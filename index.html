@@ -604,7 +604,7 @@ function updateSimStats(){
  
 async function fetchPriceData(ticker){
   const controller=new AbortController();
-  const timeout=setTimeout(()=>controller.abort(),4000);
+  const timeout=setTimeout(()=>controller.abort(),6000);
   try{
     const r=await fetch(`/api/price?ticker=${encodeURIComponent(ticker)}`,{signal:controller.signal});
     clearTimeout(timeout);
@@ -615,19 +615,20 @@ async function fetchPriceData(ticker){
  
 async function fetchSimData(ticker,dir,capital,days,model){
   // Fetch price data and Claude analysis in parallel
-  const [priceData, claudeRaw] = await Promise.allSettled([
-    fetchPriceData(ticker),
-    fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:700,messages:[{role:'user',content:
-        `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, early 2026. Return ONLY JSON: {"current_price":number,"mu":number,"sigma":number,"asset_type":"stock|crypto|etf","verdict":"STRONG ENTRY|WAIT FOR DIP|HIGH RISK|AVOID","thesis":"3 sentences","signals":["s1","s2","s3","s4"],"key_risk":"1 sentence"}`}]})
-    }).then(r=>r.json())
-  ]);
+  // Run both in parallel - no artificial timeout on Claude
+  const pricePromise = fetchPriceData(ticker);
+  const claudePromise = fetch('/api/claude',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:700,messages:[{role:'user',content:
+      `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, early 2026. Return ONLY JSON: {"current_price":number,"mu":number,"sigma":number,"asset_type":"stock|crypto|etf","verdict":"STRONG ENTRY|WAIT FOR DIP|HIGH RISK|AVOID","thesis":"3 sentences","signals":["s1","s2","s3","s4"],"key_risk":"1 sentence"}`}]})
+  }).then(r=>r.json());
+ 
+  const [priceData, claudeRaw] = await Promise.allSettled([pricePromise, claudePromise]);
  
   // Parse Claude response
   let cd={current_price:100,mu:.15,sigma:.35,asset_type:'stock',verdict:'WATCH',thesis:'',signals:[],key_risk:''};
   if(claudeRaw.status==='fulfilled'){
-    try{cd=JSON.parse(claudeRaw.value.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());}catch(e){}
+    try{cd=JSON.parse(claudeRaw.value.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());}catch(e){console.log('Claude parse error',e);}
   }
  
   // Override with real price data if available
