@@ -459,32 +459,60 @@ let simRunning=false,simTimer=null,allPaths=[],allFinals=[];
 let SP={S0:100,mu:.15,sigma:.35,days:90,capital:10000,dir:'LONG',model:'gbm'};
 let simHistory=[];
  
+// Live price cache
+const livePrices={};
+const defaultTickers=['NVDA','AAPL','MELI','META','TSLA','BTC/USD','ETH/USD','SPY','AMZN','MSFT'];
+ 
+async function fetchLivePrice(ticker){
+  try{
+    const r=await fetch(`/api/price?ticker=${encodeURIComponent(ticker)}`);
+    if(!r.ok) return null;
+    const d=await r.json();
+    if(d.currentPrice){
+      livePrices[ticker]={price:d.currentPrice,return30d:d.return30d||0,name:d.longName||ticker};
+      return d;
+    }
+  }catch(e){}
+  return null;
+}
+ 
+async function refreshLiveTape(){
+  // Fetch prices for default tickers + any simulated tickers
+  const toFetch=[...new Set([...defaultTickers,...simHistory.map(s=>s.ticker)])].slice(0,12);
+  await Promise.allSettled(toFetch.map(t=>fetchLivePrice(normalizeTicker(t))));
+  renderLiveTape();
+}
+ 
+function renderLiveTape(){
+  const tape=document.getElementById('tapeInner');
+  const keys=Object.keys(livePrices);
+  if(!keys.length) return;
+ 
+  const items=keys.map(t=>{
+    const d=livePrices[t];
+    const ret=d.return30d||0;
+    const cls=ret>=0?'up':'dn';
+    const sign=ret>=0?'+':'';
+    const displayTicker=t.replace('/USD','');
+    return `<div class="tape-item">
+      <span class="sym">${displayTicker}</span>
+      <span style="color:var(--text2)">$${Number(d.price).toLocaleString(undefined,{maximumFractionDigits:d.price>100?0:2})}</span>
+      <span class="${cls}">${sign}${(ret*100).toFixed(1)}%</span>
+    </div>`;
+  });
+  tape.innerHTML=items.join('')+items.join('');
+}
+ 
 function addToTape(ticker,dir,expReturn,winRate,verdict,currentPrice){
   simHistory.unshift({ticker,dir,expReturn,winRate,verdict,currentPrice,ts:new Date()});
   if(simHistory.length>20) simHistory.pop();
-  renderTape();
+  // Update live price cache with our fresh data
+  if(currentPrice) livePrices[ticker]={price:currentPrice,return30d:expReturn,name:ticker};
+  renderLiveTape();
 }
  
 function renderTape(){
-  if(simHistory.length===0) return;
-  const tape=document.getElementById('tapeInner');
-  const items=simHistory.map(s=>{
-    const ret=s.expReturn||0;
-    const cls=ret>=0?'up':'dn';
-    const sign=ret>=0?'+':'';
-    const price=s.currentPrice?'$'+Number(s.currentPrice).toLocaleString(undefined,{maximumFractionDigits:0}):'';
-    const vcolor=s.verdict==='STRONG ENTRY'?'var(--green)':s.verdict==='AVOID'?'var(--red)':'var(--text3)';
-    return `<div class="tape-item">
-      <span class="sym">${s.ticker}</span>
-      <span style="color:var(--text3)">${s.dir}</span>
-      ${price?`<span style="color:var(--text2)">${price}</span>`:''}
-      <span class="${cls}">${sign}${(ret*100).toFixed(1)}% exp</span>
-      <span style="font-size:10px;color:var(--text3)">${(s.winRate*100).toFixed(0)}% win</span>
-      <span style="font-size:10px;color:${vcolor}">${s.verdict||''}</span>
-    </div>`;
-  });
-  // duplicate for seamless scroll
-  tape.innerHTML=items.join('')+items.join('');
+  renderLiveTape();
 }
 let simCtx,distCtx,simW,simH,distH,activeChart=null;
  
@@ -1641,6 +1669,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   renderPortfolioTable();
   renderWatchlist();
   renderHistory();
+  refreshLiveTape();
+  setInterval(refreshLiveTape, 30*1000);
 });
 </script>
 </body>
