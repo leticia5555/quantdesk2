@@ -1207,6 +1207,21 @@ ${comparisonData.length>1?`
   Always consult a qualified financial advisor before making investment decisions. / 
   Este reporte es generado por un motor de simulación con IA y es solo para fines informativos.
 </div>
+<!-- NOTE MODAL -->
+<div id="noteModal" style="display:none;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.7);align-items:center;justify-content:center;">
+  <div style="background:var(--bg1);border:1px solid var(--border2);border-radius:8px;padding:24px;width:90%;max-width:480px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <span style="font-family:var(--mono);font-size:12px;color:var(--text2);" id="noteModalTitle">// add note</span>
+      <button onclick="closeNoteModal()" style="font-size:16px;color:var(--text3);border:none;background:none;cursor:pointer;">✕</button>
+    </div>
+    <textarea id="noteInput" rows="4" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--text);font-family:var(--sans);font-size:13px;padding:10px 12px;border-radius:4px;resize:vertical;outline:none;line-height:1.6;" placeholder="Your research note... why did you run this? what did you decide?"></textarea>
+    <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end;">
+      <button onclick="closeNoteModal()" style="font-size:12px;padding:6px 16px;">Cancel</button>
+      <button onclick="saveNote()" class="primary" style="font-size:12px;padding:6px 16px;">Save note</button>
+    </div>
+  </div>
+</div>
+ 
 </body>
 </html>`;
  
@@ -1431,13 +1446,17 @@ function renderHistory(){
     const ret = (e.expReturn>=0?'+':'')+(e.expReturn*100).toFixed(1)+'%';
     const retColor = e.expReturn>=0?'var(--green)':'var(--red)';
     const vcolor = e.verdict==='STRONG ENTRY'?'var(--green)':e.verdict==='AVOID'?'var(--red)':'var(--text2)';
-    return `<div style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--bg1);border:1px solid var(--border);border-radius:4px;cursor:pointer;flex-wrap:wrap;" onclick="loadFromHistory(${i})">
-      <span style="font-family:var(--mono);font-size:12px;font-weight:500;color:var(--text);min-width:50px;">${e.ticker}</span>
-      <span style="font-size:10px;color:${e.dir==='LONG'?'var(--green)':'var(--red)'};">${e.dir}</span>
-      <span style="font-size:11px;color:var(--text2);">$${Number(e.currentPrice||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
-      <span style="font-size:11px;color:${retColor};font-family:var(--mono);">${ret}</span>
-      <span style="font-size:10px;color:${vcolor};border:1px solid ${vcolor};padding:1px 6px;border-radius:2px;">${e.verdict||'—'}</span>
-      <span style="font-size:10px;color:var(--text3);margin-left:auto;">${e.date} · ${e.days}d</span>
+    return `<div style="background:var(--bg1);border:1px solid var(--border);border-radius:4px;overflow:hidden;">
+      <div style="display:flex;align-items:center;gap:12px;padding:8px 12px;cursor:pointer;flex-wrap:wrap;" onclick="loadFromHistory(${i})">
+        <span style="font-family:var(--mono);font-size:12px;font-weight:500;color:var(--text);min-width:50px;">${e.ticker}</span>
+        <span style="font-size:10px;color:${e.dir==='LONG'?'var(--green)':'var(--red)'};">${e.dir}</span>
+        <span style="font-size:11px;color:var(--text2);">$${Number(e.currentPrice||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+        <span style="font-size:11px;color:${retColor};font-family:var(--mono);">${ret}</span>
+        <span style="font-size:10px;color:${vcolor};border:1px solid ${vcolor};padding:1px 6px;border-radius:2px;">${e.verdict||'—'}</span>
+        <span style="font-size:10px;color:var(--text3);margin-left:auto;">${e.date} · ${e.days}d</span>
+        <button onclick="event.stopPropagation();openNoteModal(${i})" style="font-size:10px;padding:2px 8px;border:1px solid var(--border2);color:var(--text3);background:none;border-radius:3px;cursor:pointer;font-family:var(--mono);">${e.note?'✎ edit':'+ note'}</button>
+      </div>
+      ${e.note?`<div style="padding:6px 12px 10px;font-size:12px;color:var(--text2);font-family:var(--sans);line-height:1.6;border-top:1px solid var(--border);background:var(--bg2);">📝 ${e.note}</div>`:''}
     </div>`;
   }).join('');
 }
@@ -1451,6 +1470,41 @@ function loadFromHistory(idx){
   document.getElementById('simDays').value = e.days;
   document.getElementById('simModel').value = e.model||'gbm';
 }
+ 
+// ─── NOTES ────────────────────────────────────────────
+let currentNoteIdx = -1;
+ 
+function openNoteModal(idx){
+  currentNoteIdx = idx;
+  const e = simHistoryPersist[idx];
+  document.getElementById('noteModalTitle').textContent = `// note · ${e.ticker} · ${e.date}`;
+  document.getElementById('noteInput').value = e.note || '';
+  const modal = document.getElementById('noteModal');
+  modal.style.display = 'flex';
+  setTimeout(()=>document.getElementById('noteInput').focus(), 100);
+}
+ 
+function closeNoteModal(){
+  document.getElementById('noteModal').style.display = 'none';
+  currentNoteIdx = -1;
+}
+ 
+function saveNote(){
+  if(currentNoteIdx < 0) return;
+  const note = document.getElementById('noteInput').value.trim();
+  simHistoryPersist[currentNoteIdx].note = note;
+  saveHistoryPersist();
+  renderHistory();
+  closeNoteModal();
+}
+ 
+// Close modal on backdrop click — wait for DOM
+window.addEventListener('DOMContentLoaded',()=>{
+  const modal=document.getElementById('noteModal');
+  const input=document.getElementById('noteInput');
+  if(modal) modal.addEventListener('click',function(e){if(e.target===this)closeNoteModal();});
+  if(input) input.addEventListener('keydown',function(e){if((e.metaKey||e.ctrlKey)&&e.key==='Enter')saveNote();});
+});
  
 // ─── COMPARISON ───────────────────────────────────────
 let comparisonData=[];
@@ -1673,5 +1727,20 @@ document.addEventListener('DOMContentLoaded',()=>{
   setInterval(refreshLiveTape, 30*1000);
 });
 </script>
+<!-- NOTE MODAL -->
+<div id="noteModal" style="display:none;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.7);align-items:center;justify-content:center;">
+  <div style="background:var(--bg1);border:1px solid var(--border2);border-radius:8px;padding:24px;width:90%;max-width:480px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <span style="font-family:var(--mono);font-size:12px;color:var(--text2);" id="noteModalTitle">// add note</span>
+      <button onclick="closeNoteModal()" style="font-size:16px;color:var(--text3);border:none;background:none;cursor:pointer;">✕</button>
+    </div>
+    <textarea id="noteInput" rows="4" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--text);font-family:var(--sans);font-size:13px;padding:10px 12px;border-radius:4px;resize:vertical;outline:none;line-height:1.6;" placeholder="Your research note... why did you run this? what did you decide?"></textarea>
+    <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end;">
+      <button onclick="closeNoteModal()" style="font-size:12px;padding:6px 16px;">Cancel</button>
+      <button onclick="saveNote()" class="primary" style="font-size:12px;padding:6px 16px;">Save note</button>
+    </div>
+  </div>
+</div>
+ 
 </body>
 </html>
