@@ -241,7 +241,8 @@ td:first-child{color:var(--text);font-weight:500;}
     <select id="simModel"><option value="gbm">GBM — standard</option><option value="jump">Jump diffusion</option><option value="regime">Regime switching</option></select>
   </div>
  
-  <div class="chips">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+    <span style="font-size:11px;color:var(--text3);font-family:var(--mono);">// quick</span>
     <button class="chip" onclick="setSimTicker('NVDA')">NVDA</button>
     <button class="chip" onclick="setSimTicker('BTC')">BTC</button>
     <button class="chip" onclick="setSimTicker('MELI')">MELI</button>
@@ -252,6 +253,24 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="chip" onclick="setSimTicker('SOL')">SOL</button>
     <button class="chip" onclick="setSimTicker('AMZN')">AMZN</button>
     <button class="chip" onclick="setSimTicker('SPY')">SPY</button>
+  </div>
+ 
+  <!-- WATCHLIST -->
+  <div style="margin-bottom:16px;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+      <span style="font-size:11px;color:var(--text3);font-family:var(--mono);">// watchlist</span>
+      <div id="watchlistChips" style="display:flex;flex-wrap:wrap;gap:5px;flex:1;"></div>
+      <button onclick="addToWatchlist()" style="font-size:10px;padding:2px 10px;border:1px solid var(--green);color:var(--green);background:none;border-radius:3px;cursor:pointer;font-family:var(--mono);white-space:nowrap;">+ save ticker</button>
+    </div>
+  </div>
+ 
+  <!-- SIM HISTORY -->
+  <div id="historyPanel" style="display:none;margin-bottom:16px;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+      <span style="font-size:11px;color:var(--text3);font-family:var(--mono);">// saved simulations</span>
+      <button onclick="clearHistory()" style="font-size:10px;padding:2px 8px;border:1px solid var(--border2);color:var(--text3);background:none;border-radius:3px;cursor:pointer;font-family:var(--mono);">clear</button>
+    </div>
+    <div id="historyList" style="display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto;"></div>
   </div>
  
   <div class="run-row">
@@ -737,6 +756,7 @@ async function startSim(){
         const tickerVal=document.getElementById('simTicker').value.toUpperCase();
         addToTape(tickerVal,SP.dir,mean,wins/rets.length,lastCd.verdict||'',SP.S0);
         addToComparison(tickerVal,SP.dir,SP.S0,mean,wins/rets.length,sharpe,var95,SP.capital,lastCd.verdict||'');
+        addSimToHistory(tickerVal,SP.dir,SP.capital,SP.days,SP.model,mean,wins/rets.length,sharpe,var95,lastCd.verdict||'',SP.S0,lastCd.thesis||'');
       }
       return;
     }
@@ -1155,6 +1175,103 @@ function updateSpeedLabel(){
   document.getElementById('speedLabel').textContent=labels[v];
 }
  
+// ─── WATCHLIST ────────────────────────────────────────
+let watchlist = JSON.parse(localStorage.getItem('qd_watchlist')||'[]');
+let simHistoryPersist = JSON.parse(localStorage.getItem('qd_history')||'[]');
+ 
+function saveWatchlist(){
+  localStorage.setItem('qd_watchlist', JSON.stringify(watchlist));
+}
+ 
+function saveHistoryPersist(){
+  localStorage.setItem('qd_history', JSON.stringify(simHistoryPersist.slice(0,50)));
+}
+ 
+function addToWatchlist(){
+  const ticker = document.getElementById('simTicker').value.trim().toUpperCase();
+  if(!ticker) return;
+  if(watchlist.includes(ticker)){
+    // remove if already saved
+    watchlist = watchlist.filter(t=>t!==ticker);
+  } else {
+    watchlist.unshift(ticker);
+    if(watchlist.length>20) watchlist.pop();
+  }
+  saveWatchlist();
+  renderWatchlist();
+}
+ 
+function removeFromWatchlist(ticker){
+  watchlist = watchlist.filter(t=>t!==ticker);
+  saveWatchlist();
+  renderWatchlist();
+}
+ 
+function renderWatchlist(){
+  const el = document.getElementById('watchlistChips');
+  if(!el) return;
+  if(!watchlist.length){
+    el.innerHTML = '<span style="font-size:10px;color:var(--text3);font-family:var(--mono);">empty — save tickers you research often</span>';
+    return;
+  }
+  el.innerHTML = watchlist.map(t=>`
+    <span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border:1px solid var(--border2);border-radius:20px;color:var(--text2);font-family:var(--mono);">
+      <span style="cursor:pointer;" onclick="setSimTicker('${t}')">${t}</span>
+      <span onclick="removeFromWatchlist('${t}')" style="cursor:pointer;color:var(--text3);font-size:10px;margin-left:2px;">✕</span>
+    </span>`).join('');
+}
+ 
+function addSimToHistory(ticker, dir, capital, days, model, expReturn, winRate, sharpeVal, var95Val, verdict, currentPrice, thesis){
+  const entry = {
+    ticker, dir, capital, days, model,
+    expReturn, winRate, sharpe: sharpeVal, var95: var95Val,
+    verdict, currentPrice, thesis,
+    ts: new Date().toISOString(),
+    date: new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
+  };
+  simHistoryPersist.unshift(entry);
+  if(simHistoryPersist.length>50) simHistoryPersist.pop();
+  saveHistoryPersist();
+  renderHistory();
+}
+ 
+function clearHistory(){
+  simHistoryPersist = [];
+  saveHistoryPersist();
+  renderHistory();
+}
+ 
+function renderHistory(){
+  const panel = document.getElementById('historyPanel');
+  const list = document.getElementById('historyList');
+  if(!panel||!list) return;
+  if(!simHistoryPersist.length){ panel.style.display='none'; return; }
+  panel.style.display = 'block';
+  list.innerHTML = simHistoryPersist.map((e,i)=>{
+    const ret = (e.expReturn>=0?'+':'')+(e.expReturn*100).toFixed(1)+'%';
+    const retColor = e.expReturn>=0?'var(--green)':'var(--red)';
+    const vcolor = e.verdict==='STRONG ENTRY'?'var(--green)':e.verdict==='AVOID'?'var(--red)':'var(--text2)';
+    return `<div style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--bg1);border:1px solid var(--border);border-radius:4px;cursor:pointer;flex-wrap:wrap;" onclick="loadFromHistory(${i})">
+      <span style="font-family:var(--mono);font-size:12px;font-weight:500;color:var(--text);min-width:50px;">${e.ticker}</span>
+      <span style="font-size:10px;color:${e.dir==='LONG'?'var(--green)':'var(--red)'};">${e.dir}</span>
+      <span style="font-size:11px;color:var(--text2);">$${Number(e.currentPrice||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+      <span style="font-size:11px;color:${retColor};font-family:var(--mono);">${ret}</span>
+      <span style="font-size:10px;color:${vcolor};border:1px solid ${vcolor};padding:1px 6px;border-radius:2px;">${e.verdict||'—'}</span>
+      <span style="font-size:10px;color:var(--text3);margin-left:auto;">${e.date} · ${e.days}d</span>
+    </div>`;
+  }).join('');
+}
+ 
+function loadFromHistory(idx){
+  const e = simHistoryPersist[idx];
+  if(!e) return;
+  document.getElementById('simTicker').value = e.ticker;
+  document.getElementById('simDir').value = e.dir;
+  document.getElementById('simCapital').value = e.capital;
+  document.getElementById('simDays').value = e.days;
+  document.getElementById('simModel').value = e.model||'gbm';
+}
+ 
 // ─── COMPARISON ───────────────────────────────────────
 let comparisonData=[];
  
@@ -1370,6 +1487,8 @@ function setStatus(txt,live=true){
 document.addEventListener('DOMContentLoaded',()=>{
   initCanvases();
   renderPortfolioTable();
+  renderWatchlist();
+  renderHistory();
 });
 </script>
 </body>
