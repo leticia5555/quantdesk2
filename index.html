@@ -28,7 +28,7 @@
 }
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{background:var(--bg);color:var(--text);font-family:var(--mono);min-height:100vh;overflow-x:hidden;}
-
+ 
 /* TOPBAR */
 .topbar{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:48px;border-bottom:1px solid var(--border);background:var(--bg1);position:sticky;top:0;z-index:100;}
 .logo{font-size:13px;font-weight:600;letter-spacing:.15em;color:var(--text);}
@@ -42,11 +42,11 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--mono);min-hei
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 .status-dot.live{animation:pulse 2s infinite;}
 .status-txt{font-size:10px;color:var(--text3);letter-spacing:.06em;}
-
+ 
 /* LAYOUT */
 .page{display:none;padding:24px;}
 .page.active{display:block;}
-
+ 
 /* TICKER TAPE */
 .tape{background:var(--bg1);border-bottom:1px solid var(--border);padding:6px 0;overflow:hidden;white-space:nowrap;}
 .tape-inner{display:inline-flex;gap:32px;animation:scroll 30s linear infinite;}
@@ -55,12 +55,12 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--mono);min-hei
 .tape-item .sym{color:var(--text);font-weight:500;}
 .tape-item .up{color:var(--green);}
 .tape-item .dn{color:var(--red);}
-
+ 
 /* SECTION HEADERS */
 .section-header{display:flex;align-items:baseline;gap:12px;margin-bottom:16px;}
 .section-title{font-size:11px;font-weight:500;letter-spacing:.1em;text-transform:uppercase;color:var(--text2);}
 .section-line{flex:1;height:1px;background:var(--border);}
-
+ 
 /* INPUTS */
 input,select,textarea{
   background:var(--bg2);border:1px solid var(--border2);color:var(--text);
@@ -79,12 +79,12 @@ button.primary{background:var(--green);border-color:var(--green);color:#fff;font
 button.primary:hover{background:var(--green2);border-color:var(--green2);}
 button.danger{border-color:var(--red);color:var(--red);}
 button.danger:hover{background:var(--red);color:#fff;}
-
+ 
 /* CHIPS */
 .chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:16px;}
 .chip{font-size:11px;padding:3px 10px;border-radius:20px;border:1px solid var(--border2);color:var(--text3);cursor:pointer;transition:all .12s;background:none;font-family:var(--mono);}
 .chip:hover,.chip.active{border-color:var(--green);color:var(--green);background:rgba(29,158,117,.08);}
-
+ 
 /* STAT CARDS */
 .stat-grid{display:grid;gap:8px;margin-bottom:16px;}
 .stat-grid.cols-6{grid-template-columns:repeat(6,1fr);}
@@ -97,21 +97,21 @@ button.danger:hover{background:var(--red);color:#fff;}
 .pos{color:var(--green)!important;}
 .neg{color:var(--red)!important;}
 .muted{color:var(--text2)!important;}
-
+ 
 /* CARDS */
 .card{background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:16px 20px;margin-bottom:10px;}
 .card:hover{border-color:var(--border2);}
-
+ 
 /* PROGRESS */
 .prog-row{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
 .prog-track{flex:1;height:2px;background:var(--bg3);border-radius:1px;overflow:hidden;}
 .prog-fill{height:100%;background:var(--blue);border-radius:1px;transition:width .05s;width:0%;}
 .prog-lbl{font-size:10px;color:var(--text3);min-width:90px;text-align:right;}
-
+ 
 /* CANVAS */
 .canvas-wrap{position:relative;width:100%;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--bg1);}
 canvas{display:block;width:100%;height:100%;}
-
+ 
 /* SCENARIO */
 .scenario-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px;}
 .scen{border:1px solid var(--border);border-radius:6px;padding:12px;text-align:center;background:var(--bg1);}
@@ -121,14 +121,14 @@ canvas{display:block;width:100%;height:100%;}
 .scen-pct{font-size:22px;font-weight:500;}
 .scen-pnl{font-size:12px;margin-top:2px;color:var(--text2);}
 .scen-prob{font-size:10px;color:var(--text3);margin-top:4px;}
-
+ 
 /* VERDICT */
 .verdict{display:inline-block;font-size:10px;padding:3px 10px;border-radius:3px;border:1px solid;letter-spacing:.06em;text-transform:uppercase;}
 .v-strong{border-color:var(--blue);color:var(--blue);background:rgba(55,138,221,.1);}
 .v-wait{border-color:var(--green);color:var(--green);background:rgba(29,158,117,.1);}
 .v-risk{border-color:var(--amber);color:var(--amber);background:rgba(239,159,39,.1);}
 .v-avoid{border-color:var(--text3);color:var(--text3);background:rgba(85,85,80,.1);}
-
+ 
 /* ANALYSIS */
 .analysis{background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:14px 16px;margin-bottom:8px;}
 .analysis h3{font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;}
@@ -138,7 +138,7 @@ canvas{display:block;width:100%;height:100%;}
 .sig-list li::before{content:'//';position:absolute;left:0;color:var(--text3);font-family:var(--mono);font-size:10px;top:1px;}
 .analysis.risk{border-color:rgba(226,75,74,.25);}
 .analysis.risk h3{color:var(--red);}
-
+ 
 /* VC CARDS */
 .deal-card{background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:16px 18px;margin-bottom:10px;transition:border-color .15s;}
 .deal-card:hover{border-color:var(--border2);}
@@ -158,13 +158,13 @@ canvas{display:block;width:100%;height:100%;}
 .sig-fill{height:100%;border-radius:2px;}
 .sig-score{font-size:12px;font-weight:500;}
 .traction-tag{font-size:10px;padding:2px 8px;border-radius:3px;border:1px solid var(--amber);color:var(--amber);background:rgba(239,159,39,.08);}
-
+ 
 /* LOADING */
 .loading{text-align:center;padding:40px;color:var(--text3);font-size:12px;letter-spacing:.04em;}
 .loading::after{content:'';animation:dots 1.5s infinite;}
 @keyframes dots{0%{content:''}33%{content:'.'}66%{content:'..'}100%{content:'...'}}
 .err-msg{font-size:12px;color:var(--red);padding:12px 16px;border:1px solid rgba(226,75,74,.3);border-radius:6px;}
-
+ 
 /* CONTROLS GRID */
 .ctrl-grid{display:grid;gap:8px;margin-bottom:12px;}
 .ctrl-grid.g3{grid-template-columns:1fr 1fr 1fr;}
@@ -172,23 +172,23 @@ canvas{display:block;width:100%;height:100%;}
 .run-row{display:flex;gap:8px;margin-bottom:16px;}
 .run-row button{flex:1;}
 .run-row button.primary{flex:2;}
-
+ 
 /* PORTFOLIO TABLE */
 table{width:100%;border-collapse:collapse;font-size:12px;}
 th{font-size:10px;color:var(--text3);text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.06em;font-weight:400;}
 td{padding:10px 12px;border-bottom:1px solid var(--border);color:var(--text2);}
 tr:hover td{background:var(--bg2);}
 td:first-child{color:var(--text);font-weight:500;}
-
+ 
 /* GRID LAYOUT */
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
 .three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;}
-
+ 
 /* SCROLLBAR */
 ::-webkit-scrollbar{width:4px;height:4px;}
 ::-webkit-scrollbar-track{background:var(--bg);}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
-
+ 
 /* RESPONSIVE */
 @media(max-width:900px){
   .stat-grid.cols-6{grid-template-columns:repeat(3,1fr);}
@@ -205,7 +205,7 @@ td:first-child{color:var(--text);font-weight:500;}
 </style>
 </head>
 <body>
-
+ 
 <!-- TOPBAR -->
 <div class="topbar">
   <div class="logo">QUANT<span>DESK</span></div>
@@ -219,7 +219,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <div class="status-txt" id="globalStatus">READY</div>
   </div>
 </div>
-
+ 
 <!-- TICKER TAPE -->
 <div class="tape">
   <div class="tape-inner" id="tapeInner">
@@ -246,11 +246,11 @@ td:first-child{color:var(--text);font-weight:500;}
     <div class="tape-item"><span class="sym">SPY</span><span class="dn">-0.2%</span></div>
   </div>
 </div>
-
+ 
 <!-- SIM PAGE -->
 <div id="page-sim" class="page active">
   <div class="section-header"><span class="section-title">// Monte Carlo Simulation</span><div class="section-line"></div></div>
-
+ 
   <div class="ctrl-grid g3">
     <input type="text" id="simTicker" placeholder="Ticker: NVDA, BTC, MELI..."/>
     <select id="simDir"><option value="LONG">LONG (buy)</option><option value="SHORT">SHORT (sell)</option></select>
@@ -259,7 +259,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <select id="simPaths"><option value="100">100 paths</option><option value="300" selected>300 paths</option><option value="500">500 paths</option><option value="1000">1000 paths</option></select>
     <select id="simModel"><option value="gbm">GBM — standard</option><option value="jump">Jump diffusion</option><option value="regime">Regime switching</option></select>
   </div>
-
+ 
   <div class="chips">
     <button class="chip" onclick="setSimTicker('NVDA')">NVDA</button>
     <button class="chip" onclick="setSimTicker('BTC')">BTC</button>
@@ -272,13 +272,13 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="chip" onclick="setSimTicker('AMZN')">AMZN</button>
     <button class="chip" onclick="setSimTicker('SPY')">SPY</button>
   </div>
-
+ 
   <div class="run-row">
     <button class="primary" onclick="startSim()">▶ Run simulation</button>
     <button onclick="stopSim()">■ Stop</button>
     <button onclick="clearSim()" class="danger">✕ Clear</button>
   </div>
-
+ 
   <div class="stat-grid cols-6" id="simStats">
     <div class="stat-card"><div class="stat-lbl">Paths run</div><div class="stat-val" id="sN">—</div><div class="stat-sub">simulations</div></div>
     <div class="stat-card"><div class="stat-lbl">Expected P&L</div><div class="stat-val" id="sEpnl">—</div><div class="stat-sub" id="sEpct">—</div></div>
@@ -287,23 +287,23 @@ td:first-child{color:var(--text);font-weight:500;}
     <div class="stat-card"><div class="stat-lbl">Max drawdown</div><div class="stat-val neg" id="sDD">—</div><div class="stat-sub">worst path</div></div>
     <div class="stat-card"><div class="stat-lbl">VaR 95%</div><div class="stat-val neg" id="sVaR">—</div><div class="stat-sub">at risk</div></div>
   </div>
-
+ 
   <div class="prog-row"><div class="prog-track"><div class="prog-fill" id="progFill"></div></div><div class="prog-lbl" id="progLbl">0 / 0</div></div>
-
+ 
   <div class="canvas-wrap" style="height:320px;margin-bottom:10px;">
     <canvas id="simCanvas"></canvas>
   </div>
-
+ 
   <div class="canvas-wrap" style="height:110px;margin-bottom:16px;">
     <canvas id="distCanvas"></canvas>
   </div>
-
+ 
   <div class="scenario-row">
     <div class="scen bear"><div class="scen-lbl">bear · p10</div><div class="scen-pct neg" id="scB">—</div><div class="scen-pnl" id="scBpnl">—</div><div class="scen-prob">worst 10% of paths</div></div>
     <div class="scen"><div class="scen-lbl">base · median</div><div class="scen-pct" id="scM">—</div><div class="scen-pnl" id="scMpnl">—</div><div class="scen-prob">median outcome</div></div>
     <div class="scen bull"><div class="scen-lbl">bull · p90</div><div class="scen-pct pos" id="scU">—</div><div class="scen-pnl" id="scUpnl">—</div><div class="scen-prob">best 10% of paths</div></div>
   </div>
-
+ 
   <div id="simAnalysis" style="display:none;">
     <div class="analysis">
       <h3>Trade thesis</h3>
@@ -323,16 +323,16 @@ td:first-child{color:var(--text);font-weight:500;}
     </div>
   </div>
 </div>
-
+ 
 <!-- VC PAGE -->
 <div id="page-vc" class="page">
   <div class="section-header"><span class="section-title">// VC Intelligence</span><div class="section-line"></div></div>
-
+ 
   <div class="ctrl-grid g2" style="margin-bottom:12px;">
     <input type="text" id="vcQuery" placeholder="Sector or theme: AI agents, LATAM fintech..."/>
     <select id="vcStage"><option value="all">All stages</option><option value="Seed">Seed</option><option value="Series A">Series A</option><option value="Series B">Series B+</option><option value="Growth">Growth</option></select>
   </div>
-
+ 
   <div class="chips">
     <button class="chip" onclick="vcChip('AI agents')">AI agents</button>
     <button class="chip" onclick="vcChip('LATAM fintech')">LATAM fintech</button>
@@ -344,18 +344,18 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="chip" onclick="vcChip('consumer AI')">consumer AI</button>
     <button class="chip" onclick="vcChip('health tech')">health tech</button>
   </div>
-
+ 
   <div class="run-row">
     <button class="primary" onclick="runVC()">▶ Scan deal flow</button>
   </div>
-
+ 
   <div id="vcResults"></div>
 </div>
-
+ 
 <!-- PORTFOLIO PAGE -->
 <div id="page-portfolio" class="page">
   <div class="section-header"><span class="section-title">// Portfolio Simulator</span><div class="section-line"></div></div>
-
+ 
   <div class="two-col" style="margin-bottom:16px;">
     <div>
       <div style="margin-bottom:8px;font-size:11px;color:var(--text3);">// add position</div>
@@ -377,22 +377,22 @@ td:first-child{color:var(--text);font-weight:500;}
       </div>
     </div>
   </div>
-
+ 
   <div id="ptTable" style="margin-bottom:16px;">
     <table>
       <thead><tr><th>Ticker</th><th>Dir</th><th>Amount</th><th>Horizon</th><th>Exp. Return</th><th>Win %</th><th>VaR</th><th></th></tr></thead>
       <tbody id="ptBody"><tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px;">No positions yet — add one above</td></tr></tbody>
     </table>
   </div>
-
+ 
   <div class="run-row">
     <button class="primary" onclick="runPortfolioSim()" id="ptRunBtn" disabled>▶ Run portfolio simulation</button>
     <button onclick="clearPortfolio()" class="danger">✕ Clear all</button>
   </div>
-
+ 
   <div id="ptResults"></div>
 </div>
-
+ 
 <script>
 // ─── NAVIGATION ───────────────────────────────────────────
 function showPage(id){
@@ -401,18 +401,18 @@ function showPage(id){
   document.getElementById('page-'+id).classList.add('active');
   event.target.classList.add('active');
 }
-
+ 
 // ─── GLOBAL STATUS ────────────────────────────────────────
 function setStatus(txt,live=true){
   document.getElementById('globalStatus').textContent=txt;
   document.getElementById('globalDot').className='status-dot'+(live?' live':'');
 }
-
+ 
 // ─── SIM ENGINE ───────────────────────────────────────────
 let simRunning=false,simTimer=null,allPaths=[],allFinals=[];
 let SP={S0:100,mu:.15,sigma:.35,days:90,capital:10000,dir:'LONG',model:'gbm'};
 let simCtx,distCtx,simW,simH,distH,activeChart=null;
-
+ 
 function initCanvases(){
   const sc=document.getElementById('simCanvas');
   const dc=document.getElementById('distCanvas');
@@ -421,7 +421,7 @@ function initCanvases(){
   resizeCanvases();
   window.addEventListener('resize',resizeCanvases);
 }
-
+ 
 function resizeCanvases(){
   const sc=document.getElementById('simCanvas');
   const dc=document.getElementById('distCanvas');
@@ -436,11 +436,11 @@ function resizeCanvases(){
   distCtx.scale(dpr,dpr);
   if(allPaths.length>0)redrawSim();
 }
-
+ 
 function setSimTicker(t){document.getElementById('simTicker').value=t;}
-
+ 
 function stopSim(){simRunning=false;if(simTimer)clearTimeout(simTimer);setStatus('STOPPED',false);}
-
+ 
 function clearSim(){
   stopSim();allPaths=[];allFinals=[];
   simCtx.clearRect(0,0,simW,simH);
@@ -452,12 +452,12 @@ function clearSim(){
   document.getElementById('simAnalysis').style.display='none';
   setStatus('READY');
 }
-
+ 
 function randn(){
   let u=0,v=0;while(u===0)u=Math.random();while(v===0)v=Math.random();
   return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
 }
-
+ 
 function genPath(S0,mu,sigma,days,model){
   const dt=1/252,path=[S0];let S=S0;
   for(let i=0;i<days;i++){
@@ -474,15 +474,15 @@ function genPath(S0,mu,sigma,days,model){
     S=S*Math.exp(ret);path.push(S);
   }return path;
 }
-
+ 
 const PAD=38,PAD_R=16,PAD_B=28;
-
+ 
 function getMinMax(){
   let mn=Infinity,mx=-Infinity;
   allPaths.forEach(p=>p.forEach(v=>{if(v<mn)mn=v;if(v>mx)mx=v;}));
   return[mn*.97,mx*1.03];
 }
-
+ 
 function drawAxes(mn,mx){
   const xS=(simW-PAD-PAD_R)/SP.days,yS=(simH-PAD-PAD_B)/(mx-mn);
   simCtx.strokeStyle='rgba(42,42,42,0.8)';simCtx.lineWidth=0.5;
@@ -502,7 +502,7 @@ function drawAxes(mn,mx){
     simCtx.fillText('d'+d,x-10,simH-8);
   }
 }
-
+ 
 function drawPath(p,mn,mx){
   const n=allPaths.length,alpha=n>300?.05:n>150?.08:n>80?.12:.18;
   const final=p[p.length-1],pnl=SP.dir==='LONG'?final-SP.S0:SP.S0-final;
@@ -515,7 +515,7 @@ function drawPath(p,mn,mx){
     i===0?simCtx.moveTo(x,y):simCtx.lineTo(x,y);
   });simCtx.stroke();
 }
-
+ 
 function drawPercentiles(mn,mx){
   if(allPaths.length<10)return;
   const xS=(simW-PAD-PAD_R)/SP.days,yS=(simH-PAD-PAD_B)/(mx-mn);
@@ -532,7 +532,7 @@ function drawPercentiles(mn,mx){
     });simCtx.stroke();
   });
 }
-
+ 
 function redrawSim(){
   simCtx.clearRect(0,0,simW,simH);
   if(!allPaths.length)return;
@@ -541,7 +541,7 @@ function redrawSim(){
   allPaths.forEach(p=>drawPath(p,mn,mx));
   if(allPaths.length>=10)drawPercentiles(mn,mx);
 }
-
+ 
 function drawDist(){
   const dw=document.getElementById('distCanvas').parentElement.clientWidth;
   distCtx.clearRect(0,0,dw,distH);
@@ -570,7 +570,7 @@ function drawDist(){
   distCtx.fillStyle='rgba(226,75,74,.8)';
   distCtx.fillText('VaR',var95x+2,14);
 }
-
+ 
 function updateSimStats(){
   if(!allFinals.length)return;
   const returns=allFinals.map(f=>SP.dir==='LONG'?(f-SP.S0)/SP.S0:(SP.S0-f)/SP.S0);
@@ -601,18 +601,40 @@ function updateSimStats(){
   document.getElementById('scU').textContent=fmt(p90);
   document.getElementById('scUpnl').textContent=fmtD(p90);
 }
-
+ 
+async function fetchPriceData(ticker){
+  const r=await fetch(`/api/price?ticker=${encodeURIComponent(ticker)}`);
+  if(!r.ok) throw new Error('Price fetch failed');
+  return r.json();
+}
+ 
 async function fetchSimData(ticker,dir,capital,days,model){
+  let priceData=null;
+  try{priceData=await fetchPriceData(ticker);}catch(e){}
+  const priceContext=priceData
+    ?`Real market data: current price $${priceData.currentPrice}, annualized drift mu=${(priceData.mu*100).toFixed(1)}%, annualized volatility sigma=${(priceData.sigma*100).toFixed(1)}%, 30d return=${(priceData.return30d*100).toFixed(1)}%, 52w high=$${priceData.high52w}, 52w low=$${priceData.low52w}, asset type=${priceData.asset_type}.`
+    :'No real price data available, estimate from knowledge.';
   const r=await fetch('/api/claude',{
     method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:600,messages:[{role:'user',content:
-      `Quant analyst brief for a ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, early 2026. Return ONLY JSON:
-{"current_price":number,"mu":number,"sigma":number,"asset_type":"stock|crypto|etf","verdict":"STRONG ENTRY|WAIT FOR DIP|HIGH RISK|AVOID","thesis":"3 sentences","signals":["s1","s2","s3","s4"],"key_risk":"1 sentence"}`}]})
+    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:700,messages:[{role:'user',content:
+      `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, early 2026. ${priceContext} Return ONLY JSON (use real data values for current_price/mu/sigma if provided): {"current_price":number,"mu":number,"sigma":number,"asset_type":"stock|crypto|etf","verdict":"STRONG ENTRY|WAIT FOR DIP|HIGH RISK|AVOID","thesis":"3 sentences referencing actual price levels","signals":["s1","s2","s3","s4"],"key_risk":"1 sentence"}`}]})
   });
   const d=await r.json();
-  return JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+  const cd=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+  if(priceData){
+    cd.current_price=priceData.currentPrice;
+    cd.mu=priceData.mu;
+    cd.sigma=priceData.sigma;
+    cd.asset_type=priceData.asset_type;
+    cd.recentPrices=priceData.recentPrices;
+    cd.high52w=priceData.high52w;
+    cd.low52w=priceData.low52w;
+    cd.return30d=priceData.return30d;
+    cd.longName=priceData.longName;
+  }
+  return cd;
 }
-
+ 
 async function startSim(){
   clearSim();
   const ticker=document.getElementById('simTicker').value.trim().toUpperCase();
@@ -651,21 +673,26 @@ async function startSim(){
     simTimer=setTimeout(batch,done<50?30:done<200?15:8);
   }batch();
 }
-
+ 
 function showSimAnalysis(cd,ticker,capital,days){
   document.getElementById('simAnalysis').style.display='block';
   const vmap={'STRONG ENTRY':'v-strong','WAIT FOR DIP':'v-wait','HIGH RISK':'v-risk','AVOID':'v-avoid'};
   const vb=document.getElementById('simVerdict');
   vb.textContent=cd.verdict||'WATCH';vb.className='verdict '+(vmap[cd.verdict]||'v-wait');
-  document.getElementById('simMeta').textContent=`${ticker} · ${cd.asset_type} · $${capital.toLocaleString()} · ${days}d · μ=${((cd.mu||.15)*100).toFixed(0)}% σ=${((cd.sigma||.35)*100).toFixed(0)}%`;
+  const name=cd.longName&&cd.longName!==ticker?cd.longName:'';
+  const priceStr=cd.current_price?`$${Number(cd.current_price).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`:'';
+  const rangeStr=cd.high52w?`52w $${cd.low52w?.toFixed(0)}–$${cd.high52w?.toFixed(0)}`:'';
+  const ret30=cd.return30d?`30d ${cd.return30d>=0?'+':''}${(cd.return30d*100).toFixed(1)}%`:'';
+  const dataTag=cd.recentPrices?'LIVE DATA':'EST';
+  document.getElementById('simMeta').innerHTML=`<span style="color:var(--text)">${ticker}</span>${name?' · '+name:''} · ${cd.asset_type} · ${priceStr} · ${rangeStr} · ${ret30} · μ=${((cd.mu||.15)*100).toFixed(0)}% σ=${((cd.sigma||.35)*100).toFixed(0)}% · <span style="color:${cd.recentPrices?'var(--green)':'var(--amber)';}">${dataTag}</span>`;
   document.getElementById('simThesis').textContent=cd.thesis||'';
   document.getElementById('simSignals').innerHTML=(cd.signals||[]).map(s=>`<li>${s}</li>`).join('');
   document.getElementById('simRisk').textContent=cd.key_risk||'';
 }
-
+ 
 // ─── VC ENGINE ────────────────────────────────────────────
 function vcChip(v){document.getElementById('vcQuery').value=v;runVC();}
-
+ 
 async function runVC(){
   const q=document.getElementById('vcQuery').value.trim();
   const stage=document.getElementById('vcStage').value;
@@ -687,7 +714,7 @@ Return ONLY JSON array of 4:
     setStatus('READY',false);
   }catch(e){el.innerHTML=`<div class="err-msg">Error: ${e.message}</div>`;setStatus('ERROR',false);}
 }
-
+ 
 function renderVC(deals,q){
   const el=document.getElementById('vcResults');
   el.innerHTML=`<div style="font-size:10px;color:var(--text3);margin-bottom:12px;letter-spacing:.04em;">${deals.length} deals · "${q}" · ${new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}</div>`;
@@ -730,10 +757,10 @@ function renderVC(deals,q){
     el.appendChild(card);
   });
 }
-
+ 
 // ─── PORTFOLIO ENGINE ─────────────────────────────────────
 let positions=[];
-
+ 
 async function addPosition(){
   const ticker=document.getElementById('ptTicker').value.trim().toUpperCase();
   const dir=document.getElementById('ptDir').value;
@@ -757,9 +784,9 @@ async function addPosition(){
   setStatus('READY',false);
   document.getElementById('ptTicker').value='';document.getElementById('ptAmount').value='';
 }
-
+ 
 function removePosition(i){positions.splice(i,1);renderPortfolioTable();}
-
+ 
 function renderPortfolioTable(){
   const tbody=document.getElementById('ptBody');
   if(!positions.length){
@@ -792,7 +819,7 @@ function renderPortfolioTable(){
   document.getElementById('ptReturn').className='stat-val '+(wAvgReturn>=0?'pos':'neg');
   document.getElementById('ptVaR').textContent=(wAvgVaR*100).toFixed(1)+'%';
 }
-
+ 
 async function runPortfolioSim(){
   if(!positions.length)return;
   const el=document.getElementById('ptResults');
@@ -824,7 +851,7 @@ async function runPortfolioSim(){
   const p90=sorted[Math.floor(returns.length*.9)];
   const fmt=v=>(v>=0?'+':'')+(v*100).toFixed(1)+'%';
   const fmtD=v=>(v>=0?'+$':'-$')+Math.abs(Math.round(v*total)).toLocaleString();
-
+ 
   const prompt=await fetch('/api/claude',{
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:400,messages:[{role:'user',content:
@@ -833,7 +860,7 @@ async function runPortfolioSim(){
   const pd=await prompt.json();
   let assessment={assessment:'Portfolio simulation complete.',key_risk:'Diversification and correlation risk.'};
   try{assessment=JSON.parse(pd.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());}catch(e){}
-
+ 
   el.innerHTML=`
     <div class="section-header" style="margin-top:8px;"><span class="section-title">// Portfolio Results · ${NSIM} simulations</span><div class="section-line"></div></div>
     <div class="stat-grid cols-4" style="margin-bottom:16px;">
@@ -851,9 +878,9 @@ async function runPortfolioSim(){
     <div class="analysis risk"><h3>Key risk</h3><p>${assessment.key_risk}</p></div>`;
   setStatus('READY',false);
 }
-
+ 
 function clearPortfolio(){positions=[];renderPortfolioTable();document.getElementById('ptResults').innerHTML='';}
-
+ 
 // ─── INIT ─────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded',()=>{
   initCanvases();
