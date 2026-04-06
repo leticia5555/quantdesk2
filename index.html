@@ -217,6 +217,7 @@ td:first-child{color:var(--text);font-weight:500;}
   <div class="topbar-right">
     <div class="status-dot live" id="globalDot"></div>
     <div class="status-txt" id="globalStatus">READY</div>
+    <button onclick="toggleLang()" id="langBtn" style="font-family:var(--mono);font-size:11px;padding:4px 10px;border:1px solid var(--border2);color:var(--text3);background:none;border-radius:3px;cursor:pointer;margin-left:8px;letter-spacing:.06em;">ES</button>
   </div>
 </div>
  
@@ -259,19 +260,19 @@ td:first-child{color:var(--text);font-weight:500;}
     <button onclick="clearSim()" class="danger">✕ Clear</button>
   </div>
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
-    <span style="font-size:11px;color:var(--text3);">// speed</span>
+    <span id="speedTxt" style="font-size:11px;color:var(--text3);">// speed</span>
     <input type="range" id="simSpeed" min="1" max="3" value="2" step="1" style="width:100px;" oninput="updateSpeedLabel()"/>
     <span id="speedLabel" style="font-size:11px;color:var(--text2);min-width:60px;">MEDIUM</span>
-    <span style="font-size:10px;color:var(--text3);margin-left:8px;">slow = cinematic · fast = instant</span>
+    <span id="speedNote" style="font-size:10px;color:var(--text3);margin-left:8px;">slow = cinematic · fast = instant</span>
   </div>
  
   <div class="stat-grid cols-6" id="simStats">
-    <div class="stat-card"><div class="stat-lbl">Paths run</div><div class="stat-val" id="sN">—</div><div class="stat-sub">simulations</div></div>
+    <div class="stat-card"><div class="stat-lbl" id="lbl-paths">Paths run</div><div class="stat-val" id="sN">—</div><div class="stat-sub" id="sub-paths">simulations</div></div>
     <div class="stat-card"><div class="stat-lbl">Expected P&L</div><div class="stat-val" id="sEpnl">—</div><div class="stat-sub" id="sEpct">—</div></div>
-    <div class="stat-card"><div class="stat-lbl">Win rate</div><div class="stat-val" id="sWin">—</div><div class="stat-sub">profitable paths</div></div>
-    <div class="stat-card"><div class="stat-lbl">Sharpe ratio</div><div class="stat-val" id="sSharpe">—</div><div class="stat-sub">risk-adjusted</div></div>
-    <div class="stat-card"><div class="stat-lbl">Max drawdown</div><div class="stat-val neg" id="sDD">—</div><div class="stat-sub">worst path</div></div>
-    <div class="stat-card"><div class="stat-lbl">VaR 95%</div><div class="stat-val neg" id="sVaR">—</div><div class="stat-sub">at risk</div></div>
+    <div class="stat-card"><div class="stat-lbl" id="lbl-win">Win rate</div><div class="stat-val" id="sWin">—</div><div class="stat-sub" id="sub-win">profitable paths</div></div>
+    <div class="stat-card"><div class="stat-lbl" id="lbl-sharpe">Sharpe ratio</div><div class="stat-val" id="sSharpe">—</div><div class="stat-sub" id="sub-sharpe">risk-adjusted</div></div>
+    <div class="stat-card"><div class="stat-lbl" id="lbl-dd">Max drawdown</div><div class="stat-val neg" id="sDD">—</div><div class="stat-sub" id="sub-dd">worst path</div></div>
+    <div class="stat-card"><div class="stat-lbl" id="lbl-var">VaR 95%</div><div class="stat-val neg" id="sVaR">—</div><div class="stat-sub" id="sub-var">at risk</div></div>
   </div>
  
   <div class="prog-row"><div class="prog-track"><div class="prog-fill" id="progFill"></div></div><div class="prog-lbl" id="progLbl">0 / 0</div></div>
@@ -285,13 +286,13 @@ td:first-child{color:var(--text);font-weight:500;}
   </div>
  
   <div class="scenario-row">
-    <div class="scen bear"><div class="scen-lbl">bear · p10</div><div class="scen-pct neg" id="scB">—</div><div class="scen-pnl" id="scBpnl">—</div><div class="scen-prob">worst 10% of paths</div></div>
-    <div class="scen"><div class="scen-lbl">base · median</div><div class="scen-pct" id="scM">—</div><div class="scen-pnl" id="scMpnl">—</div><div class="scen-prob">median outcome</div></div>
-    <div class="scen bull"><div class="scen-lbl">bull · p90</div><div class="scen-pct pos" id="scU">—</div><div class="scen-pnl" id="scUpnl">—</div><div class="scen-prob">best 10% of paths</div></div>
+    <div class="scen bear"><div class="scen-lbl" id="lbl-bear">bear · p10</div><div class="scen-pct neg" id="scB">—</div><div class="scen-pnl" id="scBpnl">—</div><div class="scen-prob" id="prob-bear">worst 10% of paths</div></div>
+    <div class="scen"><div class="scen-lbl" id="lbl-base">base · median</div><div class="scen-pct" id="scM">—</div><div class="scen-pnl" id="scMpnl">—</div><div class="scen-prob" id="prob-base">median outcome</div></div>
+    <div class="scen bull"><div class="scen-lbl" id="lbl-bull">bull · p90</div><div class="scen-pct pos" id="scU">—</div><div class="scen-pnl" id="scUpnl">—</div><div class="scen-prob" id="prob-bull">best 10% of paths</div></div>
   </div>
  
   <div id="comparisonPanel" style="display:none;margin-bottom:16px;">
-    <div class="section-header"><span class="section-title">// session comparison</span><div class="section-line"></div></div>
+    <div class="section-header"><span class="section-title" id="compTitle">// session comparison</span><div class="section-line"></div></div>
     <div id="comparisonTable" style="overflow-x:auto;">
       <table style="width:100%;">
         <thead>
@@ -306,7 +307,7 @@ td:first-child{color:var(--text);font-weight:500;}
  
   <div id="simAnalysis" style="display:none;">
     <div class="analysis">
-      <h3>Trade thesis</h3>
+      <h3 id="thesisTitle">Trade thesis</h3>
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
         <span id="simVerdict" class="verdict"></span>
         <span id="simMeta" style="font-size:11px;color:var(--text3);"></span>
@@ -314,15 +315,15 @@ td:first-child{color:var(--text);font-weight:500;}
       <p id="simThesis"></p>
     </div>
     <div class="analysis">
-      <h3>Key signals</h3>
+      <h3 id="signalsTitle">Key signals</h3>
       <ul class="sig-list" id="simSignals"></ul>
     </div>
     <div class="analysis risk">
-      <h3>Key risk</h3>
+      <h3 id="riskTitle">Key risk</h3>
       <p id="simRisk"></p>
     </div>
     <div class="analysis" id="newsBlock" style="display:none;border-color:rgba(55,138,221,.3);">
-      <h3 style="color:var(--blue);">// recent news sentiment</h3>
+      <h3 id="newsTitle" style="color:var(--blue);">// recent news sentiment</h3>
       <p id="simNews"></p>
     </div>
   </div>
@@ -330,7 +331,7 @@ td:first-child{color:var(--text);font-weight:500;}
  
 <!-- VC PAGE -->
 <div id="page-vc" class="page">
-  <div class="section-header"><span class="section-title">// VC Intelligence</span><div class="section-line"></div></div>
+  <div class="section-header"><span class="section-title" id="vcTitle">// VC Intelligence</span><div class="section-line"></div></div>
  
   <div class="ctrl-grid g2" style="margin-bottom:12px;">
     <input type="text" id="vcQuery" placeholder="Sector or theme: AI agents, LATAM fintech..."/>
@@ -358,7 +359,7 @@ td:first-child{color:var(--text);font-weight:500;}
  
 <!-- PORTFOLIO PAGE -->
 <div id="page-portfolio" class="page">
-  <div class="section-header"><span class="section-title">// Portfolio Simulator</span><div class="section-line"></div></div>
+  <div class="section-header"><span class="section-title" id="portTitle">// Portfolio Simulator</span><div class="section-line"></div></div>
  
   <div class="two-col" style="margin-bottom:16px;">
     <div>
@@ -369,15 +370,15 @@ td:first-child{color:var(--text);font-weight:500;}
         <input type="number" id="ptAmount" placeholder="Amount $" min="100"/>
         <select id="ptHorizon"><option value="5">1W</option><option value="15">15d</option><option value="30">1M</option><option value="90" selected>3M</option><option value="180">6M</option><option value="365">1Y</option></select>
       </div>
-      <button class="primary" onclick="addPosition()" style="width:100%;">+ Add position</button>
+      <button id="addPosBtn" class="primary" onclick="addPosition()" style="width:100%;">+ Add position</button>
     </div>
     <div>
       <div style="margin-bottom:8px;font-size:11px;color:var(--text3);">// portfolio summary</div>
       <div class="stat-grid cols-2">
-        <div class="stat-card"><div class="stat-lbl">Total capital</div><div class="stat-val" id="ptTotal">$0</div></div>
-        <div class="stat-card"><div class="stat-lbl">Positions</div><div class="stat-val" id="ptCount">0</div></div>
-        <div class="stat-card"><div class="stat-lbl">Expected return</div><div class="stat-val" id="ptReturn">—</div></div>
-        <div class="stat-card"><div class="stat-lbl">Portfolio VaR</div><div class="stat-val neg" id="ptVaR">—</div></div>
+        <div class="stat-card"><div class="stat-lbl" id="lbl-ptTotal">Total capital</div><div class="stat-val" id="ptTotal">$0</div></div>
+        <div class="stat-card"><div class="stat-lbl" id="lbl-ptCount">Positions</div><div class="stat-val" id="ptCount">0</div></div>
+        <div class="stat-card"><div class="stat-lbl" id="lbl-ptReturn">Expected return</div><div class="stat-val" id="ptReturn">—</div></div>
+        <div class="stat-card"><div class="stat-lbl" id="lbl-ptVar">Portfolio VaR</div><div class="stat-val neg" id="ptVaR">—</div></div>
       </div>
     </div>
   </div>
@@ -391,7 +392,7 @@ td:first-child{color:var(--text);font-weight:500;}
  
   <div class="run-row">
     <button class="primary" onclick="runPortfolioSim()" id="ptRunBtn" disabled>▶ Run portfolio simulation</button>
-    <button onclick="clearPortfolio()" class="danger">✕ Clear all</button>
+    <button id="clearPortBtn" onclick="clearPortfolio()" class="danger">✕ Clear all</button>
   </div>
  
   <div id="ptResults"></div>
@@ -1012,6 +1013,184 @@ function renderComparison(){
 }
  
 // ─── INIT ─────────────────────────────────────────────────
+// ─── I18N ──────────────────────────────────────────────────
+let currentLang='en';
+const i18n={
+  en:{
+    sim:'SIM', vc:'VC', portfolio:'PORTFOLIO',
+    ready:'READY', complete:'COMPLETE', stopped:'STOPPED', simulating:'SIMULATING...', fetching:'FETCHING DATA...',
+    tapeDefault:'run a simulation to see results here',
+    simTitle:'// Monte Carlo Simulation',
+    tickerPlaceholder:'Ticker: NVDA, BTC, MELI...',
+    capitalPlaceholder:'Capital $',
+    runSim:'▶ Run simulation', stop:'■ Stop', clear:'✕ Clear',
+    speed:'// speed', slow:'SLOW', medium:'MEDIUM', fast:'FAST',
+    slowNote:'slow = cinematic · fast = instant',
+    pathsRun:'Paths run', simulations:'simulations',
+    expectedPnl:'Expected P&L', winRate:'Win rate', profitablePaths:'profitable paths',
+    sharpe:'Sharpe ratio', riskAdj:'risk-adjusted',
+    maxDD:'Max drawdown', worstPath:'worst path',
+    var:'VaR 95%', atRisk:'at risk',
+    bear:'bear · p10', base:'base · median', bull:'bull · p90',
+    worstPaths:'worst 10% of paths', medianOutcome:'median outcome', bestPaths:'best 10% of paths',
+    sessionComp:'// session comparison',
+    tradeThesis:'Trade thesis', keySignals:'Key signals', keyRisk:'Key risk', newsTitle:'// recent news sentiment',
+    vcTitle:'// VC Intelligence', vcPlaceholder:'Sector or theme: AI agents, LATAM fintech...',
+    scanDeal:'▶ Scan deal flow',
+    portTitle:'// Portfolio Simulator', addPosition:'// add position',
+    portSummary:'// portfolio summary', totalCapital:'Total capital', positions:'Positions',
+    expReturn:'Expected return', portVar:'Portfolio VaR',
+    addBtn:'+ Add position', runPort:'▶ Run portfolio simulation', clearAll:'✕ Clear all',
+    longDir:'LONG (buy)', shortDir:'SHORT (sell)',
+    ticker:'Ticker', dir:'Dir', amount:'Amount', horizon:'Horizon',
+    expReturnCol:'Exp. Return', winCol:'Win %', varCol:'VaR',
+    portResults:'// Portfolio Results',
+    portAssess:'Portfolio assessment',
+  },
+  es:{
+    sim:'SIM', vc:'VC', portfolio:'PORTAFOLIO',
+    ready:'LISTO', complete:'COMPLETO', stopped:'DETENIDO', simulating:'SIMULANDO...', fetching:'OBTENIENDO DATOS...',
+    tapeDefault:'ejecuta una simulación para ver resultados aquí',
+    simTitle:'// Simulación Monte Carlo',
+    tickerPlaceholder:'Ticker: NVDA, BTC, MELI...',
+    capitalPlaceholder:'Capital $',
+    runSim:'▶ Ejecutar simulación', stop:'■ Detener', clear:'✕ Limpiar',
+    speed:'// velocidad', slow:'LENTO', medium:'MEDIO', fast:'RÁPIDO',
+    slowNote:'lento = cinemático · rápido = instantáneo',
+    pathsRun:'Rutas ejecutadas', simulations:'simulaciones',
+    expectedPnl:'P&L esperado', winRate:'Tasa de ganancia', profitablePaths:'rutas rentables',
+    sharpe:'Ratio Sharpe', riskAdj:'ajustado al riesgo',
+    maxDD:'Drawdown máximo', worstPath:'peor ruta',
+    var:'VaR 95%', atRisk:'en riesgo',
+    bear:'bajista · p10', base:'base · mediana', bull:'alcista · p90',
+    worstPaths:'peor 10% de rutas', medianOutcome:'resultado mediano', bestPaths:'mejor 10% de rutas',
+    sessionComp:'// comparación de sesión',
+    tradeThesis:'Tesis de inversión', keySignals:'Señales clave', keyRisk:'Riesgo principal', newsTitle:'// noticias recientes',
+    vcTitle:'// Inteligencia VC', vcPlaceholder:'Sector o tema: agentes IA, fintech LATAM...',
+    scanDeal:'▶ Escanear flujo de deals',
+    portTitle:'// Simulador de Portafolio', addPosition:'// agregar posición',
+    portSummary:'// resumen del portafolio', totalCapital:'Capital total', positions:'Posiciones',
+    expReturn:'Retorno esperado', portVar:'VaR del portafolio',
+    addBtn:'+ Agregar posición', runPort:'▶ Simular portafolio', clearAll:'✕ Limpiar todo',
+    longDir:'LARGO (compra)', shortDir:'CORTO (venta)',
+    ticker:'Ticker', dir:'Dir', amount:'Monto', horizon:'Horizonte',
+    expReturnCol:'Ret. Esperado', winCol:'% Ganancia', varCol:'VaR',
+    portResults:'// Resultados del Portafolio',
+    portAssess:'Evaluación del portafolio',
+  }
+};
+ 
+function t(key){ return i18n[currentLang][key]||i18n.en[key]||key; }
+ 
+function toggleLang(){
+  currentLang=currentLang==='en'?'es':'en';
+  document.getElementById('langBtn').textContent=currentLang==='en'?'ES':'EN';
+  applyLang();
+}
+ 
+function applyLang(){
+  const L=currentLang;
+  // Nav tabs
+  document.querySelectorAll('.nav-btn')[0].textContent=t('sim');
+  document.querySelectorAll('.nav-btn')[1].textContent=t('vc');
+  document.querySelectorAll('.nav-btn')[2].textContent=t('portfolio');
+ 
+  // Status
+  const st=document.getElementById('globalStatus').textContent;
+  const statusMap={
+    'READY':t('ready'),'LISTO':t('ready'),
+    'COMPLETE':t('complete'),'COMPLETO':t('complete'),
+    'STOPPED':t('stopped'),'DETENIDO':t('stopped'),
+  };
+  if(statusMap[st]) document.getElementById('globalStatus').textContent=statusMap[st];
+ 
+  // SIM PAGE
+  setText('simTitle',t('simTitle'));
+  setPlaceholder('simTicker',t('tickerPlaceholder'));
+  setPlaceholder('simCapital',t('capitalPlaceholder'));
+ 
+  // Buttons
+  setBtn(0,t('runSim'));setBtn(1,t('stop'));setBtn(2,t('clear'));
+ 
+  // Direction select
+  const dirSel=document.getElementById('simDir');
+  if(dirSel){dirSel.options[0].text=t('longDir');dirSel.options[1].text=t('shortDir');}
+ 
+  // Speed
+  setText('speedTxt',t('speed'));
+  setText('speedNote',t('slowNote'));
+  updateSpeedLabel();
+ 
+  // Stat cards
+  setStatLbl('lbl-paths',t('pathsRun'));setStatSub('sub-paths',t('simulations'));
+  setStatLbl('lbl-epnl',t('expectedPnl'));
+  setStatLbl('lbl-win',t('winRate'));setStatSub('sub-win',t('profitablePaths'));
+  setStatLbl('lbl-sharpe',t('sharpe'));setStatSub('sub-sharpe',t('riskAdj'));
+  setStatLbl('lbl-dd',t('maxDD'));setStatSub('sub-dd',t('worstPath'));
+  setStatLbl('lbl-var',t('var'));setStatSub('sub-var',t('atRisk'));
+ 
+  // Scenarios
+  setScenLbl('lbl-bear',t('bear'));setScenProb('prob-bear',t('worstPaths'));
+  setScenLbl('lbl-base',t('base'));setScenProb('prob-base',t('medianOutcome'));
+  setScenLbl('lbl-bull',t('bull'));setScenProb('prob-bull',t('bestPaths'));
+ 
+  // Section titles
+  setText('compTitle',t('sessionComp'));
+  setText('thesisTitle',t('tradeThesis'));
+  setText('signalsTitle',t('keySignals'));
+  setText('riskTitle',t('keyRisk'));
+  setText('newsTitle',t('newsTitle'));
+ 
+  // VC
+  setText('vcTitle',t('vcTitle'));
+  setPlaceholder('vcQuery',t('vcPlaceholder'));
+  setVcBtn(t('scanDeal'));
+ 
+  // Portfolio
+  setText('portTitle',t('portTitle'));
+  setText('addPosTitle',t('addPosition'));
+  setText('portSumTitle',t('portSummary'));
+  setStatLbl('lbl-ptTotal',t('totalCapital'));
+  setStatLbl('lbl-ptCount',t('positions'));
+  setStatLbl('lbl-ptReturn',t('expReturn'));
+  setStatLbl('lbl-ptVar',t('portVar'));
+  setText('addPosBtn',t('addBtn'));
+  setText('runPortBtn',t('runPort'));
+  setText('clearPortBtn',t('clearAll'));
+ 
+  // Table headers
+  setTh(0,t('ticker'));setTh(1,t('dir'));setTh(2,t('amount'));
+  setTh(3,t('horizon'));setTh(4,t('expReturnCol'));setTh(5,t('winCol'));setTh(6,t('varCol'));
+ 
+  // Tape
+  const tape=document.getElementById('tapeInner');
+  if(tape&&simHistory.length===0) tape.innerHTML=`<div class="tape-item"><span class="sym">QUANTDESK</span><span style="color:var(--text3)">${t('tapeDefault')}</span></div>`;
+}
+ 
+function setText(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
+function setPlaceholder(id,val){const e=document.getElementById(id);if(e)e.placeholder=val;}
+function setStatLbl(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
+function setStatSub(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
+function setScenLbl(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
+function setScenProb(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
+function setBtn(idx,val){const btns=document.querySelectorAll('.run-row button');if(btns[idx])btns[idx].textContent=val;}
+function setVcBtn(val){const b=document.querySelector('#page-vc .run-row button');if(b)b.textContent=val;}
+function setTh(idx,val){const ths=document.querySelectorAll('#ptTable th');if(ths[idx])ths[idx].textContent=val;}
+ 
+// Override setStatus to use translations
+const _origSetStatus=setStatus;
+function setStatus(txt,live=true){
+  const statusMap={
+    'READY':()=>t('ready'),'COMPLETE':()=>t('complete'),
+    'STOPPED':()=>t('stopped'),'SIMULATING...':()=>t('simulating'),
+    'FETCHING DATA...':()=>t('fetching'),'PORTFOLIO SIM...':()=>t('simulating'),
+    'SCANNING VC...':()=>t('simulating'),'FETCHING...':()=>t('fetching'),
+  };
+  const translated=(statusMap[txt]?statusMap[txt]():txt);
+  document.getElementById('globalStatus').textContent=translated;
+  document.getElementById('globalDot').className='status-dot'+(live?' live':'');
+}
+ 
 document.addEventListener('DOMContentLoaded',()=>{
   initCanvases();
   renderPortfolioTable();
