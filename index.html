@@ -300,6 +300,8 @@ td:first-child{color:var(--text);font-weight:500;}
     <button onclick="stopSim()">■ Stop</button>
     <button onclick="clearSim()" class="danger">✕ Clear</button>
     <button onclick="exportPDF()" id="exportBtn" style="border-color:var(--blue);color:var(--blue);" title="Export research report">↓ PDF</button>
+    <button onclick="runBacktest()" id="backtestBtn" style="border-color:var(--amber);color:var(--amber);" title="Backtest last 6 months">↺ Backtest</button>
+    <button onclick="toggleTikTok()" id="tikTokBtn" style="border-color:#ff0050;color:#ff0050;" title="TikTok fullscreen mode">▶ TikTok</button>
   </div>
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
     <span id="speedTxt" style="font-size:11px;color:var(--text3);">// speed</span>
@@ -947,6 +949,8 @@ function updateSimStats(){
         <div class="stat-sub">${(returns.filter(r=>r>=2).length/n*100).toFixed(1)}% of paths</div>
       </div>
     </div>
+ 
+    ${renderRiskOfRuin(winRate, avgWin, avgLoss, SP.capital)}
   `;
 }
  
@@ -1032,6 +1036,7 @@ async function startSim(){
   const days=parseInt(document.getElementById('simDays').value)||90;
   const total=parseInt(document.getElementById('simPaths').value)||300;
   const model=document.getElementById('simModel').value;
+  stopBreathing();
   setStatus('FETCHING DATA...',true);
   let cd;
   try{cd=await fetchSimData(ticker,dir,capital,days,model);}
@@ -1046,6 +1051,7 @@ async function startSim(){
     if(!simRunning||done>=total){
       setStatus(done>=total?'COMPLETE':'STOPPED',false);
       redrawSim();drawDist();updateSimStats();
+      if(done>=total) setTimeout(startBreathing, 500);
       if(done>=total){
         const rets=allFinals.map(f=>SP.dir==='LONG'?(f-SP.S0)/SP.S0:(SP.S0-f)/SP.S0);
         const mean=rets.reduce((a,b)=>a+b,0)/rets.length;
@@ -2154,6 +2160,330 @@ function renderComparison(){
 }
  
 // ─── INIT ─────────────────────────────────────────────────
+// ─── RISK OF RUIN ─────────────────────────────────────
+function calcRuin(winRate, avgWin, avgLoss, capital, trades, ruinThreshold){
+  // Monte Carlo risk of ruin simulation
+  if(avgLoss<=0||winRate<=0||winRate>=1) return 0;
+  const SIMS=2000;
+  let ruined=0;
+  const ruin=capital*(1-ruinThreshold);
+  for(let s=0;s<SIMS;s++){
+    let bal=capital;
+    for(let t=0;t<trades;t++){
+      if(Math.random()<winRate) bal+=bal*avgWin;
+      else bal-=bal*avgLoss;
+      if(bal<=ruin){ruined++;break;}
+    }
+  }
+  return ruined/SIMS;
+}
+ 
+function renderRiskOfRuin(winRate, avgWin, avgLoss, capital){
+  if(!avgWin||!avgLoss) return '';
+  
+  const ruin10_50=calcRuin(winRate,avgWin,avgLoss,capital,50,0.10);
+  const ruin25_50=calcRuin(winRate,avgWin,avgLoss,capital,50,0.25);
+  const ruin50_50=calcRuin(winRate,avgWin,avgLoss,capital,50,0.50);
+  const ruin10_100=calcRuin(winRate,avgWin,avgLoss,capital,100,0.10);
+  const ruin50_100=calcRuin(winRate,avgWin,avgLoss,capital,100,0.50);
+  const ruin10_200=calcRuin(winRate,avgWin,avgLoss,capital,200,0.10);
+ 
+  const ruinColor=p=>p>0.5?'var(--red)':p>0.25?'var(--amber)':'var(--green)';
+  const fmt=p=>(p*100).toFixed(1)+'%';
+ 
+  // Optimal trades before ruin
+  let safeTrades=0;
+  for(let t=10;t<=500;t+=10){
+    if(calcRuin(winRate,avgWin,avgLoss,capital,t,0.5)>0.5){safeTrades=t;break;}
+  }
+ 
+  return `
+    <div class="section-header" style="margin-top:4px;"><span class="section-title">// risk of ruin</span><div class="section-line"></div></div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;">
+      <div class="stat-card">
+        <div class="stat-lbl">Lose 10% in 50 trades</div>
+        <div class="stat-val" style="color:${ruinColor(ruin10_50)}">${fmt(ruin10_50)}</div>
+        <div class="stat-sub">probability of -10% loss</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-lbl">Lose 25% in 50 trades</div>
+        <div class="stat-val" style="color:${ruinColor(ruin25_50)}">${fmt(ruin25_50)}</div>
+        <div class="stat-sub">significant drawdown</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-lbl">Lose 50% in 50 trades</div>
+        <div class="stat-val" style="color:${ruinColor(ruin50_50)}">${fmt(ruin50_50)}</div>
+        <div class="stat-sub">half capital gone</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-lbl">Lose 10% in 100 trades</div>
+        <div class="stat-val" style="color:${ruinColor(ruin10_100)}">${fmt(ruin10_100)}</div>
+        <div class="stat-sub">extended trading</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-lbl">Lose 50% in 100 trades</div>
+        <div class="stat-val" style="color:${ruinColor(ruin50_100)}">${fmt(ruin50_100)}</div>
+        <div class="stat-sub">long-term ruin</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-lbl">Lose 10% in 200 trades</div>
+        <div class="stat-val" style="color:${ruinColor(ruin10_200)}">${fmt(ruin10_200)}</div>
+        <div class="stat-sub">professional scale</div>
+      </div>
+    </div>
+    <div style="padding:12px 16px;background:var(--bg2);border:1px solid ${ruinColor(ruin50_50)};border-radius:6px;margin-bottom:8px;">
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:6px;">// verdict</div>
+      <div style="font-family:var(--sans);font-size:13px;color:var(--text2);line-height:1.7;">
+        At a <strong style="color:var(--text)">${(winRate*100).toFixed(0)}% win rate</strong> with 
+        avg win <strong style="color:var(--green)">${(avgWin*100).toFixed(1)}%</strong> and 
+        avg loss <strong style="color:var(--red)">${(avgLoss*100).toFixed(1)}%</strong> — 
+        you have a <strong style="color:${ruinColor(ruin50_50)}">${fmt(ruin50_50)}</strong> chance of 
+        losing half your capital within 50 trades.
+        ${safeTrades>0?`Expect significant drawdown after approximately <strong style="color:var(--amber)">${safeTrades} trades</strong>.`:'This setup has strong long-term survival odds.'}
+      </div>
+    </div>`;
+}
+ 
+// ─── BACKTESTING ──────────────────────────────────────
+async function runBacktest(){
+  const ticker=document.getElementById('simTicker').value.trim().toUpperCase();
+  if(!ticker||!allFinals.length){alert('Run a simulation first');return;}
+ 
+  const btn=document.getElementById('backtestBtn');
+  btn.textContent='Running backtest...';btn.disabled=true;
+ 
+  try{
+    // Ask Claude to backtest using known historical data
+    const dir=SP.dir;
+    const days=SP.days;
+    const capital=SP.capital;
+    const currentPrice=SP.S0;
+ 
+    const r=await fetch('/api/claude',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,
+        messages:[{role:'user',content:
+          `You are a quant backtester. The user simulated a ${dir} trade on ${ticker} today at ~$${currentPrice} for ${days} days with $${capital}.
+ 
+Backtest this exact setup going back 6 months. For each of the last 6 months, what WOULD have happened if they ran this same trade?
+ 
+Use your knowledge of ${ticker}'s actual price history in 2025-2026.
+ 
+Return ONLY JSON:
+{
+  "periods": [
+    {"start":"Month YYYY","entry_price":number,"exit_price":number,"return_pct":number,"outcome":"WIN|LOSS","note":"1 sentence what happened"},
+    ... 6 periods total
+  ],
+  "backtest_win_rate": number (0-1),
+  "backtest_avg_return": number,
+  "model_accuracy": "HIGH|MEDIUM|LOW",
+  "summary": "2 sentences comparing backtest results to current simulation"
+}`}]})
+    });
+ 
+    const d=await r.json();
+    const bt=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    renderBacktest(bt, ticker, dir);
+  }catch(e){
+    console.error('Backtest error',e);
+  }finally{
+    btn.textContent='↺ Backtest (6mo)';btn.disabled=false;
+  }
+}
+ 
+function renderBacktest(bt, ticker, dir){
+  let panel=document.getElementById('backtestPanel');
+  if(!panel){
+    panel=document.createElement('div');
+    panel.id='backtestPanel';
+    panel.style.cssText='margin-bottom:16px;';
+    const extPanel=document.getElementById('extStatsPanel');
+    if(extPanel&&extPanel.parentNode) extPanel.parentNode.insertBefore(panel,extPanel.nextSibling);
+  }
+ 
+  const wr=(bt.backtest_win_rate||0)*100;
+  const avgR=(bt.backtest_avg_return||0)*100;
+  const accColor={'HIGH':'var(--green)','MEDIUM':'var(--amber)','LOW':'var(--red)'}[bt.model_accuracy]||'var(--text2)';
+ 
+  panel.innerHTML=`
+    <div class="section-header"><span class="section-title">// backtest · last 6 months</span><div class="section-line"></div></div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px;">
+      <div class="stat-card"><div class="stat-lbl">Backtest win rate</div><div class="stat-val ${wr>=50?'pos':'neg'}">${wr.toFixed(0)}%</div><div class="stat-sub">historical ${dir} trades</div></div>
+      <div class="stat-card"><div class="stat-lbl">Avg return</div><div class="stat-val ${avgR>=0?'pos':'neg'}">${avgR>=0?'+':''}${avgR.toFixed(1)}%</div><div class="stat-sub">per period</div></div>
+      <div class="stat-card"><div class="stat-lbl">Model accuracy</div><div class="stat-val" style="color:${accColor}">${bt.model_accuracy||'—'}</div><div class="stat-sub">vs actual outcomes</div></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:5px;margin-bottom:10px;">
+      ${(bt.periods||[]).map(p=>{
+        const win=p.outcome==='WIN';
+        return `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg1);border:1px solid ${win?'rgba(0,201,125,.2)':'rgba(226,75,74,.2)'};border-radius:4px;flex-wrap:wrap;">
+          <span style="font-family:var(--mono);font-size:11px;color:var(--text3);min-width:90px;">${p.start}</span>
+          <span style="font-size:11px;color:var(--text2);">$${Number(p.entry_price||0).toLocaleString(undefined,{maximumFractionDigits:0})} → $${Number(p.exit_price||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+          <span style="font-family:var(--mono);font-size:12px;font-weight:500;color:${win?'var(--green)':'var(--red)'};">${p.return_pct>=0?'+':''}${Number(p.return_pct||0).toFixed(1)}%</span>
+          <span style="font-size:10px;padding:1px 6px;border-radius:2px;background:${win?'rgba(0,201,125,.15)':'rgba(226,75,74,.15)'};color:${win?'var(--green)':'var(--red)'};">${p.outcome}</span>
+          <span style="font-size:11px;color:var(--text3);font-family:var(--sans);flex:1;">${p.note||''}</span>
+        </div>`;
+      }).join('')}
+    </div>
+    <div style="padding:12px 16px;background:var(--bg2);border:1px solid var(--border2);border-radius:6px;">
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:6px;">// model vs reality</div>
+      <div style="font-family:var(--sans);font-size:13px;color:var(--text2);line-height:1.7;">${bt.summary||''}</div>
+    </div>`;
+}
+ 
+// ─── BREATHING ANIMATION ──────────────────────────────
+let breatheFrame=null;
+let breathePhase=0;
+ 
+function startBreathing(){
+  if(breatheFrame) cancelAnimationFrame(breatheFrame);
+  if(!allPaths.length) return;
+ 
+  function breathe(){
+    breathePhase+=0.02;
+    const pulse=Math.sin(breathePhase)*0.015; // subtle ±1.5% pulse
+    const[mn,mx]=getMinMax();
+    const mnP=mn*(1-Math.abs(pulse));
+    const mxP=mx*(1+Math.abs(pulse));
+    simCtx.clearRect(0,0,simW,simH);
+    drawAxes(mn,mx);
+    // Draw paths with slight alpha breathing
+    const alpha=0.06+Math.sin(breathePhase)*0.02;
+    allPaths.forEach(p=>{
+      const final=p[p.length-1],pnl=SP.dir==='LONG'?final-SP.S0:SP.S0-final;
+      const ratio=Math.min(1,Math.max(0,pnl/(SP.S0*.5)));
+      const r=Math.round((1-ratio)*200+30),g=Math.round(ratio*150+20);
+      simCtx.beginPath();simCtx.strokeStyle=`rgba(${r},${g},40,${alpha})`;simCtx.lineWidth=.7;
+      const xS=(simW-38-12)/SP.days,yS=(simH-38-28)/(mx-mn);
+      p.forEach((v,i)=>{
+        const x=38+i*xS,y=simH-28-(v-mn)*yS;
+        i===0?simCtx.moveTo(x,y):simCtx.lineTo(x,y);
+      });simCtx.stroke();
+    });
+    drawPercentiles(mn,mx);
+    breatheFrame=requestAnimationFrame(breathe);
+  }
+  breatheFrame=requestAnimationFrame(breathe);
+}
+ 
+function stopBreathing(){
+  if(breatheFrame){cancelAnimationFrame(breatheFrame);breatheFrame=null;}
+}
+ 
+// ─── TIKTOK MODE ──────────────────────────────────────
+let tikTokActive=false;
+let tikTokOverlay=null;
+ 
+function toggleTikTok(){
+  if(tikTokActive){
+    exitTikTok();return;
+  }
+  if(!allPaths.length){alert('Run a simulation first');return;}
+ 
+  tikTokActive=true;
+  stopBreathing();
+ 
+  // Create fullscreen overlay
+  tikTokOverlay=document.createElement('div');
+  tikTokOverlay.style.cssText=`
+    position:fixed;inset:0;z-index:9999;background:#000;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    cursor:pointer;
+  `;
+ 
+  const ticker=document.getElementById('simTicker').value.toUpperCase();
+  const lastCd=window._lastCd||{};
+  const verdict=lastCd.verdict||'';
+  const vcolor={'STRONG ENTRY':'#00c97d','WAIT FOR DIP':'#4a9eff','HIGH RISK':'#ffb347','AVOID':'#ff4545'}[verdict]||'#888';
+ 
+  tikTokOverlay.innerHTML=`
+    <div style="position:absolute;top:24px;left:24px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:rgba(255,255,255,.4);letter-spacing:.1em;">QUANTDESK</div>
+    <div style="position:absolute;top:24px;right:24px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:rgba(255,255,255,.3);">tap to exit</div>
+    <div style="width:min(90vw,800px);position:relative;">
+      <canvas id="tikTokCanvas" style="width:100%;border-radius:8px;"></canvas>
+    </div>
+    <div style="margin-top:24px;text-align:center;">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:clamp(24px,5vw,48px);font-weight:700;color:#fff;letter-spacing:-.02em;">${ticker}</div>
+      <div style="font-size:clamp(14px,3vw,20px);color:${vcolor};font-family:'IBM Plex Mono',monospace;margin-top:8px;letter-spacing:.05em;">${verdict}</div>
+    </div>
+  `;
+ 
+  document.body.appendChild(tikTokOverlay);
+  tikTokOverlay.addEventListener('click',exitTikTok);
+ 
+  // Setup fullscreen canvas
+  const ttCanvas=document.getElementById('tikTokCanvas');
+  const dpr=devicePixelRatio||1;
+  const w=Math.min(window.innerWidth*.9,800);
+  const h=Math.round(w*.56);
+  ttCanvas.width=w*dpr;ttCanvas.height=h*dpr;
+  ttCanvas.style.height=h+'px';
+  const ttCtx=ttCanvas.getContext('2d');
+  ttCtx.scale(dpr,dpr);
+ 
+  // Replay simulation slowly on fullscreen canvas
+  let ttPaths=[],ttDone=0;
+  const ttTotal=Math.min(allPaths.length,200);
+  const ttMn=Math.min(...allPaths.flat())*.97;
+  const ttMx=Math.max(...allPaths.flat())*1.03;
+  const xS=(w-40-10)/SP.days;
+  const yS=(h-30-20)/(ttMx-ttMn);
+ 
+  function drawTT(){
+    ttCtx.clearRect(0,0,w,h);
+    ttCtx.strokeStyle='rgba(255,255,255,.05)';ttCtx.lineWidth=0.5;
+    for(let i=0;i<=3;i++){
+      const p=ttMn+(ttMx-ttMn)*(i/3),y=h-20-(p-ttMn)*yS;
+      ttCtx.beginPath();ttCtx.moveTo(40,y);ttCtx.lineTo(w-10,y);ttCtx.stroke();
+      ttCtx.fillStyle='rgba(255,255,255,.2)';ttCtx.font='9px monospace';
+      ttCtx.fillText('$'+p.toFixed(0),2,y+3);
+    }
+    ttPaths.forEach(p=>{
+      const final=p[p.length-1],pnl=SP.dir==='LONG'?final-SP.S0:SP.S0-final;
+      const ratio=Math.min(1,Math.max(0,pnl/(SP.S0*.5)));
+      const r=Math.round((1-ratio)*200+30),gg=Math.round(ratio*150+20);
+      ttCtx.beginPath();ttCtx.strokeStyle=`rgba(${r},${gg},40,0.15)`;ttCtx.lineWidth=1;
+      p.forEach((v,i)=>{
+        const x=40+i*xS,y=h-20-(v-ttMn)*yS;
+        i===0?ttCtx.moveTo(x,y):ttCtx.lineTo(x,y);
+      });ttCtx.stroke();
+    });
+    if(ttPaths.length>=10){
+      [[.1,'#ff4545',2],[.5,'#4a9eff',2.5],[.9,'#00c97d',2]].forEach(([pct,col,lw])=>{
+        const band=[];
+        for(let t=0;t<=SP.days;t++){
+          const vals=ttPaths.map(p=>p[t]).filter(Boolean).sort((a,b)=>a-b);
+          if(vals.length) band.push(vals[Math.floor(vals.length*pct)]);
+        }
+        ttCtx.beginPath();ttCtx.strokeStyle=col;ttCtx.lineWidth=lw;
+        band.forEach((v,i)=>{
+          const x=40+i*xS,y=h-20-(v-ttMn)*yS;
+          i===0?ttCtx.moveTo(x,y):ttCtx.lineTo(x,y);
+        });ttCtx.stroke();
+      });
+    }
+  }
+ 
+  let ttTimer;
+  function addTTBatch(){
+    if(!tikTokActive||ttDone>=ttTotal)return;
+    const bs=Math.min(2,ttTotal-ttDone);
+    for(let i=0;i<bs;i++){ttPaths.push(allPaths[ttDone]);ttDone++;}
+    drawTT();
+    ttTimer=setTimeout(addTTBatch,80);
+  }
+  addTTBatch();
+  window._ttTimer=ttTimer;
+}
+ 
+function exitTikTok(){
+  tikTokActive=false;
+  if(window._ttTimer)clearTimeout(window._ttTimer);
+  if(tikTokOverlay&&tikTokOverlay.parentNode) tikTokOverlay.parentNode.removeChild(tikTokOverlay);
+  tikTokOverlay=null;
+  startBreathing();
+}
+ 
 // ─── VOICE ────────────────────────────────────────────
 function voiceWinner(ticker, verdict, winRate){
   if(!window.speechSynthesis) return;
