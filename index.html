@@ -852,14 +852,34 @@ function showSimAnalysis(cd,ticker,capital,days){
   document.getElementById('simThesis').textContent=cd.thesis||'';
   document.getElementById('simSignals').innerHTML=(cd.signals||[]).map(s=>`<li>${s}</li>`).join('');
   document.getElementById('simRisk').textContent=cd.key_risk||'';
-  if(cd.news_summary&&cd.news_summary.length>5){
-    document.getElementById('newsBlock').style.display='block';
-    document.getElementById('simNews').textContent=cd.news_summary;
-  } else {
-    document.getElementById('newsBlock').style.display='none';
-  }
-  // Show earnings + sentiment from window._lastNews
+  // Show news from Finnhub directly (don't rely on Claude's summary)
   const nd=window._lastNews||{};
+  const newsBlock=document.getElementById('newsBlock');
+  const simNews=document.getElementById('simNews');
+  
+  let newsHtml='';
+  
+  // Real headlines
+  if(nd.headlines&&nd.headlines.length>0){
+    newsHtml+=nd.headlines.slice(0,4).map(h=>`
+      <div style="padding:6px 0;border-bottom:1px solid var(--border);font-family:var(--sans);">
+        <div style="font-size:12px;color:var(--text2);line-height:1.5;">${h.headline}</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px;">${h.source||''} · ${h.datetime?new Date(h.datetime*1000).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'recent'}</div>
+      </div>`).join('');
+  }
+  
+  // Claude's summary as fallback
+  if(!newsHtml&&cd.news_summary&&cd.news_summary.length>5){
+    newsHtml=`<p style="font-size:13px;color:var(--text2);font-family:var(--sans);">${cd.news_summary}</p>`;
+  }
+ 
+  if(newsHtml){
+    newsBlock.style.display='block';
+    simNews.innerHTML=newsHtml;
+  } else {
+    newsBlock.style.display='none';
+  }
+ 
   showEarningsAlert(nd.nextEarnings, nd.sentiment);
 }
  
