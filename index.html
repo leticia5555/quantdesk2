@@ -739,8 +739,11 @@ async function fetchSimData(ticker,dir,capital,days,model){
   // Build news context for Claude
   const pd2=priceData.status==='fulfilled'?priceData.value:null;
   const nd=newsData.status==='fulfilled'?newsData.value:{headlines:[]};
+  window._lastNews=nd;
   const headlines=(nd.headlines||[]).map(h=>h.headline).slice(0,4).join(' | ');
-  const newsContext=headlines?`Recent news: ${headlines}`:'';
+  const earningsCtx=nd.nextEarnings?`IMPORTANT: Earnings in ${nd.nextEarnings.daysUntil} days (${nd.nextEarnings.date}).`:'';
+  const sentCtx=nd.sentiment?.bullish?`News sentiment: ${(nd.sentiment.bullish*100).toFixed(0)}% bullish, ${(nd.sentiment.bearish*100).toFixed(0)}% bearish.`:'';
+  const newsContext=[headlines?`Recent headlines: ${headlines}`:'', earningsCtx, sentCtx].filter(Boolean).join(' ');
   const priceContext2=pd2?`Real data: price $${pd2.currentPrice}, mu=${(pd2.mu*100).toFixed(1)}%, sigma=${(pd2.sigma*100).toFixed(1)}%, 30d=${(pd2.return30d*100).toFixed(1)}%, 52w $${pd2.low52w}-$${pd2.high52w}.`:'';
  
   // Now call Claude with full context
@@ -855,6 +858,42 @@ function showSimAnalysis(cd,ticker,capital,days){
   } else {
     document.getElementById('newsBlock').style.display='none';
   }
+  // Show earnings + sentiment from window._lastNews
+  const nd=window._lastNews||{};
+  showEarningsAlert(nd.nextEarnings, nd.sentiment);
+}
+ 
+function showEarningsAlert(earnings, sentiment){
+  let existing=document.getElementById('earningsAlert');
+  if(existing) existing.remove();
+  if(!earnings&&!sentiment) return;
+  const el=document.createElement('div');
+  el.id='earningsAlert';
+  el.style.cssText='margin-bottom:8px;';
+  let html='';
+  if(earnings){
+    const urgency=earnings.daysUntil<=7?'var(--red)':earnings.daysUntil<=21?'var(--amber)':'var(--text2)';
+    html+=`<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border:1px solid ${urgency};border-radius:6px;background:var(--bg1);margin-bottom:6px;">
+      <span style="font-family:var(--mono);font-size:11px;color:${urgency};">📅 EARNINGS</span>
+      <span style="font-size:12px;color:var(--text2);font-family:var(--sans);">${earnings.date} · <strong style="color:${urgency};">${earnings.daysUntil} days away</strong>${earnings.epsEstimate?` · EPS est. $${earnings.epsEstimate}`:''}</span>
+    </div>`;
+  }
+  if(sentiment&&sentiment.bullish!==undefined){
+    const bull=parseFloat(sentiment.bullish*100).toFixed(0);
+    const bear=parseFloat(sentiment.bearish*100).toFixed(0);
+    const sentColor=bull>55?'var(--green)':bear>55?'var(--red)':'var(--text2)';
+    html+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 14px;border:1px solid var(--border);border-radius:6px;background:var(--bg1);">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--text3);">SENTIMENT</span>
+      <span style="font-size:12px;color:var(--green);">▲ ${bull}% bullish</span>
+      <span style="font-size:12px;color:var(--red);">▼ ${bear}% bearish</span>
+      <div style="flex:1;height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;">
+        <div style="width:${bull}%;height:100%;background:var(--green);border-radius:2px;"></div>
+      </div>
+    </div>`;
+  }
+  el.innerHTML=html;
+  const analysisBlock=document.getElementById('simAnalysis');
+  if(analysisBlock) analysisBlock.insertBefore(el, analysisBlock.firstChild);
 }
  
 // ─── VC ENGINE ────────────────────────────────────────────
