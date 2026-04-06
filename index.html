@@ -223,27 +223,7 @@ td:first-child{color:var(--text);font-weight:500;}
 <!-- TICKER TAPE -->
 <div class="tape">
   <div class="tape-inner" id="tapeInner">
-    <div class="tape-item"><span class="sym">NVDA</span><span class="up">+2.4%</span></div>
-    <div class="tape-item"><span class="sym">BTC</span><span class="up">+1.8%</span></div>
-    <div class="tape-item"><span class="sym">MELI</span><span class="up">+3.1%</span></div>
-    <div class="tape-item"><span class="sym">META</span><span class="dn">-0.6%</span></div>
-    <div class="tape-item"><span class="sym">ETH</span><span class="up">+4.2%</span></div>
-    <div class="tape-item"><span class="sym">AAPL</span><span class="dn">-0.3%</span></div>
-    <div class="tape-item"><span class="sym">TSLA</span><span class="up">+1.1%</span></div>
-    <div class="tape-item"><span class="sym">SOL</span><span class="up">+5.7%</span></div>
-    <div class="tape-item"><span class="sym">AMZN</span><span class="up">+0.9%</span></div>
-    <div class="tape-item"><span class="sym">SPY</span><span class="dn">-0.2%</span></div>
-    <!-- duplicate for seamless loop -->
-    <div class="tape-item"><span class="sym">NVDA</span><span class="up">+2.4%</span></div>
-    <div class="tape-item"><span class="sym">BTC</span><span class="up">+1.8%</span></div>
-    <div class="tape-item"><span class="sym">MELI</span><span class="up">+3.1%</span></div>
-    <div class="tape-item"><span class="sym">META</span><span class="dn">-0.6%</span></div>
-    <div class="tape-item"><span class="sym">ETH</span><span class="up">+4.2%</span></div>
-    <div class="tape-item"><span class="sym">AAPL</span><span class="dn">-0.3%</span></div>
-    <div class="tape-item"><span class="sym">TSLA</span><span class="up">+1.1%</span></div>
-    <div class="tape-item"><span class="sym">SOL</span><span class="up">+5.7%</span></div>
-    <div class="tape-item"><span class="sym">AMZN</span><span class="up">+0.9%</span></div>
-    <div class="tape-item"><span class="sym">SPY</span><span class="dn">-0.2%</span></div>
+    <div class="tape-item"><span class="sym">QUANTDESK</span><span style="color:var(--text3)">run a simulation to see results here</span></div>
   </div>
 </div>
  
@@ -411,6 +391,35 @@ function setStatus(txt,live=true){
 // ─── SIM ENGINE ───────────────────────────────────────────
 let simRunning=false,simTimer=null,allPaths=[],allFinals=[];
 let SP={S0:100,mu:.15,sigma:.35,days:90,capital:10000,dir:'LONG',model:'gbm'};
+let simHistory=[];
+ 
+function addToTape(ticker,dir,expReturn,winRate,verdict,currentPrice){
+  simHistory.unshift({ticker,dir,expReturn,winRate,verdict,currentPrice,ts:new Date()});
+  if(simHistory.length>20) simHistory.pop();
+  renderTape();
+}
+ 
+function renderTape(){
+  if(simHistory.length===0) return;
+  const tape=document.getElementById('tapeInner');
+  const items=simHistory.map(s=>{
+    const ret=s.expReturn||0;
+    const cls=ret>=0?'up':'dn';
+    const sign=ret>=0?'+':'';
+    const price=s.currentPrice?'$'+Number(s.currentPrice).toLocaleString(undefined,{maximumFractionDigits:0}):'';
+    const vcolor=s.verdict==='STRONG ENTRY'?'var(--green)':s.verdict==='AVOID'?'var(--red)':'var(--text3)';
+    return `<div class="tape-item">
+      <span class="sym">${s.ticker}</span>
+      <span style="color:var(--text3)">${s.dir}</span>
+      ${price?`<span style="color:var(--text2)">${price}</span>`:''}
+      <span class="${cls}">${sign}${(ret*100).toFixed(1)}% exp</span>
+      <span style="font-size:10px;color:var(--text3)">${(s.winRate*100).toFixed(0)}% win</span>
+      <span style="font-size:10px;color:${vcolor}">${s.verdict||''}</span>
+    </div>`;
+  });
+  // duplicate for seamless scroll
+  tape.innerHTML=items.join('')+items.join('');
+}
 let simCtx,distCtx,simW,simH,distH,activeChart=null;
  
 function initCanvases(){
@@ -661,6 +670,7 @@ async function startSim(){
   try{cd=await fetchSimData(ticker,dir,capital,days,model);}
   catch(e){cd={current_price:100,mu:.15,sigma:.35,asset_type:'asset',verdict:'WATCH',thesis:'Using default params.',signals:['Check ticker'],key_risk:'Data unavailable'};}
   SP={S0:cd.current_price||100,mu:cd.mu||.15,sigma:cd.sigma||.35,days,capital,dir,model};
+  window._lastCd=cd;
   showSimAnalysis(cd,ticker,capital,days);
   setStatus('SIMULATING...',true);
   simRunning=true;
@@ -668,7 +678,20 @@ async function startSim(){
   function batch(){
     if(!simRunning||done>=total){
       setStatus(done>=total?'COMPLETE':'STOPPED',false);
-      redrawSim();drawDist();updateSimStats();return;
+      redrawSim();drawDist();updateSimStats();
+      if(done>=total){
+        // calculate final expected return for tape
+        const rets=allFinals.map(f=>SP.dir==='LONG'?(f-SP.S0)/SP.S0:(SP.S0-f)/SP.S0);
+        const mean=rets.reduce((a,b)=>a+b,0)/rets.length;
+        const wins=rets.filter(r=>r>0).length;
+        const lastCd=window._lastCd||{};
+        addToTape(
+          document.getElementById('simTicker').value.toUpperCase(),
+          SP.dir, mean, wins/rets.length,
+          lastCd.verdict||'', SP.S0
+        );
+      }
+      return;
     }
     const bs=Math.min(5,total-done);
     for(let i=0;i<bs;i++){
