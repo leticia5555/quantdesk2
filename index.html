@@ -189,6 +189,24 @@ td:first-child{color:var(--text);font-weight:500;}
 ::-webkit-scrollbar-track{background:var(--bg);}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
  
+/* AUTOCOMPLETE */
+.autocomplete-wrap{position:relative;}
+.autocomplete-list{
+  position:absolute;top:100%;left:0;right:0;z-index:200;
+  background:var(--bg2);border:1px solid var(--border2);border-top:none;
+  border-radius:0 0 4px 4px;max-height:220px;overflow-y:auto;
+}
+.autocomplete-item{
+  padding:8px 12px;font-family:var(--mono);font-size:12px;cursor:pointer;
+  display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);
+  transition:background .1s;
+}
+.autocomplete-item:last-child{border-bottom:none;}
+.autocomplete-item:hover,.autocomplete-item.active{background:var(--bg3);}
+.autocomplete-item .sym{color:var(--text);font-weight:500;min-width:60px;}
+.autocomplete-item .name{color:var(--text3);font-size:11px;font-family:var(--sans);}
+.autocomplete-item .type{color:var(--text3);font-size:10px;margin-left:auto;}
+ 
 /* RESPONSIVE */
 @media(max-width:900px){
   .stat-grid.cols-6{grid-template-columns:repeat(3,1fr);}
@@ -233,7 +251,10 @@ td:first-child{color:var(--text);font-weight:500;}
   <div class="section-header"><span class="section-title">// Monte Carlo Simulation</span><div class="section-line"></div></div>
  
   <div class="ctrl-grid g3">
-    <input type="text" id="simTicker" placeholder="Ticker: NVDA, BTC, MELI..."/>
+    <div class="autocomplete-wrap">
+      <input type="text" id="simTicker" placeholder="Ticker: NVDA, BTC, MELI..." oninput="onTickerInput()" onkeydown="onTickerKey(event)" autocomplete="off"/>
+      <div class="autocomplete-list" id="acList" style="display:none;"></div>
+    </div>
     <select id="simDir"><option value="LONG">LONG (buy)</option><option value="SHORT">SHORT (sell)</option></select>
     <input type="number" id="simCapital" placeholder="Capital $" value="10000" min="100"/>
     <select id="simDays"><option value="3">3 days</option><option value="5">1 week</option><option value="10">2 weeks</option><option value="15">15 days</option><option value="21">3 weeks</option><option value="30">1 month</option><option value="60">2 months</option><option value="90" selected>3 months</option><option value="180">6 months</option><option value="365">1 year</option></select>
@@ -1174,6 +1195,137 @@ function updateSpeedLabel(){
   const labels={1:'SLOW',2:'MEDIUM',3:'FAST'};
   document.getElementById('speedLabel').textContent=labels[v];
 }
+ 
+// ─── AUTOCOMPLETE ─────────────────────────────────────
+const TICKERS = [
+  {sym:'AAPL',name:'Apple Inc.',type:'stock'},
+  {sym:'MSFT',name:'Microsoft Corp.',type:'stock'},
+  {sym:'NVDA',name:'NVIDIA Corp.',type:'stock'},
+  {sym:'GOOGL',name:'Alphabet Inc.',type:'stock'},
+  {sym:'AMZN',name:'Amazon.com Inc.',type:'stock'},
+  {sym:'META',name:'Meta Platforms',type:'stock'},
+  {sym:'TSLA',name:'Tesla Inc.',type:'stock'},
+  {sym:'MELI',name:'MercadoLibre Inc.',type:'stock'},
+  {sym:'BABA',name:'Alibaba Group',type:'stock'},
+  {sym:'NFLX',name:'Netflix Inc.',type:'stock'},
+  {sym:'AMD',name:'Advanced Micro Devices',type:'stock'},
+  {sym:'INTC',name:'Intel Corp.',type:'stock'},
+  {sym:'CRM',name:'Salesforce Inc.',type:'stock'},
+  {sym:'SHOP',name:'Shopify Inc.',type:'stock'},
+  {sym:'SQ',name:'Block Inc.',type:'stock'},
+  {sym:'PYPL',name:'PayPal Holdings',type:'stock'},
+  {sym:'COIN',name:'Coinbase Global',type:'stock'},
+  {sym:'UBER',name:'Uber Technologies',type:'stock'},
+  {sym:'LYFT',name:'Lyft Inc.',type:'stock'},
+  {sym:'SNAP',name:'Snap Inc.',type:'stock'},
+  {sym:'TWTR',name:'X Corp.',type:'stock'},
+  {sym:'SPOT',name:'Spotify Technology',type:'stock'},
+  {sym:'ABNB',name:'Airbnb Inc.',type:'stock'},
+  {sym:'DASH',name:'DoorDash Inc.',type:'stock'},
+  {sym:'RBLX',name:'Roblox Corp.',type:'stock'},
+  {sym:'PLTR',name:'Palantir Technologies',type:'stock'},
+  {sym:'AI',name:'C3.ai Inc.',type:'stock'},
+  {sym:'SMCI',name:'Super Micro Computer',type:'stock'},
+  {sym:'ARM',name:'Arm Holdings',type:'stock'},
+  {sym:'AVGO',name:'Broadcom Inc.',type:'stock'},
+  {sym:'QCOM',name:'Qualcomm Inc.',type:'stock'},
+  {sym:'TSM',name:'Taiwan Semiconductor',type:'stock'},
+  {sym:'ASML',name:'ASML Holding',type:'stock'},
+  {sym:'SAP',name:'SAP SE',type:'stock'},
+  {sym:'NKE',name:'Nike Inc.',type:'stock'},
+  {sym:'DIS',name:'Walt Disney Co.',type:'stock'},
+  {sym:'JPM',name:'JPMorgan Chase',type:'stock'},
+  {sym:'GS',name:'Goldman Sachs',type:'stock'},
+  {sym:'BAC',name:'Bank of America',type:'stock'},
+  {sym:'V',name:'Visa Inc.',type:'stock'},
+  {sym:'MA',name:'Mastercard Inc.',type:'stock'},
+  {sym:'XOM',name:'Exxon Mobil',type:'stock'},
+  {sym:'WMT',name:'Walmart Inc.',type:'stock'},
+  {sym:'COST',name:'Costco Wholesale',type:'stock'},
+  {sym:'SPY',name:'S&P 500 ETF',type:'etf'},
+  {sym:'QQQ',name:'Nasdaq 100 ETF',type:'etf'},
+  {sym:'IWM',name:'Russell 2000 ETF',type:'etf'},
+  {sym:'GLD',name:'Gold ETF',type:'etf'},
+  {sym:'TLT',name:'20Y Treasury ETF',type:'etf'},
+  {sym:'VT',name:'Total World Stock ETF',type:'etf'},
+  {sym:'BTC/USD',name:'Bitcoin',type:'crypto'},
+  {sym:'ETH/USD',name:'Ethereum',type:'crypto'},
+  {sym:'SOL/USD',name:'Solana',type:'crypto'},
+  {sym:'BNB/USD',name:'BNB',type:'crypto'},
+  {sym:'ADA/USD',name:'Cardano',type:'crypto'},
+  {sym:'AVAX/USD',name:'Avalanche',type:'crypto'},
+  {sym:'DOT/USD',name:'Polkadot',type:'crypto'},
+  {sym:'DOGE/USD',name:'Dogecoin',type:'crypto'},
+  {sym:'XRP/USD',name:'XRP',type:'crypto'},
+  // LATAM
+  {sym:'MELI',name:'MercadoLibre (LATAM)',type:'stock'},
+  {sym:'NU',name:'Nu Holdings (Nubank)',type:'stock'},
+  {sym:'GLOB',name:'Globant SA',type:'stock'},
+  {sym:'DESP',name:'Despegar.com',type:'stock'},
+  {sym:'LREN3.SA',name:'Lojas Renner (Brasil)',type:'stock'},
+  {sym:'VALE3.SA',name:'Vale SA (Brasil)',type:'stock'},
+  {sym:'PETR4.SA',name:'Petrobras (Brasil)',type:'stock'},
+  {sym:'ITUB4.SA',name:'Itaú Unibanco',type:'stock'},
+  {sym:'WALMEX.MX',name:'Walmart México',type:'stock'},
+  {sym:'FEMSAUBD.MX',name:'FEMSA México',type:'stock'},
+  {sym:'AMXL.MX',name:'América Móvil',type:'stock'},
+];
+ 
+let acIndex=-1;
+ 
+function onTickerInput(){
+  const val=document.getElementById('simTicker').value.trim().toUpperCase();
+  const list=document.getElementById('acList');
+  if(val.length<1){list.style.display='none';return;}
+  const matches=TICKERS.filter(t=>
+    t.sym.startsWith(val)||t.name.toUpperCase().includes(val)
+  ).slice(0,8);
+  if(!matches.length){list.style.display='none';return;}
+  acIndex=-1;
+  list.innerHTML=matches.map((t,i)=>`
+    <div class="autocomplete-item" data-sym="${t.sym}" onclick="selectTicker('${t.sym}')">
+      <span class="sym">${t.sym}</span>
+      <span class="name">${t.name}</span>
+      <span class="type">${t.type}</span>
+    </div>`).join('');
+  list.style.display='block';
+}
+ 
+function onTickerKey(e){
+  const list=document.getElementById('acList');
+  const items=list.querySelectorAll('.autocomplete-item');
+  if(e.key==='ArrowDown'){
+    e.preventDefault();
+    acIndex=Math.min(acIndex+1,items.length-1);
+    items.forEach((el,i)=>el.classList.toggle('active',i===acIndex));
+  } else if(e.key==='ArrowUp'){
+    e.preventDefault();
+    acIndex=Math.max(acIndex-1,0);
+    items.forEach((el,i)=>el.classList.toggle('active',i===acIndex));
+  } else if(e.key==='Enter'){
+    if(acIndex>=0&&items[acIndex]){
+      selectTicker(items[acIndex].dataset.sym);
+    } else {
+      list.style.display='none';
+    }
+  } else if(e.key==='Escape'){
+    list.style.display='none';
+  }
+}
+ 
+function selectTicker(sym){
+  document.getElementById('simTicker').value=sym;
+  document.getElementById('acList').style.display='none';
+  acIndex=-1;
+}
+ 
+// Close autocomplete when clicking outside
+document.addEventListener('click',e=>{
+  if(!e.target.closest('.autocomplete-wrap')){
+    const list=document.getElementById('acList');
+    if(list) list.style.display='none';
+  }
+});
  
 // ─── WATCHLIST ────────────────────────────────────────
 let watchlist = JSON.parse(localStorage.getItem('qd_watchlist')||'[]');
