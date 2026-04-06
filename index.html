@@ -258,6 +258,12 @@ td:first-child{color:var(--text);font-weight:500;}
     <button onclick="stopSim()">■ Stop</button>
     <button onclick="clearSim()" class="danger">✕ Clear</button>
   </div>
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+    <span style="font-size:11px;color:var(--text3);">// speed</span>
+    <input type="range" id="simSpeed" min="1" max="3" value="2" step="1" style="width:100px;" oninput="updateSpeedLabel()"/>
+    <span id="speedLabel" style="font-size:11px;color:var(--text2);min-width:60px;">MEDIUM</span>
+    <span style="font-size:10px;color:var(--text3);margin-left:8px;">slow = cinematic · fast = instant</span>
+  </div>
  
   <div class="stat-grid cols-6" id="simStats">
     <div class="stat-card"><div class="stat-lbl">Paths run</div><div class="stat-val" id="sN">—</div><div class="stat-sub">simulations</div></div>
@@ -282,6 +288,20 @@ td:first-child{color:var(--text);font-weight:500;}
     <div class="scen bear"><div class="scen-lbl">bear · p10</div><div class="scen-pct neg" id="scB">—</div><div class="scen-pnl" id="scBpnl">—</div><div class="scen-prob">worst 10% of paths</div></div>
     <div class="scen"><div class="scen-lbl">base · median</div><div class="scen-pct" id="scM">—</div><div class="scen-pnl" id="scMpnl">—</div><div class="scen-prob">median outcome</div></div>
     <div class="scen bull"><div class="scen-lbl">bull · p90</div><div class="scen-pct pos" id="scU">—</div><div class="scen-pnl" id="scUpnl">—</div><div class="scen-prob">best 10% of paths</div></div>
+  </div>
+ 
+  <div id="comparisonPanel" style="display:none;margin-bottom:16px;">
+    <div class="section-header"><span class="section-title">// session comparison</span><div class="section-line"></div></div>
+    <div id="comparisonTable" style="overflow-x:auto;">
+      <table style="width:100%;">
+        <thead>
+          <tr>
+            <th>Ticker</th><th>Dir</th><th>Price</th><th>Exp. Return</th><th>Win %</th><th>Sharpe</th><th>VaR 95%</th><th>Verdict</th>
+          </tr>
+        </thead>
+        <tbody id="comparisonBody"></tbody>
+      </table>
+    </div>
   </div>
  
   <div id="simAnalysis" style="display:none;">
@@ -680,16 +700,18 @@ async function startSim(){
       setStatus(done>=total?'COMPLETE':'STOPPED',false);
       redrawSim();drawDist();updateSimStats();
       if(done>=total){
-        // calculate final expected return for tape
         const rets=allFinals.map(f=>SP.dir==='LONG'?(f-SP.S0)/SP.S0:(SP.S0-f)/SP.S0);
         const mean=rets.reduce((a,b)=>a+b,0)/rets.length;
+        const variance=rets.reduce((a,r)=>a+(r-mean)**2,0)/rets.length;
+        const std=Math.sqrt(variance);
+        const sharpe=std>0?(mean/std)*Math.sqrt(252/SP.days):0;
         const wins=rets.filter(r=>r>0).length;
+        const sorted=[...rets].sort((a,b)=>a-b);
+        const var95=sorted[Math.floor(sorted.length*.05)];
         const lastCd=window._lastCd||{};
-        addToTape(
-          document.getElementById('simTicker').value.toUpperCase(),
-          SP.dir, mean, wins/rets.length,
-          lastCd.verdict||'', SP.S0
-        );
+        const tickerVal=document.getElementById('simTicker').value.toUpperCase();
+        addToTape(tickerVal,SP.dir,mean,wins/rets.length,lastCd.verdict||'',SP.S0);
+        addToComparison(tickerVal,SP.dir,SP.S0,mean,wins/rets.length,sharpe,var95,SP.capital,lastCd.verdict||'');
       }
       return;
     }
@@ -705,7 +727,9 @@ async function startSim(){
     allPaths.forEach(p=>drawPath(p,mn,mx));
     if(done>=20)drawPercentiles(mn,mx);
     if(done%20===0||done===total){drawDist();updateSimStats();}
-    simTimer=setTimeout(batch,done<50?30:done<200?15:8);
+    const spd=parseInt(document.getElementById('simSpeed').value||2);
+    const delay=spd===1?(done<50?200:done<200?150:100):spd===2?(done<50?30:done<200?15:8):0;
+    simTimer=setTimeout(batch,delay);
   }batch();
 }
  
@@ -917,6 +941,46 @@ async function runPortfolioSim(){
 }
  
 function clearPortfolio(){positions=[];renderPortfolioTable();document.getElementById('ptResults').innerHTML='';}
+ 
+// ─── SPEED ────────────────────────────────────────────
+function updateSpeedLabel(){
+  const v=parseInt(document.getElementById('simSpeed').value);
+  const labels={1:'SLOW',2:'MEDIUM',3:'FAST'};
+  document.getElementById('speedLabel').textContent=labels[v];
+}
+ 
+// ─── COMPARISON ───────────────────────────────────────
+let comparisonData=[];
+ 
+function addToComparison(ticker,dir,price,expReturn,winRate,sharpe,var95,capital,verdict){
+  // Remove duplicate ticker+dir
+  comparisonData=comparisonData.filter(c=>!(c.ticker===ticker&&c.dir===dir));
+  comparisonData.unshift({ticker,dir,price,expReturn,winRate,sharpe,var95,capital,verdict});
+  if(comparisonData.length>8) comparisonData.pop();
+  renderComparison();
+}
+ 
+function renderComparison(){
+  if(comparisonData.length<1) return;
+  document.getElementById('comparisonPanel').style.display='block';
+  const fmt=v=>(v>=0?'+':'')+(v*100).toFixed(1)+'%';
+  const vcolors={'STRONG ENTRY':'var(--green)','WAIT FOR DIP':'var(--green2)','HIGH RISK':'var(--amber)','AVOID':'var(--red)'};
+  const rows=comparisonData.map(c=>{
+    const retClass=c.expReturn>=0?'pos':'neg';
+    const vcolor=vcolors[c.verdict]||'var(--text3)';
+    return `<tr>
+      <td style="font-weight:500;color:var(--text)">${c.ticker}</td>
+      <td style="color:${c.dir==='LONG'?'var(--green)':'var(--red)'}">${c.dir}</td>
+      <td>$${Number(c.price).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+      <td class="${retClass}">${fmt(c.expReturn)}<br><span style="font-size:10px;color:var(--text3)">${c.expReturn>=0?'+':''}$${Math.round(c.expReturn*c.capital).toLocaleString()}</span></td>
+      <td>${(c.winRate*100).toFixed(1)}%</td>
+      <td>${c.sharpe.toFixed(2)}</td>
+      <td class="neg">${fmt(c.var95)}</td>
+      <td style="color:${vcolor};font-size:10px;">${c.verdict||'—'}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('comparisonBody').innerHTML=rows;
+}
  
 // ─── INIT ─────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded',()=>{
