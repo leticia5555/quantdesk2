@@ -258,6 +258,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="primary" onclick="startSim()">▶ Run simulation</button>
     <button onclick="stopSim()">■ Stop</button>
     <button onclick="clearSim()" class="danger">✕ Clear</button>
+    <button onclick="exportPDF()" id="exportBtn" style="border-color:var(--blue);color:var(--blue);" title="Export research report">↓ PDF</button>
   </div>
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
     <span id="speedTxt" style="font-size:11px;color:var(--text3);">// speed</span>
@@ -971,6 +972,181 @@ async function runPortfolioSim(){
 }
  
 function clearPortfolio(){positions=[];renderPortfolioTable();document.getElementById('ptResults').innerHTML='';}
+ 
+// ─── PDF EXPORT ───────────────────────────────────────
+function exportPDF(){
+  const ticker=document.getElementById('simTicker').value.toUpperCase()||'ASSET';
+  const dir=document.getElementById('simDir').value;
+  const capital=document.getElementById('simCapital').value||'10000';
+  const days=document.getElementById('simDays').value||'90';
+ 
+  // Collect all data from DOM
+  const epnl=document.getElementById('sEpnl').textContent;
+  const epct=document.getElementById('sEpct').textContent;
+  const winRate=document.getElementById('sWin').textContent;
+  const sharpe=document.getElementById('sSharpe').textContent;
+  const dd=document.getElementById('sDD').textContent;
+  const var95=document.getElementById('sVaR').textContent;
+  const paths=document.getElementById('sN').textContent;
+  const scB=document.getElementById('scB').textContent;
+  const scBpnl=document.getElementById('scBpnl').textContent;
+  const scM=document.getElementById('scM').textContent;
+  const scMpnl=document.getElementById('scMpnl').textContent;
+  const scU=document.getElementById('scU').textContent;
+  const scUpnl=document.getElementById('scUpnl').textContent;
+  const verdict=document.getElementById('simVerdict').textContent;
+  const meta=document.getElementById('simMeta').textContent;
+  const thesis=document.getElementById('simThesis').textContent;
+  const signals=Array.from(document.querySelectorAll('#simSignals li')).map(l=>l.textContent);
+  const risk=document.getElementById('simRisk').textContent;
+  const news=document.getElementById('simNews').textContent;
+  const now=new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
+ 
+  // Capture canvas as image
+  const canvasImg=document.getElementById('simCanvas').toDataURL('image/png');
+ 
+  // Comparison table
+  let compRows='';
+  comparisonData.forEach(c=>{
+    const ret=(c.expReturn>=0?'+':'')+(c.expReturn*100).toFixed(1)+'%';
+    compRows+=`<tr>
+      <td>${c.ticker}</td><td>${c.dir}</td>
+      <td>$${Number(c.price).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+      <td style="color:${c.expReturn>=0?'#00c97d':'#ff4545'}">${ret}</td>
+      <td>${(c.winRate*100).toFixed(1)}%</td>
+      <td>${c.sharpe.toFixed(2)}</td>
+      <td>${c.verdict}</td>
+    </tr>`;
+  });
+ 
+  const vcolor=verdict==='STRONG ENTRY'?'#00c97d':verdict==='AVOID'?'#ff4545':verdict==='HIGH RISK'?'#ffb347':'#4a9eff';
+ 
+  const html=`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"/>
+<title>QUANTDESK — ${ticker} Research Report</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'Courier New',monospace;background:#fff;color:#111;padding:48px;max-width:900px;margin:0 auto;}
+  .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:32px;padding-bottom:16px;border-bottom:2px solid #111;}
+  .logo{font-size:20px;font-weight:700;letter-spacing:.1em;}
+  .logo span{color:#00c97d;}
+  .report-meta{text-align:right;font-size:11px;color:#666;}
+  .report-meta strong{color:#111;font-size:13px;display:block;margin-bottom:4px;}
+  h2{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#666;margin:24px 0 12px;border-bottom:1px solid #eee;padding-bottom:6px;}
+  .verdict-badge{display:inline-block;padding:4px 12px;border-radius:2px;font-size:12px;font-weight:700;letter-spacing:.06em;color:${vcolor};border:1px solid ${vcolor};margin-bottom:8px;}
+  .meta-line{font-size:11px;color:#666;margin-bottom:16px;}
+  .stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:#eee;margin-bottom:24px;}
+  .stat{background:#fff;padding:16px;border:1px solid #eee;}
+  .stat-lbl{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:#999;margin-bottom:4px;}
+  .stat-val{font-size:20px;font-weight:700;}
+  .stat-val.pos{color:#00c97d;}.stat-val.neg{color:#ff4545;}
+  .stat-sub{font-size:10px;color:#999;margin-top:2px;}
+  .scen-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:#eee;margin-bottom:24px;}
+  .scen{background:#fff;padding:16px;text-align:center;border:1px solid #eee;}
+  .scen-lbl{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:#999;margin-bottom:6px;}
+  .scen-pct{font-size:22px;font-weight:700;}.scen-pnl{font-size:11px;color:#666;margin-top:2px;}
+  .chart-img{width:100%;border:1px solid #eee;margin-bottom:24px;}
+  .thesis-box{background:#f9f9f9;border-left:3px solid #00c97d;padding:16px;margin-bottom:24px;font-size:13px;line-height:1.7;font-family:Georgia,serif;color:#333;}
+  .signals{list-style:none;margin-bottom:24px;}
+  .signals li{font-size:12px;color:#444;padding:6px 0;border-bottom:1px solid #f0f0f0;line-height:1.5;}
+  .signals li::before{content:"// ";color:#999;}
+  .risk-box{background:#fff8f8;border-left:3px solid #ff4545;padding:16px;margin-bottom:24px;font-size:13px;line-height:1.6;font-family:Georgia,serif;color:#333;}
+  .news-box{background:#f0f6ff;border-left:3px solid #4a9eff;padding:16px;margin-bottom:24px;font-size:13px;line-height:1.6;font-family:Georgia,serif;color:#333;}
+  table{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:24px;}
+  th{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:#999;padding:8px;border-bottom:2px solid #111;text-align:left;}
+  td{padding:8px;border-bottom:1px solid #eee;color:#444;}
+  td:first-child{font-weight:700;color:#111;}
+  .footer{margin-top:48px;padding-top:16px;border-top:1px solid #eee;display:flex;justify-content:space-between;font-size:10px;color:#999;}
+  .disclaimer{font-size:9px;color:#bbb;margin-top:8px;line-height:1.5;}
+  @media print{body{padding:24px;}@page{margin:20mm;}}
+</style>
+</head>
+<body>
+<div class="header">
+  <div>
+    <div class="logo">QUANT<span>DESK</span></div>
+    <div style="font-size:11px;color:#999;margin-top:4px;">Solo Quant Research Terminal</div>
+  </div>
+  <div class="report-meta">
+    <strong>${ticker} Research Report</strong>
+    Generated: ${now}<br/>
+    ${paths} Monte Carlo paths · ${days}-day horizon<br/>
+    Capital: $${Number(capital).toLocaleString()} · ${dir}
+  </div>
+</div>
+ 
+<h2>Verdict & Summary</h2>
+<div class="verdict-badge">${verdict}</div>
+<div class="meta-line">${meta}</div>
+ 
+<h2>Simulation Statistics</h2>
+<div class="stats-grid">
+  <div class="stat"><div class="stat-lbl">Expected P&L</div><div class="stat-val ${epnl.includes('-')?'neg':'pos'}">${epnl}</div><div class="stat-sub">${epct}</div></div>
+  <div class="stat"><div class="stat-lbl">Win Rate</div><div class="stat-val">${winRate}</div><div class="stat-sub">profitable paths</div></div>
+  <div class="stat"><div class="stat-lbl">Sharpe Ratio</div><div class="stat-val">${sharpe}</div><div class="stat-sub">risk-adjusted</div></div>
+  <div class="stat"><div class="stat-lbl">Max Drawdown</div><div class="stat-val neg">${dd}</div><div class="stat-sub">worst path</div></div>
+  <div class="stat"><div class="stat-lbl">VaR 95%</div><div class="stat-val neg">${var95}</div><div class="stat-sub">at risk</div></div>
+  <div class="stat"><div class="stat-lbl">Paths Run</div><div class="stat-val">${paths}</div><div class="stat-sub">simulations</div></div>
+</div>
+ 
+<h2>Price Path Chart</h2>
+<img class="chart-img" src="${canvasImg}" alt="Monte Carlo paths"/>
+ 
+<h2>Scenario Analysis</h2>
+<div class="scen-grid">
+  <div class="scen" style="border-top:2px solid #ff4545;">
+    <div class="scen-lbl">Bear · P10</div>
+    <div class="scen-pct" style="color:#ff4545;">${scB}</div>
+    <div class="scen-pnl">${scBpnl}</div>
+    <div style="font-size:9px;color:#999;margin-top:4px;">worst 10% of paths</div>
+  </div>
+  <div class="scen" style="border-top:2px solid #999;">
+    <div class="scen-lbl">Base · Median</div>
+    <div class="scen-pct">${scM}</div>
+    <div class="scen-pnl">${scMpnl}</div>
+    <div style="font-size:9px;color:#999;margin-top:4px;">median outcome</div>
+  </div>
+  <div class="scen" style="border-top:2px solid #00c97d;">
+    <div class="scen-lbl">Bull · P90</div>
+    <div class="scen-pct" style="color:#00c97d;">${scU}</div>
+    <div class="scen-pnl">${scUpnl}</div>
+    <div style="font-size:9px;color:#999;margin-top:4px;">best 10% of paths</div>
+  </div>
+</div>
+ 
+${thesis?`<h2>Trade Thesis</h2><div class="thesis-box">${thesis}</div>`:''}
+${signals.length?`<h2>Key Signals</h2><ul class="signals">${signals.map(s=>`<li>${s}</li>`).join('')}</ul>`:''}
+${risk?`<h2>Key Risk</h2><div class="risk-box">${risk}</div>`:''}
+${news?`<h2>Recent News</h2><div class="news-box">${news}</div>`:''}
+ 
+${comparisonData.length>1?`
+<h2>Session Comparison</h2>
+<table>
+  <thead><tr><th>Ticker</th><th>Direction</th><th>Price</th><th>Exp. Return</th><th>Win %</th><th>Sharpe</th><th>Verdict</th></tr></thead>
+  <tbody>${compRows}</tbody>
+</table>`:''}
+ 
+<div class="footer">
+  <div>QUANTDESK · quantdesk2.vercel.app</div>
+  <div>${now}</div>
+</div>
+<div class="disclaimer">
+  This report is generated by an AI-powered simulation engine and is for informational purposes only. 
+  It does not constitute financial advice. Past performance and simulated results do not guarantee future returns. 
+  Always consult a qualified financial advisor before making investment decisions. / 
+  Este reporte es generado por un motor de simulación con IA y es solo para fines informativos.
+</div>
+</body>
+</html>`;
+ 
+  // Open in new window and trigger print
+  const pdfWin=window.open('','_blank');
+  pdfWin.document.write(html);
+  pdfWin.document.close();
+  pdfWin.onload=()=>{ pdfWin.focus(); pdfWin.print(); };
+}
  
 // ─── SPEED ────────────────────────────────────────────
 function updateSpeedLabel(){
