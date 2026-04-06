@@ -321,6 +321,10 @@ td:first-child{color:var(--text);font-weight:500;}
       <h3>Key risk</h3>
       <p id="simRisk"></p>
     </div>
+    <div class="analysis" id="newsBlock" style="display:none;border-color:rgba(55,138,221,.3);">
+      <h3 style="color:var(--blue);">// recent news sentiment</h3>
+      <p id="simNews"></p>
+    </div>
   </div>
 </div>
  
@@ -631,11 +635,18 @@ function updateSimStats(){
   document.getElementById('scUpnl').textContent=fmtD(p90);
 }
  
+function normalizeTicker(ticker){
+  const cryptoMap={'BTC':'BTC/USD','ETH':'ETH/USD','SOL':'SOL/USD','BNB':'BNB/USD',
+    'XRP':'XRP/USD','ADA':'ADA/USD','DOGE':'DOGE/USD','AVAX':'AVAX/USD','DOT':'DOT/USD'};
+  return cryptoMap[ticker.toUpperCase()]||ticker;
+}
+ 
 async function fetchPriceData(ticker){
+  const normalized=normalizeTicker(ticker);
   const controller=new AbortController();
   const timeout=setTimeout(()=>controller.abort(),6000);
   try{
-    const r=await fetch(`/api/price?ticker=${encodeURIComponent(ticker)}`,{signal:controller.signal});
+    const r=await fetch(`/api/price?ticker=${encodeURIComponent(normalized)}`,{signal:controller.signal});
     clearTimeout(timeout);
     if(!r.ok) return null;
     return await r.json();
@@ -644,24 +655,36 @@ async function fetchPriceData(ticker){
  
 async function fetchSimData(ticker,dir,capital,days,model){
   // Fetch price data and Claude analysis in parallel
-  // Run both in parallel - no artificial timeout on Claude
+  // Fetch price + news in parallel first
   const pricePromise = fetchPriceData(ticker);
+  const newsPromise = fetch(`/api/news?ticker=${encodeURIComponent(ticker)}`).then(r=>r.json()).catch(()=>({headlines:[]}));
+  const [priceData, newsData] = await Promise.allSettled([pricePromise, newsPromise]);
+ 
+  // Build news context for Claude
+  const pd2=priceData.status==='fulfilled'?priceData.value:null;
+  const nd=newsData.status==='fulfilled'?newsData.value:{headlines:[]};
+  const headlines=(nd.headlines||[]).map(h=>h.headline).slice(0,4).join(' | ');
+  const newsContext=headlines?`Recent news: ${headlines}`:'';
+  const priceContext2=pd2?`Real data: price $${pd2.currentPrice}, mu=${(pd2.mu*100).toFixed(1)}%, sigma=${(pd2.sigma*100).toFixed(1)}%, 30d=${(pd2.return30d*100).toFixed(1)}%, 52w $${pd2.low52w}-$${pd2.high52w}.`:'';
+ 
+  // Now call Claude with full context
   const claudePromise = fetch('/api/claude',{
     method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:700,messages:[{role:'user',content:
-      `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, early 2026. Return ONLY JSON: {"current_price":number,"mu":number,"sigma":number,"asset_type":"stock|crypto|etf","verdict":"STRONG ENTRY|WAIT FOR DIP|HIGH RISK|AVOID","thesis":"3 sentences","signals":["s1","s2","s3","s4"],"key_risk":"1 sentence"}`}]})
+    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,messages:[{role:'user',content:
+      `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, early 2026. ${priceContext2} ${newsContext} Return ONLY JSON: {"current_price":number,"mu":number,"sigma":number,"asset_type":"stock|crypto|etf","verdict":"STRONG ENTRY|WAIT FOR DIP|HIGH RISK|AVOID","thesis":"3 sentences referencing real price levels and recent news if available","signals":["specific signal 1","specific signal 2","specific signal 3","specific signal 4"],"key_risk":"1 sentence","news_summary":"1 sentence summary of recent news sentiment, or empty string if no news"}`}]})
   }).then(r=>r.json());
  
-  const [priceData, claudeRaw] = await Promise.allSettled([pricePromise, claudePromise]);
+  const [_, claudeRaw] = await Promise.allSettled([pricePromise, claudePromise]);
+  const priceData2 = priceData;
  
   // Parse Claude response
-  let cd={current_price:100,mu:.15,sigma:.35,asset_type:'stock',verdict:'WATCH',thesis:'',signals:[],key_risk:''};
+  let cd={current_price:100,mu:.15,sigma:.35,asset_type:'stock',verdict:'WATCH',thesis:'',signals:[],key_risk:'',news_summary:''};
   if(claudeRaw.status==='fulfilled'){
     try{cd=JSON.parse(claudeRaw.value.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());}catch(e){console.log('Claude parse error',e);}
   }
  
   // Override with real price data if available
-  const pd=priceData.status==='fulfilled'?priceData.value:null;
+  const pd=priceData2.status==='fulfilled'?priceData2.value:null;
   if(pd&&pd.currentPrice){
     cd.current_price=pd.currentPrice;
     cd.mu=pd.mu;
@@ -749,6 +772,12 @@ function showSimAnalysis(cd,ticker,capital,days){
   document.getElementById('simThesis').textContent=cd.thesis||'';
   document.getElementById('simSignals').innerHTML=(cd.signals||[]).map(s=>`<li>${s}</li>`).join('');
   document.getElementById('simRisk').textContent=cd.key_risk||'';
+  if(cd.news_summary&&cd.news_summary.length>5){
+    document.getElementById('newsBlock').style.display='block';
+    document.getElementById('simNews').textContent=cd.news_summary;
+  } else {
+    document.getElementById('newsBlock').style.display='none';
+  }
 }
  
 // ─── VC ENGINE ────────────────────────────────────────────
