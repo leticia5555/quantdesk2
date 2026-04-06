@@ -706,9 +706,15 @@ function updateSimStats(){
 }
  
 function normalizeTicker(ticker){
-  const cryptoMap={'BTC':'BTC/USD','ETH':'ETH/USD','SOL':'SOL/USD','BNB':'BNB/USD',
-    'XRP':'XRP/USD','ADA':'ADA/USD','DOGE':'DOGE/USD','AVAX':'AVAX/USD','DOT':'DOT/USD'};
-  return cryptoMap[ticker.toUpperCase()]||ticker;
+  const t=ticker.toUpperCase().trim();
+  // Already normalized
+  if(t.includes('/USD')) return t;
+  const cryptoMap={
+    'BTC':'BTC/USD','ETH':'ETH/USD','SOL':'SOL/USD','BNB':'BNB/USD',
+    'XRP':'XRP/USD','ADA':'ADA/USD','DOGE':'DOGE/USD','AVAX':'AVAX/USD',
+    'DOT':'DOT/USD','MATIC':'MATIC/USD','LTC':'LTC/USD','LINK':'LINK/USD'
+  };
+  return cryptoMap[t]||t;
 }
  
 async function fetchPriceData(ticker){
@@ -741,7 +747,7 @@ async function fetchSimData(ticker,dir,capital,days,model){
   const claudePromise = fetch('/api/claude',{
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,messages:[{role:'user',content:
-      `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, early 2026. ${priceContext2} ${newsContext} Return ONLY JSON: {"current_price":number,"mu":number,"sigma":number,"asset_type":"stock|crypto|etf","verdict":"STRONG ENTRY|WAIT FOR DIP|HIGH RISK|AVOID","thesis":"3 sentences referencing real price levels and recent news if available","signals":["specific signal 1","specific signal 2","specific signal 3","specific signal 4"],"key_risk":"1 sentence","news_summary":"1 sentence summary of recent news sentiment, or empty string if no news"}`}]})
+      `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, early 2026. ${priceContext2} ${newsContext} IMPORTANT: Use ONLY real prices from data provided above. If no real price data, use your best knowledge of actual early 2026 prices — never invent speculative or extreme prices. Return ONLY JSON: {"current_price":number,"mu":number,"sigma":number,"asset_type":"stock|crypto|etf","verdict":"STRONG ENTRY|WAIT FOR DIP|HIGH RISK|AVOID","thesis":"3 sentences","signals":["signal 1","signal 2","signal 3","signal 4"],"key_risk":"1 sentence","news_summary":"1 sentence or empty string"}`}]})
   }).then(r=>r.json());
  
   const [_, claudeRaw] = await Promise.allSettled([pricePromise, claudePromise]);
