@@ -599,10 +599,11 @@ function renderLiveTape(){
     const cls=ret>=0?'up':'dn';
     const sign=ret>=0?'+':'';
     const displayTicker=t.replace('/USD','');
+    const retLabel=Math.abs(ret*100)<0.05?'':` ${sign}${(ret*100).toFixed(1)}%`;
     return `<div class="tape-item">
       <span class="sym">${displayTicker}</span>
       <span style="color:var(--text2)">$${Number(d.price).toLocaleString(undefined,{maximumFractionDigits:d.price>100?0:2})}</span>
-      <span class="${cls}">${sign}${(ret*100).toFixed(1)}%</span>
+      ${retLabel?`<span class="${cls}">${retLabel}</span>`:''}
     </div>`;
   });
   tape.innerHTML=items.join('')+items.join('');
