@@ -229,6 +229,7 @@ td:first-child{color:var(--text);font-weight:500;}
   <div class="logo">QUANT<span>DESK</span></div>
   <nav class="nav">
     <button class="nav-btn active" onclick="showPage('sim')">SIM</button>
+    <button class="nav-btn" onclick="showPage('compare')">COMPARE</button>
     <button class="nav-btn" onclick="showPage('vc')">VC</button>
     <button class="nav-btn" onclick="showPage('portfolio')">PORTFOLIO</button>
   </nav>
@@ -370,6 +371,107 @@ td:first-child{color:var(--text);font-weight:500;}
   </div>
 </div>
  
+<!-- COMPARE PAGE -->
+<div id="page-compare" class="page">
+  <div class="section-header"><span class="section-title">// side-by-side comparison</span><div class="section-line"></div></div>
+ 
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px;">
+    <div>
+      <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">// asset 1</div>
+      <div style="display:flex;gap:4px;">
+        <input type="text" id="cmp1" placeholder="NVDA" style="flex:1;" oninput="onCmpInput(1)" onkeydown="onCmpKey(event,1)" autocomplete="off"/>
+        <select id="cmpDir1" style="width:90px;"><option value="LONG">LONG</option><option value="SHORT">SHORT</option></select>
+      </div>
+      <div class="autocomplete-list" id="acCmp1" style="display:none;"></div>
+    </div>
+    <div>
+      <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">// asset 2</div>
+      <div style="display:flex;gap:4px;">
+        <input type="text" id="cmp2" placeholder="MELI" style="flex:1;" oninput="onCmpInput(2)" onkeydown="onCmpKey(event,2)" autocomplete="off"/>
+        <select id="cmpDir2" style="width:90px;"><option value="LONG">LONG</option><option value="SHORT">SHORT</option></select>
+      </div>
+      <div class="autocomplete-list" id="acCmp2" style="display:none;"></div>
+    </div>
+    <div>
+      <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">// asset 3</div>
+      <div style="display:flex;gap:4px;">
+        <input type="text" id="cmp3" placeholder="BTC" style="flex:1;" oninput="onCmpInput(3)" onkeydown="onCmpKey(event,3)" autocomplete="off"/>
+        <select id="cmpDir3" style="width:90px;"><option value="LONG">LONG</option><option value="SHORT">SHORT</option></select>
+      </div>
+      <div class="autocomplete-list" id="acCmp3" style="display:none;"></div>
+    </div>
+  </div>
+ 
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;">
+    <input type="number" id="cmpCapital" placeholder="Capital $" value="10000" style="font-family:var(--mono);"/>
+    <select id="cmpDays" style="font-family:var(--mono);font-size:13px;">
+      <option value="5">1 week</option>
+      <option value="30">1 month</option>
+      <option value="90" selected>3 months</option>
+      <option value="180">6 months</option>
+      <option value="365">1 year</option>
+    </select>
+    <select id="cmpPaths" style="font-family:var(--mono);font-size:13px;">
+      <option value="100">100 paths</option>
+      <option value="200" selected>200 paths</option>
+      <option value="300">300 paths</option>
+    </select>
+  </div>
+ 
+  <div class="run-row">
+    <button class="primary" onclick="runComparison()">▶ Run comparison</button>
+    <button onclick="clearComparison()" class="danger">✕ Clear</button>
+  </div>
+ 
+  <!-- Three canvases side by side -->
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px;">
+    <div>
+      <div style="font-size:11px;color:var(--text3);font-family:var(--mono);padding:8px;border:1px solid var(--border);border-bottom:none;border-radius:4px 4px 0 0;display:flex;justify-content:space-between;">
+        <span id="cmpLabel1">ASSET 1</span>
+        <span id="cmpStatus1" style="color:var(--text3);">—</span>
+      </div>
+      <div style="border:1px solid var(--border);border-radius:0 0 4px 4px;overflow:hidden;height:200px;">
+        <canvas id="cmpCanvas1" style="width:100%;height:100%;"></canvas>
+      </div>
+    </div>
+    <div>
+      <div style="font-size:11px;color:var(--text3);font-family:var(--mono);padding:8px;border:1px solid var(--border);border-bottom:none;border-radius:4px 4px 0 0;display:flex;justify-content:space-between;">
+        <span id="cmpLabel2">ASSET 2</span>
+        <span id="cmpStatus2" style="color:var(--text3);">—</span>
+      </div>
+      <div style="border:1px solid var(--border);border-radius:0 0 4px 4px;overflow:hidden;height:200px;">
+        <canvas id="cmpCanvas2" style="width:100%;height:100%;"></canvas>
+      </div>
+    </div>
+    <div>
+      <div style="font-size:11px;color:var(--text3);font-family:var(--mono);padding:8px;border:1px solid var(--border);border-bottom:none;border-radius:4px 4px 0 0;display:flex;justify-content:space-between;">
+        <span id="cmpLabel3">ASSET 3</span>
+        <span id="cmpStatus3" style="color:var(--text3);">—</span>
+      </div>
+      <div style="border:1px solid var(--border);border-radius:0 0 4px 4px;overflow:hidden;height:200px;">
+        <canvas id="cmpCanvas3" style="width:100%;height:100%;"></canvas>
+      </div>
+    </div>
+  </div>
+ 
+  <!-- Comparison results table -->
+  <div id="cmpResults" style="display:none;">
+    <div class="section-header"><span class="section-title">// verdict</span><div class="section-line"></div></div>
+    <div id="cmpCards" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px;"></div>
+    <table style="width:100%;">
+      <thead>
+        <tr>
+          <th>Metric</th>
+          <th id="cmpTh1">Asset 1</th>
+          <th id="cmpTh2">Asset 2</th>
+          <th id="cmpTh3">Asset 3</th>
+        </tr>
+      </thead>
+      <tbody id="cmpTable"></tbody>
+    </table>
+  </div>
+</div>
+ 
 <!-- VC PAGE -->
 <div id="page-vc" class="page">
   <div class="section-header"><span class="section-title" id="vcTitle">// VC Intelligence</span><div class="section-line"></div></div>
@@ -446,6 +548,7 @@ function showPage(id){
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
   event.target.classList.add('active');
+  if(id==='compare') setTimeout(initCmpCanvases,50);
 }
  
 // ─── GLOBAL STATUS ────────────────────────────────────────
@@ -815,6 +918,7 @@ async function startSim(){
         addToTape(tickerVal,SP.dir,mean,wins/rets.length,lastCd.verdict||'',SP.S0);
         addToComparison(tickerVal,SP.dir,SP.S0,mean,wins/rets.length,sharpe,var95,SP.capital,lastCd.verdict||'');
         addSimToHistory(tickerVal,SP.dir,SP.capital,SP.days,SP.model,mean,wins/rets.length,sharpe,var95,lastCd.verdict||'',SP.S0,lastCd.thesis||'');
+        voiceSim(tickerVal,lastCd.verdict||'',wins/rets.length);
       }
       return;
     }
@@ -1536,6 +1640,272 @@ function loadFromHistory(idx){
   document.getElementById('simModel').value = e.model||'gbm';
 }
  
+// ─── COMPARISON ENGINE ────────────────────────────────
+const cmpState = [
+  {paths:[],finals:[],ctx:null,W:0,H:0,running:false,timer:null,data:null},
+  {paths:[],finals:[],ctx:null,W:0,H:0,running:false,timer:null,data:null},
+  {paths:[],finals:[],ctx:null,W:0,H:0,running:false,timer:null,data:null}
+];
+ 
+function initCmpCanvases(){
+  [1,2,3].forEach(i=>{
+    const c=document.getElementById(`cmpCanvas${i}`);
+    if(!c)return;
+    const dpr=devicePixelRatio||1;
+    const w=c.parentElement.clientWidth;
+    const h=200;
+    c.width=w*dpr;c.height=h*dpr;
+    c.style.width=w+'px';c.style.height=h+'px';
+    const ctx=c.getContext('2d');
+    ctx.scale(dpr,dpr);
+    cmpState[i-1].ctx=ctx;
+    cmpState[i-1].W=w;
+    cmpState[i-1].H=h;
+  });
+}
+ 
+function onCmpInput(n){
+  const val=document.getElementById(`cmp${n}`).value.trim().toUpperCase();
+  const list=document.getElementById(`acCmp${n}`);
+  if(val.length<1){list.style.display='none';return;}
+  const matches=TICKERS.filter(t=>t.sym.startsWith(val)||t.name.toUpperCase().includes(val)).slice(0,5);
+  if(!matches.length){list.style.display='none';return;}
+  list.innerHTML=matches.map(t=>`
+    <div class="autocomplete-item" onclick="selectCmpTicker(${n},'${t.sym}')">
+      <span class="sym">${t.sym}</span>
+      <span class="name">${t.name}</span>
+    </div>`).join('');
+  list.style.display='block';
+}
+ 
+function onCmpKey(e,n){
+  if(e.key==='Escape') document.getElementById(`acCmp${n}`).style.display='none';
+  if(e.key==='Enter') document.getElementById(`acCmp${n}`).style.display='none';
+}
+ 
+function selectCmpTicker(n,sym){
+  document.getElementById(`cmp${n}`).value=sym;
+  document.getElementById(`acCmp${n}`).style.display='none';
+}
+ 
+function clearComparison(){
+  cmpState.forEach((s,i)=>{
+    s.running=false;if(s.timer)clearTimeout(s.timer);
+    s.paths=[];s.finals=[];s.data=null;
+    if(s.ctx) s.ctx.clearRect(0,0,s.W,s.H);
+    document.getElementById(`cmpStatus${i+1}`).textContent='—';
+    document.getElementById(`cmpStatus${i+1}`).style.color='var(--text3)';
+  });
+  document.getElementById('cmpResults').style.display='none';
+}
+ 
+async function runComparison(){
+  clearComparison();
+  initCmpCanvases();
+  const capital=parseFloat(document.getElementById('cmpCapital').value)||10000;
+  const days=parseInt(document.getElementById('cmpDays').value)||90;
+  const paths=parseInt(document.getElementById('cmpPaths').value)||200;
+  const assets=[
+    {ticker:document.getElementById('cmp1').value.trim().toUpperCase(), dir:document.getElementById('cmpDir1').value},
+    {ticker:document.getElementById('cmp2').value.trim().toUpperCase(), dir:document.getElementById('cmpDir2').value},
+    {ticker:document.getElementById('cmp3').value.trim().toUpperCase(), dir:document.getElementById('cmpDir3').value},
+  ].filter(a=>a.ticker);
+ 
+  if(!assets.length){alert('Enter at least one ticker');return;}
+ 
+  // Fetch data for all assets in parallel
+  setStatus('FETCHING...',true);
+  const dataResults = await Promise.allSettled(
+    assets.map(a => fetchSimData(a.ticker, a.dir, capital, days, 'gbm'))
+  );
+ 
+  // Run simulations for each
+  assets.forEach((a,i)=>{
+    const cd = dataResults[i].status==='fulfilled' ? dataResults[i].value : 
+      {current_price:100,mu:.15,sigma:.35,asset_type:'stock',verdict:'WATCH'};
+    cmpState[i].data={...cd, ticker:a.ticker, dir:a.dir, capital, days};
+    document.getElementById(`cmpLabel${i+1}`).textContent=`${a.ticker} · ${a.dir}`;
+    document.getElementById(`cmpTh${i+1}`).textContent=a.ticker;
+    runCmpSim(i, cd, capital, days, paths);
+  });
+  setStatus('READY',false);
+}
+ 
+function runCmpSim(idx, cd, capital, days, total){
+  const s=cmpState[idx];
+  s.running=true;
+  const S0=cd.current_price||100;
+  const mu=cd.mu||.15;
+  const sigma=cd.sigma||.35;
+  const dir=s.data.dir;
+  let done=0;
+ 
+  function batch(){
+    if(!s.running||done>=total){
+      s.running=false;
+      updateCmpStatus(idx);
+      checkAllDone();
+      return;
+    }
+    const bs=Math.min(4,total-done);
+    for(let i=0;i<bs;i++){
+      const p=genPath(S0,mu,sigma,days,'gbm');
+      s.paths.push(p);s.finals.push(p[p.length-1]);done++;
+    }
+    drawCmpCanvas(idx,S0,dir);
+    s.timer=setTimeout(batch,done<30?40:done<100?20:10);
+  }
+  batch();
+}
+ 
+function drawCmpCanvas(idx,S0,dir){
+  const s=cmpState[idx];
+  if(!s.ctx||!s.paths.length)return;
+  const ctx=s.ctx;const W=s.W;const H=s.H;
+  ctx.clearRect(0,0,W,H);
+  let mn=Infinity,mx=-Infinity;
+  s.paths.forEach(p=>p.forEach(v=>{if(v<mn)mn=v;if(v>mx)mx=v;}));
+  mn*=.97;mx*=1.03;
+  const xS=(W-30-10)/s.paths[0].length;
+  const yS=(H-20-15)/(mx-mn);
+ 
+  // grid
+  ctx.strokeStyle='rgba(30,30,30,.8)';ctx.lineWidth=0.5;
+  for(let i=0;i<=2;i++){
+    const p=mn+(mx-mn)*(i/2);
+    const y=H-15-(p-mn)*yS;
+    ctx.beginPath();ctx.moveTo(30,y);ctx.lineTo(W-10,y);ctx.stroke();
+    ctx.fillStyle='rgba(85,85,80,.8)';ctx.font='8px monospace';
+    ctx.fillText('$'+p.toFixed(0),2,y+3);
+  }
+ 
+  // entry line
+  const S0y=H-15-(S0-mn)*yS;
+  ctx.strokeStyle='rgba(74,158,255,.3)';ctx.setLineDash([3,3]);ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(30,S0y);ctx.lineTo(W-10,S0y);ctx.stroke();
+  ctx.setLineDash([]);
+ 
+  // paths
+  const n=s.paths.length;
+  s.paths.forEach(p=>{
+    const final=p[p.length-1];
+    const pnl=dir==='LONG'?final-S0:S0-final;
+    const ratio=Math.min(1,Math.max(0,pnl/(S0*.5)));
+    const r=Math.round((1-ratio)*200+30),g=Math.round(ratio*150+20);
+    const alpha=n>150?.06:n>80?.1:.16;
+    ctx.beginPath();ctx.strokeStyle=`rgba(${r},${g},40,${alpha})`;ctx.lineWidth=.7;
+    p.forEach((v,i)=>{
+      const x=30+i*xS,y=H-15-(v-mn)*yS;
+      i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+    });ctx.stroke();
+  });
+ 
+  // percentile lines
+  if(n>=15){
+    [[.1,'#E24B4A',1.5],[.5,'#378ADD',2],[.9,'#00c97d',1.5]].forEach(([pct,col,lw])=>{
+      const band=[];
+      for(let t=0;t<s.paths[0].length;t++){
+        const vals=s.paths.map(p=>p[t]).sort((a,b)=>a-b);
+        band.push(vals[Math.floor(vals.length*pct)]);
+      }
+      ctx.beginPath();ctx.strokeStyle=col;ctx.lineWidth=lw;
+      band.forEach((v,i)=>{
+        const x=30+i*xS,y=H-15-(v-mn)*yS;
+        i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+      });ctx.stroke();
+    });
+  }
+}
+ 
+function updateCmpStatus(idx){
+  const s=cmpState[idx];
+  if(!s.finals.length)return;
+  const dir=s.data.dir;
+  const S0=s.data.current_price||100;
+  const returns=s.finals.map(f=>dir==='LONG'?(f-S0)/S0:(S0-f)/S0);
+  const mean=returns.reduce((a,b)=>a+b,0)/returns.length;
+  const wins=returns.filter(r=>r>0).length;
+  const winRate=wins/returns.length;
+  const el=document.getElementById(`cmpStatus${idx+1}`);
+  el.textContent=(mean>=0?'+':'')+(mean*100).toFixed(1)+'% · '+(winRate*100).toFixed(0)+'% win';
+  el.style.color=mean>=0?'var(--green)':'var(--red)';
+  s.summary={mean,winRate,returns};
+}
+ 
+function checkAllDone(){
+  const active=cmpState.filter(s=>s.data);
+  if(active.every(s=>!s.running&&s.finals.length>0)){
+    renderCmpResults();
+  }
+}
+ 
+function renderCmpResults(){
+  const el=document.getElementById('cmpResults');
+  el.style.display='block';
+ 
+  // Verdict cards
+  const cards=document.getElementById('cmpCards');
+  const verdictColors={'STRONG ENTRY':'var(--green)','WAIT FOR DIP':'var(--blue)','HIGH RISK':'var(--amber)','AVOID':'var(--red)'};
+  cards.innerHTML=cmpState.filter(s=>s.data).map((s,i)=>{
+    if(!s.summary)return'';
+    const {mean,winRate}=s.summary;
+    const variance=s.summary.returns.reduce((a,r)=>a+(r-mean)**2,0)/s.summary.returns.length;
+    const sharpe=Math.sqrt(variance)>0?(mean/Math.sqrt(variance))*Math.sqrt(252/s.data.days):0;
+    const sorted=[...s.summary.returns].sort((a,b)=>a-b);
+    const var95=sorted[Math.floor(sorted.length*.05)];
+    const v=s.data.verdict||'WATCH';
+    const vc=verdictColors[v]||'var(--text2)';
+    const retClass=mean>=0?'pos':'neg';
+    return `<div style="background:var(--bg1);border:1px solid ${vc};border-radius:6px;padding:16px;text-align:center;">
+      <div style="font-family:var(--mono);font-size:13px;font-weight:500;color:var(--text);margin-bottom:4px;">${s.data.ticker}</div>
+      <div style="font-size:10px;color:${s.data.dir==='LONG'?'var(--green)':'var(--red)'};margin-bottom:12px;">${s.data.dir}</div>
+      <div style="font-size:22px;font-weight:500;class:${retClass};color:${mean>=0?'var(--green)':'var(--red)'};">${mean>=0?'+':''}${(mean*100).toFixed(1)}%</div>
+      <div style="font-size:12px;color:var(--text2);margin-top:2px;">${(winRate*100).toFixed(0)}% win · Sharpe ${sharpe.toFixed(2)}</div>
+      <div style="font-size:10px;padding:3px 8px;border-radius:2px;border:1px solid ${vc};color:${vc};display:inline-block;margin-top:10px;">${v}</div>
+    </div>`;
+  }).join('');
+ 
+  // Metrics table
+  const metrics=[
+    ['Current price', s=>s.data?.current_price?'$'+Number(s.data.current_price).toLocaleString(undefined,{maximumFractionDigits:0}):'—'],
+    ['Expected return', s=>{
+      if(!s.summary)return'—';
+      const m=s.summary.mean;
+      return `<span style="color:${m>=0?'var(--green)':'var(--red)'}">${m>=0?'+':''}${(m*100).toFixed(1)}%</span>`;
+    }],
+    ['Win rate', s=>s.summary?(s.summary.winRate*100).toFixed(1)+'%':'—'],
+    ['Sharpe ratio', s=>{
+      if(!s.summary)return'—';
+      const {mean,returns}=s.summary;
+      const v=returns.reduce((a,r)=>a+(r-mean)**2,0)/returns.length;
+      return Math.sqrt(v)>0?((mean/Math.sqrt(v))*Math.sqrt(252/s.data.days)).toFixed(2):'—';
+    }],
+    ['VaR 95%', s=>{
+      if(!s.summary)return'—';
+      const sorted=[...s.summary.returns].sort((a,b)=>a-b);
+      const v=sorted[Math.floor(sorted.length*.05)];
+      return `<span style="color:var(--red)">${(v*100).toFixed(1)}%</span>`;
+    }],
+    ['Volatility σ', s=>s.data?(s.data.sigma*100).toFixed(0)+'%':'—'],
+    ['Verdict', s=>{
+      const v=s.data?.verdict||'—';
+      const vc=verdictColors[v]||'var(--text2)';
+      return `<span style="color:${vc};border:1px solid ${vc};padding:1px 6px;border-radius:2px;font-size:10px;">${v}</span>`;
+    }],
+  ];
+ 
+  const active=cmpState.filter(s=>s.data);
+  document.getElementById('cmpTable').innerHTML=metrics.map(([label,fn])=>`
+    <tr>
+      <td style="color:var(--text3);font-size:11px;">${label}</td>
+      ${active.map(s=>`<td>${fn(s)}</td>`).join('')}
+    </tr>`).join('');
+ 
+  // Voice the winner
+  const winner=active.filter(s=>s.summary).sort((a,b)=>b.summary.mean-a.summary.mean)[0];
+  if(winner&&winner.data) voiceWinner(winner.data.ticker, winner.data.verdict, winner.summary.winRate);
+}
+ 
 // ─── NOTES ────────────────────────────────────────────
 let currentNoteIdx = -1;
  
@@ -1605,6 +1975,39 @@ function renderComparison(){
 }
  
 // ─── INIT ─────────────────────────────────────────────────
+// ─── VOICE ────────────────────────────────────────────
+function voiceWinner(ticker, verdict, winRate){
+  if(!window.speechSynthesis) return;
+  const winPct=Math.round(winRate*100);
+  const verdictMap={
+    'STRONG ENTRY':'Strong entry',
+    'WAIT FOR DIP':'Wait for a dip',
+    'HIGH RISK':'High risk — proceed with caution',
+    'AVOID':'Avoid this trade'
+  };
+  const text=`${ticker}. ${verdictMap[verdict]||verdict}. ${winPct} percent win rate based on ${cmpState.filter(s=>s.data).length>1?'comparison analysis':'Monte Carlo simulation'}.`;
+  const utt=new SpeechSynthesisUtterance(text);
+  utt.rate=0.9;utt.pitch=1;utt.volume=0.8;
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(utt);
+}
+ 
+function voiceSim(ticker, verdict, winRate){
+  if(!window.speechSynthesis) return;
+  const winPct=Math.round(winRate*100);
+  const verdictMap={
+    'STRONG ENTRY':'Strong entry',
+    'WAIT FOR DIP':'Wait for a dip before entering',
+    'HIGH RISK':'High risk — proceed with caution',
+    'AVOID':'Avoid this trade'
+  };
+  const text=`${ticker}. ${verdictMap[verdict]||verdict}. ${winPct} percent win probability.`;
+  const utt=new SpeechSynthesisUtterance(text);
+  utt.rate=0.9;utt.pitch=1;utt.volume=0.8;
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(utt);
+}
+ 
 // ─── I18N ──────────────────────────────────────────────────
 let currentLang='en';
 const i18n={
