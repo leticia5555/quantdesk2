@@ -302,6 +302,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button onclick="exportPDF()" id="exportBtn" style="border-color:var(--blue);color:var(--blue);" title="Export research report">↓ PDF</button>
     <button onclick="runBacktest()" id="backtestBtn" style="border-color:var(--amber);color:var(--amber);" title="Backtest last 6 months">↺ Backtest</button>
     <button onclick="toggleTikTok()" id="tikTokBtn" style="border-color:#ff0050;color:#ff0050;" title="TikTok fullscreen mode">▶ TikTok</button>
+    <button onclick="runInvestorPersonas()" id="personasBtn" style="border-color:#9b59b6;color:#9b59b6;" title="Ask legendary investors">👤 Investors</button>
   </div>
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
     <span id="speedTxt" style="font-size:11px;color:var(--text3);">// speed</span>
@@ -2329,6 +2330,138 @@ function renderBacktest(bt, ticker, dir){
     <div style="padding:12px 16px;background:var(--bg2);border:1px solid var(--border2);border-radius:6px;">
       <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:6px;">// model vs reality</div>
       <div style="font-family:var(--sans);font-size:13px;color:var(--text2);line-height:1.7;">${bt.summary||''}</div>
+    </div>`;
+}
+ 
+// ─── INVESTOR PERSONAS ────────────────────────────────
+const INVESTORS = [
+  {id:'buffett', name:'Warren Buffett', style:'Value investor. Seeks wonderful companies at fair prices. Long-term focus. Hates speculation. Asks: is this a wonderful business at a fair price?', emoji:'🎩'},
+  {id:'munger', name:'Charlie Munger', style:'Mental models investor. Inverts problems. Only buys wonderful businesses at fair prices. Extremely patient. Allergic to complexity and leverage.', emoji:'📚'},
+  {id:'burry', name:'Michael Burry', style:'Deep value contrarian. Hunts mispricings. Loves shorting bubbles. Data-driven skeptic. Always asks what everyone else is missing.', emoji:'🔍'},
+  {id:'cathie', name:'Cathie Wood', style:'Disruptive innovation investor. Loves exponential growth, AI, crypto, genomics. 5-year minimum horizon. Sees traditional valuation as backward-looking.', emoji:'🚀'},
+  {id:'lynch', name:'Peter Lynch', style:'Growth at reasonable price. Invest in what you know. Loves ten-baggers found in everyday life. Practical, grounded, anti-jargon.', emoji:'📈'},
+  {id:'druckenmiller', name:'Stanley Druckenmiller', style:'Macro legend. Asymmetric bets. Follows liquidity and momentum. Never averages down. Preserving capital is priority one.', emoji:'⚡'},
+  {id:'dalio', name:'Ray Dalio', style:'All-weather portfolio builder. Studies debt cycles and macro. Loves diversification and uncorrelated assets. Risk parity framework.', emoji:'📊'},
+  {id:'marks', name:'Howard Marks', style:'Risk-first investor. Market cycle expert. Believes risk control is the most important thing. Skeptical of consensus, patient for opportunity.', emoji:'⚠️'},
+  {id:'mobius', name:'Mark Mobius', style:'Emerging markets legend. 30 years in LATAM, Asia, Africa. Loves undervalued frontier markets. Understands currency risk and political risk deeply.', emoji:'🌏'},
+  {id:'masa', name:'Masayoshi Son', style:'300-year vision investor. Bets on AI singularity. Either 10x or zero — no middle ground. Famously lost $70B and came back. LATAM bets: Rappi, Kavak.', emoji:'💥'},
+];
+ 
+async function runInvestorPersonas(){
+  const ticker=document.getElementById('simTicker').value.trim().toUpperCase();
+  if(!ticker||!allFinals.length){alert('Run a simulation first');return;}
+ 
+  const btn=document.getElementById('personasBtn');
+  btn.textContent='Asking investors...';btn.disabled=true;
+ 
+  const dir=SP.dir;
+  const capital=SP.capital;
+  const days=SP.days;
+  const price=SP.S0;
+  const lastCd=window._lastCd||{};
+  const thesis=lastCd.thesis||'';
+  const verdict=lastCd.verdict||'';
+ 
+  // Calculate returns from simulation
+  const returns=allFinals.map(f=>dir==='LONG'?(f-price)/price:(price-f)/price);
+  const mean=returns.reduce((a,b)=>a+b,0)/returns.length;
+  const wins=returns.filter(r=>r>0).length;
+  const winRate=(wins/returns.length*100).toFixed(0);
+ 
+  try{
+    const r=await fetch('/api/claude',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1200,
+        messages:[{role:'user',content:
+          `You are simulating 10 legendary investors analyzing a trade. Give each investor's brutally honest opinion — make them sound exactly like themselves. Some bullish, some bearish, some neutral. Disagree with each other.
+ 
+Trade: ${dir} ${ticker} at $${price.toFixed(0)}, $${capital} capital, ${days}-day horizon.
+Monte Carlo: ${winRate}% win rate, ${(mean*100).toFixed(1)}% expected return.
+Current thesis: ${thesis}
+Model verdict: ${verdict}
+ 
+Rules:
+- Buffett and Munger should be skeptical of short timeframes and speculation
+- Burry should look for what everyone is missing or getting wrong
+- Cathie should see the exponential future
+- Dalio should mention macro/debt cycles
+- Marks should focus on downside risk
+- Mobius should mention LATAM/emerging market angle specifically
+- Masa should be either wildly bullish or completely uninterested — no middle ground
+- Each response max 2 sentences, in their authentic voice
+- Include a specific price target or condition when possible
+ 
+Return ONLY JSON array of exactly 10 objects:
+[
+  {"id":"buffett","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
+  {"id":"munger","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
+  {"id":"burry","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
+  {"id":"cathie","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
+  {"id":"lynch","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
+  {"id":"druckenmiller","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
+  {"id":"dalio","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
+  {"id":"marks","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
+  {"id":"mobius","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
+  {"id":"masa","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"}
+]`}]})
+    });
+ 
+    const d=await r.json();
+    const personas=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    renderPersonas(personas, ticker);
+  }catch(e){
+    console.error('Personas error',e);
+  }finally{
+    btn.textContent='👤 Investors';btn.disabled=false;
+  }
+}
+ 
+function renderPersonas(personas, ticker){
+  let panel=document.getElementById('personasPanel');
+  if(!panel){
+    panel=document.createElement('div');
+    panel.id='personasPanel';
+    panel.style.cssText='margin-bottom:16px;';
+    const analysisBlock=document.getElementById('simAnalysis');
+    if(analysisBlock) analysisBlock.insertBefore(panel, analysisBlock.firstChild);
+  }
+ 
+  const verdictColor={BUY:'var(--green)',HOLD:'var(--amber)',PASS:'var(--red)'};
+  const convictionBg={HIGH:'rgba(0,201,125,.08)',MEDIUM:'rgba(239,159,39,.08)',LOW:'rgba(226,75,74,.08)'};
+ 
+  const votes={BUY:0,HOLD:0,PASS:0};
+  personas.forEach(p=>votes[p.verdict]=(votes[p.verdict]||0)+1);
+  const consensus=Object.entries(votes).sort((a,b)=>b[1]-a[1])[0];
+ 
+  panel.innerHTML=`
+    <div class="section-header"><span class="section-title">// what would legendary investors do?</span><div class="section-line"></div></div>
+ 
+    <div style="display:flex;align-items:center;gap:16px;padding:12px 16px;background:var(--bg2);border:1px solid var(--border2);border-radius:6px;margin-bottom:12px;flex-wrap:wrap;">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--text3);">CONSENSUS</span>
+      <span style="font-size:18px;font-weight:500;color:${verdictColor[consensus[0]]};">${consensus[0]}</span>
+      <span style="font-size:12px;color:var(--text2);">${consensus[1]} of 6 investors agree</span>
+      <div style="display:flex;gap:6px;margin-left:auto;">
+        ${Object.entries(votes).map(([v,c])=>c>0?`<span style="font-size:11px;padding:2px 8px;border-radius:3px;border:1px solid ${verdictColor[v]};color:${verdictColor[v]};">${v} ${c}</span>`:'').join('')}
+      </div>
+    </div>
+ 
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;"> 
+      ${personas.map(p=>{
+        const inv=INVESTORS.find(i=>i.id===p.id)||{name:p.id,emoji:'👤'};
+        const vc=verdictColor[p.verdict]||'var(--text2)';
+        const bg=convictionBg[p.conviction]||'';
+        return `<div style="background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:14px;${bg?'background:'+bg:''}">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <span style="font-size:18px;">${inv.emoji}</span>
+            <div>
+              <div style="font-family:var(--mono);font-size:12px;font-weight:500;color:var(--text);">${inv.name}</div>
+              <div style="font-size:10px;color:var(--text3);">${p.conviction} conviction</div>
+            </div>
+            <span style="margin-left:auto;font-size:11px;padding:2px 8px;border-radius:2px;border:1px solid ${vc};color:${vc};font-family:var(--mono);">${p.verdict}</span>
+          </div>
+          <p style="font-size:12px;color:var(--text2);line-height:1.6;font-family:var(--sans);font-style:italic;">"${p.take}"</p>
+        </div>`;
+      }).join('')}
     </div>`;
 }
  
