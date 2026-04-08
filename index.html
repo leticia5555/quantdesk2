@@ -303,6 +303,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button onclick="runBacktest()" id="backtestBtn" style="border-color:var(--amber);color:var(--amber);" title="Backtest last 6 months">↺ Backtest</button>
     <button onclick="toggleTikTok()" id="tikTokBtn" style="border-color:#ff0050;color:#ff0050;" title="TikTok fullscreen mode">▶ TikTok</button>
     <button onclick="runInvestorPersonas()" id="personasBtn" style="border-color:#9b59b6;color:#9b59b6;" title="Ask legendary investors">👤 Investors</button>
+    <button onclick="runDebate()" id="debateBtn" style="border-color:var(--amber);color:var(--amber);" title="Bull vs Bear debate">⚔ Debate</button>
   </div>
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
     <span id="speedTxt" style="font-size:11px;color:var(--text3);">// speed</span>
@@ -2330,6 +2331,181 @@ function renderBacktest(bt, ticker, dir){
     <div style="padding:12px 16px;background:var(--bg2);border:1px solid var(--border2);border-radius:6px;">
       <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:6px;">// model vs reality</div>
       <div style="font-family:var(--sans);font-size:13px;color:var(--text2);line-height:1.7;">${bt.summary||''}</div>
+    </div>`;
+}
+ 
+// ─── BULL VS BEAR DEBATE ──────────────────────────────
+async function runDebate(){
+  const ticker=document.getElementById('simTicker').value.trim().toUpperCase();
+  if(!ticker||!allFinals.length){alert('Run a simulation first');return;}
+ 
+  const btn=document.getElementById('debateBtn');
+  btn.textContent='Debating...';btn.disabled=true;
+ 
+  // Build debate panel immediately
+  let panel=document.getElementById('debatePanel');
+  if(!panel){
+    panel=document.createElement('div');
+    panel.id='debatePanel';
+    panel.style.cssText='margin-bottom:16px;';
+    const simAnalysis=document.getElementById('simAnalysis');
+    if(simAnalysis) simAnalysis.insertBefore(panel, simAnalysis.firstChild);
+  }
+ 
+  const returns=allFinals.map(f=>SP.dir==='LONG'?(f-SP.S0)/SP.S0:(SP.S0-f)/SP.S0);
+  const mean=returns.reduce((a,b)=>a+b,0)/returns.length;
+  const wins=returns.filter(r=>r>0).length;
+  const winRate=(wins/returns.length*100).toFixed(0);
+  const sorted=[...returns].sort((a,b)=>a-b);
+  const var95=sorted[Math.floor(returns.length*.05)];
+  const lastCd=window._lastCd||{};
+  const nd=window._lastNews||{};
+  const headlines=(nd.headlines||[]).slice(0,3).map(h=>h.headline).join(' | ');
+  const earningsCtx=nd.nextEarnings?`Earnings in ${nd.nextEarnings.daysUntil} days.`:'';
+ 
+  const context=`
+Asset: ${ticker} at $${SP.S0.toFixed(0)} | Direction: ${SP.dir} | Capital: $${SP.capital.toLocaleString()} | Horizon: ${SP.days} days
+Monte Carlo (${allFinals.length} paths): Win rate ${winRate}%, Expected return ${(mean*100).toFixed(1)}%, VaR 95% ${(var95*100).toFixed(1)}%
+Volatility: σ=${((SP.sigma||.35)*100).toFixed(0)}%, Drift: μ=${((SP.mu||.15)*100).toFixed(0)}%
+${lastCd.thesis||''}
+${headlines?'Recent news: '+headlines:''}
+${earningsCtx}`;
+ 
+  // Show loading state
+  panel.innerHTML=`
+    <div class="section-header"><span class="section-title">// bull vs bear debate</span><div class="section-line"></div></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+      <div style="padding:12px;background:rgba(0,201,125,.06);border:1px solid rgba(0,201,125,.2);border-radius:6px;">
+        <div style="font-family:var(--mono);font-size:11px;color:var(--green);margin-bottom:8px;">🐂 BULL ANALYST</div>
+        <div style="font-size:12px;color:var(--text3);font-family:var(--sans);">Loading argument...</div>
+      </div>
+      <div style="padding:12px;background:rgba(226,75,74,.06);border:1px solid rgba(226,75,74,.2);border-radius:6px;">
+        <div style="font-family:var(--mono);font-size:11px;color:var(--red);margin-bottom:8px;">🐻 BEAR ANALYST</div>
+        <div style="font-size:12px;color:var(--text3);font-family:var(--sans);">Loading argument...</div>
+      </div>
+    </div>`;
+ 
+  try{
+    // Run all 3 rounds + risk manager in parallel for speed
+    const [round1Res, riskRes] = await Promise.all([
+      fetch('/api/claude',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1500,
+          messages:[{role:'user',content:`You are running a Wall Street trading debate between a Bull Analyst and Bear Analyst about this trade.
+ 
+${context}
+ 
+Generate a 3-round debate. Each round the analysts respond to each other, building on prior arguments. Make it feel like a real institutional debate — specific data points, disagreements, pushback.
+ 
+Return ONLY JSON:
+{
+  "rounds": [
+    {
+      "round": 1,
+      "bull": "Bull analyst opening argument — 3 sentences, specific and data-driven",
+      "bear": "Bear analyst opening counter — 3 sentences, directly challenges the bull"
+    },
+    {
+      "round": 2,
+      "bull": "Bull responds to bear's point — 2-3 sentences",
+      "bear": "Bear responds to bull's point — 2-3 sentences"
+    },
+    {
+      "round": 3,
+      "bull": "Bull closing argument — 2 sentences",
+      "bear": "Bear closing argument — 2 sentences"
+    }
+  ]
+}`}]})
+      }).then(r=>r.json()),
+ 
+      fetch('/api/claude',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:600,
+          messages:[{role:'user',content:`You are the Risk Manager at a trading firm. After reviewing this trade's data, give your final verdict.
+ 
+${context}
+ 
+Give a decisive, institutional-quality risk assessment. Include a specific position size recommendation as % of portfolio.
+ 
+Return ONLY JSON:
+{
+  "verdict": "APPROVE|APPROVE WITH CONDITIONS|REJECT",
+  "conviction": "HIGH|MEDIUM|LOW",
+  "position_size": "X% of portfolio",
+  "stop_loss": "price or % level",
+  "take_profit": "price or % level",
+  "max_hold": "X days",
+  "rationale": "3 sentences explaining the decision",
+  "conditions": "1 sentence — what conditions must be met, or empty string if APPROVE/REJECT"
+}`}]})
+      }).then(r=>r.json())
+    ]);
+ 
+    const debate=JSON.parse(round1Res.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    const risk=JSON.parse(riskRes.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+ 
+    renderDebate(debate, risk, ticker);
+  }catch(e){
+    panel.innerHTML+='<div class="err-msg">Debate error: '+e.message+'</div>';
+    console.error(e);
+  }finally{
+    btn.textContent='⚔ Debate';btn.disabled=false;
+  }
+}
+ 
+function renderDebate(debate, risk, ticker){
+  const panel=document.getElementById('debatePanel');
+  if(!panel)return;
+ 
+  const verdictColor={'APPROVE':'var(--green)','APPROVE WITH CONDITIONS':'var(--amber)','REJECT':'var(--red)'}[risk.verdict]||'var(--text2)';
+  const verdictBg={'APPROVE':'rgba(0,201,125,.08)','APPROVE WITH CONDITIONS':'rgba(239,159,39,.08)','REJECT':'rgba(226,75,74,.08)'}[risk.verdict]||'';
+ 
+  let roundsHtml=debate.rounds.map(r=>`
+    <div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-bottom:6px;letter-spacing:.06em;">ROUND ${r.round}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div style="padding:12px;background:rgba(0,201,125,.06);border:1px solid rgba(0,201,125,.2);border-radius:6px;">
+          <div style="font-family:var(--mono);font-size:10px;color:var(--green);margin-bottom:6px;">🐂 BULL</div>
+          <p style="font-size:12px;color:var(--text2);line-height:1.6;font-family:var(--sans);">${r.bull}</p>
+        </div>
+        <div style="padding:12px;background:rgba(226,75,74,.06);border:1px solid rgba(226,75,74,.2);border-radius:6px;">
+          <div style="font-family:var(--mono);font-size:10px;color:var(--red);margin-bottom:6px;">🐻 BEAR</div>
+          <p style="font-size:12px;color:var(--text2);line-height:1.6;font-family:var(--sans);">${r.bear}</p>
+        </div>
+      </div>
+    </div>`).join('');
+ 
+  panel.innerHTML=`
+    <div class="section-header"><span class="section-title">// bull vs bear debate · ${ticker}</span><div class="section-line"></div></div>
+    ${roundsHtml}
+ 
+    <div style="margin-top:16px;padding:16px;background:${verdictBg};border:1px solid ${verdictColor};border-radius:6px;">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
+        <div style="font-family:var(--mono);font-size:11px;color:var(--text3);">⚖️ RISK MANAGER VERDICT</div>
+        <span style="font-family:var(--mono);font-size:13px;font-weight:500;color:${verdictColor};">${risk.verdict}</span>
+        <span style="font-size:10px;color:var(--text3);">${risk.conviction} conviction</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px;">
+        <div class="stat-card" style="padding:8px;">
+          <div class="stat-lbl">Position size</div>
+          <div style="font-size:14px;font-weight:500;color:${verdictColor};">${risk.position_size||'—'}</div>
+        </div>
+        <div class="stat-card" style="padding:8px;">
+          <div class="stat-lbl">Stop loss</div>
+          <div style="font-size:14px;font-weight:500;color:var(--red);">${risk.stop_loss||'—'}</div>
+        </div>
+        <div class="stat-card" style="padding:8px;">
+          <div class="stat-lbl">Take profit</div>
+          <div style="font-size:14px;font-weight:500;color:var(--green);">${risk.take_profit||'—'}</div>
+        </div>
+        <div class="stat-card" style="padding:8px;">
+          <div class="stat-lbl">Max hold</div>
+          <div style="font-size:14px;font-weight:500;color:var(--text);">${risk.max_hold||'—'}</div>
+        </div>
+      </div>
+      <p style="font-size:13px;color:var(--text2);line-height:1.7;font-family:var(--sans);">${risk.rationale||''}</p>
+      ${risk.conditions?`<p style="font-size:12px;color:var(--amber);margin-top:8px;font-family:var(--sans);">⚠️ ${risk.conditions}</p>`:''}
     </div>`;
 }
  
