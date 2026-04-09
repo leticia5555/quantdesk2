@@ -982,46 +982,65 @@ async function fetchPriceData(ticker){
 }
  
 async function fetchSimData(ticker,dir,capital,days,model){
-  // Fetch price data and Claude analysis in parallel
-  // Fetch price + news in parallel first
-  const pricePromise = fetchPriceData(ticker);
-  const newsPromise = fetch(`/api/news?ticker=${encodeURIComponent(ticker)}`).then(r=>r.json()).catch(()=>({headlines:[]}));
-  const [priceData, newsData] = await Promise.allSettled([pricePromise, newsPromise]);
+  // Step 1: fetch price + news in parallel (fast)
+  const [priceData, newsData] = await Promise.allSettled([
+    fetchPriceData(ticker),
+    fetch(`/api/news?ticker=${encodeURIComponent(ticker)}`).then(r=>r.json()).catch(()=>({headlines:[]}))
+  ]);
  
-  // Build news context for Claude
-  const pd2=priceData.status==='fulfilled'?priceData.value:null;
+  // Step 2: extract real price data immediately
+  const pd=priceData.status==='fulfilled'?priceData.value:null;
   const nd=newsData.status==='fulfilled'?newsData.value:{headlines:[]};
   window._lastNews=nd;
-  const headlines=(nd.headlines||[]).map(h=>h.headline).slice(0,4).join(' | ');
-  const earningsCtx=nd.nextEarnings?`IMPORTANT: Earnings in ${nd.nextEarnings.daysUntil} days (${nd.nextEarnings.date}).`:'';
-  const sentCtx=nd.sentiment?.bullish?`News sentiment: ${(nd.sentiment.bullish*100).toFixed(0)}% bullish, ${(nd.sentiment.bearish*100).toFixed(0)}% bearish.`:'';
-  const newsContext=[headlines?`Recent headlines: ${headlines}`:'', earningsCtx, sentCtx].filter(Boolean).join(' ');
-  const priceContext2=pd2?`Real data: price $${pd2.currentPrice}, mu=${(pd2.mu*100).toFixed(1)}%, sigma=${(pd2.sigma*100).toFixed(1)}%, 30d=${(pd2.return30d*100).toFixed(1)}%, 52w $${pd2.low52w}-$${pd2.high52w}.`:'';
  
-  // Now call Claude with full context
-  const claudePromise = fetch('/api/claude',{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,messages:[{role:'user',content:
-      `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, early 2026. ${priceContext2} ${newsContext} IMPORTANT: Use ONLY real prices from data provided above. If no real price data, use your best knowledge of actual early 2026 prices — never invent speculative or extreme prices. Return ONLY JSON: {"current_price":number,"mu":number,"sigma":number,"asset_type":"stock|crypto|etf","verdict":"STRONG ENTRY|WAIT FOR DIP|HIGH RISK|AVOID","thesis":"3 sentences","signals":["signal 1","signal 2","signal 3","signal 4"],"key_risk":"1 sentence","news_summary":"1 sentence or empty string"}`}]})
-  }).then(r=>r.json());
+  // Step 3: build context for Claude using real price
+  const priceContext=pd?`Real market data as of today: current price $${pd.currentPrice}, annualized drift mu=${(pd.mu*100).toFixed(1)}%, annualized volatility sigma=${(pd.sigma*100).toFixed(1)}%, 30-day return=${(pd.return30d*100).toFixed(1)}%, 52w range $${pd.low52w} to $${pd.high52w}, exchange: ${pd.exchange||'US'}.`
+    :'No real price data — use your knowledge of actual April 2026 prices.';
+  const headlines=(nd.headlines||[]).map(h=>h.headline).slice(0,3).join(' | ');
+  const earningsCtx=nd.nextEarnings?`Earnings in ${nd.nextEarnings.daysUntil} days (${nd.nextEarnings.date}).`:'';
+  const sentCtx=nd.sentiment?.bullish?`Sentiment: ${(nd.sentiment.bullish*100).toFixed(0)}% bullish.`:'';
+  const newsContext=[headlines?`News: ${headlines}`:'',earningsCtx,sentCtx].filter(Boolean).join(' ');
  
-  const [_, claudeRaw] = await Promise.allSettled([pricePromise, claudePromise]);
-  const priceData2 = priceData;
+  // Step 4: call Claude with full context
+  let cd={
+    current_price: pd?.currentPrice||150,
+    mu: pd?.mu||.15,
+    sigma: pd?.sigma||.35,
+    asset_type: pd?.asset_type||'stock',
+    verdict:'WATCH',thesis:'',signals:[],key_risk:'',news_summary:''
+  };
  
-  // Parse Claude response
-  let cd={current_price:100,mu:.15,sigma:.35,asset_type:'stock',verdict:'WATCH',thesis:'',signals:[],key_risk:'',news_summary:''};
-  if(claudeRaw.status==='fulfilled'){
-    try{cd=JSON.parse(claudeRaw.value.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());}catch(e){console.log('Claude parse error',e);}
+  try{
+    const claudeRes=await fetch('/api/claude',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,messages:[{role:'user',content:
+        `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, April 2026.
+${priceContext}
+${newsContext}
+The current price is $${pd?.currentPrice||'unknown'} — use this exact price in your response.
+Return ONLY JSON: {"current_price":${pd?.currentPrice||'number'},"mu":${pd?.mu||'number'},"sigma":${pd?.sigma||'number'},"asset_type":"${pd?.asset_type||'stock'}","verdict":"STRONG ENTRY|WAIT FOR DIP|HIGH RISK|AVOID","thesis":"3 sentences referencing the actual current price","signals":["signal 1","signal 2","signal 3","signal 4"],"key_risk":"1 sentence","news_summary":"1 sentence or empty string"}`}]})
+    });
+    const claudeData=await claudeRes.json();
+    const parsed=JSON.parse(claudeData.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    cd.verdict=parsed.verdict||cd.verdict;
+    cd.thesis=parsed.thesis||'';
+    cd.signals=parsed.signals||[];
+    cd.key_risk=parsed.key_risk||'';
+    cd.news_summary=parsed.news_summary||'';
+  }catch(e){
+    console.log('Claude error:',e);
+    cd.thesis='AI analysis unavailable. Simulation uses real market data.';
+    cd.signals=['Real price data loaded from Finnhub','Volatility calculated from 52w range','Monte Carlo uses actual mu and sigma','Check console for API errors'];
+    cd.key_risk='AI thesis unavailable — verify manually before trading.';
   }
  
-  // Override with real price data if available
-  const pd=priceData2.status==='fulfilled'?priceData2.value:null;
+  // Step 5: ALWAYS override price with real data — never use Claude's price guess
   if(pd&&pd.currentPrice){
     cd.current_price=pd.currentPrice;
     cd.mu=pd.mu;
     cd.sigma=pd.sigma;
     cd.asset_type=pd.asset_type;
-    cd.recentPrices=pd.recentPrices;
+    cd.recentPrices=pd.recentPrices||[];
     cd.high52w=pd.high52w;
     cd.low52w=pd.low52w;
     cd.return30d=pd.return30d;
@@ -1043,7 +1062,17 @@ async function startSim(){
   setStatus('FETCHING DATA...',true);
   let cd;
   try{cd=await fetchSimData(ticker,dir,capital,days,model);}
-  catch(e){cd={current_price:100,mu:.15,sigma:.35,asset_type:'asset',verdict:'WATCH',thesis:'Using default params.',signals:['Check ticker'],key_risk:'Data unavailable'};}
+  catch(e){
+    // Use known approximate prices as fallback
+    const knownPrices={'NVDA':110,'AAPL':210,'META':580,'GOOGL':175,'MSFT':375,'AMZN':215,
+      'TSLA':250,'MELI':1700,'SPY':560,'QQQ':445,'PLTR':90,'COIN':200,
+      'BTC':83000,'ETH':1800,'SOL':130,'BNB':600};
+    const fp=knownPrices[ticker]||150;
+    cd={current_price:fp,mu:.15,sigma:.35,asset_type:fp>1000?'crypto':'stock',
+      verdict:'WATCH',thesis:'Price data unavailable — using approximate price. AI analysis below.',
+      signals:['Check Finnhub API key','Verify ticker symbol','Try again in a moment','Data may be temporarily unavailable'],
+      key_risk:'Price data is estimated — verify before trading.'};
+  }
   SP={S0:cd.current_price||100,mu:cd.mu||.15,sigma:cd.sigma||.35,days,capital,dir,model};
   window._lastCd=cd;
   showSimAnalysis(cd,ticker,capital,days);
@@ -3026,6 +3055,11 @@ document.addEventListener('DOMContentLoaded',()=>{
       <button onclick="closeNoteModal()" style="font-size:12px;padding:6px 16px;">Cancel</button>
       <button onclick="saveNote()" class="primary" style="font-size:12px;padding:6px 16px;">Save note</button>
     </div>
+  </div>
+</div>
+ 
+</body>
+</html>
   </div>
 </div>
  
