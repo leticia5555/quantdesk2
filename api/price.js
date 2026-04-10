@@ -3,14 +3,14 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
- 
+
   const { ticker } = req.query;
   if (!ticker) return res.status(400).json({ error: 'Ticker required' });
- 
+
   const t = ticker.toUpperCase().trim();
   const finnhubKey = process.env.FINNHUB_API_KEY;
- 
-  // Crypto map for CoinGecko (free, no key needed)
+
+  // ── Crypto map for CoinGecko ──────────────────────────
   const cryptoMap = {
     'BTC/USD': 'bitcoin', 'BTC': 'bitcoin',
     'ETH/USD': 'ethereum', 'ETH': 'ethereum',
@@ -25,9 +25,9 @@ export default async function handler(req, res) {
     'LINK/USD': 'chainlink', 'LINK': 'chainlink',
     'LTC/USD': 'litecoin', 'LTC': 'litecoin',
   };
- 
+
   const coinGeckoId = cryptoMap[t];
- 
+
   // ── CRYPTO via CoinGecko ──────────────────────────────
   if (coinGeckoId) {
     try {
@@ -35,29 +35,50 @@ export default async function handler(req, res) {
         fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${coinGeckoId}&vs_currencies=usd&include_24hr_change=true`),
         fetch(`https://api.coingecko.com/api/v3/coins/${coinGeckoId}/market_chart?vs_currency=usd&days=365&interval=daily`)
       ]);
- 
       const [priceData, histData] = await Promise.all([priceRes.json(), histRes.json()]);
       const coinInfo = priceData[coinGeckoId];
       if (!coinInfo) return res.status(404).json({ error: `Crypto not found: ${t}` });
- 
+
       const currentPrice = coinInfo.usd;
       const closes = (histData.prices || []).map(p => p[1]).filter(v => v > 0);
- 
-      let mu = 0.5, sigma = 0.8, high52w = currentPrice * 1.5;
-      let low52w = currentPrice * 0.5, return30d = coinInfo.usd_24h_change / 100 * 30;
- 
-      if (closes.length >= 20) {
-        const returns = [];
-        for (let i = 1; i < closes.length; i++) returns.push((closes[i] - closes[i-1]) / closes[i-1]);
-        const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-        const variance = returns.reduce((a, r) => a + (r - mean) ** 2, 0) / returns.length;
-        mu = mean * 252;
-        sigma = Math.sqrt(variance) * Math.sqrt(252);
+
+      let mu = 0.5, sigma = 0.8;
+      let high52w = currentPrice * 1.5, low52w = currentPrice * 0.5;
+      let return30d = coinInfo.usd_24h_change / 100 * 30;
+
+      if (closes.length >= 30) {
+        // ── Real daily returns ──
+        const dailyReturns = [];
+        for (let i = 1; i < closes.length; i++) {
+          dailyReturns.push(Math.log(closes[i] / closes[i-1]));
+        }
+        const meanDaily = dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length;
+        const varDaily = dailyReturns.reduce((a, r) => a + (r - meanDaily) ** 2, 0) / dailyReturns.length;
+        const sigmaDaily = Math.sqrt(varDaily);
+
+        // ── EWMA volatility (Bloomberg-style: recent vol weighted more) ──
+        const lambda = 0.94; // RiskMetrics decay factor
+        let ewmaVar = varDaily;
+        for (let i = dailyReturns.length - 30; i < dailyReturns.length; i++) {
+          ewmaVar = lambda * ewmaVar + (1 - lambda) * dailyReturns[i] ** 2;
+        }
+        const ewmaSigma = Math.sqrt(ewmaVar);
+
+        // Blend: 60% EWMA (recent) + 40% historical (long-run)
+        sigma = Math.min(Math.max((ewmaSigma * 0.6 + sigmaDaily * 0.4) * Math.sqrt(252), 0.20), 2.0);
+
+        // ── Realistic mu: shrink toward zero to avoid momentum extrapolation ──
+        const rawMu = meanDaily * 252;
+        // Shrink 70% toward market return (10%) — prevents extreme drift
+        mu = rawMu * 0.30 + 0.10 * 0.70;
+        mu = Math.min(Math.max(mu, -0.50), 0.80);
+
         high52w = Math.max(...closes);
         low52w = Math.min(...closes);
-        return30d = (currentPrice - closes[Math.max(0, closes.length - 31)]) / closes[Math.max(0, closes.length - 31)];
+        const idx30 = Math.max(0, closes.length - 31);
+        return30d = (currentPrice - closes[idx30]) / closes[idx30];
       }
- 
+
       return res.status(200).json({
         ticker: t,
         currentPrice: parseFloat(currentPrice.toFixed(2)),
@@ -76,66 +97,104 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: `Crypto fetch failed: ${err.message}` });
     }
   }
- 
-  // ── STOCKS via Finnhub (free tier: quote only) ────────
+
+  // ── STOCKS via Finnhub + Yahoo Finance historical ─────
   if (!finnhubKey) return res.status(500).json({ error: 'FINNHUB_API_KEY not set' });
- 
+
   try {
     const symbol = t.replace('/USD', '');
- 
-    // Free tier: quote + basic metrics + profile
-    const [quoteRes, metricRes, profileRes] = await Promise.all([
+
+    // Fetch Finnhub quote + metrics + Yahoo historical in parallel
+    const now = Math.floor(Date.now() / 1000);
+    const oneYearAgo = now - 365 * 24 * 3600;
+
+    const [quoteRes, metricRes, profileRes, yahooRes] = await Promise.all([
       fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${finnhubKey}`),
       fetch(`https://finnhub.io/api/v1/stock/metric?symbol=${symbol}&metric=all&token=${finnhubKey}`),
-      fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${symbol}&token=${finnhubKey}`)
+      fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${symbol}&token=${finnhubKey}`),
+      fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?period1=${oneYearAgo}&period2=${now}&interval=1d&range=1y`,
+        { headers: { 'User-Agent': 'Mozilla/5.0' } })
+        .then(r => r.json())
+        .catch(() => null)
     ]);
- 
+
     const [quote, metric, profile] = await Promise.all([
       quoteRes.json(), metricRes.json(), profileRes.json()
     ]);
- 
+
     if (!quote.c || quote.c === 0) {
       return res.status(404).json({ error: `No price data for ${symbol}` });
     }
- 
+
     const currentPrice = quote.c;
     const m = metric.metric || {};
- 
-    const beta = m.beta || 1;
+    const beta = Math.min(Math.max(m.beta || 1.0, 0.3), 3.0);
+
+    // ── Extract Yahoo historical closes ──────────────────
+    let closes = [];
+    try {
+      const chart = yahooRes?.chart?.result?.[0];
+      if (chart?.indicators?.quote?.[0]?.close) {
+        closes = chart.indicators.quote[0].close.filter(v => v != null && v > 0);
+      }
+    } catch (e) {}
+
     const high52w = m['52WeekHigh'] || quote.h || currentPrice * 1.3;
-    const low52w = m['52WeekLow'] || quote.l || currentPrice * 0.7;
- 
-    // ── Realistic mu: cap 52w return to avoid inflated drift ──
-    // Use market-implied expected return: risk-free + beta * equity premium
-    // Risk-free ~4.5%, equity premium ~5.5% = market ~10%
-    const raw52wReturn = m['52WeekPriceReturnDaily'] ? m['52WeekPriceReturnDaily'] / 100 : 0.10;
-    // Mean-revert: expected return is weighted avg of 52w return and long-run expectation
-    // High past returns tend to mean-revert; cap mu at realistic forward-looking level
-    const marketMu = 0.10; // S&P long-run ~10%
-    const betaAdj = Math.min(Math.max(beta, 0.5), 2.5); // clamp beta
-    const capmMu = 0.045 + betaAdj * 0.055; // CAPM: rf + beta * equity_premium
-    // Blend: 30% past return (momentum) + 70% CAPM (fundamental)
-    // This prevents TSLA 130% past return from becoming 130% expected future return
-    const mu = Math.min(Math.max(capmMu * 0.7 + raw52wReturn * 0.3, -0.30), 0.35);
- 
-    // ── Realistic sigma: correct Parkinson estimator ──
-    // Parkinson (1980): sigma = ln(H/L) / sqrt(4*ln(2)) for daily data
-    // Then scale up by beta relative to market (SPY sigma ~15%)
-    const parkinson = Math.log(high52w / low52w) / Math.sqrt(4 * Math.log(2));
-    // High-beta stocks have proportionally higher vol
-    const betaVolAdj = 1.0 + (betaAdj - 1.0) * 0.25;
-    const sigma = Math.min(Math.max(parkinson * betaVolAdj, 0.15), 1.20); // clamp 15%-120%
- 
-    // 30d return from quote
-    const prevClose = quote.pc || currentPrice;
-    // Use best available return metric in order of preference
-    const return30d = 
-      m['1MonthPriceReturnDaily'] ? m['1MonthPriceReturnDaily'] / 100 :
-      m['13WeekPriceReturnDaily'] ? m['13WeekPriceReturnDaily'] / 100 / 13 * 4 :
-      m['4WeekPriceReturnDaily'] ? m['4WeekPriceReturnDaily'] / 100 :
-      quote.dp ? quote.dp / 100 * 21 :  // scale daily % to ~1 month
-      (currentPrice - prevClose) / prevClose;
- 
+    const low52w  = m['52WeekLow']  || quote.l || currentPrice * 0.7;
+
+    let mu, sigma, return30d;
+
+    if (closes.length >= 30) {
+      // ── Real daily log-returns from Yahoo ───────────────
+      const dailyReturns = [];
+      for (let i = 1; i < closes.length; i++) {
+        if (closes[i] > 0 && closes[i-1] > 0) {
+          dailyReturns.push(Math.log(closes[i] / closes[i-1]));
+        }
+      }
+
+      const meanDaily = dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length;
+      const varDaily  = dailyReturns.reduce((a, r) => a + (r - meanDaily) ** 2, 0) / dailyReturns.length;
+
+      // ── EWMA volatility (RiskMetrics λ=0.94) ────────────
+      // Weights recent volatility more — same as Bloomberg/JPMorgan
+      const lambda = 0.94;
+      let ewmaVar = varDaily;
+      const recentReturns = dailyReturns.slice(-60); // last 60 days for EWMA
+      recentReturns.forEach(r => {
+        ewmaVar = lambda * ewmaVar + (1 - lambda) * r * r;
+      });
+      const ewmaSigma = Math.sqrt(ewmaVar);
+
+      // Blend realized vol (long-run) + EWMA (short-run)
+      const historicalSigma = Math.sqrt(varDaily * 252);
+      const currentSigma    = ewmaSigma * Math.sqrt(252);
+      sigma = historicalSigma * 0.40 + currentSigma * 0.60;
+      sigma = Math.min(Math.max(sigma, 0.10), 1.50);
+
+      // ── Mu: CAPM shrinkage estimator ─────────────────────
+      // Raw historical return is a noisy predictor — shrink toward CAPM
+      const rawMuAnnual = meanDaily * 252;
+      const capmMu = 0.045 + beta * 0.055; // rf=4.5%, ERP=5.5%
+      // Shrink: 25% past return + 75% CAPM — prevents momentum extrapolation
+      mu = rawMuAnnual * 0.25 + capmMu * 0.75;
+      mu = Math.min(Math.max(mu, -0.40), 0.45);
+
+      // ── 30d return from actual prices ───────────────────
+      const idx30 = Math.max(0, closes.length - 31);
+      return30d = (closes[closes.length - 1] - closes[idx30]) / closes[idx30];
+
+    } else {
+      // Fallback: Parkinson + CAPM (no Yahoo data)
+      const parkinson = Math.log(high52w / low52w) / Math.sqrt(4 * Math.log(2));
+      sigma = Math.min(Math.max(parkinson * (1 + (beta - 1) * 0.25), 0.15), 1.20);
+      mu = Math.min(Math.max(0.045 + beta * 0.055, 0.04), 0.30);
+      return30d = m['1MonthPriceReturnDaily'] ? m['1MonthPriceReturnDaily'] / 100 :
+                  m['13WeekPriceReturnDaily'] ? m['13WeekPriceReturnDaily'] / 100 / 13 * 4 :
+                  quote.dp ? quote.dp / 100 * 21 :
+                  (currentPrice - (quote.pc || currentPrice)) / (quote.pc || currentPrice);
+    }
+
     return res.status(200).json({
       ticker: symbol,
       currentPrice: parseFloat(currentPrice.toFixed(2)),
@@ -144,14 +203,14 @@ export default async function handler(req, res) {
       high52w: parseFloat(high52w.toFixed(2)),
       low52w: parseFloat(low52w.toFixed(2)),
       return30d: parseFloat(return30d.toFixed(4)),
-      dataPoints: 252,
+      dataPoints: closes.length || 252,
       asset_type: 'stock',
       currency: profile.currency || 'USD',
       exchange: profile.exchange || '',
       longName: profile.name || symbol,
-      recentPrices: []
+      recentPrices: closes.slice(-30).map(p => parseFloat(p.toFixed(2)))
     });
- 
+
   } catch (err) {
     return res.status(500).json({ error: `Stock fetch failed: ${err.message}` });
   }
