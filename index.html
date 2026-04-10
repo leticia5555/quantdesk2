@@ -232,6 +232,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('compare')">COMPARE</button>
     <button class="nav-btn" onclick="showPage('vc')">VC</button>
     <button class="nav-btn" onclick="showPage('portfolio')">PORTFOLIO</button>
+    <button class="nav-btn" onclick="showPage('macro')">MACRO</button>
   </nav>
   <div class="topbar-right">
     <div class="status-dot live" id="globalDot"></div>
@@ -545,7 +546,452 @@ td:first-child{color:var(--text);font-weight:500;}
   <div id="ptResults"></div>
 </div>
  
+<!-- MACRO PAGE -->
+<div id="page-macro" class="page">
+  <div class="section-header"><span class="section-title">// macro intelligence</span><div class="section-line"></div></div>
+ 
+  <!-- FEAR & GREED + MARKET SUMMARY ROW -->
+  <div style="display:grid;grid-template-columns:280px 1fr;gap:12px;margin-bottom:16px;">
+ 
+    <!-- Fear & Greed Gauge -->
+    <div style="background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:16px;text-align:center;">
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.08em;margin-bottom:12px;">// FEAR & GREED INDEX</div>
+      <canvas id="fearGaugeCanvas" width="220" height="130" style="display:block;margin:0 auto;"></canvas>
+      <div id="fearScore" style="font-size:36px;font-weight:700;font-family:var(--mono);margin-top:4px;">—</div>
+      <div id="fearLabel" style="font-size:12px;color:var(--text2);margin-top:2px;font-family:var(--mono);">Loading...</div>
+      <div id="fearDesc" style="font-size:10px;color:var(--text3);margin-top:8px;line-height:1.5;font-family:var(--sans);"></div>
+    </div>
+ 
+    <!-- Market summary cards -->
+    <div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.08em;margin-bottom:8px;">// GLOBAL MARKETS</div>
+      <div id="marketCards" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;"></div>
+    </div>
+  </div>
+ 
+  <!-- CURRENCY DASHBOARD -->
+  <div class="section-header"><span class="section-title">// LATAM currency risk</span><div class="section-line"></div></div>
+  <div id="currencyCards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px;"></div>
+ 
+  <!-- CURRENCY IMPACT CALCULATOR -->
+  <div style="background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:14px;margin-bottom:16px;">
+    <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-bottom:10px;">// currency impact on your position</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end;">
+      <div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px;">Ticker (MXN/BRL)</div>
+        <input type="text" id="fxTicker" placeholder="AMXL.MX" style="font-family:var(--mono);"/>
+      </div>
+      <div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px;">Position USD $</div>
+        <input type="number" id="fxAmount" value="10000" style="font-family:var(--mono);"/>
+      </div>
+      <div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px;">Currency move %</div>
+        <input type="number" id="fxMove" value="-5" style="font-family:var(--mono);"/>
+      </div>
+      <button onclick="calcFxImpact()" class="primary" style="white-space:nowrap;">Calculate</button>
+    </div>
+    <div id="fxResult" style="margin-top:10px;display:none;padding:10px;background:var(--bg2);border-radius:4px;font-family:var(--mono);font-size:12px;"></div>
+  </div>
+ 
+  <!-- ECONOMIC CALENDAR -->
+  <div class="section-header"><span class="section-title">// economic calendar</span><div class="section-line"></div></div>
+  <div id="econCalendar" style="margin-bottom:16px;"></div>
+ 
+  <!-- SECTOR HEATMAP -->
+  <div class="section-header"><span class="section-title">// sector heatmap</span><div class="section-line"></div></div>
+  <div id="sectorHeatmap" style="margin-bottom:16px;"></div>
+ 
+  <!-- MACRO AI BRIEF -->
+  <div class="section-header"><span class="section-title">// AI macro brief</span><div class="section-line"></div></div>
+  <div class="run-row">
+    <button class="primary" onclick="runMacroBrief()" id="macroBriefBtn">▶ Generate macro brief</button>
+  </div>
+  <div id="macroBriefResult"></div>
+</div>
+ 
+ 
 <script>
+// ─── MACRO ENGINE ────────────────────────────────────────
+let macroLoaded=false;
+ 
+async function loadMacroPage(){
+  if(macroLoaded) return;
+  macroLoaded=true;
+  await Promise.all([
+    loadFearGreed(),
+    loadCurrencies(),
+    loadMarketSummary(),
+    loadEconCalendar(),
+    loadSectorHeatmap()
+  ]);
+}
+ 
+// ── Fear & Greed ──────────────────────────────────────
+async function loadFearGreed(){
+  // Calculate composite Fear & Greed from market data
+  try{
+    const [btcData, spyData] = await Promise.allSettled([
+      fetch('/api/price?ticker=BTC%2FUSD').then(r=>r.json()),
+      fetch('/api/price?ticker=SPY').then(r=>r.json())
+    ]);
+ 
+    const btc=btcData.status==='fulfilled'?btcData.value:null;
+    const spy=spyData.status==='fulfilled'?spyData.value:null;
+ 
+    // Composite score based on available signals
+    let score=50; // neutral default
+    let signals=[];
+ 
+    if(btc){
+      const btcMomentum=btc.return30d||0;
+      if(btcMomentum>0.15){score+=15;signals.push('BTC strong momentum');}
+      else if(btcMomentum>0.05){score+=7;signals.push('BTC positive momentum');}
+      else if(btcMomentum<-0.15){score-=15;signals.push('BTC fear signal');}
+      else if(btcMomentum<-0.05){score-=7;signals.push('BTC weak');}
+    }
+ 
+    if(spy){
+      const spyMomentum=spy.return30d||0;
+      const spySigma=spy.sigma||0.15;
+      if(spyMomentum>0.05){score+=10;signals.push('SPY bullish');}
+      else if(spyMomentum<-0.05){score-=10;signals.push('SPY bearish');}
+      if(spySigma<0.12){score+=8;signals.push('Low volatility');}
+      else if(spySigma>0.25){score-=8;signals.push('High volatility');}
+    }
+ 
+    score=Math.max(0,Math.min(100,score));
+ 
+    // Ask Claude to refine with current market knowledge
+    const r=await fetch('/api/claude',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:200,
+        messages:[{role:'user',content:
+          `Based on market conditions in April 2026, what is the current Fear & Greed score (0-100) and why?
+0-25=Extreme Fear, 26-45=Fear, 46-55=Neutral, 56-75=Greed, 76-100=Extreme Greed.
+Return ONLY JSON: {"score":number,"label":"Extreme Fear|Fear|Neutral|Greed|Extreme Greed","description":"2 sentences on current market sentiment"}`}]})
+    });
+    const d=await r.json();
+    const fg=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    score=fg.score||score;
+    renderFearGreed(score, fg.label||'Neutral', fg.description||'');
+  }catch(e){
+    renderFearGreed(50,'Neutral','Market sentiment data unavailable.');
+  }
+}
+ 
+function renderFearGreed(score, label, desc){
+  const el=document.getElementById('fearScore');
+  const lbl=document.getElementById('fearLabel');
+  const descEl=document.getElementById('fearDesc');
+  if(el) el.textContent=score;
+  
+  const color=score<=25?'var(--red)':score<=45?'var(--amber)':score<=55?'var(--text2)':score<=75?'var(--green)':'#00ff88';
+  if(el) el.style.color=color;
+  if(lbl){lbl.textContent=label;lbl.style.color=color;}
+  if(descEl) descEl.textContent=desc;
+ 
+  // Draw gauge
+  const canvas=document.getElementById('fearGaugeCanvas');
+  if(!canvas) return;
+  const ctx=canvas.getContext('2d');
+  const W=220,H=130,cx=110,cy=110,r=90;
+  ctx.clearRect(0,0,W,H);
+ 
+  // Background arc segments
+  const segments=[
+    {from:Math.PI,to:Math.PI*1.2,color:'#E24B4A'},
+    {from:Math.PI*1.2,to:Math.PI*1.4,color:'#EF9F27'},
+    {from:Math.PI*1.4,to:Math.PI*1.6,color:'#888'},
+    {from:Math.PI*1.6,to:Math.PI*1.8,color:'#1D9E75'},
+    {from:Math.PI*1.8,to:Math.PI*2,color:'#00ff88'},
+  ];
+  segments.forEach(s=>{
+    ctx.beginPath();ctx.arc(cx,cy,r,s.from,s.to);
+    ctx.lineWidth=18;ctx.strokeStyle=s.color+'55';ctx.stroke();
+  });
+ 
+  // Active arc
+  const angle=Math.PI+(score/100)*Math.PI;
+  ctx.beginPath();ctx.arc(cx,cy,r,Math.PI,angle);
+  ctx.lineWidth=18;ctx.strokeStyle=color;ctx.stroke();
+ 
+  // Needle
+  const needleAngle=Math.PI+(score/100)*Math.PI;
+  ctx.beginPath();
+  ctx.moveTo(cx,cy);
+  ctx.lineTo(cx+Math.cos(needleAngle)*70,cy+Math.sin(needleAngle)*70);
+  ctx.lineWidth=2;ctx.strokeStyle='var(--text)';ctx.stroke();
+  ctx.beginPath();ctx.arc(cx,cy,6,0,Math.PI*2);
+  ctx.fillStyle='var(--text)';ctx.fill();
+ 
+  // Labels
+  ctx.fillStyle='rgba(85,85,80,.7)';ctx.font='8px IBM Plex Mono,monospace';
+  ctx.fillText('FEAR',15,H-5);
+  ctx.fillText('GREED',W-42,H-5);
+}
+ 
+// ── Market Summary ─────────────────────────────────────
+async function loadMarketSummary(){
+  const tickers=['SPY','QQQ','GLD','BTC/USD','ETH/USD','MELI'];
+  const names={'SPY':'S&P 500','QQQ':'Nasdaq','GLD':'Gold','BTC/USD':'Bitcoin','ETH/USD':'Ethereum','MELI':'MercadoLibre'};
+  
+  const results=await Promise.allSettled(
+    tickers.map(t=>fetch(`/api/price?ticker=${encodeURIComponent(t)}`).then(r=>r.json()))
+  );
+ 
+  const cards=document.getElementById('marketCards');
+  if(!cards) return;
+ 
+  cards.innerHTML=results.map((r,i)=>{
+    const t=tickers[i];
+    if(r.status!=='fulfilled'||!r.value.currentPrice) return `
+      <div class="stat-card" style="padding:10px;">
+        <div class="stat-lbl">${names[t]||t}</div>
+        <div class="stat-val" style="font-size:14px;">—</div>
+      </div>`;
+    const d=r.value;
+    const ret=d.return30d||0;
+    const retColor=ret>=0?'var(--green)':'var(--red)';
+    const price=d.currentPrice>1000?d.currentPrice.toLocaleString(undefined,{maximumFractionDigits:0}):d.currentPrice.toFixed(2);
+    return `<div class="stat-card" style="padding:10px;">
+      <div class="stat-lbl">${names[t]||t.replace('/USD','')}</div>
+      <div style="font-size:15px;font-weight:500;font-family:var(--mono);color:var(--text);">$${price}</div>
+      <div style="font-size:11px;color:${retColor};font-family:var(--mono);">${ret>=0?'+':''}${(ret*100).toFixed(1)}% 30d</div>
+    </div>`;
+  }).join('');
+}
+ 
+// ── Currencies ─────────────────────────────────────────
+async function loadCurrencies(){
+  const pairs=[
+    {pair:'USDMXN',name:'USD/MXN',flag:'🇲🇽',desc:'Mexican Peso'},
+    {pair:'USDBRL',name:'USD/BRL',flag:'🇧🇷',desc:'Brazilian Real'},
+    {pair:'USDCOP',name:'USD/COP',flag:'🇨🇴',desc:'Colombian Peso'},
+    {pair:'USDCLP',name:'USD/CLP',flag:'🇨🇱',desc:'Chilean Peso'},
+  ];
+ 
+  // Fetch FX rates via Claude (Finnhub free tier doesn't have FX)
+  try{
+    const r=await fetch('/api/claude',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:300,
+        messages:[{role:'user',content:
+          `Current FX rates April 2026. Return ONLY JSON array:
+[
+  {"pair":"USDMXN","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},
+  {"pair":"USDBRL","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},
+  {"pair":"USDCOP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},
+  {"pair":"USDCLP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"}
+]
+change30d is the % change in the last 30 days (positive = USD stronger = local currency weaker)`}]})
+    });
+    const d=await r.json();
+    const fx=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    renderCurrencies(pairs, fx);
+  }catch(e){
+    renderCurrencies(pairs, []);
+  }
+}
+ 
+function renderCurrencies(pairs, fx){
+  const el=document.getElementById('currencyCards');
+  if(!el) return;
+  el.innerHTML=pairs.map(p=>{
+    const data=fx.find(f=>f.pair===p.pair)||{rate:0,change30d:0,trend:'STABLE',risk:'MEDIUM'};
+    const riskColor={'HIGH':'var(--red)','MEDIUM':'var(--amber)','LOW':'var(--green)'}[data.risk]||'var(--text2)';
+    const trendIcon={'UP':'↑','DOWN':'↓','STABLE':'→'}[data.trend]||'→';
+    const trendColor=data.trend==='UP'?'var(--red)':data.trend==='DOWN'?'var(--green)':'var(--text2)';
+    return `<div class="stat-card">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+        <span style="font-size:16px;">${p.flag}</span>
+        <div>
+          <div style="font-family:var(--mono);font-size:11px;font-weight:500;color:var(--text);">${p.name}</div>
+          <div style="font-size:10px;color:var(--text3);">${p.desc}</div>
+        </div>
+      </div>
+      <div style="font-size:20px;font-weight:500;font-family:var(--mono);">${data.rate?data.rate.toFixed(2):'—'}</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+        <span style="font-size:11px;color:${trendColor};">${trendIcon} ${data.change30d>0?'+':''}${(data.change30d||0).toFixed(1)}% 30d</span>
+        <span style="font-size:10px;padding:1px 6px;border:1px solid ${riskColor};color:${riskColor};border-radius:2px;font-family:var(--mono);">${data.risk} RISK</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+ 
+// ── FX Impact Calculator ───────────────────────────────
+function calcFxImpact(){
+  const ticker=document.getElementById('fxTicker').value||'position';
+  const amount=parseFloat(document.getElementById('fxAmount').value)||10000;
+  const move=parseFloat(document.getElementById('fxMove').value)||0;
+  const impact=amount*(move/100);
+  const newVal=amount+impact;
+  const el=document.getElementById('fxResult');
+  el.style.display='block';
+  el.innerHTML=`
+    <span style="color:var(--text3);">If ${ticker} currency moves <strong style="color:${move>=0?'var(--green)':'var(--red)'};">${move>=0?'+':''}${move}%</strong></span>
+    <span style="margin:0 12px;color:var(--text3);">→</span>
+    <span style="color:var(--text);">$${amount.toLocaleString()} position becomes </span>
+    <strong style="color:${impact>=0?'var(--green)':'var(--red)'};">$${newVal.toLocaleString(undefined,{maximumFractionDigits:0})}</strong>
+    <span style="color:${impact>=0?'var(--green)':'var(--red)'};">(${impact>=0?'+':''}$${Math.abs(impact).toLocaleString(undefined,{maximumFractionDigits:0})} FX impact)</span>`;
+}
+ 
+// ── Economic Calendar ──────────────────────────────────
+async function loadEconCalendar(){
+  const el=document.getElementById('econCalendar');
+  if(!el) return;
+  el.innerHTML='<div class="loading">loading calendar</div>';
+  try{
+    const r=await fetch('/api/claude',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:600,
+        messages:[{role:'user',content:
+          `Economic calendar for April-May 2026. Include Fed meetings, CPI, jobs reports, and LATAM central bank events (Banxico, Banco Central Brasil).
+Return ONLY JSON array of 8 events:
+[{"date":"Apr DD","event":"Event name","country":"US|MX|BR|EU|GLOBAL","impact":"HIGH|MEDIUM|LOW","expected":"expected value or empty","previous":"previous value or empty","description":"1 sentence"}]`}]})
+    });
+    const d=await r.json();
+    const events=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    renderCalendar(events);
+  }catch(e){el.innerHTML='<div class="err-msg">Calendar unavailable</div>';}
+}
+ 
+function renderCalendar(events){
+  const el=document.getElementById('econCalendar');
+  if(!el) return;
+  const impactColor={'HIGH':'var(--red)','MEDIUM':'var(--amber)','LOW':'var(--text3)'};
+  const flags={'US':'🇺🇸','MX':'🇲🇽','BR':'🇧🇷','EU':'🇪🇺','GLOBAL':'🌍'};
+  const eventRows=events.map(e=>{
+    const ic=impactColor[e.impact]||'var(--border)';
+    const fl=flags[e.country]||'🌍';
+    return '<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg1);border:1px solid var(--border);border-left:3px solid '+ic+';border-radius:4px;flex-wrap:wrap;">'+
+      '<span style="font-family:var(--mono);font-size:11px;color:var(--text3);min-width:55px;">'+e.date+'</span>'+
+      '<span style="font-size:14px;">'+fl+'</span>'+
+      '<div style="flex:1;"><span style="font-family:var(--mono);font-size:12px;font-weight:500;color:var(--text);">'+e.event+'</span>'+
+      '<span style="font-size:10px;color:var(--text3);margin-left:8px;font-family:var(--sans);">'+(e.description||'')+'</span></div>'+
+      (e.expected?'<span style="font-size:10px;color:var(--text2);">Est: '+e.expected+'</span>':'')+
+      (e.previous?'<span style="font-size:10px;color:var(--text3);">Prev: '+e.previous+'</span>':'')+
+      '<span style="font-size:10px;padding:1px 6px;border:1px solid '+ic+';color:'+ic+';border-radius:2px;font-family:var(--mono);">'+e.impact+'</span></div>';
+  }).join('');
+  el.innerHTML='<div style="display:flex;flex-direction:column;gap:6px;">'+eventRows+'</div>';
+}
+ 
+// ── Sector Heatmap ─────────────────────────────────────
+async function loadSectorHeatmap(){
+  const el=document.getElementById('sectorHeatmap');
+  if(!el) return;
+  el.innerHTML='<div class="loading">loading sectors</div>';
+  try{
+    const r=await fetch('/api/claude',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:400,
+        messages:[{role:'user',content:
+          `Sector performance for April 2026. Include LATAM sectors.
+Return ONLY JSON array of 10 sectors:
+[{"sector":"Technology","return30d":number,"ytd":number,"signal":"BULLISH|NEUTRAL|BEARISH","note":"1 sentence"}]`}]})
+    });
+    const d=await r.json();
+    const sectors=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    renderHeatmap(sectors);
+  }catch(e){el.innerHTML='<div class="err-msg">Heatmap unavailable</div>';}
+}
+ 
+function renderHeatmap(sectors){
+  const el=document.getElementById('sectorHeatmap');
+  if(!el) return;
+  const sorted=[...sectors].sort((a,b)=>b.return30d-a.return30d);
+  el.innerHTML=`<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;">
+    ${sorted.map(s=>{
+      const ret=s.return30d||0;
+      const intensity=Math.min(1,Math.abs(ret)/15);
+      const bg=ret>=0?'rgba(29,158,117,'+(0.1+intensity*0.4)+')':"rgba(226,75,74,"+(0.1+intensity*0.4)+")";
+      const color=ret>=0?'var(--green)':'var(--red)';
+      return `<div style="background:${bg};border:1px solid ${ret>=0?'rgba(29,158,117,.3)':'rgba(226,75,74,.3)'};border-radius:6px;padding:12px;cursor:default;" title="${s.note||''}">
+        <div style="font-size:11px;font-family:var(--mono);color:var(--text);margin-bottom:4px;line-height:1.3;">${s.sector}</div>
+        <div style="font-size:16px;font-weight:500;color:${color};font-family:var(--mono);">${ret>=0?'+':''}${ret.toFixed(1)}%</div>
+        <div style="font-size:9px;color:var(--text3);margin-top:2px;">YTD: ${s.ytd>=0?'+':''}${(s.ytd||0).toFixed(1)}%</div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+ 
+// ── Macro AI Brief ─────────────────────────────────────
+async function runMacroBrief(){
+  const btn=document.getElementById('macroBriefBtn');
+  const el=document.getElementById('macroBriefResult');
+  btn.textContent='Generating...';btn.disabled=true;
+  el.innerHTML='<div class="loading">analyzing global macro</div>';
+  try{
+    const r=await fetch('/api/claude',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,
+        messages:[{role:'user',content:
+          `You are the chief macro strategist at a major bank. Write a concise macro intelligence brief for LATAM investors as of April 2026.
+ 
+Cover:
+1. US Fed policy and interest rate outlook
+2. USD strength and impact on LATAM currencies
+3. China slowdown / commodity impact on Brazil and Mexico
+4. Top 3 macro risks for LATAM portfolios right now
+5. Top 2 macro opportunities for LATAM investors
+ 
+Return ONLY JSON:
+{
+  "headline": "One bold macro call for April 2026",
+  "fed_outlook": "2 sentences on Fed policy",
+  "usd_outlook": "2 sentences on dollar strength",
+  "latam_macro": "2 sentences on LATAM specific conditions",
+  "top_risks": ["risk 1","risk 2","risk 3"],
+  "opportunities": ["opportunity 1","opportunity 2"],
+  "positioning": "2 sentences on how to position a LATAM portfolio right now"
+}`}]})
+    });
+    const d=await r.json();
+    const brief=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    renderMacroBrief(brief);
+  }catch(e){
+    el.innerHTML=`<div class="err-msg">Brief generation failed: ${e.message}</div>`;
+  }finally{
+    btn.textContent='▶ Generate macro brief';btn.disabled=false;
+  }
+}
+ 
+function renderMacroBrief(brief){
+  const el=document.getElementById('macroBriefResult');
+  el.innerHTML=`
+    <div style="background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:8px;">
+      <div style="font-family:var(--mono);font-size:13px;font-weight:500;color:var(--blue);margin-bottom:12px;">"${brief.headline}"</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+        <div>
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">// FED OUTLOOK</div>
+          <p style="font-size:12px;color:var(--text2);font-family:var(--sans);line-height:1.6;">${brief.fed_outlook}</p>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">// USD OUTLOOK</div>
+          <p style="font-size:12px;color:var(--text2);font-family:var(--sans);line-height:1.6;">${brief.usd_outlook}</p>
+        </div>
+      </div>
+      <div style="margin-bottom:12px;">
+        <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">// LATAM MACRO</div>
+        <p style="font-size:12px;color:var(--text2);font-family:var(--sans);line-height:1.6;">${brief.latam_macro}</p>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+        <div>
+          <div style="font-size:10px;color:var(--red);font-family:var(--mono);margin-bottom:6px;">// TOP RISKS</div>
+          ${(brief.top_risks||[]).map(r=>'<div style="font-size:11px;color:var(--text2);padding:4px 0;border-bottom:1px solid var(--border);font-family:var(--sans);">▼ '+r+'</div>').join('')}
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--green);font-family:var(--mono);margin-bottom:6px;">// OPPORTUNITIES</div>
+          ${(brief.opportunities||[]).map(o=>'<div style="font-size:11px;color:var(--text2);padding:4px 0;border-bottom:1px solid var(--border);font-family:var(--sans);">▲ '+o+'</div>').join('')}
+        </div>
+      </div>
+      <div style="background:var(--bg2);border:1px solid var(--border2);border-radius:4px;padding:12px;">
+        <div style="font-size:10px;color:var(--amber);font-family:var(--mono);margin-bottom:4px;">// POSITIONING</div>
+        <p style="font-size:12px;color:var(--text2);font-family:var(--sans);line-height:1.6;">${brief.positioning}</p>
+      </div>
+    </div>`;
+}
+ 
 // ─── NAVIGATION ───────────────────────────────────────────
 function showPage(id){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
@@ -553,6 +999,7 @@ function showPage(id){
   document.getElementById('page-'+id).classList.add('active');
   event.target.classList.add('active');
   if(id==='compare') setTimeout(initCmpCanvases,50);
+  if(id==='macro') setTimeout(loadMacroPage,50);
 }
  
 // ─── GLOBAL STATUS ────────────────────────────────────────
@@ -1365,7 +1812,7 @@ async function runPortfolioSim(){
   const prompt=await fetch('/api/claude',{
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:400,messages:[{role:'user',content:
-      `Portfolio of ${positions.length} positions: ${positions.map(p=>`${p.dir} ${p.ticker} $${p.amount}`).join(', ')}. Monte Carlo (500 sims): expected return ${fmt(mean)}, win rate ${(wins/returns.length*100).toFixed(0)}%, Sharpe ${sharpe.toFixed(2)}, VaR95 ${fmt(var95)}. Give a 2-sentence portfolio assessment and 1-sentence key risk. Return JSON: {"assessment":"","key_risk":""}`}]})
+      `Portfolio of ${positions.length} positions: ${positions.map(p=>p.dir+' '+p.ticker+' $'+p.amount).join(', ')}. Monte Carlo (500 sims): expected return ${fmt(mean)}, win rate ${(wins/returns.length*100).toFixed(0)}%, Sharpe ${sharpe.toFixed(2)}, VaR95 ${fmt(var95)}. Give a 2-sentence portfolio assessment and 1-sentence key risk. Return JSON: {"assessment":"","key_risk":""}`}]})
   });
   const pd=await prompt.json();
   let assessment={assessment:'Portfolio simulation complete.',key_risk:'Diversification and correlation risk.'};
@@ -1686,13 +2133,13 @@ Return ONLY JSON:
   <div>
     <h3 style="color:#00c97d;font-size:11px;margin-bottom:8px;">▲ Key Catalysts</h3>
     <ul class="catalyst-list">
-      ${(companyData.catalysts||[]).map(c=>`<li>${c}</li>`).join('')}
+      ${(companyData.catalysts||[]).map(c=>'<li>'+c+'</li>').join('')}
     </ul>
   </div>
   <div>
     <h3 style="color:#ff4545;font-size:11px;margin-bottom:8px;">▼ Key Risks</h3>
     <ul class="risk-list">
-      ${(companyData.risks||[]).map(r=>`<li>${r}</li>`).join('')}
+      ${(companyData.risks||[]).map(r=>'<li>'+r+'</li>').join('')}
     </ul>
   </div>
 </div>
@@ -1735,7 +2182,7 @@ ${risk?`<div class="risk-box"><strong>Primary risk (simulation):</strong> ${risk
 ${thesis?`
 <h2>06 · Trade Thesis</h2>
 <div class="thesis-box">${thesis}</div>
-${signals.length?`<ul class="catalyst-list">${signals.map(s=>`<li>${s}</li>`).join('')}</ul>`:''}
+${signals.length?'<ul class="catalyst-list">'+signals.map(s=>'<li>'+s+'</li>').join('')+'</ul>':''}
 `:''}
  
 ${newsHtml?`
@@ -1770,31 +2217,6 @@ ${comparisonData.length>1?`
 </div>
 <div class="disclaimer">
   IMPORTANT DISCLOSURE: This report is generated by an AI-powered simulation engine for informational and educational purposes only. It does not constitute financial advice, investment recommendations, or an offer to buy or sell securities. Monte Carlo simulations are probabilistic models based on historical parameters and do not guarantee future results. Consult a registered financial advisor before making investment decisions. Past performance does not indicate future results. / Este reporte es generado por inteligencia artificial con fines informativos y educativos únicamente. No constituye asesoría financiera ni recomendación de inversión.
-</div>
- 
-</body>
-</html>`;
- 
-  // Open in new window and trigger print
-  const pdfWin=window.open('','_blank');
-  pdfWin.document.write(html);
-  pdfWin.document.close();
-  pdfWin.onload=()=>{ pdfWin.focus(); pdfWin.print(); };
-}
- 
-// ─── SPEED ────────────────────────────────────────────
-<div id="noteModal" style="display:none;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.7);align-items:center;justify-content:center;">
-  <div style="background:var(--bg1);border:1px solid var(--border2);border-radius:8px;padding:24px;width:90%;max-width:480px;">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-      <span style="font-family:var(--mono);font-size:12px;color:var(--text2);" id="noteModalTitle">// add note</span>
-      <button onclick="closeNoteModal()" style="font-size:16px;color:var(--text3);border:none;background:none;cursor:pointer;">✕</button>
-    </div>
-    <textarea id="noteInput" rows="4" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--text);font-family:var(--sans);font-size:13px;padding:10px 12px;border-radius:4px;resize:vertical;outline:none;line-height:1.6;" placeholder="Your research note... why did you run this? what did you decide?"></textarea>
-    <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end;">
-      <button onclick="closeNoteModal()" style="font-size:12px;padding:6px 16px;">Cancel</button>
-      <button onclick="saveNote()" class="primary" style="font-size:12px;padding:6px 16px;">Save note</button>
-    </div>
-  </div>
 </div>
  
 </body>
