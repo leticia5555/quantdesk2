@@ -710,54 +710,68 @@ function renderMovers(movers){
  
 // ── Fear & Greed ──────────────────────────────────────
 async function loadFearGreed(){
-  // Calculate composite Fear & Greed from market data
+  // Step 1: calculate score immediately from live price data
   try{
-    const [btcData, spyData] = await Promise.allSettled([
+    const [btcData, spyData, nvdaData] = await Promise.allSettled([
       fetch('/api/price?ticker=BTC%2FUSD').then(r=>r.json()),
-      fetch('/api/price?ticker=SPY').then(r=>r.json())
+      fetch('/api/price?ticker=SPY').then(r=>r.json()),
+      fetch('/api/price?ticker=NVDA').then(r=>r.json()),
     ]);
  
     const btc=btcData.status==='fulfilled'?btcData.value:null;
     const spy=spyData.status==='fulfilled'?spyData.value:null;
+    const nvda=nvdaData.status==='fulfilled'?nvdaData.value:null;
  
-    // Composite score based on available signals
-    let score=50; // neutral default
-    let signals=[];
+    let score=50;
  
-    if(btc){
-      const btcMomentum=btc.return30d||0;
-      if(btcMomentum>0.15){score+=15;signals.push('BTC strong momentum');}
-      else if(btcMomentum>0.05){score+=7;signals.push('BTC positive momentum');}
-      else if(btcMomentum<-0.15){score-=15;signals.push('BTC fear signal');}
-      else if(btcMomentum<-0.05){score-=7;signals.push('BTC weak');}
+    if(btc&&btc.return30d!==undefined){
+      const m=btc.return30d;
+      score+=m>0.2?18:m>0.1?10:m>0.02?5:m<-0.2?-18:m<-0.1?-10:m<-0.02?-5:0;
+    }
+    if(spy&&spy.return30d!==undefined){
+      const m=spy.return30d;
+      score+=m>0.05?12:m>0.02?6:m>0?3:m<-0.05?-12:m<-0.02?-6:m<0?-3:0;
+      // Volatility signal
+      const sig=spy.sigma||0.15;
+      score+=sig<0.12?8:sig>0.28?-10:sig>0.22?-5:0;
+    }
+    if(nvda&&nvda.return30d!==undefined){
+      const m=nvda.return30d;
+      score+=m>0.1?5:m<-0.1?-5:0;
     }
  
-    if(spy){
-      const spyMomentum=spy.return30d||0;
-      const spySigma=spy.sigma||0.15;
-      if(spyMomentum>0.05){score+=10;signals.push('SPY bullish');}
-      else if(spyMomentum<-0.05){score-=10;signals.push('SPY bearish');}
-      if(spySigma<0.12){score+=8;signals.push('Low volatility');}
-      else if(spySigma>0.25){score-=8;signals.push('High volatility');}
-    }
+    score=Math.max(2,Math.min(98,Math.round(score)));
  
-    score=Math.max(0,Math.min(100,score));
+    const label=score<=25?'Extreme Fear':score<=45?'Fear':score<=55?'Neutral':score<=75?'Greed':'Extreme Greed';
  
-    // Ask Claude to refine with current market knowledge
-    const r=await fetch('/api/claude',{
+    // Build description from actual data
+    const btcRet=btc?.return30d?((btc.return30d*100).toFixed(1)+'%'):'n/a';
+    const spyRet=spy?.return30d?((spy.return30d*100).toFixed(1)+'%'):'n/a';
+    const desc='BTC '+btcRet+' · SPY '+spyRet+' 30d. '+(score<45?'Risk-off sentiment dominant — investors cautious.':score>55?'Risk-on appetite — markets showing confidence.':'Mixed signals. No clear directional bias.');
+ 
+    renderFearGreed(score, label, desc);
+ 
+    // Step 2: try Claude refinement in background (non-blocking)
+    fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:200,
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:150,
         messages:[{role:'user',content:
-          `Based on market conditions in April 2026, what is the current Fear & Greed score (0-100) and why?
-0-25=Extreme Fear, 26-45=Fear, 46-55=Neutral, 56-75=Greed, 76-100=Extreme Greed.
-Return ONLY JSON: {"score":number,"label":"Extreme Fear|Fear|Neutral|Greed|Extreme Greed","description":"2 sentences on current market sentiment"}`}]})
-    });
-    const d=await r.json();
-    const fg=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
-    score=fg.score||score;
-    renderFearGreed(score, fg.label||'Neutral', fg.description||'');
+          'Fear & Greed score for financial markets April 9 2026. Consider recent tariff fears, market volatility, crypto action. Return ONLY JSON: {"score":number,"label":"Extreme Fear|Fear|Neutral|Greed|Extreme Greed","description":"1 sentence"}'}]})
+    }).then(r=>r.json()).then(d=>{
+      const fg=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+      if(fg.score) renderFearGreed(fg.score, fg.label||label, fg.description||desc);
+    }).catch(()=>{});
+ 
   }catch(e){
-    renderFearGreed(50,'Neutral','Market sentiment data unavailable.');
+    // Pure Claude fallback
+    fetch('/api/claude',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:150,
+        messages:[{role:'user',content:'Fear & Greed score April 2026. Return ONLY JSON: {"score":number,"label":"string","description":"1 sentence"}'}]})
+    }).then(r=>r.json()).then(d=>{
+      const fg=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+      renderFearGreed(fg.score||40, fg.label||'Fear', fg.description||'');
+    }).catch(()=>renderFearGreed(40,'Fear','Elevated macro uncertainty in April 2026.'));
   }
 }
  
