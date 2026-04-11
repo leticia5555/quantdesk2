@@ -925,7 +925,7 @@ function applyPreset(name){
   if(p.scSort) document.getElementById('scSort').value=p.scSort;
   // Highlight active preset
   document.querySelectorAll('.screener-preset').forEach(b=>b.style.borderColor='#333');
-  event.target.style.borderColor='#00c97d';
+  if(typeof event!=='undefined'&&event&&event.target) event.target.style.borderColor='#00c97d';
   runScreener();
 }
 
