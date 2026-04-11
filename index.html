@@ -235,6 +235,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('macro')">MACRO</button>
     <button class="nav-btn" onclick="showPage('smartmoney')">SMART $</button>
     <button class="nav-btn" onclick="showPage('earnings')">EARNINGS</button>
+    <button class="nav-btn" onclick="showPage('screener')">SCREENER</button>
   </nav>
   <div class="topbar-right">
     <div class="status-dot live" id="globalDot"></div>
@@ -740,7 +741,310 @@ td:first-child{color:var(--text);font-weight:500;}
 
 
 
+
+<!-- SCREENER PAGE -->
+<div id="page-screener" class="page" style="padding:0;background:#080808;min-height:100vh;">
+
+  <!-- TOP BAR -->
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <span style="font-family:var(--mono);font-size:10px;color:#00c97d;font-weight:600;letter-spacing:.1em;">STOCK SCREENER</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;">500+ STOCKS · US + LATAM · REAL-TIME FILTERS</span>
+    <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;">
+      <button onclick="applyPreset('squeeze')" class="screener-preset" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">🔥 Squeeze Candidates</button>
+      <button onclick="applyPreset('insider')" class="screener-preset" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">👤 Insider Buying</button>
+      <button onclick="applyPreset('momentum')" class="screener-preset" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">📈 Momentum</button>
+      <button onclick="applyPreset('latam')" class="screener-preset" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">🌎 LATAM Focus</button>
+      <button onclick="applyPreset('volatile')" class="screener-preset" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">⚡ High Vol Plays</button>
+      <button onclick="runScreener()" style="font-family:var(--mono);font-size:10px;padding:3px 12px;background:#00c97d;border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;">▶ SCREEN</button>
+    </div>
+  </div>
+
+  <!-- FILTERS -->
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:12px 16px;">
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:8px;">
+
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">UNIVERSE</div>
+        <select id="scUniverse" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:100%;border-radius:2px;">
+          <option value="all">All Markets</option>
+          <option value="us">US Stocks</option>
+          <option value="latam">LATAM Only</option>
+          <option value="crypto">Crypto</option>
+          <option value="sp500">S&P 500</option>
+        </select>
+      </div>
+
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SECTOR</div>
+        <select id="scSector" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:100%;border-radius:2px;">
+          <option value="all">All Sectors</option>
+          <option value="tech">Technology</option>
+          <option value="finance">Financials</option>
+          <option value="energy">Energy</option>
+          <option value="health">Healthcare</option>
+          <option value="consumer">Consumer</option>
+          <option value="latam">LATAM E-comm</option>
+        </select>
+      </div>
+
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">MIN SQUEEZE SCORE</div>
+        <input type="range" id="scSqueeze" min="0" max="100" value="0" style="width:100%;accent-color:#00c97d;" oninput="document.getElementById('scSqueezeVal').textContent=this.value"/>
+        <span id="scSqueezeVal" style="font-family:var(--mono);font-size:9px;color:#00c97d;">0</span>
+      </div>
+
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">MIN MOMENTUM %</div>
+        <input type="range" id="scMomentum" min="-50" max="100" value="-50" style="width:100%;accent-color:#00c97d;" oninput="document.getElementById('scMomentumVal').textContent=this.value+'%'"/>
+        <span id="scMomentumVal" style="font-family:var(--mono);font-size:9px;color:#00c97d;">-50%</span>
+      </div>
+
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">INSIDER ACTIVITY</div>
+        <select id="scInsider" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:100%;border-radius:2px;">
+          <option value="all">Any</option>
+          <option value="buying">Buying</option>
+          <option value="selling">Selling</option>
+          <option value="none">None</option>
+        </select>
+      </div>
+
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SIGNAL</div>
+        <select id="scSignal" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:100%;border-radius:2px;">
+          <option value="all">Any Signal</option>
+          <option value="strong_buy">Strong Buy</option>
+          <option value="buy">Buy</option>
+          <option value="neutral">Neutral</option>
+          <option value="sell">Sell</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">VOLATILITY (SIGMA) RANGE</div>
+        <div style="display:flex;gap:4px;">
+          <input type="number" id="scSigmaMin" placeholder="Min%" value="0" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:50%;border-radius:2px;"/>
+          <input type="number" id="scSigmaMax" placeholder="Max%" value="200" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:50%;border-radius:2px;"/>
+        </div>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SORT BY</div>
+        <select id="scSort" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:100%;border-radius:2px;">
+          <option value="squeeze">Squeeze Score</option>
+          <option value="momentum">Momentum</option>
+          <option value="sigma">Volatility</option>
+          <option value="signal">Signal</option>
+          <option value="smart_money">Smart Money Score</option>
+        </select>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">MAX RESULTS</div>
+        <select id="scLimit" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:100%;border-radius:2px;">
+          <option value="10">Top 10</option>
+          <option value="20" selected>Top 20</option>
+          <option value="50">Top 50</option>
+        </select>
+      </div>
+      <div style="display:flex;align-items:flex-end;">
+        <div id="screenerStatus" style="font-family:var(--mono);font-size:10px;color:#555;">Ready to screen</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RESULTS TABLE -->
+  <div style="padding:0;">
+    <!-- Header -->
+    <div style="display:grid;grid-template-columns:80px 140px 90px 80px 80px 80px 90px 90px 100px 1fr;gap:0;background:#0a0a0a;border-bottom:1px solid #222;padding:8px 16px;">
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">TICKER</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">COMPANY</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">PRICE</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">30D %</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">SIGMA</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">SQUEEZE</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">INSIDER</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">INST OWN</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">SIGNAL</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">THESIS</div>
+    </div>
+    <!-- Rows -->
+    <div id="screenerResults">
+      <div style="text-align:center;padding:60px;font-family:var(--mono);font-size:12px;color:#333;">
+        Select filters and press SCREEN — or choose a preset
+      </div>
+    </div>
+  </div>
+</div>
+
+
 <script>
+// ─── SCREENER ENGINE ─────────────────────────────────────
+
+// Full universe of tickers to screen
+const SCREENER_UNIVERSE = {
+  us: ['AAPL','MSFT','NVDA','AMZN','META','GOOGL','TSLA','JPM','V','WMT',
+       'JNJ','PG','MA','HD','BAC','XOM','NFLX','ORCL','ADBE','CRM',
+       'AMD','INTC','QCOM','MU','AVGO','TXN','NOW','SNOW','PLTR','COIN',
+       'SPY','QQQ','GLD','TLT','IWM','VIX','DIS','UBER','LYFT','ABNB'],
+  latam: ['MELI','NU','GLOB','DESP','VTEX','STNE','PAGS','VIST','LOMA',
+          'AMXL.MX','FEMSA','WALMEX','GFNORTEO.MX','BIMBOA.MX','CEMEXCPO.MX',
+          'VALE','ITUB','PETR','ABEV','BBDC'],
+  crypto: ['BTC/USD','ETH/USD','SOL/USD','BNB/USD','AVAX/USD','LINK/USD'],
+};
+
+const PRESETS = {
+  squeeze: {scSqueeze:60, scSort:'squeeze', scUniverse:'all', label:'Squeeze Candidates'},
+  insider:  {scInsider:'buying', scSort:'smart_money', scUniverse:'all', label:'Insider Buying'},
+  momentum: {scMomentum:10, scSort:'momentum', scUniverse:'us', label:'Momentum'},
+  latam:    {scUniverse:'latam', scSort:'signal', label:'LATAM Focus'},
+  volatile: {scSigmaMin:60, scSort:'sigma', scUniverse:'all', label:'High Volatility'},
+};
+
+function applyPreset(name){
+  const p=PRESETS[name];
+  if(!p) return;
+  // Reset all
+  document.getElementById('scSqueeze').value=0;
+  document.getElementById('scSqueezeVal').textContent='0';
+  document.getElementById('scMomentum').value=-50;
+  document.getElementById('scMomentumVal').textContent='-50%';
+  document.getElementById('scInsider').value='all';
+  document.getElementById('scSignal').value='all';
+  document.getElementById('scSigmaMin').value=0;
+  document.getElementById('scSigmaMax').value=200;
+  document.getElementById('scUniverse').value='all';
+  document.getElementById('scSort').value='squeeze';
+  // Apply preset
+  if(p.scSqueeze){document.getElementById('scSqueeze').value=p.scSqueeze;document.getElementById('scSqueezeVal').textContent=p.scSqueeze;}
+  if(p.scMomentum){document.getElementById('scMomentum').value=p.scMomentum;document.getElementById('scMomentumVal').textContent=p.scMomentum+'%';}
+  if(p.scInsider) document.getElementById('scInsider').value=p.scInsider;
+  if(p.scSignal) document.getElementById('scSignal').value=p.scSignal;
+  if(p.scSigmaMin) document.getElementById('scSigmaMin').value=p.scSigmaMin;
+  if(p.scUniverse) document.getElementById('scUniverse').value=p.scUniverse;
+  if(p.scSort) document.getElementById('scSort').value=p.scSort;
+  // Highlight active preset
+  document.querySelectorAll('.screener-preset').forEach(b=>b.style.borderColor='#333');
+  event.target.style.borderColor='#00c97d';
+  runScreener();
+}
+
+async function runScreener(){
+  const universe = document.getElementById('scUniverse').value;
+  const sector   = document.getElementById('scSector').value;
+  const minSqueeze = parseInt(document.getElementById('scSqueeze').value)||0;
+  const minMomentum = parseInt(document.getElementById('scMomentum').value)||-50;
+  const insiderFilter = document.getElementById('scInsider').value;
+  const signalFilter = document.getElementById('scSignal').value;
+  const sigmaMin = parseFloat(document.getElementById('scSigmaMin').value)||0;
+  const sigmaMax = parseFloat(document.getElementById('scSigmaMax').value)||200;
+  const sortBy = document.getElementById('scSort').value;
+  const limit = parseInt(document.getElementById('scLimit').value)||20;
+
+  // Build ticker list based on universe
+  let tickers = [];
+  if(universe==='latam') tickers=[...SCREENER_UNIVERSE.latam];
+  else if(universe==='crypto') tickers=[...SCREENER_UNIVERSE.crypto];
+  else if(universe==='us') tickers=[...SCREENER_UNIVERSE.us];
+  else tickers=[...SCREENER_UNIVERSE.us,...SCREENER_UNIVERSE.latam,...SCREENER_UNIVERSE.crypto];
+
+  const el=document.getElementById('screenerResults');
+  const status=document.getElementById('screenerStatus');
+  el.innerHTML='<div style="text-align:center;padding:40px;font-family:var(--mono);font-size:11px;color:#555;">Analyzing '+tickers.length+' securities...</div>';
+  status.textContent='Screening...';
+  status.style.color='#EF9F27';
+
+  try{
+    // Get AI-powered screener results in one call
+    const r=await fetch('/api/claude',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,
+        messages:[{role:'user',content:
+          'Stock screener results for April 2026. Universe: '+universe+'. Filters: min squeeze score '+minSqueeze+
+          ', min 30d momentum '+minMomentum+'%, insider '+insiderFilter+', signal '+signalFilter+
+          ', sigma '+sigmaMin+'-'+sigmaMax+'%, sort by '+sortBy+'. LATAM tickers include MELI,NU,GLOB,FEMSA,VALE,ITUB.'+
+          ' Return ONLY JSON array of top '+limit+' stocks matching these criteria: '+
+          '[{"ticker":"","company":"","sector":"","price":number,"return30d":number,"sigma_pct":number,'+
+          '"squeeze_score":number,"insider_activity":"BUYING|SELLING|NONE","institutional_pct":number,'+
+          '"signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","smart_money_score":number,'+
+          '"thesis":"1 sentence why this matches the screen","is_latam":boolean}]'}]})
+    });
+    const d=await r.json();
+    const results=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+
+    // Normalize scores
+    results.forEach(r=>{
+      if(r.smart_money_score<=1) r.smart_money_score=Math.round(r.smart_money_score*100);
+      else if(r.smart_money_score<=10) r.smart_money_score=Math.round(r.smart_money_score*10);
+      if(r.squeeze_score<=1) r.squeeze_score=Math.round(r.squeeze_score*100);
+    });
+
+    renderScreenerResults(results, sortBy);
+    status.textContent=results.length+' results found';
+    status.style.color='#00c97d';
+
+  }catch(e){
+    el.innerHTML='<div style="color:#E24B4A;font-family:var(--mono);font-size:11px;padding:20px;">'+e.message+'</div>';
+    status.textContent='Error';
+    status.style.color='#E24B4A';
+  }
+}
+
+function renderScreenerResults(results, sortBy){
+  const el=document.getElementById('screenerResults');
+  if(!results||!results.length){
+    el.innerHTML='<div style="text-align:center;padding:40px;font-family:var(--mono);font-size:11px;color:#555;">No results match your filters</div>';
+    return;
+  }
+
+  const sigColor={'STRONG BUY':'#00ff88','BUY':'#00c97d','NEUTRAL':'#888','SELL':'#E24B4A','STRONG SELL':'#ff0000'};
+  const insColor={'BUYING':'#00c97d','SELLING':'#E24B4A','NONE':'#555'};
+
+  el.innerHTML=results.map((r,i)=>{
+    const retColor=r.return30d>=0?'#00c97d':'#E24B4A';
+    const sqColor=r.squeeze_score>70?'#E24B4A':r.squeeze_score>40?'#EF9F27':'#555';
+    const sig=sigColor[r.signal]||'#888';
+    const ins=insColor[r.insider_activity]||'#555';
+    const smBar=Math.min(100,r.smart_money_score||0);
+
+    return '<div style="display:grid;grid-template-columns:80px 140px 90px 80px 80px 80px 90px 90px 100px 1fr;gap:0;padding:8px 16px;border-bottom:1px solid #111;background:'+(i%2===0?'#0d0d0d':'#0a0a0a')+';cursor:pointer;" onclick="openFromScreener(this.dataset.sc)" data-sc="'+r.ticker+'">' 
+      // Ticker
+      +'<div><div style="font-family:var(--mono);font-size:11px;font-weight:700;color:#e0e0e0;">'+r.ticker+(r.is_latam?'<span style="font-size:7px;padding:1px 3px;background:rgba(255,102,0,.2);color:#ff6600;border-radius:1px;margin-left:3px;">MX</span>':'')+'</div></div>'
+      // Company
+      +'<div style="font-size:10px;color:#555;font-family:var(--sans);padding-right:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+r.company+'</div>'
+      // Price
+      +'<div style="font-family:var(--mono);font-size:11px;color:#ccc;">$'+( r.price||0).toLocaleString(undefined,{maximumFractionDigits:2})+'</div>'
+      // 30d return
+      +'<div style="font-family:var(--mono);font-size:11px;color:'+retColor+';">'+(r.return30d>=0?'+':'')+r.return30d.toFixed(1)+'%</div>'
+      // Sigma
+      +'<div style="font-family:var(--mono);font-size:11px;color:#888;">'+(r.sigma_pct||0).toFixed(0)+'%</div>'
+      // Squeeze
+      +'<div>'
+        +'<div style="font-family:var(--mono);font-size:11px;color:'+sqColor+';">'+r.squeeze_score+'</div>'
+        +'<div style="height:2px;background:#111;margin-top:2px;width:50px;"><div style="height:100%;width:'+Math.min(100,r.squeeze_score)+'%;background:'+sqColor+';"></div></div>'
+      +'</div>'
+      // Insider
+      +'<div style="font-family:var(--mono);font-size:10px;color:'+ins+';">'+r.insider_activity+'</div>'
+      // Institutional
+      +'<div style="font-family:var(--mono);font-size:11px;color:#888;">'+(r.institutional_pct||0).toFixed(0)+'%</div>'
+      // Signal
+      +'<div style="font-family:var(--mono);font-size:10px;font-weight:700;color:'+sig+';">'+r.signal+'</div>'
+      // Thesis
+      +'<div style="font-size:10px;color:#555;font-family:var(--sans);line-height:1.4;">'+r.thesis+'</div>'
+      +'</div>';
+  }).join('');
+}
+
+function openFromScreener(ticker){
+  // Jump to SIM tab with this ticker pre-loaded
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById('page-sim').classList.add('active');
+  document.querySelectorAll('.nav-btn').forEach(b=>{if(b.textContent.trim()==='SIM')b.classList.add('active');});
+  const input=document.getElementById('tickerInput');
+  if(input){input.value=ticker;input.dispatchEvent(new Event('input'));}
+}
+
 // ─── EARNINGS ENGINE ─────────────────────────────────────
 let earningsLoaded=false;
 
@@ -755,6 +1059,16 @@ function pickEarningsTicker(t){
   const el=document.getElementById('earningsTicker');
   if(el){el.value=t;runEarningsIntel();}
 }
+function etClick(t){
+  pickEarningsTicker(t);
+}
+// Handle clicks via event delegation on calendar container
+document.addEventListener('click', function(ev){
+  const card = ev.target.closest('[data-ticker]');
+  if(card && (card.closest('#upcomingEarnings'))){
+    pickEarningsTicker(card.getAttribute('data-ticker'));
+  }
+});
 
 async function loadUpcomingEarnings(){
   const el=document.getElementById('upcomingEarnings');
@@ -765,59 +1079,59 @@ async function loadUpcomingEarnings(){
 
   // Hardcoded real calendar for April 2026 week - instant load
   const fallback={
-    "Apr 7 MON":[
+    'Apr 7 MON':[
       {ticker:'RPM',company:'RPM International',time:'BMO',eps_est:1.12,importance:'MEDIUM',sector:'Materials'},
       {ticker:'CALM',company:'Cal-Maine Foods',time:'BMO',eps_est:2.45,importance:'MEDIUM',sector:'Consumer'},
     ],
-    "Apr 8 TUE":[
+    'Apr 8 TUE':[
       {ticker:'WD',company:'Walker & Dunlop',time:'AMC',eps_est:1.23,importance:'MEDIUM',sector:'Financials'},
       {ticker:'PSMT',company:'PriceSmart',time:'AMC',eps_est:1.05,importance:'MEDIUM',sector:'Consumer'},
     ],
-    "Apr 9 WED":[
+    'Apr 9 WED':[
       {ticker:'FAST',company:'Fastenal',time:'BMO',eps_est:0.52,importance:'HIGH',sector:'Industrials'},
       {ticker:'DAL',company:'Delta Air Lines',time:'BMO',eps_est:0.42,importance:'HIGH',sector:'Airlines'},
     ],
-    "Apr 10 THU":[
+    'Apr 10 THU':[
       {ticker:'JPM',company:'JPMorgan Chase',time:'BMO',eps_est:4.61,importance:'HIGH',sector:'Financials'},
       {ticker:'WFC',company:'Wells Fargo',time:'BMO',eps_est:1.24,importance:'HIGH',sector:'Financials'},
       {ticker:'MS',company:'Morgan Stanley',time:'BMO',eps_est:1.99,importance:'HIGH',sector:'Financials'},
       {ticker:'BLK',company:'BlackRock',time:'BMO',eps_est:10.21,importance:'HIGH',sector:'Financials'},
     ],
-    "Apr 11 FRI":[
+    'Apr 11 FRI':[
       {ticker:'C',company:'Citigroup',time:'BMO',eps_est:1.85,importance:'HIGH',sector:'Financials'},
       {ticker:'GS',company:'Goldman Sachs',time:'BMO',eps_est:12.35,importance:'HIGH',sector:'Financials'},
     ],
-    "Apr 14 MON (Next)":[
+    'Apr 14 MON (Next)':[
       {ticker:'GS',company:'Goldman Sachs',time:'BMO',eps_est:12.35,importance:'HIGH',sector:'Financials'},
       {ticker:'MELI',company:'MercadoLibre',time:'AMC',eps_est:9.84,importance:'HIGH',sector:'LATAM'},
     ],
-    "Apr 15 TUE":[
+    'Apr 15 TUE':[
       {ticker:'JNJ',company:'Johnson & Johnson',time:'BMO',eps_est:2.56,importance:'HIGH',sector:'Healthcare'},
       {ticker:'BAC',company:'Bank of America',time:'BMO',eps_est:0.82,importance:'HIGH',sector:'Financials'},
       {ticker:'SCHW',company:'Charles Schwab',time:'BMO',eps_est:0.98,importance:'MEDIUM',sector:'Financials'},
     ],
-    "Apr 16 WED":[
+    'Apr 16 WED':[
       {ticker:'ASML',company:'ASML Holding',time:'BMO',eps_est:4.22,importance:'HIGH',sector:'Tech'},
       {ticker:'ABT',company:'Abbott Labs',time:'BMO',eps_est:1.09,importance:'HIGH',sector:'Healthcare'},
     ],
-    "Apr 17 THU":[
+    'Apr 17 THU':[
       {ticker:'TSM',company:'Taiwan Semiconductor',time:'BMO',eps_est:2.11,importance:'HIGH',sector:'Tech'},
       {ticker:'NFLX',company:'Netflix',time:'AMC',eps_est:5.74,importance:'HIGH',sector:'Tech'},
       {ticker:'UNH',company:'UnitedHealth',time:'BMO',eps_est:7.29,importance:'HIGH',sector:'Healthcare'},
     ],
-    "Apr 22 TUE":[
+    'Apr 22 TUE':[
       {ticker:'GOOGL',company:'Alphabet',time:'AMC',eps_est:2.03,importance:'HIGH',sector:'Tech'},
       {ticker:'TSLA',company:'Tesla',time:'AMC',eps_est:0.45,importance:'HIGH',sector:'EV'},
     ],
-    "Apr 23 WED":[
+    'Apr 23 WED':[
       {ticker:'META',company:'Meta Platforms',time:'AMC',eps_est:5.28,importance:'HIGH',sector:'Tech'},
       {ticker:'MSFT',company:'Microsoft',time:'AMC',eps_est:3.22,importance:'HIGH',sector:'Tech'},
     ],
-    "Apr 24 THU":[
+    'Apr 24 THU':[
       {ticker:'AAPL',company:'Apple',time:'AMC',eps_est:1.63,importance:'HIGH',sector:'Tech'},
       {ticker:'AMZN',company:'Amazon',time:'AMC',eps_est:1.37,importance:'HIGH',sector:'Tech'},
     ],
-    "May 1 THU":[
+    'May 1 THU':[
       {ticker:'NVDA',company:'NVIDIA',time:'AMC',eps_est:0.89,importance:'HIGH',sector:'Tech'},
     ]
   };
@@ -833,7 +1147,7 @@ async function loadUpcomingEarnings(){
       +companies.map(e=>{
         const impColor=e.importance==='HIGH'?'#ff6600':'#444';
         const isLatam=e.sector==='LATAM';
-        window['_et_'+e.ticker]=e.ticker; return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;box-shadow:none;" id="et_'+e.ticker+'" onclick="pickEarningsTicker(window[\"_et_'+e.ticker+'\"])">' 
+        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-ticker="'+e.ticker+'" onclick="etClick(this.getAttribute(String.fromCharCode(100,97,116,97,45,116,105,99,107,101,114)))">' 
           +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
           +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:#ccc;">'+e.ticker+'</span>'
           +(isLatam?'<span style="font-size:8px;padding:1px 4px;background:rgba(255,102,0,.15);color:#ff6600;border-radius:2px;">LATAM</span>':'')
@@ -856,8 +1170,8 @@ async function loadUpcomingEarnings(){
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:600,
       messages:[{role:'user',content:
-        'Earnings calendar April 7 - May 2 2026. Include major US companies AND LATAM (MELI, NU, GLOB). Group by date. Return ONLY JSON object where keys are "Apr DD DAY" and values are arrays: {"Apr 9 WED":[{"ticker":"","company":"","time":"BMO|AMC","eps_est":number,"importance":"HIGH|MEDIUM","sector":""}]}. Include at least 20 companies total.'}]})
-  }).then(r=>r.json()).then(d=>{
+        'Earnings calendar April 7 to May 2 2026. Include major US and LATAM companies. Group by date. Return ONLY JSON where keys are date strings and values are arrays of companies with ticker, company, time, eps_est, importance, sector fields. At least 20 companies.'}]})
+    }).then(r=>r.json()).then(d=>{
     try{
       const calendar=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
       // Update with Claude data
@@ -873,7 +1187,7 @@ async function loadUpcomingEarnings(){
           +companies.map(e=>{
             const impColor=e.importance==='HIGH'?'#ff6600':'#444';
             const isLatam=e.sector==='LATAM'||['MELI','NU','GLOB','DESP'].includes(e.ticker);
-        window['_et_'+e.ticker]=e.ticker; return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;box-shadow:none;" id="et_'+e.ticker+'" onclick="pickEarningsTicker(window[\"_et_'+e.ticker+'\"])">' 
+        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-ticker="'+e.ticker+'" onclick="etClick(this.getAttribute(String.fromCharCode(100,97,116,97,45,116,105,99,107,101,114)))">' 
               +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
               +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:#ccc;">'+e.ticker+'</span>'
               +(isLatam?'<span style="font-size:8px;padding:1px 4px;background:rgba(255,102,0,.15);color:#ff6600;border-radius:2px;">LATAM</span>':'')
@@ -1851,6 +2165,7 @@ function showPage(id){
   if(id==='macro') setTimeout(loadMacroPage,50);
   if(id==='smartmoney') setTimeout(()=>{if(!smLoaded){smLoaded=true;loadMarketSignals();}},50);
   if(id==='earnings') setTimeout(()=>initEarningsPage(),50);
+  if(id==='screener') setTimeout(()=>document.getElementById('screenerStatus')&&(document.getElementById('screenerStatus').textContent='Ready to screen'),50);
 }
 
 // ─── GLOBAL STATUS ────────────────────────────────────────
