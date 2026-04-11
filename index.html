@@ -750,6 +750,12 @@ async function initEarningsPage(){
   loadUpcomingEarnings();
 }
 
+const attrName='data-et';
+function pickEarningsTicker(t){
+  const el=document.getElementById('earningsTicker');
+  if(el){el.value=t;runEarningsIntel();}
+}
+
 async function loadUpcomingEarnings(){
   const el=document.getElementById('upcomingEarnings');
   if(!el) return;
@@ -827,7 +833,7 @@ async function loadUpcomingEarnings(){
       +companies.map(e=>{
         const impColor=e.importance==='HIGH'?'#ff6600':'#444';
         const isLatam=e.sector==='LATAM';
-        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" onclick="document.getElementById('earningsTicker').value=''+e.ticker+'';runEarningsIntel();">'
+        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-et="'+e.ticker+'" onclick="pickEarningsTicker(this.getAttribute(attrName))">' 
           +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
           +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:#ccc;">'+e.ticker+'</span>'
           +(isLatam?'<span style="font-size:8px;padding:1px 4px;background:rgba(255,102,0,.15);color:#ff6600;border-radius:2px;">LATAM</span>':'')
@@ -867,7 +873,7 @@ async function loadUpcomingEarnings(){
           +companies.map(e=>{
             const impColor=e.importance==='HIGH'?'#ff6600':'#444';
             const isLatam=e.sector==='LATAM'||['MELI','NU','GLOB','DESP'].includes(e.ticker);
-            return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" onclick="document.getElementById('earningsTicker').value=''+e.ticker+'';runEarningsIntel();">'
+        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-et="'+e.ticker+'" onclick="pickEarningsTicker(this.getAttribute(attrName))">' 
               +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
               +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:#ccc;">'+e.ticker+'</span>'
               +(isLatam?'<span style="font-size:8px;padding:1px 4px;background:rgba(255,102,0,.15);color:#ff6600;border-radius:2px;">LATAM</span>':'')
