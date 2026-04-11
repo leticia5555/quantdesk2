@@ -907,11 +907,20 @@ async function runEarningsIntel(){
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1800,
         messages:[{role:'user',content:
-          'Financial data exercise for '+ticker+'. Using approximate publicly known figures, fill this JSON template with realistic estimates based on the company known financial history. All numbers are educational estimates only. Return ONLY the JSON, no other text: {"eps_history":[{"quarter":"Q4 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q3 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q2 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q1 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q4 2024","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0}],"price_reactions":[{"quarter":"Q4 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q3 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q2 2025","reaction_pct":0,"direction":"DOWN","note":"string"},{"quarter":"Q1 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q4 2024","reaction_pct":0,"direction":"UP","note":"string"}],"next_earnings":{"date":"string","days_away":0,"eps_estimate":0,"revenue_estimate":0,"whisper_number":0,"implied_move_pct":0,"key_metrics_to_watch":["string","string","string"],"guidance_tone":"RAISED"},"verdict":{"signal":"BEAT","confidence":"HIGH","trade_setup":"string","risk":"string","bull_scenario":"string","bear_scenario":"string","historical_beat_rate":0}}. Replace all 0s and placeholder strings with realistic values for '+ticker+'.'}]})
+          'Financial data exercise for '+ticker+'. Using approximate publicly known figures, fill this JSON template with realistic estimates based on the company known financial history. All numbers are educational estimates only. Return ONLY the JSON, no other text: {"eps_history":[{"quarter":"Q4 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q3 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q2 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q1 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q4 2024","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0}],"price_reactions":[{"quarter":"Q4 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q3 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q2 2025","reaction_pct":0,"direction":"DOWN","note":"string"},{"quarter":"Q1 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q4 2024","reaction_pct":0,"direction":"UP","note":"string"}],"next_earnings":{"date":"string","days_away":0,"eps_estimate":0,"revenue_estimate":0,"whisper_number":0,"implied_move_pct":0,"key_metrics_to_watch":["string","string","string"],"guidance_tone":"RAISED"},"verdict":{"signal":"BEAT","confidence":"HIGH","trade_setup":"string","risk":"string","bull_scenario":"string","bear_scenario":"string","historical_beat_rate":75}}. Replace all 0s and placeholder strings with realistic values for '+ticker+'.'}]})
     });
     const d=await r.json();
     const data=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
 
+    // Normalize beat rate — force to 0-100 range
+    if(data.verdict){
+      let br=parseFloat(data.verdict.historical_beat_rate)||75;
+      if(br<1.1) br=Math.round(br*100);      // 0.75 → 75
+      else if(br<=10) br=Math.round(br*10);  // 7.5 → 75
+      // clamp to valid range
+      br=Math.min(100,Math.max(0,Math.round(br)));
+      data.verdict.historical_beat_rate=br;
+    }
     renderEpsHistory(data.eps_history);
     renderPriceReactions(data.price_reactions);
     renderNextEarnings(data.next_earnings, ticker);
