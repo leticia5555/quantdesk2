@@ -711,307 +711,222 @@ async function runSmartMoney(){
   const ticker=document.getElementById('smTicker').value.trim().toUpperCase();
   if(!ticker){alert('Enter a ticker');return;}
 
-  // Reset panels
+  // Reset panels with loading state
   ['shortInterestPanel','insiderPanel','institutionalPanel','optionsPanel','smVerdictPanel'].forEach(id=>{
     const el=document.getElementById(id);
     if(el) el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:11px;text-align:center;padding:30px 0;">Loading...</div>';
   });
 
-  // Run all in parallel
-  await Promise.all([
-    loadShortInterest(ticker),
-    loadInsiderTransactions(ticker),
-    loadInstitutional(ticker),
-    loadOptionsSentiment(ticker),
-  ]);
+  // ONE Claude call gets ALL smart money data at once — faster and guaranteed to have data for verdict
+  try{
+    const r=await fetch('/api/claude',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,
+        messages:[{role:'user',content:
+          'Bloomberg smart money data for '+ticker+' April 2026. Use SEC, FINRA, 13F knowledge. Return ONLY valid JSON with these exact keys: {"short_interest":{"short_interest_pct":number,"days_to_cover":number,"short_squeeze_score":number,"change_vs_month_ago":"INCREASED|DECREASED|STABLE","borrow_rate_pct":number,"narrative":"string"},"insider":{"transactions":[{"date":"string","insider":"string","title":"string","type":"BUY|SELL","shares":number,"value_usd":number,"price_usd":number}],"net_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"institutional":{"institutional_pct":number,"top_holders":[{"name":"string","pct":number,"change":"INCREASED|DECREASED|NEW|EXITED"}],"hedge_fund_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"options":{"put_call_ratio":number,"implied_volatility_pct":number,"iv_percentile":number,"options_sentiment":"BULLISH|BEARISH|NEUTRAL","unusual_activity":"YES|NO","notable_flow":"string","max_pain":number,"key_strikes":[{"strike":number,"type":"CALL|PUT","open_interest":number,"significance":"HIGH|MEDIUM"}]},"verdict":{"overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","conviction":"HIGH|MEDIUM|LOW","smart_money_score":number,"key_insight":"string","bull_case":"string","bear_case":"string","trade_setup":"string","risk_flags":["string"]}}'}]})
+    });
 
-  // After all data loaded, generate AI verdict
-  await generateSmVerdictAI(ticker);
+    if(!r.ok) throw new Error('API error: '+r.status);
+    const d=await r.json();
+    if(!d.content) throw new Error('No content in response');
+
+    const rawText=d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim();
+    const data=JSON.parse(rawText);
+
+    renderShortInterest(data.short_interest);
+    renderInsiderTransactions(data.insider);
+    renderInstitutional(data.institutional);
+    renderOptionsSentiment(data.options);
+    renderSmVerdict(data.verdict);
+
+  }catch(e){
+    console.error('Smart money error:', e.message);
+    const errMsg='<div style="color:#E24B4A;font-family:var(--mono);font-size:11px;padding:16px;">'+e.message+'<br><br><span style="color:#555;font-size:10px;">Open console for details</span></div>';
+    ['shortInterestPanel','insiderPanel','institutionalPanel','optionsPanel','smVerdictPanel'].forEach(id=>{
+      const el=document.getElementById(id);
+      if(el) el.innerHTML=errMsg;
+    });
+  }
 }
 
-// ── Short Interest ─────────────────────────────────────
-async function loadShortInterest(ticker){
+// ── Render Short Interest ──────────────────────────────
+function renderShortInterest(si){
   const el=document.getElementById('shortInterestPanel');
-
-  // Use Finnhub for short interest data
-  try{
-    const finnhubKey=null; // accessed via our proxy
-    const r=await fetch('/api/price?ticker='+encodeURIComponent(ticker));
-    const priceData=await r.json();
-
-    // Claude knows short interest for major tickers
-    const siRes=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:300,
-        messages:[{role:'user',content:
-          'Short interest data for '+ticker+' as of April 2026. Use your knowledge of recent FINRA data. Return ONLY JSON: {"short_interest_pct":number,"days_to_cover":number,"short_squeeze_score":number_1_to_100,"change_vs_month_ago":"INCREASED|DECREASED|STABLE","borrow_rate_pct":number,"narrative":"2 sentences on short interest story"}'}]})
-    });
-    const sd=await siRes.json();
-    const si=JSON.parse(sd.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
-
-    const squeezeColor=si.short_squeeze_score>70?'#E24B4A':si.short_squeeze_score>40?'#EF9F27':'#00c97d';
-    const changeIcon={'INCREASED':'↑','DECREASED':'↓','STABLE':'→'}[si.change_vs_month_ago]||'→';
-    const changeColor={'INCREASED':'#E24B4A','DECREASED':'#00c97d','STABLE':'#888'}[si.change_vs_month_ago]||'#888';
-
-    el.innerHTML=`
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
-        <div style="background:#111;padding:10px;border:1px solid #1a1a1a;">
-          <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SHORT INTEREST %</div>
-          <div style="font-family:var(--mono);font-size:22px;font-weight:700;color:#E24B4A;">${si.short_interest_pct.toFixed(1)}%</div>
-          <div style="font-size:9px;color:${changeColor};margin-top:2px;">${changeIcon} vs last month</div>
-        </div>
-        <div style="background:#111;padding:10px;border:1px solid #1a1a1a;">
-          <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">DAYS TO COVER</div>
-          <div style="font-family:var(--mono);font-size:22px;font-weight:700;color:#ccc;">${si.days_to_cover.toFixed(1)}</div>
-          <div style="font-size:9px;color:#555;margin-top:2px;">days at avg volume</div>
-        </div>
-        <div style="background:#111;padding:10px;border:1px solid #1a1a1a;">
-          <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SQUEEZE SCORE</div>
-          <div style="font-family:var(--mono);font-size:22px;font-weight:700;color:${squeezeColor};">${si.short_squeeze_score}/100</div>
-          <div style="font-size:9px;color:${squeezeColor};margin-top:2px;">${si.short_squeeze_score>70?'HIGH SQUEEZE RISK':si.short_squeeze_score>40?'MODERATE':'LOW RISK'}</div>
-        </div>
-        <div style="background:#111;padding:10px;border:1px solid #1a1a1a;">
-          <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">BORROW RATE</div>
-          <div style="font-family:var(--mono);font-size:22px;font-weight:700;color:#EF9F27;">${si.borrow_rate_pct.toFixed(1)}%</div>
-          <div style="font-size:9px;color:#555;margin-top:2px;">annual cost to short</div>
-        </div>
-      </div>
-      <p style="font-size:11px;color:#666;font-family:var(--sans);line-height:1.6;border-top:1px solid #1a1a1a;padding-top:8px;">${si.narrative}</p>`;
-
-    // Store for verdict
-    window._smShort=si;
-  }catch(e){
-    el.innerHTML='<div style="color:#E24B4A;font-family:var(--mono);font-size:11px;">Short interest data unavailable</div>';
-  }
+  if(!el||!si) return;
+  const squeezeColor=si.short_squeeze_score>70?'#E24B4A':si.short_squeeze_score>40?'#EF9F27':'#00c97d';
+  const changeIcon={'INCREASED':'↑','DECREASED':'↓','STABLE':'→'}[si.change_vs_month_ago]||'→';
+  const changeColor={'INCREASED':'#E24B4A','DECREASED':'#00c97d','STABLE':'#888'}[si.change_vs_month_ago]||'#888';
+  el.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">'
+    +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SHORT INTEREST %</div>'
+    +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:#E24B4A;">'+si.short_interest_pct.toFixed(1)+'%</div>'
+    +'<div style="font-size:9px;color:'+changeColor+';margin-top:2px;">'+changeIcon+' vs last month</div>'
+    +'</div>'
+    +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">DAYS TO COVER</div>'
+    +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:#ccc;">'+si.days_to_cover.toFixed(1)+'</div>'
+    +'<div style="font-size:9px;color:#555;margin-top:2px;">days at avg volume</div>'
+    +'</div>'
+    +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SQUEEZE SCORE</div>'
+    +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:'+squeezeColor+';">'+si.short_squeeze_score+'/100</div>'
+    +'<div style="font-size:9px;color:'+squeezeColor+';margin-top:2px;">'+(si.short_squeeze_score>70?'HIGH SQUEEZE RISK':si.short_squeeze_score>40?'MODERATE':'LOW RISK')+'</div>'
+    +'</div>'
+    +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">BORROW RATE</div>'
+    +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:#EF9F27;">'+si.borrow_rate_pct.toFixed(1)+'%</div>'
+    +'<div style="font-size:9px;color:#555;margin-top:2px;">annual cost to short</div>'
+    +'</div>'
+    +'</div>'
+    +'<p style="font-size:11px;color:#666;font-family:var(--sans);line-height:1.6;border-top:1px solid #1a1a1a;padding-top:8px;">'+si.narrative+'</p>';
 }
 
-// ── Insider Transactions ───────────────────────────────
-async function loadInsiderTransactions(ticker){
+// ── Render Insider Transactions ───────────────────────
+function renderInsiderTransactions(ins){
   const el=document.getElementById('insiderPanel');
-  try{
-    const r=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:400,
-        messages:[{role:'user',content:
-          'Insider transactions for '+ticker+' last 6 months as of April 2026. Use your knowledge of SEC Form 4 filings. Return ONLY JSON: {"transactions":[{"date":"Mon YYYY","insider":"name","title":"CEO|CFO|Director|etc","type":"BUY|SELL","shares":number,"value_usd":number,"price_usd":number}],"net_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"2 sentences"}. Include up to 5 most significant transactions.'}]})
-    });
-    const d=await r.json();
-    const ins=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
-
-    const sentColor={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'}[ins.net_sentiment]||'#888';
-
-    let txRows=ins.transactions.map(tx=>{
-      const isBuy=tx.type==='BUY';
-      const col=isBuy?'#00c97d':'#E24B4A';
-      const val=tx.value_usd>1000000?'$'+(tx.value_usd/1000000).toFixed(1)+'M':'$'+(tx.value_usd/1000).toFixed(0)+'K';
-      return '<div style="display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid #1a1a1a;flex-wrap:wrap;">'
-        +'<span style="font-family:var(--mono);font-size:9px;color:#444;min-width:65px;">'+tx.date+'</span>'
-        +'<span style="font-size:10px;padding:1px 6px;background:'+(isBuy?'rgba(0,201,125,.15)':'rgba(226,75,74,.15)')+';color:'+col+';font-family:var(--mono);font-size:9px;">'+tx.type+'</span>'
-        +'<div style="flex:1;min-width:80px;">'
-        +'<div style="font-size:10px;color:#ccc;font-family:var(--mono);">'+tx.insider+'</div>'
-        +'<div style="font-size:9px;color:#444;">'+tx.title+'</div>'
-        +'</div>'
-        +'<div style="text-align:right;">'
-        +'<div style="font-family:var(--mono);font-size:11px;font-weight:600;color:'+col+';">'+val+'</div>'
-        +'<div style="font-size:9px;color:#444;">'+tx.shares.toLocaleString()+' shares</div>'
-        +'</div>'
-        +'</div>';
-    }).join('');
-
-    el.innerHTML='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">'
-      +'<span style="font-family:var(--mono);font-size:10px;color:#555;">NET SENTIMENT</span>'
-      +'<span style="font-family:var(--mono);font-size:12px;font-weight:700;color:'+sentColor+';">'+ins.net_sentiment+'</span>'
+  if(!el||!ins) return;
+  const sentColor={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'}[ins.net_sentiment]||'#888';
+  let txRows=(ins.transactions||[]).map(tx=>{
+    const isBuy=tx.type==='BUY';
+    const col=isBuy?'#00c97d':'#E24B4A';
+    const val=tx.value_usd>1000000?'$'+(tx.value_usd/1000000).toFixed(1)+'M':'$'+(tx.value_usd/1000).toFixed(0)+'K';
+    return '<div style="display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid #1a1a1a;flex-wrap:wrap;">'
+      +'<span style="font-family:var(--mono);font-size:9px;color:#444;min-width:65px;">'+tx.date+'</span>'
+      +'<span style="font-size:9px;padding:1px 6px;background:'+(isBuy?'rgba(0,201,125,.15)':'rgba(226,75,74,.15)')+';color:'+col+';font-family:var(--mono);">'+tx.type+'</span>'
+      +'<div style="flex:1;min-width:80px;">'
+      +'<div style="font-size:10px;color:#ccc;font-family:var(--mono);">'+tx.insider+'</div>'
+      +'<div style="font-size:9px;color:#444;">'+tx.title+'</div>'
       +'</div>'
-      +txRows
-      +'<p style="font-size:11px;color:#555;font-family:var(--sans);line-height:1.5;margin-top:8px;border-top:1px solid #1a1a1a;padding-top:8px;">'+ins.summary+'</p>';
-
-    window._smInsider=ins;
-  }catch(e){
-    el.innerHTML='<div style="color:#E24B4A;font-family:var(--mono);font-size:11px;">Insider data unavailable</div>';
-  }
+      +'<div style="text-align:right;">'
+      +'<div style="font-family:var(--mono);font-size:11px;font-weight:600;color:'+col+';">'+val+'</div>'
+      +'<div style="font-size:9px;color:#444;">'+(tx.shares||0).toLocaleString()+' shares</div>'
+      +'</div>'
+      +'</div>';
+  }).join('');
+  el.innerHTML='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">'
+    +'<span style="font-family:var(--mono);font-size:10px;color:#555;">NET SENTIMENT</span>'
+    +'<span style="font-family:var(--mono);font-size:12px;font-weight:700;color:'+sentColor+';">'+ins.net_sentiment+'</span>'
+    +'</div>'
+    +txRows
+    +'<p style="font-size:11px;color:#555;font-family:var(--sans);line-height:1.5;margin-top:8px;border-top:1px solid #1a1a1a;padding-top:8px;">'+(ins.summary||'')+'</p>';
 }
 
-// ── Institutional Ownership ────────────────────────────
-async function loadInstitutional(ticker){
+
+
+// ── Render Institutional ──────────────────────────────
+function renderInstitutional(inst){
   const el=document.getElementById('institutionalPanel');
-  try{
-    const r=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:350,
-        messages:[{role:'user',content:
-          'Institutional ownership for '+ticker+' as of April 2026. Return ONLY JSON: {"institutional_pct":number,"top_holders":[{"name":"","pct":number,"change":"INCREASED|DECREASED|NEW|EXITED"}],"recent_13f_signal":"BULLISH|BEARISH|NEUTRAL","hedge_fund_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"1 sentence"}. Include top 5 holders.'}]})
-    });
-    const d=await r.json();
-    const inst=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
-
-    const changeColor={'INCREASED':'#00c97d','DECREASED':'#E24B4A','NEW':'#EF9F27','EXITED':'#E24B4A'};
-    const changeIcon={'INCREASED':'↑','DECREASED':'↓','NEW':'★','EXITED':'✕'};
-
-    let holdersHtml=inst.top_holders.map(h=>{
-      const col=changeColor[h.change]||'#888';
-      const icon=changeIcon[h.change]||'→';
-      return '<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid #1a1a1a;">'
-        +'<div style="flex:1;">'
-        +'<div style="font-size:10px;color:#ccc;font-family:var(--mono);">'+h.name+'</div>'
-        +'</div>'
-        +'<span style="font-family:var(--mono);font-size:10px;color:#888;">'+h.pct.toFixed(1)+'%</span>'
-        +'<span style="font-size:10px;color:'+col+';min-width:16px;text-align:right;">'+icon+'</span>'
-        +'</div>';
-    }).join('');
-
-    const hfColor={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'}[inst.hedge_fund_sentiment]||'#888';
-
-    el.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">'
-      +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
-      +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">INST. OWNERSHIP</div>'
-      +'<div style="font-family:var(--mono);font-size:20px;font-weight:700;color:#ccc;">'+inst.institutional_pct.toFixed(1)+'%</div>'
-      +'</div>'
-      +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
-      +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">HEDGE FUND VIEW</div>'
-      +'<div style="font-family:var(--mono);font-size:13px;font-weight:700;color:'+hfColor+';">'+inst.hedge_fund_sentiment+'</div>'
-      +'</div>'
-      +'</div>'
-      +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:6px;">TOP HOLDERS</div>'
-      +holdersHtml
-      +'<p style="font-size:10px;color:#444;font-family:var(--sans);margin-top:8px;">'+inst.summary+'</p>';
-
-    window._smInstitutional=inst;
-  }catch(e){
-    el.innerHTML='<div style="color:#E24B4A;font-family:var(--mono);font-size:11px;">Institutional data unavailable</div>';
-  }
+  if(!el||!inst) return;
+  const changeColor={'INCREASED':'#00c97d','DECREASED':'#E24B4A','NEW':'#EF9F27','EXITED':'#E24B4A'};
+  const changeIcon={'INCREASED':'↑','DECREASED':'↓','NEW':'★','EXITED':'✕'};
+  let holdersHtml=(inst.top_holders||[]).map(h=>{
+    const col=changeColor[h.change]||'#888';
+    const icon=changeIcon[h.change]||'→';
+    return '<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid #1a1a1a;">'
+      +'<div style="flex:1;"><div style="font-size:10px;color:#ccc;font-family:var(--mono);">'+h.name+'</div></div>'
+      +'<span style="font-family:var(--mono);font-size:10px;color:#888;">'+h.pct.toFixed(1)+'%</span>'
+      +'<span style="font-size:10px;color:'+col+';min-width:16px;text-align:right;">'+icon+'</span>'
+      +'</div>';
+  }).join('');
+  const hfColor={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'}[inst.hedge_fund_sentiment]||'#888';
+  el.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">'
+    +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">INST. OWNERSHIP</div>'
+    +'<div style="font-family:var(--mono);font-size:20px;font-weight:700;color:#ccc;">'+inst.institutional_pct.toFixed(1)+'%</div>'
+    +'</div>'
+    +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">HEDGE FUND VIEW</div>'
+    +'<div style="font-family:var(--mono);font-size:13px;font-weight:700;color:'+hfColor+';">'+inst.hedge_fund_sentiment+'</div>'
+    +'</div>'
+    +'</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:6px;">TOP HOLDERS</div>'
+    +holdersHtml
+    +'<p style="font-size:10px;color:#444;font-family:var(--sans);margin-top:8px;">'+(inst.summary||'')+'</p>';
 }
 
-// ── Options Sentiment ──────────────────────────────────
-async function loadOptionsSentiment(ticker){
+
+
+// ── Render Options Sentiment ──────────────────────────
+function renderOptionsSentiment(opt){
   const el=document.getElementById('optionsPanel');
-  try{
-    const r=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:350,
-        messages:[{role:'user',content:
-          'Options market sentiment for '+ticker+' as of April 2026. Use your knowledge of options activity, IV, and put/call ratios. Return ONLY JSON: {"put_call_ratio":number,"implied_volatility_pct":number,"iv_percentile":number,"options_sentiment":"BULLISH|BEARISH|NEUTRAL","unusual_activity":"YES|NO","notable_flow":"1 sentence describing notable options activity","max_pain":number,"key_strikes":[{"strike":number,"type":"CALL|PUT","open_interest":number,"significance":"HIGH|MEDIUM"}]}'}]})
-    });
-    const d=await r.json();
-    const opt=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
-
-    const sentColor={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'}[opt.options_sentiment]||'#888';
-    const pcColor=opt.put_call_ratio>1?'#E24B4A':opt.put_call_ratio<0.7?'#00c97d':'#888';
-    const ivColor=opt.iv_percentile>75?'#E24B4A':opt.iv_percentile>50?'#EF9F27':'#00c97d';
-
-    let strikesHtml=(opt.key_strikes||[]).slice(0,4).map(s=>{
-      const col=s.type==='CALL'?'#00c97d':'#E24B4A';
-      return '<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #1a1a1a;">'
-        +'<span style="font-size:9px;padding:1px 5px;background:'+(s.type==='CALL'?'rgba(0,201,125,.15)':'rgba(226,75,74,.15)')+';color:'+col+';font-family:var(--mono);">'+s.type+'</span>'
-        +'<span style="font-family:var(--mono);font-size:10px;color:#ccc;">$'+s.strike+'</span>'
-        +'<span style="font-size:9px;color:#444;margin-left:auto;">'+( s.open_interest/1000).toFixed(0)+'K OI</span>'
-        +(s.significance==='HIGH'?'<span style="font-size:9px;color:#EF9F27;">HOT</span>':'')
-        +'</div>';
-    }).join('');
-
-    el.innerHTML='<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px;">'
-      +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;text-align:center;">'
-      +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">P/C RATIO</div>'
-      +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:'+pcColor+';">'+opt.put_call_ratio.toFixed(2)+'</div>'
-      +'<div style="font-size:9px;color:#555;">'+(opt.put_call_ratio>1?'BEARISH':opt.put_call_ratio<0.7?'BULLISH':'NEUTRAL')+'</div>'
-      +'</div>'
-      +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;text-align:center;">'
-      +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">IV</div>'
-      +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#ccc;">'+opt.implied_volatility_pct.toFixed(0)+'%</div>'
-      +'<div style="font-size:9px;color:'+ivColor+';">'+opt.iv_percentile+'th PCT</div>'
-      +'</div>'
-      +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;text-align:center;">'
-      +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">MAX PAIN</div>'
-      +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#EF9F27;">$'+( opt.max_pain||0)+'</div>'
-      +'<div style="font-size:9px;color:#555;">options expiry</div>'
-      +'</div>'
-      +'</div>'
-      +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:6px;">KEY STRIKES</div>'
-      +strikesHtml
-      +(opt.unusual_activity==='YES'?'<div style="margin-top:8px;padding:6px 8px;background:rgba(239,159,39,.1);border:1px solid rgba(239,159,39,.3);border-radius:2px;font-size:10px;color:#EF9F27;font-family:var(--sans);">⚡ UNUSUAL ACTIVITY: '+opt.notable_flow+'</div>':'')
-      +'<div style="margin-top:6px;font-family:var(--mono);font-size:10px;color:'+sentColor+';">OPTIONS SIGNAL: '+opt.options_sentiment+'</div>';
-
-    window._smOptions=opt;
-  }catch(e){
-    el.innerHTML='<div style="color:#E24B4A;font-family:var(--mono);font-size:11px;">Options data unavailable</div>';
-  }
+  if(!el||!opt) return;
+  const sentColor={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'}[opt.options_sentiment]||'#888';
+  const pcColor=opt.put_call_ratio>1?'#E24B4A':opt.put_call_ratio<0.7?'#00c97d':'#888';
+  const ivColor=opt.iv_percentile>75?'#E24B4A':opt.iv_percentile>50?'#EF9F27':'#00c97d';
+  let strikesHtml=(opt.key_strikes||[]).slice(0,4).map(s=>{
+    const col=s.type==='CALL'?'#00c97d':'#E24B4A';
+    return '<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #1a1a1a;">'
+      +'<span style="font-size:9px;padding:1px 5px;background:'+(s.type==='CALL'?'rgba(0,201,125,.15)':'rgba(226,75,74,.15)')+';color:'+col+';font-family:var(--mono);">'+s.type+'</span>'
+      +'<span style="font-family:var(--mono);font-size:10px;color:#ccc;">$'+s.strike+'</span>'
+      +'<span style="font-size:9px;color:#444;margin-left:auto;">'+(( s.open_interest||0)/1000).toFixed(0)+'K OI</span>'
+      +(s.significance==='HIGH'?'<span style="font-size:9px;color:#EF9F27;">HOT</span>':'')
+      +'</div>';
+  }).join('');
+  el.innerHTML='<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px;">'
+    +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;text-align:center;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">P/C RATIO</div>'
+    +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:'+pcColor+';">'+opt.put_call_ratio.toFixed(2)+'</div>'
+    +'<div style="font-size:9px;color:#555;">'+(opt.put_call_ratio>1?'BEARISH':opt.put_call_ratio<0.7?'BULLISH':'NEUTRAL')+'</div>'
+    +'</div>'
+    +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;text-align:center;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">IV</div>'
+    +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#ccc;">'+opt.implied_volatility_pct.toFixed(0)+'%</div>'
+    +'<div style="font-size:9px;color:'+ivColor+';">'+opt.iv_percentile+'th PCT</div>'
+    +'</div>'
+    +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;text-align:center;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">MAX PAIN</div>'
+    +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#EF9F27;">$'+(opt.max_pain||0)+'</div>'
+    +'<div style="font-size:9px;color:#555;">options expiry</div>'
+    +'</div>'
+    +'</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:6px;">KEY STRIKES</div>'
+    +strikesHtml
+    +(opt.unusual_activity==='YES'?'<div style="margin-top:8px;padding:6px 8px;background:rgba(239,159,39,.1);border:1px solid rgba(239,159,39,.3);border-radius:2px;font-size:10px;color:#EF9F27;font-family:var(--sans);">⚡ '+(opt.notable_flow||'')+'</div>':'')
+    +'<div style="margin-top:6px;font-family:var(--mono);font-size:10px;color:'+sentColor+';">OPTIONS SIGNAL: '+opt.options_sentiment+'</div>';
 }
 
-// ── AI Smart Money Verdict ─────────────────────────────
-async function generateSmVerdictAI(ticker){
+
+
+// ── Render Smart Money Verdict ────────────────────────
+function renderSmVerdict(v){
   const el=document.getElementById('smVerdictPanel');
-  el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:11px;text-align:center;padding:20px 0;">Synthesizing signals...</div>';
-
-  const short=window._smShort||{};
-  const insider=window._smInsider||{};
-  const inst=window._smInstitutional||{};
-  const opts=window._smOptions||{};
-
-  try{
-    const r=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:400,
-        messages:[{role:'user',content:
-          `Smart money synthesis for ${ticker}. 
-Short interest: ${short.short_interest_pct||'?'}% float, squeeze score ${short.short_squeeze_score||'?'}/100.
-Insiders: ${insider.net_sentiment||'?'} sentiment.
-Institutions: ${inst.hedge_fund_sentiment||'?'}, ${inst.institutional_pct||'?'}% owned.
-Options: P/C ${opts.put_call_ratio||'?'}, IV ${opts.implied_volatility_pct||'?'}%, signal ${opts.options_sentiment||'?'}.
-
-What is the smart money doing? Is there a trade setup?
-Return ONLY JSON: {
-  "overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL",
-  "conviction":"HIGH|MEDIUM|LOW",
-  "smart_money_score":number_0_to_100,
-  "key_insight":"1 sentence — the single most important smart money signal",
-  "bull_case":"2 sentences from smart money perspective",
-  "bear_case":"2 sentences from smart money perspective",
-  "trade_setup":"1 sentence on optimal entry/exit based on smart money signals",
-  "risk_flags":["flag1","flag2"]
-}`}]})
-    });
-    const d=await r.json();
-    const v=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
-
-    const sigColor={'STRONG BUY':'#00ff88','BUY':'#00c97d','NEUTRAL':'#888','SELL':'#E24B4A','STRONG SELL':'#ff0000'}[v.overall_signal]||'#888';
-    const scoreBar=Math.round((v.smart_money_score/100)*100);
-
-    el.innerHTML='<div style="text-align:center;margin-bottom:16px;">'
-      +'<div style="font-family:var(--mono);font-size:24px;font-weight:700;color:'+sigColor+';">'+v.overall_signal+'</div>'
-      +'<div style="font-size:10px;color:#555;margin-top:2px;">'+v.conviction+' CONVICTION</div>'
-      +'<div style="margin:10px auto;max-width:160px;">'
-      +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SMART MONEY SCORE</div>'
-      +'<div style="height:6px;background:#111;border-radius:3px;overflow:hidden;">'
-      +'<div style="height:100%;width:'+scoreBar+'%;background:'+sigColor+';border-radius:3px;"></div>'
-      +'</div>'
-      +'<div style="font-family:var(--mono);font-size:14px;color:'+sigColor+';margin-top:4px;">'+v.smart_money_score+'/100</div>'
-      +'</div>'
-      +'</div>'
-      +'<div style="background:rgba(0,201,125,.05);border:1px solid rgba(0,201,125,.15);padding:8px 10px;margin-bottom:10px;border-radius:2px;">'
-      +'<div style="font-family:var(--mono);font-size:9px;color:#00c97d;margin-bottom:4px;">KEY INSIGHT</div>'
-      +'<div style="font-size:11px;color:#ccc;font-family:var(--sans);line-height:1.5;">'+v.key_insight+'</div>'
-      +'</div>'
-      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">'
-      +'<div style="background:#111;padding:8px;border-left:2px solid #00c97d;">'
-      +'<div style="font-family:var(--mono);font-size:9px;color:#00c97d;margin-bottom:4px;">BULL CASE</div>'
-      +'<div style="font-size:10px;color:#888;font-family:var(--sans);line-height:1.5;">'+v.bull_case+'</div>'
-      +'</div>'
-      +'<div style="background:#111;padding:8px;border-left:2px solid #E24B4A;">'
-      +'<div style="font-family:var(--mono);font-size:9px;color:#E24B4A;margin-bottom:4px;">BEAR CASE</div>'
-      +'<div style="font-size:10px;color:#888;font-family:var(--sans);line-height:1.5;">'+v.bear_case+'</div>'
-      +'</div>'
-      +'</div>'
-      +'<div style="padding:8px;background:#0a0a0a;border:1px solid #EF9F27;border-radius:2px;margin-bottom:8px;">'
-      +'<div style="font-family:var(--mono);font-size:9px;color:#EF9F27;margin-bottom:3px;">TRADE SETUP</div>'
-      +'<div style="font-size:11px;color:#ccc;font-family:var(--sans);">'+v.trade_setup+'</div>'
-      +'</div>'
-      +(v.risk_flags&&v.risk_flags.length?'<div style="font-family:var(--mono);font-size:9px;color:#E24B4A;margin-bottom:4px;">RISK FLAGS</div>'
-        +v.risk_flags.map(f=>'<div style="font-size:10px;color:#666;padding:2px 0;">⚠ '+f+'</div>').join('')
-      :'');
-
-  }catch(e){
-    el.innerHTML='<div style="color:#E24B4A;font-family:var(--mono);font-size:11px;">Verdict generation failed</div>';
-  }
+  if(!el||!v) return;
+  const sigColor={'STRONG BUY':'#00ff88','BUY':'#00c97d','NEUTRAL':'#888','SELL':'#E24B4A','STRONG SELL':'#ff0000'}[v.overall_signal]||'#888';
+  const scoreBar=Math.round((v.smart_money_score/100)*100);
+  el.innerHTML='<div style="text-align:center;margin-bottom:16px;">'
+    +'<div style="font-family:var(--mono);font-size:24px;font-weight:700;color:'+sigColor+';">'+v.overall_signal+'</div>'
+    +'<div style="font-size:10px;color:#555;margin-top:2px;">'+v.conviction+' CONVICTION</div>'
+    +'<div style="margin:10px auto;max-width:160px;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SMART MONEY SCORE</div>'
+    +'<div style="height:6px;background:#111;border-radius:3px;overflow:hidden;">'
+    +'<div style="height:100%;width:'+scoreBar+'%;background:'+sigColor+';border-radius:3px;"></div>'
+    +'</div>'
+    +'<div style="font-family:var(--mono);font-size:14px;color:'+sigColor+';margin-top:4px;">'+v.smart_money_score+'/100</div>'
+    +'</div>'
+    +'</div>'
+    +'<div style="background:rgba(0,201,125,.05);border:1px solid rgba(0,201,125,.15);padding:8px 10px;margin-bottom:10px;border-radius:2px;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#00c97d;margin-bottom:4px;">KEY INSIGHT</div>'
+    +'<div style="font-size:11px;color:#ccc;font-family:var(--sans);line-height:1.5;">'+v.key_insight+'</div>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">'
+    +'<div style="background:#111;padding:8px;border-left:2px solid #00c97d;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#00c97d;margin-bottom:4px;">BULL CASE</div>'
+    +'<div style="font-size:10px;color:#888;font-family:var(--sans);line-height:1.5;">'+v.bull_case+'</div>'
+    +'</div>'
+    +'<div style="background:#111;padding:8px;border-left:2px solid #E24B4A;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#E24B4A;margin-bottom:4px;">BEAR CASE</div>'
+    +'<div style="font-size:10px;color:#888;font-family:var(--sans);line-height:1.5;">'+v.bear_case+'</div>'
+    +'</div>'
+    +'</div>'
+    +'<div style="padding:8px;background:#0a0a0a;border:1px solid #EF9F27;border-radius:2px;margin-bottom:8px;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#EF9F27;margin-bottom:3px;">TRADE SETUP</div>'
+    +'<div style="font-size:11px;color:#ccc;font-family:var(--sans);">'+v.trade_setup+'</div>'
+    +'</div>'
+    +((v.risk_flags&&v.risk_flags.length)?'<div style="font-family:var(--mono);font-size:9px;color:#E24B4A;margin-bottom:4px;">RISK FLAGS</div>'
+      +v.risk_flags.map(f=>'<div style="font-size:10px;color:#666;padding:2px 0;">⚠ '+f+'</div>').join(''):'');
 }
+
+
 
 // ── Market-Wide Signals ────────────────────────────────
 async function loadMarketSignals(){
