@@ -733,6 +733,10 @@ async function runSmartMoney(){
     const rawText=d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim();
     const data=JSON.parse(rawText);
 
+    // Normalize score if Claude returned 0-1 instead of 0-100
+    if(data.verdict && data.verdict.smart_money_score <= 1){
+      data.verdict.smart_money_score = Math.round(data.verdict.smart_money_score * 100);
+    }
     renderShortInterest(data.short_interest);
     renderInsiderTransactions(data.insider);
     renderInstitutional(data.institutional);
