@@ -887,9 +887,9 @@ const SCREENER_UNIVERSE = {
        'JNJ','PG','MA','HD','BAC','XOM','NFLX','ORCL','ADBE','CRM',
        'AMD','INTC','QCOM','MU','AVGO','TXN','NOW','SNOW','PLTR','COIN',
        'SPY','QQQ','GLD','TLT','IWM','VIX','DIS','UBER','LYFT','ABNB'],
-  latam: ['MELI','NU','GLOB','DESP','VTEX','STNE','PAGS','VIST','LOMA',
-          'AMXL.MX','FEMSA','WALMEX','GFNORTEO.MX','BIMBOA.MX','CEMEXCPO.MX',
-          'VALE','ITUB','PETR','ABEV','BBDC'],
+  latam: ['MELI','NU','GLOB','STNE','VALE','ITUB','PETR','ABEV',
+          'AMXL.MX','WALMEX.MX','BIMBOA.MX','GFNORTEO.MX',
+          'DESP','PAGS','VIST'],
   crypto: ['BTC/USD','ETH/USD','SOL/USD','BNB/USD','AVAX/USD','LINK/USD'],
 };
 
@@ -964,8 +964,9 @@ async function runScreener(){
     const priceResults = await Promise.allSettled(
       tickers.slice(0, limit).map(t =>
         fetch('/api/price?ticker='+encodeURIComponent(normalizeTicker(t)))
-          .then(r=>r.json())
-          .then(d=>({...d, ticker: t}))
+          .then(r=>{ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+          .then(d=>{ if(d.error) throw new Error(d.error); return {...d, ticker: t}; })
+          .catch(e=>null)
       )
     );
 
@@ -994,7 +995,7 @@ async function runScreener(){
     };
 
     const results = priceResults
-      .filter(r => r.status==='fulfilled' && r.value && r.value.currentPrice)
+      .filter(r => r.status==='fulfilled' && r.value && r.value.currentPrice && !r.value.error)
       .map(r => {
         const d = r.value;
         const t = d.ticker;
@@ -1046,6 +1047,12 @@ async function runScreener(){
     };
     results.sort(sortFns[sortBy]||sortFns.squeeze);
 
+    console.log('Screener results:', results.length, 'from', priceResults.length, 'fetches');
+    if(results.length===0){
+      el.innerHTML='<div style="padding:20px;font-family:var(--mono);font-size:11px;color:#555;">No results match your filters. Try wider filters or different universe.</div>';
+      status.textContent='0 results';
+      return;
+    }
     renderScreenerResults(results.slice(0, limit), sortBy);
     status.textContent=results.length+' results';
     status.style.color='#00c97d';
@@ -1123,6 +1130,15 @@ async function initEarningsPage(){
 }
 
 const attrName='data-et';
+
+// Safe JSON parse - never throws, returns null on failure
+function safeJSON(text){
+  try{
+    const clean=text.replace(/```json|```/g,'').trim();
+    if(clean.startsWith('I ')||clean.startsWith('I cannot')||clean.startsWith('Sorry')||clean.length<2) return null;
+    return JSON.parse(clean);
+  }catch(e){return null;}
+}
 function pickEarningsTicker(t){
   const el=document.getElementById('earningsTicker');
   if(el){el.value=t;runEarningsIntel();}
@@ -1241,7 +1257,7 @@ async function loadUpcomingEarnings(){
         'Earnings calendar April 7 to May 2 2026. Include major US and LATAM companies. Group by date. Return ONLY JSON where keys are date strings and values are arrays of companies with ticker, company, time, eps_est, importance, sector fields. At least 20 companies.'}]})
     }).then(r=>r.json()).then(d=>{
     try{
-      const calendar=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+      const calendar=safeJSON(d.content.map(b=>b.text||'').join(''));
       // Update with Claude data
       let newHtml='';
       Object.entries(calendar).forEach(([day, companies])=>{
@@ -1292,7 +1308,7 @@ async function runEarningsIntel(){
           'Financial data exercise for '+ticker+'. Using approximate publicly known figures, fill this JSON template with realistic estimates based on the company known financial history. All numbers are educational estimates only. Return ONLY the JSON, no other text: {"eps_history":[{"quarter":"Q4 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q3 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q2 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q1 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q4 2024","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0}],"price_reactions":[{"quarter":"Q4 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q3 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q2 2025","reaction_pct":0,"direction":"DOWN","note":"string"},{"quarter":"Q1 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q4 2024","reaction_pct":0,"direction":"UP","note":"string"}],"next_earnings":{"date":"string","days_away":0,"eps_estimate":0,"revenue_estimate":0,"whisper_number":0,"implied_move_pct":0,"key_metrics_to_watch":["string","string","string"],"guidance_tone":"RAISED"},"verdict":{"signal":"BEAT","confidence":"HIGH","trade_setup":"string","risk":"string","bull_scenario":"string","bear_scenario":"string","historical_beat_rate":75}}. Replace all 0s and placeholder strings with realistic values for '+ticker+'.'}]})
     });
     const d=await r.json();
-    const data=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    const data=safeJSON(d.content.map(b=>b.text||'').join(''));
 
     // Normalize beat rate — force to 0-100 range
     if(data.verdict){
@@ -1671,7 +1687,7 @@ async function loadMarketSignals(){
           'Market-wide smart money signals April 2026. What are institutions, hedge funds, and options traders doing in aggregate? Return ONLY JSON: {"signals":[{"category":"HEDGE FUNDS|INSTITUTIONS|OPTIONS|INSIDER|DARK POOL","signal":"BULLISH|BEARISH|NEUTRAL","description":"1 sentence","confidence":"HIGH|MEDIUM|LOW"}],"market_positioning":"RISK-ON|RISK-OFF|MIXED","key_theme":"1 sentence on dominant smart money theme"}. Include 5 signals.'}]})
     });
     const d=await r.json();
-    const ms=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    const ms=safeJSON(d.content.map(b=>b.text||'').join(''));
 
     const sigCol={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'};
     const posCol={'RISK-ON':'#00c97d','RISK-OFF':'#E24B4A','MIXED':'#EF9F27'}[ms.market_positioning]||'#888';
@@ -1822,7 +1838,7 @@ async function loadFearGreed(){
         messages:[{role:'user',content:
           'Fear & Greed score for financial markets April 9 2026. Consider recent tariff fears, market volatility, crypto action. Return ONLY JSON: {"score":number,"label":"Extreme Fear|Fear|Neutral|Greed|Extreme Greed","description":"1 sentence"}'}]})
     }).then(r=>r.json()).then(d=>{
-      const fg=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+      const fg=safeJSON(d.content.map(b=>b.text||'').join(''));
       if(fg.score) renderFearGreed(fg.score, fg.label||label, fg.description||desc);
     }).catch(()=>{});
 
@@ -1833,7 +1849,7 @@ async function loadFearGreed(){
       body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:150,
         messages:[{role:'user',content:'Fear & Greed score April 2026. Return ONLY JSON: {"score":number,"label":"string","description":"1 sentence"}'}]})
     }).then(r=>r.json()).then(d=>{
-      const fg=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+      const fg=safeJSON(d.content.map(b=>b.text||'').join(''));
       renderFearGreed(fg.score||40, fg.label||'Fear', fg.description||'');
     }).catch(()=>renderFearGreed(40,'Fear','Elevated macro uncertainty in April 2026.'));
   }
@@ -1992,7 +2008,7 @@ async function loadCurrencies(){
           'FX rates April 2026. Return ONLY JSON array: [{"pair":"USDMXN","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDBRL","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDCOP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDCLP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"}]'}]})
     });
     const d=await r.json();
-    const fx=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    const fx=safeJSON(d.content.map(b=>b.text||'').join(''));
     renderCurrencies(pairs, fx);
   }catch(e){ /* keep fallback */ }
 }
@@ -2063,7 +2079,7 @@ async function loadEconCalendar(){
           'Economic calendar April-May 2026. Fed, CPI, jobs, Banxico, Brazil COPOM. Return ONLY JSON array of 8: [{"date":"Apr DD","event":"name","country":"US|MX|BR|EU","impact":"HIGH|MEDIUM|LOW","expected":"","previous":"","description":"1 sentence"}]'}]})
     });
     const d=await r.json();
-    const events=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    const events=safeJSON(d.content.map(b=>b.text||'').join(''));
     renderCalendar(events);
   }catch(e){ /* keep fallback */ }
 }
@@ -2121,7 +2137,7 @@ async function loadSectorHeatmap(){
           'Sector performance April 2026 including LATAM. Return ONLY JSON array of 10: [{"sector":"name","return30d":number,"ytd":number,"signal":"BULLISH|NEUTRAL|BEARISH","note":"1 sentence"}]'}]})
     });
     const d=await r.json();
-    const sectors=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    const sectors=safeJSON(d.content.map(b=>b.text||'').join(''));
     renderHeatmap(sectors);
   }catch(e){ /* keep fallback */ }
 }
@@ -2178,7 +2194,7 @@ Return ONLY JSON:
 }`}]})
     });
     const d=await r.json();
-    const brief=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    const brief=safeJSON(d.content.map(b=>b.text||'').join(''));
     renderMacroBrief(brief);
   }catch(e){
     el.innerHTML=`<div class="err-msg">Brief generation failed: ${e.message}</div>`;
@@ -2236,8 +2252,7 @@ function showPage(id){
   if(id==='screener') setTimeout(()=>{
     const el=document.getElementById('screenerStatus');
     if(el) el.textContent='Ready to screen';
-    // Auto-run LATAM screen on first open
-    if(!window._screenerRan){window._screenerRan=true;runScreener();}
+    // Don't auto-run — let user pick a preset or click SCREEN
   },100);
 }
 
@@ -2707,7 +2722,7 @@ The current price is $${pd?.currentPrice||'unknown'} — use this exact price in
 Return ONLY JSON: {"current_price":${pd?.currentPrice||'number'},"mu":${pd?.mu||'number'},"sigma":${pd?.sigma||'number'},"asset_type":"${pd?.asset_type||'stock'}","verdict":"STRONG ENTRY|WAIT FOR DIP|HIGH RISK|AVOID","thesis":"3 sentences referencing the actual current price","signals":["signal 1","signal 2","signal 3","signal 4"],"key_risk":"1 sentence","news_summary":"1 sentence or empty string"}`}]})
     });
     const claudeData=await claudeRes.json();
-    const parsed=JSON.parse(claudeData.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    const parsed=safeJSON(claudeData.content.map(b=>b.text||'').join(''));
     cd.verdict=parsed.verdict||cd.verdict;
     cd.thesis=parsed.thesis||'';
     cd.signals=parsed.signals||[];
@@ -2905,7 +2920,7 @@ Return ONLY JSON array of 4:
 {"name":"","sector":"","amount":"$XM","round":"","raised":"$XM total","founded":"YYYY","hq":"City,Country","lead_investor":"","backers":["","",""],"thesis":"2 sentences","why_now":"1 sentence","traction":"key metric","traction_signal":"ACCELERATING|STEADY|EARLY","signal_score":1-100,"verdict":"STRONG BUY|WATCH|PASS"}`}]})
     });
     const d=await res.json();
-    const deals=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    const deals=safeJSON(d.content.map(b=>b.text||'').join(''));
     renderVC(deals,q);
     setStatus('READY',false);
   }catch(e){el.innerHTML=`<div class="err-msg">Error: ${e.message}</div>`;setStatus('ERROR',false);}
@@ -3164,7 +3179,7 @@ Return ONLY JSON:
 }`}]})
     });
     const d=await r.json();
-    companyData=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    companyData=safeJSON(d.content.map(b=>b.text||'').join(''));
   }catch(e){console.log('Company data error',e);}
 
   btn.textContent=origText;btn.disabled=false;
@@ -4202,7 +4217,7 @@ Return ONLY JSON:
     });
 
     const d=await r.json();
-    const bt=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    const bt=safeJSON(d.content.map(b=>b.text||'').join(''));
     renderBacktest(bt, ticker, dir);
   }catch(e){
     console.error('Backtest error',e);
@@ -4499,7 +4514,7 @@ Return ONLY JSON array of exactly 10 objects:
     });
 
     const d=await r.json();
-    const personas=JSON.parse(d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    const personas=safeJSON(d.content.map(b=>b.text||'').join(''));
     renderPersonas(personas, ticker);
   }catch(e){
     console.error('Personas error',e);
