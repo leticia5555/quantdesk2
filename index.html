@@ -964,8 +964,11 @@ async function runScreener(){
     const priceResults = await Promise.allSettled(
       tickers.slice(0, limit).map(t =>
         fetch('/api/price?ticker='+encodeURIComponent(normalizeTicker(t)))
-          .then(r=>{ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
-          .then(d=>{ if(d.error) throw new Error(d.error); return {...d, ticker: t}; })
+          .then(r=>r.text())
+          .then(text=>{ 
+            try{ const d=JSON.parse(text); if(d.error) return null; return {...d, ticker: t}; }
+            catch(e){ return null; }
+          })
           .catch(e=>null)
       )
     );
@@ -1472,7 +1475,8 @@ async function runSmartMoney(){
     if(!d.content) throw new Error('No content in response');
 
     const rawText=d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim();
-    const data=JSON.parse(rawText);
+    const data=safeJSON(rawText);
+    if(!data) throw new Error('AI returned invalid data — try again');
 
     // Normalize score — Claude sometimes returns 0-10 or 0-1 instead of 0-100
     if(data.verdict){
@@ -3070,7 +3074,7 @@ async function runPortfolioSim(){
   });
   const pd=await prompt.json();
   let assessment={assessment:'Portfolio simulation complete.',key_risk:'Diversification and correlation risk.'};
-  try{assessment=JSON.parse(pd.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());}catch(e){}
+  try{assessment=safeJSON(pd.content.map(b=>b.text||'').join(''));}catch(e){}
 
   el.innerHTML=`
     <div class="section-header" style="margin-top:8px;"><span class="section-title">// Portfolio Results · ${NSIM} simulations</span><div class="section-line"></div></div>
@@ -4373,8 +4377,9 @@ Return ONLY JSON:
       }).then(r=>r.json())
     ]);
 
-    const debate=JSON.parse(round1Res.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
-    const risk=JSON.parse(riskRes.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim());
+    const debate=safeJSON(round1Res.content.map(b=>b.text||'').join(''));
+    const risk=safeJSON(riskRes.content.map(b=>b.text||'').join(''));
+    if(!debate||!risk) throw new Error('Debate data unavailable');
 
     renderDebate(debate, risk, ticker);
   }catch(e){
