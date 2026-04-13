@@ -897,7 +897,7 @@ const PRESETS = {
   squeeze: {scSqueeze:60, scSort:'squeeze', scUniverse:'all', label:'Squeeze Candidates'},
   insider:  {scInsider:'buying', scSort:'smart_money', scUniverse:'all', label:'Insider Buying'},
   momentum: {scMomentum:10, scSort:'momentum', scUniverse:'us', label:'Momentum'},
-  latam:    {scUniverse:'latam', scSort:'signal', label:'LATAM Focus'},
+  latam:    {scUniverse:'latam', scSort:'signal', scSqueeze:0, label:'LATAM Focus'},
   volatile: {scSigmaMin:60, scSort:'sigma', scUniverse:'all', label:'High Volatility'},
 };
 
@@ -995,6 +995,27 @@ async function runScreener(){
       'AMD':    {squeeze:35,insider:'NONE',inst:66,signal:'BUY',score:67,thesis:'MI300 gaining share vs NVDA in AI inference'},
       'SNOW':   {squeeze:45,insider:'SELLING',inst:55,signal:'NEUTRAL',score:48,thesis:'CEO change creates uncertainty despite solid fundamentals'},
       'JPM':    {squeeze:10,insider:'NONE',inst:75,signal:'BUY',score:69,thesis:'Best positioned US bank for rate environment'},
+      // US extras
+      'V':      {squeeze:14,insider:'NONE',inst:80,signal:'BUY',score:67,thesis:'Payments network with unmatched global reach and margin'},
+      'WMT':    {squeeze:8,insider:'NONE',inst:68,signal:'NEUTRAL',score:58,thesis:'Defensive retail with e-commerce growth but rich valuation'},
+      'JNJ':    {squeeze:9,insider:'NONE',inst:74,signal:'NEUTRAL',score:55,thesis:'Healthcare giant facing litigation overhang on talc'},
+      'PG':     {squeeze:7,insider:'NONE',inst:72,signal:'NEUTRAL',score:52,thesis:'Consumer staples defensive play amid macro uncertainty'},
+      'MA':     {squeeze:13,insider:'NONE',inst:81,signal:'BUY',score:66,thesis:'Visa/Mastercard duopoly benefits from cashless trend'},
+      'HD':     {squeeze:11,insider:'NONE',inst:76,signal:'NEUTRAL',score:54,thesis:'Housing market slowdown weighing on home improvement spend'},
+      'XOM':    {squeeze:15,insider:'NONE',inst:64,signal:'NEUTRAL',score:56,thesis:'Oil price dependent, OPEC cuts supporting near-term'},
+      'NFLX':   {squeeze:22,insider:'NONE',inst:71,signal:'BUY',score:70,thesis:'Ad-supported tier driving subscriber and revenue growth'},
+      'ORCL':   {squeeze:18,insider:'NONE',inst:65,signal:'NEUTRAL',score:58,thesis:'Cloud ERP migration driving recurring revenue growth'},
+      'ADBE':   {squeeze:28,insider:'NONE',inst:83,signal:'NEUTRAL',score:55,thesis:'AI features in Creative Cloud offset Figma competition'},
+      'CRM':    {squeeze:32,insider:'NONE',inst:79,signal:'NEUTRAL',score:52,thesis:'Agentforce AI push needs to prove ROI to enterprise buyers'},
+      'BAC':    {squeeze:12,insider:'NONE',inst:70,signal:'NEUTRAL',score:57,thesis:'Rate sensitivity improving as Fed cuts begin cycle'},
+      // LATAM extras
+      'WALMEX.MX':{squeeze:15,insider:'NONE',inst:58,signal:'NEUTRAL',score:54,thesis:'Dominant Mexican retailer, defensive amid peso volatility'},
+      'AMXL.MX':  {squeeze:20,insider:'NONE',inst:45,signal:'NEUTRAL',score:52,thesis:'Telecom giant with regional coverage across LATAM'},
+      'BIMBOA.MX': {squeeze:12,insider:'BUYING',inst:42,signal:'BUY',score:61,thesis:'Global bakery leader, family insider buying is bullish'},
+      'GFNORTEO.MX':{squeeze:18,insider:'NONE',inst:55,signal:'BUY',score:63,thesis:'Largest Mexican bank benefiting from nearshoring boom'},
+      'PAGS':   {squeeze:45,insider:'NONE',inst:38,signal:'BUY',score:65,thesis:'Brazilian fintech growing SMB payments in underpenetrated market'},
+      'VIST':   {squeeze:38,insider:'BUYING',inst:30,signal:'STRONG BUY',score:77,thesis:'Argentina oil boom from Vaca Muerta shale, insider accumulation'},
+      'ABEV':   {squeeze:16,insider:'NONE',inst:52,signal:'NEUTRAL',score:54,thesis:'Beer dominance in Brazil but volume growth slowing'},
     };
 
     const results = priceResults
@@ -1002,7 +1023,10 @@ async function runScreener(){
       .map(r => {
         const d = r.value;
         const t = d.ticker;
-        const sm = smartData[t] || {squeeze:25,insider:'NONE',inst:50,signal:'NEUTRAL',score:50,thesis:'Solid fundamental story with moderate risk profile'};
+        // Try multiple key variations for lookup
+        const sm = smartData[t] 
+          || smartData[t.replace('.MX','').replace('.SA','')]
+          || {squeeze:25,insider:'NONE',inst:50,signal:'NEUTRAL',score:50,thesis:'Solid fundamental story with moderate risk profile'};
         const ret30 = (d.return30d||0)*100;
         const sigma = (d.sigma||0.3)*100;
         const isLatam = ['MELI','NU','GLOB','VALE','ITUB','PETR','STNE','DESP','WALMEX.MX','AMXL.MX','FEMSA.MX','BIMBOA.MX'].includes(t);
@@ -1087,7 +1111,7 @@ function renderScreenerResults(results, sortBy){
 
     return '<div style="display:grid;grid-template-columns:80px 140px 90px 80px 80px 80px 90px 90px 100px 1fr;gap:0;padding:8px 16px;border-bottom:1px solid #111;background:'+(i%2===0?'#0d0d0d':'#0a0a0a')+';cursor:pointer;" onclick="openFromScreener(this.dataset.sc)" data-sc="'+r.ticker+'">' 
       // Ticker
-      +'<div><div style="font-family:var(--mono);font-size:11px;font-weight:700;color:#e0e0e0;">'+r.ticker+(r.is_latam?'<span style="font-size:7px;padding:1px 3px;background:rgba(255,102,0,.2);color:#ff6600;border-radius:1px;margin-left:3px;">MX</span>':'')+'</div></div>'
+      +'<div><div style="font-family:var(--mono);font-size:11px;font-weight:700;color:#e0e0e0;">'+r.ticker+'</div>'+(r.is_latam?'<div style="font-size:7px;color:#ff6600;">LATAM</div>':'<div></div>')+'</div>'
       // Company
       +'<div style="font-size:10px;color:#555;font-family:var(--sans);padding-right:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+r.company+'</div>'
       // Price
