@@ -1145,8 +1145,13 @@ function openFromScreener(ticker){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-sim').classList.add('active');
   document.querySelectorAll('.nav-btn').forEach(b=>{if(b.textContent.trim()==='SIM')b.classList.add('active');});
-  const input=document.getElementById('tickerInput');
-  if(input){input.value=ticker;input.dispatchEvent(new Event('input'));}
+  const input=document.getElementById('simTicker');
+  if(input){
+    input.value=ticker;
+    input.dispatchEvent(new Event('input'));
+    // Scroll to top so user sees the SIM page
+    window.scrollTo({top:0,behavior:'smooth'});
+  }
 }
 
 // ─── EARNINGS ENGINE ─────────────────────────────────────
