@@ -236,6 +236,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('smartmoney')">SMART $</button>
     <button class="nav-btn" onclick="showPage('earnings')">EARNINGS</button>
     <button class="nav-btn" onclick="showPage('screener')">SCREENER</button>
+    <button class="nav-btn" onclick="showPage('gallery')">GALLERY</button>
   </nav>
   <div class="topbar-right">
     <div class="status-dot live" id="globalDot"></div>
@@ -309,6 +310,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button onclick="runInvestorPersonas()" id="personasBtn" style="border-color:#9b59b6;color:#9b59b6;" title="Ask legendary investors">👤 Investors</button>
     <button onclick="runDebate()" id="debateBtn" style="border-color:var(--amber);color:var(--amber);" title="Bull vs Bear debate">⚔ Debate</button>
     <button onclick="startLiveTrack()" id="trackBtn" style="border-color:#00ffcc;color:#00ffcc;" title="Track this trade live vs simulation">📡 Track Live</button>
+    <button onclick="saveSim()" id="saveSimBtn" style="border-color:#9b59b6;color:#9b59b6;" title="Save simulation to gallery">💾 Save Sim</button>
   </div>
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
     <span id="speedTxt" style="font-size:11px;color:var(--text3);">// speed</span>
@@ -2371,6 +2373,7 @@ function showPage(id){
   if(id==='macro') setTimeout(loadMacroPage,50);
   if(id==='smartmoney') setTimeout(()=>{if(!smLoaded){smLoaded=true;loadMarketSignals();}},50);
   if(id==='earnings') setTimeout(()=>initEarningsPage(),50);
+  if(id==='gallery') setTimeout(()=>renderGallery(),50);
   if(id==='screener') setTimeout(()=>{
     const el=document.getElementById('screenerStatus');
     if(el) el.textContent='Ready to screen';
@@ -5064,6 +5067,300 @@ function setStatus(txt,live=true){
   document.getElementById('globalDot').className='status-dot'+(live?' live':'');
 }
 
+// ─── SIMULATION GALLERY ──────────────────────────────────
+let savedSims = JSON.parse(localStorage.getItem('qd_gallery') || '[]');
+
+function saveSim(){
+  if(!allPaths.length || !SP.S0){
+    alert('Run a simulation first');
+    return;
+  }
+  const ticker = document.getElementById('simTicker').value.trim().toUpperCase();
+  const lastCd = window._lastCd || {};
+
+  // Capture canvas snapshot
+  const snapshot = document.getElementById('simCanvas').toDataURL('image/png');
+
+  // Calculate stats
+  const returns = allFinals.map(f => SP.dir==='LONG'?(f-SP.S0)/SP.S0:(SP.S0-f)/SP.S0);
+  const sorted = [...returns].sort((a,b)=>a-b);
+  const mean = returns.reduce((a,b)=>a+b,0)/returns.length;
+  const wins = returns.filter(r=>r>0).length;
+  const var95 = sorted[Math.floor(returns.length*0.05)];
+  const std = Math.sqrt(returns.reduce((a,r)=>a+(r-mean)**2,0)/returns.length);
+  const sharpe = std>0?(mean/std)*Math.sqrt(252/SP.days):0;
+
+  const sim = {
+    id: Date.now(),
+    ticker,
+    dir: SP.dir,
+    entryPrice: SP.S0,
+    capital: SP.capital,
+    days: SP.days,
+    model: SP.model,
+    mu: SP.mu,
+    sigma: SP.sigma,
+    verdict: lastCd.verdict || '—',
+    thesis: lastCd.thesis || '',
+    mean,
+    winRate: wins/returns.length,
+    sharpe,
+    var95,
+    p10: sorted[Math.floor(returns.length*0.1)],
+    p50: sorted[Math.floor(returns.length*0.5)],
+    p90: sorted[Math.floor(returns.length*0.9)],
+    snapshot,
+    savedAt: new Date().toISOString(),
+    dateLabel: new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}),
+    // Save compressed paths (every 5th point to save space)
+    paths: allPaths.slice(0,50).map(p=>p.filter((_,i)=>i%2===0)),
+    finals: allFinals.slice(0,100),
+    // Live tracking data
+    livePoints: [],
+    isTracking: false,
+    trackStartTime: null,
+    trackEntryPrice: null,
+  };
+
+  savedSims.unshift(sim);
+  if(savedSims.length > 20) savedSims.pop(); // max 20 saved
+
+  // Save without snapshot to localStorage (too big), keep snapshot in memory only
+  const forStorage = savedSims.map(s=>({...s, snapshot:null, paths:null}));
+  try{ localStorage.setItem('qd_gallery', JSON.stringify(forStorage)); }catch(e){}
+
+  // Flash button feedback
+  const btn = document.getElementById('saveSimBtn');
+  const orig = btn.textContent;
+  btn.textContent = '✅ Saved!';
+  btn.style.borderColor = '#00c97d';
+  btn.style.color = '#00c97d';
+  setTimeout(()=>{ btn.textContent=orig; btn.style.borderColor='#9b59b6'; btn.style.color='#9b59b6'; }, 1500);
+}
+
+function clearGallery(){
+  savedSims = [];
+  localStorage.removeItem('qd_gallery');
+  renderGallery();
+}
+
+function renderGallery(){
+  const el = document.getElementById('galleryGrid');
+  if(!el) return;
+
+  if(!savedSims.length){
+    el.innerHTML = '<div style="color:#333;font-family:var(--mono);font-size:12px;text-align:center;padding:60px;grid-column:1/-1;">No saved simulations yet — run a sim and click 💾 Save Sim</div>';
+    return;
+  }
+
+  const vcolors = {'STRONG ENTRY':'#00c97d','WAIT FOR DIP':'#378ADD','HIGH RISK':'#EF9F27','AVOID':'#E24B4A'};
+  const fmt = v => (v>=0?'+':'')+(v*100).toFixed(1)+'%';
+  const fmtD = (v,cap) => (v>=0?'+$':'-$')+Math.abs(Math.round(v*cap)).toLocaleString();
+
+  el.innerHTML = savedSims.map((s,i) => {
+    const vc = vcolors[s.verdict] || '#888';
+    const retColor = s.mean>=0?'#00c97d':'#E24B4A';
+
+    // Build mini sparkline from paths
+    const sparkId = 'spark_'+s.id;
+
+    // Live tracking status
+    const hasLive = s.livePoints && s.livePoints.length > 1;
+    const lastLivePrice = hasLive ? s.livePoints[s.livePoints.length-1].price : null;
+    const livePnl = lastLivePrice ? (s.dir==='LONG'?(lastLivePrice-s.entryPrice)/s.entryPrice:(s.entryPrice-lastLivePrice)/s.entryPrice) : null;
+
+    return `<div style="background:#0d0d0d;border:1px solid #1a1a1a;border-radius:8px;overflow:hidden;transition:border-color .2s;" onmouseenter="this.style.borderColor='#9b59b6'" onmouseleave="this.style.borderColor='#1a1a1a'">
+      
+      <!-- Header -->
+      <div style="padding:12px 14px;border-bottom:1px solid #1a1a1a;display:flex;align-items:center;gap:10px;">
+        <div>
+          <div style="font-family:var(--mono);font-size:14px;font-weight:700;color:#e0e0e0;">${s.ticker}</div>
+          <div style="font-size:9px;color:#555;margin-top:1px;">${s.dateLabel}</div>
+        </div>
+        <span style="font-size:9px;padding:2px 8px;border:1px solid ${vc};color:${vc};border-radius:2px;font-family:var(--mono);">${s.verdict}</span>
+        <div style="margin-left:auto;text-align:right;">
+          <div style="font-family:var(--mono);font-size:13px;color:#888;">$${Number(s.entryPrice).toLocaleString(undefined,{maximumFractionDigits:0})}</div>
+          <div style="font-size:9px;color:#555;">${s.dir} · ${s.days}d · $${s.capital.toLocaleString()}</div>
+        </div>
+      </div>
+
+      <!-- Mini canvas -->
+      <div style="position:relative;height:120px;background:#080808;">
+        <canvas id="${sparkId}" style="width:100%;height:120px;display:block;"></canvas>
+        ${hasLive ? `<div style="position:absolute;top:6px;right:8px;display:flex;align-items:center;gap:4px;">
+          <div style="width:6px;height:6px;border-radius:50%;background:#00ffcc;animation:pulse 1.5s infinite;"></div>
+          <span style="font-family:var(--mono);font-size:9px;color:#00ffcc;">LIVE</span>
+        </div>` : ''}
+      </div>
+
+      <!-- Stats row -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-bottom:1px solid #1a1a1a;">
+        <div style="padding:8px;border-right:1px solid #1a1a1a;text-align:center;">
+          <div style="font-size:9px;color:#555;font-family:var(--mono);margin-bottom:3px;">EXP RETURN</div>
+          <div style="font-family:var(--mono);font-size:13px;font-weight:600;color:${retColor};">${fmt(s.mean)}</div>
+        </div>
+        <div style="padding:8px;border-right:1px solid #1a1a1a;text-align:center;">
+          <div style="font-size:9px;color:#555;font-family:var(--mono);margin-bottom:3px;">WIN RATE</div>
+          <div style="font-family:var(--mono);font-size:13px;font-weight:600;color:#ccc;">${(s.winRate*100).toFixed(0)}%</div>
+        </div>
+        <div style="padding:8px;border-right:1px solid #1a1a1a;text-align:center;">
+          <div style="font-size:9px;color:#555;font-family:var(--mono);margin-bottom:3px;">SHARPE</div>
+          <div style="font-family:var(--mono);font-size:13px;font-weight:600;color:#ccc;">${s.sharpe.toFixed(2)}</div>
+        </div>
+        <div style="padding:8px;text-align:center;">
+          <div style="font-size:9px;color:#555;font-family:var(--mono);margin-bottom:3px;">VaR 95%</div>
+          <div style="font-family:var(--mono);font-size:13px;font-weight:600;color:#E24B4A;">${fmt(s.var95)}</div>
+        </div>
+      </div>
+
+      <!-- Scenario row -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;border-bottom:1px solid #1a1a1a;">
+        <div style="padding:6px 8px;border-right:1px solid #1a1a1a;text-align:center;">
+          <div style="font-size:8px;color:#555;">BEAR P10</div>
+          <div style="font-family:var(--mono);font-size:11px;color:#E24B4A;">${fmt(s.p10)}</div>
+        </div>
+        <div style="padding:6px 8px;border-right:1px solid #1a1a1a;text-align:center;">
+          <div style="font-size:8px;color:#555;">MEDIAN</div>
+          <div style="font-family:var(--mono);font-size:11px;color:#888;">${fmt(s.p50)}</div>
+        </div>
+        <div style="padding:6px 8px;text-align:center;">
+          <div style="font-size:8px;color:#555;">BULL P90</div>
+          <div style="font-family:var(--mono);font-size:11px;color:#00c97d;">${fmt(s.p90)}</div>
+        </div>
+      </div>
+
+      ${hasLive ? `
+      <!-- Live tracking bar -->
+      <div style="padding:8px 14px;background:rgba(0,255,204,.05);border-bottom:1px solid rgba(0,255,204,.1);">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-family:var(--mono);font-size:9px;color:#00ffcc;">📡 LIVE: $${lastLivePrice.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+          <span style="font-family:var(--mono);font-size:11px;color:${livePnl>=0?'#00c97d':'#E24B4A'};font-weight:700;">${fmt(livePnl)}</span>
+        </div>
+      </div>` : ''}
+
+      <!-- Thesis -->
+      ${s.thesis ? `<div style="padding:8px 14px;font-size:10px;color:#444;font-family:var(--sans);line-height:1.5;border-bottom:1px solid #1a1a1a;">${s.thesis.substring(0,120)}${s.thesis.length>120?'...':''}</div>` : ''}
+
+      <!-- Actions -->
+      <div style="padding:8px 14px;display:flex;gap:6px;">
+        <button onclick="replaySim(${i})" style="font-family:var(--mono);font-size:10px;padding:4px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;flex:1;">▶ Replay</button>
+        <button onclick="trackSavedSim(${i})" style="font-family:var(--mono);font-size:10px;padding:4px 10px;border:1px solid #00ffcc;color:#00ffcc;background:none;border-radius:2px;cursor:pointer;flex:1;">📡 Track</button>
+        <button onclick="deleteSim(${i})" style="font-family:var(--mono);font-size:10px;padding:4px 8px;border:1px solid #333;color:#555;background:none;border-radius:2px;cursor:pointer;">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Draw sparklines after render
+  setTimeout(() => savedSims.forEach((s,i) => drawSparkline(s, i)), 100);
+}
+
+function drawSparkline(sim, idx){
+  const canvas = document.getElementById('spark_' + sim.id);
+  if(!canvas || !sim.paths || !sim.paths.length) return;
+
+  const dpr = devicePixelRatio || 1;
+  const W = canvas.parentElement.clientWidth;
+  const H = 120;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  // Find min/max
+  let mn = Infinity, mx = -Infinity;
+  sim.paths.forEach(p => p.forEach(v => { if(v<mn)mn=v; if(v>mx)mx=v; }));
+  mn *= 0.97; mx *= 1.03;
+  const xS = (W-4) / (sim.paths[0].length - 1);
+  const yS = (H-8) / (mx - mn);
+
+  // Draw paths
+  sim.paths.forEach(p => {
+    const final = p[p.length-1];
+    const pnl = sim.dir==='LONG' ? final-sim.entryPrice : sim.entryPrice-final;
+    const ratio = Math.min(1, Math.max(0, pnl/(sim.entryPrice*0.5)));
+    const r = Math.round((1-ratio)*180+20), g = Math.round(ratio*120+10);
+    ctx.beginPath();
+    ctx.strokeStyle = `rgba(${r},${g},30,0.12)`;
+    ctx.lineWidth = 0.8;
+    p.forEach((v,i) => {
+      const x = 2 + i*xS, y = H-4-(v-mn)*yS;
+      i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+    });
+    ctx.stroke();
+  });
+
+  // Entry line
+  const entryY = H-4-(sim.entryPrice-mn)*yS;
+  ctx.strokeStyle = 'rgba(136,136,136,0.3)';
+  ctx.setLineDash([3,3]);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(2, entryY);
+  ctx.lineTo(W-2, entryY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Draw live points if any
+  if(sim.livePoints && sim.livePoints.length > 1){
+    const msPerDay = 1000*60*60*24;
+    const liveXScale = (W-4) / (sim.days * msPerDay);
+    ctx.beginPath();
+    ctx.strokeStyle = '#00ffcc';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#00ffcc';
+    ctx.shadowBlur = 4;
+    sim.livePoints.forEach((pt,i) => {
+      const elapsed = pt.t - sim.trackStartTime;
+      const x = 2 + elapsed * liveXScale;
+      const y = H-4-(pt.price-mn)*yS;
+      i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+    });
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+}
+
+function replaySim(idx){
+  const s = savedSims[idx];
+  if(!s) return;
+  // Navigate to SIM tab and pre-fill
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById('page-sim').classList.add('active');
+  document.querySelectorAll('.nav-btn').forEach(b=>{if(b.textContent.trim()==='SIM')b.classList.add('active');});
+  document.getElementById('simTicker').value = s.ticker;
+  document.getElementById('simDir').value = s.dir;
+  document.getElementById('simCapital').value = s.capital;
+  document.getElementById('simDays').value = s.days;
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+
+function trackSavedSim(idx){
+  const s = savedSims[idx];
+  if(!s) return;
+  // Navigate to SIM and start tracking
+  replaySim(idx);
+  setTimeout(() => {
+    // Fake having run the sim with saved data
+    if(s.paths && s.paths.length) {
+      allPaths = s.paths.map(p=>[...p]);
+      allFinals = s.finals ? [...s.finals] : s.paths.map(p=>p[p.p.length-1]);
+      SP = { S0: s.entryPrice, mu: s.mu||0.15, sigma: s.sigma||0.35, days: s.days, capital: s.capital, dir: s.dir, model: s.model||'gbm' };
+      redrawSim();
+      updateSimStats();
+    }
+    startLiveTrack();
+  }, 300);
+}
+
+function deleteSim(idx){
+  savedSims.splice(idx, 1);
+  const forStorage = savedSims.map(s=>({...s, snapshot:null, paths:null}));
+  try{ localStorage.setItem('qd_gallery', JSON.stringify(forStorage)); }catch(e){}
+  renderGallery();
+}
+
 // ─── LIVE TRADE TRACKER ───────────────────────────────
 let liveTrack = null;
 let liveTrackInterval = null;
@@ -5108,6 +5405,9 @@ function startLiveTrack(){
   liveTrackInterval = setInterval(updateLiveTrack, 30000);
   updateLiveTrack(); // immediate first update
 
+  // Start 30fps canvas animation loop
+  startLiveCanvasLoop();
+
   // Scroll to canvas
   document.getElementById('simCanvas').scrollIntoView({behavior:'smooth', block:'center'});
 
@@ -5124,6 +5424,7 @@ async function updateLiveTrack(){
     const now = Date.now();
     const currentPrice = r.currentPrice;
     liveTrackPoints.push({t: now, price: currentPrice});
+    liveAnimTarget = currentPrice; // update animation target
 
     // Calculate P&L
     const pnlPct = liveTrack.dir === 'LONG'
@@ -5232,9 +5533,54 @@ function drawLiveOverlay(currentPrice, currentPnl){
   simCtx.fillText('LIVE', lastPt.x + 9, lastPt.y - 2);
 }
 
+// 30fps live canvas animation
+let liveCanvasFrame = null;
+let liveAnimPrice = null; // smoothly animated price
+let liveAnimTarget = null;
+
+function startLiveCanvasLoop(){
+  if(liveCanvasFrame) cancelAnimationFrame(liveCanvasFrame);
+  liveAnimPrice = liveTrack ? liveTrack.entryPrice : null;
+  liveAnimTarget = liveAnimPrice;
+
+  function animate(){
+    if(!liveTrack){ liveCanvasFrame = null; return; }
+
+    // Smooth interpolation toward target price (ease)
+    if(liveAnimTarget && liveAnimPrice){
+      liveAnimPrice += (liveAnimTarget - liveAnimPrice) * 0.05;
+    }
+
+    // Tiny brownian noise to make it look alive between updates
+    if(liveAnimPrice && SP.sigma){
+      const dt = 1/(252*24*60*2); // ~30fps in trading time
+      const noise = (Math.random()-0.5) * liveAnimPrice * SP.sigma * Math.sqrt(dt) * 3;
+      liveAnimPrice += noise;
+    }
+
+    // Redraw canvas with animated price
+    if(liveAnimPrice) drawLiveOverlay(liveAnimPrice, null);
+
+    // Pulse the dot
+    const dot = document.getElementById('liveTrackDot');
+    if(dot){
+      const scale = 0.8 + 0.4 * Math.abs(Math.sin(Date.now() * 0.003));
+      dot.style.transform = `scale(${scale.toFixed(2)})`;
+    }
+
+    liveCanvasFrame = requestAnimationFrame(animate);
+  }
+  liveCanvasFrame = requestAnimationFrame(animate);
+}
+
+function stopLiveCanvasLoop(){
+  if(liveCanvasFrame){ cancelAnimationFrame(liveCanvasFrame); liveCanvasFrame = null; }
+}
+
 function stopLiveTrack(){
   if(liveTrackInterval) clearInterval(liveTrackInterval);
   liveTrackInterval = null;
+  stopLiveCanvasLoop();
 
   // Show accuracy report
   if(liveTrack && liveTrackPoints.length > 1){
@@ -5269,6 +5615,22 @@ document.addEventListener('DOMContentLoaded',()=>{
   setInterval(refreshLiveTape, 30*1000);
 });
 </script>
+<!-- GALLERY PAGE -->
+<div id="page-gallery" class="page" style="padding:0;background:#080808;min-height:100vh;">
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;">
+    <span style="font-family:var(--mono);font-size:10px;color:#9b59b6;font-weight:600;letter-spacing:.1em;">SIMULATION GALLERY</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;">SAVED SIMULATIONS · LIVE TRACKING · ACCURACY REPORTS</span>
+    <div style="margin-left:auto;display:flex;gap:8px;">
+      <button onclick="clearGallery()" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#555;background:none;border-radius:2px;cursor:pointer;">🗑 Clear All</button>
+    </div>
+  </div>
+  <div id="galleryGrid" style="padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;">
+    <div style="color:#333;font-family:var(--mono);font-size:12px;text-align:center;padding:60px;grid-column:1/-1;">
+      No saved simulations yet — run a sim and click 💾 Save Sim
+    </div>
+  </div>
+</div>
+
 <!-- NOTE MODAL -->
 <div id="noteModal" style="display:none;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.7);align-items:center;justify-content:center;">
   <div style="background:var(--bg1);border:1px solid var(--border2);border-radius:8px;padding:24px;width:90%;max-width:480px;">
