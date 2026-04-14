@@ -5254,9 +5254,9 @@ function renderGallery(){
   setTimeout(() => savedSims.forEach((s,i) => drawSparkline(s, i)), 100);
 }
 
-function drawSparkline(sim, idx){
+async function drawSparkline(sim, idx){
   const canvas = document.getElementById('spark_' + sim.id);
-  if(!canvas || !sim.paths || !sim.paths.length) return;
+  if(!canvas) return;
 
   const dpr = devicePixelRatio || 1;
   const W = canvas.parentElement.clientWidth;
@@ -5267,31 +5267,149 @@ function drawSparkline(sim, idx){
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
 
-  // Find min/max
+  // Try to fetch real price history from Yahoo Finance
+  let realPrices = null;
+  try{
+    const r = await fetch('/api/price?ticker=' + encodeURIComponent(normalizeTicker(sim.ticker)));
+    const d = await r.json();
+    if(d.recentPrices && d.recentPrices.length > 3){
+      realPrices = d.recentPrices; // array of recent daily closes
+    }
+  }catch(e){}
+
+  if(realPrices && realPrices.length > 3){
+    // Draw REAL price chart
+    drawRealPriceChart(ctx, W, H, sim, realPrices);
+  } else if(sim.paths && sim.paths.length){
+    // Fallback to sim paths
+    drawSimPaths(ctx, W, H, sim);
+  }
+}
+
+function drawRealPriceChart(ctx, W, H, sim, prices){
+  // Use last N days matching sim horizon
+  const n = Math.min(prices.length, Math.max(30, sim.days * 3));
+  const slice = prices.slice(-n);
+  
+  let mn = Math.min(...slice) * 0.98;
+  let mx = Math.max(...slice) * 1.02;
+  const xS = (W-8) / (slice.length - 1);
+  const yS = (H-16) / (mx - mn);
+
+  // Background gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  const isUp = slice[slice.length-1] >= slice[0];
+  grad.addColorStop(0, isUp ? 'rgba(0,201,125,0.08)' : 'rgba(226,75,74,0.08)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  
+  // Fill area under line
+  ctx.beginPath();
+  slice.forEach((v,i) => {
+    const x = 4 + i*xS, y = H-8-(v-mn)*yS;
+    i===0 ? ctx.moveTo(x, H-8) : null;
+    i===0 ? ctx.lineTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.lineTo(4 + (slice.length-1)*xS, H-8);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Draw price line
+  const lineColor = isUp ? '#00c97d' : '#E24B4A';
+  ctx.beginPath();
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = 'round';
+  slice.forEach((v,i) => {
+    const x = 4 + i*xS, y = H-8-(v-mn)*yS;
+    i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+  });
+  ctx.stroke();
+
+  // Entry price line (when sim was started)
+  const entryY = H-8-(sim.entryPrice-mn)*yS;
+  if(entryY > 0 && entryY < H){
+    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+    ctx.setLineDash([3,3]);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(4, entryY);
+    ctx.lineTo(W-4, entryY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Entry label
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.font = '8px IBM Plex Mono,monospace';
+    ctx.fillText('entry', W-36, entryY-2);
+  }
+
+  // Current price dot
+  const lastX = 4 + (slice.length-1)*xS;
+  const lastY = H-8-(slice[slice.length-1]-mn)*yS;
+  ctx.beginPath();
+  ctx.arc(lastX, lastY, 3, 0, Math.PI*2);
+  ctx.fillStyle = lineColor;
+  ctx.fill();
+
+  // Price label top-left
+  ctx.fillStyle = '#888';
+  ctx.font = '9px IBM Plex Mono,monospace';
+  const lastPrice = slice[slice.length-1];
+  const firstPrice = slice[0];
+  const chgPct = ((lastPrice-firstPrice)/firstPrice*100).toFixed(1);
+  const chgColor = lastPrice >= firstPrice ? '#00c97d' : '#E24B4A';
+  ctx.fillStyle = '#555';
+  ctx.fillText('$'+lastPrice.toLocaleString(undefined,{maximumFractionDigits:0}), 6, 12);
+  ctx.fillStyle = chgColor;
+  ctx.fillText((lastPrice>=firstPrice?'+':'')+chgPct+'%', 6, 22);
+
+  // Draw live track overlay if any
+  if(sim.livePoints && sim.livePoints.length > 1 && sim.trackStartTime){
+    const msPerDay = 1000*60*60*24;
+    // Find entry point x position (last point in the slice = today)
+    const entryXinChart = 4 + (slice.length-1)*xS;
+    
+    ctx.beginPath();
+    ctx.strokeStyle = '#00ffcc';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#00ffcc';
+    ctx.shadowBlur = 6;
+    sim.livePoints.forEach((pt,i) => {
+      const elapsed = (pt.t - sim.trackStartTime) / msPerDay;
+      const x = entryXinChart + elapsed * xS * 30; // scale to chart
+      const y = H-8-(pt.price-mn)*yS;
+      if(x > W-4) return;
+      i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+    });
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+}
+
+function drawSimPaths(ctx, W, H, sim){
+  if(!sim.paths || !sim.paths.length) return;
   let mn = Infinity, mx = -Infinity;
   sim.paths.forEach(p => p.forEach(v => { if(v<mn)mn=v; if(v>mx)mx=v; }));
   mn *= 0.97; mx *= 1.03;
   const xS = (W-4) / (sim.paths[0].length - 1);
   const yS = (H-8) / (mx - mn);
 
-  // Draw paths
   sim.paths.forEach(p => {
     const final = p[p.length-1];
     const pnl = sim.dir==='LONG' ? final-sim.entryPrice : sim.entryPrice-final;
     const ratio = Math.min(1, Math.max(0, pnl/(sim.entryPrice*0.5)));
     const r = Math.round((1-ratio)*180+20), g = Math.round(ratio*120+10);
     ctx.beginPath();
-    ctx.strokeStyle = `rgba(${r},${g},30,0.12)`;
+    ctx.strokeStyle = `rgba(${r},${g},30,0.15)`;
     ctx.lineWidth = 0.8;
     p.forEach((v,i) => {
-      const x = 2 + i*xS, y = H-4-(v-mn)*yS;
+      const x = 2 + i*xS, y = H-8-(v-mn)*yS;
       i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
     });
     ctx.stroke();
   });
 
-  // Entry line
-  const entryY = H-4-(sim.entryPrice-mn)*yS;
+  const entryY = H-8-(sim.entryPrice-mn)*yS;
   ctx.strokeStyle = 'rgba(136,136,136,0.3)';
   ctx.setLineDash([3,3]);
   ctx.lineWidth = 1;
@@ -5300,25 +5418,6 @@ function drawSparkline(sim, idx){
   ctx.lineTo(W-2, entryY);
   ctx.stroke();
   ctx.setLineDash([]);
-
-  // Draw live points if any
-  if(sim.livePoints && sim.livePoints.length > 1){
-    const msPerDay = 1000*60*60*24;
-    const liveXScale = (W-4) / (sim.days * msPerDay);
-    ctx.beginPath();
-    ctx.strokeStyle = '#00ffcc';
-    ctx.lineWidth = 2;
-    ctx.shadowColor = '#00ffcc';
-    ctx.shadowBlur = 4;
-    sim.livePoints.forEach((pt,i) => {
-      const elapsed = pt.t - sim.trackStartTime;
-      const x = 2 + elapsed * liveXScale;
-      const y = H-4-(pt.price-mn)*yS;
-      i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
-    });
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-  }
 }
 
 function replaySim(idx){
