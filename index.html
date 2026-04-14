@@ -5081,6 +5081,9 @@ function saveSim(){
   // Capture canvas snapshot
   const snapshot = document.getElementById('simCanvas').toDataURL('image/png');
 
+  // Capture real price history from last fetch
+  const lastCdPrices = (window._lastCd && window._lastCd.recentPrices) ? window._lastCd.recentPrices : null;
+
   // Calculate stats
   const returns = allFinals.map(f => SP.dir==='LONG'?(f-SP.S0)/SP.S0:(SP.S0-f)/SP.S0);
   const sorted = [...returns].sort((a,b)=>a-b);
@@ -5115,6 +5118,7 @@ function saveSim(){
     // Save compressed paths (every 5th point to save space)
     paths: allPaths.slice(0,50).map(p=>p.filter((_,i)=>i%2===0)),
     finals: allFinals.slice(0,100),
+    recentPrices: lastCdPrices, // real price history at save time
     // Live tracking data
     livePoints: [],
     isTracking: false,
@@ -5267,21 +5271,22 @@ async function drawSparkline(sim, idx){
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
 
-  // Try to fetch real price history from Yahoo Finance
-  let realPrices = null;
-  try{
-    const r = await fetch('/api/price?ticker=' + encodeURIComponent(normalizeTicker(sim.ticker)));
-    const d = await r.json();
-    if(d.recentPrices && d.recentPrices.length > 3){
-      realPrices = d.recentPrices; // array of recent daily closes
-    }
-  }catch(e){}
+  // Use saved prices first (instant), then try to fetch fresh ones
+  let realPrices = sim.recentPrices || null;
+
+  if(!realPrices || realPrices.length < 4){
+    try{
+      const r = await fetch('/api/price?ticker=' + encodeURIComponent(normalizeTicker(sim.ticker)));
+      const d = await r.json();
+      if(d.recentPrices && d.recentPrices.length > 3){
+        realPrices = d.recentPrices;
+      }
+    }catch(e){}
+  }
 
   if(realPrices && realPrices.length > 3){
-    // Draw REAL price chart
     drawRealPriceChart(ctx, W, H, sim, realPrices);
   } else if(sim.paths && sim.paths.length){
-    // Fallback to sim paths
     drawSimPaths(ctx, W, H, sim);
   }
 }
