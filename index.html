@@ -308,6 +308,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button onclick="toggleTikTok()" id="tikTokBtn" style="border-color:#ff0050;color:#ff0050;" title="TikTok fullscreen mode">▶ TikTok</button>
     <button onclick="runInvestorPersonas()" id="personasBtn" style="border-color:#9b59b6;color:#9b59b6;" title="Ask legendary investors">👤 Investors</button>
     <button onclick="runDebate()" id="debateBtn" style="border-color:var(--amber);color:var(--amber);" title="Bull vs Bear debate">⚔ Debate</button>
+    <button onclick="startLiveTrack()" id="trackBtn" style="border-color:#00ffcc;color:#00ffcc;" title="Track this trade live vs simulation">📡 Track Live</button>
   </div>
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
     <span id="speedTxt" style="font-size:11px;color:var(--text3);">// speed</span>
@@ -355,7 +356,43 @@ td:first-child{color:var(--text);font-weight:500;}
     </div>
   </div>
 
-  <div id="simAnalysis" style="display:none;">
+  <!-- LIVE TRADE TRACKER -->
+<div id="liveTrackPanel" style="display:none;margin-bottom:16px;border:1px solid #00ffcc;border-radius:8px;overflow:hidden;">
+  <div style="background:#0a1a18;padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <div style="display:flex;align-items:center;gap:6px;">
+      <div id="liveTrackDot" style="width:8px;height:8px;border-radius:50%;background:#00ffcc;animation:pulse 1.5s infinite;"></div>
+      <span style="font-family:var(--mono);font-size:11px;color:#00ffcc;letter-spacing:.08em;">LIVE TRADE TRACKER</span>
+    </div>
+    <span id="liveTrackTicker" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#fff;"></span>
+    <span id="liveTrackDir" style="font-size:10px;color:#888;"></span>
+    <div style="margin-left:auto;display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+      <div style="text-align:center;">
+        <div style="font-size:9px;color:#555;font-family:var(--mono);">ENTRY</div>
+        <div id="liveTrackEntry" style="font-family:var(--mono);font-size:13px;color:#888;"></div>
+      </div>
+      <div style="text-align:center;">
+        <div style="font-size:9px;color:#555;font-family:var(--mono);">NOW</div>
+        <div id="liveTrackNow" style="font-family:var(--mono);font-size:15px;font-weight:700;color:#fff;"></div>
+      </div>
+      <div style="text-align:center;">
+        <div style="font-size:9px;color:#555;font-family:var(--mono);">P&L</div>
+        <div id="liveTrackPnl" style="font-family:var(--mono);font-size:15px;font-weight:700;"></div>
+      </div>
+      <div style="text-align:center;">
+        <div style="font-size:9px;color:#555;font-family:var(--mono);">VS SIM</div>
+        <div id="liveTrackVsSim" style="font-family:var(--mono);font-size:11px;"></div>
+      </div>
+      <div style="text-align:center;">
+        <div style="font-size:9px;color:#555;font-family:var(--mono);">TIME LEFT</div>
+        <div id="liveTrackTime" style="font-family:var(--mono);font-size:11px;color:#888;"></div>
+      </div>
+      <button onclick="stopLiveTrack()" style="font-size:10px;padding:3px 10px;border:1px solid #555;color:#555;background:none;border-radius:3px;cursor:pointer;font-family:var(--mono);">■ Stop</button>
+    </div>
+  </div>
+  <div id="liveTrackStatus" style="padding:6px 16px;font-family:var(--mono);font-size:11px;color:#555;background:#080808;border-bottom:1px solid #1a1a1a;"></div>
+</div>
+
+<div id="simAnalysis" style="display:none;">
     <div class="analysis">
       <h3 id="thesisTitle">Trade thesis</h3>
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
@@ -5025,6 +5062,202 @@ function setStatus(txt,live=true){
   const translated=(statusMap[txt]?statusMap[txt]():txt);
   document.getElementById('globalStatus').textContent=translated;
   document.getElementById('globalDot').className='status-dot'+(live?' live':'');
+}
+
+// ─── LIVE TRADE TRACKER ───────────────────────────────
+let liveTrack = null;
+let liveTrackInterval = null;
+let liveTrackPoints = []; // real price history [{t, price}]
+
+function startLiveTrack(){
+  if(!allPaths.length || !SP.S0){
+    alert('Run a simulation first, then click Track Live');
+    return;
+  }
+  const ticker = document.getElementById('simTicker').value.trim().toUpperCase();
+  if(!ticker){ alert('Enter a ticker first'); return; }
+
+  // Save track state
+  liveTrack = {
+    ticker,
+    dir: SP.dir,
+    entryPrice: SP.S0,
+    entryTime: Date.now(),
+    days: SP.days,
+    capital: SP.capital,
+    mu: SP.mu,
+    sigma: SP.sigma,
+    paths: allPaths.map(p=>[...p]), // snapshot of sim paths
+    finals: [...allFinals],
+  };
+  liveTrackPoints = [{t: Date.now(), price: SP.S0}];
+
+  // Show panel
+  const panel = document.getElementById('liveTrackPanel');
+  panel.style.display = 'block';
+  document.getElementById('liveTrackTicker').textContent = ticker;
+  document.getElementById('liveTrackDir').textContent = SP.dir;
+  document.getElementById('liveTrackEntry').textContent = '$' + SP.S0.toLocaleString(undefined,{maximumFractionDigits:2});
+  document.getElementById('trackBtn').textContent = '📡 Tracking...';
+  document.getElementById('trackBtn').style.borderColor = '#00ffcc';
+
+  // Draw initial overlay
+  drawLiveOverlay();
+
+  // Start polling price every 30s
+  liveTrackInterval = setInterval(updateLiveTrack, 30000);
+  updateLiveTrack(); // immediate first update
+
+  // Scroll to canvas
+  document.getElementById('simCanvas').scrollIntoView({behavior:'smooth', block:'center'});
+
+  setStatus('TRACKING LIVE', true);
+}
+
+async function updateLiveTrack(){
+  if(!liveTrack) return;
+
+  try{
+    const r = await fetchPriceData(liveTrack.ticker);
+    if(!r || !r.currentPrice) return;
+
+    const now = Date.now();
+    const currentPrice = r.currentPrice;
+    liveTrackPoints.push({t: now, price: currentPrice});
+
+    // Calculate P&L
+    const pnlPct = liveTrack.dir === 'LONG'
+      ? (currentPrice - liveTrack.entryPrice) / liveTrack.entryPrice
+      : (liveTrack.entryPrice - currentPrice) / liveTrack.entryPrice;
+    const pnlDollar = pnlPct * liveTrack.capital;
+    const pnlColor = pnlPct >= 0 ? '#00ffcc' : '#E24B4A';
+
+    // Update header
+    document.getElementById('liveTrackNow').textContent = '$' + currentPrice.toLocaleString(undefined,{maximumFractionDigits:2});
+    document.getElementById('liveTrackPnl').textContent = (pnlPct>=0?'+':'') + (pnlPct*100).toFixed(2) + '%';
+    document.getElementById('liveTrackPnl').style.color = pnlColor;
+
+    // Time remaining
+    const elapsed = (now - liveTrack.entryTime) / (1000 * 60 * 60 * 24); // days elapsed
+    const remaining = Math.max(0, liveTrack.days - elapsed);
+    const hrs = Math.floor(remaining * 24);
+    const mins = Math.floor((remaining * 24 - hrs) * 60);
+    document.getElementById('liveTrackTime').textContent = hrs + 'h ' + mins + 'm';
+
+    // Where are we vs sim percentiles?
+    const simReturns = liveTrack.finals.map(f =>
+      liveTrack.dir === 'LONG'
+        ? (f - liveTrack.entryPrice) / liveTrack.entryPrice
+        : (liveTrack.entryPrice - f) / liveTrack.entryPrice
+    ).sort((a,b)=>a-b);
+    const n = simReturns.length;
+    const myPercentile = Math.round(simReturns.filter(r => r <= pnlPct).length / n * 100);
+
+    let vsSimText, vsSimColor;
+    if(myPercentile >= 75){ vsSimText = '🔥 TOP ' + (100-myPercentile) + '%'; vsSimColor = '#00ff88'; }
+    else if(myPercentile >= 50){ vsSimText = '✅ ABOVE MEDIAN'; vsSimColor = '#00c97d'; }
+    else if(myPercentile >= 25){ vsSimText = '📊 BELOW MEDIAN'; vsSimColor = '#EF9F27'; }
+    else { vsSimText = '⚠️ BOTTOM ' + myPercentile + '%'; vsSimColor = '#E24B4A'; }
+
+    document.getElementById('liveTrackVsSim').textContent = vsSimText;
+    document.getElementById('liveTrackVsSim').style.color = vsSimColor;
+
+    // Status bar
+    const timeAgo = Math.round((now - liveTrackPoints[liveTrackPoints.length-2]?.t || 0) / 1000);
+    document.getElementById('liveTrackStatus').textContent =
+      'Last update: just now · Entry $' + liveTrack.entryPrice.toLocaleString(undefined,{maximumFractionDigits:0}) +
+      ' → Now $' + currentPrice.toLocaleString(undefined,{maximumFractionDigits:0}) +
+      ' · Percentile vs sim: ' + myPercentile + 'th · ' +
+      liveTrackPoints.length + ' data points collected';
+
+    // Redraw canvas with live overlay
+    drawLiveOverlay(currentPrice, pnlPct);
+
+  } catch(e){
+    console.log('Live track update error:', e);
+  }
+}
+
+function drawLiveOverlay(currentPrice, currentPnl){
+  if(!liveTrack || !simCtx) return;
+
+  // Redraw base simulation first
+  redrawSim();
+
+  if(!currentPrice || liveTrackPoints.length < 1) return;
+
+  const [mn, mx] = getMinMax();
+  const xS = (simW - PAD - PAD_R) / SP.days;
+  const yS = (simH - PAD - PAD_B) / (mx - mn);
+
+  // Draw live price path on top
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const points = liveTrackPoints.map(p => ({
+    x: PAD + ((p.t - liveTrack.entryTime) / msPerDay) * xS,
+    y: simH - PAD_B - (p.price - mn) * yS,
+    price: p.price
+  }));
+
+  // Draw glow effect
+  simCtx.save();
+  simCtx.shadowColor = '#00ffcc';
+  simCtx.shadowBlur = 8;
+  simCtx.beginPath();
+  simCtx.strokeStyle = '#00ffcc';
+  simCtx.lineWidth = 2.5;
+  points.forEach((pt, i) => {
+    if(i === 0) simCtx.moveTo(pt.x, pt.y);
+    else simCtx.lineTo(pt.x, pt.y);
+  });
+  simCtx.stroke();
+  simCtx.restore();
+
+  // Draw current price dot
+  const lastPt = points[points.length - 1];
+  simCtx.beginPath();
+  simCtx.arc(lastPt.x, lastPt.y, 5, 0, Math.PI * 2);
+  simCtx.fillStyle = '#00ffcc';
+  simCtx.fill();
+
+  // Price label next to dot
+  simCtx.fillStyle = '#00ffcc';
+  simCtx.font = 'bold 10px IBM Plex Mono,monospace';
+  simCtx.fillText('$' + currentPrice.toLocaleString(undefined,{maximumFractionDigits:0}), lastPt.x + 8, lastPt.y + 4);
+
+  // "LIVE" tag
+  simCtx.fillStyle = 'rgba(0,255,204,0.15)';
+  simCtx.fillRect(lastPt.x + 6, lastPt.y - 12, 32, 14);
+  simCtx.fillStyle = '#00ffcc';
+  simCtx.font = '8px IBM Plex Mono,monospace';
+  simCtx.fillText('LIVE', lastPt.x + 9, lastPt.y - 2);
+}
+
+function stopLiveTrack(){
+  if(liveTrackInterval) clearInterval(liveTrackInterval);
+  liveTrackInterval = null;
+
+  // Show accuracy report
+  if(liveTrack && liveTrackPoints.length > 1){
+    const lastPrice = liveTrackPoints[liveTrackPoints.length-1].price;
+    const pnlPct = liveTrack.dir === 'LONG'
+      ? (lastPrice - liveTrack.entryPrice) / liveTrack.entryPrice
+      : (liveTrack.entryPrice - lastPrice) / liveTrack.entryPrice;
+    const simMedian = [...liveTrack.finals].sort((a,b)=>a-b)[Math.floor(liveTrack.finals.length*0.5)];
+    const simMedianPct = (simMedian - liveTrack.entryPrice) / liveTrack.entryPrice;
+    const accuracy = 1 - Math.abs(pnlPct - simMedianPct) / Math.max(Math.abs(simMedianPct), 0.001);
+
+    document.getElementById('liveTrackStatus').textContent =
+      'STOPPED · Final P&L: ' + (pnlPct>=0?'+':'') + (pnlPct*100).toFixed(2) + '% · ' +
+      'Sim predicted: ' + (simMedianPct>=0?'+':'') + (simMedianPct*100).toFixed(1) + '% · ' +
+      'Model accuracy: ' + Math.max(0, Math.round(accuracy*100)) + '%';
+  }
+
+  document.getElementById('liveTrackPanel').style.display = 'none';
+  document.getElementById('trackBtn').textContent = '📡 Track Live';
+  liveTrack = null;
+  liveTrackPoints = [];
+  setStatus('READY', false);
+  redrawSim();
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
