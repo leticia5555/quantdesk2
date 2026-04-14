@@ -5494,13 +5494,38 @@ function drawLiveOverlay(currentPrice, currentPnl){
   const xS = (simW - PAD - PAD_R) / SP.days;
   const yS = (simH - PAD - PAD_B) / (mx - mn);
 
-  // Draw live price path on top
+  // Build points from real history + current animated position
   const msPerDay = 1000 * 60 * 60 * 24;
-  const points = liveTrackPoints.map(p => ({
+  
+  // Real collected points
+  const realPoints = liveTrackPoints.map(p => ({
     x: PAD + ((p.t - liveTrack.entryTime) / msPerDay) * xS,
     y: simH - PAD_B - (p.price - mn) * yS,
     price: p.price
   }));
+
+  // Current animated point at NOW time (moves right with real clock)
+  const nowX = PAD + ((Date.now() - liveTrack.entryTime) / msPerDay) * xS;
+  const nowY = simH - PAD_B - (currentPrice - mn) * yS;
+  const animPoint = { x: Math.min(nowX, simW - PAD_R - 10), y: nowY, price: currentPrice };
+
+  // Combine: all real points + current animated tip
+  const points = [...realPoints];
+  // Replace last point with animated version if it's more recent
+  if(points.length > 0){
+    points[points.length-1] = {...points[points.length-1], y: nowY, price: currentPrice};
+  }
+  points.push(animPoint);
+
+  // Deduplicate by x position
+  const seen = new Set();
+  const uniquePoints = points.filter(p => {
+    const key = Math.round(p.x);
+    if(seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const finalPoints = uniquePoints.length > 1 ? uniquePoints : [uniquePoints[0], animPoint];
 
   // Draw glow effect
   simCtx.save();
@@ -5509,15 +5534,15 @@ function drawLiveOverlay(currentPrice, currentPnl){
   simCtx.beginPath();
   simCtx.strokeStyle = '#00ffcc';
   simCtx.lineWidth = 2.5;
-  points.forEach((pt, i) => {
+  finalPoints.forEach((pt, i) => {
     if(i === 0) simCtx.moveTo(pt.x, pt.y);
     else simCtx.lineTo(pt.x, pt.y);
   });
   simCtx.stroke();
   simCtx.restore();
 
-  // Draw current price dot
-  const lastPt = points[points.length - 1];
+  // Draw current price dot (pulsing)
+  const lastPt = animPoint;
   simCtx.beginPath();
   simCtx.arc(lastPt.x, lastPt.y, 5, 0, Math.PI * 2);
   simCtx.fillStyle = '#00ffcc';
@@ -5582,7 +5607,7 @@ function startLiveCanvasLoop(){
     // Tiny brownian noise to make it look alive between updates
     if(liveAnimPrice && SP.sigma){
       const dt = 1/(252*24*60*2); // ~30fps in trading time
-      const noise = (Math.random()-0.5) * liveAnimPrice * SP.sigma * Math.sqrt(dt) * 3;
+      const noise = (Math.random()-0.5) * liveAnimPrice * SP.sigma * Math.sqrt(dt) * 15; // visible micro-movement
       liveAnimPrice += noise;
     }
 
