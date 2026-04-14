@@ -5435,7 +5435,10 @@ async function updateLiveTrack(){
 
     // Update header
     document.getElementById('liveTrackNow').textContent = '$' + currentPrice.toLocaleString(undefined,{maximumFractionDigits:2});
-    document.getElementById('liveTrackPnl').textContent = (pnlPct>=0?'+':'') + (pnlPct*100).toFixed(2) + '%';
+    const pnlDollarAmt = pnlPct * liveTrack.capital;
+    document.getElementById('liveTrackPnl').innerHTML = 
+      '<div style="font-size:15px;">'+(pnlPct>=0?'+':'')+(pnlPct*100).toFixed(2)+'%</div>'
+      +'<div style="font-size:11px;opacity:.8;">'+(pnlDollarAmt>=0?'+$':'-$')+Math.abs(pnlDollarAmt).toLocaleString(undefined,{maximumFractionDigits:0})+'</div>';
     document.getElementById('liveTrackPnl').style.color = pnlColor;
 
     // Time remaining
@@ -5520,17 +5523,42 @@ function drawLiveOverlay(currentPrice, currentPnl){
   simCtx.fillStyle = '#00ffcc';
   simCtx.fill();
 
-  // Price label next to dot
-  simCtx.fillStyle = '#00ffcc';
-  simCtx.font = 'bold 10px IBM Plex Mono,monospace';
-  simCtx.fillText('$' + currentPrice.toLocaleString(undefined,{maximumFractionDigits:0}), lastPt.x + 8, lastPt.y + 4);
+  // Price + P&L label next to dot
+  if(currentPrice && liveTrack){
+    const livePnlPct = liveTrack.dir==='LONG'
+      ? (currentPrice - liveTrack.entryPrice) / liveTrack.entryPrice
+      : (liveTrack.entryPrice - currentPrice) / liveTrack.entryPrice;
+    const livePnlDollar = livePnlPct * liveTrack.capital;
+    const pnlSign = livePnlPct >= 0 ? '+' : '';
+    const pnlCol = livePnlPct >= 0 ? '#00ffcc' : '#ff6666';
+
+    // Background pill
+    const labelW = 110;
+    simCtx.fillStyle = 'rgba(0,0,0,0.75)';
+    simCtx.beginPath();
+    simCtx.roundRect ? simCtx.roundRect(lastPt.x+8, lastPt.y-18, labelW, 32, 3) : simCtx.rect(lastPt.x+8, lastPt.y-18, labelW, 32);
+    simCtx.fill();
+    simCtx.strokeStyle = pnlCol;
+    simCtx.lineWidth = 0.5;
+    simCtx.stroke();
+
+    // Price
+    simCtx.fillStyle = '#fff';
+    simCtx.font = 'bold 10px IBM Plex Mono,monospace';
+    simCtx.fillText('$' + currentPrice.toLocaleString(undefined,{maximumFractionDigits:0}), lastPt.x+12, lastPt.y-5);
+
+    // P&L pct + dollar
+    simCtx.fillStyle = pnlCol;
+    simCtx.font = '9px IBM Plex Mono,monospace';
+    simCtx.fillText(pnlSign+(livePnlPct*100).toFixed(2)+'%  '+(livePnlDollar>=0?'+$':'-$')+Math.abs(livePnlDollar).toLocaleString(undefined,{maximumFractionDigits:0}), lastPt.x+12, lastPt.y+8);
+  }
 
   // "LIVE" tag
   simCtx.fillStyle = 'rgba(0,255,204,0.15)';
-  simCtx.fillRect(lastPt.x + 6, lastPt.y - 12, 32, 14);
+  simCtx.fillRect(lastPt.x + 6, lastPt.y - 28, 32, 12);
   simCtx.fillStyle = '#00ffcc';
   simCtx.font = '8px IBM Plex Mono,monospace';
-  simCtx.fillText('LIVE', lastPt.x + 9, lastPt.y - 2);
+  simCtx.fillText('LIVE', lastPt.x + 9, lastPt.y - 19);
 }
 
 // 30fps live canvas animation
