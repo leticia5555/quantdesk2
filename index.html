@@ -4356,19 +4356,31 @@ function renderComparison(){
 // ─── RISK OF RUIN ─────────────────────────────────────
 function calcRuin(winRate, avgWin, avgLoss, capital, trades, ruinThreshold){
   // Monte Carlo risk of ruin simulation
+  // avgWin and avgLoss are fractional returns per trade (e.g. 0.007 = 0.7%)
   if(avgLoss<=0||winRate<=0||winRate>=1) return 0;
-  const SIMS=2000;
-  let ruined=0;
-  const ruin=capital*(1-ruinThreshold);
-  for(let s=0;s<SIMS;s++){
-    let bal=capital;
-    for(let t=0;t<trades;t++){
-      if(Math.random()<winRate) bal+=bal*avgWin;
-      else bal-=bal*avgLoss;
-      if(bal<=ruin){ruined++;break;}
+
+  // Sanity check — if expected value is strongly positive, ruin is near zero
+  const ev = winRate*avgWin - (1-winRate)*avgLoss;
+  // If ev per trade is positive and large relative to threshold, skip expensive sim
+  if(ev > 0 && ev * trades > ruinThreshold * 2) return 0;
+
+  const SIMS = 1000;
+  let ruined = 0;
+  const ruinLevel = capital * (1 - ruinThreshold);
+
+  // Fixed dollar P&L per trade (not compounding) — more realistic for position sizing
+  const winAmt = capital * avgWin;
+  const lossAmt = capital * avgLoss;
+
+  for(let s = 0; s < SIMS; s++){
+    let bal = capital;
+    for(let t = 0; t < trades; t++){
+      if(Math.random() < winRate) bal += winAmt;
+      else bal -= lossAmt;
+      if(bal <= ruinLevel){ ruined++; break; }
     }
   }
-  return ruined/SIMS;
+  return ruined / SIMS;
 }
 
 function renderRiskOfRuin(winRate, avgWin, avgLoss, capital){
