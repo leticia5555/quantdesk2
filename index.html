@@ -3046,14 +3046,31 @@ async function startSim(){
         const std=Math.sqrt(variance);
         const sharpe=std>0?(mean/std)*Math.sqrt(252/SP.days):0;
         const wins=rets.filter(r=>r>0).length;
+        const winRate=wins/rets.length;
         const sorted=[...rets].sort((a,b)=>a-b);
         const var95=sorted[Math.floor(sorted.length*.05)];
         const lastCd=window._lastCd||{};
+
+        // ── DYNAMIC VERDICT — based on sim results, not Claude's opinion ──
+        // Combines win rate + Sharpe ratio for a true risk-adjusted call
+        let dynamicVerdict;
+        if(winRate >= 0.65 && sharpe >= 1.0)         dynamicVerdict = 'STRONG ENTRY';
+        else if(winRate >= 0.55 && sharpe >= 0.5)    dynamicVerdict = 'BUY';
+        else if(winRate >= 0.45 && sharpe >= -0.3)   dynamicVerdict = 'WAIT FOR DIP';
+        else if(winRate >= 0.30)                      dynamicVerdict = 'HIGH RISK';
+        else                                           dynamicVerdict = 'AVOID';
+
+        // Override Claude's verdict with our math-based one
+        lastCd.verdict = dynamicVerdict;
+        const vmap={'STRONG ENTRY':'v-strong','BUY':'v-strong','WAIT FOR DIP':'v-wait','HIGH RISK':'v-risk','AVOID':'v-avoid'};
+        const vb=document.getElementById('simVerdict');
+        if(vb){ vb.textContent=dynamicVerdict; vb.className='verdict '+(vmap[dynamicVerdict]||'v-wait'); }
+
         const tickerVal=document.getElementById('simTicker').value.toUpperCase();
-        addToTape(tickerVal,SP.dir,mean,wins/rets.length,lastCd.verdict||'',SP.S0);
-        addToComparison(tickerVal,SP.dir,SP.S0,mean,wins/rets.length,sharpe,var95,SP.capital,lastCd.verdict||'');
-        addSimToHistory(tickerVal,SP.dir,SP.capital,SP.days,SP.model,mean,wins/rets.length,sharpe,var95,lastCd.verdict||'',SP.S0,lastCd.thesis||'');
-        voiceSim(tickerVal,lastCd.verdict||'',wins/rets.length);
+        addToTape(tickerVal,SP.dir,mean,winRate,dynamicVerdict,SP.S0);
+        addToComparison(tickerVal,SP.dir,SP.S0,mean,winRate,sharpe,var95,SP.capital,dynamicVerdict);
+        addSimToHistory(tickerVal,SP.dir,SP.capital,SP.days,SP.model,mean,winRate,sharpe,var95,dynamicVerdict,SP.S0,lastCd.thesis||'');
+        voiceSim(tickerVal,dynamicVerdict,winRate);
       }
       return;
     }
