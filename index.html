@@ -4385,13 +4385,22 @@ function calcRuin(winRate, avgWin, avgLoss, capital, trades, ruinThreshold){
 
 function renderRiskOfRuin(winRate, avgWin, avgLoss, capital){
   if(!avgWin||!avgLoss) return '';
+
+  // Scale trade counts based on holding period
+  // 3d trade → ~60 trades/year, 90d trade → ~4 trades/year
+  const tradesPerYear = Math.round(252 / SP.days);
+  const t1 = Math.max(5, tradesPerYear);          // ~1 year of trades
+  const t2 = Math.max(10, tradesPerYear * 2);     // ~2 years
+  const t3 = Math.max(20, tradesPerYear * 5);     // ~5 years
+
+  const ruin10_50  = calcRuin(winRate,avgWin,avgLoss,capital,t1,0.10);
+  const ruin25_50  = calcRuin(winRate,avgWin,avgLoss,capital,t1,0.25);
+  const ruin50_50  = calcRuin(winRate,avgWin,avgLoss,capital,t1,0.50);
+  const ruin10_100 = calcRuin(winRate,avgWin,avgLoss,capital,t2,0.10);
+  const ruin50_100 = calcRuin(winRate,avgWin,avgLoss,capital,t2,0.50);
+  const ruin10_200 = calcRuin(winRate,avgWin,avgLoss,capital,t3,0.10);
   
-  const ruin10_50=calcRuin(winRate,avgWin,avgLoss,capital,50,0.10);
-  const ruin25_50=calcRuin(winRate,avgWin,avgLoss,capital,50,0.25);
-  const ruin50_50=calcRuin(winRate,avgWin,avgLoss,capital,50,0.50);
-  const ruin10_100=calcRuin(winRate,avgWin,avgLoss,capital,100,0.10);
-  const ruin50_100=calcRuin(winRate,avgWin,avgLoss,capital,100,0.50);
-  const ruin10_200=calcRuin(winRate,avgWin,avgLoss,capital,200,0.10);
+  const lbl1=t1+' trades (~1yr)', lbl2=t2+' trades (~2yr)', lbl3=t3+' trades (~5yr)';
 
   const ruinColor=p=>p>0.5?'var(--red)':p>0.25?'var(--amber)':'var(--green)';
   const fmt=p=>(p*100).toFixed(1)+'%';
@@ -4406,32 +4415,32 @@ function renderRiskOfRuin(winRate, avgWin, avgLoss, capital){
     <div class="section-header" style="margin-top:4px;"><span class="section-title">// risk of ruin</span><div class="section-line"></div></div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;">
       <div class="stat-card">
-        <div class="stat-lbl">Lose 10% in 50 trades</div>
+        <div class="stat-lbl">Lose 10% · ${lbl1}</div>
         <div class="stat-val" style="color:${ruinColor(ruin10_50)}">${fmt(ruin10_50)}</div>
         <div class="stat-sub">probability of -10% loss</div>
       </div>
       <div class="stat-card">
-        <div class="stat-lbl">Lose 25% in 50 trades</div>
+        <div class="stat-lbl">Lose 25% · ${lbl1}</div>
         <div class="stat-val" style="color:${ruinColor(ruin25_50)}">${fmt(ruin25_50)}</div>
         <div class="stat-sub">significant drawdown</div>
       </div>
       <div class="stat-card">
-        <div class="stat-lbl">Lose 50% in 50 trades</div>
+        <div class="stat-lbl">Lose 50% · ${lbl1}</div>
         <div class="stat-val" style="color:${ruinColor(ruin50_50)}">${fmt(ruin50_50)}</div>
         <div class="stat-sub">half capital gone</div>
       </div>
       <div class="stat-card">
-        <div class="stat-lbl">Lose 10% in 100 trades</div>
+        <div class="stat-lbl">Lose 10% · ${lbl2}</div>
         <div class="stat-val" style="color:${ruinColor(ruin10_100)}">${fmt(ruin10_100)}</div>
         <div class="stat-sub">extended trading</div>
       </div>
       <div class="stat-card">
-        <div class="stat-lbl">Lose 50% in 100 trades</div>
+        <div class="stat-lbl">Lose 50% · ${lbl2}</div>
         <div class="stat-val" style="color:${ruinColor(ruin50_100)}">${fmt(ruin50_100)}</div>
         <div class="stat-sub">long-term ruin</div>
       </div>
       <div class="stat-card">
-        <div class="stat-lbl">Lose 10% in 200 trades</div>
+        <div class="stat-lbl">Lose 10% · ${lbl3}</div>
         <div class="stat-val" style="color:${ruinColor(ruin10_200)}">${fmt(ruin10_200)}</div>
         <div class="stat-sub">professional scale</div>
       </div>
