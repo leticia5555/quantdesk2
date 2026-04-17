@@ -2588,6 +2588,120 @@ function garchUpdate(lastVar, lastShock, longRunVar){
   return omega + alpha*lastShock*lastShock + beta*lastVar;
 }
 
+// ── CORRELATION + CHOLESKY (Bloomberg-grade portfolio math) ──────
+// Estimates pairwise correlation between assets based on type
+// In production this would come from real historical price correlation
+// For now we use realistic asset-type-based defaults
+function estimateCorrelation(asset1, asset2){
+  // Same asset → perfect correlation
+  if(asset1.ticker === asset2.ticker) return 1.0;
+
+  const t1 = asset1.asset_type || 'stock';
+  const t2 = asset2.asset_type || 'stock';
+
+  // Crypto-to-crypto (highly correlated, esp BTC/ETH)
+  if(t1 === 'crypto' && t2 === 'crypto') return 0.75;
+
+  // Crypto-to-stock (medium, since 2020 cryptos correlate with risk-on)
+  if((t1 === 'crypto') !== (t2 === 'crypto')) return 0.35;
+
+  // Stock-to-stock — base 0.5, adjust by sector/region
+  let corr = 0.50;
+
+  // Both LATAM stocks → higher correlation (regional risk)
+  const latamTickers = ['MELI','NU','GLOB','VALE','ITUB','PBR','BBD','FEMSA','WALMEX','AMXL'];
+  const isLatam1 = latamTickers.includes(asset1.ticker);
+  const isLatam2 = latamTickers.includes(asset2.ticker);
+  if(isLatam1 && isLatam2) corr = 0.70;
+  else if(isLatam1 || isLatam2) corr = 0.40;
+
+  // Both mega-cap tech → very high correlation
+  const megaTech = ['AAPL','MSFT','NVDA','GOOGL','META','AMZN','TSLA'];
+  if(megaTech.includes(asset1.ticker) && megaTech.includes(asset2.ticker)) corr = 0.65;
+
+  return corr;
+}
+
+// Build N×N correlation matrix from list of assets
+function buildCorrelationMatrix(assets){
+  const n = assets.length;
+  const C = Array.from({length:n}, () => new Array(n).fill(0));
+  for(let i=0; i<n; i++){
+    for(let j=0; j<n; j++){
+      C[i][j] = estimateCorrelation(assets[i], assets[j]);
+    }
+  }
+  return C;
+}
+
+// Cholesky decomposition: C = L * L^T where L is lower triangular
+// This lets us generate correlated random shocks: Z_corr = L * Z_independent
+function choleskyDecomp(C){
+  const n = C.length;
+  const L = Array.from({length:n}, () => new Array(n).fill(0));
+  for(let i=0; i<n; i++){
+    for(let j=0; j<=i; j++){
+      let sum = 0;
+      for(let k=0; k<j; k++) sum += L[i][k]*L[j][k];
+      if(i === j){
+        const diag = C[i][i] - sum;
+        L[i][j] = Math.sqrt(Math.max(diag, 1e-10)); // safe sqrt
+      } else {
+        L[i][j] = (C[i][j] - sum) / L[j][j];
+      }
+    }
+  }
+  return L;
+}
+
+// Multiply L (lower triangular) by independent random vector → correlated shocks
+function generateCorrelatedShocks(L, df=5){
+  const n = L.length;
+  // Independent t-distributed shocks (fat tails, like our single-asset model)
+  const z = new Array(n);
+  for(let i=0; i<n; i++) z[i] = randt(df);
+  // Correlated shocks = L * z
+  const correlated = new Array(n).fill(0);
+  for(let i=0; i<n; i++){
+    for(let j=0; j<=i; j++){
+      correlated[i] += L[i][j] * z[j];
+    }
+  }
+  return correlated;
+}
+
+// Generate correlated paths for multiple assets simultaneously
+// Returns array of paths, one per asset, all sharing the same time-correlated shocks
+function genCorrelatedPaths(assets, days){
+  const n = assets.length;
+  const C = buildCorrelationMatrix(assets);
+  const L = choleskyDecomp(C);
+  const dt = 1/252;
+
+  // Initialize paths and GARCH state per asset
+  const paths = assets.map(a => [a.S0]);
+  const S = assets.map(a => a.S0);
+  const longRunVar = assets.map(a => (a.sigma*a.sigma)/252);
+  const garchVar = [...longRunVar];
+  const lastShock = new Array(n).fill(0);
+
+  for(let t=0; t<days; t++){
+    const shocks = generateCorrelatedShocks(L, 5);
+    for(let i=0; i<n; i++){
+      const sig = Math.sqrt(garchVar[i]);
+      const z = shocks[i];
+      const ret = (assets[i].mu - 0.5*garchVar[i]*252)*dt + sig*Math.sqrt(dt)*z;
+      lastShock[i] = sig*Math.sqrt(dt)*z;
+      garchVar[i] = garchUpdate(garchVar[i], lastShock[i]/Math.sqrt(dt), longRunVar[i]);
+      garchVar[i] = Math.max(longRunVar[i]*0.1, Math.min(longRunVar[i]*10, garchVar[i]));
+      S[i] = S[i] * Math.exp(ret);
+      paths[i].push(S[i]);
+    }
+  }
+
+  return {paths, correlationMatrix: C};
+}
+
 // ── Main path generator ───────────────────────────────
 function genPath(S0,mu,sigma,days,model){
   const dt=1/252;
@@ -3305,15 +3419,20 @@ function renderPortfolioTable(){
 async function runPortfolioSim(){
   if(!positions.length)return;
   const el=document.getElementById('ptResults');
-  el.innerHTML='<div class="loading">running portfolio simulation</div>';
+  el.innerHTML='<div class="loading">running CORRELATED portfolio simulation (Cholesky + GARCH + Fat Tails)</div>';
   setStatus('PORTFOLIO SIM...',true);
   const NSIM=500,horizon=Math.max(...positions.map(p=>p.horizon));
   const portReturns=[];
+
+  // Pre-compute correlation matrix once for display
+  const corrMatrix = buildCorrelationMatrix(positions);
+
   for(let s=0;s<NSIM;s++){
+    // Generate CORRELATED paths for all assets simultaneously
+    const {paths} = genCorrelatedPaths(positions, horizon);
     let totalPnl=0;
-    positions.forEach(p=>{
-      const path=genPath(p.S0,p.mu,p.sigma,p.horizon,'gbm');
-      const final=path[path.length-1];
+    positions.forEach((p,i)=>{
+      const final=paths[i][paths[i].length-1];
       const ret=p.dir==='LONG'?(final-p.S0)/p.S0:(p.S0-final)/p.S0;
       totalPnl+=ret*p.amount;
     });
@@ -3344,7 +3463,7 @@ async function runPortfolioSim(){
   try{assessment=safeJSON(pd.content.map(b=>b.text||'').join(''));}catch(e){}
 
   el.innerHTML=`
-    <div class="section-header" style="margin-top:8px;"><span class="section-title">// Portfolio Results · ${NSIM} simulations</span><div class="section-line"></div></div>
+    <div class="section-header" style="margin-top:8px;"><span class="section-title">// Portfolio Results · ${NSIM} simulations · Cholesky-correlated</span><div class="section-line"></div></div>
     <div class="stat-grid cols-4" style="margin-bottom:16px;">
       <div class="stat-card"><div class="stat-lbl">Expected return</div><div class="stat-val ${mean>=0?'pos':'neg'}">${fmt(mean)}</div><div class="stat-sub">${fmtD(mean)}</div></div>
       <div class="stat-card"><div class="stat-lbl">Win rate</div><div class="stat-val">${(wins/returns.length*100).toFixed(1)}%</div><div class="stat-sub">of ${NSIM} sims</div></div>
@@ -3356,6 +3475,27 @@ async function runPortfolioSim(){
       <div class="scen"><div class="scen-lbl">base · median</div><div class="scen-pct ${p50>=0?'pos':'neg'}">${fmt(p50)}</div><div class="scen-pnl">${fmtD(p50)}</div></div>
       <div class="scen bull"><div class="scen-lbl">bull · p90</div><div class="scen-pct pos">${fmt(p90)}</div><div class="scen-pnl">${fmtD(p90)}</div></div>
     </div>
+
+    <div class="section-header" style="margin-top:16px;"><span class="section-title">// correlation matrix</span><div class="section-line"></div></div>
+    <div style="overflow-x:auto;margin-bottom:16px;">
+      <table style="border-collapse:collapse;font-family:var(--mono);font-size:11px;width:auto;">
+        <tr><th style="padding:6px 10px;background:#0a0a0a;border:1px solid #1a1a1a;"></th>
+          ${positions.map(p=>`<th style="padding:6px 10px;background:#0a0a0a;border:1px solid #1a1a1a;color:var(--text2);">${p.ticker}</th>`).join('')}
+        </tr>
+        ${corrMatrix.map((row,i)=>`<tr>
+          <th style="padding:6px 10px;background:#0a0a0a;border:1px solid #1a1a1a;color:var(--text2);text-align:left;">${positions[i].ticker}</th>
+          ${row.map((v,j)=>{
+            const intensity=Math.abs(v);
+            const color=v>0.6?`rgba(226,75,74,${intensity})`:v>0.3?`rgba(255,170,0,${intensity})`:`rgba(0,200,150,${intensity*0.6})`;
+            return `<td style="padding:6px 10px;border:1px solid #1a1a1a;text-align:center;background:${i===j?'#1a1a1a':color};color:${intensity>0.5?'#fff':'var(--text2)'};">${v.toFixed(2)}</td>`;
+          }).join('')}
+        </tr>`).join('')}
+      </table>
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;font-family:var(--mono);">
+        <span style="color:#00c896;">low</span> · <span style="color:#ffaa00;">medium</span> · <span style="color:#e24b4a;">high</span> correlation · diagonal = 1.0 by definition
+      </div>
+    </div>
+
     <div class="analysis"><h3>Portfolio assessment</h3><p>${assessment.assessment}</p></div>
     <div class="analysis risk"><h3>Key risk</h3><p>${assessment.key_risk}</p></div>`;
   setStatus('READY',false);
