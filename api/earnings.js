@@ -5,11 +5,9 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const finnhubKey = process.env.FINNHUB_API_KEY;
-  if (!finnhubKey) return res.status(500).json({ error: 'No API key' });
+  if (!finnhubKey) return res.status(200).json({ earnings: [] });
 
   const { from, to } = req.query;
-  
-  // Default to next 30 days if no dates provided
   const now = new Date();
   const fromDate = from || now.toISOString().split('T')[0];
   const toDate = to || new Date(now.getTime() + 30*24*60*60*1000).toISOString().split('T')[0];
@@ -18,13 +16,18 @@ export default async function handler(req, res) {
     const r = await fetch(
       `https://finnhub.io/api/v1/calendar/earnings?from=${fromDate}&to=${toDate}&token=${finnhubKey}`
     );
-    const data = await r.json();
 
+    // Check content type — if Finnhub returns HTML, it's a plan restriction
+    const contentType = r.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      return res.status(200).json({ earnings: [] });
+    }
+
+    const data = await r.json();
     if (!data.earningsCalendar) {
       return res.status(200).json({ earnings: [] });
     }
 
-    // Filter and format - only companies with estimates
     const earnings = data.earningsCalendar
       .filter(e => e.epsEstimate !== null && e.symbol)
       .map(e => ({
@@ -41,8 +44,8 @@ export default async function handler(req, res) {
       .sort((a, b) => new Date(a.date) - new Date(b.date));
 
     return res.status(200).json({ earnings, count: earnings.length });
-
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    // Always return empty array — frontend uses hardcoded fallback calendar
+    return res.status(200).json({ earnings: [] });
   }
 }
