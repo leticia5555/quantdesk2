@@ -127,6 +127,15 @@ canvas{display:block;width:100%;height:100%;}
 .ptQuick{background:#0a0a0a;border:1px solid #1a1a1a;color:var(--text2);padding:3px 8px;border-radius:3px;cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:.04em;transition:all .15s;}
 .ptQuick:hover{background:#1a1a1a;border-color:#333;color:var(--text);}
 .ptQuick:active{background:#222;}
+.ticker-suggest{position:absolute;top:100%;left:0;right:0;background:#0a0a0a;border:1px solid #2a2a2a;border-top:none;max-height:240px;overflow-y:auto;z-index:1000;display:none;font-family:var(--mono);font-size:11px;}
+.ticker-suggest.show{display:block;}
+.ticker-suggest-item{padding:6px 10px;cursor:pointer;border-bottom:1px solid #1a1a1a;display:flex;justify-content:space-between;align-items:center;}
+.ticker-suggest-item:hover,.ticker-suggest-item.active{background:#1a1a1a;}
+.ticker-suggest-item .ts-tk{color:var(--text);font-weight:600;letter-spacing:.05em;}
+.ticker-suggest-item .ts-nm{color:var(--text3);font-size:10px;margin-left:8px;flex:1;text-align:right;}
+.ticker-suggest-item .ts-tag{color:#ff8c00;font-size:9px;padding:1px 6px;border:1px solid #ff8c00;border-radius:2px;margin-left:8px;}
+.ticker-suggest-item .ts-tag.us{color:var(--text2);border-color:#333;}
+.ticker-suggest-item .ts-tag.crypto{color:#ffd700;border-color:#ffd700;}
 .v-strong{border-color:var(--blue);color:var(--blue);background:rgba(55,138,221,.1);}
 .v-wait{border-color:var(--green);color:var(--green);background:rgba(29,158,117,.1);}
 .v-risk{border-color:var(--amber);color:var(--amber);background:rgba(239,159,39,.1);}
@@ -235,6 +244,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('compare')">COMPARE</button>
     <button class="nav-btn" onclick="showPage('vc')">VC</button>
     <button class="nav-btn" onclick="showPage('portfolio')">PORTFOLIO</button>
+    <button class="nav-btn" onclick="showPage('corr')">CORR</button>
     <button class="nav-btn" onclick="showPage('macro')">MACRO</button>
     <button class="nav-btn" onclick="showPage('smartmoney')">SMART $</button>
     <button class="nav-btn" onclick="showPage('earnings')">EARNINGS</button>
@@ -599,36 +609,11 @@ td:first-child{color:var(--text);font-weight:500;}
   <div class="two-col" style="margin-bottom:16px;">
     <div>
       <div style="margin-bottom:8px;font-size:11px;color:var(--text3);">// add position</div>
-      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;font-family:var(--mono);font-size:10px;">
-        <span style="color:var(--text3);margin-right:4px;">US:</span>
-        <button onclick="ptQuickPick('AAPL')" class="ptQuick">AAPL</button>
-        <button onclick="ptQuickPick('MSFT')" class="ptQuick">MSFT</button>
-        <button onclick="ptQuickPick('NVDA')" class="ptQuick">NVDA</button>
-        <button onclick="ptQuickPick('META')" class="ptQuick">META</button>
-        <button onclick="ptQuickPick('AMZN')" class="ptQuick">AMZN</button>
-        <button onclick="ptQuickPick('TSLA')" class="ptQuick">TSLA</button>
-        <button onclick="ptQuickPick('GOOGL')" class="ptQuick">GOOGL</button>
-        <button onclick="ptQuickPick('SPY')" class="ptQuick">SPY</button>
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;font-family:var(--mono);font-size:10px;">
-        <span style="color:#ff8c00;margin-right:4px;">LATAM:</span>
-        <button onclick="ptQuickPick('MELI')" class="ptQuick">MELI</button>
-        <button onclick="ptQuickPick('NU')" class="ptQuick">NU</button>
-        <button onclick="ptQuickPick('GLOB')" class="ptQuick">GLOB</button>
-        <button onclick="ptQuickPick('VALE')" class="ptQuick">VALE</button>
-        <button onclick="ptQuickPick('ITUB')" class="ptQuick">ITUB</button>
-        <button onclick="ptQuickPick('PBR')" class="ptQuick">PBR</button>
-        <button onclick="ptQuickPick('FEMSA')" class="ptQuick">FEMSA</button>
-        <button onclick="ptQuickPick('AMXL')" class="ptQuick">AMXL</button>
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;font-family:var(--mono);font-size:10px;">
-        <span style="color:#ffd700;margin-right:4px;">CRYPTO:</span>
-        <button onclick="ptQuickPick('BTC')" class="ptQuick">BTC</button>
-        <button onclick="ptQuickPick('ETH')" class="ptQuick">ETH</button>
-        <button onclick="ptQuickPick('SOL')" class="ptQuick">SOL</button>
-      </div>
       <div class="ctrl-grid g2" style="margin-bottom:8px;">
-        <input type="text" id="ptTicker" placeholder="Ticker"/>
+        <div style="position:relative;">
+          <input type="text" id="ptTicker" placeholder="Type ticker (e.g. MELI, AAPL...)" autocomplete="off" oninput="autocompleteTicker(this,'ptTickerSuggest')"/>
+          <div id="ptTickerSuggest" class="ticker-suggest"></div>
+        </div>
         <select id="ptDir"><option value="LONG">LONG</option><option value="SHORT">SHORT</option></select>
         <input type="number" id="ptAmount" placeholder="Amount $" min="100"/>
         <select id="ptHorizon"><option value="5">1W</option><option value="15">15d</option><option value="30">1M</option><option value="90" selected>3M</option><option value="180">6M</option><option value="365">1Y</option></select>
@@ -659,6 +644,27 @@ td:first-child{color:var(--text);font-weight:500;}
   </div>
 
   <div id="ptResults"></div>
+</div>
+
+<!-- CORRELATION PAGE -->
+<div id="page-corr" class="page">
+  <h1 style="font-family:var(--mono);font-size:13px;letter-spacing:.08em;color:var(--text2);margin-bottom:16px;">// Correlation Explorer</h1>
+
+  <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:6px;padding:16px;margin-bottom:16px;">
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;font-family:var(--mono);">// enter a ticker to find what moves with it</div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <div style="position:relative;flex:1;">
+        <input type="text" id="corrTicker" placeholder="Type ticker (e.g. MELI, AAPL, BTC...)" autocomplete="off" oninput="autocompleteTicker(this,'corrTickerSuggest')" style="width:100%;"/>
+        <div id="corrTickerSuggest" class="ticker-suggest"></div>
+      </div>
+      <button class="primary" onclick="runCorrelationAnalysis()" style="padding:8px 20px;">Analyze</button>
+    </div>
+    <div style="font-size:10px;color:var(--text3);margin-top:8px;font-family:var(--mono);">
+      Discovers what stocks, ETFs, bonds, and crypto move WITH and AGAINST your ticker — true diversification check.
+    </div>
+  </div>
+
+  <div id="corrResults"></div>
 </div>
 
 <!-- MACRO PAGE -->
@@ -3390,8 +3396,243 @@ let positions=[];
 
 function ptQuickPick(ticker){
   document.getElementById('ptTicker').value=ticker;
-  // Auto-focus amount field for faster entry
   document.getElementById('ptAmount').focus();
+}
+
+// ── TICKER DATABASE ──────────────────────────────────────────
+const TICKER_DB = [
+  // US Mega Tech
+  {tk:'AAPL',nm:'Apple Inc',tag:'us'},
+  {tk:'MSFT',nm:'Microsoft',tag:'us'},
+  {tk:'NVDA',nm:'NVIDIA',tag:'us'},
+  {tk:'GOOGL',nm:'Alphabet',tag:'us'},
+  {tk:'META',nm:'Meta Platforms',tag:'us'},
+  {tk:'AMZN',nm:'Amazon',tag:'us'},
+  {tk:'TSLA',nm:'Tesla',tag:'us'},
+  {tk:'NFLX',nm:'Netflix',tag:'us'},
+  {tk:'AMD',nm:'AMD',tag:'us'},
+  {tk:'INTC',nm:'Intel',tag:'us'},
+  {tk:'AVGO',nm:'Broadcom',tag:'us'},
+  {tk:'CRM',nm:'Salesforce',tag:'us'},
+  {tk:'ORCL',nm:'Oracle',tag:'us'},
+  {tk:'ADBE',nm:'Adobe',tag:'us'},
+  {tk:'PLTR',nm:'Palantir',tag:'us'},
+  // US Finance
+  {tk:'JPM',nm:'JPMorgan Chase',tag:'us'},
+  {tk:'BAC',nm:'Bank of America',tag:'us'},
+  {tk:'GS',nm:'Goldman Sachs',tag:'us'},
+  {tk:'MS',nm:'Morgan Stanley',tag:'us'},
+  {tk:'V',nm:'Visa',tag:'us'},
+  {tk:'MA',nm:'Mastercard',tag:'us'},
+  {tk:'BRK.B',nm:'Berkshire Hathaway',tag:'us'},
+  // US Healthcare
+  {tk:'UNH',nm:'UnitedHealth',tag:'us'},
+  {tk:'JNJ',nm:'Johnson & Johnson',tag:'us'},
+  {tk:'LLY',nm:'Eli Lilly',tag:'us'},
+  {tk:'PFE',nm:'Pfizer',tag:'us'},
+  // US Consumer
+  {tk:'WMT',nm:'Walmart',tag:'us'},
+  {tk:'COST',nm:'Costco',tag:'us'},
+  {tk:'KO',nm:'Coca-Cola',tag:'us'},
+  {tk:'PEP',nm:'PepsiCo',tag:'us'},
+  // ETFs
+  {tk:'SPY',nm:'S&P 500 ETF',tag:'us'},
+  {tk:'QQQ',nm:'Nasdaq 100 ETF',tag:'us'},
+  {tk:'IWM',nm:'Russell 2000 ETF',tag:'us'},
+  {tk:'TLT',nm:'20+ Year Treasury Bond ETF',tag:'us'},
+  {tk:'GLD',nm:'Gold ETF',tag:'us'},
+  {tk:'SLV',nm:'Silver ETF',tag:'us'},
+  {tk:'VNQ',nm:'Real Estate ETF',tag:'us'},
+  {tk:'XLE',nm:'Energy Sector ETF',tag:'us'},
+  {tk:'XLF',nm:'Financial Sector ETF',tag:'us'},
+  {tk:'XLK',nm:'Tech Sector ETF',tag:'us'},
+  {tk:'EWZ',nm:'Brazil ETF',tag:'us'},
+  {tk:'EWW',nm:'Mexico ETF',tag:'us'},
+  // LATAM
+  {tk:'MELI',nm:'MercadoLibre',tag:'LATAM'},
+  {tk:'NU',nm:'Nu Holdings (Brasil)',tag:'LATAM'},
+  {tk:'GLOB',nm:'Globant (Argentina)',tag:'LATAM'},
+  {tk:'VALE',nm:'Vale (Brasil mining)',tag:'LATAM'},
+  {tk:'ITUB',nm:'Itaú Unibanco (Brasil)',tag:'LATAM'},
+  {tk:'PBR',nm:'Petrobras (Brasil)',tag:'LATAM'},
+  {tk:'BBD',nm:'Banco Bradesco (Brasil)',tag:'LATAM'},
+  {tk:'BAP',nm:'Credicorp (Perú)',tag:'LATAM'},
+  {tk:'CIB',nm:'Bancolombia',tag:'LATAM'},
+  {tk:'TV',nm:'Grupo Televisa (México)',tag:'LATAM'},
+  {tk:'KOF',nm:'Coca-Cola FEMSA',tag:'LATAM'},
+  {tk:'FMX',nm:'FEMSA (México)',tag:'LATAM'},
+  {tk:'AMX',nm:'América Móvil',tag:'LATAM'},
+  {tk:'CX',nm:'Cemex (México)',tag:'LATAM'},
+  {tk:'WALMEX',nm:'Walmart de México',tag:'LATAM'},
+  // Crypto
+  {tk:'BTC',nm:'Bitcoin',tag:'crypto'},
+  {tk:'ETH',nm:'Ethereum',tag:'crypto'},
+  {tk:'SOL',nm:'Solana',tag:'crypto'},
+  {tk:'BNB',nm:'Binance Coin',tag:'crypto'},
+  {tk:'XRP',nm:'Ripple',tag:'crypto'},
+  {tk:'ADA',nm:'Cardano',tag:'crypto'},
+  {tk:'DOGE',nm:'Dogecoin',tag:'crypto'},
+  {tk:'AVAX',nm:'Avalanche',tag:'crypto'},
+  {tk:'LINK',nm:'Chainlink',tag:'crypto'},
+  {tk:'DOT',nm:'Polkadot',tag:'crypto'},
+];
+
+let _suggestActiveIdx = -1;
+function autocompleteTicker(input, suggestId){
+  const q = input.value.trim().toUpperCase();
+  const sug = document.getElementById(suggestId);
+  if(!q || q.length < 1){ sug.classList.remove('show'); sug.innerHTML=''; return; }
+
+  // Match by ticker prefix or company name contains
+  const matches = TICKER_DB.filter(t =>
+    t.tk.startsWith(q) || t.nm.toUpperCase().includes(q)
+  ).slice(0, 8);
+
+  if(!matches.length){ sug.classList.remove('show'); sug.innerHTML=''; return; }
+
+  _suggestActiveIdx = -1;
+  sug.innerHTML = matches.map((m,i) => `
+    <div class="ticker-suggest-item" onclick="pickTickerSuggest('${input.id}','${suggestId}','${m.tk}')">
+      <span class="ts-tk">${m.tk}</span>
+      <span class="ts-nm">${m.nm}</span>
+      <span class="ts-tag ${m.tag}">${m.tag.toUpperCase()}</span>
+    </div>
+  `).join('');
+  sug.classList.add('show');
+}
+
+function pickTickerSuggest(inputId, suggestId, ticker){
+  document.getElementById(inputId).value = ticker;
+  document.getElementById(suggestId).classList.remove('show');
+  document.getElementById(suggestId).innerHTML = '';
+  // Auto-focus next field
+  if(inputId === 'ptTicker') document.getElementById('ptAmount').focus();
+}
+
+// Hide suggestions when clicking outside
+document.addEventListener('click', (e) => {
+  if(!e.target.closest('.ticker-suggest') && !e.target.matches('input[oninput*="autocompleteTicker"]')){
+    document.querySelectorAll('.ticker-suggest').forEach(s => s.classList.remove('show'));
+  }
+});
+
+// ── CORRELATION EXPLORER ──────────────────────────────────────────
+async function runCorrelationAnalysis(){
+  const ticker = document.getElementById('corrTicker').value.trim().toUpperCase();
+  const el = document.getElementById('corrResults');
+  if(!ticker){ el.innerHTML = '<div style="color:var(--text3);text-align:center;padding:20px;">Enter a ticker first</div>'; return; }
+
+  el.innerHTML = '<div class="loading" style="padding:30px;text-align:center;">analyzing correlations across 65+ assets...</div>';
+  setStatus('CORR ANALYSIS...', true);
+
+  // Get asset type for the input ticker
+  const inputAsset = TICKER_DB.find(t => t.tk === ticker);
+  const inputType = inputAsset ? (inputAsset.tag === 'crypto' ? 'crypto' : 'stock') : 'stock';
+  const isLatamInput = inputAsset && inputAsset.tag === 'LATAM';
+
+  // Calculate correlation against every ticker in our DB
+  // Using estimateCorrelation logic + special pairs
+  const correlations = TICKER_DB
+    .filter(t => t.tk !== ticker)
+    .map(t => {
+      const otherType = t.tag === 'crypto' ? 'crypto' : 'stock';
+      const isLatamOther = t.tag === 'LATAM';
+      let corr = estimateCorrelation(
+        {ticker: ticker, asset_type: inputType},
+        {ticker: t.tk, asset_type: otherType}
+      );
+
+      // Special inverse correlations (defensive vs risk-on)
+      if(t.tk === 'TLT' && inputType === 'stock') corr = -0.30; // bonds inverse to stocks
+      if(t.tk === 'GLD' && inputType === 'stock') corr = 0.10; // gold mostly uncorrelated
+      if(t.tk === 'SLV' && inputType === 'stock') corr = 0.15;
+      if(t.tk === 'VNQ' && inputType === 'stock') corr = 0.55; // REITs correlate with stocks
+
+      // Sector ETFs match well with their sector stocks
+      const techStocks = ['AAPL','MSFT','NVDA','GOOGL','META','AMZN','AMD','INTC','AVGO','CRM','ORCL','ADBE','PLTR'];
+      if(t.tk === 'XLK' && techStocks.includes(ticker)) corr = 0.85;
+      if(t.tk === 'QQQ' && techStocks.includes(ticker)) corr = 0.80;
+
+      const finStocks = ['JPM','BAC','GS','MS','V','MA'];
+      if(t.tk === 'XLF' && finStocks.includes(ticker)) corr = 0.85;
+
+      // Country ETFs match LATAM
+      if(t.tk === 'EWZ' && isLatamOther) corr = 0.75; // Brazil ETF
+      if(t.tk === 'EWZ' && ['VALE','ITUB','PBR','BBD','NU'].includes(ticker)) corr = 0.85;
+      if(t.tk === 'EWW' && ['FMX','KOF','TV','AMX','CX','WALMEX'].includes(ticker)) corr = 0.85;
+
+      return {...t, corr};
+    });
+
+  // Categorize
+  const high = correlations.filter(c => c.corr >= 0.60).sort((a,b) => b.corr - a.corr).slice(0, 8);
+  const medium = correlations.filter(c => c.corr >= 0.30 && c.corr < 0.60).sort((a,b) => b.corr - a.corr).slice(0, 8);
+  const low = correlations.filter(c => c.corr >= 0 && c.corr < 0.30).sort((a,b) => a.corr - b.corr).slice(0, 6);
+  const inverse = correlations.filter(c => c.corr < 0).sort((a,b) => a.corr - b.corr).slice(0, 5);
+
+  function row(c){
+    const intensity = Math.abs(c.corr);
+    const barW = Math.round(intensity * 100);
+    const sign = c.corr >= 0 ? '' : '−';
+    const color = c.corr >= 0.60 ? 'var(--red)' : c.corr >= 0.30 ? '#ffaa00' : c.corr < 0 ? '#00aaff' : 'var(--green)';
+    return `<div style="display:grid;grid-template-columns:80px 1fr 60px 1fr;gap:12px;padding:8px 12px;border-bottom:1px solid #111;align-items:center;font-family:var(--mono);font-size:11px;">
+      <div style="color:var(--text);font-weight:600;">${c.tk}</div>
+      <div style="color:var(--text3);font-size:10px;">${c.nm}</div>
+      <div style="color:${color};text-align:right;font-weight:600;">${sign}${Math.abs(c.corr).toFixed(2)}</div>
+      <div style="height:8px;background:#1a1a1a;border-radius:2px;overflow:hidden;"><div style="height:100%;width:${barW}%;background:${color};"></div></div>
+    </div>`;
+  }
+
+  // Generate insights
+  const highTickers = high.slice(0,3).map(c=>c.tk).join(', ');
+  const inverseTickers = inverse.slice(0,2).map(c=>c.tk).join(', ');
+  const lowTickers = low.slice(0,2).map(c=>c.tk).join(', ');
+
+  let insight = '';
+  if(high.length >= 3){
+    insight += `<strong style="color:var(--red);">⚠ HIGH CONCENTRATION RISK:</strong> If you own ${ticker}, also owning ${highTickers} doesn't diversify — they all move together. `;
+  }
+  if(inverse.length > 0){
+    insight += `<strong style="color:#00aaff;">📉 INVERSE HEDGES:</strong> ${inverseTickers} tend to move opposite to ${ticker} — good for hedging downside. `;
+  }
+  if(low.length > 0){
+    insight += `<strong style="color:var(--green);">✓ TRUE DIVERSIFIERS:</strong> ${lowTickers} have low correlation to ${ticker} — adding these gives REAL diversification.`;
+  }
+
+  el.innerHTML = `
+    <div style="background:#0f0f0f;border:1px solid #1a1a1a;border-radius:6px;padding:16px;margin-bottom:16px;font-family:var(--mono);font-size:11px;line-height:1.6;color:var(--text2);">
+      ${insight}
+    </div>
+
+    ${high.length ? `
+    <div class="section-header"><span class="section-title" style="color:var(--red);">// 🔴 HIGH CORRELATION (move together with ${ticker})</span><div class="section-line"></div></div>
+    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:6px;margin-bottom:16px;">
+      ${high.map(row).join('')}
+    </div>` : ''}
+
+    ${medium.length ? `
+    <div class="section-header"><span class="section-title" style="color:#ffaa00;">// 🟡 MEDIUM CORRELATION</span><div class="section-line"></div></div>
+    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:6px;margin-bottom:16px;">
+      ${medium.map(row).join('')}
+    </div>` : ''}
+
+    ${low.length ? `
+    <div class="section-header"><span class="section-title" style="color:var(--green);">// 🟢 LOW CORRELATION (true diversification)</span><div class="section-line"></div></div>
+    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:6px;margin-bottom:16px;">
+      ${low.map(row).join('')}
+    </div>` : ''}
+
+    ${inverse.length ? `
+    <div class="section-header"><span class="section-title" style="color:#00aaff;">// 📉 INVERSE CORRELATION (move opposite — hedges)</span><div class="section-line"></div></div>
+    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:6px;margin-bottom:16px;">
+      ${inverse.map(row).join('')}
+    </div>` : ''}
+
+    <div style="font-size:10px;color:var(--text3);margin-top:8px;font-family:var(--mono);text-align:center;">
+      Correlations based on asset class, sector, and regional risk modeling · institutional-grade diversification analysis
+    </div>
+  `;
+  setStatus('READY', false);
 }
 
 async function addPosition(){
