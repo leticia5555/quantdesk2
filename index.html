@@ -124,6 +124,9 @@ canvas{display:block;width:100%;height:100%;}
 
 /* VERDICT */
 .verdict{display:inline-block;font-size:10px;padding:3px 10px;border-radius:3px;border:1px solid;letter-spacing:.06em;text-transform:uppercase;}
+.ptQuick{background:#0a0a0a;border:1px solid #1a1a1a;color:var(--text2);padding:3px 8px;border-radius:3px;cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:.04em;transition:all .15s;}
+.ptQuick:hover{background:#1a1a1a;border-color:#333;color:var(--text);}
+.ptQuick:active{background:#222;}
 .v-strong{border-color:var(--blue);color:var(--blue);background:rgba(55,138,221,.1);}
 .v-wait{border-color:var(--green);color:var(--green);background:rgba(29,158,117,.1);}
 .v-risk{border-color:var(--amber);color:var(--amber);background:rgba(239,159,39,.1);}
@@ -596,6 +599,34 @@ td:first-child{color:var(--text);font-weight:500;}
   <div class="two-col" style="margin-bottom:16px;">
     <div>
       <div style="margin-bottom:8px;font-size:11px;color:var(--text3);">// add position</div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;font-family:var(--mono);font-size:10px;">
+        <span style="color:var(--text3);margin-right:4px;">US:</span>
+        <button onclick="ptQuickPick('AAPL')" class="ptQuick">AAPL</button>
+        <button onclick="ptQuickPick('MSFT')" class="ptQuick">MSFT</button>
+        <button onclick="ptQuickPick('NVDA')" class="ptQuick">NVDA</button>
+        <button onclick="ptQuickPick('META')" class="ptQuick">META</button>
+        <button onclick="ptQuickPick('AMZN')" class="ptQuick">AMZN</button>
+        <button onclick="ptQuickPick('TSLA')" class="ptQuick">TSLA</button>
+        <button onclick="ptQuickPick('GOOGL')" class="ptQuick">GOOGL</button>
+        <button onclick="ptQuickPick('SPY')" class="ptQuick">SPY</button>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;font-family:var(--mono);font-size:10px;">
+        <span style="color:#ff8c00;margin-right:4px;">LATAM:</span>
+        <button onclick="ptQuickPick('MELI')" class="ptQuick">MELI</button>
+        <button onclick="ptQuickPick('NU')" class="ptQuick">NU</button>
+        <button onclick="ptQuickPick('GLOB')" class="ptQuick">GLOB</button>
+        <button onclick="ptQuickPick('VALE')" class="ptQuick">VALE</button>
+        <button onclick="ptQuickPick('ITUB')" class="ptQuick">ITUB</button>
+        <button onclick="ptQuickPick('PBR')" class="ptQuick">PBR</button>
+        <button onclick="ptQuickPick('FEMSA')" class="ptQuick">FEMSA</button>
+        <button onclick="ptQuickPick('AMXL')" class="ptQuick">AMXL</button>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;font-family:var(--mono);font-size:10px;">
+        <span style="color:#ffd700;margin-right:4px;">CRYPTO:</span>
+        <button onclick="ptQuickPick('BTC')" class="ptQuick">BTC</button>
+        <button onclick="ptQuickPick('ETH')" class="ptQuick">ETH</button>
+        <button onclick="ptQuickPick('SOL')" class="ptQuick">SOL</button>
+      </div>
       <div class="ctrl-grid g2" style="margin-bottom:8px;">
         <input type="text" id="ptTicker" placeholder="Ticker"/>
         <select id="ptDir"><option value="LONG">LONG</option><option value="SHORT">SHORT</option></select>
@@ -3356,6 +3387,12 @@ function renderVC(deals,q){
 
 // ─── PORTFOLIO ENGINE ─────────────────────────────────────
 let positions=[];
+
+function ptQuickPick(ticker){
+  document.getElementById('ptTicker').value=ticker;
+  // Auto-focus amount field for faster entry
+  document.getElementById('ptAmount').focus();
+}
 
 async function addPosition(){
   const ticker=document.getElementById('ptTicker').value.trim().toUpperCase();
