@@ -265,7 +265,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <input type="number" id="simCapital" placeholder="Capital $" value="10000" min="100"/>
     <select id="simDays"><option value="3">3 days</option><option value="5">1 week</option><option value="10">2 weeks</option><option value="15">15 days</option><option value="21">3 weeks</option><option value="30">1 month</option><option value="60">2 months</option><option value="90" selected>3 months</option><option value="180">6 months</option><option value="365">1 year</option></select>
     <select id="simPaths"><option value="100">100 paths</option><option value="300" selected>300 paths</option><option value="500">500 paths</option><option value="1000">1000 paths</option></select>
-    <select id="simModel"><option value="gbm">GBM — standard</option><option value="jump">Jump diffusion</option><option value="regime">Regime switching</option></select>
+    <select id="simModel"><option value="gbm">GBM + GARCH + Fat Tails</option><option value="jump">Jump Diffusion + GARCH</option><option value="regime">Regime Switching + GARCH</option></select>
   </div>
 
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
@@ -2563,26 +2563,82 @@ function clearSim(){
   setStatus('READY');
 }
 
+// ── Normal random (Box-Muller) ────────────────────────
 function randn(){
   let u=0,v=0;while(u===0)u=Math.random();while(v===0)v=Math.random();
   return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
 }
 
+// ── Student-t random (fat tails) ─────────────────────
+// df=4 gives realistic market kurtosis (~6 vs normal's 3)
+function randt(df=4){
+  const x=randn();
+  // Chi-squared via sum of squared normals
+  let chi2=0;
+  for(let i=0;i<df;i++){const n=randn();chi2+=n*n;}
+  return x/Math.sqrt(chi2/df);
+}
+
+// ── GARCH(1,1) volatility update ─────────────────────
+// omega + alpha*last_shock^2 + beta*last_var
+// Standard params: alpha=0.09, beta=0.90, omega=variance*(1-alpha-beta)
+function garchUpdate(lastVar, lastShock, longRunVar){
+  const alpha=0.09, beta=0.90;
+  const omega=longRunVar*(1-alpha-beta);
+  return omega + alpha*lastShock*lastShock + beta*lastVar;
+}
+
+// ── Main path generator ───────────────────────────────
 function genPath(S0,mu,sigma,days,model){
-  const dt=1/252,path=[S0];let S=S0;
+  const dt=1/252;
+  const path=[S0];
+  let S=S0;
+
+  // GARCH state — starts at long-run variance
+  const longRunVar=sigma*sigma/252; // daily variance
+  let garchVar=longRunVar;
+  let lastShock=0;
+
   for(let i=0;i<days;i++){
-    const z=randn();let ret;
-    if(model==='gbm'){ret=(mu-.5*sigma*sigma)*dt+sigma*Math.sqrt(dt)*z;}
-    else if(model==='jump'){
-      const j=Math.random()<.03?(-.02+.05*randn()):0;
-      ret=(mu-.5*sigma*sigma)*dt+sigma*Math.sqrt(dt)*z+j;
-    }else{
-      const r=Math.random()<.3;
-      const em=r?mu*.3:mu,es=r?sigma*1.8:sigma*.7;
-      ret=(em-.5*es*es)*dt+es*Math.sqrt(dt)*z;
+    let ret;
+
+    if(model==='gbm'){
+      // GBM + GARCH volatility + fat tails (t-distribution)
+      const garchSigma=Math.sqrt(garchVar);
+      const z=randt(5); // df=5: fat tails, realistic kurtosis
+      ret=(mu-.5*garchVar*252)*dt + garchSigma*Math.sqrt(dt)*z;
+      lastShock=garchSigma*Math.sqrt(dt)*z;
+      garchVar=garchUpdate(garchVar, lastShock/Math.sqrt(dt), longRunVar);
+      garchVar=Math.max(longRunVar*0.1, Math.min(longRunVar*10, garchVar)); // clamp
+
+    } else if(model==='jump'){
+      // Jump diffusion + GARCH + fat tails
+      const garchSigma=Math.sqrt(garchVar);
+      const z=randt(5);
+      const jumpProb=0.03; // 3% chance of jump per day
+      const j=Math.random()<jumpProb ? (-.025+.06*randn()) : 0;
+      ret=(mu-.5*garchVar*252)*dt + garchSigma*Math.sqrt(dt)*z + j;
+      lastShock=garchSigma*Math.sqrt(dt)*z+j;
+      garchVar=garchUpdate(garchVar, lastShock/Math.sqrt(dt), longRunVar);
+      garchVar=Math.max(longRunVar*0.1, Math.min(longRunVar*15, garchVar));
+
+    } else {
+      // Regime switching + GARCH + fat tails
+      const inBearRegime=Math.random()<0.3;
+      const regimeMu=inBearRegime ? mu*0.3 : mu;
+      const regimeLongRunVar=inBearRegime ? longRunVar*3 : longRunVar*0.7;
+      garchVar=garchUpdate(garchVar, lastShock/Math.sqrt(dt)||0, regimeLongRunVar);
+      garchVar=Math.max(longRunVar*0.05, Math.min(longRunVar*20, garchVar));
+      const garchSigma=Math.sqrt(garchVar);
+      const z=randt(4); // heavier tails in regime switching
+      ret=(regimeMu-.5*garchVar*252)*dt + garchSigma*Math.sqrt(dt)*z;
+      lastShock=garchSigma*Math.sqrt(dt)*z;
     }
-    S=S*Math.exp(ret);path.push(S);
-  }return path;
+
+    S=S*Math.exp(ret);
+    path.push(S);
+  }
+  return path;
 }
 
 const PAD=38,PAD_R=16,PAD_B=28;
