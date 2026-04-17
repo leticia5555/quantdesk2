@@ -1258,14 +1258,16 @@ function pickEarningsTicker(t){
   const el=document.getElementById('earningsTicker');
   if(el){el.value=t;runEarningsIntel();}
 }
-function etClick(t){
-  pickEarningsTicker(t);
+function etClick(el){
+  const t = typeof el === 'string' ? el : (el.getAttribute('data-ticker') || el.getAttribute('data-et') || '');
+  if(t) pickEarningsTicker(t);
 }
-// Handle clicks via event delegation on calendar container
+// Handle clicks via event delegation
 document.addEventListener('click', function(ev){
-  const card = ev.target.closest('[data-ticker]');
-  if(card && (card.closest('#upcomingEarnings'))){
-    pickEarningsTicker(card.getAttribute('data-ticker'));
+  const card = ev.target.closest('[data-ticker],[data-et]');
+  if(card && card.closest('#upcomingEarnings')){
+    const t = card.getAttribute('data-ticker') || card.getAttribute('data-et');
+    if(t) pickEarningsTicker(t);
   }
 });
 
@@ -1318,7 +1320,7 @@ async function loadUpcomingEarnings(){
           +companies.map(e=>{
             const impColor=e.importance==='HIGH'?'#ff6600':'#444';
             const isLatam=e.sector==='LATAM'||['MELI','NU','GLOB','DESP'].includes(e.ticker);
-        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-ticker="'+e.ticker+'" onclick="etClick(this.getAttribute(String.fromCharCode(100,97,116,97,45,116,105,99,107,101,114)))">' 
+        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-ticker="'+e.ticker+'" onclick="etClick(this)">' 
               +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
               +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:#ccc;">'+e.ticker+'</span>'
               +(isLatam?'<span style="font-size:8px;padding:1px 4px;background:rgba(255,102,0,.15);color:#ff6600;border-radius:2px;">LATAM</span>':'')
@@ -1379,7 +1381,7 @@ function renderEarningsCalendar(realEarnings){
       +companies.map(e=>{
         const impColor=e.importance==='HIGH'?'#ff6600':'#444';
         const isLatam=e.is_latam||e.sector==='LATAM';
-        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-et="'+e.ticker+'" onclick="etClick(this.getAttribute(String.fromCharCode(100,97,116,97,45,116,105,99,107,101,114)))">'
+        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-et="'+e.ticker+'" onclick="etClick(this)">'
           +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
           +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:#ccc;">'+e.ticker+'</span>'
           +(isLatam?'<span style="font-size:8px;padding:1px 4px;background:rgba(255,102,0,.15);color:#ff6600;border-radius:2px;">LATAM</span>':'')
