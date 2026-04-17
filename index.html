@@ -392,6 +392,48 @@ td:first-child{color:var(--text);font-weight:500;}
     </div>
   </div>
   <div id="liveTrackStatus" style="padding:6px 16px;font-family:var(--mono);font-size:11px;color:#555;background:#080808;border-bottom:1px solid #1a1a1a;"></div>
+  
+  <!-- LIVE ANALYTICS PANEL -->
+  <div id="liveAnalyticsPanel" style="display:none;background:#080808;border-top:1px solid #1a1a1a;">
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:0;border-bottom:1px solid #111;">
+      <div style="padding:8px 12px;border-right:1px solid #111;">
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">HIGH</div>
+        <div id="ltHigh" style="font-family:var(--mono);font-size:12px;color:#00c97d;">—</div>
+        <div id="ltHighPct" style="font-size:9px;color:#555;">—</div>
+      </div>
+      <div style="padding:8px 12px;border-right:1px solid #111;">
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">LOW</div>
+        <div id="ltLow" style="font-family:var(--mono);font-size:12px;color:#E24B4A;">—</div>
+        <div id="ltLowPct" style="font-size:9px;color:#555;">—</div>
+      </div>
+      <div style="padding:8px 12px;border-right:1px solid #111;">
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">TIME POSITIVE</div>
+        <div id="ltTimePos" style="font-family:var(--mono);font-size:12px;color:#ccc;">—</div>
+        <div id="ltTimePosBar" style="height:2px;background:#1a1a1a;margin-top:4px;"><div id="ltTimePosBarFill" style="height:100%;background:#00c97d;width:0%;"></div></div>
+      </div>
+      <div style="padding:8px 12px;border-right:1px solid #111;">
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">MOMENTUM</div>
+        <div id="ltMomentum" style="font-family:var(--mono);font-size:12px;">—</div>
+        <div id="ltMomentumSub" style="font-size:9px;color:#555;">last 5 ticks</div>
+      </div>
+      <div style="padding:8px 12px;border-right:1px solid #111;">
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">MAX DRAWDOWN</div>
+        <div id="ltMaxDD" style="font-family:var(--mono);font-size:12px;color:#E24B4A;">—</div>
+        <div id="ltMaxDDTime" style="font-size:9px;color:#555;">since entry</div>
+      </div>
+      <div style="padding:8px 12px;">
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">DATA POINTS</div>
+        <div id="ltDataPts" style="font-family:var(--mono);font-size:12px;color:#888;">—</div>
+        <div id="ltDataFreq" style="font-size:9px;color:#555;">every 30s</div>
+      </div>
+    </div>
+
+    <!-- Mini sparkline of live price path -->
+    <div style="padding:8px 12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">YOUR ACTUAL PATH vs SIM MEDIAN</div>
+      <canvas id="ltMiniChart" style="width:100%;height:50px;display:block;"></canvas>
+    </div>
+  </div>
 </div>
 
 <div id="simAnalysis" style="display:none;">
@@ -936,7 +978,7 @@ const PRESETS = {
   squeeze: {scSqueeze:60, scSort:'squeeze', scUniverse:'all', label:'Squeeze Candidates'},
   insider:  {scInsider:'buying', scSort:'smart_money', scUniverse:'all', label:'Insider Buying'},
   momentum: {scMomentum:10, scSort:'momentum', scUniverse:'us', label:'Momentum'},
-  latam:    {scUniverse:'latam', scSort:'signal', scSqueeze:0, label:'LATAM Focus'},
+  latam:    {scUniverse:'latam', scSort:'signal', scSqueeze:0, scMomentum:-50, label:'LATAM Focus'},
   volatile: {scSigmaMin:60, scSort:'sigma', scUniverse:'all', label:'High Volatility'},
 };
 
@@ -2374,6 +2416,7 @@ function showPage(id){
   if(id==='smartmoney') setTimeout(()=>{if(!smLoaded){smLoaded=true;loadMarketSignals();}},50);
   if(id==='earnings') setTimeout(()=>initEarningsPage(),50);
   if(id==='gallery') setTimeout(()=>renderGallery(),50);
+  else stopGalleryLiveUpdates(); // stop when leaving gallery
   if(id==='screener') setTimeout(()=>{
     const el=document.getElementById('screenerStatus');
     if(el) el.textContent='Ready to screen';
@@ -5256,6 +5299,125 @@ function renderGallery(){
 
   // Draw sparklines after render
   setTimeout(() => savedSims.forEach((s,i) => drawSparkline(s, i)), 100);
+
+  // Start live updates for gallery
+  startGalleryLiveUpdates();
+}
+
+// ─── BINANCE WEBSOCKET LIVE FEED ─────────────────────────
+let binanceWS = null;
+let binancePrices = {}; // ticker -> [{t, price, ...}]
+let galleryAnimFrame = null;
+let galleryLiveInterval = null;
+const galleryLivePrices = {}; // ticker -> [{t, price}]
+
+function startBinanceFeed(tickers){
+  // Map our tickers to Binance symbols
+  const binanceMap = {
+    'BTC/USD': 'btcusdt', 'ETH/USD': 'ethusdt', 'SOL/USD': 'solusdt',
+    'BNB/USD': 'bnbusdt', 'AVAX/USD': 'avaxusdt', 'LINK/USD': 'linkusdt',
+    'DOGE/USD': 'dogeusdt', 'XRP/USD': 'xrpusdt'
+  };
+
+  const streams = tickers
+    .map(t => binanceMap[normalizeTicker(t)])
+    .filter(Boolean)
+    .map(s => s + '@trade')
+    .join('/');
+
+  if(!streams) return;
+
+  if(binanceWS){ binanceWS.close(); binanceWS = null; }
+
+  try{
+    binanceWS = new WebSocket('wss://stream.binance.com:9443/stream?streams=' + streams);
+
+    binanceWS.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if(!msg.data) return;
+      const d = msg.data;
+      const price = parseFloat(d.p);
+      const t = d.s.toLowerCase(); // e.g. 'btcusdt'
+
+      // Map back to our ticker format
+      const ourTicker = Object.entries(binanceMap).find(([k,v]) => v===t)?.[0];
+      if(!ourTicker) return;
+
+      if(!binancePrices[ourTicker]) binancePrices[ourTicker] = [];
+      binancePrices[ourTicker].push({ t: Date.now(), price });
+      // Keep last 500 ticks (~8 min at 1/sec)
+      if(binancePrices[ourTicker].length > 500) binancePrices[ourTicker].shift();
+
+      // Also update galleryLivePrices for chart drawing
+      if(!galleryLivePrices[ourTicker]) galleryLivePrices[ourTicker] = [];
+      galleryLivePrices[ourTicker].push({ t: Date.now(), price });
+      if(galleryLivePrices[ourTicker].length > 500) galleryLivePrices[ourTicker].shift();
+    };
+
+    binanceWS.onerror = () => { binanceWS = null; };
+    binanceWS.onclose = () => { binanceWS = null; };
+
+  }catch(e){ console.log('Binance WS error:', e); }
+}
+
+function stopBinanceFeed(){
+  if(binanceWS){ binanceWS.close(); binanceWS = null; }
+  if(galleryAnimFrame){ cancelAnimationFrame(galleryAnimFrame); galleryAnimFrame = null; }
+}
+
+function startGalleryAnimation(){
+  if(galleryAnimFrame) cancelAnimationFrame(galleryAnimFrame);
+
+  function loop(){
+    // Redraw all gallery sparklines at 30fps
+    savedSims.forEach((s,i) => {
+      const ticker = normalizeTicker(s.ticker);
+      if(binancePrices[ticker] && binancePrices[ticker].length > 1){
+        drawSparkline(s, i);
+      }
+    });
+    galleryAnimFrame = requestAnimationFrame(loop);
+  }
+  galleryAnimFrame = requestAnimationFrame(loop);
+}
+
+function startGalleryLiveUpdates(){
+  if(!savedSims.length) return;
+
+  const tickers = [...new Set(savedSims.map(s => s.ticker))];
+  const cryptoTickers = tickers.filter(t => ['BTC','ETH','SOL','BNB','AVAX','LINK','DOGE','XRP'].some(c => t.includes(c)));
+  const stockTickers = tickers.filter(t => !cryptoTickers.includes(t));
+
+  // Crypto: use Binance WebSocket (real-time per second)
+  if(cryptoTickers.length > 0){
+    startBinanceFeed(cryptoTickers);
+    startGalleryAnimation(); // 30fps redraw loop
+  }
+
+  // Stocks: poll every 30s (no real-time free API)
+  if(stockTickers.length > 0){
+    async function updateStocks(){
+      await Promise.allSettled(stockTickers.map(async t => {
+        try{
+          const r = await fetch('/api/price?ticker=' + encodeURIComponent(normalizeTicker(t)));
+          const d = await r.json();
+          if(d.currentPrice){
+            if(!galleryLivePrices[t]) galleryLivePrices[t] = [];
+            galleryLivePrices[t].push({t: Date.now(), price: d.currentPrice});
+            if(galleryLivePrices[t].length > 200) galleryLivePrices[t].shift();
+          }
+        }catch(e){}
+      }));
+      savedSims.filter(s => stockTickers.includes(s.ticker)).forEach((s,i) => drawSparkline(s, i));
+    }
+    updateStocks();
+    galleryLiveInterval = setInterval(updateStocks, 30000);
+  }
+}
+
+function stopGalleryLiveUpdates(){
+  if(galleryLiveInterval){ clearInterval(galleryLiveInterval); galleryLiveInterval = null; }
+  stopBinanceFeed();
 }
 
 async function drawSparkline(sim, idx){
@@ -5294,7 +5456,11 @@ async function drawSparkline(sim, idx){
 function drawRealPriceChart(ctx, W, H, sim, prices){
   // Use last N days matching sim horizon
   const n = Math.min(prices.length, Math.max(30, sim.days * 3));
-  const slice = prices.slice(-n);
+  let slice = prices.slice(-n);
+
+  // Get live tick data from Binance WS
+  const tickerKey = normalizeTicker(sim.ticker);
+  const liveData = binancePrices[tickerKey] || galleryLivePrices[tickerKey] || null;
   
   let mn = Math.min(...slice) * 0.98;
   let mx = Math.max(...slice) * 1.02;
@@ -5348,13 +5514,31 @@ function drawRealPriceChart(ctx, W, H, sim, prices){
     ctx.fillText('entry', W-36, entryY-2);
   }
 
-  // Current price dot
+  // Current price dot - pulsing if live data
   const lastX = 4 + (slice.length-1)*xS;
   const lastY = H-8-(slice[slice.length-1]-mn)*yS;
+  const hasLiveNow = liveData && liveData.length > 0;
+  
+  if(hasLiveNow){
+    // Outer glow ring
+    ctx.beginPath();
+    ctx.arc(lastX, lastY, 6, 0, Math.PI*2);
+    ctx.fillStyle = lineColor.replace(')', ',0.2)').replace('rgb', 'rgba');
+    ctx.fill();
+  }
   ctx.beginPath();
-  ctx.arc(lastX, lastY, 3, 0, Math.PI*2);
+  ctx.arc(lastX, lastY, hasLiveNow ? 4 : 3, 0, Math.PI*2);
   ctx.fillStyle = lineColor;
   ctx.fill();
+  
+  // LIVE badge if updating
+  if(hasLiveNow){
+    ctx.fillStyle = 'rgba(0,201,125,0.15)';
+    ctx.fillRect(W-30, 2, 26, 12);
+    ctx.fillStyle = '#00c97d';
+    ctx.font = 'bold 8px IBM Plex Mono,monospace';
+    ctx.fillText('LIVE', W-27, 11);
+  }
 
   // Price label top-left
   ctx.fillStyle = '#888';
@@ -5367,6 +5551,81 @@ function drawRealPriceChart(ctx, W, H, sim, prices){
   ctx.fillText('$'+lastPrice.toLocaleString(undefined,{maximumFractionDigits:0}), 6, 12);
   ctx.fillStyle = chgColor;
   ctx.fillText((lastPrice>=firstPrice?'+':'')+chgPct+'%', 6, 22);
+
+  // Draw LIVE BINANCE tick data as bright moving line
+  if(liveData && liveData.length > 1){
+    // Show last ~60 ticks (1 min) of live data on the right side of chart
+    const liveTicks = liveData.slice(-120);
+    const liveW = Math.min(W * 0.35, 120); // use right 35% of chart for live
+    const liveStartX = W - liveW - 4;
+    
+    // Find min/max for live section
+    let lmn = Math.min(...liveTicks.map(p=>p.price));
+    let lmx = Math.max(...liveTicks.map(p=>p.price));
+    const lrange = lmx - lmn || lmn * 0.01;
+    lmn -= lrange * 0.1; lmx += lrange * 0.1;
+    
+    const lxS = liveW / (liveTicks.length - 1);
+    const lyS = (H - 24) / (lmx - lmn);
+
+    // Separator line
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2,2]);
+    ctx.beginPath();
+    ctx.moveTo(liveStartX, 8);
+    ctx.lineTo(liveStartX, H-8);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Live price line
+    ctx.beginPath();
+    ctx.strokeStyle = '#00ffcc';
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = '#00ffcc';
+    ctx.shadowBlur = 4;
+    liveTicks.forEach((pt, i) => {
+      const x = liveStartX + i * lxS;
+      const y = H - 8 - (pt.price - lmn) * lyS;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Trade P&L line (entry price mapped to live section)
+    const entryMappedY = H - 8 - (sim.entryPrice - lmn) * lyS;
+    if(entryMappedY > 8 && entryMappedY < H-8){
+      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+      ctx.setLineDash([2,3]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(liveStartX, entryMappedY);
+      ctx.lineTo(W-4, entryMappedY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Last price label
+    const lastLivePt = liveTicks[liveTicks.length-1];
+    const lastLiveX = liveStartX + (liveTicks.length-1) * lxS;
+    const lastLiveY = H - 8 - (lastLivePt.price - lmn) * lyS;
+    
+    // Pulsing dot
+    ctx.beginPath();
+    ctx.arc(lastLiveX, lastLiveY, 3, 0, Math.PI*2);
+    ctx.fillStyle = '#00ffcc';
+    ctx.fill();
+    
+    // P&L vs entry
+    const livePnl = (lastLivePt.price - sim.entryPrice) / sim.entryPrice;
+    const pnlDollar = livePnl * sim.capital;
+    ctx.fillStyle = livePnl >= 0 ? '#00ffcc' : '#ff6666';
+    ctx.font = 'bold 9px IBM Plex Mono,monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText((livePnl>=0?'+':'')+(livePnl*100).toFixed(2)+'%', W-4, H-2);
+    ctx.fillText((pnlDollar>=0?'+$':'-$')+Math.abs(pnlDollar).toLocaleString(undefined,{maximumFractionDigits:0}), W-4, H-12);
+    ctx.textAlign = 'left';
+  }
 
   // Draw live track overlay if any
   if(sim.livePoints && sim.livePoints.length > 1 && sim.trackStartTime){
@@ -5443,19 +5702,40 @@ function replaySim(idx){
 function trackSavedSim(idx){
   const s = savedSims[idx];
   if(!s) return;
-  // Navigate to SIM and start tracking
-  replaySim(idx);
+
+  // Navigate to SIM tab
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById('page-sim').classList.add('active');
+  document.querySelectorAll('.nav-btn').forEach(b=>{if(b.textContent.trim()==='SIM')b.classList.add('active');});
+  document.getElementById('simTicker').value = s.ticker;
+  document.getElementById('simDir').value = s.dir;
+  document.getElementById('simCapital').value = s.capital;
+  document.getElementById('simDays').value = s.days;
+  window.scrollTo({top:0, behavior:'smooth'});
+
   setTimeout(() => {
-    // Fake having run the sim with saved data
+    // Restore simulation state
+    SP = { S0: s.entryPrice, mu: s.mu||0.15, sigma: s.sigma||0.35, days: s.days, capital: s.capital, dir: s.dir, model: s.model||'gbm' };
+    window._lastCd = { verdict: s.verdict, thesis: s.thesis, current_price: s.entryPrice, mu: s.mu, sigma: s.sigma, longName: s.ticker };
+
     if(s.paths && s.paths.length) {
       allPaths = s.paths.map(p=>[...p]);
-      allFinals = s.finals ? [...s.finals] : s.paths.map(p=>p[p.p.length-1]);
-      SP = { S0: s.entryPrice, mu: s.mu||0.15, sigma: s.sigma||0.35, days: s.days, capital: s.capital, dir: s.dir, model: s.model||'gbm' };
-      redrawSim();
-      updateSimStats();
+      allFinals = s.finals ? [...s.finals] : s.paths.map(p=>p[p.length-1]);
+    } else {
+      // Generate quick sim if paths weren't saved
+      allPaths = []; allFinals = [];
+      for(let i=0;i<200;i++){
+        const p = genPath(s.entryPrice, s.mu||0.15, s.sigma||0.35, s.days, s.model||'gbm');
+        allPaths.push(p); allFinals.push(p[p.length-1]);
+      }
     }
+
+    redrawSim();
+    updateSimStats();
+    showSimAnalysis(window._lastCd, s.ticker, s.capital, s.days);
     startLiveTrack();
-  }, 300);
+  }, 400);
 }
 
 function deleteSim(idx){
@@ -5496,6 +5776,7 @@ function startLiveTrack(){
   // Show panel
   const panel = document.getElementById('liveTrackPanel');
   panel.style.display = 'block';
+  document.getElementById('liveAnalyticsPanel').style.display = 'block';
   document.getElementById('liveTrackTicker').textContent = ticker;
   document.getElementById('liveTrackDir').textContent = SP.dir;
   document.getElementById('liveTrackEntry').textContent = '$' + SP.S0.toLocaleString(undefined,{maximumFractionDigits:2});
@@ -5578,6 +5859,8 @@ async function updateLiveTrack(){
       ' · Percentile vs sim: ' + myPercentile + 'th · ' +
       liveTrackPoints.length + ' data points collected';
 
+    // Update analytics panel
+    updateLiveAnalytics(currentPrice);
     // Redraw canvas with live overlay
     drawLiveOverlay(currentPrice, pnlPct);
 
@@ -5690,6 +5973,160 @@ function drawLiveOverlay(currentPrice, currentPnl){
   simCtx.fillText('LIVE', lastPt.x + 9, lastPt.y - 19);
 }
 
+function updateLiveAnalytics(currentPrice){
+  if(!liveTrack || !liveTrackPoints.length) return;
+
+  const pts = liveTrackPoints;
+  const prices = pts.map(p => p.price);
+  const entry = liveTrack.entryPrice;
+  const dir = liveTrack.dir;
+
+  // High / Low since entry
+  const high = Math.max(...prices);
+  const low = Math.min(...prices);
+  const highPct = ((high - entry) / entry * 100);
+  const lowPct = ((low - entry) / entry * 100);
+
+  // Time positive vs negative
+  const posPoints = prices.filter(p => dir==='LONG' ? p > entry : p < entry).length;
+  const posPct = Math.round(posPoints / prices.length * 100);
+
+  // Momentum — last 5 ticks direction
+  const last5 = prices.slice(-6);
+  let momentumScore = 0;
+  for(let i=1; i<last5.length; i++){
+    momentumScore += last5[i] > last5[i-1] ? 1 : -1;
+  }
+  const momentumDir = momentumScore > 2 ? '↑ ACCELERATING' : momentumScore < -2 ? '↓ DECELERATING' : '→ SIDEWAYS';
+  const momentumColor = momentumScore > 2 ? '#00c97d' : momentumScore < -2 ? '#E24B4A' : '#888';
+
+  // Max drawdown since entry
+  let maxDD = 0;
+  prices.forEach(p => {
+    const dd = dir==='LONG' ? (entry - p)/entry : (p - entry)/entry;
+    if(dd > maxDD) maxDD = dd;
+  });
+
+  // Update DOM
+  const fmt = (p, v) => '$' + Math.abs(v).toLocaleString(undefined,{maximumFractionDigits:0});
+  const fmtPct = v => (v>=0?'+':'') + v.toFixed(2) + '%';
+
+  const hiEl = document.getElementById('ltHigh');
+  const loEl = document.getElementById('ltLow');
+  if(hiEl) { hiEl.textContent = fmt(entry, high); hiEl.style.color = highPct>=0?'#00c97d':'#E24B4A'; }
+  const hiPctEl = document.getElementById('ltHighPct');
+  if(hiPctEl) hiPctEl.textContent = fmtPct(highPct);
+
+  if(loEl) { loEl.textContent = fmt(entry, low); loEl.style.color = '#E24B4A'; }
+  const loPctEl = document.getElementById('ltLowPct');
+  if(loPctEl) loPctEl.textContent = fmtPct(lowPct);
+
+  const tpEl = document.getElementById('ltTimePos');
+  if(tpEl) tpEl.textContent = posPct + '% of time';
+  const tpBar = document.getElementById('ltTimePosBarFill');
+  if(tpBar) tpBar.style.width = posPct + '%';
+
+  const momEl = document.getElementById('ltMomentum');
+  if(momEl){ momEl.textContent = momentumDir; momEl.style.color = momentumColor; }
+
+  const ddEl = document.getElementById('ltMaxDD');
+  if(ddEl) ddEl.textContent = '-' + (maxDD*100).toFixed(2) + '%';
+
+  const dpEl = document.getElementById('ltDataPts');
+  if(dpEl) dpEl.textContent = pts.length + ' pts';
+
+  // Update status bar
+  const statusEl = document.getElementById('liveTrackStatus');
+  if(statusEl){
+    const pnlNow = dir==='LONG' ? (currentPrice-entry)/entry : (entry-currentPrice)/entry;
+    const pnlDollar = pnlNow * liveTrack.capital;
+    statusEl.textContent = 
+      'High: $'+high.toLocaleString(undefined,{maximumFractionDigits:0})+
+      ' · Low: $'+low.toLocaleString(undefined,{maximumFractionDigits:0})+
+      ' · '+posPct+'% time profitable'+
+      ' · '+pts.length+' data points'+
+      ' · Max DD: -'+(maxDD*100).toFixed(2)+'%';
+  }
+
+  // Draw mini chart: actual path vs sim median
+  drawLtMiniChart(prices, entry, dir);
+}
+
+function drawLtMiniChart(prices, entry, dir){
+  const canvas = document.getElementById('ltMiniChart');
+  if(!canvas) return;
+  const dpr = devicePixelRatio || 1;
+  const W = canvas.parentElement.clientWidth - 24;
+  const H = 50;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  if(prices.length < 2) return;
+
+  // Calculate sim median path for same number of points
+  let simMedianPath = null;
+  if(allPaths.length > 10 && SP.days){
+    const step = Math.floor(allPaths[0].length / Math.max(prices.length, 2));
+    simMedianPath = [];
+    for(let i=0; i<prices.length; i++){
+      const idx = Math.min(i * step, allPaths[0].length-1);
+      const vals = allPaths.map(p=>p[idx]).sort((a,b)=>a-b);
+      simMedianPath.push(vals[Math.floor(vals.length*0.5)]);
+    }
+  }
+
+  const allVals = [...prices, ...(simMedianPath||[])];
+  let mn = Math.min(...allVals) * 0.999;
+  let mx = Math.max(...allVals) * 1.001;
+  const xS = (W-4) / (prices.length - 1);
+  const yS = (H-8) / (mx - mn);
+
+  // Entry line
+  const entryY = H-4-(entry-mn)*yS;
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.setLineDash([3,3]);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(2, entryY); ctx.lineTo(W-2, entryY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Sim median path (blue)
+  if(simMedianPath){
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(55,138,221,0.5)';
+    ctx.lineWidth = 1;
+    simMedianPath.forEach((v,i)=>{
+      const x=2+i*xS, y=H-4-(v-mn)*yS;
+      i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+    });
+    ctx.stroke();
+  }
+
+  // Actual price path (cyan)
+  ctx.beginPath();
+  ctx.strokeStyle = '#00ffcc';
+  ctx.lineWidth = 2;
+  ctx.shadowColor = '#00ffcc';
+  ctx.shadowBlur = 3;
+  prices.forEach((v,i)=>{
+    const x=2+i*xS, y=H-4-(v-mn)*yS;
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  });
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Labels
+  ctx.fillStyle = '#00ffcc';
+  ctx.font = '8px IBM Plex Mono,monospace';
+  ctx.fillText('YOU', 4, 10);
+  ctx.fillStyle = 'rgba(55,138,221,0.8)';
+  ctx.fillText('SIM P50', W-46, 10);
+}
+
 // 30fps live canvas animation
 let liveCanvasFrame = null;
 let liveAnimPrice = null; // smoothly animated price
@@ -5756,6 +6193,7 @@ function stopLiveTrack(){
   }
 
   document.getElementById('liveTrackPanel').style.display = 'none';
+  document.getElementById('liveAnalyticsPanel').style.display = 'none';
   document.getElementById('trackBtn').textContent = '📡 Track Live';
   liveTrack = null;
   liveTrackPoints = [];
