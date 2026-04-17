@@ -266,6 +266,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <select id="simDays"><option value="3">3 days</option><option value="5">1 week</option><option value="10">2 weeks</option><option value="15">15 days</option><option value="21">3 weeks</option><option value="30">1 month</option><option value="60">2 months</option><option value="90" selected>3 months</option><option value="180">6 months</option><option value="365">1 year</option></select>
     <select id="simPaths"><option value="100">100 paths</option><option value="300" selected>300 paths</option><option value="500">500 paths</option><option value="1000">1000 paths</option></select>
     <select id="simModel"><option value="gbm">GBM + GARCH + Fat Tails</option><option value="jump">Jump Diffusion + GARCH</option><option value="regime">Regime Switching + GARCH</option></select>
+    <select id="simScenario" title="Drift scenario — how Bloomberg shows uncertainty"><option value="base" selected>μ: Base (live data)</option><option value="bear">μ: Bear (-15%)</option><option value="bull">μ: Bull (+25%)</option><option value="market">μ: Market (+10%)</option><option value="zero">μ: Zero drift (Medallion-style)</option></select>
   </div>
 
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
@@ -3029,6 +3030,14 @@ async function startSim(){
       key_risk:'Price data is estimated — verify before trading.'};
   }
   SP={S0:cd.current_price||100,mu:cd.mu||.15,sigma:cd.sigma||.35,days,capital,dir,model};
+
+  // Apply drift scenario (Bloomberg-style — be honest about mu uncertainty)
+  const scenario = document.getElementById('simScenario')?.value || 'base';
+  if(scenario === 'bear')   SP.mu = -0.15;
+  else if(scenario === 'bull')   SP.mu = 0.25;
+  else if(scenario === 'market') SP.mu = 0.10;
+  else if(scenario === 'zero')   SP.mu = 0.00;
+  // 'base' uses cd.mu from live data
   window._lastCd=cd;
   showSimAnalysis(cd,ticker,capital,days);
   setStatus('SIMULATING...',true);
