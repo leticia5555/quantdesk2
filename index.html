@@ -5309,17 +5309,23 @@ async function runAICommittee(){
   const sharpe = std>0 ? (mean/std)*Math.sqrt(252/days) : 0;
   const cd = window._lastCd || {};
 
+  const isCrypto = (cd.asset_type === 'crypto') || ['BTC','ETH','SOL','BNB','XRP','ADA','DOGE','AVAX','LINK','DOT'].includes(ticker);
+
   const agents = [
     {id:'valuation', emoji:'📊', name:'Valuation Agent', color:'#00bcd4',
-      prompt:`You are a valuation analyst. ${ticker} is at $${S0}, 52w range $${cd.low52w||'?'}-$${cd.high52w||'?'}, 30d return ${((cd.return30d||0)*100).toFixed(1)}%. Based on valuation only (P/E vs sector, price relative to 52w range, growth justifying price): is this overvalued, fairly valued, or undervalued? ONE verdict (STRONG BUY/BUY/HOLD/SELL/STRONG SELL) and ONE sentence reasoning. Return JSON: {"verdict":"","reasoning":""}`},
+      prompt: isCrypto
+        ? `You are a crypto valuation analyst. ${ticker} is at $${S0}, 52w range $${cd.low52w||'?'}-$${cd.high52w||'?'}, 30d return ${((cd.return30d||0)*100).toFixed(1)}%. Based on market cap, price relative to 52w range, on-chain metrics, and relative valuation vs other cryptos: is this overvalued, fairly valued, or undervalued? Pick ONE: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL. Respond ONLY with valid JSON and nothing else: {"verdict":"HOLD","reasoning":"one sentence here"}`
+        : `You are a valuation analyst. ${ticker} is at $${S0}, 52w range $${cd.low52w||'?'}-$${cd.high52w||'?'}, 30d return ${((cd.return30d||0)*100).toFixed(1)}%. Based on valuation only (P/E vs sector, price relative to 52w range, growth justifying price): is this overvalued, fairly valued, or undervalued? Pick ONE: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL. Respond ONLY with valid JSON: {"verdict":"HOLD","reasoning":"one sentence here"}`},
     {id:'sentiment', emoji:'📰', name:'Sentiment Agent', color:'#ff6b6b',
-      prompt:`You are a sentiment analyst. ${ticker} at $${S0}. Based on recent news, analyst ratings, social sentiment for April 2026: what's the market feeling? ONE verdict (STRONG BUY/BUY/HOLD/SELL/STRONG SELL) and ONE sentence on sentiment drivers. Return JSON: {"verdict":"","reasoning":""}`},
+      prompt:`You are a market sentiment analyst. ${ticker} at $${S0}, recent 30-day return ${((cd.return30d||0)*100).toFixed(1)}%. Based on recent news flow, analyst ratings, social sentiment, and retail interest for April 2026: what's the market feeling? Pick ONE: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL. Respond ONLY with valid JSON: {"verdict":"HOLD","reasoning":"one sentence on sentiment drivers"}`},
     {id:'fundamentals', emoji:'🔬', name:'Fundamentals Agent', color:'#4caf50',
-      prompt:`You are a fundamentals analyst. ${ticker} at $${S0}. Based on revenue growth, margins, debt, cashflow, competitive position: is the BUSINESS healthy? ONE verdict (STRONG BUY/BUY/HOLD/SELL/STRONG SELL) and ONE sentence on fundamental strength. Return JSON: {"verdict":"","reasoning":""}`},
+      prompt: isCrypto
+        ? `You are a crypto on-chain analyst. ${ticker} at $${S0}. Analyze network fundamentals: adoption, transaction volume, developer activity, institutional holdings, network security, and ecosystem growth. Pick ONE: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL. Respond ONLY with valid JSON: {"verdict":"HOLD","reasoning":"one sentence on network strength"}`
+        : `You are a fundamentals analyst. ${ticker} at $${S0}. Based on revenue growth, margins, debt, cashflow, competitive position, and management quality: is the BUSINESS healthy? Pick ONE: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL. Respond ONLY with valid JSON: {"verdict":"HOLD","reasoning":"one sentence on fundamental strength"}`},
     {id:'technicals', emoji:'📈', name:'Technicals Agent', color:'#ff9800',
-      prompt:`You are a technical analyst. ${ticker} at $${S0}, 52w range $${cd.low52w||'?'}-$${cd.high52w||'?'}, 30d momentum ${((cd.return30d||0)*100).toFixed(1)}%, sigma ${((cd.sigma||.3)*100).toFixed(0)}%. Based on moving averages, RSI, MACD, support/resistance levels: what does the chart say? ONE verdict (STRONG BUY/BUY/HOLD/SELL/STRONG SELL) and ONE sentence on technical picture. Return JSON: {"verdict":"","reasoning":""}`},
+      prompt:`You are a technical analyst. ${ticker} at $${S0}, 52w range $${cd.low52w||'?'}-$${cd.high52w||'?'}, 30d momentum ${((cd.return30d||0)*100).toFixed(1)}%, sigma ${((cd.sigma||.3)*100).toFixed(0)}%. Based on moving averages, RSI, MACD, support/resistance levels, and trend strength: what does the chart say? Pick ONE: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL. Respond ONLY with valid JSON: {"verdict":"HOLD","reasoning":"one sentence on technical picture"}`},
     {id:'risk', emoji:'⚠️', name:'Risk Manager', color:'#e91e63',
-      prompt:`You are a risk manager. Monte Carlo sim for ${ticker} ${dir} ${days}d shows: win rate ${(winRate*100).toFixed(0)}%, Sharpe ${sharpe.toFixed(2)}, VaR95 ${(var95*100).toFixed(1)}%, expected ${(mean*100).toFixed(1)}%. Based on RISK-ADJUSTED metrics only: is this trade worth the risk? ONE verdict (STRONG BUY/BUY/HOLD/SELL/STRONG SELL) and ONE sentence on risk/reward. Return JSON: {"verdict":"","reasoning":""}`}
+      prompt:`You are a risk manager. Monte Carlo simulation for ${ticker} ${dir} ${days}d trade shows: win rate ${(winRate*100).toFixed(0)}%, Sharpe ratio ${sharpe.toFixed(2)}, VaR95 ${(var95*100).toFixed(1)}%, expected return ${(mean*100).toFixed(1)}%. Based purely on RISK-ADJUSTED metrics: is this trade worth the risk? Pick ONE: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL. Respond ONLY with valid JSON: {"verdict":"HOLD","reasoning":"one sentence on risk/reward"}`}
   ];
 
   // Loading state
@@ -5344,15 +5350,28 @@ async function runAICommittee(){
     try{
       const r=await fetch('/api/claude',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:200,
+        body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:250,
           messages:[{role:'user',content:a.prompt}]})
       });
       const d=await r.json();
       const text=d.content?.map(b=>b.text||'').join('')||'';
-      const parsed = safeJSON(text) || {verdict:'HOLD',reasoning:'unable to analyze'};
+
+      // Try JSON parse first
+      let parsed = safeJSON(text);
+
+      // Fallback: regex extraction if JSON parsing fails
+      if(!parsed || !parsed.verdict){
+        const verdictMatch = text.match(/STRONG BUY|STRONG SELL|BUY|SELL|HOLD/i);
+        const verdict = verdictMatch ? verdictMatch[0].toUpperCase() : 'HOLD';
+        // Grab the longest sentence as reasoning
+        const sentences = text.split(/[.!?]\s+/).filter(s => s.length > 20 && s.length < 300);
+        const reasoning = sentences[0] || text.slice(0, 200).trim() || 'Analysis complete';
+        parsed = {verdict, reasoning};
+      }
+
       return {...a, verdict:parsed.verdict||'HOLD', reasoning:parsed.reasoning||''};
     }catch(e){
-      return {...a, verdict:'HOLD', reasoning:'analysis failed'};
+      return {...a, verdict:'HOLD', reasoning:'analysis unavailable'};
     }
   }));
 
