@@ -323,6 +323,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button onclick="runInvestorPersonas()" id="personasBtn" style="border-color:#9b59b6;color:#9b59b6;" title="Ask legendary investors">👤 Investors</button>
     <button onclick="runDebate()" id="debateBtn" style="border-color:var(--amber);color:var(--amber);" title="Bull vs Bear debate">⚔ Debate</button>
     <button onclick="runAICommittee()" id="committeeBtn" style="border-color:#00bcd4;color:#00bcd4;" title="5 AI agents analyze from different angles">🧠 AI Committee</button>
+    <button onclick="runEnsemble()" id="ensembleBtn" style="border-color:#ff00aa;color:#ff00aa;" title="Run all 3 models in parallel — see where they agree">🎯 Ensemble</button>
     <button onclick="startLiveTrack()" id="trackBtn" style="border-color:#00ffcc;color:#00ffcc;" title="Track this trade live vs simulation">📡 Track Live</button>
     <button onclick="saveSim()" id="saveSimBtn" style="border-color:#9b59b6;color:#9b59b6;" title="Save simulation to gallery">💾 Save Sim</button>
   </div>
@@ -5339,6 +5340,159 @@ const INVESTORS = [
   {id:'mobius', name:'Mark Mobius', style:'Emerging markets legend. 30 years in LATAM, Asia, Africa. Loves undervalued frontier markets. Understands currency risk and political risk deeply.', emoji:'🌏'},
   {id:'masa', name:'Masayoshi Son', style:'300-year vision investor. Bets on AI singularity. Either 10x or zero — no middle ground. Famously lost $70B and came back. LATAM bets: Rappi, Kavak.', emoji:'💥'},
 ];
+
+// ─── ENSEMBLE: run all 3 models in parallel, show consensus ───
+async function runEnsemble(){
+  const ticker=document.getElementById('simTicker').value.trim().toUpperCase();
+  if(!ticker||!allFinals.length){alert('Run a simulation first');return;}
+
+  const btn=document.getElementById('ensembleBtn');
+  btn.textContent='Running 3 models...';btn.disabled=true;
+
+  // Inject panel
+  let panel=document.getElementById('ensemblePanel');
+  if(!panel){
+    panel=document.createElement('div');
+    panel.id='ensemblePanel';
+    panel.style.cssText='margin-bottom:16px;';
+    const committeePanel=document.getElementById('committeePanel');
+    const target = committeePanel || document.getElementById('backtestPanel') || document.getElementById('extStatsPanel');
+    if(target&&target.parentNode) target.parentNode.insertBefore(panel,target.nextSibling);
+  }
+
+  const S0=SP.S0, mu=SP.mu||0.12, sigma=SP.sigma||0.35, days=SP.days, dir=SP.dir;
+  const nPaths = 300;
+  const models = [
+    {id:'gbm', name:'GBM + GARCH', color:'#4caf50', desc:'standard diffusion'},
+    {id:'jump', name:'Jump Diffusion', color:'#ff9800', desc:'black swans'},
+    {id:'regime', name:'Regime Switching', color:'#9c27b0', desc:'bull/bear cycles'}
+  ];
+
+  // Loading
+  panel.innerHTML = `
+    <div class="section-header"><span class="section-title" style="color:#ff00aa;">// 🎯 ENSEMBLE · 3 MODELS IN PARALLEL · ${nPaths*3} total paths</span><div class="section-line"></div></div>
+    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:6px;padding:16px;text-align:center;color:var(--text3);">
+      running ${nPaths} paths × 3 models...
+    </div>
+  `;
+
+  // Run each model
+  const results = models.map(m => {
+    const finals = [];
+    const pathsPL = [];
+    for(let i=0; i<nPaths; i++){
+      const path = genPath(S0, mu, sigma, days, m.id);
+      const final = path[path.length-1];
+      finals.push(final);
+      const ret = dir==='LONG' ? (final-S0)/S0 : (S0-final)/S0;
+      pathsPL.push(ret);
+    }
+    const mean = pathsPL.reduce((a,b)=>a+b,0)/pathsPL.length;
+    const winRate = pathsPL.filter(r=>r>0).length/pathsPL.length;
+    const sorted = [...pathsPL].sort((a,b)=>a-b);
+    const var95 = sorted[Math.floor(pathsPL.length*.05)];
+    const std = Math.sqrt(pathsPL.reduce((a,r)=>a+(r-mean)**2,0)/pathsPL.length);
+    const sharpe = std>0 ? (mean/std)*Math.sqrt(252/days) : 0;
+    const p10 = sorted[Math.floor(pathsPL.length*.10)];
+    const p90 = sorted[Math.floor(pathsPL.length*.90)];
+    return {...m, mean, winRate, var95, sharpe, p10, p90, finals};
+  });
+
+  // Consensus statistics
+  const avgMean = results.reduce((a,r)=>a+r.mean,0)/3;
+  const meanStd = Math.sqrt(results.reduce((a,r)=>a+(r.mean-avgMean)**2,0)/3);
+  const avgWinRate = results.reduce((a,r)=>a+r.winRate,0)/3;
+  const winRateStd = Math.sqrt(results.reduce((a,r)=>a+(r.winRate-avgWinRate)**2,0)/3);
+  const avgSharpe = results.reduce((a,r)=>a+r.sharpe,0)/3;
+
+  // Agreement score: how close do the models agree? (lower std = higher agreement)
+  // Win rate std < 0.05 = high agreement, > 0.10 = low agreement
+  let agreementLevel, agreementColor, agreementEmoji;
+  if(winRateStd < 0.05){ agreementLevel='HIGH CONSENSUS'; agreementColor='var(--green)'; agreementEmoji='✅'; }
+  else if(winRateStd < 0.10){ agreementLevel='MODERATE CONSENSUS'; agreementColor='#ffaa00'; agreementEmoji='🟡'; }
+  else{ agreementLevel='LOW CONSENSUS'; agreementColor='var(--red)'; agreementEmoji='⚠️'; }
+
+  // Verdict
+  let consensusVerdict, verdictColor;
+  if(avgWinRate >= 0.65 && avgSharpe >= 1.0){ consensusVerdict='STRONG ENTRY'; verdictColor='var(--green)'; }
+  else if(avgWinRate >= 0.55 && avgSharpe >= 0.5){ consensusVerdict='BUY'; verdictColor='#66bb6a'; }
+  else if(avgWinRate >= 0.45 && avgSharpe >= -0.3){ consensusVerdict='WAIT FOR DIP'; verdictColor='#ffaa00'; }
+  else if(avgWinRate >= 0.30){ consensusVerdict='HIGH RISK'; verdictColor='#ff7043'; }
+  else{ consensusVerdict='AVOID'; verdictColor='var(--red)'; }
+
+  function card(r){
+    const wrColor = r.winRate>=0.5 ? 'var(--green)' : r.winRate>=0.4 ? '#ffaa00' : 'var(--red)';
+    const retColor = r.mean>=0 ? 'var(--green)' : 'var(--red)';
+    return `<div style="background:#0a0a0a;border:1px solid ${r.color}44;border-radius:6px;padding:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <div>
+          <div style="font-family:var(--mono);font-size:12px;color:${r.color};font-weight:600;">${r.name}</div>
+          <div style="font-size:9px;color:var(--text3);letter-spacing:.05em;">${r.desc.toUpperCase()}</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+        <div>
+          <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">WIN RATE</div>
+          <div style="font-size:18px;font-weight:600;color:${wrColor};font-family:var(--mono);">${(r.winRate*100).toFixed(0)}%</div>
+        </div>
+        <div>
+          <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">EXP. RETURN</div>
+          <div style="font-size:18px;font-weight:600;color:${retColor};font-family:var(--mono);">${r.mean>=0?'+':''}${(r.mean*100).toFixed(1)}%</div>
+        </div>
+        <div>
+          <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">SHARPE</div>
+          <div style="font-size:13px;color:var(--text);font-family:var(--mono);">${r.sharpe.toFixed(2)}</div>
+        </div>
+        <div>
+          <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">VAR 95%</div>
+          <div style="font-size:13px;color:var(--red);font-family:var(--mono);">${(r.var95*100).toFixed(1)}%</div>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--text3);font-family:var(--mono);padding-top:8px;border-top:1px solid #1a1a1a;">
+        p10 ${(r.p10*100).toFixed(1)}% · p90 ${(r.p90*100).toFixed(1)}%
+      </div>
+    </div>`;
+  }
+
+  panel.innerHTML = `
+    <div class="section-header"><span class="section-title" style="color:#ff00aa;">// 🎯 ENSEMBLE · 3 MODELS IN PARALLEL · ${nPaths*3} total paths</span><div class="section-line"></div></div>
+
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
+      ${results.map(card).join('')}
+    </div>
+
+    <div style="background:linear-gradient(135deg, rgba(255,0,170,.08) 0%, rgba(0,188,212,.08) 100%);border:1px solid ${agreementColor}44;border-radius:6px;padding:16px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;align-items:center;">
+        <div>
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">// AGREEMENT LEVEL</div>
+          <div style="font-size:16px;font-weight:700;color:${agreementColor};">${agreementEmoji} ${agreementLevel}</div>
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-top:4px;">win rate σ = ${(winRateStd*100).toFixed(1)}%</div>
+        </div>
+        <div style="text-align:center;border-left:1px solid #2a2a2a;border-right:1px solid #2a2a2a;padding:0 16px;">
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">// CONSENSUS WIN RATE</div>
+          <div style="font-size:26px;font-weight:700;color:var(--text);font-family:var(--mono);">${(avgWinRate*100).toFixed(0)}%</div>
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-top:4px;">± ${(winRateStd*100).toFixed(1)}% across models</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">// ENSEMBLE VERDICT</div>
+          <div style="font-size:18px;font-weight:700;color:${verdictColor};letter-spacing:.05em;">${consensusVerdict}</div>
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-top:4px;">avg return ${avgMean>=0?'+':''}${(avgMean*100).toFixed(1)}%</div>
+        </div>
+      </div>
+
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid #1a1a1a;font-size:11px;color:var(--text2);line-height:1.6;font-family:var(--sans);">
+        ${winRateStd < 0.05
+          ? `<strong style="color:var(--green);">✅ All 3 models agree</strong> — the outcome is robust across different modeling assumptions. High confidence in the ${consensusVerdict} signal.`
+          : winRateStd < 0.10
+          ? `<strong style="color:#ffaa00;">🟡 Models mostly agree</strong> — some sensitivity to modeling choice. Consider the spread between GBM (${(results[0].winRate*100).toFixed(0)}%) and Regime (${(results[2].winRate*100).toFixed(0)}%) when sizing.`
+          : `<strong style="color:var(--red);">⚠️ Models disagree significantly</strong> — outcome is highly dependent on assumptions. Jump/regime tail events change the story. Reduce position size.`
+        }
+      </div>
+    </div>
+  `;
+
+  btn.textContent='🎯 Ensemble';btn.disabled=false;
+}
 
 // ─── AI COMMITTEE — 5 technical agents analyze in parallel ────
 async function runAICommittee(){
