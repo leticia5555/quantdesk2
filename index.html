@@ -2610,12 +2610,15 @@ function randn(){
 
 // ── Student-t random (fat tails) ─────────────────────
 // df=4 gives realistic market kurtosis (~6 vs normal's 3)
+// Normalized to have variance 1 (raw t has variance df/(df-2))
 function randt(df=4){
   const x=randn();
   // Chi-squared via sum of squared normals
   let chi2=0;
   for(let i=0;i<df;i++){const n=randn();chi2+=n*n;}
-  return x/Math.sqrt(chi2/df);
+  // Raw t-draw: x/sqrt(chi2/df), scale to variance 1
+  const rawT = x/Math.sqrt(chi2/df);
+  return rawT * Math.sqrt((df-2)/df);
 }
 
 // ── GARCH(1,1) volatility update ─────────────────────
@@ -2814,11 +2817,12 @@ function genPath(S0,mu,sigma,days,model){
 
     if(model==='gbm'){
       // GBM + GARCH volatility + fat tails (t-distribution)
+      // garchVar is DAILY variance. drift correction: (mu*dt) - 0.5*garchVar
       const garchSigma=Math.sqrt(garchVar);
       const z=randt(5); // df=5: fat tails, realistic kurtosis
-      ret=(mu-.5*garchVar*252)*dt + garchSigma*Math.sqrt(dt)*z;
-      lastShock=garchSigma*Math.sqrt(dt)*z;
-      garchVar=garchUpdate(garchVar, lastShock/Math.sqrt(dt), longRunVar);
+      ret = mu*dt - 0.5*garchVar + garchSigma*z;
+      lastShock=garchSigma*z;
+      garchVar=garchUpdate(garchVar, lastShock, longRunVar);
       garchVar=Math.max(longRunVar*0.1, Math.min(longRunVar*10, garchVar)); // clamp
 
     } else if(model==='jump'){
@@ -2827,9 +2831,9 @@ function genPath(S0,mu,sigma,days,model){
       const z=randt(5);
       const jumpProb=0.03; // 3% chance of jump per day
       const j=Math.random()<jumpProb ? (-.025+.06*randn()) : 0;
-      ret=(mu-.5*garchVar*252)*dt + garchSigma*Math.sqrt(dt)*z + j;
-      lastShock=garchSigma*Math.sqrt(dt)*z+j;
-      garchVar=garchUpdate(garchVar, lastShock/Math.sqrt(dt), longRunVar);
+      ret = mu*dt - 0.5*garchVar + garchSigma*z + j;
+      lastShock=garchSigma*z+j;
+      garchVar=garchUpdate(garchVar, lastShock, longRunVar);
       garchVar=Math.max(longRunVar*0.1, Math.min(longRunVar*15, garchVar));
 
     } else {
@@ -2837,12 +2841,12 @@ function genPath(S0,mu,sigma,days,model){
       const inBearRegime=Math.random()<0.3;
       const regimeMu=inBearRegime ? mu*0.3 : mu;
       const regimeLongRunVar=inBearRegime ? longRunVar*3 : longRunVar*0.7;
-      garchVar=garchUpdate(garchVar, lastShock/Math.sqrt(dt)||0, regimeLongRunVar);
+      garchVar=garchUpdate(garchVar, lastShock||0, regimeLongRunVar);
       garchVar=Math.max(longRunVar*0.05, Math.min(longRunVar*20, garchVar));
       const garchSigma=Math.sqrt(garchVar);
       const z=randt(4); // heavier tails in regime switching
-      ret=(regimeMu-.5*garchVar*252)*dt + garchSigma*Math.sqrt(dt)*z;
-      lastShock=garchSigma*Math.sqrt(dt)*z;
+      ret = regimeMu*dt - 0.5*garchVar + garchSigma*z;
+      lastShock=garchSigma*z;
     }
 
     S=S*Math.exp(ret);
