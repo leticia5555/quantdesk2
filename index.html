@@ -3009,11 +3009,13 @@ function updateSimStats(){
   const grossLoss=Math.abs(returns.filter(r=>r<0).reduce((a,r)=>a+r,0));
   const profitFactor=grossLoss>0?grossWin/grossLoss:999;
 
-  // Kelly criterion
+  // Kelly criterion: f* = p - (1-p)*(L/W) where W=avg win, L=avg loss magnitudes
   const winRate=wins/n;
   const avgWin=wins>0?grossWin/wins:0;
   const avgLoss=losses>0?grossLoss/losses:0;
-  const kelly=avgLoss>0?(winRate-(1-winRate)*(avgLoss/avgWin>0?avgWin/avgLoss:0)):0;
+  const kelly = (avgWin>0 && avgLoss>0)
+    ? winRate - (1-winRate) * (avgLoss/avgWin)
+    : 0;
 
   // Expected value
   const ev=mean*SP.capital;
@@ -3319,8 +3321,9 @@ function showSimAnalysis(cd,ticker,capital,days){
   const ret30d=cd.return30d?(cd.return30d>=0?'+':'')+( cd.return30d*100).toFixed(1)+'% 30d':'';
   const dataColor=cd.recentPrices?'var(--green)':'var(--amber)';
   const dataTag=cd.recentPrices?'LIVE DATA':'EST';
+  const modelName = SP.model==='gbm' ? 'GBM+GARCH+t' : SP.model==='jump' ? 'Jump Diff+GARCH+t' : 'Regime+GARCH+t';
   const metaParts=[ticker,name,cd.asset_type,priceStr,rangeStr,ret30d,'mu='+((cd.mu||.15)*100).toFixed(0)+'%','sigma='+((cd.sigma||.35)*100).toFixed(0)+'%'].filter(Boolean).join(' · ');
-  document.getElementById('simMeta').innerHTML=metaParts+' · <span style="color:'+dataColor+'">'+dataTag+'</span>';
+  document.getElementById('simMeta').innerHTML=metaParts+' · <span style="color:'+dataColor+'">'+dataTag+'</span>'+' · <span style="color:#00bcd4;font-size:10px;">model: '+modelName+'</span>';
   document.getElementById('simThesis').textContent=cd.thesis||'';
   document.getElementById('simSignals').innerHTML=(cd.signals||[]).map(s=>`<li>${s}</li>`).join('');
   document.getElementById('simRisk').textContent=cd.key_risk||'';
