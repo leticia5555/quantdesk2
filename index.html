@@ -2610,7 +2610,7 @@ function randn(){
 
 // ── Student-t random (fat tails) ─────────────────────
 // df=4 gives realistic market kurtosis (~6 vs normal's 3)
-// Normalized to have variance 1 (raw t has variance df/(df-2))
+// Normalized to have variance 1, winsorized at ±4 to cap absurd outliers
 function randt(df=4){
   const x=randn();
   // Chi-squared via sum of squared normals
@@ -2618,7 +2618,9 @@ function randt(df=4){
   for(let i=0;i<df;i++){const n=randn();chi2+=n*n;}
   // Raw t-draw: x/sqrt(chi2/df), scale to variance 1
   const rawT = x/Math.sqrt(chi2/df);
-  return rawT * Math.sqrt((df-2)/df);
+  const normalized = rawT * Math.sqrt((df-2)/df);
+  // Winsorize at ±4: cap extreme tail events (still allows fat tails vs normal's ±3)
+  return Math.max(-4, Math.min(4, normalized));
 }
 
 // ── GARCH(1,1) volatility update ─────────────────────
