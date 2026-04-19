@@ -367,6 +367,73 @@ td:first-child{color:var(--text);font-weight:500;}
     <canvas id="distCanvas"></canvas>
   </div>
 
+  <!-- WHAT-IF SLIDERS PANEL -->
+  <div id="whatIfPanel" style="display:none;background:linear-gradient(135deg, rgba(0,188,212,.06) 0%, rgba(255,0,170,.06) 100%);border:1px solid #1a1a1a;border-radius:8px;padding:14px;margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div>
+        <div style="font-family:var(--mono);font-size:12px;color:#00bcd4;letter-spacing:.05em;font-weight:600;">// 🎚️ WHAT-IF SCENARIOS</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px;">Move sliders to see how parameters change the outcome in real-time</div>
+      </div>
+      <button onclick="resetWhatIf()" style="background:none;border:1px solid #333;color:var(--text3);padding:4px 10px;border-radius:3px;cursor:pointer;font-family:var(--mono);font-size:10px;">↻ reset</button>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:12px;">
+      <div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+          <span style="font-size:10px;color:var(--text3);font-family:var(--mono);">DRIFT (mu)</span>
+          <span id="wiMuVal" style="font-size:11px;color:#00bcd4;font-family:var(--mono);font-weight:600;">15%</span>
+        </div>
+        <input type="range" id="wiMu" min="-20" max="80" value="15" step="1" style="width:100%;accent-color:#00bcd4;" oninput="updateWhatIf()"/>
+        <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;">
+          <span>-20%</span><span>+80%</span>
+        </div>
+      </div>
+      <div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+          <span style="font-size:10px;color:var(--text3);font-family:var(--mono);">VOLATILITY (σ)</span>
+          <span id="wiSigmaVal" style="font-size:11px;color:#ff00aa;font-family:var(--mono);font-weight:600;">35%</span>
+        </div>
+        <input type="range" id="wiSigma" min="5" max="120" value="35" step="1" style="width:100%;accent-color:#ff00aa;" oninput="updateWhatIf()"/>
+        <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;">
+          <span>5%</span><span>120%</span>
+        </div>
+      </div>
+      <div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+          <span style="font-size:10px;color:var(--text3);font-family:var(--mono);">HORIZON (days)</span>
+          <span id="wiDaysVal" style="font-size:11px;color:#ffaa00;font-family:var(--mono);font-weight:600;">90d</span>
+        </div>
+        <input type="range" id="wiDays" min="5" max="365" value="90" step="5" style="width:100%;accent-color:#ffaa00;" oninput="updateWhatIf()"/>
+        <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;">
+          <span>5d</span><span>365d</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="wiResults" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding-top:12px;border-top:1px solid #1a1a1a;">
+      <div style="background:rgba(0,0,0,.4);border-radius:4px;padding:8px;">
+        <div style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-bottom:2px;">EXPECTED RETURN</div>
+        <div id="wiExp" style="font-size:16px;font-weight:600;color:var(--text);font-family:var(--mono);">—</div>
+        <div id="wiExpOrig" style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;">vs —</div>
+      </div>
+      <div style="background:rgba(0,0,0,.4);border-radius:4px;padding:8px;">
+        <div style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-bottom:2px;">WIN RATE</div>
+        <div id="wiWin" style="font-size:16px;font-weight:600;color:var(--text);font-family:var(--mono);">—</div>
+        <div id="wiWinOrig" style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;">vs —</div>
+      </div>
+      <div style="background:rgba(0,0,0,.4);border-radius:4px;padding:8px;">
+        <div style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-bottom:2px;">SHARPE</div>
+        <div id="wiSharpe" style="font-size:16px;font-weight:600;color:var(--text);font-family:var(--mono);">—</div>
+        <div id="wiSharpeOrig" style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;">vs —</div>
+      </div>
+      <div style="background:rgba(0,0,0,.4);border-radius:4px;padding:8px;">
+        <div style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-bottom:2px;">VaR 95%</div>
+        <div id="wiVar" style="font-size:16px;font-weight:600;color:var(--red);font-family:var(--mono);">—</div>
+        <div id="wiVarOrig" style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;">vs —</div>
+      </div>
+    </div>
+  </div>
+
   <div class="scenario-row">
     <div class="scen bear"><div class="scen-lbl" id="lbl-bear">bear · p10</div><div class="scen-pct neg" id="scB">—</div><div class="scen-pnl" id="scBpnl">—</div><div class="scen-prob" id="prob-bear">worst 10% of paths</div></div>
     <div class="scen"><div class="scen-lbl" id="lbl-base">base · median</div><div class="scen-pct" id="scM">—</div><div class="scen-pnl" id="scMpnl">—</div><div class="scen-prob" id="prob-base">median outcome</div></div>
@@ -3388,7 +3455,7 @@ function updateSimStats(){
     ${renderRiskOfRuin(winRate, avgWin, avgLoss, SP.capital)}
   `;
   applyTooltips();
-  renderWhatIfPanel();
+  showWhatIfPanel();
 }
 
 function normalizeTicker(ticker){
@@ -5611,7 +5678,143 @@ const INVESTORS = [
   {id:'masa', name:'Masayoshi Son', style:'300-year vision investor. Bets on AI singularity. Either 10x or zero — no middle ground. Famously lost $70B and came back. LATAM bets: Rappi, Kavak.', emoji:'💥'},
 ];
 
-// ─── RUIN SIMULATOR: visual 100 accounts trading ────
+// ── WHAT-IF SLIDERS: real-time GBM recalculation ──
+let _whatIfOriginal = null;
+
+function showWhatIfPanel(){
+  // Called after a sim completes
+  const panel = document.getElementById('whatIfPanel');
+  if(!panel || !SP) return;
+
+  // Store original params as baseline
+  _whatIfOriginal = {
+    mu: SP.mu || 0.15,
+    sigma: SP.sigma || 0.35,
+    days: SP.days || 90,
+    S0: SP.S0,
+    dir: SP.dir
+  };
+
+  // Sync sliders to current values
+  document.getElementById('wiMu').value = Math.round(_whatIfOriginal.mu * 100);
+  document.getElementById('wiSigma').value = Math.round(_whatIfOriginal.sigma * 100);
+  document.getElementById('wiDays').value = _whatIfOriginal.days;
+
+  panel.style.display = 'block';
+  updateWhatIf();
+}
+
+function resetWhatIf(){
+  if(!_whatIfOriginal) return;
+  document.getElementById('wiMu').value = Math.round(_whatIfOriginal.mu * 100);
+  document.getElementById('wiSigma').value = Math.round(_whatIfOriginal.sigma * 100);
+  document.getElementById('wiDays').value = _whatIfOriginal.days;
+  updateWhatIf();
+}
+
+// GBM closed-form approximations
+function gbmExpectedReturn(mu, sigma, days, dir){
+  const t = days / 252;
+  // For LONG: E[ST/S0] = exp(mu*t), so return = exp(mu*t) - 1
+  const exp = Math.exp(mu * t) - 1;
+  return dir === 'LONG' ? exp : -exp;
+}
+
+function gbmWinRate(mu, sigma, days, dir){
+  // P(ST > S0) for LONG = P(log(ST/S0) > 0)
+  // log(ST/S0) ~ N((mu - 0.5*sigma^2)*t, sigma^2*t)
+  const t = days / 252;
+  const driftAdj = (mu - 0.5 * sigma * sigma) * t;
+  const vol = sigma * Math.sqrt(t);
+  if(vol === 0) return mu > 0 ? 1 : 0;
+  const z = driftAdj / vol;
+  // Normal CDF approximation
+  const cdf = 0.5 * (1 + erf(z / Math.sqrt(2)));
+  return dir === 'LONG' ? cdf : 1 - cdf;
+}
+
+function erf(x){
+  // Abramowitz & Stegun approx
+  const sign = x >= 0 ? 1 : -1;
+  x = Math.abs(x);
+  const a1 =  0.254829592, a2 = -0.284496736, a3 =  1.421413741;
+  const a4 = -1.453152027, a5 =  1.061405429, p  =  0.3275911;
+  const t = 1.0 / (1.0 + p * x);
+  const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+  return sign * y;
+}
+
+function gbmVaR95(mu, sigma, days, dir){
+  // 5th percentile of returns. log(ST/S0) ~ N((mu-0.5σ²)t, σ²t)
+  // 5th percentile z = -1.645
+  const t = days / 252;
+  const meanLog = (mu - 0.5*sigma*sigma) * t;
+  const stdLog = sigma * Math.sqrt(t);
+  const pct5Log = meanLog - 1.645 * stdLog;
+  const ret = Math.exp(pct5Log) - 1;
+  return dir === 'LONG' ? ret : -Math.exp(meanLog + 1.645*stdLog) + 1;
+}
+
+function gbmSharpe(mu, sigma, days){
+  // Annualized Sharpe: (mu - rf) / sigma with rf ~4.5%
+  return (mu - 0.045) / sigma;
+}
+
+function updateWhatIf(){
+  if(!_whatIfOriginal) return;
+
+  const muPct = parseFloat(document.getElementById('wiMu').value);
+  const sigmaPct = parseFloat(document.getElementById('wiSigma').value);
+  const days = parseInt(document.getElementById('wiDays').value);
+
+  const mu = muPct / 100;
+  const sigma = sigmaPct / 100;
+
+  // Update labels
+  document.getElementById('wiMuVal').textContent = (muPct>=0?'+':'') + muPct + '%';
+  document.getElementById('wiSigmaVal').textContent = sigmaPct + '%';
+  document.getElementById('wiDaysVal').textContent = days + 'd';
+
+  // Compute new metrics (GBM closed form — fast)
+  const dir = _whatIfOriginal.dir;
+  const expR = gbmExpectedReturn(mu, sigma, days, dir);
+  const winR = gbmWinRate(mu, sigma, days, dir);
+  const sharpe = gbmSharpe(mu, sigma, days);
+  const var95 = gbmVaR95(mu, sigma, days, dir);
+
+  // Original
+  const origMu = _whatIfOriginal.mu, origSig = _whatIfOriginal.sigma, origDays = _whatIfOriginal.days;
+  const origExp = gbmExpectedReturn(origMu, origSig, origDays, dir);
+  const origWin = gbmWinRate(origMu, origSig, origDays, dir);
+  const origSharpe = gbmSharpe(origMu, origSig, origDays);
+  const origVar = gbmVaR95(origMu, origSig, origDays, dir);
+
+  // Display
+  const setVal = (id, val, orig, isPct, isNeg) => {
+    const el = document.getElementById(id);
+    const origEl = document.getElementById(id + 'Orig');
+    const diff = val - orig;
+    const sign = diff > 0.001 ? '▲' : diff < -0.001 ? '▼' : '=';
+    const diffColor = Math.abs(diff) < 0.005 ? 'var(--text3)' : (isNeg ? (diff > 0 ? 'var(--green)' : 'var(--red)') : (diff > 0 ? 'var(--green)' : 'var(--red)'));
+    if(isPct){
+      el.style.color = val >= 0 ? 'var(--green)' : 'var(--red)';
+      if(id === 'wiVar') el.style.color = 'var(--red)';
+      el.textContent = (val>=0?'+':'') + (val*100).toFixed(1) + '%';
+      origEl.innerHTML = `<span style="color:${diffColor}">${sign}</span> vs ${(orig>=0?'+':'') + (orig*100).toFixed(1)}% orig`;
+    } else {
+      el.textContent = val.toFixed(2);
+      origEl.innerHTML = `<span style="color:${diffColor}">${sign}</span> vs ${orig.toFixed(2)} orig`;
+    }
+  };
+
+  setVal('wiExp', expR, origExp, true, false);
+  setVal('wiWin', winR, origWin, true, false);
+  setVal('wiSharpe', sharpe, origSharpe, false, false);
+  setVal('wiVar', var95, origVar, true, true);
+
+  // Also display win rate as %
+  document.getElementById('wiWin').textContent = (winR*100).toFixed(0) + '%';
+}
 function openRuinSimulator(){
   if(!allFinals.length){alert('Run a simulation first');return;}
 
