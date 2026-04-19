@@ -289,7 +289,7 @@ td:first-child{color:var(--text);font-weight:500;}
     </div>
     <select id="simDir"><option value="LONG">LONG (buy)</option><option value="SHORT">SHORT (sell)</option></select>
     <input type="number" id="simCapital" placeholder="Capital $" value="10000" min="100"/>
-    <select id="simDays"><option value="3">3 days</option><option value="5">1 week</option><option value="10">2 weeks</option><option value="15">15 days</option><option value="21">3 weeks</option><option value="30">1 month</option><option value="60">2 months</option><option value="90" selected>3 months</option><option value="180">6 months</option><option value="365">1 year</option></select>
+    <select id="simDays"><option value="1">1 day</option><option value="2">2 days</option><option value="3">3 days</option><option value="5">1 week</option><option value="10">2 weeks</option><option value="15">15 days</option><option value="21">3 weeks</option><option value="30">1 month</option><option value="60">2 months</option><option value="90" selected>3 months</option><option value="180">6 months</option><option value="365">1 year</option></select>
     <select id="simPaths"><option value="100">100 paths</option><option value="300" selected>300 paths</option><option value="500">500 paths</option><option value="1000">1000 paths</option></select>
     <select id="simModel"><option value="gbm">GBM + GARCH + Fat Tails</option><option value="jump">Jump Diffusion + GARCH</option><option value="regime">Regime Switching + GARCH</option></select>
   </div>
@@ -338,6 +338,8 @@ td:first-child{color:var(--text);font-weight:500;}
     <button onclick="runAICommittee()" id="committeeBtn" style="border-color:#00bcd4;color:#00bcd4;" title="5 AI agents analyze from different angles">🧠 AI Committee</button>
     <button onclick="runEnsemble()" id="ensembleBtn" style="border-color:#ff00aa;color:#ff00aa;" title="Run all 3 models in parallel — see where they agree">🎯 Ensemble</button>
     <button onclick="openRuinSimulator()" id="ruinBtn" style="border-color:#ff4444;color:#ff4444;" title="Watch 100 accounts trade — see how many survive">💀 Ruin Simulator</button>
+    <button onclick="openValuation()" id="valuationBtn" style="border-color:#8b5cf6;color:#8b5cf6;" title="DCF valuation with Gordon Growth + Comparables">💰 Valuation</button>
+    <button onclick="openTechnicals()" id="techBtn" style="border-color:#f59e0b;color:#f59e0b;" title="RSI, MACD, Moving Averages">📈 Technicals</button>
     <button onclick="startLiveTrack()" id="trackBtn" style="border-color:#00ffcc;color:#00ffcc;" title="Track this trade live vs simulation">📡 Track Live</button>
     <button onclick="saveSim()" id="saveSimBtn" style="border-color:#9b59b6;color:#9b59b6;" title="Save simulation to gallery">💾 Save Sim</button>
   </div>
@@ -5977,6 +5979,754 @@ function updateWhatIf(){
   // Also display win rate as %
   document.getElementById('wiWin').textContent = (winR*100).toFixed(0) + '%';
 }
+
+// ─── VALUATION: Gordon Growth + Comparables + Graham ────
+async function openValuation(){
+  const ticker = document.getElementById('simTicker').value.trim().toUpperCase();
+  if(!ticker){alert('Enter a ticker first');return;}
+
+  const baseTicker = ticker.replace('/USD','').replace('-USD','');
+  const isCrypto = ['BTC','ETH','SOL','BNB','XRP','ADA','DOGE','AVAX','LINK','DOT'].includes(baseTicker);
+
+  let modal = document.getElementById('valuationModal');
+  if(modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'valuationModal';
+  modal.style.cssText = `position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.95);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:20px;box-sizing:border-box;overflow-y:auto;`;
+
+  if(isCrypto){
+    modal.innerHTML = `
+      <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:24px;max-width:600px;width:100%;text-align:center;">
+        <div style="font-family:var(--mono);font-size:14px;color:var(--text);font-weight:600;margin-bottom:16px;">💰 VALUATION — ${baseTicker}</div>
+        <div style="color:var(--text3);font-size:13px;line-height:1.6;padding:20px;">
+          Traditional valuation (DCF, P/E, Graham) doesn't apply to ${baseTicker}.<br/><br/>
+          Cryptos don't have cashflow, earnings, or book value — they're valued by network adoption, scarcity, and market sentiment.<br/><br/>
+          Crypto valuation methods (Stock-to-Flow, NVT, MVRV) coming soon.
+        </div>
+        <button onclick="document.getElementById('valuationModal').remove()" style="margin-top:12px;background:none;border:1px solid #333;color:var(--text2);padding:8px 20px;border-radius:4px;cursor:pointer;font-family:var(--mono);">✕ close</button>
+      </div>`;
+    document.body.appendChild(modal);
+    return;
+  }
+
+  modal.innerHTML = `
+    <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:20px;max-width:1200px;width:100%;max-height:95vh;overflow-y:auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <div>
+          <div style="font-family:var(--mono);font-size:14px;color:var(--text);font-weight:600;letter-spacing:.05em;">💰 FUNDAMENTAL VALUATION — ${baseTicker}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:4px;">Gordon Growth + Comparables + Graham Number · institutional-grade analysis</div>
+        </div>
+        <button onclick="document.getElementById('valuationModal').remove()" style="background:none;border:1px solid #333;color:var(--text2);padding:6px 14px;border-radius:4px;cursor:pointer;font-family:var(--mono);">✕ close</button>
+      </div>
+
+      <div style="background:linear-gradient(135deg, rgba(139,92,246,.08) 0%, rgba(0,188,212,.08) 100%);border:1px solid #2a2a2a;border-radius:6px;padding:16px;margin-bottom:16px;">
+        <div style="font-family:var(--mono);font-size:12px;color:#8b5cf6;font-weight:600;margin-bottom:12px;">// 01 · GORDON GROWTH MODEL (DCF)</div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:14px;font-family:var(--sans);line-height:1.5;">
+          Goldman Sachs' core valuation formula: <strong style="color:var(--text);">Value = Cash Flow / (Risk − Growth)</strong>. Move sliders to see how growth assumptions change fair value.
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:14px;">
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <span style="font-size:10px;color:var(--text3);font-family:var(--mono);">CASH FLOW ($/share)</span>
+              <span id="ggCashVal" style="font-size:11px;color:#8b5cf6;font-family:var(--mono);font-weight:600;">$5</span>
+            </div>
+            <input type="range" id="ggCash" min="0.5" max="50" value="5" step="0.5" style="width:100%;accent-color:#8b5cf6;" oninput="updateGordon()"/>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <span style="font-size:10px;color:var(--text3);font-family:var(--mono);">RISK (discount rate)</span>
+              <span id="ggRiskVal" style="font-size:11px;color:#ff00aa;font-family:var(--mono);font-weight:600;">12%</span>
+            </div>
+            <input type="range" id="ggRisk" min="5" max="30" value="12" step="0.5" style="width:100%;accent-color:#ff00aa;" oninput="updateGordon()"/>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <span style="font-size:10px;color:var(--text3);font-family:var(--mono);">GROWTH RATE</span>
+              <span id="ggGrowthVal" style="font-size:11px;color:#00bcd4;font-family:var(--mono);font-weight:600;">5%</span>
+            </div>
+            <input type="range" id="ggGrowth" min="0" max="25" value="5" step="0.5" style="width:100%;accent-color:#00bcd4;" oninput="updateGordon()"/>
+          </div>
+        </div>
+        <div style="background:rgba(0,0,0,.5);border-radius:6px;padding:16px;text-align:center;">
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">// FAIR VALUE per share</div>
+          <div id="ggValue" style="font-size:36px;font-weight:700;color:#8b5cf6;font-family:var(--mono);">$—</div>
+          <div id="ggUpside" style="font-size:12px;color:var(--text2);margin-top:4px;font-family:var(--mono);">vs current $—</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;">
+          <div style="background:rgba(226,75,74,.08);border:1px solid rgba(226,75,74,.3);border-radius:4px;padding:10px;cursor:pointer;text-align:center;" onclick="ggBearCase()">
+            <div style="font-size:10px;color:var(--red);font-family:var(--mono);font-weight:600;">🐻 BEAR · 2%</div>
+          </div>
+          <div style="background:rgba(255,170,0,.08);border:1px solid rgba(255,170,0,.3);border-radius:4px;padding:10px;cursor:pointer;text-align:center;" onclick="ggBaseCase()">
+            <div style="font-size:10px;color:#ffaa00;font-family:var(--mono);font-weight:600;">🟡 BASE · 5%</div>
+          </div>
+          <div style="background:rgba(29,158,117,.08);border:1px solid rgba(29,158,117,.3);border-radius:4px;padding:10px;cursor:pointer;text-align:center;" onclick="ggBullCase()">
+            <div style="font-size:10px;color:var(--green);font-family:var(--mono);font-weight:600;">🐂 BULL · 15%</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:16px;margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="font-family:var(--mono);font-size:12px;color:#00bcd4;font-weight:600;">// 02 · COMPARABLES (MULTIPLES)</div>
+          <button onclick="loadComparables('${baseTicker}')" id="loadCompsBtn" style="background:#00bcd4;color:#000;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--mono);font-size:10px;font-weight:600;">▶ Load</button>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:14px;font-family:var(--sans);line-height:1.5;">
+          How ${baseTicker} trades vs sector peers. Above sector avg = premium valuation. Below = discount.
+        </div>
+        <div id="compsContent" style="font-size:12px;color:var(--text3);text-align:center;padding:20px;">Click Load to fetch multiples</div>
+      </div>
+
+      <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:16px;margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="font-family:var(--mono);font-size:12px;color:#4caf50;font-weight:600;">// 03 · GRAHAM NUMBER (Value Investing)</div>
+          <button onclick="loadGraham('${baseTicker}')" id="loadGrahamBtn" style="background:#4caf50;color:#000;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--mono);font-size:10px;font-weight:600;">▶ Compute</button>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:14px;font-family:var(--sans);line-height:1.5;">
+          Benjamin Graham's conservative formula: <strong style="color:var(--text);">√(22.5 × EPS × Book Value)</strong>. Price below = margin of safety.
+        </div>
+        <div id="grahamContent" style="font-size:12px;color:var(--text3);text-align:center;padding:20px;">Click Compute</div>
+      </div>
+
+      <div style="background:linear-gradient(135deg, rgba(0,188,212,.06) 0%, rgba(255,0,170,.06) 100%);border:1px solid #2a2a2a;border-radius:6px;padding:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="font-family:var(--mono);font-size:12px;color:#ff00aa;font-weight:600;">// 04 · AI ANALYST SYNTHESIS</div>
+          <button onclick="runValuationAI('${baseTicker}')" id="valAIBtn" style="background:#ff00aa;color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--mono);font-size:10px;font-weight:600;">▶ Analyze</button>
+        </div>
+        <div id="valAIContent" style="font-size:12px;color:var(--text3);text-align:center;padding:20px;">AI synthesis comparing all methods + market price</div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  await autoFillValuation(baseTicker);
+  updateGordon();
+}
+
+async function autoFillValuation(ticker){
+  try{
+    const r = await fetch(`/api/price?ticker=${ticker}`);
+    const d = await r.json();
+    if(d.currentPrice) window._valCurrentPrice = d.currentPrice;
+    if(d.eps && d.eps > 0) document.getElementById('ggCash').value = Math.max(0.5, d.eps).toFixed(1);
+    if(d.beta){
+      const capmRisk = 4.5 + d.beta * 5.5;
+      document.getElementById('ggRisk').value = Math.min(30, Math.max(5, capmRisk)).toFixed(1);
+    }
+  }catch(e){}
+}
+
+function updateGordon(){
+  const cash = parseFloat(document.getElementById('ggCash').value);
+  const risk = parseFloat(document.getElementById('ggRisk').value) / 100;
+  const growth = parseFloat(document.getElementById('ggGrowth').value) / 100;
+  document.getElementById('ggCashVal').textContent = '$' + cash;
+  document.getElementById('ggRiskVal').textContent = (risk*100).toFixed(1) + '%';
+  document.getElementById('ggGrowthVal').textContent = (growth*100).toFixed(1) + '%';
+
+  let value = null;
+  if(risk > growth) value = cash / (risk - growth);
+
+  const valEl = document.getElementById('ggValue');
+  const upsideEl = document.getElementById('ggUpside');
+  const currentPrice = window._valCurrentPrice || 100;
+
+  if(value === null){
+    valEl.textContent = '∞';
+    valEl.style.color = 'var(--red)';
+    upsideEl.innerHTML = '<span style="color:var(--red);">⚠️ formula unstable: growth ≥ risk</span>';
+  } else {
+    valEl.textContent = '$' + value.toLocaleString(undefined, {maximumFractionDigits: 0});
+    const upside = (value - currentPrice) / currentPrice;
+    const upsideColor = upside > 0.20 ? 'var(--green)' : upside > 0 ? '#66bb6a' : upside > -0.20 ? '#ffaa00' : 'var(--red)';
+    const verdict = upside > 0.30 ? 'DEEPLY UNDERVALUED' : upside > 0.10 ? 'UNDERVALUED' : upside > -0.10 ? 'FAIRLY VALUED' : upside > -0.30 ? 'OVERVALUED' : 'SIGNIFICANTLY OVERVALUED';
+    upsideEl.innerHTML = `vs current <strong>$${currentPrice.toLocaleString(undefined,{maximumFractionDigits:2})}</strong> · <span style="color:${upsideColor};font-weight:600;">${upside>=0?'+':''}${(upside*100).toFixed(1)}% · ${verdict}</span>`;
+    valEl.style.color = upside > 0.10 ? 'var(--green)' : upside > -0.10 ? '#8b5cf6' : 'var(--red)';
+  }
+}
+
+function ggBearCase(){ document.getElementById('ggGrowth').value = 2; updateGordon(); }
+function ggBaseCase(){ document.getElementById('ggGrowth').value = 5; updateGordon(); }
+function ggBullCase(){ document.getElementById('ggGrowth').value = 15; updateGordon(); }
+
+async function loadComparables(ticker){
+  const el = document.getElementById('compsContent');
+  const btn = document.getElementById('loadCompsBtn');
+  btn.textContent = 'loading...'; btn.disabled = true;
+  el.innerHTML = '<div style="color:var(--text3);padding:20px;">fetching peer multiples...</div>';
+
+  try{
+    const r = await fetch(`/api/fundamentals?ticker=${ticker}`);
+    const d = await r.json();
+
+    if(d.error || !d.pe){
+      el.innerHTML = '<div style="color:var(--text3);padding:20px;">No fundamentals available (might be ETF or non-US equity)</div>';
+      btn.textContent = '▶ Load'; btn.disabled = false; return;
+    }
+
+    const pe = d.pe || 0, pb = d.pb || 0, ps = d.ps || 0;
+    const sectorPE = d.sectorPE || 22, sectorPB = d.sectorPB || 3.5;
+    const peVerdict = pe > sectorPE * 1.2 ? 'OVERVALUED' : pe < sectorPE * 0.8 ? 'UNDERVALUED' : 'IN LINE';
+    const peColor = pe > sectorPE * 1.2 ? 'var(--red)' : pe < sectorPE * 0.8 ? 'var(--green)' : '#ffaa00';
+
+    el.innerHTML = `
+      <div style="text-align:left;">
+        <div style="display:grid;grid-template-columns:100px 1fr 100px 1fr;gap:8px;padding:8px 12px;border-bottom:1px solid #2a2a2a;font-family:var(--mono);font-size:10px;color:var(--text3);">
+          <span>METRIC</span><span style="text-align:right;">${ticker}</span><span style="text-align:right;">SECTOR</span><span style="text-align:right;">VERDICT</span>
+        </div>
+        <div style="display:grid;grid-template-columns:100px 1fr 100px 1fr;gap:8px;padding:10px 12px;font-family:var(--mono);font-size:12px;">
+          <span style="color:var(--text2);">P/E</span>
+          <span style="color:var(--text);text-align:right;font-weight:600;">${pe.toFixed(1)}</span>
+          <span style="color:var(--text3);text-align:right;">${sectorPE.toFixed(1)}</span>
+          <span style="color:${peColor};text-align:right;font-weight:600;font-size:10px;">${peVerdict}</span>
+        </div>
+        ${pb ? `<div style="display:grid;grid-template-columns:100px 1fr 100px 1fr;gap:8px;padding:10px 12px;font-family:var(--mono);font-size:12px;border-top:1px solid #1a1a1a;">
+          <span style="color:var(--text2);">P/B</span>
+          <span style="color:var(--text);text-align:right;font-weight:600;">${pb.toFixed(1)}</span>
+          <span style="color:var(--text3);text-align:right;">${sectorPB.toFixed(1)}</span>
+          <span style="color:${pb > sectorPB*1.2?'var(--red)':pb < sectorPB*0.8?'var(--green)':'#ffaa00'};text-align:right;font-weight:600;font-size:10px;">${pb > sectorPB*1.2?'OVERVALUED':pb < sectorPB*0.8?'UNDERVALUED':'IN LINE'}</span>
+        </div>` : ''}
+        ${ps ? `<div style="display:grid;grid-template-columns:100px 1fr 100px 1fr;gap:8px;padding:10px 12px;font-family:var(--mono);font-size:12px;border-top:1px solid #1a1a1a;">
+          <span style="color:var(--text2);">P/S</span>
+          <span style="color:var(--text);text-align:right;font-weight:600;">${ps.toFixed(1)}</span>
+          <span style="color:var(--text3);text-align:right;">3.0</span>
+          <span style="color:${ps > 4?'var(--red)':ps < 2?'var(--green)':'#ffaa00'};text-align:right;font-weight:600;font-size:10px;">${ps > 4?'OVERVALUED':ps < 2?'UNDERVALUED':'IN LINE'}</span>
+        </div>` : ''}
+      </div>
+      <div style="margin-top:12px;padding:10px;background:rgba(0,0,0,.4);border-radius:4px;font-size:11px;color:var(--text2);line-height:1.5;font-family:var(--sans);">
+        ${pe > sectorPE * 1.5 ? `⚠️ <strong style="color:var(--red);">${ticker} trades at ${((pe/sectorPE - 1)*100).toFixed(0)}% premium</strong> to sector.` :
+          pe < sectorPE * 0.7 ? `✅ <strong style="color:var(--green);">${ticker} trades at ${((1 - pe/sectorPE)*100).toFixed(0)}% discount</strong> to sector.` :
+          `${ticker} trades <strong>in line</strong> with sector.`}
+      </div>`;
+    btn.textContent = '✓ loaded'; btn.disabled = true;
+  }catch(e){
+    el.innerHTML = '<div style="color:var(--red);padding:20px;">Failed to load</div>';
+    btn.textContent = '▶ Load'; btn.disabled = false;
+  }
+}
+
+async function loadGraham(ticker){
+  const el = document.getElementById('grahamContent');
+  const btn = document.getElementById('loadGrahamBtn');
+  btn.textContent = 'computing...'; btn.disabled = true;
+
+  try{
+    const r = await fetch(`/api/fundamentals?ticker=${ticker}`);
+    const d = await r.json();
+
+    if(d.error || !d.eps || !d.bookValue){
+      el.innerHTML = '<div style="color:var(--text3);padding:20px;">EPS and Book Value needed — not available</div>';
+      btn.textContent = '▶ Compute'; btn.disabled = false; return;
+    }
+
+    const graham = Math.sqrt(22.5 * d.eps * d.bookValue);
+    const currentPrice = window._valCurrentPrice || 100;
+    const marginOfSafety = (graham - currentPrice) / currentPrice;
+    const safetyColor = marginOfSafety > 0.20 ? 'var(--green)' : marginOfSafety > 0 ? '#66bb6a' : 'var(--red)';
+    const verdict = marginOfSafety > 0.30 ? 'STRONG BUY (Graham approves)' : marginOfSafety > 0.10 ? 'BUY' : marginOfSafety > -0.10 ? 'HOLD' : 'AVOID (no margin of safety)';
+
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;text-align:left;">
+        <div style="padding:12px;background:rgba(0,0,0,.4);border-radius:6px;">
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:6px;">INPUTS</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-family:var(--mono);font-size:12px;">
+            <span style="color:var(--text3);">EPS:</span><span>$${d.eps.toFixed(2)}</span>
+            <span style="color:var(--text3);">Book Value:</span><span>$${d.bookValue.toFixed(2)}</span>
+          </div>
+        </div>
+        <div style="padding:12px;background:rgba(76,175,80,.08);border:1px solid rgba(76,175,80,.3);border-radius:6px;text-align:center;">
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:6px;">GRAHAM NUMBER</div>
+          <div style="font-size:28px;font-weight:700;color:#4caf50;font-family:var(--mono);">$${graham.toFixed(2)}</div>
+        </div>
+      </div>
+      <div style="margin-top:12px;padding:12px;background:rgba(0,0,0,.4);border-radius:6px;font-family:var(--mono);font-size:11px;">
+        <span style="color:var(--text3);">Current:</span> <strong>$${currentPrice.toFixed(2)}</strong>
+        &nbsp;·&nbsp;
+        <span style="color:var(--text3);">Safety margin:</span> <strong style="color:${safetyColor};">${marginOfSafety>=0?'+':''}${(marginOfSafety*100).toFixed(1)}%</strong>
+        <br/><span style="color:${safetyColor};font-weight:600;margin-top:4px;display:block;">${verdict}</span>
+      </div>`;
+    btn.textContent = '✓ done'; btn.disabled = true;
+  }catch(e){
+    el.innerHTML = '<div style="color:var(--red);padding:20px;">Failed</div>';
+    btn.textContent = '▶ Compute'; btn.disabled = false;
+  }
+}
+
+async function runValuationAI(ticker){
+  const el = document.getElementById('valAIContent');
+  const btn = document.getElementById('valAIBtn');
+  btn.textContent = 'analyzing...'; btn.disabled = true;
+  el.innerHTML = '<div style="color:var(--text3);padding:20px;">AI synthesizing all methods...</div>';
+
+  const cash = document.getElementById('ggCash').value;
+  const risk = document.getElementById('ggRisk').value;
+  const growth = document.getElementById('ggGrowth').value;
+  const ggValue = parseFloat(cash) / (parseFloat(risk)/100 - parseFloat(growth)/100);
+  const currentPrice = window._valCurrentPrice || 100;
+
+  try{
+    const r = await fetch('/api/claude',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:450,
+        messages:[{role:'user',content:
+          `You are a senior equity analyst writing a research note on ${ticker} at $${currentPrice}.
+
+Gordon Growth DCF assumptions: Cash Flow $${cash}/share, Discount Rate ${risk}%, Growth ${growth}% → Fair Value $${ggValue.toFixed(0)}
+
+Write 3 short paragraphs:
+1. WHAT THE VALUATION SAYS: Compare fair value to market price, what's the gap
+2. WHAT THE MARKET IS PRICING IN: What growth rate would justify the CURRENT price if risk stays at ${risk}%? Calculate this: implied_growth = risk - cash/current_price
+3. VERDICT: BUY / HOLD / SELL with ONE clear reason
+
+Write like a Goldman Sachs note. Be specific with numbers. 300 words max.`}]})
+    });
+    const d = await r.json();
+    const text = d.content?.map(b=>b.text||'').join('') || 'Analysis unavailable';
+    el.innerHTML = `<div style="text-align:left;font-family:var(--sans);font-size:12px;color:var(--text2);line-height:1.7;padding:4px 8px;">${text.split(/\n\n+/).map(p=>`<p style="margin:0 0 10px 0;">${p}</p>`).join('')}</div>`;
+    btn.textContent = '✓ done'; btn.disabled = false;
+  }catch(e){
+    el.innerHTML = '<div style="color:var(--red);padding:20px;">Failed</div>';
+    btn.textContent = '▶ Analyze'; btn.disabled = false;
+  }
+}
+
+// ─── TECHNICAL INDICATORS: RSI, MACD, SMA ────
+async function openTechnicals(){
+  const ticker = document.getElementById('simTicker').value.trim().toUpperCase();
+  if(!ticker){alert('Enter a ticker first');return;}
+
+  const baseTicker = ticker.replace('/USD','').replace('-USD','');
+  const isCrypto = ['BTC','ETH','SOL','BNB','XRP','ADA','DOGE','AVAX','LINK','DOT'].includes(baseTicker);
+
+  let modal = document.getElementById('techModal');
+  if(modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'techModal';
+  modal.style.cssText = `position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.95);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:20px;box-sizing:border-box;overflow-y:auto;`;
+
+  modal.innerHTML = `
+    <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:20px;max-width:1100px;width:100%;max-height:95vh;overflow-y:auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <div>
+          <div style="font-family:var(--mono);font-size:14px;color:var(--text);font-weight:600;letter-spacing:.05em;">📈 TECHNICAL ANALYSIS — ${baseTicker}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:4px;">RSI · MACD · Moving Averages · Golden/Death Cross detection</div>
+        </div>
+        <button onclick="document.getElementById('techModal').remove()" style="background:none;border:1px solid #333;color:var(--text2);padding:6px 14px;border-radius:4px;cursor:pointer;font-family:var(--mono);">✕ close</button>
+      </div>
+
+      <div id="techContent" style="text-align:center;color:var(--text3);padding:40px;font-family:var(--mono);font-size:12px;">
+        loading historical prices (250+ days needed for MACD, SMA-200)...
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  await loadTechnicals(baseTicker, isCrypto);
+}
+
+async function loadTechnicals(ticker, isCrypto){
+  const el = document.getElementById('techContent');
+
+  try{
+    // Fetch historical data
+    let prices = [];
+    let dates = [];
+
+    if(isCrypto){
+      // CoinGecko for crypto (365 days)
+      const cgId = {BTC:'bitcoin',ETH:'ethereum',SOL:'solana',BNB:'binancecoin',XRP:'ripple',ADA:'cardano',DOGE:'dogecoin',AVAX:'avalanche-2',LINK:'chainlink',DOT:'polkadot'}[ticker];
+      if(cgId){
+        const r = await fetch(`https://api.coingecko.com/api/v3/coins/${cgId}/market_chart?vs_currency=usd&days=365&interval=daily`);
+        const d = await r.json();
+        prices = (d.prices || []).map(p => p[1]);
+        dates = (d.prices || []).map(p => p[0]);
+      }
+    } else {
+      // Yahoo Finance 1yr daily
+      const now = Math.floor(Date.now() / 1000);
+      const yearAgo = now - 365 * 24 * 3600;
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${yearAgo}&period2=${now}&interval=1d`;
+      try{
+        const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        const d = await r.json();
+        const result = d?.chart?.result?.[0];
+        prices = (result?.indicators?.quote?.[0]?.close || []).filter(v => v != null);
+        dates = result?.timestamp || [];
+      }catch(e){
+        // CORS fallback — use our price API
+        const r2 = await fetch(`/api/price?ticker=${ticker}`);
+        const d2 = await r2.json();
+        prices = d2.recentPrices || [];
+      }
+    }
+
+    if(prices.length < 30){
+      el.innerHTML = '<div style="color:var(--text3);padding:40px;">Not enough historical data</div>';
+      return;
+    }
+
+    // Compute indicators
+    const rsi = computeRSI(prices, 14);
+    const macd = computeMACD(prices);
+    const sma50 = computeSMA(prices, 50);
+    const sma200 = computeSMA(prices, 200);
+    const currentPrice = prices[prices.length - 1];
+    const currentRSI = rsi[rsi.length - 1];
+    const currentMACD = macd.macd[macd.macd.length - 1];
+    const currentSignal = macd.signal[macd.signal.length - 1];
+    const currentHist = currentMACD - currentSignal;
+    const currentSMA50 = sma50[sma50.length - 1];
+    const currentSMA200 = sma200[sma200.length - 1];
+
+    // Golden Cross / Death Cross detection
+    let crossSignal = 'No recent cross';
+    let crossColor = 'var(--text3)';
+    if(currentSMA50 && currentSMA200){
+      // Check last 20 days for cross
+      for(let i = Math.max(0, sma50.length - 20); i < sma50.length; i++){
+        if(sma50[i] == null || sma200[i] == null) continue;
+        const prev50 = sma50[i-1], prev200 = sma200[i-1];
+        if(prev50 == null || prev200 == null) continue;
+        if(prev50 <= prev200 && sma50[i] > sma200[i]){
+          crossSignal = `🌟 GOLDEN CROSS ${sma50.length - i} days ago — bullish`;
+          crossColor = 'var(--green)';
+        } else if(prev50 >= prev200 && sma50[i] < sma200[i]){
+          crossSignal = `💀 DEATH CROSS ${sma50.length - i} days ago — bearish`;
+          crossColor = 'var(--red)';
+        }
+      }
+    }
+
+    // RSI interpretation
+    let rsiVerdict, rsiColor;
+    if(currentRSI > 70){ rsiVerdict = 'OVERBOUGHT — potential pullback'; rsiColor = 'var(--red)'; }
+    else if(currentRSI > 60){ rsiVerdict = 'strong bullish momentum'; rsiColor = '#66bb6a'; }
+    else if(currentRSI > 40){ rsiVerdict = 'neutral zone'; rsiColor = 'var(--text2)'; }
+    else if(currentRSI > 30){ rsiVerdict = 'weak bearish momentum'; rsiColor = '#ffaa00'; }
+    else { rsiVerdict = 'OVERSOLD — potential bounce'; rsiColor = 'var(--green)'; }
+
+    // MACD interpretation
+    const macdVerdict = currentHist > 0 ? 'BULLISH (signal crossed above)' : 'BEARISH (signal crossed below)';
+    const macdColor = currentHist > 0 ? 'var(--green)' : 'var(--red)';
+
+    // MA position
+    let maVerdict, maColor;
+    if(currentPrice > currentSMA50 && currentPrice > currentSMA200){ maVerdict = 'Price above both MAs — strong uptrend'; maColor = 'var(--green)'; }
+    else if(currentPrice < currentSMA50 && currentPrice < currentSMA200){ maVerdict = 'Price below both MAs — strong downtrend'; maColor = 'var(--red)'; }
+    else{ maVerdict = 'Mixed signals — transitioning'; maColor = '#ffaa00'; }
+
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;text-align:left;">
+        <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:14px;">
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">RSI (14)</div>
+          <div style="font-size:28px;font-weight:700;color:${rsiColor};font-family:var(--mono);">${currentRSI.toFixed(1)}</div>
+          <div style="font-size:9px;color:${rsiColor};margin-top:4px;">${rsiVerdict}</div>
+        </div>
+        <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:14px;">
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">MACD</div>
+          <div style="font-size:20px;font-weight:700;color:${macdColor};font-family:var(--mono);">${currentMACD > 0 ? '+' : ''}${currentMACD.toFixed(2)}</div>
+          <div style="font-size:9px;color:${macdColor};margin-top:4px;">${macdVerdict}</div>
+        </div>
+        <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:14px;">
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">SMA 50 / 200</div>
+          <div style="font-size:14px;font-weight:600;color:var(--text);font-family:var(--mono);">$${currentSMA50?currentSMA50.toFixed(2):'—'}<span style="color:var(--text3);"> / </span>$${currentSMA200?currentSMA200.toFixed(2):'—'}</div>
+          <div style="font-size:9px;color:${maColor};margin-top:4px;">${maVerdict}</div>
+        </div>
+        <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:14px;">
+          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">CROSS SIGNAL</div>
+          <div style="font-size:12px;font-weight:600;color:${crossColor};line-height:1.4;margin-top:6px;">${crossSignal}</div>
+        </div>
+      </div>
+
+      <!-- Price + MA chart -->
+      <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:12px;margin-bottom:12px;">
+        <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:8px;">// PRICE · SMA 50 (yellow) · SMA 200 (cyan)</div>
+        <canvas id="techChart" style="width:100%;height:220px;display:block;"></canvas>
+      </div>
+
+      <!-- RSI chart -->
+      <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:12px;margin-bottom:12px;">
+        <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:8px;">// RSI (overbought &gt; 70 · oversold &lt; 30)</div>
+        <canvas id="rsiChart" style="width:100%;height:120px;display:block;"></canvas>
+      </div>
+
+      <!-- MACD chart -->
+      <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:12px;">
+        <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:8px;">// MACD · signal line · histogram</div>
+        <canvas id="macdChart" style="width:100%;height:120px;display:block;"></canvas>
+      </div>
+
+      <!-- Overall verdict -->
+      <div style="margin-top:16px;padding:16px;background:linear-gradient(135deg, rgba(245,158,11,.08) 0%, rgba(0,188,212,.08) 100%);border:1px solid #2a2a2a;border-radius:6px;">
+        <div style="font-family:var(--mono);font-size:11px;color:#f59e0b;margin-bottom:8px;">// TECHNICAL VERDICT</div>
+        <div style="font-size:12px;color:var(--text2);line-height:1.6;">
+          ${generateTechnicalVerdict(currentRSI, currentHist, currentPrice, currentSMA50, currentSMA200, crossSignal)}
+        </div>
+      </div>
+    `;
+
+    // Draw the charts
+    setTimeout(() => {
+      drawTechChart(prices, sma50, sma200);
+      drawRSIChart(rsi);
+      drawMACDChart(macd);
+    }, 50);
+
+  }catch(e){
+    el.innerHTML = `<div style="color:var(--red);padding:40px;">Failed to load technicals: ${e.message}</div>`;
+  }
+}
+
+function generateTechnicalVerdict(rsi, macdHist, price, sma50, sma200, crossSignal){
+  let bullish = 0, bearish = 0;
+  if(rsi > 50 && rsi < 70) bullish++;
+  else if(rsi < 30) bullish++; // oversold = bounce potential
+  else if(rsi > 70) bearish++;
+  else if(rsi < 50 && rsi > 30) bearish++;
+
+  if(macdHist > 0) bullish++; else bearish++;
+  if(price > sma50) bullish++; else bearish++;
+  if(price > sma200) bullish++; else bearish++;
+  if(crossSignal.includes('GOLDEN')) bullish++;
+  if(crossSignal.includes('DEATH')) bearish++;
+
+  const total = bullish + bearish;
+  const bullScore = bullish / total;
+
+  let verdict, color;
+  if(bullScore >= 0.8){ verdict = '🐂 STRONG BULLISH'; color = 'var(--green)'; }
+  else if(bullScore >= 0.6){ verdict = '📈 BULLISH'; color = '#66bb6a'; }
+  else if(bullScore >= 0.4){ verdict = '😐 NEUTRAL'; color = '#ffaa00'; }
+  else if(bullScore >= 0.2){ verdict = '📉 BEARISH'; color = '#ff7043'; }
+  else{ verdict = '🐻 STRONG BEARISH'; color = 'var(--red)'; }
+
+  return `<strong style="color:${color};font-size:14px;">${verdict}</strong> · ${bullish}/${total} signals bullish · <span style="color:var(--text3);">This is a pure technical read. Combine with Valuation tab and Monte Carlo for full picture.</span>`;
+}
+
+function computeSMA(prices, period){
+  const sma = new Array(prices.length).fill(null);
+  for(let i = period - 1; i < prices.length; i++){
+    let sum = 0;
+    for(let j = 0; j < period; j++) sum += prices[i - j];
+    sma[i] = sum / period;
+  }
+  return sma;
+}
+
+function computeEMA(prices, period){
+  const ema = new Array(prices.length).fill(null);
+  const k = 2 / (period + 1);
+  // Start with SMA for first period
+  let sum = 0;
+  for(let i = 0; i < period && i < prices.length; i++) sum += prices[i];
+  ema[period - 1] = sum / period;
+  for(let i = period; i < prices.length; i++){
+    ema[i] = prices[i] * k + ema[i-1] * (1 - k);
+  }
+  return ema;
+}
+
+function computeRSI(prices, period = 14){
+  const rsi = new Array(prices.length).fill(null);
+  if(prices.length < period + 1) return rsi;
+  let gains = 0, losses = 0;
+  for(let i = 1; i <= period; i++){
+    const change = prices[i] - prices[i-1];
+    if(change > 0) gains += change;
+    else losses -= change;
+  }
+  gains /= period; losses /= period;
+  rsi[period] = 100 - 100 / (1 + gains/Math.max(losses, 0.0001));
+  for(let i = period + 1; i < prices.length; i++){
+    const change = prices[i] - prices[i-1];
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? -change : 0;
+    gains = (gains * (period - 1) + gain) / period;
+    losses = (losses * (period - 1) + loss) / period;
+    rsi[i] = 100 - 100 / (1 + gains/Math.max(losses, 0.0001));
+  }
+  return rsi;
+}
+
+function computeMACD(prices, fast = 12, slow = 26, signalPeriod = 9){
+  const emaFast = computeEMA(prices, fast);
+  const emaSlow = computeEMA(prices, slow);
+  const macd = prices.map((_, i) => (emaFast[i] != null && emaSlow[i] != null) ? emaFast[i] - emaSlow[i] : null);
+  const macdValues = macd.filter(v => v != null);
+  const signal = computeEMA(macdValues, signalPeriod);
+  // Align signal back to full array
+  const fullSignal = new Array(prices.length).fill(null);
+  let sigIdx = 0;
+  for(let i = 0; i < macd.length; i++){
+    if(macd[i] != null){
+      fullSignal[i] = signal[sigIdx] ?? null;
+      sigIdx++;
+    }
+  }
+  return { macd, signal: fullSignal };
+}
+
+function drawTechChart(prices, sma50, sma200){
+  const canvas = document.getElementById('techChart');
+  if(!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const validPrices = prices.filter(v => v != null);
+  const min = Math.min(...validPrices) * 0.97;
+  const max = Math.max(...validPrices) * 1.03;
+  const xStep = W / (prices.length - 1);
+  const yFor = v => H - ((v - min) / (max - min)) * (H - 20) - 10;
+
+  // Grid
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 1;
+  for(let i = 1; i < 4; i++){
+    const y = (H / 4) * i;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+
+  // Price
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  prices.forEach((v, i) => {
+    if(v == null) return;
+    const x = i * xStep, y = yFor(v);
+    if(i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // SMA 50 (yellow)
+  ctx.strokeStyle = '#f59e0b';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  let started = false;
+  sma50.forEach((v, i) => {
+    if(v == null) return;
+    const x = i * xStep, y = yFor(v);
+    if(!started){ ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // SMA 200 (cyan)
+  ctx.strokeStyle = '#00bcd4';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  started = false;
+  sma200.forEach((v, i) => {
+    if(v == null) return;
+    const x = i * xStep, y = yFor(v);
+    if(!started){ ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // Price labels
+  ctx.fillStyle = '#666';
+  ctx.font = '10px monospace';
+  ctx.fillText('$' + max.toFixed(0), 4, 12);
+  ctx.fillText('$' + min.toFixed(0), 4, H - 4);
+}
+
+function drawRSIChart(rsi){
+  const canvas = document.getElementById('rsiChart');
+  if(!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr; canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const yFor = v => H - (v / 100) * H;
+  const xStep = W / (rsi.length - 1);
+
+  // Zones
+  ctx.fillStyle = 'rgba(226,75,74,0.08)';
+  ctx.fillRect(0, yFor(100), W, yFor(70) - yFor(100));
+  ctx.fillStyle = 'rgba(29,158,117,0.08)';
+  ctx.fillRect(0, yFor(30), W, yFor(0) - yFor(30));
+
+  // 70 / 30 lines
+  ctx.strokeStyle = 'rgba(226,75,74,0.4)'; ctx.setLineDash([4,4]); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, yFor(70)); ctx.lineTo(W, yFor(70)); ctx.stroke();
+  ctx.strokeStyle = 'rgba(29,158,117,0.4)';
+  ctx.beginPath(); ctx.moveTo(0, yFor(30)); ctx.lineTo(W, yFor(30)); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // RSI line
+  ctx.strokeStyle = '#a855f7'; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  let started = false;
+  rsi.forEach((v, i) => {
+    if(v == null) return;
+    const x = i * xStep, y = yFor(v);
+    if(!started){ ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  ctx.fillStyle = '#666'; ctx.font = '10px monospace';
+  ctx.fillText('70', 4, yFor(70) - 2);
+  ctx.fillText('30', 4, yFor(30) - 2);
+}
+
+function drawMACDChart(macd){
+  const canvas = document.getElementById('macdChart');
+  if(!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr; canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const allVals = [...macd.macd.filter(v=>v!=null), ...macd.signal.filter(v=>v!=null)];
+  const absMax = Math.max(...allVals.map(Math.abs)) * 1.1 || 1;
+  const yFor = v => H/2 - (v / absMax) * (H/2 - 5);
+  const xStep = W / (macd.macd.length - 1);
+
+  // Zero line
+  ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
+
+  // Histogram
+  macd.macd.forEach((v, i) => {
+    if(v == null || macd.signal[i] == null) return;
+    const hist = v - macd.signal[i];
+    const x = i * xStep;
+    const h = yFor(hist) - H/2;
+    ctx.fillStyle = hist >= 0 ? 'rgba(29,158,117,0.5)' : 'rgba(226,75,74,0.5)';
+    ctx.fillRect(x - xStep/2, H/2, Math.max(1, xStep - 1), h);
+  });
+
+  // MACD line (blue)
+  ctx.strokeStyle = '#378ADD'; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  let started = false;
+  macd.macd.forEach((v, i) => {
+    if(v == null) return;
+    const x = i * xStep, y = yFor(v);
+    if(!started){ ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // Signal line (orange)
+  ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  started = false;
+  macd.signal.forEach((v, i) => {
+    if(v == null) return;
+    const x = i * xStep, y = yFor(v);
+    if(!started){ ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
 function openRuinSimulator(){
   if(!allFinals.length){alert('Run a simulation first');return;}
 
