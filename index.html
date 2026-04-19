@@ -2650,6 +2650,7 @@ function initCanvases(){
   distCtx=dc.getContext('2d');
   resizeCanvases();
   window.addEventListener('resize',resizeCanvases);
+  installChartHover();
 }
 
 function resizeCanvases(){
@@ -2673,6 +2674,7 @@ function stopSim(){simRunning=false;if(simTimer)clearTimeout(simTimer);setStatus
 
 function clearSim(){
   stopSim();allPaths=[];allFinals=[];
+  _hoveredPath = -1; _pinnedPath = -1;
   simCtx.clearRect(0,0,simW,simH);
   distCtx.clearRect(0,0,document.getElementById('distCanvas').parentElement.clientWidth,distH);
   ['sN','sEpnl','sEpct','sWin','sSharpe','sDD','sVaR','scB','scBpnl','scM','scMpnl','scU','scUpnl']
@@ -2966,17 +2968,33 @@ function drawAxes(mn,mx){
   }
 }
 
-function drawPath(p,mn,mx){
-  const n=allPaths.length,alpha=n>300?.05:n>150?.08:n>80?.12:.18;
+function drawPath(p,mn,mx,opacityOverride,isHighlight){
+  const n=allPaths.length;
+  const baseAlpha=n>300?.05:n>150?.08:n>80?.12:.18;
+  const alpha = opacityOverride !== undefined ? opacityOverride : baseAlpha;
   const final=p[p.length-1],pnl=SP.dir==='LONG'?final-SP.S0:SP.S0-final;
   const ratio=Math.min(1,Math.max(0,pnl/(SP.S0*.5)));
   const r=Math.round((1-ratio)*210+30),g=Math.round(ratio*130+20);
   const xS=(simW-PAD-PAD_R)/SP.days,yS=(simH-PAD-PAD_B)/(mx-mn);
-  simCtx.beginPath();simCtx.strokeStyle=`rgba(${r},${g},40,${alpha})`;simCtx.lineWidth=.7;
-  p.forEach((v,i)=>{
-    const x=PAD+i*xS,y=simH-PAD_B-(v-mn)*yS;
-    i===0?simCtx.moveTo(x,y):simCtx.lineTo(x,y);
-  });simCtx.stroke();
+  if(isHighlight){
+    // white halo + colored core
+    simCtx.beginPath();simCtx.strokeStyle='rgba(255,255,255,0.9)';simCtx.lineWidth=3;
+    p.forEach((v,i)=>{
+      const x=PAD+i*xS,y=simH-PAD_B-(v-mn)*yS;
+      i===0?simCtx.moveTo(x,y):simCtx.lineTo(x,y);
+    });simCtx.stroke();
+    simCtx.beginPath();simCtx.strokeStyle=`rgba(${r},${g},40,1)`;simCtx.lineWidth=1.8;
+    p.forEach((v,i)=>{
+      const x=PAD+i*xS,y=simH-PAD_B-(v-mn)*yS;
+      i===0?simCtx.moveTo(x,y):simCtx.lineTo(x,y);
+    });simCtx.stroke();
+  } else {
+    simCtx.beginPath();simCtx.strokeStyle=`rgba(${r},${g},40,${alpha})`;simCtx.lineWidth=.7;
+    p.forEach((v,i)=>{
+      const x=PAD+i*xS,y=simH-PAD_B-(v-mn)*yS;
+      i===0?simCtx.moveTo(x,y):simCtx.lineTo(x,y);
+    });simCtx.stroke();
+  }
 }
 
 function drawPercentiles(mn,mx){
@@ -2996,13 +3014,157 @@ function drawPercentiles(mn,mx){
   });
 }
 
+// Hover state
+let _hoveredPath = -1;
+let _pinnedPath = -1;
+
 function redrawSim(){
   simCtx.clearRect(0,0,simW,simH);
   if(!allPaths.length)return;
   const[mn,mx]=getMinMax();
   drawAxes(mn,mx);
-  allPaths.forEach(p=>drawPath(p,mn,mx));
+
+  const highlightIdx = _pinnedPath >= 0 ? _pinnedPath : _hoveredPath;
+
+  if(highlightIdx >= 0 && highlightIdx < allPaths.length){
+    // Draw all others dimmed
+    allPaths.forEach((p, i) => {
+      if(i !== highlightIdx) drawPath(p, mn, mx, 0.12);
+    });
+    // Draw highlighted on top
+    drawPath(allPaths[highlightIdx], mn, mx, 1, true);
+  } else {
+    allPaths.forEach(p => drawPath(p, mn, mx));
+  }
+
   if(allPaths.length>=10)drawPercentiles(mn,mx);
+}
+
+// Modified drawPath to accept opacity + highlight
+function drawPathWithOpacity(path, mn, mx, opacity, isHighlight){
+  if(!path || !path.length) return;
+  const range = mx - mn || 1;
+  const xStep = (simW - PAD - PAD_R) / (path.length - 1);
+  simCtx.strokeStyle = isHighlight ? 'rgba(255,255,255,0.95)' : `rgba(226,75,74,${opacity})`;
+  simCtx.lineWidth = isHighlight ? 2 : 0.8;
+  simCtx.beginPath();
+  path.forEach((v, i) => {
+    const x = PAD + i * xStep;
+    const y = simH - PAD_B - ((v - mn) / range) * (simH - PAD_B - 10);
+    if(i === 0) simCtx.moveTo(x, y);
+    else simCtx.lineTo(x, y);
+  });
+  simCtx.stroke();
+}
+
+function installChartHover(){
+  const canvas = document.getElementById('simCanvas');
+  if(!canvas || canvas._hoverInstalled) return;
+  canvas._hoverInstalled = true;
+  canvas.style.cursor = 'crosshair';
+
+  const tooltip = document.createElement('div');
+  tooltip.id = 'chartHoverTooltip';
+  tooltip.style.cssText = `
+    position:absolute;background:rgba(0,0,0,0.95);border:1px solid #2a2a2a;
+    border-radius:6px;padding:10px 12px;font-family:var(--mono);font-size:11px;
+    color:var(--text);pointer-events:none;z-index:100;display:none;
+    box-shadow:0 4px 20px rgba(0,0,0,.6);min-width:200px;
+  `;
+  canvas.parentElement.style.position = 'relative';
+  canvas.parentElement.appendChild(tooltip);
+
+  canvas.addEventListener('mousemove', e => {
+    if(!allPaths.length) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    // Find closest path at this x position
+    const [priceMin, priceMax] = getMinMax();
+    const range = priceMax - priceMin || 1;
+    const pathLen = allPaths[0].length;
+    const xStep = (simW - PAD - PAD_R) / (pathLen - 1);
+    const dayIdx = Math.max(0, Math.min(pathLen - 1, Math.round((mx - PAD) / xStep)));
+
+    // Compute y at this dayIdx for each path, find closest
+    let closestIdx = -1, closestDist = Infinity;
+    allPaths.forEach((p, i) => {
+      const v = p[dayIdx];
+      const py = simH - PAD_B - ((v - priceMin) / range) * (simH - PAD_B - 10);
+      const dist = Math.abs(py - my);
+      if(dist < closestDist){ closestDist = dist; closestIdx = i; }
+    });
+
+    if(closestDist < 15 && closestIdx !== _hoveredPath){
+      _hoveredPath = closestIdx;
+      redrawSim();
+      showPathTooltip(closestIdx, mx, my, tooltip);
+    } else if(closestDist >= 15){
+      if(_hoveredPath !== -1){
+        _hoveredPath = -1;
+        redrawSim();
+        tooltip.style.display = 'none';
+      }
+    } else {
+      // Same path, just move tooltip
+      tooltip.style.left = (mx + 15) + 'px';
+      tooltip.style.top = (my - 10) + 'px';
+    }
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    if(_hoveredPath !== -1){
+      _hoveredPath = -1;
+      redrawSim();
+      tooltip.style.display = 'none';
+    }
+  });
+
+  canvas.addEventListener('click', e => {
+    if(_hoveredPath >= 0){
+      _pinnedPath = _pinnedPath === _hoveredPath ? -1 : _hoveredPath;
+      redrawSim();
+    } else if(_pinnedPath >= 0){
+      _pinnedPath = -1;
+      redrawSim();
+    }
+  });
+}
+
+function showPathTooltip(idx, mx, my, tooltip){
+  const path = allPaths[idx];
+  if(!path) return;
+  const entry = path[0];
+  const exit = path[path.length - 1];
+  const maxP = Math.max(...path);
+  const minP = Math.min(...path);
+  const ret = SP.dir === 'LONG' ? (exit - entry)/entry : (entry - exit)/entry;
+  const maxGain = SP.dir === 'LONG' ? (maxP - entry)/entry : (entry - minP)/entry;
+  const maxLoss = SP.dir === 'LONG' ? (minP - entry)/entry : -(maxP - entry)/entry;
+  const pnl = ret * SP.capital;
+  const retColor = ret >= 0 ? '#1d9e75' : '#e24b4a';
+  const pinText = _pinnedPath === idx ? '📌 PINNED · click to unpin' : 'click to pin this path';
+
+  tooltip.innerHTML = `
+    <div style="border-bottom:1px solid #2a2a2a;padding-bottom:6px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">
+      <span style="color:#888;font-size:10px;">Path #${idx + 1}</span>
+      <span style="color:${retColor};font-weight:600;font-size:13px;">${ret>=0?'+':''}${(ret*100).toFixed(1)}%</span>
+    </div>
+    <div style="display:grid;grid-template-columns:auto auto;gap:4px 12px;font-size:10px;">
+      <span style="color:#666;">Entry:</span><span>$${entry.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
+      <span style="color:#666;">Exit:</span><span style="color:${retColor};">$${exit.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
+      <span style="color:#666;">P&amp;L:</span><span style="color:${retColor};font-weight:600;">${pnl>=0?'+':''}$${Math.abs(pnl).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+      <span style="color:#666;">Peak:</span><span style="color:#1d9e75;">+${(maxGain*100).toFixed(1)}%</span>
+      <span style="color:#666;">Trough:</span><span style="color:#e24b4a;">${(maxLoss*100).toFixed(1)}%</span>
+    </div>
+    <div style="margin-top:8px;padding-top:6px;border-top:1px solid #1a1a1a;font-size:9px;color:#555;text-align:center;">
+      ${pinText}
+    </div>
+  `;
+  tooltip.style.display = 'block';
+  tooltip.style.left = (mx + 15) + 'px';
+  tooltip.style.top = (my - 10) + 'px';
 }
 
 function drawDist(){
