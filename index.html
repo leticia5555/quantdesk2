@@ -90,7 +90,20 @@ button.danger:hover{background:var(--red);color:#fff;}
 .stat-grid.cols-6{grid-template-columns:repeat(6,1fr);}
 .stat-grid.cols-4{grid-template-columns:repeat(4,1fr);}
 .stat-grid.cols-3{grid-template-columns:repeat(3,1fr);}
-.stat-card{background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:12px 14px;}
+.stat-card{background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:12px 14px;position:relative;cursor:help;transition:all .15s;}
+.stat-card:hover{border-color:#333;background:#0d0d0d;}
+.stat-card[data-tip]:hover::after{
+  content:attr(data-tip);
+  position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);
+  background:#000;color:var(--text);padding:10px 14px;border:1px solid #2a2a2a;border-radius:6px;
+  font-size:11px;font-family:var(--sans);font-weight:400;line-height:1.5;letter-spacing:normal;text-transform:none;
+  white-space:normal;width:280px;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.6);
+  pointer-events:none;
+}
+.stat-card[data-tip]:hover::before{
+  content:'';position:absolute;bottom:100%;left:50%;transform:translateX(-50%);
+  border:6px solid transparent;border-top-color:#2a2a2a;z-index:9999;
+}
 .stat-lbl{font-size:10px;color:var(--text3);margin-bottom:5px;letter-spacing:.05em;text-transform:uppercase;}
 .stat-val{font-size:18px;font-weight:500;color:var(--text);}
 .stat-sub{font-size:10px;color:var(--text3);margin-top:3px;}
@@ -324,6 +337,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button onclick="runDebate()" id="debateBtn" style="border-color:var(--amber);color:var(--amber);" title="Bull vs Bear debate">⚔ Debate</button>
     <button onclick="runAICommittee()" id="committeeBtn" style="border-color:#00bcd4;color:#00bcd4;" title="5 AI agents analyze from different angles">🧠 AI Committee</button>
     <button onclick="runEnsemble()" id="ensembleBtn" style="border-color:#ff00aa;color:#ff00aa;" title="Run all 3 models in parallel — see where they agree">🎯 Ensemble</button>
+    <button onclick="openRuinSimulator()" id="ruinBtn" style="border-color:#ff4444;color:#ff4444;" title="Watch 100 accounts trade — see how many survive">💀 Ruin Simulator</button>
     <button onclick="startLiveTrack()" id="trackBtn" style="border-color:#00ffcc;color:#00ffcc;" title="Track this trade live vs simulation">📡 Track Live</button>
     <button onclick="saveSim()" id="saveSimBtn" style="border-color:#9b59b6;color:#9b59b6;" title="Save simulation to gallery">💾 Save Sim</button>
   </div>
@@ -2953,6 +2967,37 @@ function drawDist(){
   distCtx.fillText('VaR',var95x+2,14);
 }
 
+// ── STATS TOOLTIPS DICTIONARY ─────────────────────────
+const STAT_TOOLTIPS = {
+  'Paths run': 'Number of Monte Carlo simulations run. Each path is one possible price trajectory. More paths = more statistical confidence. Bloomberg standard is 1000+; we run 300 by default for speed.',
+  'Expected P&L': 'Average profit/loss across all simulated paths. This is the MEAN outcome — but volatility means actual outcomes can vary widely.',
+  'Win rate': 'Percentage of paths that ended profitable. 50% = coin flip. Above 55% starts to get interesting. Below 40% is a losing setup.',
+  'Sharpe ratio': 'Risk-adjusted return. (Return - risk-free rate) / Volatility. Above 1.0 = great. 0.5-1.0 = decent. Below 0 = losing money per unit of risk.',
+  'Max drawdown': 'Worst peak-to-valley loss across all paths. This is the WORST path — a black swan scenario. Historical TSLA max DD was ~65%.',
+  'VaR 95%': 'Value at Risk. In the worst 5% of scenarios, you lose AT LEAST this amount. Institutional standard risk metric.',
+  'Sortino ratio': 'Like Sharpe but only penalizes DOWNSIDE volatility. Better for asymmetric returns. Above 1.0 is good.',
+  'Calmar ratio': 'Annualized return / Max drawdown. How much return per unit of worst-case loss. Above 0.5 = decent.',
+  'Profit factor': 'Gross wins / Gross losses. Above 1.0 = profitable system. Above 2.0 = excellent. Renaissance averages ~2.5.',
+  'Kelly %': 'Optimal bet size per Kelly Criterion. If Kelly says 15%, put 15% of capital in this trade. Negative Kelly = DO NOT TRADE. Professional traders use half-Kelly for safety.',
+  'CVaR 95%': 'Conditional VaR (Expected Shortfall). Average loss in the worst 5% of scenarios. More conservative than VaR — Basel III standard.',
+  'VaR 99%': 'In the worst 1% of scenarios, you lose at least this. Tail risk metric.',
+  'Avg drawdown': 'Average worst drawdown across all paths (not just the worst path). More useful than Max DD for planning.',
+  'Skewness': 'Asymmetry of returns. Positive = right tail (moonshots). Negative = left tail (crashes). Crypto tends positive; airlines negative.',
+  'bear · p10': '10th percentile outcome. Only 10% of paths ended worse than this — your pessimistic scenario.',
+  'base · median': '50th percentile. Most likely outcome. Half of paths ended better, half worse.',
+  'bull · p90': '90th percentile. Only 10% of paths ended better — your optimistic scenario.',
+};
+
+function applyTooltips(){
+  document.querySelectorAll('.stat-card').forEach(card => {
+    const lblEl = card.querySelector('.stat-lbl');
+    if(!lblEl) return;
+    const label = lblEl.textContent.trim();
+    const tip = STAT_TOOLTIPS[label];
+    if(tip) card.setAttribute('data-tip', tip);
+  });
+}
+
 function updateSimStats(){
   if(!allFinals.length)return;
   const returns=allFinals.map(f=>SP.dir==='LONG'?(f-SP.S0)/SP.S0:(SP.S0-f)/SP.S0);
@@ -3128,6 +3173,7 @@ function updateSimStats(){
 
     ${renderRiskOfRuin(winRate, avgWin, avgLoss, SP.capital)}
   `;
+  applyTooltips();
 }
 
 function normalizeTicker(ticker){
@@ -5350,7 +5396,312 @@ const INVESTORS = [
   {id:'masa', name:'Masayoshi Son', style:'300-year vision investor. Bets on AI singularity. Either 10x or zero — no middle ground. Famously lost $70B and came back. LATAM bets: Rappi, Kavak.', emoji:'💥'},
 ];
 
-// ─── ENSEMBLE: run all 3 models in parallel, show consensus ───
+// ─── RUIN SIMULATOR: visual 100 accounts trading ────
+function openRuinSimulator(){
+  if(!allFinals.length){alert('Run a simulation first');return;}
+
+  // Get stats from current sim
+  const dir=SP.dir, S0=SP.S0;
+  const rets = allFinals.map(f => dir==='LONG' ? (f-S0)/S0 : (S0-f)/S0);
+  const wins = rets.filter(r=>r>0);
+  const losses = rets.filter(r=>r<0);
+  const winRate = wins.length / rets.length;
+  const avgWin = wins.length ? wins.reduce((a,b)=>a+b,0)/wins.length : 0.05;
+  const avgLoss = losses.length ? Math.abs(losses.reduce((a,b)=>a+b,0)/losses.length) : 0.05;
+  const stdWin = wins.length ? Math.sqrt(wins.reduce((a,r)=>a+(r-avgWin)**2,0)/wins.length) : 0.02;
+  const stdLoss = losses.length ? Math.sqrt(losses.reduce((a,r)=>a+(r-avgLoss)**2,0)/losses.length) : 0.02;
+
+  // Create modal overlay
+  let modal = document.getElementById('ruinModal');
+  if(modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'ruinModal';
+  modal.style.cssText = `
+    position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.95);
+    z-index:10000;display:flex;align-items:center;justify-content:center;
+    padding:20px;box-sizing:border-box;
+  `;
+  modal.innerHTML = `
+    <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:20px;max-width:1100px;width:100%;max-height:95vh;overflow-y:auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <div>
+          <div style="font-family:var(--mono);font-size:14px;color:var(--text);font-weight:600;letter-spacing:.05em;">💀 RUIN SIMULATOR</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:4px;">100 accounts · $10,000 each · 50 trades · ${(winRate*100).toFixed(0)}% win rate · ${dir} ${document.getElementById('simTicker').value}</div>
+        </div>
+        <button onclick="document.getElementById('ruinModal').remove()" style="background:none;border:1px solid #333;color:var(--text2);padding:6px 14px;border-radius:4px;cursor:pointer;font-family:var(--mono);">✕ close</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 280px;gap:16px;">
+        <div id="ruinCanvasContainer" style="background:#050505;border:1px solid #1a1a1a;border-radius:6px;padding:12px;position:relative;height:500px;overflow:hidden;">
+          <canvas id="ruinCanvas" style="width:100%;height:100%;"></canvas>
+          <div style="position:absolute;top:8px;left:12px;font-family:var(--mono);font-size:10px;color:var(--text3);pointer-events:none;">$10,000 start · $5,000 = death zone</div>
+        </div>
+
+        <div>
+          <div style="background:#050505;border:1px solid #1a1a1a;border-radius:6px;padding:16px;margin-bottom:12px;">
+            <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:6px;">// TRADE #</div>
+            <div id="ruinTradeNum" style="font-family:var(--mono);font-size:32px;font-weight:600;color:var(--text);">0 / 50</div>
+          </div>
+          <div style="background:#050505;border:1px solid #1a1a1a;border-radius:6px;padding:16px;margin-bottom:12px;">
+            <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:6px;">// ALIVE</div>
+            <div id="ruinAlive" style="font-family:var(--mono);font-size:32px;font-weight:600;color:var(--green);">100</div>
+            <div style="font-size:10px;color:var(--text3);margin-top:4px;">above $5,000</div>
+          </div>
+          <div style="background:#050505;border:1px solid #1a1a1a;border-radius:6px;padding:16px;margin-bottom:12px;">
+            <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:6px;">// DEAD</div>
+            <div id="ruinDead" style="font-family:var(--mono);font-size:32px;font-weight:600;color:var(--red);">0</div>
+            <div style="font-size:10px;color:var(--text3);margin-top:4px;">below $5,000</div>
+          </div>
+          <div style="background:#050505;border:1px solid #1a1a1a;border-radius:6px;padding:16px;">
+            <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:6px;">// AVG BALANCE</div>
+            <div id="ruinAvg" style="font-family:var(--mono);font-size:24px;font-weight:600;color:var(--text);">$10,000</div>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:14px;">
+            <button onclick="startRuinSim()" id="ruinStart" style="flex:1;background:var(--green);color:#000;border:none;padding:10px;border-radius:4px;cursor:pointer;font-family:var(--mono);font-weight:600;letter-spacing:.05em;">▶ START</button>
+            <button onclick="resetRuinSim()" style="background:none;border:1px solid #333;color:var(--text2);padding:10px 14px;border-radius:4px;cursor:pointer;font-family:var(--mono);">↻ RESET</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="ruinVerdict" style="margin-top:16px;padding:16px;background:#050505;border:1px solid #1a1a1a;border-radius:6px;text-align:center;font-family:var(--mono);font-size:12px;color:var(--text3);">
+        Press START to watch 100 traders take 50 consecutive trades. See who survives.
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  // Store sim params
+  window._ruinParams = {winRate, avgWin, avgLoss, stdWin, stdLoss};
+
+  // Initialize canvas
+  setTimeout(() => {
+    initRuinCanvas();
+  }, 50);
+}
+
+let _ruinState = null;
+let _ruinAnimId = null;
+
+function initRuinCanvas(){
+  const canvas = document.getElementById('ruinCanvas');
+  if(!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+
+  _ruinState = {
+    accounts: Array(100).fill(null).map((_,i) => ({
+      id: i,
+      balance: 10000,
+      history: [10000],
+      dead: false,
+      color: `hsl(${(i*3.6)%360}, 60%, 50%)`
+    })),
+    trade: 0,
+    maxTrades: 50,
+    canvas, ctx,
+    width: rect.width, height: rect.height
+  };
+
+  drawRuin();
+}
+
+function drawRuin(){
+  const s = _ruinState;
+  if(!s) return;
+  const {ctx, width, height, accounts, maxTrades} = s;
+
+  ctx.clearRect(0, 0, width, height);
+
+  // Grid lines
+  const minY = 0, maxY = 25000;
+  const yFor = val => height - ((val - minY) / (maxY - minY)) * height;
+
+  // Horizontal gridlines
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 1;
+  [5000, 10000, 15000, 20000].forEach(level => {
+    ctx.beginPath();
+    ctx.moveTo(0, yFor(level));
+    ctx.lineTo(width, yFor(level));
+    ctx.stroke();
+    // Label
+    ctx.fillStyle = '#444';
+    ctx.font = '10px monospace';
+    ctx.fillText('$'+level.toLocaleString(), 4, yFor(level) - 2);
+  });
+
+  // Death zone (below $5000)
+  ctx.fillStyle = 'rgba(226, 75, 74, 0.08)';
+  ctx.fillRect(0, yFor(5000), width, height - yFor(5000));
+
+  // $5000 death line
+  ctx.strokeStyle = 'rgba(226, 75, 74, 0.5)';
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(0, yFor(5000));
+  ctx.lineTo(width, yFor(5000));
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Starting line $10000
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+  ctx.beginPath();
+  ctx.moveTo(0, yFor(10000));
+  ctx.lineTo(width, yFor(10000));
+  ctx.stroke();
+
+  // Draw each account's path
+  const xStep = width / maxTrades;
+  accounts.forEach(acc => {
+    if(acc.history.length < 2) return;
+    ctx.beginPath();
+    ctx.strokeStyle = acc.dead ? 'rgba(226, 75, 74, 0.25)' : acc.color.replace(')', ', 0.7)').replace('hsl', 'hsla');
+    ctx.lineWidth = acc.dead ? 0.8 : 1.2;
+    acc.history.forEach((v, i) => {
+      const x = i * xStep;
+      const y = yFor(Math.max(0, Math.min(maxY, v)));
+      if(i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Death marker
+    if(acc.dead){
+      const deathIdx = acc.history.findIndex(v => v < 5000);
+      if(deathIdx > 0){
+        ctx.fillStyle = 'rgba(226, 75, 74, 0.8)';
+        ctx.beginPath();
+        ctx.arc(deathIdx * xStep, yFor(acc.history[deathIdx]), 3, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+  });
+}
+
+function startRuinSim(){
+  const btn = document.getElementById('ruinStart');
+  if(!_ruinState) return;
+  if(_ruinState.trade >= _ruinState.maxTrades){
+    resetRuinSim();
+    return;
+  }
+  btn.textContent = '⏸ RUNNING...';
+  btn.disabled = true;
+
+  const p = window._ruinParams;
+
+  function tradeStep(){
+    const s = _ruinState;
+    if(!s || s.trade >= s.maxTrades){
+      finishRuinSim();
+      return;
+    }
+
+    s.trade++;
+
+    s.accounts.forEach(acc => {
+      if(acc.dead){
+        acc.history.push(acc.history[acc.history.length-1]);
+        return;
+      }
+      // Simulate one trade
+      const win = Math.random() < p.winRate;
+      let ret;
+      if(win){
+        ret = p.avgWin + p.stdWin * (Math.random()*2 - 1) * 0.8;
+      } else {
+        ret = -(p.avgLoss + p.stdLoss * (Math.random()*2 - 1) * 0.8);
+      }
+      // Risk 20% per trade (aggressive retail style)
+      const positionSize = acc.balance * 0.20;
+      const pnl = positionSize * ret * 2; // leveraged effect for drama
+      acc.balance = Math.max(0, acc.balance + pnl);
+      acc.history.push(acc.balance);
+      if(acc.balance < 5000 && !acc.dead){
+        acc.dead = true;
+      }
+    });
+
+    // Update UI
+    const alive = s.accounts.filter(a => !a.dead).length;
+    const dead = 100 - alive;
+    const avg = s.accounts.reduce((a,acc)=>a+acc.balance,0) / 100;
+    document.getElementById('ruinTradeNum').textContent = `${s.trade} / 50`;
+    document.getElementById('ruinAlive').textContent = alive;
+    document.getElementById('ruinDead').textContent = dead;
+    document.getElementById('ruinAvg').textContent = '$'+avg.toLocaleString(undefined,{maximumFractionDigits:0});
+
+    // Color update
+    const aliveEl = document.getElementById('ruinAlive');
+    const deadEl = document.getElementById('ruinDead');
+    aliveEl.style.color = alive > 70 ? 'var(--green)' : alive > 40 ? '#ffaa00' : 'var(--red)';
+    deadEl.style.color = dead > 50 ? 'var(--red)' : dead > 25 ? '#ffaa00' : 'var(--text)';
+
+    drawRuin();
+
+    _ruinAnimId = setTimeout(tradeStep, 120);
+  }
+
+  tradeStep();
+}
+
+function finishRuinSim(){
+  const s = _ruinState;
+  if(!s) return;
+  const alive = s.accounts.filter(a => !a.dead).length;
+  const dead = 100 - alive;
+  const avgSurvivor = s.accounts.filter(a=>!a.dead).reduce((a,acc)=>a+acc.balance,0)/Math.max(1,alive);
+  const maxBal = Math.max(...s.accounts.map(a=>a.balance));
+  const bigWinners = s.accounts.filter(a=>a.balance >= 20000).length;
+
+  let verdict, color, emoji;
+  if(alive >= 80){ verdict='STRONG SURVIVAL'; color='var(--green)'; emoji='🏆'; }
+  else if(alive >= 60){ verdict='DECENT ODDS'; color='#66bb6a'; emoji='✅'; }
+  else if(alive >= 40){ verdict='COIN FLIP'; color='#ffaa00'; emoji='⚠️'; }
+  else if(alive >= 20){ verdict='HIGH RISK'; color='#ff7043'; emoji='🔥'; }
+  else{ verdict='MOST TRADERS LOST IT ALL'; color='var(--red)'; emoji='💀'; }
+
+  document.getElementById('ruinVerdict').innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:center;gap:24px;flex-wrap:wrap;">
+      <div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px;">// VERDICT</div>
+        <div style="font-size:18px;font-weight:700;color:${color};letter-spacing:.05em;">${emoji} ${verdict}</div>
+      </div>
+      <div style="border-left:1px solid #2a2a2a;padding-left:24px;">
+        <div style="font-size:10px;color:var(--text3);">${alive} of 100 survived 50 trades</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px;">Best: $${maxBal.toLocaleString(undefined,{maximumFractionDigits:0})} · Avg survivor: $${avgSurvivor.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px;">${bigWinners} got to $20k+ (doubled)</div>
+      </div>
+    </div>
+  `;
+
+  const btn = document.getElementById('ruinStart');
+  btn.textContent = '↻ RUN AGAIN';
+  btn.disabled = false;
+  btn.onclick = resetRuinSim;
+}
+
+function resetRuinSim(){
+  if(_ruinAnimId) clearTimeout(_ruinAnimId);
+  initRuinCanvas();
+  document.getElementById('ruinTradeNum').textContent = '0 / 50';
+  document.getElementById('ruinAlive').textContent = '100';
+  document.getElementById('ruinAlive').style.color = 'var(--green)';
+  document.getElementById('ruinDead').textContent = '0';
+  document.getElementById('ruinDead').style.color = 'var(--text)';
+  document.getElementById('ruinAvg').textContent = '$10,000';
+  document.getElementById('ruinVerdict').innerHTML = 'Press START to watch 100 traders take 50 consecutive trades. See who survives.';
+  const btn = document.getElementById('ruinStart');
+  btn.textContent = '▶ START';
+  btn.disabled = false;
+  btn.onclick = startRuinSim;
+}
+
+// ─── RUIN SIMULATOR END ───
 async function runEnsemble(){
   const ticker=document.getElementById('simTicker').value.trim().toUpperCase();
   if(!ticker||!allFinals.length){alert('Run a simulation first');return;}
