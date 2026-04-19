@@ -2967,6 +2967,220 @@ function drawDist(){
   distCtx.fillText('VaR',var95x+2,14);
 }
 
+// ─── WHAT-IF SLIDERS: analytical GBM recomputation in real time ──
+function renderWhatIfPanel(){
+  if(!allFinals.length) return;
+  let panel = document.getElementById('whatifPanel');
+  if(!panel){
+    panel = document.createElement('div');
+    panel.id = 'whatifPanel';
+    panel.style.cssText = 'margin-top:12px;margin-bottom:12px;';
+    const statsTarget = document.getElementById('simAnalysis') || document.body;
+    if(statsTarget && statsTarget.parentNode){
+      statsTarget.parentNode.insertBefore(panel, statsTarget);
+    }
+  }
+
+  const baseMu = SP.mu || 0.12;
+  const baseSigma = SP.sigma || 0.35;
+  const baseDays = SP.days || 90;
+  const baseCapital = SP.capital || 10000;
+
+  panel.innerHTML = `
+    <div class="section-header"><span class="section-title" style="color:#00bcd4;">// what-if scenarios · live recompute</span><div class="section-line"></div></div>
+    <div style="background:linear-gradient(135deg,#0a0a0a 0%,#0f0a14 100%);border:1px solid #1a1a1a;border-radius:6px;padding:16px;">
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:14px;margin-bottom:14px;">
+        <div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <label style="font-size:10px;color:var(--text3);font-family:var(--mono);">μ (drift)</label>
+            <span id="wiMuVal" style="font-size:11px;color:var(--text);font-family:var(--mono);font-weight:600;">${(baseMu*100).toFixed(0)}%</span>
+          </div>
+          <input type="range" id="wiMu" min="-30" max="60" step="1" value="${(baseMu*100).toFixed(0)}" style="width:100%;accent-color:#00bcd4;" oninput="updateWhatIf()"/>
+        </div>
+        <div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <label style="font-size:10px;color:var(--text3);font-family:var(--mono);">σ (volatility)</label>
+            <span id="wiSigmaVal" style="font-size:11px;color:var(--text);font-family:var(--mono);font-weight:600;">${(baseSigma*100).toFixed(0)}%</span>
+          </div>
+          <input type="range" id="wiSigma" min="5" max="120" step="1" value="${(baseSigma*100).toFixed(0)}" style="width:100%;accent-color:#ff9800;" oninput="updateWhatIf()"/>
+        </div>
+        <div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <label style="font-size:10px;color:var(--text3);font-family:var(--mono);">horizon (days)</label>
+            <span id="wiDaysVal" style="font-size:11px;color:var(--text);font-family:var(--mono);font-weight:600;">${baseDays}d</span>
+          </div>
+          <input type="range" id="wiDays" min="3" max="730" step="1" value="${baseDays}" style="width:100%;accent-color:#9c27b0;" oninput="updateWhatIf()"/>
+        </div>
+        <div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <label style="font-size:10px;color:var(--text3);font-family:var(--mono);">capital</label>
+            <span id="wiCapVal" style="font-size:11px;color:var(--text);font-family:var(--mono);font-weight:600;">$${baseCapital.toLocaleString()}</span>
+          </div>
+          <input type="range" id="wiCap" min="1000" max="1000000" step="1000" value="${baseCapital}" style="width:100%;accent-color:#4caf50;" oninput="updateWhatIf()"/>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;">
+        <button onclick="applyWhatIfPreset('crash')" class="wi-preset">💥 Crash −30%</button>
+        <button onclick="applyWhatIfPreset('vol_double')" class="wi-preset">📈 Volatility ×2</button>
+        <button onclick="applyWhatIfPreset('bull')" class="wi-preset">🐂 Bull regime (μ ×2)</button>
+        <button onclick="applyWhatIfPreset('bear')" class="wi-preset">🐻 Bear regime (μ ÷2)</button>
+        <button onclick="applyWhatIfPreset('quick')" class="wi-preset">⚡ 1 week</button>
+        <button onclick="applyWhatIfPreset('long')" class="wi-preset">📅 1 year</button>
+        <button onclick="resetWhatIf()" class="wi-preset" style="border-color:#333;color:var(--text2);">↻ Reset</button>
+      </div>
+
+      <div id="wiResults" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;"></div>
+
+      <div id="wiInsight" style="margin-top:12px;padding:12px;background:#080808;border:1px solid #1a1a1a;border-radius:4px;font-size:11px;color:var(--text2);line-height:1.6;font-family:var(--sans);"></div>
+    </div>
+  `;
+
+  if(!document.getElementById('wiStyles')){
+    const style = document.createElement('style');
+    style.id = 'wiStyles';
+    style.textContent = `
+      .wi-preset{background:#0a0a0a;border:1px solid #2a2a2a;color:var(--text2);padding:5px 10px;border-radius:3px;cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:.04em;transition:all .15s;}
+      .wi-preset:hover{background:#1a1a1a;border-color:#444;color:var(--text);transform:translateY(-1px);}
+      .wi-preset:active{transform:translateY(0);}
+      input[type=range]{-webkit-appearance:none;appearance:none;height:4px;background:#1a1a1a;border-radius:2px;outline:none;}
+      input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:var(--text);cursor:pointer;border:2px solid #000;}
+      input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--text);cursor:pointer;border:2px solid #000;}
+    `;
+    document.head.appendChild(style);
+  }
+
+  updateWhatIf();
+}
+
+function updateWhatIf(){
+  const mu = parseFloat(document.getElementById('wiMu').value) / 100;
+  const sigma = parseFloat(document.getElementById('wiSigma').value) / 100;
+  const days = parseInt(document.getElementById('wiDays').value);
+  const capital = parseInt(document.getElementById('wiCap').value);
+
+  document.getElementById('wiMuVal').textContent = (mu*100).toFixed(0)+'%';
+  document.getElementById('wiSigmaVal').textContent = (sigma*100).toFixed(0)+'%';
+  document.getElementById('wiDaysVal').textContent = days+'d';
+  document.getElementById('wiCapVal').textContent = '$'+capital.toLocaleString();
+
+  const t = days/252;
+  const driftAdj = mu - 0.5*sigma*sigma;
+  const muLogRet = driftAdj * t;
+  const sigmaLogRet = sigma * Math.sqrt(t);
+
+  const expectedReturn = Math.exp(mu*t) - 1;
+  const medianReturn = Math.exp(muLogRet) - 1;
+
+  function normCDF(x){
+    const a1=0.254829592, a2=-0.284496736, a3=1.421413741, a4=-1.453152027, a5=1.061405429, p=0.3275911;
+    const sign = x<0 ? -1 : 1;
+    x = Math.abs(x)/Math.sqrt(2);
+    const tt = 1/(1+p*x);
+    const y = 1-(((((a5*tt+a4)*tt)+a3)*tt+a2)*tt+a1)*tt*Math.exp(-x*x);
+    return 0.5*(1+sign*y);
+  }
+  const winRate = 1 - normCDF(-muLogRet/Math.max(0.001, sigmaLogRet));
+
+  const var95 = Math.exp(muLogRet + sigmaLogRet*(-1.645)) - 1;
+  const p10 = Math.exp(muLogRet + sigmaLogRet*(-1.282)) - 1;
+  const p90 = Math.exp(muLogRet + sigmaLogRet*(1.282)) - 1;
+
+  const sharpe = (sigma > 0) ? driftAdj / sigma : 0;
+
+  function fmtPct(x){ return (x>=0?'+':'')+(x*100).toFixed(1)+'%'; }
+  function fmtD(x){ const v = x*capital; return (v>=0?'+':'-')+'$'+Math.abs(v).toLocaleString(undefined,{maximumFractionDigits:0}); }
+  function colorFor(x){ return x>=0 ? 'var(--green)' : 'var(--red)'; }
+
+  document.getElementById('wiResults').innerHTML = `
+    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:10px;text-align:center;">
+      <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">EXPECTED</div>
+      <div style="font-size:17px;font-weight:600;color:${colorFor(expectedReturn)};font-family:var(--mono);margin:3px 0;">${fmtPct(expectedReturn)}</div>
+      <div style="font-size:10px;color:var(--text3);">${fmtD(expectedReturn)}</div>
+    </div>
+    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:10px;text-align:center;">
+      <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">WIN RATE</div>
+      <div style="font-size:17px;font-weight:600;color:${winRate>=0.5?'var(--green)':'var(--red)'};font-family:var(--mono);margin:3px 0;">${(winRate*100).toFixed(0)}%</div>
+      <div style="font-size:10px;color:var(--text3);">prob profitable</div>
+    </div>
+    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:10px;text-align:center;">
+      <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">SHARPE</div>
+      <div style="font-size:17px;font-weight:600;color:${sharpe>0?'var(--green)':'var(--red)'};font-family:var(--mono);margin:3px 0;">${sharpe.toFixed(2)}</div>
+      <div style="font-size:10px;color:var(--text3);">risk-adj</div>
+    </div>
+    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:10px;text-align:center;">
+      <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">VaR 95%</div>
+      <div style="font-size:17px;font-weight:600;color:var(--red);font-family:var(--mono);margin:3px 0;">${fmtPct(var95)}</div>
+      <div style="font-size:10px;color:var(--text3);">${fmtD(var95)}</div>
+    </div>
+    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:10px;text-align:center;">
+      <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">p10 → p90</div>
+      <div style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono);margin:3px 0;">${fmtPct(p10)} / ${fmtPct(p90)}</div>
+      <div style="font-size:10px;color:var(--text3);">range 80%</div>
+    </div>
+  `;
+
+  let verdict, verdictColor;
+  if(winRate >= 0.65 && sharpe >= 1.0){ verdict='STRONG ENTRY'; verdictColor='var(--green)'; }
+  else if(winRate >= 0.55 && sharpe >= 0.5){ verdict='BUY'; verdictColor='#66bb6a'; }
+  else if(winRate >= 0.45 && sharpe >= -0.3){ verdict='WAIT FOR DIP'; verdictColor='#ffaa00'; }
+  else if(winRate >= 0.30){ verdict='HIGH RISK'; verdictColor='#ff7043'; }
+  else{ verdict='AVOID'; verdictColor='var(--red)'; }
+
+  const baseMu = SP.mu || 0.12;
+  const baseSigma = SP.sigma || 0.35;
+  const baseDays = SP.days || 90;
+  const muDelta = ((mu - baseMu)/Math.abs(baseMu||1)*100).toFixed(0);
+  const sigmaDelta = ((sigma - baseSigma)/baseSigma*100).toFixed(0);
+  const daysDelta = ((days - baseDays)/baseDays*100).toFixed(0);
+
+  document.getElementById('wiInsight').innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;">
+      <div>
+        <span style="color:var(--text3);font-family:var(--mono);font-size:10px;">VERDICT:</span>
+        <strong style="color:${verdictColor};letter-spacing:.05em;margin-left:6px;font-family:var(--mono);">${verdict}</strong>
+      </div>
+      <div style="font-size:10px;color:var(--text3);font-family:var(--mono);">
+        vs base: μ ${muDelta>=0?'+':''}${muDelta}% · σ ${sigmaDelta>=0?'+':''}${sigmaDelta}% · horizon ${daysDelta>=0?'+':''}${daysDelta}%
+      </div>
+    </div>
+    <div style="margin-top:8px;color:var(--text3);font-size:10px;font-family:var(--mono);">
+      analytical GBM closed-form · instantaneous recompute · move sliders to stress-test
+    </div>
+  `;
+}
+
+function applyWhatIfPreset(preset){
+  const baseMu = SP.mu || 0.12;
+  const baseSigma = SP.sigma || 0.35;
+  const baseDays = SP.days || 90;
+  const baseCap = SP.capital || 10000;
+
+  let newMu = baseMu*100, newSigma = baseSigma*100, newDays = baseDays, newCap = baseCap;
+
+  if(preset === 'crash'){ newMu = Math.max(-30, baseMu*100 - 30); newSigma = Math.min(120, baseSigma*100 * 1.8); }
+  if(preset === 'vol_double'){ newSigma = Math.min(120, baseSigma*200); }
+  if(preset === 'bull'){ newMu = Math.min(60, baseMu*200); }
+  if(preset === 'bear'){ newMu = baseMu*50; }
+  if(preset === 'quick'){ newDays = 7; }
+  if(preset === 'long'){ newDays = 365; }
+
+  document.getElementById('wiMu').value = newMu;
+  document.getElementById('wiSigma').value = newSigma;
+  document.getElementById('wiDays').value = newDays;
+  document.getElementById('wiCap').value = newCap;
+  updateWhatIf();
+}
+
+function resetWhatIf(){
+  document.getElementById('wiMu').value = (SP.mu||0.12)*100;
+  document.getElementById('wiSigma').value = (SP.sigma||0.35)*100;
+  document.getElementById('wiDays').value = SP.days||90;
+  document.getElementById('wiCap').value = SP.capital||10000;
+  updateWhatIf();
+}
+
 // ── STATS TOOLTIPS DICTIONARY ─────────────────────────
 const STAT_TOOLTIPS = {
   'Paths run': 'Number of Monte Carlo simulations run. Each path is one possible price trajectory. More paths = more statistical confidence. Bloomberg standard is 1000+; we run 300 by default for speed.',
@@ -3174,6 +3388,7 @@ function updateSimStats(){
     ${renderRiskOfRuin(winRate, avgWin, avgLoss, SP.capital)}
   `;
   applyTooltips();
+  renderWhatIfPanel();
 }
 
 function normalizeTicker(ticker){
