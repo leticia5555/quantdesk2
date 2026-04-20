@@ -90,20 +90,7 @@ button.danger:hover{background:var(--red);color:#fff;}
 .stat-grid.cols-6{grid-template-columns:repeat(6,1fr);}
 .stat-grid.cols-4{grid-template-columns:repeat(4,1fr);}
 .stat-grid.cols-3{grid-template-columns:repeat(3,1fr);}
-.stat-card{background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:12px 14px;position:relative;cursor:help;transition:all .15s;}
-.stat-card:hover{border-color:#333;background:#0d0d0d;}
-.stat-card[data-tip]:hover::after{
-  content:attr(data-tip);
-  position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);
-  background:#000;color:var(--text);padding:10px 14px;border:1px solid #2a2a2a;border-radius:6px;
-  font-size:11px;font-family:var(--sans);font-weight:400;line-height:1.5;letter-spacing:normal;text-transform:none;
-  white-space:normal;width:280px;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.6);
-  pointer-events:none;
-}
-.stat-card[data-tip]:hover::before{
-  content:'';position:absolute;bottom:100%;left:50%;transform:translateX(-50%);
-  border:6px solid transparent;border-top-color:#2a2a2a;z-index:9999;
-}
+.stat-card{background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:12px 14px;}
 .stat-lbl{font-size:10px;color:var(--text3);margin-bottom:5px;letter-spacing:.05em;text-transform:uppercase;}
 .stat-val{font-size:18px;font-weight:500;color:var(--text);}
 .stat-sub{font-size:10px;color:var(--text3);margin-top:3px;}
@@ -137,18 +124,6 @@ canvas{display:block;width:100%;height:100%;}
 
 /* VERDICT */
 .verdict{display:inline-block;font-size:10px;padding:3px 10px;border-radius:3px;border:1px solid;letter-spacing:.06em;text-transform:uppercase;}
-.ptQuick{background:#0a0a0a;border:1px solid #1a1a1a;color:var(--text2);padding:3px 8px;border-radius:3px;cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:.04em;transition:all .15s;}
-.ptQuick:hover{background:#1a1a1a;border-color:#333;color:var(--text);}
-.ptQuick:active{background:#222;}
-.ticker-suggest{position:absolute;top:100%;left:0;right:0;background:#0a0a0a;border:1px solid #2a2a2a;border-top:none;max-height:240px;overflow-y:auto;z-index:1000;display:none;font-family:var(--mono);font-size:11px;}
-.ticker-suggest.show{display:block;}
-.ticker-suggest-item{padding:6px 10px;cursor:pointer;border-bottom:1px solid #1a1a1a;display:flex;justify-content:space-between;align-items:center;}
-.ticker-suggest-item:hover,.ticker-suggest-item.active{background:#1a1a1a;}
-.ticker-suggest-item .ts-tk{color:var(--text);font-weight:600;letter-spacing:.05em;}
-.ticker-suggest-item .ts-nm{color:var(--text3);font-size:10px;margin-left:8px;flex:1;text-align:right;}
-.ticker-suggest-item .ts-tag{color:#ff8c00;font-size:9px;padding:1px 6px;border:1px solid #ff8c00;border-radius:2px;margin-left:8px;}
-.ticker-suggest-item .ts-tag.us{color:var(--text2);border-color:#333;}
-.ticker-suggest-item .ts-tag.crypto{color:#ffd700;border-color:#ffd700;}
 .v-strong{border-color:var(--blue);color:var(--blue);background:rgba(55,138,221,.1);}
 .v-wait{border-color:var(--green);color:var(--green);background:rgba(29,158,117,.1);}
 .v-risk{border-color:var(--amber);color:var(--amber);background:rgba(239,159,39,.1);}
@@ -257,7 +232,6 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('compare')">COMPARE</button>
     <button class="nav-btn" onclick="showPage('vc')">VC</button>
     <button class="nav-btn" onclick="showPage('portfolio')">PORTFOLIO</button>
-    <button class="nav-btn" onclick="showPage('corr')">CORR</button>
     <button class="nav-btn" onclick="showPage('macro')">MACRO</button>
     <button class="nav-btn" onclick="showPage('smartmoney')">SMART $</button>
     <button class="nav-btn" onclick="showPage('earnings')">EARNINGS</button>
@@ -289,9 +263,9 @@ td:first-child{color:var(--text);font-weight:500;}
     </div>
     <select id="simDir"><option value="LONG">LONG (buy)</option><option value="SHORT">SHORT (sell)</option></select>
     <input type="number" id="simCapital" placeholder="Capital $" value="10000" min="100"/>
-    <select id="simDays"><option value="1">1 day</option><option value="2">2 days</option><option value="3">3 days</option><option value="5">1 week</option><option value="10">2 weeks</option><option value="15">15 days</option><option value="21">3 weeks</option><option value="30">1 month</option><option value="60">2 months</option><option value="90" selected>3 months</option><option value="180">6 months</option><option value="365">1 year</option></select>
+    <select id="simDays"><option value="3">3 days</option><option value="5">1 week</option><option value="10">2 weeks</option><option value="15">15 days</option><option value="21">3 weeks</option><option value="30">1 month</option><option value="60">2 months</option><option value="90" selected>3 months</option><option value="180">6 months</option><option value="365">1 year</option></select>
     <select id="simPaths"><option value="100">100 paths</option><option value="300" selected>300 paths</option><option value="500">500 paths</option><option value="1000">1000 paths</option></select>
-    <select id="simModel"><option value="gbm">GBM + GARCH + Fat Tails</option><option value="jump">Jump Diffusion + GARCH</option><option value="regime">Regime Switching + GARCH</option></select>
+    <select id="simModel"><option value="gbm">GBM — standard</option><option value="jump">Jump diffusion</option><option value="regime">Regime switching</option></select>
   </div>
 
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
@@ -335,11 +309,6 @@ td:first-child{color:var(--text);font-weight:500;}
     <button onclick="toggleTikTok()" id="tikTokBtn" style="border-color:#ff0050;color:#ff0050;" title="TikTok fullscreen mode">▶ TikTok</button>
     <button onclick="runInvestorPersonas()" id="personasBtn" style="border-color:#9b59b6;color:#9b59b6;" title="Ask legendary investors">👤 Investors</button>
     <button onclick="runDebate()" id="debateBtn" style="border-color:var(--amber);color:var(--amber);" title="Bull vs Bear debate">⚔ Debate</button>
-    <button onclick="runAICommittee()" id="committeeBtn" style="border-color:#00bcd4;color:#00bcd4;" title="5 AI agents analyze from different angles">🧠 AI Committee</button>
-    <button onclick="runEnsemble()" id="ensembleBtn" style="border-color:#ff00aa;color:#ff00aa;" title="Run all 3 models in parallel — see where they agree">🎯 Ensemble</button>
-    <button onclick="openRuinSimulator()" id="ruinBtn" style="border-color:#ff4444;color:#ff4444;" title="Watch 100 accounts trade — see how many survive">💀 Ruin Simulator</button>
-    <button onclick="openValuation()" id="valuationBtn" style="border-color:#8b5cf6;color:#8b5cf6;" title="DCF valuation with Gordon Growth + Comparables">💰 Valuation</button>
-    <button onclick="openTechnicals()" id="techBtn" style="border-color:#f59e0b;color:#f59e0b;" title="RSI, MACD, Moving Averages">📈 Technicals</button>
     <button onclick="startLiveTrack()" id="trackBtn" style="border-color:#00ffcc;color:#00ffcc;" title="Track this trade live vs simulation">📡 Track Live</button>
     <button onclick="saveSim()" id="saveSimBtn" style="border-color:#9b59b6;color:#9b59b6;" title="Save simulation to gallery">💾 Save Sim</button>
   </div>
@@ -367,73 +336,6 @@ td:first-child{color:var(--text);font-weight:500;}
 
   <div class="canvas-wrap" style="height:110px;margin-bottom:16px;">
     <canvas id="distCanvas"></canvas>
-  </div>
-
-  <!-- WHAT-IF SLIDERS PANEL -->
-  <div id="whatIfPanel" style="display:none;background:linear-gradient(135deg, rgba(0,188,212,.06) 0%, rgba(255,0,170,.06) 100%);border:1px solid #1a1a1a;border-radius:8px;padding:14px;margin-bottom:16px;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-      <div>
-        <div style="font-family:var(--mono);font-size:12px;color:#00bcd4;letter-spacing:.05em;font-weight:600;">// 🎚️ WHAT-IF SCENARIOS</div>
-        <div style="font-size:10px;color:var(--text3);margin-top:2px;">Move sliders to see how parameters change the outcome in real-time</div>
-      </div>
-      <button onclick="resetWhatIf()" style="background:none;border:1px solid #333;color:var(--text3);padding:4px 10px;border-radius:3px;cursor:pointer;font-family:var(--mono);font-size:10px;">↻ reset</button>
-    </div>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:12px;">
-      <div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-          <span style="font-size:10px;color:var(--text3);font-family:var(--mono);">DRIFT (mu)</span>
-          <span id="wiMuVal" style="font-size:11px;color:#00bcd4;font-family:var(--mono);font-weight:600;">15%</span>
-        </div>
-        <input type="range" id="wiMu" min="-20" max="80" value="15" step="1" style="width:100%;accent-color:#00bcd4;" oninput="updateWhatIf()"/>
-        <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;">
-          <span>-20%</span><span>+80%</span>
-        </div>
-      </div>
-      <div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-          <span style="font-size:10px;color:var(--text3);font-family:var(--mono);">VOLATILITY (σ)</span>
-          <span id="wiSigmaVal" style="font-size:11px;color:#ff00aa;font-family:var(--mono);font-weight:600;">35%</span>
-        </div>
-        <input type="range" id="wiSigma" min="5" max="120" value="35" step="1" style="width:100%;accent-color:#ff00aa;" oninput="updateWhatIf()"/>
-        <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;">
-          <span>5%</span><span>120%</span>
-        </div>
-      </div>
-      <div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-          <span style="font-size:10px;color:var(--text3);font-family:var(--mono);">HORIZON (days)</span>
-          <span id="wiDaysVal" style="font-size:11px;color:#ffaa00;font-family:var(--mono);font-weight:600;">90d</span>
-        </div>
-        <input type="range" id="wiDays" min="5" max="365" value="90" step="5" style="width:100%;accent-color:#ffaa00;" oninput="updateWhatIf()"/>
-        <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;">
-          <span>5d</span><span>365d</span>
-        </div>
-      </div>
-    </div>
-
-    <div id="wiResults" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding-top:12px;border-top:1px solid #1a1a1a;">
-      <div style="background:rgba(0,0,0,.4);border-radius:4px;padding:8px;">
-        <div style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-bottom:2px;">EXPECTED RETURN</div>
-        <div id="wiExp" style="font-size:16px;font-weight:600;color:var(--text);font-family:var(--mono);">—</div>
-        <div id="wiExpOrig" style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;">vs —</div>
-      </div>
-      <div style="background:rgba(0,0,0,.4);border-radius:4px;padding:8px;">
-        <div style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-bottom:2px;">WIN RATE</div>
-        <div id="wiWin" style="font-size:16px;font-weight:600;color:var(--text);font-family:var(--mono);">—</div>
-        <div id="wiWinOrig" style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;">vs —</div>
-      </div>
-      <div style="background:rgba(0,0,0,.4);border-radius:4px;padding:8px;">
-        <div style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-bottom:2px;">SHARPE</div>
-        <div id="wiSharpe" style="font-size:16px;font-weight:600;color:var(--text);font-family:var(--mono);">—</div>
-        <div id="wiSharpeOrig" style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;">vs —</div>
-      </div>
-      <div style="background:rgba(0,0,0,.4);border-radius:4px;padding:8px;">
-        <div style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-bottom:2px;">VaR 95%</div>
-        <div id="wiVar" style="font-size:16px;font-weight:600;color:var(--red);font-family:var(--mono);">—</div>
-        <div id="wiVarOrig" style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;">vs —</div>
-      </div>
-    </div>
   </div>
 
   <div class="scenario-row">
@@ -695,10 +597,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <div>
       <div style="margin-bottom:8px;font-size:11px;color:var(--text3);">// add position</div>
       <div class="ctrl-grid g2" style="margin-bottom:8px;">
-        <div style="position:relative;">
-          <input type="text" id="ptTicker" placeholder="Type ticker (e.g. MELI, AAPL...)" autocomplete="off" oninput="autocompleteTicker(this,'ptTickerSuggest')"/>
-          <div id="ptTickerSuggest" class="ticker-suggest"></div>
-        </div>
+        <input type="text" id="ptTicker" placeholder="Ticker"/>
         <select id="ptDir"><option value="LONG">LONG</option><option value="SHORT">SHORT</option></select>
         <input type="number" id="ptAmount" placeholder="Amount $" min="100"/>
         <select id="ptHorizon"><option value="5">1W</option><option value="15">15d</option><option value="30">1M</option><option value="90" selected>3M</option><option value="180">6M</option><option value="365">1Y</option></select>
@@ -729,27 +628,6 @@ td:first-child{color:var(--text);font-weight:500;}
   </div>
 
   <div id="ptResults"></div>
-</div>
-
-<!-- CORRELATION PAGE -->
-<div id="page-corr" class="page">
-  <h1 style="font-family:var(--mono);font-size:13px;letter-spacing:.08em;color:var(--text2);margin-bottom:16px;">// Correlation Explorer</h1>
-
-  <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:6px;padding:16px;margin-bottom:16px;">
-    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;font-family:var(--mono);">// enter a ticker to find what moves with it</div>
-    <div style="display:flex;gap:8px;align-items:center;">
-      <div style="position:relative;flex:1;">
-        <input type="text" id="corrTicker" placeholder="Type ticker (e.g. MELI, AAPL, BTC...)" autocomplete="off" oninput="autocompleteTicker(this,'corrTickerSuggest')" style="width:100%;"/>
-        <div id="corrTickerSuggest" class="ticker-suggest"></div>
-      </div>
-      <button class="primary" onclick="runCorrelationAnalysis()" style="padding:8px 20px;">Analyze</button>
-    </div>
-    <div style="font-size:10px;color:var(--text3);margin-top:8px;font-family:var(--mono);">
-      Discovers what stocks, ETFs, bonds, and crypto move WITH and AGAINST your ticker — true diversification check.
-    </div>
-  </div>
-
-  <div id="corrResults"></div>
 </div>
 
 <!-- MACRO PAGE -->
@@ -1100,7 +978,7 @@ const PRESETS = {
   squeeze: {scSqueeze:60, scSort:'squeeze', scUniverse:'all', label:'Squeeze Candidates'},
   insider:  {scInsider:'buying', scSort:'smart_money', scUniverse:'all', label:'Insider Buying'},
   momentum: {scMomentum:10, scSort:'momentum', scUniverse:'us', label:'Momentum'},
-  latam:    {scUniverse:'latam', scSort:'signal', scSqueeze:0, scMomentum:-50, label:'LATAM Focus'},
+  latam:    {scUniverse:'latam', scSort:'signal', scSqueeze:0, label:'LATAM Focus'},
   volatile: {scSigmaMin:60, scSort:'sigma', scUniverse:'all', label:'High Volatility'},
 };
 
@@ -1380,16 +1258,14 @@ function pickEarningsTicker(t){
   const el=document.getElementById('earningsTicker');
   if(el){el.value=t;runEarningsIntel();}
 }
-function etClick(el){
-  const t = typeof el === 'string' ? el : (el.getAttribute('data-ticker') || el.getAttribute('data-et') || '');
-  if(t) pickEarningsTicker(t);
+function etClick(t){
+  pickEarningsTicker(t);
 }
-// Handle clicks via event delegation
+// Handle clicks via event delegation on calendar container
 document.addEventListener('click', function(ev){
-  const card = ev.target.closest('[data-ticker],[data-et]');
-  if(card && card.closest('#upcomingEarnings')){
-    const t = card.getAttribute('data-ticker') || card.getAttribute('data-et');
-    if(t) pickEarningsTicker(t);
+  const card = ev.target.closest('[data-ticker]');
+  if(card && (card.closest('#upcomingEarnings'))){
+    pickEarningsTicker(card.getAttribute('data-ticker'));
   }
 });
 
@@ -1433,17 +1309,7 @@ async function loadUpcomingEarnings(){
       let newHtml='';
       Object.entries(calendar).forEach(([day, companies])=>{
         if(!companies||!companies.length) return;
-        // Mark this week's dates in orange
-    const now=new Date();
-    const dayNums=day.match(/\d+/);
-    const monthNames={'Jan':0,'Feb':1,'Mar':2,'Apr':3,'May':4,'Jun':5,'Jul':6,'Aug':7,'Sep':8,'Oct':9,'Nov':10,'Dec':11};
-    const monthMatch=day.match(/^([A-Za-z]+)/);
-    let isNear=false;
-    if(dayNums&&monthMatch&&monthNames[monthMatch[1]]!==undefined){
-      const d=new Date(now.getFullYear(),monthNames[monthMatch[1]],parseInt(dayNums[0]));
-      const diff=(d-now)/(1000*60*60*24);
-      isNear=diff>=-1&&diff<=7;
-    }
+        const isNear=day.includes('Apr 9')||day.includes('Apr 10')||day.includes('Apr 11');
         const dayColor=isNear?'#ff6600':'#555';
         newHtml+='<div style="margin-bottom:16px;">'
           +'<div style="font-family:var(--mono);font-size:10px;color:'+dayColor+';letter-spacing:.06em;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1a1a1a;">'
@@ -1452,7 +1318,7 @@ async function loadUpcomingEarnings(){
           +companies.map(e=>{
             const impColor=e.importance==='HIGH'?'#ff6600':'#444';
             const isLatam=e.sector==='LATAM'||['MELI','NU','GLOB','DESP'].includes(e.ticker);
-        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-ticker="'+e.ticker+'" onclick="etClick(this)">' 
+        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-ticker="'+e.ticker+'" onclick="etClick(this.getAttribute(String.fromCharCode(100,97,116,97,45,116,105,99,107,101,114)))">' 
               +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
               +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:#ccc;">'+e.ticker+'</span>'
               +(isLatam?'<span style="font-size:8px;padding:1px 4px;background:rgba(255,102,0,.15);color:#ff6600;border-radius:2px;">LATAM</span>':'')
@@ -1513,7 +1379,7 @@ function renderEarningsCalendar(realEarnings){
       +companies.map(e=>{
         const impColor=e.importance==='HIGH'?'#ff6600':'#444';
         const isLatam=e.is_latam||e.sector==='LATAM';
-        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-et="'+e.ticker+'" onclick="etClick(this)">'
+        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-et="'+e.ticker+'" onclick="etClick(this.getAttribute(String.fromCharCode(100,97,116,97,45,116,105,99,107,101,114)))">'
           +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
           +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:#ccc;">'+e.ticker+'</span>'
           +(isLatam?'<span style="font-size:8px;padding:1px 4px;background:rgba(255,102,0,.15);color:#ff6600;border-radius:2px;">LATAM</span>':'')
@@ -1532,81 +1398,63 @@ function renderEarningsCalendar(realEarnings){
 }
 
 function getFallbackCalendar(){
-  // Dynamic calendar — always shows next 4 weeks from today
-  const now = new Date();
-  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-
-  function dateKey(d){
-    return months[d.getMonth()]+' '+d.getDate()+' '+days[d.getDay()].toUpperCase().slice(0,3);
-  }
-  function isThisWeek(d){
-    const diff = (d - now) / (1000*60*60*24);
-    return diff >= -1 && diff <= 7;
-  }
-
-  // Build next 28 days of earnings using well-known companies
-  // Rotates based on current week so it always looks fresh
-  const weekNum = Math.floor((now - new Date(2026,0,1)) / (7*24*60*60*1000));
-
-  // Core earnings companies that report quarterly — assign to days relative to today
-  const earningsPool = [
-    // Mega cap tech
-    {ticker:'AAPL',company:'Apple',time:'AMC',eps_est:1.63,importance:'HIGH',sector:'Tech'},
-    {ticker:'MSFT',company:'Microsoft',time:'AMC',eps_est:3.22,importance:'HIGH',sector:'Tech'},
-    {ticker:'NVDA',company:'NVIDIA',time:'AMC',eps_est:0.89,importance:'HIGH',sector:'Tech'},
-    {ticker:'AMZN',company:'Amazon',time:'AMC',eps_est:1.37,importance:'HIGH',sector:'Tech'},
-    {ticker:'META',company:'Meta Platforms',time:'AMC',eps_est:5.28,importance:'HIGH',sector:'Tech'},
-    {ticker:'GOOGL',company:'Alphabet',time:'AMC',eps_est:2.03,importance:'HIGH',sector:'Tech'},
-    {ticker:'TSLA',company:'Tesla',time:'AMC',eps_est:0.45,importance:'HIGH',sector:'EV'},
-    // Finance
-    {ticker:'JPM',company:'JPMorgan Chase',time:'BMO',eps_est:4.61,importance:'HIGH',sector:'Financials'},
-    {ticker:'GS',company:'Goldman Sachs',time:'BMO',eps_est:12.35,importance:'HIGH',sector:'Financials'},
-    {ticker:'BAC',company:'Bank of America',time:'BMO',eps_est:0.82,importance:'HIGH',sector:'Financials'},
-    {ticker:'MS',company:'Morgan Stanley',time:'BMO',eps_est:1.99,importance:'HIGH',sector:'Financials'},
-    {ticker:'V',company:'Visa',time:'AMC',eps_est:2.68,importance:'HIGH',sector:'Financials'},
-    {ticker:'MA',company:'Mastercard',time:'AMC',eps_est:3.58,importance:'HIGH',sector:'Financials'},
-    // LATAM
-    {ticker:'MELI',company:'MercadoLibre',time:'AMC',eps_est:9.84,importance:'HIGH',sector:'LATAM',is_latam:true},
-    {ticker:'NU',company:'Nu Holdings',time:'AMC',eps_est:0.12,importance:'HIGH',sector:'LATAM',is_latam:true},
-    {ticker:'GLOB',company:'Globant',time:'AMC',eps_est:1.24,importance:'HIGH',sector:'LATAM',is_latam:true},
-    // Others
-    {ticker:'NFLX',company:'Netflix',time:'AMC',eps_est:5.74,importance:'HIGH',sector:'Tech'},
-    {ticker:'SPOT',company:'Spotify',time:'BMO',eps_est:2.44,importance:'HIGH',sector:'Tech'},
-    {ticker:'COIN',company:'Coinbase',time:'AMC',eps_est:1.85,importance:'HIGH',sector:'Crypto'},
-    {ticker:'PLTR',company:'Palantir',time:'AMC',eps_est:0.13,importance:'MEDIUM',sector:'Tech'},
-    {ticker:'AMD',company:'AMD',time:'AMC',eps_est:0.68,importance:'HIGH',sector:'Tech'},
-    {ticker:'INTC',company:'Intel',time:'AMC',eps_est:0.02,importance:'HIGH',sector:'Tech'},
-    {ticker:'TSM',company:'Taiwan Semi',time:'BMO',eps_est:2.11,importance:'HIGH',sector:'Tech'},
-    {ticker:'QCOM',company:'Qualcomm',time:'AMC',eps_est:2.85,importance:'HIGH',sector:'Tech'},
-    {ticker:'UNH',company:'UnitedHealth',time:'BMO',eps_est:7.29,importance:'HIGH',sector:'Healthcare'},
-    {ticker:'JNJ',company:'Johnson & Johnson',time:'BMO',eps_est:2.56,importance:'HIGH',sector:'Healthcare'},
-  ];
-
-  // Distribute companies across next 4 weeks (Mon-Fri only)
-  const grouped = {};
-  let poolIdx = (weekNum * 5) % earningsPool.length;
-  
-  for(let d = 0; d < 28; d++){
-    const date = new Date(now);
-    date.setDate(now.getDate() + d);
-    const dow = date.getDay();
-    if(dow === 0 || dow === 6) continue; // skip weekends
-    
-    const key = dateKey(date);
-    // 2-4 companies per day, rotated from pool
-    const count = 2 + (d % 3);
-    const companies = [];
-    for(let i = 0; i < count; i++){
-      companies.push({...earningsPool[poolIdx % earningsPool.length]});
-      poolIdx++;
-    }
-    grouped[key] = companies;
-  }
-
-  return grouped;
+  return {
+    'Apr 9 WED':[
+      {ticker:'FAST',company:'Fastenal',time:'BMO',eps_est:0.52,importance:'HIGH',sector:'Industrials'},
+      {ticker:'DAL',company:'Delta Air Lines',time:'BMO',eps_est:0.42,importance:'HIGH',sector:'Airlines'},
+    ],
+    'Apr 10 THU':[
+      {ticker:'JPM',company:'JPMorgan Chase',time:'BMO',eps_est:4.61,importance:'HIGH',sector:'Financials'},
+      {ticker:'WFC',company:'Wells Fargo',time:'BMO',eps_est:1.24,importance:'HIGH',sector:'Financials'},
+      {ticker:'MS',company:'Morgan Stanley',time:'BMO',eps_est:1.99,importance:'HIGH',sector:'Financials'},
+      {ticker:'BLK',company:'BlackRock',time:'BMO',eps_est:10.21,importance:'HIGH',sector:'Financials'},
+      {ticker:'GS',company:'Goldman Sachs',time:'BMO',eps_est:12.35,importance:'HIGH',sector:'Financials'},
+    ],
+    'Apr 14 MON':[
+      {ticker:'MELI',company:'MercadoLibre',time:'AMC',eps_est:9.84,importance:'HIGH',sector:'LATAM'},
+      {ticker:'BAC',company:'Bank of America',time:'BMO',eps_est:0.82,importance:'HIGH',sector:'Financials'},
+    ],
+    'Apr 15 TUE':[
+      {ticker:'JNJ',company:'Johnson & Johnson',time:'BMO',eps_est:2.56,importance:'HIGH',sector:'Healthcare'},
+      {ticker:'UNH',company:'UnitedHealth',time:'BMO',eps_est:7.29,importance:'HIGH',sector:'Healthcare'},
+    ],
+    'Apr 17 THU':[
+      {ticker:'TSM',company:'Taiwan Semi',time:'BMO',eps_est:2.11,importance:'HIGH',sector:'Tech'},
+      {ticker:'NFLX',company:'Netflix',time:'AMC',eps_est:5.74,importance:'HIGH',sector:'Tech'},
+      {ticker:'AXP',company:'American Express',time:'BMO',eps_est:3.64,importance:'HIGH',sector:'Financials'},
+    ],
+    'Apr 22 TUE':[
+      {ticker:'GOOGL',company:'Alphabet',time:'AMC',eps_est:2.03,importance:'HIGH',sector:'Tech'},
+      {ticker:'TSLA',company:'Tesla',time:'AMC',eps_est:0.45,importance:'HIGH',sector:'EV'},
+    ],
+    'Apr 23 WED':[
+      {ticker:'META',company:'Meta Platforms',time:'AMC',eps_est:5.28,importance:'HIGH',sector:'Tech'},
+      {ticker:'MSFT',company:'Microsoft',time:'AMC',eps_est:3.22,importance:'HIGH',sector:'Tech'},
+      {ticker:'IBM',company:'IBM',time:'AMC',eps_est:1.65,importance:'MEDIUM',sector:'Tech'},
+      {ticker:'NOW',company:'ServiceNow',time:'AMC',eps_est:3.84,importance:'HIGH',sector:'Tech'},
+    ],
+    'Apr 24 THU':[
+      {ticker:'AAPL',company:'Apple',time:'AMC',eps_est:1.63,importance:'HIGH',sector:'Tech'},
+      {ticker:'AMZN',company:'Amazon',time:'AMC',eps_est:1.37,importance:'HIGH',sector:'Tech'},
+      {ticker:'INTC',company:'Intel',time:'AMC',eps_est:0.02,importance:'HIGH',sector:'Tech'},
+    ],
+    'Apr 29 TUE':[
+      {ticker:'V',company:'Visa',time:'AMC',eps_est:2.68,importance:'HIGH',sector:'Financials'},
+      {ticker:'SBUX',company:'Starbucks',time:'AMC',eps_est:0.49,importance:'HIGH',sector:'Consumer'},
+      {ticker:'NU',company:'Nu Holdings',time:'AMC',eps_est:0.12,importance:'HIGH',sector:'LATAM'},
+    ],
+    'Apr 30 WED':[
+      {ticker:'MA',company:'Mastercard',time:'AMC',eps_est:3.58,importance:'HIGH',sector:'Financials'},
+      {ticker:'SPOT',company:'Spotify',time:'BMO',eps_est:2.44,importance:'HIGH',sector:'Tech'},
+      {ticker:'GLOB',company:'Globant',time:'AMC',eps_est:1.24,importance:'HIGH',sector:'LATAM'},
+    ],
+    'May 1 THU':[
+      {ticker:'NVDA',company:'NVIDIA',time:'AMC',eps_est:0.89,importance:'HIGH',sector:'Tech'},
+      {ticker:'AMGN',company:'Amgen',time:'AMC',eps_est:4.98,importance:'HIGH',sector:'Healthcare'},
+      {ticker:'QCOM',company:'Qualcomm',time:'AMC',eps_est:2.85,importance:'HIGH',sector:'Tech'},
+    ],
+  };
 }
-
 
 async function runEarningsIntel(){
   const ticker=document.getElementById('earningsTicker').value.trim().toUpperCase();
@@ -1622,7 +1470,7 @@ async function runEarningsIntel(){
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1800,
         messages:[{role:'user',content:
-          'You are a financial data analyst. Today is April 17, 2026. Fill in realistic earnings data for '+ticker+' based on your knowledge of this company. IMPORTANT RULES: (1) next_earnings date must be in 2026 after April 17, (2) days_away must be positive, (3) NEVER use 0 for eps_actual — use real approximate figures, (4) surprise_pct = ((actual-estimate)/estimate)*100. Return ONLY valid JSON: {"eps_history":[{"quarter":"Q4 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q3 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q2 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q1 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q4 2024","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0}],"price_reactions":[{"quarter":"Q4 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q3 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q2 2025","reaction_pct":0,"direction":"DOWN","note":"string"},{"quarter":"Q1 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q4 2024","reaction_pct":0,"direction":"UP","note":"string"}],"next_earnings":{"date":"May 2026 or later","days_away":30,"eps_estimate":0,"revenue_estimate":0,"whisper_number":0,"implied_move_pct":0,"key_metrics_to_watch":["metric 1","metric 2","metric 3"],"guidance_tone":"RAISED"},"verdict":{"signal":"BEAT","confidence":"HIGH","trade_setup":"string","risk":"string","bull_scenario":"string","bear_scenario":"string","historical_beat_rate":75}}. Replace ALL zeros with real approximate values for '+ticker+' as of April 2026.'}]})
+          'Financial data exercise for '+ticker+'. Using approximate publicly known figures, fill this JSON template with realistic estimates based on the company known financial history. All numbers are educational estimates only. Return ONLY the JSON, no other text: {"eps_history":[{"quarter":"Q4 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q3 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q2 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q1 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q4 2024","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0}],"price_reactions":[{"quarter":"Q4 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q3 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q2 2025","reaction_pct":0,"direction":"DOWN","note":"string"},{"quarter":"Q1 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q4 2024","reaction_pct":0,"direction":"UP","note":"string"}],"next_earnings":{"date":"string","days_away":0,"eps_estimate":0,"revenue_estimate":0,"whisper_number":0,"implied_move_pct":0,"key_metrics_to_watch":["string","string","string"],"guidance_tone":"RAISED"},"verdict":{"signal":"BEAT","confidence":"HIGH","trade_setup":"string","risk":"string","bull_scenario":"string","bear_scenario":"string","historical_beat_rate":75}}. Replace all 0s and placeholder strings with realistic values for '+ticker+'.'}]})
     });
     const d=await r.json();
     const data=safeJSON(d.content.map(b=>b.text||'').join(''));
@@ -2622,7 +2470,7 @@ function renderLiveTape(){
     const cls=ret>=0?'up':'dn';
     const sign=ret>=0?'+':'';
     const displayTicker=t.replace('/USD','');
-    const retLabel=Math.abs(ret*100)<0.05?'':` ${sign}${(ret*100).toFixed(1)}%`;
+    const retLabel=Math.abs(ret*100)<0.05?'':` ${sign}${(ret*100).toFixed(1)}% <span style="color:var(--text3);font-size:9px;">30d</span>`;
     return `<div class="tape-item">
       <span class="sym">${displayTicker}</span>
       <span style="color:var(--text2)">$${Number(d.price).toLocaleString(undefined,{maximumFractionDigits:d.price>100?0:2})}</span>
@@ -2652,7 +2500,6 @@ function initCanvases(){
   distCtx=dc.getContext('2d');
   resizeCanvases();
   window.addEventListener('resize',resizeCanvases);
-  installChartHover();
 }
 
 function resizeCanvases(){
@@ -2676,7 +2523,6 @@ function stopSim(){simRunning=false;if(simTimer)clearTimeout(simTimer);setStatus
 
 function clearSim(){
   stopSim();allPaths=[];allFinals=[];
-  _hoveredPath = -1; _pinnedPath = -1;
   simCtx.clearRect(0,0,simW,simH);
   distCtx.clearRect(0,0,document.getElementById('distCanvas').parentElement.clientWidth,distH);
   ['sN','sEpnl','sEpct','sWin','sSharpe','sDD','sVaR','scB','scBpnl','scM','scMpnl','scU','scUpnl']
@@ -2687,259 +2533,26 @@ function clearSim(){
   setStatus('READY');
 }
 
-// ── Normal random (Box-Muller) ────────────────────────
 function randn(){
   let u=0,v=0;while(u===0)u=Math.random();while(v===0)v=Math.random();
   return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
 }
 
-// ── Student-t random (fat tails) ─────────────────────
-// df=4 gives realistic market kurtosis (~6 vs normal's 3)
-// Normalized to have variance 1, winsorized at ±4 to cap absurd outliers
-function randt(df=4){
-  const x=randn();
-  // Chi-squared via sum of squared normals
-  let chi2=0;
-  for(let i=0;i<df;i++){const n=randn();chi2+=n*n;}
-  // Raw t-draw: x/sqrt(chi2/df), scale to variance 1
-  const rawT = x/Math.sqrt(chi2/df);
-  const normalized = rawT * Math.sqrt((df-2)/df);
-  // Winsorize at ±4: cap extreme tail events (still allows fat tails vs normal's ±3)
-  return Math.max(-4, Math.min(4, normalized));
-}
-
-// ── GARCH(1,1) volatility update ─────────────────────
-// omega + alpha*last_shock^2 + beta*last_var
-// Standard params: alpha=0.09, beta=0.90, omega=variance*(1-alpha-beta)
-function garchUpdate(lastVar, lastShock, longRunVar){
-  const alpha=0.09, beta=0.90;
-  const omega=longRunVar*(1-alpha-beta);
-  return omega + alpha*lastShock*lastShock + beta*lastVar;
-}
-
-// ── CORRELATION + CHOLESKY (Bloomberg-grade portfolio math) ──────
-// Estimates pairwise correlation between assets based on type
-// In production this would come from real historical price correlation
-// For now we use realistic asset-type-based defaults
-function estimateCorrelation(asset1, asset2){
-  // Same asset → perfect correlation
-  if(asset1.ticker === asset2.ticker) return 1.0;
-
-  const t1 = asset1.asset_type || 'stock';
-  const t2 = asset2.asset_type || 'stock';
-
-  // Crypto-to-crypto (highly correlated, esp BTC/ETH)
-  if(t1 === 'crypto' && t2 === 'crypto') return 0.78;
-
-  // Crypto-to-stock (medium, since 2020 cryptos correlate with risk-on tech)
-  if((t1 === 'crypto') !== (t2 === 'crypto')){
-    const techStocks = ['AAPL','MSFT','NVDA','GOOGL','META','AMZN','TSLA','QQQ','XLK'];
-    const isTech = techStocks.includes(asset1.ticker) || techStocks.includes(asset2.ticker);
-    return isTech ? 0.45 : 0.28;
-  }
-
-  // Stock-to-stock — base 0.40, adjust by sector/region
-  let corr = 0.40;
-
-  // Sector classification
-  const megaTech = ['AAPL','MSFT','NVDA','GOOGL','META','AMZN','AVGO','ORCL','CRM','ADBE','NFLX','AMD','INTC','PLTR'];
-  const finance = ['JPM','BAC','GS','MS','V','MA','BRK.B','WFC','C'];
-  const healthcare = ['UNH','JNJ','LLY','PFE','ABBV','MRK'];
-  const consumer = ['WMT','COST','KO','PEP','PG','MCD'];
-  const energy = ['XOM','CVX','SLB','COP','XLE'];
-  const etfBroad = ['SPY','QQQ','IWM','VOO','VTI'];
-  const etfBond = ['TLT','IEF','AGG','BND'];
-  const etfGold = ['GLD','SLV','GDX'];
-  const etfReit = ['VNQ','IYR','SCHH'];
-
-  const inSector = (tk, sector) => sector.includes(tk);
-
-  // Both in same sector → high correlation
-  if(inSector(asset1.ticker, megaTech) && inSector(asset2.ticker, megaTech)) corr = 0.75;
-  else if(inSector(asset1.ticker, finance) && inSector(asset2.ticker, finance)) corr = 0.78;
-  else if(inSector(asset1.ticker, healthcare) && inSector(asset2.ticker, healthcare)) corr = 0.60;
-  else if(inSector(asset1.ticker, consumer) && inSector(asset2.ticker, consumer)) corr = 0.55;
-  else if(inSector(asset1.ticker, energy) && inSector(asset2.ticker, energy)) corr = 0.82;
-  else if(inSector(asset1.ticker, etfBond) && inSector(asset2.ticker, etfBond)) corr = 0.90;
-  else if(inSector(asset1.ticker, etfGold) && inSector(asset2.ticker, etfGold)) corr = 0.85;
-
-  // Broad market ETFs correlate ~0.85 with large caps in their index
-  if(inSector(asset1.ticker, etfBroad) && inSector(asset2.ticker, megaTech)) corr = 0.75;
-  if(inSector(asset2.ticker, etfBroad) && inSector(asset1.ticker, megaTech)) corr = 0.75;
-  if(inSector(asset1.ticker, etfBroad) && inSector(asset2.ticker, etfBroad)) corr = 0.92;
-
-  // QQQ especially correlates with tech
-  if(asset1.ticker === 'QQQ' && inSector(asset2.ticker, megaTech)) corr = 0.85;
-  if(asset2.ticker === 'QQQ' && inSector(asset1.ticker, megaTech)) corr = 0.85;
-
-  // XLK (tech sector ETF) very high with tech stocks
-  if(asset1.ticker === 'XLK' && inSector(asset2.ticker, megaTech)) corr = 0.88;
-  if(asset2.ticker === 'XLK' && inSector(asset1.ticker, megaTech)) corr = 0.88;
-
-  // LATAM region
-  const latamTickers = ['MELI','NU','GLOB','VALE','ITUB','PBR','BBD','FMX','KOF','AMX','CX','WALMEX','TV','BAP','CIB'];
-  const isLatam1 = latamTickers.includes(asset1.ticker);
-  const isLatam2 = latamTickers.includes(asset2.ticker);
-  if(isLatam1 && isLatam2) corr = 0.70;
-  else if(isLatam1 !== isLatam2) corr = Math.min(corr, 0.38);
-
-  // Brazilian subset is more correlated
-  const brazil = ['VALE','ITUB','PBR','BBD','NU'];
-  if(brazil.includes(asset1.ticker) && brazil.includes(asset2.ticker)) corr = 0.80;
-
-  // Mexican subset
-  const mexico = ['FMX','KOF','AMX','CX','WALMEX','TV'];
-  if(mexico.includes(asset1.ticker) && mexico.includes(asset2.ticker)) corr = 0.68;
-
-  // Country ETFs
-  if(asset1.ticker === 'EWZ' && brazil.includes(asset2.ticker)) corr = 0.85;
-  if(asset2.ticker === 'EWZ' && brazil.includes(asset1.ticker)) corr = 0.85;
-  if(asset1.ticker === 'EWW' && mexico.includes(asset2.ticker)) corr = 0.82;
-  if(asset2.ticker === 'EWW' && mexico.includes(asset1.ticker)) corr = 0.82;
-
-  // Bonds inverse to stocks
-  if(inSector(asset1.ticker, etfBond) && !inSector(asset2.ticker, etfBond)) corr = -0.30;
-  if(inSector(asset2.ticker, etfBond) && !inSector(asset1.ticker, etfBond)) corr = -0.30;
-
-  // Gold low correlation
-  if(inSector(asset1.ticker, etfGold) && !inSector(asset2.ticker, etfGold)) corr = 0.10;
-  if(inSector(asset2.ticker, etfGold) && !inSector(asset1.ticker, etfGold)) corr = 0.10;
-
-  return corr;
-}
-
-// Build N×N correlation matrix from list of assets
-function buildCorrelationMatrix(assets){
-  const n = assets.length;
-  const C = Array.from({length:n}, () => new Array(n).fill(0));
-  for(let i=0; i<n; i++){
-    for(let j=0; j<n; j++){
-      C[i][j] = estimateCorrelation(assets[i], assets[j]);
-    }
-  }
-  return C;
-}
-
-// Cholesky decomposition: C = L * L^T where L is lower triangular
-// This lets us generate correlated random shocks: Z_corr = L * Z_independent
-function choleskyDecomp(C){
-  const n = C.length;
-  const L = Array.from({length:n}, () => new Array(n).fill(0));
-  for(let i=0; i<n; i++){
-    for(let j=0; j<=i; j++){
-      let sum = 0;
-      for(let k=0; k<j; k++) sum += L[i][k]*L[j][k];
-      if(i === j){
-        const diag = C[i][i] - sum;
-        L[i][j] = Math.sqrt(Math.max(diag, 1e-10)); // safe sqrt
-      } else {
-        L[i][j] = (C[i][j] - sum) / L[j][j];
-      }
-    }
-  }
-  return L;
-}
-
-// Multiply L (lower triangular) by independent random vector → correlated shocks
-function generateCorrelatedShocks(L, df=5){
-  const n = L.length;
-  // Independent t-distributed shocks (fat tails, like our single-asset model)
-  const z = new Array(n);
-  for(let i=0; i<n; i++) z[i] = randt(df);
-  // Correlated shocks = L * z
-  const correlated = new Array(n).fill(0);
-  for(let i=0; i<n; i++){
-    for(let j=0; j<=i; j++){
-      correlated[i] += L[i][j] * z[j];
-    }
-  }
-  return correlated;
-}
-
-// Generate correlated paths for multiple assets simultaneously
-// Returns array of paths, one per asset, all sharing the same time-correlated shocks
-function genCorrelatedPaths(assets, days){
-  const n = assets.length;
-  const C = buildCorrelationMatrix(assets);
-  const L = choleskyDecomp(C);
-  const dt = 1/252;
-
-  // Initialize paths and GARCH state per asset
-  const paths = assets.map(a => [a.S0]);
-  const S = assets.map(a => a.S0);
-  const longRunVar = assets.map(a => (a.sigma*a.sigma)/252);
-  const garchVar = [...longRunVar];
-  const lastShock = new Array(n).fill(0);
-
-  for(let t=0; t<days; t++){
-    const shocks = generateCorrelatedShocks(L, 5);
-    for(let i=0; i<n; i++){
-      const sig = Math.sqrt(garchVar[i]);
-      const z = shocks[i];
-      const ret = (assets[i].mu - 0.5*garchVar[i]*252)*dt + sig*Math.sqrt(dt)*z;
-      lastShock[i] = sig*Math.sqrt(dt)*z;
-      garchVar[i] = garchUpdate(garchVar[i], lastShock[i]/Math.sqrt(dt), longRunVar[i]);
-      garchVar[i] = Math.max(longRunVar[i]*0.1, Math.min(longRunVar[i]*10, garchVar[i]));
-      S[i] = S[i] * Math.exp(ret);
-      paths[i].push(S[i]);
-    }
-  }
-
-  return {paths, correlationMatrix: C};
-}
-
-// ── Main path generator ───────────────────────────────
 function genPath(S0,mu,sigma,days,model){
-  const dt=1/252;
-  const path=[S0];
-  let S=S0;
-
-  // GARCH state — starts at long-run variance
-  const longRunVar=sigma*sigma/252; // daily variance
-  let garchVar=longRunVar;
-  let lastShock=0;
-
+  const dt=1/252,path=[S0];let S=S0;
   for(let i=0;i<days;i++){
-    let ret;
-
-    if(model==='gbm'){
-      // GBM + GARCH volatility + fat tails (t-distribution)
-      // garchVar is DAILY variance. drift correction: (mu*dt) - 0.5*garchVar
-      const garchSigma=Math.sqrt(garchVar);
-      const z=randt(5); // df=5: fat tails, realistic kurtosis
-      ret = mu*dt - 0.5*garchVar + garchSigma*z;
-      lastShock=garchSigma*z;
-      garchVar=garchUpdate(garchVar, lastShock, longRunVar);
-      garchVar=Math.max(longRunVar*0.1, Math.min(longRunVar*10, garchVar)); // clamp
-
-    } else if(model==='jump'){
-      // Jump diffusion + GARCH + fat tails
-      const garchSigma=Math.sqrt(garchVar);
-      const z=randt(5);
-      const jumpProb=0.03; // 3% chance of jump per day
-      const j=Math.random()<jumpProb ? (-.025+.06*randn()) : 0;
-      ret = mu*dt - 0.5*garchVar + garchSigma*z + j;
-      lastShock=garchSigma*z+j;
-      garchVar=garchUpdate(garchVar, lastShock, longRunVar);
-      garchVar=Math.max(longRunVar*0.1, Math.min(longRunVar*15, garchVar));
-
-    } else {
-      // Regime switching + GARCH + fat tails
-      const inBearRegime=Math.random()<0.3;
-      const regimeMu=inBearRegime ? mu*0.3 : mu;
-      const regimeLongRunVar=inBearRegime ? longRunVar*3 : longRunVar*0.7;
-      garchVar=garchUpdate(garchVar, lastShock||0, regimeLongRunVar);
-      garchVar=Math.max(longRunVar*0.05, Math.min(longRunVar*20, garchVar));
-      const garchSigma=Math.sqrt(garchVar);
-      const z=randt(4); // heavier tails in regime switching
-      ret = regimeMu*dt - 0.5*garchVar + garchSigma*z;
-      lastShock=garchSigma*z;
+    const z=randn();let ret;
+    if(model==='gbm'){ret=(mu-.5*sigma*sigma)*dt+sigma*Math.sqrt(dt)*z;}
+    else if(model==='jump'){
+      const j=Math.random()<.03?(-.02+.05*randn()):0;
+      ret=(mu-.5*sigma*sigma)*dt+sigma*Math.sqrt(dt)*z+j;
+    }else{
+      const r=Math.random()<.3;
+      const em=r?mu*.3:mu,es=r?sigma*1.8:sigma*.7;
+      ret=(em-.5*es*es)*dt+es*Math.sqrt(dt)*z;
     }
-
-    S=S*Math.exp(ret);
-    path.push(S);
-  }
-  return path;
+    S=S*Math.exp(ret);path.push(S);
+  }return path;
 }
 
 const PAD=38,PAD_R=16,PAD_B=28;
@@ -2970,33 +2583,17 @@ function drawAxes(mn,mx){
   }
 }
 
-function drawPath(p,mn,mx,opacityOverride,isHighlight){
-  const n=allPaths.length;
-  const baseAlpha=n>300?.05:n>150?.08:n>80?.12:.18;
-  const alpha = opacityOverride !== undefined ? opacityOverride : baseAlpha;
+function drawPath(p,mn,mx){
+  const n=allPaths.length,alpha=n>300?.05:n>150?.08:n>80?.12:.18;
   const final=p[p.length-1],pnl=SP.dir==='LONG'?final-SP.S0:SP.S0-final;
   const ratio=Math.min(1,Math.max(0,pnl/(SP.S0*.5)));
   const r=Math.round((1-ratio)*210+30),g=Math.round(ratio*130+20);
   const xS=(simW-PAD-PAD_R)/SP.days,yS=(simH-PAD-PAD_B)/(mx-mn);
-  if(isHighlight){
-    // white halo + colored core
-    simCtx.beginPath();simCtx.strokeStyle='rgba(255,255,255,0.9)';simCtx.lineWidth=3;
-    p.forEach((v,i)=>{
-      const x=PAD+i*xS,y=simH-PAD_B-(v-mn)*yS;
-      i===0?simCtx.moveTo(x,y):simCtx.lineTo(x,y);
-    });simCtx.stroke();
-    simCtx.beginPath();simCtx.strokeStyle=`rgba(${r},${g},40,1)`;simCtx.lineWidth=1.8;
-    p.forEach((v,i)=>{
-      const x=PAD+i*xS,y=simH-PAD_B-(v-mn)*yS;
-      i===0?simCtx.moveTo(x,y):simCtx.lineTo(x,y);
-    });simCtx.stroke();
-  } else {
-    simCtx.beginPath();simCtx.strokeStyle=`rgba(${r},${g},40,${alpha})`;simCtx.lineWidth=.7;
-    p.forEach((v,i)=>{
-      const x=PAD+i*xS,y=simH-PAD_B-(v-mn)*yS;
-      i===0?simCtx.moveTo(x,y):simCtx.lineTo(x,y);
-    });simCtx.stroke();
-  }
+  simCtx.beginPath();simCtx.strokeStyle=`rgba(${r},${g},40,${alpha})`;simCtx.lineWidth=.7;
+  p.forEach((v,i)=>{
+    const x=PAD+i*xS,y=simH-PAD_B-(v-mn)*yS;
+    i===0?simCtx.moveTo(x,y):simCtx.lineTo(x,y);
+  });simCtx.stroke();
 }
 
 function drawPercentiles(mn,mx){
@@ -3016,157 +2613,13 @@ function drawPercentiles(mn,mx){
   });
 }
 
-// Hover state
-let _hoveredPath = -1;
-let _pinnedPath = -1;
-
 function redrawSim(){
   simCtx.clearRect(0,0,simW,simH);
   if(!allPaths.length)return;
   const[mn,mx]=getMinMax();
   drawAxes(mn,mx);
-
-  const highlightIdx = _pinnedPath >= 0 ? _pinnedPath : _hoveredPath;
-
-  if(highlightIdx >= 0 && highlightIdx < allPaths.length){
-    // Draw all others dimmed
-    allPaths.forEach((p, i) => {
-      if(i !== highlightIdx) drawPath(p, mn, mx, 0.12);
-    });
-    // Draw highlighted on top
-    drawPath(allPaths[highlightIdx], mn, mx, 1, true);
-  } else {
-    allPaths.forEach(p => drawPath(p, mn, mx));
-  }
-
+  allPaths.forEach(p=>drawPath(p,mn,mx));
   if(allPaths.length>=10)drawPercentiles(mn,mx);
-}
-
-// Modified drawPath to accept opacity + highlight
-function drawPathWithOpacity(path, mn, mx, opacity, isHighlight){
-  if(!path || !path.length) return;
-  const range = mx - mn || 1;
-  const xStep = (simW - PAD - PAD_R) / (path.length - 1);
-  simCtx.strokeStyle = isHighlight ? 'rgba(255,255,255,0.95)' : `rgba(226,75,74,${opacity})`;
-  simCtx.lineWidth = isHighlight ? 2 : 0.8;
-  simCtx.beginPath();
-  path.forEach((v, i) => {
-    const x = PAD + i * xStep;
-    const y = simH - PAD_B - ((v - mn) / range) * (simH - PAD_B - 10);
-    if(i === 0) simCtx.moveTo(x, y);
-    else simCtx.lineTo(x, y);
-  });
-  simCtx.stroke();
-}
-
-function installChartHover(){
-  const canvas = document.getElementById('simCanvas');
-  if(!canvas || canvas._hoverInstalled) return;
-  canvas._hoverInstalled = true;
-  canvas.style.cursor = 'crosshair';
-
-  const tooltip = document.createElement('div');
-  tooltip.id = 'chartHoverTooltip';
-  tooltip.style.cssText = `
-    position:absolute;background:rgba(0,0,0,0.95);border:1px solid #2a2a2a;
-    border-radius:6px;padding:10px 12px;font-family:var(--mono);font-size:11px;
-    color:var(--text);pointer-events:none;z-index:100;display:none;
-    box-shadow:0 4px 20px rgba(0,0,0,.6);min-width:200px;
-  `;
-  canvas.parentElement.style.position = 'relative';
-  canvas.parentElement.appendChild(tooltip);
-
-  canvas.addEventListener('mousemove', e => {
-    if(!allPaths.length) return;
-    const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-
-    // Find closest path at this x position
-    const [priceMin, priceMax] = getMinMax();
-    const range = priceMax - priceMin || 1;
-    const pathLen = allPaths[0].length;
-    const xStep = (simW - PAD - PAD_R) / (pathLen - 1);
-    const dayIdx = Math.max(0, Math.min(pathLen - 1, Math.round((mx - PAD) / xStep)));
-
-    // Compute y at this dayIdx for each path, find closest
-    let closestIdx = -1, closestDist = Infinity;
-    allPaths.forEach((p, i) => {
-      const v = p[dayIdx];
-      const py = simH - PAD_B - ((v - priceMin) / range) * (simH - PAD_B - 10);
-      const dist = Math.abs(py - my);
-      if(dist < closestDist){ closestDist = dist; closestIdx = i; }
-    });
-
-    if(closestDist < 15 && closestIdx !== _hoveredPath){
-      _hoveredPath = closestIdx;
-      redrawSim();
-      showPathTooltip(closestIdx, mx, my, tooltip);
-    } else if(closestDist >= 15){
-      if(_hoveredPath !== -1){
-        _hoveredPath = -1;
-        redrawSim();
-        tooltip.style.display = 'none';
-      }
-    } else {
-      // Same path, just move tooltip
-      tooltip.style.left = (mx + 15) + 'px';
-      tooltip.style.top = (my - 10) + 'px';
-    }
-  });
-
-  canvas.addEventListener('mouseleave', () => {
-    if(_hoveredPath !== -1){
-      _hoveredPath = -1;
-      redrawSim();
-      tooltip.style.display = 'none';
-    }
-  });
-
-  canvas.addEventListener('click', e => {
-    if(_hoveredPath >= 0){
-      _pinnedPath = _pinnedPath === _hoveredPath ? -1 : _hoveredPath;
-      redrawSim();
-    } else if(_pinnedPath >= 0){
-      _pinnedPath = -1;
-      redrawSim();
-    }
-  });
-}
-
-function showPathTooltip(idx, mx, my, tooltip){
-  const path = allPaths[idx];
-  if(!path) return;
-  const entry = path[0];
-  const exit = path[path.length - 1];
-  const maxP = Math.max(...path);
-  const minP = Math.min(...path);
-  const ret = SP.dir === 'LONG' ? (exit - entry)/entry : (entry - exit)/entry;
-  const maxGain = SP.dir === 'LONG' ? (maxP - entry)/entry : (entry - minP)/entry;
-  const maxLoss = SP.dir === 'LONG' ? (minP - entry)/entry : -(maxP - entry)/entry;
-  const pnl = ret * SP.capital;
-  const retColor = ret >= 0 ? '#1d9e75' : '#e24b4a';
-  const pinText = _pinnedPath === idx ? '📌 PINNED · click to unpin' : 'click to pin this path';
-
-  tooltip.innerHTML = `
-    <div style="border-bottom:1px solid #2a2a2a;padding-bottom:6px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">
-      <span style="color:#888;font-size:10px;">Path #${idx + 1}</span>
-      <span style="color:${retColor};font-weight:600;font-size:13px;">${ret>=0?'+':''}${(ret*100).toFixed(1)}%</span>
-    </div>
-    <div style="display:grid;grid-template-columns:auto auto;gap:4px 12px;font-size:10px;">
-      <span style="color:#666;">Entry:</span><span>$${entry.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
-      <span style="color:#666;">Exit:</span><span style="color:${retColor};">$${exit.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
-      <span style="color:#666;">P&amp;L:</span><span style="color:${retColor};font-weight:600;">${pnl>=0?'+':''}$${Math.abs(pnl).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
-      <span style="color:#666;">Peak:</span><span style="color:#1d9e75;">+${(maxGain*100).toFixed(1)}%</span>
-      <span style="color:#666;">Trough:</span><span style="color:#e24b4a;">${(maxLoss*100).toFixed(1)}%</span>
-    </div>
-    <div style="margin-top:8px;padding-top:6px;border-top:1px solid #1a1a1a;font-size:9px;color:#555;text-align:center;">
-      ${pinText}
-    </div>
-  `;
-  tooltip.style.display = 'block';
-  tooltip.style.left = (mx + 15) + 'px';
-  tooltip.style.top = (my - 10) + 'px';
 }
 
 function drawDist(){
@@ -3196,251 +2649,6 @@ function drawDist(){
   distCtx.beginPath();distCtx.moveTo(var95x,4);distCtx.lineTo(var95x,distH-14);distCtx.stroke();
   distCtx.fillStyle='rgba(226,75,74,.8)';
   distCtx.fillText('VaR',var95x+2,14);
-}
-
-// ─── WHAT-IF SLIDERS: analytical GBM recomputation in real time ──
-function renderWhatIfPanel(){
-  if(!allFinals.length) return;
-  let panel = document.getElementById('whatifPanel');
-  if(!panel){
-    panel = document.createElement('div');
-    panel.id = 'whatifPanel';
-    panel.style.cssText = 'margin-top:12px;margin-bottom:12px;';
-    const statsTarget = document.getElementById('simAnalysis') || document.body;
-    if(statsTarget && statsTarget.parentNode){
-      statsTarget.parentNode.insertBefore(panel, statsTarget);
-    }
-  }
-
-  const baseMu = SP.mu || 0.12;
-  const baseSigma = SP.sigma || 0.35;
-  const baseDays = SP.days || 90;
-  const baseCapital = SP.capital || 10000;
-
-  panel.innerHTML = `
-    <div class="section-header"><span class="section-title" style="color:#00bcd4;">// what-if scenarios · live recompute</span><div class="section-line"></div></div>
-    <div style="background:linear-gradient(135deg,#0a0a0a 0%,#0f0a14 100%);border:1px solid #1a1a1a;border-radius:6px;padding:16px;">
-
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:14px;margin-bottom:14px;">
-        <div>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-            <label style="font-size:10px;color:var(--text3);font-family:var(--mono);">μ (drift)</label>
-            <span id="wiMuVal" style="font-size:11px;color:var(--text);font-family:var(--mono);font-weight:600;">${(baseMu*100).toFixed(0)}%</span>
-          </div>
-          <input type="range" id="wiMu" min="-30" max="60" step="1" value="${(baseMu*100).toFixed(0)}" style="width:100%;accent-color:#00bcd4;" oninput="updateWhatIf()"/>
-        </div>
-        <div>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-            <label style="font-size:10px;color:var(--text3);font-family:var(--mono);">σ (volatility)</label>
-            <span id="wiSigmaVal" style="font-size:11px;color:var(--text);font-family:var(--mono);font-weight:600;">${(baseSigma*100).toFixed(0)}%</span>
-          </div>
-          <input type="range" id="wiSigma" min="5" max="120" step="1" value="${(baseSigma*100).toFixed(0)}" style="width:100%;accent-color:#ff9800;" oninput="updateWhatIf()"/>
-        </div>
-        <div>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-            <label style="font-size:10px;color:var(--text3);font-family:var(--mono);">horizon (days)</label>
-            <span id="wiDaysVal" style="font-size:11px;color:var(--text);font-family:var(--mono);font-weight:600;">${baseDays}d</span>
-          </div>
-          <input type="range" id="wiDays" min="3" max="730" step="1" value="${baseDays}" style="width:100%;accent-color:#9c27b0;" oninput="updateWhatIf()"/>
-        </div>
-        <div>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-            <label style="font-size:10px;color:var(--text3);font-family:var(--mono);">capital</label>
-            <span id="wiCapVal" style="font-size:11px;color:var(--text);font-family:var(--mono);font-weight:600;">$${baseCapital.toLocaleString()}</span>
-          </div>
-          <input type="range" id="wiCap" min="1000" max="1000000" step="1000" value="${baseCapital}" style="width:100%;accent-color:#4caf50;" oninput="updateWhatIf()"/>
-        </div>
-      </div>
-
-      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;">
-        <button onclick="applyWhatIfPreset('crash')" class="wi-preset">💥 Crash −30%</button>
-        <button onclick="applyWhatIfPreset('vol_double')" class="wi-preset">📈 Volatility ×2</button>
-        <button onclick="applyWhatIfPreset('bull')" class="wi-preset">🐂 Bull regime (μ ×2)</button>
-        <button onclick="applyWhatIfPreset('bear')" class="wi-preset">🐻 Bear regime (μ ÷2)</button>
-        <button onclick="applyWhatIfPreset('quick')" class="wi-preset">⚡ 1 week</button>
-        <button onclick="applyWhatIfPreset('long')" class="wi-preset">📅 1 year</button>
-        <button onclick="resetWhatIf()" class="wi-preset" style="border-color:#333;color:var(--text2);">↻ Reset</button>
-      </div>
-
-      <div id="wiResults" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;"></div>
-
-      <div id="wiInsight" style="margin-top:12px;padding:12px;background:#080808;border:1px solid #1a1a1a;border-radius:4px;font-size:11px;color:var(--text2);line-height:1.6;font-family:var(--sans);"></div>
-    </div>
-  `;
-
-  if(!document.getElementById('wiStyles')){
-    const style = document.createElement('style');
-    style.id = 'wiStyles';
-    style.textContent = `
-      .wi-preset{background:#0a0a0a;border:1px solid #2a2a2a;color:var(--text2);padding:5px 10px;border-radius:3px;cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:.04em;transition:all .15s;}
-      .wi-preset:hover{background:#1a1a1a;border-color:#444;color:var(--text);transform:translateY(-1px);}
-      .wi-preset:active{transform:translateY(0);}
-      input[type=range]{-webkit-appearance:none;appearance:none;height:4px;background:#1a1a1a;border-radius:2px;outline:none;}
-      input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:var(--text);cursor:pointer;border:2px solid #000;}
-      input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--text);cursor:pointer;border:2px solid #000;}
-    `;
-    document.head.appendChild(style);
-  }
-
-  updateWhatIf();
-}
-
-function updateWhatIf(){
-  const mu = parseFloat(document.getElementById('wiMu').value) / 100;
-  const sigma = parseFloat(document.getElementById('wiSigma').value) / 100;
-  const days = parseInt(document.getElementById('wiDays').value);
-  const capital = parseInt(document.getElementById('wiCap').value);
-
-  document.getElementById('wiMuVal').textContent = (mu*100).toFixed(0)+'%';
-  document.getElementById('wiSigmaVal').textContent = (sigma*100).toFixed(0)+'%';
-  document.getElementById('wiDaysVal').textContent = days+'d';
-  document.getElementById('wiCapVal').textContent = '$'+capital.toLocaleString();
-
-  const t = days/252;
-  const driftAdj = mu - 0.5*sigma*sigma;
-  const muLogRet = driftAdj * t;
-  const sigmaLogRet = sigma * Math.sqrt(t);
-
-  const expectedReturn = Math.exp(mu*t) - 1;
-  const medianReturn = Math.exp(muLogRet) - 1;
-
-  function normCDF(x){
-    const a1=0.254829592, a2=-0.284496736, a3=1.421413741, a4=-1.453152027, a5=1.061405429, p=0.3275911;
-    const sign = x<0 ? -1 : 1;
-    x = Math.abs(x)/Math.sqrt(2);
-    const tt = 1/(1+p*x);
-    const y = 1-(((((a5*tt+a4)*tt)+a3)*tt+a2)*tt+a1)*tt*Math.exp(-x*x);
-    return 0.5*(1+sign*y);
-  }
-  const winRate = 1 - normCDF(-muLogRet/Math.max(0.001, sigmaLogRet));
-
-  const var95 = Math.exp(muLogRet + sigmaLogRet*(-1.645)) - 1;
-  const p10 = Math.exp(muLogRet + sigmaLogRet*(-1.282)) - 1;
-  const p90 = Math.exp(muLogRet + sigmaLogRet*(1.282)) - 1;
-
-  const sharpe = (sigma > 0) ? driftAdj / sigma : 0;
-
-  function fmtPct(x){ return (x>=0?'+':'')+(x*100).toFixed(1)+'%'; }
-  function fmtD(x){ const v = x*capital; return (v>=0?'+':'-')+'$'+Math.abs(v).toLocaleString(undefined,{maximumFractionDigits:0}); }
-  function colorFor(x){ return x>=0 ? 'var(--green)' : 'var(--red)'; }
-
-  document.getElementById('wiResults').innerHTML = `
-    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:10px;text-align:center;">
-      <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">EXPECTED</div>
-      <div style="font-size:17px;font-weight:600;color:${colorFor(expectedReturn)};font-family:var(--mono);margin:3px 0;">${fmtPct(expectedReturn)}</div>
-      <div style="font-size:10px;color:var(--text3);">${fmtD(expectedReturn)}</div>
-    </div>
-    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:10px;text-align:center;">
-      <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">WIN RATE</div>
-      <div style="font-size:17px;font-weight:600;color:${winRate>=0.5?'var(--green)':'var(--red)'};font-family:var(--mono);margin:3px 0;">${(winRate*100).toFixed(0)}%</div>
-      <div style="font-size:10px;color:var(--text3);">prob profitable</div>
-    </div>
-    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:10px;text-align:center;">
-      <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">SHARPE</div>
-      <div style="font-size:17px;font-weight:600;color:${sharpe>0?'var(--green)':'var(--red)'};font-family:var(--mono);margin:3px 0;">${sharpe.toFixed(2)}</div>
-      <div style="font-size:10px;color:var(--text3);">risk-adj</div>
-    </div>
-    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:10px;text-align:center;">
-      <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">VaR 95%</div>
-      <div style="font-size:17px;font-weight:600;color:var(--red);font-family:var(--mono);margin:3px 0;">${fmtPct(var95)}</div>
-      <div style="font-size:10px;color:var(--text3);">${fmtD(var95)}</div>
-    </div>
-    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:10px;text-align:center;">
-      <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">p10 → p90</div>
-      <div style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono);margin:3px 0;">${fmtPct(p10)} / ${fmtPct(p90)}</div>
-      <div style="font-size:10px;color:var(--text3);">range 80%</div>
-    </div>
-  `;
-
-  let verdict, verdictColor;
-  if(winRate >= 0.65 && sharpe >= 1.0){ verdict='STRONG ENTRY'; verdictColor='var(--green)'; }
-  else if(winRate >= 0.55 && sharpe >= 0.5){ verdict='BUY'; verdictColor='#66bb6a'; }
-  else if(winRate >= 0.45 && sharpe >= -0.3){ verdict='WAIT FOR DIP'; verdictColor='#ffaa00'; }
-  else if(winRate >= 0.30){ verdict='HIGH RISK'; verdictColor='#ff7043'; }
-  else{ verdict='AVOID'; verdictColor='var(--red)'; }
-
-  const baseMu = SP.mu || 0.12;
-  const baseSigma = SP.sigma || 0.35;
-  const baseDays = SP.days || 90;
-  const muDelta = ((mu - baseMu)/Math.abs(baseMu||1)*100).toFixed(0);
-  const sigmaDelta = ((sigma - baseSigma)/baseSigma*100).toFixed(0);
-  const daysDelta = ((days - baseDays)/baseDays*100).toFixed(0);
-
-  document.getElementById('wiInsight').innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;">
-      <div>
-        <span style="color:var(--text3);font-family:var(--mono);font-size:10px;">VERDICT:</span>
-        <strong style="color:${verdictColor};letter-spacing:.05em;margin-left:6px;font-family:var(--mono);">${verdict}</strong>
-      </div>
-      <div style="font-size:10px;color:var(--text3);font-family:var(--mono);">
-        vs base: μ ${muDelta>=0?'+':''}${muDelta}% · σ ${sigmaDelta>=0?'+':''}${sigmaDelta}% · horizon ${daysDelta>=0?'+':''}${daysDelta}%
-      </div>
-    </div>
-    <div style="margin-top:8px;color:var(--text3);font-size:10px;font-family:var(--mono);">
-      analytical GBM closed-form · instantaneous recompute · move sliders to stress-test
-    </div>
-  `;
-}
-
-function applyWhatIfPreset(preset){
-  const baseMu = SP.mu || 0.12;
-  const baseSigma = SP.sigma || 0.35;
-  const baseDays = SP.days || 90;
-  const baseCap = SP.capital || 10000;
-
-  let newMu = baseMu*100, newSigma = baseSigma*100, newDays = baseDays, newCap = baseCap;
-
-  if(preset === 'crash'){ newMu = Math.max(-30, baseMu*100 - 30); newSigma = Math.min(120, baseSigma*100 * 1.8); }
-  if(preset === 'vol_double'){ newSigma = Math.min(120, baseSigma*200); }
-  if(preset === 'bull'){ newMu = Math.min(60, baseMu*200); }
-  if(preset === 'bear'){ newMu = baseMu*50; }
-  if(preset === 'quick'){ newDays = 7; }
-  if(preset === 'long'){ newDays = 365; }
-
-  document.getElementById('wiMu').value = newMu;
-  document.getElementById('wiSigma').value = newSigma;
-  document.getElementById('wiDays').value = newDays;
-  document.getElementById('wiCap').value = newCap;
-  updateWhatIf();
-}
-
-function resetWhatIf(){
-  document.getElementById('wiMu').value = (SP.mu||0.12)*100;
-  document.getElementById('wiSigma').value = (SP.sigma||0.35)*100;
-  document.getElementById('wiDays').value = SP.days||90;
-  document.getElementById('wiCap').value = SP.capital||10000;
-  updateWhatIf();
-}
-
-// ── STATS TOOLTIPS DICTIONARY ─────────────────────────
-const STAT_TOOLTIPS = {
-  'Paths run': 'Number of Monte Carlo simulations run. Each path is one possible price trajectory. More paths = more statistical confidence. Bloomberg standard is 1000+; we run 300 by default for speed.',
-  'Expected P&L': 'Average profit/loss across all simulated paths. This is the MEAN outcome — but volatility means actual outcomes can vary widely.',
-  'Win rate': 'Percentage of paths that ended profitable. 50% = coin flip. Above 55% starts to get interesting. Below 40% is a losing setup.',
-  'Sharpe ratio': 'Risk-adjusted return. (Return - risk-free rate) / Volatility. Above 1.0 = great. 0.5-1.0 = decent. Below 0 = losing money per unit of risk.',
-  'Max drawdown': 'Worst peak-to-valley loss across all paths. This is the WORST path — a black swan scenario. Historical TSLA max DD was ~65%.',
-  'VaR 95%': 'Value at Risk. In the worst 5% of scenarios, you lose AT LEAST this amount. Institutional standard risk metric.',
-  'Sortino ratio': 'Like Sharpe but only penalizes DOWNSIDE volatility. Better for asymmetric returns. Above 1.0 is good.',
-  'Calmar ratio': 'Annualized return / Max drawdown. How much return per unit of worst-case loss. Above 0.5 = decent.',
-  'Profit factor': 'Gross wins / Gross losses. Above 1.0 = profitable system. Above 2.0 = excellent. Renaissance averages ~2.5.',
-  'Kelly %': 'Optimal bet size per Kelly Criterion. If Kelly says 15%, put 15% of capital in this trade. Negative Kelly = DO NOT TRADE. Professional traders use half-Kelly for safety.',
-  'CVaR 95%': 'Conditional VaR (Expected Shortfall). Average loss in the worst 5% of scenarios. More conservative than VaR — Basel III standard.',
-  'VaR 99%': 'In the worst 1% of scenarios, you lose at least this. Tail risk metric.',
-  'Avg drawdown': 'Average worst drawdown across all paths (not just the worst path). More useful than Max DD for planning.',
-  'Skewness': 'Asymmetry of returns. Positive = right tail (moonshots). Negative = left tail (crashes). Crypto tends positive; airlines negative.',
-  'bear · p10': '10th percentile outcome. Only 10% of paths ended worse than this — your pessimistic scenario.',
-  'base · median': '50th percentile. Most likely outcome. Half of paths ended better, half worse.',
-  'bull · p90': '90th percentile. Only 10% of paths ended better — your optimistic scenario.',
-};
-
-function applyTooltips(){
-  document.querySelectorAll('.stat-card').forEach(card => {
-    const lblEl = card.querySelector('.stat-lbl');
-    if(!lblEl) return;
-    const label = lblEl.textContent.trim();
-    const tip = STAT_TOOLTIPS[label];
-    if(tip) card.setAttribute('data-tip', tip);
-  });
 }
 
 function updateSimStats(){
@@ -3499,13 +2707,11 @@ function updateSimStats(){
   const grossLoss=Math.abs(returns.filter(r=>r<0).reduce((a,r)=>a+r,0));
   const profitFactor=grossLoss>0?grossWin/grossLoss:999;
 
-  // Kelly criterion: f* = p - (1-p)*(L/W) where W=avg win, L=avg loss magnitudes
+  // Kelly criterion
   const winRate=wins/n;
   const avgWin=wins>0?grossWin/wins:0;
   const avgLoss=losses>0?grossLoss/losses:0;
-  const kelly = (avgWin>0 && avgLoss>0)
-    ? winRate - (1-winRate) * (avgLoss/avgWin)
-    : 0;
+  const kelly=avgLoss>0?(winRate-(1-winRate)*(avgLoss/avgWin>0?avgWin/avgLoss:0)):0;
 
   // Expected value
   const ev=mean*SP.capital;
@@ -3618,8 +2824,6 @@ function updateSimStats(){
 
     ${renderRiskOfRuin(winRate, avgWin, avgLoss, SP.capital)}
   `;
-  applyTooltips();
-  showWhatIfPanel();
 }
 
 function normalizeTicker(ticker){
@@ -3756,31 +2960,14 @@ async function startSim(){
         const std=Math.sqrt(variance);
         const sharpe=std>0?(mean/std)*Math.sqrt(252/SP.days):0;
         const wins=rets.filter(r=>r>0).length;
-        const winRate=wins/rets.length;
         const sorted=[...rets].sort((a,b)=>a-b);
         const var95=sorted[Math.floor(sorted.length*.05)];
         const lastCd=window._lastCd||{};
-
-        // ── DYNAMIC VERDICT — based on sim results, not Claude's opinion ──
-        // Combines win rate + Sharpe ratio for a true risk-adjusted call
-        let dynamicVerdict;
-        if(winRate >= 0.65 && sharpe >= 1.0)         dynamicVerdict = 'STRONG ENTRY';
-        else if(winRate >= 0.55 && sharpe >= 0.5)    dynamicVerdict = 'BUY';
-        else if(winRate >= 0.45 && sharpe >= -0.3)   dynamicVerdict = 'WAIT FOR DIP';
-        else if(winRate >= 0.30)                      dynamicVerdict = 'HIGH RISK';
-        else                                           dynamicVerdict = 'AVOID';
-
-        // Override Claude's verdict with our math-based one
-        lastCd.verdict = dynamicVerdict;
-        const vmap={'STRONG ENTRY':'v-strong','BUY':'v-strong','WAIT FOR DIP':'v-wait','HIGH RISK':'v-risk','AVOID':'v-avoid'};
-        const vb=document.getElementById('simVerdict');
-        if(vb){ vb.textContent=dynamicVerdict; vb.className='verdict '+(vmap[dynamicVerdict]||'v-wait'); }
-
         const tickerVal=document.getElementById('simTicker').value.toUpperCase();
-        addToTape(tickerVal,SP.dir,mean,winRate,dynamicVerdict,SP.S0);
-        addToComparison(tickerVal,SP.dir,SP.S0,mean,winRate,sharpe,var95,SP.capital,dynamicVerdict);
-        addSimToHistory(tickerVal,SP.dir,SP.capital,SP.days,SP.model,mean,winRate,sharpe,var95,dynamicVerdict,SP.S0,lastCd.thesis||'');
-        voiceSim(tickerVal,dynamicVerdict,winRate);
+        addToTape(tickerVal,SP.dir,mean,wins/rets.length,lastCd.verdict||'',SP.S0);
+        addToComparison(tickerVal,SP.dir,SP.S0,mean,wins/rets.length,sharpe,var95,SP.capital,lastCd.verdict||'');
+        addSimToHistory(tickerVal,SP.dir,SP.capital,SP.days,SP.model,mean,wins/rets.length,sharpe,var95,lastCd.verdict||'',SP.S0,lastCd.thesis||'');
+        voiceSim(tickerVal,lastCd.verdict||'',wins/rets.length);
       }
       return;
     }
@@ -3813,9 +3000,8 @@ function showSimAnalysis(cd,ticker,capital,days){
   const ret30d=cd.return30d?(cd.return30d>=0?'+':'')+( cd.return30d*100).toFixed(1)+'% 30d':'';
   const dataColor=cd.recentPrices?'var(--green)':'var(--amber)';
   const dataTag=cd.recentPrices?'LIVE DATA':'EST';
-  const modelName = SP.model==='gbm' ? 'GBM+GARCH+t' : SP.model==='jump' ? 'Jump Diff+GARCH+t' : 'Regime+GARCH+t';
   const metaParts=[ticker,name,cd.asset_type,priceStr,rangeStr,ret30d,'mu='+((cd.mu||.15)*100).toFixed(0)+'%','sigma='+((cd.sigma||.35)*100).toFixed(0)+'%'].filter(Boolean).join(' · ');
-  document.getElementById('simMeta').innerHTML=metaParts+' · <span style="color:'+dataColor+'">'+dataTag+'</span>'+' · <span style="color:#00bcd4;font-size:10px;">model: '+modelName+'</span>';
+  document.getElementById('simMeta').innerHTML=metaParts+' · <span style="color:'+dataColor+'">'+dataTag+'</span>';
   document.getElementById('simThesis').textContent=cd.thesis||'';
   document.getElementById('simSignals').innerHTML=(cd.signals||[]).map(s=>`<li>${s}</li>`).join('');
   document.getElementById('simRisk').textContent=cd.key_risk||'';
@@ -3848,79 +3034,6 @@ function showSimAnalysis(cd,ticker,capital,days){
   }
 
   showEarningsAlert(nd.nextEarnings, nd.sentiment);
-
-  // Inject correlation widget
-  renderCorrelationWidget(ticker, cd.asset_type);
-}
-
-// ── CORRELATION WIDGET in SIM page ────────────────────
-function renderCorrelationWidget(ticker, assetType){
-  // Normalize ticker — strip /USD suffix for crypto
-  const baseTicker = ticker.replace('/USD','').replace('-USD','').toUpperCase();
-
-  // Find or create widget container
-  let widget = document.getElementById('corrWidget');
-  if(!widget){
-    widget = document.createElement('div');
-    widget.id = 'corrWidget';
-    widget.style.cssText = 'margin-bottom:16px;';
-    // Insert after simAnalysis
-    const simAnalysis = document.getElementById('simAnalysis');
-    if(simAnalysis && simAnalysis.parentNode){
-      simAnalysis.parentNode.insertBefore(widget, simAnalysis.nextSibling);
-    }
-  }
-
-  // Find top correlated assets using same logic as CORR tab
-  const inputType = assetType || 'stock';
-  const correlations = TICKER_DB
-    .filter(t => t.tk !== baseTicker)
-    .map(t => {
-      const otherType = t.tag === 'crypto' ? 'crypto' : 'stock';
-      let corr = estimateCorrelation(
-        {ticker: baseTicker, asset_type: inputType},
-        {ticker: t.tk, asset_type: otherType}
-      );
-      if(t.tk === 'TLT' && inputType === 'stock') corr = -0.30;
-      if(t.tk === 'GLD' && inputType === 'stock') corr = 0.10;
-      const techStocks = ['AAPL','MSFT','NVDA','GOOGL','META','AMZN'];
-      if(t.tk === 'XLK' && techStocks.includes(baseTicker)) corr = 0.85;
-      if(t.tk === 'EWZ' && ['VALE','ITUB','PBR','NU'].includes(baseTicker)) corr = 0.85;
-      return {...t, corr};
-    });
-
-  const top3High = correlations.filter(c => c.corr >= 0.60).sort((a,b)=>b.corr-a.corr).slice(0, 3);
-  const top3Inverse = correlations.filter(c => c.corr < 0.15).sort((a,b)=>a.corr-b.corr).slice(0, 3);
-
-  if(top3High.length === 0 && top3Inverse.length === 0){ widget.innerHTML = ''; return; }
-
-  function pill(c, isHedge){
-    const color = isHedge ? (c.corr < 0 ? '#00aaff' : 'var(--green)') : 'var(--red)';
-    const sign = c.corr >= 0 ? '' : '−';
-    return `<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:#0a0a0a;border:1px solid ${color}44;border-radius:3px;font-family:var(--mono);font-size:11px;">
-      <strong style="color:var(--text);">${c.tk}</strong>
-      <span style="color:${color};font-weight:600;">${sign}${Math.abs(c.corr).toFixed(2)}</span>
-    </span>`;
-  }
-
-  widget.innerHTML = `
-    <div class="section-header"><span class="section-title">// correlated assets</span><div class="section-line"></div></div>
-    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:6px;padding:12px;">
-      ${top3High.length ? `
-      <div style="margin-bottom:10px;">
-        <div style="font-size:10px;color:var(--text3);margin-bottom:6px;font-family:var(--mono);">🔴 MOVES WITH ${baseTicker} (avoid for diversification)</div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;">${top3High.map(c=>pill(c,false)).join('')}</div>
-      </div>` : ''}
-      ${top3Inverse.length ? `
-      <div>
-        <div style="font-size:10px;color:var(--text3);margin-bottom:6px;font-family:var(--mono);">🟢 TRUE DIVERSIFIERS / HEDGES</div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;">${top3Inverse.map(c=>pill(c,true)).join('')}</div>
-      </div>` : ''}
-      <div style="text-align:center;margin-top:10px;padding-top:10px;border-top:1px solid #111;">
-        <button onclick="document.getElementById('corrTicker').value='${baseTicker}';showPage('corr');runCorrelationAnalysis();" style="background:none;border:1px solid #333;color:var(--text2);padding:4px 12px;border-radius:3px;cursor:pointer;font-family:var(--mono);font-size:10px;">→ Full correlation analysis</button>
-      </div>
-    </div>
-  `;
 }
 
 function showEarningsAlert(earnings, sentiment){
@@ -4027,248 +3140,6 @@ function renderVC(deals,q){
 // ─── PORTFOLIO ENGINE ─────────────────────────────────────
 let positions=[];
 
-function ptQuickPick(ticker){
-  document.getElementById('ptTicker').value=ticker;
-  document.getElementById('ptAmount').focus();
-}
-
-// ── TICKER DATABASE ──────────────────────────────────────────
-const TICKER_DB = [
-  // US Mega Tech
-  {tk:'AAPL',nm:'Apple Inc',tag:'us'},
-  {tk:'MSFT',nm:'Microsoft',tag:'us'},
-  {tk:'NVDA',nm:'NVIDIA',tag:'us'},
-  {tk:'GOOGL',nm:'Alphabet',tag:'us'},
-  {tk:'META',nm:'Meta Platforms',tag:'us'},
-  {tk:'AMZN',nm:'Amazon',tag:'us'},
-  {tk:'TSLA',nm:'Tesla',tag:'us'},
-  {tk:'NFLX',nm:'Netflix',tag:'us'},
-  {tk:'AMD',nm:'AMD',tag:'us'},
-  {tk:'INTC',nm:'Intel',tag:'us'},
-  {tk:'AVGO',nm:'Broadcom',tag:'us'},
-  {tk:'CRM',nm:'Salesforce',tag:'us'},
-  {tk:'ORCL',nm:'Oracle',tag:'us'},
-  {tk:'ADBE',nm:'Adobe',tag:'us'},
-  {tk:'PLTR',nm:'Palantir',tag:'us'},
-  // US Finance
-  {tk:'JPM',nm:'JPMorgan Chase',tag:'us'},
-  {tk:'BAC',nm:'Bank of America',tag:'us'},
-  {tk:'GS',nm:'Goldman Sachs',tag:'us'},
-  {tk:'MS',nm:'Morgan Stanley',tag:'us'},
-  {tk:'V',nm:'Visa',tag:'us'},
-  {tk:'MA',nm:'Mastercard',tag:'us'},
-  {tk:'BRK.B',nm:'Berkshire Hathaway',tag:'us'},
-  // US Healthcare
-  {tk:'UNH',nm:'UnitedHealth',tag:'us'},
-  {tk:'JNJ',nm:'Johnson & Johnson',tag:'us'},
-  {tk:'LLY',nm:'Eli Lilly',tag:'us'},
-  {tk:'PFE',nm:'Pfizer',tag:'us'},
-  // US Consumer
-  {tk:'WMT',nm:'Walmart',tag:'us'},
-  {tk:'COST',nm:'Costco',tag:'us'},
-  {tk:'KO',nm:'Coca-Cola',tag:'us'},
-  {tk:'PEP',nm:'PepsiCo',tag:'us'},
-  // ETFs
-  {tk:'SPY',nm:'S&P 500 ETF',tag:'us'},
-  {tk:'QQQ',nm:'Nasdaq 100 ETF',tag:'us'},
-  {tk:'IWM',nm:'Russell 2000 ETF',tag:'us'},
-  {tk:'TLT',nm:'20+ Year Treasury Bond ETF',tag:'us'},
-  {tk:'GLD',nm:'Gold ETF',tag:'us'},
-  {tk:'SLV',nm:'Silver ETF',tag:'us'},
-  {tk:'VNQ',nm:'Real Estate ETF',tag:'us'},
-  {tk:'XLE',nm:'Energy Sector ETF',tag:'us'},
-  {tk:'XLF',nm:'Financial Sector ETF',tag:'us'},
-  {tk:'XLK',nm:'Tech Sector ETF',tag:'us'},
-  {tk:'EWZ',nm:'Brazil ETF',tag:'us'},
-  {tk:'EWW',nm:'Mexico ETF',tag:'us'},
-  // LATAM
-  {tk:'MELI',nm:'MercadoLibre',tag:'LATAM'},
-  {tk:'NU',nm:'Nu Holdings (Brasil)',tag:'LATAM'},
-  {tk:'GLOB',nm:'Globant (Argentina)',tag:'LATAM'},
-  {tk:'VALE',nm:'Vale (Brasil mining)',tag:'LATAM'},
-  {tk:'ITUB',nm:'Itaú Unibanco (Brasil)',tag:'LATAM'},
-  {tk:'PBR',nm:'Petrobras (Brasil)',tag:'LATAM'},
-  {tk:'BBD',nm:'Banco Bradesco (Brasil)',tag:'LATAM'},
-  {tk:'BAP',nm:'Credicorp (Perú)',tag:'LATAM'},
-  {tk:'CIB',nm:'Bancolombia',tag:'LATAM'},
-  {tk:'TV',nm:'Grupo Televisa (México)',tag:'LATAM'},
-  {tk:'KOF',nm:'Coca-Cola FEMSA',tag:'LATAM'},
-  {tk:'FMX',nm:'FEMSA (México)',tag:'LATAM'},
-  {tk:'AMX',nm:'América Móvil',tag:'LATAM'},
-  {tk:'CX',nm:'Cemex (México)',tag:'LATAM'},
-  {tk:'WALMEX',nm:'Walmart de México',tag:'LATAM'},
-  // Crypto
-  {tk:'BTC',nm:'Bitcoin',tag:'crypto'},
-  {tk:'ETH',nm:'Ethereum',tag:'crypto'},
-  {tk:'SOL',nm:'Solana',tag:'crypto'},
-  {tk:'BNB',nm:'Binance Coin',tag:'crypto'},
-  {tk:'XRP',nm:'Ripple',tag:'crypto'},
-  {tk:'ADA',nm:'Cardano',tag:'crypto'},
-  {tk:'DOGE',nm:'Dogecoin',tag:'crypto'},
-  {tk:'AVAX',nm:'Avalanche',tag:'crypto'},
-  {tk:'LINK',nm:'Chainlink',tag:'crypto'},
-  {tk:'DOT',nm:'Polkadot',tag:'crypto'},
-];
-
-let _suggestActiveIdx = -1;
-function autocompleteTicker(input, suggestId){
-  const q = input.value.trim().toUpperCase();
-  const sug = document.getElementById(suggestId);
-  if(!q || q.length < 1){ sug.classList.remove('show'); sug.innerHTML=''; return; }
-
-  // Match by ticker prefix or company name contains
-  const matches = TICKER_DB.filter(t =>
-    t.tk.startsWith(q) || t.nm.toUpperCase().includes(q)
-  ).slice(0, 8);
-
-  if(!matches.length){ sug.classList.remove('show'); sug.innerHTML=''; return; }
-
-  _suggestActiveIdx = -1;
-  sug.innerHTML = matches.map((m,i) => `
-    <div class="ticker-suggest-item" onclick="pickTickerSuggest('${input.id}','${suggestId}','${m.tk}')">
-      <span class="ts-tk">${m.tk}</span>
-      <span class="ts-nm">${m.nm}</span>
-      <span class="ts-tag ${m.tag}">${m.tag.toUpperCase()}</span>
-    </div>
-  `).join('');
-  sug.classList.add('show');
-}
-
-function pickTickerSuggest(inputId, suggestId, ticker){
-  document.getElementById(inputId).value = ticker;
-  document.getElementById(suggestId).classList.remove('show');
-  document.getElementById(suggestId).innerHTML = '';
-  // Auto-focus next field
-  if(inputId === 'ptTicker') document.getElementById('ptAmount').focus();
-}
-
-// Hide suggestions when clicking outside
-document.addEventListener('click', (e) => {
-  if(!e.target.closest('.ticker-suggest') && !e.target.matches('input[oninput*="autocompleteTicker"]')){
-    document.querySelectorAll('.ticker-suggest').forEach(s => s.classList.remove('show'));
-  }
-});
-
-// ── CORRELATION EXPLORER ──────────────────────────────────────────
-async function runCorrelationAnalysis(){
-  const tickerRaw = document.getElementById('corrTicker').value.trim().toUpperCase();
-  const ticker = tickerRaw.replace('/USD','').replace('-USD','');
-  const el = document.getElementById('corrResults');
-  if(!ticker){ el.innerHTML = '<div style="color:var(--text3);text-align:center;padding:20px;">Enter a ticker first</div>'; return; }
-
-  el.innerHTML = '<div class="loading" style="padding:30px;text-align:center;">analyzing correlations across 65+ assets...</div>';
-  setStatus('CORR ANALYSIS...', true);
-
-  // Get asset type for the input ticker
-  const inputAsset = TICKER_DB.find(t => t.tk === ticker);
-  const inputType = inputAsset ? (inputAsset.tag === 'crypto' ? 'crypto' : 'stock') : 'stock';
-  const isLatamInput = inputAsset && inputAsset.tag === 'LATAM';
-
-  // Calculate correlation against every ticker in our DB
-  // Using estimateCorrelation logic + special pairs
-  const correlations = TICKER_DB
-    .filter(t => t.tk !== ticker)
-    .map(t => {
-      const otherType = t.tag === 'crypto' ? 'crypto' : 'stock';
-      const isLatamOther = t.tag === 'LATAM';
-      let corr = estimateCorrelation(
-        {ticker: ticker, asset_type: inputType},
-        {ticker: t.tk, asset_type: otherType}
-      );
-
-      // Special inverse correlations (defensive vs risk-on)
-      if(t.tk === 'TLT' && inputType === 'stock') corr = -0.30; // bonds inverse to stocks
-      if(t.tk === 'GLD' && inputType === 'stock') corr = 0.10; // gold mostly uncorrelated
-      if(t.tk === 'SLV' && inputType === 'stock') corr = 0.15;
-      if(t.tk === 'VNQ' && inputType === 'stock') corr = 0.55; // REITs correlate with stocks
-
-      // Sector ETFs match well with their sector stocks
-      const techStocks = ['AAPL','MSFT','NVDA','GOOGL','META','AMZN','AMD','INTC','AVGO','CRM','ORCL','ADBE','PLTR'];
-      if(t.tk === 'XLK' && techStocks.includes(ticker)) corr = 0.85;
-      if(t.tk === 'QQQ' && techStocks.includes(ticker)) corr = 0.80;
-
-      const finStocks = ['JPM','BAC','GS','MS','V','MA'];
-      if(t.tk === 'XLF' && finStocks.includes(ticker)) corr = 0.85;
-
-      // Country ETFs match LATAM
-      if(t.tk === 'EWZ' && isLatamOther) corr = 0.75; // Brazil ETF
-      if(t.tk === 'EWZ' && ['VALE','ITUB','PBR','BBD','NU'].includes(ticker)) corr = 0.85;
-      if(t.tk === 'EWW' && ['FMX','KOF','TV','AMX','CX','WALMEX'].includes(ticker)) corr = 0.85;
-
-      return {...t, corr};
-    });
-
-  // Categorize
-  const high = correlations.filter(c => c.corr >= 0.60).sort((a,b) => b.corr - a.corr).slice(0, 8);
-  const medium = correlations.filter(c => c.corr >= 0.30 && c.corr < 0.60).sort((a,b) => b.corr - a.corr).slice(0, 8);
-  const low = correlations.filter(c => c.corr >= 0 && c.corr < 0.30).sort((a,b) => a.corr - b.corr).slice(0, 6);
-  const inverse = correlations.filter(c => c.corr < 0).sort((a,b) => a.corr - b.corr).slice(0, 5);
-
-  function row(c){
-    const intensity = Math.abs(c.corr);
-    const barW = Math.round(intensity * 100);
-    const sign = c.corr >= 0 ? '' : '−';
-    const color = c.corr >= 0.60 ? 'var(--red)' : c.corr >= 0.30 ? '#ffaa00' : c.corr < 0 ? '#00aaff' : 'var(--green)';
-    return `<div style="display:grid;grid-template-columns:80px 1fr 60px 1fr;gap:12px;padding:8px 12px;border-bottom:1px solid #111;align-items:center;font-family:var(--mono);font-size:11px;">
-      <div style="color:var(--text);font-weight:600;">${c.tk}</div>
-      <div style="color:var(--text3);font-size:10px;">${c.nm}</div>
-      <div style="color:${color};text-align:right;font-weight:600;">${sign}${Math.abs(c.corr).toFixed(2)}</div>
-      <div style="height:8px;background:#1a1a1a;border-radius:2px;overflow:hidden;"><div style="height:100%;width:${barW}%;background:${color};"></div></div>
-    </div>`;
-  }
-
-  // Generate insights
-  const highTickers = high.slice(0,3).map(c=>c.tk).join(', ');
-  const inverseTickers = inverse.slice(0,2).map(c=>c.tk).join(', ');
-  const lowTickers = low.slice(0,2).map(c=>c.tk).join(', ');
-
-  let insight = '';
-  if(high.length >= 3){
-    insight += `<strong style="color:var(--red);">⚠ HIGH CONCENTRATION RISK:</strong> If you own ${ticker}, also owning ${highTickers} doesn't diversify — they all move together. `;
-  }
-  if(inverse.length > 0){
-    insight += `<strong style="color:#00aaff;">📉 INVERSE HEDGES:</strong> ${inverseTickers} tend to move opposite to ${ticker} — good for hedging downside. `;
-  }
-  if(low.length > 0){
-    insight += `<strong style="color:var(--green);">✓ TRUE DIVERSIFIERS:</strong> ${lowTickers} have low correlation to ${ticker} — adding these gives REAL diversification.`;
-  }
-
-  el.innerHTML = `
-    <div style="background:#0f0f0f;border:1px solid #1a1a1a;border-radius:6px;padding:16px;margin-bottom:16px;font-family:var(--mono);font-size:11px;line-height:1.6;color:var(--text2);">
-      ${insight}
-    </div>
-
-    ${high.length ? `
-    <div class="section-header"><span class="section-title" style="color:var(--red);">// 🔴 HIGH CORRELATION (move together with ${ticker})</span><div class="section-line"></div></div>
-    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:6px;margin-bottom:16px;">
-      ${high.map(row).join('')}
-    </div>` : ''}
-
-    ${medium.length ? `
-    <div class="section-header"><span class="section-title" style="color:#ffaa00;">// 🟡 MEDIUM CORRELATION</span><div class="section-line"></div></div>
-    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:6px;margin-bottom:16px;">
-      ${medium.map(row).join('')}
-    </div>` : ''}
-
-    ${low.length ? `
-    <div class="section-header"><span class="section-title" style="color:var(--green);">// 🟢 LOW CORRELATION (true diversification)</span><div class="section-line"></div></div>
-    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:6px;margin-bottom:16px;">
-      ${low.map(row).join('')}
-    </div>` : ''}
-
-    ${inverse.length ? `
-    <div class="section-header"><span class="section-title" style="color:#00aaff;">// 📉 INVERSE CORRELATION (move opposite — hedges)</span><div class="section-line"></div></div>
-    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:6px;margin-bottom:16px;">
-      ${inverse.map(row).join('')}
-    </div>` : ''}
-
-    <div style="font-size:10px;color:var(--text3);margin-top:8px;font-family:var(--mono);text-align:center;">
-      Correlations based on asset class, sector, and regional risk modeling · institutional-grade diversification analysis
-    </div>
-  `;
-  setStatus('READY', false);
-}
-
 async function addPosition(){
   const ticker=document.getElementById('ptTicker').value.trim().toUpperCase();
   const dir=document.getElementById('ptDir').value;
@@ -4331,20 +3202,15 @@ function renderPortfolioTable(){
 async function runPortfolioSim(){
   if(!positions.length)return;
   const el=document.getElementById('ptResults');
-  el.innerHTML='<div class="loading">running CORRELATED portfolio simulation (Cholesky + GARCH + Fat Tails)</div>';
+  el.innerHTML='<div class="loading">running portfolio simulation</div>';
   setStatus('PORTFOLIO SIM...',true);
   const NSIM=500,horizon=Math.max(...positions.map(p=>p.horizon));
   const portReturns=[];
-
-  // Pre-compute correlation matrix once for display
-  const corrMatrix = buildCorrelationMatrix(positions);
-
   for(let s=0;s<NSIM;s++){
-    // Generate CORRELATED paths for all assets simultaneously
-    const {paths} = genCorrelatedPaths(positions, horizon);
     let totalPnl=0;
-    positions.forEach((p,i)=>{
-      const final=paths[i][paths[i].length-1];
+    positions.forEach(p=>{
+      const path=genPath(p.S0,p.mu,p.sigma,p.horizon,'gbm');
+      const final=path[path.length-1];
       const ret=p.dir==='LONG'?(final-p.S0)/p.S0:(p.S0-final)/p.S0;
       totalPnl+=ret*p.amount;
     });
@@ -4375,7 +3241,7 @@ async function runPortfolioSim(){
   try{assessment=safeJSON(pd.content.map(b=>b.text||'').join(''));}catch(e){}
 
   el.innerHTML=`
-    <div class="section-header" style="margin-top:8px;"><span class="section-title">// Portfolio Results · ${NSIM} simulations · Cholesky-correlated</span><div class="section-line"></div></div>
+    <div class="section-header" style="margin-top:8px;"><span class="section-title">// Portfolio Results · ${NSIM} simulations</span><div class="section-line"></div></div>
     <div class="stat-grid cols-4" style="margin-bottom:16px;">
       <div class="stat-card"><div class="stat-lbl">Expected return</div><div class="stat-val ${mean>=0?'pos':'neg'}">${fmt(mean)}</div><div class="stat-sub">${fmtD(mean)}</div></div>
       <div class="stat-card"><div class="stat-lbl">Win rate</div><div class="stat-val">${(wins/returns.length*100).toFixed(1)}%</div><div class="stat-sub">of ${NSIM} sims</div></div>
@@ -4387,27 +3253,6 @@ async function runPortfolioSim(){
       <div class="scen"><div class="scen-lbl">base · median</div><div class="scen-pct ${p50>=0?'pos':'neg'}">${fmt(p50)}</div><div class="scen-pnl">${fmtD(p50)}</div></div>
       <div class="scen bull"><div class="scen-lbl">bull · p90</div><div class="scen-pct pos">${fmt(p90)}</div><div class="scen-pnl">${fmtD(p90)}</div></div>
     </div>
-
-    <div class="section-header" style="margin-top:16px;"><span class="section-title">// correlation matrix</span><div class="section-line"></div></div>
-    <div style="overflow-x:auto;margin-bottom:16px;">
-      <table style="border-collapse:collapse;font-family:var(--mono);font-size:11px;width:auto;">
-        <tr><th style="padding:6px 10px;background:#0a0a0a;border:1px solid #1a1a1a;"></th>
-          ${positions.map(p=>`<th style="padding:6px 10px;background:#0a0a0a;border:1px solid #1a1a1a;color:var(--text2);">${p.ticker}</th>`).join('')}
-        </tr>
-        ${corrMatrix.map((row,i)=>`<tr>
-          <th style="padding:6px 10px;background:#0a0a0a;border:1px solid #1a1a1a;color:var(--text2);text-align:left;">${positions[i].ticker}</th>
-          ${row.map((v,j)=>{
-            const intensity=Math.abs(v);
-            const color=v>0.6?`rgba(226,75,74,${intensity})`:v>0.3?`rgba(255,170,0,${intensity})`:`rgba(0,200,150,${intensity*0.6})`;
-            return `<td style="padding:6px 10px;border:1px solid #1a1a1a;text-align:center;background:${i===j?'#1a1a1a':color};color:${intensity>0.5?'#fff':'var(--text2)'};">${v.toFixed(2)}</td>`;
-          }).join('')}
-        </tr>`).join('')}
-      </table>
-      <div style="font-size:10px;color:var(--text3);margin-top:6px;font-family:var(--mono);">
-        <span style="color:#00c896;">low</span> · <span style="color:#ffaa00;">medium</span> · <span style="color:#e24b4a;">high</span> correlation · diagonal = 1.0 by definition
-      </div>
-    </div>
-
     <div class="analysis"><h3>Portfolio assessment</h3><p>${assessment.assessment}</p></div>
     <div class="analysis risk"><h3>Key risk</h3><p>${assessment.key_risk}</p></div>`;
   setStatus('READY',false);
@@ -5425,51 +4270,30 @@ function renderComparison(){
 // ─── RISK OF RUIN ─────────────────────────────────────
 function calcRuin(winRate, avgWin, avgLoss, capital, trades, ruinThreshold){
   // Monte Carlo risk of ruin simulation
-  // avgWin and avgLoss are fractional returns per trade (e.g. 0.007 = 0.7%)
   if(avgLoss<=0||winRate<=0||winRate>=1) return 0;
-
-  // Sanity check — if expected value is strongly positive, ruin is near zero
-  const ev = winRate*avgWin - (1-winRate)*avgLoss;
-  // If ev per trade is positive and large relative to threshold, skip expensive sim
-  if(ev > 0 && ev * trades > ruinThreshold * 2) return 0;
-
-  const SIMS = 1000;
-  let ruined = 0;
-  const ruinLevel = capital * (1 - ruinThreshold);
-
-  // Fixed dollar P&L per trade (not compounding) — more realistic for position sizing
-  const winAmt = capital * avgWin;
-  const lossAmt = capital * avgLoss;
-
-  for(let s = 0; s < SIMS; s++){
-    let bal = capital;
-    for(let t = 0; t < trades; t++){
-      if(Math.random() < winRate) bal += winAmt;
-      else bal -= lossAmt;
-      if(bal <= ruinLevel){ ruined++; break; }
+  const SIMS=2000;
+  let ruined=0;
+  const ruin=capital*(1-ruinThreshold);
+  for(let s=0;s<SIMS;s++){
+    let bal=capital;
+    for(let t=0;t<trades;t++){
+      if(Math.random()<winRate) bal+=bal*avgWin;
+      else bal-=bal*avgLoss;
+      if(bal<=ruin){ruined++;break;}
     }
   }
-  return ruined / SIMS;
+  return ruined/SIMS;
 }
 
 function renderRiskOfRuin(winRate, avgWin, avgLoss, capital){
   if(!avgWin||!avgLoss) return '';
-
-  // Scale trade counts based on holding period
-  // 3d trade → ~60 trades/year, 90d trade → ~4 trades/year
-  const tradesPerYear = Math.round(252 / SP.days);
-  const t1 = Math.max(5, tradesPerYear);          // ~1 year of trades
-  const t2 = Math.max(10, tradesPerYear * 2);     // ~2 years
-  const t3 = Math.max(20, tradesPerYear * 5);     // ~5 years
-
-  const ruin10_50  = calcRuin(winRate,avgWin,avgLoss,capital,t1,0.10);
-  const ruin25_50  = calcRuin(winRate,avgWin,avgLoss,capital,t1,0.25);
-  const ruin50_50  = calcRuin(winRate,avgWin,avgLoss,capital,t1,0.50);
-  const ruin10_100 = calcRuin(winRate,avgWin,avgLoss,capital,t2,0.10);
-  const ruin50_100 = calcRuin(winRate,avgWin,avgLoss,capital,t2,0.50);
-  const ruin10_200 = calcRuin(winRate,avgWin,avgLoss,capital,t3,0.10);
   
-  const lbl1=t1+' trades (~1yr)', lbl2=t2+' trades (~2yr)', lbl3=t3+' trades (~5yr)';
+  const ruin10_50=calcRuin(winRate,avgWin,avgLoss,capital,50,0.10);
+  const ruin25_50=calcRuin(winRate,avgWin,avgLoss,capital,50,0.25);
+  const ruin50_50=calcRuin(winRate,avgWin,avgLoss,capital,50,0.50);
+  const ruin10_100=calcRuin(winRate,avgWin,avgLoss,capital,100,0.10);
+  const ruin50_100=calcRuin(winRate,avgWin,avgLoss,capital,100,0.50);
+  const ruin10_200=calcRuin(winRate,avgWin,avgLoss,capital,200,0.10);
 
   const ruinColor=p=>p>0.5?'var(--red)':p>0.25?'var(--amber)':'var(--green)';
   const fmt=p=>(p*100).toFixed(1)+'%';
@@ -5484,32 +4308,32 @@ function renderRiskOfRuin(winRate, avgWin, avgLoss, capital){
     <div class="section-header" style="margin-top:4px;"><span class="section-title">// risk of ruin</span><div class="section-line"></div></div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;">
       <div class="stat-card">
-        <div class="stat-lbl">Lose 10% · ${lbl1}</div>
+        <div class="stat-lbl">Lose 10% in 50 trades</div>
         <div class="stat-val" style="color:${ruinColor(ruin10_50)}">${fmt(ruin10_50)}</div>
         <div class="stat-sub">probability of -10% loss</div>
       </div>
       <div class="stat-card">
-        <div class="stat-lbl">Lose 25% · ${lbl1}</div>
+        <div class="stat-lbl">Lose 25% in 50 trades</div>
         <div class="stat-val" style="color:${ruinColor(ruin25_50)}">${fmt(ruin25_50)}</div>
         <div class="stat-sub">significant drawdown</div>
       </div>
       <div class="stat-card">
-        <div class="stat-lbl">Lose 50% · ${lbl1}</div>
+        <div class="stat-lbl">Lose 50% in 50 trades</div>
         <div class="stat-val" style="color:${ruinColor(ruin50_50)}">${fmt(ruin50_50)}</div>
         <div class="stat-sub">half capital gone</div>
       </div>
       <div class="stat-card">
-        <div class="stat-lbl">Lose 10% · ${lbl2}</div>
+        <div class="stat-lbl">Lose 10% in 100 trades</div>
         <div class="stat-val" style="color:${ruinColor(ruin10_100)}">${fmt(ruin10_100)}</div>
         <div class="stat-sub">extended trading</div>
       </div>
       <div class="stat-card">
-        <div class="stat-lbl">Lose 50% · ${lbl2}</div>
+        <div class="stat-lbl">Lose 50% in 100 trades</div>
         <div class="stat-val" style="color:${ruinColor(ruin50_100)}">${fmt(ruin50_100)}</div>
         <div class="stat-sub">long-term ruin</div>
       </div>
       <div class="stat-card">
-        <div class="stat-lbl">Lose 10% · ${lbl3}</div>
+        <div class="stat-lbl">Lose 10% in 200 trades</div>
         <div class="stat-val" style="color:${ruinColor(ruin10_200)}">${fmt(ruin10_200)}</div>
         <div class="stat-sub">professional scale</div>
       </div>
@@ -5527,7 +4351,7 @@ function renderRiskOfRuin(winRate, avgWin, avgLoss, capital){
     </div>`;
 }
 
-// ─── BACKTESTING (REAL DATA from Yahoo Finance) ──────
+// ─── BACKTESTING ──────────────────────────────────────
 async function runBacktest(){
   const ticker=document.getElementById('simTicker').value.trim().toUpperCase();
   if(!ticker||!allFinals.length){alert('Run a simulation first');return;}
@@ -5536,61 +4360,42 @@ async function runBacktest(){
   btn.textContent='Running backtest...';btn.disabled=true;
 
   try{
+    // Ask Claude to backtest using known historical data
     const dir=SP.dir;
     const days=SP.days;
+    const capital=SP.capital;
+    const currentPrice=SP.S0;
 
-    // Fetch REAL historical data from our backend
-    const btRes = await fetch(`/api/backtest?ticker=${ticker}&days=${days}&direction=${dir}`);
-    const realBt = await btRes.json();
+    const r=await fetch('/api/claude',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,
+        messages:[{role:'user',content:
+          `You are a quant backtester. The user simulated a ${dir} trade on ${ticker} today at ~$${currentPrice} for ${days} days with $${capital}.
 
-    if(realBt.error || !realBt.periods || !realBt.periods.length){
-      alert('Backtest failed: ' + (realBt.error || 'no data'));
-      btn.textContent='↺ Backtest';btn.disabled=false;
-      return;
-    }
+Backtest this exact setup going back 6 months. For each of the last 6 months, what WOULD have happened if they ran this same trade?
 
-    // Compare to current simulation
-    const simRets = allFinals.map(f => dir==='LONG' ? (f-SP.S0)/SP.S0 : (SP.S0-f)/SP.S0);
-    const simWinRate = simRets.filter(r=>r>0).length / simRets.length;
-    const simAvgReturn = simRets.reduce((a,b)=>a+b,0) / simRets.length;
+Use your knowledge of ${ticker}'s actual price history in 2025-2026.
 
-    // Model accuracy: compare backtest win rate to sim win rate
-    const winRateDiff = Math.abs(realBt.backtest_win_rate - simWinRate);
-    const returnDiff = Math.abs(realBt.backtest_avg_return - simAvgReturn);
-    let accuracy = 'HIGH';
-    if(winRateDiff > 0.20 || returnDiff > 0.08) accuracy = 'MEDIUM';
-    if(winRateDiff > 0.35 || returnDiff > 0.15) accuracy = 'LOW';
+Return ONLY JSON:
+{
+  "periods": [
+    {"start":"Month YYYY","entry_price":number,"exit_price":number,"return_pct":number,"outcome":"WIN|LOSS","note":"1 sentence what happened"},
+    ... 6 periods total
+  ],
+  "backtest_win_rate": number (0-1),
+  "backtest_avg_return": number,
+  "model_accuracy": "HIGH|MEDIUM|LOW",
+  "summary": "2 sentences comparing backtest results to current simulation"
+}`}]})
+    });
 
-    // Ask Claude for a 2-sentence narrative comparison
-    let summary = `Model showed ${(simWinRate*100).toFixed(0)}% win rate vs actual ${(realBt.backtest_win_rate*100).toFixed(0)}% in backtest. ${accuracy==='HIGH'?'Strong alignment between simulation and historical reality.':accuracy==='MEDIUM'?'Moderate alignment — some deviation from historical patterns.':'Significant divergence from historical reality — interpret with caution.'}`;
-
-    try{
-      const r=await fetch('/api/claude',{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:200,
-          messages:[{role:'user',content:
-            `Compare backtest results to Monte Carlo simulation for ${ticker} ${dir} ${days}d trades. Real backtest: ${(realBt.backtest_win_rate*100).toFixed(0)}% win rate, ${(realBt.backtest_avg_return*100).toFixed(1)}% avg return across ${realBt.periods.length} historical periods. Current simulation: ${(simWinRate*100).toFixed(0)}% win rate, ${(simAvgReturn*100).toFixed(1)}% expected. Give ONE sentence: does the model match reality? Be direct.`}]})
-      });
-      const d=await r.json();
-      const text = d.content?.map(b=>b.text||'').join('').trim();
-      if(text && text.length < 300) summary = text;
-    }catch(e){}
-
-    const bt = {
-      periods: realBt.periods,
-      backtest_win_rate: realBt.backtest_win_rate,
-      backtest_avg_return: realBt.backtest_avg_return,
-      model_accuracy: accuracy,
-      summary,
-      sim_win_rate: simWinRate,
-      sim_avg_return: simAvgReturn
-    };
+    const d=await r.json();
+    const bt=safeJSON(d.content.map(b=>b.text||'').join(''));
     renderBacktest(bt, ticker, dir);
   }catch(e){
     console.error('Backtest error',e);
-    alert('Backtest failed: ' + e.message);
   }finally{
-    btn.textContent='↺ Backtest';btn.disabled=false;
+    btn.textContent='↺ Backtest (6mo)';btn.disabled=false;
   }
 }
 
@@ -5605,52 +4410,33 @@ function renderBacktest(bt, ticker, dir){
   }
 
   const wr=(bt.backtest_win_rate||0)*100;
-  const simWr=(bt.sim_win_rate||0)*100;
   const avgR=(bt.backtest_avg_return||0)*100;
-  const simAvgR=(bt.sim_avg_return||0)*100;
   const accColor={'HIGH':'var(--green)','MEDIUM':'var(--amber)','LOW':'var(--red)'}[bt.model_accuracy]||'var(--text2)';
 
   panel.innerHTML=`
-    <div class="section-header"><span class="section-title">// backtest · real historical data from Yahoo</span><div class="section-line"></div></div>
-
-    <div style="background:#0f0f0f;border:1px solid #1a1a1a;border-radius:6px;padding:12px;margin-bottom:12px;">
-      <div style="font-size:11px;color:var(--text3);margin-bottom:6px;font-family:var(--mono);">// model vs reality</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
-        <div>
-          <div style="font-size:10px;color:var(--text3);margin-bottom:2px;">SIMULATION predicted:</div>
-          <div style="font-family:var(--mono);font-size:13px;color:var(--text);">${simWr.toFixed(0)}% win rate · ${simAvgR>=0?'+':''}${simAvgR.toFixed(1)}% avg</div>
-        </div>
-        <div>
-          <div style="font-size:10px;color:var(--text3);margin-bottom:2px;">REALITY showed:</div>
-          <div style="font-family:var(--mono);font-size:13px;color:var(--text);">${wr.toFixed(0)}% win rate · ${avgR>=0?'+':''}${avgR.toFixed(1)}% avg</div>
-        </div>
-      </div>
-    </div>
-
+    <div class="section-header"><span class="section-title">// backtest · last 6 months</span><div class="section-line"></div></div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px;">
-      <div class="stat-card"><div class="stat-lbl">Actual win rate</div><div class="stat-val ${wr>=50?'pos':'neg'}">${wr.toFixed(0)}%</div><div class="stat-sub">${bt.periods.length} historical trades</div></div>
-      <div class="stat-card"><div class="stat-lbl">Actual avg return</div><div class="stat-val ${avgR>=0?'pos':'neg'}">${avgR>=0?'+':''}${avgR.toFixed(1)}%</div><div class="stat-sub">per ${dir} trade</div></div>
-      <div class="stat-card"><div class="stat-lbl">Model accuracy</div><div class="stat-val" style="color:${accColor}">${bt.model_accuracy||'—'}</div><div class="stat-sub">vs simulation</div></div>
+      <div class="stat-card"><div class="stat-lbl">Backtest win rate</div><div class="stat-val ${wr>=50?'pos':'neg'}">${wr.toFixed(0)}%</div><div class="stat-sub">historical ${dir} trades</div></div>
+      <div class="stat-card"><div class="stat-lbl">Avg return</div><div class="stat-val ${avgR>=0?'pos':'neg'}">${avgR>=0?'+':''}${avgR.toFixed(1)}%</div><div class="stat-sub">per period</div></div>
+      <div class="stat-card"><div class="stat-lbl">Model accuracy</div><div class="stat-val" style="color:${accColor}">${bt.model_accuracy||'—'}</div><div class="stat-sub">vs actual outcomes</div></div>
     </div>
-
     <div style="display:flex;flex-direction:column;gap:5px;margin-bottom:10px;">
       ${(bt.periods||[]).map(p=>{
         const win=p.outcome==='WIN';
         return `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg1);border:1px solid ${win?'rgba(0,201,125,.2)':'rgba(226,75,74,.2)'};border-radius:4px;flex-wrap:wrap;">
           <span style="font-family:var(--mono);font-size:11px;color:var(--text3);min-width:90px;">${p.start}</span>
-          <span style="font-size:11px;color:var(--text2);">$${Number(p.entry_price||0).toLocaleString(undefined,{maximumFractionDigits:2})} → $${Number(p.exit_price||0).toLocaleString(undefined,{maximumFractionDigits:2})}</span>
-          <span style="font-family:var(--mono);font-size:11px;color:${win?'var(--green)':'var(--red)'};margin-left:auto;font-weight:600;">${p.return_pct>=0?'+':''}${p.return_pct}%</span>
-          <span style="font-size:9px;padding:2px 6px;border-radius:2px;background:${win?'rgba(0,201,125,.15)':'rgba(226,75,74,.15)'};color:${win?'var(--green)':'var(--red)'};">${p.outcome}</span>
+          <span style="font-size:11px;color:var(--text2);">$${Number(p.entry_price||0).toLocaleString(undefined,{maximumFractionDigits:0})} → $${Number(p.exit_price||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+          <span style="font-family:var(--mono);font-size:12px;font-weight:500;color:${win?'var(--green)':'var(--red)'};">${p.return_pct>=0?'+':''}${Number(p.return_pct||0).toFixed(1)}%</span>
+          <span style="font-size:10px;padding:1px 6px;border-radius:2px;background:${win?'rgba(0,201,125,.15)':'rgba(226,75,74,.15)'};color:${win?'var(--green)':'var(--red)'};">${p.outcome}</span>
+          <span style="font-size:11px;color:var(--text3);font-family:var(--sans);flex:1;">${p.note||''}</span>
         </div>`;
       }).join('')}
     </div>
-
-    <div style="padding:12px;background:var(--bg2);border:1px solid #1a1a1a;border-radius:4px;font-size:11px;color:var(--text2);line-height:1.5;">
-      ${bt.summary||''}
-    </div>
-  `;
+    <div style="padding:12px 16px;background:var(--bg2);border:1px solid var(--border2);border-radius:6px;">
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:6px;">// model vs reality</div>
+      <div style="font-family:var(--sans);font-size:13px;color:var(--text2);line-height:1.7;">${bt.summary||''}</div>
+    </div>`;
 }
-
 
 // ─── BULL VS BEAR DEBATE ──────────────────────────────
 async function runDebate(){
@@ -5841,1560 +4627,6 @@ const INVESTORS = [
   {id:'mobius', name:'Mark Mobius', style:'Emerging markets legend. 30 years in LATAM, Asia, Africa. Loves undervalued frontier markets. Understands currency risk and political risk deeply.', emoji:'🌏'},
   {id:'masa', name:'Masayoshi Son', style:'300-year vision investor. Bets on AI singularity. Either 10x or zero — no middle ground. Famously lost $70B and came back. LATAM bets: Rappi, Kavak.', emoji:'💥'},
 ];
-
-// ── WHAT-IF SLIDERS: real-time GBM recalculation ──
-let _whatIfOriginal = null;
-
-function showWhatIfPanel(){
-  // Called after a sim completes
-  const panel = document.getElementById('whatIfPanel');
-  if(!panel || !SP) return;
-
-  // Store original params as baseline
-  _whatIfOriginal = {
-    mu: SP.mu || 0.15,
-    sigma: SP.sigma || 0.35,
-    days: SP.days || 90,
-    S0: SP.S0,
-    dir: SP.dir
-  };
-
-  // Sync sliders to current values
-  document.getElementById('wiMu').value = Math.round(_whatIfOriginal.mu * 100);
-  document.getElementById('wiSigma').value = Math.round(_whatIfOriginal.sigma * 100);
-  document.getElementById('wiDays').value = _whatIfOriginal.days;
-
-  panel.style.display = 'block';
-  updateWhatIf();
-}
-
-function resetWhatIf(){
-  if(!_whatIfOriginal) return;
-  document.getElementById('wiMu').value = Math.round(_whatIfOriginal.mu * 100);
-  document.getElementById('wiSigma').value = Math.round(_whatIfOriginal.sigma * 100);
-  document.getElementById('wiDays').value = _whatIfOriginal.days;
-  updateWhatIf();
-}
-
-// GBM closed-form approximations
-function gbmExpectedReturn(mu, sigma, days, dir){
-  const t = days / 252;
-  // For LONG: E[ST/S0] = exp(mu*t), so return = exp(mu*t) - 1
-  const exp = Math.exp(mu * t) - 1;
-  return dir === 'LONG' ? exp : -exp;
-}
-
-function gbmWinRate(mu, sigma, days, dir){
-  // P(ST > S0) for LONG = P(log(ST/S0) > 0)
-  // log(ST/S0) ~ N((mu - 0.5*sigma^2)*t, sigma^2*t)
-  const t = days / 252;
-  const driftAdj = (mu - 0.5 * sigma * sigma) * t;
-  const vol = sigma * Math.sqrt(t);
-  if(vol === 0) return mu > 0 ? 1 : 0;
-  const z = driftAdj / vol;
-  // Normal CDF approximation
-  const cdf = 0.5 * (1 + erf(z / Math.sqrt(2)));
-  return dir === 'LONG' ? cdf : 1 - cdf;
-}
-
-function erf(x){
-  // Abramowitz & Stegun approx
-  const sign = x >= 0 ? 1 : -1;
-  x = Math.abs(x);
-  const a1 =  0.254829592, a2 = -0.284496736, a3 =  1.421413741;
-  const a4 = -1.453152027, a5 =  1.061405429, p  =  0.3275911;
-  const t = 1.0 / (1.0 + p * x);
-  const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
-  return sign * y;
-}
-
-function gbmVaR95(mu, sigma, days, dir){
-  // 5th percentile of returns. log(ST/S0) ~ N((mu-0.5σ²)t, σ²t)
-  // 5th percentile z = -1.645
-  const t = days / 252;
-  const meanLog = (mu - 0.5*sigma*sigma) * t;
-  const stdLog = sigma * Math.sqrt(t);
-  const pct5Log = meanLog - 1.645 * stdLog;
-  const ret = Math.exp(pct5Log) - 1;
-  return dir === 'LONG' ? ret : -Math.exp(meanLog + 1.645*stdLog) + 1;
-}
-
-function gbmSharpe(mu, sigma, days){
-  // Annualized Sharpe: (mu - rf) / sigma with rf ~4.5%
-  return (mu - 0.045) / sigma;
-}
-
-function updateWhatIf(){
-  if(!_whatIfOriginal) return;
-
-  const muPct = parseFloat(document.getElementById('wiMu').value);
-  const sigmaPct = parseFloat(document.getElementById('wiSigma').value);
-  const days = parseInt(document.getElementById('wiDays').value);
-
-  const mu = muPct / 100;
-  const sigma = sigmaPct / 100;
-
-  // Update labels
-  document.getElementById('wiMuVal').textContent = (muPct>=0?'+':'') + muPct + '%';
-  document.getElementById('wiSigmaVal').textContent = sigmaPct + '%';
-  document.getElementById('wiDaysVal').textContent = days + 'd';
-
-  // Compute new metrics (GBM closed form — fast)
-  const dir = _whatIfOriginal.dir;
-  const expR = gbmExpectedReturn(mu, sigma, days, dir);
-  const winR = gbmWinRate(mu, sigma, days, dir);
-  const sharpe = gbmSharpe(mu, sigma, days);
-  const var95 = gbmVaR95(mu, sigma, days, dir);
-
-  // Original
-  const origMu = _whatIfOriginal.mu, origSig = _whatIfOriginal.sigma, origDays = _whatIfOriginal.days;
-  const origExp = gbmExpectedReturn(origMu, origSig, origDays, dir);
-  const origWin = gbmWinRate(origMu, origSig, origDays, dir);
-  const origSharpe = gbmSharpe(origMu, origSig, origDays);
-  const origVar = gbmVaR95(origMu, origSig, origDays, dir);
-
-  // Display
-  const setVal = (id, val, orig, isPct, isNeg) => {
-    const el = document.getElementById(id);
-    const origEl = document.getElementById(id + 'Orig');
-    const diff = val - orig;
-    const sign = diff > 0.001 ? '▲' : diff < -0.001 ? '▼' : '=';
-    const diffColor = Math.abs(diff) < 0.005 ? 'var(--text3)' : (isNeg ? (diff > 0 ? 'var(--green)' : 'var(--red)') : (diff > 0 ? 'var(--green)' : 'var(--red)'));
-    if(isPct){
-      el.style.color = val >= 0 ? 'var(--green)' : 'var(--red)';
-      if(id === 'wiVar') el.style.color = 'var(--red)';
-      el.textContent = (val>=0?'+':'') + (val*100).toFixed(1) + '%';
-      origEl.innerHTML = `<span style="color:${diffColor}">${sign}</span> vs ${(orig>=0?'+':'') + (orig*100).toFixed(1)}% orig`;
-    } else {
-      el.textContent = val.toFixed(2);
-      origEl.innerHTML = `<span style="color:${diffColor}">${sign}</span> vs ${orig.toFixed(2)} orig`;
-    }
-  };
-
-  setVal('wiExp', expR, origExp, true, false);
-  setVal('wiWin', winR, origWin, true, false);
-  setVal('wiSharpe', sharpe, origSharpe, false, false);
-  setVal('wiVar', var95, origVar, true, true);
-
-  // Also display win rate as %
-  document.getElementById('wiWin').textContent = (winR*100).toFixed(0) + '%';
-}
-
-// ─── VALUATION: Gordon Growth + Comparables + Graham ────
-async function openValuation(){
-  const ticker = document.getElementById('simTicker').value.trim().toUpperCase();
-  if(!ticker){alert('Enter a ticker first');return;}
-
-  const baseTicker = ticker.replace('/USD','').replace('-USD','');
-  const isCrypto = ['BTC','ETH','SOL','BNB','XRP','ADA','DOGE','AVAX','LINK','DOT'].includes(baseTicker);
-
-  let modal = document.getElementById('valuationModal');
-  if(modal) modal.remove();
-  modal = document.createElement('div');
-  modal.id = 'valuationModal';
-  modal.style.cssText = `position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.95);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:20px;box-sizing:border-box;overflow-y:auto;`;
-
-  if(isCrypto){
-    modal.innerHTML = `
-      <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:24px;max-width:600px;width:100%;text-align:center;">
-        <div style="font-family:var(--mono);font-size:14px;color:var(--text);font-weight:600;margin-bottom:16px;">💰 VALUATION — ${baseTicker}</div>
-        <div style="color:var(--text3);font-size:13px;line-height:1.6;padding:20px;">
-          Traditional valuation (DCF, P/E, Graham) doesn't apply to ${baseTicker}.<br/><br/>
-          Cryptos don't have cashflow, earnings, or book value — they're valued by network adoption, scarcity, and market sentiment.<br/><br/>
-          Crypto valuation methods (Stock-to-Flow, NVT, MVRV) coming soon.
-        </div>
-        <button onclick="document.getElementById('valuationModal').remove()" style="margin-top:12px;background:none;border:1px solid #333;color:var(--text2);padding:8px 20px;border-radius:4px;cursor:pointer;font-family:var(--mono);">✕ close</button>
-      </div>`;
-    document.body.appendChild(modal);
-    return;
-  }
-
-  modal.innerHTML = `
-    <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:20px;max-width:1200px;width:100%;max-height:95vh;overflow-y:auto;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <div>
-          <div style="font-family:var(--mono);font-size:14px;color:var(--text);font-weight:600;letter-spacing:.05em;">💰 FUNDAMENTAL VALUATION — ${baseTicker}</div>
-          <div style="font-size:11px;color:var(--text3);margin-top:4px;">Gordon Growth + Comparables + Graham Number · institutional-grade analysis</div>
-        </div>
-        <button onclick="document.getElementById('valuationModal').remove()" style="background:none;border:1px solid #333;color:var(--text2);padding:6px 14px;border-radius:4px;cursor:pointer;font-family:var(--mono);">✕ close</button>
-      </div>
-
-      <div style="background:linear-gradient(135deg, rgba(139,92,246,.08) 0%, rgba(0,188,212,.08) 100%);border:1px solid #2a2a2a;border-radius:6px;padding:16px;margin-bottom:16px;">
-        <div style="font-family:var(--mono);font-size:12px;color:#8b5cf6;font-weight:600;margin-bottom:12px;">// 01 · GORDON GROWTH MODEL (DCF)</div>
-        <div style="font-size:11px;color:var(--text3);margin-bottom:10px;font-family:var(--sans);line-height:1.5;">
-          Goldman Sachs' core valuation formula: <strong style="color:var(--text);">Value = Cash Flow / (Risk − Growth)</strong>. Move sliders to see how growth assumptions change fair value.
-        </div>
-        <div style="background:rgba(0,188,212,.05);border-left:2px solid #00bcd4;padding:8px 10px;margin-bottom:14px;font-size:10px;color:var(--text2);line-height:1.5;font-family:var(--sans);">
-          💡 <strong>The point isn't the number — it's the assumption.</strong> If you think the company grows faster than the slider, it's UNDERvalued. If slower, OVERvalued. For Tesla: bulls assume 20%+ growth, bears assume 2-5%. Same company, different story.
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:14px;">
-          <div>
-            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-              <span style="font-size:10px;color:var(--text3);font-family:var(--mono);">CASH FLOW ($/share)</span>
-              <span id="ggCashVal" style="font-size:11px;color:#8b5cf6;font-family:var(--mono);font-weight:600;">$5</span>
-            </div>
-            <input type="range" id="ggCash" min="0.5" max="50" value="5" step="0.5" style="width:100%;accent-color:#8b5cf6;" oninput="updateGordon()"/>
-          </div>
-          <div>
-            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-              <span style="font-size:10px;color:var(--text3);font-family:var(--mono);">RISK (discount rate)</span>
-              <span id="ggRiskVal" style="font-size:11px;color:#ff00aa;font-family:var(--mono);font-weight:600;">12%</span>
-            </div>
-            <input type="range" id="ggRisk" min="5" max="30" value="12" step="0.5" style="width:100%;accent-color:#ff00aa;" oninput="updateGordon()"/>
-          </div>
-          <div>
-            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-              <span style="font-size:10px;color:var(--text3);font-family:var(--mono);">GROWTH RATE</span>
-              <span id="ggGrowthVal" style="font-size:11px;color:#00bcd4;font-family:var(--mono);font-weight:600;">5%</span>
-            </div>
-            <input type="range" id="ggGrowth" min="0" max="25" value="5" step="0.5" style="width:100%;accent-color:#00bcd4;" oninput="updateGordon()"/>
-          </div>
-        </div>
-        <div style="background:rgba(0,0,0,.5);border-radius:6px;padding:16px;text-align:center;">
-          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">// FAIR VALUE per share</div>
-          <div id="ggValue" style="font-size:36px;font-weight:700;color:#8b5cf6;font-family:var(--mono);">$—</div>
-          <div id="ggUpside" style="font-size:12px;color:var(--text2);margin-top:4px;font-family:var(--mono);">vs current $—</div>
-        </div>
-
-        <!-- Sensitivity curve: fair value at different growth rates -->
-        <div style="margin-top:12px;padding:10px;background:rgba(0,0,0,.3);border-radius:6px;">
-          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:6px;">// FAIR VALUE BY GROWTH ASSUMPTION</div>
-          <div id="ggSensitivity" style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px;"></div>
-        </div>
-
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;">
-          <div style="background:rgba(226,75,74,.08);border:1px solid rgba(226,75,74,.3);border-radius:4px;padding:10px;cursor:pointer;text-align:center;" onclick="ggBearCase()">
-            <div style="font-size:10px;color:var(--red);font-family:var(--mono);font-weight:600;">🐻 BEAR · 2%</div>
-          </div>
-          <div style="background:rgba(255,170,0,.08);border:1px solid rgba(255,170,0,.3);border-radius:4px;padding:10px;cursor:pointer;text-align:center;" onclick="ggBaseCase()">
-            <div style="font-size:10px;color:#ffaa00;font-family:var(--mono);font-weight:600;">🟡 BASE · 5%</div>
-          </div>
-          <div style="background:rgba(29,158,117,.08);border:1px solid rgba(29,158,117,.3);border-radius:4px;padding:10px;cursor:pointer;text-align:center;" onclick="ggBullCase()">
-            <div style="font-size:10px;color:var(--green);font-family:var(--mono);font-weight:600;">🐂 BULL · 15%</div>
-          </div>
-        </div>
-      </div>
-
-      <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:16px;margin-bottom:16px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-          <div style="font-family:var(--mono);font-size:12px;color:#00bcd4;font-weight:600;">// 02 · COMPARABLES (MULTIPLES)</div>
-          <button onclick="loadComparables('${baseTicker}')" id="loadCompsBtn" style="background:#00bcd4;color:#000;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--mono);font-size:10px;font-weight:600;">▶ Load</button>
-        </div>
-        <div style="font-size:11px;color:var(--text3);margin-bottom:14px;font-family:var(--sans);line-height:1.5;">
-          How ${baseTicker} trades vs sector peers. Above sector avg = premium valuation. Below = discount.
-        </div>
-        <div id="compsContent" style="font-size:12px;color:var(--text3);text-align:center;padding:20px;">Click Load to fetch multiples</div>
-      </div>
-
-      <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:16px;margin-bottom:16px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-          <div style="font-family:var(--mono);font-size:12px;color:#4caf50;font-weight:600;">// 03 · GRAHAM NUMBER (Value Investing)</div>
-          <button onclick="loadGraham('${baseTicker}')" id="loadGrahamBtn" style="background:#4caf50;color:#000;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--mono);font-size:10px;font-weight:600;">▶ Compute</button>
-        </div>
-        <div style="font-size:11px;color:var(--text3);margin-bottom:14px;font-family:var(--sans);line-height:1.5;">
-          Benjamin Graham's conservative formula: <strong style="color:var(--text);">√(22.5 × EPS × Book Value)</strong>. Price below = margin of safety.
-        </div>
-        <div id="grahamContent" style="font-size:12px;color:var(--text3);text-align:center;padding:20px;">Click Compute</div>
-      </div>
-
-      <div style="background:linear-gradient(135deg, rgba(0,188,212,.06) 0%, rgba(255,0,170,.06) 100%);border:1px solid #2a2a2a;border-radius:6px;padding:16px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-          <div style="font-family:var(--mono);font-size:12px;color:#ff00aa;font-weight:600;">// 04 · AI ANALYST SYNTHESIS</div>
-          <button onclick="runValuationAI('${baseTicker}')" id="valAIBtn" style="background:#ff00aa;color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--mono);font-size:10px;font-weight:600;">▶ Analyze</button>
-        </div>
-        <div id="valAIContent" style="font-size:12px;color:var(--text3);text-align:center;padding:20px;">AI synthesis comparing all methods + market price</div>
-      </div>
-    </div>`;
-  document.body.appendChild(modal);
-
-  await autoFillValuation(baseTicker);
-  updateGordon();
-}
-
-async function autoFillValuation(ticker){
-  try{
-    const r = await fetch(`/api/price?ticker=${ticker}`);
-    const d = await r.json();
-    if(d.currentPrice) window._valCurrentPrice = d.currentPrice;
-    if(d.eps && d.eps > 0) document.getElementById('ggCash').value = Math.max(0.5, d.eps).toFixed(1);
-    if(d.beta){
-      const capmRisk = 4.5 + d.beta * 5.5;
-      document.getElementById('ggRisk').value = Math.min(30, Math.max(5, capmRisk)).toFixed(1);
-    }
-
-    // Try to fetch fundamentals for smarter growth default
-    try{
-      const rf = await fetch(`/api/fundamentals?ticker=${ticker}`);
-      const df = await rf.json();
-
-      // Use revenue growth if available, otherwise reverse-engineer implied growth
-      let defaultGrowth = 5;
-      if(df.revenueGrowth != null && df.revenueGrowth > 0){
-        // Cap at 25% (Gordon formula breaks above that)
-        defaultGrowth = Math.min(25, Math.max(0, df.revenueGrowth * 100));
-      } else if(d.currentPrice && d.eps && d.eps > 0 && d.beta){
-        // Reverse-engineer: what growth rate makes fair_value = current_price?
-        // price = eps / (risk - g)  =>  g = risk - eps/price
-        const risk = (4.5 + d.beta * 5.5) / 100;
-        const impliedG = risk - d.eps / d.currentPrice;
-        if(impliedG > 0 && impliedG < 0.25){
-          defaultGrowth = Math.round(impliedG * 100 * 10) / 10;
-        }
-      }
-
-      document.getElementById('ggGrowth').value = defaultGrowth;
-
-      // Also store fundamentals for later
-      window._valFundamentals = df;
-    }catch(e){}
-  }catch(e){}
-}
-
-function updateGordon(){
-  const cash = parseFloat(document.getElementById('ggCash').value);
-  const risk = parseFloat(document.getElementById('ggRisk').value) / 100;
-  const growth = parseFloat(document.getElementById('ggGrowth').value) / 100;
-  document.getElementById('ggCashVal').textContent = '$' + cash;
-  document.getElementById('ggRiskVal').textContent = (risk*100).toFixed(1) + '%';
-  document.getElementById('ggGrowthVal').textContent = (growth*100).toFixed(1) + '%';
-
-  let value = null;
-  if(risk > growth) value = cash / (risk - growth);
-
-  const valEl = document.getElementById('ggValue');
-  const upsideEl = document.getElementById('ggUpside');
-  const currentPrice = window._valCurrentPrice || 100;
-
-  if(value === null){
-    valEl.textContent = '∞';
-    valEl.style.color = 'var(--red)';
-    upsideEl.innerHTML = '<span style="color:var(--red);">⚠️ formula unstable: growth ≥ risk</span>';
-  } else {
-    valEl.textContent = '$' + value.toLocaleString(undefined, {maximumFractionDigits: 0});
-    const upside = (value - currentPrice) / currentPrice;
-    const upsideColor = upside > 0.20 ? 'var(--green)' : upside > 0 ? '#66bb6a' : upside > -0.20 ? '#ffaa00' : 'var(--red)';
-    const verdict = upside > 0.30 ? 'DEEPLY UNDERVALUED' : upside > 0.10 ? 'UNDERVALUED' : upside > -0.10 ? 'FAIRLY VALUED' : upside > -0.30 ? 'OVERVALUED' : 'SIGNIFICANTLY OVERVALUED';
-    upsideEl.innerHTML = `vs current <strong>$${currentPrice.toLocaleString(undefined,{maximumFractionDigits:2})}</strong> · <span style="color:${upsideColor};font-weight:600;">${upside>=0?'+':''}${(upside*100).toFixed(1)}% · ${verdict}</span>`;
-    valEl.style.color = upside > 0.10 ? 'var(--green)' : upside > -0.10 ? '#8b5cf6' : 'var(--red)';
-  }
-
-  // Render sensitivity: fair value at different growth rates
-  const sensEl = document.getElementById('ggSensitivity');
-  if(sensEl){
-    const growthSteps = [2, 5, 10, 15, 20, 25];
-    sensEl.innerHTML = growthSteps.map(g => {
-      const gDec = g / 100;
-      let v = null;
-      if(risk > gDec) v = cash / (risk - gDec);
-      const upside = v != null ? (v - currentPrice) / currentPrice : null;
-      const color = v == null ? 'var(--red)' : upside > 0.10 ? 'var(--green)' : upside > -0.10 ? '#ffaa00' : 'var(--red)';
-      const isCurrent = Math.abs(gDec - growth) < 0.005;
-      return `<div style="background:${isCurrent?'rgba(139,92,246,.15)':'rgba(0,0,0,.3)'};border:1px solid ${isCurrent?'#8b5cf6':'#1a1a1a'};border-radius:4px;padding:8px 4px;text-align:center;">
-        <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">g=${g}%</div>
-        <div style="font-size:13px;font-weight:600;color:${color};font-family:var(--mono);margin-top:2px;">${v==null?'∞':'$'+Math.round(v).toLocaleString()}</div>
-        ${v!=null?`<div style="font-size:8px;color:${color};font-family:var(--mono);margin-top:1px;">${upside>=0?'+':''}${(upside*100).toFixed(0)}%</div>`:''}
-      </div>`;
-    }).join('');
-  }
-}
-
-function ggBearCase(){ document.getElementById('ggGrowth').value = 2; updateGordon(); }
-function ggBaseCase(){ document.getElementById('ggGrowth').value = 5; updateGordon(); }
-function ggBullCase(){ document.getElementById('ggGrowth').value = 15; updateGordon(); }
-
-async function loadComparables(ticker){
-  const el = document.getElementById('compsContent');
-  const btn = document.getElementById('loadCompsBtn');
-  btn.textContent = 'loading...'; btn.disabled = true;
-  el.innerHTML = '<div style="color:var(--text3);padding:20px;">fetching peer multiples...</div>';
-
-  try{
-    const r = await fetch(`/api/fundamentals?ticker=${ticker}`);
-    const d = await r.json();
-
-    if(d.error || !d.pe){
-      el.innerHTML = '<div style="color:var(--text3);padding:20px;">No fundamentals available (might be ETF or non-US equity)</div>';
-      btn.textContent = '▶ Load'; btn.disabled = false; return;
-    }
-
-    const pe = d.pe || 0, pb = d.pb || 0, ps = d.ps || 0;
-    const sectorPE = d.sectorPE || 22, sectorPB = d.sectorPB || 3.5;
-    const peVerdict = pe > sectorPE * 1.2 ? 'OVERVALUED' : pe < sectorPE * 0.8 ? 'UNDERVALUED' : 'IN LINE';
-    const peColor = pe > sectorPE * 1.2 ? 'var(--red)' : pe < sectorPE * 0.8 ? 'var(--green)' : '#ffaa00';
-
-    el.innerHTML = `
-      <div style="text-align:left;">
-        <div style="display:grid;grid-template-columns:100px 1fr 100px 1fr;gap:8px;padding:8px 12px;border-bottom:1px solid #2a2a2a;font-family:var(--mono);font-size:10px;color:var(--text3);">
-          <span>METRIC</span><span style="text-align:right;">${ticker}</span><span style="text-align:right;">SECTOR</span><span style="text-align:right;">VERDICT</span>
-        </div>
-        <div style="display:grid;grid-template-columns:100px 1fr 100px 1fr;gap:8px;padding:10px 12px;font-family:var(--mono);font-size:12px;">
-          <span style="color:var(--text2);">P/E</span>
-          <span style="color:var(--text);text-align:right;font-weight:600;">${pe.toFixed(1)}</span>
-          <span style="color:var(--text3);text-align:right;">${sectorPE.toFixed(1)}</span>
-          <span style="color:${peColor};text-align:right;font-weight:600;font-size:10px;">${peVerdict}</span>
-        </div>
-        ${pb ? `<div style="display:grid;grid-template-columns:100px 1fr 100px 1fr;gap:8px;padding:10px 12px;font-family:var(--mono);font-size:12px;border-top:1px solid #1a1a1a;">
-          <span style="color:var(--text2);">P/B</span>
-          <span style="color:var(--text);text-align:right;font-weight:600;">${pb.toFixed(1)}</span>
-          <span style="color:var(--text3);text-align:right;">${sectorPB.toFixed(1)}</span>
-          <span style="color:${pb > sectorPB*1.2?'var(--red)':pb < sectorPB*0.8?'var(--green)':'#ffaa00'};text-align:right;font-weight:600;font-size:10px;">${pb > sectorPB*1.2?'OVERVALUED':pb < sectorPB*0.8?'UNDERVALUED':'IN LINE'}</span>
-        </div>` : ''}
-        ${ps ? `<div style="display:grid;grid-template-columns:100px 1fr 100px 1fr;gap:8px;padding:10px 12px;font-family:var(--mono);font-size:12px;border-top:1px solid #1a1a1a;">
-          <span style="color:var(--text2);">P/S</span>
-          <span style="color:var(--text);text-align:right;font-weight:600;">${ps.toFixed(1)}</span>
-          <span style="color:var(--text3);text-align:right;">3.0</span>
-          <span style="color:${ps > 4?'var(--red)':ps < 2?'var(--green)':'#ffaa00'};text-align:right;font-weight:600;font-size:10px;">${ps > 4?'OVERVALUED':ps < 2?'UNDERVALUED':'IN LINE'}</span>
-        </div>` : ''}
-      </div>
-      <div style="margin-top:12px;padding:10px;background:rgba(0,0,0,.4);border-radius:4px;font-size:11px;color:var(--text2);line-height:1.5;font-family:var(--sans);">
-        ${pe > sectorPE * 1.5 ? `⚠️ <strong style="color:var(--red);">${ticker} trades at ${((pe/sectorPE - 1)*100).toFixed(0)}% premium</strong> to sector.` :
-          pe < sectorPE * 0.7 ? `✅ <strong style="color:var(--green);">${ticker} trades at ${((1 - pe/sectorPE)*100).toFixed(0)}% discount</strong> to sector.` :
-          `${ticker} trades <strong>in line</strong> with sector.`}
-      </div>`;
-    btn.textContent = '✓ loaded'; btn.disabled = true;
-  }catch(e){
-    el.innerHTML = '<div style="color:var(--red);padding:20px;">Failed to load</div>';
-    btn.textContent = '▶ Load'; btn.disabled = false;
-  }
-}
-
-async function loadGraham(ticker){
-  const el = document.getElementById('grahamContent');
-  const btn = document.getElementById('loadGrahamBtn');
-  btn.textContent = 'computing...'; btn.disabled = true;
-
-  try{
-    const r = await fetch(`/api/fundamentals?ticker=${ticker}`);
-    const d = await r.json();
-
-    if(d.error || !d.eps || !d.bookValue){
-      el.innerHTML = '<div style="color:var(--text3);padding:20px;">EPS and Book Value needed — not available</div>';
-      btn.textContent = '▶ Compute'; btn.disabled = false; return;
-    }
-
-    const graham = Math.sqrt(22.5 * d.eps * d.bookValue);
-    const currentPrice = window._valCurrentPrice || 100;
-    const marginOfSafety = (graham - currentPrice) / currentPrice;
-    const safetyColor = marginOfSafety > 0.20 ? 'var(--green)' : marginOfSafety > 0 ? '#66bb6a' : 'var(--red)';
-    const verdict = marginOfSafety > 0.30 ? 'STRONG BUY (Graham approves)' : marginOfSafety > 0.10 ? 'BUY' : marginOfSafety > -0.10 ? 'HOLD' : 'AVOID (no margin of safety)';
-
-    el.innerHTML = `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;text-align:left;">
-        <div style="padding:12px;background:rgba(0,0,0,.4);border-radius:6px;">
-          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:6px;">INPUTS</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-family:var(--mono);font-size:12px;">
-            <span style="color:var(--text3);">EPS:</span><span>$${d.eps.toFixed(2)}</span>
-            <span style="color:var(--text3);">Book Value:</span><span>$${d.bookValue.toFixed(2)}</span>
-          </div>
-        </div>
-        <div style="padding:12px;background:rgba(76,175,80,.08);border:1px solid rgba(76,175,80,.3);border-radius:6px;text-align:center;">
-          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:6px;">GRAHAM NUMBER</div>
-          <div style="font-size:28px;font-weight:700;color:#4caf50;font-family:var(--mono);">$${graham.toFixed(2)}</div>
-        </div>
-      </div>
-      <div style="margin-top:12px;padding:12px;background:rgba(0,0,0,.4);border-radius:6px;font-family:var(--mono);font-size:11px;">
-        <span style="color:var(--text3);">Current:</span> <strong>$${currentPrice.toFixed(2)}</strong>
-        &nbsp;·&nbsp;
-        <span style="color:var(--text3);">Safety margin:</span> <strong style="color:${safetyColor};">${marginOfSafety>=0?'+':''}${(marginOfSafety*100).toFixed(1)}%</strong>
-        <br/><span style="color:${safetyColor};font-weight:600;margin-top:4px;display:block;">${verdict}</span>
-      </div>`;
-    btn.textContent = '✓ done'; btn.disabled = true;
-  }catch(e){
-    el.innerHTML = '<div style="color:var(--red);padding:20px;">Failed</div>';
-    btn.textContent = '▶ Compute'; btn.disabled = false;
-  }
-}
-
-async function runValuationAI(ticker){
-  const el = document.getElementById('valAIContent');
-  const btn = document.getElementById('valAIBtn');
-  btn.textContent = 'analyzing...'; btn.disabled = true;
-  el.innerHTML = '<div style="color:var(--text3);padding:20px;">AI synthesizing all methods...</div>';
-
-  const cash = document.getElementById('ggCash').value;
-  const risk = document.getElementById('ggRisk').value;
-  const growth = document.getElementById('ggGrowth').value;
-  const ggValue = parseFloat(cash) / (parseFloat(risk)/100 - parseFloat(growth)/100);
-  const currentPrice = window._valCurrentPrice || 100;
-
-  try{
-    const r = await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:450,
-        messages:[{role:'user',content:
-          `You are a senior equity analyst writing a research note on ${ticker} at $${currentPrice}.
-
-Gordon Growth DCF assumptions: Cash Flow $${cash}/share, Discount Rate ${risk}%, Growth ${growth}% → Fair Value $${ggValue.toFixed(0)}
-
-Write 3 short paragraphs:
-1. WHAT THE VALUATION SAYS: Compare fair value to market price, what's the gap
-2. WHAT THE MARKET IS PRICING IN: What growth rate would justify the CURRENT price if risk stays at ${risk}%? Calculate this: implied_growth = risk - cash/current_price
-3. VERDICT: BUY / HOLD / SELL with ONE clear reason
-
-Write like a Goldman Sachs note. Be specific with numbers. 300 words max.`}]})
-    });
-    const d = await r.json();
-    const text = d.content?.map(b=>b.text||'').join('') || 'Analysis unavailable';
-    el.innerHTML = `<div style="text-align:left;font-family:var(--sans);font-size:12px;color:var(--text2);line-height:1.7;padding:4px 8px;">${text.split(/\n\n+/).map(p=>`<p style="margin:0 0 10px 0;">${p}</p>`).join('')}</div>`;
-    btn.textContent = '✓ done'; btn.disabled = false;
-  }catch(e){
-    el.innerHTML = '<div style="color:var(--red);padding:20px;">Failed</div>';
-    btn.textContent = '▶ Analyze'; btn.disabled = false;
-  }
-}
-
-// ─── TECHNICAL INDICATORS: RSI, MACD, SMA ────
-async function openTechnicals(){
-  const ticker = document.getElementById('simTicker').value.trim().toUpperCase();
-  if(!ticker){alert('Enter a ticker first');return;}
-
-  const baseTicker = ticker.replace('/USD','').replace('-USD','');
-  const isCrypto = ['BTC','ETH','SOL','BNB','XRP','ADA','DOGE','AVAX','LINK','DOT'].includes(baseTicker);
-
-  let modal = document.getElementById('techModal');
-  if(modal) modal.remove();
-  modal = document.createElement('div');
-  modal.id = 'techModal';
-  modal.style.cssText = `position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.95);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:20px;box-sizing:border-box;overflow-y:auto;`;
-
-  modal.innerHTML = `
-    <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:20px;max-width:1100px;width:100%;max-height:95vh;overflow-y:auto;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <div>
-          <div style="font-family:var(--mono);font-size:14px;color:var(--text);font-weight:600;letter-spacing:.05em;">📈 TECHNICAL ANALYSIS — ${baseTicker}</div>
-          <div style="font-size:11px;color:var(--text3);margin-top:4px;">RSI · MACD · Moving Averages · Golden/Death Cross detection</div>
-        </div>
-        <button onclick="document.getElementById('techModal').remove()" style="background:none;border:1px solid #333;color:var(--text2);padding:6px 14px;border-radius:4px;cursor:pointer;font-family:var(--mono);">✕ close</button>
-      </div>
-
-      <div id="techContent" style="text-align:center;color:var(--text3);padding:40px;font-family:var(--mono);font-size:12px;">
-        loading historical prices (250+ days needed for MACD, SMA-200)...
-      </div>
-    </div>`;
-  document.body.appendChild(modal);
-
-  await loadTechnicals(baseTicker, isCrypto);
-}
-
-async function loadTechnicals(ticker, isCrypto){
-  const el = document.getElementById('techContent');
-
-  try{
-    // Fetch historical data
-    let prices = [];
-    let dates = [];
-
-    if(isCrypto){
-      // CoinGecko for crypto (365 days)
-      const cgId = {BTC:'bitcoin',ETH:'ethereum',SOL:'solana',BNB:'binancecoin',XRP:'ripple',ADA:'cardano',DOGE:'dogecoin',AVAX:'avalanche-2',LINK:'chainlink',DOT:'polkadot'}[ticker];
-      if(cgId){
-        const r = await fetch(`https://api.coingecko.com/api/v3/coins/${cgId}/market_chart?vs_currency=usd&days=365&interval=daily`);
-        const d = await r.json();
-        prices = (d.prices || []).map(p => p[1]);
-        dates = (d.prices || []).map(p => p[0]);
-      }
-    } else {
-      // Yahoo Finance 1yr daily
-      const now = Math.floor(Date.now() / 1000);
-      const yearAgo = now - 365 * 24 * 3600;
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${yearAgo}&period2=${now}&interval=1d`;
-      try{
-        const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-        const d = await r.json();
-        const result = d?.chart?.result?.[0];
-        prices = (result?.indicators?.quote?.[0]?.close || []).filter(v => v != null);
-        dates = result?.timestamp || [];
-      }catch(e){
-        // CORS fallback — use our price API
-        const r2 = await fetch(`/api/price?ticker=${ticker}`);
-        const d2 = await r2.json();
-        prices = d2.recentPrices || [];
-      }
-    }
-
-    if(prices.length < 30){
-      el.innerHTML = '<div style="color:var(--text3);padding:40px;">Not enough historical data</div>';
-      return;
-    }
-
-    // Compute indicators
-    const rsi = computeRSI(prices, 14);
-    const macd = computeMACD(prices);
-    const sma50 = computeSMA(prices, 50);
-    const sma200 = computeSMA(prices, 200);
-    const currentPrice = prices[prices.length - 1];
-    const currentRSI = rsi[rsi.length - 1];
-    const currentMACD = macd.macd[macd.macd.length - 1];
-    const currentSignal = macd.signal[macd.signal.length - 1];
-    const currentHist = currentMACD - currentSignal;
-    const currentSMA50 = sma50[sma50.length - 1];
-    const currentSMA200 = sma200[sma200.length - 1];
-
-    // Golden Cross / Death Cross detection
-    let crossSignal = 'No recent cross';
-    let crossColor = 'var(--text3)';
-    if(currentSMA50 && currentSMA200){
-      // Check last 20 days for cross
-      for(let i = Math.max(0, sma50.length - 20); i < sma50.length; i++){
-        if(sma50[i] == null || sma200[i] == null) continue;
-        const prev50 = sma50[i-1], prev200 = sma200[i-1];
-        if(prev50 == null || prev200 == null) continue;
-        if(prev50 <= prev200 && sma50[i] > sma200[i]){
-          crossSignal = `🌟 GOLDEN CROSS ${sma50.length - i} days ago — bullish`;
-          crossColor = 'var(--green)';
-        } else if(prev50 >= prev200 && sma50[i] < sma200[i]){
-          crossSignal = `💀 DEATH CROSS ${sma50.length - i} days ago — bearish`;
-          crossColor = 'var(--red)';
-        }
-      }
-    }
-
-    // RSI interpretation
-    let rsiVerdict, rsiColor;
-    if(currentRSI > 70){ rsiVerdict = 'OVERBOUGHT — potential pullback'; rsiColor = 'var(--red)'; }
-    else if(currentRSI > 60){ rsiVerdict = 'strong bullish momentum'; rsiColor = '#66bb6a'; }
-    else if(currentRSI > 40){ rsiVerdict = 'neutral zone'; rsiColor = 'var(--text2)'; }
-    else if(currentRSI > 30){ rsiVerdict = 'weak bearish momentum'; rsiColor = '#ffaa00'; }
-    else { rsiVerdict = 'OVERSOLD — potential bounce'; rsiColor = 'var(--green)'; }
-
-    // MACD interpretation
-    const macdVerdict = currentHist > 0 ? 'BULLISH (signal crossed above)' : 'BEARISH (signal crossed below)';
-    const macdColor = currentHist > 0 ? 'var(--green)' : 'var(--red)';
-
-    // MA position
-    let maVerdict, maColor;
-    if(currentPrice > currentSMA50 && currentPrice > currentSMA200){ maVerdict = 'Price above both MAs — strong uptrend'; maColor = 'var(--green)'; }
-    else if(currentPrice < currentSMA50 && currentPrice < currentSMA200){ maVerdict = 'Price below both MAs — strong downtrend'; maColor = 'var(--red)'; }
-    else{ maVerdict = 'Mixed signals — transitioning'; maColor = '#ffaa00'; }
-
-    el.innerHTML = `
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;text-align:left;">
-        <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:14px;">
-          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">RSI (14)</div>
-          <div style="font-size:28px;font-weight:700;color:${rsiColor};font-family:var(--mono);">${currentRSI.toFixed(1)}</div>
-          <div style="font-size:9px;color:${rsiColor};margin-top:4px;">${rsiVerdict}</div>
-        </div>
-        <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:14px;">
-          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">MACD</div>
-          <div style="font-size:20px;font-weight:700;color:${macdColor};font-family:var(--mono);">${currentMACD > 0 ? '+' : ''}${currentMACD.toFixed(2)}</div>
-          <div style="font-size:9px;color:${macdColor};margin-top:4px;">${macdVerdict}</div>
-        </div>
-        <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:14px;">
-          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">SMA 50 / 200</div>
-          <div style="font-size:14px;font-weight:600;color:var(--text);font-family:var(--mono);">$${currentSMA50?currentSMA50.toFixed(2):'—'}<span style="color:var(--text3);"> / </span>$${currentSMA200?currentSMA200.toFixed(2):'—'}</div>
-          <div style="font-size:9px;color:${maColor};margin-top:4px;">${maVerdict}</div>
-        </div>
-        <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:14px;">
-          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">CROSS SIGNAL</div>
-          <div style="font-size:12px;font-weight:600;color:${crossColor};line-height:1.4;margin-top:6px;">${crossSignal}</div>
-        </div>
-      </div>
-
-      <!-- Price + MA chart -->
-      <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:12px;margin-bottom:12px;">
-        <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:8px;">// PRICE · SMA 50 (yellow) · SMA 200 (cyan)</div>
-        <canvas id="techChart" style="width:100%;height:220px;display:block;"></canvas>
-      </div>
-
-      <!-- RSI chart -->
-      <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:12px;margin-bottom:12px;">
-        <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:8px;">// RSI (overbought &gt; 70 · oversold &lt; 30)</div>
-        <canvas id="rsiChart" style="width:100%;height:120px;display:block;"></canvas>
-      </div>
-
-      <!-- MACD chart -->
-      <div style="background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;padding:12px;">
-        <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:8px;">// MACD · signal line · histogram</div>
-        <canvas id="macdChart" style="width:100%;height:120px;display:block;"></canvas>
-      </div>
-
-      <!-- Overall verdict -->
-      <div style="margin-top:16px;padding:16px;background:linear-gradient(135deg, rgba(245,158,11,.08) 0%, rgba(0,188,212,.08) 100%);border:1px solid #2a2a2a;border-radius:6px;">
-        <div style="font-family:var(--mono);font-size:11px;color:#f59e0b;margin-bottom:8px;">// TECHNICAL VERDICT</div>
-        <div style="font-size:12px;color:var(--text2);line-height:1.6;">
-          ${generateTechnicalVerdict(currentRSI, currentHist, currentPrice, currentSMA50, currentSMA200, crossSignal)}
-        </div>
-      </div>
-    `;
-
-    // Draw the charts
-    setTimeout(() => {
-      drawTechChart(prices, sma50, sma200);
-      drawRSIChart(rsi);
-      drawMACDChart(macd);
-    }, 50);
-
-  }catch(e){
-    el.innerHTML = `<div style="color:var(--red);padding:40px;">Failed to load technicals: ${e.message}</div>`;
-  }
-}
-
-function generateTechnicalVerdict(rsi, macdHist, price, sma50, sma200, crossSignal){
-  let bullish = 0, bearish = 0;
-  if(rsi > 50 && rsi < 70) bullish++;
-  else if(rsi < 30) bullish++; // oversold = bounce potential
-  else if(rsi > 70) bearish++;
-  else if(rsi < 50 && rsi > 30) bearish++;
-
-  if(macdHist > 0) bullish++; else bearish++;
-  if(price > sma50) bullish++; else bearish++;
-  if(price > sma200) bullish++; else bearish++;
-  if(crossSignal.includes('GOLDEN')) bullish++;
-  if(crossSignal.includes('DEATH')) bearish++;
-
-  const total = bullish + bearish;
-  const bullScore = bullish / total;
-
-  let verdict, color;
-  if(bullScore >= 0.8){ verdict = '🐂 STRONG BULLISH'; color = 'var(--green)'; }
-  else if(bullScore >= 0.6){ verdict = '📈 BULLISH'; color = '#66bb6a'; }
-  else if(bullScore >= 0.4){ verdict = '😐 NEUTRAL'; color = '#ffaa00'; }
-  else if(bullScore >= 0.2){ verdict = '📉 BEARISH'; color = '#ff7043'; }
-  else{ verdict = '🐻 STRONG BEARISH'; color = 'var(--red)'; }
-
-  return `<strong style="color:${color};font-size:14px;">${verdict}</strong> · ${bullish}/${total} signals bullish · <span style="color:var(--text3);">This is a pure technical read. Combine with Valuation tab and Monte Carlo for full picture.</span>`;
-}
-
-function computeSMA(prices, period){
-  const sma = new Array(prices.length).fill(null);
-  for(let i = period - 1; i < prices.length; i++){
-    let sum = 0;
-    for(let j = 0; j < period; j++) sum += prices[i - j];
-    sma[i] = sum / period;
-  }
-  return sma;
-}
-
-function computeEMA(prices, period){
-  const ema = new Array(prices.length).fill(null);
-  const k = 2 / (period + 1);
-  // Start with SMA for first period
-  let sum = 0;
-  for(let i = 0; i < period && i < prices.length; i++) sum += prices[i];
-  ema[period - 1] = sum / period;
-  for(let i = period; i < prices.length; i++){
-    ema[i] = prices[i] * k + ema[i-1] * (1 - k);
-  }
-  return ema;
-}
-
-function computeRSI(prices, period = 14){
-  const rsi = new Array(prices.length).fill(null);
-  if(prices.length < period + 1) return rsi;
-  let gains = 0, losses = 0;
-  for(let i = 1; i <= period; i++){
-    const change = prices[i] - prices[i-1];
-    if(change > 0) gains += change;
-    else losses -= change;
-  }
-  gains /= period; losses /= period;
-  rsi[period] = 100 - 100 / (1 + gains/Math.max(losses, 0.0001));
-  for(let i = period + 1; i < prices.length; i++){
-    const change = prices[i] - prices[i-1];
-    const gain = change > 0 ? change : 0;
-    const loss = change < 0 ? -change : 0;
-    gains = (gains * (period - 1) + gain) / period;
-    losses = (losses * (period - 1) + loss) / period;
-    rsi[i] = 100 - 100 / (1 + gains/Math.max(losses, 0.0001));
-  }
-  return rsi;
-}
-
-function computeMACD(prices, fast = 12, slow = 26, signalPeriod = 9){
-  const emaFast = computeEMA(prices, fast);
-  const emaSlow = computeEMA(prices, slow);
-  const macd = prices.map((_, i) => (emaFast[i] != null && emaSlow[i] != null) ? emaFast[i] - emaSlow[i] : null);
-  const macdValues = macd.filter(v => v != null);
-  const signal = computeEMA(macdValues, signalPeriod);
-  // Align signal back to full array
-  const fullSignal = new Array(prices.length).fill(null);
-  let sigIdx = 0;
-  for(let i = 0; i < macd.length; i++){
-    if(macd[i] != null){
-      fullSignal[i] = signal[sigIdx] ?? null;
-      sigIdx++;
-    }
-  }
-  return { macd, signal: fullSignal };
-}
-
-function drawTechChart(prices, sma50, sma200){
-  const canvas = document.getElementById('techChart');
-  if(!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width * dpr;
-  canvas.height = rect.height * dpr;
-  ctx.scale(dpr, dpr);
-  const W = rect.width, H = rect.height;
-  ctx.clearRect(0, 0, W, H);
-
-  const validPrices = prices.filter(v => v != null);
-  const min = Math.min(...validPrices) * 0.97;
-  const max = Math.max(...validPrices) * 1.03;
-  const xStep = W / (prices.length - 1);
-  const yFor = v => H - ((v - min) / (max - min)) * (H - 20) - 10;
-
-  // Grid
-  ctx.strokeStyle = '#1a1a1a';
-  ctx.lineWidth = 1;
-  for(let i = 1; i < 4; i++){
-    const y = (H / 4) * i;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-  }
-
-  // Price
-  ctx.strokeStyle = 'rgba(255,255,255,0.8)';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  prices.forEach((v, i) => {
-    if(v == null) return;
-    const x = i * xStep, y = yFor(v);
-    if(i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  // SMA 50 (yellow)
-  ctx.strokeStyle = '#f59e0b';
-  ctx.lineWidth = 1.2;
-  ctx.beginPath();
-  let started = false;
-  sma50.forEach((v, i) => {
-    if(v == null) return;
-    const x = i * xStep, y = yFor(v);
-    if(!started){ ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  // SMA 200 (cyan)
-  ctx.strokeStyle = '#00bcd4';
-  ctx.lineWidth = 1.2;
-  ctx.beginPath();
-  started = false;
-  sma200.forEach((v, i) => {
-    if(v == null) return;
-    const x = i * xStep, y = yFor(v);
-    if(!started){ ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  // Price labels
-  ctx.fillStyle = '#666';
-  ctx.font = '10px monospace';
-  ctx.fillText('$' + max.toFixed(0), 4, 12);
-  ctx.fillText('$' + min.toFixed(0), 4, H - 4);
-}
-
-function drawRSIChart(rsi){
-  const canvas = document.getElementById('rsiChart');
-  if(!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width * dpr; canvas.height = rect.height * dpr;
-  ctx.scale(dpr, dpr);
-  const W = rect.width, H = rect.height;
-  ctx.clearRect(0, 0, W, H);
-
-  const yFor = v => H - (v / 100) * H;
-  const xStep = W / (rsi.length - 1);
-
-  // Zones
-  ctx.fillStyle = 'rgba(226,75,74,0.08)';
-  ctx.fillRect(0, yFor(100), W, yFor(70) - yFor(100));
-  ctx.fillStyle = 'rgba(29,158,117,0.08)';
-  ctx.fillRect(0, yFor(30), W, yFor(0) - yFor(30));
-
-  // 70 / 30 lines
-  ctx.strokeStyle = 'rgba(226,75,74,0.4)'; ctx.setLineDash([4,4]); ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(0, yFor(70)); ctx.lineTo(W, yFor(70)); ctx.stroke();
-  ctx.strokeStyle = 'rgba(29,158,117,0.4)';
-  ctx.beginPath(); ctx.moveTo(0, yFor(30)); ctx.lineTo(W, yFor(30)); ctx.stroke();
-  ctx.setLineDash([]);
-
-  // RSI line
-  ctx.strokeStyle = '#a855f7'; ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  let started = false;
-  rsi.forEach((v, i) => {
-    if(v == null) return;
-    const x = i * xStep, y = yFor(v);
-    if(!started){ ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  ctx.fillStyle = '#666'; ctx.font = '10px monospace';
-  ctx.fillText('70', 4, yFor(70) - 2);
-  ctx.fillText('30', 4, yFor(30) - 2);
-}
-
-function drawMACDChart(macd){
-  const canvas = document.getElementById('macdChart');
-  if(!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width * dpr; canvas.height = rect.height * dpr;
-  ctx.scale(dpr, dpr);
-  const W = rect.width, H = rect.height;
-  ctx.clearRect(0, 0, W, H);
-
-  const allVals = [...macd.macd.filter(v=>v!=null), ...macd.signal.filter(v=>v!=null)];
-  const absMax = Math.max(...allVals.map(Math.abs)) * 1.1 || 1;
-  const yFor = v => H/2 - (v / absMax) * (H/2 - 5);
-  const xStep = W / (macd.macd.length - 1);
-
-  // Zero line
-  ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
-
-  // Histogram
-  macd.macd.forEach((v, i) => {
-    if(v == null || macd.signal[i] == null) return;
-    const hist = v - macd.signal[i];
-    const x = i * xStep;
-    const h = yFor(hist) - H/2;
-    ctx.fillStyle = hist >= 0 ? 'rgba(29,158,117,0.5)' : 'rgba(226,75,74,0.5)';
-    ctx.fillRect(x - xStep/2, H/2, Math.max(1, xStep - 1), h);
-  });
-
-  // MACD line (blue)
-  ctx.strokeStyle = '#378ADD'; ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  let started = false;
-  macd.macd.forEach((v, i) => {
-    if(v == null) return;
-    const x = i * xStep, y = yFor(v);
-    if(!started){ ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  // Signal line (orange)
-  ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  started = false;
-  macd.signal.forEach((v, i) => {
-    if(v == null) return;
-    const x = i * xStep, y = yFor(v);
-    if(!started){ ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-}
-
-function openRuinSimulator(){
-  if(!allFinals.length){alert('Run a simulation first');return;}
-
-  // Get stats from current sim
-  const dir=SP.dir, S0=SP.S0;
-  const rets = allFinals.map(f => dir==='LONG' ? (f-S0)/S0 : (S0-f)/S0);
-  const wins = rets.filter(r=>r>0);
-  const losses = rets.filter(r=>r<0);
-  const winRate = wins.length / rets.length;
-  const avgWin = wins.length ? wins.reduce((a,b)=>a+b,0)/wins.length : 0.05;
-  const avgLoss = losses.length ? Math.abs(losses.reduce((a,b)=>a+b,0)/losses.length) : 0.05;
-  const stdWin = wins.length ? Math.sqrt(wins.reduce((a,r)=>a+(r-avgWin)**2,0)/wins.length) : 0.02;
-  const stdLoss = losses.length ? Math.sqrt(losses.reduce((a,r)=>a+(r-avgLoss)**2,0)/losses.length) : 0.02;
-
-  // Create modal overlay
-  let modal = document.getElementById('ruinModal');
-  if(modal) modal.remove();
-  modal = document.createElement('div');
-  modal.id = 'ruinModal';
-  modal.style.cssText = `
-    position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.95);
-    z-index:10000;display:flex;align-items:center;justify-content:center;
-    padding:20px;box-sizing:border-box;
-  `;
-  modal.innerHTML = `
-    <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:20px;max-width:1100px;width:100%;max-height:95vh;overflow-y:auto;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <div>
-          <div style="font-family:var(--mono);font-size:14px;color:var(--text);font-weight:600;letter-spacing:.05em;">💀 RUIN SIMULATOR</div>
-          <div style="font-size:11px;color:var(--text3);margin-top:4px;">100 accounts · $10,000 each · 50 trades · ${(winRate*100).toFixed(0)}% win rate · ${dir} ${document.getElementById('simTicker').value}</div>
-        </div>
-        <button onclick="document.getElementById('ruinModal').remove()" style="background:none;border:1px solid #333;color:var(--text2);padding:6px 14px;border-radius:4px;cursor:pointer;font-family:var(--mono);">✕ close</button>
-      </div>
-
-      <div style="display:grid;grid-template-columns:1fr 280px;gap:16px;">
-        <div id="ruinCanvasContainer" style="background:#050505;border:1px solid #1a1a1a;border-radius:6px;padding:12px;position:relative;height:500px;overflow:hidden;">
-          <canvas id="ruinCanvas" style="width:100%;height:100%;"></canvas>
-          <div style="position:absolute;top:8px;left:12px;font-family:var(--mono);font-size:10px;color:var(--text3);pointer-events:none;">$10,000 start · $5,000 = death zone</div>
-        </div>
-
-        <div>
-          <div style="background:#050505;border:1px solid #1a1a1a;border-radius:6px;padding:16px;margin-bottom:12px;">
-            <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:6px;">// TRADE #</div>
-            <div id="ruinTradeNum" style="font-family:var(--mono);font-size:32px;font-weight:600;color:var(--text);">0 / 50</div>
-          </div>
-          <div style="background:#050505;border:1px solid #1a1a1a;border-radius:6px;padding:16px;margin-bottom:12px;">
-            <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:6px;">// ALIVE</div>
-            <div id="ruinAlive" style="font-family:var(--mono);font-size:32px;font-weight:600;color:var(--green);">100</div>
-            <div style="font-size:10px;color:var(--text3);margin-top:4px;">above $5,000</div>
-          </div>
-          <div style="background:#050505;border:1px solid #1a1a1a;border-radius:6px;padding:16px;margin-bottom:12px;">
-            <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:6px;">// DEAD</div>
-            <div id="ruinDead" style="font-family:var(--mono);font-size:32px;font-weight:600;color:var(--red);">0</div>
-            <div style="font-size:10px;color:var(--text3);margin-top:4px;">below $5,000</div>
-          </div>
-          <div style="background:#050505;border:1px solid #1a1a1a;border-radius:6px;padding:16px;">
-            <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:6px;">// AVG BALANCE</div>
-            <div id="ruinAvg" style="font-family:var(--mono);font-size:24px;font-weight:600;color:var(--text);">$10,000</div>
-          </div>
-          <div style="display:flex;gap:6px;margin-top:14px;">
-            <button onclick="startRuinSim()" id="ruinStart" style="flex:1;background:var(--green);color:#000;border:none;padding:10px;border-radius:4px;cursor:pointer;font-family:var(--mono);font-weight:600;letter-spacing:.05em;">▶ START</button>
-            <button onclick="resetRuinSim()" style="background:none;border:1px solid #333;color:var(--text2);padding:10px 14px;border-radius:4px;cursor:pointer;font-family:var(--mono);">↻ RESET</button>
-          </div>
-        </div>
-      </div>
-
-      <div id="ruinVerdict" style="margin-top:16px;padding:16px;background:#050505;border:1px solid #1a1a1a;border-radius:6px;text-align:center;font-family:var(--mono);font-size:12px;color:var(--text3);">
-        Press START to watch 100 traders take 50 consecutive trades. See who survives.
-      </div>
-    </div>
-  `;
-  document.body.appendChild(modal);
-
-  // Store sim params
-  window._ruinParams = {winRate, avgWin, avgLoss, stdWin, stdLoss};
-
-  // Initialize canvas
-  setTimeout(() => {
-    initRuinCanvas();
-  }, 50);
-}
-
-let _ruinState = null;
-let _ruinAnimId = null;
-
-function initRuinCanvas(){
-  const canvas = document.getElementById('ruinCanvas');
-  if(!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width * dpr;
-  canvas.height = rect.height * dpr;
-  ctx.scale(dpr, dpr);
-
-  _ruinState = {
-    accounts: Array(100).fill(null).map((_,i) => ({
-      id: i,
-      balance: 10000,
-      history: [10000],
-      dead: false,
-      color: `hsl(${(i*3.6)%360}, 60%, 50%)`
-    })),
-    trade: 0,
-    maxTrades: 50,
-    canvas, ctx,
-    width: rect.width, height: rect.height
-  };
-
-  drawRuin();
-}
-
-function drawRuin(){
-  const s = _ruinState;
-  if(!s) return;
-  const {ctx, width, height, accounts, maxTrades} = s;
-
-  ctx.clearRect(0, 0, width, height);
-
-  // Grid lines
-  const minY = 0, maxY = 25000;
-  const yFor = val => height - ((val - minY) / (maxY - minY)) * height;
-
-  // Horizontal gridlines
-  ctx.strokeStyle = '#1a1a1a';
-  ctx.lineWidth = 1;
-  [5000, 10000, 15000, 20000].forEach(level => {
-    ctx.beginPath();
-    ctx.moveTo(0, yFor(level));
-    ctx.lineTo(width, yFor(level));
-    ctx.stroke();
-    // Label
-    ctx.fillStyle = '#444';
-    ctx.font = '10px monospace';
-    ctx.fillText('$'+level.toLocaleString(), 4, yFor(level) - 2);
-  });
-
-  // Death zone (below $5000)
-  ctx.fillStyle = 'rgba(226, 75, 74, 0.08)';
-  ctx.fillRect(0, yFor(5000), width, height - yFor(5000));
-
-  // $5000 death line
-  ctx.strokeStyle = 'rgba(226, 75, 74, 0.5)';
-  ctx.setLineDash([4, 4]);
-  ctx.beginPath();
-  ctx.moveTo(0, yFor(5000));
-  ctx.lineTo(width, yFor(5000));
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  // Starting line $10000
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
-  ctx.beginPath();
-  ctx.moveTo(0, yFor(10000));
-  ctx.lineTo(width, yFor(10000));
-  ctx.stroke();
-
-  // Draw each account's path
-  const xStep = width / maxTrades;
-  accounts.forEach(acc => {
-    if(acc.history.length < 2) return;
-    ctx.beginPath();
-    ctx.strokeStyle = acc.dead ? 'rgba(226, 75, 74, 0.25)' : acc.color.replace(')', ', 0.7)').replace('hsl', 'hsla');
-    ctx.lineWidth = acc.dead ? 0.8 : 1.2;
-    acc.history.forEach((v, i) => {
-      const x = i * xStep;
-      const y = yFor(Math.max(0, Math.min(maxY, v)));
-      if(i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-
-    // Death marker
-    if(acc.dead){
-      const deathIdx = acc.history.findIndex(v => v < 5000);
-      if(deathIdx > 0){
-        ctx.fillStyle = 'rgba(226, 75, 74, 0.8)';
-        ctx.beginPath();
-        ctx.arc(deathIdx * xStep, yFor(acc.history[deathIdx]), 3, 0, Math.PI*2);
-        ctx.fill();
-      }
-    }
-  });
-}
-
-function startRuinSim(){
-  const btn = document.getElementById('ruinStart');
-  if(!_ruinState) return;
-  if(_ruinState.trade >= _ruinState.maxTrades){
-    resetRuinSim();
-    return;
-  }
-  btn.textContent = '⏸ RUNNING...';
-  btn.disabled = true;
-
-  const p = window._ruinParams;
-
-  function tradeStep(){
-    const s = _ruinState;
-    if(!s || s.trade >= s.maxTrades){
-      finishRuinSim();
-      return;
-    }
-
-    s.trade++;
-
-    s.accounts.forEach(acc => {
-      if(acc.dead){
-        acc.history.push(acc.history[acc.history.length-1]);
-        return;
-      }
-      // Simulate one trade
-      const win = Math.random() < p.winRate;
-      let ret;
-      if(win){
-        ret = p.avgWin + p.stdWin * (Math.random()*2 - 1) * 0.8;
-      } else {
-        ret = -(p.avgLoss + p.stdLoss * (Math.random()*2 - 1) * 0.8);
-      }
-      // Risk 20% per trade (aggressive retail style)
-      const positionSize = acc.balance * 0.20;
-      const pnl = positionSize * ret * 2; // leveraged effect for drama
-      acc.balance = Math.max(0, acc.balance + pnl);
-      acc.history.push(acc.balance);
-      if(acc.balance < 5000 && !acc.dead){
-        acc.dead = true;
-      }
-    });
-
-    // Update UI
-    const alive = s.accounts.filter(a => !a.dead).length;
-    const dead = 100 - alive;
-    const avg = s.accounts.reduce((a,acc)=>a+acc.balance,0) / 100;
-    document.getElementById('ruinTradeNum').textContent = `${s.trade} / 50`;
-    document.getElementById('ruinAlive').textContent = alive;
-    document.getElementById('ruinDead').textContent = dead;
-    document.getElementById('ruinAvg').textContent = '$'+avg.toLocaleString(undefined,{maximumFractionDigits:0});
-
-    // Color update
-    const aliveEl = document.getElementById('ruinAlive');
-    const deadEl = document.getElementById('ruinDead');
-    aliveEl.style.color = alive > 70 ? 'var(--green)' : alive > 40 ? '#ffaa00' : 'var(--red)';
-    deadEl.style.color = dead > 50 ? 'var(--red)' : dead > 25 ? '#ffaa00' : 'var(--text)';
-
-    drawRuin();
-
-    _ruinAnimId = setTimeout(tradeStep, 120);
-  }
-
-  tradeStep();
-}
-
-function finishRuinSim(){
-  const s = _ruinState;
-  if(!s) return;
-  const alive = s.accounts.filter(a => !a.dead).length;
-  const dead = 100 - alive;
-  const avgSurvivor = s.accounts.filter(a=>!a.dead).reduce((a,acc)=>a+acc.balance,0)/Math.max(1,alive);
-  const maxBal = Math.max(...s.accounts.map(a=>a.balance));
-  const bigWinners = s.accounts.filter(a=>a.balance >= 20000).length;
-
-  let verdict, color, emoji;
-  if(alive >= 80){ verdict='STRONG SURVIVAL'; color='var(--green)'; emoji='🏆'; }
-  else if(alive >= 60){ verdict='DECENT ODDS'; color='#66bb6a'; emoji='✅'; }
-  else if(alive >= 40){ verdict='COIN FLIP'; color='#ffaa00'; emoji='⚠️'; }
-  else if(alive >= 20){ verdict='HIGH RISK'; color='#ff7043'; emoji='🔥'; }
-  else{ verdict='MOST TRADERS LOST IT ALL'; color='var(--red)'; emoji='💀'; }
-
-  document.getElementById('ruinVerdict').innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:center;gap:24px;flex-wrap:wrap;">
-      <div>
-        <div style="font-size:10px;color:var(--text3);margin-bottom:4px;">// VERDICT</div>
-        <div style="font-size:18px;font-weight:700;color:${color};letter-spacing:.05em;">${emoji} ${verdict}</div>
-      </div>
-      <div style="border-left:1px solid #2a2a2a;padding-left:24px;">
-        <div style="font-size:10px;color:var(--text3);">${alive} of 100 survived 50 trades</div>
-        <div style="font-size:10px;color:var(--text3);margin-top:2px;">Best: $${maxBal.toLocaleString(undefined,{maximumFractionDigits:0})} · Avg survivor: $${avgSurvivor.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
-        <div style="font-size:10px;color:var(--text3);margin-top:2px;">${bigWinners} got to $20k+ (doubled)</div>
-      </div>
-    </div>
-  `;
-
-  const btn = document.getElementById('ruinStart');
-  btn.textContent = '↻ RUN AGAIN';
-  btn.disabled = false;
-  btn.onclick = resetRuinSim;
-}
-
-function resetRuinSim(){
-  if(_ruinAnimId) clearTimeout(_ruinAnimId);
-  initRuinCanvas();
-  document.getElementById('ruinTradeNum').textContent = '0 / 50';
-  document.getElementById('ruinAlive').textContent = '100';
-  document.getElementById('ruinAlive').style.color = 'var(--green)';
-  document.getElementById('ruinDead').textContent = '0';
-  document.getElementById('ruinDead').style.color = 'var(--text)';
-  document.getElementById('ruinAvg').textContent = '$10,000';
-  document.getElementById('ruinVerdict').innerHTML = 'Press START to watch 100 traders take 50 consecutive trades. See who survives.';
-  const btn = document.getElementById('ruinStart');
-  btn.textContent = '▶ START';
-  btn.disabled = false;
-  btn.onclick = startRuinSim;
-}
-
-// ─── RUIN SIMULATOR END ───
-async function runEnsemble(){
-  const ticker=document.getElementById('simTicker').value.trim().toUpperCase();
-  if(!ticker||!allFinals.length){alert('Run a simulation first');return;}
-
-  const btn=document.getElementById('ensembleBtn');
-  btn.textContent='Running 3 models...';btn.disabled=true;
-
-  // Inject panel
-  let panel=document.getElementById('ensemblePanel');
-  if(!panel){
-    panel=document.createElement('div');
-    panel.id='ensemblePanel';
-    panel.style.cssText='margin-bottom:16px;';
-    const committeePanel=document.getElementById('committeePanel');
-    const target = committeePanel || document.getElementById('backtestPanel') || document.getElementById('extStatsPanel');
-    if(target&&target.parentNode) target.parentNode.insertBefore(panel,target.nextSibling);
-  }
-
-  const S0=SP.S0, mu=SP.mu||0.12, sigma=SP.sigma||0.35, days=SP.days, dir=SP.dir;
-  const nPaths = 300;
-  const models = [
-    {id:'gbm', name:'GBM + GARCH', color:'#4caf50', desc:'standard diffusion'},
-    {id:'jump', name:'Jump Diffusion', color:'#ff9800', desc:'black swans'},
-    {id:'regime', name:'Regime Switching', color:'#9c27b0', desc:'bull/bear cycles'}
-  ];
-
-  // Loading
-  panel.innerHTML = `
-    <div class="section-header"><span class="section-title" style="color:#ff00aa;">// 🎯 ENSEMBLE · 3 MODELS IN PARALLEL · ${nPaths*3} total paths</span><div class="section-line"></div></div>
-    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:6px;padding:16px;text-align:center;color:var(--text3);">
-      running ${nPaths} paths × 3 models...
-    </div>
-  `;
-
-  // Run each model
-  const results = models.map(m => {
-    const finals = [];
-    const pathsPL = [];
-    for(let i=0; i<nPaths; i++){
-      const path = genPath(S0, mu, sigma, days, m.id);
-      const final = path[path.length-1];
-      finals.push(final);
-      const ret = dir==='LONG' ? (final-S0)/S0 : (S0-final)/S0;
-      pathsPL.push(ret);
-    }
-    const mean = pathsPL.reduce((a,b)=>a+b,0)/pathsPL.length;
-    const winRate = pathsPL.filter(r=>r>0).length/pathsPL.length;
-    const sorted = [...pathsPL].sort((a,b)=>a-b);
-    const var95 = sorted[Math.floor(pathsPL.length*.05)];
-    const std = Math.sqrt(pathsPL.reduce((a,r)=>a+(r-mean)**2,0)/pathsPL.length);
-    const sharpe = std>0 ? (mean/std)*Math.sqrt(252/days) : 0;
-    const p10 = sorted[Math.floor(pathsPL.length*.10)];
-    const p90 = sorted[Math.floor(pathsPL.length*.90)];
-    return {...m, mean, winRate, var95, sharpe, p10, p90, finals};
-  });
-
-  // Consensus statistics
-  const avgMean = results.reduce((a,r)=>a+r.mean,0)/3;
-  const meanStd = Math.sqrt(results.reduce((a,r)=>a+(r.mean-avgMean)**2,0)/3);
-  const avgWinRate = results.reduce((a,r)=>a+r.winRate,0)/3;
-  const winRateStd = Math.sqrt(results.reduce((a,r)=>a+(r.winRate-avgWinRate)**2,0)/3);
-  const avgSharpe = results.reduce((a,r)=>a+r.sharpe,0)/3;
-
-  // Agreement score: how close do the models agree? (lower std = higher agreement)
-  // Win rate std < 0.05 = high agreement, > 0.10 = low agreement
-  let agreementLevel, agreementColor, agreementEmoji;
-  if(winRateStd < 0.05){ agreementLevel='HIGH CONSENSUS'; agreementColor='var(--green)'; agreementEmoji='✅'; }
-  else if(winRateStd < 0.10){ agreementLevel='MODERATE CONSENSUS'; agreementColor='#ffaa00'; agreementEmoji='🟡'; }
-  else{ agreementLevel='LOW CONSENSUS'; agreementColor='var(--red)'; agreementEmoji='⚠️'; }
-
-  // Verdict
-  let consensusVerdict, verdictColor;
-  if(avgWinRate >= 0.65 && avgSharpe >= 1.0){ consensusVerdict='STRONG ENTRY'; verdictColor='var(--green)'; }
-  else if(avgWinRate >= 0.55 && avgSharpe >= 0.5){ consensusVerdict='BUY'; verdictColor='#66bb6a'; }
-  else if(avgWinRate >= 0.45 && avgSharpe >= -0.3){ consensusVerdict='WAIT FOR DIP'; verdictColor='#ffaa00'; }
-  else if(avgWinRate >= 0.30){ consensusVerdict='HIGH RISK'; verdictColor='#ff7043'; }
-  else{ consensusVerdict='AVOID'; verdictColor='var(--red)'; }
-
-  function card(r){
-    const wrColor = r.winRate>=0.5 ? 'var(--green)' : r.winRate>=0.4 ? '#ffaa00' : 'var(--red)';
-    const retColor = r.mean>=0 ? 'var(--green)' : 'var(--red)';
-    return `<div style="background:#0a0a0a;border:1px solid ${r.color}44;border-radius:6px;padding:14px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-        <div>
-          <div style="font-family:var(--mono);font-size:12px;color:${r.color};font-weight:600;">${r.name}</div>
-          <div style="font-size:9px;color:var(--text3);letter-spacing:.05em;">${r.desc.toUpperCase()}</div>
-        </div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
-        <div>
-          <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">WIN RATE</div>
-          <div style="font-size:18px;font-weight:600;color:${wrColor};font-family:var(--mono);">${(r.winRate*100).toFixed(0)}%</div>
-        </div>
-        <div>
-          <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">EXP. RETURN</div>
-          <div style="font-size:18px;font-weight:600;color:${retColor};font-family:var(--mono);">${r.mean>=0?'+':''}${(r.mean*100).toFixed(1)}%</div>
-        </div>
-        <div>
-          <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">SHARPE</div>
-          <div style="font-size:13px;color:var(--text);font-family:var(--mono);">${r.sharpe.toFixed(2)}</div>
-        </div>
-        <div>
-          <div style="font-size:9px;color:var(--text3);font-family:var(--mono);">VAR 95%</div>
-          <div style="font-size:13px;color:var(--red);font-family:var(--mono);">${(r.var95*100).toFixed(1)}%</div>
-        </div>
-      </div>
-      <div style="font-size:10px;color:var(--text3);font-family:var(--mono);padding-top:8px;border-top:1px solid #1a1a1a;">
-        p10 ${(r.p10*100).toFixed(1)}% · p90 ${(r.p90*100).toFixed(1)}%
-      </div>
-    </div>`;
-  }
-
-  panel.innerHTML = `
-    <div class="section-header"><span class="section-title" style="color:#ff00aa;">// 🎯 ENSEMBLE · 3 MODELS IN PARALLEL · ${nPaths*3} total paths</span><div class="section-line"></div></div>
-
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
-      ${results.map(card).join('')}
-    </div>
-
-    <div style="background:linear-gradient(135deg, rgba(255,0,170,.08) 0%, rgba(0,188,212,.08) 100%);border:1px solid ${agreementColor}44;border-radius:6px;padding:16px;">
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;align-items:center;">
-        <div>
-          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">// AGREEMENT LEVEL</div>
-          <div style="font-size:16px;font-weight:700;color:${agreementColor};">${agreementEmoji} ${agreementLevel}</div>
-          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-top:4px;">win rate σ = ${(winRateStd*100).toFixed(1)}%</div>
-        </div>
-        <div style="text-align:center;border-left:1px solid #2a2a2a;border-right:1px solid #2a2a2a;padding:0 16px;">
-          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">// CONSENSUS WIN RATE</div>
-          <div style="font-size:26px;font-weight:700;color:var(--text);font-family:var(--mono);">${(avgWinRate*100).toFixed(0)}%</div>
-          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-top:4px;">± ${(winRateStd*100).toFixed(1)}% across models</div>
-        </div>
-        <div style="text-align:center;">
-          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:4px;">// ENSEMBLE VERDICT</div>
-          <div style="font-size:18px;font-weight:700;color:${verdictColor};letter-spacing:.05em;">${consensusVerdict}</div>
-          <div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-top:4px;">avg return ${avgMean>=0?'+':''}${(avgMean*100).toFixed(1)}%</div>
-        </div>
-      </div>
-
-      <div style="margin-top:14px;padding-top:12px;border-top:1px solid #1a1a1a;font-size:11px;color:var(--text2);line-height:1.6;font-family:var(--sans);">
-        ${winRateStd < 0.05
-          ? `<strong style="color:var(--green);">✅ All 3 models agree</strong> — the outcome is robust across different modeling assumptions. High confidence in the ${consensusVerdict} signal.`
-          : winRateStd < 0.10
-          ? `<strong style="color:#ffaa00;">🟡 Models mostly agree</strong> — some sensitivity to modeling choice. Consider the spread between GBM (${(results[0].winRate*100).toFixed(0)}%) and Regime (${(results[2].winRate*100).toFixed(0)}%) when sizing.`
-          : `<strong style="color:var(--red);">⚠️ Models disagree significantly</strong> — outcome is highly dependent on assumptions. Jump/regime tail events change the story. Reduce position size.`
-        }
-      </div>
-    </div>
-  `;
-
-  btn.textContent='🎯 Ensemble';btn.disabled=false;
-}
-
-// ─── AI COMMITTEE — 5 technical agents analyze in parallel ────
-async function runAICommittee(){
-  const ticker=document.getElementById('simTicker').value.trim().toUpperCase();
-  if(!ticker||!allFinals.length){alert('Run a simulation first');return;}
-
-  const btn=document.getElementById('committeeBtn');
-  btn.textContent='Committee analyzing...';btn.disabled=true;
-
-  // Inject panel immediately
-  let panel=document.getElementById('committeePanel');
-  if(!panel){
-    panel=document.createElement('div');
-    panel.id='committeePanel';
-    panel.style.cssText='margin-bottom:16px;';
-    const backtestPanel=document.getElementById('backtestPanel');
-    const target = backtestPanel || document.getElementById('extStatsPanel');
-    if(target&&target.parentNode) target.parentNode.insertBefore(panel,target.nextSibling);
-  }
-
-  // Get sim stats to feed agents
-  const dir=SP.dir, days=SP.days, capital=SP.capital, S0=SP.S0;
-  const rets = allFinals.map(f => dir==='LONG' ? (f-S0)/S0 : (S0-f)/S0);
-  const mean = rets.reduce((a,b)=>a+b,0) / rets.length;
-  const winRate = rets.filter(r=>r>0).length / rets.length;
-  const sorted = [...rets].sort((a,b)=>a-b);
-  const var95 = sorted[Math.floor(rets.length*.05)];
-  const std = Math.sqrt(rets.reduce((a,r)=>a+(r-mean)**2,0) / rets.length);
-  const sharpe = std>0 ? (mean/std)*Math.sqrt(252/days) : 0;
-  const cd = window._lastCd || {};
-
-  const isCrypto = (cd.asset_type === 'crypto') || ['BTC','ETH','SOL','BNB','XRP','ADA','DOGE','AVAX','LINK','DOT'].includes(ticker);
-
-  const agents = [
-    {id:'valuation', emoji:'📊', name:'Valuation Agent', color:'#00bcd4',
-      prompt: isCrypto
-        ? `You are a crypto valuation analyst. ${ticker} is at $${S0}, 52w range $${cd.low52w||'?'}-$${cd.high52w||'?'}, 30d return ${((cd.return30d||0)*100).toFixed(1)}%. Based on market cap, price relative to 52w range, on-chain metrics, and relative valuation vs other cryptos: is this overvalued, fairly valued, or undervalued? Pick ONE: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL. Respond ONLY with valid JSON and nothing else: {"verdict":"HOLD","reasoning":"one sentence here"}`
-        : `You are a valuation analyst. ${ticker} is at $${S0}, 52w range $${cd.low52w||'?'}-$${cd.high52w||'?'}, 30d return ${((cd.return30d||0)*100).toFixed(1)}%. Based on valuation only (P/E vs sector, price relative to 52w range, growth justifying price): is this overvalued, fairly valued, or undervalued? Pick ONE: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL. Respond ONLY with valid JSON: {"verdict":"HOLD","reasoning":"one sentence here"}`},
-    {id:'sentiment', emoji:'📰', name:'Sentiment Agent', color:'#ff6b6b',
-      prompt:`You are a market sentiment analyst. ${ticker} at $${S0}, recent 30-day return ${((cd.return30d||0)*100).toFixed(1)}%. Based on recent news flow, analyst ratings, social sentiment, and retail interest for April 2026: what's the market feeling? Pick ONE: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL. Respond ONLY with valid JSON: {"verdict":"HOLD","reasoning":"one sentence on sentiment drivers"}`},
-    {id:'fundamentals', emoji:'🔬', name:'Fundamentals Agent', color:'#4caf50',
-      prompt: isCrypto
-        ? `You are a crypto on-chain analyst. ${ticker} at $${S0}. Analyze network fundamentals: adoption, transaction volume, developer activity, institutional holdings, network security, and ecosystem growth. Pick ONE: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL. Respond ONLY with valid JSON: {"verdict":"HOLD","reasoning":"one sentence on network strength"}`
-        : `You are a fundamentals analyst. ${ticker} at $${S0}. Based on revenue growth, margins, debt, cashflow, competitive position, and management quality: is the BUSINESS healthy? Pick ONE: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL. Respond ONLY with valid JSON: {"verdict":"HOLD","reasoning":"one sentence on fundamental strength"}`},
-    {id:'technicals', emoji:'📈', name:'Technicals Agent', color:'#ff9800',
-      prompt:`You are a technical analyst. ${ticker} at $${S0}, 52w range $${cd.low52w||'?'}-$${cd.high52w||'?'}, 30d momentum ${((cd.return30d||0)*100).toFixed(1)}%, sigma ${((cd.sigma||.3)*100).toFixed(0)}%. Based on moving averages, RSI, MACD, support/resistance levels, and trend strength: what does the chart say? Pick ONE: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL. Respond ONLY with valid JSON: {"verdict":"HOLD","reasoning":"one sentence on technical picture"}`},
-    {id:'risk', emoji:'⚠️', name:'Risk Manager', color:'#e91e63',
-      prompt:`You are a risk manager. Monte Carlo simulation for ${ticker} ${dir} ${days}d trade shows: win rate ${(winRate*100).toFixed(0)}%, Sharpe ratio ${sharpe.toFixed(2)}, VaR95 ${(var95*100).toFixed(1)}%, expected return ${(mean*100).toFixed(1)}%. Based purely on RISK-ADJUSTED metrics: is this trade worth the risk? Pick ONE: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL. Respond ONLY with valid JSON: {"verdict":"HOLD","reasoning":"one sentence on risk/reward"}`}
-  ];
-
-  // Loading state
-  panel.innerHTML = `
-    <div class="section-header"><span class="section-title">// AI Committee · 5 agents analyzing ${ticker}</span><div class="section-line"></div></div>
-    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:12px;">
-      ${agents.map(a => `
-        <div id="agent-${a.id}" style="background:#0a0a0a;border:1px solid ${a.color}33;border-radius:6px;padding:12px;text-align:center;min-height:120px;">
-          <div style="font-size:22px;margin-bottom:4px;">${a.emoji}</div>
-          <div style="font-size:11px;color:${a.color};font-weight:600;margin-bottom:8px;font-family:var(--mono);">${a.name}</div>
-          <div style="font-size:10px;color:var(--text3);">analyzing...</div>
-        </div>
-      `).join('')}
-    </div>
-    <div id="committeeVerdict" style="background:#0f0f0f;border:1px solid #1a1a1a;border-radius:6px;padding:16px;text-align:center;color:var(--text3);font-family:var(--mono);font-size:12px;">
-      waiting for all agents...
-    </div>
-  `;
-
-  // Run all agents in parallel
-  const results = await Promise.all(agents.map(async a => {
-    try{
-      const r=await fetch('/api/claude',{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:250,
-          messages:[{role:'user',content:a.prompt}]})
-      });
-      const d=await r.json();
-      const text=d.content?.map(b=>b.text||'').join('')||'';
-
-      // Try JSON parse first
-      let parsed = safeJSON(text);
-
-      // Fallback: regex extraction if JSON parsing fails
-      if(!parsed || !parsed.verdict){
-        const verdictMatch = text.match(/STRONG BUY|STRONG SELL|BUY|SELL|HOLD/i);
-        const verdict = verdictMatch ? verdictMatch[0].toUpperCase() : 'HOLD';
-        // Grab the longest sentence as reasoning
-        const sentences = text.split(/[.!?]\s+/).filter(s => s.length > 20 && s.length < 300);
-        const reasoning = sentences[0] || text.slice(0, 200).trim() || 'Analysis complete';
-        parsed = {verdict, reasoning};
-      }
-
-      return {...a, verdict:parsed.verdict||'HOLD', reasoning:parsed.reasoning||''};
-    }catch(e){
-      return {...a, verdict:'HOLD', reasoning:'analysis unavailable'};
-    }
-  }));
-
-  // Render each agent card
-  const verdictScore = {'STRONG BUY':2,'BUY':1,'HOLD':0,'SELL':-1,'STRONG SELL':-2};
-  const verdictColor = v => {
-    if(v==='STRONG BUY') return 'var(--green)';
-    if(v==='BUY') return '#66bb6a';
-    if(v==='HOLD') return '#ffaa00';
-    if(v==='SELL') return '#ff7043';
-    return 'var(--red)';
-  };
-
-  results.forEach(r => {
-    const card = document.getElementById('agent-'+r.id);
-    if(card){
-      card.innerHTML = `
-        <div style="font-size:22px;margin-bottom:4px;">${r.emoji}</div>
-        <div style="font-size:11px;color:${r.color};font-weight:600;margin-bottom:6px;font-family:var(--mono);">${r.name}</div>
-        <div style="font-size:11px;color:${verdictColor(r.verdict)};font-weight:700;letter-spacing:.05em;margin-bottom:6px;">${r.verdict}</div>
-        <div style="font-size:10px;color:var(--text3);line-height:1.4;">${r.reasoning}</div>
-      `;
-    }
-  });
-
-  // Compute consensus
-  const scores = results.map(r => verdictScore[r.verdict] ?? 0);
-  const avgScore = scores.reduce((a,b)=>a+b,0) / scores.length;
-  const strongBuy = results.filter(r => r.verdict==='STRONG BUY').length;
-  const buy = results.filter(r => r.verdict==='BUY').length;
-  const hold = results.filter(r => r.verdict==='HOLD').length;
-  const sell = results.filter(r => r.verdict==='SELL').length;
-  const strongSell = results.filter(r => r.verdict==='STRONG SELL').length;
-
-  let consensusVerdict, consensusColor, consensusEmoji;
-  if(avgScore >= 1.2){ consensusVerdict='STRONG BUY'; consensusColor='var(--green)'; consensusEmoji='🚀'; }
-  else if(avgScore >= 0.4){ consensusVerdict='BUY'; consensusColor='#66bb6a'; consensusEmoji='📈'; }
-  else if(avgScore >= -0.4){ consensusVerdict='HOLD'; consensusColor='#ffaa00'; consensusEmoji='🤔'; }
-  else if(avgScore >= -1.2){ consensusVerdict='SELL'; consensusColor='#ff7043'; consensusEmoji='📉'; }
-  else{ consensusVerdict='STRONG SELL'; consensusColor='var(--red)'; consensusEmoji='🚨'; }
-
-  const confidence = Math.max(strongBuy+buy, hold, sell+strongSell) / results.length * 100;
-
-  document.getElementById('committeeVerdict').innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:center;gap:20px;flex-wrap:wrap;">
-      <div>
-        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;font-family:var(--mono);">// portfolio manager verdict</div>
-        <div style="font-size:24px;font-weight:700;color:${consensusColor};letter-spacing:.05em;">${consensusEmoji} ${consensusVerdict}</div>
-      </div>
-      <div style="border-left:1px solid #2a2a2a;padding-left:20px;">
-        <div style="font-size:10px;color:var(--text3);font-family:var(--mono);">CONFIDENCE</div>
-        <div style="font-size:20px;font-weight:600;color:var(--text);">${confidence.toFixed(0)}%</div>
-      </div>
-      <div style="border-left:1px solid #2a2a2a;padding-left:20px;font-size:11px;font-family:var(--mono);color:var(--text3);">
-        <div>${strongBuy}x STRONG BUY · ${buy}x BUY</div>
-        <div>${hold}x HOLD</div>
-        <div>${sell}x SELL · ${strongSell}x STRONG SELL</div>
-      </div>
-    </div>
-  `;
-
-  btn.textContent='🧠 AI Committee';btn.disabled=false;
-}
 
 async function runInvestorPersonas(){
   const ticker=document.getElementById('simTicker').value.trim().toUpperCase();
@@ -8470,40 +5702,19 @@ function replaySim(idx){
 function trackSavedSim(idx){
   const s = savedSims[idx];
   if(!s) return;
-
-  // Navigate to SIM tab
-  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
-  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-  document.getElementById('page-sim').classList.add('active');
-  document.querySelectorAll('.nav-btn').forEach(b=>{if(b.textContent.trim()==='SIM')b.classList.add('active');});
-  document.getElementById('simTicker').value = s.ticker;
-  document.getElementById('simDir').value = s.dir;
-  document.getElementById('simCapital').value = s.capital;
-  document.getElementById('simDays').value = s.days;
-  window.scrollTo({top:0, behavior:'smooth'});
-
+  // Navigate to SIM and start tracking
+  replaySim(idx);
   setTimeout(() => {
-    // Restore simulation state
-    SP = { S0: s.entryPrice, mu: s.mu||0.15, sigma: s.sigma||0.35, days: s.days, capital: s.capital, dir: s.dir, model: s.model||'gbm' };
-    window._lastCd = { verdict: s.verdict, thesis: s.thesis, current_price: s.entryPrice, mu: s.mu, sigma: s.sigma, longName: s.ticker };
-
+    // Fake having run the sim with saved data
     if(s.paths && s.paths.length) {
       allPaths = s.paths.map(p=>[...p]);
-      allFinals = s.finals ? [...s.finals] : s.paths.map(p=>p[p.length-1]);
-    } else {
-      // Generate quick sim if paths weren't saved
-      allPaths = []; allFinals = [];
-      for(let i=0;i<200;i++){
-        const p = genPath(s.entryPrice, s.mu||0.15, s.sigma||0.35, s.days, s.model||'gbm');
-        allPaths.push(p); allFinals.push(p[p.length-1]);
-      }
+      allFinals = s.finals ? [...s.finals] : s.paths.map(p=>p[p.p.length-1]);
+      SP = { S0: s.entryPrice, mu: s.mu||0.15, sigma: s.sigma||0.35, days: s.days, capital: s.capital, dir: s.dir, model: s.model||'gbm' };
+      redrawSim();
+      updateSimStats();
     }
-
-    redrawSim();
-    updateSimStats();
-    showSimAnalysis(window._lastCd, s.ticker, s.capital, s.days);
     startLiveTrack();
-  }, 400);
+  }, 300);
 }
 
 function deleteSim(idx){
