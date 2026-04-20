@@ -1,4 +1,3 @@
-
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -85,6 +84,9 @@ export default async function handler(req, res) {
         return30d = (currentPrice - closes[idx30]) / closes[idx30];
       }
 
+      // Day change: use 24h change from CoinGecko
+      const dayChange = coinInfo.usd_24h_change != null ? coinInfo.usd_24h_change / 100 : 0;
+
       return res.status(200).json({
         ticker: t,
         currentPrice: parseFloat(currentPrice.toFixed(2)),
@@ -93,6 +95,7 @@ export default async function handler(req, res) {
         high52w: parseFloat(high52w.toFixed(2)),
         low52w: parseFloat(low52w.toFixed(2)),
         return30d: parseFloat(return30d.toFixed(4)),
+        dayChange: parseFloat(dayChange.toFixed(4)),
         dataPoints: closes.length,
         asset_type: 'crypto',
         currency: 'USD',
@@ -205,6 +208,10 @@ export default async function handler(req, res) {
                   (currentPrice - (quote.pc || currentPrice)) / (quote.pc || currentPrice);
     }
 
+    // Day change from Finnhub quote (dp = day percent, pc = previous close)
+    const dayChange = quote.dp != null ? quote.dp / 100 :
+                      quote.pc ? (currentPrice - quote.pc) / quote.pc : 0;
+
     return res.status(200).json({
       ticker: symbol,
       currentPrice: parseFloat(currentPrice.toFixed(2)),
@@ -213,6 +220,7 @@ export default async function handler(req, res) {
       high52w: parseFloat(high52w.toFixed(2)),
       low52w: parseFloat(low52w.toFixed(2)),
       return30d: parseFloat(return30d.toFixed(4)),
+      dayChange: parseFloat(dayChange.toFixed(4)),
       dataPoints: closes.length || 252,
       asset_type: 'stock',
       currency: profile.currency || 'USD',
