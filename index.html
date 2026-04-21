@@ -992,8 +992,8 @@ const SCREENER_UNIVERSE = {
        'JNJ','PG','MA','HD','BAC','XOM','NFLX','ORCL','ADBE','CRM',
        'AMD','INTC','QCOM','MU','AVGO','TXN','NOW','SNOW','PLTR','COIN',
        'SPY','QQQ','GLD','TLT','IWM','VIX','DIS','UBER','LYFT','ABNB'],
-  latam: ['MELI','NU','GLOB','STNE','VALE','ITUB','PETR','ABEV',
-          'AMXL.MX','WALMEX.MX','BIMBOA.MX','GFNORTEO.MX',
+  latam: ['MELI','NU','GLOB','STNE','VALE','ITUB','PBR','ABEV','BBD','SBS','CIB','BAP','XP','GOL','LSPD',
+          'AMXL.MX','WALMEX.MX','BIMBOA.MX','GFNORTEO.MX','FEMSAUBD.MX','KOFUBL.MX','CEMEXCPO.MX','GAPB.MX','ASURB.MX','ALFAA.MX',
           'DESP','PAGS','VIST'],
   crypto: ['BTC/USD','ETH/USD','SOL/USD','BNB/USD','AVAX/USD','LINK/USD'],
 };
@@ -1085,9 +1085,16 @@ async function runScreener(){
       'GLOB':   {squeeze:35,insider:'BUYING',inst:52,signal:'STRONG BUY',score:78,thesis:'CEO buying, IT nearshoring boom driving revenue'},
       'VALE':   {squeeze:28,insider:'NONE',inst:71,signal:'NEUTRAL',score:52,thesis:'Iron ore demand tied to China recovery uncertainty'},
       'ITUB':   {squeeze:22,insider:'NONE',inst:62,signal:'BUY',score:65,thesis:'Brazilian banking leader, rate cuts boosting margins'},
-      'PETR':   {squeeze:31,insider:'NONE',inst:58,signal:'NEUTRAL',score:55,thesis:'Oil price exposure with Brazil political risk'},
       'STNE':   {squeeze:55,insider:'BUYING',inst:38,signal:'BUY',score:71,thesis:'Payments in Brazil undervalued vs peers'},
-      'DESP':   {squeeze:48,insider:'NONE',inst:42,signal:'NEUTRAL',score:58,thesis:'LATAM travel recovery play'},
+      'PBR':    {squeeze:31,insider:'NONE',inst:58,signal:'NEUTRAL',score:55,thesis:'Petrobras: oil exposure with Brazil political risk and high dividend yield play'},
+      'BBD':    {squeeze:18,insider:'NONE',inst:54,signal:'NEUTRAL',score:56,thesis:'Bradesco: large Brazilian private bank, Selic cuts boosting margins'},
+      'SBS':    {squeeze:24,insider:'NONE',inst:48,signal:'NEUTRAL',score:58,thesis:'Sabesp: Sao Paulo water utility post-privatization, defensive infra play'},
+      'CIB':    {squeeze:20,insider:'NONE',inst:52,signal:'BUY',score:62,thesis:'Bancolombia ADR: largest Colombian bank trading at discount to book'},
+      'BAP':    {squeeze:22,insider:'NONE',inst:50,signal:'NEUTRAL',score:60,thesis:'Credicorp: Peru largest financial group, copper macro tailwind'},
+      'XP':     {squeeze:35,insider:'NONE',inst:55,signal:'NEUTRAL',score:58,thesis:'XP Inc: Brazilian wealth management leader, retail flow recovery story'},
+      'GOL':    {squeeze:62,insider:'BUYING',inst:25,signal:'NEUTRAL',score:50,thesis:'Brazilian airline post-Chapter 11 turnaround, high risk/reward'},
+      'LSPD':   {squeeze:48,insider:'NONE',inst:45,signal:'NEUTRAL',score:54,thesis:'Lightspeed: SMB POS and payments, Canada-LATAM exposure'},
+      'DESP':   {squeeze:48,insider:'NONE',inst:42,signal:'NEUTRAL',score:58,thesis:'Despegar: LATAM travel platform recovery play'},
       'NVDA':   {squeeze:18,insider:'NONE',inst:72,signal:'BUY',score:74,thesis:'AI chip demand structural, not cyclical'},
       'TSLA':   {squeeze:32,insider:'BUYING',inst:48,signal:'NEUTRAL',score:58,thesis:'Robotaxi catalyst could re-rate stock higher'},
       'AAPL':   {squeeze:12,insider:'NONE',inst:61,signal:'NEUTRAL',score:55,thesis:'Services growth offsetting iPhone cycle slowdown'},
@@ -1118,10 +1125,35 @@ async function runScreener(){
       'AMXL.MX':  {squeeze:20,insider:'NONE',inst:45,signal:'NEUTRAL',score:52,thesis:'Telecom giant with regional coverage across LATAM'},
       'BIMBOA.MX': {squeeze:12,insider:'BUYING',inst:42,signal:'BUY',score:61,thesis:'Global bakery leader, family insider buying is bullish'},
       'GFNORTEO.MX':{squeeze:18,insider:'NONE',inst:55,signal:'BUY',score:63,thesis:'Largest Mexican bank benefiting from nearshoring boom'},
+      'FEMSAUBD.MX':{squeeze:14,insider:'NONE',inst:60,signal:'BUY',score:66,thesis:'OXXO retail dominance + Heineken stake = high-quality Mexican consumer compounder'},
+      'KOFUBL.MX': {squeeze:11,insider:'NONE',inst:58,signal:'NEUTRAL',score:58,thesis:'Coca-Cola FEMSA: largest Coke bottler in LATAM, defensive consumer staples'},
+      'CEMEXCPO.MX':{squeeze:32,insider:'NONE',inst:48,signal:'BUY',score:62,thesis:'CEMEX: cement exposure to US infra spending and Mexico nearshoring construction'},
+      'GAPB.MX':   {squeeze:9,insider:'NONE',inst:52,signal:'BUY',score:64,thesis:'GAP: Pacific airports operator, tourism recovery and concession upside'},
+      'ASURB.MX':  {squeeze:8,insider:'NONE',inst:54,signal:'BUY',score:65,thesis:'ASUR: Cancun airports, structural tourism growth in Riviera Maya'},
+      'ALFAA.MX':  {squeeze:28,insider:'NONE',inst:38,signal:'NEUTRAL',score:55,thesis:'Alfa: Mexican industrial conglomerate, spinoffs unlocking discount'},
       'PAGS':   {squeeze:45,insider:'NONE',inst:38,signal:'BUY',score:65,thesis:'Brazilian fintech growing SMB payments in underpenetrated market'},
       'VIST':   {squeeze:38,insider:'BUYING',inst:30,signal:'STRONG BUY',score:77,thesis:'Argentina oil boom from Vaca Muerta shale, insider accumulation'},
       'ABEV':   {squeeze:16,insider:'NONE',inst:52,signal:'NEUTRAL',score:54,thesis:'Beer dominance in Brazil but volume growth slowing'},
     };
+
+    // Honest fallback: build thesis from what we actually know rather than fake-confident generic text
+    function buildFallbackThesis(ticker, priceData){
+      const isMx = ticker.endsWith('.MX');
+      const isBr = ticker.endsWith('.SA');
+      const isCrypto = ticker.includes('/USD');
+      const ret30 = priceData ? (priceData.return30d||0)*100 : null;
+      const sigma = priceData ? (priceData.sigma||0)*100 : null;
+      const region = isMx ? 'Mexico (BMV)' : isBr ? 'Brazil (B3)' : isCrypto ? 'Crypto' : 'Equity';
+      const parts = [region + ' ticker — coverage in progress'];
+      if(ret30 !== null && Math.abs(ret30) > 1){
+        parts.push('30d ' + (ret30>0?'+':'') + ret30.toFixed(1) + '%');
+      }
+      if(sigma !== null && sigma > 0){
+        parts.push(sigma > 60 ? 'very high vol' : sigma > 35 ? 'elevated vol' : 'moderate vol');
+      }
+      parts.push('verify thesis manually');
+      return parts.join(' · ');
+    }
 
     const results = priceResults
       .filter(r => r.status==='fulfilled')
@@ -1131,14 +1163,19 @@ async function runScreener(){
         const d = (r.value && r.value.currentPrice && !r.value.error)
           ? r.value
           : null;
-        // Try multiple key variations for lookup
+        // Try multiple key variations for lookup (handle exchange suffixes + BMV series suffixes)
+        const tBase = t.split('.')[0];
+        const tCore = tBase.replace(/(UBD|UBL|CPO|UBC)$/,'');
         const sm = smartData[t]
-          || smartData[t.replace('.MX','').replace('.SA','')]
-          || {squeeze:25,insider:'NONE',inst:50,signal:'NEUTRAL',score:50,thesis:'Solid fundamental story with moderate risk profile'};
+          || smartData[tBase]
+          || smartData[tCore]
+          || smartData[tCore + '.MX']
+          || smartData[tCore + '.SA']
+          || {squeeze:25,insider:'NONE',inst:50,signal:'NEUTRAL',score:50,thesis:buildFallbackThesis(t, d), _isFallback:true};
         const ret30 = d ? (d.return30d||0)*100 : 0;
         const sigma = d ? (d.sigma||0.3)*100 : 35;
         const price = d ? d.currentPrice : null;
-        const isLatam = ['MELI','NU','GLOB','VALE','ITUB','PETR','STNE','DESP','PAGS','VIST','ABEV','AMXL.MX','WALMEX.MX','FEMSA.MX','BIMBOA.MX','GFNORTEO.MX'].includes(t);
+        const isLatam = SCREENER_UNIVERSE.latam.includes(t);
 
         // For LATAM tickers without price data, use fallback price 0 but still display
         if(!price && !isLatam) return null;
@@ -1161,6 +1198,7 @@ async function runScreener(){
           signal: signal,
           smart_money_score: sm.score,
           thesis: sm.thesis,
+          is_fallback: !!sm._isFallback,
           is_latam: isLatam,
           no_price: !price
         };
@@ -1247,8 +1285,11 @@ function renderScreenerResults(results, sortBy){
       +'<div style="font-family:var(--mono);font-size:11px;color:#888;">'+(r.institutional_pct||0).toFixed(0)+'%</div>'
       // Signal
       +'<div style="font-family:var(--mono);font-size:10px;font-weight:700;color:'+sig+';">'+r.signal+'</div>'
-      // Thesis
-      +'<div style="font-size:10px;color:#555;font-family:var(--sans);line-height:1.4;">'+r.thesis+'</div>'
+      // Thesis (with limited-coverage indicator when fallback)
+      +'<div style="font-size:10px;color:'+(r.is_fallback?'#666':'#555')+';font-family:var(--sans);line-height:1.4;">'
+        +(r.is_fallback?'<span style="font-family:var(--mono);font-size:9px;color:#e67e22;border:1px solid rgba(230,126,34,.4);padding:1px 5px;border-radius:2px;margin-right:6px;letter-spacing:.05em;">LIMITED</span>':'')
+        +r.thesis
+      +'</div>'
       +'</div>';
   }).join('');
 }
