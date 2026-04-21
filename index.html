@@ -30,11 +30,13 @@
 html,body{background:var(--bg);color:var(--text);font-family:var(--mono);min-height:100vh;overflow-x:hidden;}
 
 /* TOPBAR */
-.topbar{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:48px;border-bottom:1px solid var(--border);background:var(--bg1);position:sticky;top:0;z-index:100;}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:48px;border-bottom:1px solid var(--border);background:var(--bg1);position:sticky;top:0;z-index:100;gap:12px;}
+.logo{flex-shrink:0;}
 .logo{font-size:13px;font-weight:600;letter-spacing:.15em;color:var(--text);}
 .logo span{color:var(--green);}
-.nav{display:flex;gap:0;}
-.nav-btn{background:none;border:none;font-family:var(--mono);font-size:11px;color:var(--text3);padding:0 16px;height:48px;cursor:pointer;letter-spacing:.08em;text-transform:uppercase;transition:color .15s;border-bottom:2px solid transparent;}
+.nav{display:flex;gap:0;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:none;flex:1;min-width:0;mask-image:linear-gradient(to right,black calc(100% - 24px),transparent 100%);-webkit-mask-image:linear-gradient(to right,black calc(100% - 24px),transparent 100%);}
+.nav::-webkit-scrollbar{display:none;}
+.nav-btn{background:none;border:none;font-family:var(--mono);font-size:11px;color:var(--text3);padding:0 16px;height:48px;cursor:pointer;letter-spacing:.08em;text-transform:uppercase;transition:color .15s;border-bottom:2px solid transparent;flex-shrink:0;white-space:nowrap;}
 .nav-btn:hover{color:var(--text2);}
 .nav-btn.active{color:var(--green);border-bottom-color:var(--green);}
 .topbar-right{display:flex;align-items:center;gap:16px;}
@@ -222,7 +224,7 @@ td:first-child{color:var(--text);font-weight:500;}
 @media(max-width:600px){
   .stat-grid.cols-6,.stat-grid.cols-4{grid-template-columns:repeat(2,1fr);}
   .ctrl-grid.g3,.ctrl-grid.g2{grid-template-columns:1fr;}
-  .topbar{padding:0 12px;}
+  .topbar{padding:0 8px;}
   .page{padding:16px;}
   .nav-btn{padding:0 10px;font-size:10px;}
 }
@@ -2492,6 +2494,7 @@ function showPage(id){
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
   event.target.classList.add('active');
+  event.target.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
   if(id==='compare') setTimeout(initCmpCanvases,50);
   if(id==='macro') setTimeout(loadMacroPage,50);
   if(id==='smartmoney') setTimeout(()=>{if(!smLoaded){smLoaded=true;loadMarketSignals();}},50);
