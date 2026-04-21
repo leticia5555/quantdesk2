@@ -1,4 +1,4 @@
-[README (2).md](https://github.com/user-attachments/files/26919842/README.2.md)
+
 # QuantDesk
 
 > Bloomberg Terminal for 650M Spanish speakers. Quant-grade financial intelligence combining institutional analytics, TradingView-style social layer, and AI-native workflows.
@@ -51,7 +51,7 @@ QuantDesk gives retail and institutional investors in LATAM the same class of qu
 
 **AI-native means built differently.** Every module ships with AI synthesis — not as a chatbot bolted on, but as the default output layer. Users get the quant output AND the plain-Spanish interpretation of what it means.
 
-**Distribution is already solved.** Companion media brand [@prismlatam](https://instagram.com/prismlatam) and creator channel [@aprendeconmigotec](https://tiktok.com/@aprendeconmigotec) (43K, 38.7% Search traffic) provide organic acquisition.
+**Distribution is already solved.** Companion media brand [@prismlatam](https://instagram.com/prismlatam) and creator channel [@leticiatijerinam](https://tiktok.com/@leticiatijerinam) (43K, 38.7% Search traffic) provide organic acquisition.
 
 ---
 
