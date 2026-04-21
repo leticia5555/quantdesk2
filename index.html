@@ -242,6 +242,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('smartmoney')">SMART $</button>
     <button class="nav-btn" onclick="showPage('earnings')">EARNINGS</button>
     <button class="nav-btn" onclick="showPage('screener')">SCREENER</button>
+    <button class="nav-btn" onclick="showPage('agents')">AGENTS</button>
     <button class="nav-btn" onclick="showPage('gallery')">GALLERY</button>
   </nav>
   <div class="topbar-right">
@@ -2455,6 +2456,7 @@ function showPage(id){
   if(id==='earnings') setTimeout(()=>initEarningsPage(),50);
   if(id==='gallery') setTimeout(()=>renderGallery(),50);
   else stopGalleryLiveUpdates(); // stop when leaving gallery
+  if(id==='agents') setTimeout(()=>initAgentsPage(),50);
   if(id==='screener') setTimeout(()=>{
     const el=document.getElementById('screenerStatus');
     if(el) el.textContent='Ready to screen';
@@ -5062,7 +5064,525 @@ Return ONLY JSON array of exactly 10 objects:
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// ─── INVESTOR AGENTS LEADERBOARD ───────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// Each persona vote is saved with the sim context. When the horizon
+// passes, the system fetches the actual price and scores each agent's
+// call. HIGH conviction = ±3pts, MEDIUM = ±2pts, LOW = ±1pt.
+// ═══════════════════════════════════════════════════════════════════
+
+let agentVotes = JSON.parse(localStorage.getItem('qd_agent_votes') || '[]');
+let fantasyTeam = JSON.parse(localStorage.getItem('qd_fantasy_team') || '[]');
+let agentTimeframe = 'month';
+let lastBattleShare = null;
+
+function saveAgentVotes(){
+  localStorage.setItem('qd_agent_votes', JSON.stringify(agentVotes.slice(-500))); // cap at 500
+}
+function saveFantasyTeam(){
+  localStorage.setItem('qd_fantasy_team', JSON.stringify(fantasyTeam));
+}
+
+// Called from renderPersonas() — persist a full battle
+function recordAgentVotes(personas, ticker){
+  if(!personas || !personas.length) return;
+  const battleId = 'b_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
+  const entryPrice = SP.S0;
+  const days = SP.days;
+  const dir = SP.dir;
+  const ts = Date.now();
+  const resolveAt = ts + days * 86400 * 1000;
+  personas.forEach(p => {
+    agentVotes.push({
+      battleId, ticker, agent: p.id,
+      verdict: p.verdict, conviction: p.conviction, take: p.take,
+      entryPrice, days, dir, ts, resolveAt,
+      resolved: false, hit: null, exitPrice: null, points: 0
+    });
+  });
+  saveAgentVotes();
+}
+
+// Called when visiting AGENTS tab — resolve any vote whose horizon has passed
+async function resolveAllPendingVotes(silent=false){
+  const now = Date.now();
+  const btn = document.getElementById('agentsRefreshBtn');
+  if(btn && !silent){ btn.textContent = '↻ Resolving...'; btn.disabled = true; }
+
+  // Group pending by ticker so we only fetch each price once
+  const pendingByTicker = {};
+  agentVotes.forEach(v => {
+    if(!v.resolved && v.resolveAt <= now){
+      pendingByTicker[v.ticker] = pendingByTicker[v.ticker] || [];
+      pendingByTicker[v.ticker].push(v);
+    }
+  });
+
+  const tickers = Object.keys(pendingByTicker);
+  if(!tickers.length){
+    if(btn && !silent){ btn.textContent = '↻ Up to date'; setTimeout(()=>{btn.textContent='↻ Resolve votes'; btn.disabled=false;},1500); }
+    renderAgentsPage();
+    return;
+  }
+
+  let resolvedCount = 0;
+  for(const ticker of tickers){
+    try{
+      const r = await fetch(`/api/price?ticker=${encodeURIComponent(ticker)}`);
+      if(!r.ok) continue;
+      const d = await r.json();
+      const currentPrice = d.currentPrice;
+      if(!currentPrice) continue;
+
+      pendingByTicker[ticker].forEach(v => {
+        const ret = v.dir === 'LONG'
+          ? (currentPrice - v.entryPrice) / v.entryPrice
+          : (v.entryPrice - currentPrice) / v.entryPrice;
+        // Scoring: BUY expects +ret, PASS expects -ret, HOLD expects |ret|<5%
+        let hit = false;
+        if(v.verdict === 'BUY') hit = ret > 0.02;        // >2% up = correct BUY
+        else if(v.verdict === 'PASS') hit = ret < -0.02; // >2% down = correct PASS
+        else hit = Math.abs(ret) < 0.05;                 // flat = correct HOLD
+
+        const weight = v.conviction === 'HIGH' ? 3 : v.conviction === 'MEDIUM' ? 2 : 1;
+        v.resolved = true;
+        v.hit = hit;
+        v.exitPrice = currentPrice;
+        v.actualReturn = ret;
+        v.points = hit ? weight : -weight;
+        resolvedCount++;
+      });
+    }catch(e){ console.error('resolve err', ticker, e); }
+  }
+
+  saveAgentVotes();
+  if(btn && !silent){
+    btn.textContent = `↻ Resolved ${resolvedCount}`;
+    setTimeout(()=>{btn.textContent='↻ Resolve votes'; btn.disabled=false;}, 1800);
+  }
+  renderAgentsPage();
+}
+
+// Quick track record for showing badges inline on persona cards
+function getAgentTrackRecord(agentId){
+  const resolved = agentVotes.filter(v => v.agent === agentId && v.resolved);
+  if(!resolved.length) return { resolved: 0, accuracy: 0, points: 0 };
+  const hits = resolved.filter(v => v.hit).length;
+  const points = resolved.reduce((a,v)=>a+v.points,0);
+  return {
+    resolved: resolved.length,
+    accuracy: Math.round(hits / resolved.length * 100),
+    points
+  };
+}
+
+// Aggregate stats per agent for a given timeframe
+function getAgentStats(agentId, tf){
+  const now = Date.now();
+  const monthAgo = now - 30*86400*1000;
+  const votes = agentVotes.filter(v => {
+    if(v.agent !== agentId) return false;
+    if(tf === 'month') return v.resolved && v.ts >= monthAgo;
+    if(tf === 'pending') return !v.resolved;
+    return v.resolved; // alltime
+  });
+  if(tf === 'pending') return { total: votes.length, votes };
+  const hits = votes.filter(v => v.hit).length;
+  const points = votes.reduce((a,v)=>a+v.points,0);
+  // hot/cold streak: look at last 5 resolved
+  const recent = votes.slice(-5);
+  let streak = 0;
+  for(let i=recent.length-1; i>=0; i--){
+    if(i===recent.length-1){ streak = recent[i].hit ? 1 : -1; }
+    else if((streak>0 && recent[i].hit) || (streak<0 && !recent[i].hit)){
+      streak += streak>0 ? 1 : -1;
+    } else break;
+  }
+  return {
+    total: votes.length,
+    hits,
+    accuracy: votes.length ? Math.round(hits/votes.length*100) : 0,
+    points,
+    streak,
+    votes
+  };
+}
+
+// Build leaderboard array sorted by points
+function buildLeaderboard(tf){
+  return INVESTORS.map(inv => {
+    const s = getAgentStats(inv.id, tf);
+    return { ...inv, ...s };
+  }).sort((a,b) => (b.points||0) - (a.points||0));
+}
+
+// ─── UI: AGENTS PAGE ─────────────────────────────────────
+function initAgentsPage(){
+  // auto-resolve on page visit (silent, doesn't show button spinner)
+  resolveAllPendingVotes(true);
+}
+
+function setAgentTimeframe(tf){
+  agentTimeframe = tf;
+  document.querySelectorAll('.agent-tf-btn').forEach(b => {
+    const active = b.getAttribute('data-tf') === tf;
+    b.classList.toggle('active', active);
+    b.style.background = active ? 'rgba(230,126,34,.15)' : 'none';
+    b.style.color = active ? '#e67e22' : '#666';
+    b.style.borderColor = active ? 'rgba(230,126,34,.3)' : '#222';
+  });
+  renderAgentsPage();
+}
+
+function renderAgentsPage(){
+  renderLeaderboard();
+  renderRecentBattles();
+  renderRoster();
+  renderFantasyTeam();
+  // status bar
+  const total = agentVotes.length;
+  const resolved = agentVotes.filter(v=>v.resolved).length;
+  const pending = total - resolved;
+  const sb = document.getElementById('agentsStatusBar');
+  if(sb) sb.textContent = `${total} total calls · ${resolved} resolved · ${pending} pending`;
+}
+
+function renderLeaderboard(){
+  const el = document.getElementById('agentsLeaderboard');
+  if(!el) return;
+  const tf = agentTimeframe;
+  if(tf === 'pending'){
+    const pending = agentVotes.filter(v => !v.resolved).sort((a,b)=>a.resolveAt-b.resolveAt);
+    if(!pending.length){
+      el.innerHTML = `<div style="color:#444;font-family:var(--mono);font-size:12px;text-align:center;padding:40px;">No pending calls. Run some sims with 👤 Investors.</div>`;
+      return;
+    }
+    el.innerHTML = pending.slice(0,20).map(v => {
+      const inv = INVESTORS.find(i=>i.id===v.agent) || {name:v.agent, emoji:'👤'};
+      const daysLeft = Math.max(0, Math.ceil((v.resolveAt - Date.now())/86400000));
+      const vc = v.verdict==='BUY'?'var(--green)':v.verdict==='PASS'?'var(--red)':'var(--amber)';
+      return `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid #1a1a1a;font-size:11px;font-family:var(--mono);">
+        <span style="font-size:14px;">${inv.emoji}</span>
+        <span style="color:#ccc;min-width:110px;">${inv.name}</span>
+        <span style="color:${vc};padding:1px 6px;border:1px solid ${vc};border-radius:2px;">${v.verdict}</span>
+        <span style="color:#888;">${v.conviction}</span>
+        <span style="color:#fff;margin-left:auto;">$${v.ticker}</span>
+        <span style="color:#666;">@$${v.entryPrice.toFixed(2)} · ${v.dir}</span>
+        <span style="color:#e67e22;min-width:70px;text-align:right;">${daysLeft}d left</span>
+      </div>`;
+    }).join('');
+    return;
+  }
+
+  const board = buildLeaderboard(tf);
+  const hasData = board.some(b => b.total > 0);
+  if(!hasData){
+    el.innerHTML = `<div style="color:#444;font-family:var(--mono);font-size:12px;text-align:center;padding:40px;">No resolved calls yet. Run sims with 👤 Investors and come back after the horizon passes.</div>`;
+    return;
+  }
+
+  el.innerHTML = `
+    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;overflow:hidden;">
+      <div style="display:grid;grid-template-columns:40px 1.6fr 70px 70px 70px 80px;gap:10px;padding:8px 12px;border-bottom:1px solid #1a1a1a;font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;">
+        <span>#</span><span>AGENT</span><span style="text-align:right;">CALLS</span><span style="text-align:right;">ACC</span><span style="text-align:right;">STREAK</span><span style="text-align:right;">POINTS</span>
+      </div>
+      ${board.map((b,i) => {
+        if(!b.total) return `<div style="display:grid;grid-template-columns:40px 1.6fr 70px 70px 70px 80px;gap:10px;padding:10px 12px;border-bottom:1px solid #121212;font-family:var(--mono);font-size:11px;color:#333;">
+          <span>${i+1}</span>
+          <span>${b.emoji} ${b.name}</span>
+          <span style="text-align:right;">—</span><span style="text-align:right;">—</span><span style="text-align:right;">—</span><span style="text-align:right;">0</span>
+        </div>`;
+        const accColor = b.accuracy >= 60 ? 'var(--green)' : b.accuracy >= 45 ? 'var(--amber)' : 'var(--red)';
+        const pointsColor = b.points > 0 ? 'var(--green)' : b.points < 0 ? 'var(--red)' : '#888';
+        const streakDisplay = b.streak > 1 ? `🔥 ${b.streak}W` : b.streak < -1 ? `🧊 ${-b.streak}L` : b.streak === 1 ? 'W' : b.streak === -1 ? 'L' : '—';
+        const streakColor = b.streak > 1 ? 'var(--green)' : b.streak < -1 ? 'var(--red)' : '#888';
+        const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
+        return `<div style="display:grid;grid-template-columns:40px 1.6fr 70px 70px 70px 80px;gap:10px;padding:10px 12px;border-bottom:1px solid #121212;font-family:var(--mono);font-size:11px;color:#ccc;align-items:center;">
+          <span style="color:#666;">${medal || (i+1)}</span>
+          <span>${b.emoji} <span style="color:#fff;">${b.name}</span></span>
+          <span style="text-align:right;color:#888;">${b.total}</span>
+          <span style="text-align:right;color:${accColor};font-weight:500;">${b.accuracy}%</span>
+          <span style="text-align:right;color:${streakColor};">${streakDisplay}</span>
+          <span style="text-align:right;color:${pointsColor};font-weight:600;">${b.points>0?'+':''}${b.points}</span>
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderRecentBattles(){
+  const el = document.getElementById('agentsRecentBattles');
+  if(!el) return;
+  // Group votes by battleId
+  const battles = {};
+  agentVotes.forEach(v => {
+    battles[v.battleId] = battles[v.battleId] || { id: v.battleId, ticker: v.ticker, ts: v.ts, dir: v.dir, entryPrice: v.entryPrice, days: v.days, votes: [] };
+    battles[v.battleId].votes.push(v);
+  });
+  const list = Object.values(battles).sort((a,b)=>b.ts-a.ts).slice(0,6);
+  if(!list.length){
+    el.innerHTML = `<div style="color:#444;font-family:var(--mono);font-size:12px;text-align:center;padding:20px;">No battles yet.</div>`;
+    return;
+  }
+  el.innerHTML = list.map(b => {
+    const resolved = b.votes.filter(v=>v.resolved).length;
+    const hits = b.votes.filter(v=>v.hit).length;
+    const buys = b.votes.filter(v=>v.verdict==='BUY').length;
+    const passes = b.votes.filter(v=>v.verdict==='PASS').length;
+    const date = new Date(b.ts).toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    const status = resolved === b.votes.length ? `${hits}/${b.votes.length} correct` : `${resolved}/${b.votes.length} resolved`;
+    const statusColor = resolved === b.votes.length ? (hits > b.votes.length/2 ? 'var(--green)' : 'var(--red)') : '#888';
+    return `<div onclick="openBattleShareFromHistory('${b.id}')" style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:10px 12px;margin-bottom:6px;cursor:pointer;display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:11px;">
+      <span style="color:#fff;font-weight:500;min-width:70px;">$${b.ticker}</span>
+      <span style="color:#666;">${b.dir} @ $${b.entryPrice.toFixed(2)}</span>
+      <span style="color:var(--green);font-size:10px;">BUY ${buys}</span>
+      <span style="color:var(--red);font-size:10px;">PASS ${passes}</span>
+      <span style="color:${statusColor};margin-left:auto;">${status}</span>
+      <span style="color:#444;">${date}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderRoster(){
+  const el = document.getElementById('agentsRoster');
+  if(!el) return;
+  el.innerHTML = INVESTORS.map(inv => {
+    const inTeam = fantasyTeam.includes(inv.id);
+    const s = getAgentStats(inv.id, 'alltime');
+    const accBadge = s.total > 0 ? `<span style="font-size:9px;color:#666;margin-left:4px;">${s.accuracy}%</span>` : '';
+    return `<div onclick="toggleFantasyAgent('${inv.id}')" style="display:flex;align-items:center;gap:8px;padding:7px 10px;margin-bottom:4px;background:${inTeam?'rgba(230,126,34,.1)':'#0a0a0a'};border:1px solid ${inTeam?'rgba(230,126,34,.4)':'#1a1a1a'};border-radius:3px;cursor:pointer;font-family:var(--mono);font-size:11px;">
+      <span style="font-size:14px;">${inv.emoji}</span>
+      <span style="color:${inTeam?'#e67e22':'#ccc'};">${inv.name}</span>${accBadge}
+      <span style="margin-left:auto;font-size:9px;color:${inTeam?'#e67e22':'#444'};">${inTeam?'✓ IN TEAM':'+ ADD'}</span>
+    </div>`;
+  }).join('');
+}
+
+function toggleFantasyAgent(id){
+  const idx = fantasyTeam.indexOf(id);
+  if(idx >= 0){
+    fantasyTeam.splice(idx, 1);
+  } else {
+    if(fantasyTeam.length >= 3){
+      alert('Your team is full (max 3). Remove someone first.');
+      return;
+    }
+    fantasyTeam.push(id);
+  }
+  saveFantasyTeam();
+  renderRoster();
+  renderFantasyTeam();
+}
+
+function renderFantasyTeam(){
+  const slotsEl = document.getElementById('fantasyTeamSlots');
+  const statsEl = document.getElementById('fantasyTeamStats');
+  if(!slotsEl || !statsEl) return;
+
+  // slots
+  const slotHTML = [0,1,2].map(i => {
+    const id = fantasyTeam[i];
+    if(!id) return `<div style="border:1px dashed #333;border-radius:4px;padding:16px 6px;text-align:center;color:#333;font-family:var(--mono);font-size:10px;">SLOT ${i+1}</div>`;
+    const inv = INVESTORS.find(x=>x.id===id);
+    return `<div onclick="toggleFantasyAgent('${id}')" style="background:rgba(230,126,34,.1);border:1px solid rgba(230,126,34,.4);border-radius:4px;padding:10px 6px;text-align:center;cursor:pointer;">
+      <div style="font-size:20px;">${inv.emoji}</div>
+      <div style="font-family:var(--mono);font-size:10px;color:#e67e22;margin-top:4px;">${inv.name.split(' ')[0]}</div>
+    </div>`;
+  }).join('');
+  slotsEl.innerHTML = slotHTML;
+
+  // combined stats
+  if(fantasyTeam.length === 0){
+    statsEl.innerHTML = `<div style="font-family:var(--mono);font-size:10px;color:#555;text-align:center;padding:14px 0;">Pick agents from the roster below →</div>`;
+    return;
+  }
+  const combined = fantasyTeam.reduce((acc, id) => {
+    const s = getAgentStats(id, 'alltime');
+    return { total: acc.total+s.total, hits: acc.hits+s.hits, points: acc.points+s.points };
+  }, { total:0, hits:0, points:0 });
+  const acc = combined.total ? Math.round(combined.hits/combined.total*100) : 0;
+  const accColor = acc >= 60 ? 'var(--green)' : acc >= 45 ? 'var(--amber)' : combined.total ? 'var(--red)' : '#666';
+  const pointsColor = combined.points > 0 ? 'var(--green)' : combined.points < 0 ? 'var(--red)' : '#888';
+  statsEl.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding-top:10px;border-top:1px solid #1a1a1a;">
+      <div style="text-align:center;"><div style="font-family:var(--mono);font-size:9px;color:#555;">CALLS</div><div style="font-size:16px;color:#fff;">${combined.total||'—'}</div></div>
+      <div style="text-align:center;"><div style="font-family:var(--mono);font-size:9px;color:#555;">ACCURACY</div><div style="font-size:16px;color:${accColor};">${combined.total?acc+'%':'—'}</div></div>
+      <div style="text-align:center;"><div style="font-family:var(--mono);font-size:9px;color:#555;">POINTS</div><div style="font-size:16px;color:${pointsColor};">${combined.points>0?'+':''}${combined.points}</div></div>
+    </div>`;
+}
+
+function clearAgentVotes(){
+  if(!confirm('Reset all agent votes and leaderboard? This cannot be undone.')) return;
+  agentVotes = [];
+  saveAgentVotes();
+  renderAgentsPage();
+}
+
+// ─── BATTLE SHARE MODAL ─────────────────────────────────
+function openBattleShare(ticker){
+  // build battle from most recent votes for this ticker
+  const now = Date.now();
+  const recent = agentVotes.filter(v => v.ticker === ticker).sort((a,b)=>b.ts-a.ts);
+  if(!recent.length) { alert('No battle found'); return; }
+  const battleId = recent[0].battleId;
+  openBattleShareFromHistory(battleId);
+}
+
+function openBattleShareFromHistory(battleId){
+  const votes = agentVotes.filter(v => v.battleId === battleId);
+  if(!votes.length) return;
+  const ticker = votes[0].ticker;
+  const entryPrice = votes[0].entryPrice;
+  const dir = votes[0].dir;
+  const days = votes[0].days;
+  const buys = votes.filter(v=>v.verdict==='BUY').sort((a,b)=>(b.conviction==='HIGH'?2:b.conviction==='MEDIUM'?1:0)-(a.conviction==='HIGH'?2:a.conviction==='MEDIUM'?1:0));
+  const passes = votes.filter(v=>v.verdict==='PASS').sort((a,b)=>(b.conviction==='HIGH'?2:b.conviction==='MEDIUM'?1:0)-(a.conviction==='HIGH'?2:a.conviction==='MEDIUM'?1:0));
+
+  const topBull = buys[0];
+  const topBear = passes[0];
+  const consensus = buys.length > passes.length ? 'BULLISH' : passes.length > buys.length ? 'BEARISH' : 'SPLIT';
+  const consensusColor = consensus==='BULLISH'?'#00c97d':consensus==='BEARISH'?'#e24b4a':'#ef9f27';
+
+  lastBattleShare = { ticker, entryPrice, dir, days, buys, passes, consensus, topBull, topBear };
+
+  const canvas = document.getElementById('battleShareCanvas');
+  canvas.innerHTML = `
+    <div style="font-family:var(--mono);font-size:10px;color:#444;letter-spacing:.15em;margin-bottom:6px;">QUANTDESK · INVESTOR AGENTS</div>
+    <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:14px;">
+      <span style="font-size:30px;font-weight:600;color:#fff;">$${ticker}</span>
+      <span style="font-family:var(--mono);font-size:12px;color:#888;">${dir} · ${days}d horizon · @$${entryPrice.toFixed(2)}</span>
+    </div>
+    <div style="display:flex;gap:10px;margin-bottom:14px;">
+      ${topBull ? `<div style="flex:1;background:rgba(0,201,125,.08);border:1px solid rgba(0,201,125,.3);border-radius:6px;padding:12px;">
+        <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:6px;">BULL CASE · ${topBull.conviction}</div>
+        <div style="font-size:13px;color:#fff;margin-bottom:4px;">${(INVESTORS.find(i=>i.id===topBull.agent)||{}).emoji||'👤'} ${(INVESTORS.find(i=>i.id===topBull.agent)||{}).name||topBull.agent} says BUY</div>
+        <div style="font-size:11px;color:#aaa;font-style:italic;line-height:1.5;">"${topBull.take}"</div>
+      </div>` : ''}
+      ${topBear ? `<div style="flex:1;background:rgba(226,75,74,.08);border:1px solid rgba(226,75,74,.3);border-radius:6px;padding:12px;">
+        <div style="font-family:var(--mono);font-size:9px;color:#e24b4a;letter-spacing:.1em;margin-bottom:6px;">BEAR CASE · ${topBear.conviction}</div>
+        <div style="font-size:13px;color:#fff;margin-bottom:4px;">${(INVESTORS.find(i=>i.id===topBear.agent)||{}).emoji||'👤'} ${(INVESTORS.find(i=>i.id===topBear.agent)||{}).name||topBear.agent} says PASS</div>
+        <div style="font-size:11px;color:#aaa;font-style:italic;line-height:1.5;">"${topBear.take}"</div>
+      </div>` : ''}
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;padding-top:10px;border-top:1px solid #1a1a1a;">
+      <span style="font-family:var(--mono);font-size:10px;color:#555;">CONSENSUS</span>
+      <span style="font-size:14px;font-weight:600;color:${consensusColor};">${consensus}</span>
+      <span style="font-family:var(--mono);font-size:10px;color:#666;">BUY ${buys.length} · PASS ${passes.length}</span>
+      <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#333;">quantdesk2.vercel.app</span>
+    </div>`;
+  document.getElementById('battleShareModal').style.display = 'flex';
+}
+
+function closeBattleShareModal(){
+  document.getElementById('battleShareModal').style.display = 'none';
+}
+
+function copyBattleText(){
+  if(!lastBattleShare) return;
+  const b = lastBattleShare;
+  const bullName = b.topBull ? (INVESTORS.find(i=>i.id===b.topBull.agent)||{}).name : null;
+  const bearName = b.topBear ? (INVESTORS.find(i=>i.id===b.topBear.agent)||{}).name : null;
+  const lines = [
+    `⚔ $${b.ticker} — ${b.dir} ${b.days}d @ $${b.entryPrice.toFixed(2)}`,
+    '',
+    bullName ? `🟢 ${bullName}: BUY (${b.topBull.conviction}) — "${b.topBull.take}"` : '',
+    bearName ? `🔴 ${bearName}: PASS (${b.topBear.conviction}) — "${b.topBear.take}"` : '',
+    '',
+    `Consensus: ${b.consensus} · BUY ${b.buys.length} · PASS ${b.passes.length}`,
+    `Run your own → quantdesk2.vercel.app`
+  ].filter(Boolean).join('\n');
+  navigator.clipboard.writeText(lines).then(()=>{
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = '✓ Copied';
+    setTimeout(()=>btn.textContent=orig, 1500);
+  });
+}
+
+function downloadBattleImage(){
+  // render the share canvas to PNG via html2canvas-style SVG foreignObject trick
+  const el = document.getElementById('battleShareCanvas');
+  if(!el || !lastBattleShare) return;
+  const W = 1080, H = 720;
+  const b = lastBattleShare;
+  const bullInv = b.topBull ? INVESTORS.find(i=>i.id===b.topBull.agent) : null;
+  const bearInv = b.topBear ? INVESTORS.find(i=>i.id===b.topBear.agent) : null;
+  const consensusColor = b.consensus==='BULLISH'?'#00c97d':b.consensus==='BEARISH'?'#e24b4a':'#ef9f27';
+
+  const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const wrap = (text, maxChars) => {
+    const words = (text||'').split(' ');
+    const lines = [];
+    let cur = '';
+    words.forEach(w => {
+      if((cur+' '+w).trim().length > maxChars){ lines.push(cur); cur = w; }
+      else cur = (cur+' '+w).trim();
+    });
+    if(cur) lines.push(cur);
+    return lines.slice(0,4);
+  };
+
+  const bullLines = b.topBull ? wrap(b.topBull.take, 45) : [];
+  const bearLines = b.topBear ? wrap(b.topBear.take, 45) : [];
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+    <rect width="${W}" height="${H}" fill="#0a0a0a"/>
+    <text x="60" y="70" font-family="monospace" font-size="18" fill="#555" letter-spacing="3">QUANTDESK · INVESTOR AGENTS</text>
+    <text x="60" y="160" font-family="sans-serif" font-size="80" font-weight="700" fill="#fff">$${esc(b.ticker)}</text>
+    <text x="${60 + b.ticker.length*48}" y="160" font-family="monospace" font-size="22" fill="#888">${esc(b.dir)} · ${b.days}d · @$${b.entryPrice.toFixed(2)}</text>
+
+    ${bullInv ? `
+      <rect x="60" y="220" width="460" height="280" rx="12" fill="#001a10" stroke="#00c97d" stroke-opacity="0.4"/>
+      <text x="80" y="255" font-family="monospace" font-size="16" fill="#00c97d" letter-spacing="2">BULL · ${esc(b.topBull.conviction)}</text>
+      <text x="80" y="295" font-family="sans-serif" font-size="24" font-weight="600" fill="#fff">${esc(bullInv.name)}</text>
+      <text x="80" y="322" font-family="monospace" font-size="14" fill="#888">says BUY</text>
+      ${bullLines.map((l,i)=>`<text x="80" y="${365+i*28}" font-family="sans-serif" font-size="18" fill="#bbb" font-style="italic">"${esc(l)}"</text>`).join('')}
+    ` : ''}
+
+    ${bearInv ? `
+      <rect x="560" y="220" width="460" height="280" rx="12" fill="#1a0606" stroke="#e24b4a" stroke-opacity="0.4"/>
+      <text x="580" y="255" font-family="monospace" font-size="16" fill="#e24b4a" letter-spacing="2">BEAR · ${esc(b.topBear.conviction)}</text>
+      <text x="580" y="295" font-family="sans-serif" font-size="24" font-weight="600" fill="#fff">${esc(bearInv.name)}</text>
+      <text x="580" y="322" font-family="monospace" font-size="14" fill="#888">says PASS</text>
+      ${bearLines.map((l,i)=>`<text x="580" y="${365+i*28}" font-family="sans-serif" font-size="18" fill="#bbb" font-style="italic">"${esc(l)}"</text>`).join('')}
+    ` : ''}
+
+    <line x1="60" y1="560" x2="${W-60}" y2="560" stroke="#1a1a1a"/>
+    <text x="60" y="615" font-family="monospace" font-size="18" fill="#555" letter-spacing="2">CONSENSUS</text>
+    <text x="230" y="618" font-family="sans-serif" font-size="32" font-weight="700" fill="${consensusColor}">${esc(b.consensus)}</text>
+    <text x="450" y="618" font-family="monospace" font-size="18" fill="#888">BUY ${b.buys.length} · PASS ${b.passes.length}</text>
+    <text x="${W-60}" y="660" text-anchor="end" font-family="monospace" font-size="16" fill="#444">quantdesk2.vercel.app</text>
+  </svg>`;
+
+  const blob = new Blob([svg], {type:'image/svg+xml'});
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  img.onload = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    canvas.toBlob(blob => {
+      const link = document.createElement('a');
+      link.download = `quantdesk-battle-${b.ticker}-${Date.now()}.png`;
+      link.href = URL.createObjectURL(blob);
+      link.click();
+      URL.revokeObjectURL(link.href);
+    });
+    URL.revokeObjectURL(url);
+  };
+  img.src = url;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// End of Investor Agents Leaderboard
+// ═══════════════════════════════════════════════════════════════════
+
 function renderPersonas(personas, ticker){
+  // persist votes for leaderboard tracking
+  try { recordAgentVotes(personas, ticker); } catch(e){ console.error('vote save err', e); }
+
   let panel=document.getElementById('personasPanel');
   if(!panel){
     panel=document.createElement('div');
@@ -5085,9 +5605,11 @@ function renderPersonas(personas, ticker){
     <div style="display:flex;align-items:center;gap:16px;padding:12px 16px;background:var(--bg2);border:1px solid var(--border2);border-radius:6px;margin-bottom:12px;flex-wrap:wrap;">
       <span style="font-family:var(--mono);font-size:11px;color:var(--text3);">CONSENSUS</span>
       <span style="font-size:18px;font-weight:500;color:${verdictColor[consensus[0]]};">${consensus[0]}</span>
-      <span style="font-size:12px;color:var(--text2);">${consensus[1]} of 6 investors agree</span>
-      <div style="display:flex;gap:6px;margin-left:auto;">
+      <span style="font-size:12px;color:var(--text2);">${consensus[1]} of ${personas.length} investors agree</span>
+      <div style="display:flex;gap:6px;margin-left:auto;align-items:center;">
         ${Object.entries(votes).map(([v,c])=>c>0?`<span style="font-size:11px;padding:2px 8px;border-radius:3px;border:1px solid ${verdictColor[v]};color:${verdictColor[v]};">${v} ${c}</span>`:'').join('')}
+        <button onclick="openBattleShare('${ticker}')" style="margin-left:8px;font-family:var(--mono);font-size:10px;padding:4px 10px;background:rgba(230,126,34,.15);color:#e67e22;border:1px solid rgba(230,126,34,.4);border-radius:3px;cursor:pointer;">⚔ Share battle</button>
+        <button onclick="showPage('agents')" style="font-family:var(--mono);font-size:10px;padding:4px 10px;background:none;color:#888;border:1px solid #333;border-radius:3px;cursor:pointer;">🏆 Leaderboard</button>
       </div>
     </div>
 
@@ -5096,11 +5618,13 @@ function renderPersonas(personas, ticker){
         const inv=INVESTORS.find(i=>i.id===p.id)||{name:p.id,emoji:'👤'};
         const vc=verdictColor[p.verdict]||'var(--text2)';
         const bg=convictionBg[p.conviction]||'';
+        const trackRec=getAgentTrackRecord(p.id);
+        const trackBadge=trackRec.resolved>0?`<span style="font-size:9px;color:#666;margin-left:4px;">${trackRec.accuracy}% last ${trackRec.resolved}</span>`:'';
         return `<div style="background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:14px;${bg?'background:'+bg:''}">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
             <span style="font-size:18px;">${inv.emoji}</span>
             <div>
-              <div style="font-family:var(--mono);font-size:12px;font-weight:500;color:var(--text);">${inv.name}</div>
+              <div style="font-family:var(--mono);font-size:12px;font-weight:500;color:var(--text);">${inv.name}${trackBadge}</div>
               <div style="font-size:10px;color:var(--text3);">${p.conviction} conviction</div>
             </div>
             <span style="margin-left:auto;font-size:11px;padding:2px 8px;border-radius:2px;border:1px solid ${vc};color:${vc};font-family:var(--mono);">${p.verdict}</span>
@@ -6566,6 +7090,83 @@ document.addEventListener('DOMContentLoaded',()=>{
   <div id="galleryGrid" style="padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;">
     <div style="color:#333;font-family:var(--mono);font-size:12px;text-align:center;padding:60px;grid-column:1/-1;">
       No saved simulations yet — run a sim and click 💾 Save Sim
+    </div>
+  </div>
+</div>
+
+<!-- AGENTS PAGE -->
+<div id="page-agents" class="page" style="padding:0;background:#080808;min-height:100vh;">
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+    <span style="font-family:var(--mono);font-size:10px;color:#e67e22;font-weight:600;letter-spacing:.1em;">INVESTOR AGENTS LEADERBOARD</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;">LEGENDARY INVESTORS · PREDICTIONS VS REALITY · FANTASY TEAMS</span>
+    <div style="margin-left:auto;display:flex;gap:8px;">
+      <button onclick="resolveAllPendingVotes()" id="agentsRefreshBtn" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">↻ Resolve votes</button>
+      <button onclick="clearAgentVotes()" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#555;background:none;border-radius:2px;cursor:pointer;">🗑 Reset</button>
+    </div>
+  </div>
+
+  <!-- TIMEFRAME TABS -->
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:4px 16px;display:flex;gap:2px;">
+    <button class="agent-tf-btn active" data-tf="month" onclick="setAgentTimeframe('month')" style="font-family:var(--mono);font-size:10px;padding:5px 12px;background:rgba(230,126,34,.15);color:#e67e22;border:1px solid rgba(230,126,34,.3);border-radius:2px;cursor:pointer;">THIS MONTH</button>
+    <button class="agent-tf-btn" data-tf="alltime" onclick="setAgentTimeframe('alltime')" style="font-family:var(--mono);font-size:10px;padding:5px 12px;background:none;color:#666;border:1px solid #222;border-radius:2px;cursor:pointer;">ALL-TIME</button>
+    <button class="agent-tf-btn" data-tf="pending" onclick="setAgentTimeframe('pending')" style="font-family:var(--mono);font-size:10px;padding:5px 12px;background:none;color:#666;border:1px solid #222;border-radius:2px;cursor:pointer;">PENDING CALLS</button>
+    <div id="agentsStatusBar" style="margin-left:auto;font-family:var(--mono);font-size:10px;color:#666;padding:5px 0;align-self:center;"></div>
+  </div>
+
+  <div style="padding:16px;display:grid;grid-template-columns:1.4fr 1fr;gap:16px;max-width:1400px;margin:0 auto;" id="agentsMainGrid">
+    <!-- LEFT: LEADERBOARD -->
+    <div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+        <span style="font-family:var(--mono);font-size:11px;color:#e67e22;letter-spacing:.1em;">// LEADERBOARD</span>
+        <div style="flex:1;height:1px;background:#1a1a1a;"></div>
+        <span id="agentsSummary" style="font-family:var(--mono);font-size:10px;color:#555;"></span>
+      </div>
+      <div id="agentsLeaderboard"></div>
+
+      <div style="margin-top:24px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+          <span style="font-family:var(--mono);font-size:11px;color:#e67e22;letter-spacing:.1em;">// RECENT BATTLES</span>
+          <div style="flex:1;height:1px;background:#1a1a1a;"></div>
+        </div>
+        <div id="agentsRecentBattles"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: FANTASY TEAM -->
+    <div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+        <span style="font-family:var(--mono);font-size:11px;color:#e67e22;letter-spacing:.1em;">// YOUR FANTASY TEAM</span>
+        <div style="flex:1;height:1px;background:#1a1a1a;"></div>
+      </div>
+      <div id="fantasyTeamBlock" style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:14px;">
+        <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:10px;">Pick 3 agents. Their combined accuracy = your score.</div>
+        <div id="fantasyTeamSlots" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px;"></div>
+        <div id="fantasyTeamStats"></div>
+      </div>
+
+      <div style="margin-top:16px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+          <span style="font-family:var(--mono);font-size:11px;color:#e67e22;letter-spacing:.1em;">// ROSTER</span>
+          <div style="flex:1;height:1px;background:#1a1a1a;"></div>
+          <span style="font-family:var(--mono);font-size:10px;color:#555;">click to add/remove</span>
+        </div>
+        <div id="agentsRoster"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- BATTLE SHARE MODAL -->
+<div id="battleShareModal" style="display:none;position:fixed;inset:0;z-index:800;background:rgba(0,0,0,.85);align-items:center;justify-content:center;">
+  <div style="background:#0a0a0a;border:1px solid #222;border-radius:8px;padding:20px;width:92%;max-width:540px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <span style="font-family:var(--mono);font-size:11px;color:#e67e22;letter-spacing:.1em;">// SHARE THIS BATTLE</span>
+      <button onclick="closeBattleShareModal()" style="font-size:16px;color:#555;border:none;background:none;cursor:pointer;">✕</button>
+    </div>
+    <div id="battleShareCanvas" style="background:#000;border:1px solid #1a1a1a;border-radius:6px;padding:28px 24px;margin-bottom:14px;"></div>
+    <div style="display:flex;gap:8px;">
+      <button onclick="copyBattleText()" style="flex:1;font-family:var(--mono);font-size:11px;padding:8px 12px;background:rgba(230,126,34,.15);color:#e67e22;border:1px solid rgba(230,126,34,.4);border-radius:3px;cursor:pointer;">📋 Copy text</button>
+      <button onclick="downloadBattleImage()" style="flex:1;font-family:var(--mono);font-size:11px;padding:8px 12px;background:rgba(0,201,125,.15);color:var(--green);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;">💾 Download PNG</button>
     </div>
   </div>
 </div>
