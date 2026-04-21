@@ -693,7 +693,7 @@ td:first-child{color:var(--text);font-weight:500;}
       <!-- FX Calculator -->
       <div style="padding:12px;">
         <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;">FX IMPACT CALC</div>
-        <input type="text" id="fxTicker" placeholder="AMXL.MX" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 8px;width:100%;margin-bottom:4px;border-radius:2px;"/>
+        <input type="text" id="fxTicker" placeholder="AMXB.MX" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 8px;width:100%;margin-bottom:4px;border-radius:2px;"/>
         <input type="number" id="fxAmount" value="10000" placeholder="USD amount" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 8px;width:100%;margin-bottom:4px;border-radius:2px;"/>
         <div style="display:flex;gap:4px;">
           <input type="number" id="fxMove" value="-5" placeholder="FX %" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 8px;flex:1;border-radius:2px;"/>
@@ -994,8 +994,8 @@ const SCREENER_UNIVERSE = {
        'JNJ','PG','MA','HD','BAC','XOM','NFLX','ORCL','ADBE','CRM',
        'AMD','INTC','QCOM','MU','AVGO','TXN','NOW','SNOW','PLTR','COIN',
        'SPY','QQQ','GLD','TLT','IWM','VIX','DIS','UBER','LYFT','ABNB'],
-  latam: ['MELI','NU','GLOB','STNE','VALE','ITUB','PBR','ABEV','BBD','SBS','CIB','BAP','XP','GOL','LSPD',
-          'AMXL.MX','WALMEX.MX','BIMBOA.MX','GFNORTEO.MX','FEMSAUBD.MX','KOFUBL.MX','CEMEXCPO.MX','GAPB.MX','ASURB.MX','ALFAA.MX',
+  latam: ['MELI','NU','GLOB','STNE','VALE','ITUB','PBR','ABEV','BBD','SBS','CIB','BAP','XP','GOLL4.SA','LSPD',
+          'AMXB.MX','WALMEX.MX','BIMBOA.MX','GFNORTEO.MX','FEMSAUBD.MX','KOFUBL.MX','CEMEXCPO.MX','GAPB.MX','ASURB.MX','ALFAA.MX',
           'DESP','PAGS','VIST'],
   crypto: ['BTC/USD','ETH/USD','SOL/USD','BNB/USD','AVAX/USD','LINK/USD'],
 };
@@ -1094,7 +1094,7 @@ async function runScreener(){
       'CIB':    {squeeze:20,insider:'NONE',inst:52,signal:'BUY',score:62,thesis:'Bancolombia ADR: largest Colombian bank trading at discount to book'},
       'BAP':    {squeeze:22,insider:'NONE',inst:50,signal:'NEUTRAL',score:60,thesis:'Credicorp: Peru largest financial group, copper macro tailwind'},
       'XP':     {squeeze:35,insider:'NONE',inst:55,signal:'NEUTRAL',score:58,thesis:'XP Inc: Brazilian wealth management leader, retail flow recovery story'},
-      'GOL':    {squeeze:62,insider:'BUYING',inst:25,signal:'NEUTRAL',score:50,thesis:'Brazilian airline post-Chapter 11 turnaround, high risk/reward'},
+      'GOLL4.SA':    {squeeze:62,insider:'BUYING',inst:25,signal:'NEUTRAL',score:50,thesis:'Brazilian airline post-Chapter 11 turnaround, high risk/reward'},
       'LSPD':   {squeeze:48,insider:'NONE',inst:45,signal:'NEUTRAL',score:54,thesis:'Lightspeed: SMB POS and payments, Canada-LATAM exposure'},
       'DESP':   {squeeze:48,insider:'NONE',inst:42,signal:'NEUTRAL',score:58,thesis:'Despegar: LATAM travel platform recovery play'},
       'NVDA':   {squeeze:18,insider:'NONE',inst:72,signal:'BUY',score:74,thesis:'AI chip demand structural, not cyclical'},
@@ -1124,7 +1124,7 @@ async function runScreener(){
       'BAC':    {squeeze:12,insider:'NONE',inst:70,signal:'NEUTRAL',score:57,thesis:'Rate sensitivity improving as Fed cuts begin cycle'},
       // LATAM extras
       'WALMEX.MX':{squeeze:15,insider:'NONE',inst:58,signal:'NEUTRAL',score:54,thesis:'Dominant Mexican retailer, defensive amid peso volatility'},
-      'AMXL.MX':  {squeeze:20,insider:'NONE',inst:45,signal:'NEUTRAL',score:52,thesis:'Telecom giant with regional coverage across LATAM'},
+      'AMXB.MX':  {squeeze:20,insider:'NONE',inst:45,signal:'NEUTRAL',score:52,thesis:'Telecom giant with regional coverage across LATAM'},
       'BIMBOA.MX': {squeeze:12,insider:'BUYING',inst:42,signal:'BUY',score:61,thesis:'Global bakery leader, family insider buying is bullish'},
       'GFNORTEO.MX':{squeeze:18,insider:'NONE',inst:55,signal:'BUY',score:63,thesis:'Largest Mexican bank benefiting from nearshoring boom'},
       'FEMSAUBD.MX':{squeeze:14,insider:'NONE',inst:60,signal:'BUY',score:66,thesis:'OXXO retail dominance + Heineken stake = high-quality Mexican consumer compounder'},
@@ -2171,14 +2171,14 @@ async function loadMarketSummary(){
   const groups=[
     {label:'US', tickers:['SPY','QQQ','IWM','GLD','TLT','AMZN','NVDA','TSLA']},
     {label:'CRYPTO', tickers:['BTC/USD','ETH/USD','SOL/USD','BNB/USD']},
-    {label:'LATAM', tickers:['MELI','NU','GLOB','AMXL.MX']},
+    {label:'LATAM', tickers:['MELI','NU','GLOB','AMXB.MX']},
   ];
 
   const names={
     'SPY':'S&P 500','QQQ':'Nasdaq 100','IWM':'Russell 2K','GLD':'Gold',
     'TLT':'20Y Treasury','AMZN':'Amazon','NVDA':'NVIDIA','TSLA':'Tesla',
     'BTC/USD':'Bitcoin','ETH/USD':'Ethereum','SOL/USD':'Solana','BNB/USD':'BNB',
-    'MELI':'MercadoLibre','NU':'Nu Holdings','GLOB':'Globant','AMXL.MX':'América Móvil'
+    'MELI':'MercadoLibre','NU':'Nu Holdings','GLOB':'Globant','AMXB.MX':'América Móvil'
   };
 
   // Estimated fallbacks for tickers that may not return data
@@ -2189,7 +2189,7 @@ async function loadMarketSummary(){
     'BNB/USD':{currentPrice:580,return30d:0.04},
     'NU':{currentPrice:13.2,return30d:-0.08},
     'GLOB':{currentPrice:168,return30d:-0.12},
-    'AMXL.MX':{currentPrice:18.4,return30d:-0.04},
+    'AMXB.MX':{currentPrice:18.4,return30d:-0.04},
   };
 
   const allTickers=groups.flatMap(g=>g.tickers);
@@ -4147,7 +4147,7 @@ const TICKERS = [
   {sym:'ITUB4.SA',name:'Itaú Unibanco',type:'stock'},
   {sym:'WALMEX.MX',name:'Walmart México',type:'stock'},
   {sym:'FEMSAUBD.MX',name:'FEMSA México',type:'stock'},
-  {sym:'AMXL.MX',name:'América Móvil',type:'stock'},
+  {sym:'AMXB.MX',name:'América Móvil',type:'stock'},
 ];
 
 let acIndex=-1;
