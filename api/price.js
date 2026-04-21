@@ -104,15 +104,16 @@ export default async function handler(req, res) {
   const isBCBA = t.endsWith('.BA');      // Buenos Aires (Argentina)
   const isYahooOnly = isBMV || isB3 || isBCBA;
 
-  // Nice display names for common BMV tickers (no Finnhub profile available)
+  // Nice display names for common BMV/B3 tickers (no Finnhub profile available)
   const bmvNames = {
+    // BMV México
     'FEMSAUBD.MX': 'Fomento Económico Mexicano (FEMSA)',
     'KOFUBL.MX':   'Coca-Cola FEMSA',
     'CEMEXCPO.MX': 'CEMEX',
     'GAPB.MX':     'Grupo Aeroportuario del Pacífico',
     'ASURB.MX':    'Grupo Aeroportuario del Sureste (ASUR)',
     'ALFAA.MX':    'Alfa SAB',
-    'AMXL.MX':     'América Móvil',
+    'AMXB.MX':     'América Móvil (Serie B)',
     'WALMEX.MX':   'Walmart de México',
     'BIMBOA.MX':   'Grupo Bimbo',
     'GFNORTEO.MX': 'Grupo Financiero Banorte',
@@ -121,6 +122,14 @@ export default async function handler(req, res) {
     'GCARSOA1.MX': 'Grupo Carso',
     'PINFRA.MX':   'Promotora y Operadora de Infraestructura',
     'LIVEPOLC-1.MX': 'El Puerto de Liverpool',
+    // B3 Brasil
+    'GOLL4.SA':    'Gol Linhas Aéreas',
+    'PETR4.SA':    'Petrobras (PN)',
+    'VALE3.SA':    'Vale S.A.',
+    'ITUB4.SA':    'Itaú Unibanco',
+    'BBAS3.SA':    'Banco do Brasil',
+    'ABEV3.SA':    'Ambev',
+    'B3SA3.SA':    'B3 (Bolsa de Brasil)',
   };
 
   // ── YAHOO-FIRST ROUTE (for BMV/B3/BCBA — Finnhub doesn't cover these) ──
@@ -351,6 +360,13 @@ export default async function handler(req, res) {
     const dayChange = quote.dp != null ? quote.dp / 100 :
                       quote.pc ? (currentPrice - quote.pc) / quote.pc : 0;
 
+    // Best-available longName: Finnhub profile → Yahoo meta → symbol
+    let yahooLongName = null;
+    try {
+      const yMeta = yahooRes?.chart?.result?.[0]?.meta;
+      yahooLongName = yMeta?.longName || yMeta?.shortName || null;
+    } catch (e) {}
+
     return res.status(200).json({
       ticker: symbol,
       currentPrice: parseFloat(currentPrice.toFixed(2)),
@@ -364,7 +380,7 @@ export default async function handler(req, res) {
       asset_type: 'stock',
       currency: profile.currency || 'USD',
       exchange: profile.exchange || '',
-      longName: profile.name || symbol,
+      longName: profile.name || yahooLongName || symbol,
       recentPrices: closes.slice(-30).map(p => parseFloat(p.toFixed(2)))
     });
 
