@@ -51,7 +51,7 @@ QuantDesk gives retail and institutional investors in LATAM the same class of qu
 
 **AI-native means built differently.** Every module ships with AI synthesis — not as a chatbot bolted on, but as the default output layer. Users get the quant output AND the plain-Spanish interpretation of what it means.
 
-**Distribution is already solved.** Creator channel [@leticiatijerinam](https://tiktok.com/@leticiatijerinam) (43K, 38.7% Search traffic) provide organic acquisition.
+**Distribution is already solved.** Creator channel Organic acquisition via creator channel @leticiatijerinam (43K, 38.7% Search traffic).
 
 ---
 
