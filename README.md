@@ -68,7 +68,7 @@ Active development. Shipping 5+ major product tabs in parallel. Solo technical f
 **Leticia Tijerina** — Monterrey, MX
 Self-taught Python quant. Previously built a 70+ iteration trading bot for Polymarket BTC prediction markets (67% accuracy on spot momentum signals, proprietary Kappa metric for order book manipulation detection). 14+ years in fashion (Derek Lam NYC, ICONY co-founder). MBA Esden, BA Tecnológico de Monterrey.
 
-- Twitter: [@leticiatijerinam](https://tiktok.com/@leticiatijerinam)
+- Twitter: [@0xLeticia]((https://x.com/0xLeticia))
 - LinkedIn: [leticia-tijerina-martinez](https://www.linkedin.com/in/leticia-tijerina-martinez-46999757/)
 
 ---
