@@ -318,6 +318,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button onclick="runDebate()" id="debateBtn" style="border-color:var(--amber);color:var(--amber);" title="Bull vs Bear debate">⚔ Debate</button>
     <button onclick="startLiveTrack()" id="trackBtn" style="border-color:#00ffcc;color:#00ffcc;" title="Track this trade live vs simulation">📡 Track Live</button>
     <button onclick="saveSim()" id="saveSimBtn" style="border-color:#9b59b6;color:#9b59b6;" title="Save simulation to gallery">💾 Save Sim</button>
+    <button onclick="openShareSimModal()" id="shareSimBtn" style="border-color:#00d4ff;color:#00d4ff;" title="Share this simulation — anyone with the link can re-run it">🔗 Share</button>
   </div>
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
     <span id="speedTxt" style="font-size:11px;color:var(--text3);">// speed</span>
@@ -7135,6 +7136,155 @@ function stopLiveTrack(){
   redrawSim();
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// ─── SHAREABLE LINKS (Remix this sim) ──────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// URL format: ?t=NVDA&d=LONG&days=90&cap=10000&m=gbm
+// Anyone opening a shared link → inputs pre-filled + auto-run
+// ═══════════════════════════════════════════════════════════════════
+
+function buildShareLink(){
+  const ticker = (document.getElementById('simTicker').value||'').trim().toUpperCase();
+  if(!ticker) return null;
+  const dir = document.getElementById('simDir').value;
+  const days = document.getElementById('simDays').value;
+  const cap = document.getElementById('simCapital').value||'10000';
+  const model = document.getElementById('simModel').value;
+  const params = new URLSearchParams({
+    t: ticker, d: dir, days: days, cap: cap, m: model
+  });
+  const base = window.location.origin + window.location.pathname;
+  return `${base}?${params.toString()}`;
+}
+
+function openShareSimModal(){
+  const ticker = (document.getElementById('simTicker').value||'').trim();
+  if(!ticker){ alert('Pick a ticker first'); return; }
+  const link = buildShareLink();
+  if(!link) return;
+
+  const dir = document.getElementById('simDir').value;
+  const days = document.getElementById('simDays').value;
+  const cap = document.getElementById('simCapital').value||'10000';
+  const model = document.getElementById('simModel').value;
+  const modelName = { gbm:'GBM', jump:'Jump diffusion', regime:'Regime switching' }[model] || model;
+  const daysLabel = { '3':'3 days','5':'1 week','10':'2 weeks','15':'15 days','21':'3 weeks','30':'1 month','60':'2 months','90':'3 months','180':'6 months','365':'1 year' }[days] || (days+' days');
+
+  const txtX = `Ran a Monte Carlo on $${ticker.toUpperCase()} — ${dir} · ${daysLabel} · $${parseInt(cap).toLocaleString()} · ${modelName}. Remix this sim:`;
+  const txtWA = `Mira esta simulación de $${ticker.toUpperCase()} (${dir}, ${daysLabel}) en QuantDesk: `;
+
+  const modal = document.getElementById('shareSimModal');
+  const body = document.getElementById('shareSimBody');
+  body.innerHTML = `
+    <div style="font-family:var(--mono);font-size:11px;color:#888;margin-bottom:6px;">Your shareable link</div>
+    <div style="display:flex;gap:6px;margin-bottom:14px;">
+      <input id="shareLinkInput" type="text" value="${link.replace(/"/g,'&quot;')}" readonly onclick="this.select()" style="flex:1;font-family:var(--mono);font-size:11px;padding:8px 10px;background:#050505;color:#00d4ff;border:1px solid #1a2a30;border-radius:3px;outline:none;"/>
+      <button onclick="copyShareLink()" style="font-family:var(--mono);font-size:11px;padding:8px 14px;background:rgba(0,212,255,.15);color:#00d4ff;border:1px solid rgba(0,212,255,.4);border-radius:3px;cursor:pointer;white-space:nowrap;">📋 Copy</button>
+    </div>
+
+    <div style="background:#050505;border:1px solid #1a1a1a;border-radius:6px;padding:12px;margin-bottom:14px;">
+      <div style="font-family:var(--mono);font-size:10px;color:#555;letter-spacing:.1em;margin-bottom:8px;">WHAT GETS SHARED</div>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;font-family:var(--mono);font-size:11px;">
+        <div><span style="color:#555;">Ticker:</span> <span style="color:#fff;">$${ticker.toUpperCase()}</span></div>
+        <div><span style="color:#555;">Direction:</span> <span style="color:#fff;">${dir}</span></div>
+        <div><span style="color:#555;">Horizon:</span> <span style="color:#fff;">${daysLabel}</span></div>
+        <div><span style="color:#555;">Capital:</span> <span style="color:#fff;">$${parseInt(cap).toLocaleString()}</span></div>
+        <div><span style="color:#555;">Model:</span> <span style="color:#fff;">${modelName}</span></div>
+        <div><span style="color:#555;">Auto-runs:</span> <span style="color:var(--green);">✓ Yes</span></div>
+      </div>
+    </div>
+
+    <div style="font-family:var(--mono);font-size:11px;color:#888;margin-bottom:6px;">Share on</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+      <a href="https://twitter.com/intent/tweet?text=${encodeURIComponent(txtX)}&url=${encodeURIComponent(link)}" target="_blank" rel="noopener" style="text-align:center;font-family:var(--mono);font-size:11px;padding:10px 8px;background:#111;color:#fff;border:1px solid #333;border-radius:3px;text-decoration:none;">𝕏 / Twitter</a>
+      <a href="https://wa.me/?text=${encodeURIComponent(txtWA + link)}" target="_blank" rel="noopener" style="text-align:center;font-family:var(--mono);font-size:11px;padding:10px 8px;background:rgba(37,211,102,.1);color:#25d366;border:1px solid rgba(37,211,102,.3);border-radius:3px;text-decoration:none;">💬 WhatsApp</a>
+      <a href="https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(txtX)}" target="_blank" rel="noopener" style="text-align:center;font-family:var(--mono);font-size:11px;padding:10px 8px;background:rgba(0,136,204,.1);color:#0088cc;border:1px solid rgba(0,136,204,.3);border-radius:3px;text-decoration:none;">✈ Telegram</a>
+    </div>
+  `;
+  modal.style.display = 'flex';
+}
+
+function closeShareSimModal(){
+  document.getElementById('shareSimModal').style.display = 'none';
+}
+
+function copyShareLink(){
+  const inp = document.getElementById('shareLinkInput');
+  if(!inp) return;
+  navigator.clipboard.writeText(inp.value).then(()=>{
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = '✓ Copied!';
+    btn.style.background = 'rgba(0,201,125,.2)';
+    btn.style.color = 'var(--green)';
+    btn.style.borderColor = 'var(--green)';
+    setTimeout(()=>{
+      btn.textContent = orig;
+      btn.style.background = 'rgba(0,212,255,.15)';
+      btn.style.color = '#00d4ff';
+      btn.style.borderColor = 'rgba(0,212,255,.4)';
+    }, 1800);
+  }).catch(()=>{
+    inp.select();
+    document.execCommand('copy');
+  });
+}
+
+// Called on page load — if URL has share params, pre-fill and auto-run
+function loadSharedSim(){
+  const params = new URLSearchParams(window.location.search);
+  const t = params.get('t');
+  if(!t) return false;
+
+  const d = params.get('d') || 'LONG';
+  const days = params.get('days') || '90';
+  const cap = params.get('cap') || '10000';
+  const m = params.get('m') || 'gbm';
+
+  // pre-fill inputs
+  const tEl = document.getElementById('simTicker');
+  const dEl = document.getElementById('simDir');
+  const daysEl = document.getElementById('simDays');
+  const capEl = document.getElementById('simCapital');
+  const mEl = document.getElementById('simModel');
+  if(tEl) tEl.value = t.toUpperCase();
+  if(dEl && (d==='LONG'||d==='SHORT')) dEl.value = d;
+  if(daysEl) daysEl.value = days;
+  if(capEl) capEl.value = cap;
+  if(mEl && ['gbm','jump','regime'].includes(m)) mEl.value = m;
+
+  // banner
+  showSharedSimBanner(t.toUpperCase());
+
+  // auto-run after a tick so DOM + live prices settle
+  setTimeout(()=>{
+    try { if(typeof startSim === 'function') startSim(); } catch(e){ console.error('auto-run err', e); }
+  }, 800);
+
+  // clean URL after loading so back button behaves normally (keep params via history state if ever needed)
+  // we leave ?t in URL so user can still copy/paste this same link
+  return true;
+}
+
+function showSharedSimBanner(ticker){
+  let banner = document.getElementById('sharedSimBanner');
+  if(banner) banner.remove();
+  banner = document.createElement('div');
+  banner.id = 'sharedSimBanner';
+  banner.style.cssText = 'position:sticky;top:48px;z-index:40;background:linear-gradient(90deg,rgba(0,212,255,.15),rgba(0,212,255,.03));border-bottom:1px solid rgba(0,212,255,.3);padding:8px 16px;font-family:var(--mono);font-size:11px;color:#00d4ff;display:flex;align-items:center;gap:10px;';
+  banner.innerHTML = `
+    <span style="font-size:14px;">🔗</span>
+    <span>You're viewing a shared simulation of <strong style="color:#fff;">$${ticker}</strong> — remix the inputs and run your own.</span>
+    <button onclick="document.getElementById('sharedSimBanner').remove()" style="margin-left:auto;font-size:12px;color:#00d4ff;border:none;background:none;cursor:pointer;opacity:.7;">✕</button>
+  `;
+  const page = document.getElementById('page-sim');
+  if(page) page.insertBefore(banner, page.firstChild);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// End of Shareable Links
+// ═══════════════════════════════════════════════════════════════════
+
 document.addEventListener('DOMContentLoaded',()=>{
   initCanvases();
   renderPortfolioTable();
@@ -7142,6 +7292,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   renderHistory();
   refreshLiveTape();
   setInterval(refreshLiveTape, 30*1000);
+  // auto-load shared sim if URL has ?t=
+  loadSharedSim();
 });
 </script>
 <!-- GALLERY PAGE -->
@@ -7233,6 +7385,20 @@ document.addEventListener('DOMContentLoaded',()=>{
     <div style="display:flex;gap:8px;flex-shrink:0;">
       <button onclick="copyBattleText()" style="flex:1;font-family:var(--mono);font-size:11px;padding:8px 12px;background:rgba(230,126,34,.15);color:#e67e22;border:1px solid rgba(230,126,34,.4);border-radius:3px;cursor:pointer;">📋 Copy text</button>
       <button onclick="downloadBattleImage()" style="flex:1;font-family:var(--mono);font-size:11px;padding:8px 12px;background:rgba(0,201,125,.15);color:var(--green);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;">💾 Download PNG</button>
+    </div>
+  </div>
+</div>
+
+<!-- SHARE SIM MODAL -->
+<div id="shareSimModal" style="display:none;position:fixed;inset:0;z-index:800;background:rgba(0,0,0,.85);align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#0a0a0a;border:1px solid #1a2a30;border-radius:8px;padding:20px;width:96%;max-width:520px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <span style="font-family:var(--mono);font-size:11px;color:#00d4ff;letter-spacing:.1em;">// SHARE THIS SIMULATION</span>
+      <button onclick="closeShareSimModal()" style="font-size:16px;color:#555;border:none;background:none;cursor:pointer;">✕</button>
+    </div>
+    <div id="shareSimBody"></div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #1a1a1a;font-family:var(--mono);font-size:10px;color:#444;line-height:1.6;">
+      Anyone with this link will see the same inputs and the sim will auto-run for them. They can tweak and remix freely — your version isn't affected.
     </div>
   </div>
 </div>
