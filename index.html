@@ -3178,7 +3178,7 @@ function updateSimStats(){
       <div class="stat-card"><div class="stat-lbl">Sortino ratio</div><div class="stat-val ${sortino>=1?'pos':sortino<0?'neg':''}">${sortino.toFixed(2)}</div><div class="stat-sub">downside-adj</div></div>
       <div class="stat-card"><div class="stat-lbl">Calmar ratio</div><div class="stat-val ${calmar>=1?'pos':calmar<0?'neg':''}">${calmar.toFixed(2)}</div><div class="stat-sub">return/drawdown</div></div>
       <div class="stat-card"><div class="stat-lbl">Profit factor</div><div class="stat-val ${profitFactor>=1.5?'pos':profitFactor<1?'neg':''}">${profitFactor>50?'∞':profitFactor.toFixed(2)}</div><div class="stat-sub">gross win/loss</div></div>
-      <div class="stat-card"><div class="stat-lbl">Kelly %</div><div class="stat-val">${(kelly*100).toFixed(1)}%</div><div class="stat-sub">optimal bet size</div></div>
+      <div class="stat-card"><div class="stat-lbl">Kelly %</div><div class="stat-val ${fullKelly>=0.10?'pos':fullKelly<0?'neg':''}">${(fullKelly*100).toFixed(1)}%</div><div class="stat-sub">full · ${(kelly*100).toFixed(1)}% quarter (institutional)</div></div>
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px;">
