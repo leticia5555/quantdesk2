@@ -5436,40 +5436,68 @@ function openBattleShareFromHistory(battleId){
   const entryPrice = votes[0].entryPrice;
   const dir = votes[0].dir;
   const days = votes[0].days;
-  const buys = votes.filter(v=>v.verdict==='BUY').sort((a,b)=>(b.conviction==='HIGH'?2:b.conviction==='MEDIUM'?1:0)-(a.conviction==='HIGH'?2:a.conviction==='MEDIUM'?1:0));
-  const passes = votes.filter(v=>v.verdict==='PASS').sort((a,b)=>(b.conviction==='HIGH'?2:b.conviction==='MEDIUM'?1:0)-(a.conviction==='HIGH'?2:a.conviction==='MEDIUM'?1:0));
+
+  // Sort: BUY first, then HOLD, then PASS; within each group HIGH > MED > LOW
+  const convRank = c => c==='HIGH'?3:c==='MEDIUM'?2:1;
+  const verdRank = v => v==='BUY'?3:v==='HOLD'?2:1;
+  const sorted = [...votes].sort((a,b) => verdRank(b.verdict)-verdRank(a.verdict) || convRank(b.conviction)-convRank(a.conviction));
+
+  const buys = votes.filter(v=>v.verdict==='BUY').sort((a,b)=>convRank(b.conviction)-convRank(a.conviction));
+  const holds = votes.filter(v=>v.verdict==='HOLD').sort((a,b)=>convRank(b.conviction)-convRank(a.conviction));
+  const passes = votes.filter(v=>v.verdict==='PASS').sort((a,b)=>convRank(b.conviction)-convRank(a.conviction));
 
   const topBull = buys[0];
   const topBear = passes[0];
   const consensus = buys.length > passes.length ? 'BULLISH' : passes.length > buys.length ? 'BEARISH' : 'SPLIT';
   const consensusColor = consensus==='BULLISH'?'#00c97d':consensus==='BEARISH'?'#e24b4a':'#ef9f27';
 
-  lastBattleShare = { ticker, entryPrice, dir, days, buys, passes, consensus, topBull, topBear };
+  lastBattleShare = { ticker, entryPrice, dir, days, buys, passes, holds, consensus, topBull, topBear, allVotes: sorted };
+
+  const verdictStyles = {
+    BUY: { bg:'rgba(0,201,125,.08)', border:'rgba(0,201,125,.3)', label:'#00c97d' },
+    HOLD:{ bg:'rgba(239,159,39,.08)', border:'rgba(239,159,39,.3)', label:'#ef9f27' },
+    PASS:{ bg:'rgba(226,75,74,.08)', border:'rgba(226,75,74,.3)', label:'#e24b4a' }
+  };
 
   const canvas = document.getElementById('battleShareCanvas');
   canvas.innerHTML = `
     <div style="font-family:var(--mono);font-size:10px;color:#444;letter-spacing:.15em;margin-bottom:6px;">QUANTDESK · INVESTOR AGENTS</div>
-    <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:14px;">
-      <span style="font-size:30px;font-weight:600;color:#fff;">$${ticker}</span>
+    <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px;flex-wrap:wrap;">
+      <span style="font-size:32px;font-weight:600;color:#fff;">$${ticker}</span>
       <span style="font-family:var(--mono);font-size:12px;color:#888;">${dir} · ${days}d horizon · @$${entryPrice.toFixed(2)}</span>
     </div>
-    <div style="display:flex;gap:10px;margin-bottom:14px;">
-      ${topBull ? `<div style="flex:1;background:rgba(0,201,125,.08);border:1px solid rgba(0,201,125,.3);border-radius:6px;padding:12px;">
-        <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:6px;">BULL CASE · ${topBull.conviction}</div>
-        <div style="font-size:13px;color:#fff;margin-bottom:4px;">${(INVESTORS.find(i=>i.id===topBull.agent)||{}).emoji||'👤'} ${(INVESTORS.find(i=>i.id===topBull.agent)||{}).name||topBull.agent} says BUY</div>
-        <div style="font-size:11px;color:#aaa;font-style:italic;line-height:1.5;">"${topBull.take}"</div>
-      </div>` : ''}
-      ${topBear ? `<div style="flex:1;background:rgba(226,75,74,.08);border:1px solid rgba(226,75,74,.3);border-radius:6px;padding:12px;">
-        <div style="font-family:var(--mono);font-size:9px;color:#e24b4a;letter-spacing:.1em;margin-bottom:6px;">BEAR CASE · ${topBear.conviction}</div>
-        <div style="font-size:13px;color:#fff;margin-bottom:4px;">${(INVESTORS.find(i=>i.id===topBear.agent)||{}).emoji||'👤'} ${(INVESTORS.find(i=>i.id===topBear.agent)||{}).name||topBear.agent} says PASS</div>
-        <div style="font-size:11px;color:#aaa;font-style:italic;line-height:1.5;">"${topBear.take}"</div>
-      </div>` : ''}
-    </div>
-    <div style="display:flex;align-items:center;gap:10px;padding-top:10px;border-top:1px solid #1a1a1a;">
+
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#050505;border:1px solid #1a1a1a;border-radius:6px;margin-bottom:14px;flex-wrap:wrap;">
       <span style="font-family:var(--mono);font-size:10px;color:#555;">CONSENSUS</span>
-      <span style="font-size:14px;font-weight:600;color:${consensusColor};">${consensus}</span>
-      <span style="font-family:var(--mono);font-size:10px;color:#666;">BUY ${buys.length} · PASS ${passes.length}</span>
-      <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#333;">quantdesk2.vercel.app</span>
+      <span style="font-size:16px;font-weight:600;color:${consensusColor};">${consensus}</span>
+      <span style="font-family:var(--mono);font-size:11px;color:#888;">${votes.length} investors weighed in</span>
+      <div style="margin-left:auto;display:flex;gap:6px;">
+        <span style="font-family:var(--mono);font-size:10px;padding:2px 8px;border:1px solid rgba(0,201,125,.4);color:#00c97d;border-radius:2px;">BUY ${buys.length}</span>
+        ${holds.length ? `<span style="font-family:var(--mono);font-size:10px;padding:2px 8px;border:1px solid rgba(239,159,39,.4);color:#ef9f27;border-radius:2px;">HOLD ${holds.length}</span>` : ''}
+        <span style="font-family:var(--mono);font-size:10px;padding:2px 8px;border:1px solid rgba(226,75,74,.4);color:#e24b4a;border-radius:2px;">PASS ${passes.length}</span>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:14px;">
+      ${sorted.map(v => {
+        const inv = INVESTORS.find(i=>i.id===v.agent) || { name:v.agent, emoji:'👤' };
+        const st = verdictStyles[v.verdict] || verdictStyles.HOLD;
+        return `<div style="background:${st.bg};border:1px solid ${st.border};border-radius:6px;padding:10px 12px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <span style="font-size:16px;">${inv.emoji}</span>
+            <div style="min-width:0;flex:1;">
+              <div style="font-family:var(--mono);font-size:11px;color:#fff;font-weight:500;">${inv.name}</div>
+              <div style="font-family:var(--mono);font-size:9px;color:#666;">${v.conviction} conviction</div>
+            </div>
+            <span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border:1px solid ${st.label};color:${st.label};border-radius:2px;">${v.verdict}</span>
+          </div>
+          <div style="font-size:11px;color:#bbb;font-style:italic;line-height:1.5;">"${v.take}"</div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <div style="display:flex;align-items:center;padding-top:10px;border-top:1px solid #1a1a1a;">
+      <span style="font-family:var(--mono);font-size:9px;color:#333;">quantdesk2.vercel.app · Bloomberg + TradingView for LATAM</span>
     </div>`;
   document.getElementById('battleShareModal').style.display = 'flex';
 }
@@ -5481,16 +5509,21 @@ function closeBattleShareModal(){
 function copyBattleText(){
   if(!lastBattleShare) return;
   const b = lastBattleShare;
-  const bullName = b.topBull ? (INVESTORS.find(i=>i.id===b.topBull.agent)||{}).name : null;
-  const bearName = b.topBear ? (INVESTORS.find(i=>i.id===b.topBear.agent)||{}).name : null;
+  const emoji = v => v==='BUY'?'🟢':v==='PASS'?'🔴':'🟡';
+  const nameOf = id => (INVESTORS.find(i=>i.id===id)||{}).name || id;
+
+  // Show all agents by verdict, HIGH conviction first
+  const voteLines = (b.allVotes||[]).map(v =>
+    `${emoji(v.verdict)} ${nameOf(v.agent)}: ${v.verdict} (${v.conviction}) — "${v.take}"`
+  );
+
   const lines = [
     `⚔ $${b.ticker} — ${b.dir} ${b.days}d @ $${b.entryPrice.toFixed(2)}`,
+    `Consensus: ${b.consensus} · BUY ${b.buys.length} · HOLD ${(b.holds||[]).length} · PASS ${b.passes.length}`,
     '',
-    bullName ? `🟢 ${bullName}: BUY (${b.topBull.conviction}) — "${b.topBull.take}"` : '',
-    bearName ? `🔴 ${bearName}: PASS (${b.topBear.conviction}) — "${b.topBear.take}"` : '',
+    ...voteLines,
     '',
-    `Consensus: ${b.consensus} · BUY ${b.buys.length} · PASS ${b.passes.length}`,
-    `Run your own → quantdesk2.vercel.app`
+    `Run your own sim → quantdesk2.vercel.app`
   ].filter(Boolean).join('\n');
   navigator.clipboard.writeText(lines).then(()=>{
     const btn = event.target;
@@ -5501,17 +5534,15 @@ function copyBattleText(){
 }
 
 function downloadBattleImage(){
-  // render the share canvas to PNG via html2canvas-style SVG foreignObject trick
-  const el = document.getElementById('battleShareCanvas');
-  if(!el || !lastBattleShare) return;
-  const W = 1080, H = 720;
+  if(!lastBattleShare) return;
   const b = lastBattleShare;
-  const bullInv = b.topBull ? INVESTORS.find(i=>i.id===b.topBull.agent) : null;
-  const bearInv = b.topBear ? INVESTORS.find(i=>i.id===b.topBear.agent) : null;
   const consensusColor = b.consensus==='BULLISH'?'#00c97d':b.consensus==='BEARISH'?'#e24b4a':'#ef9f27';
 
+  // 1080x1920 vertical format (TikTok / Instagram Stories / Reels)
+  const W = 1080, H = 1920;
+
   const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  const wrap = (text, maxChars) => {
+  const wrap = (text, maxChars, maxLines=3) => {
     const words = (text||'').split(' ');
     const lines = [];
     let cur = '';
@@ -5520,39 +5551,70 @@ function downloadBattleImage(){
       else cur = (cur+' '+w).trim();
     });
     if(cur) lines.push(cur);
-    return lines.slice(0,4);
+    if(lines.length > maxLines){
+      const truncated = lines.slice(0, maxLines);
+      truncated[maxLines-1] = truncated[maxLines-1].slice(0, maxChars-3) + '...';
+      return truncated;
+    }
+    return lines;
   };
 
-  const bullLines = b.topBull ? wrap(b.topBull.take, 45) : [];
-  const bearLines = b.topBear ? wrap(b.topBear.take, 45) : [];
+  const verdictColors = {
+    BUY:  { fill:'#001a10', stroke:'#00c97d', label:'#00c97d' },
+    HOLD: { fill:'#1a1106', stroke:'#ef9f27', label:'#ef9f27' },
+    PASS: { fill:'#1a0606', stroke:'#e24b4a', label:'#e24b4a' }
+  };
+
+  // Grid: 2 columns × 5 rows
+  const agents = b.allVotes;
+  const cardW = 470, cardH = 220;
+  const gapX = 20, gapY = 18;
+  const gridStartX = (W - (cardW*2 + gapX))/2; // center
+  const gridStartY = 520;
+
+  const cardsSvg = agents.map((v, idx) => {
+    const col = idx % 2;
+    const row = Math.floor(idx / 2);
+    const x = gridStartX + col*(cardW+gapX);
+    const y = gridStartY + row*(cardH+gapY);
+    const inv = INVESTORS.find(i=>i.id===v.agent) || { name:v.agent, emoji:'👤' };
+    const c = verdictColors[v.verdict] || verdictColors.HOLD;
+    const lines = wrap(v.take, 42, 3);
+    return `
+      <rect x="${x}" y="${y}" width="${cardW}" height="${cardH}" rx="10" fill="${c.fill}" stroke="${c.stroke}" stroke-opacity="0.4"/>
+      <text x="${x+22}" y="${y+40}" font-family="sans-serif" font-size="22" font-weight="600" fill="#fff">${esc(inv.emoji)} ${esc(inv.name)}</text>
+      <text x="${x+22}" y="${y+62}" font-family="monospace" font-size="13" fill="#666">${esc(v.conviction)} CONVICTION</text>
+      <rect x="${x+cardW-90}" y="${y+18}" width="72" height="26" rx="3" fill="none" stroke="${c.label}"/>
+      <text x="${x+cardW-54}" y="${y+36}" text-anchor="middle" font-family="monospace" font-size="13" font-weight="600" fill="${c.label}">${esc(v.verdict)}</text>
+      ${lines.map((l,li)=>`<text x="${x+22}" y="${y+100+li*28}" font-family="sans-serif" font-size="17" fill="#bbb" font-style="italic">"${esc(l)}"</text>`).join('')}
+    `;
+  }).join('');
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
     <rect width="${W}" height="${H}" fill="#0a0a0a"/>
-    <text x="60" y="70" font-family="monospace" font-size="18" fill="#555" letter-spacing="3">QUANTDESK · INVESTOR AGENTS</text>
-    <text x="60" y="160" font-family="sans-serif" font-size="80" font-weight="700" fill="#fff">$${esc(b.ticker)}</text>
-    <text x="${60 + b.ticker.length*48}" y="160" font-family="monospace" font-size="22" fill="#888">${esc(b.dir)} · ${b.days}d · @$${b.entryPrice.toFixed(2)}</text>
 
-    ${bullInv ? `
-      <rect x="60" y="220" width="460" height="280" rx="12" fill="#001a10" stroke="#00c97d" stroke-opacity="0.4"/>
-      <text x="80" y="255" font-family="monospace" font-size="16" fill="#00c97d" letter-spacing="2">BULL · ${esc(b.topBull.conviction)}</text>
-      <text x="80" y="295" font-family="sans-serif" font-size="24" font-weight="600" fill="#fff">${esc(bullInv.name)}</text>
-      <text x="80" y="322" font-family="monospace" font-size="14" fill="#888">says BUY</text>
-      ${bullLines.map((l,i)=>`<text x="80" y="${365+i*28}" font-family="sans-serif" font-size="18" fill="#bbb" font-style="italic">"${esc(l)}"</text>`).join('')}
-    ` : ''}
+    <!-- Header -->
+    <text x="${W/2}" y="90" text-anchor="middle" font-family="monospace" font-size="22" fill="#555" letter-spacing="4">QUANTDESK · INVESTOR AGENTS</text>
 
-    ${bearInv ? `
-      <rect x="560" y="220" width="460" height="280" rx="12" fill="#1a0606" stroke="#e24b4a" stroke-opacity="0.4"/>
-      <text x="580" y="255" font-family="monospace" font-size="16" fill="#e24b4a" letter-spacing="2">BEAR · ${esc(b.topBear.conviction)}</text>
-      <text x="580" y="295" font-family="sans-serif" font-size="24" font-weight="600" fill="#fff">${esc(bearInv.name)}</text>
-      <text x="580" y="322" font-family="monospace" font-size="14" fill="#888">says PASS</text>
-      ${bearLines.map((l,i)=>`<text x="580" y="${365+i*28}" font-family="sans-serif" font-size="18" fill="#bbb" font-style="italic">"${esc(l)}"</text>`).join('')}
-    ` : ''}
+    <!-- Ticker -->
+    <text x="${W/2}" y="220" text-anchor="middle" font-family="sans-serif" font-size="130" font-weight="700" fill="#fff">$${esc(b.ticker)}</text>
+    <text x="${W/2}" y="270" text-anchor="middle" font-family="monospace" font-size="26" fill="#888">${esc(b.dir)} · ${b.days}d horizon · @$${b.entryPrice.toFixed(2)}</text>
 
-    <line x1="60" y1="560" x2="${W-60}" y2="560" stroke="#1a1a1a"/>
-    <text x="60" y="615" font-family="monospace" font-size="18" fill="#555" letter-spacing="2">CONSENSUS</text>
-    <text x="230" y="618" font-family="sans-serif" font-size="32" font-weight="700" fill="${consensusColor}">${esc(b.consensus)}</text>
-    <text x="450" y="618" font-family="monospace" font-size="18" fill="#888">BUY ${b.buys.length} · PASS ${b.passes.length}</text>
-    <text x="${W-60}" y="660" text-anchor="end" font-family="monospace" font-size="16" fill="#444">quantdesk2.vercel.app</text>
+    <!-- Consensus banner -->
+    <rect x="80" y="330" width="${W-160}" height="130" rx="10" fill="#050505" stroke="#1a1a1a"/>
+    <text x="120" y="375" font-family="monospace" font-size="18" fill="#555" letter-spacing="3">CONSENSUS</text>
+    <text x="120" y="430" font-family="sans-serif" font-size="56" font-weight="700" fill="${consensusColor}">${esc(b.consensus)}</text>
+    <text x="${W-120}" y="380" text-anchor="end" font-family="monospace" font-size="22" fill="#00c97d">BUY ${b.buys.length}</text>
+    ${b.holds && b.holds.length ? `<text x="${W-120}" y="410" text-anchor="end" font-family="monospace" font-size="22" fill="#ef9f27">HOLD ${b.holds.length}</text>` : ''}
+    <text x="${W-120}" y="440" text-anchor="end" font-family="monospace" font-size="22" fill="#e24b4a">PASS ${b.passes.length}</text>
+
+    <!-- Agent grid -->
+    ${cardsSvg}
+
+    <!-- Footer -->
+    <line x1="80" y1="${H-110}" x2="${W-80}" y2="${H-110}" stroke="#1a1a1a"/>
+    <text x="${W/2}" y="${H-60}" text-anchor="middle" font-family="monospace" font-size="22" fill="#666" letter-spacing="2">quantdesk2.vercel.app</text>
+    <text x="${W/2}" y="${H-30}" text-anchor="middle" font-family="monospace" font-size="16" fill="#333" letter-spacing="1">Bloomberg + TradingView for LATAM · AI-native</text>
   </svg>`;
 
   const blob = new Blob([svg], {type:'image/svg+xml'});
@@ -5563,13 +5625,17 @@ function downloadBattleImage(){
     canvas.width = W; canvas.height = H;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(img, 0, 0);
-    canvas.toBlob(blob => {
+    canvas.toBlob(blob2 => {
       const link = document.createElement('a');
       link.download = `quantdesk-battle-${b.ticker}-${Date.now()}.png`;
-      link.href = URL.createObjectURL(blob);
+      link.href = URL.createObjectURL(blob2);
       link.click();
       URL.revokeObjectURL(link.href);
     });
+    URL.revokeObjectURL(url);
+  };
+  img.onerror = () => {
+    alert('Could not render image. Try clicking Copy text instead.');
     URL.revokeObjectURL(url);
   };
   img.src = url;
@@ -7157,14 +7223,14 @@ document.addEventListener('DOMContentLoaded',()=>{
 </div>
 
 <!-- BATTLE SHARE MODAL -->
-<div id="battleShareModal" style="display:none;position:fixed;inset:0;z-index:800;background:rgba(0,0,0,.85);align-items:center;justify-content:center;">
-  <div style="background:#0a0a0a;border:1px solid #222;border-radius:8px;padding:20px;width:92%;max-width:540px;">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+<div id="battleShareModal" style="display:none;position:fixed;inset:0;z-index:800;background:rgba(0,0,0,.85);align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#0a0a0a;border:1px solid #222;border-radius:8px;padding:20px;width:96%;max-width:960px;max-height:92vh;display:flex;flex-direction:column;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-shrink:0;">
       <span style="font-family:var(--mono);font-size:11px;color:#e67e22;letter-spacing:.1em;">// SHARE THIS BATTLE</span>
       <button onclick="closeBattleShareModal()" style="font-size:16px;color:#555;border:none;background:none;cursor:pointer;">✕</button>
     </div>
-    <div id="battleShareCanvas" style="background:#000;border:1px solid #1a1a1a;border-radius:6px;padding:28px 24px;margin-bottom:14px;"></div>
-    <div style="display:flex;gap:8px;">
+    <div id="battleShareCanvas" style="background:#000;border:1px solid #1a1a1a;border-radius:6px;padding:24px;margin-bottom:14px;overflow-y:auto;flex:1;"></div>
+    <div style="display:flex;gap:8px;flex-shrink:0;">
       <button onclick="copyBattleText()" style="flex:1;font-family:var(--mono);font-size:11px;padding:8px 12px;background:rgba(230,126,34,.15);color:#e67e22;border:1px solid rgba(230,126,34,.4);border-radius:3px;cursor:pointer;">📋 Copy text</button>
       <button onclick="downloadBattleImage()" style="flex:1;font-family:var(--mono);font-size:11px;padding:8px 12px;background:rgba(0,201,125,.15);color:var(--green);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;">💾 Download PNG</button>
     </div>
