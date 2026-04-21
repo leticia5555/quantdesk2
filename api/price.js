@@ -64,11 +64,17 @@ export default async function handler(req, res) {
 
         sigma = Math.min(Math.max((ewmaSigma * 0.6 + sigmaDaily * 0.4) * Math.sqrt(252), 0.20), 2.0);
 
-        const rawMu = meanDaily * 252;
-        const cryptoCAPM = 0.045 + 2.0 * 0.055;
-        const historicalCryptoCAGR = 0.35;
-        mu = cryptoCAPM * 0.40 + historicalCryptoCAGR * 0.40 + rawMu * 0.20;
-        mu = Math.min(Math.max(mu, 0.05), 0.80);
+        // ── CRYPTO MU: Pure CAPM (institutional standard) ──
+        // rf = 4.5% (US 10y Treasury), ERP = 5.5% (historical equity risk premium)
+        // β_crypto = 1.8 (midpoint between BTC ~1.5 and altcoins ~2.5)
+        // Rationale: Merton (1980) showed realized-return estimation has enormous standard
+        // error — using CAPM avoids the momentum/CAGR trap that biases mu upward in bulls.
+        // Standard error on this estimate: ~±15% annualized. Treat as "centered guess" not truth.
+        const rf = 0.045;
+        const erp = 0.055;
+        const betaCrypto = 1.8;
+        mu = rf + betaCrypto * erp;  // = 14.4%, stable across reruns
+        const muSE = 0.15;  // standard error ±15pp — reported for honesty
 
         high52w = Math.max(...closes);
         low52w = Math.min(...closes);
@@ -82,6 +88,7 @@ export default async function handler(req, res) {
         ticker: t,
         currentPrice: parseFloat(currentPrice.toFixed(2)),
         mu: parseFloat(mu.toFixed(4)),
+        muSE: 0.15,  // ±15pp standard error on mu estimate
         sigma: parseFloat(sigma.toFixed(4)),
         high52w: parseFloat(high52w.toFixed(2)),
         low52w: parseFloat(low52w.toFixed(2)),
@@ -187,14 +194,15 @@ export default async function handler(req, res) {
         const currentSigma    = ewmaSigma * Math.sqrt(252);
         sigma = Math.min(Math.max(historicalSigma * 0.40 + currentSigma * 0.60, 0.10), 1.50);
 
-        // LATAM CAPM: higher rf (local rates ~8-10%), higher ERP (EM premium)
-        // Mexico: CETES 28d ~10%; Brazil: Selic ~11%
-        // Use USD-denominated ADR-like assumption since sims are USD-based
-        // Beta we don't have from Yahoo meta reliably → use 1.1 default for LATAM
-        const rf = isBMV ? 0.055 : isB3 ? 0.060 : 0.080;  // MX slightly higher than US, BR higher, AR much higher
-        const erp = 0.065;  // EM equity risk premium ~ 6.5%
-        const beta = 1.1;   // conservative LATAM beta
-        mu = Math.min(Math.max(rf + beta * erp, 0.02), 0.30);
+        // ── LATAM CAPM: Country-specific rf (local sovereign yields, Apr 2026) ──
+        // Mexico: CETES 28d ~9.5% · Brazil: Selic ~11% · Argentina: BADLAR ~30%
+        // ERP for EM markets: ~6.5-7% (Damodaran EM Country Risk Premium)
+        // Beta for LATAM blue chips typically 0.9-1.2 vs local benchmark
+        // Stocks quote in local currency (MXN/BRL/ARS) so mu is in local terms
+        const rf  = isBMV ? 0.095 : isB3 ? 0.110 : 0.300;
+        const erp = isBMV ? 0.065 : isB3 ? 0.070 : 0.100;
+        const beta = 1.0;  // default LATAM blue-chip beta; upgrade to Yahoo beta if available
+        mu = Math.min(Math.max(rf + beta * erp, 0.02), 0.50);
 
         high52w = meta.fiftyTwoWeekHigh || Math.max(...closes);
         low52w  = meta.fiftyTwoWeekLow  || Math.min(...closes);
@@ -214,6 +222,7 @@ export default async function handler(req, res) {
         ticker: t,
         currentPrice: parseFloat(currentPrice.toFixed(2)),
         mu: parseFloat(mu.toFixed(4)),
+        muSE: 0.10,  // ±10pp standard error (EM has wider confidence interval than DM)
         sigma: parseFloat(sigma.toFixed(4)),
         high52w: parseFloat(high52w.toFixed(2)),
         low52w: parseFloat(low52w.toFixed(2)),
@@ -371,6 +380,7 @@ export default async function handler(req, res) {
       ticker: symbol,
       currentPrice: parseFloat(currentPrice.toFixed(2)),
       mu: parseFloat(mu.toFixed(4)),
+      muSE: 0.08,  // ±8pp standard error (DM equities have tighter CI than EM or crypto)
       sigma: parseFloat(sigma.toFixed(4)),
       high52w: parseFloat(high52w.toFixed(2)),
       low52w: parseFloat(low52w.toFixed(2)),
