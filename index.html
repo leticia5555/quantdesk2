@@ -3374,11 +3374,55 @@ async function startSim(){
         const sorted=[...rets].sort((a,b)=>a-b);
         const var95=sorted[Math.floor(sorted.length*.05)];
         const lastCd=window._lastCd||{};
+
+        // ── HONEST VERDICT (overrides Claude's optimistic AI call) ──
+        // Computes verdict from real sim stats: Sharpe, Kelly, P(ruin 50%), win rate
+        // This is what makes "STRONG ENTRY" actually mean something
+        const losses=rets.filter(r=>r<0).length;
+        const grossWin=rets.filter(r=>r>0).reduce((a,r)=>a+r,0);
+        const grossLoss=Math.abs(rets.filter(r=>r<0).reduce((a,r)=>a+r,0));
+        const winRate=wins/rets.length;
+        const avgWin=wins>0?grossWin/wins:0;
+        const avgLoss=losses>0?grossLoss/losses:0;
+        const kellyFrac=avgLoss>0&&avgWin>0
+          ? (winRate-(1-winRate)*(avgLoss/avgWin))
+          : 0;
+        // P(ruin 50% in 50 trades): proportion of simulation paths that dropped >50%
+        const ruinPaths=allPaths.filter(p=>{
+          let peak=p[0];
+          for(const v of p){ if(v>peak)peak=v; if((peak-v)/peak>=0.50) return true; }
+          return false;
+        }).length;
+        const ruin50=ruinPaths/allPaths.length;
+
+        // Verdict rubric (institutional-grade, Bloomberg-honest)
+        let computedVerdict;
+        if(mean<=0){
+          computedVerdict='AVOID';  // negative expectancy = don't trade
+        } else if(ruin50>0.10){
+          computedVerdict='HIGH RISK';  // >10% chance of losing half = red flag regardless of return
+        } else if(sharpe>=1.0 && kellyFrac>=0.05 && ruin50<0.03){
+          computedVerdict='STRONG ENTRY';  // excellent risk-adjusted return
+        } else if(sharpe>=0.7 && kellyFrac>=0.02){
+          computedVerdict='BUY';  // solid but not spectacular
+        } else if(sharpe>=0.4){
+          computedVerdict='WATCH';  // mediocre risk-adjusted — worth tracking, not buying
+        } else {
+          computedVerdict='WAIT FOR DIP';  // low Sharpe — better entry likely coming
+        }
+
+        // Override Claude's verdict with the honest one and update display
+        lastCd.verdict=computedVerdict;
+        window._lastCd=lastCd;
+        const vmap={'STRONG ENTRY':'v-strong','BUY':'v-strong','WATCH':'v-wait','WAIT FOR DIP':'v-wait','HIGH RISK':'v-risk','AVOID':'v-avoid'};
+        const vb=document.getElementById('simVerdict');
+        if(vb){ vb.textContent=computedVerdict; vb.className='verdict '+(vmap[computedVerdict]||'v-wait'); }
+
         const tickerVal=document.getElementById('simTicker').value.toUpperCase();
-        addToTape(tickerVal,SP.dir,mean,wins/rets.length,lastCd.verdict||'',SP.S0);
-        addToComparison(tickerVal,SP.dir,SP.S0,mean,wins/rets.length,sharpe,var95,SP.capital,lastCd.verdict||'');
-        addSimToHistory(tickerVal,SP.dir,SP.capital,SP.days,SP.model,mean,wins/rets.length,sharpe,var95,lastCd.verdict||'',SP.S0,lastCd.thesis||'');
-        voiceSim(tickerVal,lastCd.verdict||'',wins/rets.length);
+        addToTape(tickerVal,SP.dir,mean,wins/rets.length,computedVerdict,SP.S0);
+        addToComparison(tickerVal,SP.dir,SP.S0,mean,wins/rets.length,sharpe,var95,SP.capital,computedVerdict);
+        addSimToHistory(tickerVal,SP.dir,SP.capital,SP.days,SP.model,mean,wins/rets.length,sharpe,var95,computedVerdict,SP.S0,lastCd.thesis||'');
+        voiceSim(tickerVal,computedVerdict,wins/rets.length);
       }
       return;
     }
@@ -4548,7 +4592,7 @@ function renderCmpResults(){
 
   // Verdict cards
   const cards=document.getElementById('cmpCards');
-  const verdictColors={'STRONG ENTRY':'var(--green)','WAIT FOR DIP':'var(--blue)','HIGH RISK':'var(--amber)','AVOID':'var(--red)'};
+  const verdictColors={'STRONG ENTRY':'var(--green)','BUY':'var(--green)','WATCH':'var(--amber)','WAIT FOR DIP':'var(--blue)','HIGH RISK':'var(--amber)','AVOID':'var(--red)'};
   cards.innerHTML=cmpState.filter(s=>s.data).map((s,i)=>{
     if(!s.summary)return'';
     const {mean,winRate}=s.summary;
@@ -4659,7 +4703,7 @@ function renderComparison(){
   if(comparisonData.length<1) return;
   document.getElementById('comparisonPanel').style.display='block';
   const fmt=v=>(v>=0?'+':'')+(v*100).toFixed(1)+'%';
-  const vcolors={'STRONG ENTRY':'var(--green)','WAIT FOR DIP':'var(--green2)','HIGH RISK':'var(--amber)','AVOID':'var(--red)'};
+  const vcolors={'STRONG ENTRY':'var(--green)','BUY':'var(--green)','WATCH':'var(--amber)','WAIT FOR DIP':'var(--green2)','HIGH RISK':'var(--amber)','AVOID':'var(--red)'};
   const rows=comparisonData.map(c=>{
     const retClass=c.expReturn>=0?'pos':'neg';
     const vcolor=vcolors[c.verdict]||'var(--text3)';
@@ -5808,7 +5852,7 @@ function toggleTikTok(){
   const ticker=document.getElementById('simTicker').value.toUpperCase();
   const lastCd=window._lastCd||{};
   const verdict=lastCd.verdict||'';
-  const vcolor={'STRONG ENTRY':'#00c97d','WAIT FOR DIP':'#4a9eff','HIGH RISK':'#ffb347','AVOID':'#ff4545'}[verdict]||'#888';
+  const vcolor={'STRONG ENTRY':'#00c97d','BUY':'#00c97d','WATCH':'#ffb347','WAIT FOR DIP':'#4a9eff','HIGH RISK':'#ffb347','AVOID':'#ff4545'}[verdict]||'#888';
 
   tikTokOverlay.innerHTML=`
     <div style="position:absolute;top:24px;left:24px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:rgba(255,255,255,.4);letter-spacing:.1em;">QUANTDESK</div>
@@ -6199,7 +6243,7 @@ function renderGallery(){
     return;
   }
 
-  const vcolors = {'STRONG ENTRY':'#00c97d','WAIT FOR DIP':'#378ADD','HIGH RISK':'#EF9F27','AVOID':'#E24B4A'};
+  const vcolors = {'STRONG ENTRY':'#00c97d','BUY':'#00c97d','WATCH':'#EF9F27','WAIT FOR DIP':'#378ADD','HIGH RISK':'#EF9F27','AVOID':'#E24B4A'};
   const fmt = v => (v>=0?'+':'')+(v*100).toFixed(1)+'%';
   const fmtD = (v,cap) => (v>=0?'+$':'-$')+Math.abs(Math.round(v*cap)).toLocaleString();
 
