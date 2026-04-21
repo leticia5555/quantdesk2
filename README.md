@@ -32,9 +32,9 @@ QuantDesk gives retail and institutional investors in LATAM the same class of qu
 - Deployed on Vercel
 
 **Backend / Data**
-- Python FastAPI microservice on Railway ([`quantdesk-data`](https://github.com/leticia5555/quantdesk-data))
-- Finnhub, Yahoo Finance, CoinGecko for market data
+- Direct integration with Finnhub, Yahoo Finance, and CoinGecko APIs
 - Anthropic Claude API for AI verdicts and natural language synthesis
+- Python microservice for quant computations (in development)
 
 **Quant models**
 - EWMA (Exponentially Weighted Moving Average) volatility
@@ -51,7 +51,7 @@ QuantDesk gives retail and institutional investors in LATAM the same class of qu
 
 **AI-native means built differently.** Every module ships with AI synthesis — not as a chatbot bolted on, but as the default output layer. Users get the quant output AND the plain-Spanish interpretation of what it means.
 
-**Distribution is already solved.** Creator channel Organic acquisition via creator channel @leticiatijerinam (43K, 38.7% Search traffic).
+**Distribution is already solved.** Creator channel [@leticiatijerinam](https://tiktok.com/@leticiatijerinam) (43K, 38.7% Search traffic) provides organic acquisition.
 
 ---
 
@@ -68,7 +68,8 @@ Active development. Shipping 5+ major product tabs in parallel. Solo technical f
 **Leticia Tijerina** — Monterrey, MX
 Self-taught Python quant. Previously built a 70+ iteration trading bot for Polymarket BTC prediction markets (67% accuracy on spot momentum signals, proprietary Kappa metric for order book manipulation detection). 14+ years in fashion (Derek Lam NYC, ICONY co-founder). MBA Esden, BA Tecnológico de Monterrey.
 
-- Twitter: [@0xLeticia]((https://x.com/0xLeticia))
+- Twitter: [@0xLeticia](https://x.com/0xLeticia)
+- TikTok: [@leticiatijerinam](https://tiktok.com/@leticiatijerinam) (43K, LATAM tech/finance creator)
 - LinkedIn: [leticia-tijerina-martinez](https://www.linkedin.com/in/leticia-tijerina-martinez-46999757/)
 
 ---
