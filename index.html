@@ -1537,32 +1537,55 @@ async function runEarningsIntel(){
 
   ['epsPanel','reactionPanel','nextEarningsPanel','earningsVerdictPanel'].forEach(id=>{
     const el=document.getElementById(id);
-    if(el) el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:11px;text-align:center;padding:20px;">Loading...</div>';
+    if(el) el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:11px;text-align:center;padding:20px;">Loading real Finnhub data...</div>';
   });
 
   try{
+    // 1) Fetch REAL last-8-quarters history from /api/earnings?ticker=
+    const histRes = await fetch('/api/earnings?ticker='+encodeURIComponent(ticker));
+    const hist = await histRes.json();
+
+    if(!hist.history || hist.history.length===0){
+      const errMsg = hist.error || 'No earnings history available for '+ticker;
+      ['epsPanel','reactionPanel','nextEarningsPanel','earningsVerdictPanel'].forEach(id=>{
+        const el=document.getElementById(id);
+        if(el) el.innerHTML='<div style="color:#888;font-family:var(--mono);font-size:11px;padding:16px;text-align:center;">'+errMsg+'</div>';
+      });
+      return;
+    }
+
+    // 2) Render REAL data immediately (no waiting for Claude)
+    renderEpsHistoryReal(hist);
+    renderPriceReactionsReal(hist);
+
+    // 3) In parallel: ask Claude ONLY for next earnings setup + verdict (NOT for historical numbers)
+    const claudePrompt =
+      'For '+ticker+', the last '+hist.total+' quarters showed: beat rate '+hist.beat_rate_pct+
+      '%, avg surprise '+hist.avg_surprise_pct+'%, avg post-earnings stock reaction '+
+      (hist.avg_stock_reaction_pct!=null?hist.avg_stock_reaction_pct+'%':'N/A')+
+      '. Generate ONLY analysis JSON (no historical numbers — those are real from Finnhub). '+
+      'Return ONLY this JSON: {"next_earnings":{"date":"YYYY-MM-DD","days_away":N,"eps_estimate":N,'+
+      '"revenue_estimate":N,"whisper_number":N,"implied_move_pct":N,"key_metrics_to_watch":["s","s","s"],'+
+      '"guidance_tone":"RAISED|MAINTAINED|LOWERED|FIRST_TIME"},'+
+      '"verdict":{"signal":"BEAT|MISS|INLINE","confidence":"HIGH|MEDIUM|LOW","trade_setup":"s",'+
+      '"risk":"s","bull_scenario":"s","bear_scenario":"s"}}. Use realistic estimates for next quarter.';
+
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1800,
-        messages:[{role:'user',content:
-          'Financial data exercise for '+ticker+'. Using approximate publicly known figures, fill this JSON template with realistic estimates based on the company known financial history. All numbers are educational estimates only. Return ONLY the JSON, no other text: {"eps_history":[{"quarter":"Q4 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q3 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q2 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q1 2025","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0},{"quarter":"Q4 2024","eps_actual":0,"eps_estimate":0,"surprise_pct":0,"revenue_actual":0,"revenue_est":0}],"price_reactions":[{"quarter":"Q4 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q3 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q2 2025","reaction_pct":0,"direction":"DOWN","note":"string"},{"quarter":"Q1 2025","reaction_pct":0,"direction":"UP","note":"string"},{"quarter":"Q4 2024","reaction_pct":0,"direction":"UP","note":"string"}],"next_earnings":{"date":"string","days_away":0,"eps_estimate":0,"revenue_estimate":0,"whisper_number":0,"implied_move_pct":0,"key_metrics_to_watch":["string","string","string"],"guidance_tone":"RAISED"},"verdict":{"signal":"BEAT","confidence":"HIGH","trade_setup":"string","risk":"string","bull_scenario":"string","bear_scenario":"string","historical_beat_rate":75}}. Replace all 0s and placeholder strings with realistic values for '+ticker+'.'}]})
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:900,
+        messages:[{role:'user',content:claudePrompt}]})
     });
     const d=await r.json();
-    const data=safeJSON(d.content.map(b=>b.text||'').join(''));
+    const analysis=safeJSON(d.content.map(b=>b.text||'').join(''));
 
-    // Normalize beat rate — force to 0-100 range
-    if(data.verdict){
-      let br=parseFloat(data.verdict.historical_beat_rate)||75;
-      if(br<1.1) br=Math.round(br*100);      // 0.75 → 75
-      else if(br<=10) br=Math.round(br*10);  // 7.5 → 75
-      // clamp to valid range
-      br=Math.min(100,Math.max(0,Math.round(br)));
-      data.verdict.historical_beat_rate=br;
+    if(analysis && analysis.next_earnings){
+      renderNextEarnings(analysis.next_earnings, ticker);
     }
-    renderEpsHistory(data.eps_history);
-    renderPriceReactions(data.price_reactions);
-    renderNextEarnings(data.next_earnings, ticker);
-    renderEarningsVerdict(data.verdict, ticker);
+    if(analysis && analysis.verdict){
+      // Inject REAL beat rate into verdict so display is consistent with history
+      analysis.verdict.historical_beat_rate = hist.beat_rate_pct;
+      renderEarningsVerdict(analysis.verdict, ticker);
+    }
   }catch(e){
     console.error('Earnings error:',e);
     ['epsPanel','reactionPanel','nextEarningsPanel','earningsVerdictPanel'].forEach(id=>{
@@ -1570,6 +1593,86 @@ async function runEarningsIntel(){
       if(el) el.innerHTML='<div style="color:#E24B4A;font-family:var(--mono);font-size:11px;padding:16px;">'+e.message+'</div>';
     });
   }
+}
+
+// ── REAL EPS HISTORY (from Finnhub) ────────────────────────────
+function renderEpsHistoryReal(hist){
+  const el=document.getElementById('epsPanel');
+  if(!el||!hist.history) return;
+
+  // Header with aggregate stats
+  let html='<div style="background:#111;border:1px solid #ff6600;padding:10px;margin-bottom:8px;text-align:center;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">BEAT RATE · LAST '+hist.total+' QUARTERS</div>'
+    +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:#ff6600;">'+hist.beats+'/'+hist.total+' · '+hist.beat_rate_pct.toFixed(1)+'%</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#888;margin-top:4px;">avg surprise '+(hist.avg_surprise_pct>0?'+':'')+hist.avg_surprise_pct.toFixed(1)+'%</div>'
+    +'</div>';
+
+  html+='<div style="display:flex;flex-direction:column;gap:6px;">';
+  hist.history.forEach(q=>{
+    if(q.surprise_pct==null||q.eps_actual==null||q.eps_estimate==null) return;
+    const beat=q.surprise_pct>0;
+    const col=beat?'#00c97d':'#E24B4A';
+    const bar=Math.min(Math.abs(q.surprise_pct)*3,100);
+    const qLabel='Q'+q.quarter+' '+q.year;
+    html+='<div style="background:#111;border:1px solid #1a1a1a;padding:10px;">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">'
+      +'<span style="font-family:var(--mono);font-size:10px;color:#888;">'+qLabel+'</span>'
+      +'<span style="font-family:var(--mono);font-size:10px;font-weight:700;color:'+col+';">'+(beat?'BEAT':'MISS')+' '+(q.surprise_pct>0?'+':'')+q.surprise_pct.toFixed(1)+'%</span>'
+      +'</div>'
+      +'<div style="display:flex;gap:12px;font-size:10px;margin-bottom:6px;">'
+      +'<span style="color:#555;">Est: <span style="color:#888;">$'+q.eps_estimate.toFixed(2)+'</span></span>'
+      +'<span style="color:#555;">Act: <span style="color:'+col+';">$'+q.eps_actual.toFixed(2)+'</span></span>'
+      +'<span style="color:#555;margin-left:auto;font-size:9px;">'+q.period+'</span>'
+      +'</div>'
+      +'<div style="height:3px;background:#1a1a1a;border-radius:2px;overflow:hidden;">'
+      +'<div style="width:'+bar+'%;height:100%;background:'+col+';border-radius:2px;"></div>'
+      +'</div>'
+      +'</div>';
+  });
+  html+='</div>';
+  html+='<div style="font-family:var(--mono);font-size:8px;color:#444;margin-top:8px;text-align:center;">SOURCE: Finnhub · LIVE DATA</div>';
+  el.innerHTML=html;
+}
+
+// ── REAL POST-EARNINGS STOCK REACTION (from Yahoo) ─────────────
+function renderPriceReactionsReal(hist){
+  const el=document.getElementById('reactionPanel');
+  if(!el||!hist.history) return;
+
+  const reactions = hist.history.filter(h => h.stock_reaction_pct != null);
+  if(reactions.length===0){
+    el.innerHTML='<div style="color:#888;font-family:var(--mono);font-size:11px;padding:16px;text-align:center;">Stock reaction data unavailable</div>';
+    return;
+  }
+
+  const avgAbs = reactions.reduce((a,r)=>a+Math.abs(r.stock_reaction_pct),0)/reactions.length;
+
+  let html='<div style="background:#111;border:1px solid #ff6600;padding:8px;margin-bottom:8px;text-align:center;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:2px;">AVG MOVE POST-EARNINGS</div>'
+    +'<div style="font-family:var(--mono);font-size:20px;font-weight:700;color:#ff6600;">±'+avgAbs.toFixed(1)+'%</div>'
+    +'<div style="font-family:var(--mono);font-size:8px;color:#444;margin-top:4px;">'+reactions.length+' quarters · next-day close</div>'
+    +'</div>';
+
+  html+='<div style="display:flex;flex-direction:column;gap:6px;">';
+  reactions.forEach(r=>{
+    const col=r.stock_reaction_pct>0?'#00c97d':'#E24B4A';
+    const bar=Math.min(Math.abs(r.stock_reaction_pct)*4,100);
+    const qLabel='Q'+r.quarter+' '+r.year;
+    const beatTag = r.beat==null ? '' : (r.beat ? ' · beat' : ' · miss');
+    html+='<div style="background:#111;border:1px solid #1a1a1a;padding:8px;">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">'
+      +'<span style="font-family:var(--mono);font-size:10px;color:#555;min-width:60px;">'+qLabel+'</span>'
+      +'<div style="flex:1;height:3px;background:#1a1a1a;border-radius:2px;overflow:hidden;">'
+      +'<div style="width:'+bar+'%;height:100%;background:'+col+';"></div>'
+      +'</div>'
+      +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:'+col+';min-width:50px;text-align:right;">'+(r.stock_reaction_pct>0?'+':'')+r.stock_reaction_pct.toFixed(1)+'%</span>'
+      +'</div>'
+      +'<div style="font-size:9px;color:#444;font-family:var(--mono);">'+r.period+beatTag+'</div>'
+      +'</div>';
+  });
+  html+='</div>';
+  html+='<div style="font-family:var(--mono);font-size:8px;color:#444;margin-top:8px;text-align:center;">SOURCE: Yahoo Finance · LIVE DATA</div>';
+  el.innerHTML=html;
 }
 
 function renderEpsHistory(history){
