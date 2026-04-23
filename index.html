@@ -1558,17 +1558,35 @@ async function runEarningsIntel(){
     renderEpsHistoryReal(hist);
     renderPriceReactionsReal(hist);
 
-    // 3) In parallel: ask Claude ONLY for next earnings setup + verdict (NOT for historical numbers)
+    // 3) Determine what's real vs what needs Claude
+    const realNext = hist.next_earnings;  // from Finnhub calendar, may be null
+    const hasRealDate = realNext && realNext.date && realNext.days_away != null;
+
+    // 4) Render real NEXT EARNINGS immediately if we have it (skeleton with real fields + loading)
+    if(hasRealDate){
+      renderNextEarningsPartial(realNext, ticker);
+    } else {
+      const panel = document.getElementById('nextEarningsPanel');
+      if(panel) panel.innerHTML = '<div style="color:#888;font-family:var(--mono);font-size:11px;padding:16px;text-align:center;">No upcoming earnings in next 120 days for '+ticker+'</div>';
+    }
+
+    // 5) Ask Claude ONLY for creative parts (whisper/implied move/metrics/guidance + verdict)
+    // We give Claude today's date + real next date + historical context so it won't hallucinate
+    const todayIso = new Date().toISOString().split('T')[0];
+    const realContext = hasRealDate
+      ? `Next confirmed report: ${realNext.date} (${realNext.days_away} days from today ${todayIso}). EPS estimate: $${realNext.eps_estimate}. Revenue estimate: $${realNext.revenue_estimate||'N/A'}. DO NOT change these numbers.`
+      : `No upcoming report confirmed. Skip next_earnings fields.`;
+
     const claudePrompt =
-      'For '+ticker+', the last '+hist.total+' quarters showed: beat rate '+hist.beat_rate_pct+
-      '%, avg surprise '+hist.avg_surprise_pct+'%, avg post-earnings stock reaction '+
-      (hist.avg_stock_reaction_pct!=null?hist.avg_stock_reaction_pct+'%':'N/A')+
-      '. Generate ONLY analysis JSON (no historical numbers — those are real from Finnhub). '+
-      'Return ONLY this JSON: {"next_earnings":{"date":"YYYY-MM-DD","days_away":N,"eps_estimate":N,'+
-      '"revenue_estimate":N,"whisper_number":N,"implied_move_pct":N,"key_metrics_to_watch":["s","s","s"],'+
-      '"guidance_tone":"RAISED|MAINTAINED|LOWERED|FIRST_TIME"},'+
-      '"verdict":{"signal":"BEAT|MISS|INLINE","confidence":"HIGH|MEDIUM|LOW","trade_setup":"s",'+
-      '"risk":"s","bull_scenario":"s","bear_scenario":"s"}}. Use realistic estimates for next quarter.';
+      `For ${ticker}. Today is ${todayIso}. ${realContext} ` +
+      `Historical context: beat rate ${hist.beat_rate_pct}%, avg surprise ${hist.avg_surprise_pct}%, ` +
+      `avg post-earnings reaction ${hist.avg_stock_reaction_pct!=null?hist.avg_stock_reaction_pct+'%':'N/A'}. ` +
+      `Return ONLY this JSON (educational AI analysis — no historical numbers): ` +
+      `{"next_analysis":{"whisper_number":N,"implied_move_pct":N,` +
+      `"key_metrics_to_watch":["s","s","s"],"guidance_tone":"RAISED|MAINTAINED|LOWERED|FIRST_TIME"},` +
+      `"verdict":{"signal":"BEAT|MISS|INLINE","confidence":"HIGH|MEDIUM|LOW","trade_setup":"s",` +
+      `"risk":"s","bull_scenario":"s","bear_scenario":"s"}}. ` +
+      `Whisper should be realistic (1-5% above consensus for bullish names). Implied move 3-10% based on sector vol.`;
 
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
@@ -1578,9 +1596,24 @@ async function runEarningsIntel(){
     const d=await r.json();
     const analysis=safeJSON(d.content.map(b=>b.text||'').join(''));
 
-    if(analysis && analysis.next_earnings){
-      renderNextEarnings(analysis.next_earnings, ticker);
+    // 6) Merge real Finnhub data with Claude's AI analysis
+    if(hasRealDate && analysis && analysis.next_analysis){
+      const merged = {
+        // REAL from Finnhub — never overwritten
+        date: realNext.date,
+        days_away: realNext.days_away,
+        eps_estimate: realNext.eps_estimate,
+        revenue_estimate: realNext.revenue_estimate,
+        time: realNext.time,
+        // AI estimates (labeled as such in render)
+        whisper_number: analysis.next_analysis.whisper_number,
+        implied_move_pct: analysis.next_analysis.implied_move_pct,
+        key_metrics_to_watch: analysis.next_analysis.key_metrics_to_watch,
+        guidance_tone: analysis.next_analysis.guidance_tone
+      };
+      renderNextEarnings(merged, ticker);
     }
+
     if(analysis && analysis.verdict){
       // Inject REAL beat rate into verdict so display is consistent with history
       analysis.verdict.historical_beat_rate = hist.beat_rate_pct;
@@ -1728,33 +1761,61 @@ function renderPriceReactions(reactions){
   el.innerHTML=html;
 }
 
+function renderNextEarningsPartial(next, ticker){
+  // Renders immediately with REAL Finnhub data while waiting for Claude's AI analysis
+  const el=document.getElementById('nextEarningsPanel');
+  if(!el||!next) return;
+  const urgency=next.days_away<=7?'#E24B4A':next.days_away<=21?'#EF9F27':'#555';
+  el.innerHTML='<div style="text-align:center;margin-bottom:16px;padding:12px;background:#111;border:1px solid '+urgency+';">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">NEXT REPORT <span style="color:#00c97d;">· LIVE</span></div>'
+    +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:'+urgency+';">'+next.date+'</div>'
+    +'<div style="font-family:var(--mono);font-size:12px;color:'+urgency+';margin-top:2px;">'+next.days_away+' days away</div>'
+    +(next.time?'<div style="font-family:var(--mono);font-size:9px;color:#888;margin-top:4px;">'+next.time+'</div>':'')
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px;">'
+    +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">EPS ESTIMATE <span style="color:#00c97d;">· LIVE</span></div>'
+    +'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#ccc;">$'+(next.eps_estimate||0).toFixed(2)+'</div>'
+    +'<div style="font-size:9px;color:#555;margin-top:2px;">Whisper loading...</div>'
+    +'</div>'
+    +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;">'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">IMPLIED MOVE</div>'
+    +'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#444;">calculating...</div>'
+    +'<div style="font-size:9px;color:#555;margin-top:2px;">AI analysis</div>'
+    +'</div>'
+    +'</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;">AI analysis loading...</div>';
+}
+
 function renderNextEarnings(next, ticker){
   const el=document.getElementById('nextEarningsPanel');
   if(!el||!next) return;
   const urgency=next.days_away<=7?'#E24B4A':next.days_away<=21?'#EF9F27':'#555';
   const guideColor={'RAISED':'#00c97d','MAINTAINED':'#888','LOWERED':'#E24B4A','FIRST_TIME':'#EF9F27'}[next.guidance_tone]||'#888';
+  const whisper = next.whisper_number || next.eps_estimate;
   el.innerHTML='<div style="text-align:center;margin-bottom:16px;padding:12px;background:#111;border:1px solid '+urgency+';">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">NEXT REPORT</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">NEXT REPORT <span style="color:#00c97d;">· LIVE</span></div>'
     +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:'+urgency+';">'+next.date+'</div>'
     +'<div style="font-family:var(--mono);font-size:12px;color:'+urgency+';margin-top:2px;">'+next.days_away+' days away</div>'
+    +(next.time?'<div style="font-family:var(--mono);font-size:9px;color:#888;margin-top:4px;">'+next.time+'</div>':'')
     +'</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px;">'
     +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">EPS ESTIMATE</div>'
-    +'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#ccc;">$'+next.eps_estimate.toFixed(2)+'</div>'
-    +'<div style="font-size:9px;color:#EF9F27;margin-top:2px;">Whisper: $'+( next.whisper_number||next.eps_estimate).toFixed(2)+'</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">EPS ESTIMATE <span style="color:#00c97d;">· LIVE</span></div>'
+    +'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#ccc;">$'+(next.eps_estimate||0).toFixed(2)+'</div>'
+    +'<div style="font-size:9px;color:#EF9F27;margin-top:2px;">Whisper: $'+whisper.toFixed(2)+' <span style="color:#555;">· AI</span></div>'
     +'</div>'
     +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">IMPLIED MOVE</div>'
-    +'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#ff6600;">±'+( next.implied_move_pct||0).toFixed(1)+'%</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">IMPLIED MOVE <span style="color:#888;">· AI</span></div>'
+    +'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#ff6600;">±'+(next.implied_move_pct||0).toFixed(1)+'%</div>'
     +'<div style="font-size:9px;color:#555;margin-top:2px;">options priced in</div>'
     +'</div>'
     +'</div>'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:6px;">KEY METRICS TO WATCH</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:6px;">KEY METRICS TO WATCH <span style="color:#888;">· AI</span></div>'
     +(next.key_metrics_to_watch||[]).map(m=>'<div style="font-size:10px;color:#888;padding:3px 0;border-bottom:1px solid #1a1a1a;font-family:var(--sans);">→ '+m+'</div>').join('')
     +'<div style="margin-top:8px;display:flex;align-items:center;gap:6px;">'
-    +'<span style="font-family:var(--mono);font-size:9px;color:#555;">GUIDANCE TREND</span>'
-    +'<span style="font-family:var(--mono);font-size:10px;font-weight:700;color:'+guideColor+';">'+next.guidance_tone+'</span>'
+    +'<span style="font-family:var(--mono);font-size:9px;color:#555;">GUIDANCE TREND <span style="color:#888;">· AI</span></span>'
+    +'<span style="font-family:var(--mono);font-size:10px;font-weight:700;color:'+guideColor+';">'+(next.guidance_tone||'N/A')+'</span>'
     +'</div>';
 }
 
