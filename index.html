@@ -7895,481 +7895,666 @@ async function downloadMemoPDF(){
   const origText = btn.textContent;
 
   try {
-    // ── 1. Validate we have sim data ──
     if(!window._lastCd || !window._lastSimStats){
       alert('Run a simulation first — click ▶ Run simulation, then come back to generate the memo.');
       return;
     }
 
-    btn.textContent = '⏳ Generating...';
+    btn.textContent = '⏳ Fetching data...';
     btn.disabled = true;
 
     const cd = window._lastCd;
     const st = window._lastSimStats;
-    const ticker = (cd.ticker || document.getElementById('simTicker').value || '').toUpperCase();
+    const ticker = (cd.ticker || document.getElementById('simTicker').value || '').toUpperCase().replace('/USD','');
     const name = cd.longName || cd.name || ticker;
     const price = cd.currentPrice || cd.S0 || 0;
-    const dir = (st.dir || 'LONG');
+    const dir = st.dir || 'LONG';
     const days = st.days || 90;
     const capital = st.capital || 10000;
     const model = st.model || 'GBM';
 
-    // ── 2. Collect investor agent votes if they exist ──
-    // Grab the MOST RECENT battle for this ticker from the global agentVotes array
+    // ── 1. Fetch ALL memo data in parallel ──
+    let memoData = null;
+    try {
+      const r = await fetch('/api/memo?ticker=' + encodeURIComponent(ticker));
+      memoData = await r.json();
+    } catch(e) {
+      console.error('Memo API fetch failed:', e);
+      memoData = {};
+    }
+
+    // ── 2. Collect latest agent battle if it exists ──
     let agentBattle = null;
     try {
       if(Array.isArray(agentVotes) && agentVotes.length > 0){
-        // Find latest battleId for this ticker
         const tickerVotes = agentVotes.filter(v => v.ticker === ticker);
         if(tickerVotes.length > 0){
           tickerVotes.sort((a,b) => (b.ts||0) - (a.ts||0));
           const latestBattleId = tickerVotes[0].battleId;
           const battleVotes = agentVotes.filter(v => v.battleId === latestBattleId);
-          if(battleVotes.length > 0){
-            agentBattle = { votes: battleVotes };
-          }
+          if(battleVotes.length > 0){ agentBattle = { votes: battleVotes }; }
         }
       }
     } catch(e) { agentBattle = null; }
 
-    // ── 3. Ask Claude for executive summary + trade setup + risks ──
-    // One call, structured JSON output, fed the real quant numbers
-    const claudePromptMemo =
-      `You are preparing an institutional research memo for ${ticker} (${name}). Today is ${new Date().toISOString().split('T')[0]}. ` +
-      `Live quant metrics from Monte Carlo simulation: ` +
-      `Direction ${dir}, Horizon ${days}d, Capital $${capital.toLocaleString()}, Model ${model}. ` +
-      `Expected return ${(st.mean*100).toFixed(2)}%, Sharpe ${st.sharpe.toFixed(2)}, ` +
-      `Sortino ${(st.sortino||0).toFixed(2)}, Kelly full ${((st.fullKelly||st.kelly)*100).toFixed(1)}%, ` +
-      `Win rate ${(st.winRate*100).toFixed(1)}%, P(ruin 50%) ${((st.ruin50||0)*100).toFixed(1)}%, ` +
-      `Max drawdown ${(st.maxDD*100).toFixed(1)}%, VaR 95% ${(st.var95*100).toFixed(1)}%, ` +
-      `mu ${(cd.mu*100).toFixed(1)}% ±${((cd.muSE||0.15)*100).toFixed(0)}pp, sigma ${(cd.sigma*100).toFixed(1)}%. ` +
-      `Verdict: ${cd.verdict}. ` +
-      `Return ONLY this JSON: ` +
-      `{"executive_summary":"2-3 sentence institutional summary citing actual numbers",` +
-      `"trade_thesis":"Why this trade makes sense in 2-3 sentences",` +
-      `"entry_price":N,"stop_loss":N,"target_price":N,"position_size_pct":N,` +
-      `"risks":["risk 1 concrete","risk 2 concrete","risk 3 concrete"],` +
-      `"catalysts":["catalyst 1","catalyst 2","catalyst 3"],` +
-      `"bull_case":"Best case in 1-2 sentences","bear_case":"Worst case in 1-2 sentences",` +
-      `"time_horizon_note":"Why ${days}d is or isn't appropriate"}. ` +
-      `Entry = current price. Stop = price × (1 - max_acceptable_loss). Target = price × (1 + expected_move). ` +
-      `Position size = Quarter Kelly × 100 rounded. Write in institutional tone, like a Goldman research memo.`;
+    btn.textContent = '⏳ Writing analysis...';
 
-    let memoAnalysis = null;
+    // ── 3. Ask Claude for the narrative (executive summary, thesis, scenarios, risks) ──
+    // Claude ONLY writes narrative — never invents numbers
+    const f = memoData.fundamentals || {};
+    const e = memoData.earnings || {};
+    const t = memoData.technicals || {};
+    const a = memoData.analyst || {};
+
+    const claudePrompt =
+      `You are writing narrative sections for an institutional research memo on ${ticker} (${name}). ` +
+      `Today is ${new Date().toISOString().split('T')[0]}. Current price: $${price.toFixed(2)}. ` +
+      `You will receive real data — use it, don't invent numbers. ` +
+      `DATA: Expected return ${(st.mean*100).toFixed(2)}%, Sharpe ${st.sharpe.toFixed(2)}, ` +
+      `Quarter-Kelly ${(st.kelly*100).toFixed(1)}%, P(ruin 50%) ${((st.ruin50||0)*100).toFixed(1)}%, ` +
+      `Max DD ${(st.maxDD*100).toFixed(1)}%, Verdict ${cd.verdict}. ` +
+      `P/E ${f.pe_ratio||'N/A'}, Beta ${f.beta||'N/A'}, 52w range $${f.low_52w||'?'}-$${f.high_52w||'?'}. ` +
+      `Earnings beat rate ${e.beat_rate_pct!=null?e.beat_rate_pct+'%':'N/A'}. ` +
+      `RSI ${t.rsi_14||'N/A'} (${t.rsi_signal||''}). ` +
+      (a.price_target?.target_mean ? `Analyst target avg $${a.price_target.target_mean.toFixed(2)}. ` : '') +
+      `Return ONLY this JSON: ` +
+      `{"executive_summary":"3-sentence institutional summary citing actual quant metrics",` +
+      `"thesis":"Why this trade makes sense in 2-3 sentences, referencing fundamentals",` +
+      `"risks":["risk 1","risk 2","risk 3"],"catalysts":["catalyst 1","catalyst 2","catalyst 3"],` +
+      `"bull_case":"Best case narrative 1-2 sentences","bear_case":"Worst case 1-2 sentences",` +
+      `"valuation_commentary":"1-2 sentence take on whether stock is cheap/fair/expensive based on P/E and fundamentals",` +
+      `"technical_commentary":"1-2 sentence take on chart setup based on RSI and SMA data"}. ` +
+      `Write in Goldman Sachs / Morgan Stanley research tone. Cite specific numbers. No filler.`;
+
+    let narrative = null;
     try {
       const r = await fetch('/api/claude', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1200,
-          messages: [{role:'user', content: claudePromptMemo}]
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1500,
+          messages: [{role:'user', content: claudePrompt}]
         })
       });
       const d = await r.json();
-      memoAnalysis = safeJSON(d.content.map(b=>b.text||'').join(''));
-    } catch(e) {
-      console.error('Claude memo analysis failed:', e);
-    }
+      narrative = safeJSON(d.content.map(b=>b.text||'').join(''));
+    } catch(e) { console.error('Claude narrative failed:', e); }
 
-    // Fallback if Claude fails
-    if(!memoAnalysis){
-      memoAnalysis = {
-        executive_summary: `${ticker} ${dir} ${days}d: expected return ${(st.mean*100).toFixed(1)}%, Sharpe ${st.sharpe.toFixed(2)}. Verdict ${cd.verdict}.`,
-        trade_thesis: 'See quant metrics below. Manual analysis recommended.',
-        entry_price: price,
-        stop_loss: price * 0.9,
-        target_price: price * (1 + st.mean),
-        position_size_pct: Math.round((st.kelly || 0.03) * 100),
-        risks: ['High volatility may cause drawdown beyond sim estimates', 'Single-stock concentration risk', 'Macro tail risks not in model'],
-        catalysts: ['Next earnings report', 'Sector momentum', 'Macro data releases'],
-        bull_case: 'Best-case scenario aligns with p90 path.',
-        bear_case: 'Worst-case scenario aligns with p10 path.',
-        time_horizon_note: `${days} days horizon selected.`
+    if(!narrative){
+      narrative = {
+        executive_summary: `${ticker} Monte Carlo at $${price.toFixed(2)} projects ${(st.mean*100).toFixed(1)}% return with Sharpe ${st.sharpe.toFixed(2)}. Verdict: ${cd.verdict}.`,
+        thesis: 'See quant and fundamental data below.',
+        risks: ['Volatility may exceed modeled estimates','Single-stock concentration','Macro tail events not in model'],
+        catalysts: ['Upcoming earnings report','Sector momentum','Macro data releases'],
+        bull_case: 'Bullish scenario aligns with p90 path.',
+        bear_case: 'Bearish scenario aligns with p10 path.',
+        valuation_commentary: 'Valuation commentary not available.',
+        technical_commentary: 'Technical commentary not available.'
       };
     }
 
     btn.textContent = '⏳ Building PDF...';
 
-    // ── 4. Build the PDF with jsPDF ──
+    // ── 4. Compute derived values BEFORE PDF (no Claude-invented prices) ──
+    const acceptableLossPct = Math.min(Math.abs(st.var95), 0.20);  // cap stop at 20%
+    const entryPrice = price;
+    const stopLoss = price * (1 - acceptableLossPct);
+    const targetPrice = price * (1 + Math.max(st.mean, 0.05));
+    const positionSizePct = Math.round((st.kelly || 0.03) * 100);
+
+    // ═══════════════════════════════════════════════════════════════
+    // BUILD THE PDF
+    // ═══════════════════════════════════════════════════════════════
     const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit: 'pt', format: 'letter' });  // 612×792 pt
+    const doc = new jsPDF({ unit: 'pt', format: 'letter' });
     const W = doc.internal.pageSize.getWidth();
     const H = doc.internal.pageSize.getHeight();
-    let y = 40;
+    const M = 40;  // margin
+    let y = M;
 
-    // Color palette matching QuantDesk
+    // Palette
     const COL = {
-      text: [30, 30, 30],
-      muted: [120, 120, 120],
-      accent: [255, 102, 0],      // orange
-      green: [0, 180, 110],
-      red: [220, 60, 60],
-      line: [220, 220, 220]
+      text: [30,30,30], dark: [10,10,10], muted: [130,130,130],
+      accent: [255,102,0], green: [0,170,100], red: [220,60,60],
+      amber: [239,159,39], line: [225,225,225], bg: [248,248,248]
     };
-
     const setCol = rgb => doc.setTextColor(rgb[0], rgb[1], rgb[2]);
-    const drawHR = () => {
-      doc.setDrawColor(220, 220, 220); doc.setLineWidth(0.5);
-      doc.line(40, y, W-40, y);
-      y += 12;
-    };
+    const setFill = rgb => doc.setFillColor(rgb[0], rgb[1], rgb[2]);
+    const setDraw = rgb => doc.setDrawColor(rgb[0], rgb[1], rgb[2]);
 
-    // Helper: new page if we're getting close to bottom
+    const hr = () => {
+      setDraw(COL.line); doc.setLineWidth(0.5);
+      doc.line(M, y, W-M, y);
+      y += 14;
+    };
     const ensureSpace = (needed) => {
-      if(y + needed > H - 60){
-        doc.addPage();
-        y = 40;
-      }
+      if (y + needed > H - 80) { doc.addPage(); y = M; }
+    };
+    const sectionTitle = (num, text) => {
+      ensureSpace(30);
+      doc.setFont('helvetica','bold'); doc.setFontSize(11);
+      setCol(COL.accent);
+      doc.text(`${num}. ${text.toUpperCase()}`, M, y);
+      y += 18;
+    };
+    const para = (text, size=10, color=COL.text, italic=false) => {
+      if(!text) return;
+      doc.setFont('helvetica', italic ? 'italic' : 'normal');
+      doc.setFontSize(size);
+      setCol(color);
+      const lines = doc.splitTextToSize(text, W-M*2);
+      ensureSpace(lines.length * (size + 3));
+      doc.text(lines, M, y);
+      y += lines.length * (size + 3) + 4;
+    };
+    const fmtNum = (n, digits=2) => {
+      if (n == null || isNaN(n)) return 'N/A';
+      return Number(n).toLocaleString(undefined, {minimumFractionDigits: digits, maximumFractionDigits: digits});
+    };
+    const fmtCurrency = (n) => n == null ? 'N/A' : '$' + fmtNum(n);
+    const fmtPct = (n, sign=false) => {
+      if (n == null || isNaN(n)) return 'N/A';
+      const s = n > 0 && sign ? '+' : '';
+      return s + Number(n).toFixed(1) + '%';
+    };
+    const fmtMarketCap = (mCapMillions) => {
+      if (!mCapMillions) return 'N/A';
+      if (mCapMillions >= 1000000) return '$' + (mCapMillions/1000000).toFixed(2) + 'T';
+      if (mCapMillions >= 1000) return '$' + (mCapMillions/1000).toFixed(1) + 'B';
+      return '$' + mCapMillions.toFixed(0) + 'M';
+    };
+    const fmtBigDollar = (n) => {
+      if (n == null) return 'N/A';
+      if (n >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B';
+      if (n >= 1e6) return '$' + (n/1e6).toFixed(0) + 'M';
+      return '$' + fmtNum(n,0);
     };
 
-    // ── HEADER ──
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(18);
-    setCol(COL.accent);
-    doc.text('QUANTDESK', 40, y);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(10);
-    setCol(COL.muted);
-    doc.text('INSTITUTIONAL RESEARCH MEMO', 40 + 105, y - 4);
-    y += 10;
+    // ─── HEADER ───────────────────────────────────────
+    // Logo area (left), title (right)
+    setFill(COL.dark);
+    doc.rect(0, 0, W, 70, 'F');
 
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(20);
+    doc.setTextColor(255, 102, 0);
+    doc.text('QUANTDESK', M, 32);
+
+    doc.setFont('helvetica','normal');
     doc.setFontSize(9);
-    setCol(COL.muted);
-    doc.text('quantdesk2.vercel.app · Bloomberg + TradingView for LATAM · AI-native', 40, y);
-    y += 20;
+    doc.setTextColor(200, 200, 200);
+    doc.text('INSTITUTIONAL RESEARCH MEMO', M, 48);
 
-    // Ticker headline
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(32);
+    doc.setFontSize(8);
+    doc.setTextColor(140, 140, 140);
+    const dateStr = new Date().toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'});
+    doc.text(dateStr, W - M - doc.getTextWidth(dateStr), 32);
+    doc.text('quantdesk2.vercel.app', W - M - doc.getTextWidth('quantdesk2.vercel.app'), 48);
+
+    y = 90;
+
+    // Ticker hero block
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(36);
     setCol(COL.text);
-    doc.text(`$${ticker}`, 40, y);
-    y += 8;
+    doc.text(`$${ticker}`, M, y + 10);
 
-    doc.setFont('helvetica', 'normal');
+    const companyLine = `${name}`;
+    const sectorLine = (memoData.profile?.industry || memoData.profile?.finnhubIndustry || cd.asset_type || 'asset') +
+                       (memoData.profile?.country ? ` · ${memoData.profile.country}` : '') +
+                       (memoData.profile?.exchange ? ` · ${memoData.profile.exchange}` : '');
+    doc.setFont('helvetica','normal');
     doc.setFontSize(11);
     setCol(COL.muted);
-    doc.text(`${name} · ${cd.asset_type||'asset'} · $${price.toFixed(2)} · ${dir} ${days}d horizon`, 40, y);
-    y += 6;
+    doc.text(companyLine, M + doc.getTextWidth(`$${ticker}`) + 12, y);
+    doc.setFontSize(9);
+    doc.text(sectorLine, M + doc.getTextWidth(`$${ticker}`) + 12, y + 14);
 
-    const todayNice = new Date().toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'});
+    // Current price block (top right)
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(28);
+    setCol(COL.text);
+    const priceTxt = `$${fmtNum(price)}`;
+    doc.text(priceTxt, W - M - doc.getTextWidth(priceTxt), y + 10);
+
+    doc.setFont('helvetica','normal');
     doc.setFontSize(9);
     setCol(COL.muted);
-    doc.text(`Memo date: ${todayNice}`, 40, y);
-    y += 20;
+    const rangeTxt = f.low_52w && f.high_52w ? `52w $${fmtNum(f.low_52w,0)}-$${fmtNum(f.high_52w,0)}` : 'Price · LIVE';
+    doc.text(rangeTxt, W - M - doc.getTextWidth(rangeTxt), y + 28);
+
+    y += 46;
 
     // Verdict badge
     const verdictColors = {
       'STRONG ENTRY': COL.green, 'BUY': COL.green,
-      'WATCH': [239, 159, 39], 'WAIT FOR DIP': [239, 159, 39],
+      'WATCH': COL.amber, 'WAIT FOR DIP': COL.amber,
       'HIGH RISK': COL.red, 'AVOID': COL.red
     };
     const vc = verdictColors[cd.verdict] || COL.muted;
-    doc.setFillColor(vc[0], vc[1], vc[2]);
-    doc.roundedRect(40, y, 160, 28, 3, 3, 'F');
+    const verdictTxt = `VERDICT: ${cd.verdict}`;
+    const verdictW = 20 + doc.getTextWidth(verdictTxt);
+    setFill(vc);
+    doc.roundedRect(M, y, verdictW, 26, 3, 3, 'F');
     doc.setFont('helvetica','bold');
-    doc.setFontSize(14);
-    doc.setTextColor(255, 255, 255);
-    doc.text(`VERDICT: ${cd.verdict}`, 50, y + 18);
-    y += 45;
+    doc.setFontSize(12);
+    doc.setTextColor(255,255,255);
+    doc.text(verdictTxt, M + 10, y + 17);
 
-    drawHR();
-
-    // ── 1. EXECUTIVE SUMMARY ──
-    doc.setFont('helvetica','bold');
-    doc.setFontSize(11);
-    setCol(COL.accent);
-    doc.text('1. EXECUTIVE SUMMARY', 40, y);
-    y += 16;
-
+    // Sim parameters (right of verdict)
     doc.setFont('helvetica','normal');
-    doc.setFontSize(10);
-    setCol(COL.text);
-    const exec = doc.splitTextToSize(memoAnalysis.executive_summary || 'Analysis pending.', W-80);
-    doc.text(exec, 40, y);
-    y += exec.length * 13 + 14;
-
-    // Thesis
-    doc.setFont('helvetica','bold');
     doc.setFontSize(9);
     setCol(COL.muted);
-    doc.text('THESIS', 40, y);
-    y += 12;
-    doc.setFont('helvetica','normal');
-    doc.setFontSize(10);
-    setCol(COL.text);
-    const thesis = doc.splitTextToSize(memoAnalysis.trade_thesis || '', W-80);
-    doc.text(thesis, 40, y);
-    y += thesis.length * 13 + 16;
+    const simMeta = `${dir} · ${days} days · ${capital.toLocaleString()} · ${model}`;
+    doc.text(simMeta, M + verdictW + 14, y + 17);
 
-    drawHR();
-    ensureSpace(180);
+    y += 40;
+    hr();
 
-    // ── 2. MONTE CARLO METRICS ──
-    doc.setFont('helvetica','bold');
-    doc.setFontSize(11);
-    setCol(COL.accent);
-    doc.text('2. QUANT METRICS · MONTE CARLO SIMULATION', 40, y);
-    y += 16;
+    // ─── §1 EXECUTIVE SUMMARY ─────────────────────────
+    sectionTitle('§1', 'Executive Summary');
+    para(narrative.executive_summary);
 
-    // 4-column grid of key stats
-    const cells = [
-      ['Expected Return', `${(st.mean*100)>=0?'+':''}${(st.mean*100).toFixed(2)}%`, st.mean>=0?COL.green:COL.red],
-      ['Win Rate', `${(st.winRate*100).toFixed(1)}%`, COL.text],
-      ['Sharpe Ratio', `${st.sharpe.toFixed(2)}`, st.sharpe>=1?COL.green:st.sharpe<0.4?COL.red:COL.text],
-      ['Sortino', `${(st.sortino||0).toFixed(2)}`, COL.text],
-      ['Kelly (Full)', `${((st.fullKelly||st.kelly)*100).toFixed(1)}%`, COL.text],
-      ['Kelly (Quarter)', `${(st.kelly*100).toFixed(1)}%`, COL.accent],
-      ['P(ruin 50%)', `${((st.ruin50||0)*100).toFixed(1)}%`, (st.ruin50||0)>0.05?COL.red:COL.green],
-      ['Max Drawdown', `${(st.maxDD*100).toFixed(1)}%`, COL.red],
-      ['VaR 95%', `${(st.var95*100).toFixed(1)}%`, COL.red],
-      ['CVaR 95%', `${((st.cvar95||0)*100).toFixed(1)}%`, COL.red],
-      ['mu (CAPM)', `${(cd.mu*100).toFixed(1)}% ±${((cd.muSE||0.15)*100).toFixed(0)}pp`, COL.text],
-      ['sigma (EWMA)', `${(cd.sigma*100).toFixed(1)}%`, COL.text]
-    ];
-    const cellW = (W-80) / 4;
-    const cellH = 32;
-    cells.forEach((c, i) => {
-      const col = i % 4;
-      const row = Math.floor(i / 4);
-      const x = 40 + col * cellW;
-      const cy = y + row * cellH;
-      doc.setDrawColor(COL.line[0], COL.line[1], COL.line[2]);
-      doc.rect(x, cy, cellW-4, cellH-4);
-      doc.setFont('helvetica','normal');
-      doc.setFontSize(7);
-      setCol(COL.muted);
-      doc.text(c[0], x+6, cy+10);
-      doc.setFont('helvetica','bold');
-      doc.setFontSize(11);
-      setCol(c[2]);
-      doc.text(c[1], x+6, cy+24);
-    });
-    y += Math.ceil(cells.length / 4) * cellH + 10;
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); setCol(COL.muted);
+    doc.text('THESIS', M, y); y += 13;
+    para(narrative.thesis);
+    hr();
 
-    drawHR();
-    ensureSpace(150);
-
-    // ── 3. TRADE SETUP ──
-    doc.setFont('helvetica','bold');
-    doc.setFontSize(11);
-    setCol(COL.accent);
-    doc.text('3. TRADE SETUP', 40, y);
-    y += 16;
-
-    const setupCells = [
-      ['Entry Price', `$${(memoAnalysis.entry_price || price).toFixed(2)}`, COL.text],
-      ['Stop Loss', `$${(memoAnalysis.stop_loss || price*0.9).toFixed(2)}`, COL.red],
-      ['Target Price', `$${(memoAnalysis.target_price || price*1.1).toFixed(2)}`, COL.green],
-      ['Position Size', `${memoAnalysis.position_size_pct || Math.round((st.kelly||0.03)*100)}%`, COL.accent]
-    ];
-    setupCells.forEach((c, i) => {
-      const x = 40 + i * ((W-80)/4);
-      doc.setDrawColor(COL.line[0], COL.line[1], COL.line[2]);
-      doc.rect(x, y, ((W-80)/4)-4, 44);
-      doc.setFont('helvetica','normal');
-      doc.setFontSize(8);
-      setCol(COL.muted);
-      doc.text(c[0], x+8, y+14);
-      doc.setFont('helvetica','bold');
-      doc.setFontSize(16);
-      setCol(c[2]);
-      doc.text(c[1], x+8, y+34);
-    });
-    y += 54;
-
-    if(memoAnalysis.time_horizon_note){
-      doc.setFont('helvetica','italic');
-      doc.setFontSize(9);
-      setCol(COL.muted);
-      const tn = doc.splitTextToSize(memoAnalysis.time_horizon_note, W-80);
-      doc.text(tn, 40, y);
-      y += tn.length * 12 + 10;
+    // ─── §2 COMPANY PROFILE ───────────────────────────
+    if (memoData.profile) {
+      sectionTitle('§2', 'Company Profile');
+      const p = memoData.profile;
+      const profileCells = [
+        ['Industry', p.industry || 'N/A'],
+        ['Country', p.country || 'N/A'],
+        ['Exchange', p.exchange || 'N/A'],
+        ['IPO', p.ipo || 'N/A'],
+        ['Market Cap', fmtMarketCap(p.marketCap)],
+        ['Shares Out', p.shareOutstanding ? p.shareOutstanding.toFixed(0) + 'M' : 'N/A']
+      ];
+      drawGrid(doc, profileCells, M, y, W-M*2, 3, 30, COL);
+      y += Math.ceil(profileCells.length/3) * 30 + 8;
+      hr();
     }
 
-    drawHR();
-    ensureSpace(140);
+    // ─── §3 FUNDAMENTALS ──────────────────────────────
+    sectionTitle('§3', 'Fundamentals');
+    const fundCells = [
+      ['P/E Ratio', fmtNum(f.pe_ratio,1), pe_color(f.pe_ratio, COL)],
+      ['P/B Ratio', fmtNum(f.pb_ratio,1), COL.text],
+      ['P/S Ratio', fmtNum(f.ps_ratio,1), COL.text],
+      ['EV/EBITDA', fmtNum(f.ev_ebitda,1), COL.text],
+      ['Beta', fmtNum(f.beta,2), COL.text],
+      ['Div Yield', f.dividend_yield != null ? fmtPct(f.dividend_yield) : 'N/A', COL.text],
+      ['Revenue TTM', fmtBigDollar(f.revenue_ttm), COL.text],
+      ['Gross Margin', f.gross_margin_ttm != null ? fmtPct(f.gross_margin_ttm) : 'N/A', margin_color(f.gross_margin_ttm, 40, COL)],
+      ['Operating Margin', f.operating_margin_ttm != null ? fmtPct(f.operating_margin_ttm) : 'N/A', margin_color(f.operating_margin_ttm, 20, COL)],
+      ['Net Margin', f.net_margin_ttm != null ? fmtPct(f.net_margin_ttm) : 'N/A', margin_color(f.net_margin_ttm, 10, COL)],
+      ['ROE TTM', f.roe_ttm != null ? fmtPct(f.roe_ttm) : 'N/A', margin_color(f.roe_ttm, 15, COL)],
+      ['D/E Ratio', fmtNum(f.debt_to_equity,2), COL.text],
+      ['EPS TTM', f.eps_ttm != null ? '$' + fmtNum(f.eps_ttm) : 'N/A', COL.text],
+      ['EPS Growth 3y', f.eps_growth_3y != null ? fmtPct(f.eps_growth_3y, true) : 'N/A', COL.text],
+      ['Revenue Growth 3y', f.revenue_growth_3y != null ? fmtPct(f.revenue_growth_3y, true) : 'N/A', COL.text]
+    ];
+    drawColoredGrid(doc, fundCells, M, y, W-M*2, 3, 30, COL);
+    y += Math.ceil(fundCells.length/3) * 30 + 4;
 
-    // ── 4. BULL & BEAR CASES ──
-    doc.setFont('helvetica','bold');
-    doc.setFontSize(11);
-    setCol(COL.accent);
-    doc.text('4. SCENARIOS', 40, y);
-    y += 16;
+    para(narrative.valuation_commentary, 9, COL.muted, true);
+    hr();
 
-    const halfW = (W - 90) / 2;
+    // ─── §4 EARNINGS TRACK RECORD ─────────────────────
+    sectionTitle('§4', 'Earnings Track Record');
 
-    // Bull
-    doc.setDrawColor(COL.green[0], COL.green[1], COL.green[2]);
-    doc.setLineWidth(2);
-    doc.line(40, y, 40, y+70);
-    doc.setLineWidth(0.5);
-    doc.setFont('helvetica','bold');
-    doc.setFontSize(9);
-    setCol(COL.green);
-    doc.text('BULL CASE', 50, y+10);
-    doc.setFont('helvetica','normal');
-    doc.setFontSize(9);
-    setCol(COL.text);
-    const bull = doc.splitTextToSize(memoAnalysis.bull_case || '', halfW);
-    doc.text(bull, 50, y+24);
-
-    // Bear (right col)
-    doc.setDrawColor(COL.red[0], COL.red[1], COL.red[2]);
-    doc.setLineWidth(2);
-    doc.line(40+halfW+10, y, 40+halfW+10, y+70);
-    doc.setLineWidth(0.5);
-    doc.setFont('helvetica','bold');
-    doc.setFontSize(9);
-    setCol(COL.red);
-    doc.text('BEAR CASE', 40+halfW+20, y+10);
-    doc.setFont('helvetica','normal');
-    doc.setFontSize(9);
-    setCol(COL.text);
-    const bear = doc.splitTextToSize(memoAnalysis.bear_case || '', halfW);
-    doc.text(bear, 40+halfW+20, y+24);
-
-    y += 80;
-    drawHR();
-    ensureSpace(120);
-
-    // ── 5. KEY RISKS & CATALYSTS ──
-    doc.setFont('helvetica','bold');
-    doc.setFontSize(11);
-    setCol(COL.accent);
-    doc.text('5. RISKS & CATALYSTS', 40, y);
-    y += 16;
-
-    // Risks
-    doc.setFont('helvetica','bold');
-    doc.setFontSize(9);
-    setCol(COL.red);
-    doc.text('KEY RISKS', 40, y);
-    y += 12;
-    doc.setFont('helvetica','normal');
-    doc.setFontSize(9);
-    setCol(COL.text);
-    (memoAnalysis.risks || []).forEach(r => {
-      const rl = doc.splitTextToSize(`• ${r}`, W-80);
-      doc.text(rl, 40, y);
-      y += rl.length * 11;
-    });
-    y += 6;
-
-    // Catalysts
-    doc.setFont('helvetica','bold');
-    doc.setFontSize(9);
-    setCol(COL.green);
-    doc.text('CATALYSTS', 40, y);
-    y += 12;
-    doc.setFont('helvetica','normal');
-    doc.setFontSize(9);
-    setCol(COL.text);
-    (memoAnalysis.catalysts || []).forEach(c => {
-      const cl = doc.splitTextToSize(`• ${c}`, W-80);
-      doc.text(cl, 40, y);
-      y += cl.length * 11;
-    });
-    y += 10;
-
-    // ── 6. INVESTOR CONSENSUS (if agents were run) ──
-    if(agentBattle && agentBattle.votes && agentBattle.votes.length > 0){
-      ensureSpace(180);
-      drawHR();
-
-      doc.setFont('helvetica','bold');
-      doc.setFontSize(11);
+    if (e.history && e.history.length > 0) {
+      // Stats banner
+      setFill(COL.bg);
+      doc.roundedRect(M, y, W-M*2, 34, 3, 3, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(10);
       setCol(COL.accent);
-      doc.text('6. INVESTOR CONSENSUS · 10 LEGENDARY INVESTORS', 40, y);
-      y += 16;
+      doc.text(`BEAT RATE: ${e.beats}/${e.total} · ${e.beat_rate_pct!=null?e.beat_rate_pct.toFixed(1)+'%':'N/A'}`, M+12, y+14);
+      doc.setFont('helvetica','normal'); doc.setFontSize(9);
+      setCol(COL.muted);
+      doc.text(`Avg surprise ${fmtPct(e.avg_surprise_pct, true)} · Last ${e.history.length} quarters`, M+12, y+27);
+
+      if (e.next) {
+        doc.setFont('helvetica','bold'); doc.setFontSize(9);
+        setCol(COL.accent);
+        const nt = `NEXT: ${e.next.date} (${e.next.days_away}d) · EPS est $${fmtNum(e.next.eps_estimate)}`;
+        doc.text(nt, W-M-12-doc.getTextWidth(nt), y+14);
+      }
+      y += 40;
+
+      // Quarter table
+      ensureSpace((e.history.length + 1) * 16);
+      doc.setFont('helvetica','bold'); doc.setFontSize(8); setCol(COL.muted);
+      doc.text('QUARTER', M, y);
+      doc.text('EPS EST', M+80, y);
+      doc.text('EPS ACT', M+130, y);
+      doc.text('SURPRISE', M+180, y);
+      doc.text('REVENUE', M+240, y);
+      doc.text('YoY', M+310, y);
+      doc.text('STOCK +1d', M+360, y);
+      doc.text('DATE', M+430, y);
+      y += 10;
+      setDraw(COL.line);
+      doc.line(M, y, W-M, y);
+      y += 6;
+
+      e.history.forEach(q => {
+        if(q.eps_actual == null) return;
+        ensureSpace(14);
+        const col = q.beat ? COL.green : COL.red;
+        doc.setFont('helvetica','normal'); doc.setFontSize(9); setCol(COL.text);
+        doc.text(`Q${q.quarter} ${q.year}`, M, y);
+        doc.text('$' + fmtNum(q.eps_estimate), M+80, y);
+        doc.text('$' + fmtNum(q.eps_actual), M+130, y);
+        setCol(col);
+        doc.setFont('helvetica','bold');
+        doc.text((q.surprise_pct>0?'+':'') + q.surprise_pct.toFixed(1) + '%', M+180, y);
+        doc.setFont('helvetica','normal'); setCol(COL.text);
+        doc.text(q.revenue != null ? fmtBigDollar(q.revenue) : 'N/A', M+240, y);
+        if (q.revenue_yoy_pct != null) {
+          setCol(q.revenue_yoy_pct > 0 ? COL.green : COL.red);
+          doc.text(fmtPct(q.revenue_yoy_pct, true), M+310, y);
+        } else { setCol(COL.muted); doc.text('N/A', M+310, y); }
+        if (q.stock_reaction_pct != null) {
+          setCol(q.stock_reaction_pct > 0 ? COL.green : COL.red);
+          doc.text(fmtPct(q.stock_reaction_pct, true), M+360, y);
+        } else { setCol(COL.muted); doc.text('N/A', M+360, y); }
+        setCol(COL.muted);
+        doc.text(q.period || 'N/A', M+430, y);
+        y += 14;
+      });
+      y += 4;
+    } else {
+      para('Earnings history unavailable.', 9, COL.muted, true);
+    }
+    hr();
+
+    // ─── §5 TECHNICAL SETUP ───────────────────────────
+    if (t && t.current_price) {
+      sectionTitle('§5', 'Technical Setup');
+      const techCells = [
+        ['Current', '$'+fmtNum(t.current_price), COL.text],
+        ['SMA 50', t.sma_50 != null ? '$'+fmtNum(t.sma_50) : 'N/A', COL.text],
+        ['SMA 200', t.sma_200 != null ? '$'+fmtNum(t.sma_200) : 'N/A', COL.text],
+        ['vs SMA 50', t.price_vs_sma50_pct != null ? fmtPct(t.price_vs_sma50_pct, true) : 'N/A',
+         t.price_vs_sma50_pct > 0 ? COL.green : COL.red],
+        ['vs SMA 200', t.price_vs_sma200_pct != null ? fmtPct(t.price_vs_sma200_pct, true) : 'N/A',
+         t.price_vs_sma200_pct > 0 ? COL.green : COL.red],
+        ['Golden Cross', t.golden_cross ? 'YES' : 'NO',
+         t.golden_cross ? COL.green : COL.red],
+        ['RSI (14)', t.rsi_14 != null ? fmtNum(t.rsi_14,1) : 'N/A',
+         t.rsi_signal === 'OVERBOUGHT' ? COL.red : t.rsi_signal === 'OVERSOLD' ? COL.green : COL.text],
+        ['RSI Signal', t.rsi_signal || 'N/A',
+         t.rsi_signal === 'OVERBOUGHT' ? COL.red : t.rsi_signal === 'OVERSOLD' ? COL.green : COL.muted],
+        ['20d Vol (ann)', t.volatility_20d_annualized != null ? fmtPct(t.volatility_20d_annualized) : 'N/A', COL.text],
+        ['Support 60d', '$'+fmtNum(t.support), COL.red],
+        ['Resistance 60d', '$'+fmtNum(t.resistance), COL.green],
+        ['Upside/Downside', (t.upside_to_resistance_pct>0?'+':'')+t.upside_to_resistance_pct.toFixed(1)+'% / '+(t.downside_to_support_pct).toFixed(1)+'%', COL.text]
+      ];
+      drawColoredGrid(doc, techCells, M, y, W-M*2, 3, 30, COL);
+      y += Math.ceil(techCells.length/3) * 30 + 4;
+      para(narrative.technical_commentary, 9, COL.muted, true);
+      hr();
+    }
+
+    // ─── §6 ANALYST CONSENSUS ─────────────────────────
+    if (a.recommendation || a.price_target) {
+      sectionTitle('§6', 'Analyst Consensus');
+
+      if (a.recommendation && a.recommendation.total_analysts > 0) {
+        const r = a.recommendation;
+        ensureSpace(60);
+        setFill(COL.bg);
+        doc.roundedRect(M, y, (W-M*2)/2 - 6, 60, 3, 3, 'F');
+
+        doc.setFont('helvetica','bold'); doc.setFontSize(10);
+        const conCol = r.consensus === 'BUY' ? COL.green : r.consensus === 'SELL' ? COL.red : COL.amber;
+        setCol(conCol);
+        doc.text(`CONSENSUS: ${r.consensus}`, M+10, y+18);
+
+        doc.setFont('helvetica','normal'); doc.setFontSize(8);
+        setCol(COL.muted);
+        doc.text(`${r.total_analysts} analysts · ${r.period}`, M+10, y+30);
+
+        doc.setFontSize(8); setCol(COL.text);
+        doc.text(`Strong Buy: ${r.strong_buy}  ·  Buy: ${r.buy}  ·  Hold: ${r.hold}  ·  Sell: ${r.sell}  ·  Strong Sell: ${r.strong_sell}`, M+10, y+48);
+      }
+
+      if (a.price_target && a.price_target.target_mean) {
+        const pt = a.price_target;
+        const upside = ((pt.target_mean - price) / price) * 100;
+        const col2Start = M + (W-M*2)/2 + 6;
+        setFill(COL.bg);
+        doc.roundedRect(col2Start, y, (W-M*2)/2 - 6, 60, 3, 3, 'F');
+
+        doc.setFont('helvetica','bold'); doc.setFontSize(10);
+        setCol(COL.accent);
+        doc.text(`PRICE TARGET (AVG): $${fmtNum(pt.target_mean)}`, col2Start+10, y+18);
+
+        doc.setFont('helvetica','normal'); doc.setFontSize(8);
+        setCol(upside > 0 ? COL.green : COL.red);
+        doc.text(`Upside: ${fmtPct(upside, true)}`, col2Start+10, y+32);
+
+        setCol(COL.muted);
+        doc.setFontSize(8);
+        doc.text(`High $${fmtNum(pt.target_high)} · Low $${fmtNum(pt.target_low)} · ${pt.num_analysts||'?'} analysts`, col2Start+10, y+48);
+      }
+      y += 70;
+      hr();
+    }
+
+    // ─── §7 MONTE CARLO METRICS ───────────────────────
+    sectionTitle('§7', 'Quant Metrics · Monte Carlo Simulation');
+    const quantCells = [
+      ['Expected Return', fmtPct(st.mean*100, true), st.mean>=0 ? COL.green : COL.red],
+      ['Win Rate', fmtPct(st.winRate*100), COL.text],
+      ['Sharpe Ratio', fmtNum(st.sharpe,2), st.sharpe>=1?COL.green:st.sharpe<0.4?COL.red:COL.text],
+      ['Sortino', fmtNum(st.sortino||0,2), COL.text],
+      ['Kelly Full', fmtPct((st.fullKelly||st.kelly)*100), COL.text],
+      ['Kelly Quarter', fmtPct(st.kelly*100), COL.accent],
+      ['P(ruin 50%)', fmtPct((st.ruin50||0)*100), (st.ruin50||0)>0.05?COL.red:COL.green],
+      ['Max Drawdown', fmtPct(st.maxDD*100), COL.red],
+      ['VaR 95%', fmtPct(st.var95*100), COL.red],
+      ['CVaR 95%', fmtPct((st.cvar95||0)*100), COL.red],
+      ['mu (CAPM)', `${(cd.mu*100).toFixed(1)}% ±${((cd.muSE||0.15)*100).toFixed(0)}pp`, COL.text],
+      ['sigma (EWMA)', fmtPct(cd.sigma*100), COL.text]
+    ];
+    drawColoredGrid(doc, quantCells, M, y, W-M*2, 4, 30, COL);
+    y += Math.ceil(quantCells.length/4) * 30 + 8;
+    hr();
+
+    // ─── §8 TRADE SETUP ───────────────────────────────
+    sectionTitle('§8', 'Trade Setup');
+    const setupCells = [
+      ['Entry Price', '$' + fmtNum(entryPrice), COL.text],
+      ['Stop Loss', '$' + fmtNum(stopLoss), COL.red],
+      ['Target Price', '$' + fmtNum(targetPrice), COL.green],
+      ['Position Size', positionSizePct + '%', COL.accent]
+    ];
+    drawColoredGrid(doc, setupCells, M, y, W-M*2, 4, 48, COL, true);
+    y += 56;
+    para(`Based on Quarter-Kelly sizing (AQR/PIMCO convention). Stop at VaR 95% level (${fmtPct(st.var95*100)}). Target at expected Monte Carlo return over ${days}d.`, 9, COL.muted, true);
+    hr();
+
+    // ─── §9 SCENARIOS ─────────────────────────────────
+    sectionTitle('§9', 'Scenarios');
+    const halfW = (W - M*2 - 16) / 2;
+    ensureSpace(80);
+    setDraw(COL.green); doc.setLineWidth(2);
+    doc.line(M, y, M, y+70); doc.setLineWidth(0.5);
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); setCol(COL.green);
+    doc.text('BULL CASE', M+10, y+12);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); setCol(COL.text);
+    const bullLines = doc.splitTextToSize(narrative.bull_case || '', halfW-10);
+    doc.text(bullLines, M+10, y+26);
+
+    setDraw(COL.red); doc.setLineWidth(2);
+    doc.line(M+halfW+16, y, M+halfW+16, y+70); doc.setLineWidth(0.5);
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); setCol(COL.red);
+    doc.text('BEAR CASE', M+halfW+26, y+12);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); setCol(COL.text);
+    const bearLines = doc.splitTextToSize(narrative.bear_case || '', halfW-10);
+    doc.text(bearLines, M+halfW+26, y+26);
+
+    y += 85;
+    hr();
+
+    // ─── §10 RISKS & CATALYSTS ────────────────────────
+    sectionTitle('§10', 'Risks & Catalysts');
+
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); setCol(COL.red);
+    doc.text('KEY RISKS', M, y); y += 13;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); setCol(COL.text);
+    (narrative.risks||[]).forEach(r => {
+      const lines = doc.splitTextToSize('• ' + r, W-M*2);
+      ensureSpace(lines.length * 12);
+      doc.text(lines, M, y);
+      y += lines.length * 12;
+    });
+    y += 8;
+
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); setCol(COL.green);
+    doc.text('CATALYSTS', M, y); y += 13;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); setCol(COL.text);
+    (narrative.catalysts||[]).forEach(c => {
+      const lines = doc.splitTextToSize('• ' + c, W-M*2);
+      ensureSpace(lines.length * 12);
+      doc.text(lines, M, y);
+      y += lines.length * 12;
+    });
+    y += 8;
+
+    // ─── §11 INVESTOR CONSENSUS (10 AGENTS) ───────────
+    if (agentBattle && agentBattle.votes && agentBattle.votes.length > 0) {
+      hr();
+      sectionTitle('§11', 'Investor Consensus · 10 Legendary Investors');
 
       const buys = agentBattle.votes.filter(v=>v.verdict==='BUY').length;
       const holds = agentBattle.votes.filter(v=>v.verdict==='HOLD').length;
       const passes = agentBattle.votes.filter(v=>v.verdict==='PASS').length;
       const consensus = buys >= 6 ? 'BULLISH' : passes >= 6 ? 'BEARISH' : 'SPLIT';
-      const conColor = consensus==='BULLISH'?COL.green:consensus==='BEARISH'?COL.red:[239,159,39];
+      const conColor = consensus==='BULLISH'?COL.green:consensus==='BEARISH'?COL.red:COL.amber;
 
-      doc.setFont('helvetica','bold');
-      doc.setFontSize(12);
+      doc.setFont('helvetica','bold'); doc.setFontSize(12);
       setCol(conColor);
-      doc.text(`CONSENSUS: ${consensus}`, 40, y);
-      doc.setFont('helvetica','normal');
-      doc.setFontSize(10);
-      setCol(COL.text);
-      doc.text(`BUY ${buys} · HOLD ${holds} · PASS ${passes}`, 200, y);
-      y += 14;
+      doc.text(`CONSENSUS: ${consensus}`, M, y);
+      doc.setFont('helvetica','normal'); doc.setFontSize(10); setCol(COL.text);
+      doc.text(`BUY ${buys} · HOLD ${holds} · PASS ${passes}`, M+170, y);
+      y += 16;
 
-      doc.setFont('helvetica','normal');
-      doc.setFontSize(8);
-      setCol(COL.muted);
       agentBattle.votes.slice(0, 10).forEach(v => {
-        ensureSpace(20);
-        const vc2 = v.verdict==='BUY'?COL.green:v.verdict==='PASS'?COL.red:[239,159,39];
-        doc.setFont('helvetica','bold');
+        ensureSpace(32);
+        const vc2 = v.verdict==='BUY'?COL.green:v.verdict==='PASS'?COL.red:COL.amber;
+        doc.setFont('helvetica','bold'); doc.setFontSize(8);
         setCol(vc2);
-        doc.text(`[${v.verdict}]`, 40, y);
-        doc.setFont('helvetica','bold');
-        setCol(COL.text);
+        doc.text(`[${v.verdict}]`, M, y);
+        doc.setFont('helvetica','bold'); setCol(COL.text);
         const agentName = (typeof nameOf === 'function') ? nameOf(v.agent) : v.agent;
-        doc.text(agentName, 78, y);
-        doc.setFont('helvetica','normal');
-        setCol(COL.muted);
-        doc.text(`(${v.conviction})`, 78 + doc.getTextWidth(agentName) + 6, y);
-        y += 11;
-        const quote = doc.splitTextToSize(`"${v.take}"`, W-90);
-        setCol(COL.text);
-        doc.setFont('helvetica','italic');
-        doc.setFontSize(8);
-        doc.text(quote, 50, y);
+        doc.text(agentName, M+38, y);
+        doc.setFont('helvetica','normal'); setCol(COL.muted);
+        doc.text(`(${v.conviction})`, M+38+doc.getTextWidth(agentName)+6, y);
+        y += 10;
+        const quote = doc.splitTextToSize(`"${v.take}"`, W-M*2-10);
+        setCol(COL.text); doc.setFont('helvetica','italic'); doc.setFontSize(8);
+        doc.text(quote, M+10, y);
         y += quote.length * 10 + 6;
       });
     }
 
-    // ── FOOTER (last page) ──
-    ensureSpace(100);
-    y = H - 90;
-    drawHR();
-    doc.setFont('helvetica','normal');
-    doc.setFontSize(8);
+    // ─── FOOTER: Disclaimer + page numbers ────────────
+    ensureSpace(110);
+    y = H - 95;
+    setDraw(COL.line); doc.line(M, y, W-M, y);
+    y += 10;
+
+    doc.setFont('helvetica','normal'); doc.setFontSize(7);
     setCol(COL.muted);
     const disclaimer = doc.splitTextToSize(
-      'This memo is generated by QuantDesk AI for educational and research purposes only. It is not investment advice. Quant metrics are derived from Monte Carlo simulation (GBM/Jump/Regime) using live price data from Finnhub, Yahoo Finance, and CoinGecko. Mu estimates use CAPM (rf + β × ERP) following Merton (1980). Position sizing uses fractional Kelly (Quarter-Kelly) per AQR/PIMCO institutional convention. Past performance and simulated returns do not guarantee future results. Consult a licensed financial advisor before making any investment decision.',
-      W - 80
+      'DISCLAIMER: This memo is generated by QuantDesk AI for educational and research purposes only. It is not investment advice. ' +
+      'Data sourced from Finnhub, Yahoo Finance, CoinGecko. Quant metrics from Monte Carlo simulation (GBM) using CAPM (Merton 1980) and Quarter-Kelly sizing (AQR convention). ' +
+      'Past performance does not guarantee future results. Consult a licensed financial advisor before making any investment decision.',
+      W-M*2
     );
-    doc.text(disclaimer, 40, y);
+    doc.text(disclaimer, M, y);
     y += disclaimer.length * 9 + 8;
 
-    setCol(COL.accent);
-    doc.setFont('helvetica','bold');
-    doc.setFontSize(8);
-    doc.text('quantdesk2.vercel.app', 40, y);
-    setCol(COL.muted);
-    doc.setFont('helvetica','normal');
-    doc.text(' · Bloomberg + TradingView for LATAM · AI-native', 40 + 110, y);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); setCol(COL.accent);
+    doc.text('quantdesk2.vercel.app', M, y);
+    doc.setFont('helvetica','normal'); setCol(COL.muted);
+    doc.text(' · Bloomberg + TradingView for LATAM · AI-native', M+doc.getTextWidth('quantdesk2.vercel.app'), y);
 
-    // Page numbers
+    // Page numbers (all pages)
     const totalPages = doc.internal.getNumberOfPages();
-    for(let i = 1; i <= totalPages; i++){
+    for (let i = 1; i <= totalPages; i++) {
       doc.setPage(i);
-      doc.setFont('helvetica','normal');
-      doc.setFontSize(8);
-      setCol(COL.muted);
-      doc.text(`Page ${i} of ${totalPages}`, W-80, H-30);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7); setCol(COL.muted);
+      doc.text(`${ticker} · Memo · Page ${i} of ${totalPages}`, W-M-80, H-20);
     }
 
-    // ── SAVE ──
     const filename = `QuantDesk_Memo_${ticker}_${new Date().toISOString().split('T')[0]}.pdf`;
     doc.save(filename);
 
     btn.textContent = '✓ Downloaded!';
     setTimeout(()=>{ btn.textContent = origText; btn.disabled = false; }, 2000);
 
-  } catch (err) {
+  } catch(err) {
     console.error('PDF generation error:', err);
     alert('Error generating PDF: ' + err.message);
     btn.textContent = origText;
     btn.disabled = false;
   }
+}
+
+// ── PDF helpers ──
+function drawGrid(doc, cells, x, y, totalW, cols, rowH, COL){
+  const cellW = totalW / cols;
+  cells.forEach((c, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const cx = x + col * cellW;
+    const cy = y + row * rowH;
+    doc.setDrawColor(COL.line[0], COL.line[1], COL.line[2]); doc.setLineWidth(0.5);
+    doc.rect(cx+2, cy+2, cellW-4, rowH-4);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7);
+    doc.setTextColor(COL.muted[0], COL.muted[1], COL.muted[2]);
+    doc.text(c[0], cx+8, cy+12);
+    doc.setFont('helvetica','bold'); doc.setFontSize(10);
+    doc.setTextColor(COL.text[0], COL.text[1], COL.text[2]);
+    doc.text(c[1], cx+8, cy+24);
+  });
+}
+
+function drawColoredGrid(doc, cells, x, y, totalW, cols, rowH, COL, bigFont){
+  const cellW = totalW / cols;
+  cells.forEach((c, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const cx = x + col * cellW;
+    const cy = y + row * rowH;
+    doc.setDrawColor(COL.line[0], COL.line[1], COL.line[2]); doc.setLineWidth(0.5);
+    doc.rect(cx+2, cy+2, cellW-4, rowH-4);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7);
+    doc.setTextColor(COL.muted[0], COL.muted[1], COL.muted[2]);
+    doc.text(c[0], cx+8, cy+12);
+    doc.setFont('helvetica','bold'); doc.setFontSize(bigFont ? 14 : 10);
+    const color = c[2] || COL.text;
+    doc.setTextColor(color[0], color[1], color[2]);
+    doc.text(c[1], cx+8, bigFont ? cy+32 : cy+24);
+  });
+}
+
+function pe_color(pe, COL){
+  if (pe == null) return COL.muted;
+  if (pe > 0 && pe < 15) return COL.green;
+  if (pe > 40) return COL.red;
+  return COL.text;
+}
+
+function margin_color(pct, threshold, COL){
+  if (pct == null) return COL.muted;
+  if (pct > threshold) return COL.green;
+  if (pct < 0) return COL.red;
+  return COL.text;
 }
 </script>
 <!-- GALLERY PAGE -->
