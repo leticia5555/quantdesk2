@@ -1653,16 +1653,31 @@ function renderEpsHistoryReal(hist){
     const col=beat?'#00c97d':'#E24B4A';
     const bar=Math.min(Math.abs(q.surprise_pct)*3,100);
     const qLabel='Q'+q.quarter+' '+q.year;
+
+    // Revenue line (only if we have data)
+    let revLine = '';
+    if(q.revenue_actual != null){
+      // Format revenue in billions or millions
+      const rev = q.revenue_actual;
+      const revStr = rev >= 1e9 ? '$'+(rev/1e9).toFixed(2)+'B' : rev >= 1e6 ? '$'+(rev/1e6).toFixed(0)+'M' : '$'+rev.toFixed(0);
+      const yoyColor = q.revenue_yoy_pct==null ? '#555' : q.revenue_yoy_pct>0 ? '#00c97d' : '#E24B4A';
+      const yoyStr = q.revenue_yoy_pct==null ? '' : ' · <span style="color:'+yoyColor+';">'+(q.revenue_yoy_pct>0?'+':'')+q.revenue_yoy_pct.toFixed(1)+'% YoY</span>';
+      revLine = '<div style="display:flex;gap:12px;font-size:10px;margin-bottom:6px;color:#555;">'
+        +'<span>Revenue: <span style="color:#ccc;">'+revStr+'</span>'+yoyStr+'</span>'
+        +'</div>';
+    }
+
     html+='<div style="background:#111;border:1px solid #1a1a1a;padding:10px;">'
       +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">'
       +'<span style="font-family:var(--mono);font-size:10px;color:#888;">'+qLabel+'</span>'
       +'<span style="font-family:var(--mono);font-size:10px;font-weight:700;color:'+col+';">'+(beat?'BEAT':'MISS')+' '+(q.surprise_pct>0?'+':'')+q.surprise_pct.toFixed(1)+'%</span>'
       +'</div>'
       +'<div style="display:flex;gap:12px;font-size:10px;margin-bottom:6px;">'
-      +'<span style="color:#555;">Est: <span style="color:#888;">$'+q.eps_estimate.toFixed(2)+'</span></span>'
-      +'<span style="color:#555;">Act: <span style="color:'+col+';">$'+q.eps_actual.toFixed(2)+'</span></span>'
+      +'<span style="color:#555;">EPS est: <span style="color:#888;">$'+q.eps_estimate.toFixed(2)+'</span></span>'
+      +'<span style="color:#555;">act: <span style="color:'+col+';">$'+q.eps_actual.toFixed(2)+'</span></span>'
       +'<span style="color:#555;margin-left:auto;font-size:9px;">'+q.period+'</span>'
       +'</div>'
+      +revLine
       +'<div style="height:3px;background:#1a1a1a;border-radius:2px;overflow:hidden;">'
       +'<div style="width:'+bar+'%;height:100%;background:'+col+';border-radius:2px;"></div>'
       +'</div>'
