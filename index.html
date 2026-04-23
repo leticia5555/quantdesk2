@@ -749,7 +749,10 @@ td:first-child{color:var(--text);font-weight:500;}
     <span style="font-family:var(--mono);font-size:10px;color:#00c97d;font-weight:600;letter-spacing:.1em;">SMART MONEY TRACKER</span>
     <span style="font-family:var(--mono);font-size:10px;color:#333;">SEC · FINRA · CBOE · FINNHUB</span>
     <div style="margin-left:auto;display:flex;gap:8px;">
-      <input type="text" id="smTicker" placeholder="TICKER" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 10px;width:100px;border-radius:2px;text-transform:uppercase;"/>
+      <div class="autocomplete-wrap" style="display:inline-block;">
+        <input type="text" id="smTicker" placeholder="TICKER" oninput="onSmTickerInput()" onkeydown="onSmTickerKey(event)" autocomplete="off" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 10px;width:100px;border-radius:2px;text-transform:uppercase;"/>
+        <div id="smAcList" class="autocomplete-list" style="display:none;"></div>
+      </div>
       <button onclick="runSmartMoney()" style="font-family:var(--mono);font-size:10px;padding:4px 12px;background:#00c97d;border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;letter-spacing:.04em;">ANALYZE</button>
     </div>
   </div>
@@ -818,7 +821,10 @@ td:first-child{color:var(--text);font-weight:500;}
     <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;">EARNINGS INTELLIGENCE</span>
     <span style="font-family:var(--mono);font-size:10px;color:#333;">EPS · SURPRISES · REACTIONS · WHISPER NUMBERS</span>
     <div style="margin-left:auto;display:flex;gap:8px;">
-      <input type="text" id="earningsTicker" placeholder="TICKER" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 10px;width:100px;border-radius:2px;text-transform:uppercase;"/>
+      <div class="autocomplete-wrap" style="display:inline-block;">
+        <input type="text" id="earningsTicker" placeholder="TICKER" oninput="onEarningsTickerInput()" onkeydown="onEarningsTickerKey(event)" autocomplete="off" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 10px;width:100px;border-radius:2px;text-transform:uppercase;"/>
+        <div id="earningsAcList" class="autocomplete-list" style="display:none;"></div>
+      </div>
       <button onclick="runEarningsIntel()" style="font-family:var(--mono);font-size:10px;padding:4px 12px;background:#ff6600;border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;">ANALYZE</button>
     </div>
   </div>
@@ -4336,14 +4342,18 @@ const TICKERS = [
   {sym:'AMD',name:'Advanced Micro Devices',type:'stock'},
   {sym:'INTC',name:'Intel Corp.',type:'stock'},
   {sym:'CRM',name:'Salesforce Inc.',type:'stock'},
+  {sym:'ORCL',name:'Oracle Corp.',type:'stock'},
+  {sym:'ADBE',name:'Adobe Inc.',type:'stock'},
+  {sym:'NOW',name:'ServiceNow Inc.',type:'stock'},
   {sym:'SHOP',name:'Shopify Inc.',type:'stock'},
   {sym:'SQ',name:'Block Inc.',type:'stock'},
   {sym:'PYPL',name:'PayPal Holdings',type:'stock'},
   {sym:'COIN',name:'Coinbase Global',type:'stock'},
+  {sym:'HOOD',name:'Robinhood Markets',type:'stock'},
   {sym:'UBER',name:'Uber Technologies',type:'stock'},
   {sym:'LYFT',name:'Lyft Inc.',type:'stock'},
   {sym:'SNAP',name:'Snap Inc.',type:'stock'},
-  {sym:'TWTR',name:'X Corp.',type:'stock'},
+  {sym:'PINS',name:'Pinterest Inc.',type:'stock'},
   {sym:'SPOT',name:'Spotify Technology',type:'stock'},
   {sym:'ABNB',name:'Airbnb Inc.',type:'stock'},
   {sym:'DASH',name:'DoorDash Inc.',type:'stock'},
@@ -4355,24 +4365,57 @@ const TICKERS = [
   {sym:'AVGO',name:'Broadcom Inc.',type:'stock'},
   {sym:'QCOM',name:'Qualcomm Inc.',type:'stock'},
   {sym:'TSM',name:'Taiwan Semiconductor',type:'stock'},
+  {sym:'MU',name:'Micron Technology',type:'stock'},
+  {sym:'LRCX',name:'Lam Research',type:'stock'},
+  {sym:'KLAC',name:'KLA Corporation',type:'stock'},
   {sym:'ASML',name:'ASML Holding',type:'stock'},
   {sym:'SAP',name:'SAP SE',type:'stock'},
   {sym:'NKE',name:'Nike Inc.',type:'stock'},
+  {sym:'LULU',name:'Lululemon Athletica',type:'stock'},
   {sym:'DIS',name:'Walt Disney Co.',type:'stock'},
   {sym:'JPM',name:'JPMorgan Chase',type:'stock'},
   {sym:'GS',name:'Goldman Sachs',type:'stock'},
+  {sym:'MS',name:'Morgan Stanley',type:'stock'},
   {sym:'BAC',name:'Bank of America',type:'stock'},
+  {sym:'WFC',name:'Wells Fargo',type:'stock'},
   {sym:'V',name:'Visa Inc.',type:'stock'},
   {sym:'MA',name:'Mastercard Inc.',type:'stock'},
+  {sym:'AXP',name:'American Express',type:'stock'},
+  {sym:'BRK.B',name:'Berkshire Hathaway B',type:'stock'},
   {sym:'XOM',name:'Exxon Mobil',type:'stock'},
+  {sym:'CVX',name:'Chevron Corp.',type:'stock'},
   {sym:'WMT',name:'Walmart Inc.',type:'stock'},
   {sym:'COST',name:'Costco Wholesale',type:'stock'},
+  {sym:'HD',name:'Home Depot',type:'stock'},
+  {sym:'MCD',name:"McDonald's Corp.",type:'stock'},
+  {sym:'KO',name:'Coca-Cola Co.',type:'stock'},
+  {sym:'PEP',name:'PepsiCo Inc.',type:'stock'},
+  {sym:'JNJ',name:'Johnson & Johnson',type:'stock'},
+  {sym:'UNH',name:'UnitedHealth Group',type:'stock'},
+  {sym:'PFE',name:'Pfizer Inc.',type:'stock'},
+  {sym:'LLY',name:'Eli Lilly & Co.',type:'stock'},
+  {sym:'ABBV',name:'AbbVie Inc.',type:'stock'},
+  {sym:'MRK',name:'Merck & Co.',type:'stock'},
+  // ETFs
   {sym:'SPY',name:'S&P 500 ETF',type:'etf'},
   {sym:'QQQ',name:'Nasdaq 100 ETF',type:'etf'},
   {sym:'IWM',name:'Russell 2000 ETF',type:'etf'},
+  {sym:'DIA',name:'Dow Jones ETF',type:'etf'},
+  {sym:'VTI',name:'Total US Market ETF',type:'etf'},
+  {sym:'VOO',name:'S&P 500 Vanguard ETF',type:'etf'},
   {sym:'GLD',name:'Gold ETF',type:'etf'},
+  {sym:'SLV',name:'Silver ETF',type:'etf'},
   {sym:'TLT',name:'20Y Treasury ETF',type:'etf'},
   {sym:'VT',name:'Total World Stock ETF',type:'etf'},
+  {sym:'EEM',name:'Emerging Markets ETF',type:'etf'},
+  {sym:'EWZ',name:'Brazil ETF',type:'etf'},
+  {sym:'EWW',name:'Mexico ETF',type:'etf'},
+  {sym:'ILF',name:'Latin America ETF',type:'etf'},
+  {sym:'ARKK',name:'ARK Innovation ETF',type:'etf'},
+  {sym:'XLK',name:'Technology Sector ETF',type:'etf'},
+  {sym:'XLF',name:'Financial Sector ETF',type:'etf'},
+  {sym:'XLE',name:'Energy Sector ETF',type:'etf'},
+  // Crypto
   {sym:'BTC/USD',name:'Bitcoin',type:'crypto'},
   {sym:'ETH/USD',name:'Ethereum',type:'crypto'},
   {sym:'SOL/USD',name:'Solana',type:'crypto'},
@@ -4382,18 +4425,56 @@ const TICKERS = [
   {sym:'DOT/USD',name:'Polkadot',type:'crypto'},
   {sym:'DOGE/USD',name:'Dogecoin',type:'crypto'},
   {sym:'XRP/USD',name:'XRP',type:'crypto'},
-  // LATAM
-  {sym:'MELI',name:'MercadoLibre (LATAM)',type:'stock'},
-  {sym:'NU',name:'Nu Holdings (Nubank)',type:'stock'},
-  {sym:'GLOB',name:'Globant SA',type:'stock'},
-  {sym:'DESP',name:'Despegar.com',type:'stock'},
-  {sym:'LREN3.SA',name:'Lojas Renner (Brasil)',type:'stock'},
-  {sym:'VALE3.SA',name:'Vale SA (Brasil)',type:'stock'},
-  {sym:'PETR4.SA',name:'Petrobras (Brasil)',type:'stock'},
-  {sym:'ITUB4.SA',name:'Itaú Unibanco',type:'stock'},
-  {sym:'WALMEX.MX',name:'Walmart México',type:'stock'},
-  {sym:'FEMSAUBD.MX',name:'FEMSA México',type:'stock'},
-  {sym:'AMXB.MX',name:'América Móvil',type:'stock'},
+  {sym:'MATIC/USD',name:'Polygon',type:'crypto'},
+  {sym:'LINK/USD',name:'Chainlink',type:'crypto'},
+  {sym:'LTC/USD',name:'Litecoin',type:'crypto'},
+  // LATAM ADRs (in USD on NYSE/NASDAQ)
+  {sym:'NU',name:'Nu Holdings · Nubank',type:'latam'},
+  {sym:'GLOB',name:'Globant SA · Argentina',type:'latam'},
+  {sym:'DESP',name:'Despegar · LATAM travel',type:'latam'},
+  {sym:'STNE',name:'StoneCo · Brazil payments',type:'latam'},
+  {sym:'PAGS',name:'PagSeguro · Brazil',type:'latam'},
+  {sym:'VALE',name:'Vale SA · Brazil mining',type:'latam'},
+  {sym:'PBR',name:'Petrobras · Brazil oil',type:'latam'},
+  {sym:'ITUB',name:'Itaú Unibanco · Brazil',type:'latam'},
+  {sym:'BBD',name:'Bradesco · Brazil',type:'latam'},
+  {sym:'ABEV',name:'AmBev · Brazil beverages',type:'latam'},
+  {sym:'SBS',name:'Sabesp · Brazil utility',type:'latam'},
+  {sym:'CIB',name:'Bancolombia · Colombia',type:'latam'},
+  {sym:'BAP',name:'Credicorp · Peru',type:'latam'},
+  {sym:'XP',name:'XP Inc · Brazil wealth',type:'latam'},
+  {sym:'AMX',name:'América Móvil ADR',type:'latam'},
+  {sym:'CX',name:'CEMEX ADR · Mexico',type:'latam'},
+  {sym:'FMX',name:'FEMSA ADR · Mexico',type:'latam'},
+  {sym:'KOF',name:'Coca-Cola FEMSA',type:'latam'},
+  {sym:'ASR',name:'Grupo Aeroportuario Sureste',type:'latam'},
+  {sym:'PAC',name:'Grupo Aeroportuario Pacífico',type:'latam'},
+  {sym:'LSPD',name:'Lightspeed Commerce',type:'latam'},
+  // Brazil B3 (.SA)
+  {sym:'PETR4.SA',name:'Petrobras PN · B3',type:'bmv'},
+  {sym:'VALE3.SA',name:'Vale ON · B3',type:'bmv'},
+  {sym:'ITUB4.SA',name:'Itaú Unibanco PN · B3',type:'bmv'},
+  {sym:'BBAS3.SA',name:'Banco do Brasil · B3',type:'bmv'},
+  {sym:'ABEV3.SA',name:'Ambev ON · B3',type:'bmv'},
+  {sym:'B3SA3.SA',name:'B3 SA · Bolsa de Brasil',type:'bmv'},
+  {sym:'LREN3.SA',name:'Lojas Renner · B3',type:'bmv'},
+  {sym:'GOLL4.SA',name:'Gol Linhas Aéreas · B3',type:'bmv'},
+  // Mexico BMV (.MX)
+  {sym:'WALMEX.MX',name:'Walmart de México · BMV',type:'bmv'},
+  {sym:'FEMSAUBD.MX',name:'FEMSA · BMV',type:'bmv'},
+  {sym:'KOFUBL.MX',name:'Coca-Cola FEMSA · BMV',type:'bmv'},
+  {sym:'AMXB.MX',name:'América Móvil B · BMV',type:'bmv'},
+  {sym:'CEMEXCPO.MX',name:'CEMEX CPO · BMV',type:'bmv'},
+  {sym:'GAPB.MX',name:'GAP Aeroportuario · BMV',type:'bmv'},
+  {sym:'ASURB.MX',name:'ASUR Aeroportuario · BMV',type:'bmv'},
+  {sym:'ALFAA.MX',name:'Alfa SAB · BMV',type:'bmv'},
+  {sym:'BIMBOA.MX',name:'Grupo Bimbo · BMV',type:'bmv'},
+  {sym:'GFNORTEO.MX',name:'Banorte · BMV',type:'bmv'},
+  {sym:'CUERVO.MX',name:'Becle/Jose Cuervo · BMV',type:'bmv'},
+  {sym:'TLEVISACPO.MX',name:'Grupo Televisa · BMV',type:'bmv'},
+  {sym:'GCARSOA1.MX',name:'Grupo Carso · BMV',type:'bmv'},
+  {sym:'PINFRA.MX',name:'PINFRA · BMV',type:'bmv'},
+  {sym:'LIVEPOLC-1.MX',name:'Liverpool · BMV',type:'bmv'},
 ];
 
 let acIndex=-1;
@@ -4444,11 +4525,116 @@ function selectTicker(sym){
   acIndex=-1;
 }
 
+// ─── EARNINGS TICKER AUTOCOMPLETE ──────────────────────
+let earningsAcIndex=-1;
+function onEarningsTickerInput(){
+  const val=document.getElementById('earningsTicker').value.trim().toUpperCase();
+  const list=document.getElementById('earningsAcList');
+  if(val.length<1){list.style.display='none';return;}
+  // Only stocks/ETFs/LATAM/bmv (no crypto since earnings is stock-only)
+  const matches=TICKERS.filter(t=>
+    t.type!=='crypto' && (t.sym.startsWith(val)||t.name.toUpperCase().includes(val))
+  ).slice(0,8);
+  if(!matches.length){list.style.display='none';return;}
+  earningsAcIndex=-1;
+  list.innerHTML=matches.map((t,i)=>`
+    <div class="autocomplete-item" data-sym="${t.sym}" onclick="selectEarningsTicker('${t.sym}')">
+      <span class="sym">${t.sym}</span>
+      <span class="name">${t.name}</span>
+      <span class="type">${t.type}</span>
+    </div>`).join('');
+  list.style.display='block';
+}
+
+function onEarningsTickerKey(e){
+  const list=document.getElementById('earningsAcList');
+  const items=list.querySelectorAll('.autocomplete-item');
+  if(e.key==='ArrowDown'){
+    e.preventDefault();
+    earningsAcIndex=Math.min(earningsAcIndex+1,items.length-1);
+    items.forEach((el,i)=>el.classList.toggle('active',i===earningsAcIndex));
+  } else if(e.key==='ArrowUp'){
+    e.preventDefault();
+    earningsAcIndex=Math.max(earningsAcIndex-1,0);
+    items.forEach((el,i)=>el.classList.toggle('active',i===earningsAcIndex));
+  } else if(e.key==='Enter'){
+    e.preventDefault();
+    if(earningsAcIndex>=0&&items[earningsAcIndex]){
+      selectEarningsTicker(items[earningsAcIndex].dataset.sym);
+    } else {
+      list.style.display='none';
+      runEarningsIntel();  // if no suggestion picked, just run with typed value
+    }
+  } else if(e.key==='Escape'){
+    list.style.display='none';
+  }
+}
+
+function selectEarningsTicker(sym){
+  document.getElementById('earningsTicker').value=sym;
+  document.getElementById('earningsAcList').style.display='none';
+  earningsAcIndex=-1;
+  runEarningsIntel();  // auto-run when selecting
+}
+
+// ─── SMART MONEY TICKER AUTOCOMPLETE ───────────────────
+let smAcIndex=-1;
+function onSmTickerInput(){
+  const val=document.getElementById('smTicker').value.trim().toUpperCase();
+  const list=document.getElementById('smAcList');
+  if(val.length<1){list.style.display='none';return;}
+  const matches=TICKERS.filter(t=>
+    t.type!=='crypto' && (t.sym.startsWith(val)||t.name.toUpperCase().includes(val))
+  ).slice(0,8);
+  if(!matches.length){list.style.display='none';return;}
+  smAcIndex=-1;
+  list.innerHTML=matches.map((t,i)=>`
+    <div class="autocomplete-item" data-sym="${t.sym}" onclick="selectSmTicker('${t.sym}')">
+      <span class="sym">${t.sym}</span>
+      <span class="name">${t.name}</span>
+      <span class="type">${t.type}</span>
+    </div>`).join('');
+  list.style.display='block';
+}
+
+function onSmTickerKey(e){
+  const list=document.getElementById('smAcList');
+  const items=list.querySelectorAll('.autocomplete-item');
+  if(e.key==='ArrowDown'){
+    e.preventDefault();
+    smAcIndex=Math.min(smAcIndex+1,items.length-1);
+    items.forEach((el,i)=>el.classList.toggle('active',i===smAcIndex));
+  } else if(e.key==='ArrowUp'){
+    e.preventDefault();
+    smAcIndex=Math.max(smAcIndex-1,0);
+    items.forEach((el,i)=>el.classList.toggle('active',i===smAcIndex));
+  } else if(e.key==='Enter'){
+    e.preventDefault();
+    if(smAcIndex>=0&&items[smAcIndex]){
+      selectSmTicker(items[smAcIndex].dataset.sym);
+    } else {
+      list.style.display='none';
+      if(typeof runSmartMoney==='function') runSmartMoney();
+    }
+  } else if(e.key==='Escape'){
+    list.style.display='none';
+  }
+}
+
+function selectSmTicker(sym){
+  document.getElementById('smTicker').value=sym;
+  document.getElementById('smAcList').style.display='none';
+  smAcIndex=-1;
+  if(typeof runSmartMoney==='function') runSmartMoney();
+}
+
 // Close autocomplete when clicking outside
 document.addEventListener('click',e=>{
   if(!e.target.closest('.autocomplete-wrap')){
-    const list=document.getElementById('acList');
-    if(list) list.style.display='none';
+    ['acList','earningsAcList','smAcList'].forEach(id=>{
+      const list=document.getElementById(id);
+      if(list) list.style.display='none';
+    });
   }
 });
 
