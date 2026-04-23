@@ -5626,12 +5626,36 @@ function copyBattleText(){
     '',
     `Run your own sim → quantdesk2.vercel.app`
   ].filter(Boolean).join('\n');
-  navigator.clipboard.writeText(lines).then(()=>{
-    const btn = event.target;
+
+  const btn = event.target.closest('button');
+  const showCopied = () => {
+    if(!btn) return;
     const orig = btn.textContent;
     btn.textContent = '✓ Copied';
-    setTimeout(()=>btn.textContent=orig, 1500);
-  });
+    setTimeout(()=>{ btn.textContent = orig; }, 1500);
+  };
+  const copyFallback = (text) => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:-9999px;opacity:0;';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch(e){}
+    document.body.removeChild(ta);
+    return ok;
+  };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(lines).then(showCopied).catch(() => {
+      if(copyFallback(lines)) showCopied();
+      else if(btn){ btn.textContent='⚠ Press Cmd+C'; setTimeout(()=>btn.textContent='📋 Copy text',2000); }
+    });
+  } else if(copyFallback(lines)){
+    showCopied();
+  } else if(btn){
+    btn.textContent='⚠ Press Cmd+C';
+    setTimeout(()=>btn.textContent='📋 Copy text',2000);
+  }
 }
 
 function downloadBattleImage(){
@@ -7311,8 +7335,12 @@ function closeShareSimModal(){
 function copyShareLink(){
   const inp = document.getElementById('shareLinkInput');
   if(!inp) return;
-  navigator.clipboard.writeText(inp.value).then(()=>{
-    const btn = event.target;
+  const btn = event.target.closest('button');
+  if(!btn) return;
+  const text = inp.value;
+
+  // Visual feedback helper — always runs regardless of which copy method works
+  const showCopied = () => {
     const orig = btn.textContent;
     btn.textContent = '✓ Copied!';
     btn.style.background = 'rgba(0,201,125,.2)';
@@ -7324,10 +7352,43 @@ function copyShareLink(){
       btn.style.color = '#00d4ff';
       btn.style.borderColor = 'rgba(0,212,255,.4)';
     }, 1800);
-  }).catch(()=>{
-    inp.select();
-    document.execCommand('copy');
-  });
+  };
+
+  // Try modern Clipboard API first (requires HTTPS + permission)
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(showCopied).catch(() => {
+      // Fallback: use execCommand on a selected input
+      try {
+        inp.removeAttribute('readonly');
+        inp.focus();
+        inp.select();
+        inp.setSelectionRange(0, text.length);
+        const ok = document.execCommand('copy');
+        inp.setAttribute('readonly', '');
+        if(ok) showCopied();
+        else { btn.textContent = '⚠ Press Cmd+C'; setTimeout(()=>{btn.textContent='📋 Copy';}, 2500); }
+      } catch(e){
+        btn.textContent = '⚠ Press Cmd+C';
+        setTimeout(()=>{btn.textContent='📋 Copy';}, 2500);
+      }
+    });
+  } else {
+    // Old browsers — use execCommand directly
+    try {
+      inp.removeAttribute('readonly');
+      inp.focus();
+      inp.select();
+      inp.setSelectionRange(0, text.length);
+      const ok = document.execCommand('copy');
+      inp.setAttribute('readonly', '');
+      if(ok) showCopied();
+      else { inp.select(); btn.textContent = '⚠ Press Cmd+C'; setTimeout(()=>{btn.textContent='📋 Copy';}, 2500); }
+    } catch(e){
+      inp.select();
+      btn.textContent = '⚠ Press Cmd+C';
+      setTimeout(()=>{btn.textContent='📋 Copy';}, 2500);
+    }
+  }
 }
 
 // Called on page load — if URL has share params, pre-fill and auto-run
