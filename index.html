@@ -8208,6 +8208,7 @@ async function downloadMemoPDF(){
     hr();
 
     // ─── §4 EARNINGS TRACK RECORD ─────────────────────
+    ensureSpace(200);  // title + stats banner (40) + table header (16) + 4-8 rows (~14 each)
     sectionTitle('§4', 'Earnings Track Record');
 
     if (e.history && e.history.length > 0) {
@@ -8351,6 +8352,7 @@ async function downloadMemoPDF(){
     }
 
     // ─── §7 MONTE CARLO METRICS ───────────────────────
+    ensureSpace(130);  // title (18) + 3 rows × 30pt + margin
     sectionTitle('§7', 'Quant Metrics · Monte Carlo Simulation');
     const quantCells = [
       ['Expected Return', fmtPct(st.mean*100, true), st.mean>=0 ? COL.green : COL.red],
@@ -8371,6 +8373,7 @@ async function downloadMemoPDF(){
     hr();
 
     // ─── §8 TRADE SETUP ───────────────────────────────
+    ensureSpace(100);  // title (18) + grid (56) + para (~20)
     sectionTitle('§8', 'Trade Setup');
     const setupCells = [
       ['Entry Price', '$' + fmtNum(entryPrice), COL.text],
@@ -8384,9 +8387,9 @@ async function downloadMemoPDF(){
     hr();
 
     // ─── §9 SCENARIOS ─────────────────────────────────
+    ensureSpace(115);  // title (18) + scenarios block (90) + margin
     sectionTitle('§9', 'Scenarios');
     const halfW = (W - M*2 - 16) / 2;
-    ensureSpace(80);
     setDraw(COL.green); doc.setLineWidth(2);
     doc.line(M, y, M, y+70); doc.setLineWidth(0.5);
     doc.setFont('helvetica','bold'); doc.setFontSize(9); setCol(COL.green);
@@ -8407,6 +8410,7 @@ async function downloadMemoPDF(){
     hr();
 
     // ─── §10 RISKS & CATALYSTS ────────────────────────
+    ensureSpace(120);
     sectionTitle('§10', 'Risks & Catalysts');
 
     doc.setFont('helvetica','bold'); doc.setFontSize(9); setCol(COL.red);
