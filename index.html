@@ -1879,12 +1879,21 @@ async function runSmartMoney(){
     const data=safeJSON(rawText);
     if(!data) throw new Error('AI returned invalid data — try again');
 
-    // Normalize score — Claude sometimes returns 0-10 or 0-1 instead of 0-100
+    // Normalize score — Claude returns inconsistent formats (0-1, 0-10, or 0-100)
+    // Logic: range-based detection with safe fallback
     if(data.verdict){
-      let s = data.verdict.smart_money_score;
-      if(s <= 1) s = Math.round(s * 100);       // 0.74 → 74
-      else if(s <= 10) s = Math.round(s * 10);   // 7.4 → 74
-      data.verdict.smart_money_score = Math.round(s);
+      let s = parseFloat(data.verdict.smart_money_score);
+      if(isNaN(s) || s == null) {
+        s = 50;  // safe default when Claude returns invalid/missing
+      } else if(s > 0 && s <= 1) {
+        s = Math.round(s * 100);          // 0.74 → 74 (decimal format)
+      } else if(s > 1 && s <= 10) {
+        s = Math.round(s * 10);            // 7.4 → 74 (0-10 scale)
+      } else {
+        s = Math.round(s);                 // already 0-100
+      }
+      s = Math.min(100, Math.max(0, s));  // clamp to valid range
+      data.verdict.smart_money_score = s;
     }
     renderShortInterest(data.short_interest);
     renderInsiderTransactions(data.insider);
@@ -2045,10 +2054,18 @@ function renderSmVerdict(v){
   const el=document.getElementById('smVerdictPanel');
   if(!el||!v) return;
   // Normalize smart_money_score — force to 0-100 range
-  let sms = parseFloat(v.smart_money_score) || 50;
-  if(sms <= 1.0) sms = Math.round(sms * 100);       // 0.74 → 74
-  else if(sms <= 10) sms = Math.round(sms * 10);    // 7.4 → 74
-  sms = Math.min(100, Math.max(0, Math.round(sms)));
+  // Normalize smart_money_score — belt-and-suspenders (already normalized upstream, but double-safe)
+  let sms = parseFloat(v.smart_money_score);
+  if(isNaN(sms) || sms == null) {
+    sms = 50;
+  } else if(sms > 0 && sms <= 1) {
+    sms = Math.round(sms * 100);
+  } else if(sms > 1 && sms <= 10) {
+    sms = Math.round(sms * 10);
+  } else {
+    sms = Math.round(sms);
+  }
+  sms = Math.min(100, Math.max(0, sms));
   v.smart_money_score = sms;
 
   const sigColor={'STRONG BUY':'#00ff88','BUY':'#00c97d','NEUTRAL':'#888','SELL':'#E24B4A','STRONG SELL':'#ff0000'}[v.overall_signal]||'#888';
