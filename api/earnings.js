@@ -27,7 +27,7 @@ export default async function handler(req, res) {
       const futureStr = new Date(today.getTime() + 120 * 24 * 3600 * 1000).toISOString().split('T')[0];
 
       // All fetches have .catch fallback to null so Promise.all never rejects
-      const [epsRes, yahooRes, calRes] = await Promise.all([
+      const [epsRes, yahooRes, calRes, finRes] = await Promise.all([
         fetch(`https://finnhub.io/api/v1/stock/earnings?symbol=${sym}&token=${finnhubKey}`)
           .catch(() => null),
         fetch(
@@ -35,6 +35,8 @@ export default async function handler(req, res) {
           { headers: { 'User-Agent': 'Mozilla/5.0' } }
         ).catch(() => null),
         fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${todayStr}&to=${futureStr}&symbol=${sym}&token=${finnhubKey}`)
+          .catch(() => null),
+        fetch(`https://finnhub.io/api/v1/stock/financials-reported?symbol=${sym}&freq=quarterly&token=${finnhubKey}`)
           .catch(() => null)
       ]);
 
@@ -76,7 +78,41 @@ export default async function handler(req, res) {
         }
       } catch (e) { priceLookup = null; }
 
-      // ── BUILD HISTORY ARRAY ──
+      // ── REVENUE LOOKUP from financials-reported ──
+      // Build map: "YYYY-QN" → {revenue, period} for quick cross-reference with earnings
+      let revenueByPeriod = {};
+      try {
+        if (finRes && finRes.ok) {
+          const ct = finRes.headers.get('content-type') || '';
+          if (ct.includes('application/json')) {
+            const finJson = await finRes.json();
+            const reports = (finJson && finJson.data) || [];
+            reports.forEach(r => {
+              const ic = r.report && r.report.ic ? r.report.ic : [];
+              // Revenue is concept 'us-gaap_Revenues' or 'us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax'
+              const revItem = ic.find(item =>
+                item.concept && (
+                  item.concept.toLowerCase().includes('revenue') ||
+                  item.concept.toLowerCase().includes('sales')
+                )
+              );
+              if (revItem && typeof revItem.value === 'number' && r.quarter && r.year) {
+                const key = `${r.year}-Q${r.quarter}`;
+                // Keep first found (usually the most authoritative revenue line)
+                if (!revenueByPeriod[key]) {
+                  revenueByPeriod[key] = {
+                    revenue: revItem.value,
+                    period: r.endDate || null,
+                    filed: r.filedDate || null
+                  };
+                }
+              }
+            });
+          }
+        }
+      } catch (e) { revenueByPeriod = {}; }
+
+      // ── BUILD HISTORY ARRAY with revenue + YoY ──
       const history = quarters.map(q => {
         const epsEst = (q && typeof q.estimate === 'number') ? q.estimate : null;
         const epsAct = (q && typeof q.actual === 'number') ? q.actual : null;
@@ -99,6 +135,22 @@ export default async function handler(req, res) {
           }
         } catch (e) { stockReaction = null; }
 
+        // Revenue lookup (actual reported)
+        let revenue = null;
+        let revenueYoyPct = null;
+        if (q.year && q.quarter) {
+          const key = `${q.year}-Q${q.quarter}`;
+          if (revenueByPeriod[key] && typeof revenueByPeriod[key].revenue === 'number') {
+            revenue = revenueByPeriod[key].revenue;
+          }
+          // YoY: same quarter one year earlier
+          const yoyKey = `${q.year - 1}-Q${q.quarter}`;
+          if (revenue != null && revenueByPeriod[yoyKey] && revenueByPeriod[yoyKey].revenue > 0) {
+            const prevRev = revenueByPeriod[yoyKey].revenue;
+            revenueYoyPct = ((revenue - prevRev) / prevRev) * 100;
+          }
+        }
+
         return {
           period: q.period || null,
           quarter: q.quarter || null,
@@ -107,7 +159,9 @@ export default async function handler(req, res) {
           eps_actual: epsAct,
           surprise_pct: surprisePct != null ? +surprisePct.toFixed(2) : null,
           beat: surprisePct != null ? (surprisePct > 0) : null,
-          stock_reaction_pct: stockReaction != null ? +stockReaction.toFixed(2) : null
+          stock_reaction_pct: stockReaction != null ? +stockReaction.toFixed(2) : null,
+          revenue_actual: revenue,
+          revenue_yoy_pct: revenueYoyPct != null ? +revenueYoyPct.toFixed(1) : null
         };
       });
 
