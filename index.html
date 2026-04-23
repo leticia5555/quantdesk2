@@ -7907,11 +7907,13 @@ async function downloadMemoPDF(){
     const st = window._lastSimStats;
     const ticker = (cd.ticker || document.getElementById('simTicker').value || '').toUpperCase().replace('/USD','');
     const name = cd.longName || cd.name || ticker;
-    const price = cd.currentPrice || cd.S0 || 0;
+    // Price field: Finnhub uses currentPrice, Claude responses use current_price. Fallback to SP.S0 or fetched price.
+    let price = cd.currentPrice || cd.current_price || 0;
+    if(!price && typeof SP !== 'undefined' && SP.S0) price = SP.S0;
     const dir = st.dir || 'LONG';
     const days = st.days || 90;
     const capital = st.capital || 10000;
-    const model = st.model || 'GBM';
+    const model = (st.model || 'GBM').toUpperCase();
 
     // ── 1. Fetch ALL memo data in parallel ──
     let memoData = null;
@@ -8091,39 +8093,43 @@ async function downloadMemoPDF(){
 
     y = 90;
 
-    // Ticker hero block
+    // ── Ticker hero block (stacked layout, no overlap) ──
     doc.setFont('helvetica','bold');
     doc.setFontSize(36);
     setCol(COL.text);
     doc.text(`$${ticker}`, M, y + 10);
 
-    const companyLine = `${name}`;
-    const sectorLine = (memoData.profile?.industry || memoData.profile?.finnhubIndustry || cd.asset_type || 'asset') +
-                       (memoData.profile?.country ? ` · ${memoData.profile.country}` : '') +
-                       (memoData.profile?.exchange ? ` · ${memoData.profile.exchange}` : '');
-    doc.setFont('helvetica','normal');
-    doc.setFontSize(11);
-    setCol(COL.muted);
-    doc.text(companyLine, M + doc.getTextWidth(`$${ticker}`) + 12, y);
-    doc.setFontSize(9);
-    doc.text(sectorLine, M + doc.getTextWidth(`$${ticker}`) + 12, y + 14);
-
-    // Current price block (top right)
+    // Current price block (top right) — aligned to same baseline as ticker
     doc.setFont('helvetica','bold');
     doc.setFontSize(28);
     setCol(COL.text);
-    const priceTxt = `$${fmtNum(price)}`;
+    const priceTxt = price > 0 ? `$${fmtNum(price)}` : '$—';
     doc.text(priceTxt, W - M - doc.getTextWidth(priceTxt), y + 10);
 
     doc.setFont('helvetica','normal');
     doc.setFontSize(9);
     setCol(COL.muted);
-    const rangeTxt = f.low_52w && f.high_52w ? `52w $${fmtNum(f.low_52w,0)}-$${fmtNum(f.high_52w,0)}` : 'Price · LIVE';
-    doc.text(rangeTxt, W - M - doc.getTextWidth(rangeTxt), y + 28);
+    const rangeTxt = f.low_52w && f.high_52w ? `52w $${fmtNum(f.low_52w,0)}-$${fmtNum(f.high_52w,0)}` : 'LIVE price';
+    doc.text(rangeTxt, W - M - doc.getTextWidth(rangeTxt), y + 26);
 
-    y += 46;
+    // Company name + sector BELOW the ticker (not beside, to avoid overlap)
+    y += 28;
+    doc.setFont('helvetica','normal');
+    doc.setFontSize(12);
+    setCol(COL.text);
+    doc.text(name, M, y);
 
-    // Verdict badge
+    y += 14;
+    doc.setFontSize(9);
+    setCol(COL.muted);
+    const sectorLine = (memoData.profile?.industry || cd.asset_type || 'asset') +
+                       (memoData.profile?.country ? ` · ${memoData.profile.country}` : '') +
+                       (memoData.profile?.exchange ? ` · ${memoData.profile.exchange}` : '');
+    doc.text(sectorLine, M, y);
+
+    y += 18;
+
+    // ── Verdict badge (auto-width based on actual text) ──
     const verdictColors = {
       'STRONG ENTRY': COL.green, 'BUY': COL.green,
       'WATCH': COL.amber, 'WAIT FOR DIP': COL.amber,
@@ -8131,22 +8137,23 @@ async function downloadMemoPDF(){
     };
     const vc = verdictColors[cd.verdict] || COL.muted;
     const verdictTxt = `VERDICT: ${cd.verdict}`;
-    const verdictW = 20 + doc.getTextWidth(verdictTxt);
-    setFill(vc);
-    doc.roundedRect(M, y, verdictW, 26, 3, 3, 'F');
     doc.setFont('helvetica','bold');
     doc.setFontSize(12);
+    const verdictTxtW = doc.getTextWidth(verdictTxt);
+    const verdictW = verdictTxtW + 28;  // 14pt padding each side
+    setFill(vc);
+    doc.roundedRect(M, y, verdictW, 28, 3, 3, 'F');
     doc.setTextColor(255,255,255);
-    doc.text(verdictTxt, M + 10, y + 17);
+    doc.text(verdictTxt, M + 14, y + 19);
 
     // Sim parameters (right of verdict)
     doc.setFont('helvetica','normal');
     doc.setFontSize(9);
     setCol(COL.muted);
-    const simMeta = `${dir} · ${days} days · ${capital.toLocaleString()} · ${model}`;
-    doc.text(simMeta, M + verdictW + 14, y + 17);
+    const simMeta = `${dir} · ${days}d · $${capital.toLocaleString()} · ${model}`;
+    doc.text(simMeta, M + verdictW + 14, y + 18);
 
-    y += 40;
+    y += 42;
     hr();
 
     // ─── §1 EXECUTIVE SUMMARY ─────────────────────────
