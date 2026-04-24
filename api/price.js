@@ -106,37 +106,93 @@ export default async function handler(req, res) {
   }
 
   // ── Detect LATAM exchanges (Finnhub doesn't cover these) ──
-  const isBMV = t.endsWith('.MX');       // Bolsa Mexicana de Valores
-  const isB3  = t.endsWith('.SA');       // B3 / Bovespa Brasil
+  const isBMV  = t.endsWith('.MX');      // Bolsa Mexicana de Valores
+  const isB3   = t.endsWith('.SA');      // B3 / Bovespa Brasil
   const isBCBA = t.endsWith('.BA');      // Buenos Aires (Argentina)
-  const isYahooOnly = isBMV || isB3 || isBCBA;
+  const isBVS  = t.endsWith('.SN');      // Bolsa de Santiago (Chile)
+  const isYahooOnly = isBMV || isB3 || isBCBA || isBVS;
 
-  // Nice display names for common BMV/B3 tickers (no Finnhub profile available)
+  // Nice display names for common LATAM tickers (no Finnhub profile available)
   const bmvNames = {
-    // BMV México
-    'FEMSAUBD.MX': 'Fomento Económico Mexicano (FEMSA)',
-    'KOFUBL.MX':   'Coca-Cola FEMSA',
-    'CEMEXCPO.MX': 'CEMEX',
-    'GAPB.MX':     'Grupo Aeroportuario del Pacífico',
-    'ASURB.MX':    'Grupo Aeroportuario del Sureste (ASUR)',
-    'ALFAA.MX':    'Alfa SAB',
-    'AMXB.MX':     'América Móvil (Serie B)',
-    'WALMEX.MX':   'Walmart de México',
-    'BIMBOA.MX':   'Grupo Bimbo',
-    'GFNORTEO.MX': 'Grupo Financiero Banorte',
-    'CUERVO.MX':   'Becle (Jose Cuervo)',
-    'TLEVISACPO.MX': 'Grupo Televisa',
-    'GCARSOA1.MX': 'Grupo Carso',
-    'PINFRA.MX':   'Promotora y Operadora de Infraestructura',
-    'LIVEPOLC-1.MX': 'El Puerto de Liverpool',
-    // B3 Brasil
-    'GOLL4.SA':    'Gol Linhas Aéreas',
-    'PETR4.SA':    'Petrobras (PN)',
-    'VALE3.SA':    'Vale S.A.',
-    'ITUB4.SA':    'Itaú Unibanco',
-    'BBAS3.SA':    'Banco do Brasil',
-    'ABEV3.SA':    'Ambev',
-    'B3SA3.SA':    'B3 (Bolsa de Brasil)',
+    // ══════ BMV México ══════
+    'FEMSAUBD.MX':  'Fomento Económico Mexicano (FEMSA)',
+    'KOFUBL.MX':    'Coca-Cola FEMSA',
+    'CEMEXCPO.MX':  'CEMEX',
+    'GAPB.MX':      'Grupo Aeroportuario del Pacífico',
+    'ASURB.MX':     'Grupo Aeroportuario del Sureste (ASUR)',
+    'OMAB.MX':      'Grupo Aeroportuario Centro Norte (OMA)',
+    'ALFAA.MX':     'Alfa SAB',
+    'AMXB.MX':      'América Móvil (Serie B)',
+    'WALMEX.MX':    'Walmart de México',
+    'BIMBOA.MX':    'Grupo Bimbo',
+    'GFNORTEO.MX':  'Grupo Financiero Banorte',
+    'CUERVO.MX':    'Becle (Jose Cuervo)',
+    'TLEVISACPO.MX':'Grupo Televisa',
+    'GCARSOA1.MX':  'Grupo Carso',
+    'PINFRA.MX':    'Promotora y Operadora de Infraestructura',
+    'LIVEPOLC-1.MX':'El Puerto de Liverpool',
+    'GMEXICOB.MX':  'Grupo México',
+    'AC.MX':        'Arca Continental',
+    'ORBIA.MX':     'Orbia Advance Corporation',
+    'MEGACPO.MX':   'Megacable Holdings',
+    'VOLARA.MX':    'Controladora Volaris',
+    'LABB.MX':      'Genomma Lab Internacional',
+    'KIMBERA.MX':   'Kimberly-Clark de México',
+    'GRUMAB.MX':    'Gruma',
+    'PE&OLES.MX':   'Industrias Peñoles',
+    'GMXT.MX':      'GMéxico Transportes',
+    'ELEKTRA.MX':   'Grupo Elektra',
+    'LACOMUBC.MX':  'La Comer',
+    'CHDRAUIB.MX':  'Grupo Comercial Chedraui',
+    'SORIANAB.MX':  'Organización Soriana',
+    // ══════ B3 Brasil ══════
+    'GOLL4.SA':     'Gol Linhas Aéreas',
+    'PETR4.SA':     'Petrobras (PN)',
+    'VALE3.SA':     'Vale S.A.',
+    'ITUB4.SA':     'Itaú Unibanco',
+    'BBAS3.SA':     'Banco do Brasil',
+    'ABEV3.SA':     'Ambev',
+    'B3SA3.SA':     'B3 (Bolsa de Brasil)',
+    'LREN3.SA':     'Lojas Renner',
+    'MGLU3.SA':     'Magazine Luiza',
+    'WEGE3.SA':     'WEG',
+    'SUZB3.SA':     'Suzano',
+    'JBSS3.SA':     'JBS',
+    'BRFS3.SA':     'BRF · Brasil Foods',
+    'RENT3.SA':     'Localiza Rent a Car',
+    'CCRO3.SA':     'CCR',
+    'RADL3.SA':     'Raia Drogasil',
+    'ELET3.SA':     'Eletrobras (ON)',
+    'ELET6.SA':     'Eletrobras (PNB)',
+    'RAIZ4.SA':     'Raízen',
+    'EQTL3.SA':     'Equatorial Energia',
+    'UGPA3.SA':     'Ultrapar Participações',
+    'VIVT3.SA':     'Telefônica Brasil (Vivo)',
+    'HAPV3.SA':     'Hapvida Participações',
+    // ══════ Chile (Bolsa de Santiago .SN) ══════
+    'SQM-B.SN':     'Sociedad Química y Minera (SQM)',
+    'CHILE.SN':     'Banco de Chile',
+    'FALABELLA.SN': 'Falabella',
+    'COPEC.SN':     'Empresas Copec',
+    'ENELCHILE.SN': 'Enel Chile',
+    'CENCOSUD.SN':  'Cencosud',
+    'LTM.SN':       'LATAM Airlines Group',
+    'ANDINA-B.SN':  'Embotelladora Andina',
+    'CMPC.SN':      'Empresas CMPC',
+    'PARAUCO.SN':   'Parque Arauco',
+    'BSANTANDER.SN':'Banco Santander Chile',
+    'VAPORES.SN':   'Compañía Sud Americana de Vapores (CSAV)',
+    // ══════ Argentina (Bolsa de Buenos Aires .BA) ══════
+    'YPFD.BA':      'YPF',
+    'GGAL.BA':      'Grupo Financiero Galicia',
+    'PAMP.BA':      'Pampa Energía',
+    'ALUA.BA':      'Aluar Aluminio Argentino',
+    'TXAR.BA':      'Ternium Argentina',
+    'MIRG.BA':      'Mirgor',
+    'LOMA.BA':      'Loma Negra',
+    'CRES.BA':      'Cresud',
+    'BMA.BA':       'Banco Macro',
+    'TRAN.BA':      'Transener',
   };
 
   // ── YAHOO-FIRST ROUTE (for BMV/B3/BCBA — Finnhub doesn't cover these) ──
@@ -162,8 +218,8 @@ export default async function handler(req, res) {
 
       const closes = (chart.indicators?.quote?.[0]?.close || []).filter(v => v != null && v > 0);
 
-      const currency = meta.currency || (isBMV ? 'MXN' : isB3 ? 'BRL' : 'ARS');
-      const exchange = meta.exchangeName || (isBMV ? 'MEX' : isB3 ? 'SAO' : 'BUE');
+      const currency = meta.currency || (isBMV ? 'MXN' : isB3 ? 'BRL' : isBVS ? 'CLP' : 'ARS');
+      const exchange = meta.exchangeName || (isBMV ? 'MEX' : isB3 ? 'SAO' : isBVS ? 'SGO' : 'BUE');
 
       // Better name lookup: our map → Yahoo meta → raw ticker
       const longName = bmvNames[t] || meta.longName || meta.shortName || t;
@@ -195,12 +251,12 @@ export default async function handler(req, res) {
         sigma = Math.min(Math.max(historicalSigma * 0.40 + currentSigma * 0.60, 0.10), 1.50);
 
         // ── LATAM CAPM: Country-specific rf (local sovereign yields, Apr 2026) ──
-        // Mexico: CETES 28d ~9.5% · Brazil: Selic ~11% · Argentina: BADLAR ~30%
-        // ERP for EM markets: ~6.5-7% (Damodaran EM Country Risk Premium)
+        // Mexico: CETES 28d ~9.5% · Brazil: Selic ~11% · Chile: TPM ~5.5% · Argentina: BADLAR ~30%
+        // ERP: Damodaran EM Country Risk Premium (Mex 6.5%, Bra 7%, Chile 6%, Arg 10%)
         // Beta for LATAM blue chips typically 0.9-1.2 vs local benchmark
-        // Stocks quote in local currency (MXN/BRL/ARS) so mu is in local terms
-        const rf  = isBMV ? 0.095 : isB3 ? 0.110 : 0.300;
-        const erp = isBMV ? 0.065 : isB3 ? 0.070 : 0.100;
+        // Stocks quote in local currency (MXN/BRL/CLP/ARS) so mu is in local terms
+        const rf  = isBMV ? 0.095 : isB3 ? 0.110 : isBVS ? 0.055 : 0.300;
+        const erp = isBMV ? 0.065 : isB3 ? 0.070 : isBVS ? 0.060 : 0.100;
         const beta = 1.0;  // default LATAM blue-chip beta; upgrade to Yahoo beta if available
         mu = Math.min(Math.max(rf + beta * erp, 0.02), 0.50);
 
