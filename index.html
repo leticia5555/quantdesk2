@@ -244,6 +244,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('macro')">MACRO</button>
     <button class="nav-btn" onclick="showPage('smartmoney')">SMART $</button>
     <button class="nav-btn" onclick="showPage('earnings')">EARNINGS</button>
+    <button class="nav-btn" onclick="showPage('ipos')">IPOS</button>
     <button class="nav-btn" onclick="showPage('screener')">SCREENER</button>
     <button class="nav-btn" onclick="showPage('agents')">AGENTS</button>
     <button class="nav-btn" onclick="showPage('gallery')">GALLERY</button>
@@ -2713,6 +2714,7 @@ function showPage(id){
   if(id==='macro') setTimeout(loadMacroPage,50);
   if(id==='smartmoney') setTimeout(()=>{if(!smLoaded){smLoaded=true;loadMarketSignals();}},50);
   if(id==='earnings') setTimeout(()=>initEarningsPage(),50);
+  if(id==='ipos') setTimeout(()=>{ if(!_iposCache) loadIPOs(); },50);
   if(id==='gallery') setTimeout(()=>renderGallery(),50);
   else stopGalleryLiveUpdates(); // stop when leaving gallery
   if(id==='agents') setTimeout(()=>initAgentsPage(),50);
@@ -4598,22 +4600,87 @@ const TICKERS = [
 ];
 
 let acIndex=-1;
+let acSearchTimer=null;     // debounce timer
+let acLastQuery='';          // last query sent to API
+let acLastGlobalResults=[];  // cache of last global results
 
 function onTickerInput(){
   const val=document.getElementById('simTicker').value.trim().toUpperCase();
   const list=document.getElementById('acList');
   if(val.length<1){list.style.display='none';return;}
-  const matches=TICKERS.filter(t=>
+
+  // ── 1. Instant: show local matches immediately ──
+  const localMatches=TICKERS.filter(t=>
     t.sym.startsWith(val)||t.name.toUpperCase().includes(val)
   ).slice(0,8);
-  if(!matches.length){list.style.display='none';return;}
+
+  renderAutocomplete(localMatches, val, /*isLoading*/ val.length>=2);
+
+  // ── 2. Async: call global search after 250ms debounce (only for 2+ chars) ──
+  if(val.length>=2){
+    clearTimeout(acSearchTimer);
+    acSearchTimer=setTimeout(async()=>{
+      if(val===acLastQuery){ return; }
+      acLastQuery=val;
+      try{
+        const r=await fetch('/api/search?q='+encodeURIComponent(val));
+        const d=await r.json();
+        // Only apply if query hasn't changed since
+        if((document.getElementById('simTicker').value.trim().toUpperCase())!==val) return;
+        acLastGlobalResults=(d.results||[]).map(r=>({
+          sym:r.symbol, name:r.name, type:r.type||'global'
+        }));
+        // Merge: local first (dedup), then global
+        const seen=new Set(localMatches.map(t=>t.sym.toUpperCase()));
+        const merged=[...localMatches];
+        for(const g of acLastGlobalResults){
+          if(merged.length>=10) break;
+          if(!seen.has(g.sym.toUpperCase())){
+            seen.add(g.sym.toUpperCase());
+            merged.push(g);
+          }
+        }
+        renderAutocomplete(merged, val, false);
+      } catch(e){
+        console.error('Ticker search failed:',e);
+        // On error, just keep local results showing
+      }
+    }, 250);
+  }
+}
+
+function renderAutocomplete(matches, val, isLoading){
+  const list=document.getElementById('acList');
+  if(!matches.length && !isLoading){list.style.display='none';return;}
   acIndex=-1;
-  list.innerHTML=matches.map((t,i)=>`
-    <div class="autocomplete-item" data-sym="${t.sym}" onclick="selectTicker('${t.sym}')">
+
+  const typeStyle = (type) => {
+    const map={
+      'bmv':'background:#2a1a00;color:#ff6600;',
+      'latam':'background:#2a1a00;color:#ff6600;',
+      'crypto':'background:#0a2a1a;color:#00ff88;',
+      'etf':'background:#1a1a2a;color:#8888ff;',
+      'global':'background:#1a1a1a;color:#888;',
+      'Common Stock':'background:#0a1a2a;color:#6699cc;',
+      'ADR':'background:#2a0a1a;color:#cc6699;'
+    };
+    return map[type]||'background:#1a1a1a;color:#666;';
+  };
+
+  let html=matches.map((t,i)=>`
+    <div class="autocomplete-item" data-sym="${t.sym}" onclick="selectTicker('${t.sym.replace(/'/g,"\\'")}')">
       <span class="sym">${t.sym}</span>
-      <span class="name">${t.name}</span>
-      <span class="type">${t.type}</span>
+      <span class="name">${(t.name||'').slice(0,48)}</span>
+      <span class="type" style="${typeStyle(t.type)}padding:2px 6px;border-radius:3px;font-size:9px;">${t.type||''}</span>
     </div>`).join('');
+
+  if(isLoading && matches.length<10){
+    html+=`<div style="padding:6px 10px;font-family:var(--mono);font-size:10px;color:#555;border-top:1px solid #1a1a1a;">
+      searching globally...
+    </div>`;
+  }
+
+  list.innerHTML=html;
   list.style.display='block';
 }
 
@@ -7954,6 +8021,163 @@ document.addEventListener('DOMContentLoaded',()=>{
 });
 
 // ═══════════════════════════════════════════════════════════════
+// IPO CALENDAR — Upcoming + recent IPOs with performance
+// ═══════════════════════════════════════════════════════════════
+let _iposCache = null;
+
+async function loadIPOs(){
+  const el = document.getElementById('iposContent');
+  const btn = document.getElementById('iposRefreshBtn');
+  if(btn){ btn.textContent = '↻ Loading...'; btn.disabled = true; }
+  el.innerHTML = '<div style="padding:40px;text-align:center;color:#555;font-family:var(--mono);font-size:12px;">Fetching IPO calendar from Finnhub...</div>';
+
+  try {
+    const r = await fetch('/api/ipos');
+    const d = await r.json();
+    _iposCache = d;
+    renderIPOs(d);
+  } catch(e) {
+    el.innerHTML = '<div style="padding:40px;text-align:center;color:#e74c3c;font-family:var(--mono);font-size:12px;">Failed to load IPO calendar: '+e.message+'</div>';
+  }
+
+  if(btn){ btn.textContent = '↻ Refresh'; btn.disabled = false; }
+}
+
+function renderIPOs(data){
+  const el = document.getElementById('iposContent');
+  if(!data || (data.error && !data.this_week)){
+    el.innerHTML = '<div style="padding:40px;text-align:center;color:#e74c3c;">'+
+      '<div style="font-family:var(--mono);font-size:12px;margin-bottom:8px;">IPO calendar unavailable</div>'+
+      '<div style="font-size:10px;color:#555;">'+(data?.error||'Unknown error')+'</div></div>';
+    return;
+  }
+
+  const renderIpoCard = (ipo, isRecent) => {
+    const statusColor = {
+      'expected': '#00d4ff',
+      'priced': '#2ecc71',
+      'filed': '#f39c12',
+      'withdrawn': '#e74c3c'
+    }[ipo.status] || '#888';
+
+    const statusLabel = (ipo.status || 'unknown').toUpperCase();
+
+    let performanceBlock = '';
+    if(isRecent && ipo.currentPrice && ipo.priceMid){
+      const perfColor = ipo.performancePct >= 0 ? '#2ecc71' : '#e74c3c';
+      const sign = ipo.performancePct >= 0 ? '+' : '';
+      performanceBlock = `
+        <div style="display:flex;gap:10px;padding-top:8px;margin-top:8px;border-top:1px solid #1a1a1a;">
+          <div style="flex:1;">
+            <div style="font-size:9px;color:#555;">IPO PRICE</div>
+            <div style="font-size:13px;color:#ccc;font-weight:600;">$${ipo.priceMid.toFixed(2)}</div>
+          </div>
+          <div style="flex:1;">
+            <div style="font-size:9px;color:#555;">NOW</div>
+            <div style="font-size:13px;color:#ccc;font-weight:600;">$${ipo.currentPrice.toFixed(2)}</div>
+          </div>
+          <div style="flex:1;text-align:right;">
+            <div style="font-size:9px;color:#555;">SINCE IPO</div>
+            <div style="font-size:15px;color:${perfColor};font-weight:700;">${sign}${ipo.performancePct.toFixed(1)}%</div>
+          </div>
+        </div>
+      `;
+    }
+
+    const priceRangeBlock = ipo.priceRange ? `
+      <div style="font-size:10px;color:#888;margin-top:4px;">
+        Price range: <span style="color:#ccc;">${ipo.priceRange}</span>
+        ${ipo.numberOfShares ? ` · ${(ipo.numberOfShares/1e6).toFixed(1)}M shares` : ''}
+      </div>
+    ` : '';
+
+    const daysAway = ipo.date ?
+      Math.round((new Date(ipo.date) - new Date()) / (1000*60*60*24)) : null;
+    const dayLabel = daysAway == null ? '' :
+      daysAway > 0 ? `in ${daysAway}d` :
+      daysAway === 0 ? 'TODAY' :
+      `${Math.abs(daysAway)}d ago`;
+
+    return `
+      <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:14px;transition:border-color .15s;"
+           onmouseover="this.style.borderColor='#ff6600'" onmouseout="this.style.borderColor='#1a1a1a'">
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">
+          <div style="flex:1;min-width:0;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+              <div style="font-family:var(--mono);font-size:14px;color:#fff;font-weight:700;cursor:pointer;"
+                   onclick="useIPOTicker('${(ipo.symbol||'').replace(/'/g,"\\'")}')">
+                ${ipo.symbol || '—'}
+              </div>
+              <span style="font-family:var(--mono);font-size:8px;padding:2px 6px;background:#1a1a1a;color:${statusColor};border-radius:2px;">${statusLabel}</span>
+            </div>
+            <div style="font-size:11px;color:#aaa;line-height:1.3;">${ipo.name || '—'}</div>
+            ${priceRangeBlock}
+          </div>
+          <div style="text-align:right;flex-shrink:0;">
+            <div style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;">${ipo.date||'TBA'}</div>
+            <div style="font-family:var(--mono);font-size:9px;color:#555;margin-top:2px;">${dayLabel}</div>
+            ${ipo.exchange ? `<div style="font-size:9px;color:#555;margin-top:2px;">${ipo.exchange}</div>` : ''}
+          </div>
+        </div>
+        ${performanceBlock}
+      </div>
+    `;
+  };
+
+  const renderSection = (title, subtitle, ipos, color, isRecent) => {
+    if(!ipos || ipos.length === 0){
+      return `
+        <div style="margin-bottom:24px;">
+          <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px;">
+            <span style="font-family:var(--mono);font-size:12px;color:${color};font-weight:700;letter-spacing:.08em;">${title}</span>
+            <span style="font-family:var(--mono);font-size:10px;color:#444;">${subtitle}</span>
+          </div>
+          <div style="color:#444;font-size:11px;padding:20px;border:1px dashed #1a1a1a;border-radius:4px;text-align:center;">No IPOs in this window</div>
+        </div>
+      `;
+    }
+    return `
+      <div style="margin-bottom:24px;">
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px;">
+          <span style="font-family:var(--mono);font-size:12px;color:${color};font-weight:700;letter-spacing:.08em;">${title}</span>
+          <span style="font-family:var(--mono);font-size:10px;color:#555;">${ipos.length} · ${subtitle}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px;">
+          ${ipos.map(ipo => renderIpoCard(ipo, isRecent)).join('')}
+        </div>
+      </div>
+    `;
+  };
+
+  const total = (data.this_week?.length||0) + (data.next_30d?.length||0) + (data.recent?.length||0);
+  const headerHtml = `
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid #1a1a1a;">
+      <span style="font-family:var(--mono);font-size:14px;color:#ff6600;font-weight:700;">IPO CALENDAR</span>
+      <span style="font-family:var(--mono);font-size:10px;color:#888;">${total} IPOs tracked · Live from Finnhub</span>
+    </div>
+  `;
+
+  el.innerHTML =
+    headerHtml +
+    renderSection('🔴 THIS WEEK', 'confirmed in next 7 days', data.this_week, '#e74c3c', false) +
+    renderSection('🟡 NEXT 30 DAYS', 'expected/filed', data.next_30d, '#f39c12', false) +
+    renderSection('🟢 RECENT DEBUTS', 'last 45 days with live performance', data.recent, '#2ecc71', true) +
+    renderSection('⚪ LATER', 'farther out', data.later, '#888', false);
+}
+
+// When user clicks a ticker in IPO cards, take them to SIM
+function useIPOTicker(sym){
+  if(!sym) return;
+  const input = document.getElementById('simTicker');
+  if(input){ input.value = sym; }
+  showPage('sim');
+  setTimeout(() => {
+    const runBtn = document.querySelector('button[onclick*="runSim"]');
+    // Don't auto-run — let user press Run themselves
+  }, 200);
+}
+
+// ═══════════════════════════════════════════════════════════════
 // PDF MEMO — Institutional-grade research memo generator
 // ═══════════════════════════════════════════════════════════════
 async function downloadMemoPDF(){
@@ -8647,6 +8871,21 @@ function margin_color(pct, threshold, COL){
     <div style="color:#333;font-family:var(--mono);font-size:12px;text-align:center;padding:60px;grid-column:1/-1;">
       No saved simulations yet — run a sim and click 💾 Save Sim
     </div>
+  </div>
+</div>
+
+<!-- IPOS PAGE -->
+<div id="page-ipos" class="page" style="padding:0;background:#080808;min-height:100vh;">
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+    <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;">IPO CALENDAR</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;">UPCOMING IPOS · RECENT DEBUTS · LIVE PERFORMANCE</span>
+    <div style="margin-left:auto;display:flex;gap:8px;">
+      <button onclick="loadIPOs()" id="iposRefreshBtn" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">↻ Refresh</button>
+    </div>
+  </div>
+
+  <div id="iposContent" style="padding:16px;color:#888;font-family:var(--mono);font-size:11px;">
+    Loading IPO calendar...
   </div>
 </div>
 
