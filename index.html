@@ -486,6 +486,13 @@ td:first-child{color:var(--text);font-weight:500;}
       <h3 id="newsTitle" style="color:var(--blue);">// recent news sentiment</h3>
       <p id="simNews"></p>
     </div>
+    <div class="analysis" id="newsLiveBlock" style="display:none;border-color:rgba(255,102,0,.3);">
+      <h3 style="color:#ff6600;display:flex;align-items:center;justify-content:space-between;">
+        <span>📰 // live news feed</span>
+        <button onclick="loadTickerNews()" id="newsRefreshBtn" style="font-family:var(--mono);font-size:9px;padding:2px 8px;background:none;color:#888;border:1px solid #333;border-radius:2px;cursor:pointer;">↻ refresh</button>
+      </h3>
+      <div id="newsLiveList" style="display:flex;flex-direction:column;gap:8px;margin-top:10px;"></div>
+    </div>
   </div>
 </div>
 
@@ -3754,6 +3761,9 @@ function showSimAnalysis(cd,ticker,capital,days){
   }
 
   showEarningsAlert(nd.nextEarnings, nd.sentiment);
+
+  // Auto-load live news feed for this ticker
+  setTimeout(() => { try { loadTickerNews(); } catch(e) { console.error('news load err', e); } }, 200);
 }
 
 function showEarningsAlert(earnings, sentiment){
@@ -8019,6 +8029,83 @@ document.addEventListener('DOMContentLoaded',()=>{
   // auto-load shared sim if URL has ?t=
   loadSharedSim();
 });
+
+// ═══════════════════════════════════════════════════════════════
+// NEWS FEED — Live news per ticker
+// ═══════════════════════════════════════════════════════════════
+async function loadTickerNews(){
+  const ticker = (document.getElementById('simTicker').value || '').trim().toUpperCase().replace('/USD','');
+  const block = document.getElementById('newsLiveBlock');
+  const list = document.getElementById('newsLiveList');
+  const btn = document.getElementById('newsRefreshBtn');
+
+  if(!ticker){ block.style.display='none'; return; }
+
+  block.style.display = 'block';
+  if(btn){ btn.textContent = '↻ loading...'; btn.disabled = true; }
+  list.innerHTML = '<div style="color:#555;font-family:var(--mono);font-size:10px;padding:14px;text-align:center;">fetching news...</div>';
+
+  try {
+    const r = await fetch('/api/news?ticker=' + encodeURIComponent(ticker));
+    const d = await r.json();
+    // Use newsLive (rich format) if present, fallback to headlines
+    const newsItems = d.newsLive || d.headlines || d.news || [];
+    renderNewsList(newsItems, ticker);
+  } catch(e) {
+    list.innerHTML = '<div style="color:#e74c3c;font-family:var(--mono);font-size:10px;padding:14px;">Failed to load news: '+e.message+'</div>';
+  }
+
+  if(btn){ btn.textContent = '↻ refresh'; btn.disabled = false; }
+}
+
+function renderNewsList(news, ticker){
+  const list = document.getElementById('newsLiveList');
+  if(!news || news.length === 0){
+    list.innerHTML = '<div style="color:#666;font-family:var(--mono);font-size:10px;padding:14px;text-align:center;border:1px dashed #1a1a1a;border-radius:3px;">No recent news for '+ticker+' (last 14 days)</div>';
+    return;
+  }
+
+  const timeAgo = (unix) => {
+    if(!unix) return '';
+    const diffSec = (Date.now()/1000) - unix;
+    if(diffSec < 0) return 'just now';
+    if(diffSec < 60) return Math.floor(diffSec)+'s ago';
+    if(diffSec < 3600) return Math.floor(diffSec/60)+'m ago';
+    if(diffSec < 86400) return Math.floor(diffSec/3600)+'h ago';
+    if(diffSec < 86400*7) return Math.floor(diffSec/86400)+'d ago';
+    if(diffSec < 86400*30) return Math.floor(diffSec/(86400*7))+'w ago';
+    return new Date(unix*1000).toLocaleDateString();
+  };
+
+  list.innerHTML = news.slice(0, 12).map(item => {
+    const thumb = item.image ?
+      `<img src="${item.image}" style="width:64px;height:64px;object-fit:cover;border-radius:3px;flex-shrink:0;background:#1a1a1a;" onerror="this.style.display='none'"/>` :
+      `<div style="width:64px;height:64px;background:#1a1a1a;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:18px;color:#444;">📰</div>`;
+
+    const ago = timeAgo(item.datetime);
+    const headline = (item.headline || '').slice(0, 200);
+    const source = (item.source || 'Unknown').slice(0, 30);
+    const summary = (item.summary || '').slice(0, 140);
+
+    return `
+      <a href="${item.url}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;">
+        <div style="display:flex;gap:10px;padding:10px;background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;cursor:pointer;transition:border-color .15s,background .15s;"
+             onmouseover="this.style.borderColor='#ff6600';this.style.background='#0e0a06'"
+             onmouseout="this.style.borderColor='#1a1a1a';this.style.background='#0a0a0a'">
+          ${thumb}
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:12px;color:#ddd;font-weight:500;line-height:1.35;margin-bottom:4px;">${headline}</div>
+            ${summary ? `<div style="font-size:10px;color:#888;line-height:1.4;margin-bottom:4px;">${summary}${item.summary && item.summary.length>140?'…':''}</div>` : ''}
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+              <span style="font-family:var(--mono);font-size:9px;color:#ff6600;font-weight:600;">${source}</span>
+              <span style="font-family:var(--mono);font-size:9px;color:#555;">${ago}</span>
+            </div>
+          </div>
+        </div>
+      </a>
+    `;
+  }).join('');
+}
 
 // ═══════════════════════════════════════════════════════════════
 // IPO CALENDAR — Upcoming + recent IPOs with performance
