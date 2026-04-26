@@ -245,6 +245,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('smartmoney')">SMART $</button>
     <button class="nav-btn" onclick="showPage('earnings')">EARNINGS</button>
     <button class="nav-btn" onclick="showPage('ipos')">IPOS</button>
+    <button class="nav-btn" onclick="showPage('movers')">MOVERS</button>
     <button class="nav-btn" onclick="showPage('screener')">SCREENER</button>
     <button class="nav-btn" onclick="showPage('agents')">AGENTS</button>
     <button class="nav-btn" onclick="showPage('gallery')">GALLERY</button>
@@ -2722,6 +2723,7 @@ function showPage(id){
   if(id==='smartmoney') setTimeout(()=>{if(!smLoaded){smLoaded=true;loadMarketSignals();}},50);
   if(id==='earnings') setTimeout(()=>initEarningsPage(),50);
   if(id==='ipos') setTimeout(()=>{ if(!_iposCache) loadIPOs(); },50);
+  if(id==='movers') setTimeout(()=>{ if(!_moversCache) loadMovers(); },50);
   if(id==='gallery') setTimeout(()=>renderGallery(),50);
   else stopGalleryLiveUpdates(); // stop when leaving gallery
   if(id==='agents') setTimeout(()=>initAgentsPage(),50);
@@ -8108,6 +8110,116 @@ function renderNewsList(news, ticker){
 }
 
 // ═══════════════════════════════════════════════════════════════
+// TOP MOVERS — Gainers / Losers / Most Volatile
+// ═══════════════════════════════════════════════════════════════
+let _moversCache = null;
+let _moversAutoTimer = null;
+
+async function loadMovers(){
+  const el = document.getElementById('moversContent');
+  const btn = document.getElementById('moversRefreshBtn');
+  const ts = document.getElementById('moversTimestamp');
+  if(btn){ btn.textContent = '↻ Loading...'; btn.disabled = true; }
+  el.innerHTML = '<div style="padding:40px;text-align:center;color:#555;font-family:var(--mono);font-size:12px;">Scanning ~80 tickers in parallel...</div>';
+
+  try {
+    const r = await fetch('/api/movers');
+    const d = await r.json();
+    _moversCache = d;
+    renderMovers(d);
+    if(ts){
+      const now = new Date();
+      ts.textContent = 'Updated ' + now.toLocaleTimeString();
+    }
+  } catch(e) {
+    el.innerHTML = '<div style="padding:40px;text-align:center;color:#e74c3c;font-family:var(--mono);font-size:12px;">Failed to load movers: '+e.message+'</div>';
+  }
+
+  if(btn){ btn.textContent = '↻ Refresh'; btn.disabled = false; }
+}
+
+function renderMovers(data){
+  const el = document.getElementById('moversContent');
+  if(!data || (data.error && (!data.gainers || data.gainers.length===0))){
+    el.innerHTML = '<div style="padding:40px;text-align:center;color:#e74c3c;font-family:var(--mono);font-size:12px;">'+
+      'Movers data unavailable<br><span style="font-size:10px;color:#555;">'+(data?.error||'Unknown error')+'</span></div>';
+    return;
+  }
+
+  const renderMoverRow = (m, idx, type) => {
+    const isUp = m.changePct > 0;
+    const colorMain = isUp ? '#2ecc71' : '#e74c3c';
+    const arrow = isUp ? '↑' : '↓';
+    const sign = isUp ? '+' : '';
+
+    return `
+      <div style="display:grid;grid-template-columns:30px 1fr auto auto;gap:10px;align-items:center;padding:10px 12px;background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;cursor:pointer;transition:border-color .15s, background .15s;"
+           onclick="useMoverTicker('${m.symbol}')"
+           onmouseover="this.style.borderColor='${colorMain}';this.style.background='#0e0e0e'"
+           onmouseout="this.style.borderColor='#1a1a1a';this.style.background='#0a0a0a'">
+        <div style="font-family:var(--mono);font-size:10px;color:#444;">#${idx+1}</div>
+        <div>
+          <div style="font-family:var(--mono);font-size:13px;color:#fff;font-weight:700;">${m.symbol}</div>
+          <div style="font-family:var(--mono);font-size:9px;color:#666;margin-top:2px;">$${m.price.toFixed(2)} · prev $${(m.prevClose||0).toFixed(2)}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-family:var(--mono);font-size:14px;color:${colorMain};font-weight:700;">${sign}${m.changePct.toFixed(2)}%</div>
+          <div style="font-family:var(--mono);font-size:9px;color:${colorMain};margin-top:2px;">${arrow} ${sign}$${Math.abs(m.change||0).toFixed(2)}</div>
+        </div>
+        <div style="font-size:18px;color:${colorMain};opacity:.6;">${arrow}</div>
+      </div>
+    `;
+  };
+
+  const renderColumn = (title, items, color, icon, type) => {
+    if(!items || items.length === 0){
+      return `
+        <div>
+          <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:12px;">
+            <span style="font-family:var(--mono);font-size:13px;color:${color};font-weight:700;letter-spacing:.08em;">${icon} ${title}</span>
+          </div>
+          <div style="color:#444;font-size:11px;padding:20px;border:1px dashed #1a1a1a;border-radius:4px;text-align:center;">No data</div>
+        </div>
+      `;
+    }
+    return `
+      <div>
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:12px;">
+          <span style="font-family:var(--mono);font-size:13px;color:${color};font-weight:700;letter-spacing:.08em;">${icon} ${title}</span>
+          <span style="font-family:var(--mono);font-size:9px;color:#555;">${items.length}</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          ${items.map((m, i) => renderMoverRow(m, i, type)).join('')}
+        </div>
+      </div>
+    `;
+  };
+
+  const total = data.total_scanned || 0;
+  const headerHtml = `
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid #1a1a1a;">
+      <span style="font-family:var(--mono);font-size:14px;color:#ff6600;font-weight:700;">TOP MOVERS</span>
+      <span style="font-family:var(--mono);font-size:10px;color:#888;">Scanned ${total} tickers · Live from Finnhub · Click any row to simulate</span>
+    </div>
+  `;
+
+  el.innerHTML = headerHtml + `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(360px, 1fr));gap:24px;">
+      ${renderColumn('TOP GAINERS', data.gainers, '#2ecc71', '📈', 'gainer')}
+      ${renderColumn('TOP LOSERS', data.losers, '#e74c3c', '📉', 'loser')}
+      ${renderColumn('MOST VOLATILE', data.volatile, '#f39c12', '🔥', 'volatile')}
+    </div>
+  `;
+}
+
+function useMoverTicker(sym){
+  if(!sym) return;
+  const input = document.getElementById('simTicker');
+  if(input){ input.value = sym; }
+  showPage('sim');
+}
+
+// ═══════════════════════════════════════════════════════════════
 // IPO CALENDAR — Upcoming + recent IPOs with performance
 // ═══════════════════════════════════════════════════════════════
 let _iposCache = null;
@@ -8973,6 +9085,20 @@ function margin_color(pct, threshold, COL){
 
   <div id="iposContent" style="padding:16px;color:#888;font-family:var(--mono);font-size:11px;">
     Loading IPO calendar...
+  </div>
+</div>
+
+<!-- MOVERS PAGE -->
+<div id="page-movers" class="page" style="padding:0;background:#080808;min-height:100vh;">
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+    <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;">TOP MOVERS</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;">GAINERS · LOSERS · MOST VOLATILE · LIVE</span>
+    <span id="moversTimestamp" style="font-family:var(--mono);font-size:9px;color:#444;margin-left:auto;"></span>
+    <button onclick="loadMovers()" id="moversRefreshBtn" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">↻ Refresh</button>
+  </div>
+
+  <div id="moversContent" style="padding:16px;color:#888;font-family:var(--mono);font-size:11px;">
+    Loading top movers...
   </div>
 </div>
 
