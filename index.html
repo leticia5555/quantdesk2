@@ -8079,19 +8079,123 @@ function renderNewsList(news, ticker){
     return new Date(unix*1000).toLocaleDateString();
   };
 
-  list.innerHTML = news.slice(0, 12).map(item => {
-    const thumb = item.image ?
-      `<img src="${item.image}" style="width:64px;height:64px;object-fit:cover;border-radius:3px;flex-shrink:0;background:#1a1a1a;" onerror="this.style.display='none'"/>` :
-      `<div style="width:64px;height:64px;background:#1a1a1a;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:18px;color:#444;">📰</div>`;
+  // Map common ticker -> company name patterns to catch headlines that don't say the ticker explicitly
+  const tickerKeywords = {
+    'NVDA': ['nvidia','jensen huang','rtx','geforce','cuda'],
+    'TSLA': ['tesla','elon musk','cybertruck','model 3','model y','model s','model x'],
+    'AAPL': ['apple','iphone','ipad','macbook','tim cook','vision pro','airpods'],
+    'MSFT': ['microsoft','satya nadella','azure','windows','xbox','copilot'],
+    'GOOGL':['google','alphabet','sundar pichai','android','gemini','youtube'],
+    'META': ['meta','facebook','instagram','whatsapp','zuckerberg','threads'],
+    'AMZN': ['amazon','jeff bezos','andy jassy','aws','prime'],
+    'NFLX': ['netflix'],
+    'AMD':  ['advanced micro','lisa su','ryzen','radeon'],
+    'INTC': ['intel','pat gelsinger'],
+    'BTC':  ['bitcoin','btc','satoshi'],
+    'ETH':  ['ethereum','eth','vitalik'],
+    'MELI': ['mercadolibre','mercado libre','marcos galperin'],
+    'NU':   ['nubank','nu holdings','david velez']
+  };
+
+  const tk = ticker.toUpperCase();
+  const synonyms = tickerKeywords[tk] || [];
+
+  // ── 1. RELEVANCE FILTER ──
+  // Keep only news that explicitly mentions the ticker OR a synonym in headline
+  const isRelevant = (item) => {
+    const txt = ((item.headline||'') + ' ' + (item.summary||'')).toLowerCase();
+    if(txt.includes(tk.toLowerCase())) return true;
+    if(txt.includes('$'+tk.toLowerCase())) return true;
+    for(const syn of synonyms){
+      if(txt.includes(syn.toLowerCase())) return true;
+    }
+    // Check `related` field if Finnhub set it
+    if(item.related && String(item.related).toUpperCase().includes(tk)) return true;
+    return false;
+  };
+
+  const filtered = news.filter(isRelevant);
+
+  // If filter is too aggressive (kills all news), show top 5 unfiltered with a banner
+  let toRender, fallbackUsed = false;
+  if(filtered.length === 0){
+    toRender = news.slice(0, 5);
+    fallbackUsed = true;
+  } else {
+    toRender = filtered.slice(0, 12);
+  }
+
+  // ── 2. DROP YAHOO PLACEHOLDER LOGOS (the purple "f" image you saw) ──
+  const isBadThumbnail = (url) => {
+    if(!url) return true;
+    const u = String(url).toLowerCase();
+    // Yahoo's placeholder image patterns (these are the purple "f" logos)
+    if(u.includes('s.yimg.com/uu/api/res')) return false;  // these are real article thumbs
+    if(u.includes('yahoo') && (u.includes('logo') || u.includes('default'))) return true;
+    if(u.includes('finnhub')) return true;  // finnhub's placeholder
+    if(u.endsWith('.svg')) return true;     // logos usually svg
+    if(u.length < 30) return true;          // suspicious tiny urls
+    return false;
+  };
+
+  // ── 3. SUB-SOURCE DETECTION (from URL host) ──
+  const subSource = (url) => {
+    if(!url) return null;
+    try {
+      const u = new URL(url);
+      const host = u.hostname.replace(/^www\./, '');
+      // Map common Yahoo sub-publishers
+      const map = {
+        'fool.com': 'Motley Fool',
+        'seekingalpha.com': 'Seeking Alpha',
+        'reuters.com': 'Reuters',
+        'bloomberg.com': 'Bloomberg',
+        'cnbc.com': 'CNBC',
+        'wsj.com': 'WSJ',
+        'ft.com': 'Financial Times',
+        'marketwatch.com': 'MarketWatch',
+        'barrons.com': "Barron's",
+        'investorplace.com': 'InvestorPlace',
+        'zacks.com': 'Zacks',
+        'benzinga.com': 'Benzinga',
+        'businessinsider.com': 'Business Insider',
+        'forbes.com': 'Forbes',
+        'finance.yahoo.com': 'Yahoo Finance',
+        'yahoo.com': 'Yahoo'
+      };
+      for(const [domain, label] of Object.entries(map)){
+        if(host.endsWith(domain)) return label;
+      }
+      return host;
+    } catch(e) { return null; }
+  };
+
+  // ── BUILD HTML ──
+  let html = '';
+
+  if(fallbackUsed){
+    html += `<div style="font-family:var(--mono);font-size:9px;color:#888;padding:8px 10px;background:#1a1108;border-left:2px solid #f39c12;margin-bottom:10px;border-radius:2px;">
+      ⚠ No headlines explicitly mention ${ticker}. Showing recent ticker-tagged news (may be tangentially related).
+    </div>`;
+  }
+
+  html += toRender.map(item => {
+    const validImage = !isBadThumbnail(item.image);
+    const thumb = validImage ?
+      `<img src="${item.image}" style="width:56px;height:56px;object-fit:cover;border-radius:3px;flex-shrink:0;background:#1a1a1a;" onerror="this.style.display='none';this.parentNode.querySelector('.thumb-fallback').style.display='flex';"/>
+       <div class="thumb-fallback" style="display:none;width:56px;height:56px;background:#1a1a1a;border-radius:3px;flex-shrink:0;align-items:center;justify-content:center;font-size:16px;color:#444;">📰</div>` :
+      '';  // No thumb at all if image is bad — cleaner
 
     const ago = timeAgo(item.datetime);
     const headline = (item.headline || '').slice(0, 200);
     const source = (item.source || 'Unknown').slice(0, 30);
+    const sub = subSource(item.url);
+    const sourceLabel = sub && sub !== source ? `${source} · ${sub}` : source;
     const summary = (item.summary || '').slice(0, 140);
 
     return `
       <a href="${item.url}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;">
-        <div style="display:flex;gap:10px;padding:10px;background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;cursor:pointer;transition:border-color .15s,background .15s;"
+        <div style="display:flex;gap:10px;padding:10px 12px;background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;cursor:pointer;transition:border-color .15s,background .15s;"
              onmouseover="this.style.borderColor='#ff6600';this.style.background='#0e0a06'"
              onmouseout="this.style.borderColor='#1a1a1a';this.style.background='#0a0a0a'">
           ${thumb}
@@ -8099,7 +8203,7 @@ function renderNewsList(news, ticker){
             <div style="font-size:12px;color:#ddd;font-weight:500;line-height:1.35;margin-bottom:4px;">${headline}</div>
             ${summary ? `<div style="font-size:10px;color:#888;line-height:1.4;margin-bottom:4px;">${summary}${item.summary && item.summary.length>140?'…':''}</div>` : ''}
             <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-              <span style="font-family:var(--mono);font-size:9px;color:#ff6600;font-weight:600;">${source}</span>
+              <span style="font-family:var(--mono);font-size:9px;color:#ff6600;font-weight:600;">${sourceLabel}</span>
               <span style="font-family:var(--mono);font-size:9px;color:#555;">${ago}</span>
             </div>
           </div>
@@ -8107,6 +8211,13 @@ function renderNewsList(news, ticker){
       </a>
     `;
   }).join('');
+
+  // Add disclaimer footer about source aggregation
+  html += `<div style="font-family:var(--mono);font-size:8px;color:#444;padding:8px 4px 0;text-align:center;line-height:1.5;">
+    via Yahoo Finance aggregator · for premium sources (Bloomberg/Reuters/WSJ) upgrade coming
+  </div>`;
+
+  list.innerHTML = html;
 }
 
 // ═══════════════════════════════════════════════════════════════
