@@ -277,7 +277,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <input type="number" id="simCapital" placeholder="Capital $" value="10000" min="100"/>
     <select id="simDays"><option value="1">1 day</option><option value="3">3 days</option><option value="5">1 week</option><option value="10">2 weeks</option><option value="15">15 days</option><option value="21">3 weeks</option><option value="30">1 month</option><option value="60">2 months</option><option value="90" selected>3 months</option><option value="180">6 months</option><option value="365">1 year</option></select>
     <select id="simPaths"><option value="100">100 paths · fastest</option><option value="300">300 paths · noisy</option><option value="500">500 paths</option><option value="1000" selected>1,000 paths · default</option><option value="2000">2,000 paths · institutional</option><option value="5000">5,000 paths · precise (slow)</option><option value="10000">10,000 paths · Bloomberg-grade (very slow)</option></select>
-    <select id="simModel"><option value="gbm">GBM — standard</option><option value="jump">Jump diffusion</option><option value="regime">Regime switching</option></select>
+    <select id="simModel"><option value="gbm">GBM · Student-t (fat tails)</option><option value="jump">Jump diffusion</option><option value="regime">Regime switching</option></select>
   </div>
 
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
@@ -3174,21 +3174,58 @@ function randn(){
   return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
 }
 
+// ─── Student-t random sampler with variance normalization ─────────────
+// Student-t with df=5 has fatter tails than Normal but finite variance (5/3).
+// We rescale so the resulting innovations have unit variance — this keeps
+// sigma in the GBM formula meaning the same thing it always meant (the
+// volatility in % per year). Without rescaling, switching from Normal to
+// Student-t would secretly inflate volatility and break all comparison
+// with historical Sharpe/VaR figures.
+//
+// Method: ratio of normals — Z / sqrt(chi2/df). The chi2 is built from
+// df-many squared normals. Then we divide by sqrt(df/(df-2)) to normalize.
+const STUDENT_DF = 5;
+const STUDENT_VAR_FACTOR = Math.sqrt(STUDENT_DF / (STUDENT_DF - 2));  // ~1.291 for df=5
+function randStudentT(){
+  const z = randn();
+  let chi2 = 0;
+  for (let i = 0; i < STUDENT_DF; i++) {
+    const g = randn();
+    chi2 += g * g;
+  }
+  return (z / Math.sqrt(chi2 / STUDENT_DF)) / STUDENT_VAR_FACTOR;
+}
+
 function genPath(S0,mu,sigma,days,model){
   const dt=1/252,path=[S0];let S=S0;
   for(let i=0;i<days;i++){
-    const z=randn();let ret;
-    if(model==='gbm'){ret=(mu-.5*sigma*sigma)*dt+sigma*Math.sqrt(dt)*z;}
-    else if(model==='jump'){
-      const j=Math.random()<.03?(-.02+.05*randn()):0;
-      ret=(mu-.5*sigma*sigma)*dt+sigma*Math.sqrt(dt)*z+j;
-    }else{
-      const r=Math.random()<.3;
-      const em=r?mu*.3:mu,es=r?sigma*1.8:sigma*.7;
-      ret=(em-.5*es*es)*dt+es*Math.sqrt(dt)*z;
+    let ret;
+    if(model==='gbm'){
+      // GBM with Student-t innovations (fat tails default — Bloomberg-honest)
+      // Captures the empirical fact that daily returns have kurtosis ~4-7,
+      // not the kurtosis=3 implied by Normal. Without this, the model
+      // systematically underestimates the probability of large moves.
+      const z = randStudentT();
+      ret = (mu - 0.5*sigma*sigma)*dt + sigma*Math.sqrt(dt)*z;
     }
-    S=S*Math.exp(ret);path.push(S);
-  }return path;
+    else if(model==='jump'){
+      // Jump diffusion (Merton 1976): Normal innovations + Poisson jumps.
+      // Use plain Normal here because the jumps already provide tail mass.
+      const z = randn();
+      const j = Math.random() < 0.03 ? (-0.02 + 0.05*randn()) : 0;
+      ret = (mu - 0.5*sigma*sigma)*dt + sigma*Math.sqrt(dt)*z + j;
+    } else {
+      // Regime switching: alternates between calm and stress regimes.
+      const z = randn();
+      const r = Math.random() < 0.3;
+      const em = r ? mu*0.3 : mu;
+      const es = r ? sigma*1.8 : sigma*0.7;
+      ret = (em - 0.5*es*es)*dt + es*Math.sqrt(dt)*z;
+    }
+    S = S*Math.exp(ret);
+    path.push(S);
+  }
+  return path;
 }
 
 const PAD=38,PAD_R=16,PAD_B=28;
@@ -7939,7 +7976,7 @@ function openShareSimModal(){
   const days = document.getElementById('simDays').value;
   const cap = document.getElementById('simCapital').value||'10000';
   const model = document.getElementById('simModel').value;
-  const modelName = { gbm:'GBM', jump:'Jump diffusion', regime:'Regime switching' }[model] || model;
+  const modelName = { gbm:'GBM Student-t', jump:'Jump diffusion', regime:'Regime switching' }[model] || model;
   const daysLabel = { '3':'3 days','5':'1 week','10':'2 weeks','15':'15 days','21':'3 weeks','30':'1 month','60':'2 months','90':'3 months','180':'6 months','365':'1 year' }[days] || (days+' days');
 
   const txtX = `Ran a Monte Carlo on $${ticker.toUpperCase()} — ${dir} · ${daysLabel} · $${parseInt(cap).toLocaleString()} · ${modelName}. Remix this sim:`;
