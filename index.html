@@ -3629,20 +3629,41 @@ async function startSim(){
         }).length;
         const ruin50=ruinPaths/allPaths.length;
 
-        // Verdict rubric (institutional-grade, Bloomberg-honest)
+        // ── Multi-factor verdict rubric (institutional-grade scoring) ──
+        // Old rubric used only Sharpe → caused NVDA 90d +6.9% Kelly 9% to be WATCH instead of BUY
+        // New rubric sums evidence across 7 quant signals + retorno absoluto
+
+        // Compute profit factor and sortino for scoring
+        const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? 999 : 0);
+        const downsideRets = rets.filter(r => r < 0);
+        const downsideStd = downsideRets.length > 0
+          ? Math.sqrt(downsideRets.reduce((a,r)=>a+r*r,0) / downsideRets.length)
+          : std;
+        const sortino = downsideStd > 0 ? (mean/downsideStd) * Math.sqrt(252/SP.days) : 0;
+
+        // Score: 0-7, higher = stronger setup
+        let score = 0;
+        if (sharpe >= 0.4)        score += 1;  // baseline risk-adjusted return
+        if (sharpe >= 0.7)        score += 1;  // good Sharpe
+        if (kellyFrac >= 0.05)    score += 1;  // Kelly says size up
+        if (profitFactor >= 2.0)  score += 1;  // asymmetric upside (wins > 2× losses)
+        if (sortino >= 0.7)       score += 1;  // downside-adj return decent
+        if (winRate >= 0.55)      score += 1;  // majority profitable paths
+        if (mean >= 0.05)         score += 1;  // significant absolute return (5%+)
+
         let computedVerdict;
-        if(mean<=0){
-          computedVerdict='AVOID';  // negative expectancy = don't trade
-        } else if(ruin50>0.10){
-          computedVerdict='HIGH RISK';  // >10% chance of losing half = red flag regardless of return
-        } else if(sharpe>=1.0 && kellyFrac>=0.05 && ruin50<0.03){
-          computedVerdict='STRONG ENTRY';  // excellent risk-adjusted return
-        } else if(sharpe>=0.7 && kellyFrac>=0.02){
-          computedVerdict='BUY';  // solid but not spectacular
-        } else if(sharpe>=0.4){
-          computedVerdict='WATCH';  // mediocre risk-adjusted — worth tracking, not buying
+        if (mean <= 0) {
+          computedVerdict = 'AVOID';                      // negative expectancy
+        } else if (ruin50 > 0.10) {
+          computedVerdict = 'HIGH RISK';                  // >10% chance of half-capital ruin
+        } else if (score >= 6 && sharpe >= 0.9 && ruin50 < 0.03) {
+          computedVerdict = 'STRONG ENTRY';               // excellent across the board
+        } else if (score >= 4) {
+          computedVerdict = 'BUY';                        // sufficient evidence
+        } else if (score >= 2) {
+          computedVerdict = 'WATCH';                      // some positive signals, not enough
         } else {
-          computedVerdict='WAIT FOR DIP';  // low Sharpe — better entry likely coming
+          computedVerdict = 'WAIT FOR DIP';               // weak signals → wait for better entry
         }
 
         // Override Claude's verdict with the honest one and update display
@@ -3658,9 +3679,7 @@ async function startSim(){
           for(const v of p){ if(v>peak)peak=v; const d=(peak-v)/peak; if(d>dd)dd=d; }
           return Math.max(maxDD, dd);
         }, 0);
-        const downside = rets.filter(r=>r<0);
-        const downsideStd = downside.length>0 ? Math.sqrt(downside.reduce((a,r)=>a+r*r,0)/downside.length) : std;
-        const sortino = downsideStd>0 ? (mean/downsideStd)*Math.sqrt(252/SP.days) : 0;
+        // Note: sortino, downsideStd already computed above for verdict scoring — reuse
 
         window._lastSimStats = {
           ticker: document.getElementById('simTicker').value.toUpperCase(),
