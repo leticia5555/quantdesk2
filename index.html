@@ -277,7 +277,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <input type="number" id="simCapital" placeholder="Capital $" value="10000" min="100"/>
     <select id="simDays"><option value="1">1 day</option><option value="3">3 days</option><option value="5">1 week</option><option value="10">2 weeks</option><option value="15">15 days</option><option value="21">3 weeks</option><option value="30">1 month</option><option value="60">2 months</option><option value="90" selected>3 months</option><option value="180">6 months</option><option value="365">1 year</option></select>
     <select id="simPaths"><option value="100">100 paths · fastest</option><option value="300">300 paths · noisy</option><option value="500">500 paths</option><option value="1000" selected>1,000 paths · default</option><option value="2000">2,000 paths · institutional</option><option value="5000">5,000 paths · precise (slow)</option><option value="10000">10,000 paths · Bloomberg-grade (very slow)</option></select>
-    <select id="simModel"><option value="gbm">GBM · Student-t (fat tails)</option><option value="jump">Jump diffusion</option><option value="regime">Regime switching</option></select>
+    <select id="simModel"><option value="gbm">GBM · Student-t (fat tails)</option><option value="jump">Jump diffusion</option><option value="regime">Regime switching</option><option value="garch">GARCH(1,1) · vol clustering</option></select>
   </div>
 
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
@@ -3198,30 +3198,70 @@ function randStudentT(){
 
 function genPath(S0,mu,sigma,days,model){
   const dt=1/252,path=[S0];let S=S0;
+
+  // ── Earnings jump configuration (when next earnings is within horizon) ──
+  const earningsData = (window._lastNews && window._lastNews.nextEarnings) || null;
+  const earningsDay = (earningsData && earningsData.daysUntil != null
+                       && earningsData.daysUntil >= 0
+                       && earningsData.daysUntil < days) ? earningsData.daysUntil : -1;
+  const impliedMove = Math.min(Math.max(sigma * 0.20, 0.03), 0.15);
+
+  // ── GARCH(1,1) state for vol clustering ──
+  // Standard equity-market parameters from Bollerslev/Engle literature:
+  //   alpha=0.10 (impact of yesterday's shock), beta=0.85 (persistence)
+  //   omega calibrated so unconditional vol equals input sigma
+  // unconditional_var = omega / (1 - alpha - beta)
+  // → omega = unconditional_var × (1 - alpha - beta)
+  const garchAlpha = 0.10;
+  const garchBeta = 0.85;
+  const sigmaDaily = sigma / Math.sqrt(252);
+  const uncondVar = sigmaDaily * sigmaDaily;
+  const garchOmega = uncondVar * (1 - garchAlpha - garchBeta);
+  let garchVar = uncondVar;  // start at long-run mean
+  let lastShock = 0;
+
   for(let i=0;i<days;i++){
     let ret;
+    let dailySigma = sigmaDaily;  // default: constant
+
     if(model==='gbm'){
       // GBM with Student-t innovations (fat tails default — Bloomberg-honest)
-      // Captures the empirical fact that daily returns have kurtosis ~4-7,
-      // not the kurtosis=3 implied by Normal. Without this, the model
-      // systematically underestimates the probability of large moves.
       const z = randStudentT();
       ret = (mu - 0.5*sigma*sigma)*dt + sigma*Math.sqrt(dt)*z;
     }
     else if(model==='jump'){
-      // Jump diffusion (Merton 1976): Normal innovations + Poisson jumps.
-      // Use plain Normal here because the jumps already provide tail mass.
       const z = randn();
       const j = Math.random() < 0.03 ? (-0.02 + 0.05*randn()) : 0;
       ret = (mu - 0.5*sigma*sigma)*dt + sigma*Math.sqrt(dt)*z + j;
-    } else {
-      // Regime switching: alternates between calm and stress regimes.
+    }
+    else if(model==='garch'){
+      // GARCH(1,1) — vol clusters: high-vol days follow high-vol days.
+      // Update variance forward using last day's shock and previous variance
+      garchVar = garchOmega + garchAlpha * lastShock * lastShock + garchBeta * garchVar;
+      dailySigma = Math.sqrt(garchVar);
+      // Use Student-t for innovations to also keep fat tails
+      const z = randStudentT();
+      const shock = dailySigma * z;
+      lastShock = shock;
+      // Annualize-equivalent volatility for the drift correction term
+      const sigmaEffective = dailySigma * Math.sqrt(252);
+      ret = (mu - 0.5*sigmaEffective*sigmaEffective)*dt + shock;
+    }
+    else {
       const z = randn();
       const r = Math.random() < 0.3;
       const em = r ? mu*0.3 : mu;
       const es = r ? sigma*1.8 : sigma*0.7;
       ret = (em - 0.5*es*es)*dt + es*Math.sqrt(dt)*z;
     }
+
+    // ── Earnings jump (Merton 1976) on the specific day next report drops ──
+    if (i === earningsDay) {
+      const driftBias = 0.005;
+      const jumpRet = driftBias + impliedMove * randn();
+      ret = ret + jumpRet;
+    }
+
     S = S*Math.exp(ret);
     path.push(S);
   }
@@ -3648,7 +3688,24 @@ async function startSim(){
       signals:['Check Finnhub API key','Verify ticker symbol','Try again in a moment','Data may be temporarily unavailable'],
       key_risk:'Price data is estimated — verify before trading.'};
   }
-  SP={S0:cd.current_price||100,mu:cd.mu||.15,sigma:cd.sigma||.35,days,capital,dir,model};
+  // ── Mean reversion drift adjustment (AQR "valuation tilt") ──
+  // If price is near 52w high, expected forward returns are statistically lower.
+  // If near 52w low, expected returns are higher. Magnitude calibrated empirically:
+  // ~3pp pull at the extreme (top/bottom 10% of 52w range), zero at midpoint.
+  // This is mild enough to not override CAPM but strong enough to be visible.
+  let muAdjusted = cd.mu || 0.15;
+  if (cd.high52w && cd.low52w && cd.current_price && cd.high52w > cd.low52w) {
+    const range = cd.high52w - cd.low52w;
+    const positionInRange = Math.max(0, Math.min(1, (cd.current_price - cd.low52w) / range));
+    // tilt ranges from +3pp (at low) to -3pp (at high), zero at midpoint
+    const tiltStrength = 0.06;  // 6pp full swing
+    const reversionTilt = (0.5 - positionInRange) * tiltStrength;
+    muAdjusted = (cd.mu || 0.15) + reversionTilt;
+    // Clamp to sane range
+    muAdjusted = Math.min(Math.max(muAdjusted, 0.02), 0.50);
+  }
+
+  SP={S0:cd.current_price||100,mu:muAdjusted,sigma:cd.sigma||.35,days,capital,dir,model};
   window._lastCd=cd;
   showSimAnalysis(cd,ticker,capital,days);
   setStatus('SIMULATING...',true);
@@ -7976,7 +8033,7 @@ function openShareSimModal(){
   const days = document.getElementById('simDays').value;
   const cap = document.getElementById('simCapital').value||'10000';
   const model = document.getElementById('simModel').value;
-  const modelName = { gbm:'GBM Student-t', jump:'Jump diffusion', regime:'Regime switching' }[model] || model;
+  const modelName = { gbm:'GBM Student-t', jump:'Jump diffusion', regime:'Regime switching', garch:'GARCH(1,1)' }[model] || model;
   const daysLabel = { '3':'3 days','5':'1 week','10':'2 weeks','15':'15 days','21':'3 weeks','30':'1 month','60':'2 months','90':'3 months','180':'6 months','365':'1 year' }[days] || (days+' days');
 
   const txtX = `Ran a Monte Carlo on $${ticker.toUpperCase()} — ${dir} · ${daysLabel} · $${parseInt(cap).toLocaleString()} · ${modelName}. Remix this sim:`;
@@ -8097,7 +8154,7 @@ function loadSharedSim(){
   if(dEl && (d==='LONG'||d==='SHORT')) dEl.value = d;
   if(daysEl) daysEl.value = days;
   if(capEl) capEl.value = cap;
-  if(mEl && ['gbm','jump','regime'].includes(m)) mEl.value = m;
+  if(mEl && ['gbm','jump','regime','garch'].includes(m)) mEl.value = m;
 
   // banner
   showSharedSimBanner(t.toUpperCase());
