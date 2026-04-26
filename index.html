@@ -3760,9 +3760,39 @@ function showSimAnalysis(cd,ticker,capital,days){
   
   let newsHtml='';
   
-  // Real headlines
+  // Filter headlines for relevance (same logic as live news feed)
+  const tkUpper = (ticker||'').toUpperCase();
+  const tickerKeywordsMini = {
+    'NVDA':['nvidia','jensen huang','rtx','geforce','cuda'],
+    'TSLA':['tesla','elon musk','cybertruck','model 3','model y','model s','model x'],
+    'AAPL':['apple','iphone','ipad','macbook','tim cook','vision pro','airpods'],
+    'MSFT':['microsoft','satya nadella','azure','windows','xbox','copilot'],
+    'GOOGL':['google','alphabet','sundar pichai','android','gemini','youtube'],
+    'META':['meta','facebook','instagram','whatsapp','zuckerberg','threads'],
+    'AMZN':['amazon','jeff bezos','andy jassy','aws','prime'],
+    'NFLX':['netflix'],
+    'AMD':['advanced micro','lisa su','ryzen','radeon'],
+    'INTC':['intel','pat gelsinger'],
+    'BTC':['bitcoin','btc','satoshi'],
+    'ETH':['ethereum','eth','vitalik'],
+    'MELI':['mercadolibre','mercado libre','marcos galperin'],
+    'NU':['nubank','nu holdings','david velez']
+  };
+  const synsMini = tickerKeywordsMini[tkUpper] || [];
+  const isRelevantMini = h => {
+    const txt = ((h.headline||'') + ' ' + (h.summary||'')).toLowerCase();
+    if(txt.includes(tkUpper.toLowerCase())) return true;
+    if(txt.includes('$'+tkUpper.toLowerCase())) return true;
+    for(const s of synsMini){ if(txt.includes(s.toLowerCase())) return true; }
+    return false;
+  };
+  
+  // Real headlines (filtered)
   if(nd.headlines&&nd.headlines.length>0){
-    newsHtml+=nd.headlines.slice(0,4).map(h=>`
+    let filtered = nd.headlines.filter(isRelevantMini);
+    // If filter kills everything, fallback to all (with implicit caveat)
+    if(filtered.length === 0) filtered = nd.headlines;
+    newsHtml+=filtered.slice(0,4).map(h=>`
       <div style="padding:6px 0;border-bottom:1px solid var(--border);font-family:var(--sans);">
         <div style="font-size:12px;color:var(--text2);line-height:1.5;">${h.headline}</div>
         <div style="font-size:10px;color:var(--text3);margin-top:2px;">${h.source||''} · ${h.datetime?new Date(h.datetime*1000).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'recent'}</div>
@@ -8120,7 +8150,10 @@ function renderNewsList(news, ticker){
   const synonyms = tickerKeywords[tk] || [];
 
   // ── 1. RELEVANCE FILTER ──
-  // Keep only news that explicitly mentions the ticker OR a synonym in headline
+  // Keep only news that explicitly mentions the ticker OR a synonym in headline/summary
+  // NOTE: We do NOT check `related` field — Finnhub tags every result with the queried ticker
+  // even if the article doesn't actually discuss it. That's why the filter must rely only
+  // on text content of headline + summary.
   const isRelevant = (item) => {
     const txt = ((item.headline||'') + ' ' + (item.summary||'')).toLowerCase();
     if(txt.includes(tk.toLowerCase())) return true;
@@ -8128,8 +8161,6 @@ function renderNewsList(news, ticker){
     for(const syn of synonyms){
       if(txt.includes(syn.toLowerCase())) return true;
     }
-    // Check `related` field if Finnhub set it
-    if(item.related && String(item.related).toUpperCase().includes(tk)) return true;
     return false;
   };
 
