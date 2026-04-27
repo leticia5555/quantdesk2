@@ -8584,7 +8584,10 @@ function renderSectors(data){
 
     <!-- SECTOR HEATMAP -->
     <div>
-      <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:12px;letter-spacing:.05em;">// ${(data.category||'us').toUpperCase()} · ${sectors.length} ETFS · sorted by % change · click to simulate</div>
+      <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:12px;letter-spacing:.05em;">
+        // ${(data.category||'us').toUpperCase()} · ${sectors.length}${data.total_expected && data.total_expected !== sectors.length ? ' of '+data.total_expected : ''} ETFS LOADED · sorted by % change · click to simulate
+        ${data.failed && data.failed.length > 0 ? `<span style="color:#e74c3c;margin-left:8px;">(${data.failed.map(f => f.ticker).join(', ')} not available)</span>` : ''}
+      </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;">
         ${cardsHtml}
       </div>
