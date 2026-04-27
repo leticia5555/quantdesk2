@@ -1,23 +1,65 @@
 // ═══════════════════════════════════════════════════════════════
-// /api/sectors — 11 SPDR Sector ETFs with live % change
-// Uses Finnhub /quote endpoint (free tier)
+// /api/sectors — 4 categories of ETF heatmaps
+//   us:         11 SPDR sector ETFs (default)
+//   latam:      6 country/region ETFs for LATAM
+//   themes:     14 thematic megatrends
+//   industries: sub-industry ETFs (semis, biotech, banks, etc.)
 // ═══════════════════════════════════════════════════════════════
 
-const SECTORS = [
-  { ticker: 'XLK', name: 'Technology',           emoji: '💻', topStocks: ['AAPL','MSFT','NVDA','AVGO','ORCL'] },
-  { ticker: 'XLF', name: 'Financials',           emoji: '🏦', topStocks: ['JPM','BAC','WFC','GS','BRK-B'] },
-  { ticker: 'XLV', name: 'Healthcare',           emoji: '🏥', topStocks: ['LLY','JNJ','UNH','MRK','PFE'] },
-  { ticker: 'XLY', name: 'Consumer Discretionary',emoji: '🛍️', topStocks: ['AMZN','TSLA','HD','MCD','NKE'] },
-  { ticker: 'XLP', name: 'Consumer Staples',     emoji: '🥫', topStocks: ['WMT','PG','KO','PEP','COST'] },
-  { ticker: 'XLE', name: 'Energy',               emoji: '⛽', topStocks: ['XOM','CVX','COP','SLB','EOG'] },
-  { ticker: 'XLI', name: 'Industrials',          emoji: '🏭', topStocks: ['CAT','BA','HON','UPS','RTX'] },
-  { ticker: 'XLB', name: 'Materials',            emoji: '⛏️', topStocks: ['LIN','SHW','APD','ECL','FCX'] },
-  { ticker: 'XLU', name: 'Utilities',            emoji: '⚡', topStocks: ['NEE','SO','DUK','SRE','AEP'] },
-  { ticker: 'XLRE',name: 'Real Estate',          emoji: '🏢', topStocks: ['PLD','AMT','EQIX','WELL','CCI'] },
-  { ticker: 'XLC', name: 'Communication',        emoji: '📡', topStocks: ['META','GOOGL','NFLX','DIS','VZ'] }
-];
+const CATEGORIES = {
+  us: [
+    { ticker: 'XLK', name: 'Technology',           emoji: '💻', topStocks: ['AAPL','MSFT','NVDA','AVGO','ORCL'] },
+    { ticker: 'XLF', name: 'Financials',           emoji: '🏦', topStocks: ['JPM','BAC','WFC','GS','BRK-B'] },
+    { ticker: 'XLV', name: 'Healthcare',           emoji: '🏥', topStocks: ['LLY','JNJ','UNH','MRK','PFE'] },
+    { ticker: 'XLY', name: 'Consumer Discretionary',emoji: '🛍️', topStocks: ['AMZN','TSLA','HD','MCD','NKE'] },
+    { ticker: 'XLP', name: 'Consumer Staples',     emoji: '🥫', topStocks: ['WMT','PG','KO','PEP','COST'] },
+    { ticker: 'XLE', name: 'Energy',               emoji: '⛽', topStocks: ['XOM','CVX','COP','SLB','EOG'] },
+    { ticker: 'XLI', name: 'Industrials',          emoji: '🏭', topStocks: ['CAT','BA','HON','UPS','RTX'] },
+    { ticker: 'XLB', name: 'Materials',            emoji: '⛏️', topStocks: ['LIN','SHW','APD','ECL','FCX'] },
+    { ticker: 'XLU', name: 'Utilities',            emoji: '⚡', topStocks: ['NEE','SO','DUK','SRE','AEP'] },
+    { ticker: 'XLRE',name: 'Real Estate',          emoji: '🏢', topStocks: ['PLD','AMT','EQIX','WELL','CCI'] },
+    { ticker: 'XLC', name: 'Communication',        emoji: '📡', topStocks: ['META','GOOGL','NFLX','DIS','VZ'] }
+  ],
+  latam: [
+    { ticker: 'EWW', name: 'Mexico',           emoji: '🇲🇽', topStocks: ['AMX','FMX','GFNORTEO.MX','WALMEX.MX','CEMEXCPO.MX'] },
+    { ticker: 'EWZ', name: 'Brazil',           emoji: '🇧🇷', topStocks: ['VALE','ITUB','PBR','ABEV','BBAS3.SA'] },
+    { ticker: 'ECH', name: 'Chile',            emoji: '🇨🇱', topStocks: ['BSAC','SQM-B.SN','CHILE.SN','FALABELLA.SN','COPEC.SN'] },
+    { ticker: 'ARGT',name: 'Argentina',        emoji: '🇦🇷', topStocks: ['YPFD.BA','GGAL.BA','PAMP.BA','BMA.BA','CRES.BA'] },
+    { ticker: 'GXG', name: 'Colombia',         emoji: '🇨🇴', topStocks: ['EC','CIB','BVN','AVAL'] },
+    { ticker: 'ILF', name: 'LatAm 40 (broad)', emoji: '🌎', topStocks: ['VALE','ITUB','PBR','AMX','FMX'] }
+  ],
+  themes: [
+    { ticker: 'SOXX', name: 'Semiconductors',     emoji: '🔬', topStocks: ['NVDA','AVGO','AMD','TSM','QCOM'] },
+    { ticker: 'AIQ',  name: 'AI & Robotics',      emoji: '🤖', topStocks: ['NVDA','META','GOOGL','MSFT','TSLA'] },
+    { ticker: 'IBB',  name: 'Biotech',            emoji: '🧬', topStocks: ['VRTX','REGN','GILD','MRNA','BIIB'] },
+    { ticker: 'XBI',  name: 'Biotech (Small)',    emoji: '⚗️', topStocks: ['SRPT','ARWR','ALNY','BMRN','EXEL'] },
+    { ticker: 'HACK', name: 'Cybersecurity',      emoji: '🔒', topStocks: ['CRWD','PANW','ZS','FTNT','OKTA'] },
+    { ticker: 'CLOU', name: 'Cloud Computing',    emoji: '☁️', topStocks: ['CRM','SNOW','NET','DDOG','MDB'] },
+    { ticker: 'JETS', name: 'Airlines',           emoji: '✈️', topStocks: ['DAL','UAL','AAL','LUV','SKYW'] },
+    { ticker: 'TAN',  name: 'Solar Energy',       emoji: '☀️', topStocks: ['FSLR','ENPH','SEDG','RUN','NXT'] },
+    { ticker: 'ICLN', name: 'Clean Energy',       emoji: '🌱', topStocks: ['FSLR','ENPH','PLUG','BLDP','TPIC'] },
+    { ticker: 'BLOK', name: 'Blockchain',         emoji: '⛓️', topStocks: ['COIN','MSTR','RIOT','MARA','HUT'] },
+    { ticker: 'DRIV', name: 'Autonomous Vehicles',emoji: '🚗', topStocks: ['TSLA','NVDA','GOOGL','MBLY','APTV'] },
+    { ticker: 'GLD',  name: 'Gold',               emoji: '🥇', topStocks: ['Physical gold trust'] },
+    { ticker: 'SLV',  name: 'Silver',             emoji: '🥈', topStocks: ['Physical silver trust'] },
+    { ticker: 'URA',  name: 'Uranium',            emoji: '☢️', topStocks: ['CCJ','URNM','NXE','UEC','DNN'] }
+  ],
+  industries: [
+    { ticker: 'KRE',  name: 'Regional Banks',     emoji: '🏛️', topStocks: ['ZION','RF','CMA','CFG','KEY'] },
+    { ticker: 'KIE',  name: 'Insurance',          emoji: '🛡️', topStocks: ['PGR','TRV','MET','PRU','CB'] },
+    { ticker: 'KCE',  name: 'Capital Markets',    emoji: '💼', topStocks: ['GS','MS','SCHW','RJF','BLK'] },
+    { ticker: 'IHI',  name: 'Medical Devices',    emoji: '🩺', topStocks: ['ISRG','MDT','SYK','BSX','BDX'] },
+    { ticker: 'IYR',  name: 'Real Estate (broad)',emoji: '🏘️', topStocks: ['PLD','AMT','EQIX','WELL','PSA'] },
+    { ticker: 'OIH',  name: 'Oil Services',       emoji: '🛢️', topStocks: ['SLB','HAL','BKR','FTI','NOV'] },
+    { ticker: 'XHB',  name: 'Homebuilders',       emoji: '🏗️', topStocks: ['DHI','LEN','PHM','NVR','TOL'] },
+    { ticker: 'ITA',  name: 'Aerospace & Defense',emoji: '🛩️', topStocks: ['BA','RTX','LMT','GE','NOC'] },
+    { ticker: 'MOO',  name: 'Agriculture',        emoji: '🌾', topStocks: ['DE','ADM','CTVA','BG','MOS'] },
+    { ticker: 'KWEB', name: 'China Internet',     emoji: '🇨🇳', topStocks: ['BABA','TCEHY','PDD','JD','BIDU'] },
+    { ticker: 'XRT',  name: 'Retail',             emoji: '🛒', topStocks: ['AMZN','HD','LOW','TGT','COST'] },
+    { ticker: 'IGV',  name: 'Software',           emoji: '💾', topStocks: ['MSFT','ORCL','CRM','ADBE','INTU'] }
+  ]
+};
 
-// Also include broad market for reference
 const REFS = [
   { ticker: 'SPY', name: 'S&P 500' },
   { ticker: 'QQQ', name: 'Nasdaq 100' },
@@ -35,6 +77,9 @@ export default async function handler(req, res) {
   if (!finnhubKey) {
     return res.status(200).json({ sectors: [], references: [], error: 'FINNHUB_API_KEY not set' });
   }
+
+  const cat = (req.query.category || 'us').toLowerCase();
+  const sectorList = CATEGORIES[cat] || CATEGORIES.us;
 
   try {
     const fetchQuote = async (sym) => {
@@ -56,8 +101,7 @@ export default async function handler(req, res) {
       } catch (e) { return null; }
     };
 
-    // Fetch all sectors and references in parallel
-    const sectorPromises = SECTORS.map(async (s) => {
+    const sectorPromises = sectorList.map(async (s) => {
       const quote = await fetchQuote(s.ticker);
       if (!quote) return null;
       return {
@@ -84,6 +128,7 @@ export default async function handler(req, res) {
     const references = refsResult.filter(r => r != null);
 
     return res.status(200).json({
+      category: cat,
       sectors,
       references,
       generated_at: new Date().toISOString()
