@@ -2725,7 +2725,7 @@ function showPage(id){
   if(id==='earnings') setTimeout(()=>initEarningsPage(),50);
   if(id==='ipos') setTimeout(()=>{ if(!_iposCache) loadIPOs(); },50);
   if(id==='movers') setTimeout(()=>{ if(!_moversCache) loadMovers(); },50);
-  if(id==='sectors') setTimeout(()=>{ if(!_sectorsCache) loadSectors(); },50);
+  if(id==='sectors') setTimeout(()=>{ if(!_sectorsCache[_currentSectorCat]) loadSectors(); },50);
   if(id==='gallery') setTimeout(()=>renderGallery(),50);
   else stopGalleryLiveUpdates(); // stop when leaving gallery
   if(id==='agents') setTimeout(()=>initAgentsPage(),50);
@@ -8391,21 +8391,50 @@ function renderNewsList(news, ticker){
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SECTOR HEATMAP — 11 SPDR sectors with live % change
+// SECTOR HEATMAP — 4 categories: US / LATAM / Themes / Industries
 // ═══════════════════════════════════════════════════════════════
-let _sectorsCache = null;
+let _sectorsCache = {};            // cache per category
+let _currentSectorCat = 'us';      // active sub-tab
+
+function switchSectorCategory(cat){
+  if(!['us','latam','themes','industries'].includes(cat)) return;
+  _currentSectorCat = cat;
+  // Update visual state of sub-tabs
+  document.querySelectorAll('.sector-subtab').forEach(b => {
+    b.style.background = 'none';
+    b.style.color = '#888';
+    b.style.borderColor = '#333';
+    b.style.fontWeight = '400';
+  });
+  const active = document.getElementById('sectorTab-' + cat);
+  if(active){
+    active.style.background = '#1a1a1a';
+    active.style.color = '#ff6600';
+    active.style.borderColor = '#ff6600';
+    active.style.fontWeight = '600';
+  }
+  // Use cache if available, else fetch
+  if(_sectorsCache[cat]){
+    renderSectors(_sectorsCache[cat]);
+    const ts = document.getElementById('sectorsTimestamp');
+    if(ts) ts.textContent = 'Cached · click ↻ Refresh for live';
+  } else {
+    loadSectors();
+  }
+}
 
 async function loadSectors(){
+  const cat = _currentSectorCat;
   const el = document.getElementById('sectorsContent');
   const btn = document.getElementById('sectorsRefreshBtn');
   const ts = document.getElementById('sectorsTimestamp');
   if(btn){ btn.textContent = '↻ Loading...'; btn.disabled = true; }
-  el.innerHTML = '<div style="padding:40px;text-align:center;color:#555;font-family:var(--mono);font-size:12px;">Fetching 11 sector ETFs in parallel...</div>';
+  el.innerHTML = `<div style="padding:40px;text-align:center;color:#555;font-family:var(--mono);font-size:12px;">Fetching ${cat.toUpperCase()} ETFs in parallel...</div>`;
 
   try {
-    const r = await fetch('/api/sectors');
+    const r = await fetch('/api/sectors?category=' + encodeURIComponent(cat));
     const d = await r.json();
-    _sectorsCache = d;
+    _sectorsCache[cat] = d;
     renderSectors(d);
     if(ts){
       const now = new Date();
@@ -8555,7 +8584,7 @@ function renderSectors(data){
 
     <!-- SECTOR HEATMAP -->
     <div>
-      <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:12px;letter-spacing:.05em;">// 11 SPDR SECTORS · sorted by % change · click to simulate</div>
+      <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:12px;letter-spacing:.05em;">// ${(data.category||'us').toUpperCase()} · ${sectors.length} ETFS · sorted by % change · click to simulate</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;">
         ${cardsHtml}
       </div>
@@ -9589,9 +9618,18 @@ function margin_color(pct, threshold, COL){
 <div id="page-sectors" class="page" style="padding:0;background:#080808;min-height:100vh;">
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
     <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;">SECTOR HEATMAP</span>
-    <span style="font-family:var(--mono);font-size:10px;color:#333;">11 SPDR SECTORS · LIVE % CHANGE</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;">US · LATAM · THEMES · INDUSTRIES · LIVE</span>
     <span id="sectorsTimestamp" style="font-family:var(--mono);font-size:9px;color:#444;margin-left:auto;"></span>
     <button onclick="loadSectors()" id="sectorsRefreshBtn" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">↻ Refresh</button>
+  </div>
+
+  <!-- Sub-tab navigation for 4 categories -->
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:8px 16px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+    <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.05em;margin-right:4px;">// VIEW:</span>
+    <button onclick="switchSectorCategory('us')" id="sectorTab-us" class="sector-subtab active-sector" style="font-family:var(--mono);font-size:10px;padding:5px 12px;background:#1a1a1a;color:#ff6600;border:1px solid #ff6600;border-radius:3px;cursor:pointer;font-weight:600;">🇺🇸 US SPDR (11)</button>
+    <button onclick="switchSectorCategory('latam')" id="sectorTab-latam" class="sector-subtab" style="font-family:var(--mono);font-size:10px;padding:5px 12px;background:none;color:#888;border:1px solid #333;border-radius:3px;cursor:pointer;">🌎 LATAM (6)</button>
+    <button onclick="switchSectorCategory('themes')" id="sectorTab-themes" class="sector-subtab" style="font-family:var(--mono);font-size:10px;padding:5px 12px;background:none;color:#888;border:1px solid #333;border-radius:3px;cursor:pointer;">💡 THEMES (14)</button>
+    <button onclick="switchSectorCategory('industries')" id="sectorTab-industries" class="sector-subtab" style="font-family:var(--mono);font-size:10px;padding:5px 12px;background:none;color:#888;border:1px solid #333;border-radius:3px;cursor:pointer;">🔧 INDUSTRIES (12)</button>
   </div>
 
   <div id="sectorsContent" style="padding:16px;color:#888;font-family:var(--mono);font-size:11px;">
