@@ -8487,10 +8487,10 @@ function renderSectors(data){
            onmouseout="this.style.borderColor='#1a1a1a';this.style.transform='scale(1)'">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
           <div>
-            <div style="font-size:22px;line-height:1;">${s.emoji||'📊'}</div>
+            <div style="font-size:22px;line-height:1;font-family:'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif;">${s.emoji||'📊'}</div>
             <div style="font-family:var(--mono);font-size:9px;color:#aaa;margin-top:6px;letter-spacing:.05em;">${s.name.toUpperCase()}</div>
           </div>
-          <div style="font-family:var(--mono);font-size:10px;color:#666;font-weight:600;">${s.ticker}</div>
+          <div style="font-family:var(--mono);font-size:11px;color:#fff;font-weight:700;background:rgba(0,0,0,.3);padding:3px 6px;border-radius:2px;letter-spacing:.05em;">${s.ticker}</div>
         </div>
         <div style="font-family:var(--mono);font-size:24px;font-weight:700;color:${txtCol};line-height:1;letter-spacing:-.02em;">
           ${sign}${s.changePct.toFixed(2)}%
@@ -8537,12 +8537,12 @@ function renderSectors(data){
       </div>
       <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:12px;">
         <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.05em;margin-bottom:4px;">BEST</div>
-        <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#2ecc71;">${bestSector.emoji} ${bestSector.ticker}</div>
+        <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#2ecc71;"><span style="font-family:'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif;">${bestSector.emoji}</span> ${bestSector.ticker}</div>
         <div style="font-family:var(--mono);font-size:10px;color:#2ecc71;margin-top:2px;">+${bestSector.changePct.toFixed(2)}%</div>
       </div>
       <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:12px;">
         <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.05em;margin-bottom:4px;">WORST</div>
-        <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#e74c3c;">${worstSector.emoji} ${worstSector.ticker}</div>
+        <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#e74c3c;"><span style="font-family:'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif;">${worstSector.emoji}</span> ${worstSector.ticker}</div>
         <div style="font-family:var(--mono);font-size:10px;color:#e74c3c;margin-top:2px;">${worstSector.changePct.toFixed(2)}%</div>
       </div>
     </div>
