@@ -21,12 +21,12 @@ const CATEGORIES = {
     { ticker: 'XLC', name: 'Communication',        emoji: '📡', topStocks: ['META','GOOGL','NFLX','DIS','VZ'] }
   ],
   latam: [
-    { ticker: 'EWW', name: 'Mexico',           emoji: '🇲🇽', topStocks: ['AMX','FMX','GFNORTEO.MX','WALMEX.MX','CEMEXCPO.MX'] },
-    { ticker: 'EWZ', name: 'Brazil',           emoji: '🇧🇷', topStocks: ['VALE','ITUB','PBR','ABEV','BBAS3.SA'] },
-    { ticker: 'ECH', name: 'Chile',            emoji: '🇨🇱', topStocks: ['BSAC','SQM-B.SN','CHILE.SN','FALABELLA.SN','COPEC.SN'] },
-    { ticker: 'ARGT',name: 'Argentina',        emoji: '🇦🇷', topStocks: ['YPFD.BA','GGAL.BA','PAMP.BA','BMA.BA','CRES.BA'] },
-    { ticker: 'GXG', name: 'Colombia',         emoji: '🇨🇴', topStocks: ['EC','CIB','BVN','AVAL'] },
-    { ticker: 'ILF', name: 'LatAm 40 (broad)', emoji: '🌎', topStocks: ['VALE','ITUB','PBR','AMX','FMX'] }
+    { ticker: 'EWW',  name: 'Mexico',           emoji: '🇲🇽', topStocks: ['AMX','FMX','GFNORTEO.MX','WALMEX.MX','CEMEXCPO.MX'] },
+    { ticker: 'EWZ',  name: 'Brazil',           emoji: '🇧🇷', topStocks: ['VALE','ITUB','PBR','ABEV','BBAS3.SA'] },
+    { ticker: 'ECH',  name: 'Chile',            emoji: '🇨🇱', topStocks: ['BSAC','SQM-B.SN','CHILE.SN','FALABELLA.SN','COPEC.SN'] },
+    { ticker: 'ARGT', name: 'Argentina',        emoji: '🇦🇷', topStocks: ['YPFD.BA','GGAL.BA','PAMP.BA','BMA.BA','CRES.BA'] },
+    { ticker: 'GXG',  name: 'Colombia',         emoji: '🇨🇴', topStocks: ['EC','CIB','BVN','AVAL'], yahooFallback: true, altTickers: ['ICOL','GXG'] },
+    { ticker: 'ILF',  name: 'LatAm 40 (broad)', emoji: '🌎', topStocks: ['VALE','ITUB','PBR','AMX','FMX'] }
   ],
   themes: [
     { ticker: 'SOXX', name: 'Semiconductors',     emoji: '🔬', topStocks: ['NVDA','AVGO','AMD','TSM','QCOM'] },
@@ -82,7 +82,7 @@ export default async function handler(req, res) {
   const sectorList = CATEGORIES[cat] || CATEGORIES.us;
 
   try {
-    const fetchQuote = async (sym) => {
+    const fetchQuoteFinnhub = async (sym) => {
       try {
         const r = await fetch(
           `https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`
@@ -101,20 +101,68 @@ export default async function handler(req, res) {
       } catch (e) { return null; }
     };
 
+    const fetchQuoteYahoo = async (sym) => {
+      try {
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=5d&interval=1d`;
+        const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        if (!r.ok) return null;
+        const d = await r.json();
+        const result = d?.chart?.result?.[0];
+        if (!result || !result.meta) return null;
+        const meta = result.meta;
+        const closes = result.indicators?.quote?.[0]?.close || [];
+        const validCloses = closes.filter(c => c != null && c > 0);
+        if (validCloses.length < 2) return null;
+        const current = meta.regularMarketPrice || validCloses[validCloses.length - 1];
+        const prev = meta.chartPreviousClose || validCloses[validCloses.length - 2];
+        const change = current - prev;
+        const changePct = prev > 0 ? (change / prev) * 100 : 0;
+        return {
+          price: +current.toFixed(2),
+          change: +change.toFixed(2),
+          changePct: +changePct.toFixed(2),
+          high: meta.regularMarketDayHigh || null,
+          low: meta.regularMarketDayLow || null,
+          prevClose: prev
+        };
+      } catch (e) { return null; }
+    };
+
+    // Try Finnhub first, then Yahoo with alt tickers if specified
+    const fetchQuoteResilient = async (sectorDef) => {
+      // Try main ticker on Finnhub
+      let quote = await fetchQuoteFinnhub(sectorDef.ticker);
+      if (quote) return { quote, tickerUsed: sectorDef.ticker };
+
+      // If yahooFallback flagged, try alts on Finnhub then Yahoo
+      if (sectorDef.yahooFallback) {
+        const altTickers = sectorDef.altTickers || [sectorDef.ticker];
+        for (const alt of altTickers) {
+          quote = await fetchQuoteFinnhub(alt);
+          if (quote) return { quote, tickerUsed: alt };
+        }
+        for (const alt of altTickers) {
+          quote = await fetchQuoteYahoo(alt);
+          if (quote) return { quote, tickerUsed: alt };
+        }
+      }
+      return null;
+    };
+
     const sectorPromises = sectorList.map(async (s) => {
-      const quote = await fetchQuote(s.ticker);
-      if (!quote) return null;
+      const result = await fetchQuoteResilient(s);
+      if (!result) return null;
       return {
-        ticker: s.ticker,
+        ticker: result.tickerUsed,
         name: s.name,
         emoji: s.emoji,
         topStocks: s.topStocks,
-        ...quote
+        ...result.quote
       };
     });
 
     const refPromises = REFS.map(async (r) => {
-      const quote = await fetchQuote(r.ticker);
+      const quote = await fetchQuoteFinnhub(r.ticker);
       if (!quote) return null;
       return { ticker: r.ticker, name: r.name, ...quote };
     });
@@ -127,10 +175,18 @@ export default async function handler(req, res) {
     const sectors = sectorsResult.filter(s => s != null);
     const references = refsResult.filter(r => r != null);
 
+    // Track failures so frontend can show "loaded X of Y"
+    const failedSectors = sectorList
+      .filter((s, i) => sectorsResult[i] == null)
+      .map(s => ({ ticker: s.ticker, name: s.name }));
+
     return res.status(200).json({
       category: cat,
       sectors,
       references,
+      total_expected: sectorList.length,
+      total_loaded: sectors.length,
+      failed: failedSectors,
       generated_at: new Date().toISOString()
     });
 
