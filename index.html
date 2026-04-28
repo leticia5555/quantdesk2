@@ -4100,23 +4100,127 @@ function renderPortfolioTable(){
   document.getElementById('ptVaR').textContent=(wAvgVaR*100).toFixed(1)+'%';
 }
 
+// ─── CHOLESKY DECOMPOSITION ──────────────────────────────────────
+// For a positive-definite symmetric matrix M (N×N), find lower triangular L
+// such that L · L^T = M. Used to convert independent Gaussian variables
+// into correlated ones: Z_correlated = L · Z_independent.
+//
+// Algorithm: standard Cholesky-Banachiewicz, in-place.
+// Returns null if matrix is not positive-definite (rare in practice for
+// real correlation matrices; we add a tiny ridge ε·I as backup).
+function choleskyDecompose(M){
+  const N = M.length;
+  const L = Array(N).fill(null).map(() => Array(N).fill(0));
+  for(let i = 0; i < N; i++){
+    for(let j = 0; j <= i; j++){
+      let sum = 0;
+      for(let k = 0; k < j; k++) sum += L[i][k] * L[j][k];
+      if(i === j){
+        const val = M[i][i] - sum;
+        if(val <= 0) return null;  // not positive-definite, signal to retry with regularization
+        L[i][j] = Math.sqrt(val);
+      } else {
+        L[i][j] = (M[i][j] - sum) / L[j][j];
+      }
+    }
+  }
+  return L;
+}
+
+// Apply Cholesky with ridge regularization fallback for ill-conditioned matrices
+function safeCholesky(corrMatrix){
+  let L = choleskyDecompose(corrMatrix);
+  if(L) return L;
+  // Add small ridge ε·I to make positive-definite
+  const N = corrMatrix.length;
+  const eps = 1e-6;
+  const reg = corrMatrix.map((row, i) => row.map((v, j) => i === j ? v + eps : v));
+  L = choleskyDecompose(reg);
+  if(L) return L;
+  // Last resort: identity (zero correlation) — better than crashing
+  console.warn('Cholesky failed even with regularization; falling back to independent draws');
+  const I = Array(N).fill(null).map((_, i) => {
+    const row = Array(N).fill(0);
+    row[i] = 1;
+    return row;
+  });
+  return I;
+}
+
+// Generate N correlated Standard-Normal samples using precomputed L
+function correlatedDraws(L){
+  const N = L.length;
+  const Z = Array(N).fill(0).map(() => randn());  // independent Gaussian
+  const X = Array(N).fill(0);
+  for(let i = 0; i < N; i++){
+    let sum = 0;
+    for(let j = 0; j <= i; j++) sum += L[i][j] * Z[j];
+    X[i] = sum;
+  }
+  return X;
+}
+
 async function runPortfolioSim(){
   if(!positions.length)return;
   const el=document.getElementById('ptResults');
-  el.innerHTML='<div class="loading">running portfolio simulation</div>';
-  setStatus('PORTFOLIO SIM...',true);
+  el.innerHTML='<div class="loading">fetching historical correlations</div>';
+  setStatus('LOADING CORRELATIONS...',true);
   const NSIM=500,horizon=Math.max(...positions.map(p=>p.horizon));
+
+  // ── Step 1: Fetch historical correlation matrix ──
+  const tickers = positions.map(p => p.ticker).join(',');
+  let corrMatrix = null;
+  let cholL = null;
+  let corrInfo = null;
+  try{
+    const r = await fetch('/api/correlations?tickers=' + encodeURIComponent(tickers));
+    const d = await r.json();
+    if(d.corr && d.corr.length === positions.length){
+      corrMatrix = d.corr;
+      corrInfo = { n_days: d.n_days, failed: d.failed || [] };
+      cholL = safeCholesky(corrMatrix);
+    } else {
+      console.warn('Correlation API returned incomplete data, falling back to independence');
+    }
+  } catch(e){
+    console.warn('Correlation fetch failed:', e);
+  }
+
+  el.innerHTML = '<div class="loading">running ' + NSIM + ' correlated portfolio simulations</div>';
+  setStatus('PORTFOLIO SIM...',true);
+
   const portReturns=[];
+  const dt = 1/252;
+
   for(let s=0;s<NSIM;s++){
-    let totalPnl=0;
-    positions.forEach(p=>{
-      const path=genPath(p.S0,p.mu,p.sigma,p.horizon,'gbm');
-      const final=path[path.length-1];
-      const ret=p.dir==='LONG'?(final-p.S0)/p.S0:(p.S0-final)/p.S0;
-      totalPnl+=ret*p.amount;
+    // ── Per simulation: build correlated paths for each asset ──
+    // Initialize each position at S0
+    const currentPrices = positions.map(p => p.S0);
+
+    for(let day = 0; day < horizon; day++){
+      // Generate one correlated draw vector for this day
+      const draws = cholL ? correlatedDraws(cholL) : positions.map(() => randn());
+      // Update each asset's price using GBM with that draw
+      for(let i = 0; i < positions.length; i++){
+        const p = positions[i];
+        if(day >= p.horizon) continue;  // stop updating if asset's horizon shorter
+        const ret = (p.mu - 0.5*p.sigma*p.sigma)*dt + p.sigma*Math.sqrt(dt)*draws[i];
+        currentPrices[i] = currentPrices[i] * Math.exp(ret);
+      }
+    }
+
+    // Compute total P&L for this simulation
+    let totalPnl = 0;
+    positions.forEach((p, i) => {
+      const final = currentPrices[i];
+      const ret = p.dir==='LONG' ? (final - p.S0)/p.S0 : (p.S0 - final)/p.S0;
+      totalPnl += ret * p.amount;
     });
     portReturns.push(totalPnl);
   }
+
+  // Stash correlation info for the UI
+  window._lastCorrInfo = { matrix: corrMatrix, tickers: positions.map(p => p.ticker), info: corrInfo };
   const total=positions.reduce((a,p)=>a+p.amount,0);
   const returns=portReturns.map(pnl=>pnl/total);
   const sorted=[...returns].sort((a,b)=>a-b);
@@ -4141,8 +4245,80 @@ async function runPortfolioSim(){
   let assessment={assessment:'Portfolio simulation complete.',key_risk:'Diversification and correlation risk.'};
   try{assessment=safeJSON(pd.content.map(b=>b.text||'').join(''));}catch(e){}
 
+  // ── Build correlation matrix HTML (heatmap-style) ──
+  let corrMatrixHtml = '';
+  if(window._lastCorrInfo && window._lastCorrInfo.matrix){
+    const M = window._lastCorrInfo.matrix;
+    const tk = window._lastCorrInfo.tickers;
+    const days = window._lastCorrInfo.info?.n_days || 0;
+    // Color scale: -1 (red) to 0 (gray) to +1 (green)
+    const corrColor = (v) => {
+      if(v >= 0.7) return 'rgba(231,76,60,0.7)';   // dangerous concentration
+      if(v >= 0.4) return 'rgba(231,76,60,0.4)';
+      if(v >= 0.2) return 'rgba(231,76,60,0.2)';
+      if(v <= -0.4) return 'rgba(46,204,113,0.5)';  // diversification
+      if(v <= -0.2) return 'rgba(46,204,113,0.25)';
+      return 'rgba(120,120,120,0.15)';
+    };
+    let avgOffDiag = 0, count = 0;
+    for(let i=0;i<M.length;i++) for(let j=0;j<M.length;j++) if(i!==j){ avgOffDiag += M[i][j]; count++; }
+    const avgCorr = count > 0 ? (avgOffDiag/count) : 0;
+    const corrVerdict = avgCorr > 0.6 ? 'HIGH (concentrated risk)' : avgCorr > 0.3 ? 'MODERATE' : avgCorr > 0 ? 'LOW (some diversification)' : 'NEGATIVE (strong diversification)';
+    const corrVerdictColor = avgCorr > 0.6 ? '#e74c3c' : avgCorr > 0.3 ? '#f39c12' : '#2ecc71';
+
+    corrMatrixHtml = `
+      <div class="section-header" style="margin-top:8px;"><span class="section-title">// Correlation matrix · ${days} days of historical returns</span><div class="section-line"></div></div>
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:16px;margin-bottom:16px;align-items:start;">
+        <div style="overflow-x:auto;">
+          <table style="border-collapse:collapse;font-family:var(--mono);font-size:10px;">
+            <thead>
+              <tr>
+                <th style="padding:4px 8px;color:#666;"></th>
+                ${tk.map(t => `<th style="padding:4px 8px;color:#aaa;font-weight:600;">${t}</th>`).join('')}
+              </tr>
+            </thead>
+            <tbody>
+              ${M.map((row, i) => `
+                <tr>
+                  <td style="padding:4px 8px;color:#aaa;font-weight:600;font-family:var(--mono);">${tk[i]}</td>
+                  ${row.map((v, j) => `
+                    <td style="padding:6px 8px;background:${corrColor(v)};color:${Math.abs(v)>0.5?'#fff':'#bbb'};text-align:center;font-weight:${i===j?'700':'400'};">
+                      ${i===j ? '1.00' : (v>=0?'+':'') + v.toFixed(2)}
+                    </td>
+                  `).join('')}
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div style="font-family:var(--mono);font-size:11px;color:#888;line-height:1.7;">
+          <div style="margin-bottom:8px;">
+            <span style="color:#666;">Average pairwise correlation:</span><br>
+            <span style="color:${corrVerdictColor};font-size:18px;font-weight:700;">${(avgCorr>=0?'+':'') + avgCorr.toFixed(3)}</span>
+            <span style="color:${corrVerdictColor};font-size:10px;margin-left:8px;">${corrVerdict}</span>
+          </div>
+          <div style="color:#666;font-size:10px;line-height:1.6;">
+            <span style="background:rgba(231,76,60,0.5);padding:1px 6px;border-radius:2px;">red</span> = correlated (move together)<br>
+            <span style="background:rgba(46,204,113,0.4);padding:1px 6px;border-radius:2px;">green</span> = anti-correlated (hedge)<br>
+            <span style="background:rgba(120,120,120,0.2);padding:1px 6px;border-radius:2px;">gray</span> = uncorrelated
+          </div>
+          <div style="margin-top:10px;padding:8px;background:#0a0a0a;border-radius:3px;font-size:9px;color:#666;">
+            ⓘ Computed from 6 months of daily log-returns via Pearson correlation, then applied to Monte Carlo via Cholesky decomposition. Diversification benefit is captured \u2014 portfolios with correlated assets show higher Var95 than naive independence.
+          </div>
+        </div>
+      </div>
+    `;
+  } else {
+    corrMatrixHtml = `
+      <div style="margin:8px 0 16px;padding:10px 12px;background:#1a1010;border:1px solid #4a2020;border-radius:3px;color:#e74c3c;font-family:var(--mono);font-size:10px;">
+        ⚠️ Could not load historical correlations — falling back to independence assumption (likely <em>understates</em> portfolio risk).
+      </div>
+    `;
+  }
+
   el.innerHTML=`
-    <div class="section-header" style="margin-top:8px;"><span class="section-title">// Portfolio Results · ${NSIM} simulations</span><div class="section-line"></div></div>
+    ${corrMatrixHtml}
+    <div class="section-header" style="margin-top:8px;"><span class="section-title">// Portfolio Results · ${NSIM} correlated simulations</span><div class="section-line"></div></div>
     <div class="stat-grid cols-4" style="margin-bottom:16px;">
       <div class="stat-card"><div class="stat-lbl">Expected return</div><div class="stat-val ${mean>=0?'pos':'neg'}">${fmt(mean)}</div><div class="stat-sub">${fmtD(mean)}</div></div>
       <div class="stat-card"><div class="stat-lbl">Win rate</div><div class="stat-val">${(wins/returns.length*100).toFixed(1)}%</div><div class="stat-sub">of ${NSIM} sims</div></div>
