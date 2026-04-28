@@ -7526,17 +7526,34 @@ function replaySim(idx){
 function trackSavedSim(idx){
   const s = savedSims[idx];
   if(!s) return;
-  // Navigate to SIM and start tracking
+  // Navigate to SIM
   replaySim(idx);
+
   setTimeout(() => {
-    // Fake having run the sim with saved data
-    if(s.paths && s.paths.length) {
-      allPaths = s.paths.map(p=>[...p]);
-      allFinals = s.finals ? [...s.finals] : s.paths.map(p=>p[p.p.length-1]);
-      SP = { S0: s.entryPrice, mu: s.mu||0.15, sigma: s.sigma||0.35, days: s.days, capital: s.capital, dir: s.dir, model: s.model||'gbm' };
-      redrawSim();
-      updateSimStats();
+    // ── Restore SP from saved sim ──
+    SP = { S0: s.entryPrice, mu: s.mu||0.15, sigma: s.sigma||0.35,
+           days: s.days, capital: s.capital, dir: s.dir, model: s.model||'gbm' };
+
+    // ── Restore paths: from saved or regenerate ──
+    if(s.paths && s.paths.length){
+      // Saved in same session — paths still in memory
+      allPaths = s.paths.map(p => [...p]);
+      allFinals = s.finals ? [...s.finals] : s.paths.map(p => p[p.length-1]);
+    } else {
+      // Restored from localStorage (after page reload) — paths were dropped to save space.
+      // Regenerate using same parameters so the visualization shows fan + percentile bands.
+      // 200 paths is enough to show the cone visually without being slow.
+      allPaths = [];
+      allFinals = [];
+      const N_REGEN = 200;
+      for(let i = 0; i < N_REGEN; i++){
+        const p = genPath(SP.S0, SP.mu, SP.sigma, SP.days, SP.model);
+        allPaths.push(p);
+        allFinals.push(p[p.length-1]);
+      }
     }
+    redrawSim();
+    updateSimStats();
     startLiveTrack();
   }, 300);
 }
@@ -7561,12 +7578,24 @@ function startLiveTrack(){
   const ticker = document.getElementById('simTicker').value.trim().toUpperCase();
   if(!ticker){ alert('Enter a ticker first'); return; }
 
+  // ── Find the matching saved sim (if any) so we can link the track ──
+  // We match by ticker + entryPrice + dir, taking the most recent.
+  // If found, we reuse its id as our entryTime fingerprint so subsequent
+  // captures persist back to the correct gallery entry. If not found,
+  // we use a fresh timestamp (track works in-memory only).
+  const matchingSim = savedSims.find(s =>
+    s.ticker === ticker &&
+    Math.abs(s.entryPrice - SP.S0) < 0.01 &&
+    s.dir === SP.dir
+  );
+  const entryTimeFingerprint = matchingSim ? matchingSim.id : Date.now();
+
   // Save track state
   liveTrack = {
     ticker,
     dir: SP.dir,
     entryPrice: SP.S0,
-    entryTime: Date.now(),
+    entryTime: entryTimeFingerprint,
     days: SP.days,
     capital: SP.capital,
     mu: SP.mu,
@@ -7574,7 +7603,12 @@ function startLiveTrack(){
     paths: allPaths.map(p=>[...p]), // snapshot of sim paths
     finals: [...allFinals],
   };
-  liveTrackPoints = [{t: Date.now(), price: SP.S0}];
+  // If reopening an existing track, restore historical points instead of starting fresh
+  if(matchingSim && matchingSim.livePoints && matchingSim.livePoints.length > 0){
+    liveTrackPoints = matchingSim.livePoints.slice();
+  } else {
+    liveTrackPoints = [{t: Date.now(), price: SP.S0}];
+  }
 
   // Show panel
   const panel = document.getElementById('liveTrackPanel');
@@ -7602,6 +7636,25 @@ function startLiveTrack(){
   setStatus('TRACKING LIVE', true);
 }
 
+// ─── PERSISTENCE: keep the live trail across page reloads ─────────────
+// Strategy: identify the matching saved sim by ticker + entryPrice + entryTime
+// (the unique fingerprint), update its livePoints array, and rewrite storage.
+// localStorage size for ~1000 points (each ~30 bytes) = 30KB. Comfortably under quota.
+function persistLiveTrackToStorage(){
+  if(!liveTrack || !liveTrackPoints.length) return;
+  // Find the matching sim by id (we set entryTime=sim.id when starting track)
+  const idx = savedSims.findIndex(s => s.id === liveTrack.entryTime);
+  if(idx === -1) return;  // sim wasn't saved to gallery; nothing to persist
+  // Update in-memory savedSims with the latest trail
+  savedSims[idx].livePoints = liveTrackPoints.slice();  // shallow copy
+  savedSims[idx].isTracking = true;
+  savedSims[idx].trackStartTime = liveTrackPoints[0]?.t || Date.now();
+  savedSims[idx].trackEntryPrice = liveTrack.entryPrice;
+  // Persist (drop heavy snapshot/paths fields — they'll be regenerated on load)
+  const forStorage = savedSims.map(s => ({...s, snapshot:null, paths:null}));
+  try{ localStorage.setItem('qd_gallery', JSON.stringify(forStorage)); }catch(e){}
+}
+
 async function updateLiveTrack(){
   if(!liveTrack) return;
 
@@ -7613,6 +7666,10 @@ async function updateLiveTrack(){
     const currentPrice = r.currentPrice;
     liveTrackPoints.push({t: now, price: currentPrice});
     liveAnimTarget = currentPrice; // update animation target
+
+    // ── Persist to localStorage so the live trail survives page reload ──
+    // We find this sim in savedSims (matched by ticker + entry price + entryTime) and update its livePoints.
+    persistLiveTrackToStorage();
 
     // Calculate P&L
     const pnlPct = liveTrack.dir === 'LONG'
@@ -7998,6 +8055,15 @@ function stopLiveTrack(){
   document.getElementById('liveTrackPanel').style.display = 'none';
   document.getElementById('liveAnalyticsPanel').style.display = 'none';
   document.getElementById('trackBtn').textContent = '📡 Track Live';
+  // Mark as not actively tracking, but keep the historical livePoints for next time
+  if(liveTrack){
+    const idx = savedSims.findIndex(s => s.id === liveTrack.entryTime);
+    if(idx !== -1){
+      savedSims[idx].isTracking = false;
+      const forStorage = savedSims.map(s => ({...s, snapshot:null, paths:null}));
+      try{ localStorage.setItem('qd_gallery', JSON.stringify(forStorage)); }catch(e){}
+    }
+  }
   liveTrack = null;
   liveTrackPoints = [];
   setStatus('READY', false);
