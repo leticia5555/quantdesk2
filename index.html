@@ -491,6 +491,11 @@ td:first-child{color:var(--text);font-weight:500;}
       </div>
       <p id="simThesis"></p>
     </div>
+    <!-- Risk-free rate comparison: institutional honesty about whether trade beats T-bill -->
+    <div id="riskFreeBlock" class="analysis" style="display:none;">
+      <h3 id="riskFreeTitle" style="font-size:11px;font-family:var(--mono);letter-spacing:.05em;">// risk-free hurdle check</h3>
+      <div id="riskFreeContent" style="font-family:var(--mono);font-size:11px;line-height:1.6;"></div>
+    </div>
     <!-- Pre-trade intelligence: only shown when patterns from history match current setup -->
     <div id="preTradeIntelBlock" class="analysis" style="display:none;border-color:rgba(155,89,182,.4);">
       <h3 style="color:#9b59b6;">🧠 // trade intelligence · pattern match</h3>
@@ -3772,6 +3777,8 @@ async function startSim(){
         // ── Multi-factor verdict rubric (institutional-grade scoring) ──
         // Old rubric used only Sharpe → caused NVDA 90d +6.9% Kelly 9% to be WATCH instead of BUY
         // New rubric sums evidence across 7 quant signals + retorno absoluto
+        // 2026-04 update: Added 2 institutional caps to prevent "Sharpe optical illusion"
+        //   where high Sharpe + tiny mean produces fake BUY signal (TSLA case study).
 
         // Compute profit factor and sortino for scoring
         const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? 999 : 0);
@@ -3780,6 +3787,15 @@ async function startSim(){
           ? Math.sqrt(downsideRets.reduce((a,r)=>a+r*r,0) / downsideRets.length)
           : std;
         const sortino = downsideStd > 0 ? (mean/downsideStd) * Math.sqrt(252/SP.days) : 0;
+
+        // ── Annualized return + risk-free comparison ──
+        // Treasury yield serves as the hurdle rate: any trade returning less than
+        // the risk-free rate annualized is failing to compensate the user for taking
+        // equity risk. This is non-negotiable institutionally — even 10/10 Sharpe
+        // doesn't justify accepting equity volatility for sub-T-bill returns.
+        const RISK_FREE_RATE = 0.045;  // ~4.5% T-bill yield, US dollar (Apr 2026)
+        const annualizedReturn = mean * (252 / SP.days);
+        const excessReturn = annualizedReturn - RISK_FREE_RATE;
 
         // Score: 0-7, higher = stronger setup
         let score = 0;
@@ -3805,6 +3821,33 @@ async function startSim(){
         } else {
           computedVerdict = 'WAIT FOR DIP';               // weak signals → wait for better entry
         }
+
+        // ── INSTITUTIONAL CAPS ────────────────────────────────────────
+        // Cap 1: Risk-free rate hurdle.
+        // If annualized return doesn't beat T-bill, this is NOT a buy regardless
+        // of how good the Sharpe looks. High Sharpe with near-zero mean is the
+        // "Sharpe optical illusion" — tiny noise around tiny return.
+        if (excessReturn <= 0 && (computedVerdict === 'BUY' || computedVerdict === 'STRONG ENTRY')) {
+          computedVerdict = 'WATCH';
+        }
+        // Cap 2: Kelly Quarter sizing.
+        // Below 5% Kelly Quarter (≈ 1.25% full Kelly) means the trade doesn't
+        // earn the right to be a real allocation. Sub-institutional sizing.
+        const kellyQuarter = kellyFrac * 0.25;
+        if (kellyQuarter < 0.0125 && (computedVerdict === 'BUY' || computedVerdict === 'STRONG ENTRY')) {
+          computedVerdict = 'WATCH';
+        }
+
+        // Stash for PDF/UI display
+        window._verdictDiagnostics = {
+          score,
+          sharpe: +sharpe.toFixed(2),
+          kellyQuarter: +(kellyQuarter*100).toFixed(2),
+          annualizedReturn: +(annualizedReturn*100).toFixed(2),
+          excessReturn: +(excessReturn*100).toFixed(2),
+          riskFreeRate: +(RISK_FREE_RATE*100).toFixed(2),
+          beatsRiskFree: excessReturn > 0,
+        };
 
         // Override Claude's verdict with the honest one and update display
         lastCd.verdict=computedVerdict;
@@ -3877,6 +3920,49 @@ function showSimAnalysis(cd,ticker,capital,days){
   const vmap={'STRONG ENTRY':'v-strong','WAIT FOR DIP':'v-wait','HIGH RISK':'v-risk','AVOID':'v-avoid'};
   const vb=document.getElementById('simVerdict');
   vb.textContent=cd.verdict||'WATCH';vb.className='verdict '+(vmap[cd.verdict]||'v-wait');
+
+  // ── Risk-free hurdle check display ──
+  // Show whether annualized expected return beats US Treasury yield. This is
+  // institutional honesty — even high Sharpe is meaningless if the trade
+  // doesn't earn more than risk-free.
+  try {
+    const diag = window._verdictDiagnostics;
+    const rfBlock = document.getElementById('riskFreeBlock');
+    const rfContent = document.getElementById('riskFreeContent');
+    if(diag && rfBlock && rfContent){
+      const beats = diag.beatsRiskFree;
+      const arrow = beats ? '↑' : '↓';
+      const verdictColor = beats ? '#00c97d' : '#EF9F27';
+      const excessLabel = beats ? '+' : '';
+      rfBlock.style.display = 'block';
+      rfBlock.style.borderColor = beats ? 'rgba(0,201,125,.3)' : 'rgba(239,159,39,.4)';
+      document.getElementById('riskFreeTitle').style.color = verdictColor;
+      rfContent.innerHTML = `
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:8px;">
+          <div>
+            <div style="color:#666;font-size:9px;letter-spacing:.05em;margin-bottom:3px;">YOUR TRADE (annualized)</div>
+            <div style="color:#aaa;font-size:14px;font-weight:600;">${diag.annualizedReturn >= 0 ? '+':''}${diag.annualizedReturn.toFixed(2)}%</div>
+          </div>
+          <div>
+            <div style="color:#666;font-size:9px;letter-spacing:.05em;margin-bottom:3px;">US TREASURY (T-bill)</div>
+            <div style="color:#aaa;font-size:14px;font-weight:600;">+${diag.riskFreeRate.toFixed(2)}%</div>
+          </div>
+          <div>
+            <div style="color:#666;font-size:9px;letter-spacing:.05em;margin-bottom:3px;">EXCESS RETURN</div>
+            <div style="color:${verdictColor};font-size:14px;font-weight:700;">${arrow} ${excessLabel}${diag.excessReturn.toFixed(2)}%</div>
+          </div>
+        </div>
+        <div style="color:${verdictColor};font-size:10px;line-height:1.5;padding-top:6px;border-top:1px solid rgba(255,255,255,.05);">
+          ${beats
+            ? `✓ Trade earns the equity risk premium (${diag.excessReturn.toFixed(2)}pp above risk-free). Worth taking the volatility.`
+            : `⚠ Trade returns less than a Treasury bond. Equity risk not compensated. Consider waiting for better entry or skipping.`}
+        </div>`;
+    } else if(rfBlock){
+      rfBlock.style.display = 'none';
+    }
+  } catch(e){
+    console.log('[risk-free check] skipped:', e.message);
+  }
 
   // ── Pre-Trade Intelligence: match current setup vs historical patterns ──
   // Only show if user has ≥5 closed trades with patterns detected.
@@ -5787,13 +5873,28 @@ function renderRiskOfRuin(winRate, avgWin, avgLoss, capital){
     <div style="padding:12px 16px;background:var(--bg2);border:1px solid ${ruinColor(ruin50_50)};border-radius:6px;margin-bottom:8px;">
       <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:6px;">// verdict</div>
       <div style="font-family:var(--sans);font-size:13px;color:var(--text2);line-height:1.7;">
-        At a <strong style="color:var(--text)">${(winRate*100).toFixed(0)}% win rate</strong> with 
-        avg win <strong style="color:var(--green)">${(avgWin*100).toFixed(1)}%</strong> and 
-        avg loss <strong style="color:var(--red)">${(avgLoss*100).toFixed(1)}%</strong> — 
-        you have a <strong style="color:${ruinColor(ruin50_50)}">${fmt(ruin50_50)}</strong> chance of 
+        At a <strong style="color:var(--text)">${(winRate*100).toFixed(0)}% win rate</strong> with
+        avg win <strong style="color:var(--green)">${(avgWin*100).toFixed(1)}%</strong> and
+        avg loss <strong style="color:var(--red)">${(avgLoss*100).toFixed(1)}%</strong> —
+        you have a <strong style="color:${ruinColor(ruin50_50)}">${fmt(ruin50_50)}</strong> chance of
         losing half your capital within 50 trades.
         ${safeTrades>0?`Expect significant drawdown after approximately <strong style="color:var(--amber)">${safeTrades} trades</strong>.`:'This setup has strong long-term survival odds.'}
       </div>
+      ${(() => {
+        const diag = window._verdictDiagnostics;
+        if(!diag) return '';
+        const warnings = [];
+        if(!diag.beatsRiskFree){
+          warnings.push(`<strong style="color:var(--amber)">Annualized return ${diag.annualizedReturn.toFixed(1)}% does not beat the ${diag.riskFreeRate.toFixed(1)}% risk-free rate</strong> — you're not being paid for taking equity risk.`);
+        }
+        if(diag.kellyQuarter < 1.25){
+          warnings.push(`<strong style="color:var(--amber)">Kelly Quarter is ${diag.kellyQuarter.toFixed(2)}%</strong> (institutional minimum: 1.25%) — sizing too small to justify the position.`);
+        }
+        if(warnings.length === 0) return '';
+        return `<div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.06);font-family:var(--sans);font-size:12px;color:var(--text2);line-height:1.7;">
+          ${warnings.map(w => `<div style="margin-bottom:4px;">⚠ ${w}</div>`).join('')}
+        </div>`;
+      })()}
     </div>`;
 }
 
