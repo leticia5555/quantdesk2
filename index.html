@@ -491,6 +491,11 @@ td:first-child{color:var(--text);font-weight:500;}
       </div>
       <p id="simThesis"></p>
     </div>
+    <!-- Pre-trade intelligence: only shown when patterns from history match current setup -->
+    <div id="preTradeIntelBlock" class="analysis" style="display:none;border-color:rgba(155,89,182,.4);">
+      <h3 style="color:#9b59b6;">🧠 // trade intelligence · pattern match</h3>
+      <div id="preTradeIntelContent" style="font-family:var(--mono);font-size:11px;line-height:1.6;color:#aaa;"></div>
+    </div>
     <div class="analysis">
       <h3 id="signalsTitle">Key signals</h3>
       <ul class="sig-list" id="simSignals"></ul>
@@ -3872,6 +3877,44 @@ function showSimAnalysis(cd,ticker,capital,days){
   const vmap={'STRONG ENTRY':'v-strong','WAIT FOR DIP':'v-wait','HIGH RISK':'v-risk','AVOID':'v-avoid'};
   const vb=document.getElementById('simVerdict');
   vb.textContent=cd.verdict||'WATCH';vb.className='verdict '+(vmap[cd.verdict]||'v-wait');
+
+  // ── Pre-Trade Intelligence: match current setup vs historical patterns ──
+  // Only show if user has ≥5 closed trades with patterns detected.
+  try{
+    refreshClosedTradeOutcomes();
+    const currentCtx = captureEntryContext(cd, SP);
+    const matched = matchCurrentToPatterns(currentCtx);
+    const block = document.getElementById('preTradeIntelBlock');
+    const content = document.getElementById('preTradeIntelContent');
+    if(matched && (matched.matchingWins.length > 0 || matched.matchingLoses.length > 0)){
+      block.style.display = 'block';
+      let html = `<div style="color:#666;margin-bottom:10px;">Compared against your <span style="color:#9b59b6;">${matched.totalClosed}</span> closed trades:</div>`;
+      if(matched.matchingWins.length > 0){
+        html += `<div style="background:#0d1f12;border:0.5px solid #1d4d2d;border-radius:4px;padding:10px;margin-bottom:8px;">`;
+        html += `<div style="color:#2ecc71;font-size:10px;margin-bottom:6px;letter-spacing:.05em;">⚡ MATCHES YOUR WINNING PATTERN${matched.matchingWins.length > 1 ? 'S' : ''}</div>`;
+        for(const p of matched.matchingWins.slice(0, 2)){
+          html += `<div style="color:#e0e0e0;font-size:11px;margin-bottom:4px;">${p.combo[0]} <span style="color:#666;">+</span> ${p.combo[1]}</div>`;
+          html += `<div style="color:#888;font-size:10px;margin-bottom:8px;">Historically: <span style="color:#2ecc71;">${p.wins} of ${p.sampleSize} wins</span> · avg <span style="color:#2ecc71;">${p.avgReturn>=0?'+':''}${(p.avgReturn*100).toFixed(2)}%</span></div>`;
+        }
+        html += `</div>`;
+      }
+      if(matched.matchingLoses.length > 0){
+        html += `<div style="background:#1f0d0d;border:0.5px solid #4d1d1d;border-radius:4px;padding:10px;">`;
+        html += `<div style="color:#e74c3c;font-size:10px;margin-bottom:6px;letter-spacing:.05em;">⚠️ ALSO MATCHES A LOSING PATTERN — caution</div>`;
+        for(const p of matched.matchingLoses.slice(0, 2)){
+          html += `<div style="color:#e0e0e0;font-size:11px;margin-bottom:4px;">${p.combo[0]} <span style="color:#666;">+</span> ${p.combo[1]}</div>`;
+          html += `<div style="color:#888;font-size:10px;margin-bottom:8px;">Historically: <span style="color:#e74c3c;">${p.wins} of ${p.sampleSize} wins</span> · avg <span style="color:#e74c3c;">${p.avgReturn>=0?'+':''}${(p.avgReturn*100).toFixed(2)}%</span></div>`;
+        }
+        html += `</div>`;
+      }
+      content.innerHTML = html;
+    } else {
+      block.style.display = 'none';
+    }
+  } catch(e){
+    // Silently skip if intel fails — never break the sim display
+    console.log('[intel] skipped:', e.message);
+  }
   const name=cd.longName&&cd.longName!==ticker?cd.longName:'';
   const priceStr=cd.current_price?'$'+Number(cd.current_price).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'';
   const rangeStr=cd.high52w?'52w $'+cd.low52w.toFixed(0)+'-$'+cd.high52w.toFixed(0):'';
@@ -7128,6 +7171,338 @@ function setStatus(txt,live=true){
 // ─── SIMULATION GALLERY ──────────────────────────────────
 let savedSims = JSON.parse(localStorage.getItem('qd_gallery') || '[]');
 
+// ═══════════════════════════════════════════════════════════════
+// TRADE INTELLIGENCE — Pattern learning from trade history
+// ═══════════════════════════════════════════════════════════════
+
+// Compute Wilder's RSI from a price series (standard 14-period).
+// Returns null if not enough data.
+function computeRSI(prices, period){
+  period = period || 14;
+  if(!prices || prices.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for(let i = 1; i <= period; i++){
+    const change = prices[i] - prices[i-1];
+    if(change > 0) gains += change;
+    else losses += Math.abs(change);
+  }
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+  // Wilder smoothing for the rest
+  for(let i = period + 1; i < prices.length; i++){
+    const change = prices[i] - prices[i-1];
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? Math.abs(change) : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  }
+  if(avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
+}
+
+// Snapshot of market conditions at trade entry. Stored with each saved sim
+// so the pattern detector can later analyze which conditions correlate
+// with winning vs losing outcomes.
+function captureEntryContext(cd, sp){
+  const ctx = {
+    capturedAt: Date.now(),
+    // Technical
+    rsi14: null,
+    distFrom52wHigh: null,    // % below the 52w high (negative = at high)
+    distFrom52wLow: null,     // % above the 52w low
+    positionInRange: null,    // 0 (at low) to 1 (at high)
+    distFromSMA50: null,      // % above/below SMA50
+    // Momentum
+    return30d: null,
+    return7d: null,
+    // Earnings
+    daysToEarnings: null,
+    earningsWithinHorizon: null,  // boolean
+    // Verdict
+    verdict: cd.verdict || null,
+    sigma: sp.sigma,
+    mu: sp.mu,
+    // Sim characteristics
+    horizonDays: sp.days,
+    direction: sp.dir,
+  };
+
+  // RSI from recentPrices
+  if(cd.recentPrices && cd.recentPrices.length >= 15){
+    ctx.rsi14 = +(computeRSI(cd.recentPrices, 14) || 0).toFixed(1);
+  }
+
+  // 52w position
+  if(cd.high52w && cd.low52w && cd.current_price && cd.high52w > cd.low52w){
+    ctx.distFrom52wHigh = +(((cd.high52w - cd.current_price) / cd.high52w) * 100).toFixed(2);
+    ctx.distFrom52wLow = +(((cd.current_price - cd.low52w) / cd.low52w) * 100).toFixed(2);
+    ctx.positionInRange = +(((cd.current_price - cd.low52w) / (cd.high52w - cd.low52w))).toFixed(3);
+  }
+
+  // SMA-50 distance (use the last 50 prices if available)
+  if(cd.recentPrices && cd.recentPrices.length >= 30){
+    const slice = cd.recentPrices.slice(-Math.min(50, cd.recentPrices.length));
+    const sma = slice.reduce((a,b)=>a+b, 0) / slice.length;
+    if(cd.current_price && sma > 0){
+      ctx.distFromSMA50 = +((cd.current_price - sma) / sma * 100).toFixed(2);
+    }
+  }
+
+  // 30-day return (if we have ≥ 30 prices)
+  if(cd.recentPrices && cd.recentPrices.length >= 30){
+    const back30 = cd.recentPrices[cd.recentPrices.length - 30];
+    if(back30 > 0){
+      ctx.return30d = +(((cd.current_price - back30) / back30) * 100).toFixed(2);
+    }
+  }
+
+  // 7-day return
+  if(cd.recentPrices && cd.recentPrices.length >= 7){
+    const back7 = cd.recentPrices[cd.recentPrices.length - 7];
+    if(back7 > 0){
+      ctx.return7d = +(((cd.current_price - back7) / back7) * 100).toFixed(2);
+    }
+  }
+
+  // Earnings (from window._lastNews if available)
+  const newsData = window._lastNews;
+  if(newsData && newsData.nextEarnings && newsData.nextEarnings.daysUntil != null){
+    ctx.daysToEarnings = newsData.nextEarnings.daysUntil;
+    ctx.earningsWithinHorizon = newsData.nextEarnings.daysUntil <= sp.days;
+  }
+
+  return ctx;
+}
+
+// Compute trade outcome from livePoints + entry. Used to populate sim.outcome
+// when a trade closes (horizon elapsed). Outcome is what pattern detector
+// correlates with context features.
+function computeOutcome(sim){
+  if(!sim.livePoints || sim.livePoints.length < 2) return null;
+
+  const pts = sim.livePoints;
+  const entryPx = sim.entryPrice;
+  const lastPx = pts[pts.length - 1].price;
+
+  // Final return (signed by direction)
+  const finalRet = sim.dir === 'LONG'
+    ? (lastPx - entryPx) / entryPx
+    : (entryPx - lastPx) / entryPx;
+
+  // Max drawdown during the trade (worst running loss from peak)
+  let runningPL = 0, peakPL = 0, maxDD = 0;
+  for(const pt of pts){
+    const pnl = sim.dir === 'LONG'
+      ? (pt.price - entryPx) / entryPx
+      : (entryPx - pt.price) / entryPx;
+    if(pnl > peakPL) peakPL = pnl;
+    const dd = peakPL - pnl;
+    if(dd > maxDD) maxDD = dd;
+  }
+
+  // Time to peak gain
+  let peakIdx = 0, peakVal = -Infinity;
+  pts.forEach((pt, i) => {
+    const pnl = sim.dir === 'LONG'
+      ? (pt.price - entryPx) / entryPx
+      : (entryPx - pt.price) / entryPx;
+    if(pnl > peakVal){ peakVal = pnl; peakIdx = i; }
+  });
+  const timeToPeakDays = (pts[peakIdx].t - pts[0].t) / (1000 * 60 * 60 * 24);
+
+  return {
+    finalReturn: +finalRet.toFixed(4),
+    maxDrawdown: +maxDD.toFixed(4),
+    peakReturn: +peakVal.toFixed(4),
+    timeToPeakDays: +timeToPeakDays.toFixed(2),
+    isWin: finalRet > 0,
+    closedAt: pts[pts.length - 1].t,
+    nDataPoints: pts.length,
+    // Compare with sim prediction for accuracy
+    predictedMean: sim.mean || 0,
+    deltaVsPredicted: +(finalRet - (sim.mean || 0)).toFixed(4),
+    // Within sim distribution? (was the actual within p10-p90?)
+    withinSimRange: sim.p10 != null && sim.p90 != null
+      ? (finalRet >= sim.p10 && finalRet <= sim.p90)
+      : null,
+  };
+}
+
+// Update outcomes for all sims whose horizon has elapsed and have live data
+function refreshClosedTradeOutcomes(){
+  const now = Date.now();
+  let updated = false;
+  savedSims.forEach(sim => {
+    const horizonMs = (sim.days || 0) * 24 * 60 * 60 * 1000;
+    const elapsed = sim.id ? (now - sim.id) : 0;
+    if(elapsed >= horizonMs && sim.livePoints && sim.livePoints.length > 1){
+      // This trade is closed (horizon passed). Compute outcome if missing or stale.
+      const outcome = computeOutcome(sim);
+      if(outcome && (!sim.outcome || sim.outcome.nDataPoints !== outcome.nDataPoints)){
+        sim.outcome = outcome;
+        updated = true;
+      }
+    }
+  });
+  if(updated){
+    const forStorage = savedSims.map(s => ({...s, snapshot:null, paths:null}));
+    try{ localStorage.setItem('qd_gallery', JSON.stringify(forStorage)); }catch(e){}
+  }
+}
+
+// ─── PATTERN DETECTOR ────────────────────────────────────────────
+// Analyzes closed trades to find combinations of features that predict
+// winning vs losing outcomes. Uses simple bucketing — no ML required.
+//
+// We bucket each context feature into discrete bins (e.g. RSI < 40, 40-60, 60+)
+// and report win rate + average return for each bucket. The strongest patterns
+// are those with high sample size AND strong signal (deviation from baseline).
+function detectPatterns(){
+  const closed = savedSims.filter(s => s.outcome && s.context);
+  if(closed.length < 3) {
+    return { closed: closed.length, patterns: [], factorTable: [], winningPatterns: [], losingPatterns: [] };
+  }
+
+  // Baseline win rate across all closed trades
+  const baselineWinRate = closed.filter(s => s.outcome.isWin).length / closed.length;
+  const baselineAvgReturn = closed.reduce((a,s) => a + s.outcome.finalReturn, 0) / closed.length;
+
+  // ── Bucketing definitions ──
+  // Each is: { name, get(ctx) -> bucket label, or null if N/A }
+  const features = [
+    { name: 'RSI < 40 (oversold)',     get: c => c.rsi14 != null && c.rsi14 < 40 },
+    { name: 'RSI > 70 (overbought)',   get: c => c.rsi14 != null && c.rsi14 > 70 },
+    { name: 'RSI 40–60 (neutral)',     get: c => c.rsi14 != null && c.rsi14 >= 40 && c.rsi14 <= 60 },
+    { name: 'Within 5% of 52w high',   get: c => c.distFrom52wHigh != null && c.distFrom52wHigh < 5 },
+    { name: 'Within 10% of 52w low',   get: c => c.distFrom52wLow != null && c.distFrom52wLow < 10 },
+    { name: '30d return > +10%',       get: c => c.return30d != null && c.return30d > 10 },
+    { name: '30d return < -10%',       get: c => c.return30d != null && c.return30d < -10 },
+    { name: 'Above SMA-50',            get: c => c.distFromSMA50 != null && c.distFromSMA50 > 0 },
+    { name: 'Below SMA-50',            get: c => c.distFromSMA50 != null && c.distFromSMA50 < 0 },
+    { name: 'Earnings within horizon', get: c => c.earningsWithinHorizon === true },
+    { name: 'Earnings > 30d away',     get: c => c.daysToEarnings != null && c.daysToEarnings > 30 },
+    { name: 'Verdict was BUY',         get: c => c.verdict === 'BUY' || c.verdict === 'STRONG ENTRY' },
+    { name: 'Verdict was WAIT',        get: c => c.verdict === 'WAIT FOR DIP' || c.verdict === 'WATCH' },
+  ];
+
+  // Compute factor table: for each feature, what's the win rate and avg return
+  // when that feature is true?
+  const factorTable = [];
+  for(const f of features){
+    const matching = closed.filter(s => f.get(s.context));
+    if(matching.length === 0) continue;
+    const wins = matching.filter(s => s.outcome.isWin).length;
+    const winRate = wins / matching.length;
+    const avgReturn = matching.reduce((a,s) => a + s.outcome.finalReturn, 0) / matching.length;
+    factorTable.push({
+      feature: f.name,
+      sampleSize: matching.length,
+      winRate: +winRate.toFixed(3),
+      avgReturn: +avgReturn.toFixed(4),
+      lift: +(winRate - baselineWinRate).toFixed(3),  // how much above baseline
+    });
+  }
+  // Sort by avg return descending so winners are first
+  factorTable.sort((a,b) => b.avgReturn - a.avgReturn);
+
+  // ── Find combination patterns (pairs of features) ──
+  // Pairs that have ≥3 samples AND ≥70% win rate are "winning patterns"
+  // Pairs with ≤30% win rate are "losing patterns"
+  const winningPatterns = [];
+  const losingPatterns = [];
+  for(let i = 0; i < features.length; i++){
+    for(let j = i+1; j < features.length; j++){
+      const f1 = features[i];
+      const f2 = features[j];
+      // Skip mutually exclusive pairs (e.g. RSI<40 AND RSI>70)
+      const exclusivePairs = [
+        ['RSI < 40 (oversold)', 'RSI > 70 (overbought)'],
+        ['RSI < 40 (oversold)', 'RSI 40–60 (neutral)'],
+        ['RSI > 70 (overbought)', 'RSI 40–60 (neutral)'],
+        ['Within 5% of 52w high', 'Within 10% of 52w low'],
+        ['Above SMA-50', 'Below SMA-50'],
+        ['Earnings within horizon', 'Earnings > 30d away'],
+        ['Verdict was BUY', 'Verdict was WAIT'],
+        ['30d return > +10%', '30d return < -10%'],
+      ];
+      const isExclusive = exclusivePairs.some(p =>
+        (p[0] === f1.name && p[1] === f2.name) || (p[0] === f2.name && p[1] === f1.name)
+      );
+      if(isExclusive) continue;
+
+      const matching = closed.filter(s => f1.get(s.context) && f2.get(s.context));
+      if(matching.length < 3) continue;
+
+      const wins = matching.filter(s => s.outcome.isWin).length;
+      const winRate = wins / matching.length;
+      const avgReturn = matching.reduce((a,s) => a + s.outcome.finalReturn, 0) / matching.length;
+
+      const pattern = {
+        combo: [f1.name, f2.name],
+        sampleSize: matching.length,
+        winRate: +winRate.toFixed(3),
+        avgReturn: +avgReturn.toFixed(4),
+        wins,
+        losses: matching.length - wins,
+      };
+
+      if(winRate >= 0.70) winningPatterns.push(pattern);
+      else if(winRate <= 0.30) losingPatterns.push(pattern);
+    }
+  }
+
+  // Sort winning by avgReturn desc, losing by avgReturn asc (worst first)
+  winningPatterns.sort((a,b) => b.avgReturn - a.avgReturn);
+  losingPatterns.sort((a,b) => a.avgReturn - b.avgReturn);
+
+  return {
+    closed: closed.length,
+    baselineWinRate: +baselineWinRate.toFixed(3),
+    baselineAvgReturn: +baselineAvgReturn.toFixed(4),
+    factorTable,
+    winningPatterns: winningPatterns.slice(0, 5),  // top 5
+    losingPatterns: losingPatterns.slice(0, 5),
+  };
+}
+
+// ─── PRE-TRADE PATTERN MATCHER ───────────────────────────────────
+// Given a current context (entering a new sim), match against known patterns
+// and return alerts.
+function matchCurrentToPatterns(currentCtx){
+  const result = detectPatterns();
+  if(result.closed < 5) return null;  // not enough history
+
+  // Re-create the feature get functions (mirror of detectPatterns)
+  const featureGet = {
+    'RSI < 40 (oversold)':     c => c.rsi14 != null && c.rsi14 < 40,
+    'RSI > 70 (overbought)':   c => c.rsi14 != null && c.rsi14 > 70,
+    'RSI 40–60 (neutral)':     c => c.rsi14 != null && c.rsi14 >= 40 && c.rsi14 <= 60,
+    'Within 5% of 52w high':   c => c.distFrom52wHigh != null && c.distFrom52wHigh < 5,
+    'Within 10% of 52w low':   c => c.distFrom52wLow != null && c.distFrom52wLow < 10,
+    '30d return > +10%':       c => c.return30d != null && c.return30d > 10,
+    '30d return < -10%':       c => c.return30d != null && c.return30d < -10,
+    'Above SMA-50':            c => c.distFromSMA50 != null && c.distFromSMA50 > 0,
+    'Below SMA-50':            c => c.distFromSMA50 != null && c.distFromSMA50 < 0,
+    'Earnings within horizon': c => c.earningsWithinHorizon === true,
+    'Earnings > 30d away':     c => c.daysToEarnings != null && c.daysToEarnings > 30,
+    'Verdict was BUY':         c => c.verdict === 'BUY' || c.verdict === 'STRONG ENTRY',
+    'Verdict was WAIT':        c => c.verdict === 'WAIT FOR DIP' || c.verdict === 'WATCH',
+  };
+
+  // For each winning pattern, check if current matches
+  const matchingWins = result.winningPatterns.filter(p =>
+    featureGet[p.combo[0]] && featureGet[p.combo[1]] &&
+    featureGet[p.combo[0]](currentCtx) && featureGet[p.combo[1]](currentCtx)
+  );
+  const matchingLoses = result.losingPatterns.filter(p =>
+    featureGet[p.combo[0]] && featureGet[p.combo[1]] &&
+    featureGet[p.combo[0]](currentCtx) && featureGet[p.combo[1]](currentCtx)
+  );
+
+  return { matchingWins, matchingLoses, totalClosed: result.closed };
+}
+
 function saveSim(){
   if(!allPaths.length || !SP.S0){
     alert('Run a simulation first');
@@ -7151,6 +7526,11 @@ function saveSim(){
   const std = Math.sqrt(returns.reduce((a,r)=>a+(r-mean)**2,0)/returns.length);
   const sharpe = std>0?(mean/std)*Math.sqrt(252/SP.days):0;
 
+  // ── TRADE INTELLIGENCE: capture context features at entry ──
+  // These features are what the pattern detector will analyze later to find
+  // what conditions correlate with winning vs losing trades.
+  const context = captureEntryContext(lastCd, SP);
+
   const sim = {
     id: Date.now(),
     ticker,
@@ -7173,15 +7553,16 @@ function saveSim(){
     snapshot,
     savedAt: new Date().toISOString(),
     dateLabel: new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}),
-    // Save compressed paths (every 5th point to save space)
     paths: allPaths.slice(0,50).map(p=>p.filter((_,i)=>i%2===0)),
     finals: allFinals.slice(0,100),
-    recentPrices: lastCdPrices, // real price history at save time
-    // Live tracking data
+    recentPrices: lastCdPrices,
     livePoints: [],
     isTracking: false,
     trackStartTime: null,
     trackEntryPrice: null,
+    // ── NEW: trade intelligence context ──
+    context,             // entry conditions snapshot
+    outcome: null,       // populated when trade closes
   };
 
   savedSims.unshift(sim);
@@ -7283,6 +7664,107 @@ function renderGallery(){
       });
       const avgDelta = rows.length > 0 ? totalDelta / rows.length : 0;
       const accuracyPct = rows.length > 0 ? (beat / rows.length * 100) : 0;
+
+      // ── Refresh outcomes for closed trades, then detect patterns ──
+      refreshClosedTradeOutcomes();
+      const intel = detectPatterns();
+      const hasEnoughForPatterns = intel.closed >= 3;
+      const hasEnoughForCombos = intel.closed >= 5;
+
+      // Build patterns HTML
+      let patternsHtml = '';
+      if(hasEnoughForPatterns){
+        // Winning patterns block
+        const winsHtml = intel.winningPatterns.length > 0
+          ? intel.winningPatterns.slice(0, 3).map(p => `
+              <div style="background:#0d1f12;border:0.5px solid #1d4d2d;border-radius:4px;padding:12px;margin-bottom:8px;">
+                <div style="font-family:var(--mono);font-size:10px;color:#2ecc71;margin-bottom:6px;letter-spacing:.05em;">
+                  WINNING PATTERN · ${(p.winRate*100).toFixed(0)}% WIN RATE
+                </div>
+                <div style="font-family:var(--mono);font-size:12px;color:#e0e0e0;line-height:1.5;margin-bottom:8px;">
+                  ${p.combo[0]} <span style="color:#666;">+</span> ${p.combo[1]}
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-family:var(--mono);font-size:10px;">
+                  <div><span style="color:#666;">Sample:</span> <span style="color:#2ecc71;">${p.wins} of ${p.sampleSize} trades</span></div>
+                  <div><span style="color:#666;">Avg gain:</span> <span style="color:#2ecc71;">${p.avgReturn>=0?'+':''}${(p.avgReturn*100).toFixed(2)}%</span></div>
+                </div>
+              </div>`).join('')
+          : `<div style="font-family:var(--mono);font-size:10px;color:#444;padding:14px;text-align:center;font-style:italic;">No winning patterns found yet (need ≥5 closed trades with ≥70% win rate combo)</div>`;
+
+        const losesHtml = intel.losingPatterns.length > 0
+          ? intel.losingPatterns.slice(0, 3).map(p => `
+              <div style="background:#1f0d0d;border:0.5px solid #4d1d1d;border-radius:4px;padding:12px;margin-bottom:8px;">
+                <div style="font-family:var(--mono);font-size:10px;color:#e74c3c;margin-bottom:6px;letter-spacing:.05em;">
+                  LOSING PATTERN · ${(p.winRate*100).toFixed(0)}% WIN RATE
+                </div>
+                <div style="font-family:var(--mono);font-size:12px;color:#e0e0e0;line-height:1.5;margin-bottom:8px;">
+                  ${p.combo[0]} <span style="color:#666;">+</span> ${p.combo[1]}
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-family:var(--mono);font-size:10px;">
+                  <div><span style="color:#666;">Sample:</span> <span style="color:#e74c3c;">${p.wins} of ${p.sampleSize} trades</span></div>
+                  <div><span style="color:#666;">Avg:</span> <span style="color:#e74c3c;">${p.avgReturn>=0?'+':''}${(p.avgReturn*100).toFixed(2)}%</span></div>
+                </div>
+              </div>`).join('')
+          : `<div style="font-family:var(--mono);font-size:10px;color:#444;padding:14px;text-align:center;font-style:italic;">No losing patterns found yet (good news!)</div>`;
+
+        // Factor performance table
+        const top10Factors = intel.factorTable.slice(0, 10);
+        const factorRowsHtml = top10Factors.map(f => `
+          <tr>
+            <td style="padding:6px 8px;color:#aaa;font-family:var(--mono);font-size:11px;">${f.feature}</td>
+            <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px;color:${f.avgReturn>=0?'#2ecc71':'#e74c3c'};font-weight:500;">${f.avgReturn>=0?'+':''}${(f.avgReturn*100).toFixed(2)}%</td>
+            <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px;color:${f.winRate>=0.5?'#2ecc71':'#e74c3c'};">${(f.winRate*100).toFixed(0)}%</td>
+            <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px;color:#888;">${f.sampleSize}</td>
+          </tr>`).join('');
+
+        patternsHtml = `
+          <div style="margin-top:18px;">
+            <div style="display:grid;grid-template-columns:${hasEnoughForCombos ? '1fr 1fr' : '1fr'};gap:12px;margin-bottom:14px;">
+              <div>
+                <div style="font-family:var(--mono);font-size:10px;color:#2ecc71;margin-bottom:8px;letter-spacing:.05em;">// WHAT WORKS FOR YOU</div>
+                ${hasEnoughForCombos ? winsHtml : `<div style="font-family:var(--mono);font-size:10px;color:#666;padding:14px;text-align:center;background:#0a0a0a;border:0.5px solid #1a1a1a;border-radius:4px;">Need ≥5 closed trades to detect patterns. You have ${intel.closed}.</div>`}
+              </div>
+              ${hasEnoughForCombos ? `
+                <div>
+                  <div style="font-family:var(--mono);font-size:10px;color:#e74c3c;margin-bottom:8px;letter-spacing:.05em;">// WHAT HURTS YOU</div>
+                  ${losesHtml}
+                </div>` : ''}
+            </div>
+
+            <div style="margin-top:14px;">
+              <div style="font-family:var(--mono);font-size:10px;color:#888;margin-bottom:8px;letter-spacing:.05em;">// FACTOR PERFORMANCE · what conditions correlate with returns</div>
+              <div style="background:#0d0d0d;border:0.5px solid #1a1a1a;border-radius:4px;overflow:hidden;">
+                <table style="width:100%;border-collapse:collapse;">
+                  <thead>
+                    <tr style="background:#1a1a1a;">
+                      <th style="padding:8px;text-align:left;font-family:var(--mono);font-size:9px;color:#666;font-weight:500;letter-spacing:.05em;">CONDITION AT ENTRY</th>
+                      <th style="padding:8px;text-align:right;font-family:var(--mono);font-size:9px;color:#666;font-weight:500;letter-spacing:.05em;">AVG RETURN</th>
+                      <th style="padding:8px;text-align:right;font-family:var(--mono);font-size:9px;color:#666;font-weight:500;letter-spacing:.05em;">WIN RATE</th>
+                      <th style="padding:8px;text-align:right;font-family:var(--mono);font-size:9px;color:#666;font-weight:500;letter-spacing:.05em;">N</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${factorRowsHtml || '<tr><td colspan="4" style="padding:14px;text-align:center;color:#444;font-family:var(--mono);font-size:10px;">No factor data yet</td></tr>'}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div style="margin-top:12px;padding:10px 12px;background:#0a0a0a;border:0.5px solid #1a1a1a;border-radius:4px;font-family:var(--mono);font-size:9px;color:#666;line-height:1.5;">
+              ⓘ Patterns are detected from your closed trades' entry context (RSI, position vs 52w, momentum, earnings) and outcomes. The more trades you close, the smarter this gets. Baseline win rate across all your trades: <span style="color:#888;">${(intel.baselineWinRate*100).toFixed(0)}%</span>
+            </div>
+          </div>
+        `;
+      } else {
+        patternsHtml = `
+          <div style="margin-top:18px;padding:16px;background:#0a0a0a;border:0.5px dashed #1a1a1a;border-radius:6px;text-align:center;">
+            <div style="font-family:var(--mono);font-size:11px;color:#666;line-height:1.6;">
+              🧠 <span style="color:#888;">Trade Intelligence will appear here</span><br/>
+              <span style="color:#444;font-size:9px;">Need ≥3 closed trades. Currently: ${intel.closed} closed.</span>
+            </div>
+          </div>`;
+      }
+
       summary.style.display = 'block';
       summary.innerHTML = `
         <div style="padding:16px;background:#0a0a0a;border-bottom:1px solid #1a1a1a;">
@@ -7308,6 +7790,7 @@ function renderGallery(){
               accuracyPct >= 40 ? '⚖️ Moderate accuracy — typical for honest Monte Carlo (real markets have surprises).' :
               '⚠️ Low accuracy lately — review whether market regime has shifted (volatility regime, news shocks).'}
           </div>
+          ${patternsHtml}
         </div>`;
     }
   } else if(summary){
