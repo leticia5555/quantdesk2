@@ -8675,7 +8675,16 @@ async function loadSectors(){
 
   try {
     const r = await fetch('/api/sectors?category=' + encodeURIComponent(cat));
-    const d = await r.json();
+    // Try to parse JSON; if it returns HTML (Vercel error page), handle gracefully
+    let d;
+    const text = await r.text();
+    try {
+      d = JSON.parse(text);
+    } catch (parseErr) {
+      // The endpoint returned HTML instead of JSON — likely Vercel function crashed.
+      // Show a clear, user-friendly message instead of the raw parse error.
+      throw new Error('API returned ' + r.status + ' — server function crashed. Wait 30s and refresh.');
+    }
     _sectorsCache[cat] = d;
     renderSectors(d);
     if(ts){
