@@ -423,7 +423,22 @@ td:first-child{color:var(--text);font-weight:500;}
     </div>
   </div>
   <div id="liveTrackStatus" style="padding:6px 16px;font-family:var(--mono);font-size:11px;color:#555;background:#080808;border-bottom:1px solid #1a1a1a;"></div>
-  
+
+  <!-- LIVE ACTION RECOMMENDATION PANEL -->
+  <div id="liveActionPanel" style="display:none;background:#080808;border-bottom:1px solid #1a1a1a;padding:14px 16px;">
+    <div style="display:grid;grid-template-columns:1fr 2fr;gap:18px;align-items:center;">
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.05em;margin-bottom:4px;">QUALITY OF ENTRY</div>
+        <div id="liveQualityBadge" style="font-family:var(--mono);font-size:18px;font-weight:700;letter-spacing:.02em;"></div>
+        <div id="liveQualityDetail" style="font-family:var(--mono);font-size:10px;color:#888;margin-top:3px;"></div>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.05em;margin-bottom:4px;">SUGGESTED ACTION</div>
+        <div id="liveActionBadge" style="font-family:var(--mono);font-size:14px;font-weight:600;line-height:1.4;"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- LIVE ANALYTICS PANEL -->
   <div id="liveAnalyticsPanel" style="display:none;background:#080808;border-top:1px solid #1a1a1a;">
     <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:0;border-bottom:1px solid #111;">
@@ -7191,12 +7206,116 @@ function clearGallery(){
   renderGallery();
 }
 
+// ═══════════════════════════════════════════════════════════════
+// GALLERY VIEW MODES — All / Tracking / Completed (Track Record)
+// ═══════════════════════════════════════════════════════════════
+let _currentGalleryView = 'all';
+
+function switchGalleryView(view){
+  if(!['all','tracking','completed'].includes(view)) return;
+  _currentGalleryView = view;
+  document.querySelectorAll('.gallery-subtab').forEach(b => {
+    b.style.background = 'none';
+    b.style.color = '#888';
+    b.style.borderColor = '#333';
+    b.style.fontWeight = '400';
+  });
+  const active = document.getElementById('galleryTab-' + view);
+  if(active){
+    active.style.background = '#1a1a1a';
+    active.style.color = '#9b59b6';
+    active.style.borderColor = '#9b59b6';
+    active.style.fontWeight = '600';
+  }
+  renderGallery();
+}
+
 function renderGallery(){
   const el = document.getElementById('galleryGrid');
+  const summary = document.getElementById('trackRecordSummary');
   if(!el) return;
 
   if(!savedSims.length){
     el.innerHTML = '<div style="color:#333;font-family:var(--mono);font-size:12px;text-align:center;padding:60px;grid-column:1/-1;">No saved simulations yet — run a sim and click 💾 Save Sim</div>';
+    if(summary) summary.style.display = 'none';
+    return;
+  }
+
+  // Filter by view
+  let sims = savedSims;
+  const view = _currentGalleryView || 'all';
+  if(view === 'tracking'){
+    sims = savedSims.filter(s => s.livePoints && s.livePoints.length > 1 && (s.isTracking || s.livePoints.length > 0));
+  } else if(view === 'completed'){
+    // Completed = trade horizon has elapsed (or live tracking captured enough data)
+    const now = Date.now();
+    sims = savedSims.filter(s => {
+      const horizonMs = (s.days || 0) * 24 * 60 * 60 * 1000;
+      const elapsed = s.id ? (now - s.id) : 0;
+      return elapsed >= horizonMs && s.livePoints && s.livePoints.length > 1;
+    });
+  }
+
+  // ─── TRACK RECORD SUMMARY (only on completed view) ───
+  if(view === 'completed' && summary){
+    if(sims.length === 0){
+      summary.style.display = 'block';
+      summary.innerHTML = `
+        <div style="padding:24px 16px;text-align:center;background:#0a0a0a;border-bottom:1px solid #1a1a1a;">
+          <div style="font-family:var(--mono);font-size:11px;color:#666;line-height:1.6;">
+            No completed trades yet.<br/>
+            <span style="color:#444;font-size:9px;">Trades show here after the simulation horizon (e.g. 30 days) has elapsed and you've been live-tracking.</span>
+          </div>
+        </div>`;
+    } else {
+      // Calculate accuracy stats: predicted vs actual for each completed sim
+      let beat = 0, miss = 0, totalDelta = 0;
+      const rows = sims.map(s => {
+        const lastLive = s.livePoints[s.livePoints.length - 1];
+        const actualPct = s.dir === 'LONG'
+          ? (lastLive.price - s.entryPrice) / s.entryPrice
+          : (s.entryPrice - lastLive.price) / s.entryPrice;
+        const predictedPct = s.mean || 0;
+        const delta = actualPct - predictedPct;
+        totalDelta += delta;
+        if(delta >= 0) beat++; else miss++;
+        return { sim: s, actualPct, predictedPct, delta };
+      });
+      const avgDelta = rows.length > 0 ? totalDelta / rows.length : 0;
+      const accuracyPct = rows.length > 0 ? (beat / rows.length * 100) : 0;
+      summary.style.display = 'block';
+      summary.innerHTML = `
+        <div style="padding:16px;background:#0a0a0a;border-bottom:1px solid #1a1a1a;">
+          <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.05em;margin-bottom:10px;">// TRACK RECORD · LIFETIME ACCURACY</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:14px;">
+            <div style="background:#0d0d0d;border:1px solid #1a1a1a;border-radius:4px;padding:12px;">
+              <div style="font-family:var(--mono);font-size:9px;color:#666;margin-bottom:4px;">COMPLETED TRADES</div>
+              <div style="font-family:var(--mono);font-size:22px;font-weight:700;color:#9b59b6;">${rows.length}</div>
+            </div>
+            <div style="background:#0d0d0d;border:1px solid #1a1a1a;border-radius:4px;padding:12px;">
+              <div style="font-family:var(--mono);font-size:9px;color:#666;margin-bottom:4px;">SIM ACCURACY</div>
+              <div style="font-family:var(--mono);font-size:22px;font-weight:700;color:${accuracyPct >= 50 ? '#2ecc71':'#e74c3c'};">${accuracyPct.toFixed(0)}%</div>
+              <div style="font-family:var(--mono);font-size:9px;color:#888;margin-top:2px;">${beat} beat · ${miss} missed</div>
+            </div>
+            <div style="background:#0d0d0d;border:1px solid #1a1a1a;border-radius:4px;padding:12px;">
+              <div style="font-family:var(--mono);font-size:9px;color:#666;margin-bottom:4px;">AVG DELTA (actual − predicted)</div>
+              <div style="font-family:var(--mono);font-size:22px;font-weight:700;color:${avgDelta >= 0 ? '#2ecc71':'#e74c3c'};">${avgDelta >= 0 ? '+':''}${(avgDelta*100).toFixed(2)}pp</div>
+              <div style="font-family:var(--mono);font-size:9px;color:#888;margin-top:2px;">positive = sim conservative</div>
+            </div>
+          </div>
+          <div style="font-family:var(--mono);font-size:10px;color:#666;line-height:1.5;padding-top:6px;border-top:1px solid #1a1a1a;">
+            ${accuracyPct >= 60 ? '✅ Strong predictive accuracy. Sim is reliable for decision-making.' :
+              accuracyPct >= 40 ? '⚖️ Moderate accuracy — typical for honest Monte Carlo (real markets have surprises).' :
+              '⚠️ Low accuracy lately — review whether market regime has shifted (volatility regime, news shocks).'}
+          </div>
+        </div>`;
+    }
+  } else if(summary){
+    summary.style.display = 'none';
+  }
+
+  if(sims.length === 0){
+    el.innerHTML = `<div style="color:#444;font-family:var(--mono);font-size:11px;text-align:center;padding:40px;grid-column:1/-1;">No simulations match this view (${view})</div>`;
     return;
   }
 
@@ -7204,7 +7323,9 @@ function renderGallery(){
   const fmt = v => (v>=0?'+':'')+(v*100).toFixed(1)+'%';
   const fmtD = (v,cap) => (v>=0?'+$':'-$')+Math.abs(Math.round(v*cap)).toLocaleString();
 
-  el.innerHTML = savedSims.map((s,i) => {
+  el.innerHTML = sims.map((s,i) => {
+    // Find the actual index in savedSims for action handlers
+    const realIdx = savedSims.indexOf(s);
     const vc = vcolors[s.verdict] || '#888';
     const retColor = s.mean>=0?'#00c97d':'#E24B4A';
 
@@ -7216,8 +7337,33 @@ function renderGallery(){
     const lastLivePrice = hasLive ? s.livePoints[s.livePoints.length-1].price : null;
     const livePnl = lastLivePrice ? (s.dir==='LONG'?(lastLivePrice-s.entryPrice)/s.entryPrice:(s.entryPrice-lastLivePrice)/s.entryPrice) : null;
 
+    // For completed view: compute predicted vs actual delta
+    let trackBadge = '';
+    if(view === 'completed' && hasLive){
+      const actualPct = livePnl;
+      const predictedPct = s.mean || 0;
+      const delta = actualPct - predictedPct;
+      const deltaColor = delta >= 0 ? '#2ecc71' : '#e74c3c';
+      const deltaIcon = delta >= 0 ? '✅' : '❌';
+      trackBadge = `
+        <div style="padding:10px 14px;background:#0a0a0a;border-bottom:1px solid #1a1a1a;font-family:var(--mono);font-size:10px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+            <span style="color:#666;">PREDICTED:</span>
+            <span style="color:#888;">${(predictedPct*100).toFixed(2)}%</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+            <span style="color:#666;">ACTUAL:</span>
+            <span style="color:${actualPct>=0?'#2ecc71':'#e74c3c'};font-weight:600;">${(actualPct*100).toFixed(2)}%</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding-top:4px;border-top:1px solid #1a1a1a;">
+            <span style="color:#666;">DELTA:</span>
+            <span style="color:${deltaColor};font-weight:700;">${deltaIcon} ${delta>=0?'+':''}${(delta*100).toFixed(2)}pp</span>
+          </div>
+        </div>`;
+    }
+
     return `<div style="background:#0d0d0d;border:1px solid #1a1a1a;border-radius:8px;overflow:hidden;transition:border-color .2s;" onmouseenter="this.style.borderColor='#9b59b6'" onmouseleave="this.style.borderColor='#1a1a1a'">
-      
+
       <!-- Header -->
       <div style="padding:12px 14px;border-bottom:1px solid #1a1a1a;display:flex;align-items:center;gap:10px;">
         <div>
@@ -7230,6 +7376,8 @@ function renderGallery(){
           <div style="font-size:9px;color:#555;">${s.dir} · ${s.days}d · $${s.capital.toLocaleString()}</div>
         </div>
       </div>
+
+      ${trackBadge}
 
       <!-- Mini canvas -->
       <div style="position:relative;height:120px;background:#080808;">
@@ -7290,15 +7438,18 @@ function renderGallery(){
 
       <!-- Actions -->
       <div style="padding:8px 14px;display:flex;gap:6px;">
-        <button onclick="replaySim(${i})" style="font-family:var(--mono);font-size:10px;padding:4px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;flex:1;">▶ Replay</button>
-        <button onclick="trackSavedSim(${i})" style="font-family:var(--mono);font-size:10px;padding:4px 10px;border:1px solid #00ffcc;color:#00ffcc;background:none;border-radius:2px;cursor:pointer;flex:1;">📡 Track</button>
-        <button onclick="deleteSim(${i})" style="font-family:var(--mono);font-size:10px;padding:4px 8px;border:1px solid #333;color:#555;background:none;border-radius:2px;cursor:pointer;">✕</button>
+        <button onclick="replaySim(${realIdx})" style="font-family:var(--mono);font-size:10px;padding:4px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;flex:1;">▶ Replay</button>
+        <button onclick="trackSavedSim(${realIdx})" style="font-family:var(--mono);font-size:10px;padding:4px 10px;border:1px solid #00ffcc;color:#00ffcc;background:none;border-radius:2px;cursor:pointer;flex:1;">📡 Track</button>
+        <button onclick="deleteSim(${realIdx})" style="font-family:var(--mono);font-size:10px;padding:4px 8px;border:1px solid #333;color:#555;background:none;border-radius:2px;cursor:pointer;">✕</button>
       </div>
     </div>`;
   }).join('');
 
-  // Draw sparklines after render
-  setTimeout(() => savedSims.forEach((s,i) => drawSparkline(s, i)), 100);
+  // Draw sparklines after render — only for sims actually visible
+  setTimeout(() => sims.forEach((s) => {
+    const realIdx = savedSims.indexOf(s);
+    drawSparkline(s, realIdx);
+  }), 100);
 
   // Start live updates for gallery
   startGalleryLiveUpdates();
@@ -7887,6 +8038,80 @@ async function updateLiveTrack(){
     document.getElementById('liveTrackVsSim').textContent = vsSimText;
     document.getElementById('liveTrackVsSim').style.color = vsSimColor;
 
+    // ──────────────────────────────────────────────────────────────
+    // QUALITY OF ENTRY + DYNAMIC ACTION RECOMMENDATION
+    // Calculates whether the trade is currently outperforming or
+    // underperforming the original Monte Carlo distribution, and
+    // suggests an action based on percentile + time elapsed.
+    //
+    // Logic: at any moment, your percentile tells you where you are
+    // relative to all simulated outcomes. p>90 means you're in the
+    // top 10% — usually time to take partial profit. p<10 means
+    // you're in the bottom 10% — likely a bad scenario unfolding.
+    // ──────────────────────────────────────────────────────────────
+    let qualityText, qualityColor, qualityDetail;
+    if(myPercentile >= 90){
+      qualityText = '🔥 EXCEPTIONAL';
+      qualityColor = '#00ff88';
+      qualityDetail = `Top ${100 - myPercentile}% of simulated paths · outperforming all expectations`;
+    } else if(myPercentile >= 70){
+      qualityText = '🟢 EXCELLENT';
+      qualityColor = '#2ecc71';
+      qualityDetail = `Better than ${myPercentile}% of simulated paths · trade is winning`;
+    } else if(myPercentile >= 50){
+      qualityText = '✅ ON TRACK';
+      qualityColor = '#7cd76b';
+      qualityDetail = `Above sim median · ${myPercentile}th percentile · paths predicted ranged ${(simReturns[0]*100).toFixed(1)}% to ${(simReturns[n-1]*100).toFixed(1)}%`;
+    } else if(myPercentile >= 30){
+      qualityText = '🟡 BELOW EXPECTED';
+      qualityColor = '#f39c12';
+      qualityDetail = `${myPercentile}th percentile · underperforming the median scenario`;
+    } else if(myPercentile >= 10){
+      qualityText = '🔻 UNDERPERFORMING';
+      qualityColor = '#e67e22';
+      qualityDetail = `Bottom ${myPercentile}% · trade going against the modal scenario`;
+    } else {
+      qualityText = '🔴 TAIL SCENARIO';
+      qualityColor = '#e74c3c';
+      qualityDetail = `Bottom ${myPercentile}% · sim only gave this ${myPercentile}% probability`;
+    }
+    document.getElementById('liveQualityBadge').textContent = qualityText;
+    document.getElementById('liveQualityBadge').style.color = qualityColor;
+    document.getElementById('liveQualityDetail').textContent = qualityDetail;
+
+    // ── Dynamic action recommendation ──
+    // Combines percentile with time elapsed:
+    //   - early in trade + bad percentile → STOP LOSS
+    //   - late in trade + good percentile → TAKE PROFIT
+    //   - middle ground → HOLD
+    const timeElapsedFraction = Math.min(1, elapsed / liveTrack.days);
+    let actionText, actionColor;
+    if(myPercentile >= 90){
+      actionText = '🎯 TAKE PROFIT NOW · You exceeded the 90th percentile of expectations. Risk-reward now favors locking gains.';
+      actionColor = '#00ff88';
+    } else if(myPercentile >= 75 && timeElapsedFraction > 0.3){
+      actionText = '💰 TAKE PARTIAL PROFIT · Sell 30-50% now, let the rest run with stop at entry.';
+      actionColor = '#2ecc71';
+    } else if(myPercentile >= 50){
+      actionText = '✋ HOLD · Trade performing as expected. No action required.';
+      actionColor = '#7cd76b';
+    } else if(myPercentile >= 30 && timeElapsedFraction < 0.5){
+      actionText = '⏳ PATIENCE · Below median but early in horizon. Sim still has time to play out.';
+      actionColor = '#f39c12';
+    } else if(myPercentile >= 30){
+      actionText = '⚠️ MONITOR CLOSELY · Underperforming late in horizon. Consider tightening stop loss.';
+      actionColor = '#f39c12';
+    } else if(myPercentile >= 10){
+      actionText = '🛑 REDUCE EXPOSURE · Trade is underwater vs 70% of simulated outcomes.';
+      actionColor = '#e67e22';
+    } else {
+      actionText = '🚨 STOP LOSS · You are in the tail of the distribution. Sim only gave this ' + myPercentile + '% probability of happening.';
+      actionColor = '#e74c3c';
+    }
+    document.getElementById('liveActionBadge').textContent = actionText;
+    document.getElementById('liveActionBadge').style.color = actionColor;
+    document.getElementById('liveActionPanel').style.display = 'block';
+
     // Status bar
     const timeAgo = Math.round((now - liveTrackPoints[liveTrackPoints.length-2]?.t || 0) / 1000);
     document.getElementById('liveTrackStatus').textContent =
@@ -8230,6 +8455,8 @@ function stopLiveTrack(){
 
   document.getElementById('liveTrackPanel').style.display = 'none';
   document.getElementById('liveAnalyticsPanel').style.display = 'none';
+  const ap = document.getElementById('liveActionPanel');
+  if(ap) ap.style.display = 'none';
   document.getElementById('trackBtn').textContent = '📡 Track Live';
   // Mark as not actively tracking, but keep the historical livePoints for next time
   if(liveTrack){
@@ -9827,11 +10054,23 @@ function margin_color(pct, threshold, COL){
 <div id="page-gallery" class="page" style="padding:0;background:#080808;min-height:100vh;">
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;">
     <span style="font-family:var(--mono);font-size:10px;color:#9b59b6;font-weight:600;letter-spacing:.1em;">SIMULATION GALLERY</span>
-    <span style="font-family:var(--mono);font-size:10px;color:#333;">SAVED SIMULATIONS · LIVE TRACKING · ACCURACY REPORTS</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;">SAVED SIMS · LIVE TRACKING · ACCURACY REPORTS</span>
     <div style="margin-left:auto;display:flex;gap:8px;">
       <button onclick="clearGallery()" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#555;background:none;border-radius:2px;cursor:pointer;">🗑 Clear All</button>
     </div>
   </div>
+
+  <!-- Sub-tab navigation: All / Tracking / Completed -->
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:8px 16px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+    <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.05em;margin-right:4px;">// VIEW:</span>
+    <button onclick="switchGalleryView('all')" id="galleryTab-all" class="gallery-subtab active-gallery" style="font-family:var(--mono);font-size:10px;padding:5px 12px;background:#1a1a1a;color:#9b59b6;border:1px solid #9b59b6;border-radius:3px;cursor:pointer;font-weight:600;">📚 ALL SIMS</button>
+    <button onclick="switchGalleryView('tracking')" id="galleryTab-tracking" class="gallery-subtab" style="font-family:var(--mono);font-size:10px;padding:5px 12px;background:none;color:#888;border:1px solid #333;border-radius:3px;cursor:pointer;">📡 LIVE TRACKING</button>
+    <button onclick="switchGalleryView('completed')" id="galleryTab-completed" class="gallery-subtab" style="font-family:var(--mono);font-size:10px;padding:5px 12px;background:none;color:#888;border:1px solid #333;border-radius:3px;cursor:pointer;">📊 TRACK RECORD</button>
+  </div>
+
+  <!-- Track record summary (shown only when view=completed) -->
+  <div id="trackRecordSummary" style="display:none;"></div>
+
   <div id="galleryGrid" style="padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;">
     <div style="color:#333;font-family:var(--mono);font-size:12px;text-align:center;padding:60px;grid-column:1/-1;">
       No saved simulations yet — run a sim and click 💾 Save Sim
