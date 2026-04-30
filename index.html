@@ -3849,6 +3849,48 @@ async function startSim(){
           beatsRiskFree: excessReturn > 0,
         };
 
+        // ── Re-render risk-free hurdle block now that diagnostics are set ──
+        // showSimAnalysis() runs at sim START before _verdictDiagnostics exists,
+        // so the block stayed hidden. Now that the sim is COMPLETE and we just
+        // computed the diagnostics, we render the block here with fresh data.
+        try {
+          const rfDiag = window._verdictDiagnostics;
+          const rfBlock = document.getElementById('riskFreeBlock');
+          const rfContent = document.getElementById('riskFreeContent');
+          if(rfDiag && rfBlock && rfContent){
+            const beats = rfDiag.beatsRiskFree;
+            const arrow = beats ? '↑' : '↓';
+            const verdictColor = beats ? '#00c97d' : '#EF9F27';
+            const excessLabel = beats ? '+' : '';
+            rfBlock.style.display = 'block';
+            rfBlock.style.borderColor = beats ? 'rgba(0,201,125,.3)' : 'rgba(239,159,39,.4)';
+            const titleEl = document.getElementById('riskFreeTitle');
+            if(titleEl) titleEl.style.color = verdictColor;
+            rfContent.innerHTML = `
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:8px;">
+                <div>
+                  <div style="color:#666;font-size:9px;letter-spacing:.05em;margin-bottom:3px;">YOUR TRADE (annualized)</div>
+                  <div style="color:#aaa;font-size:14px;font-weight:600;">${rfDiag.annualizedReturn >= 0 ? '+':''}${rfDiag.annualizedReturn.toFixed(2)}%</div>
+                </div>
+                <div>
+                  <div style="color:#666;font-size:9px;letter-spacing:.05em;margin-bottom:3px;">US TREASURY (T-bill)</div>
+                  <div style="color:#aaa;font-size:14px;font-weight:600;">+${rfDiag.riskFreeRate.toFixed(2)}%</div>
+                </div>
+                <div>
+                  <div style="color:#666;font-size:9px;letter-spacing:.05em;margin-bottom:3px;">EXCESS RETURN</div>
+                  <div style="color:${verdictColor};font-size:14px;font-weight:700;">${arrow} ${excessLabel}${rfDiag.excessReturn.toFixed(2)}%</div>
+                </div>
+              </div>
+              <div style="color:${verdictColor};font-size:10px;line-height:1.5;padding-top:6px;border-top:1px solid rgba(255,255,255,.05);">
+                ${beats
+                  ? '✓ Trade earns the equity risk premium (' + rfDiag.excessReturn.toFixed(2) + 'pp above risk-free). Worth taking the volatility.'
+                  : '⚠ Trade returns less than a Treasury bond. Equity risk not compensated. Consider waiting for better entry or skipping.'}
+              </div>`;
+          }
+        } catch(e){
+          console.log('[risk-free re-render] skipped:', e.message);
+        }
+
         // Override Claude's verdict with the honest one and update display
         lastCd.verdict=computedVerdict;
         window._lastCd=lastCd;
