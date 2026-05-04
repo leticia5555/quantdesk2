@@ -9445,12 +9445,8 @@ function renderNewsList(news, ticker){
   }
 
   html += toRender.map(item => {
-    const validImage = !isBadThumbnail(item.image);
-    const thumb = validImage ?
-      `<img src="${item.image}" style="width:56px;height:56px;object-fit:cover;border-radius:3px;flex-shrink:0;background:#1a1a1a;" onerror="this.style.display='none';this.parentNode.querySelector('.thumb-fallback').style.display='flex';"/>
-       <div class="thumb-fallback" style="display:none;width:56px;height:56px;background:#1a1a1a;border-radius:3px;flex-shrink:0;align-items:center;justify-content:center;font-size:16px;color:#444;">📰</div>` :
-      '';  // No thumb at all if image is bad — cleaner
-
+    // No thumbnails — Yahoo aggregator returns inconsistent placeholder logos
+    // that look unprofessional. Pure text cards are cleaner and faster to scan.
     const ago = timeAgo(item.datetime);
     const headline = (item.headline || '').slice(0, 200);
     const source = (item.source || 'Unknown').slice(0, 30);
@@ -9460,17 +9456,14 @@ function renderNewsList(news, ticker){
 
     return `
       <a href="${item.url}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;">
-        <div style="display:flex;gap:10px;padding:10px 12px;background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;cursor:pointer;transition:border-color .15s,background .15s;"
-             onmouseover="this.style.borderColor='#ff6600';this.style.background='#0e0a06'"
-             onmouseout="this.style.borderColor='#1a1a1a';this.style.background='#0a0a0a'">
-          ${thumb}
-          <div style="flex:1;min-width:0;">
-            <div style="font-size:12px;color:#ddd;font-weight:500;line-height:1.35;margin-bottom:4px;">${headline}</div>
-            ${summary ? `<div style="font-size:10px;color:#888;line-height:1.4;margin-bottom:4px;">${summary}${item.summary && item.summary.length>140?'…':''}</div>` : ''}
-            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-              <span style="font-family:var(--mono);font-size:9px;color:#ff6600;font-weight:600;">${sourceLabel}</span>
-              <span style="font-family:var(--mono);font-size:9px;color:#555;">${ago}</span>
-            </div>
+        <div style="padding:12px 14px;background:#0a0a0a;border:1px solid #1a1a1a;border-left:2px solid #ff6600;border-radius:3px;cursor:pointer;transition:border-color .15s,background .15s;"
+             onmouseover="this.style.borderColor='#ff6600';this.style.borderLeftColor='#ff6600';this.style.background='#0e0a06'"
+             onmouseout="this.style.borderColor='#1a1a1a';this.style.borderLeftColor='#ff6600';this.style.background='#0a0a0a'">
+          <div style="font-size:12px;color:#ddd;font-weight:500;line-height:1.4;margin-bottom:5px;">${headline}</div>
+          ${summary ? `<div style="font-size:10px;color:#888;line-height:1.5;margin-bottom:6px;">${summary}${item.summary && item.summary.length>140?'…':''}</div>` : ''}
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <span style="font-family:var(--mono);font-size:9px;color:#ff6600;font-weight:600;letter-spacing:.05em;">${sourceLabel}</span>
+            <span style="font-family:var(--mono);font-size:9px;color:#555;">${ago}</span>
           </div>
         </div>
       </a>
