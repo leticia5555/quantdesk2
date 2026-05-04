@@ -248,6 +248,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('movers')">MOVERS</button>
     <button class="nav-btn" onclick="showPage('sectors')">SECTORS</button>
     <button class="nav-btn" onclick="showPage('screener')">SCREENER</button>
+    <button class="nav-btn" onclick="showPage('social')">SOCIAL</button>
     <button class="nav-btn" onclick="showPage('agents')">AGENTS</button>
     <button class="nav-btn" onclick="showPage('gallery')">GALLERY</button>
   </nav>
@@ -7311,6 +7312,325 @@ function setStatus(txt,live=true){
   document.getElementById('globalDot').className='status-dot'+(live?' live':'');
 }
 
+// ─── SOCIAL PULSE — Reddit + CoinGecko sentiment ─────────
+// Crypto detection map (matches the one in api/price.js)
+const SOCIAL_CRYPTO_TICKERS = {
+  'BTC':'bitcoin','BTC/USD':'bitcoin',
+  'ETH':'ethereum','ETH/USD':'ethereum',
+  'SOL':'solana','SOL/USD':'solana',
+  'BNB':'binancecoin','BNB/USD':'binancecoin',
+  'XRP':'ripple','XRP/USD':'ripple',
+  'ADA':'cardano','ADA/USD':'cardano',
+  'DOGE':'dogecoin','DOGE/USD':'dogecoin',
+  'AVAX':'avalanche-2','AVAX/USD':'avalanche-2',
+  'DOT':'polkadot','DOT/USD':'polkadot',
+  'MATIC':'matic-network','MATIC/USD':'matic-network',
+  'LINK':'chainlink','LINK/USD':'chainlink',
+  'LTC':'litecoin','LTC/USD':'litecoin'
+};
+
+// Sentiment keywords for scoring Reddit posts
+const BULLISH_WORDS = ['moon','rocket','buy','calls','long','bull','bullish','pump','breakout','rally','squeeze','gains','tendies','yolo','ath','rip','printer','green','holding','diamond','hands','accumulate','support','undervalued','huge','strong','beat','beats','crushing'];
+const BEARISH_WORDS = ['dump','crash','puts','short','bear','bearish','sell','selling','rekt','dead','rug','scam','tank','tanking','red','blood','bagholder','bagholding','fell','falling','drop','dropping','overvalued','weak','miss','missed','disaster','collapse'];
+
+function scoreSentiment(text){
+  if(!text) return 0;
+  const t = text.toLowerCase();
+  let bull = 0, bear = 0;
+  BULLISH_WORDS.forEach(w => { if(t.includes(w)) bull++; });
+  BEARISH_WORDS.forEach(w => { if(t.includes(w)) bear++; });
+  if(bull === 0 && bear === 0) return 0;
+  return (bull - bear) / (bull + bear);  // -1 to +1
+}
+
+// Reddit JSON endpoints — public, no auth needed
+async function fetchRedditPosts(query, subreddit, limit = 25){
+  const url = `https://www.reddit.com/r/${subreddit}/search.json?q=${encodeURIComponent(query)}&restrict_sr=1&sort=hot&t=week&limit=${limit}`;
+  try {
+    const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if(!r.ok) return [];
+    const data = await r.json();
+    return (data.data?.children || []).map(c => ({
+      title: c.data.title,
+      selftext: c.data.selftext || '',
+      score: c.data.score || 0,
+      num_comments: c.data.num_comments || 0,
+      subreddit: c.data.subreddit,
+      url: 'https://reddit.com' + c.data.permalink,
+      created_utc: c.data.created_utc,
+      author: c.data.author
+    }));
+  } catch(e){
+    console.log(`[reddit] ${subreddit} fetch failed:`, e.message);
+    return [];
+  }
+}
+
+async function fetchCoinGeckoSentiment(coinId){
+  try {
+    const r = await fetch(`https://api.coingecko.com/api/v3/coins/${coinId}?localization=false&tickers=false&market_data=false&community_data=true&developer_data=false`);
+    if(!r.ok) return null;
+    const data = await r.json();
+    return {
+      sentimentUp: data.sentiment_votes_up_percentage || null,
+      sentimentDown: data.sentiment_votes_down_percentage || null,
+      redditSubscribers: data.community_data?.reddit_subscribers || 0,
+      redditActiveUsers: data.community_data?.reddit_accounts_active_48h || 0,
+      twitterFollowers: data.community_data?.twitter_followers || 0
+    };
+  } catch(e){
+    console.log('[coingecko sentiment] failed:', e.message);
+    return null;
+  }
+}
+
+function timeAgoSec(timestampSec){
+  const diff = Math.floor(Date.now()/1000) - timestampSec;
+  if(diff < 60) return diff + 's ago';
+  if(diff < 3600) return Math.floor(diff/60) + 'm ago';
+  if(diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return Math.floor(diff/86400) + 'd ago';
+}
+
+async function analyzeSocial(){
+  const input = document.getElementById('socialTickerInput');
+  const ticker = input.value.trim().toUpperCase();
+  if(!ticker){ input.focus(); return; }
+
+  const results = document.getElementById('socialResults');
+  const isCrypto = !!SOCIAL_CRYPTO_TICKERS[ticker];
+
+  // Show loading state
+  results.innerHTML = `
+    <div style="text-align:center;padding:60px 20px;color:#3498db;font-family:var(--mono);font-size:12px;">
+      <div style="font-size:32px;margin-bottom:16px;animation:pulse 1.5s ease-in-out infinite;">📡</div>
+      <div style="margin-bottom:6px;">Analyzing social pulse for ${ticker}...</div>
+      <div style="color:#666;font-size:10px;">Fetching Reddit threads ${isCrypto ? '+ CoinGecko sentiment' : ''}</div>
+    </div>
+    <style>@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}</style>
+  `;
+
+  // Pick subreddits based on asset type
+  const subreddits = isCrypto
+    ? ['cryptocurrency','CryptoMarkets']
+    : ['wallstreetbets','stocks','investing'];
+
+  // Build search query — use the actual ticker for stocks, the name for crypto
+  const queries = isCrypto
+    ? [ticker, ticker.replace('/USD',''), SOCIAL_CRYPTO_TICKERS[ticker]]
+    : [ticker, '$' + ticker];
+
+  // Fetch all subreddits in parallel
+  try {
+    const allPostsPromises = [];
+    subreddits.forEach(sub => {
+      queries.forEach(q => allPostsPromises.push(fetchRedditPosts(q, sub, 15)));
+    });
+
+    const cgPromise = isCrypto ? fetchCoinGeckoSentiment(SOCIAL_CRYPTO_TICKERS[ticker]) : Promise.resolve(null);
+
+    const [postsArrays, cgData] = await Promise.all([
+      Promise.all(allPostsPromises),
+      cgPromise
+    ]);
+
+    // Flatten and dedupe by URL
+    const seen = new Set();
+    const allPosts = [];
+    postsArrays.flat().forEach(p => {
+      if(!seen.has(p.url)){
+        seen.add(p.url);
+        allPosts.push(p);
+      }
+    });
+
+    if(allPosts.length === 0 && !cgData){
+      results.innerHTML = `
+        <div style="text-align:center;padding:60px 20px;color:#666;font-family:var(--mono);font-size:12px;">
+          <div style="font-size:32px;margin-bottom:16px;">🔇</div>
+          <div style="color:#888;margin-bottom:6px;">No social discussion found for ${ticker}</div>
+          <div style="color:#555;font-size:10px;max-width:380px;margin:0 auto;">
+            Either the ticker is too small for retail attention, or Reddit is rate-limiting our request. Try again in a minute or pick a more popular ticker.
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    renderSocialPulse(ticker, allPosts, cgData, isCrypto);
+
+  } catch(err){
+    console.log('[social] error:', err);
+    results.innerHTML = `
+      <div style="text-align:center;padding:60px 20px;color:#EF9F27;font-family:var(--mono);font-size:12px;">
+        <div style="font-size:32px;margin-bottom:16px;">⚠️</div>
+        <div>Social fetch failed: ${err.message}</div>
+        <div style="color:#666;font-size:10px;margin-top:10px;">Try again in a moment</div>
+      </div>
+    `;
+  }
+}
+
+function renderSocialPulse(ticker, posts, cgData, isCrypto){
+  const results = document.getElementById('socialResults');
+
+  // ── Compute aggregate sentiment from Reddit posts ──
+  // Weight each post by upvotes (more popular = more signal)
+  let weightedSentiment = 0;
+  let totalWeight = 0;
+  posts.forEach(p => {
+    const text = p.title + ' ' + p.selftext;
+    const s = scoreSentiment(text);
+    const weight = Math.max(1, Math.log(Math.max(p.score, 1) + 1));
+    weightedSentiment += s * weight;
+    totalWeight += weight;
+  });
+  let redditSentiment = totalWeight > 0 ? weightedSentiment / totalWeight : 0;
+
+  // Convert -1..1 → 0..100 percentage
+  let sentimentPct = Math.round((redditSentiment + 1) * 50);
+
+  // If we have CoinGecko data, blend it in (50/50)
+  if(cgData && cgData.sentimentUp != null){
+    sentimentPct = Math.round(0.5 * sentimentPct + 0.5 * cgData.sentimentUp);
+  }
+
+  // Sentiment bucket
+  let sentimentLabel, sentimentColor, sentimentEmoji;
+  if(sentimentPct >= 65){
+    sentimentLabel = 'BULLISH'; sentimentColor = '#00c97d'; sentimentEmoji = '🟢';
+  } else if(sentimentPct >= 55){
+    sentimentLabel = 'MILDLY BULLISH'; sentimentColor = '#7ec97d'; sentimentEmoji = '🟢';
+  } else if(sentimentPct >= 45){
+    sentimentLabel = 'NEUTRAL'; sentimentColor = '#888'; sentimentEmoji = '⚪';
+  } else if(sentimentPct >= 35){
+    sentimentLabel = 'MILDLY BEARISH'; sentimentColor = '#EF9F27'; sentimentEmoji = '🟡';
+  } else {
+    sentimentLabel = 'BEARISH'; sentimentColor = '#ff3a3a'; sentimentEmoji = '🔴';
+  }
+
+  // ── Compute mention volume metrics ──
+  const now = Math.floor(Date.now() / 1000);
+  const last24h = now - 86400;
+  const last7d = now - 86400 * 7;
+
+  const posts24h = posts.filter(p => p.created_utc >= last24h);
+  const posts7d = posts.filter(p => p.created_utc >= last7d);
+  const mentions24h = posts24h.length;
+  const avg24h_over_7d = posts7d.length / 7;
+  const volumeChange = avg24h_over_7d > 0
+    ? Math.round(((mentions24h - avg24h_over_7d) / avg24h_over_7d) * 100)
+    : 0;
+  const volumeArrow = volumeChange > 0 ? '↑' : volumeChange < 0 ? '↓' : '→';
+  const volumeColor = volumeChange > 50 ? '#00c97d' : volumeChange < -30 ? '#ff3a3a' : '#888';
+
+  // ── Top discussed threads (sort by upvotes) ──
+  const topPosts = [...posts].sort((a,b) => b.score - a.score).slice(0, 8);
+
+  // ── Build HTML ──
+  let html = `
+    <!-- Main Social Pulse Card -->
+    <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid ${sentimentColor};border-radius:4px;padding:30px 24px;margin-bottom:16px;text-align:center;">
+      <div style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.15em;margin-bottom:14px;">// SOCIAL PULSE — ${ticker}</div>
+      <div style="font-size:48px;margin-bottom:8px;">${sentimentEmoji}</div>
+      <div style="font-family:var(--mono);font-size:22px;color:${sentimentColor};font-weight:700;letter-spacing:.05em;margin-bottom:6px;">${sentimentLabel}</div>
+      <div style="font-family:var(--mono);font-size:11px;color:#888;margin-bottom:18px;">${sentimentPct}% positive sentiment</div>
+      <div style="height:6px;background:#0f0f0f;border-radius:3px;max-width:300px;margin:0 auto;overflow:hidden;">
+        <div style="height:100%;width:${sentimentPct}%;background:${sentimentColor};border-radius:3px;transition:width .8s ease;"></div>
+      </div>
+    </div>
+
+    <!-- Two metric cards -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+      <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:18px;">
+        <div style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;margin-bottom:8px;">MENTIONS LAST 24H</div>
+        <div style="font-family:var(--mono);font-size:24px;color:#ddd;font-weight:700;">${mentions24h}</div>
+        <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:4px;">across ${isCrypto ? 'crypto' : 'finance'} subreddits</div>
+      </div>
+      <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:18px;">
+        <div style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;margin-bottom:8px;">VS 7-DAY AVG</div>
+        <div style="font-family:var(--mono);font-size:24px;color:${volumeColor};font-weight:700;">${volumeArrow} ${volumeChange >= 0 ? '+' : ''}${volumeChange}%</div>
+        <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:4px;">${avg24h_over_7d.toFixed(1)} avg mentions/day</div>
+      </div>
+    </div>
+  `;
+
+  // CoinGecko community card (only for crypto)
+  if(cgData && (cgData.redditSubscribers || cgData.twitterFollowers)){
+    const fmt = n => n >= 1000000 ? (n/1000000).toFixed(1)+'M' : n >= 1000 ? (n/1000).toFixed(1)+'K' : n;
+    html += `
+      <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:18px;margin-bottom:16px;">
+        <div style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;margin-bottom:12px;">// COMMUNITY · via CoinGecko</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;">
+          <div>
+            <div style="font-family:var(--mono);font-size:9px;color:#666;margin-bottom:4px;">REDDIT SUBSCRIBERS</div>
+            <div style="font-family:var(--mono);font-size:16px;color:#ddd;font-weight:600;">${fmt(cgData.redditSubscribers)}</div>
+          </div>
+          <div>
+            <div style="font-family:var(--mono);font-size:9px;color:#666;margin-bottom:4px;">REDDIT ACTIVE 48H</div>
+            <div style="font-family:var(--mono);font-size:16px;color:#ddd;font-weight:600;">${fmt(cgData.redditActiveUsers)}</div>
+          </div>
+          <div>
+            <div style="font-family:var(--mono);font-size:9px;color:#666;margin-bottom:4px;">TWITTER FOLLOWERS</div>
+            <div style="font-family:var(--mono);font-size:16px;color:#ddd;font-weight:600;">${fmt(cgData.twitterFollowers)}</div>
+          </div>
+        </div>
+        ${cgData.sentimentUp != null ? `
+          <div style="margin-top:12px;padding-top:10px;border-top:1px solid #1a1a1a;font-family:var(--mono);font-size:10px;color:#888;">
+            CoinGecko community vote: <span style="color:#00c97d;font-weight:600;">${cgData.sentimentUp.toFixed(0)}% bullish</span> · <span style="color:#ff3a3a;font-weight:600;">${cgData.sentimentDown.toFixed(0)}% bearish</span>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  // Top discussed threads
+  if(topPosts.length > 0){
+    html += `
+      <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:18px;">
+        <div style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;margin-bottom:14px;">// TOP DISCUSSED THREADS</div>
+        ${topPosts.map(p => {
+          const ago = timeAgoSec(p.created_utc);
+          const title = (p.title || '').slice(0, 140);
+          const sentimentScore = scoreSentiment(p.title + ' ' + p.selftext);
+          let dotColor = '#666';
+          if(sentimentScore > 0.3) dotColor = '#00c97d';
+          else if(sentimentScore < -0.3) dotColor = '#ff3a3a';
+          else if(sentimentScore > 0) dotColor = '#7ec97d';
+          else if(sentimentScore < 0) dotColor = '#EF9F27';
+
+          return `
+            <a href="${p.url}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;">
+              <div style="padding:12px 14px;background:#080808;border:1px solid #151515;border-radius:3px;margin-bottom:8px;cursor:pointer;transition:border-color .15s,background .15s;"
+                   onmouseover="this.style.borderColor='#3498db';this.style.background='#0a0d10'"
+                   onmouseout="this.style.borderColor='#151515';this.style.background='#080808'">
+                <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:6px;">
+                  <div style="width:8px;height:8px;border-radius:50%;background:${dotColor};margin-top:5px;flex-shrink:0;"></div>
+                  <div style="flex:1;font-size:12px;color:#ddd;line-height:1.4;">${title}</div>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding-left:18px;">
+                  <span style="font-family:var(--mono);font-size:9px;color:#3498db;font-weight:600;">r/${p.subreddit}</span>
+                  <span style="font-family:var(--mono);font-size:9px;color:#666;">▲ ${p.score} · 💬 ${p.num_comments} · ${ago}</span>
+                </div>
+              </div>
+            </a>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  // Disclaimer
+  html += `
+    <div style="font-family:var(--mono);font-size:8px;color:#444;text-align:center;padding:16px 4px 4px;line-height:1.6;">
+      via Reddit JSON API ${isCrypto ? '+ CoinGecko community data' : ''} · sentiment scored locally · cache ~1 min<br>
+      retail signal ≠ investment advice — discussion volume measures attention, not direction
+    </div>
+  `;
+
+  results.innerHTML = html;
+}
+
 // ─── SIMULATION GALLERY ──────────────────────────────────
 let savedSims = JSON.parse(localStorage.getItem('qd_gallery') || '[]');
 
@@ -10669,6 +10989,57 @@ function margin_color(pct, threshold, COL){
   return COL.text;
 }
 </script>
+<!-- SOCIAL PAGE -->
+<div id="page-social" class="page" style="padding:0;background:#080808;min-height:100vh;">
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+    <span style="font-family:var(--mono);font-size:10px;color:#3498db;font-weight:600;letter-spacing:.1em;">SOCIAL PULSE</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;">REDDIT SENTIMENT · MENTION VOLUME · TRENDING THREADS</span>
+  </div>
+
+  <!-- Search bar -->
+  <div style="padding:20px 16px;border-bottom:1px solid #1a1a1a;background:#0a0a0a;">
+    <div style="max-width:600px;margin:0 auto;display:flex;gap:8px;">
+      <input type="text" id="socialTickerInput" placeholder="Enter ticker (e.g., NVDA, BTC, MELI, AAPL)"
+             style="flex:1;background:#0a0a0a;border:1px solid #2a2a2a;color:#ddd;padding:10px 14px;font-family:var(--mono);font-size:13px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;"
+             onfocus="this.style.borderColor='#3498db'"
+             onblur="this.style.borderColor='#2a2a2a'"
+             onkeydown="if(event.key==='Enter') analyzeSocial();">
+      <button onclick="analyzeSocial()"
+              style="background:#3498db;color:#fff;border:none;padding:10px 22px;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.1em;border-radius:3px;cursor:pointer;transition:background .15s;"
+              onmouseover="this.style.background='#2980b9'"
+              onmouseout="this.style.background='#3498db'">
+        ANALYZE →
+      </button>
+    </div>
+    <div style="max-width:600px;margin:10px auto 0;display:flex;gap:6px;flex-wrap:wrap;">
+      <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.05em;margin-right:4px;">// quick:</span>
+      <button onclick="document.getElementById('socialTickerInput').value='NVDA';analyzeSocial();" class="social-chip" style="font-family:var(--mono);font-size:10px;padding:3px 9px;background:#0a0a0a;color:#888;border:1px solid #2a2a2a;border-radius:2px;cursor:pointer;">NVDA</button>
+      <button onclick="document.getElementById('socialTickerInput').value='TSLA';analyzeSocial();" class="social-chip" style="font-family:var(--mono);font-size:10px;padding:3px 9px;background:#0a0a0a;color:#888;border:1px solid #2a2a2a;border-radius:2px;cursor:pointer;">TSLA</button>
+      <button onclick="document.getElementById('socialTickerInput').value='BTC';analyzeSocial();" class="social-chip" style="font-family:var(--mono);font-size:10px;padding:3px 9px;background:#0a0a0a;color:#888;border:1px solid #2a2a2a;border-radius:2px;cursor:pointer;">BTC</button>
+      <button onclick="document.getElementById('socialTickerInput').value='ETH';analyzeSocial();" class="social-chip" style="font-family:var(--mono);font-size:10px;padding:3px 9px;background:#0a0a0a;color:#888;border:1px solid #2a2a2a;border-radius:2px;cursor:pointer;">ETH</button>
+      <button onclick="document.getElementById('socialTickerInput').value='AAPL';analyzeSocial();" class="social-chip" style="font-family:var(--mono);font-size:10px;padding:3px 9px;background:#0a0a0a;color:#888;border:1px solid #2a2a2a;border-radius:2px;cursor:pointer;">AAPL</button>
+      <button onclick="document.getElementById('socialTickerInput').value='AMZN';analyzeSocial();" class="social-chip" style="font-family:var(--mono);font-size:10px;padding:3px 9px;background:#0a0a0a;color:#888;border:1px solid #2a2a2a;border-radius:2px;cursor:pointer;">AMZN</button>
+      <button onclick="document.getElementById('socialTickerInput').value='MELI';analyzeSocial();" class="social-chip" style="font-family:var(--mono);font-size:10px;padding:3px 9px;background:#0a0a0a;color:#888;border:1px solid #2a2a2a;border-radius:2px;cursor:pointer;">MELI</button>
+      <button onclick="document.getElementById('socialTickerInput').value='SOL';analyzeSocial();" class="social-chip" style="font-family:var(--mono);font-size:10px;padding:3px 9px;background:#0a0a0a;color:#888;border:1px solid #2a2a2a;border-radius:2px;cursor:pointer;">SOL</button>
+    </div>
+  </div>
+
+  <!-- Results area -->
+  <div id="socialResults" style="padding:24px 16px;max-width:900px;margin:0 auto;">
+    <div style="text-align:center;padding:60px 20px;color:#444;font-family:var(--mono);font-size:12px;line-height:1.8;">
+      <div style="font-size:48px;margin-bottom:20px;">📡</div>
+      <div style="color:#888;margin-bottom:8px;">// Social Pulse</div>
+      <div style="color:#555;font-size:11px;max-width:400px;margin:0 auto;">
+        Analyze what retail investors are saying about any ticker on Reddit.<br>
+        Sentiment, mention volume, and the most discussed threads — in real time.
+      </div>
+      <div style="color:#3498db;font-size:10px;margin-top:30px;letter-spacing:.1em;">
+        ENTER A TICKER ABOVE TO BEGIN
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- GALLERY PAGE -->
 <div id="page-gallery" class="page" style="padding:0;background:#080808;min-height:100vh;">
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;">
