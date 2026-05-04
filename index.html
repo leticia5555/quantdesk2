@@ -5914,7 +5914,14 @@ function renderRiskOfRuin(winRate, avgWin, avgLoss, capital){
       </div>
     </div>
     <div style="padding:12px 16px;background:var(--bg2);border:1px solid ${ruinColor(ruin50_50)};border-radius:6px;margin-bottom:8px;">
-      <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:6px;">// verdict</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;gap:10px;">
+        <span>// verdict</span>
+        <button onclick="openRuinAnimation()" style="font-family:var(--mono);font-size:10px;padding:4px 10px;background:#0a0a0a;color:#ff6600;border:1px solid #ff6600;border-radius:3px;cursor:pointer;font-weight:600;letter-spacing:.05em;transition:all .15s;"
+                onmouseover="this.style.background='#ff6600';this.style.color='#000'"
+                onmouseout="this.style.background='#0a0a0a';this.style.color='#ff6600'">
+          ▶ WATCH 100 TRADERS RACE
+        </button>
+      </div>
       <div style="font-family:var(--sans);font-size:13px;color:var(--text2);line-height:1.7;">
         At a <strong style="color:var(--text)">${(winRate*100).toFixed(0)}% win rate</strong> with
         avg win <strong style="color:var(--green)">${(avgWin*100).toFixed(1)}%</strong> and
@@ -7629,6 +7636,279 @@ function renderSocialPulse(ticker, posts, cgData, isCrypto){
   `;
 
   results.innerHTML = html;
+}
+
+// ─── RUIN ANIMATION — 4 Strategies Race ──────────────────
+// 100 traders split into 4 groups of 25, same edge, different sizing
+// Quarter Kelly · Full Kelly · Fixed 5% · Martingale
+let ruinAnimState = {
+  running: false,
+  paused: false,
+  trade: 0,
+  maxTrades: 50,
+  intervalId: null,
+  edge: { winRate: 0.51, avgWin: 0.107, avgLoss: 0.085, kelly: 0 },
+  initialCapital: 10000,
+  ruinThreshold: 0.5,  // dies when capital drops below 50%
+  // Each account: { capital, alive, lastWasLoss, martBet, history }
+  accounts: { qkelly: [], fkelly: [], fixed: [], mart: [] }
+};
+
+function openRuinAnimation(){
+  // Use the actual sim's stats if available
+  const stats = window._lastSimStats;
+  if(!stats || !stats.winRate || !allFinals.length){
+    alert('Run a simulation first — the animation uses your sim\'s win rate, avg win, and avg loss.');
+    return;
+  }
+
+  // Compute avg win and avg loss from the sim's final returns
+  // (The actual win/loss percentages, not the path-level stats)
+  const wins = [], losses = [];
+  allFinals.forEach(f => {
+    const r = (f - SP.capital) / SP.capital;
+    if(r > 0) wins.push(r); else if(r < 0) losses.push(-r);
+  });
+  const avgWin = wins.length ? wins.reduce((a,b)=>a+b,0)/wins.length : 0.10;
+  const avgLoss = losses.length ? losses.reduce((a,b)=>a+b,0)/losses.length : 0.08;
+
+  // Kelly fraction = (p*b - q) / b  where b = avgWin/avgLoss, p = winRate
+  const winRate = stats.winRate;
+  const b = avgWin / avgLoss;
+  const kelly = Math.max(0, Math.min(1, (winRate * b - (1 - winRate)) / b));
+
+  ruinAnimState.edge = { winRate, avgWin, avgLoss, kelly };
+  ruinAnimState.initialCapital = SP.capital || 10000;
+
+  // Update header stats
+  document.getElementById('ruinEdgeWinRate').textContent = (winRate*100).toFixed(1) + '%';
+  document.getElementById('ruinEdgeAvgWin').textContent = '+' + (avgWin*100).toFixed(1) + '%';
+  document.getElementById('ruinEdgeAvgLoss').textContent = '-' + (avgLoss*100).toFixed(1) + '%';
+  document.getElementById('ruinEdgeKelly').textContent = (kelly*100).toFixed(1) + '%';
+  document.getElementById('ruinAnimSubtitle').textContent =
+    `${SP.dir || 'LONG'} ${document.getElementById('simTicker').value.toUpperCase()} · same edge · 4 sizing strategies · who survives 50 trades?`;
+
+  // Init accounts and grids
+  initRuinAccounts();
+  renderRuinGrids();
+
+  // Show modal and start
+  document.getElementById('ruinAnimationModal').style.display = 'block';
+  document.getElementById('ruinVerdict').style.display = 'none';
+  document.getElementById('ruinTradeNum').textContent = '0';
+  document.getElementById('ruinProgressBar').style.width = '0%';
+  document.getElementById('ruinPlayPauseBtn').textContent = '⏸ Pause';
+
+  startRuinAnimation();
+}
+
+function closeRuinAnimation(){
+  stopRuinAnimation();
+  document.getElementById('ruinAnimationModal').style.display = 'none';
+}
+
+function initRuinAccounts(){
+  const cap = ruinAnimState.initialCapital;
+  ruinAnimState.accounts = {
+    qkelly: Array.from({length:25}, () => ({ capital: cap, alive: true, lastWasLoss: false, martBet: 0.05 })),
+    fkelly: Array.from({length:25}, () => ({ capital: cap, alive: true, lastWasLoss: false, martBet: 0.05 })),
+    fixed:  Array.from({length:25}, () => ({ capital: cap, alive: true, lastWasLoss: false, martBet: 0.05 })),
+    mart:   Array.from({length:25}, () => ({ capital: cap, alive: true, lastWasLoss: false, martBet: 0.05 }))
+  };
+  ruinAnimState.trade = 0;
+}
+
+function getSizing(strat, account){
+  const { kelly } = ruinAnimState.edge;
+  switch(strat){
+    case 'qkelly': return Math.min(0.25 * kelly, 0.25);  // cap at 25% of capital
+    case 'fkelly': return Math.min(kelly, 0.5);          // cap at 50% to avoid >100% bets
+    case 'fixed':  return 0.05;
+    case 'mart':   return Math.min(account.martBet, 0.5);  // cap doubling at 50%
+    default: return 0.05;
+  }
+}
+
+function executeOneTradeClean(){
+  const { winRate, avgWin, avgLoss } = ruinAnimState.edge;
+  const ruinFloor = ruinAnimState.initialCapital * (1 - ruinAnimState.ruinThreshold);
+
+  ['qkelly','fkelly','fixed','mart'].forEach(strat => {
+    ruinAnimState.accounts[strat].forEach(acc => {
+      if(!acc.alive) return;
+      const sizing = getSizing(strat, acc);
+      const wins = Math.random() < winRate;
+      // Vary the magnitude slightly so paths differ
+      const wMag = avgWin * (0.7 + Math.random() * 0.6);
+      const lMag = avgLoss * (0.7 + Math.random() * 0.6);
+
+      if(wins){
+        acc.capital *= (1 + sizing * wMag);
+        acc.lastWasLoss = false;
+        acc.martBet = 0.05;  // reset martingale on win
+      } else {
+        acc.capital *= (1 - sizing * lMag);
+        acc.lastWasLoss = true;
+        if(strat === 'mart') acc.martBet = Math.min(acc.martBet * 2, 0.5);  // double bet, cap at 50%
+      }
+
+      // Death check
+      if(acc.capital <= ruinFloor){
+        acc.alive = false;
+        acc.capital = 0;
+      }
+    });
+  });
+}
+
+function renderRuinGrids(){
+  ['qkelly','fkelly','fixed','mart'].forEach(strat => {
+    const grid = document.getElementById('ruinAccounts-' + strat);
+    const accounts = ruinAnimState.accounts[strat];
+    const colors = { qkelly:'#00c97d', fkelly:'#3498db', fixed:'#EF9F27', mart:'#ff3a3a' };
+
+    grid.innerHTML = accounts.map(acc => {
+      if(!acc.alive){
+        return `<div title="Dead — went below 50% capital" style="aspect-ratio:1;background:#1a0000;border:1px solid #2a0000;border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:9px;">💀</div>`;
+      }
+      // Color intensity based on capital ratio vs initial
+      const ratio = acc.capital / ruinAnimState.initialCapital;
+      // Scale brightness: ratio 1 = full color, ratio 0.5 = dim, ratio >2 = bright
+      const opacity = Math.max(0.25, Math.min(1, ratio * 0.7));
+      // Border for big winners
+      const border = ratio > 1.5 ? `box-shadow:0 0 4px ${colors[strat]};` : '';
+      return `<div title="$${acc.capital.toFixed(0)}" style="aspect-ratio:1;background:${colors[strat]};opacity:${opacity};border-radius:2px;${border}"></div>`;
+    }).join('');
+
+    // Update survivor count
+    const alive = accounts.filter(a => a.alive).length;
+    document.getElementById('ruinSurv-' + strat).textContent = alive + '/25';
+
+    // Update median capital
+    const sorted = [...accounts].sort((a,b) => a.capital - b.capital);
+    const median = sorted[12].capital;
+    document.getElementById('ruinMedian-' + strat).textContent = '$' + Math.round(median).toLocaleString();
+  });
+}
+
+function startRuinAnimation(){
+  ruinAnimState.running = true;
+  ruinAnimState.paused = false;
+  if(ruinAnimState.intervalId) clearInterval(ruinAnimState.intervalId);
+
+  // ~300ms per trade × 50 trades = 15 seconds total
+  ruinAnimState.intervalId = setInterval(() => {
+    if(ruinAnimState.paused) return;
+    if(ruinAnimState.trade >= ruinAnimState.maxTrades){
+      stopRuinAnimation();
+      showRuinVerdict();
+      return;
+    }
+    executeOneTradeClean();
+    ruinAnimState.trade++;
+    renderRuinGrids();
+    document.getElementById('ruinTradeNum').textContent = ruinAnimState.trade;
+    document.getElementById('ruinProgressBar').style.width = (ruinAnimState.trade / ruinAnimState.maxTrades * 100) + '%';
+  }, 300);
+}
+
+function stopRuinAnimation(){
+  ruinAnimState.running = false;
+  if(ruinAnimState.intervalId){
+    clearInterval(ruinAnimState.intervalId);
+    ruinAnimState.intervalId = null;
+  }
+}
+
+function toggleRuinPlay(){
+  const btn = document.getElementById('ruinPlayPauseBtn');
+  if(ruinAnimState.trade >= ruinAnimState.maxTrades){
+    // restart
+    restartRuinAnimation();
+    return;
+  }
+  ruinAnimState.paused = !ruinAnimState.paused;
+  btn.textContent = ruinAnimState.paused ? '▶ Resume' : '⏸ Pause';
+}
+
+function skipRuinAnimation(){
+  if(!ruinAnimState.running) return;
+  ruinAnimState.paused = false;
+  // Run remaining trades instantly
+  while(ruinAnimState.trade < ruinAnimState.maxTrades){
+    executeOneTradeClean();
+    ruinAnimState.trade++;
+  }
+  renderRuinGrids();
+  document.getElementById('ruinTradeNum').textContent = ruinAnimState.trade;
+  document.getElementById('ruinProgressBar').style.width = '100%';
+  stopRuinAnimation();
+  showRuinVerdict();
+}
+
+function restartRuinAnimation(){
+  stopRuinAnimation();
+  document.getElementById('ruinVerdict').style.display = 'none';
+  document.getElementById('ruinPlayPauseBtn').textContent = '⏸ Pause';
+  initRuinAccounts();
+  renderRuinGrids();
+  document.getElementById('ruinTradeNum').textContent = '0';
+  document.getElementById('ruinProgressBar').style.width = '0%';
+  startRuinAnimation();
+}
+
+function showRuinVerdict(){
+  // Compute results
+  const results = {};
+  ['qkelly','fkelly','fixed','mart'].forEach(strat => {
+    const accounts = ruinAnimState.accounts[strat];
+    const alive = accounts.filter(a => a.alive);
+    const sorted = [...accounts].sort((a,b) => a.capital - b.capital);
+    results[strat] = {
+      survivors: alive.length,
+      survivalRate: alive.length / 25,
+      medianCapital: sorted[12].capital,
+      meanCapital: accounts.reduce((s,a) => s + a.capital, 0) / 25
+    };
+  });
+
+  // Find the winner (best median + survival)
+  const stratNames = { qkelly:'Quarter Kelly', fkelly:'Full Kelly', fixed:'Fixed 5%', mart:'Martingale' };
+  const ranked = Object.entries(results).sort((a,b) => {
+    // Prioritize: higher survival, then higher median
+    if(a[1].survivors !== b[1].survivors) return b[1].survivors - a[1].survivors;
+    return b[1].medianCapital - a[1].medianCapital;
+  });
+  const winner = ranked[0][0];
+  const loser = ranked[3][0];
+
+  const cap = ruinAnimState.initialCapital;
+  const fmtMoney = c => '$' + Math.round(c).toLocaleString();
+  const fmtChange = c => {
+    const pct = ((c - cap) / cap) * 100;
+    const sign = pct >= 0 ? '+' : '';
+    return `${sign}${pct.toFixed(1)}%`;
+  };
+
+  const lessonText = `
+    Same edge. Same win rate. Same avg win and loss. <strong style="color:#ddd">Only sizing differed.</strong><br><br>
+    <strong style="color:#00c97d">Quarter Kelly</strong> (institutional standard) ended with
+    <strong>${results.qkelly.survivors}/25</strong> survivors, median ${fmtMoney(results.qkelly.medianCapital)} (${fmtChange(results.qkelly.medianCapital)}).<br>
+    <strong style="color:#3498db">Full Kelly</strong> (academic optimal):
+    <strong>${results.fkelly.survivors}/25</strong> survivors, median ${fmtMoney(results.fkelly.medianCapital)} (${fmtChange(results.fkelly.medianCapital)}).<br>
+    <strong style="color:#EF9F27">Fixed 5%</strong> (naive retail):
+    <strong>${results.fixed.survivors}/25</strong> survivors, median ${fmtMoney(results.fixed.medianCapital)} (${fmtChange(results.fixed.medianCapital)}).<br>
+    <strong style="color:#ff3a3a">Martingale</strong> (double after loss):
+    <strong>${results.mart.survivors}/25</strong> survivors, median ${fmtMoney(results.mart.medianCapital)} (${fmtChange(results.mart.medianCapital)}).<br><br>
+    <strong style="color:#ff6600">Lesson:</strong> Sizing is not a detail — it's the difference between professional and gambler.
+    Hedge funds like AQR, Renaissance, and Two Sigma use fractional Kelly (or smaller) for a reason.
+    Most retail blows up not because their edge is wrong, but because they bet too big.
+    ${results.mart.survivors === 0 ? '<br><br>And Martingale? Always dies. The math is unforgiving.' : ''}
+  `;
+
+  document.getElementById('ruinVerdictText').innerHTML = lessonText;
+  document.getElementById('ruinVerdict').style.display = 'block';
+  document.getElementById('ruinPlayPauseBtn').textContent = '↺ Replay';
 }
 
 // ─── SIMULATION GALLERY ──────────────────────────────────
@@ -11223,6 +11503,126 @@ function margin_color(pct, threshold, COL){
       <button onclick="closeNoteModal()" style="font-size:12px;padding:6px 16px;">Cancel</button>
       <button onclick="saveNote()" class="primary" style="font-size:12px;padding:6px 16px;">Save note</button>
     </div>
+  </div>
+</div>
+
+<!-- RUIN ANIMATION MODAL -->
+<div id="ruinAnimationModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.92);z-index:9999;overflow:auto;backdrop-filter:blur(4px);">
+  <div style="max-width:1100px;margin:20px auto;background:#0a0a0a;border:1px solid #1a1a1a;border-radius:6px;padding:20px;font-family:var(--mono);">
+
+    <!-- Header -->
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-bottom:1px solid #1a1a1a;padding-bottom:12px;">
+      <div>
+        <div style="font-size:14px;color:#ff6600;font-weight:700;letter-spacing:.1em;">// 100 TRADERS RACE</div>
+        <div id="ruinAnimSubtitle" style="font-size:10px;color:#666;margin-top:3px;">Same edge · Different sizing strategy · Who survives?</div>
+      </div>
+      <button onclick="closeRuinAnimation()" style="background:none;border:1px solid #333;color:#888;width:30px;height:30px;border-radius:3px;cursor:pointer;font-size:14px;">✕</button>
+    </div>
+
+    <!-- Edge Stats Header -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px;padding:10px 12px;background:#080808;border:1px solid #1a1a1a;border-radius:4px;">
+      <div><div style="font-size:9px;color:#555;letter-spacing:.05em;">WIN RATE</div><div id="ruinEdgeWinRate" style="font-size:14px;color:#ddd;font-weight:600;">—</div></div>
+      <div><div style="font-size:9px;color:#555;letter-spacing:.05em;">AVG WIN</div><div id="ruinEdgeAvgWin" style="font-size:14px;color:#00c97d;font-weight:600;">—</div></div>
+      <div><div style="font-size:9px;color:#555;letter-spacing:.05em;">AVG LOSS</div><div id="ruinEdgeAvgLoss" style="font-size:14px;color:#ff3a3a;font-weight:600;">—</div></div>
+      <div><div style="font-size:9px;color:#555;letter-spacing:.05em;">KELLY %</div><div id="ruinEdgeKelly" style="font-size:14px;color:#3498db;font-weight:600;">—</div></div>
+    </div>
+
+    <!-- 4 Strategy grids -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+      <!-- Quarter Kelly -->
+      <div style="background:#080808;border:1px solid #1a1a1a;border-left:3px solid #00c97d;border-radius:4px;padding:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <div>
+            <div style="font-size:11px;color:#00c97d;font-weight:700;">QUARTER KELLY</div>
+            <div style="font-size:9px;color:#666;margin-top:2px;">Institutional · 25% of optimal</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:9px;color:#555;">SURVIVORS</div>
+            <div id="ruinSurv-qkelly" style="font-size:16px;color:#ddd;font-weight:700;">25/25</div>
+          </div>
+        </div>
+        <div id="ruinAccounts-qkelly" style="display:grid;grid-template-columns:repeat(25,1fr);gap:2px;"></div>
+        <div style="font-size:9px;color:#666;margin-top:8px;">
+          Median capital: <span id="ruinMedian-qkelly" style="color:#00c97d;">$10,000</span>
+        </div>
+      </div>
+
+      <!-- Full Kelly -->
+      <div style="background:#080808;border:1px solid #1a1a1a;border-left:3px solid #3498db;border-radius:4px;padding:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <div>
+            <div style="font-size:11px;color:#3498db;font-weight:700;">FULL KELLY</div>
+            <div style="font-size:9px;color:#666;margin-top:2px;">Academic · 100% of optimal · aggressive</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:9px;color:#555;">SURVIVORS</div>
+            <div id="ruinSurv-fkelly" style="font-size:16px;color:#ddd;font-weight:700;">25/25</div>
+          </div>
+        </div>
+        <div id="ruinAccounts-fkelly" style="display:grid;grid-template-columns:repeat(25,1fr);gap:2px;"></div>
+        <div style="font-size:9px;color:#666;margin-top:8px;">
+          Median capital: <span id="ruinMedian-fkelly" style="color:#3498db;">$10,000</span>
+        </div>
+      </div>
+
+      <!-- Fixed 5% -->
+      <div style="background:#080808;border:1px solid #1a1a1a;border-left:3px solid #EF9F27;border-radius:4px;padding:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <div>
+            <div style="font-size:11px;color:#EF9F27;font-weight:700;">FIXED 5%</div>
+            <div style="font-size:9px;color:#666;margin-top:2px;">Naive retail · always 5% per trade</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:9px;color:#555;">SURVIVORS</div>
+            <div id="ruinSurv-fixed" style="font-size:16px;color:#ddd;font-weight:700;">25/25</div>
+          </div>
+        </div>
+        <div id="ruinAccounts-fixed" style="display:grid;grid-template-columns:repeat(25,1fr);gap:2px;"></div>
+        <div style="font-size:9px;color:#666;margin-top:8px;">
+          Median capital: <span id="ruinMedian-fixed" style="color:#EF9F27;">$10,000</span>
+        </div>
+      </div>
+
+      <!-- Martingale -->
+      <div style="background:#080808;border:1px solid #1a1a1a;border-left:3px solid #ff3a3a;border-radius:4px;padding:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <div>
+            <div style="font-size:11px;color:#ff3a3a;font-weight:700;">MARTINGALE</div>
+            <div style="font-size:9px;color:#666;margin-top:2px;">Casino killer · double after each loss</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:9px;color:#555;">SURVIVORS</div>
+            <div id="ruinSurv-mart" style="font-size:16px;color:#ddd;font-weight:700;">25/25</div>
+          </div>
+        </div>
+        <div id="ruinAccounts-mart" style="display:grid;grid-template-columns:repeat(25,1fr);gap:2px;"></div>
+        <div style="font-size:9px;color:#666;margin-top:8px;">
+          Median capital: <span id="ruinMedian-mart" style="color:#ff3a3a;">$10,000</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Progress bar + controls -->
+    <div style="margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <div style="font-size:10px;color:#666;">Trade <span id="ruinTradeNum" style="color:#ddd;font-weight:600;">0</span> / <span id="ruinTradeMax">50</span></div>
+        <div style="display:flex;gap:6px;">
+          <button id="ruinPlayPauseBtn" onclick="toggleRuinPlay()" style="font-size:10px;padding:4px 10px;background:#0a0a0a;color:#ff6600;border:1px solid #ff6600;border-radius:3px;cursor:pointer;">⏸ Pause</button>
+          <button onclick="skipRuinAnimation()" style="font-size:10px;padding:4px 10px;background:#0a0a0a;color:#888;border:1px solid #333;border-radius:3px;cursor:pointer;">▶▶ Skip to End</button>
+          <button onclick="restartRuinAnimation()" style="font-size:10px;padding:4px 10px;background:#0a0a0a;color:#888;border:1px solid #333;border-radius:3px;cursor:pointer;">↺ Restart</button>
+        </div>
+      </div>
+      <div style="height:4px;background:#1a1a1a;border-radius:2px;overflow:hidden;">
+        <div id="ruinProgressBar" style="height:100%;width:0%;background:linear-gradient(90deg,#3498db,#00c97d);transition:width .3s;"></div>
+      </div>
+    </div>
+
+    <!-- Verdict (shown at end) -->
+    <div id="ruinVerdict" style="display:none;padding:14px 16px;background:#080808;border:1px solid #ff6600;border-radius:4px;">
+      <div style="font-size:10px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;font-weight:700;">// THE LESSON</div>
+      <div id="ruinVerdictText" style="font-size:12px;color:#ccc;line-height:1.7;font-family:var(--sans);"></div>
+    </div>
+
   </div>
 </div>
 
