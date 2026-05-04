@@ -3916,6 +3916,7 @@ async function startSim(){
           mean, sharpe, sortino, var95,
           cvar95: -cvar95,  // negative return → positive loss magnitude
           winRate, fullKelly: kellyFrac, kelly: kellyFrac * 0.25, ruin50,
+          avgWin, avgLoss,  // ← needed by Ruin Race animation (correct values, not recomputed)
           maxDD: -maxDDpath
         };
 
@@ -7657,27 +7658,27 @@ let ruinAnimState = {
 function openRuinAnimation(){
   // Use the actual sim's stats if available
   const stats = window._lastSimStats;
-  if(!stats || !stats.winRate || !allFinals.length){
+  if(!stats || !stats.winRate || stats.avgWin == null || stats.avgLoss == null){
     alert('Run a simulation first — the animation uses your sim\'s win rate, avg win, and avg loss.');
     return;
   }
 
-  // Compute avg win and avg loss from the sim's final returns
-  // (The actual win/loss percentages, not the path-level stats)
-  const wins = [], losses = [];
-  allFinals.forEach(f => {
-    const r = (f - SP.capital) / SP.capital;
-    if(r > 0) wins.push(r); else if(r < 0) losses.push(-r);
-  });
-  const avgWin = wins.length ? wins.reduce((a,b)=>a+b,0)/wins.length : 0.10;
-  const avgLoss = losses.length ? losses.reduce((a,b)=>a+b,0)/losses.length : 0.08;
+  // Use the trade-level avgWin and avgLoss (already correctly computed by the sim engine)
+  // These are aggregated from per-path returns where r > 0 (wins) and r < 0 (losses)
+  const winRate = stats.winRate;
+  const avgWin = stats.avgWin;
+  const avgLoss = stats.avgLoss;
+
+  // Sanity check — clamp avgLoss to avoid degenerate "everyone dies instantly" cases
+  // Worst-case real-world per-trade loss is bounded by stop-loss discipline (~30%)
+  const safeAvgLoss = Math.min(avgLoss, 0.30);
+  const safeAvgWin  = Math.min(avgWin,  0.50);
 
   // Kelly fraction = (p*b - q) / b  where b = avgWin/avgLoss, p = winRate
-  const winRate = stats.winRate;
-  const b = avgWin / avgLoss;
+  const b = safeAvgWin / safeAvgLoss;
   const kelly = Math.max(0, Math.min(1, (winRate * b - (1 - winRate)) / b));
 
-  ruinAnimState.edge = { winRate, avgWin, avgLoss, kelly };
+  ruinAnimState.edge = { winRate, avgWin: safeAvgWin, avgLoss: safeAvgLoss, kelly };
   ruinAnimState.initialCapital = SP.capital || 10000;
 
   // Update header stats
