@@ -1034,29 +1034,68 @@ td:first-child{color:var(--text);font-weight:500;}
 
 // Full universe of tickers to screen
 const SCREENER_UNIVERSE = {
-  us: ['AAPL','MSFT','NVDA','AMZN','META','GOOGL','TSLA','JPM','V','WMT',
-       'JNJ','PG','MA','HD','BAC','XOM','NFLX','ORCL','ADBE','CRM',
-       'AMD','INTC','QCOM','MU','AVGO','TXN','NOW','SNOW','PLTR','COIN',
-       'SPY','QQQ','GLD','TLT','IWM','VIX','DIS','UBER','LYFT','ABNB'],
-latam: [
-  // ── ADRs (cotizan en NYSE/NASDAQ en USD) ──
-  'MELI','NU','GLOB','STNE','VALE','ITUB','PBR','ABEV','BBD','SBS','CIB','BAP','XP','LSPD',
-  'DESP','PAGS','VIST','EC','AVAL','BVN','SCCO','BSAC','ERJ','ERO','FMX','KOF','AMX','CX',
-  'ASR','PAC',
-  // ── México (BMV) ──
-  'AMXB.MX','WALMEX.MX','BIMBOA.MX','GFNORTEO.MX','FEMSAUBD.MX','KOFUBL.MX','CEMEXCPO.MX',
-  'GAPB.MX','ASURB.MX','OMAB.MX','ALFAA.MX','GMEXICOB.MX','AC.MX','PE&OLES.MX','ELEKTRA.MX',
-  'TLEVISACPO.MX','ORBIA.MX','KIMBERA.MX','GRUMAB.MX','LIVEPOLC-1.MX','CHDRAUIB.MX','PINFRA.MX',
-  'GCARSOA1.MX','MEGACPO.MX','VOLARA.MX','CUERVO.MX',
-  // ── Brasil (B3) ──
-  'PETR4.SA','VALE3.SA','ITUB4.SA','BBAS3.SA','ABEV3.SA','MGLU3.SA','WEGE3.SA','SUZB3.SA',
-  'JBSS3.SA','BRFS3.SA','RENT3.SA','RADL3.SA','ELET3.SA','VIVT3.SA','HAPV3.SA',
-  // ── Chile (Santiago) ──
-  'SQM-B.SN','CHILE.SN','FALABELLA.SN','COPEC.SN','ENELCHILE.SN','CENCOSUD.SN',
-  // ── Argentina (Buenos Aires) ──
-  'YPFD.BA','GGAL.BA','PAMP.BA','BMA.BA','LOMA.BA',
-],
-  crypto: ['BTC/USD','ETH/USD','SOL/USD','BNB/USD','AVAX/USD','LINK/USD'],
+  us: [
+    // Mega-cap tech (Magnificent 7 + cloud)
+    'AAPL','MSFT','NVDA','AMZN','META','GOOGL','GOOG','TSLA','AVGO','ORCL',
+    'CRM','ADBE','NOW','CSCO','INTC','AMD','QCOM','TXN','MU','AMAT',
+    'LRCX','KLAC','ASML','ARM','MRVL','SMCI','PLTR','SNOW','DDOG','NET',
+    'CRWD','ZS','PANW','FTNT','OKTA','TEAM','MDB','ZM','DOCU','HUBS',
+    // Financials
+    'JPM','BAC','WFC','GS','MS','C','BLK','SCHW','AXP','V','MA','PYPL',
+    'COF','USB','PNC','TFC','SPGI','MCO','CB','PGR','MET','PRU','AIG',
+    // Healthcare/Pharma
+    'JNJ','UNH','LLY','PFE','ABBV','MRK','TMO','ABT','DHR','BMY','AMGN',
+    'GILD','CVS','CI','HUM','ELV','REGN','VRTX','ISRG','MDT','SYK','BSX',
+    // Consumer/Retail
+    'WMT','HD','COST','LOW','TGT','NKE','LULU','SBUX','MCD','CMG','YUM',
+    'KO','PEP','PG','CL','KMB','MDLZ','MNST','EL','PM','MO',
+    // Energy
+    'XOM','CVX','COP','SLB','EOG','PSX','MPC','VLO','OXY','HES',
+    // Industrials/Defense
+    'BA','LMT','RTX','GE','CAT','DE','HON','UPS','FDX','UBER','LYFT',
+    // Media/Entertainment
+    'NFLX','DIS','SPOT','RBLX','EA','TTWO','PINS','SNAP',
+    // Speculative/Meme/AI
+    'COIN','HOOD','RIVN','LCID','NIO','XPEV','BABA','JD','PDD','BIDU',
+    'SHOP','SQ','AFRM','SOFI','UPST','RKT',
+    // Big ETFs
+    'SPY','QQQ','IWM','DIA','VTI','VOO','GLD','SLV','TLT','HYG','EEM','EWZ','EWW','ARKK',
+    'XLK','XLF','XLE','XLV','XLY','XLP','XLI','XLU','XLB','XLRE','XBI','SOXX','SMH'
+  ],
+  
+  crypto: [
+    // Top 10 by market cap
+    'BTC/USD','ETH/USD','SOL/USD','BNB/USD','XRP/USD','ADA/USD','DOGE/USD',
+    'AVAX/USD','DOT/USD','MATIC/USD',
+    // L1s & L2s
+    'LINK/USD','LTC/USD','BCH/USD','ATOM/USD','NEAR/USD','APT/USD','ARB/USD',
+    'OP/USD','SUI/USD','TIA/USD','SEI/USD','INJ/USD',
+    // DeFi
+    'UNI/USD','AAVE/USD','MKR/USD','LDO/USD','RNDR/USD','GRT/USD',
+    // Memecoins (volatility plays)
+    'SHIB/USD','PEPE/USD','WIF/USD','BONK/USD','FLOKI/USD',
+    // Other notable
+    'TRX/USD','XLM/USD','HBAR/USD','VET/USD','FIL/USD','ICP/USD','ALGO/USD','XTZ/USD'
+  ],
+  
+  latam: [
+    // ── ADRs ──
+    'MELI','NU','GLOB','STNE','VALE','ITUB','PBR','ABEV','BBD','SBS','CIB','BAP','XP','LSPD',
+    'DESP','PAGS','VIST','EC','AVAL','BVN','SCCO','BSAC','ERJ','ERO','FMX','KOF','AMX','CX',
+    'ASR','PAC',
+    // ── México (BMV) ──
+    'AMXB.MX','WALMEX.MX','BIMBOA.MX','GFNORTEO.MX','FEMSAUBD.MX','KOFUBL.MX','CEMEXCPO.MX',
+    'GAPB.MX','ASURB.MX','OMAB.MX','ALFAA.MX','GMEXICOB.MX','AC.MX','PE&OLES.MX','ELEKTRA.MX',
+    'TLEVISACPO.MX','ORBIA.MX','KIMBERA.MX','GRUMAB.MX','LIVEPOLC-1.MX','CHDRAUIB.MX','PINFRA.MX',
+    'GCARSOA1.MX','MEGACPO.MX','VOLARA.MX','CUERVO.MX',
+    // ── Brasil (B3) ──
+    'PETR4.SA','VALE3.SA','ITUB4.SA','BBAS3.SA','ABEV3.SA','MGLU3.SA','WEGE3.SA','SUZB3.SA',
+    'JBSS3.SA','BRFS3.SA','RENT3.SA','RADL3.SA','ELET3.SA','VIVT3.SA','HAPV3.SA',
+    // ── Chile ──
+    'SQM-B.SN','CHILE.SN','FALABELLA.SN','COPEC.SN','ENELCHILE.SN','CENCOSUD.SN',
+    // ── Argentina ──
+    'YPFD.BA','GGAL.BA','PAMP.BA','BMA.BA','LOMA.BA',
+  ],
 };
 
 const PRESETS = {
