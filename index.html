@@ -11627,8 +11627,8 @@ function margin_color(pct, threshold, COL){
   </div>
 </div>
 <!-- ════════════════════════════════════════════════════════════════════════════
-     LATAM REAL RATE WIDGET · v3 (resilient, self-installing)
-     Drop-in replacement for v2. Paste right before </body>.
+     LATAM REAL RATE WIDGET · v3.1 (handles partial CPI failures)
+     Drop-in replacement for v3. Paste right before the LAST </body>.
      ════════════════════════════════════════════════════════════════════════════ -->
  
 <style>
@@ -11737,7 +11737,6 @@ function margin_color(pct, threshold, COL){
     renderData();
   }
  
-  // ──── Safe fetch helper: returns null on any failure instead of throwing ────
   async function safeFetch(url) {
     try {
       const r = await fetch(url);
@@ -11749,18 +11748,14 @@ function margin_color(pct, threshold, COL){
     }
   }
  
-  // ──── Compute YoY inflation with graceful fallback when 365d baseline missing ────
   function computeYoY(points) {
     if (!Array.isArray(points) || points.length < 2) return null;
     const sorted = [...points].sort((a, b) => new Date(a.date) - new Date(b.date));
     const latest = sorted[sorted.length - 1];
     if (!latest?.value) return null;
- 
     const latestDate = new Date(latest.date);
     const targetDate = new Date(latestDate);
     targetDate.setDate(targetDate.getDate() - 365);
- 
-    // Find closest point to target (within ±60 days)
     let baseline = null;
     let minDiff = Infinity;
     for (const p of sorted) {
@@ -11769,21 +11764,25 @@ function margin_color(pct, threshold, COL){
       if (diff < minDiff) { minDiff = diff; baseline = p; }
     }
     if (!baseline?.value) return null;
- 
     const daysOff = minDiff / (1000 * 60 * 60 * 24);
     const monthsCovered = (latestDate - new Date(baseline.date)) / (1000 * 60 * 60 * 24 * 30.44);
-    if (monthsCovered < 6) return null; // not enough history
- 
-    // If baseline is close to 365d (within 60d), it's a true YoY
-    // If baseline is much closer to latest, annualize the partial change
+    if (monthsCovered < 6) return null;
     const rawChange = ((latest.value - baseline.value) / baseline.value) * 100;
-    if (daysOff <= 60) {
-      return { value: rawChange, approx: false };
-    } else {
-      // Annualize: scale by 12 / months covered
-      const annualized = rawChange * (12 / monthsCovered);
-      return { value: annualized, approx: true, monthsCovered };
+    if (daysOff <= 60) return { value: rawChange, approx: false };
+    return { value: rawChange * (12 / monthsCovered), approx: true, monthsCovered };
+  }
+ 
+  // ──── Compute US CPI YoY from Core CPI as fallback when headline CPI fails ────
+  function computeCoreCpiYoY(usAll) {
+    const coreCpi = usAll?.indicators?.CORE_CPI;
+    if (!coreCpi?.latest?.value) return null;
+    // Use 90d change as approximation if no history available
+    const change90 = coreCpi.change_90d?.pct;
+    if (change90 != null) {
+      // Approximate annualized: scale 90d change × 4
+      return change90 * 4;
     }
+    return null;
   }
  
   async function renderData() {
@@ -11792,14 +11791,13 @@ function margin_color(pct, threshold, COL){
     const narrative = document.getElementById('qd-rr-narrative');
     if (!body) return;
  
-    // Fetch in parallel but tolerate individual failures
     const [mxAll, mxInpc, usAll] = await Promise.all([
       safeFetch('/api/banxico?series=all'),
       safeFetch('/api/banxico?series=INPC&days=500'),
       safeFetch('/api/fred?series=all')
     ]);
  
-    // ── Mexico side ──
+    // Mexico
     const mxPolicy = mxAll?.indicators?.POLICY?.latest?.value ?? null;
     const inflationResult = computeYoY(mxInpc?.points);
     const mxInflation = inflationResult?.value ?? null;
@@ -11807,14 +11805,18 @@ function margin_color(pct, threshold, COL){
     const mxReal = (mxPolicy != null && mxInflation != null) ? mxPolicy - mxInflation : null;
     const usdMxn30 = mxAll?.indicators?.USDMXN?.change_30d?.pct ?? null;
  
-    // ── US side ──
+    // US — with Core CPI fallback when headline CPI fails
     const usPolicy = usAll?.derived?.nominal_fed_funds ?? usAll?.indicators?.FEDFUNDS?.latest?.value ?? null;
-    const usReal = usAll?.derived?.real_fed_funds ?? null;
-    const usInflation = usAll?.derived?.cpi_yoy ?? null;
+    let usInflation = usAll?.derived?.cpi_yoy ?? null;
+    let usInflationSource = 'CPI';
+    if (usInflation == null) {
+      const coreFallback = computeCoreCpiYoY(usAll);
+      if (coreFallback != null) { usInflation = coreFallback; usInflationSource = 'Core CPI~'; }
+    }
+    const usReal = (usPolicy != null && usInflation != null) ? usPolicy - usInflation : null;
     const dxy30 = usAll?.indicators?.DXY?.change_30d?.pct ?? null;
     const vix = usAll?.indicators?.VIX?.latest?.value ?? null;
  
-    // ── Hard fail only if BOTH policy rates are missing ──
     if (mxPolicy == null && usPolicy == null) {
       body.innerHTML = `<div style="text-align:center;color:#ef4444;padding:20px;font-size:13px;">No se pudieron cargar los datos. Reintentando en 1 hora.</div>`;
       return;
@@ -11825,7 +11827,6 @@ function margin_color(pct, threshold, COL){
     const displaySpread = realSpread ?? nominalSpread;
     const spreadType = realSpread != null ? 'real' : 'nominal';
  
-    // ── Render body ──
     const mxBlock = mxPolicy != null ? `
       <div class="qd-rr-country">
         <div class="qd-rr-label">Banxico</div>
@@ -11833,7 +11834,7 @@ function margin_color(pct, threshold, COL){
         <div class="qd-rr-rate">${mxPolicy.toFixed(2)}%</div>
         <div class="qd-rr-real">${mxReal != null
           ? `Real: <strong>${mxReal >= 0 ? '+' : ''}${mxReal.toFixed(2)}%</strong> · inflación ${mxInflation.toFixed(1)}%${inflationApprox ? '*' : ''}`
-          : 'Real: <strong>—</strong>'}</div>
+          : `Nominal · inflación no disponible`}</div>
       </div>
     ` : `<div class="qd-rr-country"><div class="qd-rr-label">Banxico</div><div class="qd-rr-name">Datos no disponibles</div></div>`;
  
@@ -11843,8 +11844,8 @@ function margin_color(pct, threshold, COL){
         <div class="qd-rr-name">Fed Funds Rate</div>
         <div class="qd-rr-rate">${usPolicy.toFixed(2)}%</div>
         <div class="qd-rr-real">${usReal != null
-          ? `Real: <strong>${usReal >= 0 ? '+' : ''}${usReal.toFixed(2)}%</strong> · CPI ${usInflation != null ? usInflation.toFixed(1) : '—'}%`
-          : 'Real: <strong>—</strong>'}</div>
+          ? `Real: <strong>${usReal >= 0 ? '+' : ''}${usReal.toFixed(2)}%</strong> · ${usInflationSource} ${usInflation.toFixed(1)}%`
+          : `Nominal · CPI no disponible`}</div>
       </div>
     ` : `<div class="qd-rr-country right"><div class="qd-rr-label">Federal Reserve</div><div class="qd-rr-name">Datos no disponibles</div></div>`;
  
@@ -11858,7 +11859,6 @@ function margin_color(pct, threshold, COL){
  
     body.innerHTML = mxBlock + spreadBlock + usBlock;
  
-    // ── Narrative ──
     const tags = [];
     if (realSpread != null && realSpread >= 2.5) tags.push('<span class="qd-rr-tag">Carry alto</span>');
     else if (realSpread != null && realSpread >= 1) tags.push('<span class="qd-rr-tag warn">Carry moderado</span>');
@@ -11882,7 +11882,8 @@ function margin_color(pct, threshold, COL){
     }
  
     let footnote = '';
-    if (inflationApprox) footnote = `<div class="qd-rr-warn">* Inflación anualizada con ${inflationResult.monthsCovered.toFixed(0)} meses de historia (datos parciales).</div>`;
+    if (inflationApprox) footnote = `<div class="qd-rr-warn">* Inflación MX anualizada con ${inflationResult.monthsCovered.toFixed(0)} meses de historia.</div>`;
+    if (usInflationSource.includes('~')) footnote += `<div class="qd-rr-warn">~ CPI headline no disponible · usando Core CPI como aproximación.</div>`;
  
     narrative.innerHTML = tags.join('') + parts.join(' · ') + env + footnote;
  
