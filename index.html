@@ -1179,59 +1179,10 @@ async function runScreener(){
     );
 
     // Smart money estimates per ticker
-  const smartData = {
-  'MELI':       {squeeze:42, insider:'NONE',    inst:68, signal:'BUY',         score:72},
-  'NU':         {squeeze:38, insider:'NONE',    inst:45, signal:'BUY',         score:68},
-  'GLOB':       {squeeze:35, insider:'NONE',    inst:52, signal:'NEUTRAL',     score:60},
-  'VALE':       {squeeze:28, insider:'NONE',    inst:71, signal:'NEUTRAL',     score:52},
-  'ITUB':       {squeeze:22, insider:'NONE',    inst:62, signal:'NEUTRAL',     score:58},
-  'STNE':       {squeeze:55, insider:'NONE',    inst:38, signal:'NEUTRAL',     score:62},
-  'PBR':        {squeeze:31, insider:'NONE',    inst:58, signal:'NEUTRAL',     score:55},
-  'BBD':        {squeeze:18, insider:'NONE',    inst:54, signal:'NEUTRAL',     score:56},
-  'SBS':        {squeeze:24, insider:'NONE',    inst:48, signal:'NEUTRAL',     score:58},
-  'CIB':        {squeeze:20, insider:'NONE',    inst:52, signal:'NEUTRAL',     score:58},
-  'BAP':        {squeeze:22, insider:'NONE',    inst:50, signal:'NEUTRAL',     score:60},
-  'XP':         {squeeze:35, insider:'NONE',    inst:55, signal:'NEUTRAL',     score:58},
-  'LSPD':       {squeeze:48, insider:'NONE',    inst:45, signal:'NEUTRAL',     score:54},
-  'DESP':       {squeeze:48, insider:'NONE',    inst:42, signal:'NEUTRAL',     score:58},
-  'NVDA':       {squeeze:18, insider:'NONE',    inst:72, signal:'NEUTRAL',     score:65},
-  'TSLA':       {squeeze:32, insider:'NONE',    inst:48, signal:'NEUTRAL',     score:55},
-  'AAPL':       {squeeze:12, insider:'NONE',    inst:61, signal:'NEUTRAL',     score:55},
-  'MSFT':       {squeeze:15, insider:'NONE',    inst:73, signal:'NEUTRAL',     score:62},
-  'META':       {squeeze:20, insider:'NONE',    inst:69, signal:'NEUTRAL',     score:62},
-  'AMZN':       {squeeze:16, insider:'NONE',    inst:64, signal:'NEUTRAL',     score:60},
-  'GOOGL':      {squeeze:19, insider:'NONE',    inst:70, signal:'NEUTRAL',     score:60},
-  'COIN':       {squeeze:62, insider:'NONE',    inst:35, signal:'NEUTRAL',     score:60},
-  'PLTR':       {squeeze:58, insider:'NONE',    inst:42, signal:'NEUTRAL',     score:54},
-  'AMD':        {squeeze:35, insider:'NONE',    inst:66, signal:'NEUTRAL',     score:60},
-  'SNOW':       {squeeze:45, insider:'NONE',    inst:55, signal:'NEUTRAL',     score:55},
-  'JPM':        {squeeze:10, insider:'NONE',    inst:75, signal:'NEUTRAL',     score:62},
-  'V':          {squeeze:14, insider:'NONE',    inst:80, signal:'NEUTRAL',     score:62},
-  'WMT':        {squeeze:8,  insider:'NONE',    inst:68, signal:'NEUTRAL',     score:58},
-  'JNJ':        {squeeze:9,  insider:'NONE',    inst:74, signal:'NEUTRAL',     score:55},
-  'PG':         {squeeze:7,  insider:'NONE',    inst:72, signal:'NEUTRAL',     score:55},
-  'MA':         {squeeze:13, insider:'NONE',    inst:81, signal:'NEUTRAL',     score:62},
-  'HD':         {squeeze:11, insider:'NONE',    inst:76, signal:'NEUTRAL',     score:55},
-  'XOM':        {squeeze:15, insider:'NONE',    inst:64, signal:'NEUTRAL',     score:55},
-  'NFLX':       {squeeze:22, insider:'NONE',    inst:71, signal:'NEUTRAL',     score:60},
-  'ORCL':       {squeeze:18, insider:'NONE',    inst:65, signal:'NEUTRAL',     score:58},
-  'ADBE':       {squeeze:28, insider:'NONE',    inst:83, signal:'NEUTRAL',     score:55},
-  'CRM':        {squeeze:32, insider:'NONE',    inst:79, signal:'NEUTRAL',     score:55},
-  'BAC':        {squeeze:12, insider:'NONE',    inst:70, signal:'NEUTRAL',     score:55},
-  'WALMEX.MX':  {squeeze:15, insider:'NONE',    inst:58, signal:'NEUTRAL',     score:55},
-  'AMXB.MX':    {squeeze:20, insider:'NONE',    inst:45, signal:'NEUTRAL',     score:52},
-  'BIMBOA.MX':  {squeeze:12, insider:'NONE',    inst:42, signal:'NEUTRAL',     score:58},
-  'GFNORTEO.MX':{squeeze:18, insider:'NONE',    inst:55, signal:'NEUTRAL',     score:58},
-  'FEMSAUBD.MX':{squeeze:14, insider:'NONE',    inst:60, signal:'NEUTRAL',     score:60},
-  'KOFUBL.MX':  {squeeze:11, insider:'NONE',    inst:58, signal:'NEUTRAL',     score:58},
-  'CEMEXCPO.MX':{squeeze:32, insider:'NONE',    inst:48, signal:'NEUTRAL',     score:58},
-  'GAPB.MX':    {squeeze:9,  insider:'NONE',    inst:52, signal:'NEUTRAL',     score:60},
-  'ASURB.MX':   {squeeze:8,  insider:'NONE',    inst:54, signal:'NEUTRAL',     score:60},
-  'ALFAA.MX':   {squeeze:28, insider:'NONE',    inst:38, signal:'NEUTRAL',     score:55},
-  'PAGS':       {squeeze:45, insider:'NONE',    inst:38, signal:'NEUTRAL',     score:60},
-  'VIST':       {squeeze:38, insider:'NONE',    inst:30, signal:'NEUTRAL',     score:60},
-  'ABEV':       {squeeze:16, insider:'NONE',    inst:52, signal:'NEUTRAL',     score:54},
-};
+// smartData removed — was hardcoded with stale thesis like "CEO buying" 
+// that we couldn't verify. All tickers now use buildFallbackThesis() 
+// which generates honest descriptors from live price data only.
+const smartData = {};
 
     // Honest fallback: build thesis from what we actually know rather than fake-confident generic text
     function buildFallbackThesis(ticker, priceData){
