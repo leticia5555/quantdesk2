@@ -11626,6 +11626,277 @@ function margin_color(pct, threshold, COL){
 
   </div>
 </div>
-
+<!-- ════════════════════════════════════════════════════════════════════════════
+     LATAM REAL RATE WIDGET · v3 (resilient, self-installing)
+     Drop-in replacement for v2. Paste right before </body>.
+     ════════════════════════════════════════════════════════════════════════════ -->
+ 
+<style>
+  .qd-rr-widget {
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    border: 1px solid rgba(148, 163, 184, 0.15);
+    border-radius: 16px;
+    padding: 24px 28px;
+    margin: 0 0 24px 0;
+    color: #e2e8f0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  }
+  .qd-rr-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 20px; padding-bottom: 16px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  }
+  .qd-rr-title { display: flex; align-items: center; gap: 10px; }
+  .qd-rr-title h3 { font-size: 16px; font-weight: 600; margin: 0; color: #f1f5f9; letter-spacing: 0.3px; }
+  .qd-rr-flag { font-size: 22px; }
+  .qd-rr-dot {
+    width: 8px; height: 8px; background: #10b981; border-radius: 50%;
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+    animation: qd-rr-pulse 2s ease-in-out infinite; margin-left: 4px;
+  }
+  @keyframes qd-rr-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.4 } }
+  .qd-rr-updated { font-size: 12px; color: #64748b; font-variant-numeric: tabular-nums; }
+  .qd-rr-body { display: grid; grid-template-columns: 1fr auto 1fr; gap: 32px; align-items: center; }
+  .qd-rr-country { display: flex; flex-direction: column; gap: 6px; }
+  .qd-rr-country.right { text-align: right; align-items: flex-end; }
+  .qd-rr-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; }
+  .qd-rr-name { font-size: 13px; color: #cbd5e1; margin-bottom: 4px; }
+  .qd-rr-rate { font-size: 36px; font-weight: 700; color: #f8fafc; font-variant-numeric: tabular-nums; line-height: 1; margin-bottom: 4px; }
+  .qd-rr-real { font-size: 13px; color: #94a3b8; font-variant-numeric: tabular-nums; }
+  .qd-rr-real strong { color: #cbd5e1; font-weight: 600; }
+  .qd-rr-spread { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0 24px; }
+  .qd-rr-arrow { font-size: 20px; color: #10b981; line-height: 1; }
+  .qd-rr-value { font-size: 32px; font-weight: 800; color: #10b981; font-variant-numeric: tabular-nums; line-height: 1; letter-spacing: -0.5px; }
+  .qd-rr-vlabel { font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px; color: #64748b; font-weight: 600; }
+  .qd-rr-narrative {
+    margin-top: 20px; padding-top: 16px;
+    border-top: 1px solid rgba(148, 163, 184, 0.1);
+    font-size: 13px; color: #cbd5e1; line-height: 1.5;
+  }
+  .qd-rr-tag {
+    display: inline-block; padding: 2px 8px;
+    background: rgba(16, 185, 129, 0.15); color: #10b981;
+    border-radius: 4px; font-size: 11px; font-weight: 600;
+    margin-right: 6px; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .qd-rr-tag.warn { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+  .qd-rr-tag.bear { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+  .qd-rr-skel { height: 80px; border-radius: 8px;
+    background: linear-gradient(90deg, rgba(148,163,184,0.05) 25%, rgba(148,163,184,0.1) 50%, rgba(148,163,184,0.05) 75%);
+    background-size: 200% 100%; animation: qd-rr-shim 1.5s ease-in-out infinite;
+  }
+  @keyframes qd-rr-shim { 0% { background-position: 200% 0 } 100% { background-position: -200% 0 } }
+  .qd-rr-warn { font-size: 11px; color: #f59e0b; margin-top: 4px; font-style: italic; }
+  @media (max-width: 640px) {
+    .qd-rr-body { grid-template-columns: 1fr; gap: 20px; text-align: center; }
+    .qd-rr-country, .qd-rr-country.right { text-align: center; align-items: center; }
+    .qd-rr-rate { font-size: 28px; }
+    .qd-rr-value { font-size: 26px; }
+  }
+</style>
+ 
+<script>
+(function() {
+  const WIDGET_HTML = `
+    <div id="qd-real-rate" class="qd-rr-widget">
+      <div class="qd-rr-header">
+        <div class="qd-rr-title">
+          <span class="qd-rr-flag">🇲🇽</span>
+          <span class="qd-rr-flag">🇺🇸</span>
+          <h3>Diferencial de Tasas Reales</h3>
+          <span class="qd-rr-dot"></span>
+        </div>
+        <div class="qd-rr-updated" id="qd-rr-updated">Cargando datos en vivo…</div>
+      </div>
+      <div class="qd-rr-body" id="qd-rr-body">
+        <div class="qd-rr-skel"></div><div class="qd-rr-skel"></div><div class="qd-rr-skel"></div>
+      </div>
+      <div class="qd-rr-narrative" id="qd-rr-narrative"></div>
+    </div>
+  `;
+ 
+  function installWidget() {
+    if (document.getElementById('qd-real-rate')) return;
+    let target = null;
+    const allEls = document.querySelectorAll('[id]');
+    for (const el of allEls) {
+      const id = (el.id || '').toLowerCase();
+      if (id.includes('macro') && !id.includes('button') && !id.includes('nav')) { target = el; break; }
+    }
+    if (!target) {
+      const candidates = document.querySelectorAll('section, div, main, article');
+      for (const el of candidates) {
+        const text = (el.textContent || '').slice(0, 500);
+        if ((text.includes('Calendario') || text.includes('Banxico') || text.includes('COPOM'))
+            && el.children.length > 0 && el.children.length < 30) { target = el; break; }
+      }
+    }
+    if (!target) target = document.body;
+    target.insertAdjacentHTML('afterbegin', WIDGET_HTML);
+    renderData();
+  }
+ 
+  // ──── Safe fetch helper: returns null on any failure instead of throwing ────
+  async function safeFetch(url) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) return null;
+      return await r.json();
+    } catch (e) {
+      console.warn('QD fetch failed:', url, e);
+      return null;
+    }
+  }
+ 
+  // ──── Compute YoY inflation with graceful fallback when 365d baseline missing ────
+  function computeYoY(points) {
+    if (!Array.isArray(points) || points.length < 2) return null;
+    const sorted = [...points].sort((a, b) => new Date(a.date) - new Date(b.date));
+    const latest = sorted[sorted.length - 1];
+    if (!latest?.value) return null;
+ 
+    const latestDate = new Date(latest.date);
+    const targetDate = new Date(latestDate);
+    targetDate.setDate(targetDate.getDate() - 365);
+ 
+    // Find closest point to target (within ±60 days)
+    let baseline = null;
+    let minDiff = Infinity;
+    for (const p of sorted) {
+      if (!p?.value) continue;
+      const diff = Math.abs(new Date(p.date) - targetDate);
+      if (diff < minDiff) { minDiff = diff; baseline = p; }
+    }
+    if (!baseline?.value) return null;
+ 
+    const daysOff = minDiff / (1000 * 60 * 60 * 24);
+    const monthsCovered = (latestDate - new Date(baseline.date)) / (1000 * 60 * 60 * 24 * 30.44);
+    if (monthsCovered < 6) return null; // not enough history
+ 
+    // If baseline is close to 365d (within 60d), it's a true YoY
+    // If baseline is much closer to latest, annualize the partial change
+    const rawChange = ((latest.value - baseline.value) / baseline.value) * 100;
+    if (daysOff <= 60) {
+      return { value: rawChange, approx: false };
+    } else {
+      // Annualize: scale by 12 / months covered
+      const annualized = rawChange * (12 / monthsCovered);
+      return { value: annualized, approx: true, monthsCovered };
+    }
+  }
+ 
+  async function renderData() {
+    const body = document.getElementById('qd-rr-body');
+    const updated = document.getElementById('qd-rr-updated');
+    const narrative = document.getElementById('qd-rr-narrative');
+    if (!body) return;
+ 
+    // Fetch in parallel but tolerate individual failures
+    const [mxAll, mxInpc, usAll] = await Promise.all([
+      safeFetch('/api/banxico?series=all'),
+      safeFetch('/api/banxico?series=INPC&days=500'),
+      safeFetch('/api/fred?series=all')
+    ]);
+ 
+    // ── Mexico side ──
+    const mxPolicy = mxAll?.indicators?.POLICY?.latest?.value ?? null;
+    const inflationResult = computeYoY(mxInpc?.points);
+    const mxInflation = inflationResult?.value ?? null;
+    const inflationApprox = inflationResult?.approx ?? false;
+    const mxReal = (mxPolicy != null && mxInflation != null) ? mxPolicy - mxInflation : null;
+    const usdMxn30 = mxAll?.indicators?.USDMXN?.change_30d?.pct ?? null;
+ 
+    // ── US side ──
+    const usPolicy = usAll?.derived?.nominal_fed_funds ?? usAll?.indicators?.FEDFUNDS?.latest?.value ?? null;
+    const usReal = usAll?.derived?.real_fed_funds ?? null;
+    const usInflation = usAll?.derived?.cpi_yoy ?? null;
+    const dxy30 = usAll?.indicators?.DXY?.change_30d?.pct ?? null;
+    const vix = usAll?.indicators?.VIX?.latest?.value ?? null;
+ 
+    // ── Hard fail only if BOTH policy rates are missing ──
+    if (mxPolicy == null && usPolicy == null) {
+      body.innerHTML = `<div style="text-align:center;color:#ef4444;padding:20px;font-size:13px;">No se pudieron cargar los datos. Reintentando en 1 hora.</div>`;
+      return;
+    }
+ 
+    const nominalSpread = (mxPolicy != null && usPolicy != null) ? mxPolicy - usPolicy : null;
+    const realSpread = (mxReal != null && usReal != null) ? mxReal - usReal : null;
+    const displaySpread = realSpread ?? nominalSpread;
+    const spreadType = realSpread != null ? 'real' : 'nominal';
+ 
+    // ── Render body ──
+    const mxBlock = mxPolicy != null ? `
+      <div class="qd-rr-country">
+        <div class="qd-rr-label">Banxico</div>
+        <div class="qd-rr-name">Tasa de referencia</div>
+        <div class="qd-rr-rate">${mxPolicy.toFixed(2)}%</div>
+        <div class="qd-rr-real">${mxReal != null
+          ? `Real: <strong>${mxReal >= 0 ? '+' : ''}${mxReal.toFixed(2)}%</strong> · inflación ${mxInflation.toFixed(1)}%${inflationApprox ? '*' : ''}`
+          : 'Real: <strong>—</strong>'}</div>
+      </div>
+    ` : `<div class="qd-rr-country"><div class="qd-rr-label">Banxico</div><div class="qd-rr-name">Datos no disponibles</div></div>`;
+ 
+    const usBlock = usPolicy != null ? `
+      <div class="qd-rr-country right">
+        <div class="qd-rr-label">Federal Reserve</div>
+        <div class="qd-rr-name">Fed Funds Rate</div>
+        <div class="qd-rr-rate">${usPolicy.toFixed(2)}%</div>
+        <div class="qd-rr-real">${usReal != null
+          ? `Real: <strong>${usReal >= 0 ? '+' : ''}${usReal.toFixed(2)}%</strong> · CPI ${usInflation != null ? usInflation.toFixed(1) : '—'}%`
+          : 'Real: <strong>—</strong>'}</div>
+      </div>
+    ` : `<div class="qd-rr-country right"><div class="qd-rr-label">Federal Reserve</div><div class="qd-rr-name">Datos no disponibles</div></div>`;
+ 
+    const spreadBlock = displaySpread != null ? `
+      <div class="qd-rr-spread">
+        <div class="qd-rr-arrow">${displaySpread >= 0 ? '→' : '←'}</div>
+        <div class="qd-rr-value">${displaySpread >= 0 ? '+' : ''}${(displaySpread * 100).toFixed(0)} bps</div>
+        <div class="qd-rr-vlabel">Carry ${spreadType} MX vs US</div>
+      </div>
+    ` : `<div class="qd-rr-spread"><div class="qd-rr-vlabel">—</div></div>`;
+ 
+    body.innerHTML = mxBlock + spreadBlock + usBlock;
+ 
+    // ── Narrative ──
+    const tags = [];
+    if (realSpread != null && realSpread >= 2.5) tags.push('<span class="qd-rr-tag">Carry alto</span>');
+    else if (realSpread != null && realSpread >= 1) tags.push('<span class="qd-rr-tag warn">Carry moderado</span>');
+    else if (realSpread != null) tags.push('<span class="qd-rr-tag bear">Carry bajo</span>');
+ 
+    const parts = [];
+    if (realSpread != null) parts.push(`MXN ofrece <strong>${realSpread >= 0 ? '+' : ''}${(realSpread*100).toFixed(0)} bps</strong> de carry real vs USD`);
+    else if (nominalSpread != null) parts.push(`Diferencial nominal <strong>${nominalSpread >= 0 ? '+' : ''}${(nominalSpread*100).toFixed(0)} bps</strong> a favor de MXN`);
+    if (dxy30 != null) parts.push(`DXY ${dxy30 >= 0 ? '+' : ''}${dxy30.toFixed(1)}% (30d)`);
+    if (vix != null) parts.push(`VIX ${vix.toFixed(1)}`);
+    if (usdMxn30 != null) parts.push(`USDMXN ${usdMxn30 >= 0 ? '+' : ''}${usdMxn30.toFixed(1)}% (30d)`);
+ 
+    let env = '';
+    if (realSpread != null) {
+      if (realSpread > 2 && (dxy30 ?? 0) < 0 && (vix ?? 100) < 20)
+        env = ' · <strong style="color:#10b981">ambiente favorable a EM</strong>';
+      else if (realSpread < 1 && (vix ?? 0) > 25)
+        env = ' · <strong style="color:#ef4444">ambiente adverso a EM</strong>';
+      else
+        env = ' · <strong style="color:#f59e0b">ambiente mixto</strong>';
+    }
+ 
+    let footnote = '';
+    if (inflationApprox) footnote = `<div class="qd-rr-warn">* Inflación anualizada con ${inflationResult.monthsCovered.toFixed(0)} meses de historia (datos parciales).</div>`;
+ 
+    narrative.innerHTML = tags.join('') + parts.join(' · ') + env + footnote;
+ 
+    const now = new Date();
+    updated.textContent = `Actualizado ${now.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })} CDMX`;
+  }
+ 
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', installWidget);
+  } else {
+    installWidget();
+  }
+  setInterval(renderData, 60 * 60 * 1000);
+})();
+</script>
 </body>
 </html>
