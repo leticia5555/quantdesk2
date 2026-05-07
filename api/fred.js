@@ -9,27 +9,23 @@
 //
 // Response shape mirrors /api/banxico for consistent client integration.
 // ═══════════════════════════════════════════════════════════════
-
 const cache = new Map();
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-
-// Map our canonical names to FRED series IDs
-// Browse: https://fred.stlouisfed.org/categories
+ 
 const SERIES_MAP = {
-  FEDFUNDS:  'FEDFUNDS',     // Federal Funds Effective Rate
-  DGS10:     'DGS10',        // 10-Year Treasury yield
-  DGS2:      'DGS2',          // 2-Year Treasury yield
-  DGS30:     'DGS30',         // 30-Year Treasury yield
-  CPI:       'CPIAUCSL',      // CPI All Urban Consumers
-  CORE_CPI:  'CPILFESL',      // Core CPI (ex food/energy)
-  UNRATE:    'UNRATE',        // Unemployment rate
-  DXY:       'DTWEXBGS',      // Trade-weighted USD index (broad)
-  GDP:       'GDP',           // Gross Domestic Product
-  M2:        'M2SL',          // M2 money supply
-  VIX:       'VIXCLS',        // CBOE Volatility Index
-  SP500:     'SP500',         // S&P 500 index
+  FEDFUNDS:  'FEDFUNDS',
+  DGS10:     'DGS10',
+  DGS2:      'DGS2',
+  DGS30:     'DGS30',
+  CPI:       'CPIAUCSL',
+  CORE_CPI:  'CPILFESL',
+  UNRATE:    'UNRATE',
+  DXY:       'DTWEXBGS',
+  GDP:       'GDP',
+  M2:        'M2SL',
+  VIX:       'VIXCLS',
+  SP500:     'SP500',
 };
-
 const SERIES_META = {
   FEDFUNDS:  { name: 'Fed Funds Rate',         unit: '% annual',     decimals: 2 },
   DGS10:     { name: 'US 10Y Treasury',        unit: '% annual',     decimals: 2 },
@@ -44,18 +40,17 @@ const SERIES_META = {
   VIX:       { name: 'VIX volatility',         unit: 'index',        decimals: 2 },
   SP500:     { name: 'S&P 500',                unit: 'index',        decimals: 2 },
 };
-
+ 
 function fmtDate(d) {
   return d.toISOString().split('T')[0];
 }
-
+ 
 async function fetchSeries(seriesId, apiKey, fromDate, toDate) {
   const cacheKey = `${seriesId}|${fromDate}|${toDate}`;
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
     return { ...cached.data, _cached: true };
   }
-
   const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${apiKey}&file_type=json&observation_start=${fromDate}&observation_end=${toDate}&sort_order=asc`;
   const r = await fetch(url);
   if (!r.ok) {
@@ -64,13 +59,12 @@ async function fetchSeries(seriesId, apiKey, fromDate, toDate) {
   const data = await r.json();
   const obs = data?.observations || [];
   const points = obs
-    .filter(o => o.value && o.value !== '.')  // FRED uses '.' for missing
+    .filter(o => o.value && o.value !== '.')
     .map(o => ({
       date: o.date,
       value: parseFloat(o.value)
     }))
     .filter(p => !isNaN(p.value));
-
   const result = {
     code: seriesId,
     points,
@@ -80,13 +74,57 @@ async function fetchSeries(seriesId, apiKey, fromDate, toDate) {
   cache.set(cacheKey, { ts: Date.now(), data: result });
   return result;
 }
-
+ 
+// ──── Compute YoY change from a series of points (with ±60d tolerance) ────
+function computeYoYFromPoints(points) {
+  if (!Array.isArray(points) || points.length < 2) return null;
+  const latest = points[points.length - 1];
+  if (!latest?.value) return null;
+  const targetDate = new Date(latest.date);
+  targetDate.setDate(targetDate.getDate() - 365);
+  let baseline = null;
+  let minDiff = Infinity;
+  for (const p of points) {
+    if (!p?.value) continue;
+    const diff = Math.abs(new Date(p.date) - targetDate);
+    if (diff < minDiff) { minDiff = diff; baseline = p; }
+  }
+  if (!baseline?.value) return null;
+  return ((latest.value - baseline.value) / baseline.value) * 100;
+}
+ 
+// ──── Try CPI first, fall back to CORE_CPI if CPI is unavailable ────
+async function computeInflationYoY(apiKey, fromStr, toStr, today) {
+  const yearAgo = new Date(today.getTime() - 380 * 24 * 60 * 60 * 1000);
+  const yearAgoStr = fmtDate(yearAgo);
+ 
+  // Attempt 1: headline CPI
+  try {
+    const cpiYear = await fetchSeries(SERIES_MAP.CPI, apiKey, yearAgoStr, toStr);
+    const yoy = computeYoYFromPoints(cpiYear.points);
+    if (yoy != null) return { value: yoy, source: 'CPI', date: cpiYear.latest?.date };
+  } catch (e) {
+    console.warn('CPI YoY failed, trying Core CPI:', e.message);
+  }
+ 
+  // Attempt 2: Core CPI fallback (Fed actually prefers this for policy)
+  try {
+    const coreYear = await fetchSeries(SERIES_MAP.CORE_CPI, apiKey, yearAgoStr, toStr);
+    const yoy = computeYoYFromPoints(coreYear.points);
+    if (yoy != null) return { value: yoy, source: 'Core CPI', date: coreYear.latest?.date };
+  } catch (e) {
+    console.warn('Core CPI YoY failed:', e.message);
+  }
+ 
+  return null;
+}
+ 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
-
+ 
   const apiKey = process.env.FRED_API_KEY;
   if (!apiKey) {
     return res.status(500).json({
@@ -94,15 +132,14 @@ export default async function handler(req, res) {
       help: 'Get a free key at https://fredaccount.stlouisfed.org/apikey'
     });
   }
-
+ 
   const { series = 'all', days = '365' } = req.query;
   const daysNum = Math.min(Math.max(parseInt(days) || 365, 1), 3650);
-
   const today = new Date();
   const from = new Date(today.getTime() - daysNum * 24 * 60 * 60 * 1000);
   const fromStr = fmtDate(from);
   const toStr = fmtDate(today);
-
+ 
   try {
     if (series !== 'all') {
       const upper = series.toUpperCase();
@@ -120,13 +157,11 @@ export default async function handler(req, res) {
         ...data
       });
     }
-
-    // Key indicators in parallel
+ 
     const keySeries = ['FEDFUNDS', 'DGS10', 'DGS2', 'CPI', 'CORE_CPI', 'UNRATE', 'DXY', 'VIX'];
     const results = await Promise.allSettled(
       keySeries.map(s => fetchSeries(SERIES_MAP[s], apiKey, fromStr, toStr))
     );
-
     const out = {};
     keySeries.forEach((s, i) => {
       const r = results[i];
@@ -142,27 +177,26 @@ export default async function handler(req, res) {
         out[s] = { error: r.reason?.message || 'fetch failed' };
       }
     });
-
-    // Compute real Fed Funds rate (nominal − YoY CPI inflation) — useful for spread widget
+ 
+    // ──── Compute real Fed Funds rate with CPI → Core CPI fallback ────
     let real_rate = null;
-    try {
-      if (out.FEDFUNDS?.latest && out.CPI?.latest) {
-        // Need CPI from 12 months ago to compute YoY
-        const yearAgo = new Date(today.getTime() - 380 * 24 * 60 * 60 * 1000);
-        const cpiYear = await fetchSeries(SERIES_MAP.CPI, apiKey, fmtDate(yearAgo), toStr);
-        if (cpiYear.points.length >= 2) {
-          const oldCpi = cpiYear.points[0].value;
-          const newCpi = cpiYear.points[cpiYear.points.length - 1].value;
-          const cpi_yoy = ((newCpi - oldCpi) / oldCpi) * 100;
-          real_rate = +(out.FEDFUNDS.latest.value - cpi_yoy).toFixed(2);
-          out.CPI_YOY = {
-            meta: { name: 'CPI YoY', unit: '%', decimals: 2 },
-            latest: { date: out.CPI.latest.date, value: +cpi_yoy.toFixed(2) }
-          };
-        }
+    let cpi_yoy_value = null;
+    let cpi_source = null;
+ 
+    if (out.FEDFUNDS?.latest) {
+      const inflationResult = await computeInflationYoY(apiKey, fromStr, toStr, today);
+      if (inflationResult != null) {
+        cpi_yoy_value = +inflationResult.value.toFixed(2);
+        cpi_source = inflationResult.source;
+        real_rate = +(out.FEDFUNDS.latest.value - inflationResult.value).toFixed(2);
+        out.CPI_YOY = {
+          meta: { name: `${inflationResult.source} YoY`, unit: '%', decimals: 2 },
+          latest: { date: inflationResult.date, value: cpi_yoy_value },
+          source: inflationResult.source
+        };
       }
-    } catch (e) { /* skip if CPI YoY fails */ }
-
+    }
+ 
     return res.status(200).json({
       country: 'United States',
       source: 'FRED · St. Louis Fed',
@@ -170,11 +204,11 @@ export default async function handler(req, res) {
       derived: {
         real_fed_funds: real_rate,
         nominal_fed_funds: out.FEDFUNDS?.latest?.value || null,
-        cpi_yoy: out.CPI_YOY?.latest?.value || null
+        cpi_yoy: cpi_yoy_value,
+        cpi_source: cpi_source  // 'CPI' or 'Core CPI' so client knows which was used
       },
       generated_at: new Date().toISOString()
     });
-
   } catch (e) {
     return res.status(500).json({
       error: e.message || 'FRED fetch failed',
@@ -182,7 +216,7 @@ export default async function handler(req, res) {
     });
   }
 }
-
+ 
 function computeChange(points, daysWindow) {
   if (!points || points.length < 2) return null;
   const latest = points[points.length - 1];
