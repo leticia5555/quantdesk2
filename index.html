@@ -1098,6 +1098,19 @@ const SCREENER_UNIVERSE = {
   ],
 };
 
+// LATAM ADRs (US-listed, no exchange suffix) → country of origin
+const LATAM_ADR_COUNTRY = {
+  MELI:'Argentina', GLOB:'Argentina', DESP:'Argentina',
+  NU:'Brasil', STNE:'Brasil', VALE:'Brasil', ITUB:'Brasil', PBR:'Brasil',
+  ABEV:'Brasil', BBD:'Brasil', SBS:'Brasil', XP:'Brasil', PAGS:'Brasil',
+  ERJ:'Brasil', ERO:'Brasil',
+  CIB:'Colombia', EC:'Colombia', AVAL:'Colombia',
+  BAP:'Perú', BVN:'Perú', SCCO:'Perú',
+  BSAC:'Chile',
+  FMX:'México', KOF:'México', AMX:'México', CX:'México',
+  ASR:'México', PAC:'México', VIST:'México',
+};
+
 const PRESETS = {
   squeeze: {scSqueeze:60, scSort:'squeeze', scUniverse:'all', label:'Squeeze Candidates'},
   insider:  {scInsider:'buying', scSort:'smart_money', scUniverse:'all', label:'Insider Buying'},
@@ -1185,7 +1198,7 @@ async function runScreener(){
 const smartData = {};
 
     // Live-data fallback — no hardcoded narratives, only honest descriptors from real prices
-    function buildFallbackThesis(ticker, priceData){
+    function buildFallbackThesis(ticker, priceData, isLatam){
       const isMx = ticker.endsWith('.MX');
       const isBr = ticker.endsWith('.SA');
       const isAr = ticker.endsWith('.BA');
@@ -1198,6 +1211,8 @@ const smartData = {};
                    : isAr ? 'Argentina'
                    : isCl ? 'Chile'
                    : isCrypto ? 'Crypto'
+                   : LATAM_ADR_COUNTRY[ticker] ? LATAM_ADR_COUNTRY[ticker] + ' (ADR)'
+                   : isLatam ? 'LATAM'
                    : 'US/ADR';
       const parts = [region];
       if(ret30 !== null){
@@ -1227,16 +1242,16 @@ const smartData = {};
         // Try multiple key variations for lookup (handle exchange suffixes + BMV series suffixes)
         const tBase = t.split('.')[0];
         const tCore = tBase.replace(/(UBD|UBL|CPO|UBC)$/,'');
+        const isLatam = SCREENER_UNIVERSE.latam.includes(t);
         const sm = smartData[t]
           || smartData[tBase]
           || smartData[tCore]
           || smartData[tCore + '.MX']
           || smartData[tCore + '.SA']
-          || {squeeze:25,insider:'NONE',inst:50,signal:'NEUTRAL',score:50,thesis:buildFallbackThesis(t, d), _isFallback:true};
+          || {squeeze:25,insider:'NONE',inst:50,signal:'NEUTRAL',score:50,thesis:buildFallbackThesis(t, d, isLatam), _isFallback:true};
         const ret30 = d ? (d.return30d||0)*100 : 0;
         const sigma = d ? (d.sigma||0.3)*100 : 35;
         const price = d ? d.currentPrice : null;
-        const isLatam = SCREENER_UNIVERSE.latam.includes(t);
 
         // For LATAM tickers without price data, use fallback price 0 but still display
         if(!price && !isLatam) return null;
@@ -1330,9 +1345,9 @@ function renderScreenerResults(results, sortBy){
       // Company
       +'<div style="font-size:10px;color:#555;font-family:var(--sans);padding-right:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+r.company+'</div>'
       // Price
-      +'<div style="font-family:var(--mono);font-size:11px;color:#ccc;">$'+( r.price||0).toLocaleString(undefined,{maximumFractionDigits:2})+'</div>'
+      +'<div style="font-family:var(--mono);font-size:11px;color:'+(r.no_price?'#555':'#ccc')+';">'+(r.no_price?'n/a':'$'+r.price.toLocaleString(undefined,{maximumFractionDigits:2}))+'</div>'
       // 30d return
-      +'<div style="font-family:var(--mono);font-size:11px;color:'+retColor+';">'+(r.return30d>=0?'+':'')+r.return30d.toFixed(1)+'%</div>'
+      +'<div style="font-family:var(--mono);font-size:11px;color:'+(r.no_price?'#555':retColor)+';">'+(r.no_price?'n/a':((r.return30d>=0?'+':'')+r.return30d.toFixed(1)+'%'))+'</div>'
       // Sigma
       +'<div style="font-family:var(--mono);font-size:11px;color:#888;">'+(r.sigma_pct||0).toFixed(0)+'%</div>'
       // Squeeze
