@@ -6,6 +6,10 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set' });
+  const body = req.body || {};
+  if (!Array.isArray(body.messages) || body.messages.length === 0) {
+    return res.status(400).json({ error: 'messages must be a non-empty array' });
+  }
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -15,9 +19,9 @@ export default async function handler(req, res) {
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: req.body.model || 'claude-sonnet-4-20250514',
-        max_tokens: req.body.max_tokens || 1000,
-        messages: req.body.messages
+        model: body.model || 'claude-sonnet-4-20250514',
+        max_tokens: body.max_tokens || 1000,
+        messages: body.messages
       })
     });
     const data = await response.json();

@@ -224,7 +224,8 @@ function computeChange(points, daysWindow) {
   target.setDate(target.getDate() - daysWindow);
   const reversed = [...points].reverse();
   const earlier = reversed.find(p => new Date(p.date) <= target) || points[0];
-  if (!earlier || earlier.value === 0) return null;
+  if (!earlier || !Number.isFinite(earlier.value) || earlier.value === 0) return null;
+  if (!Number.isFinite(latest.value)) return null;
   return {
     from: earlier.value,
     to: latest.value,
