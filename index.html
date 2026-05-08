@@ -1239,65 +1239,95 @@ const smartData = {};
         const d = (r.value && r.value.currentPrice && !r.value.error)
           ? r.value
           : null;
-        // Try multiple key variations for lookup (handle exchange suffixes + BMV series suffixes)
-        const tBase = t.split('.')[0];
-        const tCore = tBase.replace(/(UBD|UBL|CPO|UBC)$/,'');
         const isLatam = SCREENER_UNIVERSE.latam.includes(t);
-        const sm = smartData[t]
-          || smartData[tBase]
-          || smartData[tCore]
-          || smartData[tCore + '.MX']
-          || smartData[tCore + '.SA']
-          || {squeeze:25,insider:'NONE',inst:50,signal:'NEUTRAL',score:50,thesis:buildFallbackThesis(t, d, isLatam), _isFallback:true};
-        const ret30 = d ? (d.return30d||0)*100 : 0;
-        const sigma = d ? (d.sigma||0.3)*100 : 35;
+        const ret30 = d && d.return30d != null ? d.return30d * 100 : null;
+        const sigma = d && d.sigma != null ? d.sigma * 100 : null;
         const price = d ? d.currentPrice : null;
 
-        // For LATAM tickers without price data, use fallback price 0 but still display
+        // For non-LATAM tickers without price data, drop the row
         if(!price && !isLatam) return null;
 
-        // Auto-adjust signal based on momentum
-        let signal = sm.signal;
-        if(ret30 < -15) signal = signal==='STRONG BUY'?'BUY':signal==='BUY'?'NEUTRAL':'SELL';
-        if(ret30 > 20) signal = signal==='NEUTRAL'?'BUY':signal==='BUY'?'STRONG BUY':signal;
+        // Real metrics from /api/price (US route only — Yahoo route doesn't supply these)
+        const shortPct  = d && Number.isFinite(d.shortPct)  ? d.shortPct  : null;
+        const shortRat  = d && Number.isFinite(d.shortRatio)? d.shortRatio: null;
+        const instPct   = d && Number.isFinite(d.instPct)   ? d.instPct   : null;
+        const insiderP  = d && Number.isFinite(d.insiderPct)? d.insiderPct: null;
+
+        // Squeeze score: short% (×2, cap 50) + days-to-cover (×4, cap 30) + momentum boost (cap 20)
+        let squeeze = null;
+        if(shortPct != null || shortRat != null){
+          let s = 0;
+          if(shortPct != null) s += Math.min(50, shortPct * 2);
+          if(shortRat != null) s += Math.min(30, shortRat * 4);
+          if(ret30   != null && ret30 > 0) s += Math.min(20, ret30 * 0.5);
+          squeeze = Math.round(Math.min(100, s));
+        }
+
+        // Smart-money score: institutional ownership (0.7×) + insider ownership (1.5×), capped 100
+        let smartMoney = null;
+        if(instPct != null || insiderP != null){
+          smartMoney = Math.min(100, Math.round((instPct||0) * 0.7 + (insiderP||0) * 1.5));
+        }
+
+        // Signal: prefer analyst consensus; fall back to momentum-derived; tilt by extreme momentum
+        let signal = (d && d.analystSignal) || null;
+        if(!signal && ret30 != null){
+          if(ret30 > 20) signal = 'BUY';
+          else if(ret30 > 5) signal = 'BUY';
+          else if(ret30 < -20) signal = 'SELL';
+          else if(ret30 < -5) signal = 'SELL';
+          else signal = 'HOLD';
+        }
+        if(signal && ret30 != null){
+          if(ret30 < -15) signal = signal==='STRONG BUY'?'BUY':signal==='BUY'?'HOLD':signal==='HOLD'?'SELL':signal;
+          if(ret30 > 20) signal = signal==='HOLD'?'BUY':signal==='BUY'?'STRONG BUY':signal;
+        }
 
         return {
           ticker: t,
           company: (d && d.longName) || t,
           sector: (d && d.sector) || (isLatam?'LATAM':'Tech'),
           price: price,
-          return30d: parseFloat(ret30.toFixed(1)),
-          sigma_pct: parseFloat(sigma.toFixed(0)),
-          squeeze_score: sm.squeeze,
-          insider_activity: sm.insider,
-          institutional_pct: sm.inst,
+          return30d: ret30 != null ? parseFloat(ret30.toFixed(1)) : null,
+          sigma_pct: sigma != null ? parseFloat(sigma.toFixed(0)) : null,
+          squeeze_score: squeeze,
+          insider_activity: (d && d.insiderActivity) || null,
+          insider_pct: insiderP,
+          institutional_pct: instPct,
           signal: signal,
-          smart_money_score: sm.score,
-          thesis: sm.thesis,
-          is_fallback: !!sm._isFallback,
+          smart_money_score: smartMoney,
+          analyst_count: (d && d.analystCount) || null,
+          thesis: buildFallbackThesis(t, d, isLatam),
           is_latam: isLatam,
           no_price: !price
         };
       })
       .filter(r => r !== null)
       .filter(r => {
-        if(r.return30d < minMomentum) return false;
-        if(r.sigma_pct < sigmaMin || r.sigma_pct > sigmaMax) return false;
-        if(r.squeeze_score < minSqueeze) return false;
-        if(insiderFilter!=='all' && r.insider_activity.toUpperCase()!==insiderFilter.toUpperCase()) return false;
-        if(signalFilter!=='all' && r.signal.toLowerCase().replace(/ /g,'_')!==signalFilter.toLowerCase().replace(/ /g,'_')) return false;
+        if(r.return30d != null && r.return30d < minMomentum) return false;
+        if(r.sigma_pct != null && (r.sigma_pct < sigmaMin || r.sigma_pct > sigmaMax)) return false;
+        if(minSqueeze > 0 && (r.squeeze_score == null || r.squeeze_score < minSqueeze)) return false;
+        if(insiderFilter!=='all'){
+          if(!r.insider_activity) return false;
+          if(r.insider_activity.toUpperCase()!==insiderFilter.toUpperCase()) return false;
+        }
+        if(signalFilter!=='all'){
+          if(!r.signal) return false;
+          if(r.signal.toLowerCase().replace(/ /g,'_')!==signalFilter.toLowerCase().replace(/ /g,'_')) return false;
+        }
         return true;
       });
 
-    // Sort
+    // Sort — null values sink to the bottom
+    const nullLast = (a,b) => (a==null) - (b==null) || (b||0) - (a||0);
     const sortFns = {
-      squeeze: (a,b)=>b.squeeze_score-a.squeeze_score,
-      momentum: (a,b)=>b.return30d-a.return30d,
-      sigma: (a,b)=>b.sigma_pct-a.sigma_pct,
-      smart_money: (a,b)=>b.smart_money_score-a.smart_money_score,
+      squeeze:    (a,b)=>nullLast(a.squeeze_score, b.squeeze_score),
+      momentum:   (a,b)=>nullLast(a.return30d,     b.return30d),
+      sigma:      (a,b)=>nullLast(a.sigma_pct,     b.sigma_pct),
+      smart_money:(a,b)=>nullLast(a.smart_money_score, b.smart_money_score),
       signal: (a,b)=>{
-        const o={'STRONG BUY':5,'BUY':4,'NEUTRAL':3,'SELL':2,'STRONG SELL':1};
-        return (o[b.signal]||3)-(o[a.signal]||3);
+        const o={'STRONG BUY':5,'BUY':4,'HOLD':3,'NEUTRAL':3,'SELL':2,'STRONG SELL':1};
+        return (o[b.signal]||0)-(o[a.signal]||0);
       }
     };
     results.sort(sortFns[sortBy]||sortFns.squeeze);
@@ -1333,13 +1363,13 @@ function renderScreenerResults(results, sortBy){
   const insColor={'BUYING':'#00c97d','SELLING':'#E24B4A','NONE':'#555'};
 
   el.innerHTML=results.map((r,i)=>{
-    const retColor=r.return30d>=0?'#00c97d':'#E24B4A';
-    const sqColor=r.squeeze_score>70?'#E24B4A':r.squeeze_score>40?'#EF9F27':'#555';
-    const sig=sigColor[r.signal]||'#888';
-    const ins=insColor[r.insider_activity]||'#555';
-    const smBar=Math.min(100,r.smart_money_score||0);
+    const NA = '<span style="color:#444;">—</span>';
+    const retColor=r.return30d!=null&&r.return30d>=0?'#00c97d':'#E24B4A';
+    const sqColor=r.squeeze_score==null?'#444':r.squeeze_score>70?'#E24B4A':r.squeeze_score>40?'#EF9F27':'#555';
+    const sig=r.signal?(sigColor[r.signal]||'#888'):'#444';
+    const ins=r.insider_activity?(insColor[r.insider_activity]||'#555'):'#444';
 
-    return '<div style="display:grid;grid-template-columns:80px 140px 90px 80px 80px 80px 90px 90px 100px 1fr;gap:0;padding:8px 16px;border-bottom:1px solid #111;background:'+(i%2===0?'#0d0d0d':'#0a0a0a')+';cursor:pointer;" onclick="openFromScreener(this.dataset.sc)" data-sc="'+r.ticker+'">' 
+    return '<div style="display:grid;grid-template-columns:80px 140px 90px 80px 80px 80px 90px 90px 100px 1fr;gap:0;padding:8px 16px;border-bottom:1px solid #111;background:'+(i%2===0?'#0d0d0d':'#0a0a0a')+';cursor:pointer;" onclick="openFromScreener(this.dataset.sc)" data-sc="'+r.ticker+'">'
       // Ticker
       +'<div><div style="font-family:var(--mono);font-size:11px;font-weight:700;color:#e0e0e0;">'+r.ticker+'</div>'+(r.is_latam?'<div style="font-size:7px;color:#ff6600;">LATAM</div>':'<div></div>')+'</div>'
       // Company
@@ -1347,25 +1377,22 @@ function renderScreenerResults(results, sortBy){
       // Price
       +'<div style="font-family:var(--mono);font-size:11px;color:'+(r.no_price?'#555':'#ccc')+';">'+(r.no_price?'n/a':'$'+r.price.toLocaleString(undefined,{maximumFractionDigits:2}))+'</div>'
       // 30d return
-      +'<div style="font-family:var(--mono);font-size:11px;color:'+(r.no_price?'#555':retColor)+';">'+(r.no_price?'n/a':((r.return30d>=0?'+':'')+r.return30d.toFixed(1)+'%'))+'</div>'
+      +'<div style="font-family:var(--mono);font-size:11px;color:'+(r.return30d==null?'#555':retColor)+';">'+(r.return30d==null?'n/a':((r.return30d>=0?'+':'')+r.return30d.toFixed(1)+'%'))+'</div>'
       // Sigma
-      +'<div style="font-family:var(--mono);font-size:11px;color:#888;">'+(r.sigma_pct||0).toFixed(0)+'%</div>'
+      +'<div style="font-family:var(--mono);font-size:11px;color:#888;">'+(r.sigma_pct==null?NA:r.sigma_pct.toFixed(0)+'%')+'</div>'
       // Squeeze
       +'<div>'
-        +'<div style="font-family:var(--mono);font-size:11px;color:'+sqColor+';">'+r.squeeze_score+'</div>'
-        +'<div style="height:2px;background:#111;margin-top:2px;width:50px;"><div style="height:100%;width:'+Math.min(100,r.squeeze_score)+'%;background:'+sqColor+';"></div></div>'
+        +'<div style="font-family:var(--mono);font-size:11px;color:'+sqColor+';">'+(r.squeeze_score==null?NA:r.squeeze_score)+'</div>'
+        +(r.squeeze_score==null?'':'<div style="height:2px;background:#111;margin-top:2px;width:50px;"><div style="height:100%;width:'+r.squeeze_score+'%;background:'+sqColor+';"></div></div>')
       +'</div>'
-      // Insider
-      +'<div style="font-family:var(--mono);font-size:10px;color:'+ins+';">'+r.insider_activity+'</div>'
-      // Institutional
-      +'<div style="font-family:var(--mono);font-size:11px;color:#888;">'+(r.institutional_pct||0).toFixed(0)+'%</div>'
-      // Signal
-      +'<div style="font-family:var(--mono);font-size:10px;font-weight:700;color:'+sig+';">'+r.signal+'</div>'
-      // Thesis (with limited-coverage indicator when fallback)
-      +'<div style="font-size:10px;color:'+(r.is_fallback?'#666':'#555')+';font-family:var(--sans);line-height:1.4;">'
-        +''
-        +r.thesis
-      +'</div>'
+      // Insider activity (last 90d net buys/sells)
+      +'<div style="font-family:var(--mono);font-size:10px;color:'+ins+';">'+(r.insider_activity||NA)+'</div>'
+      // Institutional ownership %
+      +'<div style="font-family:var(--mono);font-size:11px;color:#888;">'+(r.institutional_pct==null?NA:r.institutional_pct.toFixed(0)+'%')+'</div>'
+      // Signal (analyst consensus or momentum-derived)
+      +'<div style="font-family:var(--mono);font-size:10px;font-weight:700;color:'+sig+';">'+(r.signal||NA)+(r.analyst_count?' <span style=\"color:#444;font-weight:400;\">('+r.analyst_count+')</span>':'')+'</div>'
+      // Thesis
+      +'<div style="font-size:10px;color:#555;font-family:var(--sans);line-height:1.4;">'+r.thesis+'</div>'
       +'</div>';
   }).join('');
 }
