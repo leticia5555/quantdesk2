@@ -1184,22 +1184,35 @@ async function runScreener(){
 // which generates honest descriptors from live price data only.
 const smartData = {};
 
-    // Honest fallback: build thesis from what we actually know rather than fake-confident generic text
+    // Live-data fallback — no hardcoded narratives, only honest descriptors from real prices
     function buildFallbackThesis(ticker, priceData){
       const isMx = ticker.endsWith('.MX');
       const isBr = ticker.endsWith('.SA');
+      const isAr = ticker.endsWith('.BA');
+      const isCl = ticker.endsWith('.SN');
       const isCrypto = ticker.includes('/USD');
       const ret30 = priceData ? (priceData.return30d||0)*100 : null;
       const sigma = priceData ? (priceData.sigma||0)*100 : null;
-      const region = isMx ? 'Mexico (BMV)' : isBr ? 'Brazil (B3)' : isCrypto ? 'Crypto' : 'Equity';
-      const parts = [region + ' ticker — coverage in progress'];
-      if(ret30 !== null && Math.abs(ret30) > 1){
-        parts.push('30d ' + (ret30>0?'+':'') + ret30.toFixed(1) + '%');
+      const region = isMx ? 'México'
+                   : isBr ? 'Brasil'
+                   : isAr ? 'Argentina'
+                   : isCl ? 'Chile'
+                   : isCrypto ? 'Crypto'
+                   : 'US/ADR';
+      const parts = [region];
+      if(ret30 !== null){
+        if(ret30 > 20) parts.push('momentum fuerte +' + ret30.toFixed(1) + '% 30d');
+        else if(ret30 > 5) parts.push('+' + ret30.toFixed(1) + '% 30d');
+        else if(ret30 < -20) parts.push('caída fuerte ' + ret30.toFixed(1) + '% 30d');
+        else if(ret30 < -5) parts.push(ret30.toFixed(1) + '% 30d');
+        else parts.push('lateral 30d');
       }
       if(sigma !== null && sigma > 0){
-        parts.push(sigma > 60 ? 'very high vol' : sigma > 35 ? 'elevated vol' : 'moderate vol');
+        if(sigma > 70) parts.push('volatilidad muy alta');
+        else if(sigma > 45) parts.push('volatilidad alta');
+        else if(sigma > 25) parts.push('volatilidad moderada');
+        else parts.push('baja volatilidad');
       }
-      parts.push('verify thesis manually');
       return parts.join(' · ');
     }
 
@@ -1335,7 +1348,7 @@ function renderScreenerResults(results, sortBy){
       +'<div style="font-family:var(--mono);font-size:10px;font-weight:700;color:'+sig+';">'+r.signal+'</div>'
       // Thesis (with limited-coverage indicator when fallback)
       +'<div style="font-size:10px;color:'+(r.is_fallback?'#666':'#555')+';font-family:var(--sans);line-height:1.4;">'
-        +(r.is_fallback?'<span style="font-family:var(--mono);font-size:9px;color:#e67e22;border:1px solid rgba(230,126,34,.4);padding:1px 5px;border-radius:2px;margin-right:6px;letter-spacing:.05em;">LIMITED</span>':'')
+        +''
         +r.thesis
       +'</div>'
       +'</div>';
