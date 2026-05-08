@@ -305,14 +305,22 @@ export default async function handler(req, res) {
     const now = Math.floor(Date.now() / 1000);
     const oneYearAgo = now - 365 * 24 * 3600;
 
-    const [quoteRes, metricRes, profileRes, yahooRes] = await Promise.all([
+    // Insider window: last 90 days
+    const insiderFromTs = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+
+    const [quoteRes, metricRes, profileRes, yahooRes, recRes, insiderRes] = await Promise.all([
       fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${finnhubKey}`),
       fetch(`https://finnhub.io/api/v1/stock/metric?symbol=${symbol}&metric=all&token=${finnhubKey}`),
       fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${symbol}&token=${finnhubKey}`),
       fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?period1=${oneYearAgo}&period2=${now}&interval=1d&range=1y`,
         { headers: { 'User-Agent': 'Mozilla/5.0' } })
         .then(r => r.json())
-        .catch(() => null)
+        .catch(() => null),
+      // Best-effort: don't fail the whole call if these 429 or error
+      fetch(`https://finnhub.io/api/v1/stock/recommendation?symbol=${symbol}&token=${finnhubKey}`)
+        .then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`https://finnhub.io/api/v1/stock/insider-transactions?symbol=${symbol}&from=${insiderFromTs}&token=${finnhubKey}`)
+        .then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
 
     const [quote, metric, profile] = await Promise.all([
@@ -432,12 +440,55 @@ export default async function handler(req, res) {
       yahooLongName = yMeta?.longName || yMeta?.shortName || null;
     } catch (e) {}
 
+    // ── Short interest, ownership (from Finnhub metric — already fetched) ──
+    const pickNum = (...vals) => {
+      for (const v of vals) if (Number.isFinite(v)) return v;
+      return null;
+    };
+    const shortPct    = pickNum(m.shortInterestSharesPercent, m.shortPercentOfFloat, m.shortPercentageOfSharesOutstanding);
+    const shortRatio  = pickNum(m.shortRatio);
+    const instPct     = pickNum(m.institutionalOwnership, m.institutionalOwnershipPercent, m.percentInstitutions);
+    const insiderPct  = pickNum(m.insiderOwnership, m.insiderOwnershipPercent, m.percentInsiders);
+
+    // ── Analyst consensus → label + numeric score 1..5 ──
+    let analystSignal = null, analystScore = null, analystCount = null;
+    if (Array.isArray(recRes) && recRes.length > 0) {
+      const r = recRes[0]; // most recent period
+      const total = (r.strongBuy||0) + (r.buy||0) + (r.hold||0) + (r.sell||0) + (r.strongSell||0);
+      if (total > 0) {
+        const w = ((r.strongBuy||0)*5 + (r.buy||0)*4 + (r.hold||0)*3 + (r.sell||0)*2 + (r.strongSell||0)*1) / total;
+        analystScore = parseFloat(w.toFixed(2));
+        analystCount = total;
+        analystSignal = w >= 4.5 ? 'STRONG BUY' : w >= 3.5 ? 'BUY' : w >= 2.5 ? 'HOLD' : w >= 1.5 ? 'SELL' : 'STRONG SELL';
+      }
+    }
+
+    // ── Insider activity over last 90 days: net dollar value of transactions ──
+    let insiderActivity = null, insiderNetValue = null, insiderTxnCount = null;
+    if (insiderRes && Array.isArray(insiderRes.data)) {
+      const txns = insiderRes.data;
+      insiderTxnCount = txns.length;
+      // change > 0 = buy, change < 0 = sell; use price-weighted dollar value
+      let net = 0;
+      for (const tx of txns) {
+        const change = Number(tx.change) || 0;
+        const txPrice = Number(tx.transactionPrice) || currentPrice;
+        net += change * txPrice;
+      }
+      insiderNetValue = Math.round(net);
+      if (insiderTxnCount === 0) insiderActivity = 'NONE';
+      else if (insiderNetValue > 100000) insiderActivity = 'BUYING';
+      else if (insiderNetValue < -100000) insiderActivity = 'SELLING';
+      else insiderActivity = 'MIXED';
+    }
+
     return res.status(200).json({
       ticker: symbol,
       currentPrice: parseFloat(currentPrice.toFixed(2)),
       mu: parseFloat(mu.toFixed(4)),
       muSE: 0.08,  // ±8pp standard error (DM equities have tighter CI than EM or crypto)
       sigma: parseFloat(sigma.toFixed(4)),
+      beta: parseFloat(beta.toFixed(2)),
       high52w: parseFloat(high52w.toFixed(2)),
       low52w: parseFloat(low52w.toFixed(2)),
       return30d: parseFloat(return30d.toFixed(4)),
@@ -447,7 +498,11 @@ export default async function handler(req, res) {
       currency: profile.currency || 'USD',
       exchange: profile.exchange || '',
       longName: profile.name || yahooLongName || symbol,
-      recentPrices: closes.slice(-30).map(p => parseFloat(p.toFixed(2)))
+      recentPrices: closes.slice(-30).map(p => parseFloat(p.toFixed(2))),
+      // Real fundamentals for screener
+      shortPct, shortRatio, instPct, insiderPct,
+      analystSignal, analystScore, analystCount,
+      insiderActivity, insiderNetValue, insiderTxnCount
     });
 
   } catch (err) {
