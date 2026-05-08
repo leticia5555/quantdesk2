@@ -1197,16 +1197,18 @@ async function runScreener(){
 // which generates honest descriptors from live price data only.
 const smartData = {};
 
-    // Live-data fallback — no hardcoded narratives, only honest descriptors from real prices
+   // Live-data fallback — no hardcoded narratives, only honest descriptors from real prices
     function buildFallbackThesis(ticker, priceData, isLatam){
       const isMx = ticker.endsWith('.MX');
       const isBr = ticker.endsWith('.SA');
       const isAr = ticker.endsWith('.BA');
       const isCl = ticker.endsWith('.SN');
       const isCrypto = ticker.includes('/USD');
+      const isAr = ticker.endsWith('.BA');
+      const isCl = ticker.endsWith('.SN');
       const ret30 = priceData ? (priceData.return30d||0)*100 : null;
       const sigma = priceData ? (priceData.sigma||0)*100 : null;
-      const region = isMx ? 'México'
+const region = isMx ? 'México'
                    : isBr ? 'Brasil'
                    : isAr ? 'Argentina'
                    : isCl ? 'Chile'
@@ -1382,7 +1384,7 @@ function renderScreenerResults(results, sortBy){
       +'<div style="font-family:var(--mono);font-size:11px;color:#888;">'+(r.sigma_pct==null?NA:r.sigma_pct.toFixed(0)+'%')+'</div>'
       // Squeeze
       +'<div>'
-        +'<div style="font-family:var(--mono);font-size:11px;color:'+sqColor+';">'+(r.squeeze_score==null?NA:r.squeeze_score)+'</div>'
++'<div style="font-family:var(--mono);font-size:11px;color:'+sqColor+';">'+(r.squeeze_score==null?NA:r.squeeze_score)+'</div>'
         +(r.squeeze_score==null?'':'<div style="height:2px;background:#111;margin-top:2px;width:50px;"><div style="height:100%;width:'+r.squeeze_score+'%;background:'+sqColor+';"></div></div>')
       +'</div>'
       // Insider activity (last 90d net buys/sells)
