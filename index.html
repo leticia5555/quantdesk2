@@ -866,10 +866,6 @@ td:first-child{color:var(--text);font-weight:500;}
       <button onclick="runEarningsIntel()" style="font-family:var(--mono);font-size:10px;padding:4px 12px;background:#ff6600;border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;">ANALYZE</button>
     </div>
   </div>
-  <div style="padding:16px;border-bottom:1px solid #1a1a1a;">
-    <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:10px;">UPCOMING EARNINGS THIS WEEK</div>
-    <div id="upcomingEarnings" style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;"></div>
-  </div>
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:#111;margin-top:1px;">
     <div style="background:#0d0d0d;padding:16px;">
       <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">EPS HISTORY · SURPRISES</div>
@@ -887,6 +883,10 @@ td:first-child{color:var(--text);font-weight:500;}
   <div style="background:#0d0d0d;padding:16px;margin-top:1px;">
     <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">AI EARNINGS VERDICT</div>
     <div id="earningsVerdictPanel"><div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:20px 0;">Enter ticker to analyze</div></div>
+  </div>
+  <div style="padding:16px;border-top:1px solid #1a1a1a;">
+    <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:10px;">UPCOMING EARNINGS THIS WEEK</div>
+    <div id="upcomingEarnings" style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;"></div>
   </div>
 </div>
 
@@ -1421,8 +1421,6 @@ async function initEarningsPage(){
   loadUpcomingEarnings();
 }
 
-const attrName='data-et';
-
 // Safe JSON parse - never throws, returns null on failure
 function safeJSON(text){
   try{
@@ -1495,7 +1493,7 @@ async function loadUpcomingEarnings(){
           +companies.map(e=>{
             const impColor=e.importance==='HIGH'?'#ff6600':'#444';
             const isLatam=e.sector==='LATAM'||['MELI','NU','GLOB','DESP'].includes(e.ticker);
-        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-ticker="'+e.ticker+'" onclick="etClick(this.getAttribute(String.fromCharCode(100,97,116,97,45,116,105,99,107,101,114)))">' 
+        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-ticker="'+e.ticker+'" onclick="etClick(this.dataset.ticker)">'
               +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
               +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:#ccc;">'+e.ticker+'</span>'
               +(isLatam?'<span style="font-size:8px;padding:1px 4px;background:rgba(255,102,0,.15);color:#ff6600;border-radius:2px;">LATAM</span>':'')
@@ -1556,7 +1554,7 @@ function renderEarningsCalendar(realEarnings){
       +companies.map(e=>{
         const impColor=e.importance==='HIGH'?'#ff6600':'#444';
         const isLatam=e.is_latam||e.sector==='LATAM';
-        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-et="'+e.ticker+'" onclick="etClick(this.getAttribute(String.fromCharCode(100,97,116,97,45,116,105,99,107,101,114)))">'
+        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-ticker="'+e.ticker+'" onclick="etClick(this.dataset.ticker)">'
           +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
           +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:#ccc;">'+e.ticker+'</span>'
           +(isLatam?'<span style="font-size:8px;padding:1px 4px;background:rgba(255,102,0,.15);color:#ff6600;border-radius:2px;">LATAM</span>':'')
