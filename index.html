@@ -836,7 +836,7 @@ td:first-child{color:var(--text);font-weight:500;}
 
     <!-- SMART MONEY VERDICT -->
     <div style="background:#0d0d0d;padding:16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">AI SMART MONEY VERDICT</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">AI SMART MONEY VERDICT 🤖</div>
       <div id="smVerdictPanel">
         <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;">Enter ticker to analyze</div>
       </div>
@@ -845,7 +845,7 @@ td:first-child{color:var(--text);font-weight:500;}
 
   <!-- MARKET-WIDE SIGNALS -->
   <div style="background:#0d0d0d;padding:16px;margin-top:1px;">
-    <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">MARKET-WIDE SMART MONEY SIGNALS</div>
+    <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">MARKET-WIDE SMART MONEY SIGNALS 🤖 AI Analysis</div>
     <div id="marketSignalsPanel">
       <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:20px 0;">Loading market signals...</div>
     </div>
@@ -1988,13 +1988,19 @@ async function runSmartMoney(){
     if(el) el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:11px;text-align:center;padding:30px 0;">Loading...</div>';
   });
 
-  // ONE Claude call gets ALL smart money data at once — faster and guaranteed to have data for verdict
+  // Real insider data from SEC EDGAR (via Finnhub) runs in parallel with the
+  // Claude analysis. Insider transactions are no longer asked of Claude — we
+  // only let it produce subjective blocks (bull/bear case, trade setup, etc.).
+  const insiderPromise = fetch('/api/insider?ticker='+encodeURIComponent(ticker))
+    .then(r=>r.ok?r.json():null)
+    .catch(()=>null);
+
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,
         messages:[{role:'user',content:
-          'Bloomberg smart money data for '+ticker+' April 2026. Use SEC, FINRA, 13F knowledge. Return ONLY valid JSON with these exact keys: {"short_interest":{"short_interest_pct":number,"days_to_cover":number,"short_squeeze_score":number,"change_vs_month_ago":"INCREASED|DECREASED|STABLE","borrow_rate_pct":number,"narrative":"string"},"insider":{"transactions":[{"date":"string","insider":"string","title":"string","type":"BUY|SELL","shares":number,"value_usd":number,"price_usd":number}],"net_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"institutional":{"institutional_pct":number,"top_holders":[{"name":"string","pct":number,"change":"INCREASED|DECREASED|NEW|EXITED"}],"hedge_fund_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"options":{"put_call_ratio":number,"implied_volatility_pct":number,"iv_percentile":number,"options_sentiment":"BULLISH|BEARISH|NEUTRAL","unusual_activity":"YES|NO","notable_flow":"string","max_pain":number,"key_strikes":[{"strike":number,"type":"CALL|PUT","open_interest":number,"significance":"HIGH|MEDIUM"}]},"verdict":{"overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","conviction":"HIGH|MEDIUM|LOW","smart_money_score":number,"key_insight":"string","bull_case":"string","bear_case":"string","trade_setup":"string","risk_flags":["string"]}}'}]})
+          'Bloomberg smart money data for '+ticker+' April 2026. Use SEC, FINRA, 13F knowledge. Return ONLY valid JSON with these exact keys: {"short_interest":{"short_interest_pct":number,"days_to_cover":number,"short_squeeze_score":number,"change_vs_month_ago":"INCREASED|DECREASED|STABLE","borrow_rate_pct":number,"narrative":"string"},"institutional":{"institutional_pct":number,"top_holders":[{"name":"string","pct":number,"change":"INCREASED|DECREASED|NEW|EXITED"}],"hedge_fund_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"options":{"put_call_ratio":number,"implied_volatility_pct":number,"iv_percentile":number,"options_sentiment":"BULLISH|BEARISH|NEUTRAL","unusual_activity":"YES|NO","notable_flow":"string","max_pain":number,"key_strikes":[{"strike":number,"type":"CALL|PUT","open_interest":number,"significance":"HIGH|MEDIUM"}]},"verdict":{"overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","conviction":"HIGH|MEDIUM|LOW","smart_money_score":number,"key_insight":"string","bull_case":"string","bear_case":"string","trade_setup":"string","risk_flags":["string"]}}'}]})
     });
 
     if(!r.ok) throw new Error('API error: '+r.status);
@@ -2022,18 +2028,22 @@ async function runSmartMoney(){
       data.verdict.smart_money_score = s;
     }
     renderShortInterest(data.short_interest);
-    renderInsiderTransactions(data.insider);
     renderInstitutional(data.institutional);
     renderOptionsSentiment(data.options);
     renderSmVerdict(data.verdict);
 
+    // Real insider data — render once /api/insider resolves (it ran in parallel)
+    insiderPromise.then(renderInsiderTransactions);
+
   }catch(e){
     console.error('Smart money error:', e.message);
     const errMsg='<div style="color:#E24B4A;font-family:var(--mono);font-size:11px;padding:16px;">'+e.message+'<br><br><span style="color:#555;font-size:10px;">Open console for details</span></div>';
-    ['shortInterestPanel','insiderPanel','institutionalPanel','optionsPanel','smVerdictPanel'].forEach(id=>{
+    // Insider panel is independent of Claude — let the real /api/insider call still populate it
+    ['shortInterestPanel','institutionalPanel','optionsPanel','smVerdictPanel'].forEach(id=>{
       const el=document.getElementById(id);
       if(el) el.innerHTML=errMsg;
     });
+    insiderPromise.then(renderInsiderTransactions);
   }
 }
 
@@ -2069,34 +2079,58 @@ function renderShortInterest(si){
     +'<p style="font-size:11px;color:#666;font-family:var(--sans);line-height:1.6;border-top:1px solid #1a1a1a;padding-top:8px;">'+si.narrative+'</p>';
 }
 
-// ── Render Insider Transactions ───────────────────────
+// ── Render Insider Transactions (real SEC EDGAR Form 4 via /api/insider) ──
 function renderInsiderTransactions(ins){
   const el=document.getElementById('insiderPanel');
-  if(!el||!ins) return;
-  const sentColor={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'}[ins.net_sentiment]||'#888';
-  let txRows=(ins.transactions||[]).map(tx=>{
-    const isBuy=tx.type==='BUY';
-    const col=isBuy?'#00c97d':'#E24B4A';
-    const val=tx.value_usd>1000000?'$'+(tx.value_usd/1000000).toFixed(1)+'M':'$'+(tx.value_usd/1000).toFixed(0)+'K';
+  if(!el) return;
+  const escape=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const fmtVal=v=>{
+    const a=Math.abs(v||0);
+    if(a>=1e9)return '$'+(v/1e9).toFixed(2)+'B';
+    if(a>=1e6)return '$'+(v/1e6).toFixed(1)+'M';
+    if(a>=1e3)return '$'+(v/1e3).toFixed(0)+'K';
+    return '$'+(v||0).toFixed(0);
+  };
+  const hasData = ins && Array.isArray(ins.transactions) && ins.transactions.length > 0;
+  const sourceLine = hasData
+    ? 'SOURCE: SEC EDGAR Form 4 (via Finnhub) · Live data'
+    : 'SOURCE: No SEC data available for this ticker';
+
+  if(!hasData){
+    el.innerHTML='<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:10px;">'+sourceLine+'</div>'
+      +'<div style="color:#666;font-family:var(--sans);font-size:11px;line-height:1.5;padding:20px 0;text-align:center;">No SEC insider data available for this ticker.<br><span style="color:#444;font-size:10px;">Coverage limited to US-listed equities.</span></div>';
+    return;
+  }
+
+  const sentColor={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'}[ins.netSentiment]||'#888';
+  const txRows=ins.transactions.map(tx=>{
+    const t=tx.type||'OTHER';
+    const isBuy=t==='BUY';
+    const isSell=t==='SELL';
+    const col=isBuy?'#00c97d':isSell?'#E24B4A':'#888';
+    const bg=isBuy?'rgba(0,201,125,.15)':isSell?'rgba(226,75,74,.15)':'rgba(136,136,136,.15)';
+    const dateStr=tx.transactionDate||tx.filingDate||'';
     return '<div style="display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid #1a1a1a;flex-wrap:wrap;">'
-      +'<span style="font-family:var(--mono);font-size:9px;color:#444;min-width:65px;">'+tx.date+'</span>'
-      +'<span style="font-size:9px;padding:1px 6px;background:'+(isBuy?'rgba(0,201,125,.15)':'rgba(226,75,74,.15)')+';color:'+col+';font-family:var(--mono);">'+tx.type+'</span>'
+      +'<span style="font-family:var(--mono);font-size:9px;color:#444;min-width:65px;">'+escape(dateStr)+'</span>'
+      +'<span style="font-size:9px;padding:1px 6px;background:'+bg+';color:'+col+';font-family:var(--mono);">'+escape(t)+'</span>'
       +'<div style="flex:1;min-width:80px;">'
-      +'<div style="font-size:10px;color:#ccc;font-family:var(--mono);">'+tx.insider+'</div>'
-      +'<div style="font-size:9px;color:#444;">'+tx.title+'</div>'
+      +'<div style="font-size:10px;color:#ccc;font-family:var(--mono);">'+escape(tx.name||'—')+'</div>'
+      +(tx.title?'<div style="font-size:9px;color:#444;">'+escape(tx.title)+'</div>':'')
       +'</div>'
       +'<div style="text-align:right;">'
-      +'<div style="font-family:var(--mono);font-size:11px;font-weight:600;color:'+col+';">'+val+'</div>'
+      +'<div style="font-family:var(--mono);font-size:11px;font-weight:600;color:'+col+';">'+fmtVal(tx.value)+'</div>'
       +'<div style="font-size:9px;color:#444;">'+(tx.shares||0).toLocaleString()+' shares</div>'
       +'</div>'
       +'</div>';
   }).join('');
-  el.innerHTML='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">'
+
+  el.innerHTML='<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:8px;">'+sourceLine+'</div>'
+    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">'
     +'<span style="font-family:var(--mono);font-size:10px;color:#555;">NET SENTIMENT</span>'
-    +'<span style="font-family:var(--mono);font-size:12px;font-weight:700;color:'+sentColor+';">'+ins.net_sentiment+'</span>'
+    +'<span style="font-family:var(--mono);font-size:12px;font-weight:700;color:'+sentColor+';">'+escape(ins.netSentiment||'NEUTRAL')+'</span>'
     +'</div>'
     +txRows
-    +'<p style="font-size:11px;color:#555;font-family:var(--sans);line-height:1.5;margin-top:8px;border-top:1px solid #1a1a1a;padding-top:8px;">'+(ins.summary||'')+'</p>';
+    +(ins.summary?'<p style="font-size:11px;color:#555;font-family:var(--sans);line-height:1.5;margin-top:8px;border-top:1px solid #1a1a1a;padding-top:8px;">'+escape(ins.summary)+'</p>':'');
 }
 
 
@@ -2226,7 +2260,8 @@ function renderSmVerdict(v){
     +'<div style="font-size:11px;color:#ccc;font-family:var(--sans);">'+v.trade_setup+'</div>'
     +'</div>'
     +((v.risk_flags&&v.risk_flags.length)?'<div style="font-family:var(--mono);font-size:9px;color:#E24B4A;margin-bottom:4px;">RISK FLAGS</div>'
-      +v.risk_flags.map(f=>'<div style="font-size:10px;color:#666;padding:2px 0;">⚠ '+f+'</div>').join(''):'');
+      +v.risk_flags.map(f=>'<div style="font-size:10px;color:#666;padding:2px 0;">⚠ '+f+'</div>').join(''):'')
+    +'<div style="margin-top:12px;padding-top:8px;border-top:1px solid #1a1a1a;font-family:var(--sans);font-size:9px;color:#555;line-height:1.4;">⚠️ AI-generated analysis. Not financial advice. Verify with primary sources.</div>';
 }
 
 
