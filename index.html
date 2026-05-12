@@ -11508,8 +11508,8 @@ function margin_color(pct, threshold, COL){
       <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
         <span class="agent-icon" style="font-size:18px;">📚</span>
         <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Filings Agent</span>
-        <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">SEC EDGAR · 10-K analysis</span>
-        <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">US stocks · LATAM ADRs (MELI, NU, VALE, FMX…)</span>
+        <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">SEC EDGAR · 10-K / 20-F analysis</span>
+        <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">US stocks · LATAM ADRs · Form 10-K and 20-F</span>
       </div>
 
       <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;position:relative;">
@@ -12192,18 +12192,20 @@ function margin_color(pct, threshold, COL){
     return '#888';
   };
 
-  // Render "Item 1A, p.42" as a clickable link pointing into the actual 10-K
-  function renderCitation(source, filingUrl) {
+  // Render "Item 1A, p.42" (10-K) or "Item 3.D, p.42" (20-F) as a
+  // clickable link pointing into the actual filing.
+  function renderCitation(source, filingUrl, filingType) {
     if (!source) return '';
     const txt = escapeHtml(source);
+    const ft = filingType ? escapeHtml(filingType) : 'filing';
     if (!filingUrl) {
       return `<span style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.05em;">📄 ${txt}</span>`;
     }
-    // Extract "Item 1A" → SEC EDGAR doesn't take anchors reliably, but we
-    // still link to the document so the user can ctrl-F to the section.
+    // SEC EDGAR doesn't take anchors reliably, but we still link to the
+    // document so the user can ctrl-F to the cited section.
     return `<a href="${escapeHtml(filingUrl)}" target="_blank" rel="noopener noreferrer"
       style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.05em;text-decoration:none;border-bottom:1px dotted #333;"
-      title="Open 10-K on SEC.gov">📄 ${txt}</a>`;
+      title="Open ${ft} on SEC.gov">📄 ${txt}</a>`;
   }
 
   function setStatus(html) {
@@ -12322,19 +12324,21 @@ function margin_color(pct, threshold, COL){
     const filingUrl = payload.filing_url || '';
     const indexUrl = payload.index_url || '';
     const company = payload.company_name || payload.ticker;
+    const filingTypeRaw = payload.filing_type || '10-K';
+    const filingType = escapeHtml(filingTypeRaw);
 
     // ── Header ──
     const header = `
       <div style="display:flex;align-items:flex-start;gap:12px;padding:14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${GREEN};border-radius:3px;margin-bottom:12px;flex-wrap:wrap;">
         <div style="flex:1;min-width:220px;">
-          <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:4px;">// 10-K ANALYSIS COMPLETE</div>
+          <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:4px;">// ${filingType} ANALYSIS COMPLETE</div>
           <div style="font-family:var(--mono);font-size:14px;color:#ddd;font-weight:700;letter-spacing:.05em;">${escapeHtml(payload.ticker)} · ${escapeHtml(company)}</div>
           <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:3px;">
             Filed ${escapeHtml(payload.filing_date || '—')}${payload.report_date ? ' · Period ' + escapeHtml(payload.report_date) : ''} · CIK ${escapeHtml(payload.cik || '—')}
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;">
-          ${filingUrl ? `<a href="${escapeHtml(filingUrl)}" target="_blank" rel="noopener noreferrer" style="font-family:var(--mono);font-size:10px;color:${GREEN};text-decoration:none;border:1px solid rgba(0,201,125,.3);padding:4px 10px;border-radius:2px;">↗ Open 10-K on SEC.gov</a>` : ''}
+          ${filingUrl ? `<a href="${escapeHtml(filingUrl)}" target="_blank" rel="noopener noreferrer" style="font-family:var(--mono);font-size:10px;color:${GREEN};text-decoration:none;border:1px solid rgba(0,201,125,.3);padding:4px 10px;border-radius:2px;">↗ Open ${filingType} on SEC.gov</a>` : ''}
           ${indexUrl ? `<a href="${escapeHtml(indexUrl)}" target="_blank" rel="noopener noreferrer" style="font-family:var(--mono);font-size:9px;color:#666;text-decoration:none;">All filings →</a>` : ''}
         </div>
       </div>`;
@@ -12356,7 +12360,7 @@ function margin_color(pct, threshold, COL){
             return `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid ${col};border-radius:3px;padding:10px;">
               <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:6px;">
                 <span style="font-family:var(--mono);font-size:8px;color:${col};letter-spacing:.1em;padding:2px 6px;border:1px solid ${col}40;border-radius:2px;text-transform:uppercase;">${escapeHtml(r.severity || 'risk')}</span>
-                ${renderCitation(r.source, filingUrl)}
+                ${renderCitation(r.source, filingUrl, filingTypeRaw)}
               </div>
               <div style="font-family:var(--mono);font-size:11px;color:#ccc;line-height:1.5;">${escapeHtml(r.risk || '')}</div>
             </div>`;
@@ -12384,7 +12388,7 @@ function margin_color(pct, threshold, COL){
                   <td style="padding:8px 10px;color:#ddd;">${escapeHtml(s.name || '—')}</td>
                   <td style="padding:8px 10px;text-align:right;color:#ccc;">${escapeHtml(s.revenue || '—')}</td>
                   <td style="padding:8px 10px;text-align:right;color:${yoyColor(s.yoy_growth)};font-weight:600;">${escapeHtml(s.yoy_growth || '—')}</td>
-                  <td style="padding:8px 10px;text-align:right;">${renderCitation(s.source, filingUrl)}</td>
+                  <td style="padding:8px 10px;text-align:right;">${renderCitation(s.source, filingUrl, filingTypeRaw)}</td>
                 </tr>`).join('')}
             </tbody>
           </table>
@@ -12397,7 +12401,7 @@ function margin_color(pct, threshold, COL){
       <div style="margin-bottom:12px;padding:12px;background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
           <span style="font-family:var(--mono);font-size:9px;color:#9b59b6;letter-spacing:.15em;">// MANAGEMENT COMMENTARY</span>
-          ${mc.source ? renderCitation(mc.source, filingUrl) : ''}
+          ${mc.source ? renderCitation(mc.source, filingUrl, filingTypeRaw) : ''}
         </div>
         ${mc.tone_shift ? `<div style="margin-bottom:8px;">
           <span style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;">TONE SHIFT:</span>
@@ -12419,7 +12423,7 @@ function margin_color(pct, threshold, COL){
           <div style="background:rgba(255,58,58,.05);border:1px solid rgba(255,58,58,.25);border-left:3px solid ${RED};border-radius:3px;padding:10px;margin-bottom:6px;">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:6px;">
               <div style="font-family:var(--mono);font-size:11px;color:#ddd;font-weight:600;">${escapeHtml(f.flag || '')}</div>
-              ${renderCitation(f.source, filingUrl)}
+              ${renderCitation(f.source, filingUrl, filingTypeRaw)}
             </div>
             ${f.why_concerning ? `<div style="font-family:var(--mono);font-size:10px;color:#aaa;line-height:1.5;">${escapeHtml(f.why_concerning)}</div>` : ''}
           </div>`).join('')}
