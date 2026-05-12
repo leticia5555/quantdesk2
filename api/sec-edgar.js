@@ -99,7 +99,13 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const rawTicker = (req.query.ticker || '').toString().trim();
-  const filingType = (req.query.filing || '10-K').toString().trim().toUpperCase();
+  // `filing` accepts a single type ("10-K"), a comma-separated priority list
+  // ("10-K,20-F"), or the alias "ANNUAL" — all meaning "find the most recent
+  // matching annual report, preferring earlier entries in the list".
+  const filingParam = (req.query.filing || '10-K,20-F').toString().trim().toUpperCase();
+  const filingPriority = filingParam === 'ANNUAL'
+    ? ['10-K', '20-F']
+    : filingParam.split(',').map(s => s.trim()).filter(Boolean);
 
   if (!rawTicker) {
     return res.status(400).json({ error: 'ticker query param required' });
@@ -136,21 +142,28 @@ export default async function handler(req, res) {
       });
     }
 
-    // Find the most recent filing matching the requested type.
-    // recent.form is parallel to accessionNumber, filingDate, primaryDocument.
+    // Find the most recent filing in the priority order.
+    // recent.form is parallel to accessionNumber, filingDate, primaryDocument
+    // and is already in reverse-chron order. Pick the earliest-priority type
+    // for which any filing exists.
     let idx = -1;
-    for (let i = 0; i < recent.form.length; i++) {
-      if ((recent.form[i] || '').toUpperCase() === filingType) {
-        idx = i;
-        break; // filings are in reverse-chron order
+    let matchedType = null;
+    for (const type of filingPriority) {
+      for (let i = 0; i < recent.form.length; i++) {
+        if ((recent.form[i] || '').toUpperCase() === type) {
+          idx = i;
+          matchedType = type;
+          break;
+        }
       }
+      if (idx !== -1) break;
     }
 
     if (idx === -1) {
-      return res.status(200).json({
-        error: `No ${filingType} filing found for this ticker`,
-        ticker
-      });
+      const human = filingPriority.length > 1
+        ? `No annual filing (${filingPriority.join(' or ')}) found for this ticker`
+        : `No ${filingPriority[0]} filing found for this ticker`;
+      return res.status(200).json({ error: human, ticker });
     }
 
     const accessionNumber = recent.accessionNumber[idx];
@@ -161,7 +174,7 @@ export default async function handler(req, res) {
     const cikInt = parseInt(hit.cik, 10);
 
     const filingUrl = `https://www.sec.gov/Archives/edgar/data/${cikInt}/${accessionNoDashes}/${primaryDocument}`;
-    const indexUrl = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${paddedCik}&type=${encodeURIComponent(filingType)}&dateb=&owner=include&count=10`;
+    const indexUrl = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${paddedCik}&type=${encodeURIComponent(matchedType)}&dateb=&owner=include&count=10`;
 
     const filingText = await fetchFilingText(filingUrl);
 
@@ -172,7 +185,7 @@ export default async function handler(req, res) {
       ticker,
       company_name: submissions.name || hit.title,
       cik: paddedCik,
-      filing_type: filingType,
+      filing_type: matchedType,
       filing_date: filingDate,
       report_date: reportDate,
       accession_number: accessionNumber,
