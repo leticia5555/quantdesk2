@@ -11497,31 +11497,32 @@ function margin_color(pct, threshold, COL){
 
   <!-- ─── RESEARCH AGENTS (Sprint 1: Filings Agent) ─────────────────── -->
   <section id="researchAgentsSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
-    <div style="max-width:1400px;margin:0 auto;">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-        <span style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// RESEARCH AGENTS</span>
-        <div style="flex:1;height:1px;background:#1a1a1a;"></div>
-        <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;">SPRINT 1</span>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// RESEARCH AGENTS</span>
+      <div style="flex:1;height:1px;background:#1a1a1a;"></div>
+      <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;">SPRINT 1</span>
+    </div>
+    <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Institutional-grade analysis powered by SEC EDGAR + Claude</div>
+
+    <div class="research-agent-card" style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid var(--green,#00c97d);border-radius:4px;padding:16px;">
+      <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+        <span class="agent-icon" style="font-size:18px;">📚</span>
+        <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Filings Agent</span>
+        <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">SEC EDGAR · 10-K analysis</span>
+        <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">US stocks · LATAM ADRs (MELI, NU, VALE, FMX…)</span>
       </div>
-      <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Institutional-grade analysis powered by SEC EDGAR + Claude</div>
 
-      <div class="research-agent-card" style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid var(--green,#00c97d);border-radius:4px;padding:16px;">
-        <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
-          <span class="agent-icon" style="font-size:18px;">📚</span>
-          <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Filings Agent</span>
-          <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">SEC EDGAR · 10-K analysis</span>
-          <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">US stocks · LATAM ADRs (MELI, NU, VALE, FMX…)</span>
+      <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;position:relative;">
+        <div style="flex:1;min-width:220px;position:relative;">
+          <input id="filingsAgentTicker" placeholder="Enter ticker (e.g., NVDA, MELI, FMX)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="filingsAgentDropdown" aria-expanded="false"
+                 style="width:100%;box-sizing:border-box;background:#080808;border:1px solid #222;color:#ddd;font-family:var(--mono);font-size:12px;padding:9px 12px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;" />
+          <div id="filingsAgentDropdown" role="listbox" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#0a0a0a;border:1px solid #222;border-radius:3px;z-index:200;max-height:320px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,.6);"></div>
         </div>
-
-        <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-          <input id="filingsAgentTicker" placeholder="Enter ticker (e.g., NVDA, MELI, FMX)" autocomplete="off" spellcheck="false"
-                 style="flex:1;min-width:220px;background:#080808;border:1px solid #222;color:#ddd;font-family:var(--mono);font-size:12px;padding:9px 12px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;" />
-          <button id="filingsAgentBtn"
-                  style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE 10-K</button>
-        </div>
-
-        <div id="filingsAgentOutput" class="agent-output" style="font-family:var(--mono);font-size:11px;color:#888;"></div>
+        <button id="filingsAgentBtn"
+                style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE 10-K</button>
       </div>
+
+      <div id="filingsAgentOutput" class="agent-output" style="font-family:var(--mono);font-size:11px;color:#888;"></div>
     </div>
   </section>
 
@@ -12022,7 +12023,7 @@ function margin_color(pct, threshold, COL){
 })();
 </script>
 
-<!-- ─── FILINGS AGENT (Sprint 1) ─────────────────────────────────────── -->
+<!-- ─── FILINGS AGENT (Sprint 1 + 1.5) ───────────────────────────────── -->
 <script>
 (function(){
   const GREEN = '#00c97d';
@@ -12033,6 +12034,140 @@ function margin_color(pct, threshold, COL){
   const escapeHtml = s => String(s == null ? '' : s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+  // ── Ticker autocomplete catalog ───────────────────────────────────
+  // A symbol's region determines whether SEC EDGAR has filings for it:
+  //   us       — US-listed common stocks   → ✓ EDGAR
+  //   adr      — LATAM company, US ADR     → ✓ EDGAR
+  //   latam    — LATAM local listing       → ✗ no EDGAR
+  // Crypto symbols (BTC/USD…) are excluded from this list — EDGAR has
+  // no filings for tokens, so surfacing them here would only mislead.
+
+  const COUNTRY_FLAG = {
+    Argentina:'🇦🇷', Brasil:'🇧🇷', Chile:'🇨🇱', Colombia:'🇨🇴',
+    'México':'🇲🇽', Mexico:'🇲🇽', Perú:'🇵🇪', Peru:'🇵🇪'
+  };
+
+  const EXCHANGE_COUNTRY = {
+    '.MX':'México', '.SA':'Brasil', '.SN':'Chile', '.BA':'Argentina'
+  };
+
+  // Small curated names map. Keeps autocomplete rows readable without
+  // requiring a network lookup. Tickers absent here just show their symbol.
+  const TICKER_NAMES = {
+    AAPL:'Apple', MSFT:'Microsoft', NVDA:'NVIDIA', AMZN:'Amazon', META:'Meta Platforms',
+    GOOGL:'Alphabet (Class A)', GOOG:'Alphabet (Class C)', TSLA:'Tesla', AVGO:'Broadcom',
+    ORCL:'Oracle', CRM:'Salesforce', ADBE:'Adobe', NOW:'ServiceNow', CSCO:'Cisco',
+    INTC:'Intel', AMD:'AMD', QCOM:'Qualcomm', TXN:'Texas Instruments', MU:'Micron',
+    AMAT:'Applied Materials', LRCX:'Lam Research', KLAC:'KLA', ASML:'ASML', ARM:'Arm Holdings',
+    MRVL:'Marvell', SMCI:'Super Micro', PLTR:'Palantir', SNOW:'Snowflake', DDOG:'Datadog',
+    NET:'Cloudflare', CRWD:'CrowdStrike', ZS:'Zscaler', PANW:'Palo Alto Networks',
+    FTNT:'Fortinet', OKTA:'Okta', TEAM:'Atlassian', MDB:'MongoDB', ZM:'Zoom',
+    DOCU:'DocuSign', HUBS:'HubSpot',
+    JPM:'JPMorgan Chase', BAC:'Bank of America', WFC:'Wells Fargo', GS:'Goldman Sachs',
+    MS:'Morgan Stanley', C:'Citigroup', BLK:'BlackRock', SCHW:'Charles Schwab',
+    AXP:'American Express', V:'Visa', MA:'Mastercard', PYPL:'PayPal', COF:'Capital One',
+    USB:'U.S. Bancorp', PNC:'PNC Financial', TFC:'Truist', SPGI:'S&P Global', MCO:"Moody's",
+    CB:'Chubb', PGR:'Progressive', MET:'MetLife', PRU:'Prudential', AIG:'AIG',
+    JNJ:'Johnson & Johnson', UNH:'UnitedHealth', LLY:'Eli Lilly', PFE:'Pfizer',
+    ABBV:'AbbVie', MRK:'Merck', TMO:'Thermo Fisher', ABT:'Abbott', DHR:'Danaher',
+    BMY:'Bristol-Myers', AMGN:'Amgen', GILD:'Gilead', CVS:'CVS Health', CI:'Cigna',
+    HUM:'Humana', ELV:'Elevance', REGN:'Regeneron', VRTX:'Vertex', ISRG:'Intuitive Surgical',
+    MDT:'Medtronic', SYK:'Stryker', BSX:'Boston Scientific',
+    WMT:'Walmart', HD:'Home Depot', COST:'Costco', LOW:"Lowe's", TGT:'Target',
+    NKE:'Nike', LULU:'Lululemon', SBUX:'Starbucks', MCD:"McDonald's", CMG:'Chipotle',
+    YUM:'Yum! Brands', KO:'Coca-Cola', PEP:'PepsiCo', PG:'Procter & Gamble',
+    CL:'Colgate-Palmolive', KMB:'Kimberly-Clark', MDLZ:'Mondelez', MNST:'Monster Beverage',
+    EL:'Estée Lauder', PM:'Philip Morris', MO:'Altria',
+    XOM:'ExxonMobil', CVX:'Chevron', COP:'ConocoPhillips', SLB:'Schlumberger',
+    EOG:'EOG Resources', PSX:'Phillips 66', MPC:'Marathon Petroleum', VLO:'Valero',
+    OXY:'Occidental', HES:'Hess',
+    BA:'Boeing', LMT:'Lockheed Martin', RTX:'RTX', GE:'GE Aerospace', CAT:'Caterpillar',
+    DE:'Deere', HON:'Honeywell', UPS:'UPS', FDX:'FedEx', UBER:'Uber', LYFT:'Lyft',
+    NFLX:'Netflix', DIS:'Disney', SPOT:'Spotify', RBLX:'Roblox', EA:'Electronic Arts',
+    TTWO:'Take-Two', PINS:'Pinterest', SNAP:'Snap',
+    COIN:'Coinbase', HOOD:'Robinhood', RIVN:'Rivian', LCID:'Lucid', NIO:'NIO',
+    XPEV:'XPeng', BABA:'Alibaba', JD:'JD.com', PDD:'PDD Holdings', BIDU:'Baidu',
+    SHOP:'Shopify', SQ:'Block', AFRM:'Affirm', SOFI:'SoFi', UPST:'Upstart', RKT:'Rocket',
+    SPY:'S&P 500 ETF', QQQ:'Nasdaq 100 ETF', IWM:'Russell 2000 ETF', DIA:'Dow ETF',
+    VTI:'Total Market ETF', VOO:'S&P 500 ETF', GLD:'Gold ETF', SLV:'Silver ETF',
+    TLT:'20+Y Treasury ETF', HYG:'High Yield ETF', EEM:'Emerging Markets ETF',
+    EWZ:'Brazil ETF', EWW:'Mexico ETF', ARKK:'ARK Innovation', XLK:'Tech Sector ETF',
+    XLF:'Financials ETF', XLE:'Energy ETF', XLV:'Healthcare ETF', XLY:'Consumer Disc. ETF',
+    XLP:'Consumer Staples ETF', XLI:'Industrials ETF', XLU:'Utilities ETF',
+    XLB:'Materials ETF', XLRE:'Real Estate ETF', XBI:'Biotech ETF', SOXX:'Semis ETF',
+    SMH:'Semiconductors ETF',
+    // LATAM ADRs (US-listed)
+    MELI:'MercadoLibre', NU:'Nu Holdings', GLOB:'Globant', STNE:'StoneCo',
+    VALE:'Vale', ITUB:'Itaú Unibanco', PBR:'Petrobras', ABEV:'Ambev',
+    BBD:'Banco Bradesco', SBS:'Sabesp', CIB:'Bancolombia', BAP:'Credicorp',
+    XP:'XP Inc.', LSPD:'Lightspeed', DESP:'Despegar', PAGS:'PagSeguro',
+    VIST:'Vista Energy', EC:'Ecopetrol', AVAL:'Grupo Aval', BVN:'Buenaventura',
+    SCCO:'Southern Copper', BSAC:'Banco Santander Chile', ERJ:'Embraer', ERO:'Ero Copper',
+    FMX:'FEMSA', KOF:'Coca-Cola FEMSA', AMX:'América Móvil', CX:'Cemex',
+    ASR:'Grupo Aeroportuario Sureste', PAC:'Grupo Aeroportuario Pacífico'
+  };
+
+  function regionFor(symbol) {
+    // .MX/.SA/.SN/.BA → LATAM local listing (no EDGAR)
+    const dotIdx = symbol.lastIndexOf('.');
+    if (dotIdx > 0) {
+      const suffix = symbol.slice(dotIdx);
+      if (EXCHANGE_COUNTRY[suffix]) {
+        return { code: 'latam', label: EXCHANGE_COUNTRY[suffix], edgar: false };
+      }
+    }
+    // LATAM ADR map → US-listed (covered by EDGAR)
+    if (typeof LATAM_ADR_COUNTRY !== 'undefined' && LATAM_ADR_COUNTRY[symbol]) {
+      return { code: 'adr', label: LATAM_ADR_COUNTRY[symbol] + ' ADR', edgar: true };
+    }
+    // Crypto pair format like BTC/USD — never has filings
+    if (symbol.includes('/')) {
+      return { code: 'crypto', label: 'Crypto', edgar: false };
+    }
+    return { code: 'us', label: 'US', edgar: true };
+  }
+
+  // Build the flat catalog once at script init (SCREENER_UNIVERSE is
+  // defined earlier in index.html). De-dup across regions.
+  const TICKER_CATALOG = (function build() {
+    const out = [];
+    const seen = new Set();
+    function push(sym) {
+      if (!sym || seen.has(sym)) return;
+      seen.add(sym);
+      const region = regionFor(sym);
+      // Skip crypto in the Filings Agent dropdown — 10-Ks don't exist for tokens
+      if (region.code === 'crypto') return;
+      out.push({
+        symbol: sym,
+        name: TICKER_NAMES[sym] || '',
+        region
+      });
+    }
+    try {
+      if (typeof SCREENER_UNIVERSE !== 'undefined') {
+        (SCREENER_UNIVERSE.us || []).forEach(push);
+        (SCREENER_UNIVERSE.latam || []).forEach(push);
+      }
+    } catch (_) { /* SCREENER_UNIVERSE may not be loaded yet */ }
+    return out;
+  })();
+
+  function searchTickers(query) {
+    const q = String(query || '').trim().toUpperCase();
+    if (!q) return [];
+    const prefix = [], contains = [], nameMatch = [];
+    for (const row of TICKER_CATALOG) {
+      const sym = row.symbol;
+      const name = row.name.toUpperCase();
+      if (sym.startsWith(q)) prefix.push(row);
+      else if (sym.includes(q)) contains.push(row);
+      else if (name && name.includes(q)) nameMatch.push(row);
+      if (prefix.length >= 8) break;
+    }
+    return prefix.concat(contains, nameMatch).slice(0, 8);
+  }
 
   const severityColor = sev => {
     const s = String(sev || '').toLowerCase();
@@ -12074,6 +12209,84 @@ function margin_color(pct, threshold, COL){
   function setStatus(html) {
     const out = document.getElementById('filingsAgentOutput');
     if (out) out.innerHTML = html;
+  }
+
+  // ── Ticker context strip (live price + market cap) ─────────────
+  // Rendered above the analysis. Hidden silently if both APIs fail.
+  function renderContextStrip(payload) {
+    if (!payload) return '';
+    const p = payload.price || null;
+    const f = payload.fundamentals || null;
+    if (!p && !f) return '';
+
+    const sym = payload.ticker;
+    const region = payload.region || regionFor(sym);
+    const flag = COUNTRY_FLAG[region.label.replace(' ADR','')] || '';
+
+    const name = (p && p.longName) || (TICKER_NAMES[sym]) || '';
+    const price = p && typeof p.currentPrice === 'number' ? `$${p.currentPrice.toFixed(2)}` : null;
+
+    let changeStr = '';
+    let changeColor = '#888';
+    if (p && typeof p.dayChange === 'number') {
+      const pct = p.dayChange * 100;
+      const abs = (p.currentPrice * p.dayChange);
+      const sign = pct >= 0 ? '+' : '';
+      changeStr = `${sign}${abs.toFixed(2)} (${sign}${pct.toFixed(2)}%)`;
+      changeColor = pct > 0 ? GREEN : pct < 0 ? RED : '#888';
+    }
+
+    let mcapStr = null;
+    if (f && typeof f.marketCap === 'number' && f.marketCap > 0) {
+      const m = f.marketCap;
+      mcapStr = m >= 1e12 ? `$${(m/1e12).toFixed(2)}T`
+              : m >= 1e9  ? `$${(m/1e9).toFixed(1)}B`
+              : m >= 1e6  ? `$${(m/1e6).toFixed(0)}M`
+              : `$${m.toLocaleString()}`;
+    }
+
+    const sector = f && f.sector ? f.sector : null;
+    const exch = p && p.exchange ? p.exchange : null;
+    const regLabel = region.code === 'adr' ? `${flag} LATAM ADR` :
+                     region.code === 'latam' ? `${flag} ${region.label}` :
+                     region.code === 'us' ? 'US' : region.label;
+
+    const line1Parts = [
+      `<span style="color:#ddd;font-weight:700;">${escapeHtml(sym)}</span>`,
+      name ? `<span style="color:#888;">${escapeHtml(name)}</span>` : '',
+      price ? `<span style="color:#ddd;font-weight:600;">${price}</span>` : '',
+      changeStr ? `<span style="color:${changeColor};font-weight:600;">${changeStr}</span>` : '',
+      changeStr ? `<span style="color:#444;">1d</span>` : ''
+    ].filter(Boolean);
+
+    const line2Parts = [
+      mcapStr ? `Market Cap <span style="color:#bbb;">${mcapStr}</span>` : '',
+      sector ? `Sector <span style="color:#bbb;">${escapeHtml(sector)}</span>` : '',
+      exch ? `Exch <span style="color:#bbb;">${escapeHtml(exch)}</span>` : '',
+      `Region <span style="color:#bbb;">${regLabel}</span>`
+    ].filter(Boolean);
+
+    return `<div id="filingsContextStrip" style="display:flex;flex-direction:column;gap:4px;padding:10px 14px;background:#080808;border:1px solid #1a1a1a;border-radius:3px;margin-bottom:10px;font-family:var(--mono);font-size:11px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">${line1Parts.join('<span style="color:#333;">·</span>')}</div>
+      ${line2Parts.length ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:#666;font-size:10px;">${line2Parts.join('<span style="color:#333;">·</span>')}</div>` : ''}
+    </div>`;
+  }
+
+  async function fetchContext(ticker) {
+    const region = regionFor(ticker);
+    // LATAM-local tickers (.MX/.SA/...) — /api/price supports Yahoo,
+    // but fundamentals from Yahoo Finance may not. Try both regardless.
+    const safe = url => fetch(url).then(r => r.ok ? r.json() : null).catch(() => null);
+    const [price, fundamentals] = await Promise.all([
+      safe(`/api/price?ticker=${encodeURIComponent(ticker)}`),
+      safe(`/api/fundamentals?ticker=${encodeURIComponent(ticker)}`)
+    ]);
+    return {
+      ticker,
+      region,
+      price:        price && !price.error ? price : null,
+      fundamentals: fundamentals && !fundamentals.error ? fundamentals : null
+    };
   }
 
   function renderLoading(stage) {
@@ -12248,7 +12461,93 @@ function margin_color(pct, threshold, COL){
         Source: ${escapeHtml(payload.source || 'SEC EDGAR + Claude')}${payload.stats ? ' · ' + (payload.stats.sent_chars || 0).toLocaleString() + ' chars analyzed' : ''}
       </div>`;
 
-    setStatus(header + summary + risks + segments + commentary + redFlags + metrics + insight + footer);
+    const ctx = window._filingsContext && window._filingsContext.ticker === payload.ticker
+      ? renderContextStrip(window._filingsContext) : '';
+
+    setStatus(ctx + header + summary + risks + segments + commentary + redFlags + metrics + insight + footer);
+  }
+
+  // ── Autocomplete dropdown ─────────────────────────────────────────
+  const dropdownState = {
+    items: [],
+    cursor: -1,
+    open: false
+  };
+
+  function regionBadge(region) {
+    const edgar = region.edgar;
+    const bg = edgar ? 'rgba(0,201,125,.12)' : 'rgba(239,159,39,.12)';
+    const col = edgar ? GREEN : YELLOW;
+    const mark = edgar ? '✓ EDGAR' : '✗ no EDGAR';
+    const flag = COUNTRY_FLAG[region.label.replace(' ADR','')] || '';
+    return `<span style="display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:8px;color:${col};letter-spacing:.08em;padding:2px 6px;background:${bg};border:1px solid ${col}40;border-radius:2px;">
+      <span style="width:5px;height:5px;border-radius:50%;background:${col};"></span>${mark}
+    </span>
+    <span style="font-family:var(--mono);font-size:9px;color:#666;">${flag ? flag + ' ' : ''}${escapeHtml(region.label)}</span>`;
+  }
+
+  function renderDropdown() {
+    const dd = document.getElementById('filingsAgentDropdown');
+    const input = document.getElementById('filingsAgentTicker');
+    if (!dd || !input) return;
+
+    if (!dropdownState.open || dropdownState.items.length === 0) {
+      dd.style.display = 'none';
+      dd.innerHTML = '';
+      input.setAttribute('aria-expanded', 'false');
+      return;
+    }
+
+    dd.style.display = 'block';
+    input.setAttribute('aria-expanded', 'true');
+    dd.innerHTML = dropdownState.items.map((it, i) => {
+      const selected = i === dropdownState.cursor;
+      const bg = selected ? 'rgba(0,201,125,.08)' : 'transparent';
+      const border = selected ? '#1f3a2a' : '#0f0f0f';
+      return `<div role="option" data-i="${i}" data-symbol="${escapeHtml(it.symbol)}"
+        style="display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid ${border};">
+        <span style="font-family:var(--mono);font-size:12px;color:#ddd;font-weight:700;letter-spacing:.05em;min-width:90px;">${escapeHtml(it.symbol)}</span>
+        <span style="flex:1;font-family:var(--mono);font-size:11px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(it.name || '—')}</span>
+        ${regionBadge(it.region)}
+      </div>`;
+    }).join('');
+  }
+
+  function openDropdown(query) {
+    dropdownState.items = searchTickers(query);
+    dropdownState.cursor = dropdownState.items.length > 0 ? 0 : -1;
+    dropdownState.open = dropdownState.items.length > 0;
+    renderDropdown();
+  }
+
+  function closeDropdown() {
+    dropdownState.open = false;
+    dropdownState.cursor = -1;
+    renderDropdown();
+  }
+
+  function moveDropdown(delta) {
+    if (!dropdownState.open || dropdownState.items.length === 0) return;
+    const n = dropdownState.items.length;
+    dropdownState.cursor = (dropdownState.cursor + delta + n) % n;
+    renderDropdown();
+    // Scroll selected into view
+    const dd = document.getElementById('filingsAgentDropdown');
+    if (dd) {
+      const sel = dd.querySelector(`[data-i="${dropdownState.cursor}"]`);
+      if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function selectDropdown(idx) {
+    if (idx == null) idx = dropdownState.cursor;
+    if (idx < 0 || idx >= dropdownState.items.length) return false;
+    const pick = dropdownState.items[idx];
+    const input = document.getElementById('filingsAgentTicker');
+    if (input) input.value = pick.symbol;
+    closeDropdown();
+    runFilingsAgent();
+    return true;
   }
 
   async function runFilingsAgent() {
@@ -12263,6 +12562,9 @@ function margin_color(pct, threshold, COL){
       return;
     }
     tickerEl.value = ticker;
+    closeDropdown();
+    // Reset cached context so a previous ticker's strip doesn't bleed through
+    window._filingsContext = null;
 
     btn.disabled = true;
     btn.style.opacity = '0.5';
@@ -12277,8 +12579,18 @@ function margin_color(pct, threshold, COL){
     const t1 = setTimeout(() => renderLoading(1), 1500);
     const t2 = setTimeout(() => renderLoading(2), 8000);
 
+    // Fire price/fundamentals lookup in parallel with the filings agent.
+    // We cache the result on window so renderResults can splice it in.
+    const ctxPromise = fetchContext(ticker).then(c => {
+      window._filingsContext = c;
+      return c;
+    }).catch(() => null);
+
     try {
-      const r = await fetch('/api/filings-agent?ticker=' + encodeURIComponent(ticker));
+      const [r, _ctx] = await Promise.all([
+        fetch('/api/filings-agent?ticker=' + encodeURIComponent(ticker)),
+        ctxPromise
+      ]);
       clearTimeout(t1); clearTimeout(t2);
       const data = await r.json();
 
@@ -12305,14 +12617,65 @@ function margin_color(pct, threshold, COL){
   function wire() {
     const btn = document.getElementById('filingsAgentBtn');
     const input = document.getElementById('filingsAgentTicker');
+    const dd = document.getElementById('filingsAgentDropdown');
     if (btn && !btn._wired) {
       btn._wired = true;
       btn.addEventListener('click', runFilingsAgent);
     }
     if (input && !input._wired) {
       input._wired = true;
+
+      input.addEventListener('input', () => {
+        openDropdown(input.value);
+      });
+      input.addEventListener('focus', () => {
+        if (input.value) openDropdown(input.value);
+      });
       input.addEventListener('keydown', e => {
-        if (e.key === 'Enter') { e.preventDefault(); runFilingsAgent(); }
+        if (dropdownState.open) {
+          if (e.key === 'ArrowDown') { e.preventDefault(); moveDropdown(1); return; }
+          if (e.key === 'ArrowUp')   { e.preventDefault(); moveDropdown(-1); return; }
+          if (e.key === 'Escape')    { e.preventDefault(); closeDropdown(); return; }
+          if (e.key === 'Enter') {
+            // If a dropdown item is highlighted, pick it (which auto-runs).
+            // Otherwise just run on the typed text.
+            e.preventDefault();
+            if (dropdownState.cursor >= 0 && selectDropdown()) return;
+            runFilingsAgent();
+            return;
+          }
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          runFilingsAgent();
+        }
+      });
+    }
+    if (dd && !dd._wired) {
+      dd._wired = true;
+      // Mousedown (not click) so it fires before the input's blur handler.
+      dd.addEventListener('mousedown', e => {
+        const row = e.target.closest('[data-i]');
+        if (!row) return;
+        e.preventDefault();
+        selectDropdown(parseInt(row.dataset.i, 10));
+      });
+      dd.addEventListener('mouseover', e => {
+        const row = e.target.closest('[data-i]');
+        if (!row) return;
+        const i = parseInt(row.dataset.i, 10);
+        if (i !== dropdownState.cursor) {
+          dropdownState.cursor = i;
+          renderDropdown();
+        }
+      });
+    }
+    // Click anywhere outside the input/dropdown closes the menu.
+    if (!document._filingsOutsideWired) {
+      document._filingsOutsideWired = true;
+      document.addEventListener('click', e => {
+        if (!dropdownState.open) return;
+        const within = e.target.closest('#filingsAgentDropdown, #filingsAgentTicker');
+        if (!within) closeDropdown();
       });
     }
   }
