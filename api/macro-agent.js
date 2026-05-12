@@ -39,6 +39,16 @@ const COUNTRY_META = {
   PE: { name: 'Peru',            currency: 'PEN', fxYahoo: 'PEN=X',      em: true },
   UY: { name: 'Uruguay',         currency: 'UYU', fxYahoo: 'UYU=X',      em: true },
   EC: { name: 'Ecuador',         currency: 'USD', fxYahoo: null,         em: true },  // dollarized
+  // Tax-haven / financial-centre jurisdictions — commonly used as legal HQ
+  // for LATAM ADRs (Cayman, Luxembourg, …). No local-macro block via these;
+  // the OPERATIONAL_COUNTRY_OVERRIDE map routes to the real country.
+  KY: { name: 'Cayman Islands',  currency: 'KYD', fxYahoo: null,         em: false },
+  LU: { name: 'Luxembourg',      currency: 'EUR', fxYahoo: null,         em: false },
+  CH: { name: 'Switzerland',     currency: 'CHF', fxYahoo: 'CHF=X',      em: false },
+  IE: { name: 'Ireland',         currency: 'EUR', fxYahoo: null,         em: false },
+  BM: { name: 'Bermuda',         currency: 'BMD', fxYahoo: null,         em: false },
+  JE: { name: 'Jersey',          currency: 'GBP', fxYahoo: null,         em: false },
+  GG: { name: 'Guernsey',        currency: 'GBP', fxYahoo: null,         em: false },
   // Non-LATAM but worth surfacing
   NL: { name: 'Netherlands',     currency: 'EUR', fxYahoo: 'EUR=X',      em: false },
   GB: { name: 'United Kingdom',  currency: 'GBP', fxYahoo: 'GBP=X',      em: false },
