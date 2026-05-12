@@ -12930,7 +12930,7 @@ function margin_color(pct, threshold, COL){
     </div>`;
   }
 
-  function renderDcf(dcf, ticker) {
+  function renderDcf(dcf, ticker, scenarios, confidence) {
     if (!dcf) return '';
     if (dcf.skipped) {
       return `<div style="margin-bottom:12px;padding:14px;background:rgba(239,159,39,.05);border:1px solid rgba(239,159,39,.3);border-radius:3px;">
@@ -12939,9 +12939,30 @@ function margin_color(pct, threshold, COL){
       </div>`;
     }
     const a = dcf.assumptions || {};
-    // Fair value card
+
+    // Scenarios row (bull/base/bear)
+    const renderScen = (key, label, isBase) => {
+      const s = scenarios && scenarios[key];
+      if (!s) return '';
+      const upCol = s.upside == null ? '#888' : s.upside >= 0 ? GREEN : RED;
+      const bg = isBase ? 'rgba(0,201,125,.06)' : '#080808';
+      const border = isBase ? GREEN : '#1a1a1a';
+      const labelCol = isBase ? GREEN : '#666';
+      return `<div style="background:${bg};border:1px solid ${border};border-radius:3px;padding:10px 12px;flex:1;min-width:130px;">
+        <div style="font-family:var(--mono);font-size:9px;color:${labelCol};letter-spacing:.1em;margin-bottom:4px;">${escapeHtml(label)}${isBase ? ' ◀' : ''}</div>
+        <div style="font-family:var(--mono);font-size:14px;color:#ddd;font-weight:700;">${fmtMoney(s.fairValue, { dp: 2 })}</div>
+        <div style="font-family:var(--mono);font-size:10px;color:${upCol};font-weight:600;margin-top:2px;">${fmtSignedPct(s.upside)}</div>
+      </div>`;
+    };
+    const scenariosRow = scenarios ? `<div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+      ${renderScen('bull_case', 'BULL', false)}
+      ${renderScen('base_case', 'BASE', true)}
+      ${renderScen('bear_case', 'BEAR', false)}
+    </div>` : '';
+
+    // Fair value card (base case, with the same number as scenarios.base_case)
     const fvCard = `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;padding:14px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:8px;">FAIR VALUE PER SHARE</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:8px;">FAIR VALUE PER SHARE (BASE)</div>
       <div style="font-family:var(--mono);font-size:24px;color:#ddd;font-weight:700;">${fmtMoney(dcf.fairValuePerShare, { dp: 2 })}</div>
       <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:6px;">
         vs current ${dcf.currentPrice != null ? fmtMoney(dcf.currentPrice, { dp: 2 }) : 'N/A'}
@@ -12949,18 +12970,23 @@ function margin_color(pct, threshold, COL){
       </div>
     </div>`;
 
+    // Assumptions panel with new calibrated fields
+    const fcfLabel = a.fcfMarginSource || 'historical avg';
+    const waccLabel = a.waccBounded ? 'WACC (bounded)' : 'WACC';
+    const tgLabel = a.terminalGrowthAdjusted ? 'Terminal growth (adj)' : 'Terminal growth';
+    const cagrLabel = a.revenueCagrCapped ? 'Revenue CAGR (capped)' : 'Revenue CAGR (3y)';
     const assumptions = `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;padding:14px;">
       <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:8px;">KEY ASSUMPTIONS</div>
       <div style="display:grid;grid-template-columns:auto auto;gap:4px 12px;font-family:var(--mono);font-size:11px;">
-        <div style="color:#666;">Revenue CAGR (yr 1)</div><div style="color:#ddd;text-align:right;">${fmtSignedPct(a.revenueCagr)}</div>
-        <div style="color:#666;">Fade to (yr 5)</div><div style="color:#ddd;text-align:right;">${fmtPct(0.05)}</div>
-        <div style="color:#666;">FCF margin (3y avg)</div><div style="color:#ddd;text-align:right;">${fmtPct(a.fcfMargin)}</div>
-        <div style="color:#666;">WACC</div><div style="color:#ddd;text-align:right;">${fmtPct(a.wacc, 2)}</div>
+        <div style="color:#666;">${escapeHtml(cagrLabel)}</div><div style="color:#ddd;text-align:right;">${fmtSignedPct(a.revenueCagr)}</div>
+        <div style="color:#666;">FCF margin (${escapeHtml(fcfLabel)})</div><div style="color:#ddd;text-align:right;">${fmtPct(a.fcfMargin)}</div>
+        <div style="color:#666;">${escapeHtml(waccLabel)}</div><div style="color:#ddd;text-align:right;">${fmtPct(a.wacc, 2)}</div>
         <div style="color:#666;">Cost of equity</div><div style="color:#999;text-align:right;">${fmtPct(a.costOfEquity, 2)}</div>
-        <div style="color:#666;">Cost of debt (after tax)</div><div style="color:#999;text-align:right;">${fmtPct(a.costOfDebtAfterTax, 2)}</div>
+        <div style="color:#666;">Cost of debt (a/t)</div><div style="color:#999;text-align:right;">${fmtPct(a.costOfDebtAfterTax, 2)}</div>
         <div style="color:#666;">Beta</div><div style="color:#999;text-align:right;">${fmtNum(a.beta, 2)}</div>
+        <div style="color:#666;">ERP${a.region && a.region !== 'US' ? ' (EM adj)' : ''}</div><div style="color:#999;text-align:right;">${fmtPct(a.erp, 2)}</div>
         <div style="color:#666;">Tax rate</div><div style="color:#999;text-align:right;">${fmtPct(a.taxRate, 1)}</div>
-        <div style="color:#666;">Terminal growth</div><div style="color:#ddd;text-align:right;">${fmtPct(a.terminalGrowth, 2)}</div>
+        <div style="color:#666;">${escapeHtml(tgLabel)}</div><div style="color:#ddd;text-align:right;">${fmtPct(a.terminalGrowth, 2)}</div>
       </div>
     </div>`;
 
@@ -12985,14 +13011,60 @@ function margin_color(pct, threshold, COL){
       </table>
     </div>`;
 
+    const confChip = confidence ? confidenceChip(confidence) : '';
+
     return `<div style="margin-bottom:12px;">
-      <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:8px;">// DCF VALUATION (5y + Terminal)</div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap;">
+        <span style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;">// DCF VALUATION (5y + Terminal)</span>
+        ${confChip}
+      </div>
+      ${scenariosRow}
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;margin-bottom:8px;">
         ${fvCard}
         ${assumptions}
       </div>
       <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:6px;">SENSITIVITY · Fair value per share (cell color = signed upside band)</div>
       ${sensTable}
+    </div>`;
+  }
+
+  function confidenceChip(c) {
+    const cat = c.category || 'N/A';
+    const col = cat.startsWith('HIGH') ? GREEN : cat.startsWith('MEDIUM') ? AMBER : '#888';
+    const factors = Array.isArray(c.factors) && c.factors.length ? c.factors.join(' · ') : '';
+    return `<span title="${escapeHtml(factors)}" style="display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:9px;letter-spacing:.1em;color:${col};padding:2px 8px;background:${col}1a;border:1px solid ${col}55;border-radius:2px;">
+      <span style="width:5px;height:5px;border-radius:50%;background:${col};"></span>${escapeHtml(cat)} · ${c.score}
+    </span>`;
+  }
+
+  function mosBadge(mos) {
+    if (!mos) return '';
+    const cat = mos.category;
+    const col = cat === 'STRONG MARGIN OF SAFETY' ? GREEN
+              : cat === 'GOOD MARGIN OF SAFETY' ? GREEN
+              : cat === 'ADEQUATE MARGIN' ? GREEN
+              : cat === 'FAIR VALUE' ? AMBER
+              : cat === 'PREMIUM PRICING' ? RED
+              : cat === 'OVERVALUED PER MODEL' ? RED : '#888';
+    const bg  = col === GREEN ? 'rgba(0,201,125,.10)'
+              : col === AMBER ? 'rgba(239,159,39,.10)'
+              : col === RED ? 'rgba(255,58,58,.08)' : 'rgba(255,255,255,.04)';
+    return `<span style="display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;letter-spacing:.12em;font-weight:700;color:${col};background:${bg};border:1px solid ${col}55;padding:6px 12px;border-radius:3px;">
+      ${escapeHtml(cat)} · ${fmtSignedPct(mos.upside_pct)}
+    </span>`;
+  }
+
+  function renderConsensus(cons) {
+    if (!cons || (cons.target_mean == null && cons.target_median == null)) return '';
+    const vs = cons.vs_our_fair_value;
+    const delta = vs && vs.delta_pct != null ? vs.delta_pct : null;
+    const dCol = delta == null ? '#888' : delta > 0.1 ? GREEN : delta < -0.1 ? RED : AMBER;
+    return `<div style="padding:10px 12px;background:#080808;border:1px solid #1a1a1a;border-radius:3px;margin-bottom:12px;display:flex;gap:14px;flex-wrap:wrap;align-items:center;">
+      <span style="font-family:var(--mono);font-size:9px;color:${BLUE};letter-spacing:.15em;">// WALL ST CONSENSUS</span>
+      <span style="font-family:var(--mono);font-size:11px;color:#888;">Mean <span style="color:#ddd;font-weight:600;">${cons.target_mean != null ? fmtMoney(cons.target_mean, { dp: 2 }) : 'N/A'}</span></span>
+      <span style="font-family:var(--mono);font-size:11px;color:#888;">Range <span style="color:#aaa;">${cons.target_low != null ? fmtMoney(cons.target_low, { dp: 0 }) : 'N/A'} – ${cons.target_high != null ? fmtMoney(cons.target_high, { dp: 0 }) : 'N/A'}</span></span>
+      ${vs && vs.our_value != null ? `<span style="font-family:var(--mono);font-size:11px;color:#888;">Our DCF <span style="color:#ddd;font-weight:600;">${fmtMoney(vs.our_value, { dp: 2 })}</span></span>` : ''}
+      ${delta != null ? `<span style="margin-left:auto;font-family:var(--mono);font-size:11px;color:${dCol};font-weight:600;">Δ ${fmtSignedPct(delta)} vs consensus</span>` : ''}
     </div>`;
   }
 
@@ -13003,17 +13075,19 @@ function margin_color(pct, threshold, COL){
     const peers = (payload.peers || []).map(p => escapeHtml(p)).join(', ') || 'No peers found';
     const narr = payload.narrative || {};
 
+    const regionLabel = payload.region && payload.region !== 'US' ? ` · ${escapeHtml(payload.region)}` : '';
+
     const header = `
       <div style="display:flex;align-items:flex-start;gap:12px;padding:14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${GREEN};border-radius:3px;margin-bottom:12px;flex-wrap:wrap;">
         <div style="flex:1;min-width:220px;">
           <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:4px;">// FUNDAMENTAL ANALYSIS COMPLETE</div>
           <div style="font-family:var(--mono);font-size:14px;color:#ddd;font-weight:700;letter-spacing:.05em;">${t} · ${co}</div>
           <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:3px;">
-            ${sector ? `Sector ${sector} · ` : ''}Peers ${peers}
+            ${sector ? `Sector ${sector}` : ''}${regionLabel} · Peers ${peers}
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
-          ${signalChip(payload.signal)}
+          ${mosBadge(payload.margin_of_safety) || signalChip(payload.signal)}
           ${payload.signal && payload.signal.reason ? `<span style="font-family:var(--mono);font-size:9px;color:#666;max-width:240px;text-align:right;">${escapeHtml(payload.signal.reason)}</span>` : ''}
         </div>
       </div>`;
@@ -13024,7 +13098,8 @@ function margin_color(pct, threshold, COL){
         <div style="font-family:var(--mono);font-size:12px;color:#ddd;line-height:1.6;">${escapeHtml(narr.valuation_summary)}</div>
       </div>` : '';
 
-    const dcfBlock = renderDcf(payload.dcf, t);
+    const consensusBlock = renderConsensus(payload.consensus);
+    const dcfBlock = renderDcf(payload.dcf, t, payload.scenarios, payload.confidence);
     const dcfNote = narr.dcf_note ? `<div style="padding:10px 12px;background:#080808;border:1px solid #1a1a1a;border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:11px;color:#bbb;line-height:1.6;">
       <span style="color:${GREEN};font-size:9px;letter-spacing:.1em;">DCF NOTE · </span>${escapeHtml(narr.dcf_note)}
     </div>` : '';
@@ -13052,7 +13127,7 @@ function margin_color(pct, threshold, COL){
       Source: ${escapeHtml(payload.source || 'Finnhub + Custom DCF + Claude')}${payload.stats ? ` · ${payload.stats.snapshots_used}y annual snapshots · ${payload.stats.peer_count} peers` : ''}
     </div>`;
 
-    setStatus(header + valSummary + dcfBlock + dcfNote + multiplesBlock + peerTakeaway + scoresBlock + healthNote + insight + footer);
+    setStatus(header + valSummary + consensusBlock + dcfBlock + dcfNote + multiplesBlock + peerTakeaway + scoresBlock + healthNote + insight + footer);
   }
 
   // ── Autocomplete dropdown ─────────────────────────────────────
