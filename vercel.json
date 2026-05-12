@@ -1,12 +1,6 @@
 {
   "functions": {
     "api/*.js": {
-      "maxDuration": 30
-    },
-    "api/filings-agent.js": {
-      "maxDuration": 60
-    },
-    "api/sec-edgar.js": {
       "maxDuration": 60
     }
   }
