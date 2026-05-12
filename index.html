@@ -13361,6 +13361,14 @@ function margin_color(pct, threshold, COL){
     Argentina:'🇦🇷', Brasil:'🇧🇷', Brazil:'🇧🇷', Chile:'🇨🇱', Colombia:'🇨🇴',
     'México':'🇲🇽', Mexico:'🇲🇽', Perú:'🇵🇪', Peru:'🇵🇪'
   };
+  // ISO-2 flag lookup — used by the operational-country header which
+  // gets ISO codes from the backend, not display names.
+  const COUNTRY_FLAG_ISO = {
+    US:'🇺🇸', AR:'🇦🇷', BR:'🇧🇷', MX:'🇲🇽', CL:'🇨🇱', CO:'🇨🇴', PE:'🇵🇪',
+    UY:'🇺🇾', EC:'🇪🇨', KY:'🇰🇾', LU:'🇱🇺', NL:'🇳🇱', GB:'🇬🇧', JP:'🇯🇵',
+    CN:'🇨🇳', KR:'🇰🇷', BO:'🇧🇴', PY:'🇵🇾', VE:'🇻🇪'
+  };
+  const flagFor = code => COUNTRY_FLAG_ISO[(code || '').toUpperCase()] || '';
   const EXCHANGE_COUNTRY = {
     '.MX':'México', '.SA':'Brasil', '.SN':'Chile', '.BA':'Argentina'
   };
@@ -13591,9 +13599,30 @@ function margin_color(pct, threshold, COL){
     const t  = escapeHtml(payload.ticker);
     const co = escapeHtml(payload.company_name || payload.ticker);
     const sector = payload.sector ? escapeHtml(payload.sector) : '';
-    const country = payload.country_name
-      ? `${COUNTRY_FLAG[payload.country_name] || ''} ${escapeHtml(payload.country_name)} (${escapeHtml(payload.country)})`
-      : '';
+
+    // Country line. If operational ≠ legal (override applied), surface both:
+    //   "Sector Retail · 🇧🇷 Brazil (primary) · Legal: 🇺🇾 Uruguay"
+    // Otherwise the simple form:
+    //   "Sector Retail · 🇧🇷 Brazil (BR)"
+    let country = '';
+    if (payload.country_name) {
+      const opFlag = flagFor(payload.country);
+      if (payload.country_override_applied) {
+        const legalFlag = flagFor(payload.country_legal);
+        country = `${opFlag} ${escapeHtml(payload.country_name)} · <span style="color:#555;">Legal: ${legalFlag} ${escapeHtml(payload.country_legal_name || payload.country_legal || '')}</span>`;
+      } else {
+        country = `${opFlag} ${escapeHtml(payload.country_name)} (${escapeHtml(payload.country)})`;
+      }
+    }
+
+    // Secondary exposure line — only shown when the override carries
+    // secondary_countries (e.g., MELI → BR primary + AR/MX secondary).
+    let secondaryLine = '';
+    if (payload.country_override_applied && Array.isArray(payload.secondary_countries) && payload.secondary_countries.length) {
+      const parts = payload.secondary_countries.map(c => `${flagFor(c)} ${escapeHtml(c)}`);
+      const opChip = `${flagFor(payload.country)} ${escapeHtml(payload.country)}`;
+      secondaryLine = `<div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:2px;">📍 Operational exposure: ${opChip} · ${parts.join(' · ')}</div>`;
+    }
 
     const header = `
       <div style="display:flex;align-items:flex-start;gap:12px;padding:14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${GREEN};border-radius:3px;margin-bottom:12px;flex-wrap:wrap;">
@@ -13603,6 +13632,7 @@ function margin_color(pct, threshold, COL){
           <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:3px;">
             ${sector ? `Sector ${sector}` : ''}${sector && country ? ' · ' : ''}${country}
           </div>
+          ${secondaryLine}
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
           ${cycleChip(payload.us_macro && payload.us_macro.cycle_position)}
