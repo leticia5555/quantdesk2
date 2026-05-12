@@ -167,21 +167,62 @@ function extractSnapshot(report) {
   const receivables = findConcept(bs, ['accountsreceivablenetcurrent', 'tradeandotherreceivables', 'accounts receivable', 'receivables']);
   const ppe = findConcept(bs, ['propertyplantandequipmentnet', 'ppe', 'property, plant']);
 
-  const cfo = findConcept(cf, [
-    'netcashprovidedbyusedinoperatingactivities',
-    'cashflowsfromusedinoperatingactivities',
-    'operatingactivities', 'cash from operating'
+  // ── Cash flow ── try a direct "free cash flow" field first, since
+  // some filers (and Finnhub's normalized concepts) surface it outright.
+  // Fall back to CFO − |CapEx| with broad pattern coverage for GAAP/IFRS.
+  const directFcf = findConcept(cf, [
+    'us-gaap_freecashflow',
+    'freecashflow',
+    'free_cash_flow',
+    'free cash flow'
   ]);
+
+  const cfo = findConcept(cf, [
+    'us-gaap_netcashprovidedbyusedinoperatingactivities',
+    'netcashprovidedbyusedinoperatingactivities',
+    'netcashprovidedbyoperatingactivities',
+    'cashflowfromoperations',
+    'ifrs-full_cashflowsfromusedinoperatingactivities',
+    'cashflowsfromusedinoperatingactivities',
+    'cashflowsfromoperatingactivities',
+    'netcashfromoperatingactivities',
+    'operatingactivities',
+    'cash from operating',
+    'cash flow from operating',
+    'net cash provided by operating'
+  ]);
+
   const capex = findConcept(cf, [
+    'us-gaap_paymentstoacquirepropertyplantandequipment',
     'paymentstoacquirepropertyplantandequipment',
-    'purchaseofpropertyplantandequipment',
     'paymentsforpropertyplantandequipment',
-    'capital expenditure'
+    'paymentstoacquireproductiveassets',
+    'ifrs-full_purchaseofpropertyplantandequipmentclassifiedasinvestingactivities',
+    'ifrs-full_purchaseofpropertyplantandequipment',
+    'purchaseofpropertyplantandequipment',
+    'purchasesofpropertyandequipment',
+    'purchaseofpropertyandequipment',
+    'capitalexpenditures',
+    'capital expenditure',
+    'purchases of property'
   ]);
 
   // Total debt: try direct total; else sum LT + current portion of LTD
   let totalDebt = findConcept(bs, ['longtermdebt', 'totaldebt']);
   if (totalDebt == null) totalDebt = longTermDebt;
+
+  let fcf = null;
+  if (typeof directFcf === 'number' && isFinite(directFcf)) {
+    fcf = directFcf;
+  } else if (typeof cfo === 'number' && typeof capex === 'number') {
+    // CapEx is usually reported as a negative outflow; take abs to subtract.
+    fcf = cfo - Math.abs(capex);
+  } else if (typeof cfo === 'number') {
+    // Last resort: if we have CFO but no CapEx, approximate FCF ≈ CFO.
+    // This OVER-states FCF for capital-intensive businesses but lets the
+    // DCF run rather than skipping outright. Flag it via the source field.
+    fcf = cfo;
+  }
 
   return {
     year: report.year || null,
@@ -191,10 +232,11 @@ function extractSnapshot(report) {
     totalAssets, currentAssets, totalLiabilities, currentLiabilities,
     retainedEarnings, stockholdersEquity, longTermDebt, totalDebt,
     cash, inventory, receivables, ppe,
-    cfo, capex,
-    fcf: (typeof cfo === 'number' && typeof capex === 'number')
-      ? cfo - Math.abs(capex)  // capex is reported as negative in many filings
-      : null
+    cfo, capex, fcf,
+    fcfSource: fcf == null ? null
+              : (typeof directFcf === 'number' ? 'direct'
+              : (typeof cfo === 'number' && typeof capex === 'number') ? 'cfo-capex'
+              : 'cfo-only')
   };
 }
 
@@ -464,10 +506,15 @@ function valueFcfStream(fcfs, wacc, terminalGrowth) {
 }
 
 function buildDcf({ snapshots, marketCap, sharesOut, totalDebt, cash, beta,
-                    interestExpense, taxRate, currentPrice }) {
+                    interestExpense, taxRate, currentPrice, fallbackFcfMargin }) {
   const proj = buildRevenueProjection(snapshots);
   if (!proj) return { skipped: true, reason: 'Insufficient revenue history' };
-  const fcfMargin = avgFcfMargin(snapshots);
+  let fcfMargin = avgFcfMargin(snapshots);
+  let fcfMarginSource = 'historical 3y avg';
+  if (fcfMargin == null && fallbackFcfMargin != null && isFinite(fallbackFcfMargin)) {
+    fcfMargin = fallbackFcfMargin;
+    fcfMarginSource = 'TTM (Finnhub metric)';
+  }
   if (fcfMargin == null || fcfMargin <= 0) {
     return {
       skipped: true,
@@ -513,6 +560,7 @@ function buildDcf({ snapshots, marketCap, sharesOut, totalDebt, cash, beta,
       revenueCagr: proj.cagr,
       revenueCagrYears: proj.years,
       fcfMargin,
+      fcfMarginSource,
       wacc: w.wacc,
       costOfEquity: w.ke,
       costOfDebtAfterTax: w.kd,
@@ -724,9 +772,25 @@ export default async function handler(req, res) {
     const cash     = latest ? latest.cash : null;
     const interestExpense = latest ? latest.interestExpense : null;
 
+    // TTM fallback FCF margin from Finnhub's normalized metrics, in case
+    // historical financials-reported is too sparse to derive one ourselves.
+    const mm = (metric && metric.metric) || {};
+    const fcfTtm = mm.freeCashFlowTTM || mm.freeCashFlowAnnual || null;
+    const revTtm = mm.revenueTTM || mm.revenuePerShareTTM != null
+      ? (mm.revenueTTM || (mm.revenuePerShareTTM * (sharesOut || 0)))
+      : null;
+    const fallbackFcfMargin = (fcfTtm != null && revTtm != null && revTtm > 0)
+      ? fcfTtm / revTtm : null;
+
+    // Diagnostic: log what we extracted so the Vercel function logs
+    // expose why FCF resolved (or didn't) per ticker.
+    console.log(`[fundamental-agent] ${ticker}: snapshots=${snapshots.length} ` +
+      `fcf_per_year=${JSON.stringify(snapshots.map(s => ({ y: s.year, fcf: s.fcf, src: s.fcfSource })))} ` +
+      `ttm_fallback_margin=${fallbackFcfMargin}`);
+
     const dcf = buildDcf({
       snapshots, marketCap, sharesOut, totalDebt, cash, beta,
-      interestExpense, taxRate, currentPrice
+      interestExpense, taxRate, currentPrice, fallbackFcfMargin
     });
 
     const signal = dcf.skipped ? { band: 'N/A', color: 'grey', reason: dcf.reason }
