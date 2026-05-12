@@ -11495,6 +11495,37 @@ function margin_color(pct, threshold, COL){
 <!-- AGENTS PAGE -->
 <div id="page-agents" class="page" style="padding:0;background:#080808;min-height:100vh;">
 
+  <!-- ─── EVENT AGENT (Sprint 4) ──────────────────────────────────── -->
+  <section id="eventAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// EVENT AGENT</span>
+      <div style="flex:1;height:1px;background:#1a1a1a;"></div>
+      <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;">SPRINT 4</span>
+    </div>
+    <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Upcoming catalysts and corporate events · Catalysts · Earnings · M&amp;A · Regulatory</div>
+
+    <div class="research-agent-card" style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid var(--green,#00c97d);border-radius:4px;padding:16px;">
+      <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+        <span class="agent-icon" style="font-size:18px;">📅</span>
+        <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Event Agent</span>
+        <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">Catalysts · Earnings · M&amp;A · Regulatory</span>
+        <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">Finnhub + Claude · Next 30-90d</span>
+      </div>
+
+      <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;position:relative;">
+        <div style="flex:1;min-width:220px;position:relative;">
+          <input id="eventAgentTicker" placeholder="Enter ticker (e.g., NVDA, MELI, VALE)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="eventAgentDropdown" aria-expanded="false"
+                 style="width:100%;box-sizing:border-box;background:#080808;border:1px solid #222;color:#ddd;font-family:var(--mono);font-size:12px;padding:9px 12px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;" />
+          <div id="eventAgentDropdown" role="listbox" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#0a0a0a;border:1px solid #222;border-radius:3px;z-index:200;max-height:320px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,.6);"></div>
+        </div>
+        <button id="eventAgentBtn"
+                style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE CATALYSTS</button>
+      </div>
+
+      <div id="eventAgentOutput" class="agent-output" style="font-family:var(--mono);font-size:11px;color:#888;"></div>
+    </div>
+  </section>
+
   <!-- ─── MACRO AGENT (Sprint 3) ─────────────────────────────────── -->
   <section id="macroAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
@@ -13819,6 +13850,515 @@ function margin_color(pct, threshold, COL){
       document.addEventListener('click', e => {
         if (!ddState.open) return;
         const within = e.target.closest('#macroAgentDropdown, #macroAgentTicker');
+        if (!within) closeDropdown();
+      });
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire);
+  } else {
+    wire();
+  }
+})();
+</script>
+
+<!-- ─── EVENT AGENT (Sprint 4) ───────────────────────────────────────── -->
+<script>
+(function(){
+  const GREEN  = '#00c97d';
+  const RED    = '#ff3a3a';
+  const AMBER  = '#EF9F27';
+  const BLUE   = '#3498db';
+  const PURPLE = '#9b59b6';
+  const GREY   = '#888';
+
+  const escapeHtml = s => String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+  const fmtMoney = (n, dp = 2) => {
+    if (n == null || !isFinite(n)) return 'N/A';
+    const a = Math.abs(n);
+    const sign = n < 0 ? '-' : '';
+    if (a >= 1e12) return `${sign}$${(a/1e12).toFixed(2)}T`;
+    if (a >= 1e9)  return `${sign}$${(a/1e9).toFixed(2)}B`;
+    if (a >= 1e6)  return `${sign}$${(a/1e6).toFixed(1)}M`;
+    if (a >= 1e3)  return `${sign}$${(a/1e3).toFixed(1)}K`;
+    return `${sign}$${a.toFixed(dp)}`;
+  };
+  const fmtSignedPct = (n, dp = 1) => {
+    if (n == null || !isFinite(n)) return 'N/A';
+    const s = n >= 0 ? '+' : '';
+    return `${s}${n.toFixed(dp)}%`;
+  };
+  const fmtPct = (n, dp = 1) => (n == null || !isFinite(n)) ? 'N/A' : `${n.toFixed(dp)}%`;
+  const fmtInt = n => (n == null || !isFinite(n)) ? 'N/A' : Math.round(n).toLocaleString();
+
+  // ── Self-contained autocomplete (mirrors Macro/Fundamental Agent) ──
+  const EXCHANGE_COUNTRY = {
+    '.MX':'México', '.SA':'Brasil', '.SN':'Chile', '.BA':'Argentina'
+  };
+  function regionFor(symbol) {
+    const dot = symbol.lastIndexOf('.');
+    if (dot > 0) {
+      const suffix = symbol.slice(dot);
+      if (EXCHANGE_COUNTRY[suffix]) return { code:'latam', label: EXCHANGE_COUNTRY[suffix], coverage: false };
+    }
+    if (typeof LATAM_ADR_COUNTRY !== 'undefined' && LATAM_ADR_COUNTRY[symbol]) {
+      return { code:'adr', label: LATAM_ADR_COUNTRY[symbol] + ' ADR', coverage: true };
+    }
+    if (symbol.includes('/')) return { code:'crypto', label:'Crypto', coverage: false };
+    return { code:'us', label:'US', coverage: true };
+  }
+  const CATALOG = (function () {
+    const out = [], seen = new Set();
+    const push = sym => {
+      if (!sym || seen.has(sym)) return;
+      seen.add(sym);
+      const region = regionFor(sym);
+      if (region.code === 'crypto') return;
+      out.push({ symbol: sym, region, finnhub: region.coverage });
+    };
+    try {
+      if (typeof SCREENER_UNIVERSE !== 'undefined') {
+        (SCREENER_UNIVERSE.us || []).forEach(push);
+        (SCREENER_UNIVERSE.latam || []).forEach(push);
+      }
+    } catch (_) {}
+    return out;
+  })();
+  function searchTickers(q) {
+    q = String(q || '').trim().toUpperCase();
+    if (!q) return [];
+    const prefix = [], contains = [];
+    for (const row of CATALOG) {
+      if (row.symbol.startsWith(q)) prefix.push(row);
+      else if (row.symbol.includes(q)) contains.push(row);
+      if (prefix.length >= 8) break;
+    }
+    return prefix.concat(contains).slice(0, 8);
+  }
+
+  // ── Render helpers ─────────────────────────────────────────────
+  function setStatus(html) {
+    const out = document.getElementById('eventAgentOutput');
+    if (out) out.innerHTML = html;
+  }
+  function renderLoading(stage) {
+    const stages = [
+      'Fetching earnings calendar...',
+      'Scanning news for catalyst signals...',
+      'Analyzing insider activity...',
+      'Generating catalyst thesis...'
+    ];
+    setStatus(
+      `<div style="padding:14px;background:#080808;border:1px solid #1a1a1a;border-radius:3px;">
+        <div style="font-family:var(--mono);font-size:10px;color:${GREEN};letter-spacing:.1em;margin-bottom:10px;">// EVENT AGENT WORKING</div>
+        ${stages.map((label, i) => {
+          const active = i === stage;
+          const done = i < stage;
+          const color = active ? GREEN : done ? '#666' : '#333';
+          const mark = done ? '✓' : active ? '▶' : '·';
+          return `<div style="font-family:var(--mono);font-size:11px;color:${color};margin:4px 0;">${mark} ${escapeHtml(label)}</div>`;
+        }).join('')}
+      </div>`
+    );
+  }
+  function renderError(msg) {
+    setStatus(
+      `<div style="padding:14px;background:rgba(255,58,58,.05);border:1px solid rgba(255,58,58,.3);border-radius:3px;font-family:var(--mono);font-size:11px;color:${RED};">
+        ✕ ${escapeHtml(msg)}
+      </div>`
+    );
+  }
+
+  // ── Catalyst proximity chip (color by days_until) ──────────────
+  function catalystChip(nm) {
+    if (!nm) {
+      return `<span style="display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;color:${GREY};background:rgba(255,255,255,.04);border:1px solid #2a2a2a;padding:6px 12px;border-radius:3px;">📅 NO MAJOR CATALYST</span>`;
+    }
+    const d = nm.days_until;
+    const col = d == null ? GREY : d < 7 ? RED : d <= 14 ? AMBER : GREEN;
+    const bg  = d == null ? 'rgba(255,255,255,.04)' : d < 7 ? 'rgba(255,58,58,.10)' : d <= 14 ? 'rgba(239,159,39,.10)' : 'rgba(0,201,125,.12)';
+    const label = escapeHtml(nm.label || nm.type || 'Catalyst');
+    const dayLabel = d == null ? '' : ` · ${d}d`;
+    return `<span style="display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;letter-spacing:.1em;font-weight:700;color:${col};background:${bg};border:1px solid ${col}55;padding:6px 12px;border-radius:3px;">📅 ${label}${dayLabel}</span>`;
+  }
+
+  function microCard(label, value, sub, valueColor) {
+    return `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;padding:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:6px;">${escapeHtml(label)}</div>
+      <div style="font-family:var(--mono);font-size:15px;color:${valueColor || '#ddd'};font-weight:700;margin-bottom:4px;">${value}</div>
+      <div style="font-family:var(--mono);font-size:10px;color:#666;line-height:1.4;">${sub}</div>
+    </div>`;
+  }
+
+  function renderEarnings(e) {
+    if (!e) return '';
+    const next = e.next_date
+      ? `${escapeHtml(e.next_date)}${e.days_until != null ? ` (${e.days_until}d)` : ''}`
+      : 'N/A';
+    const nextSub = e.next_eps_estimate != null
+      ? `EPS est <span style="color:#bbb;">$${e.next_eps_estimate.toFixed(2)}</span>${e.next_revenue_estimate ? ` · Rev est <span style="color:#bbb;">${fmtMoney(e.next_revenue_estimate, 1)}</span>` : ''}${e.fiscal_period ? ` · <span style="color:${BLUE};">${escapeHtml(e.fiscal_period)}</span>` : ''}`
+      : 'No estimate published';
+
+    let beatCol = '#bbb';
+    if (e.beat_rate_4q != null) {
+      beatCol = e.beat_rate_4q > 50 ? GREEN : e.beat_rate_4q >= 25 ? AMBER : RED;
+    }
+    const beatVal = e.beat_rate_4q != null ? `${e.beat_rate_4q}%` : 'N/A';
+    const validCount = (e.last_4_reports || []).filter(r => r.beat != null).length;
+    const beats = (e.last_4_reports || []).filter(r => r.beat === true).length;
+    const beatSub = validCount > 0
+      ? `${beats}/${validCount} beats · Avg surprise <span style="color:${e.avg_surprise_pct >= 0 ? GREEN : RED};font-weight:600;">${fmtSignedPct(e.avg_surprise_pct)}</span>`
+      : 'No history';
+
+    // Last quarter card
+    const lq = (e.last_4_reports && e.last_4_reports[0]) || null;
+    const lqVal = lq && lq.eps_actual != null ? `$${lq.eps_actual.toFixed(2)}` : 'N/A';
+    const lqCol = lq && lq.beat ? GREEN : lq && lq.beat === false ? RED : '#ddd';
+    const lqSub = lq
+      ? `${escapeHtml(lq.date || '')} · est $${lq.eps_estimate != null ? lq.eps_estimate.toFixed(2) : '—'} · <span style="color:${lqCol};font-weight:600;">${lq.beat ? 'BEAT' : lq.beat === false ? 'MISS' : '—'} ${lq.surprise_pct != null ? `(${fmtSignedPct(lq.surprise_pct)})` : ''}</span>`
+      : 'No data';
+
+    // 4Q history mini bars
+    const history = (e.last_4_reports || []).slice().reverse(); // oldest first for the bar chart
+    const maxMag = Math.max(1, ...history.map(r => Math.abs(r.surprise_pct || 0)));
+    const bars = history.map(r => {
+      const s = r.surprise_pct;
+      if (s == null) {
+        return `<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:2px;">
+          <div style="width:80%;height:30px;background:#1a1a1a;border-radius:1px;"></div>
+          <div style="font-family:var(--mono);font-size:8px;color:#444;">—</div>
+        </div>`;
+      }
+      const h = Math.max(4, Math.round((Math.abs(s) / maxMag) * 50));
+      const col = s >= 0 ? GREEN : RED;
+      return `<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:2px;">
+        <div style="width:80%;height:${h}px;background:${col}66;border:1px solid ${col};border-radius:1px;"></div>
+        <div style="font-family:var(--mono);font-size:8px;color:${col};font-weight:600;">${fmtSignedPct(s, 0)}</div>
+      </div>`;
+    }).join('');
+    const historyCard = `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;padding:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:6px;">4Q SURPRISE HISTORY</div>
+      <div style="display:flex;align-items:flex-end;gap:4px;height:60px;">${bars || '<div style="color:#444;font-family:var(--mono);font-size:10px;align-self:center;">No data</div>'}</div>
+    </div>`;
+
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${BLUE};letter-spacing:.15em;margin-bottom:8px;">// 📅 EARNINGS CALENDAR</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;">
+        ${microCard('Next Earnings', next, nextSub)}
+        ${microCard('Beat Rate (4Q)', beatVal, beatSub, beatCol)}
+        ${microCard('Last Quarter', lqVal, lqSub, lqCol)}
+        ${historyCard}
+      </div>
+    </div>`;
+  }
+
+  function renderDividends(d, price) {
+    if (!d || !d.has_dividend) return '';
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${AMBER};letter-spacing:.15em;margin-bottom:8px;">// 💰 DIVIDENDS</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;">
+        ${microCard('Next Ex-Date',
+                    d.next_ex_date ? `${escapeHtml(d.next_ex_date)}${d.days_until != null ? ` (${d.days_until}d)` : ''}` : 'Not announced',
+                    d.frequency ? `Frequency: <span style="color:#bbb;">${escapeHtml(d.frequency)}</span>` : '—')}
+        ${microCard('Amount',
+                    d.amount != null ? `$${Number(d.amount).toFixed(2)}` : 'N/A',
+                    'Per share')}
+        ${microCard('Yield (TTM)',
+                    d.yield_pct != null ? fmtPct(d.yield_pct, 2) : 'N/A',
+                    price ? `vs price $${price.toFixed(2)}` : '—')}
+        ${microCard('Last Payments',
+                    d.last_4 && d.last_4.length ? `${d.last_4.length} of 4` : 'No data',
+                    d.last_4 && d.last_4[0] ? `Most recent: ${escapeHtml(d.last_4[0].date)}` : '—')}
+      </div>
+    </div>`;
+  }
+
+  function renderNewsList(title, color, bgRgba, payload, icon) {
+    const items = (payload && payload.top_news) || [];
+    if (items.length === 0) return '';
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${color};letter-spacing:.15em;margin-bottom:8px;">// ${escapeHtml(icon)} ${escapeHtml(title)} <span style="color:#444;font-weight:400;">(${payload.deals_mentioned || payload.active_concerns || items.length})</span></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px;">
+        ${items.slice(0, 3).map(n => `<div style="background:${bgRgba};border:1px solid ${color}40;border-left:3px solid ${color};border-radius:3px;padding:10px 12px;">
+          <div style="font-family:var(--mono);font-size:9px;color:${color};letter-spacing:.05em;margin-bottom:4px;">${escapeHtml(n.date || '')} · ${escapeHtml(n.keyword || n.category || '')}</div>
+          <div style="font-family:var(--mono);font-size:11px;color:#ddd;line-height:1.4;${n.url ? '' : ''}">
+            ${n.url
+              ? `<a href="${escapeHtml(n.url)}" target="_blank" rel="noopener noreferrer" style="color:#ddd;text-decoration:none;border-bottom:1px dotted #333;">${escapeHtml(n.headline || '')}</a>`
+              : escapeHtml(n.headline || '')}
+          </div>
+        </div>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  function renderInsider(i) {
+    if (!i) return '';
+    const dir = i.category || 'QUIET';
+    const dirCol = dir === 'BUYING' ? GREEN : dir === 'SELLING' ? RED : dir === 'MIXED' ? AMBER : GREY;
+    const dirBg  = dir === 'BUYING' ? 'rgba(0,201,125,.10)' : dir === 'SELLING' ? 'rgba(255,58,58,.08)' : dir === 'MIXED' ? 'rgba(239,159,39,.08)' : 'rgba(255,255,255,.03)';
+
+    const netCol = i.net_value > 0 ? GREEN : i.net_value < 0 ? RED : '#888';
+    const lt = i.largest_transaction;
+
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${PURPLE};letter-spacing:.15em;margin-bottom:8px;">// 👔 INSIDER ACTIVITY (90D)</div>
+      <div style="background:${dirBg};border:1px solid ${dirCol}55;border-left:3px solid ${dirCol};border-radius:3px;padding:14px;display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:center;">
+        <div>
+          <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:4px;">DIRECTION</div>
+          <div style="font-family:var(--mono);font-size:18px;letter-spacing:.15em;font-weight:700;color:${dirCol};">${escapeHtml(dir)}</div>
+          <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:6px;">${i.transaction_count || 0} txns · ${i.buy_count || 0} buys · ${i.sell_count || 0} sells</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;font-family:var(--mono);font-size:11px;">
+          <div>
+            <div style="color:#666;font-size:9px;letter-spacing:.1em;margin-bottom:2px;">NET VALUE</div>
+            <div style="color:${netCol};font-weight:600;">${i.net_value != null ? (i.net_value >= 0 ? '+' : '−') + fmtMoney(Math.abs(i.net_value), 0).replace('$', '$') : 'N/A'}</div>
+          </div>
+          <div>
+            <div style="color:#666;font-size:9px;letter-spacing:.1em;margin-bottom:2px;">BUY $ / SELL $</div>
+            <div style="color:#bbb;">${fmtMoney(i.total_buy_value, 0)} / ${fmtMoney(i.total_sell_value, 0)}</div>
+          </div>
+          ${lt ? `<div>
+            <div style="color:#666;font-size:9px;letter-spacing:.1em;margin-bottom:2px;">LARGEST</div>
+            <div style="color:#ddd;">${escapeHtml(lt.insider_name || '')}</div>
+            <div style="color:${lt.value >= 0 ? GREEN : RED};font-size:10px;font-weight:600;">${escapeHtml(lt.transaction_type || '')} · ${fmtMoney(Math.abs(lt.value || 0), 0)}</div>
+            <div style="color:#666;font-size:9px;">${escapeHtml(lt.date || '')} · ${fmtInt(lt.shares)} sh</div>
+          </div>` : ''}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function renderCorpActions(c) {
+    if (!c) return '';
+    const recent = c.recent_splits || [];
+    const upcoming = c.upcoming_splits || [];
+    if (recent.length === 0 && upcoming.length === 0) return '';
+    const splitTxt = arr => arr.map(s => `${escapeHtml(s.date)} · ${s.to_factor}-for-${s.from_factor}`).join(', ');
+    return `<div style="margin-bottom:12px;padding:10px 12px;background:#080808;border:1px solid #1a1a1a;border-radius:3px;font-family:var(--mono);font-size:11px;color:#bbb;line-height:1.5;">
+      <span style="color:${BLUE};font-size:9px;letter-spacing:.1em;">🔧 CORPORATE ACTIONS · </span>
+      ${upcoming.length ? `<span style="color:${AMBER};font-weight:600;">Upcoming:</span> ${splitTxt(upcoming)}` : ''}
+      ${upcoming.length && recent.length ? ' · ' : ''}
+      ${recent.length ? `<span style="color:#666;">Recent:</span> ${splitTxt(recent)}` : ''}
+    </div>`;
+  }
+
+  function renderPositioning(items) {
+    if (!Array.isArray(items) || items.length === 0) return '';
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:8px;">// 🎯 POSITIONING CONSIDERATIONS</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;">
+        ${items.map(it => `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid ${GREEN};border-radius:3px;padding:10px 12px;font-family:var(--mono);font-size:11px;color:#ddd;line-height:1.5;">${escapeHtml(it || '')}</div>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  function renderResults(payload) {
+    const t = escapeHtml(payload.ticker);
+    const co = escapeHtml(payload.company_name || payload.ticker);
+    const sector = payload.sector ? escapeHtml(payload.sector) : '';
+
+    const header = `
+      <div style="display:flex;align-items:flex-start;gap:12px;padding:14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${GREEN};border-radius:3px;margin-bottom:12px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:220px;">
+          <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:4px;">// EVENT ANALYSIS COMPLETE</div>
+          <div style="font-family:var(--mono);font-size:14px;color:#ddd;font-weight:700;letter-spacing:.05em;">${t} · ${co}</div>
+          <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:3px;">
+            ${sector ? `Sector ${sector}` : ''}${payload.country ? `${sector ? ' · ' : ''}Country ${escapeHtml(payload.country)}` : ''}
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
+          ${catalystChip(payload.next_major_catalyst)}
+        </div>
+      </div>`;
+
+    const summary = payload.catalyst_summary ? `
+      <div style="padding:12px 14px;background:rgba(0,201,125,.04);border:1px solid rgba(0,201,125,.2);border-radius:3px;margin-bottom:12px;">
+        <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:6px;">// CATALYST SUMMARY</div>
+        <div style="font-family:var(--mono);font-size:12px;color:#ddd;line-height:1.6;">${escapeHtml(payload.catalyst_summary)}</div>
+      </div>` : '';
+
+    const earningsBlock = renderEarnings(payload.earnings);
+    const earningsCoverageNote = (!payload.earnings || !payload.earnings.next_date && (!payload.earnings.last_4_reports || payload.earnings.last_4_reports.length === 0))
+      ? `<div style="padding:10px 12px;background:rgba(239,159,39,.05);border:1px solid rgba(239,159,39,.3);border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:11px;color:#bbb;">
+          ⓘ Calendar coverage limited for this ticker.
+        </div>` : '';
+
+    const dividendsBlock = renderDividends(payload.dividends, payload.current_price);
+    const maBlock = renderNewsList('M&A SIGNALS', BLUE, 'rgba(52,152,219,.04)', payload.ma_signals, '🤝');
+    const regBlock = renderNewsList('REGULATORY', RED, 'rgba(255,58,58,.05)', payload.regulatory_signals, '⚖️');
+    const insiderBlock = renderInsider(payload.insider_activity);
+    const corpBlock = renderCorpActions(payload.corporate_actions);
+
+    const thesis = payload.primary_catalyst_thesis ? `
+      <div style="padding:12px 14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${BLUE};border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:12px;color:#ddd;line-height:1.6;">
+        <span style="color:${BLUE};font-size:9px;letter-spacing:.15em;">PRIMARY CATALYST · </span>${escapeHtml(payload.primary_catalyst_thesis)}
+      </div>` : '';
+
+    const positioning = renderPositioning(payload.positioning_considerations);
+
+    const insight = payload.institutional_insight ? `
+      <div style="padding:14px;background:linear-gradient(180deg, rgba(239,159,39,.10), rgba(239,159,39,.02));border:1px solid rgba(239,159,39,.45);border-radius:3px;margin-bottom:6px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span style="font-size:14px;">💡</span>
+          <span style="font-family:var(--mono);font-size:9px;color:${AMBER};letter-spacing:.15em;font-weight:600;">// INSTITUTIONAL INSIGHT</span>
+        </div>
+        <div style="font-family:var(--mono);font-size:12px;color:#e8e8e8;line-height:1.7;font-style:italic;">${escapeHtml(payload.institutional_insight)}</div>
+      </div>` : '';
+
+    const footer = `<div style="margin-top:10px;font-family:var(--mono);font-size:9px;color:#444;text-align:right;letter-spacing:.05em;">
+      Source: ${escapeHtml(payload.source || 'Finnhub + Claude')}
+    </div>`;
+
+    setStatus(header + summary + earningsCoverageNote + earningsBlock + dividendsBlock + maBlock + regBlock + insiderBlock + corpBlock + thesis + positioning + insight + footer);
+  }
+
+  // ── Autocomplete dropdown (mirrors other agents) ───────────────
+  const ddState = { items: [], cursor: -1, open: false };
+  function regionBadge(region, finnhubOk) {
+    const col = finnhubOk ? GREEN : AMBER;
+    const bg  = finnhubOk ? 'rgba(0,201,125,.12)' : 'rgba(239,159,39,.12)';
+    const mark = finnhubOk ? '✓ events' : '✗ limited';
+    return `<span style="display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:8px;color:${col};letter-spacing:.08em;padding:2px 6px;background:${bg};border:1px solid ${col}40;border-radius:2px;">
+      <span style="width:5px;height:5px;border-radius:50%;background:${col};"></span>${mark}
+    </span>
+    <span style="font-family:var(--mono);font-size:9px;color:#666;">${escapeHtml(region.label)}</span>`;
+  }
+  function renderDropdown() {
+    const dd = document.getElementById('eventAgentDropdown');
+    const input = document.getElementById('eventAgentTicker');
+    if (!dd || !input) return;
+    if (!ddState.open || ddState.items.length === 0) {
+      dd.style.display = 'none'; dd.innerHTML = '';
+      input.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    dd.style.display = 'block';
+    input.setAttribute('aria-expanded', 'true');
+    dd.innerHTML = ddState.items.map((it, i) => {
+      const selected = i === ddState.cursor;
+      const bg = selected ? 'rgba(0,201,125,.08)' : 'transparent';
+      const border = selected ? '#1f3a2a' : '#0f0f0f';
+      return `<div role="option" data-i="${i}"
+        style="display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid ${border};">
+        <span style="font-family:var(--mono);font-size:12px;color:#ddd;font-weight:700;letter-spacing:.05em;min-width:90px;">${escapeHtml(it.symbol)}</span>
+        <span style="flex:1;"></span>
+        ${regionBadge(it.region, it.finnhub)}
+      </div>`;
+    }).join('');
+  }
+  function openDropdown(q) {
+    ddState.items = searchTickers(q);
+    ddState.cursor = ddState.items.length ? 0 : -1;
+    ddState.open = ddState.items.length > 0;
+    renderDropdown();
+  }
+  function closeDropdown() { ddState.open = false; ddState.cursor = -1; renderDropdown(); }
+  function moveDropdown(d) {
+    if (!ddState.open || !ddState.items.length) return;
+    const n = ddState.items.length;
+    ddState.cursor = (ddState.cursor + d + n) % n;
+    renderDropdown();
+    const dd = document.getElementById('eventAgentDropdown');
+    if (dd) {
+      const sel = dd.querySelector(`[data-i="${ddState.cursor}"]`);
+      if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
+    }
+  }
+  function selectDropdown(i) {
+    if (i == null) i = ddState.cursor;
+    if (i < 0 || i >= ddState.items.length) return false;
+    const pick = ddState.items[i];
+    const input = document.getElementById('eventAgentTicker');
+    if (input) input.value = pick.symbol;
+    closeDropdown();
+    runEventAgent();
+    return true;
+  }
+
+  async function runEventAgent() {
+    const input = document.getElementById('eventAgentTicker');
+    const btn = document.getElementById('eventAgentBtn');
+    if (!input || !btn) return;
+    const ticker = (input.value || '').trim().toUpperCase();
+    if (!ticker) { renderError('Enter a ticker first (e.g., NVDA, MELI, VALE).'); input.focus(); return; }
+    input.value = ticker;
+    closeDropdown();
+
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    btn.style.cursor = 'wait';
+    const origLabel = btn.textContent;
+    btn.textContent = '⏳ WORKING...';
+
+    renderLoading(0);
+    const t1 = setTimeout(() => renderLoading(1), 1000);
+    const t2 = setTimeout(() => renderLoading(2), 3000);
+    const t3 = setTimeout(() => renderLoading(3), 6000);
+
+    try {
+      const r = await fetch('/api/event-agent?ticker=' + encodeURIComponent(ticker));
+      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
+      const data = await r.json();
+      if (data.error) { renderError(data.error); return; }
+      renderResults(data);
+    } catch (err) {
+      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
+      renderError('Network error: ' + (err && err.message ? err.message : 'unknown'));
+    } finally {
+      btn.disabled = false;
+      btn.style.opacity = '';
+      btn.style.cursor = 'pointer';
+      btn.textContent = origLabel;
+    }
+  }
+
+  function wire() {
+    const btn = document.getElementById('eventAgentBtn');
+    const input = document.getElementById('eventAgentTicker');
+    const dd = document.getElementById('eventAgentDropdown');
+    if (btn && !btn._wired) { btn._wired = true; btn.addEventListener('click', runEventAgent); }
+    if (input && !input._wired) {
+      input._wired = true;
+      input.addEventListener('input', () => openDropdown(input.value));
+      input.addEventListener('focus', () => { if (input.value) openDropdown(input.value); });
+      input.addEventListener('keydown', e => {
+        if (ddState.open) {
+          if (e.key === 'ArrowDown') { e.preventDefault(); moveDropdown(1); return; }
+          if (e.key === 'ArrowUp')   { e.preventDefault(); moveDropdown(-1); return; }
+          if (e.key === 'Escape')    { e.preventDefault(); closeDropdown(); return; }
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (ddState.cursor >= 0 && selectDropdown()) return;
+            runEventAgent();
+            return;
+          }
+        } else if (e.key === 'Enter') { e.preventDefault(); runEventAgent(); }
+      });
+    }
+    if (dd && !dd._wired) {
+      dd._wired = true;
+      dd.addEventListener('mousedown', e => {
+        const row = e.target.closest('[data-i]');
+        if (!row) return;
+        e.preventDefault();
+        selectDropdown(parseInt(row.dataset.i, 10));
+      });
+      dd.addEventListener('mouseover', e => {
+        const row = e.target.closest('[data-i]');
+        if (!row) return;
+        const i = parseInt(row.dataset.i, 10);
+        if (i !== ddState.cursor) { ddState.cursor = i; renderDropdown(); }
+      });
+    }
+    if (!document._eventOutsideWired) {
+      document._eventOutsideWired = true;
+      document.addEventListener('click', e => {
+        if (!ddState.open) return;
+        const within = e.target.closest('#eventAgentDropdown, #eventAgentTicker');
         if (!within) closeDropdown();
       });
     }
