@@ -11495,6 +11495,37 @@ function margin_color(pct, threshold, COL){
 <!-- AGENTS PAGE -->
 <div id="page-agents" class="page" style="padding:0;background:#080808;min-height:100vh;">
 
+  <!-- ─── MACRO AGENT (Sprint 3) ─────────────────────────────────── -->
+  <section id="macroAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// MACRO AGENT</span>
+      <div style="flex:1;height:1px;background:#1a1a1a;"></div>
+      <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;">SPRINT 3</span>
+    </div>
+    <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Macroeconomic context for any ticker · Rates · FX · Commodities · Cycle</div>
+
+    <div class="research-agent-card" style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid var(--green,#00c97d);border-radius:4px;padding:16px;">
+      <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+        <span class="agent-icon" style="font-size:18px;">🌎</span>
+        <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Macro Agent</span>
+        <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">Rates · FX · Commodities · Cycle</span>
+        <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">FRED + Yahoo Finance · LATAM-aware</span>
+      </div>
+
+      <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;position:relative;">
+        <div style="flex:1;min-width:220px;position:relative;">
+          <input id="macroAgentTicker" placeholder="Enter ticker (e.g., NVDA, MELI, VALE)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="macroAgentDropdown" aria-expanded="false"
+                 style="width:100%;box-sizing:border-box;background:#080808;border:1px solid #222;color:#ddd;font-family:var(--mono);font-size:12px;padding:9px 12px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;" />
+          <div id="macroAgentDropdown" role="listbox" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#0a0a0a;border:1px solid #222;border-radius:3px;z-index:200;max-height:320px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,.6);"></div>
+        </div>
+        <button id="macroAgentBtn"
+                style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE MACRO</button>
+      </div>
+
+      <div id="macroAgentOutput" class="agent-output" style="font-family:var(--mono);font-size:11px;color:#888;"></div>
+    </div>
+  </section>
+
   <!-- ─── FUNDAMENTAL AGENT (Sprint 2) ───────────────────────────────── -->
   <section id="fundamentalAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
@@ -13291,6 +13322,473 @@ function margin_color(pct, threshold, COL){
       document.addEventListener('click', e => {
         if (!ddState.open) return;
         const within = e.target.closest('#fundamentalAgentDropdown, #fundamentalAgentTicker');
+        if (!within) closeDropdown();
+      });
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire);
+  } else {
+    wire();
+  }
+})();
+</script>
+
+<!-- ─── MACRO AGENT (Sprint 3) ───────────────────────────────────────── -->
+<script>
+(function(){
+  const GREEN  = '#00c97d';
+  const RED    = '#ff3a3a';
+  const AMBER  = '#EF9F27';
+  const BLUE   = '#3498db';
+  const PURPLE = '#9b59b6';
+
+  const escapeHtml = s => String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+  const fmtPct  = (n, dp = 2) => (n == null || !isFinite(n)) ? 'N/A' : `${n.toFixed(dp)}%`;
+  const fmtSigPct = (n, dp = 2) => {
+    if (n == null || !isFinite(n)) return 'N/A';
+    const s = n >= 0 ? '+' : '';
+    return `${s}${n.toFixed(dp)}%`;
+  };
+  const fmtNum  = (n, dp = 2) => (n == null || !isFinite(n)) ? 'N/A' : n.toFixed(dp);
+
+  // ── Self-contained autocomplete (same shape as Fundamental Agent) ──
+  const COUNTRY_FLAG = {
+    Argentina:'🇦🇷', Brasil:'🇧🇷', Brazil:'🇧🇷', Chile:'🇨🇱', Colombia:'🇨🇴',
+    'México':'🇲🇽', Mexico:'🇲🇽', Perú:'🇵🇪', Peru:'🇵🇪'
+  };
+  const EXCHANGE_COUNTRY = {
+    '.MX':'México', '.SA':'Brasil', '.SN':'Chile', '.BA':'Argentina'
+  };
+  function regionFor(symbol) {
+    const dot = symbol.lastIndexOf('.');
+    if (dot > 0) {
+      const suffix = symbol.slice(dot);
+      if (EXCHANGE_COUNTRY[suffix]) return { code:'latam', label: EXCHANGE_COUNTRY[suffix], coverage: false };
+    }
+    if (typeof LATAM_ADR_COUNTRY !== 'undefined' && LATAM_ADR_COUNTRY[symbol]) {
+      return { code:'adr', label: LATAM_ADR_COUNTRY[symbol] + ' ADR', coverage: true };
+    }
+    if (symbol.includes('/')) return { code:'crypto', label:'Crypto', coverage: false };
+    return { code:'us', label:'US', coverage: true };
+  }
+  const CATALOG = (function () {
+    const out = [], seen = new Set();
+    const push = sym => {
+      if (!sym || seen.has(sym)) return;
+      seen.add(sym);
+      const region = regionFor(sym);
+      if (region.code === 'crypto') return;  // no Finnhub profile for tokens
+      out.push({ symbol: sym, region, finnhub: region.coverage });
+    };
+    try {
+      if (typeof SCREENER_UNIVERSE !== 'undefined') {
+        (SCREENER_UNIVERSE.us || []).forEach(push);
+        (SCREENER_UNIVERSE.latam || []).forEach(push);
+      }
+    } catch (_) {}
+    return out;
+  })();
+  function searchTickers(q) {
+    q = String(q || '').trim().toUpperCase();
+    if (!q) return [];
+    const prefix = [], contains = [];
+    for (const row of CATALOG) {
+      if (row.symbol.startsWith(q)) prefix.push(row);
+      else if (row.symbol.includes(q)) contains.push(row);
+      if (prefix.length >= 8) break;
+    }
+    return prefix.concat(contains).slice(0, 8);
+  }
+
+  // ── Render helpers ─────────────────────────────────────────────
+  function setStatus(html) {
+    const out = document.getElementById('macroAgentOutput');
+    if (out) out.innerHTML = html;
+  }
+  function renderLoading(stage) {
+    const stages = [
+      'Detecting country and sector...',
+      'Fetching US Federal Reserve data...',
+      'Pulling FX and commodity context...',
+      'Generating macro institutional insight...'
+    ];
+    setStatus(
+      `<div style="padding:14px;background:#080808;border:1px solid #1a1a1a;border-radius:3px;">
+        <div style="font-family:var(--mono);font-size:10px;color:${GREEN};letter-spacing:.1em;margin-bottom:10px;">// MACRO AGENT WORKING</div>
+        ${stages.map((label, i) => {
+          const active = i === stage;
+          const done = i < stage;
+          const color = active ? GREEN : done ? '#666' : '#333';
+          const mark = done ? '✓' : active ? '▶' : '·';
+          return `<div style="font-family:var(--mono);font-size:11px;color:${color};margin:4px 0;">${mark} ${escapeHtml(label)}</div>`;
+        }).join('')}
+      </div>`
+    );
+  }
+  function renderError(msg) {
+    setStatus(
+      `<div style="padding:14px;background:rgba(255,58,58,.05);border:1px solid rgba(255,58,58,.3);border-radius:3px;font-family:var(--mono);font-size:11px;color:${RED};">
+        ✕ ${escapeHtml(msg)}
+      </div>`
+    );
+  }
+
+  function cycleChip(pos) {
+    const map = {
+      TIGHTENING: { col: RED,   bg: 'rgba(255,58,58,.10)' },
+      HOLD:       { col: AMBER, bg: 'rgba(239,159,39,.10)' },
+      EASING:     { col: GREEN, bg: 'rgba(0,201,125,.12)' },
+      NEUTRAL:    { col: BLUE,  bg: 'rgba(52,152,219,.10)' }
+    };
+    const m = map[pos] || { col: '#888', bg: 'rgba(255,255,255,.04)' };
+    return `<span style="display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;letter-spacing:.15em;font-weight:700;color:${m.col};background:${m.bg};border:1px solid ${m.col}55;padding:6px 12px;border-radius:3px;">FED ${escapeHtml(pos || 'N/A')}</span>`;
+  }
+
+  function yieldCurveColor(cat) {
+    if (cat === 'INVERTED') return RED;
+    if (cat === 'FLAT') return AMBER;
+    if (cat === 'STEEPENING' || cat === 'STEEP') return GREEN;
+    return '#888';
+  }
+  function vixColor(regime) {
+    if (regime === 'LOW') return GREEN;
+    if (regime === 'NORMAL') return '#aaa';
+    if (regime === 'ELEVATED') return AMBER;
+    if (regime === 'HIGH') return RED;
+    return '#888';
+  }
+  function fxRegimeColor(r) {
+    if (r === 'APPRECIATING') return GREEN;
+    if (r === 'STABLE') return '#aaa';
+    if (r === 'VOLATILE') return AMBER;
+    if (r === 'DEPRECIATING') return RED;
+    return '#888';
+  }
+  function sensColor(level) {
+    if (level === 'HIGH')   return RED;
+    if (level === 'MEDIUM') return AMBER;
+    if (level === 'LOW')    return GREEN;
+    return '#888';
+  }
+
+  function macroCard(label, value, sub, valueColor) {
+    return `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;padding:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:6px;">${escapeHtml(label)}</div>
+      <div style="font-family:var(--mono);font-size:18px;color:${valueColor || '#ddd'};font-weight:700;margin-bottom:4px;">${value}</div>
+      <div style="font-family:var(--mono);font-size:10px;color:#666;">${sub}</div>
+    </div>`;
+  }
+
+  function renderUsMacro(us) {
+    if (!us || !us.fred_available) {
+      return `<div style="padding:14px;background:rgba(239,159,39,.05);border:1px solid rgba(239,159,39,.3);border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:11px;color:#bbb;">
+        // US MACRO ENVIRONMENT · FRED data unavailable — set FRED_API_KEY to enable.
+      </div>`;
+    }
+    const ff = us.fed_funds_rate;
+    const t10 = us.treasury_10y;
+    const t2  = us.treasury_2y;
+    const slope = us.yield_curve_slope;
+    const cpi = us.cpi_yoy;
+    const real = us.real_rate;
+    const vix = us.vix;
+
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${BLUE};letter-spacing:.15em;margin-bottom:8px;">// US MACRO ENVIRONMENT</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;">
+        ${macroCard('Fed Funds Rate',
+                    ff != null ? fmtPct(ff) : 'N/A',
+                    `Cycle: <span style="color:#bbb;">${escapeHtml(us.cycle_position || 'N/A')}</span>`)}
+        ${macroCard('10Y − 2Y Curve',
+                    slope != null ? fmtSigPct(slope) + ' pp' : 'N/A',
+                    `<span style="color:${yieldCurveColor(us.yield_curve_category)};font-weight:600;">${escapeHtml(us.yield_curve_category || 'N/A')}</span>`,
+                    yieldCurveColor(us.yield_curve_category))}
+        ${macroCard('CPI YoY',
+                    cpi != null ? fmtPct(cpi) : 'N/A',
+                    `Real rate: <span style="color:#bbb;">${real != null ? fmtSigPct(real) : 'N/A'}</span>${us.cpi_source ? ` · ${escapeHtml(us.cpi_source)}` : ''}`)}
+        ${macroCard('VIX',
+                    vix != null ? fmtNum(vix, 1) : 'N/A',
+                    `<span style="color:${vixColor(us.vix_regime)};font-weight:600;">${escapeHtml(us.vix_regime || 'N/A')}</span> regime`,
+                    vixColor(us.vix_regime))}
+      </div>
+      ${us.treasury_10y != null ? `<div style="font-family:var(--mono);font-size:9px;color:#444;margin-top:6px;">10Y ${fmtPct(us.treasury_10y)} · 2Y ${fmtPct(us.treasury_2y)}${us.dxy != null ? ` · DXY ${fmtNum(us.dxy, 2)}` : ''}</div>` : ''}
+    </div>`;
+  }
+
+  function renderLocalMacro(local) {
+    if (!local) return '';
+    if (local.error) {
+      return `<div style="padding:10px 12px;background:rgba(239,159,39,.05);border:1px solid rgba(239,159,39,.3);border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:11px;color:#bbb;">
+        // LOCAL MACRO · ${escapeHtml(local.country_name || local.country)} (${escapeHtml(local.currency)}) — ${escapeHtml(local.error)}
+      </div>`;
+    }
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${PURPLE};letter-spacing:.15em;margin-bottom:8px;">// LOCAL MACRO · ${escapeHtml(local.country_name)} (${escapeHtml(local.currency)})</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;">
+        ${macroCard(`USD / ${escapeHtml(local.currency)}`,
+                    fmtNum(local.rate, local.rate < 100 ? 4 : 2),
+                    `12m: <span style="color:${local.change_1y_pct > 0 ? RED : GREEN};font-weight:600;">${fmtSigPct(local.change_1y_pct)}</span> · <span style="color:${fxRegimeColor(local.regime)};">${escapeHtml(local.regime || 'N/A')}</span>`,
+                    fxRegimeColor(local.regime))}
+        ${macroCard('FX volatility (1y, ann.)',
+                    local.volatility_1y_pct != null ? fmtPct(local.volatility_1y_pct, 1) : 'N/A',
+                    `<span style="color:${sensColor(local.volatility_band)};font-weight:600;">${escapeHtml(local.volatility_band || 'N/A')}</span> regime`,
+                    sensColor(local.volatility_band))}
+      </div>
+    </div>`;
+  }
+
+  function renderCommodities(cc) {
+    if (!cc || !cc.applicable) return '';
+    const list = cc.commodities || [];
+    if (list.length === 0) return '';
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${AMBER};letter-spacing:.15em;margin-bottom:8px;">// COMMODITY CONTEXT</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;">
+        ${list.map(c => macroCard(
+          escapeHtml(c.label),
+          '$' + fmtNum(c.price, 2),
+          `12m: <span style="color:${c.change_1y_pct >= 0 ? GREEN : RED};font-weight:600;">${fmtSigPct(c.change_1y_pct)}</span>`,
+          '#ddd'
+        )).join('')}
+      </div>
+    </div>`;
+  }
+
+  function renderSensitivities(s) {
+    if (!s) return '';
+    const cell = (label, level) => `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid ${sensColor(level)};border-radius:3px;padding:10px 12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:4px;">${escapeHtml(label)}</div>
+      <div style="font-family:var(--mono);font-size:14px;color:${sensColor(level)};font-weight:700;letter-spacing:.05em;">${escapeHtml(level || 'N/A')}</div>
+    </div>`;
+    const drivers = (s.primary_drivers || []).map(d => d.replace(/_/g, ' '));
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:8px;">// TICKER MACRO SENSITIVITY</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;margin-bottom:6px;">
+        ${cell('FX', s.fx_sensitivity)}
+        ${cell('Rates', s.rate_sensitivity)}
+        ${cell('Commodities', s.commodity_sensitivity)}
+      </div>
+      ${drivers.length ? `<div style="font-family:var(--mono);font-size:10px;color:#666;">Primary drivers: <span style="color:#aaa;">${drivers.map(escapeHtml).join(' · ')}</span></div>` : ''}
+    </div>`;
+  }
+
+  function renderListPanel(title, items, color, bgRgba) {
+    if (!Array.isArray(items) || items.length === 0) return '';
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${color};letter-spacing:.15em;margin-bottom:8px;">// ${escapeHtml(title)}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;">
+        ${items.map(it => `<div style="background:${bgRgba};border:1px solid ${color}40;border-left:3px solid ${color};border-radius:3px;padding:10px 12px;font-family:var(--mono);font-size:11px;color:#ddd;line-height:1.5;">${escapeHtml(it || '')}</div>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  function renderResults(payload) {
+    const t  = escapeHtml(payload.ticker);
+    const co = escapeHtml(payload.company_name || payload.ticker);
+    const sector = payload.sector ? escapeHtml(payload.sector) : '';
+    const country = payload.country_name
+      ? `${COUNTRY_FLAG[payload.country_name] || ''} ${escapeHtml(payload.country_name)} (${escapeHtml(payload.country)})`
+      : '';
+
+    const header = `
+      <div style="display:flex;align-items:flex-start;gap:12px;padding:14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${GREEN};border-radius:3px;margin-bottom:12px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:220px;">
+          <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:4px;">// MACRO ANALYSIS COMPLETE</div>
+          <div style="font-family:var(--mono);font-size:14px;color:#ddd;font-weight:700;letter-spacing:.05em;">${t} · ${co}</div>
+          <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:3px;">
+            ${sector ? `Sector ${sector}` : ''}${sector && country ? ' · ' : ''}${country}
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
+          ${cycleChip(payload.us_macro && payload.us_macro.cycle_position)}
+        </div>
+      </div>`;
+
+    const macroSummary = payload.macro_summary ? `
+      <div style="padding:12px 14px;background:rgba(0,201,125,.04);border:1px solid rgba(0,201,125,.2);border-radius:3px;margin-bottom:12px;">
+        <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:6px;">// MACRO SUMMARY</div>
+        <div style="font-family:var(--mono);font-size:12px;color:#ddd;line-height:1.6;">${escapeHtml(payload.macro_summary)}</div>
+      </div>` : '';
+
+    const usBlock = renderUsMacro(payload.us_macro);
+    const localBlock = renderLocalMacro(payload.local_macro);
+    const commodBlock = renderCommodities(payload.commodity_context);
+    const sensBlock = renderSensitivities(payload.ticker_macro_correlations);
+
+    const impact = payload.ticker_specific_impact ? `
+      <div style="padding:10px 12px;background:#080808;border:1px solid #1a1a1a;border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:11px;color:#bbb;line-height:1.6;">
+        <span style="color:${BLUE};font-size:9px;letter-spacing:.1em;">TICKER IMPACT · </span>${escapeHtml(payload.ticker_specific_impact)}
+      </div>` : '';
+
+    const risks = renderListPanel('KEY RISKS',         payload.key_risks,         RED,   'rgba(255,58,58,.05)');
+    const opps  = renderListPanel('KEY OPPORTUNITIES', payload.key_opportunities, GREEN, 'rgba(0,201,125,.04)');
+
+    const insight = payload.institutional_insight ? `
+      <div style="padding:14px;background:linear-gradient(180deg, rgba(239,159,39,.10), rgba(239,159,39,.02));border:1px solid rgba(239,159,39,.45);border-radius:3px;margin-bottom:6px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span style="font-size:14px;">💡</span>
+          <span style="font-family:var(--mono);font-size:9px;color:${AMBER};letter-spacing:.15em;font-weight:600;">// INSTITUTIONAL INSIGHT</span>
+        </div>
+        <div style="font-family:var(--mono);font-size:12px;color:#e8e8e8;line-height:1.7;font-style:italic;">${escapeHtml(payload.institutional_insight)}</div>
+      </div>` : '';
+
+    const footer = `<div style="margin-top:10px;font-family:var(--mono);font-size:9px;color:#444;text-align:right;letter-spacing:.05em;">
+      Source: ${escapeHtml(payload.source || 'FRED + Yahoo Finance + Claude')}
+    </div>`;
+
+    setStatus(header + macroSummary + usBlock + localBlock + commodBlock + sensBlock + impact + risks + opps + insight + footer);
+  }
+
+  // ── Autocomplete dropdown (mirrors Fundamental Agent) ──────────
+  const ddState = { items: [], cursor: -1, open: false };
+
+  function regionBadge(region, finnhubOk) {
+    const col = finnhubOk ? GREEN : AMBER;
+    const bg  = finnhubOk ? 'rgba(0,201,125,.12)' : 'rgba(239,159,39,.12)';
+    const mark = finnhubOk ? '✓ macro' : '✗ limited';
+    const flag = COUNTRY_FLAG[region.label.replace(' ADR','')] || '';
+    return `<span style="display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:8px;color:${col};letter-spacing:.08em;padding:2px 6px;background:${bg};border:1px solid ${col}40;border-radius:2px;">
+      <span style="width:5px;height:5px;border-radius:50%;background:${col};"></span>${mark}
+    </span>
+    <span style="font-family:var(--mono);font-size:9px;color:#666;">${flag ? flag + ' ' : ''}${escapeHtml(region.label)}</span>`;
+  }
+  function renderDropdown() {
+    const dd = document.getElementById('macroAgentDropdown');
+    const input = document.getElementById('macroAgentTicker');
+    if (!dd || !input) return;
+    if (!ddState.open || ddState.items.length === 0) {
+      dd.style.display = 'none'; dd.innerHTML = '';
+      input.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    dd.style.display = 'block';
+    input.setAttribute('aria-expanded', 'true');
+    dd.innerHTML = ddState.items.map((it, i) => {
+      const selected = i === ddState.cursor;
+      const bg = selected ? 'rgba(0,201,125,.08)' : 'transparent';
+      const border = selected ? '#1f3a2a' : '#0f0f0f';
+      return `<div role="option" data-i="${i}"
+        style="display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid ${border};">
+        <span style="font-family:var(--mono);font-size:12px;color:#ddd;font-weight:700;letter-spacing:.05em;min-width:90px;">${escapeHtml(it.symbol)}</span>
+        <span style="flex:1;"></span>
+        ${regionBadge(it.region, it.finnhub)}
+      </div>`;
+    }).join('');
+  }
+  function openDropdown(q) {
+    ddState.items = searchTickers(q);
+    ddState.cursor = ddState.items.length ? 0 : -1;
+    ddState.open = ddState.items.length > 0;
+    renderDropdown();
+  }
+  function closeDropdown() { ddState.open = false; ddState.cursor = -1; renderDropdown(); }
+  function moveDropdown(d) {
+    if (!ddState.open || !ddState.items.length) return;
+    const n = ddState.items.length;
+    ddState.cursor = (ddState.cursor + d + n) % n;
+    renderDropdown();
+    const dd = document.getElementById('macroAgentDropdown');
+    if (dd) {
+      const sel = dd.querySelector(`[data-i="${ddState.cursor}"]`);
+      if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
+    }
+  }
+  function selectDropdown(i) {
+    if (i == null) i = ddState.cursor;
+    if (i < 0 || i >= ddState.items.length) return false;
+    const pick = ddState.items[i];
+    const input = document.getElementById('macroAgentTicker');
+    if (input) input.value = pick.symbol;
+    closeDropdown();
+    runMacroAgent();
+    return true;
+  }
+
+  async function runMacroAgent() {
+    const input = document.getElementById('macroAgentTicker');
+    const btn = document.getElementById('macroAgentBtn');
+    if (!input || !btn) return;
+    const ticker = (input.value || '').trim().toUpperCase();
+    if (!ticker) { renderError('Enter a ticker first (e.g., NVDA, MELI, VALE).'); input.focus(); return; }
+    input.value = ticker;
+    closeDropdown();
+
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    btn.style.cursor = 'wait';
+    const origLabel = btn.textContent;
+    btn.textContent = '⏳ WORKING...';
+
+    renderLoading(0);
+    const t1 = setTimeout(() => renderLoading(1), 1000);
+    const t2 = setTimeout(() => renderLoading(2), 3500);
+    const t3 = setTimeout(() => renderLoading(3), 7000);
+
+    try {
+      const r = await fetch('/api/macro-agent?ticker=' + encodeURIComponent(ticker));
+      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
+      const data = await r.json();
+      if (data.error) { renderError(data.error); return; }
+      renderResults(data);
+    } catch (err) {
+      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
+      renderError('Network error: ' + (err && err.message ? err.message : 'unknown'));
+    } finally {
+      btn.disabled = false;
+      btn.style.opacity = '';
+      btn.style.cursor = 'pointer';
+      btn.textContent = origLabel;
+    }
+  }
+
+  function wire() {
+    const btn = document.getElementById('macroAgentBtn');
+    const input = document.getElementById('macroAgentTicker');
+    const dd = document.getElementById('macroAgentDropdown');
+    if (btn && !btn._wired) { btn._wired = true; btn.addEventListener('click', runMacroAgent); }
+    if (input && !input._wired) {
+      input._wired = true;
+      input.addEventListener('input', () => openDropdown(input.value));
+      input.addEventListener('focus', () => { if (input.value) openDropdown(input.value); });
+      input.addEventListener('keydown', e => {
+        if (ddState.open) {
+          if (e.key === 'ArrowDown') { e.preventDefault(); moveDropdown(1); return; }
+          if (e.key === 'ArrowUp')   { e.preventDefault(); moveDropdown(-1); return; }
+          if (e.key === 'Escape')    { e.preventDefault(); closeDropdown(); return; }
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (ddState.cursor >= 0 && selectDropdown()) return;
+            runMacroAgent();
+            return;
+          }
+        } else if (e.key === 'Enter') { e.preventDefault(); runMacroAgent(); }
+      });
+    }
+    if (dd && !dd._wired) {
+      dd._wired = true;
+      dd.addEventListener('mousedown', e => {
+        const row = e.target.closest('[data-i]');
+        if (!row) return;
+        e.preventDefault();
+        selectDropdown(parseInt(row.dataset.i, 10));
+      });
+      dd.addEventListener('mouseover', e => {
+        const row = e.target.closest('[data-i]');
+        if (!row) return;
+        const i = parseInt(row.dataset.i, 10);
+        if (i !== ddState.cursor) { ddState.cursor = i; renderDropdown(); }
+      });
+    }
+    if (!document._macroOutsideWired) {
+      document._macroOutsideWired = true;
+      document.addEventListener('click', e => {
+        if (!ddState.open) return;
+        const within = e.target.closest('#macroAgentDropdown, #macroAgentTicker');
         if (!within) closeDropdown();
       });
     }
