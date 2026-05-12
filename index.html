@@ -11495,6 +11495,37 @@ function margin_color(pct, threshold, COL){
 <!-- AGENTS PAGE -->
 <div id="page-agents" class="page" style="padding:0;background:#080808;min-height:100vh;">
 
+  <!-- ─── FUNDAMENTAL AGENT (Sprint 2) ───────────────────────────────── -->
+  <section id="fundamentalAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// FUNDAMENTAL AGENT</span>
+      <div style="flex:1;height:1px;background:#1a1a1a;"></div>
+      <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;">SPRINT 2</span>
+    </div>
+    <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Quantitative valuation with sensitivity · DCF + Multiples + Health Scores</div>
+
+    <div class="research-agent-card" style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid var(--green,#00c97d);border-radius:4px;padding:16px;">
+      <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+        <span class="agent-icon" style="font-size:18px;">📊</span>
+        <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Fundamental Agent</span>
+        <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">DCF + Multiples + Health Scores</span>
+        <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">Altman Z · Piotroski F · Beneish M · 5y DCF</span>
+      </div>
+
+      <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;position:relative;">
+        <div style="flex:1;min-width:220px;position:relative;">
+          <input id="fundamentalAgentTicker" placeholder="Enter ticker (e.g., NVDA, MELI, NU)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="fundamentalAgentDropdown" aria-expanded="false"
+                 style="width:100%;box-sizing:border-box;background:#080808;border:1px solid #222;color:#ddd;font-family:var(--mono);font-size:12px;padding:9px 12px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;" />
+          <div id="fundamentalAgentDropdown" role="listbox" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#0a0a0a;border:1px solid #222;border-radius:3px;z-index:200;max-height:320px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,.6);"></div>
+        </div>
+        <button id="fundamentalAgentBtn"
+                style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE FUNDAMENTALS</button>
+      </div>
+
+      <div id="fundamentalAgentOutput" class="agent-output" style="font-family:var(--mono);font-size:11px;color:#888;"></div>
+    </div>
+  </section>
+
   <!-- ─── RESEARCH AGENTS (Sprint 1: Filings Agent) ─────────────────── -->
   <section id="researchAgentsSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
@@ -12679,6 +12710,512 @@ function margin_color(pct, threshold, COL){
       document.addEventListener('click', e => {
         if (!dropdownState.open) return;
         const within = e.target.closest('#filingsAgentDropdown, #filingsAgentTicker');
+        if (!within) closeDropdown();
+      });
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire);
+  } else {
+    wire();
+  }
+})();
+</script>
+
+<!-- ─── FUNDAMENTAL AGENT (Sprint 2) ─────────────────────────────────── -->
+<script>
+(function(){
+  const GREEN  = '#00c97d';
+  const RED    = '#ff3a3a';
+  const AMBER  = '#EF9F27';
+  const BLUE   = '#3498db';
+  const PURPLE = '#9b59b6';
+
+  const escapeHtml = s => String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+  // ── Number formatters ─────────────────────────────────────────
+  const fmtMoney = (n, opts = {}) => {
+    if (n == null || !isFinite(n)) return 'N/A';
+    const a = Math.abs(n);
+    if (a >= 1e12) return `$${(n/1e12).toFixed(2)}T`;
+    if (a >= 1e9)  return `$${(n/1e9).toFixed(2)}B`;
+    if (a >= 1e6)  return `$${(n/1e6).toFixed(1)}M`;
+    return `$${n.toFixed(opts.dp == null ? 2 : opts.dp)}`;
+  };
+  const fmtPct = (n, dp = 1) => (n == null || !isFinite(n)) ? 'N/A' : `${(n*100).toFixed(dp)}%`;
+  const fmtSignedPct = (n, dp = 1) => {
+    if (n == null || !isFinite(n)) return 'N/A';
+    const s = n >= 0 ? '+' : '';
+    return `${s}${(n*100).toFixed(dp)}%`;
+  };
+  const fmtMult = (n, dp = 1) => (n == null || !isFinite(n) || n <= 0) ? 'N/A' : `${n.toFixed(dp)}×`;
+  const fmtNum  = (n, dp = 2) => (n == null || !isFinite(n)) ? 'N/A' : n.toFixed(dp);
+
+  // ── Ticker autocomplete (self-contained, mirrors Filings Agent) ───
+  // We DO NOT touch the Filings Agent IIFE. This block builds its own
+  // catalog off the globally-defined SCREENER_UNIVERSE.
+  const COUNTRY_FLAG = {
+    Argentina:'🇦🇷', Brasil:'🇧🇷', Chile:'🇨🇱', Colombia:'🇨🇴',
+    'México':'🇲🇽', Mexico:'🇲🇽', Perú:'🇵🇪', Peru:'🇵🇪'
+  };
+  const EXCHANGE_COUNTRY = {
+    '.MX':'México', '.SA':'Brasil', '.SN':'Chile', '.BA':'Argentina'
+  };
+  function regionFor(symbol) {
+    const dot = symbol.lastIndexOf('.');
+    if (dot > 0) {
+      const suffix = symbol.slice(dot);
+      if (EXCHANGE_COUNTRY[suffix]) return { code: 'latam', label: EXCHANGE_COUNTRY[suffix], coverage: false };
+    }
+    if (typeof LATAM_ADR_COUNTRY !== 'undefined' && LATAM_ADR_COUNTRY[symbol]) {
+      return { code: 'adr', label: LATAM_ADR_COUNTRY[symbol] + ' ADR', coverage: true };
+    }
+    if (symbol.includes('/')) return { code: 'crypto', label: 'Crypto', coverage: false };
+    return { code: 'us', label: 'US', coverage: true };
+  }
+
+  const CATALOG = (function () {
+    const out = [], seen = new Set();
+    const push = sym => {
+      if (!sym || seen.has(sym)) return;
+      seen.add(sym);
+      const region = regionFor(sym);
+      // Fundamental Agent skips crypto AND LATAM-local listings because
+      // Finnhub coverage for those is poor.
+      if (region.code === 'crypto') return;
+      out.push({ symbol: sym, region, finnhub: region.coverage });
+    };
+    try {
+      if (typeof SCREENER_UNIVERSE !== 'undefined') {
+        (SCREENER_UNIVERSE.us || []).forEach(push);
+        (SCREENER_UNIVERSE.latam || []).forEach(push);
+      }
+    } catch (_) {}
+    return out;
+  })();
+
+  function searchTickers(q) {
+    q = String(q || '').trim().toUpperCase();
+    if (!q) return [];
+    const prefix = [], contains = [];
+    for (const row of CATALOG) {
+      if (row.symbol.startsWith(q)) prefix.push(row);
+      else if (row.symbol.includes(q)) contains.push(row);
+      if (prefix.length >= 8) break;
+    }
+    return prefix.concat(contains).slice(0, 8);
+  }
+
+  // ── Rendering ─────────────────────────────────────────────────
+  function setStatus(html) {
+    const out = document.getElementById('fundamentalAgentOutput');
+    if (out) out.innerHTML = html;
+  }
+  function renderLoading(stage) {
+    const stages = [
+      'Fetching financial data from Finnhub...',
+      'Calculating multiples and peer comparison...',
+      'Running DCF model with sensitivity analysis...',
+      'Generating institutional insight...'
+    ];
+    setStatus(
+      `<div style="padding:14px;background:#080808;border:1px solid #1a1a1a;border-radius:3px;">
+        <div style="font-family:var(--mono);font-size:10px;color:${GREEN};letter-spacing:.1em;margin-bottom:10px;">// FUNDAMENTAL AGENT WORKING</div>
+        ${stages.map((label, i) => {
+          const active = i === stage;
+          const done = i < stage;
+          const color = active ? GREEN : done ? '#666' : '#333';
+          const mark = done ? '✓' : active ? '▶' : '·';
+          return `<div style="font-family:var(--mono);font-size:11px;color:${color};margin:4px 0;">${mark} ${escapeHtml(label)}</div>`;
+        }).join('')}
+      </div>`
+    );
+  }
+  function renderError(msg) {
+    setStatus(
+      `<div style="padding:14px;background:rgba(255,58,58,.05);border:1px solid rgba(255,58,58,.3);border-radius:3px;font-family:var(--mono);font-size:11px;color:${RED};">
+        ✕ ${escapeHtml(msg)}
+      </div>`
+    );
+  }
+
+  function signalChip(signal) {
+    const band = (signal && signal.band) || 'N/A';
+    const col = band === 'DISCOUNT' ? GREEN
+              : band === 'PREMIUM'  ? RED
+              : band === 'FAIR'     ? AMBER : '#666';
+    const bg  = band === 'DISCOUNT' ? 'rgba(0,201,125,.12)'
+              : band === 'PREMIUM'  ? 'rgba(255,58,58,.10)'
+              : band === 'FAIR'     ? 'rgba(239,159,39,.10)' : 'rgba(255,255,255,.04)';
+    return `<span style="display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;letter-spacing:.15em;font-weight:700;color:${col};background:${bg};border:1px solid ${col}55;padding:6px 12px;border-radius:3px;">${escapeHtml(band)}</span>`;
+  }
+
+  function multipleCellColor(self, median) {
+    if (self == null || median == null || median <= 0) return '#ccc';
+    const ratio = self / median;
+    if (ratio > 1.5) return RED;     // >50% above median
+    if (ratio < 0.67) return GREEN;  // >33% below
+    return '#ccc';
+  }
+
+  function renderMultiples(m, sym) {
+    const self = m.self || {};
+    const med  = m.sectorMedians || {};
+    const peers = m.peers || [];
+    const rows = [
+      ['P/E (fwd)', 'pe_fwd'],
+      ['P/E (trail)', 'pe_trail'],
+      ['P/S', 'ps'],
+      ['P/B', 'pb'],
+      ['EV/EBITDA', 'ev_ebitda'],
+      ['P/FCF', 'p_fcf']
+    ];
+    const allTickers = [sym, ...peers.map(p => p.ticker), 'Median'];
+    const head = `<tr style="background:#080808;color:#555;font-size:9px;letter-spacing:.1em;">
+      <th style="text-align:left;padding:8px 10px;border-bottom:1px solid #1a1a1a;">MULTIPLE</th>
+      ${allTickers.map((t, i) => `<th style="text-align:right;padding:8px 10px;border-bottom:1px solid #1a1a1a;${i===0?'color:#ddd;':''}">${escapeHtml(t)}</th>`).join('')}
+    </tr>`;
+    const body = rows.map(([label, key]) => {
+      const cells = [
+        // self
+        `<td style="padding:8px 10px;text-align:right;color:${multipleCellColor(self[key], med[key])};font-weight:600;">${fmtMult(self[key])}</td>`,
+        // peers
+        ...peers.map(p => `<td style="padding:8px 10px;text-align:right;color:#999;">${fmtMult(p.multiples[key])}</td>`),
+        // median
+        `<td style="padding:8px 10px;text-align:right;color:#666;font-style:italic;">${fmtMult(med[key])}</td>`
+      ];
+      return `<tr style="border-bottom:1px solid #111;">
+        <td style="padding:8px 10px;color:#888;">${escapeHtml(label)}</td>
+        ${cells.join('')}
+      </tr>`;
+    }).join('');
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${BLUE};letter-spacing:.15em;margin-bottom:8px;">// MULTIPLES COMPARISON</div>
+      <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;overflow:auto;">
+        <table style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px;min-width:520px;">
+          <thead>${head}</thead><tbody>${body}</tbody>
+        </table>
+      </div>
+      <div style="font-family:var(--mono);font-size:9px;color:#444;margin-top:6px;">Red &gt;50% above median · Green &gt;33% below median · Median across ticker + peers</div>
+    </div>`;
+  }
+
+  function scoreCard(title, value, band, desc, palette) {
+    const col = palette[band] || '#888';
+    return `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid ${col};border-radius:3px;padding:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">
+        <div style="font-family:var(--mono);font-size:10px;color:#888;letter-spacing:.1em;">${escapeHtml(title)}</div>
+        <span style="font-family:var(--mono);font-size:8px;color:${col};letter-spacing:.1em;padding:2px 6px;border:1px solid ${col}55;border-radius:2px;text-transform:uppercase;">${escapeHtml(band || 'N/A')}</span>
+      </div>
+      <div style="font-family:var(--mono);font-size:20px;color:#ddd;font-weight:700;margin-bottom:4px;">${escapeHtml(value)}</div>
+      <div style="font-family:var(--mono);font-size:10px;color:#666;line-height:1.4;">${escapeHtml(desc || '')}</div>
+    </div>`;
+  }
+
+  function renderScores(scores) {
+    const z = scores.altmanZ, f = scores.piotroski, b = scores.beneishM;
+    const zVal = z && z.value != null ? fmtNum(z.value, 2) : 'N/A';
+    const fVal = f && f.value != null ? `${f.value}/9` : 'N/A';
+    const bVal = b && b.value != null ? fmtNum(b.value, 2) : 'N/A';
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${PURPLE};letter-spacing:.15em;margin-bottom:8px;">// FINANCIAL HEALTH SCORES</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;">
+        ${scoreCard('Altman Z', zVal, z.band, z.desc, { SAFE: GREEN, GREY: AMBER, DISTRESS: RED, 'N/A': '#666' })}
+        ${scoreCard('Piotroski F', fVal, f.band, f.desc, { STRONG: GREEN, NEUTRAL: AMBER, WEAK: RED, 'N/A': '#666' })}
+        ${scoreCard('Beneish M', bVal, b.band, b.desc, { CLEAN: GREEN, 'MANIPULATION RISK': RED, 'N/A': '#666' })}
+      </div>
+    </div>`;
+  }
+
+  function renderDcf(dcf, ticker) {
+    if (!dcf) return '';
+    if (dcf.skipped) {
+      return `<div style="margin-bottom:12px;padding:14px;background:rgba(239,159,39,.05);border:1px solid rgba(239,159,39,.3);border-radius:3px;">
+        <div style="font-family:var(--mono);font-size:9px;color:${AMBER};letter-spacing:.15em;margin-bottom:6px;">// DCF SKIPPED</div>
+        <div style="font-family:var(--mono);font-size:11px;color:#bbb;line-height:1.5;">${escapeHtml(dcf.reason || 'DCF not produced for this name.')}</div>
+      </div>`;
+    }
+    const a = dcf.assumptions || {};
+    // Fair value card
+    const fvCard = `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;padding:14px;">
+      <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:8px;">FAIR VALUE PER SHARE</div>
+      <div style="font-family:var(--mono);font-size:24px;color:#ddd;font-weight:700;">${fmtMoney(dcf.fairValuePerShare, { dp: 2 })}</div>
+      <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:6px;">
+        vs current ${dcf.currentPrice != null ? fmtMoney(dcf.currentPrice, { dp: 2 }) : 'N/A'}
+        ${dcf.upside != null ? `<span style="color:${dcf.upside >= 0 ? GREEN : RED};font-weight:600;margin-left:6px;">${fmtSignedPct(dcf.upside)}</span>` : ''}
+      </div>
+    </div>`;
+
+    const assumptions = `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;padding:14px;">
+      <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:8px;">KEY ASSUMPTIONS</div>
+      <div style="display:grid;grid-template-columns:auto auto;gap:4px 12px;font-family:var(--mono);font-size:11px;">
+        <div style="color:#666;">Revenue CAGR (yr 1)</div><div style="color:#ddd;text-align:right;">${fmtSignedPct(a.revenueCagr)}</div>
+        <div style="color:#666;">Fade to (yr 5)</div><div style="color:#ddd;text-align:right;">${fmtPct(0.05)}</div>
+        <div style="color:#666;">FCF margin (3y avg)</div><div style="color:#ddd;text-align:right;">${fmtPct(a.fcfMargin)}</div>
+        <div style="color:#666;">WACC</div><div style="color:#ddd;text-align:right;">${fmtPct(a.wacc, 2)}</div>
+        <div style="color:#666;">Cost of equity</div><div style="color:#999;text-align:right;">${fmtPct(a.costOfEquity, 2)}</div>
+        <div style="color:#666;">Cost of debt (after tax)</div><div style="color:#999;text-align:right;">${fmtPct(a.costOfDebtAfterTax, 2)}</div>
+        <div style="color:#666;">Beta</div><div style="color:#999;text-align:right;">${fmtNum(a.beta, 2)}</div>
+        <div style="color:#666;">Tax rate</div><div style="color:#999;text-align:right;">${fmtPct(a.taxRate, 1)}</div>
+        <div style="color:#666;">Terminal growth</div><div style="color:#ddd;text-align:right;">${fmtPct(a.terminalGrowth, 2)}</div>
+      </div>
+    </div>`;
+
+    // Sensitivity 3x3
+    const ax = dcf.sensitivityAxes || {};
+    const sens = dcf.sensitivity || [];
+    const sensHead = `<tr style="background:#080808;color:#555;font-size:9px;letter-spacing:.1em;">
+      <th style="padding:6px 10px;border-bottom:1px solid #1a1a1a;text-align:left;">WACC ↓ / g →</th>
+      ${(ax.g || []).map(g => `<th style="padding:6px 10px;border-bottom:1px solid #1a1a1a;text-align:right;">${fmtPct(g, 2)}</th>`).join('')}
+    </tr>`;
+    const sensBody = sens.map((row, i) => `<tr style="border-bottom:1px solid #111;">
+      <td style="padding:6px 10px;color:#666;font-family:var(--mono);font-size:10px;">${fmtPct((ax.wacc || [])[i], 2)}</td>
+      ${row.map(c => {
+        if (!c) return `<td style="padding:6px 10px;text-align:right;color:#444;">N/A</td>`;
+        const col = c.upside == null ? '#ddd' : c.upside > 0.05 ? GREEN : c.upside < -0.05 ? RED : '#ddd';
+        return `<td style="padding:6px 10px;text-align:right;color:${col};">${fmtMoney(c.fairValue, { dp: 0 })}</td>`;
+      }).join('')}
+    </tr>`).join('');
+    const sensTable = `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;overflow:auto;">
+      <table style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px;">
+        <thead>${sensHead}</thead><tbody>${sensBody}</tbody>
+      </table>
+    </div>`;
+
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:8px;">// DCF VALUATION (5y + Terminal)</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;margin-bottom:8px;">
+        ${fvCard}
+        ${assumptions}
+      </div>
+      <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:6px;">SENSITIVITY · Fair value per share (cell color = signed upside band)</div>
+      ${sensTable}
+    </div>`;
+  }
+
+  function renderResults(payload) {
+    const t  = escapeHtml(payload.ticker);
+    const co = escapeHtml(payload.companyName || payload.ticker);
+    const sector = payload.sector ? escapeHtml(payload.sector) : '';
+    const peers = (payload.peers || []).map(p => escapeHtml(p)).join(', ') || 'No peers found';
+    const narr = payload.narrative || {};
+
+    const header = `
+      <div style="display:flex;align-items:flex-start;gap:12px;padding:14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${GREEN};border-radius:3px;margin-bottom:12px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:220px;">
+          <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:4px;">// FUNDAMENTAL ANALYSIS COMPLETE</div>
+          <div style="font-family:var(--mono);font-size:14px;color:#ddd;font-weight:700;letter-spacing:.05em;">${t} · ${co}</div>
+          <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:3px;">
+            ${sector ? `Sector ${sector} · ` : ''}Peers ${peers}
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
+          ${signalChip(payload.signal)}
+          ${payload.signal && payload.signal.reason ? `<span style="font-family:var(--mono);font-size:9px;color:#666;max-width:240px;text-align:right;">${escapeHtml(payload.signal.reason)}</span>` : ''}
+        </div>
+      </div>`;
+
+    const valSummary = narr.valuation_summary ? `
+      <div style="padding:12px 14px;background:rgba(0,201,125,.04);border:1px solid rgba(0,201,125,.2);border-radius:3px;margin-bottom:12px;">
+        <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:6px;">// VALUATION SUMMARY</div>
+        <div style="font-family:var(--mono);font-size:12px;color:#ddd;line-height:1.6;">${escapeHtml(narr.valuation_summary)}</div>
+      </div>` : '';
+
+    const dcfBlock = renderDcf(payload.dcf, t);
+    const dcfNote = narr.dcf_note ? `<div style="padding:10px 12px;background:#080808;border:1px solid #1a1a1a;border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:11px;color:#bbb;line-height:1.6;">
+      <span style="color:${GREEN};font-size:9px;letter-spacing:.1em;">DCF NOTE · </span>${escapeHtml(narr.dcf_note)}
+    </div>` : '';
+
+    const multiplesBlock = renderMultiples(payload.multiples || {}, t);
+    const peerTakeaway = narr.peer_takeaway ? `<div style="padding:10px 12px;background:#080808;border:1px solid #1a1a1a;border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:11px;color:#bbb;line-height:1.6;">
+      <span style="color:${BLUE};font-size:9px;letter-spacing:.1em;">PEER TAKEAWAY · </span>${escapeHtml(narr.peer_takeaway)}
+    </div>` : '';
+
+    const scoresBlock = renderScores(payload.scores || {});
+    const healthNote = narr.health_observation ? `<div style="padding:10px 12px;background:#080808;border:1px solid #1a1a1a;border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:11px;color:#bbb;line-height:1.6;">
+      <span style="color:${PURPLE};font-size:9px;letter-spacing:.1em;">HEALTH READ · </span>${escapeHtml(narr.health_observation)}
+    </div>` : '';
+
+    const insight = narr.institutional_insight ? `
+      <div style="padding:14px;background:linear-gradient(180deg, rgba(239,159,39,.10), rgba(239,159,39,.02));border:1px solid rgba(239,159,39,.45);border-radius:3px;margin-bottom:6px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span style="font-size:14px;">💡</span>
+          <span style="font-family:var(--mono);font-size:9px;color:${AMBER};letter-spacing:.15em;font-weight:600;">// INSTITUTIONAL INSIGHT</span>
+        </div>
+        <div style="font-family:var(--mono);font-size:12px;color:#e8e8e8;line-height:1.7;font-style:italic;">${escapeHtml(narr.institutional_insight)}</div>
+      </div>` : '';
+
+    const footer = `<div style="margin-top:10px;font-family:var(--mono);font-size:9px;color:#444;text-align:right;letter-spacing:.05em;">
+      Source: ${escapeHtml(payload.source || 'Finnhub + Custom DCF + Claude')}${payload.stats ? ` · ${payload.stats.snapshots_used}y annual snapshots · ${payload.stats.peer_count} peers` : ''}
+    </div>`;
+
+    setStatus(header + valSummary + dcfBlock + dcfNote + multiplesBlock + peerTakeaway + scoresBlock + healthNote + insight + footer);
+  }
+
+  // ── Autocomplete dropdown ─────────────────────────────────────
+  const ddState = { items: [], cursor: -1, open: false };
+
+  function regionBadge(region, finnhubOk) {
+    const col = finnhubOk ? GREEN : AMBER;
+    const bg  = finnhubOk ? 'rgba(0,201,125,.12)' : 'rgba(239,159,39,.12)';
+    const mark = finnhubOk ? '✓ Finnhub' : '✗ limited';
+    const flag = COUNTRY_FLAG[region.label.replace(' ADR','')] || '';
+    return `<span style="display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:8px;color:${col};letter-spacing:.08em;padding:2px 6px;background:${bg};border:1px solid ${col}40;border-radius:2px;">
+      <span style="width:5px;height:5px;border-radius:50%;background:${col};"></span>${mark}
+    </span>
+    <span style="font-family:var(--mono);font-size:9px;color:#666;">${flag ? flag + ' ' : ''}${escapeHtml(region.label)}</span>`;
+  }
+
+  function renderDropdown() {
+    const dd = document.getElementById('fundamentalAgentDropdown');
+    const input = document.getElementById('fundamentalAgentTicker');
+    if (!dd || !input) return;
+    if (!ddState.open || ddState.items.length === 0) {
+      dd.style.display = 'none';
+      dd.innerHTML = '';
+      input.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    dd.style.display = 'block';
+    input.setAttribute('aria-expanded', 'true');
+    dd.innerHTML = ddState.items.map((it, i) => {
+      const selected = i === ddState.cursor;
+      const bg = selected ? 'rgba(0,201,125,.08)' : 'transparent';
+      const border = selected ? '#1f3a2a' : '#0f0f0f';
+      return `<div role="option" data-i="${i}"
+        style="display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid ${border};">
+        <span style="font-family:var(--mono);font-size:12px;color:#ddd;font-weight:700;letter-spacing:.05em;min-width:90px;">${escapeHtml(it.symbol)}</span>
+        <span style="flex:1;"></span>
+        ${regionBadge(it.region, it.finnhub)}
+      </div>`;
+    }).join('');
+  }
+
+  function openDropdown(q) {
+    ddState.items = searchTickers(q);
+    ddState.cursor = ddState.items.length ? 0 : -1;
+    ddState.open = ddState.items.length > 0;
+    renderDropdown();
+  }
+  function closeDropdown() {
+    ddState.open = false; ddState.cursor = -1; renderDropdown();
+  }
+  function moveDropdown(d) {
+    if (!ddState.open || !ddState.items.length) return;
+    const n = ddState.items.length;
+    ddState.cursor = (ddState.cursor + d + n) % n;
+    renderDropdown();
+    const dd = document.getElementById('fundamentalAgentDropdown');
+    if (dd) {
+      const sel = dd.querySelector(`[data-i="${ddState.cursor}"]`);
+      if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
+    }
+  }
+  function selectDropdown(i) {
+    if (i == null) i = ddState.cursor;
+    if (i < 0 || i >= ddState.items.length) return false;
+    const pick = ddState.items[i];
+    const input = document.getElementById('fundamentalAgentTicker');
+    if (input) input.value = pick.symbol;
+    closeDropdown();
+    runFundamentalAgent();
+    return true;
+  }
+
+  async function runFundamentalAgent() {
+    const input = document.getElementById('fundamentalAgentTicker');
+    const btn   = document.getElementById('fundamentalAgentBtn');
+    if (!input || !btn) return;
+    const ticker = (input.value || '').trim().toUpperCase();
+    if (!ticker) {
+      renderError('Enter a ticker first (e.g., NVDA, MELI, NU).');
+      input.focus();
+      return;
+    }
+    input.value = ticker;
+    closeDropdown();
+
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    btn.style.cursor = 'wait';
+    const origLabel = btn.textContent;
+    btn.textContent = '⏳ WORKING...';
+
+    renderLoading(0);
+    // Progressive UX cues — these are timer-driven since we can't stream
+    // intermediate progress from a single Vercel function.
+    const t1 = setTimeout(() => renderLoading(1), 1200);
+    const t2 = setTimeout(() => renderLoading(2), 4000);
+    const t3 = setTimeout(() => renderLoading(3), 8000);
+
+    try {
+      const r = await fetch('/api/fundamental-agent?ticker=' + encodeURIComponent(ticker));
+      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
+      const data = await r.json();
+      if (data.error) { renderError(data.error); return; }
+      renderResults(data);
+    } catch (err) {
+      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
+      renderError('Network error: ' + (err && err.message ? err.message : 'unknown'));
+    } finally {
+      btn.disabled = false;
+      btn.style.opacity = '';
+      btn.style.cursor = 'pointer';
+      btn.textContent = origLabel;
+    }
+  }
+
+  function wire() {
+    const btn = document.getElementById('fundamentalAgentBtn');
+    const input = document.getElementById('fundamentalAgentTicker');
+    const dd = document.getElementById('fundamentalAgentDropdown');
+    if (btn && !btn._wired) {
+      btn._wired = true;
+      btn.addEventListener('click', runFundamentalAgent);
+    }
+    if (input && !input._wired) {
+      input._wired = true;
+      input.addEventListener('input', () => openDropdown(input.value));
+      input.addEventListener('focus', () => { if (input.value) openDropdown(input.value); });
+      input.addEventListener('keydown', e => {
+        if (ddState.open) {
+          if (e.key === 'ArrowDown') { e.preventDefault(); moveDropdown(1); return; }
+          if (e.key === 'ArrowUp')   { e.preventDefault(); moveDropdown(-1); return; }
+          if (e.key === 'Escape')    { e.preventDefault(); closeDropdown(); return; }
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (ddState.cursor >= 0 && selectDropdown()) return;
+            runFundamentalAgent();
+            return;
+          }
+        } else if (e.key === 'Enter') {
+          e.preventDefault(); runFundamentalAgent();
+        }
+      });
+    }
+    if (dd && !dd._wired) {
+      dd._wired = true;
+      dd.addEventListener('mousedown', e => {
+        const row = e.target.closest('[data-i]');
+        if (!row) return;
+        e.preventDefault();
+        selectDropdown(parseInt(row.dataset.i, 10));
+      });
+      dd.addEventListener('mouseover', e => {
+        const row = e.target.closest('[data-i]');
+        if (!row) return;
+        const i = parseInt(row.dataset.i, 10);
+        if (i !== ddState.cursor) { ddState.cursor = i; renderDropdown(); }
+      });
+    }
+    if (!document._fundamentalOutsideWired) {
+      document._fundamentalOutsideWired = true;
+      document.addEventListener('click', e => {
+        if (!ddState.open) return;
+        const within = e.target.closest('#fundamentalAgentDropdown, #fundamentalAgentTicker');
         if (!within) closeDropdown();
       });
     }
