@@ -35,13 +35,69 @@ const MA_KEYWORDS = [
   'spinoff', 'carve-out', 'divest', 'stake in', 'majority stake',
   'minority stake', 'joint venture'
 ];
+// Regulatory keywords. Short tokens use word boundaries so "cade" doesn't
+// match "decade", "fine" doesn't match "define", "doj" doesn't match
+// "adjourn", etc. Longer phrases stay as substring matches — they're
+// already specific enough that a false-positive is unlikely.
 const REGULATORY_KEYWORDS = [
-  'antitrust', 'ftc', 'doj', 'sec investigation', 'fda',
-  'investigation', 'subpoena', 'consent decree', 'regulator',
-  'regulatory approval', 'regulatory action', 'lawsuit',
-  'settle', 'fine', 'penalty', 'banxico', 'cofece', 'cnv',
-  'cvm ', 'cade', 'ipd', 'sanction', 'compliance', 'probe'
+  // Long phrases — plain substring
+  { kind: 'sub', text: 'antitrust',          label: 'antitrust' },
+  { kind: 'sub', text: 'sec investigation',  label: 'sec investigation' },
+  { kind: 'sub', text: 'investigation',      label: 'investigation' },
+  { kind: 'sub', text: 'subpoena',           label: 'subpoena' },
+  { kind: 'sub', text: 'consent decree',     label: 'consent decree' },
+  { kind: 'sub', text: 'regulator',          label: 'regulator' },
+  { kind: 'sub', text: 'regulatory approval',label: 'regulatory approval' },
+  { kind: 'sub', text: 'regulatory action',  label: 'regulatory action' },
+  { kind: 'sub', text: 'lawsuit',            label: 'lawsuit' },
+  { kind: 'sub', text: 'settle',             label: 'settle' },
+  { kind: 'sub', text: 'penalty',            label: 'penalty' },
+  { kind: 'sub', text: 'sanction',           label: 'sanction' },
+  { kind: 'sub', text: 'compliance',         label: 'compliance' },
+  // Short tokens — word-boundary regex
+  { kind: 'word', re: /\bftc\b/i,            label: 'ftc' },
+  { kind: 'word', re: /\bdoj\b/i,            label: 'doj' },
+  { kind: 'word', re: /\bfda\b/i,            label: 'fda' },
+  { kind: 'word', re: /\bcade\b/i,           label: 'cade' },
+  { kind: 'word', re: /\bcofece\b/i,         label: 'cofece' },
+  { kind: 'word', re: /\bcnv\b/i,            label: 'cnv' },
+  { kind: 'word', re: /\bcvm\b/i,            label: 'cvm' },
+  { kind: 'word', re: /\bbanxico\b/i,        label: 'banxico' },
+  { kind: 'word', re: /\bfine\b/i,           label: 'fine' },
+  { kind: 'word', re: /\bprobe\b/i,          label: 'probe' },
+  { kind: 'word', re: /\bipd\b/i,            label: 'ipd' }
 ];
+
+// ── Operational-country override (copy of Macro Agent's map) ─────
+// Finnhub returns LEGAL HQ, not where the company actually operates.
+// LATAM ADRs commonly re-domicile to Cayman / Luxembourg / Uruguay
+// for tax efficiency. We surface the real operational country so the
+// Event Agent header matches what the Macro Agent shows (Sprint 3.1).
+// Keep this in sync with macro-agent.js — same shape, same entries.
+const OPERATIONAL_COUNTRY_OVERRIDE = {
+  // Cayman Islands (KY) → Brazil operations
+  STNE: { country: 'BR', name: 'Brazil',                       note: 'Legal HQ: Cayman Islands. 100% Brazil operations.' },
+  PAGS: { country: 'BR', name: 'Brazil',                       note: 'Legal HQ: Cayman Islands. 100% Brazil operations.' },
+  XP:   { country: 'BR', name: 'Brazil',                       note: 'Legal HQ: Cayman Islands. 100% Brazil operations.' },
+  VTEX: { country: 'BR', name: 'Brazil',                       note: 'Legal HQ: Cayman Islands. Brazil-led LATAM operations.' },
+  INTR: { country: 'BR', name: 'Brazil',                       note: 'Legal HQ: Cayman Islands. 100% Brazil operations.' },
+  NU:   { country: 'BR', name: 'Brazil', secondary: ['MX','CO'],
+          note: 'Legal HQ: Cayman Islands. Brazil + Mexico + Colombia operations.' },
+
+  // Luxembourg (LU) → Argentina / LATAM operations
+  GLOB: { country: 'AR', name: 'Argentina', secondary: ['US','BR','MX'],
+          note: 'Legal HQ: Luxembourg. Argentina origin, global delivery.' },
+  TS:   { country: 'AR', name: 'Argentina', secondary: ['MX','BR'],
+          note: 'Tenaris. Legal HQ: Luxembourg. LATAM industrial operations.' },
+  TX:   { country: 'AR', name: 'Argentina', secondary: ['MX','BR'],
+          note: 'Ternium. Legal HQ: Luxembourg. LATAM steel operations.' },
+
+  // Uruguay (UY) → multi-LATAM operations
+  MELI: { country: 'BR', name: 'Brazil (primary)', secondary: ['AR','MX'],
+          note: 'Legal HQ: Uruguay. Revenue mix: Brazil 55%, Argentina 25%, Mexico 15%.' },
+  DLO:  { country: 'BR', name: 'Brazil (primary)', secondary: ['AR','MX','CL','CO'],
+          note: 'DLocal. Legal HQ: Uruguay. Multi-LATAM payments processor.' }
+};
 
 // ── Finnhub helpers ──────────────────────────────────────────────
 function safeFetch(url) { return fetch(url).catch(() => null); }
@@ -193,13 +249,17 @@ function categorizeNews(newsArr) {
       });
       continue;  // priority: M&A first
     }
-    const regHit = REGULATORY_KEYWORDS.find(k => text.includes(k));
+    // Regulatory: short tokens use word-boundary regex (so "cade"
+    // doesn't match "decade"), long phrases use substring.
+    const regHit = REGULATORY_KEYWORDS.find(k =>
+      k.kind === 'word' ? k.re.test(text) : text.includes(k.text)
+    );
     if (regHit) {
       matchedReg.push({
         headline: n.headline,
         date: new Date(n._ts).toISOString().slice(0, 10),
         category: 'regulatory',
-        keyword: regHit,
+        keyword: regHit.label,
         url: n.url || null,
         source: n.source || null
       });
@@ -437,6 +497,14 @@ export default async function handler(req, res) {
     const sector = profile.finnhubIndustry || null;
     const currentPrice = (quoteJ && typeof quoteJ.c === 'number' && quoteJ.c > 0) ? quoteJ.c : null;
 
+    // ── Country: apply operational override for re-domiciled LATAM ADRs ──
+    // Keeps Event Agent consistent with Macro Agent (Sprint 3.1). MELI
+    // shows BR not UY, STNE/PAGS show BR not KY, GLOB shows AR not LU.
+    const finnhubCountry = (profile.country || 'US').toUpperCase();
+    const override = OPERATIONAL_COUNTRY_OVERRIDE[ticker];
+    const effectiveCountry = override ? override.country : finnhubCountry;
+    const countryOverrideApplied = !!override;
+
     // ── 2. Build each block ──
     const calendarArr = (calendarJ && calendarJ.earningsCalendar) || [];
     const earnings = buildEarningsBlock(historyJ, calendarArr);
@@ -458,7 +526,9 @@ export default async function handler(req, res) {
     if (apiKey) {
       const brief = {
         ticker, company, sector,
-        country: profile.country || null,
+        country: effectiveCountry,
+        country_legal: finnhubCountry,
+        country_override_applied: countryOverrideApplied,
         current_price: currentPrice,
         earnings, dividends,
         ma_signals: news.ma,
@@ -477,7 +547,9 @@ export default async function handler(req, res) {
       ticker,
       company_name: company,
       sector,
-      country: profile.country || null,
+      country: effectiveCountry,
+      country_legal: finnhubCountry,
+      country_override_applied: countryOverrideApplied,
       current_price: currentPrice,
       earnings,
       dividends,
