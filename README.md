@@ -1,7 +1,8 @@
 
 # QuantDesk
 
-> Bloomberg Terminal for 650M Spanish speakers. Quant-grade financial intelligence combining institutional analytics, TradingView-style social layer, and AI-native workflows.
+> AI-native hedge fund research engine for 650M Spanish-speaking retail traders.
+> Bloomberg-grade analysis. In Spanish. For free.
 
 **Live:** [quantdesk2.vercel.app](https://quantdesk2.vercel.app)
 
@@ -9,19 +10,61 @@
 
 ## What it does
 
-QuantDesk gives retail and institutional investors in LATAM the same class of quantitative tooling that Bloomberg Terminal subscribers pay $24,000/year for — accessible, in Spanish, and AI-native from the ground up.
+QuantDesk gives retail investors in LATAM the same class of quantitative research that hedge funds and Bloomberg subscribers pay $24K-$77K/year for — accessible, in Spanish, and AI-native from the ground up.
 
-**Core modules**
+The core product is a suite of **specialized research agents** that each tackle one dimension of institutional research, ship outputs in seconds, and integrate into a unified ticker analysis workflow.
 
-- **SIM** — Monte Carlo simulations with GBM, jump diffusion, and fat-tail models. Backtesting engine against historical data.
-- **COMPARE** — Side-by-side asset comparison with correlation analysis.
-- **PORTFOLIO** — Portfolio construction with risk metrics (VaR, Sharpe, max drawdown).
-- **MACRO** — Cross-market macro signals across rates, FX, commodities, and equities.
-- **SMART $** — Smart money tracker aggregating institutional flows and positioning data.
-- **EARNINGS** — Earnings intelligence with post-earnings drift analysis and beat/miss prediction.
-- **SCREENER** — Multi-universe screener (US / LATAM / crypto) with fundamental and technical filters.
-- **AGENTS** — AI investor agents (Buffett, Burry, Wood, Munger, Dalio) voting on simulations.
-- **GALLERY** — Public simulation history and community insights.
+---
+
+## Specialized Research Agents
+
+Four agents in production. Six planned per [YC RFS #2](https://www.ycombinator.com/rfs) (AI-Native Hedge Funds).
+
+### 📑 Filings Agent
+SEC 10-K / 10-Q + 20-F LATAM coverage. Surfaces inventory commitments, FX exposure, capital controls, regulatory risks. Citation-backed extraction from filings.
+
+### 💰 Fundamental Agent
+Quant-grade DCF with sector-aware calibration:
+- Bull / Base / Bear scenarios
+- Stage-based revenue fade (no naive linear projection)
+- Trimmed-mean FCF margin with sector caps
+- Bounded WACC with EM risk premium for LATAM ADRs
+- Margin of Safety badges (6 categories)
+- Confidence indicator (HIGH / MEDIUM / LOW)
+- Wall Street consensus comparison
+
+### 🌍 Macro Agent
+Macroeconomic context for any ticker:
+- US rate environment (Fed cycle, yield curve regime, real rates, VIX)
+- Local FX analysis (USD/BRL, USD/ARS, USD/MXN) with regime detection
+- Sector-specific commodity context (mining, energy, agriculture)
+- LATAM ADR aware — operational country override for tickers domiciled in Cayman / Luxembourg / Uruguay
+
+### 📅 Event Agent
+Upcoming catalysts and corporate events:
+- Earnings calendar with beat-rate analytics
+- M&A signal detection (16 deal keywords)
+- LATAM-aware regulatory detection (CADE, COFECE, Banxico, CNV, CVM + US agencies)
+- Insider activity with founder-CEO weighting
+- Dividend frequency inference
+- Primary catalyst thesis + positioning considerations
+
+### Coming next
+- Sentiment Agent (NLP on news + social)
+- Risk Anomaly Agent (volatility, correlation breakdown, regime shifts)
+- Investor Council 2.0 — 10 personalities citing the research agents
+
+---
+
+## Other modules
+
+- **SIM** — Monte Carlo with GBM, jump diffusion, regime switching. Ruin simulator with 100-account animation.
+- **COMPARE** — Side-by-side ticker analysis with correlation matrices.
+- **PORTFOLIO** — Construction + risk metrics (VaR, Sharpe, max drawdown).
+- **SMART $** — Insider transaction tracker via Form 4 filings.
+- **SCREENER** — ~260 tickers across US / LATAM / crypto with live-data fundamental filters.
+- **AGENTS** — Investor personality agents (Buffett, Burry, Wood, Munger, Dalio + LATAM personas in development).
+- **GALLERY** — Public simulation history.
 
 ---
 
@@ -29,44 +72,48 @@ QuantDesk gives retail and institutional investors in LATAM the same class of qu
 
 **Frontend**
 - Vanilla JS + HTML5 Canvas for custom charts
-- Deployed on Vercel
+- Deployed on Vercel (auto-deploy from `main`)
 
-**Backend / Data**
-- Direct integration with Finnhub, Yahoo Finance, and CoinGecko APIs
-- Anthropic Claude API for AI verdicts and natural language synthesis
-- Python microservice for quant computations (in development)
+**Backend**
+- Node.js serverless functions on Vercel
+- Direct integration with Finnhub, Yahoo Finance, CoinGecko, SEC EDGAR
+- FRED API for macro time series
+- Anthropic Claude API for synthesis and institutional insight generation
 
 **Quant models**
-- EWMA (Exponentially Weighted Moving Average) volatility
-- CAPM with shrinkage estimator
-- GARCH(1,1) for volatility forecasting
+- DCF with sector-aware fade and bounded WACC
+- EWMA volatility, GARCH(1,1) forecasting
+- CAPM with bounded beta (0.7–2.0) and EM risk premium adjustment
 - Cholesky decomposition for correlated Monte Carlo paths
-- Implied volatility integration with fat-tail corrections
+- Altman Z, Piotroski F, Beneish M scoring
 
 ---
 
 ## Thesis
 
-**LATAM is Bloomberg-underserved.** $250B+ sits in Mexican AFOREs (pension funds) alone. Mexican brokerages (GBM, Actinver, Vector), fintechs (Bitso, Nubank MX, Flink), and an emerging generation of retail quants all need institutional-grade tooling in their language.
+**LATAM is institutionally underserved.** AlphaSense ($4B valuation, $500M ARR, 6,500 enterprise clients) charges $77K/client/year and ignores Spanish-speaking retail entirely. Bloomberg ($73B) costs $24K/year and is unusable for retail. Boosted.ai ($71M raised) is B2B asset managers only.
 
-**AI-native means built differently.** Every module ships with AI synthesis — not as a chatbot bolted on, but as the default output layer. Users get the quant output AND the plain-Spanish interpretation of what it means.
+**650 million Spanish speakers** — 200M+ retail investors and growing — have no native-language institutional research option.
 
-**Distribution is already solved.** Creator channel [@leticiatijerinam](https://tiktok.com/@leticiatijerinam) (43K, 38.7% Search traffic) provides organic acquisition.
+**AI-native means built differently.** Every research agent ships with quantified insights, scenario analysis, and contrarian institutional reads — not as a chatbot bolted on, but as the default output layer. Conservative bias by design protects retail from sell-side bullish bias.
+
+**Distribution channel exists.** Creator brand [@leticiatijerinam](https://tiktok.com/@leticiatijerinam) (43K, 38.7% Search traffic) provides organic acquisition for LATAM Spanish-speaking retail traders.
 
 ---
 
 ## Status
 
-Active development. Shipping 5+ major product tabs in parallel. Solo technical founder.
+Active development. 4 specialized research agents shipped in production over the last 30 days. Solo technical founder.
 
-**YC W26 applicant.**
+**YC S26 applicant** — application submitted, Progress Update filed framing QuantDesk against RFS #2 (AI-Native Hedge Funds).
 
 ---
 
 ## Founder
 
 **Leticia Tijerina** — Monterrey, MX
-Self-taught Python quant. Previously built a 70+ iteration trading bot for Polymarket BTC prediction markets (67% accuracy on spot momentum signals, proprietary Kappa metric for order book manipulation detection). 14+ years in fashion (Derek Lam NYC, ICONY co-founder). MBA Esden, BA Tecnológico de Monterrey.
+
+Self-taught Python quant. Built a 70+ iteration trading bot for Polymarket BTC prediction markets (67% accuracy on spot momentum signals, proprietary Kappa metric for order book manipulation detection). 14+ years in fashion (Derek Lam NYC, ICONY co-founder, 500K monthly Pinterest views). MBA Esden, BA Tecnológico de Monterrey.
 
 - Twitter: [@0xLeticia](https://x.com/0xLeticia)
 - TikTok: [@leticiatijerinam](https://tiktok.com/@leticiatijerinam) (43K, LATAM tech/finance creator)
