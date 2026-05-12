@@ -2,7 +2,7 @@
 # QuantDesk
 
 > AI-native hedge fund research engine for 650M Spanish-speaking retail traders.
-> Bloomberg-grade analysis. In Spanish. For free.
+> Bloomberg-grade analysis. In Spanish. 
 
 **Live:** [quantdesk2.vercel.app](https://quantdesk2.vercel.app)
 
