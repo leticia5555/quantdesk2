@@ -18,7 +18,7 @@ The core product is a suite of **specialized research agents** that each tackle 
 
 ## Specialized Research Agents
 
-Four agents in production. Six planned per [YC RFS #2](https://www.ycombinator.com/rfs) (AI-Native Hedge Funds).
+Four agents in production. Six planned. (AI-Native Hedge Funds).
 
 ### 📑 Filings Agent
 SEC 10-K / 10-Q + 20-F LATAM coverage. Surfaces inventory commitments, FX exposure, capital controls, regulatory risks. Citation-backed extraction from filings.
@@ -105,7 +105,6 @@ Upcoming catalysts and corporate events:
 
 Active development. 4 specialized research agents shipped in production over the last 30 days. Solo technical founder.
 
-**YC S26 applicant** — application submitted, Progress Update filed framing QuantDesk against RFS #2 (AI-Native Hedge Funds).
 
 ---
 
