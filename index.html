@@ -11494,6 +11494,37 @@ function margin_color(pct, threshold, COL){
 
 <!-- AGENTS PAGE -->
 <div id="page-agents" class="page" style="padding:0;background:#080808;min-height:100vh;">
+
+  <!-- ─── RESEARCH AGENTS (Sprint 1: Filings Agent) ─────────────────── -->
+  <section id="researchAgentsSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
+    <div style="max-width:1400px;margin:0 auto;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+        <span style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// RESEARCH AGENTS</span>
+        <div style="flex:1;height:1px;background:#1a1a1a;"></div>
+        <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;">SPRINT 1</span>
+      </div>
+      <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Institutional-grade analysis powered by SEC EDGAR + Claude</div>
+
+      <div class="research-agent-card" style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid var(--green,#00c97d);border-radius:4px;padding:16px;">
+        <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+          <span class="agent-icon" style="font-size:18px;">📚</span>
+          <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Filings Agent</span>
+          <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">SEC EDGAR · 10-K analysis</span>
+          <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">US stocks · LATAM ADRs (MELI, NU, VALE, FMX…)</span>
+        </div>
+
+        <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+          <input id="filingsAgentTicker" placeholder="Enter ticker (e.g., NVDA, MELI, FMX)" autocomplete="off" spellcheck="false"
+                 style="flex:1;min-width:220px;background:#080808;border:1px solid #222;color:#ddd;font-family:var(--mono);font-size:12px;padding:9px 12px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;" />
+          <button id="filingsAgentBtn"
+                  style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE 10-K</button>
+        </div>
+
+        <div id="filingsAgentOutput" class="agent-output" style="font-family:var(--mono);font-size:11px;color:#888;"></div>
+      </div>
+    </div>
+  </section>
+
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
     <span style="font-family:var(--mono);font-size:10px;color:#e67e22;font-weight:600;letter-spacing:.1em;">INVESTOR AGENTS LEADERBOARD</span>
     <span style="font-family:var(--mono);font-size:10px;color:#333;">LEGENDARY INVESTORS · PREDICTIONS VS REALITY · FANTASY TEAMS</span>
@@ -11988,6 +12019,309 @@ function margin_color(pct, threshold, COL){
     installWidget();
   }
   setInterval(renderData, 60 * 60 * 1000);
+})();
+</script>
+
+<!-- ─── FILINGS AGENT (Sprint 1) ─────────────────────────────────────── -->
+<script>
+(function(){
+  const GREEN = '#00c97d';
+  const ORANGE = '#e67e22';
+  const RED = '#ff3a3a';
+  const YELLOW = '#EF9F27';
+
+  const escapeHtml = s => String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+  const severityColor = sev => {
+    const s = String(sev || '').toLowerCase();
+    if (s === 'high') return RED;
+    if (s === 'medium') return YELLOW;
+    if (s === 'low') return GREEN;
+    return '#888';
+  };
+
+  const toneColor = t => {
+    const s = String(t || '').toLowerCase();
+    if (s.includes('bullish')) return GREEN;
+    if (s.includes('cautious') || s.includes('bearish')) return RED;
+    return YELLOW;
+  };
+
+  const yoyColor = g => {
+    if (g == null) return '#888';
+    const s = String(g);
+    if (s.startsWith('+') || (/^\d/.test(s) && !s.startsWith('-'))) return GREEN;
+    if (s.startsWith('-')) return RED;
+    return '#888';
+  };
+
+  // Render "Item 1A, p.42" as a clickable link pointing into the actual 10-K
+  function renderCitation(source, filingUrl) {
+    if (!source) return '';
+    const txt = escapeHtml(source);
+    if (!filingUrl) {
+      return `<span style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.05em;">📄 ${txt}</span>`;
+    }
+    // Extract "Item 1A" → SEC EDGAR doesn't take anchors reliably, but we
+    // still link to the document so the user can ctrl-F to the section.
+    return `<a href="${escapeHtml(filingUrl)}" target="_blank" rel="noopener noreferrer"
+      style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.05em;text-decoration:none;border-bottom:1px dotted #333;"
+      title="Open 10-K on SEC.gov">📄 ${txt}</a>`;
+  }
+
+  function setStatus(html) {
+    const out = document.getElementById('filingsAgentOutput');
+    if (out) out.innerHTML = html;
+  }
+
+  function renderLoading(stage) {
+    const stages = [
+      { label: 'Fetching 10-K from SEC EDGAR...', done: stage >= 1 },
+      { label: 'Reading filing (this can take 30-60 seconds for large filings)...', done: stage >= 2 },
+      { label: 'Extracting insights with Filings Agent...', done: stage >= 3 }
+    ];
+    setStatus(
+      `<div style="padding:14px;background:#080808;border:1px solid #1a1a1a;border-radius:3px;">
+        <div style="font-family:var(--mono);font-size:10px;color:${GREEN};letter-spacing:.1em;margin-bottom:10px;">// FILINGS AGENT WORKING</div>
+        ${stages.map((s, i) => {
+          const active = i === stage;
+          const done = s.done && !active;
+          const color = active ? GREEN : done ? '#666' : '#333';
+          const mark = done ? '✓' : active ? '▶' : '·';
+          return `<div style="font-family:var(--mono);font-size:11px;color:${color};margin:4px 0;">${mark} ${escapeHtml(s.label)}</div>`;
+        }).join('')}
+      </div>`
+    );
+  }
+
+  function renderError(msg) {
+    setStatus(
+      `<div style="padding:14px;background:rgba(255,58,58,.05);border:1px solid rgba(255,58,58,.3);border-radius:3px;font-family:var(--mono);font-size:11px;color:${RED};">
+        ✕ ${escapeHtml(msg)}
+      </div>`
+    );
+  }
+
+  function renderResults(payload) {
+    const a = payload.analysis || {};
+    const filingUrl = payload.filing_url || '';
+    const indexUrl = payload.index_url || '';
+    const company = payload.company_name || payload.ticker;
+
+    // ── Header ──
+    const header = `
+      <div style="display:flex;align-items:flex-start;gap:12px;padding:14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${GREEN};border-radius:3px;margin-bottom:12px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:220px;">
+          <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:4px;">// 10-K ANALYSIS COMPLETE</div>
+          <div style="font-family:var(--mono);font-size:14px;color:#ddd;font-weight:700;letter-spacing:.05em;">${escapeHtml(payload.ticker)} · ${escapeHtml(company)}</div>
+          <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:3px;">
+            Filed ${escapeHtml(payload.filing_date || '—')}${payload.report_date ? ' · Period ' + escapeHtml(payload.report_date) : ''} · CIK ${escapeHtml(payload.cik || '—')}
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;">
+          ${filingUrl ? `<a href="${escapeHtml(filingUrl)}" target="_blank" rel="noopener noreferrer" style="font-family:var(--mono);font-size:10px;color:${GREEN};text-decoration:none;border:1px solid rgba(0,201,125,.3);padding:4px 10px;border-radius:2px;">↗ Open 10-K on SEC.gov</a>` : ''}
+          ${indexUrl ? `<a href="${escapeHtml(indexUrl)}" target="_blank" rel="noopener noreferrer" style="font-family:var(--mono);font-size:9px;color:#666;text-decoration:none;">All filings →</a>` : ''}
+        </div>
+      </div>`;
+
+    // ── Executive summary ──
+    const summary = a.executive_summary ? `
+      <div style="padding:14px;background:rgba(0,201,125,.04);border:1px solid rgba(0,201,125,.2);border-radius:3px;margin-bottom:12px;">
+        <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:8px;">// EXECUTIVE SUMMARY</div>
+        <div style="font-family:var(--mono);font-size:12px;color:#ddd;line-height:1.6;">${escapeHtml(a.executive_summary)}</div>
+      </div>` : '';
+
+    // ── Risk factors ──
+    const risks = Array.isArray(a.top_risk_factors) && a.top_risk_factors.length ? `
+      <div style="margin-bottom:12px;">
+        <div style="font-family:var(--mono);font-size:9px;color:${ORANGE};letter-spacing:.15em;margin-bottom:8px;">// TOP RISK FACTORS</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px;">
+          ${a.top_risk_factors.map(r => {
+            const col = severityColor(r.severity);
+            return `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid ${col};border-radius:3px;padding:10px;">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:6px;">
+                <span style="font-family:var(--mono);font-size:8px;color:${col};letter-spacing:.1em;padding:2px 6px;border:1px solid ${col}40;border-radius:2px;text-transform:uppercase;">${escapeHtml(r.severity || 'risk')}</span>
+                ${renderCitation(r.source, filingUrl)}
+              </div>
+              <div style="font-family:var(--mono);font-size:11px;color:#ccc;line-height:1.5;">${escapeHtml(r.risk || '')}</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>` : '';
+
+    // ── Business segments ──
+    const segments = Array.isArray(a.business_segments) && a.business_segments.length ? `
+      <div style="margin-bottom:12px;">
+        <div style="font-family:var(--mono);font-size:9px;color:#3498db;letter-spacing:.15em;margin-bottom:8px;">// BUSINESS SEGMENTS</div>
+        <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;overflow:hidden;">
+          <table style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px;">
+            <thead>
+              <tr style="background:#080808;color:#555;font-size:9px;letter-spacing:.1em;">
+                <th style="text-align:left;padding:8px 10px;border-bottom:1px solid #1a1a1a;">SEGMENT</th>
+                <th style="text-align:right;padding:8px 10px;border-bottom:1px solid #1a1a1a;">REVENUE</th>
+                <th style="text-align:right;padding:8px 10px;border-bottom:1px solid #1a1a1a;">YoY</th>
+                <th style="text-align:right;padding:8px 10px;border-bottom:1px solid #1a1a1a;">SOURCE</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${a.business_segments.map(s => `
+                <tr style="border-bottom:1px solid #111;">
+                  <td style="padding:8px 10px;color:#ddd;">${escapeHtml(s.name || '—')}</td>
+                  <td style="padding:8px 10px;text-align:right;color:#ccc;">${escapeHtml(s.revenue || '—')}</td>
+                  <td style="padding:8px 10px;text-align:right;color:${yoyColor(s.yoy_growth)};font-weight:600;">${escapeHtml(s.yoy_growth || '—')}</td>
+                  <td style="padding:8px 10px;text-align:right;">${renderCitation(s.source, filingUrl)}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>` : '';
+
+    // ── Management commentary ──
+    const mc = a.management_commentary;
+    const commentary = mc && (mc.tone_shift || (Array.isArray(mc.key_changes) && mc.key_changes.length)) ? `
+      <div style="margin-bottom:12px;padding:12px;background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+          <span style="font-family:var(--mono);font-size:9px;color:#9b59b6;letter-spacing:.15em;">// MANAGEMENT COMMENTARY</span>
+          ${mc.source ? renderCitation(mc.source, filingUrl) : ''}
+        </div>
+        ${mc.tone_shift ? `<div style="margin-bottom:8px;">
+          <span style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;">TONE SHIFT:</span>
+          <span style="font-family:var(--mono);font-size:11px;color:${toneColor(mc.tone_shift)};font-weight:600;margin-left:6px;">${escapeHtml(mc.tone_shift)}</span>
+        </div>` : ''}
+        ${Array.isArray(mc.key_changes) && mc.key_changes.length ? `<div>
+          <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;margin-bottom:4px;">KEY CHANGES:</div>
+          <ul style="margin:0;padding-left:18px;font-family:var(--mono);font-size:11px;color:#ccc;line-height:1.7;">
+            ${mc.key_changes.map(k => `<li>${escapeHtml(k)}</li>`).join('')}
+          </ul>
+        </div>` : ''}
+      </div>` : '';
+
+    // ── Red flags ──
+    const redFlags = Array.isArray(a.red_flags) && a.red_flags.length ? `
+      <div style="margin-bottom:12px;">
+        <div style="font-family:var(--mono);font-size:9px;color:${RED};letter-spacing:.15em;margin-bottom:8px;">⚠ RED FLAGS</div>
+        ${a.red_flags.map(f => `
+          <div style="background:rgba(255,58,58,.05);border:1px solid rgba(255,58,58,.25);border-left:3px solid ${RED};border-radius:3px;padding:10px;margin-bottom:6px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:6px;">
+              <div style="font-family:var(--mono);font-size:11px;color:#ddd;font-weight:600;">${escapeHtml(f.flag || '')}</div>
+              ${renderCitation(f.source, filingUrl)}
+            </div>
+            ${f.why_concerning ? `<div style="font-family:var(--mono);font-size:10px;color:#aaa;line-height:1.5;">${escapeHtml(f.why_concerning)}</div>` : ''}
+          </div>`).join('')}
+      </div>` : '';
+
+    // ── Key metrics ──
+    const km = a.key_metrics || {};
+    const metricCells = [
+      ['Revenue (TTM)', km.revenue_ttm],
+      ['Revenue YoY', km.revenue_growth_yoy, yoyColor(km.revenue_growth_yoy)],
+      ['Op Margin', km.operating_margin],
+      ['FCF Margin', km.fcf_margin],
+      ['Net Debt', km.net_debt]
+    ].filter(c => c[1] != null && c[1] !== '');
+    const metrics = metricCells.length ? `
+      <div style="margin-bottom:12px;">
+        <div style="font-family:var(--mono);font-size:9px;color:#3498db;letter-spacing:.15em;margin-bottom:8px;">// KEY METRICS</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px;">
+          ${metricCells.map(c => `
+            <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;padding:10px;">
+              <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;margin-bottom:4px;">${escapeHtml(c[0])}</div>
+              <div style="font-family:var(--mono);font-size:13px;color:${c[2] || '#ddd'};font-weight:700;">${escapeHtml(c[1])}</div>
+            </div>`).join('')}
+        </div>
+      </div>` : '';
+
+    // ── Institutional insight (the "wow" moment) ──
+    const insight = a.institutional_insight ? `
+      <div style="padding:14px;background:linear-gradient(180deg, rgba(0,201,125,.08), rgba(0,201,125,.02));border:1px solid rgba(0,201,125,.35);border-radius:3px;margin-bottom:6px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span style="font-size:14px;">💡</span>
+          <span style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;font-weight:600;">// INSTITUTIONAL INSIGHT</span>
+        </div>
+        <div style="font-family:var(--mono);font-size:12px;color:#e8e8e8;line-height:1.7;font-style:italic;">${escapeHtml(a.institutional_insight)}</div>
+      </div>` : '';
+
+    const footer = `
+      <div style="margin-top:10px;font-family:var(--mono);font-size:9px;color:#444;text-align:right;letter-spacing:.05em;">
+        Source: ${escapeHtml(payload.source || 'SEC EDGAR + Claude')}${payload.stats ? ' · ' + (payload.stats.sent_chars || 0).toLocaleString() + ' chars analyzed' : ''}
+      </div>`;
+
+    setStatus(header + summary + risks + segments + commentary + redFlags + metrics + insight + footer);
+  }
+
+  async function runFilingsAgent() {
+    const tickerEl = document.getElementById('filingsAgentTicker');
+    const btn = document.getElementById('filingsAgentBtn');
+    if (!tickerEl || !btn) return;
+
+    const ticker = (tickerEl.value || '').trim().toUpperCase();
+    if (!ticker) {
+      renderError('Enter a ticker first (e.g., NVDA, MELI, FMX).');
+      tickerEl.focus();
+      return;
+    }
+    tickerEl.value = ticker;
+
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    btn.style.cursor = 'wait';
+    const origLabel = btn.textContent;
+    btn.textContent = '⏳ WORKING...';
+
+    renderLoading(0);
+
+    // Progressive stage indicator — these are best-effort UX cues since we
+    // can't stream actual progress from a single Vercel function.
+    const t1 = setTimeout(() => renderLoading(1), 1500);
+    const t2 = setTimeout(() => renderLoading(2), 8000);
+
+    try {
+      const r = await fetch('/api/filings-agent?ticker=' + encodeURIComponent(ticker));
+      clearTimeout(t1); clearTimeout(t2);
+      const data = await r.json();
+
+      if (data.error) {
+        renderError(data.error);
+        return;
+      }
+      if (!data.analysis) {
+        renderError('Filings Agent returned no analysis. Try again in a moment.');
+        return;
+      }
+      renderResults(data);
+    } catch (err) {
+      clearTimeout(t1); clearTimeout(t2);
+      renderError('Network error: ' + (err && err.message ? err.message : 'unknown'));
+    } finally {
+      btn.disabled = false;
+      btn.style.opacity = '';
+      btn.style.cursor = 'pointer';
+      btn.textContent = origLabel;
+    }
+  }
+
+  function wire() {
+    const btn = document.getElementById('filingsAgentBtn');
+    const input = document.getElementById('filingsAgentTicker');
+    if (btn && !btn._wired) {
+      btn._wired = true;
+      btn.addEventListener('click', runFilingsAgent);
+    }
+    if (input && !input._wired) {
+      input._wired = true;
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); runFilingsAgent(); }
+      });
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire);
+  } else {
+    wire();
+  }
 })();
 </script>
 </body>
