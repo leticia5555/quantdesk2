@@ -11519,7 +11519,7 @@ function margin_color(pct, threshold, COL){
           <div id="filingsAgentDropdown" role="listbox" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#0a0a0a;border:1px solid #222;border-radius:3px;z-index:200;max-height:320px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,.6);"></div>
         </div>
         <button id="filingsAgentBtn"
-                style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE 10-K</button>
+                style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE FILING</button>
       </div>
 
       <div id="filingsAgentOutput" class="agent-output" style="font-family:var(--mono);font-size:11px;color:#888;"></div>
@@ -12293,7 +12293,7 @@ function margin_color(pct, threshold, COL){
 
   function renderLoading(stage) {
     const stages = [
-      { label: 'Fetching 10-K from SEC EDGAR...', done: stage >= 1 },
+      { label: 'Fetching annual filing from SEC EDGAR...', done: stage >= 1 },
       { label: 'Reading filing (this can take 30-60 seconds for large filings)...', done: stage >= 2 },
       { label: 'Extracting insights with Filings Agent...', done: stage >= 3 }
     ];
