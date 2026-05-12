@@ -51,6 +51,88 @@ function countryMeta(code) {
   return COUNTRY_META[c] || { name: c || 'Unknown', currency: 'USD', fxYahoo: null, em: false };
 }
 
+// ── Operational-country override ─────────────────────────────────
+// Finnhub returns LEGAL HQ, not where the company actually operates.
+// LATAM ADRs commonly re-domicile to Cayman / Luxembourg / Uruguay
+// for tax efficiency, which makes the macro context misleading
+// (MELI's UYU vol is irrelevant — its BRL exposure is). This map
+// surfaces the real operational country so FX/rates/local-macro
+// blocks align with the actual revenue mix.
+const OPERATIONAL_COUNTRY_OVERRIDE = {
+  // Cayman Islands (KY) → Brazil operations
+  STNE: { country: 'BR', name: 'Brazil',                       note: 'Legal HQ: Cayman Islands. 100% Brazil operations.' },
+  PAGS: { country: 'BR', name: 'Brazil',                       note: 'Legal HQ: Cayman Islands. 100% Brazil operations.' },
+  XP:   { country: 'BR', name: 'Brazil',                       note: 'Legal HQ: Cayman Islands. 100% Brazil operations.' },
+  VTEX: { country: 'BR', name: 'Brazil',                       note: 'Legal HQ: Cayman Islands. Brazil-led LATAM operations.' },
+  INTR: { country: 'BR', name: 'Brazil',                       note: 'Legal HQ: Cayman Islands. 100% Brazil operations.' },
+  NU:   { country: 'BR', name: 'Brazil', secondary: ['MX','CO'],
+          note: 'Legal HQ: Cayman Islands. Brazil + Mexico + Colombia operations.' },
+
+  // Luxembourg (LU) → Argentina / LATAM operations
+  GLOB: { country: 'AR', name: 'Argentina', secondary: ['US','BR','MX'],
+          note: 'Legal HQ: Luxembourg. Argentina origin, global delivery.' },
+  TS:   { country: 'AR', name: 'Argentina', secondary: ['MX','BR'],
+          note: 'Tenaris. Legal HQ: Luxembourg. LATAM industrial operations.' },
+  TX:   { country: 'AR', name: 'Argentina', secondary: ['MX','BR'],
+          note: 'Ternium. Legal HQ: Luxembourg. LATAM steel operations.' },
+
+  // Uruguay (UY) → multi-LATAM operations
+  MELI: { country: 'BR', name: 'Brazil (primary)', secondary: ['AR','MX'],
+          note: 'Legal HQ: Uruguay. Revenue mix: Brazil 55%, Argentina 25%, Mexico 15%.' },
+  DLO:  { country: 'BR', name: 'Brazil (primary)', secondary: ['AR','MX','CL','CO'],
+          note: 'DLocal. Legal HQ: Uruguay. Multi-LATAM payments processor.' }
+};
+
+// Resolve the effective operational context for a ticker. Returns
+// both the operational view and the legal view from Finnhub so the
+// response and the UI can show both transparently.
+function resolveCountryContext(ticker, finnhubCountry) {
+  const legalCode = (finnhubCountry || 'US').toUpperCase();
+  const legalMeta = countryMeta(legalCode);
+  const override = OPERATIONAL_COUNTRY_OVERRIDE[ticker];
+
+  if (!override) {
+    return {
+      effectiveCode: legalCode,
+      effectiveName: legalMeta.name,
+      effective: legalMeta,
+      legalCode,
+      legalName: legalMeta.name,
+      overrideApplied: false,
+      secondaryCountries: [],
+      overrideNote: null
+    };
+  }
+
+  const opCode = (override.country || legalCode).toUpperCase();
+  const opMeta = countryMeta(opCode);
+  // Graceful fallback — if the override country isn't in our coverage
+  // map, fall back to the Finnhub original rather than breaking.
+  if (!COUNTRY_META[opCode]) {
+    console.log(`[macro-agent] ${ticker}: override target ${opCode} not in COUNTRY_META, falling back to legal ${legalCode}`);
+    return {
+      effectiveCode: legalCode,
+      effectiveName: legalMeta.name,
+      effective: legalMeta,
+      legalCode,
+      legalName: legalMeta.name,
+      overrideApplied: false,
+      secondaryCountries: [],
+      overrideNote: null
+    };
+  }
+  return {
+    effectiveCode: opCode,
+    effectiveName: override.name || opMeta.name,
+    effective: opMeta,
+    legalCode,
+    legalName: legalMeta.name,
+    overrideApplied: true,
+    secondaryCountries: Array.isArray(override.secondary) ? override.secondary : [],
+    overrideNote: override.note || null
+  };
+}
+
 // ── Sector → macro driver classification ─────────────────────────
 // Returns { key, label, fxSens, rateSens, commoditySens, commodities }.
 // `commodities` is an array of Yahoo tickers to pull (empty = skip block).
@@ -257,6 +339,13 @@ function fedCyclePosition(ffLatest, ff30dChange, ff90dChange) {
 
 // ── Claude narrative ─────────────────────────────────────────────
 async function runClaude(apiKey, brief) {
+  // Inject extra guidance when the ticker's legal HQ differs from its
+  // operational country (Cayman / Lux / Uruguay ADRs). Claude should
+  // weight the operational country's FX & rates, not the tax HQ.
+  const overrideClause = brief.country_override_applied
+    ? `\n\nIMPORTANT — operational country override is in effect for this ticker. It is legally domiciled in ${brief.country_legal_name} (${brief.country_legal}) but operates primarily in ${brief.country_name}${brief.secondary_countries && brief.secondary_countries.length ? ` with material secondary exposure to ${brief.secondary_countries.join(', ')}` : ''}. ${brief.country_note || ''} Weight your macro analysis toward the OPERATIONAL country (FX, central bank rates, country risk premium) — NOT the legal HQ, which is a tax-structure artifact. Mention this nuance explicitly when it's load-bearing for the thesis (e.g., "MELI's Uruguay domicile provides tax efficiency, but its Brazil revenue exposure means BRL is the dominant FX driver").`
+    : '';
+
   const system = `You are a senior macro strategist at a top-tier hedge fund. You will be given a structured JSON macro brief covering a specific ticker: its country, sector, current US rate environment, local FX context (if foreign), commodity backdrop (if sector-applicable), and pre-classified macro sensitivities.
 
 Produce a concise institutional-grade narrative. Return ONLY a JSON object, no preamble:
@@ -269,7 +358,7 @@ Produce a concise institutional-grade narrative. Return ONLY a JSON object, no p
   "institutional_insight": "<3-4 sentences of NON-OBVIOUS contrarian macro read. For LATAM ADRs weight FX, capital-controls, and home-country rate cycles. For US names focus on real rates, yield curve, and what the consensus is mis-pricing.>"
 }
 
-Be quantitative. Reference actual values from the brief. No fluff. Avoid generic statements like "rates affect tech valuations" — instead say which specific level/move matters here.`;
+Be quantitative. Reference actual values from the brief. No fluff. Avoid generic statements like "rates affect tech valuations" — instead say which specific level/move matters here.${overrideClause}`;
 
   const user = `Analyze this macro brief and return the JSON narrative.\n\n\`\`\`json\n${JSON.stringify(brief, null, 2)}\n\`\`\``;
 
@@ -328,8 +417,9 @@ export default async function handler(req, res) {
     }
     const company = profile.name;
     const industry = profile.finnhubIndustry || null;
-    const countryCode = (profile.country || 'US').toUpperCase();
-    const country = countryMeta(countryCode);
+    const ctx = resolveCountryContext(ticker, profile.country);
+    const countryCode = ctx.effectiveCode;
+    const country = ctx.effective;
     const isForeignIssuer = countryCode !== 'US';
     const sectorKey = classifySector(industry);
     const sens = sectorSensitivities(sectorKey, isForeignIssuer);
@@ -416,7 +506,8 @@ export default async function handler(req, res) {
     };
 
     // Diagnostic log
-    console.log(`[macro-agent] ${ticker}: country=${countryCode} sector=${sectorKey} ` +
+    console.log(`[macro-agent] ${ticker}: country=${countryCode} (legal=${ctx.legalCode}` +
+      `${ctx.overrideApplied ? ', override applied' : ''}) sector=${sectorKey} ` +
       `ff=${ffLatest} t10-t2=${yc.slope} cpi=${cpiYoy} vix=${vix} ` +
       `fx_pair=${fxSymbol || 'none'} fx_chg=${local_macro && local_macro.change_1y_pct} ` +
       `commodities=${commoditySymbols.join(',') || 'none'}`);
@@ -427,8 +518,13 @@ export default async function handler(req, res) {
     if (apiKey) {
       const brief = {
         ticker, company, sector: industry, sectorKey,
-        country: countryCode, country_name: country.name, currency: country.currency,
+        country: countryCode, country_name: ctx.effectiveName, currency: country.currency,
         is_foreign_issuer: isForeignIssuer, is_em: country.em,
+        country_legal: ctx.legalCode,
+        country_legal_name: ctx.legalName,
+        country_override_applied: ctx.overrideApplied,
+        secondary_countries: ctx.secondaryCountries,
+        country_note: ctx.overrideNote,
         us_macro, local_macro, commodity_context, ticker_macro_correlations
       };
       const out = await runClaude(apiKey, brief);
@@ -444,7 +540,12 @@ export default async function handler(req, res) {
       sector: industry,
       sector_key: sectorKey,
       country: countryCode,
-      country_name: country.name,
+      country_name: ctx.effectiveName,
+      country_legal: ctx.legalCode,
+      country_legal_name: ctx.legalName,
+      country_override_applied: ctx.overrideApplied,
+      secondary_countries: ctx.secondaryCountries,
+      country_note: ctx.overrideNote,
       is_foreign_issuer: isForeignIssuer,
       is_em: country.em,
       us_macro,
