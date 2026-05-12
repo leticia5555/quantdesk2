@@ -36,6 +36,45 @@ const DEFAULT_COST_OF_DEBT = 0.05;
 const MAX_REVENUE_GROWTH = 0.30;  // dampen early-year growth
 const TERMINAL_FADE_GROWTH = 0.05; // final-year revenue growth target
 
+// ── Manual peer fallback ──────────────────────────────────────────
+// Finnhub /stock/peers is sparse for LATAM ADRs and a handful of other
+// names. When it returns fewer than 2 peers we fall back to this map.
+// Tickers must be US-listed so /stock/metric resolves cleanly.
+const MANUAL_PEER_FALLBACK = {
+  // LATAM e-commerce / fintech
+  MELI: ['AMZN', 'BABA', 'PDD', 'EBAY'],
+  NU:   ['SOFI', 'AFRM', 'V', 'MA'],
+  STNE: ['SQ', 'PYPL', 'AFRM', 'SOFI'],
+  PAGS: ['SQ', 'PYPL', 'STNE', 'SOFI'],
+  // LATAM mining / materials
+  VALE: ['RIO', 'BHP', 'FCX', 'NEM'],
+  SQM:  ['ALB', 'LAC', 'PLL', 'MP'],
+  // LATAM banking
+  ITUB: ['BBD', 'BSBR', 'BAP', 'BCH'],
+  BBD:  ['ITUB', 'BSBR', 'BAP', 'BCH'],
+  BBAR: ['GGAL', 'SUPV', 'BAP', 'BMA'],
+  GGAL: ['BBAR', 'SUPV', 'BMA', 'BAP'],
+  BSAC: ['BCH', 'BAP', 'BBD', 'ITUB'],
+  // LATAM energy
+  PBR:  ['XOM', 'CVX', 'BP', 'TTE'],
+  EC:   ['XOM', 'CVX', 'BP', 'PBR'],
+  // LATAM consumer / beverage
+  FMX:  ['KOF', 'ABEV', 'BUD', 'CCEP'],
+  KOF:  ['FMX', 'ABEV', 'BUD', 'CCEP'],
+  ABEV: ['BUD', 'CCEP', 'KOF', 'FMX'],
+  // LATAM telecom / media
+  AMX:  ['VOD', 'T', 'VZ', 'TMUS'],
+  TV:   ['DIS', 'PARA', 'WBD', 'CMCSA'],
+  // LATAM airports
+  ASR:  ['PAC', 'OMAB', 'CAAP', 'GOL'],
+  PAC:  ['ASR', 'OMAB', 'CAAP', 'GOL'],
+  // LATAM steel / industrial
+  GGB:  ['TX', 'SID', 'X', 'STLD'],
+  TX:   ['GGB', 'SID', 'X', 'NUE'],
+  SUZ:  ['IP', 'WRK', 'PKG', 'KS'],
+  ERJ:  ['BA', 'AIR', 'LMT', 'GD']
+};
+
 // ── Finnhub fetch helpers ─────────────────────────────────────────
 function safeFetch(url) {
   return fetch(url).catch(() => null);
@@ -634,10 +673,20 @@ export default async function handler(req, res) {
     const latest = snapshots[0] || null;
     const prior  = snapshots[1] || null;
 
-    // ── 3. Peer pulls (limit 4, exclude self, then sector median across self+peers) ──
-    const peerTickers = Array.isArray(peersRaw)
+    // ── 3. Peer resolution (Finnhub first, manual map as fallback) ──
+    // Finnhub /stock/peers is sparse / empty for many LATAM ADRs. If it
+    // returns fewer than 2 usable peers, fall back to the curated map.
+    let peerTickers = Array.isArray(peersRaw)
       ? peersRaw.filter(p => typeof p === 'string' && p.toUpperCase() !== ticker).slice(0, 4)
       : [];
+    let peerSource = 'finnhub';
+    if (peerTickers.length < 2 && MANUAL_PEER_FALLBACK[ticker]) {
+      console.log(`[fundamental-agent] ${ticker}: using manual peer fallback (finnhub returned ${peerTickers.length})`);
+      peerTickers = MANUAL_PEER_FALLBACK[ticker]
+        .filter(p => p.toUpperCase() !== ticker)
+        .slice(0, 4);
+      peerSource = 'manual';
+    }
     const peerMetricRes = await Promise.all(peerTickers.map(p =>
       safeFetch(`https://finnhub.io/api/v1/stock/metric?symbol=${encodeURIComponent(p)}&metric=all&token=${finnhubKey}`)
     ));
@@ -722,7 +771,8 @@ export default async function handler(req, res) {
       source: 'Finnhub + Custom DCF + Claude',
       stats: {
         snapshots_used: snapshots.length,
-        peer_count: peers.length
+        peer_count: peers.length,
+        peer_source: peerSource
       }
     });
   } catch (err) {
