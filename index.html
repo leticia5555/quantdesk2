@@ -11495,6 +11495,37 @@ function margin_color(pct, threshold, COL){
 <!-- AGENTS PAGE -->
 <div id="page-agents" class="page" style="padding:0;background:#080808;min-height:100vh;">
 
+  <!-- ─── SENTIMENT AGENT (Sprint 5) ──────────────────────────────── -->
+  <section id="sentimentAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// SENTIMENT AGENT</span>
+      <div style="flex:1;height:1px;background:#1a1a1a;"></div>
+      <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;">SPRINT 5</span>
+    </div>
+    <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Real-time sentiment analysis across news and social · News · Reddit · Velocity · Anomaly</div>
+
+    <div class="research-agent-card" style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid var(--green,#00c97d);border-radius:4px;padding:16px;">
+      <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+        <span class="agent-icon" style="font-size:18px;">📡</span>
+        <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Sentiment Agent</span>
+        <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">News · Reddit · Velocity · Anomaly</span>
+        <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">Finnhub + Reddit + Claude · 7d / 30d windows</span>
+      </div>
+
+      <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;position:relative;">
+        <div style="flex:1;min-width:220px;position:relative;">
+          <input id="sentimentAgentTicker" placeholder="Enter ticker (e.g., NVDA, MELI, VALE)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="sentimentAgentDropdown" aria-expanded="false"
+                 style="width:100%;box-sizing:border-box;background:#080808;border:1px solid #222;color:#ddd;font-family:var(--mono);font-size:12px;padding:9px 12px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;" />
+          <div id="sentimentAgentDropdown" role="listbox" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#0a0a0a;border:1px solid #222;border-radius:3px;z-index:200;max-height:320px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,.6);"></div>
+        </div>
+        <button id="sentimentAgentBtn"
+                style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE SENTIMENT</button>
+      </div>
+
+      <div id="sentimentAgentOutput" class="agent-output" style="font-family:var(--mono);font-size:11px;color:#888;"></div>
+    </div>
+  </section>
+
   <!-- ─── EVENT AGENT (Sprint 4) ──────────────────────────────────── -->
   <section id="eventAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
@@ -14359,6 +14390,580 @@ function margin_color(pct, threshold, COL){
       document.addEventListener('click', e => {
         if (!ddState.open) return;
         const within = e.target.closest('#eventAgentDropdown, #eventAgentTicker');
+        if (!within) closeDropdown();
+      });
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire);
+  } else {
+    wire();
+  }
+})();
+</script>
+
+<!-- ─── SENTIMENT AGENT (Sprint 5) ───────────────────────────────────── -->
+<script>
+(function(){
+  const GREEN  = '#00c97d';
+  const RED    = '#ff3a3a';
+  const AMBER  = '#EF9F27';
+  const BLUE   = '#3498db';
+  const PURPLE = '#9b59b6';
+  const GREY   = '#888';
+
+  const escapeHtml = s => String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  const fmtScore = n => (n == null || !isFinite(n)) ? 'N/A' : (n >= 0 ? '+' : '') + n.toFixed(2);
+  const fmtScore3 = n => (n == null || !isFinite(n)) ? 'N/A' : (n >= 0 ? '+' : '') + n.toFixed(3);
+
+  const COUNTRY_FLAG_ISO = {
+    US:'🇺🇸', AR:'🇦🇷', BR:'🇧🇷', MX:'🇲🇽', CL:'🇨🇱', CO:'🇨🇴', PE:'🇵🇪',
+    UY:'🇺🇾', EC:'🇪🇨', KY:'🇰🇾', LU:'🇱🇺', NL:'🇳🇱', GB:'🇬🇧', JP:'🇯🇵',
+    CN:'🇨🇳', KR:'🇰🇷'
+  };
+  const flagFor = code => COUNTRY_FLAG_ISO[(code || '').toUpperCase()] || '';
+
+  // ── Self-contained autocomplete (mirrors other agents) ────────
+  const EXCHANGE_COUNTRY = {
+    '.MX':'México', '.SA':'Brasil', '.SN':'Chile', '.BA':'Argentina'
+  };
+  function regionFor(symbol) {
+    const dot = symbol.lastIndexOf('.');
+    if (dot > 0) {
+      const suffix = symbol.slice(dot);
+      if (EXCHANGE_COUNTRY[suffix]) return { code:'latam', label: EXCHANGE_COUNTRY[suffix], coverage: false };
+    }
+    if (typeof LATAM_ADR_COUNTRY !== 'undefined' && LATAM_ADR_COUNTRY[symbol]) {
+      return { code:'adr', label: LATAM_ADR_COUNTRY[symbol] + ' ADR', coverage: true };
+    }
+    if (symbol.includes('/')) return { code:'crypto', label:'Crypto', coverage: false };
+    return { code:'us', label:'US', coverage: true };
+  }
+  const CATALOG = (function () {
+    const out = [], seen = new Set();
+    const push = sym => {
+      if (!sym || seen.has(sym)) return;
+      seen.add(sym);
+      const region = regionFor(sym);
+      if (region.code === 'crypto') return;
+      out.push({ symbol: sym, region, finnhub: region.coverage });
+    };
+    try {
+      if (typeof SCREENER_UNIVERSE !== 'undefined') {
+        (SCREENER_UNIVERSE.us || []).forEach(push);
+        (SCREENER_UNIVERSE.latam || []).forEach(push);
+      }
+    } catch (_) {}
+    return out;
+  })();
+  function searchTickers(q) {
+    q = String(q || '').trim().toUpperCase();
+    if (!q) return [];
+    const prefix = [], contains = [];
+    for (const row of CATALOG) {
+      if (row.symbol.startsWith(q)) prefix.push(row);
+      else if (row.symbol.includes(q)) contains.push(row);
+      if (prefix.length >= 8) break;
+    }
+    return prefix.concat(contains).slice(0, 8);
+  }
+
+  function setStatus(html) {
+    const out = document.getElementById('sentimentAgentOutput');
+    if (out) out.innerHTML = html;
+  }
+  function renderLoading(stage) {
+    const stages = [
+      'Fetching news headlines...',
+      'Scoring sentiment with Claude...',
+      'Pulling Reddit signals...',
+      'Detecting anomalies and velocity...',
+      'Generating contrarian read...'
+    ];
+    setStatus(
+      `<div style="padding:14px;background:#080808;border:1px solid #1a1a1a;border-radius:3px;">
+        <div style="font-family:var(--mono);font-size:10px;color:${GREEN};letter-spacing:.1em;margin-bottom:10px;">// SENTIMENT AGENT WORKING</div>
+        ${stages.map((label, i) => {
+          const active = i === stage;
+          const done = i < stage;
+          const color = active ? GREEN : done ? '#666' : '#333';
+          const mark = done ? '✓' : active ? '▶' : '·';
+          return `<div style="font-family:var(--mono);font-size:11px;color:${color};margin:4px 0;">${mark} ${escapeHtml(label)}</div>`;
+        }).join('')}
+      </div>`
+    );
+  }
+  function renderError(msg) {
+    setStatus(
+      `<div style="padding:14px;background:rgba(255,58,58,.05);border:1px solid rgba(255,58,58,.3);border-radius:3px;font-family:var(--mono);font-size:11px;color:${RED};">
+        ✕ ${escapeHtml(msg)}
+      </div>`
+    );
+  }
+
+  // ── Category color / emoji ────────────────────────────────────
+  function categoryColor(cat) {
+    if (!cat) return '#888';
+    if (cat === 'VERY_POSITIVE')   return GREEN;
+    if (cat === 'POSITIVE')        return GREEN;
+    if (cat === 'MILDLY_POSITIVE') return '#62c97d';
+    if (cat === 'NEUTRAL')         return '#888';
+    if (cat === 'MILDLY_NEGATIVE') return '#d68545';
+    if (cat === 'NEGATIVE')        return RED;
+    if (cat === 'VERY_NEGATIVE')   return RED;
+    return '#888';
+  }
+  function categoryEmoji(cat) {
+    if (cat === 'VERY_POSITIVE')   return '🚀';
+    if (cat === 'POSITIVE')        return '😊';
+    if (cat === 'MILDLY_POSITIVE') return '🙂';
+    if (cat === 'NEUTRAL')         return '😐';
+    if (cat === 'MILDLY_NEGATIVE') return '😕';
+    if (cat === 'NEGATIVE')        return '😟';
+    if (cat === 'VERY_NEGATIVE')   return '🔥';
+    return '😐';
+  }
+  function trendArrow(trend) {
+    if (!trend) return '→';
+    if (trend.includes('ACCELERATING_POSITIVE')) return '↗↗';
+    if (trend.includes('STABLE_POSITIVE'))       return '↗';
+    if (trend.includes('REVERSING_TO_POSITIVE')) return '↩↗';
+    if (trend.includes('ACCELERATING_NEGATIVE')) return '↘↘';
+    if (trend.includes('STABLE_NEGATIVE'))       return '↘';
+    if (trend.includes('REVERSING_TO_NEGATIVE')) return '↩↘';
+    return '→';
+  }
+  function trendColor(trend) {
+    if (!trend) return '#888';
+    if (trend.includes('POSITIVE')) return GREEN;
+    if (trend.includes('NEGATIVE')) return RED;
+    return '#888';
+  }
+  function velocityColor(v) {
+    if (v === 'STRONG_POSITIVE') return GREEN;
+    if (v === 'POSITIVE')        return GREEN;
+    if (v === 'STRONG_NEGATIVE') return RED;
+    if (v === 'NEGATIVE')        return RED;
+    return '#888';
+  }
+  function anomalyColor(a) {
+    if (a === 'POSITIVE_SPIKE') return GREEN;
+    if (a === 'NEGATIVE_SPIKE') return RED;
+    return '#888';
+  }
+  function readableLabel(s) {
+    return String(s || '').replace(/_/g, ' ');
+  }
+
+  // ── Header sentiment chip ─────────────────────────────────────
+  function sentimentChip(overview) {
+    if (!overview) {
+      return `<span style="display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;color:${GREY};background:rgba(255,255,255,.04);border:1px solid #2a2a2a;padding:6px 12px;border-radius:3px;">📡 NO DATA</span>`;
+    }
+    const cat = overview.category || 'NEUTRAL';
+    const col = categoryColor(cat);
+    const emoji = categoryEmoji(cat);
+    const score = fmtScore(overview.current_score);
+    return `<span style="display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;letter-spacing:.12em;font-weight:700;color:${col};background:${col}1a;border:1px solid ${col}55;padding:6px 12px;border-radius:3px;">${emoji} ${escapeHtml(readableLabel(cat))} · ${score}</span>`;
+  }
+
+  function microCard(label, valueHtml, sub, valueColor) {
+    return `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;padding:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:6px;">${escapeHtml(label)}</div>
+      <div style="font-family:var(--mono);font-size:15px;color:${valueColor || '#ddd'};font-weight:700;margin-bottom:4px;">${valueHtml}</div>
+      <div style="font-family:var(--mono);font-size:10px;color:#666;line-height:1.4;">${sub}</div>
+    </div>`;
+  }
+
+  function renderOverview(overview, news, velocity, anomaly) {
+    if (!overview) return '';
+    const curCat = overview.category;
+    const curCol = categoryColor(curCat);
+
+    // 30d baseline category from raw score
+    const baseScore = news && news.avg_score_30d;
+    const baseCat = baseScore == null ? 'NEUTRAL'
+                   : baseScore >  0.5  ? 'VERY_POSITIVE'
+                   : baseScore >  0.25 ? 'POSITIVE'
+                   : baseScore >  0.1  ? 'MILDLY_POSITIVE'
+                   : baseScore >= -0.1 ? 'NEUTRAL'
+                   : baseScore >= -0.25 ? 'MILDLY_NEGATIVE'
+                   : baseScore >= -0.5 ? 'NEGATIVE' : 'VERY_NEGATIVE';
+    const baseCol = categoryColor(baseCat);
+
+    const velVal = velocity && velocity.velocity != null ? fmtScore(velocity.velocity) : 'N/A';
+    const velCat = velocity && velocity.category ? velocity.category : 'STABLE';
+    const velCol = velocityColor(velCat);
+
+    const anomalyType = anomaly && anomaly.type ? anomaly.type : 'STABLE';
+    const anomalyCol = anomalyColor(anomalyType);
+    const anomalyMag = anomaly && anomaly.magnitude != null ? anomaly.magnitude.toFixed(2) : '—';
+
+    const trendStr = `${trendArrow(overview.trend)} ${escapeHtml(readableLabel(overview.trend || ''))}`;
+
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${BLUE};letter-spacing:.15em;margin-bottom:8px;">// 📊 SENTIMENT OVERVIEW</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;">
+        ${microCard('Current (7d)',
+                    `${fmtScore(overview.current_score)} <span style="font-size:11px;color:${curCol};">${escapeHtml(readableLabel(curCat))}</span>`,
+                    `<span style="color:${trendColor(overview.trend)};">${trendStr}</span>`,
+                    curCol)}
+        ${microCard('30d Baseline',
+                    `${fmtScore(baseScore)} <span style="font-size:11px;color:${baseCol};">${escapeHtml(readableLabel(baseCat))}</span>`,
+                    news ? `${news.headlines_analyzed_30d || 0} headlines scored` : '',
+                    baseCol)}
+        ${microCard('Velocity',
+                    `<span style="color:${velCol};">${escapeHtml(readableLabel(velCat))}</span> · ${velVal}`,
+                    velocity ? `3d ${fmtScore(velocity.last_3d_avg)} vs prior 4d ${fmtScore(velocity.prior_4d_avg)}` : '',
+                    velCol)}
+        ${microCard('Anomaly',
+                    anomaly && anomaly.detected
+                      ? `<span style="color:${anomalyCol};">${escapeHtml(readableLabel(anomalyType))}</span>`
+                      : `<span style="color:#888;">STABLE</span>`,
+                    `Magnitude ${anomalyMag}${anomaly && anomaly.context ? ' · ' + escapeHtml(anomaly.context) : ''}`,
+                    anomalyCol)}
+      </div>
+    </div>`;
+  }
+
+  // ── News breakdown: polarity strip + category bars ────────────
+  function renderNewsBreakdown(news) {
+    if (!news || (news.headlines_analyzed_7d || 0) === 0) {
+      return `<div style="padding:10px 12px;background:rgba(239,159,39,.05);border:1px solid rgba(239,159,39,.3);border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:11px;color:#bbb;">
+        ⓘ Limited news coverage in the last 7 days. Showing what's available below.
+      </div>`;
+    }
+    const total = (news.positive_count_7d || 0) + (news.negative_count_7d || 0) + (news.neutral_count_7d || 0);
+    const pp = total ? ((news.positive_count_7d || 0) / total) * 100 : 0;
+    const np = total ? ((news.negative_count_7d || 0) / total) * 100 : 0;
+    const nu = total ? ((news.neutral_count_7d  || 0) / total) * 100 : 0;
+    const polarityBar = `<div style="display:flex;height:8px;border-radius:2px;overflow:hidden;background:#1a1a1a;margin-bottom:4px;">
+      <div style="width:${pp.toFixed(1)}%;background:${GREEN};"></div>
+      <div style="width:${nu.toFixed(1)}%;background:#3a3a3a;"></div>
+      <div style="width:${np.toFixed(1)}%;background:${RED};"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:#666;">
+      <span style="color:${GREEN};">▲ ${news.positive_count_7d || 0} positive</span>
+      <span>${news.neutral_count_7d || 0} neutral</span>
+      <span style="color:${RED};">▼ ${news.negative_count_7d || 0} negative</span>
+    </div>`;
+
+    // Category bars
+    const cats = news.category_breakdown || {};
+    const catEntries = Object.entries(cats).sort((a, b) => b[1].count - a[1].count).slice(0, 6);
+    const maxCnt = catEntries.length ? Math.max(...catEntries.map(([, v]) => v.count)) : 1;
+    const catBars = catEntries.map(([k, v]) => {
+      const w = Math.round((v.count / maxCnt) * 100);
+      const col = v.avg_score > 0.1 ? GREEN : v.avg_score < -0.1 ? RED : '#888';
+      return `<div style="display:grid;grid-template-columns:90px 1fr 64px;gap:8px;align-items:center;font-family:var(--mono);font-size:10px;color:#888;padding:3px 0;">
+        <span>${escapeHtml(k)}</span>
+        <div style="position:relative;height:8px;background:#1a1a1a;border-radius:2px;">
+          <div style="position:absolute;left:0;top:0;bottom:0;width:${w}%;background:${col}55;border-radius:2px;"></div>
+        </div>
+        <span style="text-align:right;">${v.count} · <span style="color:${col};">${fmtScore(v.avg_score)}</span></span>
+      </div>`;
+    }).join('');
+
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${PURPLE};letter-spacing:.15em;margin-bottom:8px;">// 📰 NEWS SENTIMENT BREAKDOWN (7D · ${news.headlines_analyzed_7d} headlines)</div>
+      <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;padding:12px;">
+        ${polarityBar}
+        ${catEntries.length ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid #1a1a1a;">
+          <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:6px;">BY CATEGORY</div>
+          ${catBars}
+        </div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  function renderHeadlineList(title, items, color, bgRgba, icon) {
+    if (!items || items.length === 0) return '';
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${color};letter-spacing:.15em;margin-bottom:8px;">// ${escapeHtml(icon)} ${escapeHtml(title)}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px;">
+        ${items.slice(0, 3).map(n => `<div style="background:${bgRgba};border:1px solid ${color}40;border-left:3px solid ${color};border-radius:3px;padding:10px 12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;font-family:var(--mono);font-size:9px;color:${color};letter-spacing:.05em;margin-bottom:4px;">
+            <span>${escapeHtml(n.date || '')} · ${escapeHtml(n.category || 'other')}</span>
+            <span style="color:${color};font-weight:700;">${fmtScore(n.score)}</span>
+          </div>
+          <div style="font-family:var(--mono);font-size:11px;color:#ddd;line-height:1.4;">
+            ${n.url
+              ? `<a href="${escapeHtml(n.url)}" target="_blank" rel="noopener noreferrer" style="color:#ddd;text-decoration:none;border-bottom:1px dotted #333;">${escapeHtml(n.headline || '')}</a>`
+              : escapeHtml(n.headline || '')}
+          </div>
+          ${n.source ? `<div style="font-family:var(--mono);font-size:9px;color:#555;margin-top:4px;">${escapeHtml(n.source)}</div>` : ''}
+        </div>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  function renderReddit(reddit) {
+    if (!reddit) return '';
+    const count = reddit.posts_analyzed || 0;
+    if (count === 0) {
+      return `<div style="padding:10px 12px;background:rgba(255,255,255,.02);border:1px solid #1a1a1a;border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:11px;color:#666;">
+        💬 REDDIT SIGNAL · No matching posts in the last week.
+      </div>`;
+    }
+    const avg = reddit.avg_score;
+    const col = avg == null ? '#888' : avg > 0.1 ? GREEN : avg < -0.1 ? RED : '#888';
+    const subs = (reddit.top_subreddits || []).map(s => `r/${escapeHtml(s)}`).join(' · ');
+    const samples = (reddit.sample_titles || []).slice(0, 3);
+    const trendingBadge = reddit.trending
+      ? `<span style="font-family:var(--mono);font-size:9px;color:${AMBER};letter-spacing:.1em;padding:2px 6px;background:rgba(239,159,39,.10);border:1px solid ${AMBER}55;border-radius:2px;">🔥 TRENDING</span>`
+      : '';
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${AMBER};letter-spacing:.15em;margin-bottom:8px;">// 💬 REDDIT SIGNAL</div>
+      <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid ${col};border-radius:3px;padding:12px;display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:flex-start;">
+        <div>
+          <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:4px;">AVG SCORE</div>
+          <div style="font-family:var(--mono);font-size:20px;color:${col};font-weight:700;">${fmtScore(avg)}</div>
+          <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:4px;">${count} posts</div>
+          ${trendingBadge ? `<div style="margin-top:6px;">${trendingBadge}</div>` : ''}
+        </div>
+        <div style="font-family:var(--mono);font-size:11px;color:#bbb;">
+          ${subs ? `<div style="margin-bottom:6px;color:#666;">${subs}</div>` : ''}
+          ${samples.length ? samples.map(t => `<div style="margin-bottom:4px;line-height:1.4;">
+            ${t.url
+              ? `<a href="${escapeHtml(t.url)}" target="_blank" rel="noopener noreferrer" style="color:#bbb;text-decoration:none;border-bottom:1px dotted #2a2a2a;">${escapeHtml(t.title)}</a>`
+              : escapeHtml(t.title)}
+            <span style="color:#444;font-size:9px;"> · r/${escapeHtml(t.subreddit || '')} · ${fmtScore(t.score)}</span>
+          </div>`).join('') : '<div style="color:#555;">No sample titles available.</div>'}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function renderPositioning(items) {
+    if (!Array.isArray(items) || items.length === 0) return '';
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:8px;">// 🎯 POSITIONING CONSIDERATIONS</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;">
+        ${items.map(it => `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid ${GREEN};border-radius:3px;padding:10px 12px;font-family:var(--mono);font-size:11px;color:#ddd;line-height:1.5;">${escapeHtml(it || '')}</div>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  function renderResults(payload) {
+    const t = escapeHtml(payload.ticker);
+    const co = escapeHtml(payload.company_name || payload.ticker);
+    const sector = payload.sector ? escapeHtml(payload.sector) : '';
+    let country = '';
+    if (payload.country_name) {
+      const opFlag = flagFor(payload.country);
+      if (payload.country_override_applied) {
+        const legalFlag = flagFor(payload.country_legal);
+        country = `${opFlag} ${escapeHtml(payload.country_name)} · <span style="color:#555;">Legal: ${legalFlag} ${escapeHtml(payload.country_legal || '')}</span>`;
+      } else {
+        country = `${opFlag} ${escapeHtml(payload.country_name)} (${escapeHtml(payload.country)})`;
+      }
+    }
+
+    const header = `
+      <div style="display:flex;align-items:flex-start;gap:12px;padding:14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${GREEN};border-radius:3px;margin-bottom:12px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:220px;">
+          <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:4px;">// SENTIMENT ANALYSIS COMPLETE</div>
+          <div style="font-family:var(--mono);font-size:14px;color:#ddd;font-weight:700;letter-spacing:.05em;">${t} · ${co}</div>
+          <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:3px;">
+            ${sector ? `Sector ${sector}` : ''}${sector && country ? ' · ' : ''}${country}
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
+          ${sentimentChip(payload.sentiment_overview)}
+        </div>
+      </div>`;
+
+    const summary = payload.sentiment_summary ? `
+      <div style="padding:12px 14px;background:rgba(0,201,125,.04);border:1px solid rgba(0,201,125,.2);border-radius:3px;margin-bottom:12px;">
+        <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:6px;">// SENTIMENT SUMMARY</div>
+        <div style="font-family:var(--mono);font-size:12px;color:#ddd;line-height:1.6;">${escapeHtml(payload.sentiment_summary)}</div>
+      </div>` : '';
+
+    const overview = renderOverview(payload.sentiment_overview, payload.news_sentiment, payload.sentiment_velocity, payload.anomaly_detection);
+    const breakdown = renderNewsBreakdown(payload.news_sentiment);
+
+    const topPos = (payload.news_sentiment && payload.news_sentiment.top_positive) || [];
+    const topNeg = (payload.news_sentiment && payload.news_sentiment.top_negative) || [];
+    const posBlock = renderHeadlineList('TOP POSITIVE HEADLINES (7D)', topPos, GREEN, 'rgba(0,201,125,.04)', '🔥');
+    const negBlock = renderHeadlineList('TOP NEGATIVE HEADLINES (7D)', topNeg, RED,   'rgba(255,58,58,.05)', '❄️');
+
+    const reddit = renderReddit(payload.reddit_sentiment);
+
+    const narrativeBlock = payload.dominant_narrative ? `
+      <div style="padding:12px 14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${BLUE};border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:12px;color:#ddd;line-height:1.6;">
+        <span style="color:${BLUE};font-size:9px;letter-spacing:.15em;">DOMINANT NARRATIVE · </span>${escapeHtml(payload.dominant_narrative)}
+      </div>` : '';
+
+    const contrarianBlock = payload.contrarian_read ? `
+      <div style="padding:12px 14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${PURPLE};border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:12px;color:#ddd;line-height:1.6;">
+        <span style="color:${PURPLE};font-size:9px;letter-spacing:.15em;">CONTRARIAN READ · </span>${escapeHtml(payload.contrarian_read)}
+      </div>` : '';
+
+    const positioning = renderPositioning(payload.positioning_considerations);
+
+    const insight = payload.institutional_insight ? `
+      <div style="padding:14px;background:linear-gradient(180deg, rgba(239,159,39,.10), rgba(239,159,39,.02));border:1px solid rgba(239,159,39,.45);border-radius:3px;margin-bottom:6px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span style="font-size:14px;">💡</span>
+          <span style="font-family:var(--mono);font-size:9px;color:${AMBER};letter-spacing:.15em;font-weight:600;">// INSTITUTIONAL INSIGHT</span>
+        </div>
+        <div style="font-family:var(--mono);font-size:12px;color:#e8e8e8;line-height:1.7;font-style:italic;">${escapeHtml(payload.institutional_insight)}</div>
+      </div>` : '';
+
+    const footer = `<div style="margin-top:10px;font-family:var(--mono);font-size:9px;color:#444;text-align:right;letter-spacing:.05em;">
+      Source: ${escapeHtml(payload.source || 'Finnhub + Reddit + Claude')}
+    </div>`;
+
+    setStatus(header + summary + overview + breakdown + posBlock + negBlock + reddit + narrativeBlock + contrarianBlock + positioning + insight + footer);
+  }
+
+  // ── Autocomplete dropdown ─────────────────────────────────────
+  const ddState = { items: [], cursor: -1, open: false };
+  function regionBadge(region, finnhubOk) {
+    const col = finnhubOk ? GREEN : AMBER;
+    const bg  = finnhubOk ? 'rgba(0,201,125,.12)' : 'rgba(239,159,39,.12)';
+    const mark = finnhubOk ? '✓ sentiment' : '✗ limited';
+    return `<span style="display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:8px;color:${col};letter-spacing:.08em;padding:2px 6px;background:${bg};border:1px solid ${col}40;border-radius:2px;">
+      <span style="width:5px;height:5px;border-radius:50%;background:${col};"></span>${mark}
+    </span>
+    <span style="font-family:var(--mono);font-size:9px;color:#666;">${escapeHtml(region.label)}</span>`;
+  }
+  function renderDropdown() {
+    const dd = document.getElementById('sentimentAgentDropdown');
+    const input = document.getElementById('sentimentAgentTicker');
+    if (!dd || !input) return;
+    if (!ddState.open || ddState.items.length === 0) {
+      dd.style.display = 'none'; dd.innerHTML = '';
+      input.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    dd.style.display = 'block';
+    input.setAttribute('aria-expanded', 'true');
+    dd.innerHTML = ddState.items.map((it, i) => {
+      const selected = i === ddState.cursor;
+      const bg = selected ? 'rgba(0,201,125,.08)' : 'transparent';
+      const border = selected ? '#1f3a2a' : '#0f0f0f';
+      return `<div role="option" data-i="${i}"
+        style="display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid ${border};">
+        <span style="font-family:var(--mono);font-size:12px;color:#ddd;font-weight:700;letter-spacing:.05em;min-width:90px;">${escapeHtml(it.symbol)}</span>
+        <span style="flex:1;"></span>
+        ${regionBadge(it.region, it.finnhub)}
+      </div>`;
+    }).join('');
+  }
+  function openDropdown(q) {
+    ddState.items = searchTickers(q);
+    ddState.cursor = ddState.items.length ? 0 : -1;
+    ddState.open = ddState.items.length > 0;
+    renderDropdown();
+  }
+  function closeDropdown() { ddState.open = false; ddState.cursor = -1; renderDropdown(); }
+  function moveDropdown(d) {
+    if (!ddState.open || !ddState.items.length) return;
+    const n = ddState.items.length;
+    ddState.cursor = (ddState.cursor + d + n) % n;
+    renderDropdown();
+    const dd = document.getElementById('sentimentAgentDropdown');
+    if (dd) {
+      const sel = dd.querySelector(`[data-i="${ddState.cursor}"]`);
+      if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
+    }
+  }
+  function selectDropdown(i) {
+    if (i == null) i = ddState.cursor;
+    if (i < 0 || i >= ddState.items.length) return false;
+    const pick = ddState.items[i];
+    const input = document.getElementById('sentimentAgentTicker');
+    if (input) input.value = pick.symbol;
+    closeDropdown();
+    runSentimentAgent();
+    return true;
+  }
+
+  async function runSentimentAgent() {
+    const input = document.getElementById('sentimentAgentTicker');
+    const btn = document.getElementById('sentimentAgentBtn');
+    if (!input || !btn) return;
+    const ticker = (input.value || '').trim().toUpperCase();
+    if (!ticker) { renderError('Enter a ticker first (e.g., NVDA, MELI, VALE).'); input.focus(); return; }
+    input.value = ticker;
+    closeDropdown();
+
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    btn.style.cursor = 'wait';
+    const origLabel = btn.textContent;
+    btn.textContent = '⏳ WORKING...';
+
+    renderLoading(0);
+    const t1 = setTimeout(() => renderLoading(1), 1200);
+    const t2 = setTimeout(() => renderLoading(2), 5000);
+    const t3 = setTimeout(() => renderLoading(3), 9000);
+    const t4 = setTimeout(() => renderLoading(4), 12000);
+
+    try {
+      const r = await fetch('/api/sentiment-agent?ticker=' + encodeURIComponent(ticker));
+      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4);
+      const data = await r.json();
+      if (data.error) { renderError(data.error); return; }
+      renderResults(data);
+    } catch (err) {
+      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4);
+      renderError('Network error: ' + (err && err.message ? err.message : 'unknown'));
+    } finally {
+      btn.disabled = false;
+      btn.style.opacity = '';
+      btn.style.cursor = 'pointer';
+      btn.textContent = origLabel;
+    }
+  }
+
+  function wire() {
+    const btn = document.getElementById('sentimentAgentBtn');
+    const input = document.getElementById('sentimentAgentTicker');
+    const dd = document.getElementById('sentimentAgentDropdown');
+    if (btn && !btn._wired) { btn._wired = true; btn.addEventListener('click', runSentimentAgent); }
+    if (input && !input._wired) {
+      input._wired = true;
+      input.addEventListener('input', () => openDropdown(input.value));
+      input.addEventListener('focus', () => { if (input.value) openDropdown(input.value); });
+      input.addEventListener('keydown', e => {
+        if (ddState.open) {
+          if (e.key === 'ArrowDown') { e.preventDefault(); moveDropdown(1); return; }
+          if (e.key === 'ArrowUp')   { e.preventDefault(); moveDropdown(-1); return; }
+          if (e.key === 'Escape')    { e.preventDefault(); closeDropdown(); return; }
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (ddState.cursor >= 0 && selectDropdown()) return;
+            runSentimentAgent();
+            return;
+          }
+        } else if (e.key === 'Enter') { e.preventDefault(); runSentimentAgent(); }
+      });
+    }
+    if (dd && !dd._wired) {
+      dd._wired = true;
+      dd.addEventListener('mousedown', e => {
+        const row = e.target.closest('[data-i]');
+        if (!row) return;
+        e.preventDefault();
+        selectDropdown(parseInt(row.dataset.i, 10));
+      });
+      dd.addEventListener('mouseover', e => {
+        const row = e.target.closest('[data-i]');
+        if (!row) return;
+        const i = parseInt(row.dataset.i, 10);
+        if (i !== ddState.cursor) { ddState.cursor = i; renderDropdown(); }
+      });
+    }
+    if (!document._sentimentOutsideWired) {
+      document._sentimentOutsideWired = true;
+      document.addEventListener('click', e => {
+        if (!ddState.open) return;
+        const within = e.target.closest('#sentimentAgentDropdown, #sentimentAgentTicker');
         if (!within) closeDropdown();
       });
     }
