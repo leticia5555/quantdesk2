@@ -11495,6 +11495,37 @@ function margin_color(pct, threshold, COL){
 <!-- AGENTS PAGE -->
 <div id="page-agents" class="page" style="padding:0;background:#080808;min-height:100vh;">
 
+  <!-- ─── RISK ANOMALY AGENT (Sprint 6) ──────────────────────────── -->
+  <section id="riskAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// RISK ANOMALY AGENT</span>
+      <div style="flex:1;height:1px;background:#1a1a1a;"></div>
+      <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;">SPRINT 6</span>
+    </div>
+    <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Quantitative risk regime detection · Volatility · Beta · Correlation · Drawdown</div>
+
+    <div class="research-agent-card" style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid var(--green,#00c97d);border-radius:4px;padding:16px;">
+      <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+        <span class="agent-icon" style="font-size:18px;">⚠️</span>
+        <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Risk Anomaly Agent</span>
+        <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">Volatility · Beta · Correlation · Drawdown</span>
+        <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">Yahoo Finance + Finnhub + Claude · 252d window</span>
+      </div>
+
+      <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;position:relative;">
+        <div style="flex:1;min-width:220px;position:relative;">
+          <input id="riskAgentTicker" placeholder="Enter ticker (e.g., NVDA, MELI, VALE)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="riskAgentDropdown" aria-expanded="false"
+                 style="width:100%;box-sizing:border-box;background:#080808;border:1px solid #222;color:#ddd;font-family:var(--mono);font-size:12px;padding:9px 12px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;" />
+          <div id="riskAgentDropdown" role="listbox" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#0a0a0a;border:1px solid #222;border-radius:3px;z-index:200;max-height:320px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,.6);"></div>
+        </div>
+        <button id="riskAgentBtn"
+                style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE RISK</button>
+      </div>
+
+      <div id="riskAgentOutput" class="agent-output" style="font-family:var(--mono);font-size:11px;color:#888;"></div>
+    </div>
+  </section>
+
   <!-- ─── SENTIMENT AGENT (Sprint 5) ──────────────────────────────── -->
   <section id="sentimentAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
@@ -14964,6 +14995,574 @@ function margin_color(pct, threshold, COL){
       document.addEventListener('click', e => {
         if (!ddState.open) return;
         const within = e.target.closest('#sentimentAgentDropdown, #sentimentAgentTicker');
+        if (!within) closeDropdown();
+      });
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire);
+  } else {
+    wire();
+  }
+})();
+</script>
+
+<!-- ─── RISK ANOMALY AGENT (Sprint 6) ────────────────────────────────── -->
+<script>
+(function(){
+  const GREEN  = '#00c97d';
+  const RED    = '#ff3a3a';
+  const AMBER  = '#EF9F27';
+  const ORANGE = '#e67e22';
+  const BLUE   = '#3498db';
+  const PURPLE = '#9b59b6';
+  const GREY   = '#888';
+
+  const escapeHtml = s => String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  const fmtPctAbs   = (n, dp = 1) => (n == null || !isFinite(n)) ? 'N/A' : `${(n * 100).toFixed(dp)}%`;
+  const fmtSigPct   = (n, dp = 1) => {
+    if (n == null || !isFinite(n)) return 'N/A';
+    const s = n >= 0 ? '+' : '';
+    return `${s}${(n * 100).toFixed(dp)}%`;
+  };
+  const fmtNum = (n, dp = 2) => (n == null || !isFinite(n)) ? 'N/A' : n.toFixed(dp);
+
+  const COUNTRY_FLAG_ISO = {
+    US:'🇺🇸', AR:'🇦🇷', BR:'🇧🇷', MX:'🇲🇽', CL:'🇨🇱', CO:'🇨🇴', PE:'🇵🇪',
+    UY:'🇺🇾', EC:'🇪🇨', KY:'🇰🇾', LU:'🇱🇺', NL:'🇳🇱', GB:'🇬🇧', JP:'🇯🇵',
+    CN:'🇨🇳', KR:'🇰🇷'
+  };
+  const flagFor = code => COUNTRY_FLAG_ISO[(code || '').toUpperCase()] || '';
+
+  // ── Self-contained autocomplete (mirrors other agents) ────────
+  const EXCHANGE_COUNTRY = {
+    '.MX':'México', '.SA':'Brasil', '.SN':'Chile', '.BA':'Argentina'
+  };
+  function regionFor(symbol) {
+    const dot = symbol.lastIndexOf('.');
+    if (dot > 0) {
+      const suffix = symbol.slice(dot);
+      if (EXCHANGE_COUNTRY[suffix]) return { code:'latam', label: EXCHANGE_COUNTRY[suffix], coverage: false };
+    }
+    if (typeof LATAM_ADR_COUNTRY !== 'undefined' && LATAM_ADR_COUNTRY[symbol]) {
+      return { code:'adr', label: LATAM_ADR_COUNTRY[symbol] + ' ADR', coverage: true };
+    }
+    if (symbol.includes('/')) return { code:'crypto', label:'Crypto', coverage: false };
+    return { code:'us', label:'US', coverage: true };
+  }
+  const CATALOG = (function () {
+    const out = [], seen = new Set();
+    const push = sym => {
+      if (!sym || seen.has(sym)) return;
+      seen.add(sym);
+      const region = regionFor(sym);
+      if (region.code === 'crypto') return;
+      out.push({ symbol: sym, region, finnhub: region.coverage });
+    };
+    try {
+      if (typeof SCREENER_UNIVERSE !== 'undefined') {
+        (SCREENER_UNIVERSE.us || []).forEach(push);
+        (SCREENER_UNIVERSE.latam || []).forEach(push);
+      }
+    } catch (_) {}
+    return out;
+  })();
+  function searchTickers(q) {
+    q = String(q || '').trim().toUpperCase();
+    if (!q) return [];
+    const prefix = [], contains = [];
+    for (const row of CATALOG) {
+      if (row.symbol.startsWith(q)) prefix.push(row);
+      else if (row.symbol.includes(q)) contains.push(row);
+      if (prefix.length >= 8) break;
+    }
+    return prefix.concat(contains).slice(0, 8);
+  }
+
+  function setStatus(html) {
+    const out = document.getElementById('riskAgentOutput');
+    if (out) out.innerHTML = html;
+  }
+  function renderLoading(stage) {
+    const stages = [
+      'Fetching price history (252d)...',
+      'Calculating volatility regime...',
+      'Computing beta drift...',
+      'Detecting correlation breakdowns...',
+      'Generating risk insight...'
+    ];
+    setStatus(
+      `<div style="padding:14px;background:#080808;border:1px solid #1a1a1a;border-radius:3px;">
+        <div style="font-family:var(--mono);font-size:10px;color:${GREEN};letter-spacing:.1em;margin-bottom:10px;">// RISK AGENT WORKING</div>
+        ${stages.map((label, i) => {
+          const active = i === stage;
+          const done = i < stage;
+          const color = active ? GREEN : done ? '#666' : '#333';
+          const mark = done ? '✓' : active ? '▶' : '·';
+          return `<div style="font-family:var(--mono);font-size:11px;color:${color};margin:4px 0;">${mark} ${escapeHtml(label)}</div>`;
+        }).join('')}
+      </div>`
+    );
+  }
+  function renderError(msg) {
+    setStatus(
+      `<div style="padding:14px;background:rgba(255,58,58,.05);border:1px solid rgba(255,58,58,.3);border-radius:3px;font-family:var(--mono);font-size:11px;color:${RED};">
+        ✕ ${escapeHtml(msg)}
+      </div>`
+    );
+  }
+
+  function readable(s) { return String(s || '').replace(/_/g, ' '); }
+
+  // ── Regime chip in the header ─────────────────────────────────
+  function regimeChip(overview) {
+    if (!overview) return '';
+    const regime = overview.regime || 'LOW_RISK_REGIME';
+    const score  = overview.anomaly_score != null ? overview.anomaly_score : '—';
+    const max    = overview.max_anomaly_score || 13;
+    let col, emoji;
+    if (regime === 'EXTREME_RISK_REGIME')      { col = RED;    emoji = '🚨'; }
+    else if (regime === 'ELEVATED_RISK_REGIME'){ col = ORANGE; emoji = '⚠️'; }
+    else if (regime === 'MODERATE_RISK_REGIME'){ col = AMBER;  emoji = '⚠'; }
+    else                                       { col = GREEN;  emoji = '✓'; }
+    return `<span style="display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;letter-spacing:.12em;font-weight:700;color:${col};background:${col}1a;border:1px solid ${col}55;padding:6px 12px;border-radius:3px;">${emoji} ${escapeHtml(readable(regime))} · ${score}/${max}</span>`;
+  }
+
+  function microCard(label, valueHtml, sub, valueColor, leftBarColor) {
+    const lb = leftBarColor ? `border-left:3px solid ${leftBarColor};` : '';
+    return `<div style="background:#0a0a0a;border:1px solid #1a1a1a;${lb}border-radius:3px;padding:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:6px;">${escapeHtml(label)}</div>
+      <div style="font-family:var(--mono);font-size:14px;color:${valueColor || '#ddd'};font-weight:700;margin-bottom:4px;">${valueHtml}</div>
+      <div style="font-family:var(--mono);font-size:10px;color:#666;line-height:1.4;">${sub}</div>
+    </div>`;
+  }
+
+  // Color helpers per category
+  function volColor(regime) {
+    if (regime === 'ELEVATED' || regime === 'DEEPLY_COMPRESSED') return RED;
+    if (regime === 'MILDLY_ELEVATED' || regime === 'COMPRESSED') return AMBER;
+    if (regime === 'NORMAL') return GREEN;
+    return GREY;
+  }
+  function driftColor(cat) {
+    if (cat === 'SIGNIFICANT_DRIFT') return RED;
+    if (cat === 'MODERATE_DRIFT')    return AMBER;
+    if (cat === 'STABLE_BETA')       return GREEN;
+    return GREY;
+  }
+  function corrColor(status) {
+    if (status === 'BREAKDOWN')      return RED;
+    if (status === 'MILD_BREAKDOWN') return AMBER;
+    if (status === 'INTACT')         return GREEN;
+    return GREY;
+  }
+  function ddColor(cat) {
+    if (cat === 'BEAR_MARKET')   return RED;
+    if (cat === 'CORRECTION')    return ORANGE;
+    if (cat === 'MILD_PULLBACK') return AMBER;
+    if (cat === 'NEAR_HIGHS')    return GREEN;
+    return GREY;
+  }
+  function shortColor(cat) {
+    if (cat === 'EXTREMELY_HIGH') return RED;
+    if (cat === 'HIGH')           return ORANGE;
+    if (cat === 'MODERATE')       return AMBER;
+    if (cat === 'LOW')            return GREEN;
+    return GREY;
+  }
+
+  // ── 4-card overview ──────────────────────────────────────────
+  function renderOverview(p) {
+    const v = p.volatility || {};
+    const b = p.beta_analysis || {};
+    const c = p.correlation || {};
+    const d = p.drawdown_analysis || {};
+
+    const volCol = volColor(v.regime);
+    const volSub = (v.realized_30d != null && v.realized_252d != null)
+      ? `30d ${fmtPctAbs(v.realized_30d)} · 252d ${fmtPctAbs(v.realized_252d)} · ${v.expansion_ratio != null ? (v.expansion_ratio >= 1 ? '+' : '') + ((v.expansion_ratio - 1) * 100).toFixed(0) + '%' : 'N/A'}`
+      : 'Insufficient history';
+
+    const driftArrow = b.direction === 'INCREASING' ? '↑' : b.direction === 'DECREASING' ? '↓' : '→';
+    const dCol = driftColor(b.drift_category);
+    const dSub = (b.beta_30d != null && b.beta_252d != null)
+      ? `β 30d ${fmtNum(b.beta_30d)} · 252d ${fmtNum(b.beta_252d)} <span style="color:${dCol};">${driftArrow}</span>`
+      : 'Insufficient data';
+
+    const cCol = corrColor(c.breakdown_status);
+    const cSub = `Sector 30d ${c.ticker_vs_sector_30d != null ? fmtNum(c.ticker_vs_sector_30d) : 'N/A'} · 252d ${c.ticker_vs_sector_252d != null ? fmtNum(c.ticker_vs_sector_252d) : 'N/A'}${c.ticker_vs_spy_30d != null ? ` · SPY 30d ${fmtNum(c.ticker_vs_spy_30d)}` : ''}`;
+
+    const ddCol = ddColor(d.category);
+    const ddSub = `From 52w high: <span style="color:${ddCol};font-weight:600;">${fmtSigPct(d.current_drawdown_from_52w_high, 1)}</span> · Max 252d ${fmtSigPct(d.max_drawdown_252d, 1)}`;
+
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${BLUE};letter-spacing:.15em;margin-bottom:8px;">// 📊 RISK OVERVIEW</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;">
+        ${microCard('Volatility Regime', `<span style="color:${volCol};">${escapeHtml(readable(v.regime || 'N/A'))}</span>`, volSub, volCol, volCol)}
+        ${microCard('Beta Drift',        `<span style="color:${dCol};">${escapeHtml(readable(b.drift_category || 'N/A'))}</span>`, dSub, dCol, dCol)}
+        ${microCard('Correlation',       `<span style="color:${cCol};">${escapeHtml(readable(c.breakdown_status || 'N/A'))}</span>`, cSub, cCol, cCol)}
+        ${microCard('Drawdown',          `<span style="color:${ddCol};">${escapeHtml(readable(d.category || 'N/A'))}</span>`, ddSub, ddCol, ddCol)}
+      </div>
+    </div>`;
+  }
+
+  // ── Volatility timeline (4 bars: 7d/30d/90d/252d) ────────────
+  function renderVolTimeline(v) {
+    if (!v) return '';
+    const entries = [
+      ['7d',   v.realized_7d],
+      ['30d',  v.realized_30d],
+      ['90d',  v.realized_90d],
+      ['252d', v.realized_252d]
+    ];
+    const valid = entries.filter(e => typeof e[1] === 'number' && isFinite(e[1]));
+    if (valid.length === 0) return '';
+    const max = Math.max(...valid.map(e => e[1]));
+    const baseline = v.realized_252d;
+    const bars = entries.map(([label, val]) => {
+      if (val == null) {
+        return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;">
+          <div style="width:80%;height:8px;background:#1a1a1a;border-radius:1px;"></div>
+          <div style="font-family:var(--mono);font-size:9px;color:#444;">N/A</div>
+          <div style="font-family:var(--mono);font-size:9px;color:#666;">${label}</div>
+        </div>`;
+      }
+      const h = Math.max(8, Math.round((val / max) * 80));
+      // Color by deviation vs 252d baseline
+      let col = GREY;
+      if (baseline != null && baseline > 0) {
+        const ratio = val / baseline;
+        if (ratio > 1.5)      col = RED;
+        else if (ratio > 1.2) col = ORANGE;
+        else if (ratio < 0.6) col = ORANGE;   // deeply compressed flagged too
+        else if (ratio < 0.8) col = AMBER;
+        else                  col = GREEN;
+      }
+      return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;">
+        <div style="width:80%;height:${h}px;background:${col}55;border:1px solid ${col};border-radius:1px;"></div>
+        <div style="font-family:var(--mono);font-size:9px;color:${col};font-weight:600;">${fmtPctAbs(val, 1)}</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#666;">${label}</div>
+      </div>`;
+    }).join('');
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${PURPLE};letter-spacing:.15em;margin-bottom:8px;">// 📈 VOLATILITY TIMELINE (annualized realized σ)</div>
+      <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;padding:14px;">
+        <div style="display:flex;align-items:flex-end;gap:6px;height:100px;">${bars}</div>
+        ${v.interpretation ? `<div style="font-family:var(--mono);font-size:10px;color:#888;margin-top:8px;line-height:1.5;">${escapeHtml(v.interpretation)}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  // ── Correlation analysis: 3 horizon bars + status ────────────
+  function renderCorrelation(c, sectorEtf) {
+    if (!c) return '';
+    const valid = [c.ticker_vs_sector_30d, c.ticker_vs_sector_90d, c.ticker_vs_sector_252d].filter(v => v != null);
+    if (valid.length === 0) return '';
+    const col = corrColor(c.breakdown_status);
+    const horizons = [
+      ['30d',  c.ticker_vs_sector_30d],
+      ['90d',  c.ticker_vs_sector_90d],
+      ['252d', c.ticker_vs_sector_252d]
+    ];
+    const rows = horizons.map(([label, v]) => {
+      if (v == null) {
+        return `<div style="display:grid;grid-template-columns:60px 1fr 60px;gap:8px;align-items:center;font-family:var(--mono);font-size:10px;color:#666;padding:4px 0;">
+          <span>${label}</span>
+          <div style="height:8px;background:#1a1a1a;border-radius:2px;"></div>
+          <span style="text-align:right;color:#444;">N/A</span>
+        </div>`;
+      }
+      // Map -1..1 → 0..100
+      const pct = Math.max(0, Math.min(100, ((v + 1) / 2) * 100));
+      const barCol = v > 0.5 ? GREEN : v > 0 ? AMBER : RED;
+      return `<div style="display:grid;grid-template-columns:60px 1fr 60px;gap:8px;align-items:center;font-family:var(--mono);font-size:10px;color:#888;padding:4px 0;">
+        <span>${label}</span>
+        <div style="position:relative;height:8px;background:#1a1a1a;border-radius:2px;">
+          <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:#333;"></div>
+          <div style="position:absolute;left:${v >= 0 ? '50%' : `${pct}%`};top:0;bottom:0;width:${Math.abs(pct - 50)}%;background:${barCol}77;border-radius:2px;"></div>
+        </div>
+        <span style="text-align:right;color:${barCol};font-weight:600;">${fmtNum(v)}</span>
+      </div>`;
+    }).join('');
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${BLUE};letter-spacing:.15em;margin-bottom:8px;">// 🎯 SECTOR CORRELATION (vs ${escapeHtml(sectorEtf || 'SPY')})</div>
+      <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid ${col};border-radius:3px;padding:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <span style="font-family:var(--mono);font-size:11px;color:${col};font-weight:700;letter-spacing:.1em;">${escapeHtml(readable(c.breakdown_status || 'UNKNOWN'))}</span>
+          ${c.ticker_vs_spy_30d != null ? `<span style="font-family:var(--mono);font-size:10px;color:#666;">vs SPY 30d ${fmtNum(c.ticker_vs_spy_30d)} · 252d ${c.ticker_vs_spy_252d != null ? fmtNum(c.ticker_vs_spy_252d) : 'N/A'}</span>` : ''}
+        </div>
+        ${rows}
+        ${c.interpretation ? `<div style="font-family:var(--mono);font-size:10px;color:#888;margin-top:8px;line-height:1.5;">${escapeHtml(c.interpretation)}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  function renderShortInterest(si) {
+    if (!si || !si.available) {
+      return `<div style="margin-bottom:12px;padding:10px 12px;background:rgba(255,255,255,.02);border:1px solid #1a1a1a;border-radius:3px;font-family:var(--mono);font-size:11px;color:#666;">
+        💀 SHORT INTEREST · Data unavailable for this ticker (free-tier coverage limited).
+      </div>`;
+    }
+    const col = shortColor(si.category);
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${col};letter-spacing:.15em;margin-bottom:8px;">// 💀 SHORT INTEREST</div>
+      <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid ${col};border-radius:3px;padding:12px;display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:center;">
+        <div>
+          <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:4px;">% OF FLOAT</div>
+          <div style="font-family:var(--mono);font-size:20px;color:${col};font-weight:700;">${si.pct_of_float != null ? si.pct_of_float.toFixed(2) + '%' : 'N/A'}</div>
+          <div style="font-family:var(--mono);font-size:9px;color:${col};letter-spacing:.1em;margin-top:4px;">${escapeHtml(si.category)}</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;font-family:var(--mono);font-size:11px;">
+          <div>
+            <div style="color:#666;font-size:9px;letter-spacing:.1em;margin-bottom:2px;">DAYS TO COVER</div>
+            <div style="color:#ddd;">${si.days_to_cover != null ? si.days_to_cover.toFixed(1) : 'N/A'}</div>
+          </div>
+          <div>
+            <div style="color:#666;font-size:9px;letter-spacing:.1em;margin-bottom:2px;">30D CHANGE</div>
+            <div style="color:#ddd;">${escapeHtml(si.change_30d || 'N/A')}</div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function renderPositioning(items) {
+    if (!Array.isArray(items) || items.length === 0) return '';
+    return `<div style="margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:8px;">// 🎯 POSITIONING CONSIDERATIONS</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;">
+        ${items.map(it => `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid ${GREEN};border-radius:3px;padding:10px 12px;font-family:var(--mono);font-size:11px;color:#ddd;line-height:1.5;">${escapeHtml(it || '')}</div>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  function renderResults(payload) {
+    const t  = escapeHtml(payload.ticker);
+    const co = escapeHtml(payload.company_name || payload.ticker);
+    const sector = payload.sector ? escapeHtml(payload.sector) : '';
+    const etfChip = payload.sector_etf
+      ? `<span style="font-family:var(--mono);font-size:9px;color:#888;background:#0f0f0f;border:1px solid #1a1a1a;padding:2px 6px;border-radius:2px;">vs ${escapeHtml(payload.sector_etf)}${payload.sector_etf_fallback ? ' (fallback)' : ''}</span>`
+      : '';
+    let country = '';
+    if (payload.country_name) {
+      const opFlag = flagFor(payload.country);
+      if (payload.country_override_applied) {
+        const legalFlag = flagFor(payload.country_legal);
+        country = `${opFlag} ${escapeHtml(payload.country_name)} · <span style="color:#555;">Legal: ${legalFlag} ${escapeHtml(payload.country_legal || '')}</span>`;
+      } else {
+        country = `${opFlag} ${escapeHtml(payload.country_name)} (${escapeHtml(payload.country)})`;
+      }
+    }
+
+    const header = `
+      <div style="display:flex;align-items:flex-start;gap:12px;padding:14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${GREEN};border-radius:3px;margin-bottom:12px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:220px;">
+          <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:4px;">// RISK ANALYSIS COMPLETE</div>
+          <div style="font-family:var(--mono);font-size:14px;color:#ddd;font-weight:700;letter-spacing:.05em;">${t} · ${co}</div>
+          <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            ${sector ? `<span>Sector ${sector}</span>` : ''}
+            ${etfChip}
+            ${country ? `<span>· ${country}</span>` : ''}
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
+          ${regimeChip(payload.risk_overview)}
+          ${payload.risk_overview && payload.risk_overview.primary_concern ? `<span style="font-family:var(--mono);font-size:9px;color:#666;text-align:right;max-width:280px;">${escapeHtml(readable(payload.risk_overview.primary_concern))}</span>` : ''}
+        </div>
+      </div>`;
+
+    const dq = payload.data_quality || {};
+    const dataWarn = (dq.insufficient_history || dq.low_volume_flag) ? `
+      <div style="margin-bottom:12px;padding:10px 12px;background:rgba(239,159,39,.05);border:1px solid rgba(239,159,39,.3);border-radius:3px;font-family:var(--mono);font-size:11px;color:#bbb;">
+        ⓘ ${dq.insufficient_history ? `Limited price history (${dq.trading_days} trading days) — short-window metrics may be noisy.` : ''}
+        ${dq.low_volume_flag ? ` Average daily volume ${dq.avg_volume ? dq.avg_volume.toLocaleString() : ''} is low; vol estimates may be unreliable.` : ''}
+      </div>` : '';
+
+    const summary = payload.risk_summary ? `
+      <div style="padding:12px 14px;background:rgba(0,201,125,.04);border:1px solid rgba(0,201,125,.2);border-radius:3px;margin-bottom:12px;">
+        <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:6px;">// RISK SUMMARY</div>
+        <div style="font-family:var(--mono);font-size:12px;color:#ddd;line-height:1.6;">${escapeHtml(payload.risk_summary)}</div>
+      </div>` : '';
+
+    const overview = renderOverview(payload);
+    const volTimeline = renderVolTimeline(payload.volatility);
+    const corrBlock = renderCorrelation(payload.correlation, payload.sector_etf);
+    const shortBlock = renderShortInterest(payload.short_interest);
+
+    const dominant = payload.dominant_risk_factor ? `
+      <div style="padding:12px 14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${ORANGE};border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:12px;color:#ddd;line-height:1.6;">
+        <span style="color:${ORANGE};font-size:9px;letter-spacing:.15em;">🎯 DOMINANT RISK FACTOR · </span>${escapeHtml(payload.dominant_risk_factor)}
+      </div>` : '';
+    const asym = payload.asymmetric_risks ? `
+      <div style="padding:12px 14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${PURPLE};border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:12px;color:#ddd;line-height:1.6;">
+        <span style="color:${PURPLE};font-size:9px;letter-spacing:.15em;">⚡ ASYMMETRIC RISKS · </span>${escapeHtml(payload.asymmetric_risks)}
+      </div>` : '';
+
+    const positioning = renderPositioning(payload.positioning_considerations);
+
+    const insight = payload.institutional_insight ? `
+      <div style="padding:14px;background:linear-gradient(180deg, rgba(239,159,39,.10), rgba(239,159,39,.02));border:1px solid rgba(239,159,39,.45);border-radius:3px;margin-bottom:6px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span style="font-size:14px;">💡</span>
+          <span style="font-family:var(--mono);font-size:9px;color:${AMBER};letter-spacing:.15em;font-weight:600;">// INSTITUTIONAL INSIGHT</span>
+        </div>
+        <div style="font-family:var(--mono);font-size:12px;color:#e8e8e8;line-height:1.7;font-style:italic;">${escapeHtml(payload.institutional_insight)}</div>
+      </div>` : '';
+
+    const footer = `<div style="margin-top:10px;font-family:var(--mono);font-size:9px;color:#444;text-align:right;letter-spacing:.05em;">
+      Source: ${escapeHtml(payload.source || 'Yahoo Finance + Finnhub + Claude')}${payload.data_quality ? ` · ${payload.data_quality.trading_days} trading days analyzed` : ''}
+    </div>`;
+
+    setStatus(header + dataWarn + summary + overview + volTimeline + corrBlock + shortBlock + dominant + asym + positioning + insight + footer);
+  }
+
+  // ── Autocomplete dropdown ─────────────────────────────────────
+  const ddState = { items: [], cursor: -1, open: false };
+  function regionBadge(region, finnhubOk) {
+    const col = finnhubOk ? GREEN : AMBER;
+    const bg  = finnhubOk ? 'rgba(0,201,125,.12)' : 'rgba(239,159,39,.12)';
+    const mark = finnhubOk ? '✓ risk' : '✗ limited';
+    return `<span style="display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:8px;color:${col};letter-spacing:.08em;padding:2px 6px;background:${bg};border:1px solid ${col}40;border-radius:2px;">
+      <span style="width:5px;height:5px;border-radius:50%;background:${col};"></span>${mark}
+    </span>
+    <span style="font-family:var(--mono);font-size:9px;color:#666;">${escapeHtml(region.label)}</span>`;
+  }
+  function renderDropdown() {
+    const dd = document.getElementById('riskAgentDropdown');
+    const input = document.getElementById('riskAgentTicker');
+    if (!dd || !input) return;
+    if (!ddState.open || ddState.items.length === 0) {
+      dd.style.display = 'none'; dd.innerHTML = '';
+      input.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    dd.style.display = 'block';
+    input.setAttribute('aria-expanded', 'true');
+    dd.innerHTML = ddState.items.map((it, i) => {
+      const selected = i === ddState.cursor;
+      const bg = selected ? 'rgba(0,201,125,.08)' : 'transparent';
+      const border = selected ? '#1f3a2a' : '#0f0f0f';
+      return `<div role="option" data-i="${i}"
+        style="display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid ${border};">
+        <span style="font-family:var(--mono);font-size:12px;color:#ddd;font-weight:700;letter-spacing:.05em;min-width:90px;">${escapeHtml(it.symbol)}</span>
+        <span style="flex:1;"></span>
+        ${regionBadge(it.region, it.finnhub)}
+      </div>`;
+    }).join('');
+  }
+  function openDropdown(q) {
+    ddState.items = searchTickers(q);
+    ddState.cursor = ddState.items.length ? 0 : -1;
+    ddState.open = ddState.items.length > 0;
+    renderDropdown();
+  }
+  function closeDropdown() { ddState.open = false; ddState.cursor = -1; renderDropdown(); }
+  function moveDropdown(d) {
+    if (!ddState.open || !ddState.items.length) return;
+    const n = ddState.items.length;
+    ddState.cursor = (ddState.cursor + d + n) % n;
+    renderDropdown();
+    const dd = document.getElementById('riskAgentDropdown');
+    if (dd) {
+      const sel = dd.querySelector(`[data-i="${ddState.cursor}"]`);
+      if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
+    }
+  }
+  function selectDropdown(i) {
+    if (i == null) i = ddState.cursor;
+    if (i < 0 || i >= ddState.items.length) return false;
+    const pick = ddState.items[i];
+    const input = document.getElementById('riskAgentTicker');
+    if (input) input.value = pick.symbol;
+    closeDropdown();
+    runRiskAgent();
+    return true;
+  }
+
+  async function runRiskAgent() {
+    const input = document.getElementById('riskAgentTicker');
+    const btn = document.getElementById('riskAgentBtn');
+    if (!input || !btn) return;
+    const ticker = (input.value || '').trim().toUpperCase();
+    if (!ticker) { renderError('Enter a ticker first (e.g., NVDA, MELI, VALE).'); input.focus(); return; }
+    input.value = ticker;
+    closeDropdown();
+
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    btn.style.cursor = 'wait';
+    const origLabel = btn.textContent;
+    btn.textContent = '⏳ WORKING...';
+
+    renderLoading(0);
+    const t1 = setTimeout(() => renderLoading(1), 1200);
+    const t2 = setTimeout(() => renderLoading(2), 3500);
+    const t3 = setTimeout(() => renderLoading(3), 6500);
+    const t4 = setTimeout(() => renderLoading(4), 9500);
+
+    try {
+      const r = await fetch('/api/risk-agent?ticker=' + encodeURIComponent(ticker));
+      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4);
+      const data = await r.json();
+      if (data.error) { renderError(data.error); return; }
+      renderResults(data);
+    } catch (err) {
+      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4);
+      renderError('Network error: ' + (err && err.message ? err.message : 'unknown'));
+    } finally {
+      btn.disabled = false;
+      btn.style.opacity = '';
+      btn.style.cursor = 'pointer';
+      btn.textContent = origLabel;
+    }
+  }
+
+  function wire() {
+    const btn = document.getElementById('riskAgentBtn');
+    const input = document.getElementById('riskAgentTicker');
+    const dd = document.getElementById('riskAgentDropdown');
+    if (btn && !btn._wired) { btn._wired = true; btn.addEventListener('click', runRiskAgent); }
+    if (input && !input._wired) {
+      input._wired = true;
+      input.addEventListener('input', () => openDropdown(input.value));
+      input.addEventListener('focus', () => { if (input.value) openDropdown(input.value); });
+      input.addEventListener('keydown', e => {
+        if (ddState.open) {
+          if (e.key === 'ArrowDown') { e.preventDefault(); moveDropdown(1); return; }
+          if (e.key === 'ArrowUp')   { e.preventDefault(); moveDropdown(-1); return; }
+          if (e.key === 'Escape')    { e.preventDefault(); closeDropdown(); return; }
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (ddState.cursor >= 0 && selectDropdown()) return;
+            runRiskAgent();
+            return;
+          }
+        } else if (e.key === 'Enter') { e.preventDefault(); runRiskAgent(); }
+      });
+    }
+    if (dd && !dd._wired) {
+      dd._wired = true;
+      dd.addEventListener('mousedown', e => {
+        const row = e.target.closest('[data-i]');
+        if (!row) return;
+        e.preventDefault();
+        selectDropdown(parseInt(row.dataset.i, 10));
+      });
+      dd.addEventListener('mouseover', e => {
+        const row = e.target.closest('[data-i]');
+        if (!row) return;
+        const i = parseInt(row.dataset.i, 10);
+        if (i !== ddState.cursor) { ddState.cursor = i; renderDropdown(); }
+      });
+    }
+    if (!document._riskOutsideWired) {
+      document._riskOutsideWired = true;
+      document.addEventListener('click', e => {
+        if (!ddState.open) return;
+        const within = e.target.closest('#riskAgentDropdown, #riskAgentTicker');
         if (!within) closeDropdown();
       });
     }
