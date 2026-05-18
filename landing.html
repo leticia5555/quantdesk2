@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>QUANTDESK — Bloomberg-grade research. In 60 seconds.</title>
+<title>QUANTDESK — Six AI research agents. In 60 seconds.</title>
 <meta name="description" content="Six AI research agents analyze any stock in 60 seconds. SEC filings, fundamentals, macro, events, sentiment, risk. US + LATAM ADRs. Spanish output."/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
@@ -327,6 +327,101 @@ h1 .dim{color:var(--text3);}
 .social-handle{font-family:var(--mono);font-size:12px;color:var(--text2);}
 .social-detail{font-family:var(--sans);font-size:12px;color:var(--text3);line-height:1.5;margin-top:auto;}
 
+/* STATS — click-to-replay affordance */
+.stat-block{cursor:pointer;transition:background .2s ease;}
+.stat-block:hover{background:#0a0a0a;}
+.count.color-red-green{animation:colorRedToGreen 1.5s forwards;}
+@keyframes colorRedToGreen{
+  0%{color:var(--red);}
+  60%{color:var(--amber);}
+  100%{color:var(--text);}
+}
+
+/* EXPLAINER CARD HOVER-EXPAND */
+.explainer{position:relative;outline:none;}
+.explainer-expand{
+  max-height:0;overflow:hidden;opacity:0;margin-top:0;
+  transition:max-height .35s ease, opacity .25s ease, margin-top .35s ease;
+}
+.explainer:hover .explainer-expand,
+.explainer:focus-within .explainer-expand{
+  max-height:160px;opacity:1;margin-top:10px;
+}
+.explainer-expand-label{
+  font-family:var(--mono);font-size:9px;color:var(--green);
+  letter-spacing:.16em;text-transform:uppercase;margin-bottom:6px;
+}
+.explainer-expand-body{
+  font-family:var(--mono);font-size:11px;color:var(--text);line-height:1.55;
+  padding:10px 12px;background:rgba(var(--green-rgb),.05);
+  border:1px solid rgba(var(--green-rgb),.18);border-radius:2px;
+}
+/* On touch / no-hover devices, surface the example output by default. */
+@media(hover:none){
+  .explainer-expand{max-height:160px;opacity:1;margin-top:10px;}
+}
+
+/* COST-SAVINGS SLIDER */
+.pay-slider-block{
+  max-width:760px;margin:0 auto 36px;
+  padding:22px 26px;border:1px solid var(--border2);
+  border-radius:4px;background:var(--bg1);
+}
+.pay-slider-q{
+  font-family:var(--mono);font-size:12px;color:var(--text2);
+  letter-spacing:.04em;margin-bottom:14px;
+}
+#paySlider{
+  width:100%;-webkit-appearance:none;appearance:none;
+  height:4px;background:var(--border2);border-radius:2px;outline:none;
+  margin:6px 0 8px;cursor:pointer;
+}
+#paySlider::-webkit-slider-thumb{
+  -webkit-appearance:none;appearance:none;
+  width:18px;height:18px;border-radius:50%;
+  background:var(--green);border:2px solid var(--bg);
+  box-shadow:0 0 0 2px var(--green), 0 0 14px rgba(var(--green-rgb),.45);
+  cursor:grab;transition:transform .15s ease;
+}
+#paySlider::-webkit-slider-thumb:active{cursor:grabbing;transform:scale(1.12);}
+#paySlider::-moz-range-thumb{
+  width:18px;height:18px;border-radius:50%;
+  background:var(--green);border:2px solid var(--bg);
+  box-shadow:0 0 0 2px var(--green);cursor:grab;
+}
+.pay-slider-meta{
+  display:flex;justify-content:space-between;align-items:baseline;
+  font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.08em;
+}
+.pay-slider-current{
+  color:var(--green);font-weight:700;font-size:13px;letter-spacing:0;
+}
+.pay-slider-unit{color:var(--text3);font-weight:400;font-size:10px;margin-left:2px;}
+.pay-slider-calc{
+  font-family:var(--mono);font-size:13px;color:var(--text2);
+  line-height:1.5;margin-top:14px;
+}
+.pay-slider-calc .accent{color:var(--green);font-weight:700;}
+.pay-slider-calc .dim{color:var(--text3);}
+.pay-slider-eq{
+  font-family:var(--mono);font-size:11px;color:var(--text3);
+  line-height:1.5;margin-top:4px;font-style:italic;
+}
+
+/* MICRO-CTAs after sections */
+.micro-cta-wrap{text-align:center;margin:36px auto 0;}
+.micro-cta{
+  display:inline-flex;align-items:center;gap:8px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.1em;
+  padding:10px 22px;border:1px solid var(--border2);
+  color:var(--text2);background:transparent;border-radius:2px;
+  text-decoration:none;transition:all .2s ease;cursor:pointer;
+}
+.micro-cta:hover{
+  border-color:var(--green);color:var(--green);
+  background:rgba(var(--green-rgb),.06);transform:translateY(-1px);
+}
+
 /* BOTTOM CTA */
 .cta-section{
   padding:120px 48px;text-align:center;position:relative;overflow:hidden;
@@ -434,7 +529,7 @@ footer{
     </div>
 
     <!-- INTERACTIVE ANALYZER -->
-    <div class="analyzer fade-up" style="animation-delay:.6s">
+    <div class="analyzer fade-up" id="analyzer" style="animation-delay:.6s">
       <div class="analyzer-head">
         <span class="analyzer-title"><span class="accent">QUANTDESK</span> · LIVE ANALYZER</span>
         <div class="analyzer-live"><span class="dot"></span>LIVE</div>
@@ -470,79 +565,119 @@ footer{
   <div class="section-eyebrow">// Agents</div>
   <h2 class="section-title">Six specialists. One ticker.<br><span class="dim">Sixty seconds.</span></h2>
   <div class="explainer-grid">
-    <div class="explainer">
+    <div class="explainer" tabindex="0">
       <div class="explainer-icon">📊</div>
       <div class="explainer-name">FILINGS <span class="accent">Agent</span></div>
       <div class="explainer-desc">Reads SEC 10-K / 20-F end to end. Pulls risk factors, segment revenue, red flags — with page-level citations.</div>
       <div class="explainer-eg">e.g. MELI <span class="v">$30.9B FX exposure flagged</span> · Item 1A, p.42</div>
+      <div class="explainer-expand">
+        <div class="explainer-expand-label">// Example output</div>
+        <div class="explainer-expand-body">MELI 20-F · Brazil 55% rev concentration · Argentina capital controls · $30.9B FX exposure flagged on page 125</div>
+      </div>
     </div>
-    <div class="explainer">
+    <div class="explainer" tabindex="0">
       <div class="explainer-icon">💰</div>
       <div class="explainer-name">FUNDAMENTAL <span class="accent">Agent</span></div>
       <div class="explainer-desc">Custom DCF with sensitivity, peer multiples, margin-of-safety band. Built ground-up, not scraped.</div>
       <div class="explainer-eg">e.g. MELI fair value <span class="v">$1,703 (+7.9%)</span> · DISCOUNT band</div>
+      <div class="explainer-expand">
+        <div class="explainer-expand-label">// Example output</div>
+        <div class="explainer-expand-body">MELI DCF · Bear $1,420 / Base $1,703 / Bull $1,950 · WACC 11.2% · Terminal 3.5% growth</div>
+      </div>
     </div>
-    <div class="explainer">
+    <div class="explainer" tabindex="0">
       <div class="explainer-icon">🌍</div>
       <div class="explainer-name">MACRO <span class="accent">Agent</span></div>
       <div class="explainer-desc">FRED + Banxico + Yahoo. LATAM ADR operational-country override, not legal domicile. FX layered on revenue mix.</div>
       <div class="explainer-eg">e.g. MELI Brazil 55% rev · <span class="v">BRL +13% APPRECIATING</span></div>
+      <div class="explainer-expand">
+        <div class="explainer-expand-label">// Example output</div>
+        <div class="explainer-expand-body">MELI macro · Brazil 55% rev · BRL +13% YTD · Selic 11.75% · Mexico exposure 12%</div>
+      </div>
     </div>
-    <div class="explainer">
+    <div class="explainer" tabindex="0">
       <div class="explainer-icon">📅</div>
       <div class="explainer-name">EVENT <span class="accent">Agent</span></div>
       <div class="explainer-desc">Earnings, dividends, splits, M&A signals, insider transactions. Identifies the next major catalyst.</div>
       <div class="explainer-eg">e.g. MELI Q2 earnings <span class="v">84d</span> · Mercado Pago divestiture</div>
+      <div class="explainer-expand">
+        <div class="explainer-expand-label">// Example output</div>
+        <div class="explainer-expand-body">MELI events · Q2 earnings 84d · Mercado Pago divestiture signal · Insider: 3 buys last quarter</div>
+      </div>
     </div>
-    <div class="explainer">
+    <div class="explainer" tabindex="0">
       <div class="explainer-icon">📈</div>
       <div class="explainer-name">SENTIMENT <span class="accent">Agent</span></div>
       <div class="explainer-desc">News + Reddit weighted. Velocity, anomaly detection, dominant-narrative read.</div>
       <div class="explainer-eg">e.g. MELI Burry buying · <span class="v">Velocity inflection</span></div>
+      <div class="explainer-expand">
+        <div class="explainer-expand-label">// Example output</div>
+        <div class="explainer-expand-body">MELI sentiment · 51 headlines scored · Velocity inflection +0.095 · Burry buying</div>
+      </div>
     </div>
-    <div class="explainer">
+    <div class="explainer" tabindex="0">
       <div class="explainer-icon">⚠️</div>
       <div class="explainer-name">RISK <span class="accent">Agent</span></div>
       <div class="explainer-desc">Volatility regime, beta drift, correlation breakdown, drawdown — composite 13-point anomaly score.</div>
       <div class="explainer-eg">e.g. MELI <span class="v">MODERATE 6/13</span> · Vol expansion 127%</div>
+      <div class="explainer-expand">
+        <div class="explainer-expand-label">// Example output</div>
+        <div class="explainer-expand-body">MELI risk 6/13 · Vol regime expanding · Beta drift 0.9→1.2 · Correlation breakdown SPY 0.72→0.45</div>
+      </div>
     </div>
   </div>
+  <div class="micro-cta-wrap"><a href="#analyzer" class="micro-cta">See your ticker analyzed ↑</a></div>
 </section>
 
-<!-- STATS WITH COUNT-UP -->
+<!-- STATS WITH COUNT-UP (click any stat to replay) -->
 <section class="stats-section reveal" id="stats">
-  <div class="stat-block">
+  <div class="stat-block" title="Click to replay" onclick="replayStat(this)">
     <div class="stat-num"><span class="count" data-target="6" data-duration="1000">0</span></div>
     <div class="stat-desc">Specialized AI research agents in production.</div>
     <div class="stat-desc-es">Agentes especializados en producción.</div>
   </div>
-  <div class="stat-block">
-    <div class="stat-num"><span class="prefix">$</span><span class="count" data-target="24000" data-duration="1500" data-format="comma">0</span></div>
-    <div class="stat-desc">What Bloomberg Terminal costs per year. We charge $29/month.</div>
-    <div class="stat-desc-es">Lo que cuesta Bloomberg por año.</div>
+  <div class="stat-block" title="Click to replay" onclick="replayStat(this)">
+    <div class="stat-num"><span class="prefix">$</span><span class="count" data-target="24000" data-duration="1500" data-format="comma" data-tween="red-green">0</span></div>
+    <div class="stat-desc">What Wall Street pays for the same analysis. You pay $0.</div>
+    <div class="stat-desc-es">Lo que paga Wall Street por el mismo análisis. Tú pagas $0.</div>
   </div>
-  <div class="stat-block">
-    <div class="stat-num"><span class="count" data-target="60" data-duration="1000">0</span><span class="suffix">s</span></div>
+  <div class="stat-block" title="Click to replay" onclick="replayStat(this)">
+    <div class="stat-num"><span class="count" data-target="60" data-duration="1000" data-replay="countdown">0</span><span class="suffix">s</span></div>
     <div class="stat-desc">From ticker to full analysis — six agents in parallel.</div>
     <div class="stat-desc-es">De ticker a análisis completo.</div>
   </div>
-  <div class="stat-block">
+  <div class="stat-block" title="Click to replay" onclick="replayStat(this)">
     <div class="stat-num"><span class="count" data-target="250" data-duration="2000">0</span><span class="suffix">+</span></div>
     <div class="stat-desc">LATAM ADRs covered. MELI, NU, VALE, PBR, BBD — and more.</div>
     <div class="stat-desc-es">ADRs latinoamericanos cubiertos.</div>
   </div>
 </section>
+<div class="micro-cta-wrap"><a href="#analyzer" class="micro-cta">Try the analyzer ↑</a></div>
 
 <!-- SECTION 3 — The math is brutal -->
 <section class="section reveal" id="pricing">
   <div class="section-eyebrow">// Pricing</div>
   <h2 class="section-title">The math is brutal.</h2>
+
+  <!-- COST-SAVINGS SLIDER -->
+  <div class="pay-slider-block">
+    <div class="pay-slider-q">How much do you currently pay for research?</div>
+    <input id="paySlider" type="range" min="0" max="50000" step="500" value="24000" oninput="updateSlider()" aria-label="Annual research spend"/>
+    <div class="pay-slider-meta">
+      <span class="pay-slider-end">$0</span>
+      <span class="pay-slider-current" id="payVal">$24,000<span class="pay-slider-unit">/year</span></span>
+      <span class="pay-slider-end">$50,000</span>
+    </div>
+    <div class="pay-slider-calc" id="saveCalc"></div>
+    <div class="pay-slider-eq" id="saveEq"></div>
+  </div>
+
   <div class="math-wrap">
     <div class="receipt them">
       <div class="receipt-lbl">What you'd pay elsewhere for the same analysis</div>
-      <div class="receipt-row"><span class="name">Bloomberg Terminal</span><span class="price">$24,000<span style="color:var(--text3);font-weight:400;font-size:11px;">/yr</span></span></div>
-      <div class="receipt-row"><span class="name">AlphaSense</span><span class="price">$77,000<span style="color:var(--text3);font-weight:400;font-size:11px;">/client</span></span></div>
-      <div class="receipt-row"><span class="name">Refinitiv Eikon</span><span class="price">$22,000<span style="color:var(--text3);font-weight:400;font-size:11px;">/yr</span></span></div>
+      <div class="receipt-row"><span class="name">Terminal A</span><span class="price">$24,000<span style="color:var(--text3);font-weight:400;font-size:11px;">/yr</span></span></div>
+      <div class="receipt-row"><span class="name">Platform B</span><span class="price">$77,000<span style="color:var(--text3);font-weight:400;font-size:11px;">/client</span></span></div>
+      <div class="receipt-row"><span class="name">Terminal C</span><span class="price">$22,000<span style="color:var(--text3);font-weight:400;font-size:11px;">/yr</span></span></div>
       <div class="receipt-total"><span class="lbl">Annual total</span><span class="total">$123,000</span></div>
     </div>
     <div class="math-vs">vs.</div>
@@ -553,6 +688,7 @@ footer{
       <div class="receipt-total"><span class="lbl">Annual cost at launch</span><span class="total">$348</span></div>
     </div>
   </div>
+  <div class="micro-cta-wrap"><a href="#waitlist" class="micro-cta">Start free, no card needed →</a></div>
 </section>
 
 <!-- SECTION 4 — Built solo. In public. For LATAM. -->
@@ -908,22 +1044,88 @@ function wireInput(){
   });
 }
 
-// ── COUNT-UP STATS (IntersectionObserver) ──
+// ── COUNT-UP STATS (IntersectionObserver + click-to-replay) ──
 function easeOutCubic(t){return 1-Math.pow(1-t,3);}
+
+function _formatCount(v, fmt){
+  return fmt==='comma' ? v.toLocaleString() : String(v);
+}
+
+// One-shot count-up from `from` to `to`. Returns a Promise that resolves
+// when the animation completes (used to chain the countdown bounce).
+function _tween(el, from, to, dur, fmt){
+  return new Promise(resolve=>{
+    const t0=performance.now();
+    function tick(now){
+      const p=Math.min(1,(now-t0)/dur);
+      const v=Math.round(from + (to-from)*easeOutCubic(p));
+      el.textContent=_formatCount(v, fmt);
+      if(p<1) requestAnimationFrame(tick); else resolve();
+    }
+    requestAnimationFrame(tick);
+  });
+}
+
 function startCountUp(el){
   if(el.dataset.done==='1') return;
   el.dataset.done='1';
   const target=Number(el.dataset.target)||0;
   const dur=Number(el.dataset.duration)||1200;
   const fmt=el.dataset.format||'';
-  const t0=performance.now();
-  function tick(now){
-    const p=Math.min(1,(now-t0)/dur);
-    const v=Math.round(target*easeOutCubic(p));
-    el.textContent = fmt==='comma' ? v.toLocaleString() : String(v);
-    if(p<1) requestAnimationFrame(tick);
+  _tween(el, 0, target, dur, fmt);
+  if(el.dataset.tween==='red-green'){
+    el.classList.remove('color-red-green');
+    void el.offsetWidth; // restart animation
+    el.classList.add('color-red-green');
   }
-  requestAnimationFrame(tick);
+}
+
+// Click handler for stat blocks — replays the animation. The 60s stat
+// has data-replay="countdown" which bounces 60→0→60 for the dramatic
+// "in 60 seconds" beat without leaving the page in a broken state.
+function replayStat(block){
+  const el=block && block.querySelector('.count');
+  if(!el) return;
+  const target=Number(el.dataset.target)||0;
+  const dur=Number(el.dataset.duration)||1200;
+  const fmt=el.dataset.format||'';
+  if(el.dataset.replay==='countdown'){
+    _tween(el, target, 0, dur, fmt).then(()=>_tween(el, 0, target, dur, fmt));
+    return;
+  }
+  if(el.dataset.tween==='red-green'){
+    el.classList.remove('color-red-green');
+    void el.offsetWidth;
+    el.classList.add('color-red-green');
+  }
+  _tween(el, 0, target, dur, fmt);
+}
+
+// ── COST-SAVINGS SLIDER ──
+const QD_ANNUAL=348; // $29/mo × 12 — launch price; beta is $0
+function updateSlider(){
+  const slider=document.getElementById('paySlider');
+  const valEl=document.getElementById('payVal');
+  const calcEl=document.getElementById('saveCalc');
+  const eqEl=document.getElementById('saveEq');
+  if(!slider||!valEl||!calcEl||!eqEl) return;
+  const pay=Number(slider.value);
+  valEl.innerHTML='$'+pay.toLocaleString()+'<span class="pay-slider-unit">/year</span>';
+  if(pay<=QD_ANNUAL){
+    calcEl.innerHTML='<span class="dim">You\'re already paying less than QuantDesk at launch.</span> Try it free during beta.';
+    eqEl.textContent='';
+    return;
+  }
+  const savings=pay-QD_ANNUAL;
+  calcEl.innerHTML='You\'d save <span class="accent">$'+savings.toLocaleString()+'/year</span> with QuantDesk.';
+  const iphones=Math.floor(savings/1200);
+  const teslaPayments=Math.floor(savings/500);
+  const rentMonths=Math.floor(savings/2500);
+  const parts=[];
+  if(iphones>0) parts.push(iphones+' iPhone Pro'+(iphones>1?'s':''));
+  if(teslaPayments>0) parts.push(teslaPayments+' Tesla payment'+(teslaPayments>1?'s':''));
+  if(rentMonths>0) parts.push(rentMonths+' month'+(rentMonths>1?'s':'')+' of rent');
+  eqEl.textContent=parts.length ? 'That\'s '+parts.join(' · ')+'.' : '';
 }
 
 // ── SCROLL REVEAL + COUNT-UP via single IntersectionObserver ──
@@ -952,6 +1154,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   setStaticForTicker('MELI');   // instant paint — visible product within first frame
   wireChips();
   wireInput();
+  updateSlider();
   wireObservers();
 });
 </script>
