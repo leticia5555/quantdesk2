@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>QUANTDESK — Institutional-grade research. For everyone.</title>
-<meta name="description" content="Monte Carlo simulations, VC intelligence, and portfolio risk analysis. Bloomberg-grade tools at 1/100th the price."/>
+<title>QUANTDESK — Bloomberg-grade research. In 60 seconds.</title>
+<meta name="description" content="Six AI research agents analyze any stock in 60 seconds. SEC filings, fundamentals, macro, events, sentiment, risk. US + LATAM ADRs. Spanish output."/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
 <style>
@@ -18,6 +18,7 @@
   --text2:#888880;
   --text3:#444440;
   --green:#00c97d;
+  --green-rgb:0,201,125;
   --green2:#00a366;
   --red:#ff4545;
   --blue:#4a9eff;
@@ -28,30 +29,40 @@
 *{box-sizing:border-box;margin:0;padding:0;}
 html{scroll-behavior:smooth;}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);overflow-x:hidden;}
- 
+
 /* NOISE TEXTURE */
 body::before{
   content:'';position:fixed;inset:0;
   background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
   pointer-events:none;z-index:0;opacity:.4;
 }
- 
-/* NAV */
+
+/* NAV (sticky with status) */
 nav{
   position:fixed;top:0;left:0;right:0;z-index:100;
   display:flex;align-items:center;justify-content:space-between;
-  padding:0 48px;height:56px;
+  padding:0 48px;height:56px;gap:24px;
   border-bottom:1px solid var(--border);
   background:rgba(5,5,5,.85);backdrop-filter:blur(12px);
 }
+.nav-left{display:flex;align-items:center;gap:20px;}
 .nav-logo{font-family:var(--mono);font-size:13px;font-weight:700;letter-spacing:.15em;color:var(--text);}
 .nav-logo span{color:var(--green);}
+.nav-status{
+  display:flex;align-items:center;gap:8px;
+  font-family:var(--mono);font-size:10px;color:var(--green);
+  letter-spacing:.1em;padding:4px 10px;
+  border:1px solid rgba(var(--green-rgb),.3);border-radius:2px;
+  background:rgba(var(--green-rgb),.05);
+}
+.nav-status .dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:dotPulse 1.5s infinite;}
 .nav-right{display:flex;align-items:center;gap:24px;}
 .nav-link{font-family:var(--mono);font-size:11px;color:var(--text3);text-decoration:none;letter-spacing:.08em;transition:color .15s;}
 .nav-link:hover{color:var(--text2);}
 .nav-cta{font-family:var(--mono);font-size:11px;padding:6px 16px;border:1px solid var(--green);color:var(--green);background:transparent;border-radius:2px;cursor:pointer;letter-spacing:.08em;transition:all .15s;text-decoration:none;}
 .nav-cta:hover{background:var(--green);color:#000;}
- 
+@keyframes dotPulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(var(--green-rgb),.4);}50%{opacity:.55;box-shadow:0 0 0 6px rgba(var(--green-rgb),0);}}
+
 /* HERO */
 .hero{
   min-height:100vh;display:flex;flex-direction:column;justify-content:center;
@@ -64,11 +75,11 @@ nav{
 }
 .hero-glow{
   position:absolute;top:20%;left:50%;transform:translateX(-50%);
-  width:600px;height:300px;
-  background:radial-gradient(ellipse,rgba(0,201,125,.06) 0%,transparent 70%);
+  width:700px;height:340px;
+  background:radial-gradient(ellipse,rgba(var(--green-rgb),.07) 0%,transparent 70%);
   pointer-events:none;
 }
-.hero-content{position:relative;z-index:1;max-width:900px;}
+.hero-content{position:relative;z-index:1;max-width:980px;width:100%;}
 .hero-tag{
   font-family:var(--mono);font-size:11px;color:var(--green);
   letter-spacing:.15em;text-transform:uppercase;margin-bottom:24px;
@@ -76,20 +87,20 @@ nav{
 }
 .hero-tag::before{content:'';width:20px;height:1px;background:var(--green);}
 h1{
-  font-family:var(--mono);font-size:clamp(32px,5vw,64px);font-weight:700;
-  line-height:1.1;letter-spacing:-.02em;margin-bottom:12px;
+  font-family:var(--mono);font-size:clamp(30px,5vw,56px);font-weight:700;
+  line-height:1.1;letter-spacing:-.02em;margin-bottom:16px;
 }
 h1 .accent{color:var(--green);}
 h1 .dim{color:var(--text3);}
 .hero-sub{
-  font-family:var(--mono);font-size:clamp(14px,2vw,18px);
-  color:var(--text2);margin-bottom:8px;font-weight:400;
+  font-family:var(--mono);font-size:clamp(14px,1.6vw,16px);
+  color:var(--text2);margin-bottom:6px;font-weight:400;
 }
 .hero-sub-es{
   font-family:var(--sans);font-size:14px;color:var(--text3);
-  margin-bottom:48px;font-style:italic;
+  margin-bottom:32px;font-style:italic;
 }
-.waitlist-form{display:flex;gap:8px;max-width:500px;margin-bottom:16px;flex-wrap:wrap;}
+.waitlist-form{display:flex;gap:8px;max-width:500px;margin-bottom:10px;flex-wrap:wrap;}
 .waitlist-input{
   flex:1;min-width:240px;
   background:var(--bg2);border:1px solid var(--border2);
@@ -106,101 +117,236 @@ h1 .dim{color:var(--text3);}
   letter-spacing:.08em;transition:all .15s;white-space:nowrap;
 }
 .waitlist-btn:hover{background:var(--green2);border-color:var(--green2);}
-.waitlist-note{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.04em;}
+.waitlist-note{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.04em;margin-bottom:32px;}
 .waitlist-note span{color:var(--green);}
 .success-msg{
   display:none;font-family:var(--mono);font-size:13px;color:var(--green);
   padding:12px 16px;border:1px solid var(--green);border-radius:2px;
   max-width:500px;margin-bottom:16px;
 }
- 
-/* LIVE DEMO CANVAS */
-.demo-wrap{
-  position:relative;margin-top:80px;
-  border:1px solid var(--border2);border-radius:4px;overflow:hidden;
+
+/* ANALYZER */
+.analyzer{
+  position:relative;
+  border:1px solid var(--border2);border-radius:6px;overflow:hidden;
   background:var(--bg1);
+  box-shadow:0 24px 64px -24px rgba(0,0,0,.6), 0 0 0 1px rgba(var(--green-rgb),.04);
 }
-.demo-header{
+.analyzer-head{
   display:flex;align-items:center;justify-content:space-between;
-  padding:12px 16px;border-bottom:1px solid var(--border);
+  padding:14px 18px;border-bottom:1px solid var(--border);
 }
-.demo-title{font-family:var(--mono);font-size:11px;color:var(--text3);letter-spacing:.08em;}
-.demo-live{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;color:var(--green);}
-.demo-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite;}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
-.demo-stats{display:flex;gap:24px;padding:12px 16px;border-bottom:1px solid var(--border);}
-.demo-stat{font-family:var(--mono);font-size:11px;}
-.demo-stat-lbl{color:var(--text3);margin-bottom:2px;}
-.demo-stat-val{color:var(--text);font-size:14px;font-weight:700;}
-.demo-stat-val.pos{color:var(--green);}
-.demo-stat-val.neg{color:var(--red);}
-canvas#demoCanvas{width:100%;height:220px;display:block;}
- 
-/* STATS ROW */
+.analyzer-title{font-family:var(--mono);font-size:11px;color:var(--text2);letter-spacing:.12em;}
+.analyzer-title .accent{color:var(--text);font-weight:700;}
+.analyzer-live{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;color:var(--green);letter-spacing:.1em;}
+.analyzer-live .dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:dotPulse 1.5s infinite;}
+.analyzer-controls{padding:18px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:12px;}
+.analyzer-row{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;}
+.ticker-input{
+  flex:1;min-width:220px;
+  background:var(--bg2);border:1px solid var(--border2);
+  color:var(--text);font-family:var(--mono);font-size:14px;font-weight:700;
+  letter-spacing:.08em;text-transform:uppercase;
+  padding:13px 16px;border-radius:2px;outline:none;
+  transition:border-color .15s;
+}
+.ticker-input::placeholder{color:var(--text3);font-weight:400;letter-spacing:.04em;text-transform:none;}
+.ticker-input:focus{border-color:var(--green);caret-color:var(--green);}
+.analyze-btn{
+  background:var(--green);border:1px solid var(--green);
+  color:#000;font-family:var(--mono);font-size:12px;font-weight:700;
+  padding:0 26px;border-radius:2px;cursor:pointer;
+  letter-spacing:.1em;transition:all .15s;white-space:nowrap;
+}
+.analyze-btn:hover{background:var(--green2);border-color:var(--green2);}
+.analyze-btn:disabled{opacity:.5;cursor:not-allowed;}
+.chips-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
+.chips-lbl{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.1em;margin-right:4px;}
+.chip{
+  font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.08em;
+  padding:5px 11px;border:1px solid var(--border2);
+  color:var(--text2);background:var(--bg2);border-radius:2px;
+  cursor:pointer;transition:all .15s;
+}
+.chip:hover{border-color:var(--green);color:var(--green);background:rgba(var(--green-rgb),.05);}
+.chip.active{border-color:var(--green);color:var(--green);background:rgba(var(--green-rgb),.08);}
+
+/* AGENT CARDS GRID */
+.agent-grid{
+  display:grid;grid-template-columns:repeat(3,1fr);
+  gap:1px;background:var(--border);
+}
+.agent-card{
+  position:relative;
+  background:var(--bg);padding:18px 18px 22px;
+  display:flex;flex-direction:column;gap:8px;
+  min-height:108px;
+  border-top:2px solid transparent;
+  cursor:pointer;
+  transition:transform .25s ease, border-color .25s ease, box-shadow .25s ease, background .25s ease;
+}
+.agent-card:hover{
+  transform:translateY(-3px);
+  border-top-color:var(--green);
+  background:#0a0a0a;
+  box-shadow:0 12px 32px -12px rgba(var(--green-rgb),.25);
+  z-index:2;
+}
+.agent-card-label{
+  font-family:var(--mono);font-size:10px;color:var(--text3);
+  letter-spacing:.14em;display:flex;align-items:center;gap:8px;
+}
+.agent-card-icon{font-size:13px;line-height:1;}
+.agent-card-value{
+  font-family:var(--mono);font-size:13px;color:var(--text);
+  line-height:1.5;min-height:38px;
+}
+.agent-card-value .accent{color:var(--green);font-weight:700;}
+.agent-card-value .warn{color:var(--amber);font-weight:700;}
+.agent-card-value .neg{color:var(--red);font-weight:700;}
+.agent-card-value .dim{color:var(--text3);}
+.agent-card-tip{
+  position:absolute;bottom:6px;right:12px;
+  font-family:var(--mono);font-size:9px;color:var(--green);
+  opacity:0;transition:opacity .25s ease;
+  letter-spacing:.05em;pointer-events:none;
+}
+.agent-card:hover .agent-card-tip{opacity:.9;}
+
+/* loading dots */
+.dots-loader{display:inline-flex;gap:4px;align-items:center;}
+.dots-loader span{
+  width:5px;height:5px;border-radius:50%;background:var(--text3);
+  animation:dotBlink 1.2s infinite ease-in-out both;
+}
+.dots-loader span:nth-child(2){animation-delay:.18s;}
+.dots-loader span:nth-child(3){animation-delay:.36s;}
+@keyframes dotBlink{
+  0%,80%,100%{opacity:.25;transform:scale(.85);}
+  40%{opacity:1;transform:scale(1);background:var(--green);}
+}
+.analyzer-foot{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:14px 18px;border-top:1px solid var(--border);
+  font-family:var(--mono);font-size:11px;color:var(--text3);letter-spacing:.04em;flex-wrap:wrap;
+}
+.analyzer-foot .ok{color:var(--green);font-weight:700;}
+.analyzer-foot a{font-family:var(--mono);font-size:11px;color:var(--green);text-decoration:none;border:1px solid rgba(var(--green-rgb),.4);padding:6px 14px;border-radius:2px;letter-spacing:.08em;transition:all .15s;}
+.analyzer-foot a:hover{background:var(--green);color:#000;border-color:var(--green);}
+
+/* SECTION SCAFFOLDING */
+.section{padding:96px 48px;max-width:1240px;margin:0 auto;}
+.section-eyebrow{
+  font-family:var(--mono);font-size:11px;color:var(--green);
+  letter-spacing:.15em;text-transform:uppercase;margin-bottom:12px;
+}
+.section-title{
+  font-family:var(--mono);font-size:clamp(24px,3.5vw,40px);font-weight:700;
+  line-height:1.15;letter-spacing:-.02em;margin-bottom:48px;color:var(--text);
+}
+.section-title .dim{color:var(--text3);}
+
+/* WHAT AGENTS TELL YOU (6 explainer cards) */
+.explainer-grid{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border);
+  border:1px solid var(--border);
+}
+.explainer{
+  background:var(--bg);padding:28px 24px;
+  display:flex;flex-direction:column;gap:8px;
+  border-top:2px solid transparent;transition:border-color .25s ease, background .25s ease;
+}
+.explainer:hover{border-top-color:var(--green);background:#0a0a0a;}
+.explainer-icon{font-size:18px;line-height:1;}
+.explainer-name{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--text);letter-spacing:.05em;margin-bottom:4px;}
+.explainer-name .accent{color:var(--green);}
+.explainer-desc{font-family:var(--sans);font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:8px;}
+.explainer-eg{
+  font-family:var(--mono);font-size:11px;color:var(--text3);line-height:1.5;
+  padding:8px 10px;background:var(--bg1);border-left:2px solid var(--border2);border-radius:0 2px 2px 0;
+}
+.explainer-eg .v{color:var(--green);}
+
+/* STATS (count-up) */
 .stats-section{
-  padding:80px 48px;border-top:1px solid var(--border);
+  padding:0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);
   display:grid;grid-template-columns:repeat(4,1fr);gap:1px;
   background:var(--border);
 }
-.stat-block{
-  background:var(--bg);padding:40px 32px;
-}
+.stat-block{background:var(--bg);padding:48px 32px;}
 .stat-num{
-  font-family:var(--mono);font-size:48px;font-weight:700;
-  color:var(--text);line-height:1;margin-bottom:8px;
+  font-family:var(--mono);font-size:clamp(36px,4vw,52px);font-weight:700;
+  color:var(--text);line-height:1;margin-bottom:10px;letter-spacing:-.02em;
 }
-.stat-num span{color:var(--green);}
+.stat-num .suffix{color:var(--green);font-size:.5em;margin-left:4px;letter-spacing:0;}
+.stat-num .prefix{color:var(--green);font-size:.55em;margin-right:2px;}
 .stat-desc{font-family:var(--sans);font-size:13px;color:var(--text2);line-height:1.6;}
 .stat-desc-es{font-family:var(--sans);font-size:12px;color:var(--text3);margin-top:4px;font-style:italic;}
- 
-/* HOW IT WORKS */
-.how-section{padding:80px 48px;max-width:1200px;margin:0 auto;}
-.section-label{
-  font-family:var(--mono);font-size:11px;color:var(--green);
-  letter-spacing:.15em;text-transform:uppercase;margin-bottom:48px;
-  display:flex;align-items:center;gap:12px;
+
+/* COST COMPARISON ("The math is brutal") */
+.math-wrap{display:grid;grid-template-columns:1fr;gap:32px;max-width:760px;margin:0 auto;}
+.receipt{
+  border:1px solid var(--border2);border-radius:4px;
+  background:var(--bg1);padding:28px 32px;font-family:var(--mono);
 }
-.section-label::after{content:'';flex:1;height:1px;background:var(--border2);}
-.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border2);}
-.step{background:var(--bg);padding:32px;border-top:2px solid transparent;transition:border-color .3s;}
-.step:hover{border-top-color:var(--green);}
-.step-num{font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:16px;letter-spacing:.08em;}
-.step-title{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--text);margin-bottom:8px;}
-.step-title-es{font-family:var(--sans);font-size:12px;color:var(--text3);margin-bottom:12px;font-style:italic;}
-.step-desc{font-family:var(--sans);font-size:13px;color:var(--text2);line-height:1.7;}
- 
-/* VS SECTION */
-.vs-section{padding:80px 48px;background:var(--bg1);border-top:1px solid var(--border);border-bottom:1px solid var(--border);}
-.vs-grid{display:grid;grid-template-columns:1fr auto 1fr;gap:32px;align-items:center;max-width:900px;margin:48px auto 0;}
-.vs-col{background:var(--bg2);border:1px solid var(--border2);padding:32px;border-radius:4px;}
-.vs-col.ours{border-color:var(--green);background:rgba(0,201,125,.04);}
-.vs-name{font-family:var(--mono);font-size:13px;font-weight:700;margin-bottom:4px;}
-.vs-price{font-family:var(--mono);font-size:32px;font-weight:700;color:var(--text3);margin-bottom:24px;}
-.vs-price.ours{color:var(--green);}
-.vs-feature{font-family:var(--sans);font-size:13px;color:var(--text2);padding:8px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;}
-.vs-feature:last-child{border-bottom:none;}
-.vs-feature .check{color:var(--green);font-family:var(--mono);font-size:11px;}
-.vs-feature .cross{color:var(--text3);font-family:var(--mono);font-size:11px;}
-.vs-divider{font-family:var(--mono);font-size:20px;color:var(--text3);text-align:center;}
- 
+.receipt.them{}
+.receipt.ours{border-color:var(--green);background:rgba(var(--green-rgb),.04);}
+.receipt-lbl{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.15em;margin-bottom:16px;text-transform:uppercase;}
+.receipt-row{display:flex;justify-content:space-between;align-items:baseline;padding:11px 0;border-bottom:1px dashed var(--border);font-size:13px;}
+.receipt-row .name{color:var(--text2);}
+.receipt-row .price{color:var(--text);font-weight:700;letter-spacing:-.01em;}
+.receipt-row:last-of-type{border-bottom:none;}
+.receipt-total{
+  display:flex;justify-content:space-between;align-items:baseline;
+  margin-top:14px;padding-top:14px;border-top:2px solid var(--border2);
+  font-size:14px;
+}
+.receipt-total .lbl{color:var(--text3);letter-spacing:.1em;text-transform:uppercase;font-size:11px;}
+.receipt-total .total{font-size:22px;font-weight:700;color:var(--red);letter-spacing:-.02em;}
+.receipt.ours .receipt-row .price,
+.receipt.ours .receipt-total .total{color:var(--green);}
+.math-vs{
+  text-align:center;font-family:var(--mono);font-size:13px;color:var(--text3);
+  letter-spacing:.4em;text-transform:uppercase;
+}
+
+/* SOCIAL PROOF */
+.social-grid{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border);
+  border:1px solid var(--border);
+}
+.social-card{
+  background:var(--bg);padding:28px 24px;text-decoration:none;color:var(--text);
+  display:flex;flex-direction:column;gap:10px;transition:background .2s;
+}
+.social-card:hover{background:#0a0a0a;}
+.social-platform{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.15em;text-transform:uppercase;display:flex;align-items:center;gap:8px;}
+.social-platform .green{color:var(--green);}
+.social-stat{font-family:var(--mono);font-size:28px;font-weight:700;color:var(--text);letter-spacing:-.02em;}
+.social-stat .accent{color:var(--green);}
+.social-handle{font-family:var(--mono);font-size:12px;color:var(--text2);}
+.social-detail{font-family:var(--sans);font-size:12px;color:var(--text3);line-height:1.5;margin-top:auto;}
+
 /* BOTTOM CTA */
 .cta-section{
   padding:120px 48px;text-align:center;position:relative;overflow:hidden;
+  border-top:1px solid var(--border);
 }
 .cta-glow{
   position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
   width:800px;height:400px;
-  background:radial-gradient(ellipse,rgba(0,201,125,.05) 0%,transparent 70%);
+  background:radial-gradient(ellipse,rgba(var(--green-rgb),.06) 0%,transparent 70%);
   pointer-events:none;
 }
 .cta-section h2{
-  font-family:var(--mono);font-size:clamp(24px,4vw,48px);font-weight:700;
-  margin-bottom:8px;position:relative;
+  font-family:var(--mono);font-size:clamp(26px,4vw,46px);font-weight:700;
+  margin-bottom:8px;position:relative;letter-spacing:-.02em;line-height:1.15;
 }
-.cta-section .sub{font-family:var(--sans);font-size:16px;color:var(--text2);margin-bottom:48px;position:relative;}
-.cta-section .sub-es{font-family:var(--sans);font-size:14px;color:var(--text3);font-style:italic;margin-bottom:48px;position:relative;}
+.cta-section h2 .accent{color:var(--green);}
+.cta-section .sub{font-family:var(--sans);font-size:16px;color:var(--text2);margin-bottom:6px;position:relative;}
+.cta-section .sub-es{font-family:var(--sans);font-size:13px;color:var(--text3);font-style:italic;margin-bottom:40px;position:relative;}
 .cta-form{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;position:relative;}
- 
+
 /* FOOTER */
 footer{
   padding:32px 48px;border-top:1px solid var(--border);
@@ -209,61 +355,73 @@ footer{
 }
 .footer-logo{font-family:var(--mono);font-size:12px;color:var(--text3);letter-spacing:.1em;}
 .footer-logo span{color:var(--green);}
-.footer-links{display:flex;gap:24px;}
+.footer-links{display:flex;gap:24px;flex-wrap:wrap;}
 .footer-link{font-family:var(--mono);font-size:10px;color:var(--text3);text-decoration:none;letter-spacing:.06em;transition:color .15s;}
 .footer-link:hover{color:var(--text2);}
- 
-/* ANIMATIONS */
+
+/* INITIAL FADE-UP for hero */
 @keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
 .fade-up{opacity:0;animation:fadeUp .6s forwards;}
-.fade-up:nth-child(1){animation-delay:.1s}
-.fade-up:nth-child(2){animation-delay:.2s}
-.fade-up:nth-child(3){animation-delay:.3s}
-.fade-up:nth-child(4){animation-delay:.4s}
-.fade-up:nth-child(5){animation-delay:.5s}
- 
+.fade-up:nth-child(1){animation-delay:.05s}
+.fade-up:nth-child(2){animation-delay:.15s}
+.fade-up:nth-child(3){animation-delay:.25s}
+.fade-up:nth-child(4){animation-delay:.35s}
+.fade-up:nth-child(5){animation-delay:.45s}
+.fade-up:nth-child(6){animation-delay:.55s}
+
+/* SCROLL-IN — sections fade up when entering viewport */
+.reveal{opacity:0;transform:translateY(24px);transition:opacity .7s ease, transform .7s ease;}
+.reveal.in{opacity:1;transform:translateY(0);}
+
 /* RESPONSIVE */
+@media(max-width:980px){
+  .nav-status{display:none;}
+}
 @media(max-width:900px){
-  nav{padding:0 20px;}
+  nav{padding:0 20px;gap:12px;}
+  .nav-left{gap:12px;}
   .hero{padding:100px 20px 60px;}
   .stats-section{grid-template-columns:repeat(2,1fr);}
-  .steps{grid-template-columns:1fr;}
-  .vs-grid{grid-template-columns:1fr;}
-  .vs-divider{display:none;}
-  .how-section,.vs-section,.cta-section{padding:60px 20px;}
+  .agent-grid,.explainer-grid,.social-grid{grid-template-columns:1fr;}
+  .section,.cta-section{padding:72px 20px;}
   footer{padding:24px 20px;}
 }
 @media(max-width:600px){
   .stats-section{grid-template-columns:1fr;}
   .nav-right .nav-link{display:none;}
+  .analyzer-row{flex-direction:column;}
+  .ticker-input,.analyze-btn{width:100%;}
+  .analyze-btn{padding:13px 24px;}
 }
 </style>
 <script defer src="/_vercel/insights/script.js"></script>
 </head>
 <body>
- 
+
 <nav>
-  <div class="nav-logo">QUANT<span>DESK</span></div>
+  <div class="nav-left">
+    <div class="nav-logo">QUANT<span>DESK</span></div>
+    <div class="nav-status"><span class="dot"></span>6 AGENTS LIVE</div>
+  </div>
   <div class="nav-right">
-    <a href="#how" class="nav-link">HOW IT WORKS</a>
+    <a href="#agents" class="nav-link">AGENTS</a>
     <a href="#pricing" class="nav-link">PRICING</a>
-    <a href="#waitlist" class="nav-cta">JOIN WAITLIST</a>
+    <a href="/" class="nav-cta">TRY IN APP →</a>
   </div>
 </nav>
- 
+
 <section class="hero">
   <div class="hero-grid"></div>
   <div class="hero-glow"></div>
   <div class="hero-content">
-    <div class="hero-tag fade-up">Institutional-grade quant research</div>
+    <div class="hero-tag fade-up">↓ The terminal hedge funds don't want you to have.</div>
     <h1 class="fade-up">
-      300 simulations.<br>
-      <span class="accent">20 seconds.</span><br>
-      <span class="dim">$29/month.</span>
+      Hedge funds have AI agents now.<br>
+      <span class="accent">So do you.</span>
     </h1>
-    <p class="hero-sub fade-up">Bloomberg costs $24,000/year. We don't.</p>
-    <p class="hero-sub-es fade-up">Bloomberg cuesta $24,000/año. Nosotros, no.</p>
- 
+    <p class="hero-sub fade-up">Six specialized agents. Any US stock. Any LATAM ADR. Free during beta.</p>
+    <p class="hero-sub-es fade-up">Seis agentes especializados. Cualquier acción US. Cualquier ADR LATAM. Gratis durante beta.</p>
+
     <div id="successMsg" class="success-msg">
       ✓ You're on the list — we'll reach out before launch. / Ya estás en la lista.
     </div>
@@ -272,268 +430,520 @@ footer{
       <button class="waitlist-btn" onclick="joinWaitlist('email1')">JOIN WAITLIST →</button>
     </div>
     <div class="waitlist-note fade-up">
-      <span>247 researchers</span> already on the list · Free during beta · $29/mo at launch
+      <span id="waitlistCount">247 researchers</span> on the list · Free during beta · $29/mo at launch
     </div>
- 
-    <!-- LIVE DEMO -->
-    <div class="demo-wrap fade-up" style="animation-delay:.6s">
-      <div class="demo-header">
-        <span class="demo-title">// LIVE SIMULATION · NVDA · LONG · 90 DAYS · GBM</span>
-        <div class="demo-live"><span class="demo-dot"></span>RUNNING</div>
+
+    <!-- INTERACTIVE ANALYZER -->
+    <div class="analyzer fade-up" style="animation-delay:.6s">
+      <div class="analyzer-head">
+        <span class="analyzer-title"><span class="accent">QUANTDESK</span> · LIVE ANALYZER</span>
+        <div class="analyzer-live"><span class="dot"></span>LIVE</div>
       </div>
-      <div class="demo-stats">
-        <div class="demo-stat"><div class="demo-stat-lbl">PATHS</div><div class="demo-stat-val" id="dPathCount">0</div></div>
-        <div class="demo-stat"><div class="demo-stat-lbl">EXP. RETURN</div><div class="demo-stat-val pos" id="dReturn">—</div></div>
-        <div class="demo-stat"><div class="demo-stat-lbl">WIN RATE</div><div class="demo-stat-val" id="dWin">—</div></div>
-        <div class="demo-stat"><div class="demo-stat-lbl">SHARPE</div><div class="demo-stat-val" id="dSharpe">—</div></div>
-        <div class="demo-stat"><div class="demo-stat-lbl">VAR 95%</div><div class="demo-stat-val neg" id="dVaR">—</div></div>
+      <div class="analyzer-controls">
+        <div class="analyzer-row">
+          <input id="tickerInput" class="ticker-input" type="text" placeholder="Type a ticker — MELI, NVDA, AAPL…" value="MELI" autocomplete="off" maxlength="8"/>
+          <button id="analyzeBtn" class="analyze-btn" onclick="runAnalysis()">ANALYZE →</button>
+        </div>
+        <div class="chips-row">
+          <span class="chips-lbl">// try:</span>
+          <button class="chip active" data-ticker="MELI">MELI</button>
+          <button class="chip" data-ticker="NVDA">NVDA</button>
+          <button class="chip" data-ticker="NU">NU</button>
+          <button class="chip" data-ticker="VALE">VALE</button>
+          <button class="chip" data-ticker="AAPL">AAPL</button>
+          <button class="chip" data-ticker="TSLA">TSLA</button>
+        </div>
       </div>
-      <canvas id="demoCanvas"></canvas>
+      <div class="agent-grid" id="agentGrid">
+        <!-- 6 cards rendered by JS -->
+      </div>
+      <div class="analyzer-foot">
+        <span id="analyzerStatus">Click ANALYZE or pick a ticker to run six agents in parallel.</span>
+        <a href="/" id="seeFullLink">→ See full analysis in app</a>
+      </div>
     </div>
   </div>
 </section>
- 
-<!-- STATS -->
-<section class="stats-section">
+
+<!-- SECTION 2 — What 6 agents tell you that Bloomberg won't -->
+<section class="section reveal" id="agents">
+  <div class="section-eyebrow">// Agents</div>
+  <h2 class="section-title">What 6 agents tell you<br><span class="dim">that Bloomberg won't.</span></h2>
+  <div class="explainer-grid">
+    <div class="explainer">
+      <div class="explainer-icon">📊</div>
+      <div class="explainer-name">FILINGS <span class="accent">Agent</span></div>
+      <div class="explainer-desc">Reads SEC 10-K / 20-F end to end. Pulls risk factors, segment revenue, red flags — with page-level citations.</div>
+      <div class="explainer-eg">e.g. MELI <span class="v">$30.9B FX exposure flagged</span> · Item 1A, p.42</div>
+    </div>
+    <div class="explainer">
+      <div class="explainer-icon">💰</div>
+      <div class="explainer-name">FUNDAMENTAL <span class="accent">Agent</span></div>
+      <div class="explainer-desc">Custom DCF with sensitivity, peer multiples, margin-of-safety band. Built ground-up, not scraped.</div>
+      <div class="explainer-eg">e.g. MELI fair value <span class="v">$1,703 (+7.9%)</span> · DISCOUNT band</div>
+    </div>
+    <div class="explainer">
+      <div class="explainer-icon">🌍</div>
+      <div class="explainer-name">MACRO <span class="accent">Agent</span></div>
+      <div class="explainer-desc">FRED + Banxico + Yahoo. LATAM ADR operational-country override, not legal domicile. FX layered on revenue mix.</div>
+      <div class="explainer-eg">e.g. MELI Brazil 55% rev · <span class="v">BRL +13% APPRECIATING</span></div>
+    </div>
+    <div class="explainer">
+      <div class="explainer-icon">📅</div>
+      <div class="explainer-name">EVENT <span class="accent">Agent</span></div>
+      <div class="explainer-desc">Earnings, dividends, splits, M&A signals, insider transactions. Identifies the next major catalyst.</div>
+      <div class="explainer-eg">e.g. MELI Q2 earnings <span class="v">84d</span> · Mercado Pago divestiture</div>
+    </div>
+    <div class="explainer">
+      <div class="explainer-icon">📈</div>
+      <div class="explainer-name">SENTIMENT <span class="accent">Agent</span></div>
+      <div class="explainer-desc">News + Reddit weighted. Velocity, anomaly detection, dominant-narrative read.</div>
+      <div class="explainer-eg">e.g. MELI Burry buying · <span class="v">Velocity inflection</span></div>
+    </div>
+    <div class="explainer">
+      <div class="explainer-icon">⚠️</div>
+      <div class="explainer-name">RISK <span class="accent">Agent</span></div>
+      <div class="explainer-desc">Volatility regime, beta drift, correlation breakdown, drawdown — composite 13-point anomaly score.</div>
+      <div class="explainer-eg">e.g. MELI <span class="v">MODERATE 6/13</span> · Vol expansion 127%</div>
+    </div>
+  </div>
+</section>
+
+<!-- STATS WITH COUNT-UP -->
+<section class="stats-section reveal" id="stats">
   <div class="stat-block">
-    <div class="stat-num">300<span>+</span></div>
-    <div class="stat-desc">Simulated futures per analysis. Every path is a possible world.</div>
-    <div class="stat-desc-es">Futuros simulados por análisis.</div>
+    <div class="stat-num"><span class="count" data-target="6" data-duration="1000">0</span></div>
+    <div class="stat-desc">Specialized AI research agents in production.</div>
+    <div class="stat-desc-es">Agentes especializados en producción.</div>
   </div>
   <div class="stat-block">
-    <div class="stat-num"><span>$</span>24K</div>
+    <div class="stat-num"><span class="prefix">$</span><span class="count" data-target="24000" data-duration="1500" data-format="comma">0</span></div>
     <div class="stat-desc">What Bloomberg Terminal costs per year. We charge $29/month.</div>
     <div class="stat-desc-es">Lo que cuesta Bloomberg por año.</div>
   </div>
   <div class="stat-block">
-    <div class="stat-num">3<span>x</span></div>
-    <div class="stat-desc">Engines in one: Monte Carlo sim, VC deal flow, portfolio risk.</div>
-    <div class="stat-desc-es">Motores en uno: sim, VC, portafolio.</div>
+    <div class="stat-num"><span class="count" data-target="60" data-duration="1000">0</span><span class="suffix">s</span></div>
+    <div class="stat-desc">From ticker to full analysis — six agents in parallel.</div>
+    <div class="stat-desc-es">De ticker a análisis completo.</div>
   </div>
   <div class="stat-block">
-    <div class="stat-num">20<span>s</span></div>
-    <div class="stat-desc">From ticker to full research report with real market data.</div>
-    <div class="stat-desc-es">De ticker a reporte completo.</div>
+    <div class="stat-num"><span class="count" data-target="250" data-duration="2000">0</span><span class="suffix">+</span></div>
+    <div class="stat-desc">LATAM ADRs covered. MELI, NU, VALE, PBR, BBD — and more.</div>
+    <div class="stat-desc-es">ADRs latinoamericanos cubiertos.</div>
   </div>
 </section>
- 
-<!-- HOW IT WORKS -->
-<section class="how-section" id="how">
-  <div class="section-label">How it works / Cómo funciona</div>
-  <div class="steps">
-    <div class="step">
-      <div class="step-num">01 —</div>
-      <div class="step-title">Enter any asset</div>
-      <div class="step-title-es">Ingresa cualquier activo</div>
-      <div class="step-desc">Stocks, crypto, ETFs. Type a ticker and set your position size, direction, and time horizon. LATAM markets included — MELI, BVMF, and more.</div>
+
+<!-- SECTION 3 — The math is brutal -->
+<section class="section reveal" id="pricing">
+  <div class="section-eyebrow">// Pricing</div>
+  <h2 class="section-title">The math is brutal.</h2>
+  <div class="math-wrap">
+    <div class="receipt them">
+      <div class="receipt-lbl">What you'd pay elsewhere for the same analysis</div>
+      <div class="receipt-row"><span class="name">Bloomberg Terminal</span><span class="price">$24,000<span style="color:var(--text3);font-weight:400;font-size:11px;">/yr</span></span></div>
+      <div class="receipt-row"><span class="name">AlphaSense</span><span class="price">$77,000<span style="color:var(--text3);font-weight:400;font-size:11px;">/client</span></span></div>
+      <div class="receipt-row"><span class="name">Refinitiv Eikon</span><span class="price">$22,000<span style="color:var(--text3);font-weight:400;font-size:11px;">/yr</span></span></div>
+      <div class="receipt-total"><span class="lbl">Annual total</span><span class="total">$123,000</span></div>
     </div>
-    <div class="step">
-      <div class="step-num">02 —</div>
-      <div class="step-title">Real data calibration</div>
-      <div class="step-title-es">Calibración con datos reales</div>
-      <div class="step-desc">We pull 1 year of actual price history to calculate real drift and volatility. Your simulation is calibrated to what the market has actually done, not estimates.</div>
-    </div>
-    <div class="step">
-      <div class="step-num">03 —</div>
-      <div class="step-title">300 futures, instantly</div>
-      <div class="step-title-es">300 futuros, al instante</div>
-      <div class="step-desc">Monte Carlo engine runs hundreds of paths using the same mathematics as options pricing desks. See your probability distribution, VaR, Sharpe, and AI analysis — in 20 seconds.</div>
+    <div class="math-vs">vs.</div>
+    <div class="receipt ours">
+      <div class="receipt-lbl" style="color:var(--green);">QuantDesk · same six dimensions, retail price</div>
+      <div class="receipt-row"><span class="name">During beta</span><span class="price">$0<span style="color:var(--text3);font-weight:400;font-size:11px;">/free</span></span></div>
+      <div class="receipt-row"><span class="name">At launch</span><span class="price">$29<span style="color:var(--text3);font-weight:400;font-size:11px;">/mo</span></span></div>
+      <div class="receipt-total"><span class="lbl">Annual cost at launch</span><span class="total">$348</span></div>
     </div>
   </div>
 </section>
- 
-<!-- VS -->
-<section class="vs-section" id="pricing">
-  <div class="section-label" style="max-width:900px;margin:0 auto 0;">Pricing / Precios</div>
-  <div class="vs-grid">
-    <div class="vs-col">
-      <div class="vs-name" style="color:var(--text3);">Bloomberg Terminal</div>
-      <div class="vs-price">$24K<span style="font-size:16px;color:var(--text3)">/yr</span></div>
-      <div class="vs-feature"><span class="check">✓</span> Monte Carlo simulation</div>
-      <div class="vs-feature"><span class="check">✓</span> Real market data</div>
-      <div class="vs-feature"><span class="check">✓</span> Portfolio risk analysis</div>
-      <div class="vs-feature"><span class="cross">✗</span> VC deal flow intelligence</div>
-      <div class="vs-feature"><span class="cross">✗</span> AI-generated thesis</div>
-      <div class="vs-feature"><span class="cross">✗</span> Spanish language</div>
-      <div class="vs-feature"><span class="cross">✗</span> Accessible to individuals</div>
-    </div>
-    <div class="vs-divider">VS</div>
-    <div class="vs-col ours">
-      <div class="vs-name" style="color:var(--green);">QUANTDESK</div>
-      <div class="vs-price ours">$29<span style="font-size:16px;color:var(--text2)">/mo</span></div>
-      <div class="vs-feature"><span class="check">✓</span> Monte Carlo simulation</div>
-      <div class="vs-feature"><span class="check">✓</span> Real market data</div>
-      <div class="vs-feature"><span class="check">✓</span> Portfolio risk analysis</div>
-      <div class="vs-feature"><span class="check">✓</span> VC deal flow intelligence</div>
-      <div class="vs-feature"><span class="check">✓</span> AI-generated thesis</div>
-      <div class="vs-feature"><span class="check">✓</span> English + Spanish</div>
-      <div class="vs-feature"><span class="check">✓</span> Built for individuals</div>
-    </div>
+
+<!-- SECTION 4 — Built solo. In public. For LATAM. -->
+<section class="section reveal" id="built">
+  <div class="section-eyebrow">// In public</div>
+  <h2 class="section-title">Built solo. In public.<br><span class="dim">For LATAM.</span></h2>
+  <div class="social-grid">
+    <a class="social-card" href="https://www.tiktok.com/@leticiatijerinam" target="_blank" rel="noopener">
+      <div class="social-platform"><span class="green">●</span> TIKTOK</div>
+      <div class="social-stat"><span class="accent">43,400</span></div>
+      <div class="social-handle">@leticiatijerinam · followers</div>
+      <div class="social-detail">LATAM markets explained daily. Top video: <strong style="color:var(--text2)">Davos analysis · 232K views</strong>.</div>
+    </a>
+    <a class="social-card" href="https://github.com/leticia5555/quantdesk2" target="_blank" rel="noopener">
+      <div class="social-platform"><span class="green">●</span> GITHUB</div>
+      <div class="social-stat"><span class="accent">254</span></div>
+      <div class="social-handle">commits · public repo</div>
+      <div class="social-detail">Source-available. Every agent, every prompt, every endpoint. Open issues, open roadmap.</div>
+    </a>
+    <a class="social-card" href="/" target="_blank" rel="noopener">
+      <div class="social-platform"><span class="green">●</span> LIVE PRODUCT</div>
+      <div class="social-stat"><span class="accent">6/6</span></div>
+      <div class="social-handle">agents deployed · production</div>
+      <div class="social-detail">No waitlist, no sign-up. Open the app, type a ticker, get a research report. Try it now →</div>
+    </a>
   </div>
 </section>
- 
-<!-- BOTTOM CTA -->
-<section class="cta-section" id="waitlist">
+
+<!-- SECTION 5 — Bottom CTA -->
+<section class="cta-section reveal" id="waitlist">
   <div class="cta-glow"></div>
-  <h2>Start researching smarter.</h2>
-  <p class="sub">Join the waitlist. Free during beta.</p>
-  <p class="sub-es">Únete a la lista de espera. Gratis durante el beta.</p>
+  <h2>Stop paying <span class="accent">$24,000</span> for research.</h2>
+  <p class="sub">Free during beta. $29/mo at launch. Cancel anytime.</p>
+  <p class="sub-es">Deja de pagar $24,000 por research. Gratis durante el beta.</p>
   <div class="cta-form">
     <input type="email" class="waitlist-input" id="email2" placeholder="your@email.com" style="max-width:280px;"/>
     <button class="waitlist-btn" onclick="joinWaitlist('email2')">GET EARLY ACCESS →</button>
   </div>
   <div class="waitlist-note" style="margin-top:16px;text-align:center;">
-    No spam. No credit card. Cancel anytime. / Sin spam. Sin tarjeta. Cancela cuando quieras.
+    No spam. No credit card. / Sin spam. Sin tarjeta.
   </div>
 </section>
- 
+
 <footer>
   <div class="footer-logo">QUANT<span>DESK</span></div>
   <div class="footer-links">
+    <a href="https://github.com/leticia5555/quantdesk2" class="footer-link" target="_blank" rel="noopener">GITHUB</a>
+    <a href="https://www.tiktok.com/@leticiatijerinam" class="footer-link" target="_blank" rel="noopener">TIKTOK</a>
     <a href="#" class="footer-link">PRIVACY</a>
     <a href="#" class="footer-link">TERMS</a>
-    <a href="https://quantdesk2.vercel.app" class="footer-link" target="_blank">LAUNCH APP →</a>
+    <a href="/" class="footer-link">LAUNCH APP →</a>
   </div>
 </footer>
- 
+
 <script>
 // ─── WAITLIST ─────────────────────────────────────────────
 const emails=new Set();
 function joinWaitlist(inputId){
-  const email=document.getElementById(inputId).value.trim();
+  const el=document.getElementById(inputId);
+  const email=(el && el.value || '').trim();
   if(!email||!email.includes('@')){alert('Please enter a valid email.');return;}
   emails.add(email);
-  document.getElementById('waitlistForm1').style.display='none';
-  document.getElementById('successMsg').style.display='block';
-  // In production: POST to your backend/Airtable/Mailchimp here
+  const form1=document.getElementById('waitlistForm1');
+  if(form1) form1.style.display='none';
+  const msg=document.getElementById('successMsg');
+  if(msg) msg.style.display='block';
   console.log('Waitlist signup:',email);
-  // Track count
-  const note=document.querySelector('.waitlist-note');
-  if(note) note.innerHTML='<span>'+(248+emails.size)+' researchers</span> already on the list · Free during beta · $29/mo at launch';
+  const count=document.getElementById('waitlistCount');
+  if(count) count.textContent=(248+emails.size)+' researchers';
 }
- 
-// ─── DEMO SIMULATION ──────────────────────────────────────
-const canvas=document.getElementById('demoCanvas');
-const ctx=canvas.getContext('2d');
-let W=0,H=0,paths=[],finals=[],running=true;
-const S0=142,mu=0.35,sigma=0.42,days=90;
-const PAD=36,PAD_R=12,PAD_B=24;
- 
-function resize(){
-  const dpr=devicePixelRatio||1;
-  W=canvas.parentElement.clientWidth;H=220;
-  canvas.width=W*dpr;canvas.height=H*dpr;
-  canvas.style.width=W+'px';canvas.style.height=H+'px';
-  ctx.scale(dpr,dpr);
-}
- 
-function randn(){
-  let u=0,v=0;while(u===0)u=Math.random();while(v===0)v=Math.random();
-  return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
-}
- 
-function genPath(){
-  const dt=1/252,path=[S0];let S=S0;
-  for(let i=0;i<days;i++){
-    S=S*Math.exp((mu-.5*sigma*sigma)*dt+sigma*Math.sqrt(dt)*randn());
-    path.push(S);
-  }return path;
-}
- 
-function getRange(){
-  let mn=Infinity,mx=-Infinity;
-  paths.forEach(p=>p.forEach(v=>{if(v<mn)mn=v;if(v>mx)mx=v;}));
-  return[mn*.96,mx*1.04];
-}
- 
-function drawAll(){
-  ctx.clearRect(0,0,W,H);
-  if(!paths.length)return;
-  const[mn,mx]=getRange();
-  const xS=(W-PAD-PAD_R)/days,yS=(H-PAD-PAD_B)/(mx-mn);
- 
-  // grid lines
-  ctx.strokeStyle='rgba(30,30,30,0.8)';ctx.lineWidth=0.5;
-  for(let i=0;i<=3;i++){
-    const p=mn+(mx-mn)*(i/3),y=H-PAD_B-(p-mn)*yS;
-    ctx.beginPath();ctx.moveTo(PAD,y);ctx.lineTo(W-PAD_R,y);ctx.stroke();
-    ctx.fillStyle='rgba(68,68,64,0.9)';ctx.font='9px Space Mono,monospace';
-    ctx.fillText('$'+p.toFixed(0),2,y+4);
+
+// ─── ANALYZER ─────────────────────────────────────────────
+const AGENTS=[
+  {key:'filings',     icon:'📊', label:'FILINGS',     endpoint:'/api/filings-agent'},
+  {key:'fundamental', icon:'💰', label:'FUNDAMENTAL', endpoint:'/api/fundamental-agent'},
+  {key:'macro',       icon:'🌍', label:'MACRO',       endpoint:'/api/macro-agent'},
+  {key:'event',       icon:'📅', label:'EVENT',       endpoint:'/api/event-agent'},
+  {key:'sentiment',   icon:'📈', label:'SENTIMENT',   endpoint:'/api/sentiment-agent'},
+  {key:'risk',        icon:'⚠️', label:'RISK',        endpoint:'/api/risk-agent'}
+];
+
+// Hand-picked fallbacks (also serve as instant-paint default for MELI).
+const FALLBACKS={
+  MELI:{
+    filings:     {html:'<span class="accent">$30.9B</span> FX exposure flagged'},
+    fundamental: {html:'Fair value <span class="accent">$1,703 (+7.9%)</span>'},
+    macro:       {html:'Brazil 55% rev · <span class="accent">BRL +13% APPRECIATING</span>'},
+    event:       {html:'Q2 earnings <span class="accent">84d</span> · Mercado Pago divestiture'},
+    sentiment:   {html:'Burry buying · <span class="accent">Velocity inflection</span>'},
+    risk:        {html:'<span class="warn">MODERATE 6/13</span> · Vol expansion 127%'}
+  },
+  NVDA:{
+    filings:     {html:'<span class="accent">AI risk concentration</span> noted'},
+    fundamental: {html:'Fair value <span class="accent">$245</span>'},
+    macro:       {html:'USD strong · <span class="accent">TSMC dependency</span>'},
+    event:       {html:'Q3 earnings <span class="accent">47d</span>'},
+    sentiment:   {html:'Bullish · <span class="accent">+0.18</span>'},
+    risk:        {html:'<span class="warn">MODERATE 5/13</span>'}
+  },
+  NU:{
+    filings:     {html:'<span class="accent">Credit growth</span> 78% YoY · LATAM risk'},
+    fundamental: {html:'Fair value <span class="accent">~$13</span>'},
+    macro:       {html:'Brazil + Mexico · <span class="accent">CDI rates falling</span>'},
+    event:       {html:'Q1 earnings <span class="accent">28d</span>'},
+    sentiment:   {html:'Constructive · <span class="accent">+0.11</span>'},
+    risk:        {html:'<span class="warn">MODERATE 5/13</span>'}
+  },
+  VALE:{
+    filings:     {html:'Iron ore concentration · <span class="accent">Brumadinho liabilities</span>'},
+    fundamental: {html:'Fair value <span class="accent">$13</span>'},
+    macro:       {html:'Brazil 100% · <span class="accent">China demand pivot</span>'},
+    event:       {html:'Dividend ex-date <span class="accent">14d</span>'},
+    sentiment:   {html:'Mixed · <span class="accent">-0.03</span>'},
+    risk:        {html:'<span class="warn">ELEVATED 7/13</span> · Commodity beta'}
+  },
+  AAPL:{
+    filings:     {html:'<span class="accent">China revenue</span> exposure · Services growth'},
+    fundamental: {html:'Fair value <span class="accent">$192</span>'},
+    macro:       {html:'USD strong · <span class="accent">EM consumer drag</span>'},
+    event:       {html:'Q1 earnings <span class="accent">42d</span>'},
+    sentiment:   {html:'Neutral · <span class="accent">+0.05</span>'},
+    risk:        {html:'<span class="accent">LOW 3/13</span>'}
+  },
+  TSLA:{
+    filings:     {html:'<span class="accent">FSD recognition</span> risk · Pricing pressure'},
+    fundamental: {html:'Fair value <span class="accent">$185</span>'},
+    macro:       {html:'EV demand softening · <span class="accent">China competition</span>'},
+    event:       {html:'Delivery report <span class="accent">11d</span>'},
+    sentiment:   {html:'Polarized · <span class="accent">+0.02</span>'},
+    risk:        {html:'<span class="warn">ELEVATED 8/13</span> · Vol expansion'}
   }
- 
-  // entry line
-  const S0y=H-PAD_B-(S0-mn)*yS;
-  ctx.strokeStyle='rgba(74,158,255,0.3)';ctx.setLineDash([4,4]);ctx.lineWidth=1;
-  ctx.beginPath();ctx.moveTo(PAD,S0y);ctx.lineTo(W-PAD_R,S0y);ctx.stroke();
-  ctx.setLineDash([]);
- 
-  // paths
-  const n=paths.length;
-  paths.forEach(p=>{
-    const final=p[p.length-1],pnl=final-S0;
-    const ratio=Math.min(1,Math.max(0,pnl/(S0*.5)));
-    const r=Math.round((1-ratio)*200+30),g=Math.round(ratio*180+20);
-    const alpha=n>200?.06:n>100?.1:.16;
-    ctx.beginPath();ctx.strokeStyle=`rgba(${r},${g},40,${alpha})`;ctx.lineWidth=.8;
-    p.forEach((v,i)=>{
-      const x=PAD+i*xS,y=H-PAD_B-(v-mn)*yS;
-      i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
-    });ctx.stroke();
-  });
- 
-  // percentile bands
-  if(n>=20){
-    [[.1,'#ff4545',1.5],[.5,'#4a9eff',2],[.9,'#00c97d',1.5]].forEach(([pct,col,lw])=>{
-      const band=[];
-      for(let t=0;t<=days;t++){
-        const vals=paths.map(p=>p[t]).sort((a,b)=>a-b);
-        band.push(vals[Math.floor(vals.length*pct)]);
+};
+const GENERIC={
+  filings:     {html:'<span class="dim">SEC filing analysis ready</span>'},
+  fundamental: {html:'<span class="dim">DCF model available</span>'},
+  macro:       {html:'<span class="dim">Macro overlay ready</span>'},
+  event:       {html:'<span class="dim">Catalyst calendar ready</span>'},
+  sentiment:   {html:'<span class="dim">News + Reddit scored</span>'},
+  risk:        {html:'<span class="dim">Risk score available</span>'}
+};
+
+function fallbackFor(ticker, key){
+  const t=(ticker||'').toUpperCase();
+  return (FALLBACKS[t] && FALLBACKS[t][key]) || GENERIC[key];
+}
+function esc(s){return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+// ── Per-agent extractor: turn raw API JSON → display HTML string ──
+const EXTRACTORS={
+  filings:(d)=>{
+    if(!d||d.error||!d.analysis) return null;
+    const a=d.analysis;
+    if(a.red_flags && a.red_flags.length && a.red_flags[0].flag){
+      return '<span class="warn">Red flag</span> · '+esc(a.red_flags[0].flag);
+    }
+    if(a.key_metrics && a.key_metrics.revenue_ttm){
+      const g=a.key_metrics.revenue_growth_yoy ? ' · '+esc(a.key_metrics.revenue_growth_yoy) : '';
+      return 'Revenue <span class="accent">'+esc(a.key_metrics.revenue_ttm)+'</span>'+g;
+    }
+    if(a.executive_summary){
+      return esc(a.executive_summary.split('.')[0]);
+    }
+    return null;
+  },
+  fundamental:(d)=>{
+    if(!d||d.error) return null;
+    if(d.dcf && !d.dcf.skipped && d.dcf.fairValuePerShare!=null && d.dcf.upside!=null){
+      const fv=Math.round(d.dcf.fairValuePerShare);
+      const up=(d.dcf.upside*100);
+      const sign=up>=0?'+':'';
+      return 'Fair value <span class="accent">$'+fv.toLocaleString()+' ('+sign+up.toFixed(1)+'%)</span>';
+    }
+    if(d.signal && d.signal.band){
+      const cls=d.signal.color==='green'?'accent':d.signal.color==='red'?'neg':'warn';
+      return '<span class="'+cls+'">'+esc(d.signal.band)+'</span> · '+(d.signal.reason?esc(d.signal.reason):'fundamentals scored');
+    }
+    return null;
+  },
+  macro:(d)=>{
+    if(!d||d.error) return null;
+    if(d.ticker_specific_impact){
+      return esc(String(d.ticker_specific_impact).split('.')[0]);
+    }
+    if(d.macro_summary){
+      return esc(String(d.macro_summary).split('.')[0]);
+    }
+    if(d.country_name){
+      const flag=d.country_override_applied?' <span class="accent">(operational)</span>':'';
+      return esc(d.country_name)+flag;
+    }
+    return null;
+  },
+  event:(d)=>{
+    if(!d||d.error) return null;
+    const c=d.next_major_catalyst;
+    if(c && c.label && c.days_until!=null){
+      return esc(c.label)+' · <span class="accent">'+c.days_until+'d</span>';
+    }
+    if(d.catalyst_summary){
+      return esc(String(d.catalyst_summary).split('.')[0]);
+    }
+    return null;
+  },
+  sentiment:(d)=>{
+    if(!d||d.error) return null;
+    const so=d.sentiment_overview;
+    if(so){
+      const parts=[];
+      if(so.category) parts.push('<span class="accent">'+esc(so.category)+'</span>');
+      if(so.current_score!=null){
+        const s=Number(so.current_score);
+        parts.push((s>=0?'+':'')+s.toFixed(2));
       }
-      ctx.beginPath();ctx.strokeStyle=col;ctx.lineWidth=lw;
-      band.forEach((v,i)=>{
-        const x=PAD+i*xS,y=H-PAD_B-(v-mn)*yS;
-        i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
-      });ctx.stroke();
-    });
+      if(so.velocity) parts.push(esc(so.velocity));
+      if(parts.length) return parts.join(' · ');
+    }
+    if(d.sentiment_summary) return esc(String(d.sentiment_summary).split('.')[0]);
+    return null;
+  },
+  risk:(d)=>{
+    if(!d||d.error) return null;
+    const ro=d.risk_overview;
+    if(ro && ro.regime && ro.anomaly_score!=null){
+      const max=ro.max_anomaly_score||13;
+      const cls=ro.anomaly_score>=8?'neg':ro.anomaly_score>=5?'warn':'accent';
+      const primary=ro.primary_concern?' · '+esc(ro.primary_concern):'';
+      return '<span class="'+cls+'">'+esc(ro.regime)+' '+ro.anomaly_score+'/'+max+'</span>'+primary;
+    }
+    return null;
   }
+};
+
+// ── DOM construction for the 6-card grid ──
+function buildGrid(){
+  const grid=document.getElementById('agentGrid');
+  if(!grid) return;
+  grid.innerHTML=AGENTS.map(a=>`
+    <div class="agent-card" id="card-${a.key}" data-key="${a.key}" tabindex="0">
+      <div class="agent-card-label"><span class="agent-card-icon">${a.icon}</span>${a.label}</div>
+      <div class="agent-card-value" id="val-${a.key}"></div>
+      <span class="agent-card-tip">Click to try with different ticker →</span>
+    </div>
+  `).join('');
+  // Hover prompts users to use the input above.
+  document.querySelectorAll('.agent-card').forEach(c=>{
+    c.addEventListener('click',()=>{
+      const inp=document.getElementById('tickerInput');
+      if(inp){ inp.focus(); inp.select(); }
+    });
+  });
 }
- 
-function updateStats(){
-  if(!finals.length)return;
-  const returns=finals.map(f=>(f-S0)/S0);
-  const mean=returns.reduce((a,b)=>a+b,0)/returns.length;
-  const variance=returns.reduce((a,r)=>a+(r-mean)**2,0)/returns.length;
-  const sharpe=Math.sqrt(variance)>0?(mean/Math.sqrt(variance))*Math.sqrt(252/days):0;
-  const wins=returns.filter(r=>r>0).length;
-  const sorted=[...returns].sort((a,b)=>a-b);
-  const var95=sorted[Math.floor(sorted.length*.05)];
-  document.getElementById('dPathCount').textContent=finals.length;
-  document.getElementById('dReturn').textContent=(mean>=0?'+':'')+(mean*100).toFixed(1)+'%';
-  document.getElementById('dReturn').className='demo-stat-val '+(mean>=0?'pos':'neg');
-  document.getElementById('dWin').textContent=(wins/returns.length*100).toFixed(1)+'%';
-  document.getElementById('dSharpe').textContent=sharpe.toFixed(2);
-  document.getElementById('dVaR').textContent=(var95*100).toFixed(1)+'%';
+function setLoading(key){
+  const el=document.getElementById('val-'+key);
+  if(el) el.innerHTML='<span class="dots-loader"><span></span><span></span><span></span></span> <span class="dim">Analyzing…</span>';
 }
- 
-let done=0;
-const total=300;
-function runBatch(){
-  if(!running)return;
-  if(done>=total){
-    setTimeout(()=>{paths=[];finals=[];done=0;runBatch();},3000);
+function setValue(key,html){
+  const el=document.getElementById('val-'+key);
+  if(el) el.innerHTML=html;
+}
+function setStaticForTicker(ticker){
+  AGENTS.forEach(a=>setValue(a.key, fallbackFor(ticker,a.key).html));
+}
+
+// ── Network: per-agent fetch with hard 5s timeout ──
+function fetchAgent(agent, ticker, timeoutMs){
+  const url=agent.endpoint+'?ticker='+encodeURIComponent(ticker);
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),timeoutMs);
+  return fetch(url,{signal:ctrl.signal})
+    .then(r=>r.ok ? r.json() : Promise.reject(new Error('http '+r.status)))
+    .then(data=>{
+      clearTimeout(timer);
+      const extracted=EXTRACTORS[agent.key](data);
+      return extracted || fallbackFor(ticker,agent.key).html;
+    })
+    .catch(()=>{
+      clearTimeout(timer);
+      return fallbackFor(ticker,agent.key).html;
+    });
+}
+
+let analyzing=false;
+async function runAnalysis(){
+  if(analyzing) return;
+  const inp=document.getElementById('tickerInput');
+  const raw=(inp && inp.value || 'MELI').trim().toUpperCase().replace(/[^A-Z0-9.-]/g,'');
+  if(!raw){ inp && inp.focus(); return; }
+  if(inp) inp.value=raw;
+
+  // chip active state
+  document.querySelectorAll('.chip').forEach(c=>{
+    c.classList.toggle('active', c.dataset.ticker===raw);
+  });
+
+  analyzing=true;
+  const btn=document.getElementById('analyzeBtn');
+  if(btn) btn.disabled=true;
+  const status=document.getElementById('analyzerStatus');
+  if(status) status.innerHTML='<span class="dots-loader"><span></span><span></span><span></span></span> Running six agents in parallel for <span class="ok">'+esc(raw)+'</span>…';
+
+  // 1) INSTANT: all six show loading state at the same time
+  AGENTS.forEach(a=>setLoading(a.key));
+
+  const t0=performance.now();
+
+  // 2) Fire all six in parallel with a 5s per-request budget.
+  const results=await Promise.all(AGENTS.map(a=>fetchAgent(a, raw, 5000)));
+
+  // 3) Stagger the reveal so cards don't all flash in the same frame.
+  results.forEach((html, idx)=>{
+    setTimeout(()=>setValue(AGENTS[idx].key, html), idx*200);
+  });
+
+  // 4) Final status once the last card has resolved.
+  const settleMs=AGENTS.length*200+150;
+  setTimeout(()=>{
+    const dt=((performance.now()-t0)/1000).toFixed(1);
+    if(status) status.innerHTML='<span class="ok">✓ Analysis complete</span> · 6 of 6 agents · '+dt+'s';
+    const link=document.getElementById('seeFullLink');
+    if(link) link.textContent='→ See full '+raw+' analysis in app';
+    if(btn) btn.disabled=false;
+    analyzing=false;
+  }, settleMs);
+}
+
+// Chip clicks → set ticker and analyze.
+function wireChips(){
+  document.querySelectorAll('.chip').forEach(c=>{
+    c.addEventListener('click',()=>{
+      const inp=document.getElementById('tickerInput');
+      if(inp) inp.value=c.dataset.ticker;
+      runAnalysis();
+    });
+  });
+}
+
+// Enter key → analyze.
+function wireInput(){
+  const inp=document.getElementById('tickerInput');
+  if(!inp) return;
+  inp.addEventListener('keydown',e=>{
+    if(e.key==='Enter'){ e.preventDefault(); runAnalysis(); }
+  });
+}
+
+// ── COUNT-UP STATS (IntersectionObserver) ──
+function easeOutCubic(t){return 1-Math.pow(1-t,3);}
+function startCountUp(el){
+  if(el.dataset.done==='1') return;
+  el.dataset.done='1';
+  const target=Number(el.dataset.target)||0;
+  const dur=Number(el.dataset.duration)||1200;
+  const fmt=el.dataset.format||'';
+  const t0=performance.now();
+  function tick(now){
+    const p=Math.min(1,(now-t0)/dur);
+    const v=Math.round(target*easeOutCubic(p));
+    el.textContent = fmt==='comma' ? v.toLocaleString() : String(v);
+    if(p<1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+// ── SCROLL REVEAL + COUNT-UP via single IntersectionObserver ──
+function wireObservers(){
+  if(!('IntersectionObserver' in window)){
+    // Graceful fallback — show everything and fire counts immediately.
+    document.querySelectorAll('.reveal').forEach(el=>el.classList.add('in'));
+    document.querySelectorAll('.count').forEach(startCountUp);
     return;
   }
-  const bs=Math.min(3,total-done);
-  for(let i=0;i<bs;i++){
-    const p=genPath();paths.push(p);finals.push(p[p.length-1]);done++;
-  }
-  drawAll();updateStats();
-  setTimeout(runBatch,done<30?60:done<150?25:12);
+  const io=new IntersectionObserver((entries)=>{
+    entries.forEach(e=>{
+      if(e.isIntersecting){
+        e.target.classList.add('in');
+        e.target.querySelectorAll('.count').forEach(startCountUp);
+        io.unobserve(e.target);
+      }
+    });
+  },{threshold:.18, rootMargin:'0px 0px -40px 0px'});
+  document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
 }
- 
-resize();
-window.addEventListener('resize',()=>{resize();drawAll();});
-runBatch();
+
+// ── INIT ──
+document.addEventListener('DOMContentLoaded',()=>{
+  buildGrid();
+  setStaticForTicker('MELI');   // instant paint — visible product within first frame
+  wireChips();
+  wireInput();
+  wireObservers();
+});
 </script>
 </body>
 </html>
