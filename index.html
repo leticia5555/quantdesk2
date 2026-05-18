@@ -238,8 +238,8 @@ td:first-child{color:var(--text);font-weight:500;}
 <div class="topbar">
   <div class="logo">QUANT<span>DESK</span></div>
   <nav class="nav">
-    <button class="nav-btn" onclick="showPage('agents')">AGENTS</button>
-    <button class="nav-btn active" onclick="showPage('sim')">SIM</button>
+    <button class="nav-btn active" onclick="showPage('agents')">AGENTS</button>
+    <button class="nav-btn" onclick="showPage('sim')">SIM</button>
     <button class="nav-btn" onclick="showPage('compare')">COMPARE</button>
     <button class="nav-btn" onclick="showPage('vc')">VC</button>
     <button class="nav-btn" onclick="showPage('portfolio')">PORTFOLIO</button>
@@ -268,7 +268,7 @@ td:first-child{color:var(--text);font-weight:500;}
 </div>
 
 <!-- SIM PAGE -->
-<div id="page-sim" class="page active">
+<div id="page-sim" class="page">
   <div class="section-header"><span class="section-title">// Monte Carlo Simulation</span><div class="section-line"></div></div>
 
   <div class="ctrl-grid g3">
@@ -2834,9 +2834,16 @@ function renderMacroBrief(brief){
 function showPage(id){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
-  document.getElementById('page-'+id).classList.add('active');
-  event.target.classList.add('active');
-  event.target.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
+  const page=document.getElementById('page-'+id);
+  if(page) page.classList.add('active');
+  const evt=(typeof event!=='undefined')?event:null;
+  let btn=(evt&&evt.target&&evt.target.classList&&evt.target.classList.contains('nav-btn'))?evt.target:null;
+  if(!btn) btn=document.querySelector('.nav-btn[onclick*="showPage(\''+id+'\')"]');
+  if(btn){
+    btn.classList.add('active');
+    btn.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
+  }
+  try{ localStorage.setItem('qd_lastTab', id); }catch(e){}
   if(id==='compare') setTimeout(initCmpCanvases,50);
   if(id==='macro') setTimeout(loadMacroPage,50);
   if(id==='smartmoney') setTimeout(()=>{if(!smLoaded){smLoaded=true;loadMarketSignals();}},50);
@@ -2853,6 +2860,19 @@ function showPage(id){
     // Don't auto-run — let user pick a preset or click SCREEN
   },100);
 }
+
+// Restore last-visited tab on page load. Default (AGENTS) is already
+// set in the HTML, so when no tab was saved (or saved=agents) we just
+// init the agents page; otherwise navigate to the saved tab.
+window.addEventListener('DOMContentLoaded',()=>{
+  let saved=null;
+  try{ saved=localStorage.getItem('qd_lastTab'); }catch(e){}
+  if(saved && saved!=='agents' && document.getElementById('page-'+saved)){
+    showPage(saved);
+  } else {
+    setTimeout(()=>{ if(typeof initAgentsPage==='function') initAgentsPage(); },50);
+  }
+});
 
 // ─── GLOBAL STATUS ────────────────────────────────────────
 function setStatus(txt,live=true){
@@ -11494,7 +11514,7 @@ function margin_color(pct, threshold, COL){
 </div>
 
 <!-- AGENTS PAGE -->
-<div id="page-agents" class="page" style="padding:0;background:#080808;min-height:100vh;">
+<div id="page-agents" class="page active" style="padding:0;background:#080808;min-height:100vh;">
 
   <!-- ─── RISK ANOMALY AGENT (Sprint 6) ──────────────────────────── -->
   <section id="riskAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
