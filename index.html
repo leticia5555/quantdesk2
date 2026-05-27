@@ -7396,6 +7396,32 @@ const i18n = {
     v_BEAT:'BEAT', v_MISS:'MISS', v_INLINE:'INLINE',
     c_HIGH:'HIGH', c_MEDIUM:'MEDIUM', c_LOW:'LOW',
     convictionLbl:'CONVICTION',
+    // Research Agents (Sprint 1-6)
+    ra_header_risk:'// RISK ANOMALY AGENT',
+    ra_header_sentiment:'// SENTIMENT AGENT',
+    ra_header_event:'// EVENT AGENT',
+    ra_header_macro:'// MACRO AGENT',
+    ra_header_fundamental:'// FUNDAMENTAL AGENT',
+    ra_header_filings:'// RESEARCH AGENTS',
+    ra_name_risk:'Risk Anomaly Agent',
+    ra_name_sentiment:'Sentiment Agent',
+    ra_name_event:'Event Agent',
+    ra_name_macro:'Macro Agent',
+    ra_name_fundamental:'Fundamental Agent',
+    ra_name_filings:'Filings Agent',
+    ra_sub_risk:'Quantitative risk regime detection · Volatility · Beta · Correlation · Drawdown',
+    ra_sub_sentiment:'Real-time sentiment analysis across news and social · News · Reddit · Velocity · Anomaly',
+    ra_sub_event:'Upcoming catalysts and corporate events · Catalysts · Earnings · M&A · Regulatory',
+    ra_sub_macro:'Macroeconomic context for any ticker · Rates · FX · Commodities · Cycle',
+    ra_sub_fundamental:'Quantitative valuation with sensitivity · DCF + Multiples + Health Scores',
+    ra_sub_filings:'Institutional-grade analysis powered by SEC EDGAR + Claude',
+    ra_btn_risk:'▶ ANALYZE RISK',
+    ra_btn_sentiment:'▶ ANALYZE SENTIMENT',
+    ra_btn_event:'▶ ANALYZE CATALYSTS',
+    ra_btn_macro:'▶ ANALYZE MACRO',
+    ra_btn_fundamental:'▶ ANALYZE VALUATION',
+    ra_btn_filings:'▶ ANALYZE FILINGS',
+    ra_ph_ticker:'Enter ticker (e.g., NVDA, MELI, VALE)',
   },
   es: {
     // Nav
@@ -7522,6 +7548,32 @@ const i18n = {
     v_BEAT:'BEAT', v_MISS:'MISS', v_INLINE:'EN LÍNEA',
     c_HIGH:'ALTA', c_MEDIUM:'MEDIA', c_LOW:'BAJA',
     convictionLbl:'CONVICCIÓN',
+    // Research Agents (Sprint 1-6)
+    ra_header_risk:'// AGENTE DE RIESGO',
+    ra_header_sentiment:'// AGENTE DE SENTIMIENTO',
+    ra_header_event:'// AGENTE DE EVENTOS',
+    ra_header_macro:'// AGENTE MACRO',
+    ra_header_fundamental:'// AGENTE FUNDAMENTAL',
+    ra_header_filings:'// AGENTES DE INVESTIGACIÓN',
+    ra_name_risk:'Agente de Riesgo',
+    ra_name_sentiment:'Agente de Sentimiento',
+    ra_name_event:'Agente de Eventos',
+    ra_name_macro:'Agente Macro',
+    ra_name_fundamental:'Agente Fundamental',
+    ra_name_filings:'Agente de Filings',
+    ra_sub_risk:'Detección cuantitativa de régimen de riesgo · Volatilidad · Beta · Correlación · Drawdown',
+    ra_sub_sentiment:'Análisis de sentimiento en tiempo real · Noticias · Reddit · Velocidad · Anomalía',
+    ra_sub_event:'Próximos catalizadores y eventos corporativos · Catalizadores · Resultados · M&A · Regulatorio',
+    ra_sub_macro:'Contexto macroeconómico para cualquier ticker · Tasas · FX · Commodities · Ciclo',
+    ra_sub_fundamental:'Valoración cuantitativa con sensibilidad · DCF + Múltiplos + Salud',
+    ra_sub_filings:'Análisis institucional con SEC EDGAR + Claude',
+    ra_btn_risk:'▶ ANALIZAR RIESGO',
+    ra_btn_sentiment:'▶ ANALIZAR SENTIMIENTO',
+    ra_btn_event:'▶ ANALIZAR CATALIZADORES',
+    ra_btn_macro:'▶ ANALIZAR MACRO',
+    ra_btn_fundamental:'▶ ANALIZAR VALORACIÓN',
+    ra_btn_filings:'▶ ANALIZAR FILINGS',
+    ra_ph_ticker:'Ingresa un ticker (ej. NVDA, MELI, VALE)',
   }
 };
 
@@ -11787,27 +11839,27 @@ function margin_color(pct, threshold, COL){
   <!-- ─── RISK ANOMALY AGENT (Sprint 6) ──────────────────────────── -->
   <section id="riskAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-      <span style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// RISK ANOMALY AGENT</span>
+      <span data-i18n="ra_header_risk" style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// RISK ANOMALY AGENT</span>
       <div style="flex:1;height:1px;background:#1a1a1a;"></div>
       <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;">SPRINT 6</span>
     </div>
-    <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Quantitative risk regime detection · Volatility · Beta · Correlation · Drawdown</div>
+    <div data-i18n="ra_sub_risk" style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Quantitative risk regime detection · Volatility · Beta · Correlation · Drawdown</div>
 
     <div class="research-agent-card" style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid var(--green,#00c97d);border-radius:4px;padding:16px;">
       <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
         <span class="agent-icon" style="font-size:18px;">⚠️</span>
-        <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Risk Anomaly Agent</span>
+        <span class="agent-name" data-i18n="ra_name_risk" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Risk Anomaly Agent</span>
         <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">Volatility · Beta · Correlation · Drawdown</span>
         <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">Yahoo Finance + Finnhub + Claude · 252d window</span>
       </div>
 
       <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;position:relative;">
         <div style="flex:1;min-width:220px;position:relative;">
-          <input id="riskAgentTicker" placeholder="Enter ticker (e.g., NVDA, MELI, VALE)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="riskAgentDropdown" aria-expanded="false"
+          <input id="riskAgentTicker" data-i18n-ph="ra_ph_ticker" placeholder="Enter ticker (e.g., NVDA, MELI, VALE)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="riskAgentDropdown" aria-expanded="false"
                  style="width:100%;box-sizing:border-box;background:#080808;border:1px solid #222;color:#ddd;font-family:var(--mono);font-size:12px;padding:9px 12px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;" />
           <div id="riskAgentDropdown" role="listbox" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#0a0a0a;border:1px solid #222;border-radius:3px;z-index:200;max-height:320px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,.6);"></div>
         </div>
-        <button id="riskAgentBtn"
+        <button id="riskAgentBtn" data-i18n="ra_btn_risk"
                 style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE RISK</button>
       </div>
 
@@ -11818,27 +11870,27 @@ function margin_color(pct, threshold, COL){
   <!-- ─── SENTIMENT AGENT (Sprint 5) ──────────────────────────────── -->
   <section id="sentimentAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-      <span style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// SENTIMENT AGENT</span>
+      <span data-i18n="ra_header_sentiment" style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// SENTIMENT AGENT</span>
       <div style="flex:1;height:1px;background:#1a1a1a;"></div>
       <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;">SPRINT 5</span>
     </div>
-    <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Real-time sentiment analysis across news and social · News · Reddit · Velocity · Anomaly</div>
+    <div data-i18n="ra_sub_sentiment" style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Real-time sentiment analysis across news and social · News · Reddit · Velocity · Anomaly</div>
 
     <div class="research-agent-card" style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid var(--green,#00c97d);border-radius:4px;padding:16px;">
       <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
         <span class="agent-icon" style="font-size:18px;">📡</span>
-        <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Sentiment Agent</span>
+        <span class="agent-name" data-i18n="ra_name_sentiment" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Sentiment Agent</span>
         <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">News · Reddit · Velocity · Anomaly</span>
         <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">Finnhub + Reddit + Claude · 7d / 30d windows</span>
       </div>
 
       <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;position:relative;">
         <div style="flex:1;min-width:220px;position:relative;">
-          <input id="sentimentAgentTicker" placeholder="Enter ticker (e.g., NVDA, MELI, VALE)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="sentimentAgentDropdown" aria-expanded="false"
+          <input id="sentimentAgentTicker" data-i18n-ph="ra_ph_ticker" placeholder="Enter ticker (e.g., NVDA, MELI, VALE)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="sentimentAgentDropdown" aria-expanded="false"
                  style="width:100%;box-sizing:border-box;background:#080808;border:1px solid #222;color:#ddd;font-family:var(--mono);font-size:12px;padding:9px 12px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;" />
           <div id="sentimentAgentDropdown" role="listbox" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#0a0a0a;border:1px solid #222;border-radius:3px;z-index:200;max-height:320px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,.6);"></div>
         </div>
-        <button id="sentimentAgentBtn"
+        <button id="sentimentAgentBtn" data-i18n="ra_btn_sentiment"
                 style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE SENTIMENT</button>
       </div>
 
@@ -11849,27 +11901,27 @@ function margin_color(pct, threshold, COL){
   <!-- ─── EVENT AGENT (Sprint 4) ──────────────────────────────────── -->
   <section id="eventAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-      <span style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// EVENT AGENT</span>
+      <span data-i18n="ra_header_event" style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// EVENT AGENT</span>
       <div style="flex:1;height:1px;background:#1a1a1a;"></div>
       <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;">SPRINT 4</span>
     </div>
-    <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Upcoming catalysts and corporate events · Catalysts · Earnings · M&amp;A · Regulatory</div>
+    <div data-i18n="ra_sub_event" style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Upcoming catalysts and corporate events · Catalysts · Earnings · M&amp;A · Regulatory</div>
 
     <div class="research-agent-card" style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid var(--green,#00c97d);border-radius:4px;padding:16px;">
       <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
         <span class="agent-icon" style="font-size:18px;">📅</span>
-        <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Event Agent</span>
+        <span class="agent-name" data-i18n="ra_name_event" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Event Agent</span>
         <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">Catalysts · Earnings · M&amp;A · Regulatory</span>
         <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">Finnhub + Claude · Next 30-90d</span>
       </div>
 
       <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;position:relative;">
         <div style="flex:1;min-width:220px;position:relative;">
-          <input id="eventAgentTicker" placeholder="Enter ticker (e.g., NVDA, MELI, VALE)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="eventAgentDropdown" aria-expanded="false"
+          <input id="eventAgentTicker" data-i18n-ph="ra_ph_ticker" placeholder="Enter ticker (e.g., NVDA, MELI, VALE)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="eventAgentDropdown" aria-expanded="false"
                  style="width:100%;box-sizing:border-box;background:#080808;border:1px solid #222;color:#ddd;font-family:var(--mono);font-size:12px;padding:9px 12px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;" />
           <div id="eventAgentDropdown" role="listbox" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#0a0a0a;border:1px solid #222;border-radius:3px;z-index:200;max-height:320px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,.6);"></div>
         </div>
-        <button id="eventAgentBtn"
+        <button id="eventAgentBtn" data-i18n="ra_btn_event"
                 style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE CATALYSTS</button>
       </div>
 
@@ -11880,27 +11932,27 @@ function margin_color(pct, threshold, COL){
   <!-- ─── MACRO AGENT (Sprint 3) ─────────────────────────────────── -->
   <section id="macroAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-      <span style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// MACRO AGENT</span>
+      <span data-i18n="ra_header_macro" style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// MACRO AGENT</span>
       <div style="flex:1;height:1px;background:#1a1a1a;"></div>
       <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;">SPRINT 3</span>
     </div>
-    <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Macroeconomic context for any ticker · Rates · FX · Commodities · Cycle</div>
+    <div data-i18n="ra_sub_macro" style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Macroeconomic context for any ticker · Rates · FX · Commodities · Cycle</div>
 
     <div class="research-agent-card" style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid var(--green,#00c97d);border-radius:4px;padding:16px;">
       <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
         <span class="agent-icon" style="font-size:18px;">🌎</span>
-        <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Macro Agent</span>
+        <span class="agent-name" data-i18n="ra_name_macro" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Macro Agent</span>
         <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">Rates · FX · Commodities · Cycle</span>
         <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">FRED + Yahoo Finance · LATAM-aware</span>
       </div>
 
       <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;position:relative;">
         <div style="flex:1;min-width:220px;position:relative;">
-          <input id="macroAgentTicker" placeholder="Enter ticker (e.g., NVDA, MELI, VALE)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="macroAgentDropdown" aria-expanded="false"
+          <input id="macroAgentTicker" data-i18n-ph="ra_ph_ticker" placeholder="Enter ticker (e.g., NVDA, MELI, VALE)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="macroAgentDropdown" aria-expanded="false"
                  style="width:100%;box-sizing:border-box;background:#080808;border:1px solid #222;color:#ddd;font-family:var(--mono);font-size:12px;padding:9px 12px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;" />
           <div id="macroAgentDropdown" role="listbox" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#0a0a0a;border:1px solid #222;border-radius:3px;z-index:200;max-height:320px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,.6);"></div>
         </div>
-        <button id="macroAgentBtn"
+        <button id="macroAgentBtn" data-i18n="ra_btn_macro"
                 style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE MACRO</button>
       </div>
 
@@ -11911,27 +11963,27 @@ function margin_color(pct, threshold, COL){
   <!-- ─── FUNDAMENTAL AGENT (Sprint 2) ───────────────────────────────── -->
   <section id="fundamentalAgentSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-      <span style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// FUNDAMENTAL AGENT</span>
+      <span data-i18n="ra_header_fundamental" style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// FUNDAMENTAL AGENT</span>
       <div style="flex:1;height:1px;background:#1a1a1a;"></div>
       <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;">SPRINT 2</span>
     </div>
-    <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Quantitative valuation with sensitivity · DCF + Multiples + Health Scores</div>
+    <div data-i18n="ra_sub_fundamental" style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Quantitative valuation with sensitivity · DCF + Multiples + Health Scores</div>
 
     <div class="research-agent-card" style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid var(--green,#00c97d);border-radius:4px;padding:16px;">
       <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
         <span class="agent-icon" style="font-size:18px;">📊</span>
-        <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Fundamental Agent</span>
+        <span class="agent-name" data-i18n="ra_name_fundamental" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Fundamental Agent</span>
         <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">DCF + Multiples + Health Scores</span>
         <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">Altman Z · Piotroski F · Beneish M · 5y DCF</span>
       </div>
 
       <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;position:relative;">
         <div style="flex:1;min-width:220px;position:relative;">
-          <input id="fundamentalAgentTicker" placeholder="Enter ticker (e.g., NVDA, MELI, NU)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="fundamentalAgentDropdown" aria-expanded="false"
+          <input id="fundamentalAgentTicker" data-i18n-ph="ra_ph_ticker" placeholder="Enter ticker (e.g., NVDA, MELI, NU)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="fundamentalAgentDropdown" aria-expanded="false"
                  style="width:100%;box-sizing:border-box;background:#080808;border:1px solid #222;color:#ddd;font-family:var(--mono);font-size:12px;padding:9px 12px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;" />
           <div id="fundamentalAgentDropdown" role="listbox" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#0a0a0a;border:1px solid #222;border-radius:3px;z-index:200;max-height:320px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,.6);"></div>
         </div>
-        <button id="fundamentalAgentBtn"
+        <button id="fundamentalAgentBtn" data-i18n="ra_btn_fundamental"
                 style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE FUNDAMENTALS</button>
       </div>
 
@@ -11942,27 +11994,27 @@ function margin_color(pct, threshold, COL){
   <!-- ─── RESEARCH AGENTS (Sprint 1: Filings Agent) ─────────────────── -->
   <section id="researchAgentsSection" style="background:#080808;border-bottom:1px solid #1a1a1a;padding:18px 16px 22px;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-      <span style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// RESEARCH AGENTS</span>
+      <span data-i18n="ra_header_filings" style="font-family:var(--mono);font-size:11px;color:var(--green,#00c97d);letter-spacing:.12em;font-weight:600;">// RESEARCH AGENTS</span>
       <div style="flex:1;height:1px;background:#1a1a1a;"></div>
       <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.1em;">SPRINT 1</span>
     </div>
-    <div style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Institutional-grade analysis powered by SEC EDGAR + Claude</div>
+    <div data-i18n="ra_sub_filings" style="font-family:var(--mono);font-size:10px;color:#666;margin-bottom:14px;">Institutional-grade analysis powered by SEC EDGAR + Claude</div>
 
     <div class="research-agent-card" style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid var(--green,#00c97d);border-radius:4px;padding:16px;">
       <div class="agent-header" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
         <span class="agent-icon" style="font-size:18px;">📚</span>
-        <span class="agent-name" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Filings Agent</span>
+        <span class="agent-name" data-i18n="ra_name_filings" style="font-family:var(--mono);font-size:13px;font-weight:700;color:#ddd;letter-spacing:.05em;">Filings Agent</span>
         <span class="agent-source" style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.1em;padding:2px 8px;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:2px;">SEC EDGAR · 10-K / 20-F analysis</span>
         <span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">US stocks · LATAM ADRs · Form 10-K and 20-F</span>
       </div>
 
       <div class="agent-input" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;position:relative;">
         <div style="flex:1;min-width:220px;position:relative;">
-          <input id="filingsAgentTicker" placeholder="Enter ticker (e.g., NVDA, MELI, FMX)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="filingsAgentDropdown" aria-expanded="false"
+          <input id="filingsAgentTicker" data-i18n-ph="ra_ph_ticker" placeholder="Enter ticker (e.g., NVDA, MELI, FMX)" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="filingsAgentDropdown" aria-expanded="false"
                  style="width:100%;box-sizing:border-box;background:#080808;border:1px solid #222;color:#ddd;font-family:var(--mono);font-size:12px;padding:9px 12px;border-radius:3px;outline:none;letter-spacing:.05em;text-transform:uppercase;" />
           <div id="filingsAgentDropdown" role="listbox" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#0a0a0a;border:1px solid #222;border-radius:3px;z-index:200;max-height:320px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,.6);"></div>
         </div>
-        <button id="filingsAgentBtn"
+        <button id="filingsAgentBtn" data-i18n="ra_btn_filings"
                 style="font-family:var(--mono);font-size:11px;padding:9px 18px;background:rgba(0,201,125,.15);color:var(--green,#00c97d);border:1px solid rgba(0,201,125,.4);border-radius:3px;cursor:pointer;font-weight:700;letter-spacing:.1em;">▶ ANALYZE FILING</button>
       </div>
 
