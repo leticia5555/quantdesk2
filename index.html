@@ -7550,6 +7550,19 @@ function toggleLang(){
   try{ localStorage.setItem('qd_lang', currentLang); }catch(e){}
   document.getElementById('langBtn').textContent = currentLang==='en' ? 'ES' : 'EN';
   applyLang();
+
+  // Clear stale server-agent outputs so the user knows to re-analyze in the new language.
+  // Only clears panels that already contain a real response (>200 chars); empty/placeholder
+  // panels are left alone.
+  ['filingsAgentOutput','fundamentalAgentOutput','macroAgentOutput',
+   'eventAgentOutput','sentimentAgentOutput','riskAgentOutput'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el && el.innerHTML && el.innerHTML.length > 200){
+      el.innerHTML = '<div style="font-family:var(--mono);font-size:11px;color:#888;padding:16px;text-align:center;">'
+        + (currentLang === 'es' ? 'Idioma cambiado — vuelve a analizar para ver el resultado en español' : 'Language changed — click ANALYZE again to see output in English')
+        + '</div>';
+    }
+  });
 }
 
 function applyLang(){
@@ -13023,7 +13036,7 @@ function margin_color(pct, threshold, COL){
 
     try {
       const [r, _ctx] = await Promise.all([
-        fetch('/api/filings-agent?ticker=' + encodeURIComponent(ticker)),
+        fetch('/api/filings-agent?ticker=' + encodeURIComponent(ticker) + '&lang=' + currentLang),
         ctxPromise
       ]);
       clearTimeout(t1); clearTimeout(t2);
@@ -13627,7 +13640,7 @@ function margin_color(pct, threshold, COL){
     const t3 = setTimeout(() => renderLoading(3), 8000);
 
     try {
-      const r = await fetch('/api/fundamental-agent?ticker=' + encodeURIComponent(ticker));
+      const r = await fetch('/api/fundamental-agent?ticker=' + encodeURIComponent(ticker) + '&lang=' + currentLang);
       clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
       const data = await r.json();
       if (data.error) { renderError(data.error); return; }
@@ -14129,7 +14142,7 @@ function margin_color(pct, threshold, COL){
     const t3 = setTimeout(() => renderLoading(3), 7000);
 
     try {
-      const r = await fetch('/api/macro-agent?ticker=' + encodeURIComponent(ticker));
+      const r = await fetch('/api/macro-agent?ticker=' + encodeURIComponent(ticker) + '&lang=' + currentLang);
       clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
       const data = await r.json();
       if (data.error) { renderError(data.error); return; }
@@ -14638,7 +14651,7 @@ function margin_color(pct, threshold, COL){
     const t3 = setTimeout(() => renderLoading(3), 6000);
 
     try {
-      const r = await fetch('/api/event-agent?ticker=' + encodeURIComponent(ticker));
+      const r = await fetch('/api/event-agent?ticker=' + encodeURIComponent(ticker) + '&lang=' + currentLang);
       clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
       const data = await r.json();
       if (data.error) { renderError(data.error); return; }
@@ -15212,7 +15225,7 @@ function margin_color(pct, threshold, COL){
     const t4 = setTimeout(() => renderLoading(4), 12000);
 
     try {
-      const r = await fetch('/api/sentiment-agent?ticker=' + encodeURIComponent(ticker));
+      const r = await fetch('/api/sentiment-agent?ticker=' + encodeURIComponent(ticker) + '&lang=' + currentLang);
       clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4);
       const data = await r.json();
       if (data.error) { renderError(data.error); return; }
@@ -15780,7 +15793,7 @@ function margin_color(pct, threshold, COL){
     const t4 = setTimeout(() => renderLoading(4), 9500);
 
     try {
-      const r = await fetch('/api/risk-agent?ticker=' + encodeURIComponent(ticker));
+      const r = await fetch('/api/risk-agent?ticker=' + encodeURIComponent(ticker) + '&lang=' + currentLang);
       clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4);
       const data = await r.json();
       if (data.error) { renderError(data.error); return; }

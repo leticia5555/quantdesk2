@@ -29,6 +29,13 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
 
+// ── Bilingual support ─────────────────────────────────────────────
+function langDirective(lang) {
+  return lang === 'es'
+    ? '\n\nIMPORTANTE: Responde completamente en español (español latinoamericano neutral). Todos los campos en lenguaje natural deben estar en español. Mantén los tickers, números, símbolos griegos (β, σ, ρ) y siglas (EPS, FX, ADR, BUY/HOLD/PASS, BEAT/MISS) en su forma original. Los nombres de empresas se mantienen en su idioma original. Las categorías cuantitativas (LOW/MODERATE/ELEVATED/EXTREME, INTACT/BREAKDOWN, etc.) se mantienen en inglés porque son códigos de estado del sistema; el resto del texto narrativo debe ser español.'
+    : '';
+}
+
 // Risk-free / equity-risk-premium base. All cash flows are USD-denominated
 // (US-listed names + ADRs), so we use the US 10Y as the risk-free anchor.
 const RISK_FREE_RATE = 0.045;
@@ -737,7 +744,7 @@ function sensitivityGrid({ startRev, growths, fcfMargin, baseWacc, baseTerminalG
 // ═══════════════════════════════════════════════════════════════════
 // Claude narrative (calibration-aware prompt)
 // ═══════════════════════════════════════════════════════════════════
-async function runClaude(apiKey, brief) {
+async function runClaude(apiKey, brief, lang) {
   const system = `You are a senior fundamental research analyst at a top-tier hedge fund. You will be given a structured JSON brief containing pre-computed valuation multiples, financial health scores (Altman Z, Piotroski F, Beneish M), and a calibrated 5-year DCF with bull/base/bear scenarios, Wall Street consensus, margin-of-safety category, and a confidence score.
 
 Produce a concise institutional-grade narrative. Return ONLY a JSON object, no preamble:
@@ -764,7 +771,7 @@ Be quantitative. Be specific. No fluff.`;
       'anthropic-version': ANTHROPIC_VERSION
     },
     body: JSON.stringify({
-      model: ANTHROPIC_MODEL, max_tokens: 1500, system,
+      model: ANTHROPIC_MODEL, max_tokens: 1500, system: system + langDirective(lang),
       messages: [{ role: 'user', content: user }]
     })
   });
@@ -792,6 +799,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const ticker = (req.query.ticker || '').toString().trim().toUpperCase();
+  const lang = (req.query.lang || 'en').toString().toLowerCase();
   if (!ticker) return res.status(400).json({ error: 'ticker query param required' });
 
   const finnhubKey = process.env.FINNHUB_API_KEY;
@@ -1043,7 +1051,7 @@ export default async function handler(req, res) {
         currentPrice, multiples: selfMultiples, sectorMedians, scores,
         dcf, scenarios, margin_of_safety: mos, consensus, confidence, signal
       };
-      const out = await runClaude(apiKey, brief);
+      const out = await runClaude(apiKey, brief, lang);
       if (out.ok) narrative = out.ok;
       else console.log(`[fundamental-agent] ${ticker}: claude error`, out.error, out.raw_preview || out.detail);
     }
