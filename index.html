@@ -269,7 +269,7 @@ td:first-child{color:var(--text);font-weight:500;}
 
 <!-- SIM PAGE -->
 <div id="page-sim" class="page">
-  <div class="section-header"><span class="section-title">// Monte Carlo Simulation</span><div class="section-line"></div></div>
+  <div class="section-header"><span class="section-title" data-i18n="simTitle">// Monte Carlo Simulation</span><div class="section-line"></div></div>
 
   <div class="ctrl-grid g3">
     <div class="autocomplete-wrap">
@@ -316,9 +316,9 @@ td:first-child{color:var(--text);font-weight:500;}
   </div>
 
   <div class="run-row">
-    <button class="primary" onclick="startSim()">▶ Run simulation</button>
-    <button onclick="stopSim()">■ Stop</button>
-    <button onclick="clearSim()" class="danger">✕ Clear</button>
+    <button class="primary" onclick="startSim()" data-i18n="runSim">▶ Run simulation</button>
+    <button onclick="stopSim()" data-i18n="stop">■ Stop</button>
+    <button onclick="clearSim()" class="danger" data-i18n="clear">✕ Clear</button>
     <button onclick="exportPDF()" id="exportBtn" style="border-color:var(--blue);color:var(--blue);" title="Export research report">↓ PDF</button>
     <button onclick="runBacktest()" id="backtestBtn" style="border-color:var(--amber);color:var(--amber);" title="Backtest last 6 months">↺ Backtest</button>
     <button onclick="toggleTikTok()" id="tikTokBtn" style="border-color:#ff0050;color:#ff0050;" title="TikTok fullscreen mode">▶ TikTok</button>
@@ -330,19 +330,19 @@ td:first-child{color:var(--text);font-weight:500;}
     <button onclick="downloadMemoPDF()" id="memoPdfBtn" style="border-color:#ff6600;color:#ff6600;font-weight:700;" title="Download institutional research memo (PDF)">📄 MEMO</button>
   </div>
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
-    <span id="speedTxt" style="font-size:11px;color:var(--text3);">// speed</span>
+    <span id="speedTxt" style="font-size:11px;color:var(--text3);" data-i18n="speed">// speed</span>
     <input type="range" id="simSpeed" min="1" max="3" value="2" step="1" style="width:100px;" oninput="updateSpeedLabel()"/>
     <span id="speedLabel" style="font-size:11px;color:var(--text2);min-width:60px;">MEDIUM</span>
-    <span id="speedNote" style="font-size:10px;color:var(--text3);margin-left:8px;">slow = cinematic · fast = instant</span>
+    <span id="speedNote" style="font-size:10px;color:var(--text3);margin-left:8px;" data-i18n="slowNote">slow = cinematic · fast = instant</span>
   </div>
 
   <div class="stat-grid cols-6" id="simStats">
-    <div class="stat-card"><div class="stat-lbl" id="lbl-paths">Paths run</div><div class="stat-val" id="sN">—</div><div class="stat-sub" id="sub-paths">simulations</div></div>
-    <div class="stat-card"><div class="stat-lbl">Expected P&L</div><div class="stat-val" id="sEpnl">—</div><div class="stat-sub" id="sEpct">—</div></div>
-    <div class="stat-card"><div class="stat-lbl" id="lbl-win">Win rate</div><div class="stat-val" id="sWin">—</div><div class="stat-sub" id="sub-win">profitable paths</div></div>
-    <div class="stat-card"><div class="stat-lbl" id="lbl-sharpe">Sharpe ratio</div><div class="stat-val" id="sSharpe">—</div><div class="stat-sub" id="sub-sharpe">risk-adjusted</div></div>
-    <div class="stat-card"><div class="stat-lbl" id="lbl-dd">Max drawdown</div><div class="stat-val neg" id="sDD">—</div><div class="stat-sub" id="sub-dd">worst path</div></div>
-    <div class="stat-card"><div class="stat-lbl" id="lbl-var">VaR 95%</div><div class="stat-val neg" id="sVaR">—</div><div class="stat-sub" id="sub-var">at risk</div></div>
+    <div class="stat-card"><div class="stat-lbl" id="lbl-paths" data-i18n="pathsRun">Paths run</div><div class="stat-val" id="sN">—</div><div class="stat-sub" id="sub-paths" data-i18n="simulations">simulations</div></div>
+    <div class="stat-card"><div class="stat-lbl" data-i18n="expectedPnl">Expected P&L</div><div class="stat-val" id="sEpnl">—</div><div class="stat-sub" id="sEpct">—</div></div>
+    <div class="stat-card"><div class="stat-lbl" id="lbl-win" data-i18n="winRate">Win rate</div><div class="stat-val" id="sWin">—</div><div class="stat-sub" id="sub-win" data-i18n="profitablePaths">profitable paths</div></div>
+    <div class="stat-card"><div class="stat-lbl" id="lbl-sharpe" data-i18n="sharpe">Sharpe ratio</div><div class="stat-val" id="sSharpe">—</div><div class="stat-sub" id="sub-sharpe" data-i18n="riskAdj">risk-adjusted</div></div>
+    <div class="stat-card"><div class="stat-lbl" id="lbl-dd" data-i18n="maxDD">Max drawdown</div><div class="stat-val neg" id="sDD">—</div><div class="stat-sub" id="sub-dd" data-i18n="worstPath">worst path</div></div>
+    <div class="stat-card"><div class="stat-lbl" id="lbl-var" data-i18n="var">VaR 95%</div><div class="stat-val neg" id="sVaR">—</div><div class="stat-sub" id="sub-var" data-i18n="atRisk">at risk</div></div>
   </div>
 
   <div class="prog-row"><div class="prog-track"><div class="prog-fill" id="progFill"></div></div><div class="prog-lbl" id="progLbl">0 / 0</div></div>
@@ -372,13 +372,13 @@ td:first-child{color:var(--text);font-weight:500;}
   </div>
 
   <div class="scenario-row">
-    <div class="scen bear"><div class="scen-lbl" id="lbl-bear">bear · p10</div><div class="scen-pct neg" id="scB">—</div><div class="scen-pnl" id="scBpnl">—</div><div class="scen-prob" id="prob-bear">worst 10% of paths</div></div>
-    <div class="scen"><div class="scen-lbl" id="lbl-base">base · median</div><div class="scen-pct" id="scM">—</div><div class="scen-pnl" id="scMpnl">—</div><div class="scen-prob" id="prob-base">median outcome</div></div>
-    <div class="scen bull"><div class="scen-lbl" id="lbl-bull">bull · p90</div><div class="scen-pct pos" id="scU">—</div><div class="scen-pnl" id="scUpnl">—</div><div class="scen-prob" id="prob-bull">best 10% of paths</div></div>
+    <div class="scen bear"><div class="scen-lbl" id="lbl-bear" data-i18n="bear">bear · p10</div><div class="scen-pct neg" id="scB">—</div><div class="scen-pnl" id="scBpnl">—</div><div class="scen-prob" id="prob-bear" data-i18n="worstPaths">worst 10% of paths</div></div>
+    <div class="scen"><div class="scen-lbl" id="lbl-base" data-i18n="base">base · median</div><div class="scen-pct" id="scM">—</div><div class="scen-pnl" id="scMpnl">—</div><div class="scen-prob" id="prob-base" data-i18n="medianOutcome">median outcome</div></div>
+    <div class="scen bull"><div class="scen-lbl" id="lbl-bull" data-i18n="bull">bull · p90</div><div class="scen-pct pos" id="scU">—</div><div class="scen-pnl" id="scUpnl">—</div><div class="scen-prob" id="prob-bull" data-i18n="bestPaths">best 10% of paths</div></div>
   </div>
 
   <div id="comparisonPanel" style="display:none;margin-bottom:16px;">
-    <div class="section-header"><span class="section-title" id="compTitle">// session comparison</span><div class="section-line"></div></div>
+    <div class="section-header"><span class="section-title" id="compTitle" data-i18n="sessionComp">// session comparison</span><div class="section-line"></div></div>
     <div id="comparisonTable" style="overflow-x:auto;">
       <table style="width:100%;">
         <thead>
@@ -486,7 +486,7 @@ td:first-child{color:var(--text);font-weight:500;}
 
 <div id="simAnalysis" style="display:none;">
     <div class="analysis">
-      <h3 id="thesisTitle">Trade thesis</h3>
+      <h3 id="thesisTitle" data-i18n="tradeThesis">Trade thesis</h3>
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
         <span id="simVerdict" class="verdict"></span>
         <span id="simMeta" style="font-size:11px;color:var(--text3);"></span>
@@ -504,15 +504,15 @@ td:first-child{color:var(--text);font-weight:500;}
       <div id="preTradeIntelContent" style="font-family:var(--mono);font-size:11px;line-height:1.6;color:#aaa;"></div>
     </div>
     <div class="analysis">
-      <h3 id="signalsTitle">Key signals</h3>
+      <h3 id="signalsTitle" data-i18n="keySignals">Key signals</h3>
       <ul class="sig-list" id="simSignals"></ul>
     </div>
     <div class="analysis risk">
-      <h3 id="riskTitle">Key risk</h3>
+      <h3 id="riskTitle" data-i18n="keyRisk">Key risk</h3>
       <p id="simRisk"></p>
     </div>
     <div class="analysis" id="newsBlock" style="display:none;border-color:rgba(55,138,221,.3);">
-      <h3 id="newsTitle" style="color:var(--blue);">// recent news sentiment</h3>
+      <h3 id="newsTitle" style="color:var(--blue);" data-i18n="newsTitle">// recent news sentiment</h3>
       <p id="simNews"></p>
     </div>
     <div class="analysis" id="newsLiveBlock" style="display:none;border-color:rgba(255,102,0,.3);">
@@ -628,10 +628,10 @@ td:first-child{color:var(--text);font-weight:500;}
 
 <!-- VC PAGE -->
 <div id="page-vc" class="page">
-  <div class="section-header"><span class="section-title" id="vcTitle">// VC Intelligence</span><div class="section-line"></div></div>
+  <div class="section-header"><span class="section-title" id="vcTitle" data-i18n="vcTitle">// VC Intelligence</span><div class="section-line"></div></div>
 
   <div class="ctrl-grid g2" style="margin-bottom:12px;">
-    <input type="text" id="vcQuery" placeholder="Sector or theme: AI agents, LATAM fintech..."/>
+    <input type="text" id="vcQuery" placeholder="Sector or theme: AI agents, LATAM fintech..." data-i18n-ph="vcPlaceholder"/>
     <select id="vcStage"><option value="all">All stages</option><option value="Seed">Seed</option><option value="Series A">Series A</option><option value="Series B">Series B+</option><option value="Growth">Growth</option></select>
   </div>
 
@@ -648,7 +648,7 @@ td:first-child{color:var(--text);font-weight:500;}
   </div>
 
   <div class="run-row">
-    <button class="primary" onclick="runVC()">▶ Scan deal flow</button>
+    <button class="primary" onclick="runVC()" data-i18n="scanDeal">▶ Scan deal flow</button>
   </div>
 
   <div id="vcResults"></div>
@@ -656,40 +656,40 @@ td:first-child{color:var(--text);font-weight:500;}
 
 <!-- PORTFOLIO PAGE -->
 <div id="page-portfolio" class="page">
-  <div class="section-header"><span class="section-title" id="portTitle">// Portfolio Simulator</span><div class="section-line"></div></div>
+  <div class="section-header"><span class="section-title" id="portTitle" data-i18n="portTitle">// Portfolio Simulator</span><div class="section-line"></div></div>
 
   <div class="two-col" style="margin-bottom:16px;">
     <div>
-      <div style="margin-bottom:8px;font-size:11px;color:var(--text3);">// add position</div>
+      <div style="margin-bottom:8px;font-size:11px;color:var(--text3);" data-i18n="addPosition">// add position</div>
       <div class="ctrl-grid g2" style="margin-bottom:8px;">
         <input type="text" id="ptTicker" placeholder="Ticker"/>
         <select id="ptDir"><option value="LONG">LONG</option><option value="SHORT">SHORT</option></select>
         <input type="number" id="ptAmount" placeholder="Amount $" min="100"/>
         <select id="ptHorizon"><option value="5">1W</option><option value="15">15d</option><option value="30">1M</option><option value="90" selected>3M</option><option value="180">6M</option><option value="365">1Y</option></select>
       </div>
-      <button id="addPosBtn" class="primary" onclick="addPosition()" style="width:100%;">+ Add position</button>
+      <button id="addPosBtn" class="primary" onclick="addPosition()" style="width:100%;" data-i18n="addBtn">+ Add position</button>
     </div>
     <div>
-      <div style="margin-bottom:8px;font-size:11px;color:var(--text3);">// portfolio summary</div>
+      <div style="margin-bottom:8px;font-size:11px;color:var(--text3);" data-i18n="portSummary">// portfolio summary</div>
       <div class="stat-grid cols-2">
-        <div class="stat-card"><div class="stat-lbl" id="lbl-ptTotal">Total capital</div><div class="stat-val" id="ptTotal">$0</div></div>
-        <div class="stat-card"><div class="stat-lbl" id="lbl-ptCount">Positions</div><div class="stat-val" id="ptCount">0</div></div>
-        <div class="stat-card"><div class="stat-lbl" id="lbl-ptReturn">Expected return</div><div class="stat-val" id="ptReturn">—</div></div>
-        <div class="stat-card"><div class="stat-lbl" id="lbl-ptVar">Portfolio VaR</div><div class="stat-val neg" id="ptVaR">—</div></div>
+        <div class="stat-card"><div class="stat-lbl" id="lbl-ptTotal" data-i18n="totalCapital">Total capital</div><div class="stat-val" id="ptTotal">$0</div></div>
+        <div class="stat-card"><div class="stat-lbl" id="lbl-ptCount" data-i18n="positions">Positions</div><div class="stat-val" id="ptCount">0</div></div>
+        <div class="stat-card"><div class="stat-lbl" id="lbl-ptReturn" data-i18n="expReturn">Expected return</div><div class="stat-val" id="ptReturn">—</div></div>
+        <div class="stat-card"><div class="stat-lbl" id="lbl-ptVar" data-i18n="portVar">Portfolio VaR</div><div class="stat-val neg" id="ptVaR">—</div></div>
       </div>
     </div>
   </div>
 
   <div id="ptTable" style="margin-bottom:16px;">
     <table>
-      <thead><tr><th>Ticker</th><th>Dir</th><th>Amount</th><th>Horizon</th><th>Exp. Return</th><th>Win %</th><th>VaR</th><th></th></tr></thead>
-      <tbody id="ptBody"><tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px;">No positions yet — add one above</td></tr></tbody>
+      <thead><tr><th data-i18n="ticker">Ticker</th><th data-i18n="dir">Dir</th><th data-i18n="amount">Amount</th><th data-i18n="horizon">Horizon</th><th data-i18n="expReturnCol">Exp. Return</th><th data-i18n="winCol">Win %</th><th data-i18n="varCol">VaR</th><th></th></tr></thead>
+      <tbody id="ptBody"><tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px;" data-i18n="noPositions">No positions yet — add one above</td></tr></tbody>
     </table>
   </div>
 
   <div class="run-row">
-    <button class="primary" onclick="runPortfolioSim()" id="ptRunBtn" disabled>▶ Run portfolio simulation</button>
-    <button id="clearPortBtn" onclick="clearPortfolio()" class="danger">✕ Clear all</button>
+    <button class="primary" onclick="runPortfolioSim()" id="ptRunBtn" disabled data-i18n="runPort">▶ Run portfolio simulation</button>
+    <button id="clearPortBtn" onclick="clearPortfolio()" class="danger" data-i18n="clearAll">✕ Clear all</button>
   </div>
 
   <div id="ptResults"></div>
@@ -700,10 +700,10 @@ td:first-child{color:var(--text);font-weight:500;}
 
   <!-- BLOOMBERG STYLE TOP BAR -->
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:20px;flex-wrap:wrap;">
-    <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;">QUANTDESK MARKETS</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;" data-i18n="macroTitle">QUANTDESK MARKETS</span>
     <span style="font-family:var(--mono);font-size:10px;color:#444;" id="macroTime">—</span>
     <div style="display:flex;gap:16px;margin-left:auto;flex-wrap:wrap;" id="topBarTickers"></div>
-    <button onclick="runMacroBrief()" id="macroBriefBtn" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #ff6600;color:#ff6600;background:none;border-radius:2px;cursor:pointer;letter-spacing:.06em;">AI BRIEF</button>
+    <button onclick="runMacroBrief()" id="macroBriefBtn" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #ff6600;color:#ff6600;background:none;border-radius:2px;cursor:pointer;letter-spacing:.06em;" data-i18n="aiBrief">AI BRIEF</button>
   </div>
 
   <!-- MAIN BLOOMBERG GRID -->
@@ -714,7 +714,7 @@ td:first-child{color:var(--text);font-weight:500;}
 
       <!-- Fear & Greed -->
       <div style="padding:12px;border-bottom:1px solid #1a1a1a;">
-        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:10px;">SENTIMENT INDEX</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:10px;" data-i18n="sentimentIndex">SENTIMENT INDEX</div>
         <div style="position:relative;text-align:center;">
           <canvas id="fearGaugeCanvas" width="190" height="120" style="display:block;margin:0 auto;"></canvas>
           <div id="fearScore" style="font-size:28px;font-weight:700;font-family:var(--mono);text-align:center;margin-top:4px;line-height:1;">—</div>
@@ -725,13 +725,13 @@ td:first-child{color:var(--text);font-weight:500;}
 
       <!-- LATAM FX -->
       <div style="padding:12px;border-bottom:1px solid #1a1a1a;">
-        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;">LATAM FX</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;" data-i18n="latamFx">LATAM FX</div>
         <div id="fxMiniCards" style="display:flex;flex-direction:column;gap:4px;"></div>
       </div>
 
       <!-- FX Calculator -->
       <div style="padding:12px;">
-        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;">FX IMPACT CALC</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;" data-i18n="fxImpact">FX IMPACT CALC</div>
         <input type="text" id="fxTicker" placeholder="AMXB.MX" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 8px;width:100%;margin-bottom:4px;border-radius:2px;"/>
         <input type="number" id="fxAmount" value="10000" placeholder="USD amount" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 8px;width:100%;margin-bottom:4px;border-radius:2px;"/>
         <div style="display:flex;gap:4px;">
@@ -747,13 +747,13 @@ td:first-child{color:var(--text);font-weight:500;}
 
       <!-- Markets table -->
       <div style="padding:12px;border-bottom:1px solid #1a1a1a;">
-        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;">GLOBAL MARKETS</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;" data-i18n="globalMarkets">GLOBAL MARKETS</div>
         <div id="marketCards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;"></div>
       </div>
 
       <!-- Sector Heatmap -->
       <div style="padding:12px;border-bottom:1px solid #1a1a1a;flex:1;">
-        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;">SECTOR PERFORMANCE</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;" data-i18n="sectorPerformance">SECTOR PERFORMANCE</div>
         <div id="sectorHeatmap"></div>
       </div>
 
@@ -766,13 +766,13 @@ td:first-child{color:var(--text);font-weight:500;}
 
       <!-- Economic Calendar -->
       <div style="padding:12px;border-bottom:1px solid #1a1a1a;flex:1;overflow-y:auto;max-height:50vh;">
-        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;">ECONOMIC CALENDAR</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;" data-i18n="economicCalendar">ECONOMIC CALENDAR</div>
         <div id="econCalendar"></div>
       </div>
 
       <!-- Market Movers -->
       <div style="padding:12px;">
-        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;">MARKET MOVERS</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;" data-i18n="marketMovers">MARKET MOVERS</div>
         <div id="marketMovers"></div>
       </div>
     </div>
@@ -785,14 +785,14 @@ td:first-child{color:var(--text);font-weight:500;}
 
   <!-- TOP BAR -->
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;">
-    <span style="font-family:var(--mono);font-size:10px;color:#00c97d;font-weight:600;letter-spacing:.1em;">SMART MONEY TRACKER</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#00c97d;font-weight:600;letter-spacing:.1em;" data-i18n="smartMoneyTracker">SMART MONEY TRACKER</span>
     <span style="font-family:var(--mono);font-size:10px;color:#333;">SEC · FINRA · CBOE · FINNHUB</span>
     <div style="margin-left:auto;display:flex;gap:8px;">
       <div class="autocomplete-wrap" style="display:inline-block;">
         <input type="text" id="smTicker" placeholder="TICKER" oninput="onSmTickerInput()" onkeydown="onSmTickerKey(event)" autocomplete="off" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 10px;width:100px;border-radius:2px;text-transform:uppercase;"/>
         <div id="smAcList" class="autocomplete-list" style="display:none;"></div>
       </div>
-      <button onclick="runSmartMoney()" style="font-family:var(--mono);font-size:10px;padding:4px 12px;background:#00c97d;border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;letter-spacing:.04em;">ANALYZE</button>
+      <button onclick="runSmartMoney()" style="font-family:var(--mono);font-size:10px;padding:4px 12px;background:#00c97d;border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;letter-spacing:.04em;" data-i18n="analyze">ANALYZE</button>
     </div>
   </div>
 
@@ -801,25 +801,25 @@ td:first-child{color:var(--text);font-weight:500;}
 
     <!-- SHORT INTEREST -->
     <div style="background:#0d0d0d;padding:16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">SHORT INTEREST</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="shortInterest">SHORT INTEREST</div>
       <div id="shortInterestPanel">
-        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;">Enter ticker to analyze</div>
+        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;" data-i18n="enterTicker">Enter ticker to analyze</div>
       </div>
     </div>
 
     <!-- INSIDER TRANSACTIONS -->
     <div style="background:#0d0d0d;padding:16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">INSIDER TRANSACTIONS · SEC</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="insiderTx">INSIDER TRANSACTIONS · SEC</div>
       <div id="insiderPanel">
-        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;">Enter ticker to analyze</div>
+        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;" data-i18n="enterTicker">Enter ticker to analyze</div>
       </div>
     </div>
 
     <!-- INSTITUTIONAL OWNERSHIP -->
     <div style="background:#0d0d0d;padding:16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">INSTITUTIONAL OWNERSHIP</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="instOwnership">INSTITUTIONAL OWNERSHIP</div>
       <div id="institutionalPanel">
-        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;">Enter ticker to analyze</div>
+        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;" data-i18n="enterTicker">Enter ticker to analyze</div>
       </div>
     </div>
   </div>
@@ -829,24 +829,24 @@ td:first-child{color:var(--text);font-weight:500;}
 
     <!-- PUT/CALL + OPTIONS FLOW -->
     <div style="background:#0d0d0d;padding:16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">OPTIONS SENTIMENT · PUT/CALL</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="optionsSentiment">OPTIONS SENTIMENT · PUT/CALL</div>
       <div id="optionsPanel">
-        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;">Enter ticker to analyze</div>
+        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;" data-i18n="enterTicker">Enter ticker to analyze</div>
       </div>
     </div>
 
     <!-- SMART MONEY VERDICT -->
     <div style="background:#0d0d0d;padding:16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">AI SMART MONEY VERDICT 🤖</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="aiSmartVerdict">AI SMART MONEY VERDICT 🤖</div>
       <div id="smVerdictPanel">
-        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;">Enter ticker to analyze</div>
+        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;" data-i18n="enterTicker">Enter ticker to analyze</div>
       </div>
     </div>
   </div>
 
   <!-- MARKET-WIDE SIGNALS -->
   <div style="background:#0d0d0d;padding:16px;margin-top:1px;">
-    <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">MARKET-WIDE SMART MONEY SIGNALS 🤖 AI Analysis</div>
+    <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="marketWideSignals">MARKET-WIDE SMART MONEY SIGNALS 🤖 AI Analysis</div>
     <div id="marketSignalsPanel">
       <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:20px 0;">Loading market signals...</div>
     </div>
@@ -857,36 +857,36 @@ td:first-child{color:var(--text);font-weight:500;}
 <!-- EARNINGS PAGE -->
 <div id="page-earnings" class="page" style="padding:0;background:#080808;min-height:100vh;">
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
-    <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;">EARNINGS INTELLIGENCE</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;" data-i18n="earningsIntel">EARNINGS INTELLIGENCE</span>
     <span style="font-family:var(--mono);font-size:10px;color:#333;">EPS · SURPRISES · REACTIONS · WHISPER NUMBERS</span>
     <div style="margin-left:auto;display:flex;gap:8px;">
       <div class="autocomplete-wrap" style="display:inline-block;">
         <input type="text" id="earningsTicker" placeholder="TICKER" oninput="onEarningsTickerInput()" onkeydown="onEarningsTickerKey(event)" autocomplete="off" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 10px;width:100px;border-radius:2px;text-transform:uppercase;"/>
         <div id="earningsAcList" class="autocomplete-list" style="display:none;"></div>
       </div>
-      <button onclick="runEarningsIntel()" style="font-family:var(--mono);font-size:10px;padding:4px 12px;background:#ff6600;border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;">ANALYZE</button>
+      <button onclick="runEarningsIntel()" style="font-family:var(--mono);font-size:10px;padding:4px 12px;background:#ff6600;border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;" data-i18n="analyze">ANALYZE</button>
     </div>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:#111;margin-top:1px;">
     <div style="background:#0d0d0d;padding:16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">EPS HISTORY · SURPRISES</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="epsHistory">EPS HISTORY · SURPRISES</div>
       <div id="epsPanel"><div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;">Enter ticker to analyze</div></div>
     </div>
     <div style="background:#0d0d0d;padding:16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">POST-EARNINGS PRICE REACTION</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="postEarnReaction">POST-EARNINGS PRICE REACTION</div>
       <div id="reactionPanel"><div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;">Enter ticker to analyze</div></div>
     </div>
     <div style="background:#0d0d0d;padding:16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">NEXT EARNINGS SETUP</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="nextEarnSetup">NEXT EARNINGS SETUP</div>
       <div id="nextEarningsPanel"><div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;">Enter ticker to analyze</div></div>
     </div>
   </div>
   <div style="background:#0d0d0d;padding:16px;margin-top:1px;">
-    <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;">AI EARNINGS VERDICT</div>
+    <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="aiEarnVerdict">AI EARNINGS VERDICT</div>
     <div id="earningsVerdictPanel"><div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:20px 0;">Enter ticker to analyze</div></div>
   </div>
   <div style="padding:16px;border-top:1px solid #1a1a1a;">
-    <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:10px;">UPCOMING EARNINGS THIS WEEK</div>
+    <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:10px;" data-i18n="upcomingEarn">UPCOMING EARNINGS THIS WEEK</div>
     <div id="upcomingEarnings" style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;"></div>
   </div>
 </div>
@@ -899,15 +899,15 @@ td:first-child{color:var(--text);font-weight:500;}
 
   <!-- TOP BAR -->
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-    <span style="font-family:var(--mono);font-size:10px;color:#00c97d;font-weight:600;letter-spacing:.1em;">STOCK SCREENER</span>
-    <span style="font-family:var(--mono);font-size:10px;color:#333;">500+ STOCKS · US + LATAM · REAL-TIME FILTERS</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#00c97d;font-weight:600;letter-spacing:.1em;" data-i18n="stockScreener">STOCK SCREENER</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;" data-i18n="screenerSubtitle">500+ STOCKS · US + LATAM · REAL-TIME FILTERS</span>
     <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;">
       <button onclick="applyPreset('squeeze')" class="screener-preset" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">🔥 Squeeze Candidates</button>
       <button onclick="applyPreset('insider')" class="screener-preset" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">👤 Insider Buying</button>
       <button onclick="applyPreset('momentum')" class="screener-preset" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">📈 Momentum</button>
       <button onclick="applyPreset('latam')" class="screener-preset" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">🌎 LATAM Focus</button>
       <button onclick="applyPreset('volatile')" class="screener-preset" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">⚡ High Vol Plays</button>
-      <button onclick="runScreener()" style="font-family:var(--mono);font-size:10px;padding:3px 12px;background:#00c97d;border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;">▶ SCREEN</button>
+      <button onclick="runScreener()" style="font-family:var(--mono);font-size:10px;padding:3px 12px;background:#00c97d;border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;" data-i18n="screen">▶ SCREEN</button>
     </div>
   </div>
 
@@ -916,18 +916,17 @@ td:first-child{color:var(--text);font-weight:500;}
     <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:8px;">
 
       <div>
-        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">UNIVERSE</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="universe">UNIVERSE</div>
         <select id="scUniverse" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:100%;border-radius:2px;">
           <option value="all">All Markets</option>
           <option value="us">US Stocks</option>
           <option value="latam">LATAM Only</option>
           <option value="crypto">Crypto</option>
-          <option value="sp500">S&P 500</option>
         </select>
       </div>
 
       <div>
-        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SECTOR</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="sector">SECTOR</div>
         <select id="scSector" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:100%;border-radius:2px;">
           <option value="all">All Sectors</option>
           <option value="tech">Technology</option>
@@ -940,19 +939,19 @@ td:first-child{color:var(--text);font-weight:500;}
       </div>
 
       <div>
-        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">MIN SQUEEZE SCORE</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="minSqueeze">MIN SQUEEZE SCORE</div>
         <input type="range" id="scSqueeze" min="0" max="100" value="0" style="width:100%;accent-color:#00c97d;" oninput="document.getElementById('scSqueezeVal').textContent=this.value"/>
         <span id="scSqueezeVal" style="font-family:var(--mono);font-size:9px;color:#00c97d;">0</span>
       </div>
 
       <div>
-        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">MIN MOMENTUM %</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="minMomentum">MIN MOMENTUM %</div>
         <input type="range" id="scMomentum" min="-50" max="100" value="-50" style="width:100%;accent-color:#00c97d;" oninput="document.getElementById('scMomentumVal').textContent=this.value+'%'"/>
         <span id="scMomentumVal" style="font-family:var(--mono);font-size:9px;color:#00c97d;">-50%</span>
       </div>
 
       <div>
-        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">INSIDER ACTIVITY</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="insiderActivity">INSIDER ACTIVITY</div>
         <select id="scInsider" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:100%;border-radius:2px;">
           <option value="all">Any</option>
           <option value="buying">Buying</option>
@@ -962,7 +961,7 @@ td:first-child{color:var(--text);font-weight:500;}
       </div>
 
       <div>
-        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SIGNAL</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalLbl">SIGNAL</div>
         <select id="scSignal" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:100%;border-radius:2px;">
           <option value="all">Any Signal</option>
           <option value="strong_buy">Strong Buy</option>
@@ -975,14 +974,14 @@ td:first-child{color:var(--text);font-weight:500;}
 
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
       <div>
-        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">VOLATILITY (SIGMA) RANGE</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="volRange">VOLATILITY (SIGMA) RANGE</div>
         <div style="display:flex;gap:4px;">
           <input type="number" id="scSigmaMin" placeholder="Min%" value="0" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:50%;border-radius:2px;"/>
           <input type="number" id="scSigmaMax" placeholder="Max%" value="200" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:50%;border-radius:2px;"/>
         </div>
       </div>
       <div>
-        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SORT BY</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="sortBy">SORT BY</div>
         <select id="scSort" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:100%;border-radius:2px;">
           <option value="squeeze">Squeeze Score</option>
           <option value="momentum">Momentum</option>
@@ -992,7 +991,7 @@ td:first-child{color:var(--text);font-weight:500;}
         </select>
       </div>
       <div>
-        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">MAX RESULTS</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="maxResults">MAX RESULTS</div>
         <select id="scLimit" style="font-family:var(--mono);font-size:10px;background:#111;border:1px solid #222;color:#ccc;padding:4px;width:100%;border-radius:2px;">
           <option value="10">Top 10</option>
           <option value="20" selected>Top 20</option>
@@ -1000,7 +999,7 @@ td:first-child{color:var(--text);font-weight:500;}
         </select>
       </div>
       <div style="display:flex;align-items:flex-end;">
-        <div id="screenerStatus" style="font-family:var(--mono);font-size:10px;color:#555;">Ready to screen</div>
+        <div id="screenerStatus" style="font-family:var(--mono);font-size:10px;color:#555;" data-i18n="readyScreen">Ready to screen</div>
       </div>
     </div>
   </div>
@@ -1009,20 +1008,20 @@ td:first-child{color:var(--text);font-weight:500;}
   <div style="padding:0;">
     <!-- Header -->
     <div style="display:grid;grid-template-columns:80px 140px 90px 80px 80px 80px 90px 90px 100px 1fr;gap:0;background:#0a0a0a;border-bottom:1px solid #222;padding:8px 16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">TICKER</div>
-      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">COMPANY</div>
-      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">PRICE</div>
-      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">30D %</div>
-      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">SIGMA</div>
-      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">SQUEEZE</div>
-      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">INSIDER</div>
-      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">INST OWN</div>
-      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">SIGNAL</div>
-      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;">THESIS</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;" data-i18n="ticker">TICKER</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;" data-i18n="company">COMPANY</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;" data-i18n="priceCol">PRICE</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;" data-i18n="day30">30D %</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;" data-i18n="sigmaCol">SIGMA</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;" data-i18n="squeezeCol">SQUEEZE</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;" data-i18n="insiderCol">INSIDER</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;" data-i18n="instOwnCol">INST OWN</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;" data-i18n="signalLbl">SIGNAL</div>
+      <div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.06em;" data-i18n="thesisCol">THESIS</div>
     </div>
     <!-- Rows -->
     <div id="screenerResults">
-      <div style="text-align:center;padding:60px;font-family:var(--mono);font-size:12px;color:#333;">
+      <div style="text-align:center;padding:60px;font-family:var(--mono);font-size:12px;color:#333;" data-i18n="selectFilters">
         Select filters and press SCREEN — or choose a preset
       </div>
     </div>
@@ -1693,7 +1692,7 @@ async function runEarningsIntel(){
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:900,
-        messages:[{role:'user',content:claudePrompt}]})
+        messages:[{role:'user',content:claudePrompt + langDirective()}]})
     });
     const d=await r.json();
     const analysis=safeJSON(d.content.map(b=>b.text||'').join(''));
@@ -2001,7 +2000,7 @@ async function runSmartMoney(){
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,
         messages:[{role:'user',content:
-          'Bloomberg smart money data for '+ticker+' April 2026. Use SEC, FINRA, 13F knowledge. Return ONLY valid JSON with these exact keys: {"short_interest":{"short_interest_pct":number,"days_to_cover":number,"short_squeeze_score":number,"change_vs_month_ago":"INCREASED|DECREASED|STABLE","borrow_rate_pct":number,"narrative":"string"},"institutional":{"institutional_pct":number,"top_holders":[{"name":"string","pct":number,"change":"INCREASED|DECREASED|NEW|EXITED"}],"hedge_fund_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"options":{"put_call_ratio":number,"implied_volatility_pct":number,"iv_percentile":number,"options_sentiment":"BULLISH|BEARISH|NEUTRAL","unusual_activity":"YES|NO","notable_flow":"string","max_pain":number,"key_strikes":[{"strike":number,"type":"CALL|PUT","open_interest":number,"significance":"HIGH|MEDIUM"}]},"verdict":{"overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","conviction":"HIGH|MEDIUM|LOW","smart_money_score":number,"key_insight":"string","bull_case":"string","bear_case":"string","trade_setup":"string","risk_flags":["string"]}}'}]})
+          'Bloomberg smart money data for '+ticker+' April 2026. Use SEC, FINRA, 13F knowledge. Return ONLY valid JSON with these exact keys: {"short_interest":{"short_interest_pct":number,"days_to_cover":number,"short_squeeze_score":number,"change_vs_month_ago":"INCREASED|DECREASED|STABLE","borrow_rate_pct":number,"narrative":"string"},"institutional":{"institutional_pct":number,"top_holders":[{"name":"string","pct":number,"change":"INCREASED|DECREASED|NEW|EXITED"}],"hedge_fund_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"options":{"put_call_ratio":number,"implied_volatility_pct":number,"iv_percentile":number,"options_sentiment":"BULLISH|BEARISH|NEUTRAL","unusual_activity":"YES|NO","notable_flow":"string","max_pain":number,"key_strikes":[{"strike":number,"type":"CALL|PUT","open_interest":number,"significance":"HIGH|MEDIUM"}]},"verdict":{"overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","conviction":"HIGH|MEDIUM|LOW","smart_money_score":number,"key_insight":"string","bull_case":"string","bear_case":"string","trade_setup":"string","risk_flags":["string"]}}' + langDirective()}]})
     });
 
     if(!r.ok) throw new Error('API error: '+r.status);
@@ -2232,8 +2231,8 @@ function renderSmVerdict(v){
   const sigColor={'STRONG BUY':'#00ff88','BUY':'#00c97d','NEUTRAL':'#888','SELL':'#E24B4A','STRONG SELL':'#ff0000'}[v.overall_signal]||'#888';
   const scoreBar=Math.round((v.smart_money_score/100)*100);
   el.innerHTML='<div style="text-align:center;margin-bottom:16px;">'
-    +'<div style="font-family:var(--mono);font-size:24px;font-weight:700;color:'+sigColor+';">'+v.overall_signal+'</div>'
-    +'<div style="font-size:10px;color:#555;margin-top:2px;">'+v.conviction+' CONVICTION</div>'
+    +'<div style="font-family:var(--mono);font-size:24px;font-weight:700;color:'+sigColor+';">'+verdictLabel(v.overall_signal)+'</div>'
+    +'<div style="font-size:10px;color:#555;margin-top:2px;">'+verdictLabel(v.conviction)+' '+t('convictionLbl')+'</div>'
     +'<div style="margin:10px auto;max-width:160px;">'
     +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SMART MONEY SCORE</div>'
     +'<div style="height:6px;background:#111;border-radius:3px;overflow:hidden;">'
@@ -2782,7 +2781,7 @@ Return ONLY JSON:
   "top_risks": ["risk 1","risk 2","risk 3"],
   "opportunities": ["opportunity 1","opportunity 2"],
   "positioning": "2 sentences on how to position a LATAM portfolio right now"
-}`}]})
+}` + langDirective()}]})
     });
     const d=await r.json();
     const brief=safeJSON(d.content.map(b=>b.text||'').join(''));
@@ -4286,7 +4285,7 @@ async function runVC(){
       body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1400,messages:[{role:'user',content:
         `Senior VC analyst. Active fundraising in "${q}" (stage: ${stage==='all'?'any':stage}), early 2026. Real companies when possible.
 Return ONLY JSON array of 4:
-{"name":"","sector":"","amount":"$XM","round":"","raised":"$XM total","founded":"YYYY","hq":"City,Country","lead_investor":"","backers":["","",""],"thesis":"2 sentences","why_now":"1 sentence","traction":"key metric","traction_signal":"ACCELERATING|STEADY|EARLY","signal_score":1-100,"verdict":"STRONG BUY|WATCH|PASS"}`}]})
+{"name":"","sector":"","amount":"$XM","round":"","raised":"$XM total","founded":"YYYY","hq":"City,Country","lead_investor":"","backers":["","",""],"thesis":"2 sentences","why_now":"1 sentence","traction":"key metric","traction_signal":"ACCELERATING|STEADY|EARLY","signal_score":1-100,"verdict":"STRONG BUY|WATCH|PASS"}` + langDirective()}]})
     });
     const d=await res.json();
     const deals=safeJSON(d.content.map(b=>b.text||'').join(''));
@@ -5993,7 +5992,7 @@ function renderRiskOfRuin(winRate, avgWin, avgLoss, capital){
   }
 
   return `
-    <div class="section-header" style="margin-top:4px;"><span class="section-title">// risk of ruin</span><div class="section-line"></div></div>
+    <div class="section-header" style="margin-top:4px;"><span class="section-title" data-i18n="riskOfRuin">// risk of ruin</span><div class="section-line"></div></div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;">
       <div class="stat-card">
         <div class="stat-lbl">Lose 10% in 50 trades</div>
@@ -6298,8 +6297,8 @@ function renderDebate(debate, risk, ticker){
     <div style="margin-top:16px;padding:16px;background:${verdictBg};border:1px solid ${verdictColor};border-radius:6px;">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
         <div style="font-family:var(--mono);font-size:11px;color:var(--text3);">⚖️ RISK MANAGER VERDICT</div>
-        <span style="font-family:var(--mono);font-size:13px;font-weight:500;color:${verdictColor};">${risk.verdict}</span>
-        <span style="font-size:10px;color:var(--text3);">${risk.conviction} conviction</span>
+        <span style="font-family:var(--mono);font-size:13px;font-weight:500;color:${verdictColor};">${verdictLabel(risk.verdict)}</span>
+        <span style="font-size:10px;color:var(--text3);">${verdictLabel(risk.conviction)} ${t('convictionLbl').toLowerCase()}</span>
       </div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px;">
         <div class="stat-card" style="padding:8px;">
@@ -6336,6 +6335,9 @@ const INVESTORS = [
   {id:'marks', name:'Howard Marks', style:'Risk-first investor. Market cycle expert. Believes risk control is the most important thing. Skeptical of consensus, patient for opportunity.', emoji:'⚠️'},
   {id:'mobius', name:'Mark Mobius', style:'Emerging markets legend. 30 years in LATAM, Asia, Africa. Loves undervalued frontier markets. Understands currency risk and political risk deeply.', emoji:'🌏'},
   {id:'masa', name:'Masayoshi Son', style:'300-year vision investor. Bets on AI singularity. Either 10x or zero — no middle ground. Famously lost $70B and came back. LATAM bets: Rappi, Kavak.', emoji:'💥'},
+  {id:'slim', name:'Carlos Slim', style:'LATAM telecom and infrastructure tycoon. Patient buyer of cash-flow-generating assets at distressed valuations. Thinks in decades, not quarters. Skeptical of asset-light tech with no moat. Heavy on telecom, banking, real estate, retail.', emoji:'🇲🇽'},
+  {id:'galperin', name:'Marcos Galperin', style:'Argentine founder-operator. Built MercadoLibre into LATAM\'s Amazon. Understands fintech rails, logistics, and consumer behavior in emerging markets. Bullish on LATAM digital adoption, skeptical of US-centric assumptions about emerging consumers.', emoji:'🇦🇷'},
+  {id:'lemann', name:'Jorge Paulo Lemann', style:'Brazilian 3G Capital founder. Zero-based budgeting evangelist. Buys mature consumer brands and ruthlessly cuts costs. Long horizons, concentrated bets. Famous for AB InBev, Burger King, Kraft Heinz. Looks for operational fat to trim.', emoji:'🇧🇷'},
 ];
 
 async function runInvestorPersonas(){
@@ -6364,7 +6366,7 @@ async function runInvestorPersonas(){
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1200,
         messages:[{role:'user',content:
-          `You are simulating 10 legendary investors analyzing a trade. Give each investor's brutally honest opinion — make them sound exactly like themselves. Some bullish, some bearish, some neutral. Disagree with each other.
+          `You are simulating 13 legendary investors analyzing a trade. Give each investor's brutally honest opinion — make them sound exactly like themselves. Some bullish, some bearish, some neutral. Disagree with each other.
 
 Trade: ${dir} ${ticker} at $${price.toFixed(0)}, $${capital} capital, ${days}-day horizon.
 Monte Carlo: ${winRate}% win rate, ${(mean*100).toFixed(1)}% expected return.
@@ -6379,10 +6381,13 @@ Rules:
 - Marks should focus on downside risk
 - Mobius should mention LATAM/emerging market angle specifically
 - Masa should be either wildly bullish or completely uninterested — no middle ground
+- Slim should look for cash flow, infrastructure leverage, LATAM oligopoly dynamics
+- Galperin should think like a LATAM consumer operator and call out fintech/logistics nuances
+- Lemann should ask if there's operational fat to cut and whether the brand has staying power
 - Each response max 2 sentences, in their authentic voice
 - Include a specific price target or condition when possible
 
-Return ONLY JSON array of exactly 10 objects:
+Return ONLY JSON array of exactly 13 objects:
 [
   {"id":"buffett","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
   {"id":"munger","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
@@ -6393,8 +6398,11 @@ Return ONLY JSON array of exactly 10 objects:
   {"id":"dalio","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
   {"id":"marks","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
   {"id":"mobius","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
-  {"id":"masa","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"}
-]`}]})
+  {"id":"masa","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
+  {"id":"slim","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
+  {"id":"galperin","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
+  {"id":"lemann","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"}
+]` + langDirective()}]})
     });
 
     const d=await r.json();
@@ -6608,8 +6616,8 @@ function renderLeaderboard(){
       return `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid #1a1a1a;font-size:11px;font-family:var(--mono);">
         <span style="font-size:14px;">${inv.emoji}</span>
         <span style="color:#ccc;min-width:110px;">${inv.name}</span>
-        <span style="color:${vc};padding:1px 6px;border:1px solid ${vc};border-radius:2px;">${v.verdict}</span>
-        <span style="color:#888;">${v.conviction}</span>
+        <span style="color:${vc};padding:1px 6px;border:1px solid ${vc};border-radius:2px;">${verdictLabel(v.verdict)}</span>
+        <span style="color:#888;">${verdictLabel(v.conviction)}</span>
         <span style="color:#fff;margin-left:auto;">$${v.ticker}</span>
         <span style="color:#666;">@$${v.entryPrice.toFixed(2)} · ${v.dir}</span>
         <span style="color:#e67e22;min-width:70px;text-align:right;">${daysLeft}d left</span>
@@ -6830,9 +6838,9 @@ function openBattleShareFromHistory(battleId){
             <span style="font-size:16px;">${inv.emoji}</span>
             <div style="min-width:0;flex:1;">
               <div style="font-family:var(--mono);font-size:11px;color:#fff;font-weight:500;">${inv.name}</div>
-              <div style="font-family:var(--mono);font-size:9px;color:#666;">${v.conviction} conviction</div>
+              <div style="font-family:var(--mono);font-size:9px;color:#666;">${verdictLabel(v.conviction)} ${t('convictionLbl').toLowerCase()}</div>
             </div>
-            <span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border:1px solid ${st.label};color:${st.label};border-radius:2px;">${v.verdict}</span>
+            <span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border:1px solid ${st.label};color:${st.label};border-radius:2px;">${verdictLabel(v.verdict)}</span>
           </div>
           <div style="font-size:11px;color:#bbb;font-style:italic;line-height:1.5;">"${v.take}"</div>
         </div>`;
@@ -6857,7 +6865,7 @@ function copyBattleText(){
 
   // Show all agents by verdict, HIGH conviction first
   const voteLines = (b.allVotes||[]).map(v =>
-    `${emoji(v.verdict)} ${nameOf(v.agent)}: ${v.verdict} (${v.conviction}) — "${v.take}"`
+    `${emoji(v.verdict)} ${nameOf(v.agent)}: ${verdictLabel(v.verdict)} (${verdictLabel(v.conviction)}) — "${v.take}"`
   );
 
   const lines = [
@@ -6950,9 +6958,9 @@ function downloadBattleImage(){
     return `
       <rect x="${x}" y="${y}" width="${cardW}" height="${cardH}" rx="10" fill="${c.fill}" stroke="${c.stroke}" stroke-opacity="0.4"/>
       <text x="${x+22}" y="${y+40}" font-family="sans-serif" font-size="22" font-weight="600" fill="#fff">${esc(inv.emoji)} ${esc(inv.name)}</text>
-      <text x="${x+22}" y="${y+62}" font-family="monospace" font-size="13" fill="#666">${esc(v.conviction)} CONVICTION</text>
+      <text x="${x+22}" y="${y+62}" font-family="monospace" font-size="13" fill="#666">${esc(verdictLabel(v.conviction))} ${esc(t('convictionLbl'))}</text>
       <rect x="${x+cardW-90}" y="${y+18}" width="72" height="26" rx="3" fill="none" stroke="${c.label}"/>
-      <text x="${x+cardW-54}" y="${y+36}" text-anchor="middle" font-family="monospace" font-size="13" font-weight="600" fill="${c.label}">${esc(v.verdict)}</text>
+      <text x="${x+cardW-54}" y="${y+36}" text-anchor="middle" font-family="monospace" font-size="13" font-weight="600" fill="${c.label}">${esc(verdictLabel(v.verdict))}</text>
       ${lines.map((l,li)=>`<text x="${x+22}" y="${y+100+li*28}" font-family="sans-serif" font-size="17" fill="#bbb" font-style="italic">"${esc(l)}"</text>`).join('')}
     `;
   }).join('');
@@ -7058,9 +7066,9 @@ function renderPersonas(personas, ticker){
             <span style="font-size:18px;">${inv.emoji}</span>
             <div>
               <div style="font-family:var(--mono);font-size:12px;font-weight:500;color:var(--text);">${inv.name}${trackBadge}</div>
-              <div style="font-size:10px;color:var(--text3);">${p.conviction} conviction</div>
+              <div style="font-size:10px;color:var(--text3);">${verdictLabel(p.conviction)} ${t('convictionLbl').toLowerCase()}</div>
             </div>
-            <span style="margin-left:auto;font-size:11px;padding:2px 8px;border-radius:2px;border:1px solid ${vc};color:${vc};font-family:var(--mono);">${p.verdict}</span>
+            <span style="margin-left:auto;font-size:11px;padding:2px 8px;border-radius:2px;border:1px solid ${vc};color:${vc};font-family:var(--mono);">${verdictLabel(p.verdict)}</span>
           </div>
           <p style="font-size:12px;color:var(--text2);line-height:1.6;font-family:var(--sans);font-style:italic;">"${p.take}"</p>
         </div>`;
@@ -7255,16 +7263,35 @@ function voiceSim(ticker, verdict, winRate){
 }
 
 // ─── I18N ──────────────────────────────────────────────────
-let currentLang='en';
-const i18n={
-  en:{
-    sim:'SIM', vc:'VC', portfolio:'PORTFOLIO',
-    ready:'READY', complete:'COMPLETE', stopped:'STOPPED', simulating:'SIMULATING...', fetching:'FETCHING DATA...',
+let currentLang = (function(){
+  const saved = localStorage.getItem('qd_lang');
+  if (saved === 'en' || saved === 'es') return saved;
+  const browser = (navigator.language || 'en').toLowerCase();
+  return browser.startsWith('es') ? 'es' : 'en';
+})();
+
+const i18n = {
+  en: {
+    // Nav
+    nav_agents:'AGENTS', nav_sim:'SIM', nav_compare:'COMPARE', nav_vc:'VC',
+    nav_portfolio:'PORTFOLIO', nav_macro:'MACRO', nav_smartmoney:'SMART $',
+    nav_earnings:'EARNINGS', nav_ipos:'IPOS', nav_movers:'MOVERS',
+    nav_sectors:'SECTORS', nav_screener:'SCREENER', nav_social:'SOCIAL',
+    nav_gallery:'GALLERY',
+    // Status
+    ready:'READY', complete:'COMPLETE', stopped:'STOPPED',
+    simulating:'SIMULATING...', fetching:'FETCHING DATA...',
+    loading:'Loading...', error:'Error', noData:'No data',
+    enterTicker:'Enter ticker to analyze',
+    // Common buttons
+    analyze:'ANALYZE', run:'▶ Run', stop:'■ Stop', clear:'✕ Clear',
+    save:'💾 Save', share:'🔗 Share', refresh:'↻ refresh',
+    // SIM tab
     tapeDefault:'run a simulation to see results here',
     simTitle:'// Monte Carlo Simulation',
     tickerPlaceholder:'Ticker: NVDA, BTC, MELI...',
     capitalPlaceholder:'Capital $',
-    runSim:'▶ Run simulation', stop:'■ Stop', clear:'✕ Clear',
+    runSim:'▶ Run simulation',
     speed:'// speed', slow:'SLOW', medium:'MEDIUM', fast:'FAST',
     slowNote:'slow = cinematic · fast = instant',
     pathsRun:'Paths run', simulations:'simulations',
@@ -7275,9 +7302,24 @@ const i18n={
     bear:'bear · p10', base:'base · median', bull:'bull · p90',
     worstPaths:'worst 10% of paths', medianOutcome:'median outcome', bestPaths:'best 10% of paths',
     sessionComp:'// session comparison',
-    tradeThesis:'Trade thesis', keySignals:'Key signals', keyRisk:'Key risk', newsTitle:'// recent news sentiment',
-    vcTitle:'// VC Intelligence', vcPlaceholder:'Sector or theme: AI agents, LATAM fintech...',
+    tradeThesis:'Trade thesis', keySignals:'Key signals', keyRisk:'Key risk',
+    newsTitle:'// recent news sentiment',
+    askInvestors:'👤 Investors', askingInvestors:'Asking investors...',
+    debate:'⚔ Debate', trackLive:'📡 Track Live', saveSim:'💾 Save Sim',
+    memo:'📄 MEMO', tiktok:'▶ TikTok', backtest:'↺ Backtest',
+    watch100:'▶ WATCH 100 TRADERS RACE',
+    // AGENTS / Leaderboard
+    leaderboardTitle:'// Investor Agents Leaderboard',
+    rank:'Rank', agent:'Agent', points:'Points', wins:'Wins', losses:'Losses', pending:'Pending',
+    timeframeWeek:'Week', timeframeMonth:'Month', timeframeAll:'All time',
+    fantasyTeam:'Fantasy Team', pickTeam:'Pick your team of 3',
+    reset:'Reset', voted:'voted', won:'won', lost:'lost',
+    // VC
+    vcTitle:'// VC Intelligence',
+    vcPlaceholder:'Sector or theme: AI agents, LATAM fintech...',
     scanDeal:'▶ Scan deal flow',
+    allStages:'All stages', seed:'Seed', seriesA:'Series A', seriesB:'Series B+', growth:'Growth',
+    // Portfolio
     portTitle:'// Portfolio Simulator', addPosition:'// add position',
     portSummary:'// portfolio summary', totalCapital:'Total capital', positions:'Positions',
     expReturn:'Expected return', portVar:'Portfolio VaR',
@@ -7285,17 +7327,97 @@ const i18n={
     longDir:'LONG (buy)', shortDir:'SHORT (sell)',
     ticker:'Ticker', dir:'Dir', amount:'Amount', horizon:'Horizon',
     expReturnCol:'Exp. Return', winCol:'Win %', varCol:'VaR',
-    portResults:'// Portfolio Results',
-    portAssess:'Portfolio assessment',
+    portResults:'// Portfolio Results', portAssess:'Portfolio assessment',
+    noPositions:'No positions yet — add one above',
+    // MACRO
+    macroTitle:'QUANTDESK MARKETS', aiBrief:'AI BRIEF',
+    sentimentIndex:'SENTIMENT INDEX', latamFx:'LATAM FX', fxImpact:'FX IMPACT',
+    globalMarkets:'GLOBAL MARKETS', sectorPerformance:'SECTOR PERFORMANCE',
+    economicCalendar:'ECONOMIC CALENDAR', marketMovers:'MARKET MOVERS',
+    // SMART $
+    smartMoneyTracker:'SMART MONEY TRACKER',
+    shortInterest:'SHORT INTEREST',
+    insiderTx:'INSIDER TRANSACTIONS · SEC',
+    instOwnership:'INSTITUTIONAL OWNERSHIP',
+    optionsSentiment:'OPTIONS SENTIMENT · PUT/CALL',
+    aiSmartVerdict:'AI SMART MONEY VERDICT 🤖',
+    marketWideSignals:'MARKET-WIDE SMART MONEY SIGNALS 🤖',
+    // EARNINGS
+    earningsIntel:'EARNINGS INTELLIGENCE',
+    earningsSubtitle:'EPS · SURPRISES · REACTIONS · WHISPER NUMBERS',
+    epsHistory:'EPS HISTORY · SURPRISES',
+    postEarnReaction:'POST-EARNINGS PRICE REACTION',
+    nextEarnSetup:'NEXT EARNINGS SETUP',
+    aiEarnVerdict:'AI EARNINGS VERDICT',
+    upcomingEarn:'UPCOMING EARNINGS THIS WEEK',
+    beatRate:'BEAT RATE', lastQuarters:'LAST {n} QUARTERS',
+    // SCREENER
+    stockScreener:'STOCK SCREENER',
+    screenerSubtitle:'500+ STOCKS · US + LATAM · REAL-TIME',
+    filters:'FILTERS', screen:'▶ SCREEN', universe:'UNIVERSE',
+    allMarkets:'All Markets', usStocks:'US Stocks', latamOnly:'LATAM Only',
+    cryptoOpt:'Crypto', sp500:'S&P 500',
+    sector:'SECTOR', allSectors:'All Sectors',
+    technology:'Technology', financials:'Financials', energy:'Energy',
+    healthcare:'Healthcare', consumer:'Consumer', latamEcomm:'LATAM E-comm',
+    minSqueeze:'MIN SQUEEZE SCORE', minMomentum:'MIN MOMENTUM %',
+    insiderActivity:'INSIDER ACTIVITY',
+    any:'Any', buying:'Buying', selling:'Selling', none:'None',
+    signalLbl:'SIGNAL', anySignal:'Any Signal',
+    strongBuy:'Strong Buy', buy:'Buy', neutral:'Neutral', sell:'Sell', strongSell:'Strong Sell',
+    volRange:'VOLATILITY (SIGMA) RANGE', sortBy:'SORT BY',
+    squeezeScoreOpt:'Squeeze Score', momentumOpt:'Momentum', volatilityOpt:'Volatility',
+    smartMoneyOpt:'Smart Money Score',
+    maxResults:'MAX RESULTS', top10:'Top 10', top20:'Top 20', top50:'Top 50',
+    readyScreen:'Ready to screen',
+    selectFilters:'Select filters and press SCREEN — or choose a preset',
+    company:'COMPANY', priceCol:'PRICE', day30:'30D %', sigmaCol:'SIGMA',
+    squeezeCol:'SQUEEZE', insiderCol:'INSIDER', instOwnCol:'INST OWN',
+    thesisCol:'THESIS',
+    // Presets
+    presetSqueeze:'🔥 Squeeze Candidates', presetInsider:'👤 Insider Buying',
+    presetMomentum:'📈 Momentum', presetLatam:'🌎 LATAM Focus',
+    presetVolatile:'⚡ High Vol Plays',
+    // SOCIAL
+    socialPulse:'SOCIAL PULSE',
+    socialSubtitle:'REDDIT SENTIMENT · MENTION VOLUME · TRENDING THREADS',
+    // Risk of Ruin
+    riskOfRuin:'// risk of ruin',
+    lose10in50:'Lose 10% in 50 trades', lose25in50:'Lose 25% in 50 trades',
+    lose50in50:'Lose 50% in 50 trades', lose10in100:'Lose 10% in 100 trades',
+    lose50in100:'Lose 50% in 100 trades', lose10in200:'Lose 10% in 200 trades',
+    probLoss10:'probability of -10% loss',
+    significantDD:'significant drawdown',
+    halfCapital:'half capital gone',
+    extendedTrading:'extended trading',
+    // Verdicts (English passthrough)
+    v_BUY:'BUY', v_HOLD:'HOLD', v_PASS:'PASS', v_SELL:'SELL',
+    v_STRONG_BUY:'STRONG BUY', v_STRONG_SELL:'STRONG SELL', v_NEUTRAL:'NEUTRAL',
+    v_BEAT:'BEAT', v_MISS:'MISS', v_INLINE:'INLINE',
+    c_HIGH:'HIGH', c_MEDIUM:'MEDIUM', c_LOW:'LOW',
+    convictionLbl:'CONVICTION',
   },
-  es:{
-    sim:'SIM', vc:'VC', portfolio:'PORTAFOLIO',
-    ready:'LISTO', complete:'COMPLETO', stopped:'DETENIDO', simulating:'SIMULANDO...', fetching:'OBTENIENDO DATOS...',
+  es: {
+    // Nav
+    nav_agents:'AGENTES', nav_sim:'SIM', nav_compare:'COMPARAR', nav_vc:'VC',
+    nav_portfolio:'PORTAFOLIO', nav_macro:'MACRO', nav_smartmoney:'DINERO LISTO',
+    nav_earnings:'RESULTADOS', nav_ipos:'IPOS', nav_movers:'MOVIMIENTOS',
+    nav_sectors:'SECTORES', nav_screener:'FILTRO', nav_social:'SOCIAL',
+    nav_gallery:'GALERÍA',
+    // Status
+    ready:'LISTO', complete:'COMPLETO', stopped:'DETENIDO',
+    simulating:'SIMULANDO...', fetching:'OBTENIENDO DATOS...',
+    loading:'Cargando...', error:'Error', noData:'Sin datos',
+    enterTicker:'Ingresa un ticker para analizar',
+    // Common buttons
+    analyze:'ANALIZAR', run:'▶ Ejecutar', stop:'■ Detener', clear:'✕ Limpiar',
+    save:'💾 Guardar', share:'🔗 Compartir', refresh:'↻ actualizar',
+    // SIM tab
     tapeDefault:'ejecuta una simulación para ver resultados aquí',
     simTitle:'// Simulación Monte Carlo',
     tickerPlaceholder:'Ticker: NVDA, BTC, MELI...',
     capitalPlaceholder:'Capital $',
-    runSim:'▶ Ejecutar simulación', stop:'■ Detener', clear:'✕ Limpiar',
+    runSim:'▶ Ejecutar simulación',
     speed:'// velocidad', slow:'LENTO', medium:'MEDIO', fast:'RÁPIDO',
     slowNote:'lento = cinemático · rápido = instantáneo',
     pathsRun:'Rutas ejecutadas', simulations:'simulaciones',
@@ -7306,9 +7428,24 @@ const i18n={
     bear:'bajista · p10', base:'base · mediana', bull:'alcista · p90',
     worstPaths:'peor 10% de rutas', medianOutcome:'resultado mediano', bestPaths:'mejor 10% de rutas',
     sessionComp:'// comparación de sesión',
-    tradeThesis:'Tesis de inversión', keySignals:'Señales clave', keyRisk:'Riesgo principal', newsTitle:'// noticias recientes',
-    vcTitle:'// Inteligencia VC', vcPlaceholder:'Sector o tema: agentes IA, fintech LATAM...',
+    tradeThesis:'Tesis de inversión', keySignals:'Señales clave', keyRisk:'Riesgo principal',
+    newsTitle:'// noticias recientes',
+    askInvestors:'👤 Inversionistas', askingInvestors:'Consultando inversionistas...',
+    debate:'⚔ Debate', trackLive:'📡 Seguir en vivo', saveSim:'💾 Guardar Sim',
+    memo:'📄 MEMO', tiktok:'▶ TikTok', backtest:'↺ Backtest',
+    watch100:'▶ VER 100 TRADERS COMPETIR',
+    // AGENTS / Leaderboard
+    leaderboardTitle:'// Tabla de Agentes Inversionistas',
+    rank:'Posición', agent:'Agente', points:'Puntos', wins:'Aciertos', losses:'Errores', pending:'Pendientes',
+    timeframeWeek:'Semana', timeframeMonth:'Mes', timeframeAll:'Todo',
+    fantasyTeam:'Equipo Fantasy', pickTeam:'Elige tu equipo de 3',
+    reset:'Reiniciar', voted:'votó', won:'ganó', lost:'perdió',
+    // VC
+    vcTitle:'// Inteligencia VC',
+    vcPlaceholder:'Sector o tema: agentes IA, fintech LATAM...',
     scanDeal:'▶ Escanear flujo de deals',
+    allStages:'Todas las etapas', seed:'Seed', seriesA:'Serie A', seriesB:'Serie B+', growth:'Growth',
+    // Portfolio
     portTitle:'// Simulador de Portafolio', addPosition:'// agregar posición',
     portSummary:'// resumen del portafolio', totalCapital:'Capital total', positions:'Posiciones',
     expReturn:'Retorno esperado', portVar:'VaR del portafolio',
@@ -7316,97 +7453,215 @@ const i18n={
     longDir:'LARGO (compra)', shortDir:'CORTO (venta)',
     ticker:'Ticker', dir:'Dir', amount:'Monto', horizon:'Horizonte',
     expReturnCol:'Ret. Esperado', winCol:'% Ganancia', varCol:'VaR',
-    portResults:'// Resultados del Portafolio',
-    portAssess:'Evaluación del portafolio',
+    portResults:'// Resultados del Portafolio', portAssess:'Evaluación del portafolio',
+    noPositions:'Sin posiciones — agrega una arriba',
+    // MACRO
+    macroTitle:'QUANTDESK MERCADOS', aiBrief:'RESUMEN IA',
+    sentimentIndex:'ÍNDICE DE SENTIMIENTO', latamFx:'FX LATAM', fxImpact:'IMPACTO FX',
+    globalMarkets:'MERCADOS GLOBALES', sectorPerformance:'DESEMPEÑO POR SECTOR',
+    economicCalendar:'CALENDARIO ECONÓMICO', marketMovers:'MOVIMIENTOS DEL MERCADO',
+    // SMART $
+    smartMoneyTracker:'RASTREADOR DE DINERO LISTO',
+    shortInterest:'INTERÉS CORTO',
+    insiderTx:'TRANSACCIONES INTERNAS · SEC',
+    instOwnership:'PROPIEDAD INSTITUCIONAL',
+    optionsSentiment:'SENTIMIENTO DE OPCIONES · PUT/CALL',
+    aiSmartVerdict:'VEREDICTO IA · DINERO LISTO 🤖',
+    marketWideSignals:'SEÑALES DE DINERO LISTO · MERCADO COMPLETO 🤖',
+    // EARNINGS
+    earningsIntel:'INTELIGENCIA DE RESULTADOS',
+    earningsSubtitle:'EPS · SORPRESAS · REACCIONES · WHISPER',
+    epsHistory:'HISTORIAL EPS · SORPRESAS',
+    postEarnReaction:'REACCIÓN POST-RESULTADOS',
+    nextEarnSetup:'PRÓXIMOS RESULTADOS',
+    aiEarnVerdict:'VEREDICTO IA DE RESULTADOS',
+    upcomingEarn:'RESULTADOS DE ESTA SEMANA',
+    beatRate:'TASA DE BEAT', lastQuarters:'ÚLTIMOS {n} TRIMESTRES',
+    // SCREENER
+    stockScreener:'FILTRO DE ACCIONES',
+    screenerSubtitle:'500+ ACCIONES · US + LATAM · TIEMPO REAL',
+    filters:'FILTROS', screen:'▶ FILTRAR', universe:'UNIVERSO',
+    allMarkets:'Todos los mercados', usStocks:'Acciones US', latamOnly:'Solo LATAM',
+    cryptoOpt:'Cripto', sp500:'S&P 500',
+    sector:'SECTOR', allSectors:'Todos los sectores',
+    technology:'Tecnología', financials:'Financieras', energy:'Energía',
+    healthcare:'Salud', consumer:'Consumo', latamEcomm:'E-comm LATAM',
+    minSqueeze:'SQUEEZE MÍNIMO', minMomentum:'MOMENTUM MÍNIMO %',
+    insiderActivity:'ACTIVIDAD INTERNA',
+    any:'Cualquiera', buying:'Comprando', selling:'Vendiendo', none:'Ninguna',
+    signalLbl:'SEÑAL', anySignal:'Cualquier señal',
+    strongBuy:'Compra fuerte', buy:'Compra', neutral:'Neutral', sell:'Venta', strongSell:'Venta fuerte',
+    volRange:'RANGO DE VOLATILIDAD (SIGMA)', sortBy:'ORDENAR POR',
+    squeezeScoreOpt:'Score Squeeze', momentumOpt:'Momentum', volatilityOpt:'Volatilidad',
+    smartMoneyOpt:'Score Dinero Listo',
+    maxResults:'RESULTADOS MÁX', top10:'Top 10', top20:'Top 20', top50:'Top 50',
+    readyScreen:'Listo para filtrar',
+    selectFilters:'Selecciona filtros y presiona FILTRAR — o elige un preset',
+    company:'EMPRESA', priceCol:'PRECIO', day30:'30D %', sigmaCol:'SIGMA',
+    squeezeCol:'SQUEEZE', insiderCol:'INTERNO', instOwnCol:'INST',
+    thesisCol:'TESIS',
+    // Presets
+    presetSqueeze:'🔥 Candidatos Squeeze', presetInsider:'👤 Compras Internas',
+    presetMomentum:'📈 Momentum', presetLatam:'🌎 Foco LATAM',
+    presetVolatile:'⚡ Alta Volatilidad',
+    // SOCIAL
+    socialPulse:'PULSO SOCIAL',
+    socialSubtitle:'SENTIMIENTO REDDIT · VOLUMEN DE MENCIONES · HILOS TENDENCIA',
+    // Risk of Ruin
+    riskOfRuin:'// riesgo de ruina',
+    lose10in50:'Perder 10% en 50 trades', lose25in50:'Perder 25% en 50 trades',
+    lose50in50:'Perder 50% en 50 trades', lose10in100:'Perder 10% en 100 trades',
+    lose50in100:'Perder 50% en 100 trades', lose10in200:'Perder 10% en 200 trades',
+    probLoss10:'probabilidad de pérdida -10%',
+    significantDD:'drawdown significativo',
+    halfCapital:'mitad del capital perdido',
+    extendedTrading:'trading extendido',
+    // Verdicts (Spanish)
+    v_BUY:'COMPRAR', v_HOLD:'MANTENER', v_PASS:'PASAR', v_SELL:'VENDER',
+    v_STRONG_BUY:'COMPRA FUERTE', v_STRONG_SELL:'VENTA FUERTE', v_NEUTRAL:'NEUTRAL',
+    v_BEAT:'BEAT', v_MISS:'MISS', v_INLINE:'EN LÍNEA',
+    c_HIGH:'ALTA', c_MEDIUM:'MEDIA', c_LOW:'BAJA',
+    convictionLbl:'CONVICCIÓN',
   }
 };
 
-function t(key){ return i18n[currentLang][key]||i18n.en[key]||key; }
+function t(key){ return (i18n[currentLang] && i18n[currentLang][key]) || i18n.en[key] || key; }
+
+// Append to AI prompts so Claude responds in the active language.
+function langDirective(){
+  return currentLang === 'es'
+    ? '\n\nIMPORTANTE: Responde en español. Todos los textos en lenguaje natural deben estar en español rioplatense neutral. Mantén los nombres propios, tickers y siglas en su forma original (BUY/HOLD/PASS, EPS, FX, etc.).'
+    : '\n\nIMPORTANT: Respond in English.';
+}
+
+// Translate a server-returned verdict label (BUY|HOLD|PASS, HIGH|MEDIUM|LOW, etc.)
+function verdictLabel(raw){
+  if(!raw) return '';
+  const norm = String(raw).toUpperCase().replace(/\s+/g,'_');
+  const key = 'v_' + norm;
+  if(i18n.en[key]) return t(key);
+  const ckey = 'c_' + norm;
+  if(i18n.en[ckey]) return t(ckey);
+  return raw;
+}
 
 function toggleLang(){
-  currentLang=currentLang==='en'?'es':'en';
-  document.getElementById('langBtn').textContent=currentLang==='en'?'ES':'EN';
+  currentLang = currentLang==='en' ? 'es' : 'en';
+  try{ localStorage.setItem('qd_lang', currentLang); }catch(e){}
+  document.getElementById('langBtn').textContent = currentLang==='en' ? 'ES' : 'EN';
   applyLang();
 }
 
 function applyLang(){
-  const L=currentLang;
-  // Nav tabs
-  document.querySelectorAll('.nav-btn')[0].textContent=t('sim');
-  document.querySelectorAll('.nav-btn')[1].textContent=t('vc');
-  document.querySelectorAll('.nav-btn')[2].textContent=t('portfolio');
+  // Nav tabs — match by the onclick handler so we don't depend on order
+  document.querySelectorAll('.nav-btn').forEach(b=>{
+    const oc = b.getAttribute('onclick') || '';
+    const m = oc.match(/showPage\('(\w+)'\)/);
+    if(!m) return;
+    const key = 'nav_' + m[1];
+    if(i18n.en[key]) b.textContent = t(key);
+  });
 
-  // Status
-  const st=document.getElementById('globalStatus').textContent;
-  const statusMap={
-    'READY':t('ready'),'LISTO':t('ready'),
-    'COMPLETE':t('complete'),'COMPLETO':t('complete'),
-    'STOPPED':t('stopped'),'DETENIDO':t('stopped'),
-  };
-  if(statusMap[st]) document.getElementById('globalStatus').textContent=statusMap[st];
+  // Status badge
+  const st = document.getElementById('globalStatus');
+  if(st){
+    const cur = st.textContent.trim();
+    const map = {READY:'ready',LISTO:'ready',COMPLETE:'complete',COMPLETO:'complete',STOPPED:'stopped',DETENIDO:'stopped'};
+    if(map[cur]) st.textContent = t(map[cur]);
+  }
 
-  // SIM PAGE
-  setText('simTitle',t('simTitle'));
-  setPlaceholder('simTicker',t('tickerPlaceholder'));
-  setPlaceholder('simCapital',t('capitalPlaceholder'));
+  // Helpers
+  const set = (id, key) => { const el=document.getElementById(id); if(el && i18n.en[key]) el.textContent = t(key); };
+  const setPh = (id, key) => { const el=document.getElementById(id); if(el && i18n.en[key]) el.placeholder = t(key); };
+  const setBySel = (sel, key) => { document.querySelectorAll(sel).forEach(el=>{ if(i18n.en[key]) el.textContent = t(key); }); };
 
-  // Buttons
-  setBtn(0,t('runSim'));setBtn(1,t('stop'));setBtn(2,t('clear'));
+  // Translate all elements with data-i18n="key"
+  document.querySelectorAll('[data-i18n]').forEach(el=>{
+    const key = el.getAttribute('data-i18n');
+    if(i18n.en[key]) el.textContent = t(key);
+  });
+  document.querySelectorAll('[data-i18n-ph]').forEach(el=>{
+    const key = el.getAttribute('data-i18n-ph');
+    if(i18n.en[key]) el.placeholder = t(key);
+  });
 
-  // Direction select
-  const dirSel=document.getElementById('simDir');
-  if(dirSel){dirSel.options[0].text=t('longDir');dirSel.options[1].text=t('shortDir');}
+  // SIM specifics that don't have stable IDs yet
+  setPh('simTicker','tickerPlaceholder');
+  setPh('simCapital','capitalPlaceholder');
+  set('simTitle','simTitle');
 
-  // Speed
-  setText('speedTxt',t('speed'));
-  setText('speedNote',t('slowNote'));
-  updateSpeedLabel();
+  // Dropdown options — Universe filter
+  const u = document.getElementById('scUniverse');
+  if(u){
+    const labels = {all:'allMarkets', us:'usStocks', latam:'latamOnly', crypto:'cryptoOpt', sp500:'sp500'};
+    [...u.options].forEach(o=>{ if(labels[o.value] && i18n.en[labels[o.value]]) o.text = t(labels[o.value]); });
+  }
+  // Sector filter
+  const s = document.getElementById('scSector');
+  if(s){
+    const labels = {all:'allSectors', tech:'technology', finance:'financials', energy:'energy', healthcare:'healthcare', consumer:'consumer', latam_ecomm:'latamEcomm'};
+    [...s.options].forEach(o=>{ if(labels[o.value] && i18n.en[labels[o.value]]) o.text = t(labels[o.value]); });
+  }
+  // Insider activity
+  const ia = document.getElementById('scInsider');
+  if(ia){
+    const labels = {all:'any', buying:'buying', selling:'selling', none:'none'};
+    [...ia.options].forEach(o=>{ if(labels[o.value] && i18n.en[labels[o.value]]) o.text = t(labels[o.value]); });
+  }
+  // Signal filter
+  const sig = document.getElementById('scSignal');
+  if(sig){
+    const labels = {all:'anySignal', 'STRONG BUY':'strongBuy', BUY:'buy', NEUTRAL:'neutral', SELL:'sell'};
+    [...sig.options].forEach(o=>{ if(labels[o.value] && i18n.en[labels[o.value]]) o.text = t(labels[o.value]); });
+  }
+  // Sort by
+  const sb = document.getElementById('scSort');
+  if(sb){
+    const labels = {squeeze:'squeezeScoreOpt', momentum:'momentumOpt', sigma:'volatilityOpt', signal:'signalLbl', smart_money:'smartMoneyOpt'};
+    [...sb.options].forEach(o=>{ if(labels[o.value] && i18n.en[labels[o.value]]) o.text = t(labels[o.value]); });
+  }
+  // Max results
+  const lim = document.getElementById('scLimit');
+  if(lim){
+    const labels = {10:'top10', 20:'top20', 50:'top50'};
+    [...lim.options].forEach(o=>{ if(labels[o.value] && i18n.en[labels[o.value]]) o.text = t(labels[o.value]); });
+  }
 
-  // Stat cards
-  setStatLbl('lbl-paths',t('pathsRun'));setStatSub('sub-paths',t('simulations'));
-  setStatLbl('lbl-epnl',t('expectedPnl'));
-  setStatLbl('lbl-win',t('winRate'));setStatSub('sub-win',t('profitablePaths'));
-  setStatLbl('lbl-sharpe',t('sharpe'));setStatSub('sub-sharpe',t('riskAdj'));
-  setStatLbl('lbl-dd',t('maxDD'));setStatSub('sub-dd',t('worstPath'));
-  setStatLbl('lbl-var',t('var'));setStatSub('sub-var',t('atRisk'));
+  // Screener preset buttons
+  const presetMap = [
+    ["applyPreset('squeeze')", 'presetSqueeze'],
+    ["applyPreset('insider')", 'presetInsider'],
+    ["applyPreset('momentum')", 'presetMomentum'],
+    ["applyPreset('latam')", 'presetLatam'],
+    ["applyPreset('volatile')", 'presetVolatile'],
+  ];
+  document.querySelectorAll('.screener-preset').forEach(b=>{
+    const oc = b.getAttribute('onclick') || '';
+    const hit = presetMap.find(([fn]) => oc.includes(fn));
+    if(hit) b.textContent = t(hit[1]);
+  });
 
-  // Scenarios
-  setScenLbl('lbl-bear',t('bear'));setScenProb('prob-bear',t('worstPaths'));
-  setScenLbl('lbl-base',t('base'));setScenProb('prob-base',t('medianOutcome'));
-  setScenLbl('lbl-bull',t('bull'));setScenProb('prob-bull',t('bestPaths'));
+  // Direction select on the SIM page
+  const dir = document.getElementById('simDir');
+  if(dir && dir.options.length >= 2){
+    dir.options[0].text = t('longDir');
+    dir.options[1].text = t('shortDir');
+  }
 
-  // Section titles
-  setText('compTitle',t('sessionComp'));
-  setText('thesisTitle',t('tradeThesis'));
-  setText('signalsTitle',t('keySignals'));
-  setText('riskTitle',t('keyRisk'));
-  setText('newsTitle',t('newsTitle'));
-
-  // VC
-  setText('vcTitle',t('vcTitle'));
-  setPlaceholder('vcQuery',t('vcPlaceholder'));
-  setVcBtn(t('scanDeal'));
-
-  // Portfolio
-  setText('portTitle',t('portTitle'));
-  setText('addPosTitle',t('addPosition'));
-  setText('portSumTitle',t('portSummary'));
-  setStatLbl('lbl-ptTotal',t('totalCapital'));
-  setStatLbl('lbl-ptCount',t('positions'));
-  setStatLbl('lbl-ptReturn',t('expReturn'));
-  setStatLbl('lbl-ptVar',t('portVar'));
-  setText('addPosBtn',t('addBtn'));
-  setText('runPortBtn',t('runPort'));
-  setText('clearPortBtn',t('clearAll'));
-
-  // Table headers
-  setTh(0,t('ticker'));setTh(1,t('dir'));setTh(2,t('amount'));
-  setTh(3,t('horizon'));setTh(4,t('expReturnCol'));setTh(5,t('winCol'));setTh(6,t('varCol'));
-
-  // Tape
-  const tape=document.getElementById('tapeInner');
-  if(tape&&simHistory.length===0) tape.innerHTML=`<div class="tape-item"><span class="sym">QUANTDESK</span><span style="color:var(--text3)">${t('tapeDefault')}</span></div>`;
+  // Live tape default message
+  const tape = document.getElementById('tapeInner');
+  if(tape && tape.textContent.includes('run a simulation')){
+    const el = tape.querySelector('.tape-item span:nth-child(2)');
+    if(el) el.textContent = t('tapeDefault');
+  }
 }
+
+// Run once on initial paint so first-load matches the detected language
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('langBtn');
+  if(btn) btn.textContent = currentLang==='en' ? 'ES' : 'EN';
+  applyLang();
+});
 
 function setText(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
 function setPlaceholder(id,val){const e=document.getElementById(id);if(e)e.placeholder=val;}
@@ -11385,8 +11640,8 @@ function margin_color(pct, threshold, COL){
 <!-- SOCIAL PAGE -->
 <div id="page-social" class="page" style="padding:0;background:#080808;min-height:100vh;">
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
-    <span style="font-family:var(--mono);font-size:10px;color:#3498db;font-weight:600;letter-spacing:.1em;">SOCIAL PULSE</span>
-    <span style="font-family:var(--mono);font-size:10px;color:#333;">REDDIT SENTIMENT · MENTION VOLUME · TRENDING THREADS</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#3498db;font-weight:600;letter-spacing:.1em;" data-i18n="socialPulse">SOCIAL PULSE</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;" data-i18n="socialSubtitle">REDDIT SENTIMENT · MENTION VOLUME · TRENDING THREADS</span>
   </div>
 
   <!-- Search bar -->
