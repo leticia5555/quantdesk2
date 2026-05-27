@@ -24,6 +24,13 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
 
+// ── Bilingual support ─────────────────────────────────────────────
+function langDirective(lang) {
+  return lang === 'es'
+    ? '\n\nIMPORTANTE: Responde completamente en español (español latinoamericano neutral). Todos los campos en lenguaje natural deben estar en español. Mantén los tickers, números, símbolos griegos (β, σ, ρ) y siglas (EPS, FX, ADR, BUY/HOLD/PASS, BEAT/MISS) en su forma original. Los nombres de empresas se mantienen en su idioma original. Las categorías cuantitativas (LOW/MODERATE/ELEVATED/EXTREME, INTACT/BREAKDOWN, etc.) se mantienen en inglés porque son códigos de estado del sistema; el resto del texto narrativo debe ser español.'
+    : '';
+}
+
 // ── Operational country override (kept in sync with macro/event/sentiment) ──
 const OPERATIONAL_COUNTRY_OVERRIDE = {
   STNE: { country: 'BR', name: 'Brazil' },
@@ -325,7 +332,7 @@ async function fetchShortInterest(ticker, finnhubKey) {
 }
 
 // ── Claude narrative ─────────────────────────────────────────────
-async function runClaude(apiKey, brief) {
+async function runClaude(apiKey, brief, lang) {
   const system = `You are a senior risk-portfolio manager at a top-tier hedge fund. You will be given a structured JSON risk brief covering a specific ticker: realized volatility regime, beta drift vs SPY, sector + SPY correlations, drawdown analysis, short interest (if available), and a composite anomaly score.
 
 Produce a concise institutional-grade risk narrative. Return ONLY a JSON object, no preamble:
@@ -354,7 +361,7 @@ Be quantitative. Use the actual numbers (β, σ, ρ, drawdown %) in the brief. N
       'anthropic-version': ANTHROPIC_VERSION
     },
     body: JSON.stringify({
-      model: ANTHROPIC_MODEL, max_tokens: 1600, system,
+      model: ANTHROPIC_MODEL, max_tokens: 1600, system: system + langDirective(lang),
       messages: [{ role: 'user', content: user }]
     })
   });
@@ -382,6 +389,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const ticker = (req.query.ticker || '').toString().trim().toUpperCase();
+  const lang = (req.query.lang || 'en').toString().toLowerCase();
   if (!ticker) return res.status(400).json({ error: 'ticker query param required' });
 
   const finnhubKey = process.env.FINNHUB_API_KEY;
@@ -581,7 +589,7 @@ export default async function handler(req, res) {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     let narrative = null;
     if (apiKey) {
-      const out = await runClaude(apiKey, payload);
+      const out = await runClaude(apiKey, payload, lang);
       if (out.ok) narrative = out.ok;
       else console.log(`[risk-agent] ${ticker}: claude error`, out.error, out.raw_preview || out.detail);
     }

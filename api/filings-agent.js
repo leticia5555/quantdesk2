@@ -18,6 +18,13 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
 
+// ── Bilingual support ─────────────────────────────────────────────
+function langDirective(lang) {
+  return lang === 'es'
+    ? '\n\nIMPORTANTE: Responde completamente en español (español latinoamericano neutral). Todos los campos en lenguaje natural deben estar en español. Mantén los tickers, números, símbolos griegos (β, σ, ρ) y siglas (EPS, FX, ADR, BUY/HOLD/PASS, BEAT/MISS) en su forma original. Los nombres de empresas se mantienen en su idioma original. Las categorías cuantitativas (LOW/MODERATE/ELEVATED/EXTREME, INTACT/BREAKDOWN, etc.) se mantienen en inglés porque son códigos de estado del sistema; el resto del texto narrativo debe ser español.'
+    : '';
+}
+
 // ~4 chars/token, so 360k chars ≈ 90k tokens — comfortable headroom in
 // a 200k context window for the system prompt + JSON output.
 const MAX_FILING_CHARS = 360_000;
@@ -262,6 +269,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const ticker = (req.query.ticker || '').toString().trim().toUpperCase();
+  const lang = (req.query.lang || 'en').toString().toLowerCase();
   if (!ticker) {
     return res.status(400).json({ error: 'ticker query param required' });
   }
@@ -326,7 +334,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
         max_tokens: 4000,
-        system: systemPrompt,
+        system: systemPrompt + langDirective(lang),
         messages: [{ role: 'user', content: userMessage }]
       })
     });
