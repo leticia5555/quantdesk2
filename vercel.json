@@ -3,5 +3,9 @@
     "api/*.js": {
       "maxDuration": 60
     }
-  }
+  },
+  "rewrites": [
+    { "source": "/app", "destination": "/app.html" },
+    { "source": "/terminal", "destination": "/app.html" }
+  ]
 }
