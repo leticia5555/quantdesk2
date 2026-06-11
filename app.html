@@ -230,6 +230,16 @@ td:first-child{color:var(--text);font-weight:500;}
   .page{padding:16px;}
   .nav-btn{padding:0 10px;font-size:10px;}
 }
+
+/* METRICS GLOSSARY — bilingual plain-language tooltips */
+.gloss-i{display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;margin-left:4px;border-radius:50%;font-family:var(--sans);font-size:9px;font-weight:700;font-style:normal;line-height:1;color:var(--text3);border:1px solid var(--border2);cursor:pointer;vertical-align:middle;opacity:.7;transition:opacity .12s,color .12s,border-color .12s;-webkit-user-select:none;user-select:none;}
+.gloss-i:hover,.gloss-i:focus{opacity:1;color:var(--blue);border-color:var(--blue);outline:none;}
+#glossPop{position:fixed;z-index:9999;display:none;max-width:300px;width:max-content;background:#0d0d0d;border:1px solid var(--border2);border-radius:5px;padding:13px 15px;box-shadow:0 10px 34px rgba(0,0,0,.65);font-family:var(--sans);}
+#glossPop .gp-title{font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--blue);margin-bottom:7px;}
+#glossPop .gp-what{font-size:12px;line-height:1.5;color:var(--text2);}
+#glossPop .gp-means{font-size:12.5px;line-height:1.55;color:var(--text);margin-top:9px;font-weight:500;}
+#glossPop .gp-eye{font-size:11px;line-height:1.5;color:var(--text2);margin-top:10px;padding-top:9px;border-top:1px solid var(--border);}
+#glossPop .gp-eye b{color:var(--amber);font-weight:700;}
 </style>
 </head>
 <body>
@@ -7527,6 +7537,195 @@ const i18n = {
 
 function t(key){ return (i18n[currentLang] && i18n[currentLang][key]) || i18n.en[key] || key; }
 
+// ─── STOCK METRICS GLOSSARY ───────────────────────────────────────
+// Plain-language, bilingual explanations for the core metrics retail
+// traders see across the terminal. Each metric carries:
+//   que_es   → what the number is, in one sentence
+//   significa→ what THIS value means (chosen by threshold band)
+//   ojo      → the catch / the misconception that trips people up
+// Surfaced via a tap-to-open ⓘ popover next to live values.
+const METRIC_GLOSSARY = {
+  price_change: {
+    label: { es:'Cambio %', en:'% Change' },
+    es:{
+      que_es:"El cambio porcentual te dice qué tanto subió o bajó respecto a su propio precio.",
+      significa:{ up:"Hoy subió {value}%. En pesos puede parecer poco, pero en % es lo que importa.",
+                  down:"Hoy bajó {value}%. El % te deja comparar contra cualquier otra acción." },
+      ojo:"Una acción de $10 que sube $1 ganó 10%. Una de $1,000 que sube $1 ganó 0.1%. El precio absoluto engaña."
+    },
+    en:{
+      que_es:"The percent change tells you how much it moved relative to its own price.",
+      significa:{ up:"Up {value}% today. Dollar moves can look small — the % is what matters.",
+                  down:"Down {value}% today. The % lets you compare against any other stock." },
+      ojo:"A $10 stock up $1 gained 10%. A $1,000 stock up $1 gained 0.1%. Absolute price misleads."
+    }
+  },
+  beta: {
+    label: { es:'Beta', en:'Beta' },
+    es:{
+      que_es:"Mide qué tanto se mueve esta acción comparada con el mercado.",
+      significa:{ low:"Beta {value}: más estable que el mercado. Sube menos en rallies, cae menos en crashes.",
+                  market:"Beta {value}: se mueve prácticamente igual que el mercado.",
+                  high:"Beta {value}: amplifica el mercado un {amplification}%. Más riesgo, más potencial." },
+      ojo:"Beta alta NO significa mejor. Significa más amplitud — en ambas direcciones."
+    },
+    en:{
+      que_es:"Measures how much this stock moves compared to the market.",
+      significa:{ low:"Beta {value}: steadier than the market. Gains less in rallies, loses less in crashes.",
+                  market:"Beta {value}: moves roughly in line with the market.",
+                  high:"Beta {value}: amplifies the market by {amplification}%. More risk, more potential." },
+      ojo:"High beta does NOT mean better. It means bigger swings — in both directions."
+    }
+  },
+  volatility: {
+    label: { es:'Volatilidad', en:'Volatility' },
+    es:{
+      que_es:"Qué tanto 'brinca' el precio día a día.",
+      significa:{ low:"Volatilidad {value}%: relativamente tranquila. Movimientos diarios moderados.",
+                  high:"Volatilidad {value}%: montaña rusa. Espera movimientos diarios fuertes." },
+      ojo:"Volatilidad no es dirección. Una acción puede ser muy volátil y aún así subir a largo plazo."
+    },
+    en:{
+      que_es:"How much the price 'jumps around' day to day.",
+      significa:{ low:"Volatility {value}%: relatively calm. Moderate daily moves.",
+                  high:"Volatility {value}%: rollercoaster. Expect sharp daily swings." },
+      ojo:"Volatility is not direction. A stock can be wildly volatile and still go up long-term."
+    }
+  },
+  market_cap: {
+    label: { es:'Capitalización', en:'Market Cap' },
+    es:{
+      que_es:"El valor total de la empresa en bolsa: precio por acción × número de acciones.",
+      significa:{ mega:"{value}: una de las empresas más grandes del mundo. Generalmente más estable.",
+                  large:"{value}: empresa grande y establecida.",
+                  mid:"{value}: empresa mediana. Más espacio para crecer, más riesgo.",
+                  small:"{value}: empresa chica. Alto potencial, alta volatilidad." },
+      ojo:"Precio por acción ≠ tamaño. Una acción de $50 puede ser una empresa más grande que una de $500."
+    },
+    en:{
+      que_es:"The company's total stock market value: share price × number of shares.",
+      significa:{ mega:"{value}: one of the largest companies in the world. Generally more stable.",
+                  large:"{value}: large, established company.",
+                  mid:"{value}: mid-size company. More room to grow, more risk.",
+                  small:"{value}: small company. High potential, high volatility." },
+      ojo:"Share price ≠ size. A $50 stock can be a bigger company than a $500 one."
+    }
+  },
+  pe_ratio: {
+    label: { es:'P/E', en:'P/E' },
+    es:{
+      que_es:"Cuántos años de ganancias actuales 'pagas' al comprar a este precio.",
+      significa:{ low:"P/E {value}: barata respecto a sus ganancias — o el mercado espera problemas.",
+                  moderate:"P/E {value}: valuación razonable respecto a sus ganancias actuales.",
+                  high:"P/E {value}: cara hoy. El mercado apuesta a crecimiento futuro fuerte.",
+                  negative:"P/E negativo: la empresa pierde dinero actualmente." },
+      ojo:"P/E bajo no siempre es ganga, y P/E alto no siempre es burbuja. Compáralo contra empresas del mismo sector."
+    },
+    en:{
+      que_es:"How many years of current earnings you 'pay' when buying at this price.",
+      significa:{ low:"P/E {value}: cheap relative to earnings — or the market expects trouble.",
+                  moderate:"P/E {value}: reasonable valuation relative to current earnings.",
+                  high:"P/E {value}: expensive today. The market is betting on strong future growth.",
+                  negative:"Negative P/E: the company is currently losing money." },
+      ojo:"Low P/E isn't always a bargain, high P/E isn't always a bubble. Compare within the same sector."
+    }
+  }
+};
+
+// Pick the right significa band for a metric given its raw numeric value.
+function glossBand(key, num){
+  switch(key){
+    case 'price_change': return num >= 0 ? 'up' : 'down';
+    case 'beta':         return num < 0.8 ? 'low' : num <= 1.2 ? 'market' : 'high';
+    case 'volatility':   return num < 40 ? 'low' : 'high';
+    case 'market_cap':   return num >= 200e9 ? 'mega' : num >= 10e9 ? 'large' : num >= 2e9 ? 'mid' : 'small';
+    case 'pe_ratio':     return num < 0 ? 'negative' : num < 15 ? 'low' : num <= 25 ? 'moderate' : 'high';
+    default:             return null;
+  }
+}
+
+// Build the {que_es, significa, ojo, label} strings for the active language.
+// num = raw numeric value (drives the band + amplification); disp = human string for {value}.
+function explainMetric(key, num, disp){
+  const entry = METRIC_GLOSSARY[key];
+  if(!entry) return null;
+  const g = entry[currentLang] || entry.en;
+  const band = glossBand(key, num);
+  let significa = (band && g.significa[band]) || '';
+  const valStr = disp != null && disp !== '' ? String(disp)
+               : (num != null ? (key === 'price_change' ? Math.abs(num).toFixed(2)
+                                : key === 'volatility' ? Math.round(num)
+                                : Number(num).toFixed(2)) : '');
+  const amp = num != null ? Math.round((num - 1) * 100) : 0;
+  significa = significa.replace('{value}', valStr).replace('{amplification}', amp);
+  return { label:(entry.label[currentLang] || entry.label.en), que_es:g.que_es, significa, ojo:g.ojo };
+}
+
+// Inline ⓘ icon that opens the glossary popover for `key` at value `num`.
+// `disp` is the already-formatted value shown to the user (e.g. "$2.4T", "1.35").
+function glossIcon(key, num, disp){
+  if(!METRIC_GLOSSARY[key]) return '';
+  const d = disp == null ? '' : encodeURIComponent(String(disp));
+  const n = num == null || !isFinite(num) ? '' : num;
+  return `<span class="gloss-i" role="button" tabindex="0" aria-label="info" data-gk="${key}" data-gv="${n}" data-gd="${d}">i</span>`;
+}
+
+function hideGloss(){
+  const p = document.getElementById('glossPop');
+  if(p) p.style.display = 'none';
+}
+
+function showGloss(icon){
+  let pop = document.getElementById('glossPop');
+  if(!pop){
+    pop = document.createElement('div');
+    pop.id = 'glossPop';
+    document.body.appendChild(pop);
+  }
+  const key = icon.getAttribute('data-gk');
+  const gvRaw = icon.getAttribute('data-gv');
+  const num = gvRaw === '' || gvRaw == null ? null : parseFloat(gvRaw);
+  const disp = decodeURIComponent(icon.getAttribute('data-gd') || '');
+  const info = explainMetric(key, num, disp);
+  if(!info){ hideGloss(); return; }
+
+  const eyeLabel = currentLang === 'es' ? 'Ojo' : 'Heads up';
+  pop.innerHTML =
+    `<div class="gp-title">${info.label}</div>`
+    + `<div class="gp-what">${info.que_es}</div>`
+    + (info.significa ? `<div class="gp-means">${info.significa}</div>` : '')
+    + `<div class="gp-eye"><b>${eyeLabel}:</b> ${info.ojo}</div>`;
+
+  // Reveal off-screen first to measure, then clamp into the viewport.
+  pop.style.display = 'block';
+  pop.style.left = '-9999px';
+  pop.style.top = '0px';
+  const r = icon.getBoundingClientRect();
+  const pw = pop.offsetWidth, ph = pop.offsetHeight;
+  const margin = 8;
+  let left = r.left;
+  if(left + pw + margin > window.innerWidth) left = window.innerWidth - pw - margin;
+  if(left < margin) left = margin;
+  let top = r.bottom + 6;
+  if(top + ph + margin > window.innerHeight) top = r.top - ph - 6;   // flip above
+  if(top < margin) top = margin;
+  pop.style.left = left + 'px';
+  pop.style.top = top + 'px';
+}
+
+// Delegated open/close — works for icons injected into any dynamic view.
+document.addEventListener('click', function(e){
+  const ic = e.target.closest && e.target.closest('.gloss-i');
+  if(ic){ e.stopPropagation(); showGloss(ic); return; }
+  if(!(e.target.closest && e.target.closest('#glossPop'))) hideGloss();
+});
+document.addEventListener('keydown', function(e){
+  if(e.key === 'Escape'){ hideGloss(); return; }
+  const ic = e.target.closest && e.target.closest('.gloss-i');
+  if(ic && (e.key === 'Enter' || e.key === ' ')){ e.preventDefault(); showGloss(ic); }
+});
+window.addEventListener('resize', hideGloss);
+
 // Append to AI prompts so Claude responds in the active language.
 function langDirective(){
   return currentLang === 'es'
@@ -12674,12 +12873,14 @@ function margin_color(pct, threshold, COL){
 
     let changeStr = '';
     let changeColor = '#888';
+    let changeGloss = '';
     if (p && typeof p.dayChange === 'number') {
       const pct = p.dayChange * 100;
       const abs = (p.currentPrice * p.dayChange);
       const sign = pct >= 0 ? '+' : '';
       changeStr = `${sign}${abs.toFixed(2)} (${sign}${pct.toFixed(2)}%)`;
       changeColor = pct > 0 ? GREEN : pct < 0 ? RED : '#888';
+      changeGloss = glossIcon('price_change', pct, Math.abs(pct).toFixed(2));
     }
 
     let mcapStr = null;
@@ -12702,11 +12903,11 @@ function margin_color(pct, threshold, COL){
       name ? `<span style="color:#888;">${escapeHtml(name)}</span>` : '',
       price ? `<span style="color:#ddd;font-weight:600;">${price}</span>` : '',
       changeStr ? `<span style="color:${changeColor};font-weight:600;">${changeStr}</span>` : '',
-      changeStr ? `<span style="color:#444;">1d</span>` : ''
+      changeStr ? `<span style="color:#444;">1d</span>${changeGloss}` : ''
     ].filter(Boolean);
 
     const line2Parts = [
-      mcapStr ? `Market Cap <span style="color:#bbb;">${mcapStr}</span>` : '',
+      mcapStr ? `Market Cap <span style="color:#bbb;">${mcapStr}</span>${glossIcon('market_cap', f.marketCap, mcapStr)}` : '',
       sector ? `Sector <span style="color:#bbb;">${escapeHtml(sector)}</span>` : '',
       exch ? `Exch <span style="color:#bbb;">${escapeHtml(exch)}</span>` : '',
       `Region <span style="color:#bbb;">${regLabel}</span>`
@@ -13300,8 +13501,10 @@ function margin_color(pct, threshold, COL){
         // median
         `<td style="padding:8px 10px;text-align:right;color:#666;font-style:italic;">${fmtMult(med[key])}</td>`
       ];
+      const peGloss = (key.startsWith('pe') && typeof self[key] === 'number' && isFinite(self[key]))
+        ? glossIcon('pe_ratio', self[key], fmtMult(self[key])) : '';
       return `<tr style="border-bottom:1px solid #111;">
-        <td style="padding:8px 10px;color:#888;">${escapeHtml(label)}</td>
+        <td style="padding:8px 10px;color:#888;">${escapeHtml(label)}${peGloss}</td>
         ${cells.join('')}
       </tr>`;
     }).join('');
@@ -15490,8 +15693,8 @@ function margin_color(pct, threshold, COL){
     return `<div style="margin-bottom:12px;">
       <div style="font-family:var(--mono);font-size:9px;color:${BLUE};letter-spacing:.15em;margin-bottom:8px;">// 📊 RISK OVERVIEW</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;">
-        ${microCard('Volatility Regime', `<span style="color:${volCol};">${escapeHtml(readable(v.regime || 'N/A'))}</span>`, volSub, volCol, volCol)}
-        ${microCard('Beta Drift',        `<span style="color:${dCol};">${escapeHtml(readable(b.drift_category || 'N/A'))}</span>`, dSub, dCol, dCol)}
+        ${microCard('Volatility Regime', `<span style="color:${volCol};">${escapeHtml(readable(v.regime || 'N/A'))}</span>${v.realized_30d != null ? glossIcon('volatility', v.realized_30d * 100) : ''}`, volSub, volCol, volCol)}
+        ${microCard('Beta Drift',        `<span style="color:${dCol};">${escapeHtml(readable(b.drift_category || 'N/A'))}</span>${b.beta_30d != null ? glossIcon('beta', b.beta_30d) : ''}`, dSub, dCol, dCol)}
         ${microCard('Correlation',       `<span style="color:${cCol};">${escapeHtml(readable(c.breakdown_status || 'N/A'))}</span>`, cSub, cCol, cCol)}
         ${microCard('Drawdown',          `<span style="color:${ddCol};">${escapeHtml(readable(d.category || 'N/A'))}</span>`, ddSub, ddCol, ddCol)}
       </div>
