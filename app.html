@@ -3748,7 +3748,8 @@ async function fetchSimData(ticker,dir,capital,days,model){
   window._lastNews=nd;
 
   // Step 3: build context for Claude using real price
-  const priceContext=pd?`Real market data as of today: current price $${pd.currentPrice}, annualized drift mu=${(pd.mu*100).toFixed(1)}%, annualized volatility sigma=${(pd.sigma*100).toFixed(1)}%, 30-day return=${(pd.return30d*100).toFixed(1)}%, 52w range $${pd.low52w} to $${pd.high52w}, exchange: ${pd.exchange||'US'}.`
+  const ipoNote=pd&&(pd.recentIPO||pd.rangeUnreliable)?` IMPORTANT: This is a RECENT IPO with only ${pd.dataPoints||'a few'} days of trading history. The 52-week range shown covers only the post-IPO period — do NOT compare the current price against a full-year range or claim the stock trades above/below its historical range. Base your thesis on IPO dynamics (lockup expiry, valuation vs fundamentals, early volatility) instead.`:'';
+  const priceContext=pd?`Real market data as of today: current price $${pd.currentPrice}, annualized drift mu=${(pd.mu*100).toFixed(1)}%, annualized volatility sigma=${(pd.sigma*100).toFixed(1)}%, 30-day return=${(pd.return30d*100).toFixed(1)}%, 52w range $${pd.low52w} to $${pd.high52w}, exchange: ${pd.exchange||'US'}.${ipoNote}`
     :'No real price data — use your knowledge of actual April 2026 prices.';
   const headlines=(nd.headlines||[]).map(h=>h.headline).slice(0,3).join(' | ');
   const earningsCtx=nd.nextEarnings?`Earnings in ${nd.nextEarnings.daysUntil} days (${nd.nextEarnings.date}).`:'';
@@ -3797,6 +3798,8 @@ Return ONLY JSON: {"current_price":${pd?.currentPrice||'number'},"mu":${pd?.mu||
     cd.recentPrices=pd.recentPrices||[];
     cd.high52w=pd.high52w;
     cd.low52w=pd.low52w;
+    cd.recentIPO=pd.recentIPO||false;
+    cd.rangeUnreliable=pd.rangeUnreliable||false;
     cd.return30d=pd.return30d;
     cd.longName=pd.longName;
   }
@@ -3833,7 +3836,8 @@ async function startSim(){
   // ~3pp pull at the extreme (top/bottom 10% of 52w range), zero at midpoint.
   // This is mild enough to not override CAPM but strong enough to be visible.
   let muAdjusted = cd.mu || 0.15;
-  if (cd.high52w && cd.low52w && cd.current_price && cd.high52w > cd.low52w) {
+  // Skip the tilt for recent IPOs: a days-old range has no mean-reversion signal
+  if (!cd.recentIPO && !cd.rangeUnreliable && cd.high52w && cd.low52w && cd.current_price && cd.high52w > cd.low52w) {
     const range = cd.high52w - cd.low52w;
     const positionInRange = Math.max(0, Math.min(1, (cd.current_price - cd.low52w) / range));
     // tilt ranges from +3pp (at low) to -3pp (at high), zero at midpoint
@@ -4158,7 +4162,7 @@ function showSimAnalysis(cd,ticker,capital,days){
   }
   const name=cd.longName&&cd.longName!==ticker?cd.longName:'';
   const priceStr=cd.current_price?'$'+Number(cd.current_price).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'';
-  const rangeStr=cd.high52w?'52w $'+cd.low52w.toFixed(0)+'-$'+cd.high52w.toFixed(0):'';
+  const rangeStr=cd.high52w?(cd.recentIPO||cd.rangeUnreliable?'post-IPO range $':'52w $')+cd.low52w.toFixed(0)+'-$'+cd.high52w.toFixed(0):'';
   const ret30d=cd.return30d?(cd.return30d>=0?'+':'')+( cd.return30d*100).toFixed(1)+'% 30d':'';
   const dataColor=cd.recentPrices?'var(--green)':'var(--amber)';
   const dataTag=cd.recentPrices?'LIVE DATA':'EST';
@@ -8357,8 +8361,8 @@ function captureEntryContext(cd, sp){
     ctx.rsi14 = +(computeRSI(cd.recentPrices, 14) || 0).toFixed(1);
   }
 
-  // 52w position
-  if(cd.high52w && cd.low52w && cd.current_price && cd.high52w > cd.low52w){
+  // 52w position (skip for recent IPOs — a days-old range carries no signal)
+  if(!cd.recentIPO && !cd.rangeUnreliable && cd.high52w && cd.low52w && cd.current_price && cd.high52w > cd.low52w){
     ctx.distFrom52wHigh = +(((cd.high52w - cd.current_price) / cd.high52w) * 100).toFixed(2);
     ctx.distFrom52wLow = +(((cd.current_price - cd.low52w) / cd.low52w) * 100).toFixed(2);
     ctx.positionInRange = +(((cd.current_price - cd.low52w) / (cd.high52w - cd.low52w))).toFixed(3);

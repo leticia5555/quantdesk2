@@ -262,17 +262,27 @@ export default async function handler(req, res) {
 
         high52w = meta.fiftyTwoWeekHigh || Math.max(...closes);
         low52w  = meta.fiftyTwoWeekLow  || Math.min(...closes);
+        // IPO/stale sanity check: precio fuera de rango → reconstruir desde historia real
+        if (currentPrice > high52w * 1.02 || currentPrice < low52w * 0.98) {
+          high52w = Math.max(...closes, currentPrice);
+          low52w  = Math.min(...closes, currentPrice);
+        }
         const idx30 = Math.max(0, closes.length - 31);
         return30d = (closes[closes.length - 1] - closes[idx30]) / closes[idx30];
       } else {
-        // Fallback when Yahoo history is thin
+        // Fallback when Yahoo history is thin (posible IPO reciente en BMV/B3)
         high52w = meta.fiftyTwoWeekHigh || currentPrice * 1.3;
         low52w  = meta.fiftyTwoWeekLow  || currentPrice * 0.7;
+        if (currentPrice > high52w * 1.02 || currentPrice < low52w * 0.98) {
+          high52w = currentPrice * 1.1;
+          low52w  = currentPrice * 0.9;
+        }
         const parkinson = Math.log(high52w / low52w) / Math.sqrt(4 * Math.log(2));
         sigma = Math.min(Math.max(parkinson, 0.15), 1.20);
         mu = 0.12;  // conservative LATAM default
         return30d = 0;
       }
+      const recentIPO = closes.length > 0 && closes.length < 60;
 
       return res.status(200).json({
         ticker: t,
@@ -282,6 +292,7 @@ export default async function handler(req, res) {
         sigma: parseFloat(sigma.toFixed(4)),
         high52w: parseFloat(high52w.toFixed(2)),
         low52w: parseFloat(low52w.toFixed(2)),
+        recentIPO,
         return30d: parseFloat(return30d.toFixed(4)),
         dayChange: parseFloat(dayChange.toFixed(4)),
         dataPoints: closes.length,
@@ -339,6 +350,15 @@ export default async function handler(req, res) {
         const dayChange = prevClose && prevClose > 0 ? (cp - prevClose) / prevClose : 0;
 
         let mu = 0.10, sigma = 0.30, return30d = 0;
+        let yHigh = meta.fiftyTwoWeekHigh || cp * 1.3;
+        let yLow  = meta.fiftyTwoWeekLow  || cp * 0.7;
+        const recentIPO = closes.length > 0 && closes.length < 60;
+        let rangeUnreliable = false;
+        if (cp > yHigh * 1.02 || cp < yLow * 0.98) {
+          rangeUnreliable = true;
+          if (closes.length >= 2) { yHigh = Math.max(...closes, cp); yLow = Math.min(...closes, cp); }
+          else { yHigh = cp * 1.1; yLow = cp * 0.9; }
+        }
         if (closes.length >= 30) {
           const dailyReturns = [];
           for (let i = 1; i < closes.length; i++) {
@@ -350,6 +370,9 @@ export default async function handler(req, res) {
           mu = Math.min(Math.max(0.045 + 1.1 * 0.055, 0.02), 0.30);
           const idx30 = Math.max(0, closes.length - 31);
           return30d = (closes[closes.length - 1] - closes[idx30]) / closes[idx30];
+        } else if (recentIPO || rangeUnreliable) {
+          sigma = 0.70; // IPO reciente: vol alta por defecto
+          mu = 0.10;
         }
 
         return res.status(200).json({
@@ -357,8 +380,10 @@ export default async function handler(req, res) {
           currentPrice: parseFloat(cp.toFixed(2)),
           mu: parseFloat(mu.toFixed(4)),
           sigma: parseFloat(sigma.toFixed(4)),
-          high52w: parseFloat((meta.fiftyTwoWeekHigh || cp * 1.3).toFixed(2)),
-          low52w:  parseFloat((meta.fiftyTwoWeekLow  || cp * 0.7).toFixed(2)),
+          high52w: parseFloat(yHigh.toFixed(2)),
+          low52w:  parseFloat(yLow.toFixed(2)),
+          recentIPO,
+          rangeUnreliable,
           return30d: parseFloat(return30d.toFixed(4)),
           dayChange: parseFloat(dayChange.toFixed(4)),
           dataPoints: closes.length,
@@ -384,8 +409,24 @@ export default async function handler(req, res) {
       }
     } catch (e) {}
 
-    const high52w = m['52WeekHigh'] || quote.h || currentPrice * 1.3;
-    const low52w  = m['52WeekLow']  || quote.l || currentPrice * 0.7;
+    let high52w = m['52WeekHigh'] || quote.h || currentPrice * 1.3;
+    let low52w  = m['52WeekLow']  || quote.l || currentPrice * 0.7;
+
+    // ── IPO/stale-data sanity check (bug: SPCX showed 52w $21-$27 vs price $169) ──
+    // If the live price sits OUTSIDE the reported 52w range, that range is impossible:
+    // Finnhub is returning stale or pre-IPO secondary-market data. Rebuild from real history.
+    const recentIPO = closes.length > 0 && closes.length < 60;
+    let rangeUnreliable = false;
+    if (currentPrice > high52w * 1.02 || currentPrice < low52w * 0.98) {
+      rangeUnreliable = true;
+      if (closes.length >= 2) {
+        high52w = Math.max(...closes, currentPrice);
+        low52w  = Math.min(...closes, currentPrice);
+      } else {
+        high52w = Math.max(quote.h || currentPrice, currentPrice);
+        low52w  = Math.min(quote.l || currentPrice, currentPrice) * 0.95;
+      }
+    }
 
     let mu, sigma, return30d;
 
@@ -420,6 +461,22 @@ export default async function handler(req, res) {
 
       const idx30 = Math.max(0, closes.length - 31);
       return30d = (closes[closes.length - 1] - closes[idx30]) / closes[idx30];
+    } else if (recentIPO || rangeUnreliable) {
+      // Recent IPO with thin history (e.g. SPCX days after listing): Parkinson on a
+      // stale/tiny range grossly understates vol. Fresh listings trade at 60-90% annualized.
+      if (closes.length >= 5) {
+        const rets = [];
+        for (let i = 1; i < closes.length; i++) {
+          if (closes[i] > 0 && closes[i-1] > 0) rets.push(Math.log(closes[i] / closes[i-1]));
+        }
+        const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+        const v = rets.reduce((a, r) => a + (r - mean) ** 2, 0) / rets.length;
+        sigma = Math.min(Math.max(Math.sqrt(v * 252), 0.60), 1.50);
+      } else {
+        sigma = 0.70; // IPO default until real history accumulates
+      }
+      mu = Math.min(Math.max(0.045 + beta * 0.055, 0.04), 0.30);
+      return30d = quote.dp ? quote.dp / 100 : 0; // no meaningful 30d return for a days-old listing
     } else {
       const parkinson = Math.log(high52w / low52w) / Math.sqrt(4 * Math.log(2));
       sigma = Math.min(Math.max(parkinson * (1 + (beta - 1) * 0.25), 0.15), 1.20);
@@ -491,6 +548,8 @@ export default async function handler(req, res) {
       beta: parseFloat(beta.toFixed(2)),
       high52w: parseFloat(high52w.toFixed(2)),
       low52w: parseFloat(low52w.toFixed(2)),
+      recentIPO,
+      rangeUnreliable,
       return30d: parseFloat(return30d.toFixed(4)),
       dayChange: parseFloat(dayChange.toFixed(4)),
       dataPoints: closes.length || 252,
