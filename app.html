@@ -15884,9 +15884,12 @@ function margin_color(pct, threshold, COL){
 
   <div style="padding:16px;max-width:900px;margin:0 auto;">
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px;">
-      <input type="text" id="conexInput" placeholder="Escribe un activo: AMXL, peso, bitcoin, oro, FEMSA..."
-        onkeydown="if(event.key==='Enter')runConexiones()" autocomplete="off"
-        style="flex:1;min-width:240px;font-family:var(--mono);font-size:13px;padding:10px 12px;background:#0d0d0d;border:1px solid #2a2a2a;color:#eee;border-radius:4px;outline:none;"/>
+      <div style="position:relative;flex:1;min-width:240px;">
+        <input type="text" id="conexInput" placeholder="Escribe un activo: AMXL, peso, bitcoin, oro, FEMSA..."
+          autocomplete="off"
+          style="width:100%;box-sizing:border-box;font-family:var(--mono);font-size:13px;padding:10px 12px;background:#0d0d0d;border:1px solid #2a2a2a;color:#eee;border-radius:4px;outline:none;"/>
+        <div id="conexDropdown" style="position:absolute;left:0;right:0;top:100%;background:#10151f;border:1px solid #1f2937;border-top:none;max-height:280px;overflow-y:auto;z-index:50;display:none;font-family:var(--mono);"></div>
+      </div>
       <button onclick="runConexiones()" id="conexBtn"
         style="font-family:var(--mono);font-size:12px;font-weight:600;padding:10px 22px;background:#ff6600;color:#000;border:none;border-radius:4px;cursor:pointer;letter-spacing:.05em;">BUSCAR</button>
     </div>
@@ -15974,7 +15977,7 @@ function margin_color(pct, threshold, COL){
       let html = '';
 
       // Headline sentence built from results[0].
-      html += '<div style="background:#0d0d0d;border:1px solid #1f1f1f;border-left:3px solid #ff6600;border-radius:4px;padding:14px 16px;margin-bottom:16px;line-height:1.6;color:#ddd;font-size:13px;">';
+      html += '<div style="background:#0d0d0d;border:1px solid #1f1f1f;border-left:3px solid #ff6600;border-radius:4px;padding:14px 16px;margin-bottom:16px;line-height:1.6;color:#ddd;font-size:13px;max-width:100%;white-space:normal;overflow-wrap:anywhere;">';
       html += 'Lo que más se conecta con <b style="color:#fff;">'+esc(subjName)+'</b> es <b style="color:#fff;">'+esc(top.name)+'</b> — se mueve en dirección <b style="color:'+dirColor+';">'+dirWord+'</b> con correlación <b style="color:#fff;">'+fmt(top.r)+'</b> ('+esc(topPill.txt)+').';
       html += '</div>';
 
@@ -16017,6 +16020,110 @@ function margin_color(pct, threshold, COL){
       btn.disabled = false; btn.style.opacity = '1';
     }
   };
+
+  // ─── Autocomplete dropdown ─────────────────────────────────────
+  // Filters ONLY the existing curated universe + alias map already on
+  // this page. No new API calls, no external ticker search.
+  // SUGGESTIONS: label shown in dropdown, query = what we actually search.
+  const CONEX_SUGGESTIONS = [
+    {label:'peso (USD/MXN)', query:'peso'},
+    {label:'bitcoin', query:'bitcoin'},
+    {label:'ethereum', query:'eth'},
+    {label:'petróleo (WTI)', query:'petroleo'},
+    {label:'oro', query:'oro'},
+    {label:'S&P 500', query:'sp500'},
+    {label:'IPC (BMV)', query:'ipc'},
+    {label:'DXY (índice del dólar)', query:'dxy'},
+    {label:'AMXL — América Móvil', query:'AMXB.MX'},
+    {label:'FEMSA', query:'FEMSAUBD.MX'},
+    {label:'WALMEX — Walmart México', query:'WALMEX.MX'},
+    {label:'GFNORTE — Banorte', query:'GFNORTEO.MX'},
+    {label:'CEMEX', query:'CEMEXCPO.MX'},
+    {label:'GMÉXICO', query:'GMEXICOB.MX'},
+    {label:'BIMBO', query:'BIMBOA.MX'},
+    {label:'KIMBER', query:'KIMBERA.MX'},
+    {label:'ELEKTRA', query:'ELEKTRA*.MX'},
+    {label:'ALSEA', query:'ALSEA.MX'},
+    {label:'ORBIA', query:'ORBIA.MX'},
+    {label:'PINFRA', query:'PINFRA.MX'},
+    {label:'GAP — aeropuerto', query:'GAPB.MX'},
+    {label:'ASUR — aeropuerto', query:'ASURB.MX'},
+    {label:'OMA — aeropuerto', query:'OMAB.MX'},
+    {label:'LIVERPOOL', query:'LIVEPOLC-1.MX'},
+    {label:'MELI — MercadoLibre', query:'MELI'},
+    {label:'NU — Nubank', query:'NU'},
+    {label:'VALE — minería Brasil', query:'VALE'},
+    {label:'ITAÚ', query:'ITUB'},
+    {label:'BRADESCO', query:'BBD'},
+    {label:'PETROBRAS', query:'PBR'},
+    {label:'GERDAU', query:'GGB'},
+    {label:'CSN', query:'SID'}
+  ];
+
+  const conexInput = document.getElementById('conexInput');
+  const dd = document.getElementById('conexDropdown');
+  let activeIdx = -1;
+
+  function currentMatches(){
+    const v = conexInput.value.trim().toLowerCase();
+    if(!v) return [];
+    return CONEX_SUGGESTIONS.filter(s =>
+      s.label.toLowerCase().includes(v) || s.query.toLowerCase().includes(v)
+    ).slice(0,8);
+  }
+
+  function renderDropdown(items){
+    if(!items.length){ dd.style.display='none'; return; }
+    dd.innerHTML = items.map((it,i)=>
+      '<div class="conex-opt" data-q="'+esc(it.query)+'" data-i="'+i+'" '+
+      'style="padding:10px 14px;cursor:pointer;font-size:13px;color:#e8edf4;'+
+      'border-bottom:1px solid #161d2b;background:'+(i===activeIdx?'#161d2b':'transparent')+';">'+
+      esc(it.label)+'</div>'
+    ).join('');
+    dd.style.display='block';
+    dd.querySelectorAll('.conex-opt').forEach(el=>{
+      el.onmousedown = (e)=>{ // mousedown beats input blur
+        e.preventDefault();
+        const q = el.dataset.q;
+        conexInput.value = q;
+        dd.style.display='none';
+        window.runConexiones();
+      };
+    });
+  }
+
+  function filterSuggestions(){
+    activeIdx = -1;
+    renderDropdown(currentMatches());
+  }
+
+  if(conexInput && dd){
+    conexInput.addEventListener('input', filterSuggestions);
+    conexInput.addEventListener('focus', filterSuggestions);
+    conexInput.addEventListener('blur', ()=> setTimeout(()=>{ dd.style.display='none'; },150));
+
+    conexInput.addEventListener('keydown', (e)=>{
+      const opts = [...dd.querySelectorAll('.conex-opt')];
+      if(e.key==='ArrowDown'){
+        e.preventDefault();
+        if(!opts.length){ filterSuggestions(); return; }
+        activeIdx = Math.min(activeIdx+1, opts.length-1);
+        renderDropdown(currentMatches());
+      } else if(e.key==='ArrowUp'){
+        e.preventDefault();
+        activeIdx = Math.max(activeIdx-1, 0);
+        renderDropdown(currentMatches());
+      } else if(e.key==='Enter'){
+        if(activeIdx>=0 && opts[activeIdx]){
+          conexInput.value = opts[activeIdx].dataset.q;
+        }
+        dd.style.display='none';
+        window.runConexiones();
+      } else if(e.key==='Escape'){
+        dd.style.display='none';
+      }
+    });
+  }
 })();
 </script>
 </body>
