@@ -249,6 +249,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('ipos')">IPOS</button>
     <button class="nav-btn" onclick="showPage('movers')">MOVERS</button>
     <button class="nav-btn" onclick="showPage('sectors')">SECTORS</button>
+    <button class="nav-btn" onclick="showPage('conexiones')">CONEXIONES</button>
     <button class="nav-btn" onclick="showPage('screener')">SCREENER</button>
     <button class="nav-btn" onclick="showPage('social')">SOCIAL</button>
     <button class="nav-btn" onclick="showPage('gallery')">GALLERY</button>
@@ -15866,6 +15867,156 @@ function margin_color(pct, threshold, COL){
   } else {
     wire();
   }
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     CONEXIONES PAGE — "Buscador de Conexiones"
+     One ticker vs the curated LATAM universe from /api/connections.
+     Historical correlation only (no live streaming, no alerts).
+     ═══════════════════════════════════════════════════════════════ -->
+<div id="page-conexiones" class="page" style="padding:0;background:#080808;min-height:100vh;">
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+    <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;">BUSCADOR DE CONEXIONES</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;">¿QUÉ SE MUEVE JUNTO A TU ACTIVO? · CORRELACIÓN HISTÓRICA · 6 MESES</span>
+    <span id="conexTimestamp" style="font-family:var(--mono);font-size:9px;color:#444;margin-left:auto;"></span>
+  </div>
+
+  <div style="padding:16px;max-width:900px;margin:0 auto;">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px;">
+      <input type="text" id="conexInput" placeholder="Escribe un activo: AMXL, peso, bitcoin, oro, FEMSA..."
+        onkeydown="if(event.key==='Enter')runConexiones()" autocomplete="off"
+        style="flex:1;min-width:240px;font-family:var(--mono);font-size:13px;padding:10px 12px;background:#0d0d0d;border:1px solid #2a2a2a;color:#eee;border-radius:4px;outline:none;"/>
+      <button onclick="runConexiones()" id="conexBtn"
+        style="font-family:var(--mono);font-size:12px;font-weight:600;padding:10px 22px;background:#ff6600;color:#000;border:none;border-radius:4px;cursor:pointer;letter-spacing:.05em;">BUSCAR</button>
+    </div>
+    <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:16px;">
+      Ejemplos: peso · bitcoin · petroleo · oro · AMXL · FEMSA · WALMEX · GFNORTE · MELI · NU
+    </div>
+    <div id="conexContent" style="color:#888;font-family:var(--mono);font-size:11px;">
+      <span style="color:#555;">Escribe un activo y presiona BUSCAR para ver con qué se conecta.</span>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ─── BUSCADOR DE CONEXIONES ─────────────────────────────────────
+   One ticker vs a curated LATAM universe. Calls /api/connections,
+   which reuses the historical-correlation math from /api/correlations.
+   Historical only — no live streaming, no alerts. */
+(function(){
+  // Friendly aliases so users can type "peso" or "amxl" instead of Yahoo symbols.
+  const CONEX_ALIAS = {
+    'peso':'MXN=X','mxn':'MXN=X','dolar':'MXN=X','dólar':'MXN=X','usdmxn':'MXN=X',
+    'bitcoin':'BTC-USD','btc':'BTC-USD','ethereum':'ETH-USD','eth':'ETH-USD',
+    'petroleo':'CL=F','petróleo':'CL=F','crudo':'CL=F','wti':'CL=F',
+    'oro':'GC=F','gold':'GC=F',
+    'sp500':'^GSPC','s&p':'^GSPC','spx':'^GSPC','ipc':'^MXX','dxy':'DX-Y.NYB',
+    'amxl':'AMXL.MX','americamovil':'AMXL.MX',
+    'femsa':'FEMSAUBD.MX','walmex':'WALMEX.MX','walmart':'WALMEX.MX',
+    'gfnorte':'GFNORTEO.MX','banorte':'GFNORTEO.MX',
+    'cemex':'CEMEXCPO.MX','gmexico':'GMEXICOB.MX','gméxico':'GMEXICOB.MX',
+    'bimbo':'BIMBOA.MX','kimber':'KIMBERA.MX','elektra':'ELEKTRA.MX','alsea':'ALSEA.MX',
+    'orbia':'ORBIA.MX','pinfra':'PINFRA.MX','gap':'GAPB.MX','asur':'ASURB.MX',
+    'oma':'OMAB.MX','liverpool':'LIVEPOLC-1.MX','livepol':'LIVEPOLC-1.MX',
+    'meli':'MELI','mercadolibre':'MELI','vale':'VALE','itau':'ITUB','itaú':'ITUB',
+    'bradesco':'BBD','petrobras':'PBR','nu':'NU','nubank':'NU',
+    'gerdau':'GGB','csn':'SID'
+  };
+
+  function resolveSymbol(raw){
+    const key = raw.trim().toLowerCase().replace(/\s+/g,'');
+    if (CONEX_ALIAS[key]) return CONEX_ALIAS[key];
+    return raw.trim().toUpperCase();
+  }
+
+  // Verdict pills, keyed by `strength` from the API (classify()).
+  const CONEX_PILL = {
+    fuerte:  {bg:'#0c2a1c',bd:'#00c97d',fg:'#00c97d',txt:'Fuerte'},
+    moderada:{bg:'#2a210c',bd:'#ff9d00',fg:'#ffb43d',txt:'Moderada'},
+    debil:   {bg:'#22220c',bd:'#8a8a3a',fg:'#cfcf7a',txt:'Débil'},
+    ninguna: {bg:'#161616',bd:'#333',  fg:'#777',   txt:'Ninguna'}
+  };
+
+  function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+  function fmt(r){return (r>=0?'+':'')+Number(r).toFixed(3);}
+
+  window.runConexiones = async function(){
+    const inp = document.getElementById('conexInput');
+    const out = document.getElementById('conexContent');
+    const btn = document.getElementById('conexBtn');
+    const raw = (inp && inp.value || '').trim();
+    if(!raw){ out.innerHTML = '<span style="color:#777;">Escribe un activo para empezar.</span>'; return; }
+    const symbol = resolveSymbol(raw);
+
+    btn.disabled = true; btn.style.opacity = '0.6';
+    out.innerHTML = '<span style="color:#888;">Calculando correlaciones contra el universo... (puede tardar unos segundos)</span>';
+
+    try{
+      const resp = await fetch('/api/connections?ticker=' + encodeURIComponent(symbol));
+      const data = await resp.json();
+
+      if(data.error){
+        out.innerHTML = '<span style="color:#ff5a5a;">'+esc(data.error)+'</span>';
+        return;
+      }
+      if(!data.results || !data.results.length){
+        out.innerHTML = '<span style="color:#ff5a5a;">No se encontraron conexiones para '+esc(symbol)+'.</span>';
+        return;
+      }
+
+      const top = data.results[0];
+      const subjName = data.subjectName || symbol;
+      const topPill = CONEX_PILL[top.strength] || CONEX_PILL.ninguna;
+      const dirWord = top.direction === 'misma' ? 'misma' : 'opuesta';
+      const dirColor = top.direction === 'misma' ? '#00c97d' : '#ff7a7a';
+
+      let html = '';
+
+      // Headline sentence built from results[0].
+      html += '<div style="background:#0d0d0d;border:1px solid #1f1f1f;border-left:3px solid #ff6600;border-radius:4px;padding:14px 16px;margin-bottom:16px;line-height:1.6;color:#ddd;font-size:13px;">';
+      html += 'Lo que más se conecta con <b style="color:#fff;">'+esc(subjName)+'</b> es <b style="color:#fff;">'+esc(top.name)+'</b> — se mueve en dirección <b style="color:'+dirColor+';">'+dirWord+'</b> con correlación <b style="color:#fff;">'+fmt(top.r)+'</b> ('+esc(topPill.txt)+').';
+      html += '</div>';
+
+      // Meta line.
+      html += '<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:10px;">Sujeto: '+esc(data.subject)+' · '+data.n_days+' días de retornos · '+data.results.length+' activos comparados</div>';
+
+      // Ranked rows: name, |r| bar, coefficient, verdict pill.
+      data.results.forEach(row=>{
+        const p = CONEX_PILL[row.strength] || CONEX_PILL.ninguna;
+        const pct = Math.min(100, Math.abs(row.r)*100);
+        const barColor = row.r>=0 ? '#00c97d' : '#ff5a5a';
+        html += '<div style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-bottom:1px solid #141414;">';
+        html += '<div style="width:120px;min-width:120px;font-family:var(--mono);font-size:11px;color:#ddd;" title="'+esc(row.desc||'')+'">'+esc(row.name)+(row.hedge?' <span title="cobertura natural" style="color:#5aa0ff;">⛨</span>':'')+'</div>';
+        html += '<div style="flex:1;height:14px;background:#111;border-radius:2px;overflow:hidden;">';
+        html += '<div style="height:100%;width:'+pct.toFixed(1)+'%;background:'+barColor+';opacity:.75;"></div>';
+        html += '</div>';
+        html += '<div style="width:60px;text-align:right;font-family:var(--mono);font-size:11px;color:#bbb;">'+fmt(row.r)+'</div>';
+        html += '<div style="width:84px;text-align:center;font-family:var(--mono);font-size:9px;font-weight:600;padding:3px 0;border-radius:3px;background:'+p.bg+';border:1px solid '+p.bd+';color:'+p.fg+';">'+p.txt+'</div>';
+        html += '</div>';
+      });
+
+      // Footnote: count of natural hedges (hedge:true).
+      const hedges = data.results.filter(x=>x.hedge);
+      if(hedges.length){
+        html += '<div style="margin-top:14px;font-family:var(--mono);font-size:10px;color:#5aa0ff;">⛨ '+hedges.length+' '+(hedges.length===1?'cobertura natural':'coberturas naturales')+' (correlación negativa ≤ -0.30): '+hedges.map(h=>esc(h.name)).join(', ')+'</div>';
+      } else {
+        html += '<div style="margin-top:14px;font-family:var(--mono);font-size:10px;color:#555;">Sin coberturas naturales en este universo.</div>';
+      }
+
+      if(data.failed && data.failed.length){
+        html += '<div style="margin-top:6px;font-family:var(--mono);font-size:9px;color:#444;">No cargaron: '+data.failed.map(esc).join(', ')+'</div>';
+      }
+
+      out.innerHTML = html;
+      const ts = document.getElementById('conexTimestamp');
+      if(ts) ts.textContent = 'Actualizado ' + new Date().toLocaleTimeString();
+    }catch(e){
+      out.innerHTML = '<span style="color:#ff5a5a;">Error de red: '+esc(e && e.message || 'desconocido')+'</span>';
+    }finally{
+      btn.disabled = false; btn.style.opacity = '1';
+    }
+  };
 })();
 </script>
 </body>
