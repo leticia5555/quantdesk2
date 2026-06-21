@@ -26,8 +26,8 @@
 // (BMV tickers use the .MX suffix on Yahoo; ADRs use US symbols.)
 const DEFAULT_UNIVERSE = [
   // Mexican large caps (BMV)
-  'AMXL.MX','FEMSAUBD.MX','WALMEX.MX','GFNORTEO.MX','CEMEXCPO.MX',
-  'GMEXICOB.MX','BIMBOA.MX','KIMBERA.MX','ELEKTRA.MX','ALSEA.MX',
+  'AMXB.MX','FEMSAUBD.MX','WALMEX.MX','GFNORTEO.MX','CEMEXCPO.MX',
+  'GMEXICOB.MX','BIMBOA.MX','KIMBERA.MX','ELEKTRA*.MX','ALSEA.MX',
   'ORBIA.MX','PINFRA.MX','GAPB.MX','ASURB.MX','OMAB.MX','LIVEPOLC-1.MX',
   // LATAM ADRs / regional
   'MELI','VALE','ITUB','BBD','PBR','NU','GGB','SID',
@@ -43,7 +43,7 @@ const DEFAULT_UNIVERSE = [
 
 // Friendly names + one-line descriptions for display (extend as needed).
 const META = {
-  'AMXL.MX':{name:'AMXL', desc:'América Móvil — telecom'},
+  'AMXB.MX':{name:'AMXL', desc:'América Móvil — telecom'},
   'FEMSAUBD.MX':{name:'FEMSA', desc:'FEMSA — bebidas / retail'},
   'WALMEX.MX':{name:'WALMEX', desc:'Walmart de México'},
   'GFNORTEO.MX':{name:'GFNORTE', desc:'Banorte — banca'},
@@ -51,7 +51,7 @@ const META = {
   'GMEXICOB.MX':{name:'GMÉXICO', desc:'Grupo México — minería'},
   'BIMBOA.MX':{name:'BIMBO', desc:'Grupo Bimbo — alimentos'},
   'KIMBERA.MX':{name:'KIMBER', desc:'Kimberly-Clark México'},
-  'ELEKTRA.MX':{name:'ELEKTRA', desc:'Grupo Elektra — retail / crédito'},
+  'ELEKTRA*.MX':{name:'ELEKTRA', desc:'Grupo Elektra — retail / crédito'},
   'ALSEA.MX':{name:'ALSEA', desc:'Alsea — restaurantes'},
   'ORBIA.MX':{name:'ORBIA', desc:'Orbia — químicos'},
   'PINFRA.MX':{name:'PINFRA', desc:'Pinfra — infraestructura'},
