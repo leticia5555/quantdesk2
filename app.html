@@ -342,7 +342,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <div class="stat-card"><div class="stat-lbl" data-i18n="expectedPnl">Expected P&L</div><div class="stat-val" id="sEpnl">—</div><div class="stat-sub" id="sEpct">—</div></div>
     <div class="stat-card"><div class="stat-lbl" id="lbl-win" data-i18n="winRate">Win rate</div><div class="stat-val" id="sWin">—</div><div class="stat-sub" id="sub-win" data-i18n="profitablePaths">profitable paths</div></div>
     <div class="stat-card"><div class="stat-lbl" id="lbl-sharpe" data-i18n="sharpe">Sharpe ratio</div><div class="stat-val" id="sSharpe">—</div><div class="stat-sub" id="sub-sharpe" data-i18n="riskAdj">risk-adjusted</div></div>
-    <div class="stat-card"><div class="stat-lbl" id="lbl-dd" data-i18n="maxDD">Max drawdown</div><div class="stat-val neg" id="sDD">—</div><div class="stat-sub" id="sub-dd" data-i18n="worstPath">worst path</div></div>
+    <div class="stat-card"><div class="stat-lbl" id="lbl-dd" data-i18n="maxDD">Max drawdown</div><div class="stat-val neg" id="sDD">—</div><div class="stat-sub" id="sub-dd" data-i18n="peakToTrough">peak-to-trough</div></div>
     <div class="stat-card"><div class="stat-lbl" id="lbl-var" data-i18n="var">VaR 95%</div><div class="stat-val neg" id="sVaR">—</div><div class="stat-sub" id="sub-var" data-i18n="atRisk">at risk</div></div>
   </div>
 
@@ -1475,7 +1475,7 @@ async function loadUpcomingEarnings(){
   // Try Claude update in background
   fetch('/api/claude',{
     method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:600,
+    body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:600,
       messages:[{role:'user',content:
         'Earnings calendar April 7 to May 2 2026. Include major US and LATAM companies. Group by date. Return ONLY JSON where keys are date strings and values are arrays of companies with ticker, company, time, eps_est, importance, sector fields. At least 20 companies.'}]})
     }).then(r=>r.json()).then(d=>{
@@ -1692,7 +1692,7 @@ async function runEarningsIntel(){
 
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:900,
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:900,
         messages:[{role:'user',content:claudePrompt + langDirective()}]})
     });
     const d=await r.json();
@@ -1999,7 +1999,7 @@ async function runSmartMoney(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:2000,
         messages:[{role:'user',content:
           'Bloomberg smart money data for '+ticker+' April 2026. Use SEC, FINRA, 13F knowledge. Return ONLY valid JSON with these exact keys: {"short_interest":{"short_interest_pct":number,"days_to_cover":number,"short_squeeze_score":number,"change_vs_month_ago":"INCREASED|DECREASED|STABLE","borrow_rate_pct":number,"narrative":"string"},"institutional":{"institutional_pct":number,"top_holders":[{"name":"string","pct":number,"change":"INCREASED|DECREASED|NEW|EXITED"}],"hedge_fund_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"options":{"put_call_ratio":number,"implied_volatility_pct":number,"iv_percentile":number,"options_sentiment":"BULLISH|BEARISH|NEUTRAL","unusual_activity":"YES|NO","notable_flow":"string","max_pain":number,"key_strikes":[{"strike":number,"type":"CALL|PUT","open_interest":number,"significance":"HIGH|MEDIUM"}]},"verdict":{"overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","conviction":"HIGH|MEDIUM|LOW","smart_money_score":number,"key_insight":"string","bull_case":"string","bear_case":"string","trade_setup":"string","risk_flags":["string"]}}' + langDirective()}]})
     });
@@ -2273,7 +2273,7 @@ async function loadMarketSignals(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:500,
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:500,
         messages:[{role:'user',content:
           'Market-wide smart money signals April 2026. What are institutions, hedge funds, and options traders doing in aggregate? Return ONLY JSON: {"signals":[{"category":"HEDGE FUNDS|INSTITUTIONS|OPTIONS|INSIDER|DARK POOL","signal":"BULLISH|BEARISH|NEUTRAL","description":"1 sentence","confidence":"HIGH|MEDIUM|LOW"}],"market_positioning":"RISK-ON|RISK-OFF|MIXED","key_theme":"1 sentence on dominant smart money theme"}. Include 5 signals.'}]})
     });
@@ -2425,7 +2425,7 @@ async function loadFearGreed(){
     // Step 2: try Claude refinement in background (non-blocking)
     fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:150,
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:150,
         messages:[{role:'user',content:
           'Fear & Greed score for financial markets April 9 2026. Consider recent tariff fears, market volatility, crypto action. Return ONLY JSON: {"score":number,"label":"Extreme Fear|Fear|Neutral|Greed|Extreme Greed","description":"1 sentence"}'}]})
     }).then(r=>r.json()).then(d=>{
@@ -2437,7 +2437,7 @@ async function loadFearGreed(){
     // Pure Claude fallback
     fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:150,
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:150,
         messages:[{role:'user',content:'Fear & Greed score April 2026. Return ONLY JSON: {"score":number,"label":"string","description":"1 sentence"}'}]})
     }).then(r=>r.json()).then(d=>{
       const fg=safeJSON(d.content.map(b=>b.text||'').join(''));
@@ -2594,7 +2594,7 @@ async function loadCurrencies(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:250,
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:250,
         messages:[{role:'user',content:
           'FX rates April 2026. Return ONLY JSON array: [{"pair":"USDMXN","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDBRL","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDCOP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDCLP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"}]'}]})
     });
@@ -2665,7 +2665,7 @@ async function loadEconCalendar(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:500,
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:500,
         messages:[{role:'user',content:
           'Economic calendar April-May 2026. Fed, CPI, jobs, Banxico, Brazil COPOM. Return ONLY JSON array of 8: [{"date":"Apr DD","event":"name","country":"US|MX|BR|EU","impact":"HIGH|MEDIUM|LOW","expected":"","previous":"","description":"1 sentence"}]'}]})
     });
@@ -2723,7 +2723,7 @@ async function loadSectorHeatmap(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:350,
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:350,
         messages:[{role:'user',content:
           'Sector performance April 2026 including LATAM. Return ONLY JSON array of 10: [{"sector":"name","return30d":number,"ytd":number,"signal":"BULLISH|NEUTRAL|BEARISH","note":"1 sentence"}]'}]})
     });
@@ -2762,7 +2762,7 @@ async function runMacroBrief(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:800,
         messages:[{role:'user',content:
           `You are the chief macro strategist at a major bank. Write a concise macro intelligence brief for LATAM investors as of April 2026.
 
@@ -3769,7 +3769,7 @@ async function fetchSimData(ticker,dir,capital,days,model){
   try{
     const claudeRes=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,messages:[{role:'user',content:
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:800,messages:[{role:'user',content:
         `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, April 2026.
 ${priceContext}
 ${newsContext}
@@ -3777,6 +3777,21 @@ The current price is $${pd?.currentPrice||'unknown'} — use this exact price in
 Return ONLY JSON: {"current_price":${pd?.currentPrice||'number'},"mu":${pd?.mu||'number'},"sigma":${pd?.sigma||'number'},"asset_type":"${pd?.asset_type||'stock'}","verdict":"STRONG ENTRY|WAIT FOR DIP|HIGH RISK|AVOID","thesis":"3 sentences referencing the actual current price","signals":["signal 1","signal 2","signal 3","signal 4"],"key_risk":"1 sentence","news_summary":"1 sentence or empty string"}`}]})
     });
     const claudeData=await claudeRes.json();
+    // Surface the real failure instead of masking it as a generic fallback.
+    // Anthropic (proxied via /api/claude) returns non-2xx with an error body
+    // like {error:{type,message}} or {error:"..."}; a 200 with no content array
+    // is an empty/malformed response. Both previously threw an opaque TypeError
+    // on claudeData.content.map(...) and looked identical to "no data".
+    if(!claudeRes.ok){
+      const apiMsg=(claudeData&&claudeData.error&&(claudeData.error.message||claudeData.error))||claudeRes.statusText||'unknown';
+      const msgStr=typeof apiMsg==='string'?apiMsg:JSON.stringify(apiMsg);
+      console.error(`[thesis] Claude API failed: HTTP ${claudeRes.status} — ${msgStr}`,claudeData);
+      throw {kind:'api_failed',status:claudeRes.status,message:msgStr};
+    }
+    if(!claudeData||!Array.isArray(claudeData.content)||claudeData.content.length===0){
+      console.error('[thesis] Claude returned an empty/malformed response (no content array):',claudeData);
+      throw {kind:'empty_response',status:claudeRes.status,message:'Empty response from AI (no content)'};
+    }
     const parsed=safeJSON(claudeData.content.map(b=>b.text||'').join(''));
     cd.verdict=parsed.verdict||cd.verdict;
     cd.thesis=parsed.thesis||'';
@@ -3784,10 +3799,25 @@ Return ONLY JSON: {"current_price":${pd?.currentPrice||'number'},"mu":${pd?.mu||
     cd.key_risk=parsed.key_risk||'';
     cd.news_summary=parsed.news_summary||'';
   }catch(e){
-    console.log('Claude error:',e);
-    cd.thesis='AI analysis unavailable. Simulation uses real market data.';
-    cd.signals=['Real price data loaded from Finnhub','Volatility calculated from 52w range','Monte Carlo uses actual mu and sigma','Check console for API errors'];
-    cd.key_risk='AI thesis unavailable — verify manually before trading.';
+    // Distinguish a failed API call from a successful-but-empty one, and from a
+    // network/exception, so the UI shows an accurate error state instead of
+    // making every failure look like "no data".
+    const status=e&&e.status;
+    const detail=(e&&e.message)?e.message:(e&&e.toString?e.toString():'unknown');
+    const kind=(e&&e.kind)||'exception';
+    console.error(`[thesis] AI thesis generation failed (${kind}${status?`, HTTP ${status}`:''}): ${detail}`,e);
+    cd.aiError={kind,status:status||null,detail};
+    if(kind==='api_failed'){
+      cd.thesis=`⚠️ AI analysis call FAILED (HTTP ${status||'?'}): ${detail}. The Monte Carlo simulation below still uses real market data.`;
+      cd.key_risk=`AI thesis unavailable — the Anthropic API call failed (HTTP ${status||'?'}). This is an API/config error, not missing data. Check the model ID and ANTHROPIC_API_KEY.`;
+    }else if(kind==='empty_response'){
+      cd.thesis='⚠️ AI analysis returned an EMPTY response. The Monte Carlo simulation below still uses real market data.';
+      cd.key_risk='AI thesis unavailable — the API responded but returned no content.';
+    }else{
+      cd.thesis=`⚠️ AI analysis unavailable (${detail}). The Monte Carlo simulation below still uses real market data.`;
+      cd.key_risk='AI thesis unavailable — verify manually before trading. Check console for details.';
+    }
+    cd.signals=['Real price data loaded from Finnhub','Volatility calculated from 52w range','Monte Carlo uses actual mu and sigma','See console for the exact API error'];
   }
 
   // Step 5: ALWAYS override price with real data — never use Claude's price guess
@@ -4287,7 +4317,7 @@ async function runVC(){
   try{
     const res=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1400,messages:[{role:'user',content:
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1400,messages:[{role:'user',content:
         `Senior VC analyst. Active fundraising in "${q}" (stage: ${stage==='all'?'any':stage}), early 2026. Real companies when possible.
 Return ONLY JSON array of 4:
 {"name":"","sector":"","amount":"$XM","round":"","raised":"$XM total","founded":"YYYY","hq":"City,Country","lead_investor":"","backers":["","",""],"thesis":"2 sentences","why_now":"1 sentence","traction":"key metric","traction_signal":"ACCELERATING|STEADY|EARLY","signal_score":1-100,"verdict":"STRONG BUY|WATCH|PASS"}` + langDirective()}]})
@@ -4542,7 +4572,7 @@ async function runPortfolioSim(){
 
   const prompt=await fetch('/api/claude',{
     method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:400,messages:[{role:'user',content:
+    body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:400,messages:[{role:'user',content:
       `Portfolio of ${positions.length} positions: ${positions.map(p=>p.dir+' '+p.ticker+' $'+p.amount).join(', ')}. Monte Carlo (500 sims): expected return ${fmt(mean)}, win rate ${(wins/returns.length*100).toFixed(0)}%, Sharpe ${sharpe.toFixed(2)}, VaR95 ${fmt(var95)}. Give a 2-sentence portfolio assessment and 1-sentence key risk. Return JSON: {"assessment":"","key_risk":""}`}]})
   });
   const pd=await prompt.json();
@@ -4707,7 +4737,7 @@ async function exportPDF(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1000,
         messages:[{role:'user',content:
           `You are a senior equity research analyst at Goldman Sachs. Write a company overview for ${ticker} as of April 2026.
 Current price: $${SP.S0.toFixed(2)}. 52w range: $${lastCd.low52w||'—'} - $${lastCd.high52w||'—'}.
@@ -5987,6 +6017,32 @@ function renderRiskOfRuin(winRate, avgWin, avgLoss, capital){
   const ruin50_100=calcRuin(winRate,avgWin,avgLoss,capital,100,0.50);
   const ruin10_200=calcRuin(winRate,avgWin,avgLoss,capital,200,0.10);
 
+  // ── Risk-of-ruin diagnostics (50-trade case) ──────────────────────
+  // Shows exactly what each threshold tests. Note: avgWin/avgLoss here are
+  // per-PATH (whole-horizon) magnitudes from the Monte Carlo, but calcRuin
+  // compounds them as PER-TRADE returns over N trades. When avgLoss is large,
+  // a single trade can breach multiple drawdown barriers at once, which makes
+  // the -10% / -25% / -50% probabilities saturate and bunch together. The
+  // thresholds themselves are correct (10%→90%, 25%→75%, 50%→50% of capital).
+  console.log('[risk-of-ruin] 50-trade case', {
+    inputs: { winRate:+winRate.toFixed(4), avgWin:+avgWin.toFixed(4), avgLoss:+avgLoss.toFixed(4), capital },
+    note: 'avgWin/avgLoss are per-PATH terminal returns, applied per-trade by calcRuin',
+    singleLossBreaches: {
+      // After one losing trade, balance = capital*(1-avgLoss). Which barriers does that single loss cross?
+      balanceAfterOneLoss: +(capital*(1-avgLoss)).toFixed(2),
+      crosses_10pct_barrier: capital*(1-avgLoss) <= capital*0.90,  // barrier at 90% of capital
+      crosses_25pct_barrier: capital*(1-avgLoss) <= capital*0.75,  // barrier at 75% of capital
+      crosses_50pct_barrier: capital*(1-avgLoss) <= capital*0.50   // barrier at 50% of capital
+    },
+    thresholds: {
+      'lose10% (barrier=90% cap)': { ruinBalance:+(capital*0.90).toFixed(2), prob:+(ruin10_50*100).toFixed(1)+'%' },
+      'lose25% (barrier=75% cap)': { ruinBalance:+(capital*0.75).toFixed(2), prob:+(ruin25_50*100).toFixed(1)+'%' },
+      'lose50% (barrier=50% cap)': { ruinBalance:+(capital*0.50).toFixed(2), prob:+(ruin50_50*100).toFixed(1)+'%' }
+    },
+    monotonic: ruin10_50 >= ruin25_50 && ruin25_50 >= ruin50_50,
+    sims: 2000, montecarloNoiseApprox: '±~1pp (a <1pp gap between adjacent thresholds is within noise)'
+  });
+
   const ruinColor=p=>p>0.5?'var(--red)':p>0.25?'var(--amber)':'var(--green)';
   const fmt=p=>(p*100).toFixed(1)+'%';
 
@@ -6082,7 +6138,7 @@ async function runBacktest(){
 
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:800,
         messages:[{role:'user',content:
           `You are a quant backtester. The user simulated a ${dir} trade on ${ticker} today at ~$${currentPrice} for ${days} days with $${capital}.
 
@@ -6208,7 +6264,7 @@ ${earningsCtx}`;
     const [round1Res, riskRes] = await Promise.all([
       fetch('/api/claude',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1500,
+        body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1500,
           messages:[{role:'user',content:`You are running a Wall Street trading debate between a Bull Analyst and Bear Analyst about this trade.
 
 ${context}
@@ -6239,7 +6295,7 @@ Return ONLY JSON:
 
       fetch('/api/claude',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:600,
+        body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:600,
           messages:[{role:'user',content:`You are the Risk Manager at a trading firm. After reviewing this trade's data, give your final verdict.
 
 ${context}
@@ -6369,7 +6425,7 @@ async function runInvestorPersonas(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1200,
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1200,
         messages:[{role:'user',content:
           `You are simulating 13 legendary investors analyzing a trade. Give each investor's brutally honest opinion — make them sound exactly like themselves. Some bullish, some bearish, some neutral. Disagree with each other.
 
@@ -7302,7 +7358,7 @@ const i18n = {
     pathsRun:'Paths run', simulations:'simulations',
     expectedPnl:'Expected P&L', winRate:'Win rate', profitablePaths:'profitable paths',
     sharpe:'Sharpe ratio', riskAdj:'risk-adjusted',
-    maxDD:'Max drawdown', worstPath:'worst path',
+    maxDD:'Max drawdown', worstPath:'worst path', peakToTrough:'peak-to-trough',
     var:'VaR 95%', atRisk:'at risk',
     bear:'bear · p10', base:'base · median', bull:'bull · p90',
     worstPaths:'worst 10% of paths', medianOutcome:'median outcome', bestPaths:'best 10% of paths',
@@ -7428,7 +7484,7 @@ const i18n = {
     pathsRun:'Rutas ejecutadas', simulations:'simulaciones',
     expectedPnl:'P&L esperado', winRate:'Tasa de ganancia', profitablePaths:'rutas rentables',
     sharpe:'Ratio Sharpe', riskAdj:'ajustado al riesgo',
-    maxDD:'Drawdown máximo', worstPath:'peor ruta',
+    maxDD:'Drawdown máximo', worstPath:'peor ruta', peakToTrough:'pico-valle',
     var:'VaR 95%', atRisk:'en riesgo',
     bear:'bajista · p10', base:'base · mediana', bull:'alcista · p90',
     worstPaths:'peor 10% de rutas', medianOutcome:'resultado mediano', bestPaths:'mejor 10% de rutas',
@@ -11059,7 +11115,7 @@ async function downloadMemoPDF(){
     try {
       const r = await fetch('/api/claude', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1500,
+        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1500,
           messages: [{role:'user', content: claudePrompt}]
         })
       });
