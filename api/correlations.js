@@ -24,6 +24,8 @@ export default async function handler(req, res) {
 
   try {
     // Fetch ~6 months of daily closes from Yahoo for each ticker (Yahoo is free + supports LATAM)
+    // Returns a Map of trading-day-bucket -> close so series can be aligned by
+    // actual date rather than by array position (US + LATAM calendars differ).
     const fetchHistorical = async (sym) => {
       try {
         const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=6mo&interval=1d`;
@@ -33,9 +35,19 @@ export default async function handler(req, res) {
         const result = d?.chart?.result?.[0];
         if (!result) return null;
         const closes = result.indicators?.quote?.[0]?.close || [];
-        const cleanCloses = closes.filter(c => c != null && c > 0);
-        if (cleanCloses.length < 30) return null;  // need at least a month of data
-        return cleanCloses;
+        const timestamps = result.timestamp || [];
+        // Pair each close with its timestamp and drop nulls together. Bucket by
+        // UTC day so the same calendar trading day aligns across exchanges.
+        const byDay = new Map();
+        for (let i = 0; i < closes.length; i++) {
+          const c = closes[i];
+          const ts = timestamps[i];
+          if (c != null && c > 0 && ts != null) {
+            byDay.set(Math.floor(ts / 86400), c);
+          }
+        }
+        if (byDay.size < 30) return null;  // need at least a month of data
+        return byDay;
       } catch (e) { return null; }
     };
 
@@ -47,7 +59,7 @@ export default async function handler(req, res) {
     const validTickers = [];
     const validCloses = [];
     for (let i = 0; i < tickers.length; i++) {
-      if (allCloses[i] && allCloses[i].length >= 30) {
+      if (allCloses[i] && allCloses[i].size >= 30) {
         validIdx.push(i);
         validTickers.push(tickers[i]);
         validCloses.push(allCloses[i]);
@@ -65,9 +77,24 @@ export default async function handler(req, res) {
       });
     }
 
-    // Align to shortest series so all returns line up by day
-    const minLen = Math.min(...validCloses.map(c => c.length));
-    const alignedCloses = validCloses.map(c => c.slice(c.length - minLen));
+    // Align by intersecting common trading days so returns line up by actual date
+    let commonDays = null;
+    for (const m of validCloses) {
+      if (commonDays === null) commonDays = new Set(m.keys());
+      else commonDays = new Set([...commonDays].filter(day => m.has(day)));
+    }
+    const sortedDays = [...commonDays].sort((a, b) => a - b);
+    if (sortedDays.length < 30) {
+      return res.status(200).json({
+        tickers: validTickers,
+        corr: [],
+        sigmas: [],
+        n_days: sortedDays.length,
+        error: 'Insufficient overlapping trading days across tickers',
+        failed: tickers.filter(t => !validTickers.includes(t))
+      });
+    }
+    const alignedCloses = validCloses.map(m => sortedDays.map(day => m.get(day)));
 
     // Compute log-returns for each ticker
     const computeReturns = (closes) => {

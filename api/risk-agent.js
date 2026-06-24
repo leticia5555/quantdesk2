@@ -151,13 +151,21 @@ function annualizedVol(returns) {
   return s == null ? null : s * Math.sqrt(252);
 }
 
-// Align two series by their last N points (Yahoo trading days line up
-// for two US tickers — but if there's a holiday mismatch, trimming
-// from the end keeps the most recent shared window).
-function alignTail(a, b, n) {
-  if (!a || !b) return [null, null];
-  const take = Math.min(a.length, b.length, n);
-  return [a.slice(-take), b.slice(-take)];
+// Align two Yahoo point series on their common trading days (UTC day buckets)
+// and return the paired log-return series. Aligning by date — rather than by
+// tail position — keeps beta/correlation correct when the two series have a
+// missing/extra bar somewhere in the middle (holidays, halts, LATAM calendars).
+function alignReturnsByDate(pointsA, pointsB) {
+  if (!pointsA || !pointsB) return [[], []];
+  const mapB = new Map();
+  for (const p of pointsB) mapB.set(Math.floor(p.ts / 86400), p.close);
+  const closesA = [];
+  const closesB = [];
+  for (const p of pointsA) {            // pointsA is chronological (Yahoo ascending)
+    const day = Math.floor(p.ts / 86400);
+    if (mapB.has(day)) { closesA.push(p.close); closesB.push(mapB.get(day)); }
+  }
+  return [logReturns(closesA), logReturns(closesB)];
 }
 
 // ── Categorizers ─────────────────────────────────────────────────
@@ -458,12 +466,11 @@ export default async function handler(req, res) {
     let b30 = null, b90 = null, b252 = null;
     let corrSpy30 = null, corrSpy252 = null;
     if (spySeries && spySeries.points && spySeries.points.length >= 30) {
-      const spyCloses = spySeries.points.map(p => p.close);
-      const spyRets = logReturns(spyCloses);
-      // Align by tail length so the most recent N points line up
-      const [ta252, sp252] = alignTail(tickerRets, spyRets, 251);
-      const [ta90,  sp90]  = alignTail(tickerRets, spyRets, 89);
-      const [ta30,  sp30]  = alignTail(tickerRets, spyRets, 29);
+      // Align ticker and SPY on common trading days before taking tails
+      const [taRets, spyRets] = alignReturnsByDate(tickerSeries.points, spySeries.points);
+      const ta252 = taRets.slice(-251), sp252 = spyRets.slice(-251);
+      const ta90  = taRets.slice(-89),  sp90  = spyRets.slice(-89);
+      const ta30  = taRets.slice(-29),  sp30  = spyRets.slice(-29);
       b252       = beta(ta252, sp252);
       b90        = beta(ta90,  sp90);
       b30        = beta(ta30,  sp30);
@@ -475,11 +482,10 @@ export default async function handler(req, res) {
     // ── 5. Sector correlation ──
     let corrSec30 = null, corrSec90 = null, corrSec252 = null;
     if (sectorSeries && sectorSeries.points && sectorSeries.points.length >= 30) {
-      const secCloses = sectorSeries.points.map(p => p.close);
-      const secRets = logReturns(secCloses);
-      const [ta252, sc252] = alignTail(tickerRets, secRets, 251);
-      const [ta90,  sc90]  = alignTail(tickerRets, secRets, 89);
-      const [ta30,  sc30]  = alignTail(tickerRets, secRets, 29);
+      const [taRets, secRets] = alignReturnsByDate(tickerSeries.points, sectorSeries.points);
+      const ta252 = taRets.slice(-251), sc252 = secRets.slice(-251);
+      const ta90  = taRets.slice(-89),  sc90  = secRets.slice(-89);
+      const ta30  = taRets.slice(-29),  sc30  = secRets.slice(-29);
       corrSec252 = correlation(ta252, sc252);
       corrSec90  = correlation(ta90,  sc90);
       corrSec30  = correlation(ta30,  sc30);
@@ -488,9 +494,9 @@ export default async function handler(req, res) {
       // reuse the SPY correlations.
       corrSec252 = corrSpy252;
       corrSec30 = corrSpy30;
-      const spyRets = spySeries ? logReturns(spySeries.points.map(p => p.close)) : null;
-      if (spyRets) {
-        const [ta90, sp90] = alignTail(tickerRets, spyRets, 89);
+      if (spySeries && spySeries.points) {
+        const [taRets, spyRets] = alignReturnsByDate(tickerSeries.points, spySeries.points);
+        const ta90 = taRets.slice(-89), sp90 = spyRets.slice(-89);
         corrSec90 = correlation(ta90, sp90);
       }
     }
