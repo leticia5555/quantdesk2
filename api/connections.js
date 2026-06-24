@@ -43,7 +43,7 @@ const DEFAULT_UNIVERSE = [
 
 // Friendly names + one-line descriptions for display (extend as needed).
 const META = {
-  'AMXB.MX':{name:'AMXL', desc:'América Móvil — telecom'},
+  'AMXB.MX':{name:'AMXB', desc:'América Móvil (Serie B) — telecom'},
   'FEMSAUBD.MX':{name:'FEMSA', desc:'FEMSA — bebidas / retail'},
   'WALMEX.MX':{name:'WALMEX', desc:'Walmart de México'},
   'GFNORTEO.MX':{name:'GFNORTE', desc:'Banorte — banca'},

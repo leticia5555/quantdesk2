@@ -901,7 +901,12 @@ export default async function handler(req, res) {
     // TTM fallback margin from Finnhub's normalized metric
     const mm = (metric && metric.metric) || {};
     const fcfTtm = mm.freeCashFlowTTM || mm.freeCashFlowAnnual || null;
-    const revTtm = mm.revenueTTM || (mm.revenuePerShareTTM != null && sharesOut ? mm.revenuePerShareTTM * sharesOut : null);
+    // fcfTtm and revenueTTM are in millions; revenuePerShareTTM is per share in
+    // actual currency, so multiply by shares-in-millions (profile.shareOutstanding,
+    // not the ×1e6 sharesOut) to keep the fallback revenue in millions too —
+    // otherwise the margin comes out ~1e6 too small and collapses to ~0.
+    const sharesOutMM = (profile && profile.shareOutstanding) ? profile.shareOutstanding : null;
+    const revTtm = mm.revenueTTM || (mm.revenuePerShareTTM != null && sharesOutMM ? mm.revenuePerShareTTM * sharesOutMM : null);
     const fallbackFcfMargin = (fcfTtm != null && revTtm != null && revTtm > 0) ? fcfTtm / revTtm : null;
 
     let dcf = null;
