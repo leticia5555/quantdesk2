@@ -226,11 +226,16 @@ function computeChange(points, daysWindow) {
   const earlier = reversed.find(p => new Date(p.date) <= target) || points[0];
   if (!earlier || !Number.isFinite(earlier.value) || earlier.value === 0) return null;
   if (!Number.isFinite(latest.value)) return null;
+  // Report the actual elapsed days. When no point reaches back a full
+  // `daysWindow` (e.g. monthly series in a short window), `earlier` falls back
+  // to the oldest available point, so labeling it `daysWindow` would overstate
+  // the period the change actually covers.
+  const actualDays = Math.round((new Date(latest.date) - new Date(earlier.date)) / 86400000);
   return {
     from: earlier.value,
     to: latest.value,
     pct: +(((latest.value - earlier.value) / earlier.value) * 100).toFixed(2),
     abs: +(latest.value - earlier.value).toFixed(4),
-    days: daysWindow
+    days: actualDays
   };
 }

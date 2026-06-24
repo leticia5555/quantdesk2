@@ -887,8 +887,13 @@ export default async function handler(req, res) {
     };
 
     // ── 5. Calibrated DCF ──
-    const taxRate = (latest && latest.incomeTax && latest.netIncome && (latest.incomeTax + latest.netIncome) > 0)
-      ? latest.incomeTax / (latest.incomeTax + latest.netIncome) : null;
+    // Effective tax rate = tax / pretax income, pretax = netIncome + tax.
+    // Use explicit null checks (not truthiness) so a legitimate zero tax or
+    // zero net income isn't treated as missing data.
+    const pretaxIncome = (latest && latest.incomeTax != null && latest.netIncome != null)
+      ? latest.incomeTax + latest.netIncome : null;
+    const taxRate = (pretaxIncome != null && pretaxIncome > 0)
+      ? latest.incomeTax / pretaxIncome : null;
     const totalDebt = latest ? latest.totalDebt : null;
     const cash      = latest ? latest.cash : null;
     const interestExpense = latest ? latest.interestExpense : null;
