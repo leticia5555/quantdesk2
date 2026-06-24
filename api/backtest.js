@@ -28,22 +28,33 @@ export default async function handler(req, res) {
     const result = data?.chart?.result?.[0];
     if(!result) return res.status(200).json({ error: 'No data', periods: [] });
  
-    const closes = result.indicators?.quote?.[0]?.close?.filter(c => c != null) || [];
-    const timestamps = result.timestamp || [];
+    // Filter closes and timestamps together so indices stay aligned —
+    // Yahoo returns null closes on halts/holidays while keeping the timestamp.
+    const rawCloses = result.indicators?.quote?.[0]?.close || [];
+    const rawTimestamps = result.timestamp || [];
+    const closes = [];
+    const timestamps = [];
+    for (let i = 0; i < rawCloses.length; i++) {
+      if (rawCloses[i] != null) {
+        closes.push(rawCloses[i]);
+        timestamps.push(rawTimestamps[i]);
+      }
+    }
  
     if(closes.length < d + 30){
       return res.status(200).json({ error: 'Insufficient history', periods: [] });
     }
  
-    // Run backtest: pick 6 entry points evenly spaced in last 18 months
-    // For each entry, measure return after `d` days
+    // Run backtest: pick 6 entry points evenly spaced across the usable range
+    // For each entry, measure return after `d` days. The last valid entry is
+    // at index (totalDays - d - 1) so its exit lands on the final bar.
     const totalDays = closes.length;
-    const availableEntries = totalDays - d - 1;
+    const lastEntry = totalDays - d - 1;
     const periods = [];
     const numPeriods = 6;
- 
+
     for(let i = 0; i < numPeriods; i++){
-      const entryIdx = Math.floor(availableEntries * (i / numPeriods)) + Math.floor(d / 2);
+      const entryIdx = Math.floor(lastEntry * (i / (numPeriods - 1)));
       const exitIdx = entryIdx + d;
       if(exitIdx >= totalDays) break;
  

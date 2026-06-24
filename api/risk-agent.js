@@ -314,7 +314,9 @@ async function fetchShortInterest(ticker, finnhubKey) {
   // Sort ascending by settlementDate
   items.sort((a, b) => new Date(a.settlementDate || 0) - new Date(b.settlementDate || 0));
   const last = items[items.length - 1];
-  const prev = items.length > 1 ? items[0] : null;
+  // Compare the latest reading against the immediately-preceding one, not the
+  // oldest record in the fetch window.
+  const prev = items.length > 1 ? items[items.length - 2] : null;
   // Finnhub fields: shortInterest, daysToCover, settlementDate
   const pct = typeof last.shortInterestRatio === 'number' ? last.shortInterestRatio
             : (typeof last.percentOfFloat === 'number' ? last.percentOfFloat : null);

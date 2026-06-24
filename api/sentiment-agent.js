@@ -31,9 +31,11 @@ function langDirective(lang) {
 }
 
 // Hard cap on items sent to Claude in one batched scoring call.
-// Modern Sonnet-class context handles 80 short headlines comfortably,
-// but we cap to keep latency + token cost predictable.
-const MAX_BATCH = 80;
+// Must cover the worst case (news 60 + reddit 30 = 90); otherwise the batch
+// is truncated and the trailing Reddit posts get no score and are silently
+// dropped from every aggregate. Modern Sonnet-class context handles this many
+// short headlines comfortably.
+const MAX_BATCH = 100;
 const REDDIT_LIMIT = 25;          // posts per subreddit listing
 const REDDIT_USER_AGENT = 'QuantDesk/1.0 (sentiment agent)';
 

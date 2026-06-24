@@ -27,8 +27,11 @@ export default async function handler(req, res) {
       fetch(`https://finnhub.io/api/v1/company-news?symbol=${symbol}&from=${fromStr}&to=${toStr}&token=${finnhubKey}`)
     ];
     if (!isCrypto) {
+      // Finnhub's earnings calendar requires an explicit date window; without
+      // from/to it returns a narrow default range and upcoming earnings are missed.
+      const earnTo = new Date(today.getTime() + 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       fetches.push(
-        fetch(`https://finnhub.io/api/v1/calendar/earnings?symbol=${symbol}&token=${finnhubKey}`),
+        fetch(`https://finnhub.io/api/v1/calendar/earnings?symbol=${symbol}&from=${fromStr}&to=${earnTo}&token=${finnhubKey}`),
         fetch(`https://finnhub.io/api/v1/news-sentiment?symbol=${symbol}&token=${finnhubKey}`)
       );
     }

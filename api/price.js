@@ -57,7 +57,7 @@ export default async function handler(req, res) {
 
         const lambda = 0.94;
         let ewmaVar = varDaily;
-        for (let i = dailyReturns.length - 30; i < dailyReturns.length; i++) {
+        for (let i = Math.max(0, dailyReturns.length - 30); i < dailyReturns.length; i++) {
           ewmaVar = lambda * ewmaVar + (1 - lambda) * dailyReturns[i] ** 2;
         }
         const ewmaSigma = Math.sqrt(ewmaVar);

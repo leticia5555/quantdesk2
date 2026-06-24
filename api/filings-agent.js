@@ -120,9 +120,11 @@ function extractKeyItems(text, filingType) {
 
   const config = SECTION_CONFIG[filingType] || SECTION_CONFIG['10-K'];
 
-  // Match: "Item <digits>" optionally followed by ".<letter>" or just
-  // "<letter>" (10-K compact form: "Item 1A").
-  const itemRegex = /\bitem\s+(\d{1,2})\.?\s*([a-z])?\b/gi;
+  // Match: "Item <digits>" optionally followed by a contiguous sub-letter
+  // ("Item 1A" or "Item 1.A"). The sub-letter must immediately follow the
+  // number — allowing whitespace before it (the old `\s*`) wrongly absorbed a
+  // following single-letter word, e.g. "Item 7 a discussion" → key "7A".
+  const itemRegex = /\bitem\s+(\d{1,2})(?:\.?([a-z]))?\b/gi;
   const matches = [];
   let m;
   while ((m = itemRegex.exec(text)) !== null) {
