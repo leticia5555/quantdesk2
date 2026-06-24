@@ -101,8 +101,9 @@ export default async function handler(req, res) {
       const sentData = results[2].value;
       if (sentData.sentiment) {
         sentiment = {
-          score: sentData.sentiment.bearishPercent !== undefined
-            ? (1 - sentData.sentiment.bearishPercent).toFixed(2)
+          // Numeric bullish share in [0,1], consistent with bullish/bearish below
+          score: sentData.sentiment.bullishPercent != null
+            ? +Number(sentData.sentiment.bullishPercent).toFixed(2)
             : null,
           bullish: sentData.sentiment.bullishPercent,
           bearish: sentData.sentiment.bearishPercent

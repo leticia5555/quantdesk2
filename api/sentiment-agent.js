@@ -443,8 +443,12 @@ export default async function handler(req, res) {
     const ranked = news7dValid
       .filter(n => n.relevance == null || n.relevance >= 0.4)
       .slice();
-    const topPositive = ranked.slice().sort((a, b) => b.sentiment_score - a.sentiment_score).slice(0, 3);
-    const topNegative = ranked.slice().sort((a, b) => a.sentiment_score - b.sentiment_score).slice(0, 3);
+    // Gate by polarity so a uniformly bearish week doesn't surface
+    // negative-scored headlines as "top positive" (and vice versa).
+    const topPositive = ranked.filter(n => n.sentiment_score > 0.1)
+      .sort((a, b) => b.sentiment_score - a.sentiment_score).slice(0, 3);
+    const topNegative = ranked.filter(n => n.sentiment_score < -0.1)
+      .sort((a, b) => a.sentiment_score - b.sentiment_score).slice(0, 3);
 
     // ── 6. Reddit aggregates ──
     const redditValid = redditScored.filter(p => typeof p.sentiment_score === 'number');
