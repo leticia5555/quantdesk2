@@ -50,6 +50,12 @@ const MIN_TOTAL_OBS = 60;          // min aligned obs to judge at all
 const MIN_SPLIT_OBS = 25;          // min obs per split to trust an OOS re-test
 const MAX_TRADEABLE_HALFLIFE = 120.0; // bars; longer = real but too slow to trade
 
+// Hedge-beta band for narrating a Gate-A failure. |β| within this of zero =
+// "no linear relationship" (independent); strongly negative below it =
+// "inverted/unstable hedge"; clearly positive above it = "co-trending but not
+// cointegrated". Only affects the explain text, never the verdict.
+const NEAR_ZERO_BETA = 0.2;
+
 // MacKinnon (2010) asymptotic ADF critical values (constant, no trend).
 const ADF_CRIT = { 0.01: -3.43, 0.05: -2.86, 0.10: -2.57 };
 
@@ -371,9 +377,21 @@ function validatePair(xsIn, ysIn, useLog = true) {
 
   const pIs = adfIs.p_approx;
   if (!adfIs.stationary) {
+    // The spread failed ADF, but *why* depends on the hedge relationship.
+    // bIs is the OLS hedge beta of the very spread that failed: it tells us
+    // whether the two assets are linearly unrelated (β≈0), inversely/unstably
+    // related (β strongly negative), or co-trending yet not cointegrated (β>0).
+    let why;
+    if (bIs < -NEAR_ZERO_BETA) {
+      why = `La relación de hedge es inestable/invertida en esta ventana (β=${bIs.toFixed(2)}): los dos activos están correlacionados pero divergen en tendencia, así que el residual no forma un spread estacionario.`;
+    } else if (Math.abs(bIs) <= NEAR_ZERO_BETA) {
+      why = `No hay relación lineal entre ambos (β≈${bIs.toFixed(2)}): se mueven de forma independiente, son dos caminatas aleatorias, no un par.`;
+    } else {
+      why = `Se mueven juntos pero el spread no revierte (β=${bIs.toFixed(2)}): hay correlación pero no cointegran en esta ventana, el residual se separa sin volver.`;
+    }
     return {
       final: SIN_COINTEGRACION,
-      explain: `El spread no es estacionario in-sample (ADF=${adfIs.stat.toFixed(2)} ≥ crítico ${adfIs.crit.toFixed(2)}, p≈${pIs.toFixed(3)}). No hay cointegración: son dos caminatas aleatorias, no un par. (Falló la Puerta A.)`,
+      explain: `El spread no es estacionario in-sample (ADF=${adfIs.stat.toFixed(2)} ≥ crítico ${adfIs.crit.toFixed(2)}, p≈${pIs.toFixed(3)}). ${why} (Falló la Puerta A.)`,
       detail,
     };
   }
