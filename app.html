@@ -251,6 +251,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('sectors')">SECTORS</button>
     <button class="nav-btn" onclick="showPage('conexiones')">CONEXIONES</button>
     <button class="nav-btn" onclick="showPage('screener')">SCREENER</button>
+    <button class="nav-btn" onclick="showPage('pairs')">PARES</button>
     <button class="nav-btn" onclick="showPage('social')">SOCIAL</button>
     <button class="nav-btn" onclick="showPage('gallery')">GALLERY</button>
   </nav>
@@ -1029,6 +1030,209 @@ td:first-child{color:var(--text);font-weight:500;}
   </div>
 </div>
 
+
+<!-- PAIRS VALIDATOR PAGE -->
+<div id="page-pairs" class="page" style="padding:0;background:#080808;min-height:100vh;">
+
+  <!-- TOP BAR -->
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <span style="font-family:var(--mono);font-size:10px;color:var(--green);font-weight:600;letter-spacing:.1em;" data-i18n="pairsTitle">VALIDADOR DE PARES</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;" data-i18n="pairsSubtitle">COINTEGRACIÓN · VIDA MEDIA OU · RE-TEST OOS</span>
+  </div>
+
+  <!-- INPUTS -->
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:12px 16px;">
+    <div style="display:grid;grid-template-columns:1fr 1fr 110px auto;gap:8px;align-items:end;max-width:640px;">
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="pairsTickerY">TICKER Y (objetivo)</div>
+        <input id="pvY" type="text" placeholder="AMZN" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')runPairsValidator()" style="font-family:var(--mono);font-size:12px;background:#111;border:1px solid #222;color:#ccc;padding:6px 8px;width:100%;border-radius:2px;text-transform:uppercase;"/>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="pairsTickerX">TICKER X (hedge)</div>
+        <input id="pvX" type="text" placeholder="GOOGL" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')runPairsValidator()" style="font-family:var(--mono);font-size:12px;background:#111;border:1px solid #222;color:#ccc;padding:6px 8px;width:100%;border-radius:2px;text-transform:uppercase;"/>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="pairsRange">RANGO</div>
+        <select id="pvRange" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:6px 4px;width:100%;border-radius:2px;">
+          <option value="1y">1 año</option>
+          <option value="2y" selected>2 años</option>
+          <option value="5y">5 años</option>
+        </select>
+      </div>
+      <div>
+        <button onclick="runPairsValidator()" id="pvBtn" style="font-family:var(--mono);font-size:11px;padding:7px 14px;background:var(--green);border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;white-space:nowrap;" data-i18n="pairsValidateBtn">▶ VALIDAR PAR</button>
+      </div>
+    </div>
+    <!-- Preset pairs -->
+    <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+      <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.06em;" data-i18n="pairsExamples">EJEMPLOS:</span>
+      <button class="pv-preset" onclick="pvPreset('AMZN','GOOGL')">AMZN / GOOGL</button>
+      <button class="pv-preset" onclick="pvPreset('KO','PEP')">KO / PEP</button>
+      <button class="pv-preset" onclick="pvPreset('V','MA')">V / MA</button>
+      <button class="pv-preset" onclick="pvPreset('GLD','SLV')">GLD / SLV</button>
+      <button class="pv-preset" onclick="pvPreset('HD','LOW')">HD / LOW</button>
+    </div>
+  </div>
+
+  <!-- RESULT -->
+  <div id="pvResult" style="padding:24px 16px;">
+    <div style="text-align:center;padding:60px;font-family:var(--mono);font-size:12px;color:#333;line-height:1.6;" data-i18n="pairsEmpty">
+      Mete dos tickers y pica VALIDAR PAR — ¿el spread realmente revierte, o es folklore?
+    </div>
+  </div>
+</div>
+
+<style>
+.pv-preset{font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;transition:all .12s;}
+.pv-preset:hover{border-color:var(--green);color:var(--green);}
+</style>
+
+<script>
+// ─── PAIRS VALIDATOR ─────────────────────────────────────
+// Front-end for /api/pairs-validator (Engle-Granger cointegration →
+// OU half-life → out-of-sample re-test). Sends two tickers, renders the
+// user-facing Spanish verdict big + the raw numbers behind it.
+
+// Semantic colour per user-facing verdict tier.
+const PV_TIER = {
+  'VENTAJA REAL':        { color:'var(--green)', glow:'rgba(29,158,117,.16)' },
+  'MARGINAL':            { color:'var(--amber)', glow:'rgba(239,159,39,.12)' },
+  'RUIDO':               { color:'var(--red)',   glow:'rgba(226,75,74,.12)' },
+  'SOBREAJUSTADO':       { color:'var(--red)',   glow:'rgba(226,75,74,.12)' },
+  'DATOS INSUFICIENTES': { color:'var(--text3)', glow:'rgba(85,85,80,.10)' },
+};
+
+function pvPreset(y, x){
+  document.getElementById('pvY').value = y;
+  document.getElementById('pvX').value = x;
+  runPairsValidator();
+}
+
+function pvFmt(v, d){
+  return (v === null || v === undefined || Number.isNaN(v)) ? '—' : Number(v).toFixed(d);
+}
+function pvBars(v){
+  return (v === null || v === undefined) ? '—' : Math.round(v) + ' barras';
+}
+function pvChip(ok){
+  if (ok === true)  return '<span style="color:var(--green);font-weight:700;">PASA</span>';
+  if (ok === false) return '<span style="color:var(--red);font-weight:700;">FALLA</span>';
+  return '<span style="color:var(--text3);">—</span>';
+}
+function pvMsg(html, color){
+  document.getElementById('pvResult').innerHTML =
+    '<div style="text-align:center;padding:60px;font-family:var(--mono);font-size:12px;color:' +
+    (color || '#666') + ';line-height:1.6;">' + html + '</div>';
+}
+
+async function runPairsValidator(){
+  const x = (document.getElementById('pvX').value || '').trim().toUpperCase();
+  const y = (document.getElementById('pvY').value || '').trim().toUpperCase();
+  const range = document.getElementById('pvRange').value;
+  const btn = document.getElementById('pvBtn');
+
+  if(!x || !y){ pvMsg('Mete los dos tickers — Y (objetivo) y X (hedge).'); return; }
+  if(x === y){ pvMsg('X y Y deben ser tickers distintos.'); return; }
+
+  const oldLabel = btn.textContent;
+  btn.disabled = true; btn.style.opacity = '.6'; btn.textContent = 'VALIDANDO…';
+  document.getElementById('pvResult').innerHTML =
+    '<div class="loading">analizando cointegración de ' + y + ' ~ ' + x + ' · ' + range + '…</div>';
+  if(typeof setStatus === 'function') setStatus('VALIDANDO PAR ' + y + '/' + x + '…', true);
+
+  try{
+    const url = '/api/pairs-validator?x=' + encodeURIComponent(x) +
+                '&y=' + encodeURIComponent(y) + '&range=' + encodeURIComponent(range);
+    const r = await fetch(url);
+    let data;
+    try { data = await r.json(); } catch(e){ data = null; }
+    if(!r.ok || !data || data.error){
+      const why = (data && data.error) ? data.error : ('HTTP ' + r.status);
+      pvMsg('No se pudo validar el par.<br><span style="color:#444;font-size:11px;">' + why + '</span>', 'var(--red)');
+    } else {
+      renderPairsResult(data);
+    }
+  }catch(e){
+    pvMsg('Error de red al validar el par.<br><span style="color:#444;font-size:11px;">' + (e && e.message ? e.message : e) + '</span>', 'var(--red)');
+  }finally{
+    btn.disabled = false; btn.style.opacity = '1'; btn.textContent = oldLabel;
+    if(typeof setStatus === 'function') setStatus('LISTO', false);
+  }
+}
+
+function renderPairsResult(data){
+  const el = document.getElementById('pvResult');
+  const tier = PV_TIER[data.verdict] || { color:'var(--text2)', glow:'transparent' };
+  const co = data.cointegration, ou = data.ou_half_life, oos = data.oos, h = data.hedge || {};
+
+  // Row inside a gate block.
+  const row = (label, val) =>
+    '<div style="display:grid;grid-template-columns:210px 1fr;gap:8px;padding:5px 0;border-bottom:1px solid #141414;">' +
+      '<span style="color:var(--text3);">' + label + '</span>' +
+      '<span style="color:var(--text);">' + val + '</span></div>';
+
+  // Header for a gate (A/B/C) with pass/fail badge.
+  const gateHead = (letter, name, ok) => {
+    const c = ok === true ? 'var(--green)' : ok === false ? 'var(--red)' : 'var(--text3)';
+    return '<div style="display:flex;align-items:center;gap:8px;margin:16px 0 4px;">' +
+      '<span style="font-family:var(--mono);font-size:10px;font-weight:700;color:' + c + ';border:1px solid ' + c + ';border-radius:3px;padding:1px 6px;">PUERTA ' + letter + '</span>' +
+      '<span style="font-size:10px;color:var(--text2);letter-spacing:.08em;text-transform:uppercase;">' + name + '</span>' +
+      '<span style="margin-left:auto;font-size:10px;">' + pvChip(ok) + '</span></div>';
+  };
+  const notRun = '<div style="padding:6px 0;color:var(--text3);font-size:11px;">no evaluada en este caso.</div>';
+
+  // Gate A — Engle-Granger cointegration + ADF.
+  let gateA = gateHead('A', 'Cointegración · Engle-Granger + ADF', co ? co.stationary : null);
+  if(co){
+    gateA += row('ADF stat vs crítico', pvFmt(co.adf_stat, 3) + ' vs ' + pvFmt(co.adf_crit, 2));
+    gateA += row('p-valor aprox.', pvFmt(co.p_approx, 3));
+    gateA += row('lag (BIC) · n usados', co.lag + ' · ' + co.n_used);
+    gateA += row('spread estacionario', pvChip(co.stationary));
+  } else { gateA += notRun; }
+
+  // Gate B — OU half-life.
+  let gateB = gateHead('B', 'Vida media OU', ou ? ou.tradeable : null);
+  if(ou){
+    gateB += row('θ (velocidad reversión)', pvFmt(ou.theta, 4));
+    gateB += row('vida media', pvBars(ou.half_life_bars) + (ou.max_tradeable_bars ? '  (máx operable ' + Math.round(ou.max_tradeable_bars) + ')' : ''));
+    gateB += row('operable', pvChip(ou.tradeable));
+  } else { gateB += notRun; }
+
+  // Gate C — out-of-sample re-cointegration.
+  const oosOk = oos ? (oos.stationary === true && oos.tradeable === true) : null;
+  let gateC = gateHead('C', 'Re-test fuera de muestra (30%)', oosOk);
+  if(oos){
+    gateC += row('ADF stat oos vs crítico', pvFmt(oos.adf_stat, 3) + ' vs ' + pvFmt(oos.adf_crit, 2));
+    gateC += row('estacionario oos', pvChip(oos.stationary));
+    gateC += row('vida media oos', pvBars(oos.half_life_bars));
+    gateC += row('operable oos', pvChip(oos.tradeable));
+  } else { gateC += notRun; }
+
+  el.innerHTML =
+  '<div style="max-width:760px;margin:0 auto;">' +
+    // Big verdict card.
+    '<div style="border:1px solid #1a1a1a;border-left:3px solid ' + tier.color + ';background:linear-gradient(90deg,' + tier.glow + ',transparent);padding:20px 22px;border-radius:4px;">' +
+      '<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;">' +
+        '<span style="font-family:var(--mono);font-size:12px;color:var(--text2);letter-spacing:.08em;font-weight:600;">' + data.pair.y + ' ~ ' + data.pair.x + '</span>' +
+        '<span style="font-family:var(--mono);font-size:10px;color:var(--text3);">' + data.n_obs + ' obs alineadas' + (data.skipped ? ' · ' + data.skipped + ' descartadas' : '') + '</span>' +
+      '</div>' +
+      '<div style="font-family:var(--mono);font-size:34px;font-weight:700;color:' + tier.color + ';letter-spacing:.01em;margin:8px 0 3px;line-height:1.05;">' + data.verdict + '</div>' +
+      '<div style="font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.06em;">veredicto técnico: ' + data.gate_verdict + '</div>' +
+      '<div style="font-family:var(--sans);font-size:13px;color:var(--text2);line-height:1.55;margin-top:12px;">' + data.explain + '</div>' +
+    '</div>' +
+    // Hedge ratio line.
+    '<div style="display:flex;gap:24px;flex-wrap:wrap;margin:14px 2px 4px;font-family:var(--mono);font-size:11px;color:var(--text2);">' +
+      '<span>β (hedge): <b style="color:var(--text);">' + pvFmt(h.beta, 3) + '</b></span>' +
+      '<span>α: <b style="color:var(--text);">' + pvFmt(h.alpha, 3) + '</b></span>' +
+      '<span>z-score ahora: <b style="color:var(--text);">' + pvFmt(h.z_now, 2) + '</b> <span style="color:var(--text3);">(qué tan estirado está hoy)</span></span>' +
+    '</div>' +
+    // Detail / "the why".
+    '<div class="section-header" style="margin-top:18px;"><span class="section-title">// El porqué · las 3 puertas</span><div class="section-line"></div></div>' +
+    '<div style="font-family:var(--mono);font-size:11px;">' + gateA + gateB + gateC + '</div>' +
+    '<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:16px;line-height:1.5;">spread = Y − (α + β·X) sobre log-precios · cointegración Engle-Granger · vida media Ornstein-Uhlenbeck · split cronológico 70/30 para el re-test OOS.</div>' +
+  '</div>';
+}
+</script>
 
 <script>
 // ─── SCREENER ENGINE ─────────────────────────────────────
@@ -7282,7 +7486,16 @@ const i18n = {
     nav_portfolio:'PORTFOLIO', nav_macro:'MACRO', nav_smartmoney:'SMART $',
     nav_earnings:'EARNINGS', nav_ipos:'IPOS', nav_movers:'MOVERS',
     nav_sectors:'SECTORS', nav_screener:'SCREENER', nav_social:'SOCIAL',
-    nav_gallery:'GALLERY',
+    nav_gallery:'GALLERY', nav_pairs:'PAIRS',
+    // PAIRS VALIDATOR
+    pairsTitle:'PAIRS VALIDATOR',
+    pairsSubtitle:'COINTEGRATION · OU HALF-LIFE · OOS RE-TEST',
+    pairsTickerY:'TICKER Y (target)',
+    pairsTickerX:'TICKER X (hedge)',
+    pairsRange:'RANGE',
+    pairsValidateBtn:'▶ VALIDATE PAIR',
+    pairsExamples:'EXAMPLES:',
+    pairsEmpty:'Enter two tickers and hit VALIDATE PAIR — does the spread actually revert, or is it folklore?',
     // Status
     ready:'READY', complete:'COMPLETE', stopped:'STOPPED',
     simulating:'SIMULATING...', fetching:'FETCHING DATA...',
@@ -7408,7 +7621,16 @@ const i18n = {
     nav_portfolio:'PORTAFOLIO', nav_macro:'MACRO', nav_smartmoney:'DINERO LISTO',
     nav_earnings:'RESULTADOS', nav_ipos:'IPOS', nav_movers:'MOVIMIENTOS',
     nav_sectors:'SECTORES', nav_screener:'FILTRO', nav_social:'SOCIAL',
-    nav_gallery:'GALERÍA',
+    nav_gallery:'GALERÍA', nav_pairs:'PARES',
+    // PAIRS VALIDATOR
+    pairsTitle:'VALIDADOR DE PARES',
+    pairsSubtitle:'COINTEGRACIÓN · VIDA MEDIA OU · RE-TEST OOS',
+    pairsTickerY:'TICKER Y (objetivo)',
+    pairsTickerX:'TICKER X (hedge)',
+    pairsRange:'RANGO',
+    pairsValidateBtn:'▶ VALIDAR PAR',
+    pairsExamples:'EJEMPLOS:',
+    pairsEmpty:'Mete dos tickers y pica VALIDAR PAR — ¿el spread realmente revierte, o es folklore?',
     // Status
     ready:'LISTO', complete:'COMPLETO', stopped:'DETENIDO',
     simulating:'SIMULANDO...', fetching:'OBTENIENDO DATOS...',
