@@ -259,6 +259,7 @@ td:first-child{color:var(--text);font-weight:500;}
   <div class="topbar-right">
     <div class="status-dot live" id="globalDot"></div>
     <div class="status-txt" id="globalStatus">READY</div>
+    <button onclick="qdShowEstado()" id="qdProBtn" title="Suscripción" style="font-family:var(--mono);font-size:11px;padding:4px 10px;border:1px solid var(--border2);color:var(--text3);background:none;border-radius:3px;cursor:pointer;margin-left:8px;letter-spacing:.06em;white-space:nowrap;">PRO</button>
     <button onclick="toggleLang()" id="langBtn" style="font-family:var(--mono);font-size:11px;padding:4px 10px;border:1px solid var(--border2);color:var(--text3);background:none;border-radius:3px;cursor:pointer;margin-left:8px;letter-spacing:.06em;">ES</button>
   </div>
 </div>
@@ -8062,6 +8063,20 @@ const i18n = {
     signalsBollMult:'STD DEV (σ)',
     signalsLookback:'LOOKBACK (DAYS)',
     signalsLookbackNote:'exit: low of lookback/2 days',
+    // PRO / STRIPE
+    pwTitle:'You\'ve used your 3 validations for today',
+    pwBody:'The daily limit is what keeps this free. Pro removes it: unlimited validations across PAIRS and SIGNALS, same anti-self-deception rigor.',
+    pwReset:'The counter resets tomorrow — your 3 free runs come back.',
+    pwPrice:'$29 USD/mo · cancel anytime',
+    pwCta:'GO PRO — $29/MO',
+    pwAlready:'Already Pro? Verify your email:',
+    pwVerify:'VERIFY',
+    stTitle:'YOUR SUBSCRIPTION',
+    stProActive:'PRO ACTIVE — unlimited validations',
+    stRenews:'Renews on',
+    stPortal:'MANAGE / CANCEL IN STRIPE',
+    stPortalNote:'Payments, invoices and cancellation are handled in Stripe\'s official Customer Portal.',
+    stFreeLine:'Validations today:',
     // Status
     ready:'READY', complete:'COMPLETE', stopped:'STOPPED',
     simulating:'SIMULATING...', fetching:'FETCHING DATA...',
@@ -8219,6 +8234,20 @@ const i18n = {
     signalsBollMult:'DESV. (σ)',
     signalsLookback:'LOOKBACK (DÍAS)',
     signalsLookbackNote:'salida: mínimo de lookback/2 días',
+    // PRO / STRIPE
+    pwTitle:'Llegaste a tus 3 validaciones de hoy',
+    pwBody:'El límite diario es lo que mantiene esto gratis. Pro lo quita: validaciones ilimitadas en PARES y SEÑALES, con el mismo rigor anti-autoengaño.',
+    pwReset:'El contador se resetea mañana — tus 3 gratis vuelven.',
+    pwPrice:'$29 USD/mes · cancela cuando quieras',
+    pwCta:'HAZTE PRO — $29/MES',
+    pwAlready:'¿Ya eres Pro? Verifica tu email:',
+    pwVerify:'VERIFICAR',
+    stTitle:'TU SUSCRIPCIÓN',
+    stProActive:'PRO ACTIVO — validaciones ilimitadas',
+    stRenews:'Se renueva el',
+    stPortal:'GESTIONAR / CANCELAR EN STRIPE',
+    stPortalNote:'Pagos, facturas y cancelación se manejan en el Customer Portal oficial de Stripe.',
+    stFreeLine:'Validaciones de hoy:',
     // Status
     ready:'LISTO', complete:'COMPLETO', stopped:'DETENIDO',
     simulating:'SIMULANDO...', fetching:'OBTENIENDO DATOS...',
@@ -16935,6 +16964,288 @@ function margin_color(pct, threshold, COL){
     });
   }
 })();
+</script>
+
+<!-- ═══════ PRO / STRIPE: paywall + estado de suscripción ═══════ -->
+<div id="qdProOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:900;align-items:center;justify-content:center;padding:16px;">
+  <div style="width:100%;max-width:440px;background:#0d0d0d;border:1px solid #222;border-radius:6px;padding:22px 24px;position:relative;">
+    <button onclick="qdCloseModal()" style="position:absolute;top:8px;right:8px;border:none;background:none;color:#555;font-size:16px;cursor:pointer;padding:6px 10px;">✕</button>
+
+    <!-- título paywall -->
+    <div id="qdPwHead" style="display:none;">
+      <div style="font-family:var(--mono);font-size:16px;font-weight:700;color:var(--text);line-height:1.3;" data-i18n="pwTitle">Llegaste a tus 3 validaciones de hoy</div>
+      <div style="font-family:var(--sans);font-size:12px;color:var(--text2);line-height:1.55;margin-top:10px;" data-i18n="pwBody">El límite diario es lo que mantiene esto gratis. Pro lo quita: validaciones ilimitadas en PARES y SEÑALES, con el mismo rigor anti-autoengaño.</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:8px;" data-i18n="pwReset">El contador se resetea mañana — tus 3 gratis vuelven.</div>
+    </div>
+
+    <!-- título estado -->
+    <div id="qdStHead" style="display:none;">
+      <div style="font-family:var(--mono);font-size:13px;font-weight:700;color:var(--text2);letter-spacing:.08em;" data-i18n="stTitle">TU SUSCRIPCIÓN</div>
+    </div>
+
+    <!-- bloque PRO activo -->
+    <div id="qdProInfo" style="display:none;margin-top:14px;">
+      <div style="font-family:var(--mono);font-size:14px;font-weight:700;color:var(--green);" data-i18n="stProActive">PRO ACTIVO — validaciones ilimitadas</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text2);margin-top:8px;">
+        <span id="qdProEmail" style="color:var(--text);"></span><br>
+        <span data-i18n="stRenews">Se renueva el</span> <span id="qdProRenew" style="color:var(--text);">—</span>
+      </div>
+      <button onclick="qdPortal()" id="qdPortalBtn" style="margin-top:14px;width:100%;font-family:var(--mono);font-size:11px;padding:9px 14px;background:none;border:1px solid var(--border2);color:var(--text2);font-weight:600;border-radius:3px;cursor:pointer;" data-i18n="stPortal">GESTIONAR / CANCELAR EN STRIPE</button>
+      <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:8px;line-height:1.5;" data-i18n="stPortalNote">Pagos, facturas y cancelación se manejan en el Customer Portal oficial de Stripe.</div>
+    </div>
+
+    <!-- bloque FREE: cuota + CTA + verificación -->
+    <div id="qdFreeInfo" style="display:none;margin-top:14px;">
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text2);margin-bottom:12px;">
+        <span data-i18n="stFreeLine">Validaciones de hoy:</span> <b id="qdQuotaLine" style="color:var(--text);">0/3</b>
+      </div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:6px;" data-i18n="pwPrice">$29 USD/mes · cancela cuando quieras</div>
+      <button onclick="qdCheckout()" id="qdCtaBtn" style="width:100%;font-family:var(--mono);font-size:12px;padding:11px 14px;background:var(--green);border:none;color:#000;font-weight:700;border-radius:3px;cursor:pointer;letter-spacing:.04em;" data-i18n="pwCta">HAZTE PRO — $29/MES</button>
+      <div style="margin-top:16px;border-top:1px solid #1a1a1a;padding-top:12px;">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-bottom:6px;" data-i18n="pwAlready">¿Ya eres Pro? Verifica tu email:</div>
+        <div style="display:flex;gap:6px;">
+          <input id="qdProEmailInput" type="email" placeholder="tu@correo.com" autocomplete="email" onkeydown="if(event.key==='Enter')qdVerifyClick()" style="flex:1;font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:7px 8px;border-radius:2px;"/>
+          <button onclick="qdVerifyClick()" id="qdVerifyBtn" style="font-family:var(--mono);font-size:10px;padding:7px 12px;background:none;border:1px solid var(--border2);color:var(--text2);border-radius:2px;cursor:pointer;" data-i18n="pwVerify">VERIFICAR</button>
+        </div>
+        <div id="qdVerifyMsg" style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:6px;min-height:14px;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── PRO / STRIPE ─────────────────────────────────────────
+// Freemium: 3 validaciones/día gratis entre AMBOS motores (PARES +
+// SEÑALES); Pro ($29/mes vía Stripe Checkout) = ilimitadas.
+//
+// Decisiones v1 (deliberadamente lo mínimo honesto):
+//  - Identidad: el email del Checkout, guardado en localStorage y
+//    verificado contra Stripe vía /api/stripe-status. Sin usuarios.
+//  - Estado: SIN base de datos; Stripe es la fuente de verdad y aquí
+//    solo se cachea la respuesta unas horas.
+//  - Límite free: contador en localStorage que resetea a medianoche
+//    local. Bypasseable a propósito — es v1, no un DRM.
+//
+// El gate NO edita los motores: envuelve runPairsValidator y
+// runSignalBacktester por nombre global. Inputs inválidos pasan
+// directo al motor (que muestra su propio mensaje) sin gastar crédito.
+
+const QD_FREE_LIMIT = 3;
+const QD_PRO_CACHE_MS = 6 * 3600 * 1000; // re-verificar contra Stripe cada 6h
+
+// ── cuota diaria ──
+function qdTodayKey(){
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function qdGetQuota(){
+  try{
+    const q = JSON.parse(localStorage.getItem('qd_valids') || 'null');
+    if (q && q.date === qdTodayKey() && typeof q.count === 'number') return q;
+  }catch(e){}
+  return { date: qdTodayKey(), count: 0 };
+}
+function qdUsed(){ return qdGetQuota().count; }
+function qdCanValidate(){ return qdIsPro() || qdUsed() < QD_FREE_LIMIT; }
+function qdCountValidation(){
+  if (qdIsPro()) return;
+  const q = qdGetQuota();
+  q.count++;
+  try{ localStorage.setItem('qd_valids', JSON.stringify(q)); }catch(e){}
+  qdRenderProUi();
+}
+
+// ── estado Pro (cacheado; Stripe manda) ──
+function qdProState(){
+  try{ return JSON.parse(localStorage.getItem('qd_pro') || 'null') || {}; }catch(e){ return {}; }
+}
+function qdIsPro(){
+  const p = qdProState();
+  return !!(p.pro && p.checkedAt && Date.now() - p.checkedAt < QD_PRO_CACHE_MS);
+}
+function qdSaveProState(data){
+  try{
+    localStorage.setItem('qd_pro', JSON.stringify({
+      email: data.email || qdProState().email || null,
+      pro: !!data.pro,
+      status: data.status || null,
+      current_period_end: data.current_period_end || null,
+      checkedAt: Date.now(),
+    }));
+  }catch(e){}
+  qdRenderProUi();
+}
+
+async function qdFetchStatus(params){
+  const r = await fetch('/api/stripe-status?' + params);
+  const data = await r.json().catch(() => null);
+  if (!r.ok || !data || data.error) throw new Error((data && data.error) || ('HTTP ' + r.status));
+  return data;
+}
+
+// ── acciones ──
+async function qdCheckout(){
+  const btn = document.getElementById('qdCtaBtn');
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = '…';
+  try{
+    const email = qdProState().email || (document.getElementById('qdProEmailInput').value || '').trim().toLowerCase();
+    const r = await fetch('/api/stripe-checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(email && email.includes('@') ? { email } : {}),
+    });
+    const data = await r.json().catch(() => null);
+    if (data && data.url){ window.location.href = data.url; return; }
+    qdVerifyMsg((data && data.error) || 'No se pudo abrir el checkout.', 'var(--red)');
+  }catch(e){
+    qdVerifyMsg('Error de red al abrir el checkout.', 'var(--red)');
+  }finally{
+    btn.disabled = false; btn.textContent = old;
+  }
+}
+
+async function qdPortal(){
+  const email = qdProState().email;
+  if (!email) return;
+  const btn = document.getElementById('qdPortalBtn');
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = '…';
+  try{
+    const r = await fetch('/api/stripe-portal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await r.json().catch(() => null);
+    if (data && data.url){ window.location.href = data.url; return; }
+    alert((data && data.error) || 'No se pudo abrir el portal de Stripe.');
+  }catch(e){
+    alert('Error de red al abrir el portal de Stripe.');
+  }finally{
+    btn.disabled = false; btn.textContent = old;
+  }
+}
+
+function qdVerifyMsg(txt, color){
+  const el = document.getElementById('qdVerifyMsg');
+  el.textContent = txt || '';
+  el.style.color = color || 'var(--text3)';
+}
+
+async function qdVerifyClick(){
+  const email = (document.getElementById('qdProEmailInput').value || '').trim().toLowerCase();
+  if (!email || !email.includes('@')){ qdVerifyMsg('Escribe el email con el que pagaste.'); return; }
+  qdVerifyMsg('Verificando contra Stripe…');
+  try{
+    const data = await qdFetchStatus('email=' + encodeURIComponent(email));
+    qdSaveProState({ ...data, email });
+    if (data.pro){
+      qdVerifyMsg('✓ PRO activo — validaciones ilimitadas.', 'var(--green)');
+      setTimeout(qdShowEstado, 600);
+    } else {
+      qdVerifyMsg('Ese email no tiene una suscripción activa (' + (data.status || 'none') + ').', 'var(--amber)');
+    }
+  }catch(e){
+    qdVerifyMsg('No se pudo verificar: ' + e.message, 'var(--red)');
+  }
+}
+
+// ── modal ──
+function qdOpenModal(mode){
+  const pro = qdIsPro();
+  document.getElementById('qdPwHead').style.display = mode === 'paywall' ? 'block' : 'none';
+  document.getElementById('qdStHead').style.display = mode === 'estado' ? 'block' : 'none';
+  document.getElementById('qdProInfo').style.display = pro ? 'block' : 'none';
+  document.getElementById('qdFreeInfo').style.display = pro ? 'none' : 'block';
+  if (pro){
+    const p = qdProState();
+    document.getElementById('qdProEmail').textContent = p.email || '';
+    document.getElementById('qdProRenew').textContent = p.current_period_end
+      ? new Date(p.current_period_end * 1000).toLocaleDateString() : '—';
+  } else {
+    document.getElementById('qdQuotaLine').textContent = Math.min(qdUsed(), QD_FREE_LIMIT) + '/' + QD_FREE_LIMIT;
+    const saved = qdProState().email;
+    if (saved) document.getElementById('qdProEmailInput').value = saved;
+    qdVerifyMsg('');
+  }
+  document.getElementById('qdProOverlay').style.display = 'flex';
+}
+function qdShowPaywall(){ qdOpenModal('paywall'); }
+function qdShowEstado(){ qdOpenModal('estado'); }
+function qdCloseModal(){ document.getElementById('qdProOverlay').style.display = 'none'; }
+document.getElementById('qdProOverlay').addEventListener('click', function(e){
+  if (e.target === this) qdCloseModal();
+});
+
+// ── indicador en topbar: "PRO ✓" o "PRO · 2/3" (neutro en idioma) ──
+function qdRenderProUi(){
+  const btn = document.getElementById('qdProBtn');
+  if (!btn) return;
+  if (qdIsPro()){
+    btn.textContent = 'PRO ✓';
+    btn.style.color = 'var(--green)';
+    btn.style.borderColor = 'var(--green)';
+  } else {
+    btn.textContent = 'PRO · ' + Math.min(qdUsed(), QD_FREE_LIMIT) + '/' + QD_FREE_LIMIT;
+    btn.style.color = 'var(--text3)';
+    btn.style.borderColor = 'var(--border2)';
+  }
+}
+
+// ── gate: envuelve los motores SIN editarlos ──
+(function(){
+  const origPairs = window.runPairsValidator;
+  if (typeof origPairs === 'function'){
+    window.runPairsValidator = function(){
+      const x = ((document.getElementById('pvX') || {}).value || '').trim().toUpperCase();
+      const y = ((document.getElementById('pvY') || {}).value || '').trim().toUpperCase();
+      // input inválido: el motor muestra su mensaje, sin gastar crédito
+      if (!x || !y || x === y) return origPairs.apply(this, arguments);
+      if (!qdCanValidate()){ qdShowPaywall(); return; }
+      qdCountValidation();
+      return origPairs.apply(this, arguments);
+    };
+  }
+  const origSignals = window.runSignalBacktester;
+  if (typeof origSignals === 'function'){
+    window.runSignalBacktester = function(){
+      const t_ = ((document.getElementById('sbTicker') || {}).value || '').trim();
+      if (!t_) return origSignals.apply(this, arguments);
+      if (!qdCanValidate()){ qdShowPaywall(); return; }
+      qdCountValidation();
+      return origSignals.apply(this, arguments);
+    };
+  }
+})();
+
+// ── arranque: retorno del Checkout + re-verificación del caché ──
+window.addEventListener('DOMContentLoaded', function(){
+  qdRenderProUi();
+
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('stripe') === 'success' && params.get('session_id')){
+    // El session_id nos da el email pagado — la app aprende la identidad
+    // sin que el usuario la re-escriba.
+    qdFetchStatus('session_id=' + encodeURIComponent(params.get('session_id')))
+      .then(function(data){
+        qdSaveProState(data);
+        qdShowEstado();
+      })
+      .catch(function(){ /* si falla, el usuario puede verificar por email */ });
+    history.replaceState(null, '', window.location.pathname);
+  } else if (params.get('stripe') === 'cancel'){
+    history.replaceState(null, '', window.location.pathname);
+  }
+
+  // Caché Pro vencido pero con email conocido: re-verificar en silencio.
+  const p = qdProState();
+  if (p.email && (!p.checkedAt || Date.now() - p.checkedAt >= QD_PRO_CACHE_MS)){
+    qdFetchStatus('email=' + encodeURIComponent(p.email))
+      .then(qdSaveProState)
+      .catch(function(){ /* red caída: se reintenta en la próxima carga */ });
+  }
+});
 </script>
 </body>
 </html>
