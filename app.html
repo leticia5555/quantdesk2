@@ -1246,7 +1246,7 @@ function renderPairsResult(data){
 
   <!-- INPUTS -->
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:12px 16px;">
-    <div style="display:grid;grid-template-columns:120px 190px 120px 100px auto;gap:8px;align-items:end;max-width:760px;">
+    <div class="sb-input-grid">
       <div>
         <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsTicker">TICKER</div>
         <input id="sbTicker" type="text" placeholder="AAPL" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')runSignalBacktester()" style="font-family:var(--mono);font-size:12px;background:#111;border:1px solid #222;color:#ccc;padding:6px 8px;width:100%;border-radius:2px;text-transform:uppercase;"/>
@@ -1256,6 +1256,9 @@ function renderPairsResult(data){
         <select id="sbRule" onchange="sbRuleChanged()" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:6px 4px;width:100%;border-radius:2px;">
           <option value="rsi" selected>RSI (reversión)</option>
           <option value="sma_cross">Cruce de medias (SMA)</option>
+          <option value="macd">MACD (cruce de señal)</option>
+          <option value="bollinger">Bandas de Bollinger</option>
+          <option value="breakout">Breakout (máx N días)</option>
         </select>
       </div>
       <div>
@@ -1306,6 +1309,43 @@ function renderPairsResult(data){
       </div>
     </div>
 
+    <!-- Rule params: MACD -->
+    <div id="sbMacdParams" style="display:none;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:end;">
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsMacdFast">EMA RÁPIDA</div>
+        <input id="sbMacdFast" type="number" value="12" min="2" max="200" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:5px 8px;width:90px;border-radius:2px;"/>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsMacdSlow">EMA LENTA</div>
+        <input id="sbMacdSlow" type="number" value="26" min="3" max="400" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:5px 8px;width:90px;border-radius:2px;"/>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsMacdSignal">SEÑAL</div>
+        <input id="sbMacdSignal" type="number" value="9" min="2" max="100" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:5px 8px;width:90px;border-radius:2px;"/>
+      </div>
+    </div>
+
+    <!-- Rule params: Bollinger -->
+    <div id="sbBollParams" style="display:none;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:end;">
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsBollPeriod">PERÍODO</div>
+        <input id="sbBollPeriod" type="number" value="20" min="2" max="200" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:5px 8px;width:90px;border-radius:2px;"/>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsBollMult">DESV. (σ)</div>
+        <input id="sbBollMult" type="number" value="2" min="0.5" max="5" step="0.5" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:5px 8px;width:90px;border-radius:2px;"/>
+      </div>
+    </div>
+
+    <!-- Rule params: Breakout -->
+    <div id="sbBreakParams" style="display:none;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:end;">
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsLookback">LOOKBACK (DÍAS)</div>
+        <input id="sbLookback" type="number" value="20" min="2" max="200" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:5px 8px;width:110px;border-radius:2px;"/>
+      </div>
+      <div style="font-family:var(--mono);font-size:9px;color:#444;padding-bottom:7px;" data-i18n="signalsLookbackNote">salida: mínimo de lookback/2 días</div>
+    </div>
+
     <!-- Preset signals -->
     <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
       <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.06em;" data-i18n="signalsExamples">EJEMPLOS:</span>
@@ -1314,6 +1354,9 @@ function renderPairsResult(data){
       <button class="sb-preset" onclick="sbPreset('BTC','rsi',{entry:25,exit:75})">BTC · RSI 25/75</button>
       <button class="sb-preset" onclick="sbPreset('NVDA','sma_cross',{fast:10,slow:30})">NVDA · SMA 10/30</button>
       <button class="sb-preset" onclick="sbPreset('KO','rsi',{entry:30,exit:70,range:'5y'})">KO · RSI 5 años</button>
+      <button class="sb-preset" onclick="sbPreset('QQQ','macd',{macdFast:12,macdSlow:26,signal:9})">QQQ · MACD 12/26/9</button>
+      <button class="sb-preset" onclick="sbPreset('TSLA','bollinger',{period:20,mult:2})">TSLA · BOLLINGER 20/2σ</button>
+      <button class="sb-preset" onclick="sbPreset('ETH','breakout',{lookback:20})">ETH · BREAKOUT 20d</button>
     </div>
 
     <!-- Contador K (visible desde el primer intento) -->
@@ -1329,6 +1372,15 @@ function renderPairsResult(data){
 </div>
 
 <style>
+/* Fila de inputs: columnas fijas en desktop; en móvil colapsa a 2 columnas
+   y el botón VALIDAR SEÑAL ocupa la fila completa — el body tiene
+   overflow-x:hidden, así que un grid que desborda deja el botón inalcanzable. */
+.sb-input-grid{display:grid;grid-template-columns:120px 190px 120px 100px auto;gap:8px;align-items:end;max-width:760px;}
+@media(max-width:720px){
+  .sb-input-grid{grid-template-columns:1fr 1fr;max-width:100%;}
+  .sb-input-grid>div:last-child{grid-column:1 / -1;}
+  .sb-input-grid>div:last-child button{width:100%;padding:10px 14px;}
+}
 .sb-preset{font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;transition:all .12s;}
 .sb-preset:hover{border-color:var(--green);color:var(--green);}
 .sb-metric-table th,.sb-metric-table td{padding:6px 10px;border-bottom:1px solid #141414;text-align:right;font-family:var(--mono);font-size:11px;}
@@ -1375,21 +1427,32 @@ function sbKPhrase(k, ticker){
     (ticker ? ' <span style="color:#333;">(' + ticker + '; cambiar de ticker resetea el conteo)</span>' : '');
 }
 
+// Cada regla muestra solo su fila de parámetros.
+const SB_PARAM_PANELS = {
+  rsi:'sbRsiParams', sma_cross:'sbSmaParams', macd:'sbMacdParams',
+  bollinger:'sbBollParams', breakout:'sbBreakParams',
+};
 function sbRuleChanged(){
   const rule = document.getElementById('sbRule').value;
-  document.getElementById('sbRsiParams').style.display = rule === 'rsi' ? 'flex' : 'none';
-  document.getElementById('sbSmaParams').style.display = rule === 'sma_cross' ? 'flex' : 'none';
+  for (const r in SB_PARAM_PANELS){
+    document.getElementById(SB_PARAM_PANELS[r]).style.display = r === rule ? 'flex' : 'none';
+  }
 }
 
+// opts → id de input; los presets solo setean lo que traen.
+const SB_PRESET_FIELDS = {
+  entry:'sbEntryLevel', exit:'sbExitLevel', fast:'sbFast', slow:'sbSlow',
+  macdFast:'sbMacdFast', macdSlow:'sbMacdSlow', signal:'sbMacdSignal',
+  period:'sbBollPeriod', mult:'sbBollMult', lookback:'sbLookback',
+};
 function sbPreset(ticker, rule, opts){
   opts = opts || {};
   document.getElementById('sbTicker').value = ticker;
   document.getElementById('sbRule').value = rule;
   sbRuleChanged();
-  if (opts.entry != null) document.getElementById('sbEntryLevel').value = opts.entry;
-  if (opts.exit != null) document.getElementById('sbExitLevel').value = opts.exit;
-  if (opts.fast != null) document.getElementById('sbFast').value = opts.fast;
-  if (opts.slow != null) document.getElementById('sbSlow').value = opts.slow;
+  for (const key in SB_PRESET_FIELDS){
+    if (opts[key] != null) document.getElementById(SB_PRESET_FIELDS[key]).value = opts[key];
+  }
   document.getElementById('sbRange').value = opts.range || '2y';
   runSignalBacktester();
 }
@@ -1429,13 +1492,27 @@ async function runSignalBacktester(){
     params.exitLevel = parseFloat(document.getElementById('sbExitLevel').value);
     if (!Number.isFinite(params.entryLevel)) params.entryLevel = direction === 'long' ? 30 : 70;
     if (!Number.isFinite(params.exitLevel)) params.exitLevel = direction === 'long' ? 70 : 30;
-  } else {
+  } else if (rule === 'sma_cross'){
     params.fast = parseInt(document.getElementById('sbFast').value, 10) || 20;
     params.slow = parseInt(document.getElementById('sbSlow').value, 10) || 50;
     if (params.fast >= params.slow){
       sbMsg('La SMA rápida (' + params.fast + ') debe ser menor que la lenta (' + params.slow + ').', 'var(--red)');
       return;
     }
+  } else if (rule === 'macd'){
+    params.fast = parseInt(document.getElementById('sbMacdFast').value, 10) || 12;
+    params.slow = parseInt(document.getElementById('sbMacdSlow').value, 10) || 26;
+    params.signal = parseInt(document.getElementById('sbMacdSignal').value, 10) || 9;
+    if (params.fast >= params.slow){
+      sbMsg('La EMA rápida (' + params.fast + ') debe ser menor que la lenta (' + params.slow + ').', 'var(--red)');
+      return;
+    }
+  } else if (rule === 'bollinger'){
+    params.period = parseInt(document.getElementById('sbBollPeriod').value, 10) || 20;
+    params.mult = parseFloat(document.getElementById('sbBollMult').value);
+    if (!Number.isFinite(params.mult) || params.mult <= 0) params.mult = 2;
+  } else {
+    params.lookback = parseInt(document.getElementById('sbLookback').value, 10) || 20;
   }
 
   // K: una configuración = regla + dirección + rango + parámetros.
@@ -1445,10 +1522,11 @@ async function runSignalBacktester(){
   kInfo.style.display = 'block';
   kInfo.innerHTML = sbKPhrase(k, ticker);
 
+  const ruleNames = { rsi:'RSI', sma_cross:'cruce SMA', macd:'MACD', bollinger:'Bollinger', breakout:'breakout' };
   const oldLabel = btn.textContent;
   btn.disabled = true; btn.style.opacity = '.6'; btn.textContent = 'VALIDANDO…';
   document.getElementById('sbResult').innerHTML =
-    '<div class="loading">corriendo backtest de ' + ticker + ' · ' + (rule === 'rsi' ? 'RSI' : 'cruce SMA') + ' · ' + range + '…</div>';
+    '<div class="loading">corriendo backtest de ' + ticker + ' · ' + (ruleNames[rule] || rule) + ' · ' + range + '…</div>';
   if(typeof setStatus === 'function') setStatus('VALIDANDO SEÑAL ' + ticker + '…', true);
 
   try{
@@ -1459,8 +1537,14 @@ async function runSignalBacktester(){
       '&k=' + k;
     if (rule === 'rsi'){
       url += '&rsiPeriod=' + params.rsiPeriod + '&entryLevel=' + params.entryLevel + '&exitLevel=' + params.exitLevel;
-    } else {
+    } else if (rule === 'sma_cross'){
       url += '&fast=' + params.fast + '&slow=' + params.slow;
+    } else if (rule === 'macd'){
+      url += '&fast=' + params.fast + '&slow=' + params.slow + '&signal=' + params.signal;
+    } else if (rule === 'bollinger'){
+      url += '&period=' + params.period + '&mult=' + params.mult;
+    } else {
+      url += '&lookback=' + params.lookback;
     }
     const r = await fetch(url);
     let data;
@@ -7971,6 +8055,13 @@ const i18n = {
     signalsExit:'EXIT RSI',
     signalsFast:'FAST SMA',
     signalsSlow:'SLOW SMA',
+    signalsMacdFast:'FAST EMA',
+    signalsMacdSlow:'SLOW EMA',
+    signalsMacdSignal:'SIGNAL',
+    signalsBollPeriod:'PERIOD',
+    signalsBollMult:'STD DEV (σ)',
+    signalsLookback:'LOOKBACK (DAYS)',
+    signalsLookbackNote:'exit: low of lookback/2 days',
     // Status
     ready:'READY', complete:'COMPLETE', stopped:'STOPPED',
     simulating:'SIMULATING...', fetching:'FETCHING DATA...',
@@ -8121,6 +8212,13 @@ const i18n = {
     signalsExit:'RSI SALIDA',
     signalsFast:'SMA RÁPIDA',
     signalsSlow:'SMA LENTA',
+    signalsMacdFast:'EMA RÁPIDA',
+    signalsMacdSlow:'EMA LENTA',
+    signalsMacdSignal:'SEÑAL',
+    signalsBollPeriod:'PERÍODO',
+    signalsBollMult:'DESV. (σ)',
+    signalsLookback:'LOOKBACK (DÍAS)',
+    signalsLookbackNote:'salida: mínimo de lookback/2 días',
     // Status
     ready:'LISTO', complete:'COMPLETO', stopped:'DETENIDO',
     simulating:'SIMULANDO...', fetching:'OBTENIENDO DATOS...',
