@@ -252,6 +252,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('conexiones')">CONEXIONES</button>
     <button class="nav-btn" onclick="showPage('screener')">SCREENER</button>
     <button class="nav-btn" onclick="showPage('pairs')">PARES</button>
+    <button class="nav-btn" onclick="showPage('signals')">SEÑALES</button>
     <button class="nav-btn" onclick="showPage('social')">SOCIAL</button>
     <button class="nav-btn" onclick="showPage('gallery')">GALLERY</button>
   </nav>
@@ -1231,6 +1232,465 @@ function renderPairsResult(data){
     '<div style="font-family:var(--mono);font-size:11px;">' + gateA + gateB + gateC + '</div>' +
     '<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:16px;line-height:1.5;">spread = Y − (α + β·X) sobre log-precios · cointegración Engle-Granger · vida media Ornstein-Uhlenbeck · split cronológico 70/30 para el re-test OOS.</div>' +
   '</div>';
+}
+</script>
+
+<!-- SIGNAL BACKTESTER PAGE -->
+<div id="page-signals" class="page" style="padding:0;background:#080808;min-height:100vh;">
+
+  <!-- TOP BAR -->
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <span style="font-family:var(--mono);font-size:10px;color:var(--green);font-weight:600;letter-spacing:.1em;" data-i18n="signalsTitle">BACKTESTER DE SEÑALES</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;" data-i18n="signalsSubtitle">SPLIT 70/30 IS·OOS · CONTEO K · BONFERRONI</span>
+  </div>
+
+  <!-- INPUTS -->
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:12px 16px;">
+    <div style="display:grid;grid-template-columns:120px 190px 120px 100px auto;gap:8px;align-items:end;max-width:760px;">
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsTicker">TICKER</div>
+        <input id="sbTicker" type="text" placeholder="AAPL" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')runSignalBacktester()" style="font-family:var(--mono);font-size:12px;background:#111;border:1px solid #222;color:#ccc;padding:6px 8px;width:100%;border-radius:2px;text-transform:uppercase;"/>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsRule">REGLA</div>
+        <select id="sbRule" onchange="sbRuleChanged()" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:6px 4px;width:100%;border-radius:2px;">
+          <option value="rsi" selected>RSI (reversión)</option>
+          <option value="sma_cross">Cruce de medias (SMA)</option>
+        </select>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsDirection">DIRECCIÓN</div>
+        <select id="sbDir" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:6px 4px;width:100%;border-radius:2px;">
+          <option value="long" selected>LONG</option>
+          <option value="short">SHORT</option>
+        </select>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsRange">RANGO</div>
+        <select id="sbRange" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:6px 4px;width:100%;border-radius:2px;">
+          <option value="1y">1 año</option>
+          <option value="2y" selected>2 años</option>
+          <option value="5y">5 años</option>
+        </select>
+      </div>
+      <div>
+        <button onclick="runSignalBacktester()" id="sbBtn" style="font-family:var(--mono);font-size:11px;padding:7px 14px;background:var(--green);border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;white-space:nowrap;" data-i18n="signalsValidateBtn">▶ VALIDAR SEÑAL</button>
+      </div>
+    </div>
+
+    <!-- Rule params: RSI -->
+    <div id="sbRsiParams" style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:end;">
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsRsiPeriod">PERÍODO RSI</div>
+        <input id="sbRsiPeriod" type="number" value="14" min="2" max="100" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:5px 8px;width:90px;border-radius:2px;"/>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsEntry">RSI ENTRADA</div>
+        <input id="sbEntryLevel" type="number" value="30" min="1" max="99" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:5px 8px;width:90px;border-radius:2px;"/>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsExit">RSI SALIDA</div>
+        <input id="sbExitLevel" type="number" value="70" min="1" max="99" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:5px 8px;width:90px;border-radius:2px;"/>
+      </div>
+    </div>
+
+    <!-- Rule params: SMA cross -->
+    <div id="sbSmaParams" style="display:none;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:end;">
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsFast">SMA RÁPIDA</div>
+        <input id="sbFast" type="number" value="20" min="2" max="200" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:5px 8px;width:90px;border-radius:2px;"/>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="signalsSlow">SMA LENTA</div>
+        <input id="sbSlow" type="number" value="50" min="3" max="400" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:5px 8px;width:90px;border-radius:2px;"/>
+      </div>
+    </div>
+
+    <!-- Preset signals -->
+    <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+      <span style="font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.06em;" data-i18n="signalsExamples">EJEMPLOS:</span>
+      <button class="sb-preset" onclick="sbPreset('AAPL','rsi',{entry:30,exit:70})">AAPL · RSI 30/70</button>
+      <button class="sb-preset" onclick="sbPreset('SPY','sma_cross',{fast:20,slow:50})">SPY · SMA 20/50</button>
+      <button class="sb-preset" onclick="sbPreset('BTC','rsi',{entry:25,exit:75})">BTC · RSI 25/75</button>
+      <button class="sb-preset" onclick="sbPreset('NVDA','sma_cross',{fast:10,slow:30})">NVDA · SMA 10/30</button>
+      <button class="sb-preset" onclick="sbPreset('KO','rsi',{entry:30,exit:70,range:'5y'})">KO · RSI 5 años</button>
+    </div>
+
+    <!-- Contador K (visible desde el primer intento) -->
+    <div id="sbKInfo" style="display:none;margin-top:10px;font-family:var(--mono);font-size:10px;color:#555;line-height:1.5;"></div>
+  </div>
+
+  <!-- RESULT -->
+  <div id="sbResult" style="padding:24px 16px;">
+    <div style="text-align:center;padding:60px;font-family:var(--mono);font-size:12px;color:#333;line-height:1.6;" data-i18n="signalsEmpty">
+      Mete un ticker, elige una regla y pica VALIDAR SEÑAL — ¿la regla tiene ventaja real, o solo memorizó el pasado?
+    </div>
+  </div>
+</div>
+
+<style>
+.sb-preset{font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;transition:all .12s;}
+.sb-preset:hover{border-color:var(--green);color:var(--green);}
+.sb-metric-table th,.sb-metric-table td{padding:6px 10px;border-bottom:1px solid #141414;text-align:right;font-family:var(--mono);font-size:11px;}
+.sb-metric-table th{color:#555;font-size:9px;letter-spacing:.08em;font-weight:600;}
+.sb-metric-table td:first-child,.sb-metric-table th:first-child{text-align:left;color:var(--text3);}
+.sb-metric-table .sb-oos{background:rgba(29,158,117,.06);border-left:1px solid rgba(29,158,117,.25);border-right:1px solid rgba(29,158,117,.25);color:var(--text);}
+.sb-metric-table th.sb-oos{color:var(--green);}
+</style>
+
+<script>
+// ─── SIGNAL BACKTESTER ─────────────────────────────────────
+// Front-end for /api/signal-backtester (regla RSI o cruce SMA sobre un solo
+// ticker → split cronológico 70/30 → veredicto SOLO sobre out-of-sample).
+// La pieza central es el chart estilo TradingView de la equity curve (SVG
+// puro, sin librerías): línea IS|OOS, marcadores de trades, tooltip.
+
+// Color semántico por veredicto — mismo sistema que la tab PARES.
+const SB_TIER = {
+  'VENTAJA REAL':        { color:'var(--green)', glow:'rgba(29,158,117,.16)' },
+  'FRAGIL':              { color:'var(--amber)', glow:'rgba(239,159,39,.12)' },
+  'SIN VENTAJA':         { color:'var(--red)',   glow:'rgba(226,75,74,.12)' },
+  'DATOS INSUFICIENTES': { color:'var(--text3)', glow:'rgba(85,85,80,.10)' },
+};
+// El endpoint manda 'FRAGIL' sin acento; en pantalla lo mostramos con acento.
+const SB_VERDICT_LABEL = { 'FRAGIL':'FRÁGIL' };
+
+// ── CONTADOR K ──
+// El endpoint es stateless: el frontend lleva la cuenta de cuántas
+// configuraciones DISTINTAS se probaron con el ticker actual y la pasa como
+// ?k=. Cada configuración nueva suma 1 (repetir exactamente la misma no);
+// cambiar de ticker resetea. Es el insumo de la corrección de Bonferroni.
+let sbKTicker = null;
+let sbKConfigs = [];
+
+function sbComputeK(ticker, sig){
+  if (ticker !== sbKTicker){ sbKTicker = ticker; sbKConfigs = []; }
+  if (!sbKConfigs.includes(sig)) sbKConfigs.push(sig);
+  return sbKConfigs.length;
+}
+
+function sbKPhrase(k, ticker){
+  return 'Intentos con este ticker: <b style="color:' + (k > 3 ? 'var(--amber)' : 'var(--text2)') + ';">' + k + '</b>' +
+    ' — cada intento hace más probable encontrar suerte en vez de edge.' +
+    (ticker ? ' <span style="color:#333;">(' + ticker + '; cambiar de ticker resetea el conteo)</span>' : '');
+}
+
+function sbRuleChanged(){
+  const rule = document.getElementById('sbRule').value;
+  document.getElementById('sbRsiParams').style.display = rule === 'rsi' ? 'flex' : 'none';
+  document.getElementById('sbSmaParams').style.display = rule === 'sma_cross' ? 'flex' : 'none';
+}
+
+function sbPreset(ticker, rule, opts){
+  opts = opts || {};
+  document.getElementById('sbTicker').value = ticker;
+  document.getElementById('sbRule').value = rule;
+  sbRuleChanged();
+  if (opts.entry != null) document.getElementById('sbEntryLevel').value = opts.entry;
+  if (opts.exit != null) document.getElementById('sbExitLevel').value = opts.exit;
+  if (opts.fast != null) document.getElementById('sbFast').value = opts.fast;
+  if (opts.slow != null) document.getElementById('sbSlow').value = opts.slow;
+  document.getElementById('sbRange').value = opts.range || '2y';
+  runSignalBacktester();
+}
+
+// ── formatters ──
+function sbFmt(v, d){ return (v === null || v === undefined || Number.isNaN(v)) ? '—' : Number(v).toFixed(d); }
+function sbPct(v, d){ return (v === null || v === undefined || Number.isNaN(v)) ? '—' : (v * 100).toFixed(d == null ? 1 : d) + '%'; }
+function sbSignedPct(v){
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  const c = v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--text2)';
+  return '<span style="color:' + c + ';font-weight:700;">' + (v > 0 ? '+' : '') + (v * 100).toFixed(1) + '%</span>';
+}
+function sbChip(ok){
+  if (ok === true)  return '<span style="color:var(--green);font-weight:700;">PASA</span>';
+  if (ok === false) return '<span style="color:var(--red);font-weight:700;">FALLA</span>';
+  return '<span style="color:var(--text3);">—</span>';
+}
+function sbMsg(html, color){
+  document.getElementById('sbResult').innerHTML =
+    '<div style="text-align:center;padding:60px;font-family:var(--mono);font-size:12px;color:' +
+    (color || '#666') + ';line-height:1.6;">' + html + '</div>';
+}
+
+async function runSignalBacktester(){
+  const ticker = (document.getElementById('sbTicker').value || '').trim().toUpperCase();
+  const rule = document.getElementById('sbRule').value;
+  const direction = document.getElementById('sbDir').value;
+  const range = document.getElementById('sbRange').value;
+  const btn = document.getElementById('sbBtn');
+
+  if(!ticker){ sbMsg('Mete un ticker — la regla necesita un activo que juzgar.'); return; }
+
+  const params = {};
+  if (rule === 'rsi'){
+    params.rsiPeriod = parseInt(document.getElementById('sbRsiPeriod').value, 10) || 14;
+    params.entryLevel = parseFloat(document.getElementById('sbEntryLevel').value);
+    params.exitLevel = parseFloat(document.getElementById('sbExitLevel').value);
+    if (!Number.isFinite(params.entryLevel)) params.entryLevel = direction === 'long' ? 30 : 70;
+    if (!Number.isFinite(params.exitLevel)) params.exitLevel = direction === 'long' ? 70 : 30;
+  } else {
+    params.fast = parseInt(document.getElementById('sbFast').value, 10) || 20;
+    params.slow = parseInt(document.getElementById('sbSlow').value, 10) || 50;
+    if (params.fast >= params.slow){
+      sbMsg('La SMA rápida (' + params.fast + ') debe ser menor que la lenta (' + params.slow + ').', 'var(--red)');
+      return;
+    }
+  }
+
+  // K: una configuración = regla + dirección + rango + parámetros.
+  const sig = JSON.stringify([rule, direction, range, params]);
+  const k = sbComputeK(ticker, sig);
+  const kInfo = document.getElementById('sbKInfo');
+  kInfo.style.display = 'block';
+  kInfo.innerHTML = sbKPhrase(k, ticker);
+
+  const oldLabel = btn.textContent;
+  btn.disabled = true; btn.style.opacity = '.6'; btn.textContent = 'VALIDANDO…';
+  document.getElementById('sbResult').innerHTML =
+    '<div class="loading">corriendo backtest de ' + ticker + ' · ' + (rule === 'rsi' ? 'RSI' : 'cruce SMA') + ' · ' + range + '…</div>';
+  if(typeof setStatus === 'function') setStatus('VALIDANDO SEÑAL ' + ticker + '…', true);
+
+  try{
+    let url = '/api/signal-backtester?ticker=' + encodeURIComponent(ticker) +
+      '&rule=' + encodeURIComponent(rule) +
+      '&direction=' + encodeURIComponent(direction) +
+      '&range=' + encodeURIComponent(range) +
+      '&k=' + k;
+    if (rule === 'rsi'){
+      url += '&rsiPeriod=' + params.rsiPeriod + '&entryLevel=' + params.entryLevel + '&exitLevel=' + params.exitLevel;
+    } else {
+      url += '&fast=' + params.fast + '&slow=' + params.slow;
+    }
+    const r = await fetch(url);
+    let data;
+    try { data = await r.json(); } catch(e){ data = null; }
+    if(!r.ok || !data || data.error){
+      const why = (data && data.error) ? data.error : ('HTTP ' + r.status);
+      sbMsg('No se pudo validar la señal.<br><span style="color:#444;font-size:11px;">' + why + '</span>', 'var(--red)');
+    } else {
+      renderSignalResult(data);
+    }
+  }catch(e){
+    sbMsg('Error de red al validar la señal.<br><span style="color:#444;font-size:11px;">' + (e && e.message ? e.message : e) + '</span>', 'var(--red)');
+  }finally{
+    btn.disabled = false; btn.style.opacity = '1'; btn.textContent = oldLabel;
+    if(typeof setStatus === 'function') setStatus('LISTO', false);
+  }
+}
+
+function renderSignalResult(data){
+  const el = document.getElementById('sbResult');
+  const tier = SB_TIER[data.verdict] || { color:'var(--text2)', glow:'transparent' };
+  const verdictLbl = SB_VERDICT_LABEL[data.verdict] || data.verdict;
+
+  // 1. Veredicto grande — siempre; si no hay curva (datos insuficientes) es lo único.
+  let html =
+  '<div style="max-width:860px;margin:0 auto;">' +
+    '<div style="border:1px solid #1a1a1a;border-left:3px solid ' + tier.color + ';background:linear-gradient(90deg,' + tier.glow + ',transparent);padding:20px 22px;border-radius:4px;">' +
+      '<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;">' +
+        '<span style="font-family:var(--mono);font-size:12px;color:var(--text2);letter-spacing:.08em;font-weight:600;">' + data.ticker + (data.rule ? ' · ' + data.rule.describe + ' · ' + data.rule.direction.toUpperCase() : '') + '</span>' +
+        '<span style="font-family:var(--mono);font-size:10px;color:var(--text3);">' + (data.n_bars || 0) + ' barras' + (data.date_range ? ' · ' + data.date_range.start + ' → ' + data.date_range.end : '') + '</span>' +
+      '</div>' +
+      '<div style="font-family:var(--mono);font-size:34px;font-weight:700;color:' + tier.color + ';letter-spacing:.01em;margin:8px 0 3px;line-height:1.05;">' + verdictLbl + '</div>' +
+      '<div style="font-family:var(--sans);font-size:13px;color:var(--text2);line-height:1.55;margin-top:12px;">' + data.explain + '</div>' +
+    '</div>';
+
+  if (!data.equity_curve || !data.split){
+    el.innerHTML = html + '</div>';
+    return;
+  }
+
+  const m = data.metrics, bm = data.benchmark || {}, h = data.honesty || {};
+  const oosRet = m.out_of_sample.total_return;
+
+  // 2. EL CHART — contenedor; el SVG se dibuja después de insertar el HTML.
+  html +=
+    '<div class="section-header" style="margin-top:20px;"><span class="section-title">// Equity curve · in-sample | out-of-sample</span><div class="section-line"></div></div>' +
+    '<div id="sbChart" style="position:relative;background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:4px;">' +
+      '<div id="sbTip" style="position:absolute;display:none;pointer-events:none;background:#111;border:1px solid #333;padding:5px 8px;font-family:var(--mono);font-size:10px;color:#ccc;border-radius:3px;z-index:5;white-space:nowrap;"></div>' +
+    '</div>' +
+    '<div style="display:flex;gap:18px;flex-wrap:wrap;margin:6px 2px 0;font-family:var(--mono);font-size:9px;color:var(--text3);">' +
+      '<span><span style="color:var(--green);">▲</span> entrada</span>' +
+      '<span><span style="color:var(--red);">▼</span> salida</span>' +
+      '<span style="color:#444;">┊ split 70/30 en ' + data.split.date + '</span>' +
+      '<span style="color:#444;">línea punteada horizontal = equity 1.0 (punto de partida)</span>' +
+    '</div>';
+
+  // 3. Métricas Full / IS / OOS — la columna OOS es la que importa.
+  const pf = (t) => (t.n_trades > 0 && t.profit_factor === null) ? '∞' : sbFmt(t.profit_factor, 2);
+  const row = (label, f, i, o) =>
+    '<tr><td>' + label + '</td><td>' + f + '</td><td>' + i + '</td><td class="sb-oos">' + o + '</td></tr>';
+  html +=
+    '<div class="section-header" style="margin-top:22px;"><span class="section-title">// Métricas por tramo</span><div class="section-line"></div></div>' +
+    '<div style="overflow-x:auto;">' +
+    '<table class="sb-metric-table" style="width:100%;border-collapse:collapse;">' +
+      '<thead><tr><th>MÉTRICA</th><th>FULL</th><th>IN-SAMPLE (70%)</th><th class="sb-oos">OUT-OF-SAMPLE (30%) ★</th></tr></thead>' +
+      '<tbody>' +
+      row('Win rate', sbPct(m.full.win_rate), sbPct(m.in_sample.win_rate), sbPct(m.out_of_sample.win_rate)) +
+      row('Profit factor', pf(m.full), pf(m.in_sample), pf(m.out_of_sample)) +
+      row('Max drawdown', sbPct(m.full.max_drawdown), sbPct(m.in_sample.max_drawdown), sbPct(m.out_of_sample.max_drawdown)) +
+      row('Sharpe', sbFmt(m.full.sharpe, 2), sbFmt(m.in_sample.sharpe, 2), sbFmt(m.out_of_sample.sharpe, 2)) +
+      row('N trades', m.full.n_trades, m.in_sample.n_trades, m.out_of_sample.n_trades) +
+      row('Retorno total', sbSignedPct(m.full.total_return), sbSignedPct(m.in_sample.total_return), sbSignedPct(m.out_of_sample.total_return)) +
+      row('Ret. sin el mejor trade', sbSignedPct(m.full.ret_sin_mejor), sbSignedPct(m.in_sample.ret_sin_mejor), sbSignedPct(m.out_of_sample.ret_sin_mejor)) +
+      '</tbody></table></div>' +
+    '<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:6px;">★ el veredicto se juzga SOLO sobre out-of-sample — un backtest bonito in-sample suele estar sobreajustado.</div>';
+
+  // 4. Benchmark: si la estrategia no le gana a no hacer nada, que se vea YA.
+  const bh = bm.buy_hold_oos;
+  const beats = (oosRet != null && bh != null) ? oosRet > bh : null;
+  const dirLbl = data.rule && data.rule.direction === 'short' ? 'short & hold' : 'buy & hold';
+  html +=
+    '<div class="section-header" style="margin-top:22px;"><span class="section-title">// Benchmark · vs ' + dirLbl + ' OOS</span><div class="section-line"></div></div>' +
+    '<div style="border:1px solid #1a1a1a;border-left:3px solid ' + (beats === true ? 'var(--green)' : beats === false ? 'var(--red)' : '#333') + ';border-radius:4px;padding:14px 18px;display:flex;gap:28px;flex-wrap:wrap;align-items:center;font-family:var(--mono);font-size:12px;">' +
+      '<span style="color:var(--text3);font-size:10px;">ESTRATEGIA OOS<br><span style="font-size:16px;">' + sbSignedPct(oosRet) + '</span></span>' +
+      '<span style="color:#444;font-size:14px;">vs</span>' +
+      '<span style="color:var(--text3);font-size:10px;">' + dirLbl.toUpperCase() + ' OOS (no hacer nada)<br><span style="font-size:16px;">' + sbSignedPct(bh) + '</span></span>' +
+      '<span style="margin-left:auto;font-size:12px;font-weight:700;color:' + (beats === true ? 'var(--green)' : beats === false ? 'var(--red)' : 'var(--text3)') + ';">' +
+        (beats === true ? 'LE GANA AL BENCHMARK' : beats === false ? 'NO LE GANA A NO HACER NADA' : '—') + '</span>' +
+    '</div>' +
+    (bm.base_rate_oos != null
+      ? '<div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:6px;">base rate OOS (entrar al azar y aguantar ' + (bm.median_hold_bars || '—') + ' barras): ' + sbPct(bm.base_rate_oos) + ' de días ganadores · win rate OOS de la regla: ' + sbPct(m.out_of_sample.win_rate) + '</div>'
+      : '');
+
+  // 5. La sección de honestidad: k, p-value, Bonferroni, warnings.
+  const bf = h.bonferroni || {};
+  const hRow = (label, val) =>
+    '<div style="display:grid;grid-template-columns:230px 1fr;gap:8px;padding:5px 0;border-bottom:1px solid #141414;">' +
+      '<span style="color:var(--text3);">' + label + '</span>' +
+      '<span style="color:var(--text);">' + val + '</span></div>';
+  html +=
+    '<div class="section-header" style="margin-top:22px;"><span class="section-title">// Honestidad estadística</span><div class="section-line"></div></div>' +
+    '<div style="font-family:var(--mono);font-size:11px;">' +
+      '<div style="padding:8px 10px;margin-bottom:8px;border:1px solid rgba(239,159,39,.25);background:rgba(239,159,39,.05);border-radius:3px;color:var(--text2);font-size:10px;line-height:1.5;">' + sbKPhrase(h.k_cumulative || 1, data.ticker) + '</div>' +
+      hRow('k acumulado (variaciones probadas)', '<b>' + (h.k_cumulative != null ? h.k_cumulative : '—') + '</b>') +
+      hRow('p-value naive (win rate vs base rate)', sbFmt(h.naive_p_value, 4)) +
+      hRow('alpha ajustado (0.05 / k)', sbFmt(bf.adjusted_alpha, 4)) +
+      hRow('significativo a solas (p < 0.05)', sbChip(bf.significant_naive)) +
+      hRow('sobrevive Bonferroni (p < 0.05/k)', sbChip(bf.significant_bonferroni)) +
+    '</div>' +
+    ((h.warnings && h.warnings.length)
+      ? '<div style="margin-top:12px;">' + h.warnings.map(function(w){
+          return '<div style="font-family:var(--mono);font-size:10px;color:var(--amber);padding:5px 0;line-height:1.5;">⚠ ' + w + '</div>'; }).join('') + '</div>'
+      : '') +
+    '<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:16px;line-height:1.5;">señal y fill al cierre de la misma barra · split cronológico 70/30 por barra · cada trade se asigna a su tramo por la barra de entrada · fuente: ' + (data.source || '—') + '</div>' +
+  '</div>';
+
+  el.innerHTML = html;
+  sbDrawChart(data);
+}
+
+// ── EL CHART ──
+// Equity curve estilo TradingView en SVG puro: línea de equity, split IS|OOS
+// con línea vertical punteada y fondo distinto en OOS, referencia en 1.0,
+// marcadores ▲/▼ por trade y tooltip con fecha + equity al hacer hover.
+function sbDrawChart(data){
+  const wrap = document.getElementById('sbChart');
+  if (!wrap) return;
+  const eq = data.equity_curve;
+  const n = eq.length;
+  if (n < 2) return;
+  const splitIdx = data.split.index;
+
+  const W = 900, H = 340, padL = 50, padR = 14, padT = 30, padB = 28;
+  const pw = W - padL - padR, ph = H - padT - padB;
+
+  let lo = 1, hi = 1;
+  for (const p of eq){ if (p.equity < lo) lo = p.equity; if (p.equity > hi) hi = p.equity; }
+  const span = (hi - lo) || 0.1;
+  lo -= span * 0.06; hi += span * 0.06;
+
+  const xs = (i) => padL + pw * i / (n - 1);
+  const ys = (v) => padT + ph * (1 - (v - lo) / (hi - lo));
+  const xSplit = xs(splitIdx);
+
+  // fondo sutilmente distinto en la zona OOS
+  let svg = '<rect x="' + xSplit.toFixed(1) + '" y="' + padT + '" width="' + (W - padR - xSplit).toFixed(1) + '" height="' + ph + '" fill="rgba(55,138,221,.05)"/>';
+
+  // grid horizontal + labels de equity
+  for (let g = 0; g <= 4; g++){
+    const v = lo + (hi - lo) * g / 4, y = ys(v);
+    svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '" stroke="#161616"/>' +
+      '<text x="' + (padL - 6) + '" y="' + (y + 3).toFixed(1) + '" text-anchor="end" fill="#555" font-size="9">' + v.toFixed(2) + '</text>';
+  }
+  // fechas en el eje x (primera y última ancladas hacia adentro para no recortarse)
+  const nx = Math.min(6, n);
+  for (let g = 0; g < nx; g++){
+    const i = Math.round(g * (n - 1) / (nx - 1));
+    const anchor = g === 0 ? 'start' : g === nx - 1 ? 'end' : 'middle';
+    svg += '<text x="' + xs(i).toFixed(1) + '" y="' + (H - 8) + '" text-anchor="' + anchor + '" fill="#555" font-size="9">' + eq[i].date + '</text>';
+  }
+
+  // línea horizontal de referencia en 1.0
+  if (1 >= lo && 1 <= hi){
+    const y1 = ys(1);
+    svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y1.toFixed(1) + '" y2="' + y1.toFixed(1) + '" stroke="#444" stroke-dasharray="2,4"/>' +
+      '<text x="' + (W - padR - 2) + '" y="' + (y1 - 4).toFixed(1) + '" text-anchor="end" fill="#555" font-size="9">1.00</text>';
+  }
+
+  // línea vertical punteada del split + labels de zona
+  svg += '<line x1="' + xSplit.toFixed(1) + '" x2="' + xSplit.toFixed(1) + '" y1="' + padT + '" y2="' + (padT + ph) + '" stroke="#666" stroke-dasharray="4,4"/>' +
+    '<text x="' + ((padL + xSplit) / 2).toFixed(1) + '" y="' + (padT - 8) + '" text-anchor="middle" fill="#666" font-size="9" letter-spacing="1">in-sample</text>' +
+    '<text x="' + ((xSplit + W - padR) / 2).toFixed(1) + '" y="' + (padT - 8) + '" text-anchor="middle" fill="#378ADD" font-size="9" letter-spacing="1">out-of-sample</text>';
+
+  // la equity curve
+  let d = '';
+  for (let i = 0; i < n; i++){
+    d += (i ? 'L' : 'M') + xs(i).toFixed(1) + ',' + ys(eq[i].equity).toFixed(1);
+  }
+  svg += '<path d="' + d + '" fill="none" stroke="#378ADD" stroke-width="1.6"/>';
+
+  // marcadores de trades: ▲ verde en la entrada, ▼ rojo en la salida
+  const dateIdx = {};
+  eq.forEach(function(p, i){ dateIdx[p.date] = i; });
+  for (const t of (data.trades || [])){
+    const ei = dateIdx[t.entry_date];
+    const xi = dateIdx[t.exit_date];
+    if (ei != null){
+      const x = xs(ei), y = ys(eq[ei].equity);
+      svg += '<polygon points="' + x.toFixed(1) + ',' + (y + 5).toFixed(1) + ' ' + (x - 4.5).toFixed(1) + ',' + (y + 13).toFixed(1) + ' ' + (x + 4.5).toFixed(1) + ',' + (y + 13).toFixed(1) + '" fill="#1D9E75">' +
+        '<title>entrada ' + t.entry_date + ' @ ' + t.entry + ' (' + t.sample + ')</title></polygon>';
+    }
+    if (xi != null){
+      const x = xs(xi), y = ys(eq[xi].equity);
+      svg += '<polygon points="' + x.toFixed(1) + ',' + (y - 5).toFixed(1) + ' ' + (x - 4.5).toFixed(1) + ',' + (y - 13).toFixed(1) + ' ' + (x + 4.5).toFixed(1) + ',' + (y - 13).toFixed(1) + '" fill="#E24B4A">' +
+        '<title>salida ' + t.exit_date + ' @ ' + t.exit + ' · ret ' + (t.ret > 0 ? '+' : '') + (t.ret * 100).toFixed(2) + '% (' + t.exit_reason + ')</title></polygon>';
+    }
+  }
+
+  // crosshair (se mueve con el mouse)
+  svg += '<line id="sbXh" x1="0" x2="0" y1="' + padT + '" y2="' + (padT + ph) + '" stroke="#333" visibility="hidden"/>' +
+    '<circle id="sbXc" r="3" fill="#378ADD" stroke="#0a0a0a" stroke-width="1.5" visibility="hidden"/>';
+
+  wrap.insertAdjacentHTML('beforeend',
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;display:block;cursor:crosshair;font-family:var(--mono);">' + svg + '</svg>');
+
+  // tooltip con fecha y equity al hacer hover
+  const svgEl = wrap.querySelector('svg');
+  const tip = document.getElementById('sbTip');
+  const xh = document.getElementById('sbXh');
+  const xc = document.getElementById('sbXc');
+  svgEl.addEventListener('mousemove', function(ev){
+    const r = svgEl.getBoundingClientRect();
+    const sx = (ev.clientX - r.left) * (W / r.width);
+    let i = Math.round((sx - padL) / pw * (n - 1));
+    i = Math.max(0, Math.min(n - 1, i));
+    const x = xs(i), y = ys(eq[i].equity);
+    xh.setAttribute('x1', x); xh.setAttribute('x2', x); xh.setAttribute('visibility', 'visible');
+    xc.setAttribute('cx', x); xc.setAttribute('cy', y); xc.setAttribute('visibility', 'visible');
+    const zone = i >= splitIdx ? '<span style="color:#378ADD;">OOS</span>' : '<span style="color:#666;">IS</span>';
+    tip.innerHTML = eq[i].date + ' · equity <b>' + eq[i].equity.toFixed(3) + '</b> · ' + zone;
+    const px = (x / W) * r.width, py = (y / H) * r.height;
+    tip.style.left = Math.max(4, Math.min(px + 12, r.width - 190)) + 'px';
+    tip.style.top = Math.max(4, py - 34) + 'px';
+    tip.style.display = 'block';
+  });
+  svgEl.addEventListener('mouseleave', function(){
+    tip.style.display = 'none';
+    xh.setAttribute('visibility', 'hidden');
+    xc.setAttribute('visibility', 'hidden');
+  });
 }
 </script>
 
@@ -7486,7 +7946,7 @@ const i18n = {
     nav_portfolio:'PORTFOLIO', nav_macro:'MACRO', nav_smartmoney:'SMART $',
     nav_earnings:'EARNINGS', nav_ipos:'IPOS', nav_movers:'MOVERS',
     nav_sectors:'SECTORS', nav_screener:'SCREENER', nav_social:'SOCIAL',
-    nav_gallery:'GALLERY', nav_pairs:'PAIRS',
+    nav_gallery:'GALLERY', nav_pairs:'PAIRS', nav_signals:'SIGNALS',
     // PAIRS VALIDATOR
     pairsTitle:'PAIRS VALIDATOR',
     pairsSubtitle:'COINTEGRATION · OU HALF-LIFE · OOS RE-TEST',
@@ -7496,6 +7956,21 @@ const i18n = {
     pairsValidateBtn:'▶ VALIDATE PAIR',
     pairsExamples:'EXAMPLES:',
     pairsEmpty:'Enter two tickers and hit VALIDATE PAIR — does the spread actually revert, or is it folklore?',
+    // SIGNAL BACKTESTER
+    signalsTitle:'SIGNAL BACKTESTER',
+    signalsSubtitle:'70/30 IS·OOS SPLIT · K-TRACKING · BONFERRONI',
+    signalsTicker:'TICKER',
+    signalsRule:'RULE',
+    signalsDirection:'DIRECTION',
+    signalsRange:'RANGE',
+    signalsValidateBtn:'▶ VALIDATE SIGNAL',
+    signalsExamples:'EXAMPLES:',
+    signalsEmpty:'Enter a ticker, pick a rule and hit VALIDATE SIGNAL — does the rule have a real edge, or did it just memorize the past?',
+    signalsRsiPeriod:'RSI PERIOD',
+    signalsEntry:'ENTRY RSI',
+    signalsExit:'EXIT RSI',
+    signalsFast:'FAST SMA',
+    signalsSlow:'SLOW SMA',
     // Status
     ready:'READY', complete:'COMPLETE', stopped:'STOPPED',
     simulating:'SIMULATING...', fetching:'FETCHING DATA...',
@@ -7621,7 +8096,7 @@ const i18n = {
     nav_portfolio:'PORTAFOLIO', nav_macro:'MACRO', nav_smartmoney:'DINERO LISTO',
     nav_earnings:'RESULTADOS', nav_ipos:'IPOS', nav_movers:'MOVIMIENTOS',
     nav_sectors:'SECTORES', nav_screener:'FILTRO', nav_social:'SOCIAL',
-    nav_gallery:'GALERÍA', nav_pairs:'PARES',
+    nav_gallery:'GALERÍA', nav_pairs:'PARES', nav_signals:'SEÑALES',
     // PAIRS VALIDATOR
     pairsTitle:'VALIDADOR DE PARES',
     pairsSubtitle:'COINTEGRACIÓN · VIDA MEDIA OU · RE-TEST OOS',
@@ -7631,6 +8106,21 @@ const i18n = {
     pairsValidateBtn:'▶ VALIDAR PAR',
     pairsExamples:'EJEMPLOS:',
     pairsEmpty:'Mete dos tickers y pica VALIDAR PAR — ¿el spread realmente revierte, o es folklore?',
+    // SIGNAL BACKTESTER
+    signalsTitle:'BACKTESTER DE SEÑALES',
+    signalsSubtitle:'SPLIT 70/30 IS·OOS · CONTEO K · BONFERRONI',
+    signalsTicker:'TICKER',
+    signalsRule:'REGLA',
+    signalsDirection:'DIRECCIÓN',
+    signalsRange:'RANGO',
+    signalsValidateBtn:'▶ VALIDAR SEÑAL',
+    signalsExamples:'EJEMPLOS:',
+    signalsEmpty:'Mete un ticker, elige una regla y pica VALIDAR SEÑAL — ¿la regla tiene ventaja real, o solo memorizó el pasado?',
+    signalsRsiPeriod:'PERÍODO RSI',
+    signalsEntry:'RSI ENTRADA',
+    signalsExit:'RSI SALIDA',
+    signalsFast:'SMA RÁPIDA',
+    signalsSlow:'SMA LENTA',
     // Status
     ready:'LISTO', complete:'COMPLETO', stopped:'DETENIDO',
     simulating:'SIMULANDO...', fetching:'OBTENIENDO DATOS...',
