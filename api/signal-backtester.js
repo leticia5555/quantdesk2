@@ -22,6 +22,19 @@
 //   rule=sma_cross  LONG:  entra en cruce dorado (SMA fast cruza ARRIBA de
 //                          SMA slow), sale en cruce de muerte.
 //                   SHORT: al revés.
+//   rule=macd       LONG:  entra cuando la línea MACD (EMA fast − EMA slow)
+//                          cruza ARRIBA de su señal (EMA signal del MACD),
+//                          sale en el cruce inverso. Defaults 12/26/9.
+//                   SHORT: al revés.
+//   rule=bollinger  LONG:  entra cuando el cierre cae BAJO la banda inferior
+//                          (SMA period − mult·std), sale cuando el cierre
+//                          toca/cruza la media. Defaults period=20, mult=2.
+//                   SHORT: entra sobre la banda superior, sale en la media.
+//   rule=breakout   LONG:  entra cuando el cierre rompe el MÁXIMO de los
+//                          `lookback` días previos, sale cuando cierra bajo
+//                          el mínimo de los lookback/2 días previos (def. 20).
+//                   SHORT: al revés (rompe el mínimo entra, sobre el máximo
+//                          de lookback/2 sale).
 //
 // Señal y fill usan el CIERRE de la misma barra (igual que backtest_stock.py).
 // Un trade abierto al final de los datos se cierra al último close y se
@@ -30,7 +43,10 @@
 // INPUT
 //   GET  /api/signal-backtester?ticker=AAPL&rule=rsi[&direction=long
 //        &range=2y&rsiPeriod=14&entryLevel=30&exitLevel=70
-//        &fast=20&slow=50&maxHold=0&k=1]
+//        &fast=20&slow=50&signal=9&period=20&mult=2&lookback=20
+//        &maxHold=0&k=1]
+//        (fast/slow sirven a sma_cross y macd — defaults 20/50 y 12/26;
+//         signal solo macd; period/mult solo bollinger; lookback solo breakout)
 //   POST /api/signal-backtester  { "ticker":"AAPL", "rule":"rsi", ... }
 //        o arrays crudos (salta Yahoo, útil para tests offline):
 //        { "prices":[...], "dates":["YYYY-MM-DD",...], "rule":"rsi", ... }
@@ -113,6 +129,77 @@ function computeSMA(closes, period) {
     if (i >= period - 1) sma[i] = sum / period;
   }
   return sma;
+}
+
+// EMA estándar: semilla con SMA de los primeros `period` valores y
+// suavizado k = 2/(period+1) después; null antes de tener semilla.
+function computeEMA(values, period) {
+  const n = values.length;
+  const ema = new Array(n).fill(null);
+  if (n < period) return ema;
+  let sum = 0;
+  for (let i = 0; i < period; i++) sum += values[i];
+  ema[period - 1] = sum / period;
+  const k = 2 / (period + 1);
+  for (let i = period; i < n; i++) ema[i] = values[i] * k + ema[i - 1] * (1 - k);
+  return ema;
+}
+
+// MACD clásico: línea = EMA(fast) − EMA(slow); señal = EMA(signalPeriod) de
+// la línea, calculada sobre su tramo válido (desde slow−1). Ambos arrays
+// vienen alineados con `closes`, con null donde aún no hay historia.
+function computeMACD(closes, fast = 12, slow = 26, signalPeriod = 9) {
+  const n = closes.length;
+  const emaFast = computeEMA(closes, fast);
+  const emaSlow = computeEMA(closes, slow);
+  const macd = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    if (emaFast[i] !== null && emaSlow[i] !== null) macd[i] = emaFast[i] - emaSlow[i];
+  }
+  const signal = new Array(n).fill(null);
+  const start = slow - 1;
+  if (n > start) {
+    const sigVals = computeEMA(macd.slice(start), signalPeriod);
+    for (let j = 0; j < sigVals.length; j++) {
+      if (sigVals[j] !== null) signal[start + j] = sigVals[j];
+    }
+  }
+  return { macd, signal };
+}
+
+// Desviación estándar rodante (población, como el Bollinger clásico);
+// null hasta tener `period` cierres. O(n·period) — sobra para ≤1300 barras.
+function computeRollingStd(closes, period) {
+  const n = closes.length;
+  const sd = new Array(n).fill(null);
+  if (n < period) return sd;
+  for (let i = period - 1; i < n; i++) {
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) sum += closes[j];
+    const mean = sum / period;
+    let sq = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      const d = closes[j] - mean;
+      sq += d * d;
+    }
+    sd[i] = Math.sqrt(sq / period);
+  }
+  return sd;
+}
+
+// Extremo (máx o mín) de las `window` barras PREVIAS a i — excluye la barra
+// actual, que es la que rompe o no rompe. null hasta tener historia completa.
+function rollingExtremePrev(closes, window, isMax) {
+  const n = closes.length;
+  const out = new Array(n).fill(null);
+  for (let i = window; i < n; i++) {
+    let m = closes[i - window];
+    for (let j = i - window + 1; j < i; j++) {
+      m = isMax ? Math.max(m, closes[j]) : Math.min(m, closes[j]);
+    }
+    out[i] = m;
+  }
+  return out;
 }
 
 // ─────────────────── Simulación ───────────────────
@@ -346,7 +433,61 @@ function buildRule(closes, rule, direction, params) {
     }];
   }
 
-  throw new Error(`Regla desconocida: '${rule}'. Usa 'rsi' o 'sma_cross'.`);
+  if (rule === 'macd') {
+    const { macd, signal } = computeMACD(closes, params.fast, params.slow, params.signalPeriod);
+    const ready = (i) => i > 0 && macd[i - 1] !== null && signal[i - 1] !== null &&
+      macd[i] !== null && signal[i] !== null;
+    const crossUp = (i) => ready(i) && macd[i - 1] <= signal[i - 1] && macd[i] > signal[i];
+    const crossDown = (i) => ready(i) && macd[i - 1] >= signal[i - 1] && macd[i] < signal[i];
+    const [entry, exit_] = direction === 'long' ? [crossUp, crossDown] : [crossDown, crossUp];
+    return [entry, exit_, {
+      type: 'macd', fast: params.fast, slow: params.slow, signal_period: params.signalPeriod,
+      describe: `MACD(${params.fast},${params.slow},${params.signalPeriod}) cruza ${direction === 'long' ? 'arriba' : 'abajo'} de la señal entra, cruce inverso sale`,
+    }];
+  }
+
+  if (rule === 'bollinger') {
+    const mid = computeSMA(closes, params.period);
+    const sd = computeRollingStd(closes, params.period);
+    const band = (i, sign) => mid[i] + sign * params.mult * sd[i];
+    const ready = (i) => mid[i] !== null && sd[i] !== null;
+    // LONG: cierre bajo la banda inferior entra, toca la media sale.
+    // SHORT: cierre sobre la banda superior entra, toca la media sale.
+    const entry = direction === 'long'
+      ? (i) => ready(i) && closes[i] < band(i, -1)
+      : (i) => ready(i) && closes[i] > band(i, +1);
+    const exit_ = direction === 'long'
+      ? (i) => ready(i) && closes[i] >= mid[i]
+      : (i) => ready(i) && closes[i] <= mid[i];
+    return [entry, exit_, {
+      type: 'bollinger', period: params.period, mult: params.mult,
+      describe: `Cierre ${direction === 'long' ? 'bajo la banda inferior' : 'sobre la banda superior'} de Bollinger(${params.period}, ${params.mult}σ) entra, toca la media sale`,
+    }];
+  }
+
+  if (rule === 'breakout') {
+    const lookback = params.lookback;
+    const exitLb = Math.max(1, Math.floor(lookback / 2));
+    // Extremos de las barras PREVIAS: la barra actual es la que rompe.
+    const hiPrev = rollingExtremePrev(closes, lookback, true);
+    const loPrevExit = rollingExtremePrev(closes, exitLb, false);
+    const loPrev = rollingExtremePrev(closes, lookback, false);
+    const hiPrevExit = rollingExtremePrev(closes, exitLb, true);
+    const entry = direction === 'long'
+      ? (i) => hiPrev[i] !== null && closes[i] > hiPrev[i]
+      : (i) => loPrev[i] !== null && closes[i] < loPrev[i];
+    const exit_ = direction === 'long'
+      ? (i) => loPrevExit[i] !== null && closes[i] < loPrevExit[i]
+      : (i) => hiPrevExit[i] !== null && closes[i] > hiPrevExit[i];
+    return [entry, exit_, {
+      type: 'breakout', lookback, exit_lookback: exitLb,
+      describe: direction === 'long'
+        ? `Cierre rompe el máximo de ${lookback} días entra, cierre bajo el mínimo de ${exitLb} días sale`
+        : `Cierre rompe el mínimo de ${lookback} días entra, cierre sobre el máximo de ${exitLb} días sale`,
+    }];
+  }
+
+  throw new Error(`Regla desconocida: '${rule}'. Usa 'rsi', 'sma_cross', 'macd', 'bollinger' o 'breakout'.`);
 }
 
 // ─────────────────── El backtest completo ───────────────────
@@ -521,21 +662,30 @@ export default async function handler(req, res) {
     const x = parseFloat(v);
     return Number.isFinite(x) ? x : undefined;
   };
+  const numClamp = (v, lo, hi, def) => {
+    const x = parseFloat(v);
+    return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : def;
+  };
   const params = {
     rsiPeriod: clamp(src.rsiPeriod, 2, 100, 14),
     entryLevel: num(src.entryLevel),
     exitLevel: num(src.exitLevel),
-    fast: clamp(src.fast, 2, 200, 20),
-    slow: clamp(src.slow, 3, 400, 50),
+    // fast/slow sirven a sma_cross (20/50) y macd (12/26); default por regla.
+    fast: clamp(src.fast, 2, 200, rule === 'macd' ? 12 : 20),
+    slow: clamp(src.slow, 3, 400, rule === 'macd' ? 26 : 50),
+    signalPeriod: clamp(src.signal, 2, 100, 9),
+    period: clamp(src.period, 2, 200, 20),
+    mult: numClamp(src.mult, 0.5, 5, 2),
+    lookback: clamp(src.lookback, 2, 200, 20),
   };
 
   if (!['long', 'short'].includes(direction)) {
     return res.status(400).json({ error: "direction debe ser 'long' o 'short'." });
   }
-  if (!['rsi', 'sma_cross'].includes(rule)) {
-    return res.status(400).json({ error: "rule debe ser 'rsi' o 'sma_cross'.", usage: '/api/signal-backtester?ticker=AAPL&rule=rsi' });
+  if (!['rsi', 'sma_cross', 'macd', 'bollinger', 'breakout'].includes(rule)) {
+    return res.status(400).json({ error: "rule debe ser 'rsi', 'sma_cross', 'macd', 'bollinger' o 'breakout'.", usage: '/api/signal-backtester?ticker=AAPL&rule=rsi' });
   }
-  if (rule === 'sma_cross' && params.fast >= params.slow) {
+  if ((rule === 'sma_cross' || rule === 'macd') && params.fast >= params.slow) {
     return res.status(400).json({ error: `fast (${params.fast}) debe ser menor que slow (${params.slow}).` });
   }
 
@@ -582,7 +732,8 @@ export default async function handler(req, res) {
 
 // Named exports para unit testing (ignorados por el runtime de Vercel).
 export {
-  computeRSI, computeSMA, tradeReturn, runSignal, buildEquityCurve,
+  computeRSI, computeSMA, computeEMA, computeMACD, computeRollingStd,
+  rollingExtremePrev, tradeReturn, runSignal, buildEquityCurve,
   maxDrawdown, sharpeRatio, summarize, baseRate, binomPValue, normCdf,
   verdict, buildRule, backtest,
   VENTAJA_REAL, FRAGIL, SIN_VENTAJA, INSUFICIENTE,
