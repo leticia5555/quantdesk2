@@ -254,6 +254,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('pairs')">PARES</button>
     <button class="nav-btn" onclick="showPage('signals')">SEÑALES</button>
     <button class="nav-btn" onclick="showPage('edges');qdRenderEdges()">MIS EDGES</button>
+    <button class="nav-btn" onclick="showPage('myagents');qdAgentsOpen()">MIS AGENTES</button>
     <button class="nav-btn" onclick="showPage('social')">SOCIAL</button>
     <button class="nav-btn" onclick="showPage('gallery')">GALLERY</button>
   </nav>
@@ -1797,6 +1798,65 @@ function sbDrawChart(data){
     </div>
   </div>
 </div>
+
+<!-- PAPER TRADING AGENTS PAGE -->
+<div id="page-myagents" class="page" style="padding:0;background:#080808;min-height:100vh;">
+
+  <!-- TOP BAR -->
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <span style="font-family:var(--mono);font-size:10px;color:var(--green);font-weight:600;letter-spacing:.1em;" data-i18n="agentsTitle">AGENTES DE PAPER TRADING</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;" data-i18n="agentsSubtitle">TUS EDGES OPERANDO EN SIMULADO · VELAS DIARIAS · SIN BROKER</span>
+    <span id="agCount" style="margin-left:auto;font-family:var(--mono);font-size:10px;color:#444;"></span>
+  </div>
+
+  <!-- TOOLBAR -->
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <button onclick="qdAgentCreateOpen()" style="font-family:var(--mono);font-size:11px;padding:7px 14px;background:var(--green);border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;" data-i18n="agentsNew">+ NUEVO AGENTE</button>
+    <span id="agStatus" style="font-family:var(--mono);font-size:10px;color:var(--text3);"></span>
+    <span style="flex-basis:100%;font-family:var(--mono);font-size:9px;color:#444;line-height:1.5;" data-i18n="agentsAssumptions">supuestos: capital simulado $10,000 · fills al cierre diario Yahoo + slippage 0.10%/lado + comisión 0.05%/lado · riesgo 2%/trade (stop 10% → notional 20%) · sin apalancamiento · pares: z±2 entra, z=0 sale, 10% por leg · MUERTE a −20% desde el peak</span>
+  </div>
+
+  <!-- LIST / DETAIL -->
+  <div id="agList" style="padding:20px 16px;">
+    <div style="text-align:center;padding:60px;font-family:var(--mono);font-size:12px;color:#333;line-height:1.6;" data-i18n="agentsEmpty">
+      Sin agentes todavía. Crea uno, asígnale edges de tu biblioteca y míralo operar en simulado — los malos también enseñan.
+    </div>
+  </div>
+  <div id="agDetail" style="display:none;padding:20px 16px;"></div>
+</div>
+
+<!-- CREATE AGENT MODAL -->
+<div id="agCreateOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:900;align-items:center;justify-content:center;padding:16px;">
+  <div style="width:100%;max-width:480px;max-height:86vh;overflow-y:auto;background:#0d0d0d;border:1px solid #222;border-radius:6px;padding:22px 24px;position:relative;">
+    <button onclick="qdAgentCreateClose()" style="position:absolute;top:8px;right:8px;border:none;background:none;color:#555;font-size:16px;cursor:pointer;padding:6px 10px;">✕</button>
+    <div style="font-family:var(--mono);font-size:13px;font-weight:700;color:var(--text2);letter-spacing:.08em;" data-i18n="agNewTitle">NUEVO AGENTE</div>
+    <div style="margin-top:14px;">
+      <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="agName">NOMBRE</div>
+      <input id="agName" type="text" maxlength="40" placeholder="p. ej. Reversión LATAM" style="font-family:var(--mono);font-size:12px;background:#111;border:1px solid #222;color:#ccc;padding:7px 8px;width:100%;border-radius:2px;"/>
+    </div>
+    <div style="margin-top:12px;">
+      <div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;" data-i18n="agPickEdges">EDGES DE TU BIBLIOTECA (los malos también valen — velos perder)</div>
+      <div id="agEdgePicker" style="max-height:220px;overflow-y:auto;border:1px solid #1a1a1a;border-radius:3px;padding:6px 8px;"></div>
+    </div>
+    <div id="agCreateMsg" style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:10px;min-height:14px;"></div>
+    <button onclick="qdAgentCreate()" id="agCreateBtn" style="margin-top:8px;width:100%;font-family:var(--mono);font-size:12px;padding:10px 14px;background:var(--green);border:none;color:#000;font-weight:700;border-radius:3px;cursor:pointer;" data-i18n="agCreateBtn">▶ CREAR AGENTE ($10,000 simulados)</button>
+    <div style="font-family:var(--mono);font-size:9px;color:#444;margin-top:10px;line-height:1.5;" data-i18n="agDisclaimer">Paper trading: dinero simulado, fills al cierre diario con slippage y comisión conservadores. Si el equity cae −20% desde su pico, el agente muere y queda congelado — como en la vida real, sin revivir.</div>
+  </div>
+</div>
+
+<style>
+.ag-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;max-width:1100px;margin:0 auto;}
+.ag-card{background:#0d0d0d;border:1px solid #1a1a1a;border-radius:4px;padding:14px 16px;display:flex;flex-direction:column;gap:7px;cursor:pointer;transition:border-color .12s;}
+.ag-card:hover{border-color:#2a2a2a;}
+.ag-badge{font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.08em;padding:1px 8px;border-radius:3px;}
+.ag-badge.alive{color:var(--green);border:1px solid var(--green);}
+.ag-badge.dead{color:var(--red);border:1px solid var(--red);background:rgba(226,75,74,.08);}
+.ag-table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:10px;}
+.ag-table th,.ag-table td{padding:5px 8px;border-bottom:1px solid #141414;text-align:right;}
+.ag-table th{color:#555;font-size:9px;letter-spacing:.08em;}
+.ag-table td:first-child,.ag-table th:first-child{text-align:left;}
+.ag-edge-opt{display:flex;gap:8px;align-items:center;padding:4px 0;font-family:var(--mono);font-size:10px;color:var(--text2);cursor:pointer;}
+</style>
 
 <style>
 .edge-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;max-width:1100px;margin:0 auto;}
@@ -8063,7 +8123,18 @@ const i18n = {
     nav_portfolio:'PORTFOLIO', nav_macro:'MACRO', nav_smartmoney:'SMART $',
     nav_earnings:'EARNINGS', nav_ipos:'IPOS', nav_movers:'MOVERS',
     nav_sectors:'SECTORS', nav_screener:'SCREENER', nav_social:'SOCIAL',
-    nav_gallery:'GALLERY', nav_pairs:'PAIRS', nav_signals:'SIGNALS', nav_edges:'MY EDGES',
+    nav_gallery:'GALLERY', nav_pairs:'PAIRS', nav_signals:'SIGNALS', nav_edges:'MY EDGES', nav_myagents:'MY AGENTS',
+    // PAPER TRADING AGENTS
+    agentsTitle:'PAPER TRADING AGENTS',
+    agentsSubtitle:'YOUR EDGES TRADING SIMULATED · DAILY CANDLES · NO BROKER',
+    agentsEmpty:'No agents yet. Create one, assign edges from your library and watch it trade simulated — the bad ones teach too.',
+    agentsNew:'+ NEW AGENT',
+    agentsAssumptions:'assumptions: $10,000 simulated capital · fills at Yahoo daily close + 0.10% slippage/side + 0.05% commission/side · 2% risk/trade (10% stop → 20% notional) · no leverage · pairs: z±2 in, z=0 out, 10% per leg · DEATH at −20% from peak',
+    agNewTitle:'NEW AGENT',
+    agName:'NAME',
+    agPickEdges:'EDGES FROM YOUR LIBRARY (bad ones count too — watch them lose)',
+    agCreateBtn:'▶ CREATE AGENT ($10,000 simulated)',
+    agDisclaimer:'Paper trading: simulated money, daily-close fills with conservative slippage and commission. If equity falls −20% from its peak, the agent dies and is frozen — like real life, no reviving.',
     // EDGE LIBRARY
     edgesTitle:'EDGE LIBRARY',
     edgesSubtitle:'YOUR SAVED VALIDATIONS · RE-VALIDATE · WATCH THE DECAY',
@@ -8245,7 +8316,18 @@ const i18n = {
     nav_portfolio:'PORTAFOLIO', nav_macro:'MACRO', nav_smartmoney:'DINERO LISTO',
     nav_earnings:'RESULTADOS', nav_ipos:'IPOS', nav_movers:'MOVIMIENTOS',
     nav_sectors:'SECTORES', nav_screener:'FILTRO', nav_social:'SOCIAL',
-    nav_gallery:'GALERÍA', nav_pairs:'PARES', nav_signals:'SEÑALES', nav_edges:'MIS EDGES',
+    nav_gallery:'GALERÍA', nav_pairs:'PARES', nav_signals:'SEÑALES', nav_edges:'MIS EDGES', nav_myagents:'MIS AGENTES',
+    // PAPER TRADING AGENTS
+    agentsTitle:'AGENTES DE PAPER TRADING',
+    agentsSubtitle:'TUS EDGES OPERANDO EN SIMULADO · VELAS DIARIAS · SIN BROKER',
+    agentsEmpty:'Sin agentes todavía. Crea uno, asígnale edges de tu biblioteca y míralo operar en simulado — los malos también enseñan.',
+    agentsNew:'+ NUEVO AGENTE',
+    agentsAssumptions:'supuestos: capital simulado $10,000 · fills al cierre diario Yahoo + slippage 0.10%/lado + comisión 0.05%/lado · riesgo 2%/trade (stop 10% → notional 20%) · sin apalancamiento · pares: z±2 entra, z=0 sale, 10% por leg · MUERTE a −20% desde el peak',
+    agNewTitle:'NUEVO AGENTE',
+    agName:'NOMBRE',
+    agPickEdges:'EDGES DE TU BIBLIOTECA (los malos también valen — velos perder)',
+    agCreateBtn:'▶ CREAR AGENTE ($10,000 simulados)',
+    agDisclaimer:'Paper trading: dinero simulado, fills al cierre diario con slippage y comisión conservadores. Si el equity cae −20% desde su pico, el agente muere y queda congelado — como en la vida real, sin revivir.',
     // EDGE LIBRARY
     edgesTitle:'BIBLIOTECA DE EDGES',
     edgesSubtitle:'TUS VALIDACIONES GUARDADAS · RE-VALIDA · MIRA EL DECAY',
@@ -17680,6 +17762,356 @@ async function qdRevalidateEdge(id){
     };
   }
 })();
+</script>
+
+<script>
+// ─── AGENTES DE PAPER TRADING ─────────────────────────────
+// Un agente = contenedor de edges de la biblioteca operando en simulado
+// (velas diarias Yahoo, server-side). La DB es Neon: al crear el primer
+// agente, la biblioteca localStorage se migra a la DB (campo source marca
+// la procedencia) y localStorage queda como fallback de solo lectura.
+//
+// Identidad: uid anónimo en localStorage + email de Stripe si existe.
+// Límite: 3 agentes free / ilimitados Pro (verificación server-side con
+// el mismo patrón Stripe del paywall; aquí solo se refleja el 402).
+
+const AG_FREE_LIMIT = 3;
+let agAgents = [];
+
+function qdUid(){
+  let uid = null;
+  try{ uid = localStorage.getItem('qd_uid'); }catch(e){}
+  if (!uid){
+    uid = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    try{ localStorage.setItem('qd_uid', uid); }catch(e){}
+  }
+  return uid;
+}
+function agMoney(v){
+  if (v == null || Number.isNaN(Number(v))) return '—';
+  return '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+function agPct(v){
+  if (v == null || Number.isNaN(v)) return '—';
+  const c = v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--text2)';
+  return '<span style="color:' + c + ';font-weight:700;">' + (v > 0 ? '+' : '') + (v * 100).toFixed(1) + '%</span>';
+}
+function agStatusMsg(txt, color){
+  const el = document.getElementById('agStatus');
+  if (el){ el.textContent = txt || ''; el.style.color = color || 'var(--text3)'; }
+}
+
+// ── abrir la tab: catch-up (si el cron no corrió) y luego lista ──
+async function qdAgentsOpen(){
+  document.getElementById('agDetail').style.display = 'none';
+  document.getElementById('agList').style.display = 'block';
+  agStatusMsg('actualizando agentes…');
+  try{
+    await fetch('/api/agents-run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uid: qdUid() }),
+    }).catch(function(){});
+  }catch(e){}
+  await qdAgentsRefresh();
+}
+
+async function qdAgentsRefresh(){
+  try{
+    const r = await fetch('/api/agents?uid=' + encodeURIComponent(qdUid()));
+    const data = await r.json().catch(function(){ return null; });
+    if (!r.ok || !data || data.error){
+      agStatusMsg((data && data.error) || ('HTTP ' + r.status), 'var(--red)');
+      return;
+    }
+    agAgents = data.agents || [];
+    agStatusMsg('');
+    qdAgentsRenderList();
+  }catch(e){
+    agStatusMsg('error de red al cargar agentes.', 'var(--red)');
+  }
+}
+
+function qdAgentsRenderList(){
+  const el = document.getElementById('agList');
+  const count = document.getElementById('agCount');
+  if (count) count.textContent = agAgents.length + (qdIsProSafe() ? '' : '/' + AG_FREE_LIMIT);
+  if (!agAgents.length){
+    el.innerHTML = '<div style="text-align:center;padding:60px;font-family:var(--mono);font-size:12px;color:#333;line-height:1.6;">' +
+      (typeof t === 'function' ? t('agentsEmpty') : 'Sin agentes todavía.') + '</div>';
+    return;
+  }
+  el.innerHTML = '<div class="ag-grid">' + agAgents.map(function(a){
+    const ret = a.capital_start > 0 ? (a.equity - a.capital_start) / a.capital_start : null;
+    const dead = a.status === 'dead';
+    return '<div class="ag-card" style="border-left:3px solid ' + (dead ? 'var(--red)' : 'var(--green)') + ';" onclick="qdAgentDetail(\'' + a.id + '\')">' +
+      '<div style="display:flex;align-items:center;gap:8px;">' +
+        '<span style="font-family:var(--mono);font-size:12px;color:var(--text);font-weight:600;">' + a.name + '</span>' +
+        '<span class="ag-badge ' + (dead ? 'dead' : 'alive') + '" style="margin-left:auto;">' +
+          (dead ? 'MUERTO (' + String(a.died_at || '').slice(0, 10) + ')' : 'VIVO') + '</span>' +
+      '</div>' +
+      '<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:var(--text);">' + agMoney(a.equity) +
+        ' <span style="font-size:12px;">' + agPct(ret) + '</span></div>' +
+      '<div style="font-family:var(--mono);font-size:10px;color:var(--text3);">' + a.n_edges + ' edge' + (a.n_edges === 1 ? '' : 's') +
+        ' · desde ' + String(a.created_at || '').slice(0, 10) + '</div>' +
+      '<div style="display:flex;">' +
+        '<button class="edge-btn danger" style="margin-left:auto;" onclick="event.stopPropagation();qdAgentDelete(\'' + a.id + '\',\'' + a.name.replace(/'/g, '') + '\')">✕</button>' +
+      '</div>' +
+    '</div>';
+  }).join('') + '</div>';
+}
+
+function qdIsProSafe(){ return typeof qdIsPro === 'function' ? qdIsPro() : false; }
+
+async function qdAgentDelete(id, name){
+  if (!confirm('¿Eliminar el agente "' + name + '" y todo su historial?')) return;
+  try{
+    await fetch('/api/agents?uid=' + encodeURIComponent(qdUid()) + '&id=' + encodeURIComponent(id), { method: 'DELETE' });
+    await qdAgentsRefresh();
+  }catch(e){ agStatusMsg('no se pudo eliminar.', 'var(--red)'); }
+}
+
+// ── crear agente (+ migración de la biblioteca) ──
+function qdAgentCreateOpen(){
+  const msg = document.getElementById('agCreateMsg');
+  msg.textContent = ''; msg.style.color = 'var(--text3)';
+  const edges = (typeof qdEdgesLoad === 'function' ? qdEdgesLoad().edges : []);
+  const picker = document.getElementById('agEdgePicker');
+  if (!edges.length){
+    picker.innerHTML = '<div style="font-family:var(--mono);font-size:10px;color:#555;padding:8px 0;">Tu biblioteca está vacía — valida algo en PARES o SEÑALES y guárdalo primero.</div>';
+  } else {
+    picker.innerHTML = edges.map(function(e){
+      const color = typeof qdEdgeColor === 'function' ? qdEdgeColor(e.verdict) : 'var(--text2)';
+      const label = typeof qdEdgeTitle === 'function' ? qdEdgeTitle(e) : e.id;
+      return '<label class="ag-edge-opt"><input type="checkbox" value="' + e.id + '" style="width:auto;accent-color:#1D9E75;"/>' +
+        '<span>' + label + '</span>' +
+        '<span style="margin-left:auto;color:' + color + ';font-weight:700;font-size:9px;">' + (typeof qdEdgeLabel === 'function' ? qdEdgeLabel(e.verdict) : e.verdict) + '</span></label>';
+    }).join('');
+  }
+  // límite free visible ANTES de intentar (el server igual lo valida)
+  if (agAgents.length >= AG_FREE_LIMIT && !qdIsProSafe()){
+    msg.innerHTML = AG_FREE_LIMIT + ' agentes es el límite free — Pro tiene ilimitados. ' +
+      '<button onclick="qdCheckout()" style="font-family:var(--mono);font-size:10px;padding:3px 10px;background:var(--green);border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;">HAZTE PRO — $29/MES</button>';
+    msg.style.color = 'var(--amber)';
+  }
+  document.getElementById('agCreateOverlay').style.display = 'flex';
+}
+function qdAgentCreateClose(){ document.getElementById('agCreateOverlay').style.display = 'none'; }
+document.getElementById('agCreateOverlay').addEventListener('click', function(e){
+  if (e.target === this) qdAgentCreateClose();
+});
+
+async function qdAgentCreate(){
+  const name = (document.getElementById('agName').value || '').trim();
+  const picked = [...document.querySelectorAll('#agEdgePicker input:checked')].map(function(i){ return i.value; });
+  const msg = document.getElementById('agCreateMsg');
+  const btn = document.getElementById('agCreateBtn');
+  if (!name){ msg.textContent = 'Ponle nombre al agente.'; msg.style.color = 'var(--amber)'; return; }
+  if (!picked.length){ msg.textContent = 'Elige al menos un edge.'; msg.style.color = 'var(--amber)'; return; }
+
+  btn.disabled = true; const old = btn.textContent; btn.textContent = 'CREANDO…';
+  try{
+    // migración: manda la biblioteca COMPLETA; el server upsertea con
+    // source='localStorage:...' — localStorage queda como fallback lectura.
+    const payload = {
+      uid: qdUid(),
+      email: (typeof qdProState === 'function' ? qdProState().email : null) || null,
+      name: name,
+      edge_ids: picked,
+      edges: (typeof qdEdgesLoad === 'function' ? qdEdgesLoad().edges : []),
+    };
+    const r = await fetch('/api/agents', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json().catch(function(){ return null; });
+    if (r.status === 402 && data && data.upgrade){
+      msg.innerHTML = data.error + ' <button onclick="qdCheckout()" style="font-family:var(--mono);font-size:10px;padding:3px 10px;background:var(--green);border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;">HAZTE PRO</button>';
+      msg.style.color = 'var(--amber)';
+      return;
+    }
+    if (!r.ok || !data || data.error){
+      msg.textContent = (data && data.error) || ('HTTP ' + r.status);
+      msg.style.color = 'var(--red)';
+      return;
+    }
+    try{ localStorage.setItem('qd_edges_migrated_at', new Date().toISOString()); }catch(e){}
+    qdAgentCreateClose();
+    document.getElementById('agName').value = '';
+    agStatusMsg('agente creado — corriendo catch-up inicial…');
+    await fetch('/api/agents-run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uid: qdUid() }) }).catch(function(){});
+    await qdAgentsRefresh();
+  }catch(e){
+    msg.textContent = 'error de red al crear.'; msg.style.color = 'var(--red)';
+  }finally{
+    btn.disabled = false; btn.textContent = old;
+  }
+}
+
+// ── detalle: equity curve + posiciones + trades ──
+async function qdAgentDetail(id){
+  const list = document.getElementById('agList');
+  const det = document.getElementById('agDetail');
+  list.style.display = 'none';
+  det.style.display = 'block';
+  det.innerHTML = '<div class="loading">cargando agente…</div>';
+  try{
+    const r = await fetch('/api/agents?uid=' + encodeURIComponent(qdUid()) + '&id=' + encodeURIComponent(id));
+    const data = await r.json().catch(function(){ return null; });
+    if (!r.ok || !data || data.error){
+      det.innerHTML = '<div class="loading" style="color:var(--red);">' + ((data && data.error) || 'error') + '</div>';
+      return;
+    }
+    qdAgentRenderDetail(data);
+  }catch(e){
+    det.innerHTML = '<div class="loading" style="color:var(--red);">error de red</div>';
+  }
+}
+
+function qdAgentRenderDetail(data){
+  const a = data.agent;
+  const dead = a.status === 'dead';
+  const ret = a.capital_start > 0 ? (a.equity - a.capital_start) / a.capital_start : null;
+  const dd = a.equity_peak > 0 ? (a.equity - a.equity_peak) / a.equity_peak : null;
+
+  const posRows = (data.open_positions || []).map(function(p){
+    return '<tr><td>' + p.symbol + '</td><td>' + p.direction.toUpperCase().replace('_', ' ') + '</td>' +
+      '<td>' + (p.legs ? '2 legs' : Number(p.qty).toFixed(2)) + '</td>' +
+      '<td>' + (p.legs ? 'z=' + Number(p.entry_price).toFixed(2) : Number(p.entry_price).toFixed(2)) + '</td>' +
+      '<td>' + p.entry_date + '</td>' +
+      '<td>' + (p.stop_price != null ? Number(p.stop_price).toFixed(2) : (p.legs ? '|z|≥4' : '—')) + '</td></tr>';
+  }).join('');
+  const tradeRows = (data.trades || []).slice(0, 50).map(function(p){
+    const pnl = p.pnl != null ? Number(p.pnl) : null;
+    return '<tr><td>' + (p.exit_date || '—') + '</td><td>' + p.symbol + '</td>' +
+      '<td>' + p.direction.toUpperCase().replace('_', ' ') + '</td>' +
+      '<td>' + p.entry_date + '</td><td>' + (p.exit_reason || '—') + '</td>' +
+      '<td style="color:' + (pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text2)') + ';font-weight:700;">' +
+        (pnl != null ? (pnl > 0 ? '+' : '') + pnl.toFixed(2) : '—') + '</td></tr>';
+  }).join('');
+  const edgeChips = (data.edges || []).map(function(e){
+    const color = typeof qdEdgeColor === 'function' ? qdEdgeColor(e.verdict) : 'var(--text2)';
+    return '<span style="font-family:var(--mono);font-size:9px;border:1px solid #333;border-left:3px solid ' + color + ';border-radius:3px;padding:2px 8px;color:var(--text2);">' +
+      (typeof qdEdgeTitle === 'function' ? qdEdgeTitle(e) : e.id) + '</span>';
+  }).join(' ');
+
+  document.getElementById('agDetail').innerHTML =
+    '<div style="max-width:900px;margin:0 auto;">' +
+      '<button class="edge-btn" onclick="qdAgentsBack()">← AGENTES</button>' +
+      '<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-top:14px;">' +
+        '<span style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--text);">' + a.name + '</span>' +
+        '<span class="ag-badge ' + (dead ? 'dead' : 'alive') + '">' + (dead ? 'MUERTO (' + String(a.died_at || '').slice(0, 10) + ')' : 'VIVO') + '</span>' +
+        '<span style="margin-left:auto;font-family:var(--mono);font-size:20px;font-weight:700;color:var(--text);">' + agMoney(a.equity) + ' ' + agPct(ret) + '</span>' +
+      '</div>' +
+      '<div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:4px;">' +
+        'capital inicial ' + agMoney(a.capital_start) + ' · peak ' + agMoney(a.equity_peak) +
+        ' · drawdown actual ' + agPct(dd) + ' · última vela ' + (a.last_run_date || '—') +
+        (dead ? ' · <span style="color:var(--red);">murió al cruzar −20% desde el peak — congelado, sin revivir</span>' : '') + '</div>' +
+      '<div style="margin-top:6px;">' + edgeChips + '</div>' +
+
+      '<div class="section-header" style="margin-top:20px;"><span class="section-title">// Equity curve</span><div class="section-line"></div></div>' +
+      '<div id="agChart" style="position:relative;background:#0a0a0a;border:1px solid #1a1a1a;border-radius:4px;padding:4px;">' +
+        '<div id="agTip" style="position:absolute;display:none;pointer-events:none;background:#111;border:1px solid #333;padding:5px 8px;font-family:var(--mono);font-size:10px;color:#ccc;border-radius:3px;z-index:5;white-space:nowrap;"></div>' +
+      '</div>' +
+
+      '<div class="section-header" style="margin-top:20px;"><span class="section-title">// Posiciones abiertas (' + (data.open_positions || []).length + ')</span><div class="section-line"></div></div>' +
+      ((data.open_positions || []).length
+        ? '<div style="overflow-x:auto;"><table class="ag-table"><thead><tr><th>SÍMBOLO</th><th>DIR</th><th>QTY</th><th>ENTRADA</th><th>FECHA</th><th>STOP</th></tr></thead><tbody>' + posRows + '</tbody></table></div>'
+        : '<div style="font-family:var(--mono);font-size:10px;color:#444;">sin posiciones abiertas — el agente espera señal.</div>') +
+
+      '<div class="section-header" style="margin-top:20px;"><span class="section-title">// Historial de trades (' + (data.trades || []).length + ')</span><div class="section-line"></div></div>' +
+      ((data.trades || []).length
+        ? '<div style="overflow-x:auto;"><table class="ag-table"><thead><tr><th>SALIDA</th><th>SÍMBOLO</th><th>DIR</th><th>ENTRADA</th><th>RAZÓN</th><th>PNL $</th></tr></thead><tbody>' + tradeRows + '</tbody></table></div>'
+        : '<div style="font-family:var(--mono);font-size:10px;color:#444;">todavía sin trades cerrados.</div>') +
+
+      '<div style="font-family:var(--mono);font-size:9px;color:#444;margin-top:16px;line-height:1.5;">' +
+        'fills al cierre diario + 0.10% slippage + 0.05% comisión por lado · riesgo 2%/trade (stop 10% → notional 20% del equity) · pares: |z|≥2 entra, z=0 sale, stop |z|≥4, 10% por leg · sin apalancamiento · datos Yahoo Finance</div>' +
+    '</div>';
+
+  qdAgentChart(data.equity_history || [], Number(a.capital_start), dead ? String(a.died_at || '').slice(0, 10) : null);
+}
+
+function qdAgentsBack(){
+  document.getElementById('agDetail').style.display = 'none';
+  document.getElementById('agList').style.display = 'block';
+}
+
+// Equity curve del agente — mismo lenguaje visual que el chart del
+// backtester (SVG puro): línea, grid, referencia en el capital inicial,
+// crosshair + tooltip, y marcador de muerte si aplica.
+function qdAgentChart(rows, capitalStart, diedDate){
+  const wrap = document.getElementById('agChart');
+  if (!wrap) return;
+  const n = rows.length;
+  if (n < 2){
+    wrap.insertAdjacentHTML('beforeend', '<div style="font-family:var(--mono);font-size:10px;color:#444;padding:30px;text-align:center;">la curva aparece cuando el agente lleve al menos 2 días de vida.</div>');
+    return;
+  }
+  const eq = rows.map(function(r){ return Number(r.equity); });
+  const W = 900, H = 300, padL = 56, padR = 14, padT = 20, padB = 28;
+  const pw = W - padL - padR, ph = H - padT - padB;
+  let lo = Math.min(capitalStart, ...eq), hi = Math.max(capitalStart, ...eq);
+  const span = (hi - lo) || capitalStart * 0.05;
+  lo -= span * 0.06; hi += span * 0.06;
+  const xs = function(i){ return padL + pw * i / (n - 1); };
+  const ys = function(v){ return padT + ph * (1 - (v - lo) / (hi - lo)); };
+
+  let svg = '';
+  for (let g = 0; g <= 4; g++){
+    const v = lo + (hi - lo) * g / 4, y = ys(v);
+    svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '" stroke="#161616"/>' +
+      '<text x="' + (padL - 6) + '" y="' + (y + 3).toFixed(1) + '" text-anchor="end" fill="#555" font-size="9">' + agMoney(v).replace('$', '$') + '</text>';
+  }
+  const nx = Math.min(6, n);
+  for (let g = 0; g < nx; g++){
+    const i = Math.round(g * (n - 1) / (nx - 1));
+    const anchor = g === 0 ? 'start' : g === nx - 1 ? 'end' : 'middle';
+    svg += '<text x="' + xs(i).toFixed(1) + '" y="' + (H - 8) + '" text-anchor="' + anchor + '" fill="#555" font-size="9">' + rows[i].date + '</text>';
+  }
+  const yRef = ys(capitalStart);
+  svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + yRef.toFixed(1) + '" y2="' + yRef.toFixed(1) + '" stroke="#444" stroke-dasharray="2,4"/>' +
+    '<text x="' + (W - padR - 2) + '" y="' + (yRef - 4).toFixed(1) + '" text-anchor="end" fill="#555" font-size="9">' + agMoney(capitalStart) + '</text>';
+
+  let d = '';
+  for (let i = 0; i < n; i++) d += (i ? 'L' : 'M') + xs(i).toFixed(1) + ',' + ys(eq[i]).toFixed(1);
+  const lineColor = eq[n - 1] >= capitalStart ? '#1D9E75' : '#E24B4A';
+  svg += '<path d="' + d + '" fill="none" stroke="' + lineColor + '" stroke-width="1.6"/>';
+
+  if (diedDate){
+    const di = rows.findIndex(function(r){ return r.date === diedDate; });
+    const x = xs(di >= 0 ? di : n - 1);
+    svg += '<line x1="' + x.toFixed(1) + '" x2="' + x.toFixed(1) + '" y1="' + padT + '" y2="' + (padT + ph) + '" stroke="#E24B4A" stroke-dasharray="4,4"/>' +
+      '<text x="' + x.toFixed(1) + '" y="' + (padT - 6) + '" text-anchor="middle" fill="#E24B4A" font-size="9">☠ ' + diedDate + '</text>';
+  }
+  svg += '<line id="agXh" x1="0" x2="0" y1="' + padT + '" y2="' + (padT + ph) + '" stroke="#333" visibility="hidden"/>' +
+    '<circle id="agXc" r="3" fill="' + lineColor + '" stroke="#0a0a0a" stroke-width="1.5" visibility="hidden"/>';
+
+  wrap.insertAdjacentHTML('beforeend',
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;display:block;cursor:crosshair;font-family:var(--mono);">' + svg + '</svg>');
+
+  const svgEl = wrap.querySelector('svg');
+  const tip = document.getElementById('agTip');
+  const xh = document.getElementById('agXh');
+  const xc = document.getElementById('agXc');
+  svgEl.addEventListener('mousemove', function(ev){
+    const r = svgEl.getBoundingClientRect();
+    const sx = (ev.clientX - r.left) * (W / r.width);
+    let i = Math.round((sx - padL) / pw * (n - 1));
+    i = Math.max(0, Math.min(n - 1, i));
+    const x = xs(i), y = ys(eq[i]);
+    xh.setAttribute('x1', x); xh.setAttribute('x2', x); xh.setAttribute('visibility', 'visible');
+    xc.setAttribute('cx', x); xc.setAttribute('cy', y); xc.setAttribute('visibility', 'visible');
+    tip.innerHTML = rows[i].date + ' · <b>' + agMoney(eq[i]) + '</b>';
+    const px = (x / W) * r.width, py = (y / H) * r.height;
+    tip.style.left = Math.max(4, Math.min(px + 12, r.width - 160)) + 'px';
+    tip.style.top = Math.max(4, py - 34) + 'px';
+    tip.style.display = 'block';
+  });
+  svgEl.addEventListener('mouseleave', function(){
+    tip.style.display = 'none';
+    xh.setAttribute('visibility', 'hidden');
+    xc.setAttribute('visibility', 'hidden');
+  });
+}
 </script>
 </body>
 </html>
