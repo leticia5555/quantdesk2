@@ -253,6 +253,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('screener')">SCREENER</button>
     <button class="nav-btn" onclick="showPage('pairs')">PARES</button>
     <button class="nav-btn" onclick="showPage('signals')">SEÑALES</button>
+    <button class="nav-btn" onclick="showPage('edges');qdRenderEdges()">MIS EDGES</button>
     <button class="nav-btn" onclick="showPage('social')">SOCIAL</button>
     <button class="nav-btn" onclick="showPage('gallery')">GALLERY</button>
   </nav>
@@ -1778,6 +1779,37 @@ function sbDrawChart(data){
   });
 }
 </script>
+
+<!-- EDGE LIBRARY PAGE -->
+<div id="page-edges" class="page" style="padding:0;background:#080808;min-height:100vh;">
+
+  <!-- TOP BAR -->
+  <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <span style="font-family:var(--mono);font-size:10px;color:var(--green);font-weight:600;letter-spacing:.1em;" data-i18n="edgesTitle">BIBLIOTECA DE EDGES</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;" data-i18n="edgesSubtitle">TUS VALIDACIONES GUARDADAS · RE-VALIDA · MIRA EL DECAY</span>
+    <span id="edgesCount" style="margin-left:auto;font-family:var(--mono);font-size:10px;color:#444;"></span>
+  </div>
+
+  <!-- LIST -->
+  <div id="edgesList" style="padding:20px 16px;">
+    <div style="text-align:center;padding:60px;font-family:var(--mono);font-size:12px;color:#333;line-height:1.6;" data-i18n="edgesEmpty">
+      Todavía no guardas ningún edge. Valida algo en PARES o SEÑALES y pica GUARDAR EDGE — bueno o malo, aquí se ve cómo envejece.
+    </div>
+  </div>
+</div>
+
+<style>
+.edge-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;max-width:1100px;margin:0 auto;}
+.edge-card{background:#0d0d0d;border:1px solid #1a1a1a;border-radius:4px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;}
+.edge-card:hover{border-color:#2a2a2a;}
+.edge-chip{font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.08em;padding:1px 7px;border-radius:3px;border:1px solid #333;color:#888;}
+.edge-btn{font-family:var(--mono);font-size:10px;padding:5px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;transition:all .12s;}
+.edge-btn:hover{border-color:var(--green);color:var(--green);}
+.edge-btn.danger:hover{border-color:var(--red);color:var(--red);}
+.qd-save-edge{font-family:var(--mono);font-size:11px;padding:6px 14px;border:1px solid var(--border2);color:var(--text2);background:none;border-radius:3px;cursor:pointer;transition:all .12s;font-weight:600;letter-spacing:.03em;}
+.qd-save-edge:hover{border-color:var(--green);color:var(--green);}
+.qd-save-edge:disabled{border-color:var(--green);color:var(--green);opacity:.8;cursor:default;}
+</style>
 
 <script>
 // ─── SCREENER ENGINE ─────────────────────────────────────
@@ -8031,7 +8063,18 @@ const i18n = {
     nav_portfolio:'PORTFOLIO', nav_macro:'MACRO', nav_smartmoney:'SMART $',
     nav_earnings:'EARNINGS', nav_ipos:'IPOS', nav_movers:'MOVERS',
     nav_sectors:'SECTORS', nav_screener:'SCREENER', nav_social:'SOCIAL',
-    nav_gallery:'GALLERY', nav_pairs:'PAIRS', nav_signals:'SIGNALS',
+    nav_gallery:'GALLERY', nav_pairs:'PAIRS', nav_signals:'SIGNALS', nav_edges:'MY EDGES',
+    // EDGE LIBRARY
+    edgesTitle:'EDGE LIBRARY',
+    edgesSubtitle:'YOUR SAVED VALIDATIONS · RE-VALIDATE · WATCH THE DECAY',
+    edgesEmpty:'No edges saved yet. Validate something in PAIRS or SIGNALS and hit SAVE EDGE — good or bad, here you watch it age.',
+    edgeSave:'💾 SAVE EDGE',
+    edgeUpdate:'💾 UPDATE EDGE',
+    edgeSaved:'✓ SAVED',
+    edgeSavedMsg:'saved to MY EDGES',
+    edgeUpdatedMsg:'edge updated in MY EDGES',
+    edgeLimitMsg:'50-edge limit — delete one in MY EDGES first',
+    edgeRevalidate:'↻ RE-VALIDATE',
     // PAIRS VALIDATOR
     pairsTitle:'PAIRS VALIDATOR',
     pairsSubtitle:'COINTEGRATION · OU HALF-LIFE · OOS RE-TEST',
@@ -8202,7 +8245,18 @@ const i18n = {
     nav_portfolio:'PORTAFOLIO', nav_macro:'MACRO', nav_smartmoney:'DINERO LISTO',
     nav_earnings:'RESULTADOS', nav_ipos:'IPOS', nav_movers:'MOVIMIENTOS',
     nav_sectors:'SECTORES', nav_screener:'FILTRO', nav_social:'SOCIAL',
-    nav_gallery:'GALERÍA', nav_pairs:'PARES', nav_signals:'SEÑALES',
+    nav_gallery:'GALERÍA', nav_pairs:'PARES', nav_signals:'SEÑALES', nav_edges:'MIS EDGES',
+    // EDGE LIBRARY
+    edgesTitle:'BIBLIOTECA DE EDGES',
+    edgesSubtitle:'TUS VALIDACIONES GUARDADAS · RE-VALIDA · MIRA EL DECAY',
+    edgesEmpty:'Todavía no guardas ningún edge. Valida algo en PARES o SEÑALES y pica GUARDAR EDGE — bueno o malo, aquí se ve cómo envejece.',
+    edgeSave:'💾 GUARDAR EDGE',
+    edgeUpdate:'💾 ACTUALIZAR EDGE',
+    edgeSaved:'✓ GUARDADO',
+    edgeSavedMsg:'guardado en MIS EDGES',
+    edgeUpdatedMsg:'edge actualizado en MIS EDGES',
+    edgeLimitMsg:'límite de 50 edges — elimina alguno en MIS EDGES',
+    edgeRevalidate:'↻ RE-VALIDAR',
     // PAIRS VALIDATOR
     pairsTitle:'VALIDADOR DE PARES',
     pairsSubtitle:'COINTEGRACIÓN · VIDA MEDIA OU · RE-TEST OOS',
@@ -17246,6 +17300,386 @@ window.addEventListener('DOMContentLoaded', function(){
       .catch(function(){ /* red caída: se reintenta en la próxima carga */ });
   }
 });
+</script>
+
+<script>
+// ─── BIBLIOTECA DE EDGES ──────────────────────────────────
+// v0: colección personal de validaciones guardadas (PARES + SEÑALES) en
+// localStorage — mismo patrón que el contador k y el límite free. Es el
+// primer paso hacia los agentes de paper trading: cada edge guarda su
+// config completa (re-ejecutable), el veredicto y las métricas OOS, y un
+// historial de re-validaciones donde el decay se vuelve visible.
+//
+// SCHEMA (edge_schema_version: 1) — pensado para migrar a DB y alimentar
+// agentes sin re-mapear:
+//   {
+//     edge_schema_version: 1,
+//     id: 'e...'                        // único, estable
+//     engine: 'pairs' | 'signals',
+//     config: {...}                     // TODO lo necesario para re-correr:
+//                                       //  pairs:   {x, y, range}
+//                                       //  signals: {ticker, rule, direction,
+//                                       //            range, params:{...}}
+//     verdict: 'VENTAJA REAL',          // último veredicto
+//     metrics: {...}                    // últimas métricas clave OOS
+//     created_at, validated_at: ISO,
+//     verdict_history: [{at, verdict, metrics}],  // cada validación es un
+//                                       // punto de datos (cap 20, conserva
+//                                       // el original)
+//     source: 'quantdesk-app-v0',       // procedencia, para la migración
+//     notes: null                       // reservado
+//   }
+//
+// El botón GUARDAR EDGE se inyecta ENVOLVIENDO renderPairsResult /
+// renderSignalResult por nombre global — cero ediciones a los motores,
+// igual que el gate del paywall envolvió los runners. RE-VALIDAR llama a
+// los endpoints directo con la config guardada y respeta la cuota free
+// (usa qdCanValidate/qdCountValidation del bloque Stripe si existen).
+
+const QD_EDGE_LIMIT = 50;          // generoso sin reventar localStorage
+const QD_EDGE_HISTORY_CAP = 20;    // por edge: original + últimas 19
+
+// Colores por veredicto — unión de los tiers de PARES y SEÑALES.
+const EDGE_TIER = {
+  'VENTAJA REAL':        'var(--green)',
+  'MARGINAL':            'var(--amber)',
+  'FRAGIL':              'var(--amber)',
+  'RUIDO':               'var(--red)',
+  'SOBREAJUSTADO':       'var(--red)',
+  'SIN VENTAJA':         'var(--red)',
+  'DATOS INSUFICIENTES': 'var(--text3)',
+};
+const EDGE_VERDICT_LABEL = { 'FRAGIL': 'FRÁGIL' };
+function qdEdgeColor(v){ return EDGE_TIER[v] || 'var(--text2)'; }
+function qdEdgeLabel(v){ return EDGE_VERDICT_LABEL[v] || v || '—'; }
+
+// ── storage ──
+function qdEdgesLoad(){
+  try{
+    const s = JSON.parse(localStorage.getItem('qd_edges') || 'null');
+    if (s && Array.isArray(s.edges)) return s;
+  }catch(e){}
+  return { schema_version: 1, edges: [] };
+}
+function qdEdgesStore(s){
+  try{ localStorage.setItem('qd_edges', JSON.stringify(s)); }catch(e){}
+}
+// Config idéntica ⇒ mismo edge (guardar de nuevo actualiza, no duplica).
+function qdEdgeSig(engine, config){ return JSON.stringify([engine, config]); }
+
+// ── extracción de config + métricas desde las respuestas de los motores ──
+function qdExtractSignals(data){
+  const r = data.rule || {};
+  const rangeMatch = /\(([^\s)]+) daily\)/.exec(data.source || '');
+  const params =
+    r.type === 'rsi' ? { rsiPeriod: r.rsi_period, entryLevel: r.entry_level, exitLevel: r.exit_level } :
+    r.type === 'sma_cross' ? { fast: r.fast, slow: r.slow } :
+    r.type === 'macd' ? { fast: r.fast, slow: r.slow, signal: r.signal_period } :
+    r.type === 'bollinger' ? { period: r.period, mult: r.mult } :
+    r.type === 'breakout' ? { lookback: r.lookback } : {};
+  const oos = (data.metrics || {}).out_of_sample || {};
+  const h = data.honesty || {};
+  return {
+    config: {
+      ticker: data.ticker,
+      rule: r.type || 'rsi',
+      direction: r.direction || 'long',
+      range: rangeMatch ? rangeMatch[1] : '2y',
+      params,
+    },
+    verdict: data.verdict,
+    metrics: {
+      total_return_oos: oos.total_return ?? null,
+      win_rate_oos: oos.win_rate ?? null,
+      profit_factor_oos: oos.profit_factor ?? null,
+      ret_sin_mejor_oos: oos.ret_sin_mejor ?? null,
+      sharpe_oos: oos.sharpe ?? null,
+      max_drawdown_oos: oos.max_drawdown ?? null,
+      n_trades_oos: oos.n_trades ?? null,
+      buy_hold_oos: (data.benchmark || {}).buy_hold_oos ?? null,
+      k_cumulative: h.k_cumulative ?? null,
+      naive_p_value: h.naive_p_value ?? null,
+      significant_bonferroni: (h.bonferroni || {}).significant_bonferroni ?? null,
+    },
+  };
+}
+function qdExtractPairs(data){
+  const oos = data.oos || {};
+  const hedge = data.hedge || {};
+  // El response de pairs no echa el range: se lee del selector (fallback 2y).
+  const rangeEl = document.getElementById('pvRange');
+  return {
+    config: {
+      x: (data.pair || {}).x,
+      y: (data.pair || {}).y,
+      range: rangeEl ? rangeEl.value : '2y',
+    },
+    verdict: data.verdict,
+    metrics: {
+      gate_verdict: data.gate_verdict ?? null,
+      stationary_oos: oos.stationary ?? null,
+      tradeable_oos: oos.tradeable ?? null,
+      half_life_oos: oos.half_life_bars ?? null,
+      adf_stat_oos: oos.adf_stat ?? null,
+      beta: hedge.beta ?? null,
+      z_now: hedge.z_now ?? null,
+      n_obs: data.n_obs ?? null,
+    },
+  };
+}
+
+// ── botón GUARDAR EDGE inyectado en los resultados ──
+window.__qdEdgeDraft = { pairs: null, signals: null };
+
+function qdInjectSaveBtn(engine, data){
+  if (!data || !data.verdict) return;
+  // DATOS INSUFICIENTES en SEÑALES no trae `rule`: no hay config fiel que
+  // guardar/re-correr. Cualquier otro veredicto (incluso los malos) se guarda.
+  if (engine === 'signals' && !data.rule) return;
+  if (engine === 'pairs' && !data.pair) return;
+  const draft = engine === 'signals' ? qdExtractSignals(data) : qdExtractPairs(data);
+  window.__qdEdgeDraft[engine] = draft;
+
+  const container = document.getElementById(engine === 'signals' ? 'sbResult' : 'pvResult');
+  const wrapper = container && container.firstElementChild;
+  const verdictCard = wrapper && wrapper.firstElementChild;
+  if (!verdictCard) return;
+
+  const exists = qdEdgesLoad().edges.some((e) => qdEdgeSig(e.engine, e.config) === qdEdgeSig(engine, draft.config));
+  const label = typeof t === 'function' ? t(exists ? 'edgeUpdate' : 'edgeSave') : '💾 GUARDAR EDGE';
+  verdictCard.insertAdjacentHTML('afterend',
+    '<div style="margin:10px 0 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
+      '<button class="qd-save-edge" id="qdSaveBtn-' + engine + '" onclick="qdSaveEdgeClick(\'' + engine + '\')">' + label + '</button>' +
+      '<span id="qdSaveMsg-' + engine + '" style="font-family:var(--mono);font-size:10px;color:var(--text3);"></span>' +
+    '</div>');
+}
+
+function qdSaveEdgeClick(engine){
+  const draft = window.__qdEdgeDraft[engine];
+  const btn = document.getElementById('qdSaveBtn-' + engine);
+  const msg = document.getElementById('qdSaveMsg-' + engine);
+  if (!draft || !btn) return;
+
+  const store = qdEdgesLoad();
+  const sig = qdEdgeSig(engine, draft.config);
+  const now = new Date().toISOString();
+  const existing = store.edges.find((e) => qdEdgeSig(e.engine, e.config) === sig);
+
+  if (existing){
+    existing.verdict = draft.verdict;
+    existing.metrics = draft.metrics;
+    existing.validated_at = now;
+    qdEdgeHistoryPush(existing, now, draft.verdict, draft.metrics);
+    if (msg) msg.textContent = typeof t === 'function' ? t('edgeUpdatedMsg') : 'edge actualizado en MIS EDGES';
+  } else {
+    if (store.edges.length >= QD_EDGE_LIMIT){
+      if (msg){ msg.textContent = (typeof t === 'function' ? t('edgeLimitMsg') : 'límite de 50 edges — elimina alguno en MIS EDGES'); msg.style.color = 'var(--amber)'; }
+      return;
+    }
+    store.edges.unshift({
+      edge_schema_version: 1,
+      id: 'e' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+      engine,
+      config: draft.config,
+      verdict: draft.verdict,
+      metrics: draft.metrics,
+      created_at: now,
+      validated_at: now,
+      verdict_history: [{ at: now, verdict: draft.verdict, metrics: draft.metrics }],
+      source: 'quantdesk-app-v0',
+      notes: null,
+    });
+    if (msg) msg.textContent = (typeof t === 'function' ? t('edgeSavedMsg') : 'guardado en MIS EDGES') + ' (' + store.edges.length + '/' + QD_EDGE_LIMIT + ')';
+  }
+  qdEdgesStore(store);
+  btn.disabled = true;
+  btn.textContent = typeof t === 'function' ? t('edgeSaved') : '✓ GUARDADO';
+}
+
+// Historial con cap: conserva SIEMPRE la validación original (índice 0)
+// y las últimas QD_EDGE_HISTORY_CAP−1.
+function qdEdgeHistoryPush(edge, at, verdict, metrics){
+  if (!Array.isArray(edge.verdict_history)) edge.verdict_history = [];
+  edge.verdict_history.push({ at, verdict, metrics });
+  while (edge.verdict_history.length > QD_EDGE_HISTORY_CAP) edge.verdict_history.splice(1, 1);
+}
+
+// ── descripciones para las cards ──
+function qdEdgeTitle(e){
+  if (e.engine === 'pairs') return e.config.y + ' ~ ' + e.config.x;
+  const p = e.config.params || {};
+  const rule =
+    e.config.rule === 'rsi' ? 'RSI(' + p.rsiPeriod + ') ' + p.entryLevel + '/' + p.exitLevel :
+    e.config.rule === 'sma_cross' ? 'SMA ' + p.fast + '/' + p.slow :
+    e.config.rule === 'macd' ? 'MACD ' + p.fast + '/' + p.slow + '/' + p.signal :
+    e.config.rule === 'bollinger' ? 'BOLLINGER ' + p.period + '/' + p.mult + 'σ' :
+    e.config.rule === 'breakout' ? 'BREAKOUT ' + p.lookback + 'd' : e.config.rule;
+  return e.config.ticker + ' · ' + rule + ' · ' + (e.config.direction || 'long').toUpperCase();
+}
+function qdEdgePct(v){ return v == null ? '—' : ((v > 0 ? '+' : '') + (v * 100).toFixed(1) + '%'); }
+function qdEdgeChk(v){ return v === true ? '✓' : v === false ? '✗' : '—'; }
+function qdEdgeMetricsLine(e){
+  const m = e.metrics || {};
+  if (e.engine === 'pairs'){
+    return 'OOS: estacionario ' + qdEdgeChk(m.stationary_oos) + ' · vida media ' +
+      (m.half_life_oos != null ? Math.round(m.half_life_oos) + ' barras' : '—') +
+      ' · operable ' + qdEdgeChk(m.tradeable_oos) +
+      '<br>β ' + (m.beta != null ? Number(m.beta).toFixed(3) : '—') +
+      ' · z ahora ' + (m.z_now != null ? Number(m.z_now).toFixed(2) : '—') +
+      ' · ' + (m.n_obs != null ? m.n_obs + ' obs' : '');
+  }
+  return 'OOS: ret ' + qdEdgePct(m.total_return_oos) +
+    ' · win ' + (m.win_rate_oos != null ? (m.win_rate_oos * 100).toFixed(0) + '%' : '—') +
+    ' · PF ' + (m.profit_factor_oos != null ? Number(m.profit_factor_oos).toFixed(2) : '—') +
+    ' · ' + (m.n_trades_oos != null ? m.n_trades_oos + ' trades' : '—') +
+    '<br>sin mejor trade ' + qdEdgePct(m.ret_sin_mejor_oos) +
+    ' · vs B&H OOS ' + qdEdgePct(m.buy_hold_oos);
+}
+// Último cambio de veredicto en el historial → el decay, visible.
+function qdEdgeDecay(e){
+  const h = e.verdict_history || [];
+  for (let i = h.length - 1; i > 0; i--){
+    if (h[i].verdict !== h[i - 1].verdict){
+      return '<div style="font-family:var(--mono);font-size:10px;color:var(--amber);padding:4px 8px;border:1px solid rgba(239,159,39,.3);border-radius:3px;background:rgba(239,159,39,.05);">' +
+        'era <b style="color:' + qdEdgeColor(h[i - 1].verdict) + ';">' + qdEdgeLabel(h[i - 1].verdict) + '</b>' +
+        ' → ahora <b style="color:' + qdEdgeColor(h[i].verdict) + ';">' + qdEdgeLabel(h[i].verdict) + '</b>' +
+        ' <span style="color:var(--text3);">(' + h[i].at.slice(0, 10) + ')</span></div>';
+    }
+  }
+  if (h.length > 1){
+    return '<div style="font-family:var(--mono);font-size:10px;color:var(--text3);">estable en ' + h.length + ' validaciones desde ' + h[0].at.slice(0, 10) + '</div>';
+  }
+  return '';
+}
+
+// ── render de la tab MIS EDGES ──
+function qdRenderEdges(){
+  const el = document.getElementById('edgesList');
+  const count = document.getElementById('edgesCount');
+  if (!el) return;
+  const store = qdEdgesLoad();
+  if (count) count.textContent = store.edges.length + '/' + QD_EDGE_LIMIT;
+  if (!store.edges.length){
+    el.innerHTML = '<div style="text-align:center;padding:60px;font-family:var(--mono);font-size:12px;color:#333;line-height:1.6;">' +
+      (typeof t === 'function' ? t('edgesEmpty') : 'Todavía no guardas ningún edge. Valida algo en PARES o SEÑALES y pica GUARDAR EDGE — bueno o malo, aquí se ve cómo envejece.') + '</div>';
+    return;
+  }
+  el.innerHTML = '<div class="edge-grid">' + store.edges.map((e) => {
+    const color = qdEdgeColor(e.verdict);
+    return '<div class="edge-card" style="border-left:3px solid ' + color + ';">' +
+      '<div style="display:flex;align-items:center;gap:8px;">' +
+        '<span class="edge-chip">' + (e.engine === 'pairs' ? 'PAR' : 'SEÑAL') + '</span>' +
+        '<span style="font-family:var(--mono);font-size:11px;color:var(--text);font-weight:600;">' + qdEdgeTitle(e) + '</span>' +
+        '<span style="margin-left:auto;font-family:var(--mono);font-size:9px;color:#444;">' + (e.config.range || '') + '</span>' +
+      '</div>' +
+      '<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:' + color + ';line-height:1.1;">' + qdEdgeLabel(e.verdict) + '</div>' +
+      qdEdgeDecay(e) +
+      '<div style="font-family:var(--mono);font-size:10px;color:var(--text2);line-height:1.6;">' + qdEdgeMetricsLine(e) + '</div>' +
+      '<div style="font-family:var(--mono);font-size:9px;color:#444;">validado ' + (e.validated_at || '').slice(0, 10) + ' · guardado ' + (e.created_at || '').slice(0, 10) + '</div>' +
+      '<div id="qdEdgeMsg-' + e.id + '" style="font-family:var(--mono);font-size:10px;color:var(--text3);min-height:0;"></div>' +
+      '<div style="display:flex;gap:8px;margin-top:auto;">' +
+        '<button class="edge-btn" id="qdReval-' + e.id + '" onclick="qdRevalidateEdge(\'' + e.id + '\')" >' + (typeof t === 'function' ? t('edgeRevalidate') : '↻ RE-VALIDAR') + '</button>' +
+        '<button class="edge-btn danger" style="margin-left:auto;" onclick="qdDeleteEdge(\'' + e.id + '\')">✕</button>' +
+      '</div>' +
+    '</div>';
+  }).join('') + '</div>';
+}
+
+function qdDeleteEdge(id){
+  const store = qdEdgesLoad();
+  const e = store.edges.find((x) => x.id === id);
+  if (!e) return;
+  if (!confirm('¿Eliminar el edge "' + qdEdgeTitle(e) + '" de tu biblioteca?')) return;
+  store.edges = store.edges.filter((x) => x.id !== id);
+  qdEdgesStore(store);
+  qdRenderEdges();
+}
+
+// ── re-validación con la config guardada ──
+function qdEdgeUrl(e, k){
+  if (e.engine === 'pairs'){
+    return '/api/pairs-validator?x=' + encodeURIComponent(e.config.x) +
+      '&y=' + encodeURIComponent(e.config.y) + '&range=' + encodeURIComponent(e.config.range || '2y');
+  }
+  const c = e.config, p = c.params || {};
+  let u = '/api/signal-backtester?ticker=' + encodeURIComponent(c.ticker) +
+    '&rule=' + encodeURIComponent(c.rule) + '&direction=' + encodeURIComponent(c.direction || 'long') +
+    '&range=' + encodeURIComponent(c.range || '2y') + '&k=' + (k || 1);
+  if (c.rule === 'rsi') u += '&rsiPeriod=' + p.rsiPeriod + '&entryLevel=' + p.entryLevel + '&exitLevel=' + p.exitLevel;
+  else if (c.rule === 'sma_cross') u += '&fast=' + p.fast + '&slow=' + p.slow;
+  else if (c.rule === 'macd') u += '&fast=' + p.fast + '&slow=' + p.slow + '&signal=' + p.signal;
+  else if (c.rule === 'bollinger') u += '&period=' + p.period + '&mult=' + p.mult;
+  else if (c.rule === 'breakout') u += '&lookback=' + p.lookback;
+  return u;
+}
+
+async function qdRevalidateEdge(id){
+  const store = qdEdgesLoad();
+  const edge = store.edges.find((x) => x.id === id);
+  if (!edge) return;
+  const btn = document.getElementById('qdReval-' + id);
+  const msg = document.getElementById('qdEdgeMsg-' + id);
+
+  // Una re-validación ES una validación: respeta la cuota free.
+  if (typeof qdCanValidate === 'function' && !qdCanValidate()){
+    if (typeof qdShowPaywall === 'function') qdShowPaywall();
+    return;
+  }
+
+  // K honesto: misma config re-corrida sobre el mismo ticker no infla k,
+  // pero se reporta el acumulado real de ese ticker si la tab SEÑALES ya
+  // probó variaciones (sbComputeK usa firmas idénticas a las del runner).
+  let k = 1;
+  if (edge.engine === 'signals' && typeof sbComputeK === 'function'){
+    k = sbComputeK(edge.config.ticker, JSON.stringify([edge.config.rule, edge.config.direction, edge.config.range, edge.config.params]));
+  }
+  if (typeof qdCountValidation === 'function') qdCountValidation();
+
+  if (btn){ btn.disabled = true; btn.textContent = '…'; }
+  if (msg){ msg.textContent = 're-validando…'; msg.style.color = 'var(--text3)'; }
+
+  try{
+    const r = await fetch(qdEdgeUrl(edge, k));
+    let data;
+    try{ data = await r.json(); }catch(e){ data = null; }
+    if (!r.ok || !data || data.error || !data.verdict){
+      if (msg){ msg.textContent = 'no se pudo re-validar: ' + ((data && data.error) || ('HTTP ' + r.status)); msg.style.color = 'var(--red)'; }
+      if (btn){ btn.disabled = false; btn.textContent = typeof t === 'function' ? t('edgeRevalidate') : '↻ RE-VALIDAR'; }
+      return;
+    }
+    const fresh = edge.engine === 'signals' ? qdExtractSignals(data) : qdExtractPairs(data);
+    const now = new Date().toISOString();
+    edge.verdict = fresh.verdict;
+    edge.metrics = fresh.metrics;
+    edge.validated_at = now;
+    qdEdgeHistoryPush(edge, now, fresh.verdict, fresh.metrics);
+    qdEdgesStore(store);
+    qdRenderEdges(); // re-render completo: la card muestra el decay si cambió
+  }catch(e){
+    if (msg){ msg.textContent = 'error de red al re-validar.'; msg.style.color = 'var(--red)'; }
+    if (btn){ btn.disabled = false; btn.textContent = typeof t === 'function' ? t('edgeRevalidate') : '↻ RE-VALIDAR'; }
+  }
+}
+
+// ── inyección: envuelve los renderers de ambos motores (sin editarlos) ──
+(function(){
+  const origSignals = window.renderSignalResult;
+  if (typeof origSignals === 'function'){
+    window.renderSignalResult = function(data){
+      const out = origSignals.apply(this, arguments);
+      try{ qdInjectSaveBtn('signals', data); }catch(e){}
+      return out;
+    };
+  }
+  const origPairs = window.renderPairsResult;
+  if (typeof origPairs === 'function'){
+    window.renderPairsResult = function(data){
+      const out = origPairs.apply(this, arguments);
+      try{ qdInjectSaveBtn('pairs', data); }catch(e){}
+      return out;
+    };
+  }
+})();
 </script>
 </body>
 </html>
