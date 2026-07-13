@@ -18113,5 +18113,328 @@ function qdAgentChart(rows, capitalStart, diedDate){
   });
 }
 </script>
+
+<style>
+/* ─── AUTOCOMPLETE UNIFICADO ─── */
+.qd-ac-list{position:fixed;z-index:950;background:#0d0d0d;border:1px solid #2a2a2a;border-radius:4px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.5);-webkit-overflow-scrolling:touch;}
+.qd-ac-item{display:flex;gap:8px;align-items:baseline;padding:8px 10px;cursor:pointer;font-family:var(--mono);border-bottom:1px solid #141414;}
+.qd-ac-item:last-child{border-bottom:none;}
+.qd-ac-item.active,.qd-ac-item:hover{background:#161616;}
+.qd-ac-item .s{font-size:11px;font-weight:700;color:var(--text);white-space:nowrap;}
+.qd-ac-item .n{font-size:10px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
+.qd-ac-item .x{font-size:9px;color:var(--text3);border:1px solid #2a2a2a;border-radius:3px;padding:1px 6px;white-space:nowrap;}
+.qd-ac-note{padding:6px 10px;font-family:var(--mono);font-size:9px;color:#555;border-top:1px solid #1a1a1a;}
+</style>
+
+<script>
+// ─── AUTOCOMPLETE DE TICKERS (componente único) ───────────────────
+// Un solo dropdown singleton (position:fixed, no lo recorta ningún
+// contenedor) conectado a los inputs de ticker de motores + SIM + COMPARE.
+//
+// Fuente híbrida:
+//   1) la lista curada local TICKERS (ya existente en la app) responde
+//      instantáneo y aparece primero;
+//   2) si hay pocos matches locales, fallback a /api/ticker-search
+//      (proxy de Yahoo, debounce 300ms) — cualquier ticker global,
+//      incluyendo .MX y .SA. Al seleccionar, el input queda con el
+//      símbolo EXACTO que los endpoints esperan (crypto local BTC/USD
+//      se normaliza a BTC, que los motores mapean a BTC-USD).
+//
+// Integración sin tocar los motores (patrón wrapper):
+//   - los handlers legados de SIM/COMPARE (onTickerInput/onCmpInput/...)
+//     se anulan reasignando los globales — su código no se edita;
+//   - las teclas se interceptan en CAPTURE sobre document, así el Enter
+//     de selección NO llega al onkeydown inline de PARES/SEÑALES, pero
+//     un Enter sin selección sí dispara la validación como siempre;
+//   - móvil: selección con pointerdown (gana al blur), y el dropdown se
+//     abre ARRIBA del input cuando el teclado de iPhone come el espacio
+//     inferior (visualViewport).
+
+const QD_AC_REMOTE_DEBOUNCE = 300;
+const QD_AC_MIN_LOCAL = 4;      // menos matches locales que esto → fallback remoto
+const QD_AC_MAX_ROWS = 8;
+
+const qdAc = { el: null, input: null, items: [], idx: -1, timer: null, seq: 0, visible: false };
+
+// Catálogo local desde TICKERS: símbolo normalizado + nombre + bolsa.
+let qdAcCatalog = null;
+function qdAcBuildCatalog(){
+  if (qdAcCatalog) return qdAcCatalog;
+  const src = (typeof TICKERS !== 'undefined' && Array.isArray(TICKERS)) ? TICKERS : [];
+  qdAcCatalog = src.map(function(t){
+    let sym = t.sym, name = t.name || '', exch = 'US';
+    if (t.type === 'crypto'){ sym = sym.replace('/USD', ''); exch = 'CRYPTO'; }
+    else if (sym.endsWith('.MX')){ exch = 'BMV'; name = name.replace(/\s*·\s*BMV\s*$/, ''); }
+    else if (sym.endsWith('.SA')){ exch = 'B3'; name = name.replace(/\s*·\s*B3\s*$/, ''); }
+    else if (sym.endsWith('.SN')){ exch = 'BCS'; }
+    else if (sym.endsWith('.BA')){ exch = 'BYMA'; }
+    else if (t.type === 'etf'){ exch = 'US · ETF'; }
+    else if (t.type === 'latam'){ exch = 'US · ADR'; }
+    return { sym: sym, name: name, exch: exch, U: sym.toUpperCase(), NU: name.toUpperCase() };
+  });
+  return qdAcCatalog;
+}
+
+function qdAcLocalSearch(q){
+  const cat = qdAcBuildCatalog();
+  const pre = [], mid = [];
+  for (const t of cat){
+    if (t.U.startsWith(q)) pre.push(t);
+    else if (t.U.includes(q) || t.NU.includes(q)) mid.push(t);
+    if (pre.length >= QD_AC_MAX_ROWS) break;
+  }
+  return pre.concat(mid).slice(0, QD_AC_MAX_ROWS);
+}
+
+function qdAcEnsureEl(){
+  if (qdAc.el) return qdAc.el;
+  const el = document.createElement('div');
+  el.className = 'qd-ac-list';
+  el.style.display = 'none';
+  el.setAttribute('role', 'listbox');
+  document.body.appendChild(el);
+  qdAc.el = el;
+  return el;
+}
+
+function qdAcHide(){
+  if (qdAc.el) qdAc.el.style.display = 'none';
+  qdAc.visible = false;
+  qdAc.idx = -1;
+}
+
+// Coloca el dropdown pegado al input; si el espacio visible debajo (con el
+// teclado móvil abierto, visualViewport lo refleja) no alcanza, va ARRIBA.
+function qdAcPosition(){
+  const el = qdAc.el, input = qdAc.input;
+  if (!el || !input) return;
+  const r = input.getBoundingClientRect();
+  const vv = window.visualViewport;
+  const viewTop = vv ? vv.offsetTop : 0;
+  const viewBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+  const spaceBelow = viewBottom - r.bottom - 8;
+  const spaceAbove = r.top - viewTop - 8;
+  const width = Math.min(Math.max(r.width, 300), (vv ? vv.width : window.innerWidth) - 16);
+  el.style.left = Math.max(8, Math.min(r.left, (vv ? vv.width : window.innerWidth) - width - 8)) + 'px';
+  el.style.width = width + 'px';
+  if (spaceBelow >= 160 || spaceBelow >= spaceAbove){
+    el.style.top = (r.bottom + 4) + 'px';
+    el.style.bottom = 'auto';
+    el.style.maxHeight = Math.max(120, Math.min(260, spaceBelow)) + 'px';
+  } else {
+    el.style.top = 'auto';
+    el.style.bottom = (window.innerHeight - r.top + 4) + 'px';
+    el.style.maxHeight = Math.max(120, Math.min(260, spaceAbove)) + 'px';
+  }
+}
+
+function qdAcRender(items, note){
+  const el = qdAcEnsureEl();
+  qdAc.items = items;
+  qdAc.idx = -1;
+  if (!items.length && !note){ qdAcHide(); return; }
+  el.innerHTML = items.map(function(t, i){
+    return '<div class="qd-ac-item" role="option" data-i="' + i + '">' +
+      '<span class="s">' + t.sym + '</span>' +
+      '<span class="n">' + (t.name || '') + '</span>' +
+      '<span class="x">' + (t.exch || '') + '</span></div>';
+  }).join('') + (note ? '<div class="qd-ac-note">' + note + '</div>' : '');
+  // pointerdown gana al blur del input → tap en móvil selecciona siempre.
+  el.querySelectorAll('.qd-ac-item').forEach(function(row){
+    row.addEventListener('pointerdown', function(ev){
+      ev.preventDefault();
+      qdAcSelect(parseInt(row.dataset.i, 10));
+    });
+  });
+  el.style.display = 'block';
+  qdAc.visible = true;
+  qdAcPosition();
+}
+
+function qdAcSelect(i){
+  const t = qdAc.items[i];
+  const input = qdAc.input;
+  if (!t || !input) return;
+  input.value = t.sym;
+  // los flujos legados escuchan input/change (p. ej. COMPARE re-lee valores)
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  qdAcHide();
+  input.focus();
+}
+
+function qdAcQuery(input){
+  qdAc.input = input;
+  const q = (input.value || '').trim().toUpperCase();
+  clearTimeout(qdAc.timer);
+  if (!q){ qdAcHide(); return; }
+
+  const local = qdAcLocalSearch(q);
+  const wantRemote = q.length >= 2 && local.length < QD_AC_MIN_LOCAL;
+  qdAcRender(local, wantRemote ? 'buscando en Yahoo…' : null);
+
+  if (!wantRemote) return;
+  const seq = ++qdAc.seq;
+  qdAc.timer = setTimeout(async function(){
+    try{
+      const r = await fetch('/api/ticker-search?q=' + encodeURIComponent(q));
+      const data = await r.json().catch(function(){ return null; });
+      // descarta respuestas viejas o si el usuario ya cambió el texto
+      if (seq !== qdAc.seq || !qdAc.input || (qdAc.input.value || '').trim().toUpperCase() !== q) return;
+      const seen = new Set(local.map(function(t){ return t.sym.toUpperCase(); }));
+      const merged = local.slice();
+      for (const x of ((data && data.results) || [])){
+        if (merged.length >= QD_AC_MAX_ROWS) break;
+        if (seen.has(x.symbol.toUpperCase())) continue;
+        seen.add(x.symbol.toUpperCase());
+        merged.push({ sym: x.symbol, name: x.name, exch: x.exchange || 'YAHOO' });
+      }
+      qdAcRender(merged, merged.length ? null : 'sin resultados');
+    }catch(e){ /* red caída: se quedan los locales */ }
+  }, QD_AC_REMOTE_DEBOUNCE);
+}
+
+function qdAcAttach(id){
+  const input = document.getElementById(id);
+  if (!input || input.dataset.qdac) return;
+  input.dataset.qdac = '1';
+  input.addEventListener('input', function(){ qdAcQuery(input); });
+  input.addEventListener('focus', function(){ if ((input.value || '').trim()) qdAcQuery(input); });
+  input.addEventListener('blur', function(){ setTimeout(function(){ if (qdAc.input === input) qdAcHide(); }, 160); });
+}
+
+// Teclado en CAPTURE sobre document: se procesa ANTES que los onkeydown
+// inline de los inputs (PARES/SEÑALES corren la validación con Enter).
+// Con dropdown abierto: flechas navegan, Enter con selección elige (y NO
+// llega al validador), Enter sin selección cierra y deja pasar, Esc cierra.
+document.addEventListener('keydown', function(ev){
+  if (!qdAc.visible || document.activeElement !== qdAc.input) return;
+  const rows = qdAc.el ? [...qdAc.el.querySelectorAll('.qd-ac-item')] : [];
+  if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp'){
+    ev.preventDefault(); ev.stopPropagation();
+    const delta = ev.key === 'ArrowDown' ? 1 : -1;
+    qdAc.idx = Math.max(0, Math.min(rows.length - 1, qdAc.idx + delta));
+    rows.forEach(function(r, i){ r.classList.toggle('active', i === qdAc.idx); });
+    if (rows[qdAc.idx]) rows[qdAc.idx].scrollIntoView({ block: 'nearest' });
+  } else if (ev.key === 'Enter'){
+    if (qdAc.idx >= 0){
+      ev.preventDefault(); ev.stopPropagation();
+      qdAcSelect(qdAc.idx);
+    } else {
+      qdAcHide(); // sin selección: el Enter sigue su curso (validar/simular)
+    }
+  } else if (ev.key === 'Escape'){
+    ev.stopPropagation();
+    qdAcHide();
+  }
+}, true);
+
+// Reposicionar con scroll/resize/teclado móvil.
+['scroll', 'resize'].forEach(function(evt){
+  window.addEventListener(evt, function(){ if (qdAc.visible) qdAcPosition(); }, true);
+});
+if (window.visualViewport){
+  window.visualViewport.addEventListener('resize', function(){ if (qdAc.visible) qdAcPosition(); });
+}
+
+// ── conexión: motores + SIM + COMPARE ──
+window.addEventListener('DOMContentLoaded', function(){
+  ['pvX', 'pvY', 'sbTicker', 'simTicker', 'cmp1', 'cmp2', 'cmp3'].forEach(qdAcAttach);
+
+  // Neutraliza los autocompletes legados de SIM/COMPARE reasignando sus
+  // globales (los oninput inline resuelven el nombre al momento del evento).
+  // Su código no se toca; sus dropdowns simplemente no vuelven a abrirse.
+  ['onTickerInput', 'onTickerKey', 'onCmpInput', 'onCmpKey'].forEach(function(fn){
+    if (typeof window[fn] === 'function') window[fn] = function(){};
+  });
+  ['acList', 'acCmp1', 'acCmp2', 'acCmp3'].forEach(function(id){
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+});
+
+// ─── AVISO DE LIQUIDEZ (honestidad) ───────────────────────
+// Al validar en PARES/SEÑALES, se consulta el volumen promedio diario en
+// USD (3 meses) de los tickers involucrados. Bajo $1M USD/día el cierre
+// diario es ruidoso y el slippage real sería mayor: se inyecta un aviso en
+// el resultado y el flag queda PERSISTIDO en las métricas del edge si el
+// usuario lo guarda (metrics.illiquid + metrics.adv_usd) — la advertencia
+// viaja con el edge a la biblioteca y a los agentes.
+
+const qdLiqCache = {};
+async function qdCheckLiquidity(sym){
+  if (qdLiqCache[sym] !== undefined) return qdLiqCache[sym];
+  try{
+    const r = await fetch('/api/ticker-search?liquidity=' + encodeURIComponent(sym));
+    const data = await r.json().catch(function(){ return null; });
+    qdLiqCache[sym] = data && data.illiquid !== undefined ? data : null;
+  }catch(e){ qdLiqCache[sym] = null; }
+  return qdLiqCache[sym];
+}
+
+function qdLiqFmt(v){
+  if (v == null) return '?';
+  if (v >= 1e9) return '$' + (v / 1e9).toFixed(1) + 'B';
+  if (v >= 1e6) return '$' + (v / 1e6).toFixed(1) + 'M';
+  return '$' + Math.round(v / 1000) + 'k';
+}
+
+async function qdLiquidityNotice(engine, symbols, containerId){
+  const checks = await Promise.all(symbols.map(qdCheckLiquidity));
+  const bad = [];
+  checks.forEach(function(c, i){ if (c && c.illiquid === true) bad.push({ sym: symbols[i], adv: c.adv_usd }); });
+  if (!bad.length) return;
+
+  // 1) persistir en el draft del edge (si el usuario guarda, viaja con él)
+  const draft = window.__qdEdgeDraft && window.__qdEdgeDraft[engine];
+  if (draft && draft.metrics){
+    draft.metrics.illiquid = true;
+    draft.metrics.adv_usd = Math.min.apply(null, bad.map(function(b){ return b.adv || 0; }));
+  }
+
+  // 2) aviso visible en el resultado (si sigue en pantalla)
+  const container = document.getElementById(containerId);
+  const wrapper = container && container.firstElementChild;
+  const verdictCard = wrapper && wrapper.firstElementChild;
+  if (!verdictCard || document.getElementById('qdLiqWarn-' + engine)) return;
+  verdictCard.insertAdjacentHTML('afterend',
+    '<div id="qdLiqWarn-' + engine + '" style="margin-top:10px;padding:8px 12px;border:1px solid rgba(239,159,39,.35);background:rgba(239,159,39,.06);border-radius:3px;font-family:var(--mono);font-size:10px;color:var(--amber);line-height:1.5;">' +
+      '⚠ LIQUIDEZ BAJA: ' + bad.map(function(b){ return b.sym + ' (~' + qdLiqFmt(b.adv) + ' USD/día)'; }).join(' · ') +
+      ' — con menos de $1M/día el cierre diario es ruidoso y el slippage real te comería el edge. Datos poco confiables para validar.' +
+    '</div>');
+}
+
+// Envuelve los renderers (capa externa sobre el wrapper de GUARDAR EDGE,
+// que ya corrió y dejó el draft listo). Los motores no se editan.
+(function(){
+  const oS = window.renderSignalResult;
+  if (typeof oS === 'function'){
+    window.renderSignalResult = function(data){
+      const out = oS.apply(this, arguments);
+      try{ if (data && data.ticker && data.rule) qdLiquidityNotice('signals', [data.ticker], 'sbResult'); }catch(e){}
+      return out;
+    };
+  }
+  const oP = window.renderPairsResult;
+  if (typeof oP === 'function'){
+    window.renderPairsResult = function(data){
+      const out = oP.apply(this, arguments);
+      try{ if (data && data.pair) qdLiquidityNotice('pairs', [data.pair.x, data.pair.y], 'pvResult'); }catch(e){}
+      return out;
+    };
+  }
+  // La card de MIS EDGES muestra el flag persistido (wrapper, sin editar).
+  const oM = window.qdEdgeMetricsLine;
+  if (typeof oM === 'function'){
+    window.qdEdgeMetricsLine = function(e){
+      let s = oM.apply(this, arguments);
+      if (e && e.metrics && e.metrics.illiquid){
+        s += '<br><span style="color:var(--amber);">⚠ ilíquido (~' + qdLiqFmt(e.metrics.adv_usd) + '/día) — validación poco confiable</span>';
+      }
+      return s;
+    };
+  }
+})();
+</script>
 </body>
 </html>
