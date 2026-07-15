@@ -81,8 +81,30 @@ export default async function handler(req, res) {
       return res.status(200).json({ agent: agents[0], edges, open_positions: open, trades: closed, equity_history: equity, assumptions: ASSUMPTIONS });
     }
 
-    // ── LISTA ──
+    // ── LISTA (+ re-adopción por email verificado en Stripe) ──
     if (req.method === 'GET') {
+      // Si el uid anónimo cambió (otro navegador/perfil, site data borrada),
+      // los agentes y edges creados bajo el uid ANTERIOR quedan huérfanos en
+      // la DB. Con ?email= y una suscripción ACTIVA en Stripe para ese email,
+      // se re-parentan al uid actual. Mismo modelo de identidad honor-based
+      // del paywall v1 (el email no se prueba con login — deliberado, sin
+      // sistema de cuentas); el gate de Stripe evita adopciones arbitrarias
+      // de emails no-Pro. Idempotente: sin huérfanos, no hace nada.
+      const adoptEmail = ((q.email || '').toString().trim().toLowerCase());
+      if (adoptEmail && adoptEmail.includes('@') && await isProEmail(adoptEmail)) {
+        const owners = await sql(
+          `select id from users where lower(email) = $1 and id <> $2`, [adoptEmail, uid]);
+        if (owners.length) {
+          const ids = `{${owners.map((o) => o.id).join(',')}}`;
+          await sqlBatch([
+            [`insert into users (id, email) values ($1, $2)
+              on conflict (id) do update set email = excluded.email`, [uid, adoptEmail]],
+            [`update agents set user_id = $1 where user_id = any($2::text[])`, [uid, ids]],
+            [`update edges set user_id = $1 where user_id = any($2::text[])`, [uid, ids]],
+          ]);
+        }
+      }
+
       const agents = await sql(
         `select a.*, (select count(*) from agent_edges ae where ae.agent_id = a.id) as n_edges
          from agents a where a.user_id = $1 order by a.created_at desc`, [uid]);

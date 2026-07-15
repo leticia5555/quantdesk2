@@ -17894,7 +17894,11 @@ async function qdAgentsOpen(){
 
 async function qdAgentsRefresh(){
   try{
-    const r = await fetch('/api/agents?uid=' + encodeURIComponent(qdUid()));
+    // Con email Pro verificado, el server re-adopta agentes/edges huérfanos
+    // de uids anteriores (cambio de navegador/perfil) antes de listar.
+    const proEmail = (typeof qdProState === 'function' && qdProState().email) || '';
+    const r = await fetch('/api/agents?uid=' + encodeURIComponent(qdUid()) +
+      (proEmail ? '&email=' + encodeURIComponent(proEmail) : ''));
     const data = await r.json().catch(function(){ return null; });
     if (!r.ok || !data || data.error){
       agStatusMsg((data && data.error) || ('HTTP ' + r.status), 'var(--red)');
