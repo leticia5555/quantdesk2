@@ -2316,7 +2316,7 @@ async function loadUpcomingEarnings(){
   // Try Claude update in background
   fetch('/api/claude',{
     method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:600,
+    body:JSON.stringify({max_tokens:600,
       messages:[{role:'user',content:
         'Earnings calendar April 7 to May 2 2026. Include major US and LATAM companies. Group by date. Return ONLY JSON where keys are date strings and values are arrays of companies with ticker, company, time, eps_est, importance, sector fields. At least 20 companies.'}]})
     }).then(r=>r.json()).then(d=>{
@@ -2533,7 +2533,7 @@ async function runEarningsIntel(){
 
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:900,
+      body:JSON.stringify({max_tokens:900,
         messages:[{role:'user',content:claudePrompt + langDirective()}]})
     });
     const d=await r.json();
@@ -2840,7 +2840,7 @@ async function runSmartMoney(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,
+      body:JSON.stringify({max_tokens:2000,
         messages:[{role:'user',content:
           'Bloomberg smart money data for '+ticker+' April 2026. Use SEC, FINRA, 13F knowledge. Return ONLY valid JSON with these exact keys: {"short_interest":{"short_interest_pct":number,"days_to_cover":number,"short_squeeze_score":number,"change_vs_month_ago":"INCREASED|DECREASED|STABLE","borrow_rate_pct":number,"narrative":"string"},"institutional":{"institutional_pct":number,"top_holders":[{"name":"string","pct":number,"change":"INCREASED|DECREASED|NEW|EXITED"}],"hedge_fund_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"options":{"put_call_ratio":number,"implied_volatility_pct":number,"iv_percentile":number,"options_sentiment":"BULLISH|BEARISH|NEUTRAL","unusual_activity":"YES|NO","notable_flow":"string","max_pain":number,"key_strikes":[{"strike":number,"type":"CALL|PUT","open_interest":number,"significance":"HIGH|MEDIUM"}]},"verdict":{"overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","conviction":"HIGH|MEDIUM|LOW","smart_money_score":number,"key_insight":"string","bull_case":"string","bear_case":"string","trade_setup":"string","risk_flags":["string"]}}' + langDirective()}]})
     });
@@ -3114,7 +3114,7 @@ async function loadMarketSignals(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:500,
+      body:JSON.stringify({max_tokens:500,
         messages:[{role:'user',content:
           'Market-wide smart money signals April 2026. What are institutions, hedge funds, and options traders doing in aggregate? Return ONLY JSON: {"signals":[{"category":"HEDGE FUNDS|INSTITUTIONS|OPTIONS|INSIDER|DARK POOL","signal":"BULLISH|BEARISH|NEUTRAL","description":"1 sentence","confidence":"HIGH|MEDIUM|LOW"}],"market_positioning":"RISK-ON|RISK-OFF|MIXED","key_theme":"1 sentence on dominant smart money theme"}. Include 5 signals.'}]})
     });
@@ -3266,7 +3266,7 @@ async function loadFearGreed(){
     // Step 2: try Claude refinement in background (non-blocking)
     fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:150,
+      body:JSON.stringify({max_tokens:150,
         messages:[{role:'user',content:
           'Fear & Greed score for financial markets April 9 2026. Consider recent tariff fears, market volatility, crypto action. Return ONLY JSON: {"score":number,"label":"Extreme Fear|Fear|Neutral|Greed|Extreme Greed","description":"1 sentence"}'}]})
     }).then(r=>r.json()).then(d=>{
@@ -3278,7 +3278,7 @@ async function loadFearGreed(){
     // Pure Claude fallback
     fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:150,
+      body:JSON.stringify({max_tokens:150,
         messages:[{role:'user',content:'Fear & Greed score April 2026. Return ONLY JSON: {"score":number,"label":"string","description":"1 sentence"}'}]})
     }).then(r=>r.json()).then(d=>{
       const fg=safeJSON(d.content.map(b=>b.text||'').join(''));
@@ -3435,7 +3435,7 @@ async function loadCurrencies(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:250,
+      body:JSON.stringify({max_tokens:250,
         messages:[{role:'user',content:
           'FX rates April 2026. Return ONLY JSON array: [{"pair":"USDMXN","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDBRL","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDCOP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDCLP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"}]'}]})
     });
@@ -3506,7 +3506,7 @@ async function loadEconCalendar(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:500,
+      body:JSON.stringify({max_tokens:500,
         messages:[{role:'user',content:
           'Economic calendar April-May 2026. Fed, CPI, jobs, Banxico, Brazil COPOM. Return ONLY JSON array of 8: [{"date":"Apr DD","event":"name","country":"US|MX|BR|EU","impact":"HIGH|MEDIUM|LOW","expected":"","previous":"","description":"1 sentence"}]'}]})
     });
@@ -3564,7 +3564,7 @@ async function loadSectorHeatmap(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:350,
+      body:JSON.stringify({max_tokens:350,
         messages:[{role:'user',content:
           'Sector performance April 2026 including LATAM. Return ONLY JSON array of 10: [{"sector":"name","return30d":number,"ytd":number,"signal":"BULLISH|NEUTRAL|BEARISH","note":"1 sentence"}]'}]})
     });
@@ -3603,7 +3603,7 @@ async function runMacroBrief(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,
+      body:JSON.stringify({max_tokens:800,
         messages:[{role:'user',content:
           `You are the chief macro strategist at a major bank. Write a concise macro intelligence brief for LATAM investors as of April 2026.
 
@@ -4624,7 +4624,7 @@ async function fetchSimData(ticker,dir,capital,days,model){
   try{
     const claudeRes=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,messages:[{role:'user',content:
+      body:JSON.stringify({max_tokens:800,messages:[{role:'user',content:
         `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, April 2026.
 ${priceContext}
 ${newsContext}
@@ -5142,7 +5142,7 @@ async function runVC(){
   try{
     const res=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1400,messages:[{role:'user',content:
+      body:JSON.stringify({max_tokens:1400,messages:[{role:'user',content:
         `Senior VC analyst. Active fundraising in "${q}" (stage: ${stage==='all'?'any':stage}), early 2026. Real companies when possible.
 Return ONLY JSON array of 4:
 {"name":"","sector":"","amount":"$XM","round":"","raised":"$XM total","founded":"YYYY","hq":"City,Country","lead_investor":"","backers":["","",""],"thesis":"2 sentences","why_now":"1 sentence","traction":"key metric","traction_signal":"ACCELERATING|STEADY|EARLY","signal_score":1-100,"verdict":"STRONG BUY|WATCH|PASS"}` + langDirective()}]})
@@ -5397,7 +5397,7 @@ async function runPortfolioSim(){
 
   const prompt=await fetch('/api/claude',{
     method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:400,messages:[{role:'user',content:
+    body:JSON.stringify({max_tokens:400,messages:[{role:'user',content:
       `Portfolio of ${positions.length} positions: ${positions.map(p=>p.dir+' '+p.ticker+' $'+p.amount).join(', ')}. Monte Carlo (500 sims): expected return ${fmt(mean)}, win rate ${(wins/returns.length*100).toFixed(0)}%, Sharpe ${sharpe.toFixed(2)}, VaR95 ${fmt(var95)}. Give a 2-sentence portfolio assessment and 1-sentence key risk. Return JSON: {"assessment":"","key_risk":""}`}]})
   });
   const pd=await prompt.json();
@@ -5562,7 +5562,7 @@ async function exportPDF(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,
+      body:JSON.stringify({max_tokens:1000,
         messages:[{role:'user',content:
           `You are a senior equity research analyst at Goldman Sachs. Write a company overview for ${ticker} as of April 2026.
 Current price: $${SP.S0.toFixed(2)}. 52w range: $${lastCd.low52w||'—'} - $${lastCd.high52w||'—'}.
@@ -6937,7 +6937,7 @@ async function runBacktest(){
 
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,
+      body:JSON.stringify({max_tokens:800,
         messages:[{role:'user',content:
           `You are a quant backtester. The user simulated a ${dir} trade on ${ticker} today at ~$${currentPrice} for ${days} days with $${capital}.
 
@@ -7063,7 +7063,7 @@ ${earningsCtx}`;
     const [round1Res, riskRes] = await Promise.all([
       fetch('/api/claude',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1500,
+        body:JSON.stringify({max_tokens:1500,
           messages:[{role:'user',content:`You are running a Wall Street trading debate between a Bull Analyst and Bear Analyst about this trade.
 
 ${context}
@@ -7094,7 +7094,7 @@ Return ONLY JSON:
 
       fetch('/api/claude',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:600,
+        body:JSON.stringify({max_tokens:600,
           messages:[{role:'user',content:`You are the Risk Manager at a trading firm. After reviewing this trade's data, give your final verdict.
 
 ${context}
@@ -7224,7 +7224,7 @@ async function runInvestorPersonas(){
   try{
     const r=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1200,
+      body:JSON.stringify({max_tokens:1200,
         messages:[{role:'user',content:
           `You are simulating 13 legendary investors analyzing a trade. Give each investor's brutally honest opinion — make them sound exactly like themselves. Some bullish, some bearish, some neutral. Disagree with each other.
 
@@ -12048,7 +12048,7 @@ async function downloadMemoPDF(){
     try {
       const r = await fetch('/api/claude', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1500,
+        body: JSON.stringify({ max_tokens: 1500,
           messages: [{role:'user', content: claudePrompt}]
         })
       });

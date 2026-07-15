@@ -1,3 +1,5 @@
+import { ANTHROPIC_MODEL } from './_lib/model.js';
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -19,7 +21,11 @@ export default async function handler(req, res) {
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: body.model || 'claude-sonnet-4-20250514',
+        // El modelo lo decide el SERVER (env ANTHROPIC_MODEL o default en
+        // _lib/model.js). body.model se ignora a propósito: clientes con
+        // HTML cacheado viejo mandaban un modelo ya retirado y tumbaban
+        // toda la IA (jul 2026).
+        model: ANTHROPIC_MODEL,
         max_tokens: body.max_tokens || 1000,
         ...(body.system ? { system: body.system } : {}),
         messages: body.messages
