@@ -3,30 +3,30 @@
 // Computes from quotes of curated tickers (Finnhub free tier)
 // ═══════════════════════════════════════════════════════════════
 
-// Curated list — most-watched US large caps + popular mid/small + LATAM
+// Curated list — most-watched US large caps + popular mid/small + LATAM.
+// MÁXIMO 55: Finnhub free = 60 req/min. La lista anterior tenía 84 y los
+// ~24 quotes del final recibían 429 EN SILENCIO — por eso MU (puesto #62)
+// nunca aparecía en Top Losers aunque cayera -10%. Con ≤55 la cobertura
+// es completa y determinista en cada corrida.
 const WATCHLIST = [
   // Mega-cap tech
   'NVDA','MSFT','AAPL','GOOGL','META','AMZN','TSLA','AVGO','ORCL','NFLX',
+  // Semiconductors (antes al final de la lista, en la zona rate-limitada)
+  'TSM','ASML','MU','QCOM','INTC','MRVL','AMD',
   // Other large cap
-  'AMD','CRM','ADBE','SHOP','PLTR','MRNA','SNOW','UBER','ABNB','COIN',
+  'CRM','SHOP','PLTR','SNOW','UBER','COIN',
   // Retail favorites + meme
-  'GME','AMC','BB','HOOD','SOFI','RIVN','LCID','HIMS','RKLB','PATH',
+  'GME','HOOD','SOFI','RIVN','HIMS','RKLB',
   // Healthcare / biotech
-  'LLY','PFE','JNJ','MRK','UNH','BMY','GILD',
+  'LLY','PFE','UNH',
   // Finance
-  'JPM','BAC','GS','V','MA','PYPL','SQ',
-  // Energy / industrial
-  'XOM','CVX','BA','CAT','GE',
-  // Consumer
-  'WMT','TGT','HD','NKE','SBUX','DIS','MCD','KO','PEP',
-  // EV / Auto
-  'F','GM','LI','XPEV','NIO',
-  // Semiconductors
-  'TSM','ASML','MU','QCOM','INTC','MRVL',
+  'JPM','BAC','GS','V','PYPL',
+  // Energy / industrial / consumer
+  'XOM','BA','CAT','WMT','NKE','DIS',
   // ETFs popular
-  'SPY','QQQ','IWM','DIA','ARKK','TQQQ','SQQQ','VTI',
+  'SPY','QQQ','IWM','ARKK',
   // LATAM ADRs (highly liquid)
-  'MELI','NU','GLOB','VALE','PBR','ITUB','BBD','AMX','FMX','KOF'
+  'MELI','NU','GLOB','VALE','PBR','ITUB','AMX','FMX'
 ];
 
 export default async function handler(req, res) {
@@ -85,11 +85,15 @@ export default async function handler(req, res) {
       .sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct))
       .slice(0, 10);
 
+    // Cache compartido en el edge: los quotes no cambian en <60s y esto
+    // evita que cada visitante re-queme el presupuesto de 60 req/min.
+    res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=120');
     return res.status(200).json({
       gainers,
       losers,
       volatile,
       total_scanned: all.length,
+      watchlist_size: WATCHLIST.length,
       generated_at: new Date().toISOString()
     });
 

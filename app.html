@@ -8138,6 +8138,8 @@ const i18n = {
     nav_gallery:'GALLERY', nav_pairs:'PAIRS', nav_signals:'SIGNALS', nav_edges:'MY EDGES', nav_myagents:'MY AGENTS',
     // Unified honest fallback (data/AI unavailable)
     dataUnavailable:'Data unavailable — free-tier coverage limited.',
+    moversWatchlistTitle:'TOP MOVERS · WATCHLIST',
+    moversTooltip:'Movers within QuantDesk\'s curated watchlist (~55 most-watched US large caps, memes, semis and LATAM ADRs) — NOT the whole market. A stock outside this list won\'t appear here even on a big move.',
     // PAPER TRADING AGENTS
     agentsTitle:'PAPER TRADING AGENTS',
     agentsSubtitle:'YOUR EDGES TRADING SIMULATED · DAILY CANDLES · NO BROKER',
@@ -8333,6 +8335,8 @@ const i18n = {
     nav_gallery:'GALERÍA', nav_pairs:'PARES', nav_signals:'SEÑALES', nav_edges:'MIS EDGES', nav_myagents:'MIS AGENTES',
     // Fallback honesto unificado (dato/IA no disponible)
     dataUnavailable:'Dato no disponible — cobertura limitada del plan gratuito.',
+    moversWatchlistTitle:'TOP MOVERS · WATCHLIST',
+    moversTooltip:'Movers DENTRO de la watchlist curada de QuantDesk (~55 tickers: mega-caps US, memes, semis y ADRs LATAM) — NO el mercado completo. Una acción fuera de esta lista no aparece aquí aunque se mueva fuerte.',
     // PAPER TRADING AGENTS
     agentsTitle:'AGENTES DE PAPER TRADING',
     agentsSubtitle:'TUS EDGES OPERANDO EN SIMULADO · VELAS DIARIAS · SIN BROKER',
@@ -8640,6 +8644,10 @@ function applyLang(){
   document.querySelectorAll('[data-i18n-ph]').forEach(el=>{
     const key = el.getAttribute('data-i18n-ph');
     if(i18n.en[key]) el.placeholder = t(key);
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach(el=>{
+    const key = el.getAttribute('data-i18n-title');
+    if(i18n.en[key]) el.title = t(key);
   });
 
   // Subtítulo del screener: conteo REAL del universo, no marketing.
@@ -11758,19 +11766,18 @@ async function loadMovers(){
   const btn = document.getElementById('moversRefreshBtn');
   const ts = document.getElementById('moversTimestamp');
   if(btn){ btn.textContent = '↻ Loading...'; btn.disabled = true; }
-  el.innerHTML = '<div style="padding:40px;text-align:center;color:#555;font-family:var(--mono);font-size:12px;">Scanning ~80 tickers in parallel...</div>';
+  el.innerHTML = '<div style="padding:40px;text-align:center;color:#555;font-family:var(--mono);font-size:12px;">Scanning the curated watchlist...</div>';
 
-  try {
-    const r = await fetch('/api/movers');
-    const d = await r.json();
+  const d = await qdFetchJSON('/api/movers', null, (x) => x && typeof x === 'object');
+  if (d) {
     _moversCache = d;
     renderMovers(d);
     if(ts){
       const now = new Date();
       ts.textContent = 'Updated ' + now.toLocaleTimeString();
     }
-  } catch(e) {
-    el.innerHTML = '<div style="padding:40px;text-align:center;color:#e74c3c;font-family:var(--mono);font-size:12px;">Failed to load movers: '+e.message+'</div>';
+  } else {
+    el.innerHTML = qdUnavailableHTML('movers');
   }
 
   if(btn){ btn.textContent = '↻ Refresh'; btn.disabled = false; }
@@ -11834,10 +11841,11 @@ function renderMovers(data){
   };
 
   const total = data.total_scanned || 0;
+  const wlSize = data.watchlist_size || total;
   const headerHtml = `
     <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid #1a1a1a;">
-      <span style="font-family:var(--mono);font-size:14px;color:#ff6600;font-weight:700;">TOP MOVERS</span>
-      <span style="font-family:var(--mono);font-size:10px;color:#888;">Scanned ${total} tickers · Live from Finnhub · Click any row to simulate</span>
+      <span style="font-family:var(--mono);font-size:14px;color:#ff6600;font-weight:700;cursor:help;" title="${t('moversTooltip')}">TOP MOVERS · WATCHLIST (${wlSize})</span>
+      <span style="font-family:var(--mono);font-size:10px;color:#888;">${total}/${wlSize} quotes · Live from Finnhub · Click any row to simulate</span>
     </div>
   `;
 
@@ -12791,7 +12799,7 @@ function margin_color(pct, threshold, COL){
 <!-- MOVERS PAGE -->
 <div id="page-movers" class="page" style="padding:0;background:#080808;min-height:100vh;">
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
-    <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;">TOP MOVERS</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;cursor:help;" data-i18n="moversWatchlistTitle" data-i18n-title="moversTooltip" title="">TOP MOVERS · WATCHLIST</span>
     <span style="font-family:var(--mono);font-size:10px;color:#333;">GAINERS · LOSERS · MOST VOLATILE · LIVE</span>
     <span id="moversTimestamp" style="font-family:var(--mono);font-size:9px;color:#444;margin-left:auto;"></span>
     <button onclick="loadMovers()" id="moversRefreshBtn" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">↻ Refresh</button>
