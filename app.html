@@ -3742,23 +3742,24 @@ let simHistory=[];
 const livePrices={};
 const defaultTickers=['NVDA','AAPL','MELI','META','TSLA','BTC/USD','ETH/USD','SPY','AMZN','MSFT'];
 
-async function fetchLivePrice(ticker){
-  try{
-    const r=await fetch(`/api/price?ticker=${encodeURIComponent(ticker)}`);
-    if(!r.ok) return null;
-    const d=await r.json();
-    if(d.currentPrice){
-      livePrices[ticker]={price:d.currentPrice,dayChange:d.dayChange||0,return30d:d.return30d||0,name:d.longName||ticker};
-      return d;
-    }
-  }catch(e){}
-  return null;
-}
-
 async function refreshLiveTape(){
-  // Fetch prices for default tickers + any simulated tickers
-  const toFetch=[...new Set([...defaultTickers,...simHistory.map(s=>s.ticker)])].slice(0,12);
-  await Promise.allSettled(toFetch.map(t=>fetchLivePrice(normalizeTicker(t))));
+  // Una sola llamada batched a /api/tape (quote de Yahoo: precio actual vs
+  // previous close = % intradía en vivo). Solo display — los motores siguen
+  // usando /api/price con velas diarias cerradas.
+  const toFetch=[...new Set([...defaultTickers,...simHistory.map(s=>s.ticker)].map(normalizeTicker))].slice(0,12);
+  try{
+    const r=await fetch(`/api/tape?symbols=${encodeURIComponent(toFetch.join(','))}`);
+    if(r.ok){
+      const d=await r.json();
+      const quotes=(d&&d.quotes)||{};
+      for(const sym of Object.keys(quotes)){
+        const q=quotes[sym];
+        if(!q||!isFinite(q.price)||!isFinite(q.changePct)) continue;
+        const prev=livePrices[sym]||{};
+        livePrices[sym]={...prev,price:q.price,dayChange:q.changePct/100,name:prev.name||sym};
+      }
+    }
+  }catch(e){} // Yahoo caído → la cinta conserva los últimos valores mostrados
   renderLiveTape();
 }
 
@@ -3797,13 +3798,13 @@ function renderLiveTape(){
 
   const items=keys.map(t=>{
     const d=livePrices[t];
-    const ret = d.dayChange != null ? d.dayChange : (d.return30d||0);
+    const ret = d.dayChange != null ? d.dayChange : 0;
     const cls=ret>=0?'up':'dn';
     const sign=ret>=0?'+':'';
     const displayTicker=t.replace('/USD','');
     const isCrypto = ['BTC','ETH','SOL','BNB','XRP','ADA','DOGE','AVAX','LINK','DOT'].includes(displayTicker);
     const liveDot = isCrypto ? '<span style="color:var(--green);font-size:8px;">●</span> ' : (isMarketHours ? '<span style="color:var(--green);font-size:8px;">●</span> ' : '');
-    const retLabel=Math.abs(ret*100)<0.005?' <span style="color:var(--text3);font-size:9px;">FLAT</span>':` ${sign}${(ret*100).toFixed(2)}% <span style="color:var(--text3);font-size:9px;">1d</span>`;
+    const retLabel=Math.abs(ret*100)<0.005?' <span style="color:var(--text3);font-size:9px;">FLAT</span>':` ${sign}${(ret*100).toFixed(2)}%`;
     return `<div class="tape-item">
       ${liveDot}<span class="sym">${displayTicker}</span>
       <span style="color:var(--text2)">$${Number(d.price).toLocaleString(undefined,{maximumFractionDigits:d.price>100?0:2})}</span>
