@@ -2229,8 +2229,9 @@ function renderScreenerResults(results, sortBy){
       +'</div>'
       // Insider activity (last 90d net buys/sells)
       +'<div style="font-family:var(--mono);font-size:10px;color:'+ins+';">'+(r.insider_activity||NA)+'</div>'
-      // Institutional ownership %
-      +'<div style="font-family:var(--mono);font-size:11px;color:#888;">'+(r.institutional_pct==null?NA:r.institutional_pct.toFixed(0)+'%')+'</div>'
+      // Institutional ownership % — campo premium de Finnhub: en free tier
+      // no llega nunca; el guion lleva tooltip honesto en vez de mentir.
+      +'<div style="font-family:var(--mono);font-size:11px;color:#888;">'+(r.institutional_pct==null?qdUnavailableCell():r.institutional_pct.toFixed(0)+'%')+'</div>'
       // Signal (analyst consensus or momentum-derived)
       +'<div style="font-family:var(--mono);font-size:10px;font-weight:700;color:'+sig+';">'+(r.signal||NA)+(r.analyst_count?' <span style=\"color:#444;font-weight:400;\">('+r.analyst_count+')</span>':'')+'</div>'
       // Thesis
@@ -2314,14 +2315,13 @@ async function loadUpcomingEarnings(){
 
   // Try Claude update in background
   // Try Claude update in background
-  fetch('/api/claude',{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({max_tokens:600,
+  qdAI({max_tokens:600,
       messages:[{role:'user',content:
-        'Earnings calendar April 7 to May 2 2026. Include major US and LATAM companies. Group by date. Return ONLY JSON where keys are date strings and values are arrays of companies with ticker, company, time, eps_est, importance, sector fields. At least 20 companies.'}]})
-    }).then(r=>r.json()).then(d=>{
+        'Earnings calendar April 7 to May 2 2026. Include major US and LATAM companies. Group by date. Return ONLY JSON where keys are date strings and values are arrays of companies with ticker, company, time, eps_est, importance, sector fields. At least 20 companies.'}]}).then(aiText=>{
     try{
-      const calendar=safeJSON(d.content.map(b=>b.text||'').join(''));
+      if(aiText==null) return; // el calendario hardcodeado ya está en pantalla
+      const calendar=safeJSON(aiText);
+      if(!calendar) return;
       // Update with Claude data
       let newHtml='';
       Object.entries(calendar).forEach(([day, companies])=>{
@@ -2531,13 +2531,17 @@ async function runEarningsIntel(){
       `Whisper should be realistic (1-5% above consensus for bullish names). Implied move 3-10% based on sector vol. ` +
       `CRITICAL: key_metrics_to_watch must be natural English phrases like "Data Center revenue growth" or "AI chip demand visibility" — NEVER use snake_case, camelCase, or underscores. Each metric should read like a Bloomberg analyst would write it.`;
 
-    const r=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:900,
-        messages:[{role:'user',content:claudePrompt + langDirective()}]})
-    });
-    const d=await r.json();
-    const analysis=safeJSON(d.content.map(b=>b.text||'').join(''));
+    const aiText=await qdAI({max_tokens:900,
+      messages:[{role:'user',content:claudePrompt + langDirective()}]});
+    const analysis=aiText==null?null:safeJSON(aiText);
+    if(!analysis){
+      // IA caída/timeout: fallback honesto SOLO en los paneles de IA — los
+      // paneles con datos reales de Finnhub ya quedaron pintados arriba.
+      ['nextEarningsPanel','earningsVerdictPanel'].forEach(id=>{
+        const el=document.getElementById(id);
+        if(el) el.innerHTML=qdUnavailableHTML('earnings AI · '+ticker);
+      });
+    }
 
     // 6) Merge real Finnhub data with Claude's AI analysis
     if(hasRealDate && analysis && analysis.next_analysis){
@@ -2566,7 +2570,7 @@ async function runEarningsIntel(){
     console.error('Earnings error:',e);
     ['epsPanel','reactionPanel','nextEarningsPanel','earningsVerdictPanel'].forEach(id=>{
       const el=document.getElementById(id);
-      if(el) el.innerHTML='<div style="color:#E24B4A;font-family:var(--mono);font-size:11px;padding:16px;">'+e.message+'</div>';
+      if(el) el.innerHTML=qdUnavailableHTML();
     });
   }
 }
@@ -2838,20 +2842,14 @@ async function runSmartMoney(){
     .catch(()=>null);
 
   try{
-    const r=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:2000,
+    const aiText=await qdAI({max_tokens:2000,
         messages:[{role:'user',content:
-          'Bloomberg smart money data for '+ticker+' April 2026. Use SEC, FINRA, 13F knowledge. Return ONLY valid JSON with these exact keys: {"short_interest":{"short_interest_pct":number,"days_to_cover":number,"short_squeeze_score":number,"change_vs_month_ago":"INCREASED|DECREASED|STABLE","borrow_rate_pct":number,"narrative":"string"},"institutional":{"institutional_pct":number,"top_holders":[{"name":"string","pct":number,"change":"INCREASED|DECREASED|NEW|EXITED"}],"hedge_fund_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"options":{"put_call_ratio":number,"implied_volatility_pct":number,"iv_percentile":number,"options_sentiment":"BULLISH|BEARISH|NEUTRAL","unusual_activity":"YES|NO","notable_flow":"string","max_pain":number,"key_strikes":[{"strike":number,"type":"CALL|PUT","open_interest":number,"significance":"HIGH|MEDIUM"}]},"verdict":{"overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","conviction":"HIGH|MEDIUM|LOW","smart_money_score":number,"key_insight":"string","bull_case":"string","bear_case":"string","trade_setup":"string","risk_flags":["string"]}}' + langDirective()}]})
-    });
+          'Bloomberg smart money data for '+ticker+' April 2026. Use SEC, FINRA, 13F knowledge. Return ONLY valid JSON with these exact keys: {"short_interest":{"short_interest_pct":number,"days_to_cover":number,"short_squeeze_score":number,"change_vs_month_ago":"INCREASED|DECREASED|STABLE","borrow_rate_pct":number,"narrative":"string"},"institutional":{"institutional_pct":number,"top_holders":[{"name":"string","pct":number,"change":"INCREASED|DECREASED|NEW|EXITED"}],"hedge_fund_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"options":{"put_call_ratio":number,"implied_volatility_pct":number,"iv_percentile":number,"options_sentiment":"BULLISH|BEARISH|NEUTRAL","unusual_activity":"YES|NO","notable_flow":"string","max_pain":number,"key_strikes":[{"strike":number,"type":"CALL|PUT","open_interest":number,"significance":"HIGH|MEDIUM"}]},"verdict":{"overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","conviction":"HIGH|MEDIUM|LOW","smart_money_score":number,"key_insight":"string","bull_case":"string","bear_case":"string","trade_setup":"string","risk_flags":["string"]}}' + langDirective()}]});
 
-    if(!r.ok) throw new Error('API error: '+r.status);
-    const d=await r.json();
-    if(!d.content) throw new Error('No content in response');
-
-    const rawText=d.content.map(b=>b.text||'').join('').replace(/```json|```/g,'').trim();
+    if(aiText==null) throw new Error('AI unavailable');
+    const rawText=aiText.replace(/```json|```/g,'').trim();
     const data=safeJSON(rawText);
-    if(!data) throw new Error('AI returned invalid data — try again');
+    if(!data) throw new Error('AI returned invalid data');
 
     // Normalize score — Claude returns inconsistent formats (0-1, 0-10, or 0-100)
     // Logic: range-based detection with safe fallback
@@ -2878,12 +2876,11 @@ async function runSmartMoney(){
     insiderPromise.then(renderInsiderTransactions);
 
   }catch(e){
-    console.error('Smart money error:', e.message);
-    const errMsg='<div style="color:#E24B4A;font-family:var(--mono);font-size:11px;padding:16px;">'+e.message+'<br><br><span style="color:#555;font-size:10px;">Open console for details</span></div>';
+    console.error('Smart money error:', e);
     // Insider panel is independent of Claude — let the real /api/insider call still populate it
     ['shortInterestPanel','institutionalPanel','optionsPanel','smVerdictPanel'].forEach(id=>{
       const el=document.getElementById(id);
-      if(el) el.innerHTML=errMsg;
+      if(el) el.innerHTML=qdUnavailableHTML();
     });
     insiderPromise.then(renderInsiderTransactions);
   }
@@ -3112,14 +3109,11 @@ function renderSmVerdict(v){
 async function loadMarketSignals(){
   const el=document.getElementById('marketSignalsPanel');
   try{
-    const r=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:500,
+    const aiText=await qdAI({max_tokens:500,
         messages:[{role:'user',content:
-          'Market-wide smart money signals April 2026. What are institutions, hedge funds, and options traders doing in aggregate? Return ONLY JSON: {"signals":[{"category":"HEDGE FUNDS|INSTITUTIONS|OPTIONS|INSIDER|DARK POOL","signal":"BULLISH|BEARISH|NEUTRAL","description":"1 sentence","confidence":"HIGH|MEDIUM|LOW"}],"market_positioning":"RISK-ON|RISK-OFF|MIXED","key_theme":"1 sentence on dominant smart money theme"}. Include 5 signals.'}]})
-    });
-    const d=await r.json();
-    const ms=safeJSON(d.content.map(b=>b.text||'').join(''));
+          'Market-wide smart money signals April 2026. What are institutions, hedge funds, and options traders doing in aggregate? Return ONLY JSON: {"signals":[{"category":"HEDGE FUNDS|INSTITUTIONS|OPTIONS|INSIDER|DARK POOL","signal":"BULLISH|BEARISH|NEUTRAL","description":"1 sentence","confidence":"HIGH|MEDIUM|LOW"}],"market_positioning":"RISK-ON|RISK-OFF|MIXED","key_theme":"1 sentence on dominant smart money theme"}. Include 5 signals.'}]});
+    const ms=aiText==null?null:safeJSON(aiText);
+    if(!ms||!Array.isArray(ms.signals)){ el.innerHTML=qdUnavailableHTML('market-wide signals'); return; }
 
     const sigCol={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'};
     const posCol={'RISK-ON':'#00c97d','RISK-OFF':'#E24B4A','MIXED':'#EF9F27'}[ms.market_positioning]||'#888';
@@ -3140,7 +3134,10 @@ async function loadMarketSignals(){
       }).join('')
       +'</div>';
   }catch(e){
-    el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:11px;">Loading market signals...</div>';
+    // Antes este catch pintaba "Loading market signals..." — un loader falso
+    // que disfrazaba el error de carga infinita. Fallback honesto + console.
+    console.error('Market signals error:', e);
+    el.innerHTML=qdUnavailableHTML();
   }
 }
 
@@ -3264,24 +3261,18 @@ async function loadFearGreed(){
     renderFearGreed(score, label, desc);
 
     // Step 2: try Claude refinement in background (non-blocking)
-    fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:150,
+    qdAI({max_tokens:150,
         messages:[{role:'user',content:
-          'Fear & Greed score for financial markets April 9 2026. Consider recent tariff fears, market volatility, crypto action. Return ONLY JSON: {"score":number,"label":"Extreme Fear|Fear|Neutral|Greed|Extreme Greed","description":"1 sentence"}'}]})
-    }).then(r=>r.json()).then(d=>{
-      const fg=safeJSON(d.content.map(b=>b.text||'').join(''));
-      if(fg.score) renderFearGreed(fg.score, fg.label||label, fg.description||desc);
+          'Fear & Greed score for financial markets April 9 2026. Consider recent tariff fears, market volatility, crypto action. Return ONLY JSON: {"score":number,"label":"Extreme Fear|Fear|Neutral|Greed|Extreme Greed","description":"1 sentence"}'}]}).then(aiText=>{
+      const fg=aiText==null?null:safeJSON(aiText);
+      if(fg&&fg.score) renderFearGreed(fg.score, fg.label||label, fg.description||desc);
     }).catch(()=>{});
 
   }catch(e){
     // Pure Claude fallback
-    fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:150,
-        messages:[{role:'user',content:'Fear & Greed score April 2026. Return ONLY JSON: {"score":number,"label":"string","description":"1 sentence"}'}]})
-    }).then(r=>r.json()).then(d=>{
-      const fg=safeJSON(d.content.map(b=>b.text||'').join(''));
+    qdAI({max_tokens:150,
+        messages:[{role:'user',content:'Fear & Greed score April 2026. Return ONLY JSON: {"score":number,"label":"string","description":"1 sentence"}'}]}).then(aiText=>{
+      const fg=(aiText==null?null:safeJSON(aiText))||{};
       renderFearGreed(fg.score||40, fg.label||'Fear', fg.description||'');
     }).catch(()=>renderFearGreed(40,'Fear','Elevated macro uncertainty in April 2026.'));
   }
@@ -3433,15 +3424,11 @@ async function loadCurrencies(){
 
   // Then try to get better data from Claude
   try{
-    const r=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:250,
+    const aiText=await qdAI({max_tokens:250,
         messages:[{role:'user',content:
-          'FX rates April 2026. Return ONLY JSON array: [{"pair":"USDMXN","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDBRL","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDCOP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDCLP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"}]'}]})
-    });
-    const d=await r.json();
-    const fx=safeJSON(d.content.map(b=>b.text||'').join(''));
-    renderCurrencies(pairs, fx);
+          'FX rates April 2026. Return ONLY JSON array: [{"pair":"USDMXN","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDBRL","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDCOP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDCLP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"}]'}]});
+    const fx=aiText==null?null:safeJSON(aiText);
+    if(Array.isArray(fx)) renderCurrencies(pairs, fx);
   }catch(e){ /* keep fallback */ }
 }
 
@@ -3504,15 +3491,11 @@ async function loadEconCalendar(){
 
   // Try to refresh with Claude data
   try{
-    const r=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:500,
+    const aiText=await qdAI({max_tokens:500,
         messages:[{role:'user',content:
-          'Economic calendar April-May 2026. Fed, CPI, jobs, Banxico, Brazil COPOM. Return ONLY JSON array of 8: [{"date":"Apr DD","event":"name","country":"US|MX|BR|EU","impact":"HIGH|MEDIUM|LOW","expected":"","previous":"","description":"1 sentence"}]'}]})
-    });
-    const d=await r.json();
-    const events=safeJSON(d.content.map(b=>b.text||'').join(''));
-    renderCalendar(events);
+          'Economic calendar April-May 2026. Fed, CPI, jobs, Banxico, Brazil COPOM. Return ONLY JSON array of 8: [{"date":"Apr DD","event":"name","country":"US|MX|BR|EU","impact":"HIGH|MEDIUM|LOW","expected":"","previous":"","description":"1 sentence"}]'}]});
+    const events=aiText==null?null:safeJSON(aiText);
+    if(Array.isArray(events)) renderCalendar(events);
   }catch(e){ /* keep fallback */ }
 }
 
@@ -3562,15 +3545,11 @@ async function loadSectorHeatmap(){
 
   // Try Claude refresh
   try{
-    const r=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:350,
+    const aiText=await qdAI({max_tokens:350,
         messages:[{role:'user',content:
-          'Sector performance April 2026 including LATAM. Return ONLY JSON array of 10: [{"sector":"name","return30d":number,"ytd":number,"signal":"BULLISH|NEUTRAL|BEARISH","note":"1 sentence"}]'}]})
-    });
-    const d=await r.json();
-    const sectors=safeJSON(d.content.map(b=>b.text||'').join(''));
-    renderHeatmap(sectors);
+          'Sector performance April 2026 including LATAM. Return ONLY JSON array of 10: [{"sector":"name","return30d":number,"ytd":number,"signal":"BULLISH|NEUTRAL|BEARISH","note":"1 sentence"}]'}]});
+    const sectors=aiText==null?null:safeJSON(aiText);
+    if(Array.isArray(sectors)) renderHeatmap(sectors);
   }catch(e){ /* keep fallback */ }
 }
 
@@ -3601,9 +3580,7 @@ async function runMacroBrief(){
   btn.textContent='Generating...';btn.disabled=true;
   el.innerHTML='<div class="loading">analyzing global macro</div>';
   try{
-    const r=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:800,
+    const aiText=await qdAI({max_tokens:800,
         messages:[{role:'user',content:
           `You are the chief macro strategist at a major bank. Write a concise macro intelligence brief for LATAM investors as of April 2026.
 
@@ -3623,13 +3600,13 @@ Return ONLY JSON:
   "top_risks": ["risk 1","risk 2","risk 3"],
   "opportunities": ["opportunity 1","opportunity 2"],
   "positioning": "2 sentences on how to position a LATAM portfolio right now"
-}` + langDirective()}]})
-    });
-    const d=await r.json();
-    const brief=safeJSON(d.content.map(b=>b.text||'').join(''));
+}` + langDirective()}]});
+    const brief=aiText==null?null:safeJSON(aiText);
+    if(!brief){ el.innerHTML=qdUnavailableHTML('macro brief'); return; }
     renderMacroBrief(brief);
   }catch(e){
-    el.innerHTML=`<div class="err-msg">Brief generation failed: ${e.message}</div>`;
+    console.error('Macro brief error:', e);
+    el.innerHTML=qdUnavailableHTML();
   }finally{
     btn.textContent='▶ Generate macro brief';btn.disabled=false;
   }
@@ -8138,6 +8115,8 @@ const i18n = {
     nav_earnings:'EARNINGS', nav_ipos:'IPOS', nav_movers:'MOVERS',
     nav_sectors:'SECTORS', nav_screener:'SCREENER', nav_social:'SOCIAL',
     nav_gallery:'GALLERY', nav_pairs:'PAIRS', nav_signals:'SIGNALS', nav_edges:'MY EDGES', nav_myagents:'MY AGENTS',
+    // Unified honest fallback (data/AI unavailable)
+    dataUnavailable:'Data unavailable — free-tier coverage limited.',
     // PAPER TRADING AGENTS
     agentsTitle:'PAPER TRADING AGENTS',
     agentsSubtitle:'YOUR EDGES TRADING SIMULATED · DAILY CANDLES · NO BROKER',
@@ -8331,6 +8310,8 @@ const i18n = {
     nav_earnings:'RESULTADOS', nav_ipos:'IPOS', nav_movers:'MOVIMIENTOS',
     nav_sectors:'SECTORES', nav_screener:'FILTRO', nav_social:'SOCIAL',
     nav_gallery:'GALERÍA', nav_pairs:'PARES', nav_signals:'SEÑALES', nav_edges:'MIS EDGES', nav_myagents:'MIS AGENTES',
+    // Fallback honesto unificado (dato/IA no disponible)
+    dataUnavailable:'Dato no disponible — cobertura limitada del plan gratuito.',
     // PAPER TRADING AGENTS
     agentsTitle:'AGENTES DE PAPER TRADING',
     agentsSubtitle:'TUS EDGES OPERANDO EN SIMULADO · VELAS DIARIAS · SIN BROKER',
@@ -8520,6 +8501,54 @@ const i18n = {
 };
 
 function t(key){ return (i18n[currentLang] && i18n[currentLang][key]) || i18n.en[key] || key; }
+
+// ─── CAPA UNIFICADA DE ERRORES DE DATOS/IA ────────────────────────
+// UN solo camino para las llamadas a APIs/agentes desde la UI:
+//   · timeout de 15s (AbortController) — nunca loaders infinitos
+//   · valida el shape ANTES de cualquier .map — nunca TypeError crudo
+//   · en fallo: fallback honesto bilingüe; el error técnico va a
+//     console.error (el usuario nunca ve "API error: 400" ni excepciones)
+// El texto del fallback es el mismo que ya usaba el Risk Anomaly agent,
+// ahora como componente único i18n.
+
+function qdUnavailableHTML(ctx){
+  if (ctx) console.error('qd:data-unavailable ·', ctx);
+  return '<div style="padding:14px 16px;background:rgba(255,255,255,.02);border:1px solid #1a1a1a;border-radius:3px;font-family:var(--mono);font-size:11px;color:#666;line-height:1.5;">' + t('dataUnavailable') + '</div>';
+}
+// Versión para celdas de tabla: el clásico “—” pero explicado al hover.
+function qdUnavailableCell(){
+  return '<span title="' + t('dataUnavailable') + '" style="color:#444;border-bottom:1px dotted #333;cursor:help;">—</span>';
+}
+
+const QD_FETCH_TIMEOUT_MS = 15000;
+// fetch + json + shape check. Devuelve el JSON o null — NUNCA lanza.
+async function qdFetchJSON(url, opts, shapeCheck){
+  const ctrl = new AbortController();
+  const timer = setTimeout(function(){ ctrl.abort(); }, QD_FETCH_TIMEOUT_MS);
+  try{
+    const r = await fetch(url, Object.assign({}, opts || {}, { signal: ctrl.signal }));
+    const data = await r.json().catch(function(){ return null; });
+    if (!r.ok){ console.error('qdFetchJSON', url, 'HTTP ' + r.status, data); return null; }
+    if (shapeCheck && !shapeCheck(data)){ console.error('qdFetchJSON: shape inesperado', url, data); return null; }
+    return data;
+  }catch(e){
+    console.error('qdFetchJSON', url, e && e.name === 'AbortError' ? 'timeout ' + QD_FETCH_TIMEOUT_MS + 'ms' : e);
+    return null;
+  }finally{
+    clearTimeout(timer);
+  }
+}
+
+// Llamada a la IA: devuelve el TEXTO unido de content, o null en fallo.
+// El shape se valida aquí — se acabaron los `d.content.map` sin guard.
+async function qdAI(body){
+  const data = await qdFetchJSON('/api/claude', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }, function(d){ return d && Array.isArray(d.content); });
+  if (!data) return null;
+  return data.content.map(function(b){ return b.text || ''; }).join('');
+}
 
 // Append to AI prompts so Claude responds in the active language.
 function langDirective(){
@@ -11494,26 +11523,19 @@ async function loadSectors(){
   if(btn){ btn.textContent = '↻ Loading...'; btn.disabled = true; }
   el.innerHTML = `<div style="padding:40px;text-align:center;color:#555;font-family:var(--mono);font-size:12px;">Fetching ${cat.toUpperCase()} ETFs in parallel...</div>`;
 
-  try {
-    const r = await fetch('/api/sectors?category=' + encodeURIComponent(cat));
-    // Try to parse JSON; if it returns HTML (Vercel error page), handle gracefully
-    let d;
-    const text = await r.text();
-    try {
-      d = JSON.parse(text);
-    } catch (parseErr) {
-      // The endpoint returned HTML instead of JSON — likely Vercel function crashed.
-      // Show a clear, user-friendly message instead of the raw parse error.
-      throw new Error('API returned ' + r.status + ' — server function crashed. Wait 30s and refresh.');
-    }
+  // qdFetchJSON: timeout 15s + shape check + HTML de error de Vercel cubierto
+  // (el json() fallido devuelve null, nunca un parse error crudo en la UI).
+  const d = await qdFetchJSON('/api/sectors?category=' + encodeURIComponent(cat), null,
+    (x) => x && typeof x === 'object' && !x.error);
+  if (d) {
     _sectorsCache[cat] = d;
     renderSectors(d);
     if(ts){
       const now = new Date();
       ts.textContent = 'Updated ' + now.toLocaleTimeString();
     }
-  } catch(e){
-    el.innerHTML = '<div style="padding:40px;text-align:center;color:#e74c3c;font-family:var(--mono);font-size:12px;">Failed to load sectors: '+e.message+'</div>';
+  } else {
+    el.innerHTML = qdUnavailableHTML('sectors · ' + cat);
   }
   if(btn){ btn.textContent = '↻ Refresh'; btn.disabled = false; }
 }
@@ -11817,13 +11839,12 @@ async function loadIPOs(){
   if(btn){ btn.textContent = '↻ Loading...'; btn.disabled = true; }
   el.innerHTML = '<div style="padding:40px;text-align:center;color:#555;font-family:var(--mono);font-size:12px;">Fetching IPO calendar from Finnhub...</div>';
 
-  try {
-    const r = await fetch('/api/ipos');
-    const d = await r.json();
+  const d = await qdFetchJSON('/api/ipos', null, (x) => x && typeof x === 'object');
+  if (d) {
     _iposCache = d;
-    renderIPOs(d);
-  } catch(e) {
-    el.innerHTML = '<div style="padding:40px;text-align:center;color:#e74c3c;font-family:var(--mono);font-size:12px;">Failed to load IPO calendar: '+e.message+'</div>';
+    renderIPOs(d);   // renderIPOs ya maneja data.error internamente
+  } else {
+    el.innerHTML = qdUnavailableHTML('ipos');
   }
 
   if(btn){ btn.textContent = '↻ Refresh'; btn.disabled = false; }
@@ -16585,8 +16606,9 @@ function margin_color(pct, threshold, COL){
 
   function renderShortInterest(si) {
     if (!si || !si.available) {
+      // Mismo fallback honesto unificado (i18n) del resto de la app.
       return `<div style="margin-bottom:12px;padding:10px 12px;background:rgba(255,255,255,.02);border:1px solid #1a1a1a;border-radius:3px;font-family:var(--mono);font-size:11px;color:#666;">
-        💀 SHORT INTEREST · Data unavailable for this ticker (free-tier coverage limited).
+        💀 SHORT INTEREST · ${t('dataUnavailable')}
       </div>`;
     }
     const col = shortColor(si.category);

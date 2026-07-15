@@ -421,6 +421,23 @@ const s14 = await page.evaluate(() => {
 const s14Fetched = apiCalls.some(c => c.phase === 'S14-restore-myagents' && c.path.startsWith('/api/agents'));
 report('S14 restore a MIS AGENTES carga los agentes', s14.page === 'page-myagents' && s14Fetched, JSON.stringify({ ...s14, fetchedAgents: s14Fetched }));
 
+// ── S15: IA caída → fallback honesto (capa unificada de errores) ──
+// El stub devuelve {} para /api/claude (sin .content): qdAI → null.
+currentPhase = 'S15-ai-down';
+await page.evaluate(() => showPage('smartmoney'));
+await page.evaluate(() => loadMarketSignals());
+await page.waitForTimeout(600);
+const s15a = await page.evaluate(() => document.getElementById('marketSignalsPanel').innerText);
+report('S15a market-wide con IA caída muestra fallback honesto',
+  /free-tier|plan gratuito/.test(s15a) && !/Loading market signals/.test(s15a), s15a.slice(0, 80));
+await page.evaluate(() => { document.getElementById('smTicker').value = 'AAPL'; return runSmartMoney(); });
+await page.waitForTimeout(800);
+const s15b = await page.evaluate(() => document.getElementById('smVerdictPanel').innerText);
+report('S15b SMART $ con IA caída: fallback, nunca "API error: N"',
+  /free-tier|plan gratuito/.test(s15b) && !/API error/.test(s15b), s15b.slice(0, 80));
+const pageErrors = consoleLog.filter(c => c.type === 'PAGEERROR');
+report('S15c cero PAGEERROR en toda la corrida', pageErrors.length === 0, JSON.stringify(pageErrors.slice(0, 2)));
+
 // ── console summary ──
 console.log('\n=== CONSOLA (errores/warnings/pageerrors) ===');
 for (const c of consoleLog) console.log(`[${c.tab}] ${c.type}: ${c.text}`);
