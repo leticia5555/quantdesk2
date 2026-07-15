@@ -253,8 +253,8 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('screener')">SCREENER</button>
     <button class="nav-btn" onclick="showPage('pairs')">PARES</button>
     <button class="nav-btn" onclick="showPage('signals')">SEÑALES</button>
-    <button class="nav-btn" onclick="showPage('edges');qdRenderEdges()">MIS EDGES</button>
-    <button class="nav-btn" onclick="showPage('myagents');qdAgentsOpen()">MIS AGENTES</button>
+    <button class="nav-btn" onclick="showPage('edges')">MIS EDGES</button>
+    <button class="nav-btn" onclick="showPage('myagents')">MIS AGENTES</button>
     <button class="nav-btn" onclick="showPage('social')">SOCIAL</button>
     <button class="nav-btn" onclick="showPage('gallery')">GALLERY</button>
   </nav>
@@ -3672,6 +3672,17 @@ function renderMacroBrief(brief){
 }
 
 // ─── NAVIGATION ───────────────────────────────────────────
+// Inicializadores por página: showPage() los invoca SIEMPRE, así el click
+// del nav y el restore de qd_lastTab comparten el mismo camino. (Antes los
+// inits de MIS EDGES / MIS AGENTES vivían solo en el onclick del nav y el
+// restore mostraba la página vacía sin fetchear — Bug 3 de la auditoría.)
+// Las funciones se resuelven por nombre al momento de navegar porque se
+// definen en bloques <script> posteriores.
+const PAGE_INIT={
+  edges:   ()=>{ if(typeof qdRenderEdges==='function') qdRenderEdges(); },
+  myagents:()=>{ if(typeof qdAgentsOpen==='function') qdAgentsOpen(); },
+};
+
 function showPage(id){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
@@ -3700,6 +3711,9 @@ function showPage(id){
     if(el) el.textContent='Ready to screen';
     // Don't auto-run — let user pick a preset or click SCREEN
   },100);
+  if(PAGE_INIT[id]) setTimeout(()=>{
+    try{ PAGE_INIT[id](); }catch(e){ console.error('PAGE_INIT['+id+']', e); }
+  },0);
 }
 
 // Restore last-visited tab on page load. Default (AGENTS) is already
@@ -17733,10 +17747,14 @@ async function qdRevalidateEdge(id){
     const now = new Date().toISOString();
     edge.verdict = fresh.verdict;
     edge.metrics = fresh.metrics;
+    // La liquidez se re-chequea con datos frescos (async): null = pendiente.
+    edge.metrics.illiquid = null;
+    edge.metrics.adv_usd = null;
     edge.validated_at = now;
     qdEdgeHistoryPush(edge, now, fresh.verdict, fresh.metrics);
     qdEdgesStore(store);
     qdRenderEdges(); // re-render completo: la card muestra el decay si cambió
+    if (typeof qdRefreshEdgeLiquidity === 'function') qdRefreshEdgeLiquidity(edge.id);
   }catch(e){
     if (msg){ msg.textContent = 'error de red al re-validar.'; msg.style.color = 'var(--red)'; }
     if (btn){ btn.disabled = false; btn.textContent = typeof t === 'function' ? t('edgeRevalidate') : '↻ RE-VALIDAR'; }
@@ -18311,17 +18329,24 @@ document.addEventListener('keydown', function(ev){
   if (!qdAc.visible || document.activeElement !== qdAc.input) return;
   const rows = qdAc.el ? [...qdAc.el.querySelectorAll('.qd-ac-item')] : [];
   if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp'){
+    if (!rows.length) return; // dropdown solo con la nota: la flecha no fija idx
     ev.preventDefault(); ev.stopPropagation();
     const delta = ev.key === 'ArrowDown' ? 1 : -1;
     qdAc.idx = Math.max(0, Math.min(rows.length - 1, qdAc.idx + delta));
     rows.forEach(function(r, i){ r.classList.toggle('active', i === qdAc.idx); });
     if (rows[qdAc.idx]) rows[qdAc.idx].scrollIntoView({ block: 'nearest' });
   } else if (ev.key === 'Enter'){
-    if (qdAc.idx >= 0){
+    if (qdAc.idx >= 0 && rows[qdAc.idx]){
       ev.preventDefault(); ev.stopPropagation();
       qdAcSelect(qdAc.idx);
     } else {
-      qdAcHide(); // sin selección: el Enter sigue su curso (validar/simular)
+      // sin selección real (incluida la lista vacía): cerrar SIN preventDefault
+      // — el Enter sigue su curso hasta el validador/simulador. Se cancela el
+      // fallback remoto pendiente para que no reabra el dropdown encima del
+      // resultado que ya se está validando.
+      clearTimeout(qdAc.timer);
+      qdAc.seq++;
+      qdAcHide();
     }
   } else if (ev.key === 'Escape'){
     ev.stopPropagation();
@@ -18362,8 +18387,10 @@ window.addEventListener('DOMContentLoaded', function(){
 // viaja con el edge a la biblioteca y a los agentes.
 
 const qdLiqCache = {};
-async function qdCheckLiquidity(sym){
-  if (qdLiqCache[sym] !== undefined) return qdLiqCache[sym];
+// fresh=true salta el caché de sesión: el ADV también decae, así que las
+// re-validaciones consultan de nuevo en vez de arrastrar el dato viejo.
+async function qdCheckLiquidity(sym, fresh){
+  if (!fresh && qdLiqCache[sym] !== undefined) return qdLiqCache[sym];
   try{
     const r = await fetch('/api/ticker-search?liquidity=' + encodeURIComponent(sym));
     const data = await r.json().catch(function(){ return null; });
@@ -18379,29 +18406,97 @@ function qdLiqFmt(v){
   return '$' + Math.round(v / 1000) + 'k';
 }
 
-async function qdLiquidityNotice(engine, symbols, containerId){
-  const checks = await Promise.all(symbols.map(qdCheckLiquidity));
+// Corre los checks y devuelve { illiquid, adv_usd, bad }. illiquid es
+// true/false con evidencia y null si ningún check respondió (no se acusa
+// ni se absuelve sin datos).
+async function qdLiqEvaluate(symbols, fresh){
+  const checks = await Promise.all(symbols.map(function(s){ return qdCheckLiquidity(s, fresh); }));
   const bad = [];
-  checks.forEach(function(c, i){ if (c && c.illiquid === true) bad.push({ sym: symbols[i], adv: c.adv_usd }); });
-  if (!bad.length) return;
+  let answered = false;
+  checks.forEach(function(c, i){
+    if (c && c.illiquid !== null && c.illiquid !== undefined) answered = true;
+    if (c && c.illiquid === true) bad.push({ sym: symbols[i], adv: c.adv_usd });
+  });
+  if (!answered) return { illiquid: null, adv_usd: null, bad: [] };
+  if (!bad.length) return { illiquid: false, adv_usd: null, bad: [] };
+  return { illiquid: true, adv_usd: Math.min.apply(null, bad.map(function(b){ return b.adv || 0; })), bad };
+}
 
-  // 1) persistir en el draft del edge (si el usuario guarda, viaja con él)
+// Actualiza el edge GUARDADO cuya config coincide con el draft (si existe):
+// si el usuario picó GUARDAR antes de que el check resolviera, el flag le
+// llega igual — el guardado es eventualmente consistente, nunca incorrecto.
+function qdLiqSyncStoredEdge(engine, draft, verdictOut){
+  if (typeof qdEdgesLoad !== 'function' || typeof qdEdgeSig !== 'function') return;
+  const store = qdEdgesLoad();
+  const sig = qdEdgeSig(engine, draft.config);
+  const edge = store.edges.find(function(e){ return qdEdgeSig(e.engine, e.config) === sig; });
+  if (!edge || !edge.metrics) return;
+  // Solo si el edge refleja ESTA validación (mismo veredicto vigente);
+  // un edge viejo con la misma config no se pisa desde aquí.
+  if (edge.verdict !== draft.verdict) return;
+  edge.metrics.illiquid = verdictOut.illiquid;
+  edge.metrics.adv_usd = verdictOut.adv_usd;
+  qdEdgesStore(store);
+  const page = document.querySelector('.page.active');
+  if (page && page.id === 'page-edges' && typeof qdRenderEdges === 'function') qdRenderEdges();
+}
+
+async function qdLiquidityNotice(engine, symbols, containerId){
+  // El draft se captura AL LANZARSE (síncrono, recién dejado por el wrapper
+  // de GUARDAR EDGE). Al resolver, solo se muta si sigue siendo el draft
+  // vigente — una validación posterior de otro ticker ya no es nuestra
+  // (race que contaminaba el draft siguiente, Bug 4 de la auditoría).
   const draft = window.__qdEdgeDraft && window.__qdEdgeDraft[engine];
   if (draft && draft.metrics){
-    draft.metrics.illiquid = true;
-    draft.metrics.adv_usd = Math.min.apply(null, bad.map(function(b){ return b.adv || 0; }));
+    draft.metrics.illiquid = null;   // check pendiente: desconocido, no false
+    draft.metrics.adv_usd = null;
   }
 
-  // 2) aviso visible en el resultado (si sigue en pantalla)
+  const out = await qdLiqEvaluate(symbols, false);
+
+  // sequence guard: ¿el draft sigue siendo el mismo objeto?
+  const current = window.__qdEdgeDraft && window.__qdEdgeDraft[engine];
+  if (!draft || current !== draft) return;
+
+  if (draft.metrics && out.illiquid !== null){
+    draft.metrics.illiquid = out.illiquid;
+    draft.metrics.adv_usd = out.adv_usd;
+    qdLiqSyncStoredEdge(engine, draft, out);
+  }
+  if (!out.bad.length) return;
+
+  // aviso visible en el resultado (si sigue en pantalla)
   const container = document.getElementById(containerId);
   const wrapper = container && container.firstElementChild;
   const verdictCard = wrapper && wrapper.firstElementChild;
   if (!verdictCard || document.getElementById('qdLiqWarn-' + engine)) return;
   verdictCard.insertAdjacentHTML('afterend',
     '<div id="qdLiqWarn-' + engine + '" style="margin-top:10px;padding:8px 12px;border:1px solid rgba(239,159,39,.35);background:rgba(239,159,39,.06);border-radius:3px;font-family:var(--mono);font-size:10px;color:var(--amber);line-height:1.5;">' +
-      '⚠ LIQUIDEZ BAJA: ' + bad.map(function(b){ return b.sym + ' (~' + qdLiqFmt(b.adv) + ' USD/día)'; }).join(' · ') +
+      '⚠ LIQUIDEZ BAJA: ' + out.bad.map(function(b){ return b.sym + ' (~' + qdLiqFmt(b.adv) + ' USD/día)'; }).join(' · ') +
       ' — con menos de $1M/día el cierre diario es ruidoso y el slippage real te comería el edge. Datos poco confiables para validar.' +
     '</div>');
+}
+
+// RE-VALIDAR re-corre el chequeo de liquidez con datos FRESCOS (el ADV
+// decae: un edge líquido hoy puede no serlo en 6 meses). La biblioteca lo
+// invoca por nombre tras aplicar las métricas nuevas (Bug 5: antes
+// edge.metrics = fresh.metrics borraba el flag para siempre).
+async function qdRefreshEdgeLiquidity(edgeId){
+  if (typeof qdEdgesLoad !== 'function') return;
+  const store = qdEdgesLoad();
+  const edge = store.edges.find(function(e){ return e.id === edgeId; });
+  if (!edge || !edge.metrics) return;
+  const symbols = edge.engine === 'pairs' ? [edge.config.x, edge.config.y] : [edge.config.ticker];
+  const out = await qdLiqEvaluate(symbols, true);
+  // re-lee el store: pudo cambiar mientras esperábamos la red
+  const store2 = qdEdgesLoad();
+  const edge2 = store2.edges.find(function(e){ return e.id === edgeId; });
+  if (!edge2 || !edge2.metrics) return;
+  edge2.metrics.illiquid = out.illiquid;
+  edge2.metrics.adv_usd = out.adv_usd;
+  qdEdgesStore(store2);
+  const page = document.querySelector('.page.active');
+  if (page && page.id === 'page-edges' && typeof qdRenderEdges === 'function') qdRenderEdges();
 }
 
 // Envuelve los renderers (capa externa sobre el wrapper de GUARDAR EDGE,
