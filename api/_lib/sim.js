@@ -35,6 +35,7 @@
 
 import { buildRule } from '../signal-backtester.js';
 import { buildSpread, zscoreLast, toLog } from '../pairs-validator.js';
+import { CRYPTO, toYahooSymbol } from './crypto-map.js';
 
 const ASSUMPTIONS = {
   capital_start: 10000,
@@ -72,9 +73,8 @@ function legValue(direction, qty, entry, close) {
 // ─────────────────── series ───────────────────
 
 // Cierres diarios de Yahoo (mismo plumbing que los motores).
-const CRYPTO = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX', 'LINK', 'DOT'];
 async function fetchDailySeries(ticker, range = '2y') {
-  const symbol = CRYPTO.includes(ticker) ? `${ticker}-USD` : ticker;
+  const symbol = toYahooSymbol(ticker);
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${encodeURIComponent(range)}&interval=1d`;
   const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
   if (!r.ok) return null;

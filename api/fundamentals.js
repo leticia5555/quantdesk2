@@ -1,4 +1,6 @@
 // api/fundamentals.js — Fetch P/E, P/B, P/S, EPS, Book Value from Yahoo Finance
+import { isCrypto } from './_lib/crypto-map.js';
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -7,8 +9,8 @@ export default async function handler(req, res) {
   if (!ticker) return res.status(400).json({ error: 'Ticker required' });
 
   let symbol = ticker.toUpperCase();
-  // Crypto handling
-  if(['BTC','ETH','SOL','BNB','XRP','ADA','DOGE','AVAX','LINK','DOT'].includes(symbol)){
+  // Crypto handling — canonical shared map
+  if (isCrypto(symbol)) {
     return res.status(200).json({ error: 'Fundamentals not applicable for crypto' });
   }
 
