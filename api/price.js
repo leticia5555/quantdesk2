@@ -44,7 +44,9 @@ export default async function handler(req, res) {
 
       let mu = 0.5, sigma = 0.8;
       let high52w = currentPrice * 1.5, low52w = currentPrice * 0.5;
-      let return30d = coinInfo.usd_24h_change / 100 * 30;
+      // Sin historial real no se inventa: antes extrapolaba usd_24h_change × 30
+      // y el screener mostraba 'momentum 30d' fabricado para crypto.
+      let return30d = null;
 
       if (closes.length >= 30) {
         const dailyReturns = [];
@@ -92,7 +94,7 @@ export default async function handler(req, res) {
         sigma: parseFloat(sigma.toFixed(4)),
         high52w: parseFloat(high52w.toFixed(2)),
         low52w: parseFloat(low52w.toFixed(2)),
-        return30d: parseFloat(return30d.toFixed(4)),
+        return30d: return30d != null ? parseFloat(return30d.toFixed(4)) : null,
         dayChange: parseFloat(dayChange.toFixed(4)),
         dataPoints: closes.length,
         asset_type: 'crypto',

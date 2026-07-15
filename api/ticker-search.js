@@ -21,8 +21,8 @@
 
 const ADV_THRESHOLD_USD = 1_000_000;
 const SEARCH_TYPES = new Set(['EQUITY', 'ETF', 'CRYPTOCURRENCY', 'INDEX', 'MUTUALFUND']);
-// Mismo mapeo crypto que los motores: BTC → BTC-USD.
-const CRYPTO = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX', 'LINK', 'DOT'];
+// Mismo mapeo crypto que los motores: BTC → BTC-USD (canónico compartido).
+import { toYahooSymbol } from './_lib/crypto-map.js';
 
 const YH = { headers: { 'User-Agent': 'Mozilla/5.0' } };
 
@@ -64,7 +64,7 @@ async function fxToUsd(currency) {
 }
 
 async function liquidityCheck(ticker) {
-  const symbol = CRYPTO.includes(ticker) ? `${ticker}-USD` : ticker;
+  const symbol = toYahooSymbol(ticker);
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=3mo&interval=1d`;
   const r = await fetch(url, YH);
   if (!r.ok) return { symbol: ticker, illiquid: null, error: `Yahoo HTTP ${r.status}` };

@@ -1,3 +1,5 @@
+import { isCrypto } from './_lib/crypto-map.js';
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -13,7 +15,7 @@ export default async function handler(req, res) {
   }
 
   const symbol = ticker.toUpperCase().replace('/USD', '').replace('-USD', '');
-  const isCrypto = ['BTC','ETH','SOL','BNB','XRP','ADA','DOGE','AVAX'].includes(symbol);
+  const cryptoTicker = isCrypto(symbol);
 
   try {
     const today = new Date();
@@ -26,7 +28,7 @@ export default async function handler(req, res) {
     const fetches = [
       fetch(`https://finnhub.io/api/v1/company-news?symbol=${symbol}&from=${fromStr}&to=${toStr}&token=${finnhubKey}`)
     ];
-    if (!isCrypto) {
+    if (!cryptoTicker) {
       fetches.push(
         fetch(`https://finnhub.io/api/v1/calendar/earnings?symbol=${symbol}&token=${finnhubKey}`),
         fetch(`https://finnhub.io/api/v1/news-sentiment?symbol=${symbol}&token=${finnhubKey}`)
@@ -75,7 +77,7 @@ export default async function handler(req, res) {
 
     // ── 2. EARNINGS ──────────────────────────────────────
     let nextEarnings = null;
-    if (!isCrypto && results[1]?.status === 'fulfilled') {
+    if (!cryptoTicker && results[1]?.status === 'fulfilled') {
       const earningsData = results[1].value;
       const upcoming = (earningsData.earningsCalendar || [])
         .filter(e => new Date(e.date) >= new Date())
@@ -94,7 +96,7 @@ export default async function handler(req, res) {
 
     // ── 3. SENTIMENT ─────────────────────────────────────
     let sentiment = null;
-    if (!isCrypto && results[2]?.status === 'fulfilled') {
+    if (!cryptoTicker && results[2]?.status === 'fulfilled') {
       const sentData = results[2].value;
       if (sentData.sentiment) {
         sentiment = {

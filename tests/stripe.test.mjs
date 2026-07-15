@@ -193,5 +193,19 @@ console.log('checkout: handler');
   global.fetch = realFetch;
 }
 
+// ─────────────────── periodEnd: shapes pre y post-Basil ───────────────────
+console.log('periodEnd (Renews on): shape viejo y nuevo de la API de Stripe');
+{
+  const { periodEnd } = await import('../api/stripe-status.js');
+  ok(periodEnd({ current_period_end: 1780000000 }) === 1780000000,
+    'shape pre-Basil: current_period_end en la suscripción');
+  ok(periodEnd({ items: { data: [{ current_period_end: 1790000000 }] } }) === 1790000000,
+    'shape post-Basil (2025-03-31+): el campo vive en items.data[0]');
+  ok(periodEnd({ current_period_end: 1780000000, items: { data: [{ current_period_end: 1790000000 }] } }) === 1780000000,
+    'si vienen ambos, gana el de la suscripción');
+  ok(periodEnd({ items: { data: [] } }) === null && periodEnd(null) === null,
+    'sin datos → null (el panel muestra —, no crashea)');
+}
+
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);

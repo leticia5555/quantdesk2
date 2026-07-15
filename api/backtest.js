@@ -1,4 +1,6 @@
 // api/backtest.js — Real backtest using Yahoo Finance historical data
+import { toYahooSymbol } from './_lib/crypto-map.js';
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -10,11 +12,8 @@ export default async function handler(req, res) {
   const dir = direction || 'LONG';
  
   try {
-    let symbol = ticker.toUpperCase();
-    // Crypto handling
-    if(['BTC','ETH','SOL','BNB','XRP','ADA','DOGE','AVAX','LINK','DOT'].includes(symbol)){
-      symbol = symbol + '-USD';
-    }
+    // Crypto handling — canonical shared map (includes MATIC/LTC)
+    let symbol = toYahooSymbol(ticker);
  
     // Fetch 2 years of data from Yahoo
     const now = Math.floor(Date.now() / 1000);

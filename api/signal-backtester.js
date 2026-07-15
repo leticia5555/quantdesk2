@@ -614,8 +614,8 @@ function backtest(dates, closes, opts) {
 
 // ─────────────────── Yahoo price fetch ───────────────────
 
-// Cryptos comunes van con sufijo -USD en Yahoo (mismo mapeo que backtest.js).
-const CRYPTO = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX', 'LINK', 'DOT'];
+// Cryptos van con sufijo -USD en Yahoo — mapeo canónico compartido.
+import { toYahooSymbol } from './_lib/crypto-map.js';
 
 // Baja cierres diarios de Yahoo y devuelve { dates, closes } alineados,
 // oldest-first, sin nulls (mismo plumbing que correlations.js).
@@ -709,7 +709,7 @@ export default async function handler(req, res) {
           usage: '/api/signal-backtester?ticker=AAPL&rule=rsi&range=2y',
         });
       }
-      const symbol = CRYPTO.includes(ticker) ? `${ticker}-USD` : ticker;
+      const symbol = toYahooSymbol(ticker);
       const series = await fetchYahoo(symbol, range);
       if (!series) return res.status(404).json({ error: `Sin historial de precios para ${ticker}` });
       ({ dates, closes } = series);

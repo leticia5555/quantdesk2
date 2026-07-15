@@ -41,6 +41,18 @@ function pickSubscription(subs) {
   return pool.sort((a, b) => (b.created || 0) - (a.created || 0))[0];
 }
 
+// current_period_end vive en el objeto Subscription hasta la versión de API
+// 2025-03-31 ('Basil'); desde ahí Stripe lo movió a los Subscription Items.
+// Esta integración no pina versión (usa el default de la cuenta, post-Basil
+// en cuentas nuevas), así que el campo llegaba undefined y el panel PRO
+// mostraba 'Renews on —'. Se leen AMBOS shapes.
+function periodEnd(sub) {
+  if (!sub) return null;
+  return sub.current_period_end
+    ?? sub.items?.data?.[0]?.current_period_end
+    ?? null;
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -62,7 +74,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         pro: session.status === 'complete' && (!sub || PRO_STATUSES.includes(sub.status)),
         status: sub ? sub.status : session.status,
-        current_period_end: sub?.current_period_end || null,
+        current_period_end: periodEnd(sub),
         email: paidEmail || null,
       });
     }
@@ -83,7 +95,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       pro: sub ? PRO_STATUSES.includes(sub.status) : false,
       status: sub ? sub.status : 'none',
-      current_period_end: sub?.current_period_end || null,
+      current_period_end: periodEnd(sub),
       email,
     });
   } catch (err) {
@@ -92,4 +104,4 @@ export default async function handler(req, res) {
 }
 
 // Export para unit tests.
-export { pickSubscription, PRO_STATUSES };
+export { pickSubscription, periodEnd, PRO_STATUSES };

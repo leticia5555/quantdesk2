@@ -510,6 +510,11 @@ function shapeResponse(res, xLabel, yLabel, nObs, skipped) {
 
 // ─────────────────── Yahoo price fetch + alignment ───────────────────
 
+// Crypto symbols map to their -USD Yahoo pair (shared canonical map) —
+// without this, 'ETH' silently fetched Ethan Allen and 'BTC' the Grayscale
+// ETF instead of the crypto the autocomplete offered.
+import { toYahooSymbol } from './_lib/crypto-map.js';
+
 // Fetch [timestamps, closes] of daily closes for one symbol from Yahoo.
 async function fetchYahoo(symbol, range) {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${encodeURIComponent(range)}&interval=1d`;
@@ -599,7 +604,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'x and y must be different tickers.' });
     }
 
-    const [sx, sy] = await Promise.all([fetchYahoo(x, range), fetchYahoo(y, range)]);
+    const [sx, sy] = await Promise.all([fetchYahoo(toYahooSymbol(x), range), fetchYahoo(toYahooSymbol(y), range)]);
     if (!sx) return res.status(404).json({ error: `No price history for ${x}` });
     if (!sy) return res.status(404).json({ error: `No price history for ${y}` });
 
