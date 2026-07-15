@@ -58,7 +58,7 @@ async function routeApis(page) {
     if (p === '/api/agents' && route.request().method() === 'POST') return json({ ok: true, agent: { id: 'a1' } });
     if (p === '/api/agents-run') return json({ ok: true, processed: 0 });
     if (p === '/api/stripe-status') return json({ pro: false, status: 'none', email: url.searchParams.get('email') });
-    if (p === '/api/price') return json({ current_price: 100, mu: 0.1, sigma: 0.3, asset_type: 'stock', verdict: 'WATCH' });
+    if (p === '/api/price') return json({ ticker: url.searchParams.get('ticker'), currentPrice: 100, current_price: 100, mu: 0.1, sigma: 0.35, return30d: 0.06, dayChange: 0.01, asset_type: 'stock', verdict: 'WATCH', longName: 'Stub Co' });
     if (p === '/api/news') return json({ headlines: [] });
     return json({});
   });
@@ -437,6 +437,32 @@ report('S15b SMART $ con IA caída: fallback, nunca "API error: N"',
   /free-tier|plan gratuito/.test(s15b) && !/API error/.test(s15b), s15b.slice(0, 80));
 const pageErrors = consoleLog.filter(c => c.type === 'PAGEERROR');
 report('S15c cero PAGEERROR en toda la corrida', pageErrors.length === 0, JSON.stringify(pageErrors.slice(0, 2)));
+
+// ── S16: screener — universo entrelazado, presets sin filtros pegados ──
+currentPhase = 'S16-screener';
+await page.evaluate(() => showPage('screener'));
+await page.evaluate(() => runScreener());
+await page.waitForTimeout(3000);
+const s16 = await page.evaluate(() => ({
+  status: document.getElementById('screenerStatus').textContent,
+  text: document.getElementById('screenerResults').innerText.slice(0, 3000),
+}));
+report('S16a All Markets entrelaza el universo e incluye LATAM',
+  /MELI|NU\b|VALE|AMXB|PETR4/.test(s16.text), s16.status + ' · ' + s16.text.slice(0, 60));
+await page.evaluate(() => applyPreset('volatile'));
+await page.waitForTimeout(2000);
+await page.evaluate(() => { document.getElementById('scSector').value = 'tech'; applyPreset('latam'); });
+await page.waitForTimeout(2000);
+const s16b = await page.evaluate(() => ({
+  sigmaMin: document.getElementById('scSigmaMin').value,
+  sector: document.getElementById('scSector').value,
+  universe: document.getElementById('scUniverse').value,
+}));
+report('S16b cambiar de preset resetea sigma y sector (nada pegado)',
+  s16b.sigmaMin === '0' && s16b.sector === 'all' && s16b.universe === 'latam', JSON.stringify(s16b));
+const s16c = await page.evaluate(() => document.querySelector('[data-i18n="screenerSubtitle"]').textContent);
+report('S16c subtítulo del screener con conteo real, sin "500+"',
+  /^3\d\d /.test(s16c) && !/500/.test(s16c), s16c);
 
 // ── console summary ──
 console.log('\n=== CONSOLA (errores/warnings/pageerrors) ===');

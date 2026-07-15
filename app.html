@@ -906,7 +906,7 @@ td:first-child{color:var(--text);font-weight:500;}
   <!-- TOP BAR -->
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
     <span style="font-family:var(--mono);font-size:10px;color:#00c97d;font-weight:600;letter-spacing:.1em;" data-i18n="stockScreener">STOCK SCREENER</span>
-    <span style="font-family:var(--mono);font-size:10px;color:#333;" data-i18n="screenerSubtitle">500+ STOCKS · US + LATAM · REAL-TIME FILTERS</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#333;" data-i18n="screenerSubtitle">US + LATAM + CRYPTO · REAL-TIME FILTERS</span>
     <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;">
       <button onclick="applyPreset('squeeze')" class="screener-preset" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">🔥 Squeeze Candidates</button>
       <button onclick="applyPreset('insider')" class="screener-preset" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">👤 Insider Buying</button>
@@ -1974,6 +1974,7 @@ function applyPreset(name){
   document.getElementById('scSigmaMin').value=0;
   document.getElementById('scSigmaMax').value=200;
   document.getElementById('scUniverse').value='all';
+  document.getElementById('scSector').value='all';   // antes quedaba pegado entre presets
   document.getElementById('scSort').value='squeeze';
   // Apply preset
   if(p.scSqueeze){document.getElementById('scSqueeze').value=p.scSqueeze;document.getElementById('scSqueezeVal').textContent=p.scSqueeze;}
@@ -2020,9 +2021,28 @@ async function runScreener(){
   el.innerHTML='<div style="padding:16px;font-family:var(--mono);font-size:11px;color:#555;">Fetching live data...</div>';
 
   try{
-    // Fetch real prices for the universe
-    const priceResults = await Promise.allSettled(
-      tickers.slice(0, limit).map(t =>
+    // Universo entrelazado en 'all' (US/LATAM/CRYPTO alternados): antes el
+    // scan cortaba en los primeros N del array y solo veía el prefijo
+    // mega-cap tech — LATAM y crypto jamás aparecían en All Markets.
+    if(universe==='all'){
+      const groups=[SCREENER_UNIVERSE.us,SCREENER_UNIVERSE.latam,SCREENER_UNIVERSE.crypto];
+      const maxLen=Math.max(...groups.map(g=>g.length));
+      tickers=[];
+      for(let gi=0;gi<maxLen;gi++) groups.forEach(g=>{ if(g[gi]!=null) tickers.push(g[gi]); });
+    }
+
+    // Scan por lotes: MAX RESULTS ya no recorta el UNIVERSO (bug: "Top 20"
+    // escaneaba solo los primeros 20 tickers y LUEGO filtraba — de ahí los
+    // resultados escasos). Se escanean hasta SC_SCAN_CAP en lotes de
+    // SC_CONCURRENCY (sin stampede de 300 requests que dispara 429s y datos
+    // stale), se filtra sobre TODO lo escaneado y el límite aplica al render.
+    const SC_SCAN_CAP=120, SC_CONCURRENCY=24;
+    const scanned=tickers.slice(0, SC_SCAN_CAP);
+    const priceResults=[];
+    for(let bi=0;bi<scanned.length;bi+=SC_CONCURRENCY){
+      const batch=scanned.slice(bi,bi+SC_CONCURRENCY);
+      status.textContent='Scanning '+Math.min(bi+batch.length,scanned.length)+'/'+scanned.length+(tickers.length>scanned.length?' of '+tickers.length:'')+'...';
+      const part=await Promise.allSettled(batch.map(t =>
         fetch('/api/price?ticker='+encodeURIComponent(normalizeTicker(t)))
           .then(r=>r.text())
           .then(text=>{ 
@@ -2030,8 +2050,9 @@ async function runScreener(){
             catch(e){ return null; }
           })
           .catch(e=>null)
-      )
-    );
+      ));
+      priceResults.push(...part);
+    }
 
     // Smart money estimates per ticker
 // smartData removed — was hardcoded with stale thesis like "CEO buying" 
@@ -2076,8 +2097,8 @@ const region = isMx ? 'México'
     const results = priceResults
       .filter(r => r.status==='fulfilled')
       .map((r, i) => {
-        // Use ticker from original list to ensure LATAM ones show even if API fails
-        const t = tickers[i];
+        // Use ticker from the scanned list to ensure LATAM ones show even if API fails
+        const t = scanned[i];
         const d = (r.value && r.value.currentPrice && !r.value.error)
           ? r.value
           : null;
@@ -2183,7 +2204,7 @@ const region = isMx ? 'México'
       return;
     }
     renderScreenerResults(results.slice(0, limit), sortBy);
-    status.textContent=results.length+' results';
+    status.textContent=results.length+' results · scanned '+scanned.length+'/'+tickers.length;
     status.style.color='#00c97d';
 
   }catch(e){
@@ -8259,7 +8280,7 @@ const i18n = {
     beatRate:'BEAT RATE', lastQuarters:'LAST {n} QUARTERS',
     // SCREENER
     stockScreener:'STOCK SCREENER',
-    screenerSubtitle:'500+ STOCKS · US + LATAM · REAL-TIME',
+    screenerSubtitle:'SECURITIES · US + LATAM + CRYPTO · REAL-TIME',
     filters:'FILTERS', screen:'▶ SCREEN', universe:'UNIVERSE',
     allMarkets:'All Markets', usStocks:'US Stocks', latamOnly:'LATAM Only',
     cryptoOpt:'Crypto', sp500:'S&P 500',
@@ -8454,7 +8475,7 @@ const i18n = {
     beatRate:'TASA DE BEAT', lastQuarters:'ÚLTIMOS {n} TRIMESTRES',
     // SCREENER
     stockScreener:'FILTRO DE ACCIONES',
-    screenerSubtitle:'500+ ACCIONES · US + LATAM · TIEMPO REAL',
+    screenerSubtitle:'VALORES · US + LATAM + CRYPTO · TIEMPO REAL',
     filters:'FILTROS', screen:'▶ FILTRAR', universe:'UNIVERSO',
     allMarkets:'Todos los mercados', usStocks:'Acciones US', latamOnly:'Solo LATAM',
     cryptoOpt:'Cripto', sp500:'S&P 500',
@@ -8620,6 +8641,14 @@ function applyLang(){
     const key = el.getAttribute('data-i18n-ph');
     if(i18n.en[key]) el.placeholder = t(key);
   });
+
+  // Subtítulo del screener: conteo REAL del universo, no marketing.
+  // (Va DESPUÉS del loop data-i18n, que pinta el texto base y lo pisaría.)
+  const scSub = document.querySelector('[data-i18n="screenerSubtitle"]');
+  if (scSub && typeof SCREENER_UNIVERSE !== 'undefined') {
+    const scN = SCREENER_UNIVERSE.us.length + SCREENER_UNIVERSE.latam.length + SCREENER_UNIVERSE.crypto.length;
+    scSub.textContent = scN + ' ' + t('screenerSubtitle');
+  }
 
   // SIM specifics that don't have stable IDs yet
   setPh('simTicker','tickerPlaceholder');
