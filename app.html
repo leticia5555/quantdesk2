@@ -3677,6 +3677,15 @@ function renderMacroBrief(brief){
 // Las funciones se resuelven por nombre al momento de navegar porque se
 // definen en bloques <script> posteriores.
 const PAGE_INIT={
+  // Los canvases del SIM se dimensionan leyendo el clientWidth de su
+  // contenedor, que mide 0×0 mientras page-sim está display:none — y desde
+  // que AGENTS es el tab default (7e732f2) el initCanvases del load corre
+  // siempre con SIM oculto. Redimensionar al mostrar la página es lo que
+  // hace visible el chart; resizeCanvases redibuja allPaths si ya hay sim.
+  sim: ()=>{
+    if(typeof resizeCanvases==='function') resizeCanvases();
+    if(typeof resizeDrawCanvas==='function') resizeDrawCanvas();
+  },
   edges:   ()=>{ if(typeof qdRenderEdges==='function') qdRenderEdges(); },
   myagents:()=>{ if(typeof qdAgentsOpen==='function') qdAgentsOpen(); },
 };
@@ -3824,7 +3833,7 @@ function addToTape(ticker,dir,expReturn,winRate,verdict,currentPrice){
 function renderTape(){
   renderLiveTape();
 }
-let simCtx,distCtx,simW,simH,distH,activeChart=null;
+let simCtx,distCtx,simW=0,simH=0,distH=0,activeChart=null;
 
 function initCanvases(){
   const sc=document.getElementById('simCanvas');
@@ -3862,6 +3871,7 @@ function resizeDrawCanvas(){
   const dpr = devicePixelRatio || 1;
   const parent = _drawCanvas.parentElement;
   const w = parent.clientWidth, h = parent.clientHeight;
+  if(!w || !h) return; // página oculta: conservar el último tamaño bueno
   _drawCanvas.width = w * dpr;
   _drawCanvas.height = h * dpr;
   _drawCanvas.style.width = w + 'px';
@@ -4135,6 +4145,11 @@ function analyzeDrawingIntersection(drawing){
 function resizeCanvases(){
   const sc=document.getElementById('simCanvas');
   const dc=document.getElementById('distCanvas');
+  if(!simCtx) return;
+  // page-sim oculta (display:none) mide 0×0: no aplastar el canvas con un
+  // tamaño nulo — se conserva el último bueno y PAGE_INIT.sim redimensiona
+  // al volver a mostrar la página.
+  if(!sc.parentElement.clientWidth) return;
   const dpr=devicePixelRatio||1;
   simW=sc.parentElement.clientWidth;simH=sc.parentElement.clientHeight;
   sc.width=simW*dpr;sc.height=simH*dpr;

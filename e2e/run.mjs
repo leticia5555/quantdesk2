@@ -58,7 +58,12 @@ async function routeApis(page) {
     if (p === '/api/agents' && route.request().method() === 'POST') return json({ ok: true, agent: { id: 'a1' } });
     if (p === '/api/agents-run') return json({ ok: true, processed: 0 });
     if (p === '/api/stripe-status') return json({ pro: false, status: 'none', email: url.searchParams.get('email') });
-    if (p === '/api/price') return json({ ticker: url.searchParams.get('ticker'), currentPrice: 100, current_price: 100, mu: 0.1, sigma: 0.35, return30d: 0.06, dayChange: 0.01, asset_type: 'stock', verdict: 'WATCH', longName: 'Stub Co' });
+    if (p === '/api/price') {
+      // sigma diferenciada por ticker para S17c/S17d (badge de riesgo)
+      const tk = (url.searchParams.get('ticker') || '').toUpperCase();
+      const sigma = tk.startsWith('KO') ? 0.20 : tk.startsWith('MU') ? 0.85 : 0.35;
+      return json({ ticker: tk, currentPrice: 100, current_price: 100, mu: 0.1, sigma, return30d: 0.06, dayChange: 0.01, asset_type: 'stock', verdict: 'WATCH', longName: 'Stub Co' });
+    }
     if (p === '/api/news') return json({ headlines: [] });
     return json({});
   });
@@ -463,6 +468,52 @@ report('S16b cambiar de preset resetea sigma y sector (nada pegado)',
 const s16c = await page.evaluate(() => document.querySelector('[data-i18n="screenerSubtitle"]').textContent);
 report('S16c subtítulo del screener con conteo real, sin "500+"',
   /^3\d\d /.test(s16c) && !/500/.test(s16c), s16c);
+
+// ── S17: SIM — el canvas de trayectorias dibuja (regresión canvas 0×0)
+//    y el badge de riesgo sigue la sigma del ticker (no está clavado) ──
+currentPhase = 'S17-sim-canvas';
+await page.evaluate(() => showPage('sim'));
+await page.waitForTimeout(200);
+const s17size = await page.evaluate(() => {
+  const sc = document.getElementById('simCanvas');
+  return { w: sc.width, h: sc.height };
+});
+report('S17a al mostrar SIM el canvas queda dimensionado (no 0×0)',
+  s17size.w > 0 && s17size.h > 0, JSON.stringify(s17size));
+
+async function runSimAndSample(ticker) {
+  await page.evaluate((tk) => {
+    document.getElementById('simTicker').value = tk;
+    document.getElementById('simPaths').value = '300';
+    const spd = document.getElementById('simSpeed'); if (spd) spd.value = '3';
+    startSim();
+  }, ticker);
+  await page.waitForFunction(() => {
+    const m = /(\d+) \/ (\d+)/.exec(document.getElementById('progLbl').textContent);
+    return m && m[1] === m[2] && +m[1] > 0;
+  }, { timeout: 30000 });
+  await page.waitForTimeout(400);
+  return page.evaluate(() => {
+    const sc = document.getElementById('simCanvas');
+    const img = sc.getContext('2d').getImageData(0, 0, sc.width, sc.height).data;
+    let colored = 0;
+    for (let i = 0; i < img.length; i += 4) {
+      if (img[i + 3] > 0 && (img[i] > 25 || img[i + 1] > 25 || img[i + 2] > 25)) colored++;
+    }
+    return {
+      pct: +(100 * colored / (img.length / 4)).toFixed(2),
+      verdict: document.getElementById('simVerdict').textContent,
+    };
+  });
+}
+const s17ko = await runSimAndSample('KO');
+report('S17b SIM dibuja píxeles no-negros tras simular',
+  s17ko.pct > 3, s17ko.pct + '% coloreado');
+report('S17c badge sigue la sigma: KO (σ=0.20) no sale HIGH RISK/AVOID',
+  !/HIGH RISK|AVOID/.test(s17ko.verdict), s17ko.verdict);
+const s17mu = await runSimAndSample('MU');
+report('S17d badge sigue la sigma: MU (σ=0.85) sale HIGH RISK/AVOID',
+  /HIGH RISK|AVOID/.test(s17mu.verdict), s17mu.verdict);
 
 // ── console summary ──
 console.log('\n=== CONSOLA (errores/warnings/pageerrors) ===');
