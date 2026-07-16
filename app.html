@@ -2277,11 +2277,11 @@ function openFromScreener(ticker){
 }
 
 // ─── EARNINGS ENGINE ─────────────────────────────────────
-let earningsLoaded=false;
+let earningsLoadedAt=0;
 
 async function initEarningsPage(){
-  if(earningsLoaded) return;
-  earningsLoaded=true;
+  if(Date.now()-earningsLoadedAt<QD_CAL_TTL_MS) return; // TTL 30 min, no page-lifetime
+  earningsLoadedAt=Date.now();
   loadUpcomingEarnings();
 }
 
@@ -2314,40 +2314,41 @@ async function loadUpcomingEarnings(){
   el.style.display='block';
   el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:11px;padding:16px;">Loading earnings calendar...</div>';
 
-  try{
-    // Use real Finnhub earnings calendar
-    const now=new Date();
-    const from=now.toISOString().split('T')[0];
-    const to=new Date(now.getTime()+30*24*60*60*1000).toISOString().split('T')[0];
-    
-    const r=await fetch('/api/earnings?from='+from+'&to='+to);
-    const data=await r.json();
-    
-    if(data.earnings && data.earnings.length>0){
-      renderEarningsCalendar(data.earnings);
-      return;
-    }
-  }catch(e){
-    console.log('Finnhub earnings failed, using fallback:', e.message);
-  }
-
-  // Fallback to hardcoded calendar
-  renderEarningsCalendar(null);
-
-  // Try Claude update in background
-  // Try Claude update in background
-  qdAI({max_tokens:600,
-      messages:[{role:'user',content:
-        'Earnings calendar for the next 4 weeks starting '+qdTodayLabel()+'. Include major US and LATAM companies. Group by date. Return ONLY JSON where keys are date strings and values are arrays of companies with ticker, company, time, eps_est, importance, sector fields. At least 20 companies.'}]}).then(aiText=>{
+  // Fuente primaria: calendario real de Finnhub (rango dinámico hoy→+30d).
+  // Guard de frescura ("relojes rotos"): si la respuesta no trae NINGÚN
+  // evento >= hoy es stale (caché rota o feed muerto) → un re-fetch sin
+  // caché; después IA como último recurso (validada con el mismo guard) y,
+  // si todo falla, fallback honesto — nunca eventos viejos como próximos.
+  const now=new Date();
+  const from=now.toISOString().split('T')[0];
+  const to=new Date(now.getTime()+30*24*60*60*1000).toISOString().split('T')[0];
+  const fetchCal=async function(bust){
     try{
-      if(aiText==null) return; // el calendario hardcodeado ya está en pantalla
-      const calendar=safeJSON(aiText);
-      if(!calendar) return;
-      // Update with Claude data
+      const url='/api/earnings?from='+from+'&to='+to+(bust?'&_='+Date.now():'');
+      const r=await fetch(url, bust?{cache:'no-store'}:undefined);
+      const data=await r.json();
+      if(data.earnings&&data.earnings.length&&qdCalendarFresh(data.earnings.map(function(e){return e.date;}))) return data.earnings;
+    }catch(e){}
+    return null;
+  };
+  let list=await fetchCal(false);
+  if(!list) list=await fetchCal(true);
+  if(list){ renderEarningsCalendar(list); return; }
+
+  // Último recurso: calendario compuesto por IA (anclada a HOY por
+  // api/_lib/ai-guard.js), validado con el mismo guard de frescura.
+  try{
+    const aiText=await qdAI({max_tokens:600,
+        messages:[{role:'user',content:
+          'Earnings calendar for the next 4 weeks starting '+qdTodayLabel()+'. Include major US and LATAM companies. Group by date. Return ONLY JSON where keys are date strings and values are arrays of companies with ticker, company, time, eps_est, importance, sector fields. At least 20 companies.'}]});
+    const calendar=aiText==null?null:safeJSON(aiText);
+    if(calendar&&qdCalendarFresh(Object.keys(calendar))){
       let newHtml='';
       Object.entries(calendar).forEach(([day, companies])=>{
         if(!companies||!companies.length) return;
-        const isNear=day.includes('Apr 9')||day.includes('Apr 10')||day.includes('Apr 11');
+        const d=qdParseCalDate(day);
+        if(d&&d.getTime()<Date.now()-24*3600*1000) return; // días pasados no se pintan
+        const isNear=d&&(d.getTime()-Date.now())<3*24*3600*1000;
         const dayColor=isNear?'#ff6600':'#555';
         newHtml+='<div style="margin-bottom:16px;">'
           +'<div style="font-family:var(--mono);font-size:10px;color:'+dayColor+';letter-spacing:.06em;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1a1a1a;">'
@@ -2371,9 +2372,10 @@ async function loadUpcomingEarnings(){
           +'</div>'
           +'</div>';
       });
-      if(newHtml) el.innerHTML=newHtml;
-    }catch(e){}
-  }).catch(()=>{});
+      if(newHtml){ el.innerHTML=newHtml; return; }
+    }
+  }catch(e){}
+  el.innerHTML=qdUnavailableHTML('earnings-calendar');
 }
 
 function renderEarningsCalendar(realEarnings){
@@ -2401,8 +2403,10 @@ function renderEarningsCalendar(realEarnings){
       });
     });
   } else {
-    // Use hardcoded fallback
-    grouped = getFallbackCalendar();
+    // Sin datos reales no se pinta el calendario hardcodeado de abril
+    // (mostraba eventos viejos como próximos): fallback honesto.
+    el.innerHTML=qdUnavailableHTML('earnings-calendar');
+    return;
   }
 
   const today=new Date();
@@ -2435,64 +2439,9 @@ function renderEarningsCalendar(realEarnings){
   el.innerHTML=html||'<div style="color:#555;font-family:var(--mono);font-size:11px;padding:16px;">No earnings scheduled</div>';
 }
 
-function getFallbackCalendar(){
-  return {
-    'Apr 9 WED':[
-      {ticker:'FAST',company:'Fastenal',time:'BMO',eps_est:0.52,importance:'HIGH',sector:'Industrials'},
-      {ticker:'DAL',company:'Delta Air Lines',time:'BMO',eps_est:0.42,importance:'HIGH',sector:'Airlines'},
-    ],
-    'Apr 10 THU':[
-      {ticker:'JPM',company:'JPMorgan Chase',time:'BMO',eps_est:4.61,importance:'HIGH',sector:'Financials'},
-      {ticker:'WFC',company:'Wells Fargo',time:'BMO',eps_est:1.24,importance:'HIGH',sector:'Financials'},
-      {ticker:'MS',company:'Morgan Stanley',time:'BMO',eps_est:1.99,importance:'HIGH',sector:'Financials'},
-      {ticker:'BLK',company:'BlackRock',time:'BMO',eps_est:10.21,importance:'HIGH',sector:'Financials'},
-      {ticker:'GS',company:'Goldman Sachs',time:'BMO',eps_est:12.35,importance:'HIGH',sector:'Financials'},
-    ],
-    'Apr 14 MON':[
-      {ticker:'MELI',company:'MercadoLibre',time:'AMC',eps_est:9.84,importance:'HIGH',sector:'LATAM'},
-      {ticker:'BAC',company:'Bank of America',time:'BMO',eps_est:0.82,importance:'HIGH',sector:'Financials'},
-    ],
-    'Apr 15 TUE':[
-      {ticker:'JNJ',company:'Johnson & Johnson',time:'BMO',eps_est:2.56,importance:'HIGH',sector:'Healthcare'},
-      {ticker:'UNH',company:'UnitedHealth',time:'BMO',eps_est:7.29,importance:'HIGH',sector:'Healthcare'},
-    ],
-    'Apr 17 THU':[
-      {ticker:'TSM',company:'Taiwan Semi',time:'BMO',eps_est:2.11,importance:'HIGH',sector:'Tech'},
-      {ticker:'NFLX',company:'Netflix',time:'AMC',eps_est:5.74,importance:'HIGH',sector:'Tech'},
-      {ticker:'AXP',company:'American Express',time:'BMO',eps_est:3.64,importance:'HIGH',sector:'Financials'},
-    ],
-    'Apr 22 TUE':[
-      {ticker:'GOOGL',company:'Alphabet',time:'AMC',eps_est:2.03,importance:'HIGH',sector:'Tech'},
-      {ticker:'TSLA',company:'Tesla',time:'AMC',eps_est:0.45,importance:'HIGH',sector:'EV'},
-    ],
-    'Apr 23 WED':[
-      {ticker:'META',company:'Meta Platforms',time:'AMC',eps_est:5.28,importance:'HIGH',sector:'Tech'},
-      {ticker:'MSFT',company:'Microsoft',time:'AMC',eps_est:3.22,importance:'HIGH',sector:'Tech'},
-      {ticker:'IBM',company:'IBM',time:'AMC',eps_est:1.65,importance:'MEDIUM',sector:'Tech'},
-      {ticker:'NOW',company:'ServiceNow',time:'AMC',eps_est:3.84,importance:'HIGH',sector:'Tech'},
-    ],
-    'Apr 24 THU':[
-      {ticker:'AAPL',company:'Apple',time:'AMC',eps_est:1.63,importance:'HIGH',sector:'Tech'},
-      {ticker:'AMZN',company:'Amazon',time:'AMC',eps_est:1.37,importance:'HIGH',sector:'Tech'},
-      {ticker:'INTC',company:'Intel',time:'AMC',eps_est:0.02,importance:'HIGH',sector:'Tech'},
-    ],
-    'Apr 29 TUE':[
-      {ticker:'V',company:'Visa',time:'AMC',eps_est:2.68,importance:'HIGH',sector:'Financials'},
-      {ticker:'SBUX',company:'Starbucks',time:'AMC',eps_est:0.49,importance:'HIGH',sector:'Consumer'},
-      {ticker:'NU',company:'Nu Holdings',time:'AMC',eps_est:0.12,importance:'HIGH',sector:'LATAM'},
-    ],
-    'Apr 30 WED':[
-      {ticker:'MA',company:'Mastercard',time:'AMC',eps_est:3.58,importance:'HIGH',sector:'Financials'},
-      {ticker:'SPOT',company:'Spotify',time:'BMO',eps_est:2.44,importance:'HIGH',sector:'Tech'},
-      {ticker:'GLOB',company:'Globant',time:'AMC',eps_est:1.24,importance:'HIGH',sector:'LATAM'},
-    ],
-    'May 1 THU':[
-      {ticker:'NVDA',company:'NVIDIA',time:'AMC',eps_est:0.89,importance:'HIGH',sector:'Tech'},
-      {ticker:'AMGN',company:'Amgen',time:'AMC',eps_est:4.98,importance:'HIGH',sector:'Healthcare'},
-      {ticker:'QCOM',company:'Qualcomm',time:'AMC',eps_est:2.85,importance:'HIGH',sector:'Tech'},
-    ],
-  };
-}
+// (getFallbackCalendar eliminado: calendario hardcodeado de abril 2026,
+//  reemplazado por el guard de frescura + fallback honesto)
+
 
 async function runEarningsIntel(){
   const ticker=document.getElementById('earningsTicker').value.trim().toUpperCase();
@@ -3506,28 +3455,28 @@ function calcFxImpact(){
 async function loadEconCalendar(){
   const el=document.getElementById('econCalendar');
   if(!el) return;
+  el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:10px;padding:8px 0;">Loading calendar...</div>';
 
-  // Show hardcoded calendar instantly
-  const fallbackEvents=[
-    {date:'Apr 9',event:'FOMC Minutes',country:'US',impact:'HIGH',expected:'',previous:'',description:'Federal Reserve meeting minutes release'},
-    {date:'Apr 10',event:'CPI Inflation',country:'US',impact:'HIGH',expected:'3.1%',previous:'3.2%',description:'Consumer Price Index — key for Fed rate decisions'},
-    {date:'Apr 11',event:'PPI Data',country:'US',impact:'MEDIUM',expected:'2.8%',previous:'3.0%',description:'Producer Price Index — inflation upstream'},
-    {date:'Apr 17',event:'Banxico Decision',country:'MX',impact:'HIGH',expected:'9.0%',previous:'9.5%',description:'Banco de México interest rate decision'},
-    {date:'Apr 22',event:'COPOM Meeting',country:'BR',impact:'HIGH',expected:'10.5%',previous:'10.75%',description:'Brazil central bank rate decision'},
-    {date:'Apr 25',event:'GDP Q1 2026',country:'US',impact:'HIGH',expected:'2.1%',previous:'2.3%',description:'First estimate of Q1 GDP growth'},
-    {date:'May 1',event:'Fed Rate Decision',country:'US',impact:'HIGH',expected:'4.25%',previous:'4.50%',description:'FOMC interest rate decision — markets pricing cut'},
-    {date:'May 2',event:'Jobs Report',country:'US',impact:'HIGH',expected:'180K',previous:'228K',description:'Non-farm payrolls — labor market health'},
-  ];
-  renderCalendar(fallbackEvents);
-
-  // Try to refresh with Claude data
-  try{
-    const aiText=await qdAI({max_tokens:500,
-        messages:[{role:'user',content:
-          'Economic calendar for the next 6 weeks starting '+qdTodayLabel()+'. Fed, CPI, jobs, Banxico, Brazil COPOM. Return ONLY JSON array of 8: [{"date":"MMM DD","event":"name","country":"US|MX|BR|EU","impact":"HIGH|MEDIUM|LOW","expected":"","previous":"","description":"1 sentence"}]'}]});
-    const events=aiText==null?null:safeJSON(aiText);
-    if(Array.isArray(events)) renderCalendar(events);
-  }catch(e){ /* keep fallback */ }
+  // Este calendario no tiene feed real en el free tier: lo compone la IA
+  // (anclada a la fecha de HOY por api/_lib/ai-guard.js). El array estático
+  // de abril 2026 que vivía aquí se eliminó: se pintaba primero y quedaba
+  // en pantalla mostrando eventos viejos como próximos cada vez que la IA
+  // fallaba (bug "relojes rotos"). Ahora: 2 intentos con guard de frescura
+  // (algún evento >= hoy) y, si no, fallback honesto.
+  for(let attempt=0;attempt<2;attempt++){
+    let events=null;
+    try{
+      const aiText=await qdAI({max_tokens:500,
+          messages:[{role:'user',content:
+            'Economic calendar for the next 6 weeks starting '+qdTodayLabel()+'. Fed, CPI, jobs, Banxico, Brazil COPOM. Return ONLY JSON array of 8: [{"date":"MMM DD","event":"name","country":"US|MX|BR|EU","impact":"HIGH|MEDIUM|LOW","expected":"","previous":"","description":"1 sentence"}]'}]});
+      events=aiText==null?null:safeJSON(aiText);
+    }catch(e){ events=null; }
+    if(Array.isArray(events)&&events.length&&qdCalendarFresh(events.map(function(e){return e.date;}))){
+      renderCalendar(events);
+      return;
+    }
+  }
+  el.innerHTML=qdUnavailableHTML('econ-calendar');
 }
 
 function renderCalendar(events){
@@ -3741,7 +3690,7 @@ function showPage(id){
   if(id==='macro') setTimeout(loadMacroPage,50);
   if(id==='smartmoney') setTimeout(()=>{if(!smLoaded){smLoaded=true;loadMarketSignals();}},50);
   if(id==='earnings') setTimeout(()=>initEarningsPage(),50);
-  if(id==='ipos') setTimeout(()=>{ if(!_iposCache) loadIPOs(); },50);
+  if(id==='ipos') setTimeout(()=>{ if(!_iposCache || Date.now()-_iposCacheAt>QD_CAL_TTL_MS) loadIPOs(); },50);
   if(id==='movers') setTimeout(()=>{ if(!_moversCache) loadMovers(); },50);
   if(id==='sectors') setTimeout(()=>{ if(!_sectorsCache[_currentSectorCat]) loadSectors(); },50);
   if(id==='gallery') setTimeout(()=>renderGallery(),50);
@@ -8595,6 +8544,42 @@ function qdUnavailableCell(){
   return '<span title="' + t('dataUnavailable') + '" style="color:#444;border-bottom:1px dotted #333;cursor:help;">—</span>';
 }
 
+// ── GUARD DE FRESCURA DE CALENDARIOS ("relojes rotos", jul 2026) ──
+// El Economic Calendar mostraba eventos de abril como próximos. Regla
+// barata: si un calendario no trae NINGÚN evento >= hoy, es stale — el
+// caller re-fetchea sin caché y, si persiste, muestra el fallback honesto
+// en vez de eventos viejos como próximos.
+
+// Parsea fechas de calendario: '2026-07-20', 'Jul 20', 'Jul 20 WED'.
+// Las formas sin año asumen el año en curso; si eso cae >6 meses en el
+// pasado se interpreta como el año próximo (cruce dic→ene).
+function qdParseCalDate(s){
+  if(!s) return null;
+  if(s instanceof Date) return isNaN(s)?null:s;
+  const str=String(s).trim();
+  let d=null;
+  if(/^\d{4}-\d{2}-\d{2}/.test(str)){
+    d=new Date(str.slice(0,10)+'T12:00:00');
+  } else {
+    const m=/^([A-Za-z]{3,9})\.?\s+(\d{1,2})/.exec(str);
+    if(!m) return null;
+    d=new Date(m[1]+' '+m[2]+', '+new Date().getFullYear()+' 12:00:00');
+    if(!isNaN(d) && (Date.now()-d.getTime())>183*24*3600*1000){
+      d=new Date(m[1]+' '+m[2]+', '+(new Date().getFullYear()+1)+' 12:00:00');
+    }
+  }
+  return (d&&!isNaN(d))?d:null;
+}
+
+// ¿Hay al menos un evento hoy o en adelante? graceDays corre el corte
+// hacia atrás (p. ej. IPOs "recent": la ventana del server es -45d, así
+// que una respuesta viva siempre tiene algo dentro de esa gracia).
+function qdCalendarFresh(dates, graceDays){
+  const cutoff=new Date(); cutoff.setHours(0,0,0,0);
+  if(graceDays) cutoff.setDate(cutoff.getDate()-graceDays);
+  return (dates||[]).some(function(x){ const d=qdParseCalDate(x); return d&&d>=cutoff; });
+}
+
 const QD_FETCH_TIMEOUT_MS = 15000;
 // fetch + json + shape check. Devuelve el JSON o null — NUNCA lanza.
 async function qdFetchJSON(url, opts, shapeCheck){
@@ -11931,6 +11916,8 @@ function useMoverTicker(sym){
 // IPO CALENDAR — Upcoming + recent IPOs with performance
 // ═══════════════════════════════════════════════════════════════
 let _iposCache = null;
+let _iposCacheAt = 0;
+const QD_CAL_TTL_MS = 30*60*1000; // 30 min: un tab abierto semanas no congela calendarios
 
 async function loadIPOs(){
   const el = document.getElementById('iposContent');
@@ -11938,12 +11925,24 @@ async function loadIPOs(){
   if(btn){ btn.textContent = '↻ Loading...'; btn.disabled = true; }
   el.innerHTML = '<div style="padding:40px;text-align:center;color:#555;font-family:var(--mono);font-size:12px;">Fetching IPO calendar from Finnhub...</div>';
 
-  const d = await qdFetchJSON('/api/ipos', null, (x) => x && typeof x === 'object');
-  if (d) {
-    _iposCache = d;
+  // Guard de frescura ("relojes rotos"): el server pide -45d→+90d con
+  // new Date(), así que una respuesta viva SIEMPRE tiene algún evento
+  // dentro de los últimos 45 días o el futuro. Si todo es más viejo (o
+  // vacío sin error), es una respuesta stale → re-fetch sin caché y, si
+  // persiste, fallback honesto en vez de IPOs viejas como próximas.
+  const fetchIpos = (bust) => qdFetchJSON('/api/ipos' + (bust ? '?_=' + Date.now() : ''),
+    bust ? { cache: 'no-store' } : null, (x) => x && typeof x === 'object');
+  const ipoDates = (x) => ['this_week','next_30d','later','recent']
+    .flatMap((k) => Array.isArray(x && x[k]) ? x[k] : []).map((i) => i.date);
+  const ipoFresh = (x) => qdCalendarFresh(ipoDates(x), 45);
+
+  let d = await fetchIpos(false);
+  if (d && !d.error && !ipoFresh(d)) d = await fetchIpos(true);
+  if (d && (d.error || ipoFresh(d))) {
+    _iposCache = d; _iposCacheAt = Date.now();
     renderIPOs(d);   // renderIPOs ya maneja data.error internamente
   } else {
-    el.innerHTML = qdUnavailableHTML('ipos');
+    el.innerHTML = qdUnavailableHTML('ipo-calendar');
   }
 
   if(btn){ btn.textContent = '↻ Refresh'; btn.disabled = false; }
