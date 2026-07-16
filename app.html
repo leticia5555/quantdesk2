@@ -2314,40 +2314,50 @@ async function loadUpcomingEarnings(){
   el.style.display='block';
   el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:11px;padding:16px;">Loading earnings calendar...</div>';
 
-  // Fuente primaria: calendario real de Finnhub (rango dinámico hoy→+30d).
-  // Guard de frescura ("relojes rotos"): si la respuesta no trae NINGÚN
-  // evento >= hoy es stale (caché rota o feed muerto) → un re-fetch sin
-  // caché; después IA como último recurso (validada con el mismo guard) y,
-  // si todo falla, fallback honesto — nunca eventos viejos como próximos.
+  // Fuente primaria: calendario real de Finnhub. El label del panel dice
+  // "THIS WEEK", así que la ventana es hoy→+7d — antes pedía +30 días y
+  // mostraba Aug 7/10 como "esta semana" en pleno julio. Guard doble:
+  // frescura (algún evento >= hoy) Y coherencia label-vs-datos (dentro
+  // del horizonte de 7 días). Si la respuesta no cumple es stale (caché
+  // rota, feed desincronizado) → un re-fetch sin caché; después IA como
+  // último recurso y, si todo falla, fallback honesto.
+  const EARN_HORIZON_DAYS=7;
   const now=new Date();
   const from=now.toISOString().split('T')[0];
-  const to=new Date(now.getTime()+30*24*60*60*1000).toISOString().split('T')[0];
+  const to=new Date(now.getTime()+EARN_HORIZON_DAYS*24*60*60*1000).toISOString().split('T')[0];
+  const horizonEnd=new Date(); horizonEnd.setHours(23,59,59,999); horizonEnd.setDate(horizonEnd.getDate()+EARN_HORIZON_DAYS);
   const fetchCal=async function(bust){
     try{
       const url='/api/earnings?from='+from+'&to='+to+(bust?'&_='+Date.now():'');
       const r=await fetch(url, bust?{cache:'no-store'}:undefined);
       const data=await r.json();
-      if(data.earnings&&data.earnings.length&&qdCalendarFresh(data.earnings.map(function(e){return e.date;}))) return data.earnings;
+      if(data.earnings&&data.earnings.length&&qdCalendarFresh(data.earnings.map(function(e){return e.date;}),0,EARN_HORIZON_DAYS)) return data.earnings;
     }catch(e){}
     return null;
   };
   let list=await fetchCal(false);
   if(!list) list=await fetchCal(true);
-  if(list){ renderEarningsCalendar(list); return; }
+  if(list){
+    // aunque una respuesta stale (ventana vieja de 30d) pase el guard por
+    // traer ALGO de esta semana, lo que se pinta se recorta al horizonte
+    list=list.filter(function(e){ const d=qdParseCalDate(e.date); return !d||d<=horizonEnd; });
+    renderEarningsCalendar(list); return;
+  }
 
   // Último recurso: calendario compuesto por IA (anclada a HOY por
   // api/_lib/ai-guard.js), validado con el mismo guard de frescura.
   try{
     const aiText=await qdAI({max_tokens:600,
         messages:[{role:'user',content:
-          'Earnings calendar for the next 4 weeks starting '+qdTodayLabel()+'. Include major US and LATAM companies. Group by date. Return ONLY JSON where keys are date strings and values are arrays of companies with ticker, company, time, eps_est, importance, sector fields. At least 20 companies.'}]});
+          'Earnings calendar for the next 7 days starting '+qdTodayLabel()+'. Include major US and LATAM companies. Group by date. Return ONLY JSON where keys are date strings and values are arrays of companies with ticker, company, time, eps_est, importance, sector fields.'}]});
     const calendar=aiText==null?null:safeJSON(aiText);
-    if(calendar&&qdCalendarFresh(Object.keys(calendar))){
+    if(calendar&&qdCalendarFresh(Object.keys(calendar),0,EARN_HORIZON_DAYS)){
       let newHtml='';
       Object.entries(calendar).forEach(([day, companies])=>{
         if(!companies||!companies.length) return;
         const d=qdParseCalDate(day);
         if(d&&d.getTime()<Date.now()-24*3600*1000) return; // días pasados no se pintan
+        if(d&&d>horizonEnd) return; // fuera del horizonte "this week" no se pinta
         const isNear=d&&(d.getTime()-Date.now())<3*24*3600*1000;
         const dayColor=isNear?'#ff6600':'#555';
         newHtml+='<div style="margin-bottom:16px;">'
@@ -2365,7 +2375,7 @@ async function loadUpcomingEarnings(){
               +'<div style="font-size:9px;color:#444;margin-bottom:4px;">'+e.company+'</div>'
               +'<div style="display:flex;justify-content:space-between;">'
               +'<span style="font-family:var(--mono);font-size:9px;color:#555;">'+e.time+'</span>'
-              +'<span style="font-family:var(--mono);font-size:9px;color:#888;">$'+(e.eps_est||0).toFixed(2)+'</span>'
+              +'<span style="font-family:var(--mono);font-size:9px;color:#888;">'+(e.eps_est!=null?'$'+(+e.eps_est).toFixed(2):'—')+'</span>'
               +'</div>'
               +'</div>';
           }).join('')
@@ -2396,7 +2406,7 @@ function renderEarningsCalendar(realEarnings){
         ticker:e.ticker,
         company:e.ticker, // Finnhub doesn't return company name in calendar
         time:e.time,
-        eps_est:e.eps_est||0,
+        eps_est:e.eps_est, // puede ser null (free tier): se muestra '—', no '$0.00'
         importance: Math.abs(e.eps_est||0)>1?'HIGH':'MEDIUM',
         sector:'',
         is_latam:['MELI','NU','GLOB','STNE','PAGS','VIST','VALE','ITUB','PETR'].includes(e.ticker)
@@ -2429,7 +2439,7 @@ function renderEarningsCalendar(realEarnings){
           +'<div style="font-size:9px;color:#444;margin-bottom:4px;">'+e.company+'</div>'
           +'<div style="display:flex;justify-content:space-between;">'
           +'<span style="font-family:var(--mono);font-size:9px;color:#555;">'+e.time+'</span>'
-          +'<span style="font-family:var(--mono);font-size:9px;color:#888;">$'+(e.eps_est||0).toFixed(2)+'</span>'
+          +'<span style="font-family:var(--mono);font-size:9px;color:#888;">'+(e.eps_est!=null?'$'+(+e.eps_est).toFixed(2):'—')+'</span>'
           +'</div>'
           +'</div>';
       }).join('')
@@ -8574,10 +8584,20 @@ function qdParseCalDate(s){
 // ¿Hay al menos un evento hoy o en adelante? graceDays corre el corte
 // hacia atrás (p. ej. IPOs "recent": la ventana del server es -45d, así
 // que una respuesta viva siempre tiene algo dentro de esa gracia).
-function qdCalendarFresh(dates, graceDays){
+// horizonDays acota hacia ADELANTE: coherencia label-vs-datos — un panel
+// "THIS WEEK" cuyo primer evento está a +21 días es tan stale como uno
+// congelado en abril (el bug de Aug 7/10 bajo "this week" en julio).
+function qdCalendarFresh(dates, graceDays, horizonDays){
   const cutoff=new Date(); cutoff.setHours(0,0,0,0);
   if(graceDays) cutoff.setDate(cutoff.getDate()-graceDays);
-  return (dates||[]).some(function(x){ const d=qdParseCalDate(x); return d&&d>=cutoff; });
+  let hi=null;
+  if(horizonDays!=null){
+    hi=new Date(); hi.setHours(23,59,59,999); hi.setDate(hi.getDate()+horizonDays);
+  }
+  return (dates||[]).some(function(x){
+    const d=qdParseCalDate(x);
+    return d&&d>=cutoff&&(!hi||d<=hi);
+  });
 }
 
 const QD_FETCH_TIMEOUT_MS = 15000;

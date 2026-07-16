@@ -248,8 +248,12 @@ export default async function handler(req, res) {
     if (!data.earningsCalendar) {
       return res.status(200).json({ earnings: [] });
     }
+    // No se filtra por epsEstimate: en el free tier muchos earnings
+    // CONFIRMADOS de corto plazo vienen sin estimate y el filtro los
+    // borraba — el panel "this week" quedaba mostrando solo fechas
+    // lejanas que sí traían estimate (Aug 7/10 bajo "this week" en jul).
     const earnings = data.earningsCalendar
-      .filter(e => e.epsEstimate !== null && e.symbol)
+      .filter(e => e.symbol && e.date)
       .map(e => ({
         ticker: e.symbol,
         date: e.date,
