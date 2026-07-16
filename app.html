@@ -2277,11 +2277,11 @@ function openFromScreener(ticker){
 }
 
 // ─── EARNINGS ENGINE ─────────────────────────────────────
-let earningsLoaded=false;
+let earningsLoadedAt=0;
 
 async function initEarningsPage(){
-  if(earningsLoaded) return;
-  earningsLoaded=true;
+  if(Date.now()-earningsLoadedAt<QD_CAL_TTL_MS) return; // TTL 30 min, no page-lifetime
+  earningsLoadedAt=Date.now();
   loadUpcomingEarnings();
 }
 
@@ -2314,40 +2314,41 @@ async function loadUpcomingEarnings(){
   el.style.display='block';
   el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:11px;padding:16px;">Loading earnings calendar...</div>';
 
-  try{
-    // Use real Finnhub earnings calendar
-    const now=new Date();
-    const from=now.toISOString().split('T')[0];
-    const to=new Date(now.getTime()+30*24*60*60*1000).toISOString().split('T')[0];
-    
-    const r=await fetch('/api/earnings?from='+from+'&to='+to);
-    const data=await r.json();
-    
-    if(data.earnings && data.earnings.length>0){
-      renderEarningsCalendar(data.earnings);
-      return;
-    }
-  }catch(e){
-    console.log('Finnhub earnings failed, using fallback:', e.message);
-  }
-
-  // Fallback to hardcoded calendar
-  renderEarningsCalendar(null);
-
-  // Try Claude update in background
-  // Try Claude update in background
-  qdAI({max_tokens:600,
-      messages:[{role:'user',content:
-        'Earnings calendar April 7 to May 2 2026. Include major US and LATAM companies. Group by date. Return ONLY JSON where keys are date strings and values are arrays of companies with ticker, company, time, eps_est, importance, sector fields. At least 20 companies.'}]}).then(aiText=>{
+  // Fuente primaria: calendario real de Finnhub (rango dinámico hoy→+30d).
+  // Guard de frescura ("relojes rotos"): si la respuesta no trae NINGÚN
+  // evento >= hoy es stale (caché rota o feed muerto) → un re-fetch sin
+  // caché; después IA como último recurso (validada con el mismo guard) y,
+  // si todo falla, fallback honesto — nunca eventos viejos como próximos.
+  const now=new Date();
+  const from=now.toISOString().split('T')[0];
+  const to=new Date(now.getTime()+30*24*60*60*1000).toISOString().split('T')[0];
+  const fetchCal=async function(bust){
     try{
-      if(aiText==null) return; // el calendario hardcodeado ya está en pantalla
-      const calendar=safeJSON(aiText);
-      if(!calendar) return;
-      // Update with Claude data
+      const url='/api/earnings?from='+from+'&to='+to+(bust?'&_='+Date.now():'');
+      const r=await fetch(url, bust?{cache:'no-store'}:undefined);
+      const data=await r.json();
+      if(data.earnings&&data.earnings.length&&qdCalendarFresh(data.earnings.map(function(e){return e.date;}))) return data.earnings;
+    }catch(e){}
+    return null;
+  };
+  let list=await fetchCal(false);
+  if(!list) list=await fetchCal(true);
+  if(list){ renderEarningsCalendar(list); return; }
+
+  // Último recurso: calendario compuesto por IA (anclada a HOY por
+  // api/_lib/ai-guard.js), validado con el mismo guard de frescura.
+  try{
+    const aiText=await qdAI({max_tokens:600,
+        messages:[{role:'user',content:
+          'Earnings calendar for the next 4 weeks starting '+qdTodayLabel()+'. Include major US and LATAM companies. Group by date. Return ONLY JSON where keys are date strings and values are arrays of companies with ticker, company, time, eps_est, importance, sector fields. At least 20 companies.'}]});
+    const calendar=aiText==null?null:safeJSON(aiText);
+    if(calendar&&qdCalendarFresh(Object.keys(calendar))){
       let newHtml='';
       Object.entries(calendar).forEach(([day, companies])=>{
         if(!companies||!companies.length) return;
-        const isNear=day.includes('Apr 9')||day.includes('Apr 10')||day.includes('Apr 11');
+        const d=qdParseCalDate(day);
+        if(d&&d.getTime()<Date.now()-24*3600*1000) return; // días pasados no se pintan
+        const isNear=d&&(d.getTime()-Date.now())<3*24*3600*1000;
         const dayColor=isNear?'#ff6600':'#555';
         newHtml+='<div style="margin-bottom:16px;">'
           +'<div style="font-family:var(--mono);font-size:10px;color:'+dayColor+';letter-spacing:.06em;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1a1a1a;">'
@@ -2371,9 +2372,10 @@ async function loadUpcomingEarnings(){
           +'</div>'
           +'</div>';
       });
-      if(newHtml) el.innerHTML=newHtml;
-    }catch(e){}
-  }).catch(()=>{});
+      if(newHtml){ el.innerHTML=newHtml; return; }
+    }
+  }catch(e){}
+  el.innerHTML=qdUnavailableHTML('earnings-calendar');
 }
 
 function renderEarningsCalendar(realEarnings){
@@ -2401,8 +2403,10 @@ function renderEarningsCalendar(realEarnings){
       });
     });
   } else {
-    // Use hardcoded fallback
-    grouped = getFallbackCalendar();
+    // Sin datos reales no se pinta el calendario hardcodeado de abril
+    // (mostraba eventos viejos como próximos): fallback honesto.
+    el.innerHTML=qdUnavailableHTML('earnings-calendar');
+    return;
   }
 
   const today=new Date();
@@ -2435,64 +2439,9 @@ function renderEarningsCalendar(realEarnings){
   el.innerHTML=html||'<div style="color:#555;font-family:var(--mono);font-size:11px;padding:16px;">No earnings scheduled</div>';
 }
 
-function getFallbackCalendar(){
-  return {
-    'Apr 9 WED':[
-      {ticker:'FAST',company:'Fastenal',time:'BMO',eps_est:0.52,importance:'HIGH',sector:'Industrials'},
-      {ticker:'DAL',company:'Delta Air Lines',time:'BMO',eps_est:0.42,importance:'HIGH',sector:'Airlines'},
-    ],
-    'Apr 10 THU':[
-      {ticker:'JPM',company:'JPMorgan Chase',time:'BMO',eps_est:4.61,importance:'HIGH',sector:'Financials'},
-      {ticker:'WFC',company:'Wells Fargo',time:'BMO',eps_est:1.24,importance:'HIGH',sector:'Financials'},
-      {ticker:'MS',company:'Morgan Stanley',time:'BMO',eps_est:1.99,importance:'HIGH',sector:'Financials'},
-      {ticker:'BLK',company:'BlackRock',time:'BMO',eps_est:10.21,importance:'HIGH',sector:'Financials'},
-      {ticker:'GS',company:'Goldman Sachs',time:'BMO',eps_est:12.35,importance:'HIGH',sector:'Financials'},
-    ],
-    'Apr 14 MON':[
-      {ticker:'MELI',company:'MercadoLibre',time:'AMC',eps_est:9.84,importance:'HIGH',sector:'LATAM'},
-      {ticker:'BAC',company:'Bank of America',time:'BMO',eps_est:0.82,importance:'HIGH',sector:'Financials'},
-    ],
-    'Apr 15 TUE':[
-      {ticker:'JNJ',company:'Johnson & Johnson',time:'BMO',eps_est:2.56,importance:'HIGH',sector:'Healthcare'},
-      {ticker:'UNH',company:'UnitedHealth',time:'BMO',eps_est:7.29,importance:'HIGH',sector:'Healthcare'},
-    ],
-    'Apr 17 THU':[
-      {ticker:'TSM',company:'Taiwan Semi',time:'BMO',eps_est:2.11,importance:'HIGH',sector:'Tech'},
-      {ticker:'NFLX',company:'Netflix',time:'AMC',eps_est:5.74,importance:'HIGH',sector:'Tech'},
-      {ticker:'AXP',company:'American Express',time:'BMO',eps_est:3.64,importance:'HIGH',sector:'Financials'},
-    ],
-    'Apr 22 TUE':[
-      {ticker:'GOOGL',company:'Alphabet',time:'AMC',eps_est:2.03,importance:'HIGH',sector:'Tech'},
-      {ticker:'TSLA',company:'Tesla',time:'AMC',eps_est:0.45,importance:'HIGH',sector:'EV'},
-    ],
-    'Apr 23 WED':[
-      {ticker:'META',company:'Meta Platforms',time:'AMC',eps_est:5.28,importance:'HIGH',sector:'Tech'},
-      {ticker:'MSFT',company:'Microsoft',time:'AMC',eps_est:3.22,importance:'HIGH',sector:'Tech'},
-      {ticker:'IBM',company:'IBM',time:'AMC',eps_est:1.65,importance:'MEDIUM',sector:'Tech'},
-      {ticker:'NOW',company:'ServiceNow',time:'AMC',eps_est:3.84,importance:'HIGH',sector:'Tech'},
-    ],
-    'Apr 24 THU':[
-      {ticker:'AAPL',company:'Apple',time:'AMC',eps_est:1.63,importance:'HIGH',sector:'Tech'},
-      {ticker:'AMZN',company:'Amazon',time:'AMC',eps_est:1.37,importance:'HIGH',sector:'Tech'},
-      {ticker:'INTC',company:'Intel',time:'AMC',eps_est:0.02,importance:'HIGH',sector:'Tech'},
-    ],
-    'Apr 29 TUE':[
-      {ticker:'V',company:'Visa',time:'AMC',eps_est:2.68,importance:'HIGH',sector:'Financials'},
-      {ticker:'SBUX',company:'Starbucks',time:'AMC',eps_est:0.49,importance:'HIGH',sector:'Consumer'},
-      {ticker:'NU',company:'Nu Holdings',time:'AMC',eps_est:0.12,importance:'HIGH',sector:'LATAM'},
-    ],
-    'Apr 30 WED':[
-      {ticker:'MA',company:'Mastercard',time:'AMC',eps_est:3.58,importance:'HIGH',sector:'Financials'},
-      {ticker:'SPOT',company:'Spotify',time:'BMO',eps_est:2.44,importance:'HIGH',sector:'Tech'},
-      {ticker:'GLOB',company:'Globant',time:'AMC',eps_est:1.24,importance:'HIGH',sector:'LATAM'},
-    ],
-    'May 1 THU':[
-      {ticker:'NVDA',company:'NVIDIA',time:'AMC',eps_est:0.89,importance:'HIGH',sector:'Tech'},
-      {ticker:'AMGN',company:'Amgen',time:'AMC',eps_est:4.98,importance:'HIGH',sector:'Healthcare'},
-      {ticker:'QCOM',company:'Qualcomm',time:'AMC',eps_est:2.85,importance:'HIGH',sector:'Tech'},
-    ],
-  };
-}
+// (getFallbackCalendar eliminado: calendario hardcodeado de abril 2026,
+//  reemplazado por el guard de frescura + fallback honesto)
+
 
 async function runEarningsIntel(){
   const ticker=document.getElementById('earningsTicker').value.trim().toUpperCase();
@@ -2863,9 +2812,19 @@ async function runSmartMoney(){
     .catch(()=>null);
 
   try{
+    // Precio real de HOY (la app ya lo tiene vía /api/price) para que el
+    // verdict/bull/bear se anclen a números frescos y no a memoria.
+    const pd=await fetchPriceData(ticker).catch(()=>null);
+    const freshCtx=pd&&pd.currentPrice
+      ?'DATA AS OF TODAY ('+qdTodayLabel()+', live feed): '+ticker+' trades at $'+pd.currentPrice
+        +(pd.low52w&&pd.high52w?', 52w range $'+pd.low52w+'-$'+pd.high52w:'')
+        +(pd.sigma?', annualized volatility '+(pd.sigma*100).toFixed(0)+'%':'')
+        +(pd.return30d!=null?', 30d return '+(pd.return30d*100).toFixed(1)+'%':'')
+        +'. Anchor your analysis to these numbers. '
+      :'';
     const aiText=await qdAI({max_tokens:2000,
         messages:[{role:'user',content:
-          'Bloomberg smart money data for '+ticker+' April 2026. Use SEC, FINRA, 13F knowledge. Return ONLY valid JSON with these exact keys: {"short_interest":{"short_interest_pct":number,"days_to_cover":number,"short_squeeze_score":number,"change_vs_month_ago":"INCREASED|DECREASED|STABLE","borrow_rate_pct":number,"narrative":"string"},"institutional":{"institutional_pct":number,"top_holders":[{"name":"string","pct":number,"change":"INCREASED|DECREASED|NEW|EXITED"}],"hedge_fund_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"options":{"put_call_ratio":number,"implied_volatility_pct":number,"iv_percentile":number,"options_sentiment":"BULLISH|BEARISH|NEUTRAL","unusual_activity":"YES|NO","notable_flow":"string","max_pain":number,"key_strikes":[{"strike":number,"type":"CALL|PUT","open_interest":number,"significance":"HIGH|MEDIUM"}]},"verdict":{"overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","conviction":"HIGH|MEDIUM|LOW","smart_money_score":number,"key_insight":"string","bull_case":"string","bear_case":"string","trade_setup":"string","risk_flags":["string"]}}' + langDirective()}]});
+          freshCtx+'Bloomberg smart money data for '+ticker+' as of '+qdMonthYear()+'. Use SEC, FINRA, 13F knowledge. Return ONLY valid JSON with these exact keys: {"short_interest":{"short_interest_pct":number,"days_to_cover":number,"short_squeeze_score":number,"change_vs_month_ago":"INCREASED|DECREASED|STABLE","borrow_rate_pct":number,"narrative":"string"},"institutional":{"institutional_pct":number,"top_holders":[{"name":"string","pct":number,"change":"INCREASED|DECREASED|NEW|EXITED"}],"hedge_fund_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"options":{"put_call_ratio":number,"implied_volatility_pct":number,"iv_percentile":number,"options_sentiment":"BULLISH|BEARISH|NEUTRAL","unusual_activity":"YES|NO","notable_flow":"string","max_pain":number,"key_strikes":[{"strike":number,"type":"CALL|PUT","open_interest":number,"significance":"HIGH|MEDIUM"}]},"verdict":{"overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","conviction":"HIGH|MEDIUM|LOW","smart_money_score":number,"key_insight":"string","bull_case":"string","bear_case":"string","trade_setup":"string","risk_flags":["string"]}}' + langDirective()}]});
 
     if(aiText==null) throw new Error('AI unavailable');
     const rawText=aiText.replace(/```json|```/g,'').trim();
@@ -3132,7 +3091,7 @@ async function loadMarketSignals(){
   try{
     const aiText=await qdAI({max_tokens:500,
         messages:[{role:'user',content:
-          'Market-wide smart money signals April 2026. What are institutions, hedge funds, and options traders doing in aggregate? Return ONLY JSON: {"signals":[{"category":"HEDGE FUNDS|INSTITUTIONS|OPTIONS|INSIDER|DARK POOL","signal":"BULLISH|BEARISH|NEUTRAL","description":"1 sentence","confidence":"HIGH|MEDIUM|LOW"}],"market_positioning":"RISK-ON|RISK-OFF|MIXED","key_theme":"1 sentence on dominant smart money theme"}. Include 5 signals.'}]});
+          'Market-wide smart money signals as of '+qdMonthYear()+'. What are institutions, hedge funds, and options traders doing in aggregate? Return ONLY JSON: {"signals":[{"category":"HEDGE FUNDS|INSTITUTIONS|OPTIONS|INSIDER|DARK POOL","signal":"BULLISH|BEARISH|NEUTRAL","description":"1 sentence","confidence":"HIGH|MEDIUM|LOW"}],"market_positioning":"RISK-ON|RISK-OFF|MIXED","key_theme":"1 sentence on dominant smart money theme"}. Include 5 signals.'}]});
     const ms=aiText==null?null:safeJSON(aiText);
     if(!ms||!Array.isArray(ms.signals)){ el.innerHTML=qdUnavailableHTML('market-wide signals'); return; }
 
@@ -3284,7 +3243,7 @@ async function loadFearGreed(){
     // Step 2: try Claude refinement in background (non-blocking)
     qdAI({max_tokens:150,
         messages:[{role:'user',content:
-          'Fear & Greed score for financial markets April 9 2026. Consider recent tariff fears, market volatility, crypto action. Return ONLY JSON: {"score":number,"label":"Extreme Fear|Fear|Neutral|Greed|Extreme Greed","description":"1 sentence"}'}]}).then(aiText=>{
+          'Fear & Greed score for financial markets as of '+qdTodayLabel()+'. Consider recent macro news, market volatility, crypto action. Return ONLY JSON: {"score":number,"label":"Extreme Fear|Fear|Neutral|Greed|Extreme Greed","description":"1 sentence"}'}]}).then(aiText=>{
       const fg=aiText==null?null:safeJSON(aiText);
       if(fg&&fg.score) renderFearGreed(fg.score, fg.label||label, fg.description||desc);
     }).catch(()=>{});
@@ -3292,10 +3251,10 @@ async function loadFearGreed(){
   }catch(e){
     // Pure Claude fallback
     qdAI({max_tokens:150,
-        messages:[{role:'user',content:'Fear & Greed score April 2026. Return ONLY JSON: {"score":number,"label":"string","description":"1 sentence"}'}]}).then(aiText=>{
+        messages:[{role:'user',content:'Fear & Greed score as of '+qdMonthYear()+'. Return ONLY JSON: {"score":number,"label":"string","description":"1 sentence"}'}]}).then(aiText=>{
       const fg=(aiText==null?null:safeJSON(aiText))||{};
       renderFearGreed(fg.score||40, fg.label||'Fear', fg.description||'');
-    }).catch(()=>renderFearGreed(40,'Fear','Elevated macro uncertainty in April 2026.'));
+    }).catch(()=>renderFearGreed(40,'Fear','Elevated macro uncertainty.'));
   }
 }
 
@@ -3447,7 +3406,7 @@ async function loadCurrencies(){
   try{
     const aiText=await qdAI({max_tokens:250,
         messages:[{role:'user',content:
-          'FX rates April 2026. Return ONLY JSON array: [{"pair":"USDMXN","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDBRL","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDCOP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDCLP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"}]'}]});
+          'FX rates as of '+qdMonthYear()+'. Return ONLY JSON array: [{"pair":"USDMXN","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDBRL","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDCOP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"},{"pair":"USDCLP","rate":number,"change30d":number,"trend":"UP|DOWN|STABLE","risk":"HIGH|MEDIUM|LOW"}]'}]});
     const fx=aiText==null?null:safeJSON(aiText);
     if(Array.isArray(fx)) renderCurrencies(pairs, fx);
   }catch(e){ /* keep fallback */ }
@@ -3496,28 +3455,28 @@ function calcFxImpact(){
 async function loadEconCalendar(){
   const el=document.getElementById('econCalendar');
   if(!el) return;
+  el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:10px;padding:8px 0;">Loading calendar...</div>';
 
-  // Show hardcoded calendar instantly
-  const fallbackEvents=[
-    {date:'Apr 9',event:'FOMC Minutes',country:'US',impact:'HIGH',expected:'',previous:'',description:'Federal Reserve meeting minutes release'},
-    {date:'Apr 10',event:'CPI Inflation',country:'US',impact:'HIGH',expected:'3.1%',previous:'3.2%',description:'Consumer Price Index — key for Fed rate decisions'},
-    {date:'Apr 11',event:'PPI Data',country:'US',impact:'MEDIUM',expected:'2.8%',previous:'3.0%',description:'Producer Price Index — inflation upstream'},
-    {date:'Apr 17',event:'Banxico Decision',country:'MX',impact:'HIGH',expected:'9.0%',previous:'9.5%',description:'Banco de México interest rate decision'},
-    {date:'Apr 22',event:'COPOM Meeting',country:'BR',impact:'HIGH',expected:'10.5%',previous:'10.75%',description:'Brazil central bank rate decision'},
-    {date:'Apr 25',event:'GDP Q1 2026',country:'US',impact:'HIGH',expected:'2.1%',previous:'2.3%',description:'First estimate of Q1 GDP growth'},
-    {date:'May 1',event:'Fed Rate Decision',country:'US',impact:'HIGH',expected:'4.25%',previous:'4.50%',description:'FOMC interest rate decision — markets pricing cut'},
-    {date:'May 2',event:'Jobs Report',country:'US',impact:'HIGH',expected:'180K',previous:'228K',description:'Non-farm payrolls — labor market health'},
-  ];
-  renderCalendar(fallbackEvents);
-
-  // Try to refresh with Claude data
-  try{
-    const aiText=await qdAI({max_tokens:500,
-        messages:[{role:'user',content:
-          'Economic calendar April-May 2026. Fed, CPI, jobs, Banxico, Brazil COPOM. Return ONLY JSON array of 8: [{"date":"Apr DD","event":"name","country":"US|MX|BR|EU","impact":"HIGH|MEDIUM|LOW","expected":"","previous":"","description":"1 sentence"}]'}]});
-    const events=aiText==null?null:safeJSON(aiText);
-    if(Array.isArray(events)) renderCalendar(events);
-  }catch(e){ /* keep fallback */ }
+  // Este calendario no tiene feed real en el free tier: lo compone la IA
+  // (anclada a la fecha de HOY por api/_lib/ai-guard.js). El array estático
+  // de abril 2026 que vivía aquí se eliminó: se pintaba primero y quedaba
+  // en pantalla mostrando eventos viejos como próximos cada vez que la IA
+  // fallaba (bug "relojes rotos"). Ahora: 2 intentos con guard de frescura
+  // (algún evento >= hoy) y, si no, fallback honesto.
+  for(let attempt=0;attempt<2;attempt++){
+    let events=null;
+    try{
+      const aiText=await qdAI({max_tokens:500,
+          messages:[{role:'user',content:
+            'Economic calendar for the next 6 weeks starting '+qdTodayLabel()+'. Fed, CPI, jobs, Banxico, Brazil COPOM. Return ONLY JSON array of 8: [{"date":"MMM DD","event":"name","country":"US|MX|BR|EU","impact":"HIGH|MEDIUM|LOW","expected":"","previous":"","description":"1 sentence"}]'}]});
+      events=aiText==null?null:safeJSON(aiText);
+    }catch(e){ events=null; }
+    if(Array.isArray(events)&&events.length&&qdCalendarFresh(events.map(function(e){return e.date;}))){
+      renderCalendar(events);
+      return;
+    }
+  }
+  el.innerHTML=qdUnavailableHTML('econ-calendar');
 }
 
 function renderCalendar(events){
@@ -3568,7 +3527,7 @@ async function loadSectorHeatmap(){
   try{
     const aiText=await qdAI({max_tokens:350,
         messages:[{role:'user',content:
-          'Sector performance April 2026 including LATAM. Return ONLY JSON array of 10: [{"sector":"name","return30d":number,"ytd":number,"signal":"BULLISH|NEUTRAL|BEARISH","note":"1 sentence"}]'}]});
+          'Sector performance as of '+qdMonthYear()+' including LATAM. Return ONLY JSON array of 10: [{"sector":"name","return30d":number,"ytd":number,"signal":"BULLISH|NEUTRAL|BEARISH","note":"1 sentence"}]'}]});
     const sectors=aiText==null?null:safeJSON(aiText);
     if(Array.isArray(sectors)) renderHeatmap(sectors);
   }catch(e){ /* keep fallback */ }
@@ -3601,9 +3560,33 @@ async function runMacroBrief(){
   btn.textContent='Generating...';btn.disabled=true;
   el.innerHTML='<div class="loading">analyzing global macro</div>';
   try{
+    // Datos frescos que la app YA tiene (FRED + Banxico) para anclar el
+    // brief a números reales de HOY en vez de a la memoria del modelo.
+    const [usAll,mxAll]=await Promise.all([
+      fetch('/api/fred?series=all').then(r=>r.ok?r.json():null).catch(()=>null),
+      fetch('/api/banxico?series=all').then(r=>r.ok?r.json():null).catch(()=>null),
+    ]);
+    const liveLines=[];
+    const fed=usAll?.derived?.nominal_fed_funds ?? usAll?.indicators?.FEDFUNDS?.latest?.value;
+    if(fed!=null) liveLines.push(`Fed funds rate: ${fed}%`);
+    const y10=usAll?.indicators?.DGS10?.latest?.value, y2=usAll?.indicators?.DGS2?.latest?.value;
+    if(y10!=null) liveLines.push(`US 10Y: ${y10}%`+(y2!=null?` · 2Y: ${y2}% (curve ${(y10-y2).toFixed(2)}pp)`:''));
+    if(usAll?.derived?.cpi_yoy!=null) liveLines.push(`US CPI YoY: ${usAll.derived.cpi_yoy}%`);
+    const dxy30=usAll?.indicators?.DXY?.change_30d?.pct;
+    if(dxy30!=null) liveLines.push(`DXY 30d change: ${dxy30}%`);
+    const vix=usAll?.indicators?.VIX?.latest?.value;
+    if(vix!=null) liveLines.push(`VIX: ${vix}`);
+    const mxPol=mxAll?.indicators?.POLICY?.latest?.value;
+    if(mxPol!=null) liveLines.push(`Banxico policy rate: ${mxPol}%`);
+    const mxn=mxAll?.indicators?.USDMXN?.latest?.value, mxn30=mxAll?.indicators?.USDMXN?.change_30d?.pct;
+    if(mxn!=null) liveLines.push(`USDMXN: ${mxn}`+(mxn30!=null?` (${mxn30}% 30d)`:''));
+    const liveData=liveLines.length
+      ?`\n\nLIVE DATA AS OF TODAY (${qdTodayLabel()}, from FRED/Banxico — anchor your analysis to THESE numbers, not to memory):\n- ${liveLines.join('\n- ')}\n`
+      :'';
     const aiText=await qdAI({max_tokens:800,
         messages:[{role:'user',content:
-          `You are the chief macro strategist at a major bank. Write a concise macro intelligence brief for LATAM investors as of April 2026.
+          `You are the chief macro strategist at a major bank. Write a concise macro intelligence brief for LATAM investors as of ${qdTodayLabel()}.
+${liveData}
 
 Cover:
 1. US Fed policy and interest rate outlook
@@ -3614,7 +3597,7 @@ Cover:
 
 Return ONLY JSON:
 {
-  "headline": "One bold macro call for April 2026",
+  "headline": "One bold macro call for ${qdMonthYear()}",
   "fed_outlook": "2 sentences on Fed policy",
   "usd_outlook": "2 sentences on dollar strength",
   "latam_macro": "2 sentences on LATAM specific conditions",
@@ -3707,7 +3690,7 @@ function showPage(id){
   if(id==='macro') setTimeout(loadMacroPage,50);
   if(id==='smartmoney') setTimeout(()=>{if(!smLoaded){smLoaded=true;loadMarketSignals();}},50);
   if(id==='earnings') setTimeout(()=>initEarningsPage(),50);
-  if(id==='ipos') setTimeout(()=>{ if(!_iposCache) loadIPOs(); },50);
+  if(id==='ipos') setTimeout(()=>{ if(!_iposCache || Date.now()-_iposCacheAt>QD_CAL_TTL_MS) loadIPOs(); },50);
   if(id==='movers') setTimeout(()=>{ if(!_moversCache) loadMovers(); },50);
   if(id==='sectors') setTimeout(()=>{ if(!_sectorsCache[_currentSectorCat]) loadSectors(); },50);
   if(id==='gallery') setTimeout(()=>renderGallery(),50);
@@ -4620,7 +4603,7 @@ async function fetchSimData(ticker,dir,capital,days,model){
   // Step 3: build context for Claude using real price
   const ipoNote=pd&&(pd.recentIPO||pd.rangeUnreliable)?` IMPORTANT: This is a RECENT IPO with only ${pd.dataPoints||'a few'} days of trading history. The 52-week range shown covers only the post-IPO period — do NOT compare the current price against a full-year range or claim the stock trades above/below its historical range. Base your thesis on IPO dynamics (lockup expiry, valuation vs fundamentals, early volatility) instead.`:'';
   const priceContext=pd?`Real market data as of today: current price $${pd.currentPrice}, annualized drift mu=${(pd.mu*100).toFixed(1)}%, annualized volatility sigma=${(pd.sigma*100).toFixed(1)}%, 30-day return=${(pd.return30d*100).toFixed(1)}%, 52w range $${pd.low52w} to $${pd.high52w}, exchange: ${pd.exchange||'US'}.${ipoNote}`
-    :'No real price data — use your knowledge of actual April 2026 prices.';
+    :'No real price data — use your knowledge of recent prices as of '+qdMonthYear()+'.';
   const headlines=(nd.headlines||[]).map(h=>h.headline).slice(0,3).join(' | ');
   const earningsCtx=nd.nextEarnings?`Earnings in ${nd.nextEarnings.daysUntil} days (${nd.nextEarnings.date}).`:'';
   const sentCtx=nd.sentiment?.bullish?`Sentiment: ${(nd.sentiment.bullish*100).toFixed(0)}% bullish.`:'';
@@ -4639,7 +4622,7 @@ async function fetchSimData(ticker,dir,capital,days,model){
     const claudeRes=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({max_tokens:800,messages:[{role:'user',content:
-        `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, April 2026.
+        `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, as of ${qdTodayLabel()}.
 ${priceContext}
 ${newsContext}
 The current price is $${pd?.currentPrice||'unknown'} — use this exact price in your response.
@@ -5157,7 +5140,7 @@ async function runVC(){
     const res=await fetch('/api/claude',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({max_tokens:1400,messages:[{role:'user',content:
-        `Senior VC analyst. Active fundraising in "${q}" (stage: ${stage==='all'?'any':stage}), early 2026. Real companies when possible.
+        `Senior VC analyst. Active fundraising in "${q}" (stage: ${stage==='all'?'any':stage}), as of ${qdMonthYear()}. Real companies when possible.
 Return ONLY JSON array of 4:
 {"name":"","sector":"","amount":"$XM","round":"","raised":"$XM total","founded":"YYYY","hq":"City,Country","lead_investor":"","backers":["","",""],"thesis":"2 sentences","why_now":"1 sentence","traction":"key metric","traction_signal":"ACCELERATING|STEADY|EARLY","signal_score":1-100,"verdict":"STRONG BUY|WATCH|PASS"}` + langDirective()}]})
     });
@@ -5578,7 +5561,7 @@ async function exportPDF(){
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({max_tokens:1000,
         messages:[{role:'user',content:
-          `You are a senior equity research analyst at Goldman Sachs. Write a company overview for ${ticker} as of April 2026.
+          `You are a senior equity research analyst at Goldman Sachs. Write a company overview for ${ticker} as of ${qdTodayLabel()}.
 Current price: $${SP.S0.toFixed(2)}. 52w range: $${lastCd.low52w||'—'} - $${lastCd.high52w||'—'}.
 
 Return ONLY JSON:
@@ -8561,6 +8544,42 @@ function qdUnavailableCell(){
   return '<span title="' + t('dataUnavailable') + '" style="color:#444;border-bottom:1px dotted #333;cursor:help;">—</span>';
 }
 
+// ── GUARD DE FRESCURA DE CALENDARIOS ("relojes rotos", jul 2026) ──
+// El Economic Calendar mostraba eventos de abril como próximos. Regla
+// barata: si un calendario no trae NINGÚN evento >= hoy, es stale — el
+// caller re-fetchea sin caché y, si persiste, muestra el fallback honesto
+// en vez de eventos viejos como próximos.
+
+// Parsea fechas de calendario: '2026-07-20', 'Jul 20', 'Jul 20 WED'.
+// Las formas sin año asumen el año en curso; si eso cae >6 meses en el
+// pasado se interpreta como el año próximo (cruce dic→ene).
+function qdParseCalDate(s){
+  if(!s) return null;
+  if(s instanceof Date) return isNaN(s)?null:s;
+  const str=String(s).trim();
+  let d=null;
+  if(/^\d{4}-\d{2}-\d{2}/.test(str)){
+    d=new Date(str.slice(0,10)+'T12:00:00');
+  } else {
+    const m=/^([A-Za-z]{3,9})\.?\s+(\d{1,2})/.exec(str);
+    if(!m) return null;
+    d=new Date(m[1]+' '+m[2]+', '+new Date().getFullYear()+' 12:00:00');
+    if(!isNaN(d) && (Date.now()-d.getTime())>183*24*3600*1000){
+      d=new Date(m[1]+' '+m[2]+', '+(new Date().getFullYear()+1)+' 12:00:00');
+    }
+  }
+  return (d&&!isNaN(d))?d:null;
+}
+
+// ¿Hay al menos un evento hoy o en adelante? graceDays corre el corte
+// hacia atrás (p. ej. IPOs "recent": la ventana del server es -45d, así
+// que una respuesta viva siempre tiene algo dentro de esa gracia).
+function qdCalendarFresh(dates, graceDays){
+  const cutoff=new Date(); cutoff.setHours(0,0,0,0);
+  if(graceDays) cutoff.setDate(cutoff.getDate()-graceDays);
+  return (dates||[]).some(function(x){ const d=qdParseCalDate(x); return d&&d>=cutoff; });
+}
+
 const QD_FETCH_TIMEOUT_MS = 15000;
 // fetch + json + shape check. Devuelve el JSON o null — NUNCA lanza.
 async function qdFetchJSON(url, opts, shapeCheck){
@@ -8589,6 +8608,18 @@ async function qdAI(body){
   }, function(d){ return d && Array.isArray(d.content); });
   if (!data) return null;
   return data.content.map(function(b){ return b.text || ''; }).join('');
+}
+
+// Fechas dinámicas para prompts de IA. Varios prompts traían "April 2026"
+// hardcodeado (el mes en que se escribieron) y anclaban el análisis del
+// modelo a esa fecha; el server además inyecta la fecha en el system prompt
+// (api/_lib/ai-guard.js) — estas helpers evitan que el texto del usuario
+// la contradiga.
+function qdTodayLabel(){
+  return new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
+}
+function qdMonthYear(){
+  return new Date().toLocaleDateString('en-US',{month:'long',year:'numeric'});
 }
 
 // Append to AI prompts so Claude responds in the active language.
@@ -11885,6 +11916,8 @@ function useMoverTicker(sym){
 // IPO CALENDAR — Upcoming + recent IPOs with performance
 // ═══════════════════════════════════════════════════════════════
 let _iposCache = null;
+let _iposCacheAt = 0;
+const QD_CAL_TTL_MS = 30*60*1000; // 30 min: un tab abierto semanas no congela calendarios
 
 async function loadIPOs(){
   const el = document.getElementById('iposContent');
@@ -11892,12 +11925,24 @@ async function loadIPOs(){
   if(btn){ btn.textContent = '↻ Loading...'; btn.disabled = true; }
   el.innerHTML = '<div style="padding:40px;text-align:center;color:#555;font-family:var(--mono);font-size:12px;">Fetching IPO calendar from Finnhub...</div>';
 
-  const d = await qdFetchJSON('/api/ipos', null, (x) => x && typeof x === 'object');
-  if (d) {
-    _iposCache = d;
+  // Guard de frescura ("relojes rotos"): el server pide -45d→+90d con
+  // new Date(), así que una respuesta viva SIEMPRE tiene algún evento
+  // dentro de los últimos 45 días o el futuro. Si todo es más viejo (o
+  // vacío sin error), es una respuesta stale → re-fetch sin caché y, si
+  // persiste, fallback honesto en vez de IPOs viejas como próximas.
+  const fetchIpos = (bust) => qdFetchJSON('/api/ipos' + (bust ? '?_=' + Date.now() : ''),
+    bust ? { cache: 'no-store' } : null, (x) => x && typeof x === 'object');
+  const ipoDates = (x) => ['this_week','next_30d','later','recent']
+    .flatMap((k) => Array.isArray(x && x[k]) ? x[k] : []).map((i) => i.date);
+  const ipoFresh = (x) => qdCalendarFresh(ipoDates(x), 45);
+
+  let d = await fetchIpos(false);
+  if (d && !d.error && !ipoFresh(d)) d = await fetchIpos(true);
+  if (d && (d.error || ipoFresh(d))) {
+    _iposCache = d; _iposCacheAt = Date.now();
     renderIPOs(d);   // renderIPOs ya maneja data.error internamente
   } else {
-    el.innerHTML = qdUnavailableHTML('ipos');
+    el.innerHTML = qdUnavailableHTML('ipo-calendar');
   }
 
   if(btn){ btn.textContent = '↻ Refresh'; btn.disabled = false; }

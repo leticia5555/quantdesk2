@@ -34,6 +34,12 @@ let liqDelayMs = 0;
 let liqCalls = [];
 let apiCalls = [];
 let externalUrls = [];
+// S18 (relojes rotos): 'none' = stubs vacíos como siempre; 'stale' = solo
+// eventos pasados (abril 2026); 'fresh' = eventos futuros relativos a hoy.
+let calMode = 'none';
+// Si está seteado, /api/claude devuelve este array como texto del modelo
+// (para probar el guard de frescura sobre el calendario compuesto por IA).
+let econAI = null;
 
 async function routeApis(page) {
   await page.route('**/api/**', async (route) => {
@@ -65,6 +71,32 @@ async function routeApis(page) {
       return json({ ticker: tk, currentPrice: 100, current_price: 100, mu: 0.1, sigma, return30d: 0.06, dayChange: 0.01, asset_type: 'stock', verdict: 'WATCH', longName: 'Stub Co' });
     }
     if (p === '/api/news') return json({ headlines: [] });
+    if (p === '/api/earnings' && url.searchParams.get('from') && calMode !== 'none') {
+      if (calMode === 'fresh') {
+        const d1 = new Date(Date.now() + 3 * 864e5).toISOString().slice(0, 10);
+        const d2 = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+        return json({ earnings: [
+          { ticker: 'AAPL', date: d1, time: 'AMC', eps_est: 1.5 },
+          { ticker: 'MELI', date: d2, time: 'BMO', eps_est: 9.8 },
+        ] });
+      }
+      return json({ earnings: [
+        { ticker: 'JPM', date: '2026-04-10', time: 'BMO', eps_est: 4.6 },
+        { ticker: 'DAL', date: '2026-04-09', time: 'BMO', eps_est: 0.4 },
+      ] });
+    }
+    if (p === '/api/ipos' && calMode !== 'none') {
+      if (calMode === 'fresh') {
+        const up = new Date(Date.now() + 10 * 864e5).toISOString().slice(0, 10);
+        return json({ this_week: [], later: [], recent: [],
+          next_30d: [{ symbol: 'NEWCO', name: 'NewCo', date: up, exchange: 'NASDAQ', status: 'expected', bucket: 'next_30d' }] });
+      }
+      return json({ this_week: [], next_30d: [], later: [],
+        recent: [{ symbol: 'OLDCO', name: 'OldCo', date: '2026-04-12', exchange: 'NYSE', status: 'priced', bucket: 'recent' }] });
+    }
+    if (p === '/api/claude' && econAI) {
+      return json({ content: [{ type: 'text', text: JSON.stringify(econAI) }] });
+    }
     return json({});
   });
   // block anything external
@@ -514,6 +546,71 @@ report('S17c badge sigue la sigma: KO (σ=0.20) no sale HIGH RISK/AVOID',
 const s17mu = await runSimAndSample('MU');
 report('S17d badge sigue la sigma: MU (σ=0.85) sale HIGH RISK/AVOID',
   /HIGH RISK|AVOID/.test(s17mu.verdict), s17mu.verdict);
+
+// ── S18: relojes rotos — calendarios stale nunca se muestran como próximos ──
+currentPhase = 'S18-calendars';
+const apiCount = (path) => apiCalls.filter(c => c.phase === currentPhase && c.path.startsWith(path)).length;
+
+// a) earnings con SOLO eventos pasados → re-fetch sin caché → fallback honesto
+calMode = 'stale';
+// sin showPage: dispararía initEarningsPage → segundo loadUpcomingEarnings
+// en paralelo y el conteo de llamadas dejaría de ser determinista
+await page.evaluate(() => loadUpcomingEarnings());
+await page.waitForTimeout(1200);
+const s18a = await page.evaluate(() => document.getElementById('upcomingEarnings').innerText);
+report('S18a earnings stale (abril) → fallback honesto, sin eventos viejos',
+  /unavailable|no disponible/i.test(s18a) && !/JPM|DAL/.test(s18a), s18a.slice(0, 60));
+report('S18b earnings stale disparó re-fetch sin caché (2 llamadas)',
+  apiCount('/api/earnings?from') === 2, apiCount('/api/earnings?from') + ' llamadas');
+
+// b) earnings frescos → se renderean
+calMode = 'fresh';
+await page.evaluate(() => loadUpcomingEarnings());
+await page.waitForTimeout(800);
+const s18c = await page.evaluate(() => document.getElementById('upcomingEarnings').innerText);
+report('S18c earnings frescos se renderean', /AAPL/.test(s18c) && /MELI/.test(s18c), s18c.slice(0, 60));
+
+// c) IPOs con todo más viejo que la ventana del server → re-fetch → fallback honesto
+calMode = 'stale';
+await page.evaluate(() => loadIPOs());
+await page.waitForTimeout(1200);
+const s18d = await page.evaluate(() => document.getElementById('iposContent').innerText);
+report('S18d IPOs stale → fallback honesto, sin IPOs viejas',
+  /unavailable|no disponible/i.test(s18d) && !/OLDCO/.test(s18d), s18d.slice(0, 60));
+report('S18e IPOs stale disparó re-fetch sin caché (2 llamadas)',
+  apiCount('/api/ipos') === 2, apiCount('/api/ipos') + ' llamadas');
+
+calMode = 'fresh';
+await page.evaluate(() => loadIPOs());
+await page.waitForTimeout(800);
+const s18f = await page.evaluate(() => document.getElementById('iposContent').innerText);
+report('S18f IPOs frescas se renderean', /NEWCO/.test(s18f), s18f.slice(0, 60));
+calMode = 'none';
+
+// d) calendario económico compuesto por IA: stale → 2 intentos → fallback honesto
+econAI = [
+  { date: 'Apr 9', event: 'FOMC Minutes', country: 'US', impact: 'HIGH', expected: '', previous: '', description: 'old' },
+  { date: 'Apr 10', event: 'CPI Inflation', country: 'US', impact: 'HIGH', expected: '', previous: '', description: 'old' },
+];
+const claudeBefore = apiCalls.filter(c => c.path.startsWith('/api/claude')).length;
+await page.evaluate(() => loadEconCalendar());
+await page.waitForTimeout(1200);
+const s18g = await page.evaluate(() => document.getElementById('econCalendar').innerText);
+const claudeCalls = apiCalls.filter(c => c.path.startsWith('/api/claude')).length - claudeBefore;
+report('S18g econ calendar IA con fechas de abril → fallback honesto (no FOMC Apr 9)',
+  /unavailable|no disponible/i.test(s18g) && !/FOMC/.test(s18g), s18g.slice(0, 60) + ' · ' + claudeCalls + ' intentos IA');
+
+// e) calendario económico IA con fechas frescas → se renderea
+const soonLbl = new Date(Date.now() + 5 * 864e5).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+econAI = [
+  { date: soonLbl, event: 'CPI Inflation', country: 'US', impact: 'HIGH', expected: '3.0%', previous: '3.1%', description: 'fresh' },
+  { date: soonLbl, event: 'Banxico Decision', country: 'MX', impact: 'HIGH', expected: '8.0%', previous: '8.5%', description: 'fresh' },
+];
+await page.evaluate(() => loadEconCalendar());
+await page.waitForTimeout(800);
+const s18h = await page.evaluate(() => document.getElementById('econCalendar').innerText);
+report('S18h econ calendar IA fresco se renderea', /CPI Inflation/.test(s18h) && /Banxico/.test(s18h), s18h.slice(0, 60));
+econAI = null;
 
 // ── console summary ──
 console.log('\n=== CONSOLA (errores/warnings/pageerrors) ===');

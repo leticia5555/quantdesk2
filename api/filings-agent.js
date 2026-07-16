@@ -17,6 +17,7 @@
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 import { ANTHROPIC_MODEL } from './_lib/model.js';
+import { guardedClaudeCall } from './_lib/ai-guard.js';
 
 // ── Bilingual support ─────────────────────────────────────────────
 function langDirective(lang) {
@@ -324,24 +325,21 @@ export default async function handler(req, res) {
       `Filing text:\n${trimmed}\n\n` +
       `Return the structured JSON analysis.`;
 
-    const claudeRes = await fetch(ANTHROPIC_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': ANTHROPIC_VERSION
-      },
-      body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
-        max_tokens: 4000,
-        system: systemPrompt + langDirective(lang),
-        messages: [{ role: 'user', content: userMessage }]
-      })
-    });
+    // guard:false — el análisis de un filing histórico cita legítimamente
+    // años pasados y forward-looking statements del documento ("projected
+    // growth into 2025" de un 10-K de 2024): el escaneo prospectivo daría
+    // falsos positivos y el retry re-mandaría el filing completo. La fecha
+    // de HOY sí se inyecta, y el userMessage ya ancla la Filing date.
+    const g = await guardedClaudeCall({ apiKey, guard: false, payload: {
+      model: ANTHROPIC_MODEL,
+      max_tokens: 4000,
+      system: systemPrompt + langDirective(lang),
+      messages: [{ role: 'user', content: userMessage }]
+    } });
 
-    const claudeData = await claudeRes.json();
-    if (!claudeRes.ok) {
-      console.log(`[filings-agent] ${ticker}: Claude HTTP ${claudeRes.status}`, claudeData);
+    const claudeData = g.data;
+    if (g.status >= 400) {
+      console.log(`[filings-agent] ${ticker}: Claude HTTP ${g.status}`, claudeData);
       return res.status(502).json({
         ticker,
         error: 'Claude API call failed',
