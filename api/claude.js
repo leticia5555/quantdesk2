@@ -1,4 +1,5 @@
 import { ANTHROPIC_MODEL } from './_lib/model.js';
+import { guardedClaudeCall } from './_lib/ai-guard.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -13,26 +14,27 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'messages must be a non-empty array' });
   }
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        // El modelo lo decide el SERVER (env ANTHROPIC_MODEL o default en
-        // _lib/model.js). body.model se ignora a propósito: clientes con
-        // HTML cacheado viejo mandaban un modelo ya retirado y tumbaban
-        // toda la IA (jul 2026).
+    // El modelo lo decide el SERVER (env ANTHROPIC_MODEL o default en
+    // _lib/model.js). body.model se ignora a propósito: clientes con
+    // HTML cacheado viejo mandaban un modelo ya retirado y tumbaban
+    // toda la IA (jul 2026). guardedClaudeCall además inyecta la fecha de
+    // HOY en el system prompt y corta respuestas que proyecten años
+    // pasados como escenarios futuros (1 retry, luego stale).
+    const out = await guardedClaudeCall({
+      apiKey,
+      payload: {
         model: ANTHROPIC_MODEL,
         max_tokens: body.max_tokens || 1000,
         ...(body.system ? { system: body.system } : {}),
-        messages: body.messages
-      })
+        messages: body.messages,
+      },
     });
-    const data = await response.json();
-    return res.status(response.status).json(data);
+    if (out.stale) {
+      // 502 → el front (qdAI/qdFetchJSON) lo trata como IA caída y muestra
+      // su fallback honesto en vez de publicar análisis temporalmente roto.
+      return res.status(502).json({ error: 'ai_stale_dates', detail: out.hits });
+    }
+    return res.status(out.status).json(out.data);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

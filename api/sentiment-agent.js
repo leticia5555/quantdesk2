@@ -22,6 +22,7 @@
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 import { ANTHROPIC_MODEL } from './_lib/model.js';
+import { guardedClaudeCall } from './_lib/ai-guard.js';
 
 // ── Bilingual support ─────────────────────────────────────────────
 function langDirective(lang) {
@@ -205,21 +206,15 @@ Return ONLY a JSON array of length ${trimmed.length}, in the same order as the i
 
   const user = `Score these ${trimmed.length} items for ${ticker}:\n\n${numbered}`;
 
-  const r = await fetch(ANTHROPIC_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': ANTHROPIC_VERSION
-    },
-    body: JSON.stringify({
-      model: ANTHROPIC_MODEL, max_tokens: 4000, system,
-      messages: [{ role: 'user', content: user }]
-    })
-  });
-  const data = await r.json();
-  if (!r.ok) {
-    console.log(`[sentiment-agent] scoring HTTP ${r.status}`, data && data.error);
+  // guard:false — el scoring es mecánico y los titulares traen fechas viejas
+  // legítimas; solo se inyecta la fecha, sin escaneo prospectivo.
+  const g = await guardedClaudeCall({ apiKey, guard: false, payload: {
+    model: ANTHROPIC_MODEL, max_tokens: 4000, system,
+    messages: [{ role: 'user', content: user }]
+  } });
+  const data = g.data;
+  if (g.status >= 400) {
+    console.log(`[sentiment-agent] scoring HTTP ${g.status}`, data && data.error);
     return trimmed.map(() => null);
   }
   const raw = (data.content || []).map(b => (b && b.text) || '').join('').trim();
@@ -277,20 +272,13 @@ Be quantitative. Use the actual numbers in the brief (avg 7d score, anomaly magn
 
   const user = `Analyze this sentiment brief and return the JSON narrative.\n\n\`\`\`json\n${JSON.stringify(brief, null, 2)}\n\`\`\``;
 
-  const r = await fetch(ANTHROPIC_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': ANTHROPIC_VERSION
-    },
-    body: JSON.stringify({
-      model: ANTHROPIC_MODEL, max_tokens: 1500, system: system + langDirective(lang),
-      messages: [{ role: 'user', content: user }]
-    })
-  });
-  const data = await r.json();
-  if (!r.ok) return { error: 'Claude API call failed', detail: data && data.error ? data.error : data };
+  const g = await guardedClaudeCall({ apiKey, payload: {
+    model: ANTHROPIC_MODEL, max_tokens: 1500, system: system + langDirective(lang),
+    messages: [{ role: 'user', content: user }]
+  } });
+  if (g.stale) return { error: 'AI insight blocked: stale prospective dates after retry', stale_dates: g.hits };
+  const data = g.data;
+  if (g.status >= 400) return { error: 'Claude API call failed', detail: data && data.error ? data.error : data };
   const raw = (data.content || []).map(b => (b && b.text) || '').join('').trim();
   try { return { ok: JSON.parse(raw) }; } catch (_) {}
   const fenced = raw.match(/```(?:json)?\s*([\s\S]+?)```/i);
