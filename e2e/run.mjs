@@ -72,6 +72,15 @@ async function routeApis(page) {
     }
     if (p === '/api/news') return json({ headlines: [] });
     if (p === '/api/earnings' && url.searchParams.get('from') && calMode !== 'none') {
+      if (calMode === 'farfuture') {
+        // futuro PERO fuera del horizonte "this week": +21/+24 días
+        const f1 = new Date(Date.now() + 21 * 864e5).toISOString().slice(0, 10);
+        const f2 = new Date(Date.now() + 24 * 864e5).toISOString().slice(0, 10);
+        return json({ earnings: [
+          { ticker: 'FUT1', date: f1, time: 'BMO', eps_est: 2.0 },
+          { ticker: 'FUT2', date: f2, time: 'AMC', eps_est: 1.1 },
+        ] });
+      }
       if (calMode === 'fresh') {
         const d1 = new Date(Date.now() + 3 * 864e5).toISOString().slice(0, 10);
         const d2 = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
@@ -585,6 +594,25 @@ await page.evaluate(() => loadIPOs());
 await page.waitForTimeout(800);
 const s18f = await page.evaluate(() => document.getElementById('iposContent').innerText);
 report('S18f IPOs frescas se renderean', /NEWCO/.test(s18f), s18f.slice(0, 60));
+calMode = 'none';
+
+// ── S19: coherencia label-vs-datos — "THIS WEEK" con eventos a +21 días ──
+// (el guard de frescura solo no lo atrapa: Aug 7 ES futuro; el horizonte sí)
+currentPhase = 'S19-week-coherence';
+const apiCount19 = (path) => apiCalls.filter(c => c.phase === currentPhase && c.path.startsWith(path)).length;
+calMode = 'farfuture';
+await page.evaluate(() => loadUpcomingEarnings());
+await page.waitForTimeout(1200);
+const s19a = await page.evaluate(() => document.getElementById('upcomingEarnings').innerText);
+report('S19a earnings a +21d bajo label THIS WEEK → guard de horizonte → fallback honesto',
+  /unavailable|no disponible/i.test(s19a) && !/FUT1|FUT2/.test(s19a), s19a.slice(0, 60));
+report('S19b la incoherencia disparó re-fetch sin caché (2 llamadas)',
+  apiCount19('/api/earnings?from') === 2, apiCount19('/api/earnings?from') + ' llamadas');
+const earnCall19 = apiCalls.find(c => c.phase === currentPhase && c.path.startsWith('/api/earnings?from'));
+const q19 = new URLSearchParams(earnCall19.path.split('?')[1]);
+const window19 = (new Date(q19.get('to')) - new Date(q19.get('from'))) / 864e5;
+report('S19c el request pide ventana de 7 días (from=hoy, to=hoy+7d)',
+  window19 === 7, q19.get('from') + ' → ' + q19.get('to'));
 calMode = 'none';
 
 // d) calendario económico compuesto por IA: stale → 2 intentos → fallback honesto
