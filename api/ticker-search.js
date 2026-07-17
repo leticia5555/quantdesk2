@@ -1,5 +1,14 @@
 // ═══════════════════════════════════════════════════════════════
-// /api/ticker-search — dos modos, ambos proxy de Yahoo Finance (sin key):
+// /api/ticker-search — tres modos:
+//
+//   ?profile=SYM    IDENTIDAD de la empresa para el popover del calendario
+//                   de earnings: passthrough de Finnhub profile2 (free
+//                   tier). Devuelve { symbol, name, industry, country,
+//                   exchange, currency, market_cap_m, ipo, weburl }. Los
+//                   campos que Finnhub no traiga van null — se omiten en
+//                   UI, nunca se inventan. (La descripción de negocio es
+//                   premium: la UI compone una línea con estos campos
+//                   reales.) Cache CDN 24h — la identidad no cambia.
 //
 //   ?q=fems         BÚSQUEDA global de símbolos (fallback del autocomplete
 //                   cuando la lista curada local no alcanza). Cubre
@@ -98,6 +107,28 @@ async function liquidityCheck(ticker) {
   };
 }
 
+// Identidad de empresa vía Finnhub profile2 (todo free tier). null donde
+// Finnhub no traiga dato — la UI omite, no rellena.
+async function companyProfile(ticker) {
+  const key = process.env.FINNHUB_API_KEY;
+  if (!key) return { symbol: ticker, error: 'FINNHUB_API_KEY not set' };
+  const r = await fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(ticker)}&token=${key}`);
+  if (!r.ok) return { symbol: ticker, error: `Finnhub ${r.status}` };
+  const p = await r.json();
+  if (!p || !p.name) return { symbol: ticker, error: 'sin profile' };
+  return {
+    symbol: ticker,
+    name: p.name || null,
+    industry: p.finnhubIndustry || null,
+    country: p.country || null,
+    exchange: p.exchange || null,
+    currency: p.currency || null,
+    market_cap_m: Number.isFinite(p.marketCapitalization) ? Math.round(p.marketCapitalization) : null,
+    ipo: p.ipo || null,
+    weburl: p.weburl || null,
+  };
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -105,6 +136,11 @@ export default async function handler(req, res) {
 
   const q = req.query || {};
   try {
+    if (q.profile) {
+      const out = await companyProfile(q.profile.toString().trim().toUpperCase());
+      res.setHeader('Cache-Control', 's-maxage=86400');
+      return res.status(200).json(out);
+    }
     if (q.liquidity) {
       const out = await liquidityCheck(q.liquidity.toString().trim().toUpperCase());
       res.setHeader('Cache-Control', 's-maxage=3600');
@@ -121,4 +157,4 @@ export default async function handler(req, res) {
   }
 }
 
-export { yahooSearch, liquidityCheck, fxToUsd, ADV_THRESHOLD_USD };
+export { yahooSearch, liquidityCheck, fxToUsd, companyProfile, ADV_THRESHOLD_USD };

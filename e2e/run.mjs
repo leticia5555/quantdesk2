@@ -51,6 +51,12 @@ async function routeApis(page) {
     if (p === '/api/signal-backtester') return json(signalOK(url.searchParams.get('ticker')));
     if (p === '/api/pairs-validator') return json(pairsOK(url.searchParams.get('x'), url.searchParams.get('y')));
     if (p === '/api/ticker-search') {
+      if (url.searchParams.get('profile')) {
+        const sym = url.searchParams.get('profile');
+        return json({ symbol: sym, name: sym === 'AAPL' ? 'Apple Inc.' : sym + ' Stub Corp',
+          industry: 'Technology', country: 'US', exchange: 'NASDAQ', currency: 'USD',
+          market_cap_m: 2900000, ipo: '1980-12-12', weburl: 'https://stub' });
+      }
       if (url.searchParams.get('liquidity')) {
         const sym = url.searchParams.get('liquidity');
         liqCalls.push({ phase: currentPhase, sym });
@@ -639,6 +645,49 @@ await page.waitForTimeout(800);
 const s18h = await page.evaluate(() => document.getElementById('econCalendar').innerText);
 report('S18h econ calendar IA fresco se renderea', /CPI Inflation/.test(s18h) && /Banxico/.test(s18h), s18h.slice(0, 60));
 econAI = null;
+
+// ── S20: cards con nombre local + popover de identidad (opción A) ──
+currentPhase = 'S20-company-popover';
+const apiCount20 = (prefix) => apiCalls.filter(c => c.phase === currentPhase && c.path.startsWith(prefix)).length;
+calMode = 'fresh';
+await page.evaluate(() => showPage('earnings'));
+await page.evaluate(() => loadUpcomingEarnings());
+await page.waitForTimeout(800);
+const s20cards = await page.evaluate(() => document.getElementById('upcomingEarnings').innerText);
+report('S20a la card muestra el nombre del catálogo local bajo el ticker (0 requests)',
+  /Apple Inc\./.test(s20cards) && /MercadoLibre/.test(s20cards) && apiCount20('/api/ticker-search?profile') === 0,
+  s20cards.slice(0, 70));
+
+await page.click('#upcomingEarnings [data-ticker="AAPL"]');
+await page.waitForTimeout(500);
+const s20pop = await page.evaluate(() => {
+  const el = document.getElementById('qdCoPop');
+  return { visible: !!el && el.style.display !== 'none', text: el ? el.innerText : '' };
+});
+report('S20b click → popover con nombre + industria + línea compuesta, SIN correr intel',
+  s20pop.visible && /Apple Inc\./.test(s20pop.text) && /Technology/.test(s20pop.text)
+    && /\$2\.9T/.test(s20pop.text) && /IPO 1980/.test(s20pop.text)
+    && apiCount20('/api/earnings?ticker') === 0,
+  s20pop.text.replace(/\n/g, ' · ').slice(0, 80));
+
+await page.click('#upcomingEarnings [data-ticker="MELI"]');
+await page.waitForTimeout(400);
+await page.click('#upcomingEarnings [data-ticker="AAPL"]');
+await page.waitForTimeout(400);
+report('S20c memoización de sesión: 2 clicks a AAPL = 1 sola request de profile',
+  apiCalls.filter(c => c.phase === currentPhase && c.path === '/api/ticker-search?profile=AAPL').length === 1,
+  apiCount20('/api/ticker-search?profile') + ' requests de profile en total');
+
+await page.click('#qdCoPop button');
+await page.waitForTimeout(600);
+const s20intel = await page.evaluate(() => ({
+  ticker: document.getElementById('earningsTicker').value,
+  popVisible: document.getElementById('qdCoPop').style.display !== 'none',
+}));
+report('S20d RUN INTEL → llena el ticker, cierra el popover y dispara el intel',
+  s20intel.ticker === 'AAPL' && !s20intel.popVisible && apiCount20('/api/earnings?ticker') >= 1,
+  JSON.stringify(s20intel));
+calMode = 'none';
 
 // ── console summary ──
 console.log('\n=== CONSOLA (errores/warnings/pageerrors) ===');
