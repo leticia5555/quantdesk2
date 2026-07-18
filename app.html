@@ -2518,7 +2518,10 @@ function renderEarningsCalendar(realEarnings){
       if(!grouped[key]) grouped[key]=[];
       grouped[key].push({
         ticker:e.ticker,
-        company:'', // el nombre sale del catálogo local (qdCompanyName)
+        // Nombre server-side (symbol map de Finnhub, enriquecido en
+        // /api/earnings): cubre los símbolos fuera del catálogo local de
+        // 201. En el render qdCompanyName (catálogo local) tiene prioridad.
+        company:e.company||'',
         time:e.time,
         eps_est:e.eps_est, // puede ser null (free tier): se muestra '—', no '$0.00'
         importance: Math.abs(e.eps_est||0)>1?'HIGH':'MEDIUM',
