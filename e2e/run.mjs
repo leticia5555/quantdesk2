@@ -687,6 +687,30 @@ const s20intel = await page.evaluate(() => ({
 report('S20d RUN INTEL → llena el ticker, cierra el popover y dispara el intel',
   s20intel.ticker === 'AAPL' && !s20intel.popVisible && apiCount20('/api/earnings?ticker') >= 1,
   JSON.stringify(s20intel));
+
+// e) rótulo de empresa activa en el header: vía popover (0 requests extra,
+//    AAPL ya está memoizado), gemelo SMART $, y backfill para un ticker
+//    desconocido tecleado a mano (≤1 request, luego memo)
+const s20e = await page.evaluate(() => document.getElementById('earningsActiveCo').innerText);
+report('S20e header EARNINGS muestra ticker + nombre de la empresa activa',
+  /AAPL/.test(s20e) && /Apple Inc\./.test(s20e), s20e);
+
+// NVDA no fue clickeado antes → prueba el camino catálogo-local puro
+// (0 requests de profile); MELI mostraría el nombre del profile memoizado.
+await page.evaluate(() => { document.getElementById('smTicker').value = 'NVDA'; runSmartMoney(); });
+await page.waitForTimeout(600);
+const s20f = await page.evaluate(() => document.getElementById('smActiveCo').innerText);
+report('S20f gemelo SMART $: header muestra NVDA + nombre (catálogo local, 0 requests)',
+  /NVDA/.test(s20f) && /NVIDIA/.test(s20f)
+    && apiCalls.filter(c => c.path === '/api/ticker-search?profile=NVDA').length === 0, s20f);
+
+const profBefore = apiCalls.filter(c => c.path === '/api/ticker-search?profile=ZZUNKNOWN').length;
+await page.evaluate(() => { document.getElementById('earningsTicker').value = 'ZZUNKNOWN'; runEarningsIntel(); });
+await page.waitForTimeout(800);
+const s20g = await page.evaluate(() => document.getElementById('earningsActiveCo').innerText);
+const profCalls = apiCalls.filter(c => c.path === '/api/ticker-search?profile=ZZUNKNOWN').length - profBefore;
+report('S20g ticker fuera de catálogo tecleado → backfill (1 request) y nombre en header',
+  /ZZUNKNOWN/.test(s20g) && /Stub Corp/.test(s20g) && profCalls === 1, s20g + ' · ' + profCalls + ' request');
 calMode = 'none';
 
 // ── console summary ──

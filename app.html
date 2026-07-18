@@ -792,7 +792,7 @@ td:first-child{color:var(--text);font-weight:500;}
   <!-- TOP BAR -->
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;">
     <span style="font-family:var(--mono);font-size:10px;color:#00c97d;font-weight:600;letter-spacing:.1em;" data-i18n="smartMoneyTracker">SMART MONEY TRACKER</span>
-    <span style="font-family:var(--mono);font-size:10px;color:#333;">SEC · FINRA · CBOE · FINNHUB</span>
+    <span id="smActiveCo" style="font-family:var(--mono);font-size:10px;color:#333;">SEC · FINRA · CBOE · FINNHUB</span>
     <div style="margin-left:auto;display:flex;gap:8px;">
       <div class="autocomplete-wrap" style="display:inline-block;">
         <input type="text" id="smTicker" placeholder="TICKER" oninput="onSmTickerInput()" onkeydown="onSmTickerKey(event)" autocomplete="off" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 10px;width:100px;border-radius:2px;text-transform:uppercase;"/>
@@ -864,7 +864,7 @@ td:first-child{color:var(--text);font-weight:500;}
 <div id="page-earnings" class="page" style="padding:0;background:#080808;min-height:100vh;">
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
     <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;" data-i18n="earningsIntel">EARNINGS INTELLIGENCE</span>
-    <span style="font-family:var(--mono);font-size:10px;color:#333;">EPS · SURPRISES · REACTIONS · WHISPER NUMBERS</span>
+    <span id="earningsActiveCo" style="font-family:var(--mono);font-size:10px;color:#333;">EPS · SURPRISES · REACTIONS · WHISPER NUMBERS</span>
     <div style="margin-left:auto;display:flex;gap:8px;">
       <div class="autocomplete-wrap" style="display:inline-block;">
         <input type="text" id="earningsTicker" placeholder="TICKER" oninput="onEarningsTickerInput()" onkeydown="onEarningsTickerKey(event)" autocomplete="off" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 10px;width:100px;border-radius:2px;text-transform:uppercase;"/>
@@ -2382,6 +2382,33 @@ async function qdCoPopShow(card, sym){
   }
 }
 
+// Rótulo de empresa activa en el subtítulo del header (EARNINGS y su
+// gemelo SMART $): "AMC · AMC Entertainment Holdings Inc". Cadena de
+// nombre: profile memoizado (si vino del popover) → catálogo local →
+// backfill con el MISMO fetch memoizado del popover (solo tickers
+// desconocidos tecleados a mano; ≤1 request por sesión) → ticker solo.
+async function qdSetActiveCo(elId, sym){
+  const el=document.getElementById(elId);
+  if(!el) return;
+  el.style.overflow='hidden'; el.style.textOverflow='ellipsis';
+  el.style.whiteSpace='nowrap'; el.style.maxWidth='360px';
+  const render=function(name){
+    el.innerHTML='<span style="color:#ff6600;font-weight:700;">'+sym+'</span>'
+      +(name?' · <span style="color:#ccc;">'+name+'</span>':'');
+  };
+  let name=(qdCoProfiles[sym]&&qdCoProfiles[sym].name)||qdCompanyName(sym)||'';
+  render(name);
+  if(!name && !(sym in qdCoProfiles)){
+    const p=await qdFetchJSON('/api/ticker-search?profile='+encodeURIComponent(sym), null,
+      function(x){ return x && typeof x==='object'; });
+    qdCoProfiles[sym]=(p&&!p.error&&p.name)?p:null;
+    if(qdCoProfiles[sym]){
+      if(qdCoNames) qdCoNames[sym]=qdCoProfiles[sym].name;
+      render(qdCoProfiles[sym].name);
+    }
+  }
+}
+
 // Delegación única: card → popover; click fuera → cierra; dentro, nada.
 document.addEventListener('click', function(ev){
   const pop=document.getElementById('qdCoPop');
@@ -2543,6 +2570,7 @@ function renderEarningsCalendar(realEarnings){
 async function runEarningsIntel(){
   const ticker=document.getElementById('earningsTicker').value.trim().toUpperCase();
   if(!ticker){alert('Enter a ticker');return;}
+  qdSetActiveCo('earningsActiveCo', ticker); // rótulo de empresa activa, desde el arranque
 
   ['epsPanel','reactionPanel','nextEarningsPanel','earningsVerdictPanel'].forEach(id=>{
     const el=document.getElementById(id);
@@ -2894,6 +2922,7 @@ let smLoaded=false;
 async function runSmartMoney(){
   const ticker=document.getElementById('smTicker').value.trim().toUpperCase();
   if(!ticker){alert('Enter a ticker');return;}
+  qdSetActiveCo('smActiveCo', ticker); // rótulo de empresa activa, desde el arranque
 
   // Reset panels with loading state
   ['shortInterestPanel','insiderPanel','institutionalPanel','optionsPanel','smVerdictPanel'].forEach(id=>{
