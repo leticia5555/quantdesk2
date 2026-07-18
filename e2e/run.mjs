@@ -90,9 +90,15 @@ async function routeApis(page) {
       if (calMode === 'fresh') {
         const d1 = new Date(Date.now() + 3 * 864e5).toISOString().slice(0, 10);
         const d2 = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+        // `company` = enriquecimiento server-side (symbol map de Finnhub en
+        // /api/earnings). AAPL trae un nombre distinto al del catálogo local
+        // a propósito: prueba que el local mantiene prioridad en el render.
+        // ZZOUT está fuera del catálogo de 201: solo puede pintarse desde
+        // el server (S21).
         return json({ earnings: [
-          { ticker: 'AAPL', date: d1, time: 'AMC', eps_est: 1.5 },
-          { ticker: 'MELI', date: d2, time: 'BMO', eps_est: 9.8 },
+          { ticker: 'AAPL', date: d1, time: 'AMC', eps_est: 1.5, company: 'Apple Inc (Server)' },
+          { ticker: 'MELI', date: d2, time: 'BMO', eps_est: 9.8, company: 'Mercadolibre Inc' },
+          { ticker: 'ZZOUT', date: d2, time: 'BMO', eps_est: null, company: 'Zz Outsider Corp' },
         ] });
       }
       return json({ earnings: [
@@ -711,6 +717,26 @@ const s20g = await page.evaluate(() => document.getElementById('earningsActiveCo
 const profCalls = apiCalls.filter(c => c.path === '/api/ticker-search?profile=ZZUNKNOWN').length - profBefore;
 report('S20g ticker fuera de catálogo tecleado → backfill (1 request) y nombre en header',
   /ZZUNKNOWN/.test(s20g) && /Stub Corp/.test(s20g) && profCalls === 1, s20g + ' · ' + profCalls + ' request');
+
+// ── S21: nombre server-side para símbolos FUERA del catálogo de 201 ──
+// /api/earnings enriquece cada evento con `company` (symbol map de
+// Finnhub title-cased); el render lo usa de fallback cuando qdCompanyName
+// no conoce el símbolo. El calendario sigue pintado del render fresh de
+// S20a — se lee el DOM directo, sin re-fetch ni requests de profile.
+currentPhase = 'S21-server-name';
+const s21 = await page.evaluate(() => {
+  const txt = (sym) => {
+    const el = document.querySelector('#upcomingEarnings [data-ticker="' + sym + '"] .qd-co-name');
+    return el ? el.textContent : 'NO-CARD';
+  };
+  return { localZZOUT: qdCompanyName('ZZOUT'), zzout: txt('ZZOUT'), aapl: txt('AAPL') };
+});
+report('S21a símbolo fuera del catálogo pinta el nombre del server desde el render',
+  s21.localZZOUT === '' && s21.zzout === 'Zz Outsider Corp', JSON.stringify(s21));
+report('S21b el catálogo local mantiene prioridad sobre el nombre del server',
+  s21.aapl === 'Apple Inc.', s21.aapl);
+report('S21c el nombre llegó en el response del calendario: 0 requests de profile para ZZOUT',
+  apiCalls.filter(c => c.path === '/api/ticker-search?profile=ZZOUT').length === 0, '');
 calMode = 'none';
 
 // ── console summary ──

@@ -1,3 +1,54 @@
+// ── SYMBOL MAP US: nombre de empresa por ticker ──────────────────
+// /stock/symbol?exchange=US es free tier y trae `description` (el nombre,
+// en MAYÚSCULAS) para el universo US completo (~25-30k símbolos, OTC
+// incluido) — cubre casi todo lo que devuelve el calendario. Cache en
+// memoria por instancia con TTL 24h (el equivalente server-side del
+// s-maxage=86400 de ticker-search): 1 request a Finnhub por instancia
+// caliente al día, 0 por render. Si Finnhub falla se sirve el mapa
+// stale (o null la primera vez) — el fallo no se cachea y el calendario
+// nunca se bloquea por el nombre.
+const SYMBOL_MAP_TTL_MS = 86400 * 1000;
+let symbolMapCache = { at: 0, map: null };
+
+// Siglas societarias/financieras que se conservan en mayúsculas al pasar
+// el description de Finnhub a title-case ("APPLE INC" → "Apple Inc").
+const NAME_KEEP_UPPER = new Set(['LLC', 'PLC', 'LP', 'ETF', 'REIT', 'ADR', 'USA', 'SE', 'NV', 'AG', 'SA', 'AB', 'ASA', 'II', 'III', 'IV']);
+
+export function titleCaseName(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const s = raw.trim();
+  if (!s) return null;
+  if (s !== s.toUpperCase()) return s; // ya trae minúsculas: se respeta tal cual
+  return s.toLowerCase()
+    .replace(/[a-z][a-z0-9']*/g, (w) => {
+      const up = w.toUpperCase();
+      return NAME_KEEP_UPPER.has(up) ? up : w.charAt(0).toUpperCase() + w.slice(1);
+    })
+    .replace(/\.Com\b/g, '.com'); // "AMAZON.COM" → "Amazon.com", no "Amazon.Com"
+}
+
+export async function getSymbolMap(finnhubKey) {
+  if (symbolMapCache.map && Date.now() - symbolMapCache.at < SYMBOL_MAP_TTL_MS) return symbolMapCache.map;
+  try {
+    const r = await fetch(`https://finnhub.io/api/v1/stock/symbol?exchange=US&token=${finnhubKey}`);
+    const ct = (r.headers && r.headers.get('content-type')) || '';
+    if (!r.ok || !ct.includes('application/json')) return symbolMapCache.map;
+    const list = await r.json();
+    if (!Array.isArray(list) || list.length === 0) return symbolMapCache.map;
+    const map = {};
+    for (const s of list) {
+      if (s && s.symbol && s.description) map[s.symbol] = titleCaseName(s.description);
+    }
+    symbolMapCache = { at: Date.now(), map };
+    return map;
+  } catch (e) {
+    return symbolMapCache.map;
+  }
+}
+
+// Hook de tests: vacía el cache del symbol map (nunca se usa en producción).
+export function _resetSymbolMapCache() { symbolMapCache = { at: 0, map: null }; }
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -237,9 +288,12 @@ export default async function handler(req, res) {
   const toDate = to || new Date(nowDate.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
   try {
-    const r = await fetch(
-      `https://finnhub.io/api/v1/calendar/earnings?from=${fromDate}&to=${toDate}&token=${finnhubKey}`
-    );
+    // El symbol map corre en paralelo al calendario: con cache caliente son
+    // 0 requests extra; frío, 1 request que no suma latencia secuencial.
+    const [r, symMap] = await Promise.all([
+      fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${fromDate}&to=${toDate}&token=${finnhubKey}`),
+      getSymbolMap(finnhubKey)
+    ]);
     const contentType = r.headers.get('content-type') || '';
     if (!contentType.includes('application/json')) {
       return res.status(200).json({ earnings: [] });
@@ -256,6 +310,9 @@ export default async function handler(req, res) {
       .filter(e => e.symbol && e.date)
       .map(e => ({
         ticker: e.symbol,
+        // Nombre del symbol map (title-cased); null si el símbolo no está
+        // (no-US raro) — el frontend omite, nunca inventa.
+        company: (symMap && symMap[e.symbol]) || null,
         date: e.date,
         time: e.hour === 'bmo' ? 'BMO' : e.hour === 'amc' ? 'AMC' : 'TBD',
         eps_est: e.epsEstimate,
