@@ -2300,13 +2300,100 @@ function pickEarningsTicker(t){
 function etClick(t){
   pickEarningsTicker(t);
 }
-// Handle clicks via event delegation on calendar container
+
+// ── POPOVER DE IDENTIDAD (calendario de earnings) ─────────────────
+// Opción A: el click en una card abre un popover barato (1 request a
+// /api/ticker-search?profile=SYM, memoizada por sesión); la batería
+// completa del intel solo corre con el botón RUN INTEL → (antes cada
+// click curioso disparaba ~5 llamadas Finnhub, doble por el onclick
+// inline + la delegación duplicados).
+const qdCoProfiles = {};   // memo de sesión: sym → profile | null (falló)
+let qdCoNames = null;      // sym → nombre, del catálogo local TICKERS (0 requests)
+
+function qdCompanyName(sym){
+  if(!qdCoNames){
+    qdCoNames = {};
+    try{
+      (typeof TICKERS!=='undefined'?TICKERS:[]).forEach(function(t){
+        qdCoNames[String(t.sym).replace('/USD','')] = t.name || '';
+      });
+    }catch(e){}
+  }
+  return qdCoNames[sym] || '';
+}
+
+function qdMcapFmt(m){ // profile2 trae market cap en MILLONES de la moneda base
+  if(!Number.isFinite(m)||m<=0) return null;
+  if(m>=1e6) return '$'+(m/1e6).toFixed(1).replace(/\.0$/,'')+'T';
+  if(m>=1e3) return '$'+(m/1e3).toFixed(1).replace(/\.0$/,'')+'B';
+  return '$'+Math.round(m)+'M';
+}
+
+function qdCoPopEl(){
+  let el=document.getElementById('qdCoPop');
+  if(el) return el;
+  el=document.createElement('div');
+  el.id='qdCoPop';
+  el.className='qd-co-pop';
+  el.style.display='none';
+  document.body.appendChild(el);
+  return el;
+}
+function qdCoPopHide(){ const el=document.getElementById('qdCoPop'); if(el) el.style.display='none'; }
+function qdCoPopIntel(sym){ qdCoPopHide(); pickEarningsTicker(sym); }
+
+// Línea compuesta SOLO con campos reales del profile2 (los ausentes se
+// omiten — la descripción de negocio es premium y no se inventa).
+function qdCoPopRender(el, sym, p){
+  const name=(p&&p.name)||qdCompanyName(sym)||sym;
+  const bits=[];
+  if(p&&p.country) bits.push(p.country);
+  if(p&&p.exchange) bits.push(p.exchange);
+  const mc=p?qdMcapFmt(p.market_cap_m):null; if(mc) bits.push('Mkt cap '+mc);
+  if(p&&p.ipo&&/^\d{4}/.test(p.ipo)) bits.push('IPO '+p.ipo.slice(0,4));
+  el.innerHTML=
+    '<div style="font-family:var(--mono);font-size:9px;color:#555;letter-spacing:.08em;margin-bottom:3px;">'+sym+'</div>'
+    +'<div style="font-family:var(--mono);font-size:12px;font-weight:700;color:#ccc;margin-bottom:6px;">'+name+'</div>'
+    +(p&&p.industry?'<div style="display:inline-block;font-family:var(--mono);font-size:9px;padding:1px 6px;border:1px solid #2a2a2a;border-radius:3px;color:#888;margin-bottom:6px;">'+p.industry+'</div>':'')
+    +(bits.length?'<div style="font-family:var(--mono);font-size:10px;color:#666;line-height:1.5;margin-bottom:8px;">'+bits.join(' · ')+'</div>'
+                 :'<div style="font-family:var(--mono);font-size:10px;color:#555;margin-bottom:8px;">'+t('dataUnavailable')+'</div>')
+    +'<button onclick="qdCoPopIntel(\''+sym+'\')" style="font-family:var(--mono);font-size:10px;padding:4px 10px;background:none;border:1px solid #ff6600;color:#ff6600;border-radius:2px;cursor:pointer;letter-spacing:.06em;">'+t('runIntel')+'</button>';
+}
+
+async function qdCoPopShow(card, sym){
+  const el=qdCoPopEl();
+  const r=card.getBoundingClientRect();
+  el.dataset.sym=sym;
+  el.style.left=Math.max(8, Math.min(r.left, innerWidth-276))+'px';
+  el.style.top=(r.bottom+180>innerHeight ? Math.max(8, r.top-166) : r.bottom+6)+'px';
+  el.style.display='block';
+  qdCoPopRender(el, sym, qdCoProfiles[sym]||null);
+  if(!(sym in qdCoProfiles)){
+    const p=await qdFetchJSON('/api/ticker-search?profile='+encodeURIComponent(sym), null,
+      function(x){ return x && typeof x==='object'; });
+    qdCoProfiles[sym]=(p&&!p.error&&p.name)?p:null;
+    if(qdCoProfiles[sym]){
+      // backfill: nombre al catálogo local y a la card (si estaba vacío)
+      if(qdCoNames) qdCoNames[sym]=qdCoProfiles[sym].name;
+      const nd=document.querySelector('#upcomingEarnings [data-ticker="'+sym+'"] .qd-co-name');
+      if(nd&&!nd.textContent) nd.textContent=qdCoProfiles[sym].name;
+    }
+    if(el.style.display!=='none'&&el.dataset.sym===sym) qdCoPopRender(el, sym, qdCoProfiles[sym]);
+  }
+}
+
+// Delegación única: card → popover; click fuera → cierra; dentro, nada.
 document.addEventListener('click', function(ev){
+  const pop=document.getElementById('qdCoPop');
+  if(pop&&pop.contains(ev.target)) return;
   const card = ev.target.closest('[data-ticker]');
   if(card && (card.closest('#upcomingEarnings'))){
-    pickEarningsTicker(card.getAttribute('data-ticker'));
+    qdCoPopShow(card, card.getAttribute('data-ticker'));
+    return;
   }
+  qdCoPopHide();
 });
+document.addEventListener('keydown', function(ev){ if(ev.key==='Escape') qdCoPopHide(); });
 
 async function loadUpcomingEarnings(){
   const el=document.getElementById('upcomingEarnings');
@@ -2367,12 +2454,12 @@ async function loadUpcomingEarnings(){
           +companies.map(e=>{
             const impColor=e.importance==='HIGH'?'#ff6600':'#444';
             const isLatam=e.sector==='LATAM'||['MELI','NU','GLOB','DESP'].includes(e.ticker);
-        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-ticker="'+e.ticker+'" onclick="etClick(this.dataset.ticker)">'
+        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-ticker="'+e.ticker+'">'
               +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
               +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:#ccc;">'+e.ticker+'</span>'
               +(isLatam?'<span style="font-size:8px;padding:1px 4px;background:rgba(255,102,0,.15);color:#ff6600;border-radius:2px;">LATAM</span>':'')
               +'</div>'
-              +'<div style="font-size:9px;color:#444;margin-bottom:4px;">'+e.company+'</div>'
+              +'<div class="qd-co-name" style="font-size:9px;color:#444;margin-bottom:4px;min-height:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+(qdCompanyName(e.ticker)||e.company||'')+'</div>'
               +'<div style="display:flex;justify-content:space-between;">'
               +'<span style="font-family:var(--mono);font-size:9px;color:#555;">'+e.time+'</span>'
               +'<span style="font-family:var(--mono);font-size:9px;color:#888;">'+(e.eps_est!=null?'$'+(+e.eps_est).toFixed(2):'—')+'</span>'
@@ -2404,7 +2491,7 @@ function renderEarningsCalendar(realEarnings){
       if(!grouped[key]) grouped[key]=[];
       grouped[key].push({
         ticker:e.ticker,
-        company:e.ticker, // Finnhub doesn't return company name in calendar
+        company:'', // el nombre sale del catálogo local (qdCompanyName)
         time:e.time,
         eps_est:e.eps_est, // puede ser null (free tier): se muestra '—', no '$0.00'
         importance: Math.abs(e.eps_est||0)>1?'HIGH':'MEDIUM',
@@ -2431,12 +2518,12 @@ function renderEarningsCalendar(realEarnings){
       +companies.map(e=>{
         const impColor=e.importance==='HIGH'?'#ff6600':'#444';
         const isLatam=e.is_latam||e.sector==='LATAM';
-        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-ticker="'+e.ticker+'" onclick="etClick(this.dataset.ticker)">'
+        return '<div style="background:#111;border:1px solid #1a1a1a;border-left:2px solid '+impColor+';padding:8px;cursor:pointer;" data-ticker="'+e.ticker+'">'
           +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
           +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:#ccc;">'+e.ticker+'</span>'
           +(isLatam?'<span style="font-size:8px;padding:1px 4px;background:rgba(255,102,0,.15);color:#ff6600;border-radius:2px;">LATAM</span>':'')
           +'</div>'
-          +'<div style="font-size:9px;color:#444;margin-bottom:4px;">'+e.company+'</div>'
+          +'<div class="qd-co-name" style="font-size:9px;color:#444;margin-bottom:4px;min-height:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+(qdCompanyName(e.ticker)||e.company||'')+'</div>'
           +'<div style="display:flex;justify-content:space-between;">'
           +'<span style="font-family:var(--mono);font-size:9px;color:#555;">'+e.time+'</span>'
           +'<span style="font-family:var(--mono);font-size:9px;color:#888;">'+(e.eps_est!=null?'$'+(+e.eps_est).toFixed(2):'—')+'</span>'
@@ -3684,6 +3771,7 @@ const PAGE_INIT={
 };
 
 function showPage(id){
+  if(typeof qdCoPopHide==='function') qdCoPopHide();
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
   const page=document.getElementById('page-'+id);
@@ -8288,6 +8376,7 @@ const i18n = {
     nextEarnSetup:'NEXT EARNINGS SETUP',
     aiEarnVerdict:'AI EARNINGS VERDICT',
     upcomingEarn:'UPCOMING EARNINGS THIS WEEK',
+    runIntel:'RUN INTEL →',
     beatRate:'BEAT RATE', lastQuarters:'LAST {n} QUARTERS',
     // SCREENER
     stockScreener:'STOCK SCREENER',
@@ -8485,6 +8574,7 @@ const i18n = {
     nextEarnSetup:'PRÓXIMOS RESULTADOS',
     aiEarnVerdict:'VEREDICTO IA DE RESULTADOS',
     upcomingEarn:'RESULTADOS DE ESTA SEMANA',
+    runIntel:'ANALIZAR →',
     beatRate:'TASA DE BEAT', lastQuarters:'ÚLTIMOS {n} TRIMESTRES',
     // SCREENER
     stockScreener:'FILTRO DE ACCIONES',
@@ -18286,6 +18376,7 @@ function qdAgentChart(rows, capitalStart, diedDate){
 .qd-ac-item .n{font-size:10px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
 .qd-ac-item .x{font-size:9px;color:var(--text3);border:1px solid #2a2a2a;border-radius:3px;padding:1px 6px;white-space:nowrap;}
 .qd-ac-note{padding:6px 10px;font-family:var(--mono);font-size:9px;color:#555;border-top:1px solid #1a1a1a;}
+.qd-co-pop{position:fixed;z-index:960;width:260px;background:#0d0d0d;border:1px solid #2a2a2a;border-radius:4px;padding:10px 12px;box-shadow:0 8px 24px rgba(0,0,0,.5);}
 </style>
 
 <script>
