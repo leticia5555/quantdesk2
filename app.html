@@ -223,6 +223,23 @@ td:first-child{color:var(--text);font-weight:500;}
   .ctrl-grid.g3{grid-template-columns:1fr 1fr;}
   .two-col,.three-col{grid-template-columns:1fr;}
 }
+@media(max-width:768px){
+  /* Topbar en dos filas: logo+status arriba, tabs a ancho completo abajo.
+     En una sola fila el bloque derecho (status+PRO+ES, ~228px, no encoge)
+     más el logo aplastan la nav a ~34px en un viewport de 390px: cero tabs
+     visibles. */
+  .topbar{flex-wrap:wrap;height:auto;padding:0 12px;}
+  .logo{height:42px;display:flex;align-items:center;}
+  .topbar-right{height:42px;}
+  .nav{order:1;flex-basis:100%;border-top:1px solid var(--border);mask-image:none;-webkit-mask-image:none;}
+  /* Fades dinámicos del strip: updateNavFades() pone .fade-l/.fade-r según
+     scrollLeft, así el borde solo se difumina cuando de verdad hay más tabs
+     en esa dirección (el mask estático de .nav difumina el último tab incluso
+     con el scroll al tope). Fuera de este media query las clases son inertes. */
+  .nav.fade-r{mask-image:linear-gradient(to right,black calc(100% - 32px),transparent 100%);-webkit-mask-image:linear-gradient(to right,black calc(100% - 32px),transparent 100%);}
+  .nav.fade-l{mask-image:linear-gradient(to right,transparent 0,black 32px);-webkit-mask-image:linear-gradient(to right,transparent 0,black 32px);}
+  .nav.fade-l.fade-r{mask-image:linear-gradient(to right,transparent 0,black 32px,black calc(100% - 32px),transparent 100%);-webkit-mask-image:linear-gradient(to right,transparent 0,black 32px,black calc(100% - 32px),transparent 100%);}
+}
 @media(max-width:600px){
   .stat-grid.cols-6,.stat-grid.cols-4{grid-template-columns:repeat(2,1fr);}
   .ctrl-grid.g3,.ctrl-grid.g2{grid-template-columns:1fr;}
@@ -3835,6 +3852,21 @@ function showPage(id){
     try{ PAGE_INIT[id](); }catch(e){ console.error('PAGE_INIT['+id+']', e); }
   },0);
 }
+
+// Fades dinámicos del strip de tabs en móvil (≤768px, donde el CSS de
+// .fade-l/.fade-r existe; en desktop las clases no tienen reglas).
+(function(){
+  const nav=document.querySelector('.nav');
+  if(!nav) return;
+  function updateNavFades(){
+    const max=nav.scrollWidth-nav.clientWidth;
+    nav.classList.toggle('fade-l',nav.scrollLeft>4);
+    nav.classList.toggle('fade-r',nav.scrollLeft<max-4);
+  }
+  nav.addEventListener('scroll',updateNavFades,{passive:true});
+  window.addEventListener('resize',updateNavFades);
+  updateNavFades();
+})();
 
 // Restore last-visited tab on page load. Default (AGENTS) is already
 // set in the HTML, so when no tab was saved (or saved=agents) we just
