@@ -5315,7 +5315,8 @@ Return ONLY JSON array of 4:
 
 function renderVC(deals,q){
   const el=document.getElementById('vcResults');
-  el.innerHTML=`<div style="font-size:10px;color:var(--text3);margin-bottom:12px;letter-spacing:.04em;">${deals.length} deals · "${q}" · ${new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}</div>`;
+  el.innerHTML=`<div style="font-size:10px;color:var(--text3);margin-bottom:6px;letter-spacing:.04em;">${deals.length} deals · "${q}" · ${t('vcAiTag')}</div>
+    <div style="font-family:var(--sans);font-size:9px;color:#555;line-height:1.4;margin-bottom:12px;">⚠️ ${t('vcDisclaimer')}</div>`;
   deals.forEach(d=>{
     const sc=d.signal_score||50;
     const fc=sc>=70?'#1D9E75':sc>=45?'#378ADD':'#555550';
@@ -8409,6 +8410,8 @@ const i18n = {
     vcPlaceholder:'Sector or theme: AI agents, LATAM fintech...',
     scanDeal:'▶ Scan deal flow',
     allStages:'All stages', seed:'Seed', seriesA:'Series A', seriesB:'Series B+', growth:'Growth',
+    vcAiTag:'AI analysis',
+    vcDisclaimer:'AI-generated analysis from model knowledge — not real or verified deal flow. Amounts, rounds and dates may be outdated or inaccurate. Verify with primary sources.',
     // Portfolio
     portTitle:'// Portfolio Simulator', addPosition:'// add position',
     portSummary:'// portfolio summary', totalCapital:'Total capital', positions:'Positions',
@@ -8607,6 +8610,8 @@ const i18n = {
     vcPlaceholder:'Sector o tema: agentes IA, fintech LATAM...',
     scanDeal:'▶ Escanear flujo de deals',
     allStages:'Todas las etapas', seed:'Seed', seriesA:'Serie A', seriesB:'Serie B+', growth:'Growth',
+    vcAiTag:'análisis IA',
+    vcDisclaimer:'Análisis generado por IA a partir del conocimiento del modelo — no es deal flow real ni verificado. Montos, rondas y fechas pueden estar desactualizados o ser inexactos. Verifica con fuentes primarias.',
     // Portfolio
     portTitle:'// Simulador de Portafolio', addPosition:'// agregar posición',
     portSummary:'// resumen del portafolio', totalCapital:'Capital total', positions:'Posiciones',
