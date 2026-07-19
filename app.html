@@ -5298,19 +5298,22 @@ async function runVC(){
   const el=document.getElementById('vcResults');
   el.innerHTML='<div class="loading">scanning deal flow</div>';
   setStatus('SCANNING VC...',true);
-  try{
-    const res=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:1400,messages:[{role:'user',content:
-        `Senior VC analyst. Active fundraising in "${q}" (stage: ${stage==='all'?'any':stage}), as of ${qdMonthYear()}. Real companies when possible.
+  // qdAI valida el shape y nunca lanza: un error de /api/claude (429/529 de
+  // Anthropic, 502 del guard de fechas, timeout) llega aquí como null en vez
+  // de reventar en `d.content.map` y dejar el status en ERROR. El error real
+  // queda en consola vía qdFetchJSON.
+  const aiText=await qdAI({max_tokens:1400,messages:[{role:'user',content:
+    `Senior VC analyst. Active fundraising in "${q}" (stage: ${stage==='all'?'any':stage}), as of ${qdMonthYear()}. Real companies when possible.
 Return ONLY JSON array of 4:
-{"name":"","sector":"","amount":"$XM","round":"","raised":"$XM total","founded":"YYYY","hq":"City,Country","lead_investor":"","backers":["","",""],"thesis":"2 sentences","why_now":"1 sentence","traction":"key metric","traction_signal":"ACCELERATING|STEADY|EARLY","signal_score":1-100,"verdict":"STRONG BUY|WATCH|PASS"}` + langDirective()}]})
-    });
-    const d=await res.json();
-    const deals=safeJSON(d.content.map(b=>b.text||'').join(''));
-    renderVC(deals,q);
+{"name":"","sector":"","amount":"$XM","round":"","raised":"$XM total","founded":"YYYY","hq":"City,Country","lead_investor":"","backers":["","",""],"thesis":"2 sentences","why_now":"1 sentence","traction":"key metric","traction_signal":"ACCELERATING|STEADY|EARLY","signal_score":1-100,"verdict":"STRONG BUY|WATCH|PASS"}` + langDirective()}]});
+  const deals=aiText==null?null:safeJSON(aiText);
+  if(!Array.isArray(deals)||!deals.length){
+    el.innerHTML=qdUnavailableHTML('vc scan · "'+q+'"','aiUnavailable');
     setStatus('READY',false);
-  }catch(e){el.innerHTML=`<div class="err-msg">Error: ${e.message}</div>`;setStatus('ERROR',false);}
+    return;
+  }
+  renderVC(deals,q);
+  setStatus('READY',false);
 }
 
 function renderVC(deals,q){
@@ -8300,6 +8303,7 @@ const i18n = {
     nav_gallery:'GALLERY', nav_pairs:'PAIRS', nav_signals:'SIGNALS', nav_edges:'MY EDGES', nav_myagents:'MY AGENTS',
     // Unified honest fallback (data/AI unavailable)
     dataUnavailable:'Data unavailable — free-tier coverage limited.',
+    aiUnavailable:'AI analysis unavailable — try again in a moment.',
     moversWatchlistTitle:'TOP MOVERS · WATCHLIST',
     moversTooltip:'Movers within QuantDesk\'s curated watchlist (~55 most-watched US large caps, memes, semis and LATAM ADRs) — NOT the whole market. A stock outside this list won\'t appear here even on a big move.',
     // PAPER TRADING AGENTS
@@ -8500,6 +8504,7 @@ const i18n = {
     nav_gallery:'GALERÍA', nav_pairs:'PARES', nav_signals:'SEÑALES', nav_edges:'MIS EDGES', nav_myagents:'MIS AGENTES',
     // Fallback honesto unificado (dato/IA no disponible)
     dataUnavailable:'Dato no disponible — cobertura limitada del plan gratuito.',
+    aiUnavailable:'Análisis IA no disponible — reintenta en un momento.',
     moversWatchlistTitle:'TOP MOVERS · WATCHLIST',
     moversTooltip:'Movers DENTRO de la watchlist curada de QuantDesk (~55 tickers: mega-caps US, memes, semis y ADRs LATAM) — NO el mercado completo. Una acción fuera de esta lista no aparece aquí aunque se mueva fuerte.',
     // PAPER TRADING AGENTS
@@ -8704,9 +8709,9 @@ function t(key){ return (i18n[currentLang] && i18n[currentLang][key]) || i18n.en
 // El texto del fallback es el mismo que ya usaba el Risk Anomaly agent,
 // ahora como componente único i18n.
 
-function qdUnavailableHTML(ctx){
+function qdUnavailableHTML(ctx, msgKey){
   if (ctx) console.error('qd:data-unavailable ·', ctx);
-  return '<div style="padding:14px 16px;background:rgba(255,255,255,.02);border:1px solid #1a1a1a;border-radius:3px;font-family:var(--mono);font-size:11px;color:#666;line-height:1.5;">' + t('dataUnavailable') + '</div>';
+  return '<div style="padding:14px 16px;background:rgba(255,255,255,.02);border:1px solid #1a1a1a;border-radius:3px;font-family:var(--mono);font-size:11px;color:#666;line-height:1.5;">' + t(msgKey || 'dataUnavailable') + '</div>';
 }
 // Versión para celdas de tabla: el clásico “—” pero explicado al hover.
 function qdUnavailableCell(){
