@@ -4780,25 +4780,20 @@ async function fetchSimData(ticker,dir,capital,days,model){
     verdict:'WATCH',thesis:'',signals:[],key_risk:'',news_summary:''
   };
 
-  try{
-    const claudeRes=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:800,messages:[{role:'user',content:
-        `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, as of ${qdTodayLabel()}.
+  const simAiText=await qdAI({max_tokens:800,messages:[{role:'user',content:
+    `Quant analyst. ${dir} trade on ${ticker}, $${capital}, ${days} days, ${model} model, as of ${qdTodayLabel()}.
 ${priceContext}
 ${newsContext}
 The current price is $${pd?.currentPrice||'unknown'} — use this exact price in your response.
-Return ONLY JSON: {"current_price":${pd?.currentPrice||'number'},"mu":${pd?.mu||'number'},"sigma":${pd?.sigma||'number'},"asset_type":"${pd?.asset_type||'stock'}","verdict":"STRONG ENTRY|WAIT FOR DIP|HIGH RISK|AVOID","thesis":"3 sentences referencing the actual current price","signals":["signal 1","signal 2","signal 3","signal 4"],"key_risk":"1 sentence","news_summary":"1 sentence or empty string"}`}]})
-    });
-    const claudeData=await claudeRes.json();
-    const parsed=safeJSON(claudeData.content.map(b=>b.text||'').join(''));
+Return ONLY JSON: {"current_price":${pd?.currentPrice||'number'},"mu":${pd?.mu||'number'},"sigma":${pd?.sigma||'number'},"asset_type":"${pd?.asset_type||'stock'}","verdict":"STRONG ENTRY|WAIT FOR DIP|HIGH RISK|AVOID","thesis":"3 sentences referencing the actual current price","signals":["signal 1","signal 2","signal 3","signal 4"],"key_risk":"1 sentence","news_summary":"1 sentence or empty string"}`}]});
+  const parsed=simAiText==null?null:safeJSON(simAiText);
+  if(parsed){
     cd.verdict=parsed.verdict||cd.verdict;
     cd.thesis=parsed.thesis||'';
     cd.signals=parsed.signals||[];
     cd.key_risk=parsed.key_risk||'';
     cd.news_summary=parsed.news_summary||'';
-  }catch(e){
-    console.log('Claude error:',e);
+  }else{
     cd.thesis='AI analysis unavailable. Simulation uses real market data.';
     cd.signals=['Real price data loaded from Finnhub','Volatility calculated from 52w range','Monte Carlo uses actual mu and sigma','Check console for API errors'];
     cd.key_risk='AI thesis unavailable — verify manually before trading.';
@@ -5558,14 +5553,9 @@ async function runPortfolioSim(){
   const fmt=v=>(v>=0?'+':'')+(v*100).toFixed(1)+'%';
   const fmtD=v=>(v>=0?'+$':'-$')+Math.abs(Math.round(v*total)).toLocaleString();
 
-  const prompt=await fetch('/api/claude',{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({max_tokens:400,messages:[{role:'user',content:
-      `Portfolio of ${positions.length} positions: ${positions.map(p=>p.dir+' '+p.ticker+' $'+p.amount).join(', ')}. Monte Carlo (500 sims): expected return ${fmt(mean)}, win rate ${(wins/returns.length*100).toFixed(0)}%, Sharpe ${sharpe.toFixed(2)}, VaR95 ${fmt(var95)}. Give a 2-sentence portfolio assessment and 1-sentence key risk. Return JSON: {"assessment":"","key_risk":""}`}]})
-  });
-  const pd=await prompt.json();
-  let assessment={assessment:'Portfolio simulation complete.',key_risk:'Diversification and correlation risk.'};
-  try{assessment=safeJSON(pd.content.map(b=>b.text||'').join(''));}catch(e){}
+  const portAiText=await qdAI({max_tokens:400,messages:[{role:'user',content:
+      `Portfolio of ${positions.length} positions: ${positions.map(p=>p.dir+' '+p.ticker+' $'+p.amount).join(', ')}. Monte Carlo (500 sims): expected return ${fmt(mean)}, win rate ${(wins/returns.length*100).toFixed(0)}%, Sharpe ${sharpe.toFixed(2)}, VaR95 ${fmt(var95)}. Give a 2-sentence portfolio assessment and 1-sentence key risk. Return JSON: {"assessment":"","key_risk":""}`}]});
+  const assessment=(portAiText==null?null:safeJSON(portAiText))||{assessment:'Portfolio simulation complete.',key_risk:'Diversification and correlation risk.'};
 
   // ── Build correlation matrix HTML (heatmap-style) ──
   let corrMatrixHtml = '';
@@ -5722,10 +5712,7 @@ async function exportPDF(){
     moat: '—'
   };
 
-  try{
-    const r=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:1000,
+  const coText=await qdAI({max_tokens:1000,
         messages:[{role:'user',content:
           `You are a senior equity research analyst at Goldman Sachs. Write a company overview for ${ticker} as of ${qdTodayLabel()}.
 Current price: $${SP.S0.toFixed(2)}. 52w range: $${lastCd.low52w||'—'} - $${lastCd.high52w||'—'}.
@@ -5748,11 +5735,11 @@ Return ONLY JSON:
   "analyst_rating": "BUY|HOLD|SELL (consensus)",
   "competitive_position": "1 sentence on moat and competition",
   "moat": "STRONG|MODERATE|WEAK"
-}`}]})
-    });
-    const d=await r.json();
-    companyData=safeJSON(d.content.map(b=>b.text||'').join(''));
-  }catch(e){console.log('Company data error',e);}
+}`}]});
+  // Fallo de IA: companyData conserva sus '—' por defecto — el doc sale
+  // con celdas honestas en vez de romperse.
+  const coParsed=coText==null?null:safeJSON(coText);
+  if(coParsed) companyData=coParsed;
 
   btn.textContent=origText;btn.disabled=false;
 
@@ -7091,16 +7078,13 @@ async function runBacktest(){
   const btn=document.getElementById('backtestBtn');
   btn.textContent='Running backtest...';btn.disabled=true;
 
-  try{
-    // Ask Claude to backtest using known historical data
-    const dir=SP.dir;
-    const days=SP.days;
-    const capital=SP.capital;
-    const currentPrice=SP.S0;
+  // Ask Claude to backtest using known historical data
+  const dir=SP.dir;
+  const days=SP.days;
+  const capital=SP.capital;
+  const currentPrice=SP.S0;
 
-    const r=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:800,
+  const btText=await qdAI({max_tokens:800,
         messages:[{role:'user',content:
           `You are a quant backtester. The user simulated a ${dir} trade on ${ticker} today at ~$${currentPrice} for ${days} days with $${capital}.
 
@@ -7118,17 +7102,11 @@ Return ONLY JSON:
   "backtest_avg_return": number,
   "model_accuracy": "HIGH|MEDIUM|LOW",
   "summary": "2 sentences comparing backtest results to current simulation"
-}`}]})
-    });
+}`}]});
 
-    const d=await r.json();
-    const bt=safeJSON(d.content.map(b=>b.text||'').join(''));
-    renderBacktest(bt, ticker, dir);
-  }catch(e){
-    console.error('Backtest error',e);
-  }finally{
-    btn.textContent='↺ Backtest (6mo)';btn.disabled=false;
-  }
+  const bt=btText==null?null:safeJSON(btText);
+  renderBacktest(bt, ticker, dir);
+  btn.textContent='↺ Backtest (6mo)';btn.disabled=false;
 }
 
 function renderBacktest(bt, ticker, dir){
@@ -7139,6 +7117,11 @@ function renderBacktest(bt, ticker, dir){
     panel.style.cssText='margin-bottom:16px;';
     const extPanel=document.getElementById('extStatsPanel');
     if(extPanel&&extPanel.parentNode) extPanel.parentNode.insertBefore(panel,extPanel.nextSibling);
+  }
+  if(!bt||!Array.isArray(bt.periods)){
+    panel.innerHTML='<div class="section-header"><span class="section-title">// backtest · last 6 months</span><div class="section-line"></div></div>'
+      +qdUnavailableHTML('backtest · '+ticker,'aiUnavailable');
+    return;
   }
 
   const wr=(bt.backtest_win_rate||0)*100;
@@ -7221,12 +7204,9 @@ ${earningsCtx}`;
       </div>
     </div>`;
 
-  try{
-    // Run all 3 rounds + risk manager in parallel for speed
-    const [round1Res, riskRes] = await Promise.all([
-      fetch('/api/claude',{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({max_tokens:1500,
+  // Run all 3 rounds + risk manager in parallel for speed
+  const [debText, riskText] = await Promise.all([
+    qdAI({max_tokens:1500,
           messages:[{role:'user',content:`You are running a Wall Street trading debate between a Bull Analyst and Bear Analyst about this trade.
 
 ${context}
@@ -7252,12 +7232,9 @@ Return ONLY JSON:
       "bear": "Bear closing argument — 2 sentences"
     }
   ]
-}`}]})
-      }).then(r=>r.json()),
+}`}]}),
 
-      fetch('/api/claude',{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({max_tokens:600,
+    qdAI({max_tokens:600,
           messages:[{role:'user',content:`You are the Risk Manager at a trading firm. After reviewing this trade's data, give your final verdict.
 
 ${context}
@@ -7275,20 +7252,17 @@ Return ONLY JSON:
   "rationale": "3 sentences explaining the decision",
   "conditions": "1 sentence — what conditions must be met, or empty string if APPROVE/REJECT"
 }`}]})
-      }).then(r=>r.json())
-    ]);
+  ]);
 
-    const debate=safeJSON(round1Res.content.map(b=>b.text||'').join(''));
-    const risk=safeJSON(riskRes.content.map(b=>b.text||'').join(''));
-    if(!debate||!risk) throw new Error('Debate data unavailable');
-
+  const debate=debText==null?null:safeJSON(debText);
+  const risk=riskText==null?null:safeJSON(riskText);
+  if(!debate||!risk||!Array.isArray(debate.rounds)){
+    panel.innerHTML='<div class="section-header"><span class="section-title">// bull vs bear debate</span><div class="section-line"></div></div>'
+      +qdUnavailableHTML('debate · '+ticker,'aiUnavailable');
+  }else{
     renderDebate(debate, risk, ticker);
-  }catch(e){
-    panel.innerHTML+='<div class="err-msg">Debate error: '+e.message+'</div>';
-    console.error(e);
-  }finally{
-    btn.textContent='⚔ Debate';btn.disabled=false;
   }
+  btn.textContent='⚔ Debate';btn.disabled=false;
 }
 
 function renderDebate(debate, risk, ticker){
@@ -7384,10 +7358,7 @@ async function runInvestorPersonas(){
   const wins=returns.filter(r=>r>0).length;
   const winRate=(wins/returns.length*100).toFixed(0);
 
-  try{
-    const r=await fetch('/api/claude',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:1200,
+  const perText=await qdAI({max_tokens:1200,
         messages:[{role:'user',content:
           `You are simulating 13 legendary investors analyzing a trade. Give each investor's brutally honest opinion — make them sound exactly like themselves. Some bullish, some bearish, some neutral. Disagree with each other.
 
@@ -7425,17 +7396,11 @@ Return ONLY JSON array of exactly 13 objects:
   {"id":"slim","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
   {"id":"galperin","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"},
   {"id":"lemann","verdict":"BUY|HOLD|PASS","conviction":"HIGH|MEDIUM|LOW","take":"2 sentences"}
-]` + langDirective()}]})
-    });
+]` + langDirective()}]});
 
-    const d=await r.json();
-    const personas=safeJSON(d.content.map(b=>b.text||'').join(''));
-    renderPersonas(personas, ticker);
-  }catch(e){
-    console.error('Personas error',e);
-  }finally{
-    btn.textContent='👤 Investors';btn.disabled=false;
-  }
+  const personas=perText==null?null:safeJSON(perText);
+  renderPersonas(personas, ticker);
+  btn.textContent='👤 Investors';btn.disabled=false;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -8044,8 +8009,10 @@ function downloadBattleImage(){
 // ═══════════════════════════════════════════════════════════════════
 
 function renderPersonas(personas, ticker){
-  // persist votes for leaderboard tracking
-  try { recordAgentVotes(personas, ticker); } catch(e){ console.error('vote save err', e); }
+  const personasOk=Array.isArray(personas)&&personas.length>0;
+  // persist votes for leaderboard tracking (solo con datos reales — un fallo
+  // de IA no debe registrar votos vacíos)
+  if(personasOk){ try { recordAgentVotes(personas, ticker); } catch(e){ console.error('vote save err', e); } }
 
   let panel=document.getElementById('personasPanel');
   if(!panel){
@@ -8054,6 +8021,11 @@ function renderPersonas(personas, ticker){
     panel.style.cssText='margin-bottom:16px;';
     const analysisBlock=document.getElementById('simAnalysis');
     if(analysisBlock) analysisBlock.insertBefore(panel, analysisBlock.firstChild);
+  }
+  if(!personasOk){
+    panel.innerHTML='<div class="section-header"><span class="section-title">// investor panel</span><div class="section-line"></div></div>'
+      +qdUnavailableHTML('investor personas · '+ticker,'aiUnavailable');
+    return;
   }
 
   const verdictColor={BUY:'var(--green)',HOLD:'var(--amber)',PASS:'var(--red)'};
@@ -12347,17 +12319,9 @@ async function downloadMemoPDF(){
       `"technical_commentary":"1-2 sentence take on chart setup based on RSI and SMA data"}. ` +
       `Write in Goldman Sachs / Morgan Stanley research tone. Cite specific numbers. No filler.`;
 
-    let narrative = null;
-    try {
-      const r = await fetch('/api/claude', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ max_tokens: 1500,
-          messages: [{role:'user', content: claudePrompt}]
-        })
-      });
-      const d = await r.json();
-      narrative = safeJSON(d.content.map(b=>b.text||'').join(''));
-    } catch(e) { console.error('Claude narrative failed:', e); }
+    const narText = await qdAI({ max_tokens: 1500,
+      messages: [{role:'user', content: claudePrompt}] });
+    let narrative = narText==null?null:safeJSON(narText);
 
     if(!narrative){
       narrative = {
