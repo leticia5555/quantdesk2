@@ -286,6 +286,7 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('portfolio')">PORTFOLIO</button>
     <button class="nav-btn" onclick="showPage('macro')">MACRO</button>
     <button class="nav-btn" onclick="showPage('smartmoney')">SMART $</button>
+    <button class="nav-btn" onclick="showPage('tracker')">TRACKER</button>
     <button class="nav-btn" onclick="showPage('earnings')">EARNINGS</button>
     <button class="nav-btn" onclick="showPage('ipos')">IPOS</button>
     <button class="nav-btn" onclick="showPage('movers')">MOVERS</button>
@@ -714,6 +715,23 @@ td:first-child{color:var(--text);font-weight:500;}
   </div>
 
   <div id="vcResults"></div>
+</div>
+
+<!-- STOCK TRACKER PAGE -->
+<div id="page-tracker" class="page">
+  <div class="section-header"><span class="section-title" data-i18n="stTitle">// Stock Tracker · SEC filings</span><div class="section-line"></div></div>
+
+  <!-- v1 del censo aprobado (docs/stock-tracker-scope.md): SOLO filings
+       reales de EDGAR, con el lag legal etiquetado en cada card. Nada de
+       IA inventando trades. Congreso: gates pendientes, no está aquí. -->
+  <div style="font-family:var(--sans);font-size:9px;color:#555;line-height:1.4;margin-bottom:12px;" data-i18n="stHonesty">Real trades from public SEC filings, shown with their legal reporting delay: insiders file up to 2 business days after the trade; funds file quarterly holdings up to 45 days after quarter end. Delayed by design — not investment advice.</div>
+
+  <div class="chips">
+    <button class="chip active" id="stCatBtn-insider" onclick="stSetCat('insider')" data-i18n="stCatInsider">Notable insider buys</button>
+    <button class="chip" id="stCatBtn-13f" onclick="stSetCat('13f')" data-i18n="stCat13f">13F fund moves</button>
+    <button class="chip" onclick="loadTracker(_stCat,true)">↻</button>
+  </div>
+  <div id="stFeed"></div>
 </div>
 
 <!-- PORTFOLIO PAGE -->
@@ -4097,6 +4115,7 @@ function showPage(id){
   if(id==='earnings') setTimeout(()=>initEarningsPage(),50);
   if(id==='ipos') setTimeout(()=>{ if(!_iposCache || Date.now()-_iposCacheAt>QD_CAL_TTL_MS) loadIPOs(); },50);
   if(id==='vc') setTimeout(()=>{ if(!_vcFeedCache[_vcCat] || Date.now()-_vcFeedAt[_vcCat]>QD_CAL_TTL_MS) loadVCFeed(_vcCat); },50);
+  if(id==='tracker') setTimeout(()=>{ if(!_stFeedCache[_stCat] || Date.now()-_stFeedAt[_stCat]>QD_CAL_TTL_MS) loadTracker(_stCat); },50);
   if(id==='movers') setTimeout(()=>{ if(!_moversCache) loadMovers(); },50);
   if(id==='sectors') setTimeout(()=>{ if(!_sectorsCache[_currentSectorCat]) loadSectors(); },50);
   if(id==='gallery') setTimeout(()=>renderGallery(),50);
@@ -5653,6 +5672,131 @@ function renderVCFeed(d){
   h+='<div style="font-size:10px;color:var(--text3);margin-bottom:8px;letter-spacing:.04em;">'+
     items.length+' deals · '+t('vcRealTag')+'</div>';
   h+=items.map(it=>vcFeedCard(it,d.cat==='latam')).join('');
+  el.innerHTML=h;
+}
+
+// ─── STOCK TRACKER (/api/stock-tracker) ───────────────────
+// v1 del censo aprobado: insider (Form 4, compras open-market de
+// officers/directors ≥ $100k) | 13f (diffs propios de fondos famosos).
+// Todo de filings reales de EDGAR; el lag legal va etiquetado en cada
+// card ("filed +Nd") — honestidad de lag como framing del producto.
+// Reusa vcFeedNotes (stale + fuentes caídas) y qdEscHTML.
+let _stFeedCache={insider:null,'13f':null};
+let _stFeedAt={insider:0,'13f':0};
+let _stCat='insider';
+
+function stSetCat(cat){
+  _stCat=cat;
+  ['insider','13f'].forEach(c=>{
+    const b=document.getElementById('stCatBtn-'+c);
+    if(b)b.classList.toggle('active',c===cat);
+  });
+  loadTracker(cat);
+}
+
+async function loadTracker(cat,force){
+  const el=document.getElementById('stFeed');
+  if(!el)return;
+  if(!force&&_stFeedCache[cat]&&Date.now()-_stFeedAt[cat]<QD_CAL_TTL_MS){renderTracker(_stFeedCache[cat]);return;}
+  el.innerHTML='<div class="loading">loading SEC filings</div>';
+  const d=await qdFetchJSON('/api/stock-tracker?cat='+cat+(force?'&_='+Date.now():''),
+    force?{cache:'no-store'}:null,
+    x=>x&&typeof x==='object'&&(Array.isArray(x.items)||Array.isArray(x.funds)));
+  if(!d){el.innerHTML=qdUnavailableHTML('stock tracker · '+cat);return;}
+  _stFeedCache[cat]=d;_stFeedAt[cat]=Date.now();
+  renderTracker(d);
+}
+
+function stFmtUsd(v){
+  if(v==null||isNaN(v))return'';
+  const a=Math.abs(v);
+  if(a>=1e9)return'$'+(v/1e9).toFixed(1)+'B';
+  if(a>=1e6)return'$'+(v/1e6).toFixed(1)+'M';
+  if(a>=1e3)return'$'+Math.round(v/1e3)+'k';
+  return'$'+Math.round(v);
+}
+
+// Lag honesto por card: "trade 2026-07-01 · filed +2d".
+function stLagBadge(it){
+  const parts=[];
+  if(it.tradeDate)parts.push(t('stTrade')+' '+qdEscHTML(it.tradeDate));
+  if(it.lagDays!=null)parts.push(t('stFiledLbl')+' +'+it.lagDays+'d');
+  else if(it.filedDate)parts.push(t('stFiledLbl')+' '+qdEscHTML(it.filedDate));
+  return parts.join(' · ');
+}
+
+function stInsiderCard(it){
+  const tags=[];
+  if(it.cluster)tags.push('<span class="vcf-tag" title="'+t('stClusterTip')+'">'+t('stCluster')+'</span>');
+  if(it.planned10b5)tags.push('<span class="vcf-tag" title="'+t('stPlannedTip')+'">10b5-1</span>');
+  const co=qdEscHTML(it.issuer||'—')+(it.ticker?' <span style="color:var(--text3);">('+qdEscHTML(it.ticker)+')</span>':'');
+  return '<div class="deal-card">'+
+    '<div class="deal-top">'+
+      '<div style="min-width:0;">'+
+        '<div class="deal-name">'+qdEscHTML(it.insider||'—')+'</div>'+
+        '<div class="deal-sector" style="margin-top:4px;line-height:1.5;">'+qdEscHTML(it.role||'')+' · '+co+'</div>'+
+      '</div>'+
+      '<div style="flex-shrink:0;margin-left:12px;">'+
+        '<div class="deal-amt">'+stFmtUsd(it.value)+'</div>'+
+        (tags.length?'<div style="display:flex;gap:4px;justify-content:flex-end;margin-top:4px;">'+tags.join('')+'</div>':'')+
+      '</div>'+
+    '</div>'+
+    '<div class="deal-foot">'+
+      '<div class="backers">'+(it.shares?Number(it.shares).toLocaleString()+' sh @ $'+qdEscHTML(String(it.avgPrice==null?'—':it.avgPrice)):'')+'</div>'+
+      '<div class="vcf-src">'+stLagBadge(it)+
+        (it.link?' · <a href="'+qdEscHTML(it.link)+'" target="_blank" rel="noopener noreferrer">EDGAR ↗</a>':'')+'</div>'+
+    '</div>'+
+  '</div>';
+}
+
+function stPosRow(p,showDelta){
+  const label=p.ticker?'<span style="color:var(--text);font-weight:500;">'+qdEscHTML(p.ticker)+'</span> <span style="color:var(--text3);">'+qdEscHTML(p.name||'')+'</span>'
+    :'<span style="color:var(--text2);">'+qdEscHTML(p.name||p.cusip||'—')+'</span>';
+  const delta=showDelta&&p.deltaPct!=null?' <span style="color:'+(p.deltaPct>0?'var(--green,#4caf50)':'var(--red,#e05252)')+';">'+(p.deltaPct>0?'+':'')+p.deltaPct+'%</span>':'';
+  return '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:4px 0;border-bottom:1px solid var(--border);font-size:11px;">'+
+    '<div style="min-width:0;">'+label+delta+'</div>'+
+    '<div class="vcf-src" style="flex-shrink:0;">'+stFmtUsd(p.value)+'</div>'+
+  '</div>';
+}
+
+function stFundBlock(f){
+  const buckets=[
+    ['added',t('stNew'),false],['closed',t('stClosed'),false],
+    ['increased',t('stIncreased'),true],['reduced',t('stReduced'),true],
+  ];
+  let h='<div class="analysis"><h3>'+qdEscHTML(f.fund)+(f.persona&&f.persona!==f.fund?' <span style="color:var(--text3);font-weight:400;">· '+qdEscHTML(f.persona)+'</span>':'')+'</h3>';
+  h+='<div style="font-family:var(--sans);font-size:9px;color:var(--text3);margin-bottom:8px;">'+
+    t('stQuarter')+' '+qdEscHTML(f.quarterEnd||'—')+' · '+t('stFiledLbl')+' '+qdEscHTML(f.filedDate||'—')+
+    (f.lagDays!=null?' (+'+f.lagDays+'d)':'')+' · '+stFmtUsd(f.totalValue)+' · '+
+    (f.counts?f.counts.held+' pos':'')+
+    (f.link?' · <a href="'+qdEscHTML(f.link)+'" target="_blank" rel="noopener noreferrer">EDGAR ↗</a>':'')+'</div>';
+  for(const [key,label,showDelta] of buckets){
+    const rows=(f.top&&Array.isArray(f.top[key]))?f.top[key]:[];
+    if(!rows.length)continue;
+    h+='<div style="font-size:10px;color:var(--text3);letter-spacing:.06em;margin:8px 0 2px;">'+label+
+      (f.counts&&f.counts[key]>rows.length?' <span style="color:#555;">('+rows.length+'/'+f.counts[key]+')</span>':'')+'</div>';
+    h+=rows.map(p=>stPosRow(p,showDelta)).join('');
+  }
+  return h+'</div>';
+}
+
+function renderTracker(d){
+  const el=document.getElementById('stFeed');
+  if(!el)return;
+  let h=vcFeedNotes(d);
+  if(d.cat==='insider'){
+    const items=Array.isArray(d.items)?d.items:[];
+    if(!items.length){el.innerHTML=h+qdUnavailableHTML('stock tracker · insider');return;}
+    h+='<div style="font-size:10px;color:var(--text3);margin-bottom:8px;letter-spacing:.04em;">'+
+      items.length+' · '+t('stInsiderTag')+'</div>';
+    h+=items.map(stInsiderCard).join('');
+    el.innerHTML=h;
+    return;
+  }
+  const funds=Array.isArray(d.funds)?d.funds:[];
+  if(!funds.length){el.innerHTML=h+qdUnavailableHTML('stock tracker · 13f');return;}
+  h+='<div style="font-size:10px;color:var(--text3);margin-bottom:8px;letter-spacing:.04em;">'+t('st13fTag')+'</div>';
+  h+=funds.map(stFundBlock).join('');
   el.innerHTML=h;
 }
 
@@ -8763,6 +8907,15 @@ const i18n = {
     vcDisclaimer:'AI-generated analysis from model knowledge — not real or verified deal flow. Amounts, rounds and dates may be outdated or inaccurate. Verify with primary sources.',
     vcCatRounds:'Rounds by stage', vcCatIpo:'IPO pipeline',
     vcRealTag:'real deal flow · linked sources · feed dates',
+    stTitle:'// Stock Tracker · SEC filings',
+    stHonesty:'Real trades from public SEC filings, shown with their legal reporting delay: insiders file up to 2 business days after the trade; funds file quarterly holdings up to 45 days after quarter end. Delayed by design — not investment advice.',
+    stCatInsider:'Notable insider buys', stCat13f:'13F fund moves',
+    stInsiderTag:'open-market buys by officers/directors ≥ $100k · SEC Form 4 · linked filings',
+    st13fTag:'quarter-over-quarter diffs from SEC 13F filings — a snapshot at quarter end, not today\'s portfolio',
+    stTrade:'trade', stFiledLbl:'filed', stQuarter:'quarter ended',
+    stNew:'NEW POSITIONS', stClosed:'CLOSED', stIncreased:'ADDED TO', stReduced:'TRIMMED',
+    stCluster:'CLUSTER', stClusterTip:'2+ insiders bought this company within the window',
+    stPlannedTip:'Pre-scheduled trade under a Rule 10b5-1 plan (not discretionary)',
     vcAiTitle:'// AI Scan · complementary',
     vcSourceDown:'source down', vcStaleNote:'all sources down — showing last good data',
     vcIpoCalendar:'IPO calendar · Finnhub',
@@ -8972,6 +9125,15 @@ const i18n = {
     vcDisclaimer:'Análisis generado por IA a partir del conocimiento del modelo — no es deal flow real ni verificado. Montos, rondas y fechas pueden estar desactualizados o ser inexactos. Verifica con fuentes primarias.',
     vcCatRounds:'Rondas por etapa', vcCatIpo:'Pipeline IPO',
     vcRealTag:'deal flow real · fuentes con link · fechas del feed',
+    stTitle:'// Stock Tracker · filings de la SEC',
+    stHonesty:'Trades reales de filings públicos de la SEC, mostrados con su retraso legal: los insiders reportan hasta 2 días hábiles después del trade; los fondos reportan holdings trimestrales hasta 45 días después del cierre. Con delay por diseño — no es asesoría de inversión.',
+    stCatInsider:'Compras insider destacadas', stCat13f:'Movimientos 13F',
+    stInsiderTag:'compras open-market de officers/directors ≥ $100k · SEC Form 4 · filings con link',
+    st13fTag:'diffs trimestre a trimestre de filings 13F de la SEC — foto al cierre del trimestre, no el portafolio de hoy',
+    stTrade:'trade', stFiledLbl:'reportado', stQuarter:'trimestre cerrado',
+    stNew:'POSICIONES NUEVAS', stClosed:'CERRADAS', stIncreased:'AUMENTÓ', stReduced:'RECORTÓ',
+    stCluster:'CLUSTER', stClusterTip:'2+ insiders compraron esta empresa en la ventana',
+    stPlannedTip:'Trade pre-programado bajo un plan Rule 10b5-1 (no discrecional)',
     vcAiTitle:'// Scan IA · complementario',
     vcSourceDown:'fuente caída', vcStaleNote:'fuentes caídas — mostrando lo último bueno',
     vcIpoCalendar:'Calendario IPO · Finnhub',

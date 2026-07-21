@@ -62,6 +62,7 @@ Upcoming catalysts and corporate events:
 - **COMPARE** — Side-by-side ticker analysis with correlation matrices.
 - **PORTFOLIO** — Construction + risk metrics (VaR, Sharpe, max drawdown).
 - **SMART $** — Insider transaction tracker via Form 4 filings.
+- **TRACKER** — Stock Tracker: notable insider buys (SEC Form 4, open-market P-code buys by officers/directors ≥ $100k) and quarter-over-quarter 13F diffs of famous funds, straight from EDGAR with the legal reporting lag labeled on every card.
 - **SCREENER** — ~260 tickers across US / LATAM / crypto with live-data fundamental filters.
 - **AGENTS** — Investor personality agents (Buffett, Burry, Wood, Munger, Dalio + LATAM personas in development).
 - **GALLERY** — Public simulation history.
