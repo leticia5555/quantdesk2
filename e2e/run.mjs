@@ -131,6 +131,23 @@ async function routeApis(page) {
         ai: 'ok', stale: false });
       return json({ cat, items: [], sources: {}, stale: false });
     }
+    if (p === '/api/tape') {
+      const syms = (url.searchParams.get('symbols') || '').split(',').filter(Boolean);
+      const quotes = {};
+      for (const s of syms) quotes[s] = { price: s === 'BTC/USD' ? 118000 : 190.55, prevClose: 185.25, changePct: 2.86 };
+      return json({ quotes, generated_at: new Date().toISOString() });
+    }
+    if (p === '/api/candles') {
+      // 30 velas sintéticas terminando en el bucket actual (S23)
+      const sym = url.searchParams.get('symbol'); const iv = url.searchParams.get('interval') || '1d';
+      const ivSec = iv === '5m' ? 300 : iv === '1h' ? 3600 : 86400;
+      const nowB = Math.floor(Date.now() / 1000 / ivSec) * ivSec;
+      const candles = Array.from({ length: 30 }, (_, i) => {
+        const base = 100 + i;
+        return { t: nowB - (29 - i) * ivSec, o: base, h: base + 2, l: base - 2, c: base + 1, v: 1000 + i };
+      });
+      return json({ symbol: sym, interval: iv, source: 'yahoo', currency: 'USD', candles, generated_at: new Date().toISOString() });
+    }
     return json({});
   });
   // block anything external
@@ -776,6 +793,71 @@ await page.waitForTimeout(700);
 const s22d = await page.evaluate(() => document.getElementById('vcFeed').textContent);
 report('S22d cat sin items → vacío honesto, jamás inventado',
   /unavailable|no disponible/i.test(s22d), s22d.slice(0, 80));
+
+// ── S23: chart modal (Lightweight Charts) — cinta, popover, intervalos ──
+currentPhase = 'S23-chart';
+await page.evaluate(() => refreshLiveTape());
+await page.waitForTimeout(600);
+const s23a = await page.evaluate(async () => {
+  const item = document.querySelector('.tape-item[data-chart-sym="NVDA"]');
+  if (!item) return { err: 'sin tape item NVDA' };
+  item.click();
+  await new Promise((r) => setTimeout(r, 700));
+  const ov = document.getElementById('qdChartOverlay');
+  return {
+    visible: !!ov && getComputedStyle(ov).display !== 'none',
+    sym: document.getElementById('qdChartTSym').textContent,
+    canvases: ov ? ov.querySelectorAll('canvas').length : 0,
+    foot: document.getElementById('qdChartFoot').textContent,
+  };
+});
+const s23aCalls = apiCalls.filter((c) => c.phase === 'S23-chart' && c.path.startsWith('/api/candles'));
+report('S23a click en la cinta abre el chart con velas reales renderizadas',
+  s23a.visible === true && s23a.sym === 'NVDA' && s23a.canvases >= 1 && /yahoo/.test(s23a.foot),
+  JSON.stringify(s23a));
+report('S23b una sola request a /api/candles (símbolo + intervalo default 1d)',
+  s23aCalls.length === 1 && /symbol=NVDA/.test(s23aCalls[0].path) && /interval=1d/.test(s23aCalls[0].path),
+  JSON.stringify(s23aCalls.map((c) => c.path)));
+
+const s23c = await page.evaluate(async () => {
+  qdChartClose();
+  const el = qdCoPopEl();
+  qdCoPopRender(el, 'AAPL', { name: 'Apple Inc.', industry: 'Technology', country: 'US',
+    exchange: 'NASDAQ', market_cap_m: 2900000, ipo: '1980-12-12' });
+  const hasBtn = /qdCoPopChart/.test(el.innerHTML);
+  el.style.display = 'block';
+  qdCoPopChart('AAPL');
+  await new Promise((r) => setTimeout(r, 700));
+  const ov = document.getElementById('qdChartOverlay');
+  return { hasBtn, popHidden: el.style.display === 'none',
+    open: !!ov && getComputedStyle(ov).display !== 'none',
+    sym: document.getElementById('qdChartTSym').textContent,
+    name: document.getElementById('qdChartTName').textContent };
+});
+const s23cIntel = apiCalls.filter((c) => c.phase === 'S23-chart'
+  && !c.path.startsWith('/api/candles') && !c.path.startsWith('/api/tape'));
+report('S23c popover VER CHART → cierra popover y abre el chart, SIN correr intel',
+  s23c.hasBtn && s23c.popHidden && s23c.open && s23c.sym === 'AAPL' && /Apple/.test(s23c.name)
+  && s23cIntel.length === 0,
+  JSON.stringify({ ...s23c, otherCalls: s23cIntel.map((c) => c.path) }));
+
+await page.evaluate(() => qdChartSetIv('5m'));
+await page.waitForTimeout(600);
+await page.evaluate(() => qdChartSetIv('1d'));
+await page.waitForTimeout(500);
+const iv5m = apiCalls.filter((c) => c.phase === 'S23-chart' && /api\/candles.*interval=5m/.test(c.path));
+const iv1d = apiCalls.filter((c) => c.phase === 'S23-chart' && /api\/candles.*interval=1d/.test(c.path));
+report('S23d cambio de intervalo pide 5m; volver a 1d usa el memo (0 requests nuevas)',
+  iv5m.length === 1 && /symbol=AAPL/.test(iv5m[0].path) && iv1d.length === 2,
+  JSON.stringify({ iv5m: iv5m.map((c) => c.path), iv1d: iv1d.map((c) => c.path) }));
+
+await page.keyboard.press('Escape');
+await page.waitForTimeout(300);
+const s23e = await page.evaluate(() => {
+  const ov = document.getElementById('qdChartOverlay');
+  return { closed: !!ov && getComputedStyle(ov).display === 'none' };
+});
+report('S23e Escape cierra el chart modal', s23e.closed === true, JSON.stringify(s23e));
 
 // ── console summary ──
 console.log('\n=== CONSOLA (errores/warnings/pageerrors) ===');

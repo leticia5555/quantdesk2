@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="/vendor/lightweight-charts.standalone.production.js"></script>
 <script defer src="/_vercel/insights/script.js"></script>
 <style>
 :root{
@@ -59,6 +60,26 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--mono);min-hei
 .tape-item .sym{color:var(--text);font-weight:500;}
 .tape-item .up{color:var(--green);}
 .tape-item .dn{color:var(--red);}
+.tape-item[data-chart-sym]{cursor:pointer;}
+.tape-item[data-chart-sym]:hover .sym{color:var(--green);}
+
+/* CHART MODAL (Lightweight Charts) */
+.qd-chart-overlay{position:fixed;inset:0;z-index:950;background:rgba(0,0,0,.82);display:none;align-items:center;justify-content:center;}
+.qd-chart-panel{width:min(960px,94vw);height:min(620px,86vh);background:var(--bg);border:1px solid var(--border2);border-radius:4px;display:flex;flex-direction:column;overflow:hidden;}
+.qd-chart-head{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg1);flex-wrap:wrap;}
+.qd-chart-title{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--text);letter-spacing:.06em;}
+.qd-chart-title .qd-chart-co{font-weight:400;color:var(--text2);font-size:11px;}
+.qd-chart-px{font-family:var(--mono);font-size:12px;color:var(--text);margin-left:auto;}
+.qd-chart-px .up{color:var(--green);} .qd-chart-px .dn{color:var(--red);}
+.qd-chart-iv{font-family:var(--mono);font-size:10px;padding:3px 8px;background:none;border:1px solid var(--border2);color:var(--text2);border-radius:2px;cursor:pointer;letter-spacing:.06em;}
+.qd-chart-iv.active{border-color:var(--green);color:var(--green);}
+.qd-chart-btn{font-family:var(--mono);font-size:10px;padding:3px 8px;background:none;border:1px solid var(--border2);color:var(--text2);border-radius:2px;cursor:pointer;letter-spacing:.06em;}
+.qd-chart-btn:hover{color:var(--text);border-color:var(--text3);}
+.qd-chart-body{flex:1;min-height:0;position:relative;}
+.qd-chart-foot{font-family:var(--mono);font-size:9px;color:var(--text3);padding:4px 12px;border-top:1px solid var(--border);letter-spacing:.05em;}
+@media(max-width:768px){
+  .qd-chart-panel{width:100vw;height:100%;max-height:none;border:none;border-radius:0;}
+}
 
 /* SECTION HEADERS */
 .section-header{display:flex;align-items:baseline;gap:12px;margin-bottom:16px;}
@@ -2376,6 +2397,7 @@ function qdCoPopEl(){
 }
 function qdCoPopHide(){ const el=document.getElementById('qdCoPop'); if(el) el.style.display='none'; }
 function qdCoPopIntel(sym){ qdCoPopHide(); pickEarningsTicker(sym); }
+function qdCoPopChart(sym){ qdCoPopHide(); qdChartOpen(sym); }
 
 // Línea compuesta SOLO con campos reales del profile2 (los ausentes se
 // omiten — la descripción de negocio es premium y no se inventa).
@@ -2392,7 +2414,8 @@ function qdCoPopRender(el, sym, p){
     +(p&&p.industry?'<div style="display:inline-block;font-family:var(--mono);font-size:9px;padding:1px 6px;border:1px solid #2a2a2a;border-radius:3px;color:#888;margin-bottom:6px;">'+p.industry+'</div>':'')
     +(bits.length?'<div style="font-family:var(--mono);font-size:10px;color:#666;line-height:1.5;margin-bottom:8px;">'+bits.join(' · ')+'</div>'
                  :'<div style="font-family:var(--mono);font-size:10px;color:#555;margin-bottom:8px;">'+t('dataUnavailable')+'</div>')
-    +'<button onclick="qdCoPopIntel(\''+sym+'\')" style="font-family:var(--mono);font-size:10px;padding:4px 10px;background:none;border:1px solid #ff6600;color:#ff6600;border-radius:2px;cursor:pointer;letter-spacing:.06em;">'+t('runIntel')+'</button>';
+    +'<button onclick="qdCoPopIntel(\''+sym+'\')" style="font-family:var(--mono);font-size:10px;padding:4px 10px;background:none;border:1px solid #ff6600;color:#ff6600;border-radius:2px;cursor:pointer;letter-spacing:.06em;">'+t('runIntel')+'</button>'
+    +'<button onclick="qdCoPopChart(\''+sym+'\')" style="font-family:var(--mono);font-size:10px;padding:4px 10px;background:none;border:1px solid var(--green);color:var(--green);border-radius:2px;cursor:pointer;letter-spacing:.06em;margin-left:6px;">'+t('viewChart')+'</button>';
 }
 
 async function qdCoPopShow(card, sym){
@@ -2456,6 +2479,223 @@ document.addEventListener('click', function(ev){
   qdCoPopHide();
 });
 document.addEventListener('keydown', function(ev){ if(ev.key==='Escape') qdCoPopHide(); });
+
+// ── CHART MODAL (Lightweight Charts vendoreado, Apache 2.0) ───────
+// Velas de /api/candles (Yahoo para acciones US/LATAM, Binance para
+// cripto — cero Finnhub). El histórico se pide UNA vez por símbolo/
+// intervalo (memo de sesión + s-maxage CDN); el refresh en vivo solo
+// actualiza la vela viva: cripto vía WS de Binance, acciones con el
+// quote de /api/tape cada 30s mientras el modal esté abierto.
+// attributionLogo:true — la atribución a TradingView es requisito de
+// la licencia de Lightweight Charts y no se quita.
+const qdCandleCache = {};   // 'SYM|iv' → {at, data}
+const QD_CANDLE_TTL = { '1d': 300e3, '1h': 120e3, '5m': 30e3 };
+const QD_CHART_WS_MAP = {
+  'BTC/USD':'btcusdt','ETH/USD':'ethusdt','SOL/USD':'solusdt','BNB/USD':'bnbusdt',
+  'XRP/USD':'xrpusdt','ADA/USD':'adausdt','DOGE/USD':'dogeusdt','AVAX/USD':'avaxusdt',
+  'DOT/USD':'dotusdt','LINK/USD':'linkusdt','LTC/USD':'ltcusdt' };
+let qdChart=null, qdChartSeries=null, qdChartSym=null, qdChartIv='1d';
+let qdChartTimer=null, qdChartWs=null, qdChartLast=null, qdChartReq=0;
+
+function qdChartEl(){
+  let el=document.getElementById('qdChartOverlay');
+  if(el) return el;
+  el=document.createElement('div');
+  el.id='qdChartOverlay';
+  el.className='qd-chart-overlay';
+  el.innerHTML=
+    '<div class="qd-chart-panel">'
+    +'<div class="qd-chart-head">'
+      +'<div class="qd-chart-title"><span id="qdChartTSym"></span> <span class="qd-chart-co" id="qdChartTName"></span></div>'
+      +'<div class="qd-chart-px" id="qdChartPx"></div>'
+      +'<button class="qd-chart-iv" data-iv="1d">1D</button>'
+      +'<button class="qd-chart-iv" data-iv="1h">1H</button>'
+      +'<button class="qd-chart-iv" data-iv="5m">5m</button>'
+      +'<button class="qd-chart-btn" id="qdChartSim">SIM →</button>'
+      +'<button class="qd-chart-btn" id="qdChartX">✕</button>'
+    +'</div>'
+    +'<div class="qd-chart-body" id="qdChartBody"></div>'
+    +'<div class="qd-chart-foot" id="qdChartFoot"></div>'
+    +'</div>';
+  document.body.appendChild(el);
+  el.addEventListener('click', function(ev){ if(ev.target===el) qdChartClose(); });
+  el.querySelector('#qdChartX').addEventListener('click', qdChartClose);
+  el.querySelector('#qdChartSim').addEventListener('click', function(){
+    const s=qdChartSym; qdChartClose();
+    if(s&&typeof useMoverTicker==='function') useMoverTicker(s);
+  });
+  el.querySelectorAll('.qd-chart-iv').forEach(function(b){
+    b.addEventListener('click', function(){ qdChartSetIv(b.getAttribute('data-iv')); });
+  });
+  return el;
+}
+
+function qdChartOpen(sym){
+  if(!sym) return;
+  sym=(typeof normalizeTicker==='function')?normalizeTicker(String(sym)):String(sym).toUpperCase().trim();
+  const el=qdChartEl();
+  qdChartSym=sym;
+  const disp=sym.replace('/USD','');
+  el.querySelector('#qdChartTSym').textContent=disp;
+  el.querySelector('#qdChartTName').textContent=
+    (qdCoProfiles[disp]&&qdCoProfiles[disp].name)||qdCompanyName(disp)||'';
+  el.querySelector('#qdChartPx').textContent='';
+  el.querySelectorAll('.qd-chart-iv').forEach(function(b){
+    b.className='qd-chart-iv'+(b.getAttribute('data-iv')===qdChartIv?' active':''); });
+  el.style.display='flex';
+  qdChartLoad();
+}
+
+function qdChartSetIv(iv){
+  if(!QD_CANDLE_TTL[iv]||iv===qdChartIv) return;
+  qdChartIv=iv;
+  const el=document.getElementById('qdChartOverlay');
+  if(el) el.querySelectorAll('.qd-chart-iv').forEach(function(b){
+    b.className='qd-chart-iv'+(b.getAttribute('data-iv')===iv?' active':''); });
+  qdChartLoad();
+}
+
+function qdChartDestroy(){
+  if(qdChart){ try{ qdChart.remove(); }catch(e){} }
+  qdChart=null; qdChartSeries=null; qdChartLast=null;
+}
+
+function qdChartStopLive(){
+  if(qdChartTimer){ clearInterval(qdChartTimer); qdChartTimer=null; }
+  if(qdChartWs){ try{ qdChartWs.close(); }catch(e){} qdChartWs=null; }
+}
+
+function qdChartClose(){
+  const el=document.getElementById('qdChartOverlay');
+  if(el) el.style.display='none';
+  qdChartStopLive();
+  qdChartDestroy();
+  qdChartSym=null;
+}
+document.addEventListener('keydown', function(ev){ if(ev.key==='Escape') qdChartClose(); });
+
+// Delegación global: cualquier [data-chart-sym] (cinta, movers) abre el chart.
+document.addEventListener('click', function(ev){
+  const it=ev.target.closest('[data-chart-sym]');
+  if(it) qdChartOpen(it.getAttribute('data-chart-sym'));
+});
+
+async function qdChartLoad(){
+  const sym=qdChartSym, iv=qdChartIv, req=++qdChartReq;
+  const body=document.getElementById('qdChartBody');
+  const foot=document.getElementById('qdChartFoot');
+  if(!body||!sym) return;
+  qdChartStopLive();
+  qdChartDestroy();
+  if(typeof LightweightCharts==='undefined'){
+    body.innerHTML=qdUnavailableHTML('chart lib · '+sym);
+    return;
+  }
+  body.innerHTML='<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#555;font-family:var(--mono);font-size:11px;">Loading candles...</div>';
+  if(foot) foot.textContent='';
+
+  const key=sym+'|'+iv;
+  let d=null;
+  const hit=qdCandleCache[key];
+  if(hit && (Date.now()-hit.at)<QD_CANDLE_TTL[iv]){
+    d=hit.data;
+  }else{
+    d=await qdFetchJSON('/api/candles?symbol='+encodeURIComponent(sym)+'&interval='+iv, null,
+      function(x){ return x && Array.isArray(x.candles) && x.candles.length>0; });
+    if(d) qdCandleCache[key]={at:Date.now(),data:d};
+  }
+  // respuesta tardía de una carga anterior (cambio de símbolo/intervalo): fuera
+  if(req!==qdChartReq||sym!==qdChartSym) return;
+  if(!d){ body.innerHTML=qdUnavailableHTML('chart · '+sym); return; }
+
+  body.innerHTML='';
+  const lastC=d.candles[d.candles.length-1].c;
+  qdChart=LightweightCharts.createChart(body,{
+    autoSize:true,
+    layout:{background:{type:'solid',color:'#0a0a0a'},textColor:'#888880',fontSize:10,
+      fontFamily:"'IBM Plex Mono',monospace",attributionLogo:true},
+    grid:{vertLines:{color:'#151515'},horzLines:{color:'#151515'}},
+    rightPriceScale:{borderColor:'#2a2a2a'},
+    timeScale:{borderColor:'#2a2a2a',timeVisible:iv!=='1d',secondsVisible:false},
+    crosshair:{vertLine:{color:'#333',labelBackgroundColor:'#222'},horzLine:{color:'#333',labelBackgroundColor:'#222'}},
+    // locale explícito: LWC usa navigator.language por default y los tags
+    // inválidos (p. ej. 'en-US@posix') revientan Intl con RangeError
+    localization:{locale:(typeof currentLang!=='undefined'&&currentLang==='es')?'es-MX':'en-US'},
+  });
+  qdChartSeries=qdChart.addSeries(LightweightCharts.CandlestickSeries,{
+    upColor:'#1D9E75',downColor:'#E24B4A',
+    wickUpColor:'#1D9E75',wickDownColor:'#E24B4A',borderVisible:false,
+    priceFormat:lastC<1?{type:'price',precision:4,minMove:0.0001}:{type:'price',precision:2,minMove:0.01},
+  });
+  qdChartSeries.setData(d.candles.map(function(c){
+    return {time:c.t,open:c.o,high:c.h,low:c.l,close:c.c};
+  }));
+  qdChart.timeScale().fitContent();
+  const last=d.candles[d.candles.length-1];
+  qdChartLast={time:last.t,open:last.o,high:last.h,low:last.l,close:last.c};
+  qdChartSetPx(last.c,null,d.currency);
+  if(foot) foot.textContent=d.source+' · '+iv+(d.currency&&d.currency!=='USD'?' · '+d.currency:'');
+  qdChartStartLive(sym);
+}
+
+function qdChartSetPx(price,chgPct,currency){
+  const el=document.getElementById('qdChartPx');
+  if(!el||!isFinite(price)) return;
+  const dir=qdChartLast&&price>=qdChartLast.open?'up':'dn';
+  el.innerHTML='<span class="'+dir+'">'
+    +(currency==='MXN'?'MX$':'$')+Number(price).toLocaleString(undefined,{maximumFractionDigits:price<1?4:2})
+    +(chgPct!=null&&isFinite(chgPct)?' '+(chgPct>=0?'+':'')+chgPct.toFixed(2)+'%':'')
+    +'</span>';
+}
+
+// La vela viva: el tick entra a la vela del bucket actual; si el bucket
+// cambió, se abre vela nueva. El histórico jamás se repollea.
+function qdChartLiveTick(price,chgPct){
+  if(!qdChartSeries||!qdChartLast||!isFinite(price)) return;
+  const ivSec={'1d':86400,'1h':3600,'5m':300}[qdChartIv];
+  const bucket=Math.floor(Date.now()/1000/ivSec)*ivSec;
+  if(bucket>qdChartLast.time){
+    qdChartLast={time:bucket,open:price,high:price,low:price,close:price};
+  }else{
+    qdChartLast.close=price;
+    if(price>qdChartLast.high) qdChartLast.high=price;
+    if(price<qdChartLast.low) qdChartLast.low=price;
+  }
+  try{ qdChartSeries.update(qdChartLast); }catch(e){}
+  qdChartSetPx(price,chgPct);
+}
+
+function qdChartStartLive(sym){
+  const stream=QD_CHART_WS_MAP[sym];
+  if(stream){
+    try{
+      qdChartWs=new WebSocket('wss://stream.binance.com:9443/ws/'+stream+'@trade');
+      qdChartWs.onmessage=function(e){
+        try{
+          const p=parseFloat(JSON.parse(e.data).p);
+          if(sym===qdChartSym) qdChartLiveTick(p);
+        }catch(err){}
+      };
+      qdChartWs.onerror=function(){ qdChartWs=null; qdChartPollQuote(sym); };
+      return;
+    }catch(e){ qdChartWs=null; }
+  }
+  qdChartPollQuote(sym);
+}
+
+// Acciones (o cripto sin WS): quote de /api/tape cada 30s — la misma
+// fuente/cadencia de la cinta; con la pestaña oculta no se pide nada.
+function qdChartPollQuote(sym){
+  if(qdChartTimer) clearInterval(qdChartTimer);
+  const tick=async function(){
+    if(document.hidden||sym!==qdChartSym) return;
+    const d=await qdFetchJSON('/api/tape?symbols='+encodeURIComponent(sym), null,
+      function(x){ return x && x.quotes; });
+    const q=d&&d.quotes&&d.quotes[sym];
+    if(q&&sym===qdChartSym) qdChartLiveTick(q.price,q.changePct);
+  };
+  qdChartTimer=setInterval(tick,30*1000);
+}
 
 async function loadUpcomingEarnings(){
   const el=document.getElementById('upcomingEarnings');
@@ -3353,7 +3593,7 @@ function renderMovers(movers){
   if(!el) return;
   el.innerHTML=movers.map(m=>{
     const col=m.change>=0?'#00c97d':'#E24B4A';
-    return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #1a1a1a;">'
+    return '<div data-chart-sym="'+m.ticker+'" style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #1a1a1a;cursor:pointer;">'
       +'<span style="font-family:var(--mono);font-size:11px;color:#ccc;min-width:50px;">'+m.ticker+'</span>'
       +'<span style="font-size:10px;color:#555;flex:1;">'+m.reason+'</span>'
       +'<span style="font-family:var(--mono);font-size:11px;font-weight:600;color:'+col+';">'+(m.change>=0?'+':'')+m.change.toFixed(1)+'%</span>'
@@ -3978,7 +4218,7 @@ function renderLiveTape(){
     const isCrypto = ['BTC','ETH','SOL','BNB','XRP','ADA','DOGE','AVAX','LINK','DOT'].includes(displayTicker);
     const liveDot = isCrypto ? '<span style="color:var(--green);font-size:8px;">●</span> ' : (isMarketHours ? '<span style="color:var(--green);font-size:8px;">●</span> ' : '');
     const retLabel=Math.abs(ret*100)<0.005?' <span style="color:var(--text3);font-size:9px;">FLAT</span>':` ${sign}${(ret*100).toFixed(2)}%`;
-    return `<div class="tape-item">
+    return `<div class="tape-item" data-chart-sym="${t}" title="${displayTicker} · chart">
       ${liveDot}<span class="sym">${displayTicker}</span>
       <span style="color:var(--text2)">$${Number(d.price).toLocaleString(undefined,{maximumFractionDigits:d.price>100?0:2})}</span>
       <span class="${cls}">${retLabel}</span>
@@ -8560,6 +8800,7 @@ const i18n = {
     aiEarnVerdict:'AI EARNINGS VERDICT',
     upcomingEarn:'UPCOMING EARNINGS THIS WEEK',
     runIntel:'RUN INTEL →',
+    viewChart:'VIEW CHART →',
     beatRate:'BEAT RATE', lastQuarters:'LAST {n} QUARTERS',
     // SCREENER
     stockScreener:'STOCK SCREENER',
@@ -8768,6 +9009,7 @@ const i18n = {
     aiEarnVerdict:'VEREDICTO IA DE RESULTADOS',
     upcomingEarn:'RESULTADOS DE ESTA SEMANA',
     runIntel:'ANALIZAR →',
+    viewChart:'VER CHART →',
     beatRate:'TASA DE BEAT', lastQuarters:'ÚLTIMOS {n} TRIMESTRES',
     // SCREENER
     stockScreener:'FILTRO DE ACCIONES',
@@ -12149,7 +12391,7 @@ function renderMovers(data){
 
     return `
       <div style="display:grid;grid-template-columns:30px 1fr auto auto;gap:10px;align-items:center;padding:10px 12px;background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;cursor:pointer;transition:border-color .15s, background .15s;"
-           onclick="useMoverTicker('${m.symbol}')"
+           data-chart-sym="${m.symbol}"
            onmouseover="this.style.borderColor='${colorMain}';this.style.background='#0e0e0e'"
            onmouseout="this.style.borderColor='#1a1a1a';this.style.background='#0a0a0a'">
         <div style="font-family:var(--mono);font-size:10px;color:#444;">#${idx+1}</div>
