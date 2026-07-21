@@ -1,6 +1,13 @@
 # Stock Tracker — Censo de fuentes y diagnóstico de alcance
 
-Fecha del censo: 2026-07-21. Sin código: este documento es el insumo para decidir categorías y arquitectura.
+Fecha del censo: 2026-07-21.
+
+## Decisión (aprobada 2026-07-21)
+
+- **v1 = Insider buys destacados (Form 4) + Movimientos 13F**, como **tab nuevo** (no extensión de SMART $).
+- **Congreso: EN PAUSA.** No se construye hasta resolver DOS gates: (a) smoke de efdsearch.senate.gov desde Vercel real, (b) la duda legal EIGA §105(c) sobre uso comercial (el producto tiene Stripe/freemium).
+- **Gate previo al primer PR de v1:** smoke tests desde Vercel real contra www.sec.gov (atom + Archives), data.sec.gov (submissions) y OpenFIGI. Endpoint: `GET /api/stock-tracker?smoke=1` (mismo patrón que vc-feed). Hasta que el smoke pase en producción, no se construyen las categorías.
+- **Fix de honestidad pendiente (aparte, tracked como issue):** los paneles de SMART $ generados por Claude (institutional / short interest / options) llevan mínimo un disclaimer estilo #55; el reemplazo del panel institutional con 13F real viene después de la v1.
 
 Regla de diseño: cada categoría existe solo con fuente real y gratuita detrás. Nada de IA inventando trades. Framing del producto: **honestidad de lag** — los datos llegan con retraso legal y se dice de frente.
 
