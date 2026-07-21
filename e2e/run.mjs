@@ -138,14 +138,21 @@ async function routeApis(page) {
       return json({ quotes, generated_at: new Date().toISOString() });
     }
     if (p === '/api/candles') {
-      // 30 velas sintéticas terminando en el bucket actual (S23)
+      // 30 velas sintéticas terminando en el bucket actual (S23).
+      // OLDD: última vela 2 buckets atrás (mercado cerrado — S23f).
+      // BADROW: 2 filas con OHLC inválido (whitespace guard — S23g).
       const sym = url.searchParams.get('symbol'); const iv = url.searchParams.get('interval') || '1d';
       const ivSec = iv === '5m' ? 300 : iv === '1h' ? 3600 : 86400;
       const nowB = Math.floor(Date.now() / 1000 / ivSec) * ivSec;
+      const endB = sym === 'OLDD' ? nowB - 2 * ivSec : nowB;
       const candles = Array.from({ length: 30 }, (_, i) => {
         const base = 100 + i;
-        return { t: nowB - (29 - i) * ivSec, o: base, h: base + 2, l: base - 2, c: base + 1, v: 1000 + i };
+        return { t: endB - (29 - i) * ivSec, o: base, h: base + 2, l: base - 2, c: base + 1, v: 1000 + i };
       });
+      if (sym === 'BADROW') {
+        candles[10] = { t: candles[10].t, o: null, h: null, l: null, c: null, v: 0 };
+        candles[20] = { t: candles[20].t, o: 'x', h: 121, l: 119, c: null, v: 0 };
+      }
       return json({ symbol: sym, interval: iv, source: 'yahoo', currency: 'USD', candles, generated_at: new Date().toISOString() });
     }
     return json({});
@@ -858,6 +865,39 @@ const s23e = await page.evaluate(() => {
   return { closed: !!ov && getComputedStyle(ov).display === 'none' };
 });
 report('S23e Escape cierra el chart modal', s23e.closed === true, JSON.stringify(s23e));
+
+// S23f: el quote de acciones jamás abre vela nueva (bug SNOW: la vela
+// fantasma plana o=h=l=c en el bucket de hoy se leía como slot vacío);
+// el WS de cripto (allowNew) sí puede abrir bucket con un trade real.
+const s23f = await page.evaluate(async () => {
+  qdChartOpen('OLDD');
+  await new Promise((r) => setTimeout(r, 700));
+  const before = qdChartSeries.data().length;
+  qdChartLiveTick(999, 1, false);           // tick de quote, mercado cerrado
+  const afterQuote = qdChartSeries.data().length;
+  qdChartLiveTick(999, null, true);         // trade real de WS
+  const d = qdChartSeries.data();
+  return { before, afterQuote, afterWs: d.length, wsLast: d[d.length - 1] };
+});
+report('S23f quote jamás abre vela nueva; el WS sí (trade real)',
+  s23f.before === 30 && s23f.afterQuote === 30 && s23f.afterWs === 31
+  && s23f.wsLast.open === 999 && s23f.wsLast.close === 999,
+  JSON.stringify(s23f));
+
+// S23g: filas con OHLC inválido jamás llegan a la serie (en LWC serían
+// whitespace points → slots vacíos) y el foot avisa cuántas se descartaron.
+const s23g = await page.evaluate(async () => {
+  qdChartClose();
+  qdChartOpen('BADROW');
+  await new Promise((r) => setTimeout(r, 700));
+  const bars = qdChartSeries.data().length;
+  const foot = document.getElementById('qdChartFoot').textContent;
+  qdChartClose();
+  return { bars, foot };
+});
+report('S23g filas inválidas filtradas (cero whitespace) + foot honesto',
+  s23g.bars === 28 && /incomplete|incompletos/.test(s23g.foot) && /\(2\)/.test(s23g.foot),
+  JSON.stringify(s23g));
 
 // ── console summary ──
 console.log('\n=== CONSOLA (errores/warnings/pageerrors) ===');

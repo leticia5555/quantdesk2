@@ -2563,6 +2563,7 @@ function qdChartDestroy(){
 function qdChartStopLive(){
   if(qdChartTimer){ clearInterval(qdChartTimer); qdChartTimer=null; }
   if(qdChartWs){ try{ qdChartWs.close(); }catch(e){} qdChartWs=null; }
+  qdChartLiveIvSec=null;
 }
 
 function qdChartClose(){
@@ -2608,8 +2609,15 @@ async function qdChartLoad(){
   if(req!==qdChartReq||sym!==qdChartSym) return;
   if(!d){ body.innerHTML=qdUnavailableHTML('chart · '+sym); return; }
 
+  // Blindaje anti-whitespace: en LWC un item con {time} pero sin OHLC
+  // finito es un "whitespace data point" y renderiza un SLOT VACÍO. A la
+  // serie no llega ninguna fila inválida ni fuera de orden; si se
+  // descartó algo, se avisa en el foot (honestidad visible, no vacío mudo).
+  const rows=qdChartSanitize(d.candles);
+  if(!rows.length){ body.innerHTML=qdUnavailableHTML('chart · '+sym); return; }
+  const dropped=d.candles.length-rows.length;
   body.innerHTML='';
-  const lastC=d.candles[d.candles.length-1].c;
+  const lastC=rows[rows.length-1].close;
   qdChart=LightweightCharts.createChart(body,{
     autoSize:true,
     layout:{background:{type:'solid',color:'#0a0a0a'},textColor:'#888880',fontSize:10,
@@ -2631,15 +2639,31 @@ async function qdChartLoad(){
   // El default de LWC deja 20% de banda vacía arriba y 10% abajo — las
   // velas quedaban flotando con un "espacio en blanco" enorme encima.
   qdChartSeries.priceScale().applyOptions({scaleMargins:{top:0.08,bottom:0.08}});
-  qdChartSeries.setData(d.candles.map(function(c){
-    return {time:c.t,open:c.o,high:c.h,low:c.l,close:c.c};
-  }));
+  qdChartSeries.setData(rows);
   qdChart.timeScale().fitContent();
-  const last=d.candles[d.candles.length-1];
-  qdChartLast={time:last.t,open:last.o,high:last.h,low:last.l,close:last.c};
-  qdChartSetPx(last.c,null,d.currency);
-  if(foot) foot.textContent=d.source+' · '+iv+(d.currency&&d.currency!=='USD'?' · '+d.currency:'');
+  const last=rows[rows.length-1];
+  qdChartLast={time:last.time,open:last.open,high:last.high,low:last.low,close:last.close};
+  qdChartSetPx(last.close,null,d.currency);
+  if(foot) foot.textContent=d.source+' · '+iv
+    +(d.currency&&d.currency!=='USD'?' · '+d.currency:'')
+    +(dropped>0?' · '+t('chartPartial')+' ('+dropped+')':'');
   qdChartStartLive(sym);
+}
+
+// Filas aptas para la serie: t/o/h/l/c finitos y t estrictamente
+// ascendente (LWC lanza assertion con desorden/duplicados). Lo demás
+// se descarta — jamás se inventa ni se interpola una vela.
+function qdChartSanitize(rowsIn){
+  const out=[]; let lastT=-Infinity;
+  for(let i=0;i<(rowsIn||[]).length;i++){
+    const c=rowsIn[i];
+    // Number.isFinite, no isFinite: el global coerciona (isFinite(null)===true)
+    if(!c||!Number.isFinite(c.t)||!Number.isFinite(c.o)||!Number.isFinite(c.h)||!Number.isFinite(c.l)||!Number.isFinite(c.c)) continue;
+    if(c.t<=lastT) continue;
+    lastT=c.t;
+    out.push({time:c.t,open:c.o,high:c.h,low:c.l,close:c.c});
+  }
+  return out;
 }
 
 // Eje de tiempo en vista diaria: el default de LWC mezcla granularidades
@@ -2661,7 +2685,7 @@ function qdChartDayTick(time,tickMarkType){
 
 function qdChartSetPx(price,chgPct,currency){
   const el=document.getElementById('qdChartPx');
-  if(!el||!isFinite(price)) return;
+  if(!el||!Number.isFinite(price)) return;
   const dir=qdChartLast&&price>=qdChartLast.open?'up':'dn';
   el.innerHTML='<span class="'+dir+'">'
     +(currency==='MXN'?'MX$':'$')+Number(price).toLocaleString(undefined,{maximumFractionDigits:price<1?4:2})
@@ -2669,16 +2693,19 @@ function qdChartSetPx(price,chgPct,currency){
     +'</span>';
 }
 
-// La vela viva: el tick entra a la vela del bucket actual; si el bucket
-// cambió, se abre vela nueva. El histórico jamás se repollea.
-function qdChartLiveTick(price,chgPct){
-  if(!qdChartSeries||!qdChartLast||!isFinite(price)) return;
-  const ivSec={'1d':86400,'1h':3600,'5m':300}[qdChartIv];
-  const bucket=Math.floor(Date.now()/1000/ivSec)*ivSec;
-  // Mercado cerrado: el quote estático repetiría el último cierre en un
-  // bucket nuevo → vela fantasma plana. Sin cambio de precio no hay vela.
-  if(bucket>qdChartLast.time && price===qdChartLast.close) return;
+// La vela viva: el tick SOLO actualiza la última vela real (close/high/
+// low). Abrir vela nueva en el bucket actual es privilegio del WS de
+// cripto (trades reales, buckets alineados a UTC igual que Binance);
+// el quote de acciones jamás abre vela: fuera de sesión creaba una vela
+// plana o=h=l=c en el bucket UTC de hoy — un guión de 1-2px invisible en
+// dark que se leía como slot vacío al final del chart (bug SNOW).
+// El histórico jamás se repollea.
+let qdChartLiveIvSec=null; // capturado al arrancar el live, no se lee el global en el tick
+function qdChartLiveTick(price,chgPct,allowNew){
+  if(!qdChartSeries||!qdChartLast||!Number.isFinite(price)||!qdChartLiveIvSec) return;
+  const bucket=Math.floor(Date.now()/1000/qdChartLiveIvSec)*qdChartLiveIvSec;
   if(bucket>qdChartLast.time){
+    if(!allowNew) return;
     qdChartLast={time:bucket,open:price,high:price,low:price,close:price};
   }else{
     qdChartLast.close=price;
@@ -2690,6 +2717,7 @@ function qdChartLiveTick(price,chgPct){
 }
 
 function qdChartStartLive(sym){
+  qdChartLiveIvSec={'1d':86400,'1h':3600,'5m':300}[qdChartIv]||null;
   const stream=QD_CHART_WS_MAP[sym];
   if(stream){
     try{
@@ -2697,7 +2725,7 @@ function qdChartStartLive(sym){
       qdChartWs.onmessage=function(e){
         try{
           const p=parseFloat(JSON.parse(e.data).p);
-          if(sym===qdChartSym) qdChartLiveTick(p);
+          if(sym===qdChartSym) qdChartLiveTick(p,null,true);
         }catch(err){}
       };
       qdChartWs.onerror=function(){ qdChartWs=null; qdChartPollQuote(sym); };
@@ -2716,7 +2744,7 @@ function qdChartPollQuote(sym){
     const d=await qdFetchJSON('/api/tape?symbols='+encodeURIComponent(sym), null,
       function(x){ return x && x.quotes; });
     const q=d&&d.quotes&&d.quotes[sym];
-    if(q&&sym===qdChartSym) qdChartLiveTick(q.price,q.changePct);
+    if(q&&sym===qdChartSym) qdChartLiveTick(q.price,q.changePct,false);
   };
   qdChartTimer=setInterval(tick,30*1000);
 }
@@ -8825,6 +8853,7 @@ const i18n = {
     upcomingEarn:'UPCOMING EARNINGS THIS WEEK',
     runIntel:'RUN INTEL →',
     viewChart:'VIEW CHART →',
+    chartPartial:'⚠ incomplete data',
     beatRate:'BEAT RATE', lastQuarters:'LAST {n} QUARTERS',
     // SCREENER
     stockScreener:'STOCK SCREENER',
@@ -9034,6 +9063,7 @@ const i18n = {
     upcomingEarn:'RESULTADOS DE ESTA SEMANA',
     runIntel:'ANALIZAR →',
     viewChart:'VER CHART →',
+    chartPartial:'⚠ datos incompletos',
     beatRate:'TASA DE BEAT', lastQuarters:'ÚLTIMOS {n} TRIMESTRES',
     // SCREENER
     stockScreener:'FILTRO DE ACCIONES',
