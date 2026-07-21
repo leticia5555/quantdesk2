@@ -168,6 +168,9 @@ canvas{display:block;width:100%;height:100%;}
 .sig-fill{height:100%;border-radius:2px;}
 .sig-score{font-size:12px;font-weight:500;}
 .traction-tag{font-size:10px;padding:2px 8px;border-radius:3px;border:1px solid var(--amber);color:var(--amber);background:rgba(239,159,39,.08);}
+.vcf-tag{font-size:10px;padding:1px 7px;border-radius:3px;border:1px solid var(--border2);color:var(--text2);white-space:nowrap;}
+.vcf-src{font-size:10px;color:var(--text3);font-family:var(--mono);}
+.vcf-src a{color:var(--text3);}
 
 /* LOADING */
 .loading{text-align:center;padding:40px;color:var(--text3);font-size:12px;letter-spacing:.04em;}
@@ -652,6 +655,21 @@ td:first-child{color:var(--text);font-weight:500;}
 <!-- VC PAGE -->
 <div id="page-vc" class="page">
   <div class="section-header"><span class="section-title" id="vcTitle" data-i18n="vcTitle">// VC Intelligence</span><div class="section-line"></div></div>
+
+  <!-- DEAL FLOW REAL (/api/vc-feed): censo v1 = rounds | latam | ipo.
+       Cards con fecha del pubDate y link a la fuente. Sin fuente → card
+       vacía honesta — jamás items inventados. -->
+  <div class="chips">
+    <button class="chip active" id="vcCatBtn-rounds" onclick="vcSetCat('rounds')" data-i18n="vcCatRounds">Rounds by stage</button>
+    <button class="chip" id="vcCatBtn-latam" onclick="vcSetCat('latam')">LATAM</button>
+    <button class="chip" id="vcCatBtn-ipo" onclick="vcSetCat('ipo')" data-i18n="vcCatIpo">IPO pipeline</button>
+    <button class="chip" onclick="loadVCFeed(_vcCat,true)">↻</button>
+  </div>
+  <div id="vcFeed"></div>
+
+  <!-- SCAN IA — sección COMPLEMENTARIA bajo el deal flow real, con el
+       disclaimer de #55. Conocimiento del modelo, no fuentes. -->
+  <div class="section-header" style="margin-top:26px;"><span class="section-title" data-i18n="vcAiTitle">// AI Scan · complementary</span><div class="section-line"></div></div>
 
   <div class="ctrl-grid g2" style="margin-bottom:12px;">
     <input type="text" id="vcQuery" placeholder="Sector or theme: AI agents, LATAM fintech..." data-i18n-ph="vcPlaceholder"/>
@@ -3838,6 +3856,7 @@ function showPage(id){
   if(id==='smartmoney') setTimeout(()=>{if(!smLoaded){smLoaded=true;loadMarketSignals();}},50);
   if(id==='earnings') setTimeout(()=>initEarningsPage(),50);
   if(id==='ipos') setTimeout(()=>{ if(!_iposCache || Date.now()-_iposCacheAt>QD_CAL_TTL_MS) loadIPOs(); },50);
+  if(id==='vc') setTimeout(()=>{ if(!_vcFeedCache[_vcCat] || Date.now()-_vcFeedAt[_vcCat]>QD_CAL_TTL_MS) loadVCFeed(_vcCat); },50);
   if(id==='movers') setTimeout(()=>{ if(!_moversCache) loadMovers(); },50);
   if(id==='sectors') setTimeout(()=>{ if(!_sectorsCache[_currentSectorCat]) loadSectors(); },50);
   if(id==='gallery') setTimeout(()=>renderGallery(),50);
@@ -5281,6 +5300,120 @@ function showEarningsAlert(earnings, sentiment){
   el.innerHTML=html;
   const analysisBlock=document.getElementById('simAnalysis');
   if(analysisBlock) analysisBlock.insertBefore(el, analysisBlock.firstChild);
+}
+
+// ─── VC DEAL FLOW REAL (/api/vc-feed) ─────────────────────
+// Censo v1 aprobado: rounds (TechCrunch + Crunchbase News) | latam
+// (LatamList + Contxto) | ipo (Finnhub + S-1 EDGAR). Cada card lleva la
+// fecha del pubDate del feed y link a la fuente; el sector lo clasifica
+// el server (capa central de IA, validado — jamás inventado). El scan IA
+// de abajo (runVC) es complementario y conserva su disclaimer (#55).
+// Sin fuente → card vacía honesta con flag de qué falló.
+let _vcFeedCache={rounds:null,latam:null,ipo:null};
+let _vcFeedAt={rounds:0,latam:0,ipo:0};
+let _vcCat='rounds';
+
+// Escapa contenido EXTERNO (titulares RSS/EDGAR) antes de innerHTML.
+function qdEscHTML(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
+function vcSetCat(cat){
+  _vcCat=cat;
+  ['rounds','latam','ipo'].forEach(c=>{
+    const b=document.getElementById('vcCatBtn-'+c);
+    if(b)b.classList.toggle('active',c===cat);
+  });
+  loadVCFeed(cat);
+}
+
+async function loadVCFeed(cat,force){
+  const el=document.getElementById('vcFeed');
+  if(!el)return;
+  if(!force&&_vcFeedCache[cat]&&Date.now()-_vcFeedAt[cat]<QD_CAL_TTL_MS){renderVCFeed(_vcFeedCache[cat]);return;}
+  el.innerHTML='<div class="loading">loading deal flow</div>';
+  const d=await qdFetchJSON('/api/vc-feed?cat='+cat+(force?'&_='+Date.now():''),
+    force?{cache:'no-store'}:null,
+    x=>x&&typeof x==='object'&&Array.isArray(x.items));
+  if(!d){el.innerHTML=qdUnavailableHTML('vc feed · '+cat);return;}
+  _vcFeedCache[cat]=d;_vcFeedAt[cat]=Date.now();
+  renderVCFeed(d);
+}
+
+// Flags honestos: qué fuente cayó (y stale si se sirvió lo último bueno).
+function vcFeedNotes(d){
+  let h='';
+  if(d.stale)h+='<div style="font-family:var(--sans);font-size:9px;color:var(--amber);margin-bottom:6px;">⚠ '+t('vcStaleNote')+'</div>';
+  const down=Object.keys(d.sources||{}).filter(k=>d.sources[k]&&d.sources[k].ok===false);
+  if(down.length)h+='<div style="font-family:var(--sans);font-size:9px;color:var(--text3);margin-bottom:6px;">⚠ '+t('vcSourceDown')+': '+
+    down.map(k=>qdEscHTML(k+' — '+(d.sources[k].error||'?'))).join(' · ')+'</div>';
+  return h;
+}
+
+function vcFeedCard(it,showCountry){
+  const tags=[];
+  if(it.stage)tags.push('<span class="vcf-tag">'+qdEscHTML(it.stage)+'</span>');
+  if(it.sector)tags.push('<span class="vcf-tag">'+qdEscHTML(it.sector)+'</span>');
+  if(showCountry&&it.country)tags.push('<span class="vcf-tag">'+qdEscHTML(it.country)+'</span>');
+  const title=it.link
+    ?'<a href="'+qdEscHTML(it.link)+'" target="_blank" rel="noopener noreferrer" style="color:var(--text2);text-decoration:none;">'+qdEscHTML(it.title)+' ↗</a>'
+    :qdEscHTML(it.title);
+  return '<div class="deal-card">'+
+    '<div class="deal-top">'+
+      '<div style="min-width:0;">'+
+        '<div class="deal-name">'+qdEscHTML(it.company||'—')+'</div>'+
+        '<div class="deal-sector" style="margin-top:4px;line-height:1.5;">'+title+'</div>'+
+      '</div>'+
+      '<div style="flex-shrink:0;margin-left:12px;">'+
+        '<div class="deal-amt">'+qdEscHTML(it.amount||'')+'</div>'+
+        (tags.length?'<div style="display:flex;gap:4px;justify-content:flex-end;margin-top:4px;">'+tags.join('')+'</div>':'')+
+      '</div>'+
+    '</div>'+
+    '<div class="deal-foot">'+
+      '<div class="backers">'+(it.lead?t('vcLead')+': '+qdEscHTML(it.lead):'')+'</div>'+
+      '<div class="vcf-src">'+qdEscHTML(it.source||'')+' · '+qdEscHTML(it.date||'—')+'</div>'+
+    '</div>'+
+  '</div>';
+}
+
+function renderVCFeed(d){
+  const el=document.getElementById('vcFeed');
+  if(!el)return;
+  let h=vcFeedNotes(d);
+
+  if(d.cat==='ipo'){
+    const cal=Array.isArray(d.items)?d.items:[];
+    const pipe=Array.isArray(d.pipeline)?d.pipeline:[];
+    if(!cal.length&&!pipe.length){el.innerHTML=h+qdUnavailableHTML('vc feed · ipo');return;}
+    h+='<div class="analysis"><h3>'+t('vcIpoCalendar')+'</h3>';
+    h+=cal.length?cal.slice(0,15).map(ipo=>
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;">'+
+        '<div style="min-width:0;"><span style="color:var(--text);font-weight:500;">'+qdEscHTML(ipo.symbol||'—')+'</span> '+
+          '<span style="color:var(--text3);">'+qdEscHTML(ipo.name||'')+'</span>'+
+          (ipo.price_range?'<span style="color:var(--text3);"> · '+qdEscHTML(ipo.price_range)+'</span>':'')+'</div>'+
+        '<div class="vcf-src" style="flex-shrink:0;">'+qdEscHTML((ipo.status||'')+' · '+(ipo.date||'—'))+'</div>'+
+      '</div>').join('')
+      :'<div style="font-size:11px;color:var(--text3);">'+t('dataUnavailable')+'</div>';
+    h+='</div>';
+    h+='<div class="analysis"><h3>'+t('vcIpoPipeline')+'</h3>';
+    h+=pipe.length?pipe.map(f=>
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;">'+
+        '<div style="min-width:0;color:var(--text2);">'+qdEscHTML(f.company||'—')+
+          '<span class="vcf-tag" style="margin-left:8px;">'+qdEscHTML(f.form||'S-1')+'</span></div>'+
+        '<div class="vcf-src" style="flex-shrink:0;">'+
+          (f.link?'<a href="'+qdEscHTML(f.link)+'" target="_blank" rel="noopener noreferrer">EDGAR ↗</a> · ':'')+
+          qdEscHTML(f.date||'—')+'</div>'+
+      '</div>').join('')
+      :'<div style="font-size:11px;color:var(--text3);">'+t('dataUnavailable')+'</div>';
+    h+='</div>';
+    el.innerHTML=h;
+    return;
+  }
+
+  const items=Array.isArray(d.items)?d.items:[];
+  if(!items.length){el.innerHTML=h+qdUnavailableHTML('vc feed · '+d.cat);return;}
+  h+='<div style="font-size:10px;color:var(--text3);margin-bottom:8px;letter-spacing:.04em;">'+
+    items.length+' deals · '+t('vcRealTag')+'</div>';
+  h+=items.map(it=>vcFeedCard(it,d.cat==='latam')).join('');
+  el.innerHTML=h;
 }
 
 // ─── VC ENGINE ────────────────────────────────────────────
@@ -8388,6 +8521,13 @@ const i18n = {
     allStages:'All stages', seed:'Seed', seriesA:'Series A', seriesB:'Series B+', growth:'Growth',
     vcAiTag:'AI analysis',
     vcDisclaimer:'AI-generated analysis from model knowledge — not real or verified deal flow. Amounts, rounds and dates may be outdated or inaccurate. Verify with primary sources.',
+    vcCatRounds:'Rounds by stage', vcCatIpo:'IPO pipeline',
+    vcRealTag:'real deal flow · linked sources · feed dates',
+    vcAiTitle:'// AI Scan · complementary',
+    vcSourceDown:'source down', vcStaleNote:'all sources down — showing last good data',
+    vcIpoCalendar:'IPO calendar · Finnhub',
+    vcIpoPipeline:'Early pipeline · S-1 filings · SEC EDGAR',
+    vcLead:'Lead',
     // Portfolio
     portTitle:'// Portfolio Simulator', addPosition:'// add position',
     portSummary:'// portfolio summary', totalCapital:'Total capital', positions:'Positions',
@@ -8589,6 +8729,13 @@ const i18n = {
     allStages:'Todas las etapas', seed:'Seed', seriesA:'Serie A', seriesB:'Serie B+', growth:'Growth',
     vcAiTag:'análisis IA',
     vcDisclaimer:'Análisis generado por IA a partir del conocimiento del modelo — no es deal flow real ni verificado. Montos, rondas y fechas pueden estar desactualizados o ser inexactos. Verifica con fuentes primarias.',
+    vcCatRounds:'Rondas por etapa', vcCatIpo:'Pipeline IPO',
+    vcRealTag:'deal flow real · fuentes con link · fechas del feed',
+    vcAiTitle:'// Scan IA · complementario',
+    vcSourceDown:'fuente caída', vcStaleNote:'fuentes caídas — mostrando lo último bueno',
+    vcIpoCalendar:'Calendario IPO · Finnhub',
+    vcIpoPipeline:'Pipeline temprano · S-1 · SEC EDGAR',
+    vcLead:'Lead',
     // Portfolio
     portTitle:'// Simulador de Portafolio', addPosition:'// agregar posición',
     portSummary:'// resumen del portafolio', totalCapital:'Capital total', positions:'Posiciones',
