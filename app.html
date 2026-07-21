@@ -4168,7 +4168,7 @@ function showPage(id){
   if(id==='ipos') setTimeout(()=>{ if(!_iposCache || Date.now()-_iposCacheAt>QD_CAL_TTL_MS) loadIPOs(); },50);
   if(id==='vc') setTimeout(()=>{ if(!_vcFeedCache[_vcCat] || Date.now()-_vcFeedAt[_vcCat]>QD_CAL_TTL_MS) loadVCFeed(_vcCat); },50);
   if(id==='tracker') setTimeout(()=>{ if(!_stFeedCache[_stCat] || Date.now()-_stFeedAt[_stCat]>QD_CAL_TTL_MS) loadTracker(_stCat); },50);
-  if(id==='movers') setTimeout(()=>{ if(!_moversCache) loadMovers(); },50);
+  if(id==='movers') setTimeout(()=>{ if(!_moversCaches[_moversUniverse]) loadMovers(); },50);
   if(id==='sectors') setTimeout(()=>{ if(!_sectorsCache[_currentSectorCat]) loadSectors(); },50);
   if(id==='gallery') setTimeout(()=>renderGallery(),50);
   else stopGalleryLiveUpdates(); // stop when leaving gallery
@@ -8866,6 +8866,10 @@ const i18n = {
     aiUnavailable:'AI analysis unavailable — try again in a moment.',
     moversWatchlistTitle:'TOP MOVERS · WATCHLIST',
     moversTooltip:'Movers within QuantDesk\'s curated watchlist (~55 most-watched US large caps, memes, semis and LATAM ADRs) — NOT the whole market. A stock outside this list won\'t appear here even on a big move.',
+    moversMarketTitle:'TOP MOVERS · MARKET',
+    moversMarketTooltip:'Market-wide US movers via Alpha Vantage TOP_GAINERS_LOSERS (full NASDAQ/NYSE universe). Honest trade-offs of the free source: hourly refresh, no company names or 52-week range; sub-$1 tickers and warrants are filtered out.',
+    moversToggleWatchlist:'WATCHLIST', moversToggleMarket:'MARKET',
+    moversFallbackBanner:'MARKET view unavailable — showing WATCHLIST as fallback.',
     // PAPER TRADING AGENTS
     agentsTitle:'PAPER TRADING AGENTS',
     agentsSubtitle:'YOUR EDGES TRADING SIMULATED · DAILY CANDLES · NO BROKER',
@@ -9089,6 +9093,10 @@ const i18n = {
     aiUnavailable:'Análisis IA no disponible — reintenta en un momento.',
     moversWatchlistTitle:'TOP MOVERS · WATCHLIST',
     moversTooltip:'Movers DENTRO de la watchlist curada de QuantDesk (~55 tickers: mega-caps US, memes, semis y ADRs LATAM) — NO el mercado completo. Una acción fuera de esta lista no aparece aquí aunque se mueva fuerte.',
+    moversMarketTitle:'TOP MOVERS · MERCADO',
+    moversMarketTooltip:'Movers del mercado US completo vía Alpha Vantage TOP_GAINERS_LOSERS (todo NASDAQ/NYSE). Trade-offs honestos de la fuente gratuita: refresh horario, sin nombre de empresa ni rango de 52 semanas; se filtran tickers bajo $1 y warrants.',
+    moversToggleWatchlist:'WATCHLIST', moversToggleMarket:'MERCADO',
+    moversFallbackBanner:'Vista MERCADO no disponible — mostrando WATCHLIST como fallback.',
     // PAPER TRADING AGENTS
     agentsTitle:'AGENTES DE PAPER TRADING',
     agentsSubtitle:'TUS EDGES OPERANDO EN SIMULADO · VELAS DIARIAS · SIN BROKER',
@@ -12593,25 +12601,59 @@ function useSectorEtf(sym){
 // ═══════════════════════════════════════════════════════════════
 // TOP MOVERS — Gainers / Losers / Most Volatile
 // ═══════════════════════════════════════════════════════════════
-let _moversCache = null;
+// Universo del panel: WATCHLIST default (el diferenciador personal),
+// MARKET = mercado US completo vía Alpha Vantage. Cache por universo.
+let _moversUniverse = 'watchlist';
+let _moversCaches = { watchlist: null, market: null };
 let _moversAutoTimer = null;
+
+function setMoversUniverse(u){
+  if(u !== 'market') u = 'watchlist';
+  if(_moversUniverse === u) return;
+  _moversUniverse = u;
+  updateMoversUniverseUI();
+  if(_moversCaches[u]) renderMovers(_moversCaches[u]);
+  else loadMovers();
+}
+
+function updateMoversUniverseUI(){
+  const isMkt = _moversUniverse === 'market';
+  const bw = document.getElementById('moversBtnWatchlist');
+  const bm = document.getElementById('moversBtnMarket');
+  const on  = (b)=>{ b.style.color='#ff6600'; b.style.borderColor='#ff6600'; b.style.background='rgba(255,102,0,.08)'; };
+  const off = (b)=>{ b.style.color='#666'; b.style.borderColor='#333'; b.style.background='none'; };
+  if(bw && bm){ if(isMkt){ on(bm); off(bw); } else { on(bw); off(bm); } }
+  // El título del top bar cambia con el universo; se actualizan también los
+  // atributos data-i18n para que un switch de idioma no lo regrese al otro modo.
+  const title = document.getElementById('moversPageTitle');
+  if(title){
+    title.setAttribute('data-i18n', isMkt ? 'moversMarketTitle' : 'moversWatchlistTitle');
+    title.setAttribute('data-i18n-title', isMkt ? 'moversMarketTooltip' : 'moversTooltip');
+    title.textContent = t(isMkt ? 'moversMarketTitle' : 'moversWatchlistTitle');
+    title.title = t(isMkt ? 'moversMarketTooltip' : 'moversTooltip');
+  }
+  const sub = document.getElementById('moversSubtitle');
+  if(sub) sub.textContent = isMkt ? 'GAINERS · LOSERS · MOST ACTIVE · HOURLY' : 'GAINERS · LOSERS · MOST VOLATILE · LIVE';
+}
 
 async function loadMovers(){
   const el = document.getElementById('moversContent');
   const btn = document.getElementById('moversRefreshBtn');
   const ts = document.getElementById('moversTimestamp');
+  const universe = _moversUniverse;
   if(btn){ btn.textContent = '↻ Loading...'; btn.disabled = true; }
-  el.innerHTML = '<div style="padding:40px;text-align:center;color:#555;font-family:var(--mono);font-size:12px;">Scanning the curated watchlist...</div>';
+  el.innerHTML = '<div style="padding:40px;text-align:center;color:#555;font-family:var(--mono);font-size:12px;">'+
+    (universe === 'market' ? 'Scanning the full US market...' : 'Scanning the curated watchlist...')+'</div>';
 
-  const d = await qdFetchJSON('/api/movers', null, (x) => x && typeof x === 'object');
+  const d = await qdFetchJSON('/api/movers' + (universe === 'market' ? '?universe=market' : ''),
+    null, (x) => x && typeof x === 'object');
   if (d) {
-    _moversCache = d;
-    renderMovers(d);
-    if(ts){
-      const now = new Date();
-      ts.textContent = 'Updated ' + now.toLocaleTimeString();
+    _moversCaches[universe] = d;
+    if(universe === _moversUniverse){  // descarta respuestas de un toggle previo
+      renderMovers(d);
+      if(ts) ts.textContent = 'Updated ' + new Date().toLocaleTimeString();
     }
-  } else {
+  } else if(universe === _moversUniverse) {
     el.innerHTML = qdUnavailableHTML('movers');
   }
 
@@ -12626,11 +12668,17 @@ function renderMovers(data){
     return;
   }
 
+  const fmtVol = (v) => v >= 1e9 ? (v/1e9).toFixed(1)+'B' : v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(0)+'K' : String(v);
+
   const renderMoverRow = (m, idx, type) => {
     const isUp = m.changePct > 0;
     const colorMain = isUp ? '#2ecc71' : '#e74c3c';
     const arrow = isUp ? '↑' : '↓';
     const sign = isUp ? '+' : '';
+    // En MOST ACTIVE lo relevante es el volumen, no el previous close
+    const subLine = (type === 'active' && m.volume != null)
+      ? `$${m.price.toFixed(2)} · vol ${fmtVol(m.volume)}`
+      : `$${m.price.toFixed(2)} · prev $${(m.prevClose||0).toFixed(2)}`;
 
     return `
       <div style="display:grid;grid-template-columns:30px 1fr auto auto;gap:10px;align-items:center;padding:10px 12px;background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;cursor:pointer;transition:border-color .15s, background .15s;"
@@ -12640,7 +12688,7 @@ function renderMovers(data){
         <div style="font-family:var(--mono);font-size:10px;color:#444;">#${idx+1}</div>
         <div>
           <div style="font-family:var(--mono);font-size:13px;color:#fff;font-weight:700;">${m.symbol}</div>
-          <div style="font-family:var(--mono);font-size:9px;color:#666;margin-top:2px;">$${m.price.toFixed(2)} · prev $${(m.prevClose||0).toFixed(2)}</div>
+          <div style="font-family:var(--mono);font-size:9px;color:#666;margin-top:2px;">${subLine}</div>
         </div>
         <div style="text-align:right;">
           <div style="font-family:var(--mono);font-size:14px;color:${colorMain};font-weight:700;">${sign}${m.changePct.toFixed(2)}%</div>
@@ -12675,20 +12723,41 @@ function renderMovers(data){
     `;
   };
 
+  // Universo que VIENE en la respuesta (con fallback el server ya regresó watchlist)
+  const isMarket = data.universe === 'market';
+
+  // Degradación visible: si MARKET falló, banner con la razón — nunca silencio
+  const fallbackHtml = data.universe_fallback ? `
+    <div style="margin-bottom:16px;padding:10px 12px;border:1px solid #f39c12;border-radius:3px;background:rgba(243,156,18,.06);font-family:var(--mono);font-size:10px;color:#f39c12;">
+      ⚠ ${t('moversFallbackBanner')}<span style="color:#8a6d1a;">${data.fallback_reason ? ' · ' + data.fallback_reason : ''}</span>
+    </div>
+  ` : '';
+
   const total = data.total_scanned || 0;
   const wlSize = data.watchlist_size || total;
-  const headerHtml = `
+  const headerHtml = isMarket ? `
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid #1a1a1a;">
+      <span style="font-family:var(--mono);font-size:14px;color:#ff6600;font-weight:700;cursor:help;" title="${t('moversMarketTooltip')}">${t('moversMarketTitle')}</span>
+      <span style="font-family:var(--mono);font-size:10px;color:#888;">Full US market · Alpha Vantage · hourly refresh${data.last_updated ? ' · as of ' + data.last_updated : ''} · Click any row to simulate</span>
+    </div>
+  ` : `
     <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid #1a1a1a;">
       <span style="font-family:var(--mono);font-size:14px;color:#ff6600;font-weight:700;cursor:help;" title="${t('moversTooltip')}">TOP MOVERS · WATCHLIST (${wlSize})</span>
       <span style="font-family:var(--mono);font-size:10px;color:#888;">${total}/${wlSize} quotes · Live from Finnhub · Click any row to simulate</span>
     </div>
   `;
 
-  el.innerHTML = headerHtml + `
+  // Tercera columna: MOST ACTIVE (volumen real de AV) en MARKET;
+  // MOST VOLATILE (computada de la watchlist) en WATCHLIST.
+  const thirdCol = isMarket
+    ? renderColumn('MOST ACTIVE', data.actives, '#f39c12', '🔊', 'active')
+    : renderColumn('MOST VOLATILE', data.volatile, '#f39c12', '🔥', 'volatile');
+
+  el.innerHTML = fallbackHtml + headerHtml + `
     <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(360px, 1fr));gap:24px;">
       ${renderColumn('TOP GAINERS', data.gainers, '#2ecc71', '📈', 'gainer')}
       ${renderColumn('TOP LOSERS', data.losers, '#e74c3c', '📉', 'loser')}
-      ${renderColumn('MOST VOLATILE', data.volatile, '#f39c12', '🔥', 'volatile')}
+      ${thirdCol}
     </div>
   `;
 }
@@ -13640,8 +13709,12 @@ function margin_color(pct, threshold, COL){
 <!-- MOVERS PAGE -->
 <div id="page-movers" class="page" style="padding:0;background:#080808;min-height:100vh;">
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
-    <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;cursor:help;" data-i18n="moversWatchlistTitle" data-i18n-title="moversTooltip" title="">TOP MOVERS · WATCHLIST</span>
-    <span style="font-family:var(--mono);font-size:10px;color:#333;">GAINERS · LOSERS · MOST VOLATILE · LIVE</span>
+    <span id="moversPageTitle" style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;cursor:help;" data-i18n="moversWatchlistTitle" data-i18n-title="moversTooltip" title="">TOP MOVERS · WATCHLIST</span>
+    <div style="display:flex;gap:4px;">
+      <button onclick="setMoversUniverse('watchlist')" id="moversBtnWatchlist" data-i18n="moversToggleWatchlist" style="font-family:var(--mono);font-size:9px;padding:3px 10px;border:1px solid #ff6600;color:#ff6600;background:rgba(255,102,0,.08);border-radius:2px;cursor:pointer;letter-spacing:.08em;">WATCHLIST</button>
+      <button onclick="setMoversUniverse('market')" id="moversBtnMarket" data-i18n="moversToggleMarket" style="font-family:var(--mono);font-size:9px;padding:3px 10px;border:1px solid #333;color:#666;background:none;border-radius:2px;cursor:pointer;letter-spacing:.08em;">MARKET</button>
+    </div>
+    <span id="moversSubtitle" style="font-family:var(--mono);font-size:10px;color:#333;">GAINERS · LOSERS · MOST VOLATILE · LIVE</span>
     <span id="moversTimestamp" style="font-family:var(--mono);font-size:9px;color:#444;margin-left:auto;"></span>
     <button onclick="loadMovers()" id="moversRefreshBtn" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #333;color:#888;background:none;border-radius:2px;cursor:pointer;">↻ Refresh</button>
   </div>
