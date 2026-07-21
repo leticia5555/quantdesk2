@@ -10,8 +10,9 @@
 //
 // v1 aprobada = insider buys destacados (Form 4) + movimientos 13F, como
 // tab nuevo. Las categorías (?cat=...) se construyen DESPUÉS de que este
-// smoke pase en producción. Congreso (eFD/House) queda en pausa: gate de
-// smoke propio + duda legal EIGA §105(c) — no aparece aquí todavía.
+// smoke pase en producción. Congreso (eFD/House) es activable pero con
+// gates propios (smoke de efdsearch + consulta legal puntual + modo
+// mostrar-solo, ver docs/stock-tracker-scope.md) — no aparece aquí todavía.
 //
 // Fuentes que valida el smoke:
 //   - Atom getcurrent type=4 (feed global Form 4, casi tiempo real)

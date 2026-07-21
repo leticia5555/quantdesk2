@@ -4,8 +4,15 @@ Fecha del censo: 2026-07-21.
 
 ## Decisión (aprobada 2026-07-21)
 
-- **v1 = Insider buys destacados (Form 4) + Movimientos 13F**, como **tab nuevo** (no extensión de SMART $).
-- **Congreso: EN PAUSA.** No se construye hasta resolver DOS gates: (a) smoke de efdsearch.senate.gov desde Vercel real, (b) la duda legal EIGA §105(c) sobre uso comercial (el producto tiene Stripe/freemium).
+- **v1 = Insider buys destacados (Form 4) + Movimientos 13F**, como **tab nuevo** (no extensión de SMART $). Sin cambios tras el research de Autopilot.
+- **Congreso: ACTIVABLE** (reformulado 2026-07-21 tras research de Autopilot; antes "pausado por revisión legal"). Se construye tras cumplir TRES condiciones:
+  1. Smoke de efdsearch.senate.gov desde Vercel real → OK.
+  2. Consulta legal puntual (no una revisión abierta — una pregunta concreta sobre nuestro caso).
+  3. Modo **mostrar-solo** con disclaimer informativo (sin ejecución, sin recomendación).
+
+  Base de la reformulación: (a) Autopilot usa las mismas fuentes públicas gratis — procesa los filings ellos mismos, sin agregadores — y su registro como RIA existe porque **ejecutan** trades; nuestro modo mostrar-solo no lo requiere. (b) Cero enforcement en 13 años de EIGA §105(c) (hoy 5 U.S.C. §13107(c)). (c) Precedente análogo favorable: *FEC v. Political Contributions Data* (2d Cir. 1991) — republicar datos públicos de disclosure con fines informativos. (d) El memo de Ballard Spahr sobre el espacio ni lo menciona como riesgo.
+
+  **Triggers de paro monitoreables** (si ocurre cualquiera, la categoría se congela y se reevalúa): primera acción del DOJ bajo §13107(c) contra cualquier tracker, o ley nueva que restrinja el uso de los disclosures.
 - **Gate previo al primer PR de v1:** smoke tests desde Vercel real contra www.sec.gov (atom + Archives), data.sec.gov (submissions) y OpenFIGI. Endpoint: `GET /api/stock-tracker?smoke=1` (mismo patrón que vc-feed). Hasta que el smoke pase en producción, no se construyen las categorías.
 - **Fix de honestidad pendiente (aparte, tracked como issue):** los paneles de SMART $ generados por Claude (institutional / short interest / options) llevan mínimo un disclaimer estilo #55; el reemplazo del panel institutional con 13F real viene después de la v1.
 
@@ -44,7 +51,7 @@ Regla de diseño: cada categoría existe solo con fuente real y gratuita detrás
 
 **Campos por trade:** legislador (nombre; sin ID bioguide — matching manual), ticker (**no siempre** — bonos/fondos/cripto traen `--` y solo descripción de texto libre), tipo (Purchase / Sale full / Sale partial / Exchange), rango de monto en buckets ($1,001–$15k, $15k–$50k, $50k–$100k, $100k–$250k, $250k–$500k, $500k–$1M, $1M–$5M, $5M–$25M, $25M–$50M, >$50M), fecha de trade, fecha de filing (→ lag calculable por trade), owner (Self / Spouse / Joint / Dependent Child).
 
-**⚠️ Riesgo legal específico:** el agreement de eFD refleja la Ethics in Government Act §105(c) — es ilegal usar los reportes para **fines comerciales** (con excepción de medios difundiendo al público general). QuantDesk tiene Stripe (freemium): hay que evaluar si el tab del Congreso vive solo en el tier gratuito o si el freemium ya cuenta como "comercial". Revisar antes de construir; es el precedente en que se apoyan todos los agregadores, pero no está resuelto para nuestro caso.
+**⚠️ Riesgo legal específico (dimensionado — ver Decisión):** el agreement de eFD refleja la Ethics in Government Act §105(c) (hoy 5 U.S.C. §13107(c)) — prohíbe usar los reportes para **fines comerciales** (con excepción de difusión al público general). Research 2026-07-21: cero enforcement en 13 años, precedente análogo favorable (*FEC v. Political Contributions Data*, 2d Cir. 1991), y los players del espacio (Autopilot incluido) operan sobre las mismas fuentes sin que ningún memo del sector lo marque como riesgo. Queda una consulta legal puntual como condición de activación, no una revisión abierta.
 
 ### 1.2 Insiders corporativos (SEC Form 4) — 🟢 la fuente más sólida
 
@@ -145,7 +152,7 @@ Para el Stock Tracker se necesita EDGAR directo; Finnhub queda como está para e
 
 ## 5. Riesgos
 
-1. **Legal (Congreso):** EIGA §105(c) prohíbe uso "comercial" de los disclosures. Con Stripe/freemium en el producto, evaluar antes de construir la categoría A. Form 4 y 13F no tienen esta restricción (datos EDGAR de dominio público).
+1. **Legal (Congreso):** EIGA §105(c) / 5 U.S.C. §13107(c) prohíbe uso "comercial" de los disclosures. Riesgo dimensionado como bajo (ver Decisión: cero enforcement, precedente favorable, práctica de la industria); condiciones de activación: consulta legal puntual + modo mostrar-solo con disclaimer. Triggers de paro: primera acción del DOJ bajo §13107(c) contra cualquier tracker, o ley nueva restrictiva. Form 4 y 13F no tienen esta restricción (datos EDGAR de dominio público).
 2. **Fragilidad eFD:** el endpoint JSON es interno del frontend; puede cambiar sin aviso. Mitigación: parser defensivo + alerta si el shape cambia + stale cache.
 3. **PDFs de House:** sin OCR en MVP; asumir cobertura parcial de House y decirlo en el UI ("algunos filings en papel no se procesan").
 4. **EDGAR:** 10 req/s por IP, User-Agent con email obligatorio (403 sin él), 429 con bloqueo temporal (~10 min). Ya cumplimos el patrón en `api/sec-edgar.js`.
