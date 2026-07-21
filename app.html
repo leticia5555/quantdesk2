@@ -2627,6 +2627,9 @@ async function qdChartLoad(){
     wickUpColor:'#1D9E75',wickDownColor:'#E24B4A',borderVisible:false,
     priceFormat:lastC<1?{type:'price',precision:4,minMove:0.0001}:{type:'price',precision:2,minMove:0.01},
   });
+  // El default de LWC deja 20% de banda vacía arriba y 10% abajo — las
+  // velas quedaban flotando con un "espacio en blanco" enorme encima.
+  qdChartSeries.priceScale().applyOptions({scaleMargins:{top:0.08,bottom:0.08}});
   qdChartSeries.setData(d.candles.map(function(c){
     return {time:c.t,open:c.o,high:c.h,low:c.l,close:c.c};
   }));
@@ -2654,6 +2657,9 @@ function qdChartLiveTick(price,chgPct){
   if(!qdChartSeries||!qdChartLast||!isFinite(price)) return;
   const ivSec={'1d':86400,'1h':3600,'5m':300}[qdChartIv];
   const bucket=Math.floor(Date.now()/1000/ivSec)*ivSec;
+  // Mercado cerrado: el quote estático repetiría el último cierre en un
+  // bucket nuevo → vela fantasma plana. Sin cambio de precio no hay vela.
+  if(bucket>qdChartLast.time && price===qdChartLast.close) return;
   if(bucket>qdChartLast.time){
     qdChartLast={time:bucket,open:price,high:price,low:price,close:price};
   }else{
