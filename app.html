@@ -2616,7 +2616,8 @@ async function qdChartLoad(){
       fontFamily:"'IBM Plex Mono',monospace",attributionLogo:true},
     grid:{vertLines:{color:'#151515'},horzLines:{color:'#151515'}},
     rightPriceScale:{borderColor:'#2a2a2a'},
-    timeScale:{borderColor:'#2a2a2a',timeVisible:iv!=='1d',secondsVisible:false},
+    timeScale:Object.assign({borderColor:'#2a2a2a',timeVisible:iv!=='1d',secondsVisible:false},
+      iv==='1d'?{tickMarkFormatter:qdChartDayTick}:{}),
     crosshair:{vertLine:{color:'#333',labelBackgroundColor:'#222'},horzLine:{color:'#333',labelBackgroundColor:'#222'}},
     // locale explícito: LWC usa navigator.language por default y los tags
     // inválidos (p. ej. 'en-US@posix') revientan Intl con RangeError
@@ -2639,6 +2640,23 @@ async function qdChartLoad(){
   qdChartSetPx(last.c,null,d.currency);
   if(foot) foot.textContent=d.source+' · '+iv+(d.currency&&d.currency!=='USD'?' · '+d.currency:'');
   qdChartStartLive(sym);
+}
+
+// Eje de tiempo en vista diaria: el default de LWC mezcla granularidades
+// y mete días sueltos ("2", "3") entre los meses. Aquí: mes SIEMPRE, y
+// el año en el tick de cambio de año (tickMarkType 0). Mismo locale
+// explícito que localization.locale (es-MX/en-US).
+let qdChartMonthFmt=null, qdChartMonthFmtLoc=null;
+function qdChartDayTick(time,tickMarkType){
+  const d=new Date(time*1000);
+  if(tickMarkType===0) return String(d.getUTCFullYear());
+  const loc=(typeof currentLang!=='undefined'&&currentLang==='es')?'es-MX':'en-US';
+  if(!qdChartMonthFmt||qdChartMonthFmtLoc!==loc){
+    qdChartMonthFmt=new Intl.DateTimeFormat(loc,{month:'short',timeZone:'UTC'});
+    qdChartMonthFmtLoc=loc;
+  }
+  const m=qdChartMonthFmt.format(d).replace('.','');
+  return m.charAt(0).toUpperCase()+m.slice(1);
 }
 
 function qdChartSetPx(price,chgPct,currency){
