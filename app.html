@@ -8796,7 +8796,8 @@ const i18n = {
     moversWatchlistTitle:'TOP MOVERS · WATCHLIST',
     moversTooltip:'Movers within QuantDesk\'s curated watchlist (~55 most-watched US large caps, memes, semis and LATAM ADRs) — NOT the whole market. A stock outside this list won\'t appear here even on a big move.',
     moversMarketTitle:'TOP MOVERS · MARKET',
-    moversMarketTooltip:'Market-wide US movers via Alpha Vantage TOP_GAINERS_LOSERS (full NASDAQ/NYSE universe). Honest trade-offs of the free source: hourly refresh, no company names or 52-week range; sub-$1 tickers and warrants are filtered out.',
+    moversMarketTooltip:'Market-wide US movers via Alpha Vantage TOP_GAINERS_LOSERS (full NASDAQ/NYSE universe). Honest trade-offs of the free source: data is effectively END-OF-DAY (previous close while the market is open), served through a 1-hour cache; no company names or 52-week range; sub-$1 tickers and warrants are filtered out.',
+    moversMarketFreshness:'end-of-day data',
     moversToggleWatchlist:'WATCHLIST', moversToggleMarket:'MARKET',
     moversFallbackBanner:'MARKET view unavailable — showing WATCHLIST as fallback.',
     // PAPER TRADING AGENTS
@@ -9018,7 +9019,8 @@ const i18n = {
     moversWatchlistTitle:'TOP MOVERS · WATCHLIST',
     moversTooltip:'Movers DENTRO de la watchlist curada de QuantDesk (~55 tickers: mega-caps US, memes, semis y ADRs LATAM) — NO el mercado completo. Una acción fuera de esta lista no aparece aquí aunque se mueva fuerte.',
     moversMarketTitle:'TOP MOVERS · MERCADO',
-    moversMarketTooltip:'Movers del mercado US completo vía Alpha Vantage TOP_GAINERS_LOSERS (todo NASDAQ/NYSE). Trade-offs honestos de la fuente gratuita: refresh horario, sin nombre de empresa ni rango de 52 semanas; se filtran tickers bajo $1 y warrants.',
+    moversMarketTooltip:'Movers del mercado US completo vía Alpha Vantage TOP_GAINERS_LOSERS (todo NASDAQ/NYSE). Trade-offs honestos de la fuente gratuita: la data es efectivamente AL CIERRE (cierre anterior mientras el mercado está abierto), servida con caché de 1 hora; sin nombre de empresa ni rango de 52 semanas; se filtran tickers bajo $1 y warrants.',
+    moversMarketFreshness:'datos al cierre',
     moversToggleWatchlist:'WATCHLIST', moversToggleMarket:'MERCADO',
     moversFallbackBanner:'Vista MERCADO no disponible — mostrando WATCHLIST como fallback.',
     // PAPER TRADING AGENTS
@@ -12552,7 +12554,7 @@ function updateMoversUniverseUI(){
     title.title = t(isMkt ? 'moversMarketTooltip' : 'moversTooltip');
   }
   const sub = document.getElementById('moversSubtitle');
-  if(sub) sub.textContent = isMkt ? 'GAINERS · LOSERS · MOST ACTIVE · HOURLY' : 'GAINERS · LOSERS · MOST VOLATILE · LIVE';
+  if(sub) sub.textContent = isMkt ? 'GAINERS · LOSERS · MOST ACTIVE · EOD' : 'GAINERS · LOSERS · MOST VOLATILE · LIVE';
 }
 
 async function loadMovers(){
@@ -12657,7 +12659,7 @@ function renderMovers(data){
   const headerHtml = isMarket ? `
     <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid #1a1a1a;">
       <span style="font-family:var(--mono);font-size:14px;color:#ff6600;font-weight:700;cursor:help;" title="${t('moversMarketTooltip')}">${t('moversMarketTitle')}</span>
-      <span style="font-family:var(--mono);font-size:10px;color:#888;">Full US market · Alpha Vantage · hourly refresh${data.last_updated ? ' · as of ' + data.last_updated : ''} · Click any row to simulate</span>
+      <span style="font-family:var(--mono);font-size:10px;color:#888;">Full US market · Alpha Vantage · ${t('moversMarketFreshness')}${data.last_updated ? ' · ' + data.last_updated : ''} · Click any row to simulate</span>
     </div>
   ` : `
     <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid #1a1a1a;">

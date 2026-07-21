@@ -138,8 +138,11 @@ async function runMarketSmoke() {
 // ═══ Universo MARKET — Plan B activo: Alpha Vantage TOP_GAINERS_LOSERS ═══
 // Una sola llamada devuelve gainers + losers + most active del mercado US
 // completo. Trade-offs aceptados del free tier: sin nombre de empresa ni
-// high/low, y refresh horario — 25 req/día gratis, así que s-maxage=3600
-// deja ~24 hits reales/día como techo. La UI declara la fuente en el label.
+// high/low, y data efectivamente EOD — observado en prod que last_updated
+// se queda en el cierre anterior con el mercado abierto. El s-maxage=3600
+// es solo mecánica de caché (25 req/día gratis → ~24 hits reales/día como
+// techo); la UI etiqueta la frescura de la DATA ("datos al cierre"), no
+// la del caché.
 
 // Warrants/rights/units ('ABC+', 'XYZ^', 'AB-C') y sub-$1: el raw de AV
 // viene dominado por ese ruido; sin filtro la vista MARKET sería inusable.
