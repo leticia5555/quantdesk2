@@ -5832,13 +5832,32 @@ function stFundBlock(f){
   return h+'</div>';
 }
 
+// Estado vacío HONESTO: fuentes OK + 0 items no es un error — es "escaneé
+// N filings y ninguna compra calificó" (ventana fría del atom, caveat
+// documentado en el scope). Solo fuentes caídas muestran "unavailable".
+function stEmptyState(d){
+  const s=d.scan||{};
+  let h='<div class="analysis"><h3>'+t('stEmptyTitle')+'</h3>'+
+    '<div style="font-size:11px;color:var(--text3);line-height:1.7;">'+t('stEmptyBody');
+  if(s.inspected!=null)h+='<br><span style="font-family:var(--mono);color:#555;">'+
+    (s.atom_entries!=null?s.atom_entries+' filings '+t('stEmptyInFeed')+' · ':'')+
+    s.inspected+' '+t('stEmptyInspected')+' · '+(s.accumulated||0)+' '+t('stEmptyAccum')+'</span>';
+  h+='<br>'+t('stEmptyNote')+'</div></div>';
+  return h;
+}
+
 function renderTracker(d){
   const el=document.getElementById('stFeed');
   if(!el)return;
   let h=vcFeedNotes(d);
+  const srcOk=Object.values(d.sources||{}).some(x=>x&&x.ok===true)&&
+    Object.values(d.sources||{}).every(x=>x&&x.ok!==false);
   if(d.cat==='insider'){
     const items=Array.isArray(d.items)?d.items:[];
-    if(!items.length){el.innerHTML=h+qdUnavailableHTML('stock tracker · insider');return;}
+    if(!items.length){
+      el.innerHTML=h+(srcOk?stEmptyState(d):qdUnavailableHTML('stock tracker · insider'));
+      return;
+    }
     h+='<div style="font-size:10px;color:var(--text3);margin-bottom:8px;letter-spacing:.04em;">'+
       items.length+' · '+t('stInsiderTag')+'</div>';
     h+=items.map(stInsiderCard).join('');
@@ -8968,6 +8987,10 @@ const i18n = {
     stNew:'NEW POSITIONS', stClosed:'CLOSED', stIncreased:'ADDED TO', stReduced:'TRIMMED',
     stCluster:'CLUSTER', stClusterTip:'2+ insiders bought this company within the window',
     stPlannedTip:'Pre-scheduled trade under a Rule 10b5-1 plan (not discretionary)',
+    stEmptyTitle:'No notable buys in the scanned window (yet)',
+    stEmptyBody:'Sources are up — the recent Form 4 window just has no open-market buys by officers/directors ≥ $100k. Most filings are awards, option exercises and sales; notable buys are rare by design.',
+    stEmptyInFeed:'in feed', stEmptyInspected:'inspected', stEmptyAccum:'accumulated',
+    stEmptyNote:'The feed accumulates qualifying buys as they are filed (Form 4s arrive in batches, mostly after market close). Check back later today.',
     vcAiTitle:'// AI Scan · complementary',
     vcSourceDown:'source down', vcStaleNote:'all sources down — showing last good data',
     vcIpoCalendar:'IPO calendar · Finnhub',
@@ -9187,6 +9210,10 @@ const i18n = {
     stNew:'POSICIONES NUEVAS', stClosed:'CERRADAS', stIncreased:'AUMENTÓ', stReduced:'RECORTÓ',
     stCluster:'CLUSTER', stClusterTip:'2+ insiders compraron esta empresa en la ventana',
     stPlannedTip:'Trade pre-programado bajo un plan Rule 10b5-1 (no discrecional)',
+    stEmptyTitle:'0 compras destacadas en la ventana escaneada (por ahora)',
+    stEmptyBody:'Las fuentes están arriba — la ventana reciente de Form 4 simplemente no trae compras open-market de officers/directors ≥ $100k. La mayoría de filings son awards, ejercicios de opciones y ventas; las compras destacadas son raras por diseño.',
+    stEmptyInFeed:'en el feed', stEmptyInspected:'inspeccionados', stEmptyAccum:'acumulados',
+    stEmptyNote:'El feed acumula compras calificantes conforme se reportan (los Form 4 entran en lotes, sobre todo tras el cierre del mercado). Vuelve más tarde.',
     vcAiTitle:'// Scan IA · complementario',
     vcSourceDown:'fuente caída', vcStaleNote:'fuentes caídas — mostrando lo último bueno',
     vcIpoCalendar:'Calendario IPO · Finnhub',
