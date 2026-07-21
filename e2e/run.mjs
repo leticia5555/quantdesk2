@@ -118,6 +118,19 @@ async function routeApis(page) {
     if (p === '/api/claude' && econAI) {
       return json({ content: [{ type: 'text', text: JSON.stringify(econAI) }] });
     }
+    if (p === '/api/vc-feed') {
+      // Deal flow real (PR del render VC): rounds trae 1 card con fuente
+      // caída marcada; latam llega vacío para probar el fallback honesto.
+      const cat = url.searchParams.get('cat');
+      const d1 = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+      if (cat === 'rounds') return json({ cat: 'rounds', items: [
+        { title: 'Stubco Raises $12M in Series A Funding', company: 'Stubco', amount: '$12M',
+          amount_millions: 12, currency: 'USD', stage: 'A', lead: 'Stub Capital', sector: 'AI',
+          source: 'TechCrunch', link: 'https://stub.example/round', date: d1 },
+      ], sources: { techcrunch: { ok: true, items: 1 }, crunchbase_news: { ok: false, error: 'HTTP 403' } },
+        ai: 'ok', stale: false });
+      return json({ cat, items: [], sources: {}, stale: false });
+    }
     return json({});
   });
   // block anything external
@@ -738,6 +751,31 @@ report('S21b el catálogo local mantiene prioridad sobre el nombre del server',
 report('S21c el nombre llegó en el response del calendario: 0 requests de profile para ZZOUT',
   apiCalls.filter(c => c.path === '/api/ticker-search?profile=ZZOUT').length === 0, '');
 calMode = 'none';
+
+// ── S22: VC deal flow real — card desde /api/vc-feed + fallback honesto ──
+currentPhase = 'S22-vc-feed';
+await page.evaluate(() => showPage('vc'));
+await page.waitForTimeout(700);
+const s22 = await page.evaluate(() => {
+  const feed = document.getElementById('vcFeed');
+  const card = feed.querySelector('.deal-card');
+  return {
+    name: card ? card.querySelector('.deal-name').textContent : 'NO-CARD',
+    amt: card ? card.querySelector('.deal-amt').textContent : '',
+    link: !!(card && card.querySelector('a[href="https://stub.example/round"]')),
+    src: card ? card.querySelector('.vcf-src').textContent : '',
+    downFlag: feed.textContent.includes('crunchbase_news'),
+  };
+});
+report('S22a card real: company/amount/link a la fuente',
+  s22.name === 'Stubco' && s22.amt === '$12M' && s22.link === true, JSON.stringify(s22));
+report('S22b la card lleva la fecha del pubDate del feed', /\d{4}-\d{2}-\d{2}/.test(s22.src), s22.src);
+report('S22c fuente caída visible como flag honesto', s22.downFlag === true, '');
+await page.evaluate(() => vcSetCat('latam'));
+await page.waitForTimeout(700);
+const s22d = await page.evaluate(() => document.getElementById('vcFeed').textContent);
+report('S22d cat sin items → vacío honesto, jamás inventado',
+  /unavailable|no disponible/i.test(s22d), s22d.slice(0, 80));
 
 // ── console summary ──
 console.log('\n=== CONSOLA (errores/warnings/pageerrors) ===');

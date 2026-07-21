@@ -168,13 +168,13 @@ console.log('handler cat=rounds: parsea, filtra, marca fuente caída, cachea');
   global.fetch = async (url) => {
     const u = String(url);
     fetchCount++;
-    if (u.includes('finsmes.com')) {
+    if (u.includes('techcrunch.com')) {
       return textResponse(rssXml([
         { title: 'Acme Raises $12M in Series A Funding', desc: 'The round was led by Sequoia Capital.', pubDate: rfc822(1) },
         { title: 'Interview: a chat with a founder', pubDate: rfc822(1) },
       ]));
     }
-    if (u.includes('techcrunch.com')) return textResponse('cloudflare says no', 403, 'text/html');
+    if (u.includes('news.crunchbase.com')) return textResponse('cloudflare says no', 403, 'text/html');
     throw new Error('fetch inesperado: ' + u);
   };
   const res = mockRes();
@@ -190,7 +190,7 @@ console.log('handler cat=rounds: parsea, filtra, marca fuente caída, cachea');
   ok(it.link === 'https://example.com/x', 'link a la fuente', it.link);
   ok(!('snippet' in it) && !('desc' in it), 'el cuerpo NO viaja en el payload');
   ok(it.sector === null && b.ai === 'unavailable', 'sin ANTHROPIC_API_KEY → sector null, ai unavailable', b.ai);
-  ok(b.sources.finsmes.ok === true && b.sources.techcrunch.ok === false && /403/.test(b.sources.techcrunch.error),
+  ok(b.sources.techcrunch.ok === true && b.sources.crunchbase_news.ok === false && /403/.test(b.sources.crunchbase_news.error),
     'flags honestos por fuente', JSON.stringify(b.sources));
   ok(/s-maxage=7200/.test(res.headers['Cache-Control']), 'Cache-Control de rounds (2h)', res.headers['Cache-Control']);
 
@@ -210,7 +210,7 @@ console.log('handler: todas las fuentes caídas → sirve stale con flags fresco
   await handler({ method: 'GET', query: { cat: 'rounds' } }, res);
   ok(res.code === 200 && res.body.stale === true && res.body.items.length === 1,
     'stale:true con los items del último build bueno', JSON.stringify({ stale: res.body.stale, n: res.body.items.length }));
-  ok(res.body.sources.finsmes.ok === false && res.body.sources.techcrunch.ok === false,
+  ok(res.body.sources.techcrunch.ok === false && res.body.sources.crunchbase_news.ok === false,
     'flags frescos de qué falló', JSON.stringify(res.body.sources));
 
   // sin stale disponible → payload vacío honesto, nunca inventa

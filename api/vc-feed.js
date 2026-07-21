@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // /api/vc-feed — VC deal flow real, por categoría (v1 del censo aprobado)
 //
-//   GET /api/vc-feed?cat=rounds   → rondas por etapa (FinSMEs + TechCrunch)
+//   GET /api/vc-feed?cat=rounds   → rondas por etapa (TechCrunch + Crunchbase News)
 //   GET /api/vc-feed?cat=latam    → rondas LATAM (LatamList + Contxto)
 //   GET /api/vc-feed?cat=ipo      → pipeline IPO (Finnhub calendar + S-1 EDGAR)
 //   GET /api/vc-feed?smoke=1      → smoke test: status + primeros bytes de
@@ -32,20 +32,22 @@ import { guardedClaudeCall } from './_lib/ai-guard.js';
 const SEC_UA = 'QuantDesk research@quantdesk.app';
 const BLOG_UA = 'Mozilla/5.0 (compatible; QuantDesk/1.0; research@quantdesk.app)';
 
+// Censo confirmado con el smoke corrido contra producción (jul 2026):
+// FinSMEs → 403 Cloudflare desde IPs de Vercel, FUERA del parser (queda
+// solo en el smoke por si algún día desbloquea). TechCrunch, Crunchbase
+// News, LatamList (categoría funding), Contxto (/en/feed/) y EDGAR
+// respondieron 200 con feed válido.
 const FEEDS = {
-  finsmes: 'https://www.finsmes.com/feed/',
   techcrunch: 'https://techcrunch.com/category/venture/feed/',
-  // Slugs de WordPress sin validar desde el sandbox (bloqueado): el smoke
-  // prueba categoría Y feed principal; el parser cae al principal si la
-  // categoría 404ea.
+  crunchbase_news: 'https://news.crunchbase.com/feed/',
   latamlist: 'https://latamlist.com/category/funding/feed/',
   latamlist_main: 'https://latamlist.com/feed/',
   contxto: 'https://contxto.com/en/feed/',
   contxto_main: 'https://contxto.com/feed/',
-  // Candidato de respaldo si TechCrunch bloquea (aún no entra al parser):
-  crunchbase_news: 'https://news.crunchbase.com/feed/',
   // 1 request por build — muy por debajo del límite de 10 req/s de SEC.
   edgar_s1: 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=S-1&company=&dateb=&owner=include&count=40&output=atom',
+  // Bloqueada en producción (Cloudflare 403) — solo smoke, no parser:
+  finsmes: 'https://www.finsmes.com/feed/',
 };
 
 // ── Caché en memoria por instancia (patrón symbol-map) ──────────────
@@ -332,15 +334,15 @@ async function pullFeed(name, url, sources, fallbackUrl) {
 
 async function buildRounds() {
   const sources = {};
-  const [finsmes, techcrunch] = await Promise.all([
-    pullFeed('finsmes', FEEDS.finsmes, sources),
+  const [techcrunch, crunchbase] = await Promise.all([
     pullFeed('techcrunch', FEEDS.techcrunch, sources),
+    pullFeed('crunchbase_news', FEEDS.crunchbase_news, sources),
   ]);
-  // FinSMEs es casi todo funding pero cuela entrevistas; TechCrunch venture
-  // trae opinión — solo pasan titulares con pinta de ronda.
+  // TechCrunch venture y Crunchbase News traen opinión/análisis además de
+  // rondas — solo pasan titulares con pinta de ronda.
   const items = dedupeByTitle([
-    ...finsmes.filter((i) => LOOKS_FUNDING.test(i.title)).map((i) => roundItem(i, 'FinSMEs', false)),
     ...techcrunch.filter((i) => LOOKS_FUNDING.test(i.title)).map((i) => roundItem(i, 'TechCrunch', false)),
+    ...crunchbase.filter((i) => LOOKS_FUNDING.test(i.title)).map((i) => roundItem(i, 'Crunchbase News', false)),
   ]).sort(byDateDesc).slice(0, 30);
   const ai = await applySectors(items);
   return { cat: 'rounds', items, sources, ai, stale: false, generated_at: new Date().toISOString() };
