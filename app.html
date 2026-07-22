@@ -18160,6 +18160,13 @@ function margin_color(pct, threshold, COL){
 const QD_FREE_LIMIT = 3;
 const QD_PRO_CACHE_MS = 6 * 3600 * 1000; // re-verificar contra Stripe cada 6h
 
+// ── kill-switch del paywall (fase testing) ──
+// El server (env PAYWALL_ENABLED) manda; el front lo consulta al arrancar
+// vía /api/paywall. Default seguro APAGADO → todos Pro, sin gate. Solo si
+// el server responde enabled=true regresa el paywall idéntico al de siempre.
+// Nada de Stripe se toca: es un gate delante del gate.
+let QD_PAYWALL_ENABLED = false;
+
 // ── cuota diaria ──
 function qdTodayKey(){
   const d = new Date();
@@ -18187,6 +18194,9 @@ function qdProState(){
   try{ return JSON.parse(localStorage.getItem('qd_pro') || 'null') || {}; }catch(e){ return {}; }
 }
 function qdIsPro(){
+  // Paywall apagado (default en testing): todo usuario es Pro. Único choke
+  // point — qdCanValidate, qdIsProSafe y qdCountValidation pasan por aquí.
+  if (!QD_PAYWALL_ENABLED) return true;
   const p = qdProState();
   return !!(p.pro && p.checkedAt && Date.now() - p.checkedAt < QD_PRO_CACHE_MS);
 }
@@ -18349,6 +18359,14 @@ function qdRenderProUi(){
 // ── arranque: retorno del Checkout + re-verificación del caché ──
 window.addEventListener('DOMContentLoaded', function(){
   qdRenderProUi();
+
+  // Kill-switch: consulta el flag del server. Default OFF (todos Pro); solo
+  // se re-activa el paywall si el server dice enabled=true. Si el endpoint
+  // falla, se queda OFF — la app abierta es el fallback seguro en testing.
+  fetch('/api/paywall')
+    .then(function(r){ return r.json(); })
+    .then(function(cfg){ QD_PAYWALL_ENABLED = !!(cfg && cfg.enabled); qdRenderProUi(); })
+    .catch(function(){ /* server mudo: paywall queda apagado = todos Pro */ });
 
   const params = new URLSearchParams(window.location.search);
   if (params.get('stripe') === 'success' && params.get('session_id')){

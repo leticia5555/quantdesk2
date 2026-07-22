@@ -25,11 +25,16 @@
 
 import { sql, sqlBatch, ensureSchema } from './_lib/db.js';
 import { ASSUMPTIONS } from './_lib/sim.js';
+import { paywallEnabled } from './_lib/paywall.js';
 
 const FREE_AGENT_LIMIT = 3;
 const PRO_STATUSES = ['active', 'trialing', 'past_due'];
 
 // Mismo check que /api/stripe-status, compactado: ¿este email es Pro?
+// NOTA: esta función NO consulta el kill-switch a propósito — se usa también
+// en el gate anti-robo de la adopción de agentes (abajo), que debe seguir
+// exigiendo suscripción real aunque el paywall esté apagado. El kill-switch
+// se aplica solo sobre el límite free (el 402), no sobre esta verificación.
 async function isProEmail(email) {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key || !email || !email.includes('@')) return false;
@@ -146,9 +151,12 @@ export default async function handler(req, res) {
     }
     await sqlBatch(queries);
 
-    // límite free (server-side, misma verificación Stripe del paywall)
+    // límite free (server-side, misma verificación Stripe del paywall).
+    // Kill-switch: con el paywall apagado (default en testing) NO se aplica
+    // el límite — todo usuario crea agentes ilimitados. Al reactivar
+    // PAYWALL_ENABLED=true el 402 vuelve idéntico. Stripe intacto.
     const [{ n }] = await sql('select count(*)::int as n from agents where user_id = $1', [uid]);
-    if (n >= FREE_AGENT_LIMIT && !(await isProEmail(email))) {
+    if (paywallEnabled() && n >= FREE_AGENT_LIMIT && !(await isProEmail(email))) {
       return res.status(402).json({
         error: `${FREE_AGENT_LIMIT} agentes es el límite free — Pro tiene ilimitados.`,
         limit: FREE_AGENT_LIMIT, upgrade: true,
