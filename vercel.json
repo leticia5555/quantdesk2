@@ -18,6 +18,14 @@
     {
       "path": "/api/agents-run",
       "schedule": "30 22 * * 1-5"
+    },
+    {
+      "path": "/api/arena-run",
+      "schedule": "40 22 * * 1-5"
+    },
+    {
+      "path": "/api/arena-run?phase=reconcile",
+      "schedule": "40 14 * * 1-5"
     }
   ]
 }

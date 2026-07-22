@@ -1890,6 +1890,10 @@ function sbDrawChart(data){
     <span style="flex-basis:100%;font-family:var(--mono);font-size:9px;color:#444;line-height:1.5;" data-i18n="agentsAssumptions">supuestos: capital simulado $10,000 · fills al cierre diario Yahoo + slippage 0.10%/lado + comisión 0.05%/lado · riesgo 2%/trade (stop 10% → notional 20%) · sin apalancamiento · pares: z±2 entra, z=0 sale, 10% por leg · MUERTE a −20% desde el peak</span>
   </div>
 
+  <!-- ARENA: Agente #6 "Claude PM" — experimento LLM, libro Alpaca paper propio,
+       visualmente separado de la flota validada (patrón de honestidad #55) -->
+  <div id="arenaSection" style="display:none;margin:16px 16px 0;border:1px solid #3a2d5c;border-radius:6px;background:#0c0a14;padding:14px 16px;"></div>
+
   <!-- LIST / DETAIL -->
   <div id="agList" style="padding:20px 16px;">
     <div style="text-align:center;padding:60px;font-family:var(--mono);font-size:12px;color:#333;line-height:1.6;" data-i18n="agentsEmpty">
@@ -18797,6 +18801,7 @@ async function qdAgentsOpen(){
   document.getElementById('agDetail').style.display = 'none';
   document.getElementById('agList').style.display = 'block';
   agStatusMsg('actualizando agentes…');
+  qdArenaLoad(); // fire-and-forget: el Arena nunca bloquea la flota
   try{
     await fetch('/api/agents-run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -18804,6 +18809,94 @@ async function qdAgentsOpen(){
     }).catch(function(){});
   }catch(e){}
   await qdAgentsRefresh();
+}
+
+// ── ARENA: Agente #6 "Claude PM" (experimento LLM, cuenta Alpaca paper) ──
+// Sección separada de la flota validada. Muestra: valor del libro,
+// posiciones, el último razonamiento publicado (patrón nof1) y el
+// disclaimer bilingüe permanente. Si el Arena no está activo, lo dice.
+async function qdArenaLoad(){
+  const el = document.getElementById('arenaSection');
+  if (!el) return;
+  let data = null;
+  try{
+    const r = await fetch('/api/arena');
+    data = await r.json().catch(function(){ return null; });
+  }catch(e){}
+  if (!data){ el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.innerHTML = qdArenaHtml(data);
+}
+
+function qdArenaHtml(data){
+  const mono = 'font-family:var(--mono);';
+  const header =
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
+      '<span style="' + mono + 'font-size:11px;color:#a78bfa;font-weight:700;letter-spacing:.1em;">ARENA — CLAUDE PM · AGENTE #6</span>' +
+      '<span style="' + mono + 'font-size:9px;color:#000;background:#a78bfa;padding:2px 6px;border-radius:2px;font-weight:700;">EXPERIMENTO</span>' +
+      '<span style="' + mono + 'font-size:9px;color:#555;">Alpaca paper · órdenes límite reales simuladas</span>' +
+    '</div>';
+  const disclaimer =
+    '<div style="' + mono + 'font-size:9px;color:#6b6480;line-height:1.5;margin-top:10px;border-top:1px solid #1e1930;padding-top:8px;">' +
+      'Experimento: LLM sin validación estadística · paper trading · no es asesoría — ' +
+      'Experiment: LLM with no statistical validation · paper trading · not investment advice' +
+    '</div>';
+
+  if (!data.enabled || !data.has_keys){
+    return header +
+      '<div style="' + mono + 'font-size:10px;color:#555;margin-top:8px;line-height:1.5;">' +
+        (data.has_keys ? 'Configurado pero inactivo (ARENA_ENABLED≠1). El cron no opera hasta que el smoke de Alpaca esté verde en producción.'
+                       : 'Aún no activo: faltan las keys de Alpaca paper y el smoke verde (/api/alpaca?smoke=1). La flota de arriba no depende de esto.') +
+      '</div>' + disclaimer;
+  }
+
+  var html = header;
+  if (data.account){
+    html += '<div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:10px;">' +
+      '<div><div style="' + mono + 'font-size:9px;color:#555;">VALOR DEL LIBRO</div>' +
+        '<div style="' + mono + 'font-size:20px;font-weight:700;color:var(--text);">' + agMoney(data.account.equity) + '</div></div>' +
+      '<div><div style="' + mono + 'font-size:9px;color:#555;">CASH</div>' +
+        '<div style="' + mono + 'font-size:20px;font-weight:700;color:var(--text2);">' + agMoney(data.account.cash) + '</div></div>' +
+      '<div><div style="' + mono + 'font-size:9px;color:#555;">POSICIONES</div>' +
+        '<div style="' + mono + 'font-size:20px;font-weight:700;color:var(--text2);">' + (data.positions || []).length + '/8</div></div>' +
+    '</div>';
+  } else if (data.alpaca_error){
+    html += '<div style="' + mono + 'font-size:10px;color:var(--red);margin-top:8px;">Alpaca no respondió: ' + data.alpaca_error + '</div>';
+  }
+
+  if ((data.positions || []).length){
+    html += '<div style="margin-top:10px;overflow-x:auto;"><table style="' + mono + 'font-size:10px;color:var(--text2);border-collapse:collapse;min-width:420px;">' +
+      '<tr style="color:#555;text-align:left;"><th style="padding:2px 12px 2px 0;">SÍMBOLO</th><th style="padding:2px 12px 2px 0;">QTY</th><th style="padding:2px 12px 2px 0;">ENTRADA</th><th style="padding:2px 12px 2px 0;">VALOR</th><th style="padding:2px 0;">P/L</th></tr>' +
+      data.positions.map(function(p){
+        return '<tr><td style="padding:2px 12px 2px 0;color:var(--text);font-weight:600;">' + p.symbol + '</td>' +
+          '<td style="padding:2px 12px 2px 0;">' + p.qty + '</td>' +
+          '<td style="padding:2px 12px 2px 0;">$' + Number(p.avg_entry).toFixed(2) + '</td>' +
+          '<td style="padding:2px 12px 2px 0;">' + agMoney(p.market_value) + '</td>' +
+          '<td style="padding:2px 0;">' + agPct(Number(p.unrealized_plpc)) + '</td></tr>';
+      }).join('') + '</table></div>';
+  }
+
+  if (data.journal && data.journal.plan){
+    var j = data.journal;
+    var counts = { approved: 0, discarded: 0, filled: 0 };
+    (j.actions || []).forEach(function(a){
+      if (a.result === 'approved') counts.approved++;
+      if (a.result === 'discarded') counts.discarded++;
+      if (a.order_status === 'filled') counts.filled++;
+    });
+    html += '<div style="margin-top:12px;background:#0f0c1a;border:1px solid #241d3a;border-radius:4px;padding:10px 12px;">' +
+      '<div style="' + mono + 'font-size:9px;color:#7c6fa0;">ÚLTIMO RAZONAMIENTO · ' + String(j.run_date || '').slice(0, 10) +
+        ' · ' + counts.approved + ' aprobada(s) · ' + counts.discarded + ' descartada(s) por el guard · ' + counts.filled + ' fill(s)</div>' +
+      '<div style="' + mono + 'font-size:11px;color:var(--text2);line-height:1.55;margin-top:6px;white-space:pre-wrap;">' +
+        String(j.plan).replace(/</g, '&lt;') + '</div>' +
+    '</div>';
+  } else if (data.journal && data.journal.status){
+    html += '<div style="' + mono + 'font-size:10px;color:#555;margin-top:10px;">Última corrida: ' + data.journal.status + ' (sin plan publicado).</div>';
+  } else {
+    html += '<div style="' + mono + 'font-size:10px;color:#555;margin-top:10px;">Sin corridas todavía — el primer plan se publica aquí cuando el cron corra.</div>';
+  }
+
+  return html + disclaimer;
 }
 
 async function qdAgentsRefresh(){
