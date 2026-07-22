@@ -147,6 +147,21 @@ const SCHEMA = [
      equity numeric not null,
      primary key (agent_id, date)
    )`,
+  `create table if not exists arena_journal (
+     id text primary key,
+     run_date date not null,
+     phase text not null,
+     status text not null,
+     prompt_version text,
+     prompt_hash text,
+     model text,
+     plan text,
+     llm_response text,
+     actions jsonb,
+     account jsonb,
+     error text,
+     created_at timestamptz not null default now()
+   )`,
 ];
 
 let schemaReady = false;
