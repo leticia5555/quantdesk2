@@ -25,6 +25,7 @@
 
 import { sql, sqlBatch, ensureSchema } from './_lib/db.js';
 import { ASSUMPTIONS } from './_lib/sim.js';
+import { paywallEnabled } from './_lib/paywall.js';
 
 const FREE_AGENT_LIMIT = 3;
 const PRO_STATUSES = ['active', 'trialing', 'past_due'];
@@ -146,9 +147,10 @@ export default async function handler(req, res) {
     }
     await sqlBatch(queries);
 
-    // límite free (server-side, misma verificación Stripe del paywall)
+    // límite free (server-side, misma verificación Stripe del paywall).
+    // Kill-switch: con el paywall apagado NO hay límite — todos como Pro.
     const [{ n }] = await sql('select count(*)::int as n from agents where user_id = $1', [uid]);
-    if (n >= FREE_AGENT_LIMIT && !(await isProEmail(email))) {
+    if (paywallEnabled() && n >= FREE_AGENT_LIMIT && !(await isProEmail(email))) {
       return res.status(402).json({
         error: `${FREE_AGENT_LIMIT} agentes es el límite free — Pro tiene ilimitados.`,
         limit: FREE_AGENT_LIMIT, upgrade: true,
