@@ -3289,6 +3289,12 @@ async function runSmartMoney(){
     .then(r=>r.ok?r.json():null)
     .catch(()=>null);
 
+  // Institutional ownership: real SEC 13F (índice invertido del Stock Tracker,
+  // /api/stock-tracker?cat=13f&symbol=X) — ya NO lo genera Claude. Corre en
+  // paralelo e independiente del análisis IA, igual que insider: un fallo de
+  // /api/claude no debe tocar este panel (es data pura, sin IA).
+  loadInstitutional13F(ticker);
+
   try{
     // Precio real de HOY (la app ya lo tiene vía /api/price) para que el
     // verdict/bull/bear se anclen a números frescos y no a memoria.
@@ -3326,7 +3332,8 @@ async function runSmartMoney(){
       data.verdict.smart_money_score = s;
     }
     renderShortInterest(data.short_interest);
-    renderInstitutional(data.institutional);
+    // Institutional panel ya NO sale de la IA — lo llena loadInstitutional13F
+    // (SEC 13F real) de forma independiente, arriba.
     renderOptionsSentiment(data.options);
     renderSmVerdict(data.verdict);
 
@@ -3335,8 +3342,9 @@ async function runSmartMoney(){
 
   }catch(e){
     console.error('Smart money error:', e);
-    // Insider panel is independent of Claude — let the real /api/insider call still populate it
-    ['shortInterestPanel','institutionalPanel','optionsPanel','smVerdictPanel'].forEach(id=>{
+    // Insider e Institutional son independientes de Claude — datos reales SEC
+    // que siguen poblándose solos; un fallo de IA no los pisa.
+    ['shortInterestPanel','optionsPanel','smVerdictPanel'].forEach(id=>{
       const el=document.getElementById(id);
       if(el) el.innerHTML=qdUnavailableHTML();
     });
@@ -3432,35 +3440,94 @@ function renderInsiderTransactions(ins){
 
 
 
-// ── Render Institutional ──────────────────────────────
-function renderInstitutional(inst){
+// ── Institutional Ownership — SEC 13F REAL (índice invertido) ──────────
+// Reemplaza el panel que antes inventaba Claude (issue #61, opción B). El
+// TRACKER sirve 13F por FONDO (qué tiene Berkshire); aquí lo invertimos por
+// TICKER (qué fondos tienen GOOGL) vía /api/stock-tracker?cat=13f&symbol=X,
+// reutilizando el mismo caché. Sin llamadas de IA: es data pura de EDGAR.
+async function loadInstitutional13F(ticker){
   const el=document.getElementById('institutionalPanel');
-  if(!el||!inst) return;
-  const changeColor={'INCREASED':'#00c97d','DECREASED':'#E24B4A','NEW':'#EF9F27','EXITED':'#E24B4A'};
-  const changeIcon={'INCREASED':'↑','DECREASED':'↓','NEW':'★','EXITED':'✕'};
-  let holdersHtml=(inst.top_holders||[]).map(h=>{
-    const col=changeColor[h.change]||'#888';
-    const icon=changeIcon[h.change]||'→';
-    return '<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid #1a1a1a;">'
-      +'<div style="flex:1;"><div style="font-size:10px;color:#ccc;font-family:var(--mono);">'+h.name+'</div></div>'
-      +'<span style="font-family:var(--mono);font-size:10px;color:#888;">'+h.pct.toFixed(1)+'%</span>'
-      +'<span style="font-size:10px;color:'+col+';min-width:16px;text-align:right;">'+icon+'</span>'
+  if(!el) return;
+  const d=await qdFetchJSON('/api/stock-tracker?cat=13f&symbol='+encodeURIComponent(ticker),
+    null, x=>x&&typeof x==='object'&&Array.isArray(x.holders));
+  renderInstitutional13F(d,ticker);
+}
+
+// Badge de cambio de trimestre por holder: NUEVA / AUMENTÓ +X% / RECORTÓ X% /
+// MANTIENE / CERRÓ. Colores consistentes con el resto de SMART $.
+function instChangeBadge(h){
+  const pct=(h.deltaPct!=null)?((h.deltaPct>0?'+':'')+h.deltaPct+'%'):'';
+  const map={
+    'new':{lbl:t('instNew'),col:'#EF9F27'},
+    'increased':{lbl:t('instAdded')+(pct?' '+pct:''),col:'#00c97d'},
+    'reduced':{lbl:t('instTrimmed')+(pct?' '+pct:''),col:'#E24B4A'},
+    'held':{lbl:t('instHeld'),col:'#888'},
+    'closed':{lbl:t('instClosed'),col:'#E24B4A'},
+  };
+  const m=map[h.change]||{lbl:h.change||'',col:'#888'};
+  return '<span style="font-size:9px;padding:1px 6px;font-family:var(--mono);background:rgba(255,255,255,.04);color:'+m.col+';white-space:nowrap;">'+qdEscHTML(m.lbl)+'</span>';
+}
+
+// Lag honesto por holder, igual que el TRACKER: "trimestre cerrado {fecha} ·
+// reportado +Nd". La foto es del cierre, no de hoy.
+function instLagLine(h){
+  let s=t('stQuarter')+' '+qdEscHTML(h.quarterEnd||'—');
+  if(h.lagDays!=null) s+=' · '+t('stFiledLbl')+' +'+h.lagDays+'d';
+  else if(h.filedDate) s+=' · '+t('stFiledLbl')+' '+qdEscHTML(h.filedDate);
+  return s;
+}
+
+function renderInstitutional13F(d,ticker){
+  const el=document.getElementById('institutionalPanel');
+  if(!el) return;
+  const sym=qdEscHTML(String(ticker||'').toUpperCase());
+  // d===null: la petición falló de verdad (timeout/HTTP) → "unavailable"
+  // honesto. coverage vacía: ningún fondo con datos este trimestre (fuentes
+  // caídas o cold) → también unavailable, no podemos afirmar "nadie lo tiene".
+  const coverage=(d&&Array.isArray(d.coverage))?d.coverage:[];
+  if(!d||!coverage.length){ el.innerHTML=qdUnavailableHTML('institutional 13f · '+ticker); return; }
+  const holders=Array.isArray(d.holders)?d.holders:[];
+  const nTracked=d.funds_tracked||coverage.length;
+
+  // Encabezado + disclaimer de lag (foto de cierre de trimestre, no hoy).
+  let h='<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">'+t('instSource')+' · '+nTracked+' '+t('instFundsTracked')+'</div>';
+  h+='<div style="font-family:var(--sans);font-size:9px;color:#555;line-height:1.4;margin-bottom:12px;">⚠️ '+t('inst13fDisclaimer')+'</div>';
+
+  if(!holders.length){
+    // Estado vacío HONESTO (estilo #65): con los números reales del scan.
+    // Nunca "data unavailable" cuando las fuentes están arriba.
+    const latestQ=coverage.map(c=>c.quarterEnd||'').filter(Boolean).sort().slice(-1)[0]||'—';
+    let cov=coverage.map(c=>qdEscHTML(c.fund)+' <span style="color:#444;">'+(c.positions_mapped||0)+'/'+(c.positions_total||0)+'</span>').join(' · ');
+    h+='<div style="padding:14px 16px;background:rgba(255,255,255,.02);border:1px solid #1a1a1a;border-radius:3px;font-family:var(--sans);font-size:11px;color:#888;line-height:1.6;">'
+      +t('instEmptyTitle').replace('{n}',nTracked).replace('{ticker}',sym).replace('{quarter}',qdEscHTML(latestQ))
+      +'<div style="font-size:10px;color:#555;margin-top:8px;">'+t('instEmptyBody')+'</div>'
+      +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-top:8px;">'+cov+'</div>'
       +'</div>';
+    el.innerHTML=h;
+    return;
+  }
+
+  // Holders: fondo · persona · badge de cambio · valor · lag.
+  h+='<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:6px;">'
+    +t('instHolders').replace('{n}',holders.length).replace('{ticker}',sym)+'</div>';
+  h+=holders.map(function(x){
+    const persona=(x.persona&&x.persona!==x.fund)?' <span style="color:#555;">· '+qdEscHTML(x.persona)+'</span>':'';
+    const val=(x.change==='closed')
+      ?'<span style="color:#666;">'+t('instExited')+' '+stFmtUsd(x.prevValue||0)+'</span>'
+      :'<span style="color:#ccc;">'+stFmtUsd(x.value)+'</span>';
+    const link=x.link?' <a href="'+qdEscHTML(x.link)+'" target="_blank" rel="noopener noreferrer" style="color:#555;text-decoration:none;">↗</a>':'';
+    return '<div style="padding:7px 0;border-bottom:1px solid #1a1a1a;">'
+      +'<div style="display:flex;align-items:center;gap:6px;justify-content:space-between;">'
+        +'<div style="font-size:10px;color:#ccc;font-family:var(--mono);min-width:0;">'+qdEscHTML(x.fund)+persona+'</div>'
+        +instChangeBadge(x)
+      +'</div>'
+      +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:6px;margin-top:3px;">'
+        +'<div style="font-family:var(--mono);font-size:9px;color:#555;">'+instLagLine(x)+link+'</div>'
+        +'<div style="font-family:var(--mono);font-size:12px;font-weight:700;">'+val+'</div>'
+      +'</div>'
+    +'</div>';
   }).join('');
-  const hfColor={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'}[inst.hedge_fund_sentiment]||'#888';
-  el.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">'
-    +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">INST. OWNERSHIP</div>'
-    +'<div style="font-family:var(--mono);font-size:20px;font-weight:700;color:#ccc;">'+inst.institutional_pct.toFixed(1)+'%</div>'
-    +'</div>'
-    +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">HEDGE FUND VIEW</div>'
-    +'<div style="font-family:var(--mono);font-size:13px;font-weight:700;color:'+hfColor+';">'+inst.hedge_fund_sentiment+'</div>'
-    +'</div>'
-    +'</div>'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:6px;">TOP HOLDERS</div>'
-    +holdersHtml
-    +'<p style="font-size:10px;color:#444;font-family:var(--sans);margin-top:8px;">'+(inst.summary||'')+'</p>';
+  el.innerHTML=h;
 }
 
 
@@ -9024,6 +9091,15 @@ const i18n = {
     shortInterest:'SHORT INTEREST',
     insiderTx:'INSIDER TRANSACTIONS · SEC',
     instOwnership:'INSTITUTIONAL OWNERSHIP',
+    // Institutional Ownership — real SEC 13F (inverted index), no AI (issue #61)
+    instSource:'SEC 13F · EDGAR',
+    instFundsTracked:'funds tracked',
+    inst13fDisclaimer:'13F is a snapshot at quarter close, filed up to 45 days later — not today’s position. Covers each fund’s largest holdings by value.',
+    instHolders:'{n} tracked fund(s) report {ticker}',
+    instNew:'NEW', instAdded:'ADDED', instTrimmed:'TRIMMED', instHeld:'HELD', instClosed:'CLOSED',
+    instExited:'exited',
+    instEmptyTitle:'None of the {n} tracked funds reports a {ticker} position among its top holdings as of quarter close {quarter}.',
+    instEmptyBody:'The index covers each fund’s largest holdings by value (the conviction book), inverted from real SEC 13F filings. A small tail position may not be resolved. Coverage per fund (resolved / holdings):',
     optionsSentiment:'OPTIONS SENTIMENT · PUT/CALL',
     aiSmartVerdict:'AI SMART MONEY VERDICT 🤖',
     marketWideSignals:'MARKET-WIDE SMART MONEY SIGNALS 🤖',
@@ -9251,6 +9327,15 @@ const i18n = {
     shortInterest:'INTERÉS CORTO',
     insiderTx:'TRANSACCIONES INTERNAS · SEC',
     instOwnership:'PROPIEDAD INSTITUCIONAL',
+    // Propiedad Institucional — SEC 13F real (índice invertido), sin IA (issue #61)
+    instSource:'SEC 13F · EDGAR',
+    instFundsTracked:'fondos rastreados',
+    inst13fDisclaimer:'El 13F es una foto al cierre del trimestre, reportada hasta 45 días después — no es la posición de hoy. Cubre las posiciones principales por valor de cada fondo.',
+    instHolders:'{n} fondo(s) rastreado(s) reportan {ticker}',
+    instNew:'NUEVA', instAdded:'AUMENTÓ', instTrimmed:'RECORTÓ', instHeld:'MANTIENE', instClosed:'CERRÓ',
+    instExited:'salió de',
+    instEmptyTitle:'Ninguno de los {n} fondos rastreados reporta posición en {ticker} entre sus posiciones principales al cierre {quarter}.',
+    instEmptyBody:'El índice cubre las posiciones principales por valor de cada fondo (el libro de convicción), invertido de filings 13F reales de la SEC. Una posición pequeña de cola puede no resolverse. Cobertura por fondo (resueltas / posiciones):',
     optionsSentiment:'SENTIMIENTO DE OPCIONES · PUT/CALL',
     aiSmartVerdict:'VEREDICTO IA · DINERO LISTO 🤖',
     marketWideSignals:'SEÑALES DE DINERO LISTO · MERCADO COMPLETO 🤖',

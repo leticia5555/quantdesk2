@@ -7,7 +7,7 @@
 
 import handler, {
   parseForm4Atom, parseForm4Xml, extractNotableBuy, markClusters,
-  parse13FInfotable, diff13F, pickInfotableFile,
+  parse13FInfotable, diff13F, classify13FPositions, buildSymbolIndex, pickInfotableFile,
   _resetTrackerCache, _expireTrackerCache,
 } from '../api/stock-tracker.js';
 
@@ -155,6 +155,49 @@ console.log('diff13F: nuevas / cerradas / aumentos / recortes');
   ok(d.counts.held === 2 && d.counts.closed === 1, 'counts', JSON.stringify(d.counts));
 }
 
+console.log('classify13FPositions: new / increased / reduced / held / closed');
+{
+  const prev = parse13FInfotable(infotableXml([
+    { name: 'KO', cusip: '191216100', value: 4000, shares: 100 },
+    { name: 'MSFT', cusip: '594918104', value: 3000, shares: 60 },
+    { name: 'GONE CORP', cusip: '000000000', value: 700, shares: 7 },
+  ]));
+  const curr = parse13FInfotable(infotableXml([
+    { name: 'APPLE INC', cusip: '037833100', value: 5000, shares: 100 }, // nueva
+    { name: 'KO', cusip: '191216100', value: 2000, shares: 50 },         // recorte
+    { name: 'MSFT', cusip: '594918104', value: 3000, shares: 60 },       // held (sin cambio)
+  ]));
+  const pos = classify13FPositions(prev, curr);
+  const by = Object.fromEntries(pos.map((p) => [p.cusip, p]));
+  ok(pos.length === 4, 'new + reduced + held + closed = 4', pos.length);
+  ok(by['037833100'].change === 'new', 'AAPL nueva', by['037833100'].change);
+  ok(by['191216100'].change === 'reduced' && by['191216100'].deltaPct === -50, 'KO recorte −50%', JSON.stringify(by['191216100']));
+  ok(by['594918104'].change === 'held' && by['594918104'].deltaPct === null, 'MSFT held (mantiene)', JSON.stringify(by['594918104']));
+  ok(by['000000000'].change === 'closed' && by['000000000'].value === 0 && by['000000000'].prevValue === 700, 'GONE cerrada: value 0, prevValue 700', JSON.stringify(by['000000000']));
+}
+
+console.log('buildSymbolIndex: invierte por ticker + cobertura, salta CUSIP sin ticker');
+{
+  const fund = {
+    fund: 'Berkshire Hathaway', persona: 'Warren Buffett', cik: 1067983,
+    quarterEnd: '2026-03-31', prevQuarterEnd: '2025-12-31', filedDate: '2026-05-15', lagDays: 45,
+    link: 'https://sec.gov/x',
+    _positions: [
+      { cusip: '037833100', name: 'APPLE INC', value: 5000, shares: 100, change: 'increased', deltaPct: 12.3 },
+      { cusip: '191216100', name: 'KO', value: 2000, shares: 50, change: 'held', deltaPct: null },
+      { cusip: '000000000', name: 'GONE CORP', value: 0, prevValue: 700, shares: 0, change: 'closed', deltaPct: null },
+    ],
+  };
+  const tickers = new Map([['037833100', 'AAPL'], ['000000000', 'GONE'], ['191216100', null]]);
+  const { bySymbol, coverage } = buildSymbolIndex([fund], tickers);
+  ok(bySymbol.AAPL && bySymbol.AAPL.length === 1 && bySymbol.AAPL[0].change === 'increased' && bySymbol.AAPL[0].deltaPct === 12.3, 'AAPL: Berkshire aumentó +12.3%', JSON.stringify(bySymbol.AAPL));
+  ok(bySymbol.AAPL[0].fund === 'Berkshire Hathaway' && bySymbol.AAPL[0].value === 5000, 'fondo + valor de la posición', JSON.stringify(bySymbol.AAPL[0]));
+  ok(bySymbol.GONE && bySymbol.GONE[0].change === 'closed' && bySymbol.GONE[0].value === 0 && bySymbol.GONE[0].prevValue === 700, 'cerrada indexada con prevValue', JSON.stringify(bySymbol.GONE));
+  ok(!bySymbol.KO, 'KO sin ticker (OpenFIGI) → no entra al índice');
+  ok(coverage.length === 1 && coverage[0].positions_total === 2 && coverage[0].positions_mapped === 1, 'cobertura honesta: 1 de 2 posiciones actuales resueltas (closed no cuenta)', JSON.stringify(coverage[0]));
+  ok(!('_positions' in fund), '_positions borrado tras indexar (payload por fondo queda limpio)');
+}
+
 console.log('pickInfotableFile: primary_doc fuera, nombre o tamaño');
 {
   ok(pickInfotableFile({ directory: { item: [
@@ -243,6 +286,37 @@ console.log('handler: cat=13f end-to-end (5 fondos caídos, Berkshire OK)');
   ok(typeof f.lagDays === 'number' && f.quarterEnd === iso(60), 'lag cierre→filing (honestidad)', f.lagDays);
   ok(Object.values(b.sources).filter((s) => !s.ok).length === 5, '5 fuentes caídas con flag', JSON.stringify(Object.keys(b.sources)));
   ok((res.headers['Cache-Control'] || '').includes('s-maxage=86400'), 'CDN cache 13f', res.headers['Cache-Control']);
+}
+
+console.log('handler: cat=13f&symbol=X → índice invertido (mismo cache)');
+{
+  // El cache de 13f quedó poblado por el test anterior (Berkshire: AAPL nueva
+  // con ticker vía OpenFIGI, KO recorte sin ticker). Sin tocar la red.
+  let calls = 0;
+  global.fetch = (u, o) => { calls++; return routeFetch(u, o); };
+  const resA = mockRes();
+  await handler({ method: 'GET', query: { cat: '13f', symbol: 'aapl' } }, resA);
+  const a = resA.body;
+  ok(calls === 0, 'reutiliza el cache: 0 fetches', calls);
+  ok(a.mode === 'by-symbol' && a.symbol === 'AAPL', 'vista por-ticker, símbolo normalizado', JSON.stringify({ mode: a.mode, symbol: a.symbol }));
+  ok(Array.isArray(a.holders) && a.holders.length === 1 && a.holders[0].fund === 'Berkshire Hathaway', 'Berkshire reportado en AAPL', JSON.stringify(a.holders));
+  ok(a.holders[0].change === 'new' && a.holders[0].value === 5000, 'cambio de trimestre + valor de la posición', JSON.stringify(a.holders[0]));
+  ok(a.holders[0].quarterEnd === iso(60) && typeof a.holders[0].lagDays === 'number', 'lag honesto por holder (cierre + reportado)', JSON.stringify({ q: a.holders[0].quarterEnd, lag: a.holders[0].lagDays }));
+  ok(a.funds_tracked === 6, 'funds_tracked = universo completo (para el estado vacío honesto)', a.funds_tracked);
+  ok(a.bySymbol === undefined && a.funds === undefined, 'la vista por-ticker no arrastra bySymbol/funds', JSON.stringify(Object.keys(a)));
+
+  // Ticker que ningún fondo del universo reporta → holders vacío + cobertura
+  // real (el estado vacío honesto se arma con estos números en el frontend).
+  const resB = mockRes();
+  await handler({ method: 'GET', query: { cat: '13f', symbol: 'TSLA' } }, resB);
+  const b = resB.body;
+  ok(b.holders.length === 0, 'TSLA: ningún fondo lo reporta → []', JSON.stringify(b.holders));
+  ok(Array.isArray(b.coverage) && b.coverage.length >= 1 && b.coverage[0].positions_total > 0, 'cobertura con números reales (no "data unavailable")', JSON.stringify(b.coverage[0]));
+
+  // La vista por FONDO (TRACKER) sigue sin el índice invertido.
+  const resC = mockRes();
+  await handler({ method: 'GET', query: { cat: '13f' } }, resC);
+  ok(Array.isArray(resC.body.funds) && resC.body.bySymbol === undefined && resC.body.coverage === undefined, 'vista por-fondo intacta y sin bySymbol/coverage', JSON.stringify(Object.keys(resC.body)));
 }
 
 console.log('handler: memoria + stale-on-fail');

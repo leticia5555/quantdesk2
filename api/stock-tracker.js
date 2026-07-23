@@ -8,6 +8,10 @@
 //   GET /api/stock-tracker?cat=13f     → movimientos 13F: diff propio
 //        (nuevas/cerradas/aumentos/recortes) entre los dos últimos
 //        trimestres de fondos famosos (CIKs verificados en el censo).
+//   GET /api/stock-tracker?cat=13f&symbol=GOOGL → índice INVERTIDO: para ese
+//        ticker, qué fondos del universo lo reportan y con qué cambio de
+//        trimestre. Reutiliza el MISMO cache de 13f (alimenta el panel
+//        Institutional Ownership de SMART $ con datos reales, no IA).
 //   GET /api/stock-tracker?smoke=1     → smoke test de fuentes, en vivo.
 //
 // Principios (mismos de vc-feed):
@@ -321,6 +325,27 @@ export function parse13FInfotable(xml) {
   return byCusip;
 }
 
+// Clasificación COMPLETA por posición entre dos trimestres — superset del
+// diff: incluye 'held' (mantiene, sin cambio de shares) y 'closed'. Es la
+// base del índice invertido por ticker (quién tiene GOOGL), donde una
+// posición mantenida importa tanto como una nueva. Para 'closed', value=0 y
+// prevValue = el tamaño del que salió (la foto es del cierre, no de hoy).
+export function classify13FPositions(prevMap, currMap) {
+  const out = [];
+  for (const [cusip, cur] of currMap) {
+    const prev = prevMap.get(cusip);
+    if (!prev) { out.push({ ...cur, change: 'new', deltaPct: null }); continue; }
+    const deltaPct = prev.shares > 0 ? +((cur.shares / prev.shares - 1) * 100).toFixed(1) : null;
+    if (cur.shares > prev.shares) out.push({ ...cur, change: 'increased', deltaShares: Math.round(cur.shares - prev.shares), deltaPct });
+    else if (cur.shares < prev.shares) out.push({ ...cur, change: 'reduced', deltaShares: Math.round(cur.shares - prev.shares), deltaPct });
+    else out.push({ ...cur, change: 'held', deltaPct: null });
+  }
+  for (const [cusip, prev] of prevMap) {
+    if (!currMap.has(cusip)) out.push({ ...prev, change: 'closed', value: 0, prevValue: prev.value, deltaPct: null });
+  }
+  return out;
+}
+
 // Diff por CUSIP entre dos trimestres. EDGAR solo da snapshots — esto es
 // el JOIN que ningún agregador gratuito confiable ofrece ya computado.
 export function diff13F(prevMap, currMap) {
@@ -386,6 +411,60 @@ async function mapCusipsToTickers(cusips) {
 
 const TOP_N = 5;
 
+// Índice invertido (por ticker) — cobertura por fondo. El 13F trae solo
+// CUSIP; el único mapeo gratis confiable es CUSIP→ticker (OpenFIGI), y
+// mapear TODAS las posiciones de todos los fondos no cabe en un build
+// (Renaissance ≈ 3,213 posiciones × OpenFIGI 10 jobs/req sin key). Se
+// indexan las posiciones principales por valor de cada fondo (el "libro de
+// convicción" — justo la señal de smart money) más TODAS las cerradas. El
+// cap acota el costo OpenFIGI del build frío (maxDuration 60s); el mapeo
+// degrada solo (rate limit → break, sin ticker → fuera del índice) y la
+// cobertura real se reporta por fondo (positions_mapped/positions_total)
+// para que el estado vacío nunca afirme de más. El cache (memoria + CDN 24h
+// + cusipTickerCache persistente) hace que el costo se pague rara vez.
+const INDEX_HOLDINGS_CAP = 30;
+
+// funds (con f._positions ya clasificadas) + Map CUSIP→ticker → índice
+// invertido { TICKER: [{fund, value, change, deltaPct, ...}] } y cobertura
+// por fondo. Puro: sin red, testeable. Muta cada fondo borrando _positions.
+export function buildSymbolIndex(funds, tickers) {
+  const bySymbol = {};
+  const coverage = [];
+  for (const f of funds) {
+    const positions = f._positions || [];
+    let mapped = 0;
+    let total = 0;
+    for (const p of positions) {
+      const isClosed = p.change === 'closed';
+      if (!isClosed) total++;
+      const ticker = tickers.get(p.cusip);
+      if (!ticker) continue;
+      if (!isClosed) mapped++;
+      const holder = {
+        fund: f.fund, persona: f.persona, cik: f.cik,
+        ticker, cusip: p.cusip, name: p.name,
+        value: isClosed ? 0 : Math.round(p.value),
+        shares: isClosed ? 0 : Math.round(p.shares),
+        change: p.change,
+        deltaPct: p.deltaPct != null ? p.deltaPct : null,
+        quarterEnd: f.quarterEnd, prevQuarterEnd: f.prevQuarterEnd,
+        filedDate: f.filedDate, lagDays: f.lagDays, link: f.link,
+      };
+      if (isClosed) holder.prevValue = Math.round(p.prevValue || 0);
+      (bySymbol[ticker] = bySymbol[ticker] || []).push(holder);
+    }
+    coverage.push({
+      fund: f.fund, persona: f.persona, cik: f.cik,
+      quarterEnd: f.quarterEnd, filedDate: f.filedDate, lagDays: f.lagDays,
+      positions_total: total, positions_mapped: mapped,
+    });
+    delete f._positions;
+  }
+  // Dentro de un ticker: mayor valor primero (las cerradas caen al final).
+  for (const k of Object.keys(bySymbol)) bySymbol[k].sort((a, b) => (b.value || 0) - (a.value || 0));
+  return { bySymbol, coverage };
+}
+
 async function build13F() {
   const sources = {};
   const funds = await batchedMap(FUNDS, async (fund) => {
@@ -436,23 +515,43 @@ async function build13F() {
         increased: d.increased.slice(0, TOP_N),
         reduced: d.reduced.slice(0, TOP_N),
       },
+      // Interno (no se serializa): clasificación COMPLETA de posiciones para
+      // el índice invertido por ticker. Se borra en buildSymbolIndex.
+      _positions: classify13FPositions(tables[1], curr),
       link: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${fund.cik}&type=13F-HR&dateb=&owner=include&count=10`,
     };
   }, 2, 1000); // 2 fondos por tanda: cada uno cuesta 5 requests
 
   const valid = funds.filter(Boolean);
-  // Ticker solo para los CUSIP que salen en cards (≤20 por fondo).
+  // CUSIP a mapear a ticker: los de las cards (top buckets) + las posiciones
+  // principales por valor de cada fondo (cap para el índice invertido) + TODAS
+  // las cerradas. OpenFIGI cacheado; el resto degrada a nombre en la card y a
+  // "no resuelto" en la cobertura del índice.
   const shown = valid.flatMap((f) => Object.values(f.top).flat().map((p) => p.cusip));
-  const tickers = await mapCusipsToTickers(shown);
+  const forIndex = valid.flatMap((f) => {
+    const pos = f._positions || [];
+    const topByValue = pos.filter((p) => p.change !== 'closed')
+      .sort((a, b) => (b.value || 0) - (a.value || 0)).slice(0, INDEX_HOLDINGS_CAP);
+    const closed = pos.filter((p) => p.change === 'closed');
+    return [...topByValue, ...closed].map((p) => p.cusip);
+  });
+  const tickers = await mapCusipsToTickers([...new Set([...shown, ...forIndex])]);
   for (const f of valid) {
     for (const bucket of Object.values(f.top)) {
       for (const p of bucket) p.ticker = tickers.get(p.cusip) || null;
     }
   }
 
+  // Índice invertido por ticker (para SMART $) + cobertura por fondo.
+  // buildSymbolIndex borra f._positions, así que `valid` queda limpio para
+  // la vista por fondo del TRACKER.
+  const { bySymbol, coverage } = buildSymbolIndex(valid, tickers);
+
   return {
     cat: '13f',
     funds: valid,
+    bySymbol,
+    coverage,
     lag_note: 'SEC 13F: foto al cierre del trimestre, publicada hasta 45 días después — no es el portafolio de hoy',
     sources,
     stale: false,
@@ -556,6 +655,34 @@ function payloadLooksEmpty(payload) {
   return srcs.length > 0 && srcs.every((s) => !s.ok);
 }
 
+// Vista por FONDO (TRACKER): el payload 13f sin el índice invertido — el
+// TRACKER muestra qué tiene cada fondo, no necesita el bySymbol (que puede
+// pesar). bySymbol/coverage viven en el cache, no en esta respuesta.
+function fundsView(full) {
+  const { bySymbol, coverage, ...rest } = full;
+  return rest;
+}
+
+// Vista por TICKER (SMART $): invierte el índice — para el símbolo activo,
+// qué fondos lo reportan y con qué cambio de trimestre. Reutiliza el mismo
+// cache; nunca lanza aunque el payload venga vacío (holders: []).
+function symbolView(full, symbol) {
+  const sym = String(symbol || '').toUpperCase().trim();
+  const holders = (full.bySymbol && full.bySymbol[sym]) || [];
+  return {
+    cat: '13f',
+    mode: 'by-symbol',
+    symbol: sym,
+    holders,
+    funds_tracked: FUNDS.length,
+    coverage: full.coverage || [],
+    lag_note: full.lag_note || 'SEC 13F: foto al cierre del trimestre, publicada hasta 45 días después — no es el portafolio de hoy',
+    sources: full.sources || {},
+    stale: !!full.stale,
+    generated_at: full.generated_at || new Date().toISOString(),
+  };
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -576,10 +703,17 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'cat must be insider | 13f (or pass smoke=1)' });
   }
 
+  // Modo por-ticker de 13F: mismo cache, vista invertida (SMART $).
+  const symbol = cat === '13f' && q.symbol ? String(q.symbol) : null;
+  // Da la forma correcta a la respuesta (por-fondo vs por-ticker) sobre el
+  // MISMO payload completo del cache — el bySymbol nunca sale en la vista
+  // por fondo, y la vista por ticker siempre reutiliza el índice cacheado.
+  const shape = (full) => (symbol ? symbolView(full, symbol) : cat === '13f' ? fundsView(full) : full);
+
   const entry = memCache[cat];
   if (entry.payload && Date.now() - entry.at < TTL_MS[cat]) {
     res.setHeader('Cache-Control', CDN_CACHE[cat]);
-    return res.status(200).json(entry.payload);
+    return res.status(200).json(shape(entry.payload));
   }
 
   try {
@@ -588,20 +722,20 @@ export default async function handler(req, res) {
       // Fuentes caídas y hay stale: se sirve lo último bueno con los
       // flags frescos de qué falló. El fallo NO pisa el cache.
       res.setHeader('Cache-Control', CDN_CACHE[cat]);
-      return res.status(200).json({ ...entry.payload, stale: true, sources: payload.sources });
+      return res.status(200).json(shape({ ...entry.payload, stale: true, sources: payload.sources }));
     }
     memCache[cat] = { at: Date.now(), payload };
     res.setHeader('Cache-Control', CDN_CACHE[cat]);
-    return res.status(200).json(payload);
+    return res.status(200).json(shape(payload));
   } catch (err) {
     if (entry.payload) {
       res.setHeader('Cache-Control', CDN_CACHE[cat]);
-      return res.status(200).json({ ...entry.payload, stale: true, error: String((err && err.message) || err) });
+      return res.status(200).json(shape({ ...entry.payload, stale: true, error: String((err && err.message) || err) }));
     }
-    return res.status(200).json({
-      cat, items: [], funds: [], sources: {}, stale: false,
+    return res.status(200).json(shape({
+      cat, items: [], funds: [], bySymbol: {}, coverage: [], sources: {}, stale: false,
       error: 'Server exception: ' + String((err && err.message) || err),
       generated_at: new Date().toISOString(),
-    });
+    }));
   }
 }
