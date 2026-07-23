@@ -22,6 +22,11 @@ export default async function handler(req, res) {
     // pasados como escenarios futuros (1 retry, luego stale).
     const out = await guardedClaudeCall({
       apiKey,
+      // cache: dedupe de requests idénticas (mismo ticker+día+precio, re-clicks,
+      // pestañas paralelas, visitantes cuasi-simultáneos). Clave anclada a la
+      // fecha de HOY → rota sola cada día. Baja el burn de SMART $ y del resto
+      // de paneles que pasan por aquí sin tocar su lógica.
+      cache: true,
       payload: {
         model: ANTHROPIC_MODEL,
         max_tokens: body.max_tokens || 1000,

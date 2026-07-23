@@ -28,6 +28,9 @@
 //                                   su fallback honesto.
 // ═══════════════════════════════════════════════════════════════
 
+import { createHash } from 'node:crypto';
+import { recordAiCall } from './usage.js';
+
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 
@@ -83,7 +86,7 @@ function retryReminder(hits, now) {
 //     publicar el texto; corta con su fallback honesto (status sugerido 502).
 //   - guard:false → solo inyecta la fecha, sin escaneo de salida (p. ej.
 //     scoring mecánico de titulares, donde los años viejos son legítimos).
-export async function guardedClaudeCall({ apiKey, payload, guard = true, now = new Date(), fetchImpl = fetch }) {
+async function runGuardedCall({ apiKey, payload, guard = true, now = new Date(), fetchImpl = fetch }) {
   const withDate = { ...payload, system: (payload.system || '') + dateDirective(now) };
   const call = (p) => fetchImpl(ANTHROPIC_URL, {
     method: 'POST',
@@ -114,3 +117,83 @@ export async function guardedClaudeCall({ apiKey, payload, guard = true, now = n
   if (!hits2.length) return { status: r.status, data, retried: true };
   return { status: 502, stale: true, hits: hits2, data: null };
 }
+
+// ── Caché de respuesta en memoria (opt-in) ───────────────────────
+// Muchas interacciones repiten la MISMA request (mismo ticker+idioma el
+// mismo día, re-clicks, pestañas paralelas, visitantes cuasi-simultáneos con
+// el paywall abierto). Sin caché, cada una es una llamada fresca a Anthropic.
+//
+// La clave incluye la fecha de HOY (dateDirective se ancla a ella), así que
+// el caché rota solo cada día — es literalmente "por request+día". Solo se
+// guardan éxitos (200, no-stale); jamás errores ni respuestas stale.
+//
+// Opt-in por caller (cache:true). Sin la opción, comportamiento idéntico al
+// de antes: cero caché, cero cambios.
+const RESP_CACHE = new Map(); // key → { at, result }
+const RESP_CACHE_MAX = 500;
+const DEFAULT_CACHE_TTL_MS = (() => {
+  const n = Number(process.env.AI_CACHE_TTL_MS);
+  return Number.isFinite(n) && n > 0 ? n : 6 * 3600e3; // 6h por defecto
+})();
+
+function cacheKey(payload, guard, now) {
+  const iso = now.toISOString().slice(0, 10);
+  return createHash('sha256')
+    .update(JSON.stringify({ p: payload, guard, iso }))
+    .digest('hex');
+}
+
+function cacheGet(key, ttlMs) {
+  const hit = RESP_CACHE.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > ttlMs) { RESP_CACHE.delete(key); return null; }
+  return hit.result;
+}
+
+function cacheSet(key, result) {
+  if (RESP_CACHE.size >= RESP_CACHE_MAX) {
+    // Evicción FIFO simple: borra la entrada más vieja insertada.
+    const oldest = RESP_CACHE.keys().next().value;
+    if (oldest !== undefined) RESP_CACHE.delete(oldest);
+  }
+  RESP_CACHE.set(key, { at: Date.now(), result });
+}
+
+// Wrapper público: caché opcional + journaling del burn (siempre, best-effort).
+// Firma compatible: los callers viejos (sin cache/tag) no cambian de conducta.
+export async function guardedClaudeCall(opts) {
+  const { payload, guard = true, now = new Date(), cache = false, cacheTtlMs } = opts;
+  const model = payload && payload.model;
+  const ttl = Number.isFinite(cacheTtlMs) && cacheTtlMs > 0 ? cacheTtlMs : DEFAULT_CACHE_TTL_MS;
+  const key = cache ? cacheKey(payload, guard, now) : null;
+
+  if (key) {
+    const cached = cacheGet(key, ttl);
+    if (cached) {
+      // No se re-consulta a Anthropic: journalea el ahorro y devuelve copia.
+      // recordAiCall nunca lanza (try/catch interno) y está auto-acotado a ≤2s.
+      await recordAiCall({ model, cacheHit: true, now });
+      return { ...cached, cached: true };
+    }
+  }
+
+  const out = await runGuardedCall(opts);
+
+  // Journaling del gasto — best-effort, auto-acotado, nunca rompe la respuesta.
+  await recordAiCall({
+    model,
+    usage: out && out.data && out.data.usage,
+    retried: !!(out && out.retried),
+    stale: !!(out && out.stale),
+    now,
+  });
+
+  // Solo se cachean éxitos reales (200, con data, no stale).
+  if (key && out && out.status >= 200 && out.status < 300 && out.data && !out.stale) {
+    cacheSet(key, { status: out.status, data: out.data, retried: out.retried });
+  }
+  return out;
+}
+
+// Hook de tests.
+export function _resetRespCache() { RESP_CACHE.clear(); }

@@ -380,7 +380,7 @@ Be quantitative. Reference actual values from the brief. No fluff. Avoid generic
 
   const user = `Analyze this macro brief and return the JSON narrative.\n\n\`\`\`json\n${JSON.stringify(brief, null, 2)}\n\`\`\``;
 
-  const g = await guardedClaudeCall({ apiKey, payload: {
+  const g = await guardedClaudeCall({ apiKey, cache: true, payload: {
     model: ANTHROPIC_MODEL, max_tokens: 1400, system: system + langDirective(lang),
     messages: [{ role: 'user', content: user }]
   } });

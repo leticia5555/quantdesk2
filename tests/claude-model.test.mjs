@@ -57,10 +57,12 @@ console.log('api/claude.js: el server decide el modelo');
   ok(sent.model === ANTHROPIC_MODEL, 'body.model de cliente stale se ignora', sent.model);
   ok(res.code === 200 && Array.isArray(res.body.content), 'passthrough del content en éxito');
 
-  // cliente nuevo sin model → mismo modelo central
+  // cliente nuevo sin model → mismo modelo central. (Contenido distinto al
+  // de arriba: /api/claude ahora cachea requests idénticas por día, así que
+  // un mensaje nuevo garantiza un cache-miss y una llamada real a la API.)
   sent = null;
   await handler({ method: 'POST', body: {
-    max_tokens: 50, messages: [{ role: 'user', content: 'ping' }],
+    max_tokens: 50, messages: [{ role: 'user', content: 'ping sin model' }],
   } }, mockRes());
   ok(sent.model === ANTHROPIC_MODEL, 'sin body.model usa el central', sent.model);
 }

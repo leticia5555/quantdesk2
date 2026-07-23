@@ -330,7 +330,7 @@ export default async function handler(req, res) {
     // growth into 2025" de un 10-K de 2024): el escaneo prospectivo daría
     // falsos positivos y el retry re-mandaría el filing completo. La fecha
     // de HOY sí se inyecta, y el userMessage ya ancla la Filing date.
-    const g = await guardedClaudeCall({ apiKey, guard: false, payload: {
+    const g = await guardedClaudeCall({ apiKey, guard: false, cache: true, payload: {
       model: ANTHROPIC_MODEL,
       max_tokens: 4000,
       system: systemPrompt + langDirective(lang),
