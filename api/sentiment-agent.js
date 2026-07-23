@@ -208,7 +208,7 @@ Return ONLY a JSON array of length ${trimmed.length}, in the same order as the i
 
   // guard:false — el scoring es mecánico y los titulares traen fechas viejas
   // legítimas; solo se inyecta la fecha, sin escaneo prospectivo.
-  const g = await guardedClaudeCall({ apiKey, guard: false, payload: {
+  const g = await guardedClaudeCall({ apiKey, guard: false, cache: true, payload: {
     model: ANTHROPIC_MODEL, max_tokens: 4000, system,
     messages: [{ role: 'user', content: user }]
   } });
@@ -272,7 +272,7 @@ Be quantitative. Use the actual numbers in the brief (avg 7d score, anomaly magn
 
   const user = `Analyze this sentiment brief and return the JSON narrative.\n\n\`\`\`json\n${JSON.stringify(brief, null, 2)}\n\`\`\``;
 
-  const g = await guardedClaudeCall({ apiKey, payload: {
+  const g = await guardedClaudeCall({ apiKey, cache: true, payload: {
     model: ANTHROPIC_MODEL, max_tokens: 1500, system: system + langDirective(lang),
     messages: [{ role: 'user', content: user }]
   } });

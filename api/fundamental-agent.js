@@ -764,7 +764,7 @@ Be quantitative. Be specific. No fluff.`;
 
   const user = `Analyze this fundamentals brief and return the JSON narrative.\n\n\`\`\`json\n${JSON.stringify(brief, null, 2)}\n\`\`\``;
 
-  const g = await guardedClaudeCall({ apiKey, payload: {
+  const g = await guardedClaudeCall({ apiKey, cache: true, payload: {
     model: ANTHROPIC_MODEL, max_tokens: 1500, system: system + langDirective(lang),
     messages: [{ role: 'user', content: user }]
   } });

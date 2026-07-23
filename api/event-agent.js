@@ -424,7 +424,7 @@ Be quantitative. Use the actual numbers from the brief. No fluff. If a category 
 
   const user = `Analyze this event brief and return the JSON narrative.\n\n\`\`\`json\n${JSON.stringify(brief, null, 2)}\n\`\`\``;
 
-  const g = await guardedClaudeCall({ apiKey, payload: {
+  const g = await guardedClaudeCall({ apiKey, cache: true, payload: {
     model: ANTHROPIC_MODEL, max_tokens: 1500, system: system + langDirective(lang),
     messages: [{ role: 'user', content: user }]
   } });

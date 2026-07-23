@@ -3289,6 +3289,18 @@ async function runSmartMoney(){
     .then(r=>r.ok?r.json():null)
     .catch(()=>null);
 
+  // Caché por ticker+día: mismo visitante, mismo ticker, mismo día → cero
+  // llamadas de IA. Los datos de insider (SEC, sin IA) sí se refrescan.
+  const smCached = qdDayCacheGet('sm:'+ticker);
+  if(smCached){
+    renderShortInterest(smCached.short_interest);
+    renderInstitutional(smCached.institutional);
+    renderOptionsSentiment(smCached.options);
+    renderSmVerdict(smCached.verdict);
+    insiderPromise.then(renderInsiderTransactions);
+    return;
+  }
+
   try{
     // Precio real de HOY (la app ya lo tiene vía /api/price) para que el
     // verdict/bull/bear se anclen a números frescos y no a memoria.
@@ -3325,6 +3337,7 @@ async function runSmartMoney(){
       s = Math.min(100, Math.max(0, s));  // clamp to valid range
       data.verdict.smart_money_score = s;
     }
+    qdDayCacheSet('sm:'+ticker, data);  // guarda el análisis del día para re-usos
     renderShortInterest(data.short_interest);
     renderInstitutional(data.institutional);
     renderOptionsSentiment(data.options);
@@ -3567,10 +3580,17 @@ function renderSmVerdict(v){
 async function loadMarketSignals(){
   const el=document.getElementById('marketSignalsPanel');
   try{
-    const aiText=await qdAI({max_tokens:500,
-        messages:[{role:'user',content:
-          'Market-wide smart money signals as of '+qdMonthYear()+'. What are institutions, hedge funds, and options traders doing in aggregate? Return ONLY JSON: {"signals":[{"category":"HEDGE FUNDS|INSTITUTIONS|OPTIONS|INSIDER|DARK POOL","signal":"BULLISH|BEARISH|NEUTRAL","description":"1 sentence","confidence":"HIGH|MEDIUM|LOW"}],"market_positioning":"RISK-ON|RISK-OFF|MIXED","key_theme":"1 sentence on dominant smart money theme"}. Include 5 signals.'}]});
-    const ms=aiText==null?null:safeJSON(aiText);
+    // Señal de mercado (no por ticker): idéntica para todos los visitantes del
+    // día. Cachearla por día evita una llamada de IA por cada apertura de la
+    // página SMART $ (y por cada visitante con el paywall abierto).
+    let ms=qdDayCacheGet('mkt');
+    if(!ms){
+      const aiText=await qdAI({max_tokens:500,
+          messages:[{role:'user',content:
+            'Market-wide smart money signals as of '+qdMonthYear()+'. What are institutions, hedge funds, and options traders doing in aggregate? Return ONLY JSON: {"signals":[{"category":"HEDGE FUNDS|INSTITUTIONS|OPTIONS|INSIDER|DARK POOL","signal":"BULLISH|BEARISH|NEUTRAL","description":"1 sentence","confidence":"HIGH|MEDIUM|LOW"}],"market_positioning":"RISK-ON|RISK-OFF|MIXED","key_theme":"1 sentence on dominant smart money theme"}. Include 5 signals.'}]});
+      ms=aiText==null?null:safeJSON(aiText);
+      if(ms&&Array.isArray(ms.signals)) qdDayCacheSet('mkt', ms);
+    }
     if(!ms||!Array.isArray(ms.signals)){ el.innerHTML=qdUnavailableHTML('market-wide signals'); return; }
 
     const sigCol={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'};
@@ -9408,6 +9428,36 @@ async function qdAI(body){
   }, function(d){ return d && Array.isArray(d.content); });
   if (!data) return null;
   return data.content.map(function(b){ return b.text || ''; }).join('');
+}
+
+// ── Caché de IA por (clave + día) en el navegador ────────────────
+// Complementa la caché de servidor (/api/claude): garantiza que un MISMO
+// visitante que re-analiza el mismo ticker el mismo día no vuelva a gastar
+// una llamada de IA, aunque el precio en vivo haya cambiado (el caché de
+// servidor depende de que el body sea idéntico; este no). Best-effort:
+// si localStorage está lleno/bloqueado, simplemente no cachea.
+function qdToday(){ return new Date().toISOString().slice(0,10); }
+function qdDayCacheGet(ns){
+  try{
+    const raw = localStorage.getItem('qd_dc:'+ns);
+    if(!raw) return null;
+    const o = JSON.parse(raw);
+    if(!o || o.day !== qdToday()) return null;
+    return o.v;
+  }catch(e){ return null; }
+}
+function qdDayCacheSet(ns, v){
+  try{
+    // Poda entradas de días anteriores para no acumular en localStorage.
+    const today = qdToday();
+    for(let i=localStorage.length-1;i>=0;i--){
+      const k = localStorage.key(i);
+      if(k && k.indexOf('qd_dc:')===0){
+        try{ const o=JSON.parse(localStorage.getItem(k)); if(!o||o.day!==today) localStorage.removeItem(k); }catch(_){ localStorage.removeItem(k); }
+      }
+    }
+    localStorage.setItem('qd_dc:'+ns, JSON.stringify({ day: today, v: v }));
+  }catch(e){ /* cuota llena o modo privado: sin caché, sin drama */ }
 }
 
 // Fechas dinámicas para prompts de IA. Varios prompts traían "April 2026"
