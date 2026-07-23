@@ -284,7 +284,11 @@ export default async function handler(req, res) {
   if (!finnhubKey) return res.status(200).json({ earnings: [] });
 
   const nowDate = new Date();
-  const fromDate = from || nowDate.toISOString().split('T')[0];
+  // Default de `from` con 1 día de gracia hacia atrás: un AMC se reporta tras
+  // el cierre y su reacción vive la mañana siguiente, así que el reporte del
+  // día previo sigue siendo relevante. El frontend pasa siempre from/to
+  // explícitos; esto cubre llamadas directas al endpoint.
+  const fromDate = from || new Date(nowDate.getTime() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const toDate = to || new Date(nowDate.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
   try {

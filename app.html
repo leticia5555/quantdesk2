@@ -2785,16 +2785,31 @@ async function loadUpcomingEarnings(){
   // rota, feed desincronizado) → un re-fetch sin caché; después IA como
   // último recurso y, si todo falla, fallback honesto.
   const EARN_HORIZON_DAYS=7;
-  const now=new Date();
-  const from=now.toISOString().split('T')[0];
-  const to=new Date(now.getTime()+EARN_HORIZON_DAYS*24*60*60*1000).toISOString().split('T')[0];
+  // 1 día de gracia hacia atrás: un AMC se reporta tras el cierre y su
+  // reacción vive la mañana siguiente, así que el reporte de "ayer" sigue
+  // siendo relevante hoy. El grace también absorbe el desfase de zona
+  // horaria del hemisferio oeste (LATAM/US): sin él, en la tarde/noche
+  // local la fecha UTC ya es "mañana" y el panel tiraba el AMC recién salido.
+  const EARN_GRACE_DAYS=1;
+  // Fecha LOCAL (no UTC): coherente con qdCalendarFresh/horizonEnd, que
+  // razonan en medianoche local. now.toISOString() daba fecha UTC y en la
+  // noche del oeste saltaba un día — de ahí que el panel se saltara "hoy".
+  const ymdLocal=function(offsetDays){
+    const d=new Date(); d.setDate(d.getDate()+offsetDays);
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  };
+  const from=ymdLocal(-EARN_GRACE_DAYS);
+  const to=ymdLocal(EARN_HORIZON_DAYS);
   const horizonEnd=new Date(); horizonEnd.setHours(23,59,59,999); horizonEnd.setDate(horizonEnd.getDate()+EARN_HORIZON_DAYS);
+  // Borde inferior del re-filtro: medianoche local de (hoy − grace), para
+  // conservar el día de gracia y no recortarlo por abajo.
+  const horizonStart=new Date(); horizonStart.setHours(0,0,0,0); horizonStart.setDate(horizonStart.getDate()-EARN_GRACE_DAYS);
   const fetchCal=async function(bust){
     try{
       const url='/api/earnings?from='+from+'&to='+to+(bust?'&_='+Date.now():'');
       const r=await fetch(url, bust?{cache:'no-store'}:undefined);
       const data=await r.json();
-      if(data.earnings&&data.earnings.length&&qdCalendarFresh(data.earnings.map(function(e){return e.date;}),0,EARN_HORIZON_DAYS)) return data.earnings;
+      if(data.earnings&&data.earnings.length&&qdCalendarFresh(data.earnings.map(function(e){return e.date;}),EARN_GRACE_DAYS,EARN_HORIZON_DAYS)) return data.earnings;
     }catch(e){}
     return null;
   };
@@ -2803,7 +2818,9 @@ async function loadUpcomingEarnings(){
   if(list){
     // aunque una respuesta stale (ventana vieja de 30d) pase el guard por
     // traer ALGO de esta semana, lo que se pinta se recorta al horizonte
-    list=list.filter(function(e){ const d=qdParseCalDate(e.date); return !d||d<=horizonEnd; });
+    // [hoy−grace, hoy+7]: el borde inferior conserva el día de gracia y el
+    // superior evita pintar fechas lejanas bajo el rótulo "THIS WEEK".
+    list=list.filter(function(e){ const d=qdParseCalDate(e.date); return !d||(d>=horizonStart&&d<=horizonEnd); });
     renderEarningsCalendar(list); return;
   }
 
