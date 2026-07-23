@@ -24,6 +24,7 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 import { ANTHROPIC_MODEL } from './_lib/model.js';
 import { guardedClaudeCall } from './_lib/ai-guard.js';
+import { rateLimit } from './_lib/rate-limit.js';
 
 // ── Bilingual support ─────────────────────────────────────────────
 function langDirective(lang) {
@@ -451,6 +452,7 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
+  if (!rateLimit(req, res)) return; // tope por IP: letal para bots, invisible para humanos
 
   const ticker = (req.query.ticker || '').toString().trim().toUpperCase();
   const lang = (req.query.lang || 'en').toString().toLowerCase();
