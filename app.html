@@ -18160,6 +18160,14 @@ function margin_color(pct, threshold, COL){
 const QD_FREE_LIMIT = 3;
 const QD_PRO_CACHE_MS = 6 * 3600 * 1000; // re-verificar contra Stripe cada 6h
 
+// ── kill-switch del paywall ──
+// El backend (env var PAYWALL_ENABLED) manda; /api/config lo expone. Mientras
+// no responda o esté apagado, el paywall NO existe y todo usuario es Pro
+// (default deliberado: la app abre completa). Solo se enciende si el server
+// dice paywall_enabled === true, y entonces el paywall vuelve idéntico.
+window.QD_PAYWALL_ENABLED = window.QD_PAYWALL_ENABLED === true;
+function qdPaywallOn(){ return window.QD_PAYWALL_ENABLED === true; }
+
 // ── cuota diaria ──
 function qdTodayKey(){
   const d = new Date();
@@ -18187,6 +18195,7 @@ function qdProState(){
   try{ return JSON.parse(localStorage.getItem('qd_pro') || 'null') || {}; }catch(e){ return {}; }
 }
 function qdIsPro(){
+  if (!qdPaywallOn()) return true; // paywall apagado → todos Pro, sin límite
   const p = qdProState();
   return !!(p.pro && p.checkedAt && Date.now() - p.checkedAt < QD_PRO_CACHE_MS);
 }
@@ -18349,6 +18358,16 @@ function qdRenderProUi(){
 // ── arranque: retorno del Checkout + re-verificación del caché ──
 window.addEventListener('DOMContentLoaded', function(){
   qdRenderProUi();
+
+  // Kill-switch: preguntar al server si el paywall está encendido. Por
+  // default (o si /api/config falla) queda apagado y la app abre como Pro.
+  fetch('/api/config')
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(cfg){
+      window.QD_PAYWALL_ENABLED = !!(cfg && cfg.paywall_enabled === true);
+      qdRenderProUi();
+    })
+    .catch(function(){ /* red caída: paywall queda apagado, app abierta */ });
 
   const params = new URLSearchParams(window.location.search);
   if (params.get('stripe') === 'success' && params.get('session_id')){
