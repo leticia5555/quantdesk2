@@ -49,6 +49,33 @@ en silencio. JSON malformado → run abortado honesto, cero órdenes.
 También usa (ya existentes): `FINNHUB_API_KEY` (symbol map del guard),
 `DATABASE_URL`, `CRON_SECRET`, `ANTHROPIC_MODEL` (default haiku).
 
+5. `PUBLIC_BASE_URL` — dominio público estable del deploy (p.ej.
+   `https://quantdesk2.vercel.app`) para el **self-fetch del buffet**. Es
+   OBLIGATORIA en prod: sin ella el Arena cae a `VERCEL_URL`, que es la URL
+   *generada* del deployment y está detrás de **Vercel Deployment Protection**
+   → el self-fetch de la lambda a sus propios endpoints recibe **401** y los 4
+   se marcan "no disponibles" (bug del 24-jul: 0 posiciones, 100% cash). El
+   alias público no está protegido. Resolución en `resolveBaseUrl()`.
+
+## Self-fetch del buffet: causa raíz 24-jul y observabilidad
+
+El 24-jul la corrida journaleó los 4 endpoints (movers/earnings/insiders/vc)
+como caídos y el PM se quedó 100% cash. Los handlers **nunca devuelven 5xx**
+(degradan a 200), así que el fallo estaba una capa arriba: el self-fetch a
+`VERCEL_URL` daba 401 por Deployment Protection. Fix: `PUBLIC_BASE_URL`.
+
+Además, `gatherContext` calculaba el error real por endpoint pero lo tiraba:
+solo journaleaba `unavailable: [nombres]`. Ahora journalea también
+`fetch_errors` (status HTTP / timeout real) en la nueva columna
+`arena_journal.context` — el próximo fallo queda con evidencia, no solo el
+resumen. El `context` NO viaja al prompt del LLM (`buildUserPrompt` lo excluye).
+
+**Refactor pendiente (A1):** eliminar el self-fetch HTTP y llamar a los
+builders (`buildMarketMovers`, calendario de earnings, `buildInsider`,
+`buildRounds`) **in-process**. Cero hops, cero protección de por medio, sin
+env var de URL. `PUBLIC_BASE_URL` es el fix inmediato de bajo riesgo; A1 es la
+solución definitiva que elimina la clase entera de bug.
+
 ## Nota de horario
 
 Los crons están en UTC fijo: decide 22:40 (post-cierre NYSE todo el año),
