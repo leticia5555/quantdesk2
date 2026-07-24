@@ -152,6 +152,28 @@ console.log('symbol map: types + cobertura (mismo fetch que el name map)');
     'samples trae tickers de ejemplo por tipo (con nombre)', JSON.stringify(stats.samples.PUBLIC));
 }
 
+// ─────────────────── diag handler: ?sample=N (cap por tipo) ───────────────────
+console.log('diag symboltypes: handler + parámetro sample');
+{
+  _resetSymbolMapCache();
+  global.fetch = async (url) => {
+    if (String(url).includes('/stock/symbol')) return jsonResponse([
+      { symbol: 'PUB1', description: 'PUB ONE', type: 'PUBLIC' },
+      { symbol: 'PUB2', description: 'PUB TWO', type: 'PUBLIC' },
+      { symbol: 'PUB3', description: 'PUB THREE', type: 'PUBLIC' },
+      { symbol: 'AAPL', description: 'APPLE INC', type: 'Common Stock' },
+    ]);
+    throw new Error('fetch inesperado: ' + String(url));
+  };
+  const res = mockRes();
+  await handler({ method: 'GET', query: { diag: 'symboltypes', sample: '2' } }, res);
+  ok(res.code === 200 && res.body.samples.PUBLIC.length === 2, 'diag respeta ?sample=2 (cap por tipo)', JSON.stringify(res.body && res.body.samples));
+  ok(res.headers['Cache-Control'] === 'no-store', 'diag en vivo (no-store)');
+  const res2 = mockRes();
+  await handler({ method: 'GET', query: { diag: 'symboltypes' } }, res2);
+  ok(res2.body.samples.PUBLIC.length === 3, 'sin param → default 30 trae los 3 PUBLIC disponibles', JSON.stringify(res2.body && res2.body.samples));
+}
+
 global.fetch = realFetch;
 if (realKey === undefined) delete process.env.FINNHUB_API_KEY; else process.env.FINNHUB_API_KEY = realKey;
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
