@@ -6,18 +6,27 @@
 // cuenta Alpaca paper existente — la flota validada sigue en el simulador
 // (agents-run) y no se tocan.
 //
-//   GET  ?phase=decide (default) → cron post-cierre (22:40 UTC L-V):
+//   GET  ?phase=decide (default) → cron post-cierre (22:40 UTC L-V). DOS
+//        fases (SCAN → DEEP DIVE), ambas con el MISMO modelo (ANTHROPIC_MODEL,
+//        Haiku por defecto) para no contaminar la línea base del agente #6:
 //        1. contexto: cuenta/posiciones/órdenes desde Alpaca + el buffet
 //           de NUESTROS endpoints (movers market, earnings de la semana,
 //           insider buys del tracker, titulares del vc-feed) + plan
 //           anterior reinyectado (patrón nof1).
-//        2. LLM (capa guarded + ANTHROPIC_MODEL) → JSON estricto
+//        2. SCAN (LLM #1): sobre el buffet, el SCOUT nombra hasta 5 tickers
+//           candidatos a investigar. Cero candidatos → ok_no_candidates (no
+//           gasta el DIVE). Malformado → aborted_scan_malformed_json.
+//        3. DEEP DIVE (determinista, _lib/finnhub-dive.js): por cada candidato
+//           trae de Finnhub fundamentales (P/E, market cap, márgenes, deuda),
+//           analyst recommendations y titulares recientes. Free tier; best-effort.
+//        4. DIVE (LLM #2): con esos datos decide → JSON estricto
 //           { plan, actions[] }. Malformado → run abortado, CERO órdenes.
-//        3. risk guard determinista (_lib/arena-guard.js) — descarta, no
-//           ajusta.
-//        4. aprobadas → órdenes LÍMITE day a Alpaca (fill al open
-//           siguiente); todo (prompt hash, respuesta completa, aprobadas/
-//           descartadas con razón) queda en arena_journal.
+//        5. risk guard determinista (_lib/arena-guard.js) — descarta, no
+//           ajusta. SIN CAMBIOS: valida las órdenes finales como siempre.
+//        6. aprobadas → órdenes LÍMITE day a Alpaca (fill al open
+//           siguiente); todo (prompts de ambas fases, candidatos, datos
+//           Finnhub, respuestas completas, aprobadas/descartadas con razón)
+//           queda en arena_journal.context.
 //   GET  ?phase=reconcile → cron matutino (14:40 UTC L-V): trae los fills
 //        reales (precio/timestamp) de las órdenes enviadas y los guarda en
 //        el journal. Compatible con el diseño de reconciliación de Fase 1.
@@ -28,7 +37,8 @@
 // key el run se journalea como abortado honesto, cero órdenes).
 //
 // ENV VARS: ARENA_ENABLED · ALPACA_PAPER_KEY/SECRET · ANTHROPIC_API_KEY ·
-//           FINNHUB_API_KEY (symbol map) · DATABASE_URL · CRON_SECRET (opc) ·
+//           FINNHUB_API_KEY (symbol map del guard + deep dive de candidatos) ·
+//           DATABASE_URL · CRON_SECRET (opc) ·
 //           PUBLIC_BASE_URL (dominio público estable para el self-fetch; ver
 //           resolveBaseUrl — VERCEL_URL está detrás de Deployment Protection)
 // ═══════════════════════════════════════════════════════════════
@@ -40,23 +50,50 @@ import { ANTHROPIC_MODEL } from './_lib/model.js';
 import { getSymbolMap, getSymbolTypes } from './earnings.js';
 import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpacaCreds } from './_lib/alpaca.js';
-import { parsePlanResponse, validateActions, ARENA_RULES, isLeveragedInverseETF } from './_lib/arena-guard.js';
+import { parseScanResponse, parsePlanResponse, validateActions, ARENA_RULES, isLeveragedInverseETF } from './_lib/arena-guard.js';
+import { fetchDeepDive } from './_lib/finnhub-dive.js';
 
-// Re-export: la detección vive en el guard (hogar de las reglas de universo);
-// el buffet la reusa y los tests de arena-run la importan desde acá.
+// Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
+// reglas de universo); el buffet (trimMovers) la reusa y los tests de
+// arena-run la importan desde acá.
 export { isLeveragedInverseETF };
 
-export const PROMPT_VERSION = 'arena-pm-v1';
+// v2: flujo de DOS fases (SCAN → DEEP DIVE). v1 era un solo LLM call sobre el
+// buffet. El bump permite distinguir corridas del harness viejo vs nuevo en
+// el post-mortem a 30 días.
+export const PROMPT_VERSION = 'arena-pm-v2';
 
-// ── system prompt: las reglas del PM. El schema es contrato, no sugerencia. ──
-export function buildSystemPrompt() {
-  return `You are "Claude PM", the portfolio manager of QuantDesk Arena — a PUBLIC experiment: an LLM managing a real Alpaca PAPER account (simulated money, real market quotes). Your reasoning is published verbatim next to every trade.
+// El SCOUT nombra hasta este número de tickers para el deep dive. Es también
+// el tope de llamadas a Finnhub por corrida (4 endpoints × 5 = ~20, bajo el
+// cap de 60/min del tier gratis).
+export const MAX_CANDIDATES = 5;
+
+// ── SCAN (fase 1): el SCOUT filtra el buffet a ≤5 tickers a investigar. ──
+// No decide órdenes: solo nombra candidatos. El schema es contrato.
+export function buildScanSystemPrompt() {
+  return `You are the SCOUT for QuantDesk Arena, an LLM-run PAPER trading experiment. This is STEP 1 of 2: triage, not trading.
+
+Your job: from today's market context (movers, earnings, insider buys, VC/IPO headlines) AND the current portfolio, pick up to ${MAX_CANDIDATES} US-listed common-stock tickers worth a deep-dive before the next open. A ticker is worth a deep-dive if there is a plausible reason to BUY it, or if it is an existing holding you might TRIM or EXIT. You do NOT have fundamentals yet — that is step 2; here you are only deciding what deserves the research budget.
+
+RULES:
+- US-listed common equities only. No warrants/units/rights, no sub-$1 stocks, no crypto, no options.
+- At most ${MAX_CANDIDATES} candidates. Fewer is fine. An EMPTY list is valid and correct when nothing today warrants research — do not pad it.
+- Only pick tickers grounded in the context or the portfolio below. Do not invent tickers or prices.
+
+OUTPUT: respond with ONE JSON object and NOTHING else (no markdown fences, no prose outside JSON):
+{"scan_thesis": "<why these tickers, or why none, 1-4 sentences>", "candidates": ["TICKER", ...]}`;
+}
+
+// ── DIVE (fase 2): las reglas del PM. Mismo contrato que el v1 single-call,
+// para que el guard downstream no cambie una línea. El schema es contrato. ──
+export function buildDiveSystemPrompt() {
+  return `You are "Claude PM", the portfolio manager of QuantDesk Arena — a PUBLIC experiment: an LLM managing a real Alpaca PAPER account (simulated money, real market quotes). Your reasoning is published verbatim next to every trade. This is STEP 2 of 2: you now have deep-dive data (fundamentals, analyst recommendations, recent news) for the candidates your scout flagged.
 
 HARD RULES (a deterministic risk guard enforces them AFTER you — violations are discarded and logged, never fixed for you):
 - Universe: US-listed common equities only. No warrants, no units, no rights, no sub-$1 stocks, no crypto, no options, no shorting. Long only.
 - Max ${ARENA_RULES.max_positions} simultaneous positions. Max ${ARENA_RULES.max_position_fraction * 100}% of equity per position. Keep at least ${ARENA_RULES.min_cash_fraction * 100}% of equity in cash.
 - LIMIT orders only, good for the day, executed at the NEXT market open. Set limit_price within ±${ARENA_RULES.price_band * 100}% of the last close you are given — wider is auto-discarded.
-- Only use information provided in the context below. Do not invent prices, news or fundamentals.
+- Base your decisions on the deep-dive data and portfolio provided. Do not invent prices, news or fundamentals, and do not introduce tickers you were given no data for.
 
 OUTPUT: respond with ONE JSON object and NOTHING else (no markdown fences, no prose outside JSON):
 {"plan": "<your portfolio thesis for today, 2-6 sentences>", "actions": [{"symbol": "TICKER", "side": "buy"|"sell", "notional": <USD number>, "limit_price": <number>, "conviction": <1-5>, "reasoning": "<1-2 sentences, specific>"}]}
@@ -135,11 +172,9 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   };
 }
 
-export function buildUserPrompt({ account, positions, openOrders, buffet, previous }) {
-  // fetch_errors es diagnóstico interno (se journalea); el LLM solo necesita
-  // `unavailable`. Se excluye del prompt para no cambiar su comportamiento.
-  const { fetch_errors, ...buffetForLlm } = buffet || {};
-  const portfolio = {
+// Snapshot del libro compartido por ambas fases.
+function portfolioSnapshot({ account, positions, openOrders }) {
+  return {
     equity: Number(account.equity),
     cash: Number(account.cash),
     positions: (positions || []).map((p) => ({
@@ -148,14 +183,44 @@ export function buildUserPrompt({ account, positions, openOrders, buffet, previo
     })),
     open_orders: (openOrders || []).map((o) => ({ symbol: o.symbol, side: o.side, qty: o.qty, limit_price: o.limit_price, status: o.status })),
   };
+}
+
+// ── user prompt del SCAN: portfolio + plan anterior + el buffet completo. ──
+export function buildScanUserPrompt({ account, positions, openOrders, buffet, previous }) {
+  // fetch_errors es diagnóstico interno (se journalea); el LLM solo necesita
+  // `unavailable`. Se excluye del prompt para no cambiar su comportamiento.
+  const { fetch_errors, ...buffetForLlm } = buffet || {};
   return [
-    'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolio),
+    'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders })),
     '',
-    'PREVIOUS PLAN (yours, from the last run — build on it or change course, but acknowledge it):',
+    'PREVIOUS PLAN (yours, from the last run — build on it or change course):',
     previous ? JSON.stringify(previous) : 'none — this is your first run.',
     '',
     'MARKET CONTEXT (QuantDesk endpoints; sections listed in "unavailable" failed today — do not guess their content):',
     JSON.stringify(buffetForLlm),
+    '',
+    `Pick up to ${MAX_CANDIDATES} tickers worth a deep-dive, or none. Remember: ONE JSON object, nothing else.`,
+  ].join('\n');
+}
+
+// ── user prompt del DIVE: portfolio + tesis del scout + candidatos CON su
+// deep-dive de Finnhub (fundamentales, recommendations, titulares). ──
+export function buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis, candidates, deepDive }) {
+  // Nota de datos ausentes para el modelo: price target es Premium (no lo
+  // traemos), y un candidato puede no tener cobertura Finnhub.
+  const research = (candidates || []).map((t) => ({ ticker: t, ...((deepDive && deepDive[t]) || null) }));
+  return [
+    'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders })),
+    '',
+    'PREVIOUS PLAN (yours, from the last run — build on it or change course, but acknowledge it):',
+    previous ? JSON.stringify(previous) : 'none — this is your first run.',
+    '',
+    'SCOUT THESIS (why these tickers were flagged for deep-dive):',
+    scanThesis || '(none provided)',
+    '',
+    'DEEP-DIVE DATA (Finnhub; per candidate: profile, fundamentals, analyst recommendation counts, recent news headlines).',
+    'NOTES: null fields mean the datum was unavailable (do not guess it). Analyst price targets are NOT provided; use the recommendation buy/hold/sell split as the rating signal. marketCapM is in millions USD.',
+    JSON.stringify(research),
     '',
     'Decide your actions for the next market open. Remember: ONE JSON object, nothing else.',
   ].join('\n');
@@ -197,44 +262,85 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
         orders: (prevRows[0].actions || []).map((a) => ({ symbol: a.symbol, side: a.side, result: a.result, order_status: a.order_status || null, filled_avg_price: a.filled_avg_price || null, reason: a.reason || null })) }
     : null;
 
-  const system = buildSystemPrompt();
-  const user = buildUserPrompt({ account, positions, openOrders, buffet, previous });
-  const promptHash = sha256(system + '\n---\n' + user);
-  // Diagnóstico del buffet + el PROMPT REAL, journaleado en TODA salida
-  // post-contexto. El post-mortem del 24-jul quedó ciego dos veces: (1) los
-  // fetch_errors no se guardaban, (2) del prompt solo había el hash, así que
-  // reconstruir qué vio el PM fue arqueología. Ahora queda el texto completo
-  // (system + user, exactamente lo que se le mandó al LLM).
-  const contextDiag = {
+  // ── FASE 1: SCAN ────────────────────────────────────────────────
+  const scanSystem = buildScanSystemPrompt();
+  const scanUser = buildScanUserPrompt({ account, positions, openOrders, buffet, previous });
+  const scanHash = sha256(scanSystem + '\n---\n' + scanUser);
+
+  // context journaleado desde el arranque; se enriquece por fase. El
+  // post-mortem del 24-jul quedó ciego (fetch_errors sin guardar, del prompt
+  // solo el hash). Ahora queda el texto completo de AMBAS fases, más los
+  // candidatos y los datos Finnhub — reconstruir qué vio el PM no es arqueología.
+  const context = {
     unavailable: buffet.unavailable,
     fetch_errors: buffet.fetch_errors,
-    prompt: { system, user },
+    scan: { prompt: { system: scanSystem, user: scanUser }, hash: scanHash, model: ANTHROPIC_MODEL },
   };
-  const withPrompt = { ...base, prompt_hash: promptHash, account: accountSnapshot, context: contextDiag };
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     // Dependencia documentada: la primera corrida real necesita créditos
     // de Anthropic. Sin key el run queda journaleado, con cero órdenes.
-    await journalInsert({ ...withPrompt, status: 'aborted_no_api_key', error: 'Falta ANTHROPIC_API_KEY (créditos pendientes).' });
+    await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_no_api_key', error: 'Falta ANTHROPIC_API_KEY (créditos pendientes).' });
     return { status: 'aborted_no_api_key', orders: 0 };
   }
 
-  const llm = await guardedClaudeCall({
+  const scanLlm = await guardedClaudeCall({
     apiKey,
-    payload: { model: ANTHROPIC_MODEL, max_tokens: 1500, system, messages: [{ role: 'user', content: user }] },
+    payload: { model: ANTHROPIC_MODEL, max_tokens: 500, system: scanSystem, messages: [{ role: 'user', content: scanUser }] },
     now,
   });
-  if (llm.stale || llm.status !== 200 || !llm.data) {
-    const reason = llm.stale ? 'fechas rotas tras retry (guard anti-alucinación)' : 'HTTP ' + llm.status + ' de Anthropic';
+  if (scanLlm.stale || scanLlm.status !== 200 || !scanLlm.data) {
+    const reason = (scanLlm.stale ? 'fechas rotas tras retry (guard anti-alucinación)' : 'HTTP ' + scanLlm.status + ' de Anthropic') + ' [fase scan]';
+    await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_llm_error', error: reason });
+    return { status: 'aborted_llm_error', orders: 0 };
+  }
+  const scanText = (scanLlm.data.content || []).map((b) => b.text || '').join('').trim();
+  context.scan.response = scanText;
+
+  const scan = parseScanResponse(scanText, MAX_CANDIDATES);
+  if (!scan.ok) {
+    // Regla de la casa: JSON malformado = run abortado honesto, CERO órdenes.
+    await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_scan_malformed_json', llm_response: scanText, error: scan.error });
+    return { status: 'aborted_scan_malformed_json', orders: 0 };
+  }
+  context.scan.thesis = scan.thesis;
+  context.scan.candidates = scan.candidates;
+
+  // Cero candidatos → el SCOUT no vio nada que amerite deep dive. Estado
+  // DISTINTO de "hubo candidatos y el DIVE decidió no operar" (ok_no_actions):
+  // a los 30 días quiero distinguir "no había qué investigar" de "investigué
+  // y decidí holdear". No gasta el DIVE ni pega a Finnhub.
+  if (scan.candidates.length === 0) {
+    await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'ok_no_candidates', plan: scan.thesis || 'Scout found nothing worth a deep-dive today.', llm_response: scanText });
+    return { status: 'ok_no_candidates', orders: 0, candidates: 0 };
+  }
+
+  // ── FASE 2a: DEEP DIVE (determinista, Finnhub — sin LLM) ─────────
+  const dive = await fetchDeepDive(scan.candidates, process.env.FINNHUB_API_KEY, now);
+
+  // ── FASE 2b: DIVE (LLM #2 — decide órdenes) ─────────────────────
+  const diveSystem = buildDiveSystemPrompt();
+  const diveUser = buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis: scan.thesis, candidates: scan.candidates, deepDive: dive.data });
+  const diveHash = sha256(diveSystem + '\n---\n' + diveUser);
+  context.dive = { prompt: { system: diveSystem, user: diveUser }, hash: diveHash, model: ANTHROPIC_MODEL, finnhub: dive.data, finnhub_errors: dive.errors };
+  // prompt_hash de la fila = el del DIVE (la fase que produce las órdenes).
+  const withPrompt = { ...base, prompt_hash: diveHash, account: accountSnapshot, context };
+
+  const diveLlm = await guardedClaudeCall({
+    apiKey,
+    payload: { model: ANTHROPIC_MODEL, max_tokens: 1500, system: diveSystem, messages: [{ role: 'user', content: diveUser }] },
+    now,
+  });
+  if (diveLlm.stale || diveLlm.status !== 200 || !diveLlm.data) {
+    const reason = (diveLlm.stale ? 'fechas rotas tras retry (guard anti-alucinación)' : 'HTTP ' + diveLlm.status + ' de Anthropic') + ' [fase dive]';
     await journalInsert({ ...withPrompt, status: 'aborted_llm_error', error: reason });
     return { status: 'aborted_llm_error', orders: 0 };
   }
-  const responseText = (llm.data.content || []).map((b) => b.text || '').join('').trim();
+  const responseText = (diveLlm.data.content || []).map((b) => b.text || '').join('').trim();
 
   const parsed = parsePlanResponse(responseText);
   if (!parsed.ok) {
-    // Regla de la casa: JSON malformado = run abortado honesto, CERO órdenes.
     await journalInsert({ ...withPrompt, status: 'aborted_malformed_json', llm_response: responseText, error: parsed.error });
     return { status: 'aborted_malformed_json', orders: 0 };
   }
@@ -254,6 +360,11 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
     } catch (e) { /* sin cierre → el guard descarta (fail closed) */ }
   }
 
+  // El flujo de dos fases NO toca el guard: valida las órdenes finales con las
+  // mismas reglas (universo, leveraged/inverse, security_type, banda, sizing,
+  // cash, long-only). Los datos Finnhub del deep dive son contexto para el LLM,
+  // no entran aquí — el guard sigue determinista, fail-closed, y no confía en
+  // los candidatos del scan.
   const { approved, discarded } = validateActions({
     actions: parsed.actions,
     equity: account.equity, cash: account.cash,
@@ -274,9 +385,11 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
     }
   }
 
+  // ok = se enviaron órdenes; ok_no_actions = hubo candidatos e investigación,
+  // pero el DIVE decidió holdear (distinto de ok_no_candidates).
   const status = approved.length === 0 ? 'ok_no_actions' : 'ok';
   await journalInsert({ ...withPrompt, status, plan: parsed.plan, llm_response: responseText, actions: journalActions });
-  return { status, orders: submitted, approved: approved.length, discarded: discarded.length };
+  return { status, orders: submitted, approved: approved.length, discarded: discarded.length, candidates: scan.candidates.length };
 }
 
 // ── fase RECONCILE ───────────────────────────────────────────────────

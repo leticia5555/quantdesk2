@@ -107,6 +107,41 @@ export function parsePlanResponse(raw) {
   return { ok: true, plan: parsed.plan.trim(), actions: parsed.actions || [] };
 }
 
+// ── parse del SCAN (fase 1): respuesta cruda → { ok, thesis, candidates } ──
+// El SCOUT nombra ≤maxCandidates tickers a investigar a fondo. Malformado
+// (no-JSON, candidates no-array) → { ok:false, error } y el caller aborta el
+// run (aborted_scan_malformed_json), cero órdenes. Un array VACÍO de
+// candidatos es válido (el SCOUT no vio nada que amerite deep dive) → el
+// caller journalea `ok_no_candidates` y no gasta el DIVE.
+export function parseScanResponse(raw, maxCandidates = 5) {
+  if (!raw || typeof raw !== 'string') return { ok: false, error: 'respuesta vacía del modelo' };
+  let text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end <= start) return { ok: false, error: 'la respuesta no contiene un objeto JSON' };
+  let parsed;
+  try { parsed = JSON.parse(text.slice(start, end + 1)); }
+  catch (e) { return { ok: false, error: 'JSON inválido: ' + e.message }; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, error: 'la raíz no es un objeto' };
+  }
+  if (parsed.candidates !== undefined && !Array.isArray(parsed.candidates)) {
+    return { ok: false, error: 'candidates no es un array' };
+  }
+  // Normaliza: uppercase, dedupe, descarta no-strings, corta a maxCandidates.
+  const seen = new Set();
+  const candidates = [];
+  for (const c of parsed.candidates || []) {
+    const sym = typeof c === 'string' ? c.trim().toUpperCase() : '';
+    if (!sym || seen.has(sym)) continue;
+    seen.add(sym);
+    candidates.push(sym);
+    if (candidates.length >= maxCandidates) break;
+  }
+  const thesis = typeof parsed.scan_thesis === 'string' ? parsed.scan_thesis.trim() : '';
+  return { ok: true, thesis, candidates };
+}
+
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 
 // ── validación por acción, con estado acumulado del run ─────────────
