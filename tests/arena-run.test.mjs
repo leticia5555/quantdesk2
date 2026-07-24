@@ -1,11 +1,14 @@
 // ═══════════════════════════════════════════════════════════════
 // Test de integración de /api/arena-run: runArenaDecide() de punta a punta
-// con TODO el I/O mockeado a nivel fetch — Alpaca fake (cuenta/posiciones/
-// órdenes), Anthropic fake (el plan del PM), Finnhub fake (symbol map),
-// Yahoo fake (último cierre), buffet fake (movers/earnings/tracker/vc) y
-// Neon fake (formato wire real). Valida el pipeline completo:
-//   contexto → LLM → parse → guard → orden límite a Alpaca → journal
-// y los dos aborts honestos (JSON malformado, sin API key).
+// con TODO el I/O mockeado a nivel fetch. Ahora en DOS fases:
+//   contexto → SCAN (LLM #1) → deep dive Finnhub → DIVE (LLM #2) → parse →
+//   guard → orden límite a Alpaca → journal
+// Anthropic fake devuelve respuesta distinta por fase (branch en el system:
+// 'SCOUT' vs 'Claude PM'). Finnhub fake: symbol map + deep dive (metric,
+// profile2, recommendation, company-news). Valida el pipeline completo, los
+// aborts honestos de AMBAS fases, y los dos estados "ok sin órdenes" que se
+// distinguen: ok_no_candidates (el scout no vio nada) vs ok_no_actions (hubo
+// deep dive y el DIVE holdeó).
 // Correr con `node tests/arena-run.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
@@ -33,11 +36,17 @@ const closes = Array.from({ length: 30 }, (_, i) => 195 + (i % 6));
 closes[closes.length - 1] = 200;
 const timestamps = closes.map((_, i) => (t0 + i * DAY) / 1000);
 
-// ── el plan que "responde" el LLM: una acción válida + un símbolo inventado ──
-let llmText = JSON.stringify({
+// ── fase 1 (SCAN): el SCOUT nombra AAPL como candidato ──
+let scanText = JSON.stringify({
+  scan_thesis: 'AAPL aparece en actives con earnings lejos; el resto del buffet es ruido de micro-caps.',
+  candidates: ['AAPL'],
+});
+// ── fase 2 (DIVE): una acción válida (AAPL) + un símbolo inventado (FAKEZ,
+// que ni siquiera fue candidato — prueba que el guard sigue de backstop) ──
+let diveText = JSON.stringify({
   plan: 'Primer día del libro: una sola entrada de calidad y el resto en cash mientras llegan más datos.',
   actions: [
-    { symbol: 'AAPL', side: 'buy', notional: 10000, limit_price: 201, conviction: 4, reasoning: 'Momentum del buffet con earnings lejos.' },
+    { symbol: 'AAPL', side: 'buy', notional: 10000, limit_price: 201, conviction: 4, reasoning: 'Fundamentales sólidos y recommendation buy-heavy.' },
     { symbol: 'FAKEZ', side: 'buy', notional: 5000, limit_price: 10, conviction: 2, reasoning: 'Ticker que no existe.' },
   ],
 });
@@ -45,21 +54,28 @@ let llmText = JSON.stringify({
 const alpacaOrderPosts = [];
 const journalInserts = [];
 const journalUpdates = [];
+const finnhubDiveCalls = []; // urls de deep dive (metric/profile2/recommendation/company-news)
 let orderFilled = false;
 let moversStatus = 200; // se flipa a 401 para probar fetch_errors del buffet
+
+const nowSec = Math.floor(Date.now() / 1000);
 
 global.fetch = async (url, opts = {}) => {
   const u = String(url);
   const method = opts.method || 'GET';
   const jsonReply = (obj, status = 200) => ({
     ok: status < 300, status,
+    headers: { get: () => 'application/json' }, // safeJson del deep dive exige content-type json
     json: async () => obj,
     text: async () => JSON.stringify(obj),
   });
 
-  // Anthropic
+  // Anthropic — branch por fase según el system prompt.
   if (u.includes('api.anthropic.com')) {
-    return jsonReply({ content: [{ type: 'text', text: llmText }] });
+    const body = JSON.parse(opts.body || '{}');
+    const system = String(body.system || '');
+    const text = system.includes('SCOUT') ? scanText : diveText;
+    return jsonReply({ content: [{ type: 'text', text }] });
   }
   // Alpaca
   if (u.includes('paper-api.alpaca.markets')) {
@@ -78,10 +94,31 @@ global.fetch = async (url, opts = {}) => {
     }
     return jsonReply({ message: 'ruta alpaca inesperada: ' + u }, 404);
   }
-  // Finnhub symbol map
+  // Finnhub symbol map (guard)
   if (u.includes('finnhub.io/api/v1/stock/symbol')) {
+    // symbol map con `type` (main #79): alimenta el gate de security_type del guard
     return { ok: true, status: 200, headers: { get: () => 'application/json' },
       json: async () => [{ symbol: 'AAPL', description: 'APPLE INC', type: 'Common Stock' }, { symbol: 'MSFT', description: 'MICROSOFT CORP', type: 'Common Stock' }] };
+  }
+  // Finnhub deep dive (fase 2a)
+  if (u.includes('finnhub.io/api/v1/stock/metric')) {
+    finnhubDiveCalls.push(u);
+    return jsonReply({ metric: { peTTM: 30, psTTM: 8, netProfitMarginTTM: 25, grossMarginTTM: 44, 'totalDebt/totalEquityQuarterly': 1.5, currentRatioQuarterly: 1.1, beta: 1.2 } });
+  }
+  if (u.includes('finnhub.io/api/v1/stock/profile2')) {
+    finnhubDiveCalls.push(u);
+    return jsonReply({ name: 'Apple Inc', marketCapitalization: 3000000, finnhubIndustry: 'Technology', country: 'US' });
+  }
+  if (u.includes('finnhub.io/api/v1/stock/recommendation')) {
+    finnhubDiveCalls.push(u);
+    return jsonReply([{ period: '2026-07-01', strongBuy: 20, buy: 15, hold: 5, sell: 1, strongSell: 0 }]);
+  }
+  if (u.includes('finnhub.io/api/v1/company-news')) {
+    finnhubDiveCalls.push(u);
+    return jsonReply([
+      { headline: 'Apple beats earnings expectations', datetime: nowSec - DAY / 1000, source: 'Reuters' },
+      { headline: 'Old stale headline from a month ago', datetime: nowSec - 30 * (DAY / 1000), source: 'Bloomberg' },
+    ]);
   }
   // Yahoo
   if (u.includes('yahoo')) {
@@ -130,11 +167,18 @@ global.fetch = async (url, opts = {}) => {
   throw new Error('fetch inesperado en el test: ' + u);
 };
 
-// ── 1) run feliz: válida ejecutada, inventada descartada, journal completo ──
-console.log('arena-run: decide de punta a punta (Alpaca + LLM + guard + journal fakes)');
+// índices de columnas de arena_journal (id, run_date, phase, status,
+// prompt_version, prompt_hash, model, plan, llm_response, actions, account,
+// error, context)
+const COL = { phase: 2, status: 3, version: 4, hash: 5, plan: 7, llm: 8, actions: 9, error: 11, context: 12 };
+const lastRow = () => journalInserts[journalInserts.length - 1].params;
+
+// ── 1) run feliz: SCAN → deep dive → DIVE → válida ejecutada, inventada descartada ──
+console.log('arena-run: decide de dos fases de punta a punta (SCAN + Finnhub + DIVE + guard fakes)');
 const r1 = await runArenaDecide({ baseUrl: BASE_URL });
 ok(r1.status === 'ok' && r1.orders === 1, 'run ok con 1 orden enviada', JSON.stringify(r1));
 ok(r1.discarded === 1, 'el símbolo inventado fue descartado, no ejecutado', JSON.stringify(r1));
+ok(r1.candidates === 1, 'el scan nombró 1 candidato', JSON.stringify(r1));
 
 ok(alpacaOrderPosts.length === 1, 'exactamente una orden llegó a Alpaca');
 const sent = alpacaOrderPosts[0] || {};
@@ -143,45 +187,54 @@ ok(sent.symbol === 'AAPL' && sent.qty === '49', 'qty entera floor(10000/201) = 4
 ok(sent.client_order_id === `arena:${today}:AAPL:buy`, 'client_order_id determinista (idempotencia)', sent.client_order_id);
 
 ok(journalInserts.length === 1, 'una fila de journal por run');
-const jrow = journalInserts[0].params;
-// (id, run_date, phase, status, prompt_version, prompt_hash, model, plan, llm_response, actions, account, error)
-ok(jrow[2] === 'decide' && jrow[3] === 'ok', 'journal: phase decide, status ok', jrow[3]);
-ok(jrow[4] === PROMPT_VERSION && /^[0-9a-f]{64}$/.test(jrow[5] || ''), 'journal: versión + hash sha256 del prompt');
-ok((jrow[7] || '').includes('Primer día'), 'journal: el plan del PM se publica verbatim');
-ok((jrow[8] || '').includes('FAKEZ'), 'journal: la respuesta COMPLETA del LLM queda guardada');
-const jactions = JSON.parse(jrow[9]);
+const jrow = lastRow();
+ok(jrow[COL.phase] === 'decide' && jrow[COL.status] === 'ok', 'journal: phase decide, status ok', jrow[COL.status]);
+ok(jrow[COL.version] === PROMPT_VERSION && /^[0-9a-f]{64}$/.test(jrow[COL.hash] || ''), 'journal: versión v2 + hash sha256 del prompt del DIVE');
+ok((jrow[COL.plan] || '').includes('Primer día'), 'journal: el plan del PM (del DIVE) se publica verbatim');
+ok((jrow[COL.llm] || '').includes('FAKEZ'), 'journal: la respuesta COMPLETA del DIVE queda guardada');
+const jactions = JSON.parse(jrow[COL.actions]);
 const jFake = jactions.find((a) => a.symbol === 'FAKEZ');
 const jAapl = jactions.find((a) => a.symbol === 'AAPL');
-ok(jFake && jFake.result === 'discarded' && /symbol map/.test(jFake.reason), 'journal: descartada CON razón', JSON.stringify(jFake));
+ok(jFake && jFake.result === 'discarded' && /symbol map/.test(jFake.reason), 'journal: descartada CON razón (guard de backstop)', JSON.stringify(jFake));
 ok(jAapl && jAapl.result === 'approved' && jAapl.alpaca_order_id === 'ord-1', 'journal: aprobada con su alpaca_order_id');
+// El wiring type→guard→journal (main #79): la aprobada lleva su security_type.
 ok(jAapl && jAapl.security_type === 'Common Stock', 'journal: la aprobada lleva el security_type del symbol map (wiring type→guard→journal)', JSON.stringify(jAapl && jAapl.security_type));
-// context journaleado: (id, run_date, phase, status, prompt_version, prompt_hash,
-// model, plan, llm_response, actions, account, error, context) → params[12]
-const jctx = JSON.parse(jrow[12]);
-ok(jctx && Array.isArray(jctx.unavailable) && jctx.unavailable.length === 0,
-  'journal: context.unavailable vacío cuando los 4 endpoints responden', jrow[12]);
-ok(jctx && jctx.fetch_errors && Object.keys(jctx.fetch_errors).length === 0,
-  'journal: context.fetch_errors vacío cuando todo entrega datos', jrow[12]);
 
-// context.prompt: el prompt REAL journaleado (no solo el hash) — post-mortem sin arqueología
-ok(jctx.prompt && typeof jctx.prompt.system === 'string' && typeof jctx.prompt.user === 'string',
-  'journal: context.prompt guarda system + user completos');
-ok(jctx.prompt.system.includes('Claude PM'), 'journal: el system prompt real queda guardado');
-const uMovers = JSON.parse(jctx.prompt.user.split('\n').find((l) => l.startsWith('{') && l.includes('"movers"'))).movers;
-// actives a top-8 y TSLA (puesto 7 real) por fin entra
-ok(Array.isArray(uMovers.actives) && uMovers.actives.length === 8, 'prompt: actives recortado a top-8', String((uMovers.actives || []).length));
+// ── context de dos fases: scan + dive journaleados ──
+const jctx = JSON.parse(jrow[COL.context]);
+ok(Array.isArray(jctx.unavailable) && jctx.unavailable.length === 0, 'journal: context.unavailable vacío cuando los 4 endpoints responden');
+ok(jctx.fetch_errors && Object.keys(jctx.fetch_errors).length === 0, 'journal: context.fetch_errors vacío cuando todo entrega datos');
+ok(jctx.scan && jctx.scan.prompt && jctx.scan.prompt.system.includes('SCOUT'), 'journal: context.scan.prompt guarda el system del SCOUT');
+ok(Array.isArray(jctx.scan.candidates) && jctx.scan.candidates[0] === 'AAPL', 'journal: context.scan.candidates lista los tickers elegidos', JSON.stringify(jctx.scan.candidates));
+ok(typeof jctx.scan.thesis === 'string' && jctx.scan.thesis.length > 0, 'journal: context.scan.thesis guardada');
+ok(jctx.dive && jctx.dive.prompt && jctx.dive.prompt.system.includes('Claude PM'), 'journal: context.dive.prompt guarda el system del PM');
+ok(/^[0-9a-f]{64}$/.test(jctx.scan.hash) && /^[0-9a-f]{64}$/.test(jctx.dive.hash), 'journal: hash sha256 por fase');
+
+// ── deep dive de Finnhub journaleado ──
+ok(jctx.dive.finnhub && jctx.dive.finnhub.AAPL, 'journal: context.dive.finnhub trae el ticker candidato');
+const dd = jctx.dive.finnhub.AAPL;
+ok(dd.fundamentals && dd.fundamentals.peTTM === 30 && dd.fundamentals.netMarginTTM === 25, 'deep dive: fundamentales (P/E, margen neto) extraídos de metric', JSON.stringify(dd.fundamentals));
+ok(dd.fundamentals.debtToEquity === 1.5, 'deep dive: deuda (totalDebt/totalEquity con slash en la clave) extraída', String(dd.fundamentals.debtToEquity));
+ok(dd.profile && dd.profile.marketCapM === 3000000 && dd.profile.industry === 'Technology', 'deep dive: profile2 (market cap en millones, industria)', JSON.stringify(dd.profile));
+ok(dd.recommendation && dd.recommendation.strongBuy === 20 && dd.recommendation.hold === 5, 'deep dive: recommendation (reparto de analistas) — la señal de rating', JSON.stringify(dd.recommendation));
+ok(Array.isArray(dd.news) && dd.news.length === 1 && dd.news[0].headline.includes('beats earnings'), 'deep dive: company-news filtrada a 7 días (el titular viejo de 30d se descarta)', JSON.stringify(dd.news));
+
+// ── el DIVE prompt trae los datos y aclara que price target NO viene (Premium) ──
+ok(jctx.dive.prompt.user.includes('AAPL') && /price targets? .*NOT provided/i.test(jctx.dive.prompt.user), 'prompt DIVE: research por candidato + nota de que no hay price targets (Premium)');
+
+// ── el SCAN prompt trae el buffet; movers con top-8 + filtro leveraged + ≥$5 (main #76) ──
+const uMovers = JSON.parse(jctx.scan.prompt.user.split('\n').find((l) => l.startsWith('{') && l.includes('"movers"'))).movers;
+ok(Array.isArray(uMovers.actives) && uMovers.actives.length === 8, 'prompt SCAN: actives recortado a top-8', String((uMovers.actives || []).length));
 ok(uMovers.actives.some((m) => m.symbol === 'TSLA'),
-  'prompt: TSLA (-14.5%, puesto 7 por volumen) entra en top-8, antes invisible en top-5', JSON.stringify(uMovers.actives.map((m) => m.symbol)));
-// leveraged/inverse ETFs fuera de las TRES listas
+  'prompt SCAN: TSLA (-14.5%, puesto 7 por volumen) entra en top-8, antes invisible en top-5', JSON.stringify(uMovers.actives.map((m) => m.symbol)));
 ok(!uMovers.actives.some((m) => m.symbol === 'TSLL') && !uMovers.actives.some((m) => m.symbol === 'SQQQ'),
-  'prompt: leveraged/inverse ETFs (TSLL, SQQQ) fuera de actives', JSON.stringify(uMovers.actives.map((m) => m.symbol)));
+  'prompt SCAN: leveraged/inverse ETFs (TSLL, SQQQ) fuera de actives', JSON.stringify(uMovers.actives.map((m) => m.symbol)));
 ok(!uMovers.gainers.some((m) => m.symbol === 'TSLL') && !uMovers.losers.some((m) => m.symbol === 'SQQQ'),
-  'prompt: leveraged/inverse ETFs fuera de gainers y losers');
-// filtro ≥$5: penny stocks fuera de las tres listas
+  'prompt SCAN: leveraged/inverse ETFs fuera de gainers y losers');
 ok(!uMovers.gainers.some((m) => m.symbol === 'PENNYG') && !uMovers.losers.some((m) => m.symbol === 'PENNYL') && !uMovers.actives.some((m) => m.symbol === 'WBUY'),
-  'prompt: micro-caps (<$5) filtradas de gainers, losers y actives', JSON.stringify(uMovers));
+  'prompt SCAN: micro-caps (<$5) filtradas de gainers, losers y actives', JSON.stringify(uMovers));
 ok(uMovers.gainers.some((m) => m.symbol === 'AAPL') && uMovers.losers.some((m) => m.symbol === 'TSLA'),
-  'prompt: las de precio real (AAPL, TSLA) sí quedan', JSON.stringify(uMovers));
+  'prompt SCAN: las de precio real (AAPL, TSLA) sí quedan', JSON.stringify(uMovers));
 
 // ── 1b) un endpoint del buffet cae (401) → su error REAL queda journaleado ──
 console.log('arena-run: fetch_errors del buffet en el journal (observabilidad)');
@@ -189,11 +242,11 @@ moversStatus = 401;
 const insBefore = journalInserts.length;
 const r1b = await runArenaDecide({ baseUrl: BASE_URL });
 ok(journalInserts.length === insBefore + 1, 'run con endpoint caído igual journalea');
-const ctxDown = JSON.parse(journalInserts[journalInserts.length - 1].params[12]);
-ok(ctxDown.unavailable.includes('movers'), 'context.unavailable incluye el endpoint caído', JSON.stringify(ctxDown));
-ok(ctxDown.fetch_errors.movers === 'HTTP 401', 'context.fetch_errors trae el status HTTP real (no solo "no disponible")', JSON.stringify(ctxDown.fetch_errors));
+const ctxDown = JSON.parse(lastRow()[COL.context]);
+ok(ctxDown.unavailable.includes('movers'), 'context.unavailable incluye el endpoint caído', JSON.stringify(ctxDown.unavailable));
+ok(ctxDown.fetch_errors.movers === 'HTTP 401', 'context.fetch_errors trae el status HTTP real', JSON.stringify(ctxDown.fetch_errors));
 ok(r1b.status === 'ok' || r1b.status === 'ok_no_actions', 'el Arena opera con menos contexto, no aborta por un endpoint caído', r1b.status);
-moversStatus = 200; // restaurar para no contaminar los escenarios siguientes
+moversStatus = 200; // restaurar
 
 // ── 2) reconcile: el fill real aterriza en el journal ──
 console.log('arena-run: reconcile matutino');
@@ -204,24 +257,51 @@ const upd = JSON.parse(journalUpdates[0].params[1]);
 ok(upd[0].order_status === 'filled' && upd[0].filled_avg_price === 200.55 && !!upd[0].filled_at,
   'el fill guarda precio y timestamp REALES de Alpaca', JSON.stringify(upd[0]));
 
-// ── 3) JSON malformado → abort honesto, CERO órdenes ──
-console.log('arena-run: aborts honestos');
-llmText = 'Compraría AAPL y también otras cosas, pero sin JSON.';
-const postsBefore = alpacaOrderPosts.length;
+// ── 3) SCAN sin candidatos → ok_no_candidates, sin deep dive, sin órdenes ──
+console.log('arena-run: SCAN sin candidatos (distinto de DIVE que holdea)');
+scanText = JSON.stringify({ scan_thesis: 'Todo el buffet es ruido de micro-caps hoy; nada amerita research.', candidates: [] });
+const diveCallsBefore = finnhubDiveCalls.length;
+const postsBefore3 = alpacaOrderPosts.length;
 const r3 = await runArenaDecide({ baseUrl: BASE_URL });
-ok(r3.status === 'aborted_malformed_json' && r3.orders === 0, 'malformado → run abortado', JSON.stringify(r3));
-ok(alpacaOrderPosts.length === postsBefore, 'cero órdenes nuevas a Alpaca tras el abort');
-const jAbort = journalInserts[journalInserts.length - 1].params;
-ok(jAbort[3] === 'aborted_malformed_json' && (jAbort[8] || '').includes('sin JSON'),
-  'el abort queda journaleado con la respuesta cruda');
+ok(r3.status === 'ok_no_candidates' && r3.orders === 0 && r3.candidates === 0, 'scan vacío → ok_no_candidates', JSON.stringify(r3));
+ok(finnhubDiveCalls.length === diveCallsBefore, 'NO se pegó a Finnhub deep dive cuando no hubo candidatos');
+ok(alpacaOrderPosts.length === postsBefore3, 'cero órdenes cuando no hubo candidatos');
+const jNoCand = lastRow();
+ok(jNoCand[COL.status] === 'ok_no_candidates' && (jNoCand[COL.plan] || '').includes('ruido'), 'journal: ok_no_candidates con la tesis del scout como plan');
+ok(JSON.parse(jNoCand[COL.context]).dive === undefined, 'journal: sin fase dive cuando no hubo candidatos');
 
-// ── 4) sin ANTHROPIC_API_KEY (créditos pendientes) → journaleado, cero órdenes ──
-delete process.env.ANTHROPIC_API_KEY;
+// ── 4) hay candidatos pero el DIVE holdea → ok_no_actions (distinto de #3) ──
+console.log('arena-run: DIVE holdea con candidatos → ok_no_actions');
+scanText = JSON.stringify({ scan_thesis: 'AAPL merece un vistazo.', candidates: ['AAPL'] });
+diveText = JSON.stringify({ plan: 'Fundamentales caros y recommendation mixta: holdeo, no entro hoy.', actions: [] });
 const r4 = await runArenaDecide({ baseUrl: BASE_URL });
-ok(r4.status === 'aborted_no_api_key' && r4.orders === 0, 'sin créditos → abort honesto', JSON.stringify(r4));
-ok(alpacaOrderPosts.length === postsBefore, 'sigue sin mandar órdenes');
+ok(r4.status === 'ok_no_actions' && r4.orders === 0 && r4.candidates === 1, 'DIVE con candidatos pero sin órdenes → ok_no_actions', JSON.stringify(r4));
+ok(lastRow()[COL.status] === 'ok_no_actions', 'journal: ok_no_actions es un estado DISTINTO de ok_no_candidates');
 
-// ── 5) resolveBaseUrl: PUBLIC_BASE_URL primero (fix del self-fetch 401) ──
+// ── 5) JSON malformado del SCAN → aborted_scan_malformed_json, cero órdenes ──
+console.log('arena-run: aborts honestos por fase');
+scanText = 'Investigaría AAPL y NVDA pero sin JSON.';
+const postsBefore5 = alpacaOrderPosts.length;
+const r5 = await runArenaDecide({ baseUrl: BASE_URL });
+ok(r5.status === 'aborted_scan_malformed_json' && r5.orders === 0, 'scan malformado → abort de fase 1', JSON.stringify(r5));
+ok(alpacaOrderPosts.length === postsBefore5, 'cero órdenes tras abort del scan');
+ok(lastRow()[COL.status] === 'aborted_scan_malformed_json', 'journal: abort del scan journaleado');
+
+// ── 6) SCAN ok pero DIVE malformado → aborted_malformed_json ──
+scanText = JSON.stringify({ scan_thesis: 'AAPL.', candidates: ['AAPL'] });
+diveText = 'Compraría AAPL, pero sin JSON.';
+const r6 = await runArenaDecide({ baseUrl: BASE_URL });
+ok(r6.status === 'aborted_malformed_json' && r6.orders === 0, 'dive malformado → abort de fase 2', JSON.stringify(r6));
+ok(alpacaOrderPosts.length === postsBefore5, 'sigue sin mandar órdenes');
+
+// ── 7) sin ANTHROPIC_API_KEY → journaleado, cero órdenes, ni siquiera SCAN ──
+delete process.env.ANTHROPIC_API_KEY;
+const r7 = await runArenaDecide({ baseUrl: BASE_URL });
+ok(r7.status === 'aborted_no_api_key' && r7.orders === 0, 'sin créditos → abort honesto antes del SCAN', JSON.stringify(r7));
+ok(alpacaOrderPosts.length === postsBefore5, 'sigue sin mandar órdenes');
+process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+
+// ── 8) resolveBaseUrl: PUBLIC_BASE_URL primero (fix del self-fetch 401) ──
 console.log('arena-run: resolveBaseUrl (A2 — evita Deployment Protection)');
 const envSnap = { pub: process.env.PUBLIC_BASE_URL, vercel: process.env.VERCEL_URL };
 process.env.PUBLIC_BASE_URL = 'https://quantdesk2.vercel.app';

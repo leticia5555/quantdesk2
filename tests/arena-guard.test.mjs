@@ -6,13 +6,33 @@
 // Correr con `node tests/arena-guard.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import { parsePlanResponse, validateActions, ARENA_RULES, isLeveragedInverseETF } from '../api/_lib/arena-guard.js';
+import { parseScanResponse, parsePlanResponse, validateActions, ARENA_RULES, isLeveragedInverseETF } from '../api/_lib/arena-guard.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
   if (cond) console.log('  PASS', name);
   else { failures++; console.error('  FAIL', name, detail !== undefined ? '→ ' + detail : ''); }
 }
+
+console.log('arena-guard: parse del SCAN (fase 1)');
+
+const scanGood = parseScanResponse('{"scan_thesis":"AAPL y NVDA lucen bien.","candidates":["aapl","NVDA"]}');
+ok(scanGood.ok && scanGood.candidates.length === 2 && scanGood.candidates[0] === 'AAPL', 'SCAN: candidatos normalizados a uppercase', JSON.stringify(scanGood.candidates));
+ok(scanGood.thesis.includes('AAPL'), 'SCAN: la tesis se conserva');
+
+const scanEmpty = parseScanResponse('{"scan_thesis":"Nada hoy.","candidates":[]}');
+ok(scanEmpty.ok && scanEmpty.candidates.length === 0, 'SCAN: array vacío es válido (no aborta) — el caller decide ok_no_candidates');
+
+const scanDupes = parseScanResponse('{"candidates":["AAPL","aapl","NVDA","AMD","INTC","MU","TSM"]}');
+ok(scanDupes.ok && scanDupes.candidates.length === 5, 'SCAN: dedupe + corte a 5 candidatos', JSON.stringify(scanDupes.candidates));
+ok(!scanDupes.candidates.includes('TSM'), 'SCAN: el 6º-7º candidato se descarta (tope 5)');
+
+const scanDropNonStr = parseScanResponse('{"candidates":["AAPL",123,null,"NVDA"]}');
+ok(scanDropNonStr.ok && scanDropNonStr.candidates.length === 2, 'SCAN: no-strings descartados', JSON.stringify(scanDropNonStr.candidates));
+
+ok(parseScanResponse('Investigaría AAPL, sin JSON.').ok === false, 'SCAN: prosa sin JSON → abort');
+ok(parseScanResponse('{"candidates":"AAPL"}').ok === false, 'SCAN: candidates no-array → abort');
+ok(parseScanResponse('').ok === false, 'SCAN: respuesta vacía → abort');
 
 console.log('arena-guard: parse de la respuesta del LLM');
 
