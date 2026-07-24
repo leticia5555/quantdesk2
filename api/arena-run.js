@@ -60,20 +60,51 @@ An empty actions array is a valid, often correct decision — but plan must then
 }
 
 // ── contexto: recortes compactos del buffet (tokens de Haiku, no de Opus) ──
+// ETFs apalancados/inversos (leveraged/inverse ETPs). El market feed de Alpha
+// Vantage free NO trae nombre ni tipo de activo — solo ticker/precio/%/volumen
+// —, así que no hay flag ni nombre para clasificar: la única detección limpia y
+// SIN falsos positivos es una lista curada (un regex por ticker confundiría
+// nombres reales como NU, AAL, NOK). Importa porque el guard NO los rechaza
+// (están en el symbol map US, >$1, sin sufijo de warrant) → sin este filtro el
+// PM podría comprar un 3x apalancado, y por volumen desplazan al subyacente
+// real del top de actives. Ampliar = agregar aquí; los tickers de ETP son
+// estables. No es exhaustiva: un leveraged nuevo pasa hasta que se sume.
+export const LEVERAGED_INVERSE_ETFS = new Set([
+  // Single-stock (TSLA / NVDA / MSTR / otros nombres calientes)
+  'TSLL', 'TSLT', 'TSLR', 'TSLG', 'TSLS', 'TSLQ', 'TSLZ', 'TSDD',
+  'NVDL', 'NVDU', 'NVDX', 'NVDS', 'NVDD', 'CONL', 'CONY', 'MSTX', 'MSTU', 'MSTZ',
+  'AMDL', 'AMUU', 'AAPU', 'AAPD', 'GGLL', 'AMZU', 'METU',
+  // Índices (Nasdaq 100 / S&P 500 / Dow / Russell)
+  'TQQQ', 'SQQQ', 'QLD', 'QID', 'PSQ', 'UPRO', 'SPXU', 'SPXL', 'SPXS',
+  'SSO', 'SDS', 'UDOW', 'SDOW', 'DDM', 'DXD', 'TNA', 'TZA', 'URTY', 'SRTY',
+  // Sectores / temáticos
+  'SOXL', 'SOXS', 'LABU', 'LABD', 'FAS', 'FAZ', 'TECL', 'TECS',
+  'WEBL', 'WEBS', 'DPST', 'NAIL', 'RETL', 'DFEN', 'CURE',
+  // Commodities / bonos / vol / países / crypto-apalancado
+  'BOIL', 'KOLD', 'UCO', 'SCO', 'NUGT', 'DUST', 'JNUG', 'JDST', 'GUSH', 'DRIP',
+  'ERX', 'ERY', 'TMF', 'TMV', 'UVXY', 'SVXY', 'VIXY', 'UVIX', 'SVIX',
+  'YINN', 'YANG', 'BITX', 'ETHU', 'ETHT', 'BITU', 'SBIT',
+]);
+
+export function isLeveragedInverseETF(symbol) {
+  return LEVERAGED_INVERSE_ETFS.has(String(symbol || '').trim().toUpperCase());
+}
+
 function trimMovers(data) {
   if (!data || data.universe !== 'market') return null;
-  // Filtra micro-caps (<$5) ANTES de recortar a top-5: sin esto el top_losers
-  // de Alpha Vantage (dominado por small/micro caps a -30/-40%) sepultaba a las
-  // mega-caps — TSLA a -14.5% en `actives` nunca llegaba al PM. El guard igual
-  // descartaría ese ruido, así que no se pierde nada operable. Se aplica a las
-  // tres listas por consistencia; una mega-cap real siempre pasa el piso de $5.
-  const pick = (l) => (l || [])
+  // Filtra ANTES de recortar: (a) micro-caps <$5 (el top_losers de AV está
+  // dominado por small caps a -30/-40% que sepultaban a las mega-caps; el
+  // guard igual las descartaría) y (b) ETFs apalancados/inversos. Así el
+  // recorte deja instrumentos operables y el subyacente real, no ruido.
+  const pick = (l, n) => (l || [])
     .filter((m) => m && typeof m.price === 'number' && m.price >= 5)
-    .slice(0, 5)
+    .filter((m) => !isLeveragedInverseETF(m.symbol))
+    .slice(0, n)
     .map((m) => ({ symbol: m.symbol, price: m.price, changePct: m.changePct }));
-  // `actives` (más negociadas del día) ahora SÍ entra: es donde caen las
-  // mega-caps con movimiento fuerte que no llegan al top-5 de losers/gainers.
-  return { gainers: pick(data.gainers), losers: pick(data.losers), actives: pick(data.actives) };
+  // `actives` a top-8 (gainers/losers a 5, que el ranking por % ya prioriza):
+  // es donde las mega-caps con movimiento fuerte quedaban fuera del top-5 al
+  // ser desplazadas por leveraged ETFs y small caps (TSLA -14.5%, 24-jul).
+  return { gainers: pick(data.gainers, 5), losers: pick(data.losers, 5), actives: pick(data.actives, 8) };
 }
 function trimEarnings(data) {
   return ((data && data.earnings) || []).slice(0, 12).map((e) => ({ ticker: e.ticker, company: e.company, date: e.date, time: e.time }));

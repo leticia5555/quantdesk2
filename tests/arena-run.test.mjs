@@ -9,7 +9,7 @@
 // Correr con `node tests/arena-run.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import { runArenaDecide, runArenaReconcile, PROMPT_VERSION, resolveBaseUrl } from '../api/arena-run.js';
+import { runArenaDecide, runArenaReconcile, PROMPT_VERSION, resolveBaseUrl, isLeveragedInverseETF } from '../api/arena-run.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -90,9 +90,24 @@ global.fetch = async (url, opts = {}) => {
   // Buffet (self-fetch a nuestros endpoints)
   if (u.startsWith(BASE_URL + '/api/movers')) return jsonReply({
     universe: 'market',
-    gainers: [{ symbol: 'PENNYG', price: 2, changePct: 60 }, { symbol: 'AAPL', price: 200, changePct: 3.1 }],
-    losers: [{ symbol: 'PENNYL', price: 0.5, changePct: -55 }, { symbol: 'TSLA', price: 210, changePct: -14.5 }],
-    actives: [{ symbol: 'NVDA', price: 170, changePct: 1.2 }, { symbol: 'TSLA', price: 210, changePct: -14.5 }],
+    gainers: [{ symbol: 'PENNYG', price: 2, changePct: 60 }, { symbol: 'TSLL', price: 25, changePct: 22 }, { symbol: 'AAPL', price: 200, changePct: 3.1 }],
+    losers: [{ symbol: 'PENNYL', price: 0.5, changePct: -55 }, { symbol: 'SQQQ', price: 8, changePct: -9 }, { symbol: 'TSLA', price: 210, changePct: -14.5 }],
+    // 12 actives en orden de volumen (como los da AV): TSLL/SQQQ (leveraged),
+    // WBUY (<$5) deben caer; TSLA queda en el puesto 7 real → solo top-8 la ve.
+    actives: [
+      { symbol: 'TSLL', price: 25, changePct: 22 },
+      { symbol: 'NOK', price: 6, changePct: 1.1 },
+      { symbol: 'NU', price: 12, changePct: 2.0 },
+      { symbol: 'BITO', price: 22, changePct: -3.0 },
+      { symbol: 'SQQQ', price: 8, changePct: -9 },
+      { symbol: 'AAL', price: 14, changePct: -1.2 },
+      { symbol: 'F', price: 11, changePct: 0.5 },
+      { symbol: 'WBUY', price: 2, changePct: 30 },
+      { symbol: 'PLTR', price: 30, changePct: 4.0 },
+      { symbol: 'TSLA', price: 210, changePct: -14.5 },
+      { symbol: 'NVDA', price: 170, changePct: 1.2 },
+      { symbol: 'AAPL', price: 225, changePct: 0.3 },
+    ],
   }, moversStatus);
   if (u.startsWith(BASE_URL + '/api/earnings')) return jsonReply({ earnings: [{ ticker: 'MSFT', company: 'Microsoft Corp', date: today, time: 'AMC' }] });
   if (u.startsWith(BASE_URL + '/api/stock-tracker')) return jsonReply({ items: [{ insider: 'Jane Doe', role: 'CEO', ticker: 'AAPL', value: 250000, tradeDate: today }] });
@@ -152,12 +167,18 @@ ok(jctx.prompt && typeof jctx.prompt.system === 'string' && typeof jctx.prompt.u
   'journal: context.prompt guarda system + user completos');
 ok(jctx.prompt.system.includes('Claude PM'), 'journal: el system prompt real queda guardado');
 const uMovers = JSON.parse(jctx.prompt.user.split('\n').find((l) => l.startsWith('{') && l.includes('"movers"'))).movers;
-// actives ahora entra al prompt del PM
-ok(Array.isArray(uMovers.actives) && uMovers.actives.some((m) => m.symbol === 'TSLA'),
-  'prompt: actives entra y trae TSLA (-14.5%), antes invisible', JSON.stringify(uMovers.actives));
-// filtro ≥$5: los penny stocks NO llegan al top-5 de gainers/losers
-ok(!uMovers.gainers.some((m) => m.symbol === 'PENNYG') && !uMovers.losers.some((m) => m.symbol === 'PENNYL'),
-  'prompt: micro-caps (<$5) filtradas de gainers y losers', JSON.stringify(uMovers));
+// actives a top-8 y TSLA (puesto 7 real) por fin entra
+ok(Array.isArray(uMovers.actives) && uMovers.actives.length === 8, 'prompt: actives recortado a top-8', String((uMovers.actives || []).length));
+ok(uMovers.actives.some((m) => m.symbol === 'TSLA'),
+  'prompt: TSLA (-14.5%, puesto 7 por volumen) entra en top-8, antes invisible en top-5', JSON.stringify(uMovers.actives.map((m) => m.symbol)));
+// leveraged/inverse ETFs fuera de las TRES listas
+ok(!uMovers.actives.some((m) => m.symbol === 'TSLL') && !uMovers.actives.some((m) => m.symbol === 'SQQQ'),
+  'prompt: leveraged/inverse ETFs (TSLL, SQQQ) fuera de actives', JSON.stringify(uMovers.actives.map((m) => m.symbol)));
+ok(!uMovers.gainers.some((m) => m.symbol === 'TSLL') && !uMovers.losers.some((m) => m.symbol === 'SQQQ'),
+  'prompt: leveraged/inverse ETFs fuera de gainers y losers');
+// filtro ≥$5: penny stocks fuera de las tres listas
+ok(!uMovers.gainers.some((m) => m.symbol === 'PENNYG') && !uMovers.losers.some((m) => m.symbol === 'PENNYL') && !uMovers.actives.some((m) => m.symbol === 'WBUY'),
+  'prompt: micro-caps (<$5) filtradas de gainers, losers y actives', JSON.stringify(uMovers));
 ok(uMovers.gainers.some((m) => m.symbol === 'AAPL') && uMovers.losers.some((m) => m.symbol === 'TSLA'),
   'prompt: las de precio real (AAPL, TSLA) sí quedan', JSON.stringify(uMovers));
 
@@ -216,6 +237,13 @@ ok(resolveBaseUrl({ headers: { host: 'localhost:3000', 'x-forwarded-proto': 'htt
 // restaurar el entorno
 if (envSnap.pub === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = envSnap.pub;
 if (envSnap.vercel === undefined) delete process.env.VERCEL_URL; else process.env.VERCEL_URL = envSnap.vercel;
+
+// ── 6) isLeveragedInverseETF: detecta ETPs, no confunde nombres reales ──
+console.log('arena-run: isLeveragedInverseETF (lista curada, sin falsos positivos)');
+ok(isLeveragedInverseETF('TSLL') && isLeveragedInverseETF('sqqq') && isLeveragedInverseETF(' SOXL '),
+  'detecta leveraged/inverse (case/trim-insensible)');
+ok(!isLeveragedInverseETF('NU') && !isLeveragedInverseETF('AAL') && !isLeveragedInverseETF('NOK') && !isLeveragedInverseETF('TSLA'),
+  'NO marca nombres reales (NU, AAL, NOK, TSLA)');
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);
