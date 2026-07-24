@@ -67,7 +67,7 @@ export async function getSymbolTypes(finnhubKey) {
 
 // Cobertura del campo `type` — para VERIFICAR en prod si el free tier lo puebla
 // antes de confiar en el gate. Devuelve total, poblados, % y distribución.
-export async function getSymbolTypeStats(finnhubKey, sampleSize = 8) {
+export async function getSymbolTypeStats(finnhubKey, sampleSize = 30) {
   const types = await getSymbolTypes(finnhubKey);
   if (!types) return null;
   const map = symbolMapCache.map || {};
@@ -107,12 +107,14 @@ export default async function handler(req, res) {
   const { from, to, ticker } = req.query;
 
   // ═══ DIAG: cobertura del campo `type` (para verificar el free tier) ═══
-  //   GET /api/earnings?diag=symboltypes → { total, populated, populated_pct,
-  //   distribution, would_exclude_etp_cef }. En vivo, sin cache.
+  //   GET /api/earnings?diag=symboltypes[&sample=N] → { total, populated,
+  //   populated_pct, distribution, samples, would_exclude }. En vivo, sin cache.
+  //   `sample` (default 30, cap 200) = cuántos tickers de ejemplo por tipo.
   if (req.query && req.query.diag === 'symboltypes') {
     res.setHeader('Cache-Control', 'no-store');
     if (!finnhubKey) return res.status(200).json({ error: 'FINNHUB_API_KEY not configured' });
-    const stats = await getSymbolTypeStats(finnhubKey);
+    const sampleSize = Math.min(200, Math.max(1, parseInt(req.query.sample, 10) || 30));
+    const stats = await getSymbolTypeStats(finnhubKey, sampleSize);
     return res.status(200).json(stats || { error: 'symbol types no disponibles' });
   }
 

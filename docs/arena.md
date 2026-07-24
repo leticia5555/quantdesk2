@@ -59,7 +59,8 @@ aprobada; null = el free tier no lo trajo) — lo peligroso ya lo cubre la doble
 barrera de leveraged. El tipo **`PUBLIC`** (3ª categoría por tamaño) queda por
 ahora **permitido**, pendiente de revisar ejemplos. Diag de cobertura + muestras
 por tipo en prod: `GET /api/earnings?diag=symboltypes` (total, % poblado,
-distribución, `samples` por tipo, `would_exclude`).
+distribución, `samples` por tipo —default 30, configurable con `&sample=N`—,
+`would_exclude`).
 
 ## Env vars y orden de encendido
 
