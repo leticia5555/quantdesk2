@@ -26,6 +26,46 @@ export const ARENA_RULES = {
 // no un warrant.
 const WARRANT_LIKE = /[.\-+](WS|WT|W|U|R|RT)$/i;
 
+// ── ETFs apalancados/inversos: fuera del universo (equity común) ─────
+// Doble señal, defensa en profundidad:
+//   (1) Lista curada por ticker — rápida y exacta, compartida con el filtro
+//       del buffet (trimMovers). No es exhaustiva: salen leveraged nuevos cada
+//       mes.
+//   (2) Heurística por NOMBRE del symbol map (Finnhub description) — atrapa a
+//       los que aún no están en la lista. El feed del buffet no tiene nombres,
+//       pero el guard sí, así que ESTA es la barrera real: no depende de
+//       mantener la lista al día. Importa porque el resto del guard NO los
+//       frena (están en el symbol map US, >$1, sin sufijo de warrant).
+export const LEVERAGED_INVERSE_ETFS = new Set([
+  // Single-stock (TSLA / NVDA / MSTR / otros nombres calientes)
+  'TSLL', 'TSLT', 'TSLR', 'TSLG', 'TSLS', 'TSLQ', 'TSLZ', 'TSDD',
+  'NVDL', 'NVDU', 'NVDX', 'NVDS', 'NVDD', 'CONL', 'CONY', 'MSTX', 'MSTU', 'MSTZ',
+  'AMDL', 'AMUU', 'AAPU', 'AAPD', 'GGLL', 'AMZU', 'METU',
+  // Índices (Nasdaq 100 / S&P 500 / Dow / Russell)
+  'TQQQ', 'SQQQ', 'QLD', 'QID', 'PSQ', 'UPRO', 'SPXU', 'SPXL', 'SPXS',
+  'SSO', 'SDS', 'UDOW', 'SDOW', 'DDM', 'DXD', 'TNA', 'TZA', 'URTY', 'SRTY',
+  // Sectores / temáticos
+  'SOXL', 'SOXS', 'LABU', 'LABD', 'FAS', 'FAZ', 'TECL', 'TECS',
+  'WEBL', 'WEBS', 'DPST', 'NAIL', 'RETL', 'DFEN', 'CURE',
+  // Commodities / bonos / vol / países / crypto-apalancado
+  'BOIL', 'KOLD', 'UCO', 'SCO', 'NUGT', 'DUST', 'JNUG', 'JDST', 'GUSH', 'DRIP',
+  'ERX', 'ERY', 'TMF', 'TMV', 'UVXY', 'SVXY', 'VIXY', 'UVIX', 'SVIX',
+  'YINN', 'YANG', 'BITX', 'ETHU', 'ETHT', 'BITU', 'SBIT',
+]);
+
+// Multiplicador "2X/3X/-1x/1.5x", "Ultra/UltraPro/UltraShort", "Leveraged",
+// "Inverse" en el nombre del fondo. Deliberadamente NO usa "bull/bear/short"
+// pelados (falsos positivos: Bullfrog AI, Bear Creek Mining, Short-Term). El
+// "\bultra\b" pega en "Ultra"/"UltraPro" pero no en "Ultragenyx" (sin frontera).
+const LEVERAGED_INVERSE_NAME = /(\b\d(?:\.\d)?x\b|\bultra(?:pro|short)?\b|\bleveraged\b|\binverse\b)/i;
+
+// symbol → bool. Con `name` (del symbol map) suma la señal por nombre; sin él
+// (el buffet no tiene nombres) cae solo en la lista de tickers.
+export function isLeveragedInverseETF(symbol, name) {
+  if (LEVERAGED_INVERSE_ETFS.has(String(symbol || '').trim().toUpperCase())) return true;
+  return !!name && LEVERAGED_INVERSE_NAME.test(String(name));
+}
+
 // ── parse: respuesta cruda del LLM → { ok, plan, actions } ──────────
 // Malformado (no-JSON, sin plan, actions no-array) → { ok:false, error }
 // y el caller aborta el run completo con cero órdenes.
@@ -91,6 +131,13 @@ export function validateActions({ actions, equity, cash, positions, symbolMap, l
     if (WARRANT_LIKE.test(symbol)) { discard(raw, `${symbol}: warrants/units/rights fuera del universo`); continue; }
     if (!symbolMap) { discard(raw, 'symbol map no disponible — fail closed, no se opera a ciegas'); continue; }
     if (!symbolMap[symbol]) { discard(raw, `${symbol}: no existe en el symbol map US`); continue; }
+    // Defensa en profundidad vs. el filtro del buffet: lista curada + nombre.
+    // Los leveraged/inverse pasan el resto del guard (están en el map, >$1, sin
+    // sufijo de warrant), así que sin esto se ejecutarían en Alpaca.
+    if (isLeveragedInverseETF(symbol, symbolMap[symbol])) {
+      discard(raw, `${symbol}: ETF apalancado/inverso fuera del universo (solo equity común)`);
+      continue;
+    }
 
     const lastClose = num(lastCloses && lastCloses[symbol]);
     if (!lastClose || lastClose <= 0) { discard(raw, `${symbol}: sin último cierre de referencia — fail closed`); continue; }

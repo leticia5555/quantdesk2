@@ -40,7 +40,11 @@ import { ANTHROPIC_MODEL } from './_lib/model.js';
 import { getSymbolMap } from './earnings.js';
 import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpacaCreds } from './_lib/alpaca.js';
-import { parsePlanResponse, validateActions, ARENA_RULES } from './_lib/arena-guard.js';
+import { parsePlanResponse, validateActions, ARENA_RULES, isLeveragedInverseETF } from './_lib/arena-guard.js';
+
+// Re-export: la detección vive en el guard (hogar de las reglas de universo);
+// el buffet la reusa y los tests de arena-run la importan desde acá.
+export { isLeveragedInverseETF };
 
 export const PROMPT_VERSION = 'arena-pm-v1';
 
@@ -60,42 +64,14 @@ An empty actions array is a valid, often correct decision — but plan must then
 }
 
 // ── contexto: recortes compactos del buffet (tokens de Haiku, no de Opus) ──
-// ETFs apalancados/inversos (leveraged/inverse ETPs). El market feed de Alpha
-// Vantage free NO trae nombre ni tipo de activo — solo ticker/precio/%/volumen
-// —, así que no hay flag ni nombre para clasificar: la única detección limpia y
-// SIN falsos positivos es una lista curada (un regex por ticker confundiría
-// nombres reales como NU, AAL, NOK). Importa porque el guard NO los rechaza
-// (están en el symbol map US, >$1, sin sufijo de warrant) → sin este filtro el
-// PM podría comprar un 3x apalancado, y por volumen desplazan al subyacente
-// real del top de actives. Ampliar = agregar aquí; los tickers de ETP son
-// estables. No es exhaustiva: un leveraged nuevo pasa hasta que se sume.
-export const LEVERAGED_INVERSE_ETFS = new Set([
-  // Single-stock (TSLA / NVDA / MSTR / otros nombres calientes)
-  'TSLL', 'TSLT', 'TSLR', 'TSLG', 'TSLS', 'TSLQ', 'TSLZ', 'TSDD',
-  'NVDL', 'NVDU', 'NVDX', 'NVDS', 'NVDD', 'CONL', 'CONY', 'MSTX', 'MSTU', 'MSTZ',
-  'AMDL', 'AMUU', 'AAPU', 'AAPD', 'GGLL', 'AMZU', 'METU',
-  // Índices (Nasdaq 100 / S&P 500 / Dow / Russell)
-  'TQQQ', 'SQQQ', 'QLD', 'QID', 'PSQ', 'UPRO', 'SPXU', 'SPXL', 'SPXS',
-  'SSO', 'SDS', 'UDOW', 'SDOW', 'DDM', 'DXD', 'TNA', 'TZA', 'URTY', 'SRTY',
-  // Sectores / temáticos
-  'SOXL', 'SOXS', 'LABU', 'LABD', 'FAS', 'FAZ', 'TECL', 'TECS',
-  'WEBL', 'WEBS', 'DPST', 'NAIL', 'RETL', 'DFEN', 'CURE',
-  // Commodities / bonos / vol / países / crypto-apalancado
-  'BOIL', 'KOLD', 'UCO', 'SCO', 'NUGT', 'DUST', 'JNUG', 'JDST', 'GUSH', 'DRIP',
-  'ERX', 'ERY', 'TMF', 'TMV', 'UVXY', 'SVXY', 'VIXY', 'UVIX', 'SVIX',
-  'YINN', 'YANG', 'BITX', 'ETHU', 'ETHT', 'BITU', 'SBIT',
-]);
-
-export function isLeveragedInverseETF(symbol) {
-  return LEVERAGED_INVERSE_ETFS.has(String(symbol || '').trim().toUpperCase());
-}
-
 function trimMovers(data) {
   if (!data || data.universe !== 'market') return null;
-  // Filtra ANTES de recortar: (a) micro-caps <$5 (el top_losers de AV está
-  // dominado por small caps a -30/-40% que sepultaban a las mega-caps; el
-  // guard igual las descartaría) y (b) ETFs apalancados/inversos. Así el
-  // recorte deja instrumentos operables y el subyacente real, no ruido.
+  // Filtra ANTES de recortar: (a) micro-caps <$5 (curación del buffet, más
+  // estricta que el piso de $1 del guard: el top_losers de AV está dominado
+  // por small caps a -30/-40% que sepultaban a las mega-caps) y (b) ETFs
+  // apalancados/inversos (misma detección que el guard, aquí solo por ticker
+  // porque el feed no trae nombres). El guard vuelve a filtrar (b) con la
+  // señal por nombre; esto es best-effort para no gastarle un slot al PM.
   const pick = (l, n) => (l || [])
     .filter((m) => m && typeof m.price === 'number' && m.price >= 5)
     .filter((m) => !isLeveragedInverseETF(m.symbol))

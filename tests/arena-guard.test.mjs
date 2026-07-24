@@ -6,7 +6,7 @@
 // Correr con `node tests/arena-guard.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import { parsePlanResponse, validateActions, ARENA_RULES } from '../api/_lib/arena-guard.js';
+import { parsePlanResponse, validateActions, ARENA_RULES, isLeveragedInverseETF } from '../api/_lib/arena-guard.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -102,6 +102,28 @@ ok(r.approved.length === 0 && /cierre/.test(r.discarded[0].reason), 'sin último
 // 13) warrant-like → fuera del universo aunque estuviera en el map
 r = validateActions({ ...BASE, symbolMap: { ...BASE.symbolMap, 'ACME.WS': 'Acme Warrants' }, lastCloses: { ...BASE.lastCloses, 'ACME.WS': 5 }, actions: [act({ symbol: 'ACME.WS', limit_price: 5, notional: 500 })] });
 ok(r.approved.length === 0 && /warrant/i.test(r.discarded[0].reason), 'sufijo de warrant → descartada');
+
+// 13b) ETF apalancado por LISTA (TSLL) → descartado aunque pase todo lo demás
+r = validateActions({ ...BASE, symbolMap: { ...BASE.symbolMap, TSLL: 'Direxion Daily Tsla Bull 2X Shares' }, lastCloses: { ...BASE.lastCloses, TSLL: 25 }, actions: [act({ symbol: 'TSLL', limit_price: 25, notional: 5000 })] });
+ok(r.approved.length === 0 && /apalancado\/inverso/.test(r.discarded[0].reason), 'leveraged por lista (TSLL) → descartado');
+
+// 13c) ETF apalancado NUEVO (no en la lista) atrapado por el NOMBRE del map
+r = validateActions({ ...BASE, symbolMap: { ...BASE.symbolMap, ZZZL: 'Granite 3X Long Zzz Daily ETF' }, lastCloses: { ...BASE.lastCloses, ZZZL: 40 }, actions: [act({ symbol: 'ZZZL', limit_price: 40, notional: 5000 })] });
+ok(r.approved.length === 0 && /apalancado\/inverso/.test(r.discarded[0].reason), 'leveraged NUEVO (fuera de lista) → descartado por nombre "3X"');
+
+// 13d) inverse por nombre "Inverse"
+r = validateActions({ ...BASE, symbolMap: { ...BASE.symbolMap, WXYZ: 'Acme Inverse Vix Short-Term ETF' }, lastCloses: { ...BASE.lastCloses, WXYZ: 30 }, actions: [act({ symbol: 'WXYZ', limit_price: 30, notional: 5000 })] });
+ok(r.approved.length === 0 && /apalancado\/inverso/.test(r.discarded[0].reason), 'inverse por nombre → descartado');
+
+// 13e) equity común con nombre "inofensivo" NO se marca (sin falso positivo)
+r = validateActions({ ...BASE, symbolMap: { ...BASE.symbolMap, ULTG: 'Ultragenyx Pharmaceutical Inc' }, lastCloses: { ...BASE.lastCloses, ULTG: 40 }, actions: [act({ symbol: 'ULTG', limit_price: 40, notional: 5000 })] });
+ok(r.approved.length === 1, 'equity común (Ultragenyx) NO confundido con "Ultra" apalancado', JSON.stringify(r.discarded));
+
+// 13f) el helper directo: lista + nombre, sin falsos positivos
+ok(isLeveragedInverseETF('SQQQ') && isLeveragedInverseETF('zzz', '2x Long Something') && isLeveragedInverseETF('x', 'ProShares UltraPro QQQ'),
+  'isLeveragedInverseETF: lista + nombre (2x, UltraPro)');
+ok(!isLeveragedInverseETF('AAPL', 'Apple Inc') && !isLeveragedInverseETF('BULF', 'Bullfrog AI Holdings') && !isLeveragedInverseETF('KO', 'Coca-Cola Co'),
+  'isLeveragedInverseETF: sin falsos positivos (Apple, Bullfrog, Coca-Cola)');
 
 // 14) acción malformada dentro de JSON válido → SOLO esa se descarta
 r = validateActions({ ...BASE, actions: [{ symbol: 'AAPL' }, act()] });

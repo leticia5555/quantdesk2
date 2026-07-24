@@ -26,11 +26,21 @@ al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 
 ## Reglas del PM (deterministas, fuera del LLM)
 
-Universo equities US (sin warrants/units, sin sub-$1, long-only) · máx 8
-posiciones · máx 15% del equity por posición · mín 10% de cash · SOLO
-órdenes límite (day, fill al open siguiente) · limit_price a ±2% del último
-cierre. Violación → orden descartada y journaleada con razón, jamás ajustada
-en silencio. JSON malformado → run abortado honesto, cero órdenes.
+Universo equities US (sin warrants/units, sin sub-$1, **sin ETFs
+apalancados/inversos**, long-only) · máx 8 posiciones · máx 15% del equity por
+posición · mín 10% de cash · SOLO órdenes límite (day, fill al open siguiente)
+· limit_price a ±2% del último cierre. Violación → orden descartada y
+journaleada con razón, jamás ajustada en silencio. JSON malformado → run
+abortado honesto, cero órdenes.
+
+**ETFs apalancados/inversos** (`LEVERAGED_INVERSE_ETFS` / `isLeveragedInverseETF`
+en `_lib/arena-guard.js`) se excluyen con doble barrera: (1) filtro del buffet
+por ticker (`trimMovers`, best-effort — el feed de AV no trae nombres) y (2)
+el guard, que además de la lista aplica una heurística por **nombre** del symbol
+map (multiplicador `2X/3X`, `Ultra`, `Leveraged`, `Inverse`) — esta atrapa los
+leveraged nuevos que aún no están en la lista. El guard es la barrera real: la
+lista sola no es exhaustiva (salen leveraged cada mes) y el resto de las reglas
+no los frena (están en el symbol map US, >$1, sin sufijo de warrant).
 
 ## Env vars y orden de encendido
 
