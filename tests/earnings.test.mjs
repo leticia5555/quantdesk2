@@ -127,6 +127,9 @@ console.log('symbol map: types + cobertura (mismo fetch que el name map)');
         { symbol: 'NU', description: 'NU HOLDINGS LTD', type: 'ADR' },
         { symbol: 'SPY', description: 'SPDR S&P 500 ETF TRUST', type: 'ETP' },
         { symbol: 'PDI', description: 'PIMCO DYNAMIC INCOME FUND', type: 'Closed-End Fund' },
+        { symbol: 'OEFX', description: 'SAMPLE OPEN END FUND', type: 'Open-End Fund' },
+        { symbol: 'ACMEU', description: 'ACME CORP UNIT', type: 'Unit' },
+        { symbol: 'PUBX', description: 'MYSTERY PUBLIC CO', type: 'PUBLIC' },
         { symbol: 'NOTYPE', description: 'Mystery Co' },  // sin type → no entra a types
       ]);
     }
@@ -139,10 +142,14 @@ console.log('symbol map: types + cobertura (mismo fetch que el name map)');
   const map = await getSymbolMap('test-key');
   ok(symbolCalls === 1 && map.AAPL === 'Apple Inc', 'name map y types comparten un solo fetch', symbolCalls + ' llamadas');
   const stats = await getSymbolTypeStats('test-key');
-  ok(stats && stats.total === 5 && stats.populated === 4 && stats.populated_pct === 80,
-    'stats de cobertura: 4/5 con type = 80%', JSON.stringify(stats));
-  ok(stats && stats.would_exclude_etp_cef === 2 && stats.distribution.ETP === 1 && stats.distribution['Closed-End Fund'] === 1,
-    'stats: ETP + Closed-End Fund se contarían como excluidos', JSON.stringify(stats));
+  ok(stats && stats.total === 8 && stats.populated === 7 && stats.populated_pct === 87.5,
+    'stats de cobertura: 7/8 con type = 87.5%', JSON.stringify(stats));
+  // would_exclude suma fondos (ETP+CEF+OEF) + no-equity (Unit) = 4
+  ok(stats && stats.would_exclude === 4 && stats.distribution['Open-End Fund'] === 1 && stats.distribution.Unit === 1,
+    'would_exclude refleja la política real (fondos + no-equity)', JSON.stringify(stats));
+  // samples: ejemplos por tipo para inspeccionar (p.ej. PUBLIC)
+  ok(stats && Array.isArray(stats.samples.PUBLIC) && stats.samples.PUBLIC[0].symbol === 'PUBX' && stats.samples.PUBLIC[0].name === 'Mystery Public Co',
+    'samples trae tickers de ejemplo por tipo (con nombre)', JSON.stringify(stats.samples.PUBLIC));
 }
 
 global.fetch = realFetch;
