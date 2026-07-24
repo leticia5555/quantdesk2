@@ -67,12 +67,19 @@ export function isLeveragedInverseETF(symbol, name) {
 }
 
 // ── Universo por TIPO de instrumento (campo `type` del symbol map) ──
-// Solo equity común, ADR y REIT. Se excluyen ETP (ETFs/ETNs — incluye índices
-// tipo SPY/QQQ, no solo apalancados) y Closed-End Fund. Los ADR se mantienen a
-// propósito: NU/MELI/ITUB son ADRs LATAM, el corazón de la audiencia. Regla de
-// PRODUCTO, no de seguridad: con `type` vacío/desconocido se PERMITE (el gate
-// peligroso —leveraged— ya lo cubre la doble barrera de arriba).
-export const EXCLUDED_SECURITY_TYPES = new Set(['ETP', 'Closed-End Fund']);
+// Solo equity común, ADR y REIT. Se excluyen los FONDOS: ETP (ETFs/ETNs —
+// incluye índices tipo SPY/QQQ, no solo apalancados), Closed-End Fund y
+// Open-End Fund. Los ADR se mantienen a propósito: NU/MELI/ITUB son ADRs LATAM,
+// el corazón de la audiencia. Regla de PRODUCTO, no de seguridad: con `type`
+// vacío/desconocido se PERMITE (el gate peligroso —leveraged— ya lo cubre la
+// doble barrera de arriba).
+export const EXCLUDED_SECURITY_TYPES = new Set(['ETP', 'Closed-End Fund', 'Open-End Fund']);
+
+// Instrumentos NO-equity que el sufijo del ticker (WARRANT_LIKE) atrapaba por
+// heurística; ahora el `type` del symbol map los marca de forma AUTORITATIVA
+// (97.6% de cobertura confirmada en prod). El regex queda como respaldo para
+// símbolos sin type. "Equity WRT" = warrant; "Preference" = acción preferente.
+export const NON_EQUITY_TYPES = new Set(['Unit', 'Equity WRT', 'Right', 'Preference']);
 
 // ── parse: respuesta cruda del LLM → { ok, plan, actions } ──────────
 // Malformado (no-JSON, sin plan, actions no-array) → { ok:false, error }
@@ -149,6 +156,10 @@ export function validateActions({ actions, equity, cash, positions, symbolMap, s
     // Universo por tipo. type vacío/desconocido → se permite (regla de producto);
     // el type resuelto (o null) viaja en la aprobada para el journal.
     const secType = (symbolTypes && symbolTypes[symbol]) || null;
+    if (secType && NON_EQUITY_TYPES.has(secType)) {
+      discard(raw, `${symbol}: tipo ${secType} — no es equity común (warrant/right/unit/preferente)`);
+      continue;
+    }
     if (secType && EXCLUDED_SECURITY_TYPES.has(secType)) {
       discard(raw, `${symbol}: tipo ${secType} fuera del universo (solo equity común, ADR y REIT)`);
       continue;

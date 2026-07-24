@@ -1,3 +1,5 @@
+import { EXCLUDED_SECURITY_TYPES, NON_EQUITY_TYPES } from './_lib/arena-guard.js';
+
 // ── SYMBOL MAP US: nombre de empresa por ticker ──────────────────
 // /stock/symbol?exchange=US es free tier y trae `description` (el nombre,
 // en MAYÚSCULAS) para el universo US completo (~25-30k símbolos, OTC
@@ -65,19 +67,30 @@ export async function getSymbolTypes(finnhubKey) {
 
 // Cobertura del campo `type` — para VERIFICAR en prod si el free tier lo puebla
 // antes de confiar en el gate. Devuelve total, poblados, % y distribución.
-export async function getSymbolTypeStats(finnhubKey) {
+export async function getSymbolTypeStats(finnhubKey, sampleSize = 8) {
   const types = await getSymbolTypes(finnhubKey);
   if (!types) return null;
+  const map = symbolMapCache.map || {};
   const distribution = {};
-  for (const t of Object.values(types)) distribution[t] = (distribution[t] || 0) + 1;
+  const samples = {}; // tipo → primeros N tickers (con nombre) para inspección
+  for (const [sym, t] of Object.entries(types)) {
+    distribution[t] = (distribution[t] || 0) + 1;
+    if (!samples[t]) samples[t] = [];
+    if (samples[t].length < sampleSize) samples[t].push({ symbol: sym, name: map[sym] || null });
+  }
   const populated = Object.keys(types).length;
   const total = symbolMapCache.total || populated;
+  // Cuántos excluiría la política REAL del guard (fondos + no-equity), sin drift.
+  const excluded_types = [...EXCLUDED_SECURITY_TYPES, ...NON_EQUITY_TYPES];
+  const would_exclude = excluded_types.reduce((n, t) => n + (distribution[t] || 0), 0);
   return {
     total,
     populated,
     populated_pct: total ? +(100 * populated / total).toFixed(1) : null,
     distribution,
-    would_exclude_etp_cef: (distribution.ETP || 0) + (distribution['Closed-End Fund'] || 0),
+    samples,
+    excluded_types,
+    would_exclude,
   };
 }
 

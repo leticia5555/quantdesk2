@@ -145,6 +145,20 @@ ok(r.approved.length === 1 && r.approved[0].security_type === 'REIT', 'REIT → 
 r = validateActions({ ...BASE, symbolTypes: {}, actions: [act()] });
 ok(r.approved.length === 1 && r.approved[0].security_type === null, 'type desconocido → permitido y journaleado (security_type null)', JSON.stringify(r.approved));
 
+// 13l) Open-End Fund → descartado (fondo, mismo criterio que CEF)
+r = validateActions({ ...BASE, symbolMap: { ...BASE.symbolMap, OEFX: 'Sample Open End Fund' }, lastCloses: { ...BASE.lastCloses, OEFX: 20 }, symbolTypes: { OEFX: 'Open-End Fund' }, actions: [act({ symbol: 'OEFX', limit_price: 20, notional: 2000 })] });
+ok(r.approved.length === 0 && /Open-End Fund/.test(r.discarded[0].reason), 'Open-End Fund → descartado por tipo');
+
+// 13m) warrant SIN sufijo en el ticker → lo atrapa el type "Equity WRT" (el regex no lo vería)
+r = validateActions({ ...BASE, symbolMap: { ...BASE.symbolMap, WRNTX: 'Acme Warrant' }, lastCloses: { ...BASE.lastCloses, WRNTX: 3 }, symbolTypes: { WRNTX: 'Equity WRT' }, actions: [act({ symbol: 'WRNTX', limit_price: 3, notional: 500 })] });
+ok(r.approved.length === 0 && /no es equity común/.test(r.discarded[0].reason), 'warrant sin sufijo → descartado por type autoritativo (regex no lo veía)');
+
+// 13n) Unit / Right / Preference por type → descartados
+for (const [sym, ty] of [['UNITX', 'Unit'], ['RGHTX', 'Right'], ['PREFX', 'Preference']]) {
+  const rr = validateActions({ ...BASE, symbolMap: { ...BASE.symbolMap, [sym]: sym }, lastCloses: { ...BASE.lastCloses, [sym]: 10 }, symbolTypes: { [sym]: ty }, actions: [act({ symbol: sym, limit_price: 10, notional: 1000 })] });
+  ok(rr.approved.length === 0 && /no es equity común/.test(rr.discarded[0].reason), `type ${ty} → descartado`);
+}
+
 // 14) acción malformada dentro de JSON válido → SOLO esa se descarta
 r = validateActions({ ...BASE, actions: [{ symbol: 'AAPL' }, act()] });
 ok(r.approved.length === 1 && r.discarded.length === 1 && /malformada/.test(r.discarded[0].reason),
