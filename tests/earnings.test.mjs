@@ -5,7 +5,7 @@
 // `node tests/earnings.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import handler, { titleCaseName, getSymbolMap, _resetSymbolMapCache } from '../api/earnings.js';
+import handler, { titleCaseName, getSymbolMap, getSymbolTypes, getSymbolTypeStats, _resetSymbolMapCache } from '../api/earnings.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -111,6 +111,38 @@ console.log('calendario: robustez cuando el symbol endpoint falla');
   };
   const map = await getSymbolMap('test-key');
   ok(map && map.AMC === 'Amc Entertainment Holdings Inc', 'tras el fallo, el retry puebla el map', JSON.stringify(map));
+}
+
+// ─────────────────── tipos de instrumento (gate de universo) ───────────────────
+console.log('symbol map: types + cobertura (mismo fetch que el name map)');
+{
+  _resetSymbolMapCache();
+  let symbolCalls = 0;
+  global.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/stock/symbol')) {
+      symbolCalls++;
+      return jsonResponse([
+        { symbol: 'AAPL', description: 'APPLE INC', type: 'Common Stock' },
+        { symbol: 'NU', description: 'NU HOLDINGS LTD', type: 'ADR' },
+        { symbol: 'SPY', description: 'SPDR S&P 500 ETF TRUST', type: 'ETP' },
+        { symbol: 'PDI', description: 'PIMCO DYNAMIC INCOME FUND', type: 'Closed-End Fund' },
+        { symbol: 'NOTYPE', description: 'Mystery Co' },  // sin type → no entra a types
+      ]);
+    }
+    throw new Error('fetch inesperado: ' + u);
+  };
+  const types = await getSymbolTypes('test-key');
+  ok(types && types.AAPL === 'Common Stock' && types.NU === 'ADR' && types.SPY === 'ETP', 'getSymbolTypes mapea symbol→type', JSON.stringify(types));
+  ok(types && types.NOTYPE === undefined, 'símbolo sin type no entra al mapa de tipos');
+  // getSymbolMap reusa el MISMO fetch/cache → no dispara otra llamada
+  const map = await getSymbolMap('test-key');
+  ok(symbolCalls === 1 && map.AAPL === 'Apple Inc', 'name map y types comparten un solo fetch', symbolCalls + ' llamadas');
+  const stats = await getSymbolTypeStats('test-key');
+  ok(stats && stats.total === 5 && stats.populated === 4 && stats.populated_pct === 80,
+    'stats de cobertura: 4/5 con type = 80%', JSON.stringify(stats));
+  ok(stats && stats.would_exclude_etp_cef === 2 && stats.distribution.ETP === 1 && stats.distribution['Closed-End Fund'] === 1,
+    'stats: ETP + Closed-End Fund se contarían como excluidos', JSON.stringify(stats));
 }
 
 global.fetch = realFetch;

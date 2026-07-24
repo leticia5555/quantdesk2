@@ -37,7 +37,7 @@ import { createHash } from 'node:crypto';
 import { sql, ensureSchema } from './_lib/db.js';
 import { guardedClaudeCall } from './_lib/ai-guard.js';
 import { ANTHROPIC_MODEL } from './_lib/model.js';
-import { getSymbolMap } from './earnings.js';
+import { getSymbolMap, getSymbolTypes } from './earnings.js';
 import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpacaCreds } from './_lib/alpaca.js';
 import { parsePlanResponse, validateActions, ARENA_RULES, isLeveragedInverseETF } from './_lib/arena-guard.js';
@@ -241,7 +241,9 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
 
   // Referencias deterministas para el guard: symbol map + último cierre
   // completo (mismo plumbing Yahoo del simulador) por símbolo propuesto.
+  // Nombre + tipo del symbol map (comparten fetch/cache: 1 request en frío).
   const symbolMap = await getSymbolMap(process.env.FINNHUB_API_KEY);
+  const symbolTypes = await getSymbolTypes(process.env.FINNHUB_API_KEY);
   const lastCloses = {};
   const symbols = [...new Set(parsed.actions.map((a) => a && typeof a.symbol === 'string' ? a.symbol.trim().toUpperCase() : '').filter(Boolean))];
   for (const s of symbols) {
@@ -255,7 +257,7 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   const { approved, discarded } = validateActions({
     actions: parsed.actions,
     equity: account.equity, cash: account.cash,
-    positions, symbolMap, lastCloses,
+    positions, symbolMap, symbolTypes, lastCloses,
   });
 
   // Ejecución: límite + day, client_order_id determinista (idempotencia).

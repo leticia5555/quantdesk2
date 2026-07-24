@@ -125,6 +125,26 @@ ok(isLeveragedInverseETF('SQQQ') && isLeveragedInverseETF('zzz', '2x Long Someth
 ok(!isLeveragedInverseETF('AAPL', 'Apple Inc') && !isLeveragedInverseETF('BULF', 'Bullfrog AI Holdings') && !isLeveragedInverseETF('KO', 'Coca-Cola Co'),
   'isLeveragedInverseETF: sin falsos positivos (Apple, Bullfrog, Coca-Cola)');
 
+// 13g) ETP (ETF/ETN, incluye SPY/QQQ) → descartado por tipo
+r = validateActions({ ...BASE, symbolMap: { ...BASE.symbolMap, SPY: 'Spdr S&P 500 ETF Trust' }, lastCloses: { ...BASE.lastCloses, SPY: 500 }, symbolTypes: { SPY: 'ETP' }, actions: [act({ symbol: 'SPY', limit_price: 500, notional: 5000 })] });
+ok(r.approved.length === 0 && /tipo ETP fuera del universo/.test(r.discarded[0].reason), 'ETP (ETF) → descartado por tipo');
+
+// 13h) Closed-End Fund → descartado por tipo
+r = validateActions({ ...BASE, symbolMap: { ...BASE.symbolMap, PDI: 'Pimco Dynamic Income Fund' }, lastCloses: { ...BASE.lastCloses, PDI: 18 }, symbolTypes: { PDI: 'Closed-End Fund' }, actions: [act({ symbol: 'PDI', limit_price: 18, notional: 3000 })] });
+ok(r.approved.length === 0 && /Closed-End Fund/.test(r.discarded[0].reason), 'Closed-End Fund → descartado por tipo');
+
+// 13i) ADR se MANTIENE (NU/MELI/ITUB LATAM) y lleva security_type
+r = validateActions({ ...BASE, symbolMap: { ...BASE.symbolMap, NU: 'Nu Holdings Ltd' }, lastCloses: { ...BASE.lastCloses, NU: 12 }, symbolTypes: { NU: 'ADR' }, actions: [act({ symbol: 'NU', limit_price: 12, notional: 5000 })] });
+ok(r.approved.length === 1 && r.approved[0].security_type === 'ADR', 'ADR (NU) → aprobado y con security_type', JSON.stringify(r.approved));
+
+// 13j) REIT se mantiene
+r = validateActions({ ...BASE, symbolMap: { ...BASE.symbolMap, O: 'Realty Income Corp' }, lastCloses: { ...BASE.lastCloses, O: 55 }, symbolTypes: { O: 'REIT' }, actions: [act({ symbol: 'O', limit_price: 55, notional: 5000 })] });
+ok(r.approved.length === 1 && r.approved[0].security_type === 'REIT', 'REIT → aprobado');
+
+// 13k) tipo desconocido/vacío → PERMITIR (regla de producto) pero security_type null
+r = validateActions({ ...BASE, symbolTypes: {}, actions: [act()] });
+ok(r.approved.length === 1 && r.approved[0].security_type === null, 'type desconocido → permitido y journaleado (security_type null)', JSON.stringify(r.approved));
+
 // 14) acción malformada dentro de JSON válido → SOLO esa se descarta
 r = validateActions({ ...BASE, actions: [{ symbol: 'AAPL' }, act()] });
 ok(r.approved.length === 1 && r.discarded.length === 1 && /malformada/.test(r.discarded[0].reason),
