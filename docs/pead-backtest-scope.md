@@ -147,8 +147,8 @@ Gate de **dos factores** (formulación PEAD moderna — sorpresa fundamental
 - **Sorpresa EPS** `surprise_pct = (actual − estimate) / |estimate| · 100 > X`
 - **Reacción día 1** `ret_dia1 > Y`
 
-Barrido: `X ∈ {5, 10, 20} %` y `Y ∈ {2, 3, 5} %`. (Lado short: los mismos con
-signo invertido, §3.6.)
+Barrido: `X ∈ {5, 10, 20} %` y `Y ∈ {2, 3, 5} %`. **v1 es long-only** (sorpresa
+y reacción positivas); el lado short queda fuera de v1 (ver "Fuera de v1").
 
 **Definición de "día 1" según `hour` — el detalle de corrección más
 importante:**
@@ -261,20 +261,7 @@ del S&P 500 (datasets públicos en GitHub); se documenta el bias residual.
 - Reusar las etiquetas de veredicto de la casa: **VENTAJA REAL / FRÁGIL / SIN
   VENTAJA** (`signal-backtester.js:379`), juzgadas solo en OOS.
 
-### 3.6 Lado short
-
-Espejo: sorpresa negativa (`< −X`) + reacción día 1 negativa (`< −Y`), drift
-esperado a la baja. Consideraciones:
-
-- El PEAD es **asimétrico**: el drift negativo suele ser más fuerte pero más
-  caro de operar (borrow, hard-to-borrow, riesgo de recall). Modelar un costo
-  de borrow y tratar **long y short como libros separados**, reportados por
-  separado.
-- El Arena hoy es **long-only** (`arena-guard.js`). Un agente PEAD short
-  requeriría cambios en el guard → se marca como asunto de la *fase de agente*,
-  no de la validación.
-
-### 3.7 Rigor extra — clustering de eventos (no naive t-stats)
+### 3.6 Rigor extra — clustering de eventos (no naive t-stats)
 
 Los earnings se **agrupan en el tiempo** (earnings season) y por sector; los
 retornos de eventos simultáneos están correlacionados cross-sectionalmente, así
@@ -294,8 +281,27 @@ estadística por eventos solapados.
 | **0 — Spike de datos** (~1 día) | Verificar con la key real la profundidad histórica de `calendar/earnings` + cobertura de `hour`. Script listo: `scripts/pead-phase0-probe.mjs` (correr **fuera** del entorno remoto — su política de red bloquea finnhub/alphavantage/yahoo/sec). | **GO/NO-GO.** Si free tier no da ≥2y con `hour` poblado → fallback a Alpha Vantage `EARNINGS` + SEC 8-K. |
 | **1 — Dataset de eventos** | Ingesta universo × calendario, alineado por `hour`, cacheado (§1.3). Precios de entrada (open) y salida vía `candles.js`. | Dataset de ~7k eventos crudos, auditado contra look-ahead. |
 | **2 — Descomposición + test de H0** | Medir R_dia1 vs R_drift neto de costos, todos los eventos (sin gate aún). | **KILL SWITCH.** Si R_drift ≈ 0 neto de costos → descartar. |
-| **3 — Barrido + validación** | Barrer X,Y,N en in-sample; walk-forward; costos; CAR vs SPY; short. | Métricas OOS con Bonferroni. |
+| **3 — Barrido + validación** | Barrer X,Y,N (long-only) en in-sample; walk-forward; costos; CAR vs SPY. | Métricas OOS con Bonferroni. |
 | **4 — Veredicto** | VENTAJA REAL / FRÁGIL / SIN VENTAJA en OOS neto de costos. | Si VENTAJA REAL → luz verde para **Agente #7**. Si no → se descarta. |
+
+---
+
+## Fuera de v1 / backlog
+
+Decisiones tomadas para acotar v1. Documentado aquí para no re-litigarlo y para
+retomarlo si v1 valida.
+
+- **Lado short (backlog).** Espejo de la hipótesis: sorpresa negativa (`< −X`) +
+  reacción día 1 negativa (`< −Y`), drift esperado a la baja. Se deja fuera de
+  v1 por dos razones: (1) el Arena hoy es **long-only** (`arena-guard.js`), así
+  que un agente short requeriría cambios en el guard — es asunto de fase de
+  agente, no de esta validación; (2) el PEAD short es **asimétrico y más caro**
+  (borrow, hard-to-borrow, riesgo de recall), lo que exige modelar costo de
+  borrow y tratar long/short como libros separados. Si v1 long valida, el short
+  se retoma como estudio aparte con su propio libro y su propio costo.
+- **Membresía S&P 500 point-in-time (backlog).** v1 usa filtro de liquidez
+  (§2.1). Si se quisiera pureza de índice más adelante, conseguir el CSV de
+  constituyentes históricos y medir el bias residual.
 
 ---
 
@@ -318,15 +324,15 @@ estadística por eventos solapados.
 
 ---
 
-## Decisiones abiertas para ti
+## Decisiones — resueltas
 
-1. **Fuente primaria de earnings:** ¿Finnhub `calendar/earnings` (más simple,
-   trae hora, riesgo de profundidad histórica) o directo Alpha Vantage
-   `EARNINGS` (más historia, pero 25 req/día e ingesta lenta)? → **Recomiendo
-   decidirlo con el resultado de la Fase 0**, no antes.
-2. **Universo:** ¿filtro de liquidez (recomendado, ataca survivorship) o
-   membresía S&P 500 point-in-time (más puro, requiere conseguir el CSV)?
-3. **Profundidad:** ¿3 años objetivo o estirar a 4-5 si la fuente lo permite
-   (más potencia, pero incluye regímenes muy distintos)?
-4. **Short:** ¿lo incluimos en la validación desde el inicio, o validamos long
-   primero y short como fase 2 (dado que el Arena es long-only hoy)?
+1. **Fuente primaria de earnings:** la define la **Fase 0** (Finnhub primario,
+   Alpha Vantage `EARNINGS` + SEC 8-K como fallback si el free tier no da ≥2y
+   con `hour`). El script `scripts/pead-phase0-probe.mjs` produce el veredicto.
+2. **Universo:** **filtro de liquidez** (§2.1), no membresía S&P 500. Ataca
+   survivorship y saca micro-caps.
+3. **Profundidad:** lo que den los datos, **piso 2 años o no-go** (regla de
+   decisión de la Fase 0).
+4. **Short:** **fuera de v1** — long-only como el Arena. Ver "Fuera de v1".
+
+Pendiente: correr la Fase 0 y confirmar la fuente primaria según el tier real.
