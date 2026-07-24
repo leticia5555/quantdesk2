@@ -11,7 +11,7 @@
 // otherwise they return 403/429.
 // ═══════════════════════════════════════════════════════════════════
 
-const SEC_UA = 'QuantDesk research@quantdesk.app';
+export const SEC_UA = 'QuantDesk research@quantdesk.app';
 
 // In-memory cache (lives for the lifetime of the warm Vercel function).
 // Vercel additionally caches the response via Cache-Control headers below.
@@ -19,7 +19,7 @@ const _tickersCache = { data: null, expires: 0 };
 const _submissionsCache = new Map(); // cik -> { data, expires }
 const _filingCache = new Map();      // url -> { text, expires }
 
-async function loadTickerMap() {
+export async function loadTickerMap() {
   const now = Date.now();
   if (_tickersCache.data && _tickersCache.expires > now) {
     return _tickersCache.data;
@@ -46,7 +46,7 @@ async function loadTickerMap() {
   return map;
 }
 
-async function loadSubmissions(paddedCik) {
+export async function loadSubmissions(paddedCik) {
   const now = Date.now();
   const cached = _submissionsCache.get(paddedCik);
   if (cached && cached.expires > now) return cached.data;
