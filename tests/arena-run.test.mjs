@@ -9,7 +9,7 @@
 // Correr con `node tests/arena-run.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import { runArenaDecide, runArenaReconcile, PROMPT_VERSION } from '../api/arena-run.js';
+import { runArenaDecide, runArenaReconcile, PROMPT_VERSION, resolveBaseUrl } from '../api/arena-run.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -46,6 +46,7 @@ const alpacaOrderPosts = [];
 const journalInserts = [];
 const journalUpdates = [];
 let orderFilled = false;
+let moversStatus = 200; // se flipa a 401 para probar fetch_errors del buffet
 
 global.fetch = async (url, opts = {}) => {
   const u = String(url);
@@ -87,7 +88,7 @@ global.fetch = async (url, opts = {}) => {
     return jsonReply({ chart: { result: [{ timestamp: timestamps, indicators: { quote: [{ close: closes }] } }] } });
   }
   // Buffet (self-fetch a nuestros endpoints)
-  if (u.startsWith(BASE_URL + '/api/movers')) return jsonReply({ universe: 'market', gainers: [{ symbol: 'AAPL', price: 200, changePct: 3.1 }], losers: [] });
+  if (u.startsWith(BASE_URL + '/api/movers')) return jsonReply({ universe: 'market', gainers: [{ symbol: 'AAPL', price: 200, changePct: 3.1 }], losers: [] }, moversStatus);
   if (u.startsWith(BASE_URL + '/api/earnings')) return jsonReply({ earnings: [{ ticker: 'MSFT', company: 'Microsoft Corp', date: today, time: 'AMC' }] });
   if (u.startsWith(BASE_URL + '/api/stock-tracker')) return jsonReply({ items: [{ insider: 'Jane Doe', role: 'CEO', ticker: 'AAPL', value: 250000, tradeDate: today }] });
   if (u.startsWith(BASE_URL + '/api/vc-feed')) return jsonReply({ items: [{ title: 'Startup X raises $40M Series B' }] });
@@ -133,6 +134,25 @@ const jFake = jactions.find((a) => a.symbol === 'FAKEZ');
 const jAapl = jactions.find((a) => a.symbol === 'AAPL');
 ok(jFake && jFake.result === 'discarded' && /symbol map/.test(jFake.reason), 'journal: descartada CON razón', JSON.stringify(jFake));
 ok(jAapl && jAapl.result === 'approved' && jAapl.alpaca_order_id === 'ord-1', 'journal: aprobada con su alpaca_order_id');
+// context journaleado: (id, run_date, phase, status, prompt_version, prompt_hash,
+// model, plan, llm_response, actions, account, error, context) → params[12]
+const jctx = JSON.parse(jrow[12]);
+ok(jctx && Array.isArray(jctx.unavailable) && jctx.unavailable.length === 0,
+  'journal: context.unavailable vacío cuando los 4 endpoints responden', jrow[12]);
+ok(jctx && jctx.fetch_errors && Object.keys(jctx.fetch_errors).length === 0,
+  'journal: context.fetch_errors vacío cuando todo entrega datos', jrow[12]);
+
+// ── 1b) un endpoint del buffet cae (401) → su error REAL queda journaleado ──
+console.log('arena-run: fetch_errors del buffet en el journal (observabilidad)');
+moversStatus = 401;
+const insBefore = journalInserts.length;
+const r1b = await runArenaDecide({ baseUrl: BASE_URL });
+ok(journalInserts.length === insBefore + 1, 'run con endpoint caído igual journalea');
+const ctxDown = JSON.parse(journalInserts[journalInserts.length - 1].params[12]);
+ok(ctxDown.unavailable.includes('movers'), 'context.unavailable incluye el endpoint caído', JSON.stringify(ctxDown));
+ok(ctxDown.fetch_errors.movers === 'HTTP 401', 'context.fetch_errors trae el status HTTP real (no solo "no disponible")', JSON.stringify(ctxDown.fetch_errors));
+ok(r1b.status === 'ok' || r1b.status === 'ok_no_actions', 'el Arena opera con menos contexto, no aborta por un endpoint caído', r1b.status);
+moversStatus = 200; // restaurar para no contaminar los escenarios siguientes
 
 // ── 2) reconcile: el fill real aterriza en el journal ──
 console.log('arena-run: reconcile matutino');
@@ -159,6 +179,24 @@ delete process.env.ANTHROPIC_API_KEY;
 const r4 = await runArenaDecide({ baseUrl: BASE_URL });
 ok(r4.status === 'aborted_no_api_key' && r4.orders === 0, 'sin créditos → abort honesto', JSON.stringify(r4));
 ok(alpacaOrderPosts.length === postsBefore, 'sigue sin mandar órdenes');
+
+// ── 5) resolveBaseUrl: PUBLIC_BASE_URL primero (fix del self-fetch 401) ──
+console.log('arena-run: resolveBaseUrl (A2 — evita Deployment Protection)');
+const envSnap = { pub: process.env.PUBLIC_BASE_URL, vercel: process.env.VERCEL_URL };
+process.env.PUBLIC_BASE_URL = 'https://quantdesk2.vercel.app';
+process.env.VERCEL_URL = 'quantdesk2-pnamotrql-x.vercel.app';
+ok(resolveBaseUrl({ headers: {} }) === 'https://quantdesk2.vercel.app',
+  'PUBLIC_BASE_URL gana sobre VERCEL_URL (el generado está protegido)');
+process.env.PUBLIC_BASE_URL = 'https://quantdesk2.vercel.app/';
+ok(resolveBaseUrl({ headers: {} }) === 'https://quantdesk2.vercel.app', 'recorta el trailing slash');
+delete process.env.PUBLIC_BASE_URL;
+ok(resolveBaseUrl({ headers: {} }) === 'https://quantdesk2-pnamotrql-x.vercel.app', 'cae a VERCEL_URL si no hay PUBLIC_BASE_URL');
+delete process.env.VERCEL_URL;
+ok(resolveBaseUrl({ headers: { host: 'localhost:3000', 'x-forwarded-proto': 'http' } }) === 'http://localhost:3000',
+  'cae a proto+host en dev/local');
+// restaurar el entorno
+if (envSnap.pub === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = envSnap.pub;
+if (envSnap.vercel === undefined) delete process.env.VERCEL_URL; else process.env.VERCEL_URL = envSnap.vercel;
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);

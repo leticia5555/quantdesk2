@@ -28,7 +28,9 @@
 // key el run se journalea como abortado honesto, cero órdenes).
 //
 // ENV VARS: ARENA_ENABLED · ALPACA_PAPER_KEY/SECRET · ANTHROPIC_API_KEY ·
-//           FINNHUB_API_KEY (symbol map) · DATABASE_URL · CRON_SECRET (opc)
+//           FINNHUB_API_KEY (symbol map) · DATABASE_URL · CRON_SECRET (opc) ·
+//           PUBLIC_BASE_URL (dominio público estable para el self-fetch; ver
+//           resolveBaseUrl — VERCEL_URL está detrás de Deployment Protection)
 // ═══════════════════════════════════════════════════════════════
 
 import { createHash } from 'node:crypto';
@@ -94,18 +96,32 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   const out = {};
   await Promise.all(Object.entries(targets).map(async ([k, url]) => {
     try { out[k] = await fetchJson(url); }
-    catch (err) { out[k] = null; out[k + '_error'] = String((err && err.message) || err); }
+    catch (err) {
+      out[k] = null;
+      // El error REAL del fetch (status HTTP o timeout), no solo "no disponible".
+      out[k + '_error'] = err && err.name === 'TimeoutError'
+        ? 'timeout (12s)'
+        : String((err && err.message) || err);
+    }
   }));
+  const fetch_errors = {};
+  for (const k of Object.keys(targets)) if (out[k + '_error']) fetch_errors[k] = out[k + '_error'];
   return {
     movers: trimMovers(out.movers),
     earnings_this_week: trimEarnings(out.earnings),
     notable_insider_buys: trimInsiders(out.insiders),
     vc_headlines: trimVc(out.vc),
     unavailable: Object.keys(targets).filter((k) => !out[k]),
+    // Diagnóstico: status HTTP/timeout real por endpoint caído. NO viaja al
+    // prompt del LLM (buildUserPrompt lo excluye) — se journalea para el post-mortem.
+    fetch_errors,
   };
 }
 
 export function buildUserPrompt({ account, positions, openOrders, buffet, previous }) {
+  // fetch_errors es diagnóstico interno (se journalea); el LLM solo necesita
+  // `unavailable`. Se excluye del prompt para no cambiar su comportamiento.
+  const { fetch_errors, ...buffetForLlm } = buffet || {};
   const portfolio = {
     equity: Number(account.equity),
     cash: Number(account.cash),
@@ -122,7 +138,7 @@ export function buildUserPrompt({ account, positions, openOrders, buffet, previo
     previous ? JSON.stringify(previous) : 'none — this is your first run.',
     '',
     'MARKET CONTEXT (QuantDesk endpoints; sections listed in "unavailable" failed today — do not guess their content):',
-    JSON.stringify(buffet),
+    JSON.stringify(buffetForLlm),
     '',
     'Decide your actions for the next market open. Remember: ONE JSON object, nothing else.',
   ].join('\n');
@@ -132,12 +148,13 @@ const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 
 async function journalInsert(row) {
   await sql(
-    `insert into arena_journal (id, run_date, phase, status, prompt_version, prompt_hash, model, plan, llm_response, actions, account, error)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    `insert into arena_journal (id, run_date, phase, status, prompt_version, prompt_hash, model, plan, llm_response, actions, account, error, context)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
     [row.id, row.run_date, row.phase, row.status, row.prompt_version ?? null, row.prompt_hash ?? null,
      row.model ?? null, row.plan ?? null, row.llm_response ?? null,
      row.actions ? JSON.stringify(row.actions) : null,
-     row.account ? JSON.stringify(row.account) : null, row.error ?? null]);
+     row.account ? JSON.stringify(row.account) : null, row.error ?? null,
+     row.context ? JSON.stringify(row.context) : null]);
 }
 
 // ── fase DECIDE ──────────────────────────────────────────────────────
@@ -166,7 +183,11 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   const system = buildSystemPrompt();
   const user = buildUserPrompt({ account, positions, openOrders, buffet, previous });
   const promptHash = sha256(system + '\n---\n' + user);
-  const withPrompt = { ...base, prompt_hash: promptHash, account: accountSnapshot };
+  // Diagnóstico del buffet, journaleado en TODA salida post-contexto: qué
+  // endpoints cayeron y con qué error real (el post-mortem del 24-jul quedó
+  // ciego porque esto no se guardaba).
+  const contextDiag = { unavailable: buffet.unavailable, fetch_errors: buffet.fetch_errors };
+  const withPrompt = { ...base, prompt_hash: promptHash, account: accountSnapshot, context: contextDiag };
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -271,6 +292,21 @@ export async function runArenaReconcile({ now = new Date() } = {}) {
   return summary;
 }
 
+// ── baseUrl del self-fetch al buffet ─────────────────────────────────
+// PUBLIC_BASE_URL (dominio público estable, p.ej. https://quantdesk2.vercel.app)
+// PRIMERO: VERCEL_URL es la URL *generada* del deployment y está detrás de
+// Vercel Deployment Protection → devuelve 401 al self-fetch de la lambda (la
+// causa raíz del 24-jul: los 4 endpoints "cayeron" con 401 y el Arena quedó
+// 100% cash). El alias público no está protegido. Fallbacks conservados para
+// dev/preview local. Pendiente A1 (refactor): llamadas in-process sin red.
+export function resolveBaseUrl(req) {
+  const proto = ((req && req.headers && req.headers['x-forwarded-proto']) || 'https');
+  const host = req && req.headers && req.headers.host;
+  const raw = process.env.PUBLIC_BASE_URL
+    || (process.env.VERCEL_URL ? 'https://' + process.env.VERCEL_URL : proto + '://' + host);
+  return String(raw).replace(/\/+$/, '');
+}
+
 // ── handler ──────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -297,8 +333,7 @@ export default async function handler(req, res) {
       const summary = await runArenaReconcile({});
       return res.status(200).json({ phase, ...summary });
     }
-    const proto = (req.headers['x-forwarded-proto'] || 'https');
-    const baseUrl = process.env.VERCEL_URL ? 'https://' + process.env.VERCEL_URL : proto + '://' + req.headers.host;
+    const baseUrl = resolveBaseUrl(req);
     const summary = await runArenaDecide({ baseUrl });
     return res.status(200).json({ phase: 'decide', ...summary, rules: ARENA_RULES });
   } catch (err) {

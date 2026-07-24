@@ -160,8 +160,12 @@ const SCHEMA = [
      actions jsonb,
      account jsonb,
      error text,
+     context jsonb,
      created_at timestamptz not null default now()
    )`,
+  // Migración idempotente: la tabla ya desplegada en prod se creó sin
+  // `context` (diagnóstico del buffet: unavailable + error real por endpoint).
+  `alter table arena_journal add column if not exists context jsonb`,
 ];
 
 let schemaReady = false;
