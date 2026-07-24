@@ -65,10 +65,23 @@ como caídos y el PM se quedó 100% cash. Los handlers **nunca devuelven 5xx**
 `VERCEL_URL` daba 401 por Deployment Protection. Fix: `PUBLIC_BASE_URL`.
 
 Además, `gatherContext` calculaba el error real por endpoint pero lo tiraba:
-solo journaleaba `unavailable: [nombres]`. Ahora journalea también
-`fetch_errors` (status HTTP / timeout real) en la nueva columna
-`arena_journal.context` — el próximo fallo queda con evidencia, no solo el
-resumen. El `context` NO viaja al prompt del LLM (`buildUserPrompt` lo excluye).
+solo journaleaba `unavailable: [nombres]`. Ahora la columna
+`arena_journal.context` guarda:
+- `fetch_errors` — status HTTP / timeout real por endpoint caído.
+- `prompt` — el **prompt completo** (system + user) que se le mandó al LLM,
+  no solo el `prompt_hash`. Post-mortem sin arqueología: se ve exactamente qué
+  contexto tenía el PM al decidir.
+
+El `context` NO viaja al prompt del LLM (`buildUserPrompt` excluye `fetch_errors`).
+
+### Cobertura de `movers` en el buffet
+
+`trimMovers` le pasa al PM **gainers, losers Y actives** (top-5 c/u,
+`symbol/price/changePct`). Antes solo pasaba gainers+losers, y `actives` —donde
+caen las mega-caps con movimiento fuerte— se descartaba: TSLA a -14.5% en
+actives nunca llegó al PM (24-jul). Además filtra micro-caps **<$5** antes del
+recorte, para que el top-5 no se llene de small caps a -40% que el guard
+descartaría igual y que sepultaban a las mega-caps.
 
 **Refactor pendiente (A1):** eliminar el self-fetch HTTP y llamar a los
 builders (`buildMarketMovers`, calendario de earnings, `buildInsider`,
