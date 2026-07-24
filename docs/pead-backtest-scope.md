@@ -1,11 +1,12 @@
 # SCOPE — Backtest PEAD (Post-Earnings Announcement Drift)
 
-> **Estado:** DISEÑO + PLAN DE DATOS. Nada del backtest construido todavía.
-> **Fase 0 (spike de datos) ya corrió** → fuente definitiva: **Alpha Vantage
-> `EARNINGS` + SEC 8-K** (Finnhub free descartado, ver §1.1). El plan de cosecha
-> está listo y esperando OK para implementar la Fase 1. Filosofía: **validación
-> primero, agente después.** Si el drift capturable neto de costos no existe, se
-> descarta y no se escribe una línea de agente.
+> **Estado:** FASE 1 (cosecha de datos) IMPLEMENTADA. El **backtest** en sí
+> sigue sin construirse — primero se llena el dataset. **Fase 0** resuelta →
+> fuente definitiva **Alpha Vantage `EARNINGS` + SEC 8-K** (Finnhub free
+> descartado, §1.1). La cosecha (cron de goteo + tablas Neon + job SEC) está
+> codeada y testeada; falta desplegar y prenderla (§"Arranque"). Filosofía:
+> **validación primero, agente después.** Si el drift capturable neto de costos
+> no existe, se descarta y no se escribe una línea de agente.
 
 ## Hipótesis
 
@@ -119,8 +120,15 @@ sin competir por ese presupuesto. Todo el plan gira alrededor del goteo de AV.
 
 **Dos tablas nuevas en Neon** (más una de presupuesto):
 
+**Precisión de almacenamiento:** la tabla guarda **TODA la historia que AV
+devuelva** (los ~30 años vienen gratis en la misma llamada), aunque el v0 solo
+analice ~3 años. **La tabla nunca recorta** — el recorte temporal es una
+cláusula del *query* de análisis, no de la ingesta. Bajar una vez, guardar todo,
+decidir la ventana en tiempo de backtest.
+
 ```sql
 -- Un renglón por evento. La PK hace el upsert idempotente (sin duplicados).
+-- Se guardan TODOS los trimestres que devuelva AV (sin recorte temporal).
 CREATE TABLE pead_earnings (
   symbol              text NOT NULL,
   fiscal_date_ending  date NOT NULL,
@@ -256,6 +264,26 @@ de ~24 días a **~10 minutos**, y habilita iterar/refrescar rápido.
 En una línea: **no pagás para OBTENER el v0; pagás solo para ESCALAR un v0 que
 ya mostró señal.** El v0 (gratis, 4 días) es la opción que de-riesga los $50.
 
+### Implementación (ya en el repo)
+
+| Archivo | Qué |
+|---|---|
+| `api/_lib/pead-db.js` | Schema (4 tablas) + helpers: ledger, upsert de earnings (toda la historia), event-hour, budget. |
+| `api/_lib/av-earnings.js` | Fetch + parse de AV EARNINGS. Detecta la trampa de rate-limit (HTTP 200 + `Note`) y el sentinela `'None'`. |
+| `api/_lib/pead-hour.js` | Clasificador BMO/AMC del 8-K (Item 2.02) + heurística de gap + recolección con paginación de filings viejos. Reusa `sec-edgar.js`. |
+| `api/_lib/pead-universe.js` | Universo v0 (~100 nombres líquidos, priority 0). |
+| `api/pead-harvest.js` | Cron: `?job=earnings\|hour\|seed\|status`. Gated por `CRON_SECRET` + `PEAD_HARVEST_ENABLED`. |
+| `tests/pead-harvest.test.mjs` | 30+ asserts de lógica pura (parse, clasificación, matching, gap, universo). |
+| `vercel.json` | 5 crons/día de goteo + 1 de etiquetado SEC. |
+
+### Arranque (cuando quieras prenderla)
+
+1. `DATABASE_URL` y `ALPHAVANTAGE_API_KEY` ya están; setear **`PEAD_HARVEST_ENABLED=1`**.
+2. Sembrar el ledger v0: `GET /api/pead-harvest?job=seed` (idempotente).
+3. Los crons hacen el resto: ~4 días para los 100 nombres. Monitorear con
+   `GET /api/pead-harvest?job=status` (gasto del día + estado del ledger).
+4. El job SEC (`?job=hour`) etiqueta BMO/AMC en paralelo, sin gastar presupuesto AV.
+
 ---
 
 ## 2. DISEÑO DEL EXPERIMENTO
@@ -278,12 +306,21 @@ aplicado **en la fecha del evento** (point-in-time), no hoy.
 
 ### 2.2 Periodo y conteo de eventos
 
-- Periodo objetivo: **3 años** (AV da ~30, así que la profundidad no limita;
-  el tope real será cuántos símbolos cosechemos). v0 podría estirarse a más
-  años sobre los 100 nombres si se quiere potencia extra antes de expandir.
+- Periodo de **análisis** v0: **~3 años** (decisión tomada). Aunque la tabla
+  guarde 30 años, el v0 analiza solo ~3.
 - Conteo bruto: ~600 nombres × 4 trimestres × 3 años ≈ **7.000 eventos**
   (v0: ~100 nombres × 4 × 3 ≈ **1.200 eventos** — ya suficiente para un primer
   test de H0).
+
+> **⚠️ REGLA DURA — profundidad vs survivorship (que quede escrito).**
+> El universo está definido por liquidez **de hoy**. Cuanto más atrás se
+> analiza, más survivorship bias: estaríamos midiendo earnings de empresas que
+> *sabemos* que sobrevivieron y siguen líquidas — sesgo hacia arriba.
+> **Cualquier análisis más profundo que ~3-5 años exige un universo
+> point-in-time** (membresía/liquidez reconstruida a la fecha del evento), o los
+> resultados **no son válidos**. Los 30 años en la tabla son tentadores pero
+> NO se pueden analizar con el universo de hoy. Al expandir la ventana, primero
+> se cambia el universo. Sin excepción.
 - Tras el gate de sorpresa+reacción (p.ej. decil superior): del orden de
   **algunos cientos a ~1.500 eventos** → suficiente para potencia estadística,
   incluso partiendo train/test.
@@ -385,6 +422,11 @@ nombre que luego murió sigue presente en sus eventos previos. Si más adelante
 se quiere pureza de índice, conseguir un CSV de constituyentes point-in-time
 del S&P 500 (datasets públicos en GitHub); se documenta el bias residual.
 
+**El filtro point-in-time solo mitiga survivorship dentro de la ventana en que
+el universo actual sigue siendo representativo (~3-5 años).** Para v0 (~3 años)
+está OK. Ir más atrás sin reconstruir el universo a la fecha invalida los
+resultados — ver la regla dura en §2.2.
+
 ### 3.4 Look-ahead bias
 
 - **Disponibilidad del dato de sorpresa:** con AMC día T, `epsActual` es
@@ -428,7 +470,7 @@ estadística por eventos solapados.
 | Fase | Qué | Salida / gate |
 |---|---|---|
 | **0 — Spike de datos** ✅ HECHA | `scripts/pead-phase0-probe.mjs`. Resultado: Finnhub free **NO-GO** (0 filas históricas); Alpha Vantage `EARNINGS` **GO** (~30 años). | **Fuente definitiva: AV `EARNINGS` + SEC 8-K.** |
-| **1 — Cosecha del dataset v0** | Goteo AV 25/día → **100 nombres en ~4 días** (ver "Plan de cosecha"). SEC 8-K (hora) + Yahoo (precios open/close) en paralelo. Universo completo dripping a ~24 días. | Dataset v0 (~1.200 eventos) en Neon, auditado contra look-ahead + % de hora etiquetada. |
+| **1 — Cosecha del dataset v0** ✅ IMPLEMENTADA | Goteo AV 25/día → **100 nombres en ~4 días** (ver "Plan de cosecha" + "Implementación"). SEC 8-K (hora) + Yahoo (precios open/close) en paralelo. Falta: desplegar + `PEAD_HARVEST_ENABLED=1` + seed. | Dataset v0 (~1.200 eventos) en Neon, auditado contra look-ahead + % de hora etiquetada. |
 | **2 — Descomposición + test de H0** | Medir R_dia1 vs R_drift neto de costos, todos los eventos v0 (sin gate aún). | **KILL SWITCH.** Si R_drift ≈ 0 neto de costos → descartar. Decide también el gasto de AV premium. |
 | **3 — Barrido + validación** | Barrer X,Y,N (long-only) en in-sample; walk-forward; costos; CAR vs SPY. | Métricas OOS con Bonferroni. |
 | **4 — Veredicto** | VENTAJA REAL / FRÁGIL / SIN VENTAJA en OOS neto de costos. | Si VENTAJA REAL → luz verde para **Agente #7**. Si no → se descarta. |
@@ -488,5 +530,7 @@ retomarlo si v1 valida.
 5. **AV premium ($50/mo):** decisión **post-v0** — pagar solo para *escalar* un
    v0 que ya mostró señal, nunca para obtenerlo (ver "Plan de cosecha" §4).
 
-**Próximo paso (esperando tu OK):** implementar la Fase 1 — cron de goteo +
-tablas Neon + job SEC 8-K. No se construye hasta aprobar este plan de datos.
+**Próximo paso:** desplegar y prender la Fase 1 (`PEAD_HARVEST_ENABLED=1` +
+seed, ver "Arranque"), dejar cosechar ~4 días, y recién entonces construir el
+**backtest** (Fase 2: descomposición R_dia1/R_drift + test de H0). El backtest
+NO está construido — es el próximo bloque de trabajo tras tener datos.

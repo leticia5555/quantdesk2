@@ -26,6 +26,14 @@
     {
       "path": "/api/arena-run?phase=reconcile",
       "schedule": "40 14 * * 1-5"
+    },
+    {
+      "path": "/api/pead-harvest?job=earnings",
+      "schedule": "0 12,14,16,18,20 * * *"
+    },
+    {
+      "path": "/api/pead-harvest?job=hour",
+      "schedule": "30 21 * * *"
     }
   ]
 }
