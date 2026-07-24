@@ -42,16 +42,24 @@ leveraged nuevos que aún no están en la lista. El guard es la barrera real: la
 lista sola no es exhaustiva (salen leveraged cada mes) y el resto de las reglas
 no los frena (están en el symbol map US, >$1, sin sufijo de warrant).
 
-**Universo por tipo de instrumento** (`EXCLUDED_SECURITY_TYPES` en el guard):
-solo **equity común, ADR y REIT**. Se excluyen **ETP** (ETFs/ETNs — incluye
-índices tipo SPY/QQQ, no solo apalancados) y **Closed-End Fund**. Los ADR se
-mantienen a propósito (NU/MELI/ITUB son ADRs LATAM, el corazón de la audiencia).
-El `type` sale del symbol map de Finnhub (`getSymbolTypes`, mismo fetch/cache que
-el name map). Es regla de **producto, no de seguridad**: con `type`
+**Universo por tipo de instrumento** (`EXCLUDED_SECURITY_TYPES` + `NON_EQUITY_TYPES`
+en el guard): solo **equity común, ADR y REIT**. El `type` sale del symbol map de
+Finnhub (`getSymbolTypes`, mismo fetch/cache que el name map) — cobertura **97.6%**
+confirmada en prod. Se excluyen:
+- **Fondos** (`EXCLUDED_SECURITY_TYPES`): `ETP` (ETFs/ETNs, incluye índices tipo
+  SPY/QQQ), `Closed-End Fund` y `Open-End Fund`.
+- **No-equity** (`NON_EQUITY_TYPES`): `Unit`, `Equity WRT` (warrant), `Right`,
+  `Preference` — señal autoritativa que refuerza el filtro por sufijo del ticker
+  (`WARRANT_LIKE`, que queda como respaldo para símbolos sin `type`).
+
+Los **ADR se mantienen** a propósito (NU/MELI/ITUB son ADRs LATAM, el corazón de
+la audiencia). Es regla de **producto, no de seguridad**: con `type`
 vacío/desconocido se **permite** y se journalea (`security_type` en la orden
 aprobada; null = el free tier no lo trajo) — lo peligroso ya lo cubre la doble
-barrera de leveraged. Cobertura del `type` verificable en prod con
-`GET /api/earnings?diag=symboltypes` (total, % poblado, distribución).
+barrera de leveraged. El tipo **`PUBLIC`** (3ª categoría por tamaño) queda por
+ahora **permitido**, pendiente de revisar ejemplos. Diag de cobertura + muestras
+por tipo en prod: `GET /api/earnings?diag=symboltypes` (total, % poblado,
+distribución, `samples` por tipo, `would_exclude`).
 
 ## Env vars y orden de encendido
 
