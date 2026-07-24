@@ -291,7 +291,7 @@ estadística por eventos solapados.
 
 | Fase | Qué | Salida / gate |
 |---|---|---|
-| **0 — Spike de datos** (~1 día) | Verificar con la key real la profundidad histórica de `calendar/earnings` + cobertura de `hour`. | **GO/NO-GO.** Si free tier no da ≥2y con `hour` poblado → fallback a Alpha Vantage `EARNINGS` + SEC 8-K. |
+| **0 — Spike de datos** (~1 día) | Verificar con la key real la profundidad histórica de `calendar/earnings` + cobertura de `hour`. Script listo: `scripts/pead-phase0-probe.mjs` (correr **fuera** del entorno remoto — su política de red bloquea finnhub/alphavantage/yahoo/sec). | **GO/NO-GO.** Si free tier no da ≥2y con `hour` poblado → fallback a Alpha Vantage `EARNINGS` + SEC 8-K. |
 | **1 — Dataset de eventos** | Ingesta universo × calendario, alineado por `hour`, cacheado (§1.3). Precios de entrada (open) y salida vía `candles.js`. | Dataset de ~7k eventos crudos, auditado contra look-ahead. |
 | **2 — Descomposición + test de H0** | Medir R_dia1 vs R_drift neto de costos, todos los eventos (sin gate aún). | **KILL SWITCH.** Si R_drift ≈ 0 neto de costos → descartar. |
 | **3 — Barrido + validación** | Barrer X,Y,N en in-sample; walk-forward; costos; CAR vs SPY; short. | Métricas OOS con Bonferroni. |
