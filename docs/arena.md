@@ -26,11 +26,21 @@ al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 
 ## Reglas del PM (deterministas, fuera del LLM)
 
-Universo equities US (sin warrants/units, sin sub-$1, long-only) · máx 8
-posiciones · máx 15% del equity por posición · mín 10% de cash · SOLO
-órdenes límite (day, fill al open siguiente) · limit_price a ±2% del último
-cierre. Violación → orden descartada y journaleada con razón, jamás ajustada
-en silencio. JSON malformado → run abortado honesto, cero órdenes.
+Universo equities US (sin warrants/units, sin sub-$1, **sin ETFs
+apalancados/inversos**, long-only) · máx 8 posiciones · máx 15% del equity por
+posición · mín 10% de cash · SOLO órdenes límite (day, fill al open siguiente)
+· limit_price a ±2% del último cierre. Violación → orden descartada y
+journaleada con razón, jamás ajustada en silencio. JSON malformado → run
+abortado honesto, cero órdenes.
+
+**ETFs apalancados/inversos** (`LEVERAGED_INVERSE_ETFS` / `isLeveragedInverseETF`
+en `_lib/arena-guard.js`) se excluyen con doble barrera: (1) filtro del buffet
+por ticker (`trimMovers`, best-effort — el feed de AV no trae nombres) y (2)
+el guard, que además de la lista aplica una heurística por **nombre** del symbol
+map (multiplicador `2X/3X`, `Ultra`, `Leveraged`, `Inverse`) — esta atrapa los
+leveraged nuevos que aún no están en la lista. El guard es la barrera real: la
+lista sola no es exhaustiva (salen leveraged cada mes) y el resto de las reglas
+no los frena (están en el symbol map US, >$1, sin sufijo de warrant).
 
 ## Env vars y orden de encendido
 
@@ -76,12 +86,22 @@ El `context` NO viaja al prompt del LLM (`buildUserPrompt` excluye `fetch_errors
 
 ### Cobertura de `movers` en el buffet
 
-`trimMovers` le pasa al PM **gainers, losers Y actives** (top-5 c/u,
-`symbol/price/changePct`). Antes solo pasaba gainers+losers, y `actives` —donde
-caen las mega-caps con movimiento fuerte— se descartaba: TSLA a -14.5% en
-actives nunca llegó al PM (24-jul). Además filtra micro-caps **<$5** antes del
-recorte, para que el top-5 no se llene de small caps a -40% que el guard
-descartaría igual y que sepultaban a las mega-caps.
+`trimMovers` le pasa al PM **gainers, losers Y actives** (`symbol/price/changePct`),
+gainers/losers a **top-5** y actives a **top-8**. Antes solo pasaba
+gainers+losers a top-5, y `actives` —donde caen las mega-caps con movimiento
+fuerte— se descartaba: TSLA a -14.5% en actives nunca llegó al PM (24-jul).
+
+Filtros aplicados ANTES del recorte, en las tres listas:
+- **micro-caps <$5** — el top_losers de AV está dominado por small caps a
+  -30/-40% que sepultaban a las mega-caps (el guard igual las descartaría).
+- **ETFs apalancados/inversos** (`LEVERAGED_INVERSE_ETFS` / `isLeveragedInverseETF`).
+  AV free no da nombre ni tipo → no hay flag ni nombre para clasificar; la
+  detección limpia y sin falsos positivos es una **lista curada** por ticker
+  (un regex confundiría NU/AAL/NOK). Importa porque **el guard NO los rechaza**
+  (están en el symbol map US, >$1, sin sufijo de warrant): sin este filtro el PM
+  podría comprar un 3x apalancado, y por volumen desplazan al subyacente real
+  del top de actives. La lista no es exhaustiva: un leveraged nuevo pasa hasta
+  que se agregue al Set.
 
 **Refactor pendiente (A1):** eliminar el self-fetch HTTP y llamar a los
 builders (`buildMarketMovers`, calendario de earnings, `buildInsider`,

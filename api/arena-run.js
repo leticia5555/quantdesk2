@@ -40,7 +40,11 @@ import { ANTHROPIC_MODEL } from './_lib/model.js';
 import { getSymbolMap } from './earnings.js';
 import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpacaCreds } from './_lib/alpaca.js';
-import { parsePlanResponse, validateActions, ARENA_RULES } from './_lib/arena-guard.js';
+import { parsePlanResponse, validateActions, ARENA_RULES, isLeveragedInverseETF } from './_lib/arena-guard.js';
+
+// Re-export: la detección vive en el guard (hogar de las reglas de universo);
+// el buffet la reusa y los tests de arena-run la importan desde acá.
+export { isLeveragedInverseETF };
 
 export const PROMPT_VERSION = 'arena-pm-v1';
 
@@ -62,18 +66,21 @@ An empty actions array is a valid, often correct decision — but plan must then
 // ── contexto: recortes compactos del buffet (tokens de Haiku, no de Opus) ──
 function trimMovers(data) {
   if (!data || data.universe !== 'market') return null;
-  // Filtra micro-caps (<$5) ANTES de recortar a top-5: sin esto el top_losers
-  // de Alpha Vantage (dominado por small/micro caps a -30/-40%) sepultaba a las
-  // mega-caps — TSLA a -14.5% en `actives` nunca llegaba al PM. El guard igual
-  // descartaría ese ruido, así que no se pierde nada operable. Se aplica a las
-  // tres listas por consistencia; una mega-cap real siempre pasa el piso de $5.
-  const pick = (l) => (l || [])
+  // Filtra ANTES de recortar: (a) micro-caps <$5 (curación del buffet, más
+  // estricta que el piso de $1 del guard: el top_losers de AV está dominado
+  // por small caps a -30/-40% que sepultaban a las mega-caps) y (b) ETFs
+  // apalancados/inversos (misma detección que el guard, aquí solo por ticker
+  // porque el feed no trae nombres). El guard vuelve a filtrar (b) con la
+  // señal por nombre; esto es best-effort para no gastarle un slot al PM.
+  const pick = (l, n) => (l || [])
     .filter((m) => m && typeof m.price === 'number' && m.price >= 5)
-    .slice(0, 5)
+    .filter((m) => !isLeveragedInverseETF(m.symbol))
+    .slice(0, n)
     .map((m) => ({ symbol: m.symbol, price: m.price, changePct: m.changePct }));
-  // `actives` (más negociadas del día) ahora SÍ entra: es donde caen las
-  // mega-caps con movimiento fuerte que no llegan al top-5 de losers/gainers.
-  return { gainers: pick(data.gainers), losers: pick(data.losers), actives: pick(data.actives) };
+  // `actives` a top-8 (gainers/losers a 5, que el ranking por % ya prioriza):
+  // es donde las mega-caps con movimiento fuerte quedaban fuera del top-5 al
+  // ser desplazadas por leveraged ETFs y small caps (TSLA -14.5%, 24-jul).
+  return { gainers: pick(data.gainers, 5), losers: pick(data.losers, 5), actives: pick(data.actives, 8) };
 }
 function trimEarnings(data) {
   return ((data && data.earnings) || []).slice(0, 12).map((e) => ({ ticker: e.ticker, company: e.company, date: e.date, time: e.time }));
