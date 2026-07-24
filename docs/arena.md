@@ -42,6 +42,17 @@ leveraged nuevos que aún no están en la lista. El guard es la barrera real: la
 lista sola no es exhaustiva (salen leveraged cada mes) y el resto de las reglas
 no los frena (están en el symbol map US, >$1, sin sufijo de warrant).
 
+**Universo por tipo de instrumento** (`EXCLUDED_SECURITY_TYPES` en el guard):
+solo **equity común, ADR y REIT**. Se excluyen **ETP** (ETFs/ETNs — incluye
+índices tipo SPY/QQQ, no solo apalancados) y **Closed-End Fund**. Los ADR se
+mantienen a propósito (NU/MELI/ITUB son ADRs LATAM, el corazón de la audiencia).
+El `type` sale del symbol map de Finnhub (`getSymbolTypes`, mismo fetch/cache que
+el name map). Es regla de **producto, no de seguridad**: con `type`
+vacío/desconocido se **permite** y se journalea (`security_type` en la orden
+aprobada; null = el free tier no lo trajo) — lo peligroso ya lo cubre la doble
+barrera de leveraged. Cobertura del `type` verificable en prod con
+`GET /api/earnings?diag=symboltypes` (total, % poblado, distribución).
+
 ## Env vars y orden de encendido
 
 1. `ALPACA_PAPER_KEY` / `ALPACA_PAPER_SECRET` — las agrega Lety en Vercel.

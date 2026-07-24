@@ -8,7 +8,11 @@
 // stale (o null la primera vez) — el fallo no se cachea y el calendario
 // nunca se bloquea por el nombre.
 const SYMBOL_MAP_TTL_MS = 86400 * 1000;
-let symbolMapCache = { at: 0, map: null };
+// Un solo fetch al universo US puebla nombre (map) Y tipo (types) + el total,
+// todo con el mismo TTL. `type` de Finnhub: 'Common Stock' | 'ETP' (ETF/ETN) |
+// 'ADR' | 'REIT' | 'Closed-End Fund' | … — puede venir vacío en el free tier
+// (cobertura a verificar en prod vía ?diag=symboltypes).
+let symbolMapCache = { at: 0, map: null, types: null, total: 0 };
 
 // Siglas societarias/financieras que se conservan en mayúsculas al pasar
 // el description de Finnhub a title-case ("APPLE INC" → "Apple Inc").
@@ -27,27 +31,58 @@ export function titleCaseName(raw) {
     .replace(/\.Com\b/g, '.com'); // "AMAZON.COM" → "Amazon.com", no "Amazon.Com"
 }
 
+// Un solo fetch → ambos mapas + total. El fallo NO se cachea (se sirve stale).
+async function refreshSymbolData(finnhubKey) {
+  const r = await fetch(`https://finnhub.io/api/v1/stock/symbol?exchange=US&token=${finnhubKey}`);
+  const ct = (r.headers && r.headers.get('content-type')) || '';
+  if (!r.ok || !ct.includes('application/json')) return false;
+  const list = await r.json();
+  if (!Array.isArray(list) || list.length === 0) return false;
+  const map = {};
+  const types = {};
+  for (const s of list) {
+    if (!s || !s.symbol) continue;
+    if (s.description) map[s.symbol] = titleCaseName(s.description);
+    if (s.type) types[s.symbol] = s.type; // puede faltar en el free tier
+  }
+  symbolMapCache = { at: Date.now(), map, types, total: list.length };
+  return true;
+}
+
 export async function getSymbolMap(finnhubKey) {
   if (symbolMapCache.map && Date.now() - symbolMapCache.at < SYMBOL_MAP_TTL_MS) return symbolMapCache.map;
-  try {
-    const r = await fetch(`https://finnhub.io/api/v1/stock/symbol?exchange=US&token=${finnhubKey}`);
-    const ct = (r.headers && r.headers.get('content-type')) || '';
-    if (!r.ok || !ct.includes('application/json')) return symbolMapCache.map;
-    const list = await r.json();
-    if (!Array.isArray(list) || list.length === 0) return symbolMapCache.map;
-    const map = {};
-    for (const s of list) {
-      if (s && s.symbol && s.description) map[s.symbol] = titleCaseName(s.description);
-    }
-    symbolMapCache = { at: Date.now(), map };
-    return map;
-  } catch (e) {
-    return symbolMapCache.map;
-  }
+  try { await refreshSymbolData(finnhubKey); } catch (e) { /* stale (o null la 1a vez) */ }
+  return symbolMapCache.map;
+}
+
+// Símbolo → tipo de instrumento. Mismo fetch/cache que getSymbolMap (0 requests
+// extra con cache caliente). Fuente del gate de universo del guard (equity común).
+export async function getSymbolTypes(finnhubKey) {
+  if (symbolMapCache.types && Date.now() - symbolMapCache.at < SYMBOL_MAP_TTL_MS) return symbolMapCache.types;
+  try { await refreshSymbolData(finnhubKey); } catch (e) { /* stale */ }
+  return symbolMapCache.types;
+}
+
+// Cobertura del campo `type` — para VERIFICAR en prod si el free tier lo puebla
+// antes de confiar en el gate. Devuelve total, poblados, % y distribución.
+export async function getSymbolTypeStats(finnhubKey) {
+  const types = await getSymbolTypes(finnhubKey);
+  if (!types) return null;
+  const distribution = {};
+  for (const t of Object.values(types)) distribution[t] = (distribution[t] || 0) + 1;
+  const populated = Object.keys(types).length;
+  const total = symbolMapCache.total || populated;
+  return {
+    total,
+    populated,
+    populated_pct: total ? +(100 * populated / total).toFixed(1) : null,
+    distribution,
+    would_exclude_etp_cef: (distribution.ETP || 0) + (distribution['Closed-End Fund'] || 0),
+  };
 }
 
 // Hook de tests: vacía el cache del symbol map (nunca se usa en producción).
-export function _resetSymbolMapCache() { symbolMapCache = { at: 0, map: null }; }
+export function _resetSymbolMapCache() { symbolMapCache = { at: 0, map: null, types: null, total: 0 }; }
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -57,6 +92,16 @@ export default async function handler(req, res) {
 
   const finnhubKey = process.env.FINNHUB_API_KEY;
   const { from, to, ticker } = req.query;
+
+  // ═══ DIAG: cobertura del campo `type` (para verificar el free tier) ═══
+  //   GET /api/earnings?diag=symboltypes → { total, populated, populated_pct,
+  //   distribution, would_exclude_etp_cef }. En vivo, sin cache.
+  if (req.query && req.query.diag === 'symboltypes') {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!finnhubKey) return res.status(200).json({ error: 'FINNHUB_API_KEY not configured' });
+    const stats = await getSymbolTypeStats(finnhubKey);
+    return res.status(200).json(stats || { error: 'symbol types no disponibles' });
+  }
 
   // ═══════════════════════════════════════════════════════════════
   // MODE 2: HISTORY — /api/earnings?ticker=NVDA

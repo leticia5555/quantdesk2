@@ -66,6 +66,14 @@ export function isLeveragedInverseETF(symbol, name) {
   return !!name && LEVERAGED_INVERSE_NAME.test(String(name));
 }
 
+// ── Universo por TIPO de instrumento (campo `type` del symbol map) ──
+// Solo equity común, ADR y REIT. Se excluyen ETP (ETFs/ETNs — incluye índices
+// tipo SPY/QQQ, no solo apalancados) y Closed-End Fund. Los ADR se mantienen a
+// propósito: NU/MELI/ITUB son ADRs LATAM, el corazón de la audiencia. Regla de
+// PRODUCTO, no de seguridad: con `type` vacío/desconocido se PERMITE (el gate
+// peligroso —leveraged— ya lo cubre la doble barrera de arriba).
+export const EXCLUDED_SECURITY_TYPES = new Set(['ETP', 'Closed-End Fund']);
+
 // ── parse: respuesta cruda del LLM → { ok, plan, actions } ──────────
 // Malformado (no-JSON, sin plan, actions no-array) → { ok:false, error }
 // y el caller aborta el run completo con cero órdenes.
@@ -103,7 +111,7 @@ function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 //   lastCloses  → { SYMBOL: último cierre completo } (Yahoo, plumbing sim.js)
 //   rules       → override para tests; default ARENA_RULES
 // Salida: { approved: [...con qty entera], discarded: [{ action, reason }] }
-export function validateActions({ actions, equity, cash, positions, symbolMap, lastCloses, rules = ARENA_RULES }) {
+export function validateActions({ actions, equity, cash, positions, symbolMap, symbolTypes, lastCloses, rules = ARENA_RULES }) {
   const approved = [];
   const discarded = [];
   const discard = (action, reason) => discarded.push({ action, reason });
@@ -136,6 +144,13 @@ export function validateActions({ actions, equity, cash, positions, symbolMap, l
     // sufijo de warrant), así que sin esto se ejecutarían en Alpaca.
     if (isLeveragedInverseETF(symbol, symbolMap[symbol])) {
       discard(raw, `${symbol}: ETF apalancado/inverso fuera del universo (solo equity común)`);
+      continue;
+    }
+    // Universo por tipo. type vacío/desconocido → se permite (regla de producto);
+    // el type resuelto (o null) viaja en la aprobada para el journal.
+    const secType = (symbolTypes && symbolTypes[symbol]) || null;
+    if (secType && EXCLUDED_SECURITY_TYPES.has(secType)) {
+      discard(raw, `${symbol}: tipo ${secType} fuera del universo (solo equity común, ADR y REIT)`);
       continue;
     }
 
@@ -183,6 +198,7 @@ export function validateActions({ actions, equity, cash, positions, symbolMap, l
     approved.push({
       symbol, side, qty, limit_price: limitPrice,
       notional: +cost.toFixed(2),
+      security_type: secType, // null si el free tier no lo trajo (permitido, journaleado)
       conviction: num(a.conviction),
       reasoning: typeof a.reasoning === 'string' ? a.reasoning.slice(0, 600) : null,
     });

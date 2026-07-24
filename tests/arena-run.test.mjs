@@ -81,7 +81,7 @@ global.fetch = async (url, opts = {}) => {
   // Finnhub symbol map
   if (u.includes('finnhub.io/api/v1/stock/symbol')) {
     return { ok: true, status: 200, headers: { get: () => 'application/json' },
-      json: async () => [{ symbol: 'AAPL', description: 'APPLE INC' }, { symbol: 'MSFT', description: 'MICROSOFT CORP' }] };
+      json: async () => [{ symbol: 'AAPL', description: 'APPLE INC', type: 'Common Stock' }, { symbol: 'MSFT', description: 'MICROSOFT CORP', type: 'Common Stock' }] };
   }
   // Yahoo
   if (u.includes('yahoo')) {
@@ -154,6 +154,7 @@ const jFake = jactions.find((a) => a.symbol === 'FAKEZ');
 const jAapl = jactions.find((a) => a.symbol === 'AAPL');
 ok(jFake && jFake.result === 'discarded' && /symbol map/.test(jFake.reason), 'journal: descartada CON razón', JSON.stringify(jFake));
 ok(jAapl && jAapl.result === 'approved' && jAapl.alpaca_order_id === 'ord-1', 'journal: aprobada con su alpaca_order_id');
+ok(jAapl && jAapl.security_type === 'Common Stock', 'journal: la aprobada lleva el security_type del symbol map (wiring type→guard→journal)', JSON.stringify(jAapl && jAapl.security_type));
 // context journaleado: (id, run_date, phase, status, prompt_version, prompt_hash,
 // model, plan, llm_response, actions, account, error, context) → params[12]
 const jctx = JSON.parse(jrow[12]);
