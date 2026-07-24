@@ -62,8 +62,18 @@ An empty actions array is a valid, often correct decision — but plan must then
 // ── contexto: recortes compactos del buffet (tokens de Haiku, no de Opus) ──
 function trimMovers(data) {
   if (!data || data.universe !== 'market') return null;
-  const pick = (l) => (l || []).slice(0, 5).map((m) => ({ symbol: m.symbol, price: m.price, changePct: m.changePct }));
-  return { gainers: pick(data.gainers), losers: pick(data.losers) };
+  // Filtra micro-caps (<$5) ANTES de recortar a top-5: sin esto el top_losers
+  // de Alpha Vantage (dominado por small/micro caps a -30/-40%) sepultaba a las
+  // mega-caps — TSLA a -14.5% en `actives` nunca llegaba al PM. El guard igual
+  // descartaría ese ruido, así que no se pierde nada operable. Se aplica a las
+  // tres listas por consistencia; una mega-cap real siempre pasa el piso de $5.
+  const pick = (l) => (l || [])
+    .filter((m) => m && typeof m.price === 'number' && m.price >= 5)
+    .slice(0, 5)
+    .map((m) => ({ symbol: m.symbol, price: m.price, changePct: m.changePct }));
+  // `actives` (más negociadas del día) ahora SÍ entra: es donde caen las
+  // mega-caps con movimiento fuerte que no llegan al top-5 de losers/gainers.
+  return { gainers: pick(data.gainers), losers: pick(data.losers), actives: pick(data.actives) };
 }
 function trimEarnings(data) {
   return ((data && data.earnings) || []).slice(0, 12).map((e) => ({ ticker: e.ticker, company: e.company, date: e.date, time: e.time }));
@@ -183,10 +193,16 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   const system = buildSystemPrompt();
   const user = buildUserPrompt({ account, positions, openOrders, buffet, previous });
   const promptHash = sha256(system + '\n---\n' + user);
-  // Diagnóstico del buffet, journaleado en TODA salida post-contexto: qué
-  // endpoints cayeron y con qué error real (el post-mortem del 24-jul quedó
-  // ciego porque esto no se guardaba).
-  const contextDiag = { unavailable: buffet.unavailable, fetch_errors: buffet.fetch_errors };
+  // Diagnóstico del buffet + el PROMPT REAL, journaleado en TODA salida
+  // post-contexto. El post-mortem del 24-jul quedó ciego dos veces: (1) los
+  // fetch_errors no se guardaban, (2) del prompt solo había el hash, así que
+  // reconstruir qué vio el PM fue arqueología. Ahora queda el texto completo
+  // (system + user, exactamente lo que se le mandó al LLM).
+  const contextDiag = {
+    unavailable: buffet.unavailable,
+    fetch_errors: buffet.fetch_errors,
+    prompt: { system, user },
+  };
   const withPrompt = { ...base, prompt_hash: promptHash, account: accountSnapshot, context: contextDiag };
 
   const apiKey = process.env.ANTHROPIC_API_KEY;

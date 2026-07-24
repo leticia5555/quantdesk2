@@ -88,7 +88,12 @@ global.fetch = async (url, opts = {}) => {
     return jsonReply({ chart: { result: [{ timestamp: timestamps, indicators: { quote: [{ close: closes }] } }] } });
   }
   // Buffet (self-fetch a nuestros endpoints)
-  if (u.startsWith(BASE_URL + '/api/movers')) return jsonReply({ universe: 'market', gainers: [{ symbol: 'AAPL', price: 200, changePct: 3.1 }], losers: [] }, moversStatus);
+  if (u.startsWith(BASE_URL + '/api/movers')) return jsonReply({
+    universe: 'market',
+    gainers: [{ symbol: 'PENNYG', price: 2, changePct: 60 }, { symbol: 'AAPL', price: 200, changePct: 3.1 }],
+    losers: [{ symbol: 'PENNYL', price: 0.5, changePct: -55 }, { symbol: 'TSLA', price: 210, changePct: -14.5 }],
+    actives: [{ symbol: 'NVDA', price: 170, changePct: 1.2 }, { symbol: 'TSLA', price: 210, changePct: -14.5 }],
+  }, moversStatus);
   if (u.startsWith(BASE_URL + '/api/earnings')) return jsonReply({ earnings: [{ ticker: 'MSFT', company: 'Microsoft Corp', date: today, time: 'AMC' }] });
   if (u.startsWith(BASE_URL + '/api/stock-tracker')) return jsonReply({ items: [{ insider: 'Jane Doe', role: 'CEO', ticker: 'AAPL', value: 250000, tradeDate: today }] });
   if (u.startsWith(BASE_URL + '/api/vc-feed')) return jsonReply({ items: [{ title: 'Startup X raises $40M Series B' }] });
@@ -141,6 +146,20 @@ ok(jctx && Array.isArray(jctx.unavailable) && jctx.unavailable.length === 0,
   'journal: context.unavailable vacío cuando los 4 endpoints responden', jrow[12]);
 ok(jctx && jctx.fetch_errors && Object.keys(jctx.fetch_errors).length === 0,
   'journal: context.fetch_errors vacío cuando todo entrega datos', jrow[12]);
+
+// context.prompt: el prompt REAL journaleado (no solo el hash) — post-mortem sin arqueología
+ok(jctx.prompt && typeof jctx.prompt.system === 'string' && typeof jctx.prompt.user === 'string',
+  'journal: context.prompt guarda system + user completos');
+ok(jctx.prompt.system.includes('Claude PM'), 'journal: el system prompt real queda guardado');
+const uMovers = JSON.parse(jctx.prompt.user.split('\n').find((l) => l.startsWith('{') && l.includes('"movers"'))).movers;
+// actives ahora entra al prompt del PM
+ok(Array.isArray(uMovers.actives) && uMovers.actives.some((m) => m.symbol === 'TSLA'),
+  'prompt: actives entra y trae TSLA (-14.5%), antes invisible', JSON.stringify(uMovers.actives));
+// filtro ≥$5: los penny stocks NO llegan al top-5 de gainers/losers
+ok(!uMovers.gainers.some((m) => m.symbol === 'PENNYG') && !uMovers.losers.some((m) => m.symbol === 'PENNYL'),
+  'prompt: micro-caps (<$5) filtradas de gainers y losers', JSON.stringify(uMovers));
+ok(uMovers.gainers.some((m) => m.symbol === 'AAPL') && uMovers.losers.some((m) => m.symbol === 'TSLA'),
+  'prompt: las de precio real (AAPL, TSLA) sí quedan', JSON.stringify(uMovers));
 
 // ── 1b) un endpoint del buffet cae (401) → su error REAL queda journaleado ──
 console.log('arena-run: fetch_errors del buffet en el journal (observabilidad)');
