@@ -222,6 +222,15 @@ ok(Array.isArray(dd.news) && dd.news.length === 1 && dd.news[0].headline.include
 // ── el DIVE prompt trae los datos y aclara que price target NO viene (Premium) ──
 ok(jctx.dive.prompt.user.includes('AAPL') && /price targets? .*NOT provided/i.test(jctx.dive.prompt.user), 'prompt DIVE: research por candidato + nota de que no hay price targets (Premium)');
 
+// ── el cierre se le MUESTRA al PM (fix del desfase: el guard valida contra el
+// MISMO cierre). Yahoo mock → último cierre 200 → banda ±2% = [196, 204]. ──
+ok(jctx.dive.shown_closes && jctx.dive.shown_closes.AAPL === 200, 'journal: context.dive.shown_closes guarda el cierre mostrado por candidato (auditar desfases)', JSON.stringify(jctx.dive && jctx.dive.shown_closes));
+const research = JSON.parse(jctx.dive.prompt.user.split('\n').find((l) => l.startsWith('[') && l.includes('"ticker"')));
+const rAapl = research.find((x) => x.ticker === 'AAPL');
+ok(rAapl && rAapl.last_close === 200, 'prompt DIVE: cada candidato lleva last_close (el MISMO contra el que valida el guard)', JSON.stringify(rAapl && rAapl.last_close));
+ok(rAapl && rAapl.limit_range && rAapl.limit_range.low === 196 && rAapl.limit_range.high === 204, 'prompt DIVE: limit_range ±2% ya calculado (196–204 para cierre 200) — sin aritmética para el PM', JSON.stringify(rAapl && rAapl.limit_range));
+ok(/limit_price MUST fall inside/i.test(jctx.dive.prompt.user) && /Do NOT anchor.*52-week/i.test(jctx.dive.prompt.user), 'prompt DIVE: regla de precio explícita (±2% del last_close, no anclar en 52w-high)');
+
 // ── el SCAN prompt trae el buffet; movers con top-8 + filtro leveraged + ≥$5 (main #76) ──
 const uMovers = JSON.parse(jctx.scan.prompt.user.split('\n').find((l) => l.startsWith('{') && l.includes('"movers"'))).movers;
 ok(Array.isArray(uMovers.actives) && uMovers.actives.length === 8, 'prompt SCAN: actives recortado a top-8', String((uMovers.actives || []).length));
