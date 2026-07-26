@@ -173,8 +173,9 @@ ok(r.approved.length === 0 && /Open-End Fund/.test(r.discarded[0].reason), 'Open
 r = validateActions({ ...BASE, symbolMap: { ...BASE.symbolMap, WRNTX: 'Acme Warrant' }, lastCloses: { ...BASE.lastCloses, WRNTX: 3 }, symbolTypes: { WRNTX: 'Equity WRT' }, actions: [act({ symbol: 'WRNTX', limit_price: 3, notional: 500 })] });
 ok(r.approved.length === 0 && /no es equity común/.test(r.discarded[0].reason), 'warrant sin sufijo → descartado por type autoritativo (regex no lo veía)');
 
-// 13n) Unit / Right / Preference por type → descartados
-for (const [sym, ty] of [['UNITX', 'Unit'], ['RGHTX', 'Right'], ['PREFX', 'Preference']]) {
+// 13n) Unit / Right / Preference / PUBLIC por type → descartados. PUBLIC es el
+// catch-all de Finnhub: las muestras en prod fueron preferentes y baby bonds.
+for (const [sym, ty] of [['UNITX', 'Unit'], ['RGHTX', 'Right'], ['PREFX', 'Preference'], ['PUBX', 'PUBLIC']]) {
   const rr = validateActions({ ...BASE, symbolMap: { ...BASE.symbolMap, [sym]: sym }, lastCloses: { ...BASE.lastCloses, [sym]: 10 }, symbolTypes: { [sym]: ty }, actions: [act({ symbol: sym, limit_price: 10, notional: 1000 })] });
   ok(rr.approved.length === 0 && /no es equity común/.test(rr.discarded[0].reason), `type ${ty} → descartado`);
 }

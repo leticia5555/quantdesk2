@@ -79,7 +79,10 @@ export const EXCLUDED_SECURITY_TYPES = new Set(['ETP', 'Closed-End Fund', 'Open-
 // heurística; ahora el `type` del symbol map los marca de forma AUTORITATIVA
 // (97.6% de cobertura confirmada en prod). El regex queda como respaldo para
 // símbolos sin type. "Equity WRT" = warrant; "Preference" = acción preferente.
-export const NON_EQUITY_TYPES = new Set(['Unit', 'Equity WRT', 'Right', 'Preference']);
+// `PUBLIC` es el catch-all de Finnhub (3ª categoría por tamaño): las muestras en
+// prod (diag ?sample=N) resultaron puras preferentes y baby bonds — no-equity —
+// así que se excluye también. No es suffix-catchable; solo lo marca el `type`.
+export const NON_EQUITY_TYPES = new Set(['Unit', 'Equity WRT', 'Right', 'Preference', 'PUBLIC']);
 
 // ── parse: respuesta cruda del LLM → { ok, plan, actions } ──────────
 // Malformado (no-JSON, sin plan, actions no-array) → { ok:false, error }
