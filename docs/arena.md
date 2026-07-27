@@ -17,12 +17,106 @@ al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 |---|---|
 | Cliente Alpaca (limit-only hardcodeado) | `api/_lib/alpaca.js` |
 | Smoke + health | `api/alpaca.js` (`GET ?smoke=1`) |
-| Risk guard determinista (post-LLM, fail closed) | `api/_lib/arena-guard.js` |
+| Risk guard determinista (post-LLM, fail closed) + FLOOR del screener | `api/_lib/arena-guard.js` |
+| Deep dive Finnhub por candidato (fundamentales/recommendation/news) | `api/_lib/finnhub-dive.js` |
 | Cron decide (22:40 UTC L-V) + reconcile (14:40 UTC L-V) | `api/arena-run.js` + `vercel.json` |
+| **Canal SCREENER** — screens deterministas (value/momentum) | `api/_lib/screens.js` |
+| **Canal SCREENER** — capa de datos Neon (tabla + ledger) | `api/_lib/screener-db.js` |
+| **Canal SCREENER** — universo (~150 nombres, extraído de app.html) | `api/_lib/screener-universe.js` |
+| **Canal SCREENER** — cron de precompute (cada 4h) | `api/arena-screener.js` + `vercel.json` |
 | Datos para la UI | `api/arena.js` |
 | Journal | tabla `arena_journal` (`api/_lib/db.js`) |
 | UI (sección en MIS AGENTES) | `app.html` (`qdArenaLoad`/`qdArenaHtml`) |
-| Tests | `tests/arena-guard.test.mjs` · `tests/alpaca.test.mjs` · `tests/arena-run.test.mjs` |
+| Tests | `tests/arena-guard.test.mjs` · `tests/alpaca.test.mjs` · `tests/arena-run.test.mjs` · `tests/screens.test.mjs` |
+
+## Flujo de dos fases (SCAN → DEEP DIVE)
+
+El tick `?phase=decide` corre en **dos llamadas al LLM**, ambas con el MISMO
+modelo (`ANTHROPIC_MODEL`, Haiku por defecto) para no contaminar la línea base
+del agente #6 (la liga Haiku vs Sonnet vs Opus necesita harness idéntico):
+
+1. **Contexto** — cuenta/posiciones/órdenes de Alpaca + el buffet
+   (movers market, earnings de la semana, insider buys, **canal screener**) +
+   el plan anterior reinyectado (estilo nof1).
+2. **SCAN** (LLM #1, el SCOUT) — sobre el buffet, nombra hasta `MAX_CANDIDATES`
+   (5) tickers a investigar. No decide órdenes, solo triage. Lista vacía es
+   válida. Malformado → `aborted_scan_malformed_json`, cero órdenes.
+3. **FLOOR del screener** (determinista) — reserva slots para el canal screener
+   (ver abajo) → **slate final** con `origin` por candidato.
+4. **DEEP DIVE** (determinista, `_lib/finnhub-dive.js`) — por cada candidato del
+   slate trae de Finnhub (free tier, best-effort) fundamentales (P/E, market cap,
+   márgenes, deuda), analyst recommendations y titulares recientes (top-5, 7 días).
+   Price targets son Premium → **no se traen**; el rating sale del reparto
+   buy/hold/sell de las recommendations.
+5. **DIVE** (LLM #2, el PM) — con esos datos + el último cierre por candidato
+   decide → JSON `{plan, actions[]}`. Malformado → `aborted_malformed_json`,
+   cero órdenes.
+6. **Risk guard** (`_lib/arena-guard.js`) — descarta las órdenes que violan las
+   reglas, no las ajusta. Ver abajo.
+
+**Estados "ok sin órdenes"** (se distinguen a propósito):
+- `ok_no_candidates` — ni el scout ni el screener produjeron candidatos → no se
+  gasta el DIVE ni se pega a Finnhub.
+- `ok_no_actions` — hubo candidatos y deep dive, pero el DIVE decidió holdear.
+
+## Canal SCREENER (value + momentum, precomputado en Neon)
+
+Un canal del buffet **estado-driven, no del LLM**: surface empresas sólidas a
+buen precio aunque no hayan hecho noticia hoy. El screen es **determinista**
+(`_lib/screens.js`); el LLM solo recibe los candidatos ya calificados con sus
+números.
+
+**Arquitectura (por qué precomputar):** el arena-run corre en una lambda de 60s
+y NO alcanza para pegarle a Finnhub/Yahoo por ~150 símbolos en cada corrida. Un
+cron aparte (`api/arena-screener.js`, cada 4h) llena la tabla `arena_screener`
+en Neon con fundamentales (Finnhub `stock/metric`) + precio/MA50/MA200 (Yahoo),
+drenando por antigüedad (ledger reanudable, mismo patrón que `pead-harvest`).
+**El arena-run SOLO LEE esa tabla** (`readScreenerRows`) y computa las screens en
+código → cero llamadas extra en la corrida. Gate: `ARENA_SCREENER_ENABLED=1`.
+
+**Las dos screens** (top-5 cada una, `computeScreens`):
+- **VALUE** — `P/E ∈ (0,20)`, `ROE > 15%`, `deuda/equity < 1.0`; rankeado por
+  `ROE/PE`. Qualifiers: `pe_ttm`, `roe_ttm`, `debt_to_equity`.
+- **MOMENTUM** — `cierre > MA50 > MA200`, sin blowoffs (`≤30%` sobre MA50);
+  rankeado por `% sobre MA50`. Qualifiers: `above_ma50_pct`, `above_ma200`.
+
+**CANDADO de precio:** el precio del screener tiene 1-2 días de lag. Ese precio
+**NUNCA** llega a `limit_price`. Los qualifiers son **solo ratios/%** (jamás un
+precio absoluto — hay tests que lo aseguran), y el `last_close` que ve el PM en
+el DIVE + la banda ±2% que valida el guard salen SIEMPRE de `lastCompletedclose`
+(Yahoo, fresco), no del screener.
+
+### FLOOR del screener (`applyScreenerFloor`, time-boxed del trial)
+
+`SCREENER_FLOOR = 2` (constante en `arena-run.js`, **documentada como time-boxed
+~30 días**; con datos baja a 0 → free-choice puro). Reserva hasta 2 de los 5
+slots de candidatos para el screener **solo cuando alguna screen realmente
+dispara** — nada de rellenar con basura. Razón: sin floor, un scout sesgado a lo
+noticioso podría no elegir screener en semanas → mediríamos su sesgo, no la
+calidad del canal. `floor.reason` se journalea SIEMPRE y distingue los casos:
+- `no_qualifying_candidates` — ninguna screen disparó (el floor NO se usó).
+- `scout_met_floor` — el scout ya tenía ≥floor picks de screener.
+- `screener_already_picked` — los picks del screener ya estaban en el scan.
+- `floor_applied` — se reservaron slots.
+
+### Atribución de canal (`origin` + `channels`)
+
+Cada candidato y cada acción journalea de qué canal salió, para el post-mortem a
+30 días (GROUP BY channel → qué canal produjo decisiones y cuál fue ruido):
+- `channels` — `movers`/`earnings`/`insider`/`screener` (índice determinista de
+  qué sección del buffet contenía el ticker; no confía en el LLM).
+- `origin` — `scout_picked` (lo eligió el scout, incl. screener orgánico) vs
+  `floor_reserved` (lo forzó el floor). Separa "el PM eligió el canal" de "se lo
+  reservamos".
+- `screens` + `screener_qualifiers` — si vino del screener, qué screen y con qué
+  números.
+
+El índice de atribución (`channelsByTicker`) **NO viaja al prompt del LLM** — es
+solo para journaling.
+
+**VC fuera del buffet:** las VC headlines salieron del contexto del PM (son
+empresas privadas que no puede comprar; el espacio le sirve más al screener). El
+endpoint `/api/vc-feed` sigue vivo para el resto de la app.
 
 ## Reglas del PM (deterministas, fuera del LLM)
 
@@ -78,8 +172,16 @@ distribución, `samples` por tipo —default 30, configurable con `&sample=N`—
    necesitan. Sin key, el run queda journaleado como `aborted_no_api_key`
    con cero órdenes — el cron puede quedar prendido sin gastar.
 
-También usa (ya existentes): `FINNHUB_API_KEY` (symbol map del guard),
-`DATABASE_URL`, `CRON_SECRET`, `ANTHROPIC_MODEL` (default haiku).
+También usa (ya existentes): `FINNHUB_API_KEY` (symbol map del guard + deep dive
+de candidatos + fundamentales del cron screener), `DATABASE_URL`, `CRON_SECRET`,
+`ANTHROPIC_MODEL` (default haiku).
+
+**Canal screener:** `ARENA_SCREENER_ENABLED=1` prende el cron de precompute
+(`api/arena-screener?job=refresh`, cada 4h en `vercel.json`). Es independiente de
+`ARENA_ENABLED`: mientras el cron no haya corrido (o esté apagado) la tabla
+`arena_screener` está vacía → el canal screener llega vacío al PM, no es error.
+Sembrar el ledger: `GET /api/arena-screener?job=seed` (o siembra perezosa en el
+primer `refresh`); estado: `?job=status`.
 
 5. `PUBLIC_BASE_URL` — dominio público estable del deploy (p.ej.
    `https://quantdesk2.vercel.app`) para el **self-fetch del buffet**. Es
@@ -91,20 +193,26 @@ También usa (ya existentes): `FINNHUB_API_KEY` (symbol map del guard),
 
 ## Self-fetch del buffet: causa raíz 24-jul y observabilidad
 
-El 24-jul la corrida journaleó los 4 endpoints (movers/earnings/insiders/vc)
-como caídos y el PM se quedó 100% cash. Los handlers **nunca devuelven 5xx**
-(degradan a 200), así que el fallo estaba una capa arriba: el self-fetch a
-`VERCEL_URL` daba 401 por Deployment Protection. Fix: `PUBLIC_BASE_URL`.
+El 24-jul la corrida journaleó los endpoints del buffet como caídos y el PM se
+quedó 100% cash. Los handlers **nunca devuelven 5xx** (degradan a 200), así que
+el fallo estaba una capa arriba: el self-fetch a `VERCEL_URL` daba 401 por
+Deployment Protection. Fix: `PUBLIC_BASE_URL`. (El self-fetch cubre
+movers/earnings/insiders; el canal screener se lee de Neon, no por HTTP.)
 
 Además, `gatherContext` calculaba el error real por endpoint pero lo tiraba:
 solo journaleaba `unavailable: [nombres]`. Ahora la columna
-`arena_journal.context` guarda:
+`arena_journal.context` guarda, por fase (`scan`/`dive`):
 - `fetch_errors` — status HTTP / timeout real por endpoint caído.
-- `prompt` — el **prompt completo** (system + user) que se le mandó al LLM,
-  no solo el `prompt_hash`. Post-mortem sin arqueología: se ve exactamente qué
-  contexto tenía el PM al decidir.
+- `prompt` — el **prompt completo** (system + user) de AMBAS fases, no solo el
+  `prompt_hash`. Post-mortem sin arqueología: se ve exactamente qué contexto
+  tenía el PM al decidir.
+- `scan.candidates` / `scan.floor` / `scan.slate` — picks crudos del scout, el
+  resultado del floor y el slate final con `origin`.
+- `dive.finnhub` / `dive.shown_closes` — el deep dive por candidato y el cierre
+  fresco que se le mostró al PM (auditar desfases contra lo que valida el guard).
 
-El `context` NO viaja al prompt del LLM (`buildUserPrompt` excluye `fetch_errors`).
+El `context` NO viaja al prompt del LLM (`buildScanUserPrompt` excluye
+`fetch_errors` y `channelsByTicker`).
 
 ### Cobertura de `movers` en el buffet
 

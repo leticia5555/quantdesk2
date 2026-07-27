@@ -6,7 +6,7 @@
 // Correr con `node tests/arena-guard.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import { parseScanResponse, parsePlanResponse, validateActions, ARENA_RULES, isLeveragedInverseETF } from '../api/_lib/arena-guard.js';
+import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF } from '../api/_lib/arena-guard.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -33,6 +33,36 @@ ok(scanDropNonStr.ok && scanDropNonStr.candidates.length === 2, 'SCAN: no-string
 ok(parseScanResponse('Investigaría AAPL, sin JSON.').ok === false, 'SCAN: prosa sin JSON → abort');
 ok(parseScanResponse('{"candidates":"AAPL"}').ok === false, 'SCAN: candidates no-array → abort');
 ok(parseScanResponse('').ok === false, 'SCAN: respuesta vacía → abort');
+
+console.log('arena-guard: floor del screener (atribución del canal)');
+
+// scout pide solo nombres NO-screener → el floor reserva 2 del screener.
+const f1 = applyScreenerFloor(['AAPL'], ['KO', 'NVDA', 'JNJ'], { floor: 2, maxCandidates: 5 });
+ok(f1.floor.applied === true && f1.floor.reason === 'floor_applied', 'floor: aplica cuando el scout no eligió screener', JSON.stringify(f1.floor));
+ok(f1.candidates.length === 3, 'floor: slate = scout + 2 reservados', JSON.stringify(f1.candidates));
+ok(f1.candidates[0].symbol === 'AAPL' && f1.candidates[0].origin === 'scout_picked', 'floor: pick del scout marcado scout_picked');
+ok(f1.candidates[1].origin === 'floor_reserved' && f1.candidates[2].origin === 'floor_reserved', 'floor: reservados marcados floor_reserved');
+ok(f1.candidates[1].symbol === 'KO' && f1.candidates[2].symbol === 'NVDA', 'floor: reserva por orden de ranking (KO, NVDA)', JSON.stringify(f1.floor.reserved));
+
+// condición #3: ninguna screen dispara → floor NO se usa, y se distingue.
+const f2 = applyScreenerFloor(['AAPL', 'MSFT'], [], { floor: 2, maxCandidates: 5 });
+ok(f2.floor.applied === false && f2.floor.reason === 'no_qualifying_candidates', 'floor: sin candidatos de screener → reason no_qualifying_candidates (cond. #3)', JSON.stringify(f2.floor));
+ok(f2.candidates.every((c) => c.origin === 'scout_picked') && f2.candidates.length === 2, 'floor: sin screener, el slate es solo del scout');
+
+// el scout ya eligió ≥floor nombres de screener → no se fuerza nada.
+const f3 = applyScreenerFloor(['KO', 'NVDA', 'AAPL'], ['KO', 'NVDA', 'JNJ'], { floor: 2, maxCandidates: 5 });
+ok(f3.floor.applied === false && f3.floor.reason === 'scout_met_floor', 'floor: scout ya cumplió el floor orgánicamente → no fuerza', JSON.stringify(f3.floor));
+ok(f3.candidates.filter((c) => c.origin === 'scout_picked').length === 3, 'floor: picks orgánicos de screener quedan scout_picked (no floor_reserved)');
+
+// cap a maxCandidates: reservados DEBEN entrar, se recorta la cola no-screener del scout.
+const f4 = applyScreenerFloor(['A', 'B', 'C', 'D', 'E'], ['KO', 'NVDA'], { floor: 2, maxCandidates: 5 });
+ok(f4.candidates.length === 5, 'floor: respeta el tope de 5 candidatos', String(f4.candidates.length));
+const reservedInF4 = f4.candidates.filter((c) => c.origin === 'floor_reserved').map((c) => c.symbol);
+ok(reservedInF4.join(',') === 'KO,NVDA', 'floor: los reservados entran aunque el scout llenara los 5 (recorta su cola)', JSON.stringify(f4.candidates.map((c) => c.symbol)));
+
+// floor=0 (post-trial) → free-choice puro, cero reservas.
+const f5 = applyScreenerFloor(['AAPL'], ['KO', 'NVDA'], { floor: 0, maxCandidates: 5 });
+ok(f5.floor.applied === false && f5.candidates.length === 1 && f5.candidates[0].origin === 'scout_picked', 'floor=0 → free-choice, sin reservas (knob post-trial)');
 
 console.log('arena-guard: parse de la respuesta del LLM');
 
