@@ -156,13 +156,24 @@ export function parseScanResponse(raw, maxCandidates = 5) {
 //   'floor_reserved' → lo forzó el floor (el PM/DIVE decide qué hace con él)
 //
 // Entrada: scoutPicks (símbolos del SCAN, en orden), screenerRanked (unión
-// rankeada value+momentum). Salida: { candidates:[{symbol, origin}], floor }.
+// rankeada value+momentum), screenerState (estado de la tabla: fresh/empty/
+// disabled/stale/unavailable — de screenerDataState). Salida:
+// { candidates:[{symbol, origin}], floor }.
 // `floor.reason` distingue los casos para el post-mortem (condición #3):
-//   'no_qualifying_candidates' → ninguna screen disparó (floor NO se usó)
+//   'no_qualifying_candidates' → HAY datos frescos pero ninguna screen disparó
+//   'screener_disabled'        → tabla vacía y el cron del screener apagado (flag faltante)
+//   'screener_empty'           → tabla vacía con el cron prendido (aún no llenó)
+//   'screener_stale'           → hay filas pero rancias (el cron dejó de refrescar)
+//   'screener_unavailable'     → la lectura de la tabla falló (DB caída)
 //   'scout_met_floor'          → el scout ya tenía ≥floor picks de screener
 //   'screener_already_picked'  → los candidatos de screener ya estaban en el scan
 //   'floor_applied'            → se reservaron slots
-export function applyScreenerFloor(scoutPicks, screenerRanked, { floor = 2, maxCandidates = 5 } = {}) {
+// Los cuatro `screener_*` de arriba NO significan "nada calificó": significan
+// "el canal no tenía datos que evaluar". Colapsarlos en no_qualifying_candidates
+// (el bug de origen: ARENA_SCREENER_ENABLED faltaba en Vercel) hace que el
+// journal se lea como "ninguna acción pasó la screen" cuando la verdad era "no
+// hubo screener". `screenerState` viaja desde screenerDataState(rows).
+export function applyScreenerFloor(scoutPicks, screenerRanked, { floor = 2, maxCandidates = 5, screenerState = 'fresh' } = {}) {
   const up = (s) => String(s || '').trim().toUpperCase();
   const picks = [...new Set((scoutPicks || []).map(up).filter(Boolean))].slice(0, maxCandidates);
   const rankedUp = [...new Set((screenerRanked || []).map(up).filter(Boolean))];
@@ -170,7 +181,11 @@ export function applyScreenerFloor(scoutPicks, screenerRanked, { floor = 2, maxC
   const mk = (arr, origin) => arr.map((symbol) => ({ symbol, origin }));
 
   if (rankedUp.length === 0) {
-    return { candidates: mk(picks, 'scout_picked'), floor: { applied: false, reserved: [], reason: 'no_qualifying_candidates', floor } };
+    // Sin símbolos rankeados: solo con datos FRESCOS es honesto decir "ninguna
+    // screen disparó". Vacía/apagada/rancia/caída → el reason nombra el estado
+    // del canal, no culpa a las acciones de no calificar.
+    const reason = screenerState === 'fresh' ? 'no_qualifying_candidates' : `screener_${screenerState}`;
+    return { candidates: mk(picks, 'scout_picked'), floor: { applied: false, reserved: [], reason, floor } };
   }
   const scoutScreenerCount = picks.filter((s) => screenerSet.has(s)).length;
   const deficit = Math.max(0, floor - scoutScreenerCount);

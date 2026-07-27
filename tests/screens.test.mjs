@@ -5,7 +5,7 @@
 // Correr con `node tests/screens.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import { computeScreens, screenerRankedSymbols } from '../api/_lib/screens.js';
+import { computeScreens, screenerRankedSymbols, screenerDataState, SCREENER_STALE_HOURS } from '../api/_lib/screens.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -71,6 +71,19 @@ ok(computeScreens(nonEq).value.length === 0, 'no-equity (Preference) excluido au
 console.log('screens: screenerRankedSymbols (unión value→momentum, dedupe)');
 const ranked = screenerRankedSymbols({ value: [{ symbol: 'KO' }, { symbol: 'NVDA' }], momentum: [{ symbol: 'NVDA' }, { symbol: 'MSFT' }] });
 ok(ranked.join(',') === 'KO,NVDA,MSFT', 'unión rankeada value primero, dedupe (NVDA una vez)', ranked.join(','));
+
+console.log('screens: screenerDataState (vacía/apagada/rancia/fresca)');
+const NOW = new Date('2026-07-27T12:00:00Z');
+const fresh = (h) => new Date(NOW.getTime() - h * 3600000).toISOString();
+// Tabla vacía: el flag distingue "cron apagado" (el bug) de "prendido, sin llenar".
+ok(screenerDataState([], { now: NOW, enabled: false }) === 'disabled', 'vacía + flag apagado → disabled (el caso del bug: ARENA_SCREENER_ENABLED faltaba)');
+ok(screenerDataState([], { now: NOW, enabled: true }) === 'empty', 'vacía + flag prendido → empty (cron aún no llenó)');
+ok(screenerDataState(undefined, { now: NOW, enabled: true }) === 'empty', 'null/undefined se trata como vacía');
+// Con filas: juzga por la MÁS fresca vs. SCREENER_STALE_HOURS.
+ok(screenerDataState([row({ refreshed_at: fresh(1) })], { now: NOW }) === 'fresh', 'fila refrescada hace 1h → fresh');
+ok(screenerDataState([row({ refreshed_at: fresh(SCREENER_STALE_HOURS + 1) })], { now: NOW }) === 'stale', 'fila más vieja que el umbral → stale (rancia)');
+ok(screenerDataState([row({ refreshed_at: fresh(SCREENER_STALE_HOURS + 5) }), row({ refreshed_at: fresh(2) })], { now: NOW }) === 'fresh', 'stale se juzga por la fila MÁS fresca (una reciente basta)');
+ok(screenerDataState([row({ refreshed_at: null })], { now: NOW }) === 'stale', 'fila sin refreshed_at válido → stale (nunca se refrescó de verdad)');
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);

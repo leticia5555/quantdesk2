@@ -81,6 +81,35 @@ export function computeScreens(rows, { topN = 5 } = {}) {
   return { value: strip(valueScreen(list, topN)), momentum: strip(momentumScreen(list, topN)) };
 }
 
+// ── Estado de los DATOS del screener (para un post-mortem honesto) ───
+// Distingue "la tabla no tiene datos utilizables" de "los tiene y ninguna
+// screen disparó". El bug que lo motivó: `ARENA_SCREENER_ENABLED` faltaba en
+// Vercel → el cron de precompute nunca corrió → `arena_screener` vacía, pero el
+// floor reportaba `no_qualifying_candidates`, que se LEE como "ninguna acción
+// calificó" cuando la verdad era "no hay datos". Estados:
+//   'disabled' → tabla vacía Y el flag del cron apagado (el caso exacto del bug).
+//   'empty'    → tabla vacía con el cron prendido (aún no llenó / sin filas).
+//   'stale'    → hay filas pero la más fresca supera SCREENER_STALE_HOURS
+//                (rancia: el cron dejó de refrescar y la tabla quedó congelada).
+//   'fresh'    → hay filas vigentes (la screen SÍ evaluó datos frescos).
+// El caller mapea esto al `floor.reason` (screener_disabled/empty/stale) para
+// que el journal no mienta cuando el canal simplemente no tenía qué evaluar.
+export const SCREENER_STALE_HOURS = 24;
+
+export function screenerDataState(rows, { now = new Date(), enabled = true, maxAgeHours = SCREENER_STALE_HOURS } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (list.length === 0) return enabled ? 'empty' : 'disabled';
+  let newest = null;
+  for (const r of list) {
+    const t = r && r.refreshed_at ? Date.parse(r.refreshed_at) : NaN;
+    if (Number.isFinite(t) && (newest === null || t > newest)) newest = t;
+  }
+  // Filas sin `refreshed_at` válido = nunca se refrescaron de verdad → rancia.
+  if (newest === null) return 'stale';
+  const ageMs = now.getTime() - newest;
+  return ageMs > maxAgeHours * 3600 * 1000 ? 'stale' : 'fresh';
+}
+
 // Unión rankeada de símbolos del screener (para el floor): value primero,
 // luego momentum, dedupe. El orden = prioridad de reserva del floor.
 export function screenerRankedSymbols(screens) {

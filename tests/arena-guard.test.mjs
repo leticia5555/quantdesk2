@@ -44,10 +44,23 @@ ok(f1.candidates[0].symbol === 'AAPL' && f1.candidates[0].origin === 'scout_pick
 ok(f1.candidates[1].origin === 'floor_reserved' && f1.candidates[2].origin === 'floor_reserved', 'floor: reservados marcados floor_reserved');
 ok(f1.candidates[1].symbol === 'KO' && f1.candidates[2].symbol === 'NVDA', 'floor: reserva por orden de ranking (KO, NVDA)', JSON.stringify(f1.floor.reserved));
 
-// condición #3: ninguna screen dispara → floor NO se usa, y se distingue.
-const f2 = applyScreenerFloor(['AAPL', 'MSFT'], [], { floor: 2, maxCandidates: 5 });
-ok(f2.floor.applied === false && f2.floor.reason === 'no_qualifying_candidates', 'floor: sin candidatos de screener → reason no_qualifying_candidates (cond. #3)', JSON.stringify(f2.floor));
+// condición #3: HAY datos frescos y ninguna screen dispara → floor NO se usa.
+// Solo con datos frescos es honesto decir "ninguna acción calificó".
+const f2 = applyScreenerFloor(['AAPL', 'MSFT'], [], { floor: 2, maxCandidates: 5, screenerState: 'fresh' });
+ok(f2.floor.applied === false && f2.floor.reason === 'no_qualifying_candidates', 'floor: datos frescos sin qualifiers → reason no_qualifying_candidates (cond. #3)', JSON.stringify(f2.floor));
 ok(f2.candidates.every((c) => c.origin === 'scout_picked') && f2.candidates.length === 2, 'floor: sin screener, el slate es solo del scout');
+// default screenerState = 'fresh' → compat con callers viejos.
+ok(applyScreenerFloor(['AAPL'], []).floor.reason === 'no_qualifying_candidates', 'floor: sin screenerState explícito, default fresh → no_qualifying_candidates');
+
+// Canal SIN datos: el reason nombra el estado, NO culpa a las acciones. Este
+// es el fix del bug — tabla vacía por flag faltante se leía como "nada calificó".
+ok(applyScreenerFloor(['AAPL'], [], { screenerState: 'disabled' }).floor.reason === 'screener_disabled', 'floor: tabla vacía + cron apagado → screener_disabled (no no_qualifying_candidates)');
+ok(applyScreenerFloor(['AAPL'], [], { screenerState: 'empty' }).floor.reason === 'screener_empty', 'floor: tabla vacía + cron prendido → screener_empty');
+ok(applyScreenerFloor(['AAPL'], [], { screenerState: 'stale' }).floor.reason === 'screener_stale', 'floor: tabla rancia → screener_stale');
+ok(applyScreenerFloor(['AAPL'], [], { screenerState: 'unavailable' }).floor.reason === 'screener_unavailable', 'floor: lectura de la tabla falló → screener_unavailable');
+// screenerState NO importa cuando SÍ hubo qualifiers (el canal aportó datos).
+const fFloorState = applyScreenerFloor(['AAPL'], ['KO', 'NVDA'], { floor: 2, maxCandidates: 5, screenerState: 'stale' });
+ok(fFloorState.floor.applied === true && fFloorState.floor.reason === 'floor_applied', 'floor: con qualifiers, screenerState no altera el reason (aplica normal)', JSON.stringify(fFloorState.floor));
 
 // el scout ya eligió ≥floor nombres de screener → no se fuerza nada.
 const f3 = applyScreenerFloor(['KO', 'NVDA', 'AAPL'], ['KO', 'NVDA', 'JNJ'], { floor: 2, maxCandidates: 5 });
