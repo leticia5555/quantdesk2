@@ -1969,15 +1969,16 @@ const SCREENER_UNIVERSE = {
     // Consumer/Retail
     'WMT','HD','COST','LOW','TGT','NKE','LULU','SBUX','MCD','CMG','YUM',
     'KO','PEP','PG','CL','KMB','MDLZ','MNST','EL','PM','MO',
-    // Energy
-    'XOM','CVX','COP','SLB','EOG','PSX','MPC','VLO','OXY','HES',
+    // Energy (HES removida: Hess absorbida por Chevron, delisted 2025)
+    'XOM','CVX','COP','SLB','EOG','PSX','MPC','VLO','OXY',
     // Industrials/Defense
     'BA','LMT','RTX','GE','CAT','DE','HON','UPS','FDX','UBER','LYFT',
     // Media/Entertainment
     'NFLX','DIS','SPOT','RBLX','EA','TTWO','PINS','SNAP',
     // Speculative/Meme/AI
     'COIN','HOOD','RIVN','LCID','NIO','XPEV','BABA','JD','PDD','BIDU',
-    'SHOP','SQ','AFRM','SOFI','UPST','RKT',
+    // XYZ = Block (antes SQ): rebrand con cambio de ticker en NYSE, ene-2025.
+    'SHOP','XYZ','AFRM','SOFI','UPST','RKT',
     // Big ETFs
     'SPY','QQQ','IWM','DIA','VTI','VOO','GLD','SLV','TLT','HYG','EEM','EWZ','EWW','ARKK',
     'XLK','XLF','XLE','XLV','XLY','XLP','XLI','XLU','XLB','XLRE','XBI','SOXX','SMH'
@@ -6680,7 +6681,7 @@ const TICKERS = [
   {sym:'ADBE',name:'Adobe Inc.',type:'stock'},
   {sym:'NOW',name:'ServiceNow Inc.',type:'stock'},
   {sym:'SHOP',name:'Shopify Inc.',type:'stock'},
-  {sym:'SQ',name:'Block Inc.',type:'stock'},
+  {sym:'XYZ',name:'Block Inc.',type:'stock'},
   {sym:'PYPL',name:'PayPal Holdings',type:'stock'},
   {sym:'COIN',name:'Coinbase Global',type:'stock'},
   {sym:'HOOD',name:'Robinhood Markets',type:'stock'},
@@ -14545,14 +14546,14 @@ function margin_color(pct, threshold, COL){
     EL:'Estée Lauder', PM:'Philip Morris', MO:'Altria',
     XOM:'ExxonMobil', CVX:'Chevron', COP:'ConocoPhillips', SLB:'Schlumberger',
     EOG:'EOG Resources', PSX:'Phillips 66', MPC:'Marathon Petroleum', VLO:'Valero',
-    OXY:'Occidental', HES:'Hess',
+    OXY:'Occidental',
     BA:'Boeing', LMT:'Lockheed Martin', RTX:'RTX', GE:'GE Aerospace', CAT:'Caterpillar',
     DE:'Deere', HON:'Honeywell', UPS:'UPS', FDX:'FedEx', UBER:'Uber', LYFT:'Lyft',
     NFLX:'Netflix', DIS:'Disney', SPOT:'Spotify', RBLX:'Roblox', EA:'Electronic Arts',
     TTWO:'Take-Two', PINS:'Pinterest', SNAP:'Snap',
     COIN:'Coinbase', HOOD:'Robinhood', RIVN:'Rivian', LCID:'Lucid', NIO:'NIO',
     XPEV:'XPeng', BABA:'Alibaba', JD:'JD.com', PDD:'PDD Holdings', BIDU:'Baidu',
-    SHOP:'Shopify', SQ:'Block', AFRM:'Affirm', SOFI:'SoFi', UPST:'Upstart', RKT:'Rocket',
+    SHOP:'Shopify', XYZ:'Block', AFRM:'Affirm', SOFI:'SoFi', UPST:'Upstart', RKT:'Rocket',
     SPY:'S&P 500 ETF', QQQ:'Nasdaq 100 ETF', IWM:'Russell 2000 ETF', DIA:'Dow ETF',
     VTI:'Total Market ETF', VOO:'S&P 500 ETF', GLD:'Gold ETF', SLV:'Silver ETF',
     TLT:'20+Y Treasury ETF', HYG:'High Yield ETF', EEM:'Emerging Markets ETF',

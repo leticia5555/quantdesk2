@@ -199,7 +199,26 @@ Vercel): tabla vacía **con el flag apagado** se journalea como `screener_disabl
 (el canal nunca corrió), distinto de `screener_empty` (flag prendido, aún sin
 llenar) — así el post-mortem no confunde "falta el flag" con "nada calificó".
 Sembrar el ledger: `GET /api/arena-screener?job=seed` (o siembra perezosa en el
-primer `refresh`); estado: `?job=status`.
+primer `refresh`); estado: `?job=status` (incluye el conteo `not_found`).
+
+**Tickers muertos (delisted/renombrados).** El universo se cura a mano y con el
+tiempo acumula símbolos que dejan de cotizar: HES (Hess, absorbida por Chevron)
+o SQ→XYZ (rebrand de Block). El refresh los reintentaba cada ciclo y fallaba. El
+ledger ahora distingue el tipo de fallo por `status`:
+- `error` — fallo **transitorio** (rate limit, timeout, sin-datos-hoy): se
+  reintenta en la rotación normal.
+- `not_found` — el símbolo **no está en el symbol map US de Finnhub** (delisted o
+  cambió de ticker): estado **terminal**, `pickStaleSymbols` lo excluye de la
+  rotación (no se le gasta ni una llamada más). El refresh lo detecta con el
+  symbol map que ya carga (0 requests extra) y lo marca sin pegar a Finnhub/Yahoo.
+  Fail-safe: si el map no cargó (Finnhub caído) NO delistea a ciegas — trata todo
+  como transitorio.
+
+Auditar el universo contra el symbol map en vivo: `GET /api/arena-screener?job=audit`
+(read-only) → `{ total, present, missing }`, donde `missing` son los tickers del
+universo ausentes del map (los muertos). Es la fuente autoritativa y siempre
+actual; el fix del universo en código (`_lib/screener-universe.js`) resuelve los
+ya conocidos, y `job=audit` descubre los nuevos a medida que aparezcan.
 
 5. `PUBLIC_BASE_URL` — dominio público estable del deploy (p.ej.
    `https://quantdesk2.vercel.app`) para el **self-fetch del buffet**. Es
