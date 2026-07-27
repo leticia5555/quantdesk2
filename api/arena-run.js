@@ -204,11 +204,22 @@ export function buildScanUserPrompt({ account, positions, openOrders, buffet, pr
 }
 
 // ── user prompt del DIVE: portfolio + tesis del scout + candidatos CON su
-// deep-dive de Finnhub (fundamentales, recommendations, titulares). ──
-export function buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis, candidates, deepDive }) {
+// deep-dive de Finnhub (fundamentales, recommendations, titulares) Y el ÚLTIMO
+// CIERRE + rango de límite ya calculado. Antes el PM no tenía el cierre y
+// adivinaba el límite (anclaba en el 52w-high, el único número tipo-precio de
+// Finnhub) → el guard lo descartaba por banda. Ahora se le da EL MISMO cierre
+// contra el que el guard valida, con el rango ±2% ya hecho (sin aritmética). ──
+export function buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis, candidates, deepDive, closes, priceBand = ARENA_RULES.price_band }) {
+  const round2 = (n) => Math.round(n * 100) / 100;
   // Nota de datos ausentes para el modelo: price target es Premium (no lo
-  // traemos), y un candidato puede no tener cobertura Finnhub.
-  const research = (candidates || []).map((t) => ({ ticker: t, ...((deepDive && deepDive[t]) || null) }));
+  // traemos), y un candidato puede no tener cobertura Finnhub ni cierre.
+  const research = (candidates || []).map((t) => {
+    const close = closes && typeof closes[t] === 'number' ? closes[t] : null;
+    const limit_range = close != null
+      ? { low: round2(close * (1 - priceBand)), high: round2(close * (1 + priceBand)) }
+      : null;
+    return { ticker: t, last_close: close, limit_range, ...((deepDive && deepDive[t]) || null) };
+  });
   return [
     'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders })),
     '',
@@ -218,7 +229,8 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
     'SCOUT THESIS (why these tickers were flagged for deep-dive):',
     scanThesis || '(none provided)',
     '',
-    'DEEP-DIVE DATA (Finnhub; per candidate: profile, fundamentals, analyst recommendation counts, recent news headlines).',
+    'DEEP-DIVE DATA (Finnhub; per candidate: last_close, limit_range, profile, fundamentals, analyst recommendation counts, recent news headlines).',
+    `PRICING RULE — READ CAREFULLY: for each candidate, "last_close" is the reference close and "limit_range" {low, high} is the ONLY band the risk guard accepts (±${priceBand * 100}% of last_close). Your limit_price MUST fall inside [limit_range.low, limit_range.high] or the order is auto-discarded. Do NOT anchor your limit on 52-week highs/lows, analyst targets, or any other figure — only on last_close. If last_close is null you have no valid reference for that ticker: do not place an order for it.`,
     'NOTES: null fields mean the datum was unavailable (do not guess it). Analyst price targets are NOT provided; use the recommendation buy/hold/sell split as the rating signal. marketCapM is in millions USD.',
     JSON.stringify(research),
     '',
@@ -227,6 +239,20 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
 }
 
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
+
+// Último cierre COMPLETO por símbolo — LA MISMA fuente/valor contra el que el
+// guard valida la banda ±2% (fetchDailySeries + completedSlice, plumbing Yahoo
+// del simulador). Se usa dos veces por corrida: para MOSTRARLE el cierre al PM
+// en el DIVE y para que el guard valide — el mismo número, cero desfase.
+// null si no hay serie (→ el guard descarta, fail closed).
+async function lastCompletedClose(symbol, now) {
+  try {
+    const raw = await fetchDailySeries(symbol, '3mo');
+    const series = raw ? completedSlice(raw, now) : null;
+    if (series && series.closes.length) return series.closes[series.closes.length - 1];
+  } catch (e) { /* sin cierre → fail closed */ }
+  return null;
+}
 
 async function journalInsert(row) {
   await sql(
@@ -318,12 +344,20 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
 
   // ── FASE 2a: DEEP DIVE (determinista, Finnhub — sin LLM) ─────────
   const dive = await fetchDeepDive(scan.candidates, process.env.FINNHUB_API_KEY, now);
+  // Último cierre por candidato — MISMA fuente/valor que validará el guard, así
+  // el PM ve exactamente el cierre contra el que se calcula la banda ±2% (sin
+  // desfase). Se reusa abajo para el guard, sin re-fetch.
+  const closeArr = await Promise.all(scan.candidates.map((t) => lastCompletedClose(t, now)));
+  const candidateCloses = {};
+  scan.candidates.forEach((t, i) => { candidateCloses[t] = closeArr[i]; });
 
   // ── FASE 2b: DIVE (LLM #2 — decide órdenes) ─────────────────────
   const diveSystem = buildDiveSystemPrompt();
-  const diveUser = buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis: scan.thesis, candidates: scan.candidates, deepDive: dive.data });
+  const diveUser = buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis: scan.thesis, candidates: scan.candidates, deepDive: dive.data, closes: candidateCloses });
   const diveHash = sha256(diveSystem + '\n---\n' + diveUser);
-  context.dive = { prompt: { system: diveSystem, user: diveUser }, hash: diveHash, model: ANTHROPIC_MODEL, finnhub: dive.data, finnhub_errors: dive.errors };
+  // shown_closes: el cierre que se le MOSTRÓ al PM por candidato — para auditar
+  // desfases contra lo que valida el guard (deberían coincidir siempre).
+  context.dive = { prompt: { system: diveSystem, user: diveUser }, hash: diveHash, model: ANTHROPIC_MODEL, finnhub: dive.data, finnhub_errors: dive.errors, shown_closes: candidateCloses };
   // prompt_hash de la fila = el del DIVE (la fase que produce las órdenes).
   const withPrompt = { ...base, prompt_hash: diveHash, account: accountSnapshot, context };
 
@@ -345,19 +379,18 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
     return { status: 'aborted_malformed_json', orders: 0 };
   }
 
-  // Referencias deterministas para el guard: symbol map + último cierre
-  // completo (mismo plumbing Yahoo del simulador) por símbolo propuesto.
-  // Nombre + tipo del symbol map (comparten fetch/cache: 1 request en frío).
+  // Referencias deterministas para el guard: symbol map + tipo (comparten
+  // fetch/cache: 1 request en frío) + último cierre por símbolo propuesto.
   const symbolMap = await getSymbolMap(process.env.FINNHUB_API_KEY);
   const symbolTypes = await getSymbolTypes(process.env.FINNHUB_API_KEY);
-  const lastCloses = {};
+  // Arranca de los cierres YA mostrados al PM (mismo valor exacto → sin desfase
+  // entre lo que vio y lo que se valida); solo busca símbolos de acciones que
+  // no eran candidatos (p.ej. vender una posición que el scan no nombró).
+  const lastCloses = { ...candidateCloses };
   const symbols = [...new Set(parsed.actions.map((a) => a && typeof a.symbol === 'string' ? a.symbol.trim().toUpperCase() : '').filter(Boolean))];
   for (const s of symbols) {
-    try {
-      const raw = await fetchDailySeries(s, '3mo');
-      const series = raw ? completedSlice(raw, now) : null;
-      if (series && series.closes.length) lastCloses[s] = series.closes[series.closes.length - 1];
-    } catch (e) { /* sin cierre → el guard descarta (fail closed) */ }
+    if (s in lastCloses) continue; // ya lo tenemos del deep dive (o null, fail closed)
+    lastCloses[s] = await lastCompletedClose(s, now);
   }
 
   // El flujo de dos fases NO toca el guard: valida las órdenes finales con las
