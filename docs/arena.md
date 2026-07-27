@@ -50,15 +50,17 @@ confirmada en prod. Se excluyen:
   SPY/QQQ), `Closed-End Fund` y `Open-End Fund`.
 - **No-equity** (`NON_EQUITY_TYPES`): `Unit`, `Equity WRT` (warrant), `Right`,
   `Preference` — señal autoritativa que refuerza el filtro por sufijo del ticker
-  (`WARRANT_LIKE`, que queda como respaldo para símbolos sin `type`).
+  (`WARRANT_LIKE`, que queda como respaldo para símbolos sin `type`) — más
+  `PUBLIC` (ver abajo).
 
 Los **ADR se mantienen** a propósito (NU/MELI/ITUB son ADRs LATAM, el corazón de
 la audiencia). Es regla de **producto, no de seguridad**: con `type`
 vacío/desconocido se **permite** y se journalea (`security_type` en la orden
 aprobada; null = el free tier no lo trajo) — lo peligroso ya lo cubre la doble
-barrera de leveraged. El tipo **`PUBLIC`** (3ª categoría por tamaño) queda por
-ahora **permitido**, pendiente de revisar ejemplos. Diag de cobertura + muestras
-por tipo en prod: `GET /api/earnings?diag=symboltypes` (total, % poblado,
+barrera de leveraged. El tipo **`PUBLIC`** (catch-all de Finnhub, 3ª categoría
+por tamaño) se **excluye**: las muestras en prod fueron puras preferentes y baby
+bonds (no-equity), así que entró a `NON_EQUITY_TYPES`. Diag de cobertura +
+muestras por tipo en prod: `GET /api/earnings?diag=symboltypes` (total, % poblado,
 distribución, `samples` por tipo —default 30, configurable con `&sample=N`—,
 `would_exclude`).
 
