@@ -56,7 +56,7 @@ import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpaca
 import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF } from './_lib/arena-guard.js';
 import { fetchDeepDive } from './_lib/finnhub-dive.js';
 import { readScreenerRows } from './_lib/screener-db.js';
-import { computeScreens, screenerRankedSymbols } from './_lib/screens.js';
+import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
 
 // Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
 // reglas de universo); el buffet (trimMovers) la reusa y los tests de
@@ -210,13 +210,24 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   // Finnhub/Yahoo en la corrida. Best-effort: tabla vacía (cron aún no corrió,
   // o ninguna screen dispara) → screener vacío, no es error. Solo una excepción
   // de DB cuenta como caído.
+  //
+  // `screener_state` distingue POR QUÉ el canal llegó vacío (vacía/apagada/
+  // rancia/caída vs. datos frescos sin qualifiers) → el floor lo usa para no
+  // reportar `no_qualifying_candidates` cuando la verdad es "no hubo datos".
+  // El flag del cron se lee aquí mismo: es del proyecto Vercel, así que el
+  // arena-run ve si `ARENA_SCREENER_ENABLED` faltaba (el caso del bug).
   let screener = { value: [], momentum: [] };
+  let screener_state = 'unavailable';
+  const screenerEnabled = process.env.ARENA_SCREENER_ENABLED === '1';
   const unavailable = Object.keys(targets).filter((k) => !out[k]);
   try {
-    screener = computeScreens(await readScreenerRows());
+    const screenerRows = await readScreenerRows();
+    screener = computeScreens(screenerRows);
+    screener_state = screenerDataState(screenerRows, { now, enabled: screenerEnabled });
   } catch (e) {
     fetch_errors.screener = String((e && e.message) || e);
     unavailable.push('screener');
+    screener_state = 'unavailable';
   }
 
   const channelsByTicker = buildChannels({ movers, earnings: earnings_this_week, insiders: notable_insider_buys, screener });
@@ -224,6 +235,7 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   return {
     movers, earnings_this_week, notable_insider_buys,
     screener,
+    screener_state,
     unavailable,
     // Diagnóstico: status HTTP/timeout real por endpoint caído. NO viaja al
     // prompt del LLM (buildScanUserPrompt lo excluye) — se journalea.
@@ -408,16 +420,19 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   // (scout_picked / floor_reserved) para separar las dos métricas de atribución.
   // Determinista y auditable; time-boxed (a los 30 días, SCREENER_FLOOR=0).
   const screenerRanked = screenerRankedSymbols(buffet.screener || { value: [], momentum: [] });
-  const slate = applyScreenerFloor(scan.candidates, screenerRanked, { floor: SCREENER_FLOOR, maxCandidates: MAX_CANDIDATES });
+  const slate = applyScreenerFloor(scan.candidates, screenerRanked, { floor: SCREENER_FLOOR, maxCandidates: MAX_CANDIDATES, screenerState: buffet.screener_state });
   context.scan.floor = slate.floor;       // { applied, reserved, reason, floor } — journaleado SIEMPRE (cond. #3)
+  context.scan.screener_state = buffet.screener_state; // vacía/apagada/rancia/caída/fresh — por qué el canal llegó (o no) con datos
   context.scan.slate = slate.candidates;  // [{ symbol, origin }] — la lista final
   const candidateSymbols = slate.candidates.map((c) => c.symbol);
   const candidateOrigins = new Map(slate.candidates.map((c) => [c.symbol, c.origin]));
 
-  // Cero candidatos FINALES (scout no vio nada Y ninguna screen disparó) → nada
+  // Cero candidatos FINALES (scout no vio nada Y el screener no aportó) → nada
   // que investigar. Estado DISTINTO de ok_no_actions (hubo candidatos y el DIVE
-  // holdeó). `floor.reason='no_qualifying_candidates'` ya distingue "el screener
-  // no produjo nada" de "produjo y el PM lo ignoró" (condición #3). No gasta el
+  // holdeó). `floor.reason` distingue POR QUÉ el screener no aportó: datos
+  // frescos sin qualifiers (`no_qualifying_candidates`) vs. canal sin datos
+  // (`screener_disabled/empty/stale/unavailable`) — el bug de origen era leer
+  // "tabla vacía por flag faltante" como "ninguna acción calificó". No gasta el
   // DIVE ni pega a Finnhub.
   if (candidateSymbols.length === 0) {
     await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'ok_no_candidates', plan: scan.thesis || 'Scout found nothing worth a deep-dive today.', llm_response: scanText });

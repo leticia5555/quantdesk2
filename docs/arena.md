@@ -94,10 +94,24 @@ slots de candidatos para el screener **solo cuando alguna screen realmente
 dispara** — nada de rellenar con basura. Razón: sin floor, un scout sesgado a lo
 noticioso podría no elegir screener en semanas → mediríamos su sesgo, no la
 calidad del canal. `floor.reason` se journalea SIEMPRE y distingue los casos:
-- `no_qualifying_candidates` — ninguna screen disparó (el floor NO se usó).
+- `no_qualifying_candidates` — HABÍA datos frescos pero ninguna screen disparó.
+- `screener_disabled` — la tabla `arena_screener` está vacía **y** el cron del
+  screener está apagado (`ARENA_SCREENER_ENABLED` ≠ `1`). El canal nunca corrió.
+- `screener_empty` — tabla vacía con el cron **prendido** (aún no llenó).
+- `screener_stale` — hay filas pero rancias (la más fresca supera ~24 h: el cron
+  dejó de refrescar y la tabla quedó congelada).
+- `screener_unavailable` — la lectura de la tabla falló (DB caída).
 - `scout_met_floor` — el scout ya tenía ≥floor picks de screener.
 - `screener_already_picked` — los picks del screener ya estaban en el scan.
 - `floor_applied` — se reservaron slots.
+
+Los cuatro `screener_*` (disabled/empty/stale/unavailable) **no** significan
+"ninguna acción calificó" — significan "el canal no tenía datos que evaluar".
+Antes se colapsaban en `no_qualifying_candidates`: un `ARENA_SCREENER_ENABLED`
+faltante en Vercel dejaba la tabla vacía y el post-mortem lo leía como "el PM
+descartó todo", cuando la verdad era "el screener nunca corrió". El estado sale
+de `screenerDataState(rows)` (`_lib/screens.js`) y también viaja aparte en
+`context.scan.screener_state`.
 
 ### Atribución de canal (`origin` + `channels`)
 
@@ -180,6 +194,10 @@ de candidatos + fundamentales del cron screener), `DATABASE_URL`, `CRON_SECRET`,
 (`api/arena-screener?job=refresh`, cada 4h en `vercel.json`). Es independiente de
 `ARENA_ENABLED`: mientras el cron no haya corrido (o esté apagado) la tabla
 `arena_screener` está vacía → el canal screener llega vacío al PM, no es error.
+El arena-run lee `ARENA_SCREENER_ENABLED` en la misma corrida (es del proyecto
+Vercel): tabla vacía **con el flag apagado** se journalea como `screener_disabled`
+(el canal nunca corrió), distinto de `screener_empty` (flag prendido, aún sin
+llenar) — así el post-mortem no confunde "falta el flag" con "nada calificó".
 Sembrar el ledger: `GET /api/arena-screener?job=seed` (o siembra perezosa en el
 primer `refresh`); estado: `?job=status`.
 

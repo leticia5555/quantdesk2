@@ -375,24 +375,37 @@ const jKo = JSON.parse(j3a[COL.actions]).find((a) => a.symbol === 'KO');
 ok(jKo && jKo.result === 'approved' && jKo.origin === 'floor_reserved' && jKo.screens.includes('value'),
   'atribución: la orden KO nació del canal screener por el floor (origin floor_reserved, screen value)', JSON.stringify(jKo && { origin: jKo.origin, screens: jKo.screens }));
 
-// ── 3b) scout vacío Y ninguna screen dispara → ok_no_candidates. Condición #3:
-// distinguir "el screener no produjo nada" de "produjo y el PM lo ignoró". ──
-console.log('arena-run: scout vacío Y screener vacío → ok_no_candidates (floor NO se usó)');
-screenerRows = []; // la tabla arena_screener no tiene nada que califique hoy
+// ── 3b) scout vacío Y la tabla del screener VACÍA con el cron apagado
+// (ARENA_SCREENER_ENABLED faltaba, el bug) → ok_no_candidates, pero el
+// floor.reason NO debe ser no_qualifying_candidates (eso se leería como
+// "ninguna acción calificó" cuando la verdad es "no hubo datos del canal"). ──
+console.log('arena-run: scout vacío + tabla screener vacía y cron apagado → screener_disabled (no no_qualifying_candidates)');
+screenerRows = []; // la tabla arena_screener no tiene NADA (el cron nunca corrió)
+delete process.env.ARENA_SCREENER_ENABLED; // flag faltante: el caso exacto del bug
 scanText = JSON.stringify({ scan_thesis: 'Todo el buffet es ruido de micro-caps hoy; nada amerita research.', candidates: [] });
 const diveCallsBefore3b = finnhubDiveCalls.length;
 const postsBefore3b = alpacaOrderPosts.length;
 const r3b = await runArenaDecide({ baseUrl: BASE_URL });
-ok(r3b.status === 'ok_no_candidates' && r3b.orders === 0 && r3b.candidates === 0 && r3b.floor === 'no_qualifying_candidates',
-  'scan vacío + screener vacío → ok_no_candidates', JSON.stringify(r3b));
+ok(r3b.status === 'ok_no_candidates' && r3b.orders === 0 && r3b.candidates === 0 && r3b.floor === 'screener_disabled',
+  'scan vacío + tabla vacía sin flag → ok_no_candidates con floor screener_disabled', JSON.stringify(r3b));
 ok(finnhubDiveCalls.length === diveCallsBefore3b, 'NO se pegó a Finnhub deep dive cuando no hubo candidatos');
 ok(alpacaOrderPosts.length === postsBefore3b, 'cero órdenes cuando no hubo candidatos');
 const jNoCand = lastRow();
 ok(jNoCand[COL.status] === 'ok_no_candidates' && (jNoCand[COL.plan] || '').includes('ruido'), 'journal: ok_no_candidates con la tesis del scout como plan');
 const ctx3b = JSON.parse(jNoCand[COL.context]);
-ok(ctx3b.scan.floor.reason === 'no_qualifying_candidates',
-  'journal (cond #3): floor.reason distingue "el screener no produjo nada" de "produjo y el PM lo ignoró"', JSON.stringify(ctx3b.scan.floor));
+ok(ctx3b.scan.floor.reason === 'screener_disabled',
+  'journal (fix del bug): floor.reason = screener_disabled, no no_qualifying_candidates cuando la tabla estaba vacía por flag faltante', JSON.stringify(ctx3b.scan.floor));
+ok(ctx3b.scan.screener_state === 'disabled', 'journal: screener_state journaleado (disabled) para el post-mortem', ctx3b.scan.screener_state);
 ok(ctx3b.dive === undefined, 'journal: sin fase dive cuando no hubo candidatos');
+
+// ── 3c) misma tabla vacía pero con el cron PRENDIDO → screener_empty (el cron
+// está encendido, simplemente aún no llenó): estado DISTINTO de disabled. ──
+console.log('arena-run: tabla vacía con cron prendido → screener_empty (distinto de disabled)');
+process.env.ARENA_SCREENER_ENABLED = '1';
+const r3c = await runArenaDecide({ baseUrl: BASE_URL });
+ok(r3c.status === 'ok_no_candidates' && r3c.floor === 'screener_empty', 'tabla vacía + flag prendido → floor screener_empty', JSON.stringify(r3c));
+ok(JSON.parse(lastRow()[COL.context]).scan.screener_state === 'empty', 'journal: screener_state = empty con el cron prendido');
+delete process.env.ARENA_SCREENER_ENABLED; // restaura el entorno del test
 
 // ── 4) hay candidatos pero el DIVE holdea → ok_no_actions (distinto de #3b) ──
 console.log('arena-run: DIVE holdea con candidatos → ok_no_actions');
