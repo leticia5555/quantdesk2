@@ -10,12 +10,15 @@
 //        fases (SCAN → DEEP DIVE), ambas con el MISMO modelo (ANTHROPIC_MODEL,
 //        Haiku por defecto) para no contaminar la línea base del agente #6:
 //        1. contexto: cuenta/posiciones/órdenes desde Alpaca + el buffet
-//           de NUESTROS endpoints (movers market, earnings de la semana,
-//           insider buys del tracker, titulares del vc-feed) + plan
-//           anterior reinyectado (patrón nof1).
-//        2. SCAN (LLM #1): sobre el buffet, el SCOUT nombra hasta 5 tickers
-//           candidatos a investigar. Cero candidatos → ok_no_candidates (no
-//           gasta el DIVE). Malformado → aborted_scan_malformed_json.
+//           (movers market, earnings de la semana, insider buys del tracker,
+//           y el canal SCREENER — value/momentum precomputado en Neon, leído
+//           sin llamadas en la corrida) + plan anterior reinyectado (nof1).
+//        2. SCAN (LLM #1): sobre el buffet, el SCOUT nombra hasta 5 tickers.
+//           Un FLOOR determinista reserva ≤2 slots para el screener cuando
+//           dispara (atribución: mide el canal, no el sesgo del scout). Cero
+//           candidatos finales → ok_no_candidates. Malformado →
+//           aborted_scan_malformed_json. Cada candidato/acción journalea su
+//           canal + origin (scout_picked/floor_reserved) para el post-mortem.
 //        3. DEEP DIVE (determinista, _lib/finnhub-dive.js): por cada candidato
 //           trae de Finnhub fundamentales (P/E, market cap, márgenes, deuda),
 //           analyst recommendations y titulares recientes. Free tier; best-effort.
@@ -50,8 +53,10 @@ import { ANTHROPIC_MODEL } from './_lib/model.js';
 import { getSymbolMap, getSymbolTypes } from './earnings.js';
 import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpacaCreds } from './_lib/alpaca.js';
-import { parseScanResponse, parsePlanResponse, validateActions, ARENA_RULES, isLeveragedInverseETF } from './_lib/arena-guard.js';
+import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF } from './_lib/arena-guard.js';
 import { fetchDeepDive } from './_lib/finnhub-dive.js';
+import { readScreenerRows } from './_lib/screener-db.js';
+import { computeScreens, screenerRankedSymbols } from './_lib/screens.js';
 
 // Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
 // reglas de universo); el buffet (trimMovers) la reusa y los tests de
@@ -68,12 +73,21 @@ export const PROMPT_VERSION = 'arena-pm-v2';
 // cap de 60/min del tier gratis).
 export const MAX_CANDIDATES = 5;
 
+// FLOOR del canal screener — TIME-BOXED del trial (~30 días). Reserva hasta 2
+// de los 5 slots de candidatos para el screener cuando alguna screen dispara,
+// para que la atribución mida la CALIDAD DEL CANAL y no el sesgo del scout
+// (sin floor, un scout sesgado a lo noticioso podría no elegir screener en
+// semanas → mediríamos su sesgo). A los 30 días, con datos, baja a 0 →
+// free-choice puro. El flag `origin` (scout_picked/floor_reserved) separa las
+// dos métricas de atribución.
+export const SCREENER_FLOOR = 2;
+
 // ── SCAN (fase 1): el SCOUT filtra el buffet a ≤5 tickers a investigar. ──
 // No decide órdenes: solo nombra candidatos. El schema es contrato.
 export function buildScanSystemPrompt() {
   return `You are the SCOUT for QuantDesk Arena, an LLM-run PAPER trading experiment. This is STEP 1 of 2: triage, not trading.
 
-Your job: from today's market context (movers, earnings, insider buys, VC/IPO headlines) AND the current portfolio, pick up to ${MAX_CANDIDATES} US-listed common-stock tickers worth a deep-dive before the next open. A ticker is worth a deep-dive if there is a plausible reason to BUY it, or if it is an existing holding you might TRIM or EXIT. You do NOT have fundamentals yet — that is step 2; here you are only deciding what deserves the research budget.
+Your job: from today's market context (movers, earnings, insider buys, and a deterministic value/momentum screener that surfaces solid companies at a good price even when they made no news today) AND the current portfolio, pick up to ${MAX_CANDIDATES} US-listed common-stock tickers worth a deep-dive before the next open. A ticker is worth a deep-dive if there is a plausible reason to BUY it, or if it is an existing holding you might TRIM or EXIT. You do NOT have full fundamentals yet — that is step 2; the screener already carries the metrics that qualified each name (P/E, ROE, debt, % above moving average). Here you are only deciding what deserves the research budget.
 
 RULES:
 - US-listed common equities only. No warrants/units/rights, no sub-$1 stocks, no crypto, no options.
@@ -125,8 +139,32 @@ function trimEarnings(data) {
 function trimInsiders(data) {
   return ((data && data.items) || []).slice(0, 8).map((i) => ({ insider: i.insider, role: i.role, ticker: i.ticker, value: i.value, tradeDate: i.tradeDate }));
 }
-function trimVc(data) {
-  return ((data && data.items) || []).slice(0, 8).map((i) => i.title).filter(Boolean);
+// ── atribución de canal (determinista, no confía en el LLM) ──────────
+// symbol → { channels:[...], screens:[...], qualifiers:{...} } a partir de qué
+// secciones YA TRIMMEADAS del buffet contienen cada ticker (lo que el PM ve).
+// A los 30 días: GROUP BY channel sobre las acciones del journal → qué canal
+// produjo decisiones y cuál fue ruido. NO viaja al prompt (buildScanUserPrompt
+// lo excluye) — es índice de journaling.
+function buildChannels({ movers, earnings, insiders, screener }) {
+  const map = {};
+  const add = (sym, channel) => {
+    const s = String(sym || '').trim().toUpperCase();
+    if (!s) return null;
+    if (!map[s]) map[s] = { channels: [], screens: [], qualifiers: {} };
+    if (!map[s].channels.includes(channel)) map[s].channels.push(channel);
+    return map[s];
+  };
+  if (movers) for (const list of [movers.gainers, movers.losers, movers.actives]) for (const m of (list || [])) add(m.symbol, 'movers');
+  for (const e of (earnings || [])) add(e.ticker, 'earnings');
+  for (const i of (insiders || [])) add(i.ticker, 'insider');
+  for (const name of ['value', 'momentum']) {
+    for (const c of ((screener || {})[name] || [])) {
+      const entry = add(c.symbol, 'screener');
+      if (entry && !entry.screens.includes(name)) entry.screens.push(name);
+      if (entry) Object.assign(entry.qualifiers, c.qualifiers || {});
+    }
+  }
+  return map;
 }
 
 async function fetchJson(url) {
@@ -141,11 +179,13 @@ async function fetchJson(url) {
 export async function gatherContext({ baseUrl, now = new Date() }) {
   const iso = (d) => d.toISOString().slice(0, 10);
   const weekEnd = new Date(now.getTime() + 7 * 86400000);
+  // VC salió del buffet: son empresas privadas que el PM no puede comprar; el
+  // espacio le sirve más al canal screener. El endpoint /vc-feed sigue vivo
+  // para el resto de la app.
   const targets = {
     movers: baseUrl + '/api/movers?universe=market',
     earnings: baseUrl + `/api/earnings?from=${iso(now)}&to=${iso(weekEnd)}`,
     insiders: baseUrl + '/api/stock-tracker?cat=insider',
-    vc: baseUrl + '/api/vc-feed?cat=rounds',
   };
   const out = {};
   await Promise.all(Object.entries(targets).map(async ([k, url]) => {
@@ -160,15 +200,36 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   }));
   const fetch_errors = {};
   for (const k of Object.keys(targets)) if (out[k + '_error']) fetch_errors[k] = out[k + '_error'];
+
+  const movers = trimMovers(out.movers);
+  const earnings_this_week = trimEarnings(out.earnings);
+  const notable_insider_buys = trimInsiders(out.insiders);
+
+  // Canal SCREENER (estado-driven): se LEE de Neon (precomputado por el cron
+  // arena-screener) y se computan las screens en código — CERO llamadas
+  // Finnhub/Yahoo en la corrida. Best-effort: tabla vacía (cron aún no corrió,
+  // o ninguna screen dispara) → screener vacío, no es error. Solo una excepción
+  // de DB cuenta como caído.
+  let screener = { value: [], momentum: [] };
+  const unavailable = Object.keys(targets).filter((k) => !out[k]);
+  try {
+    screener = computeScreens(await readScreenerRows());
+  } catch (e) {
+    fetch_errors.screener = String((e && e.message) || e);
+    unavailable.push('screener');
+  }
+
+  const channelsByTicker = buildChannels({ movers, earnings: earnings_this_week, insiders: notable_insider_buys, screener });
+
   return {
-    movers: trimMovers(out.movers),
-    earnings_this_week: trimEarnings(out.earnings),
-    notable_insider_buys: trimInsiders(out.insiders),
-    vc_headlines: trimVc(out.vc),
-    unavailable: Object.keys(targets).filter((k) => !out[k]),
+    movers, earnings_this_week, notable_insider_buys,
+    screener,
+    unavailable,
     // Diagnóstico: status HTTP/timeout real por endpoint caído. NO viaja al
-    // prompt del LLM (buildUserPrompt lo excluye) — se journalea para el post-mortem.
+    // prompt del LLM (buildScanUserPrompt lo excluye) — se journalea.
     fetch_errors,
+    // Índice de atribución por ticker. NO viaja al prompt — para el journal.
+    channelsByTicker,
   };
 }
 
@@ -187,9 +248,9 @@ function portfolioSnapshot({ account, positions, openOrders }) {
 
 // ── user prompt del SCAN: portfolio + plan anterior + el buffet completo. ──
 export function buildScanUserPrompt({ account, positions, openOrders, buffet, previous }) {
-  // fetch_errors es diagnóstico interno (se journalea); el LLM solo necesita
-  // `unavailable`. Se excluye del prompt para no cambiar su comportamiento.
-  const { fetch_errors, ...buffetForLlm } = buffet || {};
+  // fetch_errors y channelsByTicker son diagnóstico/atribución interna (se
+  // journalean); el LLM solo necesita `unavailable`. Se excluyen del prompt.
+  const { fetch_errors, channelsByTicker, ...buffetForLlm } = buffet || {};
   return [
     'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders })),
     '',
@@ -209,7 +270,7 @@ export function buildScanUserPrompt({ account, positions, openOrders, buffet, pr
 // adivinaba el límite (anclaba en el 52w-high, el único número tipo-precio de
 // Finnhub) → el guard lo descartaba por banda. Ahora se le da EL MISMO cierre
 // contra el que el guard valida, con el rango ±2% ya hecho (sin aritmética). ──
-export function buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis, candidates, deepDive, closes, priceBand = ARENA_RULES.price_band }) {
+export function buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis, candidates, deepDive, closes, channels, priceBand = ARENA_RULES.price_band }) {
   const round2 = (n) => Math.round(n * 100) / 100;
   // Nota de datos ausentes para el modelo: price target es Premium (no lo
   // traemos), y un candidato puede no tener cobertura Finnhub ni cierre.
@@ -218,7 +279,14 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
     const limit_range = close != null
       ? { low: round2(close * (1 - priceBand)), high: round2(close * (1 + priceBand)) }
       : null;
-    return { ticker: t, last_close: close, limit_range, ...((deepDive && deepDive[t]) || null) };
+    // Procedencia del candidato (de qué canal salió + qualifiers del screener,
+    // que son RATIOS, no precio — el candado de precio se mantiene: last_close
+    // es el fresco, el screener nunca aporta un precio absoluto).
+    const ch = channels && channels[t] ? channels[t] : null;
+    const meta = ch
+      ? { channel: ch.channels, ...(ch.screens && ch.screens.length ? { screen: ch.screens, screener_qualifiers: ch.qualifiers } : {}) }
+      : {};
+    return { ticker: t, last_close: close, limit_range, ...meta, ...((deepDive && deepDive[t]) || null) };
   });
   return [
     'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders })),
@@ -331,29 +399,43 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
     return { status: 'aborted_scan_malformed_json', orders: 0 };
   }
   context.scan.thesis = scan.thesis;
-  context.scan.candidates = scan.candidates;
+  context.scan.candidates = scan.candidates; // picks crudos del scout
 
-  // Cero candidatos → el SCOUT no vio nada que amerite deep dive. Estado
-  // DISTINTO de "hubo candidatos y el DIVE decidió no operar" (ok_no_actions):
-  // a los 30 días quiero distinguir "no había qué investigar" de "investigué
-  // y decidí holdear". No gasta el DIVE ni pega a Finnhub.
-  if (scan.candidates.length === 0) {
+  // ── FLOOR del screener ──────────────────────────────────────────
+  // Reserva hasta SCREENER_FLOOR slots para el canal screener cuando alguna
+  // screen dispara (evita que el sesgo del scout lo starve → mediría el sesgo,
+  // no la calidad del canal). Cada candidato final lleva `origin`
+  // (scout_picked / floor_reserved) para separar las dos métricas de atribución.
+  // Determinista y auditable; time-boxed (a los 30 días, SCREENER_FLOOR=0).
+  const screenerRanked = screenerRankedSymbols(buffet.screener || { value: [], momentum: [] });
+  const slate = applyScreenerFloor(scan.candidates, screenerRanked, { floor: SCREENER_FLOOR, maxCandidates: MAX_CANDIDATES });
+  context.scan.floor = slate.floor;       // { applied, reserved, reason, floor } — journaleado SIEMPRE (cond. #3)
+  context.scan.slate = slate.candidates;  // [{ symbol, origin }] — la lista final
+  const candidateSymbols = slate.candidates.map((c) => c.symbol);
+  const candidateOrigins = new Map(slate.candidates.map((c) => [c.symbol, c.origin]));
+
+  // Cero candidatos FINALES (scout no vio nada Y ninguna screen disparó) → nada
+  // que investigar. Estado DISTINTO de ok_no_actions (hubo candidatos y el DIVE
+  // holdeó). `floor.reason='no_qualifying_candidates'` ya distingue "el screener
+  // no produjo nada" de "produjo y el PM lo ignoró" (condición #3). No gasta el
+  // DIVE ni pega a Finnhub.
+  if (candidateSymbols.length === 0) {
     await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'ok_no_candidates', plan: scan.thesis || 'Scout found nothing worth a deep-dive today.', llm_response: scanText });
-    return { status: 'ok_no_candidates', orders: 0, candidates: 0 };
+    return { status: 'ok_no_candidates', orders: 0, candidates: 0, floor: slate.floor.reason };
   }
 
   // ── FASE 2a: DEEP DIVE (determinista, Finnhub — sin LLM) ─────────
-  const dive = await fetchDeepDive(scan.candidates, process.env.FINNHUB_API_KEY, now);
+  const dive = await fetchDeepDive(candidateSymbols, process.env.FINNHUB_API_KEY, now);
   // Último cierre por candidato — MISMA fuente/valor que validará el guard, así
   // el PM ve exactamente el cierre contra el que se calcula la banda ±2% (sin
   // desfase). Se reusa abajo para el guard, sin re-fetch.
-  const closeArr = await Promise.all(scan.candidates.map((t) => lastCompletedClose(t, now)));
+  const closeArr = await Promise.all(candidateSymbols.map((t) => lastCompletedClose(t, now)));
   const candidateCloses = {};
-  scan.candidates.forEach((t, i) => { candidateCloses[t] = closeArr[i]; });
+  candidateSymbols.forEach((t, i) => { candidateCloses[t] = closeArr[i]; });
 
   // ── FASE 2b: DIVE (LLM #2 — decide órdenes) ─────────────────────
   const diveSystem = buildDiveSystemPrompt();
-  const diveUser = buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis: scan.thesis, candidates: scan.candidates, deepDive: dive.data, closes: candidateCloses });
+  const diveUser = buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis: scan.thesis, candidates: candidateSymbols, deepDive: dive.data, closes: candidateCloses, channels: buffet.channelsByTicker });
   const diveHash = sha256(diveSystem + '\n---\n' + diveUser);
   // shown_closes: el cierre que se le MOSTRÓ al PM por candidato — para auditar
   // desfases contra lo que valida el guard (deberían coincidir siempre).
@@ -404,17 +486,29 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
     positions, symbolMap, symbolTypes, lastCloses,
   });
 
+  // Atribución por acción (determinista, no confía en el LLM): de qué canal(es)
+  // salió el ticker + `origin` (scout_picked/floor_reserved) + screen y
+  // qualifiers si vino del screener. A los 30 días: qué canal produjo decisiones.
+  const channels = buffet.channelsByTicker || {};
+  const attribute = (a) => {
+    const sym = a && typeof a.symbol === 'string' ? a.symbol.trim().toUpperCase() : '';
+    const ch = sym ? channels[sym] : null;
+    const enriched = { ...a, channels: ch ? ch.channels : [], origin: candidateOrigins.get(sym) || null };
+    if (ch && ch.screens && ch.screens.length) { enriched.screens = ch.screens; enriched.screener_qualifiers = ch.qualifiers; }
+    return enriched;
+  };
+
   // Ejecución: límite + day, client_order_id determinista (idempotencia).
-  const journalActions = discarded.map((d) => ({ ...(d.action && typeof d.action === 'object' ? d.action : { raw: d.action }), result: 'discarded', reason: d.reason }));
+  const journalActions = discarded.map((d) => attribute({ ...(d.action && typeof d.action === 'object' ? d.action : { raw: d.action }), result: 'discarded', reason: d.reason }));
   let submitted = 0;
   for (const a of approved) {
     const clientOrderId = `arena:${runDate}:${a.symbol}:${a.side}`;
     try {
       const order = await createLimitOrder({ symbol: a.symbol, qty: a.qty, side: a.side, limit_price: a.limit_price, client_order_id: clientOrderId });
-      journalActions.push({ ...a, result: 'approved', alpaca_order_id: order.id, client_order_id: clientOrderId, order_status: order.status });
+      journalActions.push(attribute({ ...a, result: 'approved', alpaca_order_id: order.id, client_order_id: clientOrderId, order_status: order.status }));
       submitted++;
     } catch (err) {
-      journalActions.push({ ...a, result: 'submit_failed', client_order_id: clientOrderId, reason: String((err && err.message) || err) });
+      journalActions.push(attribute({ ...a, result: 'submit_failed', client_order_id: clientOrderId, reason: String((err && err.message) || err) }));
     }
   }
 
@@ -422,7 +516,8 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   // pero el DIVE decidió holdear (distinto de ok_no_candidates).
   const status = approved.length === 0 ? 'ok_no_actions' : 'ok';
   await journalInsert({ ...withPrompt, status, plan: parsed.plan, llm_response: responseText, actions: journalActions });
-  return { status, orders: submitted, approved: approved.length, discarded: discarded.length, candidates: scan.candidates.length };
+  // `candidates` = tamaño del slate final (scout + floor), no solo los picks del scout.
+  return { status, orders: submitted, approved: approved.length, discarded: discarded.length, candidates: candidateSymbols.length, floor: slate.floor.reason };
 }
 
 // ── fase RECONCILE ───────────────────────────────────────────────────

@@ -34,6 +34,10 @@
     {
       "path": "/api/pead-harvest?job=hour",
       "schedule": "30 21 * * *"
+    },
+    {
+      "path": "/api/arena-screener?job=refresh",
+      "schedule": "0 */4 * * *"
     }
   ]
 }

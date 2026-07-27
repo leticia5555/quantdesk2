@@ -145,6 +145,61 @@ export function parseScanResponse(raw, maxCandidates = 5) {
   return { ok: true, thesis, candidates };
 }
 
+// ── FLOOR del canal screener (determinista, time-boxed del trial) ────────
+// Sin floor, si el scout tiene sesgo hacia lo noticioso, el screener podría no
+// salir elegido en semanas → mediríamos el sesgo del scout, no la calidad del
+// canal. El floor RESERVA hasta `floor` slots para candidatos del screener,
+// SOLO cuando alguna screen realmente disparó (nada de rellenar con basura).
+//
+// El flag `origin` separa las dos métricas de atribución:
+//   'scout_picked'   → el scout lo eligió (incluye screener elegido orgánicamente)
+//   'floor_reserved' → lo forzó el floor (el PM/DIVE decide qué hace con él)
+//
+// Entrada: scoutPicks (símbolos del SCAN, en orden), screenerRanked (unión
+// rankeada value+momentum). Salida: { candidates:[{symbol, origin}], floor }.
+// `floor.reason` distingue los casos para el post-mortem (condición #3):
+//   'no_qualifying_candidates' → ninguna screen disparó (floor NO se usó)
+//   'scout_met_floor'          → el scout ya tenía ≥floor picks de screener
+//   'screener_already_picked'  → los candidatos de screener ya estaban en el scan
+//   'floor_applied'            → se reservaron slots
+export function applyScreenerFloor(scoutPicks, screenerRanked, { floor = 2, maxCandidates = 5 } = {}) {
+  const up = (s) => String(s || '').trim().toUpperCase();
+  const picks = [...new Set((scoutPicks || []).map(up).filter(Boolean))].slice(0, maxCandidates);
+  const rankedUp = [...new Set((screenerRanked || []).map(up).filter(Boolean))];
+  const screenerSet = new Set(rankedUp);
+  const mk = (arr, origin) => arr.map((symbol) => ({ symbol, origin }));
+
+  if (rankedUp.length === 0) {
+    return { candidates: mk(picks, 'scout_picked'), floor: { applied: false, reserved: [], reason: 'no_qualifying_candidates', floor } };
+  }
+  const scoutScreenerCount = picks.filter((s) => screenerSet.has(s)).length;
+  const deficit = Math.max(0, floor - scoutScreenerCount);
+  if (deficit === 0) {
+    return { candidates: mk(picks, 'scout_picked'), floor: { applied: false, reserved: [], reason: 'scout_met_floor', floor } };
+  }
+  const reserved = rankedUp.filter((s) => !picks.includes(s)).slice(0, deficit);
+  if (reserved.length === 0) {
+    return { candidates: mk(picks, 'scout_picked'), floor: { applied: false, reserved: [], reason: 'screener_already_picked', floor } };
+  }
+  // Cap a maxCandidates: `reserved` DEBE entrar; se recorta la cola de picks del
+  // scout que NO son screener primero (preserva los picks de screener orgánicos).
+  let kept = picks;
+  const slotsForScout = maxCandidates - reserved.length;
+  if (picks.length > slotsForScout) {
+    const toDrop = picks.length - slotsForScout;
+    const dropIdx = new Set();
+    for (let i = picks.length - 1; i >= 0 && dropIdx.size < toDrop; i--) {
+      if (!screenerSet.has(picks[i])) dropIdx.add(i);
+    }
+    for (let i = picks.length - 1; i >= 0 && dropIdx.size < toDrop; i--) dropIdx.add(i); // último recurso
+    kept = picks.filter((_, i) => !dropIdx.has(i));
+  }
+  return {
+    candidates: [...mk(kept, 'scout_picked'), ...mk(reserved, 'floor_reserved')],
+    floor: { applied: true, reserved, reason: 'floor_applied', floor },
+  };
+}
+
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 
 // ── validación por acción, con estado acumulado del run ─────────────

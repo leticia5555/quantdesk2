@@ -104,6 +104,18 @@ function pickProfile(profileResp) {
   };
 }
 
+// ── fundamentales de UN símbolo (para el precompute del screener) ─────
+// Reusa la MISMA extracción que el deep dive (pickFundamentals) — una sola
+// definición de "qué es un fundamental". 1 request Finnhub (stock/metric).
+// null si no hay cobertura/cae la red (best-effort, el cron marca el ledger).
+export async function fetchFundamentals(symbol, finnhubKey) {
+  if (!symbol || !finnhubKey) return null;
+  const r = await safeFetch(`${BASE}/stock/metric?symbol=${encodeURIComponent(symbol)}&metric=all&token=${finnhubKey}`);
+  const metric = await safeJson(r);
+  if (!metric) return null;
+  return pickFundamentals(metric);
+}
+
 // ── deep dive de ≤5 tickers ──────────────────────────────────────────
 // Devuelve { data: { TICKER: {profile,fundamentals,recommendation,news} | null },
 //            errors: { TICKER: motivo } }. `errors` alimenta el post-mortem
