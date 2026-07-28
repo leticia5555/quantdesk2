@@ -4,6 +4,9 @@
 //   GET /api/arena-screener?job=refresh  (default) — refresca ≤PER_RUN símbolos
 //   GET /api/arena-screener?job=seed               — siembra el ledger (universo)
 //   GET /api/arena-screener?job=status             — stats (sin escribir)
+//   GET /api/arena-screener?job=audit              — universo vs. symbol map US
+//        de Finnhub: reporta los tickers muertos (delisted/renombrados) sin
+//        escribir. El refresh los marca `not_found` solo; audit es el diagnóstico.
 //
 // Llena arena_screener con métricas por símbolo: fundamentales (Finnhub
 // stock/metric, reusa fetchFundamentals) + precio/MA (Yahoo, plumbing del
@@ -20,10 +23,10 @@ import {
   ensureScreenerSchema, seedScreenerLedger, pickStaleSymbols,
   upsertScreener, markScreenerLedger, screenerStats,
 } from './_lib/screener-db.js';
-import { universeLedgerEntries } from './_lib/screener-universe.js';
+import { universeLedgerEntries, auditUniverse } from './_lib/screener-universe.js';
 import { fetchFundamentals } from './_lib/finnhub-dive.js';
 import { fetchDailySeries, completedSlice } from './_lib/sim.js';
-import { getSymbolTypes } from './earnings.js';
+import { getSymbolMap, getSymbolTypes } from './earnings.js';
 
 const PER_RUN = 30;         // ≤30 símbolos/invocación → ~40s, cabe en 60s
 const SPACING_MS = 1200;    // ~1.2s entre símbolos → muy bajo el cap Finnhub 60/min
@@ -57,17 +60,34 @@ async function runRefresh(finnhubKey, now) {
   const pending = await pickStaleSymbols(PER_RUN);
   if (!pending.length) return { job: 'refresh', done: true, note: 'ledger vacío — corré ?job=seed', stats: await screenerStats() };
 
+  // El symbol map US de Finnhub sirve para DOS cosas (mismo fetch/cache → 0
+  // requests extra entre map y types): el tipo de instrumento y —nuevo— detectar
+  // tickers muertos. Ausente del map = ya no cotiza (delisted/renombrado): se
+  // marca terminal y NO se le gastan llamadas. Si el map NO cargó (Finnhub caído)
+  // no delisteamos a ciegas: se trata todo como transitorio (fail-safe).
+  const symbolMap = (await getSymbolMap(finnhubKey).catch(() => null)) || {};
   const types = (await getSymbolTypes(finnhubKey).catch(() => null)) || {};
+  const mapLoaded = Object.keys(symbolMap).length > 0;
+
   const results = [];
   for (let i = 0; i < pending.length; i++) {
     const { symbol, attempts } = pending[i];
+    // Ticker muerto (delisted/renombrado): terminal `not_found`, sin gastar
+    // Finnhub/Yahoo ni reintentar cada ciclo. Distinto de 'error' (transitorio).
+    if (mapLoaded && !(symbol in symbolMap)) {
+      await markScreenerLedger(symbol, { status: 'not_found', error_msg: 'ausente del symbol map US de Finnhub (delisted o cambió de símbolo)' });
+      results.push({ symbol, status: 'not_found' });
+      continue;
+    }
     try {
       const [fund, px] = await Promise.all([
         fetchFundamentals(symbol, finnhubKey),   // Finnhub stock/metric
         priceAndMAs(symbol, now),                 // Yahoo daily series
       ]);
       if (!fund && px.last_close == null) {
-        await markScreenerLedger(symbol, { status: 'error', attempts: attempts + 1, error_msg: 'sin datos (Finnhub+Yahoo)' });
+        // En el map pero sin datos HOY → transitorio (rate limit / cobertura
+        // temporal). Reintentable: 'error', nunca 'not_found'.
+        await markScreenerLedger(symbol, { status: 'error', attempts: attempts + 1, error_msg: 'sin datos (Finnhub+Yahoo) — transitorio' });
         results.push({ symbol, status: 'error' });
       } else {
         const f = fund || {};
@@ -116,6 +136,18 @@ export default async function handler(req, res) {
     }
     if (job === 'status') {
       return res.status(200).json({ job: 'status', stats: await screenerStats() });
+    }
+    if (job === 'audit') {
+      // Auditoría read-only del universo contra el symbol map US de Finnhub.
+      const finnhubKey = process.env.FINNHUB_API_KEY;
+      if (!finnhubKey) return res.status(200).json({ job: 'audit', error: 'FINNHUB_API_KEY not set' });
+      const symbolMap = await getSymbolMap(finnhubKey);
+      // Sin map (Finnhub caído) NO auditamos: todo el universo se vería "missing"
+      // y sería un falso positivo peligroso (marcaría vivos como muertos).
+      if (!symbolMap || !Object.keys(symbolMap).length) {
+        return res.status(200).json({ job: 'audit', error: 'symbol map US no disponible (Finnhub caído) — no se audita a ciegas' });
+      }
+      return res.status(200).json({ job: 'audit', ...auditUniverse(symbolMap) });
     }
 
     // default: refresh

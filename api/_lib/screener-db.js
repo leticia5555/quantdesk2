@@ -29,6 +29,10 @@ const SCREENER_SCHEMA = [
      rev_growth_yoy  numeric,
      refreshed_at    timestamptz
    )`,
+  // status: 'pending' (nunca corrió) · 'done' (métricas frescas) · 'error'
+  // (fallo TRANSITORIO — rate limit/timeout/sin-datos-hoy, se reintenta) ·
+  // 'not_found' (delisted/renombrado, ausente del symbol map — TERMINAL, el
+  // refresh lo excluye para no reintentar cada ciclo).
   `create table if not exists arena_screener_ledger (
      symbol          text primary key,
      status          text not null default 'pending',
@@ -46,23 +50,32 @@ export async function ensureScreenerSchema() {
 }
 
 // Siembra idempotente del ledger (on conflict do nothing — no pisa estado).
+// `returning symbol` hace que el conteo sea REAL: Postgres solo devuelve las
+// filas efectivamente insertadas (las que chocaron por conflict no vuelven), así
+// que `r.length` = insertadas de verdad. Sin el returning, la respuesta no
+// traía filas y el seed reportaba `inserted: 0` aunque hubiera insertado 151.
 export async function seedScreenerLedger(entries) {
   if (!entries || !entries.length) return 0;
   const values = entries.map((_, i) => `($${i + 1})`).join(', ');
   const params = entries.map((e) => e.symbol);
   const r = await sql(
     `insert into arena_screener_ledger (symbol) values ${values}
-     on conflict (symbol) do nothing`, params);
+     on conflict (symbol) do nothing
+     returning symbol`, params);
   return (r && r.length) || 0;
 }
 
 // Símbolos a refrescar: los más viejos primero (refreshed_at null = nunca).
 // LEFT JOIN a la tabla de datos → nulls first drena primero lo que falta.
+// EXCLUYE `not_found` (delisted/renombrado): esos no vuelven a existir, así que
+// reintentarlos cada ciclo solo quema cuota de Finnhub y falla. `is distinct
+// from` cubre el status null defensivamente (la columna tiene default not null).
 export async function pickStaleSymbols(n = 40) {
   const rows = await sql(
     `select l.symbol, l.attempts
        from arena_screener_ledger l
        left join arena_screener s on s.symbol = l.symbol
+      where l.status is distinct from 'not_found'
       order by s.refreshed_at asc nulls first, l.attempts asc
       limit $1`, [n]);
   return rows.map((r) => ({ symbol: r.symbol, attempts: Number(r.attempts) || 0 }));
@@ -121,7 +134,8 @@ export async function screenerStats() {
     `select count(*)::int total,
             count(*) filter (where status = 'done')::int done,
             count(*) filter (where status = 'pending')::int pending,
-            count(*) filter (where status = 'error')::int error
+            count(*) filter (where status = 'error')::int error,
+            count(*) filter (where status = 'not_found')::int not_found
        from arena_screener_ledger`);
   const [dat] = await sql(
     `select count(*)::int rows, min(refreshed_at) oldest, max(refreshed_at) newest

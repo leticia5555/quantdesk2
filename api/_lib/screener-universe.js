@@ -32,15 +32,17 @@ const US_SCREENER_UNIVERSE = [
   // Consumer / retail / staples
   'WMT', 'HD', 'COST', 'LOW', 'TGT', 'NKE', 'LULU', 'SBUX', 'MCD', 'CMG', 'YUM',
   'KO', 'PEP', 'PG', 'CL', 'KMB', 'MDLZ', 'MNST', 'EL', 'PM', 'MO',
-  // Energy
-  'XOM', 'CVX', 'COP', 'SLB', 'EOG', 'PSX', 'MPC', 'VLO', 'OXY', 'HES',
+  // Energy (HES removida: Hess absorbida por Chevron —CVX ya está en la lista—,
+  // delisted 2025; el ledger la marca not_found y el refresh dejó de reintentarla)
+  'XOM', 'CVX', 'COP', 'SLB', 'EOG', 'PSX', 'MPC', 'VLO', 'OXY',
   // Industrials / defense / transport
   'BA', 'LMT', 'RTX', 'GE', 'CAT', 'DE', 'HON', 'UPS', 'FDX', 'UBER', 'LYFT',
   // Media / entertainment
   'NFLX', 'DIS', 'SPOT', 'RBLX', 'EA', 'TTWO', 'PINS', 'SNAP',
   // Speculative / fintech / ADRs
   'COIN', 'HOOD', 'RIVN', 'LCID', 'NIO', 'XPEV', 'BABA', 'JD', 'PDD', 'BIDU',
-  'SHOP', 'SQ', 'AFRM', 'SOFI', 'UPST', 'RKT',
+  // XYZ = Block (antes SQ): rebrand con cambio de ticker en NYSE, ene-2025.
+  'SHOP', 'XYZ', 'AFRM', 'SOFI', 'UPST', 'RKT',
 ];
 
 // entries para seedLedger(): dedupe defensivo por si la lista crece con copiar/pegar.
@@ -48,4 +50,22 @@ function universeLedgerEntries() {
   return [...new Set(US_SCREENER_UNIVERSE)].map((symbol) => ({ symbol }));
 }
 
-export { US_SCREENER_UNIVERSE, universeLedgerEntries };
+// ── Auditoría del universo vs. el symbol map US de Finnhub ────────────
+// Un símbolo del universo que NO aparece en el symbol map de Finnhub ya no
+// cotiza con ese ticker: delisted (p.ej. HES, absorbida por Chevron) o
+// renombrado (p.ej. SQ → XYZ tras el rebrand de Block). Los tickers muertos
+// hacían que el refresh gastara Finnhub/Yahoo en ellos cada ciclo y fallara.
+// El cron usa esto para marcarlos `not_found` (terminal, sin reintentos) y
+// `?job=audit` lo reporta.
+//
+// `symbolMap` = { SYMBOL: nombre } de getSymbolMap. NO adivina: si el map llegó
+// vacío (Finnhub caído) devuelve todos como "missing" y el caller DEBE tratar
+// el resultado como no autoritativo (ver el gate en arena-screener/refresh).
+function auditUniverse(symbolMap) {
+  const map = symbolMap || {};
+  const universe = [...new Set(US_SCREENER_UNIVERSE)];
+  const missing = universe.filter((s) => !(s in map));
+  return { total: universe.length, present: universe.length - missing.length, missing };
+}
+
+export { US_SCREENER_UNIVERSE, universeLedgerEntries, auditUniverse };
