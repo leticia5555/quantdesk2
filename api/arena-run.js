@@ -167,6 +167,27 @@ function buildChannels({ movers, earnings, insiders, screener }) {
   return map;
 }
 
+// El scout también nombra candidatos del LIBRO, no solo del buffet: el prompt del
+// SCAN le da el portfolio y le pide considerar holdings a recortar/salir. Esos
+// símbolos (posiciones abiertas u órdenes abiertas por re-anclar) NO están en
+// ninguna sección del buffet → sin este paso salían con channels:[] y el
+// post-mortem a 30 días los perdía (bug 2026-07-27: AXP tenía orden abierta y
+// GNTX era holding → ambos []; solo MU, del screener, traía canal). Marca el
+// canal 'portfolio' sobre el MISMO índice de buildChannels (lo muta y lo
+// devuelve). Un candidato puede acumular 'movers'+'portfolio' si está en ambos.
+export function addPortfolioChannels(map, { positions = [], openOrders = [] } = {}) {
+  const m = map || {};
+  const mark = (sym) => {
+    const s = String(sym || '').trim().toUpperCase();
+    if (!s) return;
+    if (!m[s]) m[s] = { channels: [], screens: [], qualifiers: {} };
+    if (!m[s].channels.includes('portfolio')) m[s].channels.push('portfolio');
+  };
+  for (const p of (positions || [])) mark(p && p.symbol);
+  for (const o of (openOrders || [])) mark(o && o.symbol);
+  return m;
+}
+
 async function fetchJson(url) {
   const r = await fetch(url, { signal: AbortSignal.timeout(12000) });
   if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -367,6 +388,13 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
     ? { date: prevRows[0].run_date, plan: prevRows[0].plan,
         orders: (prevRows[0].actions || []).map((a) => ({ symbol: a.symbol, side: a.side, result: a.result, order_status: a.order_status || null, filled_avg_price: a.filled_avg_price || null, reason: a.reason || null })) }
     : null;
+
+  // Atribución del canal 'portfolio': el índice de canales de gatherContext solo
+  // conoce el buffet. Los candidatos que el scout re-elige del LIBRO (un holding
+  // a recortar/salir, o una orden abierta a re-anclar) no están en el buffet, así
+  // que sin esto salían con channels:[]. Se marca acá —donde ya tenemos posiciones
+  // y órdenes abiertas— sobre el mismo índice, antes de construir prompts/atribuir.
+  addPortfolioChannels(buffet.channelsByTicker, { positions, openOrders });
 
   // ── FASE 1: SCAN ────────────────────────────────────────────────
   const scanSystem = buildScanSystemPrompt();
