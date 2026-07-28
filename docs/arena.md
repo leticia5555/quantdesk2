@@ -117,8 +117,14 @@ de `screenerDataState(rows)` (`_lib/screens.js`) y también viaja aparte en
 
 Cada candidato y cada acción journalea de qué canal salió, para el post-mortem a
 30 días (GROUP BY channel → qué canal produjo decisiones y cuál fue ruido):
-- `channels` — `movers`/`earnings`/`insider`/`screener` (índice determinista de
-  qué sección del buffet contenía el ticker; no confía en el LLM).
+- `channels` — `movers`/`earnings`/`insider`/`screener`/`portfolio` (índice
+  determinista de qué fuente contenía el ticker; no confía en el LLM). El scout
+  también nombra candidatos del LIBRO (holdings a recortar/salir, u órdenes
+  abiertas a re-anclar); esos no están en el buffet y se marcan `portfolio`
+  (`addPortfolioChannels`). Un array vacío `[]` significa entonces "pick sin
+  anclar" (ni buffet ni libro) — señal legítima, no un canal perdido. Antes del
+  fix del 2026-07-27, los candidatos del libro salían con `[]` y el post-mortem
+  los perdía.
 - `origin` — `scout_picked` (lo eligió el scout, incl. screener orgánico) vs
   `floor_reserved` (lo forzó el floor). Separa "el PM eligió el canal" de "se lo
   reservamos".

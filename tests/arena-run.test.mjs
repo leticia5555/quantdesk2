@@ -88,6 +88,8 @@ const journalUpdates = [];
 const finnhubDiveCalls = []; // urls de deep dive (metric/profile2/recommendation/company-news)
 let orderFilled = false;
 let moversStatus = 200; // se flipa a 401 para probar fetch_errors del buffet
+let positionsMock = []; // posiciones del libro (mutable: la atribución de portfolio lo usa)
+let openOrdersMock = []; // órdenes abiertas del libro (mutable)
 
 const nowSec = Math.floor(Date.now() / 1000);
 
@@ -111,8 +113,8 @@ global.fetch = async (url, opts = {}) => {
   // Alpaca
   if (u.includes('paper-api.alpaca.markets')) {
     if (u.endsWith('/v2/account')) return jsonReply({ status: 'ACTIVE', equity: '100000', cash: '100000' });
-    if (u.endsWith('/v2/positions')) return jsonReply([]);
-    if (u.includes('/v2/orders?')) return jsonReply([]);
+    if (u.endsWith('/v2/positions')) return jsonReply(positionsMock);
+    if (u.includes('/v2/orders?')) return jsonReply(openOrdersMock);
     if (u.endsWith('/v2/orders') && method === 'POST') {
       const body = JSON.parse(opts.body);
       alpacaOrderPosts.push(body);
@@ -134,6 +136,8 @@ global.fetch = async (url, opts = {}) => {
         { symbol: 'HD', description: 'HOME DEPOT INC', type: 'Common Stock' },
         { symbol: 'KO', description: 'COCA-COLA CO', type: 'Common Stock' },
         { symbol: 'NVDA', description: 'NVIDIA CORP', type: 'Common Stock' },
+        { symbol: 'GNTX', description: 'GENTEX CORP', type: 'Common Stock' },
+        { symbol: 'AXP', description: 'AMERICAN EXPRESS CO', type: 'Common Stock' },
       ] };
   }
   // Finnhub deep dive (fase 2a)
@@ -462,6 +466,48 @@ ok(isLeveragedInverseETF('TSLL') && isLeveragedInverseETF('sqqq') && isLeveraged
   'detecta leveraged/inverse (case/trim-insensible)');
 ok(!isLeveragedInverseETF('NU') && !isLeveragedInverseETF('AAL') && !isLeveragedInverseETF('NOK') && !isLeveragedInverseETF('TSLA'),
   'NO marca nombres reales (NU, AAL, NOK, TSLA)');
+
+// ── 10) atribución del canal PORTFOLIO: candidatos que vienen del LIBRO
+// (holding u orden abierta), no del buffet, deben salir con channels ['portfolio']
+// y NO con [] (bug 2026-07-27: AXP con orden abierta + GNTX holding → []). ──
+console.log('arena-run: atribución del canal portfolio (holdings/órdenes abiertas del libro)');
+positionsMock = [{ symbol: 'GNTX', qty: '50', avg_entry_price: '30', market_value: '1600', unrealized_plpc: '0.05' }];
+openOrdersMock = [{ symbol: 'AXP', side: 'buy', qty: '10', limit_price: '326.17', status: 'accepted' }];
+screenerRows = []; // aislar del floor
+scanText = JSON.stringify({ scan_thesis: 'Reevalúo GNTX (holding) y AXP (orden abierta de la corrida previa).', candidates: ['GNTX', 'AXP'] });
+diveText = JSON.stringify({ plan: 'Recorto GNTX y re-anclo AXP al precio de hoy.', actions: [
+  { symbol: 'GNTX', side: 'sell', notional: 800, limit_price: 199, conviction: 3, reasoning: 'Tomo ganancia parcial del holding.' },
+  { symbol: 'AXP', side: 'buy', notional: 6000, limit_price: 203, conviction: 4, reasoning: 'Re-anclo al cierre fresco de hoy.' },
+] });
+const rPf = await runArenaDecide({ baseUrl: BASE_URL });
+ok(rPf.status === 'ok' && rPf.orders === 2, 'las dos acciones del libro se ejecutan', JSON.stringify(rPf));
+const jPf = JSON.parse(lastRow()[COL.actions]);
+const aGntx = jPf.find((a) => a.symbol === 'GNTX');
+const aAxp = jPf.find((a) => a.symbol === 'AXP');
+ok(aGntx && Array.isArray(aGntx.channels) && aGntx.channels.includes('portfolio'),
+  'FIX: holding (GNTX) → channels incluye "portfolio", ya no []', JSON.stringify(aGntx && aGntx.channels));
+ok(aAxp && Array.isArray(aAxp.channels) && aAxp.channels.includes('portfolio'),
+  'FIX: orden abierta (AXP) → channels incluye "portfolio", ya no []', JSON.stringify(aAxp && aAxp.channels));
+ok(aGntx && aGntx.channels.length > 0 && aAxp && aAxp.channels.length > 0,
+  'ningún candidato del libro sale con channels vacío (atribución utilizable a 30 días)');
+// El slate journalea el mismo canal en context.scan (auditar sin depender de la acción).
+const ctxPf = JSON.parse(lastRow()[COL.context]);
+ok(ctxPf.scan.slate.every((c) => c.origin === 'scout_picked'), 'slate: ambos son scout_picked (los eligió el scout del libro)', JSON.stringify(ctxPf.scan.slate));
+positionsMock = []; openOrdersMock = []; // restaurar para no filtrar estado
+
+// Regresión: un candidato que NO está ni en el buffet ni en el libro sigue con [] —
+// [] ahora significa "pick sin anclar" (el scout lo inventó), no un bug de wiring.
+console.log('arena-run: [] ahora es señal legítima (candidato sin anclar), no un canal perdido');
+screenerRows = [];
+// NVDA solo aparece en movers; con movers caído no está en ninguna sección del
+// buffet, ni en earnings/insider, ni en el libro → debe quedar con [].
+scanText = JSON.stringify({ scan_thesis: 'Pick sin anclar en ninguna fuente.', candidates: ['NVDA'] });
+diveText = JSON.stringify({ plan: 'Compro NVDA.', actions: [{ symbol: 'NVDA', side: 'buy', notional: 5000, limit_price: 201, conviction: 3, reasoning: 'x' }] });
+moversStatus = 401; // buffet de movers caído → NVDA no está en ninguna sección
+const rUn = await runArenaDecide({ baseUrl: BASE_URL });
+const aUn = JSON.parse(lastRow()[COL.actions]).find((a) => a.symbol === 'NVDA');
+ok(aUn && Array.isArray(aUn.channels) && aUn.channels.length === 0, 'sin buffet ni libro → channels [] (señal de pick sin anclar, no bug de wiring)', JSON.stringify(aUn && aUn.channels));
+moversStatus = 200; // restaurar
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);
