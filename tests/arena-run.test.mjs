@@ -509,5 +509,26 @@ const aUn = JSON.parse(lastRow()[COL.actions]).find((a) => a.symbol === 'NVDA');
 ok(aUn && Array.isArray(aUn.channels) && aUn.channels.length === 0, 'sin buffet ni libro → channels [] (señal de pick sin anclar, no bug de wiring)', JSON.stringify(aUn && aUn.channels));
 moversStatus = 200; // restaurar
 
+// ── 11) DISCIPLINA DE LA PROSA: valores pre-formateados/rotulados (Opción 1) +
+// instrucciones de recencia y de "cita cifras verbatim" (Opción 2) en el DIVE. ──
+console.log('arena-run: disciplina de la prosa — % pre-formateado + reglas de recencia/figuras en el prompt del DIVE');
+positionsMock = [{ symbol: 'GNTX', qty: '50', avg_entry_price: '30', market_value: '1600', unrealized_plpc: '0.061' }];
+screenerRows = [];
+scanText = JSON.stringify({ scan_thesis: 'Reevalúo GNTX (holding).', candidates: ['GNTX'] });
+diveText = JSON.stringify({ plan: 'Mantengo GNTX.', actions: [] }); // hold: el DIVE igual construye y journalea su prompt
+await runArenaDecide({ baseUrl: BASE_URL });
+const ctxProse = JSON.parse(lastRow()[COL.context]);
+const diveUser = ctxProse.dive.prompt.user;
+ok(diveUser.includes('"pnl_since_entry_pct":"+6.1%"'),
+  'Opción 1: el % de posición va pre-formateado y rotulado (+6.1%), no la fracción cruda',
+  (diveUser.match(/pnl_since_entry_pct[^,}]*/) || [])[0]);
+ok(!/"unrealized_plpc"/.test(diveUser) && !/0\.061/.test(diveUser),
+  'Opción 1: la fracción cruda (0.061 / unrealized_plpc) ya NO viaja al prompt');
+ok(diveUser.includes('NEWS RECENCY') && /reserve "today" for a date that equals today/.test(diveUser),
+  'Opción 2: instrucción de recencia de titulares presente en el DIVE');
+ok(diveUser.includes('FIGURES') && /Do NOT compute, rescale, round, or invent percentages/.test(diveUser),
+  'Opción 2: instrucción "cita cifras verbatim, no inventes %" presente en el DIVE');
+positionsMock = []; // restaurar
+
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);

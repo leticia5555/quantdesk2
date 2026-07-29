@@ -266,6 +266,20 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   };
 }
 
+// Fracción cruda de Alpaca (unrealized_plpc: 0.061) → string YA formateado y
+// rotulado ("+6.1%"). El PM recibía la fracción pelada y en la prosa (a) la
+// mal-escalaba al narrarla (0.061 → "0.61%") y (b) la confundía con el cambio
+// del día. El string lleva signo y %, y el NOMBRE del campo (pnl_since_entry_pct)
+// fija la semántica —P&L desde entrada, no movimiento intradía— para que el PM
+// no tenga que formatear ni adivinar la escala. Mismo valor que la tabla del
+// panel (agPct también hace ×100). null si Alpaca no trajo el dato.
+function fmtSignedPct(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  const pct = n * 100;
+  return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
+}
+
 // Snapshot del libro compartido por ambas fases.
 function portfolioSnapshot({ account, positions, openOrders }) {
   return {
@@ -273,7 +287,9 @@ function portfolioSnapshot({ account, positions, openOrders }) {
     cash: Number(account.cash),
     positions: (positions || []).map((p) => ({
       symbol: p.symbol, qty: Number(p.qty), avg_entry: Number(p.avg_entry_price),
-      market_value: Number(p.market_value), unrealized_plpc: Number(p.unrealized_plpc),
+      market_value: Number(p.market_value),
+      // Pre-formateado + rotulado (ver fmtSignedPct): P&L desde entrada, no día.
+      pnl_since_entry_pct: fmtSignedPct(p.unrealized_plpc),
     })),
     open_orders: (openOrders || []).map((o) => ({ symbol: o.symbol, side: o.side, qty: o.qty, limit_price: o.limit_price, status: o.status })),
   };
@@ -333,6 +349,8 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
     'DEEP-DIVE DATA (Finnhub; per candidate: last_close, limit_range, profile, fundamentals, analyst recommendation counts, recent news headlines).',
     `PRICING RULE — READ CAREFULLY: for each candidate, "last_close" is the reference close and "limit_range" {low, high} is the ONLY band the risk guard accepts (±${priceBand * 100}% of last_close). Your limit_price MUST fall inside [limit_range.low, limit_range.high] or the order is auto-discarded. Do NOT anchor your limit on 52-week highs/lows, analyst targets, or any other figure — only on last_close. If last_close is null you have no valid reference for that ticker: do not place an order for it.`,
     'NOTES: null fields mean the datum was unavailable (do not guess it). Analyst price targets are NOT provided; use the recommendation buy/hold/sell split as the rating signal. marketCapM is in millions USD.',
+    'NEWS RECENCY — each news item carries a `date` (YYYY-MM-DD). Before you describe any headline, compare its date to today\'s date (given in the system prompt): state how long ago it happened ("N days ago", the weekday) and reserve "today" for a date that equals today. A headline dated before today is NOT today\'s news — do not narrate a report from several days ago as if it broke today.',
+    'FIGURES — when your plan cites a number (a %, a price, a P&L), use ONLY the figures given to you here or in the PORTFOLIO above, verbatim. Each holding carries `pnl_since_entry_pct`, already formatted ("+6.1%"): that is profit/loss SINCE YOUR ENTRY, not today\'s price move — quote it as-is if you mention it. Do NOT compute, rescale, round, or invent percentages you were not given.',
     JSON.stringify(research),
     '',
     'Decide your actions for the next market open. Remember: ONE JSON object, nothing else.',
