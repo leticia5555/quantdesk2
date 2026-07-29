@@ -18936,9 +18936,9 @@ function qdArenaHtml(data){
 
   if ((data.positions || []).length){
     html += '<div style="margin-top:10px;overflow-x:auto;"><table style="' + mono + 'font-size:10px;color:var(--text2);border-collapse:collapse;min-width:420px;">' +
-      '<tr style="color:#555;text-align:left;"><th style="padding:2px 12px 2px 0;">SÍMBOLO</th><th style="padding:2px 12px 2px 0;">QTY</th><th style="padding:2px 12px 2px 0;">ENTRADA</th><th style="padding:2px 12px 2px 0;">VALOR</th><th style="padding:2px 0;">P/L</th></tr>' +
+      '<tr style="color:#555;text-align:left;"><th style="padding:2px 12px 2px 0;position:sticky;left:0;background:#0c0a14;z-index:1;border-right:1px solid #241d3a;">SÍMBOLO</th><th style="padding:2px 12px 2px 0;">QTY</th><th style="padding:2px 12px 2px 0;">ENTRADA</th><th style="padding:2px 12px 2px 0;">VALOR</th><th style="padding:2px 0;">P/L</th></tr>' +
       data.positions.map(function(p){
-        return '<tr><td style="padding:2px 12px 2px 0;color:var(--text);font-weight:600;">' + p.symbol + '</td>' +
+        return '<tr><td style="padding:2px 12px 2px 0;color:var(--text);font-weight:600;position:sticky;left:0;background:#0c0a14;z-index:1;border-right:1px solid #241d3a;">' + p.symbol + '</td>' +
           '<td style="padding:2px 12px 2px 0;">' + p.qty + '</td>' +
           '<td style="padding:2px 12px 2px 0;">$' + Number(p.avg_entry).toFixed(2) + '</td>' +
           '<td style="padding:2px 12px 2px 0;">' + agMoney(p.market_value) + '</td>' +
