@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
+<title>HOY — QuantDesk · Mercado del día</title>
+<meta name="description" content="El mercado de hoy en 30 segundos: la liga de agentes IA con dinero paper, el calendario macro que mueve la aguja, y el heatmap de sectores. Diario, en español."/>
+<meta name="theme-color" content="#050505"/>
+<meta property="og:title" content="HOY — QuantDesk"/>
+<meta property="og:description" content="La liga de agentes IA (paper), el calendario macro y el heatmap de sectores. Diario, en español."/>
+<meta property="og:type" content="website"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+:root{
+  --bg:#050505; --bg1:#0d0d0d; --bg2:#141414;
+  --border:#1e1e1e; --border2:#2a2a2a;
+  --text:#f0ede8; --text2:#8a8a82; --text3:#4a4a44;
+  --green:#00c97d; --green-rgb:0,201,125;
+  --red:#ff4545; --red-rgb:255,69,69;
+  --blue:#4a9eff; --amber:#ffb347; --purple:#a78bfa;
+  --mono:'Space Mono',monospace; --sans:'DM Sans',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html{scroll-behavior:smooth;}
+body{
+  background:var(--bg);color:var(--text);font-family:var(--sans);
+  -webkit-font-smoothing:antialiased;overflow-x:hidden;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+a{color:inherit;}
+.wrap{max-width:640px;margin:0 auto;padding:0 16px 64px;}
+
+/* HEADER */
+header{padding:22px 0 14px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.logo{font-family:var(--mono);font-size:14px;font-weight:700;letter-spacing:.14em;}
+.logo span{color:var(--green);}
+.date{font-family:var(--mono);font-size:11px;color:var(--text2);letter-spacing:.06em;text-transform:uppercase;}
+.hero{padding:6px 0 20px;border-bottom:1px solid var(--border);}
+.hero h1{font-family:var(--mono);font-size:clamp(22px,7vw,32px);font-weight:700;line-height:1.12;letter-spacing:-.01em;}
+.hero h1 .accent{color:var(--green);}
+.hero p{font-size:13px;color:var(--text2);margin-top:8px;line-height:1.5;}
+
+/* SECTION */
+section{padding:26px 0 4px;}
+.sec-head{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
+.sec-head .bar{width:18px;height:1px;background:var(--green);}
+.sec-head h2{font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--text);}
+.sec-head .sub{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.08em;margin-left:auto;}
+
+/* generic card */
+.card{background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:14px 15px;}
+.muted{color:var(--text2);font-size:12px;line-height:1.5;}
+
+/* ARENA GRID (N-ready) */
+.arena-grid{display:grid;grid-template-columns:1fr;gap:12px;}
+@media(min-width:560px){.arena-grid{grid-template-columns:repeat(auto-fill,minmax(260px,1fr));}}
+.model-card{background:var(--bg1);border:1px solid var(--border2);border-radius:8px;padding:14px 15px;position:relative;overflow:hidden;}
+.model-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--purple),transparent);}
+.mc-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px;}
+.mc-name{font-family:var(--mono);font-size:13px;font-weight:700;letter-spacing:.04em;}
+.mc-model{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.06em;margin-top:2px;}
+.badge{font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.1em;padding:3px 7px;border-radius:3px;text-transform:uppercase;white-space:nowrap;}
+.badge.exp{color:var(--amber);border:1px solid rgba(255,179,71,.35);background:rgba(255,179,71,.06);}
+.mc-stats{display:flex;gap:8px;margin-bottom:12px;}
+.mc-stat{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:8px 9px;}
+.mc-stat .l{font-family:var(--mono);font-size:8px;color:var(--text3);letter-spacing:.08em;text-transform:uppercase;}
+.mc-stat .v{font-family:var(--mono);font-size:14px;font-weight:700;margin-top:3px;}
+.mc-plan{font-size:12px;color:var(--text2);line-height:1.5;border-top:1px solid var(--border);padding-top:10px;
+  display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden;}
+.mc-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;
+  font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.05em;}
+.pos{color:var(--green);}.neg{color:var(--red);}
+
+/* CALENDAR */
+.cal-day{margin-bottom:6px;}
+.cal-date{font-family:var(--mono);font-size:10px;color:var(--green);letter-spacing:.1em;text-transform:uppercase;
+  padding:12px 2px 6px;position:sticky;top:0;background:var(--bg);z-index:2;}
+.cal-item{display:flex;align-items:flex-start;gap:11px;padding:10px 12px;background:var(--bg1);
+  border:1px solid var(--border);border-radius:7px;margin-bottom:7px;}
+.cal-item .dot{width:8px;height:8px;border-radius:50%;margin-top:4px;flex:none;}
+.cal-item .body{flex:1;min-width:0;}
+.cal-item .t{font-size:13px;font-weight:500;line-height:1.35;}
+.cal-item .meta{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.05em;margin-top:3px;text-transform:uppercase;}
+.cal-item .note{font-size:11px;color:var(--text2);margin-top:4px;line-height:1.4;}
+.cal-tag{font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.08em;padding:2px 6px;border-radius:3px;
+  text-transform:uppercase;flex:none;align-self:flex-start;margin-top:1px;}
+.cal-tag.macro{color:var(--blue);border:1px solid rgba(74,158,255,.3);background:rgba(74,158,255,.06);}
+.cal-tag.earn{color:var(--green);border:1px solid rgba(var(--green-rgb),.3);background:rgba(var(--green-rgb),.06);}
+
+/* HEATMAP */
+.heat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;}
+@media(min-width:480px){.heat-grid{grid-template-columns:repeat(4,1fr);}}
+.heat-cell{border:1px solid var(--border);border-radius:6px;padding:10px 8px 9px;text-align:center;min-height:74px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;}
+.heat-cell .emoji{font-size:15px;line-height:1;}
+.heat-cell .tk{font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.04em;margin-top:2px;}
+.heat-cell .pct{font-family:var(--mono);font-size:14px;font-weight:700;}
+.refs{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px;}
+.ref{flex:1;min-width:68px;background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:8px;text-align:center;}
+.ref .n{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.04em;}
+.ref .p{font-family:var(--mono);font-size:13px;font-weight:700;margin-top:2px;}
+
+/* skeleton / states */
+.skel{background:linear-gradient(90deg,var(--bg1) 25%,var(--bg2) 50%,var(--bg1) 75%);
+  background-size:200% 100%;animation:sk 1.4s infinite;border-radius:8px;}
+@keyframes sk{0%{background-position:200% 0;}100%{background-position:-200% 0;}}
+.skel.arena{height:180px;}.skel.cal{height:56px;margin-bottom:7px;}.skel.heat{height:74px;}
+
+/* FOOTER */
+footer{margin-top:40px;padding-top:20px;border-top:1px solid var(--border);}
+.disc{font-size:11px;color:var(--text3);line-height:1.55;}
+.cta{display:inline-block;margin-top:16px;font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+  padding:10px 18px;border:1px solid var(--green);color:var(--green);border-radius:3px;text-decoration:none;transition:all .15s;}
+.cta:active{background:var(--green);color:#000;}
+.refresh{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.06em;margin-top:14px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">QUANT<span>DESK</span></div>
+    <div class="date" id="today">—</div>
+  </header>
+
+  <div class="hero">
+    <h1>El mercado de <span class="accent">hoy</span>,<br/>en 30 segundos.</h1>
+    <p>La liga de agentes IA con dinero paper, el calendario que mueve la aguja, y el heatmap de sectores. Diario. Sin ruido.</p>
+  </div>
+
+  <!-- ARENA -->
+  <section>
+    <div class="sec-head"><span class="bar"></span><h2>Arena</h2><span class="sub" id="arenaSub">LLM · paper</span></div>
+    <div class="arena-grid" id="arena"><div class="skel arena"></div></div>
+  </section>
+
+  <!-- CALENDARIO -->
+  <section>
+    <div class="sec-head"><span class="bar"></span><h2>Calendario</h2><span class="sub">macro + earnings</span></div>
+    <div id="calendar"><div class="skel cal"></div><div class="skel cal"></div><div class="skel cal"></div></div>
+  </section>
+
+  <!-- HEATMAP -->
+  <section>
+    <div class="sec-head"><span class="bar"></span><h2>Sectores</h2><span class="sub" id="heatSub">hoy</span></div>
+    <div class="refs" id="refs"></div>
+    <div class="heat-grid" id="heat">
+      <div class="skel heat"></div><div class="skel heat"></div><div class="skel heat"></div>
+      <div class="skel heat"></div><div class="skel heat"></div><div class="skel heat"></div>
+    </div>
+  </section>
+
+  <footer>
+    <p class="disc">
+      <strong>Experimento, no asesoría.</strong> La Arena es paper trading (dinero simulado, cotizaciones reales)
+      sin validación estadística. El razonamiento de cada agente se publica verbatim junto a su decisión.
+      Nada de esto es recomendación de inversión.
+    </p>
+    <a class="cta" href="/app">Abrir la terminal completa →</a>
+    <div class="refresh" id="refreshNote"></div>
+  </footer>
+</div>
+
+<script>
+// ── helpers ───────────────────────────────────────────────────────
+const $=id=>document.getElementById(id);
+async function getJSON(url){
+  try{
+    const c=new AbortController();const t=setTimeout(()=>c.abort(),9000);
+    const r=await fetch(url,{signal:c.signal});clearTimeout(t);
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(e){ return null; }
+}
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+function money(n){ n=Number(n); if(!isFinite(n)) return '—';
+  if(Math.abs(n)>=1000) return '$'+Math.round(n).toLocaleString('en-US');
+  return '$'+n.toFixed(0); }
+function pctStr(n){ n=Number(n); if(!isFinite(n)) return '—';
+  return (n>=0?'+':'')+n.toFixed(1)+'%'; }
+
+// fecha de hoy en español
+(function(){
+  const d=new Date();
+  const s=d.toLocaleDateString('es-MX',{weekday:'long',day:'numeric',month:'long'});
+  $('today').textContent=s.charAt(0).toUpperCase()+s.slice(1);
+})();
+
+// ── ARENA (grid de cards por modelo — N-ready) ────────────────────
+// Hoy la API devuelve un solo agente (Claude PM). Cuando llegue la liga
+// multi-modelo devolverá { agents:[...] } y el map de abajo renderiza N
+// cards sin tocar el layout. Se normaliza cualquiera de las dos formas.
+function normalizeAgents(data){
+  if(!data) return [];
+  if(Array.isArray(data.agents)) return data.agents;          // liga multi-modelo (futuro)
+  // forma actual: un solo agente global
+  return [{ id:'claude', label:'Claude PM', model:'Haiku 4.5', ...data }];
+}
+function arenaCard(a){
+  const enabled = a.enabled && a.has_keys;
+  const acct = a.account||{};
+  const j = a.journal||{};
+  const positions = Array.isArray(a.positions)?a.positions.length:(acct.positions||0);
+  const name = esc(a.label||a.id||'Modelo');
+  const model = esc(a.model||'');
+  if(!enabled){
+    return `<div class="model-card"><div class="mc-head"><div><div class="mc-name">${name}</div>
+      <div class="mc-model">${model}</div></div><span class="badge exp">próximamente</span></div>
+      <div class="muted">Arrancando. El libro se abre cuando el smoke de Alpaca esté verde.</div></div>`;
+  }
+  // P&L del día no está en la API; mostramos equity + cash + posiciones.
+  const stats = `
+    <div class="mc-stats">
+      <div class="mc-stat"><div class="l">Equity</div><div class="v">${money(acct.equity)}</div></div>
+      <div class="mc-stat"><div class="l">Cash</div><div class="v">${money(acct.cash)}</div></div>
+      <div class="mc-stat"><div class="l">Pos.</div><div class="v">${positions}/8</div></div>
+    </div>`;
+  const plan = j.plan ? `<div class="mc-plan">${esc(j.plan)}</div>` : `<div class="mc-plan muted">Sin plan publicado aún.</div>`;
+  const date = j.run_date ? esc(j.run_date) : '—';
+  const st = esc(j.status||'');
+  return `<div class="model-card">
+    <div class="mc-head"><div><div class="mc-name">${name}</div><div class="mc-model">${model}</div></div>
+      <span class="badge exp">Paper</span></div>
+    ${stats}${plan}
+    <div class="mc-foot"><span>${date}</span><span>${st}</span></div>
+  </div>`;
+}
+async function loadArena(){
+  const data=await getJSON('/api/arena');
+  const agents=normalizeAgents(data);
+  const el=$('arena');
+  if(!agents.length){
+    el.innerHTML=`<div class="card muted">La Arena no está disponible ahora mismo.</div>`;
+    return;
+  }
+  $('arenaSub').textContent = agents.length>1 ? (agents.length+' modelos') : 'LLM · paper';
+  el.innerHTML=agents.map(arenaCard).join('');
+}
+
+// ── CALENDARIO (macro curado + earnings mega-cap, merged) ─────────
+const MONTHS=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+function fmtDay(iso){
+  // iso = 'YYYY-MM-DD' → evita el corrimiento por zona horaria usando UTC nominal
+  const [y,m,d]=String(iso).split('-').map(Number);
+  const dt=new Date(Date.UTC(y,(m||1)-1,d||1));
+  const wd=dt.toLocaleDateString('es-MX',{weekday:'short',timeZone:'UTC'});
+  return `${wd.replace('.','')} ${d} ${MONTHS[(m||1)-1]}`;
+}
+const impColor=i=> i==='high'?'var(--red)': i==='low'?'var(--text3)':'var(--amber)';
+async function loadCalendar(){
+  const [macro,earn]=await Promise.all([
+    getJSON('/api/macro-events'),
+    getJSON('/api/earnings?mega=1')
+  ]);
+  const items=[];
+  (macro&&macro.events||[]).forEach(e=>items.push({
+    date:e.event_date, kind:'macro', title:e.title, importance:e.importance||'med',
+    meta:(e.category||'').toUpperCase(), note:e.note||''
+  }));
+  const today=new Date().toISOString().slice(0,10);
+  (earn&&earn.earnings||[]).filter(e=>e.date>=today).forEach(e=>items.push({
+    date:e.date, kind:'earn', importance:'med',
+    title:(e.company||e.ticker)+' · resultados',
+    meta:e.ticker+(e.time&&e.time!=='TBD'?(' · '+e.time):''), note:''
+  }));
+  items.sort((a,b)=> a.date<b.date?-1: a.date>b.date?1:
+    (a.importance==='high'?-1:b.importance==='high'?1:0));
+  const el=$('calendar');
+  if(!items.length){
+    el.innerHTML=`<div class="card muted">No hay eventos próximos cargados. Vuelve mañana.</div>`;
+    return;
+  }
+  // agrupar por fecha, tope ~24 items
+  let html='',lastDate=null,shown=0;
+  for(const it of items){
+    if(shown>=24) break;
+    if(it.date!==lastDate){ html+=`<div class="cal-date">${fmtDay(it.date)}</div>`; lastDate=it.date; }
+    const tag = it.kind==='macro'?`<span class="cal-tag macro">macro</span>`:`<span class="cal-tag earn">earnings</span>`;
+    html+=`<div class="cal-item">
+      <div class="dot" style="background:${impColor(it.importance)}"></div>
+      <div class="body"><div class="t">${esc(it.title)}</div>
+        ${it.meta?`<div class="meta">${esc(it.meta)}</div>`:''}
+        ${it.note?`<div class="note">${esc(it.note)}</div>`:''}
+      </div>${tag}</div>`;
+    shown++;
+  }
+  el.innerHTML=html;
+}
+
+// ── HEATMAP (sectores, con SOXX + IBIT ya incluidos server-side) ──
+function heatColor(pct,maxAbs){
+  const p=Number(pct); if(!isFinite(p)) return {bg:'var(--bg1)',fg:'var(--text2)'};
+  const intensity=Math.min(Math.abs(p)/maxAbs,1);
+  if(p>=0) return {bg:`rgba(var(--green-rgb),${(0.10+intensity*0.5).toFixed(2)})`,fg:'#7effc4'};
+  return {bg:`rgba(var(--red-rgb),${(0.10+intensity*0.5).toFixed(2)})`,fg:'#ff9a9a'};
+}
+async function loadHeat(){
+  const data=await getJSON('/api/sectors?category=us');
+  const el=$('heat'), refsEl=$('refs');
+  if(!data||!data.sectors||!data.sectors.length){
+    el.innerHTML=`<div class="card muted" style="grid-column:1/-1">Heatmap no disponible ahora mismo.</div>`;
+    refsEl.innerHTML=''; return;
+  }
+  const maxAbs=Math.max(0.5,...data.sectors.map(s=>Math.abs(Number(s.changePct)||0)));
+  el.innerHTML=data.sectors.map(s=>{
+    const c=heatColor(s.changePct,maxAbs);
+    return `<div class="heat-cell" style="background:${c.bg}">
+      <div class="emoji">${esc(s.emoji||'')}</div>
+      <div class="pct" style="color:${c.fg}">${pctStr(s.changePct)}</div>
+      <div class="tk">${esc(s.ticker)}</div></div>`;
+  }).join('');
+  refsEl.innerHTML=(data.references||[]).map(r=>{
+    const up=(Number(r.changePct)||0)>=0;
+    return `<div class="ref"><div class="n">${esc(r.ticker)}</div>
+      <div class="p ${up?'pos':'neg'}">${pctStr(r.changePct)}</div></div>`;
+  }).join('');
+}
+
+// ── boot ──────────────────────────────────────────────────────────
+loadArena(); loadCalendar(); loadHeat();
+$('refreshNote').textContent='Actualizado al abrir · '+new Date().toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
+</script>
+</body>
+</html>
