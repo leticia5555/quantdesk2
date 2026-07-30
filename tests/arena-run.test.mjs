@@ -90,6 +90,8 @@ let orderFilled = false;
 let moversStatus = 200; // se flipa a 401 para probar fetch_errors del buffet
 let positionsMock = []; // posiciones del libro (mutable: la atribución de portfolio lo usa)
 let openOrdersMock = []; // órdenes abiertas del libro (mutable)
+let accountEquity = 100000; // equity de la cuenta (mutable: para probar el circuit breaker)
+let journalPeak = null;     // pico de equity journaleado (mutable: HWM del breaker)
 
 const nowSec = Math.floor(Date.now() / 1000);
 
@@ -112,7 +114,7 @@ global.fetch = async (url, opts = {}) => {
   }
   // Alpaca
   if (u.includes('paper-api.alpaca.markets')) {
-    if (u.endsWith('/v2/account')) return jsonReply({ status: 'ACTIVE', equity: '100000', cash: '100000' });
+    if (u.endsWith('/v2/account')) return jsonReply({ status: 'ACTIVE', equity: String(accountEquity), cash: '100000' });
     if (u.endsWith('/v2/positions')) return jsonReply(positionsMock);
     if (u.includes('/v2/orders?')) return jsonReply(openOrdersMock);
     if (u.endsWith('/v2/orders') && method === 'POST') {
@@ -198,6 +200,10 @@ global.fetch = async (url, opts = {}) => {
         fields: SCREENER_FIELDS.map((name) => ({ name, dataTypeID: 25 })),
         rows: screenerRows.map((r) => SCREENER_FIELDS.map((f) => (r[f] == null ? null : String(r[f])))),
       });
+    }
+    // HWM del breaker: max(equity) journaleado. Mutable por test.
+    if (q.includes("max((account->>'equity')")) {
+      return jsonReply({ fields: [{ name: 'peak', dataTypeID: 1700 }], rows: [[journalPeak == null ? null : String(journalPeak)]] });
     }
     if (q.includes('insert into arena_journal')) { journalInserts.push(body); return jsonReply({ fields: [], rows: [] }); }
     if (q.includes('update arena_journal')) { journalUpdates.push(body); return jsonReply({ fields: [], rows: [] }); }
@@ -529,6 +535,108 @@ ok(diveUser.includes('NEWS RECENCY') && /reserve "today" for a date that equals 
 ok(diveUser.includes('FIGURES') && /Do NOT compute, rescale, round, or invent percentages/.test(diveUser),
   'Opción 2: instrucción "cita cifras verbatim, no inventes %" presente en el DIVE');
 positionsMock = []; // restaurar
+
+// ═══════════════════════════════════════════════════════════════
+// REGLA DE SALIDA determinista (Capa 1): EJERCITA el camino de venta que
+// en prod nunca ha disparado. Las ventas de riesgo NO las genera el LLM.
+// ═══════════════════════════════════════════════════════════════
+
+// ── 12) CORTE AMPLIO (broadcut): drawdown ≥20% desde el pico → liquida TODO,
+// se salta el LLM. Marketable limit ancho + client_order_id `:exit`. ──
+console.log('arena-run: CIRCUIT BREAKER corte amplio (−20% desde el pico) → liquida todo, sin LLM');
+positionsMock = [
+  { symbol: 'AAPL', qty: '49', avg_entry_price: '200', market_value: '9800', unrealized_plpc: '-0.02', current_price: '200' },
+  { symbol: 'GNTX', qty: '50', avg_entry_price: '30', market_value: '1500', unrealized_plpc: '-0.10', current_price: '30' },
+];
+accountEquity = 78000; journalPeak = 100000; // drawdown 22%
+const postsBeforeBC = alpacaOrderPosts.length;
+const insertsBeforeBC = journalInserts.length;
+const rBC = await runArenaDecide({ baseUrl: BASE_URL });
+ok(rBC.status === 'risk_broad_cut' && rBC.orders === 2 && rBC.breaker_stage === 'broadcut',
+  'broadcut: status risk_broad_cut, 2 ventas, sin LLM', JSON.stringify(rBC));
+ok(journalInserts.length - insertsBeforeBC === 1, 'broadcut: una sola fila de journal (no se corrió el LLM)');
+const bcPosts = alpacaOrderPosts.slice(postsBeforeBC);
+ok(bcPosts.length === 2 && bcPosts.every((o) => o.side === 'sell' && o.type === 'limit' && o.time_in_force === 'day'),
+  'broadcut: dos órdenes SELL límite+day (regla de la casa: sigue siendo limit)', JSON.stringify(bcPosts.map((o) => ({ s: o.symbol, side: o.side }))));
+ok(bcPosts.every((o) => o.client_order_id === `arena:${today}:${o.symbol}:exit`),
+  'broadcut: client_order_id con segmento :exit (no colisiona con :buy/:sell)', JSON.stringify(bcPosts.map((o) => o.client_order_id)));
+const bcAapl = bcPosts.find((o) => o.symbol === 'AAPL');
+ok(bcAapl && Number(bcAapl.limit_price) === Math.round(200 * 0.88 * 100) / 100 && bcAapl.qty === '49',
+  'broadcut: AAPL marketable limit ancho 176 (200×0.88), posición ENTERA 49', JSON.stringify(bcAapl && { l: bcAapl.limit_price, q: bcAapl.qty }));
+const bcRow = journalInserts[journalInserts.length - 1].params;
+ok(bcRow[COL.status] === 'risk_broad_cut', 'broadcut: fila journaleada como risk_broad_cut');
+const bcActions = JSON.parse(bcRow[COL.actions]);
+const bcJAapl = bcActions.find((a) => a.symbol === 'AAPL');
+ok(bcJAapl && bcJAapl.channels.includes('risk_exit') && bcJAapl.origin === 'breaker_broadcut' && typeof bcJAapl.reasoning === 'string' && bcJAapl.reasoning.length > 0,
+  'broadcut: la venta journalea channel risk_exit + origin + reasoning (atribución del post-mortem)', JSON.stringify(bcJAapl && { ch: bcJAapl.channels, o: bcJAapl.origin }));
+const bcCtx = JSON.parse(bcRow[COL.context]);
+ok(bcCtx.risk && bcCtx.risk.stage === 'broadcut' && Math.abs(bcCtx.risk.drawdown - 0.22) < 1e-9,
+  'broadcut: context.risk registra stage + drawdown desde el pico', JSON.stringify(bcCtx.risk));
+positionsMock = []; accountEquity = 100000; journalPeak = null;
+
+// ── 13) STOP CATASTRÓFICO: cierre completo < nivel ancho (entrada×0.78) →
+// vende la posición entera en su PROPIA fila, aunque el PM holdee. ──
+console.log('arena-run: STOP CATASTRÓFICO ancho (cierre bajo el nivel) → venta determinista, fila aparte');
+// Entrada 300 → nivel 234; el cierre fresco de Yahoo (200) < 234 → dispara.
+positionsMock = [{ symbol: 'MSFT', qty: '20', avg_entry_price: '300', market_value: '4000', unrealized_plpc: '-0.33', current_price: '200' }];
+accountEquity = 100000; journalPeak = 100000; // drawdown 0 → sin breaker, solo el stop por nombre
+screenerRows = [];
+scanText = JSON.stringify({ scan_thesis: 'Nada nuevo que investigar hoy.', candidates: [] });
+diveText = JSON.stringify({ plan: 'Holdeo.', actions: [] }); // el PM NO vende; el stop es determinista
+const insertsBeforeCS = journalInserts.length;
+const postsBeforeCS = alpacaOrderPosts.length;
+const rCS = await runArenaDecide({ baseUrl: BASE_URL });
+ok(rCS.risk_exits === 1 && rCS.breaker_stage === 'none',
+  'stop: 1 venta de riesgo, sin breaker de portafolio (drawdown 0)', JSON.stringify(rCS));
+const csPosts = alpacaOrderPosts.slice(postsBeforeCS);
+ok(csPosts.length === 1 && csPosts[0].symbol === 'MSFT' && csPosts[0].side === 'sell' && csPosts[0].qty === '20',
+  'stop: vende MSFT ENTERO (20) con SELL límite', JSON.stringify(csPosts[0] && { s: csPosts[0].symbol, side: csPosts[0].side, q: csPosts[0].qty }));
+ok(csPosts[0] && Number(csPosts[0].limit_price) === Math.round(200 * 0.88 * 100) / 100 && csPosts[0].client_order_id === `arena:${today}:MSFT:exit`,
+  'stop: marketable limit 176 sobre el cierre fresco 200, client_order_id :exit', JSON.stringify(csPosts[0] && csPosts[0].limit_price));
+// DOS filas: la de riesgo (status risk_exit) + la del PM (ok_no_actions, holdeó).
+const csRows = journalInserts.slice(insertsBeforeCS).map((j) => j.params);
+const csRisk = csRows.find((r) => r[COL.status] === 'risk_exit');
+const csLlm = csRows.find((r) => r[COL.status] !== 'risk_exit');
+ok(csRisk && csLlm, 'stop: dos filas — la de riesgo (risk_exit, independiente) y la del PM (el scout holdeó → ok_no_candidates)', JSON.stringify(csRows.map((r) => r[COL.status])));
+const csRiskAction = JSON.parse(csRisk[COL.actions]).find((a) => a.symbol === 'MSFT');
+ok(csRiskAction && csRiskAction.origin === 'catastrophic_stop' && csRiskAction.channels.includes('risk_exit') && /stop catastrófico/i.test(csRiskAction.reasoning),
+  'stop: la venta journalea origin catastrophic_stop + reasoning con el nivel', JSON.stringify(csRiskAction && { o: csRiskAction.origin, r: csRiskAction.reasoning }));
+positionsMock = []; journalPeak = null;
+
+// ── 14) DELEVER (−15%): recorta las débiles y SUPRIME las compras del PM. ──
+console.log('arena-run: CIRCUIT BREAKER delever (−15%) → recorta débiles + suprime compras del PM');
+// WEAK: entrada 100 (nivel stop 78; cierre 200 > 78 → NO hay stop, solo el recorte delever).
+positionsMock = [{ symbol: 'NVDA', qty: '100', avg_entry_price: '100', market_value: '9000', unrealized_plpc: '-0.10', current_price: '90' }];
+accountEquity = 84000; journalPeak = 100000; // drawdown 16% → delever
+screenerRows = [];
+scanText = JSON.stringify({ scan_thesis: 'El scout quiere comprar AAPL.', candidates: ['AAPL'] });
+diveText = JSON.stringify({ plan: 'Compro AAPL de calidad.', actions: [{ symbol: 'AAPL', side: 'buy', notional: 10000, limit_price: 201, conviction: 4, reasoning: 'Calidad.' }] });
+const insertsBeforeDL = journalInserts.length;
+const postsBeforeDL = alpacaOrderPosts.length;
+const rDL = await runArenaDecide({ baseUrl: BASE_URL });
+ok(rDL.breaker_stage === 'delever' && rDL.risk_exits === 1, 'delever: stage delever, 1 recorte de riesgo', JSON.stringify(rDL));
+const dlPosts = alpacaOrderPosts.slice(postsBeforeDL);
+ok(dlPosts.length === 1 && dlPosts[0].symbol === 'NVDA' && dlPosts[0].side === 'sell' && dlPosts[0].qty === String(Math.floor(100 * 0.33)),
+  'delever: recorta floor(100×0.33)=33 de la débil NVDA, la compra de AAPL NO llegó a Alpaca', JSON.stringify(dlPosts.map((o) => ({ s: o.symbol, side: o.side, q: o.qty }))));
+const dlLlmRow = journalInserts.slice(insertsBeforeDL).map((j) => j.params).find((r) => r[COL.status] === 'ok_no_actions' || r[COL.status] === 'ok');
+const dlAapl = JSON.parse(dlLlmRow[COL.actions]).find((a) => a.symbol === 'AAPL');
+ok(dlAapl && dlAapl.result === 'discarded' && /suprimida/.test(dlAapl.reason),
+  'delever: la compra del PM (AAPL) se journalea SUPRIMIDA con razón', JSON.stringify(dlAapl && dlAapl.reason));
+positionsMock = []; accountEquity = 100000; journalPeak = null;
+
+// ── 15) sin drawdown ni stops → el libro NO genera ventas de riesgo (no toca
+// las corridas normales — la red de seguridad no gestiona caídas normales). ──
+console.log('arena-run: sin drawdown ni stops → cero ventas de riesgo (no interfiere con lo normal)');
+positionsMock = [{ symbol: 'AAPL', qty: '10', avg_entry_price: '190', market_value: '2000', unrealized_plpc: '0.05', current_price: '200' }];
+accountEquity = 100000; journalPeak = 100000; // drawdown 0; AAPL nivel stop 148 < cierre 200 → sin stop
+screenerRows = [];
+scanText = JSON.stringify({ scan_thesis: 'Holdeo.', candidates: [] });
+diveText = JSON.stringify({ plan: 'Todo en orden.', actions: [] });
+const insertsBeforeNoop = journalInserts.length;
+const rNoop = await runArenaDecide({ baseUrl: BASE_URL });
+ok(rNoop.risk_exits === 0 && rNoop.breaker_stage === 'none' && journalInserts.length - insertsBeforeNoop === 1,
+  'normal: 0 ventas de riesgo, stage none, una sola fila (sin fila de riesgo espuria)', JSON.stringify(rNoop));
+positionsMock = []; journalPeak = null;
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);

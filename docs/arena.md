@@ -18,6 +18,7 @@ al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 | Cliente Alpaca (limit-only hardcodeado) | `api/_lib/alpaca.js` |
 | Smoke + health | `api/alpaca.js` (`GET ?smoke=1`) |
 | Risk guard determinista (post-LLM, fail closed) + FLOOR del screener | `api/_lib/arena-guard.js` |
+| **Regla de salida** determinista (circuit breaker + stop catastrófico) | `api/_lib/arena-exits.js` |
 | Deep dive Finnhub por candidato (fundamentales/recommendation/news) | `api/_lib/finnhub-dive.js` |
 | Cron decide (22:40 UTC L-V) + reconcile (14:40 UTC L-V) | `api/arena-run.js` + `vercel.json` |
 | **Canal SCREENER** — screens deterministas (value/momentum) | `api/_lib/screens.js` |
@@ -27,7 +28,7 @@ al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 | Datos para la UI | `api/arena.js` |
 | Journal | tabla `arena_journal` (`api/_lib/db.js`) |
 | UI (sección en MIS AGENTES) | `app.html` (`qdArenaLoad`/`qdArenaHtml`) |
-| Tests | `tests/arena-guard.test.mjs` · `tests/alpaca.test.mjs` · `tests/arena-run.test.mjs` · `tests/screens.test.mjs` |
+| Tests | `tests/arena-guard.test.mjs` · `tests/arena-exits.test.mjs` · `tests/alpaca.test.mjs` · `tests/arena-run.test.mjs` · `tests/screens.test.mjs` |
 
 ## Flujo de dos fases (SCAN → DEEP DIVE)
 
@@ -178,6 +179,71 @@ muestras por tipo en prod: `GET /api/earnings?diag=symboltypes` (total, % poblad
 distribución, `samples` por tipo —default 30, configurable con `&sample=N`—,
 `would_exclude`).
 
+## REGLA DE SALIDA (determinista, fuera del LLM) — `_lib/arena-exits.js`
+
+**Hallazgo que define el diseño:** un stop APRETADO por posición (p.ej. 10%) es
+la PEOR opción para este libro. Kaminski & Lo (*Journal of Financial Markets*,
+2014) muestran que los stops solo agregan valor cuando los retornos tienen
+momentum; en posiciones que revierten a la media DESTRUYEN valor — sacan justo
+cuando la ventaja es mayor. Caso en vivo: MU tocó −13.1% y al día siguiente
+estaba en +3.9%; un stop del 10% habría vendido en el fondo. Así que el libro
+**NO usa stops apretados**. Usa tres capas, todas DETERMINISTAS (no del LLM,
+porque el LLM no es confiable para disparar una venta mecánica bajo estrés):
+
+1. **CIRCUIT BREAKER de portafolio** (escalonado, desde el PICO de equity):
+   - a **−15%** del pico → `delever`: recorta una fracción
+     (`ARENA_BREAKER_DELEVER_TRIM`, ~33%) de cada posición DÉBIL (`unrealized_plpc
+     < 0`); los ganadores no se tocan. Además **suprime las compras del PM** esa
+     corrida (está subiendo efectivo, comprar lo contradiría).
+   - a **−20%** del pico → `broadcut`: liquida TODAS las posiciones y **se salta
+     el LLM** (no se abre riesgo nuevo en un −20%; ni se pega al buffet ni se
+     gasta Anthropic). Es el análogo del `DEATH -20%` de la flota validada, mejor
+     soportado para un libro de 8 posiciones que los stops por nombre.
+   - El **pico** (high-water-mark) se deriva del journal (`max(account.equity)`),
+     sin schema nuevo — el `equity_peak` de la DB es de la FLOTA del simulador,
+     otra tabla. En el primer run el pico = equity → drawdown 0.
+
+2. **STOP CATASTRÓFICO ANCHO por posición** (~`ARENA_CATASTROPHIC_STOP_PCT`, 22%,
+   FIJO desde la entrada). Regla de ejecución (sistemas de fin de día): CIERRE
+   completo por DEBAJO del nivel `entrada×(1−pct)` → vender la posición ENTERA en
+   la apertura siguiente (el gap es costo inevitable). Existe para que un desastre
+   de un solo nombre no destruya el libro, **NO para gestionar caídas normales**.
+   El `close` que evalúa es el último cierre COMPLETO (misma fuente que valida el
+   guard). Nivel `override`-able (mapa symbol→nivel) para un modo vol-escalado
+   (~3× ATR) en una capa futura — el plumbing de high/low aún no existe, así que
+   esta capa envía el modo FIJO.
+
+**LAS DOS BANDAS — no confundir.** El guard valida ENTRADAS (y ventas
+DISCRECIONALES del PM) con la banda **±2%** (`ARENA_RULES.price_band`): sanity
+check sobre el anclaje de precio del LLM. Una venta PROTECTORA la genera este
+módulo, NO el LLM, así que ese sanity check no aplica: usa **`ARENA_EXIT_PRICE_BAND`**
+(~12%), un **MARKETABLE LIMIT ANCHO** (`limit = referencia × (1 − banda)`, por
+DEBAJO del mercado) para asegurar el fill acotando el deslizamiento catastrófico.
+Sigue siendo una orden LÍMITE → respeta la regla de la casa (cicatriz Polymarket:
+JAMÁS market orders); la banda ancha existe para salir, no para ser precisa. La
+referencia de precio prioriza cierre completo → `current_price` de Alpaca →
+`avg_entry` (así un nombre delisted/ilíquido IGUAL se cierra); sin ninguna →
+descartado y journaleado (fail closed, ruidoso).
+
+**Precedencia y journaling.** Las salidas de riesgo se computan y ejecutan ANTES
+del LLM, en su **propia fila** de journal (`status = risk_exit`, o
+`risk_broad_cut` para el corte amplio) — así un stop que disparó se ejecuta
+AUNQUE el LLM luego aborte (sin API key, error, o "nada que investigar" son
+resultados normales que NO deben frenar la red). Una salida determinista GANA
+sobre la acción del PM del mismo nombre (no se ejecutan las dos). Cada venta
+journalea `channels:['risk_exit']`, `origin` (`breaker_broadcut`/`catastrophic_stop`/
+`breaker_delever`) y `reasoning` sintético — el post-mortem a 30 días las agrupa
+igual que las decisiones del PM. El `client_order_id` lleva el segmento **`:exit`**
+(distinto de `:buy`/`:sell`), así una salida determinista no colisiona con una
+venta del PM del mismo símbolo el mismo día.
+
+**Camino de venta (reparado en esta capa).** El guard aplicaba a las ventas
+reglas de ENTRADA que romperían un exit legítimo (banda ±2%, sub-$1, universo,
+fail-closed por symbol map / cierre faltante). Las salidas de riesgo NO pasan por
+esas reglas: van por su propio path con la banda de exit ancha y solo validan lo
+que aplica a cerrar un largo (posición existe, `qty ≤` lo que hay, referencia de
+precio). Las ventas DISCRECIONALES del PM sí conservan el guard ±2% a propósito.
+
 ## Env vars y orden de encendido
 
 1. `ALPACA_PAPER_KEY` / `ALPACA_PAPER_SECRET` — las agrega Lety en Vercel.
@@ -195,6 +261,12 @@ distribución, `samples` por tipo —default 30, configurable con `&sample=N`—
 También usa (ya existentes): `FINNHUB_API_KEY` (symbol map del guard + deep dive
 de candidatos + fundamentales del cron screener), `DATABASE_URL`, `CRON_SECRET`,
 `ANTHROPIC_MODEL` (default haiku).
+
+**Regla de salida** (todas opcionales, con defaults en `_lib/arena-exits.js`;
+fracciones en (0,1), time-boxed del trial): `ARENA_BREAKER_DELEVER_DD` (0.15),
+`ARENA_BREAKER_BROADCUT_DD` (0.20), `ARENA_BREAKER_DELEVER_TRIM` (0.33),
+`ARENA_CATASTROPHIC_STOP_PCT` (0.22), `ARENA_EXIT_PRICE_BAND` (0.12). Un valor
+inválido (≤0 o ≥1) cae al default en silencio.
 
 **Canal screener:** `ARENA_SCREENER_ENABLED=1` prende el cron de precompute
 (`api/arena-screener?job=refresh`, cada 4h en `vercel.json`). Es independiente de
