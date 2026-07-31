@@ -394,6 +394,7 @@ function attributeRiskExit(a, extra) {
     symbol: a.symbol, side: 'sell', qty: a.qty, limit_price: a.limit_price,
     notional: +(a.qty * a.limit_price).toFixed(2), reference: a.reference,
     channels: ['risk_exit'], origin: a.origin, reason_codes: a.reason_codes,
+    exit_band: a.exit_band, exit_attempt: a.exit_attempt, // medibles: banda usada + # de intento
     reasoning: a.reasoning, conviction: null,
     ...extra,
   };
@@ -427,27 +428,94 @@ function riskDiscardActions(discarded) {
   }));
 }
 
+// ── estado del agente: HALT del breaker −20% (persistente) ───────────
+// El broadcut DETIENE al agente (análogo del DEATH -20% de la flota: mata, no
+// vacía y ya). Reactivación MANUAL (runArenaResume) — nunca automática.
+export async function getArenaState() {
+  try {
+    const rows = await sql(`select halted, halted_at, halted_reason, resumed_at from arena_state where id = 1`);
+    return rows[0] || { halted: false, halted_at: null, halted_reason: null, resumed_at: null };
+  } catch (e) {
+    // Fail-safe: si el estado no se puede leer, NO se asume detenido (no se
+    // congela el agente por un hipo de DB) — el breaker se re-evaluará igual.
+    return { halted: false, halted_at: null, halted_reason: null, resumed_at: null };
+  }
+}
+
+// Órdenes NO llenadas (terminal): un stop catastrófico que quedó así → escala la
+// banda en la próxima corrida. 'filled'/'partially_filled' NO cuentan.
+const EXIT_NONFILL = new Set(['expired', 'canceled', 'rejected', 'done_for_day', 'replaced']);
+
+// symbol → # de stops catastróficos que NO llenaron en la ventana (para escalar
+// la banda). Lee filas risk_exit recientes; cuenta submit_failed y aprobadas con
+// order_status terminal-no-llenado. El reconcile ya actualiza order_status.
+function escalationFromRiskRows(riskRows, symbols) {
+  const counts = {};
+  const want = new Set(symbols);
+  for (const row of (riskRows || [])) {
+    for (const a of (row.actions || [])) {
+      if (!a || !want.has(a.symbol)) continue;
+      if (!(a.reason_codes || []).includes('catastrophic_stop')) continue;
+      if (a.result === 'submit_failed' || (a.result === 'approved' && EXIT_NONFILL.has(a.order_status))) {
+        counts[a.symbol] = (counts[a.symbol] || 0) + 1;
+      }
+    }
+  }
+  return counts;
+}
+
+// ── REACTIVACIÓN manual tras un halt del breaker ─────────────────────
+// Limpia el flag y re-basa el pico (resumed_at): el drawdown se medirá desde el
+// equity de AHORA, no desde el pico viejo (si no, el broadcut re-dispararía al
+// instante sobre una cuenta ya liquidada). Journalea una fila 'resumed' — la
+// decisión de revivir al agente queda documentada.
+export async function runArenaResume({ now = new Date() } = {}) {
+  const state = await getArenaState();
+  if (!state.halted) return { resumed: false, reason: 'el agente no estaba detenido' };
+  await sql(`update arena_state set halted = false, resumed_at = $1 where id = 1`, [now.toISOString()]);
+  await journalInsert({
+    id: 'arena-resume-' + now.toISOString(), run_date: now.toISOString().slice(0, 10),
+    phase: 'decide', prompt_version: PROMPT_VERSION, model: null, status: 'resumed',
+    plan: `Agente REACTIVADO manualmente tras el halt del ${state.halted_at || 's/f'} (${state.halted_reason || 'drawdown'}). El pico del breaker se re-basa al equity actual — el experimento reanuda desde aquí.`,
+  });
+  return { resumed: true, halted_since: state.halted_at };
+}
+
 // ── fase DECIDE ──────────────────────────────────────────────────────
 export async function runArenaDecide({ baseUrl, now = new Date() }) {
   const runDate = now.toISOString().slice(0, 10);
   const base = { id: 'arena-' + now.toISOString(), run_date: runDate, phase: 'decide', prompt_version: PROMPT_VERSION, model: ANTHROPIC_MODEL };
+
+  // ── HALT del breaker: si el agente está DETENIDO, no corre decide ni
+  // journalea (la muerte se journaleó UNA vez al dispararse el broadcut; nada de
+  // filas diarias). Reactivación solo manual (runArenaResume). ──
+  const state = await getArenaState();
+  if (state.halted) {
+    return { status: 'halted', halted_since: state.halted_at, reason: state.halted_reason };
+  }
 
   if (!alpacaCreds()) {
     await journalInsert({ ...base, status: 'aborted_no_alpaca_keys', error: 'Faltan ALPACA_PAPER_KEY/SECRET.' });
     return { status: 'aborted_no_alpaca_keys', orders: 0 };
   }
 
-  // Estado real del libro + plan anterior + PICO de equity (para el breaker), en
-  // paralelo. El buffet (self-fetch caro) y el LLM se posponen: si el circuit
+  // Estado real del libro + plan anterior + PICO de equity + reintentos previos,
+  // en paralelo. El buffet (self-fetch caro) y el LLM se posponen: si el circuit
   // breaker dispara un CORTE AMPLIO no se gastan ni el buffet ni Anthropic.
-  const [account, positions, openOrders, prevRows, peakRows] = await Promise.all([
+  const [account, positions, openOrders, prevRows, peakRows, riskRows] = await Promise.all([
     getAccount(), getPositions(), getOrders('open'),
     sql(`select run_date, plan, actions, status from arena_journal
          where phase = 'decide' and plan is not null order by created_at desc limit 1`),
-    // High-water-mark del libro: el máximo equity journaleado. El Arena no tenía
-    // pico propio (equity_peak de la DB es de la FLOTA del simulador, otra tabla);
-    // se deriva del journal sin schema nuevo. null en el primer run → pico = equity.
-    sql(`select max((account->>'equity')::numeric) as peak from arena_journal where account is not null`),
+    // High-water-mark del libro: el máximo equity journaleado, ACOTADO por
+    // resumed_at (tras revivir, el pico se re-basa al equity de ese momento — si
+    // no, el broadcut re-dispararía sobre una cuenta ya liquidada). El Arena no
+    // tenía pico propio (equity_peak de la DB es de la FLOTA, otra tabla). null
+    // en el primer run → pico = equity.
+    sql(`select max((account->>'equity')::numeric) as peak from arena_journal
+         where account is not null and ($1::timestamptz is null or created_at > $1::timestamptz)`, [state.resumed_at]),
+    // Stops catastróficos recientes que NO llenaron → escalan la banda (cond. #1).
+    sql(`select actions from arena_journal where status = 'risk_exit'
+         and created_at > now() - interval '7 days' order by created_at desc`),
   ]);
   const equity = Number(account.equity);
   const dbPeak = peakRows[0] && peakRows[0].peak != null ? Number(peakRows[0].peak) : 0;
@@ -467,8 +535,10 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   const heldCloseArr = await Promise.all(heldSymbols.map((s) => lastCompletedClose(s, now)));
   const heldCloses = {};
   heldSymbols.forEach((s, i) => { heldCloses[s] = heldCloseArr[i]; });
-  const risk = buildRiskExits({ equity, peak, positions, closes: heldCloses });
-  const riskContext = { peak, drawdown: +risk.drawdown.toFixed(4), stage: risk.stage, exit_price_band: EXIT_RULES.exit_price_band, approved: risk.approved, discarded: risk.discarded };
+  // Escalamiento por nombre: cuántas veces un stop catastrófico previo no llenó.
+  const escalation = escalationFromRiskRows(riskRows, heldSymbols);
+  const risk = buildRiskExits({ equity, peak, positions, closes: heldCloses, escalation });
+  const riskContext = { peak, drawdown: +risk.drawdown.toFixed(4), stage: risk.stage, escalation, bands: { breaker: EXIT_RULES.exit_band_breaker, catastrophic: EXIT_RULES.exit_band_catastrophic }, approved: risk.approved, discarded: risk.discarded };
 
   // ── CORTE AMPLIO (drawdown ≥ 20% desde el pico): liquida todo, SIN LLM ──
   // Análogo del DEATH -20% de la flota validada. No se abre riesgo nuevo en un
@@ -477,7 +547,12 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
     const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate);
     const plan = `CIRCUIT BREAKER — corte amplio. Drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)}); se liquidan ${risk.approved.length} posiciones con marketable limit y se salta el LLM (no se abre riesgo nuevo en un −20%).`;
     await journalInsert({ ...base, account: accountSnapshot, status: 'risk_broad_cut', plan, actions: [...riskActions, ...riskDiscardActions(risk.discarded)], context: { risk: riskContext } });
-    return { status: 'risk_broad_cut', orders: submitted, risk_exits: submitted, breaker_stage: 'broadcut', drawdown: +risk.drawdown.toFixed(4) };
+    // DETIENE al agente (persistente): esta es la ÚNICA fila de la muerte. Las
+    // corridas siguientes salen por el gate de halt, sin journalear. Revivir es
+    // manual (runArenaResume) — el −20% es el resultado del experimento.
+    const haltReason = `circuit breaker: drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)})`;
+    await sql(`update arena_state set halted = true, halted_at = $1, halted_reason = $2 where id = 1`, [now.toISOString(), haltReason]);
+    return { status: 'risk_broad_cut', orders: submitted, risk_exits: submitted, breaker_stage: 'broadcut', drawdown: +risk.drawdown.toFixed(4), halted: true };
   }
 
   // ── Delever / stops catastróficos: ejecuta la RED DE SEGURIDAD antes del LLM
@@ -773,6 +848,16 @@ export default async function handler(req, res) {
   try {
     await ensureSchema();
     const phase = String((req.query && req.query.phase) || 'decide').toLowerCase();
+    const action = String((req.query && req.query.action) || '').toLowerCase();
+    // Reactivación MANUAL tras un halt del breaker (−20%). Requiere CRON_SECRET
+    // (ya validado arriba) — solo Lety revive al agente, y queda documentado.
+    if (action === 'resume') {
+      const result = await runArenaResume({});
+      return res.status(200).json({ action: 'resume', ...result });
+    }
+    if (action === 'status') {
+      return res.status(200).json({ action: 'status', state: await getArenaState() });
+    }
     if (phase === 'reconcile') {
       const summary = await runArenaReconcile({});
       return res.status(200).json({ phase, ...summary });

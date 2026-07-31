@@ -19,7 +19,7 @@
 // Correr con `node tests/arena-run.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import { runArenaDecide, runArenaReconcile, PROMPT_VERSION, resolveBaseUrl, isLeveragedInverseETF } from '../api/arena-run.js';
+import { runArenaDecide, runArenaReconcile, runArenaResume, getArenaState, PROMPT_VERSION, resolveBaseUrl, isLeveragedInverseETF } from '../api/arena-run.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -92,6 +92,9 @@ let positionsMock = []; // posiciones del libro (mutable: la atribución de port
 let openOrdersMock = []; // órdenes abiertas del libro (mutable)
 let accountEquity = 100000; // equity de la cuenta (mutable: para probar el circuit breaker)
 let journalPeak = null;     // pico de equity journaleado (mutable: HWM del breaker)
+let arenaState = { halted: false, halted_at: null, halted_reason: null, resumed_at: null }; // arena_state (mutable)
+let riskExitRows = [];      // filas risk_exit recientes (mutable: para el escalamiento)
+const RISK_ACTIONS_OID = 3802; // jsonb → sql() lo parsea
 
 const nowSec = Math.floor(Date.now() / 1000);
 
@@ -204,6 +207,23 @@ global.fetch = async (url, opts = {}) => {
     // HWM del breaker: max(equity) journaleado. Mutable por test.
     if (q.includes("max((account->>'equity')")) {
       return jsonReply({ fields: [{ name: 'peak', dataTypeID: 1700 }], rows: [[journalPeak == null ? null : String(journalPeak)]] });
+    }
+    // arena_state: estado del agente (halt del breaker).
+    if (q.includes('from arena_state')) {
+      return jsonReply({
+        fields: [{ name: 'halted', dataTypeID: 16 }, { name: 'halted_at', dataTypeID: 1184 }, { name: 'halted_reason', dataTypeID: 25 }, { name: 'resumed_at', dataTypeID: 1184 }],
+        rows: [[arenaState.halted ? 't' : 'f', arenaState.halted_at, arenaState.halted_reason, arenaState.resumed_at]],
+      });
+    }
+    if (q.includes('update arena_state')) {
+      // Refleja el efecto en el estado mutable (halt o resume).
+      if (/halted = true/.test(q)) { arenaState.halted = true; arenaState.halted_at = body.params[0]; arenaState.halted_reason = body.params[1]; }
+      if (/halted = false/.test(q)) { arenaState.halted = false; arenaState.resumed_at = body.params[0]; }
+      return jsonReply({ fields: [], rows: [] });
+    }
+    // Escalamiento: filas risk_exit recientes (stops que no llenaron).
+    if (q.includes("status = 'risk_exit'")) {
+      return jsonReply({ fields: [{ name: 'actions', dataTypeID: RISK_ACTIONS_OID }], rows: riskExitRows.map((r) => [JSON.stringify(r.actions)]) });
     }
     if (q.includes('insert into arena_journal')) { journalInserts.push(body); return jsonReply({ fields: [], rows: [] }); }
     if (q.includes('update arena_journal')) { journalUpdates.push(body); return jsonReply({ fields: [], rows: [] }); }
@@ -572,7 +592,10 @@ ok(bcJAapl && bcJAapl.channels.includes('risk_exit') && bcJAapl.origin === 'brea
 const bcCtx = JSON.parse(bcRow[COL.context]);
 ok(bcCtx.risk && bcCtx.risk.stage === 'broadcut' && Math.abs(bcCtx.risk.drawdown - 0.22) < 1e-9,
   'broadcut: context.risk registra stage + drawdown desde el pico', JSON.stringify(bcCtx.risk));
+ok(rBC.halted === true && arenaState.halted === true && /circuit breaker/.test(arenaState.halted_reason || ''),
+  'broadcut DETIENE al agente (arena_state.halted = true, con razón)', JSON.stringify({ h: arenaState.halted, r: arenaState.halted_reason }));
 positionsMock = []; accountEquity = 100000; journalPeak = null;
+arenaState = { halted: false, halted_at: null, halted_reason: null, resumed_at: null }; // reset para los tests siguientes
 
 // ── 13) STOP CATASTRÓFICO: cierre completo < nivel ancho (entrada×0.78) →
 // vende la posición entera en su PROPIA fila, aunque el PM holdee. ──
@@ -591,8 +614,8 @@ ok(rCS.risk_exits === 1 && rCS.breaker_stage === 'none',
 const csPosts = alpacaOrderPosts.slice(postsBeforeCS);
 ok(csPosts.length === 1 && csPosts[0].symbol === 'MSFT' && csPosts[0].side === 'sell' && csPosts[0].qty === '20',
   'stop: vende MSFT ENTERO (20) con SELL límite', JSON.stringify(csPosts[0] && { s: csPosts[0].symbol, side: csPosts[0].side, q: csPosts[0].qty }));
-ok(csPosts[0] && Number(csPosts[0].limit_price) === Math.round(200 * 0.88 * 100) / 100 && csPosts[0].client_order_id === `arena:${today}:MSFT:exit`,
-  'stop: marketable limit 176 sobre el cierre fresco 200, client_order_id :exit', JSON.stringify(csPosts[0] && csPosts[0].limit_price));
+ok(csPosts[0] && Number(csPosts[0].limit_price) === Math.round(200 * 0.68 * 100) / 100 && csPosts[0].client_order_id === `arena:${today}:MSFT:exit`,
+  'stop: marketable limit 136 (banda catastrófica 32%) sobre el cierre fresco 200, client_order_id :exit', JSON.stringify(csPosts[0] && csPosts[0].limit_price));
 // DOS filas: la de riesgo (status risk_exit) + la del PM (ok_no_actions, holdeó).
 const csRows = journalInserts.slice(insertsBeforeCS).map((j) => j.params);
 const csRisk = csRows.find((r) => r[COL.status] === 'risk_exit');
@@ -637,6 +660,57 @@ const rNoop = await runArenaDecide({ baseUrl: BASE_URL });
 ok(rNoop.risk_exits === 0 && rNoop.breaker_stage === 'none' && journalInserts.length - insertsBeforeNoop === 1,
   'normal: 0 ventas de riesgo, stage none, una sola fila (sin fila de riesgo espuria)', JSON.stringify(rNoop));
 positionsMock = []; journalPeak = null;
+
+// ── 16) HALT GATE: agente detenido → decide no corre ni journalea (una sola
+// fila de muerte, no diaria). ──
+console.log('arena-run: HALT gate — agente detenido no corre decide ni journalea');
+arenaState = { halted: true, halted_at: '2026-07-30T22:40:00Z', halted_reason: 'circuit breaker: drawdown 22.0% desde el pico', resumed_at: null };
+const insertsBeforeHalt = journalInserts.length;
+const rHalt = await runArenaDecide({ baseUrl: BASE_URL });
+ok(rHalt.status === 'halted' && rHalt.halted_since === '2026-07-30T22:40:00Z',
+  'halt: decide devuelve status halted con la fecha', JSON.stringify(rHalt));
+ok(journalInserts.length === insertsBeforeHalt, 'halt: NO se journalea nada (sin filas diarias en el limbo)');
+
+// ── 17) RESUME manual: limpia el halt, re-basa el pico (resumed_at) y journalea
+// una fila 'resumed' documentando la revival. ──
+console.log('arena-run: RESUME manual — reactiva, re-basa el pico, documenta');
+const insertsBeforeResume = journalInserts.length;
+const rResume = await runArenaResume({});
+ok(rResume.resumed === true && arenaState.halted === false && arenaState.resumed_at,
+  'resume: limpia halted y sella resumed_at (re-basa el pico)', JSON.stringify({ r: rResume.resumed, h: arenaState.halted }));
+ok(journalInserts.length - insertsBeforeResume === 1 && journalInserts[journalInserts.length - 1].params[COL.status] === 'resumed',
+  'resume: journalea UNA fila status=resumed (revival documentada)');
+// resume sobre un agente vivo → no-op
+const rResume2 = await runArenaResume({});
+ok(rResume2.resumed === false, 'resume sobre agente vivo → no-op honesto');
+arenaState = { halted: false, halted_at: null, halted_reason: null, resumed_at: null };
+
+// ── 18) ESCALAMIENTO: un stop catastrófico que no llenó antes → banda MÁS
+// ancha en esta corrida (y el intento queda journaleado). ──
+console.log('arena-run: ESCALAMIENTO del stop catastrófico tras un intento sin llenar');
+positionsMock = [{ symbol: 'MSFT', qty: '20', avg_entry_price: '300', market_value: '4000', unrealized_plpc: '-0.33', current_price: '200' }];
+accountEquity = 100000; journalPeak = 100000;
+screenerRows = [];
+scanText = JSON.stringify({ scan_thesis: 'Nada.', candidates: [] });
+diveText = JSON.stringify({ plan: 'Holdeo.', actions: [] });
+// dos intentos previos de MSFT que expiraron sin llenar
+riskExitRows = [
+  { actions: [{ symbol: 'MSFT', reason_codes: ['catastrophic_stop'], result: 'approved', order_status: 'expired' }] },
+  { actions: [{ symbol: 'MSFT', reason_codes: ['catastrophic_stop'], result: 'approved', order_status: 'expired' }] },
+];
+const postsBeforeEsc = alpacaOrderPosts.length;
+await runArenaDecide({ baseUrl: BASE_URL });
+const escPost = alpacaOrderPosts.slice(postsBeforeEsc).find((o) => o.symbol === 'MSFT');
+// 3er intento → banda 0.32 + 2×0.13 = 0.58 → 200×0.42 = 84
+ok(escPost && Number(escPost.limit_price) === Math.round(200 * 0.42 * 100) / 100,
+  'escalamiento: 3er intento re-emite MÁS abajo (banda 58%, limit 84)', JSON.stringify(escPost && escPost.limit_price));
+const escRiskRow = journalInserts[journalInserts.length - 1].params[COL.status] === 'risk_exit'
+  ? journalInserts[journalInserts.length - 1].params
+  : journalInserts[journalInserts.length - 2].params;
+const escAction = JSON.parse(escRiskRow[COL.actions]).find((a) => a.symbol === 'MSFT');
+ok(escAction && escAction.exit_attempt === 3 && escAction.exit_band === 0.58,
+  'escalamiento: la venta journalea exit_attempt=3 y exit_band=0.58 (medible)', JSON.stringify(escAction && { a: escAction.exit_attempt, b: escAction.exit_band }));
+riskExitRows = []; positionsMock = []; journalPeak = null;
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);

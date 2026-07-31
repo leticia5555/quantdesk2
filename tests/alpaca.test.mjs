@@ -6,8 +6,8 @@
 // Correr con `node tests/alpaca.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import { createLimitOrder, alpacaCreds } from '../api/_lib/alpaca.js';
-import { runSmoke } from '../api/alpaca.js';
+import { createLimitOrder, alpacaCreds, alpacaSmokeCreds } from '../api/_lib/alpaca.js';
+import { runSmoke, runSellSmoke } from '../api/alpaca.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -78,6 +78,57 @@ await createLimitOrder({ symbol: 'msft', qty: 2, side: 'buy', limit_price: 500, 
 const last = calls[calls.length - 1];
 ok(calls.length === before + 1 && last.body.type === 'limit', 'un "type:market" colado se ignora — siempre sale limit');
 ok(last.body.symbol === 'MSFT', 'símbolo normalizado a mayúsculas');
+
+// ── smoke de VENTA en cuenta paper SEPARADA ──────────────────────────
+console.log('alpaca: smoke de venta — sin keys smoke → honesto');
+delete process.env.ALPACA_SMOKE_KEY;
+delete process.env.ALPACA_SMOKE_SECRET;
+ok(alpacaSmokeCreds() === null, 'alpacaSmokeCreds() → null sin ALPACA_SMOKE_*');
+const sellNoKeys = await runSellSmoke({ pollDelayMs: 0 });
+ok(sellNoKeys.ok === false && /ALPACA_SMOKE_KEY/.test(sellNoKeys.results[0].error), 'smoke de venta sin keys smoke → ok:false honesto');
+
+console.log('alpaca: smoke de venta — round-trip con mercado abierto');
+process.env.ALPACA_SMOKE_KEY = 'SMOKEKEY';
+process.env.ALPACA_SMOKE_SECRET = 'SMOKESECRET';
+process.env.ALPACA_SMOKE_SYMBOL = 'F';
+const sellCalls = [];
+global.fetch = async (url, opts = {}) => {
+  const u = String(url);
+  const method = opts.method || 'GET';
+  sellCalls.push({ url: u, method, headers: opts.headers, body: opts.body ? JSON.parse(opts.body) : null });
+  const reply = (obj, status = 200) => ({ ok: status < 300, status, headers: { get: () => 'application/json' }, json: async () => obj, text: async () => (obj === null ? '' : JSON.stringify(obj)) });
+  if (u.endsWith('/v2/account')) return reply({ status: 'ACTIVE', currency: 'USD', equity: '5000', account_number: 'PA-SMOKE' });
+  if (u.endsWith('/v2/clock')) return reply({ is_open: true, next_open: '2026-07-22T13:30:00Z' });
+  if (u.includes('yahoo')) {
+    const ts = Array.from({ length: 10 }, (_, i) => (Date.UTC(2026, 4, 1) + i * 86400000) / 1000);
+    return reply({ chart: { result: [{ timestamp: ts, indicators: { quote: [{ close: Array.from({ length: 10 }, () => 12) }] } }] } });
+  }
+  if (u.endsWith('/v2/orders') && method === 'POST') {
+    const b = JSON.parse(opts.body);
+    const id = b.side === 'buy' ? 'sm-buy' : 'sm-sell';
+    return reply({ id, status: 'accepted', side: b.side, type: b.type, limit_price: b.limit_price });
+  }
+  if (u.includes('/v2/orders/sm-')) {
+    const id = u.split('/v2/orders/')[1];
+    return reply({ id, status: 'filled', filled_qty: '1', filled_avg_price: '12.00' });
+  }
+  return reply({ message: 'ruta inesperada: ' + u }, 404);
+};
+const sell = await runSellSmoke({ now: new Date('2026-07-21T15:00:00Z'), pollDelayMs: 0 });
+ok(sell.ok === true && sell.mode === 'round_trip', 'round-trip: todos los pasos verdes', JSON.stringify(sell.results.filter((r) => !r.ok)));
+ok(sell.results.map((r) => r.name).join(',') === 'account,clock,reference_price,buy_1,buy_fill,sell_1,sell_fill',
+  'secuencia: compra 1 + fill, vende 1 + fill', sell.results.map((r) => r.name).join(','));
+const smokeBuy = sellCalls.find((c) => c.method === 'POST' && c.body && c.body.side === 'buy');
+const smokeSell = sellCalls.find((c) => c.method === 'POST' && c.body && c.body.side === 'sell');
+ok(smokeBuy && smokeSell && smokeBuy.body.type === 'limit' && smokeSell.body.type === 'limit',
+  'ambas patas son LIMIT (marketable, no market — regla de la casa)');
+ok(smokeSell.body.qty === '1' && smokeSell.body.symbol === 'F', 'vende exactamente 1 acción de F');
+ok(sellCalls.filter((c) => c.url.includes('alpaca.markets')).every((c) => c.headers['APCA-API-KEY-ID'] === 'SMOKEKEY'),
+  'usa las creds de la cuenta SMOKE (separada), no las del Arena');
+ok(Number(smokeSell.body.limit_price) === round2Test(12 * 0.80) && Number(smokeBuy.body.limit_price) === round2Test(12 * 1.20),
+  'marketable: compra 12×1.20=14.4, venta 12×0.80=9.6 (llena al NBBO)', JSON.stringify({ b: smokeBuy.body.limit_price, s: smokeSell.body.limit_price }));
+
+function round2Test(n) { return Math.round(n * 100) / 100; }
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);

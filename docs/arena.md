@@ -15,8 +15,9 @@ al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 
 | Pieza | Archivo |
 |---|---|
-| Cliente Alpaca (limit-only hardcodeado) | `api/_lib/alpaca.js` |
-| Smoke + health | `api/alpaca.js` (`GET ?smoke=1`) |
+| Cliente Alpaca (limit-only hardcodeado, creds override para smoke) | `api/_lib/alpaca.js` |
+| Smoke + health · **smoke de VENTA** (cuenta paper aparte) | `api/alpaca.js` (`GET ?smoke=1` · `?smoke=sell`) |
+| Estado del agente (HALT del breaker −20%, resume manual) | tabla `arena_state` (`api/_lib/db.js`) |
 | Risk guard determinista (post-LLM, fail closed) + FLOOR del screener | `api/_lib/arena-guard.js` |
 | **Regla de salida** determinista (circuit breaker + stop catastrófico) | `api/_lib/arena-exits.js` |
 | Deep dive Finnhub por candidato (fundamentales/recommendation/news) | `api/_lib/finnhub-dive.js` |
@@ -192,16 +193,21 @@ porque el LLM no es confiable para disparar una venta mecánica bajo estrés):
 
 1. **CIRCUIT BREAKER de portafolio** (escalonado, desde el PICO de equity):
    - a **−15%** del pico → `delever`: recorta una fracción
-     (`ARENA_BREAKER_DELEVER_TRIM`, ~33%) de cada posición DÉBIL (`unrealized_plpc
-     < 0`); los ganadores no se tocan. Además **suprime las compras del PM** esa
-     corrida (está subiendo efectivo, comprar lo contradiría).
-   - a **−20%** del pico → `broadcut`: liquida TODAS las posiciones y **se salta
-     el LLM** (no se abre riesgo nuevo en un −20%; ni se pega al buffet ni se
-     gasta Anthropic). Es el análogo del `DEATH -20%` de la flota validada, mejor
-     soportado para un libro de 8 posiciones que los stops por nombre.
+     (`ARENA_BREAKER_DELEVER_TRIM`, ~33%) **PRO-RATA de CADA posición** — la misma
+     fracción de todas. **NO vende "los perdedores"**: seleccionar los mayores
+     P&L negativos es una apuesta direccional que la evidencia (Kaminski & Lo)
+     dice que sale mal en un libro de reversión, y que MU refutó en vivo (−13% →
+     +19% al día siguiente). El objetivo del delever es BAJAR EXPOSICIÓN, no
+     adivinar cuál rebota: menos de todo, sin apostar a nada. Además **suprime
+     las compras del PM** esa corrida (está subiendo efectivo).
+   - a **−20%** del pico → `broadcut`: liquida TODAS las posiciones, **se salta
+     el LLM** y **DETIENE al agente** (ver *Halt* abajo). Análogo del `DEATH -20%`
+     de la flota, mejor soportado para un libro de 8 posiciones que los stops por
+     nombre.
    - El **pico** (high-water-mark) se deriva del journal (`max(account.equity)`),
      sin schema nuevo — el `equity_peak` de la DB es de la FLOTA del simulador,
-     otra tabla. En el primer run el pico = equity → drawdown 0.
+     otra tabla. En el primer run el pico = equity → drawdown 0. Tras un `resume`
+     el pico se **re-basa** (se mide desde `resumed_at`, ver *Halt*).
 
 2. **STOP CATASTRÓFICO ANCHO por posición** (~`ARENA_CATASTROPHIC_STOP_PCT`, 22%,
    FIJO desde la entrada). Regla de ejecución (sistemas de fin de día): CIERRE
@@ -213,17 +219,39 @@ porque el LLM no es confiable para disparar una venta mecánica bajo estrés):
    (~3× ATR) en una capa futura — el plumbing de high/low aún no existe, así que
    esta capa envía el modo FIJO.
 
-**LAS DOS BANDAS — no confundir.** El guard valida ENTRADAS (y ventas
-DISCRECIONALES del PM) con la banda **±2%** (`ARENA_RULES.price_band`): sanity
-check sobre el anclaje de precio del LLM. Una venta PROTECTORA la genera este
-módulo, NO el LLM, así que ese sanity check no aplica: usa **`ARENA_EXIT_PRICE_BAND`**
-(~12%), un **MARKETABLE LIMIT ANCHO** (`limit = referencia × (1 − banda)`, por
-DEBAJO del mercado) para asegurar el fill acotando el deslizamiento catastrófico.
+**DOS bandas de salida — no una, y ninguna es el ±2%.** El guard valida ENTRADAS
+(y ventas DISCRECIONALES del PM) con la banda **±2%** (`ARENA_RULES.price_band`):
+sanity check sobre el anclaje de precio del LLM. Una venta PROTECTORA la genera
+este módulo, NO el LLM — su límite no busca buen precio, evita un fill absurdo
+tipo flash crash. Por eso son ANCHAS y hay DOS (`limit = referencia × (1 − banda)`,
+marketable, por DEBAJO del mercado):
+- **`ARENA_EXIT_BAND_BREAKER`** (~12%) para delever/broadcut — desapalancamiento
+  de portafolio, gap por-nombre menor.
+- **`ARENA_EXIT_BAND_CATASTROPHIC`** (~32%) para el stop catastrófico —
+  emergencia de UN nombre, **TIENE que llenar**: un límite 32% abajo del cierre
+  llena en cualquier gap realista. Un nombre con stop+delever usa la banda ancha.
+
+**ESCALAMIENTO del stop.** Si un stop catastrófico NO llenó (el gap fue peor que
+la banda → la orden `day` expiró), la corrida siguiente lo re-emite MÁS abajo
+(`banda += ARENA_EXIT_ESCALATION_STEP` por cada intento fallido, tope
+`ARENA_EXIT_BAND_MAX` ~70%). El conteo sale de las filas `risk_exit` recientes
+(órdenes catastróficas con `order_status` terminal-no-llenado). Cada acción
+journalea `exit_band` y `exit_attempt` — para medir con qué frecuencia no llena.
 Sigue siendo una orden LÍMITE → respeta la regla de la casa (cicatriz Polymarket:
-JAMÁS market orders); la banda ancha existe para salir, no para ser precisa. La
-referencia de precio prioriza cierre completo → `current_price` de Alpaca →
-`avg_entry` (así un nombre delisted/ilíquido IGUAL se cierra); sin ninguna →
-descartado y journaleado (fail closed, ruidoso).
+JAMÁS market orders). La referencia de precio prioriza cierre completo →
+`current_price` de Alpaca → `avg_entry` (así un delisted/ilíquido IGUAL se cierra);
+sin ninguna → descartado y journaleado (fail closed, ruidoso).
+
+**HALT tras el corte amplio (`arena_state`).** El −20% ES el resultado del
+experimento: si el agente se reiniciara solo, se borraría el hallazgo. Por eso el
+broadcut, además de liquidar, **DETIENE al agente** (flag persistente en la tabla
+`arena_state`): la muerte se journalea UNA vez (`status = risk_broad_cut`), y las
+corridas siguientes salen por el gate de halt **sin journalear** (nada de filas
+diarias en el limbo). El panel lo muestra explícito ("⛔ AGENTE DETENIDO"). La
+reactivación es **MANUAL** (`GET /api/arena-run?action=resume`, con `CRON_SECRET`)
+y queda documentada con una fila `status = resumed`; al reactivar se sella
+`resumed_at`, que re-basa el pico del breaker (si no, re-dispararía el broadcut
+sobre una cuenta ya liquidada). Estado: `?action=status`.
 
 **Precedencia y journaling.** Las salidas de riesgo se computan y ejecutan ANTES
 del LLM, en su **propia fila** de journal (`status = risk_exit`, o
@@ -265,8 +293,18 @@ de candidatos + fundamentales del cron screener), `DATABASE_URL`, `CRON_SECRET`,
 **Regla de salida** (todas opcionales, con defaults en `_lib/arena-exits.js`;
 fracciones en (0,1), time-boxed del trial): `ARENA_BREAKER_DELEVER_DD` (0.15),
 `ARENA_BREAKER_BROADCUT_DD` (0.20), `ARENA_BREAKER_DELEVER_TRIM` (0.33),
-`ARENA_CATASTROPHIC_STOP_PCT` (0.22), `ARENA_EXIT_PRICE_BAND` (0.12). Un valor
-inválido (≤0 o ≥1) cae al default en silencio.
+`ARENA_CATASTROPHIC_STOP_PCT` (0.22), y las DOS bandas de salida +
+escalamiento: `ARENA_EXIT_BAND_BREAKER` (0.12), `ARENA_EXIT_BAND_CATASTROPHIC`
+(0.32), `ARENA_EXIT_ESCALATION_STEP` (0.13), `ARENA_EXIT_BAND_MAX` (0.70). Un
+valor inválido (≤0 o ≥1) cae al default en silencio.
+
+**Smoke de venta** (cuenta paper SEPARADA, para ejercitar el path REAL de venta
+sin ensuciar el libro del Agente #6): `ALPACA_SMOKE_KEY` / `ALPACA_SMOKE_SECRET`
+(una de las 3 cuentas paper del login, dedicada al smoke; mismo host paper) y
+opcional `ALPACA_SMOKE_SYMBOL` (default `F` — algo líquido y barato).
+`GET /api/alpaca?smoke=sell`: con mercado ABIERTO hace un round-trip (compra 1
+acción con marketable limit y la vende); con mercado CERRADO cae a resting
+(venta límite imposible sobre una posición → confirma → cancela).
 
 **Canal screener:** `ARENA_SCREENER_ENABLED=1` prende el cron de precompute
 (`api/arena-screener?job=refresh`, cada 4h en `vercel.json`). Es independiente de

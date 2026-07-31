@@ -40,12 +40,35 @@ export const EXIT_RULES = {
   // Circuit breaker de portafolio (desde el PICO de equity):
   breaker_delever_dd: envFrac('ARENA_BREAKER_DELEVER_DD', 0.15), // empieza a desapalancar
   breaker_broadcut_dd: envFrac('ARENA_BREAKER_BROADCUT_DD', 0.20), // corte amplio (análogo del DEATH -20% de la flota)
-  breaker_delever_trim: envFrac('ARENA_BREAKER_DELEVER_TRIM', 0.33), // fracción a recortar de cada posición DÉBIL en stage-1
+  breaker_delever_trim: envFrac('ARENA_BREAKER_DELEVER_TRIM', 0.33), // fracción a recortar PRO-RATA de CADA posición en stage-1
   // Stop catastrófico ANCHO por posición (desde la ENTRADA):
   catastrophic_stop_pct: envFrac('ARENA_CATASTROPHIC_STOP_PCT', 0.22), // ~20-25% — NO gestiona caídas normales
-  // Banda del MARKETABLE LIMIT para ventas de riesgo (≠ ±2% de entrada):
-  exit_price_band: envFrac('ARENA_EXIT_PRICE_BAND', 0.12),
+  // ── DOS bandas del MARKETABLE LIMIT (≠ ±2% de entrada) ──
+  // El límite en una venta protectora NO busca buen precio: evita un fill
+  // absurdo tipo flash crash. Por eso son ANCHAS, y hay DOS:
+  //   - breaker (12%): desapalancamiento de portafolio, gap por-nombre menor.
+  //   - catastrophic (32%): emergencia de UN nombre — TIENE que llenar; un
+  //     límite 32% abajo del cierre llena en cualquier gap realista.
+  exit_band_breaker: envFrac('ARENA_EXIT_BAND_BREAKER', 0.12),
+  exit_band_catastrophic: envFrac('ARENA_EXIT_BAND_CATASTROPHIC', 0.32),
+  // ESCALAMIENTO: si un stop catastrófico NO llenó (gap peor que la banda), la
+  // próxima corrida lo re-emite MÁS abajo (banda += step por reintento fallido),
+  // con tope exit_band_max. El intento fallido queda journaleado para medirlo.
+  exit_escalation_step: envFrac('ARENA_EXIT_ESCALATION_STEP', 0.13),
+  exit_band_max: envFrac('ARENA_EXIT_BAND_MAX', 0.70),
 };
+
+// Banda del marketable limit según la NATURALEZA de la salida + escalamiento.
+// Catastrófico (emergencia de un nombre) → banda ancha que ESCALA con cada
+// reintento fallido. Breaker (delever/broadcut, desapalancamiento ordenado) →
+// banda fija más angosta, sin escalamiento. Cap en exit_band_max.
+export function exitBand(reasonCodes, rules = EXIT_RULES, escalationAttempts = 0) {
+  const isCatastrophic = (reasonCodes || []).includes('catastrophic_stop');
+  if (!isCatastrophic) return rules.exit_band_breaker;
+  const escalated = rules.exit_band_catastrophic + Math.max(0, escalationAttempts) * rules.exit_escalation_step;
+  return Math.round(Math.min(escalated, rules.exit_band_max) * 10000) / 10000; // sin ruido FP en el journal
+
+}
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 const up = (s) => String(s || '').trim().toUpperCase();
@@ -89,19 +112,19 @@ export function planBreaker({ equity, peak, positions = [], rules = EXIT_RULES }
   }
 
   if (drawdown >= rules.breaker_delever_dd) {
-    // Solo las DÉBILES (en rojo): recorta `trim` de cada una. Los ganadores
-    // se preservan — el objetivo es subir efectivo, no vender la tesis buena.
-    const weak = positions
-      .map((p) => ({ p, plpc: num(p.unrealized_plpc) }))
-      .filter((x) => x.plpc != null && x.plpc < 0)
-      .sort((a, b) => a.plpc - b.plpc); // más débil primero
-    for (const { p, plpc } of weak) {
+    // PRO-RATA en TODAS las posiciones: recorta la misma fracción de cada una.
+    // NO se venden "los perdedores" (eso es una apuesta direccional que la
+    // evidencia —Kaminski & Lo— dice que sale mal en un libro de reversión, y
+    // que MU refutó en vivo: −13% y al día siguiente +19%). El objetivo del
+    // delever es BAJAR EXPOSICIÓN, no adivinar cuál rebota: menos de todo, sin
+    // apostar a nada.
+    for (const p of positions) {
       const held = heldQty(p);
       const qty = Math.floor(held * rules.breaker_delever_trim);
       if (qty < 1) continue; // recorte que no alcanza 1 acción → no se ajusta en silencio
       exits.push({
         symbol: up(p.symbol), qty, reason_code: 'breaker_delever',
-        detail: `desapalanca: drawdown ${(drawdown * 100).toFixed(1)}% ≥ ${(rules.breaker_delever_dd * 100).toFixed(0)}% desde el pico → recorta ${(rules.breaker_delever_trim * 100).toFixed(0)}% de la débil ${up(p.symbol)} (P&L ${(plpc * 100).toFixed(1)}%): ${qty}/${held}`,
+        detail: `desapalanca PRO-RATA: drawdown ${(drawdown * 100).toFixed(1)}% ≥ ${(rules.breaker_delever_dd * 100).toFixed(0)}% desde el pico → recorta ${(rules.breaker_delever_trim * 100).toFixed(0)}% de ${up(p.symbol)} (${qty}/${held}), sin apostar a cuál rebota`,
       });
     }
     return { stage: 'delever', drawdown, exits };
@@ -191,11 +214,12 @@ export function exitReference(position, closes = {}) {
 }
 
 // limit del marketable-limit: referencia × (1 − banda), por DEBAJO del mercado
-// para asegurar el fill. Redondeo a centavos (Alpaca exige tick de $0.01).
-export function riskExitLimit(reference, rules = EXIT_RULES) {
-  const r = num(reference);
-  if (r == null || r <= 0) return null;
-  return Math.round(r * (1 - rules.exit_price_band) * 100) / 100;
+// para asegurar el fill. `band` ya resuelto (por naturaleza + escalamiento, ver
+// exitBand). Redondeo a centavos (Alpaca exige tick de $0.01).
+export function riskExitLimit(reference, band) {
+  const r = num(reference), bnd = num(band);
+  if (r == null || r <= 0 || bnd == null || bnd < 0 || bnd >= 1) return null;
+  return Math.round(r * (1 - bnd) * 100) / 100;
 }
 
 // ── orquestador: estado del libro → órdenes de venta ejecutables ─────
@@ -206,7 +230,9 @@ export function riskExitLimit(reference, rules = EXIT_RULES) {
 // approved lleva `side:'sell'` para que el camino de ejecución sea idéntico al
 // del guard. Cada exit journalea reasoning (sintético, verbatim en la card),
 // reason_codes y origin — como pide el post-mortem a 30 días.
-export function buildRiskExits({ equity, peak, positions = [], closes = {}, rules = EXIT_RULES }) {
+// `escalation` (symbol → # de reintentos catastróficos fallidos previos) ensancha
+// la banda del stop de ese nombre (ver exitBand) — el caller lo deriva del journal.
+export function buildRiskExits({ equity, peak, positions = [], closes = {}, rules = EXIT_RULES, escalation = {} }) {
   const breaker = planBreaker({ equity, peak, positions, rules });
   // Broadcut domina: no tiene sentido evaluar stops por nombre si se liquida todo.
   const lists = breaker.stage === 'broadcut'
@@ -219,18 +245,22 @@ export function buildRiskExits({ equity, peak, positions = [], closes = {}, rule
   for (const e of merged) {
     const pos = positions.find((p) => up(p.symbol) === e.symbol);
     const reference = exitReference(pos, closes);
-    const limit_price = riskExitLimit(reference, rules);
+    const attempts = Math.max(0, Number(escalation[e.symbol]) || 0);
+    const band = exitBand(e.reason_codes, rules, attempts);
+    const limit_price = riskExitLimit(reference, band);
     if (limit_price == null) {
       // Sin ninguna referencia de precio → no se puede preciar el marketable
       // limit. Se DESCARTA y se journalea (fail closed, pero RUIDOSO).
       discarded.push({ symbol: e.symbol, qty: e.qty, origin: e.origin, reason_codes: e.reason_codes, reason: `${e.symbol}: sin referencia de precio para el marketable limit — fail closed` });
       continue;
     }
+    const escNote = attempts > 0 ? `[reintento ${attempts + 1}, banda ${(band * 100).toFixed(0)}% tras ${attempts} sin llenar] ` : '';
     approved.push({
       symbol: e.symbol, side: 'sell', qty: e.qty, limit_price,
       reference: +Number(reference).toFixed(2),
       origin: e.origin, reason_codes: e.reason_codes,
-      reasoning: e.details.join(' | ').slice(0, 600),
+      exit_band: band, exit_attempt: attempts + 1, // journaleados: mide con qué frecuencia no llena
+      reasoning: (escNote + e.details.join(' | ')).slice(0, 600),
     });
   }
   return { stage: breaker.stage, drawdown: breaker.drawdown, approved, discarded };
