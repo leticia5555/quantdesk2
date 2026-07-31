@@ -28,13 +28,16 @@ export default async function handler(req, res) {
     account: null,
     positions: [],
     journal: null,
+    halt: null,
   };
 
   try {
     await ensureSchema();
-    const rows = await sql(
-      `select run_date, status, plan, actions, account, created_at from arena_journal
-       where phase = 'decide' order by created_at desc limit 1`);
+    const [rows, stateRows] = await Promise.all([
+      sql(`select run_date, status, plan, actions, account, created_at from arena_journal
+           where phase = 'decide' order by created_at desc limit 1`),
+      sql(`select halted, halted_at, halted_reason, resumed_at from arena_state where id = 1`),
+    ]);
     if (rows[0]) {
       out.journal = {
         run_date: rows[0].run_date,
@@ -43,6 +46,16 @@ export default async function handler(req, res) {
         actions: rows[0].actions || [],
         account_at_decision: rows[0].account || null,
         created_at: rows[0].created_at,
+      };
+    }
+    // Estado de HALT del breaker: el panel lo muestra explícito (agente detenido
+    // por drawdown de −20%). Honesto y contenido — no un limbo silencioso.
+    if (stateRows[0]) {
+      out.halt = {
+        halted: !!stateRows[0].halted,
+        halted_at: stateRows[0].halted_at || null,
+        reason: stateRows[0].halted_reason || null,
+        resumed_at: stateRows[0].resumed_at || null,
       };
     }
   } catch (err) {

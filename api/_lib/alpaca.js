@@ -27,8 +27,20 @@ export function alpacaCreds() {
   return key && secret ? { key, secret } : null;
 }
 
-export async function alpacaFetch(path, { method = 'GET', body } = {}) {
-  const creds = alpacaCreds();
+// Cuenta paper SEPARADA para el smoke de venta: ejercita el path real de venta
+// sin ensuciar el libro del Agente #6 con posiciones de prueba (Lety tiene 3
+// cuentas paper por login; una la dedica al smoke). Mismo host paper.
+export function alpacaSmokeCreds() {
+  const key = process.env.ALPACA_SMOKE_KEY;
+  const secret = process.env.ALPACA_SMOKE_SECRET;
+  return key && secret ? { key, secret } : null;
+}
+
+// `creds` override (default: las del Arena). Permite apuntar a la cuenta smoke
+// sin duplicar el cliente ni la regla de la casa (limit-only) — la escritura
+// sigue pasando por createLimitOrder.
+export async function alpacaFetch(path, { method = 'GET', body, creds } = {}) {
+  creds = creds || alpacaCreds();
   if (!creds) throw new Error('Faltan ALPACA_PAPER_KEY / ALPACA_PAPER_SECRET en las env vars.');
   const r = await fetch(alpacaBase() + path, {
     method,
@@ -53,31 +65,33 @@ export async function alpacaFetch(path, { method = 'GET', body } = {}) {
 
 // ─────────────────── lectura ───────────────────
 
-export function getAccount() { return alpacaFetch('/v2/account'); }
-export function getClock() { return alpacaFetch('/v2/clock'); }
-export function getCalendar(start, end) {
-  return alpacaFetch(`/v2/calendar?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
+// `creds` opcional: default las del Arena; el smoke pasa las de su cuenta aparte.
+export function getAccount(creds) { return alpacaFetch('/v2/account', { creds }); }
+export function getClock(creds) { return alpacaFetch('/v2/clock', { creds }); }
+export function getCalendar(start, end, creds) {
+  return alpacaFetch(`/v2/calendar?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, { creds });
 }
-export function getPositions() { return alpacaFetch('/v2/positions'); }
-export function getOrders(status = 'open', limit = 100) {
-  return alpacaFetch(`/v2/orders?status=${encodeURIComponent(status)}&limit=${limit}`);
+export function getPositions(creds) { return alpacaFetch('/v2/positions', { creds }); }
+export function getOrders(status = 'open', limit = 100, creds) {
+  return alpacaFetch(`/v2/orders?status=${encodeURIComponent(status)}&limit=${limit}`, { creds });
 }
-export function getOrder(orderId) { return alpacaFetch('/v2/orders/' + encodeURIComponent(orderId)); }
-export function getOrderByClientId(clientOrderId) {
-  return alpacaFetch('/v2/orders:by_client_order_id?client_order_id=' + encodeURIComponent(clientOrderId));
+export function getOrder(orderId, creds) { return alpacaFetch('/v2/orders/' + encodeURIComponent(orderId), { creds }); }
+export function getOrderByClientId(clientOrderId, creds) {
+  return alpacaFetch('/v2/orders:by_client_order_id?client_order_id=' + encodeURIComponent(clientOrderId), { creds });
 }
 
 // ─────────────────── escritura (limit-only) ───────────────────
 
 // qty en acciones ENTERAS (los fraccionales + limit tienen letra chica en
 // Alpaca; el guard del Arena ya descarta qty < 1, aquí solo se defiende).
-export function createLimitOrder({ symbol, qty, side, limit_price, client_order_id, extended_hours = false }) {
+export function createLimitOrder({ symbol, qty, side, limit_price, client_order_id, extended_hours = false }, creds) {
   if (!symbol || typeof symbol !== 'string') throw new Error('createLimitOrder: falta symbol.');
   if (side !== 'buy' && side !== 'sell') throw new Error('createLimitOrder: side debe ser buy|sell.');
   if (!Number.isInteger(qty) || qty < 1) throw new Error('createLimitOrder: qty debe ser entero ≥ 1.');
   if (!Number.isFinite(limit_price) || limit_price <= 0) throw new Error('createLimitOrder: limit_price inválido.');
   return alpacaFetch('/v2/orders', {
     method: 'POST',
+    creds,
     body: {
       symbol: symbol.toUpperCase(),
       qty: String(qty),
@@ -91,6 +105,6 @@ export function createLimitOrder({ symbol, qty, side, limit_price, client_order_
   });
 }
 
-export function cancelOrder(orderId) {
-  return alpacaFetch('/v2/orders/' + encodeURIComponent(orderId), { method: 'DELETE' });
+export function cancelOrder(orderId, creds) {
+  return alpacaFetch('/v2/orders/' + encodeURIComponent(orderId), { method: 'DELETE', creds });
 }

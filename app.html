@@ -18921,6 +18921,14 @@ function qdArenaHtml(data){
   }
 
   var html = header;
+  if (data.halt && data.halt.halted){
+    // El breaker a −20% DETUVO al agente: honesto y explícito, no un limbo.
+    html += '<div style="' + mono + 'font-size:10px;color:#fca5a5;background:#1e0f14;border:1px solid #7f1d1d;border-radius:4px;padding:9px 12px;margin-top:10px;line-height:1.5;">' +
+      '<span style="font-weight:700;letter-spacing:.05em;">⛔ AGENTE DETENIDO</span> — circuit breaker por drawdown de −20% desde el pico de equity. ' +
+      'El libro se liquidó y el agente no vuelve a operar hasta reactivación manual. ' +
+      (data.halt.reason ? '<span style="color:#a78bfa;">' + String(data.halt.reason).replace(/</g,'&lt;') + '</span>' : '') +
+    '</div>';
+  }
   if (data.account){
     html += '<div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:10px;">' +
       '<div><div style="' + mono + 'font-size:9px;color:#555;">VALOR DEL LIBRO</div>' +

@@ -166,6 +166,20 @@ const SCHEMA = [
   // Migración idempotente: la tabla ya desplegada en prod se creó sin
   // `context` (diagnóstico del buffet: unavailable + error real por endpoint).
   `alter table arena_journal add column if not exists context jsonb`,
+  // Estado del agente (una sola fila, id=1). El circuit breaker a −20% DETIENE
+  // al agente (análogo del DEATH -20% de la flota: mata, no vacía y ya). La
+  // reactivación es MANUAL (endpoint ?action=resume) — el −20% es el resultado
+  // del experimento, revivirlo solo borraría el hallazgo. `resumed_at` re-basa
+  // el pico del breaker: tras revivir, el drawdown se mide desde el equity de
+  // ese momento, no desde el pico viejo (si no, re-dispararía el broadcut al instante).
+  `create table if not exists arena_state (
+     id int primary key default 1,
+     halted boolean not null default false,
+     halted_at timestamptz,
+     halted_reason text,
+     resumed_at timestamptz
+   )`,
+  `insert into arena_state (id, halted) values (1, false) on conflict (id) do nothing`,
 ];
 
 let schemaReady = false;

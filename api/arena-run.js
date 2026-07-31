@@ -54,6 +54,7 @@ import { getSymbolMap, getSymbolTypes } from './earnings.js';
 import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpacaCreds } from './_lib/alpaca.js';
 import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF } from './_lib/arena-guard.js';
+import { buildRiskExits, EXIT_RULES } from './_lib/arena-exits.js';
 import { fetchDeepDive } from './_lib/finnhub-dive.js';
 import { readScreenerRows } from './_lib/screener-db.js';
 import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
@@ -384,28 +385,192 @@ async function journalInsert(row) {
      row.context ? JSON.stringify(row.context) : null]);
 }
 
+// ── SALIDAS DE RIESGO (deterministas, no del LLM) ────────────────────
+// Journaling de una salida de riesgo: canal 'risk_exit' + origin (reason_code
+// más severo) + reason_codes + reasoning sintético (verbatim en la card). El
+// post-mortem a 30 días agrupa por canal igual que las decisiones del PM.
+function attributeRiskExit(a, extra) {
+  return {
+    symbol: a.symbol, side: 'sell', qty: a.qty, limit_price: a.limit_price,
+    notional: +(a.qty * a.limit_price).toFixed(2), reference: a.reference,
+    channels: ['risk_exit'], origin: a.origin, reason_codes: a.reason_codes,
+    exit_band: a.exit_band, exit_attempt: a.exit_attempt, // medibles: banda usada + # de intento
+    reasoning: a.reasoning, conviction: null,
+    ...extra,
+  };
+}
+
+// Ejecuta las ventas de riesgo con MARKETABLE LIMIT ancho (EXIT_PRICE_BAND, no
+// ±2%) + day. client_order_id con segmento `:exit` — distinto de `:buy`/`:sell`,
+// así una salida determinista NO colisiona con una venta del PM del mismo
+// símbolo el mismo día (dos ventas mismo día antes compartían client_order_id).
+async function submitRiskExits(approved, runDate) {
+  const actions = [];
+  let submitted = 0;
+  for (const a of approved) {
+    const clientOrderId = `arena:${runDate}:${a.symbol}:exit`;
+    try {
+      const order = await createLimitOrder({ symbol: a.symbol, qty: a.qty, side: 'sell', limit_price: a.limit_price, client_order_id: clientOrderId });
+      actions.push(attributeRiskExit(a, { result: 'approved', alpaca_order_id: order.id, client_order_id: clientOrderId, order_status: order.status }));
+      submitted++;
+    } catch (err) {
+      actions.push(attributeRiskExit(a, { result: 'submit_failed', client_order_id: clientOrderId, reason: String((err && err.message) || err) }));
+    }
+  }
+  return { actions, submitted };
+}
+
+// Salidas de riesgo descartadas (p.ej. sin referencia de precio) → journal.
+function riskDiscardActions(discarded) {
+  return (discarded || []).map((d) => ({
+    symbol: d.symbol, side: 'sell', qty: d.qty, channels: ['risk_exit'],
+    origin: d.origin, reason_codes: d.reason_codes, result: 'discarded', reason: d.reason,
+  }));
+}
+
+// ── estado del agente: HALT del breaker −20% (persistente) ───────────
+// El broadcut DETIENE al agente (análogo del DEATH -20% de la flota: mata, no
+// vacía y ya). Reactivación MANUAL (runArenaResume) — nunca automática.
+export async function getArenaState() {
+  try {
+    const rows = await sql(`select halted, halted_at, halted_reason, resumed_at from arena_state where id = 1`);
+    return rows[0] || { halted: false, halted_at: null, halted_reason: null, resumed_at: null };
+  } catch (e) {
+    // Fail-safe: si el estado no se puede leer, NO se asume detenido (no se
+    // congela el agente por un hipo de DB) — el breaker se re-evaluará igual.
+    return { halted: false, halted_at: null, halted_reason: null, resumed_at: null };
+  }
+}
+
+// Órdenes NO llenadas (terminal): un stop catastrófico que quedó así → escala la
+// banda en la próxima corrida. 'filled'/'partially_filled' NO cuentan.
+const EXIT_NONFILL = new Set(['expired', 'canceled', 'rejected', 'done_for_day', 'replaced']);
+
+// symbol → # de stops catastróficos que NO llenaron en la ventana (para escalar
+// la banda). Lee filas risk_exit recientes; cuenta submit_failed y aprobadas con
+// order_status terminal-no-llenado. El reconcile ya actualiza order_status.
+function escalationFromRiskRows(riskRows, symbols) {
+  const counts = {};
+  const want = new Set(symbols);
+  for (const row of (riskRows || [])) {
+    for (const a of (row.actions || [])) {
+      if (!a || !want.has(a.symbol)) continue;
+      if (!(a.reason_codes || []).includes('catastrophic_stop')) continue;
+      if (a.result === 'submit_failed' || (a.result === 'approved' && EXIT_NONFILL.has(a.order_status))) {
+        counts[a.symbol] = (counts[a.symbol] || 0) + 1;
+      }
+    }
+  }
+  return counts;
+}
+
+// ── REACTIVACIÓN manual tras un halt del breaker ─────────────────────
+// Limpia el flag y re-basa el pico (resumed_at): el drawdown se medirá desde el
+// equity de AHORA, no desde el pico viejo (si no, el broadcut re-dispararía al
+// instante sobre una cuenta ya liquidada). Journalea una fila 'resumed' — la
+// decisión de revivir al agente queda documentada.
+export async function runArenaResume({ now = new Date() } = {}) {
+  const state = await getArenaState();
+  if (!state.halted) return { resumed: false, reason: 'el agente no estaba detenido' };
+  await sql(`update arena_state set halted = false, resumed_at = $1 where id = 1`, [now.toISOString()]);
+  await journalInsert({
+    id: 'arena-resume-' + now.toISOString(), run_date: now.toISOString().slice(0, 10),
+    phase: 'decide', prompt_version: PROMPT_VERSION, model: null, status: 'resumed',
+    plan: `Agente REACTIVADO manualmente tras el halt del ${state.halted_at || 's/f'} (${state.halted_reason || 'drawdown'}). El pico del breaker se re-basa al equity actual — el experimento reanuda desde aquí.`,
+  });
+  return { resumed: true, halted_since: state.halted_at };
+}
+
 // ── fase DECIDE ──────────────────────────────────────────────────────
 export async function runArenaDecide({ baseUrl, now = new Date() }) {
   const runDate = now.toISOString().slice(0, 10);
   const base = { id: 'arena-' + now.toISOString(), run_date: runDate, phase: 'decide', prompt_version: PROMPT_VERSION, model: ANTHROPIC_MODEL };
+
+  // ── HALT del breaker: si el agente está DETENIDO, no corre decide ni
+  // journalea (la muerte se journaleó UNA vez al dispararse el broadcut; nada de
+  // filas diarias). Reactivación solo manual (runArenaResume). ──
+  const state = await getArenaState();
+  if (state.halted) {
+    return { status: 'halted', halted_since: state.halted_at, reason: state.halted_reason };
+  }
 
   if (!alpacaCreds()) {
     await journalInsert({ ...base, status: 'aborted_no_alpaca_keys', error: 'Faltan ALPACA_PAPER_KEY/SECRET.' });
     return { status: 'aborted_no_alpaca_keys', orders: 0 };
   }
 
-  // Estado real del libro + buffet + plan anterior, en paralelo.
-  const [account, positions, openOrders, buffet, prevRows] = await Promise.all([
+  // Estado real del libro + plan anterior + PICO de equity + reintentos previos,
+  // en paralelo. El buffet (self-fetch caro) y el LLM se posponen: si el circuit
+  // breaker dispara un CORTE AMPLIO no se gastan ni el buffet ni Anthropic.
+  const [account, positions, openOrders, prevRows, peakRows, riskRows] = await Promise.all([
     getAccount(), getPositions(), getOrders('open'),
-    gatherContext({ baseUrl, now }),
     sql(`select run_date, plan, actions, status from arena_journal
          where phase = 'decide' and plan is not null order by created_at desc limit 1`),
+    // High-water-mark del libro: el máximo equity journaleado, ACOTADO por
+    // resumed_at (tras revivir, el pico se re-basa al equity de ese momento — si
+    // no, el broadcut re-dispararía sobre una cuenta ya liquidada). El Arena no
+    // tenía pico propio (equity_peak de la DB es de la FLOTA, otra tabla). null
+    // en el primer run → pico = equity.
+    sql(`select max((account->>'equity')::numeric) as peak from arena_journal
+         where account is not null and ($1::timestamptz is null or created_at > $1::timestamptz)`, [state.resumed_at]),
+    // Stops catastróficos recientes que NO llenaron → escalan la banda (cond. #1).
+    sql(`select actions from arena_journal where status = 'risk_exit'
+         and created_at > now() - interval '7 days' order by created_at desc`),
   ]);
-  const accountSnapshot = { equity: Number(account.equity), cash: Number(account.cash), positions: positions.length };
+  const equity = Number(account.equity);
+  const dbPeak = peakRows[0] && peakRows[0].peak != null ? Number(peakRows[0].peak) : 0;
+  const peak = Math.max(dbPeak, equity); // monótono; incluye el equity de hoy
+  const accountSnapshot = { equity, cash: Number(account.cash), positions: positions.length };
   const previous = prevRows[0]
     ? { date: prevRows[0].run_date, plan: prevRows[0].plan,
         orders: (prevRows[0].actions || []).map((a) => ({ symbol: a.symbol, side: a.side, result: a.result, order_status: a.order_status || null, filled_avg_price: a.filled_avg_price || null, reason: a.reason || null })) }
     : null;
+
+  // ── SALIDAS DE RIESGO deterministas (circuit breaker + stop catastrófico) ──
+  // Se computan ANTES del LLM: son la red de seguridad del libro y tienen
+  // precedencia. El stop catastrófico necesita el último cierre COMPLETO por
+  // holding (misma fuente que valida el guard). Estos cierres se reusan luego
+  // como semilla del guard (sin re-fetch).
+  const heldSymbols = [...new Set((positions || []).map((p) => (p && p.symbol ? String(p.symbol).trim().toUpperCase() : '')).filter(Boolean))];
+  const heldCloseArr = await Promise.all(heldSymbols.map((s) => lastCompletedClose(s, now)));
+  const heldCloses = {};
+  heldSymbols.forEach((s, i) => { heldCloses[s] = heldCloseArr[i]; });
+  // Escalamiento por nombre: cuántas veces un stop catastrófico previo no llenó.
+  const escalation = escalationFromRiskRows(riskRows, heldSymbols);
+  const risk = buildRiskExits({ equity, peak, positions, closes: heldCloses, escalation });
+  const riskContext = { peak, drawdown: +risk.drawdown.toFixed(4), stage: risk.stage, escalation, bands: { breaker: EXIT_RULES.exit_band_breaker, catastrophic: EXIT_RULES.exit_band_catastrophic }, approved: risk.approved, discarded: risk.discarded };
+
+  // ── CORTE AMPLIO (drawdown ≥ 20% desde el pico): liquida todo, SIN LLM ──
+  // Análogo del DEATH -20% de la flota validada. No se abre riesgo nuevo en un
+  // −20%, así que ni se pega al buffet ni se gasta Anthropic.
+  if (risk.stage === 'broadcut') {
+    const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate);
+    const plan = `CIRCUIT BREAKER — corte amplio. Drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)}); se liquidan ${risk.approved.length} posiciones con marketable limit y se salta el LLM (no se abre riesgo nuevo en un −20%).`;
+    await journalInsert({ ...base, account: accountSnapshot, status: 'risk_broad_cut', plan, actions: [...riskActions, ...riskDiscardActions(risk.discarded)], context: { risk: riskContext } });
+    // DETIENE al agente (persistente): esta es la ÚNICA fila de la muerte. Las
+    // corridas siguientes salen por el gate de halt, sin journalear. Revivir es
+    // manual (runArenaResume) — el −20% es el resultado del experimento.
+    const haltReason = `circuit breaker: drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)})`;
+    await sql(`update arena_state set halted = true, halted_at = $1, halted_reason = $2 where id = 1`, [now.toISOString(), haltReason]);
+    return { status: 'risk_broad_cut', orders: submitted, risk_exits: submitted, breaker_stage: 'broadcut', drawdown: +risk.drawdown.toFixed(4), halted: true };
+  }
+
+  // ── Delever / stops catastróficos: ejecuta la RED DE SEGURIDAD antes del LLM
+  // y en su PROPIA fila de journal. Así un stop que disparó se ejecuta AUNQUE el
+  // LLM luego aborte (sin API key, error, o "nada que investigar" — resultados
+  // normales que NO deben frenar la red). stage 'none' → no-op (0 exits). ──
+  let riskSubmitted = 0;
+  if (risk.approved.length || risk.discarded.length) {
+    const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate);
+    riskSubmitted = submitted;
+    const plan = risk.stage === 'delever'
+      ? `CIRCUIT BREAKER — desapalancando. Drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)}); recorto las posiciones más débiles con marketable limit.`
+      : `STOP CATASTRÓFICO — ${risk.approved.length} posición(es) cerró bajo su nivel ancho (~${(EXIT_RULES.catastrophic_stop_pct * 100).toFixed(0)}% desde la entrada); se liquida(n) con marketable limit en la apertura.`;
+    await journalInsert({ ...base, id: base.id + ':risk', account: accountSnapshot, status: 'risk_exit', plan, actions: [...riskActions, ...riskDiscardActions(risk.discarded)], context: { risk: riskContext } });
+  }
+
+  // No hubo corte amplio → ahora sí el buffet (self-fetch) para el LLM.
+  const buffet = await gatherContext({ baseUrl, now });
 
   // Atribución del canal 'portfolio': el índice de canales de gatherContext solo
   // conoce el buffet. Los candidatos que el scout re-elige del LIBRO (un holding
@@ -426,6 +591,9 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   const context = {
     unavailable: buffet.unavailable,
     fetch_errors: buffet.fetch_errors,
+    // Salidas de riesgo del run (stage/drawdown/pico + exits deterministas):
+    // por qué desapalancó o qué stop disparó, sin depender de las acciones.
+    risk: riskContext,
     scan: { prompt: { system: scanSystem, user: scanUser }, hash: scanHash, model: ANTHROPIC_MODEL },
   };
 
@@ -434,7 +602,7 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
     // Dependencia documentada: la primera corrida real necesita créditos
     // de Anthropic. Sin key el run queda journaleado, con cero órdenes.
     await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_no_api_key', error: 'Falta ANTHROPIC_API_KEY (créditos pendientes).' });
-    return { status: 'aborted_no_api_key', orders: 0 };
+    return { status: 'aborted_no_api_key', orders: 0, risk_exits: riskSubmitted };
   }
 
   const scanLlm = await guardedClaudeCall({
@@ -445,7 +613,7 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   if (scanLlm.stale || scanLlm.status !== 200 || !scanLlm.data) {
     const reason = (scanLlm.stale ? 'fechas rotas tras retry (guard anti-alucinación)' : 'HTTP ' + scanLlm.status + ' de Anthropic') + ' [fase scan]';
     await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_llm_error', error: reason });
-    return { status: 'aborted_llm_error', orders: 0 };
+    return { status: 'aborted_llm_error', orders: 0, risk_exits: riskSubmitted };
   }
   const scanText = (scanLlm.data.content || []).map((b) => b.text || '').join('').trim();
   context.scan.response = scanText;
@@ -454,7 +622,7 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   if (!scan.ok) {
     // Regla de la casa: JSON malformado = run abortado honesto, CERO órdenes.
     await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_scan_malformed_json', llm_response: scanText, error: scan.error });
-    return { status: 'aborted_scan_malformed_json', orders: 0 };
+    return { status: 'aborted_scan_malformed_json', orders: 0, risk_exits: riskSubmitted };
   }
   context.scan.thesis = scan.thesis;
   context.scan.candidates = scan.candidates; // picks crudos del scout
@@ -482,7 +650,7 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   // DIVE ni pega a Finnhub.
   if (candidateSymbols.length === 0) {
     await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'ok_no_candidates', plan: scan.thesis || 'Scout found nothing worth a deep-dive today.', llm_response: scanText });
-    return { status: 'ok_no_candidates', orders: 0, candidates: 0, floor: slate.floor.reason };
+    return { status: 'ok_no_candidates', orders: riskSubmitted, candidates: 0, floor: slate.floor.reason, risk_exits: riskSubmitted, breaker_stage: risk.stage };
   }
 
   // ── FASE 2a: DEEP DIVE (determinista, Finnhub — sin LLM) ─────────
@@ -512,14 +680,14 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   if (diveLlm.stale || diveLlm.status !== 200 || !diveLlm.data) {
     const reason = (diveLlm.stale ? 'fechas rotas tras retry (guard anti-alucinación)' : 'HTTP ' + diveLlm.status + ' de Anthropic') + ' [fase dive]';
     await journalInsert({ ...withPrompt, status: 'aborted_llm_error', error: reason });
-    return { status: 'aborted_llm_error', orders: 0 };
+    return { status: 'aborted_llm_error', orders: 0, risk_exits: riskSubmitted };
   }
   const responseText = (diveLlm.data.content || []).map((b) => b.text || '').join('').trim();
 
   const parsed = parsePlanResponse(responseText);
   if (!parsed.ok) {
     await journalInsert({ ...withPrompt, status: 'aborted_malformed_json', llm_response: responseText, error: parsed.error });
-    return { status: 'aborted_malformed_json', orders: 0 };
+    return { status: 'aborted_malformed_json', orders: 0, risk_exits: riskSubmitted };
   }
 
   // Referencias deterministas para el guard: symbol map + tipo (comparten
@@ -529,7 +697,7 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   // Arranca de los cierres YA mostrados al PM (mismo valor exacto → sin desfase
   // entre lo que vio y lo que se valida); solo busca símbolos de acciones que
   // no eran candidatos (p.ej. vender una posición que el scan no nombró).
-  const lastCloses = { ...candidateCloses };
+  const lastCloses = { ...heldCloses, ...candidateCloses };
   const symbols = [...new Set(parsed.actions.map((a) => a && typeof a.symbol === 'string' ? a.symbol.trim().toUpperCase() : '').filter(Boolean))];
   for (const s of symbols) {
     if (s in lastCloses) continue; // ya lo tenemos del deep dive (o null, fail closed)
@@ -559,10 +727,34 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
     return enriched;
   };
 
-  // Ejecución: límite + day, client_order_id determinista (idempotencia).
-  const journalActions = discarded.map((d) => attribute({ ...(d.action && typeof d.action === 'object' ? d.action : { raw: d.action }), result: 'discarded', reason: d.reason }));
-  let submitted = 0;
+  // ── PRECEDENCIA de las salidas de riesgo sobre las acciones del PM ──
+  // Una salida determinista GANA sobre lo que el LLM propuso para ese nombre
+  // (no se ejecutan las dos). Y en stage 'delever' se SUPRIMEN las compras del
+  // PM: el breaker está subiendo efectivo, comprar lo contradiría. Las ventas
+  // discrecionales del PM sí pasan (con su banda ±2% del guard).
+  const riskSet = new Set(risk.approved.map((a) => a.symbol));
+  const llmApproved = [];
+  const overridden = [];
   for (const a of approved) {
+    if (riskSet.has(a.symbol)) {
+      overridden.push({ ...a, result: 'discarded', reason: `${a.symbol}: salida de riesgo determinista (${risk.stage}) tiene precedencia sobre la acción del PM` });
+      continue;
+    }
+    if (risk.stage === 'delever' && a.side === 'buy') {
+      overridden.push({ ...a, result: 'discarded', reason: `${a.symbol}: compra suprimida — el breaker está desapalancando (drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico)` });
+      continue;
+    }
+    llmApproved.push(a);
+  }
+
+  // Ejecución del PM (límite ±2%, client_order_id `:buy`/`:sell`). Las salidas
+  // de riesgo ya se ejecutaron y journalearon arriba, en su propia fila.
+  const journalActions = [
+    ...discarded.map((d) => attribute({ ...(d.action && typeof d.action === 'object' ? d.action : { raw: d.action }), result: 'discarded', reason: d.reason })),
+    ...overridden.map((o) => attribute(o)),
+  ];
+  let submitted = 0;
+  for (const a of llmApproved) {
     const clientOrderId = `arena:${runDate}:${a.symbol}:${a.side}`;
     try {
       const order = await createLimitOrder({ symbol: a.symbol, qty: a.qty, side: a.side, limit_price: a.limit_price, client_order_id: clientOrderId });
@@ -573,12 +765,12 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
     }
   }
 
-  // ok = se enviaron órdenes; ok_no_actions = hubo candidatos e investigación,
-  // pero el DIVE decidió holdear (distinto de ok_no_candidates).
-  const status = approved.length === 0 ? 'ok_no_actions' : 'ok';
+  // El status de ESTA fila describe la decisión del PM: ok = envió órdenes;
+  // ok_no_actions = holdeó (las salidas de riesgo van en su fila aparte).
+  const status = submitted === 0 ? 'ok_no_actions' : 'ok';
   await journalInsert({ ...withPrompt, status, plan: parsed.plan, llm_response: responseText, actions: journalActions });
-  // `candidates` = tamaño del slate final (scout + floor), no solo los picks del scout.
-  return { status, orders: submitted, approved: approved.length, discarded: discarded.length, candidates: candidateSymbols.length, floor: slate.floor.reason };
+  // `orders` suma el run completo (PM + red de seguridad); `candidates` = slate final.
+  return { status, orders: submitted + riskSubmitted, approved: llmApproved.length, discarded: discarded.length, candidates: candidateSymbols.length, floor: slate.floor.reason, risk_exits: riskSubmitted, breaker_stage: risk.stage, drawdown: +risk.drawdown.toFixed(4) };
 }
 
 // ── fase RECONCILE ───────────────────────────────────────────────────
@@ -656,6 +848,16 @@ export default async function handler(req, res) {
   try {
     await ensureSchema();
     const phase = String((req.query && req.query.phase) || 'decide').toLowerCase();
+    const action = String((req.query && req.query.action) || '').toLowerCase();
+    // Reactivación MANUAL tras un halt del breaker (−20%). Requiere CRON_SECRET
+    // (ya validado arriba) — solo Lety revive al agente, y queda documentado.
+    if (action === 'resume') {
+      const result = await runArenaResume({});
+      return res.status(200).json({ action: 'resume', ...result });
+    }
+    if (action === 'status') {
+      return res.status(200).json({ action: 'status', state: await getArenaState() });
+    }
     if (phase === 'reconcile') {
       const summary = await runArenaReconcile({});
       return res.status(200).json({ phase, ...summary });
