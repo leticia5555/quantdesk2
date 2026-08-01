@@ -87,6 +87,42 @@ console.log('calendario: company desde el symbol map');
     'cache 24h: 2 renders = 1 sola llamada al symbol endpoint', symbolCalls + ' llamadas');
 }
 
+// ─────────────────── filtro mega-cap (?mega=1, calendario de /hoy) ───────────────────
+console.log('calendario: ?mega=1 filtra a mega-caps curadas');
+{
+  _resetSymbolMapCache();
+  global.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/stock/symbol')) {
+      return jsonResponse([
+        { symbol: 'NVDA', description: 'NVIDIA CORP' },
+        { symbol: 'AAPL', description: 'APPLE INC' },
+        { symbol: 'NU', description: 'NU HOLDINGS LTD' },
+      ]);
+    }
+    if (u.includes('/calendar/earnings')) {
+      return jsonResponse({ earningsCalendar: [
+        { symbol: 'NVDA', date: iso(2), hour: 'amc', epsEstimate: 1.0 },   // mega
+        { symbol: 'ZZTINYCO', date: iso(2), hour: 'bmo', epsEstimate: 0.1 }, // NO mega
+        { symbol: 'NU', date: iso(4), hour: 'amc', epsEstimate: 0.1 },      // mega (ADR LATAM)
+        { symbol: 'AAPL', date: iso(5), hour: 'amc', epsEstimate: 2.0 },    // mega
+      ] });
+    }
+    throw new Error('fetch inesperado: ' + u);
+  };
+  const resM = mockRes();
+  await handler({ method: 'GET', query: { from: iso(0), to: iso(7), mega: '1' } }, resM);
+  const syms = (resM.body.earnings || []).map((e) => e.ticker).sort();
+  ok(resM.code === 200 && syms.length === 3, '?mega=1 devuelve solo las 3 mega-caps', JSON.stringify(syms));
+  ok(!syms.includes('ZZTINYCO'), 'descarta el small-cap fuera del set curado', JSON.stringify(syms));
+  ok(syms.includes('NU'), 'conserva el ADR LATAM (NU) del set curado', JSON.stringify(syms));
+
+  // sin mega: el mismo calendario devuelve los 4
+  const resAll = mockRes();
+  await handler({ method: 'GET', query: { from: iso(0), to: iso(7) } }, resAll);
+  ok((resAll.body.earnings || []).length === 4, 'sin ?mega=1 pasa el calendario completo (4)', (resAll.body.earnings || []).length);
+}
+
 console.log('calendario: robustez cuando el symbol endpoint falla');
 {
   _resetSymbolMapCache();

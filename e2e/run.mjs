@@ -235,7 +235,9 @@ const wrapInfo = await page.evaluate(() => {
 console.log('WRAPPERS:', JSON.stringify(wrapInfo, null, 1));
 
 // ── S1: sweep all tabs, collect console ──
-const tabs = ['agents', 'sim', 'compare', 'vc', 'portfolio', 'macro', 'smartmoney', 'earnings', 'ipos', 'movers', 'sectors', 'conexiones', 'screener', 'pairs', 'signals', 'edges', 'myagents', 'social', 'gallery'];
+// SOCIAL quedó oculto tras el flag QD_HIDE_SOCIAL — fuera del sweep (showPage
+// lo redirige a sectors, así que no aportaría nada al audit).
+const tabs = ['agents', 'sim', 'compare', 'vc', 'portfolio', 'macro', 'smartmoney', 'earnings', 'ipos', 'movers', 'sectors', 'conexiones', 'screener', 'pairs', 'signals', 'edges', 'myagents', 'gallery'];
 for (const tab of tabs) {
   currentPhase = 'tab:' + tab;
   await page.evaluate((t) => {
@@ -245,7 +247,7 @@ for (const tab of tabs) {
   }, tab);
   await page.waitForTimeout(900);
 }
-report('S1 sweep de 19 tabs', true, 'consola al final');
+report('S1 sweep de 18 tabs', true, 'consola al final');
 
 // ── S2: MIS EDGES cards con edges pre-#45 ──
 currentPhase = 'S2-edges-cards';

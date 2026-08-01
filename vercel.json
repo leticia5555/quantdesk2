@@ -12,6 +12,10 @@
     {
       "source": "/terminal",
       "destination": "/app.html"
+    },
+    {
+      "source": "/hoy",
+      "destination": "/hoy.html"
     }
   ],
   "crons": [

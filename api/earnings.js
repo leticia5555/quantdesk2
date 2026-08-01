@@ -1,5 +1,30 @@
 import { EXCLUDED_SECURITY_TYPES, NON_EQUITY_TYPES } from './_lib/arena-guard.js';
 
+// ── MEGA-CAPS: universo curado para el calendario de /hoy ────────
+// El calendario de Finnhub trae TODOS los earnings del rango (cientos). Para
+// la página pública /hoy solo interesan los reportes que mueven el mercado y
+// que la audiencia reconoce. `?mega=1` intersecta el calendario con este set
+// curado (incluye los ADR LATAM que son el corazón de la audiencia: NU/MELI/
+// ITUB/VALE/PBR). Lista a mano, estable — NO scraping, misma filosofía que el
+// calendario macro curado.
+const MEGA_CAPS = new Set([
+  // Big tech / IA
+  'AAPL','MSFT','NVDA','GOOGL','GOOG','AMZN','META','AVGO','TSLA','ORCL',
+  'AMD','CRM','ADBE','NFLX','QCOM','TXN','INTC','CSCO','IBM','NOW','INTU','PLTR',
+  // Semis extranjeras de peso
+  'TSM','ASML','MU',
+  // Finanzas / pagos
+  'JPM','BAC','GS','MS','WFC','V','MA','BRK-B','BX',
+  // Consumo / salud / industriales
+  'WMT','COST','HD','LLY','UNH','JNJ','PG','KO','PEP','MCD','DIS','NKE','BA','CAT',
+  // Energía
+  'XOM','CVX',
+  // Cripto-adyacentes / retail favorites
+  'COIN','MSTR',
+  // ADR LATAM (corazón de la audiencia)
+  'NU','MELI','ITUB','VALE','PBR','BBD','ABEV','GGB',
+]);
+
 // ── SYMBOL MAP US: nombre de empresa por ticker ──────────────────
 // /stock/symbol?exchange=US es free tier y trae `description` (el nombre,
 // en MAYÚSCULAS) para el universo US completo (~25-30k símbolos, OTC
@@ -105,6 +130,8 @@ export default async function handler(req, res) {
 
   const finnhubKey = process.env.FINNHUB_API_KEY;
   const { from, to, ticker } = req.query;
+  // ?mega=1 → solo earnings de mega-caps (calendario público de /hoy).
+  const megaOnly = String((req.query && req.query.mega) || '') === '1';
 
   // ═══ DIAG: cobertura del campo `type` (para verificar el free tier) ═══
   //   GET /api/earnings?diag=symboltypes[&sample=N] → { total, populated,
@@ -368,6 +395,8 @@ export default async function handler(req, res) {
     // lejanas que sí traían estimate (Aug 7/10 bajo "this week" en jul).
     const earnings = data.earningsCalendar
       .filter(e => e.symbol && e.date)
+      // ?mega=1: intersecta con el set curado de mega-caps (calendario /hoy).
+      .filter(e => !megaOnly || MEGA_CAPS.has(e.symbol))
       .map(e => ({
         ticker: e.symbol,
         // Nombre del symbol map (title-cased); null si el símbolo no está

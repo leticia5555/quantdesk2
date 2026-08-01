@@ -1,9 +1,15 @@
 // ═══════════════════════════════════════════════════════════════
 // /api/sectors — 4 categories of ETF heatmaps
-//   us:         11 SPDR sector ETFs (default)
+//   us:         11 GICS SPDR sectors + SOXX (semis) + IBIT (bitcoin) = 13
 //   latam:      6 country/region ETFs for LATAM
 //   themes:     14 thematic megatrends
 //   industries: sub-industry ETFs (semis, biotech, banks, etc.)
+//
+// SOXX/IBIT en `us`: los 11 SPDR cubren todo GICS (no falta ninguno), pero para
+// una audiencia retail los dos movers de titular que NO son un sector GICS son
+// semiconductores (el corazón del trade de IA) y bitcoin. Se agregan al set por
+// defecto para que el heatmap de /hoy y de la app los muestren sin categoría
+// aparte. SOXX/AIQ/etc. siguen también en `themes` para la vista temática.
 // ═══════════════════════════════════════════════════════════════
 
 const CATEGORIES = {
@@ -18,7 +24,9 @@ const CATEGORIES = {
     { ticker: 'XLB', name: 'Materials',            emoji: '⛏️', topStocks: ['LIN','SHW','APD','ECL','FCX'] },
     { ticker: 'XLU', name: 'Utilities',            emoji: '⚡', topStocks: ['NEE','SO','DUK','SRE','AEP'] },
     { ticker: 'XLRE',name: 'Real Estate',          emoji: '🏢', topStocks: ['PLD','AMT','EQIX','WELL','CCI'] },
-    { ticker: 'XLC', name: 'Communication',        emoji: '📡', topStocks: ['META','GOOGL','NFLX','DIS','VZ'] }
+    { ticker: 'XLC', name: 'Communication',        emoji: '📡', topStocks: ['META','GOOGL','NFLX','DIS','VZ'] },
+    { ticker: 'SOXX',name: 'Semiconductors',       emoji: '🔬', topStocks: ['NVDA','AVGO','AMD','TSM','QCOM'] },
+    { ticker: 'IBIT',name: 'Bitcoin',              emoji: '₿', topStocks: ['Spot bitcoin ETF'] }
   ],
   latam: [
     { ticker: 'EWW',  name: 'Mexico',           emoji: '🇲🇽', topStocks: ['AMX','FMX','GFNORTEO.MX','WALMEX.MX','CEMEXCPO.MX'] },

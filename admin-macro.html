@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
+<meta name="robots" content="noindex,nofollow"/>
+<title>Admin · Calendario macro</title>
+<style>
+:root{--bg:#050505;--bg1:#0d0d0d;--bg2:#141414;--border:#242424;--text:#f0ede8;--text2:#8a8a82;--text3:#4a4a44;
+  --green:#00c97d;--red:#ff4545;--amber:#ffb347;--blue:#4a9eff;--mono:'Space Mono',ui-monospace,monospace;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,sans-serif;line-height:1.4;
+  padding:env(safe-area-inset-top) 16px calc(env(safe-area-inset-bottom) + 40px);}
+.wrap{max-width:520px;margin:0 auto;}
+h1{font-family:var(--mono);font-size:15px;letter-spacing:.1em;margin:20px 0 4px;}
+h1 span{color:var(--green);}
+.hint{color:var(--text3);font-size:12px;font-family:var(--mono);margin-bottom:18px;}
+label{display:block;font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin:12px 0 5px;font-family:var(--mono);}
+input,select,textarea,button{font-family:inherit;font-size:15px;width:100%;}
+input,select,textarea{background:var(--bg2);border:1px solid var(--border);color:var(--text);
+  border-radius:6px;padding:11px 12px;outline:none;}
+input:focus,select:focus,textarea:focus{border-color:var(--green);}
+textarea{resize:vertical;min-height:52px;}
+.row{display:flex;gap:8px;}.row>*{flex:1;}
+button{background:var(--green);border:1px solid var(--green);color:#000;font-weight:700;border-radius:6px;
+  padding:12px;cursor:pointer;margin-top:16px;letter-spacing:.03em;}
+button:active{opacity:.8;}
+button.ghost{background:transparent;color:var(--text2);border-color:var(--border);font-weight:400;margin-top:0;}
+.card{background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px;}
+.msg{font-size:13px;padding:9px 12px;border-radius:6px;margin-top:12px;display:none;font-family:var(--mono);}
+.msg.ok{display:block;color:var(--green);background:rgba(0,201,125,.08);border:1px solid rgba(0,201,125,.25);}
+.msg.err{display:block;color:var(--red);background:rgba(255,69,69,.08);border:1px solid rgba(255,69,69,.25);}
+.ev{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-top:1px solid var(--border);}
+.ev:first-child{border-top:none;}
+.ev .d{font-family:var(--mono);font-size:11px;color:var(--green);white-space:nowrap;padding-top:2px;}
+.ev .t{flex:1;font-size:14px;}
+.ev .t small{display:block;color:var(--text3);font-size:11px;font-family:var(--mono);margin-top:2px;text-transform:uppercase;}
+.ev .del{width:auto;flex:none;background:transparent;border:1px solid var(--border);color:var(--red);
+  font-size:12px;padding:5px 10px;margin:0;border-radius:5px;}
+.imp-high{color:var(--red);}.imp-med{color:var(--amber);}.imp-low{color:var(--text3);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ADMIN · <span>calendario macro</span></h1>
+  <div class="hint">Carga curada. ~8 eventos/mes. Nada de scraping.</div>
+
+  <div class="card">
+    <label>Secret de admin</label>
+    <div class="row">
+      <input id="secret" type="password" placeholder="ADMIN_SECRET" autocomplete="off"/>
+      <button class="ghost" style="flex:none;width:auto;padding:11px 14px;" onclick="saveSecret()">Guardar</button>
+    </div>
+    <div class="hint" style="margin-top:8px;margin-bottom:0;">Se guarda solo en este teléfono (localStorage).</div>
+  </div>
+
+  <div class="card">
+    <label>Fecha</label>
+    <input id="date" type="date"/>
+    <label>Título</label>
+    <input id="title" type="text" placeholder="Ej: Decisión de tasas de la Fed" maxlength="120"/>
+    <div class="row">
+      <div>
+        <label>Categoría</label>
+        <select id="category">
+          <option value="fed">Fed / tasas</option>
+          <option value="cpi">CPI / inflación</option>
+          <option value="jobs">Empleo</option>
+          <option value="gdp">PIB</option>
+          <option value="auction">Subasta / bonos</option>
+          <option value="speech">Discurso</option>
+          <option value="opex">Vencimientos</option>
+          <option value="other">Otro</option>
+        </select>
+      </div>
+      <div>
+        <label>Importancia</label>
+        <select id="importance">
+          <option value="high">Alta</option>
+          <option value="med" selected>Media</option>
+          <option value="low">Baja</option>
+        </select>
+      </div>
+    </div>
+    <label>Nota (opcional)</label>
+    <textarea id="note" placeholder="Contexto corto, opcional" maxlength="280"></textarea>
+    <button onclick="addEvent()">Agregar evento</button>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="card">
+    <label>Próximos eventos cargados</label>
+    <div id="list" style="margin-top:8px;color:var(--text3);font-size:13px;">Cargando…</div>
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+function getSecret(){ return localStorage.getItem('qd_admin_secret')||''; }
+function saveSecret(){ localStorage.setItem('qd_admin_secret',$('secret').value.trim()); flash('Secret guardado.',true); loadList(); }
+function flash(t,ok){ const m=$('msg'); m.textContent=t; m.className='msg '+(ok?'ok':'err'); setTimeout(()=>{m.className='msg';},3500); }
+
+async function addEvent(){
+  const secret=getSecret();
+  if(!secret) return flash('Falta el secret (guárdalo arriba).',false);
+  const body={ event_date:$('date').value, title:$('title').value.trim(),
+    category:$('category').value, importance:$('importance').value, note:$('note').value.trim() };
+  if(!body.event_date) return flash('Elige una fecha.',false);
+  if(!body.title) return flash('Escribe un título.',false);
+  try{
+    const r=await fetch('/api/macro-events',{method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+secret},
+      body:JSON.stringify(body)});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) return flash(d.error||('Error '+r.status),false);
+    flash('✓ Agregado: '+body.title,true);
+    $('title').value='';$('note').value='';
+    loadList();
+  }catch(e){ flash('Error de red.',false); }
+}
+
+async function delEvent(id){
+  const secret=getSecret();
+  if(!secret) return flash('Falta el secret.',false);
+  if(!confirm('¿Borrar este evento?')) return;
+  try{
+    const r=await fetch('/api/macro-events?id='+encodeURIComponent(id),{method:'DELETE',
+      headers:{'Authorization':'Bearer '+secret}});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) return flash(d.error||('Error '+r.status),false);
+    loadList();
+  }catch(e){ flash('Error de red.',false); }
+}
+
+const MONTHS=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+function fmt(iso){ const [y,m,d]=String(iso).split('-').map(Number); return d+' '+MONTHS[(m||1)-1]; }
+async function loadList(){
+  const el=$('list');
+  try{
+    const r=await fetch('/api/macro-events?all=1');
+    const d=await r.json().catch(()=>({events:[]}));
+    const ev=d.events||[];
+    if(!ev.length){ el.innerHTML='<span style="color:var(--text3)">Sin eventos. Agrega el primero arriba.</span>'; return; }
+    el.innerHTML=ev.map(e=>`<div class="ev">
+      <div class="d">${fmt(e.event_date)}</div>
+      <div class="t">${esc(e.title)}<small class="imp-${esc(e.importance||'med')}">${esc(e.category||'')} · ${esc(e.importance||'med')}</small></div>
+      <button class="del" onclick="delEvent('${esc(e.id)}')">Borrar</button>
+    </div>`).join('');
+  }catch(e){ el.textContent='No se pudo cargar la lista.'; }
+}
+
+// boot
+$('secret').value=getSecret();
+$('date').value=new Date().toISOString().slice(0,10);
+loadList();
+</script>
+</body>
+</html>

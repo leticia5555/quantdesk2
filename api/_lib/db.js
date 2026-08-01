@@ -180,6 +180,22 @@ const SCHEMA = [
      resumed_at timestamptz
    )`,
   `insert into arena_state (id, halted) values (1, false) on conflict (id) do nothing`,
+  // Calendario macro CURADO (decisión de producto: nada de scraping frágil).
+  // Lety carga ~8 eventos/mes a mano vía el admin gated (/api/macro-events).
+  // Los earnings de mega-caps NO viven aquí — se automatizan desde el
+  // calendario de Finnhub (api/earnings.js ?mega=1). Esta tabla es solo lo
+  // curado: Fed, CPI, jobs, PIB, subastas, discursos, lo que Lety decida.
+  `create table if not exists macro_events (
+     id text primary key,
+     event_date date not null,
+     title text not null,
+     category text,
+     importance text not null default 'med',
+     note text,
+     created_at timestamptz not null default now()
+   )`,
+  // Índice para la lectura pública (upcoming, ordenado por fecha).
+  `create index if not exists macro_events_date_idx on macro_events (event_date)`,
 ];
 
 let schemaReady = false;

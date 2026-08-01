@@ -1,10 +1,12 @@
 // ═══════════════════════════════════════════════════════════════
 // Blindajes #0 — "agentes desaparecidos" no vuelve a pasar.
 //
-// 1) Migración NO destructiva (estático): el SCHEMA es 100% CREATE TABLE
+// 1) Migración NO destructiva (estático): el SCHEMA es 100% CREATE TABLE/INDEX
 //    IF NOT EXISTS y ningún camino de api/ contiene DROP/TRUNCATE.
-// 2) Audit de DELETEs (estático): el ÚNICO delete del código de agentes es
-//    el del endpoint DELETE, doble-scoped por id + user_id.
+// 2) Audit de DELETEs (estático): todo DELETE de api/ está en una allowlist
+//    revisada a mano — el de agentes doble-scoped por id+user_id, el de
+//    macro_events gated por ADMIN_SECRET. Un DELETE nuevo fuera de la lista
+//    tumba el test a propósito.
 // 3) Crear agente → "redeploy" (re-corre ensureSchema en frío) → el agente
 //    PERSISTE y el listado lo devuelve (Neon fake stateful que ejecuta la
 //    semántica real de IF NOT EXISTS).
@@ -46,7 +48,9 @@ console.log('schema: 100% CREATE TABLE IF NOT EXISTS, cero DROP/TRUNCATE en api/
   const stmts = [...schemaMatch[1].matchAll(/`\s*(create[^`]+)`/gi)].map((m) => m[1].trim());
   ok(stmts.length >= 6, `schema con ${stmts.length} sentencias`);
   for (const st of stmts) {
-    ok(/^create table if not exists/i.test(st), 'idempotente: ' + st.slice(0, 45) + '…');
+    // Idempotente = `create table/index if not exists`. El índice de
+    // macro_events (create index if not exists) también es re-ejecutable.
+    ok(/^create (table|index) if not exists/i.test(st), 'idempotente: ' + st.slice(0, 45) + '…');
   }
 
   const files = [];
@@ -61,16 +65,26 @@ console.log('schema: 100% CREATE TABLE IF NOT EXISTS, cero DROP/TRUNCATE en api/
   ok(destructive.length === 0, 'ningún api/*.js contiene DROP TABLE/TRUNCATE', destructive.join(','));
 
   // ── 2) audit de DELETEs ──
+  // Cada DELETE de api/ debe estar en esta allowlist revisada a mano. El de
+  // agentes va doble-scoped por id+user_id; el de macro_events es del admin
+  // curado (gated por ADMIN_SECRET, no toca datos de usuario). Un DELETE nuevo
+  // fuera de la lista tumba este test a propósito — para que nadie meta un
+  // borrado destructivo sin revisión.
+  const ALLOWED_DELETES = {
+    'api/agents.js': /id = \$1 and user_id = \$2/,          // doble-scoped por dueño
+    'api/macro-events.js': /delete from macro_events where id = \$1/i, // admin curado, gated
+  };
   let deletes = [];
   for (const p of files) {
     for (const m of readFileSync(p, 'utf8').matchAll(/delete\s+from\s+\w+[^'"`]*/gi)) {
       deletes.push({ file: p.slice(ROOT.length + 1), stmt: m[0].trim() });
     }
   }
-  ok(deletes.length === 1 && deletes[0].file === 'api/agents.js',
-    'un solo DELETE en todo api/ (agents.js)', JSON.stringify(deletes));
-  ok(deletes[0] && /id = \$1 and user_id = \$2/.test(deletes[0].stmt),
-    'el DELETE está doble-scoped por id + user_id', deletes[0] && deletes[0].stmt);
+  const unexpected = deletes.filter((d) => !ALLOWED_DELETES[d.file] || !ALLOWED_DELETES[d.file].test(d.stmt));
+  ok(unexpected.length === 0, 'todo DELETE de api/ está en la allowlist revisada', JSON.stringify(unexpected));
+  const agentDel = deletes.find((d) => d.file === 'api/agents.js');
+  ok(agentDel && /id = \$1 and user_id = \$2/.test(agentDel.stmt),
+    'el DELETE de agentes está doble-scoped por id + user_id', agentDel && agentDel.stmt);
 }
 
 // ─────────────────── Neon fake stateful ───────────────────
