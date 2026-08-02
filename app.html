@@ -3662,10 +3662,11 @@ async function loadTopBarTickers(){
     const t=tickers[i];
     if(r.status!=='fulfilled'||!r.value.currentPrice) return '';
     const d=r.value;
-    const ret=d.return30d||0;
+    // Cinta compacta: cambio DIARIO (dayChange), no el 30d — igual que la cinta viva.
+    const ret=(typeof d.dayChange==='number')?d.dayChange:0;
     const col=ret>=0?'#00c97d':'#E24B4A';
     const price=d.currentPrice>1000?d.currentPrice.toLocaleString(undefined,{maximumFractionDigits:0}):d.currentPrice.toFixed(2);
-    return '<span style="font-family:var(--mono);font-size:10px;"><span style="color:#888;">'+(names[t]||t)+' </span><span style="color:#ddd;">'+price+'</span> <span style="color:'+col+';">'+(ret>=0?'+':'')+(ret*100).toFixed(1)+'%</span></span>';
+    return '<span data-chart-sym="'+t+'" title="'+(names[t]||t)+' · chart" style="font-family:var(--mono);font-size:10px;cursor:pointer;"><span style="color:#888;">'+(names[t]||t)+' </span><span style="color:#ddd;">'+price+'</span> <span style="color:'+col+';">'+(ret>=0?'+':'')+(ret*100).toFixed(2)+'%</span></span>';
   }).filter(Boolean).join('<span style="color:#222;margin:0 4px;">|</span>');
 }
 
@@ -3824,7 +3825,9 @@ async function loadMarketSummary(){
   const groups=[
     {label:'US', tickers:['SPY','QQQ','IWM','GLD','TLT','AMZN','NVDA','TSLA']},
     {label:'CRYPTO', tickers:['BTC/USD','ETH/USD','SOL/USD','BNB/USD']},
-    {label:'LATAM', tickers:['MELI','NU','GLOB','AMXB.MX']},
+    // MELI/NU/GLOB cotizan como ADRs en NY (no son mercados LATAM); AMXB.MX sí es
+    // BMV local. La sección se rotula "LATAM ADRs" para no implicar índices latinos.
+    {label:'LATAM ADRs', tickers:['MELI','NU','GLOB','AMXB.MX']},
   ];
 
   const names={
@@ -3866,16 +3869,22 @@ async function loadMarketSummary(){
         html+='<div style="background:#111;padding:8px;"><div style="font-family:var(--mono);font-size:9px;color:#444;">'+(names[t]||t.replace('/USD',''))+'</div><div style="font-size:12px;color:#333;">—</div></div>';
         return;
       }
-      const ret=d.return30d||0;
-      const retColor=ret>=0?'#00c97d':'#E24B4A';
-      const retBg=ret>=0?'rgba(0,201,125,.05)':'rgba(226,75,74,.05)';
+      // Número principal = cambio DIARIO (dayChange), consistente con la cinta viva.
+      // return30d baja a una línea rotulada "30D" para no mezclar periodos sin etiqueta.
+      const day=(typeof d.dayChange==='number')?d.dayChange:null;
+      const r30=(typeof d.return30d==='number')?d.return30d:null;
+      const dayColor=day==null?'#666':(day>=0?'#00c97d':'#E24B4A');
+      const cardBg=day==null?'rgba(255,255,255,.02)':(day>=0?'rgba(0,201,125,.05)':'rgba(226,75,74,.05)');
       const price=d.currentPrice>10000?'$'+d.currentPrice.toLocaleString(undefined,{maximumFractionDigits:0}):
                   d.currentPrice>100?'$'+d.currentPrice.toLocaleString(undefined,{maximumFractionDigits:0}):
                   '$'+d.currentPrice.toFixed(2);
-      html+='<div style="background:'+retBg+';border:1px solid #1a1a1a;padding:8px;">'
+      const dayTxt=day==null?'—':((day>=0?'+':'')+(day*100).toFixed(2)+'%');
+      const r30Txt=r30==null?'':('<span style="color:#555;">30D </span><span style="color:'+(r30>=0?'#00c97d':'#E24B4A')+';">'+(r30>=0?'+':'')+(r30*100).toFixed(1)+'%</span>');
+      html+='<div data-chart-sym="'+t+'" title="'+(names[t]||t.replace('/USD',''))+' · chart" style="background:'+cardBg+';border:1px solid #1a1a1a;padding:8px;cursor:pointer;">'
         +'<div style="font-family:var(--mono);font-size:9px;color:#666;margin-bottom:3px;">'+(names[t]||t.replace('/USD',''))+'</div>'
         +'<div style="font-size:13px;font-weight:600;font-family:var(--mono);color:#e0e0e0;">'+price+'</div>'
-        +'<div style="font-family:var(--mono);font-size:10px;color:'+retColor+';margin-top:1px;">'+(ret>=0?'+':'')+(ret*100).toFixed(1)+'%</div>'
+        +'<div style="font-family:var(--mono);font-size:10px;color:'+dayColor+';margin-top:1px;">'+dayTxt+'</div>'
+        +(r30Txt?'<div style="font-family:var(--mono);font-size:8px;margin-top:1px;">'+r30Txt+'</div>':'')
         +'</div>';
     });
   });
@@ -4044,7 +4053,7 @@ function renderHeatmap(sectors){
     const textColor=intensity>0.3?'#fff':'#ccc';
     html+='<div style="background:'+bg+';padding:10px 8px;cursor:default;" title="'+(s.note||'')+'">'
       +'<div style="font-size:10px;font-family:var(--mono);color:'+textColor+';margin-bottom:3px;line-height:1.2;">'+s.sector+'</div>'
-      +'<div style="font-size:14px;font-weight:700;color:'+textColor+';font-family:var(--mono);">'+(ret>=0?'+':'')+ret.toFixed(1)+'%</div>'
+      +'<div style="font-size:14px;font-weight:700;color:'+textColor+';font-family:var(--mono);">'+(ret>=0?'+':'')+ret.toFixed(1)+'%<span style="font-size:8px;font-weight:400;opacity:.55;margin-left:3px;">30D</span></div>'
       +'<div style="font-size:9px;color:rgba(255,255,255,.4);margin-top:1px;">YTD '+(s.ytd>=0?'+':'')+( s.ytd||0).toFixed(1)+'%</div>'
       +'</div>';
   });
