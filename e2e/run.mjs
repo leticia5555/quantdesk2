@@ -139,9 +139,11 @@ async function routeApis(page) {
     }
     if (p === '/api/macro-markets') {
       // ^VIX bajo (CALM), curva invertida (^TNX 4.25% ×10 vs 2YY=F 4.60%).
-      const spark = (base) => Array.from({ length: 22 }, (_, i) => +(base * (1 + (i - 11) * 0.002)).toFixed(2));
+      // Serie 3M: 65 puntos [t(unix s), v] — el cliente la corta a 1S/1M/3M.
+      const T0 = 1700000000;
+      const series = (base) => Array.from({ length: 65 }, (_, i) => [T0 + i * 86400, +(base * (1 + (i - 32) * 0.001)).toFixed(4)]);
       const card = (price, prev) => ({ price, prevClose: prev,
-        changePct: +(((price - prev) / prev) * 100).toFixed(2), spark: spark(price), currency: 'USD' });
+        changePct: +(((price - prev) / prev) * 100).toFixed(2), series: series(price), currency: 'USD' });
       return json({ data: {
         '^VIX': card(18.5, 17.0),
         '^TNX': card(42.5, 42.0),   // ×10 → 4.25%
@@ -934,18 +936,24 @@ currentPhase = 'S24-macro-markets';
 await page.evaluate(() => { qdChartClose(); showPage('macro'); });
 await page.waitForTimeout(1400);
 const s24 = await page.evaluate(() => {
-  const hero = document.getElementById('macroHero').innerText;
+  const hero = document.getElementById('macroHero');
+  const heroTxt = hero.innerText;
   const groups = document.getElementById('macroMarkets');
   const secs = [...groups.querySelectorAll('details.mx-sec > summary')].map(s => s.innerText.replace(/\s+/g, ' ').trim());
   const cards = groups.querySelectorAll('.mx-card').length;
-  const sparks = groups.querySelectorAll('svg.mx-spark').length;
+  const sparks = groups.querySelectorAll('.mx-sparkwrap[data-spark]').length;
   const tnxCard = [...groups.querySelectorAll('.mx-card')].find(c => c.getAttribute('data-chart-sym') === '^TNX');
   return {
-    hero, secs, cards, sparks,
+    hero: heroTxt, secs, cards, sparks,
     // 10Y card muestra 4.25 (÷10 aplicado), no 42.5
     tnxVal: tnxCard ? tnxCard.querySelector('.mx-val').innerText : 'NO-CARD',
-    heroHasVix: /VIX/.test(hero) && /18\.5/.test(hero),
-    heroInverted: /INVERTED/.test(hero),
+    heroHasVix: /VIX/.test(heroTxt) && /18\.5/.test(heroTxt),
+    heroInverted: /INVERTED/.test(heroTxt),
+    // heroes = gráfica real (Lightweight Charts monta varios <canvas> por hero;
+    // se cuentan los contenedores .mx-hchart que montaron al menos uno)
+    heroCanvases: [...hero.querySelectorAll('.mx-hchart')].filter(h => h.querySelector('canvas')).length,
+    toggles: groups.querySelectorAll('.mx-tgls .mx-tgl').length,
+    recency: [...groups.querySelectorAll('.mx-recency')].some(e => /updated|actualizado/.test(e.textContent)),
   };
 });
 report('S24a hero muestra el VIX con su nivel', s24.heroHasVix, s24.hero.replace(/\n/g, ' · ').slice(0, 80));
@@ -953,9 +961,12 @@ report('S24b hero calcula el spread 10Y-2Y invertido (recession signal)', s24.he
 report('S24c grupos por región presentes (RATES/FX/COMMODITIES/ASIA/EUROPE/LATAM/FUTURES)',
   ['RATES', 'FX GLOBAL', 'COMMODITIES', 'ASIA', 'EUROPE', 'LATAM', 'US FUTURES'].every(t => s24.secs.some(s => s.includes(t))),
   JSON.stringify(s24.secs));
-report('S24d cada tarjeta tiene sparkline (svg sin ejes)', s24.cards > 0 && s24.sparks === s24.cards,
+report('S24d cada tarjeta tiene sparkline (overlay HTML sin distorsión)', s24.cards > 0 && s24.sparks === s24.cards,
   'cards=' + s24.cards + ' sparks=' + s24.sparks);
 report('S24e ^TNX se muestra ÷10 (4.25%, no 42.5)', s24.tnxVal.includes('4.25'), s24.tnxVal);
+report('S24i heroes VIX + spread con gráfica real (Lightweight Charts)', s24.heroCanvases === 2, 'canvases=' + s24.heroCanvases);
+report('S24j toggles de periodo por grupo (7 grupos × 3 = 21)', s24.toggles === 21, 'toggles=' + s24.toggles);
+report('S24k sello de recencia visible ("updated Xs ago")', s24.recency === true, '');
 
 // click en una tarjeta abre el chart modal con velas (misma plumbing candles)
 const beforeCandles = apiCalls.filter(c => c.phase === 'S24-macro-markets' && c.path.startsWith('/api/candles')).length;
@@ -983,6 +994,24 @@ const s24g = await page.evaluate(() => {
 });
 report('S24g grupos colapsables (details nativo togglea)', s24g.openBefore === true && s24g.openAfter === false,
   JSON.stringify(s24g));
+
+// S24l: el toggle de periodo re-pinta las tarjetas del grupo SIN colapsar
+// el <details> (preventDefault) y sin tocar los demás grupos.
+const s24l = await page.evaluate(async () => {
+  const sec = [...document.querySelectorAll('#macroMarkets details.mx-sec')].find(d => d.open);
+  const btn1W = sec.querySelector('.mx-tgl'); // primer toggle = 1S
+  const before = sec.querySelector('.mx-cards').innerHTML;
+  btn1W.click();
+  await new Promise(r => setTimeout(r, 150));
+  return {
+    stillOpen: sec.open,
+    active: btn1W.classList.contains('active'),
+    reRendered: sec.querySelector('.mx-cards').innerHTML !== before,
+    spark1W: /_1W"/.test(sec.querySelector('.mx-cards').innerHTML),
+  };
+});
+report('S24l toggle de periodo re-pinta el grupo sin colapsarlo',
+  s24l.stillOpen && s24l.active && s24l.reRendered && s24l.spark1W, JSON.stringify(s24l));
 
 // S24h: el quote vivo del chart escala ÷10 SOLO para índices de rendimiento
 // (^TNX 42.5 → 4.25), nunca para un stock — así la vela viva no salta a 42.5.

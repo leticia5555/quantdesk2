@@ -280,12 +280,21 @@ td:first-child{color:var(--text);font-weight:500;}
 .mx-sec{border-bottom:1px solid #1a1a1a;}
 .mx-sec>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;
   padding:9px 12px;font-family:var(--mono);font-size:9px;letter-spacing:.1em;color:#ff6600;
-  user-select:none;}
+  user-select:none;flex-wrap:wrap;}
 .mx-sec>summary::-webkit-details-marker{display:none;}
-.mx-sec>summary .mx-chev{margin-left:auto;color:#555;transition:transform .15s;font-size:10px;}
+.mx-sec>summary .mx-tools{margin-left:auto;display:flex;align-items:center;gap:8px;}
+.mx-sec>summary .mx-chev{color:#555;transition:transform .15s;font-size:10px;}
 .mx-sec[open]>summary .mx-chev{transform:rotate(90deg);}
 .mx-sec>summary .mx-sub{color:#444;letter-spacing:.04em;font-weight:400;}
+.mx-recency{font-family:var(--mono);font-size:8px;color:#3a3a3a;letter-spacing:.02em;font-weight:400;white-space:nowrap;}
 .mx-body{padding:0 12px 12px;}
+
+/* Toggles de periodo (1S · 1M · 3M) */
+.mx-tgls{display:inline-flex;gap:1px;background:#161616;border-radius:3px;padding:1px;}
+.mx-tgl{font-family:var(--mono);font-size:8px;color:#666;background:none;border:none;padding:2px 6px;
+  border-radius:2px;cursor:pointer;letter-spacing:.05em;line-height:1.4;}
+.mx-tgl:hover{color:#aaa;}
+.mx-tgl.active{background:#2a2a2a;color:#ddd;}
 
 /* Rejilla de tarjetas macro: 4 → 3 → 2 según ancho */
 .mx-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}
@@ -300,16 +309,36 @@ td:first-child{color:var(--text);font-weight:500;}
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .mx-card .mx-val{font-family:var(--mono);font-size:14px;font-weight:600;color:#e6e6e6;line-height:1.1;}
 .mx-card .mx-chg{font-family:var(--mono);font-size:10px;margin-top:1px;}
-.mx-card .mx-spark{display:block;width:100%;height:22px;margin-top:4px;}
 .mx-card .mx-unit{font-size:9px;color:#555;font-weight:400;}
 
-/* Hero: VIX + spread 10Y-2Y destacados */
+/* Sparkline: SVG estirado (línea+relleno) + overlays HTML sin distorsión
+   (punto, pulso, crosshair, punto de hover) posicionados en %. */
+.mx-sparkwrap{position:relative;width:100%;height:30px;margin-top:5px;}
+.mx-sparkwrap svg{display:block;width:100%;height:100%;overflow:visible;}
+.mx-dot,.mx-pulse,.mx-hoverdot{position:absolute;border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;}
+.mx-dot{width:5px;height:5px;}
+.mx-hoverdot{width:6px;height:6px;opacity:0;box-shadow:0 0 0 2px #0d0d0d;}
+.mx-pulse{width:5px;height:5px;opacity:0;}
+.mx-sparkwrap.mx-live .mx-pulse{animation:mxPing 2.2s ease-out infinite;}
+@keyframes mxPing{0%{box-shadow:0 0 0 0 currentColor;opacity:.5;}70%{box-shadow:0 0 0 5px currentColor;opacity:0;}100%{opacity:0;}}
+.mx-cross{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,.22);
+  transform:translateX(-50%);pointer-events:none;opacity:0;}
+
+/* Tooltip flotante compartido (fecha + valor al hacer hover) */
+#mxTip{position:fixed;z-index:9999;pointer-events:none;background:#0a0a0a;border:1px solid #2a2a2a;
+  border-radius:3px;padding:4px 7px;font-family:var(--mono);font-size:9px;color:#ddd;display:none;
+  white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,.6);}
+#mxTip .mx-tip-d{color:#666;margin-right:6px;}
+
+/* Hero: VIX + spread 10Y-2Y con gráfica real (Lightweight Charts) */
 .mx-hero{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#111;}
-.mx-hero .mx-h{background:#0d0d0d;padding:12px;cursor:pointer;transition:background .12s;}
-.mx-hero .mx-h:hover{background:#131313;}
-.mx-hero .mx-h .mx-lbl{font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:6px;}
+.mx-hero .mx-h{background:#0d0d0d;padding:12px;display:flex;flex-direction:column;}
+.mx-hero .mx-hhead{cursor:pointer;}
+.mx-hero .mx-hhead:hover .mx-big{filter:brightness(1.15);}
+.mx-hero .mx-h .mx-lbl{font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:6px;display:flex;align-items:center;gap:8px;}
 .mx-hero .mx-h .mx-big{font-family:var(--mono);font-size:30px;font-weight:700;line-height:1;color:#e6e6e6;}
 .mx-hero .mx-h .mx-sub2{font-family:var(--mono);font-size:10px;margin-top:4px;}
+.mx-hchart{width:100%;height:72px;margin-top:8px;}
 @media(max-width:360px){ .mx-hero{grid-template-columns:1fr;} }
 </style>
 </head>
@@ -3723,24 +3752,111 @@ async function loadMacroPage(){
 // futuro de rendimiento) ya viene en % directo → intacto.
 function mxYield(v){ return (Number.isFinite(v)&&v>20)?v/10:v; }
 
-// Sparkline SVG de una línea, sin ejes, coloreada por la dirección de la
-// ventana (último vs primero). Devuelve '' si no hay suficientes puntos.
-function mxSpark(spark,color){
-  const pts=(spark||[]).filter(v=>Number.isFinite(v));
-  if(pts.length<2) return '';
-  const W=100,H=22,pad=1;
-  const min=Math.min(...pts),max=Math.max(...pts),rng=(max-min)||1;
-  const dx=(W-pad*2)/(pts.length-1);
-  const d=pts.map((v,i)=>{
-    const x=(pad+i*dx).toFixed(1);
-    const y=(pad+(H-pad*2)*(1-(v-min)/rng)).toFixed(1);
-    return (i?'L':'M')+x+' '+y;
-  }).join(' ');
-  return '<svg class="mx-spark" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" aria-hidden="true">'
-    +'<path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/></svg>';
+// ── Sparkline de terminal ──────────────────────────────
+// SVG (línea + relleno degradado) estirado con preserveAspectRatio=none;
+// los adornos que NO deben deformarse (punto final, pulso, crosshair,
+// punto de hover) son overlays HTML posicionados en % — así un círculo
+// sigue siendo círculo aunque el SVG se estire. Registra la geometría en
+// mxSparkReg para el hover (fecha+valor). Recibe una serie [[t,v],…].
+const mxSparkReg={};
+function mxSpark(id, series, color, dispFmt){
+  const pts=(series||[]).filter(p=>Array.isArray(p)&&Number.isFinite(p[1]));
+  if(pts.length<2){ delete mxSparkReg[id]; return '<div class="mx-sparkwrap"></div>'; }
+  const W=100,H=30,padX=1.5,padY=5,n=pts.length;
+  const vals=pts.map(p=>p[1]);
+  const min=Math.min(...vals),max=Math.max(...vals),rng=(max-min)||Math.abs(min)||1;
+  const xs=[],ys=[],fx=[],fy=[];
+  for(let i=0;i<n;i++){
+    const x=padX+(W-padX*2)*(n===1?0.5:i/(n-1));
+    const y=padY+(H-padY*2)*(1-(pts[i][1]-min)/rng);
+    xs.push(+x.toFixed(2)); ys.push(+y.toFixed(2));
+    fx.push(+(x/W).toFixed(4)); fy.push(+(y/H).toFixed(4));
+  }
+  const line='M'+xs.map((x,i)=>x+' '+ys[i]).join(' L ');
+  const area=line+' L '+xs[n-1]+' '+(H-0.4)+' L '+xs[0]+' '+(H-0.4)+' Z';
+  const baseY=ys[0], lx=(fx[n-1]*100).toFixed(2), ly=(fy[n-1]*100).toFixed(2), gid=id+'_g';
+  mxSparkReg[id]={fx,fy,pts,fmt:dispFmt};
+  return '<div class="mx-sparkwrap mx-live" data-spark="'+id+'">'
+    +'<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" aria-hidden="true">'
+      +'<defs><linearGradient id="'+gid+'" x1="0" y1="0" x2="0" y2="1">'
+        +'<stop offset="0%" stop-color="'+color+'" stop-opacity="0.15"/>'
+        +'<stop offset="100%" stop-color="'+color+'" stop-opacity="0"/></linearGradient></defs>'
+      +'<line x1="0" y1="'+baseY+'" x2="'+W+'" y2="'+baseY+'" stroke="#3a3a3a" stroke-width="0.5" stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>'
+      +'<path d="'+area+'" fill="url(#'+gid+')"/>'
+      +'<path d="'+line+'" fill="none" stroke="'+color+'" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>'
+    +'</svg>'
+    +'<span class="mx-cross"></span>'
+    +'<span class="mx-pulse" style="left:'+lx+'%;top:'+ly+'%;color:'+color+';background:'+color+';"></span>'
+    +'<span class="mx-dot" style="left:'+lx+'%;top:'+ly+'%;background:'+color+';"></span>'
+    +'<span class="mx-hoverdot" style="background:'+color+';"></span>'
+    +'</div>';
 }
 
-// Grupos del tab. Cada item: [símbolo Yahoo, etiqueta, formateador].
+// ── Toggles de periodo (recorte de la serie 3M que ya vino) ──
+const MX_PERIODS=[{k:'1W',lbl:'1S',bars:5},{k:'1M',lbl:'1M',bars:22},{k:'3M',lbl:'3M',bars:9999}];
+const mxPeriod={};                       // gkey → k
+function mxBars(k){ const p=MX_PERIODS.find(x=>x.k===k); return p?p.bars:22; }
+function mxSliceSeries(series,k){ return (series||[]).slice(-mxBars(k)); }
+function mxTgl(ev,gkey,k){
+  ev.preventDefault(); ev.stopPropagation();      // no togglear el <details>
+  if(mxPeriod[gkey]===k) return;
+  mxPeriod[gkey]=k;
+  const bar=ev.currentTarget.parentNode;
+  if(bar) bar.querySelectorAll('.mx-tgl').forEach(b=>b.classList.toggle('active',b===ev.currentTarget));
+  mxRenderGroupCards(gkey);
+}
+
+// ── Hover: crosshair + tooltip (fecha + valor) ──
+let mxLastWrap=null;
+function mxTipEl(){ let t=document.getElementById('mxTip'); if(!t){ t=document.createElement('div'); t.id='mxTip'; document.body.appendChild(t); } return t; }
+function mxDateLabel(t){
+  const loc=(typeof currentLang!=='undefined'&&currentLang==='es')?'es-MX':'en-US';
+  return new Date(t*1000).toLocaleDateString(loc,{month:'short',day:'numeric'});
+}
+function mxClearWrap(w){ if(!w) return; const c=w.querySelector('.mx-cross'); if(c)c.style.opacity='0'; const h=w.querySelector('.mx-hoverdot'); if(h)h.style.opacity='0'; }
+function mxHoverHide(){ const tip=document.getElementById('mxTip'); if(tip)tip.style.display='none'; if(mxLastWrap){ mxClearWrap(mxLastWrap); mxLastWrap=null; } }
+function mxHoverMove(ev){
+  const wrap=ev.target.closest&&ev.target.closest('.mx-sparkwrap');
+  const reg=wrap&&mxSparkReg[wrap.getAttribute('data-spark')];
+  if(!reg||!reg.fx.length){ mxHoverHide(); return; }
+  if(mxLastWrap&&mxLastWrap!==wrap) mxClearWrap(mxLastWrap);
+  mxLastWrap=wrap;
+  const rect=wrap.getBoundingClientRect();
+  const frac=Math.max(0,Math.min(1,(ev.clientX-rect.left)/(rect.width||1)));
+  let idx=0,best=2;
+  for(let i=0;i<reg.fx.length;i++){ const dd=Math.abs(reg.fx[i]-frac); if(dd<best){best=dd;idx=i;} }
+  const px=(reg.fx[idx]*100)+'%', py=(reg.fy[idx]*100)+'%';
+  const cross=wrap.querySelector('.mx-cross'), hd=wrap.querySelector('.mx-hoverdot');
+  if(cross){ cross.style.left=px; cross.style.opacity='1'; }
+  if(hd){ hd.style.left=px; hd.style.top=py; hd.style.opacity='1'; }
+  const p=reg.pts[idx], tip=mxTipEl();
+  tip.innerHTML='<span class="mx-tip-d">'+mxDateLabel(p[0])+'</span>'+reg.fmt(p[1]);
+  tip.style.display='block';
+  const tw=tip.offsetWidth||60;
+  let L=ev.clientX+12, T=rect.top-6;
+  if(L+tw>window.innerWidth-8) L=ev.clientX-tw-12;
+  if(T<4) T=rect.bottom+6;
+  tip.style.left=L+'px'; tip.style.top=T+'px';
+}
+function mxHoverInit(){
+  const host=document.getElementById('macroMarkets');
+  if(!host||host._mxHover) return; host._mxHover=true;
+  host.addEventListener('mousemove',mxHoverMove);
+  host.addEventListener('mouseleave',mxHoverHide);
+}
+
+// ── Sello de recencia ("actualizado hace 47s") que avanza solo ──
+let mxLoadAt=0, mxRecencyTimer=null;
+function mxAgo(ts){
+  if(!ts) return '';
+  const s=Math.max(0,Math.round((Date.now()-ts)/1000));
+  const es=(typeof currentLang!=='undefined'&&currentLang==='es');
+  const body=s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h';
+  return (es?'actualizado hace '+body:'updated '+body+' ago');
+}
+function mxTickRecency(){ const txt=mxAgo(mxLoadAt); document.querySelectorAll('.mx-recency').forEach(el=>{ el.textContent=txt; }); }
+
+// Grupos del tab. Cada item: {sym Yahoo, etiqueta, unidad, formateador}.
 // El formateador recibe el precio crudo y devuelve el texto a mostrar.
 const MX_GROUPS=[
   {key:'rates', title:'RATES', sub:'US Treasuries', items:[
@@ -3777,6 +3893,7 @@ const MX_GROUPS=[
   ]},
 ];
 
+let mxData={};
 async function loadMacroMarkets(){
   const heroEl=document.getElementById('macroHero');
   const gridEl=document.getElementById('macroMarkets');
@@ -3784,77 +3901,147 @@ async function loadMacroMarkets(){
 
   const resp=await qdFetchJSON('/api/macro-markets', null,
     function(x){ return x && x.data && typeof x.data==='object'; });
-  const data=(resp&&resp.data)||{};
+  mxData=(resp&&resp.data)||{};
+  mxLoadAt=Date.now();
 
-  renderMacroHero(heroEl, data);
-  renderMacroGroups(gridEl, data);
+  renderMacroHero(heroEl, mxData);
+  renderMacroGroups(gridEl, mxData);
+  if(!mxRecencyTimer) mxRecencyTimer=setInterval(mxTickRecency,1000);
 }
 
-// Tarjeta compacta clicable con sparkline. col = color del cambio.
-function mxCard(sym, lbl, valText, chgPct, spark, unit){
-  const up=chgPct>=0;
+// Tarjeta compacta clicable con sparkline del periodo activo del grupo.
+function mxCard(it, d, period, gkey){
+  const up=d.changePct>=0;
   const col=up?'#00c97d':'#E24B4A';
-  const chg=Number.isFinite(chgPct)?((up?'+':'')+chgPct.toFixed(2)+'%'):'—';
-  return '<div class="mx-card" data-chart-sym="'+sym+'" title="'+lbl+' · '+sym+'">'
-    +'<div class="mx-lbl">'+lbl+'</div>'
-    +'<div class="mx-val">'+valText+(unit?'<span class="mx-unit"> '+unit+'</span>':'')+'</div>'
+  const chg=Number.isFinite(d.changePct)?((up?'+':'')+d.changePct.toFixed(2)+'%'):'—';
+  const dispFmt=(v)=>it.fmt(v)+(it.unit?' '+it.unit:'');
+  const sparkId='mxs_'+gkey+'_'+it.sym.replace(/[^A-Za-z0-9]/g,'')+'_'+period;
+  return '<div class="mx-card" data-chart-sym="'+it.sym+'" title="'+it.lbl+' · '+it.sym+'">'
+    +'<div class="mx-lbl">'+it.lbl+'</div>'
+    +'<div class="mx-val">'+it.fmt(d.price)+(it.unit?'<span class="mx-unit"> '+it.unit+'</span>':'')+'</div>'
     +'<div class="mx-chg" style="color:'+col+'">'+chg+'</div>'
-    +mxSpark(spark,col)
+    +mxSpark(sparkId, mxSliceSeries(d.series, period), col, dispFmt)
     +'</div>';
+}
+
+// ── Heroes con gráfica real (Lightweight Charts), no sparkline ──
+let mxHeroCharts=[];
+function mxDestroyHeroCharts(){ mxHeroCharts.forEach(c=>{ try{ c.remove(); }catch(e){} }); mxHeroCharts=[]; }
+function mxHeroBase(elId){
+  const el=document.getElementById(elId);
+  if(!el||typeof LightweightCharts==='undefined') return null;
+  const chart=LightweightCharts.createChart(el,{
+    autoSize:true,
+    layout:{background:{type:'solid',color:'rgba(0,0,0,0)'},textColor:'#555',fontSize:9,
+      fontFamily:"'IBM Plex Mono',monospace",attributionLogo:false},
+    grid:{vertLines:{visible:false},horzLines:{visible:false}},
+    rightPriceScale:{visible:false},leftPriceScale:{visible:false},
+    timeScale:{visible:false,borderVisible:false},
+    crosshair:{mode:0,vertLine:{labelVisible:false,color:'#555',width:1,style:0},horzLine:{visible:false,labelVisible:false}},
+    handleScroll:false,handleScale:false,
+    // locale explícito: LWC usa navigator.language por default y los tags
+    // inválidos del entorno (p. ej. 'en-US@posix') revientan Intl con
+    // RangeError al formatear el crosshair (mismo blindaje que el modal).
+    localization:{locale:(typeof currentLang!=='undefined'&&currentLang==='es')?'es-MX':'en-US'},
+  });
+  mxHeroCharts.push(chart);
+  return chart;
+}
+function mxHeroArea(elId,data,col){
+  const chart=mxHeroBase(elId); if(!chart) return;
+  const s=chart.addSeries(LightweightCharts.AreaSeries,{lineColor:col,topColor:col+'55',bottomColor:col+'05',
+    lineWidth:2,priceLineVisible:false,lastValueVisible:false});
+  s.setData(data); chart.timeScale().fitContent();
+}
+function mxHeroBaseline(elId,data){
+  const chart=mxHeroBase(elId); if(!chart) return;
+  const s=chart.addSeries(LightweightCharts.BaselineSeries,{baseValue:{type:'price',price:0},
+    topLineColor:'#00c97d',topFillColor1:'#00c97d40',topFillColor2:'#00c97d05',
+    bottomLineColor:'#E24B4A',bottomFillColor1:'#E24B4A40',bottomFillColor2:'#E24B4A05',
+    lineWidth:2,priceLineVisible:false,lastValueVisible:false});
+  s.setData(data); chart.timeScale().fitContent();
+}
+// Spread 10Y-2Y por fecha: alinea ^TNX y 2YY=F por timestamp (ambos en %
+// tras mxYield); solo donde existen los dos. → [{time,value}] para LWC.
+function mxSpreadSeries(tnxS,twoS){
+  if(!Array.isArray(tnxS)||!Array.isArray(twoS)) return null;
+  const m={}; twoS.forEach(p=>{ if(Array.isArray(p)) m[p[0]]=p[1]; });
+  const out=[];
+  tnxS.forEach(p=>{ if(Array.isArray(p)&&m[p[0]]!=null) out.push({time:p[0],value:+(mxYield(p[1])-mxYield(m[p[0]])).toFixed(3)}); });
+  return out;
 }
 
 function renderMacroHero(el, data){
   if(!el) return;
-  let html='';
-  // VIX — termómetro de miedo
+  mxDestroyHeroCharts();
   const vix=data['^VIX'];
+  const tnx=data['^TNX'], two=data['2YY=F'];
+  const spreadSeries=(tnx&&two)?mxSpreadSeries(tnx.series,two.series):null;
+  const spreadNow=(tnx&&two)?(mxYield(tnx.price)-mxYield(two.price)):null;
+  let html='';
+  // VIX — termómetro de miedo (subir = miedo = rojo, invertido)
   if(vix){
-    const up=vix.changePct>=0;
-    // En el VIX subir = más miedo (rojo), bajar = calma (verde) — invertido
-    const col=up?'#E24B4A':'#00c97d';
+    const up=vix.changePct>=0, col=up?'#E24B4A':'#00c97d';
     const lvl=vix.price>=30?'ELEVATED FEAR':vix.price>=20?'CAUTION':'CALM';
-    html+='<div class="mx-h" data-chart-sym="^VIX" title="VIX · ^VIX">'
-      +'<div class="mx-lbl">VIX · VOLATILITY</div>'
-      +'<div class="mx-big" style="color:'+col+'">'+vix.price.toFixed(2)+'</div>'
-      +'<div class="mx-sub2" style="color:'+col+'">'+(up?'+':'')+vix.changePct.toFixed(2)+'% · '+lvl+'</div>'
-      +'</div>';
+    html+='<div class="mx-h">'
+      +'<div class="mx-hhead" data-chart-sym="^VIX" title="VIX · abrir gráfica">'
+        +'<div class="mx-lbl">VIX · VOLATILITY <span class="mx-recency"></span></div>'
+        +'<div class="mx-big" style="color:'+col+'">'+vix.price.toFixed(2)+'</div>'
+        +'<div class="mx-sub2" style="color:'+col+'">'+(up?'+':'')+vix.changePct.toFixed(2)+'% · '+lvl+'</div>'
+      +'</div><div class="mx-hchart" id="mxHeroVix"></div></div>';
   }else{
     html+='<div class="mx-h"><div class="mx-lbl">VIX · VOLATILITY</div><div class="mx-big" style="color:#333">—</div></div>';
   }
-  // Spread 10Y-2Y — el indicador de recesión
-  const tnx=data['^TNX'], two=data['2YY=F'];
-  if(tnx&&two){
-    const spread=mxYield(tnx.price)-mxYield(two.price);
-    const inv=spread<0;
-    const col=inv?'#E24B4A':'#00c97d';
-    html+='<div class="mx-h" data-chart-sym="^TNX" title="10Y yield · ^TNX">'
-      +'<div class="mx-lbl">10Y − 2Y SPREAD</div>'
-      +'<div class="mx-big" style="color:'+col+'">'+(spread>=0?'+':'')+spread.toFixed(2)+'<span class="mx-unit"> pp</span></div>'
-      +'<div class="mx-sub2" style="color:'+col+'">'+(inv?'INVERTED · recession signal':'normal curve')+'</div>'
-      +'</div>';
+  // Spread 10Y-2Y — indicador de recesión (BaselineSeries: rojo bajo 0)
+  if(spreadNow!=null){
+    const inv=spreadNow<0, col=inv?'#E24B4A':'#00c97d';
+    html+='<div class="mx-h">'
+      +'<div class="mx-hhead" data-chart-sym="^TNX" title="10Y yield · abrir gráfica">'
+        +'<div class="mx-lbl">10Y − 2Y SPREAD</div>'
+        +'<div class="mx-big" style="color:'+col+'">'+(spreadNow>=0?'+':'')+spreadNow.toFixed(2)+'<span class="mx-unit"> pp</span></div>'
+        +'<div class="mx-sub2" style="color:'+col+'">'+(inv?'INVERTED · recession signal':'normal curve')+'</div>'
+      +'</div><div class="mx-hchart" id="mxHeroSpread"></div></div>';
   }else{
     html+='<div class="mx-h"><div class="mx-lbl">10Y − 2Y SPREAD</div><div class="mx-big" style="color:#333">—</div></div>';
   }
   el.innerHTML=html;
+  // Gráficas LWC tras insertar el DOM (contenedores ya dimensionados).
+  if(vix&&Array.isArray(vix.series)){
+    const col=vix.changePct>=0?'#E24B4A':'#00c97d';
+    mxHeroArea('mxHeroVix', vix.series.map(p=>({time:p[0],value:p[1]})), col);
+  }
+  if(spreadSeries&&spreadSeries.length>1) mxHeroBaseline('mxHeroSpread', spreadSeries);
 }
 
 function renderMacroGroups(el, data){
   if(!el) return;
   let html='';
   MX_GROUPS.forEach(g=>{
-    const cards=g.items.map(it=>{
-      const d=data[it.sym];
-      if(!d) return '';
-      return mxCard(it.sym, it.lbl, it.fmt(d.price), d.changePct, d.spark, it.unit);
-    }).filter(Boolean).join('');
-    // Si el grupo entero quedó sin datos, no pintamos una sección vacía.
-    if(!cards) return;
+    if(!g.items.some(it=>data[it.sym])) return; // grupo sin datos → sin sección vacía
+    if(!mxPeriod[g.key]) mxPeriod[g.key]='1M';
+    const tgls=MX_PERIODS.map(p=>'<button class="mx-tgl'+(mxPeriod[g.key]===p.k?' active':'')
+      +'" onclick="mxTgl(event,\''+g.key+'\',\''+p.k+'\')">'+p.lbl+'</button>').join('');
     html+='<details class="mx-sec" open>'
-      +'<summary>'+g.title+' <span class="mx-sub">'+g.sub+'</span><span class="mx-chev">›</span></summary>'
-      +'<div class="mx-body"><div class="mx-cards">'+cards+'</div></div>'
+      +'<summary>'+g.title+' <span class="mx-sub">'+g.sub+'</span>'
+        +'<span class="mx-tools"><span class="mx-recency"></span>'
+        +'<span class="mx-tgls">'+tgls+'</span><span class="mx-chev">›</span></span>'
+      +'</summary>'
+      +'<div class="mx-body"><div class="mx-cards" id="mxCards_'+g.key+'"></div></div>'
       +'</details>';
   });
   el.innerHTML=html||'<div style="padding:12px;color:#555;font-family:var(--mono);font-size:10px;">'+qdUnavailableHTML('macro markets')+'</div>';
+  MX_GROUPS.forEach(g=>{ if(document.getElementById('mxCards_'+g.key)) mxRenderGroupCards(g.key); });
+  mxHoverInit();
+  mxTickRecency();
+}
+
+// Re-pinta SOLO las tarjetas de un grupo (preserva el estado de los demás
+// <details> y de sus toggles) al cambiar de periodo.
+function mxRenderGroupCards(gkey){
+  const g=MX_GROUPS.find(x=>x.key===gkey); if(!g) return;
+  const host=document.getElementById('mxCards_'+gkey); if(!host) return;
+  const period=mxPeriod[gkey]||'1M';
+  host.innerHTML=g.items.map(it=>{ const d=mxData[it.sym]; return d?mxCard(it,d,period,gkey):''; }).filter(Boolean).join('');
 }
 
 async function loadTopBarTickers(){
