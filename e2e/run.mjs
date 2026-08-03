@@ -138,32 +138,38 @@ async function routeApis(page) {
       return json({ quotes, generated_at: new Date().toISOString() });
     }
     if (p === '/api/macro-markets') {
+      // Contrato nuevo: NADA de changePct. Solo price + serie {t,c} de ~3
+      // meses. El % por periodo lo calcula el cliente (qdPeriodChange).
       // ^VIX bajo (CALM), curva invertida (^TNX 4.25% ×10 vs 2YY=F 4.60%).
-      // Serie 3M: 65 puntos [t(unix s), v] — el cliente la corta a 1S/1M/3M.
-      const T0 = 1700000000;
-      const series = (base) => Array.from({ length: 65 }, (_, i) => [T0 + i * 86400, +(base * (1 + (i - 32) * 0.001)).toFixed(4)]);
-      const card = (price, prev) => ({ price, prevClose: prev,
-        changePct: +(((price - prev) / prev) * 100).toFixed(2), series: series(price), currency: 'USD' });
+      const nowSec = Math.floor(Date.now() / 1000);
+      // Serie que sube ~0.15%/sesión hacia el precio final: 1S/1M/3M dan %
+      // distintos y crecientes. La precisión (6 sig) preserva la variación
+      // de FX (EUR/USD 1.0850 no se aplasta a 1.08).
+      const mkSeries = (price, n = 66) => Array.from({ length: n }, (_, i) => ({
+        t: nowSec - (n - 1 - i) * 86400,
+        c: +(price * (1 - (n - 1 - i) * 0.0015)).toPrecision(6),
+      }));
+      const card = (price) => ({ price, currency: 'USD', series: mkSeries(price) });
       return json({ data: {
-        '^VIX': card(18.5, 17.0),
-        '^TNX': card(42.5, 42.0),   // ×10 → 4.25%
-        '2YY=F': card(4.60, 4.55),  // 2Y directo → spread 10Y-2Y invertido
-        '^TYX': card(46.0, 45.8),
-        'DX-Y.NYB': card(104.2, 103.9),
-        'JPY=X': card(150.3, 149.8),
-        'EURUSD=X': card(1.0850, 1.0870),
-        'CL=F': card(78.4, 77.9),
-        'BZ=F': card(82.1, 81.6),
-        '^N225': card(38500, 38200),
-        '^KS11': card(2680, 2665),
-        '^HSI': card(17800, 17950),
-        '^GDAXI': card(18200, 18100),
-        '^FTSE': card(7920, 7900),
-        '^MXX': card(52800, 52600),
-        '^BVSP': card(128000, 127500),
-        'ES=F': card(5320, 5310),
-        'NQ=F': card(18600, 18550),
-        'YM=F': card(39100, 39050),
+        '^VIX': card(18.5),
+        '^TNX': card(42.5),   // ×10 → 4.25%
+        '2YY=F': card(4.60),  // 2Y directo → spread 10Y-2Y invertido
+        '^TYX': card(46.0),
+        'DX-Y.NYB': card(104.2),
+        'JPY=X': card(150.3),
+        'EURUSD=X': card(1.0850),
+        'CL=F': card(78.4),
+        'BZ=F': card(82.1),
+        '^N225': card(38500),
+        '^KS11': card(2680),
+        '^HSI': card(17800),
+        '^GDAXI': card(18200),
+        '^FTSE': card(7920),
+        '^MXX': card(52800),
+        '^BVSP': card(128000),
+        'ES=F': card(5320),
+        'NQ=F': card(18600),
+        'YM=F': card(39100),
       }, generated_at: new Date().toISOString() });
     }
     if (p === '/api/candles') {
@@ -936,37 +942,95 @@ currentPhase = 'S24-macro-markets';
 await page.evaluate(() => { qdChartClose(); showPage('macro'); });
 await page.waitForTimeout(1400);
 const s24 = await page.evaluate(() => {
-  const hero = document.getElementById('macroHero');
-  const heroTxt = hero.innerText;
+  const hero = document.getElementById('macroHero').innerText;
   const groups = document.getElementById('macroMarkets');
   const secs = [...groups.querySelectorAll('details.mx-sec > summary')].map(s => s.innerText.replace(/\s+/g, ' ').trim());
-  const cards = groups.querySelectorAll('.mx-card').length;
-  const sparks = groups.querySelectorAll('.mx-sparkwrap[data-spark]').length;
-  const tnxCard = [...groups.querySelectorAll('.mx-card')].find(c => c.getAttribute('data-chart-sym') === '^TNX');
+  const cardEls = [...groups.querySelectorAll('.mx-card')];
+  const cards = cardEls.length;
+  const sparks = groups.querySelectorAll('svg.mx-spark').length;
+  const tnxCard = cardEls.find(c => c.getAttribute('data-chart-sym') === '^TNX');
+  const oneCard = cardEls[0];
   return {
-    hero: heroTxt, secs, cards, sparks,
+    hero, secs, cards, sparks,
     // 10Y card muestra 4.25 (÷10 aplicado), no 42.5
     tnxVal: tnxCard ? tnxCard.querySelector('.mx-val').innerText : 'NO-CARD',
-    heroHasVix: /VIX/.test(heroTxt) && /18\.5/.test(heroTxt),
-    heroInverted: /INVERTED/.test(heroTxt),
-    // heroes = gráfica real (Lightweight Charts monta varios <canvas> por hero;
-    // se cuentan los contenedores .mx-hchart que montaron al menos uno)
-    heroCanvases: [...hero.querySelectorAll('.mx-hchart')].filter(h => h.querySelector('canvas')).length,
-    toggles: groups.querySelectorAll('.mx-tgls .mx-tgl').length,
-    recency: [...groups.querySelectorAll('.mx-recency')].some(e => /updated|actualizado/.test(e.textContent)),
+    heroHasVix: /VIX/.test(hero) && /18\.5/.test(hero),
+    heroInverted: /INVERTED/.test(hero),
+    // heroes con gráfica real (Lightweight Charts) — canvas, no sparkline
+    heroVixCanvas: document.querySelectorAll('#mxHeroVix canvas').length,
+    heroSpreadCanvas: document.querySelectorAll('#mxHeroSpread canvas').length,
+    heroHeadSym: (document.querySelector('#macroHero .mx-hhead[data-chart-sym="^VIX"]') != null),
+    // el área del chart NO es clicable (solo la cabecera abre el modal)
+    heroChartNoSym: (document.querySelector('#macroHero .mx-hchart[data-chart-sym]') == null),
+    // cada % pintado lleva su etiqueta de periodo (badge qd-pct-per)
+    cardsWithPct: cardEls.filter(c => c.querySelector('.qd-pct')).length,
+    cardsWithPeriodBadge: cardEls.filter(c => c.querySelector('.qd-pct .qd-pct-per')).length,
+    everyPctHasPeriod: cardEls.every(c => {
+      const pct = c.querySelector('.qd-pct');
+      return !pct || pct.querySelector('.qd-pct-per');
+    }),
+    defaultPeriodLabel: oneCard ? (oneCard.querySelector('.qd-pct-per') || {}).textContent : null,
+    heroPctBadge: !!document.querySelector('#macroHero .qd-pct .qd-pct-per'),
+    // toolbar de periodo 1S · 1M · 3M
+    periodBtns: [...groups.querySelectorAll('.mx-toolbar .mx-per')].map(b => b.textContent.trim()),
+    activePeriod: (groups.querySelector('.mx-toolbar .mx-per.on') || {}).textContent,
+    // sello de recencia por grupo
+    recencyStamps: groups.querySelectorAll('.mx-sec > summary .mx-recency').length,
+    recencySample: (groups.querySelector('.mx-recency') || {}).textContent,
+    // sparkline viva: relleno + punto final + línea base
+    sparkArea: groups.querySelectorAll('svg.mx-spark path.mx-area').length,
+    sparkDot: groups.querySelectorAll('svg.mx-spark circle.mx-dot').length,
+    sparkBase: groups.querySelectorAll('svg.mx-spark line.mx-base').length,
   };
 });
 report('S24a hero muestra el VIX con su nivel', s24.heroHasVix, s24.hero.replace(/\n/g, ' · ').slice(0, 80));
 report('S24b hero calcula el spread 10Y-2Y invertido (recession signal)', s24.heroInverted, s24.hero.replace(/\n/g, ' · ').slice(0, 120));
+report('S24b2 heroes VIX+spread con gráfica real (Lightweight Charts, canvas)',
+  s24.heroVixCanvas >= 1 && s24.heroSpreadCanvas >= 1 && s24.heroHeadSym && s24.heroChartNoSym,
+  JSON.stringify({ vix: s24.heroVixCanvas, spread: s24.heroSpreadCanvas, head: s24.heroHeadSym, chartNoSym: s24.heroChartNoSym }));
 report('S24c grupos por región presentes (RATES/FX/COMMODITIES/ASIA/EUROPE/LATAM/FUTURES)',
   ['RATES', 'FX GLOBAL', 'COMMODITIES', 'ASIA', 'EUROPE', 'LATAM', 'US FUTURES'].every(t => s24.secs.some(s => s.includes(t))),
   JSON.stringify(s24.secs));
-report('S24d cada tarjeta tiene sparkline (overlay HTML sin distorsión)', s24.cards > 0 && s24.sparks === s24.cards,
+report('S24d cada tarjeta tiene sparkline (svg sin ejes)', s24.cards > 0 && s24.sparks === s24.cards,
   'cards=' + s24.cards + ' sparks=' + s24.sparks);
 report('S24e ^TNX se muestra ÷10 (4.25%, no 42.5)', s24.tnxVal.includes('4.25'), s24.tnxVal);
-report('S24i heroes VIX + spread con gráfica real (Lightweight Charts)', s24.heroCanvases === 2, 'canvases=' + s24.heroCanvases);
-report('S24j toggles de periodo por grupo (7 grupos × 3 = 21)', s24.toggles === 21, 'toggles=' + s24.toggles);
-report('S24k sello de recencia visible ("updated Xs ago")', s24.recency === true, '');
+report('S24i TODO % pintado lleva su etiqueta de periodo (imposible un % mudo)',
+  s24.cards > 0 && s24.cardsWithPct === s24.cards && s24.cardsWithPeriodBadge === s24.cards
+    && s24.everyPctHasPeriod && s24.heroPctBadge,
+  JSON.stringify({ cards: s24.cards, withPct: s24.cardsWithPct, withBadge: s24.cardsWithPeriodBadge, hero: s24.heroPctBadge }));
+report('S24j toolbar de periodo 1S · 1M · 3M (1M por defecto)',
+  JSON.stringify(s24.periodBtns) === JSON.stringify(['1S', '1M', '3M']) && s24.activePeriod === '1M'
+    && s24.defaultPeriodLabel === '1M',
+  JSON.stringify({ btns: s24.periodBtns, active: s24.activePeriod, badge: s24.defaultPeriodLabel }));
+report('S24k sello de recencia visible por grupo ("hace"/"ago")',
+  s24.recencyStamps === s24.secs.length && /hace|ago/.test(s24.recencySample || ''),
+  JSON.stringify({ stamps: s24.recencyStamps, secs: s24.secs.length, sample: s24.recencySample }));
+report('S24l sparkline viva: relleno + punto final + línea base en cada tarjeta',
+  s24.sparkArea === s24.cards && s24.sparkDot === s24.cards && s24.sparkBase === s24.cards,
+  JSON.stringify({ area: s24.sparkArea, dot: s24.sparkDot, base: s24.sparkBase, cards: s24.cards }));
+
+// S24m: el toggle de periodo recalcula el % (mismo dato, ancla distinta) y
+// re-etiqueta — sin repolear la red.
+const beforeMacroCalls = apiCalls.filter(c => c.phase === 'S24-macro-markets' && c.path.startsWith('/api/macro-markets')).length;
+const s24m = await page.evaluate(() => {
+  const card = () => document.querySelector('#macroMarkets .mx-card');
+  const read = () => {
+    const c = card();
+    return { pct: c.querySelector('.qd-pct').firstChild.textContent, per: c.querySelector('.qd-pct-per').textContent };
+  };
+  const at1M = read();
+  mxSetPeriod('3M');
+  const at3M = read();
+  mxSetPeriod('1S');
+  const at1S = read();
+  mxSetPeriod('1M'); // restore
+  return { at1M, at3M, at1S };
+});
+const afterMacroCalls = apiCalls.filter(c => c.phase === 'S24-macro-markets' && c.path.startsWith('/api/macro-markets')).length;
+report('S24m toggle de periodo recalcula % + re-etiqueta sin repolear la red',
+  s24m.at3M.per === '3M' && s24m.at1S.per === '1S' && s24m.at1M.per === '1M'
+    && s24m.at3M.pct !== s24m.at1S.pct && afterMacroCalls === beforeMacroCalls,
+  JSON.stringify({ ...s24m, netCalls: afterMacroCalls - beforeMacroCalls }));
 
 // click en una tarjeta abre el chart modal con velas (misma plumbing candles)
 const beforeCandles = apiCalls.filter(c => c.phase === 'S24-macro-markets' && c.path.startsWith('/api/candles')).length;
@@ -995,24 +1059,6 @@ const s24g = await page.evaluate(() => {
 report('S24g grupos colapsables (details nativo togglea)', s24g.openBefore === true && s24g.openAfter === false,
   JSON.stringify(s24g));
 
-// S24l: el toggle de periodo re-pinta las tarjetas del grupo SIN colapsar
-// el <details> (preventDefault) y sin tocar los demás grupos.
-const s24l = await page.evaluate(async () => {
-  const sec = [...document.querySelectorAll('#macroMarkets details.mx-sec')].find(d => d.open);
-  const btn1W = sec.querySelector('.mx-tgl'); // primer toggle = 1S
-  const before = sec.querySelector('.mx-cards').innerHTML;
-  btn1W.click();
-  await new Promise(r => setTimeout(r, 150));
-  return {
-    stillOpen: sec.open,
-    active: btn1W.classList.contains('active'),
-    reRendered: sec.querySelector('.mx-cards').innerHTML !== before,
-    spark1W: /_1W"/.test(sec.querySelector('.mx-cards').innerHTML),
-  };
-});
-report('S24l toggle de periodo re-pinta el grupo sin colapsarlo',
-  s24l.stillOpen && s24l.active && s24l.reRendered && s24l.spark1W, JSON.stringify(s24l));
-
 // S24h: el quote vivo del chart escala ÷10 SOLO para índices de rendimiento
 // (^TNX 42.5 → 4.25), nunca para un stock — así la vela viva no salta a 42.5.
 const s24h = await page.evaluate(() => ({
@@ -1021,6 +1067,41 @@ const s24h = await page.evaluate(() => ({
 }));
 report('S24h qdScaleQuote: yields ÷10 (^TNX→4.25), stocks/2YY=F intactos',
   s24h.tnx === 4.25 && s24h.tyx === 4.6 && s24h.nvda === 190 && s24h.two === 4.6, JSON.stringify(s24h));
+
+// S24n: MÓVIL DE VERDAD — un TAP (no hover, no .click() sintético) en una
+// tarjeta abre el modal con la serie correcta. Contexto táctil real
+// (hasTouch+isMobile, viewport de teléfono) → page.tap() emite la
+// secuencia touchstart/touchend que el navegador sintetiza a click, el
+// mismo camino que en un teléfono. Prueba el requisito #3.
+currentPhase = 'S24-mobile-tap';
+let s24n = { err: 'no-run' };
+try {
+  const mctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const mpage = await mctx.newPage();
+  attachConsole(mpage);
+  await routeApis(mpage);
+  await mpage.goto(BASE, { waitUntil: 'domcontentloaded' });
+  await mpage.waitForTimeout(2000);
+  await mpage.evaluate(() => { showPage('macro'); });
+  await mpage.waitForTimeout(1400);
+  // tap real sobre la tarjeta de Nikkei (^N225)
+  await mpage.tap('#macroMarkets .mx-card[data-chart-sym="^N225"]');
+  await mpage.waitForTimeout(700);
+  s24n = await mpage.evaluate(() => {
+    const ov = document.getElementById('qdChartOverlay');
+    return {
+      open: !!ov && getComputedStyle(ov).display !== 'none',
+      sym: document.getElementById('qdChartTSym').textContent,
+      candles: !!document.querySelector('#qdChartBody canvas, #qdChartBody table'),
+    };
+  });
+  const mCandleCalls = apiCalls.filter(c => c.phase === 'S24-mobile-tap' && /symbol=%5EN225/.test(c.path));
+  s24n.candleCall = mCandleCalls.length;
+  await mctx.close();
+} catch (e) { s24n = { err: String(e).slice(0, 200) }; }
+report('S24n TAP móvil (no hover) abre el modal con la serie correcta (^N225)',
+  s24n.open === true && s24n.sym === '^N225' && s24n.candleCall === 1,
+  JSON.stringify(s24n));
 
 // ── console summary ──
 console.log('\n=== CONSOLA (errores/warnings/pageerrors) ===');
