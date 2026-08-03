@@ -11,10 +11,17 @@
 // hace 1 request. El click de cada tarjeta cae a /api/candles (mismo
 // símbolo Yahoo) — cero llamadas extra hasta que se abre el modal.
 //
-// Por tarjeta: precio, cierre previo, % de cambio de sesión y una
-// sparkline de ~30 días (cierres diarios). El cliente aplica el ÷10 de
-// los rendimientos (^TNX/^TYX vienen ×10) con heurística robusta y
-// calcula el spread 10Y-2Y — transforms de display, no de datos.
+// CONTRATO DE DATOS (por qué el % de periodo dejó de romperse):
+// este endpoint NO devuelve ningún porcentaje pre-cocinado. Solo entrega
+// el precio actual y la SERIE cronológica de cierres diarios (~3 meses,
+// con timestamp por punto). TODO porcentaje se calcula en el cliente con
+// UNA sola función compartida (qdPeriodChange) contra el ancla del
+// periodo elegido (1S/1M/3M) y se pinta SIEMPRE con su etiqueta. Antes el
+// servidor mandaba un changePct que, para símbolos sin
+// regularMarketPreviousClose (índices/futuros/FX), caía a
+// chartPreviousClose — el cierre de HACE 30 DÍAS del rango — y se pintaba
+// como si fuera diario (KOSPI −21.97% "hoy"). Al no exponer ningún % ya
+// no hay nada que etiquetar mal: la serie es la única verdad.
 // ═══════════════════════════════════════════════════════════════
 
 // Universo fijo. El orden/agrupado y las etiquetas viven en el cliente;
@@ -32,47 +39,45 @@ export const MACRO_SYMBOLS = [
 
 const UA = { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' };
 
-// v8/finance/chart (range=1mo, interval=1d) → { price, prevClose,
-// changePct, spark:[cierres], currency }. Devuelve null salvo que haya
-// precio Y cierre previo reales — jamás se inventa un +0.00%.
-// Precisión por magnitud: los pares FX se mueven en la 3ª–4ª decimal
-// (EUR/USD 1.0850 → 1.0872). Redondear a 2 como el resto colapsaba la
-// serie en escalones (bug "euro plano"): 1.084/1.086/1.088 → 1.08. Los
-// índices grandes (^N225 38.500) no necesitan decimales; <10 lleva 4,
-// <1 lleva 6 (por si algún par baja de la paridad).
-export function mxPrecision(v) {
-  const a = Math.abs(v);
-  return a < 1 ? 6 : a < 10 ? 4 : 2;
-}
-function mxRound(v) { return +v.toFixed(mxPrecision(v)); }
+// Redondeo por CIFRAS SIGNIFICATIVAS, no por decimales fijos. El bug de
+// los "escalones cuadrados" de EUR/USD nacía de `toFixed(v<1?6:2)`: EUR/USD
+// ≈ 1.0850 es >1, así que se aplastaba a 1.08 y toda la variación mensual
+// (2ª–4ª cifra decimal) colapsaba en 2 o 3 valores repetidos → una línea
+// plana con escalones. toPrecision(6) preserva la variación real de FX
+// (1.0850 → 1.085) sin arrastrar decimales de ruido en índices grandes
+// (38500.0 → 38500). +() normaliza el string de vuelta a número.
+function sig6(v) { return +v.toPrecision(6); }
 
+// v8/finance/chart (range=3mo, interval=1d) → { price, currency,
+// series:[{t,c}] }. NO devuelve porcentaje alguno: el % por periodo lo
+// calcula el cliente (qdPeriodChange) desde la serie. Devuelve null salvo
+// que haya precio actual Y al menos 2 cierres reales (sin serie no hay
+// periodo que calcular) — jamás se inventa un dato.
 export function extractMacro(chartJson) {
   const r = chartJson?.chart?.result?.[0];
   const meta = r?.meta;
   if (!meta) return null;
   const price = meta.regularMarketPrice;
-  const prevClose = meta.regularMarketPreviousClose ?? meta.previousClose ?? meta.chartPreviousClose;
-  if (!Number.isFinite(price) || !Number.isFinite(prevClose) || prevClose <= 0) return null;
+  if (!Number.isFinite(price) || price <= 0) return null;
 
-  // Serie diaria [t(unix s), cierre] — timestamps para el crosshair/tooltip
-  // y los toggles de periodo del cliente (1S/1M/3M se cortan de esta 3M).
-  // Se descartan los huecos de sesión de Yahoo (close null); jamás se
-  // inventa ni se interpola un punto. Precisión por magnitud (ver arriba)
-  // para no aplanar el FX.
+  // Serie cronológica: cierre diario finito + su timestamp (Yahoo mete
+  // nulls en huecos de sesión; se descartan alineando close↔timestamp).
   const ts = r?.timestamp || [];
   const closesRaw = r?.indicators?.quote?.[0]?.close || [];
   const series = [];
   for (let i = 0; i < closesRaw.length; i++) {
     const c = closesRaw[i], t = ts[i];
-    if (Number.isFinite(c) && c > 0 && Number.isFinite(t)) series.push([t, mxRound(c)]);
+    if (Number.isFinite(c) && c > 0 && Number.isFinite(t)) series.push({ t, c: sig6(c) });
   }
+  // Sin ≥2 puntos no hay ventana de periodo (ni 1S) → el cliente omitiría
+  // la tarjeta igual; se devuelve null para no mandar ruido.
+  if (series.length < 2) return null;
 
   return {
-    price: mxRound(price),
-    prevClose: mxRound(prevClose),
-    changePct: +(((price - prevClose) / prevClose) * 100).toFixed(2),
-    series,
+    price: sig6(price),
     currency: meta.currency || null,
+    // ~3 meses de diario (~66 sesiones) alcanza para 1S/1M/3M holgado.
+    series: series.slice(-70),
   };
 }
 

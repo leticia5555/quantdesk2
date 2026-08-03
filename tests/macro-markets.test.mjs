@@ -1,9 +1,13 @@
 // ═══════════════════════════════════════════════════════════════
 // Unit tests de /api/macro-markets (batch del tab MACRO) con fetch
 // mockeado — sin red. Correr con `node tests/macro-markets.test.mjs`.
+//
+// Contrato nuevo (anti-bug-de-periodo): el endpoint NO devuelve ningún
+// porcentaje. Solo precio actual + serie cronológica de cierres con
+// timestamp. El % por periodo lo calcula el cliente (qdPeriodChange).
 // ═══════════════════════════════════════════════════════════════
 
-import handler, { MACRO_SYMBOLS, extractMacro, mxPrecision } from '../api/macro-markets.js';
+import handler, { MACRO_SYMBOLS, extractMacro } from '../api/macro-markets.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -16,18 +20,15 @@ function mockRes() {
     status(c) { this.code = c; return this; },
     json(o) { this.body = o; return this; }, end() { return this; } };
 }
-// timestamps paralelos a los cierres (unix s, diarios) — extractMacro los
-// necesita para la serie; sin ellos el punto se descarta.
-function chartResponse(meta, closes) {
-  const c = closes || [];
-  const ts = c.map((_, i) => 1700000000 + i * 86400);
-  return { ok: true, json: async () => ({ chart: { result: [{
-    meta, timestamp: ts, indicators: { quote: [{ close: c }] } }] } }) };
+// chart con timestamps + cierres alineados
+function chart(meta, ts, closes) {
+  return { chart: { result: [{ meta, timestamp: ts,
+    indicators: { quote: [{ close: closes }] } }] } };
 }
-function rawChart(meta, closes) {
-  const ts = closes.map((_, i) => 1700000000 + i * 86400);
-  return { chart: { result: [{ meta, timestamp: ts, indicators: { quote: [{ close: closes }] } }] } };
+function chartResponse(meta, ts, closes) {
+  return { ok: true, json: async () => chart(meta, ts, closes) };
 }
+const seq = (n, start = 0) => Array.from({ length: n }, (_, i) => start + i);
 
 // ─────────────────── universo de símbolos ───────────────────
 console.log('MACRO_SYMBOLS: universo curado y coherente');
@@ -46,59 +47,52 @@ console.log('MACRO_SYMBOLS: universo curado y coherente');
   ok(new Set(MACRO_SYMBOLS).size === MACRO_SYMBOLS.length, 'sin duplicados');
 }
 
-// ─────────────────── mxPrecision (bug euro plano) ───────────────────
-console.log('mxPrecision: decimales por magnitud — el FX no se aplana');
-{
-  ok(mxPrecision(1.085) === 4, 'EUR/USD (~1.08) → 4 decimales, no 2');
-  ok(mxPrecision(150.3) === 2, 'USD/JPY (~150) → 2 decimales');
-  ok(mxPrecision(0.85) === 6, 'sub-paridad (<1) → 6 decimales');
-  ok(mxPrecision(38500) === 2, 'índice grande → 2 decimales');
-}
-
 // ─────────────────── extractMacro ───────────────────
-console.log('extractMacro: precio + cambio de sesión + serie con timestamps');
+console.log('extractMacro: precio + serie cronológica con timestamp');
 {
-  const m = extractMacro(rawChart(
-    { regularMarketPrice: 20, chartPreviousClose: 18.5, currency: 'USD' },
-    [17, 18, 18.5, 19, 20]));
-  ok(m && m.changePct === 8.11, 'VIX +8.11% (20 vs 18.5)', JSON.stringify(m));
-  ok(m && m.price === 20 && m.prevClose === 18.5, 'expone precio y cierre previo');
-  ok(m && Array.isArray(m.series) && m.series.length === 5, 'serie con los cierres diarios', JSON.stringify(m.series));
-  ok(m && m.series[0].length === 2 && m.series[0][0] === 1700000000 && m.series[4][1] === 20,
-    'cada punto es [t(unix s), cierre]', JSON.stringify(m.series[0]));
+  const m = extractMacro(chart(
+    { regularMarketPrice: 20, currency: 'USD' },
+    [1, 2, 3, 4, 5], [17, 18, 18.5, 19, 20]));
+  ok(m && m.price === 20, 'expone el precio actual', JSON.stringify(m));
+  ok(m && m.currency === 'USD', 'propaga la moneda');
+  ok(m && Array.isArray(m.series) && m.series.length === 5, 'serie con los cierres diarios', m && m.series.length);
+  ok(m && m.series[0].t === 1 && m.series[0].c === 17 && m.series[4].c === 20,
+    'cada punto es {t,c} alineado close↔timestamp', JSON.stringify(m && m.series));
+  ok(m && !('changePct' in m) && !('prevClose' in m) && !('spark' in m),
+    'NO devuelve porcentaje ni cierre previo pre-cocinado (la serie es la única verdad)', JSON.stringify(m));
 }
 
-console.log('extractMacro: EUR/USD conserva precisión (no escalones)');
+console.log('extractMacro: FX NO se aplasta a 2 decimales (bug de escalones cuadrados)');
 {
-  // Cierres FX con moves en la 3ª decimal — con toFixed(2) colapsaban a 1.08.
-  const m = extractMacro(rawChart(
-    { regularMarketPrice: 1.0872, chartPreviousClose: 1.0850 },
-    [1.0840, 1.0852, 1.0861, 1.0858, 1.0872]));
-  const vals = m.series.map(p => p[1]);
-  ok(new Set(vals).size === 5, '5 valores DISTINTOS (no aplanados a 1.08)', JSON.stringify(vals));
-  ok(m.price === 1.0872 && m.prevClose === 1.085, 'precio/cierre con 4 decimales', m.price + '/' + m.prevClose);
-  ok(m.changePct === 0.2, 'changePct real (+0.20%), no 0.00 por redondeo', m.changePct);
+  // EUR/USD ~1.085 con variación en la 4ª cifra: toFixed(2) lo colapsaba a
+  // 1.08 (línea plana). sig6 (toPrecision(6)) preserva la variación real.
+  const m = extractMacro(chart(
+    { regularMarketPrice: 1.0921, currency: 'USD' },
+    [1, 2, 3, 4], [1.0850, 1.0862, 1.0899, 1.0921]));
+  const distinct = new Set(m.series.map(p => p.c));
+  ok(m && distinct.size === 4, 'los 4 cierres siguen siendo distintos (no colapsan a 1.08)', JSON.stringify([...distinct]));
+  ok(m && m.series[0].c === 1.085, 'preserva 1.0850 → 1.085 (no 1.08)', m && m.series[0].c);
 }
 
-console.log('extractMacro: descarta huecos de sesión (close null / sin timestamp)');
+console.log('extractMacro: descarta cierres/timestamps inválidos y toma últimos 70');
 {
-  const closes = Array.from({ length: 40 }, (_, i) => i + 1);
-  closes[3] = null; closes[7] = 0;
-  const m = extractMacro(rawChart({ regularMarketPrice: 40, chartPreviousClose: 39 }, closes));
-  ok(m && m.series.length === 38, 'huecos fuera (38 de 40)', m && m.series.length);
-  ok(m && m.series.every(p => Number.isFinite(p[1]) && p[1] > 0 && Number.isFinite(p[0])),
-    'sin nulls ni ceros, todo con timestamp');
+  const ts = seq(90, 1000);
+  const closes = seq(90, 1).map(x => x); // 1..90
+  closes[3] = null; closes[7] = 0; closes[9] = 'x';
+  const m = extractMacro(chart({ regularMarketPrice: 90 }, ts, closes));
+  ok(m && m.series.length === 70, 'serie acotada a 70 puntos', m && m.series.length);
+  ok(m && m.series.every(p => Number.isFinite(p.c) && p.c > 0 && Number.isFinite(p.t)),
+    'sin nulls/ceros ni timestamps rotos', JSON.stringify(m && m.series.slice(0, 3)));
 }
 
-console.log('extractMacro: nunca inventa un +0.00%');
+console.log('extractMacro: nunca inventa un dato');
 {
   ok(extractMacro(null) === null, 'payload nulo → null');
-  ok(extractMacro({ chart: { result: [{ meta: { regularMarketPrice: 100 } }] } }) === null,
-    'sin cierre previo → null');
-  ok(extractMacro({ chart: { result: [{ meta: { regularMarketPrice: 100, chartPreviousClose: 0 } }] } }) === null,
-    'cierre previo 0 → null (no divide por cero)');
-  ok(extractMacro({ chart: { result: [{ meta: { chartPreviousClose: 100 } }] } }) === null,
-    'sin precio actual → null');
+  ok(extractMacro(chart({}, [1, 2], [1, 2])) === null, 'sin precio actual → null');
+  ok(extractMacro(chart({ regularMarketPrice: 0 }, [1, 2], [1, 2])) === null, 'precio 0 → null');
+  ok(extractMacro(chart({ regularMarketPrice: 100 }, [1], [100])) === null,
+    'un solo punto (sin periodo que calcular) → null');
+  ok(extractMacro(chart({ regularMarketPrice: 100 }, [], [])) === null, 'sin serie → null');
 }
 
 // ─────────────────── handler batched ───────────────────
@@ -110,15 +104,18 @@ console.log('handler: batch feliz sobre el universo fijo');
   global.fetch = async (url) => {
     calls++;
     const u = String(url);
-    ok(u.includes('range=3mo') && u.includes('interval=1d'), 'pide range=3mo&interval=1d (serie 3M para toggles 1S/1M/3M)');
-    if (u.includes('%5EVIX')) return chartResponse({ regularMarketPrice: 20, chartPreviousClose: 18.5 }, [18, 19, 20]);
-    return chartResponse({ regularMarketPrice: 100, chartPreviousClose: 99 }, [98, 99, 100]);
+    ok(u.includes('range=3mo') && u.includes('interval=1d'), 'pide range=3mo&interval=1d (serie 3m en 1 fetch)');
+    if (u.includes('%5EVIX')) return chartResponse({ regularMarketPrice: 20 }, [1, 2, 3], [18, 19, 20]);
+    return chartResponse({ regularMarketPrice: 100 }, [1, 2, 3], [98, 99, 100]);
   };
   const res = mockRes();
   await handler({ method: 'GET', query: {} }, res);
   ok(res.code === 200, 'responde 200', res.code);
   ok(calls === MACRO_SYMBOLS.length, 'un fetch por símbolo del universo', calls);
-  ok(res.body.data['^VIX'] && res.body.data['^VIX'].changePct === 8.11, 'VIX indexado por su símbolo Yahoo', JSON.stringify(res.body.data['^VIX']));
+  const vix = res.body.data['^VIX'];
+  ok(vix && vix.price === 20 && Array.isArray(vix.series) && vix.series.length === 3,
+    'VIX indexado por su símbolo Yahoo con precio + serie', JSON.stringify(vix));
+  ok(vix && !('changePct' in vix), 'sin changePct en la respuesta del handler');
   ok(/s-maxage=\d+/.test(res.headers['Cache-Control'] || ''), 'setea caché CDN compartida', res.headers['Cache-Control']);
 }
 
@@ -126,12 +123,12 @@ console.log('handler: Yahoo caído parcial o total');
 {
   global.fetch = async (url) => {
     if (String(url).includes('%5EVIX')) throw new Error('yahoo caído');
-    return chartResponse({ regularMarketPrice: 100, chartPreviousClose: 99 }, [99, 100]);
+    return chartResponse({ regularMarketPrice: 100 }, [1, 2], [99, 100]);
   };
   const res = mockRes();
   await handler({ method: 'GET', query: {} }, res);
   ok(res.code === 200 && !('^VIX' in res.body.data) && Object.keys(res.body.data).length > 0,
-    'símbolo caído se omite, el resto llega (sin +0.0%)', Object.keys(res.body.data).length);
+    'símbolo caído se omite, el resto llega', Object.keys(res.body.data).length);
 
   global.fetch = async () => { throw new Error('yahoo caído'); };
   const res2 = mockRes();

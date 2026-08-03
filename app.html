@@ -280,65 +280,67 @@ td:first-child{color:var(--text);font-weight:500;}
 .mx-sec{border-bottom:1px solid #1a1a1a;}
 .mx-sec>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;
   padding:9px 12px;font-family:var(--mono);font-size:9px;letter-spacing:.1em;color:#ff6600;
-  user-select:none;flex-wrap:wrap;}
+  user-select:none;}
 .mx-sec>summary::-webkit-details-marker{display:none;}
-.mx-sec>summary .mx-tools{margin-left:auto;display:flex;align-items:center;gap:8px;}
-.mx-sec>summary .mx-chev{color:#555;transition:transform .15s;font-size:10px;}
+.mx-sec>summary .mx-chev{margin-left:auto;color:#555;transition:transform .15s;font-size:10px;}
 .mx-sec[open]>summary .mx-chev{transform:rotate(90deg);}
 .mx-sec>summary .mx-sub{color:#444;letter-spacing:.04em;font-weight:400;}
-.mx-recency{font-family:var(--mono);font-size:8px;color:#3a3a3a;letter-spacing:.02em;font-weight:400;white-space:nowrap;}
 .mx-body{padding:0 12px 12px;}
-
-/* Toggles de periodo (1S · 1M · 3M) */
-.mx-tgls{display:inline-flex;gap:1px;background:#161616;border-radius:3px;padding:1px;}
-.mx-tgl{font-family:var(--mono);font-size:8px;color:#666;background:none;border:none;padding:2px 6px;
-  border-radius:2px;cursor:pointer;letter-spacing:.05em;line-height:1.4;}
-.mx-tgl:hover{color:#aaa;}
-.mx-tgl.active{background:#2a2a2a;color:#ddd;}
 
 /* Rejilla de tarjetas macro: 4 → 3 → 2 según ancho */
 .mx-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}
 @media(max-width:1200px){ .mx-cards{grid-template-columns:repeat(3,1fr);} }
 @media(max-width:520px){ .mx-cards{grid-template-columns:repeat(2,1fr);} }
 
+/* Toolbar de periodo (1S · 1M · 3M) */
+.mx-toolbar{display:flex;align-items:center;gap:8px;padding:8px 12px 4px;}
+.mx-toolbar-lbl{font-family:var(--mono);font-size:9px;letter-spacing:.1em;color:#555;}
+.mx-per-grp{display:inline-flex;border:1px solid #222;border-radius:3px;overflow:hidden;}
+.mx-per{font-family:var(--mono);font-size:10px;font-weight:600;color:#888;background:#111;
+  border:0;border-left:1px solid #222;padding:3px 10px;cursor:pointer;transition:background .12s,color .12s;
+  min-height:26px;-webkit-tap-highlight-color:transparent;}
+.mx-per:first-child{border-left:0;}
+.mx-per:hover{color:#ccc;background:#161616;}
+.mx-per.on{color:#0a0a0a;background:#ff6600;}
+/* Sello de recencia por grupo */
+.mx-sec>summary .mx-recency{margin-left:auto;color:#555;font-weight:400;letter-spacing:0;
+  font-size:9px;font-variant-numeric:tabular-nums;}
+/* con recency presente, el chevron ya no necesita empujar (recency lo hace) */
+.mx-sec>summary .mx-recency ~ .mx-chev{margin-left:0;}
+
+/* % SIEMPRE con su etiqueta de periodo (qdPctTag) */
+.qd-pct{font-family:var(--mono);font-weight:600;display:inline-flex;align-items:baseline;gap:4px;}
+.qd-pct-per{font-size:8px;font-weight:600;color:#000;background:#555;border-radius:2px;
+  padding:0 3px;letter-spacing:.03em;opacity:.85;line-height:1.5;}
+
 /* Tarjeta clicable con sparkline */
 .mx-card{position:relative;background:#111;border:1px solid #1a1a1a;border-radius:2px;
   padding:8px 8px 6px;cursor:pointer;overflow:hidden;transition:border-color .12s,background .12s;}
 .mx-card:hover{border-color:#333;background:#141414;}
+.mx-card:active{background:#161616;}
 .mx-card .mx-lbl{font-family:var(--mono);font-size:9px;color:#888;margin-bottom:2px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .mx-card .mx-val{font-family:var(--mono);font-size:14px;font-weight:600;color:#e6e6e6;line-height:1.1;}
 .mx-card .mx-chg{font-family:var(--mono);font-size:10px;margin-top:1px;}
+.mx-card .mx-spark{display:block;width:100%;height:30px;margin-top:5px;touch-action:manipulation;}
+.mx-card .mx-spark .mx-base{stroke:#3a3a3a;stroke-width:1;stroke-dasharray:2 2;opacity:.55;}
+.mx-card .mx-spark .mx-cross{stroke:#888;stroke-width:1;}
+.mx-card .mx-spark .mx-cross-dot{fill:#fff;stroke:#0a0a0a;stroke-width:1;}
 .mx-card .mx-unit{font-size:9px;color:#555;font-weight:400;}
+/* Tooltip del crosshair */
+#mxTip{position:fixed;z-index:9999;display:none;pointer-events:none;background:#0a0a0a;
+  border:1px solid #333;border-radius:3px;padding:4px 7px;font-family:var(--mono);
+  box-shadow:0 4px 14px rgba(0,0,0,.5);white-space:nowrap;}
+#mxTip b{display:block;font-size:11px;color:#e6e6e6;font-weight:600;}
+#mxTip span{display:block;font-size:9px;color:#777;margin-top:1px;}
 
-/* Sparkline: SVG estirado (línea+relleno) + overlays HTML sin distorsión
-   (punto, pulso, crosshair, punto de hover) posicionados en %. */
-.mx-sparkwrap{position:relative;width:100%;height:30px;margin-top:5px;}
-.mx-sparkwrap svg{display:block;width:100%;height:100%;overflow:visible;}
-.mx-dot,.mx-pulse,.mx-hoverdot{position:absolute;border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;}
-.mx-dot{width:5px;height:5px;}
-.mx-hoverdot{width:6px;height:6px;opacity:0;box-shadow:0 0 0 2px #0d0d0d;}
-.mx-pulse{width:5px;height:5px;opacity:0;}
-.mx-sparkwrap.mx-live .mx-pulse{animation:mxPing 2.2s ease-out infinite;}
-@keyframes mxPing{0%{box-shadow:0 0 0 0 currentColor;opacity:.5;}70%{box-shadow:0 0 0 5px currentColor;opacity:0;}100%{opacity:0;}}
-.mx-cross{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,.22);
-  transform:translateX(-50%);pointer-events:none;opacity:0;}
-
-/* Tooltip flotante compartido (fecha + valor al hacer hover) */
-#mxTip{position:fixed;z-index:9999;pointer-events:none;background:#0a0a0a;border:1px solid #2a2a2a;
-  border-radius:3px;padding:4px 7px;font-family:var(--mono);font-size:9px;color:#ddd;display:none;
-  white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,.6);}
-#mxTip .mx-tip-d{color:#666;margin-right:6px;}
-
-/* Hero: VIX + spread 10Y-2Y con gráfica real (Lightweight Charts) */
+/* Hero: VIX + spread 10Y-2Y destacados */
 .mx-hero{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#111;}
-.mx-hero .mx-h{background:#0d0d0d;padding:12px;display:flex;flex-direction:column;}
-.mx-hero .mx-hhead{cursor:pointer;}
-.mx-hero .mx-hhead:hover .mx-big{filter:brightness(1.15);}
-.mx-hero .mx-h .mx-lbl{font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:6px;display:flex;align-items:center;gap:8px;}
+.mx-hero .mx-h{background:#0d0d0d;padding:12px;cursor:pointer;transition:background .12s;}
+.mx-hero .mx-h:hover{background:#131313;}
+.mx-hero .mx-h .mx-lbl{font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:6px;}
 .mx-hero .mx-h .mx-big{font-family:var(--mono);font-size:30px;font-weight:700;line-height:1;color:#e6e6e6;}
 .mx-hero .mx-h .mx-sub2{font-family:var(--mono);font-size:10px;margin-top:4px;}
-.mx-hchart{width:100%;height:72px;margin-top:8px;}
 @media(max-width:360px){ .mx-hero{grid-template-columns:1fr;} }
 </style>
 </head>
@@ -3744,7 +3746,72 @@ async function loadMacroPage(){
 // y futuros EE.UU. — TODO desde /api/macro-markets (Yahoo, 1 request,
 // caché CDN compartida). Cada tarjeta es clicable: data-chart-sym cae a
 // la delegación global que abre el modal de velas (/api/candles, mismo
-// símbolo Yahoo). Sparkline de ~30d embebida, sin ejes.
+// símbolo Yahoo). Sparkline interactiva embebida, sin ejes.
+
+// ═══ CONTRATO ANTI-BUG-DE-PERIODO ═══════════════════════════════
+// El bug del % de periodo volvió 3 veces porque CADA componente calculaba
+// su propio porcentaje. Se corta de raíz con dos piezas compartidas que
+// viven ACÁ, fuera de la zona de render, y que TODOS usan:
+//
+//   qdPeriodChange(serie, periodo) → { value, pct, periodLabel, window }
+//     única fuente de verdad del cálculo. Recibe la serie cronológica de
+//     cierres y ancla el % contra el inicio del periodo elegido. Ningún
+//     componente resta precios ni divide por su cuenta.
+//
+//   qdPctTag(pct, periodLabel)     → HTML del %  (LANZA sin etiqueta)
+//     única forma de PINTAR un %. Es imposible pintar uno sin decir de qué
+//     periodo es — la etiqueta es un argumento obligatorio y throw si falta.
+//
+// El lint tests/period-label-lint.test.mjs recorre la zona de render y
+// falla si alguien reintroduce un % calculado a mano (igual que el
+// date-lint con las fechas hardcodeadas).
+
+// Periodos del panel. tradingDays = cuántos cierres diarios atrás está el
+// ancla (aprox: ~5/semana, ~21/mes, ~63/trimestre). El label es lo que se
+// pinta pegado al %.
+const QD_PERIODS={
+  '1S':{ label:'1S', tradingDays:5  },
+  '1M':{ label:'1M', tradingDays:21 },
+  '3M':{ label:'3M', tradingDays:63 },
+};
+
+// Única fuente de verdad del % por periodo. Ancla contra el cierre de hace
+// `tradingDays` sesiones (acotado al primer punto disponible). Devuelve
+// también la ventana recortada para dibujar la sparkline del MISMO periodo.
+function qdPeriodChange(series, periodKey){
+  const per=QD_PERIODS[periodKey];
+  if(!per) throw new Error('qdPeriodChange: periodo desconocido '+periodKey);
+  const pts=(series||[]).filter(p=>p&&Number.isFinite(p.c)&&p.c>0);
+  const n=pts.length;
+  const out={ value:null, pct:null, periodLabel:per.label, window:pts, refIdx:0, refValue:null };
+  if(n<2) return out;
+  out.value=pts[n-1].c;
+  const refIdx=Math.max(0, n-1-per.tradingDays);
+  out.refIdx=refIdx;
+  out.refValue=pts[refIdx].c;
+  out.window=pts.slice(refIdx);
+  if(out.refValue>0) out.pct=((out.value-out.refValue)/out.refValue)*100;
+  return out;
+}
+
+// Única forma de pintar un %. La etiqueta de periodo es OBLIGATORIA: sin
+// ella lanza. opts.invert = semántica invertida (VIX: subir es malo/rojo).
+function qdPctTag(pct, periodLabel, opts){
+  if(!periodLabel || typeof periodLabel!=='string' || !periodLabel.trim())
+    throw new Error('qdPctTag: etiqueta de periodo obligatoria — prohibido pintar un % sin decir de qué periodo es');
+  opts=opts||{};
+  const fin=Number.isFinite(pct);
+  const up=fin&&pct>=0;
+  const col=!fin?'#666':(opts.invert?(up?'#E24B4A':'#00c97d'):(up?'#00c97d':'#E24B4A'));
+  const txt=fin?((up?'+':'')+pct.toFixed(2)+'%'):'—';
+  return '<span class="qd-pct" style="color:'+col+'">'+txt
+    +'<span class="qd-pct-per">'+qdEscHTML(periodLabel)+'</span></span>';
+}
+
+/* ⟦pct-lint:start⟧ — zona de render del panel MACRO. Todo % de cambio aquí
+   DEBE pasar por qdPctTag (periodo obligatorio) y todo cálculo por
+   qdPeriodChange. Prohibido calcular/formatear un % a mano — lo verifica
+   tests/period-label-lint.test.mjs. */
 
 // Rendimientos: Yahoo entrega ^TNX/^TYX ×10 (42.5 = 4.25%). Heurística
 // robusta a cualquier convención — un rendimiento del Tesoro jamás pasa
@@ -3752,117 +3819,75 @@ async function loadMacroPage(){
 // futuro de rendimiento) ya viene en % directo → intacto.
 function mxYield(v){ return (Number.isFinite(v)&&v>20)?v/10:v; }
 
-// ── Sparkline de terminal ──────────────────────────────
-// SVG (línea + relleno degradado) estirado con preserveAspectRatio=none;
-// los adornos que NO deben deformarse (punto final, pulso, crosshair,
-// punto de hover) son overlays HTML posicionados en % — así un círculo
-// sigue siendo círculo aunque el SVG se estire. Registra la geometría en
-// mxSparkReg para el hover (fecha+valor). Recibe una serie [[t,v],…].
-const mxSparkReg={};
-function mxSpark(id, series, color, dispFmt){
-  const pts=(series||[]).filter(p=>Array.isArray(p)&&Number.isFinite(p[1]));
-  if(pts.length<2){ delete mxSparkReg[id]; return '<div class="mx-sparkwrap"></div>'; }
-  const W=100,H=30,padX=1.5,padY=5,n=pts.length;
-  const vals=pts.map(p=>p[1]);
-  const min=Math.min(...vals),max=Math.max(...vals),rng=(max-min)||Math.abs(min)||1;
-  const xs=[],ys=[],fx=[],fy=[];
-  for(let i=0;i<n;i++){
-    const x=padX+(W-padX*2)*(n===1?0.5:i/(n-1));
-    const y=padY+(H-padY*2)*(1-(pts[i][1]-min)/rng);
-    xs.push(+x.toFixed(2)); ys.push(+y.toFixed(2));
-    fx.push(+(x/W).toFixed(4)); fy.push(+(y/H).toFixed(4));
-  }
-  const line='M'+xs.map((x,i)=>x+' '+ys[i]).join(' L ');
-  const area=line+' L '+xs[n-1]+' '+(H-0.4)+' L '+xs[0]+' '+(H-0.4)+' Z';
-  const baseY=ys[0], lx=(fx[n-1]*100).toFixed(2), ly=(fy[n-1]*100).toFixed(2), gid=id+'_g';
-  mxSparkReg[id]={fx,fy,pts,fmt:dispFmt};
-  return '<div class="mx-sparkwrap mx-live" data-spark="'+id+'">'
-    +'<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" aria-hidden="true">'
-      +'<defs><linearGradient id="'+gid+'" x1="0" y1="0" x2="0" y2="1">'
-        +'<stop offset="0%" stop-color="'+color+'" stop-opacity="0.15"/>'
-        +'<stop offset="100%" stop-color="'+color+'" stop-opacity="0"/></linearGradient></defs>'
-      +'<line x1="0" y1="'+baseY+'" x2="'+W+'" y2="'+baseY+'" stroke="#3a3a3a" stroke-width="0.5" stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>'
-      +'<path d="'+area+'" fill="url(#'+gid+')"/>'
-      +'<path d="'+line+'" fill="none" stroke="'+color+'" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>'
-    +'</svg>'
-    +'<span class="mx-cross"></span>'
-    +'<span class="mx-pulse" style="left:'+lx+'%;top:'+ly+'%;color:'+color+';background:'+color+';"></span>'
-    +'<span class="mx-dot" style="left:'+lx+'%;top:'+ly+'%;background:'+color+';"></span>'
-    +'<span class="mx-hoverdot" style="background:'+color+';"></span>'
-    +'</div>';
-}
+// Estado del panel: datos crudos del batch + periodo elegido + sello de
+// recencia. El toggle de periodo NO repolea la red: recalcula desde la
+// serie ya bajada (3 meses cubren 1S/1M/3M).
+let mxData={}, mxGeneratedAt=null, mxPeriod='1M', mxRecencyTimer=null;
 
-// ── Toggles de periodo (recorte de la serie 3M que ya vino) ──
-const MX_PERIODS=[{k:'1W',lbl:'1S',bars:5},{k:'1M',lbl:'1M',bars:22},{k:'3M',lbl:'3M',bars:9999}];
-const mxPeriod={};                       // gkey → k
-function mxBars(k){ const p=MX_PERIODS.find(x=>x.k===k); return p?p.bars:22; }
-function mxSliceSeries(series,k){ return (series||[]).slice(-mxBars(k)); }
-function mxTgl(ev,gkey,k){
-  ev.preventDefault(); ev.stopPropagation();      // no togglear el <details>
-  if(mxPeriod[gkey]===k) return;
-  mxPeriod[gkey]=k;
-  const bar=ev.currentTarget.parentNode;
-  if(bar) bar.querySelectorAll('.mx-tgl').forEach(b=>b.classList.toggle('active',b===ev.currentTarget));
-  mxRenderGroupCards(gkey);
-}
-
-// ── Hover: crosshair + tooltip (fecha + valor) ──
-let mxLastWrap=null;
-function mxTipEl(){ let t=document.getElementById('mxTip'); if(!t){ t=document.createElement('div'); t.id='mxTip'; document.body.appendChild(t); } return t; }
-function mxDateLabel(t){
-  const loc=(typeof currentLang!=='undefined'&&currentLang==='es')?'es-MX':'en-US';
-  return new Date(t*1000).toLocaleDateString(loc,{month:'short',day:'numeric'});
-}
-function mxClearWrap(w){ if(!w) return; const c=w.querySelector('.mx-cross'); if(c)c.style.opacity='0'; const h=w.querySelector('.mx-hoverdot'); if(h)h.style.opacity='0'; }
-function mxHoverHide(){ const tip=document.getElementById('mxTip'); if(tip)tip.style.display='none'; if(mxLastWrap){ mxClearWrap(mxLastWrap); mxLastWrap=null; } }
-function mxHoverMove(ev){
-  const wrap=ev.target.closest&&ev.target.closest('.mx-sparkwrap');
-  const reg=wrap&&mxSparkReg[wrap.getAttribute('data-spark')];
-  if(!reg||!reg.fx.length){ mxHoverHide(); return; }
-  if(mxLastWrap&&mxLastWrap!==wrap) mxClearWrap(mxLastWrap);
-  mxLastWrap=wrap;
-  const rect=wrap.getBoundingClientRect();
-  const frac=Math.max(0,Math.min(1,(ev.clientX-rect.left)/(rect.width||1)));
-  let idx=0,best=2;
-  for(let i=0;i<reg.fx.length;i++){ const dd=Math.abs(reg.fx[i]-frac); if(dd<best){best=dd;idx=i;} }
-  const px=(reg.fx[idx]*100)+'%', py=(reg.fy[idx]*100)+'%';
-  const cross=wrap.querySelector('.mx-cross'), hd=wrap.querySelector('.mx-hoverdot');
-  if(cross){ cross.style.left=px; cross.style.opacity='1'; }
-  if(hd){ hd.style.left=px; hd.style.top=py; hd.style.opacity='1'; }
-  const p=reg.pts[idx], tip=mxTipEl();
-  tip.innerHTML='<span class="mx-tip-d">'+mxDateLabel(p[0])+'</span>'+reg.fmt(p[1]);
-  tip.style.display='block';
-  const tw=tip.offsetWidth||60;
-  let L=ev.clientX+12, T=rect.top-6;
-  if(L+tw>window.innerWidth-8) L=ev.clientX-tw-12;
-  if(T<4) T=rect.bottom+6;
-  tip.style.left=L+'px'; tip.style.top=T+'px';
-}
-function mxHoverInit(){
-  const host=document.getElementById('macroMarkets');
-  if(!host||host._mxHover) return; host._mxHover=true;
-  host.addEventListener('mousemove',mxHoverMove);
-  host.addEventListener('mouseleave',mxHoverHide);
-}
-
-// ── Sello de recencia ("actualizado hace 47s") que avanza solo ──
-let mxLoadAt=0, mxRecencyTimer=null;
-function mxAgo(ts){
-  if(!ts) return '';
-  const s=Math.max(0,Math.round((Date.now()-ts)/1000));
+// Sello de recencia por grupo ("hace 47s" / "47s ago").
+function mxAgo(ms){
+  if(!Number.isFinite(ms)) return '';
+  const s=Math.max(0,Math.floor((Date.now()-ms)/1000));
   const es=(typeof currentLang!=='undefined'&&currentLang==='es');
-  const body=s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h';
-  return (es?'actualizado hace '+body:'updated '+body+' ago');
+  if(s<60) return es?('hace '+s+'s'):(s+'s ago');
+  const m=Math.floor(s/60);
+  if(m<60) return es?('hace '+m+'m'):(m+'m ago');
+  const h=Math.floor(m/60);
+  if(h<24) return es?('hace '+h+'h'):(h+'h ago');
+  const d=Math.floor(h/24);
+  return es?('hace '+d+'d'):(d+'d ago');
 }
-function mxTickRecency(){ const txt=mxAgo(mxLoadAt); document.querySelectorAll('.mx-recency').forEach(el=>{ el.textContent=txt; }); }
 
-// Grupos del tab. Cada item: {sym Yahoo, etiqueta, unidad, formateador}.
-// El formateador recibe el precio crudo y devuelve el texto a mostrar.
+// Fecha corta para el tooltip del crosshair (unix seg → "3 feb").
+function mxFmtDate(t){
+  const loc=(typeof currentLang!=='undefined'&&currentLang==='es')?'es-MX':'en-US';
+  try{ return new Date(t*1000).toLocaleDateString(loc,{month:'short',day:'numeric'}); }
+  catch(e){ return ''; }
+}
+
+// Sparkline SVG viva: relleno degradado, línea base tenue del inicio del
+// periodo, punto marcado en el último dato, línea gruesa y padding para no
+// tocar los bordes. Guarda su serie en data-spark para el crosshair (hover).
+// visualUp = color/gradiente (verde arriba / rojo abajo). fmtVal/fmtDate
+// preformatean lo que muestra el tooltip.
+function mxSparkSVG(win, visualUp, fmtVal, fmtDate){
+  const pts=(win||[]).filter(p=>p&&Number.isFinite(p.c));
+  if(pts.length<2) return '';
+  const W=100,H=30,padX=3,padT=4,padB=5;
+  const cs=pts.map(p=>p.c);
+  let min=Math.min.apply(null,cs), max=Math.max.apply(null,cs), rng=max-min;
+  // Serie (casi) plana: centrar verticalmente en vez de pegar al borde
+  // inferior — evita la "línea al piso" cuando no hay variación.
+  if(!(rng>Math.abs(max)*1e-9)){ const pad=Math.abs(max)*0.01||1; min-=pad; max+=pad; rng=max-min; }
+  const dx=(W-padX*2)/(pts.length-1);
+  const xOf=i=>padX+i*dx;
+  const yOf=c=>padT+(H-padT-padB)*(1-(c-min)/rng);
+  const line=pts.map((p,i)=>(i?'L':'M')+xOf(i).toFixed(1)+' '+yOf(p.c).toFixed(1)).join(' ');
+  const lastX=xOf(pts.length-1).toFixed(1), lastY=yOf(pts[pts.length-1].c).toFixed(1);
+  const baseY=yOf(pts[0].c).toFixed(1);
+  const area=line+' L'+lastX+' '+(H-padB)+' L'+padX+' '+(H-padB)+' Z';
+  const col=visualUp?'#00c97d':'#E24B4A';
+  const grad=visualUp?'mxFillUp':'mxFillDown';
+  const data=JSON.stringify({ padX, padT, padB, W, H, min, max,
+    c:cs, v:pts.map(p=>fmtVal(p.c)), d:pts.map(p=>fmtDate(p.t)) }).replace(/'/g,'&#39;');
+  return '<svg class="mx-spark" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" data-spark=\''+data+'\'>'
+    +'<path class="mx-area" d="'+area+'" fill="url(#'+grad+')" stroke="none"/>'
+    +'<line class="mx-base" x1="'+padX+'" y1="'+baseY+'" x2="'+(W-padX)+'" y2="'+baseY+'" vector-effect="non-scaling-stroke"/>'
+    +'<path d="'+line+'" fill="none" stroke="'+col+'" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>'
+    +'<circle class="mx-dot" cx="'+lastX+'" cy="'+lastY+'" r="2.4" fill="'+col+'"/>'
+    +'<line class="mx-cross" x1="0" y1="'+padT+'" x2="0" y2="'+(H-padB)+'" vector-effect="non-scaling-stroke" style="display:none"/>'
+    +'<circle class="mx-cross-dot" cx="0" cy="0" r="2.6" style="display:none"/>'
+    +'</svg>';
+}
+
+// Grupos del tab. Cada item: símbolo Yahoo, etiqueta, unidad, `scale`
+// (transform numérico de display, p. ej. ÷10 de yields) y `fmt` (recibe el
+// valor YA escalado). El % y la sparkline salen SIEMPRE de la serie.
 const MX_GROUPS=[
   {key:'rates', title:'RATES', sub:'US Treasuries', items:[
-    {sym:'^TNX', lbl:'10Y', unit:'%', fmt:v=>mxYield(v).toFixed(2)},
-    {sym:'2YY=F', lbl:'2Y',  unit:'%', fmt:v=>mxYield(v).toFixed(2)},
-    {sym:'^TYX', lbl:'30Y', unit:'%', fmt:v=>mxYield(v).toFixed(2)},
+    {sym:'^TNX', lbl:'10Y', unit:'%', scale:mxYield, fmt:v=>v.toFixed(2)},
+    {sym:'2YY=F', lbl:'2Y',  unit:'%', scale:mxYield, fmt:v=>v.toFixed(2)},
+    {sym:'^TYX', lbl:'30Y', unit:'%', scale:mxYield, fmt:v=>v.toFixed(2)},
   ]},
   {key:'fx', title:'FX GLOBAL', sub:'dólar · yen · euro', items:[
     {sym:'DX-Y.NYB', lbl:'DXY',     fmt:v=>v.toFixed(2)},
@@ -3893,156 +3918,195 @@ const MX_GROUPS=[
   ]},
 ];
 
-let mxData={};
+// Inyecta una sola vez los gradientes de relleno compartidos (verde/rojo).
+function mxEnsureDefs(){
+  if(document.getElementById('mxSparkDefs')) return;
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.id='mxSparkDefs'; svg.setAttribute('width','0'); svg.setAttribute('height','0');
+  svg.setAttribute('aria-hidden','true');
+  svg.style.cssText='position:absolute;width:0;height:0;overflow:hidden;';
+  svg.innerHTML=
+    '<defs>'
+    +'<linearGradient id="mxFillUp" x1="0" y1="0" x2="0" y2="1">'
+    +'<stop offset="0" stop-color="#00c97d" stop-opacity="0.38"/>'
+    +'<stop offset="1" stop-color="#00c97d" stop-opacity="0"/></linearGradient>'
+    +'<linearGradient id="mxFillDown" x1="0" y1="0" x2="0" y2="1">'
+    +'<stop offset="0" stop-color="#E24B4A" stop-opacity="0.38"/>'
+    +'<stop offset="1" stop-color="#E24B4A" stop-opacity="0"/></linearGradient>'
+    +'</defs>';
+  document.body.appendChild(svg);
+}
+
 async function loadMacroMarkets(){
-  const heroEl=document.getElementById('macroHero');
+  mxEnsureDefs();
   const gridEl=document.getElementById('macroMarkets');
   if(gridEl) gridEl.innerHTML='<div style="padding:12px;color:#555;font-family:var(--mono);font-size:10px;">Loading markets…</div>';
 
   const resp=await qdFetchJSON('/api/macro-markets', null,
     function(x){ return x && x.data && typeof x.data==='object'; });
   mxData=(resp&&resp.data)||{};
-  mxLoadAt=Date.now();
-
-  renderMacroHero(heroEl, mxData);
-  renderMacroGroups(gridEl, mxData);
-  if(!mxRecencyTimer) mxRecencyTimer=setInterval(mxTickRecency,1000);
+  mxGeneratedAt=(resp&&resp.generated_at)?Date.parse(resp.generated_at):Date.now();
+  if(!Number.isFinite(mxGeneratedAt)) mxGeneratedAt=Date.now();
+  mxRender();
 }
 
-// Tarjeta compacta clicable con sparkline del periodo activo del grupo.
-function mxCard(it, d, period, gkey){
-  const up=d.changePct>=0;
-  const col=up?'#00c97d':'#E24B4A';
-  const chg=Number.isFinite(d.changePct)?((up?'+':'')+d.changePct.toFixed(2)+'%'):'—';
-  const dispFmt=(v)=>it.fmt(v)+(it.unit?' '+it.unit:'');
-  const sparkId='mxs_'+gkey+'_'+it.sym.replace(/[^A-Za-z0-9]/g,'')+'_'+period;
+// Repinta hero + toolbar + grupos desde el estado (sin red). Lo llaman
+// tanto la carga inicial como el toggle de periodo y el cambio de idioma.
+function mxRender(){
+  renderMacroHero(document.getElementById('macroHero'), mxData);
+  renderMacroGroups(document.getElementById('macroMarkets'), mxData);
+  mxStartRecency();
+}
+
+// Toggle de periodo: cambia el ancla del % y la ventana de la sparkline.
+function mxSetPeriod(p){ if(!QD_PERIODS[p]||p===mxPeriod) return; mxPeriod=p; mxRender(); }
+
+// Toolbar de periodo (1S · 1M · 3M). Segmentado, móvil primero.
+function renderMacroToolbar(){
+  const es=(typeof currentLang!=='undefined'&&currentLang==='es');
+  const btns=Object.keys(QD_PERIODS).map(k=>
+    '<button type="button" class="mx-per'+(k===mxPeriod?' on':'')+'" onclick="mxSetPeriod(\''+k+'\')">'
+    +QD_PERIODS[k].label+'</button>').join('');
+  return '<div class="mx-toolbar"><span class="mx-toolbar-lbl">'+(es?'PERIODO':'PERIOD')+'</span>'
+    +'<div class="mx-per-grp">'+btns+'</div></div>';
+}
+
+// Tarjeta compacta clicable con sparkline viva. TODO % vía qdPctTag.
+function mxCard(it, d){
+  const raw=Array.isArray(d.series)?d.series:[];
+  const series=it.scale?raw.map(p=>({t:p.t,c:it.scale(p.c)})):raw;
+  const pc=qdPeriodChange(series, mxPeriod);
+  const valNum=it.scale?it.scale(d.price):d.price;
+  const valText=Number.isFinite(valNum)?it.fmt(valNum):'—';
+  const visualUp=Number.isFinite(pc.pct)?pc.pct>=0:true;
+  const fmtVal=c=>it.fmt(c)+(it.unit?(' '+it.unit):'');
   return '<div class="mx-card" data-chart-sym="'+it.sym+'" title="'+it.lbl+' · '+it.sym+'">'
     +'<div class="mx-lbl">'+it.lbl+'</div>'
-    +'<div class="mx-val">'+it.fmt(d.price)+(it.unit?'<span class="mx-unit"> '+it.unit+'</span>':'')+'</div>'
-    +'<div class="mx-chg" style="color:'+col+'">'+chg+'</div>'
-    +mxSpark(sparkId, mxSliceSeries(d.series, period), col, dispFmt)
+    +'<div class="mx-val">'+valText+(it.unit?'<span class="mx-unit"> '+it.unit+'</span>':'')+'</div>'
+    +'<div class="mx-chg">'+qdPctTag(pc.pct, pc.periodLabel)+'</div>'
+    +mxSparkSVG(pc.window, visualUp, fmtVal, mxFmtDate)
     +'</div>';
-}
-
-// ── Heroes con gráfica real (Lightweight Charts), no sparkline ──
-let mxHeroCharts=[];
-function mxDestroyHeroCharts(){ mxHeroCharts.forEach(c=>{ try{ c.remove(); }catch(e){} }); mxHeroCharts=[]; }
-function mxHeroBase(elId){
-  const el=document.getElementById(elId);
-  if(!el||typeof LightweightCharts==='undefined') return null;
-  const chart=LightweightCharts.createChart(el,{
-    autoSize:true,
-    layout:{background:{type:'solid',color:'rgba(0,0,0,0)'},textColor:'#555',fontSize:9,
-      fontFamily:"'IBM Plex Mono',monospace",attributionLogo:false},
-    grid:{vertLines:{visible:false},horzLines:{visible:false}},
-    rightPriceScale:{visible:false},leftPriceScale:{visible:false},
-    timeScale:{visible:false,borderVisible:false},
-    crosshair:{mode:0,vertLine:{labelVisible:false,color:'#555',width:1,style:0},horzLine:{visible:false,labelVisible:false}},
-    handleScroll:false,handleScale:false,
-    // locale explícito: LWC usa navigator.language por default y los tags
-    // inválidos del entorno (p. ej. 'en-US@posix') revientan Intl con
-    // RangeError al formatear el crosshair (mismo blindaje que el modal).
-    localization:{locale:(typeof currentLang!=='undefined'&&currentLang==='es')?'es-MX':'en-US'},
-  });
-  mxHeroCharts.push(chart);
-  return chart;
-}
-function mxHeroArea(elId,data,col){
-  const chart=mxHeroBase(elId); if(!chart) return;
-  const s=chart.addSeries(LightweightCharts.AreaSeries,{lineColor:col,topColor:col+'55',bottomColor:col+'05',
-    lineWidth:2,priceLineVisible:false,lastValueVisible:false});
-  s.setData(data); chart.timeScale().fitContent();
-}
-function mxHeroBaseline(elId,data){
-  const chart=mxHeroBase(elId); if(!chart) return;
-  const s=chart.addSeries(LightweightCharts.BaselineSeries,{baseValue:{type:'price',price:0},
-    topLineColor:'#00c97d',topFillColor1:'#00c97d40',topFillColor2:'#00c97d05',
-    bottomLineColor:'#E24B4A',bottomFillColor1:'#E24B4A40',bottomFillColor2:'#E24B4A05',
-    lineWidth:2,priceLineVisible:false,lastValueVisible:false});
-  s.setData(data); chart.timeScale().fitContent();
-}
-// Spread 10Y-2Y por fecha: alinea ^TNX y 2YY=F por timestamp (ambos en %
-// tras mxYield); solo donde existen los dos. → [{time,value}] para LWC.
-function mxSpreadSeries(tnxS,twoS){
-  if(!Array.isArray(tnxS)||!Array.isArray(twoS)) return null;
-  const m={}; twoS.forEach(p=>{ if(Array.isArray(p)) m[p[0]]=p[1]; });
-  const out=[];
-  tnxS.forEach(p=>{ if(Array.isArray(p)&&m[p[0]]!=null) out.push({time:p[0],value:+(mxYield(p[1])-mxYield(m[p[0]])).toFixed(3)}); });
-  return out;
 }
 
 function renderMacroHero(el, data){
   if(!el) return;
-  mxDestroyHeroCharts();
-  const vix=data['^VIX'];
-  const tnx=data['^TNX'], two=data['2YY=F'];
-  const spreadSeries=(tnx&&two)?mxSpreadSeries(tnx.series,two.series):null;
-  const spreadNow=(tnx&&two)?(mxYield(tnx.price)-mxYield(two.price)):null;
   let html='';
-  // VIX — termómetro de miedo (subir = miedo = rojo, invertido)
+  // VIX — termómetro de miedo
+  const vix=data['^VIX'];
   if(vix){
-    const up=vix.changePct>=0, col=up?'#E24B4A':'#00c97d';
+    const pc=qdPeriodChange(vix.series, mxPeriod);
+    // En el VIX subir = más miedo (rojo), bajar = calma (verde) — invertido
+    const up=Number.isFinite(pc.pct)?pc.pct>=0:false;
+    const col=up?'#E24B4A':'#00c97d';
     const lvl=vix.price>=30?'ELEVATED FEAR':vix.price>=20?'CAUTION':'CALM';
-    html+='<div class="mx-h">'
-      +'<div class="mx-hhead" data-chart-sym="^VIX" title="VIX · abrir gráfica">'
-        +'<div class="mx-lbl">VIX · VOLATILITY <span class="mx-recency"></span></div>'
-        +'<div class="mx-big" style="color:'+col+'">'+vix.price.toFixed(2)+'</div>'
-        +'<div class="mx-sub2" style="color:'+col+'">'+(up?'+':'')+vix.changePct.toFixed(2)+'% · '+lvl+'</div>'
-      +'</div><div class="mx-hchart" id="mxHeroVix"></div></div>';
+    html+='<div class="mx-h" data-chart-sym="^VIX" title="VIX · ^VIX">'
+      +'<div class="mx-lbl">VIX · VOLATILITY</div>'
+      +'<div class="mx-big" style="color:'+col+'">'+vix.price.toFixed(2)+'</div>'
+      +'<div class="mx-sub2">'+qdPctTag(pc.pct, pc.periodLabel, {invert:true})
+      +'<span class="mx-lvl" style="color:'+col+'"> · '+lvl+'</span></div>'
+      +'</div>';
   }else{
     html+='<div class="mx-h"><div class="mx-lbl">VIX · VOLATILITY</div><div class="mx-big" style="color:#333">—</div></div>';
   }
-  // Spread 10Y-2Y — indicador de recesión (BaselineSeries: rojo bajo 0)
-  if(spreadNow!=null){
-    const inv=spreadNow<0, col=inv?'#E24B4A':'#00c97d';
-    html+='<div class="mx-h">'
-      +'<div class="mx-hhead" data-chart-sym="^TNX" title="10Y yield · abrir gráfica">'
-        +'<div class="mx-lbl">10Y − 2Y SPREAD</div>'
-        +'<div class="mx-big" style="color:'+col+'">'+(spreadNow>=0?'+':'')+spreadNow.toFixed(2)+'<span class="mx-unit"> pp</span></div>'
-        +'<div class="mx-sub2" style="color:'+col+'">'+(inv?'INVERTED · recession signal':'normal curve')+'</div>'
-      +'</div><div class="mx-hchart" id="mxHeroSpread"></div></div>';
+  // Spread 10Y-2Y — nivel (puntos porcentuales), no un % de cambio: sin etiqueta de periodo.
+  const tnx=data['^TNX'], two=data['2YY=F'];
+  if(tnx&&two){
+    const spread=mxYield(tnx.price)-mxYield(two.price);
+    const inv=spread<0;
+    const col=inv?'#E24B4A':'#00c97d';
+    html+='<div class="mx-h" data-chart-sym="^TNX" title="10Y yield · ^TNX">'
+      +'<div class="mx-lbl">10Y − 2Y SPREAD</div>'
+      +'<div class="mx-big" style="color:'+col+'">'+(spread>=0?'+':'')+spread.toFixed(2)+'<span class="mx-unit"> pp</span></div>'
+      +'<div class="mx-sub2" style="color:'+col+'">'+(inv?'INVERTED · recession signal':'normal curve')+'</div>'
+      +'</div>';
   }else{
     html+='<div class="mx-h"><div class="mx-lbl">10Y − 2Y SPREAD</div><div class="mx-big" style="color:#333">—</div></div>';
   }
   el.innerHTML=html;
-  // Gráficas LWC tras insertar el DOM (contenedores ya dimensionados).
-  if(vix&&Array.isArray(vix.series)){
-    const col=vix.changePct>=0?'#E24B4A':'#00c97d';
-    mxHeroArea('mxHeroVix', vix.series.map(p=>({time:p[0],value:p[1]})), col);
-  }
-  if(spreadSeries&&spreadSeries.length>1) mxHeroBaseline('mxHeroSpread', spreadSeries);
 }
 
 function renderMacroGroups(el, data){
   if(!el) return;
-  let html='';
+  let html=renderMacroToolbar();
+  let any=false;
   MX_GROUPS.forEach(g=>{
-    if(!g.items.some(it=>data[it.sym])) return; // grupo sin datos → sin sección vacía
-    if(!mxPeriod[g.key]) mxPeriod[g.key]='1M';
-    const tgls=MX_PERIODS.map(p=>'<button class="mx-tgl'+(mxPeriod[g.key]===p.k?' active':'')
-      +'" onclick="mxTgl(event,\''+g.key+'\',\''+p.k+'\')">'+p.lbl+'</button>').join('');
+    const cards=g.items.map(it=>{
+      const d=data[it.sym];
+      if(!d) return '';
+      return mxCard(it, d);
+    }).filter(Boolean).join('');
+    // Si el grupo entero quedó sin datos, no pintamos una sección vacía.
+    if(!cards) return;
+    any=true;
     html+='<details class="mx-sec" open>'
       +'<summary>'+g.title+' <span class="mx-sub">'+g.sub+'</span>'
-        +'<span class="mx-tools"><span class="mx-recency"></span>'
-        +'<span class="mx-tgls">'+tgls+'</span><span class="mx-chev">›</span></span>'
-      +'</summary>'
-      +'<div class="mx-body"><div class="mx-cards" id="mxCards_'+g.key+'"></div></div>'
+      +'<span class="mx-recency" data-at="'+mxGeneratedAt+'">'+mxAgo(mxGeneratedAt)+'</span>'
+      +'<span class="mx-chev">›</span></summary>'
+      +'<div class="mx-body"><div class="mx-cards">'+cards+'</div></div>'
       +'</details>';
   });
-  el.innerHTML=html||'<div style="padding:12px;color:#555;font-family:var(--mono);font-size:10px;">'+qdUnavailableHTML('macro markets')+'</div>';
-  MX_GROUPS.forEach(g=>{ if(document.getElementById('mxCards_'+g.key)) mxRenderGroupCards(g.key); });
-  mxHoverInit();
-  mxTickRecency();
+  if(!any) html+='<div style="padding:12px;color:#555;font-family:var(--mono);font-size:10px;">'+qdUnavailableHTML('macro markets')+'</div>';
+  el.innerHTML=html;
 }
 
-// Re-pinta SOLO las tarjetas de un grupo (preserva el estado de los demás
-// <details> y de sus toggles) al cambiar de periodo.
-function mxRenderGroupCards(gkey){
-  const g=MX_GROUPS.find(x=>x.key===gkey); if(!g) return;
-  const host=document.getElementById('mxCards_'+gkey); if(!host) return;
-  const period=mxPeriod[gkey]||'1M';
-  host.innerHTML=g.items.map(it=>{ const d=mxData[it.sym]; return d?mxCard(it,d,period,gkey):''; }).filter(Boolean).join('');
+// Refresca los sellos de recencia in situ (tictac cada 5s) sin repintar.
+function mxStartRecency(){
+  if(mxRecencyTimer) clearInterval(mxRecencyTimer);
+  const upd=()=>{
+    const nodes=document.querySelectorAll('.mx-recency');
+    if(!nodes.length){ clearInterval(mxRecencyTimer); mxRecencyTimer=null; return; }
+    nodes.forEach(el=>{ el.textContent=mxAgo(+el.getAttribute('data-at')); });
+  };
+  mxRecencyTimer=setInterval(upd,5000);
 }
+
+// ── Crosshair + tooltip de la sparkline (SOLO hover, dispositivos con
+// puntero fino). En móvil no se engancha nada: el tap cae limpio en la
+// delegación global [data-chart-sym] y abre el chart. Nunca preventDefault.
+const MX_HOVER=(typeof window!=='undefined' && window.matchMedia
+  && window.matchMedia('(hover:hover) and (pointer:fine)').matches);
+let mxTipEl=null;
+function mxTip(){ if(!mxTipEl){ mxTipEl=document.createElement('div'); mxTipEl.id='mxTip'; document.body.appendChild(mxTipEl); } return mxTipEl; }
+function mxHideCross(svg){
+  if(svg){ const c=svg.querySelector('.mx-cross'), d=svg.querySelector('.mx-cross-dot');
+    if(c) c.style.display='none'; if(d) d.style.display='none'; }
+  if(mxTipEl) mxTipEl.style.display='none';
+}
+if(MX_HOVER && typeof document!=='undefined'){
+  let mxActiveSvg=null;
+  document.addEventListener('mousemove',(e)=>{
+    const svg=e.target && e.target.closest ? e.target.closest('.mx-spark') : null;
+    if(mxActiveSvg && mxActiveSvg!==svg) mxHideCross(mxActiveSvg);
+    mxActiveSvg=svg;
+    if(!svg) return;
+    let data; try{ data=JSON.parse(svg.getAttribute('data-spark')); }catch(_){ return; }
+    const n=data.c.length; if(n<2) return;
+    const rect=svg.getBoundingClientRect(); if(!rect.width) return;
+    const frac=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));
+    const idx=Math.round(frac*(n-1));
+    const dx=(data.W-data.padX*2)/(n-1);
+    const x=data.padX+idx*dx;
+    const rng=(data.max-data.min)||1;
+    const y=data.padT+(data.H-data.padT-data.padB)*(1-(data.c[idx]-data.min)/rng);
+    const cross=svg.querySelector('.mx-cross'), dot=svg.querySelector('.mx-cross-dot');
+    if(cross){ cross.setAttribute('x1',x); cross.setAttribute('x2',x); cross.style.display=''; }
+    if(dot){ dot.setAttribute('cx',x); dot.setAttribute('cy',y); dot.style.display=''; }
+    const tip=mxTip();
+    tip.innerHTML='<b>'+qdEscHTML(data.v[idx]||'')+'</b><span>'+qdEscHTML(data.d[idx]||'')+'</span>';
+    tip.style.display='block';
+    const tw=tip.offsetWidth||60, th=tip.offsetHeight||28;
+    let tx=e.clientX+12, ty=e.clientY-th-8;
+    if(tx+tw>window.innerWidth-6) tx=e.clientX-tw-12;
+    if(ty<6) ty=e.clientY+14;
+    tip.style.left=tx+'px'; tip.style.top=ty+'px';
+  },{passive:true});
+  document.addEventListener('mouseout',(e)=>{
+    const svg=e.target && e.target.closest ? e.target.closest('.mx-spark') : null;
+    if(svg && (!e.relatedTarget || !svg.contains(e.relatedTarget))){ mxHideCross(svg); if(mxActiveSvg===svg) mxActiveSvg=null; }
+  },{passive:true});
+  document.addEventListener('scroll',()=>{ if(mxActiveSvg){ mxHideCross(mxActiveSvg); mxActiveSvg=null; } },{passive:true,capture:true});
+}
+/* ⟦pct-lint:end⟧ */
 
 async function loadTopBarTickers(){
   const tickers=['SPY','NVDA','BTC/USD','ETH/USD','MELI','GLD'];
@@ -9951,6 +10015,9 @@ function toggleLang(){
   try{ localStorage.setItem('qd_lang', currentLang); }catch(e){}
   document.getElementById('langBtn').textContent = currentLang==='en' ? 'ES' : 'EN';
   applyLang();
+  // Repinta el panel MACRO para localizar el sello de recencia ("hace 47s"
+  // ↔ "47s ago"), la toolbar de periodo y las fechas del tooltip.
+  if(typeof mxData==='object' && Object.keys(mxData).length && document.getElementById('macroMarkets')) mxRender();
 
   // Clear stale server-agent outputs so the user knows to re-analyze in the new language.
   // Only clears panels that already contain a real response (>200 chars); empty/placeholder
