@@ -6,6 +6,7 @@
 import handler, {
   INTERVALS, toBinanceSymbol, toYahooSymbol,
   extractYahooCandles, extractBinanceCandles,
+  YIELD_DIV10, scaleYieldCandles,
 } from '../api/candles.js';
 
 let failures = 0;
@@ -142,6 +143,30 @@ console.log('handler: fallback a api.binance.com si el mirror falla');
   await handler({ method: 'GET', query: { symbol: 'ETH' } }, res);
   ok(urls.length === 2 && /api\.binance\.com/.test(urls[1]), 'mirror caído → api.binance.com', urls.join(' | '));
   ok(res.code === 200 && res.body.candles.length === 1, 'las velas llegan igual');
+}
+
+console.log('scaleYieldCandles: rendimientos ×10 de Yahoo → ÷10');
+{
+  const raw = [{ t: 1, o: 42.0, h: 42.8, l: 41.5, c: 42.5, v: 0 }];
+  const s = scaleYieldCandles('^TNX', raw);
+  ok(s[0].c === 4.25 && s[0].o === 4.2 && s[0].h === 4.28 && s[0].l === 4.15,
+    '^TNX 42.5 → 4.25 (OHLC completo)', JSON.stringify(s[0]));
+  ok(scaleYieldCandles('^tnx', raw)[0].c === 4.25, 'case-insensitive (^tnx)');
+  ok(YIELD_DIV10.has('^TYX') && YIELD_DIV10.has('^FVX') && YIELD_DIV10.has('^IRX'),
+    'cubre 30Y/5Y/13w además del 10Y');
+  ok(scaleYieldCandles('2YY=F', raw) === raw, '2YY=F (futuro, % directo) NO se escala — misma ref');
+  ok(scaleYieldCandles('NVDA', raw) === raw, 'un stock a ~42 NO se toca (por lista, no por valor)');
+}
+
+console.log('handler: ^TNX servido ÷10 en las velas');
+{
+  global.fetch = async () => ({ ok: true, json: async () => ({ chart: { result: [{ meta: { currency: 'USD' },
+    timestamp: [1000, 2000], indicators: { quote: [{ open: [42.0, 42.5], high: [42.9, 43.0], low: [41.8, 42.1], close: [42.5, 42.8], volume: [0, 0] }] } }] } }) });
+  const res = mockRes();
+  await handler({ method: 'GET', query: { symbol: '^TNX' } }, res);
+  ok(res.code === 200 && res.body.candles.length === 2, 'responde 200 con velas', res.code);
+  ok(res.body.candles[0].c === 4.25 && res.body.candles[1].c === 4.28,
+    'el cliente recibe el rendimiento real (4.25/4.28), no 42.5', JSON.stringify(res.body.candles.map(c => c.c)));
 }
 
 console.log('handler: fallo honesto — jamás velas inventadas');

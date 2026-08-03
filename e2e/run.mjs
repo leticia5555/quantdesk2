@@ -984,6 +984,15 @@ const s24g = await page.evaluate(() => {
 report('S24g grupos colapsables (details nativo togglea)', s24g.openBefore === true && s24g.openAfter === false,
   JSON.stringify(s24g));
 
+// S24h: el quote vivo del chart escala ÷10 SOLO para índices de rendimiento
+// (^TNX 42.5 → 4.25), nunca para un stock — así la vela viva no salta a 42.5.
+const s24h = await page.evaluate(() => ({
+  tnx: qdScaleQuote('^TNX', 42.5), tyx: qdScaleQuote('^TYX', 46.0),
+  nvda: qdScaleQuote('NVDA', 190), two: qdScaleQuote('2YY=F', 4.6),
+}));
+report('S24h qdScaleQuote: yields ÷10 (^TNX→4.25), stocks/2YY=F intactos',
+  s24h.tnx === 4.25 && s24h.tyx === 4.6 && s24h.nvda === 190 && s24h.two === 4.6, JSON.stringify(s24h));
+
 // ── console summary ──
 console.log('\n=== CONSOLA (errores/warnings/pageerrors) ===');
 for (const c of consoleLog) console.log(`[${c.tab}] ${c.type}: ${c.text}`);

@@ -2805,6 +2805,13 @@ function qdChartStartLive(sym){
   qdChartPollQuote(sym);
 }
 
+// Índices de rendimiento del Tesoro que Yahoo cotiza ×10 (^TNX 42.5 = 4.25%).
+// candles.js ya divide el histórico ÷10; el quote vivo de /api/tape llega
+// crudo, así que la vela viva se escala igual — si no, saltaría a 42.5. Lista
+// explícita (no heurística de valor): un stock a $190 jamás debe tocarse.
+const QD_YIELD_DIV10=new Set(['^TNX','^TYX','^FVX','^IRX']);
+function qdScaleQuote(sym,price){ return QD_YIELD_DIV10.has(sym)?price/10:price; }
+
 // Acciones (o cripto sin WS): quote de /api/tape cada 30s — la misma
 // fuente/cadencia de la cinta; con la pestaña oculta no se pide nada.
 function qdChartPollQuote(sym){
@@ -2814,7 +2821,8 @@ function qdChartPollQuote(sym){
     const d=await qdFetchJSON('/api/tape?symbols='+encodeURIComponent(sym), null,
       function(x){ return x && x.quotes; });
     const q=d&&d.quotes&&d.quotes[sym];
-    if(q&&sym===qdChartSym) qdChartLiveTick(q.price,q.changePct,false);
+    // changePct es invariante a la escala; el precio sí se escala para yields.
+    if(q&&sym===qdChartSym) qdChartLiveTick(qdScaleQuote(sym,q.price),q.changePct,false);
   };
   qdChartTimer=setInterval(tick,30*1000);
 }
