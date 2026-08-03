@@ -25,7 +25,7 @@ al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 | **Canal SCREENER** — screens deterministas (value/momentum) | `api/_lib/screens.js` |
 | **Canal SCREENER** — capa de datos Neon (tabla + ledger) | `api/_lib/screener-db.js` |
 | **Canal SCREENER** — universo (~150 nombres, extraído de app.html) | `api/_lib/screener-universe.js` |
-| **Canal SCREENER** — cron de precompute (cada 4h) | `api/arena-screener.js` + `vercel.json` |
+| **Canal SCREENER** — cron de precompute (cada 4h) | `api/arena-screener.js` + `.github/workflows/external-crons.yml` (GitHub Actions, **no vercel.json** — ver `docs/crons.md`) |
 | Datos para la UI | `api/arena.js` |
 | Journal | tabla `arena_journal` (`api/_lib/db.js`) |
 | UI (sección en MIS AGENTES) | `app.html` (`qdArenaLoad`/`qdArenaHtml`) |
@@ -307,7 +307,8 @@ acción con marketable limit y la vende); con mercado CERRADO cae a resting
 (venta límite imposible sobre una posición → confirma → cancela).
 
 **Canal screener:** `ARENA_SCREENER_ENABLED=1` prende el cron de precompute
-(`api/arena-screener?job=refresh`, cada 4h en `vercel.json`). Es independiente de
+(`api/arena-screener?job=refresh`, cada 4h vía GitHub Actions —
+`.github/workflows/external-crons.yml`, no `vercel.json`; ver `docs/crons.md`). Es independiente de
 `ARENA_ENABLED`: mientras el cron no haya corrido (o esté apagado) la tabla
 `arena_screener` está vacía → el canal screener llega vacío al PM, no es error.
 El arena-run lee `ARENA_SCREENER_ENABLED` en la misma corrida (es del proyecto

@@ -274,7 +274,8 @@ ya mostró señal.** El v0 (gratis, 4 días) es la opción que de-riesga los $50
 | `api/_lib/pead-universe.js` | Universo v0 (~100 nombres líquidos, priority 0). |
 | `api/pead-harvest.js` | Cron: `?job=earnings\|hour\|seed\|status`. Gated por `CRON_SECRET` + `PEAD_HARVEST_ENABLED`. |
 | `tests/pead-harvest.test.mjs` | 30+ asserts de lógica pura (parse, clasificación, matching, gap, universo). |
-| `vercel.json` | 5 crons/día de goteo + 1 de etiquetado SEC. |
+| `.github/workflows/external-crons.yml` | Goteo `?job=earnings` 5×/día (12,14,16,18,20 UTC). **NO en `vercel.json`**: el Hobby de Vercel limita crons a 1×/día. Ver `docs/crons.md`. |
+| `vercel.json` | Solo el etiquetado SEC `?job=hour` (1×/día, 21:30 UTC). |
 
 ### Arranque (cuando quieras prenderla)
 
