@@ -20,6 +20,7 @@
 
 import { sql, sqlBatch, ensureSchema } from './_lib/db.js';
 import { fetchDailySeries, completedSlice, runAgent, ASSUMPTIONS } from './_lib/sim.js';
+import { beat } from './_lib/heartbeat.js';
 
 // Símbolos que usa un edge (1 para señales, 2 para pares).
 function edgeSymbols(edge) {
@@ -112,6 +113,7 @@ export default async function handler(req, res) {
       }
       const agents = await sql(`select * from agents where status = 'alive' order by created_at`);
       const summary = await processAgents(agents);
+      await beat('agents:run', 'ok', { agents: agents.length });
       return res.status(200).json({ mode: 'cron', ...summary, assumptions: ASSUMPTIONS });
     }
 

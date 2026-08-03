@@ -22,6 +22,7 @@ import {
 import { fetchEarnings } from './_lib/av-earnings.js';
 import { classifyHourFromET, match8K, collect8Ks, loadTickerMap } from './_lib/pead-hour.js';
 import { v0LedgerEntries } from './_lib/pead-universe.js';
+import { beat } from './_lib/heartbeat.js';
 
 const DAILY_CAP = 25;          // AV free tier
 const PER_RUN = 5;             // ≤5/invocación → ~5/min, cabe en 60s
@@ -144,11 +145,12 @@ export default async function handler(req, res) {
   if (secret && (req.headers.authorization || '') !== `Bearer ${secret}`) {
     return res.status(401).json({ error: 'No autorizado.' });
   }
+  const job = String((req.query && req.query.job) || 'earnings').toLowerCase();
+
   if (process.env.PEAD_HARVEST_ENABLED !== '1') {
+    if (job === 'earnings' || job === 'hour') await beat('pead:' + job, 'disabled');
     return res.status(200).json({ disabled: true, hint: 'PEAD_HARVEST_ENABLED != 1' });
   }
-
-  const job = String((req.query && req.query.job) || 'earnings').toLowerCase();
   try {
     await ensurePeadSchema();
 
@@ -160,7 +162,9 @@ export default async function handler(req, res) {
       return res.status(200).json({ job: 'status', day: utcDay(), used: await budgetUsed(utcDay()), cap: DAILY_CAP, ledger: await ledgerStats() });
     }
     if (job === 'hour') {
-      return res.status(200).json(await runHourTagging());
+      const out = await runHourTagging();
+      await beat('pead:hour', 'ok', { tagged: out.tagged ?? null, done: out.done ?? null });
+      return res.status(200).json(out);
     }
 
     // default: earnings
@@ -171,7 +175,9 @@ export default async function handler(req, res) {
     if (stats.pending + stats.done + stats.error + stats.delisted === 0) {
       await seedLedger(v0LedgerEntries());
     }
-    return res.status(200).json(await runEarningsHarvest(apiKey));
+    const out = await runEarningsHarvest(apiKey);
+    await beat('pead:earnings', out.skipped ? 'skipped' : 'ok', { used: out.used ?? null, ledger: out.ledger ?? null });
+    return res.status(200).json(out);
   } catch (err) {
     return res.status(500).json({ error: 'pead-harvest: ' + (err && err.message ? err.message : 'unknown') });
   }
