@@ -334,13 +334,17 @@ td:first-child{color:var(--text);font-weight:500;}
 #mxTip b{display:block;font-size:11px;color:#e6e6e6;font-weight:600;}
 #mxTip span{display:block;font-size:9px;color:#777;margin-top:1px;}
 
-/* Hero: VIX + spread 10Y-2Y destacados */
+/* Hero: VIX + spread 10Y-2Y con gráfica real (Lightweight Charts) */
 .mx-hero{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#111;}
-.mx-hero .mx-h{background:#0d0d0d;padding:12px;cursor:pointer;transition:background .12s;}
-.mx-hero .mx-h:hover{background:#131313;}
+.mx-hero .mx-h{background:#0d0d0d;padding:12px;display:flex;flex-direction:column;}
+.mx-hero .mx-hhead{cursor:pointer;}
+.mx-hero .mx-hhead:hover .mx-big{filter:brightness(1.15);}
 .mx-hero .mx-h .mx-lbl{font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:6px;}
 .mx-hero .mx-h .mx-big{font-family:var(--mono);font-size:30px;font-weight:700;line-height:1;color:#e6e6e6;}
 .mx-hero .mx-h .mx-sub2{font-family:var(--mono);font-size:10px;margin-top:4px;}
+.mx-hero .mx-lvl{color:#888;}
+/* Contenedor de la gráfica del hero (área VIX / baseline del spread) */
+.mx-hchart{width:100%;height:72px;margin-top:8px;}
 @media(max-width:360px){ .mx-hero{grid-template-columns:1fr;} }
 </style>
 </head>
@@ -3988,41 +3992,109 @@ function mxCard(it, d){
     +'</div>';
 }
 
+// ── Heroes con gráfica real (Lightweight Charts), no sparkline ──
+// El VIX se pinta como área y el spread 10Y-2Y como baseline (verde arriba
+// de 0, rojo debajo). La serie viene del batch ({t,c}); el % de cabecera
+// sigue saliendo de qdPeriodChange y se pinta con qdPctTag (periodo
+// obligatorio). Solo la cabecera (.mx-hhead) abre el modal — el área del
+// chart es interactiva (crosshair de LWC), no clicable.
+let mxHeroCharts=[];
+function mxDestroyHeroCharts(){ mxHeroCharts.forEach(c=>{ try{ c.remove(); }catch(e){} }); mxHeroCharts=[]; }
+function mxHeroBase(elId){
+  const el=document.getElementById(elId);
+  if(!el||typeof LightweightCharts==='undefined') return null;
+  const chart=LightweightCharts.createChart(el,{
+    autoSize:true,
+    layout:{background:{type:'solid',color:'rgba(0,0,0,0)'},textColor:'#555',fontSize:9,
+      fontFamily:"'IBM Plex Mono',monospace",attributionLogo:false},
+    grid:{vertLines:{visible:false},horzLines:{visible:false}},
+    rightPriceScale:{visible:false},leftPriceScale:{visible:false},
+    timeScale:{visible:false,borderVisible:false},
+    crosshair:{mode:0,vertLine:{labelVisible:false,color:'#555',width:1,style:0},horzLine:{visible:false,labelVisible:false}},
+    handleScroll:false,handleScale:false,
+    // locale explícito: LWC usa navigator.language por default y los tags
+    // inválidos del entorno (p. ej. 'en-US@posix') revientan Intl con
+    // RangeError al formatear el crosshair (mismo blindaje que el modal).
+    localization:{locale:(typeof currentLang!=='undefined'&&currentLang==='es')?'es-MX':'en-US'},
+  });
+  mxHeroCharts.push(chart);
+  return chart;
+}
+function mxHeroArea(elId,data,col){
+  const chart=mxHeroBase(elId); if(!chart) return;
+  const s=chart.addSeries(LightweightCharts.AreaSeries,{lineColor:col,topColor:col+'55',bottomColor:col+'05',
+    lineWidth:2,priceLineVisible:false,lastValueVisible:false});
+  s.setData(data); chart.timeScale().fitContent();
+}
+function mxHeroBaseline(elId,data){
+  const chart=mxHeroBase(elId); if(!chart) return;
+  const s=chart.addSeries(LightweightCharts.BaselineSeries,{baseValue:{type:'price',price:0},
+    topLineColor:'#00c97d',topFillColor1:'#00c97d40',topFillColor2:'#00c97d05',
+    bottomLineColor:'#E24B4A',bottomFillColor1:'#E24B4A40',bottomFillColor2:'#E24B4A05',
+    lineWidth:2,priceLineVisible:false,lastValueVisible:false});
+  s.setData(data); chart.timeScale().fitContent();
+}
+// Serie [{t,c}] → [{time,value}] de LWC (ascendente, timestamps únicos).
+function mxToLWC(win){ return (win||[]).filter(p=>p&&Number.isFinite(p.t)&&Number.isFinite(p.c)).map(p=>({time:p.t,value:p.c})); }
+// Spread 10Y-2Y por fecha: alinea ^TNX y 2YY=F por timestamp (ambos en %
+// tras mxYield); solo donde existen los dos. → [{time,value}] para LWC.
+function mxSpreadSeries(tnxS,twoS){
+  if(!Array.isArray(tnxS)||!Array.isArray(twoS)) return null;
+  const m={}; twoS.forEach(p=>{ if(p&&Number.isFinite(p.t)) m[p.t]=p.c; });
+  const out=[];
+  tnxS.forEach(p=>{ if(p&&Number.isFinite(p.t)&&m[p.t]!=null) out.push({time:p.t,value:+(mxYield(p.c)-mxYield(m[p.t])).toFixed(3)}); });
+  return out;
+}
+
 function renderMacroHero(el, data){
   if(!el) return;
+  mxDestroyHeroCharts();
   let html='';
-  // VIX — termómetro de miedo
+  // VIX — termómetro de miedo (subir = miedo = rojo, invertido)
   const vix=data['^VIX'];
+  const vixPc=vix?qdPeriodChange(vix.series, mxPeriod):null;
   if(vix){
-    const pc=qdPeriodChange(vix.series, mxPeriod);
-    // En el VIX subir = más miedo (rojo), bajar = calma (verde) — invertido
-    const up=Number.isFinite(pc.pct)?pc.pct>=0:false;
+    const up=Number.isFinite(vixPc.pct)?vixPc.pct>=0:false;
     const col=up?'#E24B4A':'#00c97d';
     const lvl=vix.price>=30?'ELEVATED FEAR':vix.price>=20?'CAUTION':'CALM';
-    html+='<div class="mx-h" data-chart-sym="^VIX" title="VIX · ^VIX">'
-      +'<div class="mx-lbl">VIX · VOLATILITY</div>'
-      +'<div class="mx-big" style="color:'+col+'">'+vix.price.toFixed(2)+'</div>'
-      +'<div class="mx-sub2">'+qdPctTag(pc.pct, pc.periodLabel, {invert:true})
-      +'<span class="mx-lvl" style="color:'+col+'"> · '+lvl+'</span></div>'
-      +'</div>';
+    html+='<div class="mx-h">'
+      +'<div class="mx-hhead" data-chart-sym="^VIX" title="VIX · abrir gráfica">'
+        +'<div class="mx-lbl">VIX · VOLATILITY</div>'
+        +'<div class="mx-big" style="color:'+col+'">'+vix.price.toFixed(2)+'</div>'
+        +'<div class="mx-sub2">'+qdPctTag(vixPc.pct, vixPc.periodLabel, {invert:true})
+        +'<span class="mx-lvl"> · '+lvl+'</span></div>'
+      +'</div><div class="mx-hchart" id="mxHeroVix"></div></div>';
   }else{
     html+='<div class="mx-h"><div class="mx-lbl">VIX · VOLATILITY</div><div class="mx-big" style="color:#333">—</div></div>';
   }
   // Spread 10Y-2Y — nivel (puntos porcentuales), no un % de cambio: sin etiqueta de periodo.
   const tnx=data['^TNX'], two=data['2YY=F'];
+  const spreadSeries=(tnx&&two)?mxSpreadSeries(tnx.series,two.series):null;
   if(tnx&&two){
     const spread=mxYield(tnx.price)-mxYield(two.price);
     const inv=spread<0;
     const col=inv?'#E24B4A':'#00c97d';
-    html+='<div class="mx-h" data-chart-sym="^TNX" title="10Y yield · ^TNX">'
-      +'<div class="mx-lbl">10Y − 2Y SPREAD</div>'
-      +'<div class="mx-big" style="color:'+col+'">'+(spread>=0?'+':'')+spread.toFixed(2)+'<span class="mx-unit"> pp</span></div>'
-      +'<div class="mx-sub2" style="color:'+col+'">'+(inv?'INVERTED · recession signal':'normal curve')+'</div>'
-      +'</div>';
+    html+='<div class="mx-h">'
+      +'<div class="mx-hhead" data-chart-sym="^TNX" title="10Y yield · abrir gráfica">'
+        +'<div class="mx-lbl">10Y − 2Y SPREAD</div>'
+        +'<div class="mx-big" style="color:'+col+'">'+(spread>=0?'+':'')+spread.toFixed(2)+'<span class="mx-unit"> pp</span></div>'
+        +'<div class="mx-sub2" style="color:'+col+'">'+(inv?'INVERTED · recession signal':'normal curve')+'</div>'
+      +'</div><div class="mx-hchart" id="mxHeroSpread"></div></div>';
   }else{
     html+='<div class="mx-h"><div class="mx-lbl">10Y − 2Y SPREAD</div><div class="mx-big" style="color:#333">—</div></div>';
   }
   el.innerHTML=html;
+  // Gráficas LWC tras insertar el DOM (contenedores ya dimensionados). La
+  // ventana coincide con el periodo elegido, para que el chart y el % de
+  // cabecera hablen del mismo tramo.
+  if(vix&&Array.isArray(vix.series)){
+    const col=(Number.isFinite(vixPc.pct)&&vixPc.pct>=0)?'#E24B4A':'#00c97d';
+    mxHeroArea('mxHeroVix', mxToLWC(vixPc.window), col);
+  }
+  if(spreadSeries&&spreadSeries.length>1){
+    const win=(QD_PERIODS[mxPeriod]||{}).tradingDays||21;
+    mxHeroBaseline('mxHeroSpread', spreadSeries.slice(-(win+1)));
+  }
 }
 
 function renderMacroGroups(el, data){

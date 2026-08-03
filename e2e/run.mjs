@@ -956,6 +956,12 @@ const s24 = await page.evaluate(() => {
     tnxVal: tnxCard ? tnxCard.querySelector('.mx-val').innerText : 'NO-CARD',
     heroHasVix: /VIX/.test(hero) && /18\.5/.test(hero),
     heroInverted: /INVERTED/.test(hero),
+    // heroes con gráfica real (Lightweight Charts) — canvas, no sparkline
+    heroVixCanvas: document.querySelectorAll('#mxHeroVix canvas').length,
+    heroSpreadCanvas: document.querySelectorAll('#mxHeroSpread canvas').length,
+    heroHeadSym: (document.querySelector('#macroHero .mx-hhead[data-chart-sym="^VIX"]') != null),
+    // el área del chart NO es clicable (solo la cabecera abre el modal)
+    heroChartNoSym: (document.querySelector('#macroHero .mx-hchart[data-chart-sym]') == null),
     // cada % pintado lleva su etiqueta de periodo (badge qd-pct-per)
     cardsWithPct: cardEls.filter(c => c.querySelector('.qd-pct')).length,
     cardsWithPeriodBadge: cardEls.filter(c => c.querySelector('.qd-pct .qd-pct-per')).length,
@@ -979,6 +985,9 @@ const s24 = await page.evaluate(() => {
 });
 report('S24a hero muestra el VIX con su nivel', s24.heroHasVix, s24.hero.replace(/\n/g, ' · ').slice(0, 80));
 report('S24b hero calcula el spread 10Y-2Y invertido (recession signal)', s24.heroInverted, s24.hero.replace(/\n/g, ' · ').slice(0, 120));
+report('S24b2 heroes VIX+spread con gráfica real (Lightweight Charts, canvas)',
+  s24.heroVixCanvas >= 1 && s24.heroSpreadCanvas >= 1 && s24.heroHeadSym && s24.heroChartNoSym,
+  JSON.stringify({ vix: s24.heroVixCanvas, spread: s24.heroSpreadCanvas, head: s24.heroHeadSym, chartNoSym: s24.heroChartNoSym }));
 report('S24c grupos por región presentes (RATES/FX/COMMODITIES/ASIA/EUROPE/LATAM/FUTURES)',
   ['RATES', 'FX GLOBAL', 'COMMODITIES', 'ASIA', 'EUROPE', 'LATAM', 'US FUTURES'].every(t => s24.secs.some(s => s.includes(t))),
   JSON.stringify(s24.secs));
