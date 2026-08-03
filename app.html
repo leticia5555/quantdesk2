@@ -2401,7 +2401,7 @@ function renderScreenerResults(results, sortBy){
       // Price
       +'<div style="font-family:var(--mono);font-size:11px;color:'+(r.no_price?'#555':'#ccc')+';">'+(r.no_price?'n/a':'$'+r.price.toLocaleString(undefined,{maximumFractionDigits:2}))+'</div>'
       // 30d return
-      +'<div style="font-family:var(--mono);font-size:11px;color:'+(r.return30d==null?'#555':retColor)+';">'+(r.return30d==null?'n/a':((r.return30d>=0?'+':'')+r.return30d.toFixed(1)+'%'))+'</div>'
+      +'<div style="font-family:var(--mono);font-size:11px;color:'+(r.return30d==null?'#555':retColor)+';">'+(r.return30d==null?'n/a':((r.return30d>=0?'+':'')+r.return30d.toFixed(1)+'%'))+'</div>' // pct-lint-ok: retorno 30d bajo la columna rotulada "30D %" (línea 1176), periodo explícito
       // Sigma
       +'<div style="font-family:var(--mono);font-size:11px;color:#888;">'+(r.sigma_pct==null?NA:r.sigma_pct.toFixed(0)+'%')+'</div>'
       // Squeeze
@@ -3401,7 +3401,7 @@ async function runSmartMoney(){
       ?'DATA AS OF TODAY ('+qdTodayLabel()+', live feed): '+ticker+' trades at $'+pd.currentPrice
         +(pd.low52w&&pd.high52w?', 52w range $'+pd.low52w+'-$'+pd.high52w:'')
         +(pd.sigma?', annualized volatility '+(pd.sigma*100).toFixed(0)+'%':'')
-        +(pd.return30d!=null?', 30d return '+(pd.return30d*100).toFixed(1)+'%':'')
+        +(pd.return30d!=null?', 30d return '+(pd.return30d*100).toFixed(1)+'%':'') // pct-lint-ok: string de prompt a Claude, no UI; el periodo va explícito ("30d return")
         +'. Anchor your analysis to these numbers. '
       :'';
     const { text:aiText, reason:aiReason }=await qdAIx({max_tokens:2000,
@@ -3774,6 +3774,7 @@ async function loadMacroPage(){
 // ancla (aprox: ~5/semana, ~21/mes, ~63/trimestre). El label es lo que se
 // pinta pegado al %.
 const QD_PERIODS={
+  '1D':{ label:'1D', tradingDays:1,  toggle:false }, // cambio de la última sesión; NO se ofrece en el toggle MACRO
   '1S':{ label:'1S', tradingDays:5  },
   '1M':{ label:'1M', tradingDays:21 },
   '3M':{ label:'3M', tradingDays:63 },
@@ -3810,6 +3811,18 @@ function qdPctTag(pct, periodLabel, opts){
   const txt=fin?((up?'+':'')+pct.toFixed(2)+'%'):'—';
   return '<span class="qd-pct" style="color:'+col+'">'+txt
     +'<span class="qd-pct-per">'+qdEscHTML(periodLabel)+'</span></span>';
+}
+
+// Cambio 1D de un instrumento a partir de la respuesta de /api/price. Se PROHÍBE
+// leer d.dayChange: en fin de semana ese campo arrastra un prevClose viejo y sale
+// un % gigante mudo (fue el bug del strip QUANTDESK MARKETS: SPX "+20%"). Se ancla
+// a la serie de cierres (recentPrices + precio actual) y se rotula vía qdPctTag('1D').
+function qdDailyChange(d){
+  const closes=(d&&Array.isArray(d.recentPrices)?d.recentPrices:[])
+    .filter(v=>Number.isFinite(v)&&v>0).map((c,i)=>({t:i,c}));
+  if(d&&Number.isFinite(d.currentPrice)&&(!closes.length||closes[closes.length-1].c!==d.currentPrice))
+    closes.push({t:closes.length,c:d.currentPrice});
+  return qdPeriodChange(closes,'1D');
 }
 
 /* ⟦pct-lint:start⟧ — zona de render del panel MACRO. Todo % de cambio aquí
@@ -3968,7 +3981,7 @@ function mxSetPeriod(p){ if(!QD_PERIODS[p]||p===mxPeriod) return; mxPeriod=p; mx
 // Toolbar de periodo (1S · 1M · 3M). Segmentado, móvil primero.
 function renderMacroToolbar(){
   const es=(typeof currentLang!=='undefined'&&currentLang==='es');
-  const btns=Object.keys(QD_PERIODS).map(k=>
+  const btns=Object.keys(QD_PERIODS).filter(k=>QD_PERIODS[k].toggle!==false).map(k=>
     '<button type="button" class="mx-per'+(k===mxPeriod?' on':'')+'" onclick="mxSetPeriod(\''+k+'\')">'
     +QD_PERIODS[k].label+'</button>').join('');
   return '<div class="mx-toolbar"><span class="mx-toolbar-lbl">'+(es?'PERIODO':'PERIOD')+'</span>'
@@ -4180,24 +4193,54 @@ if(MX_HOVER && typeof document!=='undefined'){
 }
 /* ⟦pct-lint:end⟧ */
 
+// Estado del mercado de ACCIONES de EEUU (aprox. hora del Este; sin festivos ni
+// intraday perfecto — suficiente para rotular "abierto / cerrado · cierre del X").
+// El cripto cotiza 24/7, así que se rotula aparte por instrumento.
+function qdMarketStatus(nowArg){
+  const now=nowArg||new Date();
+  const etH=((now.getUTCHours()-4+24)%24)+now.getUTCMinutes()/60; // EDT approx (mismo criterio que la cinta viva)
+  const dow=now.getUTCDay(); // 0=domingo … 6=sábado
+  const isWeekend=dow===0||dow===6;
+  const open=!isWeekend&&etH>=9.5&&etH<16;
+  // Último día de sesión: hoy si ya abrió; si no (fin de semana o pre-apertura), el hábil anterior.
+  let d=dow;
+  if(isWeekend||etH<9.5){ do{ d=(d+6)%7; }while(d===0||d===6); }
+  const es=(typeof currentLang!=='undefined'&&currentLang==='es');
+  const days=es?['domingo','lunes','martes','miércoles','jueves','viernes','sábado']
+               :['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const label=open?(es?'abierto':'open')
+                  :(es?('cerrado · cierre del '+days[d]):('closed · '+days[d]+' close'));
+  return { open, isWeekend, lastSessionDay:days[d], label };
+}
+
 async function loadTopBarTickers(){
   const tickers=['SPY','NVDA','BTC/USD','ETH/USD','MELI','GLD'];
   const names={'SPY':'SPX','NVDA':'NVDA','BTC/USD':'BTC','ETH/USD':'ETH','MELI':'MELI','GLD':'GOLD'};
+  const CRYPTO=new Set(['BTC/USD','ETH/USD']);
   const results=await Promise.allSettled(
     tickers.map(t=>fetch('/api/price?ticker='+encodeURIComponent(normalizeTicker(t))).then(r=>r.json()))
   );
   const el=document.getElementById('topBarTickers');
   if(!el) return;
-  el.innerHTML=results.map((r,i)=>{
+  const es=(typeof currentLang!=='undefined'&&currentLang==='es');
+  const mkt=qdMarketStatus();
+  // Chip de estado: aplica a las ACCIONES del strip. Los precios congelados en
+  // fin de semana son correctos (cierre del viernes); el chip lo dice para que
+  // no parezca roto. El cripto va rotulado "24/7" porque sí se mueve.
+  const chip='<span title="'+(es?'Acciones de EEUU':'US equities')+'" style="font-family:var(--mono);font-size:9px;color:'+(mkt.open?'#00c97d':'#888')+';border:1px solid #222;border-radius:2px;padding:1px 5px;white-space:nowrap;">'
+    +(mkt.open?'● ':'○ ')+(es?'ACCIONES: ':'STOCKS: ')+mkt.label+'</span>';
+  const cells=results.map((r,i)=>{
     const t=tickers[i];
-    if(r.status!=='fulfilled'||!r.value.currentPrice) return '';
+    if(r.status!=='fulfilled'||!r.value||!r.value.currentPrice) return '';
     const d=r.value;
-    // Cinta compacta: cambio DIARIO (dayChange), no el 30d — igual que la cinta viva.
-    const ret=(typeof d.dayChange==='number')?d.dayChange:0;
-    const col=ret>=0?'#00c97d':'#E24B4A';
+    // % por la fuente compartida: cambio 1D anclado a la serie (NO d.dayChange, que
+    // en fin de semana pinta un ~20% mudo). qdPctTag obliga a rotular el periodo.
+    const pc=qdDailyChange(d);
     const price=d.currentPrice>1000?d.currentPrice.toLocaleString(undefined,{maximumFractionDigits:0}):d.currentPrice.toFixed(2);
-    return '<span data-chart-sym="'+t+'" title="'+(names[t]||t)+' · chart" style="font-family:var(--mono);font-size:10px;cursor:pointer;"><span style="color:#888;">'+(names[t]||t)+' </span><span style="color:#ddd;">'+price+'</span> <span style="color:'+col+';">'+(ret>=0?'+':'')+(ret*100).toFixed(2)+'%</span></span>';
-  }).filter(Boolean).join('<span style="color:#222;margin:0 4px;">|</span>');
+    const tag=CRYPTO.has(t)?'<span title="'+(es?'cotiza 24/7':'trades 24/7')+'" style="color:#555;font-size:8px;margin-left:3px;">24/7</span>':'';
+    return '<span data-chart-sym="'+t+'" title="'+(names[t]||t)+' · chart" style="font-family:var(--mono);font-size:10px;cursor:pointer;"><span style="color:#888;">'+(names[t]||t)+' </span><span style="color:#ddd;">'+price+'</span> '+qdPctTag(pc.pct,pc.periodLabel)+tag+'</span>';
+  }).filter(Boolean);
+  el.innerHTML=chip+(cells.length?'<span style="color:#222;margin:0 6px;">|</span>'+cells.join('<span style="color:#222;margin:0 4px;">|</span>'):'');
 }
 
 async function loadMarketMovers(){
@@ -4264,8 +4307,8 @@ async function loadFearGreed(){
     const label=score<=25?'Extreme Fear':score<=45?'Fear':score<=55?'Neutral':score<=75?'Greed':'Extreme Greed';
 
     // Build description from actual data
-    const btcRet=btc?.return30d?((btc.return30d*100).toFixed(1)+'%'):'n/a';
-    const spyRet=spy?.return30d?((spy.return30d*100).toFixed(1)+'%'):'n/a';
+    const btcRet=btc?.return30d?((btc.return30d*100).toFixed(1)+'%'):'n/a'; // pct-lint-ok: retorno 30d rotulado "30d" en la descripción (var desc), periodo explícito
+    const spyRet=spy?.return30d?((spy.return30d*100).toFixed(1)+'%'):'n/a'; // pct-lint-ok: retorno 30d rotulado "30d" en la descripción (var desc), periodo explícito
     const desc='BTC '+btcRet+' · SPY '+spyRet+' 30d. '+(score<45?'Risk-off sentiment dominant — investors cautious.':score>55?'Risk-on appetite — markets showing confidence.':'Mixed signals. No clear directional bias.');
 
     renderFearGreed(score, label, desc);
@@ -4400,22 +4443,23 @@ async function loadMarketSummary(){
         html+='<div style="background:#111;padding:8px;"><div style="font-family:var(--mono);font-size:9px;color:#444;">'+(names[t]||t.replace('/USD',''))+'</div><div style="font-size:12px;color:#333;">—</div></div>';
         return;
       }
-      // Número principal = cambio DIARIO (dayChange), consistente con la cinta viva.
-      // return30d baja a una línea rotulada "30D" para no mezclar periodos sin etiqueta.
-      const day=(typeof d.dayChange==='number')?d.dayChange:null;
-      const r30=(typeof d.return30d==='number')?d.return30d:null;
-      const dayColor=day==null?'#666':(day>=0?'#00c97d':'#E24B4A');
-      const cardBg=day==null?'rgba(255,255,255,.02)':(day>=0?'rgba(0,201,125,.05)':'rgba(226,75,74,.05)');
+      // % SIEMPRE por la fuente compartida (qdPeriodChange + qdPctTag): 1D como número
+      // principal (consistente con la cinta viva) y 1M como línea secundaria rotulada.
+      // Nada de d.dayChange/d.return30d crudos: en fin de semana arrastran prevCloses
+      // viejos y pintan un % gigante mudo (mismo bug que el strip).
+      const pcDay=qdDailyChange(d);
+      const pcMon=qdPeriodChange((d&&Array.isArray(d.recentPrices)?d.recentPrices:[])
+        .filter(v=>Number.isFinite(v)&&v>0).map((c,i)=>({t:i,c})),'1M');
+      const up=Number.isFinite(pcDay.pct)&&pcDay.pct>=0;
+      const cardBg=!Number.isFinite(pcDay.pct)?'rgba(255,255,255,.02)':(up?'rgba(0,201,125,.05)':'rgba(226,75,74,.05)');
       const price=d.currentPrice>10000?'$'+d.currentPrice.toLocaleString(undefined,{maximumFractionDigits:0}):
                   d.currentPrice>100?'$'+d.currentPrice.toLocaleString(undefined,{maximumFractionDigits:0}):
                   '$'+d.currentPrice.toFixed(2);
-      const dayTxt=day==null?'—':((day>=0?'+':'')+(day*100).toFixed(2)+'%');
-      const r30Txt=r30==null?'':('<span style="color:#555;">30D </span><span style="color:'+(r30>=0?'#00c97d':'#E24B4A')+';">'+(r30>=0?'+':'')+(r30*100).toFixed(1)+'%</span>');
       html+='<div data-chart-sym="'+t+'" title="'+(names[t]||t.replace('/USD',''))+' · chart" style="background:'+cardBg+';border:1px solid #1a1a1a;padding:8px;cursor:pointer;">'
         +'<div style="font-family:var(--mono);font-size:9px;color:#666;margin-bottom:3px;">'+(names[t]||t.replace('/USD',''))+'</div>'
         +'<div style="font-size:13px;font-weight:600;font-family:var(--mono);color:#e0e0e0;">'+price+'</div>'
-        +'<div style="font-family:var(--mono);font-size:10px;color:'+dayColor+';margin-top:1px;">'+dayTxt+'</div>'
-        +(r30Txt?'<div style="font-family:var(--mono);font-size:8px;margin-top:1px;">'+r30Txt+'</div>':'')
+        +'<div style="font-family:var(--mono);font-size:10px;margin-top:1px;">'+qdPctTag(pcDay.pct,pcDay.periodLabel)+'</div>'
+        +(Number.isFinite(pcMon.pct)?'<div style="font-family:var(--mono);font-size:8px;margin-top:1px;">'+qdPctTag(pcMon.pct,pcMon.periodLabel)+'</div>':'')
         +'</div>';
     });
   });
@@ -4459,7 +4503,6 @@ function renderCurrencies(pairs, fx){
     const data=fx.find(f=>f.pair===p.pair)||{rate:0,change30d:0,trend:'STABLE',risk:'MEDIUM'};
     const riskColor={'HIGH':'#E24B4A','MEDIUM':'#EF9F27','LOW':'#00c97d'}[data.risk]||'#888';
     const trendIcon={'UP':'↑','DOWN':'↓','STABLE':'→'}[data.trend]||'→';
-    const chgColor=data.change30d>0?'#E24B4A':'#00c97d'; // UP = USD stronger = bad for LATAM
     return '<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid #1a1a1a;">'
       +'<span style="font-size:13px;">'+p.flag+'</span>'
       +'<div style="flex:1;">'
@@ -4467,7 +4510,7 @@ function renderCurrencies(pairs, fx){
       +'</div>'
       +'<div style="text-align:right;">'
       +'<div style="font-family:var(--mono);font-size:12px;font-weight:600;color:#ddd;">'+(data.rate?data.rate.toFixed(2):'—')+'</div>'
-      +'<div style="font-family:var(--mono);font-size:9px;color:'+chgColor+';">'+trendIcon+' '+(data.change30d>0?'+':'')+data.change30d.toFixed(1)+'%</div>'
+      +'<div style="font-family:var(--mono);font-size:9px;">'+trendIcon+' '+qdPctTag(data.change30d,'1M',{invert:true})+'</div>'
       +'</div>'
       +'</div>';
   }).join('');
@@ -4861,7 +4904,7 @@ function renderLiveTape(){
 
   const items=keys.map(t=>{
     const d=livePrices[t];
-    const ret = d.dayChange != null ? d.dayChange : 0;
+    const ret = d.dayChange != null ? d.dayChange : 0; // pct-lint-ok: cinta viva intradía; dayChange = changePct/100 de /api/tape (close-vs-prevClose del día), no el /api/price
     const cls=ret>=0?'up':'dn';
     const sign=ret>=0?'+':'';
     const displayTicker=t.replace('/USD','');
@@ -6082,7 +6125,7 @@ function showSimAnalysis(cd,ticker,capital,days){
   const name=cd.longName&&cd.longName!==ticker?cd.longName:'';
   const priceStr=cd.current_price?'$'+Number(cd.current_price).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'';
   const rangeStr=cd.high52w?(cd.recentIPO||cd.rangeUnreliable?'post-IPO range $':'52w $')+cd.low52w.toFixed(0)+'-$'+cd.high52w.toFixed(0):'';
-  const ret30d=cd.return30d?(cd.return30d>=0?'+':'')+( cd.return30d*100).toFixed(1)+'% 30d':'';
+  const ret30d=cd.return30d?(cd.return30d>=0?'+':'')+( cd.return30d*100).toFixed(1)+'% 30d':''; // pct-lint-ok: retorno 30d con periodo explícito pegado ("% 30d")
   const dataColor=cd.recentPrices?'var(--green)':'var(--amber)';
   const dataTag=cd.recentPrices?'LIVE DATA':'EST';
   // Show mu with standard error (institutional-grade honesty about estimation uncertainty)
@@ -15287,14 +15330,19 @@ function margin_color(pct, threshold, COL){
     const name = (p && p.longName) || (TICKER_NAMES[sym]) || '';
     const price = p && typeof p.currentPrice === 'number' ? `$${p.currentPrice.toFixed(2)}` : null;
 
+    // % por la fuente compartida (qdDailyChange + qdPctTag): NUNCA p.dayChange crudo,
+    // que en fin de semana arrastra un prevClose viejo y pinta un % mudo. qdPctTag rotula
+    // el periodo ("1D"); el cambio en $ se conserva aparte.
     let changeStr = '';
     let changeColor = '#888';
-    if (p && typeof p.dayChange === 'number') {
-      const pct = p.dayChange * 100;
-      const abs = (p.currentPrice * p.dayChange);
-      const sign = pct >= 0 ? '+' : '';
-      changeStr = `${sign}${abs.toFixed(2)} (${sign}${pct.toFixed(2)}%)`;
-      changeColor = pct > 0 ? GREEN : pct < 0 ? RED : '#888';
+    if (p && Number.isFinite(p.currentPrice)) {
+      const pc = qdDailyChange(p);
+      if (Number.isFinite(pc.pct)) {
+        const abs = p.currentPrice * pc.pct / 100;
+        const sign = pc.pct >= 0 ? '+' : '';
+        changeStr = `${sign}${abs.toFixed(2)} ${qdPctTag(pc.pct, pc.periodLabel)}`;
+        changeColor = pc.pct > 0 ? GREEN : pc.pct < 0 ? RED : '#888';
+      }
     }
 
     let mcapStr = null;
@@ -15316,8 +15364,7 @@ function margin_color(pct, threshold, COL){
       `<span style="color:#ddd;font-weight:700;">${escapeHtml(sym)}</span>`,
       name ? `<span style="color:#888;">${escapeHtml(name)}</span>` : '',
       price ? `<span style="color:#ddd;font-weight:600;">${price}</span>` : '',
-      changeStr ? `<span style="color:${changeColor};font-weight:600;">${changeStr}</span>` : '',
-      changeStr ? `<span style="color:#444;">1d</span>` : ''
+      changeStr ? `<span style="color:${changeColor};font-weight:600;">${changeStr}</span>` : ''
     ].filter(Boolean);
 
     const line2Parts = [

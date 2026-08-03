@@ -5,8 +5,8 @@
 // en un componente (cambio de 30 días pintado como si fuera diario). La
 // causa raíz era que CADA componente calculaba y pintaba su propio %.
 //
-// Este lint lo hace IMPOSIBLE de repetir en el panel MACRO, con la misma
-// forma que el date-lint (tests/no-hardcoded-dates.test.mjs):
+// Este lint lo hace IMPOSIBLE de repetir, con la misma forma que el
+// date-lint (tests/no-hardcoded-dates.test.mjs):
 //
 //   1. Garantía de comportamiento — extrae qdPeriodChange/qdPctTag del
 //      código real de app.html y verifica que qdPctTag LANZA si le falta
@@ -15,8 +15,21 @@
 //   2. Recorre la zona de render MACRO (entre los sellos ⟦pct-lint⟧) y
 //      FALLA si alguien reintroduce un % calculado/pintado a mano
 //      (`+'%'`) o vuelve a leer el `changePct` del server. El único
-//      camino permitido es qdPctTag(pct, periodLabel) — y ahí se ve que
-//      efectivamente se usa.
+//      camino permitido es qdPctTag(pct, periodLabel).
+//   3. Escáner FILE-WIDE (todo app.html, no solo la zona MACRO): el bug
+//      volvió en el strip QUANTDESK MARKETS justamente porque vivía FUERA
+//      de los sellos. Ahora, viva donde viva, NINGÚN componente puede:
+//        · leer `d.dayChange` de /api/price (en fin de semana arrastra un
+//          prevClose viejo y sale un % gigante mudo) — hay que anclar el
+//          cambio con qdDailyChange/qdPeriodChange; ni
+//        · pintar un `return30d`/`change30d` como % a mano — va por qdPctTag.
+//      Y comprueba que los widgets de cotización (strip, tarjetas, context
+//      strip) efectivamente usan la fuente compartida.
+//
+// Fuera de alcance a propósito: el `changePct` DIARIO close-vs-prevClose de
+// vistas dedicadas de hoy (cinta viva /api/tape, heatmap de sectores
+// /api/sectores) — es un cambio del día por construcción, no un periodo
+// confundible. Dentro de la zona MACRO igual está prohibido (regla 2).
 //
 // Exento: líneas marcadas con `pct-lint-ok` (waiver explícito, dejá el
 // porqué al lado) y comentarios.
@@ -126,4 +139,71 @@ test('cero porcentajes pintados a mano en la zona de render MACRO', () => {
     if (hit) violations.push(`app.html:${base + i} [${hit}] → usa qdPctTag(pct, periodLabel) / qdPeriodChange, o marca pct-lint-ok con el porqué\n    ${line.trim()}`);
   });
   assert.deepEqual(violations, [], '\n' + violations.join('\n'));
+});
+
+// ═══ escáner FILE-WIDE (estilo date-lint) ═══════════════════════
+// El bug reaparece donde no estás mirando si el lint solo cubre la zona
+// MACRO. Estas reglas recorren TODO app.html: ningún componente, viva donde
+// viva, pinta un cambio/retorno de mercado como % sin rotular su periodo.
+const FILEWIDE = [
+  // El campo que causó el bug: /api/price.dayChange. En fin de semana arrastra
+  // un prevClose viejo → un ~20% que se pinta como si fuera diario. Prohibido
+  // leerlo: el cambio 1D se ancla a la serie con qdDailyChange/qdPeriodChange.
+  { name: '.dayChange crudo de /api/price (usa qdDailyChange/qdPeriodChange)', re: /\.dayChange\b/ },
+  // Un retorno de periodo (return30d/change30d) formateado como % a mano.
+  // El único camino es qdPctTag, que obliga a la etiqueta.
+  { name: 'return30d/change30d pintado como % a mano (usa qdPctTag)',
+    re: /(return30d|change30d)[\s\S]*?\.toFixed\([^)]*\)\s*\+\s*['"`]\s*%/ },
+];
+
+function scanFilewide(line) {
+  if (/^\s*(\/\/|\*|\/\*|<!--)/.test(line)) return null; // comentario
+  if (/pct-lint-ok/.test(line)) return null;             // waiver explícito
+  const code = line.replace(/\s\/\/.*$/, '');            // corta comentario al final de línea
+  for (const p of FILEWIDE) if (p.re.test(code)) return p.name;
+  return null;
+}
+
+test('el escáner file-wide reconoce las formas del bug (y no grita con lo legítimo)', () => {
+  // el strip original: dayChange lavado en un local y pintado como % mudo
+  assert.ok(scanFilewide("    const ret=(typeof d.dayChange==='number')?d.dayChange:0;"), 'lee .dayChange → flag');
+  assert.ok(scanFilewide("      const r30Txt=(r30>=0?'+':'')+(d.return30d*100).toFixed(1)+'%';"), 'return30d pintado a mano → flag');
+  // y NO grita con lo legítimo:
+  assert.equal(scanFilewide("    const pc=qdDailyChange(d);"), null, 'qdDailyChange es el camino permitido');
+  assert.equal(scanFilewide("      '+qdPctTag(pc.pct,pc.periodLabel)+'"), null, 'qdPctTag es el camino permitido');
+  assert.equal(scanFilewide("  const m=btc.return30d;"), null, 'leer return30d para SCORING (sin pintar %) es legítimo');
+  assert.equal(scanFilewide("    return30d: ret30 != null ? parseFloat(ret30.toFixed(1)) : null,"), null, 'guardar return30d (sin +%) es legítimo');
+  assert.equal(scanFilewide("      { name: '30d return > +10%', get: c => c.return30d > 10 },"), null, 'nombre de filtro con % literal, no un valor pintado');
+  assert.equal(scanFilewide("    const ret = d.dayChange != null ? d.dayChange : 0; // pct-lint-ok: cinta viva"), null, 'waiver pct-lint-ok exime');
+  assert.equal(scanFilewide("      +'<div>'+s.changePct.toFixed(2)+'%</div>'"), null, 'changePct diario (tape/sectores) está fuera de alcance file-wide');
+});
+
+test('cero cambios/retornos de mercado pintados como % mudo en TODO app.html', () => {
+  const violations = [];
+  SRC.split('\n').forEach((line, i) => {
+    const hit = scanFilewide(line);
+    if (hit) violations.push(`app.html:${i + 1} [${hit}]\n    ${line.trim()}`);
+  });
+  assert.deepEqual(violations, [], '\n' + violations.join('\n'));
+});
+
+test('los widgets de cotización usan la fuente compartida (no dayChange crudo)', () => {
+  const shared = ['function qdDailyChange', 'function qdMarketStatus'];
+  for (const s of shared) assert.ok(SRC.includes(s), 'falta el helper compartido: ' + s);
+
+  // Cada widget que antes leía d.dayChange debe anclar el cambio 1D vía
+  // qdDailyChange y pintar vía qdPctTag (nunca .dayChange crudo).
+  const widgets = ['function loadTopBarTickers', 'function loadMarketSummary', 'function renderContextStrip'];
+  for (const w of widgets) {
+    const i = SRC.indexOf(w);
+    assert.ok(i > 0, 'no encuentro ' + w);
+    const body = SRC.slice(i, i + 5200);
+    assert.match(body, /qdDailyChange\(/, w + ' debe anclar el cambio 1D con qdDailyChange');
+    assert.match(body, /qdPctTag\(/, w + ' debe pintar el % con qdPctTag');
+    // (que NO lea .dayChange crudo lo garantiza el escáner file-wide de arriba)
+  }
+
+  // El strip además rotula el estado de mercado (abierto/cerrado) por instrumento.
+  const strip = SRC.slice(SRC.indexOf('function loadTopBarTickers'), SRC.indexOf('function loadTopBarTickers') + 2600);
+  assert.match(strip, /qdMarketStatus\(/, 'el strip debe rotular el estado del mercado');
 });
