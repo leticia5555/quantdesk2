@@ -271,6 +271,46 @@ td:first-child{color:var(--text);font-weight:500;}
   .page{padding:16px;}
   .nav-btn{padding:0 10px;font-size:10px;}
 }
+
+/* ─── MACRO: grid Bloomberg → una columna en móvil (móvil primero) ─── */
+.macro-grid{display:grid;grid-template-columns:220px 1fr 260px;gap:1px;background:#111;min-height:calc(100vh - 80px);}
+@media(max-width:900px){ .macro-grid{grid-template-columns:1fr;min-height:0;} }
+
+/* Bloque macro colapsable (nativo <details>) */
+.mx-sec{border-bottom:1px solid #1a1a1a;}
+.mx-sec>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;
+  padding:9px 12px;font-family:var(--mono);font-size:9px;letter-spacing:.1em;color:#ff6600;
+  user-select:none;}
+.mx-sec>summary::-webkit-details-marker{display:none;}
+.mx-sec>summary .mx-chev{margin-left:auto;color:#555;transition:transform .15s;font-size:10px;}
+.mx-sec[open]>summary .mx-chev{transform:rotate(90deg);}
+.mx-sec>summary .mx-sub{color:#444;letter-spacing:.04em;font-weight:400;}
+.mx-body{padding:0 12px 12px;}
+
+/* Rejilla de tarjetas macro: 4 → 3 → 2 según ancho */
+.mx-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}
+@media(max-width:1200px){ .mx-cards{grid-template-columns:repeat(3,1fr);} }
+@media(max-width:520px){ .mx-cards{grid-template-columns:repeat(2,1fr);} }
+
+/* Tarjeta clicable con sparkline */
+.mx-card{position:relative;background:#111;border:1px solid #1a1a1a;border-radius:2px;
+  padding:8px 8px 6px;cursor:pointer;overflow:hidden;transition:border-color .12s,background .12s;}
+.mx-card:hover{border-color:#333;background:#141414;}
+.mx-card .mx-lbl{font-family:var(--mono);font-size:9px;color:#888;margin-bottom:2px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.mx-card .mx-val{font-family:var(--mono);font-size:14px;font-weight:600;color:#e6e6e6;line-height:1.1;}
+.mx-card .mx-chg{font-family:var(--mono);font-size:10px;margin-top:1px;}
+.mx-card .mx-spark{display:block;width:100%;height:22px;margin-top:4px;}
+.mx-card .mx-unit{font-size:9px;color:#555;font-weight:400;}
+
+/* Hero: VIX + spread 10Y-2Y destacados */
+.mx-hero{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#111;}
+.mx-hero .mx-h{background:#0d0d0d;padding:12px;cursor:pointer;transition:background .12s;}
+.mx-hero .mx-h:hover{background:#131313;}
+.mx-hero .mx-h .mx-lbl{font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:6px;}
+.mx-hero .mx-h .mx-big{font-family:var(--mono);font-size:30px;font-weight:700;line-height:1;color:#e6e6e6;}
+.mx-hero .mx-h .mx-sub2{font-family:var(--mono);font-size:10px;margin-top:4px;}
+@media(max-width:360px){ .mx-hero{grid-template-columns:1fr;} }
 </style>
 </head>
 <body>
@@ -787,7 +827,7 @@ td:first-child{color:var(--text);font-weight:500;}
   </div>
 
   <!-- MAIN BLOOMBERG GRID -->
-  <div style="display:grid;grid-template-columns:220px 1fr 260px;gap:1px;background:#111;min-height:calc(100vh - 80px);">
+  <div class="macro-grid">
 
     <!-- LEFT PANEL: Fear & Greed + FX -->
     <div style="background:#0d0d0d;display:flex;flex-direction:column;gap:1px;">
@@ -825,9 +865,16 @@ td:first-child{color:var(--text);font-weight:500;}
     <!-- CENTER PANEL: Markets + Heatmap + Calendar -->
     <div style="background:#0d0d0d;display:flex;flex-direction:column;gap:1px;">
 
-      <!-- Markets table -->
+      <!-- ═══ MACRO MARKETS (VIX · rates · FX global · commodities · índices · futuros) ═══ -->
+      <!-- Hero: VIX + spread 10Y-2Y -->
+      <div id="macroHero" class="mx-hero"></div>
+
+      <!-- Grupos colapsables (nativo <details>, móvil primero) -->
+      <div id="macroMarkets"></div>
+
+      <!-- Markets table (US · CRYPTO · ADRs LATAM en NY) -->
       <div style="padding:12px;border-bottom:1px solid #1a1a1a;">
-        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;" data-i18n="globalMarkets">GLOBAL MARKETS</div>
+        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;" data-i18n="globalMarkets">US · CRYPTO · LATAM ADRs</div>
         <div id="marketCards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;"></div>
       </div>
 
@@ -2758,6 +2805,13 @@ function qdChartStartLive(sym){
   qdChartPollQuote(sym);
 }
 
+// Índices de rendimiento del Tesoro que Yahoo cotiza ×10 (^TNX 42.5 = 4.25%).
+// candles.js ya divide el histórico ÷10; el quote vivo de /api/tape llega
+// crudo, así que la vela viva se escala igual — si no, saltaría a 42.5. Lista
+// explícita (no heurística de valor): un stock a $190 jamás debe tocarse.
+const QD_YIELD_DIV10=new Set(['^TNX','^TYX','^FVX','^IRX']);
+function qdScaleQuote(sym,price){ return QD_YIELD_DIV10.has(sym)?price/10:price; }
+
 // Acciones (o cripto sin WS): quote de /api/tape cada 30s — la misma
 // fuente/cadencia de la cinta; con la pestaña oculta no se pide nada.
 function qdChartPollQuote(sym){
@@ -2767,7 +2821,8 @@ function qdChartPollQuote(sym){
     const d=await qdFetchJSON('/api/tape?symbols='+encodeURIComponent(sym), null,
       function(x){ return x && x.quotes; });
     const q=d&&d.quotes&&d.quotes[sym];
-    if(q&&sym===qdChartSym) qdChartLiveTick(q.price,q.changePct,false);
+    // changePct es invariante a la escala; el precio sí se escala para yields.
+    if(q&&sym===qdChartSym) qdChartLiveTick(qdScaleQuote(sym,q.price),q.changePct,false);
   };
   qdChartTimer=setInterval(tick,30*1000);
 }
@@ -3642,12 +3697,160 @@ async function loadMacroPage(){
   await Promise.all([
     loadFearGreed(),
     loadCurrencies(),
+    loadMacroMarkets(),
     loadMarketSummary(),
     loadEconCalendar(),
     loadSectorHeatmap(),
     loadTopBarTickers(),
     loadMarketMovers()
   ]);
+}
+
+// ── MACRO MARKETS ──────────────────────────────────────
+// VIX, rendimientos, FX global, commodities, índices globales por región
+// y futuros EE.UU. — TODO desde /api/macro-markets (Yahoo, 1 request,
+// caché CDN compartida). Cada tarjeta es clicable: data-chart-sym cae a
+// la delegación global que abre el modal de velas (/api/candles, mismo
+// símbolo Yahoo). Sparkline de ~30d embebida, sin ejes.
+
+// Rendimientos: Yahoo entrega ^TNX/^TYX ×10 (42.5 = 4.25%). Heurística
+// robusta a cualquier convención — un rendimiento del Tesoro jamás pasa
+// de ~20%, así que un valor >20 está ×10 y se divide. El 2Y (2YY=F,
+// futuro de rendimiento) ya viene en % directo → intacto.
+function mxYield(v){ return (Number.isFinite(v)&&v>20)?v/10:v; }
+
+// Sparkline SVG de una línea, sin ejes, coloreada por la dirección de la
+// ventana (último vs primero). Devuelve '' si no hay suficientes puntos.
+function mxSpark(spark,color){
+  const pts=(spark||[]).filter(v=>Number.isFinite(v));
+  if(pts.length<2) return '';
+  const W=100,H=22,pad=1;
+  const min=Math.min(...pts),max=Math.max(...pts),rng=(max-min)||1;
+  const dx=(W-pad*2)/(pts.length-1);
+  const d=pts.map((v,i)=>{
+    const x=(pad+i*dx).toFixed(1);
+    const y=(pad+(H-pad*2)*(1-(v-min)/rng)).toFixed(1);
+    return (i?'L':'M')+x+' '+y;
+  }).join(' ');
+  return '<svg class="mx-spark" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" aria-hidden="true">'
+    +'<path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/></svg>';
+}
+
+// Grupos del tab. Cada item: [símbolo Yahoo, etiqueta, formateador].
+// El formateador recibe el precio crudo y devuelve el texto a mostrar.
+const MX_GROUPS=[
+  {key:'rates', title:'RATES', sub:'US Treasuries', items:[
+    {sym:'^TNX', lbl:'10Y', unit:'%', fmt:v=>mxYield(v).toFixed(2)},
+    {sym:'2YY=F', lbl:'2Y',  unit:'%', fmt:v=>mxYield(v).toFixed(2)},
+    {sym:'^TYX', lbl:'30Y', unit:'%', fmt:v=>mxYield(v).toFixed(2)},
+  ]},
+  {key:'fx', title:'FX GLOBAL', sub:'dólar · yen · euro', items:[
+    {sym:'DX-Y.NYB', lbl:'DXY',     fmt:v=>v.toFixed(2)},
+    {sym:'JPY=X',    lbl:'USD/JPY', fmt:v=>v.toFixed(2)},
+    {sym:'EURUSD=X', lbl:'EUR/USD', fmt:v=>v.toFixed(4)},
+  ]},
+  {key:'commodities', title:'COMMODITIES', sub:'crudo', items:[
+    {sym:'CL=F', lbl:'WTI',   unit:'$', fmt:v=>v.toFixed(2)},
+    {sym:'BZ=F', lbl:'Brent', unit:'$', fmt:v=>v.toFixed(2)},
+  ]},
+  {key:'asia', title:'ASIA', sub:'índices', items:[
+    {sym:'^N225', lbl:'Nikkei',    fmt:v=>Math.round(v).toLocaleString()},
+    {sym:'^KS11', lbl:'KOSPI',     fmt:v=>v.toFixed(2)},
+    {sym:'^HSI',  lbl:'Hang Seng', fmt:v=>Math.round(v).toLocaleString()},
+  ]},
+  {key:'europe', title:'EUROPE', sub:'índices', items:[
+    {sym:'^GDAXI', lbl:'DAX',  fmt:v=>Math.round(v).toLocaleString()},
+    {sym:'^FTSE',  lbl:'FTSE', fmt:v=>Math.round(v).toLocaleString()},
+  ]},
+  {key:'latam', title:'LATAM', sub:'índices reales', items:[
+    {sym:'^MXX',  lbl:'BMV IPC', fmt:v=>Math.round(v).toLocaleString()},
+    {sym:'^BVSP', lbl:'Bovespa', fmt:v=>Math.round(v).toLocaleString()},
+  ]},
+  {key:'futures', title:'US FUTURES', sub:'cómo abre EE.UU.', items:[
+    {sym:'ES=F', lbl:'S&P',    fmt:v=>v.toLocaleString(undefined,{maximumFractionDigits:2})},
+    {sym:'NQ=F', lbl:'Nasdaq', fmt:v=>v.toLocaleString(undefined,{maximumFractionDigits:2})},
+    {sym:'YM=F', lbl:'Dow',    fmt:v=>Math.round(v).toLocaleString()},
+  ]},
+];
+
+async function loadMacroMarkets(){
+  const heroEl=document.getElementById('macroHero');
+  const gridEl=document.getElementById('macroMarkets');
+  if(gridEl) gridEl.innerHTML='<div style="padding:12px;color:#555;font-family:var(--mono);font-size:10px;">Loading markets…</div>';
+
+  const resp=await qdFetchJSON('/api/macro-markets', null,
+    function(x){ return x && x.data && typeof x.data==='object'; });
+  const data=(resp&&resp.data)||{};
+
+  renderMacroHero(heroEl, data);
+  renderMacroGroups(gridEl, data);
+}
+
+// Tarjeta compacta clicable con sparkline. col = color del cambio.
+function mxCard(sym, lbl, valText, chgPct, spark, unit){
+  const up=chgPct>=0;
+  const col=up?'#00c97d':'#E24B4A';
+  const chg=Number.isFinite(chgPct)?((up?'+':'')+chgPct.toFixed(2)+'%'):'—';
+  return '<div class="mx-card" data-chart-sym="'+sym+'" title="'+lbl+' · '+sym+'">'
+    +'<div class="mx-lbl">'+lbl+'</div>'
+    +'<div class="mx-val">'+valText+(unit?'<span class="mx-unit"> '+unit+'</span>':'')+'</div>'
+    +'<div class="mx-chg" style="color:'+col+'">'+chg+'</div>'
+    +mxSpark(spark,col)
+    +'</div>';
+}
+
+function renderMacroHero(el, data){
+  if(!el) return;
+  let html='';
+  // VIX — termómetro de miedo
+  const vix=data['^VIX'];
+  if(vix){
+    const up=vix.changePct>=0;
+    // En el VIX subir = más miedo (rojo), bajar = calma (verde) — invertido
+    const col=up?'#E24B4A':'#00c97d';
+    const lvl=vix.price>=30?'ELEVATED FEAR':vix.price>=20?'CAUTION':'CALM';
+    html+='<div class="mx-h" data-chart-sym="^VIX" title="VIX · ^VIX">'
+      +'<div class="mx-lbl">VIX · VOLATILITY</div>'
+      +'<div class="mx-big" style="color:'+col+'">'+vix.price.toFixed(2)+'</div>'
+      +'<div class="mx-sub2" style="color:'+col+'">'+(up?'+':'')+vix.changePct.toFixed(2)+'% · '+lvl+'</div>'
+      +'</div>';
+  }else{
+    html+='<div class="mx-h"><div class="mx-lbl">VIX · VOLATILITY</div><div class="mx-big" style="color:#333">—</div></div>';
+  }
+  // Spread 10Y-2Y — el indicador de recesión
+  const tnx=data['^TNX'], two=data['2YY=F'];
+  if(tnx&&two){
+    const spread=mxYield(tnx.price)-mxYield(two.price);
+    const inv=spread<0;
+    const col=inv?'#E24B4A':'#00c97d';
+    html+='<div class="mx-h" data-chart-sym="^TNX" title="10Y yield · ^TNX">'
+      +'<div class="mx-lbl">10Y − 2Y SPREAD</div>'
+      +'<div class="mx-big" style="color:'+col+'">'+(spread>=0?'+':'')+spread.toFixed(2)+'<span class="mx-unit"> pp</span></div>'
+      +'<div class="mx-sub2" style="color:'+col+'">'+(inv?'INVERTED · recession signal':'normal curve')+'</div>'
+      +'</div>';
+  }else{
+    html+='<div class="mx-h"><div class="mx-lbl">10Y − 2Y SPREAD</div><div class="mx-big" style="color:#333">—</div></div>';
+  }
+  el.innerHTML=html;
+}
+
+function renderMacroGroups(el, data){
+  if(!el) return;
+  let html='';
+  MX_GROUPS.forEach(g=>{
+    const cards=g.items.map(it=>{
+      const d=data[it.sym];
+      if(!d) return '';
+      return mxCard(it.sym, it.lbl, it.fmt(d.price), d.changePct, d.spark, it.unit);
+    }).filter(Boolean).join('');
+    // Si el grupo entero quedó sin datos, no pintamos una sección vacía.
+    if(!cards) return;
+    html+='<details class="mx-sec" open>'
+      +'<summary>'+g.title+' <span class="mx-sub">'+g.sub+'</span><span class="mx-chev">›</span></summary>'
+      +'<div class="mx-body"><div class="mx-cards">'+cards+'</div></div>'
+      +'</details>';
+  });
+  el.innerHTML=html||'<div style="padding:12px;color:#555;font-family:var(--mono);font-size:10px;">'+qdUnavailableHTML('macro markets')+'</div>';
 }
 
 async function loadTopBarTickers(){
@@ -3827,6 +4030,7 @@ async function loadMarketSummary(){
     {label:'CRYPTO', tickers:['BTC/USD','ETH/USD','SOL/USD','BNB/USD']},
     // MELI/NU/GLOB cotizan como ADRs en NY (no son mercados LATAM); AMXB.MX sí es
     // BMV local. La sección se rotula "LATAM ADRs" para no implicar índices latinos.
+    // Los índices LATAM reales (^MXX, ^BVSP) viven en el bloque MACRO MARKETS de arriba.
     {label:'LATAM ADRs', tickers:['MELI','NU','GLOB','AMXB.MX']},
   ];
 
@@ -9061,7 +9265,7 @@ const i18n = {
     // MACRO
     macroTitle:'QUANTDESK MARKETS', aiBrief:'AI BRIEF',
     sentimentIndex:'SENTIMENT INDEX', latamFx:'LATAM FX', fxImpact:'FX IMPACT',
-    globalMarkets:'GLOBAL MARKETS', sectorPerformance:'SECTOR PERFORMANCE',
+    globalMarkets:'US · CRYPTO · LATAM ADRs', sectorPerformance:'SECTOR PERFORMANCE',
     economicCalendar:'ECONOMIC CALENDAR', marketMovers:'MARKET MOVERS',
     // SMART $
     smartMoneyTracker:'SMART MONEY TRACKER',
@@ -9288,7 +9492,7 @@ const i18n = {
     // MACRO
     macroTitle:'QUANTDESK MERCADOS', aiBrief:'RESUMEN IA',
     sentimentIndex:'ÍNDICE DE SENTIMIENTO', latamFx:'FX LATAM', fxImpact:'IMPACTO FX',
-    globalMarkets:'MERCADOS GLOBALES', sectorPerformance:'DESEMPEÑO POR SECTOR',
+    globalMarkets:'US · CRYPTO · ADRs LATAM', sectorPerformance:'DESEMPEÑO POR SECTOR',
     economicCalendar:'CALENDARIO ECONÓMICO', marketMovers:'MOVIMIENTOS DEL MERCADO',
     // SMART $
     smartMoneyTracker:'RASTREADOR DE DINERO LISTO',

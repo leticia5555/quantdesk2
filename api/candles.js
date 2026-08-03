@@ -39,6 +39,25 @@ export function toYahooSymbol(sym) {
   return t.endsWith('/USD') ? t.replace('/USD', '-USD') : t;
 }
 
+// Yahoo cotiza los índices de rendimiento del Tesoro ×10 (^TNX 42.5 = 4.25%).
+// El chart debe mostrar el rendimiento real, igual que las tarjetas del tab
+// MACRO (que aplican el mismo ÷10). Se escala SOLO por esta lista de símbolos,
+// nunca por heurística de valor: un precio legítimo de ~42 en cualquier otro
+// símbolo no debe tocarse. El 2Y usa 2YY=F (futuro de rendimiento, ya en %
+// directo) — no entra aquí, se muestra tal cual.
+export const YIELD_DIV10 = new Set(['^TNX', '^TYX', '^FVX', '^IRX']);
+
+// Divide OHLC ÷10 si el símbolo es un índice de rendimiento ×10; si no, tal
+// cual. El volumen (0 en estos índices) no se toca.
+export function scaleYieldCandles(symbol, candles) {
+  if (!YIELD_DIV10.has(String(symbol || '').toUpperCase().trim())) return candles;
+  return candles.map((c) => ({
+    ...c,
+    o: +(c.o / 10).toFixed(4), h: +(c.h / 10).toFixed(4),
+    l: +(c.l / 10).toFixed(4), c: +(c.c / 10).toFixed(4),
+  }));
+}
+
 // Yahoo v8 → [{t,o,h,l,c,v}] — descarta filas con OHLC incompleto (Yahoo
 // mete nulls en huecos de sesión); jamás se inventa una vela.
 export function extractYahooCandles(json) {
@@ -113,11 +132,15 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: `No candle data for ${symbol} (${source})` });
     }
 
+    // Rendimientos del Tesoro (^TNX/^TYX/…) vienen ×10 de Yahoo → ÷10 para
+    // que el chart muestre 4.25, no 42.5 (consistente con las tarjetas macro).
+    const candles = scaleYieldCandles(symbol, extracted.candles);
+
     res.setHeader('Cache-Control', `public, s-maxage=${iv.smaxage}, stale-while-revalidate=${iv.swr}`);
     return res.status(200).json({
       symbol, interval, source,
       currency: extracted.currency,
-      candles: extracted.candles,
+      candles,
       generated_at: new Date().toISOString(),
     });
   } catch (err) {

@@ -137,6 +137,33 @@ async function routeApis(page) {
       for (const s of syms) quotes[s] = { price: s === 'BTC/USD' ? 118000 : 190.55, prevClose: 185.25, changePct: 2.86 };
       return json({ quotes, generated_at: new Date().toISOString() });
     }
+    if (p === '/api/macro-markets') {
+      // ^VIX bajo (CALM), curva invertida (^TNX 4.25% ×10 vs 2YY=F 4.60%).
+      const spark = (base) => Array.from({ length: 22 }, (_, i) => +(base * (1 + (i - 11) * 0.002)).toFixed(2));
+      const card = (price, prev) => ({ price, prevClose: prev,
+        changePct: +(((price - prev) / prev) * 100).toFixed(2), spark: spark(price), currency: 'USD' });
+      return json({ data: {
+        '^VIX': card(18.5, 17.0),
+        '^TNX': card(42.5, 42.0),   // ×10 → 4.25%
+        '2YY=F': card(4.60, 4.55),  // 2Y directo → spread 10Y-2Y invertido
+        '^TYX': card(46.0, 45.8),
+        'DX-Y.NYB': card(104.2, 103.9),
+        'JPY=X': card(150.3, 149.8),
+        'EURUSD=X': card(1.0850, 1.0870),
+        'CL=F': card(78.4, 77.9),
+        'BZ=F': card(82.1, 81.6),
+        '^N225': card(38500, 38200),
+        '^KS11': card(2680, 2665),
+        '^HSI': card(17800, 17950),
+        '^GDAXI': card(18200, 18100),
+        '^FTSE': card(7920, 7900),
+        '^MXX': card(52800, 52600),
+        '^BVSP': card(128000, 127500),
+        'ES=F': card(5320, 5310),
+        'NQ=F': card(18600, 18550),
+        'YM=F': card(39100, 39050),
+      }, generated_at: new Date().toISOString() });
+    }
     if (p === '/api/candles') {
       // 30 velas sintéticas terminando en el bucket actual (S23).
       // OLDD: última vela 2 buckets atrás (mercado cerrado — S23f).
@@ -900,6 +927,71 @@ const s23g = await page.evaluate(async () => {
 report('S23g filas inválidas filtradas (cero whitespace) + foot honesto',
   s23g.bars === 28 && /incomplete|incompletos/.test(s23g.foot) && /\(2\)/.test(s23g.foot),
   JSON.stringify(s23g));
+
+// ── S24: MACRO MARKETS — hero (VIX + spread), grupos colapsables,
+//    sparklines y click en tarjeta → chart modal (/api/candles) ──
+currentPhase = 'S24-macro-markets';
+await page.evaluate(() => { qdChartClose(); showPage('macro'); });
+await page.waitForTimeout(1400);
+const s24 = await page.evaluate(() => {
+  const hero = document.getElementById('macroHero').innerText;
+  const groups = document.getElementById('macroMarkets');
+  const secs = [...groups.querySelectorAll('details.mx-sec > summary')].map(s => s.innerText.replace(/\s+/g, ' ').trim());
+  const cards = groups.querySelectorAll('.mx-card').length;
+  const sparks = groups.querySelectorAll('svg.mx-spark').length;
+  const tnxCard = [...groups.querySelectorAll('.mx-card')].find(c => c.getAttribute('data-chart-sym') === '^TNX');
+  return {
+    hero, secs, cards, sparks,
+    // 10Y card muestra 4.25 (÷10 aplicado), no 42.5
+    tnxVal: tnxCard ? tnxCard.querySelector('.mx-val').innerText : 'NO-CARD',
+    heroHasVix: /VIX/.test(hero) && /18\.5/.test(hero),
+    heroInverted: /INVERTED/.test(hero),
+  };
+});
+report('S24a hero muestra el VIX con su nivel', s24.heroHasVix, s24.hero.replace(/\n/g, ' · ').slice(0, 80));
+report('S24b hero calcula el spread 10Y-2Y invertido (recession signal)', s24.heroInverted, s24.hero.replace(/\n/g, ' · ').slice(0, 120));
+report('S24c grupos por región presentes (RATES/FX/COMMODITIES/ASIA/EUROPE/LATAM/FUTURES)',
+  ['RATES', 'FX GLOBAL', 'COMMODITIES', 'ASIA', 'EUROPE', 'LATAM', 'US FUTURES'].every(t => s24.secs.some(s => s.includes(t))),
+  JSON.stringify(s24.secs));
+report('S24d cada tarjeta tiene sparkline (svg sin ejes)', s24.cards > 0 && s24.sparks === s24.cards,
+  'cards=' + s24.cards + ' sparks=' + s24.sparks);
+report('S24e ^TNX se muestra ÷10 (4.25%, no 42.5)', s24.tnxVal.includes('4.25'), s24.tnxVal);
+
+// click en una tarjeta abre el chart modal con velas (misma plumbing candles)
+const beforeCandles = apiCalls.filter(c => c.phase === 'S24-macro-markets' && c.path.startsWith('/api/candles')).length;
+await page.evaluate(async () => {
+  const c = document.querySelector('.mx-card[data-chart-sym="^MXX"]');
+  c.click();
+  await new Promise(r => setTimeout(r, 700));
+});
+const s24f = await page.evaluate(() => {
+  const ov = document.getElementById('qdChartOverlay');
+  return { open: !!ov && getComputedStyle(ov).display !== 'none', sym: document.getElementById('qdChartTSym').textContent };
+});
+const s24Candles = apiCalls.filter(c => c.phase === 'S24-macro-markets' && /symbol=%5EMXX/.test(c.path));
+report('S24f click en tarjeta LATAM (^MXX) abre el chart modal con velas',
+  s24f.open === true && s24f.sym === '^MXX' && s24Candles.length === 1,
+  JSON.stringify({ ...s24f, candleCalls: s24Candles.map(c => c.path) }));
+await page.evaluate(() => qdChartClose());
+
+// colapsable: <details> nativo togglea
+const s24g = await page.evaluate(() => {
+  const d = document.querySelector('details.mx-sec');
+  const openBefore = d.open;
+  d.querySelector('summary').click();
+  return { openBefore, openAfter: d.open };
+});
+report('S24g grupos colapsables (details nativo togglea)', s24g.openBefore === true && s24g.openAfter === false,
+  JSON.stringify(s24g));
+
+// S24h: el quote vivo del chart escala ÷10 SOLO para índices de rendimiento
+// (^TNX 42.5 → 4.25), nunca para un stock — así la vela viva no salta a 42.5.
+const s24h = await page.evaluate(() => ({
+  tnx: qdScaleQuote('^TNX', 42.5), tyx: qdScaleQuote('^TYX', 46.0),
+  nvda: qdScaleQuote('NVDA', 190), two: qdScaleQuote('2YY=F', 4.6),
+}));
+report('S24h qdScaleQuote: yields ÷10 (^TNX→4.25), stocks/2YY=F intactos',
+  s24h.tnx === 4.25 && s24h.tyx === 4.6 && s24h.nvda === 190 && s24h.two === 4.6, JSON.stringify(s24h));
 
 // ── console summary ──
 console.log('\n=== CONSOLA (errores/warnings/pageerrors) ===');
