@@ -29,6 +29,13 @@ import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getSymbolMap, getSymbolTypes } from './earnings.js';
 import { beat } from './_lib/heartbeat.js';
 
+// El refresh procesa ≤30 símbolos con ~1.2s de espacio entre cada uno + I/O de
+// Finnhub/Yahoo: en la práctica pasa de los 60s del default de Vercel y muere con
+// 504 FUNCTION_INVOCATION_TIMEOUT. La cuenta es plan Pro (tope 300s), así que
+// subimos el límite de ESTA función a 5 min. (vercel.json fija 60s file-wide para
+// api/*.js; este export por-archivo lo sobreescribe solo aquí.)
+export const maxDuration = 300;
+
 const PER_RUN = 30;         // ≤30 símbolos/invocación → ~40s, cabe en 60s
 const SPACING_MS = 1200;    // ~1.2s entre símbolos → muy bajo el cap Finnhub 60/min
 

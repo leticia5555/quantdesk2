@@ -11,6 +11,7 @@
 import { parseEarnings } from '../api/_lib/av-earnings.js';
 import { classifyHourFromET, build8KIndex, match8K, gapHeuristic, dayDiff } from '../api/_lib/pead-hour.js';
 import { V0_UNIVERSE, v0LedgerEntries } from '../api/_lib/pead-universe.js';
+import { dedupeByReportedDate } from '../api/_lib/pead-db.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -40,6 +41,23 @@ ok(avOk.events.length === 2, 'descarta filas sin reportedDate', avOk.events.leng
 ok(avOk.events[0].reported_eps === 2.94 && avOk.events[0].surprise_pct != null, 'coerciona números');
 // surprisePercentage 'None' → recomputa (2.93-2.78)/0.78*100 ≈ 5.128
 ok(Math.abs(avOk.events[1].surprise_pct - ((2.93 - 2.78) / 2.78) * 100) < 1e-6, 'recomputa surprise_pct cuando AV manda None');
+
+console.log('pead-db: dedupeByReportedDate (mata el 500 de ON CONFLICT)');
+
+// AV a veces devuelve dos trimestres con el MISMO reportedDate. Sin dedup, el
+// INSERT ... ON CONFLICT (symbol, reported_date) trueca con "cannot affect row a
+// second time" → el handler responde 500. Colapsamos por reported_date.
+const dupEvents = [
+  { fiscal_date_ending: '2020-09-30', reported_date: '2021-01-27', reported_eps: 0.73 },
+  { fiscal_date_ending: '2020-12-31', reported_date: '2021-01-27', reported_eps: 1.68 }, // mismo día, trimestre más nuevo
+  { fiscal_date_ending: '2020-06-30', reported_date: '2020-07-30', reported_eps: 0.65 },
+];
+const deduped = dedupeByReportedDate(dupEvents);
+ok(deduped.length === 2, 'colapsa dos filas con el mismo reported_date', deduped.length);
+ok(new Set(deduped.map((e) => e.reported_date)).size === deduped.length, 'reported_date único tras dedup (respeta la PK)');
+const kept = deduped.find((e) => e.reported_date === '2021-01-27');
+ok(kept && kept.fiscal_date_ending === '2020-12-31', 'conserva el fiscal_date_ending más reciente (el eco restado se descarta)', kept && kept.fiscal_date_ending);
+ok(dedupeByReportedDate([]).length === 0 && dedupeByReportedDate(null).length === 0, 'vacío/null → [] (no crashea)');
 
 console.log('pead-hour: classifyHourFromET (hora del Este del 8-K)');
 

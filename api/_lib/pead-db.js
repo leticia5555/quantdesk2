@@ -115,10 +115,31 @@ async function ledgerStats() {
 
 // events: [{fiscal_date_ending, reported_date, reported_eps, estimated_eps,
 //           surprise, surprise_pct}]. Upsert por (symbol, reported_date).
+// La PK de pead_earnings es (symbol, reported_date). Un solo INSERT ... ON
+// CONFLICT DO UPDATE NO puede tocar la misma fila de conflicto dos veces —
+// Postgres lo rechaza con "ON CONFLICT DO UPDATE command cannot affect row a
+// second time" (→ el handler lo atrapa y responde 500). AV a veces devuelve dos
+// trimestres con el MISMO reportedDate (restatements o filas duplicadas), así que
+// colapsamos por reported_date ANTES de armar la sentencia, quedándonos con el
+// fiscal_date_ending más reciente (el trimestre "real"; el otro suele ser un eco
+// restado). Cross-invocación no importa: ON CONFLICT sí maneja duplicados entre
+// sentencias distintas — el problema es solo intra-INSERT. JS puro y testeable.
+function dedupeByReportedDate(events) {
+  const byDate = new Map();
+  for (const e of events || []) {
+    const prev = byDate.get(e.reported_date);
+    if (!prev || String(e.fiscal_date_ending) > String(prev.fiscal_date_ending)) {
+      byDate.set(e.reported_date, e);
+    }
+  }
+  return [...byDate.values()];
+}
+
 async function upsertEarnings(symbol, events) {
   if (!events || !events.length) return 0;
+  const rows = dedupeByReportedDate(events);
   // $1 = symbol; cada evento aporta 6 columnas a partir de $2.
-  const tuples = events
+  const tuples = rows
     .map((_, i) => {
       const b = 2 + i * 6;
       return `($1, $${b}, $${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5})`;
@@ -126,7 +147,7 @@ async function upsertEarnings(symbol, events) {
     .join(', ');
   const params = [
     symbol,
-    ...events.flatMap((e) => [
+    ...rows.flatMap((e) => [
       e.fiscal_date_ending,
       e.reported_date,
       e.reported_eps,
@@ -148,7 +169,7 @@ async function upsertEarnings(symbol, events) {
        ingested_at        = now()`,
     params
   );
-  return events.length;
+  return rows.length;
 }
 
 // Eventos que aún no tienen hora etiquetada (para el job SEC).
@@ -199,6 +220,7 @@ async function budgetAdd(day, n) {
 export {
   ensurePeadSchema,
   PEAD_SCHEMA,
+  dedupeByReportedDate,
   seedLedger,
   pickPending,
   markLedger,

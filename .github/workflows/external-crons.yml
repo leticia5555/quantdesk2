@@ -45,13 +45,28 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           BASE_URL: ${{ vars.APP_BASE_URL || 'https://quantdesk2.vercel.app' }}
         run: |
-          set -euo pipefail
+          # Sin `set -e`: queremos imprimir SIEMPRE status + body antes de fallar.
+          # (El `--fail-with-body` + `set -e` de antes abortaba en el fallo del
+          # command-substitution ANTES de imprimir el body → diagnóstico a ciegas.)
+          set -uo pipefail
           url="$BASE_URL/api/pead-harvest?job=earnings"
           echo "GET $url"
-          # --fail-with-body: exit != 0 en HTTP >=400 (401/500), pero imprime el body.
-          body="$(curl -sS --fail-with-body --connect-timeout 30 -m 120 \
+          body_file="$(mktemp)"
+          # -o body a archivo, -w solo el status. Sin --fail*: curl sale 0 aunque
+          # el HTTP sea 500, así el body queda capturado; solo red/timeout → !=0.
+          http_code="$(curl -sS -o "$body_file" -w '%{http_code}' \
+            --connect-timeout 30 -m 120 \
             -H "Authorization: Bearer $CRON_SECRET" "$url")"
-          echo "── respuesta ──"; echo "$body"
+          curl_exit=$?
+          echo "── HTTP $http_code (curl exit $curl_exit) ──"
+          cat "$body_file"; echo
+          body="$(cat "$body_file")"
+          if [ "$curl_exit" -ne 0 ]; then
+            echo "::error::curl falló (exit $curl_exit) — red/timeout, sin respuesta HTTP completa."; exit 1
+          fi
+          if [ "$http_code" -ge 400 ]; then
+            echo "::error::pead-harvest earnings devolvió HTTP $http_code — ver body arriba."; exit 1
+          fi
           if ! echo "$body" | jq -e . >/dev/null 2>&1; then
             echo "::error::Respuesta no es JSON válido (¿página de error de Vercel?)."; exit 1
           fi
@@ -71,12 +86,24 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           BASE_URL: ${{ vars.APP_BASE_URL || 'https://quantdesk2.vercel.app' }}
         run: |
-          set -euo pipefail
+          # Sin `set -e`: imprime SIEMPRE status + body antes de fallar (ver job de arriba).
+          set -uo pipefail
           url="$BASE_URL/api/arena-screener?job=refresh"
           echo "GET $url"
-          body="$(curl -sS --fail-with-body --connect-timeout 30 -m 120 \
+          body_file="$(mktemp)"
+          http_code="$(curl -sS -o "$body_file" -w '%{http_code}' \
+            --connect-timeout 30 -m 120 \
             -H "Authorization: Bearer $CRON_SECRET" "$url")"
-          echo "── respuesta ──"; echo "$body"
+          curl_exit=$?
+          echo "── HTTP $http_code (curl exit $curl_exit) ──"
+          cat "$body_file"; echo
+          body="$(cat "$body_file")"
+          if [ "$curl_exit" -ne 0 ]; then
+            echo "::error::curl falló (exit $curl_exit) — red/timeout, sin respuesta HTTP completa."; exit 1
+          fi
+          if [ "$http_code" -ge 400 ]; then
+            echo "::error::arena-screener refresh devolvió HTTP $http_code — ver body arriba."; exit 1
+          fi
           if ! echo "$body" | jq -e . >/dev/null 2>&1; then
             echo "::error::Respuesta no es JSON válido (¿página de error de Vercel?)."; exit 1
           fi
