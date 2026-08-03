@@ -1,5 +1,11 @@
 # ARENA — Agente #6 "Claude PM"
 
+> **Liga multi-modelo (2026-08-03):** este doc describe el harness de UN agente.
+> La generalización a N modelos (Claude/OpenAI/Grok/Gemini/DeepSeek/Qwen +
+> control) vive en `docs/arena-liga-scope.md` — el harness de aquí no cambia,
+> se corre por-agente con `agent_id`. La cuenta y el historial del Agente #6 se
+> preservan como el agente insignia `claude`.
+
 Fecha: 2026-07-22. Independiente de la migración de la flota (el doc de Fase 1,
 `docs/alpaca-paper-scope.md`, queda como está): el Arena usa la cuenta paper
 existente (PA3VOJ7VTZHW) como su libro EXCLUSIVO — la flota validada sigue en

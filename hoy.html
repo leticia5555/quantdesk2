@@ -193,8 +193,13 @@ function pctStr(n){ n=Number(n); if(!isFinite(n)) return '—';
 // cards sin tocar el layout. Se normaliza cualquiera de las dos formas.
 function normalizeAgents(data){
   if(!data) return [];
-  if(Array.isArray(data.agents)) return data.agents;          // liga multi-modelo (futuro)
-  // forma actual: un solo agente global
+  if(Array.isArray(data.agents)) return data.agents.map(a=>({   // liga multi-modelo (/api/leaderboard)
+    id:a.id, label:a.name||a.id, model:a.model_label||a.model||'',
+    enabled:data.enabled, has_keys:a.has_keys, account:a.account,
+    journal:a.journal, positions:a.positions, rank:a.rank,
+    control:a.control, house:a.house, return_pct:a.return_pct, halt:a.halt,
+  }));
+  // forma legada: un solo agente global (/api/arena)
   return [{ id:'claude', label:'Claude PM', model:'Haiku 4.5', ...data }];
 }
 function arenaCard(a){
@@ -209,33 +214,41 @@ function arenaCard(a){
       <div class="mc-model">${model}</div></div><span class="badge exp">próximamente</span></div>
       <div class="muted">Arrancando. El libro se abre cuando el smoke de Alpaca esté verde.</div></div>`;
   }
-  // P&L del día no está en la API; mostramos equity + cash + posiciones.
+  // Ranking (equity) + return total cuando la liga los trae; badge Paper/control.
+  const rankBadge = a.rank ? `<span class="badge exp" style="color:var(--gold,#ffd35a);border-color:rgba(255,211,90,.35);background:rgba(255,211,90,.06);">#${a.rank}</span>`
+    : (a.control ? `<span class="badge exp" style="color:var(--text2);border-color:var(--border2);background:var(--bg2);">control</span>` : `<span class="badge exp">Paper</span>`);
+  const ret = (a.return_pct!=null)
+    ? `<div class="mc-stat"><div class="l">Return</div><div class="v ${a.return_pct>=0?'pos':'neg'}">${pctStr(a.return_pct)}</div></div>`
+    : `<div class="mc-stat"><div class="l">Pos.</div><div class="v">${positions}/8</div></div>`;
   const stats = `
     <div class="mc-stats">
       <div class="mc-stat"><div class="l">Equity</div><div class="v">${money(acct.equity)}</div></div>
       <div class="mc-stat"><div class="l">Cash</div><div class="v">${money(acct.cash)}</div></div>
-      <div class="mc-stat"><div class="l">Pos.</div><div class="v">${positions}/8</div></div>
+      ${ret}
     </div>`;
   const plan = j.plan ? `<div class="mc-plan">${esc(j.plan)}</div>` : `<div class="mc-plan muted">Sin plan publicado aún.</div>`;
   const date = j.run_date ? esc(j.run_date) : '—';
   const st = esc(j.status||'');
   return `<div class="model-card">
     <div class="mc-head"><div><div class="mc-name">${name}</div><div class="mc-model">${model}</div></div>
-      <span class="badge exp">Paper</span></div>
+      ${rankBadge}</div>
     ${stats}${plan}
     <div class="mc-foot"><span>${date}</span><span>${st}</span></div>
   </div>`;
 }
 async function loadArena(){
-  const data=await getJSON('/api/arena');
+  // La liga (/api/leaderboard) devuelve los N agentes ya rankeados por equity;
+  // el grid N-ready los renderea sin rehacerse. Fallback al agente único legado.
+  const data=await getJSON('/api/leaderboard') || await getJSON('/api/arena');
   const agents=normalizeAgents(data);
   const el=$('arena');
   if(!agents.length){
-    el.innerHTML=`<div class="card muted">La Arena no está disponible ahora mismo.</div>`;
+    el.innerHTML=`<div class="card muted">La liga no está disponible ahora mismo.</div>`;
     return;
   }
   $('arenaSub').textContent = agents.length>1 ? (agents.length+' modelos') : 'LLM · paper';
-  el.innerHTML=agents.map(arenaCard).join('');
+  el.innerHTML=agents.map(arenaCard).join('') +
+    `<a href="/leaderboard" style="grid-column:1/-1;text-align:center;font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--purple);text-decoration:none;padding:10px;border:1px solid var(--border2);border-radius:8px;">Ver la liga completa →</a>`;
 }
 
 // ── CALENDARIO (macro curado + earnings mega-cap, merged) ─────────

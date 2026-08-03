@@ -13,7 +13,8 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql, ensureSchema } from './_lib/db.js';
-import { alpacaCreds, getAccount, getPositions } from './_lib/alpaca.js';
+import { getAccount, getPositions } from './_lib/alpaca.js';
+import { agentById, agentAlpacaCreds, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -22,9 +23,14 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Método no soportado.' });
 
+  // Vista single-agent del INSIGNIA (Claude PM · Agente #6): app.html la usa para
+  // su card de siempre y su historial se preserva bajo agent_id='claude'. El
+  // panorama multi-modelo (la liga) vive en /api/leaderboard.
+  const flagship = agentById(FLAGSHIP_AGENT_ID);
+  const flagshipCreds = agentAlpacaCreds(flagship);
   const out = {
     enabled: process.env.ARENA_ENABLED === '1',
-    has_keys: !!alpacaCreds(),
+    has_keys: !!flagshipCreds,
     account: null,
     positions: [],
     journal: null,
@@ -35,8 +41,8 @@ export default async function handler(req, res) {
     await ensureSchema();
     const [rows, stateRows] = await Promise.all([
       sql(`select run_date, status, plan, actions, account, created_at from arena_journal
-           where phase = 'decide' order by created_at desc limit 1`),
-      sql(`select halted, halted_at, halted_reason, resumed_at from arena_state where id = 1`),
+           where phase = 'decide' and agent_id = $1 order by created_at desc limit 1`, [FLAGSHIP_AGENT_ID]),
+      sql(`select halted, halted_at, halted_reason, resumed_at from arena_state where agent_id = $1`, [FLAGSHIP_AGENT_ID]),
     ]);
     if (rows[0]) {
       out.journal = {
@@ -64,7 +70,7 @@ export default async function handler(req, res) {
 
   if (out.has_keys) {
     try {
-      const [account, positions] = await Promise.all([getAccount(), getPositions()]);
+      const [account, positions] = await Promise.all([getAccount(flagshipCreds), getPositions(flagshipCreds)]);
       out.account = { equity: Number(account.equity), cash: Number(account.cash), status: account.status };
       out.positions = positions.map((p) => ({
         symbol: p.symbol, qty: Number(p.qty), avg_entry: Number(p.avg_entry_price),
