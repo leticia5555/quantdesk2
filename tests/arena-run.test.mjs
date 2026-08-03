@@ -712,5 +712,27 @@ ok(escAction && escAction.exit_attempt === 3 && escAction.exit_band === 0.58,
   'escalamiento: la venta journalea exit_attempt=3 y exit_band=0.58 (medible)', JSON.stringify(escAction && { a: escAction.exit_attempt, b: escAction.exit_band }));
 riskExitRows = []; positionsMock = []; journalPeak = null;
 
+// ── 12) OPCIÓN 3: auditoría post-hoc de los % de la prosa (journal-only). El
+// plan cita un % ANCLADO (+6.1% = pnl_since_entry_pct inyectado) y uno
+// FABRICADO (-3.77%, sin número cercano en el prompt): el journal deja rastro
+// del inventado SIN censurar el plan ni cambiar el status. La referencia es el
+// prompt del DIVE de ESTE agente, no un global. ──
+console.log('arena-run: Opción 3 — auditoría de % de la prosa journaleada (fabricación marcada, sin censura)');
+positionsMock = [{ symbol: 'GNTX', qty: '50', avg_entry_price: '30', market_value: '1600', unrealized_plpc: '0.061' }];
+screenerRows = [];
+scanText = JSON.stringify({ scan_thesis: 'Reevalúo GNTX.', candidates: ['GNTX'] });
+diveText = JSON.stringify({ plan: 'GNTX +6.1% de P&L desde entrada; veo AZO -3.77% pero sin datos, holdeo.', actions: [] });
+await runArenaDecide({ baseUrl: BASE_URL });
+const rowAudit = lastRow();
+ok(rowAudit[COL.status] === 'ok_no_actions', 'la auditoría no cambia el status (sigue ok_no_actions)', rowAudit[COL.status]);
+const audit = JSON.parse(rowAudit[COL.context]).plan_number_audit;
+ok(audit && audit.checked === 2, 'auditoría presente en el journal con los 2 tokens %', audit);
+ok(audit.tokens.find((t) => t.value === 6.1 && t.matched === true) != null,
+  '+6.1% anclado al pnl_since_entry_pct inyectado (matched)', audit.tokens);
+const fab = audit.tokens.find((t) => t.value === -3.77);
+ok(fab && fab.matched === false && audit.unmatched === 1,
+  'el % FABRICADO (-3.77%) queda marcado como no anclado; el plan NO se toca', fab);
+positionsMock = []; // restaurar
+
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);

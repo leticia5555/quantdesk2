@@ -59,6 +59,7 @@ import { getAccount, getPositions, getOrders, getOrder, createLimitOrder } from 
 import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF } from './_lib/arena-guard.js';
 import { buildRiskExits, EXIT_RULES } from './_lib/arena-exits.js';
 import { fetchDeepDive } from './_lib/finnhub-dive.js';
+import { auditPlanPercentages } from './_lib/prose-audit.js';
 import { beat } from './_lib/heartbeat.js';
 import { readScreenerRows } from './_lib/screener-db.js';
 import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
@@ -746,6 +747,16 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     await journalInsert({ ...withPrompt, status: 'aborted_malformed_json', llm_response: responseText, error: parsed.error });
     return { status: 'aborted_malformed_json', orders: 0, risk_exits: riskSubmitted };
   }
+
+  // Auditoría post-hoc de los % de la prosa (JOURNAL-ONLY, instrumento de
+  // medición — ver _lib/prose-audit.js). NO censura ni corrige el plan, NO
+  // afecta órdenes ni el status: solo deja rastro de qué porcentajes del plan
+  // no corresponden a un número que el PM realmente vio. La referencia es el
+  // prompt del DIVE DE ESTE agente (diveSystem + diveUser), no un global: cada
+  // agente de la LIGA se audita contra lo que SU propio PM tuvo enfrente.
+  // Es lo único que detecta la FABRICACIÓN pura (un % sin ancla). Arranca sin
+  // ser visible: la meta ~2 semanas es medir la tasa de falsos positivos.
+  context.plan_number_audit = auditPlanPercentages(parsed.plan, diveSystem + '\n' + diveUser);
 
   // Referencias deterministas para el guard: symbol map + tipo (comparten
   // fetch/cache: 1 request en frío) + último cierre por símbolo propuesto.
