@@ -1,0 +1,86 @@
+# ═══════════════════════════════════════════════════════════════════
+# .github/workflows/external-crons.yml
+#
+# DÓNDE VIVEN LOS CRONS SUB-DIARIOS. El plan Hobby de Vercel limita cada cron
+# a 1×/día, así que estos dos NO están en vercel.json — corren desde aquí:
+#
+#   • pead:earnings   → GET /api/pead-harvest?job=earnings   (5×/día: 12,14,16,18,20 UTC)
+#   • screener:refresh→ GET /api/arena-screener?job=refresh  (cada 4h)
+#
+# Los crons DIARIOS siguen en vercel.json (agents-run, arena decide/reconcile,
+# pead hour). Ver docs/crons.md para el mapa completo.
+#
+# Cada job falla RUIDOSAMENTE si el endpoint devuelve error: curl --fail-with-body
+# corta en HTTP >=400 (401/500), y además revisamos el cuerpo por fallos lógicos
+# que el handler devuelve como HTTP 200 (`error` / `disabled`). Un cron muerto
+# aquí = un run rojo en la pestaña Actions (+ el heartbeat en /api/cron-status).
+#
+# SETUP (una vez): en GitHub → Settings → Secrets and variables → Actions
+#   • Secret  CRON_SECRET     = el mismo valor que la env var CRON_SECRET en Vercel.
+#   • Variable APP_BASE_URL   = URL de producción (opcional; default abajo).
+#
+# NOTA: los workflows con `schedule` solo corren en la rama por defecto (main).
+# Este workflow no toma efecto hasta que este cambio esté en main.
+# ═══════════════════════════════════════════════════════════════════
+name: external-crons
+
+on:
+  schedule:
+    - cron: '0 12,14,16,18,20 * * *'   # pead:earnings — goteo AlphaVantage
+    - cron: '0 */4 * * *'              # screener:refresh — cada 4h
+  workflow_dispatch: {}                # disparo manual → corre ambos (para probar)
+
+permissions:
+  contents: read
+
+jobs:
+  pead-earnings:
+    # El disparo por schedule trae el cron exacto en github.event.schedule.
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 12,14,16,18,20 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger PEAD earnings harvest
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BASE_URL: ${{ vars.APP_BASE_URL || 'https://quantdesk2.vercel.app' }}
+        run: |
+          set -euo pipefail
+          url="$BASE_URL/api/pead-harvest?job=earnings"
+          echo "GET $url"
+          # --fail-with-body: exit != 0 en HTTP >=400 (401/500), pero imprime el body.
+          body="$(curl -sS --fail-with-body --connect-timeout 30 -m 120 \
+            -H "Authorization: Bearer $CRON_SECRET" "$url")"
+          echo "── respuesta ──"; echo "$body"
+          if ! echo "$body" | jq -e . >/dev/null 2>&1; then
+            echo "::error::Respuesta no es JSON válido (¿página de error de Vercel?)."; exit 1
+          fi
+          # Fallo lógico devuelto como HTTP 200: endpoint apagado o error interno.
+          if echo "$body" | jq -e 'has("error") or (.disabled == true)' >/dev/null; then
+            echo "::error::pead-harvest earnings devolvió error/disabled — revisar body."; exit 1
+          fi
+          echo "OK — earnings corrió."
+
+  screener-refresh:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 */4 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger Arena screener refresh
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BASE_URL: ${{ vars.APP_BASE_URL || 'https://quantdesk2.vercel.app' }}
+        run: |
+          set -euo pipefail
+          url="$BASE_URL/api/arena-screener?job=refresh"
+          echo "GET $url"
+          body="$(curl -sS --fail-with-body --connect-timeout 30 -m 120 \
+            -H "Authorization: Bearer $CRON_SECRET" "$url")"
+          echo "── respuesta ──"; echo "$body"
+          if ! echo "$body" | jq -e . >/dev/null 2>&1; then
+            echo "::error::Respuesta no es JSON válido (¿página de error de Vercel?)."; exit 1
+          fi
+          if echo "$body" | jq -e 'has("error") or (.disabled == true)' >/dev/null; then
+            echo "::error::arena-screener refresh devolvió error/disabled — revisar body."; exit 1
+          fi
+          echo "OK — screener corrió."

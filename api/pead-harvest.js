@@ -8,8 +8,11 @@
 //
 // GATES (en orden): CRON_SECRET (si existe) → PEAD_HARVEST_ENABLED=1.
 // El goteo respeta AV free = 25 req/día (guard pead_api_budget) y ~5/min
-// (≤5 símbolos por invocación, ~11s de espacio). vercel.json dispara 5 veces
-// al día = 25 símbolos/día. Ver docs/pead-backtest-scope.md §"Plan de cosecha".
+// (≤5 símbolos por invocación, ~11s de espacio). El job `earnings` NO vive en
+// vercel.json: lo dispara GitHub Actions 5 veces al día (12,14,16,18,20 UTC) =
+// 25 símbolos/día — el Hobby de Vercel limita crons a 1×/día. Ver docs/crons.md
+// y docs/pead-backtest-scope.md §"Plan de cosecha". (El job `hour` sí sigue en
+// vercel.json: es 1×/día.)
 //
 // ENV VARS: ALPHAVANTAGE_API_KEY · DATABASE_URL · CRON_SECRET (opc) ·
 //           PEAD_HARVEST_ENABLED
