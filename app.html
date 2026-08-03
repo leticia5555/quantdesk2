@@ -3357,6 +3357,7 @@ async function runSmartMoney(){
     return;
   }
 
+  let smReason=null; // causa real de la falla, para el fallback honesto
   try{
     // Precio real de HOY (la app ya lo tiene vía /api/price) para que el
     // verdict/bull/bear se anclen a números frescos y no a memoria.
@@ -3368,10 +3369,11 @@ async function runSmartMoney(){
         +(pd.return30d!=null?', 30d return '+(pd.return30d*100).toFixed(1)+'%':'')
         +'. Anchor your analysis to these numbers. '
       :'';
-    const aiText=await qdAI({max_tokens:2000,
+    const { text:aiText, reason:aiReason }=await qdAIx({max_tokens:2000,
         messages:[{role:'user',content:
           freshCtx+'Bloomberg smart money data for '+ticker+' as of '+qdMonthYear()+'. Use SEC, FINRA, 13F knowledge. Return ONLY valid JSON with these exact keys: {"short_interest":{"short_interest_pct":number,"days_to_cover":number,"short_squeeze_score":number,"change_vs_month_ago":"INCREASED|DECREASED|STABLE","borrow_rate_pct":number,"narrative":"string"},"institutional":{"institutional_pct":number,"top_holders":[{"name":"string","pct":number,"change":"INCREASED|DECREASED|NEW|EXITED"}],"hedge_fund_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"options":{"put_call_ratio":number,"implied_volatility_pct":number,"iv_percentile":number,"options_sentiment":"BULLISH|BEARISH|NEUTRAL","unusual_activity":"YES|NO","notable_flow":"string","max_pain":number,"key_strikes":[{"strike":number,"type":"CALL|PUT","open_interest":number,"significance":"HIGH|MEDIUM"}]},"verdict":{"overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","conviction":"HIGH|MEDIUM|LOW","smart_money_score":number,"key_insight":"string","bull_case":"string","bear_case":"string","trade_setup":"string","risk_flags":["string"]}}' + langDirective()}]});
 
+    smReason=aiReason;
     if(aiText==null) throw new Error('AI unavailable');
     const rawText=aiText.replace(/```json|```/g,'').trim();
     const data=safeJSON(rawText);
@@ -3407,7 +3409,7 @@ async function runSmartMoney(){
     // Insider panel is independent of Claude — let the real /api/insider call still populate it
     ['shortInterestPanel','institutionalPanel','optionsPanel','smVerdictPanel'].forEach(id=>{
       const el=document.getElementById(id);
-      if(el) el.innerHTML=qdUnavailableHTML();
+      if(el) el.innerHTML=qdUnavailableHTML('smart money', smReason);
     });
     insiderPromise.then(renderInsiderTransactions);
   }
@@ -3640,14 +3642,16 @@ async function loadMarketSignals(){
     // día. Cachearla por día evita una llamada de IA por cada apertura de la
     // página SMART $ (y por cada visitante con el paywall abierto).
     let ms=qdDayCacheGet('mkt');
+    let msReason=null;
     if(!ms){
-      const aiText=await qdAI({max_tokens:500,
+      const { text:aiText, reason }=await qdAIx({max_tokens:500,
           messages:[{role:'user',content:
             'Market-wide smart money signals as of '+qdMonthYear()+'. What are institutions, hedge funds, and options traders doing in aggregate? Return ONLY JSON: {"signals":[{"category":"HEDGE FUNDS|INSTITUTIONS|OPTIONS|INSIDER|DARK POOL","signal":"BULLISH|BEARISH|NEUTRAL","description":"1 sentence","confidence":"HIGH|MEDIUM|LOW"}],"market_positioning":"RISK-ON|RISK-OFF|MIXED","key_theme":"1 sentence on dominant smart money theme"}. Include 5 signals.'}]});
+      msReason=reason;
       ms=aiText==null?null:safeJSON(aiText);
       if(ms&&Array.isArray(ms.signals)) qdDayCacheSet('mkt', ms);
     }
-    if(!ms||!Array.isArray(ms.signals)){ el.innerHTML=qdUnavailableHTML('market-wide signals'); return; }
+    if(!ms||!Array.isArray(ms.signals)){ el.innerHTML=qdUnavailableHTML('market-wide signals', msReason); return; }
 
     const sigCol={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'};
     const posCol={'RISK-ON':'#00c97d','RISK-OFF':'#E24B4A','MIXED':'#EF9F27'}[ms.market_positioning]||'#888';
@@ -4164,51 +4168,51 @@ function calcFxImpact(){
 }
 
 // ── Economic Calendar ──────────────────────────────────
+// FUENTE ÚNICA compartida con /hoy: la tabla curada `macro_events` vía
+// /api/macro-events. Lety carga los eventos una vez desde /admin-macro.html y
+// salen aquí Y en /hoy. Cero scraping frágil, cero IA que alucine fechas: el
+// GET público ya devuelve solo eventos >= hoy (sin "relojes rotos").
+function qdMacroDateLabel(iso){
+  const p=String(iso).split('-').map(Number);
+  if(p.length!==3||!p[0]||!p[1]||!p[2]) return String(iso);
+  // TZ-safe: se interpreta como UTC igual que /hoy (evita corrimiento de día).
+  return new Date(Date.UTC(p[0],p[1]-1,p[2])).toLocaleDateString('en-US',{month:'short',day:'2-digit',timeZone:'UTC'});
+}
+function qdMapMacroEvent(e){
+  if(!e||!e.event_date||!e.title) return null;
+  const imp={high:'HIGH',med:'MEDIUM',low:'LOW'}[e.importance]||'MEDIUM';
+  return { date:qdMacroDateLabel(e.event_date), event:e.title, cat:(e.category||'').toUpperCase(), impact:imp, note:e.note||'' };
+}
 async function loadEconCalendar(){
   const el=document.getElementById('econCalendar');
   if(!el) return;
   el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:10px;padding:8px 0;">Loading calendar...</div>';
 
-  // Este calendario no tiene feed real en el free tier: lo compone la IA
-  // (anclada a la fecha de HOY por api/_lib/ai-guard.js). El array estático
-  // de abril 2026 que vivía aquí se eliminó: se pintaba primero y quedaba
-  // en pantalla mostrando eventos viejos como próximos cada vez que la IA
-  // fallaba (bug "relojes rotos"). Ahora: 2 intentos con guard de frescura
-  // (algún evento >= hoy) y, si no, fallback honesto.
-  for(let attempt=0;attempt<2;attempt++){
-    let events=null;
-    try{
-      const aiText=await qdAI({max_tokens:500,
-          messages:[{role:'user',content:
-            'Economic calendar for the next 6 weeks starting '+qdTodayLabel()+'. Fed, CPI, jobs, Banxico, Brazil COPOM. Return ONLY JSON array of 8: [{"date":"MMM DD","event":"name","country":"US|MX|BR|EU","impact":"HIGH|MEDIUM|LOW","expected":"","previous":"","description":"1 sentence"}]'}]});
-      events=aiText==null?null:safeJSON(aiText);
-    }catch(e){ events=null; }
-    if(Array.isArray(events)&&events.length&&qdCalendarFresh(events.map(function(e){return e.date;}))){
-      renderCalendar(events);
-      return;
-    }
-  }
-  el.innerHTML=qdUnavailableHTML('econ-calendar');
+  const { data, reason } = await qdFetchJSONx('/api/macro-events', null,
+    function(d){ return d && Array.isArray(d.events); });
+  if(!data){ el.innerHTML=qdUnavailableHTML('econ-calendar', reason); return; }
+  const events=(data.events||[]).map(qdMapMacroEvent).filter(Boolean);
+  if(!events.length){ el.innerHTML=qdUnavailableHTML('econ-calendar', 'errNoData'); return; }
+  renderCalendar(events);
 }
 
 function renderCalendar(events){
   const el=document.getElementById('econCalendar');
   if(!el) return;
-  const impactColor={'HIGH':'var(--red)','MEDIUM':'var(--amber)','LOW':'var(--text3)'};
-  const flags={'US':'🇺🇸','MX':'🇲🇽','BR':'🇧🇷','EU':'🇪🇺','GLOBAL':'🌍'};
+  // Texto curado por el admin, pero libre: escapar por si trae &, <, > ("PIB > 2%").
+  const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const impactDot={'HIGH':'#E24B4A','MEDIUM':'#EF9F27','LOW':'#555'};
   const eventRows=events.map(e=>{
     const ic=impactDot[e.impact]||'#333';
-    const fl=flags[e.country]||'🌍';
     return '<div style="padding:7px 0;border-bottom:1px solid #1a1a1a;display:flex;gap:6px;align-items:flex-start;">'
       +'<div style="width:4px;height:4px;border-radius:50%;background:'+ic+';margin-top:5px;flex-shrink:0;"></div>'
       +'<div style="flex:1;">'
-      +'<div style="display:flex;align-items:center;gap:4px;margin-bottom:1px;">'
-      +'<span style="font-family:var(--mono);font-size:9px;color:#555;">'+e.date+'</span>'
-      +'<span style="font-size:10px;">'+fl+'</span>'
+      +'<div style="display:flex;align-items:center;gap:5px;margin-bottom:1px;">'
+      +'<span style="font-family:var(--mono);font-size:9px;color:#555;">'+esc(e.date)+'</span>'
+      +(e.cat?'<span style="font-family:var(--mono);font-size:8px;color:#777;background:#141414;border:1px solid #222;border-radius:2px;padding:0 4px;letter-spacing:.04em;">'+esc(e.cat)+'</span>':'')
       +'</div>'
-      +'<div style="font-family:var(--mono);font-size:10px;color:#ccc;">'+e.event+'</div>'
-      +(e.expected?'<div style="font-size:9px;color:#555;margin-top:1px;">Est: '+e.expected+(e.previous?' · Prev: '+e.previous:'')+'</div>':'')
+      +'<div style="font-family:var(--mono);font-size:10px;color:#ccc;">'+esc(e.event)+'</div>'
+      +(e.note?'<div style="font-size:9px;color:#555;margin-top:1px;line-height:1.4;">'+esc(e.note)+'</div>':'')
       +'</div>'
       +'</div>';
   }).join('');
@@ -9113,9 +9117,14 @@ const i18n = {
     nav_earnings:'EARNINGS', nav_ipos:'IPOS', nav_movers:'MOVERS',
     nav_sectors:'SECTORS', nav_screener:'SCREENER', nav_social:'SOCIAL',
     nav_gallery:'GALLERY', nav_pairs:'PAIRS', nav_signals:'SIGNALS', nav_edges:'MY EDGES', nav_myagents:'MY AGENTS',
-    // Unified honest fallback (data/AI unavailable)
+    // Unified honest fallback (data/AI unavailable). dataUnavailable es el
+    // ÚLTIMO recurso; los err* de abajo dicen la causa REAL (ver qdReasonKey).
     dataUnavailable:'Data unavailable — free-tier coverage limited.',
     aiUnavailable:'AI analysis unavailable — try again in a moment.',
+    errSourceDown:'Data source unreachable — the provider is down or timed out. Try again shortly.',
+    errNoKey:'Not configured — this data source needs an API key that isn\'t set on the server.',
+    errRateLimit:'Rate limit reached — too many requests right now. Wait a minute and retry.',
+    errNoData:'Nothing loaded for this period yet — check back soon.',
     moversWatchlistTitle:'TOP MOVERS · WATCHLIST',
     moversTooltip:'Movers within QuantDesk\'s curated watchlist (~55 most-watched US large caps, memes, semis and LATAM ADRs) — NOT the whole market. A stock outside this list won\'t appear here even on a big move.',
     moversMarketTitle:'TOP MOVERS · MARKET',
@@ -9340,9 +9349,14 @@ const i18n = {
     nav_earnings:'RESULTADOS', nav_ipos:'IPOS', nav_movers:'MOVIMIENTOS',
     nav_sectors:'SECTORES', nav_screener:'FILTRO', nav_social:'SOCIAL',
     nav_gallery:'GALERÍA', nav_pairs:'PARES', nav_signals:'SEÑALES', nav_edges:'MIS EDGES', nav_myagents:'MIS AGENTES',
-    // Fallback honesto unificado (dato/IA no disponible)
+    // Fallback honesto unificado (dato/IA no disponible). dataUnavailable es el
+    // ÚLTIMO recurso; los err* de abajo dicen la causa REAL (ver qdReasonKey).
     dataUnavailable:'Dato no disponible — cobertura limitada del plan gratuito.',
     aiUnavailable:'Análisis IA no disponible — reintenta en un momento.',
+    errSourceDown:'Fuente no disponible — el proveedor está caído o tardó demasiado. Reintenta en un momento.',
+    errNoKey:'Sin configurar — esta fuente necesita una API key que no está puesta en el servidor.',
+    errRateLimit:'Límite de solicitudes alcanzado — demasiadas peticiones ahora. Espera un minuto y reintenta.',
+    errNoData:'Aún no hay nada cargado para este periodo — vuelve pronto.',
     moversWatchlistTitle:'TOP MOVERS · WATCHLIST',
     moversTooltip:'Movers DENTRO de la watchlist curada de QuantDesk (~55 tickers: mega-caps US, memes, semis y ADRs LATAM) — NO el mercado completo. Una acción fuera de esta lista no aparece aquí aunque se mueva fuerte.',
     moversMarketTitle:'TOP MOVERS · MERCADO',
@@ -9630,32 +9644,59 @@ function qdCalendarFresh(dates, graceDays, horizonDays){
 
 const QD_FETCH_TIMEOUT_MS = 15000;
 // fetch + json + shape check. Devuelve el JSON o null — NUNCA lanza.
-async function qdFetchJSON(url, opts, shapeCheck){
+// ── Clasificador de fallas: UNA causa → UNA clave i18n ───────────
+// El bug: en todo el codebase cualquier falla colapsaba en 'dataUnavailable'
+// ("cobertura limitada del plan gratuito"), aunque la causa fuera la fuente
+// caída, un rate limit o una key faltante. Esto centraliza el "por qué":
+// las x-variantes de abajo devuelven { data, reason } y los paneles pasan
+// `reason` a qdUnavailableHTML para mostrar el mensaje correcto.
+function qdReasonKey(status, body){
+  if (status === 429) return 'errRateLimit';
+  if (status === 0 || status === 408 || status === 504) return 'errSourceDown'; // timeout/gateway
+  const errStr = (body && (typeof body === 'string' ? body : (body.error || body.message))) || '';
+  // El server nombra la key faltante ("FINNHUB_API_KEY not set", "Falta ADMIN_SECRET…").
+  if (/api[_\s-]?key|not set|no configurad|falta.*(secret|key)|missing key|_API_KEY|ADMIN_SECRET|CRON_SECRET/i.test(errStr)) return 'errNoKey';
+  if (status === 401 || status === 403) return 'errNoKey';
+  if (status >= 500 || status >= 400) return 'errSourceDown';
+  return 'errSourceDown';
+}
+
+// Variante que además del dato devuelve la CAUSA (clave i18n) en caso de fallo.
+// reason viaja junto al resultado → sin estado global compartido, seguro con
+// fetches en paralelo.
+async function qdFetchJSONx(url, opts, shapeCheck){
   const ctrl = new AbortController();
   const timer = setTimeout(function(){ ctrl.abort(); }, QD_FETCH_TIMEOUT_MS);
   try{
     const r = await fetch(url, Object.assign({}, opts || {}, { signal: ctrl.signal }));
     const data = await r.json().catch(function(){ return null; });
-    if (!r.ok){ console.error('qdFetchJSON', url, 'HTTP ' + r.status, data); return null; }
-    if (shapeCheck && !shapeCheck(data)){ console.error('qdFetchJSON: shape inesperado', url, data); return null; }
-    return data;
+    if (!r.ok){ console.error('qdFetchJSON', url, 'HTTP ' + r.status, data); return { data: null, reason: qdReasonKey(r.status, data) }; }
+    if (shapeCheck && !shapeCheck(data)){ console.error('qdFetchJSON: shape inesperado', url, data); return { data: null, reason: 'errSourceDown' }; }
+    return { data: data, reason: null };
   }catch(e){
     console.error('qdFetchJSON', url, e && e.name === 'AbortError' ? 'timeout ' + QD_FETCH_TIMEOUT_MS + 'ms' : e);
-    return null;
+    return { data: null, reason: 'errSourceDown' }; // red caída o timeout
   }finally{
     clearTimeout(timer);
   }
 }
+// Compat: la mayoría de callers solo quieren el dato (o null).
+async function qdFetchJSON(url, opts, shapeCheck){
+  return (await qdFetchJSONx(url, opts, shapeCheck)).data;
+}
 
-// Llamada a la IA: devuelve el TEXTO unido de content, o null en fallo.
-// El shape se valida aquí — se acabaron los `d.content.map` sin guard.
-async function qdAI(body){
-  const data = await qdFetchJSON('/api/claude', {
+// Llamada a la IA con causa: { text, reason }. text=null en fallo.
+async function qdAIx(body){
+  const res = await qdFetchJSONx('/api/claude', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }, function(d){ return d && Array.isArray(d.content); });
-  if (!data) return null;
-  return data.content.map(function(b){ return b.text || ''; }).join('');
+  if (!res.data) return { text: null, reason: res.reason || 'aiUnavailable' };
+  return { text: res.data.content.map(function(b){ return b.text || ''; }).join(''), reason: null };
+}
+// Compat: devuelve el TEXTO unido de content, o null en fallo.
+async function qdAI(body){
+  return (await qdAIx(body)).text;
 }
 
 // ── Caché de IA por (clave + día) en el navegador ────────────────
