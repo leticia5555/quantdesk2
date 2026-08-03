@@ -296,24 +296,27 @@ td:first-child{color:var(--text);font-weight:500;}
 .mx-tgl:hover{color:#aaa;}
 .mx-tgl.active{background:#2a2a2a;color:#ddd;}
 
-/* Rejilla de tarjetas macro: 4 → 3 → 2 según ancho */
-.mx-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}
-@media(max-width:1200px){ .mx-cards{grid-template-columns:repeat(3,1fr);} }
-@media(max-width:520px){ .mx-cards{grid-template-columns:repeat(2,1fr);} }
+/* Rejilla densa: auto-fill aprovecha el ancho (más columnas en desktop,
+   menos en móvil) sin breakpoints manuales — mínimo ~110px por tarjeta. */
+.mx-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:3px;}
+@media(max-width:400px){ .mx-cards{grid-template-columns:repeat(2,1fr);} }
 
-/* Tarjeta clicable con sparkline */
+/* Tarjeta clicable con sparkline — compacta, de terminal */
 .mx-card{position:relative;background:#111;border:1px solid #1a1a1a;border-radius:2px;
-  padding:8px 8px 6px;cursor:pointer;overflow:hidden;transition:border-color .12s,background .12s;}
+  padding:5px 6px;cursor:pointer;overflow:hidden;transition:border-color .12s,background .12s;}
 .mx-card:hover{border-color:#333;background:#141414;}
-.mx-card .mx-lbl{font-family:var(--mono);font-size:9px;color:#888;margin-bottom:2px;
+.mx-card .mx-lbl{font-family:var(--mono);font-size:8px;color:#888;margin-bottom:1px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.mx-card .mx-val{font-family:var(--mono);font-size:14px;font-weight:600;color:#e6e6e6;line-height:1.1;}
-.mx-card .mx-chg{font-family:var(--mono);font-size:10px;margin-top:1px;}
-.mx-card .mx-unit{font-size:9px;color:#555;font-weight:400;}
+.mx-card .mx-val{font-family:var(--mono);font-size:13px;font-weight:600;color:#e6e6e6;line-height:1.05;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.mx-card .mx-chg{font-family:var(--mono);font-size:9px;line-height:1.2;}
+.mx-card .mx-30d{font-family:var(--mono);font-size:8px;color:#4a4a4a;line-height:1.2;}
+.mx-card .mx-30d span:first-child{color:#3a3a3a;}
+.mx-card .mx-unit{font-size:8px;color:#555;font-weight:400;}
 
 /* Sparkline: SVG estirado (línea+relleno) + overlays HTML sin distorsión
    (punto, pulso, crosshair, punto de hover) posicionados en %. */
-.mx-sparkwrap{position:relative;width:100%;height:30px;margin-top:5px;}
+.mx-sparkwrap{position:relative;width:100%;height:22px;margin-top:3px;}
 .mx-sparkwrap svg{display:block;width:100%;height:100%;overflow:visible;}
 .mx-dot,.mx-pulse,.mx-hoverdot{position:absolute;border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;}
 .mx-dot{width:5px;height:5px;}
@@ -329,6 +332,17 @@ td:first-child{color:var(--text);font-weight:500;}
   border-radius:3px;padding:4px 7px;font-family:var(--mono);font-size:9px;color:#ddd;display:none;
   white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,.6);}
 #mxTip .mx-tip-d{color:#666;margin-right:6px;}
+
+/* Strip vivo QUANTDESK MARKETS: punto de estado que parpadea al llegar
+   dato nuevo + flash verde/rojo del valor que cambió (~400ms). */
+.mx-strip-dot{width:6px;height:6px;border-radius:50%;background:#2a6b4a;display:inline-block;flex:0 0 auto;}
+.mx-strip-dot.mx-blink{animation:mxBlink .9s ease-out 1;}
+@keyframes mxBlink{0%{background:#00e58a;box-shadow:0 0 0 0 rgba(0,229,138,.6);}60%{box-shadow:0 0 0 4px rgba(0,229,138,0);}100%{background:#2a6b4a;box-shadow:0 0 0 0 rgba(0,229,138,0);}}
+.mx-tick .mx-tv{transition:color .1s;border-radius:2px;padding:0 2px;}
+.mx-tick .mx-tv.mx-flash-up{animation:mxFlashUp .45s ease-out 1;}
+.mx-tick .mx-tv.mx-flash-dn{animation:mxFlashDn .45s ease-out 1;}
+@keyframes mxFlashUp{0%{background:rgba(0,201,125,.55);color:#eafff5;}100%{background:transparent;}}
+@keyframes mxFlashDn{0%{background:rgba(226,75,74,.55);color:#ffecec;}100%{background:transparent;}}
 
 /* Hero: VIX + spread 10Y-2Y con gráfica real (Lightweight Charts) */
 .mx-hero{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#111;}
@@ -849,9 +863,10 @@ td:first-child{color:var(--text);font-weight:500;}
 
   <!-- BLOOMBERG STYLE TOP BAR -->
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:20px;flex-wrap:wrap;">
-    <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;" data-i18n="macroTitle">QUANTDESK MARKETS</span>
+    <span style="font-family:var(--mono);font-size:10px;color:#ff6600;font-weight:600;letter-spacing:.1em;display:inline-flex;align-items:center;gap:6px;"><span id="mxStripDot" class="mx-strip-dot"></span><span data-i18n="macroTitle">QUANTDESK MARKETS</span></span>
     <span style="font-family:var(--mono);font-size:10px;color:#444;" id="macroTime">—</span>
-    <div style="display:flex;gap:16px;margin-left:auto;flex-wrap:wrap;" id="topBarTickers"></div>
+    <div style="display:flex;gap:14px;margin-left:auto;flex-wrap:wrap;align-items:center;" id="topBarTickers"></div>
+    <span id="mxStripAgo" class="mx-recency" style="font-size:8px;"></span>
     <button onclick="runMacroBrief()" id="macroBriefBtn" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border:1px solid #ff6600;color:#ff6600;background:none;border-radius:2px;cursor:pointer;letter-spacing:.06em;" data-i18n="aiBrief">AI BRIEF</button>
   </div>
 
@@ -898,14 +913,9 @@ td:first-child{color:var(--text);font-weight:500;}
       <!-- Hero: VIX + spread 10Y-2Y -->
       <div id="macroHero" class="mx-hero"></div>
 
-      <!-- Grupos colapsables (nativo <details>, móvil primero) -->
+      <!-- Grupos colapsables (nativo <details>, móvil primero) — incluye el
+           bloque de riesgo (US · CRYPTO · LATAM ADRs) con el MISMO componente. -->
       <div id="macroMarkets"></div>
-
-      <!-- Markets table (US · CRYPTO · ADRs LATAM en NY) -->
-      <div style="padding:12px;border-bottom:1px solid #1a1a1a;">
-        <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:8px;" data-i18n="globalMarkets">US · CRYPTO · LATAM ADRs</div>
-        <div id="marketCards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;"></div>
-      </div>
 
       <!-- Sector Heatmap -->
       <div style="padding:12px;border-bottom:1px solid #1a1a1a;flex:1;">
@@ -3731,7 +3741,6 @@ async function loadMacroPage(){
     loadFearGreed(),
     loadCurrencies(),
     loadMacroMarkets(),
-    loadMarketSummary(),
     loadEconCalendar(),
     loadSectorHeatmap(),
     loadTopBarTickers(),
@@ -3854,7 +3863,13 @@ function mxAgo(ts){
   const body=s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h';
   return (es?'actualizado hace '+body:'updated '+body+' ago');
 }
-function mxTickRecency(){ const txt=mxAgo(mxLoadAt); document.querySelectorAll('.mx-recency').forEach(el=>{ el.textContent=txt; }); }
+function mxTickRecency(){
+  const txt=mxAgo(mxLoadAt);
+  document.querySelectorAll('.mx-recency').forEach(el=>{ el.textContent=txt; });
+  // El strip tiene su propia cadencia (30s) → su propio timestamp.
+  const ago=document.getElementById('mxStripAgo');
+  if(ago&&mxStripAt) ago.textContent=mxAgo(mxStripAt);
+}
 
 // Grupos del tab. Cada item: {sym Yahoo, etiqueta, unidad, formateador}.
 // El formateador recibe el precio crudo y devuelve el texto a mostrar.
@@ -3891,7 +3906,35 @@ const MX_GROUPS=[
     {sym:'NQ=F', lbl:'Nasdaq', fmt:v=>v.toLocaleString(undefined,{maximumFractionDigits:2})},
     {sym:'YM=F', lbl:'Dow',    fmt:v=>Math.round(v).toLocaleString()},
   ]},
+  // Bloque de riesgo — mismo componente/serie que arriba (antes era estático
+  // sin gráfica). data key = símbolo Yahoo; `chart` = ticker de app para el
+  // modal (cripto: BTC-USD → BTC/USD para el WS de Binance).
+  {key:'us', title:'US', sub:'índices · mega caps', items:[
+    {sym:'SPY',  lbl:'S&P 500',   fmt:mxUSD},
+    {sym:'QQQ',  lbl:'Nasdaq 100',fmt:mxUSD},
+    {sym:'IWM',  lbl:'Russell 2K',fmt:mxUSD},
+    {sym:'GLD',  lbl:'Gold',      fmt:mxUSD},
+    {sym:'TLT',  lbl:'20Y Treas', fmt:mxUSD},
+    {sym:'AMZN', lbl:'Amazon',    fmt:mxUSD},
+    {sym:'NVDA', lbl:'NVIDIA',    fmt:mxUSD},
+    {sym:'TSLA', lbl:'Tesla',     fmt:mxUSD},
+  ]},
+  {key:'crypto', title:'CRYPTO', sub:'24/7', items:[
+    {sym:'BTC-USD', chart:'BTC/USD', lbl:'Bitcoin',  fmt:mxUSD},
+    {sym:'ETH-USD', chart:'ETH/USD', lbl:'Ethereum', fmt:mxUSD},
+    {sym:'SOL-USD', chart:'SOL/USD', lbl:'Solana',   fmt:mxUSD},
+    {sym:'BNB-USD', chart:'BNB/USD', lbl:'BNB',      fmt:mxUSD},
+  ]},
+  {key:'latamadr', title:'LATAM ADRs', sub:'listados en NY', items:[
+    {sym:'MELI',    lbl:'MercadoLibre', fmt:mxUSD},
+    {sym:'NU',      lbl:'Nu Holdings',  fmt:mxUSD},
+    {sym:'GLOB',    lbl:'Globant',      fmt:mxUSD},
+    {sym:'AMXB.MX', lbl:'América Móvil',fmt:mxUSD},
+  ]},
 ];
+
+// Formato de precio con $ (equities/cripto): sin decimales ≥1000, 2 si no.
+function mxUSD(v){ return '$'+Number(v).toLocaleString(undefined,{maximumFractionDigits:v>=1000?0:2}); }
 
 let mxData={};
 async function loadMacroMarkets(){
@@ -3909,17 +3952,32 @@ async function loadMacroMarkets(){
   if(!mxRecencyTimer) mxRecencyTimer=setInterval(mxTickRecency,1000);
 }
 
-// Tarjeta compacta clicable con sparkline del periodo activo del grupo.
+// Cambio a ~30 días desde la serie diaria (~21 barras hábiles) — el "30D
+// chiquito" unificado de todas las tarjetas. null sin historial suficiente.
+function mxChg30(series){
+  const s=(series||[]).filter(p=>Array.isArray(p)&&Number.isFinite(p[1]));
+  if(s.length<8) return null;
+  const last=s[s.length-1][1], ref=s[Math.max(0,s.length-1-21)][1];
+  return ref>0?((last-ref)/ref*100):null;
+}
+
+// Tarjeta unificada: etiqueta, precio grande, cambio DIARIO, 30D chiquito
+// abajo, sparkline del periodo activo. Mismo componente para TODO el tab.
+// data key = it.sym (símbolo Yahoo); el modal usa it.chart||it.sym.
 function mxCard(it, d, period, gkey){
   const up=d.changePct>=0;
   const col=up?'#00c97d':'#E24B4A';
   const chg=Number.isFinite(d.changePct)?((up?'+':'')+d.changePct.toFixed(2)+'%'):'—';
+  const r30=mxChg30(d.series);
+  const r30Txt=r30==null?'':('<div class="mx-30d"><span>30D</span> <span style="color:'+(r30>=0?'#00c97d':'#E24B4A')+'">'+(r30>=0?'+':'')+r30.toFixed(1)+'%</span></div>');
   const dispFmt=(v)=>it.fmt(v)+(it.unit?' '+it.unit:'');
+  const chartSym=it.chart||it.sym;
   const sparkId='mxs_'+gkey+'_'+it.sym.replace(/[^A-Za-z0-9]/g,'')+'_'+period;
-  return '<div class="mx-card" data-chart-sym="'+it.sym+'" title="'+it.lbl+' · '+it.sym+'">'
+  return '<div class="mx-card" data-chart-sym="'+chartSym+'" title="'+it.lbl+' · '+chartSym+'">'
     +'<div class="mx-lbl">'+it.lbl+'</div>'
     +'<div class="mx-val">'+it.fmt(d.price)+(it.unit?'<span class="mx-unit"> '+it.unit+'</span>':'')+'</div>'
     +'<div class="mx-chg" style="color:'+col+'">'+chg+'</div>'
+    +r30Txt
     +mxSpark(sparkId, mxSliceSeries(d.series, period), col, dispFmt)
     +'</div>';
 }
@@ -4044,24 +4102,64 @@ function mxRenderGroupCards(gkey){
   host.innerHTML=g.items.map(it=>{ const d=mxData[it.sym]; return d?mxCard(it,d,period,gkey):''; }).filter(Boolean).join('');
 }
 
+// ── Strip vivo QUANTDESK MARKETS ────────────────────────
+// Se refresca solo cada 30s desde /api/tape (batch, cambio diario). Al
+// llegar dato nuevo: parpadea el punto de estado y el valor que cambió
+// hace flash verde/rojo (~400ms) — lo que hace que un terminal se sienta
+// vivo. La primera carga pinta la estructura; los refrescos solo mutan
+// precio/cambio para poder detectar el cambio y disparar el flash.
+const MX_STRIP=[
+  {sym:'SPY',name:'SPX'},{sym:'NVDA',name:'NVDA'},{sym:'BTC/USD',name:'BTC'},
+  {sym:'ETH/USD',name:'ETH'},{sym:'MELI',name:'MELI'},{sym:'GLD',name:'GOLD'},
+];
+let mxStripPrev={}, mxStripAt=0, mxStripTimer=null;
+function mxStripPrice(p){ return p>=1000?p.toLocaleString(undefined,{maximumFractionDigits:0}):p.toFixed(2); }
 async function loadTopBarTickers(){
-  const tickers=['SPY','NVDA','BTC/USD','ETH/USD','MELI','GLD'];
-  const names={'SPY':'SPX','NVDA':'NVDA','BTC/USD':'BTC','ETH/USD':'ETH','MELI':'MELI','GLD':'GOLD'};
-  const results=await Promise.allSettled(
-    tickers.map(t=>fetch('/api/price?ticker='+encodeURIComponent(normalizeTicker(t))).then(r=>r.json()))
-  );
+  await refreshStrip();
+  if(!mxStripTimer) mxStripTimer=setInterval(()=>{ if(!document.hidden) refreshStrip(); },30000);
+}
+async function refreshStrip(){
   const el=document.getElementById('topBarTickers');
   if(!el) return;
-  el.innerHTML=results.map((r,i)=>{
-    const t=tickers[i];
-    if(r.status!=='fulfilled'||!r.value.currentPrice) return '';
-    const d=r.value;
-    // Cinta compacta: cambio DIARIO (dayChange), no el 30d — igual que la cinta viva.
-    const ret=(typeof d.dayChange==='number')?d.dayChange:0;
-    const col=ret>=0?'#00c97d':'#E24B4A';
-    const price=d.currentPrice>1000?d.currentPrice.toLocaleString(undefined,{maximumFractionDigits:0}):d.currentPrice.toFixed(2);
-    return '<span data-chart-sym="'+t+'" title="'+(names[t]||t)+' · chart" style="font-family:var(--mono);font-size:10px;cursor:pointer;"><span style="color:#888;">'+(names[t]||t)+' </span><span style="color:#ddd;">'+price+'</span> <span style="color:'+col+';">'+(ret>=0?'+':'')+(ret*100).toFixed(2)+'%</span></span>';
-  }).filter(Boolean).join('<span style="color:#222;margin:0 4px;">|</span>');
+  const syms=MX_STRIP.map(s=>s.sym).join(',');
+  const d=await qdFetchJSON('/api/tape?symbols='+encodeURIComponent(syms),null,function(x){return x&&x.quotes;});
+  const q=(d&&d.quotes)||{};
+  // Primera vez (o tras fallo): construye la estructura con spans estables.
+  if(!el.querySelector('.mx-tick')){
+    el.innerHTML=MX_STRIP.map(s=>
+      '<span class="mx-tick" data-chart-sym="'+s.sym+'" data-sym="'+s.sym+'" title="'+s.name+' · chart" style="font-family:var(--mono);font-size:10px;cursor:pointer;">'
+      +'<span style="color:#888;">'+s.name+' </span>'
+      +'<span class="mx-tv" style="color:#ddd;">—</span></span>'
+    ).join('<span style="color:#222;margin:0 2px;">|</span>');
+  }
+  let changed=false;
+  MX_STRIP.forEach(s=>{
+    const quote=q[s.sym];
+    if(!quote||!Number.isFinite(quote.price)) return;
+    const tick=el.querySelector('.mx-tick[data-sym="'+CSS.escape(s.sym)+'"]');
+    if(!tick) return;
+    const tv=tick.querySelector('.mx-tv');
+    const chg=Number.isFinite(quote.changePct)?quote.changePct:0;
+    const col=chg>=0?'#00c97d':'#E24B4A';
+    tv.innerHTML='<span style="color:#ddd;">'+mxStripPrice(quote.price)+'</span> <span style="color:'+col+';">'+(chg>=0?'+':'')+chg.toFixed(2)+'%</span>';
+    const prev=mxStripPrev[s.sym];
+    if(prev!=null && quote.price!==prev){
+      changed=true;
+      const dir=quote.price>prev?'mx-flash-up':'mx-flash-dn';
+      tv.classList.remove('mx-flash-up','mx-flash-dn');
+      void tv.offsetWidth;               // reinicia la animación
+      tv.classList.add(dir);
+    }
+    mxStripPrev[s.sym]=quote.price;
+  });
+  if(Object.keys(q).length){
+    mxStripAt=Date.now();
+    if(changed){
+      const dot=document.getElementById('mxStripDot');
+      if(dot){ dot.classList.remove('mx-blink'); void dot.offsetWidth; dot.classList.add('mx-blink'); }
+    }
+    mxTickRecency();
+  }
 }
 
 async function loadMarketMovers(){
@@ -4214,78 +4312,6 @@ function renderFearGreed(score, label, desc){
   ctx.textAlign='left';
 }
 
-// ── Market Summary ─────────────────────────────────────
-async function loadMarketSummary(){
-  const groups=[
-    {label:'US', tickers:['SPY','QQQ','IWM','GLD','TLT','AMZN','NVDA','TSLA']},
-    {label:'CRYPTO', tickers:['BTC/USD','ETH/USD','SOL/USD','BNB/USD']},
-    // MELI/NU/GLOB cotizan como ADRs en NY (no son mercados LATAM); AMXB.MX sí es
-    // BMV local. La sección se rotula "LATAM ADRs" para no implicar índices latinos.
-    // Los índices LATAM reales (^MXX, ^BVSP) viven en el bloque MACRO MARKETS de arriba.
-    {label:'LATAM ADRs', tickers:['MELI','NU','GLOB','AMXB.MX']},
-  ];
-
-  const names={
-    'SPY':'S&P 500','QQQ':'Nasdaq 100','IWM':'Russell 2K','GLD':'Gold',
-    'TLT':'20Y Treasury','AMZN':'Amazon','NVDA':'NVIDIA','TSLA':'Tesla',
-    'BTC/USD':'Bitcoin','ETH/USD':'Ethereum','SOL/USD':'Solana','BNB/USD':'BNB',
-    'MELI':'MercadoLibre','NU':'Nu Holdings','GLOB':'Globant','AMXB.MX':'América Móvil'
-  };
-
-  // Estimated fallbacks for tickers that may not return data
-  const estimated={
-    'IWM':{currentPrice:198,return30d:-0.03},
-    'TLT':{currentPrice:88,return30d:0.02},
-    'SOL/USD':{currentPrice:130,return30d:-0.05},
-    'BNB/USD':{currentPrice:580,return30d:0.04},
-    'NU':{currentPrice:13.2,return30d:-0.08},
-    'GLOB':{currentPrice:168,return30d:-0.12},
-    'AMXB.MX':{currentPrice:18.4,return30d:-0.04},
-  };
-
-  const allTickers=groups.flatMap(g=>g.tickers);
-  const results=await Promise.allSettled(
-    allTickers.map(t=>fetch('/api/price?ticker='+encodeURIComponent(normalizeTicker(t))).then(r=>r.json()))
-  );
-
-  const cards=document.getElementById('marketCards');
-  if(!cards) return;
-  cards.style.gridTemplateColumns='repeat(4,1fr)';
-  cards.style.gap='2px';
-
-  let html='';
-  let idx=0;
-  groups.forEach(g=>{
-    html+='<div style="grid-column:1/-1;font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.08em;padding:4px 0 3px;border-bottom:1px solid #1a1a1a;margin-top:4px;">'+g.label+'</div>';
-    g.tickers.forEach(t=>{
-      const r=results[idx++];
-      const d=(r.status==='fulfilled'&&r.value&&r.value.currentPrice)?r.value:(estimated[t]||null);
-      if(!d){
-        html+='<div style="background:#111;padding:8px;"><div style="font-family:var(--mono);font-size:9px;color:#444;">'+(names[t]||t.replace('/USD',''))+'</div><div style="font-size:12px;color:#333;">—</div></div>';
-        return;
-      }
-      // Número principal = cambio DIARIO (dayChange), consistente con la cinta viva.
-      // return30d baja a una línea rotulada "30D" para no mezclar periodos sin etiqueta.
-      const day=(typeof d.dayChange==='number')?d.dayChange:null;
-      const r30=(typeof d.return30d==='number')?d.return30d:null;
-      const dayColor=day==null?'#666':(day>=0?'#00c97d':'#E24B4A');
-      const cardBg=day==null?'rgba(255,255,255,.02)':(day>=0?'rgba(0,201,125,.05)':'rgba(226,75,74,.05)');
-      const price=d.currentPrice>10000?'$'+d.currentPrice.toLocaleString(undefined,{maximumFractionDigits:0}):
-                  d.currentPrice>100?'$'+d.currentPrice.toLocaleString(undefined,{maximumFractionDigits:0}):
-                  '$'+d.currentPrice.toFixed(2);
-      const dayTxt=day==null?'—':((day>=0?'+':'')+(day*100).toFixed(2)+'%');
-      const r30Txt=r30==null?'':('<span style="color:#555;">30D </span><span style="color:'+(r30>=0?'#00c97d':'#E24B4A')+';">'+(r30>=0?'+':'')+(r30*100).toFixed(1)+'%</span>');
-      html+='<div data-chart-sym="'+t+'" title="'+(names[t]||t.replace('/USD',''))+' · chart" style="background:'+cardBg+';border:1px solid #1a1a1a;padding:8px;cursor:pointer;">'
-        +'<div style="font-family:var(--mono);font-size:9px;color:#666;margin-bottom:3px;">'+(names[t]||t.replace('/USD',''))+'</div>'
-        +'<div style="font-size:13px;font-weight:600;font-family:var(--mono);color:#e0e0e0;">'+price+'</div>'
-        +'<div style="font-family:var(--mono);font-size:10px;color:'+dayColor+';margin-top:1px;">'+dayTxt+'</div>'
-        +(r30Txt?'<div style="font-family:var(--mono);font-size:8px;margin-top:1px;">'+r30Txt+'</div>':'')
-        +'</div>';
-    });
-  });
-  cards.innerHTML=html;
-}
-
 // ── Currencies ─────────────────────────────────────────
 async function loadCurrencies(){
   const pairs=[
@@ -4411,26 +4437,27 @@ async function loadSectorHeatmap(){
   const el=document.getElementById('sectorHeatmap');
   if(!el) return;
 
-  // Instant hardcoded heatmap
+  // Instant hardcoded heatmap. `day` = cambio diario (lo que la gente busca
+  // primero) → número principal; 30D e YTD quedan de contexto.
   const fallbackSectors=[
-    {sector:'Technology',return30d:-4.2,ytd:8.1,signal:'NEUTRAL',note:'AI spending strong but valuations under pressure'},
-    {sector:'Energy',return30d:3.8,ytd:12.4,signal:'BULLISH',note:'Oil supply cuts supporting prices'},
-    {sector:'Financials',return30d:-1.9,ytd:4.2,signal:'NEUTRAL',note:'Rate cut expectations mixed for banks'},
-    {sector:'Healthcare',return30d:2.1,ytd:6.8,signal:'BULLISH',note:'Defensive play amid macro uncertainty'},
-    {sector:'LATAM E-comm',return30d:-5.3,ytd:2.1,signal:'NEUTRAL',note:'MELI under pressure from macro headwinds'},
-    {sector:'Consumer',return30d:-2.8,ytd:1.4,signal:'BEARISH',note:'Spending softening as credit tightens'},
-    {sector:'Industrials',return30d:1.2,ytd:7.9,signal:'NEUTRAL',note:'Reshoring trend supporting US manufacturing'},
-    {sector:'Utilities',return30d:4.5,ytd:9.2,signal:'BULLISH',note:'Rate cut expectations boosting yield plays'},
-    {sector:'Real Estate',return30d:3.1,ytd:5.6,signal:'NEUTRAL',note:'REITs recovering as rate cuts priced in'},
-    {sector:'Materials',return30d:-0.8,ytd:3.3,signal:'NEUTRAL',note:'China demand uncertainty weighing on commodities'},
+    {sector:'Technology',day:-0.9,return30d:-4.2,ytd:8.1,signal:'NEUTRAL',note:'AI spending strong but valuations under pressure'},
+    {sector:'Energy',day:1.1,return30d:3.8,ytd:12.4,signal:'BULLISH',note:'Oil supply cuts supporting prices'},
+    {sector:'Financials',day:-0.4,return30d:-1.9,ytd:4.2,signal:'NEUTRAL',note:'Rate cut expectations mixed for banks'},
+    {sector:'Healthcare',day:0.6,return30d:2.1,ytd:6.8,signal:'BULLISH',note:'Defensive play amid macro uncertainty'},
+    {sector:'LATAM E-comm',day:-1.4,return30d:-5.3,ytd:2.1,signal:'NEUTRAL',note:'MELI under pressure from macro headwinds'},
+    {sector:'Consumer',day:-0.7,return30d:-2.8,ytd:1.4,signal:'BEARISH',note:'Spending softening as credit tightens'},
+    {sector:'Industrials',day:0.3,return30d:1.2,ytd:7.9,signal:'NEUTRAL',note:'Reshoring trend supporting US manufacturing'},
+    {sector:'Utilities',day:0.8,return30d:4.5,ytd:9.2,signal:'BULLISH',note:'Rate cut expectations boosting yield plays'},
+    {sector:'Real Estate',day:0.5,return30d:3.1,ytd:5.6,signal:'NEUTRAL',note:'REITs recovering as rate cuts priced in'},
+    {sector:'Materials',day:-0.2,return30d:-0.8,ytd:3.3,signal:'NEUTRAL',note:'China demand uncertainty weighing on commodities'},
   ];
   renderHeatmap(fallbackSectors);
 
   // Try Claude refresh
   try{
-    const aiText=await qdAI({max_tokens:350,
+    const aiText=await qdAI({max_tokens:400,
         messages:[{role:'user',content:
-          'Sector performance as of '+qdMonthYear()+' including LATAM. Return ONLY JSON array of 10: [{"sector":"name","return30d":number,"ytd":number,"signal":"BULLISH|NEUTRAL|BEARISH","note":"1 sentence"}]'}]});
+          'Sector performance as of '+qdMonthYear()+' including LATAM. "day" = today\'s move, "return30d" = 30-day, "ytd" = year-to-date, all in percent. Return ONLY JSON array of 10: [{"sector":"name","day":number,"return30d":number,"ytd":number,"signal":"BULLISH|NEUTRAL|BEARISH","note":"1 sentence"}]'}]});
     const sectors=aiText==null?null:safeJSON(aiText);
     if(Array.isArray(sectors)) renderHeatmap(sectors);
   }catch(e){ /* keep fallback */ }
@@ -4439,17 +4466,25 @@ async function loadSectorHeatmap(){
 function renderHeatmap(sectors){
   const el=document.getElementById('sectorHeatmap');
   if(!el) return;
-  const sorted=[...sectors].sort((a,b)=>b.return30d-a.return30d);
+  // Número principal = cambio DIARIO (lo que se busca primero). Si un item
+  // no trae "day" (respuesta vieja), cae al 30D para no romperse.
+  const primary=s=>(typeof s.day==='number')?s.day:(s.return30d||0);
+  const hasDay=sectors.some(s=>typeof s.day==='number');
+  const sorted=[...sectors].sort((a,b)=>primary(b)-primary(a));
   let html='<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:2px;">';
   sorted.forEach(s=>{
-    const ret=s.return30d||0;
-    const intensity=Math.min(1,Math.abs(ret)/15);
-    const bg=ret>=0?'rgba(0,120,60,'+(0.25+intensity*0.55)+')':"rgba(160,25,25,"+(0.25+intensity*0.55)+")";
+    const p=primary(s);
+    const intensity=Math.min(1,Math.abs(p)/(hasDay?2.5:15));  // el diario se satura antes
+    const bg=p>=0?'rgba(0,120,60,'+(0.25+intensity*0.55)+')':"rgba(160,25,25,"+(0.25+intensity*0.55)+")";
     const textColor=intensity>0.3?'#fff':'#ccc';
-    html+='<div style="background:'+bg+';padding:10px 8px;cursor:default;" title="'+(s.note||'')+'">'
+    const lbl=hasDay?'1D':'30D';
+    const ctx=hasDay
+      ? '30D '+((s.return30d||0)>=0?'+':'')+(s.return30d||0).toFixed(1)+'% · YTD '+((s.ytd||0)>=0?'+':'')+(s.ytd||0).toFixed(1)+'%'
+      : 'YTD '+((s.ytd||0)>=0?'+':'')+(s.ytd||0).toFixed(1)+'%';
+    html+='<div style="background:'+bg+';padding:9px 8px;cursor:default;" title="'+(s.note||'')+'">'
       +'<div style="font-size:10px;font-family:var(--mono);color:'+textColor+';margin-bottom:3px;line-height:1.2;">'+s.sector+'</div>'
-      +'<div style="font-size:14px;font-weight:700;color:'+textColor+';font-family:var(--mono);">'+(ret>=0?'+':'')+ret.toFixed(1)+'%<span style="font-size:8px;font-weight:400;opacity:.55;margin-left:3px;">30D</span></div>'
-      +'<div style="font-size:9px;color:rgba(255,255,255,.4);margin-top:1px;">YTD '+(s.ytd>=0?'+':'')+( s.ytd||0).toFixed(1)+'%</div>'
+      +'<div style="font-size:14px;font-weight:700;color:'+textColor+';font-family:var(--mono);">'+(p>=0?'+':'')+p.toFixed(1)+'%<span style="font-size:8px;font-weight:400;opacity:.55;margin-left:3px;">'+lbl+'</span></div>'
+      +'<div style="font-size:8px;color:rgba(255,255,255,.4);margin-top:1px;">'+ctx+'</div>'
       +'</div>';
   });
   html+='</div>';

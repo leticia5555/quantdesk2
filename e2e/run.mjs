@@ -164,6 +164,12 @@ async function routeApis(page) {
         'ES=F': card(5320, 5310),
         'NQ=F': card(18600, 18550),
         'YM=F': card(39100, 39050),
+        // bloque de riesgo unificado (US · CRYPTO · LATAM ADRs)
+        'SPY': card(598.2, 594.0), 'QQQ': card(521.4, 518.0), 'IWM': card(228.3, 227.1),
+        'GLD': card(242.1, 240.5), 'TLT': card(92.4, 92.9), 'AMZN': card(214.6, 212.0),
+        'NVDA': card(138.2, 135.4), 'TSLA': card(352.1, 360.0),
+        'BTC-USD': card(96800, 95200), 'ETH-USD': card(3620, 3560), 'SOL-USD': card(238.4, 232.0), 'BNB-USD': card(672.0, 668.0),
+        'MELI': card(1842.0, 1820.0), 'NU': card(13.4, 13.7), 'GLOB': card(212.0, 209.0), 'AMXB.MX': card(15.2, 15.05),
       }, generated_at: new Date().toISOString() });
     }
     if (p === '/api/candles') {
@@ -954,19 +960,26 @@ const s24 = await page.evaluate(() => {
     heroCanvases: [...hero.querySelectorAll('.mx-hchart')].filter(h => h.querySelector('canvas')).length,
     toggles: groups.querySelectorAll('.mx-tgls .mx-tgl').length,
     recency: [...groups.querySelectorAll('.mx-recency')].some(e => /updated|actualizado/.test(e.textContent)),
+    // unificación: el bloque de riesgo ahora es un grupo con el MISMO componente
+    with30d: groups.querySelectorAll('.mx-card .mx-30d').length,
+    cryptoCard: !!groups.querySelector('.mx-card[data-chart-sym="BTC/USD"]'),
+    oldMarketCards: !!document.getElementById('marketCards'),
   };
 });
 report('S24a hero muestra el VIX con su nivel', s24.heroHasVix, s24.hero.replace(/\n/g, ' · ').slice(0, 80));
 report('S24b hero calcula el spread 10Y-2Y invertido (recession signal)', s24.heroInverted, s24.hero.replace(/\n/g, ' · ').slice(0, 120));
-report('S24c grupos por región presentes (RATES/FX/COMMODITIES/ASIA/EUROPE/LATAM/FUTURES)',
-  ['RATES', 'FX GLOBAL', 'COMMODITIES', 'ASIA', 'EUROPE', 'LATAM', 'US FUTURES'].every(t => s24.secs.some(s => s.includes(t))),
+report('S24c 10 grupos: macro por región + bloque de riesgo (US/CRYPTO/LATAM ADRs)',
+  ['RATES', 'FX GLOBAL', 'COMMODITIES', 'ASIA', 'EUROPE', 'LATAM', 'US FUTURES', 'US', 'CRYPTO', 'LATAM ADRs'].every(t => s24.secs.some(s => s.includes(t))),
   JSON.stringify(s24.secs));
-report('S24d cada tarjeta tiene sparkline (overlay HTML sin distorsión)', s24.cards > 0 && s24.sparks === s24.cards,
+report('S24d cada tarjeta tiene sparkline (overlay HTML sin distorsión)', s24.cards === 34 && s24.sparks === s24.cards,
   'cards=' + s24.cards + ' sparks=' + s24.sparks);
 report('S24e ^TNX se muestra ÷10 (4.25%, no 42.5)', s24.tnxVal.includes('4.25'), s24.tnxVal);
 report('S24i heroes VIX + spread con gráfica real (Lightweight Charts)', s24.heroCanvases === 2, 'canvases=' + s24.heroCanvases);
-report('S24j toggles de periodo por grupo (7 grupos × 3 = 21)', s24.toggles === 21, 'toggles=' + s24.toggles);
+report('S24j toggles de periodo por grupo (10 grupos × 3 = 30)', s24.toggles === 30, 'toggles=' + s24.toggles);
 report('S24k sello de recencia visible ("updated Xs ago")', s24.recency === true, '');
+report('S24m lenguaje unificado: TODAS las tarjetas con 30D + cripto clicable + sin marketCards viejo',
+  s24.with30d === s24.cards && s24.cryptoCard && !s24.oldMarketCards,
+  JSON.stringify({ with30d: s24.with30d, crypto: s24.cryptoCard, oldBlock: s24.oldMarketCards }));
 
 // click en una tarjeta abre el chart modal con velas (misma plumbing candles)
 const beforeCandles = apiCalls.filter(c => c.phase === 'S24-macro-markets' && c.path.startsWith('/api/candles')).length;

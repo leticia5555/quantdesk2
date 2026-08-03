@@ -30,6 +30,20 @@ export const MACRO_SYMBOLS = [
   'ES=F', 'NQ=F', 'YM=F',       // futuros EE.UU.
 ];
 
+// Bloque de riesgo (US · CRYPTO · ADRs LATAM) — antes se pintaba estático
+// desde /api/price sin sparkline. Ahora vive en el MISMO batch/serie que
+// el resto para unificar el lenguaje visual (una tarjeta, una gráfica).
+// Símbolos en forma Yahoo (cripto = BTC-USD); el cliente mapea a su ticker
+// de app para el modal de velas.
+export const EQUITY_SYMBOLS = [
+  'SPY', 'QQQ', 'IWM', 'GLD', 'TLT', 'AMZN', 'NVDA', 'TSLA',  // US
+  'BTC-USD', 'ETH-USD', 'SOL-USD', 'BNB-USD',                 // cripto
+  'MELI', 'NU', 'GLOB', 'AMXB.MX',                            // ADRs LATAM (+ BMV)
+];
+
+// Todo lo que puebla el batch (un solo fetch de cliente, una entrada CDN).
+export const ALL_SYMBOLS = [...MACRO_SYMBOLS, ...EQUITY_SYMBOLS];
+
 const UA = { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' };
 
 // v8/finance/chart (range=1mo, interval=1d) → { price, prevClose,
@@ -83,7 +97,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const data = {};
-  await Promise.all(MACRO_SYMBOLS.map(async (sym) => {
+  await Promise.all(ALL_SYMBOLS.map(async (sym) => {
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=3mo&interval=1d`;
       const r = await fetch(url, { headers: UA });

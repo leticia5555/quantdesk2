@@ -3,7 +3,7 @@
 // mockeado — sin red. Correr con `node tests/macro-markets.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import handler, { MACRO_SYMBOLS, extractMacro, mxPrecision } from '../api/macro-markets.js';
+import handler, { MACRO_SYMBOLS, EQUITY_SYMBOLS, ALL_SYMBOLS, extractMacro, mxPrecision } from '../api/macro-markets.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -44,6 +44,16 @@ console.log('MACRO_SYMBOLS: universo curado y coherente');
     'índices globales por región (Asia/Europa/LATAM)');
   ok(['ES=F','NQ=F','YM=F'].every(s => MACRO_SYMBOLS.includes(s)), 'futuros EE.UU.');
   ok(new Set(MACRO_SYMBOLS).size === MACRO_SYMBOLS.length, 'sin duplicados');
+}
+
+console.log('EQUITY_SYMBOLS: bloque de riesgo unificado en el mismo batch');
+{
+  ok(['SPY','QQQ','GLD','TLT','NVDA','TSLA'].every(s => EQUITY_SYMBOLS.includes(s)), 'US incluido');
+  ok(['BTC-USD','ETH-USD','SOL-USD','BNB-USD'].every(s => EQUITY_SYMBOLS.includes(s)),
+    'cripto en forma Yahoo (BTC-USD), no BTC/USD');
+  ok(['MELI','NU','GLOB','AMXB.MX'].every(s => EQUITY_SYMBOLS.includes(s)), 'ADRs LATAM');
+  ok(ALL_SYMBOLS.length === MACRO_SYMBOLS.length + EQUITY_SYMBOLS.length &&
+     new Set(ALL_SYMBOLS).size === ALL_SYMBOLS.length, 'ALL_SYMBOLS = macro + equity, sin duplicados');
 }
 
 // ─────────────────── mxPrecision (bug euro plano) ───────────────────
@@ -117,7 +127,7 @@ console.log('handler: batch feliz sobre el universo fijo');
   const res = mockRes();
   await handler({ method: 'GET', query: {} }, res);
   ok(res.code === 200, 'responde 200', res.code);
-  ok(calls === MACRO_SYMBOLS.length, 'un fetch por símbolo del universo', calls);
+  ok(calls === ALL_SYMBOLS.length, 'un fetch por símbolo del universo (macro + equity)', calls);
   ok(res.body.data['^VIX'] && res.body.data['^VIX'].changePct === 8.11, 'VIX indexado por su símbolo Yahoo', JSON.stringify(res.body.data['^VIX']));
   ok(/s-maxage=\d+/.test(res.headers['Cache-Control'] || ''), 'setea caché CDN compartida', res.headers['Cache-Control']);
 }
