@@ -405,3 +405,35 @@ Los crons están en UTC fijo: decide 22:40 (post-cierre NYSE todo el año),
 reconcile 14:40 ≈ una hora tras el open de verano y 10 min tras el de
 invierno. Si el fill entra tarde un día de invierno, el reconcile del día
 siguiente lo recoge — el estado no terminal se re-chequea hasta 7 días.
+
+## Días no hábiles (mercado cerrado)
+
+Antes de correr la liga, `runArenaLeague` pregunta **una sola vez** si el
+mercado abrió hoy (`marketClosedReason`, en `api/arena-run.js`). Es un chequeo
+**global** —un hecho de mercado, no por-agente— que va **antes** del loop de
+agentes: si está cerrado, ningún agente toca el buffet, el LLM ni Alpaca.
+
+- **Festivos = el valor real.** El cron de decide ya dispara solo entre semana
+  (`40 22 * * 1-5`), así que el fin de semana no necesita una rama de código
+  aparte (sería redundante). Lo que este chequeo agrega es el **festivo entre
+  semana**: el cron sí dispara un 4 de julio o un Thanksgiving, y ahí es donde
+  se evita correr contra un mercado cerrado.
+- **Fuente: el calendario de Alpaca.** `getCalendar(hoy, hoy)` en horario del
+  Este (`America/New_York`, robusto a UTC/DST). Sin sesión hoy → cerrado. La
+  fecha "de hoy" se calcula en ET porque el cron corre 22:40 UTC.
+- **Fila marcadora global, no silencio.** Se journalea **una sola** fila
+  `status='skipped_market_closed'` con `agent_id='league'` (sentinela, no un
+  agente real: no aparece en ninguna card por-agente), cero órdenes y
+  `context.market_check` (`reason` = `weekend` | `holiday` + fecha ET). Mercado
+  cerrado es un hecho de la liga entera, no de cada agente. Fila presente = *la
+  liga decidió no operar*; que el cron **sí** corrió lo distingue el latido
+  (`beat('arena:decide')`), no las filas del journal. La etiqueta
+  `weekend`/`holiday` es informativa: el control de flujo es uno solo (cerrado ⇒
+  skip).
+- **Calendario caído → fail-OPEN.** Si la consulta de festivos falla, la corrida
+  **sigue** (`reason='calendar_error'`). El costo de correr de más son centavos y
+  órdenes que se encolan al siguiente open; el de no correr es perder un día del
+  experimento. El fail-closed del Arena aplica a la validez de **órdenes** (el
+  guard), no a la detección de calendario.
+- **El reconcile NO se skipea:** es idempotente y barato — en un festivo
+  simplemente no hay fills nuevos.
