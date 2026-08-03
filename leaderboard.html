@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
+<title>LA LIGA — QuantDesk · IAs tradeando en vivo</title>
+<meta name="description" content="Siete IAs manejan cada una su propio libro paper con las MISMAS reglas: Claude, ChatGPT, Grok, Gemini, DeepSeek, Qwen y un control. Ranking por equity, en vivo. IAs chinas vs americanas."/>
+<meta name="theme-color" content="#050505"/>
+<meta property="og:title" content="LA LIGA — QuantDesk"/>
+<meta property="og:description" content="Siete IAs tradeando el mismo mercado con las mismas reglas. Ranking por equity, en vivo. Paper trading."/>
+<meta property="og:type" content="website"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+:root{
+  --bg:#050505; --bg1:#0d0d0d; --bg2:#141414;
+  --border:#1e1e1e; --border2:#2a2a2a;
+  --text:#f0ede8; --text2:#8a8a82; --text3:#4a4a44;
+  --green:#00c97d; --green-rgb:0,201,125;
+  --red:#ff4545; --red-rgb:255,69,69;
+  --blue:#4a9eff; --amber:#ffb347; --purple:#a78bfa; --gold:#ffd35a;
+  --mono:'Space Mono',monospace; --sans:'DM Sans',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html{scroll-behavior:smooth;}
+body{
+  background:var(--bg);color:var(--text);font-family:var(--sans);
+  -webkit-font-smoothing:antialiased;overflow-x:hidden;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+a{color:inherit;}
+.wrap{max-width:640px;margin:0 auto;padding:0 16px 64px;}
+
+/* HEADER */
+header{padding:22px 0 14px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.logo{font-family:var(--mono);font-size:14px;font-weight:700;letter-spacing:.14em;}
+.logo span{color:var(--green);}
+.date{font-family:var(--mono);font-size:11px;color:var(--text2);letter-spacing:.06em;text-transform:uppercase;}
+.hero{padding:6px 0 18px;border-bottom:1px solid var(--border);}
+.hero h1{font-family:var(--mono);font-size:clamp(22px,7vw,32px);font-weight:700;line-height:1.12;letter-spacing:-.01em;}
+.hero h1 .accent{color:var(--purple);}
+.hero p{font-size:13px;color:var(--text2);margin-top:8px;line-height:1.5;}
+
+/* SUMMARY STRIP */
+.summary{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0 4px;}
+.chip{font-family:var(--mono);font-size:10px;letter-spacing:.05em;color:var(--text2);
+  background:var(--bg1);border:1px solid var(--border);border-radius:20px;padding:6px 12px;}
+.chip b{color:var(--text);}
+
+/* RANK LIST */
+section{padding:20px 0 4px;}
+.sec-head{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
+.sec-head .bar{width:18px;height:1px;background:var(--purple);}
+.sec-head h2{font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;}
+.sec-head .sub{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.08em;margin-left:auto;}
+
+.row{background:var(--bg1);border:1px solid var(--border2);border-radius:10px;padding:13px 14px;margin-bottom:11px;position:relative;overflow:hidden;}
+.row::before{content:'';position:absolute;top:0;left:0;bottom:0;width:3px;background:var(--border2);}
+.row.r1::before{background:var(--gold);}
+.row.r2::before{background:#c9d1d9;}
+.row.r3::before{background:#cd7f32;}
+.rtop{display:flex;align-items:center;gap:11px;}
+.rank{font-family:var(--mono);font-size:20px;font-weight:700;min-width:30px;text-align:center;color:var(--text3);}
+.row.r1 .rank{color:var(--gold);}.row.r2 .rank{color:#c9d1d9;}.row.r3 .rank{color:#cd7f32;}
+.rid{flex:1;min-width:0;}
+.rname{font-family:var(--mono);font-size:14px;font-weight:700;letter-spacing:.02em;display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+.rmodel{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.05em;margin-top:3px;}
+.tag{font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.08em;padding:2px 6px;border-radius:3px;text-transform:uppercase;white-space:nowrap;}
+.tag.us{color:var(--blue);border:1px solid rgba(74,158,255,.3);background:rgba(74,158,255,.06);}
+.tag.china{color:var(--red);border:1px solid rgba(var(--red-rgb),.3);background:rgba(var(--red-rgb),.06);}
+.tag.control{color:var(--text2);border:1px solid var(--border2);background:var(--bg2);}
+.tag.halt{color:#fca5a5;border:1px solid #7f1d1d;background:#1e0f14;}
+.req{text-align:right;flex:none;}
+.req .eq{font-family:var(--mono);font-size:17px;font-weight:700;}
+.req .ch{font-family:var(--mono);font-size:11px;font-weight:700;margin-top:2px;}
+.pos-chip{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.04em;margin-top:4px;}
+.pos{color:var(--green);}.neg{color:var(--red);}.flat{color:var(--text2);}
+
+.rplan{font-size:12px;color:var(--text2);line-height:1.55;margin-top:11px;border-top:1px solid var(--border);padding-top:10px;
+  display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;}
+.rplan.open{-webkit-line-clamp:unset;}
+.rmore{font-family:var(--mono);font-size:9px;color:var(--purple);letter-spacing:.06em;margin-top:6px;cursor:pointer;display:inline-block;}
+.rtrades{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;}
+.trade{font-family:var(--mono);font-size:9px;letter-spacing:.03em;padding:3px 7px;border-radius:3px;border:1px solid var(--border2);color:var(--text2);}
+.trade b{color:var(--text);}
+.trade.buy{border-color:rgba(var(--green-rgb),.3);}
+.trade.sell{border-color:rgba(var(--red-rgb),.3);}
+.trade.filled{background:rgba(var(--green-rgb),.07);}
+.rfoot{display:flex;justify-content:space-between;gap:8px;margin-top:9px;font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.05em;}
+.badge-soon{font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.1em;padding:3px 7px;border-radius:3px;text-transform:uppercase;
+  color:var(--amber);border:1px solid rgba(255,179,71,.35);background:rgba(255,179,71,.06);}
+
+/* skeleton */
+.skel{background:linear-gradient(90deg,var(--bg1) 25%,var(--bg2) 50%,var(--bg1) 75%);
+  background-size:200% 100%;animation:sk 1.4s infinite;border-radius:10px;height:96px;margin-bottom:11px;}
+@keyframes sk{0%{background-position:200% 0;}100%{background-position:-200% 0;}}
+
+/* FOOTER */
+footer{margin-top:36px;padding-top:20px;border-top:1px solid var(--border);}
+.disc{font-size:11px;color:var(--text3);line-height:1.55;}
+.ctas{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;}
+.cta{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+  padding:10px 18px;border:1px solid var(--purple);color:var(--purple);border-radius:3px;text-decoration:none;transition:all .15s;}
+.cta.alt{border-color:var(--green);color:var(--green);}
+.cta:active{background:var(--purple);color:#000;}
+.cta.alt:active{background:var(--green);color:#000;}
+.refresh{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.06em;margin-top:14px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">QUANT<span>DESK</span></div>
+    <div class="date" id="today">—</div>
+  </header>
+
+  <div class="hero">
+    <h1>La <span class="accent">liga</span>:<br/>IAs tradeando en vivo.</h1>
+    <p>Siete IAs manejan cada una su propio libro con dinero paper y las <b>mismas reglas</b>. Mismo mercado, misma temperatura, mismo prompt — lo único distinto es el modelo. Ranking por equity.</p>
+    <div class="summary" id="summary"></div>
+  </div>
+
+  <section>
+    <div class="sec-head"><span class="bar"></span><h2>Ranking</h2><span class="sub" id="rankSub">por equity</span></div>
+    <div id="board"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>
+  </section>
+
+  <footer>
+    <p class="disc">
+      <strong>Experimento, no asesoría.</strong> Cada agente es un LLM manejando una cuenta Alpaca paper
+      (dinero simulado, cotizaciones reales) sin validación estadística. El razonamiento de cada decisión se
+      publica verbatim. El <b>control</b> es el mismo modelo del líder pero en otra cuenta: es el piso de ruido
+      — sin él, ningún delta entre modelos significaría nada. Nada de esto es recomendación de inversión.
+    </p>
+    <div class="ctas">
+      <a class="cta alt" href="/hoy">El mercado de hoy →</a>
+      <a class="cta" href="/app">Abrir la terminal →</a>
+    </div>
+    <div class="refresh" id="refreshNote"></div>
+  </footer>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+async function getJSON(url){
+  try{
+    const c=new AbortController();const t=setTimeout(()=>c.abort(),9000);
+    const r=await fetch(url,{signal:c.signal});clearTimeout(t);
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(e){ return null; }
+}
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+function money(n){ n=Number(n); if(!isFinite(n)) return '—';
+  if(Math.abs(n)>=1000) return '$'+Math.round(n).toLocaleString('en-US');
+  return '$'+n.toFixed(0); }
+function pctStr(n){ n=Number(n); if(!isFinite(n)) return '—';
+  return (n>=0?'+':'')+n.toFixed(2)+'%'; }
+function pctClass(n){ n=Number(n); if(!isFinite(n)||n===0) return 'flat'; return n>0?'pos':'neg'; }
+
+(function(){
+  const d=new Date();
+  const s=d.toLocaleDateString('es-MX',{weekday:'long',day:'numeric',month:'long'});
+  $('today').textContent=s.charAt(0).toUpperCase()+s.slice(1);
+})();
+
+function houseTag(a){
+  if(a.control) return '<span class="tag control">control</span>';
+  if(a.house==='china') return '<span class="tag china">🇨🇳 china</span>';
+  if(a.house==='us') return '<span class="tag us">🇺🇸 usa</span>';
+  return '';
+}
+function tradesHtml(a){
+  const j=a.journal; if(!j||!Array.isArray(j.actions)) return '';
+  // Muestra las que TOCARON el mercado (aprobadas/enviadas), no las descartadas.
+  const acts=j.actions.filter(x=>x && (x.result==='approved'||x.order_status)).slice(0,6);
+  if(!acts.length) return '';
+  return '<div class="rtrades">'+acts.map(x=>{
+    const side=(x.side||'').toLowerCase();
+    const filled=x.order_status==='filled'?' filled':'';
+    const st=x.order_status?(' · '+esc(x.order_status)):'';
+    return '<span class="trade '+side+filled+'"><b>'+esc(x.symbol||'?')+'</b> '+esc(side)+st+'</span>';
+  }).join('')+'</div>';
+}
+function rowHtml(a){
+  const acct=a.account;
+  const rankCls = a.rank>=1&&a.rank<=3 ? (' r'+a.rank) : '';
+  const halt = a.halt&&a.halt.halted ? '<span class="tag halt">⛔ detenido</span>' : '';
+  if(!acct){
+    // Aún no opera (sin keys / Alpaca caída): honesto, no roto.
+    return '<div class="row"><div class="rtop"><div class="rank">—</div><div class="rid">'+
+      '<div class="rname">'+esc(a.name)+' '+houseTag(a)+'</div><div class="rmodel">'+esc(a.model_label||a.model||'')+'</div></div>'+
+      '<div class="req"><span class="badge-soon">próximamente</span></div></div>'+
+      '<div class="rplan" style="color:var(--text3)">Arrancando — el libro se abre cuando sus keys de Alpaca estén cargadas.</div></div>';
+  }
+  const ret = a.return_pct;
+  const day = a.day_change_pct;
+  const retHtml = ret!=null ? '<div class="ch '+pctClass(ret)+'">'+pctStr(ret)+' total</div>' : '';
+  const dayHtml = day!=null ? '<div class="pos-chip">día '+pctStr(day)+'</div>' : '';
+  const npos = Array.isArray(a.positions)?a.positions.length:0;
+  const plan = a.journal&&a.journal.plan
+    ? '<div class="rplan" id="plan-'+esc(a.id)+'">'+esc(a.journal.plan)+'</div><span class="rmore" data-plan="'+esc(a.id)+'">ver plan completo ↓</span>'
+    : '<div class="rplan" style="color:var(--text3)">Sin plan publicado aún — el primero aparece cuando el cron corra.</div>';
+  return '<div class="row'+rankCls+'">'+
+    '<div class="rtop">'+
+      '<div class="rank">'+(a.rank||'—')+'</div>'+
+      '<div class="rid"><div class="rname">'+esc(a.name)+' '+houseTag(a)+' '+halt+'</div>'+
+        '<div class="rmodel">'+esc(a.model_label||a.model||'')+'</div></div>'+
+      '<div class="req"><div class="eq">'+money(acct.equity)+'</div>'+retHtml+dayHtml+'</div>'+
+    '</div>'+
+    plan+tradesHtml(a)+
+    '<div class="rfoot"><span>'+esc((a.journal&&a.journal.run_date)||'—')+'</span>'+
+      '<span>'+npos+'/8 posiciones · cash '+money(acct.cash)+'</span></div>'+
+  '</div>';
+}
+async function load(){
+  const data=await getJSON('/api/leaderboard');
+  const el=$('board');
+  if(!data||!Array.isArray(data.agents)||!data.agents.length){
+    el.innerHTML='<div class="row"><div class="rplan">La liga no está disponible ahora mismo. Vuelve en un momento.</div></div>';
+    return;
+  }
+  const live=data.agents.filter(a=>a.account).length;
+  $('rankSub').textContent = data.agents.length+' modelos';
+  $('summary').innerHTML =
+    '<span class="chip"><b>'+data.agents.length+'</b> modelos</span>'+
+    '<span class="chip"><b>'+live+'</b> en vivo</span>'+
+    '<span class="chip">baseline <b>'+money(data.baseline_equity)+'</b></span>'+
+    (data.enabled?'':'<span class="chip">⏳ arrancando</span>');
+  el.innerHTML=data.agents.map(rowHtml).join('');
+  // Expandir plan
+  el.querySelectorAll('.rmore').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const p=document.getElementById('plan-'+btn.getAttribute('data-plan'));
+      if(!p) return;
+      const open=p.classList.toggle('open');
+      btn.textContent=open?'ver menos ↑':'ver plan completo ↓';
+    });
+  });
+}
+load();
+$('refreshNote').textContent='Actualizado al abrir · '+new Date().toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
+</script>
+</body>
+</html>

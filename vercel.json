@@ -16,6 +16,14 @@
     {
       "source": "/hoy",
       "destination": "/hoy.html"
+    },
+    {
+      "source": "/leaderboard",
+      "destination": "/leaderboard.html"
+    },
+    {
+      "source": "/liga",
+      "destination": "/leaderboard.html"
     }
   ],
   "crons": [

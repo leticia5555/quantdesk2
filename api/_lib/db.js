@@ -166,12 +166,26 @@ const SCHEMA = [
   // Migración idempotente: la tabla ya desplegada en prod se creó sin
   // `context` (diagnóstico del buffet: unavailable + error real por endpoint).
   `alter table arena_journal add column if not exists context jsonb`,
-  // Estado del agente (una sola fila, id=1). El circuit breaker a −20% DETIENE
-  // al agente (análogo del DEATH -20% de la flota: mata, no vacía y ya). La
-  // reactivación es MANUAL (endpoint ?action=resume) — el −20% es el resultado
-  // del experimento, revivirlo solo borraría el hallazgo. `resumed_at` re-basa
-  // el pico del breaker: tras revivir, el drawdown se mide desde el equity de
-  // ese momento, no desde el pico viejo (si no, re-dispararía el broadcut al instante).
+  // LIGA multi-modelo: `agent_id` distingue a cada competidor (Claude/OpenAI/
+  // control/…) en la MISMA tabla — columna, NO tabla-por-agente (una tabla por
+  // agente forkearía el schema y duplicaría cada query del reconcile y del
+  // post-mortem). El historial del Agente #6 (filas sin agent_id) se preserva
+  // como `claude`, el insignia. Índice para el ranking/post-mortem por agente.
+  `alter table arena_journal add column if not exists agent_id text`,
+  `update arena_journal set agent_id = 'claude' where agent_id is null`,
+  `create index if not exists arena_journal_agent_idx on arena_journal (agent_id, phase, created_at desc)`,
+  // Estado del agente. El circuit breaker a −20% DETIENE al agente (análogo del
+  // DEATH -20% de la flota: mata, no vacía y ya). La reactivación es MANUAL
+  // (endpoint ?action=resume) — el −20% es el resultado del experimento,
+  // revivirlo solo borraría el hallazgo. `resumed_at` re-basa el pico del
+  // breaker: tras revivir, el drawdown se mide desde el equity de ese momento,
+  // no desde el pico viejo (si no, re-dispararía el broadcut al instante).
+  //
+  // LIGA: el halt es POR AGENTE. La tabla nació con una sola fila (id=1). La
+  // migración la re-llavea por `agent_id`: se agrega la columna, se marca la fila
+  // legada como `claude` (el Agente #6), se suelta la PK vieja de `id` (queda
+  // vestigial) y se hace único `agent_id`. Así cada agente tiene su propia fila
+  // de halt sin colisionar en id=1. Idempotente (IF EXISTS / IF NOT EXISTS).
   `create table if not exists arena_state (
      id int primary key default 1,
      halted boolean not null default false,
@@ -179,7 +193,10 @@ const SCHEMA = [
      halted_reason text,
      resumed_at timestamptz
    )`,
-  `insert into arena_state (id, halted) values (1, false) on conflict (id) do nothing`,
+  `alter table arena_state add column if not exists agent_id text`,
+  `update arena_state set agent_id = 'claude' where agent_id is null`,
+  `alter table arena_state drop constraint if exists arena_state_pkey`,
+  `create unique index if not exists arena_state_agent_uidx on arena_state (agent_id)`,
   // Calendario macro CURADO (decisión de producto: nada de scraping frágil).
   // Lety carga ~8 eventos/mes a mano vía el admin gated (/api/macro-events).
   // Los earnings de mega-caps NO viven aquí — se automatizan desde el

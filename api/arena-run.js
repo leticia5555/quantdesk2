@@ -1,14 +1,19 @@
 // ═══════════════════════════════════════════════════════════════
-// /api/arena-run — el tick del ARENA: Agente #6 "Claude PM".
+// /api/arena-run — el tick del ARENA: la LIGA multi-modelo.
 //
-// Un LLM portfolio manager estilo Rallies/nof1 con la etiqueta honesta de
-// la casa: experimento SIN validación estadística, libro EXCLUSIVO en la
-// cuenta Alpaca paper existente — la flota validada sigue en el simulador
-// (agents-run) y no se tocan.
+// LLMs portfolio manager estilo Rallies/nof1 con la etiqueta honesta de la
+// casa: experimento SIN validación estadística. Cada agente activo (registry
+// en _lib/arena-registry.js: Claude/OpenAI/control en Fase A) corre el MISMO
+// harness sobre SU propio libro Alpaca paper — para comparar el MODELO, no el
+// prompt ni el presupuesto. `runArenaLeague` orquesta a todos en paralelo con
+// el buffet/deep-dive/cierres compartidos por corrida; `runArenaDecide` es la
+// decisión de UN agente (default el insignia `claude`, cuyo historial —Agente
+// #6— se preserva). La flota validada sigue en el simulador (agents-run), aparte.
+// Doc de la liga: docs/arena-liga-scope.md.
 //
-//   GET  ?phase=decide (default) → cron post-cierre (22:40 UTC L-V). DOS
-//        fases (SCAN → DEEP DIVE), ambas con el MISMO modelo (ANTHROPIC_MODEL,
-//        Haiku por defecto) para no contaminar la línea base del agente #6:
+//   GET  ?phase=decide (default) → cron post-cierre (22:40 UTC L-V). Corre la
+//        LIGA: por CADA agente activo, DOS fases (SCAN → DEEP DIVE) con SU
+//        modelo (Anthropic directo u OpenRouter) y temperatura fija 0.7:
 //        1. contexto: cuenta/posiciones/órdenes desde Alpaca + el buffet
 //           (movers market, earnings de la semana, insider buys del tracker,
 //           y el canal SCREENER — value/momentum precomputado en Neon, leído
@@ -48,17 +53,19 @@
 
 import { createHash } from 'node:crypto';
 import { sql, ensureSchema } from './_lib/db.js';
-import { guardedClaudeCall } from './_lib/ai-guard.js';
-import { ANTHROPIC_MODEL } from './_lib/model.js';
 import { getSymbolMap, getSymbolTypes } from './earnings.js';
 import { fetchDailySeries, completedSlice } from './_lib/sim.js';
-import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpacaCreds } from './_lib/alpaca.js';
+import { getAccount, getPositions, getOrders, getOrder, createLimitOrder } from './_lib/alpaca.js';
 import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF } from './_lib/arena-guard.js';
 import { buildRiskExits, EXIT_RULES } from './_lib/arena-exits.js';
 import { fetchDeepDive } from './_lib/finnhub-dive.js';
 import { beat } from './_lib/heartbeat.js';
 import { readScreenerRows } from './_lib/screener-db.js';
 import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
+// LIGA multi-modelo: el registry (quién compite, con qué modelo/cuenta/persona)
+// y el dispatch de proveedor (Anthropic directo vs OpenRouter, forma normalizada).
+import { callArenaLLM, providerKey } from './_lib/arena-model.js';
+import { activeAgents, agentById, agentAlpacaCreds, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
 
 // Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
 // reglas de universo); el buffet (trimMovers) la reusa y los tests de
@@ -102,8 +109,12 @@ OUTPUT: respond with ONE JSON object and NOTHING else (no markdown fences, no pr
 
 // ── DIVE (fase 2): las reglas del PM. Mismo contrato que el v1 single-call,
 // para que el guard downstream no cambie una línea. El schema es contrato. ──
-export function buildDiveSystemPrompt() {
-  return `You are "Claude PM", the portfolio manager of QuantDesk Arena — a PUBLIC experiment: an LLM managing a real Alpaca PAPER account (simulated money, real market quotes). Your reasoning is published verbatim next to every trade. This is STEP 2 of 2: you now have deep-dive data (fundamentals, analyst recommendations, recent news) for the candidates your scout flagged.
+// `persona` es la ÚNICA parte del prompt que varía entre agentes de la liga
+// (identidad, decisión #6): el resto es idéntico para medir el MODELO, no el
+// prompt. `claude` y `control` comparten persona ("Claude PM") — eso hace del
+// control un piso de ruido válido. Default "Claude PM" = comportamiento v1.
+export function buildDiveSystemPrompt(persona = 'Claude PM') {
+  return `You are "${persona}", the portfolio manager of QuantDesk Arena — a PUBLIC experiment: an LLM managing a real Alpaca PAPER account (simulated money, real market quotes). Your reasoning is published verbatim next to every trade. This is STEP 2 of 2: you now have deep-dive data (fundamentals, analyst recommendations, recent news) for the candidates your scout flagged.
 
 HARD RULES (a deterministic risk guard enforces them AFTER you — violations are discarded and logged, never fixed for you):
 - Universe: US-listed common equities only. No warrants, no units, no rights, no sub-$1 stocks, no crypto, no options, no shorting. Long only.
@@ -375,15 +386,42 @@ async function lastCompletedClose(symbol, now) {
   return null;
 }
 
+// ── Caches del RUN: dedupe de datos de MERCADO entre agentes ──────────
+// Un símbolo se pide UNA vez por corrida aunque N agentes lo necesiten. Se
+// cachea la PROMESA (in-flight), no el valor, así dos agentes concurrentes no
+// disparan dos fetches del mismo símbolo. El cierre de Yahoo y el deep dive de
+// Finnhub son idénticos para todos (datos de mercado); lo que difiere por agente
+// es su libro y la decisión del LLM, no estos números.
+function cachedClose(caches, symbol, now) {
+  if (!caches.close.has(symbol)) caches.close.set(symbol, lastCompletedClose(symbol, now));
+  return caches.close.get(symbol);
+}
+async function cachedDeepDive(caches, symbols, finnhubKey, now) {
+  const per = await Promise.all((symbols || []).map(async (sym) => {
+    if (!caches.dive.has(sym)) {
+      caches.dive.set(sym, fetchDeepDive([sym], finnhubKey, now).then((r) => ({ data: r.data[sym] ?? null, err: r.errors[sym] })));
+    }
+    const { data, err } = await caches.dive.get(sym);
+    return { sym, data, err };
+  }));
+  const data = {};
+  const errors = {};
+  for (const { sym, data: d, err } of per) { data[sym] = d; if (err) errors[sym] = err; }
+  return { data, errors };
+}
+
 async function journalInsert(row) {
+  // agent_id va AL FINAL ($14): mantiene el orden histórico de columnas
+  // (id…context) para no romper lectores por posición. null → 'claude' (insignia).
   await sql(
-    `insert into arena_journal (id, run_date, phase, status, prompt_version, prompt_hash, model, plan, llm_response, actions, account, error, context)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    `insert into arena_journal (id, run_date, phase, status, prompt_version, prompt_hash, model, plan, llm_response, actions, account, error, context, agent_id)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
     [row.id, row.run_date, row.phase, row.status, row.prompt_version ?? null, row.prompt_hash ?? null,
      row.model ?? null, row.plan ?? null, row.llm_response ?? null,
      row.actions ? JSON.stringify(row.actions) : null,
      row.account ? JSON.stringify(row.account) : null, row.error ?? null,
-     row.context ? JSON.stringify(row.context) : null]);
+     row.context ? JSON.stringify(row.context) : null,
+     row.agent_id ?? FLAGSHIP_AGENT_ID]);
 }
 
 // ── SALIDAS DE RIESGO (deterministas, no del LLM) ────────────────────
@@ -405,13 +443,13 @@ function attributeRiskExit(a, extra) {
 // ±2%) + day. client_order_id con segmento `:exit` — distinto de `:buy`/`:sell`,
 // así una salida determinista NO colisiona con una venta del PM del mismo
 // símbolo el mismo día (dos ventas mismo día antes compartían client_order_id).
-async function submitRiskExits(approved, runDate) {
+async function submitRiskExits(approved, runDate, creds) {
   const actions = [];
   let submitted = 0;
   for (const a of approved) {
     const clientOrderId = `arena:${runDate}:${a.symbol}:exit`;
     try {
-      const order = await createLimitOrder({ symbol: a.symbol, qty: a.qty, side: 'sell', limit_price: a.limit_price, client_order_id: clientOrderId });
+      const order = await createLimitOrder({ symbol: a.symbol, qty: a.qty, side: 'sell', limit_price: a.limit_price, client_order_id: clientOrderId }, creds);
       actions.push(attributeRiskExit(a, { result: 'approved', alpaca_order_id: order.id, client_order_id: clientOrderId, order_status: order.status }));
       submitted++;
     } catch (err) {
@@ -432,14 +470,26 @@ function riskDiscardActions(discarded) {
 // ── estado del agente: HALT del breaker −20% (persistente) ───────────
 // El broadcut DETIENE al agente (análogo del DEATH -20% de la flota: mata, no
 // vacía y ya). Reactivación MANUAL (runArenaResume) — nunca automática.
-export async function getArenaState() {
+export async function getArenaState(agentId = FLAGSHIP_AGENT_ID) {
   try {
-    const rows = await sql(`select halted, halted_at, halted_reason, resumed_at from arena_state where id = 1`);
+    const rows = await sql(`select halted, halted_at, halted_reason, resumed_at from arena_state where agent_id = $1`, [agentId]);
     return rows[0] || { halted: false, halted_at: null, halted_reason: null, resumed_at: null };
   } catch (e) {
     // Fail-safe: si el estado no se puede leer, NO se asume detenido (no se
     // congela el agente por un hipo de DB) — el breaker se re-evaluará igual.
     return { halted: false, halted_at: null, halted_reason: null, resumed_at: null };
+  }
+}
+
+// Asegura una fila de estado por agente activo (idempotente). El halt/resume
+// son UPDATEs por agent_id; sin fila previa un UPDATE no persistiría (afecta 0
+// filas). La fila legada del Agente #6 ya quedó marcada `claude` en la migración;
+// ésta siembra las de los agentes nuevos. Requiere el índice único de agent_id.
+export async function ensureAgentStateRows(agentIds) {
+  for (const id of agentIds) {
+    try {
+      await sql(`insert into arena_state (agent_id, halted) values ($1, false) on conflict (agent_id) do nothing`, [id]);
+    } catch (e) { /* best-effort: si falla, el UPDATE del halt igual reintenta */ }
   }
 }
 
@@ -470,53 +520,61 @@ function escalationFromRiskRows(riskRows, symbols) {
 // equity de AHORA, no desde el pico viejo (si no, el broadcut re-dispararía al
 // instante sobre una cuenta ya liquidada). Journalea una fila 'resumed' — la
 // decisión de revivir al agente queda documentada.
-export async function runArenaResume({ now = new Date() } = {}) {
-  const state = await getArenaState();
-  if (!state.halted) return { resumed: false, reason: 'el agente no estaba detenido' };
-  await sql(`update arena_state set halted = false, resumed_at = $1 where id = 1`, [now.toISOString()]);
+export async function runArenaResume({ agentId = FLAGSHIP_AGENT_ID, now = new Date() } = {}) {
+  const state = await getArenaState(agentId);
+  if (!state.halted) return { resumed: false, agent: agentId, reason: 'el agente no estaba detenido' };
+  await sql(`update arena_state set halted = false, resumed_at = $1 where agent_id = $2`, [now.toISOString(), agentId]);
   await journalInsert({
-    id: 'arena-resume-' + now.toISOString(), run_date: now.toISOString().slice(0, 10),
-    phase: 'decide', prompt_version: PROMPT_VERSION, model: null, status: 'resumed',
+    id: 'arena-resume-' + agentId + '-' + now.toISOString(), run_date: now.toISOString().slice(0, 10),
+    phase: 'decide', prompt_version: PROMPT_VERSION, model: null, status: 'resumed', agent_id: agentId,
     plan: `Agente REACTIVADO manualmente tras el halt del ${state.halted_at || 's/f'} (${state.halted_reason || 'drawdown'}). El pico del breaker se re-basa al equity actual — el experimento reanuda desde aquí.`,
   });
-  return { resumed: true, halted_since: state.halted_at };
+  return { resumed: true, agent: agentId, halted_since: state.halted_at };
 }
 
 // ── fase DECIDE ──────────────────────────────────────────────────────
-export async function runArenaDecide({ baseUrl, now = new Date() }) {
+export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentById(FLAGSHIP_AGENT_ID), getBuffet, caches } = {}) {
   const runDate = now.toISOString().slice(0, 10);
-  const base = { id: 'arena-' + now.toISOString(), run_date: runDate, phase: 'decide', prompt_version: PROMPT_VERSION, model: ANTHROPIC_MODEL };
+  const agentId = agent.id;
+  const base = { id: 'arena-' + agentId + '-' + now.toISOString(), run_date: runDate, phase: 'decide', prompt_version: PROMPT_VERSION, model: agent.model, agent_id: agentId };
 
-  // ── HALT del breaker: si el agente está DETENIDO, no corre decide ni
-  // journalea (la muerte se journaleó UNA vez al dispararse el broadcut; nada de
-  // filas diarias). Reactivación solo manual (runArenaResume). ──
-  const state = await getArenaState();
+  // Caches del RUN (compartidos entre agentes por el orquestador): el buffet, los
+  // cierres de Yahoo y los deep-dives de Finnhub son datos de MERCADO idénticos
+  // para todos → se piden UNA vez por símbolo, no una por agente (dedupe con
+  // in-flight promise). Standalone (un agente suelto / tests): locales, sin compartir.
+  caches = caches || { close: new Map(), dive: new Map() };
+  getBuffet = getBuffet || (() => gatherContext({ baseUrl, now }));
+  const creds = agentAlpacaCreds(agent);
+
+  // ── HALT del breaker (POR AGENTE): si este agente está DETENIDO, no corre
+  // decide ni journalea (la muerte se journaleó UNA vez al dispararse el
+  // broadcut; nada de filas diarias). Reactivación solo manual (runArenaResume). ──
+  const state = await getArenaState(agentId);
   if (state.halted) {
     return { status: 'halted', halted_since: state.halted_at, reason: state.halted_reason };
   }
 
-  if (!alpacaCreds()) {
-    await journalInsert({ ...base, status: 'aborted_no_alpaca_keys', error: 'Faltan ALPACA_PAPER_KEY/SECRET.' });
+  if (!creds) {
+    await journalInsert({ ...base, status: 'aborted_no_alpaca_keys', error: `Faltan ALPACA_${agent.alpaca}_KEY/SECRET.` });
     return { status: 'aborted_no_alpaca_keys', orders: 0 };
   }
 
-  // Estado real del libro + plan anterior + PICO de equity + reintentos previos,
-  // en paralelo. El buffet (self-fetch caro) y el LLM se posponen: si el circuit
-  // breaker dispara un CORTE AMPLIO no se gastan ni el buffet ni Anthropic.
+  // Estado real del libro DEL AGENTE + plan anterior + PICO de equity + reintentos
+  // previos, en paralelo. El buffet (self-fetch caro) y el LLM se posponen: si el
+  // circuit breaker dispara un CORTE AMPLIO no se gastan ni el buffet ni el LLM.
   const [account, positions, openOrders, prevRows, peakRows, riskRows] = await Promise.all([
-    getAccount(), getPositions(), getOrders('open'),
+    getAccount(creds), getPositions(creds), getOrders('open', 100, creds),
     sql(`select run_date, plan, actions, status from arena_journal
-         where phase = 'decide' and plan is not null order by created_at desc limit 1`),
-    // High-water-mark del libro: el máximo equity journaleado, ACOTADO por
-    // resumed_at (tras revivir, el pico se re-basa al equity de ese momento — si
-    // no, el broadcut re-dispararía sobre una cuenta ya liquidada). El Arena no
-    // tenía pico propio (equity_peak de la DB es de la FLOTA, otra tabla). null
-    // en el primer run → pico = equity.
+         where phase = 'decide' and plan is not null and agent_id = $1 order by created_at desc limit 1`, [agentId]),
+    // High-water-mark del libro: el máximo equity journaleado POR ESTE AGENTE,
+    // ACOTADO por resumed_at (tras revivir, el pico se re-basa al equity de ese
+    // momento — si no, el broadcut re-dispararía sobre una cuenta ya liquidada).
+    // null en el primer run → pico = equity.
     sql(`select max((account->>'equity')::numeric) as peak from arena_journal
-         where account is not null and ($1::timestamptz is null or created_at > $1::timestamptz)`, [state.resumed_at]),
-    // Stops catastróficos recientes que NO llenaron → escalan la banda (cond. #1).
-    sql(`select actions from arena_journal where status = 'risk_exit'
-         and created_at > now() - interval '7 days' order by created_at desc`),
+         where account is not null and agent_id = $1 and ($2::timestamptz is null or created_at > $2::timestamptz)`, [agentId, state.resumed_at]),
+    // Stops catastróficos recientes de ESTE agente que NO llenaron → escalan la banda.
+    sql(`select actions from arena_journal where status = 'risk_exit' and agent_id = $1
+         and created_at > now() - interval '7 days' order by created_at desc`, [agentId]),
   ]);
   const equity = Number(account.equity);
   const dbPeak = peakRows[0] && peakRows[0].peak != null ? Number(peakRows[0].peak) : 0;
@@ -533,7 +591,7 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   // holding (misma fuente que valida el guard). Estos cierres se reusan luego
   // como semilla del guard (sin re-fetch).
   const heldSymbols = [...new Set((positions || []).map((p) => (p && p.symbol ? String(p.symbol).trim().toUpperCase() : '')).filter(Boolean))];
-  const heldCloseArr = await Promise.all(heldSymbols.map((s) => lastCompletedClose(s, now)));
+  const heldCloseArr = await Promise.all(heldSymbols.map((s) => cachedClose(caches, s, now)));
   const heldCloses = {};
   heldSymbols.forEach((s, i) => { heldCloses[s] = heldCloseArr[i]; });
   // Escalamiento por nombre: cuántas veces un stop catastrófico previo no llenó.
@@ -545,14 +603,14 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   // Análogo del DEATH -20% de la flota validada. No se abre riesgo nuevo en un
   // −20%, así que ni se pega al buffet ni se gasta Anthropic.
   if (risk.stage === 'broadcut') {
-    const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate);
+    const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate, creds);
     const plan = `CIRCUIT BREAKER — corte amplio. Drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)}); se liquidan ${risk.approved.length} posiciones con marketable limit y se salta el LLM (no se abre riesgo nuevo en un −20%).`;
     await journalInsert({ ...base, account: accountSnapshot, status: 'risk_broad_cut', plan, actions: [...riskActions, ...riskDiscardActions(risk.discarded)], context: { risk: riskContext } });
     // DETIENE al agente (persistente): esta es la ÚNICA fila de la muerte. Las
     // corridas siguientes salen por el gate de halt, sin journalear. Revivir es
     // manual (runArenaResume) — el −20% es el resultado del experimento.
     const haltReason = `circuit breaker: drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)})`;
-    await sql(`update arena_state set halted = true, halted_at = $1, halted_reason = $2 where id = 1`, [now.toISOString(), haltReason]);
+    await sql(`update arena_state set halted = true, halted_at = $1, halted_reason = $2 where agent_id = $3`, [now.toISOString(), haltReason, agentId]);
     return { status: 'risk_broad_cut', orders: submitted, risk_exits: submitted, breaker_stage: 'broadcut', drawdown: +risk.drawdown.toFixed(4), halted: true };
   }
 
@@ -562,7 +620,7 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   // normales que NO deben frenar la red). stage 'none' → no-op (0 exits). ──
   let riskSubmitted = 0;
   if (risk.approved.length || risk.discarded.length) {
-    const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate);
+    const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate, creds);
     riskSubmitted = submitted;
     const plan = risk.stage === 'delever'
       ? `CIRCUIT BREAKER — desapalancando. Drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)}); recorto las posiciones más débiles con marketable limit.`
@@ -570,15 +628,19 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
     await journalInsert({ ...base, id: base.id + ':risk', account: accountSnapshot, status: 'risk_exit', plan, actions: [...riskActions, ...riskDiscardActions(risk.discarded)], context: { risk: riskContext } });
   }
 
-  // No hubo corte amplio → ahora sí el buffet (self-fetch) para el LLM.
-  const buffet = await gatherContext({ baseUrl, now });
+  // No hubo corte amplio → ahora sí el buffet (self-fetch). COMPARTIDO entre
+  // agentes por el orquestador (mismo mercado para todos): el primero que llega
+  // lo computa, los demás reusan la misma promesa — cero self-fetch por agente.
+  const buffet = await getBuffet();
 
-  // Atribución del canal 'portfolio': el índice de canales de gatherContext solo
-  // conoce el buffet. Los candidatos que el scout re-elige del LIBRO (un holding
-  // a recortar/salir, o una orden abierta a re-anclar) no están en el buffet, así
-  // que sin esto salían con channels:[]. Se marca acá —donde ya tenemos posiciones
-  // y órdenes abiertas— sobre el mismo índice, antes de construir prompts/atribuir.
-  addPortfolioChannels(buffet.channelsByTicker, { positions, openOrders });
+  // Atribución del canal 'portfolio', POR AGENTE. El índice base de gatherContext
+  // solo conoce el buffet (compartido). Los candidatos que el scout re-elige del
+  // LIBRO (un holding a recortar/salir, o una orden abierta a re-anclar) no están
+  // en el buffet → sin esto salían con channels:[]. Se marca sobre un CLON del
+  // índice (el libro difiere por agente; mutar el compartido contaminaría a los
+  // demás), antes de construir prompts/atribuir.
+  const channels = buffet.channelsByTicker ? structuredClone(buffet.channelsByTicker) : {};
+  addPortfolioChannels(channels, { positions, openOrders });
 
   // ── FASE 1: SCAN ────────────────────────────────────────────────
   const scanSystem = buildScanSystemPrompt();
@@ -595,22 +657,19 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
     // Salidas de riesgo del run (stage/drawdown/pico + exits deterministas):
     // por qué desapalancó o qué stop disparó, sin depender de las acciones.
     risk: riskContext,
-    scan: { prompt: { system: scanSystem, user: scanUser }, hash: scanHash, model: ANTHROPIC_MODEL },
+    scan: { prompt: { system: scanSystem, user: scanUser }, hash: scanHash, model: agent.model },
   };
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = providerKey(agent);
   if (!apiKey) {
-    // Dependencia documentada: la primera corrida real necesita créditos
-    // de Anthropic. Sin key el run queda journaleado, con cero órdenes.
-    await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_no_api_key', error: 'Falta ANTHROPIC_API_KEY (créditos pendientes).' });
+    // Dependencia documentada: sin la key del proveedor del agente (ANTHROPIC_API_KEY
+    // para claude/control, OPENROUTER_API_KEY para el resto) el run queda
+    // journaleado, con cero órdenes — el cron puede quedar prendido sin gastar.
+    await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_no_api_key', error: `Falta la API key de ${agent.provider} (${agentId}).` });
     return { status: 'aborted_no_api_key', orders: 0, risk_exits: riskSubmitted };
   }
 
-  const scanLlm = await guardedClaudeCall({
-    apiKey,
-    payload: { model: ANTHROPIC_MODEL, max_tokens: 500, system: scanSystem, messages: [{ role: 'user', content: scanUser }] },
-    now,
-  });
+  const scanLlm = await callArenaLLM({ agent, system: scanSystem, messages: [{ role: 'user', content: scanUser }], maxTokens: 500, now });
   if (scanLlm.stale || scanLlm.status !== 200 || !scanLlm.data) {
     const reason = (scanLlm.stale ? 'fechas rotas tras retry (guard anti-alucinación)' : 'HTTP ' + scanLlm.status + ' de Anthropic') + ' [fase scan]';
     await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_llm_error', error: reason });
@@ -655,29 +714,26 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   }
 
   // ── FASE 2a: DEEP DIVE (determinista, Finnhub — sin LLM) ─────────
-  const dive = await fetchDeepDive(candidateSymbols, process.env.FINNHUB_API_KEY, now);
+  const dive = await cachedDeepDive(caches, candidateSymbols, process.env.FINNHUB_API_KEY, now);
   // Último cierre por candidato — MISMA fuente/valor que validará el guard, así
   // el PM ve exactamente el cierre contra el que se calcula la banda ±2% (sin
-  // desfase). Se reusa abajo para el guard, sin re-fetch.
-  const closeArr = await Promise.all(candidateSymbols.map((t) => lastCompletedClose(t, now)));
+  // desfase). Cacheado por el run (dedupe entre agentes); se reusa para el guard.
+  const closeArr = await Promise.all(candidateSymbols.map((t) => cachedClose(caches, t, now)));
   const candidateCloses = {};
   candidateSymbols.forEach((t, i) => { candidateCloses[t] = closeArr[i]; });
 
   // ── FASE 2b: DIVE (LLM #2 — decide órdenes) ─────────────────────
-  const diveSystem = buildDiveSystemPrompt();
-  const diveUser = buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis: scan.thesis, candidates: candidateSymbols, deepDive: dive.data, closes: candidateCloses, channels: buffet.channelsByTicker });
+  // La persona del agente es lo ÚNICO que varía del prompt (identidad, decisión #6).
+  const diveSystem = buildDiveSystemPrompt(agent.persona);
+  const diveUser = buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis: scan.thesis, candidates: candidateSymbols, deepDive: dive.data, closes: candidateCloses, channels });
   const diveHash = sha256(diveSystem + '\n---\n' + diveUser);
   // shown_closes: el cierre que se le MOSTRÓ al PM por candidato — para auditar
   // desfases contra lo que valida el guard (deberían coincidir siempre).
-  context.dive = { prompt: { system: diveSystem, user: diveUser }, hash: diveHash, model: ANTHROPIC_MODEL, finnhub: dive.data, finnhub_errors: dive.errors, shown_closes: candidateCloses };
+  context.dive = { prompt: { system: diveSystem, user: diveUser }, hash: diveHash, model: agent.model, finnhub: dive.data, finnhub_errors: dive.errors, shown_closes: candidateCloses };
   // prompt_hash de la fila = el del DIVE (la fase que produce las órdenes).
   const withPrompt = { ...base, prompt_hash: diveHash, account: accountSnapshot, context };
 
-  const diveLlm = await guardedClaudeCall({
-    apiKey,
-    payload: { model: ANTHROPIC_MODEL, max_tokens: 1500, system: diveSystem, messages: [{ role: 'user', content: diveUser }] },
-    now,
-  });
+  const diveLlm = await callArenaLLM({ agent, system: diveSystem, messages: [{ role: 'user', content: diveUser }], maxTokens: 1500, now });
   if (diveLlm.stale || diveLlm.status !== 200 || !diveLlm.data) {
     const reason = (diveLlm.stale ? 'fechas rotas tras retry (guard anti-alucinación)' : 'HTTP ' + diveLlm.status + ' de Anthropic') + ' [fase dive]';
     await journalInsert({ ...withPrompt, status: 'aborted_llm_error', error: reason });
@@ -702,7 +758,7 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   const symbols = [...new Set(parsed.actions.map((a) => a && typeof a.symbol === 'string' ? a.symbol.trim().toUpperCase() : '').filter(Boolean))];
   for (const s of symbols) {
     if (s in lastCloses) continue; // ya lo tenemos del deep dive (o null, fail closed)
-    lastCloses[s] = await lastCompletedClose(s, now);
+    lastCloses[s] = await cachedClose(caches, s, now);
   }
 
   // El flujo de dos fases NO toca el guard: valida las órdenes finales con las
@@ -718,8 +774,8 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
 
   // Atribución por acción (determinista, no confía en el LLM): de qué canal(es)
   // salió el ticker + `origin` (scout_picked/floor_reserved) + screen y
-  // qualifiers si vino del screener. A los 30 días: qué canal produjo decisiones.
-  const channels = buffet.channelsByTicker || {};
+  // qualifiers si vino del screener. Usa el índice CLONADO por agente (con las
+  // marcas 'portfolio' de SU libro). A los 30 días: qué canal produjo decisiones.
   const attribute = (a) => {
     const sym = a && typeof a.symbol === 'string' ? a.symbol.trim().toUpperCase() : '';
     const ch = sym ? channels[sym] : null;
@@ -758,7 +814,7 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   for (const a of llmApproved) {
     const clientOrderId = `arena:${runDate}:${a.symbol}:${a.side}`;
     try {
-      const order = await createLimitOrder({ symbol: a.symbol, qty: a.qty, side: a.side, limit_price: a.limit_price, client_order_id: clientOrderId });
+      const order = await createLimitOrder({ symbol: a.symbol, qty: a.qty, side: a.side, limit_price: a.limit_price, client_order_id: clientOrderId }, creds);
       journalActions.push(attribute({ ...a, result: 'approved', alpaca_order_id: order.id, client_order_id: clientOrderId, order_status: order.status }));
       submitted++;
     } catch (err) {
@@ -774,6 +830,35 @@ export async function runArenaDecide({ baseUrl, now = new Date() }) {
   return { status, orders: submitted + riskSubmitted, approved: llmApproved.length, discarded: discarded.length, candidates: candidateSymbols.length, floor: slate.floor.reason, risk_exits: riskSubmitted, breaker_stage: risk.stage, drawdown: +risk.drawdown.toFixed(4) };
 }
 
+// ── ORQUESTADOR de la LIGA (fase decide para TODOS los agentes activos) ──
+// Corre cada agente activo (registry / ARENA_LEAGUE) sobre SU cuenta con SU
+// modelo. En PARALELO: el trabajo caro y compartido —el buffet (self-fetch), los
+// cierres de Yahoo, los deep-dives de Finnhub— se computa UNA vez por corrida y
+// se comparte vía `getBuffet` + `caches` (dedupe con in-flight promise), así el
+// wall-clock ≈ el de UN agente sin importar N, y el burst a Finnhub queda acotado
+// a la UNIÓN de candidatos, no a la suma. Un agente que truena (sin keys, error
+// de proveedor) NO tumba a los demás: su fila sale con su propio status.
+export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
+  const agents = activeAgents();
+  if (!agents.length) return { agents: [], league: [] };
+  // Siembra una fila de estado por agente (el halt/resume son UPDATE por agent_id).
+  await ensureAgentStateRows(agents.map((a) => a.id));
+
+  let buffetPromise = null;
+  const getBuffet = () => (buffetPromise = buffetPromise || gatherContext({ baseUrl, now }));
+  const caches = { close: new Map(), dive: new Map() };
+
+  const results = await Promise.all(agents.map(async (agent) => {
+    try {
+      const r = await runArenaDecide({ baseUrl, now, agent, getBuffet, caches });
+      return { id: agent.id, name: agent.name, model: agent.model, ...r };
+    } catch (err) {
+      return { id: agent.id, name: agent.name, status: 'error', orders: 0, error: String((err && err.message) || err) };
+    }
+  }));
+  return { agents: results, league: results.map((r) => r.id) };
+}
+
 // ── fase RECONCILE ───────────────────────────────────────────────────
 // Fills reales (precio/timestamp de Alpaca) → journal. Estados terminales
 // se dejan de consultar; lo demás se re-chequea hasta 7 días.
@@ -781,19 +866,24 @@ const TERMINAL = new Set(['filled', 'canceled', 'expired', 'rejected', 'replaced
 
 export async function runArenaReconcile({ now = new Date() } = {}) {
   const rows = await sql(
-    `select id, actions from arena_journal
+    `select id, agent_id, actions from arena_journal
      where phase = 'decide' and actions is not null and created_at > now() - interval '7 days'
      order by created_at desc`);
   const summary = { rows_checked: rows.length, orders_checked: 0, updated: 0, filled: 0 };
 
   for (const row of rows) {
+    // Las órdenes viven en la cuenta Alpaca DEL AGENTE de la fila → se consultan
+    // con SUS creds. Fila legada sin agent_id → el insignia. Sin keys → se salta.
+    const agent = agentById(row.agent_id || FLAGSHIP_AGENT_ID);
+    const creds = agent ? agentAlpacaCreds(agent) : null;
+    if (!creds) continue;
     let changed = false;
     const actions = row.actions || [];
     for (const a of actions) {
       if (!a || !a.alpaca_order_id || TERMINAL.has(a.order_status)) continue;
       summary.orders_checked++;
       try {
-        const o = await getOrder(a.alpaca_order_id);
+        const o = await getOrder(a.alpaca_order_id, creds);
         if (o.status !== a.order_status || o.filled_at !== a.filled_at) {
           a.order_status = o.status;
           a.filled_qty = o.filled_qty != null ? Number(o.filled_qty) : null;
@@ -852,14 +942,24 @@ export default async function handler(req, res) {
     await ensureSchema();
     const phase = String((req.query && req.query.phase) || 'decide').toLowerCase();
     const action = String((req.query && req.query.action) || '').toLowerCase();
+    // Agente objetivo para resume/status (default el insignia). La liga es
+    // por-agente: ?agent=openai reactiva/consulta SOLO a ese.
+    const agentId = String((req.query && req.query.agent) || FLAGSHIP_AGENT_ID).toLowerCase();
     // Reactivación MANUAL tras un halt del breaker (−20%). Requiere CRON_SECRET
     // (ya validado arriba) — solo Lety revive al agente, y queda documentado.
     if (action === 'resume') {
-      const result = await runArenaResume({});
+      const result = await runArenaResume({ agentId });
       return res.status(200).json({ action: 'resume', ...result });
     }
     if (action === 'status') {
-      return res.status(200).json({ action: 'status', state: await getArenaState() });
+      // Sin ?agent: el estado de TODOS los agentes activos. Con ?agent: uno.
+      if (req.query && req.query.agent) {
+        return res.status(200).json({ action: 'status', agent: agentId, state: await getArenaState(agentId) });
+      }
+      const agents = activeAgents();
+      const states = {};
+      await Promise.all(agents.map(async (a) => { states[a.id] = await getArenaState(a.id); }));
+      return res.status(200).json({ action: 'status', states });
     }
     if (phase === 'reconcile') {
       const summary = await runArenaReconcile({});
@@ -867,8 +967,10 @@ export default async function handler(req, res) {
       return res.status(200).json({ phase, ...summary });
     }
     const baseUrl = resolveBaseUrl(req);
-    const summary = await runArenaDecide({ baseUrl });
-    await beat('arena:decide', 'ok', { actions: summary && summary.actions ? summary.actions.length : null });
+    const summary = await runArenaLeague({ baseUrl });
+    // Latido del cron (detecta un cron muerto). La liga corre N agentes → el
+    // payload cuenta cuántos decidieron, no las acciones de uno solo.
+    await beat('arena:decide', 'ok', { agents: summary && summary.agents ? summary.agents.length : null });
     return res.status(200).json({ phase: 'decide', ...summary, rules: ARENA_RULES });
   } catch (err) {
     return res.status(500).json({ error: 'arena-run: ' + (err && err.message ? err.message : 'unknown') });

@@ -48,9 +48,10 @@ console.log('schema: 100% CREATE TABLE IF NOT EXISTS, cero DROP/TRUNCATE en api/
   const stmts = [...schemaMatch[1].matchAll(/`\s*(create[^`]+)`/gi)].map((m) => m[1].trim());
   ok(stmts.length >= 6, `schema con ${stmts.length} sentencias`);
   for (const st of stmts) {
-    // Idempotente = `create table/index if not exists`. El índice de
-    // macro_events (create index if not exists) también es re-ejecutable.
-    ok(/^create (table|index) if not exists/i.test(st), 'idempotente: ' + st.slice(0, 45) + '…');
+    // Idempotente = `create table/index if not exists` (incl. `unique index`,
+    // como el de arena_state.agent_id que re-llavea el halt por agente). El
+    // índice de macro_events también es re-ejecutable.
+    ok(/^create (table|(unique )?index) if not exists/i.test(st), 'idempotente: ' + st.slice(0, 45) + '…');
   }
 
   const files = [];
