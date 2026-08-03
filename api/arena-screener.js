@@ -27,6 +27,7 @@ import { universeLedgerEntries, auditUniverse } from './_lib/screener-universe.j
 import { fetchFundamentals } from './_lib/finnhub-dive.js';
 import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getSymbolMap, getSymbolTypes } from './earnings.js';
+import { beat } from './_lib/heartbeat.js';
 
 const PER_RUN = 30;         // ≤30 símbolos/invocación → ~40s, cabe en 60s
 const SPACING_MS = 1200;    // ~1.2s entre símbolos → muy bajo el cap Finnhub 60/min
@@ -123,6 +124,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'No autorizado.' });
   }
   if (process.env.ARENA_SCREENER_ENABLED !== '1') {
+    await beat('screener:refresh', 'disabled');
     return res.status(200).json({ disabled: true, hint: 'ARENA_SCREENER_ENABLED != 1' });
   }
 
@@ -156,7 +158,9 @@ export default async function handler(req, res) {
     // Siembra perezosa: si el ledger está vacío, sembrar el universo antes de refrescar.
     const stats = await screenerStats();
     if (!stats.ledger.total) await seedScreenerLedger(universeLedgerEntries());
-    return res.status(200).json(await runRefresh(finnhubKey, new Date()));
+    const out = await runRefresh(finnhubKey, new Date());
+    await beat('screener:refresh', 'ok', { processed: out && out.processed ? out.processed.length : null });
+    return res.status(200).json(out);
   } catch (err) {
     return res.status(500).json({ error: 'arena-screener: ' + (err && err.message ? err.message : 'unknown') });
   }

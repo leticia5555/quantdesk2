@@ -56,6 +56,7 @@ import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpaca
 import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF } from './_lib/arena-guard.js';
 import { buildRiskExits, EXIT_RULES } from './_lib/arena-exits.js';
 import { fetchDeepDive } from './_lib/finnhub-dive.js';
+import { beat } from './_lib/heartbeat.js';
 import { readScreenerRows } from './_lib/screener-db.js';
 import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
 
@@ -842,6 +843,8 @@ export default async function handler(req, res) {
   // El switch de Lety: los crons de vercel.json disparan desde el deploy,
   // pero el Arena no opera hasta ARENA_ENABLED=1 (post smoke verde).
   if (process.env.ARENA_ENABLED !== '1') {
+    const phase = String((req.query && req.query.phase) || 'decide').toLowerCase();
+    if (phase === 'reconcile' || phase === 'decide') await beat('arena:' + phase, 'disabled');
     return res.status(200).json({ disabled: true, hint: 'ARENA_ENABLED != 1 — smoke de /api/alpaca?smoke=1 primero.' });
   }
 
@@ -860,10 +863,12 @@ export default async function handler(req, res) {
     }
     if (phase === 'reconcile') {
       const summary = await runArenaReconcile({});
+      await beat('arena:reconcile', 'ok', { halted: summary && summary.halted });
       return res.status(200).json({ phase, ...summary });
     }
     const baseUrl = resolveBaseUrl(req);
     const summary = await runArenaDecide({ baseUrl });
+    await beat('arena:decide', 'ok', { actions: summary && summary.actions ? summary.actions.length : null });
     return res.status(200).json({ phase: 'decide', ...summary, rules: ARENA_RULES });
   } catch (err) {
     return res.status(500).json({ error: 'arena-run: ' + (err && err.message ? err.message : 'unknown') });
