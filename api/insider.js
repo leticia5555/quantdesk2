@@ -1,6 +1,56 @@
 // /api/insider — real insider transactions sourced from SEC EDGAR Form 4
 // filings via Finnhub. Replaces AI-hallucinated insider data on the SMART $ tab.
 
+// ── Finnhub Form 4 field semantics (CRITICAL) ────────────────────────
+//   change: shares MOVED in this transaction (signed; <0 = disposed).
+//   share:  shares HELD AFTER the transaction (the running position).
+// The transaction's dollar size is |change| × transactionPrice. Using
+// `share` (the holding) instead of `change` inflated values ~1000× — a
+// single TSLA F-code row read as $287.38B of "tax withholding" over ~710M
+// shares (≈22% of Tesla), while its own 90-day footer said −$17.0M. Bad
+// numbers under an SEC label are worse than an empty panel: trust `change`.
+
+// Finnhub transactionCode → human type.
+// S=Sale, P=Purchase, A=Award/grant, M=Option exercise, G=Gift,
+// F=Tax withholding, D=Sale to issuer, C=Conversion, X=Exercise ITM.
+export function deriveType(tx) {
+  const code = (tx.transactionCode || '').toUpperCase();
+  if (code === 'P') return 'BUY';
+  if (code === 'S' || code === 'D') return 'SELL';
+  if (code === 'A') return 'AWARD';
+  if (code === 'M' || code === 'X') return 'OPTION EXERCISE';
+  if (code === 'F') return 'TAX WITHHOLDING';
+  if (code === 'G') return 'GIFT';
+  if (code === 'C') return 'CONVERSION';
+  // Fallback: sign of the share change.
+  const change = Number(tx.change) || 0;
+  if (change > 0) return 'BUY';
+  if (change < 0) return 'SELL';
+  return 'OTHER';
+}
+
+// Raw Finnhub row → normalized transaction. Exported for unit testing the
+// share/change fix without hitting the network.
+export function normalizeTx(tx) {
+  // Transaction SIZE is the CHANGE, never the resulting holding (`share`).
+  const change = Number(tx.change);
+  const shares = Number.isFinite(change) ? Math.abs(change) : 0;
+  const price = Number(tx.transactionPrice) || 0;
+  const value = Math.round(shares * price);
+  return {
+    name: (tx.name || '').trim(),
+    title: '', // Finnhub Form 4 feed doesn't expose title; leave blank rather than guess
+    code: (tx.transactionCode || '').toUpperCase() || null,
+    type: deriveType(tx),
+    shares,
+    price,
+    value,
+    filingDate: tx.filingDate || null,
+    transactionDate: tx.transactionDate || null,
+    _signedValue: (Number.isFinite(change) ? change : 0) * price, // for sentiment math
+  };
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -77,41 +127,8 @@ export default async function handler(req, res) {
     });
   }
 
-  // ── Map Finnhub transactionCode → human type ─────────────
-  // S=Sale, P=Purchase, A=Award/grant, M=Option exercise, G=Gift,
-  // F=Tax withholding, D=Sale to issuer
-  function deriveType(tx) {
-    const code = (tx.transactionCode || '').toUpperCase();
-    if (code === 'P') return 'BUY';
-    if (code === 'S' || code === 'D') return 'SELL';
-    if (code === 'A') return 'AWARD';
-    if (code === 'M') return 'OPTION EXERCISE';
-    if (code === 'F') return 'TAX WITHHOLDING';
-    if (code === 'G') return 'GIFT';
-    // Fallback: sign of change
-    const change = Number(tx.change) || 0;
-    if (change > 0) return 'BUY';
-    if (change < 0) return 'SELL';
-    return 'OTHER';
-  }
-
   // Normalize all rows so we can compute net sentiment, then trim to most recent 5.
-  const all = items.map(tx => {
-    const shares = Math.abs(Number(tx.share || tx.change) || 0);
-    const price = Number(tx.transactionPrice) || 0;
-    const value = Math.round(shares * price);
-    return {
-      name: (tx.name || '').trim(),
-      title: '', // Finnhub Form 4 feed doesn't expose title; leave blank rather than guess
-      type: deriveType(tx),
-      shares,
-      price,
-      value,
-      filingDate: tx.filingDate || null,
-      transactionDate: tx.transactionDate || null,
-      _signedValue: (Number(tx.change) || 0) * price, // for sentiment math
-    };
-  });
+  const all = items.map(normalizeTx);
 
   // ── Net sentiment over the 90-day window ─────────────────
   // Only count clear open-market BUY/SELL toward sentiment (skip grants,
