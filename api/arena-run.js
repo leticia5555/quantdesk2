@@ -55,7 +55,7 @@ import { createHash } from 'node:crypto';
 import { sql, ensureSchema } from './_lib/db.js';
 import { getSymbolMap, getSymbolTypes } from './earnings.js';
 import { fetchDailySeries, completedSlice } from './_lib/sim.js';
-import { getAccount, getPositions, getOrders, getOrder, createLimitOrder } from './_lib/alpaca.js';
+import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpacaCreds, getCalendar } from './_lib/alpaca.js';
 import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF } from './_lib/arena-guard.js';
 import { buildRiskExits, EXIT_RULES } from './_lib/arena-exits.js';
 import { fetchDeepDive } from './_lib/finnhub-dive.js';
@@ -849,9 +849,68 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
 // wall-clock ≈ el de UN agente sin importar N, y el burst a Finnhub queda acotado
 // a la UNIÓN de candidatos, no a la suma. Un agente que truena (sin keys, error
 // de proveedor) NO tumba a los demás: su fila sale con su propio status.
+// ── ¿mercado cerrado hoy? (festivo vía calendario de Alpaca) ─────────────────
+// El calendario de trading es en horario del Este (NYSE); la fecha "de hoy" se
+// calcula en America/New_York para no equivocarse por el offset UTC ni por DST.
+// El cron de decide corre 22:40 UTC (post-cierre) → misma fecha en ET.
+function easternDate(now) {
+  // en-CA da 'YYYY-MM-DD'.
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+}
+
+// Devuelve { closed, reason, date } — reason ∈ open | holiday | weekend | calendar_error.
+// El cron de decide ya dispara SOLO L-V (`40 22 * * 1-5`), así que el fin de
+// semana es terreno de un workflow_dispatch manual: NO se maneja con una rama
+// aparte (sería redundante con el cron). El valor que este chequeo agrega sobre
+// el cron es el FESTIVO entre semana. Un solo camino de control: si el
+// calendario de Alpaca no trae sesión hoy → cerrado (la etiqueta weekend/holiday
+// es solo informativa para el journal).
+//   - Calendario CAÍDO → fail-OPEN: corre igual (`reason='calendar_error'`). El
+//     costo de correr de más son centavos y órdenes que se encolan al siguiente
+//     open; el de NO correr es perder un día del experimento. El fail-closed del
+//     Arena aplica a la validez de ÓRDENES (el guard), no a la detección de
+//     calendario.
+// `cal`/`creds` inyectables para tests (sin red).
+export async function marketClosedReason({ now = new Date(), cal = getCalendar, creds = alpacaCreds() } = {}) {
+  const date = easternDate(now);
+  try {
+    const sessions = await cal(date, date, creds);
+    if (Array.isArray(sessions) && sessions.length > 0) return { closed: false, reason: 'open', date };
+    // Vacío = sin sesión hoy. dow sobre la fecha ET (mediodía UTC evita cruce de día).
+    const dow = new Date(date + 'T12:00:00Z').getUTCDay(); // 0=Dom, 6=Sáb
+    return { closed: true, reason: (dow === 0 || dow === 6) ? 'weekend' : 'holiday', date };
+  } catch (e) {
+    return { closed: false, reason: 'calendar_error', date, error: String((e && e.message) || e) };
+  }
+}
+
 export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   const agents = activeAgents();
   if (!agents.length) return { agents: [], league: [] };
+
+  // ── Mercado cerrado hoy: chequeo GLOBAL, UNA vez antes del loop ──────────
+  // "Mercado cerrado" es un hecho de la LIGA ENTERA, no de cada agente: se
+  // resuelve aquí, antes de tocar el buffet/LLM de nadie. Si está cerrado
+  // (festivo, o fin de semana en un dispatch manual), NINGÚN agente corre el
+  // pipeline y se journalea UNA SOLA fila marcadora global
+  // (status=skipped_market_closed, agent_id='league', cero órdenes). Fila
+  // presente = la liga decidió no operar hoy; que el cron SÍ corrió lo sigue
+  // distinguiendo el latido (`beat('arena:decide')`), no las filas del journal.
+  // El reconcile es aparte (idempotente): en un festivo simplemente no hay
+  // fills nuevos, así que no se toca aquí.
+  const market = await marketClosedReason({ now });
+  if (market.closed) {
+    await journalInsert({
+      id: 'arena-league-' + now.toISOString(),
+      run_date: now.toISOString().slice(0, 10), phase: 'decide', prompt_version: PROMPT_VERSION,
+      // agent_id='league' es un sentinela, NO un agente real: la fila no aparece
+      // en ninguna card por-agente y el post-mortem la agrupa aparte.
+      agent_id: 'league', status: 'skipped_market_closed', error: market.reason,
+      context: { market_check: { reason: market.reason, date: market.date } },
+    });
+    return { agents: [], league: [], status: 'skipped_market_closed', market_closed: market };
+  }
+
   // Siembra una fila de estado por agente (el halt/resume son UPDATE por agent_id).
   await ensureAgentStateRows(agents.map((a) => a.id));
 

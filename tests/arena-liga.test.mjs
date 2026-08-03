@@ -59,6 +59,9 @@ const orderPosts = [];       // { account, symbol, side }
 const journalInserts = [];   // params de cada insert into arena_journal
 let moversFetches = 0;
 const aaplMetricFetches = [];
+// Calendario de Alpaca: por default trae una sesión hoy (mercado ABIERTO) para
+// que las corridas normales operen. La sección de "mercado cerrado" lo vacía.
+let calendarSessions = [{ date: '2026-08-03', open: '09:30', close: '16:00' }];
 
 global.fetch = async (url, opts = {}) => {
   const u = String(url);
@@ -88,6 +91,7 @@ global.fetch = async (url, opts = {}) => {
   // Alpaca — la cuenta se identifica por el header APCA-API-KEY-ID.
   if (u.includes('paper-api.alpaca.markets')) {
     const account = (opts.headers && opts.headers['APCA-API-KEY-ID']) || '?';
+    if (u.includes('/v2/calendar')) return jsonReply(calendarSessions);
     if (u.endsWith('/v2/account')) return jsonReply({ status: 'ACTIVE', equity: '100000', cash: '100000', last_equity: '100000' });
     if (u.endsWith('/v2/positions')) return jsonReply([]);
     if (u.includes('/v2/orders?')) return jsonReply([]);
@@ -208,6 +212,33 @@ const res = await runArenaLeague({ baseUrl: BASE_URL });
   // Trabajo COMPARTIDO por corrida: buffet una vez, deep-dive de AAPL una vez.
   ok(moversFetches === 1, 'el buffet (movers) se pidió UNA vez para toda la liga (compartido)', String(moversFetches));
   ok(aaplMetricFetches.length === 1, 'el deep-dive de AAPL se pidió UNA vez (dedupe entre agentes)', String(aaplMetricFetches.length));
+}
+
+// ── mercado cerrado (festivo): chequeo GLOBAL, UNA vez antes del loop ──────────
+// El calendario de Alpaca no reporta sesión hoy → la liga NO corre el pipeline de
+// ningún agente y journalea UNA SOLA fila marcadora global (agent_id='league',
+// cero órdenes): "mercado cerrado" es un hecho de la liga entera, no de cada
+// agente. Ocurre ANTES del DIVE (sin plan_number_audit en la fila).
+console.log('liga: mercado cerrado (calendario vacío) → skip global, UNA fila marcadora de liga');
+{
+  journalInserts.length = 0;
+  const ordersBefore = orderPosts.length;
+  const saved = calendarSessions;
+  calendarSessions = []; // Alpaca sin sesión hoy → cerrado (festivo / fin de semana)
+  const res = await runArenaLeague({ baseUrl: BASE_URL });
+  calendarSessions = saved; // restaurar para no filtrar estado
+
+  ok(res.market_closed && res.market_closed.closed === true, 'la liga reporta market_closed', JSON.stringify(res.market_closed));
+  ok(res.status === 'skipped_market_closed', 'status de liga = skipped_market_closed', res.status);
+  ok(Array.isArray(res.agents) && res.agents.length === 0, 'ningún agente corre (skip global, no por-agente)', JSON.stringify(res.agents));
+  ok(orderPosts.length === ordersBefore, 'CERO órdenes enviadas a Alpaca en un día cerrado', String(orderPosts.length - ordersBefore));
+  const skipRows = journalInserts.filter((p) => p[3] === 'skipped_market_closed');
+  ok(skipRows.length === 1, 'UNA sola fila marcadora global (no una por agente)', String(skipRows.length));
+  ok(skipRows[0][13] === 'league', "la fila global lleva agent_id='league' (sentinela, no un agente real)", skipRows[0][13]);
+  const ctx0 = JSON.parse(skipRows[0][12]);
+  ok(ctx0.market_check && ctx0.market_check.reason && ctx0.market_check.date,
+    'la fila journalea context.market_check (reason + fecha ET) para auditar', JSON.stringify(ctx0.market_check));
+  ok(!ctx0.plan_number_audit, 'el skip ocurre ANTES del DIVE (sin plan_number_audit en un día cerrado)');
 }
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
