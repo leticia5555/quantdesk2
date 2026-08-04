@@ -211,6 +211,72 @@ console.log('diag symboltypes: handler + parámetro sample');
   ok(res2.body.samples.PUBLIC.length === 3, 'sin param → default 30 trae los 3 PUBLIC disponibles', JSON.stringify(res2.body && res2.body.samples));
 }
 
+// ─────────────────── ficha ?ticker= : IPO sin historial de EPS ───────────────────
+// Bug: una IPO que aún no reporta su 1er trimestre no tiene stock/earnings, y la
+// rama ?ticker= cortaba en seco con history:[] SIN calcular next_earnings — la
+// ficha nunca mostraba el próximo reporte. Fix: el próximo sale del calendario
+// aunque no haya historial (y aunque el estimate venga null en el free tier).
+console.log('ficha ?ticker=: IPO sin historial igual devuelve next_earnings');
+{
+  // dispatcher común: stock/earnings vacío, yahoo/financials no-ok, calendario con SPCX.
+  const mkFetch = (calendarEntry) => async (url) => {
+    const u = String(url);
+    if (u.includes('/stock/earnings')) return jsonResponse([]);                 // sin historial de EPS
+    if (u.includes('query1.finance.yahoo.com')) return jsonResponse({}, false); // sin precios
+    if (u.includes('/stock/financials-reported')) return jsonResponse({}, false);
+    if (u.includes('/calendar/earnings')) return jsonResponse({ earningsCalendar: calendarEntry });
+    throw new Error('fetch inesperado: ' + u);
+  };
+
+  // Caso 1: calendario trae SPCX con estimate → next_earnings poblado, sin error.
+  global.fetch = mkFetch([
+    { symbol: 'SPCX', date: iso(1), hour: 'amc', epsEstimate: 0.42, revenueEstimate: 1.2e10, quarter: 2, year: 2026 }, // date-lint-ok: iso() calcula la fecha en runtime
+  ]);
+  const r1 = mockRes();
+  await handler({ method: 'GET', query: { ticker: 'SPCX' } }, r1);
+  ok(r1.code === 200 && Array.isArray(r1.body.history) && r1.body.history.length === 0, 'sin historial → history:[]', JSON.stringify(r1.body && r1.body.history));
+  ok(r1.body.next_earnings && r1.body.next_earnings.date === iso(1), 'next_earnings sale del calendario aunque no haya historial', JSON.stringify(r1.body.next_earnings));
+  ok(r1.body.next_earnings && r1.body.next_earnings.eps_estimate === 0.42 && r1.body.next_earnings.time === 'After market close', 'next_earnings conserva estimate y traduce hour=amc', JSON.stringify(r1.body.next_earnings));
+  ok(!('error' in r1.body) || r1.body.error === undefined, 'con próximo confirmado NO se marca error', JSON.stringify(r1.body.error));
+
+  // Caso 2: mismo escenario pero estimate null (free tier) → el próximo SIGUE saliendo.
+  _resetSymbolMapCache();
+  global.fetch = mkFetch([
+    { symbol: 'SPCX', date: iso(1), hour: 'bmo', epsEstimate: null }, // date-lint-ok: iso() calcula la fecha en runtime
+  ]);
+  const r2 = mockRes();
+  await handler({ method: 'GET', query: { ticker: 'SPCX' } }, r2);
+  ok(r2.body.next_earnings && r2.body.next_earnings.date === iso(1) && r2.body.next_earnings.eps_estimate === null,
+    'estimate null no descarta el próximo (no se filtra por epsEstimate)', JSON.stringify(r2.body.next_earnings));
+
+  // Caso 3: sin historial Y sin próximo en el calendario → next_earnings null + error informativo.
+  global.fetch = mkFetch([]);
+  const r3 = mockRes();
+  await handler({ method: 'GET', query: { ticker: 'ZZNOPE' } }, r3);
+  ok(r3.body.history.length === 0 && r3.body.next_earnings === null && typeof r3.body.error === 'string',
+    'sin historial y sin próximo → next_earnings null + error', JSON.stringify(r3.body));
+}
+
+// ─────────────────── ?mega=1 incluye SPCX (calendario /hoy) ───────────────────
+console.log('calendario: ?mega=1 conserva SPCX (primer earnings post-IPO)');
+{
+  _resetSymbolMapCache();
+  global.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/stock/symbol')) return jsonResponse([{ symbol: 'SPCX', description: 'SPACEX INC' }]);
+    if (u.includes('/calendar/earnings')) return jsonResponse({ earningsCalendar: [
+      { symbol: 'SPCX', date: iso(1), hour: 'amc', epsEstimate: 0.42 },   // mega (IPO reciente) // date-lint-ok: iso() runtime
+      { symbol: 'ZZTINYCO', date: iso(1), hour: 'bmo', epsEstimate: 0.1 }, // NO mega // date-lint-ok: iso() runtime
+    ] });
+    throw new Error('fetch inesperado: ' + u);
+  };
+  const resMega = mockRes();
+  await handler({ method: 'GET', query: { from: iso(0), to: iso(7), mega: '1' } }, resMega);
+  const syms = (resMega.body.earnings || []).map((e) => e.ticker);
+  ok(resMega.code === 200 && syms.includes('SPCX') && !syms.includes('ZZTINYCO'),
+    'SPCX está en MEGA_CAPS: ?mega=1 lo conserva y descarta el small-cap', JSON.stringify(syms));
+}
+
 global.fetch = realFetch;
 if (realKey === undefined) delete process.env.FINNHUB_API_KEY; else process.env.FINNHUB_API_KEY = realKey;
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');

@@ -21,6 +21,10 @@ const MEGA_CAPS = new Set([
   'XOM','CVX',
   // Cripto-adyacentes / retail favorites
   'COIN','MSTR',
+  // IPOs recientes de peso: SpaceX (SPCX), la IPO más grande de la historia.
+  // Reporta su primer trimestre como pública y /hoy debe mostrarlo aunque no
+  // tenga historial previo (la ficha ?ticker= resuelve el próximo por calendario).
+  'SPCX',
   // ADR LATAM (corazón de la audiencia)
   'NU','MELI','ITUB','VALE','PBR','BBD','ABEV','GGB',
 ]);
@@ -122,6 +126,43 @@ export async function getSymbolTypeStats(finnhubKey, sampleSize = 30) {
 // Hook de tests: vacía el cache del symbol map (nunca se usa en producción).
 export function _resetSymbolMapCache() { symbolMapCache = { at: 0, map: null, types: null, total: 0 }; }
 
+// Próximo earnings CONFIRMADO desde el calendario de Finnhub (calRes = Response
+// de /calendar/earnings ya disparada). Se usa en ambos caminos de la rama
+// ?ticker=: con historial Y —clave— cuando NO lo hay. Una IPO que aún no reporta
+// su primer trimestre (p.ej. SPCX) no tiene stock/earnings, pero su próxima fecha
+// SÍ vive en el calendario y debe salir igual. No se filtra por epsEstimate: el
+// free tier deja muchos reportes confirmados sin estimate (misma decisión que el
+// modo calendario) — basta con que traiga fecha. Consume calRes.json() una sola
+// vez; el llamador no debe volver a leer el body.
+async function nextEarningsFromCalendar(calRes, sym) {
+  try {
+    if (calRes && calRes.ok) {
+      const ct = calRes.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        const calData = await calRes.json();
+        const list = (calData && calData.earningsCalendar) || [];
+        const upcoming = list
+          .filter(e => e && e.symbol === sym && e.date)
+          .sort((a, b) => new Date(a.date) - new Date(b.date));
+        if (upcoming.length > 0) {
+          const next = upcoming[0];
+          const daysAway = Math.max(0, Math.ceil((new Date(next.date) - new Date()) / (1000 * 60 * 60 * 24)));
+          return {
+            date: next.date,
+            days_away: daysAway,
+            eps_estimate: next.epsEstimate != null ? next.epsEstimate : null,
+            revenue_estimate: next.revenueEstimate || null,
+            quarter: next.quarter || null,
+            year: next.year || null,
+            time: next.hour === 'bmo' ? 'Before market open' : next.hour === 'amc' ? 'After market close' : 'TBD'
+          };
+        }
+      }
+    }
+  } catch (e) { /* cae a null */ }
+  return null;
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -190,10 +231,22 @@ export default async function handler(req, res) {
       } catch (e) { epsData = null; }
 
       if (!Array.isArray(epsData) || epsData.length === 0) {
+        // IPO sin historial de EPS (aún no reporta su 1er trimestre): NO cortamos
+        // en seco. El próximo earnings vive en el calendario y debe salir igual —
+        // es justo el caso de una IPO reciente (p.ej. SPCX) antes de su 1er reporte.
+        // Con próximo confirmado, next_earnings alcanza y no marcamos error; sin él,
+        // se conserva la nota informativa (plan restriction / ticker no soportado).
+        const nextEarnings = await nextEarningsFromCalendar(calRes, sym);
         return res.status(200).json({
           ticker: sym,
           history: [],
-          error: 'No EPS history returned from Finnhub (may be plan restriction or unsupported ticker)'
+          beat_rate_pct: 0,
+          beats: 0,
+          total: 0,
+          avg_surprise_pct: 0,
+          avg_stock_reaction_pct: null,
+          next_earnings: nextEarnings,
+          ...(nextEarnings ? {} : { error: 'No EPS history returned from Finnhub (may be plan restriction or unsupported ticker)' })
         });
       }
 
@@ -317,32 +370,7 @@ export default async function handler(req, res) {
         : null;
 
       // ── UPCOMING EARNINGS (Finnhub calendar) ──
-      let nextEarnings = null;
-      try {
-        if (calRes && calRes.ok) {
-          const ct = calRes.headers.get('content-type') || '';
-          if (ct.includes('application/json')) {
-            const calData = await calRes.json();
-            const list = (calData && calData.earningsCalendar) || [];
-            const upcoming = list
-              .filter(e => e && e.symbol === sym && e.epsEstimate != null)
-              .sort((a, b) => new Date(a.date) - new Date(b.date));
-            if (upcoming.length > 0) {
-              const next = upcoming[0];
-              const daysAway = Math.max(0, Math.ceil((new Date(next.date) - new Date()) / (1000 * 60 * 60 * 24)));
-              nextEarnings = {
-                date: next.date,
-                days_away: daysAway,
-                eps_estimate: next.epsEstimate,
-                revenue_estimate: next.revenueEstimate || null,
-                quarter: next.quarter || null,
-                year: next.year || null,
-                time: next.hour === 'bmo' ? 'Before market open' : next.hour === 'amc' ? 'After market close' : 'TBD'
-              };
-            }
-          }
-        }
-      } catch (e) { nextEarnings = null; }
+      const nextEarnings = await nextEarningsFromCalendar(calRes, sym);
 
       return res.status(200).json({
         ticker: sym,

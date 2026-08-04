@@ -3026,11 +3026,39 @@ async function runEarningsIntel(){
     const hist = await histRes.json();
 
     if(!hist.history || hist.history.length===0){
-      const errMsg = hist.error || 'No earnings history available for '+ticker;
-      ['epsPanel','reactionPanel','nextEarningsPanel','earningsVerdictPanel'].forEach(id=>{
+      // IPO sin historial de EPS (aún no reporta su 1er trimestre): no hay panel
+      // de historia ni veredicto, pero el PRÓXIMO earnings SÍ debe salir si Finnhub
+      // ya lo tiene en el calendario (p.ej. SPCX antes de su primer reporte). No
+      // pasamos por renderNextEarningsPartial: ese deja placeholders de IA colgados
+      // ("Whisper loading...") y aquí no llamamos a Claude.
+      const realNext = hist.next_earnings;
+      const hasRealDate = realNext && realNext.date && realNext.days_away != null;
+      const errMsg = hist.error || (hasRealDate
+        ? 'Primer reporte — sin historial de EPS todavía'
+        : 'No earnings history available for '+ticker);
+      ['epsPanel','reactionPanel','earningsVerdictPanel'].forEach(id=>{
         const el=document.getElementById(id);
         if(el) el.innerHTML='<div style="color:#888;font-family:var(--mono);font-size:11px;padding:16px;text-align:center;">'+errMsg+'</div>';
       });
+      const nextPanel=document.getElementById('nextEarningsPanel');
+      if(nextPanel){
+        if(hasRealDate){
+          const urgency=realNext.days_away<=7?'#E24B4A':realNext.days_away<=21?'#EF9F27':'#555';
+          nextPanel.innerHTML='<div style="text-align:center;margin-bottom:12px;padding:12px;background:#111;border:1px solid '+urgency+';">'
+            +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">NEXT REPORT <span style="color:#00c97d;">· LIVE</span></div>'
+            +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:'+urgency+';">'+realNext.date+'</div>'
+            +'<div style="font-family:var(--mono);font-size:12px;color:'+urgency+';margin-top:2px;">'+realNext.days_away+' days away</div>'
+            +(realNext.time?'<div style="font-family:var(--mono);font-size:9px;color:#888;margin-top:4px;">'+realNext.time+'</div>':'')
+            +'<div style="font-family:var(--mono);font-size:9px;color:#EF9F27;margin-top:6px;">PRIMER REPORTE · IPO</div>'
+            +'</div>'
+            +(realNext.eps_estimate!=null?'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;">'
+              +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">EPS ESTIMATE <span style="color:#00c97d;">· LIVE</span></div>'
+              +'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#ccc;">$'+Number(realNext.eps_estimate).toFixed(2)+'</div>'
+              +'</div>':'');
+        } else {
+          nextPanel.innerHTML='<div style="color:#888;font-family:var(--mono);font-size:11px;padding:16px;text-align:center;">'+errMsg+'</div>';
+        }
+      }
       return;
     }
 
