@@ -27,9 +27,16 @@ import { classifyHourFromET, match8K, collect8Ks, loadTickerMap } from './_lib/p
 import { v0LedgerEntries } from './_lib/pead-universe.js';
 import { beat } from './_lib/heartbeat.js';
 
+// El goteo espacia las llamadas a AV ~11s (SPACING_MS) para respetar el rate
+// limit — con ≤5 símbolos el loop ronda ~59s, pegadísimo al default de 60s de
+// Vercel: cualquier jitter de AV/DB lo empuja al 504. La cuenta es plan Pro
+// (tope 300s), así que le damos aire. NO se toca SPACING_MS: el espaciado protege
+// el rate limit de AV (la restricción real), no el reloj de la función.
+export const maxDuration = 300;
+
 const DAILY_CAP = 25;          // AV free tier
-const PER_RUN = 5;             // ≤5/invocación → ~5/min, cabe en 60s
-const SPACING_MS = 11000;      // ~11s entre llamadas AV
+const PER_RUN = 5;             // ≤5/invocación → ~5/min, cabe holgado en maxDuration
+const SPACING_MS = 11000;      // ~11s entre llamadas AV (protege el rate limit de AV)
 const HOUR_BATCH = 40;         // eventos SEC por corrida (SEC es ilimitado)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
