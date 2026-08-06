@@ -53,10 +53,10 @@
 
 import { createHash } from 'node:crypto';
 import { sql, ensureSchema } from './_lib/db.js';
-import { getSymbolMap, getSymbolTypes } from './earnings.js';
+import { getSymbolMap, getSymbolTypes, MEGA_CAPS } from './earnings.js';
 import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpacaCreds, getCalendar } from './_lib/alpaca.js';
-import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF } from './_lib/arena-guard.js';
+import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF, NON_EQUITY_TYPES, EXCLUDED_SECURITY_TYPES } from './_lib/arena-guard.js';
 import { buildRiskExits, EXIT_RULES } from './_lib/arena-exits.js';
 import { fetchDeepDive } from './_lib/finnhub-dive.js';
 import { auditPlanPercentages } from './_lib/prose-audit.js';
@@ -128,18 +128,29 @@ OUTPUT: respond with ONE JSON object and NOTHING else (no markdown fences, no pr
 An empty actions array is a valid, often correct decision — but plan must then explain why you are holding.`;
 }
 
+// Universo por TIPO de instrumento para el buffet: reusa los MISMOS sets del
+// guard (equity común/ADR/REIT dentro; warrants/units/rights/preferentes y
+// fondos ETP/CEF/OEF fuera). type vacío/desconocido → se permite (mismo
+// fail-open del guard, que re-filtra downstream de forma autoritativa). El
+// sufijo del ticker (WARRANT_LIKE) no atrapa a WLDSW/IPCXU —sin separador—,
+// pero el `type` del symbol map sí los marca.
+const isNonEquityBuffetType = (t) => !!t && (NON_EQUITY_TYPES.has(t) || EXCLUDED_SECURITY_TYPES.has(t));
+
 // ── contexto: recortes compactos del buffet (tokens de Haiku, no de Opus) ──
-function trimMovers(data) {
+function trimMovers(data, symbolTypes) {
   if (!data || data.universe !== 'market') return null;
   // Filtra ANTES de recortar: (a) micro-caps <$5 (curación del buffet, más
   // estricta que el piso de $1 del guard: el top_losers de AV está dominado
-  // por small caps a -30/-40% que sepultaban a las mega-caps) y (b) ETFs
+  // por small caps a -30/-40% que sepultaban a las mega-caps), (b) ETFs
   // apalancados/inversos (misma detección que el guard, aquí solo por ticker
-  // porque el feed no trae nombres). El guard vuelve a filtrar (b) con la
-  // señal por nombre; esto es best-effort para no gastarle un slot al PM.
+  // porque el feed no trae nombres) y (c) no-equity por `type` del symbol map
+  // (warrants/units/rights que el feed de AV cuela: WLDSW, IPCXU…). El guard
+  // vuelve a filtrar (b)/(c) autoritativamente; esto es best-effort para no
+  // gastarle un slot del buffet al PM con algo que no puede comprar.
   const pick = (l, n) => (l || [])
     .filter((m) => m && typeof m.price === 'number' && m.price >= 5)
     .filter((m) => !isLeveragedInverseETF(m.symbol))
+    .filter((m) => !isNonEquityBuffetType(symbolTypes && symbolTypes[String(m.symbol || '').trim().toUpperCase()]))
     .slice(0, n)
     .map((m) => ({ symbol: m.symbol, price: m.price, changePct: m.changePct }));
   // `actives` a top-8 (gainers/losers a 5, que el ranking por % ya prioriza):
@@ -148,7 +159,24 @@ function trimMovers(data) {
   return { gainers: pick(data.gainers, 5), losers: pick(data.losers, 5), actives: pick(data.actives, 8) };
 }
 function trimEarnings(data) {
-  return ((data && data.earnings) || []).slice(0, 12).map((e) => ({ ticker: e.ticker, company: e.company, date: e.date, time: e.time }));
+  // Relevancia, NO orden alfabético del feed. El calendario de Finnhub llega
+  // ordenado por fecha, pero DENTRO de cada día viene alfabético — así que un
+  // slice(0,12) crudo se llenaba de nombres del principio del abecedario, casi
+  // siempre micro-caps ilíquidas (AAM sin nombre, AAUAF minera OTC…) y
+  // sepultaba a las que la audiencia realmente sigue. Rankeamos por cap con la
+  // señal disponible, sin cap real en el feed: (0) mega-caps del MISMO set
+  // curado que el calendario público (?mega=1), (1) el resto que al menos
+  // resuelve nombre en el symbol map US (equity real), (2) las que ni nombre
+  // tienen (company null → OTC/no-US). Mismos 12 slots; el orden por fecha se
+  // preserva dentro de cada tier (sort estable por índice de llegada). No es un
+  // gate duro: si un día no hay 12 mega/named, el tier 2 rellena — el canal
+  // nunca queda vacío por esto (p.ej. si el symbol map estuviera caído).
+  const rank = (e) => (MEGA_CAPS.has(e.ticker) ? 0 : (e.company ? 1 : 2));
+  return ((data && data.earnings) || [])
+    .map((e, i) => ({ e, i }))
+    .sort((a, b) => rank(a.e) - rank(b.e) || a.i - b.i)
+    .slice(0, 12)
+    .map(({ e }) => ({ ticker: e.ticker, company: e.company, date: e.date, time: e.time }));
 }
 function trimInsiders(data) {
   return ((data && data.items) || []).slice(0, 8).map((i) => ({ insider: i.insider, role: i.role, ticker: i.ticker, value: i.value, tradeDate: i.tradeDate }));
@@ -236,7 +264,13 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   const fetch_errors = {};
   for (const k of Object.keys(targets)) if (out[k + '_error']) fetch_errors[k] = out[k + '_error'];
 
-  const movers = trimMovers(out.movers);
+  // Tipo de instrumento por símbolo — comparte fetch/cache con el guard (0
+  // requests con cache caliente; getSymbolTypes nunca lanza, cae a null si el
+  // symbol map no cargó todavía). Alimenta el filtro de universo del buffet de
+  // movers: fuera warrants/units/rights que el sufijo del ticker no atrapa.
+  const symbolTypes = await getSymbolTypes(process.env.FINNHUB_API_KEY);
+
+  const movers = trimMovers(out.movers, symbolTypes);
   const earnings_this_week = trimEarnings(out.earnings);
   const notable_insider_buys = trimInsiders(out.insiders);
 
