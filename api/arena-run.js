@@ -73,6 +73,15 @@ import { activeAgents, agentById, agentAlpacaCreds, FLAGSHIP_AGENT_ID } from './
 // arena-run la importan desde acá.
 export { isLeveragedInverseETF };
 
+// El decide corre N agentes en paralelo, cada uno con buffet (self-fetch) +
+// deep dive Finnhub + DOS llamadas LLM (SCAN, DIVE); ya peleaba contra el
+// default de 60s de Vercel, y el reconcile pre-decide (true-up del journal
+// antes de reinyectar el plan) le suma un pase más de órdenes. La cuenta es
+// plan Pro (tope 300s) → le damos aire. Misma medicina que pead-harvest y
+// arena-screener. El reconcile matutino (mismo handler, phase=reconcile) hereda
+// el cap; no le estorba (termina en segundos).
+export const maxDuration = 300;
+
 // v2: flujo de DOS fases (SCAN → DEEP DIVE). v1 era un solo LLM call sobre el
 // buffet. El bump permite distinguir corridas del harness viejo vs nuevo en
 // el post-mortem a 30 días.
