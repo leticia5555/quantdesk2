@@ -36,8 +36,16 @@ import { beat } from './_lib/heartbeat.js';
 // api/*.js; este export por-archivo lo sobreescribe solo aquí.)
 export const maxDuration = 300;
 
-const PER_RUN = 30;         // ≤30 símbolos/invocación → ~40s, cabe en 60s
-const SPACING_MS = 1200;    // ~1.2s entre símbolos → muy bajo el cap Finnhub 60/min
+// PER_RUN=80: con maxDuration=300 (arriba) el wall real es 300s, no los 60s del
+// default de Vercel para el que se calibró el 30 viejo. A ~2-2.5s/símbolo
+// (SPACING + I/O de Finnhub/Yahoo) → ~200s, con margen para cold start. 80/run ×
+// 6 runs/día (cron cada 4h) = 480/día → el universo v2 (~300) se cicla en <1 día.
+// El cap Finnhub 60/min NO es el cuello: el SPACING de 1.2s ya topa en ~50/min
+// pase lo que pase con el tamaño del universo. (Un run que roce los 300s muere
+// con 504, pero el ledger es reanudable —pickStaleSymbols drena lo más viejo—
+// así que el fallo es benigno, sin pérdida de datos.)
+const PER_RUN = 80;
+const SPACING_MS = 1200;    // ~1.2s entre símbolos → ~50/min, muy bajo el cap Finnhub 60/min
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

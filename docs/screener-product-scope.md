@@ -114,6 +114,61 @@ la key, cacheable, sin 20 round-trips desde el cliente).
 
 ## 3. Universo — expansión
 
+### Actualización — expansión de universo v2 (2026-08-06)
+
+**Cambio de enfoque frente al v1 de este doc:** ya no se expande con una lista
+estática curada a mano. `scripts/gen-screener-universe.mjs` **regenera** el
+universo corriendo los **criterios de liquidez existentes contra el symbol map
+US de hoy**, con el **mismo gate de tipos del guard** (equity común + ADR +
+REIT). Nada de nombres a mano.
+
+- **Criterios (ninguno reinventado):** precio ≥ `ARENA_RULES.min_price` ($1),
+  ADV ≥ `ADV_THRESHOLD_USD` ($1M, el de `/ticker-search?liquidity=`), y un piso
+  de **cap** configurable (`--min-cap`, default **$2B** mid/large). Ranking por
+  **ADV en dólares** desc → top-N. Lógica pura y testeada en
+  `_lib/screener-universe-gen.js` (`tests/screener-universe-gen.test.mjs`).
+- **Dos fases para respetar Finnhub 60/min:** (0) symbol map → gate de tipos;
+  (1) liquidez vía **Yahoo** (no cuenta al cap de Finnhub) sobre todo el pool →
+  rankea y se queda con top N×1.3; (2) **cap vía Finnhub** solo para esos
+  finalistas → **~N llamadas** (~8 min a 1.2s), no miles. Resuelve la objeción
+  del v1 (§ abajo, "Descarto…"): la liquidez rankea con Yahoo, Finnhub solo
+  toca a los finalistas. Job **offline y reanudable** (checkpoint en disco); el
+  symbol map no cambia intradía y los fundamentales son trimestrales.
+
+- **Tope cómodo — dónde queda (Finnhub 60/min + refresh 4h + maxDuration=300):**
+  - El **60/min NO es el cuello**: `SPACING_MS=1200` ya topa el refresh en
+    ~50/min pase lo que pase con el tamaño del universo.
+  - Cuellos reales: (a) el wall de **300s/run** → ~110-130 símbolos/run, y (b)
+    frescura = 6 runs/día × `PER_RUN`. Los fundamentales son trimestrales → días
+    de staleness dan igual.
+  - **`PER_RUN` subido 30 → 80** (usa el presupuesto de 300s; ~200s con margen):
+    6 runs/día × 80 = **480/día** → un universo de **~300 se cicla en <1 día** y
+    cold-fill en ~4 runs. Un run que roce los 300s muere con 504 pero el ledger
+    es reanudable (`pickStaleSymbols` drena lo más viejo) → fallo benigno.
+  - **Veredicto:** **300 es el target cómodo de v2**, con headroom holgado. El
+    techo duro antes de que la frescura sea siquiera tema es **~500-600**
+    (consistente con la propuesta v1 de abajo). 250-300 queda cómodamente dentro.
+  - Regenerar: `FINNHUB_API_KEY=… node scripts/gen-screener-universe.mjs
+    --n=300 --min-cap=2e9 --write`, luego `GET /api/arena-screener?job=seed`
+    (o dejar que la siembra perezosa del refresh agregue los nuevos al ledger).
+
+- **Qué ve el PM FUERA del universo (canal movers ≠ watchlist de 55):** el
+  buffet del Arena arma su canal movers con `/api/movers?**universe=market**`
+  (`arena-run.js:221`) → **mercado US completo** (Alpha Vantage
+  TOP_GAINERS_LOSERS), **no** la `WATCHLIST` de 55 de `movers.js`. Más aún:
+  `trimMovers` **descarta el canal entero si `universe !== 'market'`**
+  (`arena-run.js:133`) — si movers cae al fallback de watchlist, el PM ve
+  **cero** movers, nunca los 55 como sustituto. La watchlist de 55 es solo para
+  la pestaña pública MOVERS de la UI. **Implicación:** el PM ya ve nombres muy
+  fuera del universo del screener por movers (top-5 gainers/losers + top-8
+  actives del mercado entero, filtrados a ≥$5 y sin apalancados). Ampliar el
+  universo del screener cambia el **canal SCREENER** (value/momentum de Neon),
+  no lo que movers surface — son canales complementarios; el guard es el que
+  limita lo *ejecutable* al universo+tipo.
+
+> El resto de esta §3 es el análisis v1 (lista estática S&P 500). Se conserva
+> como registro de la decisión; el enfoque vigente es el generador de arriba.
+
 - **Hoy**: 151 (backend). Para producto es poco.
 - **Realidad de capacidad**: llenaste 151 en ~8 min con 4 llamadas manuales, sin
   429. El cuello NO es el rate limit — es el wall de 60 s de la lambda

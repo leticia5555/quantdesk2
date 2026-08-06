@@ -12,9 +12,19 @@
 // de drift es bajo — la lista es estable y curada por liquidez.
 //
 // El cron arena-screener precomputa métricas por cada uno de estos símbolos
-// en Neon (arena_screener); el arena-run SOLO LEE esa tabla. Expansión (S&P
-// 500 u otro set mayor) es follow-up: el precompute quita el límite de costo,
-// pero primero medimos si el canal produce algo antes de invertir en cobertura.
+// en Neon (arena_screener); el arena-run SOLO LEE esa tabla.
+//
+// ── EXPANSIÓN DE UNIVERSO v2 (2026-08-06) ───────────────────────────
+// La expansión ya no es a mano: `scripts/gen-screener-universe.mjs` REGENERA
+// esta lista corriendo los criterios de liquidez existentes (precio ≥ $1 de
+// ARENA_RULES, ADV ≥ $1M de ticker-search, + piso de cap configurable) contra
+// el symbol map US de HOY, con el mismo gate de tipos del guard (equity común +
+// ADR + REIT). La lógica pura y testeada vive en `_lib/screener-universe-gen.js`.
+// Target v2: ~300 nombres (tope cómodo — ver docs/screener-product-scope.md §3:
+// el cron los cicla en <1 día a PER_RUN=80, muy bajo el cap Finnhub 60/min).
+// Para regenerar:  FINNHUB_API_KEY=… node scripts/gen-screener-universe.mjs \
+//                    --n=300 --min-cap=2e9 --write   (luego ?job=seed).
+// Mientras no se corra con la key, esta lista queda como el universo v1 curado.
 // ═══════════════════════════════════════════════════════════════════
 
 const US_SCREENER_UNIVERSE = [
