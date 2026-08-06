@@ -73,6 +73,15 @@ import { activeAgents, agentById, agentAlpacaCreds, FLAGSHIP_AGENT_ID } from './
 // arena-run la importan desde acá.
 export { isLeveragedInverseETF };
 
+// El decide corre N agentes en paralelo, cada uno con buffet (self-fetch) +
+// deep dive Finnhub + DOS llamadas LLM (SCAN, DIVE); ya peleaba contra el
+// default de 60s de Vercel, y el reconcile pre-decide (true-up del journal
+// antes de reinyectar el plan) le suma un pase más de órdenes. La cuenta es
+// plan Pro (tope 300s) → le damos aire. Misma medicina que pead-harvest y
+// arena-screener. El reconcile matutino (mismo handler, phase=reconcile) hereda
+// el cap; no le estorba (termina en segundos).
+export const maxDuration = 300;
+
 // v2: flujo de DOS fases (SCAN → DEEP DIVE). v1 era un solo LLM call sobre el
 // buffet. El bump permite distinguir corridas del harness viejo vs nuevo en
 // el post-mortem a 30 días.
@@ -1070,12 +1079,28 @@ export default async function handler(req, res) {
       await beat('arena:reconcile', 'ok', { halted: summary && summary.halted });
       return res.status(200).json({ phase, ...summary });
     }
+    // ── Reconcile PRE-DECIDE (true-up del journal antes de reinyectar el plan) ──
+    // Los fills que aterrizan DESPUÉS del reconcile de las 14:40 eran invisibles
+    // para el decide de las 22:40: GOOGL llenó 16:54 y el PM la narró "pending
+    // order, monitor" sin analizarla. Las posiciones live YA viajaban al prompt
+    // (portfolioSnapshot); el único surface stale es `previous.orders`, que el
+    // decide lee del journal y que solo el reconcile actualiza. Correrlo aquí,
+    // justo antes de la liga, hace que el fill tardío llegue al journal a tiempo
+    // para que el plan reinyectado lo refleje. Barato: solo re-consulta las
+    // órdenes que el pase de las 14:40 dejó no-terminales (justo las que pudieron
+    // llenar tarde). NO late `arena:reconcile` — ese heartbeat es del cron de las
+    // 14:40; latirlo aquí enmascararía un cron matutino muerto. Best-effort: un
+    // tropiezo del reconcile no debe frenar la decisión del día.
+    let preDecideReconcile = null;
+    try { preDecideReconcile = await runArenaReconcile({}); }
+    catch (e) { preDecideReconcile = { error: String((e && e.message) || e) }; }
+
     const baseUrl = resolveBaseUrl(req);
     const summary = await runArenaLeague({ baseUrl });
     // Latido del cron (detecta un cron muerto). La liga corre N agentes → el
     // payload cuenta cuántos decidieron, no las acciones de uno solo.
     await beat('arena:decide', 'ok', { agents: summary && summary.agents ? summary.agents.length : null });
-    return res.status(200).json({ phase: 'decide', ...summary, rules: ARENA_RULES });
+    return res.status(200).json({ phase: 'decide', ...summary, pre_decide_reconcile: preDecideReconcile, rules: ARENA_RULES });
   } catch (err) {
     return res.status(500).json({ error: 'arena-run: ' + (err && err.message ? err.message : 'unknown') });
   }
