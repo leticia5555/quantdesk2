@@ -7,7 +7,7 @@ import { EXCLUDED_SECURITY_TYPES, NON_EQUITY_TYPES } from './_lib/arena-guard.js
 // curado (incluye los ADR LATAM que son el corazón de la audiencia: NU/MELI/
 // ITUB/VALE/PBR). Lista a mano, estable — NO scraping, misma filosofía que el
 // calendario macro curado.
-const MEGA_CAPS = new Set([
+export const MEGA_CAPS = new Set([
   // Big tech / IA
   'AAPL','MSFT','NVDA','GOOGL','GOOG','AMZN','META','AVGO','TSLA','ORCL',
   'AMD','CRM','ADBE','NFLX','QCOM','TXN','INTC','CSCO','IBM','NOW','INTU','PLTR',

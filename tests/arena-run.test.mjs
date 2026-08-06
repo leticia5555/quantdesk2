@@ -143,6 +143,10 @@ global.fetch = async (url, opts = {}) => {
         { symbol: 'NVDA', description: 'NVIDIA CORP', type: 'Common Stock' },
         { symbol: 'GNTX', description: 'GENTEX CORP', type: 'Common Stock' },
         { symbol: 'AXP', description: 'AMERICAN EXPRESS CO', type: 'Common Stock' },
+        // No-equity que el sufijo del ticker NO atrapa (sin separador) pero el
+        // `type` del symbol map sí: alimentan el filtro de universo del buffet.
+        { symbol: 'WLDSW', description: 'WEALTHYCO WARRANT', type: 'Equity WRT' },
+        { symbol: 'IPCXU', description: 'IPO CORP UNIT', type: 'Unit' },
       ] };
   }
   // Finnhub deep dive (fase 2a)
@@ -177,6 +181,10 @@ global.fetch = async (url, opts = {}) => {
     // 12 actives en orden de volumen (como los da AV): TSLL/SQQQ (leveraged),
     // WBUY (<$5) deben caer; TSLA queda en el puesto 7 real → solo top-8 la ve.
     actives: [
+      // Warrant + unit al frente: el filtro de `type` (no-equity) los saca
+      // ANTES del top-8; sin él ocuparían 2 slots y expulsarían a TSLA.
+      { symbol: 'WLDSW', price: 8, changePct: 40 },
+      { symbol: 'IPCXU', price: 10, changePct: 12 },
       { symbol: 'TSLL', price: 25, changePct: 22 },
       { symbol: 'NOK', price: 6, changePct: 1.1 },
       { symbol: 'NU', price: 12, changePct: 2.0 },
@@ -191,7 +199,15 @@ global.fetch = async (url, opts = {}) => {
       { symbol: 'AAPL', price: 225, changePct: 0.3 },
     ],
   }, moversStatus);
-  if (u.startsWith(BASE_URL + '/api/earnings')) return jsonReply({ earnings: [{ ticker: 'MSFT', company: 'Microsoft Corp', date: today, time: 'AMC' }] });
+  // Orden del feed = alfabético dentro del día (así lo da Finnhub). Un
+  // slice(0,12) crudo dejaría AAM (sin nombre) de PRIMERO; el ranking por
+  // relevancia debe subir la mega (MSFT) y hundir la de company null.
+  if (u.startsWith(BASE_URL + '/api/earnings')) return jsonReply({ earnings: [
+    { ticker: 'AAM', company: null, date: today, time: 'BMO' },              // OTC sin nombre → tier 2 (al fondo)
+    { ticker: 'AAUAF', company: 'Aura Minerals Inc', date: today, time: 'TBD' }, // named ilíquida → tier 1
+    { ticker: 'MSFT', company: 'Microsoft Corp', date: today, time: 'AMC' },  // mega curada → tier 0 (primera)
+    { ticker: 'ZED', company: 'Zed Industries', date: today, time: 'AMC' },   // named → tier 1
+  ] });
   if (u.startsWith(BASE_URL + '/api/stock-tracker')) return jsonReply({ items: [{ insider: 'Jane Doe', role: 'CEO', ticker: 'AAPL', value: 250000, tradeDate: today }] });
   // Neon
   if (u.includes('neon.tech')) {
@@ -352,6 +368,9 @@ ok(!uMovers.gainers.some((m) => m.symbol === 'PENNYG') && !uMovers.losers.some((
   'prompt SCAN: micro-caps (<$5) filtradas de gainers, losers y actives', JSON.stringify(uMovers));
 ok(uMovers.gainers.some((m) => m.symbol === 'AAPL') && uMovers.losers.some((m) => m.symbol === 'TSLA'),
   'prompt SCAN: las de precio real (AAPL, TSLA) sí quedan', JSON.stringify(uMovers));
+// ── filtro de tipos (equity/ADR/REIT) en el buffet: fuera warrants/units ──
+ok(!uMovers.actives.some((m) => m.symbol === 'WLDSW') && !uMovers.actives.some((m) => m.symbol === 'IPCXU'),
+  'prompt SCAN: warrant (WLDSW) y unit (IPCXU) filtrados de actives por `type` del symbol map', JSON.stringify(uMovers.actives.map((m) => m.symbol)));
 
 // ── el SCAN prompt trae el canal screener (value + momentum) pero SIN VC ──
 const scanBuffet = JSON.parse(jctx.scan.prompt.user.split('\n').find((l) => l.startsWith('{') && l.includes('"movers"')));
@@ -361,6 +380,12 @@ ok(scanBuffet.screener.momentum.some((c) => c.symbol === 'HD'),
   'prompt SCAN: el canal screener (momentum) llega con HD', JSON.stringify(scanBuffet.screener.momentum));
 ok(!('vc_headlines' in scanBuffet) && !('vc' in scanBuffet),
   'prompt SCAN: las VC headlines salieron del buffet (empresas privadas, no comprables)', JSON.stringify(Object.keys(scanBuffet)));
+// ── earnings_this_week por RELEVANCIA (cap), no alfabético del feed ──
+const uEarn = scanBuffet.earnings_this_week;
+ok(Array.isArray(uEarn) && uEarn[0].ticker === 'MSFT',
+  'prompt SCAN: earnings rankeado por relevancia → la mega-cap (MSFT) primero, no AAM alfabético', JSON.stringify(uEarn.map((e) => e.ticker)));
+ok(uEarn[uEarn.length - 1].ticker === 'AAM',
+  'prompt SCAN: la de company null (AAM, OTC) queda al fondo del ranking', JSON.stringify(uEarn.map((e) => e.ticker)));
 // El índice de atribución y los diagnósticos NO viajan al prompt del LLM.
 ok(!('channelsByTicker' in scanBuffet) && !('fetch_errors' in scanBuffet),
   'prompt SCAN: channelsByTicker/fetch_errors son internos, no van al prompt del LLM');
