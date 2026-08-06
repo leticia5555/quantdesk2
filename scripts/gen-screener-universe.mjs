@@ -113,18 +113,40 @@ async function capUsd(symbol, key) {
 }
 
 // ── symbol map US (nombre + tipo) ────────────────────────────────────
+// Misma validación que refreshSymbolData de earnings.js (que en prod baja este
+// mismo /stock/symbol a diario sin drama): exige r.ok Y content-type JSON — un
+// 504 de Finnhub devuelve un HTML de gateway que r.json() reventaría al parsear,
+// así que el content-type es tan importante como el status. El 504 es
+// transitorio → retry con backoff creciente (3 intentos, espera 2s luego 4s).
 async function fetchSymbolMap(key) {
-  const r = await fetch(`${FINNHUB}/stock/symbol?exchange=US&token=${key}`);
-  if (!r.ok) throw new Error(`symbol map HTTP ${r.status}`);
-  const list = await r.json();
-  if (!Array.isArray(list) || !list.length) throw new Error('symbol map vacío');
-  const map = {}, types = {};
-  for (const s of list) {
-    if (!s || !s.symbol) continue;
-    if (s.description) map[s.symbol] = s.description;
-    if (s.type) types[s.symbol] = s.type;
+  const url = `${FINNHUB}/stock/symbol?exchange=US&token=${key}`;
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const r = await fetch(url);
+      const ct = (r.headers && r.headers.get('content-type')) || '';
+      if (!r.ok || !ct.includes('application/json')) {
+        throw new Error(`HTTP ${r.status}${ct ? ` (${ct})` : ''}`);
+      }
+      const list = await r.json();
+      if (!Array.isArray(list) || !list.length) throw new Error('lista vacía');
+      const map = {}, types = {};
+      for (const s of list) {
+        if (!s || !s.symbol) continue;
+        if (s.description) map[s.symbol] = s.description;
+        if (s.type) types[s.symbol] = s.type;
+      }
+      return { map, types, total: list.length };
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 3) {
+        const waitMs = 2000 * (1 << (attempt - 1)); // 2s, 4s
+        log(`  symbol map intento ${attempt}/3 falló (${e.message}) — reintento en ${waitMs / 1000}s…`);
+        await sleep(waitMs);
+      }
+    }
   }
-  return { map, types, total: list.length };
+  throw new Error(`symbol map tras 3 intentos: ${(lastErr && lastErr.message) || 'desconocido'}`);
 }
 
 // ── checkpoint (reanudable) ──────────────────────────────────────────
