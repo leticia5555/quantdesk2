@@ -1,10 +1,10 @@
 // ═══════════════════════════════════════════════════════════════
-// Unit tests de /api/insider — semántica de campos Form 4 de Finnhub.
-// Blinda el fix del bug de $287B (usar `change`, NUNCA `share`).
-// Correr con `node tests/insider.test.mjs`.
+// Unit tests de /api/insider: el fix del parseo Form 4 (usar el CAMBIO
+// de la transacción, no el holding resultante) + tipos por código.
+// Sin red. Correr con `node tests/insider.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import { normalizeInsiderTx, deriveType } from '../api/insider.js';
+import { normalizeTx, deriveType } from '../api/insider.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -12,55 +12,44 @@ function ok(cond, name, detail) {
   else { failures++; console.error('  FAIL', name, detail !== undefined ? '→ ' + detail : ''); }
 }
 
-// ── El bug real: fila F-code de TSLA ─────────────────────────────
-// Finnhub devuelve `share` = tenencia RESULTANTE (~710M acciones) y
-// `change` = las acciones MOVIDAS en esta transacción (−17.6k). Usar
-// `share` inflaba el valor a ~$287B; el correcto es |change| × precio.
-console.log('normalizeInsiderTx: dimensiona por `change`, jamás por `share`');
+// ── El bug real: TSLA F-code con holding gigante ──────────────────
+// Finnhub: change = -710 (acciones movidas), share = 710_000_000 (holding
+// TOTAL tras la transacción). El valor debe salir de |change|, no de share.
 {
-  const tslaFcode = {
-    name: 'Elon Musk',
-    transactionCode: 'F',
-    change: -17600,        // acciones movidas (retención fiscal)
-    share: 710000000,      // tenencia resultante — NO es el tamaño de la tx
-    transactionPrice: 408.0,
-  };
-  const n = normalizeInsiderTx(tslaFcode);
-  ok(n.shares === 17600, 'shares = |change|, no la tenencia', n.shares);
-  ok(n.value === Math.round(17600 * 408.0), 'value = |change| × precio (~$7.2M)', n.value);
-  ok(n.value < 1e9, 'value jamás llega a miles de millones (mata el $287B)', n.value);
-  ok(n._signedValue < 0, '_signedValue conserva el signo (disposición)', n._signedValue);
-  ok(n.type === 'TAX WITHHOLDING', 'code F → TAX WITHHOLDING', n.type);
+  const tx = { name: 'MUSK ELON', transactionCode: 'F', change: -710, share: 710000000, transactionPrice: 404.76 };
+  const n = normalizeTx(tx);
+  ok(n.shares === 710, 'usa |change| como tamaño, no el holding', n.shares);
+  ok(n.value === Math.round(710 * 404.76), 'valor = |change|·precio (no share·precio)', n.value);
+  ok(n.value < 1e6, 'valor plausible (< $1M), no $287B', n.value);
+  ok(n.type === 'TAX WITHHOLDING', 'F → TAX WITHHOLDING', n.type);
 }
 
-// ── Compra abierta ───────────────────────────────────────────────
-console.log('normalizeInsiderTx: compra abierta (P)');
+// ── Compra open-market (P): value correcto y BUY ──────────────────
 {
-  const buy = { name: 'Jane Insider', transactionCode: 'P', change: 5000, share: 42000, transactionPrice: 20 };
-  const n = normalizeInsiderTx(buy);
-  ok(n.shares === 5000, 'shares = change', n.shares);
-  ok(n.value === 100000, 'value = 5000 × 20', n.value);
-  ok(n._signedValue === 100000, '_signedValue positivo en compra', n._signedValue);
-  ok(n.type === 'BUY', 'code P → BUY', n.type);
+  const n = normalizeTx({ name: 'DOE JANE', transactionCode: 'P', change: 1000, share: 51000, transactionPrice: 25 });
+  ok(n.type === 'BUY' && n.value === 25000 && n.shares === 1000, 'P → BUY con value=25k', JSON.stringify(n));
 }
 
-// ── Robustez de campos ausentes/basura ───────────────────────────
-console.log('normalizeInsiderTx: campos ausentes → 0 seguro, sin NaN');
+// ── Venta (S): SELL, signedValue negativo ─────────────────────────
 {
-  const n = normalizeInsiderTx({ name: '  Bob  ', transactionCode: 'S', change: -3, transactionPrice: undefined });
-  ok(n.price === 0 && n.value === 0, 'precio ausente → value 0', JSON.stringify(n));
-  ok(!Number.isNaN(n.value), 'nunca NaN', n.value);
-  ok(n.name === 'Bob', 'name trimmeado', n.name);
-  ok(n.type === 'SELL', 'code S → SELL', n.type);
+  const n = normalizeTx({ name: 'ROE J', transactionCode: 'S', change: -1250, share: 57234, transactionPrice: 655.81 });
+  ok(n.type === 'SELL', 'S → SELL', n.type);
+  ok(n.shares === 1250 && n.value === Math.round(1250 * 655.81), 'value de venta usa |change|', n.value);
+  ok(n._signedValue < 0, 'signedValue negativo en venta', n._signedValue);
 }
 
-// ── deriveType: fallback por signo cuando no hay code ─────────────
-console.log('deriveType: fallback por signo de change');
+// ── change ausente → 0 shares (no explota, no inventa) ────────────
 {
-  ok(deriveType({ change: 10 }) === 'BUY', 'change>0 → BUY');
-  ok(deriveType({ change: -10 }) === 'SELL', 'change<0 → SELL');
-  ok(deriveType({ change: 0 }) === 'OTHER', 'change=0 → OTHER');
+  const n = normalizeTx({ name: 'NOBODY', transactionCode: 'P', share: 1000, transactionPrice: 10 });
+  ok(n.shares === 0 && n.value === 0, 'sin change → 0 (no cae al holding)', JSON.stringify(n));
 }
 
-console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : `\n${failures} TESTS FALLARON`);
+// ── deriveType: cobertura de códigos ──────────────────────────────
+ok(deriveType({ transactionCode: 'A' }) === 'AWARD', 'A → AWARD');
+ok(deriveType({ transactionCode: 'M' }) === 'OPTION EXERCISE', 'M → OPTION EXERCISE');
+ok(deriveType({ transactionCode: 'G' }) === 'GIFT', 'G → GIFT');
+ok(deriveType({ change: 5 }) === 'BUY', 'sin código, change>0 → BUY');
+ok(deriveType({ change: -5 }) === 'SELL', 'sin código, change<0 → SELL');
+
+console.log(failures === 0 ? '\n✓ insider: todo en verde' : `\n✗ insider: ${failures} fallo(s)`);
 process.exit(failures ? 1 : 0);

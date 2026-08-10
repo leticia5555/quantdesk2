@@ -272,6 +272,36 @@ td:first-child{color:var(--text);font-weight:500;}
   .nav-btn{padding:0 10px;font-size:10px;}
 }
 
+/* ─── SMART $: layout POR CONTENIDO (móvil primero) ─────────────────
+   El grid se reacomoda con auto-fit: 1 columna en móvil, N en desktop, y
+   los paneles CON datos se expanden al espacio liberado por los que no los
+   tienen. Un panel sin datos NO entra al grid — colapsa a una línea en
+   .sm-dead-stack. min(280px,100%) evita overflow horizontal en <280px. */
+.sm-hero{background:#0a0a0a;border-bottom:1px solid #1a1a1a;}
+.sm-hero-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px 4px;cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.sm-hero-sym{font-family:var(--mono);font-size:15px;font-weight:700;color:#eee;letter-spacing:.02em;}
+.sm-hero-name{font-family:var(--sans);font-size:11px;color:#666;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sm-hero-px{font-family:var(--mono);font-size:15px;font-weight:700;margin-left:auto;}
+.sm-hero-px .up{color:#00c97d;} .sm-hero-px .dn{color:#E24B4A;}
+.sm-hero-hint{font-family:var(--mono);font-size:9px;color:#444;letter-spacing:.06em;}
+.sm-hero-chart{height:200px;width:100%;}
+@media(max-width:600px){ .sm-hero-chart{height:150px;} }
+.sm-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:1px;background:#111;}
+.sm-panel{background:#0d0d0d;padding:14px 16px;min-width:0;}
+.sm-phead{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;}
+.sm-phead .sm-psrc{margin-left:auto;color:#444;letter-spacing:.02em;font-weight:400;text-transform:none;}
+.sm-dead-stack{display:flex;flex-direction:column;}
+.sm-dead{display:flex;align-items:center;gap:10px;padding:8px 16px;background:#0b0b0b;border-bottom:1px solid #151515;
+  font-family:var(--mono);font-size:10px;color:#4a4a4a;letter-spacing:.04em;}
+.sm-dead-dot{width:5px;height:5px;border-radius:50%;background:#2c2c2c;flex-shrink:0;}
+.sm-dead-lbl{color:#777;font-weight:600;}
+.sm-dead-why{color:#3f3f3f;margin-left:auto;text-transform:none;letter-spacing:0;text-align:right;min-width:0;}
+.sm-click{cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.sm-click:hover{background:#111;}
+.sm-row-spark{width:74px;height:24px;flex-shrink:0;}
+@media(max-width:600px){ .sm-row-spark{width:56px;height:22px;} }
+.sm-a{color:#00b3ff;text-decoration:none;} .sm-a:hover{text-decoration:underline;}
+
 /* ─── MACRO: grid Bloomberg → una columna en móvil (móvil primero) ─── */
 .macro-grid{display:grid;grid-template-columns:220px 1fr 260px;gap:1px;background:#111;min-height:calc(100vh - 80px);}
 @media(max-width:900px){ .macro-grid{grid-template-columns:1fr;min-height:0;} }
@@ -948,7 +978,7 @@ td:first-child{color:var(--text);font-weight:500;}
   <!-- TOP BAR -->
   <div style="background:#0a0a0a;border-bottom:1px solid #1a1a1a;padding:6px 16px;display:flex;align-items:center;gap:16px;">
     <span style="font-family:var(--mono);font-size:10px;color:#00c97d;font-weight:600;letter-spacing:.1em;" data-i18n="smartMoneyTracker">SMART MONEY TRACKER</span>
-    <span id="smActiveCo" style="font-family:var(--mono);font-size:10px;color:#333;">SEC · FINRA · CBOE · FINNHUB</span>
+    <span id="smActiveCo" style="font-family:var(--mono);font-size:10px;color:#333;">SEC · FINRA · YAHOO</span>
     <div style="margin-left:auto;display:flex;gap:8px;">
       <div class="autocomplete-wrap" style="display:inline-block;">
         <input type="text" id="smTicker" placeholder="TICKER" oninput="onSmTickerInput()" onkeydown="onSmTickerKey(event)" autocomplete="off" style="font-family:var(--mono);font-size:11px;background:#111;border:1px solid #222;color:#ccc;padding:4px 10px;width:100px;border-radius:2px;text-transform:uppercase;"/>
@@ -958,53 +988,16 @@ td:first-child{color:var(--text);font-weight:500;}
     </div>
   </div>
 
-  <!-- MAIN GRID -->
-  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:#111;">
+  <!-- PRICE HERO — gráfica del ticker analizado (Lightweight Charts) -->
+  <div id="smHero" class="sm-hero"></div>
 
-    <!-- SHORT INTEREST -->
-    <div style="background:#0d0d0d;padding:16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="shortInterest">SHORT INTEREST</div>
-      <div id="shortInterestPanel">
-        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;" data-i18n="enterTicker">Enter ticker to analyze</div>
-      </div>
-    </div>
+  <!-- DATA PANELS — grid que se reacomoda según cuántos paneles tienen datos.
+       Un panel sin datos NO ocupa una caja: colapsa a una línea en #smDead. -->
+  <div id="smGrid" class="sm-grid"></div>
+  <div id="smDead" class="sm-dead-stack"></div>
 
-    <!-- INSIDER TRANSACTIONS -->
-    <div style="background:#0d0d0d;padding:16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="insiderTx">INSIDER TRANSACTIONS · SEC</div>
-      <div id="insiderPanel">
-        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;" data-i18n="enterTicker">Enter ticker to analyze</div>
-      </div>
-    </div>
-
-    <!-- INSTITUTIONAL OWNERSHIP -->
-    <div style="background:#0d0d0d;padding:16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="instOwnership">INSTITUTIONAL OWNERSHIP</div>
-      <div id="institutionalPanel">
-        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;" data-i18n="enterTicker">Enter ticker to analyze</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- OPTIONS SENTIMENT + PUT/CALL -->
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#111;margin-top:1px;">
-
-    <!-- PUT/CALL + OPTIONS FLOW -->
-    <div style="background:#0d0d0d;padding:16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="optionsSentiment">OPTIONS SENTIMENT · PUT/CALL</div>
-      <div id="optionsPanel">
-        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;" data-i18n="enterTicker">Enter ticker to analyze</div>
-      </div>
-    </div>
-
-    <!-- SMART MONEY VERDICT -->
-    <div style="background:#0d0d0d;padding:16px;">
-      <div style="font-family:var(--mono);font-size:9px;color:#00c97d;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="aiSmartVerdict">AI SMART MONEY VERDICT 🤖</div>
-      <div id="smVerdictPanel">
-        <div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:40px 0;" data-i18n="enterTicker">Enter ticker to analyze</div>
-      </div>
-    </div>
-  </div>
+  <!-- AI SYNTHESIS VERDICT (grounded en los datos reales de arriba) -->
+  <div id="smVerdictWrap"></div>
 
   <!-- MARKET-WIDE SIGNALS -->
   <div style="background:#0d0d0d;padding:16px;margin-top:1px;">
@@ -3388,314 +3381,531 @@ function renderEarningsVerdict(v, ticker){
 }
 
 // ─── SMART MONEY ENGINE ──────────────────────────────────
+// Layout POR CONTENIDO: cada fuente REAL (SEC Form 4, FINRA Reg SHO, 13F de
+// EDGAR, opciones de Yahoo) llega async y re-pinta. Un panel sin datos NO
+// ocupa una caja — colapsa a una línea (renderSmartLayout). El único bloque
+// de IA es el VEREDICTO, y va anclado a los datos reales de arriba (no
+// inventa short interest, holders ni cadenas de opciones).
 let smLoaded=false;
+// Estado central. Por clave: undefined = cargando; null = falló/sin datos;
+// objeto = datos reales. El render lee este estado, nunca el DOM.
+let smState=null;
 
 async function runSmartMoney(){
   const ticker=document.getElementById('smTicker').value.trim().toUpperCase();
   if(!ticker){alert('Enter a ticker');return;}
   qdSetActiveCo('smActiveCo', ticker); // rótulo de empresa activa, desde el arranque
 
-  // Reset panels with loading state
-  ['shortInterestPanel','insiderPanel','institutionalPanel','optionsPanel','smVerdictPanel'].forEach(id=>{
-    const el=document.getElementById(id);
-    if(el) el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:11px;text-align:center;padding:30px 0;">Loading...</div>';
+  smState={ ticker, candles:undefined, insider:undefined, inst:undefined,
+    short:undefined, options:undefined, verdict:undefined, verdictReason:null };
+  renderSmHero();        // hero en estado "cargando velas"
+  renderSmartLayout();   // paneles en estado "cargando"
+  renderSmVerdictWrap(); // limpia el veredicto previo
+
+  // Todas las fuentes reales en paralelo — ninguna bloquea a otra ni depende
+  // de IA. Cada una re-pinta su parte al resolver.
+  smLoadCandles(ticker);
+  smLoadShort(ticker);
+  smLoadInsider(ticker);
+  smLoadInstitutional(ticker);
+  smLoadOptions(ticker);
+  smLoadVerdict(ticker);
+}
+
+// ¿Sigue vigente este ticker? (el usuario pudo lanzar otro análisis)
+function smCurrent(ticker){ return smState && smState.ticker===ticker; }
+
+async function smLoadCandles(ticker){
+  const sym=(typeof normalizeTicker==='function')?normalizeTicker(ticker):ticker;
+  const d=await qdFetchJSON('/api/candles?symbol='+encodeURIComponent(sym)+'&interval=1d',
+    null, x=>x&&Array.isArray(x.candles)&&x.candles.length>0);
+  if(!smCurrent(ticker)) return;
+  smState.candles=d||null;
+  renderSmHero();
+  // Las filas de insider usan las velas para sus sparklines: re-pinta si ya llegaron.
+  if(smState.insider!==undefined) renderSmartLayout();
+}
+
+async function smLoadShort(ticker){
+  const d=await qdFetchJSON('/api/short-interest?ticker='+encodeURIComponent(ticker),
+    null, x=>x&&typeof x==='object');
+  if(!smCurrent(ticker)) return;
+  smState.short=(d&&d.summary)?d:null;
+  renderSmartLayout();
+}
+
+async function smLoadInsider(ticker){
+  const d=await qdFetchJSON('/api/insider?ticker='+encodeURIComponent(ticker),
+    null, x=>x&&typeof x==='object');
+  if(!smCurrent(ticker)) return;
+  smState.insider=(d&&Array.isArray(d.transactions)&&d.transactions.length)?d:null;
+  renderSmartLayout();
+}
+
+async function smLoadInstitutional(ticker){
+  // Reusa la MISMA fuente que el tab TRACKER (13F reales de EDGAR, 6 fondos),
+  // filtrada al ticker analizado. Cero duplicación con IA — misma jugada que
+  // hicimos con el calendario macro.
+  const d=await qdFetchJSON('/api/stock-tracker?cat=13f',
+    null, x=>x&&Array.isArray(x.funds));
+  if(!smCurrent(ticker)) return;
+  smState.inst=d?smExtract13F(d, ticker):null;
+  renderSmartLayout();
+}
+
+async function smLoadOptions(ticker){
+  const d=await qdFetchJSON('/api/options?ticker='+encodeURIComponent(ticker),
+    null, x=>x&&typeof x==='object');
+  if(!smCurrent(ticker)) return;
+  smState.options=(d&&d.available)?d:null;
+  renderSmartLayout();
+}
+
+// Veredicto IA — síntesis ANCLADA a los datos reales. Espera (con tope) a que
+// lleguen insider/short/13f para pasárselos como contexto y prohibirle
+// inventar. Caché por ticker+día: una sola llamada de IA al día.
+async function smLoadVerdict(ticker){
+  const cached=qdDayCacheGet('smv:'+ticker);
+  if(cached){ if(smCurrent(ticker)){ smState.verdict=cached; renderSmVerdictWrap(); } return; }
+  await smAwait(['insider','short','inst'], 6000);
+  if(!smCurrent(ticker)) return;
+  const pd=await fetchPriceData(ticker).catch(()=>null);
+  if(!smCurrent(ticker)) return;
+
+  const g=[];
+  if(pd&&pd.currentPrice) g.push('Price $'+pd.currentPrice
+    +(pd.low52w&&pd.high52w?' (52w $'+pd.low52w+'–$'+pd.high52w+')':'')
+    +(pd.return30d!=null?', 30d '+(pd.return30d*100).toFixed(1)+'%':'')); // pct-lint-ok: string de prompt a Claude, no UI; el periodo va explícito ("30d")
+  const ins=smState.insider;
+  if(ins&&ins.summary) g.push('Insider (SEC Form 4): '+ins.summary+' Net '+(ins.netSentiment||'NEUTRAL')+'.');
+  const sh=smState.short&&smState.short.summary;
+  if(sh) g.push('Short volume (FINRA Reg SHO, daily — NOT float short interest): latest '
+    +sh.latestRatio+'% of volume sold short, 20d avg '+(sh.avg20!=null?sh.avg20+'%':'n/a')+', trend '+sh.trend+'.');
+  const inst=smState.inst;
+  if(inst&&inst.holders&&inst.holders.length) g.push('13F moves among tracked funds: '
+    +inst.holders.map(h=>h.fund+' '+h.action+(h.deltaPct!=null?' '+(h.deltaPct>0?'+':'')+h.deltaPct+'%':'')).join('; ')+'.');
+  const opt=smState.options;
+  if(opt&&opt.put_call_oi!=null) g.push('Options (Yahoo, front expiry): put/call OI '+opt.put_call_oi
+    +(opt.atm_iv_pct!=null?', ATM IV '+opt.atm_iv_pct+'%':'')+(opt.max_pain?', max pain $'+opt.max_pain:'')+'.');
+
+  const groundTxt=g.length
+    ? 'REAL DATA for '+ticker+' as of '+qdMonthYear()+' — anchor to it and do NOT contradict or invent beyond it: '+g.join(' ')+' '
+    : 'No real smart-money data resolved for '+ticker+' as of '+qdMonthYear()+'. ';
+  const { text:aiText, reason }=await qdAIx({max_tokens:1100, messages:[{role:'user',content:
+    groundTxt+'You are a buy-side smart-money analyst. Synthesize a verdict STRICTLY from the real data above (insider flow, short-selling pressure, institutional 13F moves, options positioning, price). Never fabricate short interest %, days-to-cover, option chains, or holders not listed. If a dimension is missing, reason without it. Return ONLY valid JSON: {"overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","conviction":"HIGH|MEDIUM|LOW","smart_money_score":0-100,"key_insight":"1 sentence citing the real data","bull_case":"1-2 sentences","bear_case":"1-2 sentences","trade_setup":"1 sentence","risk_flags":["short string"]}'+langDirective()}]});
+  if(!smCurrent(ticker)) return;
+  smState.verdictReason=reason;
+  const v=aiText==null?null:safeJSON(aiText.replace(/```json|```/g,'').trim());
+  if(v){ v.smart_money_score=smNormScore(v.smart_money_score); qdDayCacheSet('smv:'+ticker, v); }
+  smState.verdict=v||null;
+  renderSmVerdictWrap();
+}
+
+// Espera a que un set de claves de smState deje de ser undefined, con tope.
+function smAwait(keys, timeoutMs){
+  return new Promise(resolve=>{
+    const start=Date.now();
+    (function tick(){
+      if(!smState){ resolve(); return; }
+      if(keys.every(k=>smState[k]!==undefined) || Date.now()-start>timeoutMs){ resolve(); return; }
+      setTimeout(tick, 120);
+    })();
   });
+}
 
-  // Real insider data from SEC EDGAR (via Finnhub) runs in parallel with the
-  // Claude analysis. Insider transactions are no longer asked of Claude — we
-  // only let it produce subjective blocks (bull/bear case, trade setup, etc.).
-  const insiderPromise = fetch('/api/insider?ticker='+encodeURIComponent(ticker))
-    .then(r=>r.ok?r.json():null)
-    .catch(()=>null);
+// Score de IA a rango 0-100 (Claude devuelve 0-1, 0-10 o 0-100 inconsistente).
+function smNormScore(raw){
+  let s=parseFloat(raw);
+  if(isNaN(s)||s==null) s=50;
+  else if(s>0&&s<=1) s=Math.round(s*100);
+  else if(s>1&&s<=10) s=Math.round(s*10);
+  else s=Math.round(s);
+  return Math.min(100, Math.max(0, s));
+}
 
-  // Caché por ticker+día: mismo visitante, mismo ticker, mismo día → cero
-  // llamadas de IA. Los datos de insider (SEC, sin IA) sí se refrescan.
-  const smCached = qdDayCacheGet('sm:'+ticker);
-  if(smCached){
-    renderShortInterest(smCached.short_interest);
-    renderInstitutional(smCached.institutional);
-    renderOptionsSentiment(smCached.options);
-    renderSmVerdict(smCached.verdict);
-    insiderPromise.then(renderInsiderTransactions);
-    return;
-  }
-
-  let smReason=null; // causa real de la falla, para el fallback honesto
-  try{
-    // Precio real de HOY (la app ya lo tiene vía /api/price) para que el
-    // verdict/bull/bear se anclen a números frescos y no a memoria.
-    const pd=await fetchPriceData(ticker).catch(()=>null);
-    const freshCtx=pd&&pd.currentPrice
-      ?'DATA AS OF TODAY ('+qdTodayLabel()+', live feed): '+ticker+' trades at $'+pd.currentPrice
-        +(pd.low52w&&pd.high52w?', 52w range $'+pd.low52w+'-$'+pd.high52w:'')
-        +(pd.sigma?', annualized volatility '+(pd.sigma*100).toFixed(0)+'%':'')
-        +(pd.return30d!=null?', 30d return '+(pd.return30d*100).toFixed(1)+'%':'') // pct-lint-ok: string de prompt a Claude, no UI; el periodo va explícito ("30d return")
-        +'. Anchor your analysis to these numbers. '
-      :'';
-    const { text:aiText, reason:aiReason }=await qdAIx({max_tokens:2000,
-        messages:[{role:'user',content:
-          freshCtx+'Bloomberg smart money data for '+ticker+' as of '+qdMonthYear()+'. Use SEC, FINRA, 13F knowledge. Return ONLY valid JSON with these exact keys: {"short_interest":{"short_interest_pct":number,"days_to_cover":number,"short_squeeze_score":number,"change_vs_month_ago":"INCREASED|DECREASED|STABLE","borrow_rate_pct":number,"narrative":"string"},"institutional":{"institutional_pct":number,"top_holders":[{"name":"string","pct":number,"change":"INCREASED|DECREASED|NEW|EXITED"}],"hedge_fund_sentiment":"BULLISH|BEARISH|NEUTRAL","summary":"string"},"options":{"put_call_ratio":number,"implied_volatility_pct":number,"iv_percentile":number,"options_sentiment":"BULLISH|BEARISH|NEUTRAL","unusual_activity":"YES|NO","notable_flow":"string","max_pain":number,"key_strikes":[{"strike":number,"type":"CALL|PUT","open_interest":number,"significance":"HIGH|MEDIUM"}]},"verdict":{"overall_signal":"STRONG BUY|BUY|NEUTRAL|SELL|STRONG SELL","conviction":"HIGH|MEDIUM|LOW","smart_money_score":number,"key_insight":"string","bull_case":"string","bear_case":"string","trade_setup":"string","risk_flags":["string"]}}' + langDirective()}]});
-
-    smReason=aiReason;
-    if(aiText==null) throw new Error('AI unavailable');
-    const rawText=aiText.replace(/```json|```/g,'').trim();
-    const data=safeJSON(rawText);
-    if(!data) throw new Error('AI returned invalid data');
-
-    // Normalize score — Claude returns inconsistent formats (0-1, 0-10, or 0-100)
-    // Logic: range-based detection with safe fallback
-    if(data.verdict){
-      let s = parseFloat(data.verdict.smart_money_score);
-      if(isNaN(s) || s == null) {
-        s = 50;  // safe default when Claude returns invalid/missing
-      } else if(s > 0 && s <= 1) {
-        s = Math.round(s * 100);          // 0.74 → 74 (decimal format)
-      } else if(s > 1 && s <= 10) {
-        s = Math.round(s * 10);            // 7.4 → 74 (0-10 scale)
-      } else {
-        s = Math.round(s);                 // already 0-100
+// 13F reales (payload de /api/stock-tracker?cat=13f) → movimientos del ticker
+// entre los 6 fondos rastreados. Honestidad: el payload trae TOP-5 por bucket
+// por fondo, así que solo vemos movimientos NOTABLES (no toda tenencia). Un
+// fondo aparece una vez, con su movimiento más relevante en el ticker.
+function smExtract13F(d, ticker){
+  if(!d||!Array.isArray(d.funds)) return null;
+  const tk=String(ticker).toUpperCase();
+  const holders=[];
+  // Orden de prioridad del movimiento a mostrar por fondo.
+  const buckets=[['added','NEW','#EF9F27'],['increased','ADDED','#00c97d'],
+    ['reduced','TRIMMED','#E24B4A'],['closed','EXITED','#E24B4A']];
+  for(const f of d.funds){
+    if(!f||!f.top) continue;
+    for(const [key,action,col] of buckets){
+      const rows=Array.isArray(f.top[key])?f.top[key]:[];
+      const hit=rows.find(p=>(p.ticker||'').toUpperCase()===tk);
+      if(hit){
+        holders.push({ fund:f.fund, persona:f.persona, action, actionCol:col,
+          value:hit.value, deltaPct:(hit.deltaPct!=null?hit.deltaPct:null),
+          quarterEnd:f.quarterEnd, link:f.link });
+        break;
       }
-      s = Math.min(100, Math.max(0, s));  // clamp to valid range
-      data.verdict.smart_money_score = s;
     }
-    qdDayCacheSet('sm:'+ticker, data);  // guarda el análisis del día para re-usos
-    renderShortInterest(data.short_interest);
-    renderInstitutional(data.institutional);
-    renderOptionsSentiment(data.options);
-    renderSmVerdict(data.verdict);
-
-    // Real insider data — render once /api/insider resolves (it ran in parallel)
-    insiderPromise.then(renderInsiderTransactions);
-
-  }catch(e){
-    console.error('Smart money error:', e);
-    // Insider panel is independent of Claude — let the real /api/insider call still populate it
-    ['shortInterestPanel','institutionalPanel','optionsPanel','smVerdictPanel'].forEach(id=>{
-      const el=document.getElementById(id);
-      if(el) el.innerHTML=qdUnavailableHTML('smart money', smReason);
-    });
-    insiderPromise.then(renderInsiderTransactions);
   }
+  return { holders, scanned:d.funds.length,
+    asOf:(d.funds[0]&&d.funds[0].quarterEnd)||null, stale:!!d.stale };
 }
 
-// ── Render Short Interest ──────────────────────────────
-function renderShortInterest(si){
-  const el=document.getElementById('shortInterestPanel');
-  if(!el||!si) return;
-  const squeezeColor=si.short_squeeze_score>70?'#E24B4A':si.short_squeeze_score>40?'#EF9F27':'#00c97d';
-  const changeIcon={'INCREASED':'↑','DECREASED':'↓','STABLE':'→'}[si.change_vs_month_ago]||'→';
-  const changeColor={'INCREASED':'#E24B4A','DECREASED':'#00c97d','STABLE':'#888'}[si.change_vs_month_ago]||'#888';
-  el.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">'
-    +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SHORT INTEREST %</div>'
-    +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:#E24B4A;">'+si.short_interest_pct.toFixed(1)+'%</div>'
-    +'<div style="font-size:9px;color:'+changeColor+';margin-top:2px;">'+changeIcon+' vs last month</div>'
-    +'</div>'
-    +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">DAYS TO COVER</div>'
-    +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:#ccc;">'+si.days_to_cover.toFixed(1)+'</div>'
-    +'<div style="font-size:9px;color:#555;margin-top:2px;">days at avg volume</div>'
-    +'</div>'
-    +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SQUEEZE SCORE</div>'
-    +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:'+squeezeColor+';">'+si.short_squeeze_score+'/100</div>'
-    +'<div style="font-size:9px;color:'+squeezeColor+';margin-top:2px;">'+(si.short_squeeze_score>70?'HIGH SQUEEZE RISK':si.short_squeeze_score>40?'MODERATE':'LOW RISK')+'</div>'
-    +'</div>'
-    +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">BORROW RATE</div>'
-    +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:#EF9F27;">'+si.borrow_rate_pct.toFixed(1)+'%</div>'
-    +'<div style="font-size:9px;color:#555;margin-top:2px;">annual cost to short</div>'
-    +'</div>'
-    +'</div>'
-    +'<p style="font-size:11px;color:#666;font-family:var(--sans);line-height:1.6;border-top:1px solid #1a1a1a;padding-top:8px;">'+si.narrative+'</p>';
+// Etiqueta bilingüe inline (evita inflar los diccionarios i18n con las
+// docenas de strings dinámicos de este tab).
+function smL(es,en){ return (typeof currentLang!=='undefined'&&currentLang==='es')?es:en; }
+// Formato de dólares compacto para valores de transacción/posición.
+function smFmtUsd(v){
+  const a=Math.abs(v||0);
+  if(a>=1e9) return '$'+(v/1e9).toFixed(2)+'B';
+  if(a>=1e6) return '$'+(v/1e6).toFixed(1)+'M';
+  if(a>=1e3) return '$'+(v/1e3).toFixed(0)+'K';
+  return '$'+Math.round(v||0);
+}
+// Cabecera de panel (título + fuente).
+function smHead(title, src){
+  return '<div class="sm-phead">'+qdEscHTML(title)
+    +(src?'<span class="sm-psrc">'+qdEscHTML(src)+'</span>':'')+'</div>';
+}
+// Línea de panel muerto (una sola línea, no una caja).
+function smDead(label, why){
+  return '<div class="sm-dead"><span class="sm-dead-dot"></span>'
+    +'<span class="sm-dead-lbl">'+qdEscHTML(label)+'</span>'
+    +'<span class="sm-dead-why">'+qdEscHTML(why||'')+'</span></div>';
 }
 
-// ── Render Insider Transactions (real SEC EDGAR Form 4 via /api/insider) ──
-function renderInsiderTransactions(ins){
-  const el=document.getElementById('insiderPanel');
-  if(!el) return;
-  const escape=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const fmtVal=v=>{
-    const a=Math.abs(v||0);
-    if(a>=1e9)return '$'+(v/1e9).toFixed(2)+'B';
-    if(a>=1e6)return '$'+(v/1e6).toFixed(1)+'M';
-    if(a>=1e3)return '$'+(v/1e3).toFixed(0)+'K';
-    return '$'+(v||0).toFixed(0);
-  };
-  const hasData = ins && Array.isArray(ins.transactions) && ins.transactions.length > 0;
-  const sourceLine = hasData
-    ? 'SOURCE: SEC EDGAR Form 4 (via Finnhub) · Live data'
-    : 'SOURCE: No SEC data available for this ticker';
+// ── Hero: gráfica de precio del ticker analizado (Lightweight Charts) ──
+let smHeroChart=null;
+function smDestroyHeroChart(){ if(smHeroChart){ try{ smHeroChart.remove(); }catch(e){} } smHeroChart=null; }
+function renderSmHero(){
+  const el=document.getElementById('smHero'); if(!el||!smState) return;
+  smDestroyHeroChart();
+  const tk=smState.ticker;
+  const name=(typeof qdCoProfiles!=='undefined'&&qdCoProfiles[tk]&&qdCoProfiles[tk].name)
+    ||(typeof qdCompanyName==='function'&&qdCompanyName(tk))||'';
+  const headOpen=name?'<span class="sm-hero-name">'+qdEscHTML(name)+'</span>':'';
+  const symSpan='<span class="sm-hero-sym">'+qdEscHTML(tk)+'</span>';
 
-  if(!hasData){
-    el.innerHTML='<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:10px;">'+sourceLine+'</div>'
-      +'<div style="color:#666;font-family:var(--sans);font-size:11px;line-height:1.5;padding:20px 0;text-align:center;">No SEC insider data available for this ticker.<br><span style="color:#444;font-size:10px;">Coverage limited to US-listed equities.</span></div>';
+  if(smState.candles===undefined){
+    el.innerHTML='<div class="sm-hero-head">'+symSpan+headOpen+'</div>'
+      +'<div class="sm-hero-chart" style="display:flex;align-items:center;justify-content:center;color:#444;font-family:var(--mono);font-size:11px;">'+smL('Cargando velas…','Loading candles…')+'</div>';
     return;
   }
+  if(!smState.candles||typeof LightweightCharts==='undefined'){
+    el.innerHTML='<div class="sm-hero-head sm-click" data-chart-sym="'+qdEscHTML(tk)+'">'+symSpan+headOpen+'</div>'
+      +'<div style="padding:10px 16px 16px;">'+qdUnavailableHTML('chart · '+tk)+'</div>';
+    return;
+  }
+  const rows=qdChartSanitize(smState.candles.candles);
+  if(!rows.length){
+    el.innerHTML='<div class="sm-hero-head sm-click" data-chart-sym="'+qdEscHTML(tk)+'">'+symSpan+headOpen+'</div>'
+      +'<div style="padding:10px 16px 16px;">'+qdUnavailableHTML('chart · '+tk)+'</div>';
+    return;
+  }
+  const last=rows[rows.length-1], prev=rows.length>1?rows[rows.length-2]:null;
+  const cur=smState.candles.currency;
+  const sign=cur==='MXN'?'MX$':'$';
+  const chgPct=prev&&prev.close?((last.close/prev.close-1)*100):null;
+  const up=chgPct==null?last.close>=last.open:chgPct>=0;
+  const pxHtml='<span class="'+(up?'up':'dn')+'">'+sign
+    +Number(last.close).toLocaleString(undefined,{maximumFractionDigits:last.close<1?4:2})
+    +(chgPct!=null?' '+(chgPct>=0?'+':'')+chgPct.toFixed(2)+'%':'')+'</span>';
 
-  const sentColor={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'}[ins.netSentiment]||'#888';
-  const txRows=ins.transactions.map(tx=>{
-    const t=tx.type||'OTHER';
-    const isBuy=t==='BUY';
-    const isSell=t==='SELL';
+  el.innerHTML='<div class="sm-hero-head sm-click" data-chart-sym="'+qdEscHTML(tk)+'" title="'+smL('Abrir gráfica','Open chart')+'">'
+      +symSpan+headOpen
+      +'<span class="sm-hero-px">'+pxHtml+'</span>'
+      +'<span class="sm-hero-hint">'+smL('ampliar','expand')+' ↗</span>'
+    +'</div>'
+    +'<div class="sm-hero-chart" id="smHeroChart"></div>';
+
+  const body=document.getElementById('smHeroChart');
+  const chart=LightweightCharts.createChart(body,{
+    autoSize:true,
+    layout:{background:{type:'solid',color:'#0a0a0a'},textColor:'#777',fontSize:9,
+      fontFamily:"'IBM Plex Mono',monospace",attributionLogo:false},
+    grid:{vertLines:{color:'#141414'},horzLines:{color:'#141414'}},
+    rightPriceScale:{borderColor:'#222'},
+    timeScale:{borderColor:'#222',timeVisible:false,secondsVisible:false,
+      tickMarkFormatter:(typeof qdChartDayTick==='function')?qdChartDayTick:undefined},
+    crosshair:{vertLine:{color:'#333',labelBackgroundColor:'#222'},horzLine:{color:'#333',labelBackgroundColor:'#222'}},
+    handleScroll:false, handleScale:false,
+    localization:{locale:(typeof currentLang!=='undefined'&&currentLang==='es')?'es-MX':'en-US'},
+  });
+  smHeroChart=chart;
+  const s=chart.addSeries(LightweightCharts.CandlestickSeries,{
+    upColor:'#1D9E75',downColor:'#E24B4A',wickUpColor:'#1D9E75',wickDownColor:'#E24B4A',borderVisible:false,
+    priceFormat:last.close<1?{type:'price',precision:4,minMove:0.0001}:{type:'price',precision:2,minMove:0.01},
+  });
+  s.priceScale().applyOptions({scaleMargins:{top:0.1,bottom:0.1}});
+  s.setData(rows);
+  chart.timeScale().fitContent();
+}
+
+// ── Sparkline de fila (línea de precio + marcador en la fecha del trade) ──
+function smRowSpark(candles, dateIso, col){
+  if(!candles||!Array.isArray(candles.candles)) return '';
+  const pts=candles.candles.filter(c=>c&&Number.isFinite(c.t)&&Number.isFinite(c.c));
+  if(pts.length<3) return '';
+  const win=pts.slice(-90);
+  const cs=win.map(c=>c.c);
+  let min=Math.min.apply(null,cs), max=Math.max.apply(null,cs), rng=max-min||Math.abs(max)*0.01||1;
+  const W=74,H=24,padX=2,padY=3;
+  const dx=(W-padX*2)/(win.length-1);
+  const xOf=i=>padX+i*dx, yOf=c=>padY+(H-padY*2)*(1-(c-min)/rng);
+  const line=win.map((c,i)=>(i?'L':'M')+xOf(i).toFixed(1)+' '+yOf(c.c).toFixed(1)).join(' ');
+  let mi=-1;
+  if(dateIso){ const tt=Date.parse(dateIso)/1000; let best=Infinity;
+    win.forEach((c,i)=>{ const dd=Math.abs(c.t-tt); if(dd<best){best=dd;mi=i;} }); }
+  const marker=mi>=0
+    ? '<circle cx="'+xOf(mi).toFixed(1)+'" cy="'+yOf(win[mi].c).toFixed(1)+'" r="2.6" fill="'+col+'" stroke="#0d0d0d" stroke-width="1"/>'
+    : '';
+  return '<svg class="sm-row-spark" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'
+    +'<path d="'+line+'" fill="none" stroke="#4a4a4a" stroke-width="1.2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
+    +marker+'</svg>';
+}
+
+// ── Sparkline de área para el panel de short volume (serie [{t,c}] en %) ──
+function smAreaSpark(series, col){
+  const pts=(series||[]).filter(p=>p&&Number.isFinite(p.t)&&Number.isFinite(p.c));
+  if(pts.length<2) return '';
+  const cs=pts.map(p=>p.c);
+  let min=Math.min.apply(null,cs), max=Math.max.apply(null,cs), rng=max-min||Math.abs(max)*0.01||1;
+  const W=120,H=34,padX=2,padT=4,padB=3;
+  const dx=(W-padX*2)/(pts.length-1);
+  const xOf=i=>padX+i*dx, yOf=c=>padT+(H-padT-padB)*(1-(c-min)/rng);
+  const line=pts.map((p,i)=>(i?'L':'M')+xOf(i).toFixed(1)+' '+yOf(p.c).toFixed(1)).join(' ');
+  const lastX=xOf(pts.length-1).toFixed(1), lastY=yOf(pts[pts.length-1].c).toFixed(1);
+  const area=line+' L'+lastX+' '+(H-padB)+' L'+padX+' '+(H-padB)+' Z';
+  return '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" style="width:100%;height:36px;display:block;">'
+    +'<path d="'+area+'" fill="'+col+'22" stroke="none"/>'
+    +'<path d="'+line+'" fill="none" stroke="'+col+'" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
+    +'<circle cx="'+lastX+'" cy="'+lastY+'" r="2.4" fill="'+col+'"/></svg>';
+}
+
+// ── Panel: SHORT VOLUME (FINRA Reg SHO) ─────────────────
+function smPanelShort(){
+  const st=smState.short;
+  const title=smL('VOLUMEN EN CORTO','SHORT VOLUME');
+  if(st===undefined) return { state:'loading', box:'<div class="sm-panel">'+smHead(title,'FINRA Reg SHO')+smLoadingBody()+'</div>' };
+  if(!st||!st.summary) return { state:'dead', line:smDead(title, smL('sin cobertura FINRA para este ticker','no FINRA coverage for this ticker')) };
+  const s=st.summary;
+  // Más short = más presión bajista → rojo cuando sube.
+  const trendCol={'INCREASING':'#E24B4A','DECREASING':'#00c97d','STABLE':'#888'}[s.trend]||'#888';
+  const trendIcon={'INCREASING':'↑','DECREASING':'↓','STABLE':'→'}[s.trend]||'→';
+  let body='<div style="display:flex;align-items:flex-end;gap:14px;margin-bottom:8px;">'
+    +'<div><div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:2px;">'+smL('ÚLTIMO DÍA','LATEST DAY')+'</div>'
+      +'<div style="font-family:var(--mono);font-size:24px;font-weight:700;color:'+trendCol+';">'+s.latestRatio+'%</div>'
+      +'<div style="font-size:9px;color:'+trendCol+';">'+trendIcon+' '+s.trend+'</div></div>'
+    +'<div style="flex:1;min-width:0;">'+smAreaSpark(st.series, trendCol)+'</div>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;">'
+    +'<div style="background:#111;padding:7px 9px;border:1px solid #1a1a1a;"><div style="font-family:var(--mono);font-size:9px;color:#555;">'+smL('PROM. 5D','5D AVG')+'</div><div style="font-family:var(--mono);font-size:15px;color:#ccc;">'+(s.avg5!=null?s.avg5+'%':'—')+'</div></div>'
+    +'<div style="background:#111;padding:7px 9px;border:1px solid #1a1a1a;"><div style="font-family:var(--mono);font-size:9px;color:#555;">'+smL('PROM. 20D','20D AVG')+'</div><div style="font-family:var(--mono);font-size:15px;color:#ccc;">'+(s.avg20!=null?s.avg20+'%':'—')+'</div></div>'
+    +'</div>'
+    +'<p style="font-size:10px;color:#555;font-family:var(--sans);line-height:1.5;border-top:1px solid #1a1a1a;padding-top:7px;">'
+    +smL('% del volumen diario ejecutado como venta en corto (no es el % del float en corto ni días para cubrir). '+s.days+' días hábiles. La señal es la tendencia.',
+         'Share of daily volume executed as short sales (NOT % of float short, nor days-to-cover). '+s.days+' trading days. The signal is the trend.')+'</p>';
+  return { state:'data', box:'<div class="sm-panel">'+smHead(title, 'FINRA Reg SHO · '+(s.latestDate||''))+body+'</div>' };
+}
+function smLoadingBody(){
+  return '<div style="color:#444;font-family:var(--mono);font-size:11px;text-align:center;padding:26px 0;">'+smL('Cargando…','Loading…')+'</div>';
+}
+
+// ── Panel: INSIDER (real SEC EDGAR Form 4 via /api/insider) ─────────
+// Filas clicables (izquierda → gráfica del ticker) + sparkline de precio
+// con marcador en la fecha del trade + enlace directo a los Form 4 en EDGAR.
+function smPanelInsider(){
+  const ins=smState.insider;
+  const title=smL('INTERNOS · SEC FORM 4','INSIDER · SEC FORM 4');
+  if(ins===undefined) return { state:'loading', box:'<div class="sm-panel">'+smHead(title,'SEC EDGAR')+smLoadingBody()+'</div>' };
+  if(!ins||!Array.isArray(ins.transactions)||!ins.transactions.length)
+    return { state:'dead', line:smDead(title, smL('sin transacciones SEC (cobertura: acciones US)','no SEC filings (US-listed only)')) };
+
+  const tk=smState.ticker;
+  const edgar='https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK='+encodeURIComponent(tk)+'&type=4&dateb=&owner=include&count=40';
+  const sentCol={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'}[ins.netSentiment]||'#888';
+  const rows=ins.transactions.map(tx=>{
+    const ty=tx.type||'OTHER';
+    const isBuy=ty==='BUY', isSell=ty==='SELL';
     const col=isBuy?'#00c97d':isSell?'#E24B4A':'#888';
     const bg=isBuy?'rgba(0,201,125,.15)':isSell?'rgba(226,75,74,.15)':'rgba(136,136,136,.15)';
     const dateStr=tx.transactionDate||tx.filingDate||'';
-    return '<div style="display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid #1a1a1a;flex-wrap:wrap;">'
-      +'<span style="font-family:var(--mono);font-size:9px;color:#444;min-width:65px;">'+escape(dateStr)+'</span>'
-      +'<span style="font-size:9px;padding:1px 6px;background:'+bg+';color:'+col+';font-family:var(--mono);">'+escape(t)+'</span>'
-      +'<div style="flex:1;min-width:80px;">'
-      +'<div style="font-size:10px;color:#ccc;font-family:var(--mono);">'+escape(tx.name||'—')+'</div>'
-      +(tx.title?'<div style="font-size:9px;color:#444;">'+escape(tx.title)+'</div>':'')
+    const spark=smRowSpark(smState.candles, tx.transactionDate||tx.filingDate, col);
+    return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #1a1a1a;">'
+      +'<div class="sm-click" data-chart-sym="'+qdEscHTML(tk)+'" style="flex:1;min-width:0;" title="'+smL('Abrir gráfica','Open chart')+'">'
+        +'<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;">'
+          +'<span style="font-size:9px;padding:1px 6px;background:'+bg+';color:'+col+';font-family:var(--mono);">'+qdEscHTML(ty)+'</span>'
+          +'<span style="font-family:var(--mono);font-size:9px;color:#444;">'+qdEscHTML(dateStr)+'</span>'
+        +'</div>'
+        +'<div style="font-size:10px;color:#ccc;font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+qdEscHTML(tx.name||'—')+'</div>'
       +'</div>'
-      +'<div style="text-align:right;">'
-      +'<div style="font-family:var(--mono);font-size:11px;font-weight:600;color:'+col+';">'+fmtVal(tx.value)+'</div>'
-      +'<div style="font-size:9px;color:#444;">'+(tx.shares||0).toLocaleString()+' shares</div>'
+      +(spark?'<div class="sm-click" data-chart-sym="'+qdEscHTML(tk)+'">'+spark+'</div>':'')
+      +'<div style="text-align:right;flex-shrink:0;">'
+        +'<div style="font-family:var(--mono);font-size:11px;font-weight:600;color:'+col+';">'+smFmtUsd(tx.value)+'</div>'
+        +'<div style="font-size:9px;color:#444;">'+(tx.shares||0).toLocaleString()+' sh</div>'
       +'</div>'
       +'</div>';
   }).join('');
 
-  el.innerHTML='<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:8px;">'+sourceLine+'</div>'
-    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">'
-    +'<span style="font-family:var(--mono);font-size:10px;color:#555;">NET SENTIMENT</span>'
-    +'<span style="font-family:var(--mono);font-size:12px;font-weight:700;color:'+sentColor+';">'+escape(ins.netSentiment||'NEUTRAL')+'</span>'
+  const body='<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">'
+    +'<span style="font-family:var(--mono);font-size:10px;color:#555;">'+smL('SENTIMIENTO NETO','NET SENTIMENT')+'</span>'
+    +'<span style="font-family:var(--mono);font-size:12px;font-weight:700;color:'+sentCol+';">'+qdEscHTML(ins.netSentiment||'NEUTRAL')+'</span>'
+    +'<a class="sm-a" href="'+qdEscHTML(edgar)+'" target="_blank" rel="noopener noreferrer" style="margin-left:auto;font-family:var(--mono);font-size:9px;">EDGAR ↗</a>'
     +'</div>'
-    +txRows
-    +(ins.summary?'<p style="font-size:11px;color:#555;font-family:var(--sans);line-height:1.5;margin-top:8px;border-top:1px solid #1a1a1a;padding-top:8px;">'+escape(ins.summary)+'</p>':'');
+    +rows
+    +(ins.summary?'<p style="font-size:10px;color:#555;font-family:var(--sans);line-height:1.5;margin-top:8px;border-top:1px solid #1a1a1a;padding-top:7px;">'+qdEscHTML(ins.summary)+'</p>':'');
+  return { state:'data', box:'<div class="sm-panel">'+smHead(title, 'SEC EDGAR · Form 4')+body+'</div>' };
 }
 
 
 
-// ── Render Institutional ──────────────────────────────
-function renderInstitutional(inst){
-  const el=document.getElementById('institutionalPanel');
-  if(!el||!inst) return;
-  const changeColor={'INCREASED':'#00c97d','DECREASED':'#E24B4A','NEW':'#EF9F27','EXITED':'#E24B4A'};
-  const changeIcon={'INCREASED':'↑','DECREASED':'↓','NEW':'★','EXITED':'✕'};
-  let holdersHtml=(inst.top_holders||[]).map(h=>{
-    const col=changeColor[h.change]||'#888';
-    const icon=changeIcon[h.change]||'→';
-    return '<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid #1a1a1a;">'
-      +'<div style="flex:1;"><div style="font-size:10px;color:#ccc;font-family:var(--mono);">'+h.name+'</div></div>'
-      +'<span style="font-family:var(--mono);font-size:10px;color:#888;">'+h.pct.toFixed(1)+'%</span>'
-      +'<span style="font-size:10px;color:'+col+';min-width:16px;text-align:right;">'+icon+'</span>'
+// ── Panel: INSTITUTIONAL (13F reales, reusa /api/stock-tracker) ─────
+// Movimientos 13F del ticker entre los 6 fondos famosos rastreados. Cada
+// fondo enlaza a sus 13F en EDGAR. Honestidad: TOP-5 por bucket por fondo,
+// así que "sin movimientos" no implica "no lo tiene", solo "sin movimiento
+// notable este trimestre".
+function smPanelInstitutional(){
+  const inst=smState.inst;
+  const title=smL('13F INSTITUCIONAL','INSTITUTIONAL 13F');
+  if(inst===undefined) return { state:'loading', box:'<div class="sm-panel">'+smHead(title,'SEC EDGAR 13F')+smLoadingBody()+'</div>' };
+  if(!inst) return { state:'dead', line:smDead(title, smL('fuente 13F no disponible','13F source unavailable')) };
+  const n=inst.scanned||6;
+  if(!inst.holders||!inst.holders.length)
+    return { state:'dead', line:smDead(title,
+      smL('ninguno de '+n+' fondos rastreados movió este ticker (top-5/fondo, '+(inst.asOf||'')+')',
+          'none of '+n+' tracked funds moved this ticker (top-5/fund, '+(inst.asOf||'')+')')) };
+
+  const iconOf={'NEW':'★','ADDED':'↑','TRIMMED':'↓','EXITED':'✕'};
+  const rows=inst.holders.map(h=>{
+    const icon=iconOf[h.action]||'→';
+    const delta=h.deltaPct!=null?' <span style="color:'+h.actionCol+';">'+(h.deltaPct>0?'+':'')+h.deltaPct+'%</span>':'';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #1a1a1a;">'
+      +'<div style="flex:1;min-width:0;">'
+        +'<div style="font-size:10px;color:#ccc;font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+qdEscHTML(h.fund)+'</div>'
+        +(h.persona&&h.persona!==h.fund?'<div style="font-size:9px;color:#555;">'+qdEscHTML(h.persona)+'</div>':'')
+      +'</div>'
+      +'<span style="font-size:9px;font-family:var(--mono);color:'+h.actionCol+';font-weight:600;">'+icon+' '+h.action+delta+'</span>'
+      +'<span style="font-family:var(--mono);font-size:10px;color:#888;flex-shrink:0;min-width:52px;text-align:right;">'+smFmtUsd(h.value)+'</span>'
+      +(h.link?'<a class="sm-a" href="'+qdEscHTML(h.link)+'" target="_blank" rel="noopener noreferrer" style="font-size:9px;font-family:var(--mono);flex-shrink:0;">↗</a>':'')
       +'</div>';
   }).join('');
-  const hfColor={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'}[inst.hedge_fund_sentiment]||'#888';
-  el.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">'
-    +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">INST. OWNERSHIP</div>'
-    +'<div style="font-family:var(--mono);font-size:20px;font-weight:700;color:#ccc;">'+inst.institutional_pct.toFixed(1)+'%</div>'
-    +'</div>'
-    +'<div style="background:#111;padding:10px;border:1px solid #1a1a1a;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">HEDGE FUND VIEW</div>'
-    +'<div style="font-family:var(--mono);font-size:13px;font-weight:700;color:'+hfColor+';">'+inst.hedge_fund_sentiment+'</div>'
-    +'</div>'
-    +'</div>'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:6px;">TOP HOLDERS</div>'
-    +holdersHtml
-    +'<p style="font-size:10px;color:#444;font-family:var(--sans);margin-top:8px;">'+(inst.summary||'')+'</p>';
+  const body=rows
+    +'<p style="font-size:10px;color:#555;font-family:var(--sans);line-height:1.5;margin-top:8px;border-top:1px solid #1a1a1a;padding-top:7px;">'
+    +smL('Movimientos 13F del trimestre entre '+n+' fondos famosos (Buffett, Wood, Burry, Ackman, Dalio, Renaissance). Foto al cierre del trimestre, publicada con lag legal — no es la tenencia de hoy.',
+         'Quarterly 13F moves across '+n+' famous funds (Buffett, Wood, Burry, Ackman, Dalio, Renaissance). Quarter-end snapshot filed with the legal lag — not today\'s holdings.')+'</p>';
+  return { state:'data', box:'<div class="sm-panel">'+smHead(title, 'SEC EDGAR · 13F'+(inst.asOf?' · '+inst.asOf:''))+body+'</div>' };
 }
 
 
 
-// ── Render Options Sentiment ──────────────────────────
-function renderOptionsSentiment(opt){
-  const el=document.getElementById('optionsPanel');
-  if(!el||!opt) return;
-  const sentColor={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'}[opt.options_sentiment]||'#888';
-  const pcColor=opt.put_call_ratio>1?'#E24B4A':opt.put_call_ratio<0.7?'#00c97d':'#888';
-  const ivColor=opt.iv_percentile>75?'#E24B4A':opt.iv_percentile>50?'#EF9F27':'#00c97d';
-  let strikesHtml=(opt.key_strikes||[]).slice(0,4).map(s=>{
+// ── Panel: OPTIONS (real, Yahoo front expiry) ───────────
+function smPanelOptions(){
+  const opt=smState.options;
+  const title=smL('OPCIONES · PUT/CALL','OPTIONS · PUT/CALL');
+  if(opt===undefined) return { state:'loading', box:'<div class="sm-panel">'+smHead(title,'Yahoo')+smLoadingBody()+'</div>' };
+  if(!opt||opt.put_call_oi==null) return { state:'dead', line:smDead(title, smL('sin cadena de opciones (Yahoo)','no options chain (Yahoo)')) };
+
+  const sentCol={'BULLISH':'#00c97d','BEARISH':'#E24B4A','NEUTRAL':'#888'}[opt.options_sentiment]||'#888';
+  const pcCol=opt.put_call_oi>1.1?'#E24B4A':opt.put_call_oi<0.7?'#00c97d':'#888';
+  const strikes=(opt.key_strikes||[]).slice(0,4).map(s=>{
     const col=s.type==='CALL'?'#00c97d':'#E24B4A';
+    const bg=s.type==='CALL'?'rgba(0,201,125,.15)':'rgba(226,75,74,.15)';
     return '<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #1a1a1a;">'
-      +'<span style="font-size:9px;padding:1px 5px;background:'+(s.type==='CALL'?'rgba(0,201,125,.15)':'rgba(226,75,74,.15)')+';color:'+col+';font-family:var(--mono);">'+s.type+'</span>'
+      +'<span style="font-size:9px;padding:1px 5px;background:'+bg+';color:'+col+';font-family:var(--mono);">'+s.type+'</span>'
       +'<span style="font-family:var(--mono);font-size:10px;color:#ccc;">$'+s.strike+'</span>'
-      +'<span style="font-size:9px;color:#444;margin-left:auto;">'+(( s.open_interest||0)/1000).toFixed(0)+'K OI</span>'
-      +(s.significance==='HIGH'?'<span style="font-size:9px;color:#EF9F27;">HOT</span>':'')
+      +'<span style="font-size:9px;color:#444;margin-left:auto;">'+((s.oi||0)/1000).toFixed(1)+'K OI</span>'
       +'</div>';
   }).join('');
-  el.innerHTML='<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px;">'
-    +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;text-align:center;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">P/C RATIO</div>'
-    +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:'+pcColor+';">'+opt.put_call_ratio.toFixed(2)+'</div>'
-    +'<div style="font-size:9px;color:#555;">'+(opt.put_call_ratio>1?'BEARISH':opt.put_call_ratio<0.7?'BULLISH':'NEUTRAL')+'</div>'
+  const body='<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px;">'
+    +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;text-align:center;"><div style="font-family:var(--mono);font-size:9px;color:#555;">P/C OI</div>'
+      +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:'+pcCol+';">'+opt.put_call_oi.toFixed(2)+'</div>'
+      +'<div style="font-size:9px;color:'+sentCol+';">'+opt.options_sentiment+'</div></div>'
+    +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;text-align:center;"><div style="font-family:var(--mono);font-size:9px;color:#555;">IV ATM</div>'
+      +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#ccc;">'+(opt.atm_iv_pct!=null?opt.atm_iv_pct+'%':'—')+'</div>'
+      +'<div style="font-size:9px;color:#555;">at-the-money</div></div>'
+    +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;text-align:center;"><div style="font-family:var(--mono);font-size:9px;color:#555;">MAX PAIN</div>'
+      +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#EF9F27;">'+(opt.max_pain?'$'+opt.max_pain:'—')+'</div>'
+      +'<div style="font-size:9px;color:#555;">'+smL('imán','magnet')+'</div></div>'
     +'</div>'
-    +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;text-align:center;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">IV</div>'
-    +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#ccc;">'+opt.implied_volatility_pct.toFixed(0)+'%</div>'
-    +'<div style="font-size:9px;color:'+ivColor+';">'+opt.iv_percentile+'th PCT</div>'
-    +'</div>'
-    +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;text-align:center;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">MAX PAIN</div>'
-    +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#EF9F27;">$'+(opt.max_pain||0)+'</div>'
-    +'<div style="font-size:9px;color:#555;">options expiry</div>'
-    +'</div>'
-    +'</div>'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:6px;">KEY STRIKES</div>'
-    +strikesHtml
-    +(opt.unusual_activity==='YES'?'<div style="margin-top:8px;padding:6px 8px;background:rgba(239,159,39,.1);border:1px solid rgba(239,159,39,.3);border-radius:2px;font-size:10px;color:#EF9F27;font-family:var(--sans);">⚡ '+(opt.notable_flow||'')+'</div>':'')
-    +'<div style="margin-top:6px;font-family:var(--mono);font-size:10px;color:'+sentColor+';">OPTIONS SIGNAL: '+opt.options_sentiment+'</div>';
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">'+smL('STRIKES CLAVE (por OI)','KEY STRIKES (by OI)')+'</div>'
+    +strikes
+    +(opt.unusual_activity?'<div style="margin-top:8px;padding:5px 8px;background:rgba(239,159,39,.1);border:1px solid rgba(239,159,39,.3);border-radius:2px;font-size:10px;color:#EF9F27;font-family:var(--sans);">⚡ '+smL('Volumen inusual vs OI en algún strike','Unusual volume vs OI on a strike')+'</div>':'')
+    +'<p style="font-size:10px;color:#555;font-family:var(--sans);line-height:1.5;margin-top:7px;border-top:1px solid #1a1a1a;padding-top:7px;">'
+    +smL('Expiración más cercana ('+(opt.expiration||'')+'). Put/Call por interés abierto.','Front expiry ('+(opt.expiration||'')+'). Put/Call by open interest.')+'</p>';
+  return { state:'data', box:'<div class="sm-panel">'+smHead(title, 'Yahoo · '+smL('front','front')+(opt.expiration?' '+opt.expiration:''))+body+'</div>' };
 }
 
 
 
-// ── Render Smart Money Verdict ────────────────────────
-function renderSmVerdict(v){
-  const el=document.getElementById('smVerdictPanel');
-  if(!el||!v) return;
-  // Normalize smart_money_score — force to 0-100 range
-  // Normalize smart_money_score — belt-and-suspenders (already normalized upstream, but double-safe)
-  let sms = parseFloat(v.smart_money_score);
-  if(isNaN(sms) || sms == null) {
-    sms = 50;
-  } else if(sms > 0 && sms <= 1) {
-    sms = Math.round(sms * 100);
-  } else if(sms > 1 && sms <= 10) {
-    sms = Math.round(sms * 10);
-  } else {
-    sms = Math.round(sms);
+// ── Dispatcher del layout POR CONTENIDO ─────────────────
+// Paneles con datos (o cargando) → grid auto-fit que se reacomoda y expande.
+// Paneles sin datos → una línea cada uno en la pila de muertos. Así el grid
+// nunca tiene cajas vacías gigantes y los vivos ganan el espacio liberado.
+function renderSmartLayout(){
+  const grid=document.getElementById('smGrid'), dead=document.getElementById('smDead');
+  if(!grid||!dead||!smState) return;
+  const panels=[ smPanelShort(), smPanelInsider(), smPanelInstitutional(), smPanelOptions() ];
+  grid.innerHTML=panels.filter(p=>p.state!=='dead').map(p=>p.box).join('');
+  dead.innerHTML=panels.filter(p=>p.state==='dead').map(p=>p.line).join('');
+}
+
+// ── Veredicto IA (síntesis anclada) — full-width bajo los paneles ──
+function renderSmVerdictWrap(){
+  const el=document.getElementById('smVerdictWrap'); if(!el) return;
+  const title=smL('VEREDICTO IA · DINERO LISTO 🤖','AI SMART MONEY VERDICT 🤖');
+  if(!smState||smState.verdict===undefined){ el.innerHTML=''; return; } // aún sintetizando
+  if(!smState.verdict){
+    el.innerHTML='<div class="sm-dead-stack">'+smDead(title, smL('IA no disponible','AI unavailable'))+'</div>';
+    return;
   }
-  sms = Math.min(100, Math.max(0, sms));
-  v.smart_money_score = sms;
+  el.innerHTML='<div class="sm-panel" style="border-top:1px solid #1a1a1a;">'
+    +smHead(title, smL('síntesis de los datos reales de arriba','synthesis of the real data above'))
+    +renderSmVerdictHTML(smState.verdict)+'</div>';
+}
 
+function renderSmVerdictHTML(v){
+  v.smart_money_score=smNormScore(v.smart_money_score);
   const sigColor={'STRONG BUY':'#00ff88','BUY':'#00c97d','NEUTRAL':'#888','SELL':'#E24B4A','STRONG SELL':'#ff0000'}[v.overall_signal]||'#888';
-  const scoreBar=Math.round((v.smart_money_score/100)*100);
-  el.innerHTML='<div style="text-align:center;margin-bottom:16px;">'
-    +'<div style="font-family:var(--mono);font-size:24px;font-weight:700;color:'+sigColor+';">'+verdictLabel(v.overall_signal)+'</div>'
-    +'<div style="font-size:10px;color:#555;margin-top:2px;">'+verdictLabel(v.conviction)+' '+t('convictionLbl')+'</div>'
-    +'<div style="margin:10px auto;max-width:160px;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SMART MONEY SCORE</div>'
-    +'<div style="height:6px;background:#111;border-radius:3px;overflow:hidden;">'
-    +'<div style="height:100%;width:'+scoreBar+'%;background:'+sigColor+';border-radius:3px;"></div>'
-    +'</div>'
-    +'<div style="font-family:var(--mono);font-size:14px;color:'+sigColor+';margin-top:4px;">'+v.smart_money_score+'/100</div>'
-    +'</div>'
-    +'</div>'
+  const scoreBar=Math.round(v.smart_money_score);
+  return '<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px;">'
+    +'<div><div style="font-family:var(--mono);font-size:22px;font-weight:700;color:'+sigColor+';">'+verdictLabel(v.overall_signal)+'</div>'
+      +'<div style="font-size:10px;color:#555;">'+verdictLabel(v.conviction)+' '+t('convictionLbl')+'</div></div>'
+    +'<div style="flex:1;min-width:140px;max-width:220px;">'
+      +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">SMART MONEY SCORE</div>'
+      +'<div style="height:6px;background:#111;border-radius:3px;overflow:hidden;"><div style="height:100%;width:'+scoreBar+'%;background:'+sigColor+';border-radius:3px;"></div></div>'
+      +'<div style="font-family:var(--mono);font-size:14px;color:'+sigColor+';margin-top:4px;">'+v.smart_money_score+'/100</div>'
+    +'</div></div>'
     +'<div style="background:rgba(0,201,125,.05);border:1px solid rgba(0,201,125,.15);padding:8px 10px;margin-bottom:10px;border-radius:2px;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#00c97d;margin-bottom:4px;">KEY INSIGHT</div>'
-    +'<div style="font-size:11px;color:#ccc;font-family:var(--sans);line-height:1.5;">'+v.key_insight+'</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#00c97d;margin-bottom:4px;">'+smL('DATO CLAVE','KEY INSIGHT')+'</div>'
+    +'<div style="font-size:11px;color:#ccc;font-family:var(--sans);line-height:1.5;">'+qdEscHTML(v.key_insight||'')+'</div></div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:8px;margin-bottom:10px;">'
+    +'<div style="background:#111;padding:8px;border-left:2px solid #00c97d;"><div style="font-family:var(--mono);font-size:9px;color:#00c97d;margin-bottom:4px;">BULL CASE</div><div style="font-size:10px;color:#999;font-family:var(--sans);line-height:1.5;">'+qdEscHTML(v.bull_case||'')+'</div></div>'
+    +'<div style="background:#111;padding:8px;border-left:2px solid #E24B4A;"><div style="font-family:var(--mono);font-size:9px;color:#E24B4A;margin-bottom:4px;">BEAR CASE</div><div style="font-size:10px;color:#999;font-family:var(--sans);line-height:1.5;">'+qdEscHTML(v.bear_case||'')+'</div></div>'
     +'</div>'
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">'
-    +'<div style="background:#111;padding:8px;border-left:2px solid #00c97d;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#00c97d;margin-bottom:4px;">BULL CASE</div>'
-    +'<div style="font-size:10px;color:#888;font-family:var(--sans);line-height:1.5;">'+v.bull_case+'</div>'
-    +'</div>'
-    +'<div style="background:#111;padding:8px;border-left:2px solid #E24B4A;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#E24B4A;margin-bottom:4px;">BEAR CASE</div>'
-    +'<div style="font-size:10px;color:#888;font-family:var(--sans);line-height:1.5;">'+v.bear_case+'</div>'
-    +'</div>'
-    +'</div>'
-    +'<div style="padding:8px;background:#0a0a0a;border:1px solid #EF9F27;border-radius:2px;margin-bottom:8px;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#EF9F27;margin-bottom:3px;">TRADE SETUP</div>'
-    +'<div style="font-size:11px;color:#ccc;font-family:var(--sans);">'+v.trade_setup+'</div>'
-    +'</div>'
+    +'<div style="padding:8px;background:#0a0a0a;border:1px solid #EF9F27;border-radius:2px;margin-bottom:8px;"><div style="font-family:var(--mono);font-size:9px;color:#EF9F27;margin-bottom:3px;">TRADE SETUP</div><div style="font-size:11px;color:#ccc;font-family:var(--sans);">'+qdEscHTML(v.trade_setup||'')+'</div></div>'
     +((v.risk_flags&&v.risk_flags.length)?'<div style="font-family:var(--mono);font-size:9px;color:#E24B4A;margin-bottom:4px;">RISK FLAGS</div>'
-      +v.risk_flags.map(f=>'<div style="font-size:10px;color:#666;padding:2px 0;">⚠ '+f+'</div>').join(''):'')
-    +'<div style="margin-top:12px;padding-top:8px;border-top:1px solid #1a1a1a;font-family:var(--sans);font-size:9px;color:#555;line-height:1.4;">⚠️ AI-generated analysis. Not financial advice. Verify with primary sources.</div>';
+      +v.risk_flags.map(f=>'<div style="font-size:10px;color:#666;padding:2px 0;">⚠ '+qdEscHTML(f)+'</div>').join(''):'')
+    +'<div style="margin-top:12px;padding-top:8px;border-top:1px solid #1a1a1a;font-family:var(--sans);font-size:9px;color:#555;line-height:1.4;">'
+    +smL('⚠️ Síntesis de IA anclada a datos SEC/FINRA/13F/Yahoo reales. No es asesoría financiera. Verifica con las fuentes primarias.',
+         '⚠️ AI synthesis anchored to real SEC/FINRA/13F/Yahoo data. Not financial advice. Verify with primary sources.')+'</div>';
 }
 
 
+
+// Estado inicial (sin análisis aún): hero con prompt, resto vacío.
+function renderSmIntro(){
+  const hero=document.getElementById('smHero');
+  const grid=document.getElementById('smGrid');
+  const dead=document.getElementById('smDead');
+  const vw=document.getElementById('smVerdictWrap');
+  if(vw) vw.innerHTML='';
+  if(dead) dead.innerHTML='';
+  if(grid) grid.innerHTML='';
+  if(hero) hero.innerHTML='<div style="padding:38px 16px;text-align:center;">'
+    +'<div style="font-family:var(--mono);font-size:12px;color:#555;margin-bottom:6px;">'+smL('Escribe un ticker para analizar el dinero listo','Enter a ticker to analyze smart money')+'</div>'
+    +'<div style="font-family:var(--mono);font-size:10px;color:#333;letter-spacing:.05em;">SEC Form 4 · FINRA Reg SHO · 13F EDGAR · Yahoo options</div>'
+    +'</div>';
+}
 
 // ── Market-Wide Signals ────────────────────────────────
 async function loadMarketSignals(){
@@ -4826,7 +5036,7 @@ function showPage(id){
   try{ localStorage.setItem('qd_lastTab', id); }catch(e){}
   if(id==='compare') setTimeout(initCmpCanvases,50);
   if(id==='macro') setTimeout(loadMacroPage,50);
-  if(id==='smartmoney') setTimeout(()=>{if(!smLoaded){smLoaded=true;loadMarketSignals();}},50);
+  if(id==='smartmoney') setTimeout(()=>{if(!smLoaded){smLoaded=true;loadMarketSignals();} if(!smState) renderSmIntro();},50);
   if(id==='earnings') setTimeout(()=>initEarningsPage(),50);
   if(id==='ipos') setTimeout(()=>{ if(!_iposCache || Date.now()-_iposCacheAt>QD_CAL_TTL_MS) loadIPOs(); },50);
   if(id==='vc') setTimeout(()=>{ if(!_vcFeedCache[_vcCat] || Date.now()-_vcFeedAt[_vcCat]>QD_CAL_TTL_MS) loadVCFeed(_vcCat); },50);

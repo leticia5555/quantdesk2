@@ -61,7 +61,14 @@ Upcoming catalysts and corporate events:
 - **SIM** — Monte Carlo with GBM, jump diffusion, regime switching. Ruin simulator with 100-account animation.
 - **COMPARE** — Side-by-side ticker analysis with correlation matrices.
 - **PORTFOLIO** — Construction + risk metrics (VaR, Sharpe, max drawdown).
-- **SMART $** — Insider transaction tracker via Form 4 filings.
+- **SMART $** — Smart-money tab, layout by content: price chart (Lightweight
+  Charts) up top, then panels that reflow to fill space and collapse to a single
+  line when a source has no data. Real data only — insider transactions (SEC
+  Form 4 via Finnhub), short-selling pressure (FINRA Reg SHO daily short volume,
+  free/no-key), institutional 13F moves (reuses the TRACKER source, filtered to
+  the ticker), and options positioning (Yahoo front-expiry: put/call by OI, ATM
+  IV, max pain). The AI verdict is the only synthesized block and is anchored to
+  those real inputs. Tickers and rows are clickable → chart or EDGAR.
 - **TRACKER** — Stock Tracker: notable insider buys (SEC Form 4, open-market P-code buys by officers/directors ≥ $100k) and quarter-over-quarter 13F diffs of famous funds, straight from EDGAR with the legal reporting lag labeled on every card.
 - **SCREENER** — ~260 tickers across US / LATAM / crypto with live-data fundamental filters.
 - **AGENTS** — Investor personality agents (Buffett, Burry, Wood, Munger, Dalio + LATAM personas in development).
