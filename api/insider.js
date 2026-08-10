@@ -1,6 +1,52 @@
 // /api/insider — real insider transactions sourced from SEC EDGAR Form 4
 // filings via Finnhub. Replaces AI-hallucinated insider data on the SMART $ tab.
 
+// ── Map Finnhub transactionCode → human type ─────────────
+// S=Sale, P=Purchase, A=Award/grant, M=Option exercise, G=Gift,
+// F=Tax withholding, D=Sale to issuer
+export function deriveType(tx) {
+  const code = (tx.transactionCode || '').toUpperCase();
+  if (code === 'P') return 'BUY';
+  if (code === 'S' || code === 'D') return 'SELL';
+  if (code === 'A') return 'AWARD';
+  if (code === 'M') return 'OPTION EXERCISE';
+  if (code === 'F') return 'TAX WITHHOLDING';
+  if (code === 'G') return 'GIFT';
+  // Fallback: sign of change
+  const change = Number(tx.change) || 0;
+  if (change > 0) return 'BUY';
+  if (change < 0) return 'SELL';
+  return 'OTHER';
+}
+
+// Raw Finnhub Form 4 row → normalized transaction. Exported so the
+// share/change dollar-value fix is locked by a unit test without hitting
+// the network.
+//
+// CRITICAL — Finnhub Form 4 field semantics:
+//   change: shares MOVED in this transaction (signed; <0 = disposed).
+//   share:  shares HELD AFTER the transaction (the running position).
+// A transaction's dollar size is |change| × transactionPrice. Reading
+// `share` (the holding) inflated values ~1000× — a single TSLA F-code row
+// showed $287B of "tax withholding" over ~710M shares (≈22% of Tesla)
+// while its own 90-day footer said −$17M. Never fall back to `share`.
+export function normalizeInsiderTx(tx) {
+  const shares = Math.abs(Number(tx.change) || 0);
+  const price = Number(tx.transactionPrice) || 0;
+  const value = Math.round(shares * price);
+  return {
+    name: (tx.name || '').trim(),
+    title: '', // Finnhub Form 4 feed doesn't expose title; leave blank rather than guess
+    type: deriveType(tx),
+    shares,
+    price,
+    value,
+    filingDate: tx.filingDate || null,
+    transactionDate: tx.transactionDate || null,
+    _signedValue: (Number(tx.change) || 0) * price, // for sentiment math
+  };
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -77,41 +123,8 @@ export default async function handler(req, res) {
     });
   }
 
-  // ── Map Finnhub transactionCode → human type ─────────────
-  // S=Sale, P=Purchase, A=Award/grant, M=Option exercise, G=Gift,
-  // F=Tax withholding, D=Sale to issuer
-  function deriveType(tx) {
-    const code = (tx.transactionCode || '').toUpperCase();
-    if (code === 'P') return 'BUY';
-    if (code === 'S' || code === 'D') return 'SELL';
-    if (code === 'A') return 'AWARD';
-    if (code === 'M') return 'OPTION EXERCISE';
-    if (code === 'F') return 'TAX WITHHOLDING';
-    if (code === 'G') return 'GIFT';
-    // Fallback: sign of change
-    const change = Number(tx.change) || 0;
-    if (change > 0) return 'BUY';
-    if (change < 0) return 'SELL';
-    return 'OTHER';
-  }
-
   // Normalize all rows so we can compute net sentiment, then trim to most recent 5.
-  const all = items.map(tx => {
-    const shares = Math.abs(Number(tx.share || tx.change) || 0);
-    const price = Number(tx.transactionPrice) || 0;
-    const value = Math.round(shares * price);
-    return {
-      name: (tx.name || '').trim(),
-      title: '', // Finnhub Form 4 feed doesn't expose title; leave blank rather than guess
-      type: deriveType(tx),
-      shares,
-      price,
-      value,
-      filingDate: tx.filingDate || null,
-      transactionDate: tx.transactionDate || null,
-      _signedValue: (Number(tx.change) || 0) * price, // for sentiment math
-    };
-  });
+  const all = items.map(normalizeInsiderTx);
 
   // ── Net sentiment over the 90-day window ─────────────────
   // Only count clear open-market BUY/SELL toward sentiment (skip grants,
