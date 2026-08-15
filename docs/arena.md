@@ -33,9 +33,10 @@ al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 | **Canal SCREENER** — universo (~150 nombres, extraído de app.html) | `api/_lib/screener-universe.js` |
 | **Canal SCREENER** — cron de precompute (cada 4h) | `api/arena-screener.js` + `.github/workflows/external-crons.yml` (GitHub Actions, **no vercel.json** — ver `docs/crons.md`) |
 | Datos para la UI | `api/arena.js` |
+| **Auditoría del run** (solo lectura, JSON/markdown + `?view=resumen`) | `api/arena-audit.js` + `api/_lib/arena-audit.js` |
 | Journal | tabla `arena_journal` (`api/_lib/db.js`) |
 | UI (sección en MIS AGENTES) | `app.html` (`qdArenaLoad`/`qdArenaHtml`) |
-| Tests | `tests/arena-guard.test.mjs` · `tests/arena-exits.test.mjs` · `tests/alpaca.test.mjs` · `tests/arena-run.test.mjs` · `tests/screens.test.mjs` |
+| Tests | `tests/arena-guard.test.mjs` · `tests/arena-exits.test.mjs` · `tests/alpaca.test.mjs` · `tests/arena-run.test.mjs` · `tests/screens.test.mjs` · `tests/arena-audit.test.mjs` |
 
 ## Flujo de dos fases (SCAN → DEEP DIVE)
 
@@ -437,3 +438,59 @@ agentes: si está cerrado, ningún agente toca el buffet, el LLM ni Alpaca.
   guard), no a la detección de calendario.
 - **El reconcile NO se skipea:** es idempotente y barato — en un festivo
   simplemente no hay fills nuevos.
+
+## Auditoría del run (`/api/arena-audit`) — solo lectura
+
+Neon no se alcanza desde el sandbox de Claude Code, pero la app en Vercel sí.
+Este endpoint es la ventana de auditoría: reconstruye, **corrida por corrida**,
+todo lo que el agente vio y decidió desde el arranque, sin abrir una sesión de
+SQL y sin tocar nada.
+
+| Query | Qué devuelve |
+|---|---|
+| `/api/arena-audit` | JSON, una entrada por corrida (agrupada por `run_date`) |
+| `?format=md` | El mismo detalle en **markdown en español**, una sección por corrida, ordenado por fecha |
+| `?view=resumen` | Métricas agregadas de todo el run |
+| `?view=resumen&format=md` | El resumen en markdown |
+| `?agent=openai` · `?agent=todos` | Otro competidor de la liga, o todas las filas |
+| `?desde=YYYY-MM-DD` · `?limit=N` | Recorte (default 500 filas; `truncado:true` avisa si no cupo todo) |
+| `?deploy=<ISO>` | Re-corta el antes/después de `buffet-quality` sin re-deploy |
+
+**Por corrida:** status y fecha · canales del buffet que llegaron y **cuántos
+ítems reales** traía cada uno (movers con su desglose gainers/losers/actives,
+earnings, insiders, screener con value/momentum) más el error real del canal
+caído · `scout_picks` crudos y la tesis · **slate final** con `origin`
+(`scout_picked`/`floor_reserved`) y el estado del floor · acciones propuestas
+(símbolo/lado/qty/límite) con el **veredicto del guard** (aprobada/descartada y
+la razón textual) · fills (precio y timestamp reales) · la prosa del plan
+verbatim · el resultado del **detector de fabricación (#93)** con sus tokens sin
+ancla · la etapa del breaker y el libro que el PM tenía enfrente.
+
+**`?view=resumen`** agrega: corridas totales y desglose por status ·
+aprobadas/descartadas/fills (total y solo del PM) · **ventas voluntarias**
+(esperado 0 — la red determinista no cuenta) · **`scout_picks` por corrida antes
+vs después del deploy de `buffet-quality`** (la predicción medible que quedó
+registrada; corte por defecto `BUFFET_QUALITY_DEPLOY`, el merge del PR #108) ·
+**posiciones que cruzaron −5%** y en cuántas corridas posteriores la prosa las
+nombró por su nombre, con las frases citadas (métrica de atención a posiciones
+heridas) · **cambios de veredicto sobre el mismo símbolo** entre corridas (el
+caso LYFT: descartado el 05-ago, aprobado el 13/14-ago) con las frases del plan
+de cada corrida.
+
+**Restricciones que el endpoint respeta (y que los tests blindan):**
+
+- **Cero writes.** Puros `SELECT`. En particular **no** llama a `ensureSchema()`
+  (hace CREATE/ALTER/UPDATE de migración) ni a `beat()`: latir aquí
+  enmascararía un cron muerto, porque el latido dejaría de significar "el cron
+  corrió". Tampoco importa `arena-run`, el guard ni el prompt del PM — el camino
+  de decisión no se toca ni de lectura.
+- **Gate de `CRON_SECRET`**, mismo patrón de `arena-run`/`ai-usage`. Se acepta
+  por header (`Authorization: Bearer <secret>`) **o** por query
+  (`?secret=<secret>`): el caso de uso es abrir el markdown directo en el
+  navegador, donde no hay forma de mandar headers. Respuesta con `no-store`.
+- **`maxDuration = 300`** (el journal ya es largo: semanas de corridas con el
+  contexto completo por fila).
+- **El buffet se reconstruye del prompt journaleado** (`context.scan.prompt.user`,
+  que es donde vive): si esa fila no lo trae, `reconstruido:false` y los conteos
+  quedan en `null` — hueco honesto, nunca un cero inventado. Los textos de los
+  prompts **no** se re-emiten: solo lo destilado.
