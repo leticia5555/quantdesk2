@@ -1,10 +1,10 @@
 # SCOPE — Backtest PEAD (Post-Earnings Announcement Drift)
 
-> **Estado:** FASE 1 (cosecha de datos) IMPLEMENTADA. El **backtest** en sí
-> sigue sin construirse — primero se llena el dataset. **Fase 0** resuelta →
-> fuente definitiva **Alpha Vantage `EARNINGS` + SEC 8-K** (Finnhub free
-> descartado, §1.1). La cosecha (cron de goteo + tablas Neon + job SEC) está
-> codeada y testeada; falta desplegar y prenderla (§"Arranque"). Filosofía:
+> **Estado:** FASE 1 (cosecha) y FASE 2 (análisis, `/api/pead-analyze`)
+> IMPLEMENTADAS. Los criterios de éxito de la Fase 2 están **congelados en
+> código** (`CRITERIOS` en `api/_lib/pead-analyze.js`) — ver §"FASE 2".
+> **Fase 0** resuelta → fuente definitiva **Alpha Vantage `EARNINGS` + SEC 8-K**
+> (Finnhub free descartado, §1.1). Filosofía:
 > **validación primero, agente después.** Si el drift capturable neto de costos
 > no existe, se descarta y no se escribe una línea de agente.
 
@@ -472,11 +472,97 @@ estadística por eventos solapados.
 |---|---|---|
 | **0 — Spike de datos** ✅ HECHA | `scripts/pead-phase0-probe.mjs`. Resultado: Finnhub free **NO-GO** (0 filas históricas); Alpha Vantage `EARNINGS` **GO** (~30 años). | **Fuente definitiva: AV `EARNINGS` + SEC 8-K.** |
 | **1 — Cosecha del dataset v0** ✅ IMPLEMENTADA | Goteo AV 25/día → **100 nombres en ~4 días** (ver "Plan de cosecha" + "Implementación"). SEC 8-K (hora) + Yahoo (precios open/close) en paralelo. Falta: desplegar + `PEAD_HARVEST_ENABLED=1` + seed. | Dataset v0 (~1.200 eventos) en Neon, auditado contra look-ahead + % de hora etiquetada. |
-| **2 — Descomposición + test de H0** | Medir R_dia1 vs R_drift neto de costos, todos los eventos v0 (sin gate aún). | **KILL SWITCH.** Si R_drift ≈ 0 neto de costos → descartar. Decide también el gasto de AV premium. |
+| **2 — Análisis** ✅ IMPLEMENTADA | `/api/pead-analyze` (solo lectura): entrada en la primera apertura posterior al reporte, decil de sorpresa, cartera calendar-time vs SPY, simulación long-only. Criterios **congelados en código** — ver §"FASE 2". | **KILL SWITCH.** GO / NO-GO / INCONCLUSO contra los umbrales del §"FASE 2". Decide también el gasto de AV premium. |
 | **3 — Barrido + validación** | Barrer X,Y,N (long-only) en in-sample; walk-forward; costos; CAR vs SPY. | Métricas OOS con Bonferroni. |
 | **4 — Veredicto** | VENTAJA REAL / FRÁGIL / SIN VENTAJA en OOS neto de costos. | Si VENTAJA REAL → luz verde para **Agente #7**. Si no → se descarta. |
 
 ---
+
+---
+
+## FASE 2 — el análisis: `/api/pead-analyze` (SOLO LECTURA)
+
+> **Los criterios de abajo se fijaron ANTES de correr nada** y viven en código
+> como `CRITERIOS` (`api/_lib/pead-analyze.js`), exportados en el JSON de cada
+> corrida. Si alguien los mueve después de ver los números, el diff lo delata.
+
+**Pregunta única:** ¿existe drift post-earnings **operable con nuestra
+infraestructura** — entrada en la primera apertura posterior al reporte, sin
+look-ahead?
+
+### La única especificación principal
+
+| Pieza | Decisión |
+|---|---|
+| Entrada | **Primera apertura posterior al reporte.** BMO → `open` del **mismo día**; AMC → `open` del **día siguiente**; DMH → como AMC (con el mercado abierto, la primera apertura posterior es la del día siguiente). |
+| Eventos sin hora | **Tratados como AMC** en la principal. Tratarlos como BMO metería look-ahead si en realidad fueron AMC (compraríamos en una apertura *anterior* al anuncio); AMC nunca lo mete — a lo sumo entra un día tarde. |
+| Señal | **Decil superior (p90) de sorpresa positiva**, corte calculado sobre los eventos de `surprise_pct > 0` de la muestra operable. |
+| Benchmark | **SPY**, vía **cartera calendar-time** (§3.6): cartera diaria equiponderada de todo lo abierto menos SPY ese día; el t-stat sale de esa serie, no del promedio por evento. |
+| Tenencia | **10 sesiones** — entrada `open(d0)`, salida `close(d0+9)`. 5 y 20 **solo** como sensibilidad. |
+| Cartera | Long-only, **máx 8 posiciones concurrentes**, **10 bp por lado**. |
+| Ventana | ~**3 años** (regla dura de §2.2: más atrás exige universo point-in-time). |
+| Precios | **Yahoo en vivo**, candles diarias **ajustadas**. Los precios NO viven en Neon. |
+
+**Ajuste de precios:** el chart v8 da `quote[0]` ajustado solo por splits y
+`adjclose` ajustado por splits **y** dividendos. Mezclarlos inventa un retorno
+del tamaño del dividendo el día ex, así que se deriva `f = adjclose/close` del
+día y se aplica **también al open** — open y close quedan en la misma escala.
+
+### Criterios de éxito (congelados)
+
+1. **Muestra** ≥ **300 eventos operables** en ~3 años (la muestra **base**: lo
+   que pasa los filtros de operabilidad, no el decil). Si no se alcanza → el
+   veredicto es **INCONCLUSO**, no "casi".
+1b. **Candado de trades**: GO exige además ≥ **30 trades ejecutados en el
+   decil**. Por debajo → **INCONCLUSO** *sin importar los números*: con un
+   puñado de eventos, el retorno medio y el Sharpe son ruido con forma de
+   resultado. Se cuenta sobre los trades ejecutados (después del tope de 8
+   concurrentes), el más estricto de los dos conteos.
+2. **Señal**: `|t| ≥ 2` sobre el abnormal diario de la cartera calendar-time.
+3. **Operabilidad**: retorno **neto** medio ≥ **+0.30% por trade** **Y**
+   **Sharpe de la estrategia ≥ 0.7**.
+4. **Sensibilidades obligatorias**: los eventos sin hora corren **dos veces**
+   (todo-BMO y todo-AMC) y se reporta si el veredicto cambia entre ambas;
+   más el **split BMO vs AMC** por separado.
+5. **Veredicto**: **GO / NO-GO / INCONCLUSO** contra estos umbrales, con **una
+   sola** especificación principal. Todo corte extra va etiquetado
+   **EXPLORATORIO** y **no cuenta** para el veredicto.
+
+**Sobre el Sharpe del §3:** se mide sobre la curva de equity de *la estrategia*
+— 8 cupos de capital, los vacíos en efectivo al 0%. Si la señal dispara poco, la
+ocupación media es baja y ese Sharpe sale bajo aunque cada trade sea bueno. Por
+eso el JSON publica al lado `ocupacion_media_cupos` y
+`sharpe_capital_invertido` (cartera equiponderada de lo realmente abierto, neta
+de costos): **no sustituyen al criterio**, lo hacen interpretable.
+
+### Garantías (mismo patrón que `/api/arena-audit`)
+
+- **Cero writes a Neon.** Puros `SELECT` sobre `pead_earnings` +
+  `pead_event_hour`. **No** llama a `ensurePeadSchema()` (hace `CREATE TABLE`)
+  ni a `beat()` — latir acá enmascararía un cron muerto.
+  `tests/pead-analyze.test.mjs` captura toda query que cruza la frontera de
+  `_lib/db.js` y falla si alguna no empieza con `SELECT`.
+- **Gate `CRON_SECRET`** por header (`Authorization: Bearer …`) o por query
+  (`?secret=…`, para abrir el markdown en el navegador). Respuesta `no-store`.
+- **`maxDuration = 300`** (~100 símbolos de Yahoo + 8 corridas del análisis).
+- El lib de análisis (`_lib/pead-analyze.js`) es **puro**: sin `fetch`, sin DB.
+  El endpoint es solo plomería.
+
+### Uso
+
+```bash
+curl -s -H "Authorization: Bearer $CRON_SECRET" \
+  "https://quantdesk2.vercel.app/api/pead-analyze" | jq
+# resumen en español, se abre directo en el navegador:
+#   /api/pead-analyze?format=md&secret=<CRON_SECRET>
+# opcionales: ?anios=3 (ventana) · ?trades=1 (detalle trade a trade)
+```
+
+| Archivo | Qué |
+|---|---|
+| `api/_lib/pead-analyze.js` | Lógica pura: `CRITERIOS`, alineación de la entrada, decil, cartera calendar-time, simulación, veredicto y el resumen en español. |
+| `api/pead-analyze.js` | Endpoint: gate, `SELECT` a Neon, Yahoo ajustado, principal + sensibilidades + exploratorios. |
+| `tests/pead-analyze.test.mjs` | Solo-lectura, gate, cero look-ahead, primitivas, ajuste de velas, cupos y costos, y GO/NO-GO/INCONCLUSO contra dataset sintético con drift plantado. |
 
 ## Fuera de v1 / backlog
 
