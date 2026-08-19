@@ -510,8 +510,14 @@ día y se aplica **también al open** — open y close quedan en la misma escala
 
 ### Criterios de éxito (congelados)
 
-1. **Muestra** ≥ **300 eventos operables** en ~3 años. Si no se alcanza → el
+1. **Muestra** ≥ **300 eventos operables** en ~3 años (la muestra **base**: lo
+   que pasa los filtros de operabilidad, no el decil). Si no se alcanza → el
    veredicto es **INCONCLUSO**, no "casi".
+1b. **Candado de trades**: GO exige además ≥ **30 trades ejecutados en el
+   decil**. Por debajo → **INCONCLUSO** *sin importar los números*: con un
+   puñado de eventos, el retorno medio y el Sharpe son ruido con forma de
+   resultado. Se cuenta sobre los trades ejecutados (después del tope de 8
+   concurrentes), el más estricto de los dos conteos.
 2. **Señal**: `|t| ≥ 2` sobre el abnormal diario de la cartera calendar-time.
 3. **Operabilidad**: retorno **neto** medio ≥ **+0.30% por trade** **Y**
    **Sharpe de la estrategia ≥ 0.7**.

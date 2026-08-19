@@ -68,7 +68,7 @@ function calendarioHabil(n, fin) {
 
 // Construye eventos + series. `driftPlantado` = retorno diario extra inyectado
 // en las 10 sesiones posteriores a la entrada de los eventos del decil superior.
-function fabrica({ nSimbolos = 100, sesiones = 1100, fin = '2026-06-30', driftPlantado = 0, semilla = 7 } = {}) {
+function fabrica({ nSimbolos = 100, sesiones = 1100, fin = '2026-06-30', driftPlantado = 0, semilla = 7, pctNegativas = 0.25 } = {}) {
   const calendario = calendarioHabil(sesiones, fin);
   const r = rng(semilla);
   const simbolos = Array.from({ length: nSimbolos }, (_, i) => 'S' + String(i).padStart(3, '0'));
@@ -79,7 +79,7 @@ function fabrica({ nSimbolos = 100, sesiones = 1100, fin = '2026-06-30', driftPl
     const sym = simbolos[k];
     for (let i = 20 + (k % 60); i < sesiones - 15; i += 63) {
       const u = r();
-      const surprise_pct = u < 0.25 ? -(r() * 40) : r() * 120;   // 25% negativas
+      const surprise_pct = u < pctNegativas ? -(r() * 40) : r() * 120;
       const hu = r();
       const hour = hu < 0.35 ? 'bmo' : hu < 0.95 ? 'amc' : null;
       eventos.push({
@@ -377,9 +377,9 @@ console.log('pead-analyze: cartera calendar-time');
 console.log('pead-analyze: veredicto GO / NO-GO / INCONCLUSO');
 {
   const C = L.CRITERIOS;
-  ok(C.min_eventos_operables === 300 && C.t_minimo === 2 && C.ret_neto_min_por_trade === 0.0030
-    && C.sharpe_min === 0.7 && C.decil === 0.90 && C.hold_principal === 10
-    && C.max_concurrentes === 8 && C.costo_por_lado === 0.0010,
+  ok(C.min_eventos_operables === 300 && C.min_trades_decil === 30 && C.t_minimo === 2
+    && C.ret_neto_min_por_trade === 0.0030 && C.sharpe_min === 0.7 && C.decil === 0.90
+    && C.hold_principal === 10 && C.max_concurrentes === 8 && C.costo_por_lado === 0.0010,
     'los umbrales son los FIJADOS ANTES DE CORRER', JSON.stringify(C));
 
   // ── INCONCLUSO: muestra corta (regla dura, no "casi") ──
@@ -394,6 +394,29 @@ console.log('pead-analyze: veredicto GO / NO-GO / INCONCLUSO');
     ok(b.principal.cumple.t === true, 'y eso pasa incluso con el criterio de señal cumplido', JSON.stringify(b.principal.cumple));
   }
 
+  // ── INCONCLUSO por el candado de trades: muestra base de sobra, decil corto ──
+  // 92% de sorpresas negativas → el decil se calcula sobre un puñado de
+  // positivas y deja menos de 30 trades, con drift plantado enorme.
+  {
+    const fx = fabrica({ nSimbolos: 100, sesiones: 1100, driftPlantado: 0.02, pctNegativas: 0.92 });
+    global.fetch = mockFetch(fx);
+    const res = mockRes();
+    await handler(GET({ anios: 3 }, { authorization: `Bearer ${SECRET}` }), res);
+    const b = res.body;
+    ok(b.principal.cumple.muestra === true, 'la muestra base sí pasa el piso de 300', b.principal.muestra.eventos_operables);
+    ok(b.principal.operabilidad.trades < 30, 'pero el decil deja menos de 30 trades', b.principal.operabilidad.trades);
+    ok(b.principal.cumple.trades_decil === false, 'el candado de trades queda en rojo');
+    ok(b.principal.cumple.t && b.principal.cumple.ret_neto && b.principal.cumple.sharpe,
+      'y los tres criterios numéricos están en VERDE (drift plantado enorme)', JSON.stringify(b.principal.cumple));
+    ok(b.veredicto === 'INCONCLUSO', '< 30 trades → INCONCLUSO sin importar los números', b.veredicto);
+
+    const md = mockRes();
+    await handler(GET({ anios: 3, format: 'md' }, { authorization: `Bearer ${SECRET}` }), md);
+    ok(/VEREDICTO: INCONCLUSO/.test(md.text), 'el markdown reporta INCONCLUSO');
+    ok(/candado/.test(md.text) && /sin importar los números/.test(md.text),
+      'y explica que fue el candado de trades, no los números');
+  }
+
   // ── GO: drift plantado fuerte ──
   {
     const fx = fabrica({ nSimbolos: 100, sesiones: 1100, driftPlantado: 0.006 });
@@ -405,7 +428,8 @@ console.log('pead-analyze: veredicto GO / NO-GO / INCONCLUSO');
     ok(Math.abs(b.principal.senal.t) >= 2, '|t| ≥ 2 con drift plantado', b.principal.senal.t);
     ok(b.principal.operabilidad.ret_neto_medio_por_trade >= 0.0030, 'retorno neto por trade sobre el umbral', b.principal.operabilidad.ret_neto_medio_por_trade);
     ok(b.principal.operabilidad.sharpe_estrategia >= 0.7, 'Sharpe de la estrategia sobre el umbral', b.principal.operabilidad.sharpe_estrategia);
-    ok(b.veredicto === 'GO', 'los 4 criterios en verde → GO', b.veredicto);
+    ok(b.principal.cumple.trades_decil === true, 'el decil supera los 30 trades', b.principal.operabilidad.trades);
+    ok(b.veredicto === 'GO', 'los 5 criterios en verde → GO', b.veredicto);
     ok(b.principal.operabilidad.trades > 0 && b.principal.muestra.eventos_senal > 0, 'hay trades y señal', `${b.principal.operabilidad.trades}/${b.principal.muestra.eventos_senal}`);
     ok(b.sensibilidades.split_bmo.muestra.por_hora.amc === 0 && b.sensibilidades.split_amc.muestra.por_hora.bmo === 0,
       'el split BMO/AMC separa de verdad las dos ramas');
@@ -427,7 +451,7 @@ console.log('pead-analyze: veredicto GO / NO-GO / INCONCLUSO');
     // dos columnas de más. Por eso el criterio se escribe "t ≥ 2 en valor absoluto".
     ok(md.text.split('\n').filter((l) => l.startsWith('| ')).every((l) => l.split('|').length === 5),
       'todas las filas de la tabla tienen exactamente 3 columnas (ningún pipe suelto)');
-    for (const clave of ['Muestra ≥ 300', 't ≥ 2 en valor absoluto', 'Retorno neto ≥ 0.30%', 'Sharpe estrategia ≥ 0.7']) {
+    for (const clave of ['Muestra ≥ 300', '≥ 30 trades en el decil', 't ≥ 2 en valor absoluto', 'Retorno neto ≥ 0.30%', 'Sharpe estrategia ≥ 0.7']) {
       ok(md.text.includes(clave), `el markdown lista el criterio "${clave}"`);
     }
     ok(/todo-BMO/.test(md.text) && /Split BMO/.test(md.text) && /Split AMC/.test(md.text), 'el markdown trae las sensibilidades obligatorias');

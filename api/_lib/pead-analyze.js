@@ -37,6 +37,13 @@
 // si alguien los mueve después de ver los números, el diff lo delata.
 const CRITERIOS = {
   min_eventos_operables: 300,   // §1 — si no se alcanza → INCONCLUSO
+  // §1b — candado pre-registrado: un decil con menos de 30 trades no alcanza
+  // para emitir GO por bueno que se vea. Con ~10% de las sorpresas positivas,
+  // el decil puede quedarse en un puñado de eventos: ahí el retorno medio y el
+  // Sharpe son ruido con forma de resultado. Por debajo → INCONCLUSO, sin
+  // importar los números. Se cuenta sobre los trades EJECUTADOS (después del
+  // tope de concurrentes), que es el más estricto de los dos conteos.
+  min_trades_decil: 30,
   t_minimo: 2,                  // §2 — |t| del abnormal calendar-time
   ret_neto_min_por_trade: 0.0030, // §3 — +0.30% neto promedio
   sharpe_min: 0.7,              // §3 — Sharpe de la estrategia
@@ -442,11 +449,15 @@ function corre({ eventos, calendario, seriesAlineadas, spyCloses, politicaHora, 
 
   const cumple = {
     muestra: operables.length >= criterios.min_eventos_operables,
+    trades_decil: sim.trades >= criterios.min_trades_decil,
     t: abn.t != null && Math.abs(abn.t) >= criterios.t_minimo,
     ret_neto: sim.ret_neto_medio != null && sim.ret_neto_medio >= criterios.ret_neto_min_por_trade,
     sharpe: sim.sharpe != null && sim.sharpe >= criterios.sharpe_min,
   };
-  const veredicto = !cumple.muestra ? 'INCONCLUSO'
+  // Los dos candados de muestra mandan sobre todo lo demás: si no hay con qué
+  // medir, el veredicto es INCONCLUSO — no "NO-GO" (que afirmaría que NO hay
+  // edge) ni "casi GO".
+  const veredicto = (!cumple.muestra || !cumple.trades_decil) ? 'INCONCLUSO'
     : (cumple.t && cumple.ret_neto && cumple.sharpe) ? 'GO' : 'NO-GO';
 
   return {
@@ -536,6 +547,7 @@ const marca = (ok) => (ok ? '✅' : '❌');
 function filasCriterios(b, c) {
   return [
     ['1 · Muestra ≥ ' + c.min_eventos_operables + ' operables', String(b.muestra.eventos_operables), b.cumple.muestra],
+    ['1b · ≥ ' + c.min_trades_decil + ' trades en el decil', String(b.operabilidad.trades), b.cumple.trades_decil],
     ['2 · t ≥ ' + c.t_minimo + ' en valor absoluto (abnormal calendar-time vs SPY)', num(b.senal.t), b.cumple.t],
     ['3a · Retorno neto ≥ ' + pct(c.ret_neto_min_por_trade) + ' por trade', pct(b.operabilidad.ret_neto_medio_por_trade), b.cumple.ret_neto],
     ['3b · Sharpe estrategia ≥ ' + num(c.sharpe_min, 1), num(b.operabilidad.sharpe_estrategia), b.cumple.sharpe],
@@ -572,8 +584,14 @@ function renderResumenMarkdown(s) {
   for (const [k, v, ok] of filasCriterios(p, c)) L.push(`| ${k} | ${v} | ${marca(ok)} |`);
   L.push('');
   if (!p.cumple.muestra) {
-    L.push(`> La muestra no llega al piso (${p.muestra.eventos_operables} < ${c.min_eventos_operables}).`);
+    L.push(`> La muestra base no llega al piso (${p.muestra.eventos_operables} < ${c.min_eventos_operables}).`);
     L.push('> Por la regla fijada de antemano el veredicto es **INCONCLUSO** — no "casi".');
+    L.push('');
+  }
+  if (p.cumple.muestra && !p.cumple.trades_decil) {
+    L.push(`> El decil deja ${p.operabilidad.trades} trades (< ${c.min_trades_decil}): por debajo del candado`);
+    L.push('> pre-registrado, el retorno medio y el Sharpe son ruido con forma de resultado.');
+    L.push('> Veredicto **INCONCLUSO** sin importar los números de arriba.');
     L.push('');
   }
   L.push('## Muestra');
