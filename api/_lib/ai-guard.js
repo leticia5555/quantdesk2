@@ -45,6 +45,43 @@ export function dateDirective(now = new Date()) {
     `If your knowledge of events close to this date is limited, say so explicitly instead of inventing recent macro context.`;
 }
 
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS_SHORT = MONTHS.map((m) => m.slice(0, 3));
+
+// ── relativeDayLabel: fecha ABSOLUTA → distancia en días YA CALCULADA ──
+//
+// BUG que motiva esto (ago 2026): al PM del Arena las noticias le llegaban con
+// fecha absoluta + una instrucción de "calculá vos qué tan vieja es", y los
+// earnings ni eso — solo `date`. Con la fecha suelta el modelo narró unos
+// earnings a DOS DÍAS como "post-market today" (NVDA 8/26 escrito el 8/24) en
+// el mismo párrafo donde fechaba bien las noticias, que sí traían contexto de
+// antigüedad. La aritmética de calendario no se delega al LLM: se hace acá y
+// viaja al prompt ya resuelta ("in 2 days (Wed Aug 26, AMC)").
+//
+// dateStr: 'YYYY-MM-DD'. `note` opcional se cuelga dentro del paréntesis (el
+// AMC/BMO de un earnings). Todo en UTC — el mismo huso que dateDirective usa
+// para decir qué día es hoy, así "today" significa lo mismo en ambos lados.
+// El año solo aparece cuando difiere del actual (evita el "Jan 3" ambiguo de
+// fin de año). Devuelve null si la fecha no parsea — el caller omite el campo,
+// nunca inventa uno.
+export function relativeDayLabel(dateStr, now = new Date(), note = null) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || '').trim());
+  if (!m) return null;
+  const day = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  if (!Number.isFinite(day)) return null;
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const diff = Math.round((day - today) / 86400000);
+  const rel = diff === 0 ? 'today'
+    : diff === 1 ? 'tomorrow'
+      : diff === -1 ? 'yesterday'
+        : diff > 0 ? `in ${diff} days`
+          : `${-diff} days ago`;
+  const d = new Date(day);
+  const year = d.getUTCFullYear() === now.getUTCFullYear() ? '' : ` ${d.getUTCFullYear()}`;
+  const stamp = `${WEEKDAYS[d.getUTCDay()]} ${MONTHS_SHORT[d.getUTCMonth()]} ${d.getUTCDate()}${year}`;
+  return `${rel} (${stamp}${note ? ', ' + note : ''})`;
+}
+
 // Señales de orientación a futuro cerca de una mención de año. Deliberadamente
 // moderada: mejor dejar pasar una frase ambigua que marcar todo el histórico
 // legítimo de un análisis ("in Q1 2024, revenue grew 12%" NO debe marcarse).

@@ -60,6 +60,7 @@ import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFlo
 import { buildRiskExits, EXIT_RULES } from './_lib/arena-exits.js';
 import { fetchDeepDive } from './_lib/finnhub-dive.js';
 import { auditPlanPercentages } from './_lib/prose-audit.js';
+import { relativeDayLabel } from './_lib/ai-guard.js';
 import { beat } from './_lib/heartbeat.js';
 import { readScreenerRows } from './_lib/screener-db.js';
 import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
@@ -167,7 +168,7 @@ function trimMovers(data, symbolTypes) {
   // ser desplazadas por leveraged ETFs y small caps (TSLA -14.5%, 24-jul).
   return { gainers: pick(data.gainers, 5), losers: pick(data.losers, 5), actives: pick(data.actives, 8) };
 }
-function trimEarnings(data) {
+function trimEarnings(data, now = new Date()) {
   // Relevancia, NO orden alfabético del feed. El calendario de Finnhub llega
   // ordenado por fecha, pero DENTRO de cada día viene alfabético — así que un
   // slice(0,12) crudo se llenaba de nombres del principio del abecedario, casi
@@ -180,12 +181,25 @@ function trimEarnings(data) {
   // preserva dentro de cada tier (sort estable por índice de llegada). No es un
   // gate duro: si un día no hay 12 mega/named, el tier 2 rellena — el canal
   // nunca queda vacío por esto (p.ej. si el symbol map estuviera caído).
+  //
+  // `when` — DÍAS RELATIVOS YA CALCULADOS ("in 2 days (Wed Aug 26, AMC)"). El
+  // feed solo trae fecha absoluta, y con eso el PM narró unos earnings a dos
+  // días como "post-market today" (NVDA 8/26 escrito el 8/24) mientras fechaba
+  // bien, en el mismo párrafo, las noticias que sí traían antigüedad. La
+  // aritmética de calendario no se delega al modelo: sale de acá resuelta. La
+  // fecha absoluta se conserva al lado (auditoría y el ancla dura del label).
   const rank = (e) => (MEGA_CAPS.has(e.ticker) ? 0 : (e.company ? 1 : 2));
   return ((data && data.earnings) || [])
     .map((e, i) => ({ e, i }))
     .sort((a, b) => rank(a.e) - rank(b.e) || a.i - b.i)
     .slice(0, 12)
-    .map(({ e }) => ({ ticker: e.ticker, company: e.company, date: e.date, time: e.time }));
+    .map(({ e }) => ({
+      ticker: e.ticker,
+      company: e.company,
+      date: e.date,
+      time: e.time,
+      when: relativeDayLabel(e.date, now, e.time && e.time !== 'TBD' ? e.time : null),
+    }));
 }
 function trimInsiders(data) {
   return ((data && data.items) || []).slice(0, 8).map((i) => ({ insider: i.insider, role: i.role, ticker: i.ticker, value: i.value, tradeDate: i.tradeDate }));
@@ -206,7 +220,15 @@ function buildChannels({ movers, earnings, insiders, screener }) {
     return map[s];
   };
   if (movers) for (const list of [movers.gainers, movers.losers, movers.actives]) for (const m of (list || [])) add(m.symbol, 'movers');
-  for (const e of (earnings || [])) add(e.ticker, 'earnings');
+  for (const e of (earnings || [])) {
+    const entry = add(e.ticker, 'earnings');
+    // El CUÁNDO viaja pegado al canal: es el único puente por el que la fecha
+    // del reporte llega a la fase DIVE (que recibe candidatos + deep dive, no
+    // el buffet). Sin esto el PM decidía "guardar pólvora para la dislocación
+    // post-earnings" sabiendo que el ticker salió del canal earnings pero sin
+    // el día — y lo rellenaba de memoria, a veces con "today".
+    if (entry && !entry.earnings) entry.earnings = { date: e.date, time: e.time, when: e.when };
+  }
   for (const i of (insiders || [])) add(i.ticker, 'insider');
   for (const name of ['value', 'momentum']) {
     for (const c of ((screener || {})[name] || [])) {
@@ -280,7 +302,7 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   const symbolTypes = await getSymbolTypes(process.env.FINNHUB_API_KEY);
 
   const movers = trimMovers(out.movers, symbolTypes);
-  const earnings_this_week = trimEarnings(out.earnings);
+  const earnings_this_week = trimEarnings(out.earnings, now);
   const notable_insider_buys = trimInsiders(out.insiders);
 
   // Canal SCREENER (estado-driven): se LEE de Neon (precomputado por el cron
@@ -364,6 +386,7 @@ export function buildScanUserPrompt({ account, positions, openOrders, buffet, pr
     previous ? JSON.stringify(previous) : 'none — this is your first run.',
     '',
     'MARKET CONTEXT (QuantDesk endpoints; sections listed in "unavailable" failed today — do not guess their content):',
+    'EARNINGS TIMING — each entry in `earnings_this_week` carries `when`, the distance from today ALREADY COMPUTED for you ("in 2 days (Wed Aug 26, AMC)", "today (Mon Aug 24, BMO)"). Use that label as-is when you mention a report; do not re-derive it from `date`, and never call a report scheduled for a later date "today" or "tonight". BMO = before the market opens that day, AMC = after it closes.',
     JSON.stringify(buffetForLlm),
     '',
     `Pick up to ${MAX_CANDIDATES} tickers worth a deep-dive, or none. Remember: ONE JSON object, nothing else.`,
@@ -389,8 +412,16 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
     // que son RATIOS, no precio — el candado de precio se mantiene: last_close
     // es el fresco, el screener nunca aporta un precio absoluto).
     const ch = channels && channels[t] ? channels[t] : null;
+    // `earnings` viaja SOLO si el candidato salió del canal earnings de esta
+    // corrida: trae la fecha del reporte con los días relativos ya calculados
+    // (`when`), que es lo único que ancla la prosa del PM cuando decide
+    // reservar cash "para la dislocación post-earnings".
     const meta = ch
-      ? { channel: ch.channels, ...(ch.screens && ch.screens.length ? { screen: ch.screens, screener_qualifiers: ch.qualifiers } : {}) }
+      ? {
+        channel: ch.channels,
+        ...(ch.screens && ch.screens.length ? { screen: ch.screens, screener_qualifiers: ch.qualifiers } : {}),
+        ...(ch.earnings ? { earnings: ch.earnings } : {}),
+      }
       : {};
     return { ticker: t, last_close: close, limit_range, ...meta, ...((deepDive && deepDive[t]) || null) };
   });
@@ -403,10 +434,11 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
     'SCOUT THESIS (why these tickers were flagged for deep-dive):',
     scanThesis || '(none provided)',
     '',
-    'DEEP-DIVE DATA (Finnhub; per candidate: last_close, limit_range, profile, fundamentals, analyst recommendation counts, recent news headlines).',
+    'DEEP-DIVE DATA (Finnhub; per candidate: last_close, limit_range, profile, fundamentals, analyst recommendation counts, recent news headlines, and — when the candidate came from the earnings calendar — its upcoming report).',
     `PRICING RULE — READ CAREFULLY: for each candidate, "last_close" is the reference close and "limit_range" {low, high} is the ONLY band the risk guard accepts (±${priceBand * 100}% of last_close). Your limit_price MUST fall inside [limit_range.low, limit_range.high] or the order is auto-discarded. Do NOT anchor your limit on 52-week highs/lows, analyst targets, or any other figure — only on last_close. If last_close is null you have no valid reference for that ticker: do not place an order for it.`,
     'NOTES: null fields mean the datum was unavailable (do not guess it). Analyst price targets are NOT provided; use the recommendation buy/hold/sell split as the rating signal. marketCapM is in millions USD.',
     'NEWS RECENCY — each news item carries a `date` (YYYY-MM-DD). Before you describe any headline, compare its date to today\'s date (given in the system prompt): state how long ago it happened ("N days ago", the weekday) and reserve "today" for a date that equals today. A headline dated before today is NOT today\'s news — do not narrate a report from several days ago as if it broke today.',
+    'EARNINGS TIMING — a candidate flagged by the earnings channel carries `earnings: {date, time, when}`, where `when` is the distance from today ALREADY COMPUTED for you ("in 2 days (Wed Aug 26, AMC)", "tomorrow (Tue Aug 25, BMO)"). Quote that label as-is; do not re-derive it from `date`, and never describe a report scheduled for a later date as happening "today" or "tonight" — if your plan holds cash for a post-earnings dislocation, say which day the catalyst actually lands on. BMO = before that day\'s open, AMC = after that day\'s close. A candidate WITHOUT an `earnings` field has no report date in your data: do not assert one from memory.',
     'FIGURES — when your plan cites a number (a %, a price, a P&L), use ONLY the figures given to you here or in the PORTFOLIO above, verbatim. Each holding carries `pnl_since_entry_pct`, already formatted ("+6.1%"): that is profit/loss SINCE YOUR ENTRY, not today\'s price move — quote it as-is if you mention it. Do NOT compute, rescale, round, or invent percentages you were not given.',
     JSON.stringify(research),
     '',
