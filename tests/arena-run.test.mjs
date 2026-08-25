@@ -41,6 +41,8 @@ const today = new Date().toISOString().slice(0, 10);
 // HD llega del screener con last_close=150 STALE, pero el cierre FRESCO de
 // Yahoo es 200 → la banda ±2% se calcula sobre 200, no sobre 150. ──
 const DAY = 86400000;
+// Earnings a dos días de hoy: el buffet debe rotularlo "in 2 days", no "today".
+const inTwoDays = new Date(Date.now() + 2 * DAY).toISOString().slice(0, 10);
 const t0 = Date.UTC(2026, 4, 1); // 2026-05-01, muy anterior a "hoy"
 const closes = Array.from({ length: 30 }, (_, i) => 195 + (i % 6));
 closes[closes.length - 1] = 200;
@@ -207,6 +209,10 @@ global.fetch = async (url, opts = {}) => {
     { ticker: 'AAUAF', company: 'Aura Minerals Inc', date: today, time: 'TBD' }, // named ilíquida → tier 1
     { ticker: 'MSFT', company: 'Microsoft Corp', date: today, time: 'AMC' },  // mega curada → tier 0 (primera)
     { ticker: 'ZED', company: 'Zed Industries', date: today, time: 'AMC' },   // named → tier 1
+    // Mega a DOS DÍAS: el caso del bug (NVDA reportando el miércoles narrado
+    // como "today" el lunes). Es además el candidato que el scout elige, así
+    // que su fecha tiene que llegar hasta el prompt del DIVE.
+    { ticker: 'AAPL', company: 'Apple Inc', date: inTwoDays, time: 'AMC' },
   ] });
   if (u.startsWith(BASE_URL + '/api/stock-tracker')) return jsonReply({ items: [{ insider: 'Jane Doe', role: 'CEO', ticker: 'AAPL', value: 250000, tradeDate: today }] });
   // Neon
@@ -354,6 +360,15 @@ ok(rHd && rHd.screener_qualifiers && !('last_close' in rHd.screener_qualifiers) 
 ok(rHd && Array.isArray(rHd.channel) && rHd.channel.includes('screener') && Array.isArray(rHd.screen) && rHd.screen.includes('momentum'),
   'prompt DIVE: el research de HD trae su procedencia (channel + screen)', JSON.stringify(rHd && { channel: rHd.channel, screen: rHd.screen }));
 ok(/limit_price MUST fall inside/i.test(jctx.dive.prompt.user) && /Do NOT anchor.*52-week/i.test(jctx.dive.prompt.user), 'prompt DIVE: regla de precio explícita (±2% del last_close, no anclar en 52w-high)');
+// ── la fecha del earnings CRUZA a la fase 2: el DIVE es donde se escribió el
+// "post-market today" de un reporte que era en dos días, y hasta ahora solo
+// recibía `channel: ['earnings']` — el canal sin el día. ──
+ok(rAapl && rAapl.earnings && /^in 2 days \(/.test(rAapl.earnings.when) && rAapl.earnings.date === inTwoDays,
+  'prompt DIVE: el candidato del canal earnings lleva su reporte con días relativos ya calculados', JSON.stringify(rAapl && rAapl.earnings));
+ok(rHd && !('earnings' in rHd),
+  'prompt DIVE: un candidato que NO salió del canal earnings no lleva fecha inventada', JSON.stringify(rHd && rHd.earnings));
+ok(/EARNINGS TIMING/.test(jctx.dive.prompt.user) && /do not assert one from memory/.test(jctx.dive.prompt.user),
+  'prompt DIVE: instrucción de citar `when` tal cual y de no inventar fecha para quien no la trae');
 
 // ── el SCAN prompt trae el buffet; movers con top-8 + filtro leveraged + ≥$5 (main #76) ──
 const uMovers = JSON.parse(jctx.scan.prompt.user.split('\n').find((l) => l.startsWith('{') && l.includes('"movers"'))).movers;
@@ -386,6 +401,19 @@ ok(Array.isArray(uEarn) && uEarn[0].ticker === 'MSFT',
   'prompt SCAN: earnings rankeado por relevancia → la mega-cap (MSFT) primero, no AAM alfabético', JSON.stringify(uEarn.map((e) => e.ticker)));
 ok(uEarn[uEarn.length - 1].ticker === 'AAM',
   'prompt SCAN: la de company null (AAM, OTC) queda al fondo del ranking', JSON.stringify(uEarn.map((e) => e.ticker)));
+// ── DÍAS RELATIVOS ya calculados (bug: earnings a 2 días narrados como "today") ──
+const eAapl = uEarn.find((e) => e.ticker === 'AAPL');
+const eMsft = uEarn.find((e) => e.ticker === 'MSFT');
+ok(eAapl && /^in 2 days \(/.test(eAapl.when) && eAapl.when.includes('AMC'),
+  'prompt SCAN: el earnings a dos días llega rotulado "in 2 days (…, AMC)", no con fecha pelada', JSON.stringify(eAapl));
+ok(eMsft && /^today \(/.test(eMsft.when),
+  'prompt SCAN: "today" queda reservado para el que SÍ reporta hoy', JSON.stringify(eMsft));
+ok(eAapl && eAapl.date === inTwoDays,
+  'prompt SCAN: la fecha absoluta se conserva junto al label relativo', JSON.stringify(eAapl && eAapl.date));
+const eTbd = uEarn.find((e) => e.ticker === 'AAUAF');
+ok(eTbd && !/TBD/.test(eTbd.when), 'prompt SCAN: hora TBD no ensucia el label (solo el día)', JSON.stringify(eTbd && eTbd.when));
+ok(/EARNINGS TIMING/.test(jctx.scan.prompt.user) && /never call a report scheduled for a later date "today"/.test(jctx.scan.prompt.user),
+  'prompt SCAN: instrucción explícita de usar `when` y no re-derivar la fecha');
 // El índice de atribución y los diagnósticos NO viajan al prompt del LLM.
 ok(!('channelsByTicker' in scanBuffet) && !('fetch_errors' in scanBuffet),
   'prompt SCAN: channelsByTicker/fetch_errors son internos, no van al prompt del LLM');

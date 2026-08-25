@@ -7,7 +7,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dateDirective, staleProspectiveDates, guardedClaudeCall } from '../api/_lib/ai-guard.js';
+import { dateDirective, staleProspectiveDates, guardedClaudeCall, relativeDayLabel } from '../api/_lib/ai-guard.js';
 
 const NOW = new Date('2026-07-16T15:00:00Z');
 
@@ -38,6 +38,32 @@ test('guard NO marca menciones históricas legítimas ni años vigentes', () => 
   assert.equal(staleProspectiveDates('Watch the July 2026 CPI print this week.', NOW).length, 0);
   assert.equal(staleProspectiveDates('', NOW).length, 0);
   assert.equal(staleProspectiveDates(null, NOW).length, 0);
+});
+
+// ── relativeDayLabel (bug ago 2026: earnings a 2 días narrados como "today") ──
+test('relativeDayLabel resuelve la distancia en días, no la delega al modelo', () => {
+  // el caso exacto del bug: NVDA reporta el miércoles 26, se escribe el lunes 24
+  const lunes = new Date('2026-08-24T22:40:00Z');
+  assert.equal(relativeDayLabel('2026-08-26', lunes, 'AMC'), 'in 2 days (Wed Aug 26, AMC)');
+  // CRM, que el mismo párrafo puso como "tomorrow" y tampoco lo era
+  assert.equal(relativeDayLabel('2026-08-27', lunes, 'AMC'), 'in 3 days (Thu Aug 27, AMC)');
+  // los tres casos con nombre propio
+  assert.equal(relativeDayLabel('2026-08-24', lunes, 'BMO'), 'today (Mon Aug 24, BMO)');
+  assert.equal(relativeDayLabel('2026-08-25', lunes, 'BMO'), 'tomorrow (Tue Aug 25, BMO)');
+  assert.equal(relativeDayLabel('2026-08-23', lunes), 'yesterday (Sun Aug 23)');
+  assert.equal(relativeDayLabel('2026-08-19', lunes), '5 days ago (Wed Aug 19)');
+});
+
+test('relativeDayLabel: el año solo aparece cuando difiere del actual', () => {
+  const finDeAno = new Date('2026-12-30T22:40:00Z');
+  assert.equal(relativeDayLabel('2026-12-31', finDeAno, 'AMC'), 'tomorrow (Thu Dec 31, AMC)');
+  assert.equal(relativeDayLabel('2027-01-03', finDeAno), 'in 4 days (Sun Jan 3 2027)');
+});
+
+test('relativeDayLabel: fecha ilegible → null (el caller omite, no inventa)', () => {
+  for (const bad of [null, undefined, '', 'TBD', '08/26/2026', '2026-8-26', 42, {}]) {
+    assert.equal(relativeDayLabel(bad, NOW), null, JSON.stringify(bad));
+  }
 });
 
 // ── guardedClaudeCall con fetch mockeado ─────────────────────────

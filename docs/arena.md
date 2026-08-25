@@ -140,8 +140,32 @@ Cada candidato y cada acción journalea de qué canal salió, para el post-morte
 - `screens` + `screener_qualifiers` — si vino del screener, qué screen y con qué
   números.
 
-El índice de atribución (`channelsByTicker`) **NO viaja al prompt del LLM** — es
-solo para journaling.
+El índice de atribución (`channelsByTicker`) **NO viaja al prompt del SCAN** (el
+scout ve el buffet, no de dónde salió cada nombre): se journalea, y en el DIVE
+se usa para adjuntarle a cada candidato su procedencia (`channel`, `screen`,
+`screener_qualifiers`, `earnings`).
+
+### Fechas de earnings con días relativos (`when`)
+
+Cada entrada de `earnings_this_week` viaja con **la distancia a hoy ya
+calculada**: `when: "in 2 days (Wed Aug 26, AMC)"` junto a la fecha absoluta
+(`date`, `time`). Lo produce `relativeDayLabel()` (`_lib/ai-guard.js`, el mismo
+archivo que ancla la fecha de hoy en el system prompt), en UTC — el mismo huso
+con el que `dateDirective()` define "hoy", así que ambos lados dicen lo mismo.
+
+**El bug (ago 2026):** los earnings llegaban como fecha absoluta pelada y el PM
+hacía la aritmética de calendario de memoria. El 24-ago escribió *"NVDA earnings
+post-market today (8/26 AMC)"* — el paréntesis correcto, la palabra "today"
+mal — en el MISMO párrafo donde fechaba bien las noticias, que sí traen
+antigüedad e instrucción de recencia. Y la conclusión del plan (reservar 28% de
+cash para dislocaciones post-earnings) quedaba anclada al día equivocado. La
+aritmética de fechas **no se delega al modelo**: sale resuelta del contexto.
+
+El label cruza a la fase 2 pegado al canal: un candidato del canal earnings
+llega al prompt del DIVE con `earnings: {date, time, when}` — antes el PM sabía
+que el ticker venía de earnings pero **no qué día**, y rellenaba el hueco. Un
+candidato sin ese campo no tiene fecha de reporte en sus datos, y el prompt le
+prohíbe explícitamente inventar una.
 
 **VC fuera del buffet:** las VC headlines salieron del contexto del PM (son
 empresas privadas que no puede comprar; el espacio le sirve más al screener). El
