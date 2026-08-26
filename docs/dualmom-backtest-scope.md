@@ -51,6 +51,13 @@ un helper cambia, cambian los dos backtests a la vez — que es el punto.
 Lo nuevo de este backtest es el gate (`smaDias`, `smaMeses`, `evaluaGate`), el
 filtro absoluto y los criterios relativos a SPY.
 
+La única extensión al helper compartido es un campo **opcional** en la canasta,
+`ranuras`, que `simulaRotacion` usa como denominador del reparto en vez de la
+cantidad de nombres — lo necesita la variante Antonacci (§4) para dejar en
+efectivo las ranuras recortadas. **Sin el campo el comportamiento es idéntico al
+de siempre**: la rotación Value+Momentum no lo pasa y no cambia ni un decimal
+(lo cubre `tests/rotation-analyze.test.mjs`, que sigue en verde sin tocarse).
+
 ### 2.2 Decisiones que hay que declarar (y por qué)
 
 - **El gate se evalúa con el CIERRE DE LA SESIÓN PREVIA.** El encargo dice "si
@@ -70,6 +77,14 @@ filtro absoluto y los criterios relativos a SPY.
   efectivo**: los sobrevivientes se reparten el capital. Es la lectura literal
   de "un nombre solo *entra* si…" — habla de entrada, no de pesos. Si no
   sobrevive ninguno, la canasta queda vacía y el mes es de efectivo.
+  Esta decisión **no se queda en una nota al pie**: la otra convención
+  (Antonacci — cada ranura recortada se queda en efectivo, peso 1/N sobre
+  N = tamaño del decil) es una **sensibilidad obligatoria** (§4), porque mueve
+  el §3 justo en los meses de momentum roto — que es cuando la lectura literal
+  *concentra* en los pocos que quedan en vez de des-arriesgar. El reporte
+  publica las dos al lado y **dice si el §3 se voltea entre ellas**: si el
+  veredicto colgara de esa decisión de pesos, la defensa que se está midiendo
+  no sería la que se pre-registró.
 - **El efectivo rinde 0.** Un T-bill habría que elegirlo y modelarlo (¿qué
   plazo? ¿qué serie?); poner 0 subestima la estrategia a propósito, que es el
   lado correcto del error para algo que se vende como defensivo.
@@ -122,6 +137,12 @@ aparte (`gate.sin_sma`) y **no** cuentan como activaciones.
 - **Rebalanceo cada 2 meses** — con una ventana de 3 años produce ~17
   rebalanceos, por debajo del piso **por aritmética**: su INCONCLUSO es de
   muestra, no de señal, y el reporte lo aclara.
+- **Ranura vacía a efectivo** (convención **Antonacci**) — cada nombre
+  recortado por el filtro absoluto deja su ranura en efectivo: el peso es
+  **1/N sobre N = tamaño del decil**, no sobre los sobrevivientes. Es la
+  variante que de verdad des-arriesga cuando el momentum se rompe. El criterio
+  principal sigue siendo la lectura literal (§2.2); esta se reporta **al lado**,
+  con su atribución calculada.
 - **Sin filtros** (sin gate y sin absoluto) — **el puente con el rotation**
   (ver §6).
 
@@ -155,7 +176,15 @@ Las mismas del `pead-analyze` / `rotation-analyze`, verificadas en
     criterios en verde: el veredicto **tiene** que toparse en GO frágil;
   - **mercado plano** — control negativo: no hay nada que ganar y los costos se
     pagan igual;
-  - **muestra corta** — INCONCLUSO por la regla dura, no "casi".
+  - **muestra corta** — INCONCLUSO por la regla dura, no "casi";
+  - **la ranura en efectivo, medida en el simulador** — una canasta de 1 nombre
+    con 4 ranuras tiene que dejar 3/4 del capital quieto en efectivo y negociar
+    solo 25%; y sin el campo `ranuras` el comportamiento tiene que ser
+    **idéntico** al de siempre (por eso la rotación Value+Momentum no se entera
+    de que el simulador ahora lo soporta);
+  - **el puente roto** — un t fuera de la banda tiene que producir el aviso que
+    apunta a la herencia del universo, y un split sin serie tiene que salir
+    "NO VERIFICABLE", nunca "cuadra".
 
 ## 6. Caveat pre-registrado: NO es una prueba independiente del momentum
 
@@ -169,18 +198,47 @@ Esta corrida usa **la misma ventana y el mismo universo** que
 2. **Régimen compartido.** Son los mismos ~3 años de mercado, en su mayoría
    alcistas.
 
-Por eso el corte **"sin filtros"** (sin gate y sin absoluto) es un **puente**
-con el corte "solo momentum" del rotation, **no una réplica**: si coinciden, eso
-no es confirmación independiente, es la misma medición dos veces. Diferencia
-menor que hay que declarar: el momentum-solo del rotation exige además **TTM
-válido** para ser elegible (comparte población con la pierna value) y acá no —
-esta estrategia no usa EPS, así que su población elegible es algo más amplia.
-
 Y el sesgo **no empuja parejo en los cuatro criterios**: infla el retorno y el
 Sharpe (§2, §4), pero también infla los de SPY, que es la vara. Sobre el
 drawdown (§3) el efecto es más sutil — un universo sin quiebras tiene menos cola
 izquierda idiosincrática, así que la defensa medida acá es, si acaso, **más
 fácil** de lo que sería en vivo.
+
+### 6.1 El puente: el split "sin filtros" tiene que reproducir el momentum-solo del rotation
+
+El corte **"sin filtros"** (sin gate y sin absoluto) es momentum relativo puro
+sobre el **mismo universo** y la **misma ventana** que el corte **"solo
+momentum"** de `/api/rotation-analyze`, que reportó **t = 1.87**. Son
+esencialmente **la misma medición sobre los mismos datos**, así que el split de
+acá **tiene que reproducirlo aproximadamente**. La referencia está congelada
+junto al resto de los criterios:
+
+```
+puente_rotation_t_referencia: 1.87
+puente_tolerancia_t: 0.5
+```
+
+No se espera igualdad exacta y la tolerancia se fijó **antes** de correr, por
+dos razones declaradas: el momentum-solo del rotation exige además **TTM
+válido** para ser elegible (comparte población con la pierna value) y acá no
+—esta estrategia no usa EPS, así que su población elegible es algo más amplia—,
+y las dos corridas se ejecutan en fechas distintas, con lo que la ventana de 3
+años no arranca exactamente en el mismo día.
+
+**Si la brecha se sale de la banda, el reporte lo dice y lo dice fuerte.** La
+lectura correcta de un puente roto **no** es "el momentum cambió" — las dos
+corridas miden lo mismo sobre los mismos datos —, sino que **algo se rompió en
+la herencia del universo**: otro set de símbolos, otra ventana o otro
+calendario. La sección "Puente con `/api/rotation-analyze`" del reporte sale con
+un **⚠️ NO CUADRA**, publica t observado, t esperado, brecha y banda, y avisa de
+revisar la herencia **antes de creerle un solo número al resto del reporte**.
+Es un chequeo de **integridad**, no un criterio de éxito: no entra en el GO.
+
+Y al revés: si **sí** cuadra, eso **confirma la herencia del universo, no el
+momentum**. Vale la pena repetirlo porque es exactamente el error que este
+caveat existe para prevenir: dos mediciones idénticas sobre los mismos datos
+coincidiendo no son evidencia independiente de nada.
+
 
 ## 7. Si los datos no alcanzan
 

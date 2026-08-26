@@ -342,8 +342,8 @@ let crashBody = null;
 
   // Las 5 sensibilidades obligatorias, todas presentes y etiquetadas.
   const etiquetas = b.sensibilidades.map((s) => s.resultado.etiqueta).join(',');
-  ok(etiquetas === 'sin_gate,sin_absoluto,faber_10m,bimestral,sin_filtros',
-    'las sensibilidades obligatorias están, incluido el puente "sin filtros"', etiquetas);
+  ok(etiquetas === 'sin_gate,sin_absoluto,faber_10m,bimestral,sin_filtros,ranura_a_efectivo',
+    'las sensibilidades obligatorias están, incluidos el puente "sin filtros" y la variante Antonacci', etiquetas);
   ok(b.sensibilidades[0].resultado.gate_activaciones === null, 'la corrida SIN GATE no reporta activaciones (no hay gate)');
   ok(b.sensibilidades[2].resultado.gate.tipo === 'sma_meses' && b.sensibilidades[2].resultado.gate.n === 10,
     'la variante Faber usa SMA de 10 MESES', JSON.stringify(b.sensibilidades[2].resultado.gate));
@@ -359,6 +359,32 @@ let crashBody = null;
   // El filtro absoluto tiene que haberse ejercido en un crash de este tamaño.
   ok(p.filtro_absoluto.nombres_recortados > 0,
     'el filtro de momentum absoluto recortó nombres del decil durante el crash', p.filtro_absoluto.nombres_recortados);
+
+  // ── La variante Antonacci: la ranura recortada se queda en EFECTIVO ──
+  const antonacci = b.sensibilidades.find((x) => x.resultado.etiqueta === 'ranura_a_efectivo').resultado;
+  ok(p.filtro_absoluto.peso_recorte === 'reparte', 'la PRINCIPAL reparte entre sobrevivientes (lectura literal)',
+    p.filtro_absoluto.peso_recorte);
+  ok(antonacci.filtro_absoluto.peso_recorte === 'efectivo', 'la sensibilidad deja la ranura en efectivo',
+    antonacci.filtro_absoluto.peso_recorte);
+  ok(antonacci.filtro_absoluto.ranuras_a_efectivo === p.filtro_absoluto.nombres_recortados,
+    'y reserva exactamente una ranura por nombre recortado',
+    `${antonacci.filtro_absoluto.ranuras_a_efectivo} vs ${p.filtro_absoluto.nombres_recortados}`);
+  ok(p.filtro_absoluto.ranuras_a_efectivo === 0, 'la principal no reserva ninguna (por construcción)',
+    p.filtro_absoluto.ranuras_a_efectivo);
+  ok(antonacci.economia.ret_total_neto !== p.economia.ret_total_neto,
+    'las dos lecturas de pesos dan carteras DISTINTAS (la decisión importa y por eso se reporta)',
+    `${antonacci.economia.ret_total_neto} vs ${p.economia.ret_total_neto}`);
+  ok(antonacci.filtro_absoluto.nombres_recortados === p.filtro_absoluto.nombres_recortados,
+    'y recortan los mismos nombres: lo único que cambia son los pesos');
+  ok(typeof b.atribucion_recorte === 'string' && /Antonacci/.test(b.atribucion_recorte),
+    'la atribución de la decisión de pesos viene calculada', b.atribucion_recorte);
+
+  // ── El puente con el rotation ──
+  ok(b.puente && b.puente.t_esperado === 1.87 && b.puente.tolerancia === 0.5,
+    'el puente lleva la referencia PRE-REGISTRADA del rotation (t = 1.87, banda ±0.5)', JSON.stringify(b.puente));
+  ok(b.puente.t_observado === b.sensibilidades[4].resultado.senal.t,
+    'y compara contra el t del split "sin filtros", no contra el de la principal');
+  ok(typeof b.puente.reproduce === 'boolean', 'el chequeo se pronuncia (cuadra o no cuadra)', b.puente.reproduce);
 
   ok(b.exploratorio.every((e) => e.etiqueta === 'EXPLORATORIO'), 'todo corte extra va etiquetado EXPLORATORIO');
   ok(b.exploratorio.length === 3 && /cierre del propio día/i.test(b.exploratorio[0].nombre),
@@ -382,12 +408,78 @@ let crashBody = null;
   ok(/Candado de honestidad/.test(md.text) && /gate_activaciones = \d/.test(md.text),
     'el markdown reporta gate_activaciones en el candado de honestidad');
   ok(/Sin gate macro/.test(md.text) && /variante Faber/.test(md.text) && /cada 2 meses/.test(md.text)
-    && /SIN FILTROS/.test(md.text) && /momentum absoluto/i.test(md.text),
-    'el markdown trae las sensibilidades obligatorias');
+    && /SIN FILTROS/.test(md.text) && /momentum absoluto/i.test(md.text)
+    && /Ranura vacía a EFECTIVO \(convención Antonacci\)/.test(md.text),
+    'el markdown trae las sensibilidades obligatorias, Antonacci incluida');
+  ok(/Puente con `\/api\/rotation-analyze`/.test(md.text) && /t esperado 1\.87/.test(md.text),
+    'el markdown trae la sección del puente con su t esperado');
+  ok(/Atribución del filtro absoluto \(pesos\)/.test(md.text),
+    'y la atribución de la decisión de pesos');
   ok(/EXPLORATORIO/.test(md.text), 'el markdown marca los cortes exploratorios');
   ok(/no es una prueba independiente/i.test(md.text), 'y cierra con el caveat');
   ok(/diagn[óo]stico/i.test(md.text) && /no cuelga de [ée]l/i.test(md.text),
     'el t se reporta como diagnóstico, no como criterio');
+}
+
+// ═══════════════════ 6b. la ranura en efectivo, medida en el simulador ═══════════════════
+console.log('dualmom-analyze: ranura recortada → EFECTIVO (1/N sobre el DECIL, no sobre sobrevivientes)');
+{
+  // Precios planos salvo A, que sube. Canasta de 1 nombre con 4 ranuras: solo
+  // 1/4 del capital entra al mercado y 3/4 se quedan quietos en efectivo.
+  const cal = Array.from({ length: 20 }, (_, i) => 'D' + String(i).padStart(2, '0'));
+  const sube = { opens: cal.map(() => 100), closes: cal.map((_, i) => 100 * 2 ** i) };
+  const seriesAlineadas = { A: sube };
+
+  const repartida = L.simulaRotacion({
+    canastas: [{ i: 0, fecha: cal[0], elegibles: 4, nombres: ['A'] }],
+    seriesAlineadas, calendario: cal, costo: 0,
+  });
+  const conRanuras = L.simulaRotacion({
+    canastas: [{ i: 0, fecha: cal[0], elegibles: 4, nombres: ['A'], ranuras: 4 }],
+    seriesAlineadas, calendario: cal, costo: 0,
+  });
+  // Sin ranuras: 100% en A. Con 4 ranuras: 25% en A + 75% en efectivo quieto.
+  const gananciaA = sube.closes[cal.length - 1] / sube.opens[0];
+  ok(Math.abs(repartida.equity_final - gananciaA) < 1e-9,
+    'sin `ranuras`, el nombre único se lleva TODO el capital (comportamiento de siempre)', repartida.equity_final);
+  ok(Math.abs(conRanuras.equity_final - (0.25 * gananciaA + 0.75)) < 1e-9,
+    'con `ranuras: 4` y 1 nombre, entra 1/4 al mercado y 3/4 quedan en EFECTIVO',
+    `${conRanuras.equity_final} vs ${0.25 * gananciaA + 0.75}`);
+  ok(Math.abs(conRanuras.turnover_medio - 0.25) < 1e-12,
+    'y el turnover es 25%: solo se negocia la ranura que se llena', conRanuras.turnover_medio);
+  // El campo es OPCIONAL: sin él nada cambia — por eso la rotación Value+Momentum
+  // no se entera de que el simulador ahora lo soporta.
+  const sinCampo = L.simulaRotacion({
+    canastas: [{ i: 0, fecha: cal[0], elegibles: 4, nombres: ['A'], ranuras: undefined }],
+    seriesAlineadas, calendario: cal, costo: 0,
+  });
+  ok(sinCampo.equity_final === repartida.equity_final, '`ranuras: undefined` = sin el campo (retrocompatible)');
+}
+
+// ═══════════════════ 6c. el puente con el rotation se pronuncia ═══════════════════
+console.log('dualmom-analyze: el puente con /api/rotation-analyze acusa una herencia rota');
+{
+  const C = L.CRITERIOS;
+  ok(C.puente_rotation_t_referencia === 1.87 && C.puente_tolerancia_t === 0.5,
+    'la referencia del puente está CONGELADA con el resto de los criterios',
+    `${C.puente_rotation_t_referencia}/${C.puente_tolerancia_t}`);
+
+  const cuadra = L.evaluaPuente({ senal: { t: 1.95 } });
+  ok(cuadra.reproduce === true && Math.abs(cuadra.brecha - 0.08) < 1e-9, 'dentro de la banda → cuadra', JSON.stringify(cuadra));
+  ok(/CONFIRMA la herencia del universo/.test(cuadra.nota) && /NO confirma el momentum/.test(cuadra.nota),
+    'y se aclara que confirma la herencia, no el momentum', cuadra.nota);
+
+  const roto = L.evaluaPuente({ senal: { t: 0.40 } });
+  ok(roto.reproduce === false, 'fuera de la banda → NO cuadra', JSON.stringify(roto));
+  ok(/HERENCIA DEL UNIVERSO está mal/.test(roto.nota), 'y el reporte apunta a la herencia del universo, no al momentum', roto.nota);
+  ok(/Revisar eso ANTES de creerle un solo número/.test(roto.nota), 'y dice que no se le crea al reporte hasta revisarlo');
+
+  const borde = L.evaluaPuente({ senal: { t: 1.87 + C.puente_tolerancia_t } });
+  ok(borde.reproduce === true, 'el borde exacto de la banda cuadra (≤, no <)', borde.brecha);
+
+  const sinSerie = L.evaluaPuente({ senal: null });
+  ok(sinSerie.reproduce === null && /NO se pudo verificar/.test(sinSerie.nota),
+    'sin serie con la que comparar, el puente se declara NO VERIFICABLE (no "cuadra")', sinSerie.nota);
 }
 
 // ═══════════════════ 7. CANDADO DE HONESTIDAD: gate sin evento ═══════════════════

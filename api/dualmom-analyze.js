@@ -35,7 +35,7 @@
 import { sql } from './_lib/db.js';
 import {
   CRITERIOS, GATE_PRINCIPAL, GATE_FABER, GATE_OFF,
-  corre, renderResumenMarkdown, ultimosHabilesDelMes,
+  corre, renderResumenMarkdown, ultimosHabilesDelMes, evaluaPuente,
   recortaVelasIncompletas, alineaAlCalendario, pct,
 } from './_lib/dualmom-analyze.js';
 import { bajaSeries } from './_lib/yahoo-daily.js';
@@ -57,7 +57,10 @@ const CAVEAT_NO_INDEPENDIENTE =
   + 'de mercado, en su mayoría alcistas. El momentum-solo del rotation y el split "sin filtros" de '
   + 'acá miden esencialmente lo mismo sobre los mismos datos: si coinciden, eso NO es confirmación '
   + 'independiente, es la misma medición dos veces. Úsese el split "sin filtros" como PUENTE entre '
-  + 'los dos reportes, no como réplica. Diferencia menor a declarar: el momentum-solo del rotation '
+  + 'los dos reportes, no como réplica — y como CHEQUEO DE INTEGRIDAD: tiene que reproducir '
+  + `aproximadamente el t = ${CRITERIOS.puente_rotation_t_referencia} del corte "solo momentum" del `
+  + 'rotation, y si no lo reproduce el problema está en la herencia del universo, no en el momentum '
+  + '(ver el bloque `puente` de la respuesta). Diferencia menor a declarar: el momentum-solo del rotation '
   + 'exige además TTM válido para ser elegible (comparte población con la pierna value), y acá no '
   + '— esta estrategia no usa EPS, así que su población elegible es algo más amplia. '
   + 'Y el sesgo NO empuja parejo en los cuatro criterios: infla el retorno y el Sharpe (§2, §4) '
@@ -156,6 +159,7 @@ export default async function handler(req, res) {
     const faber = corre({ ...base, gate: GATE_FABER, etiqueta: 'faber_10m' });
     const bimestral = corre({ ...base, cadaMeses: CRITERIOS.meses_rebalanceo_sensibilidad, etiqueta: 'bimestral' });
     const sinFiltros = corre({ ...base, gate: GATE_OFF, absoluto: false, etiqueta: 'sin_filtros' });
+    const ranuraEfectivo = corre({ ...base, pesoRecorte: 'efectivo', etiqueta: 'ranura_a_efectivo' });
 
     const sensibilidades = [
       { nombre: 'Sin gate macro (atribución: cuánto del §3 lo pone el gate)',
@@ -171,9 +175,18 @@ export default async function handler(req, res) {
         lectura: 'Se anticipa INCONCLUSO ARITMÉTICO: la mitad de rebalanceos que el mensual. Léase por sus números.',
         resultado: bimestral },
       { nombre: 'SIN FILTROS: sin gate y sin absoluto (momentum relativo puro) — PUENTE con el rotation',
-        lectura: 'Es la pierna comparable al corte "solo momentum" de /api/rotation-analyze. '
-          + 'Ojo: el rotation exige además TTM válido para ser elegible; acá no.',
+        lectura: 'Es la pierna comparable al corte "solo momentum" de /api/rotation-analyze '
+          + `(t = ${CRITERIOS.puente_rotation_t_referencia}). Tiene que reproducirlo aproximadamente; el `
+          + 'chequeo está más abajo. Ojo: el rotation exige además TTM válido para ser elegible; acá no.',
         resultado: sinFiltros },
+      { nombre: 'Ranura vacía a EFECTIVO (convención Antonacci) en vez de repartir entre sobrevivientes',
+        lectura: 'La principal toma la lectura literal ("un nombre solo ENTRA si…" habla de entrada, no de '
+          + 'pesos) y los sobrevivientes se reparten el capital. Esta variante deja cada ranura recortada '
+          + 'en efectivo: el peso es 1/N sobre N = TAMAÑO DEL DECIL, no sobre los sobrevivientes. Mueve el '
+          + '§3 justo en los meses de momentum roto — que es cuando la principal CONCENTRA en los pocos '
+          + 'que quedan en vez de des-arriesgar. Si el §3 se apoya en esta variante y no en la principal, '
+          + 'la defensa que se está midiendo no es la que se pre-registró.',
+        resultado: ranuraEfectivo },
     ];
 
     // El rebalanceo bimestral produce la MITAD de rebalanceos que el mensual:
@@ -196,6 +209,30 @@ export default async function handler(req, res) {
           ? 'Con gate_activaciones = 0 las dos corridas son la MISMA cartera: cualquier diferencia acá '
             + 'sería un bug, no un hallazgo.'
           : `Esa diferencia ES el gate, y son ${principal.gate_activaciones} mes(es) de efectivo.`)
+      : null;
+
+    // ── Puente con el rotation: chequeo de INTEGRIDAD de la herencia del
+    // universo, no criterio de éxito. Si no cuadra, lo sospechoso es el
+    // universo heredado, no el momentum. ──
+    const puente = evaluaPuente(sinFiltros, CRITERIOS);
+
+    // ── Atribución del filtro absoluto: literal vs Antonacci, calculada ──
+    const atribucionRecorte = (principal.economia && ranuraEfectivo.economia)
+      ? (principal.filtro_absoluto.nombres_recortados === 0
+        ? 'El filtro de momentum absoluto NO recortó un solo nombre en esta ventana, así que la lectura '
+          + 'literal y la variante Antonacci son la MISMA cartera: cualquier diferencia acá sería un bug, '
+          + 'no un hallazgo. La decisión de pesos no se probó.'
+        : `El filtro recortó ${principal.filtro_absoluto.nombres_recortados} nombre(s) en `
+          + `${principal.filtro_absoluto.rebalanceos_con_recorte} rebalanceo(s). Repartiendo entre `
+          + `sobrevivientes (principal) el max drawdown es ${pct(principal.economia.max_drawdown)} y el `
+          + `retorno anual ${pct(principal.economia.ret_anual_neto)}; dejando la ranura en efectivo `
+          + `(Antonacci) son ${pct(ranuraEfectivo.economia.max_drawdown)} y `
+          + `${pct(ranuraEfectivo.economia.ret_anual_neto)}, con `
+          + `${ranuraEfectivo.filtro_absoluto.ranuras_a_efectivo} ranura(s) en efectivo. `
+          + (principal.cumple.drawdown === ranuraEfectivo.cumple.drawdown
+            ? 'El §3 no depende de esa decisión de pesos.'
+            : 'OJO: el §3 SE VOLTEA entre las dos lecturas — el veredicto cuelga de una decisión de pesos '
+              + 'que no es la promesa de la estrategia. Léase con eso enfrente.'))
       : null;
 
     // ── 5. EXPLORATORIO — no cuenta para el veredicto, va etiquetado ──
@@ -267,6 +304,8 @@ export default async function handler(req, res) {
       go_fragil_motivo: principal.fragil_motivo,
       sensibilidades,
       atribucion,
+      atribucion_recorte: atribucionRecorte,
+      puente,
       nota_bimestral: notaBimestral,
       exploratorio,
       caveat: CAVEAT_NO_INDEPENDIENTE,

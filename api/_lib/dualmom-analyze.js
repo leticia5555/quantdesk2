@@ -105,6 +105,19 @@ const CRITERIOS = {
   gate_sma_dias: 200,               // principal: SMA de 200 días de SPY
   gate_sma_meses: 10,               // sensibilidad Faber: SMA de 10 meses
 
+  // PUENTE con /api/rotation-analyze. El corte "solo momentum" de aquel
+  // reporte, sobre la MISMA ventana y el MISMO universo, dio t = 1.87. El
+  // split "sin filtros" de acá (sin gate y sin absoluto) mide esencialmente lo
+  // mismo, así que TIENE QUE REPRODUCIRLO aproximadamente. No se espera
+  // igualdad exacta — el rotation exige además TTM válido para ser elegible,
+  // así que su población es un poco más chica, y las dos corridas se ejecutan
+  // en fechas distintas — por eso la tolerancia. Si la brecha se sale de la
+  // banda, la sospecha NO es "el momentum cambió": es que la HERENCIA DEL
+  // UNIVERSO está mal (otro set de símbolos, otra ventana, otro calendario), y
+  // el reporte lo dice en vez de publicar un número que no cuadra.
+  puente_rotation_t_referencia: 1.87,
+  puente_tolerancia_t: 0.5,
+
   // Piso de elegibles para EJECUTAR un rebalanceo INVERTIDO. Con ~98 símbolos
   // solo se dispara si los datos están rotos; ahí el rebalanceo se salta (se
   // arrastra la canasta anterior) y se CUENTA. El gate NO depende de esto: si
@@ -198,15 +211,27 @@ function evaluaGate({ spyCloses, calendario, finesDeMes, i, gate = GATE_PRINCIPA
 // DESPUÉS. Así "top decil (~10)" sigue queriendo decir ~10 y el filtro se ve
 // como lo que es — un recorte, medido en `absoluto.nombres_recortados`. La
 // otra lectura (filtrar primero y sacar el decil del subconjunto positivo) va
-// como corte EXPLORATORIO. Y una tercera decisión declarada: los nombres que
-// caen por el filtro NO dejan su ranura en efectivo — los sobrevivientes se
-// reparten el capital. Es la lectura literal de "un nombre solo entra si…"
-// (habla de ENTRADA, no de pesos); si nadie sobrevive, la canasta queda vacía
-// y el mes es de efectivo.
+// como corte EXPLORATORIO.
+//
+// Y la tercera decisión declarada, `pesoRecorte`, que es una SENSIBILIDAD
+// OBLIGATORIA porque mueve el §3 justo en los meses de momentum roto:
+//   'reparte'  (PRINCIPAL) — los nombres que caen por el filtro NO dejan su
+//              ranura en efectivo: los sobrevivientes se reparten el capital.
+//              Es la lectura literal de "un nombre solo ENTRA si…" — habla de
+//              entrada, no de pesos.
+//   'efectivo' (SENSIBILIDAD, convención Antonacci) — cada nombre recortado
+//              deja su ranura vacía: el peso es 1/N sobre N = TAMAÑO DEL
+//              DECIL, no sobre los sobrevivientes, y el resto queda en
+//              efectivo. Es la variante que de verdad des-arriesga cuando el
+//              momentum se rompe, en vez de concentrar en los pocos que
+//              quedan.
+// En los dos casos, si no sobrevive nadie la canasta queda vacía y el mes es
+// de efectivo entero.
 function construyeCanastasDual({
   simbolos, calendario, seriesAlineadas, iRebalanceos, spyCloses, finesDeMes,
   criterios = CRITERIOS, fraccion = CRITERIOS.fraccion_decil,
   gate = GATE_PRINCIPAL, absoluto = true, orden = 'decil_primero',
+  pesoRecorte = 'reparte',
 }) {
   const motivos = {
     sin_serie: 0, sin_precio_previo: 0, sin_open_rebalanceo: 0, sin_momentum: 0,
@@ -221,6 +246,7 @@ function construyeCanastasDual({
   let recortados = 0;
   let rebalanceosConRecorte = 0;
   let vaciasPorAbsoluto = 0;
+  let ranurasReservadas = 0;
 
   for (const i of iRebalanceos) {
     const fecha = calendario[i];
@@ -267,7 +293,7 @@ function construyeCanastasDual({
     // ── 3-4. DECIL + FILTRO ABSOLUTO ──
     // Desempate por símbolo: la corrida tiene que ser determinista.
     const porMomentum = (a, b) => (b.momentum - a.momentum) || (a.symbol < b.symbol ? -1 : 1);
-    let canasta, recorte = 0, elegiblesUsados = elegibles.length;
+    let canasta, recorte = 0, elegiblesUsados = elegibles.length, ranurasDecil = null;
 
     if (absoluto && orden === 'filtro_primero') {
       // Lectura EXPLORATORIA: el universo se filtra ANTES de cortar el decil,
@@ -284,6 +310,10 @@ function construyeCanastasDual({
       if (absoluto) {
         canasta = decil.filter((e) => e.momentum > criterios.momentum_absoluto_min);
         recorte = decil.length - canasta.length;
+        // Variante Antonacci: el denominador sigue siendo el DECIL COMPLETO,
+        // así que las ranuras recortadas quedan en efectivo (lo aplica
+        // simulaRotacion vía `canasta.ranuras`).
+        if (pesoRecorte === 'efectivo') ranurasDecil = decil.length;
       } else {
         canasta = decil;
       }
@@ -291,6 +321,7 @@ function construyeCanastasDual({
 
     if (recorte > 0) { recortados += recorte; rebalanceosConRecorte++; motivos.momentum_absoluto += recorte; }
     if (absoluto && !canasta.length) vaciasPorAbsoluto++;
+    if (ranurasDecil != null) ranurasReservadas += ranurasDecil - canasta.length;
 
     canastas.push({
       i, fecha, elegibles: elegiblesUsados,
@@ -300,6 +331,9 @@ function construyeCanastasDual({
       motivo_efectivo: canasta.length === 0 ? 'momentum_absoluto' : null,
       gate: { activo: false, precio_spy: g.precio, sma: g.sma },
       recortados_por_absoluto: recorte,
+      // Solo la variante Antonacci lo puebla; sin el campo, simulaRotacion
+      // reparte entre los nombres como siempre.
+      ...(ranurasDecil != null ? { ranuras: ranurasDecil } : {}),
     });
   }
 
@@ -317,9 +351,11 @@ function construyeCanastasDual({
     absoluto: {
       aplicado: !!absoluto,
       orden: absoluto ? orden : null,
+      peso_recorte: absoluto ? pesoRecorte : null,
       nombres_recortados: recortados,
       rebalanceos_con_recorte: rebalanceosConRecorte,
       canastas_vaciadas: vaciasPorAbsoluto,
+      ranuras_a_efectivo: ranurasReservadas,
     },
   };
 }
@@ -338,12 +374,13 @@ function corre({
   simbolos, calendario, seriesAlineadas, spyOpens, spyCloses, finesDeMes,
   desde, criterios = CRITERIOS, fraccion = CRITERIOS.fraccion_decil,
   gate = GATE_PRINCIPAL, absoluto = true, orden = 'decil_primero',
+  pesoRecorte = 'reparte',
   cadaMeses = CRITERIOS.meses_rebalanceo, etiqueta = 'principal',
 }) {
   const iRebalanceos = primerosHabilesDelMes(calendario, { desde, cadaMeses });
   const { canastas, motivos, saltados, gate: gateInfo, absoluto: absInfo } = construyeCanastasDual({
     simbolos, calendario, seriesAlineadas, iRebalanceos, spyCloses, finesDeMes,
-    criterios, fraccion, gate, absoluto, orden,
+    criterios, fraccion, gate, absoluto, orden, pesoRecorte,
   });
 
   const comun = {
@@ -471,6 +508,47 @@ function corre({
   };
 }
 
+// ─────────────────── puente con /api/rotation-analyze ───────────────────
+
+// El split "sin filtros" (sin gate, sin absoluto) es momentum relativo puro
+// sobre el MISMO universo y la MISMA ventana que el corte "solo momentum" del
+// rotation, que reportó t = 1.87. Tiene que REPRODUCIRLO aproximadamente.
+//
+// Esto NO es un criterio de éxito de la estrategia: es un chequeo de
+// INTEGRIDAD de la herencia del universo. Si la brecha se sale de la banda
+// pre-registrada, la lectura correcta no es "el momentum cambió" — las dos
+// corridas miden lo mismo sobre los mismos datos — sino que algo se rompió en
+// la herencia: otro set de símbolos, otra ventana, otro calendario. Y el
+// reporte lo dice, en vez de publicar un número que no cuadra con su gemelo.
+function evaluaPuente(bloque, criterios = CRITERIOS) {
+  const esperado = criterios.puente_rotation_t_referencia;
+  const tolerancia = criterios.puente_tolerancia_t;
+  const observado = bloque && bloque.senal ? bloque.senal.t : null;
+  if (observado == null) {
+    return {
+      t_esperado: esperado, tolerancia, t_observado: null, brecha: null, reproduce: null,
+      nota: 'El split "sin filtros" no produjo una serie con la que comparar (sin canastas ejecutadas): '
+        + 'el puente con /api/rotation-analyze NO se pudo verificar en esta corrida.',
+    };
+  }
+  const brecha = observado - esperado;
+  const reproduce = Math.abs(brecha) <= tolerancia;
+  return {
+    t_esperado: esperado, tolerancia, t_observado: observado, brecha, reproduce,
+    nota: reproduce
+      ? `El puente cuadra: t = ${num(observado)} contra el t = ${num(esperado)} del corte "solo momentum" `
+        + `de /api/rotation-analyze (brecha ${num(brecha)}, banda ±${num(tolerancia)}). Se esperaba que `
+        + 'cuadrara: es la MISMA medición sobre los MISMOS datos, así que esto CONFIRMA la herencia del '
+        + 'universo — NO confirma el momentum. Recordar el caveat: no es evidencia independiente.'
+      : `EL PUENTE NO CUADRA: t = ${num(observado)} contra el t = ${num(esperado)} esperado del corte `
+        + `"solo momentum" de /api/rotation-analyze (brecha ${num(brecha)}, fuera de la banda `
+        + `±${num(tolerancia)}). Las dos corridas deberían medir esencialmente LO MISMO sobre los MISMOS `
+        + 'datos, así que la sospecha NO es que el momentum haya cambiado: es que la HERENCIA DEL '
+        + 'UNIVERSO está mal — otro set de símbolos, otra ventana o otro calendario. Revisar eso ANTES '
+        + 'de creerle un solo número a este reporte.',
+  };
+}
+
 // ─────────────────── resumen en español ───────────────────
 
 const pct = (x, d = 2) => (x == null || !Number.isFinite(x) ? 'n/d' : (x * 100).toFixed(d) + '%');
@@ -582,6 +660,7 @@ function renderResumenMarkdown(s) {
     L.push(`(${p.muestra.rebalanceos_programados} programados, ${p.muestra.rebalanceos_saltados} saltados).`);
     L.push('No hay economía que medir: **INCONCLUSO**.');
     L.push('');
+    if (s.puente) { L.push(`> Puente con /api/rotation-analyze: ${s.puente.nota}`); L.push(''); }
     L.push('## Caveat pre-registrado');
     L.push('');
     L.push(s.caveat);
@@ -632,6 +711,7 @@ function renderResumenMarkdown(s) {
     L.push('');
   }
   if (s.atribucion) { L.push(`> **Atribución del gate**: ${s.atribucion}`); L.push(''); }
+  if (s.atribucion_recorte) { L.push(`> **Atribución del filtro absoluto (pesos)**: ${s.atribucion_recorte}`); L.push(''); }
   if (s.nota_bimestral) { L.push('> ' + s.nota_bimestral); L.push(''); }
   L.push('## Cortes EXPLORATORIOS (no cuentan para el veredicto)');
   L.push('');
@@ -639,6 +719,16 @@ function renderResumenMarkdown(s) {
     L.push(`**[${e.etiqueta}] ${e.nombre}**`);
     L.push(`- Por qué: ${e.por_que}`);
     L.push(`- ${bloqueCorto('Resultado', e.resultado)}`);
+    L.push('');
+  }
+  if (s.puente) {
+    L.push('## Puente con `/api/rotation-analyze` (chequeo de integridad, no criterio)');
+    L.push('');
+    L.push(`**${s.puente.reproduce === null ? 'NO VERIFICABLE' : s.puente.reproduce ? 'CUADRA' : '⚠️ NO CUADRA'}**`
+      + ` — t observado ${num(s.puente.t_observado)} · t esperado ${num(s.puente.t_esperado)}`
+      + ` · brecha ${num(s.puente.brecha)} · banda ±${num(s.puente.tolerancia)}`);
+    L.push('');
+    L.push(s.puente.nota);
     L.push('');
   }
   L.push('## Caveat pre-registrado: no es una prueba independiente');
@@ -651,7 +741,7 @@ function renderResumenMarkdown(s) {
 export {
   CRITERIOS, GATE_PRINCIPAL, GATE_FABER, GATE_OFF,
   ultimosHabilesDelMes, smaDias, smaMeses, evaluaGate,
-  construyeCanastasDual, curvaDesdeRetornos, corre,
+  construyeCanastasDual, curvaDesdeRetornos, corre, evaluaPuente,
   renderResumenMarkdown, filasCriterios, bloqueCorto, etiquetaVeredicto, pct, num,
   // re-exportadas para el endpoint (mismas primitivas que rotation/pead)
   alineaAlCalendario, recortaVelasIncompletas, cierreVigente,

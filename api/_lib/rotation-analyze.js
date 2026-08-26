@@ -304,6 +304,20 @@ function construyeCanastas({
 // Un nombre en cartera sin open ese día no se puede vender: se ARRASTRA con su
 // marca anterior y se cuenta. No se inventa una liquidación a un precio que no
 // existió.
+//
+// RANURAS (opcional, `canasta.ranuras`). Por default el capital se reparte
+// entre los nombres de la canasta: N nombres → 1/N cada uno. Si la canasta
+// declara `ranuras`, el denominador es ESE número y no la cantidad de nombres,
+// así que las ranuras sin nombre quedan en EFECTIVO. Lo usa el dual momentum
+// para la variante Antonacci: un nombre recortado por el filtro de momentum
+// absoluto deja su 1/N en efectivo en vez de que los sobrevivientes se lo
+// repartan. Sin el campo el comportamiento es idéntico al de siempre — la
+// rotación Value+Momentum no lo pasa y no cambia ni un decimal.
+//
+// Detalle declarado: si algún nombre se ARRASTRA (sin open, no negociable), su
+// notional ya sale de `repartible` y el denominador de ranuras NO se reduce.
+// Eso deja algo MÁS de efectivo del estrictamente necesario — el lado
+// conservador del error, que es el correcto para una variante defensiva.
 function simulaRotacion({ canastas, seriesAlineadas, calendario, costo = 0 }) {
   if (!canastas.length) return null;
   const porDia = new Map(canastas.map((c) => [c.i, c]));
@@ -349,7 +363,10 @@ function simulaRotacion({ canastas, seriesAlineadas, calendario, costo = 0 }) {
 
       const objetivoNombres = c.nombres.filter((s) => !arrastrados.has(s));
       const repartible = Math.max(0, equityOpen - valorArrastrado);
-      const porNombre = objetivoNombres.length ? repartible / objetivoNombres.length : 0;
+      // Sin `ranuras` el denominador es la cantidad de nombres (equal-weight de
+      // toda la vida). Con `ranuras`, las que quedan sin nombre van a efectivo.
+      const ranuras = Math.max(objetivoNombres.length, Number(c.ranuras) || 0);
+      const porNombre = ranuras ? repartible / ranuras : 0;
 
       // ── Turnover REAL: Σ|notional objetivo − notional actual| ──
       // Se mide sobre los pesos objetivo ANTES del costo (los pesos que se
@@ -375,7 +392,7 @@ function simulaRotacion({ canastas, seriesAlineadas, calendario, costo = 0 }) {
       // de sus propias comisiones y el turnover del siguiente rebalanceo
       // saldría inflado. equity_post = equity_open − costo, cash = 0.
       const asignable = Math.max(0, repartible - costoRebal);
-      const porNombreNeto = objetivoNombres.length ? asignable / objetivoNombres.length : 0;
+      const porNombreNeto = ranuras ? asignable / ranuras : 0;
       for (const sym of [...pos.keys()]) if (!arrastrados.has(sym)) pos.delete(sym);
       let asignado = 0;
       for (const sym of objetivoNombres) {
