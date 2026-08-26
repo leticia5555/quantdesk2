@@ -26,7 +26,6 @@ al final.
 | `arena:decide`     | `/api/arena-run`                      | `40 22 * * 1-5`        | **vercel.json** |
 | `arena:reconcile`  | `/api/arena-run?phase=reconcile`      | `40 14 * * 1-5`        | **vercel.json** |
 | `pead:hour`        | `/api/pead-harvest?job=hour`          | `30 21 * * *`          | **vercel.json** |
-| `pead:earnings`    | `/api/pead-harvest?job=earnings`      | `0 12,14,16,18,20 * * *` (5×/día) | **GitHub Actions** → `.github/workflows/external-crons.yml` |
 | `screener:refresh` | `/api/arena-screener?job=refresh`     | `0 */4 * * *` (cada 4h) | **GitHub Actions** → `.github/workflows/external-crons.yml` |
 
 > ⚠️ `vercel.json` es JSON estricto: **no admite comentarios** (una key extra
@@ -83,6 +82,15 @@ peleaban contra los 60s ya lo declaran (`export const maxDuration = 300`):
   partir el batch (hoy `PER_RUN=5`).
 - **`arena-screener`:** aire para el refresh.
 
-Pendiente opcional: regresar `pead:earnings` y `screener:refresh` a
-`vercel.json` y retirar el workflow de Actions — ya no hace falta el split, pero
-Actions funciona igual, así que no es urgente.
+Pendiente opcional: regresar `screener:refresh` a `vercel.json` y retirar el
+workflow de Actions — ya no hace falta el split, pero Actions funciona igual,
+así que no es urgente.
+
+**Retirado: `pead:earnings`.** El backtest PEAD cerró con NO-GO (ledger 99/99).
+El goteo de AlphaVantage se apaga en dos lugares y hacen cosas distintas:
+`PEAD_HARVEST_ENABLED != 1` (env var de Vercel) **corta el gasto de la key**, y
+quitar el schedule de Actions **evita el rojo diario** — el job trataba
+`disabled:true` como fallo duro. Se quitó también de `EXPECTED` en
+`api/cron-status.js` para que no quede `stale` para siempre. `pead:hour`
+(`vercel.json`, SEC 8-K) sigue como estaba: no gasta cupo de AV. Detalle en
+`docs/wheel-fase0.md` §4.3.

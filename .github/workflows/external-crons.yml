@@ -1,11 +1,17 @@
 # ═══════════════════════════════════════════════════════════════════
 # .github/workflows/external-crons.yml
 #
-# DÓNDE VIVEN LOS CRONS SUB-DIARIOS. El plan Hobby de Vercel limita cada cron
-# a 1×/día, así que estos dos NO están en vercel.json — corren desde aquí:
+# DÓNDE VIVEN LOS CRONS SUB-DIARIOS. El plan Hobby de Vercel limitaba cada cron
+# a 1×/día, así que estos NO están en vercel.json — corren desde aquí:
 #
-#   • pead:earnings   → GET /api/pead-harvest?job=earnings   (5×/día: 12,14,16,18,20 UTC)
 #   • screener:refresh→ GET /api/arena-screener?job=refresh  (cada 4h)
+#
+# RETIRADO: `pead:earnings` (goteo AlphaVantage). El backtest PEAD cerró con
+# NO-GO y su ledger quedó en 99/99 — el goteo no tenía nada más que bajar. El
+# gasto de AV lo corta `PEAD_HARVEST_ENABLED != 1` en Vercel; el schedule se
+# quita acá porque este job trata `disabled:true` como fallo duro y, con el
+# endpoint apagado, dejaba la pestaña Actions en rojo 5×/día para siempre —
+# ruido que tapa un cron realmente caído. Ver docs/wheel-fase0.md §4.3.
 #
 # Los crons DIARIOS siguen en vercel.json (agents-run, arena decide/reconcile,
 # pead hour). Ver docs/crons.md para el mapa completo.
@@ -26,56 +32,13 @@ name: external-crons
 
 on:
   schedule:
-    - cron: '0 12,14,16,18,20 * * *'   # pead:earnings — goteo AlphaVantage
     - cron: '0 */4 * * *'              # screener:refresh — cada 4h
-  workflow_dispatch: {}                # disparo manual → corre ambos (para probar)
+  workflow_dispatch: {}                # disparo manual (para probar)
 
 permissions:
   contents: read
 
 jobs:
-  pead-earnings:
-    # El disparo por schedule trae el cron exacto en github.event.schedule.
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 12,14,16,18,20 * * *'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Trigger PEAD earnings harvest
-        env:
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
-          BASE_URL: ${{ vars.APP_BASE_URL || 'https://quantdesk2.vercel.app' }}
-        run: |
-          # Sin `set -e`: queremos imprimir SIEMPRE status + body antes de fallar.
-          # (El `--fail-with-body` + `set -e` de antes abortaba en el fallo del
-          # command-substitution ANTES de imprimir el body → diagnóstico a ciegas.)
-          set -uo pipefail
-          url="$BASE_URL/api/pead-harvest?job=earnings"
-          echo "GET $url"
-          body_file="$(mktemp)"
-          # -o body a archivo, -w solo el status. Sin --fail*: curl sale 0 aunque
-          # el HTTP sea 500, así el body queda capturado; solo red/timeout → !=0.
-          http_code="$(curl -sS -o "$body_file" -w '%{http_code}' \
-            --connect-timeout 30 -m 120 \
-            -H "Authorization: Bearer $CRON_SECRET" "$url")"
-          curl_exit=$?
-          echo "── HTTP $http_code (curl exit $curl_exit) ──"
-          cat "$body_file"; echo
-          body="$(cat "$body_file")"
-          if [ "$curl_exit" -ne 0 ]; then
-            echo "::error::curl falló (exit $curl_exit) — red/timeout, sin respuesta HTTP completa."; exit 1
-          fi
-          if [ "$http_code" -ge 400 ]; then
-            echo "::error::pead-harvest earnings devolvió HTTP $http_code — ver body arriba."; exit 1
-          fi
-          if ! echo "$body" | jq -e . >/dev/null 2>&1; then
-            echo "::error::Respuesta no es JSON válido (¿página de error de Vercel?)."; exit 1
-          fi
-          # Fallo lógico devuelto como HTTP 200: endpoint apagado o error interno.
-          if echo "$body" | jq -e 'has("error") or (.disabled == true)' >/dev/null; then
-            echo "::error::pead-harvest earnings devolvió error/disabled — revisar body."; exit 1
-          fi
-          echo "OK — earnings corrió."
-
   screener-refresh:
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 */4 * * *'
     runs-on: ubuntu-latest

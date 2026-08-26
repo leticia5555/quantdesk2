@@ -63,9 +63,9 @@ ALPHAVANTAGE_API_KEY=xxx node scripts/wheel-phase0-probe.mjs
 MARKETDATA_TOKEN=yyy node scripts/wheel-phase0-probe.mjs
 ```
 
-⚠️ **El probe gasta 3-4 requests del mismo presupuesto de 25/día que consume
-`pead-harvest`** (§4.3). Correrlo un día en que el goteo de PEAD tenga margen,
-o aceptar 3-4 símbolos menos de PEAD ese día.
+El probe gasta 3-4 requests de las 25/día de la key. Con PEAD retirado (§4.3)
+el cupo está libre, así que no compite con nada — pero conviene correrlo el
+mismo día que arranque la cosecha, no en medio de ella.
 
 ---
 
@@ -274,22 +274,34 @@ Muestreo semanal = 52 viernes por año. Trades brutos = símbolos × fechas.
 exactamente **5 nombres × 2 años semanales**, o **3 nombres × 2 años** con
 holgura cómoda, o **5 nombres × 3 años si se baja a mensuales**.
 
-### 4.3 El descuento que nadie ve: **la key de AV ya está ocupada**
+### 4.3 El presupuesto está libre: **PEAD murió, las 25/día son del wheel**
 
-`api/pead-harvest.js:37` fija `DAILY_CAP = 25` para el goteo de PEAD, y
-`docs/crons.md:29` programa **5 corridas diarias** (`0 12,14,16,18,20 UTC`) de
-5 símbolos cada una: **PEAD está diseñado para consumir las 25 llamadas
-enteras**, con guard en Neon (`pead_api_budget`). Es **la misma key**.
+PEAD cerró con **NO-GO** y su ledger quedó en **99/99** — el goteo no tiene nada
+más que bajar. La key de AV (`ALPHAVANTAGE_API_KEY`, la misma para los dos
+proyectos) queda **entera para el wheel: 25 requests/día**.
 
-| Escenario de convivencia | Presupuesto real del wheel | 5 × 104 (520 req) tarda |
-|---|---:|---|
-| PEAD terminó su universo y solo refresca | ~20-25/día | ~21-26 días |
-| Se parte el presupuesto 12/13 | 12/día | **~44 días** ❌ |
-| PEAD pausado durante la cosecha del wheel | 25/día | ~21 días ⚠️ |
+Pero **no se libera sola**: el cron sigue programado y el gate sigue apagado
+por env var. Qué hay que apagar, y qué apaga qué:
 
-**Conclusión operativa:** con AV, **el wheel y PEAD no caben juntos**. O se
-espera a que PEAD termine, o se pausa el goteo de PEAD unas semanas, o se
-elige otra fuente. Esto no es un detalle: es la diferencia entre 21 y 44 días.
+| # | Qué | Dónde | Qué logra |
+|:-:|---|---|---|
+| **1** | `PEAD_HARVEST_ENABLED` ≠ `1` | env var de **Vercel** (producción) | **Lo único que corta el gasto de AV.** El gate (`api/pead-harvest.js:160`) devuelve `{disabled:true}` **antes** de `ensurePeadSchema()` y antes de cualquier llamada a AV. Con esto solo, el cupo ya es del wheel |
+| **2** | Schedule + job `pead-earnings` | `.github/workflows/external-crons.yml` | **No hace falta para el cupo — sí para el ruido.** El job trata `disabled:true` como **fallo duro** (`jq -e '(.disabled == true)'` → `::error::` + `exit 1`). Dejándolo, la pestaña Actions queda **roja 5 veces por día para siempre**, y un cron realmente caído (`screener:refresh`) se pierde en el ruido |
+| **3** | `pead:earnings` en `EXPECTED` | `api/cron-status.js:24` | Consecuencia de (2): sin schedule no hay heartbeat, y a las 8 h el job entra en `stale` → `/api/cron-status` devuelve **`ok:false` permanente** |
+
+**(2) y (3) están hechos en este branch.** **(1) queda del lado de Vercel** — es
+la única de las tres que efectivamente corta el gasto, así que **es la que
+habilita el presupuesto del wheel**.
+
+> **Sobra suelta, fuera de este alcance:** `pead:hour` (`vercel.json:43`, SEC 8-K
+> diario) **no gasta cupo de AV** — SEC es gratis — así que no bloquea nada.
+> Con el gate apagado devuelve `disabled` y sigue latiendo, así que tampoco
+> ensucia el monitor. Retirarlo es parte de jubilar PEAD del todo, no de liberar
+> el presupuesto: se deja como estaba.
+
+**Presupuesto efectivo del wheel: 25/día, sin competencia.** El alcance de
+5 nombres × 2 años (520 req) tarda **~21 días** — dentro del techo de 3 semanas,
+sin trucos de convivencia.
 
 ### 4.4 El mismo alcance en Market Data free (100 créditos/día)
 
@@ -355,13 +367,14 @@ de regímenes.**
 
 | Nivel | Alcance | Requests (AV) | Goteo | Qué se puede afirmar |
 |---|---|---:|---:|---|
-| **Piso digno** | 5 nombres × **2 años** semanales | 520 | ~21 días (key dedicada) | Captura de prima neta vs buy & hold pareado, con **al menos un tramo no-alcista** dentro |
+| **Piso digno** | 5 nombres × **2 años** semanales | 520 | ~21 días | Captura de prima neta vs buy & hold pareado, con **al menos un tramo no-alcista** dentro |
 | **Mínimo publicable con recorte** | 5 nombres × **1 año** semanales | 260 | ~11 días AV / **~4 días Market Data** | Solo **"cómo le fue en este régimen"**. Etiquetado régimen-específico, sin claim de edge |
 | **Recorte barato** | 5 nombres × 2-3 años **mensuales** | 120-180 | ~5-8 días | Responde por el wheel **mensual**, no por el semanal (menos trades, distinta prima/theta) |
 | ❌ Fuera de presupuesto | ≥8 nombres o ≥3 años semanales | 780+ | 32+ días | — |
 
-**El piso digno (5 × 2 años) cabe — pero solo justo, y solo si la key de AV está
-dedicada** (§4.3) **y si G0 pasa** (§1.2).
+**El piso digno (5 × 2 años) cabe — justo, pero cabe**: 520 requests a 25/día
+son ~21 días, y con PEAD retirado el cupo está entero (§4.3). La única condición
+que queda es **que G0 pase** (§1.2).
 
 ---
 
@@ -405,7 +418,7 @@ haya egress y key, pegar los payloads en §1.3 y anotar el resultado acá:
 
 | Resultado de G0 | Acción |
 |---|---|
-| **AV free devuelve datos reales** | Fuente primaria = AV. Alcance = 5 × 2 años. Antes: resolver la colisión con PEAD (§4.3) |
+| **AV free devuelve datos reales** | Fuente primaria = AV. Alcance = **5 nombres × 2 años semanales**, ~21 días de goteo con el cupo entero (§4.3) |
 | **AV free devuelve placeholder / paywall** | Fuente primaria = **Market Data free**, recorte a **12 meses**, y la cosecha arranca **ya** (la ventana se cae por el borde). AV queda como opción paga ($49.99/mo) si el v0 promete |
 | **Ambas fallan** y Alpaca no da quotes históricos utilizables | **NO VIABLE en gratis** → el wheel se estaciona con acta. Reabrir solo con decisión explícita de pagar $30-50/mes |
 
@@ -471,14 +484,50 @@ cuánto mueven el resultado.
 
 - **D11 — Unidad estadística.** **Cartera calendar-time semanal** (convención de
   la casa) para que el solapamiento transversal no infle el t-stat (§5.2a).
-- **D12 — Benchmark.** **Buy & hold del mismo subyacente, pareado** semana a
-  semana (no SPY). El estadístico principal va sobre **la diferencia**.
+- **D12 — Benchmark: buy & hold del mismo subyacente. NUNCA cero.**
+  ⚠️ **PRE-REGISTRADO — no se renegocia después de ver resultados.**
+
+  Vender calls **se ve como ingreso**: la prima entra todas las semanas y la
+  curva de "prima cobrada" sube sin bajar nunca. Medido contra cero —o contra
+  "prima anualizada sobre capital", que es la métrica con la que se vende el
+  wheel en internet— **casi cualquier régimen alcista da un resultado
+  espectacular y falso**: lo que entró por prima salió por upside tapado, y esa
+  pata no aparece en el estado de resultados. El costo es invisible por
+  construcción, así que hay que meterlo en el benchmark.
+
+  **Benchmark = las mismas acciones, mismo periodo, mismo capital, sin vender
+  calls**, pareado semana a semana. El estadístico principal va sobre **la
+  diferencia** (wheel − B&H), no sobre los dos niveles por separado.
+
+  **Regla NO-GO, congelada:** *si el wheel no le gana a buy & hold **ajustado
+  por riesgo** en el mismo periodo → **NO-GO**.* Sin excepciones por "pero
+  cobró mucha prima" ni por "pero tuvo menos drawdown": si la ventaja es de
+  riesgo, tiene que aparecer **en la métrica ajustada por riesgo**, no en la
+  prosa que acompaña la tabla. Cuál es esa métrica se congela **antes** de
+  correr nada (recomendación: Sharpe de la serie semanal de la diferencia, con
+  el spread medio semanal y su `t` reportados al lado).
+
+- **D12b — Qué claim sostiene cada ventana** (pre-registrado, porque un año es
+  un régimen y el covered call es la estrategia más régimen-dependiente que hay,
+  §5.2c):
+
+  | Ventana cosechada | Se PUEDE afirmar | NO se puede afirmar |
+  |---|---|---|
+  | **1 año** | *"En la ventana cosechada, sobre estos 5 nombres, el wheel rindió X bp/semana **vs buy & hold** (t = …)"*. Descriptivo, régimen-específico, con la ventana nombrada en la misma frase | Nada sobre edge esperado. Ni "el wheel funciona" ni "el wheel no funciona". Ninguna extrapolación a otro régimen |
+  | **2 años** (con ≥1 tramo no-alcista) | *"Hay / no hay **evidencia preliminar** de captura de prima neta vs B&H, y el signo **se mantiene / se da vuelta** entre el tramo alcista y el no-alcista"* | Edge robusto fuera de muestra. Comportamiento en un crash (2 años casi seguro no contienen uno). Ranking entre deltas o DTE como conclusión — eso va etiquetado **EXPLORATORIO** |
+
+  **Corolario obligatorio:** el resultado se reporta **partido por régimen**
+  (mínimo: tramo alcista vs no-alcista), no solo agregado. **Si el signo del
+  spread se da vuelta entre tramos, el veredicto es INCONCLUSO aunque el
+  agregado sea positivo** — esa es exactamente la firma de una estrategia que
+  solo cobra por vender opcionalidad mientras el mercado sube.
 - **D13 — Universo point-in-time.** Con 5 mega-caps y 1-2 años el sesgo de
   supervivencia es chico, pero hay que **declararlo**, no ignorarlo.
 - **D14 — Criterios de éxito congelados ANTES de correr nada**: piso de trades,
-  umbral de spread neto vs buy & hold, `|t|` sobre la serie semanal pareada, y
-  veredicto **GO / NO-GO / INCONCLUSO** contra una **única** especificación
-  principal. Todo lo demás, etiquetado EXPLORATORIO.
+  umbral de spread neto vs buy & hold (**el NO-GO de D12 es el piso, no un
+  criterio más**), `|t|` sobre la serie semanal pareada, el split por régimen de
+  D12b, y veredicto **GO / NO-GO / INCONCLUSO** contra una **única**
+  especificación principal. Todo lo demás, etiquetado EXPLORATORIO.
 - **D15 — Almacenamiento y goteo.** Mismo patrón que PEAD: tabla de snapshots +
   **ledger reanudable** + **guard de presupuesto diario** en Neon, con
   validación de payload **en la ingesta** (la lección de §1.2: `Note`,
@@ -512,6 +561,7 @@ esquema documentado, no verificado):
 
 Evidencia interna del repo: `api/options.js:12-14` (Yahoo = front expiry, sin
 histórico) · `api/_lib/av-earnings.js:6-10` (AV responde 200 con `Note` al
-cortar) · `api/pead-harvest.js:37` + `docs/crons.md:29` (las 25/día ya están
-comprometidas) · `docs/alpaca-paper-scope.md:195` (precedente del 403 del
+cortar) · `api/pead-harvest.js:160` (el gate que corta el gasto de AV) +
+`.github/workflows/external-crons.yml` (el cron que trata `disabled` como fallo
+duro) · `docs/alpaca-paper-scope.md:195` (precedente del 403 del
 sandbox) · `docs/pead-backtest-scope.md:516` (candado de ≥30 trades).

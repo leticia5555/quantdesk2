@@ -21,7 +21,8 @@ const EXPECTED = [
   { job: 'agents:run',      schedule: '30 22 * * 1-5',         cadence: 'días hábiles ~22:30', stale_after_h: 80 },
   { job: 'arena:decide',    schedule: '40 22 * * 1-5',         cadence: 'días hábiles ~22:40', stale_after_h: 80 },
   { job: 'arena:reconcile', schedule: '40 14 * * 1-5',         cadence: 'días hábiles ~14:40', stale_after_h: 80 },
-  { job: 'pead:earnings',   schedule: '0 12,14,16,18,20 * * *', cadence: '5×/día (goteo AV)',   stale_after_h: 8 },
+  // pead:earnings retirado con el NO-GO del PEAD: sin schedule no hay latido,
+  // y dejarlo acá daba ok:false permanente. Ver docs/wheel-fase0.md §4.3.
   { job: 'pead:hour',       schedule: '30 21 * * *',           cadence: '1×/día (SEC 8-K)',    stale_after_h: 30 },
   { job: 'screener:refresh',schedule: '0 */4 * * *',           cadence: 'cada 4h',             stale_after_h: 9 },
 ];

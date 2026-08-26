@@ -21,10 +21,9 @@
 //   ALPACA_PAPER_KEY=... ALPACA_PAPER_SECRET=... node scripts/...  # plan B
 //   WHEEL_PROBE_SYMBOL=MSFT  node scripts/wheel-phase0-probe.mjs
 //
-// COSTO: por defecto 3 requests de AV. OJO: salen del MISMO presupuesto de
-// 25/dia que consume pead-harvest (api/pead-harvest.js:37, docs/crons.md:29).
-// Correrlo un dia con margen, o aceptar 3 simbolos menos de PEAD ese dia.
-// Ajustable con AV_PROBE_BUDGET=N (min 1, max 5).
+// COSTO: por defecto 3 requests de las 25/dia del free tier de AV. Con PEAD
+// retirado (NO-GO, ledger 99/99) el cupo esta libre, asi que no compite con
+// nada. Ajustable con AV_PROBE_BUDGET=N (min 1, max 5).
 //
 // Los payloads crudos quedan en .wheel-phase0/ para pegarlos en el memo (§1.3).
 // Sin dependencias (fetch global de Node >= 18). No toca ninguna lib del repo.
@@ -169,7 +168,7 @@ export function weeklyExpirations(data, asOf) {
 async function probeAlphaVantage() {
   console.log('\n═══ (1) ALPHA VANTAGE — HISTORICAL_OPTIONS ═══');
   if (!AV_KEY) { console.log('  SALTADO: ALPHAVANTAGE_API_KEY no seteada.\n'); return null; }
-  console.log(`  simbolo=${SYMBOL}  presupuesto=${AV_BUDGET} request(s) (del cupo de 25/dia COMPARTIDO con pead-harvest)\n`);
+  console.log(`  simbolo=${SYMBOL}  presupuesto=${AV_BUDGET} request(s) (de las 25/dia del free tier)\n`);
 
   const rows = [];
   for (const d of DEPTHS) {
