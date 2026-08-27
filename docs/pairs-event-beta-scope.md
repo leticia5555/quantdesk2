@@ -157,9 +157,13 @@ feature, y el chart no lo necesita (muestra precios como los ve el usuario).
 | Ventana completa | el `range` que eligió el usuario en el validador (1y / 2y / 5y) |
 | Mínimo | **30 pares** de retornos; por debajo → `null` + razón, no un número frágil |
 
-**Nota honesta obligatoria:** con `range=1y` las dos ventanas son la misma serie.
-La respuesta marca `same_window: true` y la UI pinta **un solo** número en vez
-de repetir el mismo valor dos veces con etiquetas distintas.
+**Nota honesta obligatoria:** con `range=1y` las dos ventanas cubren el mismo
+año. No son *idénticas* — "365 días de calendario" da ~261 sesiones y la corta
+son 252 exactas, así que los dos Pearson diferirían en el tercer decimal por un
+desfase de nueve sesiones. Reportar los dos sería **precisión falsa disfrazada
+de segundo dato**. Regla: cuando `range` no supera el año, la respuesta marca
+`same_window: true`, devuelve `r_1y: null` y sólo `r_full` (etiquetado con el
+range del usuario), y la UI pinta **un solo** número.
 
 ### 4.2 Día de evento
 
@@ -190,10 +194,21 @@ auditable.
 | Caso | Regla |
 |---|---|
 | D es la última sesión disponible (no hay `E`) | evento **descartado**, contado en `dropped.no_next_session` |
-| No hay precio de Y ese día (halt, ticker joven) | evento **descartado**, `dropped.no_price` |
 | `E−1` no existe (evento al inicio de la serie) | evento **descartado**, `dropped.no_prior_close` |
-| Dos `reported_date` iguales | ya colapsados por `dedupeByReportedDate()` (`api/_lib/pead-db.js`) |
 | `reported_date` fuera de la ventana de precios de 10 años | **descartado**, `dropped.out_of_window` |
+| `reported_date` malformado (`None`, `''`, formato raro) | **descartado**, `dropped.out_of_window` |
+| Dos `reported_date` iguales | colapsados por `dedupeByReportedDate()` (`api/_lib/pead-db.js`) y otra vez por un `Set` en `buildEvents()`, para cubrir también el camino directo desde AV |
+| Una sesión sin precio en alguno de los dos | **no puede llegar a ser un evento**: ver abajo |
+
+**"Sin precio en alguno de los dos" dejó de ser un descarte por evento.** Las
+dos series se alinean por fecha **antes** de mirar ningún reporte, así que
+"día con precio válido en ambos" no es una condición que haya que acordarse de
+chequear en cada evento: **es el único tipo de día que existe río abajo**. Es un
+invariante por construcción en vez de un chequeo que alguien puede olvidar.
+
+Lo que se cae al alinear se cuenta igual, pero en su unidad correcta: viaja como
+`dropped.dropped_sessions` (**sesiones**, a nivel serie), no como eventos
+descartados. Contarlo como evento sería mezclar dos unidades en el mismo número.
 
 `dropped` sale **siempre** en la respuesta y se muestra en el pie de la sección.
 Un evento silenciosamente ausente es una muestra distinta a la que dice el JSON.
@@ -388,15 +403,15 @@ nueva fase confirma que sigue siendo `1/3` con la sección activa).
   "correlation": {
     "r_1y":   { "value": 0.62, "n": 252 },
     "r_full": { "value": 0.58, "n": 502, "range": "2y" },
-    "same_window": false,              // true si range=1y → la UI pinta uno solo
+    "same_window": false,              // true si range<=1y → r_1y va null, la UI pinta uno solo
     "unavailable": null                // o { reason: "…" }
   },
   "event_study": {
     "x_events_total": 41,              // eventos usables tras los descartes
     "window": { "from": "2016-08-27", "to": "2026-08-26", "range": "10y" },
     "hour_source": "assumed_amc",
-    "dropped": { "no_next_session": 1, "no_price": 0,
-                 "no_prior_close": 0, "out_of_window": 3 },
+    "dropped": { "no_next_session": 1, "no_prior_close": 0,
+                 "out_of_window": 3, "dropped_sessions": 12 },
     "groups": [
       { "key": "UP",   "n": 14, "n_zero": 0, "significant": true,
         "c2c": { "hit_rate": 0.64, "avg": 0.018 },
