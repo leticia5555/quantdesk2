@@ -1,0 +1,4 @@
+# Salida de las sondas (payloads crudos para pegar en los memos, no codigo).
+# scripts/wheel-phase0-probe.mjs y scripts/event-beta-probe.mjs escriben acá.
+.wheel-phase0/
+.event-beta-probe/
