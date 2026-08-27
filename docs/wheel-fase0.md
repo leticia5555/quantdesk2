@@ -192,27 +192,42 @@ se puede bajar. Si se elige esta fuente, **la cosecha es urgente**: cada semana
 de demora es una semana de historia que se cae por el borde. (Los planes pagos
 amplían el lookback; el precio exacto hay que verificarlo al registrarse.)
 
-#### G0-b — la compuerta que ahora decide la Fase 0
+#### G0-b — **PASÓ**, con dos asteriscos que hay que medir antes de cosechar
 
-Todo lo de arriba es **documentación sin verificar**, y la lección de §1.2 es
-justamente que la documentación pública de estos proveedores no alcanza para
-decidir. La sonda ya trae el bloque (tres fechas: ~1 mes, ~11 meses y ~13 meses;
-la última existe para **verificar el techo**, tiene que rebotar):
+Sondeo en local: las tres fechas devolvieron cadenas reales, **la de ~13 meses
+no rebotó** (10/10 contratos con `bid > 0`) y las tres llamadas consumieron
+**0 créditos de 10.000**. La fuente sirve. Pero los dos números que sonaban a
+buena noticia son, cada uno, una bandera:
+
+**Asterisco 1 — 10.000 créditos/día no es el Free Forever.** Free Forever son
+**100/día**. 10.000/día es el **Starter Trial**: $0 por **30 días**, **no
+renovable ni extensible**, y al terminar la cuenta **cae automáticamente a Free
+Forever** (100/día y techo de 1 año). O sea: **la cosecha tiene reloj**, y lo
+primero es averiguar en el dashboard **cuántos días quedan**.
+
+**Asterisco 2 — el sondeo usó AAPL, que es el ticker de demo de Market Data.**
+La documentación del Starter Trial dice que el acceso histórico está limitado a
+**1 año "en tickers distintos de AAPL"**. El probe corre con
+`WHEEL_PROBE_SYMBOL` en `AAPL` por defecto — es decir, **sondeamos justo el
+único símbolo que puede no tener el límite**. Los 13 meses que no rebotaron
+pueden ser un privilegio del ticker de demo, no una propiedad del plan. Y lo
+mismo vale para los 0 créditos: si AAPL es demo, su costo tampoco es
+representativo.
+
+**Ninguno de los dos se resuelve leyendo.** La sonda ya está extendida para
+medir las tres cosas de una (`scripts/wheel-phase0-probe.mjs`):
+
+| Qué mide | Cómo |
+|---|---|
+| **(a) Plan real** | Lee `x-api-ratelimit-limit`. 100 = Free Forever · 10.000 = Starter Trial · 100.000 = Trader Trial. Si es trial, avisa del reloj |
+| **(b) Techo real** | Escalera de 1 mes → 5 años, corrida **dos veces: AAPL y un ticker de control** (`MSFT`). Si AAPL llega más atrás que el control, lo marca como **falso positivo de profundidad** |
+| **(c) Costo real** | Cadena **completa sin filtros** vs filtrada, sobre el **control**, con los créditos consumidos de cada una. Ése es el presupuesto de verdad |
 
 ```
 MARKETDATA_TOKEN=xxx node scripts/wheel-phase0-probe.mjs
 ```
 
-| Resultado | Lectura |
-|---|---|
-| ~1 mes y ~11 meses devuelven contratos con `bid > 0`, y ~13 meses rebota | **G0-b PASA** — fuente primaria confirmada, techo de 12 meses confirmado. Cosechar **ya** |
-| ~11 meses vacío pero ~1 mes OK | Techo real **menor** a 12 meses → recalcular el alcance antes de cosechar |
-| `s: "error"` / 401 / créditos que se van de a cientos por request | **G0-b FALLA** → pasar a Alpaca (§3.2) |
-
-**Lo que hay que anotar acá cuando corra:** cuántos créditos consumió cada
-request (header `x-api-ratelimit-consumed`). Es el número que decide si la
-cosecha son 3 días o 30: si un snapshot filtrado cuesta 1 crédito, entran ~100
-por día; si cuesta 20, entran 5.
+**Lo que decide el veredicto es la fila del control, no la de AAPL.**
 
 ### 3.2 Alpaca — **credenciales ya en casa, presupuesto independiente**
 
@@ -308,23 +323,35 @@ El apagado sigue siendo correcto por sus propios motivos, así que se deja hecho
 
 `pead:hour` (`vercel.json`, SEC 8-K) se deja como estaba: no gasta cupo de AV.
 
-### 4.4 El presupuesto que sí importa ahora: Market Data free
+### 4.4 El presupuesto que sí importa ahora: Market Data
 
-100 créditos/día, **1 crédito por cada 1000 contratos** en consultas históricas
-(§3.1 — y es lo primero que G0-b tiene que confirmar).
+El sondeo cambió los dos parámetros de esta cuenta. Ya no son 100 créditos/día
+sino **10.000** — pero por **30 días** (Starter Trial, §3.1). El presupuesto
+dejó de ser una restricción y pasó a ser **una fecha de vencimiento**.
 
-| Alcance | Créditos (1-2 por snapshot filtrado) | Días de cosecha |
-|---|---:|---:|
-| 5 nombres × 52 viernes × **1 año** | 260-520 | **3-6 días** ✅ |
-| 10 × 52 × 1 año | 520-1.040 | 6-11 días ✅ |
-| 20 × 52 × 1 año | 1.040-2.080 | 11-21 días ⚠️ |
-| 5 × 104 × **2 años** | — | ❌ **imposible en free: el techo es 12 meses** |
+| Alcance (5 nombres × 52 viernes) | Snapshots | A 10.000 créditos/día |
+|---|---:|---|
+| 1 año | 260 | **una tarde** |
+| 2 años | 520 | **una tarde** |
+| 3 años | 780 | **una tarde** |
 
-**El problema se dio vuelta.** Con AV el presupuesto era escaso y la ventana
-abundante; acá el presupuesto sobra —se pueden cosechar 10 nombres en una
-semana— y **la ventana es el techo**. Y no es simétrico: la ventana de AV se
-podía recuperar más tarde; la de Market Data **se cae por el borde y no vuelve**.
-Cada semana de demora es una semana de historia perdida para siempre.
+A menos que la cadena completa resulte carísima (eso es lo que mide el punto (c)
+de la sonda), **el cupo diario ya no limita nada durante el trial**. Con 10.000
+créditos y snapshots de 1-2 créditos entran ~5.000-10.000 por día: el universo
+entero de cualquier alcance razonable cabe en una sola corrida.
+
+**La restricción real pasó a ser doble, y las dos son relojes:**
+
+1. **El trial se acaba** (30 días, no renovable). Después: 100 créditos/día y
+   techo de 1 año.
+2. **La ventana se cae por el borde.** Lo que hoy tiene 13 meses, después del
+   downgrade es inalcanzable para siempre.
+
+**De ahí sale el principio que ordena toda la cosecha: cosechar de atrás hacia
+adelante.** Los últimos 12 meses van a seguir siendo accesibles después del
+downgrade; **todo lo anterior, no**. Así que la historia profunda se baja
+**primero** — es la única que el reloj puede quitarnos. Detalle en
+`docs/wheel-harvest-scope.md`.
 
 ## 5. ¿Qué alcance mínimo hace el backtest estadísticamente digno?
 
@@ -385,65 +412,62 @@ la única forma de alcanzarlo es pagando.
 
 ## 6. VEREDICTO
 
-### **VIABLE CON RECORTE SEVERO** — el recorte cambió de naturaleza
+### **VIABLE** — con el alcance final pendiente de una medición, no de una apuesta
 
-Antes del sondeo, el recorte era de **tamaño**: menos nombres, menos años, misma
-pregunta. Con AV cerrada, el recorte es de **pregunta**: lo que queda gratis
-alcanza para **un año**, y un año —por la regla que este mismo memo pre-registró
-en §7 D12b— **solo sostiene un claim descriptivo**. El backtest se puede correr;
-lo que no se puede es concluir *"el wheel tiene edge"* con él.
+Las dos compuertas están cerradas: **G0 = NO** (AV es premium, §1.2) y
+**G0-b = SÍ** (Market Data devuelve cadenas históricas reales con `bid > 0`,
+§3.1). Existe una fuente accesible y gratuita. La pregunta de la Fase 0 está
+respondida: **sí, se puede backtestear covered calls semanales sobre líquidos US
+sin pagar.**
 
-**Estado por fuente, después del sondeo:**
+Lo que queda abierto no es *si* se puede, sino *cuánta historia* — y de eso
+depende **qué pregunta** puede responder la Fase 1:
+
+| Si el ticker de **control** llega a… | Recorte | D12b permite |
+|---|---|---|
+| **≥2 años** | De **tamaño** (menos nombres, no menos pregunta) | **Evidencia preliminar** de captura de prima vs B&H, con split alcista/no-alcista. **D12b respira** |
+| **~1 año** (la profundidad de AAPL era privilegio de demo) | De **pregunta** | Solo el claim **descriptivo régimen-específico** |
+
+**Por qué no lo resuelvo por decreto:** el sondeo que dio 13 meses corrió sobre
+**AAPL, el ticker de demo de Market Data**, y la documentación del Starter Trial
+dice que el histórico está limitado a 1 año en tickers distintos de AAPL. Dar el
+veredicto optimista con esa evidencia sería exactamente el error que este memo
+viene evitando desde §1.2 — creerle a una lectura cuando un request la puede
+desmentir. La sonda extendida lo mide en una corrida.
+
+### Estado por fuente, final
 
 | Fuente | Estado |
 |---|---|
-| **AV `HISTORICAL_OPTIONS`** | ❌ **CERRADA — endpoint premium** (verificado, §1.2). No se reintenta |
-| **Yahoo** | ❌ Sin historia (verificado por el código del repo, §2) |
-| **Market Data free** | ⚠️ **Candidata principal — sin sondear.** Es **G0-b** (§3.1) |
-| **Alpaca** | ⚠️ Plan B — sin sondear. Historia desde feb-2024, sin cadena as-of |
-| **Pagas** (AV Premium $49.99, ThetaData/ORATS ~$30-100) | 💰 Compran el piso digno y eliminan la cosecha (§4.2) |
+| **Market Data** | ✅ **FUENTE PRIMARIA.** Cadenas as-of con bid/ask/OI/greeks. Cupo: 10.000/día durante el trial |
+| **AV `HISTORICAL_OPTIONS`** | ❌ Cerrada — endpoint premium (verificado) |
+| **Yahoo** | ❌ Sin historia (verificado) |
+| **Alpaca** | 🔵 Plan B, ya no hace falta sondearlo salvo que Market Data falle |
+| **Pagas** ($30-50/mes) | 💰 La salida si el techo del control es 1 año y se quiere el piso digno |
 
-**Sobre el criterio pre-registrado, con honestidad:** la letra decía *"VIABLE si
-alguna fuente da ≥1 año de cadenas muestreables para ≥3-5 nombres líquidos con
-campos de premium utilizables, dentro de ≤3 semanas de goteo"*. Market Data free,
-**si G0-b pasa**, cumple esa letra con holgura (1 año exacto, 5+ nombres, bid/ask,
-3-6 días). Pero cumplir la letra y responder la pregunta del proyecto no son lo
-mismo, y el memo no va a fingir que sí: **la letra del criterio se cumple, el
-espíritu no**. De ahí el "severo".
+### Lo que manda ahora: **el reloj**
 
-### Las dos ramas, según G0-b
+El Starter Trial dura **30 días, no renovable**, y al terminar la cuenta cae a
+Free Forever (100/día, techo de 1 año). Todo lo que esté a más de 12 meses de
+antigüedad y no se haya bajado antes de esa fecha **se pierde para siempre**.
 
-| Si G0-b… | Entonces |
-|---|---|
-| **PASA** | **VIABLE CON RECORTE SEVERO.** Alcance: 5 nombres × 12 meses semanales, ~3-6 días de cosecha. Claim permitido: descriptivo régimen-específico. **La cosecha es urgente** — cada semana de demora es una semana que se cae por el borde (§4.4) |
-| **FALLA** | Sondear Alpaca (§3.2). Si también falla → **NO VIABLE en gratis**: el wheel se estaciona con acta y se reabre solo con decisión explícita de pagar |
+**Orden de trabajo, en este orden y sin adelantarse:**
 
-### La decisión que queda del lado del negocio, no de los datos
+1. **Averiguar cuántos días quedan de trial** (dashboard de Market Data). Es el
+   dato que dimensiona todo lo demás.
+2. **Correr la sonda extendida** — plan, techo real del control, costo de la
+   cadena completa. Una corrida, tres respuestas.
+3. **Cosechar de atrás hacia adelante** (`docs/wheel-harvest-scope.md`): la
+   historia profunda primero, porque es la única que el reloj puede quitarnos.
+   Los últimos 12 meses siguen ahí después del downgrade.
+4. Recién entonces, Fase 1 desde §7, con D12/D12b congelados.
 
-Con $30-50/mes se compran 2-3 años, la cosecha pasa a ser una tarde, y el claim
-sube de *descriptivo* a *evidencia preliminar de captura de prima* (§7 D12b).
-**Es la única forma de que la Fase 1 responda la pregunta original.** No es una
-recomendación de gastar: es señalar que el recorte gratis no es una versión más
-chica del proyecto, es un proyecto que contesta otra cosa.
+**La regla de "cero líneas de harvester hasta que G0-b esté cerrado" está
+cumplida** — G0-b pasó, y el diseño de la cosecha vive en
+`docs/wheel-harvest-scope.md`. Lo que **no** se escribe todavía es una línea de
+*backtest*: eso es Fase 1 y arranca de §7.
 
-Regla de la casa que aplica: no se paga por adelantado. Si se corre el v0
-descriptivo con 12 meses y **ni siquiera ahí** hay señal de captura de prima
-neta vs buy & hold, se cierra con acta y **nunca se paga**.
-
-### Qué falta, en orden
-
-1. **G0-b** — correr la sonda contra Market Data (§3.1), pegar créditos
-   consumidos y payload, y anotar el resultado acá.
-2. Si pasa: **cosechar inmediatamente** — la ventana se está cayendo.
-3. Recién entonces, Fase 1 desde §7, con D12/D12b como criterios congelados.
-
-**Regla que sigue en pie:** cero líneas de harvester hasta que G0-b esté cerrado
-y pegado en este documento. Lo que acaba de pasar con AV es exactamente el caso
-de uso: la documentación pública decía una cosa, un request dijo otra, y el
-costo de averiguarlo fueron 10 minutos en vez de dos semanas de goteo contra un
-endpoint que nunca iba a responder.
-
-## 7. Si es viable: decisiones que la Fase 1 tiene que CONGELAR
+## 7. Decisiones que la Fase 1 tiene que CONGELAR
 
 No se diseña acá — es la lista de lo que no puede quedar implícito, en orden de
 cuánto mueven el resultado.

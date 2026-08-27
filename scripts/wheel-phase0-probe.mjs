@@ -250,50 +250,111 @@ async function probeAlphaVantage() {
 }
 
 // ── Sonda 2: Market Data (marketdata.app) ───────────────────────────────
-// Free Forever = 100 creditos/dia; historico = 1 credito / 1000 contratos.
-// Techo declarado del free: no se puede pedir data de mas de 1 ano.
-// La 2a sonda (~13 meses) existe justamente para VERIFICAR ese techo.
+// Mide TRES cosas que deciden el plan de cosecha, y ninguna se puede leer de
+// la documentacion:
+//
+//   (a) PLAN REAL — los headers de rate limit delatan el cupo diario. 100/dia
+//       = Free Forever. 10.000/dia = Starter TRIAL (30 dias, no renovable, cae
+//       solo a Free Forever al terminar). 100.000 = Trader Trial. Si es trial,
+//       la cosecha tiene RELOJ.
+//   (b) TECHO REAL de profundidad — escalera hasta 5 anos. OJO: la doc del
+//       Starter Trial dice que el historico esta limitado a 1 ano "en tickers
+//       distintos de AAPL". Por eso se sondea AAPL **y** un ticker de control:
+//       si AAPL llega mas atras que el control, la profundidad que viste es un
+//       privilegio del ticker de demo, no del plan.
+//   (c) COSTO REAL en creditos de una cadena COMPLETA (sin side/strikeLimit).
+//       Ese es el presupuesto de verdad: la cadena filtrada puede costar 1
+//       credito y la completa 20.
 async function probeMarketData() {
   console.log('\n═══ (3a) MARKET DATA — /v1/options/chain?date= ═══');
   if (!MD_TOKEN) { console.log('  SALTADO: MARKETDATA_TOKEN no seteado (registro gratis).\n'); return null; }
 
-  const probes = [
-    { label: '~1 mes',    date: fridayBack(30) },
-    { label: '~11 meses', date: fridayBack(330) },
-    { label: '~13 meses', date: fridayBack(395) }, // debe REBOTAR si el techo es real
-  ];
-  const rows = [];
-  for (const p of probes) {
-    // side=call + strikeLimit acota la respuesta para que cueste 1 credito.
-    const url = `https://api.marketdata.app/v1/options/chain/${encodeURIComponent(SYMBOL)}/?date=${p.date}&side=call&strikeLimit=10`;
-    const r = await getJson(url, { Authorization: `Bearer ${MD_TOKEN}` });
+  const CONTROL = process.env.WHEEL_CONTROL_SYMBOL || 'MSFT';
+  const H = { Authorization: `Bearer ${MD_TOKEN}` };
+
+  const hdr = (r, name) => (r.headers && r.headers.get ? (r.headers.get(name) || '?') : '?');
+  async function chain(sym, date, { full = false } = {}) {
+    const filt = full ? '' : '&side=call&strikeLimit=10';
+    const r = await getJson(`https://api.marketdata.app/v1/options/chain/${encodeURIComponent(sym)}/?date=${date}${filt}`, H);
     const b = r.body || {};
-    const n = Array.isArray(b.optionSymbol) ? b.optionSymbol.length : 0;
-    const bids = Array.isArray(b.bid) ? b.bid.filter((x) => Number(x) > 0).length : 0;
-    if (r.body) save(`md-${SYMBOL}-${p.date}.json`, r.body);
-    rows.push({
-      ...p, http: r.status, s: b.s || (r.raw ? 'raw' : '-'), n, bids,
-      creditos: r.headers && r.headers.get ? (r.headers.get('x-api-ratelimit-consumed') || '?') : '?',
-      restantes: r.headers && r.headers.get ? (r.headers.get('x-api-ratelimit-remaining') || '?') : '?',
-      err: b.errmsg || r.raw || '',
-    });
-    await sleep(1500);
+    return {
+      http: r.status, s: b.s || (r.raw ? 'raw' : '-'),
+      n: Array.isArray(b.optionSymbol) ? b.optionSymbol.length : 0,
+      bids: Array.isArray(b.bid) ? b.bid.filter((x) => Number(x) > 0).length : 0,
+      consumed: hdr(r, 'x-api-ratelimit-consumed'),
+      remaining: hdr(r, 'x-api-ratelimit-remaining'),
+      limit: hdr(r, 'x-api-ratelimit-limit'),
+      err: b.errmsg || r.raw || '', body: r.body,
+    };
   }
 
-  console.log('  antiguedad    fecha        http  s        contratos  c/bid>0  creditos  restantes');
-  console.log('  ' + '-'.repeat(84));
-  for (const r of rows) {
-    console.log(
-      '  ' + r.label.padEnd(13) + String(r.date).padEnd(13) + String(r.http).padEnd(6) +
-      String(r.s).padEnd(9) + String(r.n).padStart(9) + String(r.bids).padStart(9) +
-      String(r.creditos).padStart(10) + String(r.restantes).padStart(11)
-    );
-    if (r.err) console.log(`      nota: ${String(r.err).slice(0, 140)}`);
+  // (b) Escalera de profundidad, AAPL vs control.
+  const LADDER = [
+    { label: '~1 mes',   days: 30 },
+    { label: '~11 meses', days: 330 },
+    { label: '~13 meses', days: 395 },
+    { label: '~2 anos',  days: 730 },
+    { label: '~3 anos',  days: 1095 },
+    { label: '~5 anos',  days: 1825 },
+  ];
+
+  console.log(`  Escalera de profundidad — ${SYMBOL} (demo) vs ${CONTROL} (control)\n`);
+  console.log(`  antiguedad    fecha        ${SYMBOL.padEnd(22)} ${CONTROL.padEnd(22)}`);
+  console.log('  ' + '-'.repeat(76));
+  const ladder = [];
+  for (const step of LADDER) {
+    const date = fridayBack(step.days);
+    const a = await chain(SYMBOL, date); await sleep(1200);
+    const c = await chain(CONTROL, date); await sleep(1200);
+    if (a.body) save(`md-${SYMBOL}-${date}.json`, a.body);
+    if (c.body) save(`md-${CONTROL}-${date}.json`, c.body);
+    const fmt = (x) => `${String(x.n).padStart(4)} ctr ${String(x.bids).padStart(3)} bid ${String(x.s).padEnd(8)}`;
+    console.log('  ' + step.label.padEnd(13) + date.padEnd(13) + fmt(a) + ' ' + fmt(c));
+    ladder.push({ ...step, date, demo: a, control: c });
   }
-  const near = rows[0], far = rows[2];
-  console.log(`\n  >>> ${near && near.n > 0 ? 'SIRVE' : 'NO SIRVE'} para la ventana reciente; ` +
-    `techo de 12 meses ${far && far.n > 0 ? 'NO confirmado (mejor de lo esperado)' : 'CONFIRMADO (el free no pasa de ~1 ano)'}`);
-  return { source: 'marketdata', rows };
+
+  const deepest = (key) => [...ladder].reverse().find((r) => r[key].n > 0);
+  const dDemo = deepest('demo'), dCtrl = deepest('control');
+  const first = ladder[0];
+
+  // (a) Plan real, delatado por el cupo diario.
+  const limit = Number(first.demo.limit);
+  const plan =
+    limit >= 100_000 ? 'Trader TRIAL (100k/dia, 30 dias, NO renovable → cae a Free Forever)'
+    : limit >= 10_000 ? 'Starter TRIAL (10k/dia, 30 dias, NO renovable → cae a Free Forever)'
+    : limit >= 1_000 ? 'plan pago'
+    : limit > 0 ? 'Free Forever (100/dia, techo de 1 ano)'
+    : 'desconocido (header ausente)';
+
+  console.log(`\n  (a) PLAN: cupo diario = ${first.demo.limit} → ${plan}`);
+  if (limit >= 10_000) {
+    console.log('      ⏰ RELOJ: es un trial de 30 dias. Averiguar cuantos quedan en el');
+    console.log('         dashboard ANTES de planificar la cosecha (ver docs/wheel-harvest-scope.md).');
+  }
+
+  console.log(`\n  (b) TECHO: ${SYMBOL} llega a ${dDemo ? dDemo.label : 'NADA'}; ${CONTROL} llega a ${dCtrl ? dCtrl.label : 'NADA'}`);
+  if (dDemo && (!dCtrl || dDemo.days > dCtrl.days)) {
+    console.log('      ⚠️  FALSO POSITIVO DE PROFUNDIDAD: el ticker de demo llega mas atras');
+    console.log(`         que el control. El techo REAL para la cosecha es el de ${CONTROL}.`);
+  }
+
+  // (c) Costo real: cadena completa vs filtrada, en la ventana mas profunda util.
+  const costDate = (dCtrl || first).date;
+  const filtered = await chain(CONTROL, costDate); await sleep(1200);
+  const full = await chain(CONTROL, costDate, { full: true });
+  console.log(`\n  (c) COSTO en creditos (${CONTROL} @ ${costDate}):`);
+  console.log(`      cadena FILTRADA (side=call, 10 strikes): ${String(filtered.n).padStart(5)} contratos → ${filtered.consumed} creditos`);
+  console.log(`      cadena COMPLETA (sin filtros):           ${String(full.n).padStart(5)} contratos → ${full.consumed} creditos`);
+  console.log(`      cupo restante hoy: ${full.remaining} de ${full.limit}`);
+  const cf = Number(filtered.consumed), cu = Number(full.consumed), rem = Number(full.remaining);
+  if (Number.isFinite(cf) && Number.isFinite(rem) && cf > 0) {
+    console.log(`      → con la filtrada entran ~${Math.floor(rem / cf)} snapshots mas hoy`);
+  } else if (cf === 0) {
+    console.log('      → 0 creditos: o el plan no cobra este endpoint, o el ticker es de demo.');
+    console.log(`        Confirmar con el control (${CONTROL}) antes de creerlo.`);
+  }
+
+  return { source: 'marketdata', plan, ladder, cost: { filtered, full } };
 }
 
 // ── Sonda 3: Alpaca (plan B; keys ya en casa, presupuesto independiente) ──
