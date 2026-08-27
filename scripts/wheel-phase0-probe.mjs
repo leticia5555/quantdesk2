@@ -2,9 +2,15 @@
 // ═══════════════════════════════════════════════════════════════════════
 // FASE 0 — Wheel / Covered Calls: sonda de cadenas de opciones HISTORICAS.
 //
-// Objetivo unico: cerrar la compuerta G0 de docs/wheel-fase0.md — ¿alguna
-// fuente gratuita devuelve cadenas historicas REALES (no placeholders) con
-// strikes, expiraciones y bid/ask utilizables para un covered call semanal?
+// Objetivo: cerrar las compuertas de docs/wheel-fase0.md — ¿alguna fuente
+// gratuita devuelve cadenas historicas REALES (no placeholders) con strikes,
+// expiraciones y bid/ask utilizables para un covered call semanal?
+//
+// ESTADO: G0 (Alpha Vantage) CERRADO = NO. Sondeado con key real: los tres
+// requests devolvieron HTTP 200 + {"Information": "This is a premium
+// endpoint..."}. El free tier NO tiene HISTORICAL_OPTIONS. El bloque de AV se
+// deja para reverificar si alguna vez se paga premium; hoy corta en el primer
+// request. La compuerta viva es G0-b = Market Data (bloque 3a).
 //
 // TRAMPA #1 (ya documentada en api/_lib/av-earnings.js): Alpha Vantage NO
 // devuelve 429 cuando te corta — devuelve HTTP 200 con {"Note"} o
@@ -97,7 +103,13 @@ async function getJson(url, headers = {}) {
 export function classifyAvChain(body) {
   if (!body || typeof body !== 'object') return { status: 'empty', note: 'sin JSON' };
   if (body.Note || body.Information) {
-    return { status: 'rate_limited', note: String(body.Note || body.Information).slice(0, 160) };
+    const msg = String(body.Note || body.Information);
+    // AV usa el MISMO campo para dos cosas incompatibles: "te pasaste del cupo"
+    // (transitorio, reintentable) y "este endpoint es premium" (definitivo).
+    // Tratarlas igual manda a reintentar manana un endpoint que jamas va a
+    // responder en free. El texto del paywall es lo unico que las separa.
+    const paywall = /premium endpoint|premium plans|subscribe/i.test(msg);
+    return { status: paywall ? 'paywalled' : 'rate_limited', note: msg.slice(0, 200) };
   }
   if (body['Error Message']) return { status: 'empty', note: String(body['Error Message']).slice(0, 160) };
 
@@ -184,6 +196,8 @@ async function probeAlphaVantage() {
     const c = classifyAvChain(r.body);
     const weeklies = c.status === 'ok' ? weeklyExpirations(r.body.data, date) : [];
     rows.push({ d, date, status: c.status, c, weeklies, path });
+    // Un paywall no cambia con la fecha: cortar en el primero y no quemar cupo.
+    if (c.status === 'paywalled') { console.log('  (paywall detectado: no se gastan mas requests)'); break; }
     await sleep(13_000); // AV free ~5/min
   }
 
@@ -223,8 +237,12 @@ async function probeAlphaVantage() {
   const deepest = [...rows].reverse().find((r) => r.status === 'ok');
   const verdict =
     !rows.some((r) => r.status === 'ok')
-      ? (rows.some((r) => r.status === 'placeholder') ? 'G0 FALLA — PLACEHOLDER (free tier no sirve)'
-        : rows.every((r) => r.status === 'rate_limited') ? 'G0 INDETERMINADO — rate limit/paywall: reintentar manana'
+      ? (rows.some((r) => r.status === 'paywalled')
+          ? 'G0 FALLA — PAYWALL (endpoint premium; NO reintentar, el free tier no lo tiene)'
+        : rows.some((r) => r.status === 'placeholder')
+          ? 'G0 FALLA — PLACEHOLDER (free tier no sirve)'
+        : rows.every((r) => r.status === 'rate_limited')
+          ? 'G0 INDETERMINADO — cupo diario agotado: reintentar manana'
         : 'G0 FALLA — sin datos')
       : `G0 PASA — datos reales hasta ${deepest.d.label} (${deepest.date})`;
   console.log(`\n  >>> ${verdict}`);
@@ -328,6 +346,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   console.log(`  Alpha Vantage : ${av ? av.verdict : 'no sondeado'}`);
   console.log(`  Market Data   : ${md ? (md.rows[0] && md.rows[0].n > 0 ? 'datos reales en ventana <=1 ano' : 'sin datos') : 'no sondeado'}`);
   console.log(`  Alpaca        : ${al ? (al.ok ? 'barras historicas OK (con plomeria)' : 'no utilizable tal cual') : 'no sondeado'}`);
-  console.log(`\n  Payloads crudos en ./${OUT_DIR}/ — pegar la muestra en docs/wheel-fase0.md §1.3`);
-  console.log('  y anotar el resultado de G0 en §6 antes de escribir una linea de harvester.\n');
+  console.log(`\n  Payloads crudos en ./${OUT_DIR}/`);
+  console.log('  G0 (Alpha Vantage) ya esta cerrado = NO: es endpoint premium (memo §1.2).');
+  console.log('  La compuerta viva es G0-b (Market Data): pegar creditos consumidos y');
+  console.log('  payload en docs/wheel-fase0.md §3.1, y el veredicto en §6, ANTES de');
+  console.log('  escribir una linea de harvester.\n');
 }

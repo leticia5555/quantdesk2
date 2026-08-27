@@ -4,146 +4,138 @@
 > backtest acá — si el veredicto habilita seguir, la Fase 1 arranca de la lista
 > de decisiones a congelar (§7). Nada de libs compartidas fue tocado.
 >
-> **Veredicto: VIABLE CON RECORTE**, con **una compuerta binaria abierta (G0)**
-> que se cierra con 3 requests reales — ver §0 y §6.
+> **Veredicto: VIABLE CON RECORTE SEVERO**, condicionado a una sonda pendiente
+> (G0-b, §3.1). **Alpha Vantage quedó CERRADA: es un endpoint premium** (§1.2,
+> sondeado con la key real). Ver §6.
 
 **Pregunta única.** ¿Existe una fuente accesible de cadenas de opciones
 **históricas** (strikes, expiraciones, bid/ask o premiums, idealmente con
 volumen/OI) suficiente para backtestear covered calls **semanales** sobre
 acciones US líquidas?
 
-**Respuesta corta.** Sí, existe y es barata en requests — pero **no** con la
-holgura que sugiere el free tier de Alpha Vantage. Las dos candidatas reales
-(AV `HISTORICAL_OPTIONS` y Market Data `options/chain?date=`) tienen cada una un
-techo distinto: AV puede estar **cerrada por paywall** en free (G0, sin
-verificar), y Market Data free tiene un **techo duro de 12 meses** de lookback.
-El presupuesto de requests **no** es el cuello de botella que parecía: lo es la
-**ventana histórica**, y con ella la **cobertura de regímenes**, que es lo que
-decide si el backtest dice algo o no (§5).
+**Respuesta corta.** Sí, existe — pero **no en Alpha Vantage**. El sondeo con la
+key real cerró esa puerta: `HISTORICAL_OPTIONS` es **endpoint premium**, no
+existe en el free tier (§1.2). Con eso muere de golpe **todo el plan de cosecha
+por goteo** que era el corazón de este memo: las 25 requests/día no compran
+**cero** cadenas históricas, así que no hay tabla de presupuesto que valga.
+
+Lo que queda gratis es **Market Data** (`marketdata.app`): 100 créditos/día y
+cadenas históricas as-of, pero con **techo duro de 12 meses**. Ahí el
+presupuesto deja de importar (la cosecha completa son ~3-6 días) y **la
+restricción pasa a ser la ventana**: un año es un régimen, y por la regla que
+este mismo memo pre-registró (§7 D12b), un año **solo sostiene un claim
+descriptivo**. El backtest se puede correr; lo que no se puede es concluir "el
+wheel tiene edge" con él.
 
 ---
 
-## 0. Aviso de honestidad: el sondeo en vivo NO se pudo hacer
+## 0. Cómo se sondeó (y qué no se pudo sondear)
 
-Se pidió sondear AV de verdad con 2-3 requests y documentar payloads reales.
-**No fue posible desde este entorno** y no se rodeó el bloqueo:
+**El sondeo NO se pudo hacer desde la sesión de Claude Code** — el egress
+devuelve 403 en CONNECT para `alphavantage.co`, `query2.finance.yahoo.com`,
+`marketdata.app` y `dolthub.com`, y no se rodeó el bloqueo:
 
 ```
 $ curl "https://www.alphavantage.co/query?function=HISTORICAL_OPTIONS&symbol=IBM&apikey=demo"
 curl: (56) CONNECT tunnel failed, response 403
-
-$ curl "$HTTPS_PROXY/__agentproxy/status"
-"recentRelayFailures": [
-  { "kind": "connect_rejected",
-    "detail": "gateway answered 403 to CONNECT (policy denial or upstream failure)",
-    "host": "www.alphavantage.co:443" } ]
 ```
 
-Mismo 403 para `query2.finance.yahoo.com`, `www.marketdata.app` y
-`www.dolthub.com`. Es **exactamente el precedente ya documentado en la casa**:
-`docs/alpaca-paper-scope.md:195` — *"Verificado hoy que el sandbox de desarrollo
-no puede pegar a Alpaca (proxy 403) — el smoke en Vercel es el único gate
-real"*. Además, la key de AV vive en Vercel (`ALPHAVANTAGE_API_KEY`, la usa
-`api/movers.js:181`), no en este sandbox.
+Es el mismo precedente ya documentado en `docs/alpaca-paper-scope.md:195`
+(*"el sandbox de desarrollo no puede pegar a Alpaca (proxy 403) — el smoke en
+Vercel es el único gate real"*).
 
-**Consecuencia para este memo:** todo lo que sigue sobre *campos y profundidad*
-de AV/Market Data es **esquema documentado, no verificado en vivo**, y está
-marcado como tal. Lo que **sí** es duro y no depende de ningún sondeo es la
-matemática de presupuesto (§4) y el análisis de potencia (§5) — que es donde se
-decide el veredicto.
-
-**Entregable que cierra el hueco:** `scripts/wheel-phase0-probe.mjs` (sin
-dependencias, mismo patrón que `scripts/pead-phase0-probe.mjs`). Corre 3-6
-requests, guarda los payloads crudos en disco e imprime el veredicto de G0.
-Se corre donde haya egress y key:
+**Se resolvió corriendo `scripts/wheel-phase0-probe.mjs` en local, con la key
+real.** Eso es lo que cerró G0 (§1.2). Lo que sigue pendiente es la misma sonda
+contra Market Data (**G0-b**, §3.1) — la corrida no llegó a ejecutarse: el
+comando quedó sin el espacio antes de `node`, así que la shell intentó ejecutar
+`MARKETDATA_TOKEN=…=node` como un programa en vez de setear la variable.
 
 ```
-ALPHAVANTAGE_API_KEY=xxx node scripts/wheel-phase0-probe.mjs
-# opcional, la candidata #2:
-MARKETDATA_TOKEN=yyy node scripts/wheel-phase0-probe.mjs
+MARKETDATA_TOKEN=xxx node scripts/wheel-phase0-probe.mjs   # ← el espacio importa
 ```
 
-El probe gasta 3-4 requests de las 25/día de la key. Con PEAD retirado (§4.3)
-el cupo está libre, así que no compite con nada — pero conviene correrlo el
-mismo día que arranque la cosecha, no en medio de ella.
+**Estado de la evidencia en este memo:**
 
----
+| Afirmación | Estado |
+|---|---|
+| AV `HISTORICAL_OPTIONS` es premium | ✅ **verificado en vivo**, payload en §1.3 |
+| Yahoo no tiene cadenas históricas | ✅ verificado por el código del propio repo (`api/options.js`) |
+| Market Data: 100 créditos/día, as-of, techo de 12 meses | ⚠️ **documentación, sin verificar** — es G0-b |
+| Alpaca: historia desde feb-2024, sin cadena as-of | ⚠️ documentación + reportes de foro, sin verificar |
 
-## 1. Fuente (1) — Alpha Vantage `HISTORICAL_OPTIONS`
+⚠️ **Higiene de credenciales:** la key de AV usada en el sondeo quedó expuesta
+en texto plano fuera del repo. **Rotarla** (`ALPHAVANTAGE_API_KEY` en Vercel).
+Ninguna key vive en este documento ni en el probe — se pasan por env var.
 
-### 1.1 Qué promete la documentación
+## 1. Fuente (1) — Alpha Vantage: **CERRADA. Es endpoint premium**
+
+### 1.1 Lo que prometía la documentación
+
+Vale dejarlo escrito porque explica por qué era la candidata #1 — y por qué la
+documentación pública no alcanzó para decidir:
 
 | Ítem | Lo documentado |
 |---|---|
-| Unidad de request | **1 request = 1 símbolo × 1 fecha = la cadena COMPLETA de ese día** (todas las expiraciones, todos los strikes, calls y puts) |
-| Parámetro de fecha | `date=YYYY-MM-DD`; sin él devuelve la sesión previa. Acepta cualquier fecha desde 2008-01-01 |
-| Profundidad | **15+ años** |
-| Campos | strike, expiration, type, bid, ask, last, mark, volume, open interest, **implied volatility y greeks (delta, gamma, theta, vega, rho)** |
-| Orden | por expiración cronológica; dentro de cada una, strike de menor a mayor |
-| Letra chica conocida | la `implied_volatility` **no es confiable con DTE ≤ 3 días** |
+| Unidad de request | 1 request = 1 símbolo × 1 fecha = **la cadena COMPLETA de ese día** |
+| Parámetro de fecha | `date=YYYY-MM-DD`, cualquier fecha desde 2008-01-01 |
+| Profundidad | 15+ años |
+| Campos | strike, expiration, type, bid, ask, last, mark, volume, open interest, IV y greeks |
 
-Si eso es cierto en free, es la fuente ideal para este backtest: **una sola
-llamada por fecha te da todos los strikes y todas las expiraciones**, así que
-un mismo snapshot sirve para probar Δ0.20 y Δ0.30, 7 DTE y 30 DTE, sin gastar
-un request extra. El presupuesto se cuenta en **símbolo-fecha**, no en contrato.
+Era la fuente ideal **en el papel**. En el free tier no existe.
 
-### 1.2 G0 — la compuerta binaria abierta (riesgo #1 del proyecto)
+### 1.2 G0 — **CERRADO: NO**
 
-Las fuentes secundarias **se contradicen** sobre si `HISTORICAL_OPTIONS` está
-disponible en el free tier:
+La sonda pidió la cadena de AAPL en tres profundidades con la key real
+(`ALPHAVANTAGE_API_KEY` del repo, free tier). Las tres devolvieron **HTTP 200**
+con el mismo cuerpo:
 
-- Una lectura: *"el free tier tiene acceso a datos históricos de opciones;
-  premium es para realtime"* (consistente con que `REALTIME_OPTIONS` sí está
-  marcado premium).
-- La otra: *"`HISTORICAL_OPTIONS` requiere premium de 600 o 1200 req/min; las
-  cuentas free reciben **datos placeholder** en vez de datos reales"*, con
-  centinelas del tipo `XXYYZZ` / `2099-99-99`.
+| Profundidad | Fecha | Resultado |
+|---|---|---|
+| reciente (~10 d) | viernes -10 d | `premium endpoint` |
+| ~1 año | viernes -365 d | `premium endpoint` |
+| ~2 años | viernes -730 d | `premium endpoint` |
 
-**No se puede resolver leyendo. Se resuelve con 1 request.** Y ojo con la trampa
-que la casa ya tiene documentada en `api/_lib/av-earnings.js:6-10`: **AV no
-devuelve 429 cuando te corta — devuelve HTTP 200 con `{"Note"...}` /
-`{"Information"...}`**. Si además ahora devuelve placeholders con forma de
-cadena válida, un harvest ingenuo **cosecharía basura durante dos semanas sin
-enterarse**. Por eso el probe valida tres cosas por separado: (a) no es
-`Note`/`Information`; (b) `data[]` tiene largo > 0; (c) **los valores no son
-centinelas** (`contractID` con `XXYYZZ`, `expiration` en 2099, bid/ask todos en
-0, strikes idénticos).
+**Esto no es rate limit y no se reintenta.** El cupo diario estaba intacto y el
+mensaje no habla de cupo: habla de suscripción. Es un **paywall**, y un paywall
+no cambia mañana.
 
-**Regla de decisión de G0** (pre-registrada, la aplica el probe):
+> **La sonda se equivocó en esto y ya está corregido.** Etiquetó las tres
+> respuestas como `rate_limited` y concluyó *"reintentar mañana"* — porque AV
+> manda **por el mismo campo `Information`, con el mismo HTTP 200**, dos cosas
+> incompatibles: "te pasaste del cupo" (transitorio) y "esto es premium"
+> (definitivo). `classifyAvChain()` ahora las separa por el texto y devuelve
+> `paywalled`, el veredicto dice **NO reintentar**, y corta sin gastar los
+> requests restantes. Es la misma familia de trampa que ya estaba documentada en
+> `api/_lib/av-earnings.js:6-10`, un escalón más abajo: no basta con detectar
+> `Note`/`Information`, hay que **leer cuál de las dos cosas dice**.
 
-| Resultado del probe | Lectura |
-|---|---|
-| `data[]` poblado, bid/ask > 0, strikes plausibles alrededor del spot, ≥2 expiraciones semanales | **G0 PASA** → AV free es fuente primaria |
-| `Note`/`Information` con las 25 diarias sin gastar | rate-limit o **paywall disfrazado** → reintentar 1 vez al día siguiente; si repite, **G0 FALLA** |
-| `data[]` con centinelas / bid=ask=0 / 1 sola expiración fantasma | **G0 FALLA** — placeholder. AV free queda descartada |
-| HTTP 200 con `{}` o `data: []` para fechas hábiles conocidas | **G0 FALLA** |
+### 1.3 Payload real
 
-### 1.3 Payloads
+Respuesta de `HISTORICAL_OPTIONS` con key free, idéntica en las tres fechas:
 
-**PENDIENTES — no se pudieron capturar (§0).** El probe los deja en
-`.wheel-phase0/av-<symbol>-<fecha>.json` y este es el hueco exacto que hay que
-pegar acá antes de dar la Fase 0 por cerrada:
-
-```jsonc
-// docs/wheel-fase0.md §1.3 — PEGAR AQUÍ el payload real (primeros 2 contratos)
+```json
 {
-  "endpoint": "Historical Options",
-  "message":  "success",
-  "data": [ /* ← 1 objeto por contrato; copiar 2 verbatim */ ]
+  "Information": "Thank you for using Alpha Vantage! This is a premium endpoint. You may subscribe to any of the premium plans at https://www.alphavantage.co/premium/ to instantly unlock all premium endpoints"
 }
 ```
 
-La forma **documentada** de cada elemento de `data[]` (esquema, **no**
-verificado) es un objeto plano por contrato con: `contractID`, `symbol`,
-`expiration`, `strike`, `type`, `last`, `mark`, `bid`, `bid_size`, `ask`,
-`ask_size`, `volume`, `open_interest`, `date`, `implied_volatility`, `delta`,
-`gamma`, `theta`, `vega`, `rho`. **Los campos que el backtest necesita de
-verdad son 6**: `expiration`, `strike`, `type`, `bid`, `ask`, `date`. Volumen,
-OI y greeks son deseables (filtro de liquidez y selección por delta), pero
-**no son load-bearing**: si faltan greeks, se selecciona strike por moneyness
-fija en vez de por delta (§7, decisión D3).
+Sin `data[]`, sin `endpoint`, sin `message`. **No hay cadena que parsear.**
 
----
+### 1.4 Qué se muere con esto
+
+1. **Todo el plan de cosecha por goteo.** Las 25 requests/día del free tier
+   compran **cero** cadenas históricas. La tabla de escenarios "símbolos ×
+   fechas × ventana" contra las 25/día —que era el corazón de este memo— **no
+   aplica a ninguna fuente que tengamos gratis** (§4).
+2. **La ventana profunda gratis.** Los 15+ años de AV eran lo único que ponía
+   2, 3 o 5 años al alcance sin pagar. Lo que queda gratis llega a **1 año**
+   (Market Data) o a **feb-2024** (Alpaca).
+3. **El "reintentar mañana"** como salida. No la hay.
+
+**Lo que AV sigue siendo:** la opción paga más barata que conocemos con
+profundidad seria — **$49.99/mes** (75 req/min, sin tope diario). Y ojo con el
+reencuadre: a 75 req/min, los 520 requests del alcance "5 nombres × 2 años"
+tardan **~7 minutos**, no 21 días. Pagar no acelera el goteo: lo elimina (§4.2).
 
 ## 2. Fuente (2) — Yahoo: confirmado, **solo cadena actual**
 
@@ -172,11 +164,11 @@ requests de presupuesto).
 
 ---
 
-## 3. Fuente (3) — alternativas, con la letra chica
+## 3. Fuente (3) — con AV caída, esto es **todo lo que queda**
 
 Ordenadas por qué tan cerca están de resolver el problema hoy.
 
-### 3.1 Market Data (`marketdata.app`) — **la candidata que puede reemplazar a AV**
+### 3.1 Market Data (`marketdata.app`) — **ahora la candidata PRINCIPAL**
 
 | Ítem | Dato |
 |---|---|
@@ -199,6 +191,28 @@ atrás sin pagar, y lo que hoy tiene 11 meses de antigüedad, en dos meses ya no
 se puede bajar. Si se elige esta fuente, **la cosecha es urgente**: cada semana
 de demora es una semana de historia que se cae por el borde. (Los planes pagos
 amplían el lookback; el precio exacto hay que verificarlo al registrarse.)
+
+#### G0-b — la compuerta que ahora decide la Fase 0
+
+Todo lo de arriba es **documentación sin verificar**, y la lección de §1.2 es
+justamente que la documentación pública de estos proveedores no alcanza para
+decidir. La sonda ya trae el bloque (tres fechas: ~1 mes, ~11 meses y ~13 meses;
+la última existe para **verificar el techo**, tiene que rebotar):
+
+```
+MARKETDATA_TOKEN=xxx node scripts/wheel-phase0-probe.mjs
+```
+
+| Resultado | Lectura |
+|---|---|
+| ~1 mes y ~11 meses devuelven contratos con `bid > 0`, y ~13 meses rebota | **G0-b PASA** — fuente primaria confirmada, techo de 12 meses confirmado. Cosechar **ya** |
+| ~11 meses vacío pero ~1 mes OK | Techo real **menor** a 12 meses → recalcular el alcance antes de cosechar |
+| `s: "error"` / 401 / créditos que se van de a cientos por request | **G0-b FALLA** → pasar a Alpaca (§3.2) |
+
+**Lo que hay que anotar acá cuando corra:** cuántos créditos consumió cada
+request (header `x-api-ratelimit-consumed`). Es el número que decide si la
+cosecha son 3 días o 30: si un snapshot filtrado cuesta 1 crédito, entran ~100
+por día; si cuesta 20, entran 5.
 
 ### 3.2 Alpaca — **credenciales ya en casa, presupuesto independiente**
 
@@ -234,90 +248,83 @@ implementación y de huecos** que las dos primeras. Vale 20 minutos de probe
 
 ---
 
-## 4. La matemática de presupuesto (el corazón del memo)
+## 4. La matemática de presupuesto — **reencuadrada**
 
-### 4.1 La unidad de costo
+Este era el corazón del memo mientras AV free era la fuente. Con el paywall
+(§1.2) **el cuello de botella se movió de lugar**: ya no es cuántas requests
+entran por día, es **hasta dónde llega la ventana**.
 
-**1 request = 1 símbolo × 1 fecha de observación = la cadena entera de ese día.**
-De ahí salen dos consecuencias que cambian el cálculo:
+### 4.1 La unidad de costo (sigue valiendo, sea cual sea la fuente)
+
+**1 request = 1 símbolo × 1 fecha de observación = la cadena de ese día.** De
+ahí salen dos consecuencias que valen para Market Data igual que valían para AV:
 
 1. **Las especificaciones son gratis.** Un mismo snapshot del viernes contiene
-   todos los strikes y todas las expiraciones → probar Δ0.20 vs Δ0.30, o 7 DTE
-   vs 30 DTE, **no cuesta requests adicionales**. Barrer parámetros es gratis;
-   agregar símbolos o fechas es lo que cuesta.
-2. **Hold-to-expiry cuesta 1 request por trade; los rolls cuestan 2-3.** Si el
-   call se mantiene hasta el vencimiento, el desenlace se calcula con el
-   **precio del subyacente** al vencimiento (Yahoo, gratis, ya en el repo): no
-   hace falta volver a pedir la cadena. Pero si el v0 quiere modelar *cerrar al
-   50% de ganancia* o *rollear el miércoles*, hace falta el precio **de ese
-   mismo contrato en otra fecha** → otro snapshot. **Los rolls duplican el
-   presupuesto de datos** (§7, D6).
+   todos los strikes y expiraciones → probar Δ0.20 vs Δ0.30, o 7 vs 30 DTE, **no
+   cuesta requests adicionales**. Barrer parámetros es gratis; agregar símbolos
+   o fechas es lo que cuesta.
+2. **Hold-to-expiry cuesta 1 request por trade; los rolls cuestan 2-3.** El
+   desenlace al vencimiento se calcula con el **precio del subyacente** (Yahoo,
+   gratis, ya en el repo). Pero cerrar al 50% o rollear el miércoles exige el
+   precio **del mismo contrato en otra fecha** → otro snapshot. Por eso los
+   rolls quedan fuera del v0 (§7, D6).
 
-### 4.2 Escenarios — Alpha Vantage free (25 req/día), key dedicada
+### 4.2 Lo que se murió: el goteo contra las 25/día de AV
 
-Muestreo semanal = 52 viernes por año. Trades brutos = símbolos × fechas.
+La tabla que ocupaba este lugar —3 símbolos × 52 viernes × 2 años = 312 requests
+= ~13 días de goteo, y sus variantes— **ya no describe ninguna opción
+disponible**. A 25 requests/día contra un endpoint premium, el alcance
+cosechable es **cero**, en todos los escenarios.
 
-| Alcance | Requests | Días de goteo @25/día | Trades brutos | ¿≤3 semanas? |
-|---|---:|---:|---:|:--:|
-| 3 símbolos × 52 viernes × 1 año | 156 | **~7 días** | 156 | ✅ |
-| 5 × 52 × 1 año | 260 | **~11 días** | 260 | ✅ |
-| 3 × 104 × 2 años | 312 | **~13 días** | 312 | ✅ |
-| **5 × 104 × 2 años** | **520** | **~21 días** | 520 | ⚠️ **justo en el borde** |
-| 8 × 104 × 2 años | 832 | ~34 días | 832 | ❌ |
-| 10 × 104 × 2 años | 1.040 | ~42 días | 1.040 | ❌ |
-| 5 × 156 × 3 años | 780 | ~32 días | 780 | ❌ |
-| *Solo mensuales:* 5 × 24 × 2 años | 120 | **~5 días** | 120 | ✅✅ |
-| *Solo mensuales:* 5 × 36 × 3 años | 180 | **~8 días** | 180 | ✅ |
-| *Con roll mid-week:* 5 × 52 × 1 año × 2 snapshots | 520 | ~21 días | 260 | ⚠️ borde |
+Queda como referencia de **cuánto costaría el camino pago**, y ahí el reencuadre
+importa: los planes de AV no tienen tope diario, así que **no compran un goteo
+más rápido, eliminan el goteo**.
 
-**Lectura:** el techo de 3 semanas a 25/día es **525 requests**. Eso compra
-exactamente **5 nombres × 2 años semanales**, o **3 nombres × 2 años** con
-holgura cómoda, o **5 nombres × 3 años si se baja a mensuales**.
+| Alcance | Requests | Free (25/día) | AV Premium ($49.99/mes, 75/min) |
+|---|---:|---|---|
+| 3 símbolos × 52 viernes × 1 año | 156 | ❌ imposible | ~2 min |
+| 5 × 52 × 1 año | 260 | ❌ imposible | ~4 min |
+| 5 × 104 × 2 años | 520 | ❌ imposible | **~7 min** |
+| 10 × 156 × 3 años | 1.560 | ❌ imposible | ~21 min |
 
-### 4.3 El presupuesto está libre: **PEAD murió, las 25/día son del wheel**
+**Lectura:** si el proyecto se decide a pagar, la restricción de datos
+desaparece por completo — no hay "plan de cosecha" que diseñar, es una tarde de
+trabajo. La pregunta pasa a ser de negocio (¿vale $50/mes averiguar esto?), no
+de ingeniería.
 
-PEAD cerró con **NO-GO** y su ledger quedó en **99/99** — el goteo no tiene nada
-más que bajar. La key de AV (`ALPHAVANTAGE_API_KEY`, la misma para los dos
-proyectos) queda **entera para el wheel: 25 requests/día**.
+### 4.3 El presupuesto de AV que se liberó — y por qué ya no importa acá
 
-Pero **no se libera sola**: el cron sigue programado y el gate sigue apagado
-por env var. Qué hay que apagar, y qué apaga qué:
+PEAD cerró con **NO-GO** (ledger 99/99) y su goteo se retiró en este mismo
+branch. Las 25 requests/día quedaron libres — **pero para el wheel no valen
+nada**, porque el endpoint que necesita no está en el free tier.
 
-| # | Qué | Dónde | Qué logra |
-|:-:|---|---|---|
-| **1** | `PEAD_HARVEST_ENABLED` ≠ `1` | env var de **Vercel** (producción) | **Lo único que corta el gasto de AV.** El gate (`api/pead-harvest.js:160`) devuelve `{disabled:true}` **antes** de `ensurePeadSchema()` y antes de cualquier llamada a AV. Con esto solo, el cupo ya es del wheel |
-| **2** | Schedule + job `pead-earnings` | `.github/workflows/external-crons.yml` | **No hace falta para el cupo — sí para el ruido.** El job trata `disabled:true` como **fallo duro** (`jq -e '(.disabled == true)'` → `::error::` + `exit 1`). Dejándolo, la pestaña Actions queda **roja 5 veces por día para siempre**, y un cron realmente caído (`screener:refresh`) se pierde en el ruido |
-| **3** | `pead:earnings` en `EXPECTED` | `api/cron-status.js:24` | Consecuencia de (2): sin schedule no hay heartbeat, y a las 8 h el job entra en `stale` → `/api/cron-status` devuelve **`ok:false` permanente** |
+El apagado sigue siendo correcto por sus propios motivos, así que se deja hecho:
 
-**(2) y (3) están hechos en este branch.** **(1) queda del lado de Vercel** — es
-la única de las tres que efectivamente corta el gasto, así que **es la que
-habilita el presupuesto del wheel**.
+| # | Qué | Dónde | Qué logra | Estado |
+|:-:|---|---|---|---|
+| **1** | `PEAD_HARVEST_ENABLED` ≠ `1` | env var de **Vercel** | Corta el gasto de la key (el gate de `api/pead-harvest.js:160` devuelve `disabled` antes de llamar a AV) | ⚠️ pendiente, del lado de Vercel |
+| **2** | Schedule + job `pead-earnings` | `.github/workflows/external-crons.yml` | Evita que Actions quede **roja 5×/día para siempre** — el job trata `disabled:true` como fallo duro | ✅ hecho |
+| **3** | `pead:earnings` en `EXPECTED` | `api/cron-status.js` | Evita `ok:false` permanente por `stale` sin heartbeat | ✅ hecho |
 
-> **Sobra suelta, fuera de este alcance:** `pead:hour` (`vercel.json:43`, SEC 8-K
-> diario) **no gasta cupo de AV** — SEC es gratis — así que no bloquea nada.
-> Con el gate apagado devuelve `disabled` y sigue latiendo, así que tampoco
-> ensucia el monitor. Retirarlo es parte de jubilar PEAD del todo, no de liberar
-> el presupuesto: se deja como estaba.
+`pead:hour` (`vercel.json`, SEC 8-K) se deja como estaba: no gasta cupo de AV.
 
-**Presupuesto efectivo del wheel: 25/día, sin competencia.** El alcance de
-5 nombres × 2 años (520 req) tarda **~21 días** — dentro del techo de 3 semanas,
-sin trucos de convivencia.
+### 4.4 El presupuesto que sí importa ahora: Market Data free
 
-### 4.4 El mismo alcance en Market Data free (100 créditos/día)
+100 créditos/día, **1 crédito por cada 1000 contratos** en consultas históricas
+(§3.1 — y es lo primero que G0-b tiene que confirmar).
 
-| Alcance | Créditos (1-2 por snapshot filtrado) | Días de goteo |
+| Alcance | Créditos (1-2 por snapshot filtrado) | Días de cosecha |
 |---|---:|---:|
-| 5 × 52 × **1 año** (el máximo que permite el free) | 260-520 | **3-6 días** ✅ |
+| 5 nombres × 52 viernes × **1 año** | 260-520 | **3-6 días** ✅ |
 | 10 × 52 × 1 año | 520-1.040 | 6-11 días ✅ |
 | 20 × 52 × 1 año | 1.040-2.080 | 11-21 días ⚠️ |
-| 5 × 104 × 2 años | — | ❌ **imposible en free**: el techo es 12 meses |
+| 5 × 104 × **2 años** | — | ❌ **imposible en free: el techo es 12 meses** |
 
-**Lectura:** Market Data invierte el problema. El presupuesto deja de importar
-(se pueden cosechar 10-20 nombres en una semana) pero **la ventana queda
-clavada en 12 meses**. Y no es simétrico con AV: la ventana de AV se puede
-recuperar más tarde; la de Market Data **se cae por el borde y no vuelve**.
-
----
+**El problema se dio vuelta.** Con AV el presupuesto era escaso y la ventana
+abundante; acá el presupuesto sobra —se pueden cosechar 10 nombres en una
+semana— y **la ventana es el techo**. Y no es simétrico: la ventana de AV se
+podía recuperar más tarde; la de Market Data **se cae por el borde y no vuelve**.
+Cada semana de demora es una semana de historia perdida para siempre.
 
 ## 5. ¿Qué alcance mínimo hace el backtest estadísticamente digno?
 
@@ -363,71 +370,78 @@ buy & hold. Un backtest de 12 meses no responde "¿esto sirve?" — responde
 chica. **La restricción que manda no es el tamaño de muestra: es la cobertura
 de regímenes.**
 
-### 5.3 Alcance mínimo digno — pre-registrado
+### 5.3 Alcance mínimo digno — contra lo que realmente existe
 
-| Nivel | Alcance | Requests (AV) | Goteo | Qué se puede afirmar |
-|---|---|---:|---:|---|
-| **Piso digno** | 5 nombres × **2 años** semanales | 520 | ~21 días | Captura de prima neta vs buy & hold pareado, con **al menos un tramo no-alcista** dentro |
-| **Mínimo publicable con recorte** | 5 nombres × **1 año** semanales | 260 | ~11 días AV / **~4 días Market Data** | Solo **"cómo le fue en este régimen"**. Etiquetado régimen-específico, sin claim de edge |
-| **Recorte barato** | 5 nombres × 2-3 años **mensuales** | 120-180 | ~5-8 días | Responde por el wheel **mensual**, no por el semanal (menos trades, distinta prima/theta) |
-| ❌ Fuera de presupuesto | ≥8 nombres o ≥3 años semanales | 780+ | 32+ días | — |
+| Nivel | Alcance | ¿Se puede hoy, gratis? | Qué se puede afirmar |
+|---|---|---|---|
+| **Piso digno** | 5 nombres × **2 años** semanales | ❌ **No.** AV free está cerrada; Market Data free topea en 12 meses; Alpaca llega a feb-2024 pero sin cadena as-of | Captura de prima neta vs buy & hold con **al menos un tramo no-alcista** dentro |
+| **Lo único alcanzable gratis** | 5 nombres × **1 año** semanales | ✅ Sí, vía Market Data (~3-6 días), **si G0-b pasa** | Solo **"cómo le fue en este régimen"** (§7 D12b). Sin claim de edge |
+| **Recorte mensual** | 5 nombres × 1 año, solo mensuales | ✅ Sí (~12 snapshots/nombre) | Responde por el wheel **mensual**, con ~60 trades y un solo régimen. Más barato y más pobre |
+| **Piso digno, pagando** | 5 × 2-3 años semanales | 💰 $30-50/mes | Lo mismo que el piso digno, sin esperar: la cosecha son minutos (§4.2) |
 
-**El piso digno (5 × 2 años) cabe — justo, pero cabe**: 520 requests a 25/día
-son ~21 días, y con PEAD retirado el cupo está entero (§4.3). La única condición
-que queda es **que G0 pase** (§1.2).
-
----
+**El piso digno ya no cabe en gratis.** Ese es el cambio real que introdujo el
+paywall de AV: antes el piso digno entraba justo (520 requests ≈ 21 días); ahora
+la única forma de alcanzarlo es pagando.
 
 ## 6. VEREDICTO
 
-### **VIABLE CON RECORTE**
+### **VIABLE CON RECORTE SEVERO** — el recorte cambió de naturaleza
 
-Se cumple el criterio pre-registrado —*≥1 año de cadenas muestreables para ≥3-5
-nombres líquidos con campos de premium utilizables, dentro de ≤3 semanas de
-goteo*— por **dos caminos independientes**, y sobra presupuesto en ambos:
+Antes del sondeo, el recorte era de **tamaño**: menos nombres, menos años, misma
+pregunta. Con AV cerrada, el recorte es de **pregunta**: lo que queda gratis
+alcanza para **un año**, y un año —por la regla que este mismo memo pre-registró
+en §7 D12b— **solo sostiene un claim descriptivo**. El backtest se puede correr;
+lo que no se puede es concluir *"el wheel tiene edge"* con él.
 
-- **AV free (si G0 pasa):** 5 nombres × 2 años semanales = 520 req ≈ **21 días**.
-- **Market Data free (sin G0 que resolver):** 5 nombres × 1 año = **3-6 días**.
+**Estado por fuente, después del sondeo:**
 
-**El recorte, explícito:**
-
-1. **Ventana: 1-2 años, no 5.** Con Market Data free, **exactamente 12 meses**
-   (techo duro). Con AV free, 2 años es el máximo que entra en 3 semanas.
-2. **Nombres: 5, no 20.** Mega-caps líquidos con weeklies profundos.
-3. **Una sola especificación principal** para el veredicto (delta objetivo, DTE,
-   regla de asignación). Barrer variantes es gratis en requests pero cada corte
-   extra va etiquetado **EXPLORATORIO** — convención de la casa.
-4. **Sin rolls ni cierre anticipado en el v0**: hold-to-expiry puro. Modelarlos
-   duplica el presupuesto de datos (§4.1) y se decide después, con los datos ya
-   en casa.
-5. **Con 1 año, el claim se degrada explícitamente**: no "el wheel tiene edge"
-   sino "el wheel capturó/no capturó prima neta vs buy & hold **en este
-   régimen**". Con 2 años que incluyan un tramo no-alcista, el claim sube a
-   evidencia preliminar de captura de prima.
-
-**Qué pregunta responde el recorte, textual:** *"Vendiendo sistemáticamente
-calls semanales ~Δ0.30 sobre 5 mega-caps líquidos, ¿la prima cobrada neta de
-costos superó al costo de oportunidad de las subidas tapadas, comparado contra
-tener las mismas acciones, durante la ventana cosechada?"* — y **nada más que
-eso**.
-
-### Lo que falta para cerrar la Fase 0 (no es opcional)
-
-**G0 — 3 requests, 10 minutos.** Correr `scripts/wheel-phase0-probe.mjs` donde
-haya egress y key, pegar los payloads en §1.3 y anotar el resultado acá:
-
-| Resultado de G0 | Acción |
+| Fuente | Estado |
 |---|---|
-| **AV free devuelve datos reales** | Fuente primaria = AV. Alcance = **5 nombres × 2 años semanales**, ~21 días de goteo con el cupo entero (§4.3) |
-| **AV free devuelve placeholder / paywall** | Fuente primaria = **Market Data free**, recorte a **12 meses**, y la cosecha arranca **ya** (la ventana se cae por el borde). AV queda como opción paga ($49.99/mo) si el v0 promete |
-| **Ambas fallan** y Alpaca no da quotes históricos utilizables | **NO VIABLE en gratis** → el wheel se estaciona con acta. Reabrir solo con decisión explícita de pagar $30-50/mes |
+| **AV `HISTORICAL_OPTIONS`** | ❌ **CERRADA — endpoint premium** (verificado, §1.2). No se reintenta |
+| **Yahoo** | ❌ Sin historia (verificado por el código del repo, §2) |
+| **Market Data free** | ⚠️ **Candidata principal — sin sondear.** Es **G0-b** (§3.1) |
+| **Alpaca** | ⚠️ Plan B — sin sondear. Historia desde feb-2024, sin cadena as-of |
+| **Pagas** (AV Premium $49.99, ThetaData/ORATS ~$30-100) | 💰 Compran el piso digno y eliminan la cosecha (§4.2) |
 
-**Regla anti-desperdicio (el espíritu de la Fase 0):** **no se escribe una línea
-de harvester hasta que G0 esté cerrado y pegado en §1.3.** Mejor matarlo acá que
-descubrirlo tras dos semanas de goteo — que es exactamente lo que la trampa de
-los placeholders de AV haría si nadie la valida (§1.2).
+**Sobre el criterio pre-registrado, con honestidad:** la letra decía *"VIABLE si
+alguna fuente da ≥1 año de cadenas muestreables para ≥3-5 nombres líquidos con
+campos de premium utilizables, dentro de ≤3 semanas de goteo"*. Market Data free,
+**si G0-b pasa**, cumple esa letra con holgura (1 año exacto, 5+ nombres, bid/ask,
+3-6 días). Pero cumplir la letra y responder la pregunta del proyecto no son lo
+mismo, y el memo no va a fingir que sí: **la letra del criterio se cumple, el
+espíritu no**. De ahí el "severo".
 
----
+### Las dos ramas, según G0-b
+
+| Si G0-b… | Entonces |
+|---|---|
+| **PASA** | **VIABLE CON RECORTE SEVERO.** Alcance: 5 nombres × 12 meses semanales, ~3-6 días de cosecha. Claim permitido: descriptivo régimen-específico. **La cosecha es urgente** — cada semana de demora es una semana que se cae por el borde (§4.4) |
+| **FALLA** | Sondear Alpaca (§3.2). Si también falla → **NO VIABLE en gratis**: el wheel se estaciona con acta y se reabre solo con decisión explícita de pagar |
+
+### La decisión que queda del lado del negocio, no de los datos
+
+Con $30-50/mes se compran 2-3 años, la cosecha pasa a ser una tarde, y el claim
+sube de *descriptivo* a *evidencia preliminar de captura de prima* (§7 D12b).
+**Es la única forma de que la Fase 1 responda la pregunta original.** No es una
+recomendación de gastar: es señalar que el recorte gratis no es una versión más
+chica del proyecto, es un proyecto que contesta otra cosa.
+
+Regla de la casa que aplica: no se paga por adelantado. Si se corre el v0
+descriptivo con 12 meses y **ni siquiera ahí** hay señal de captura de prima
+neta vs buy & hold, se cierra con acta y **nunca se paga**.
+
+### Qué falta, en orden
+
+1. **G0-b** — correr la sonda contra Market Data (§3.1), pegar créditos
+   consumidos y payload, y anotar el resultado acá.
+2. Si pasa: **cosechar inmediatamente** — la ventana se está cayendo.
+3. Recién entonces, Fase 1 desde §7, con D12/D12b como criterios congelados.
+
+**Regla que sigue en pie:** cero líneas de harvester hasta que G0-b esté cerrado
+y pegado en este documento. Lo que acaba de pasar con AV es exactamente el caso
+de uso: la documentación pública decía una cosa, un request dijo otra, y el
+costo de averiguarlo fueron 10 minutos en vez de dos semanas de goteo contra un
+endpoint que nunca iba a responder.
 
 ## 7. Si es viable: decisiones que la Fase 1 tiene que CONGELAR
 
