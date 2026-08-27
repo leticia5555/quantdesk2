@@ -55,7 +55,27 @@ function rng(seed) {
   return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
 }
 
-const HOY = new Date();
+// ANCLA DEL CALENDARIO DEL FIXTURE — fija, NO `new Date()`.
+//
+// El LCG de arriba existe para que "el fixture dé EXACTAMENTE lo mismo en cada
+// corrida". El calendario terminado "ayer" rompía esa promesa por la puerta de
+// atrás: los retornos eran los mismos, pero las fechas de rebalanceo (primer
+// día hábil del mes) se corrían un día por día contra ellos, así que cada día
+// se repartían distinto entre canastas.
+//
+// No es teórico y no es inofensivo: medido sobre 9 fechas simuladas, este
+// archivo fallaba en 5 — con el mismo código de producción, sin que nadie
+// tocara nada. Hoy pasa por suerte del calendario. Su gemelo
+// tests/dualmom-analyze.test.mjs ya se cayó por esto y ahí está el análisis
+// largo de la causa.
+//
+// Los fixtures son sintéticos y el código que prueban no mira el reloj
+// (`api/_lib/rotation-analyze.js` no tiene un solo `Date.now()`), así que un
+// calendario "reciente" no compraba realismo: solo compraba un rojo aleatorio.
+// (El lint anti "relojes rotos" exime tests justamente por esto.)
+const ANCLA_FIXTURE = '2026-06-30T12:00:00Z';   // date-lint-ok: ancla de fixture sintético
+
+const HOY = new Date(ANCLA_FIXTURE);
 const AYER = new Date(HOY.getTime() - 86400000).toISOString().slice(0, 10);
 
 function calendarioHabil(n, fin) {

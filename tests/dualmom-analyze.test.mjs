@@ -67,7 +67,33 @@ function normal(u) {
   return Math.sqrt(-2 * Math.log(a)) * Math.cos(2 * Math.PI * b);
 }
 
-const HOY = new Date();
+// ANCLA DEL CALENDARIO DEL FIXTURE — fija a propósito, NO `new Date()`.
+//
+// Estos fixtures son 100% sintéticos y el código de producción que prueban no
+// mira el reloj ni una vez (`api/_lib/dualmom-analyze.js` y
+// `api/_lib/rotation-analyze.js` no tienen un solo `Date.now()`; el único
+// `new Date()` del endpoint es el `generado_en`, que ninguna aserción usa).
+// Que el calendario del fixture terminara "ayer" no aportaba realismo: lo
+// único que hacía era CORRERLO un día por día.
+//
+// Y correrlo rompe cosas. La secuencia de retornos es de semilla fija, pero
+// las fechas de rebalanceo (primer día hábil del mes) se mueven contra ella,
+// así que cada día se re-reparten los retornos entre canastas. Varias
+// aserciones de este archivo viven cerca de un umbral, y el corrimiento las
+// cruzaba: el archivo pasaba unos días y fallaba otros, con el mismo código,
+// sin que nadie tocara nada. Medido sobre 14 fechas repartidas en 15 meses,
+// tres aserciones distintas se caían en al menos una de ellas:
+//   · §3 drawdown relativo — cociente entre 0.645 y 0.721 contra tope 0.70
+//   · el filtro absoluto recortando 0 nombres en el crash en vez de >0
+//   · las dos lecturas de pesos dando la MISMA cartera en vez de distintas
+//
+// Un test que depende de qué día lo corras no prueba el código: prueba el
+// calendario. Con el ancla fija el archivo es determinista para siempre.
+// (El lint anti "relojes rotos" exime tests justamente por esto — ver
+// tests/no-hardcoded-dates.test.mjs, "fixtures stale intencionales".)
+const ANCLA_FIXTURE = '2026-06-30T12:00:00Z';   // date-lint-ok: ancla de fixture sintético
+
+const HOY = new Date(ANCLA_FIXTURE);
 const AYER = new Date(HOY.getTime() - 86400000).toISOString().slice(0, 10);
 
 function calendarioHabil(n, fin) {
@@ -488,8 +514,27 @@ console.log('dualmom-analyze: gate_activaciones = 0 → el GO se topa en GO frá
   // Tendencia limpia y fuerte: el SPY nunca cierra debajo de su SMA200 en una
   // fecha de rebalanceo, así que el gate NUNCA se dispara. Los nombres llevan
   // alfa plantado, así que los 4 criterios pasan… y aun así no es un GO limpio.
+  //
+  // El alfa es 0.0032 y NO 0.0016 por una razón concreta, no por gusto: con
+  // 0.0016 este bloque era un test que se caía solo según el día del
+  // calendario. En este régimen NO hay crash, así que los dos drawdowns del
+  // §3 (el de la cartera y el de SPY) son ruido puro, y su cociente caía en
+  // 0.68–0.72 contra un tope pre-registrado de 0.70. `HOY = new Date()` hace
+  // que el calendario hábil del fixture se corra un día por día, lo que mueve
+  // las fechas de rebalanceo contra una secuencia de retornos de semilla fija
+  // — y ese corrimiento bastaba para cruzar el 0.70 en cualquier dirección.
+  // Medido: 0.721 / 0.701 / 0.703 / 0.684 / 0.645 en cinco fechas distintas,
+  // con la misma semilla y el mismo código de producción.
+  //
+  // Con 0.0032 el cociente se estaciona en 0.45–0.53 (misma medición, siete
+  // fechas repartidas en seis meses): ~0.17 de margen contra el tope, unas
+  // tres veces la dispersión que mete el calendario. El bloque NO prueba el
+  // valor del drawdown — prueba el CANDADO (§6 de la cabecera): que con
+  // gate_activaciones = 0 el veredicto se tope en "GO frágil" aunque los
+  // criterios pasen. Que pasen tiene que ser un hecho robusto del fixture, no
+  // un volado; si no, el candado se prueba unos días sí y otros no.
   const fx = fabrica({ nSimbolos: 100, sesiones: 1400, regimen: 'tendencia_limpia',
-    crash: null, alpha: 0.0016, volSpy: 0.0030, volIdio: 0.003, semilla: 23 });
+    crash: null, alpha: 0.0032, volSpy: 0.0030, volIdio: 0.003, semilla: 23 });
   global.fetch = mockFetch(fx);
   const res = mockRes();
   await handler(GET({}, { authorization: `Bearer ${SECRET}` }), res);
@@ -500,6 +545,16 @@ console.log('dualmom-analyze: gate_activaciones = 0 → el GO se topa en GO frá
   ok(b.gate_probado === false, 'gate_probado = false: el mecanismo defensivo no se ejerció');
   ok(p.cumple.sharpe && p.cumple.drawdown && p.cumple.retorno,
     'los tres criterios económicos PASAN', JSON.stringify(p.cumple));
+
+  // GUARD ANTI-FLAKE. Que el §3 pase no alcanza: tiene que pasar con margen.
+  // Un fixture parado sobre el umbral es un test que se cae solo según el día,
+  // y eso ya pasó acá (ver el comentario del alfa arriba). Esta aserción falla
+  // RUIDOSAMENTE si alguien vuelve a dejar el cociente pegado al tope, en vez
+  // de dejar que se manifieste semanas después como un rojo intermitente que
+  // nadie sabe reproducir.
+  ok(p.economia.drawdown_relativo < 0.60,
+    'el drawdown relativo pasa CON MARGEN (< 0.60 contra un tope de 0.70), no al filo',
+    p.economia.drawdown_relativo);
   ok(b.veredicto === 'GO', 'el veredicto crudo es GO', b.veredicto);
   ok(b.go_fragil === true, 'pero el candado pre-registrado lo marca FRÁGIL', b.go_fragil);
   ok(b.go_fragil_motivo === 'gate sin evento en ventana', 'con el motivo explícito', b.go_fragil_motivo);
