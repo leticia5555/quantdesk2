@@ -58,12 +58,16 @@ import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpacaCreds, getCalendar } from './_lib/alpaca.js';
 import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF, NON_EQUITY_TYPES, EXCLUDED_SECURITY_TYPES } from './_lib/arena-guard.js';
 import { buildRiskExits, EXIT_RULES } from './_lib/arena-exits.js';
-import { fetchDeepDive } from './_lib/finnhub-dive.js';
+import { fetchDeepDive, fetchTemporalInputs } from './_lib/finnhub-dive.js';
+import {
+  deriveTemporal, priceMomentum, temporalForPrompt, temporalHeadline,
+  withMomentum, pePercentile, TEMPORAL_RULES,
+} from './_lib/temporal-fundamentals.js';
 import { auditPlanPercentages } from './_lib/prose-audit.js';
 import { relativeDayLabel } from './_lib/ai-guard.js';
 import { beat } from './_lib/heartbeat.js';
 import { readScreenerRows } from './_lib/screener-db.js';
-import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
+import { computeScreens, screenerRankedSymbols, screenerDataState, temporalIndex } from './_lib/screens.js';
 // LIGA multi-modelo: el registry (quién compite, con qué modelo/cuenta/persona)
 // y el dispatch de proveedor (Anthropic directo vs OpenRouter, forma normalizada).
 import { callArenaLLM, providerKey } from './_lib/arena-model.js';
@@ -318,12 +322,21 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   // arena-run ve si `ARENA_SCREENER_ENABLED` faltaba (el caso del bug).
   let screener = { value: [], momentum: [] };
   let screener_state = 'unavailable';
+  // DIMENSIÓN TIEMPO (hallazgo T1): las MISMAS filas del screener traen las
+  // series por trimestre y el momentum precomputados. Derivar las etiquetas
+  // aquí cuesta CERO llamadas y cubre TODO el universo — así los tickers que
+  // llegan por movers/earnings/insider (no solo los del canal screener) y las
+  // posiciones del libro llevan su película pegada.
+  let temporalAll = {};
+  let universePes = [];
   const screenerEnabled = process.env.ARENA_SCREENER_ENABLED === '1';
   const unavailable = Object.keys(targets).filter((k) => !out[k]);
   try {
     const screenerRows = await readScreenerRows();
     screener = computeScreens(screenerRows);
     screener_state = screenerDataState(screenerRows, { now, enabled: screenerEnabled });
+    temporalAll = temporalIndex(screenerRows, { now });
+    universePes = screenerRows.map((r) => r.pe_ttm).filter((v) => Number.isFinite(v) && v > 0);
   } catch (e) {
     fetch_errors.screener = String((e && e.message) || e);
     unavailable.push('screener');
@@ -332,16 +345,34 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
 
   const channelsByTicker = buildChannels({ movers, earnings: earnings_this_week, insiders: notable_insider_buys, screener });
 
+  // Vista TITULAR para el SCAN: solo los tickers que están en el buffet (los
+  // que el scout puede elegir), y solo etiquetas + retornos — la serie por
+  // trimestre viaja después, en el DIVE, donde se decide. Sin esto el scout
+  // hacía triage sobre fotos y mandaba a deep-dive lo que ya venía cayendo.
+  const temporal = {};
+  for (const sym of Object.keys(channelsByTicker)) {
+    const head = temporalHeadline(temporalAll[sym]);
+    if (head) temporal[sym] = head;
+  }
+
   return {
     movers, earnings_this_week, notable_insider_buys,
     screener,
     screener_state,
+    // Etiquetas temporales de los tickers del buffet (SÍ viaja al prompt).
+    temporal,
     unavailable,
     // Diagnóstico: status HTTP/timeout real por endpoint caído. NO viaja al
     // prompt del LLM (buildScanUserPrompt lo excluye) — se journalea.
     fetch_errors,
     // Índice de atribución por ticker. NO viaja al prompt — para el journal.
     channelsByTicker,
+    // Película COMPLETA por símbolo del universo del screener (series por
+    // trimestre incluidas) + la distribución de P/E del universo (para el
+    // percentil del flag de cuchillo cayendo). NO viajan al prompt: son la
+    // base de datos del run (posiciones del libro, candidatos, guard, journal).
+    temporalIndex: temporalAll,
+    universePes,
   };
 }
 
@@ -360,33 +391,58 @@ function fmtSignedPct(v) {
 }
 
 // Snapshot del libro compartido por ambas fases.
-function portfolioSnapshot({ account, positions, openOrders }) {
+//
+// PUNTO 9 DEL REGLAMENTO T2 (pronunciamiento por posición): cada holding viaja
+// con SU película además de su foto — tendencia de ingresos, revisiones,
+// retornos 1m/3m/6m, distancia al máximo de 52 semanas y flag de cuchillo
+// cayendo. Sin esto el PM se pronunciaba sobre una posición viendo solo el P&L
+// desde su entrada, que no dice si el nombre lleva un mes cayendo ni si el
+// negocio se está deteriorando. Los números llegan YA FORMATEADOS (misma
+// medicina que `pnl_since_entry_pct`): el PM no re-escala ni calcula nada.
+// `temporal` ausente → las posiciones salen igual que antes, sin campos nuevos.
+function portfolioSnapshot({ account, positions, openOrders, temporal = null }) {
   return {
     equity: Number(account.equity),
     cash: Number(account.cash),
-    positions: (positions || []).map((p) => ({
-      symbol: p.symbol, qty: Number(p.qty), avg_entry: Number(p.avg_entry_price),
-      market_value: Number(p.market_value),
-      // Pre-formateado + rotulado (ver fmtSignedPct): P&L desde entrada, no día.
-      pnl_since_entry_pct: fmtSignedPct(p.unrealized_plpc),
-    })),
+    positions: (positions || []).map((p) => {
+      const sym = p && p.symbol ? String(p.symbol).trim().toUpperCase() : '';
+      const head = temporal && temporal[sym] ? temporalHeadline(temporal[sym]) : null;
+      return {
+        symbol: p.symbol, qty: Number(p.qty), avg_entry: Number(p.avg_entry_price),
+        market_value: Number(p.market_value),
+        // Pre-formateado + rotulado (ver fmtSignedPct): P&L desde entrada, no día.
+        pnl_since_entry_pct: fmtSignedPct(p.unrealized_plpc),
+        ...(head ? { trend_and_momentum: head } : {}),
+      };
+    }),
     open_orders: (openOrders || []).map((o) => ({ symbol: o.symbol, side: o.side, qty: o.qty, limit_price: o.limit_price, status: o.status })),
   };
 }
 
+// ── LEYENDA de la capa temporal (data dictionary, no exhortación) ────
+// Describe qué significa cada campo. NO pide operar más, no cambia cadencia ni
+// mete presión a comprar/vender: es el diccionario de datos de campos nuevos,
+// igual que la nota de EARNINGS TIMING.
+const TEMPORAL_LEGEND_SCAN = 'TREND & MOMENTUM — `temporal` maps a ticker to how its business and its price have moved OVER TIME (the snapshot metrics only tell you where they are today): `revenue_trend` accelerating/stable/decelerating with the count of consecutive quarters, `estimate_revisions` up/neutral/down, 3m/6m price returns, distance from the 52-week high, whether the last close is above its 200-day average (descriptive only), and `falling_knife: true` when a name is simultaneously cheap, falling and deteriorating. `no_data`/absent means we have no history for that ticker — it does not mean the trend is flat. The same labels are attached to each of your holdings under `trend_and_momentum`.';
+
+const TEMPORAL_LEGEND_DIVE = 'TREND & MOMENTUM (`temporal` per candidate) — the history behind the snapshot: `revenue_yoy_by_quarter` is year-over-year revenue growth for each of the last quarters, most recent first, each with the date it was reported already expressed as a distance from today ("33 days ago (Thu Jul 31)"); `eps_surprise_by_quarter` is the EPS surprise per quarter; `revenue_trend` says whether that YoY series is accelerating, stable or decelerating and for how many consecutive quarters; `estimate_revisions` (up/neutral/down) carries its own `estimate_revisions_source`; `guidance_direction` is null because our data provider does not expose company guidance — do not assert a guidance direction you were not given. `price_momentum` holds 1m/3m/6m returns, distance from the 52-week high and whether the last close is above the 200-day average — the 200-day average is DESCRIPTIVE CONTEXT, not a rule. `falling_knife: true` (with `falling_knife_why`) marks a name that is cheap AND falling AND deteriorating at the same time. All figures are pre-formatted: quote them verbatim, do not recompute or rescale them. `no_data` means we lack the history, not that the trend is flat.';
+
 // ── user prompt del SCAN: portfolio + plan anterior + el buffet completo. ──
-export function buildScanUserPrompt({ account, positions, openOrders, buffet, previous }) {
-  // fetch_errors y channelsByTicker son diagnóstico/atribución interna (se
-  // journalean); el LLM solo necesita `unavailable`. Se excluyen del prompt.
-  const { fetch_errors, channelsByTicker, ...buffetForLlm } = buffet || {};
+export function buildScanUserPrompt({ account, positions, openOrders, buffet, previous, temporal = null }) {
+  // fetch_errors, channelsByTicker, el índice temporal COMPLETO y la
+  // distribución de P/E del universo son diagnóstico/datos internos (se
+  // journalean o alimentan al guard); el LLM solo necesita `unavailable` y la
+  // vista TITULAR (`buffet.temporal`). Se excluyen del prompt.
+  const { fetch_errors, channelsByTicker, temporalIndex: _ti, universePes: _pes, ...buffetForLlm } = buffet || {};
   return [
-    'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders })),
+    'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders, temporal })),
     '',
     'PREVIOUS PLAN (yours, from the last run — build on it or change course):',
     previous ? JSON.stringify(previous) : 'none — this is your first run.',
     '',
     'MARKET CONTEXT (QuantDesk endpoints; sections listed in "unavailable" failed today — do not guess their content):',
     'EARNINGS TIMING — each entry in `earnings_this_week` carries `when`, the distance from today ALREADY COMPUTED for you ("in 2 days (Wed Aug 26, AMC)", "today (Mon Aug 24, BMO)"). Use that label as-is when you mention a report; do not re-derive it from `date`, and never call a report scheduled for a later date "today" or "tonight". BMO = before the market opens that day, AMC = after it closes.',
+    TEMPORAL_LEGEND_SCAN,
     JSON.stringify(buffetForLlm),
     '',
     `Pick up to ${MAX_CANDIDATES} tickers worth a deep-dive, or none. Remember: ONE JSON object, nothing else.`,
@@ -399,7 +455,7 @@ export function buildScanUserPrompt({ account, positions, openOrders, buffet, pr
 // adivinaba el límite (anclaba en el 52w-high, el único número tipo-precio de
 // Finnhub) → el guard lo descartaba por banda. Ahora se le da EL MISMO cierre
 // contra el que el guard valida, con el rango ±2% ya hecho (sin aritmética). ──
-export function buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis, candidates, deepDive, closes, channels, priceBand = ARENA_RULES.price_band }) {
+export function buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis, candidates, deepDive, closes, channels, temporal = null, now = new Date(), priceBand = ARENA_RULES.price_band }) {
   const round2 = (n) => Math.round(n * 100) / 100;
   // Nota de datos ausentes para el modelo: price target es Premium (no lo
   // traemos), y un candidato puede no tener cobertura Finnhub ni cierre.
@@ -423,10 +479,14 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
         ...(ch.earnings ? { earnings: ch.earnings } : {}),
       }
       : {};
-    return { ticker: t, last_close: close, limit_range, ...meta, ...((deepDive && deepDive[t]) || null) };
+    // La PELÍCULA del candidato (historial de earnings + momentum + flag de
+    // cuchillo cayendo), con los números ya formateados y las fechas de cada
+    // reporte ya expresadas como distancia a hoy (mismo patrón que `when`).
+    const film = temporalForPrompt(temporal && temporal[t], now);
+    return { ticker: t, last_close: close, limit_range, ...meta, ...((deepDive && deepDive[t]) || null), ...(film ? { temporal: film } : {}) };
   });
   return [
-    'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders })),
+    'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders, temporal })),
     '',
     'PREVIOUS PLAN (yours, from the last run — build on it or change course, but acknowledge it):',
     previous ? JSON.stringify(previous) : 'none — this is your first run.',
@@ -439,6 +499,7 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
     'NOTES: null fields mean the datum was unavailable (do not guess it). Analyst price targets are NOT provided; use the recommendation buy/hold/sell split as the rating signal. marketCapM is in millions USD.',
     'NEWS RECENCY — each news item carries a `date` (YYYY-MM-DD). Before you describe any headline, compare its date to today\'s date (given in the system prompt): state how long ago it happened ("N days ago", the weekday) and reserve "today" for a date that equals today. A headline dated before today is NOT today\'s news — do not narrate a report from several days ago as if it broke today.',
     'EARNINGS TIMING — a candidate flagged by the earnings channel carries `earnings: {date, time, when}`, where `when` is the distance from today ALREADY COMPUTED for you ("in 2 days (Wed Aug 26, AMC)", "tomorrow (Tue Aug 25, BMO)"). Quote that label as-is; do not re-derive it from `date`, and never describe a report scheduled for a later date as happening "today" or "tonight" — if your plan holds cash for a post-earnings dislocation, say which day the catalyst actually lands on. BMO = before that day\'s open, AMC = after that day\'s close. A candidate WITHOUT an `earnings` field has no report date in your data: do not assert one from memory.',
+    TEMPORAL_LEGEND_DIVE,
     'FIGURES — when your plan cites a number (a %, a price, a P&L), use ONLY the figures given to you here or in the PORTFOLIO above, verbatim. Each holding carries `pnl_since_entry_pct`, already formatted ("+6.1%"): that is profit/loss SINCE YOUR ENTRY, not today\'s price move — quote it as-is if you mention it. Do NOT compute, rescale, round, or invent percentages you were not given.',
     JSON.stringify(research),
     '',
@@ -448,17 +509,21 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
 
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 
-// Último cierre COMPLETO por símbolo — LA MISMA fuente/valor contra el que el
-// guard valida la banda ±2% (fetchDailySeries + completedSlice, plumbing Yahoo
-// del simulador). Se usa dos veces por corrida: para MOSTRARLE el cierre al PM
-// en el DIVE y para que el guard valide — el mismo número, cero desfase.
+// Serie diaria COMPLETA por símbolo (velas cerradas) — la fuente ÚNICA de
+// precio de la corrida. De aquí salen DOS cosas que antes eran dos fetches
+// distintos (o directamente no existían):
+//   · el último cierre, contra el que el guard valida la banda ±2% y que se le
+//     MUESTRA al PM en el DIVE (el mismo número, cero desfase), y
+//   · el MOMENTUM (retornos 1m/3m/6m, distancia al máximo de 52 semanas,
+//     posición vs. SMA200) — por eso el rango subió de '3mo' a '1y': con tres
+//     meses no hay ni 6m de retorno ni máximo anual.
 // null si no hay serie (→ el guard descarta, fail closed).
-async function lastCompletedClose(symbol, now) {
+async function completedDailySeries(symbol, now) {
   try {
-    const raw = await fetchDailySeries(symbol, '3mo');
+    const raw = await fetchDailySeries(symbol, '1y');
     const series = raw ? completedSlice(raw, now) : null;
-    if (series && series.closes.length) return series.closes[series.closes.length - 1];
-  } catch (e) { /* sin cierre → fail closed */ }
+    if (series && series.closes.length) return series;
+  } catch (e) { /* sin serie → fail closed */ }
   return null;
 }
 
@@ -468,9 +533,18 @@ async function lastCompletedClose(symbol, now) {
 // disparan dos fetches del mismo símbolo. El cierre de Yahoo y el deep dive de
 // Finnhub son idénticos para todos (datos de mercado); lo que difiere por agente
 // es su libro y la decisión del LLM, no estos números.
-function cachedClose(caches, symbol, now) {
-  if (!caches.close.has(symbol)) caches.close.set(symbol, lastCompletedClose(symbol, now));
-  return caches.close.get(symbol);
+function cachedSeries(caches, symbol, now) {
+  if (!caches.series) caches.series = new Map();
+  if (!caches.series.has(symbol)) caches.series.set(symbol, completedDailySeries(symbol, now));
+  return caches.series.get(symbol);
+}
+async function cachedClose(caches, symbol, now) {
+  const series = await cachedSeries(caches, symbol, now);
+  return series && series.closes.length ? series.closes[series.closes.length - 1] : null;
+}
+// Momentum del símbolo derivado de la MISMA serie cacheada (cero fetch extra).
+async function cachedMomentum(caches, symbol, now) {
+  return priceMomentum(await cachedSeries(caches, symbol, now));
 }
 async function cachedDeepDive(caches, symbols, finnhubKey, now) {
   const per = await Promise.all((symbols || []).map(async (sym) => {
@@ -484,6 +558,74 @@ async function cachedDeepDive(caches, symbols, finnhubKey, now) {
   const errors = {};
   for (const { sym, data: d, err } of per) { data[sym] = d; if (err) errors[sym] = err; }
   return { data, errors };
+}
+
+// ── la PELÍCULA por símbolo dentro de la corrida ─────────────────────
+// Dos armadores, misma regla: NADA de llamadas de más. La base son las
+// etiquetas que el cron del screener ya precomputó para todo el universo
+// (`buffet.temporalIndex`); encima se le pega el momentum FRESCO derivado de
+// la serie de Yahoo que la corrida ya bajó (cachedSeries), y solo para los
+// candidatos AUSENTES de la tabla se pide el historial en vivo a Finnhub.
+
+// Posiciones del libro (y cualquier símbolo del que ya tengamos serie).
+// Sin fila en el screener, el símbolo igual sale con su momentum: es la mitad
+// de la película que sí podemos dar sin gastar una llamada.
+async function buildHeldTemporal({ symbols, buffet, caches, now }) {
+  const stored = (buffet && buffet.temporalIndex) || {};
+  const out = {};
+  await Promise.all((symbols || []).map(async (sym) => {
+    const momentum = await cachedMomentum(caches, sym, now);
+    const base = stored[sym] || null;
+    if (base) { out[sym] = withMomentum(base, momentum); return; }
+    if (momentum) out[sym] = deriveTemporal({ momentum, now });
+  }));
+  return out;
+}
+
+// Candidatos del slate: base precomputada (o historial en VIVO si el candidato
+// no está en el universo del screener — un mover cualquiera), tendencia del
+// rating del array que el deep dive ya bajó, P/E fresco de `stock/metric` y su
+// percentil contra la distribución del universo.
+async function buildCandidateTemporal({ symbols, buffet, dive, caches, now, finnhubKey }) {
+  const stored = (buffet && buffet.temporalIndex) || {};
+  const universePes = (buffet && buffet.universePes) || [];
+  const missing = (symbols || []).filter((sym) => !stored[sym]);
+  // 2 requests por símbolo ausente, con concurrencia acotada (ver
+  // fetchTemporalInputs): en la práctica 1-3 símbolos, no los 5.
+  const live = missing.length ? await fetchTemporalInputs(missing, finnhubKey) : {};
+
+  const out = {};
+  await Promise.all((symbols || []).map(async (sym) => {
+    const entry = (dive && dive.data && dive.data[sym]) || null;
+    const momentum = await cachedMomentum(caches, sym, now);
+    const base = stored[sym] || null;
+    // P/E: el fresco del deep dive manda sobre el de la tabla (1-2 días stale).
+    const peTtm = entry && entry.fundamentals && entry.fundamentals.peTTM != null
+      ? entry.fundamentals.peTTM
+      : (base ? base.pe_ttm : null);
+    const recTrend = (entry && entry.recommendation_trend)
+      || (base && base.revisions && base.revisions.source === 'analyst_rating_trend' ? base.revisions.detail : null);
+    const revenueHistory = base && base.revenue_yoy_history && base.revenue_yoy_history.length
+      ? base.revenue_yoy_history
+      : ((live[sym] && live[sym].revenueHistory) || []);
+    const epsSurprises = base && base.eps_surprise_history && base.eps_surprise_history.length
+      ? base.eps_surprise_history
+      : ((live[sym] && live[sym].epsSurprises) || []);
+    const t = deriveTemporal({
+      revenueHistory, epsSurprises, recTrend, momentum, peTtm, universePes, now,
+      peRank: pePercentile(peTtm, universePes),
+    });
+    // La revisión REAL de estimados (cuando el cron ya acumuló ≥30 días de
+    // snapshots) gana sobre el proxy de rating: `deriveTemporal` recibió el
+    // rating, no los snapshots crudos, que solo existen en la tabla.
+    if (base && base.revisions && base.revisions.source === 'estimate_revision') t.revisions = base.revisions;
+    // Procedencia del canal: el guard la usa para saber si la tesis es "value"
+    // sin depender del texto del LLM (screen value = tesis value, determinista).
+    const ch = buffet && buffet.channelsByTicker ? buffet.channelsByTicker[sym] : null;
+    if (ch && ch.screens && ch.screens.length) t.screens = ch.screens;
+    out[sym] = t;
+  }));
+  return out;
 }
 
 async function journalInsert(row) {
@@ -618,7 +760,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // cierres de Yahoo y los deep-dives de Finnhub son datos de MERCADO idénticos
   // para todos → se piden UNA vez por símbolo, no una por agente (dedupe con
   // in-flight promise). Standalone (un agente suelto / tests): locales, sin compartir.
-  caches = caches || { close: new Map(), dive: new Map() };
+  caches = caches || { series: new Map(), dive: new Map() };
   getBuffet = getBuffet || (() => gatherContext({ baseUrl, now }));
   const creds = agentAlpacaCreds(agent);
 
@@ -720,7 +862,11 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
 
   // ── FASE 1: SCAN ────────────────────────────────────────────────
   const scanSystem = buildScanSystemPrompt();
-  const scanUser = buildScanUserPrompt({ account, positions, openOrders, buffet, previous });
+  // Las posiciones del libro llevan sus etiquetas ya en el SCAN (punto 9 del
+  // reglamento T2): el scout decide qué holding merece un deep-dive de recorte
+  // viendo si el nombre lleva un mes cayendo, no solo su P&L desde la entrada.
+  const scanTemporal = await buildHeldTemporal({ symbols: heldSymbols, buffet, caches, now });
+  const scanUser = buildScanUserPrompt({ account, positions, openOrders, buffet, previous, temporal: scanTemporal });
   const scanHash = sha256(scanSystem + '\n---\n' + scanUser);
 
   // context journaleado desde el arranque; se enriquece por fase. El
@@ -798,10 +944,41 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   const candidateCloses = {};
   candidateSymbols.forEach((t, i) => { candidateCloses[t] = closeArr[i]; });
 
+  // ── FASE 2a-bis: la PELÍCULA de los candidatos (hallazgo T1) ─────
+  // El deep dive de arriba es la FOTO. Aquí se arma la película de cada
+  // candidato, en este orden de fuentes y SIN llamadas de más:
+  //   · historial de earnings → de la tabla del screener (precomputada por el
+  //     cron); solo los candidatos AUSENTES de la tabla se piden en vivo
+  //     (típicamente 1-3 por corrida, no los 5).
+  //   · tendencia del rating → del MISMO array de recommendations que el deep
+  //     dive ya bajó (cero requests extra).
+  //   · momentum → de la MISMA serie de Yahoo que ya se bajó para el cierre.
+  //   · percentil de P/E → contra la distribución del universo del screener.
+  const candidateTemporal = await buildCandidateTemporal({
+    symbols: candidateSymbols, buffet, dive, caches, now,
+    finnhubKey: process.env.FINNHUB_API_KEY,
+  });
+  // Las posiciones del LIBRO también llevan su película (punto 9 del reglamento
+  // T2): etiquetas precomputadas + momentum FRESCO de la serie ya cacheada.
+  // Ya se armó antes del SCAN (misma serie cacheada) — se reusa tal cual.
+  const heldTemporal = scanTemporal;
+  // Índice único para prompts, guard y journal. Los candidatos mandan sobre los
+  // holdings cuando un símbolo es ambos (su película se calculó en vivo).
+  const runTemporal = { ...heldTemporal, ...candidateTemporal };
+  context.temporal = {
+    rules: TEMPORAL_RULES,
+    candidates: candidateTemporal,
+    positions: heldTemporal,
+    // Lista corta para el post-mortem: qué nombres llegaron marcados hoy.
+    falling_knife: Object.entries(runTemporal)
+      .filter(([, t]) => t && t.falling_knife && t.falling_knife.flag)
+      .map(([symbol, t]) => ({ symbol, reasons: t.falling_knife.reasons })),
+  };
+
   // ── FASE 2b: DIVE (LLM #2 — decide órdenes) ─────────────────────
   // La persona del agente es lo ÚNICO que varía del prompt (identidad, decisión #6).
   const diveSystem = buildDiveSystemPrompt(agent.persona);
-  const diveUser = buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis: scan.thesis, candidates: candidateSymbols, deepDive: dive.data, closes: candidateCloses, channels });
+  const diveUser = buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis: scan.thesis, candidates: candidateSymbols, deepDive: dive.data, closes: candidateCloses, channels, temporal: runTemporal, now });
   const diveHash = sha256(diveSystem + '\n---\n' + diveUser);
   // shown_closes: el cierre que se le MOSTRÓ al PM por candidato — para auditar
   // desfases contra lo que valida el guard (deberían coincidir siempre).
@@ -852,10 +1029,15 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // cash, long-only). Los datos Finnhub del deep dive son contexto para el LLM,
   // no entran aquí — el guard sigue determinista, fail-closed, y no confía en
   // los candidatos del scan.
+  // El guard recibe además la PELÍCULA por símbolo: con ella aplica la REGLA
+  // TEMPORAL (una compra "value" —o cualquiera con el flag de cuchillo
+  // cayendo— se rechaza si los ingresos vienen desacelerando ≥2 trimestres o
+  // las revisiones van a la baja). Sigue siendo determinista y sin I/O: los
+  // datos entran resueltos, como el symbol map y los cierres.
   const { approved, discarded } = validateActions({
     actions: parsed.actions,
     equity: account.equity, cash: account.cash,
-    positions, symbolMap, symbolTypes, lastCloses,
+    positions, symbolMap, symbolTypes, lastCloses, temporal: runTemporal,
   });
 
   // Atribución por acción (determinista, no confía en el LLM): de qué canal(es)
@@ -867,6 +1049,19 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     const ch = sym ? channels[sym] : null;
     const enriched = { ...a, channels: ch ? ch.channels : [], origin: candidateOrigins.get(sym) || null };
     if (ch && ch.screens && ch.screens.length) { enriched.screens = ch.screens; enriched.screener_qualifiers = ch.qualifiers; }
+    // Etiquetas temporales que el PM tenía enfrente para ese nombre. El guard
+    // ya las pega en las APROBADAS; acá se cubren también las DESCARTADAS, para
+    // que el post-mortem pueda cruzar "qué película tenía" contra el resultado.
+    const t = sym ? runTemporal[sym] : null;
+    if (t && !enriched.temporal) {
+      enriched.temporal = {
+        revenue_trend: t.revenue_trend ? t.revenue_trend.label : 'no_data',
+        revenue_trend_quarters: t.revenue_trend ? t.revenue_trend.consecutive_quarters : 0,
+        revisions: t.revisions ? t.revisions.label : 'no_data',
+        revisions_source: t.revisions ? t.revisions.source : null,
+        falling_knife: !!(t.falling_knife && t.falling_knife.flag),
+      };
+    }
     return enriched;
   };
 
@@ -991,7 +1186,7 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
 
   let buffetPromise = null;
   const getBuffet = () => (buffetPromise = buffetPromise || gatherContext({ baseUrl, now }));
-  const caches = { close: new Map(), dive: new Map() };
+  const caches = { series: new Map(), dive: new Map() };
 
   const results = await Promise.all(agents.map(async (agent) => {
     try {

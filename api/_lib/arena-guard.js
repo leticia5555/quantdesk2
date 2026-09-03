@@ -11,7 +11,20 @@
 //   - JSON malformado → run abortado honesto, CERO órdenes.
 //   - Fail closed: si falta un dato de referencia (symbol map caído, sin
 //     precio), la acción se descarta — nunca se asume que "seguro existe".
+//
+// REGLA TEMPORAL (sep 2026, hallazgo T1): además de las reglas de universo/
+// precio/tamaño, el guard veta las COMPRAS "value" (y cualquier compra con el
+// flag cuchillo cayendo) cuando la película del negocio está en rojo — ingresos
+// desacelerando ≥2 trimestres seguidos o revisiones a la baja. Ver
+// `temporalVeto` abajo y `_lib/temporal-fundamentals.js` para las derivaciones.
 // ═══════════════════════════════════════════════════════════════
+
+// Umbrales de la REGLA TEMPORAL (tendencia/revisiones/cuchillo cayendo): viven
+// en _lib/temporal-fundamentals.js junto a las derivaciones que los usan, y se
+// re-exportan acá para que quien lea el guard los encuentre.
+import { TEMPORAL_RULES, isValueThesis } from './temporal-fundamentals.js';
+
+export { TEMPORAL_RULES };
 
 export const ARENA_RULES = {
   max_positions: 8,            // posiciones simultáneas máximas
@@ -217,6 +230,63 @@ export function applyScreenerFloor(scoutPicks, screenerRanked, { floor = 2, maxC
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 
+// ── REGLA TEMPORAL (hallazgo T1): no se compran cuchillos cayendo ────
+//
+// El PM compró LULU como "value" con la foto (P/E ~10, ROE 31%, cero deuda) sin
+// ver que venía desacelerando varios trimestres, y un mes después la empresa
+// reportó revenue miss + guía recortada. La foto era correcta; la película
+// decía lo contrario. Esta regla es el candado determinista:
+//
+//   Una COMPRA cuya tesis es "value" —o CUALQUIER compra con el flag
+//   `falling_knife` activo— se RECHAZA si la película está en rojo:
+//   ingresos desacelerando ≥ `decel_min_quarters` trimestres seguidos, o
+//   revisiones a la baja.
+//
+// NO aplica a VENTAS (salir de un nombre que se deteriora es exactamente lo
+// que queremos) ni a compras sin tesis de valuación y sin flag (un momentum
+// buy caro y subiendo no es un cuchillo).
+//
+// SIN DATOS ⇒ NO se rechaza. A diferencia del fail-closed del precio (donde la
+// ausencia de referencia hace imposible validar la orden), aquí la ausencia de
+// historial es la NORMA en símbolos de cobertura pobre: fallar cerrado
+// bloquearía media liga por falta de cobertura de Finnhub, no por riesgo. Se
+// journalea `temporal: 'no_data'` en la acción para poder MEDIR cuántas
+// decisiones se tomaron a ciegas.
+//
+// Devuelve null (pasa) o el string de la razón del rechazo.
+export function temporalVeto(action, temporal, rules = TEMPORAL_RULES) {
+  if (!action || action.side !== 'buy' || !temporal) return null;
+  const trend = temporal.revenue_trend || null;
+  const revisions = temporal.revisions || null;
+  const knife = !!(temporal.falling_knife && temporal.falling_knife.flag);
+
+  const decelerating = !!(trend && trend.label === 'decelerating'
+    && trend.consecutive_quarters >= rules.decel_min_quarters);
+  const revisionsDown = !!(revisions && revisions.label === 'down');
+  if (!decelerating && !revisionsDown) return null;
+
+  const thesis = isValueThesis(action, temporal);
+  if (!thesis.value && !knife) return null;
+
+  const symbol = String(action.symbol || '').trim().toUpperCase();
+  const motivo = thesis.value
+    ? `compra con tesis VALUE (${thesis.why})`
+    : 'compra con flag CUCHILLO CAYENDO activo';
+  const senales = [];
+  if (decelerating) {
+    const yoy = (temporal.revenue_yoy_history || [])
+      .slice(0, trend.consecutive_quarters + 1).reverse()
+      .filter((q) => q && q.yoy_pct != null)
+      .map((q) => `${q.label} ${q.yoy_pct > 0 ? '+' : ''}${q.yoy_pct}%`);
+    senales.push(`ingresos desacelerando ${trend.consecutive_quarters} trimestres seguidos`
+      + (yoy.length ? ` (YoY ${yoy.join(' → ')})` : ''));
+  }
+  if (revisionsDown) senales.push(`revisiones a la baja (${revisions.source})`);
+  return `${symbol}: ${motivo} — ${senales.join(' y ')}. La regla temporal no compra cuchillos cayendo`
+    + (knife ? ' (flag cuchillo cayendo activo)' : '')
+    + '.';
+}
+
 // ── validación por acción, con estado acumulado del run ─────────────
 // Entradas:
 //   actions     → lo que propuso el LLM (ya parseado)
@@ -224,9 +294,13 @@ function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 //   positions   → de GET /v2/positions: [{ symbol, qty, market_value }]
 //   symbolMap   → { SYMBOL: nombre } (getSymbolMap de earnings.js) o null
 //   lastCloses  → { SYMBOL: último cierre completo } (Yahoo, plumbing sim.js)
+//   temporal    → { SYMBOL: temporal } (deriveTemporal: tendencia de ingresos,
+//                  revisiones, momentum, flag de cuchillo cayendo). Ausente o
+//                  vacío → la regla temporal no se evalúa (no bloquea nada).
 //   rules       → override para tests; default ARENA_RULES
+//   temporalRules → idem para los umbrales de la regla temporal
 // Salida: { approved: [...con qty entera], discarded: [{ action, reason }] }
-export function validateActions({ actions, equity, cash, positions, symbolMap, symbolTypes, lastCloses, rules = ARENA_RULES }) {
+export function validateActions({ actions, equity, cash, positions, symbolMap, symbolTypes, lastCloses, temporal = null, rules = ARENA_RULES, temporalRules = TEMPORAL_RULES }) {
   const approved = [];
   const discarded = [];
   const discard = (action, reason) => discarded.push({ action, reason });
@@ -273,6 +347,11 @@ export function validateActions({ actions, equity, cash, positions, symbolMap, s
       continue;
     }
 
+    // REGLA TEMPORAL — antes del sizing: es un veto sobre el NOMBRE y su
+    // película, no sobre el precio ni el tamaño. Solo compras (ver temporalVeto).
+    const temporalVetoReason = temporalVeto({ ...a, symbol, side }, temporal && temporal[symbol], temporalRules);
+    if (temporalVetoReason) { discard(raw, temporalVetoReason); continue; }
+
     const lastClose = num(lastCloses && lastCloses[symbol]);
     if (!lastClose || lastClose <= 0) { discard(raw, `${symbol}: sin último cierre de referencia — fail closed`); continue; }
     if (lastClose < rules.min_price) { discard(raw, `${symbol}: sub-$${rules.min_price} (cierre ${lastClose}) fuera del universo`); continue; }
@@ -314,10 +393,25 @@ export function validateActions({ actions, equity, cash, positions, symbolMap, s
       else held.delete(symbol);
     }
 
+    // Etiquetas temporales que el guard TUVO ENFRENTE al aprobar (o 'no_data'
+    // si el símbolo no traía película). Journalearlas es lo que permite medir,
+    // a 30 días, cuántas compras se hicieron a ciegas y con qué resultado.
+    const t = temporal && temporal[symbol];
+    const temporalTag = t
+      ? {
+        revenue_trend: t.revenue_trend ? t.revenue_trend.label : 'no_data',
+        revenue_trend_quarters: t.revenue_trend ? t.revenue_trend.consecutive_quarters : 0,
+        revisions: t.revisions ? t.revisions.label : 'no_data',
+        revisions_source: t.revisions ? t.revisions.source : null,
+        falling_knife: !!(t.falling_knife && t.falling_knife.flag),
+      }
+      : { revenue_trend: 'no_data', revenue_trend_quarters: 0, revisions: 'no_data', revisions_source: null, falling_knife: false };
+
     approved.push({
       symbol, side, qty, limit_price: limitPrice,
       notional: +cost.toFixed(2),
       security_type: secType, // null si el free tier no lo trajo (permitido, journaleado)
+      temporal: temporalTag,
       conviction: num(a.conviction),
       reasoning: typeof a.reasoning === 'string' ? a.reasoning.slice(0, 600) : null,
     });

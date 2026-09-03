@@ -12,7 +12,7 @@
 // Correr con `node tests/screener-refresh.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import { runRefresh, default as handler } from '../api/arena-screener.js';
+import { runRefresh, mergeEstimateHistory, default as handler } from '../api/arena-screener.js';
 import { seedScreenerLedger, pickStaleSymbols, screenerStats } from '../api/_lib/screener-db.js';
 import { _resetSymbolMapCache } from '../api/earnings.js';
 
@@ -35,6 +35,8 @@ let ledgerStats = { total: 0, done: 0, pending: 0, error: 0, not_found: 0 };
 const marks = [];              // updates al ledger: { symbol, params }
 const upserts = [];            // upserts a arena_screener: symbol
 const metricCalls = [];        // URLs de Finnhub /stock/metric
+const temporalCalls = [];      // URLs de la capa temporal (earnings/financials/calendar/recommendation)
+let lastUpsertParams = null;   // params del último insert into arena_screener
 const yahooCalls = [];         // URLs de Yahoo chart
 let lastSelectQuery = '';      // última query select capturada
 
@@ -66,7 +68,7 @@ global.fetch = async (url, opts = {}) => {
     }
     if (q.includes('update arena_screener_ledger')) { marks.push({ query: q, params: body.params }); return neonRows([], []); }
     if (q.includes('select l.symbol')) { lastSelectQuery = q; return neonRows(['symbol', 'attempts'], pendingRows.map((r) => [r.symbol, String(r.attempts)])); }
-    if (q.includes('insert into arena_screener')) { upserts.push(body.params[0]); return neonRows([], []); }
+    if (q.includes('insert into arena_screener')) { upserts.push(body.params[0]); lastUpsertParams = body.params; return neonRows([], []); }
     if (q.includes('from arena_screener_ledger')) {
       const s = ledgerStats;
       return neonRows(['total', 'done', 'pending', 'error', 'not_found'], [[s.total, s.done, s.pending, s.error, s.not_found].map(String)]);
@@ -86,6 +88,27 @@ global.fetch = async (url, opts = {}) => {
     if (dataDown) return { ok: false, status: 500, headers: { get: () => 'text/plain' }, json: async () => null, text: async () => '' };
     return jsonReply({ metric: { peTTM: 18, roeTTM: 25, 'totalDebt/totalEquityQuarterly': 0.4 } });
   }
+  // ── Finnhub: capa TEMPORAL del cron (historial + estimados + ratings) ──
+  if (u.includes('finnhub.io/api/v1/stock/earnings')) {
+    temporalCalls.push(u);
+    return jsonReply([{ year: 2026, quarter: 2, period: '2026-06-30', actual: 2.2, estimate: 2.0, surprisePercent: 10 }]);
+  }
+  if (u.includes('finnhub.io/api/v1/stock/financials-reported')) {
+    temporalCalls.push(u);
+    const rev = (v) => ({ report: { ic: [{ concept: 'us-gaap_Revenues', value: v }] } });
+    return jsonReply({ data: [
+      { year: 2026, quarter: 2, endDate: '2026-06-30', filedDate: '2026-07-20', ...rev(1100) },
+      { year: 2025, quarter: 2, endDate: '2025-06-30', filedDate: '2025-07-20', ...rev(1000) },
+    ] });
+  }
+  if (u.includes('finnhub.io/api/v1/calendar/earnings')) {
+    temporalCalls.push(u);
+    return jsonReply({ earningsCalendar: [{ date: '2026-10-28', quarter: 3, year: 2026, epsEstimate: 2.4, revenueEstimate: 1200 }] });
+  }
+  if (u.includes('finnhub.io/api/v1/stock/recommendation')) {
+    temporalCalls.push(u);
+    return jsonReply([{ period: '2026-09-01', strongBuy: 5, buy: 5, hold: 5, sell: 0, strongSell: 0 }]);
+  }
   // ── Yahoo daily series (NO debe llamarse para tickers muertos) ──
   if (u.includes('yahoo')) {
     yahooCalls.push(u);
@@ -103,8 +126,9 @@ symbolList = [
   { symbol: 'MSFT', description: 'MICROSOFT CORP', type: 'Common Stock' },
 ]; // HES ausente a propósito (delisted por Chevron)
 pendingRows = [{ symbol: 'AAPL', attempts: 0 }, { symbol: 'HES', attempts: 1 }];
-marks.length = 0; metricCalls.length = 0; yahooCalls.length = 0; upserts.length = 0;
-const r1 = await runRefresh(process.env.FINNHUB_API_KEY, new Date('2026-07-27T23:00:00Z'));
+marks.length = 0; metricCalls.length = 0; yahooCalls.length = 0; upserts.length = 0; temporalCalls.length = 0;
+const r1 = await runRefresh(process.env.FINNHUB_API_KEY, new Date('2026-07-27T23:00:00Z'), { spacingMs: 0 });
+const temporalAfter1 = [...temporalCalls]; // snapshot: los escenarios siguientes reusan el array
 
 const hesMark = marks.find((m) => m.params[0] === 'HES');
 const aaplMark = marks.find((m) => m.params[0] === 'AAPL');
@@ -124,11 +148,52 @@ symbolList = [];  // /stock/symbol devuelve lista vacía → cache no se puebla 
 dataDown = true;  // metric + Yahoo caídos → sin datos
 pendingRows = [{ symbol: 'HES', attempts: 2 }];
 marks.length = 0; metricCalls.length = 0;
-await runRefresh(process.env.FINNHUB_API_KEY, new Date('2026-07-27T23:00:00Z'));
+await runRefresh(process.env.FINNHUB_API_KEY, new Date('2026-07-27T23:00:00Z'), { spacingMs: 0 });
 dataDown = false;
 const hesMark2 = marks.find((m) => m.params[0] === 'HES');
 ok(hesMark2 && !hesMark2.params.includes('not_found'), 'con el map caído, HES NO se marca not_found (fail-safe: un outage no delistea)', JSON.stringify(hesMark2 && hesMark2.params));
 ok(hesMark2 && hesMark2.params.includes('error'), 'con el map caído y sin datos → error transitorio (reintentable)', JSON.stringify(hesMark2 && hesMark2.params));
+
+// ── 2-bis) capa TEMPORAL: el cron precomputa la película, no solo la foto ──
+console.log('screener-refresh: la capa temporal (series por trimestre + momentum + estimados) se guarda');
+ok(temporalAfter1.some((u) => u.includes('stock/earnings') && u.includes('symbol=AAPL')) &&
+   temporalAfter1.some((u) => u.includes('financials-reported') && u.includes('symbol=AAPL')) &&
+   temporalAfter1.some((u) => u.includes('calendar/earnings') && u.includes('symbol=AAPL')) &&
+   temporalAfter1.some((u) => u.includes('stock/recommendation') && u.includes('symbol=AAPL')),
+  'el refresh pide las 4 fuentes temporales del tier gratis para el ticker vivo', JSON.stringify(temporalAfter1.length));
+ok(!temporalAfter1.some((u) => u.includes('symbol=HES')), 'al ticker muerto NO se le gasta ninguna llamada temporal', JSON.stringify(temporalAfter1));
+// El upsert lleva 20 params + refreshed_at por now(): [13]=rev_yoy_history,
+// [14]=eps_surprise_history, [15]=rec_trend, [16]=estimate_history, [17..19]=retornos, [20]=dist 52s.
+const upRev = JSON.parse(lastUpsertParams[12]);
+ok(Array.isArray(upRev) && upRev[0].yoy_pct === 10, 'se guarda el historial de ingresos con su YoY (1100 vs 1000 = +10%)', JSON.stringify(upRev));
+ok(JSON.parse(lastUpsertParams[13])[0].surprise_pct === 10, 'se guarda la sorpresa de EPS por trimestre', lastUpsertParams[13]);
+ok(JSON.parse(lastUpsertParams[14]).score_now === 1.0, 'se guarda la tendencia del rating (score neto)', lastUpsertParams[14]);
+const upEst = JSON.parse(lastUpsertParams[15]);
+ok(Array.isArray(upEst) && upEst.length === 1 && upEst[0].eps === 2.4 && upEst[0].period === '2026-10-28',
+  'se acumula el snapshot del estimado del próximo reporte, con su periodo fiscal', lastUpsertParams[15]);
+// La serie del mock tiene 60 sesiones: alcanza para el retorno 1m y para el
+// máximo de 52 semanas, no para 3m/6m — que salen null, nunca inventados.
+ok(lastUpsertParams[16] != null && lastUpsertParams[19] != null && lastUpsertParams[17] === null,
+  'se guardan los retornos de momentum derivados de la MISMA serie de Yahoo (y null donde no hay historia)', JSON.stringify(lastUpsertParams.slice(16, 20)));
+
+console.log('screener-refresh: mergeEstimateHistory (un punto por día reciente, semanal atrás, ventana de 90d viva)');
+const DAY_MS = 86400000;
+const dAgo = (n) => new Date(Date.now() - n * DAY_MS).toISOString().slice(0, 10);
+const snap = (date, eps) => ({ date, period: 'P1', eps, revenue: 100 });
+ok(mergeEstimateHistory([snap(dAgo(31), 3)], snap(dAgo(0), 2)).length === 2, 'un día nuevo agrega entrada');
+ok(mergeEstimateHistory([snap(dAgo(0), 3)], snap(dAgo(0), 2))[0].eps === 2, 'el mismo día PISA (el cron corre cada 4h, no queremos 6 filas/día)');
+// 120 días de snapshots diarios: la serie se RALEA, pero el punto de ~90 días
+// SOBREVIVE — si no, la ventana larga de `estimateRevisions` quedaría muda.
+const daily = Array.from({ length: 120 }, (_, i) => snap(dAgo(i + 1), 3 - i * 0.01));
+const thinned = mergeEstimateHistory(daily, snap(dAgo(0), 2.5));
+ok(thinned.length <= 30, 'la serie se acota (no crece sin límite)', String(thinned.length));
+ok(thinned.slice(0, 5).every((h, i) => h.date === dAgo(i)), 'resolución DIARIA en los últimos días', JSON.stringify(thinned.slice(0, 5).map((h) => h.date)));
+const ages = thinned.map((h) => Math.round((Date.parse(thinned[0].date) - Date.parse(h.date)) / DAY_MS));
+ok(ages.some((a) => a >= 45 && a <= 135), 'queda al menos un punto dentro de la ventana de 90 días (45-135d)', JSON.stringify(ages));
+ok(ages.some((a) => a >= 15 && a <= 45), 'queda al menos un punto dentro de la ventana de 30 días (15-45d)', JSON.stringify(ages));
+ok(!ages.some((a) => a > 130), 'nada más viejo que el horizonte se conserva', JSON.stringify(ages));
+ok(mergeEstimateHistory([], null).length === 0, 'sin snapshot nuevo no rompe');
+ok(mergeEstimateHistory([{ date: 'basura' }, null], snap(dAgo(0), 1)).length === 1, 'entradas inválidas se descartan sin romper');
 
 // ── 3) seedScreenerLedger: cuenta las filas REALMENTE insertadas ──
 console.log('screener-refresh: seed cuenta inserciones reales (fix inserted:0)');

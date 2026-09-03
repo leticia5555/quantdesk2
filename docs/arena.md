@@ -27,6 +27,7 @@ al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 | Risk guard determinista (post-LLM, fail closed) + FLOOR del screener | `api/_lib/arena-guard.js` |
 | **Regla de salida** determinista (circuit breaker + stop catastrófico) | `api/_lib/arena-exits.js` |
 | Deep dive Finnhub por candidato (fundamentales/recommendation/news) | `api/_lib/finnhub-dive.js` |
+| **DIMENSIÓN TIEMPO** — historial de earnings, momentum y flag de cuchillo cayendo | `api/_lib/temporal-fundamentals.js` |
 | Cron decide (22:40 UTC L-V) + reconcile (14:40 UTC L-V) | `api/arena-run.js` + `vercel.json` |
 | **Canal SCREENER** — screens deterministas (value/momentum) | `api/_lib/screens.js` |
 | **Canal SCREENER** — capa de datos Neon (tabla + ledger) | `api/_lib/screener-db.js` |
@@ -36,7 +37,7 @@ al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 | **Auditoría del run** (solo lectura, JSON/markdown + `?view=resumen`) | `api/arena-audit.js` + `api/_lib/arena-audit.js` |
 | Journal | tabla `arena_journal` (`api/_lib/db.js`) |
 | UI (sección en MIS AGENTES) | `app.html` (`qdArenaLoad`/`qdArenaHtml`) |
-| Tests | `tests/arena-guard.test.mjs` · `tests/arena-exits.test.mjs` · `tests/alpaca.test.mjs` · `tests/arena-run.test.mjs` · `tests/screens.test.mjs` · `tests/arena-audit.test.mjs` |
+| Tests | `tests/arena-guard.test.mjs` · `tests/arena-exits.test.mjs` · `tests/alpaca.test.mjs` · `tests/arena-run.test.mjs` · `tests/screens.test.mjs` · `tests/arena-audit.test.mjs` · `tests/temporal-fundamentals.test.mjs` · `tests/screener-refresh.test.mjs` |
 
 ## Flujo de dos fases (SCAN → DEEP DIVE)
 
@@ -171,12 +172,174 @@ prohíbe explícitamente inventar una.
 empresas privadas que no puede comprar; el espacio le sirve más al screener). El
 endpoint `/api/vc-feed` sigue vivo para el resto de la app.
 
+
+## DIMENSIÓN TIEMPO: el PM veía fotos, no películas (hallazgo T1)
+
+**El caso.** El 4-ago el Arena compró LULU como *value* con lo que le daba el
+deep dive: P/E ~10, ROE 31%, cero deuda. Una FOTO correcta. El 3-sep la empresa
+reportó revenue miss + guía recortada y cayó ~15% post-market. LULU venía
+**desacelerando varios trimestres** — un dato que el PM no podía ver, porque
+`stock/metric` es un snapshot puntual: no trae serie histórica ni momentum de
+precio. Ese mismo día el PM propuso rotar a ZM con **exactamente la misma foto**
+(P/E 8.64, ROE 32%, cero deuda).
+
+**La respuesta NO es un parche al prompt** ("acuérdate de mirar la tendencia"):
+es DATO en la capa de datos, y una regla dura en el guard. Aplica igual a los
+7 agentes de la liga (nadie recibe contexto distinto).
+
+**Vocabulario.** Los identificadores van en inglés como todo el código; la prosa
+(razones del guard, este doc) en español. Correspondencia con el reglamento:
+
+| Reglamento | Campo |
+|---|---|
+| tendencia_ingresos | `revenue_trend` (`accelerating` / `stable` / `decelerating` + `consecutive_quarters`) |
+| revisiones | `revisions` (`up` / `neutral` / `down` + `source`) |
+| cuchillo cayendo | `falling_knife` (`flag` + `reasons[]`) |
+| momentum | `price_momentum` (`ret_1m`/`ret_3m`/`ret_6m`, `dist_52w_high_pct`, `above_sma200`) |
+
+### 1. Historial de earnings (≤8 trimestres)
+
+Dos fuentes del **tier gratis** de Finnhub que ya usábamos en otras partes de la
+app y que sí tienen tiempo adentro:
+
+- `stock/earnings` → **sorpresa de EPS** por trimestre.
+- `stock/financials-reported?freq=quarterly` → **ingresos por trimestre** →
+  crecimiento **YoY** contra el MISMO trimestre fiscal del año anterior. La línea
+  de ingresos se elige por una lista de conceptos XBRL priorizada (no por
+  `includes('revenue')`, que se come `CostOfRevenue` y `DeferredRevenue`).
+
+De ahí salen las dos etiquetas:
+
+- **`revenue_trend`** — cuenta trimestres CONSECUTIVOS (desde el más reciente)
+  cuyo YoY cayó/subió al menos `trend_min_delta_pp` contra el anterior. Menos
+  que eso es `stable`; menos de 2 trimestres con YoY es `no_data`.
+- **`revisions`** — dos fuentes, en orden:
+  1. **Revisión REAL de estimados**, construida en casa: el cron del screener
+     guarda en cada refresh el estimado de consenso del PRÓXIMO reporte
+     (`calendar/earnings`, gratis) **con su periodo fiscal**, y comparar el de
+     hoy contra el de hace 30/90 días **del mismo periodo** es una revisión de
+     verdad. Empieza vacía: se vuelve utilizable a los ~30 días de acumulación.
+  2. **Fallback día 0**: tendencia del RATING de analistas
+     (`stock/recommendation`, gratis, el mismo array que el deep dive ya baja) —
+     score neto en escala −2..+2, hoy vs. 30/90 días atrás. **Es un proxy**, y
+     viaja etiquetado como tal en `revisions.source`.
+
+**Límite conocido:** Finnhub free **no expone la GUÍA de la empresa** ni sus
+endpoints de revisión de estimados (`stock/revenue-estimate`, `stock/eps-estimate`
+son Premium — misma política que `stock/price-target`, que tampoco llamamos). Por
+eso `guidance` viaja como `{direction: null, available: false}` y el prompt le
+prohíbe explícitamente al PM afirmar una dirección de guía que no recibió.
+
+Cada trimestre viaja **con fecha ya resuelta**, el mismo patrón que los earnings
+del buffet: `reported: "33 days ago (Thu Jul 31)"` (`relativeDayLabel`).
+
+### 2. Momentum de precio
+
+De la MISMA serie de Yahoo que ya baja la corrida (por eso el rango subió de
+`3mo` a `1y`): retorno **1m/3m/6m**, **distancia al máximo de 52 semanas** (sobre
+CIERRES: la serie no trae máximos intradía) y si el último cierre está **sobre la
+SMA200**.
+
+**La SMA200 es DESCRIPTIVA, nunca un breaker** — acta dualmom: un gate de
+tendencia por nombre no está validado con la evidencia que tenemos
+(`docs/dualmom-backtest-scope.md`). Se muestra, no decide. Lo único que un
+retorno negativo puede hacer es ser UNA de las tres patas del flag de abajo.
+
+### 3. Flag CUCHILLO CAYENDO (capa de datos)
+
+`falling_knife` se prende cuando se cumplen **las tres a la vez**:
+
+1. **barata** — P/E en el tercil más barato del universo del screener
+   (`falling_knife_pe_percentile`); sin distribución utilizable, P/E absoluto
+   `< falling_knife_pe_absolute`;
+2. **cayendo** — retorno 3m `≤ falling_knife_ret_3m` **o** 6m `≤ falling_knife_ret_6m`;
+3. **deteriorándose** — `revenue_trend = decelerating` **o** `revisions = down`.
+
+Una acción barata que sube no es un cuchillo; una que cae con ingresos acelerando
+puede ser la oportunidad; una que cae y se deteriora pero está cara es otro
+problema. El flag se le **muestra al PM** con sus razones en texto
+(`falling_knife_why`) y va al journal (`context.temporal.falling_knife` + la
+etiqueta por acción).
+
+### 4. REGLA TEMPORAL en el guard (`temporalVeto`)
+
+> Una **COMPRA** cuya tesis es *value* —o **cualquier** compra con el flag
+> `falling_knife` activo— se **RECHAZA** si `revenue_trend = decelerating` con
+> `≥ decel_min_quarters` trimestres seguidos, **o** si `revisions = down`.
+
+- La tesis *value* se detecta con **dos señales**: (a) el candidato salió de la
+  screen `value` (determinista, no depende del texto del LLM) y (b) lenguaje de
+  valuación en el `reasoning`. (b) sobre-dispara a propósito: solo importa cuando
+  la señal temporal YA está en rojo.
+- **No aplica a VENTAS.** Salir de un nombre que se deteriora es justo lo que
+  queremos.
+- **Sin datos NO se rechaza.** A diferencia del fail-closed del precio (sin
+  referencia es imposible validar la orden), la ausencia de historial es la norma
+  en símbolos de cobertura pobre: fallar cerrado bloquearía media liga por falta
+  de cobertura, no por riesgo. Se journalea `temporal.revenue_trend = "no_data"`
+  en la acción para poder **medir** cuántas decisiones se tomaron a ciegas.
+- Rechazo con **razón textual**, como todos los demás: cita la serie de YoY que
+  la condena y nombra la regla.
+
+**Umbrales (constantes en `_lib/temporal-fundamentals.js` → `TEMPORAL_RULES`,
+para congelar antes del día 0 de la liga):**
+
+| Constante | Valor propuesto | Por qué |
+|---|---|---|
+| `trend_min_delta_pp` | `1.0` | Un trimestre "desacelera" si su YoY cae ≥1.0 punto porcentual. Filtra ruido de redondeo/mix sin filtrar una desaceleración real. |
+| `decel_min_quarters` | `2` | Trimestres seguidos que el guard exige para vetar. 1 solo es ruido; 2 ya es tendencia. |
+| `max_quarters` | `8` | Historial que se deriva y journalea. |
+| `revision_estimate_down` / `_up` | `−0.03` / `+0.03` | Cambio del consenso (−3%/+3%) que marca dirección cuando la fuente es la revisión de estimados. |
+| `revision_window_days` | `[30, 90]` | Ventanas de comparación. Se prefiere la larga (90d): una revisión sostenida pesa más que el ruido de un mes. |
+| `revision_window_slack` | `0.5` | Un snapshot de 25-45 días cuenta como "30 días" (un cron que corrió tarde no deja la ventana muda). |
+| `revision_rating_down` / `_up` | `−0.10` / `+0.10` | Cambio del score de rating (escala −2..+2) cuando la fuente es el proxy de analistas. |
+| `falling_knife_pe_percentile` | `33` | "Barata" = tercil más barato del universo. |
+| `falling_knife_pe_absolute` | `15` | Fallback cuando no hay distribución utilizable (<20 nombres con P/E). |
+| `falling_knife_ret_3m` | `−0.10` | Una caída de 10% en un trimestre es "cayendo", no ruido. |
+| `falling_knife_ret_6m` | `−0.15` | Idem a medio año. |
+
+Las **series crudas** se guardan (en `arena_screener` y en el journal), no las
+etiquetas: cambiar un umbral se re-evalúa sobre lo ya almacenado, sin
+re-crawlear el universo.
+
+### 5. Cómo llega el dato (sin gastar llamadas de más)
+
+| Consumidor | Fuente | Costo |
+|---|---|---|
+| **SCAN** — cada ticker del buffet + cada posición del libro | vista TITULAR desde `arena_screener` (precomputada por el cron) | 0 llamadas |
+| **DIVE** — cada candidato | tabla del screener; **solo** los candidatos ausentes del universo piden su historial en vivo (típ. 1-3) | 2 req/candidato ausente |
+| **Momentum** (candidatos y holdings) | la MISMA serie de Yahoo que ya se baja para el cierre | 0 llamadas |
+| **Tendencia de rating** (candidatos) | el MISMO array de `recommendation` del deep dive | 0 llamadas |
+| **Guard + journal** | el índice del run (`runTemporal`) | 0 llamadas |
+
+El **cron del screener** (`api/arena-screener.js`) pasó de 1 a **5 llamadas
+Finnhub por símbolo** (metric + earnings + financials-reported + calendar/earnings
++ recommendation), así que su espaciado subió de 1.2s a **5.5s** por símbolo
+(≈54 req/min, bajo el cap de 60/min del tier gratis; 30 símbolos ≈165s, dentro de
+los 300s de la función). El universo sigue refrescándose en ~1 día.
+
+### 6. Punto 9 del reglamento T2 — pronunciamiento por posición
+
+Cada posición del libro viaja ahora, además de con su `pnl_since_entry_pct`, con
+`trend_and_momentum`: tendencia de ingresos, revisiones, retornos 1m/3m/6m,
+distancia al máximo de 52 semanas, SMA200 y flag. El P&L desde la entrada no dice
+si un nombre **lleva un mes cayendo** ni si el negocio se está deteriorando; eso
+ahora se ve. Los números llegan **pre-formateados** (misma medicina que
+`pnl_since_entry_pct`): el PM no recalcula ni re-escala nada.
+
+El prompt de decisión **no cambió de cadencia ni de presión a operar**: lo único
+que se agregó son dos líneas de DICCIONARIO DE DATOS (qué significa cada campo
+nuevo, y que `no_data` significa "no tenemos historia", no "la tendencia es
+plana"), con la misma forma que la nota de EARNINGS TIMING que ya existía.
+
 ## Reglas del PM (deterministas, fuera del LLM)
 
 Universo equities US (sin warrants/units, sin sub-$1, **sin ETFs
 apalancados/inversos**, long-only) · máx 8 posiciones · máx 15% del equity por
 posición · mín 10% de cash · SOLO órdenes límite (day, fill al open siguiente)
-· limit_price a ±2% del último cierre. Violación → orden descartada y
+· limit_price a ±2% del último cierre · **REGLA TEMPORAL** (compra *value* o con
+flag de cuchillo cayendo sobre un negocio que se deteriora → rechazada; ver
+arriba). Violación → orden descartada y
 journaleada con razón, jamás ajustada en silencio. JSON malformado → run
 abortado honesto, cero órdenes.
 
@@ -302,6 +465,57 @@ fail-closed por symbol map / cierre faltante). Las salidas de riesgo NO pasan po
 esas reglas: van por su propio path con la banda de exit ancha y solo validan lo
 que aplica a cerrar un largo (posición existe, `qty ≤` lo que hay, referencia de
 precio). Las ventas DISCRECIONALES del PM sí conservan el guard ±2% a propósito.
+
+
+## Reglamento v2 — pendientes fechados (2026-09-03)
+
+Lo que **NO alcanza a aterrizar antes del día 0 de la liga**, escrito aquí para
+journalearlo en vez de descubrirlo después. Cada punto dice qué falta, qué se
+hace mientras tanto, y cuándo deja de ser pendiente.
+
+1. **Revisión REAL de estimados (30/90 días).** El plumbing está: el cron guarda
+   en cada refresh el estimado de consenso del próximo reporte con su periodo
+   fiscal (`estimate_history`), y `estimateRevisions()` lo compara. Pero la serie
+   **arranca vacía**: la ventana de 30 días queda utilizable ~30 días después del
+   primer refresh, y la de 90 días ~90 días después. **Mientras tanto** la
+   etiqueta `revisions` corre sobre el proxy de rating de analistas, siempre
+   marcada en `revisions.source`. Nada que hacer: es tiempo, no código.
+2. **Dirección de la GUÍA de la empresa.** El tier gratis de Finnhub no la
+   expone y los endpoints de estimados son Premium. Se declara ausente
+   (`guidance.available = false`) y el prompt prohíbe afirmarla de memoria.
+   Salir de este pendiente cuesta plan pagado, o parsear el 8-K/press release
+   (el plumbing de SEC existe en `api/sec-edgar.js`, pero extraer guía de prosa
+   es otro proyecto).
+3. **Calibración de umbrales.** Los valores de `TEMPORAL_RULES` salen de los dos
+   casos que motivaron la capa (LULU y ZM), **no de un backtest**. La validación
+   honesta es un backtest PRE-REGISTRADO de la regla de cuchillo cayendo, con la
+   misma forma que PEAD / rotación / dual momentum. Hasta entonces la regla es
+   una **hipótesis explícita**, no un edge validado — y el journal guarda las
+   series crudas justamente para poder re-evaluarla con otros umbrales sin
+   re-crawlear.
+4. **Cobertura del universo.** La película precomputada cubre los ~150 nombres
+   del universo del screener. Un ticker que llega por movers/earnings/insider y
+   **no** está en ese universo llega al SCAN sin etiquetas; recién las obtiene
+   (en vivo) si el scout lo elige como candidato. Cerrar el hueco es ampliar el
+   universo del cron, con su costo de cuota de Finnhub.
+5. **Máximo de 52 semanas sobre CIERRES, no intradía.** `fetchDailySeries` solo
+   devuelve cierres, así que `dist_52w_high_pct` mide contra el cierre más alto
+   del año. Finnhub trae el `52WeekHigh` intradía en `stock/metric` (ya viaja en
+   los fundamentales del deep dive); reconciliarlos es cosmética pendiente.
+6. **Backfill del universo.** Las filas ya existentes de `arena_screener` tienen
+   las columnas temporales en `null` hasta que el cron drene el universo
+   (~1 día con el nuevo espaciado de 5.5s). **El día 0 de la liga debe ser al
+   menos 24 h después de desplegar esto**, o los agentes arrancan con la película
+   a medias (y `no_data` NO bloquea compras, por diseño).
+7. **Texto del punto 9 del reglamento T2.** Esta PR aterriza el **dato** (cada
+   posición viaja con sus etiquetas de tendencia y momentum). La regla de
+   *pronunciamiento obligatorio por posición* como instrucción del prompt no
+   está en el repo y no se agregó aquí: tocar el prompt de decisión quedó
+   explícitamente fuera de alcance en esta capa.
+8. **Superficie de auditoría/UI.** Las etiquetas viven en el journal
+   (`context.temporal` + `action.temporal`) y en los prompts. `/api/arena-audit`
+   y la card de MIS AGENTES todavía **no** las muestran; el post-mortem a 30
+   días se hace por query sobre el journal.
 
 ## Env vars y orden de encendido
 

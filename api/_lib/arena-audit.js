@@ -39,16 +39,18 @@ const isNum = (n) => typeof n === 'number' && Number.isFinite(n);
 
 // ── parseo del prompt del SCAN ───────────────────────────────────────
 // buildScanUserPrompt arma el prompt con join('\n') y deja cada JSON en su
-// PROPIA línea, justo después de su etiqueta. Se busca la etiqueta y se
-// parsea la primera línea siguiente que abra objeto (tolerancia de 2 líneas
-// por si algún día se cuela una línea en blanco). Nunca lanza: null si no
-// hay match o el JSON no parsea.
+// PROPIA línea, después de su etiqueta y de las LEYENDAS que la acompañan
+// (EARNINGS TIMING, TREND & MOMENTUM…). Se busca la etiqueta y se parsea la
+// primera línea siguiente que abra objeto, con una ventana de 8 líneas: cada
+// leyenda nueva empujaba el JSON una línea más abajo y la ventana de 2 lo
+// perdía en silencio (el buffet salía `reconstruido:false` sin decir por qué).
+// Nunca lanza: null si no hay match o el JSON no parsea.
 export function jsonAfterMarker(text, marker) {
   if (typeof text !== 'string') return null;
   const lines = text.split('\n');
   const i = lines.findIndex((l) => l.startsWith(marker));
   if (i === -1) return null;
-  for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
+  for (let j = i + 1; j < Math.min(i + 9, lines.length); j++) {
     const s = lines[j].trim();
     if (s.startsWith('{')) { try { return JSON.parse(s); } catch (e) { return null; } }
   }

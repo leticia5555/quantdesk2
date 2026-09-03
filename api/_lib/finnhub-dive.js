@@ -12,12 +12,24 @@
 // puntual queda para un tier pagado futuro, y reactivarlo sería añadir un
 // `safeFetch(.../stock/price-target...)` aquí).
 //
+// HISTORIAL TEMPORAL (hallazgo T1, sep 2026): `stock/metric` es una FOTO —
+// no trae serie. `fetchTemporalInputs` agrega las dos fuentes GRATIS que sí
+// tienen tiempo dentro: `stock/earnings` (sorpresa de EPS por trimestre) y
+// `stock/financials-reported?freq=quarterly` (ingresos por trimestre → YoY).
+// Se llama SOLO para los candidatos que NO están en la tabla del screener
+// (el cron ya los precomputó): así el burst extra es de 1-3 tickers, no de
+// todos. `stock/revenue-estimate` / `stock/eps-estimate` (revisión de
+// estimados) son PREMIUM → NO se llaman; la revisión se construye en casa
+// (ver _lib/temporal-fundamentals.js).
+//
 // Presupuesto de llamadas: 4 endpoints × ≤5 tickers = ~20 req en un burst,
 // muy por debajo del cap de 60/min del tier gratis. Los tickers se recorren
 // secuencialmente (Promise.all interno por ticker) para no rozar el cap de
 // ~30 req/s. BEST-EFFORT: un símbolo sin cobertura Finnhub degrada a datos
 // nulos y se marca en `errors`, JAMÁS aborta la corrida.
 // ═══════════════════════════════════════════════════════════════
+
+import { parseRevenueHistory, parseEpsSurprises, recommendationTrend, TEMPORAL_RULES } from './temporal-fundamentals.js';
 
 const BASE = 'https://finnhub.io/api/v1';
 
@@ -149,6 +161,10 @@ export async function fetchDeepDive(tickers, finnhubKey, now = new Date()) {
         profile: pickProfile(profile),
         fundamentals: pickFundamentals(metric),
         recommendation: pickRecommendation(rec),
+        // TENDENCIA del rating (hoy vs. 30/90 días atrás) del MISMO array que ya
+        // bajamos: cero requests extra. `recommendation` es la foto del rating;
+        // esto es su película, y es el fallback día-0 de la etiqueta `revisions`.
+        recommendation_trend: recommendationTrend(rec, { now }),
         news: pickNews(news, now),
       };
       data[t] = entry;
@@ -162,4 +178,87 @@ export async function fetchDeepDive(tickers, finnhubKey, now = new Date()) {
     }
   }
   return { data, errors };
+}
+
+// ── historial temporal de UN símbolo (gratis) ────────────────────────
+// Dos endpoints del tier gratis que el deep dive NO traía:
+//   stock/earnings                     → sorpresa de EPS por trimestre
+//   stock/financials-reported?quarterly → ingresos por trimestre (→ YoY)
+// Devuelve { revenueHistory, epsSurprises } ya parseados y recortados a los
+// ≤8 trimestres del pedido. Best-effort: sin cobertura → arrays vacíos.
+export async function fetchEarningsHistory(symbol, finnhubKey, { maxQuarters = TEMPORAL_RULES.max_quarters } = {}) {
+  if (!symbol || !finnhubKey) return { revenueHistory: [], epsSurprises: [] };
+  const sym = encodeURIComponent(symbol);
+  // 12 trimestres de reportes para poder derivar 8 YoY (cada YoY necesita su
+  // comparable del año anterior); `limit`/`count` son params documentados.
+  const [epsR, finR] = await Promise.all([
+    safeFetch(`${BASE}/stock/earnings?symbol=${sym}&limit=${maxQuarters}&token=${finnhubKey}`),
+    safeFetch(`${BASE}/stock/financials-reported?symbol=${sym}&freq=quarterly&count=${maxQuarters + 4}&token=${finnhubKey}`),
+  ]);
+  const [eps, fin] = await Promise.all([safeJson(epsR), safeJson(finR)]);
+  return {
+    revenueHistory: parseRevenueHistory(fin, { maxQuarters }),
+    epsSurprises: parseEpsSurprises(eps, { maxQuarters }),
+  };
+}
+
+// Igual, para N símbolos con CONCURRENCIA ACOTADA. El cap del tier gratis es
+// 60 req/min y el deep dive ya gasta 4/ticker: este pase va de a 2 tickers
+// (4 requests en vuelo) para no empujar el burst por encima del cap.
+export async function fetchTemporalInputs(symbols, finnhubKey, { maxQuarters = TEMPORAL_RULES.max_quarters, concurrency = 2 } = {}) {
+  const out = {};
+  const queue = [...new Set(symbols || [])];
+  const worker = async () => {
+    while (queue.length) {
+      const s = queue.shift();
+      try { out[s] = await fetchEarningsHistory(s, finnhubKey, { maxQuarters }); }
+      catch (e) { out[s] = { revenueHistory: [], epsSurprises: [] }; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
+  return out;
+}
+
+// ── recomendaciones de analistas, la SERIE completa (gratis) ─────────
+// `pickRecommendation` (arriba) se queda con el periodo más reciente para
+// mostrarle el rating al PM. Aquí devolvemos el ARRAY entero: la TENDENCIA
+// del rating (hoy vs. 30/90 días atrás) es el fallback día-0 de la etiqueta
+// `revisions` mientras el historial de estimados propio se acumula.
+export async function fetchRecommendations(symbol, finnhubKey) {
+  if (!symbol || !finnhubKey) return null;
+  const r = await safeFetch(`${BASE}/stock/recommendation?symbol=${encodeURIComponent(symbol)}&token=${finnhubKey}`);
+  const data = await safeJson(r);
+  return Array.isArray(data) ? data : null;
+}
+
+// ── estimado de consenso del PRÓXIMO reporte (gratis) ────────────────
+// `calendar/earnings?symbol=` trae, para el próximo reporte, `epsEstimate` y
+// `revenueEstimate` con su fecha y periodo fiscal. Un snapshot solo no dice
+// nada; guardado por el cron del screener en cada refresh, la SERIE de
+// snapshots del MISMO periodo fiscal es una revisión de estimados de verdad
+// (ver _lib/temporal-fundamentals.js → estimateRevisions). Devuelve
+// { date, period, eps, revenue } o null.
+export async function fetchNextEstimate(symbol, finnhubKey, now = new Date()) {
+  if (!symbol || !finnhubKey) return null;
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const from = iso(now);
+  const to = iso(new Date(now.getTime() + 120 * 86400000));
+  const r = await safeFetch(`${BASE}/calendar/earnings?from=${from}&to=${to}&symbol=${encodeURIComponent(symbol)}&token=${finnhubKey}`);
+  const data = await safeJson(r);
+  const list = (data && Array.isArray(data.earningsCalendar)) ? data.earningsCalendar : [];
+  if (!list.length) return null;
+  // El más próximo en el tiempo (el feed no garantiza orden).
+  const next = [...list].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))[0];
+  const eps = num(next.epsEstimate);
+  const revenue = num(next.revenueEstimate);
+  if (eps == null && revenue == null) return null;
+  return {
+    // `date` es CUÁNDO tomamos el snapshot (hoy), no la fecha del reporte:
+    // es el eje temporal de la revisión. El reporte va en `period`/`report_date`.
+    date: iso(now),
+    period: next.date || null,
+    report_date: next.date || null,
+    quarter: next.quarter ?? null, year: next.year ?? null,
+    eps, revenue,
+  };
 }

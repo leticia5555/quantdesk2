@@ -43,10 +43,16 @@ const today = new Date().toISOString().slice(0, 10);
 const DAY = 86400000;
 // Earnings a dos días de hoy: el buffet debe rotularlo "in 2 days", no "today".
 const inTwoDays = new Date(Date.now() + 2 * DAY).toISOString().slice(0, 10);
-const t0 = Date.UTC(2026, 4, 1); // 2026-05-01, muy anterior a "hoy"
-const closes = Array.from({ length: 30 }, (_, i) => 195 + (i % 6));
+// 260 sesiones (un año) terminando AYER: alcanza para la MA200 y para los
+// retornos 1m/3m/6m de la capa temporal. El último cierre sigue siendo 200.
+const closes = Array.from({ length: 260 }, (_, i) => 195 + (i % 6));
 closes[closes.length - 1] = 200;
-const timestamps = closes.map((_, i) => (t0 + i * DAY) / 1000);
+const timestamps = closes.map((_, i) => (Date.now() - (260 - i) * DAY) / 1000);
+// Serie de LULU: 260 sesiones de 200 a 100 (−50% desde el máximo de 52 semanas,
+// −19% a 3 meses, bajo la SMA200). Con el P/E 10.3 del mock de `metric` y los
+// ingresos desacelerando, es el caso completo del 3-ago.
+const luluCloses = Array.from({ length: 260 }, (_, i) => 200 - i * (100 / 259));
+const luluTimestamps = luluCloses.map((_, i) => (Date.now() - (260 - i) * DAY) / 1000);
 
 // ── canal SCREENER (tabla arena_screener en Neon, mutable por test) ──
 // KO califica VALUE (P/E 18 < 20, ROE 40 > 15, deuda 0.5 < 1).
@@ -57,13 +63,32 @@ const srow = (o) => ({
   last_close: null, ma50: null, ma200: null,
   pe_ttm: null, ps_ttm: null, gross_margin: null, net_margin: null,
   debt_to_equity: null, roe_ttm: null, rev_growth_yoy: null,
+  // capa TEMPORAL precomputada por el cron (series crudas + momentum)
+  rev_yoy_history: null, eps_surprise_history: null, rec_trend: null,
+  estimate_history: null, ret_1m: null, ret_3m: null, ret_6m: null, dist_52w_high_pct: null,
   refreshed_at: '2026-07-27T00:00:00Z', ...o,
 });
-let screenerRows = [
-  srow({ symbol: 'KO', pe_ttm: 18, roe_ttm: 40, debt_to_equity: 0.5 }),           // value
-  srow({ symbol: 'HD', last_close: 150, ma50: 130, ma200: 110, pe_ttm: 60 }),     // momentum (precio STALE 150)
+// KO llega con su PELÍCULA: ingresos acelerando y precio arriba → ni cuchillo
+// ni veto (es el control del caso LULU, que sí desacelera y sí se rechaza).
+const KO_YOY = [
+  { year: 2026, quarter: 2, label: 'FY2026 Q2', filed: '2026-07-20', yoy_pct: 9.1 },
+  { year: 2026, quarter: 1, label: 'FY2026 Q1', filed: '2026-04-20', yoy_pct: 6.4 },
+  { year: 2025, quarter: 4, label: 'FY2025 Q4', filed: '2026-01-20', yoy_pct: 4.0 },
 ];
-const SCREENER_FIELDS = ['symbol', 'security_type', 'last_close', 'ma50', 'ma200', 'pe_ttm', 'ps_ttm', 'gross_margin', 'net_margin', 'debt_to_equity', 'roe_ttm', 'rev_growth_yoy', 'refreshed_at'];
+let screenerRows = [
+  srow({ symbol: 'KO', pe_ttm: 18, roe_ttm: 40, debt_to_equity: 0.5,             // value
+    rev_yoy_history: KO_YOY, ret_1m: 0.03, ret_3m: 0.08, ret_6m: 0.14, dist_52w_high_pct: -2.5 }),
+  srow({ symbol: 'HD', last_close: 150, ma50: 130, ma200: 110, pe_ttm: 60,       // momentum (precio STALE 150)
+    ret_1m: 0.04, ret_3m: 0.11, ret_6m: 0.19, dist_52w_high_pct: -1.2 }),
+];
+const SCREENER_FIELDS = ['symbol', 'security_type', 'last_close', 'ma50', 'ma200', 'pe_ttm', 'ps_ttm', 'gross_margin', 'net_margin', 'debt_to_equity', 'roe_ttm', 'rev_growth_yoy', 'rev_yoy_history', 'eps_surprise_history', 'rec_trend', 'estimate_history', 'ret_1m', 'ret_3m', 'ret_6m', 'dist_52w_high_pct', 'refreshed_at'];
+// jsonb (OID 3802) → sql() lo parsea; el resto va como texto crudo (25).
+const SCREENER_OIDS = { rev_yoy_history: 3802, eps_surprise_history: 3802, rec_trend: 3802, estimate_history: 3802 };
+const screenerCell = (r, f) => {
+  const v = r[f];
+  if (v == null) return null;
+  return SCREENER_OIDS[f] === 3802 ? JSON.stringify(v) : String(v);
+};
 
 // ── fase 1 (SCAN): el SCOUT nombra AAPL como candidato ──
 let scanText = JSON.stringify({
@@ -88,6 +113,7 @@ const alpacaOrderPosts = [];
 const journalInserts = [];
 const journalUpdates = [];
 const finnhubDiveCalls = []; // urls de deep dive (metric/profile2/recommendation/company-news)
+const finnhubTemporalCalls = []; // urls de la capa temporal (stock/earnings, financials-reported)
 let orderFilled = false;
 let moversStatus = 200; // se flipa a 401 para probar fetch_errors del buffet
 let positionsMock = []; // posiciones del libro (mutable: la atribución de portfolio lo usa)
@@ -145,6 +171,7 @@ global.fetch = async (url, opts = {}) => {
         { symbol: 'NVDA', description: 'NVIDIA CORP', type: 'Common Stock' },
         { symbol: 'GNTX', description: 'GENTEX CORP', type: 'Common Stock' },
         { symbol: 'AXP', description: 'AMERICAN EXPRESS CO', type: 'Common Stock' },
+        { symbol: 'LULU', description: 'LULULEMON ATHLETICA INC', type: 'Common Stock' },
         // No-equity que el sufijo del ticker NO atrapa (sin separador) pero el
         // `type` del symbol map sí: alimentan el filtro de universo del buffet.
         { symbol: 'WLDSW', description: 'WEALTHYCO WARRANT', type: 'Equity WRT' },
@@ -154,7 +181,30 @@ global.fetch = async (url, opts = {}) => {
   // Finnhub deep dive (fase 2a)
   if (u.includes('finnhub.io/api/v1/stock/metric')) {
     finnhubDiveCalls.push(u);
-    return jsonReply({ metric: { peTTM: 30, psTTM: 8, netProfitMarginTTM: 25, grossMarginTTM: 44, 'totalDebt/totalEquityQuarterly': 1.5, currentRatioQuarterly: 1.1, beta: 1.2 } });
+    // LULU barata (P/E 10) — el resto cara (P/E 30). El flag de cuchillo
+    // cayendo necesita "barata", y esa es la mitad del caso LULU.
+    const pe = u.includes('symbol=LULU') ? 10.3 : 30;
+    return jsonReply({ metric: { peTTM: pe, psTTM: 8, netProfitMarginTTM: 25, grossMarginTTM: 44, roeTTM: 31, 'totalDebt/totalEquityQuarterly': 1.5, currentRatioQuarterly: 1.1, beta: 1.2 } });
+  }
+  // ── capa TEMPORAL en vivo (solo para candidatos fuera del universo del
+  // screener): historial de EPS + ingresos por trimestre. AAPL acelera; LULU
+  // desacelera (el caso que motivó la regla). ──
+  if (u.includes('finnhub.io/api/v1/stock/earnings')) {
+    finnhubTemporalCalls.push(u);
+    return jsonReply([
+      { year: 2026, quarter: 2, period: '2026-06-30', actual: 3.15, estimate: 3.08, surprisePercent: 2.3 },
+      { year: 2026, quarter: 1, period: '2026-03-31', actual: 2.60, estimate: 2.56, surprisePercent: 1.6 },
+    ]);
+  }
+  if (u.includes('finnhub.io/api/v1/stock/financials-reported')) {
+    finnhubTemporalCalls.push(u);
+    const rev = (v) => ({ report: { ic: [{ concept: 'us-gaap_Revenues', value: v }] } });
+    // Serie de ingresos por trimestre fiscal (8 trimestres → 4 YoY).
+    const serie = u.includes('symbol=LULU')
+      ? [2530, 2410, 3610, 2400, 2483, 2286, 3205, 2064]   // YoY +1.9 → +5.4 → +10.1 → +15.9 (DESACELERA)
+      : [3000, 2800, 4000, 2600, 2500, 2450, 3600, 2400];  // acelera
+    const qs = [[2026, 2], [2026, 1], [2025, 4], [2025, 3], [2025, 2], [2025, 1], [2024, 4], [2024, 3]];
+    return jsonReply({ data: qs.map(([year, quarter], i) => ({ year, quarter, endDate: null, filedDate: null, ...rev(serie[i]) })) });
   }
   if (u.includes('finnhub.io/api/v1/stock/profile2')) {
     finnhubDiveCalls.push(u);
@@ -171,8 +221,12 @@ global.fetch = async (url, opts = {}) => {
       { headline: 'Old stale headline from a month ago', datetime: nowSec - 30 * (DAY / 1000), source: 'Bloomberg' },
     ]);
   }
-  // Yahoo
+  // Yahoo — serie por defecto (último cierre 200) y, para LULU, una serie
+  // DECLINANTE de un año (200 → 100): el momentum que faltaba en el caso real.
   if (u.includes('yahoo')) {
+    if (u.includes('/LULU')) {
+      return jsonReply({ chart: { result: [{ timestamp: luluTimestamps, indicators: { quote: [{ close: luluCloses }] } }] } });
+    }
     return jsonReply({ chart: { result: [{ timestamp: timestamps, indicators: { quote: [{ close: closes }] } }] } });
   }
   // Buffet (self-fetch a nuestros endpoints)
@@ -221,9 +275,11 @@ global.fetch = async (url, opts = {}) => {
     const q = body.query || '';
     // Canal screener: el arena-run SOLO LEE arena_screener (readScreenerRows).
     if (q.includes('arena_screener')) {
+      // readEstimateHistory (`select estimate_history from ... where symbol`)
+      // es del CRON, no del run; si algún día se cuela, no rompe.
       return jsonReply({
-        fields: SCREENER_FIELDS.map((name) => ({ name, dataTypeID: 25 })),
-        rows: screenerRows.map((r) => SCREENER_FIELDS.map((f) => (r[f] == null ? null : String(r[f])))),
+        fields: SCREENER_FIELDS.map((name) => ({ name, dataTypeID: SCREENER_OIDS[name] || 25 })),
+        rows: screenerRows.map((r) => SCREENER_FIELDS.map((f) => screenerCell(r, f))),
       });
     }
     // HWM del breaker: max(equity) journaleado. Mutable por test.
@@ -369,6 +425,48 @@ ok(rHd && !('earnings' in rHd),
   'prompt DIVE: un candidato que NO salió del canal earnings no lleva fecha inventada', JSON.stringify(rHd && rHd.earnings));
 ok(/EARNINGS TIMING/.test(jctx.dive.prompt.user) && /do not assert one from memory/.test(jctx.dive.prompt.user),
   'prompt DIVE: instrucción de citar `when` tal cual y de no inventar fecha para quien no la trae');
+
+// ── DIMENSIÓN TIEMPO: la película viaja al SCAN, al DIVE y al journal ──
+console.log('arena-run: capa temporal (tendencia + momentum) en ambos prompts y en el journal');
+const scanBuffetT = JSON.parse(jctx.scan.prompt.user.split('\n').find((l) => l.startsWith('{') && l.includes('"movers"')));
+ok(scanBuffetT.temporal && scanBuffetT.temporal.KO,
+  'prompt SCAN: el buffet lleva las etiquetas temporales por ticker (vista titular)', JSON.stringify(scanBuffetT.temporal));
+ok(scanBuffetT.temporal.KO.revenue_trend === 'accelerating (2q)' && scanBuffetT.temporal.KO.return_3m === '+8.0%',
+  'prompt SCAN: KO llega con su tendencia de ingresos y su retorno 3m ya formateado', JSON.stringify(scanBuffetT.temporal.KO));
+ok(scanBuffetT.temporal.HD && scanBuffetT.temporal.HD.above_sma200 === true,
+  'prompt SCAN: un ticker sin historial de ingresos igual lleva su momentum', JSON.stringify(scanBuffetT.temporal.HD));
+ok(/TREND & MOMENTUM/.test(jctx.scan.prompt.user) && /it does not mean the trend is flat/.test(jctx.scan.prompt.user),
+  'prompt SCAN: leyenda de la capa temporal (diccionario de datos, sin pedir operar más)');
+ok(!('temporalIndex' in scanBuffetT) && !('universePes' in scanBuffetT),
+  'prompt SCAN: el índice temporal COMPLETO y la distribución de P/E son internos (no van al prompt)', JSON.stringify(Object.keys(scanBuffetT)));
+
+// AAPL no está en la tabla del screener → su película se pidió EN VIVO.
+ok(finnhubTemporalCalls.some((u) => u.includes('stock/earnings') && u.includes('symbol=AAPL')) &&
+   finnhubTemporalCalls.some((u) => u.includes('financials-reported') && u.includes('symbol=AAPL')),
+  'deep dive: el candidato AUSENTE de la tabla (AAPL) pide su historial en vivo', JSON.stringify(finnhubTemporalCalls.length));
+ok(!finnhubTemporalCalls.some((u) => u.includes('symbol=KO')),
+  'deep dive: el candidato que YA está en la tabla (KO) NO gasta llamadas — se lee lo precomputado', JSON.stringify(finnhubTemporalCalls));
+ok(rAapl && rAapl.temporal && rAapl.temporal.revenue_trend === 'accelerating (3 consecutive quarter(s))',
+  'prompt DIVE: cada candidato lleva su tendencia de ingresos derivada del historial', JSON.stringify(rAapl && rAapl.temporal && rAapl.temporal.revenue_trend));
+ok(rAapl.temporal.revenue_yoy_by_quarter.length > 0 && /%$/.test(rAapl.temporal.revenue_yoy_by_quarter[0].yoy),
+  'prompt DIVE: YoY por trimestre, ya formateado', JSON.stringify(rAapl.temporal.revenue_yoy_by_quarter[0]));
+ok(rAapl.temporal.eps_surprise_by_quarter.length > 0 && rAapl.temporal.eps_surprise_by_quarter[0].surprise === '+2.3%',
+  'prompt DIVE: sorpresa de EPS por trimestre', JSON.stringify(rAapl.temporal.eps_surprise_by_quarter[0]));
+ok(rAapl.temporal.price_momentum && rAapl.temporal.price_momentum.return_3m && rAapl.temporal.price_momentum.vs_52w_high,
+  'prompt DIVE: momentum (1m/3m/6m + distancia al máximo de 52s)', JSON.stringify(rAapl.temporal.price_momentum));
+ok(rAapl.temporal.guidance_direction === null && /does not expose company guidance/.test(jctx.dive.prompt.user),
+  'prompt DIVE: la guía se declara AUSENTE explícitamente (no se deja rellenar de memoria)');
+ok(rAapl.temporal.falling_knife === false, 'prompt DIVE: AAPL no está marcada (acelerando y en máximos)', String(rAapl.temporal.falling_knife));
+ok(/200-day average is DESCRIPTIVE CONTEXT, not a rule/.test(jctx.dive.prompt.user),
+  'prompt DIVE: la SMA200 se presenta como DATO, nunca como regla (acta dualmom)');
+ok(jctx.temporal && jctx.temporal.rules && jctx.temporal.rules.decel_min_quarters === 2,
+  'journal: context.temporal.rules congela los umbrales con los que se juzgó la corrida', JSON.stringify(jctx.temporal && jctx.temporal.rules));
+ok(jctx.temporal.candidates && jctx.temporal.candidates.AAPL && jctx.temporal.candidates.AAPL.revenue_yoy_history.length > 0,
+  'journal: context.temporal.candidates guarda la película COMPLETA (series crudas incluidas)', JSON.stringify(Object.keys(jctx.temporal.candidates || {})));
+ok(Array.isArray(jctx.temporal.falling_knife) && jctx.temporal.falling_knife.length === 0,
+  'journal: lista de marcados con cuchillo cayendo (vacía hoy)', JSON.stringify(jctx.temporal.falling_knife));
+ok(jAapl && jAapl.temporal && jAapl.temporal.revenue_trend === 'accelerating' && jAapl.temporal.falling_knife === false,
+  'journal: la acción aprobada lleva la etiqueta temporal que el guard tuvo enfrente', JSON.stringify(jAapl && jAapl.temporal));
 
 // ── el SCAN prompt trae el buffet; movers con top-8 + filtro leveraged + ≥$5 (main #76) ──
 const uMovers = JSON.parse(jctx.scan.prompt.user.split('\n').find((l) => l.startsWith('{') && l.includes('"movers"'))).movers;
@@ -587,6 +685,73 @@ const rUn = await runArenaDecide({ baseUrl: BASE_URL });
 const aUn = JSON.parse(lastRow()[COL.actions]).find((a) => a.symbol === 'NVDA');
 ok(aUn && Array.isArray(aUn.channels) && aUn.channels.length === 0, 'sin buffet ni libro → channels [] (señal de pick sin anclar, no bug de wiring)', JSON.stringify(aUn && aUn.channels));
 moversStatus = 200; // restaurar
+
+// ── 10-bis) CASO LULU de punta a punta: el PM propone la compra "value" y la
+// REGLA TEMPORAL la rechaza. Reproduce el 4-ago con lo que hoy sí viaja: P/E
+// 10.3 (barata), un año de caída (200 → 100) e ingresos desacelerando 3
+// trimestres seguidos. Antes, esta compra se ejecutaba: el guard no tenía con
+// qué verla y el PM solo recibía la foto. ──
+console.log('arena-run: CASO LULU — compra "value" sobre ingresos desacelerando → RECHAZADA por la regla temporal');
+positionsMock = []; openOrdersMock = [];
+screenerRows = []; // LULU no está en el universo → su película se pide en vivo
+scanText = JSON.stringify({ scan_thesis: 'LULU cotiza a P/E 10 con ROE 31% y cero deuda: parece value.', candidates: ['LULU'] });
+diveText = JSON.stringify({ plan: 'Abro LULU: deep value con balance impecable, el mercado exagera.', actions: [
+  { symbol: 'LULU', side: 'buy', notional: 12000, limit_price: 100, conviction: 4, reasoning: 'Deep value: P/E ~10 with 31% ROE and zero debt.' },
+] });
+const postsBeforeLulu = alpacaOrderPosts.length;
+const rLulu = await runArenaDecide({ baseUrl: BASE_URL });
+ok(rLulu.status === 'ok_no_actions' && rLulu.discarded === 1, 'LULU: cero órdenes — la compra se descartó', JSON.stringify(rLulu));
+ok(alpacaOrderPosts.length === postsBeforeLulu, 'LULU: NADA llegó a Alpaca');
+const jLulu = JSON.parse(lastRow()[COL.actions]).find((a) => (a.symbol || (a.raw && a.raw.symbol)) === 'LULU');
+ok(jLulu && jLulu.result === 'discarded' && /desacelerando 3 trimestres/.test(jLulu.reason || ''),
+  'LULU: journal con la razón textual del rechazo, como los demás descartes', jLulu && jLulu.reason);
+ok(jLulu && /YoY/.test(jLulu.reason) && /cuchillo/i.test(jLulu.reason),
+  'LULU: la razón cita la serie de YoY y nombra la regla', jLulu && jLulu.reason);
+const ctxLulu = JSON.parse(lastRow()[COL.context]);
+const tLulu = ctxLulu.temporal.candidates.LULU;
+ok(tLulu && tLulu.falling_knife.flag === true,
+  'LULU: FLAG CUCHILLO CAYENDO en el journal, con sus razones', JSON.stringify(tLulu && tLulu.falling_knife.reasons));
+ok(ctxLulu.temporal.falling_knife.some((f) => f.symbol === 'LULU'),
+  'LULU: aparece en la lista de marcados de la corrida (post-mortem)', JSON.stringify(ctxLulu.temporal.falling_knife));
+const researchLulu = JSON.parse(ctxLulu.dive.prompt.user.split('\n').find((l) => l.startsWith('[') && l.includes('"ticker"')));
+ok(researchLulu[0].temporal && researchLulu[0].temporal.falling_knife === true && researchLulu[0].temporal.falling_knife_why,
+  'LULU: el PM VIO la etiqueta antes de decidir (no es un rechazo a ciegas)', JSON.stringify(researchLulu[0].temporal && researchLulu[0].temporal.falling_knife_why));
+ok(researchLulu[0].temporal.revenue_trend === 'decelerating (3 consecutive quarter(s))' && researchLulu[0].temporal.price_momentum.return_3m.startsWith('-'),
+  'LULU: el PM VIO la tendencia y el retorno 3m negativo', JSON.stringify(researchLulu[0].temporal.price_momentum));
+
+// ── 10-ter) PUNTO 9 DEL REGLAMENTO T2: cada posición del libro llega con sus
+// etiquetas de tendencia y momentum, no solo con su P&L desde la entrada. ──
+// La posición es la LULU ya comprada: el PM tiene que poder VER, al
+// pronunciarse sobre ella, que lleva meses cayendo y que el negocio frena —
+// no solo su P&L desde la entrada. El momentum sale de la serie FRESCA de
+// Yahoo (pisa al precomputado del cron, que va 1-2 días atrás).
+console.log('arena-run: punto 9 del reglamento T2 — contexto de tendencia/momentum por posición del libro');
+positionsMock = [{ symbol: 'LULU', qty: '60', avg_entry_price: '190', market_value: '6000', unrealized_plpc: '-0.474' }];
+// Fila del screener SOLO para la película (no califica a ninguna screen: sin
+// ROE ni medias móviles no dispara value ni momentum → no hay floor).
+screenerRows = [srow({ symbol: 'LULU', pe_ttm: 10.3, rev_yoy_history: [
+  { year: 2026, quarter: 2, label: 'FY2026 Q2', filed: '2026-07-31', yoy_pct: 1.9 },
+  { year: 2026, quarter: 1, label: 'FY2026 Q1', filed: '2026-05-01', yoy_pct: 5.4 },
+  { year: 2025, quarter: 4, label: 'FY2025 Q4', filed: '2026-01-30', yoy_pct: 10.1 },
+  { year: 2025, quarter: 3, label: 'FY2025 Q3', filed: '2025-10-31', yoy_pct: 15.9 },
+] })];
+scanText = JSON.stringify({ scan_thesis: 'Nada nuevo hoy.', candidates: [] });
+diveText = JSON.stringify({ plan: 'Holdeo.', actions: [] });
+const rPos = await runArenaDecide({ baseUrl: BASE_URL });
+ok(rPos.status === 'ok_no_candidates', 'la corrida holdea (sin candidatos) pero igual journalea el prompt del SCAN', JSON.stringify(rPos));
+const ctxPos = JSON.parse(lastRow()[COL.context]);
+const bookPos = JSON.parse(ctxPos.scan.prompt.user.split('\n').find((l) => l.startsWith('{') && l.includes('"positions"'))).positions[0];
+ok(bookPos && bookPos.symbol === 'LULU' && bookPos.pnl_since_entry_pct === '-47.4%', 'la posición conserva su P&L desde entrada pre-formateado', JSON.stringify(bookPos));
+const tm = bookPos.trend_and_momentum;
+ok(tm && tm.return_1m.startsWith('-') && tm.return_3m.startsWith('-') && tm.return_6m.startsWith('-'),
+  'punto 9: la posición muestra que lleva un mes (y un semestre) cayendo', JSON.stringify(tm));
+ok(tm.revenue_trend === 'decelerating (3q)' && parseFloat(tm.vs_52w_high) < -40,
+  'punto 9: tendencia de ingresos + distancia al máximo de 52 semanas por posición', JSON.stringify(tm));
+ok(tm.falling_knife === true && tm.above_sma200 === false,
+  'punto 9: el flag y la SMA200 (descriptiva) también viajan con la posición', JSON.stringify(tm));
+// (context.temporal solo se llena cuando hubo DEEP DIVE; con cero candidatos
+// la película del libro vive en el prompt del SCAN, que sí queda journaleado.)
+positionsMock = []; screenerRows = [];
 
 // ── 11) DISCIPLINA DE LA PROSA: valores pre-formateados/rotulados (Opción 1) +
 // instrucciones de recencia y de "cita cifras verbatim" (Opción 2) en el DIVE. ──

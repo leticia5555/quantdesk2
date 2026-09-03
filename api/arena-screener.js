@@ -21,10 +21,11 @@
 
 import {
   ensureScreenerSchema, seedScreenerLedger, pickStaleSymbols,
-  upsertScreener, markScreenerLedger, screenerStats,
+  upsertScreener, markScreenerLedger, screenerStats, readEstimateHistory,
 } from './_lib/screener-db.js';
 import { universeLedgerEntries, auditUniverse } from './_lib/screener-universe.js';
-import { fetchFundamentals } from './_lib/finnhub-dive.js';
+import { fetchFundamentals, fetchEarningsHistory, fetchNextEstimate, fetchRecommendations } from './_lib/finnhub-dive.js';
+import { priceMomentum, recommendationTrend } from './_lib/temporal-fundamentals.js';
 import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getSymbolMap, getSymbolTypes } from './earnings.js';
 import { beat } from './_lib/heartbeat.js';
@@ -36,8 +37,14 @@ import { beat } from './_lib/heartbeat.js';
 // api/*.js; este export por-archivo lo sobreescribe solo aquí.)
 export const maxDuration = 300;
 
-const PER_RUN = 30;         // ≤30 símbolos/invocación → ~40s, cabe en 60s
-const SPACING_MS = 1200;    // ~1.2s entre símbolos → muy bajo el cap Finnhub 60/min
+const PER_RUN = 30;         // ≤30 símbolos/invocación (universo ~150 → ~1 día con 6 corridas)
+// Espacio entre símbolos. La aritmética CAMBIÓ con la capa temporal: antes era
+// 1 request Finnhub por símbolo (stock/metric) y 1.2s bastaba (≈50 req/min).
+// Ahora son CINCO (metric + earnings + financials-reported + calendar/earnings
+// + recommendation), así que 1.2s daría ~250 req/min y reventaría el cap de
+// 60/min del tier gratis. 5.5s → ~54 req/min, bajo el cap; 30 símbolos ≈ 165s
+// + I/O, holgado dentro de los 300s de la función.
+const SPACING_MS = 5500;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -48,23 +55,70 @@ function meanLast(arr, n) {
   return s.reduce((a, b) => a + b, 0) / n;
 }
 
+// La MISMA serie de 1 año sirve para las medias móviles Y para el MOMENTUM
+// (retornos 1m/3m/6m + distancia al máximo de 52 semanas): un solo fetch.
 async function priceAndMAs(symbol, now) {
+  const empty = { last_close: null, ma50: null, ma200: null, momentum: null };
   try {
     const raw = await fetchDailySeries(symbol, '1y'); // ~252 sesiones → alcanza para MA200
     const series = raw ? completedSlice(raw, now) : null;
     const closes = series && Array.isArray(series.closes) ? series.closes : [];
-    if (!closes.length) return { last_close: null, ma50: null, ma200: null };
+    if (!closes.length) return empty;
     return {
       last_close: closes[closes.length - 1],
       ma50: meanLast(closes, 50),
       ma200: meanLast(closes, 200),
+      momentum: priceMomentum(series),
     };
   } catch (e) {
-    return { last_close: null, ma50: null, ma200: null };
+    return empty;
   }
 }
 
-async function runRefresh(finnhubKey, now) {
+// Snapshot nuevo del estimado de consenso → historial acumulado.
+//
+// La serie tiene que llegar hasta ~90 días atrás (la ventana larga de
+// `estimateRevisions`), pero NO hace falta resolución diaria en la cola: la
+// ventana de 90d acepta 45-135 días, así que un punto por semana la cubre. Se
+// RALEA en vez de truncar — truncar a N entradas recientes dejaría la ventana
+// de 90 días permanentemente muda (el bug obvio de "guardar las últimas 12").
+//
+//   · un snapshot por DÍA como máximo (el cron corre cada 4h; el mismo día pisa),
+//   · resolución diaria en los últimos RECENT_DAYS,
+//   · un punto por semana más atrás, hasta HORIZON_DAYS,
+//   · tope duro de MAX_ESTIMATE_SNAPSHOTS entradas.
+const MAX_ESTIMATE_SNAPSHOTS = 30;
+const RECENT_DAYS = 10;
+const HORIZON_DAYS = 130;
+
+export function mergeEstimateHistory(history, snapshot) {
+  const valid = (h) => h && typeof h.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(h.date);
+  const list = (Array.isArray(history) ? history : []).filter(valid);
+  const merged = snapshot && valid(snapshot)
+    ? [snapshot, ...list.filter((h) => h.date !== snapshot.date)]
+    : list;
+  const sorted = merged.sort((a, b) => b.date.localeCompare(a.date));
+  if (!sorted.length) return [];
+
+  const newest = Date.parse(sorted[0].date);
+  const out = [];
+  const weeks = new Set();
+  for (const h of sorted) {
+    const age = (newest - Date.parse(h.date)) / 86400000;
+    if (age > HORIZON_DAYS) break;
+    if (age <= RECENT_DAYS) { out.push(h); continue; }
+    const week = Math.floor(age / 7);
+    if (weeks.has(week)) continue; // ya hay un punto de esa semana (el más nuevo)
+    weeks.add(week);
+    out.push(h);
+    if (out.length >= MAX_ESTIMATE_SNAPSHOTS) break;
+  }
+  return out.slice(0, MAX_ESTIMATE_SNAPSHOTS);
+}
+
+// `spacingMs` inyectable: los tests corren sin la espera real (el espaciado
+// existe por el cap de Finnhub, no por lógica). Producción usa el default.
+async function runRefresh(finnhubKey, now, { spacingMs = SPACING_MS } = {}) {
   const pending = await pickStaleSymbols(PER_RUN);
   if (!pending.length) return { job: 'refresh', done: true, note: 'ledger vacío — corré ?job=seed', stats: await screenerStats() };
 
@@ -88,9 +142,13 @@ async function runRefresh(finnhubKey, now) {
       continue;
     }
     try {
-      const [fund, px] = await Promise.all([
-        fetchFundamentals(symbol, finnhubKey),   // Finnhub stock/metric
-        priceAndMAs(symbol, now),                 // Yahoo daily series
+      const [fund, px, hist, estimate, recs, prevEstimates] = await Promise.all([
+        fetchFundamentals(symbol, finnhubKey),      // Finnhub stock/metric (la FOTO)
+        priceAndMAs(symbol, now),                   // Yahoo daily series (MAs + momentum)
+        fetchEarningsHistory(symbol, finnhubKey),   // la PELÍCULA: ingresos YoY + sorpresa EPS
+        fetchNextEstimate(symbol, finnhubKey, now), // estimado del próximo reporte (para revisiones)
+        fetchRecommendations(symbol, finnhubKey),   // serie de ratings → tendencia (fallback día 0)
+        readEstimateHistory(symbol).catch(() => []),
       ]);
       if (!fund && px.last_close == null) {
         // En el map pero sin datos HOY → transitorio (rate limit / cobertura
@@ -99,6 +157,7 @@ async function runRefresh(finnhubKey, now) {
         results.push({ symbol, status: 'error' });
       } else {
         const f = fund || {};
+        const m = px.momentum || null;
         await upsertScreener(symbol, {
           security_type: types[symbol] || null,
           last_close: px.last_close, ma50: px.ma50, ma200: px.ma200,
@@ -106,6 +165,18 @@ async function runRefresh(finnhubKey, now) {
           gross_margin: f.grossMarginTTM ?? null, net_margin: f.netMarginTTM ?? null,
           debt_to_equity: f.debtToEquity ?? null, roe_ttm: f.roeTTM ?? null,
           rev_growth_yoy: f.revenueGrowthTTMYoy ?? null,
+          // ── capa temporal: SERIES crudas, no etiquetas (los umbrales se
+          // aplican al leer, así cambiarlos no obliga a re-crawlear) ──
+          rev_yoy_history: hist && hist.revenueHistory && hist.revenueHistory.length ? hist.revenueHistory : null,
+          eps_surprise_history: hist && hist.epsSurprises && hist.epsSurprises.length ? hist.epsSurprises : null,
+          // Tendencia del rating (hoy vs. 30/90d). El deep dive del run la
+          // recalcula fresca para sus ≤5 candidatos; el cron la cubre para TODO
+          // el universo — que es lo que necesitan el SCAN y las posiciones del
+          // libro, que nunca pasan por el deep dive.
+          rec_trend: recommendationTrend(recs, { now }),
+          estimate_history: mergeEstimateHistory(prevEstimates, estimate),
+          ret_1m: m ? m.ret_1m : null, ret_3m: m ? m.ret_3m : null, ret_6m: m ? m.ret_6m : null,
+          dist_52w_high_pct: m ? m.dist_52w_high_pct : null,
         });
         await markScreenerLedger(symbol, { status: 'done', error_msg: null });
         results.push({ symbol, status: 'done' });
@@ -114,7 +185,7 @@ async function runRefresh(finnhubKey, now) {
       await markScreenerLedger(symbol, { status: 'error', attempts: attempts + 1, error_msg: String((e && e.message) || e) });
       results.push({ symbol, status: 'error' });
     }
-    if (i < pending.length - 1) await sleep(SPACING_MS);
+    if (i < pending.length - 1 && spacingMs > 0) await sleep(spacingMs);
   }
   return { job: 'refresh', processed: results, stats: await screenerStats() };
 }

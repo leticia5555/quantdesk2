@@ -29,6 +29,22 @@ const SCREENER_SCHEMA = [
      rev_growth_yoy  numeric,
      refreshed_at    timestamptz
    )`,
+  // ── DIMENSIÓN TIEMPO (hallazgo T1, sep 2026) ──────────────────────
+  // Las columnas de arriba son una FOTO (P/E, ROE, deuda del momento). Estas
+  // son la PELÍCULA: series por trimestre + momentum de precio, precomputadas
+  // por el mismo cron para que el arena-run las LEA sin gastar llamadas.
+  // Se guardan las SERIES CRUDAS, no las etiquetas: un umbral nuevo se
+  // re-evalúa sobre lo ya almacenado, sin re-crawlear el universo.
+  `alter table arena_screener add column if not exists rev_yoy_history jsonb`,
+  `alter table arena_screener add column if not exists eps_surprise_history jsonb`,
+  `alter table arena_screener add column if not exists rec_trend jsonb`,
+  // Snapshots del estimado de consenso del próximo reporte. Cada refresh
+  // agrega uno; comparar dos del MISMO periodo fiscal = revisión de estimados.
+  `alter table arena_screener add column if not exists estimate_history jsonb`,
+  `alter table arena_screener add column if not exists ret_1m numeric`,
+  `alter table arena_screener add column if not exists ret_3m numeric`,
+  `alter table arena_screener add column if not exists ret_6m numeric`,
+  `alter table arena_screener add column if not exists dist_52w_high_pct numeric`,
   // status: 'pending' (nunca corrió) · 'done' (métricas frescas) · 'error'
   // (fallo TRANSITORIO — rate limit/timeout/sin-datos-hoy, se reintenta) ·
   // 'not_found' (delisted/renombrado, ausente del symbol map — TERMINAL, el
@@ -82,23 +98,48 @@ export async function pickStaleSymbols(n = 40) {
 }
 
 // Upsert de métricas frescas. `m` = { security_type, last_close, ma50, ma200,
-// pe_ttm, ps_ttm, gross_margin, net_margin, debt_to_equity, roe_ttm, rev_growth_yoy }.
+// pe_ttm, ps_ttm, gross_margin, net_margin, debt_to_equity, roe_ttm,
+// rev_growth_yoy } + la capa temporal { rev_yoy_history, eps_surprise_history,
+// rec_trend, estimate_history, ret_1m, ret_3m, ret_6m, dist_52w_high_pct }.
+// Los jsonb se serializan aquí (null → null, nunca "null" como texto).
 export async function upsertScreener(symbol, m) {
+  const j = (v) => (v == null ? null : JSON.stringify(v));
   await sql(
     `insert into arena_screener
        (symbol, security_type, last_close, ma50, ma200, pe_ttm, ps_ttm,
-        gross_margin, net_margin, debt_to_equity, roe_ttm, rev_growth_yoy, refreshed_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
+        gross_margin, net_margin, debt_to_equity, roe_ttm, rev_growth_yoy,
+        rev_yoy_history, eps_surprise_history, rec_trend, estimate_history,
+        ret_1m, ret_3m, ret_6m, dist_52w_high_pct, refreshed_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, now())
      on conflict (symbol) do update set
        security_type = excluded.security_type,
        last_close = excluded.last_close, ma50 = excluded.ma50, ma200 = excluded.ma200,
        pe_ttm = excluded.pe_ttm, ps_ttm = excluded.ps_ttm,
        gross_margin = excluded.gross_margin, net_margin = excluded.net_margin,
        debt_to_equity = excluded.debt_to_equity, roe_ttm = excluded.roe_ttm,
-       rev_growth_yoy = excluded.rev_growth_yoy, refreshed_at = now()`,
+       rev_growth_yoy = excluded.rev_growth_yoy,
+       rev_yoy_history = excluded.rev_yoy_history,
+       eps_surprise_history = excluded.eps_surprise_history,
+       rec_trend = excluded.rec_trend,
+       estimate_history = excluded.estimate_history,
+       ret_1m = excluded.ret_1m, ret_3m = excluded.ret_3m, ret_6m = excluded.ret_6m,
+       dist_52w_high_pct = excluded.dist_52w_high_pct,
+       refreshed_at = now()`,
     [symbol, m.security_type ?? null, m.last_close ?? null, m.ma50 ?? null, m.ma200 ?? null,
      m.pe_ttm ?? null, m.ps_ttm ?? null, m.gross_margin ?? null, m.net_margin ?? null,
-     m.debt_to_equity ?? null, m.roe_ttm ?? null, m.rev_growth_yoy ?? null]);
+     m.debt_to_equity ?? null, m.roe_ttm ?? null, m.rev_growth_yoy ?? null,
+     j(m.rev_yoy_history), j(m.eps_surprise_history), j(m.rec_trend), j(m.estimate_history),
+     m.ret_1m ?? null, m.ret_3m ?? null, m.ret_6m ?? null, m.dist_52w_high_pct ?? null]);
+}
+
+// Historial de estimados de UN símbolo (para appendear el snapshot nuevo sin
+// perder los viejos). null si el símbolo aún no está en la tabla.
+export async function readEstimateHistory(symbol) {
+  const rows = await sql(`select estimate_history from arena_screener where symbol = $1`, [symbol]);
+  const v = rows[0] ? rows[0].estimate_history : null;
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string') { try { return JSON.parse(v) || []; } catch (e) { return []; } }
+  return [];
 }
 
 export async function markScreenerLedger(symbol, patch = {}) {
@@ -118,6 +159,13 @@ export async function markScreenerLedger(symbol, patch = {}) {
 export async function readScreenerRows() {
   const rows = await sql(`select * from arena_screener`);
   const nz = (v) => (v == null ? null : Number(v));
+  // jsonb: `sql()` ya lo parsea por OID, pero un lector en modo texto (o un
+  // mock) puede entregarlo como string — se tolera sin romper la corrida.
+  const jz = (v) => {
+    if (v == null) return null;
+    if (typeof v === 'object') return v;
+    try { return JSON.parse(v); } catch (e) { return null; }
+  };
   return rows.map((r) => ({
     symbol: r.symbol,
     security_type: r.security_type,
@@ -126,6 +174,11 @@ export async function readScreenerRows() {
     gross_margin: nz(r.gross_margin), net_margin: nz(r.net_margin),
     debt_to_equity: nz(r.debt_to_equity), roe_ttm: nz(r.roe_ttm),
     rev_growth_yoy: nz(r.rev_growth_yoy), refreshed_at: r.refreshed_at,
+    // capa temporal (series crudas; las etiquetas se derivan en código)
+    rev_yoy_history: jz(r.rev_yoy_history), eps_surprise_history: jz(r.eps_surprise_history),
+    rec_trend: jz(r.rec_trend), estimate_history: jz(r.estimate_history),
+    ret_1m: nz(r.ret_1m), ret_3m: nz(r.ret_3m), ret_6m: nz(r.ret_6m),
+    dist_52w_high_pct: nz(r.dist_52w_high_pct),
   }));
 }
 

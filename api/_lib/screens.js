@@ -15,6 +15,8 @@
 // atribución justo cuando se estrena. Expansión con datos, en un mes.
 // ═══════════════════════════════════════════════════════════════════
 
+import { deriveTemporal } from './temporal-fundamentals.js';
+
 // Tipos que NO son equity común/ADR/REIT — defensa en profundidad (el universo
 // ya viene curado, pero si un símbolo resuelve a fondo/no-equity lo saltamos).
 const NON_EQUITY = new Set(['ETP', 'Closed-End Fund', 'Open-End Fund', 'Unit', 'Equity WRT', 'Right', 'Preference', 'PUBLIC']);
@@ -108,6 +110,54 @@ export function screenerDataState(rows, { now = new Date(), enabled = true, maxA
   if (newest === null) return 'stale';
   const ageMs = now.getTime() - newest;
   return ageMs > maxAgeHours * 3600 * 1000 ? 'stale' : 'fresh';
+}
+
+// ── DIMENSIÓN TIEMPO del universo (hallazgo T1) ──────────────────────
+// Las filas del screener ya traen las SERIES crudas por símbolo (historial de
+// ingresos/EPS, tendencia del rating, snapshots de estimados, retornos). Aquí
+// se convierten en ETIQUETAS (`revenue_trend`, `revisions`, `falling_knife`)
+// con las mismas reglas puras que usa el deep dive — una sola definición de
+// "qué es desacelerar", compartida por el canal precomputado y el live.
+//
+// El percentil de P/E es CROSS-SECCIONAL (depende del universo entero), así
+// que se calcula aquí, al leer la tabla, y no se almacena: el universo cambia.
+
+// Momentum guardado por el cron → la misma forma que produce priceMomentum().
+// `above_sma200` se DERIVA de last_close vs ma200 (la ma200 de la tabla ES la
+// SMA200 de cierres) — dato DESCRIPTIVO, jamás un breaker (acta dualmom).
+export function storedMomentum(row) {
+  const close = num(row.last_close), ma200 = num(row.ma200);
+  const m = {
+    ret_1m: num(row.ret_1m), ret_3m: num(row.ret_3m), ret_6m: num(row.ret_6m),
+    dist_52w_high_pct: num(row.dist_52w_high_pct),
+    above_sma200: close != null && ma200 != null && ma200 > 0 ? close > ma200 : null,
+    as_of: row.refreshed_at ? String(row.refreshed_at).slice(0, 10) : null,
+  };
+  const hasAny = ['ret_1m', 'ret_3m', 'ret_6m', 'dist_52w_high_pct'].some((k) => m[k] != null) || m.above_sma200 != null;
+  return hasAny ? m : null;
+}
+
+// rows → { SYMBOL: temporal }. Solo los símbolos con ALGO temporal (serie de
+// ingresos, sorpresas, rating o momentum): una fila sin nada no entra al índice
+// en vez de entrar con todo en null.
+export function temporalIndex(rows, { now = new Date() } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  const universePes = list.map((r) => num(r.pe_ttm)).filter((v) => v != null && v > 0);
+  const out = {};
+  for (const r of list) {
+    if (!r || !r.symbol) continue;
+    const revenueHistory = Array.isArray(r.rev_yoy_history) ? r.rev_yoy_history : [];
+    const epsSurprises = Array.isArray(r.eps_surprise_history) ? r.eps_surprise_history : [];
+    const momentum = storedMomentum(r);
+    const recTrend = r.rec_trend && typeof r.rec_trend === 'object' ? r.rec_trend : null;
+    const estimateHistory = Array.isArray(r.estimate_history) ? r.estimate_history : null;
+    if (!revenueHistory.length && !epsSurprises.length && !momentum && !recTrend && !(estimateHistory && estimateHistory.length)) continue;
+    out[String(r.symbol).trim().toUpperCase()] = deriveTemporal({
+      revenueHistory, epsSurprises, recTrend, estimateHistory, momentum,
+      peTtm: num(r.pe_ttm), universePes, now,
+    });
+  }
+  return out;
 }
 
 // Unión rankeada de símbolos del screener (para el floor): value primero,
