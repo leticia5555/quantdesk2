@@ -26,7 +26,8 @@
 // USO:
 //   node scripts/congreso-phase0-probe.mjs
 //   node scripts/congreso-phase0-probe.mjs --efiled=30 --paper=5
-//   node scripts/congreso-phase0-probe.mjs --year=2025 --only=house
+//   node scripts/congreso-phase0-probe.mjs --only=g2     # solo el Senado
+//   node scripts/congreso-phase0-probe.mjs --year=2025 --only=g1
 //
 // Sin keys: las dos rutas son publicas y anonimas. Payloads crudos y los PDFs
 // de muestra quedan en ./.congreso-phase0/ para diagnostico offline.
@@ -46,7 +47,10 @@ const args = Object.fromEntries(
 const YEAR = String(args.year || new Date().getUTCFullYear());
 const N_EFILED = Number(args.efiled || 30);
 const N_PAPER = Number(args.paper || 5);
-const ONLY = args.only || null;
+// --only acepta g1/g2 como alias de house/senate (pedido: correr G2 solo, en
+// horario habil de EE.UU., sin volver a bajar 35 PDFs).
+const ONLY = ({ g1: 'house', g2: 'senate' })[String(args.only || '').toLowerCase()]
+  || (args.only ? String(args.only).toLowerCase() : null);
 
 const UA = 'QuantDesk research@quantdesk.app';
 const THROTTLE_MS = 400;
@@ -191,13 +195,35 @@ function classifyPdf(buf) {
 
 // Marcadores del formulario PTR: presencia de texto no basta, queremos los
 // CAMPOS que la Fase 1 tendria que parsear.
+//
+// `required` decide el score de "campos completos". `ticker` es OPCIONAL a
+// proposito: bonos, fondos y cripto llegan SIN ticker (el propio formulario
+// deja `--`), asi que exigirlo penalizaria filings perfectamente parseables.
+//
+// El regex de `tipo` se corrigio tras la corrida 2 (3/30 con la version vieja,
+// contra encabezado 30/30 y owner 30/30): el formulario de la Camara imprime
+// el tipo como CODIGO de una letra en su columna —`P`, `S`, `S (partial)`,
+// `E`— no como palabra. Las palabras completas solo aparecen en algunos
+// filings. Se aceptan las dos formas, y el codigo solo cuando esta pegado a
+// una fecha o a un monto (un `S` suelto aparece por todos lados).
+// HIPOTESIS a confirmar con el diagnostico de ventana de la corrida 3.
 const PTR_MARKERS = [
-  { key: 'encabezado', re: /Transaction\s*Date|Notification\s*Date/i },
-  { key: 'tipo', re: /\bPurchase\b|\bSale\b|\bExchange\b/i },
-  { key: 'bucket_monto', re: /\$1,?001|\$15,?000|\$50,?001|\$1,?000,?001/ },
-  { key: 'owner', re: /\bSP\b|\bJT\b|\bDC\b|Spouse|Joint/i },
-  { key: 'ticker', re: /\(([A-Z]{1,5})\)/ },
+  { key: 'encabezado', required: true, re: /Transaction\s*Date|Notification\s*Date/i },
+  { key: 'tipo', required: true, re: /\bS\s*\(partial\)|\b(?:Purchase|Sale|Exchange)\b|\b[PSE](?=\s+\d{1,2}\/\d{1,2}\/\d{4})|\d{1,2}\/\d{1,2}\/\d{4}\s+[PSE](?=\s|$)|\b[PSE](?=\s+\$[\d,]+\s*-)/ },
+  { key: 'bucket_monto', required: true, re: /\$1,?001|\$15,?000|\$50,?001|\$1,?000,?001/ },
+  { key: 'owner', required: true, re: /\bSP\b|\bJT\b|\bDC\b|Spouse|Joint/i },
+  { key: 'ticker', required: false, re: /\(([A-Z]{1,5})\)/ },
 ];
+const REQUIRED_MARKERS = PTR_MARKERS.filter((m) => m.required);
+
+// Ventana de texto alrededor de la primera fecha: cuando a un filing le falta
+// un marcador requerido, esto muestra COMO viene la fila de verdad. Sin esto,
+// arreglar un regex es adivinar.
+function windowAroundRow(text) {
+  const m = /\d{1,2}\/\d{1,2}\/\d{4}/.exec(text || '');
+  if (!m) return '';
+  return String(text).slice(Math.max(0, m.index - 120), m.index + 120).replace(/\s+/g, ' ');
+}
 
 async function fetchBuf(url, opts = {}) {
   const t0 = Date.now();
@@ -296,11 +322,12 @@ async function probeHouse() {
   ];
 
   const stats = {
-    'e-filed': { n: 0, texto: 0, escaneado: 0, indeterminado: 0, error: 0, cifrados: 0, markers5: 0 },
-    papel: { n: 0, texto: 0, escaneado: 0, indeterminado: 0, error: 0, cifrados: 0, markers5: 0 },
+    'e-filed': { n: 0, texto: 0, escaneado: 0, indeterminado: 0, error: 0, cifrados: 0, completos: 0 },
+    papel: { n: 0, texto: 0, escaneado: 0, indeterminado: 0, error: 0, cifrados: 0, completos: 0 },
   };
   const markerHits = {};
   const rows = [];
+  const windows = [];
   const savedRaw = { 'e-filed': false, papel: false };
 
   for (const p of sample) {
@@ -317,36 +344,59 @@ async function probeHouse() {
 
     const c = classifyPdf(r.buf);
     let text = c.extracted;
+    let libFailed = false;
     if (pdfLib.extract) {
-      try { text = await pdfLib.extract(r.buf); } catch (e) { text = c.extracted; }
+      try { text = await pdfLib.extract(r.buf); } catch (e) { text = ''; libFailed = true; }
     }
-    const kind = text && text.trim().length > 40 ? 'texto' : c.kind;
-    stats[cls][kind === 'texto' ? 'texto' : kind === 'escaneado' ? 'escaneado' : 'indeterminado']++;
+    const chars = (text || '').trim().length;
+    // Con extractor autoritativo, SU veredicto manda: la heuristica no puede
+    // "rescatar" un PDF del que la libreria no saco nada (corrida 2: el DocID
+    // 9116328 salio "texto" con 0 chars, que es una contradiccion).
+    const kind = pdfLib.extract
+      ? (chars > 40 ? 'texto' : c.hasImage ? 'escaneado' : 'indeterminado')
+      : (chars > 40 ? 'texto' : c.kind);
+    stats[cls][kind]++;
     if (c.encrypted) stats[cls].cifrados++;
 
     const hits = PTR_MARKERS.filter((mk) => mk.re.test(text)).map((mk) => mk.key);
     for (const h of hits) markerHits[h] = (markerHits[h] || 0) + 1;
-    if (hits.length === 5) stats[cls].markers5++;
+    const req = REQUIRED_MARKERS.filter((mk) => mk.re.test(text)).length;
+    if (req === REQUIRED_MARKERS.length) stats[cls].completos++;
 
-    rows.push({ cls, docId: p.docId, type: p.type, kind, chars: (text || '').trim().length,
-                kb: Math.round(c.bytes / 1024), markers: hits.length, enc: c.encrypted, xfa: c.xfa,
+    const missing = REQUIRED_MARKERS.filter((mk) => !mk.re.test(text)).map((mk) => mk.key);
+    if (missing.length && chars) windows.push({ docId: p.docId, missing, window: windowAroundRow(text) });
+
+    rows.push({ cls, docId: p.docId, type: p.type, kind, chars, kb: Math.round(c.bytes / 1024),
+                req, ticker: hits.includes('ticker'), enc: c.encrypted, xfa: c.xfa, libFailed,
                 streams: c.diag.streams, inflated: c.diag.inflated, failed: c.diag.failed });
-    if (rows.filter((x) => x.cls === cls).length === 1 && text) save(`sample-${cls}-${p.docId}.txt`, String(text).slice(0, 20000));
+    // TODOS los textos, no solo el primero: sin esto no se pueden comparar los
+    // filings que pasan contra los que fallan (que es como se arreglo `tipo`).
+    if (text) save(`text-${cls}-${p.docId}.txt`, String(text).slice(0, 40000));
   }
 
-  console.log('    clase    DocID       tipo  clase-pdf      chars  KB  mk  cif  streams(inf/fall)');
+  console.log('    clase    DocID       tipo  clase-pdf      chars  KB  req tkr cif  streams(inf/fall)');
   for (const r of rows) {
-    console.log(`    ${r.cls.padEnd(8)} ${String(r.docId).padEnd(11)} ${String(r.type).padEnd(5)} ${String(r.kind).padEnd(14)} ${String(r.chars ?? '-').padStart(6)} ${String(r.kb ?? '-').padStart(3)} ${String(r.markers ?? '-')}/5 ${r.enc ? 'SI ' : 'no '} ${r.streams ?? '-'}(${r.inflated ?? '-'}/${r.failed ?? '-'})`);
+    console.log(`    ${r.cls.padEnd(8)} ${String(r.docId).padEnd(11)} ${String(r.type).padEnd(5)} ${String(r.kind).padEnd(14)} ${String(r.chars ?? '-').padStart(6)} ${String(r.kb ?? '-').padStart(3)} ${String(r.req ?? '-')}/${REQUIRED_MARKERS.length} ${r.ticker ? ' si' : ' no'} ${r.enc ? 'SI ' : 'no '} ${r.streams ?? '-'}(${r.inflated ?? '-'}/${r.failed ?? '-'})`);
   }
 
   for (const cls of ['e-filed', 'papel']) {
     const s = stats[cls];
     if (!s.n) continue;
     console.log(`\n    ── ${cls.toUpperCase()} (n=${s.n}) ──`);
-    console.log(`       con texto: ${s.texto}/${s.n} (${pct(s.texto, s.n)}) · escaneados: ${s.escaneado} · indeterminados: ${s.indeterminado} · errores HTTP: ${s.error}`);
-    console.log(`       con los 5 marcadores del formulario: ${s.markers5}/${s.n} (${pct(s.markers5, s.n)}) · cifrados (/Encrypt): ${s.cifrados}`);
+    console.log(`       [1] con capa de texto:   ${s.texto}/${s.n} (${pct(s.texto, s.n)})  ← ESTE decide la compuerta`);
+    console.log(`       [2] con campos completos: ${s.completos}/${s.n} (${pct(s.completos, s.n)})  ← calidad del parser, no de la fuente`);
+    console.log(`       escaneados: ${s.escaneado} · indeterminados: ${s.indeterminado} · errores HTTP: ${s.error} · cifrados (/Encrypt): ${s.cifrados}`);
   }
   console.log(`\n    marcadores agregados: ${PTR_MARKERS.map((mk) => `${mk.key}=${markerHits[mk.key] || 0}`).join(' · ')}`);
+
+  if (windows.length) {
+    console.log(`\n    ── filings a los que les falta algun campo requerido (${windows.length}) ──`);
+    console.log('       ventana de +-120 chars alrededor de la primera fecha, para ver la fila REAL:');
+    for (const w of windows.slice(0, 5)) {
+      console.log(`       ${w.docId} falta[${w.missing.join(',')}]: ...${w.window}...`);
+    }
+    if (windows.length > 5) console.log(`       (+${windows.length - 5} mas en house-sample.json)`);
+  }
 
   const diagTotal = rows.reduce((a, r) => ({ s: a.s + (r.streams || 0), i: a.i + (r.inflated || 0), f: a.f + (r.failed || 0) }), { s: 0, i: 0, f: 0 });
   console.log(`    diagnostico de streams (heuristica): ${diagTotal.s} encontrados · ${diagTotal.i} inflados · ${diagTotal.f} fallidos`);
@@ -358,16 +408,22 @@ async function probeHouse() {
 
   save('house-sample.json', JSON.stringify({ year: YEAR, extractor: pdfLib.name, total: members.length,
        ptrs: ptrs.length, byClass: { efiled: byClass['e-filed'].length, papel: byClass.papel.length },
-       stats, markerHits, rows }, null, 2));
+       stats, markerHits, rows, windows }, null, 2));
 
   // El veredicto de G1 se juega SOLO en los e-filed: los de papel se sabe que
   // necesitan OCR y estan fuera del MVP por diseño.
+  // La COMPUERTA pregunta por la FUENTE: ¿los PTR e-filed traen capa de texto?
+  // El % de campos completos mide MI PARSER, no la Camara — es informativo y
+  // se arregla con un regex, no con OCR ni con otra fuente. Confundirlos fue
+  // el error de la corrida 2 (G1 "ROJO" con 100% de los PDFs legibles).
   const e = stats['e-filed'];
-  const ratio = e.n ? e.markers5 / e.n : 0;
-  const gate = !pdfLib.name && e.texto === 0 ? 'INDETERMINADO' : ratio >= 0.9 ? 'VERDE' : 'ROJO';
-  console.log(`\n  → G1 ${gate}: ${pct(e.markers5, e.n)} de los e-filed rinde los 5 campos (umbral 90%).`);
+  const rText = e.n ? e.texto / e.n : 0;
+  const gate = !pdfLib.name && e.texto === 0 ? 'INDETERMINADO' : rText >= 0.9 ? 'VERDE' : 'ROJO';
+  console.log(`\n  → G1 ${gate}: ${pct(e.texto, e.n)} de los e-filed trae capa de texto (umbral 90%).`);
+  console.log(`    Campos completos: ${pct(e.completos, e.n)} — calidad del parser, NO decide la compuerta.`);
   if (gate === 'INDETERMINADO') console.log('    Sin libreria de PDF y con cero texto extraido, esto NO es un veredicto.');
-  return { gate, reason: `e-filed ${pct(e.markers5, e.n)} parseables`, extractor: pdfLib.name, stats };
+  return { gate, reason: `e-filed ${pct(e.texto, e.n)} con texto · ${pct(e.completos, e.n)} campos completos`,
+           extractor: pdfLib.name, stats };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -387,8 +443,12 @@ function cookiesFrom(res, jar) {
 function fingerprint(body) {
   const title = (body.match(/<title>([^<]*)<\/title>/i) || [, ''])[1].trim();
   const ref = (body.match(/Reference\s*#\s*([\w.]+)/i) || [, ''])[1];
-  const waf = /akamai|reference\s*#|access\s*denied|error\s*page/i.test(body);
-  return `title="${title || '-'}"${ref ? ` ref=${ref}` : ''} ${waf ? '· huella de bot-mitigation' : '· sin huella de WAF'}`;
+  const waf = /akamai|reference\s*#|access\s*denied/i.test(body);
+  const maintenance = /under\s*maintenance|mantenimiento|temporarily\s*unavailable/i.test(title + ' ' + body);
+  const tag = maintenance ? '· VENTANA DE MANTENIMIENTO (no es bloqueo)'
+    : waf ? '· huella de bot-mitigation' : '· sin huella de WAF';
+  return { title, ref, waf, maintenance,
+           text: `title="${title || '-'}"${ref ? ` ref=${ref}` : ''} ${tag}` };
 }
 
 async function probeSenate() {
@@ -449,6 +509,7 @@ async function probeSenate() {
     datatables[`columns[${i}][orderable]`] = 'true';
   }
 
+  let lastFp = null, lastStatus = 0;
   for (const [label, payload] of [['simple', simple], ['DataTables', datatables]]) {
     await sleep(PACE_MS);
     console.log(`  [3/3] POST /search/report/data/ — intento "${label}"`);
@@ -465,10 +526,24 @@ async function probeSenate() {
         if (json.data[0]) console.log(`    ejemplo: ${JSON.stringify(json.data[0]).slice(0, 200)}`);
         return { gate: 'VERDE', reason: `${json.data.length} filas (intento ${label})`, total: json.recordsTotal };
       }
-      console.log(`  ✗ HTTP 200 pero no es JSON — ${fingerprint(body)}`);
+      const fp = fingerprint(body);
+      console.log(`  ✗ HTTP 200 pero no es JSON — ${fp.text}`);
+      lastFp = fp;
     } else {
-      console.log(`  ✗ HTTP ${data.status} (${data.ms}ms) — ${fingerprint(body)}`);
+      const fp = fingerprint(body);
+      console.log(`  ✗ HTTP ${data.status} (${data.ms}ms) — ${fp.text}`);
+      lastFp = fp; lastStatus = data.status;
     }
+  }
+
+  // Un 503 con "Site Under Maintenance" y SIN huella de WAF no prueba nada
+  // sobre el acceso: es el Senado apagado, no el Senado bloqueandonos. Cerrar
+  // la compuerta con eso seria declarar un veredicto que no se gano.
+  if (lastFp && lastFp.maintenance) {
+    console.log('\n  → G2 INCONCLUSO: el sitio respondio "Site Under Maintenance", sin huella de WAF.');
+    console.log('    Eso es una ventana de mantenimiento del Senado, NO un bloqueo a esta IP.');
+    console.log('    Repetir en horario habil de EE.UU.:  node scripts/congreso-phase0-probe.mjs --only=g2');
+    return { gate: 'INCONCLUSO', reason: `mantenimiento del sitio (HTTP ${lastStatus}, title="${lastFp.title}")` };
   }
 
   console.log('\n  → G2 ROJO: los dos shapes de request fallan igual desde esta IP.');
@@ -501,7 +576,9 @@ async function main() {
     console.log('  La ruta recomendada del memo (House directo) queda confirmada.');
     console.log(senate && senate.gate === 'VERDE'
       ? '  El Senado tambien entra: la Fase 1 puede cubrir las dos camaras.'
-      : '  El Senado queda FUERA del MVP: la UI dice "solo Camara de Representantes".');
+      : senate && senate.gate === 'INCONCLUSO'
+        ? '  El Senado sigue SIN decidir (mantenimiento). Repetir con --only=g2 en horario habil.'
+        : '  El Senado queda FUERA del MVP: la UI dice "solo Camara de Representantes".');
   } else if (house && house.gate === 'INDETERMINADO') {
     console.log('  ⚠ G1 sin veredicto por falta de extractor. npm i --no-save pdfjs-dist y repetir.');
   } else if (house) {

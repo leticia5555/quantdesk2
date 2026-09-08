@@ -4,10 +4,11 @@
 > acá, ni diseño de UI, ni el agente copy-Congreso — si el veredicto habilita
 > seguir, la Fase 1 arranca de la lista de decisiones a congelar (§7).
 >
-> **Veredicto: VIABLE POR LA RUTA HOUSE**, con **tres compuertas abiertas**:
-> G1 y G2 se cierran con un solo comando desde una IP con egress (§0, §6); la
-> **compuerta legal §13107(c)** la cierra un abogado, con la pregunta ya
-> redactada en **§4.2**, y es previa a la Fase 1.
+> **Veredicto: VIABLE POR LA RUTA HOUSE.** Estado de las compuertas tras dos
+> corridas reales (§6.1, §6.2): **G1 Cámara 🟢 VERDE** (100% de los PTR e-filed
+> traen capa de texto) · **G2 Senado 🟡 INCONCLUSO** (el 503 fue ventana de
+> mantenimiento, no bloqueo — repetir con `--only=g2`) · **legal §13107(c) 🔴
+> ABIERTA** (§4.2, la cierra un abogado y es previa a la Fase 1).
 >
 > Fecha del reconocimiento: 2026-09-04. Actualiza y **contradice en un punto**
 > el censo de `docs/stock-tracker-scope.md` §1.1 (2026-07-21).
@@ -135,11 +136,12 @@ vs. XObjects de imagen — sin librería de PDF, sin OCR.
 - **G1 rojo** (<90%) → el MVP de House cubre menos de lo prometido y hay que
   decidir OCR (caro, fuera de un serverless de 60s) o recortar el alcance.
 
-> **Actualización tras la corrida 1 (§6.1):** el veredicto se juega **solo en
-> los e-filed** (DocID `2xxxxxxx`), medidos por separado de los de papel
-> (`9xxxxxx`). Mezclarlos en un porcentaje único escondía la respuesta. Y la
-> medición necesita un extractor de PDF de verdad: la heurística sin
-> dependencias dio un falso negativo, documentado en §6.1.
+> **Actualización tras las corridas 1 y 2 (§6.1, §6.2):** el veredicto se juega
+> **solo en los e-filed** (DocID `2xxxxxxx`), y **solo sobre el % con capa de
+> texto** — el % de campos completos mide el parser, no la fuente. Medido:
+> **100% de los e-filed traen texto**, y **38 de 379 PTRs (10.0%) son papel**,
+> el doble del "~5%" de terceros que se cita arriba. La medición exige un
+> extractor de PDF real: los PTR vienen **cifrados** (`/Encrypt` en 30/30).
 
 ### 1.3 Volumen (para dimensionar el cron, no para el veredicto)
 
@@ -401,11 +403,11 @@ fuentes en la misma app.
 | Bloque | Horas |
 |---|---|
 | Descarga ZIP + lector ZIP sin dependencias + parser del XML índice + diff de `DocID` | 3–4 |
-| Extractor de texto de PDF sin dependencias (o `pdf-parse` si se acepta la dep) + regex con anclas para la tabla de transacciones | **6–8** ← el grueso, y el que más se puede desviar por el orden caótico de extracción |
+| ~~Extractor de texto de PDF sin dependencias~~ → **imposible: los PTR vienen cifrados** (§6.2). Parser de la tabla sobre el texto que entrega `pdfjs-dist` | **2–3** (+ la decisión de meter la primera dependencia npm del repo) |
 | Normalización (buckets de monto, tipo, owner, ticker faltante, fecha trade vs filing) + esquema y tabla en Neon | 3–4 |
 | Endpoint del feed + doble cache + `?smoke=1` + cron incremental | 2–3 |
 | Backfill histórico en GitHub Action (año en curso + anterior) | 2 |
-| **Total Fase 1 (solo datos, sin UI ni agente)** | **16–21 h** |
+| **Total Fase 1 (solo datos, sin UI ni agente)** | **12–16 h** (revisado tras §6.2; antes 16–21) |
 | Senado, **solo si G2 verde** (agreement + JSON + parser de tabla HTML) | +6–10 |
 | OCR, **solo si G1 rojo** | +8–12 y sale del serverless |
 
@@ -511,16 +513,121 @@ el DataTables completo), y toma la **huella del cuerpo de error** (`<title>`,
 `Reference #`, marcas de WAF). Si los dos shapes fallan igual, no es el request:
 es la puerta, y el Senado queda fuera y se declara.
 
-### 6.2 Corrida 2 (PENDIENTE)
+### 6.2 Corrida 2 — 2026-09-08, misma Mac, con `pdfjs-dist`
 
 ```
-npm i --no-save pdfjs-dist
-node scripts/congreso-phase0-probe.mjs --efiled=30 --paper=5
+  [2/3] Indice XML
+  ✓ 1603 filings · 379 PTR (FilingType=P)
+    de esos PTR: 341 e-filed (DocID 2xxxxxxx) · 38 papel (9xxxxxx)
+
+  [3/3] Muestra: 30 e-filed + 5 papel · extractor: pdfjs-dist (autoritativo)
+    e-filed  20035190  texto  13528 chars  145 KB  5/5  cifrado SI
+    e-filed  20035370  texto   1105 chars   64 KB  4/5  cifrado SI
+    ...(30/30 con texto, TODOS cifrados)...
+    papel    9116328   texto      0 chars  556 KB  0/5  cifrado no
+    papel    9116326   escaneado  0 chars   43 KB  0/5  cifrado no
+    ...(4 de 5 escaneados)...
+
+    ── E-FILED (n=30) ──
+       con texto: 30/30 (100.0%) · escaneados: 0 · indeterminados: 0 · errores: 0
+       con los 5 marcadores: 3/30 (10.0%) · cifrados (/Encrypt): 30
+    ── PAPEL (n=5) ──
+       con texto: 1/5 · escaneados: 4 · cifrados: 0
+    marcadores: encabezado=30 · tipo=3 · bucket_monto=24 · owner=30 · ticker=22
+  → G1 ROJO: 10.0% de los e-filed rinde los 5 campos
+
+═══ G2 ═══
+  [1/3] GET  /search/home/   ✓ 200 · csrf encontrado
+  [2/3] POST /search/home/   ✓ 200
+  [3/3] POST /search/report/data/ — "simple"     ✗ 503 title="U.S. Senate: Site Under Maintenance" · sin huella de WAF
+  [3/3] POST /search/report/data/ — "DataTables" ✗ 503 (idem)
 ```
 
-Cierra G1 con extractor autoritativo y porcentajes separados por clase, y G2
-con los dos intentos. **Hasta que esta corrida esté acá, G1 y G2 siguen
-abiertas.**
+#### G1 — la compuerta está VERDE. El "ROJO" medía otra cosa.
+
+**30/30 e-filed con capa de texto. 100%.** Esa es la pregunta que la compuerta
+hace —*¿la fuente sirve?*— y la respuesta es sí, sin ambigüedad.
+
+El 10% era **mi regex**, no la Cámara: `encabezado` 30/30 y `owner` 30/30, pero
+`tipo` 3/30. Un extractor que ve el encabezado y el owner en los 30 documentos
+obviamente está leyendo el PTR; lo que fallaba era buscar el tipo de operación
+como **palabra** (`Purchase`/`Sale`), cuando el formulario de la Cámara lo
+imprime como **código de una letra** en su columna: `P`, `S`, `S (partial)`,
+`E`. Los 3 que pasaban eran los que además traían la palabra completa.
+
+Arreglado en el probe, con los dos casos y sin comerse los falsos positivos
+obvios (`S&P 500` no cuenta como venta). Y `ticker` pasa a **opcional**: bonos,
+fondos y cripto llegan sin ticker por diseño del formulario — exigirlo
+penalizaba filings perfectamente parseables (22/30 lo traían, y eso es
+coherente con la mezcla real de activos, no un fallo).
+
+**Desde ahora el probe reporta dos números separados, y no se pueden
+confundir:**
+
+| Número | Qué mide | ¿Decide la compuerta? |
+|---|---|---|
+| **% con capa de texto** | La FUENTE. Si sale bajo, hace falta OCR u otra ruta | **SÍ** |
+| **% con campos completos** | MI PARSER. Si sale bajo, se arregla un regex | No |
+
+#### El hallazgo que cambia el diseño: **30/30 cifrados (`/Encrypt`)**
+
+Los PTR e-filed de la Cámara vienen **cifrados** (contraseña vacía, el patrón
+normal de un PDF de formulario). Por eso la heurística de la corrida 1 infló
+28 streams de 302 y devolvió basura: no estaba rota por ingenua, estaba
+intentando inflar bytes cifrados.
+
+**Consecuencia para la Fase 1, y no es menor:** el parser **no puede ser código
+propio sin dependencias**. Descifrar un PDF a mano no es un fin de semana, es
+un proyecto. La Fase 1 necesita `pdfjs-dist` (o equivalente) **como dependencia
+de producción** — y este repo **hoy no tiene ninguna**: no hay `package.json`
+en la raíz, todo habla HTTP con `fetch` a mano, incluida la capa de Neon. Meter
+la primera dependencia npm del proyecto es una decisión de la casa, no un
+detalle de implementación. Va a §7.
+
+Y corrige la estimación de §6: las **6–8 h de "extractor de PDF artesanal"**
+ya no aplican. Con librería el bloque baja (~2–3 h de parser sobre texto ya
+extraído), pero se paga en superficie: una dependencia, su bundle en la función
+serverless, y su mantenimiento.
+
+#### Papel: número propio, mejor que el "~5%" de terceros
+
+**38 de 379 PTRs del año en curso son papel (10.0%)** — el doble de lo que
+citaba el pipeline de terceros en §1.2. De la muestra de 5: **4 escaneados** y
+uno de 556 KB que `pdfjs` abrió con **0 caracteres** (imagen también). Confirma
+que la clase papel es OCR o nada, y que está bien dejarla fuera del MVP —
+declarándolo en la UI, ahora con el número real: *"~1 de cada 10 filings llega
+en papel y no se procesa"*.
+
+#### G2 — **INCONCLUSO**, no rojo. Fue mantenimiento, no bloqueo.
+
+El 503 traía `title="U.S. Senate: Site Under Maintenance"` y **cero huella de
+WAF**, corrido a las 23:37 del domingo (hora Monterrey). Eso es el Senado
+apagado para mantenimiento, no el Senado bloqueándonos: cerrar la compuerta con
+esa evidencia sería declarar un veredicto que no se ganó.
+
+Nótese además lo que **sí** funcionó las dos veces: `GET /search/home/` con
+CSRF y el **POST del agreement, ambos 200**. Si hubiera bot-mitigation por
+rango de IP —la hipótesis de §2.2— habría muerto ahí, no en el tercer paso.
+**La sospecha de Akamai se debilita bastante con esta corrida.**
+
+El probe ahora detecta el mantenimiento y devuelve `INCONCLUSO` en vez de
+`ROJO`, y acepta `--only=g2` para repetir solo el Senado sin volver a bajar 35
+PDFs.
+
+### 6.3 Corrida 3 (PENDIENTE) — cierra lo que queda
+
+```
+node scripts/congreso-phase0-probe.mjs --only=g2      # en horario hábil de EE.UU.
+node scripts/congreso-phase0-probe.mjs --efiled=30 --paper=5   # confirma el fix de `tipo`
+```
+
+Estado de las compuertas:
+
+| Compuerta | Estado | Qué falta |
+|---|---|---|
+| **G1 Cámara** | 🟢 **VERDE** | Nada para la compuerta. El fix de `tipo` se verifica en la corrida 3 (informativo) |
+| **G2 Senado** | 🟡 **INCONCLUSO** | Repetir con `--only=g2` en horario hábil de EE.UU. |
+| **Legal §13107(c)** | 🔴 **ABIERTA** | La consulta de §4.2. Sigue siendo previa a la Fase 1 |
 
 ### Lo que falta para cerrar la Fase 0 (no es opcional)
 
@@ -550,6 +657,13 @@ Ninguna se decide en este memo. Se listan para que la Fase 1 no las improvise.
    misma honestidad de lag aplicada a la cobertura.)
 5. Ticker faltante: ¿se intenta resolver desde la descripción, o se muestra la
    descripción cruda? (Resolver = inventar; cuidado.)
+
+5b. **La primera dependencia npm del repo.** Los PTR están cifrados, así que
+   el parser necesita `pdfjs-dist` (o equivalente) en producción. Hoy no hay
+   `package.json` en la raíz y todo habla HTTP con `fetch` a mano. ¿Se acepta
+   la dependencia en la función serverless, se aísla el parseo en un GitHub
+   Action que escribe a Neon (y las funciones siguen sin dependencias), o se
+   busca otra salida? **Decidir ANTES de escribir el parser.**
 
 **Producto**
 6. ¿Feed global cronológico, perfil por legislador, o los dos desde el día uno?
