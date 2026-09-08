@@ -75,8 +75,9 @@ disco, **mide de verdad el % de PDFs escaneados** (no lo cita de un blog) e
 imprime el veredicto de G1 y G2. Se corre donde haya egress:
 
 ```
-node scripts/congreso-phase0-probe.mjs            # G1 + G2
-node scripts/congreso-phase0-probe.mjs --pdfs=40  # muestra más grande para el % escaneado
+npm i --no-save pdfjs-dist                        # extractor autoritativo (opcional pero necesario para G1)
+node scripts/congreso-phase0-probe.mjs                        # G1 + G2
+node scripts/congreso-phase0-probe.mjs --efiled=30 --paper=5  # muestra partida por clase
 ```
 
 No pide ninguna key. No imprime credenciales. Las dos rutas que sondea son
@@ -129,10 +130,16 @@ PTRs recientes, qué fracción tiene capa de texto. El probe clasifica cada PDF
 inflando sus content streams y buscando operadores de texto (`BT`/`Tj`/`TJ`)
 vs. XObjects de imagen — sin librería de PDF, sin OCR.
 
-- **G1 verde** (≥90% con texto en filings del año en curso) → House es la ruta,
-  el MVP ignora los escaneados y **lo dice en la UI**.
+- **G1 verde** (≥90% de los **e-filed** rinde los 5 campos del formulario) →
+  House es la ruta, el MVP ignora los de papel y **lo dice en la UI**.
 - **G1 rojo** (<90%) → el MVP de House cubre menos de lo prometido y hay que
   decidir OCR (caro, fuera de un serverless de 60s) o recortar el alcance.
+
+> **Actualización tras la corrida 1 (§6.1):** el veredicto se juega **solo en
+> los e-filed** (DocID `2xxxxxxx`), medidos por separado de los de papel
+> (`9xxxxxx`). Mezclarlos en un porcentaje único escondía la respuesta. Y la
+> medición necesita un extractor de PDF de verdad: la heurística sin
+> dependencias dio un falso negativo, documentado en §6.1.
 
 ### 1.3 Volumen (para dimensionar el cron, no para el veredicto)
 
@@ -173,6 +180,13 @@ anti-bot de Akamai**, con tres síntomas concretos:
 **Vercel serverless es exactamente una IP de datacenter.** Si el reporte es
 correcto, la categoría Senado no es "frágil": es **inviable en nuestra
 arquitectura actual**, y ninguna cantidad de parser lo arregla.
+
+**Actualización tras la corrida 1 (§6.1):** desde una IP residencial el
+`GET /search/home/` responde **200 con CSRF** y el POST del agreement **también
+200** — la puerta de entrada NO está cerrada. Lo que falla es específicamente
+`POST /search/report/data/`, con **503 y cuerpo XHTML**. Es compatible con
+bot-mitigation, pero también con un 5xx de la app o un shape de request
+obsoleto; la corrida 2 lo distingue probando dos payloads.
 
 **Calidad de esta evidencia: baja-media.** Es **una sola fuente** (el mismo
 artículo de abr-2026 que aporta el "~5%"), corroborada solo por el hecho
@@ -402,16 +416,111 @@ que resistir la tentación de comprar un proxy residencial y en cambio decirlo e
 la UI. Y aun con G1 verde, un porcentaje de filings en papel queda afuera: el
 feed es **incompleto por diseño**, y eso también se declara.*
 
-### 6.1 Salida del probe (PENDIENTE — acá va)
+### 6.1 Corrida 1 — 2026-09-08, MacBook, IP residencial, sin VPN
 
-> Correr `node scripts/congreso-phase0-probe.mjs` desde una IP con egress real
-> y pegar la salida completa acá. Mientras este bloque diga PENDIENTE, **G1 y
-> G2 siguen abiertas** y el veredicto de §6 es una recomendación con evidencia
-> de terceros, no un hecho medido.
+Primera corrida real. **Lo que cerró, lo que no, y un error mío.**
 
 ```
-(pendiente)
+═══ G1 — CAMARA (disclosures-clerk.house.gov) ═══
+  [1/3] ZIP indice: .../public_disc/financial-pdfs/2026FD.zip
+  ✓ HTTP 200 — 0.05 MB en 692ms
+  ✓ 2026FD.xml — 0.41 MB
+
+  [2/3] Indice XML
+  ✓ 1603 filings en el indice · 379 son PTR (FilingType=P)
+    tipos: C=770 · P=379 · X=247 · W=101 · D=68 · A=34 · H=2 · T=2
+    ejemplo: Mark Alford · MO04 · filed 3/31/2026 · DocID 20034201
+
+  [3/3] Muestra de 20 PDFs
+    20035392 indeterminado  0 textOps   91 KB   0/5 marcadores
+    20035190 texto          2 textOps  145 KB   0/5
+    9116328  texto          2 textOps  556 KB   1/5
+    9116326  escaneado      0 textOps   43 KB   0/5
+    9116311  escaneado      0 textOps   24 KB   0/5
+    ...(15 de 20 "indeterminado", todos con textOps=0, 61-91 KB)...
+
+    con capa de texto: 3/20 (15.0%) · escaneados: 2/20 · indeterminados: 15/20
+    errores HTTP: 0
+  → G1 ROJO: 15.0% con texto (umbral 90%)
+
+═══ G2 — SENADO (efdsearch.senate.gov) ═══
+  [1/3] GET /search/home/    ✓ HTTP 200 (468ms) · csrf encontrado
+  [2/3] POST /search/home/   ✓ HTTP 200 (504ms)   ← el agreement SÍ pasa
+  [3/3] POST /search/report/data/
+        ✗ HTTP 503 (338ms) — cuerpo: <!DOCTYPE html ... XHTML 1.0 Transitional
+  → G2 ROJO: el endpoint JSON no responde desde esta IP
 ```
+
+#### Lo que esta corrida SÍ cerró (y es lo importante)
+
+**La ruta de la Cámara es accesible desde una IP cualquiera, sin gate.**
+ZIP en 692 ms, XML de 0.41 MB con 1,603 filings y **379 PTRs**, y **20 de 20
+PDFs bajados con HTTP 200**. Sin login, sin agreement, sin captcha, sin WAF.
+Eso era la premisa de toda la recomendación de §6 y **queda confirmado**.
+
+#### El "G1 ROJO" es un FALSO NEGATIVO del extractor, no un hecho sobre los PDFs
+
+No lo tomo como veredicto, y la razón está en los propios números:
+
+- **15 PDFs "indeterminado" con `textOps=0` y 61–91 KB.** Un PTR escaneado de
+  una página pesa lo que pesa una imagen; un PDF de 63 KB **con `/Font`
+  presente** (por eso cae en "indeterminado" y no en "escaneado") es un PDF de
+  texto que mi extractor no supo abrir.
+- **Los 3 que sí clasificó "texto" dieron `textOps=2`.** Una página de PTR
+  tiene decenas de operadores de texto, no dos. O sea: incluso donde "funcionó",
+  infló un stream chico y falló con los de contenido.
+- **0/5 marcadores del formulario en toda la muestra.** Si de verdad hubiera
+  extraído texto de un PTR, "Transaction Date" o un bucket de monto tenían que
+  aparecer. No aparecieron en ninguno. Eso no es un dato sobre la Cámara: es un
+  extractor roto.
+
+**Veredicto honesto de G1: INDETERMINADO, no rojo.** La v2 del probe lo trata
+así explícitamente — con cero texto extraído y sin librería de PDF, se niega a
+emitir veredicto.
+
+#### Corrección de una hipótesis que se descartó
+
+Se sospechó que la muestra no filtraba `FilingType=P` y traía reportes anuales
+(lo que explicaría los 0/5 marcadores). **No es el caso:** el probe filtra a
+`P` antes de ordenar y muestrear (`ptrs = members.filter(m => m.type === 'P')`
+→ `sorted` → `sample`), y la evidencia lo respalda — los 20 DocIDs resolvieron **200 OK bajo `/ptr-pdfs/`**, cosa que un
+reporte anual no hace. La causa es la del punto anterior, no la muestra.
+
+#### Lo que la corrida sí enseñó sobre la partición e-filed / papel
+
+Los DocID `9116xxx` (papel) se comportan distinto de los `2003xxxx` (e-filed) y
+la v1 los mezclaba en un solo porcentaje, escondiendo justo lo que la pregunta
+(a) quería saber. Confirmado en los datos: los dos `escaneado` de la muestra son
+`9116326` y `9116311`. La v2 **parte la muestra por clase** y da un porcentaje
+por cada una — el veredicto de G1 se juega **solo en los e-filed**, porque los
+de papel ya se sabe que necesitan OCR y están fuera del MVP por diseño.
+
+#### G2 — rojo, pero con un matiz que importa
+
+**No es 403 en la puerta: es 503 en el último paso.** El `GET /search/home/`
+devolvió 200 con CSRF, y el **POST del agreement pasó (200)**. Muere
+específicamente en `POST /search/report/data/`, devolviendo XHTML en vez de
+JSON. Eso es compatible con bot-mitigation, pero **también** con un 5xx de la
+app o con un shape de request que el endpoint ya no acepta. La v1 no permitía
+distinguir.
+
+La v2 lo resuelve: pacing de 2 s entre pasos, **dos intentos** con el mismo
+juego de headers (`Referer`, `Origin`, `X-CSRFToken`, `X-Requested-With:
+XMLHttpRequest` — ya estaban en la v1) pero **distinto payload** (el simple y
+el DataTables completo), y toma la **huella del cuerpo de error** (`<title>`,
+`Reference #`, marcas de WAF). Si los dos shapes fallan igual, no es el request:
+es la puerta, y el Senado queda fuera y se declara.
+
+### 6.2 Corrida 2 (PENDIENTE)
+
+```
+npm i --no-save pdfjs-dist
+node scripts/congreso-phase0-probe.mjs --efiled=30 --paper=5
+```
+
+Cierra G1 con extractor autoritativo y porcentajes separados por clase, y G2
+con los dos intentos. **Hasta que esta corrida esté acá, G1 y G2 siguen
+abiertas.**
 
 ### Lo que falta para cerrar la Fase 0 (no es opcional)
 
