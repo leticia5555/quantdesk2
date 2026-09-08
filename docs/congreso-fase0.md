@@ -4,9 +4,10 @@
 > acá, ni diseño de UI, ni el agente copy-Congreso — si el veredicto habilita
 > seguir, la Fase 1 arranca de la lista de decisiones a congelar (§7).
 >
-> **Veredicto: VIABLE POR LA RUTA HOUSE**, con **dos compuertas binarias
-> abiertas** (G1 y G2) que se cierran con un solo comando desde una IP con
-> egress — ver §0 y §6.
+> **Veredicto: VIABLE POR LA RUTA HOUSE**, con **tres compuertas abiertas**:
+> G1 y G2 se cierran con un solo comando desde una IP con egress (§0, §6); la
+> **compuerta legal §13107(c)** la cierra un abogado, con la pregunta ya
+> redactada en **§4.2**, y es previa a la Fase 1.
 >
 > Fecha del reconocimiento: 2026-09-04. Actualiza y **contradice en un punto**
 > el censo de `docs/stock-tracker-scope.md` §1.1 (2026-07-21).
@@ -220,22 +221,114 @@ dólar hay que leer sus ToS completos, no el resumen de un buscador.
 
 ---
 
-## 4. Lo legal, en una línea (no cambió desde julio)
+## 4. Compuerta legal §13107(c) — **ABIERTA**
 
-EIGA §105(c), hoy **5 U.S.C. §13107(c)**, prohíbe usar los reportes de
-disclosure con **fines comerciales**, con excepción explícita de la **difusión
-al público general**. Aplica a **ambas cámaras** — que el Clerk de la Cámara no
-te haga clickear un agreement y el Senado sí, no cambia el estatuto.
+Esta es la **tercera compuerta** del proyecto, junto a G1 y G2. A diferencia de
+esas dos, no la cierra un script: la cierra un abogado. Y **es previa a la Fase
+1**, no posterior.
 
-El censo de julio ya dimensionó el riesgo como **bajo** (cero enforcement en 13
+### 4.1 El estatuto, con precisión
+
+EIGA §105(c), hoy **5 U.S.C. §13107(c)**, prohíbe obtener o usar los reportes
+de disclosure, entre otras cosas, **para cualquier propósito comercial** — con
+una excepción explícita: *"other than by news and communications media for
+dissemination to the general public"*. Aplica a **ambas cámaras**; que el Clerk
+de la Cámara no te haga clickear un agreement y el Senado sí, no cambia el
+estatuto, solo cambia quién te lo pone enfrente.
+
+La exposición es **civil, por acción del Attorney General**, con multa tope
+(ajustada por inflación). El monto exacto vigente y el mecanismo procesal son
+parte de lo que confirma el abogado — no los doy por sabidos acá.
+
+### 4.2 La pregunta que va al abogado (una, concreta)
+
+> **QuantDesk es un producto SaaS que cobra suscripción por sus módulos de
+> research (DCF, simulaciones, agentes). Queremos publicar un feed de PTRs del
+> STOCK Act — datos públicos del Clerk de la Cámara y de eFD — en español, en
+> modo mostrar-solo: sin ejecución de órdenes, sin recomendación, con el lag
+> legal y los rangos de monto declarados en cada tarjeta.**
+>
+> **(a) ¿Un feed público y gratuito de PTRs, dentro de un producto que cobra
+> por OTRAS funciones, cae dentro de la excepción de "news and communications
+> media for dissemination to the general public" de 5 U.S.C. §13107(c)(1)(B)?
+> ¿O el hecho de que la empresa que lo publica monetice otras partes del
+> producto lo convierte en "commercial purpose" aunque el feed en sí no se
+> cobre?**
+>
+> **(b) Si la respuesta es "solo si es gratis y abierto": ¿qué tiene que ser
+> cierto exactamente? ¿Basta con que el feed no esté detrás del paywall, o
+> también tiene que ser accesible sin cuenta, sin registro y sin rate-limit
+> por plan? ¿Cambia algo si el feed convive en la misma app con módulos de
+> pago, o hay que separarlo de dominio/producto?**
+
+Es una pregunta de sí/no con una condicional, no una revisión abierta. Eso es a
+propósito: es la condición 2 que ya fijó el censo de julio, y está redactada
+para que se pueda responder en una consulta puntual.
+
+### 4.3 Qué cambia en el diseño si la respuesta es "solo si es gratis y abierto"
+
+Esto **no se decide después de construir**. Si la respuesta es esa, la Fase 1
+arranca con estas restricciones congeladas desde el día uno:
+
+1. **El feed del Congreso NUNCA va detrás del paywall.** Ni ahora con
+   `PAYWALL_ENABLED` apagado (`api/_lib/paywall.js` — hoy toda la app está
+   abierta), ni cuando se encienda. La categoría queda **excluida por código**
+   del gate de paywall, no por configuración: una env var que alguien flipea
+   por error no puede meter datos de §13107(c) detrás de una suscripción.
+2. **Sin gating por cuenta ni por plan.** Nada de "regístrate para ver más",
+   nada de límite de tarjetas por tier. El rate-limit que quede es
+   anti-abuso de infraestructura, igual para todos, no un escalón de producto.
+3. **Ruta pública propia**, indexable, del estilo `/congreso` — mismo patrón
+   que `/liga` y `/hoy` en `vercel.json`. Que "dissemination to the general
+   public" sea verificable abriendo una URL, no explicando una arquitectura.
+4. **El agente copy-Congreso de la Fase 2 hereda la duda.** Un agente que
+   *opera* con base en esos datos dentro de un producto de pago es un caso
+   más difícil que un feed informativo — aunque sea paper trading. Si (a) sale
+   ambiguo, la Fase 2 **no** arranca sin una segunda pregunta específica sobre
+   ella.
+5. **Atribución y origen visibles en cada tarjeta**: enlace al PDF/filing
+   original en el sitio del Clerk. Es lo que convierte al feed en difusión de
+   un documento público, no en un producto de datos derivado.
+
+Si la respuesta a (a) es "sí, la excepción cubre el caso", los puntos 1–3 se
+quedan igual de todos modos: son baratos, y son la postura que hace defendible
+al producto. Lo que cambia es que dejan de ser obligatorios.
+
+### 4.4 Robinhood no es precedente para nosotros — y esto es parte del riesgo
+
+Es tentador mirar a Robinhood Social y concluir "si ellos lo hacen, se puede".
+**No aplica, por una diferencia estructural:**
+
+- **Robinhood no toca los filings.** Los datos de políticos, insiders y hedge
+  funds de Robinhood Social vienen de **TipRanks**, un proveedor tercero, y
+  cada tarjeta **atribuye a TipRanks**. Robinhood es *licenciatario*: la
+  relación con §13107(c) —y el riesgo de que alguien la cuestione— la carga el
+  proveedor, que se la vendió bajo contrato.
+- **Nosotros seríamos fuente primaria, sin intermediario.** Bajamos el ZIP del
+  Clerk, parseamos el PDF, publicamos. No hay un contrato de licencia entre
+  nosotros y el estatuto. **Todo el riesgo es nuestro, directo.**
+
+Y es justo la contracara de la decisión de §3: los agregadores que *podrían*
+hacer de intermediario (FMP, Quiver) están descartados porque **prohíben
+redistribuir**. O sea: pagar un proveedor para que cargue la licencia —el
+arreglo de Robinhood— **no está disponible a nuestro precio**. La ruta directa
+no es solo la más barata: por ahora es la única, y viene con el riesgo pegado.
+
+Esto no cambia el veredicto de §6 (el riesgo sigue dimensionado como bajo por
+las razones de julio). Cambia **quién lo carga**: nosotros, no un vendor. Va en
+la pregunta al abogado como contexto, no como argumento.
+
+### 4.5 Lo que ya estaba fijado en julio y sigue igual
+
+El censo de julio dimensionó el riesgo como **bajo** (cero enforcement en 13
 años; precedente análogo favorable *FEC v. Political Contributions Data*, 2d
 Cir. 1991; toda la industria —Autopilot incluido— opera sobre estas fuentes) y
 fijó **tres condiciones de activación**, que este memo NO toca y NO da por
 cumplidas:
 
 1. Smoke real de las fuentes desde producción → **esto es G1/G2, lo cierra el probe**.
-2. **Consulta legal puntual** (una pregunta concreta, no una revisión abierta) → **sigue abierta**.
-3. Modo **mostrar-solo**, con disclaimer informativo, sin ejecución ni recomendación → decisión de diseño de Fase 1.
+2. **Consulta legal puntual** → **es §4.2, y sigue ABIERTA**.
+3. Modo **mostrar-solo**, con disclaimer informativo, sin ejecución ni recomendación.
 
 **Triggers de paro monitoreables** (sin cambios): primera acción del DOJ bajo
 §13107(c) contra cualquier tracker, o ley nueva que restrinja el uso de los
@@ -325,8 +418,8 @@ feed es **incompleto por diseño**, y eso también se declara.*
 1. Correr `scripts/congreso-phase0-probe.mjs` desde una IP con egress y pegar
    su salida acá abajo, en un §6.1 nuevo. **G1 y G2 se cierran con números
    propios, no con citas.**
-2. La **consulta legal puntual** (condición 2 de julio) — sigue abierta y es
-   previa al primer PR de datos, no posterior.
+2. La **consulta legal puntual** — la pregunta está redactada en **§4.2** y la
+   compuerta está **ABIERTA**. Es previa al primer PR de datos, no posterior.
 3. Leer los ToS completos de Disclosed Capitol antes de considerarlo siquiera
    como fallback.
 
@@ -354,15 +447,24 @@ Ninguna se decide en este memo. Se listan para que la Fase 1 no las improvise.
    (Robinhood/TipRanks hace los dos; el perfil es lo que engancha.)
 7. Copy exacto del disclaimer de lag y de cobertura parcial, en español.
 8. ¿Entra en TRACKER como categoría A (lo que decía julio) o es tab propio?
+   **Restricción heredada:** si la compuerta §4 sale "solo si es gratis y
+   abierto", la categoría queda excluida **por código** del gate de paywall y
+   necesita ruta pública propia (§4.3) — eso condiciona dónde puede vivir.
+9. Atribución en cada tarjeta: enlace al filing original del Clerk. No es
+   estética, es lo que sostiene el argumento de "difusión de documento
+   público" (§4.3.5) — y es la diferencia con Robinhood, que atribuye a su
+   proveedor porque la licencia la carga él (§4.4).
 
 **Agente copy-Congreso (Fase 2, ni se diseña acá)**
-9. Regla de copia: ¿qué hace el agente con un rango de monto y 26 días de
-   retraso? El tamaño de posición **no** es derivable del bucket.
-10. Cuenta Alpaca paper propia y `agent_id` propio en la liga, o queda fuera del
+10. Regla de copia: ¿qué hace el agente con un rango de monto y 26 días de
+    retraso? El tamaño de posición **no** es derivable del bucket.
+11. Cuenta Alpaca paper propia y `agent_id` propio en la liga, o queda fuera del
     leaderboard por no ser comparable con el resto (los otros agentes deciden
     con información del día; este decide con información de hace un mes).
-11. Cómo se etiqueta en el leaderboard para que nadie lea "copy-Congreso ganó"
+12. Cómo se etiqueta en el leaderboard para que nadie lea "copy-Congreso ganó"
     como "copiar al Congreso funciona" con n de tres meses.
+13. **Precondición de §4.3.4:** si la respuesta legal sale ambigua, la Fase 2 no
+    arranca sin una segunda pregunta específica sobre el agente.
 
 ---
 
@@ -391,6 +493,8 @@ entorno** (§0).
 - Robinhood — HOOD Summit 2025 (anuncio de Robinhood Social): https://robinhood.com/us/en/newsroom/hood-summit-2025-news/
 - TipRanks — cobertura de trading del Congreso: https://www.tipranks.com/news/labs/follow-congress-trading-activity-with-tipranks
 - CRS — Stock Trading in Congress: https://www.congress.gov/crs_external_products/TE/HTML/TE10073.html
+- 5 U.S.C. §13107 (texto del estatuto, incl. la excepción de news media en (c)(1)(B)): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title5-section13107
+- Robinhood Social — atribución de los datos de políticos/insiders/hedge funds a TipRanks: https://robinhood.com/us/en/newsroom/hood-summit-2025-news/
 - Contexto de WAFs bloqueando rangos de datacenter: https://scrapfly.io/blog/posts/403-forbidden-web-scraping
 
 **Fuentes internas:** `docs/stock-tracker-scope.md` (censo 2026-07-21, §1.1 y
