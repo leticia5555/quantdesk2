@@ -183,12 +183,13 @@ anti-bot de Akamai**, con tres síntomas concretos:
 correcto, la categoría Senado no es "frágil": es **inviable en nuestra
 arquitectura actual**, y ninguna cantidad de parser lo arregla.
 
-**Actualización tras la corrida 1 (§6.1):** desde una IP residencial el
-`GET /search/home/` responde **200 con CSRF** y el POST del agreement **también
-200** — la puerta de entrada NO está cerrada. Lo que falla es específicamente
-`POST /search/report/data/`, con **503 y cuerpo XHTML**. Es compatible con
-bot-mitigation, pero también con un 5xx de la app o un shape de request
-obsoleto; la corrida 2 lo distingue probando dos payloads.
+**Actualización tras las corridas 1 y 2 (§6.1, §6.2): la hipótesis de Akamai se
+debilita.** Desde una IP residencial el `GET /search/home/` responde **200 con
+CSRF** y el POST del agreement **también 200**, las dos veces — si hubiera
+bloqueo por rango de IP, moriría ahí, no en el tercer paso. Y el 503 del tercer
+paso resultó ser `title="U.S. Senate: Site Under Maintenance"`, **sin huella de
+WAF**, un domingo a las 23:37. Eso es el sitio apagado, no el sitio
+bloqueándonos. **G2 queda INCONCLUSO** hasta repetir en horario hábil.
 
 **Calidad de esta evidencia: baja-media.** Es **una sola fuente** (el mismo
 artículo de abr-2026 que aporta el "~5%"), corroborada solo por el hecho
@@ -631,9 +632,10 @@ Estado de las compuertas:
 
 ### Lo que falta para cerrar la Fase 0 (no es opcional)
 
-1. Correr `scripts/congreso-phase0-probe.mjs` desde una IP con egress y pegar
-   su salida acá abajo, en un §6.1 nuevo. **G1 y G2 se cierran con números
-   propios, no con citas.**
+1. ~~Correr el probe desde una IP con egress~~ → hecho, dos corridas (§6.1,
+   §6.2). **G1 quedó VERDE.** Falta la **corrida 3 (§6.3)**: `--only=g2` en
+   horario hábil de EE.UU. para cerrar G2, y repetir la muestra para verificar
+   el fix del marcador `tipo`.
 2. La **consulta legal puntual** — la pregunta está redactada en **§4.2** y la
    compuerta está **ABIERTA**. Es previa al primer PR de datos, no posterior.
 3. Leer los ToS completos de Disclosed Capitol antes de considerarlo siquiera
