@@ -4,9 +4,11 @@
 > acá, ni diseño de UI, ni el agente copy-Congreso — si el veredicto habilita
 > seguir, la Fase 1 arranca de la lista de decisiones a congelar (§7).
 >
-> **Veredicto: VIABLE POR LA RUTA HOUSE**, con **dos compuertas binarias
-> abiertas** (G1 y G2) que se cierran con un solo comando desde una IP con
-> egress — ver §0 y §6.
+> **Veredicto: VIABLE POR LA RUTA HOUSE.** Estado de las compuertas tras dos
+> corridas reales (§6.1–§6.3): **G1 Cámara 🟢 VERDE** (100% de los PTR e-filed
+> traen capa de texto) · **G2 Senado 🟡 INCONCLUSO** (tres corridas, siempre
+> ventana de mantenimiento del Senado, nunca huella de WAF) · **legal
+> §13107(c) 🔴 ABIERTA** (§4.2, la cierra un abogado y es previa a la Fase 1).
 >
 > Fecha del reconocimiento: 2026-09-04. Actualiza y **contradice en un punto**
 > el censo de `docs/stock-tracker-scope.md` §1.1 (2026-07-21).
@@ -74,8 +76,9 @@ disco, **mide de verdad el % de PDFs escaneados** (no lo cita de un blog) e
 imprime el veredicto de G1 y G2. Se corre donde haya egress:
 
 ```
-node scripts/congreso-phase0-probe.mjs            # G1 + G2
-node scripts/congreso-phase0-probe.mjs --pdfs=40  # muestra más grande para el % escaneado
+npm i --no-save pdfjs-dist                        # extractor autoritativo (opcional pero necesario para G1)
+node scripts/congreso-phase0-probe.mjs                        # G1 + G2
+node scripts/congreso-phase0-probe.mjs --efiled=30 --paper=5  # muestra partida por clase
 ```
 
 No pide ninguna key. No imprime credenciales. Las dos rutas que sondea son
@@ -128,10 +131,17 @@ PTRs recientes, qué fracción tiene capa de texto. El probe clasifica cada PDF
 inflando sus content streams y buscando operadores de texto (`BT`/`Tj`/`TJ`)
 vs. XObjects de imagen — sin librería de PDF, sin OCR.
 
-- **G1 verde** (≥90% con texto en filings del año en curso) → House es la ruta,
-  el MVP ignora los escaneados y **lo dice en la UI**.
+- **G1 verde** (≥90% de los **e-filed** rinde los 5 campos del formulario) →
+  House es la ruta, el MVP ignora los de papel y **lo dice en la UI**.
 - **G1 rojo** (<90%) → el MVP de House cubre menos de lo prometido y hay que
   decidir OCR (caro, fuera de un serverless de 60s) o recortar el alcance.
+
+> **Actualización tras las corridas 1 y 2 (§6.1, §6.2):** el veredicto se juega
+> **solo en los e-filed** (DocID `2xxxxxxx`), y **solo sobre el % con capa de
+> texto** — el % de campos completos mide el parser, no la fuente. Medido:
+> **100% de los e-filed traen texto**, y **38 de 379 PTRs (10.0%) son papel**,
+> el doble del "~5%" de terceros que se cita arriba. La medición exige un
+> extractor de PDF real: los PTR vienen **cifrados** (`/Encrypt` en 30/30).
 
 ### 1.3 Volumen (para dimensionar el cron, no para el veredicto)
 
@@ -172,6 +182,14 @@ anti-bot de Akamai**, con tres síntomas concretos:
 **Vercel serverless es exactamente una IP de datacenter.** Si el reporte es
 correcto, la categoría Senado no es "frágil": es **inviable en nuestra
 arquitectura actual**, y ninguna cantidad de parser lo arregla.
+
+**Actualización tras las corridas 1 y 2 (§6.1, §6.2): la hipótesis de Akamai se
+debilita.** Desde una IP residencial el `GET /search/home/` responde **200 con
+CSRF** y el POST del agreement **también 200**, las dos veces — si hubiera
+bloqueo por rango de IP, moriría ahí, no en el tercer paso. Y el 503 del tercer
+paso resultó ser `title="U.S. Senate: Site Under Maintenance"`, **sin huella de
+WAF**, un domingo a las 23:37. Eso es el sitio apagado, no el sitio
+bloqueándonos. **G2 queda INCONCLUSO** hasta repetir en horario hábil.
 
 **Calidad de esta evidencia: baja-media.** Es **una sola fuente** (el mismo
 artículo de abr-2026 que aporta el "~5%"), corroborada solo por el hecho
@@ -220,22 +238,114 @@ dólar hay que leer sus ToS completos, no el resumen de un buscador.
 
 ---
 
-## 4. Lo legal, en una línea (no cambió desde julio)
+## 4. Compuerta legal §13107(c) — **ABIERTA**
 
-EIGA §105(c), hoy **5 U.S.C. §13107(c)**, prohíbe usar los reportes de
-disclosure con **fines comerciales**, con excepción explícita de la **difusión
-al público general**. Aplica a **ambas cámaras** — que el Clerk de la Cámara no
-te haga clickear un agreement y el Senado sí, no cambia el estatuto.
+Esta es la **tercera compuerta** del proyecto, junto a G1 y G2. A diferencia de
+esas dos, no la cierra un script: la cierra un abogado. Y **es previa a la Fase
+1**, no posterior.
 
-El censo de julio ya dimensionó el riesgo como **bajo** (cero enforcement en 13
+### 4.1 El estatuto, con precisión
+
+EIGA §105(c), hoy **5 U.S.C. §13107(c)**, prohíbe obtener o usar los reportes
+de disclosure, entre otras cosas, **para cualquier propósito comercial** — con
+una excepción explícita: *"other than by news and communications media for
+dissemination to the general public"*. Aplica a **ambas cámaras**; que el Clerk
+de la Cámara no te haga clickear un agreement y el Senado sí, no cambia el
+estatuto, solo cambia quién te lo pone enfrente.
+
+La exposición es **civil, por acción del Attorney General**, con multa tope
+(ajustada por inflación). El monto exacto vigente y el mecanismo procesal son
+parte de lo que confirma el abogado — no los doy por sabidos acá.
+
+### 4.2 La pregunta que va al abogado (una, concreta)
+
+> **QuantDesk es un producto SaaS que cobra suscripción por sus módulos de
+> research (DCF, simulaciones, agentes). Queremos publicar un feed de PTRs del
+> STOCK Act — datos públicos del Clerk de la Cámara y de eFD — en español, en
+> modo mostrar-solo: sin ejecución de órdenes, sin recomendación, con el lag
+> legal y los rangos de monto declarados en cada tarjeta.**
+>
+> **(a) ¿Un feed público y gratuito de PTRs, dentro de un producto que cobra
+> por OTRAS funciones, cae dentro de la excepción de "news and communications
+> media for dissemination to the general public" de 5 U.S.C. §13107(c)(1)(B)?
+> ¿O el hecho de que la empresa que lo publica monetice otras partes del
+> producto lo convierte en "commercial purpose" aunque el feed en sí no se
+> cobre?**
+>
+> **(b) Si la respuesta es "solo si es gratis y abierto": ¿qué tiene que ser
+> cierto exactamente? ¿Basta con que el feed no esté detrás del paywall, o
+> también tiene que ser accesible sin cuenta, sin registro y sin rate-limit
+> por plan? ¿Cambia algo si el feed convive en la misma app con módulos de
+> pago, o hay que separarlo de dominio/producto?**
+
+Es una pregunta de sí/no con una condicional, no una revisión abierta. Eso es a
+propósito: es la condición 2 que ya fijó el censo de julio, y está redactada
+para que se pueda responder en una consulta puntual.
+
+### 4.3 Qué cambia en el diseño si la respuesta es "solo si es gratis y abierto"
+
+Esto **no se decide después de construir**. Si la respuesta es esa, la Fase 1
+arranca con estas restricciones congeladas desde el día uno:
+
+1. **El feed del Congreso NUNCA va detrás del paywall.** Ni ahora con
+   `PAYWALL_ENABLED` apagado (`api/_lib/paywall.js` — hoy toda la app está
+   abierta), ni cuando se encienda. La categoría queda **excluida por código**
+   del gate de paywall, no por configuración: una env var que alguien flipea
+   por error no puede meter datos de §13107(c) detrás de una suscripción.
+2. **Sin gating por cuenta ni por plan.** Nada de "regístrate para ver más",
+   nada de límite de tarjetas por tier. El rate-limit que quede es
+   anti-abuso de infraestructura, igual para todos, no un escalón de producto.
+3. **Ruta pública propia**, indexable, del estilo `/congreso` — mismo patrón
+   que `/liga` y `/hoy` en `vercel.json`. Que "dissemination to the general
+   public" sea verificable abriendo una URL, no explicando una arquitectura.
+4. **El agente copy-Congreso de la Fase 2 hereda la duda.** Un agente que
+   *opera* con base en esos datos dentro de un producto de pago es un caso
+   más difícil que un feed informativo — aunque sea paper trading. Si (a) sale
+   ambiguo, la Fase 2 **no** arranca sin una segunda pregunta específica sobre
+   ella.
+5. **Atribución y origen visibles en cada tarjeta**: enlace al PDF/filing
+   original en el sitio del Clerk. Es lo que convierte al feed en difusión de
+   un documento público, no en un producto de datos derivado.
+
+Si la respuesta a (a) es "sí, la excepción cubre el caso", los puntos 1–3 se
+quedan igual de todos modos: son baratos, y son la postura que hace defendible
+al producto. Lo que cambia es que dejan de ser obligatorios.
+
+### 4.4 Robinhood no es precedente para nosotros — y esto es parte del riesgo
+
+Es tentador mirar a Robinhood Social y concluir "si ellos lo hacen, se puede".
+**No aplica, por una diferencia estructural:**
+
+- **Robinhood no toca los filings.** Los datos de políticos, insiders y hedge
+  funds de Robinhood Social vienen de **TipRanks**, un proveedor tercero, y
+  cada tarjeta **atribuye a TipRanks**. Robinhood es *licenciatario*: la
+  relación con §13107(c) —y el riesgo de que alguien la cuestione— la carga el
+  proveedor, que se la vendió bajo contrato.
+- **Nosotros seríamos fuente primaria, sin intermediario.** Bajamos el ZIP del
+  Clerk, parseamos el PDF, publicamos. No hay un contrato de licencia entre
+  nosotros y el estatuto. **Todo el riesgo es nuestro, directo.**
+
+Y es justo la contracara de la decisión de §3: los agregadores que *podrían*
+hacer de intermediario (FMP, Quiver) están descartados porque **prohíben
+redistribuir**. O sea: pagar un proveedor para que cargue la licencia —el
+arreglo de Robinhood— **no está disponible a nuestro precio**. La ruta directa
+no es solo la más barata: por ahora es la única, y viene con el riesgo pegado.
+
+Esto no cambia el veredicto de §6 (el riesgo sigue dimensionado como bajo por
+las razones de julio). Cambia **quién lo carga**: nosotros, no un vendor. Va en
+la pregunta al abogado como contexto, no como argumento.
+
+### 4.5 Lo que ya estaba fijado en julio y sigue igual
+
+El censo de julio dimensionó el riesgo como **bajo** (cero enforcement en 13
 años; precedente análogo favorable *FEC v. Political Contributions Data*, 2d
 Cir. 1991; toda la industria —Autopilot incluido— opera sobre estas fuentes) y
 fijó **tres condiciones de activación**, que este memo NO toca y NO da por
 cumplidas:
 
 1. Smoke real de las fuentes desde producción → **esto es G1/G2, lo cierra el probe**.
-2. **Consulta legal puntual** (una pregunta concreta, no una revisión abierta) → **sigue abierta**.
-3. Modo **mostrar-solo**, con disclaimer informativo, sin ejecución ni recomendación → decisión de diseño de Fase 1.
+2. **Consulta legal puntual** → **es §4.2, y sigue ABIERTA**.
+3. Modo **mostrar-solo**, con disclaimer informativo, sin ejecución ni recomendación.
 
 **Triggers de paro monitoreables** (sin cambios): primera acción del DOJ bajo
 §13107(c) contra cualquier tracker, o ley nueva que restrinja el uso de los
@@ -258,9 +368,11 @@ El encargo lo pide explícito y el reconocimiento lo confirma con números:
   $5M–$25M · $25M–$50M · >$50M.
 - **El ticker no siempre existe.** Bonos, fondos y cripto llegan con `--` y solo
   descripción de texto libre. La card tiene que degradar, no romperse.
-- **Cobertura parcial declarada.** Si G1 sale con escaneados y G2 sale rojo, la
-  UI dice *"Cámara de Representantes; algunos filings en papel no se procesan"*
-  — no se disimula con un feed que parece completo.
+- **Cobertura declarada, con el método a la vista.** Medido: **38 de 379 PTRs
+  (10.0%) llegan en papel**. No se ocultan — se transcriben con visión y se
+  etiquetan **"transcrito por IA — verificar en el filing"**, con enlace al PDF
+  (§8). Y mientras G2 no cierre, la UI dice *"solo Cámara de Representantes"*;
+  nunca un feed que parezca completo.
 
 Cada card lleva **fecha del trade Y fecha del filing**, con el lag calculado por
 trade ("presentado 34 días después"), igual que ya hace TRACKER con 13F/Form 4.
@@ -277,8 +389,12 @@ fuentes en la misma app.
 **La ruta recomendada, una sola:**
 
 > **ZIP/XML anual del Clerk de la Cámara como índice + parsing de los PDFs de
-> PTR con capa de texto, sin OCR, corriendo como cron incremental sobre Neon.
-> Cero agregadores en el critical path. Senado solo si G2 sale verde.**
+> PTR, en un GitHub Action que escribe a Neon (decisión 5b, §7). Cero
+> agregadores en el critical path. Senado solo si G2 sale verde.**
+>
+> **Alcance Fase A (decidido 2026-09-09): el 100% de la Cámara, papel
+> incluido** — carril de texto para los e-filed (§6.2) y carril de visión para
+> los ~10% en papel (§8), etiquetados y separables en la UI y en la base.
 
 **Por qué esta y no otra:**
 - Es la única gratis **y** redistribuible (dominio público). FMP y Quiver
@@ -294,11 +410,14 @@ fuentes en la misma app.
 | Bloque | Horas |
 |---|---|
 | Descarga ZIP + lector ZIP sin dependencias + parser del XML índice + diff de `DocID` | 3–4 |
-| Extractor de texto de PDF sin dependencias (o `pdf-parse` si se acepta la dep) + regex con anclas para la tabla de transacciones | **6–8** ← el grueso, y el que más se puede desviar por el orden caótico de extracción |
+| ~~Extractor de texto de PDF sin dependencias~~ → **imposible: los PTR vienen cifrados** (§6.2). Parser de la tabla sobre el texto que entrega `pdfjs-dist` | **2–3** (+ la decisión de meter la primera dependencia npm del repo) |
 | Normalización (buckets de monto, tipo, owner, ticker faltante, fecha trade vs filing) + esquema y tabla en Neon | 3–4 |
-| Endpoint del feed + doble cache + `?smoke=1` + cron incremental | 2–3 |
-| Backfill histórico en GitHub Action (año en curso + anterior) | 2 |
-| **Total Fase 1 (solo datos, sin UI ni agente)** | **16–21 h** |
+| Endpoint del feed (solo LEE de Neon, sin dependencias) + doble cache + `?smoke=1` | 2–3 |
+| El Action en sí: workflow, secrets, cron, reintentos, escritura idempotente a Neon | 2 |
+| Backfill histórico (año en curso + anterior) — mismo Action, corrida one-shot | 2 |
+| **Subtotal carril texto (e-filed)** | **11–15 h** |
+| **Carril visión para los 38 en papel (§8)** | **+7–10 h** · ~US$2 el backfill completo |
+| **Total Fase 1 (datos, 100% de la Cámara, sin UI ni agente)** | **18–25 h** |
 | Senado, **solo si G2 verde** (agreement + JSON + parser de tabla HTML) | +6–10 |
 | OCR, **solo si G1 rojo** | +8–12 y sale del serverless |
 
@@ -309,24 +428,293 @@ que resistir la tentación de comprar un proxy residencial y en cambio decirlo e
 la UI. Y aun con G1 verde, un porcentaje de filings en papel queda afuera: el
 feed es **incompleto por diseño**, y eso también se declara.*
 
-### 6.1 Salida del probe (PENDIENTE — acá va)
+### 6.1 Corrida 1 — 2026-09-08, MacBook, IP residencial, sin VPN
 
-> Correr `node scripts/congreso-phase0-probe.mjs` desde una IP con egress real
-> y pegar la salida completa acá. Mientras este bloque diga PENDIENTE, **G1 y
-> G2 siguen abiertas** y el veredicto de §6 es una recomendación con evidencia
-> de terceros, no un hecho medido.
+Primera corrida real. **Lo que cerró, lo que no, y un error mío.**
 
 ```
-(pendiente)
+═══ G1 — CAMARA (disclosures-clerk.house.gov) ═══
+  [1/3] ZIP indice: .../public_disc/financial-pdfs/2026FD.zip
+  ✓ HTTP 200 — 0.05 MB en 692ms
+  ✓ 2026FD.xml — 0.41 MB
+
+  [2/3] Indice XML
+  ✓ 1603 filings en el indice · 379 son PTR (FilingType=P)
+    tipos: C=770 · P=379 · X=247 · W=101 · D=68 · A=34 · H=2 · T=2
+    ejemplo: Mark Alford · MO04 · filed 3/31/2026 · DocID 20034201
+
+  [3/3] Muestra de 20 PDFs
+    20035392 indeterminado  0 textOps   91 KB   0/5 marcadores
+    20035190 texto          2 textOps  145 KB   0/5
+    9116328  texto          2 textOps  556 KB   1/5
+    9116326  escaneado      0 textOps   43 KB   0/5
+    9116311  escaneado      0 textOps   24 KB   0/5
+    ...(15 de 20 "indeterminado", todos con textOps=0, 61-91 KB)...
+
+    con capa de texto: 3/20 (15.0%) · escaneados: 2/20 · indeterminados: 15/20
+    errores HTTP: 0
+  → G1 ROJO: 15.0% con texto (umbral 90%)
+
+═══ G2 — SENADO (efdsearch.senate.gov) ═══
+  [1/3] GET /search/home/    ✓ HTTP 200 (468ms) · csrf encontrado
+  [2/3] POST /search/home/   ✓ HTTP 200 (504ms)   ← el agreement SÍ pasa
+  [3/3] POST /search/report/data/
+        ✗ HTTP 503 (338ms) — cuerpo: <!DOCTYPE html ... XHTML 1.0 Transitional
+  → G2 ROJO: el endpoint JSON no responde desde esta IP
 ```
+
+#### Lo que esta corrida SÍ cerró (y es lo importante)
+
+**La ruta de la Cámara es accesible desde una IP cualquiera, sin gate.**
+ZIP en 692 ms, XML de 0.41 MB con 1,603 filings y **379 PTRs**, y **20 de 20
+PDFs bajados con HTTP 200**. Sin login, sin agreement, sin captcha, sin WAF.
+Eso era la premisa de toda la recomendación de §6 y **queda confirmado**.
+
+#### El "G1 ROJO" es un FALSO NEGATIVO del extractor, no un hecho sobre los PDFs
+
+No lo tomo como veredicto, y la razón está en los propios números:
+
+- **15 PDFs "indeterminado" con `textOps=0` y 61–91 KB.** Un PTR escaneado de
+  una página pesa lo que pesa una imagen; un PDF de 63 KB **con `/Font`
+  presente** (por eso cae en "indeterminado" y no en "escaneado") es un PDF de
+  texto que mi extractor no supo abrir.
+- **Los 3 que sí clasificó "texto" dieron `textOps=2`.** Una página de PTR
+  tiene decenas de operadores de texto, no dos. O sea: incluso donde "funcionó",
+  infló un stream chico y falló con los de contenido.
+- **0/5 marcadores del formulario en toda la muestra.** Si de verdad hubiera
+  extraído texto de un PTR, "Transaction Date" o un bucket de monto tenían que
+  aparecer. No aparecieron en ninguno. Eso no es un dato sobre la Cámara: es un
+  extractor roto.
+
+**Veredicto honesto de G1: INDETERMINADO, no rojo.** La v2 del probe lo trata
+así explícitamente — con cero texto extraído y sin librería de PDF, se niega a
+emitir veredicto.
+
+#### Corrección de una hipótesis que se descartó
+
+Se sospechó que la muestra no filtraba `FilingType=P` y traía reportes anuales
+(lo que explicaría los 0/5 marcadores). **No es el caso:** el probe filtra a
+`P` antes de ordenar y muestrear (`ptrs = members.filter(m => m.type === 'P')`
+→ `sorted` → `sample`), y la evidencia lo respalda — los 20 DocIDs resolvieron **200 OK bajo `/ptr-pdfs/`**, cosa que un
+reporte anual no hace. La causa es la del punto anterior, no la muestra.
+
+#### Lo que la corrida sí enseñó sobre la partición e-filed / papel
+
+Los DocID `9116xxx` (papel) se comportan distinto de los `2003xxxx` (e-filed) y
+la v1 los mezclaba en un solo porcentaje, escondiendo justo lo que la pregunta
+(a) quería saber. Confirmado en los datos: los dos `escaneado` de la muestra son
+`9116326` y `9116311`. La v2 **parte la muestra por clase** y da un porcentaje
+por cada una — el veredicto de G1 se juega **solo en los e-filed**, porque los
+de papel ya se sabe que necesitan OCR y están fuera del MVP por diseño.
+
+#### G2 — rojo, pero con un matiz que importa
+
+**No es 403 en la puerta: es 503 en el último paso.** El `GET /search/home/`
+devolvió 200 con CSRF, y el **POST del agreement pasó (200)**. Muere
+específicamente en `POST /search/report/data/`, devolviendo XHTML en vez de
+JSON. Eso es compatible con bot-mitigation, pero **también** con un 5xx de la
+app o con un shape de request que el endpoint ya no acepta. La v1 no permitía
+distinguir.
+
+La v2 lo resuelve: pacing de 2 s entre pasos, **dos intentos** con el mismo
+juego de headers (`Referer`, `Origin`, `X-CSRFToken`, `X-Requested-With:
+XMLHttpRequest` — ya estaban en la v1) pero **distinto payload** (el simple y
+el DataTables completo), y toma la **huella del cuerpo de error** (`<title>`,
+`Reference #`, marcas de WAF). Si los dos shapes fallan igual, no es el request:
+es la puerta, y el Senado queda fuera y se declara.
+
+### 6.2 Corrida 2 — 2026-09-08, misma Mac, con `pdfjs-dist`
+
+```
+  [2/3] Indice XML
+  ✓ 1603 filings · 379 PTR (FilingType=P)
+    de esos PTR: 341 e-filed (DocID 2xxxxxxx) · 38 papel (9xxxxxx)
+
+  [3/3] Muestra: 30 e-filed + 5 papel · extractor: pdfjs-dist (autoritativo)
+    e-filed  20035190  texto  13528 chars  145 KB  5/5  cifrado SI
+    e-filed  20035370  texto   1105 chars   64 KB  4/5  cifrado SI
+    ...(30/30 con texto, TODOS cifrados)...
+    papel    9116328   texto      0 chars  556 KB  0/5  cifrado no
+    papel    9116326   escaneado  0 chars   43 KB  0/5  cifrado no
+    ...(4 de 5 escaneados)...
+
+    ── E-FILED (n=30) ──
+       con texto: 30/30 (100.0%) · escaneados: 0 · indeterminados: 0 · errores: 0
+       con los 5 marcadores: 3/30 (10.0%) · cifrados (/Encrypt): 30
+    ── PAPEL (n=5) ──
+       con texto: 1/5 · escaneados: 4 · cifrados: 0
+    marcadores: encabezado=30 · tipo=3 · bucket_monto=24 · owner=30 · ticker=22
+  → G1 ROJO: 10.0% de los e-filed rinde los 5 campos
+
+═══ G2 ═══
+  [1/3] GET  /search/home/   ✓ 200 · csrf encontrado
+  [2/3] POST /search/home/   ✓ 200
+  [3/3] POST /search/report/data/ — "simple"     ✗ 503 title="U.S. Senate: Site Under Maintenance" · sin huella de WAF
+  [3/3] POST /search/report/data/ — "DataTables" ✗ 503 (idem)
+```
+
+#### G1 — la compuerta está VERDE. El "ROJO" medía otra cosa.
+
+**30/30 e-filed con capa de texto. 100%.** Esa es la pregunta que la compuerta
+hace —*¿la fuente sirve?*— y la respuesta es sí, sin ambigüedad.
+
+El 10% era **mi regex**, no la Cámara: `encabezado` 30/30 y `owner` 30/30, pero
+`tipo` 3/30. Un extractor que ve el encabezado y el owner en los 30 documentos
+obviamente está leyendo el PTR; lo que fallaba era buscar el tipo de operación
+como **palabra** (`Purchase`/`Sale`), cuando el formulario de la Cámara lo
+imprime como **código de una letra** en su columna: `P`, `S`, `S (partial)`,
+`E`. Los 3 que pasaban eran los que además traían la palabra completa.
+
+Arreglado en el probe, con los dos casos y sin comerse los falsos positivos
+obvios (`S&P 500` no cuenta como venta). Y `ticker` pasa a **opcional**: bonos,
+fondos y cripto llegan sin ticker por diseño del formulario — exigirlo
+penalizaba filings perfectamente parseables (22/30 lo traían, y eso es
+coherente con la mezcla real de activos, no un fallo).
+
+**Desde ahora el probe reporta dos números separados, y no se pueden
+confundir:**
+
+| Número | Qué mide | ¿Decide la compuerta? |
+|---|---|---|
+| **% con capa de texto** | La FUENTE. Si sale bajo, hace falta OCR u otra ruta | **SÍ** |
+| **% con campos completos** | MI PARSER. Si sale bajo, se arregla un regex | No |
+
+#### El hallazgo que cambia el diseño: **30/30 cifrados (`/Encrypt`)**
+
+Los PTR e-filed de la Cámara vienen **cifrados** (contraseña vacía, el patrón
+normal de un PDF de formulario). Por eso la heurística de la corrida 1 infló
+28 streams de 302 y devolvió basura: no estaba rota por ingenua, estaba
+intentando inflar bytes cifrados.
+
+**Consecuencia para la Fase 1, y no es menor:** el parser **no puede ser código
+propio sin dependencias**. Descifrar un PDF a mano no es un fin de semana, es
+un proyecto. La Fase 1 necesita `pdfjs-dist` (o equivalente) **como dependencia
+de producción** — y este repo **hoy no tiene ninguna**: no hay `package.json`
+en la raíz, todo habla HTTP con `fetch` a mano, incluida la capa de Neon. Meter
+la primera dependencia npm del proyecto es una decisión de la casa, no un
+detalle de implementación. Va a §7.
+
+Y corrige la estimación de §6: las **6–8 h de "extractor de PDF artesanal"**
+ya no aplican. Con librería el bloque baja (~2–3 h de parser sobre texto ya
+extraído), pero se paga en superficie: una dependencia, su bundle en la función
+serverless, y su mantenimiento.
+
+#### Papel: número propio, mejor que el "~5%" de terceros
+
+**38 de 379 PTRs del año en curso son papel (10.0%)** — el doble de lo que
+citaba el pipeline de terceros en §1.2. De la muestra de 5: **4 escaneados** y
+uno de 556 KB que `pdfjs` abrió con **0 caracteres** (imagen también). Confirma
+que la clase papel es OCR o nada, y que está bien dejarla fuera del MVP —
+declarándolo en la UI, ahora con el número real: *"~1 de cada 10 filings llega
+en papel y no se procesa"*.
+
+#### G2 — **INCONCLUSO**, no rojo. Fue mantenimiento, no bloqueo.
+
+El 503 traía `title="U.S. Senate: Site Under Maintenance"` y **cero huella de
+WAF**, corrido a las 23:37 del domingo (hora Monterrey). Eso es el Senado
+apagado para mantenimiento, no el Senado bloqueándonos: cerrar la compuerta con
+esa evidencia sería declarar un veredicto que no se ganó.
+
+Nótese además lo que **sí** funcionó las dos veces: `GET /search/home/` con
+CSRF y el **POST del agreement, ambos 200**. Si hubiera bot-mitigation por
+rango de IP —la hipótesis de §2.2— habría muerto ahí, no en el tercer paso.
+**La sospecha de Akamai se debilita bastante con esta corrida.**
+
+El probe ahora detecta el mantenimiento y devuelve `INCONCLUSO` en vez de
+`ROJO`, y acepta `--only=g2` para repetir solo el Senado sin volver a bajar 35
+PDFs.
+
+### 6.3 Corrida 3 — 2026-09-09, con el fix de `tipo`
+
+```
+    ── E-FILED (n=30) ──
+       [1] con capa de texto:   30/30 (100.0%)  ← ESTE decide la compuerta
+       [2] con campos completos: 24/30 (80.0%)  ← calidad del parser
+       cifrados (/Encrypt): 30
+    ── PAPEL (n=5) ──
+       [1] con capa de texto:   0/5 (0.0%) · escaneados: 5 · cifrados: 0
+    marcadores: encabezado=30 · tipo=30 · bucket_monto=24 · owner=30 · ticker=22
+
+  → G1 VERDE: 100.0% de los e-filed trae capa de texto (umbral 90%)
+    Campos completos: 80.0% — calidad del parser, NO decide la compuerta
+
+  G2 SENADO: INCONCLUSO — mantenimiento del sitio
+    (HTTP 503, title="U.S. Senate: Site Under Maintenance", dos corridas, 2 shapes)
+```
+
+**`tipo`: 3/30 → 30/30.** El fix era el correcto. Con eso, `encabezado`, `tipo`
+y `owner` dan **30/30**, y **G1 queda VERDE confirmado**.
+
+**Papel: 0/5 con texto, 5/5 escaneados, 0 cifrados.** Limpio y sin ambigüedad —
+la clase papel es carril de visión (§8) o nada, y sus PDFs no están cifrados,
+así que van directo a la API como bloque `document`.
+
+#### `bucket_monto` 24/30 — la causa NO era los bonos
+
+La hipótesis de trabajo era "filas de bonos/CDs con nombre largo". Las ventanas
+de diagnóstico la desmienten: **`20033779` es una fila de Pfizer** —
+`SP Pfizer, Inc. Common Stock (PFE) [ST] S 03/10/2025 04/11/2025 $15,001 -
+$50,000` — y también fallaba. El largo del nombre no tenía nada que ver.
+
+La causa real es más tonta y más mía: el marcador **enumeraba cuatro literales**
+(`$1,001`, `$15,000`, `$50,001`, `$1,000,001`), así que solo acertaba con el
+bucket más común y fallaba con **todos** los demás:
+
+| Bucket en la fila | ¿Lo veía el regex viejo? |
+|---|---|
+| `$1,001 - $15,000` | Sí (por eso 24/30) |
+| `$15,001 - $50,000` | **No** |
+| `$100,001 - $250,000` | **No** |
+| `$250,001 - $500,000` | **No** |
+
+Corregido: ahora busca **la forma** del bucket —un rango de dólares, o el tope
+abierto `Over $50,000,000`— en vez de una lista de valores que se queda corta
+sola. **9/9 casos de test**, construidos con las 5 ventanas reales de esta
+corrida más dos trampas (un precio suelto sin rango y una fila de solo fechas
+no cuentan como bucket).
+
+Se espera **30/30 en campos completos** en la próxima corrida. Es informativo:
+no mueve la compuerta, que ya está verde.
+
+> **Nota para la Fase 1.** Que este marcador fallara sin que la fuente tuviera
+> nada malo es exactamente el modo de fallo que el parser de producción va a
+> tener, y la razón por la que la decisión 4 de §7 importa: una fila que no
+> parsea entra con `parse_status='failed'` y se **cuenta en la UI**. Un parser
+> que descarta en silencio habría reportado 24 filas correctas y perdido 6 sin
+> que nadie se enterara.
+
+#### G2 — INCONCLUSO otra vez, y ya no es casualidad
+
+Tres corridas, dos shapes de request cada una, **el mismo `Site Under
+Maintenance` sin huella de WAF**. Las dos primeras fases del flujo
+(`GET /search/home/` y el POST del agreement) responden **200 todas las veces**.
+
+Eso ya es un patrón, y apunta en la dirección contraria a §2.2: **si hubiera
+bot-mitigation por rango de IP, no habría 200 en los dos primeros pasos.** Lo
+que falta es una corrida en horario de oficina de DC para separar "ventana
+nocturna de mantenimiento" de "endpoint retirado".
+
+### 6.4 Pendiente — solo G2
+
+```
+node scripts/congreso-phase0-probe.mjs --only=g2    # horario de oficina de DC
+```
+
+Estado de las compuertas:
+
+| Compuerta | Estado | Qué falta |
+|---|---|---|
+| **G1 Cámara** | 🟢 **VERDE** (confirmado, corrida 3) | Nada. El fix de `bucket_monto` es informativo |
+| **G2 Senado** | 🟡 **INCONCLUSO** (3 corridas, siempre mantenimiento) | Una corrida en horario de oficina de DC |
+| **Legal §13107(c)** | 🔴 **ABIERTA** | La consulta de §4.2. Previa a la Fase 1 |
 
 ### Lo que falta para cerrar la Fase 0 (no es opcional)
 
-1. Correr `scripts/congreso-phase0-probe.mjs` desde una IP con egress y pegar
-   su salida acá abajo, en un §6.1 nuevo. **G1 y G2 se cierran con números
-   propios, no con citas.**
-2. La **consulta legal puntual** (condición 2 de julio) — sigue abierta y es
-   previa al primer PR de datos, no posterior.
+1. ~~Correr el probe desde una IP con egress~~ → hecho, **tres corridas**
+   (§6.1–§6.3). **G1 cerrada en VERDE.** Falta solo **G2**: una corrida
+   `--only=g2` en horario de oficina de DC.
+2. La **consulta legal puntual** — la pregunta está redactada en **§4.2** y la
+   compuerta está **ABIERTA**. Es previa al primer PR de datos, no posterior.
 3. Leer los ToS completos de Disclosed Capitol antes de considerarlo siquiera
    como fallback.
 
@@ -349,24 +737,127 @@ Ninguna se decide en este memo. Se listan para que la Fase 1 no las improvise.
 5. Ticker faltante: ¿se intenta resolver desde la descripción, o se muestra la
    descripción cruda? (Resolver = inventar; cuidado.)
 
+5b. ~~La primera dependencia npm del repo.~~ **DECIDIDO (2026-09-09):** el
+   parseo vive en un **GitHub Action que escribe a Neon**; las funciones de
+   Vercel siguen limpias y sin dependencias, y el endpoint del feed solo
+   **lee** de la base. Razones: el parseo es batch diario, no request-time; el
+   carril de visión (§8) y un eventual proxy para el Senado viven mejor fuera
+   del serverless; y la primera dependencia del repo queda aislada en
+   `.github/workflows` + `scripts/`, no en `api/`. La Cámara no tiene gate, así
+   que la IP de Azure del runner no estorba.
+
 **Producto**
 6. ¿Feed global cronológico, perfil por legislador, o los dos desde el día uno?
    (Robinhood/TipRanks hace los dos; el perfil es lo que engancha.)
 7. Copy exacto del disclaimer de lag y de cobertura parcial, en español.
 8. ¿Entra en TRACKER como categoría A (lo que decía julio) o es tab propio?
+   **Restricción heredada:** si la compuerta §4 sale "solo si es gratis y
+   abierto", la categoría queda excluida **por código** del gate de paywall y
+   necesita ruta pública propia (§4.3) — eso condiciona dónde puede vivir.
+9. Atribución en cada tarjeta: enlace al filing original del Clerk. No es
+   estética, es lo que sostiene el argumento de "difusión de documento
+   público" (§4.3.5) — y es la diferencia con Robinhood, que atribuye a su
+   proveedor porque la licencia la carga él (§4.4).
 
 **Agente copy-Congreso (Fase 2, ni se diseña acá)**
-9. Regla de copia: ¿qué hace el agente con un rango de monto y 26 días de
-   retraso? El tamaño de posición **no** es derivable del bucket.
-10. Cuenta Alpaca paper propia y `agent_id` propio en la liga, o queda fuera del
+10. Regla de copia: ¿qué hace el agente con un rango de monto y 26 días de
+    retraso? El tamaño de posición **no** es derivable del bucket.
+11. Cuenta Alpaca paper propia y `agent_id` propio en la liga, o queda fuera del
     leaderboard por no ser comparable con el resto (los otros agentes deciden
     con información del día; este decide con información de hace un mes).
-11. Cómo se etiqueta en el leaderboard para que nadie lea "copy-Congreso ganó"
+12. Cómo se etiqueta en el leaderboard para que nadie lea "copy-Congreso ganó"
     como "copiar al Congreso funciona" con n de tres meses.
+13. **Precondición de §4.3.4:** si la respuesta legal sale ambigua, la Fase 2 no
+    arranca sin una segunda pregunta específica sobre el agente.
 
 ---
 
-## 8. Fuentes consultadas
+## 8. Carril de visión — los 38 filings en papel
+
+Decidido 2026-09-09: la Fase A cubre **el 100% de la Cámara**. Los e-filed van
+por el carril de texto (§6.2); los ~10% en papel van por un segundo carril de
+**extracción con modelo de visión de Anthropic**, que devuelve transacciones en
+JSON con el schema de `congress_trades`.
+
+### 8.1 Reglas del carril (no negociables)
+
+1. **Validación contra los 4 campos requeridos** del formulario —encabezado,
+   tipo, bucket de monto y owner— antes de escribir; `ticker` es opcional
+   (bonos, fondos y cripto no lo traen por diseño del formulario).
+2. `source_method = 'ocr'` en cada fila. La UI la etiqueta **"transcrito por IA
+   — verificar en el filing"**, con enlace al PDF original del Clerk.
+3. **Validación fallida → `needs_review`. Nunca relleno.** Un campo que el
+   modelo no leyó con confianza se queda vacío y la fila se marca; no se
+   inventa, no se interpola, no se "completa con lo más probable".
+4. Backfill one-shot de los 38 de 2026, y después el mismo cron diario.
+
+### 8.2 Costo — no es un eje de decisión
+
+Los PDFs en papel **no están cifrados** (`cif=no` en la corrida 2), y la API de
+Anthropic acepta el PDF directo como bloque `document` en base64: no hace falta
+rasterizar ni pre-procesar.
+
+Supuestos, dichos de frente: **2 páginas por filing** (rango real 1–3) y
+**~2,000 tokens de entrada por página** de escaneo, más **~1,000 tokens de
+salida** de JSON. Sobre eso, con precios de la API de Anthropic:
+
+| Modelo | Entrada $/MTok | Salida $/MTok | Por filing | Los 38 | Anual (~38/año) |
+|---|---|---|---|---|---|
+| **Claude Opus 5** (recomendado) | $5 | $25 | **~$0.045** | **~$1.71** | **~$1.71** |
+| Opus 5 vía Batch API (−50%) | — | — | ~$0.023 | ~$0.87 | ~$0.87 |
+| Claude Haiku 4.5 (referencia) | $1 | $5 | ~$0.009 | ~$0.34 | ~$0.34 |
+
+**El backfill completo cuesta menos de dos dólares.** Con esos números el costo
+no decide nada: lo único que importa es la **precisión de transcripción** sobre
+escritura a mano, así que va el modelo más capaz. Si aun así se quiere ahorrar,
+el Batch API es gratis en calidad (mismo modelo, asíncrono) y parte el costo a
+la mitad — encaja perfecto con un backfill one-shot que no tiene prisa.
+
+### 8.3 Horas
+
+| Bloque | Horas |
+|---|---|
+| Prompt + schema JSON (structured outputs) + validación de los 5 marcadores | 2–3 |
+| Integración en el Action: PDF → bloque `document` → llamada → validación → insert con `source_method` / `needs_review` | 2–3 |
+| UI: badge "transcrito por IA", enlace al filing, filtro para ocultarlos | 1 |
+| Gold set propio + arnés de cross-check (§8.4) | 2–3 |
+| **Total** | **7–10 h** |
+
+### 8.4 El cross-check: House Stock Watcher **no sirve**, y hay que decirlo
+
+El plan era medir precisión contra las transcripciones manuales de House Stock
+Watcher sobre una muestra. **No se puede, por tres razones independientes** —
+cualquiera de ellas basta:
+
+1. **Está muerto.** El censo de julio ya lo verificó directo (buckets S3 → 403
+   AccessDenied, repos parados desde 2021, dominio expirado abr-2025), y hoy
+   `github.com/timothycarambat/house-stock-watcher-data` responde **404**.
+2. **Y aunque apareciera un mirror: no transcribe los escaneados.** El propio
+   modelo de datos de Stock Watcher los deja vacíos — su README del Senado lo
+   dice explícito: *"Senators that scan in their PDF will show as a trader for
+   that day but have `transactions: []`"*. O sea, **justo la clase que
+   queremos validar es la que ellos dejan en blanco.** El cross-check no
+   existiría ni con el sitio vivo.
+3. **Y aunque transcribiera: no hay solapamiento de fechas.** Sus datos se
+   congelan en ~2021; los 38 filings en papel son de 2026.
+
+**Alternativa, y es la que corresponde:** **gold set propio.** Transcribir a
+mano **10 de los 38** (una vez, ~1–2 h de trabajo humano), y medir el carril de
+visión contra eso — campo por campo, con la tasa de error por campo, no un
+"accuracy" global. Es más trabajo que apoyarse en un tercero, pero es el único
+cross-check que **existe de verdad**, y tiene una ventaja que el otro no tenía:
+mide sobre **los documentos que vamos a publicar**, no sobre una muestra de
+2021 de otro conjunto.
+
+**Criterio de aceptación — FIJADO 2026-09-09, antes de correr el gold set:**
+**ticker, tipo, fecha y bucket de monto con 0 errores en los 10.** Cualquier
+fallo en esos cuatro campos manda **el carril entero** a `needs_review` en vez
+de publicar. Queda pre-registrado acá para que no se renegocie después de ver
+el resultado.
+
+---
+
+## 9. Fuentes consultadas
 
 Todas por búsqueda web; **ninguna verificada con request propio desde este
 entorno** (§0).
@@ -391,7 +882,11 @@ entorno** (§0).
 - Robinhood — HOOD Summit 2025 (anuncio de Robinhood Social): https://robinhood.com/us/en/newsroom/hood-summit-2025-news/
 - TipRanks — cobertura de trading del Congreso: https://www.tipranks.com/news/labs/follow-congress-trading-activity-with-tipranks
 - CRS — Stock Trading in Congress: https://www.congress.gov/crs_external_products/TE/HTML/TE10073.html
+- 5 U.S.C. §13107 (texto del estatuto, incl. la excepción de news media en (c)(1)(B)): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title5-section13107
+- Robinhood Social — atribución de los datos de políticos/insiders/hedge funds a TipRanks: https://robinhood.com/us/en/newsroom/hood-summit-2025-news/
 - Contexto de WAFs bloqueando rangos de datacenter: https://scrapfly.io/blog/posts/403-forbidden-web-scraping
+- Precios de la API de Anthropic (para §8.2): https://www.anthropic.com/pricing#api
+- Entrada de PDF como bloque `document` en la Messages API: https://docs.claude.com/en/docs/build-with-claude/pdf-support
 
 **Fuentes internas:** `docs/stock-tracker-scope.md` (censo 2026-07-21, §1.1 y
 §5) · `docs/wheel-fase0.md` (precedente del bloqueo de egress) ·
