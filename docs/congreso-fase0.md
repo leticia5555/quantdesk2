@@ -5,10 +5,10 @@
 > seguir, la Fase 1 arranca de la lista de decisiones a congelar (§7).
 >
 > **Veredicto: VIABLE POR LA RUTA HOUSE.** Estado de las compuertas tras dos
-> corridas reales (§6.1, §6.2): **G1 Cámara 🟢 VERDE** (100% de los PTR e-filed
-> traen capa de texto) · **G2 Senado 🟡 INCONCLUSO** (el 503 fue ventana de
-> mantenimiento, no bloqueo — repetir con `--only=g2`) · **legal §13107(c) 🔴
-> ABIERTA** (§4.2, la cierra un abogado y es previa a la Fase 1).
+> corridas reales (§6.1–§6.3): **G1 Cámara 🟢 VERDE** (100% de los PTR e-filed
+> traen capa de texto) · **G2 Senado 🟡 INCONCLUSO** (tres corridas, siempre
+> ventana de mantenimiento del Senado, nunca huella de WAF) · **legal
+> §13107(c) 🔴 ABIERTA** (§4.2, la cierra un abogado y es previa a la Fase 1).
 >
 > Fecha del reconocimiento: 2026-09-04. Actualiza y **contradice en un punto**
 > el censo de `docs/stock-tracker-scope.md` §1.1 (2026-07-21).
@@ -624,33 +624,89 @@ El probe ahora detecta el mantenimiento y devuelve `INCONCLUSO` en vez de
 `ROJO`, y acepta `--only=g2` para repetir solo el Senado sin volver a bajar 35
 PDFs.
 
-### 6.3 Corrida 3 (PENDIENTE) — cierra lo que queda
+### 6.3 Corrida 3 — 2026-09-09, con el fix de `tipo`
 
 ```
-node scripts/congreso-phase0-probe.mjs --only=g2      # en horario hábil de EE.UU.
-node scripts/congreso-phase0-probe.mjs --efiled=30 --paper=5   # confirma el fix de `tipo`
+    ── E-FILED (n=30) ──
+       [1] con capa de texto:   30/30 (100.0%)  ← ESTE decide la compuerta
+       [2] con campos completos: 24/30 (80.0%)  ← calidad del parser
+       cifrados (/Encrypt): 30
+    ── PAPEL (n=5) ──
+       [1] con capa de texto:   0/5 (0.0%) · escaneados: 5 · cifrados: 0
+    marcadores: encabezado=30 · tipo=30 · bucket_monto=24 · owner=30 · ticker=22
+
+  → G1 VERDE: 100.0% de los e-filed trae capa de texto (umbral 90%)
+    Campos completos: 80.0% — calidad del parser, NO decide la compuerta
+
+  G2 SENADO: INCONCLUSO — mantenimiento del sitio
+    (HTTP 503, title="U.S. Senate: Site Under Maintenance", dos corridas, 2 shapes)
+```
+
+**`tipo`: 3/30 → 30/30.** El fix era el correcto. Con eso, `encabezado`, `tipo`
+y `owner` dan **30/30**, y **G1 queda VERDE confirmado**.
+
+**Papel: 0/5 con texto, 5/5 escaneados, 0 cifrados.** Limpio y sin ambigüedad —
+la clase papel es carril de visión (§8) o nada, y sus PDFs no están cifrados,
+así que van directo a la API como bloque `document`.
+
+#### `bucket_monto` 24/30 — la causa NO era los bonos
+
+La hipótesis de trabajo era "filas de bonos/CDs con nombre largo". Las ventanas
+de diagnóstico la desmienten: **`20033779` es una fila de Pfizer** —
+`SP Pfizer, Inc. Common Stock (PFE) [ST] S 03/10/2025 04/11/2025 $15,001 -
+$50,000` — y también fallaba. El largo del nombre no tenía nada que ver.
+
+La causa real es más tonta y más mía: el marcador **enumeraba cuatro literales**
+(`$1,001`, `$15,000`, `$50,001`, `$1,000,001`), así que solo acertaba con el
+bucket más común y fallaba con **todos** los demás:
+
+| Bucket en la fila | ¿Lo veía el regex viejo? |
+|---|---|
+| `$1,001 - $15,000` | Sí (por eso 24/30) |
+| `$15,001 - $50,000` | **No** |
+| `$100,001 - $250,000` | **No** |
+| `$250,001 - $500,000` | **No** |
+
+Corregido: ahora busca **la forma** del bucket —un rango de dólares, o el tope
+abierto `Over $50,000,000`— en vez de una lista de valores que se queda corta
+sola. **9/9 casos de test**, construidos con las 5 ventanas reales de esta
+corrida más dos trampas (un precio suelto sin rango y una fila de solo fechas
+no cuentan como bucket).
+
+Se espera **30/30 en campos completos** en la próxima corrida. Es informativo:
+no mueve la compuerta, que ya está verde.
+
+> **Nota para la Fase 1.** Que este marcador fallara sin que la fuente tuviera
+> nada malo es exactamente el modo de fallo que el parser de producción va a
+> tener, y la razón por la que la decisión 4 de §7 importa: una fila que no
+> parsea entra con `parse_status='failed'` y se **cuenta en la UI**. Un parser
+> que descarta en silencio habría reportado 24 filas correctas y perdido 6 sin
+> que nadie se enterara.
+
+#### G2 — INCONCLUSO otra vez, y ya no es casualidad
+
+Tres corridas, dos shapes de request cada una, **el mismo `Site Under
+Maintenance` sin huella de WAF**. Las dos primeras fases del flujo
+(`GET /search/home/` y el POST del agreement) responden **200 todas las veces**.
+
+Eso ya es un patrón, y apunta en la dirección contraria a §2.2: **si hubiera
+bot-mitigation por rango de IP, no habría 200 en los dos primeros pasos.** Lo
+que falta es una corrida en horario de oficina de DC para separar "ventana
+nocturna de mantenimiento" de "endpoint retirado".
+
+### 6.4 Pendiente — solo G2
+
+```
+node scripts/congreso-phase0-probe.mjs --only=g2    # horario de oficina de DC
 ```
 
 Estado de las compuertas:
 
 | Compuerta | Estado | Qué falta |
 |---|---|---|
-| **G1 Cámara** | 🟢 **VERDE** | Nada para la compuerta. El fix de `tipo` se verifica en la corrida 3 (informativo) |
-| **G2 Senado** | 🟡 **INCONCLUSO** | Repetir con `--only=g2` en horario hábil de EE.UU. |
-| **Legal §13107(c)** | 🔴 **ABIERTA** | La consulta de §4.2. Sigue siendo previa a la Fase 1 |
-
-### Lo que falta para cerrar la Fase 0 (no es opcional)
-
-1. ~~Correr el probe desde una IP con egress~~ → hecho, dos corridas (§6.1,
-   §6.2). **G1 quedó VERDE.** Falta la **corrida 3 (§6.3)**: `--only=g2` en
-   horario hábil de EE.UU. para cerrar G2, y repetir la muestra para verificar
-   el fix del marcador `tipo`.
-2. La **consulta legal puntual** — la pregunta está redactada en **§4.2** y la
-   compuerta está **ABIERTA**. Es previa al primer PR de datos, no posterior.
-3. Leer los ToS completos de Disclosed Capitol antes de considerarlo siquiera
-   como fallback.
-
-Hasta que 1 y 2 no estén, la Fase 1 no arranca.
+| **G1 Cámara** | 🟢 **VERDE** (confirmado, corrida 3) | Nada. El fix de `bucket_monto` es informativo |
+| **G2 Senado** | 🟡 **INCONCLUSO** (3 corridas, siempre mantenimiento) | Una corrida en horario de oficina de DC |
+| **Legal §13107(c)** | 🔴 **ABIERTA** | La consulta de §4.2. Previa a la Fase 1 |
 
 ---
 
@@ -713,7 +769,9 @@ JSON con el schema de `congress_trades`.
 
 ### 8.1 Reglas del carril (no negociables)
 
-1. **Validación contra los 5 marcadores** del formulario antes de escribir.
+1. **Validación contra los 4 campos requeridos** del formulario —encabezado,
+   tipo, bucket de monto y owner— antes de escribir; `ticker` es opcional
+   (bonos, fondos y cripto no lo traen por diseño del formulario).
 2. `source_method = 'ocr'` en cada fila. La UI la etiqueta **"transcrito por IA
    — verificar en el filing"**, con enlace al PDF original del Clerk.
 3. **Validación fallida → `needs_review`. Nunca relleno.** Un campo que el
@@ -779,11 +837,11 @@ cross-check que **existe de verdad**, y tiene una ventaja que el otro no tenía:
 mide sobre **los documentos que vamos a publicar**, no sobre una muestra de
 2021 de otro conjunto.
 
-Criterio de aceptación a pre-registrar antes de correr el gold set (no
-después): qué tasa de error por campo hace que el carril salga a producción, y
-qué campo es eliminatorio. Mi propuesta: **ticker, tipo, fecha y bucket de
-monto con 0 errores en los 10**; cualquier fallo ahí manda todo el carril a
-`needs_review` en vez de publicar.
+**Criterio de aceptación — FIJADO 2026-09-09, antes de correr el gold set:**
+**ticker, tipo, fecha y bucket de monto con 0 errores en los 10.** Cualquier
+fallo en esos cuatro campos manda **el carril entero** a `needs_review` en vez
+de publicar. Queda pre-registrado acá para que no se renegocie después de ver
+el resultado.
 
 ---
 

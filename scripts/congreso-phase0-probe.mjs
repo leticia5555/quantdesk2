@@ -210,7 +210,14 @@ function classifyPdf(buf) {
 const PTR_MARKERS = [
   { key: 'encabezado', required: true, re: /Transaction\s*Date|Notification\s*Date/i },
   { key: 'tipo', required: true, re: /\bS\s*\(partial\)|\b(?:Purchase|Sale|Exchange)\b|\b[PSE](?=\s+\d{1,2}\/\d{1,2}\/\d{4})|\d{1,2}\/\d{1,2}\/\d{4}\s+[PSE](?=\s|$)|\b[PSE](?=\s+\$[\d,]+\s*-)/ },
-  { key: 'bucket_monto', required: true, re: /\$1,?001|\$15,?000|\$50,?001|\$1,?000,?001/ },
+  // Corregido tras la corrida 3 (24/30). La version vieja ENUMERABA cuatro
+  // literales de bucket ($1,001 / $15,000 / $50,001 / $1,000,001), asi que
+  // acertaba solo con el bucket mas comun y fallaba con $15,001-$50,000,
+  // $100,001-$250,000 y $250,001-$500,000. No tenia que ver con bonos ni con
+  // nombres largos: `20033779` es una fila de Pfizer y tambien fallaba.
+  // Ahora se busca la FORMA del bucket —un rango de dolares, o el tope
+  // abierto— en vez de una lista de valores que se queda corta sola.
+  { key: 'bucket_monto', required: true, re: /\$[\d,]{3,}\s*[-–—]\s*\$[\d,]{3,}|(?:Over|Más de|>)\s*\$[\d,]{7,}/i },
   { key: 'owner', required: true, re: /\bSP\b|\bJT\b|\bDC\b|Spouse|Joint/i },
   { key: 'ticker', required: false, re: /\(([A-Z]{1,5})\)/ },
 ];
