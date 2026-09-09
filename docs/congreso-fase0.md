@@ -368,9 +368,11 @@ El encargo lo pide explícito y el reconocimiento lo confirma con números:
   $5M–$25M · $25M–$50M · >$50M.
 - **El ticker no siempre existe.** Bonos, fondos y cripto llegan con `--` y solo
   descripción de texto libre. La card tiene que degradar, no romperse.
-- **Cobertura parcial declarada.** Si G1 sale con escaneados y G2 sale rojo, la
-  UI dice *"Cámara de Representantes; algunos filings en papel no se procesan"*
-  — no se disimula con un feed que parece completo.
+- **Cobertura declarada, con el método a la vista.** Medido: **38 de 379 PTRs
+  (10.0%) llegan en papel**. No se ocultan — se transcriben con visión y se
+  etiquetan **"transcrito por IA — verificar en el filing"**, con enlace al PDF
+  (§8). Y mientras G2 no cierre, la UI dice *"solo Cámara de Representantes"*;
+  nunca un feed que parezca completo.
 
 Cada card lleva **fecha del trade Y fecha del filing**, con el lag calculado por
 trade ("presentado 34 días después"), igual que ya hace TRACKER con 13F/Form 4.
@@ -387,8 +389,12 @@ fuentes en la misma app.
 **La ruta recomendada, una sola:**
 
 > **ZIP/XML anual del Clerk de la Cámara como índice + parsing de los PDFs de
-> PTR con capa de texto, sin OCR, corriendo como cron incremental sobre Neon.
-> Cero agregadores en el critical path. Senado solo si G2 sale verde.**
+> PTR, en un GitHub Action que escribe a Neon (decisión 5b, §7). Cero
+> agregadores en el critical path. Senado solo si G2 sale verde.**
+>
+> **Alcance Fase A (decidido 2026-09-09): el 100% de la Cámara, papel
+> incluido** — carril de texto para los e-filed (§6.2) y carril de visión para
+> los ~10% en papel (§8), etiquetados y separables en la UI y en la base.
 
 **Por qué esta y no otra:**
 - Es la única gratis **y** redistribuible (dominio público). FMP y Quiver
@@ -406,9 +412,12 @@ fuentes en la misma app.
 | Descarga ZIP + lector ZIP sin dependencias + parser del XML índice + diff de `DocID` | 3–4 |
 | ~~Extractor de texto de PDF sin dependencias~~ → **imposible: los PTR vienen cifrados** (§6.2). Parser de la tabla sobre el texto que entrega `pdfjs-dist` | **2–3** (+ la decisión de meter la primera dependencia npm del repo) |
 | Normalización (buckets de monto, tipo, owner, ticker faltante, fecha trade vs filing) + esquema y tabla en Neon | 3–4 |
-| Endpoint del feed + doble cache + `?smoke=1` + cron incremental | 2–3 |
-| Backfill histórico en GitHub Action (año en curso + anterior) | 2 |
-| **Total Fase 1 (solo datos, sin UI ni agente)** | **12–16 h** (revisado tras §6.2; antes 16–21) |
+| Endpoint del feed (solo LEE de Neon, sin dependencias) + doble cache + `?smoke=1` | 2–3 |
+| El Action en sí: workflow, secrets, cron, reintentos, escritura idempotente a Neon | 2 |
+| Backfill histórico (año en curso + anterior) — mismo Action, corrida one-shot | 2 |
+| **Subtotal carril texto (e-filed)** | **11–15 h** |
+| **Carril visión para los 38 en papel (§8)** | **+7–10 h** · ~US$2 el backfill completo |
+| **Total Fase 1 (datos, 100% de la Cámara, sin UI ni agente)** | **18–25 h** |
 | Senado, **solo si G2 verde** (agreement + JSON + parser de tabla HTML) | +6–10 |
 | OCR, **solo si G1 rojo** | +8–12 y sale del serverless |
 
@@ -660,12 +669,14 @@ Ninguna se decide en este memo. Se listan para que la Fase 1 no las improvise.
 5. Ticker faltante: ¿se intenta resolver desde la descripción, o se muestra la
    descripción cruda? (Resolver = inventar; cuidado.)
 
-5b. **La primera dependencia npm del repo.** Los PTR están cifrados, así que
-   el parser necesita `pdfjs-dist` (o equivalente) en producción. Hoy no hay
-   `package.json` en la raíz y todo habla HTTP con `fetch` a mano. ¿Se acepta
-   la dependencia en la función serverless, se aísla el parseo en un GitHub
-   Action que escribe a Neon (y las funciones siguen sin dependencias), o se
-   busca otra salida? **Decidir ANTES de escribir el parser.**
+5b. ~~La primera dependencia npm del repo.~~ **DECIDIDO (2026-09-09):** el
+   parseo vive en un **GitHub Action que escribe a Neon**; las funciones de
+   Vercel siguen limpias y sin dependencias, y el endpoint del feed solo
+   **lee** de la base. Razones: el parseo es batch diario, no request-time; el
+   carril de visión (§8) y un eventual proxy para el Senado viven mejor fuera
+   del serverless; y la primera dependencia del repo queda aislada en
+   `.github/workflows` + `scripts/`, no en `api/`. La Cámara no tiene gate, así
+   que la IP de Azure del runner no estorba.
 
 **Producto**
 6. ¿Feed global cronológico, perfil por legislador, o los dos desde el día uno?
@@ -693,7 +704,90 @@ Ninguna se decide en este memo. Se listan para que la Fase 1 no las improvise.
 
 ---
 
-## 8. Fuentes consultadas
+## 8. Carril de visión — los 38 filings en papel
+
+Decidido 2026-09-09: la Fase A cubre **el 100% de la Cámara**. Los e-filed van
+por el carril de texto (§6.2); los ~10% en papel van por un segundo carril de
+**extracción con modelo de visión de Anthropic**, que devuelve transacciones en
+JSON con el schema de `congress_trades`.
+
+### 8.1 Reglas del carril (no negociables)
+
+1. **Validación contra los 5 marcadores** del formulario antes de escribir.
+2. `source_method = 'ocr'` en cada fila. La UI la etiqueta **"transcrito por IA
+   — verificar en el filing"**, con enlace al PDF original del Clerk.
+3. **Validación fallida → `needs_review`. Nunca relleno.** Un campo que el
+   modelo no leyó con confianza se queda vacío y la fila se marca; no se
+   inventa, no se interpola, no se "completa con lo más probable".
+4. Backfill one-shot de los 38 de 2026, y después el mismo cron diario.
+
+### 8.2 Costo — no es un eje de decisión
+
+Los PDFs en papel **no están cifrados** (`cif=no` en la corrida 2), y la API de
+Anthropic acepta el PDF directo como bloque `document` en base64: no hace falta
+rasterizar ni pre-procesar.
+
+Supuestos, dichos de frente: **2 páginas por filing** (rango real 1–3) y
+**~2,000 tokens de entrada por página** de escaneo, más **~1,000 tokens de
+salida** de JSON. Sobre eso, con precios de la API de Anthropic:
+
+| Modelo | Entrada $/MTok | Salida $/MTok | Por filing | Los 38 | Anual (~38/año) |
+|---|---|---|---|---|---|
+| **Claude Opus 5** (recomendado) | $5 | $25 | **~$0.045** | **~$1.71** | **~$1.71** |
+| Opus 5 vía Batch API (−50%) | — | — | ~$0.023 | ~$0.87 | ~$0.87 |
+| Claude Haiku 4.5 (referencia) | $1 | $5 | ~$0.009 | ~$0.34 | ~$0.34 |
+
+**El backfill completo cuesta menos de dos dólares.** Con esos números el costo
+no decide nada: lo único que importa es la **precisión de transcripción** sobre
+escritura a mano, así que va el modelo más capaz. Si aun así se quiere ahorrar,
+el Batch API es gratis en calidad (mismo modelo, asíncrono) y parte el costo a
+la mitad — encaja perfecto con un backfill one-shot que no tiene prisa.
+
+### 8.3 Horas
+
+| Bloque | Horas |
+|---|---|
+| Prompt + schema JSON (structured outputs) + validación de los 5 marcadores | 2–3 |
+| Integración en el Action: PDF → bloque `document` → llamada → validación → insert con `source_method` / `needs_review` | 2–3 |
+| UI: badge "transcrito por IA", enlace al filing, filtro para ocultarlos | 1 |
+| Gold set propio + arnés de cross-check (§8.4) | 2–3 |
+| **Total** | **7–10 h** |
+
+### 8.4 El cross-check: House Stock Watcher **no sirve**, y hay que decirlo
+
+El plan era medir precisión contra las transcripciones manuales de House Stock
+Watcher sobre una muestra. **No se puede, por tres razones independientes** —
+cualquiera de ellas basta:
+
+1. **Está muerto.** El censo de julio ya lo verificó directo (buckets S3 → 403
+   AccessDenied, repos parados desde 2021, dominio expirado abr-2025), y hoy
+   `github.com/timothycarambat/house-stock-watcher-data` responde **404**.
+2. **Y aunque apareciera un mirror: no transcribe los escaneados.** El propio
+   modelo de datos de Stock Watcher los deja vacíos — su README del Senado lo
+   dice explícito: *"Senators that scan in their PDF will show as a trader for
+   that day but have `transactions: []`"*. O sea, **justo la clase que
+   queremos validar es la que ellos dejan en blanco.** El cross-check no
+   existiría ni con el sitio vivo.
+3. **Y aunque transcribiera: no hay solapamiento de fechas.** Sus datos se
+   congelan en ~2021; los 38 filings en papel son de 2026.
+
+**Alternativa, y es la que corresponde:** **gold set propio.** Transcribir a
+mano **10 de los 38** (una vez, ~1–2 h de trabajo humano), y medir el carril de
+visión contra eso — campo por campo, con la tasa de error por campo, no un
+"accuracy" global. Es más trabajo que apoyarse en un tercero, pero es el único
+cross-check que **existe de verdad**, y tiene una ventaja que el otro no tenía:
+mide sobre **los documentos que vamos a publicar**, no sobre una muestra de
+2021 de otro conjunto.
+
+Criterio de aceptación a pre-registrar antes de correr el gold set (no
+después): qué tasa de error por campo hace que el carril salga a producción, y
+qué campo es eliminatorio. Mi propuesta: **ticker, tipo, fecha y bucket de
+monto con 0 errores en los 10**; cualquier fallo ahí manda todo el carril a
+`needs_review` en vez de publicar.
+
+---
+
+## 9. Fuentes consultadas
 
 Todas por búsqueda web; **ninguna verificada con request propio desde este
 entorno** (§0).
@@ -721,6 +815,8 @@ entorno** (§0).
 - 5 U.S.C. §13107 (texto del estatuto, incl. la excepción de news media en (c)(1)(B)): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title5-section13107
 - Robinhood Social — atribución de los datos de políticos/insiders/hedge funds a TipRanks: https://robinhood.com/us/en/newsroom/hood-summit-2025-news/
 - Contexto de WAFs bloqueando rangos de datacenter: https://scrapfly.io/blog/posts/403-forbidden-web-scraping
+- Precios de la API de Anthropic (para §8.2): https://www.anthropic.com/pricing#api
+- Entrada de PDF como bloque `document` en la Messages API: https://docs.claude.com/en/docs/build-with-claude/pdf-support
 
 **Fuentes internas:** `docs/stock-tracker-scope.md` (censo 2026-07-21, §1.1 y
 §5) · `docs/wheel-fase0.md` (precedente del bloqueo de egress) ·
