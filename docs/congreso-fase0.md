@@ -708,6 +708,18 @@ Estado de las compuertas:
 | **G2 Senado** | 🟡 **INCONCLUSO** (3 corridas, siempre mantenimiento) | Una corrida en horario de oficina de DC |
 | **Legal §13107(c)** | 🔴 **ABIERTA** | La consulta de §4.2. Previa a la Fase 1 |
 
+### Lo que falta para cerrar la Fase 0 (no es opcional)
+
+1. ~~Correr el probe desde una IP con egress~~ → hecho, **tres corridas**
+   (§6.1–§6.3). **G1 cerrada en VERDE.** Falta solo **G2**: una corrida
+   `--only=g2` en horario de oficina de DC.
+2. La **consulta legal puntual** — la pregunta está redactada en **§4.2** y la
+   compuerta está **ABIERTA**. Es previa al primer PR de datos, no posterior.
+3. Leer los ToS completos de Disclosed Capitol antes de considerarlo siquiera
+   como fallback.
+
+Hasta que 1 y 2 no estén, la Fase 1 no arranca.
+
 ---
 
 ## 7. Si es viable: decisiones que la Fase 1 tiene que CONGELAR
