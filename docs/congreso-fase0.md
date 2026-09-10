@@ -4,13 +4,15 @@
 > acá, ni diseño de UI, ni el agente copy-Congreso — si el veredicto habilita
 > seguir, la Fase 1 arranca de la lista de decisiones a congelar (§7).
 >
-> **Veredicto: VIABLE POR LA RUTA HOUSE.** Estado de las compuertas tras dos
-> corridas reales (§6.1–§6.4): **G1 Cámara 🟢 VERDE** (100% de los PTR e-filed
-> traen capa de texto) · **G2 Senado 🟡 INCONCLUSO** — y en la corrida 4 (§6.4)
-> se cayó la explicación que traía: no era ventana de mantenimiento, era que el
-> probe **perdía la cookie de sesión en el redirect del agreement** y mandaba un
-> payload al que le faltaban 17 claves · **legal
-> §13107(c) 🔴 ABIERTA** (§4.2, la cierra un abogado y es previa a la Fase 1).
+> **Veredicto: VIABLE, Y POR LAS DOS CÁMARAS. Fase 0 CERRADA (2026-09-10).**
+> Tras cinco corridas reales (§6.1–§6.5): **G1 Cámara 🟢 VERDE** (100% de los
+> PTR e-filed traen capa de texto) · **G2 Senado 🟢 VERDE** — el 503 que lo
+> tuvo tres corridas en INCONCLUSO no era la puerta, era que el probe **perdía
+> la cookie de sesión en el redirect del agreement** (§6.4); con eso arreglado
+> entra a la primera (§6.5) · **legal §13107(c) 🟠 ABIERTA, declarada no
+> bloqueante** para el trabajo técnico (§4.2; el filo está en *publicar*, no en
+> parsear) · queda **G3** sin medir: ¿entra el Senado desde un runner de
+> GitHub? (§6.6, se dispara a mano).
 >
 > Fecha del reconocimiento: 2026-09-04. Actualiza y **contradice en un punto**
 > el censo de `docs/stock-tracker-scope.md` §1.1 (2026-07-21).
@@ -200,6 +202,13 @@ blacklisteados por defecto en muchos WAFs. No encontré un issue de GitHub ni un
 scraper conocido que reporte la rotura con fecha. **Puede estar
 desactualizada, exagerada, o ser específica del pool de Apify.** Por eso:
 
+> **CERRADO EN VERDE (§6.5).** Todo lo de arriba se midió y la hipótesis de
+> Akamai **no sobrevivió**: desde IP residencial el flujo completo entra a la
+> primera. El 503 de las tres corridas anteriores era un bug propio de manejo
+> de cookies (§6.4), no una defensa del sitio. Lo que **sigue en pie** de esta
+> sección es la nota de arquitectura de abajo: Actions corre en IPs de
+> datacenter, y eso lo responde **G3** (§6.6), no este párrafo.
+
 **G2 (compuerta binaria):** correr el flujo completo agreement→CSRF→POST JSON
 desde la IP donde va a vivir el cron.
 - **G2 verde** → el Senado entra en la Fase 1 como segunda fuente y la ruta
@@ -386,49 +395,105 @@ fuentes en la misma app.
 
 ## 6. VEREDICTO
 
-### **VIABLE POR LA RUTA HOUSE** — fuente oficial directa, Senado detrás de G2
+### **VIABLE, Y POR LAS DOS CÁMARAS** — fuente oficial directa en ambas
 
-**La ruta recomendada, una sola:**
+**Fase 0 CERRADA (2026-09-10).** Estado final de las compuertas:
 
-> **ZIP/XML anual del Clerk de la Cámara como índice + parsing de los PDFs de
-> PTR, en un GitHub Action que escribe a Neon (decisión 5b, §7). Cero
-> agregadores en el critical path. Senado solo si G2 sale verde.**
->
-> **Alcance Fase A (decidido 2026-09-09): el 100% de la Cámara, papel
-> incluido** — carril de texto para los e-filed (§6.2) y carril de visión para
-> los ~10% en papel (§8), etiquetados y separables en la UI y en la base.
+| Compuerta | Estado | Qué la cerró |
+|---|---|---|
+| **G1 Cámara** | 🟢 **VERDE** | 100% de los PTR e-filed traen capa de texto (§6.2, confirmado §6.3) |
+| **G2 Senado** | 🟢 **VERDE** | 25 filas, `recordsTotal=2424` desde 2012, sesión creada de cero (§6.5) |
+| **Legal §13107(c)** | 🟠 **ABIERTA — no bloqueante para el trabajo técnico** (decisión de la dueña, 2026-09-10) | — |
+| **G3 Senado desde Actions** | ⏳ **SIN MEDIR** | Se dispara a mano (§6.6). No bloquea el scope; decide una línea del presupuesto |
 
-**Por qué esta y no otra:**
-- Es la única gratis **y** redistribuible (dominio público). FMP y Quiver
-  mueren por licencia, no por precio.
-- Es la única sin gate de acceso reportado — el Senado hoy es una incógnita con
-  evidencia negativa, y los agregadores comerciales son un contrato.
-- El formato es aburrido y estable: un ZIP regenerado a diario desde 2008. La
-  fragilidad que teníamos en julio (un endpoint JSON interno no documentado del
-  Senado) desaparece.
+**La ruta recomendada, ahora doble:**
 
-**Costo en horas (estimado, patrón `vc-feed`/`stock-tracker` ya en casa):**
+> **Cámara:** ZIP/XML anual del Clerk como índice + parsing de los PDFs de PTR
+> (`pdfjs-dist`, vienen cifrados) + carril de visión para el ~10% en papel.
+> **Senado:** `POST /search/report/data/` como índice + detalle HTML por PTR;
+> los escaneados van **al mismo carril de visión** que el papel de la Cámara.
+> Todo en un GitHub Action que escribe a Neon (decisión 5b, §7). **Cero
+> agregadores en el critical path.**
+
+**Lo que cambió respecto al veredicto anterior**, y conviene decirlo sin
+maquillaje: este memo declaró al Senado "incógnita con evidencia negativa"
+(§2.2) y estuvo a punto de dejarlo fuera del MVP por una hipótesis de Akamai
+que **nunca se sostuvo en una medición**. El bloqueo era un bug nuestro de
+manejo de cookies (§6.4). La sospecha de §2.2 queda **descartada para IP
+residencial**; para IP de datacenter la responde G3, no una lectura de
+artículos.
+
+Y hay una vuelta de tuerca: **el Senado es la fuente más barata de parsear de
+las dos.** Índice JSON y detalle en tabla HTML — sin PDF, sin cifrado, sin
+dependencia npm. La Cámara, que era "la ruta recomendada", es la cara.
+
+**Sobre la compuerta legal, con el registro claro.** La dueña decidió
+(2026-09-10) que §13107(c) es **abierta pero no bloqueante** para la Fase A. Lo
+anoto tal cual y sigo. Dejo dicho, una vez, dónde está el filo: el riesgo de
+§13107(c) no vive en *parsear* ni en *guardar en Neon* — vive en **publicar y
+redistribuir**. O sea que la Fase A puede construirse entera sin tocar esa
+compuerta, pero **el día que el feed se hace público, la consulta de §4.2 tiene
+que estar respondida**. Recomiendo mandarla ya, porque su respuesta puede
+cambiar el diseño de la UI (§4.3) y sale más barato saberlo antes que después.
+
+### 6.0 Alcance de la Fase A — las dos cámaras
+
+Actualizado con G2 verde. Sustituye a la tabla de horas anterior, que asumía
+solo Cámara.
+
+**Cámara (ruta PDF, la cara):**
 
 | Bloque | Horas |
 |---|---|
 | Descarga ZIP + lector ZIP sin dependencias + parser del XML índice + diff de `DocID` | 3–4 |
-| ~~Extractor de texto de PDF sin dependencias~~ → **imposible: los PTR vienen cifrados** (§6.2). Parser de la tabla sobre el texto que entrega `pdfjs-dist` | **2–3** (+ la decisión de meter la primera dependencia npm del repo) |
-| Normalización (buckets de monto, tipo, owner, ticker faltante, fecha trade vs filing) + esquema y tabla en Neon | 3–4 |
-| Endpoint del feed (solo LEE de Neon, sin dependencias) + doble cache + `?smoke=1` | 2–3 |
-| El Action en sí: workflow, secrets, cron, reintentos, escritura idempotente a Neon | 2 |
-| Backfill histórico (año en curso + anterior) — mismo Action, corrida one-shot | 2 |
-| **Subtotal carril texto (e-filed)** | **11–15 h** |
-| **Carril visión para los 38 en papel (§8)** | **+7–10 h** · ~US$2 el backfill completo |
-| **Total Fase 1 (datos, 100% de la Cámara, sin UI ni agente)** | **18–25 h** |
-| Senado, **solo si G2 verde** (agreement + JSON + parser de tabla HTML) | +6–10 |
-| OCR, **solo si G1 rojo** | +8–12 y sale del serverless |
+| Parser de la tabla sobre el texto que entrega `pdfjs-dist` (los PTR vienen **cifrados**, §6.2) | 2–3 |
+| **Subtotal Cámara** | **5–7 h** |
 
-**El caveat, dicho de frente:** *esta ruta entrega un feed que **no es el
-Congreso completo, es la Cámara** — 435 miembros, sí, pero sin los senadores,
-que son justo los nombres que traen tráfico a un tracker. Si G2 sale rojo, hay
-que resistir la tentación de comprar un proxy residencial y en cambio decirlo en
-la UI. Y aun con G1 verde, un porcentaje de filings en papel queda afuera: el
-feed es **incompleto por diseño**, y eso también se declara.*
+**Senado (ruta HTML, la barata):**
+
+| Bloque | Horas |
+|---|---|
+| Cliente de sesión: agreement → jar de cookies con redirects a mano → CSRF rotado. **Ya escrito y verificado** en `congreso-phase0-probe.mjs` (§6.4/§6.5); acá es extraerlo a módulo | 1–2 |
+| Índice: `report/data/` paginado de a 100 (~25 páginas para 2012→hoy) + diff por UUID del PTR | 2–3 |
+| Detalle: `GET /search/view/ptr/<uuid>/` + parser de la tabla HTML por transacción | 3–4 |
+| Detectar el PTR **escaneado** y derivarlo al carril de visión en vez de parsearlo | 1–2 |
+| **Subtotal Senado** | **7–11 h** |
+
+**Común a las dos:**
+
+| Bloque | Horas |
+|---|---|
+| Normalización unificada (buckets de monto, tipo, owner, ticker faltante, fecha trade vs filing) + esquema y tabla en Neon con `camara` como columna | 4–5 |
+| Endpoint del feed (solo LEE de Neon) + doble cache + `?smoke=1` | 2–3 |
+| El Action: workflow, secrets, cron, reintentos, escritura idempotente | 2–3 |
+| Carril de visión — papel de la Cámara **+ escaneados del Senado** (§8) | 7–10 |
+| **Subtotal común** | **15–21 h** |
+
+**Backfill:**
+
+| Bloque | Horas |
+|---|---|
+| Cámara, año en curso + anterior (one-shot del mismo Action) | 2 |
+| **Senado desde 2012** — 2424 PTRs: ~25 páginas de índice + 2424 detalles. El trabajo no es el volumen (es chico), es el **pacing** para no golpear la fuente, los reintentos y la reanudación desde donde cortó | **3–4** |
+| **Subtotal backfill** | **5–6 h** |
+
+| **TOTAL FASE A (datos, dos cámaras, sin UI ni agente)** | **32–45 h** |
+|---|---|
+
+**Condicionales, fuera del total:**
+
+| Condición | Costo |
+|---|---|
+| **G3 rojo** → proxy residencial con IP fija | +1,5–2,5 h · **US$5–15/mes recurrentes** (§6.6.1) |
+| Carril de visión, gasto de API | ~US$2 el backfill completo de la Cámara (§8.2); el Senado suma poco: los escaneados son minoría |
+
+**El caveat, reescrito.** El anterior decía que el feed "no es el Congreso, es
+la Cámara". Eso ya no aplica: **con las dos cámaras el feed sí cubre el
+Congreso**. Lo que queda incompleto es otra cosa, más chica y más honesta: un
+porcentaje de filings llega **en papel escaneado** en ambas cámaras, y esos
+pasan por el carril de visión, que es más lento y falible que el de texto. Se
+etiquetan, se separan en la base y **se declaran en la UI** (§5). El feed es
+incompleto por diseño en los bordes, no en el centro — y eso también se dice.
 
 ### 6.1 Corrida 1 — 2026-09-08, MacBook, IP residencial, sin VPN
 
@@ -611,6 +676,12 @@ declarándolo en la UI, ahora con el número real: *"~1 de cada 10 filings llega
 en papel y no se procesa"*.
 
 #### G2 — **INCONCLUSO**, no rojo. Fue mantenimiento, no bloqueo.
+
+> **Corregido en §6.4/§6.5.** El diagnóstico de "mantenimiento" era falso: el
+> 503 lo causaba un bug propio (cookie de sesión perdida en el redirect del
+> agreement). Con eso arreglado, **G2 entra a la primera**. Lo que esta
+> subsección sí acertó es lo de abajo: los dos primeros pasos daban 200, y eso
+> ya apuntaba en contra de la hipótesis de Akamai.
 
 El 503 traía `title="U.S. Senate: Site Under Maintenance"` y **cero huella de
 WAF**, corrido a las 23:37 del domingo (hora Monterrey). Eso es el Senado
@@ -799,40 +870,110 @@ header. La escalera lo dice y manda repetir el mismo cURL con `curl`.
 > se abstiene** en vez de reportarlo como respuesta del sitio. G2 se corre
 > desde la Mac, con salida directa.
 
-### 6.5 Pendiente — solo G2
+### 6.5 Corrida 5 — 2026-09-10, 15:59 ET: **G2 VERDE**. Era el probe, no la puerta.
+
+Mac, IP residencial, **probe corregido y sin cookie prestada** — sesión creada
+de cero por el propio probe. La escalera no hizo falta: el fix de §6.4 bastó.
 
 ```
-# 1) la escalera, con la sesión viva de Chrome (DevTools → Copy as cURL):
-export SENATE_COOKIE='csrftoken=...; sessionid=...; 33a5...=...'
-node scripts/congreso-senate-ladder.mjs
+  [1/4] GET /search/home/    ✓ 200 · csrf encontrado · cookies: csrftoken, 33a5c6d9…
+  [2/4] POST /search/home/   ✓ 200 · 1 redirect → /search/
+        cookies tras el agreement: csrftoken, 33a5c6d9…, sessionid
+        sessionid presente · search_agreement=true ✓
+  [3/4] GET /search/         ✓ 200
+        (Django rotó el csrftoken en el agreement — usando el nuevo.)
+  [4/4] POST /search/report/data/ — "navegador"
+        ✓ 200 · 25 filas · total: 2424
+        ejemplo: ["Lamar","Alexander","Alexander, Lamar (Senator)",
+                  "<a href=\"/search/view/ptr/2fe6b2b0-…/\">Periodic Transaction
+                   Report for 07/28/2017</a>","07/28/2017"]
 
-# 2) el probe arreglado, de cero:
-node scripts/congreso-phase0-probe.mjs --only=g2
+  G2 SENADO: VERDE — 25 filas (intento navegador)
 ```
 
-Estado de las compuertas:
+Las tres cosas que el fix predecía se ven en el log, una por línea: el
+`sessionid` aparece **después** del agreement y decodifica a
+`search_agreement=true`; Django **rotó** el `csrftoken` en ese mismo salto (con
+`redirect: 'follow'` los dos se perdían); y el `GET /search/` que faltaba
+responde 200 sin rebotar a `/search/home/`.
 
-| Compuerta | Estado | Qué falta |
-|---|---|---|
-| **G1 Cámara** | 🟢 **VERDE** (confirmado, corrida 3) | Nada. El fix de `bucket_monto` es informativo |
-| **G2 Senado** | 🟡 **INCONCLUSO** (4 corridas; las 3 primeras midieron un flujo roto, §6.4) | La escalera + el probe arreglado, desde la Mac |
-| **Legal §13107(c)** | 🔴 **ABIERTA** | La consulta de §4.2. Previa a la Fase 1 |
+**Lección, que vale más que la compuerta:** cuatro corridas dieron el mismo
+`Site Under Maintenance` y la constancia se leyó como evidencia sobre la
+fuente. Era constancia del **mismo bug nuestro**. Lo que rompió el empate no
+fue otra corrida más: fue el dato de que **Chrome funcionaba en paralelo desde
+la misma IP** — o sea, un control. Sin control, repetir una medición rota solo
+la confirma.
 
-### Lo que falta para cerrar la Fase 0 (no es opcional)
+**Dato de dimensionamiento:** `recordsTotal = 2424` para `report_types=[11]`
+(PTR) desde el 01/01/2012. Ese es el universo del backfill del Senado, y es
+chico: ~25 páginas de índice a 100 por página, y 2424 páginas de detalle.
 
-1. ~~Correr el probe desde una IP con egress~~ → hecho, **cuatro corridas**
-   (§6.1–§6.4). **G1 cerrada en VERDE.** Falta solo **G2**, y ya no es "otra
-   corrida más": la corrida 4 mostró que las tres anteriores medían un flujo
-   roto (§6.4). Toca la **escalera** (`congreso-senate-ladder.mjs`) más el
-   probe arreglado, desde la Mac.
-2. La **consulta legal puntual** — la pregunta está redactada en **§4.2** y la
-   compuerta está **ABIERTA**. Es previa al primer PR de datos, no posterior.
-3. Leer los ToS completos de Disclosed Capitol antes de considerarlo siquiera
-   como fallback.
+#### Lo que esto cambia en el diseño
 
-Hasta que 1 y 2 no estén, la Fase 1 no arranca.
+El Senado vuelve a ser lo que prometía §2.1: **datos ya estructurados**. El
+índice es JSON y el detalle de un PTR e-filed es una **tabla HTML por
+transacción** — sin PDF, sin cifrado, sin `pdfjs-dist`. Es la fuente *más
+barata de parsear de las dos*, al revés de lo que asumía el memo en julio.
 
----
+### 6.6 Pendiente — G3: ¿entra el Senado desde GitHub Actions?
+
+G2 verde se midió desde una IP **residencial**. El cron no vive ahí. Y §2.2 ya
+avisaba: **los runners de GitHub corren en IPs de datacenter (Azure)**, así que
+G2 verde en casa **no implica** verde en el Action.
+
+Es una compuerta aparte y se mide desde el sitio exacto donde va a vivir el
+cron: `.github/workflows/congreso-g3-senado.yml`, `workflow_dispatch`, se
+dispara a mano desde la pestaña Actions.
+
+> **Para que aparezca el botón "Run workflow", el workflow tiene que estar en
+> la rama por defecto.** O sea: primero mergear el PR, después disparar.
+
+| Resultado | Qué significa para la Fase A |
+|---|---|
+| 🟢 **VERDE** | El parseo del Senado va **en el Action, sin proxy**. Costo recurrente **US$0**. |
+| 🔴 **ROJO** | La Fase A presupuesta **proxy residencial con IP fija** (§6.6.1). |
+| 🟡 **INCONCLUSO** | No se midió. **No es un rojo** — leer el artifact antes de concluir. |
+
+El job **falla en rojo y en inconcluso**, para que el estado se lea desde la
+pestaña Actions sin abrir el log, y sube todos los cuerpos como artifact.
+
+#### 6.6.1 Si G3 sale rojo: el presupuesto del proxy, dicho antes de necesitarlo
+
+Presupuestarlo ahora evita decidirlo con prisa después. Orden de magnitud de
+proxy residencial con IP fija (*sticky*), gama baja del mercado:
+
+| Concepto | Estimado |
+|---|---|
+| Proxy residencial, IP fija, volumen bajo (el índice + ~2400 detalles, luego incremental) | **US$5–15/mes** |
+| Integrar el proxy en el probe/parser (variable de entorno + secret del repo + reintentos) | **1–2 h** |
+| Segunda medición: confirmar que el Action **con** proxy sí entra | **0,5 h** |
+
+**Antes de comprar nada, dos comprobaciones que son gratis:** correr también
+`--only=g1` desde el Action (si la Cámara *tampoco* entra, el problema es del
+runner, no del Senado), y releer §2.2 — el memo ya decía que un rojo por rango
+de IP no se esquiva mudando el scraper a Actions.
+
+Y el caveat de §6 sigue vivo tal cual: un proxy de pago agrega costo
+recurrente, fragilidad y un olor que no quiero en un producto que ya carga
+§13107(c). **Si G3 sale rojo, la opción por defecto no es comprar el proxy: es
+Cámara en el Action + Senado declarado como pendiente en la UI**, y el proxy se
+discute como decisión propia, no como trámite.
+
+### Fase 0: CERRADA
+
+1. ~~Correr el probe desde una IP con egress~~ → hecho, **cinco corridas**
+   (§6.1–§6.5). **G1 VERDE y G2 VERDE.** Las dos compuertas técnicas del
+   veredicto están cerradas.
+2. La **consulta legal §13107(c)** (§4.2) sigue **abierta**, declarada **no
+   bloqueante** para la Fase A por decisión de la dueña (2026-09-10). Se
+   mantiene en el memo porque **vuelve a ser bloqueante antes de publicar el
+   feed**, y su respuesta puede cambiar la UI (§4.3): conviene mandarla ya.
+3. ~~Leer los ToS de Disclosed Capitol~~ → **ya no hace falta**. Era el
+   fallback por si el Senado quedaba fuera. Con G2 verde no hay agregador en el
+   critical path, que era justamente el objetivo.
+
+**Lo único pendiente es G3** (§6.6), y no bloquea el scope: decide **una línea
+del presupuesto** (proxy sí o no), no si la Fase A arranca ni qué cubre.
 
 ## 7. Si es viable: decisiones que la Fase 1 tiene que CONGELAR
 

@@ -1,0 +1,125 @@
+# ═══════════════════════════════════════════════════════════════════════
+# G3 — ¿entra el Senado desde GitHub Actions?
+#
+# G2 quedo VERDE desde una IP residencial (§6.5 del memo). Esta es otra
+# pregunta, y el memo ya la anticipaba en §2.2: **los runners de GitHub corren
+# en IPs de datacenter (Azure)**. Si efdsearch discrimina por reputacion de IP,
+# G2 verde en casa NO implica verde en el Action, y mover el scraper aqui no
+# esquiva nada.
+#
+# Por eso esta compuerta se mide desde el sitio exacto donde va a vivir el cron.
+#
+#   VERDE  → el parseo del Senado va en el Action, sin proxy. Costo recurrente 0.
+#   ROJO   → la Fase A presupuesta proxy residencial con IP fija (§6.6 del memo).
+#
+# Se dispara a mano desde la pestana Actions (workflow_dispatch). No hay cron:
+# es una compuerta, no un job de produccion.
+# ═══════════════════════════════════════════════════════════════════════
+name: G3 Senado desde Actions
+
+on:
+  workflow_dispatch:
+    inputs:
+      anotar_ip:
+        description: 'Anotar la IP publica del runner (ayuda a leer un rojo por rango)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  g2-desde-actions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Sin `npm install`: el probe no tiene dependencias. G2 solo usa fetch.
+      - name: IP publica del runner
+        if: ${{ inputs.anotar_ip }}
+        continue-on-error: true
+        run: |
+          IP=$(curl -sS --max-time 10 https://api.ipify.org || echo 'no se pudo obtener')
+          echo "IP del runner: $IP"
+          echo "RUNNER_IP=$IP" >> "$GITHUB_ENV"
+
+      - name: Probe G2 (Senado)
+        id: probe
+        continue-on-error: true
+        run: node scripts/congreso-phase0-probe.mjs --only=g2 2>&1 | tee salida.txt
+
+      - name: Leer el veredicto
+        id: veredicto
+        run: |
+          leer() {
+            node -e "
+              const fs = require('node:fs');
+              let v = {};
+              try { v = JSON.parse(fs.readFileSync('.congreso-phase0/veredicto.json', 'utf8')); }
+              catch { process.stdout.write(process.argv[1] === 'gate' ? 'SIN_VEREDICTO' : 'no se genero veredicto.json'); process.exit(0); }
+              const s = v.senate || {};
+              process.stdout.write(String(s[process.argv[1]] || (process.argv[1] === 'gate' ? 'SIN_VEREDICTO' : '-')));
+            " "$1"
+          }
+          GATE=$(leer gate)
+          RAZON=$(leer reason)
+          echo "gate=$GATE" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## G3 — Senado desde GitHub Actions: \`$GATE\`"
+            echo ""
+            echo "**Motivo:** $RAZON"
+            echo ""
+            echo "**IP del runner:** \`${RUNNER_IP:-no anotada}\` (Azure, datacenter)"
+            echo ""
+            case "$GATE" in
+              VERDE)
+                echo "El Senado responde desde una IP de datacenter. **El parseo del Senado va"
+                echo "en el Action, sin proxy** — costo recurrente 0. La sospecha de Akamai de"
+                echo "§2.2 queda descartada tambien para este entorno."
+                ;;
+              ROJO)
+                echo "El Senado NO entra desde el runner. La Fase A presupuesta **proxy"
+                echo "residencial con IP fija** (§6.6 del memo)."
+                echo ""
+                echo "Antes de comprar nada: confirmar que la Camara SI entra desde el Action"
+                echo "(\`--only=g1\`). Si tampoco entra, el problema es del runner, no del Senado."
+                ;;
+              INCONCLUSO)
+                echo "Sin veredicto: el flujo no llego a medir la puerta. Leer \`salida.txt\`"
+                echo "en los artifacts antes de concluir nada — un INCONCLUSO **no** es un rojo."
+                ;;
+              *)
+                echo "El probe no dejo veredicto. Revisar el log y los artifacts."
+                ;;
+            esac
+            echo ""
+            echo "Cuerpos y payloads completos en el artifact \`g3-senado-payloads\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Guardar payloads
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g3-senado-payloads
+          path: |
+            .congreso-phase0/
+            salida.txt
+          retention-days: 14
+          if-no-files-found: warn
+
+      # Verde/rojo visible en la pestana Actions, sin abrir el log.
+      # Un INCONCLUSO tambien falla: significa que la compuerta no se midio.
+      - name: La compuerta decide el resultado del job
+        run: |
+          GATE="${{ steps.veredicto.outputs.gate }}"
+          if [ "$GATE" != "VERDE" ]; then
+            echo "::error::G3 no es VERDE (es '$GATE'). Ver el summary de esta corrida."
+            exit 1
+          fi
+          echo "G3 VERDE: el Senado entra desde el Action."
