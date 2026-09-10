@@ -5,9 +5,11 @@
 > seguir, la Fase 1 arranca de la lista de decisiones a congelar (§7).
 >
 > **Veredicto: VIABLE POR LA RUTA HOUSE.** Estado de las compuertas tras dos
-> corridas reales (§6.1–§6.3): **G1 Cámara 🟢 VERDE** (100% de los PTR e-filed
-> traen capa de texto) · **G2 Senado 🟡 INCONCLUSO** (tres corridas, siempre
-> ventana de mantenimiento del Senado, nunca huella de WAF) · **legal
+> corridas reales (§6.1–§6.4): **G1 Cámara 🟢 VERDE** (100% de los PTR e-filed
+> traen capa de texto) · **G2 Senado 🟡 INCONCLUSO** — y en la corrida 4 (§6.4)
+> se cayó la explicación que traía: no era ventana de mantenimiento, era que el
+> probe **perdía la cookie de sesión en el redirect del agreement** y mandaba un
+> payload al que le faltaban 17 claves · **legal
 > §13107(c) 🔴 ABIERTA** (§4.2, la cierra un abogado y es previa a la Fase 1).
 >
 > Fecha del reconocimiento: 2026-09-04. Actualiza y **contradice en un punto**
@@ -694,10 +696,118 @@ bot-mitigation por rango de IP, no habría 200 en los dos primeros pasos.** Lo
 que falta es una corrida en horario de oficina de DC para separar "ventana
 nocturna de mantenimiento" de "endpoint retirado".
 
-### 6.4 Pendiente — solo G2
+> **Corregido en §6.4.** Esa corrida en horario de oficina se hizo, y el patrón
+> tenía otra explicación: no era el sitio en mantenimiento, era **el probe
+> perdiendo la cookie del agreement en el redirect**. Las tres corridas
+> repetían el mismo error, y por eso daban el mismo resultado. La constancia de
+> un fallo no lo convierte en evidencia sobre la fuente.
+
+### 6.4 Corrida 4 — 2026-09-10, 15:28 ET jueves: **la hipótesis de mantenimiento se cae**
+
+Cuarta corrida `--only=g2`, en **horario de oficina de DC** — exactamente la
+corrida que §6.3 pedía. Mismo 503 `Site Under Maintenance`. Pero esta vez hay
+un dato nuevo que las tres corridas anteriores no tenían:
+
+> **Al mismo tiempo, desde la misma IP, Chrome cargaba el sitio y la búsqueda
+> de PTRs devolvía resultados.**
+
+Eso liquida la lectura de §6.2 y §6.3. **Un mantenimiento real habría roto
+también a Chrome.** La página de mantenimiento no es el sitio apagado: es lo
+que `senate.gov` le responde **a este request en concreto**. O sea: la
+diferencia está en el request, y hay que medirla, no suponerla.
+
+#### El diff real: navegador vs. probe
+
+Comparando el `Copy as cURL` del navegador contra lo que mandaba el probe,
+campo por campo (calculado, no a ojo):
+
+**a) Cookies — el probe nunca tuvo sesión. Este es el hallazgo grande.**
+
+El navegador manda tres cookies; el probe mandaba una:
+
+| Cookie | Navegador | Probe | Qué es |
+|---|---|---|---|
+| `csrftoken` | ✅ | ✅ (posiblemente vieja) | CSRF de Django |
+| `sessionid` | ✅ | ❌ **nunca la tuvo** | sesión firmada de Django; su payload decodifica literalmente a `{"search_agreement":true}` — **es el agreement** |
+| `33a5c6d9…` (32 hex = 32 hex) | ✅ | ❌ | opaca, no la emite Django (balanceador o mitigación) |
+
+La causa es un bug del probe, y está **verificado contra un servidor local que
+imita el flujo de Django**, no deducido:
+
+- `fetch()` de Node con `redirect: 'follow'` **pierde el `Set-Cookie` que viaja
+  en el 302**. `res.headers.getSetCookie()` sobre la respuesta final devuelve
+  `[]`.
+- Y undici **no tiene cookie jar propio**: tampoco reenvía esa cookie en el
+  salto siguiente.
+- En este flujo el 302 del agreement es justo donde nace `sessionid` **y donde
+  Django rota el `csrftoken`**.
+
+Resultado: el probe hacía `POST /search/home/` con el agreement, recibía el 302
+correcto… y tiraba a la basura las dos cookies que ese 302 traía. El
+`POST /search/report/data/` salía **como un visitante que nunca aceptó el
+agreement, y con un `csrftoken` ya rotado**. Las tres corridas anteriores
+midieron eso, no la puerta.
+
+**b) Payload — faltaban 17 claves que DataTables siempre manda**
+
+`columns[i][name]`, `columns[i][search][value]` y `columns[i][search][regex]`
+para las 5 columnas (15), más el segundo criterio de orden `order[1][column]`
+y `order[1][dir]`. Y dos valores que el navegador nunca manda así:
+`submitted_start_date` iba **vacío** (el navegador manda `01/01/2012 00:00:00`)
+y el orden era `column=4 desc` en vez de `column=1 asc`. Un backend DataTables
+que indexa esas claves sin comprobar revienta con `500` — y un `500` detrás del
+front-end de `senate.gov` se sirve al cliente como su página de error genérica.
+
+**c) Headers — el UA del probe no existía**
+
+El probe mandaba `Chrome/126.0`. **Ningún Chrome emite eso**: siempre son
+cuatro componentes (`126.0.0.0`). Un UA que ningún navegador real produce es
+exactamente lo que marca una regla de mitigación. Además faltaban
+`Accept-Language`, los tres `sec-ch-ua*` y los tres `Sec-Fetch-*`.
+
+**d) Orden de pasos — al probe le faltaba uno**
+
+El navegador hace `GET /search/home/` → `POST` del agreement → **`GET /search/`**
+→ `POST /search/report/data/`. Por eso su `Referer` es `/search/`. El probe
+saltaba el `GET /search/` y mandaba `Referer: /search/home/`.
+
+#### Qué se arregló y qué falta medir
+
+El probe ahora: sigue los redirects **a mano** capturando `Set-Cookie` en cada
+salto (`fetchJar`), hace el `GET /search/` que faltaba, manda el payload y los
+headers calcados del navegador, y **verifica explícitamente que exista
+`sessionid` antes de opinar**. Si el POST sale sin sesión, devuelve
+`INCONCLUSO` diciendo que el fallo se explica por el flujo — no cierra la
+compuerta con una medición inválida.
+
+Y como aquí hay cuatro sospechas a la vez, la que manda es la que se mida.
+`scripts/congreso-senate-ladder.mjs` parte del request del navegador (control
+conocido-bueno, con las cookies pegadas del `Copy as cURL`) y **cambia una sola
+variable por peldaño**: UA, `sec-ch-ua`/`Sec-Fetch`, `Referer`, cookie opaca,
+`sessionid`, payload viejo, fecha vacía, y todo junto. El primer peldaño que
+rompe nombra la causa.
+
+Un resultado importa por adelantado: **si el peldaño 0 falla**, la diferencia
+no está en headers/cookies/payload sino en la capa de transporte (huella
+TLS/JA3, HTTP/2 vs 1.1) o las cookies expiraron — y eso no lo arregla ningún
+header. La escalera lo dice y manda repetir el mismo cURL con `curl`.
+
+> **Nota de método (vale para todo el memo):** esta corrida se preparó desde un
+> contenedor cuya política de egress **no tiene `efdsearch.senate.gov` en la
+> allowlist** (`x-deny-reason: host_not_allowed`). Desde ahí no se puede medir
+> nada del Senado: el 403 es del proxy. La escalera ahora **detecta ese caso y
+> se abstiene** en vez de reportarlo como respuesta del sitio. G2 se corre
+> desde la Mac, con salida directa.
+
+### 6.5 Pendiente — solo G2
 
 ```
-node scripts/congreso-phase0-probe.mjs --only=g2    # horario de oficina de DC
+# 1) la escalera, con la sesión viva de Chrome (DevTools → Copy as cURL):
+export SENATE_COOKIE='csrftoken=...; sessionid=...; 33a5...=...'
+node scripts/congreso-senate-ladder.mjs
+
+# 2) el probe arreglado, de cero:
+node scripts/congreso-phase0-probe.mjs --only=g2
 ```
 
 Estado de las compuertas:
@@ -705,14 +815,16 @@ Estado de las compuertas:
 | Compuerta | Estado | Qué falta |
 |---|---|---|
 | **G1 Cámara** | 🟢 **VERDE** (confirmado, corrida 3) | Nada. El fix de `bucket_monto` es informativo |
-| **G2 Senado** | 🟡 **INCONCLUSO** (3 corridas, siempre mantenimiento) | Una corrida en horario de oficina de DC |
+| **G2 Senado** | 🟡 **INCONCLUSO** (4 corridas; las 3 primeras midieron un flujo roto, §6.4) | La escalera + el probe arreglado, desde la Mac |
 | **Legal §13107(c)** | 🔴 **ABIERTA** | La consulta de §4.2. Previa a la Fase 1 |
 
 ### Lo que falta para cerrar la Fase 0 (no es opcional)
 
-1. ~~Correr el probe desde una IP con egress~~ → hecho, **tres corridas**
-   (§6.1–§6.3). **G1 cerrada en VERDE.** Falta solo **G2**: una corrida
-   `--only=g2` en horario de oficina de DC.
+1. ~~Correr el probe desde una IP con egress~~ → hecho, **cuatro corridas**
+   (§6.1–§6.4). **G1 cerrada en VERDE.** Falta solo **G2**, y ya no es "otra
+   corrida más": la corrida 4 mostró que las tres anteriores medían un flujo
+   roto (§6.4). Toca la **escalera** (`congreso-senate-ladder.mjs`) más el
+   probe arreglado, desde la Mac.
 2. La **consulta legal puntual** — la pregunta está redactada en **§4.2** y la
    compuerta está **ABIERTA**. Es previa al primer PR de datos, no posterior.
 3. Leer los ToS completos de Disclosed Capitol antes de considerarlo siquiera
