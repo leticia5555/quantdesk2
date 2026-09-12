@@ -227,8 +227,44 @@ console.log('\n── analizarFamilia · revisiones y hechos sin accession');
 
   const r = analizarFamilia({ facts: { 'us-gaap': { Revenues: nodo } } }, fam('ingresos'), DESDE);
   eq(r.revisiones, 1, 'detecta el periodo re-expresado');
+  eq(r.desacuerdoAlias, 0, 'con UN solo tag no puede haber desacuerdo entre alias');
   eq(r.sinAccn, 1, 'detecta el hecho sin accession');
   eq(r.efectivos, 12, 'la re-expresión no infla el conteo de trimestres');
+}
+
+// ─────────────────────────────────────────────────────────────────
+// El bug de la corrida 1: dos ALIAS de la misma familia cubriendo el mismo
+// periodo se contaban como si la empresa se hubiera re-expresado. La huella
+// era que TODA familia con revisiones == trimestres tenía tags=2 (LULU
+// inventario 12/12, MSFT deuda 12/12). Son dos fenómenos distintos y el
+// medidor tiene que separarlos: uno es la empresa corrigiéndose (materia
+// prima de la pregunta 3), el otro es el corte de taxonomía (una decisión
+// de qué tag gana en la vista).
+// ─────────────────────────────────────────────────────────────────
+console.log('\n── analizarFamilia · revisión REAL vs desacuerdo entre alias');
+{
+  // Dos tags de la MISMA familia, mismos periodos, valores distintos.
+  // Cero re-expresiones: ninguna empresa se corrigió.
+  const viejo = nodoDuracion(ANIOS_FISCALES, { base: 1000 });
+  const nuevo = nodoDuracion(ANIOS_FISCALES, { base: 2000 });
+  const r = analizarFamilia({ facts: { 'us-gaap': {
+    Revenues: viejo,
+    RevenueFromContractWithCustomerExcludingAssessedTax: nuevo,
+  } } }, fam('ingresos'), DESDE);
+
+  eq(r.tags.length, 2, 'la familia une los dos alias');
+  eq(r.revisiones, 0, 'CERO revisiones: ningún tag se contradice a sí mismo');
+  ok(r.desacuerdoAlias > 0, 'pero sí hay desacuerdo entre alias, y se reporta aparte');
+  eq(r.efectivos, 12, 'y el conteo de trimestres no se infla');
+
+  // Dos alias que coinciden EN VALOR no son desacuerdo: es el caso normal
+  // del solapamiento de taxonomías y no debe ensuciar el reporte.
+  const iguales = analizarFamilia({ facts: { 'us-gaap': {
+    Revenues: nodoDuracion(ANIOS_FISCALES, { base: 1000 }),
+    SalesRevenueNet: nodoDuracion(ANIOS_FISCALES, { base: 1000 }),
+  } } }, fam('ingresos'), DESDE);
+  eq(iguales.desacuerdoAlias, 0, 'dos alias con el mismo valor no son desacuerdo');
+  eq(iguales.revisiones, 0, 'ni son revisión');
 }
 
 console.log('\n── analizarFamilia · instantes y taxonomía IFRS');

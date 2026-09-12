@@ -174,7 +174,12 @@ export const FAMILIAS = [
   { id: 'neto',       pregunta: 3, tipo: 'duracion', tags: ['NetIncomeLoss', 'ProfitLoss'], ifrs: ['ProfitLoss'] },
   { id: 'eps',        pregunta: 3, tipo: 'duracion', tags: ['EarningsPerShareDiluted', 'EarningsPerShareBasicAndDiluted'], ifrs: ['DilutedEarningsLossPerShare'] },
   { id: 'inventario', pregunta: 3, tipo: 'instante', tags: ['InventoryNet', 'InventoryFinishedGoods'], ifrs: ['Inventories'] },
-  { id: 'caja',       pregunta: 3, tipo: 'instante', tags: ['CashAndCashEquivalentsAtCarryingValue'], ifrs: ['CashAndCashEquivalents'] },
+  // `caja` dio 0 tags en LULU en la corrida 1: no usa
+  // CashAndCashEquivalentsAtCarryingValue. La hipótesis es que etiqueta bajo
+  // el tag de ASU 2016-18 (efectivo + efectivo restringido), que es lo normal
+  // en retail. Se agrega como alias y la PRÓXIMA corrida lo confirma o lo
+  // desmiente — no se da por cierto acá.
+  { id: 'caja',       pregunta: 3, tipo: 'instante', tags: ['CashAndCashEquivalentsAtCarryingValue', 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents'], ifrs: ['CashAndCashEquivalents'] },
   { id: 'deuda',      pregunta: 3, tipo: 'instante', tags: ['LongTermDebtNoncurrent', 'LongTermDebt'], ifrs: ['NoncurrentPortionOfNoncurrentBorrowings'] },
   { id: 'acciones',   pregunta: 2, tipo: 'instante', tags: ['CommonStockSharesOutstanding', 'EntityCommonStockSharesOutstanding'], ifrs: ['NumberOfSharesOutstanding'] },
 ];
@@ -323,7 +328,7 @@ export function analizarFamilia(facts, fam, desdeISO) {
   for (const t of (fam.ifrs || [])) if (ifrs[t]) candidatos.push({ tag: `ifrs-full:${t}`, nodo: ifrs[t] });
 
   if (!candidatos.length) {
-    return { id: fam.id, presente: false, tags: [], trimestres: 0, derivables: 0, efectivos: 0, sinAccn: 0, revisiones: 0 };
+    return { id: fam.id, presente: false, tags: [], trimestres: 0, derivables: 0, efectivos: 0, sinAccn: 0, revisiones: 0, desacuerdoAlias: 0 };
   }
 
   // Unir TODOS los alias: la serie real cruza el cambio de taxonomía.
@@ -335,16 +340,43 @@ export function analizarFamilia(facts, fam, desdeISO) {
   // Citabilidad: sin accn no hay [accession] y la afirmación no se puede citar.
   const sinAccn = enVentana.filter((h) => !h.accn).length;
 
-  // Revisiones: mismo periodo, valor distinto, presentación distinta. Es la
-  // materia prima de "qué prometieron vs qué entregaron" — y la razón por la
-  // que la tabla necesita (accession, filed) en la clave, no solo el periodo.
-  const porPeriodo = new Map();
+  // Revisiones vs desacuerdo entre alias — DOS fenómenos distintos que la
+  // corrida 1 mezcló en un solo número.
+  //
+  // BUG de la corrida 1 (2026-09-12): la clave era `start|end|unidad`, SIN el
+  // tag. Como una familia une varios alias, dos tags que cubren el mismo
+  // periodo se contaban como si la empresa se hubiera corregido. La huella
+  // era inconfundible: TODA familia con revisiones == trimestres tenía
+  // tags=2 (LULU inventario 12/12, MSFT deuda 12/12), y toda familia con
+  // tags=1 daba un conteo chico y plausible (MELI costo 3, margen 4, op 3).
+  // MELI ingresos "19 revisiones" era, en su mayor parte, ese artefacto.
+  //
+  //   revisiones  = el MISMO tag reporta el mismo periodo con otro valor.
+  //                 Eso sí es la empresa re-expresando, y es la materia prima
+  //                 de "qué prometieron vs qué entregaron".
+  //   desacuerdoAlias = dos tags DISTINTOS de la familia dan valores distintos
+  //                 para el mismo periodo. No es una corrección: es el corte
+  //                 de taxonomía (ASC 606) o dos medidas que no son la misma
+  //                 cosa. La vista tiene que elegir uno, no promediarlos.
+  const porTagPeriodo = new Map();   // tag|start|end|unidad -> Set(val)
+  const porPeriodo = new Map();      // start|end|unidad     -> Map(tag -> Set(val))
   for (const h of enVentana) {
-    const k = `${h.start || ''}|${h.end}|${h.unidad}`;
-    if (!porPeriodo.has(k)) porPeriodo.set(k, new Set());
-    porPeriodo.get(k).add(String(h.val));
+    const kPeriodo = `${h.start || ''}|${h.end}|${h.unidad}`;
+    const kTag = `${h.tag}|${kPeriodo}`;
+    if (!porTagPeriodo.has(kTag)) porTagPeriodo.set(kTag, new Set());
+    porTagPeriodo.get(kTag).add(String(h.val));
+    if (!porPeriodo.has(kPeriodo)) porPeriodo.set(kPeriodo, new Map());
+    const porTag = porPeriodo.get(kPeriodo);
+    if (!porTag.has(h.tag)) porTag.set(h.tag, new Set());
+    porTag.get(h.tag).add(String(h.val));
   }
-  const revisiones = [...porPeriodo.values()].filter((s) => s.size > 1).length;
+  const revisiones = [...porTagPeriodo.values()].filter((s) => s.size > 1).length;
+  const desacuerdoAlias = [...porPeriodo.values()].filter((porTag) => {
+    if (porTag.size < 2) return false;
+    const valores = new Set();
+    for (const s of porTag.values()) for (const v of s) valores.add(v);
+    return valores.size > 1;
+  }).length;
 
   if (fam.tipo === 'instante') {
     const cortes = new Set(enVentana.filter((h) => !h.start).map((h) => h.end));
@@ -353,7 +385,7 @@ export function analizarFamilia(facts, fam, desdeISO) {
       tags: [...new Set(enVentana.map((h) => h.tag))],
       trimestres: cortes.size, derivables: 0, efectivos: cortes.size,
       primero: [...cortes].sort()[0] || null, ultimo: [...cortes].sort().pop() || null,
-      sinAccn, revisiones, hechos: enVentana.length,
+      sinAccn, revisiones, desacuerdoAlias, hechos: enVentana.length,
     };
   }
 
@@ -388,7 +420,7 @@ export function analizarFamilia(facts, fam, desdeISO) {
     efectivos: porClase.Q.size + derivables,
     primero: [...porClase.Q].sort()[0] || null,
     ultimo: [...porClase.Q].sort().pop() || null,
-    sinAccn, revisiones, hechos: enVentana.length,
+    sinAccn, revisiones, desacuerdoAlias, hechos: enVentana.length,
   };
 }
 
@@ -491,10 +523,10 @@ async function sondearTicker(ticker, map) {
 
     save(`${ticker}-familias.json`, familias);
     console.log(`  · company-facts: ${mb(cf.bytes)} · taxonomías [${taxonomias.join(', ')}] · ${nConceptos} conceptos`);
-    console.log(`    familia           tags   Q    FY   9M   Q4-deriv  efectivos  revisiones  sin-accn`);
+    console.log(`    familia           tags   Q    FY   9M   Q4-deriv  efectivos  revis.  desac.  sin-accn`);
     for (const f of familias) {
       if (!f.presente) { console.log(`    ${f.id.padEnd(17)} —      AUSENTE`); continue; }
-      console.log(`    ${f.id.padEnd(17)}${String(f.tags.length).padEnd(7)}${String(f.trimestres).padEnd(5)}${String(f.anuales ?? '-').padEnd(5)}${String(f.nueveMeses ?? '-').padEnd(5)}${String(f.derivables).padEnd(10)}${String(f.efectivos).padEnd(11)}${String(f.revisiones).padEnd(12)}${f.sinAccn}`);
+      console.log(`    ${f.id.padEnd(17)}${String(f.tags.length).padEnd(7)}${String(f.trimestres).padEnd(5)}${String(f.anuales ?? '-').padEnd(5)}${String(f.nueveMeses ?? '-').padEnd(5)}${String(f.derivables).padEnd(10)}${String(f.efectivos).padEnd(11)}${String(f.revisiones).padEnd(8)}${String(f.desacuerdoAlias).padEnd(8)}${f.sinAccn}`);
     }
     console.log(`    conceptos de guía en XBRL: ${guia.length ? guia.join(', ') : '0  ← la guía NO está etiquetada'}`);
   }
@@ -594,29 +626,54 @@ function veredicto(reportes) {
   console.log('═══════════════════════════════════════════════════════════');
 
   const vivos = reportes.filter((r) => !r.error && r.g1 && !r.g1.error);
-  const lineas = [];
+
+  // ── El criterio se CONDICIONA al perfil del emisor (corrida 1) ──────
+  //
+  // G1 y G2 miden cosas que un emisor privado extranjero NO PRESENTA: no hay
+  // 10-Q del que salgan trimestres, ni 8-K del que salgan items — presenta
+  // 20-F anual y 6-K sin columna `items`. Correrle a VIST el criterio de un
+  // emisor doméstico no mide una falla de EDGAR: mide que le pedimos peras
+  // al olmo, y pinta de rojo dos compuertas que están verdes donde aplican.
+  //
+  // La ausencia de trimestres en un 20-F ya la CLASIFICA G6 y se declara en
+  // la UI como COBERTURA PARCIAL. Por eso G1/G2 evalúan solo a los emisores
+  // domésticos, y los extranjeros se listan aparte como "no aplica" — que no
+  // es lo mismo que aprobado, y por eso se imprime, no se esconde.
+  const esDomestico = (r) => !!(r.g6 && !r.g6.tiene20F);
+  const domesticos = vivos.filter(esDomestico);
+  const extranjeros = reportes.filter((r) => r.g6 && r.g6.tiene20F);
+  const noAplica = (xs) => (xs.length ? `  ·  no aplica: ${xs.map((r) => r.ticker).join(', ')} (20-F, ver G6)` : '');
 
   // G1: la película trimestral existe para las familias del núcleo.
   const NUCLEO = ['ingresos', 'margen', 'inventario', 'neto'];
   const esperados = ANIOS * 4;
-  const g1 = vivos.map((r) => {
+  const g1 = domesticos.map((r) => {
     const nucleo = r.g1.familias.filter((f) => NUCLEO.includes(f.id));
     const peor = Math.min(...nucleo.map((f) => f.efectivos));
     return { ticker: r.ticker, peor, ok: peor >= esperados - 1 };
   });
-  const g1Verde = g1.length && g1.every((x) => x.ok);
-  console.log(`  G1 company-facts   ${g1Verde ? '🟢 VERDE' : '🔴 ROJO '}  (criterio: ≥${esperados - 1}/${esperados} trimestres efectivos en ingresos+margen+inventario+neto)`);
+  const g1Verde = g1.length > 0 && g1.every((x) => x.ok);
+  console.log(`  G1 company-facts   ${g1Verde ? '🟢 VERDE' : '🔴 ROJO '}  (criterio: ≥${esperados - 1}/${esperados} trimestres efectivos en ingresos+margen+inventario+neto, SOLO emisores domésticos)${noAplica(extranjeros)}`);
   for (const x of g1) console.log(`       ${x.ticker.padEnd(6)} peor familia del núcleo: ${x.peor}/${esperados}`);
+  for (const r of extranjeros) {
+    const nucleo = (r.g1?.familias || []).filter((f) => NUCLEO.includes(f.id));
+    const anuales = nucleo.length ? Math.min(...nucleo.map((f) => f.anuales ?? f.efectivos)) : 0;
+    console.log(`       ${r.ticker.padEnd(6)} n/a — 20-F: ${anuales} periodo(s) anual(es) en el núcleo, 0 trimestres. Es el dato, no una falla.`);
+  }
 
   // G2: el índice ya clasifica los 8-K.
-  const g2 = reportes.filter((r) => r.g2).map((r) => ({
+  const g2 = reportes.filter((r) => r.g2 && esDomestico(r)).map((r) => ({
     ticker: r.ticker,
     cob: r.g2.ochoK ? r.g2.conItems / r.g2.ochoK : 0,
     mal: r.g2.malFormados,
   }));
-  const g2Verde = g2.length && g2.every((x) => x.cob >= 0.95 && x.mal === 0);
-  console.log(`  G2 items de 8-K    ${g2Verde ? '🟢 VERDE' : '🔴 ROJO '}  (criterio: ≥95% con item y 0 mal formados, desde el índice)`);
+  const g2Verde = g2.length > 0 && g2.every((x) => x.cob >= 0.95 && x.mal === 0);
+  console.log(`  G2 items de 8-K    ${g2Verde ? '🟢 VERDE' : '🔴 ROJO '}  (criterio: ≥95% con item y 0 mal formados, desde el índice, SOLO emisores domésticos)${noAplica(extranjeros)}`);
   for (const x of g2) console.log(`       ${x.ticker.padEnd(6)} ${(x.cob * 100).toFixed(1)}% · mal formados ${x.mal}`);
+  for (const r of extranjeros) {
+    const seisK = r.g3?.censo?.['6-K'] ?? 0;
+    console.log(`       ${r.ticker.padEnd(6)} n/a — 20-F: 0 8-K, ${seisK} 6-K. El 6-K NO trae columna items: la pregunta 1 y la 7 quedan sin clasificar.`);
+  }
 
   // G3: 13D/proxies presentes y con URL viva.
   const g3 = reportes.filter((r) => r.g3).map((r) => {
@@ -644,7 +701,13 @@ function veredicto(reportes) {
     console.log(`       ${r.ticker.padEnd(6)} ${tipo}`);
   }
 
-  return { g1Verde, g2Verde, g3Verde, guiaEnXbrl: conGuia.length > 0, detalle: { g1, g2, g3 } };
+  return {
+    g1Verde, g2Verde, g3Verde,
+    guiaEnXbrl: conGuia.length > 0,
+    evaluados: domesticos.map((r) => r.ticker),
+    noAplica: extranjeros.map((r) => r.ticker),
+    detalle: { g1, g2, g3 },
+  };
 }
 
 // ═════════════════════════════════════════════════════════════════════════
