@@ -29,7 +29,7 @@
 
 import {
   FAMILIAS, analizarFamilia, analizarItems8K, aplanarSubmissions,
-  clasePeriodo, dias, hechosDe,
+  clasePeriodo, dias, hechosDe, veredicto,
 } from '../scripts/historia-phase0-probe.mjs';
 
 let failures = 0;
@@ -265,6 +265,70 @@ console.log('\n── analizarFamilia · ausencia y ventana temporal');
 // ─────────────────────────────────────────────────────────────────
 // 5. Coherencia del catálogo de familias
 // ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// 6. veredicto(): el criterio se condiciona al PERFIL del emisor
+//
+// Replica la corrida 1 con sus numeros reales. Ahi G1 y G2 salieron ROJAS
+// por un solo emisor —VIST— que es justamente el CONTROL de cobertura
+// parcial (§4 del memo). Un 20-F no reporta trimestres ni presenta 8-K:
+// que le falten los dos no es un hallazgo sobre EDGAR, es la definicion de
+// emisor privado extranjero, y eso ya lo clasifica G6. Medir el control con
+// la vara del emisor domestico convertia en falla justo lo que se puso para
+// mostrar el limite.
+//
+// Estos tests fijan la regla para que no se vuelva a mover: domesticos →
+// G1/G2; extranjeros → fuera de criterio, veredicto en G6.
+// ─────────────────────────────────────────────────────────────────
+console.log('\n── veredicto: el perfil del emisor decide qué compuerta aplica');
+{
+  const NUCLEO = ['ingresos', 'margen', 'inventario', 'neto'];
+  // 12/12 en el nucleo = lo que dieron LULU, MSFT y MELI.
+  const familias = (efectivos) => NUCLEO.map((id) => ({ id, efectivos }));
+  const emisor = (ticker, { efectivos, ochoK, conItems, extranjero }) => ({
+    ticker,
+    g1: { familias: familias(efectivos) },
+    g2: { ochoK, conItems, malFormados: 0 },
+    g3: { urls: [{ status: 200 }], censo: {} },
+    g5a: { conceptosDeGuia: [] },
+    g6: { formaAnual: extranjero ? '20-F' : '10-K', tiene20F: extranjero,
+          tiene10Q: !extranjero, tiene6K: extranjero },
+  });
+  const corrida1 = [
+    emisor('LULU', { efectivos: 12, ochoK: 47, conItems: 47, extranjero: false }),
+    emisor('MSFT', { efectivos: 12, ochoK: 44, conItems: 44, extranjero: false }),
+    emisor('MELI', { efectivos: 12, ochoK: 52, conItems: 52, extranjero: false }),
+    emisor('VIST', { efectivos: 0, ochoK: 0, conItems: 0, extranjero: true }),
+  ];
+
+  const v = veredicto(corrida1);
+  eq(v.g1Estado, 'VERDE', 'G1 verde: los 3 domésticos dan 12/12; VIST no la decide');
+  eq(v.g2Estado, 'VERDE', 'G2 verde: los 3 domésticos dan 100%; VIST no la decide');
+  eq(v.detalle.g1.extranjeros.length, 1, 'VIST queda listado aparte en G1');
+  eq(v.detalle.g2.extranjeros.length, 1, 'VIST queda listado aparte en G2');
+  eq(v.detalle.g1.domesticos.length, 3, 'G1 se evalúa sobre los 3 domésticos');
+
+  // Sin 8-K la cobertura es n/a, NO 0%. La corrida 1 imprimia "VIST 0.0%",
+  // que leia como fallo cuando era ausencia de muestra.
+  eq(v.detalle.g2.extranjeros[0].cob, null, 'sin 8-K la cobertura es n/a, no 0%');
+
+  // Que el control no decida NO significa que nada la decida: un domestico
+  // que de verdad falle tiene que seguir poniendo la compuerta en rojo.
+  const conDomesticoRoto = [
+    emisor('LULU', { efectivos: 12, ochoK: 47, conItems: 47, extranjero: false }),
+    emisor('MSFT', { efectivos: 7, ochoK: 44, conItems: 30, extranjero: false }),
+    emisor('VIST', { efectivos: 0, ochoK: 0, conItems: 0, extranjero: true }),
+  ];
+  const v2 = veredicto(conDomesticoRoto);
+  eq(v2.g1Estado, 'ROJO', 'G1 roja si un DOMÉSTICO no llega al criterio');
+  eq(v2.g2Estado, 'ROJO', 'G2 roja si un DOMÉSTICO baja del 95%');
+
+  // Una compuerta sin muestra no opina: ni verde por vacio ni roja.
+  const soloExtranjeros = [emisor('VIST', { efectivos: 0, ochoK: 0, conItems: 0, extranjero: true })];
+  const v3 = veredicto(soloExtranjeros);
+  eq(v3.g1Estado, 'INCONCLUSO', 'G1 inconclusa si no hay ningún doméstico que medir');
+  eq(v3.g2Estado, 'INCONCLUSO', 'G2 inconclusa si no hay ningún doméstico que medir');
+}
+
 console.log('\n── catálogo FAMILIAS');
 {
   ok(FAMILIAS.length > 0, 'hay familias definidas');

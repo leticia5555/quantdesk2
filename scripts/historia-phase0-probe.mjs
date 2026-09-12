@@ -588,7 +588,7 @@ function reporteLatencia() {
   return filas;
 }
 
-function veredicto(reportes) {
+export function veredicto(reportes) {
   console.log('\n═══════════════════════════════════════════════════════════');
   console.log('  COMPUERTAS — criterio fijado ANTES de la corrida');
   console.log('═══════════════════════════════════════════════════════════');
@@ -596,27 +596,65 @@ function veredicto(reportes) {
   const vivos = reportes.filter((r) => !r.error && r.g1 && !r.g1.error);
   const lineas = [];
 
+  // El perfil del emisor decide QUE compuerta le aplica.
+  //
+  // Corrida 1: G1 y G2 salieron rojas por un solo emisor, VIST, que es
+  // justamente el CONTROL de cobertura parcial (§4 del memo). Un 20-F no
+  // reporta trimestres ni presenta 8-K: que le falten los dos no es un hallazgo
+  // sobre EDGAR, es la definicion de emisor privado extranjero — y eso ya lo
+  // clasifica G6. Medirlo con la vara del emisor domestico convertia al control
+  // en falla, que es exactamente al reves de para lo que se puso.
+  //
+  // Entonces: G1 y G2 se evaluan SOLO sobre emisores domesticos. Los
+  // extranjeros se listan aparte, fuera de criterio, y su veredicto es G6.
+  const esExtranjero = (r) => Boolean(r.g6 && (r.g6.tiene20F || ['20-F', '40-F'].includes(r.g6.formaAnual)));
+  const domesticos = (arr) => arr.filter((r) => !esExtranjero(r));
+  const extranjeros = (arr) => arr.filter((r) => esExtranjero(r));
+
+  // Sin emisores domesticos no hay nada que medir: eso es INCONCLUSO, no verde
+  // por vacio ni rojo. Una compuerta sin muestra no opina.
+  const estadoDe = (evaluados, ok) => (!evaluados.length ? 'INCONCLUSO' : ok ? 'VERDE' : 'ROJO');
+  const marca = (e) => (e === 'VERDE' ? '🟢 VERDE' : e === 'ROJO' ? '🔴 ROJO ' : '🟡 INCONCL.');
+
   // G1: la película trimestral existe para las familias del núcleo.
   const NUCLEO = ['ingresos', 'margen', 'inventario', 'neto'];
   const esperados = ANIOS * 4;
-  const g1 = vivos.map((r) => {
+  const medirG1 = (r) => {
     const nucleo = r.g1.familias.filter((f) => NUCLEO.includes(f.id));
     const peor = Math.min(...nucleo.map((f) => f.efectivos));
-    return { ticker: r.ticker, peor, ok: peor >= esperados - 1 };
-  });
-  const g1Verde = g1.length && g1.every((x) => x.ok);
-  console.log(`  G1 company-facts   ${g1Verde ? '🟢 VERDE' : '🔴 ROJO '}  (criterio: ≥${esperados - 1}/${esperados} trimestres efectivos en ingresos+margen+inventario+neto)`);
-  for (const x of g1) console.log(`       ${x.ticker.padEnd(6)} peor familia del núcleo: ${x.peor}/${esperados}`);
+    return { ticker: r.ticker, peor, ok: peor >= esperados - 1, extranjero: esExtranjero(r) };
+  };
+  const g1Dom = domesticos(vivos).map(medirG1);
+  const g1Ext = extranjeros(vivos).map(medirG1);
+  const g1Estado = estadoDe(g1Dom, g1Dom.every((x) => x.ok));
+  const g1Verde = g1Estado === 'VERDE';
+  console.log(`  G1 company-facts   ${marca(g1Estado)}  (criterio: ≥${esperados - 1}/${esperados} trimestres efectivos en ingresos+margen+inventario+neto · SOLO emisores domésticos)`);
+  for (const x of g1Dom) console.log(`       ${x.ticker.padEnd(6)} peor familia del núcleo: ${x.peor}/${esperados}`);
+  for (const x of g1Ext) console.log(`       ${x.ticker.padEnd(6)} ${x.peor}/${esperados} — FUERA DE CRITERIO: emisor extranjero, no reporta trimestres. Lo clasifica G6.`);
 
   // G2: el índice ya clasifica los 8-K.
-  const g2 = reportes.filter((r) => r.g2).map((r) => ({
+  const medirG2 = (r) => ({
     ticker: r.ticker,
-    cob: r.g2.ochoK ? r.g2.conItems / r.g2.ochoK : 0,
+    ochoK: r.g2.ochoK,
+    // Sin 8-K no hay cobertura que medir: es n/a, NO 0%. En la corrida 1 esto
+    // imprimia "VIST 0.0%", que leia como fallo cuando era ausencia de muestra.
+    cob: r.g2.ochoK ? r.g2.conItems / r.g2.ochoK : null,
     mal: r.g2.malFormados,
-  }));
-  const g2Verde = g2.length && g2.every((x) => x.cob >= 0.95 && x.mal === 0);
-  console.log(`  G2 items de 8-K    ${g2Verde ? '🟢 VERDE' : '🔴 ROJO '}  (criterio: ≥95% con item y 0 mal formados, desde el índice)`);
-  for (const x of g2) console.log(`       ${x.ticker.padEnd(6)} ${(x.cob * 100).toFixed(1)}% · mal formados ${x.mal}`);
+    extranjero: esExtranjero(r),
+  });
+  const conG2 = reportes.filter((r) => r.g2);
+  const g2Dom = domesticos(conG2).map(medirG2);
+  const g2Ext = extranjeros(conG2).map(medirG2);
+  const g2Medibles = g2Dom.filter((x) => x.cob !== null);
+  const g2Estado = estadoDe(g2Medibles, g2Medibles.every((x) => x.cob >= 0.95 && x.mal === 0));
+  const g2Verde = g2Estado === 'VERDE';
+  console.log(`  G2 items de 8-K    ${marca(g2Estado)}  (criterio: ≥95% con item y 0 mal formados, desde el índice · SOLO emisores domésticos)`);
+  for (const x of g2Dom) {
+    console.log(x.cob === null
+      ? `       ${x.ticker.padEnd(6)} n/a — sin 8-K en la ventana (no es 0%, es ausencia de muestra)`
+      : `       ${x.ticker.padEnd(6)} ${(x.cob * 100).toFixed(1)}% · mal formados ${x.mal}`);
+  }
+  for (const x of g2Ext) console.log(`       ${x.ticker.padEnd(6)} n/a — FUERA DE CRITERIO: emisor extranjero, presenta 6-K y no 8-K. Lo clasifica G6.`);
 
   // G3: 13D/proxies presentes y con URL viva.
   const g3 = reportes.filter((r) => r.g3).map((r) => {
@@ -644,7 +682,8 @@ function veredicto(reportes) {
     console.log(`       ${r.ticker.padEnd(6)} ${tipo}`);
   }
 
-  return { g1Verde, g2Verde, g3Verde, guiaEnXbrl: conGuia.length > 0, detalle: { g1, g2, g3 } };
+  return { g1Estado, g2Estado, g1Verde, g2Verde, g3Verde, guiaEnXbrl: conGuia.length > 0,
+           detalle: { g1: { domesticos: g1Dom, extranjeros: g1Ext }, g2: { domesticos: g2Dom, extranjeros: g2Ext }, g3 } };
 }
 
 // ═════════════════════════════════════════════════════════════════════════
