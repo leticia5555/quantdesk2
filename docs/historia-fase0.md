@@ -127,8 +127,8 @@ Los criterios se fijaron **antes** de correr y están codificados en la función
 
 | | Criterio | Resultado |
 |---|---|---|
-| **G1** company-facts | ≥11/12 trimestres efectivos en ingresos+margen+inventario+neto, **solo emisores domésticos** | 🟢 **VERDE** — 12/12 en LULU, MSFT y MELI |
-| **G2** items de 8-K | ≥95% de los 8-K con item en el índice y 0 mal formados, **solo emisores domésticos** | 🟢 **VERDE** — 100.0% en los tres, 0 mal formados |
+| **G1** company-facts | ≥11/12 trimestres efectivos en ingresos+margen+inventario+neto, **solo emisores domésticos** | 🟢 **VERDE** — 12/12 en LULU, MSFT y MELI · VIST fuera de criterio |
+| **G2** items de 8-K | ≥95% de los 8-K con item en el índice y 0 mal formados, **solo emisores domésticos** | 🟢 **VERDE** — 100.0% en los tres, 0 mal formados · VIST fuera de criterio |
 | **G3** 13D / proxies | toda URL de documento primario muestreada da 200 | 🟢 **VERDE** — 32/32, los cuatro emisores |
 | **G4** latencia | sin umbral: dimensionamiento | 🟢 ráfaga de 10 concurrentes → 10× HTTP 200 en 524 ms, cero 429 |
 | **G5** guía en XBRL | bifurcación de diseño | 🔴 **NO EXISTE** — 0 de 1.927 conceptos. Ver §3 |
@@ -150,8 +150,18 @@ a quien tiene 0 8-K y 250 6-K. El rojo no medía la fuente: medía que le
 pedimos peras al olmo.
 
 **Qué se cambió.** La **población**, no la vara: G1 y G2 evalúan solo a los
-emisores domésticos, y los extranjeros se imprimen aparte como *n/a* con sus
-números reales al lado.
+emisores domésticos, y los extranjeros se imprimen aparte, **fuera de
+criterio**, con sus números reales al lado.
+
+Dos refinamientos que salieron al implementarlo y que valen por sí solos:
+
+- **Sin 8-K la cobertura es `n/a`, no 0%.** La corrida 1 imprimió
+  `VIST 0.0%`, que se lee como fallo cuando en realidad era ausencia de
+  muestra. Son cosas distintas y ahora se imprimen distinto.
+- **Estado `INCONCLUSO`.** Una compuerta que se queda sin emisores domésticos
+  que medir no opina: ni verde por vacío ni roja. Sin esto, cualquier filtro
+  que vaciara la muestra caía en rojo — la misma confusión de antes, en otra
+  forma.
 
 **Qué NO se cambió, y es la prueba de que no es hacer trampa:**
 
