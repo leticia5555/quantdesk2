@@ -11,8 +11,8 @@
 > la cookie de sesión en el redirect del agreement** (§6.4); con eso arreglado
 > entra a la primera (§6.5) · **legal §13107(c) 🟠 ABIERTA, declarada no
 > bloqueante** para el trabajo técnico (§4.2; el filo está en *publicar*, no en
-> parsear) · queda **G3** sin medir: ¿entra el Senado desde un runner de
-> GitHub? (§6.6, se dispara a mano).
+> parsear) · **G3 🟢 VERDE**: el Senado entra desde un runner de GitHub **sin
+> proxy** (§6.6), así que el costo recurrente de infraestructura es **US$0**.
 >
 > Fecha del reconocimiento: 2026-09-04. Actualiza y **contradice en un punto**
 > el censo de `docs/stock-tracker-scope.md` §1.1 (2026-07-21).
@@ -208,6 +208,10 @@ desactualizada, exagerada, o ser específica del pool de Apify.** Por eso:
 > de cookies (§6.4), no una defensa del sitio. Lo que **sigue en pie** de esta
 > sección es la nota de arquitectura de abajo: Actions corre en IPs de
 > datacenter, y eso lo responde **G3** (§6.6), no este párrafo.
+>
+> **G3 también salió VERDE** (2026-09-12, §6.6): el Action entra sin proxy. Con
+> eso, la hipótesis de Akamai de esta sección queda descartada **por completo**,
+> en los dos entornos que importaban.
 
 **G2 (compuerta binaria):** correr el flujo completo agreement→CSRF→POST JSON
 desde la IP donde va a vivir el cron.
@@ -404,7 +408,7 @@ fuentes en la misma app.
 | **G1 Cámara** | 🟢 **VERDE** | 100% de los PTR e-filed traen capa de texto (§6.2, confirmado §6.3) |
 | **G2 Senado** | 🟢 **VERDE** | 25 filas, `recordsTotal=2424` desde 2012, sesión creada de cero (§6.5) |
 | **Legal §13107(c)** | 🟠 **ABIERTA — no bloqueante para el trabajo técnico** (decisión de la dueña, 2026-09-10) | — |
-| **G3 Senado desde Actions** | ⏳ **SIN MEDIR** | Se dispara a mano (§6.6). No bloquea el scope; decide una línea del presupuesto |
+| **G3 Senado desde Actions** | 🟢 **VERDE** | Corrida #3 en `main`, success en 14 s desde IP de Azure (§6.6) |
 
 **La ruta recomendada, ahora doble:**
 
@@ -480,11 +484,12 @@ solo Cámara.
 | **TOTAL FASE A (datos, dos cámaras, sin UI ni agente)** | **32–45 h** |
 |---|---|
 
-**Condicionales, fuera del total:**
+**Costo recurrente de infraestructura: US$0.** G3 verde (§6.6) eliminó la única
+línea condicional que quedaba —el proxy residencial—, así que el total de
+arriba **es el total**. No hay asteriscos.
 
-| Condición | Costo |
+| Fuera del total | Costo |
 |---|---|
-| **G3 rojo** → proxy residencial con IP fija | +1,5–2,5 h · **US$5–15/mes recurrentes** (§6.6.1) |
 | Carril de visión, gasto de API | ~US$2 el backfill completo de la Cámara (§8.2); el Senado suma poco: los escaneados son minoría |
 
 **El caveat, reescrito.** El anterior decía que el feed "no es el Congreso, es
@@ -915,55 +920,50 @@ El Senado vuelve a ser lo que prometía §2.1: **datos ya estructurados**. El
 transacción** — sin PDF, sin cifrado, sin `pdfjs-dist`. Es la fuente *más
 barata de parsear de las dos*, al revés de lo que asumía el memo en julio.
 
-### 6.6 Pendiente — G3: ¿entra el Senado desde GitHub Actions?
+### 6.6 G3 — **VERDE**. El Senado entra desde GitHub Actions, sin proxy.
 
-G2 verde se midió desde una IP **residencial**. El cron no vive ahí. Y §2.2 ya
-avisaba: **los runners de GitHub corren en IPs de datacenter (Azure)**, así que
-G2 verde en casa **no implica** verde en el Action.
+Disparada a mano desde la pestaña Actions (`congreso-g3-senado.yml`,
+`workflow_dispatch`), corrida #3 sobre `main`: **success en 14 s**.
 
-Es una compuerta aparte y se mide desde el sitio exacto donde va a vivir el
-cron: `.github/workflows/congreso-g3-senado.yml`, `workflow_dispatch`, se
-dispara a mano desde la pestaña Actions.
+Era una compuerta real, no un trámite: G2 se midió desde IP **residencial**,
+pero el cron no vive ahí, y §2.2 avisaba que **los runners de GitHub corren en
+IPs de datacenter (Azure)**. Si `efdsearch` discriminara por reputación de IP,
+G2 verde en casa no habría implicado nada aquí.
 
-> **Para que aparezca el botón "Run workflow", el workflow tiene que estar en
-> la rama por defecto.** O sea: primero mergear el PR, después disparar.
+**No discrimina.** Y los 14 s dicen algo más: no hubo challenge, ni reintentos,
+ni latencia de mitigación — el flujo de cuatro pasos entra igual de limpio
+desde Azure que desde una sala en Monterrey.
 
-| Resultado | Qué significa para la Fase A |
-|---|---|
-| 🟢 **VERDE** | El parseo del Senado va **en el Action, sin proxy**. Costo recurrente **US$0**. |
-| 🔴 **ROJO** | La Fase A presupuesta **proxy residencial con IP fija** (§6.6.1). |
-| 🟡 **INCONCLUSO** | No se midió. **No es un rojo** — leer el artifact antes de concluir. |
+**Consecuencias, las tres:**
 
-El job **falla en rojo y en inconcluso**, para que el estado se lea desde la
-pestaña Actions sin abrir el log, y sube todos los cuerpos como artifact.
+1. El parseo del Senado va **en el Action**. Cero proxy.
+2. **US$0 de costo recurrente.** La línea del proxy sale del presupuesto.
+3. La hipótesis de Akamai de §2.2 queda descartada **también para IP de
+   datacenter** — o sea, del todo. Lo que quedaba de esa sección era
+   precisamente la nota de arquitectura sobre Actions, y acaba de medirse.
 
-#### 6.6.1 Si G3 sale rojo: el presupuesto del proxy, dicho antes de necesitarlo
+> **Lo que el workflow queda haciendo, más allá de esta corrida.** Sigue en el
+> repo como compuerta permanente: si el Senado empieza a bloquear runners en el
+> futuro, la Fase A se entera **disparando el workflow**, no depurando un cron
+> roto en producción. El job falla en rojo y en inconcluso, y sube los cuerpos
+> como artifact.
 
-Presupuestarlo ahora evita decidirlo con prisa después. Orden de magnitud de
-proxy residencial con IP fija (*sticky*), gama baja del mercado:
+#### 6.6.1 El presupuesto del proxy — quedó sin usarse
 
-| Concepto | Estimado |
-|---|---|
-| Proxy residencial, IP fija, volumen bajo (el índice + ~2400 detalles, luego incremental) | **US$5–15/mes** |
-| Integrar el proxy en el probe/parser (variable de entorno + secret del repo + reintentos) | **1–2 h** |
-| Segunda medición: confirmar que el Action **con** proxy sí entra | **0,5 h** |
-
-**Antes de comprar nada, dos comprobaciones que son gratis:** correr también
-`--only=g1` desde el Action (si la Cámara *tampoco* entra, el problema es del
-runner, no del Senado), y releer §2.2 — el memo ya decía que un rojo por rango
-de IP no se esquiva mudando el scraper a Actions.
-
-Y el caveat de §6 sigue vivo tal cual: un proxy de pago agrega costo
-recurrente, fragilidad y un olor que no quiero en un producto que ya carga
-§13107(c). **Si G3 sale rojo, la opción por defecto no es comprar el proxy: es
-Cámara en el Action + Senado declarado como pendiente en la UI**, y el proxy se
-discute como decisión propia, no como trámite.
+Se presupuestó por adelantado (US$5–15/mes + 1,5–2,5 h de integración) para no
+tener que decidirlo con prisa si G3 salía rojo. **No salió rojo, así que no
+entra en el presupuesto de la Fase A.** Se deja anotado en una línea por si la
+fuente cambia de conducta más adelante: el número ya está pensado, y la
+recomendación que lo acompañaba sigue en pie —si algún día el Action deja de
+entrar, la opción por defecto **no** es comprar el proxy, es Cámara en el
+Action y Senado declarado como pendiente en la UI, con el proxy discutido como
+decisión propia.
 
 ### Fase 0: CERRADA
 
 1. ~~Correr el probe desde una IP con egress~~ → hecho, **cinco corridas**
-   (§6.1–§6.5). **G1 VERDE y G2 VERDE.** Las dos compuertas técnicas del
-   veredicto están cerradas.
+   (§6.1–§6.5) más la corrida de G3 desde el runner (§6.6). **G1 VERDE, G2
+   VERDE y G3 VERDE.** Las tres compuertas técnicas están cerradas.
 2. La **consulta legal §13107(c)** (§4.2) sigue **abierta**, declarada **no
    bloqueante** para la Fase A por decisión de la dueña (2026-09-10). Se
    mantiene en el memo porque **vuelve a ser bloqueante antes de publicar el
@@ -972,8 +972,19 @@ discute como decisión propia, no como trámite.
    fallback por si el Senado quedaba fuera. Con G2 verde no hay agregador en el
    critical path, que era justamente el objetivo.
 
-**Lo único pendiente es G3** (§6.6), y no bloquea el scope: decide **una línea
-del presupuesto** (proxy sí o no), no si la Fase A arranca ni qué cubre.
+**No queda nada técnico pendiente.** El scope de la Fase A (§6.0) está cerrado
+en **32–45 h**, las dos cámaras, **US$0 de costo recurrente**.
+
+### Orden de trabajo (decidido 2026-09-12)
+
+La Fase A de Congreso **no arranca todavía**: va **después de la Fase 0 de
+HISTORIA**, que es un módulo nuevo y se trabaja en sesión aparte. Este memo
+queda como el contrato de entrada: cuando le toque el turno, la Fase A arranca
+de §6.0 (scope y horas) y §7 (decisiones a congelar), sin volver a abrir
+ninguna compuerta.
+
+Lo único que **sí conviene mover en paralelo**, porque no depende de nadie
+más y su respuesta puede cambiar la UI: la consulta legal de §4.2.
 
 ## 7. Si es viable: decisiones que la Fase 1 tiene que CONGELAR
 
@@ -994,10 +1005,11 @@ Ninguna se decide en este memo. Se listan para que la Fase 1 no las improvise.
    parseo vive en un **GitHub Action que escribe a Neon**; las funciones de
    Vercel siguen limpias y sin dependencias, y el endpoint del feed solo
    **lee** de la base. Razones: el parseo es batch diario, no request-time; el
-   carril de visión (§8) y un eventual proxy para el Senado viven mejor fuera
-   del serverless; y la primera dependencia del repo queda aislada en
-   `.github/workflows` + `scripts/`, no en `api/`. La Cámara no tiene gate, así
-   que la IP de Azure del runner no estorba.
+   carril de visión (§8) vive mejor fuera del serverless; y la primera
+   dependencia del repo queda aislada en `.github/workflows` + `scripts/`, no
+   en `api/`. **Confirmado por G3 (§6.6):** la IP de Azure del runner no
+   estorba **a ninguna de las dos cámaras** — el argumento del "eventual proxy
+   para el Senado" que aparecía aquí quedó sin objeto.
 
 **Producto**
 6. ¿Feed global cronológico, perfil por legislador, o los dos desde el día uno?
