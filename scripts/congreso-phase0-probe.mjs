@@ -446,6 +446,52 @@ function cookiesFrom(res, jar) {
   return Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ');
 }
 
+const jarHeader = (jar) => Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ');
+
+// Redirects a mano, porque `redirect: 'follow'` PIERDE cookies.
+//
+// Verificado contra un servidor local que imita a Django (corrida 4): con
+// `redirect: 'follow'`, el `Set-Cookie` que viaja en el 302 es INVISIBLE
+// —`res.headers.getSetCookie()` sobre la respuesta final devuelve []— y undici
+// no tiene jar propio, asi que tampoco reenvia esa cookie en el salto
+// siguiente. En el flujo del Senado el 302 del agreement es justamente donde
+// nace `sessionid` ({"search_agreement":true}) y donde Django ROTA el
+// `csrftoken`. Siguiendo el redirect a mano capturamos ambos en cada salto.
+async function fetchJar(url, opts = {}, jar = {}, maxHops = 5) {
+  const t0 = Date.now();
+  let current = url;
+  let hops = 0;
+  let init = { ...opts };
+  try {
+    for (;;) {
+      const cookie = jarHeader(jar);
+      const res = await fetch(current, {
+        ...init,
+        redirect: 'manual',
+        headers: { 'User-Agent': UA, ...(init.headers || {}), ...(cookie ? { Cookie: cookie } : {}) },
+      });
+      cookiesFrom(res, jar); // capturar ANTES de saltar
+      const loc = res.headers.get('location');
+      if (![301, 302, 303, 307, 308].includes(res.status) || !loc || hops >= maxHops) {
+        const ab = await res.arrayBuffer();
+        return { ok: res.ok, status: res.status, buf: Buffer.from(ab), res,
+                 url: current, hops, ms: Date.now() - t0 };
+      }
+      await res.arrayBuffer();
+      current = new URL(loc, current).toString();
+      hops++;
+      // 301/302/303 tras un POST se siguen como GET sin cuerpo (igual que el navegador).
+      if (init.method && init.method !== 'GET' && res.status !== 307 && res.status !== 308) {
+        const { body, method, ...rest } = init;
+        init = { ...rest, method: 'GET' };
+      }
+    }
+  } catch (e) {
+    return { ok: false, status: 0, buf: Buffer.alloc(0), note: String(e.message || e),
+             url: current, hops, ms: Date.now() - t0 };
+  }
+}
+
 // Huella del cuerpo de error: distingue bot-mitigation de un 500 de la app.
 function fingerprint(body) {
   const title = (body.match(/<title>([^<]*)<\/title>/i) || [, ''])[1].trim();
@@ -458,71 +504,148 @@ function fingerprint(body) {
            text: `title="${title || '-'}"${ref ? ` ref=${ref}` : ''} ${tag}` };
 }
 
+// Un 403 del proxy de egress no dice nada sobre la fuente. Sin esto, una
+// corrida desde un contenedor con allowlist declara ROJO una compuerta que
+// nunca se midio.
+function bloqueoDeProxy(r) {
+  const deny = r && r.res && r.res.headers.get('x-deny-reason');
+  const body = r && r.buf ? r.buf.toString('utf8').slice(0, 300) : '';
+  if (deny || /Host not in allowlist/i.test(body)) {
+    return `bloqueado por el proxy de egress (${deny || 'host_not_allowed'}) — NO se midio la fuente`;
+  }
+  return null;
+}
+
 async function probeSenate() {
   console.log('\n═══ G2 — SENADO (efdsearch.senate.gov) ═══');
-  const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
+  // UA real de Chrome. El anterior ("Chrome/126.0") no existe: Chrome siempre
+  // manda cuatro componentes (126.0.0.0). Un UA que ningun Chrome emite es
+  // justo lo que una regla de bot-mitigation marca.
+  const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+  const CH = {
+    'sec-ch-ua': '"Not;A=Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"macOS"',
+    'Accept-Language': 'en-US,en;q=0.9',
+  };
   const jar = {};
   const base = 'https://efdsearch.senate.gov';
   const PACE_MS = 2000; // pacing entre pasos (pedido tras la corrida v1)
 
-  console.log('  [1/3] GET /search/home/ (agreement + CSRF)');
-  const home = await fetchBuf(`${base}/search/home/`, { headers: { 'User-Agent': BROWSER_UA,
-    Accept: 'text/html,application/xhtml+xml', 'Accept-Language': 'en-US,en;q=0.9' } });
+  console.log('  [1/4] GET /search/home/ (agreement + CSRF)');
+  const home = await fetchJar(`${base}/search/home/`, { headers: { 'User-Agent': BROWSER_UA,
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', ...CH,
+    'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none',
+    'Upgrade-Insecure-Requests': '1' } }, jar);
   if (!home.ok) {
+    const proxyMsg = bloqueoDeProxy(home);
     console.log(`  ✗ HTTP ${home.status}${home.note ? ` — ${home.note}` : ''} (${home.ms}ms)`);
+    if (proxyMsg) {
+      console.log(`  → G2 INCONCLUSO: ${proxyMsg}.`);
+      console.log('    Correr desde una maquina con salida directa, no desde el contenedor.');
+      return { gate: 'INCONCLUSO', reason: proxyMsg };
+    }
     return { gate: 'ROJO', reason: `home HTTP ${home.status}` };
   }
   const html = home.buf.toString('utf8');
   save('senate-home.html', html);
-  const cookieHeader = cookiesFrom(home.res, jar);
   const csrf = (html.match(/name=['"]csrfmiddlewaretoken['"]\s+value=['"]([^'"]+)/) || [])[1] || jar.csrftoken;
   console.log(`  ✓ HTTP 200 (${home.ms}ms) · csrf ${csrf ? 'encontrado' : 'AUSENTE'} · cookies: ${Object.keys(jar).join(', ') || 'ninguna'}`);
   if (!csrf) return { gate: 'ROJO', reason: 'sin csrfmiddlewaretoken' };
 
   await sleep(PACE_MS);
-  console.log('  [2/3] POST /search/home/ (prohibition_agreement=1)');
-  const agree = await fetchBuf(`${base}/search/home/`, {
+  console.log('  [2/4] POST /search/home/ (prohibition_agreement=1)');
+  const agree = await fetchJar(`${base}/search/home/`, {
     method: 'POST',
-    headers: { 'User-Agent': BROWSER_UA, Cookie: cookieHeader, Referer: `${base}/search/home/`,
-               Origin: base, 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: { 'User-Agent': BROWSER_UA, Referer: `${base}/search/home/`, Origin: base, ...CH,
+               Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+               'Content-Type': 'application/x-www-form-urlencoded',
+               'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'same-origin' },
     body: new URLSearchParams({ prohibition_agreement: '1', csrfmiddlewaretoken: csrf }).toString(),
-  });
+  }, jar);
   if (!agree.ok) {
     console.log(`  ✗ HTTP ${agree.status} — el agreement no paso.`);
     return { gate: 'ROJO', reason: `agreement HTTP ${agree.status}` };
   }
-  const cookie2 = cookiesFrom(agree.res, jar);
-  console.log(`  ✓ HTTP ${agree.status} (${agree.ms}ms)`);
+  console.log(`  ✓ HTTP ${agree.status} (${agree.ms}ms) · ${agree.hops} redirect(s) → ${agree.url}`);
+  console.log(`    cookies tras el agreement: ${Object.keys(jar).join(', ') || 'ninguna'}`);
 
-  // Dos intentos: el simple (v1) y el payload DataTables completo. Si los dos
-  // dan el mismo error, no es el shape del request — es la puerta.
+  // El agreement solo cuenta si dejo la sesion firmada. Sin `sessionid` el
+  // POST de datos sale como visitante que nunca acepto: eso NO es un veredicto
+  // sobre la puerta, es un flujo incompleto, y hay que decirlo.
+  const tieneSesion = Boolean(jar.sessionid);
+  if (!tieneSesion) {
+    console.log('    ⚠ No hay cookie `sessionid`: el agreement no dejo sesion firmada.');
+  } else {
+    const payload = String(jar.sessionid).split(':')[0];
+    let decoded = '';
+    try { decoded = Buffer.from(payload, 'base64').toString('utf8'); } catch { /* opaca */ }
+    console.log(`    sessionid presente${/search_agreement/.test(decoded) ? ' · search_agreement=true ✓' : ''}`);
+  }
+
+  await sleep(PACE_MS);
+  console.log('  [3/4] GET /search/ (la pagina que hace el POST — de aqui sale el Referer real)');
+  const searchPage = await fetchJar(`${base}/search/`, { headers: { 'User-Agent': BROWSER_UA,
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', ...CH,
+    Referer: `${base}/search/home/`,
+    'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'same-origin' } }, jar);
+  const searchHtml = searchPage.buf.toString('utf8');
+  save('senate-search.html', searchHtml.slice(0, 40000));
+  console.log(`  ${searchPage.ok ? '✓' : '✗'} HTTP ${searchPage.status} (${searchPage.ms}ms) · ${searchPage.hops} redirect(s) → ${searchPage.url}`);
+  if (searchPage.hops > 0 && /\/search\/home/.test(searchPage.url)) {
+    console.log('    ⚠ Nos devolvio a /search/home/: la sesion NO trae el agreement aceptado.');
+  }
+  const csrf2 = jar.csrftoken
+    || (searchHtml.match(/name=['"]csrfmiddlewaretoken['"]\s+value=['"]([^'"]+)/) || [])[1]
+    || csrf;
+  if (csrf2 !== csrf) console.log('    (Django roto el csrftoken en el agreement — usando el nuevo.)');
+
+  // Headers identicos a los del XHR de DataTables en Chrome, con el Referer
+  // que manda de verdad el navegador: /search/, no /search/home/.
   const headers = () => ({
-    'User-Agent': BROWSER_UA, Cookie: cookie2, Referer: `${base}/search/home/`, Origin: base,
+    'User-Agent': BROWSER_UA, Referer: `${base}/search/`, Origin: base, ...CH,
     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-    'X-CSRFToken': jar.csrftoken || csrf, 'X-Requested-With': 'XMLHttpRequest',
+    'X-CSRFToken': csrf2, 'X-Requested-With': 'XMLHttpRequest',
     Accept: 'application/json, text/javascript, */*; q=0.01',
+    'Sec-Fetch-Dest': 'empty', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Site': 'same-origin',
   });
-  const simple = {
+
+  // Payload calcado del "Copy as cURL" del navegador (corrida 4). Lo anterior
+  // omitia 17 claves que DataTables SIEMPRE manda (columns[i][name] y el
+  // search[value]/search[regex] por columna, mas el segundo criterio de orden)
+  // y mandaba `submitted_start_date` vacio, que el navegador nunca manda vacio.
+  const navegador = {
+    draw: '1', start: '0', length: '25',
+    'search[value]': '', 'search[regex]': 'false',
+    'order[0][column]': '1', 'order[0][dir]': 'asc',
+    'order[1][column]': '0', 'order[1][dir]': 'asc',
+    report_types: '[11]', filer_types: '[]',
+    submitted_start_date: '01/01/2012 00:00:00', submitted_end_date: '',
+    candidate_state: '', senator_state: '', office_id: '', first_name: '', last_name: '',
+  };
+  for (let i = 0; i < 5; i++) {
+    navegador[`columns[${i}][data]`] = String(i);
+    navegador[`columns[${i}][name]`] = '';
+    navegador[`columns[${i}][searchable]`] = 'true';
+    navegador[`columns[${i}][orderable]`] = 'true';
+    navegador[`columns[${i}][search][value]`] = '';
+    navegador[`columns[${i}][search][regex]`] = 'false';
+  }
+  // El shape viejo, para saber si la diferencia estaba en el payload o no.
+  const viejo = {
     start: '0', length: '25', report_types: '[11]', filer_types: '[]',
     submitted_start_date: '', submitted_end_date: '', candidate_state: '',
     senator_state: '', office_id: '', first_name: '', last_name: '',
-    csrfmiddlewaretoken: jar.csrftoken || csrf,
+    csrfmiddlewaretoken: csrf2,
   };
-  const datatables = { ...simple, draw: '1', 'order[0][column]': '4', 'order[0][dir]': 'desc',
-    'search[value]': '', 'search[regex]': 'false' };
-  for (let i = 0; i < 5; i++) {
-    datatables[`columns[${i}][data]`] = String(i);
-    datatables[`columns[${i}][searchable]`] = 'true';
-    datatables[`columns[${i}][orderable]`] = 'true';
-  }
 
   let lastFp = null, lastStatus = 0;
-  for (const [label, payload] of [['simple', simple], ['DataTables', datatables]]) {
+  for (const [label, payload] of [['navegador', navegador], ['viejo', viejo]]) {
     await sleep(PACE_MS);
-    console.log(`  [3/3] POST /search/report/data/ — intento "${label}"`);
-    const data = await fetchBuf(`${base}/search/report/data/`, {
+    console.log(`  [4/4] POST /search/report/data/ — intento "${label}"`);
+    const data = await fetchJar(`${base}/search/report/data/`, {
       method: 'POST', headers: headers(), body: new URLSearchParams(payload).toString(),
-    });
+    }, jar);
     const body = data.buf.toString('utf8');
     save(`senate-report-data-${label}.txt`, body.slice(0, 40000));
     if (data.ok) {
@@ -543,18 +666,30 @@ async function probeSenate() {
     }
   }
 
-  // Un 503 con "Site Under Maintenance" y SIN huella de WAF no prueba nada
-  // sobre el acceso: es el Senado apagado, no el Senado bloqueandonos. Cerrar
-  // la compuerta con eso seria declarar un veredicto que no se gano.
+  // Un flujo sin `sessionid` no puede cerrar la compuerta: el fallo se explica
+  // solo con que nunca aceptamos el agreement.
+  if (!tieneSesion) {
+    console.log('\n  → G2 INCONCLUSO: el POST salio SIN cookie de sesion (agreement no aceptado).');
+    console.log('    El fallo se explica por el flujo, no por la puerta. No cierra nada.');
+    return { gate: 'INCONCLUSO', reason: `sin sessionid tras el agreement (HTTP ${lastStatus || 200})` };
+  }
+
+  // "Site Under Maintenance" ya NO es coartada por si solo: en la corrida 4
+  // (jueves 15:28 ET, horario habil de DC) el navegador cargo el sitio y la
+  // busqueda de PTRs funciono desde la MISMA IP, en el mismo momento en que el
+  // probe recibia el 503. Un mantenimiento real habria roto tambien a Chrome.
+  // O sea: esa pagina es la respuesta de senate.gov a ESTE request, no el sitio
+  // apagado. Sirve para contrastar contra la escalera.
   if (lastFp && lastFp.maintenance) {
-    console.log('\n  → G2 INCONCLUSO: el sitio respondio "Site Under Maintenance", sin huella de WAF.');
-    console.log('    Eso es una ventana de mantenimiento del Senado, NO un bloqueo a esta IP.');
-    console.log('    Repetir en horario habil de EE.UU.:  node scripts/congreso-phase0-probe.mjs --only=g2');
-    return { gate: 'INCONCLUSO', reason: `mantenimiento del sitio (HTTP ${lastStatus}, title="${lastFp.title}")` };
+    console.log('\n  → G2 INCONCLUSO: "Site Under Maintenance" en el ultimo paso.');
+    console.log('    OJO: en la corrida 4 el navegador funcionaba desde la misma IP a la misma');
+    console.log('    hora. Si vuelve a pasar, NO es ventana de mantenimiento: es la respuesta a');
+    console.log('    este request. Aislar con:  node scripts/congreso-senate-ladder.mjs');
+    return { gate: 'INCONCLUSO', reason: `"${lastFp.title}" (HTTP ${lastStatus}) con navegador OK en paralelo` };
   }
 
   console.log('\n  → G2 ROJO: los dos shapes de request fallan igual desde esta IP.');
-  console.log('    Mismo error con payload simple y con DataTables completo ⇒ no es el request,');
+  console.log('    Mismo error con el payload del navegador y con el viejo ⇒ no es el shape,');
   console.log('    es la puerta. El Senado queda FUERA del MVP y se declara en la UI.');
   return { gate: 'ROJO', reason: 'ambos intentos fallan (no es el shape del request)' };
 }
