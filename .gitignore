@@ -1,0 +1,4 @@
+# Salida cruda de las sondas de Fase 0 — payloads bajados de fuentes públicas
+# para diagnóstico offline. Se regeneran corriendo la sonda; no se versionan.
+.historia-fase0/
+.congreso-phase0/
