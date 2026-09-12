@@ -180,6 +180,18 @@ La prueba que importa: **¿el cambio esconde algún problema real?** No — lo
 hace *más* visible, porque convierte un foco rojo en una sonda interna en una
 etiqueta de cobertura en el producto.
 
+**Y hay una prueba que no depende de creerle a este párrafo.** Todo lo de
+arriba es un argumento, y un argumento sobre por qué aflojar un criterio no es
+aflojarlo es exactamente lo que uno escribiría si estuviera aflojándolo. Por
+eso la regla está **fijada en un test que intenta romperla**
+(`tests/historia-phase0-probe.test.mjs`): mete un emisor **doméstico roto** a
+propósito —7/12 trimestres y 68% de cobertura de items— y exige que G1 y G2
+**sigan poniéndose rojas**. Si alguien un día ensancha el filtro hasta dejar
+pasar una falla real, ese test falla.
+
+Que el control no decida no significa que nada decida, y ahora eso es una
+propiedad ejecutable del repo en vez de una promesa del memo.
+
 ---
 
 ## 5. El esquema
