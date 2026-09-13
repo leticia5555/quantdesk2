@@ -23,12 +23,17 @@ process.env.OPENROUTER_API_KEY = 'sk-or-test';
 process.env.ALPACA_PAPER_KEY = 'PK_CLAUDE'; process.env.ALPACA_PAPER_SECRET = 'S_CLAUDE';
 process.env.ALPACA_OPENAI_KEY = 'PK_OPENAI'; process.env.ALPACA_OPENAI_SECRET = 'S_OPENAI';
 process.env.ALPACA_CONTROL_KEY = 'PK_CONTROL'; process.env.ALPACA_CONTROL_SECRET = 'S_CONTROL';
+// Temporada 2: las 4 cuentas que se suman (Grok/Gemini/DeepSeek/Qwen).
+process.env.ALPACA_GROK_KEY = 'PK_GROK'; process.env.ALPACA_GROK_SECRET = 'S_GROK';
+process.env.ALPACA_GEMINI_KEY = 'PK_GEMINI'; process.env.ALPACA_GEMINI_SECRET = 'S_GEMINI';
+process.env.ALPACA_DEEPSEEK_KEY = 'PK_DEEPSEEK'; process.env.ALPACA_DEEPSEEK_SECRET = 'S_DEEPSEEK';
+process.env.ALPACA_QWEN_KEY = 'PK_QWEN'; process.env.ALPACA_QWEN_SECRET = 'S_QWEN';
 process.env.FINNHUB_API_KEY = 'fh-test';
 delete process.env.ARENA_LEAGUE;
 delete process.env.ARENA_SCREENER_ENABLED;
 delete process.env.ARENA_TEMPERATURE;
 
-import { runArenaLeague } from '../api/arena-run.js';
+import { runArenaLeague, runArenaSeasonAnnounce, SEASON } from '../api/arena-run.js';
 import { activeAgents, agentById, agentAlpacaCreds, ARENA_TEMPERATURE, ARENA_AGENTS } from '../api/_lib/arena-registry.js';
 import { callArenaLLM, providerKey } from '../api/_lib/arena-model.js';
 import { buildDiveSystemPrompt } from '../api/arena-run.js';
@@ -58,6 +63,7 @@ const openrouterCalls = [];  // { model, temperature, phase }
 const orderPosts = [];       // { account, symbol, side }
 const journalInserts = [];   // params de cada insert into arena_journal
 let moversFetches = 0;
+const seasonRows = [];       // agent_id con fila 'season_start' ya insertada (idempotencia)
 const aaplMetricFetches = [];
 // Calendario de Alpaca: por default trae una sesión hoy (mercado ABIERTO) para
 // que las corridas normales operen. La sección de "mercado cerrado" lo vacía.
@@ -125,20 +131,35 @@ global.fetch = async (url, opts = {}) => {
     if (q.includes('from arena_state')) return jsonReply({
       fields: [{ name: 'halted', dataTypeID: 16 }, { name: 'halted_at', dataTypeID: 1184 }, { name: 'halted_reason', dataTypeID: 25 }, { name: 'resumed_at', dataTypeID: 1184 }],
       rows: [['f', null, null, null]] });
-    if (q.includes('insert into arena_journal')) { journalInserts.push(body.params); return jsonReply({ fields: [], rows: [] }); }
+    // Idempotencia del anuncio de temporada: el SELECT devuelve los agent_id que
+    // YA tienen su fila de esta temporada (los que este mock vio insertar).
+    if (q.includes("status = 'season_start'") && q.startsWith('select')) {
+      return jsonReply({
+        fields: [{ name: 'agent_id', dataTypeID: 25 }],
+        rows: seasonRows.map((id) => [id]),
+      });
+    }
+    if (q.includes('insert into arena_journal')) {
+      journalInserts.push(body.params);
+      if (body.params[3] === 'season_start') seasonRows.push(body.params[13]);
+      return jsonReply({ fields: [], rows: [] });
+    }
     return jsonReply({ fields: [], rows: [] });
   }
   throw new Error('fetch inesperado en el test: ' + u);
 };
 
 // ── 1) Registry ──────────────────────────────────────────────────────
-console.log('liga: registry (Fase A activa, slugs, temperatura, creds)');
+console.log('liga: registry (Temporada 2: los 7 activos, slugs, temperatura, creds)');
 {
   const ids = activeAgents().map((a) => a.id);
-  ok(ids.length === 3 && ids.includes('claude') && ids.includes('openai') && ids.includes('control'),
-    'Fase A activa: claude + openai + control (los otros 4 apagados)', JSON.stringify(ids));
+  const SIETE = ['claude', 'openai', 'control', 'grok', 'gemini', 'deepseek', 'qwen'];
+  ok(ids.length === 7 && SIETE.every((x) => ids.includes(x)),
+    'Temporada 2: la liga COMPLETA activa (los 7)', JSON.stringify(ids));
   const off = ARENA_AGENTS.filter((a) => !a.enabled).map((a) => a.id);
-  ok(['grok', 'gemini', 'deepseek', 'qwen'].every((x) => off.includes(x)), 'Fase B presente pero apagada', JSON.stringify(off));
+  ok(off.length === 0, 'ya no queda ningún agente apagado en el registry', JSON.stringify(off));
+  ok(['grok', 'gemini', 'deepseek', 'qwen'].every((x) => agentById(x).enabled === true),
+    'Grok/Gemini/DeepSeek/Qwen encendidos (el flip de la Temporada 2)');
   ok(ARENA_TEMPERATURE === 0.7, 'temperatura fija 0.7 por default', String(ARENA_TEMPERATURE));
   ok(agentById('openai').model === 'openai/gpt-5-mini' && agentById('openai').provider === 'openrouter', 'openai → slug gpt-5-mini vía OpenRouter');
   ok(agentById('deepseek').house === 'china' && agentById('qwen').house === 'china', 'DeepSeek/Qwen marcados casa china (ángulo de contenido)');
@@ -147,9 +168,12 @@ console.log('liga: registry (Fase A activa, slugs, temperatura, creds)');
   ok(agentAlpacaCreds(agentById('claude')).key === 'PK_CLAUDE', 'claude reusa ALPACA_PAPER_* (continuidad del Agente #6)');
   ok(agentAlpacaCreds(agentById('openai')).key === 'PK_OPENAI' && agentAlpacaCreds(agentById('control')).key === 'PK_CONTROL',
     'openai/control leen sus propias ALPACA_<ID>_*');
-  // ARENA_LEAGUE gana sobre enabled
+  ok(['grok', 'gemini', 'deepseek', 'qwen'].every((id) => agentAlpacaCreds(agentById(id)).key === 'PK_' + id.toUpperCase()),
+    'los 4 de la Temporada 2 leen sus propias ALPACA_<ID>_* (7 libros distintos)');
+  // ARENA_LEAGUE sigue ganando sobre `enabled`; con los 7 en true su uso es RECORTAR
+  // la parrilla sin redeploy (y el riesgo operativo es dejarla puesta de la Fase A).
   process.env.ARENA_LEAGUE = 'claude,grok';
-  ok(activeAgents().map((a) => a.id).join(',') === 'claude,grok', 'ARENA_LEAGUE override enciende cualquier subconjunto (Fase B sin redeploy)');
+  ok(activeAgents().map((a) => a.id).join(',') === 'claude,grok', 'ARENA_LEAGUE recorta la parrilla sin redeploy (gana sobre enabled)');
   delete process.env.ARENA_LEAGUE;
 }
 
@@ -178,20 +202,24 @@ console.log('liga: dispatch de proveedor normalizado');
 }
 
 // ── 4) Orquestador de la liga de punta a punta ──
-console.log('liga: runArenaLeague — 3 agentes, multi-cuenta, agent_id, dedupe');
+console.log('liga: runArenaLeague — los 7 agentes, multi-cuenta, agent_id, dedupe');
 anthropicCalls.length = 0; openrouterCalls.length = 0; orderPosts.length = 0;
 journalInserts.length = 0; moversFetches = 0; aaplMetricFetches.length = 0;
 const res = await runArenaLeague({ baseUrl: BASE_URL });
 {
+  const SIETE = ['claude', 'openai', 'control', 'grok', 'gemini', 'deepseek', 'qwen'];
   const byId = Object.fromEntries((res.agents || []).map((a) => [a.id, a]));
-  ok(res.agents.length === 3 && byId.claude && byId.openai && byId.control, 'corren los 3 agentes de la Fase A', JSON.stringify(res.league));
-  ok(byId.claude.status === 'ok' && byId.openai.status === 'ok' && byId.control.status === 'ok', 'los 3 deciden ok (1 orden c/u)', JSON.stringify(res.agents.map((a) => [a.id, a.status])));
+  ok(res.agents.length === 7 && SIETE.every((id) => byId[id]), 'corren los 7 agentes de la Temporada 2', JSON.stringify(res.league));
+  ok(SIETE.every((id) => byId[id].status === 'ok'), 'los 7 deciden ok (1 orden c/u)', JSON.stringify(res.agents.map((a) => [a.id, a.status])));
 
-  // Proveedor correcto por agente: claude+control → Anthropic; openai → OpenRouter.
+  // Proveedor correcto por agente: claude+control → Anthropic; los otros 5 → OpenRouter.
   ok(anthropicCalls.length === 4, 'Anthropic recibió 4 llamadas (claude + control, 2 fases c/u)', String(anthropicCalls.length));
-  ok(openrouterCalls.length === 2, 'OpenRouter recibió 2 llamadas (openai, 2 fases)', String(openrouterCalls.length));
+  ok(openrouterCalls.length === 10, 'OpenRouter recibió 10 llamadas (5 agentes × 2 fases)', String(openrouterCalls.length));
   ok(anthropicCalls.every((c) => c.model === 'claude-haiku-4-5'), 'Anthropic siempre con el modelo Haiku');
-  ok(openrouterCalls.every((c) => c.model === 'openai/gpt-5-mini'), 'OpenRouter siempre con el slug gpt-5-mini');
+  // Cada agente de OpenRouter va con SU slug — un solo adapter, cinco modelos.
+  const slugsVistos = [...new Set(openrouterCalls.map((c) => c.model))].sort();
+  ok(slugsVistos.join(',') === ['openai/gpt-5-mini', 'x-ai/grok-4-fast', 'google/gemini-2.5-flash', 'deepseek/deepseek-chat-v3.1', 'qwen/qwen-plus'].sort().join(','),
+    'OpenRouter recibió los 5 slugs distintos (uno por agente)', JSON.stringify(slugsVistos));
 
   // TEMPERATURA fija 0.7 en AMBOS proveedores.
   ok(anthropicCalls.every((c) => c.temperature === 0.7) && openrouterCalls.every((c) => c.temperature === 0.7),
@@ -200,13 +228,13 @@ const res = await runArenaLeague({ baseUrl: BASE_URL });
   // MULTI-CUENTA: cada agente mandó su orden a SU cuenta.
   const acctBySym = {};
   for (const o of orderPosts) acctBySym[o.account] = (acctBySym[o.account] || 0) + 1;
-  ok(orderPosts.length === 3, 'tres órdenes (una por agente)', JSON.stringify(orderPosts.map((o) => o.account)));
-  ok(acctBySym.PK_CLAUDE === 1 && acctBySym.PK_OPENAI === 1 && acctBySym.PK_CONTROL === 1,
-    'cada orden fue a la cuenta Alpaca correcta (multi-login por header)', JSON.stringify(acctBySym));
+  ok(orderPosts.length === 7, 'siete órdenes (una por agente)', JSON.stringify(orderPosts.map((o) => o.account)));
+  ok(SIETE.every((id) => acctBySym['PK_' + id.toUpperCase()] === 1),
+    'cada orden fue a la cuenta Alpaca correcta (7 libros, multi-login por header)', JSON.stringify(acctBySym));
 
   // agent_id: cada fila del journal lleva su agente (param $14, posición 13).
   const agentIds = journalInserts.map((p) => p[13]).sort();
-  ok(agentIds.length === 3 && agentIds.join(',') === 'claude,control,openai',
+  ok(agentIds.length === 7 && agentIds.join(',') === [...SIETE].sort().join(','),
     'agent_id journaleado por agente (columna $14, no tabla por agente)', JSON.stringify(agentIds));
 
   // Trabajo COMPARTIDO por corrida: buffet una vez, deep-dive de AAPL una vez.
@@ -239,6 +267,37 @@ console.log('liga: mercado cerrado (calendario vacío) → skip global, UNA fila
   ok(ctx0.market_check && ctx0.market_check.reason && ctx0.market_check.date,
     'la fila journalea context.market_check (reason + fecha ET) para auditar', JSON.stringify(ctx0.market_check));
   ok(!ctx0.plan_number_audit, 'el skip ocurre ANTES del DIVE (sin plan_number_audit en un día cerrado)');
+}
+
+// ── Anuncio del arranque de TEMPORADA ─────────────────────────────────────────
+// Fila OPERATIVA por agente (no una decisión): cero órdenes, model null, status
+// propio, e IDEMPOTENTE — curlear el endpoint dos veces no duplica el rastro.
+console.log('liga: anuncio de arranque de Temporada ' + SEASON + ' (fila por agente, idempotente)');
+{
+  journalInserts.length = 0; seasonRows.length = 0;
+  const ordersBefore = orderPosts.length;
+  const hoy = new Date('2026-09-13T18:00:00Z');
+  const res = await runArenaSeasonAnnounce({ now: hoy });
+
+  ok(res.season === SEASON && res.announced.length === 7, 'anuncia a los 7 agentes de la parrilla', JSON.stringify(res.announced));
+  ok(res.run_date === '2026-09-13', 'la fila lleva la fecha del día del anuncio', res.run_date);
+  ok(orderPosts.length === ordersBefore, 'CERO órdenes: un anuncio no opera', String(orderPosts.length - ordersBefore));
+  ok(journalInserts.length === 7 && journalInserts.every((p) => p[3] === 'season_start'),
+    "las 7 filas van con status 'season_start' (separable del post-mortem)", JSON.stringify(journalInserts.map((p) => p[3])));
+  ok(journalInserts.every((p) => p[6] === null), 'model null: ningún LLM decidió esto', JSON.stringify(journalInserts.map((p) => p[6])));
+  ok(journalInserts.every((p) => JSON.parse(p[9] || '[]').length === 0), 'actions vacío en todas las filas');
+  ok(journalInserts.every((p) => p[2] === 'decide'),
+    "phase='decide' → el leaderboard la publica como la entrada visible del agente");
+  const plan0 = journalInserts[0][7];
+  ok(/TEMPORADA 2 DE LA LIGA/.test(plan0) && /7 agentes/.test(plan0), 'el plan anuncia la Temporada 2 y la parrilla', plan0);
+  ok(journalInserts.every((p) => p[7] === plan0), 'el mismo anuncio verbatim para los 7 (es un hecho de la liga)');
+  ok(JSON.parse(journalInserts[0][12]).roster.length === 7, 'context.roster deja quién arrancó la temporada (auditable)');
+
+  // Segunda pasada: idempotente.
+  journalInserts.length = 0;
+  const again = await runArenaSeasonAnnounce({ now: hoy });
+  ok(again.announced.length === 0 && again.skipped.length === 7, 'segunda corrida: no duplica (idempotente)', JSON.stringify(again));
+  ok(journalInserts.length === 0, 'cero inserts en la segunda corrida', String(journalInserts.length));
 }
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');

@@ -29,12 +29,14 @@
 //    `claude` REUSA ALPACA_PAPER_* (la cuenta del Agente #6) para no perder su
 //    historial. Mapa login→agente documentado en el scope.
 //
-// 4. CADENCIA. Fase A enciende `claude` + `openai` + `control` (ese trío
-//    ejercita TODAS las rutas: Anthropic directo, OpenRouter, multi-cuenta,
-//    identidad de prompt y el control). Fase B agrega Grok/Gemini/DeepSeek/Qwen
-//    — ya son filas aquí con `enabled:false`: encenderlas es flip de bandera +
-//    sus keys, o un solo `ARENA_LEAGUE=<ids>` en Vercel para lanzar los 7 de
-//    golpe sin tocar código.
+// 4. CADENCIA. La Fase A encendió `claude` + `openai` + `control` (ese trío
+//    ejercitó TODAS las rutas: Anthropic directo, OpenRouter, multi-cuenta,
+//    identidad de prompt y el control) con el radio de explosión mínimo. Con esa
+//    base verde y las 7 cuentas de Alpaca + OPENROUTER_API_KEY cargadas, la
+//    TEMPORADA 2 enciende la liga COMPLETA: Grok/Gemini/DeepSeek/Qwen pasan a
+//    `enabled:true` y los siete corren el mismo harness desde el mismo día.
+//    `ARENA_LEAGUE=<ids>` sigue disponible para recortar la parrilla en Vercel
+//    (p. ej. apagar a uno que rompa) sin tocar código ni redeployar.
 //
 // 5. CONTROL. `control` es Haiku-B: MISMO modelo, MISMO prompt (persona
 //    IDÉNTICA a `claude`), MISMA temperatura, DISTINTA cuenta. Es el piso de
@@ -72,9 +74,9 @@ const slug = (id, fallback) => process.env['ARENA_MODEL_' + id] || fallback;
 export const FLAGSHIP_AGENT_ID = 'claude';
 
 // ── LA LIGA ───────────────────────────────────────────────────────────
-// `enabled` = Fase A (los 3 primeros). Los slugs de OpenRouter apuntan a la
-// clase RÁPIDA/EFICIENTE de cada casa (comparable a Haiku), no al tope de
-// gama — así se mide el modelo y no el presupuesto (justificación en el scope).
+// `enabled` = la parrilla de la TEMPORADA 2: los SIETE. Los slugs de OpenRouter
+// apuntan a la clase RÁPIDA/EFICIENTE de cada casa (comparable a Haiku), no al
+// tope de gama — así se mide el modelo y no el presupuesto (ver el scope).
 export const ARENA_AGENTS = [
   {
     id: 'claude', name: 'Claude', model_label: 'Haiku 4.5',
@@ -94,33 +96,35 @@ export const ARENA_AGENTS = [
     alpaca: 'CONTROL', house: 'control', control: true, phase: 'A', enabled: true,
   },
 
-  // ── Fase B: la liga completa. Filas presentes, apagadas. Encender =
-  //    `enabled:true` (o `ARENA_LEAGUE`) + las keys de Alpaca de cada una. ──
+  // ── Los cuatro que entran en la TEMPORADA 2 (eran la Fase B). Encendidos:
+  //    sus `ALPACA_<ID>_*` ya están cargadas y comparten OPENROUTER_API_KEY. ──
   {
     id: 'grok', name: 'Grok', model_label: 'Grok 4 Fast',
     provider: 'openrouter', model: slug('GROK', 'x-ai/grok-4-fast'), persona: 'Grok PM',
-    alpaca: 'GROK', house: 'us', control: false, phase: 'B', enabled: false,
+    alpaca: 'GROK', house: 'us', control: false, phase: 'B', enabled: true,
   },
   {
     id: 'gemini', name: 'Gemini', model_label: 'Gemini 2.5 Flash',
     provider: 'openrouter', model: slug('GEMINI', 'google/gemini-2.5-flash'), persona: 'Gemini PM',
-    alpaca: 'GEMINI', house: 'us', control: false, phase: 'B', enabled: false,
+    alpaca: 'GEMINI', house: 'us', control: false, phase: 'B', enabled: true,
   },
   {
     id: 'deepseek', name: 'DeepSeek', model_label: 'DeepSeek V3.1',
     provider: 'openrouter', model: slug('DEEPSEEK', 'deepseek/deepseek-chat-v3.1'), persona: 'DeepSeek PM',
-    alpaca: 'DEEPSEEK', house: 'china', control: false, phase: 'B', enabled: false,
+    alpaca: 'DEEPSEEK', house: 'china', control: false, phase: 'B', enabled: true,
   },
   {
     id: 'qwen', name: 'Qwen', model_label: 'Qwen Plus',
     provider: 'openrouter', model: slug('QWEN', 'qwen/qwen-plus'), persona: 'Qwen PM',
-    alpaca: 'QWEN', house: 'china', control: false, phase: 'B', enabled: false,
+    alpaca: 'QWEN', house: 'china', control: false, phase: 'B', enabled: true,
   },
 ];
 
 // Los agentes que corren esta liga. `ARENA_LEAGUE` (lista de ids separada por
-// comas) gana sobre las banderas `enabled` — así el salto Fase A → liga completa
-// es UNA env var en Vercel, sin redeploy. Sin override: las banderas `enabled`.
+// comas) gana sobre las banderas `enabled`: con los siete ya en `true`, su uso
+// hoy es RECORTAR la parrilla en Vercel sin redeploy (sacar a uno que rompa, o
+// volver al trío de la Fase A). OJO: si quedó puesta de la Fase A, MANDA ELLA y
+// la liga sigue corriendo 3. Sin override: las banderas `enabled` (los 7).
 export function activeAgents() {
   const override = String(process.env.ARENA_LEAGUE || '').trim();
   if (override) {

@@ -97,8 +97,8 @@ tumba a los demás** — radio de explosión mínimo.
 
 ### 4. Cadencia — construir por etapas, lanzar de una vez
 
-**Fase A (esta):** `enabled:true` para **`claude` + `openai` + `control`**. Ese
-trío ejercita TODAS las rutas de la liga completa:
+**Fase A (cerrada):** `enabled:true` para **`claude` + `openai` + `control`**. Ese
+trío ejercitó TODAS las rutas de la liga completa:
 
 - **Anthropic directo** (`claude`, `control`) · **OpenRouter** (`openai`),
 - **multi-cuenta** (3 cuentas, 1 login),
@@ -108,12 +108,21 @@ trío ejercita TODAS las rutas de la liga completa:
 
 Con el mínimo radio de explosión: un bug de adapter revienta en 3 agentes, no en 7.
 
-**Fase B (después, cuando A esté verde unos días):** Grok, Gemini, DeepSeek, Qwen
-ya son **filas del registry** con `enabled:false`. Encenderlas es:
-- flip `enabled:true` + cargar sus `ALPACA_*` (y `OPENROUTER_API_KEY` ya está), **o**
-- una sola env var **`ARENA_LEAGUE=claude,openai,control,grok,gemini,deepseek,qwen`**
-  en Vercel (gana sobre las banderas `enabled`), para lanzar los 7 de golpe sin
-  redeploy.
+**Fase B → TEMPORADA 2 (hecha):** Grok, Gemini, DeepSeek y Qwen pasaron a
+`enabled:true` en el registry. Con las **7 cuentas de Alpaca** y
+`OPENROUTER_API_KEY` cargadas en Vercel Production, la liga corre **completa**:
+2 agentes por Anthropic directo (`claude`, `control`) y 5 por OpenRouter.
+
+El arranque queda **anunciado en el journal** (una fila `season_start` por
+agente, fechada): `GET /api/arena-run?action=announce` con el `CRON_SECRET`. Es
+manual e idempotente — una temporada arranca cuando se decide, no cuando corre
+el reloj — y no manda ninguna orden. Ver `runArenaSeasonAnnounce`.
+
+> **Cuidado con `ARENA_LEAGUE`.** Sigue **ganando sobre las banderas `enabled`**.
+> Si quedó puesta de la Fase A (`claude,openai,control`), la liga seguirá
+> corriendo **3 agentes** pese al flip, y `/api/leaderboard` mostrará 3 filas.
+> Para correr los 7 por bandera: **borrar la env var**. Su uso hoy es el
+> inverso — *recortar* la parrilla sin redeploy (sacar a uno que rompa).
 
 **No se publica hasta que los siete corran.** El lanzamiento público (TikTok) es
 con la liga completa desde el día 1 — la comparación se ve en el primer video.
