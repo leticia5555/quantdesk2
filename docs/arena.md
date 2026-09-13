@@ -17,6 +17,180 @@ honesta de la casa: experimento sin validación estadística, paper trading,
 no es asesoría. El razonamiento de cada decisión se publica verbatim junto
 al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 
+> **TEMPORADA 2 — vigente desde 2026-09-13.** El reglamento de abajo
+> (§ *Reglamento de la Temporada 2*) aplica **igual a los siete agentes** de la
+> liga y se ANUNCIA en el journal con fecha (fila `status='rules_changed'`,
+> `agent_id='league'`, idempotente). `PROMPT_VERSION` sube a `arena-pm-v3-t2`:
+> las métricas de T1 y T2 **no son comparables** y el corte queda explícito para
+> el post-mortem.
+
+## Reglamento de la Temporada 2 (2026-09-13)
+
+Sale de lo que la T1 dejó ver en vivo. **El objetivo declarado es que el agente
+venda cuando debe y recuerde lo que prometió — NO que opere más seguido.**
+Ninguna de las nueve reglas premia la frecuencia; dos la limitan explícitamente.
+
+| # | Regla | Dónde vive |
+|---|---|---|
+| 1 | **Memoria de compromisos** con fecha: lo que el PM promete vuelve en la corrida siguiente con obligación de pronunciarse | `_lib/arena-memory.js` (fold del journal) + prompt del DIVE |
+| 2 | **Recién-reportados** permanecen 2 sesiones en el buffet, con la cifra real y la sorpresa ya calculada | `trimEarnings` / `gatherContext` (`arena-run.js`) |
+| 3 | **Trailing stop**: pico ≥ +15% desde la entrada ARMA un trailing del 8% | `_lib/arena-exits.js` (`planTrailingStops`) |
+| 4 | **Time stop a 45 días** → pronunciamiento obligado (NO vende) | `_lib/arena-exits.js` (`timeStopState`) + auditoría en `arena-memory` |
+| 5 | **Salidas a marketable limit**, no límite pasivo | `_lib/arena-guard.js` (`validateActions`) |
+| 6 | **Flag de ratios outlier** "posible artefacto contable" | `_lib/finnhub-dive.js` (`flagRatioOutliers`) |
+| 7 | **Corrida matutina por evento** post-earnings | `runArenaMorning` + cron `?phase=morning` |
+| 8 | **NO breaker SMA200** (NO-GO del dualmom) | decisión: ausencia protegida por lint (`tests/arena-t2.test.mjs`) |
+| 9 | **Pronunciamiento obligatorio por posición** cada corrida | prompt del DIVE + `auditPositionReview` |
+
+### 1. Memoria de compromisos (el fix de la amnesia NVDA/CRM)
+
+**El síntoma:** el PM escribía *"reservo efectivo para la dislocación
+post-earnings de NVDA"* y a los dos días ni NVDA ni CRM volvían a aparecer en su
+prosa. La promesa moría con la corrida que la escribió; nadie —ni él, ni el
+post-mortem— podía decir si la cumplió.
+
+El DIVE ahora emite `commitments: [{symbol, text, due}]`. Se journalean con id
+determinista (`YYYY-MM-DD:<tag>#<n>`, donde el tag distingue la corrida de
+decide de la matutina) y la corrida siguiente se los devuelve **abiertos, con su
+edad y si están vencidos**, exigiendo un `commitment_updates` por cada id:
+`cumplido` / `vigente` / `cancelado`. Un `vigente` es respuesta válida —pero hay
+que decir qué se está esperando—; el silencio queda contado como incumplimiento
+(`context.commitments.audit`).
+
+**Sin tabla nueva:** el estado abierto se DERIVA del journal con un fold
+(`foldCommitments`), el mismo criterio con el que el pico de equity del breaker
+sale de `max(account.equity)`. Un compromiso sin resolver a los 30 días caduca
+(marcado `caducado`, no borrado): el prompt no se llena de ruido viejo.
+
+### 2. Recién-reportados: 2 sesiones más en el buffet
+
+La T1 solo miraba hacia adelante (`/api/earnings?from=hoy`): **el día que NVDA
+reportaba, NVDA salía del buffet.** El PM había escrito "espero el reporte para
+decidir", el reporte llegaba, y el nombre ya no estaba en su contexto.
+
+Ahora la ventana del calendario se abre 5 días hacia atrás y `trimEarnings`
+devuelve DOS listas con **slots propios** — `earnings_this_week` (12) y
+`recently_reported` (8) —, para que una semana cargada no vuelva a expulsar a
+los reportados. Cada reportado viaja con `sessions_since_report`, el EPS real y
+la **sorpresa vs. estimado ya calculada** (la casa no delega aritmética al
+modelo). `sessionsAgo` cuenta sesiones L-V y **no descuenta festivos** a
+propósito: errar por ese lado mantiene un nombre un día MÁS en el buffet, que es
+la dirección segura para una regla cuyo propósito es no olvidar.
+
+### 3. Trailing stop — y por qué NO contradice a Kaminski & Lo
+
+La regla de salida de la T1 nace del hallazgo de que un stop **apretado** sobre
+una posición que revierte a la media destruye valor (MU: −13.1% y al día
+siguiente +3.9%). El trailing de la T2 es el caso **opuesto**: protege ganancia,
+no corta pérdida.
+
+- **Arma** solo cuando el pico desde la entrada llegó a **+15%**.
+- Armado, un cierre **8% por debajo de ese pico** liquida la posición entera con
+  marketable limit en la apertura siguiente.
+- **Por construcción nunca vende en pérdida:** `entrada × 1.15 × 0.92 = entrada ×
+  1.058`. El piso del trailing está SIEMPRE arriba de la entrada.
+
+El caso que arregla es el que la T1 estaba perdiendo: una ganadora que sube 25%,
+vuelve a plano, y nadie decide nada. El **pico** se deriva de la serie diaria
+acotada por la fecha de apertura, y la fecha de apertura se reconstruye de los
+**fills del propio journal** (`reconstructPositionOpens`) — sin tabla nueva, y
+auto-reparable. Si no se puede reconstruir, **el trailing NO arma**: fail-safe
+explícito, una regla nueva no liquida sobre un dato que no existe.
+
+### 4. Time stop a 45 días — obliga a hablar, no a vender
+
+A los 45 días calendario una tesis que no se movió es una tesis muerta o una que
+el PM ya no recuerda. La regla **no genera ninguna orden**: marca la posición
+`time_stop.due` en el contexto y exige un hold/trim/exit con razón. Lo que se
+mide es el incumplimiento: `position_review_audit.time_stop_missing` cuenta las
+posiciones VENCIDAS que ni así fueron nombradas.
+
+### 5. Salidas a marketable limit (cicatriz GOOGL)
+
+GOOGL: el PM decidió vender, puso un límite "justo" dentro de la banda ±2%, la
+orden `day` se quedó descansando arriba del mercado y **expiró sin llenar**. Al
+día siguiente la posición seguía ahí y el plan la narraba como *"pending order,
+monitor"*. **Una venta que no llena no es una venta.**
+
+La banda ±2% sigue siendo el sanity check del **anclaje de precio** del modelo
+(fuera de banda → descartada, como siempre), pero el precio que se ENVÍA es
+`cierre × (1 − ARENA_EXIT_BAND_DISCRETIONARY)` (4% por default), por debajo del
+mercado. **No es un ajuste silencioso** de los que la casa prohíbe: es política
+declarada de la capa de salida, journaleada por orden (`limit_price_proposed`,
+`repriced`, `exit_band`). La **compra no se toca**: un límite agresivo de compra
+paga de más, y ahí el precio del modelo sí es la decisión.
+
+### 6. Ratios outlier — "posible artefacto contable" (caso LYFT)
+
+Un P/E de 900, un ROE de 4,000% o un **debt/equity negativo** (equity contable
+negativo) no describen el negocio: son un renglón de una sola vez. El PM los
+citaba como fundamentales limpios. `flagRatioOutliers` compara contra límites de
+**plausibilidad** (no de calidad: un P/E de 60 es caro pero real) y cuelga
+`fundamentals_quality` al lado del número — **que sigue viajando tal cual**,
+porque borrarlo sería inventar un hueco. El prompt le dice qué hacer: o lo omite,
+o dice que puede ser un artefacto. Un dato ausente NO se marca: `null ≠ outlier`.
+
+### 7. Corrida matutina por evento post-earnings
+
+Cron aparte (`?phase=morning`, 14:50 UTC L-V, 10 min después del reconcile).
+**No es una segunda corrida diaria:** solo gasta LLM si una posición del libro de
+algún agente acaba de reportar. Qué cuenta como evento, medido contra el decide
+de las 22:40 de anoche:
+
+- **hoy BMO** → ningún decide lo vio. Entra.
+- **sesión anterior AMC/TBD** → el decide de anoche vio el número, pero el precio
+  recién reacciona en el open de hoy. Entra.
+- **ayer BMO** → ya repreció ayer y el decide de anoche cerró con ese precio
+  adentro. **No entra.**
+
+En esa corrida: **se salta el SCOUT** (el evento ya define el slate), **no se
+re-evalúa la red determinista** (trailing y stop catastrófico deciden con cierres
+COMPLETOS; a media mañana no hay uno nuevo y repetirlos duplicaría las órdenes de
+anoche) y **las compras se suprimen** — existe para decidir sobre lo que ya se
+tiene. Sin evento: una fila marcadora de liga
+(`skipped_no_post_earnings_event`) y cero tokens.
+
+### 8. NO hay breaker SMA200
+
+Descartado **explícitamente**: el backtest dual-momentum cerró el gate de
+tendencia en NO-GO (`docs/dualmom-backtest-scope.md`), así que no entra al Arena
+por la puerta de atrás. Es una decisión, no un olvido — por eso hay un lint
+(`tests/arena-t2.test.mjs`) que falla si alguien introduce una regla de salida
+por SMA200 en el guard, los exits, la memoria o el runner sin volver a decidirlo.
+
+### 9. Pronunciamiento obligatorio por posición
+
+Cada corrida, `positions_review: [{symbol, stance, reason}]` con **una entrada
+por posición** — `hold` / `trim` / `exit` — y una razón que cite los números
+dados. Para que pueda hacerlo, cada holding llega al prompt con su historia YA
+CALCULADA: `days_in_position`, `peak_since_entry`, `from_peak_pct`,
+`trailing_stop` (armado y su nivel) y `time_stop`.
+
+**La auditoría mide, no censura** (mismo patrón que `_lib/prose-audit.js`): una
+posición no mencionada NO aborta el run ni frena una orden — queda contada en
+`context.position_review_audit`, comparable entre los siete agentes de la liga,
+que es justo lo que el experimento quiere medir. Lo que sí fuerza una venta es el
+trailing determinista; la memoria le pone al PM la obligación de **hablar**, no
+de obedecer.
+
+Por la misma razón, los tres campos nuevos (`positions_review`, `commitments`,
+`commitment_updates`) son **tolerados, no contrato duro**: ausentes o
+malformados no abortan el run. La regla de "JSON malformado = cero órdenes"
+sigue cubriendo `plan` y `actions`; endurecerla con tres campos más solo subiría
+la tasa de aborts.
+
+### `aborted_malformed_json`: ahora dice POR QUÉ
+
+Ese status tenía dos causas muy distintas —el modelo parloteó fuera del JSON, o
+**se quedó sin tokens a mitad del objeto**— y el journal no las distinguía. Ahora
+la fila guarda `context.dive.stop_reason`, `response_chars` y `truncated`, y el
+`error` lo dice en prosa. Además el cupo del DIVE sube de **1500 → 3000 tokens**:
+con el contrato de la T2 (pronunciamiento por posición + uno por compromiso), una
+respuesta de 8 holdings ya no cabía en 1500 — y una respuesta cortada es JSON
+inválido, o sea una corrida entera perdida. `stop_reason` se normaliza también
+para OpenRouter (`finish_reason: 'length'` → `max_tokens`), así el diagnóstico
+existe para los siete agentes y no solo para los de Anthropic.
+
 ## Piezas
 
 | Pieza | Archivo |
@@ -24,10 +198,11 @@ al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 | Cliente Alpaca (limit-only hardcodeado, creds override para smoke) | `api/_lib/alpaca.js` |
 | Smoke + health · **smoke de VENTA** (cuenta paper aparte) | `api/alpaca.js` (`GET ?smoke=1` · `?smoke=sell`) |
 | Estado del agente (HALT del breaker −20%, resume manual) | tabla `arena_state` (`api/_lib/db.js`) |
-| Risk guard determinista (post-LLM, fail closed) + FLOOR del screener | `api/_lib/arena-guard.js` |
-| **Regla de salida** determinista (circuit breaker + stop catastrófico) | `api/_lib/arena-exits.js` |
+| Risk guard determinista (post-LLM, fail closed) + FLOOR del screener + **venta marketable (T2 #5)** | `api/_lib/arena-guard.js` |
+| **Regla de salida** determinista (circuit breaker + stop catastrófico + **trailing stop T2 #3**) | `api/_lib/arena-exits.js` |
+| **MEMORIA (T2)** — compromisos con fecha, historia de la posición, auditoría del pronunciamiento | `api/_lib/arena-memory.js` |
 | Deep dive Finnhub por candidato (fundamentales/recommendation/news) | `api/_lib/finnhub-dive.js` |
-| Cron decide (22:40 UTC L-V) + reconcile (14:40 UTC L-V) | `api/arena-run.js` + `vercel.json` |
+| Cron decide (22:40 UTC L-V) + reconcile (14:40 UTC L-V) + **matutina por evento (14:50 UTC L-V, T2 #7)** | `api/arena-run.js` + `vercel.json` |
 | **Canal SCREENER** — screens deterministas (value/momentum) | `api/_lib/screens.js` |
 | **Canal SCREENER** — capa de datos Neon (tabla + ledger) | `api/_lib/screener-db.js` |
 | **Canal SCREENER** — universo (~150 nombres, extraído de app.html) | `api/_lib/screener-universe.js` |
@@ -36,7 +211,7 @@ al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 | **Auditoría del run** (solo lectura, JSON/markdown + `?view=resumen`) | `api/arena-audit.js` + `api/_lib/arena-audit.js` |
 | Journal | tabla `arena_journal` (`api/_lib/db.js`) |
 | UI (sección en MIS AGENTES) | `app.html` (`qdArenaLoad`/`qdArenaHtml`) |
-| Tests | `tests/arena-guard.test.mjs` · `tests/arena-exits.test.mjs` · `tests/alpaca.test.mjs` · `tests/arena-run.test.mjs` · `tests/screens.test.mjs` · `tests/arena-audit.test.mjs` |
+| Tests | `tests/arena-guard.test.mjs` · `tests/arena-exits.test.mjs` · `tests/alpaca.test.mjs` · `tests/arena-run.test.mjs` · `tests/screens.test.mjs` · `tests/arena-audit.test.mjs` · **T2:** `tests/arena-memory.test.mjs` · `tests/arena-t2.test.mjs` · `tests/arena-morning.test.mjs` |
 
 ## Flujo de dos fases (SCAN → DEEP DIVE)
 
@@ -328,6 +503,14 @@ fracciones en (0,1), time-boxed del trial): `ARENA_BREAKER_DELEVER_DD` (0.15),
 escalamiento: `ARENA_EXIT_BAND_BREAKER` (0.12), `ARENA_EXIT_BAND_CATASTROPHIC`
 (0.32), `ARENA_EXIT_ESCALATION_STEP` (0.13), `ARENA_EXIT_BAND_MAX` (0.70). Un
 valor inválido (≤0 o ≥1) cae al default en silencio.
+
+**Temporada 2** (mismas reglas de validación; defaults entre paréntesis):
+`ARENA_TRAILING_ARM_GAIN` (0.15) y `ARENA_TRAILING_GIVE_BACK` (0.08) — el
+trailing de la regla #3 —, `ARENA_EXIT_BAND_TRAILING` (0.12) — su banda de
+marketable limit, sin escalamiento —, `ARENA_TIME_STOP_DAYS` (45, entero
+positivo; inválido → default) y `ARENA_EXIT_BAND_DISCRETIONARY` (0.04, en
+`_lib/arena-guard.js`) — la banda con la que se envía la VENTA del PM.
+Ninguna requiere tocarse para que la T2 corra: todas traen default.
 
 **Smoke de venta** (cuenta paper SEPARADA, para ejercitar el path REAL de venta
 sin ensuciar el libro del Agente #6): `ALPACA_SMOKE_KEY` / `ALPACA_SMOKE_SECRET`

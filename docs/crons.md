@@ -25,8 +25,17 @@ al final.
 | `agents:run`       | `/api/agents-run`                     | `30 22 * * 1-5`        | **vercel.json** |
 | `arena:decide`     | `/api/arena-run`                      | `40 22 * * 1-5`        | **vercel.json** |
 | `arena:reconcile`  | `/api/arena-run?phase=reconcile`      | `40 14 * * 1-5`        | **vercel.json** |
+| `arena:morning`    | `/api/arena-run?phase=morning`        | `50 14 * * 1-5`        | **vercel.json** |
 | `pead:hour`        | `/api/pead-harvest?job=hour`          | `30 21 * * *`          | **vercel.json** |
 | `screener:refresh` | `/api/arena-screener?job=refresh`     | `0 */4 * * *` (cada 4h) | **GitHub Actions** → `.github/workflows/external-crons.yml` |
+
+**`arena:morning` (Temporada 2, regla #7)** corre 10 minutos DESPUÉS del
+reconcile a propósito: primero se true-ean los fills de la apertura y recién
+después el PM decide. Es una corrida **por evento**, no una segunda corrida
+diaria — solo gasta LLM si una posición del libro de algún agente reportó
+(AMC de la sesión anterior o BMO de hoy). Si no hay evento, journalea una fila
+marcadora de liga (`skipped_no_post_earnings_event`) y sale. El latido late
+igual todos los días hábiles: distingue "el cron corrió" de "el cron operó".
 
 > ⚠️ `vercel.json` es JSON estricto: **no admite comentarios** (una key extra
 > como `//` rompe el build con *"should NOT have additional properties"*). Por

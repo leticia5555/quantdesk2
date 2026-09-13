@@ -232,5 +232,60 @@ ok(r.approved.length === 1 && r.discarded.length === 1 && /malformada/.test(r.di
 r = validateActions({ ...BASE, cash: 25000, actions: [act({ notional: 14000 }), act({ symbol: 'KO', limit_price: 60, notional: 14000 })] });
 ok(r.approved.length === 1 && r.discarded.length === 1, 'límites evaluados con estado acumulado del run', JSON.stringify({ a: r.approved.length, d: r.discarded.length }));
 
+// ── T2 #5: la VENTA del PM sale a MARKETABLE LIMIT (cicatriz GOOGL) ──
+console.log('arena-guard: T2 #5 — la venta se envía marketable, la compra no se toca');
+// Venta válida: el PM ancla en el cierre (150) y el guard la re-precia por
+// DEBAJO del mercado para que LLENE. La banda ±2% sigue validando su anclaje.
+r = validateActions({ ...BASE, actions: [{ symbol: 'NVDA', side: 'sell', notional: 3000, limit_price: 150, reasoning: 'salgo' }] });
+const sell = r.approved[0];
+ok(r.approved.length === 1 && sell.limit_price === +(150 * (1 - ARENA_RULES.discretionary_sell_band)).toFixed(2),
+  'la venta se envía a cierre × (1 − banda discrecional), por debajo del mercado', JSON.stringify(sell));
+ok(sell.limit_price_proposed === 150 && sell.repriced === 'marketable_sell' && sell.exit_band === ARENA_RULES.discretionary_sell_band,
+  'NO es un ajuste silencioso: queda el precio que pidió el PM, la marca y la banda usada', JSON.stringify(sell));
+ok(sell.notional === +(sell.qty * sell.limit_price).toFixed(2),
+  'el notional journaleado usa el precio REALMENTE enviado', JSON.stringify({ n: sell.notional, q: sell.qty, p: sell.limit_price }));
+
+// El PM que ya pidió un precio MÁS agresivo que el marketable conserva el suyo:
+// subirlo sería EMPEORAR su venta, y el objetivo es llenar, no cobrar peaje. Con
+// los defaults este caso no ocurre (la banda marketable, 4%, es más ancha que el
+// ±2% de anclaje), así que se prueba con una banda estrecha inyectada — que es
+// exactamente lo que pasaría si alguien bajara ARENA_EXIT_BAND_DISCRETIONARY.
+r = validateActions({
+  ...BASE, rules: { ...ARENA_RULES, discretionary_sell_band: 0.01 },
+  actions: [{ symbol: 'NVDA', side: 'sell', notional: 3000, limit_price: 147.2, reasoning: 'salgo ya' }],
+});
+ok(r.approved[0].limit_price === 147.2 && !r.approved[0].repriced,
+  'un límite del PM MÁS abajo que el marketable se respeta tal cual (nunca se re-precia hacia arriba)', JSON.stringify(r.approved[0]));
+
+// La banda ±2% NO se relaja: una venta fuera de banda sigue descartándose.
+r = validateActions({ ...BASE, actions: [{ symbol: 'NVDA', side: 'sell', notional: 3000, limit_price: 200, reasoning: 'sueño' }] });
+ok(r.approved.length === 0 && /banda/.test(r.discarded[0].reason),
+  'el marketable NO rescata una venta con el precio fuera de la banda ±2%: se descarta igual', JSON.stringify(r.discarded[0]));
+
+// La COMPRA no se re-precia: ahí el precio del modelo sí es la decisión.
+r = validateActions({ ...BASE, actions: [act()] });
+ok(r.approved[0].limit_price === 201 && !r.approved[0].repriced,
+  'la compra conserva el límite del PM (un límite agresivo de compra paga de más)', JSON.stringify(r.approved[0]));
+ok(ARENA_RULES.discretionary_sell_band > ARENA_RULES.price_band && ARENA_RULES.discretionary_sell_band < 0.12,
+  'la banda discrecional es más ancha que el ±2% de anclaje y más angosta que la del breaker (12%)',
+  String(ARENA_RULES.discretionary_sell_band));
+
+// ── T2 #1/#9: los campos nuevos son TOLERADOS, no contrato duro ──
+console.log('arena-guard: T2 — positions_review/commitments no endurecen el parse');
+const t2Plan = parsePlanResponse(JSON.stringify({
+  plan: 'holdeo', actions: [],
+  positions_review: [{ symbol: 'AAPL', stance: 'hold', reason: 'sigue en tesis' }],
+  commitments: [{ symbol: 'NVDA', text: 'revisar tras el reporte', due: '2026-09-18' }],
+  commitment_updates: [{ id: '2026-09-08:d#1', status: 'vigente' }],
+}));
+ok(t2Plan.ok && t2Plan.positions_review.length === 1 && t2Plan.commitments.length === 1 && t2Plan.commitment_updates.length === 1,
+  'los tres campos de la T2 llegan crudos al caller (los normaliza arena-memory)', JSON.stringify(Object.keys(t2Plan)));
+const t2Missing = parsePlanResponse('{"plan":"holdeo","actions":[]}');
+ok(t2Missing.ok && t2Missing.positions_review === undefined,
+  'una respuesta SIN los campos nuevos sigue siendo válida: no se sube la tasa de aborts por olvidar');
+const t2Junk = parsePlanResponse('{"plan":"holdeo","actions":[],"positions_review":"no es un array"}');
+ok(t2Junk.ok === true,
+  'un campo T2 malformado NO aborta el run: el contrato duro sigue siendo plan + actions (el olvido se MIDE, no se castiga con cero órdenes)');
+
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);

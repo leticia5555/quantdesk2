@@ -21,6 +21,10 @@ const EXPECTED = [
   { job: 'agents:run',      schedule: '30 22 * * 1-5',         cadence: 'días hábiles ~22:30', stale_after_h: 80 },
   { job: 'arena:decide',    schedule: '40 22 * * 1-5',         cadence: 'días hábiles ~22:40', stale_after_h: 80 },
   { job: 'arena:reconcile', schedule: '40 14 * * 1-5',         cadence: 'días hábiles ~14:40', stale_after_h: 80 },
+  // T2 #7: corrida matutina POR EVENTO. Late TODOS los días hábiles aunque no
+  // haya evento (el latido dice "el cron corrió", no "operó") — por eso la
+  // ventana de stale es la misma que la de los otros diarios.
+  { job: 'arena:morning',   schedule: '50 14 * * 1-5',         cadence: 'días hábiles ~14:50', stale_after_h: 80 },
   // pead:earnings retirado con el NO-GO del PEAD: sin schedule no hay latido,
   // y dejarlo acá daba ok:false permanente. Ver docs/wheel-fase0.md §4.3.
   { job: 'pead:hour',       schedule: '30 21 * * *',           cadence: '1×/día (SEC 8-K)',    stale_after_h: 30 },

@@ -205,7 +205,10 @@ const res = await runArenaLeague({ baseUrl: BASE_URL });
     'cada orden fue a la cuenta Alpaca correcta (multi-login por header)', JSON.stringify(acctBySym));
 
   // agent_id: cada fila del journal lleva su agente (param $14, posición 13).
-  const agentIds = journalInserts.map((p) => p[13]).sort();
+  // El anuncio del reglamento T2 (fila de liga, idempotente) usa OTRO insert con
+  // menos params y `'league'` literal en el SQL — se filtra por longitud para
+  // contar solo las filas por-agente del pipeline.
+  const agentIds = journalInserts.filter((p) => p.length === 14).map((p) => p[13]).sort();
   ok(agentIds.length === 3 && agentIds.join(',') === 'claude,control,openai',
     'agent_id journaleado por agente (columna $14, no tabla por agente)', JSON.stringify(agentIds));
 
