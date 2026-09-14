@@ -96,7 +96,7 @@ import { ARENA_AGENTS, ARENA_SEASON, activeAgents, agentById, agentAlpacaCreds, 
 // CADENCIA POR EVENTO: el corte de fecha y las constantes del vigilante.
 // El runner solo necesita saber CUÁNDO deja de correr el cron nocturno y qué
 // dice el reglamento nuevo; la lógica de disparadores vive en su módulo.
-import { WATCH_RULES, WATCH_START, watchCadenceActive } from './_lib/arena-watch.js';
+import { WATCH_RULES, watchCadenceActive, watchStartDate } from './_lib/arena-watch.js';
 
 // Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
 // reglas de universo); el buffet (trimMovers) la reusa y los tests de
@@ -1641,13 +1641,19 @@ export async function announceT2Rules(now = new Date()) {
 // N decisiones intradía por evento— como si fueran la misma población.
 //
 // La fecha NO es la del deploy: es `watchStartDate()`, el día en que el modelo
-// por evento entra en vigor. La corrida del lunes 14 se decide con el
-// reglamento viejo y queda del lado viejo del corte, que es justo el punto de
-// tener un corte.
-export const CADENCE_VERSION = WATCH_START;
-export const CADENCE_ANNOUNCEMENT_ID = 'arena-cadencia-evento-' + CADENCE_VERSION;
-export const CADENCE_RULES_TEXT = [
-  `CAMBIO DE CADENCIA del Arena — vigente desde ${WATCH_START}. Aplica IGUAL a los siete agentes de la liga, control incluido.`,
+// por evento entra en vigor.
+//
+// FUNCIONES, no constantes. Antes esto derivaba de la constante `WATCH_START` y
+// eso era un bug: `ARENA_WATCH_START` movía la COMPUERTA pero no el anuncio, así
+// que con la env var puesta el `rules_changed` quedaba fechado —y con el id— del
+// default, y el corte del post-mortem apuntaba a un día en el que no cambió
+// nada. La env var existe justamente para mover el corte sin deploy; si el
+// registro del corte no la sigue, la env var miente. Ahora las tres cosas
+// (compuerta, id y fecha del anuncio) salen del MISMO `watchStartDate()`.
+export function cadenceVersion() { return watchStartDate(); }
+export function cadenceAnnouncementId() { return 'arena-cadencia-evento-' + cadenceVersion(); }
+export function cadenceRulesText() { return [
+  `CAMBIO DE CADENCIA del Arena — vigente desde ${cadenceVersion()}. Aplica IGUAL a los siete agentes de la liga, control incluido.`,
   'El reglamento de las 9 reglas de la Temporada 2 NO cambia: sigue vigente completo en cada corrida. Lo que cambia es CUÁNDO se corre.',
   '1) SE RETIRA LA CORRIDA NOCTURNA. La decisión diaria post-cierre (22:40 UTC) deja de ser el latido del experimento. También se retira la corrida matutina post-earnings: el reporte del día pasa a ser uno de los disparadores.',
   `2) VIGILANTE SIN LLM: cada ${WATCH_RULES.tick_minutes} minutos en horario de mercado se leen, vía Alpaca, los precios de las posiciones de los siete libros y de los candidatos del buffet. Mirar cuesta CERO tokens; pensar se paga solo cuando hay motivo.`,
@@ -1658,16 +1664,16 @@ export const CADENCE_RULES_TEXT = [
   `7) TOPES, para que un día loco no queme tokens ni convierta al PM en day trader: máximo ${WATCH_RULES.max_runs_per_agent_day} corridas por agente por día (la de piso cuenta) y ${WATCH_RULES.cooldown_minutes} minutos de cooldown por ticker. Los disparadores de HECHO del día (earnings, 8-K, volumen, cercanía a un stop) disparan UNA vez por nombre por día; los de PRECIO se re-arman contra el último pronunciamiento.`,
   '8) LA RED DETERMINISTA NO SE MUEVE. Breaker, stop catastrófico y trailing siguen decidiendo con CIERRES COMPLETOS, una vez al día, en la revisión de piso — no intradía. El disparador de "a 2 puntos del stop" existe para que el PM pueda reaccionar ANTES que la red, no para que la red opine más seguido.',
   'OBJETIVO DECLARADO: que el agente decida cuando el mercado lo obliga, no cuando el reloj lo permite. Ser despertado más seguido NO es permiso para operar más seguido — ninguna regla de arriba premia la frecuencia, y dos de ellas la castigan.',
-].join('\n');
+].join('\n'); }
 
 export async function announceEventCadence(now = new Date()) {
   try {
     await sql(
       `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
        values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
-      [CADENCE_ANNOUNCEMENT_ID, CADENCE_VERSION, PROMPT_VERSION, CADENCE_RULES_TEXT,
+      [cadenceAnnouncementId(), cadenceVersion(), PROMPT_VERSION, cadenceRulesText(),
         JSON.stringify({
-          rules_version: CADENCE_VERSION, supersedes: T2_RULES_VERSION, prompt_version: PROMPT_VERSION,
+          rules_version: cadenceVersion(), supersedes: T2_RULES_VERSION, prompt_version: PROMPT_VERSION,
           cadence: 'event_driven', watch_rules: WATCH_RULES, applies_to: activeAgents().map((a) => a.id),
         })],
     );
@@ -1929,10 +1935,10 @@ async function supersededByWatch({ phase, now, trigger }) {
     id: 'arena-league-' + phase + '-superseded-' + now.toISOString(),
     run_date: now.toISOString().slice(0, 10), phase: 'decide', prompt_version: PROMPT_VERSION,
     agent_id: 'league', status: 'skipped_superseded_by_watch',
-    plan: `Corrida ${phase} retirada: desde ${WATCH_START} el Arena corre por EVENTO. Al libro lo despierta el vigilante (/api/arena-watch) cuando el mercado hace algo que le concierne, y la revisión de piso de la apertura +${WATCH_RULES.floor_after_open_minutes} min cubre al agente que nadie tocó. Cero tokens en esta fila.`,
-    context: { superseded_by: 'arena:watch', cadence_start: WATCH_START, ...(trigger ? { trigger } : {}) },
+    plan: `Corrida ${phase} retirada: desde ${watchStartDate()} el Arena corre por EVENTO. Al libro lo despierta el vigilante (/api/arena-watch) cuando el mercado hace algo que le concierne, y la revisión de piso de la apertura +${WATCH_RULES.floor_after_open_minutes} min cubre al agente que nadie tocó. Cero tokens en esta fila.`,
+    context: { superseded_by: 'arena:watch', cadence_start: watchStartDate(), ...(trigger ? { trigger } : {}) },
   });
-  return { agents: [], league: [], status: 'skipped_superseded_by_watch', cadence_start: WATCH_START };
+  return { agents: [], league: [], status: 'skipped_superseded_by_watch', cadence_start: watchStartDate() };
 }
 
 export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {

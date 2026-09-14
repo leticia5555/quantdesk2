@@ -255,9 +255,21 @@ console.log('\nvigilante: marcas, marketable limit y costo del peor caso');
     'el peor caso absoluto de los siete cabe en unos pocos dólares al día — el tope es lo que lo garantiza', String(est.daily_usd));
   console.log(`         (peor caso calculado: $${est.daily_usd}/día, ~$${est.monthly_usd}/mes con los 7 al tope)`);
 
+  // La suite fija ARENA_WATCH_START='2026-09-15' arriba, así que acá se prueba el
+  // COMPORTAMIENTO del corte contra la env var — no el default del código, que
+  // Lety movió al lunes 14 y puede volver a moverse sin tocar este test.
   ok(watchCadenceActive(new Date('2026-09-14T22:40:00Z')) === false,
-    'el LUNES 14 la cadencia nueva todavía NO rige: la corrida de esa noche corre con el reglamento viejo');
-  ok(watchCadenceActive(new Date('2026-09-15T13:50:00Z')) === true, 'el MARTES 15 sí');
+    'un día ANTES del corte vigente la cadencia nueva no rige: esa noche corre el cron viejo');
+  ok(watchCadenceActive(new Date('2026-09-15T13:50:00Z')) === true, 'el día del corte sí');
+  // Y el corte lo manda la env var, no la constante: es el freno de mano
+  // documentado (mover el corte sin deploy) y tiene que funcionar de verdad.
+  {
+    const saved = process.env.ARENA_WATCH_START;
+    process.env.ARENA_WATCH_START = '2026-09-20';
+    const antes = watchCadenceActive(new Date('2026-09-15T13:50:00Z'));
+    process.env.ARENA_WATCH_START = saved;
+    ok(antes === false, 'ARENA_WATCH_START manda sobre el default: empujarla adelante DEVUELVE el cron nocturno sin deploy');
+  }
 
   const titular = buildTriggerHeadline([
     { symbol: 'NVDA', type: 'move_since_pronouncement', detail: { price: 188, mark: 200, mark_source: 'prev_close', move_pct: -6 } },

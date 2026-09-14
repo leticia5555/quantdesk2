@@ -225,7 +225,11 @@ console.log('matutina: desde el corte de cadencia (cadencia por evento) la corri
   positionsMock = [{ symbol: 'NVDA', qty: '20', avg_entry_price: '150', market_value: '4000', current_price: '200', unrealized_plpc: '0.33' }];
   earningsCalendar = [{ ticker: 'NVDA', company: 'Nvidia Corp', date: prevSession, time: 'AMC', eps_est: 1.0, eps_actual: 0.9 }];
   const saved = process.env.ARENA_WATCH_START;
-  process.env.ARENA_WATCH_START = '2026-09-15';   // el corte real: el reloj de la suite ya lo pasó
+  // Una fecha DISTINTA del default declarado: así este caso prueba además que el
+  // anuncio SIGUE a la env var. Cuando derivaba de la constante, la compuerta se
+  // movía con `ARENA_WATCH_START` pero el `rules_changed` quedaba fechado en el
+  // default — el corte del post-mortem apuntando a un día en el que no cambió nada.
+  process.env.ARENA_WATCH_START = '2026-09-15';
   const r = await runArenaMorning({ baseUrl: BASE_URL, now: NOW });
   process.env.ARENA_WATCH_START = saved;
 
@@ -239,8 +243,12 @@ console.log('matutina: desde el corte de cadencia (cadencia por evento) la corri
   // El anuncio de reglamento entra por su propio insert (8 columnas, 5 params),
   // no por journalInsert: se busca por el id, que lleva la fecha del corte.
   const anuncio = journalInserts.filter((p) => String(p[0] || '').startsWith('arena-cadencia-evento-'));
-  ok(anuncio.length === 1 && anuncio[0][0] === 'arena-cadencia-evento-2026-09-15',
-    'y el cambio de reglamento queda anunciado con la FECHA DEL CORTE, no la del deploy', JSON.stringify(anuncio.map((p) => p[0])));
+  ok(anuncio.length === 1 && anuncio[0][0] === 'arena-cadencia-evento-2026-09-15' && anuncio[0][1] === '2026-09-15',
+    'el cambio de reglamento se anuncia con la FECHA DEL CORTE VIGENTE (la env var), no la del deploy ni el default del código',
+    JSON.stringify(anuncio.map((p) => [p[0], p[1]])));
+  ok(/vigente desde 2026-09-15/.test(String(anuncio[0][3] || '')),
+    'y el TEXTO del reglamento cita esa misma fecha: compuerta, id y prosa salen del mismo sitio',
+    String(anuncio[0][3] || '').slice(0, 80));
 }
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');

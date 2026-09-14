@@ -29,6 +29,12 @@ process.env.ALPACA_GEMINI_KEY = 'PK_GEMINI'; process.env.ALPACA_GEMINI_SECRET = 
 process.env.ALPACA_DEEPSEEK_KEY = 'PK_DEEPSEEK'; process.env.ALPACA_DEEPSEEK_SECRET = 'S_DEEPSEEK';
 process.env.ALPACA_QWEN_KEY = 'PK_QWEN'; process.env.ALPACA_QWEN_SECRET = 'S_QWEN';
 process.env.FINNHUB_API_KEY = 'fh-test';
+// Esta suite prueba la MECÁNICA de la corrida nocturna (los 7 agentes, multi-
+// cuenta, agent_id, dedupe), no el corte de cadencia — y corre contra el reloj
+// real, así que desde que el corte se adelantó al lunes 14 el gate la apagaba
+// entera. Se empuja el corte lejos con la env var que existe justo para eso: el
+// retiro del cron nocturno lo cubre `arena-morning.test.mjs`, con su propio caso.
+process.env.ARENA_WATCH_START = '2099-01-01';
 delete process.env.ARENA_LEAGUE;
 delete process.env.ARENA_SCREENER_ENABLED;
 delete process.env.ARENA_TEMPERATURE;
