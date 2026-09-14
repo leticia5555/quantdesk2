@@ -50,6 +50,10 @@
     {
       "path": "/api/pead-harvest?job=hour",
       "schedule": "30 21 * * *"
+    },
+    {
+      "path": "/api/arena-watch",
+      "schedule": "*/5 13-21 * * 1-5"
     }
   ]
 }

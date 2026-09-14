@@ -212,6 +212,11 @@ const TIPO_POR_STATUS = {
   risk_exit: 'red_de_riesgo',
   risk_broad_cut: 'red_de_riesgo',
   skipped_market_closed: 'mercado_cerrado',
+  // Cadencia por evento (2026-09-15): la fila marcadora que dejan el cron
+  // nocturno y la matutina ya retirados. NO es una decisión —cero tokens, cero
+  // órdenes—, así que agruparla con las decisiones diluiría toda métrica por
+  // corrida del post-mortem.
+  skipped_superseded_by_watch: 'cadencia_retirada',
 };
 
 export function auditaFila(row) {

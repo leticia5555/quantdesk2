@@ -13,6 +13,11 @@
 //                   stop catastrófico, breaker) con su `origen`
 //   rechazo       — una acción que NO se ejecutó, con la razón verbatim
 //   cambio_lider  — el #1 por equity cambió de manos
+//   disparador    — (cadencia por evento) el vigilante detectó algo que concierne a un agente:
+//                   qué fue, en qué nombre, y si lo despertó o lo frenó un tope.
+//                   Es el ÚNICO tipo que puede existir SIN una orden detrás —
+//                   y ése es el punto: "el mercado hizo esto y el PM decidió no
+//                   moverse" es una decisión, y la crónica de la liga la cuenta.
 //
 // PARA QUÉ: es la capa de DATOS de la narración de la liga. Hoy no hay UI ni
 // notificaciones que la consuman — a propósito: primero los datos, estables y
@@ -40,7 +45,7 @@
 import { sql } from './_lib/db.js';
 import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay } from './_lib/arena-registry.js';
 
-export const TIPOS = ['compra', 'venta', 'rechazo', 'cambio_lider'];
+export const TIPOS = ['compra', 'venta', 'rechazo', 'cambio_lider', 'disparador'];
 
 const BASELINE = (() => {
   const n = Number(process.env.ARENA_BASELINE_EQUITY);
@@ -105,6 +110,30 @@ export function eventosDeFila(row, nombre) {
     });
   }
   return out;
+}
+
+// Una fila de `arena_watch` → su evento de crónica. El titular NO viaja acá: el
+// disparador es anterior a la decisión, así que a esta altura todavía no existe
+// una voz que narre nada — la narración llega con la orden, en su propio evento.
+export function eventoDeDisparo(row, nombre) {
+  const d = row.detail || {};
+  return {
+    tipo: 'disparador', fecha: row.fired_at,
+    agente: row.agent_id, agente_nombre: nombre, simbolo: row.symbol,
+    disparador: row.trigger_type,
+    // `desperto` distingue los dos finales posibles de un disparo: el agente se
+    // pronunció, o un tope lo frenó (y entonces `razon` dice cuál).
+    desperto: !!row.fired,
+    razon: row.fired ? null : (row.skip_reason || null),
+    precio: num(d.price),
+    // Los números que hicieron que disparara, tal como se midieron. Viajan solo
+    // los que aplican a ese tipo: un disparo por volumen no tiene move_pct.
+    movimiento_pct: num(d.move_pct),
+    referencia: num(d.mark),
+    nivel: num(d.level),
+    puntos_al_nivel: num(d.points_to_level),
+    multiplo_volumen: num(d.multiple),
+  };
 }
 
 // Serie de equity por (fecha, agente) → eventos de CAMBIO DE LÍDER.
@@ -187,6 +216,25 @@ export default async function handler(req, res) {
     for (const e of eventosDeFila({ ...row, agent_id: id }, nombres[id] || id)) {
       if (tipos.has(e.tipo)) eventos.push(e);
     }
+  }
+
+  // DISPARADORES del vigilante (cadencia por evento). Tabla aparte del journal a propósito: son
+  // muchos más que las corridas (uno por nombre y por tipo, incluidos los que
+  // un tope frenó) y mezclarlos en la consulta del journal la volvería pesada
+  // para el 95% de las lecturas que no los piden. Best-effort: si la tabla no
+  // existe todavía (deploy previo a la migración), el feed sirve igual sin ellos.
+  let disparos = [];
+  if (tipos.has('disparador')) {
+    try {
+      const filas = await sql(
+        `select agent_id, symbol, trigger_type, fired, skip_reason, detail, fired_at
+         from arena_watch
+         where fired_at >= $1::timestamptz ${agente ? 'and agent_id = $2' : ''}
+         order by fired_at asc limit 2000`,
+        agente ? [desde, agente] : [desde]);
+      disparos = filas.map((f) => eventoDeDisparo(f, nombres[f.agent_id] || f.agent_id));
+    } catch (err) { disparos = []; }
+    for (const e of disparos) eventos.push(e);
   }
 
   // El liderazgo es un hecho de la LIGA: se calcula con todos los agentes

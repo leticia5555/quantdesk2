@@ -213,6 +213,60 @@ const SCHEMA = [
    )`,
   // Índice para la lectura pública (upcoming, ordenado por fecha).
   `create index if not exists macro_events_date_idx on macro_events (event_date)`,
+
+  // ═══ VIGILANTE del Arena (cadencia por evento) ════════════════
+  // Tres tablas chicas, todas de ESTADO del vigilante. El rastro narrativo
+  // (qué decidió el agente al ser despertado) sigue viviendo donde siempre:
+  // en `arena_journal`. Acá solo vive lo que el vigilante necesita para no
+  // repetirse: qué disparó, cuándo despertó a quién y contra qué precio mide.
+  //
+  // 1. arena_watch — TODO disparador, haya despertado al agente o no. La
+  //    condición #2 del reglamento de cadencia ("cada disparador se journalea con su
+  //    razón aunque el agente decida no operar") se cumple aquí: `fired=false`
+  //    + `skip_reason` deja auditable un disparo frenado por cooldown o tope.
+  `create table if not exists arena_watch (
+     id            bigserial primary key,
+     run_date      date not null,
+     agent_id      text not null,
+     symbol        text not null,
+     trigger_type  text not null,
+     fired         boolean not null default false,
+     skip_reason   text,
+     detail        jsonb,
+     fired_at      timestamptz not null default now()
+   )`,
+  `create index if not exists arena_watch_day_idx on arena_watch (run_date, agent_id)`,
+  `create index if not exists arena_watch_symbol_idx on arena_watch (agent_id, symbol, fired_at desc)`,
+
+  // 2. arena_watch_mark — el ANCLA del disparador de ±3%: el precio contra el
+  //    que se mide "desde su último pronunciamiento". Se re-fija cada vez que
+  //    el agente se pronuncia sobre el nombre, así el disparador se re-arma
+  //    solo. Sin fila, el ancla es el cierre anterior (ver markPrice).
+  `create table if not exists arena_watch_mark (
+     agent_id   text not null,
+     symbol     text not null,
+     price      numeric not null,
+     marked_at  timestamptz not null default now(),
+     source     text,
+     primary key (agent_id, symbol)
+   )`,
+
+  // 3. arena_watch_events / arena_watch_meta — cache de los eventos del día
+  //    (earnings + 8-K). En la DB y no en memoria para que una lambda fría no
+  //    re-escanee SEC; ver el encabezado de _lib/arena-watch-events.js.
+  `create table if not exists arena_watch_events (
+     run_date  date not null,
+     symbol    text not null,
+     kind      text not null,
+     detail    jsonb,
+     seen_at   timestamptz not null default now(),
+     primary key (run_date, symbol, kind)
+   )`,
+  `create table if not exists arena_watch_meta (
+     key        text primary key,
+     value      jsonb,
+     updated_at timestamptz not null default now()
+   )`,
 ];
 
 let schemaReady = false;

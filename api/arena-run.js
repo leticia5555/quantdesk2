@@ -93,6 +93,10 @@ import { callArenaLLM, providerKey } from './_lib/arena-model.js';
 // encabezado de _lib/arena-voice.js.
 import { generateHeadline } from './_lib/arena-voice.js';
 import { ARENA_AGENTS, ARENA_SEASON, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
+// CADENCIA POR EVENTO: el corte de fecha y las constantes del vigilante.
+// El runner solo necesita saber CUÁNDO deja de correr el cron nocturno y qué
+// dice el reglamento nuevo; la lógica de disparadores vive en su módulo.
+import { WATCH_RULES, WATCH_START, watchCadenceActive } from './_lib/arena-watch.js';
 
 // Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
 // reglas de universo); el buffet (trimMovers) la reusa y los tests de
@@ -622,12 +626,27 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
     ]
     : ['OPEN COMMITMENTS: none open right now. Anything you promise in today\'s plan goes into `commitments` so it comes back to you.', ''];
 
-  // Corrida por EVENTO (T2 #7): el encuadre cambia — no es la revisión diaria.
+  // Corrida por EVENTO: el encuadre cambia — no es la revisión diaria. Las tres
+  // formas (matutina post-earnings, disparador del vigilante, revisión de piso)
+  // difieren en lo que el PM PUEDE hacer, así que el encuadre lo dice explícito
+  // en vez de dejar que descubra por descarte qué acciones se le van a tirar.
+  const policy = eventPolicy(event);
+  const scope = (candidates || []).join(', ');
   const eventBlock = event
     ? [
-      `EVENT-DRIVEN MORNING RUN — this is NOT your daily review. ${event.headline}`,
-      'The market is open and these names are repricing on the number. You are here to act on what you already own: hold, trim or exit, with a reason. NEW POSITIONS ARE NOT PART OF THIS RUN — any buy will be discarded by the risk layer, so do not spend actions on them.',
-      'Doing nothing is a valid outcome. What is not valid is not saying anything about a position whose report just landed.',
+      event.type === 'watch_trigger'
+        ? `TRIGGERED RUN — this is NOT your daily review. ${event.headline}`
+        : event.type === 'watch_floor'
+          ? `FLOOR REVIEW — the watchdog saw nothing that concerns you today, so this is your scheduled pronouncement on the book. ${event.headline || ''}`.trim()
+          : `EVENT-DRIVEN MORNING RUN — this is NOT your daily review. ${event.headline}`,
+      `SCOPE: this run is limited to ${scope}. Any action on a different ticker is discarded by the risk layer — you were given no fresh data for anything else, so do not spend actions there.`,
+      policy.allow_buys
+        ? 'You MAY open a new position here if the full rulebook supports it: this run exists because something moved, and a name you do not own that moved is a buy decision or it is nothing. The same position limits, cash floor and price band apply as always.'
+        : 'NEW POSITIONS ARE NOT PART OF THIS RUN — any buy will be discarded by the risk layer, so do not spend actions on them. You are here to decide about what you already own.',
+      policy.intraday
+        ? 'THE MARKET IS OPEN AND YOUR ORDERS EXECUTE NOW, not at the next open: they are sent as marketable limits and are expected to fill within minutes. Price accordingly, and do not write a plan that assumes you get to see another close first.'
+        : 'Your orders rest until the next open, as always.',
+      'Doing nothing is a valid outcome — this run is not a quota to fill. What is not valid is being woken by something specific and saying nothing about it.',
       '',
     ]
     : [];
@@ -645,7 +664,13 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
     scanThesis || '(none provided)',
     '',
     'DEEP-DIVE DATA (Finnhub; per candidate: last_close, limit_range, profile, fundamentals, analyst recommendation counts, recent news headlines, and — when the candidate came from the earnings calendar — its upcoming report).',
-    `PRICING RULE — READ CAREFULLY: for each candidate, "last_close" is the reference close and "limit_range" {low, high} is the ONLY band the risk guard accepts (±${priceBand * 100}% of last_close). Your limit_price MUST fall inside [limit_range.low, limit_range.high] or the order is auto-discarded. Do NOT anchor your limit on 52-week highs/lows, analyst targets, or any other figure — only on last_close. If last_close is null you have no valid reference for that ticker: do not place an order for it.`,
+    `PRICING RULE — READ CAREFULLY: for each candidate, "last_close" is the reference price and "limit_range" {low, high} is the ONLY band the risk guard accepts (±${priceBand * 100}% of last_close). Your limit_price MUST fall inside [limit_range.low, limit_range.high] or the order is auto-discarded. Do NOT anchor your limit on 52-week highs/lows, analyst targets, or any other figure — only on last_close. If last_close is null you have no valid reference for that ticker: do not place an order for it.`,
+    ...(policy.intraday
+      // Honestidad de etiqueta: intradía ese campo NO es un cierre, es el
+      // último trade. El nombre del campo se conserva (es contrato con el
+      // guard y con el journal), pero el PM tiene que saber qué está mirando.
+      ? ['INTRADAY REFERENCE — the market is open, so "last_close" for each candidate is its LIVE last trade from Alpaca, not yesterday\'s close. It is the same number the risk guard checks your limit against, so anchor on it and nothing else.']
+      : []),
     'NOTES: null fields mean the datum was unavailable (do not guess it). Analyst price targets are NOT provided; use the recommendation buy/hold/sell split as the rating signal. marketCapM is in millions USD.',
     'RATIO SANITY — a candidate may carry `fundamentals_quality`, flagging ratios outside any plausible range (a P/E in the hundreds, a negative debt/equity, a margin above 100%). Those numbers are almost always an accounting artifact — a one-off charge or negative book equity — not a description of the business. If a ratio is flagged, either leave it out of your reasoning or say explicitly that it may be an artifact. Never build a thesis on a flagged ratio as if it were a clean fundamental.',
     'EARNINGS ALREADY OUT — a candidate whose `earnings` carries `reported: true` has ALREADY reported (with `sessions_since_report`, the actual EPS and the surprise vs estimate, all given to you). If you were waiting on that number, the wait is over: close the loop in this run rather than deferring it again.',
@@ -657,6 +682,7 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
     event
       ? 'Decide now, with the market open. Remember: ONE JSON object with plan, positions_review, commitment_updates, commitments and actions — nothing else.'
       : 'Decide your actions for the next market open. Remember: ONE JSON object with plan, positions_review (one entry per position), commitment_updates (one per open commitment id), commitments and actions — nothing else. Trading more is not the objective; deciding explicitly and remembering what you promised is.',
+    ...(event ? ['Being woken more often is not permission to trade more often — it is an obligation to decide more often. The book is scored on results, not on activity.'] : []),
   ].join('\n');
 }
 
@@ -832,6 +858,42 @@ export async function runArenaResume({ agentId = FLAGSHIP_AGENT_ID, now = new Da
   return { resumed: true, agent: agentId, halted_since: state.halted_at };
 }
 
+// ── POLÍTICA de la corrida por evento ────────────────────────────────
+// Hay tres formas de despertar al PM fuera de la revisión diaria, y difieren en
+// cuatro decisiones. Se resuelven AQUÍ, en un solo lugar, en vez de repartir
+// `if (event.type === ...)` por el runner:
+//
+//   allow_buys    ¿puede ABRIR riesgo nuevo?
+//   allow_unheld  ¿el slate puede traer nombres que NO tiene?
+//   slate_only    ¿se descarta cualquier acción fuera del slate?
+//   intraday      ¿la orden debe EJECUTAR ya (marketable), o descansa al open?
+//
+//   post_earnings_morning (T2 #7) — reacción al número sobre lo que YA tiene.
+//     Cerrada en las cuatro: sin compras, solo el libro, y la orden `day`
+//     descansa hasta la apertura (decide a media mañana con cierres de ayer).
+//   watch_trigger — el vigilante detectó algo. Reglamento COMPLETO sobre
+//     el/los nombres que dispararon: puede comprar (un candidato del buffet que
+//     se movió 5% es una compra o no es nada), puede traer nombres que no tiene,
+//     NO puede irse a otro lado, y ejecuta EN EL MOMENTO a marketable limit.
+//   watch_floor (cadencia #6) — la revisión de piso de la apertura +30. Es
+//     la revisión diaria mudada de horario: reglamento completo sobre TODO el libro. No abre
+//     posiciones nuevas (para eso están los disparadores y el buffet), pero sí
+//     ejecuta intradía: se decide con el mercado abierto.
+//
+// `event = null` → corrida normal: la política neutra, nada cambia.
+export function eventPolicy(event) {
+  if (!event) return { tag: 'd', allow_buys: true, allow_unheld: true, slate_only: false, intraday: false };
+  switch (event.type) {
+    case 'watch_trigger':
+      return { tag: 'w', allow_buys: true, allow_unheld: true, slate_only: true, intraday: true };
+    case 'watch_floor':
+      return { tag: 'f', allow_buys: false, allow_unheld: false, slate_only: true, intraday: true };
+    case 'post_earnings_morning':
+    default:
+      return { tag: 'm', allow_buys: false, allow_unheld: false, slate_only: true, intraday: false };
+  }
+}
+
 // ── fase DECIDE ──────────────────────────────────────────────────────
 // `event` (T2 #7) convierte la corrida en una POR EVENTO, no la revisión diaria:
 //   { type:'post_earnings_morning', symbols:[...], reports:{SYM:{...}}, headline }
@@ -845,10 +907,19 @@ export async function runArenaResume({ agentId = FLAGSHIP_AGENT_ID, now = new Da
 export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentById(FLAGSHIP_AGENT_ID), getBuffet, caches, event = null } = {}) {
   const runDate = now.toISOString().slice(0, 10);
   const agentId = agent.id;
-  // Tag de la corrida dentro del día: 'd' decide, 'm' matutina por evento. Entra
-  // en el id de los compromisos para que dos corridas del mismo día no colisionen.
-  const runTag = event ? 'm' : 'd';
-  const base = { id: 'arena-' + agentId + (event ? '-morning' : '') + '-' + now.toISOString(), run_date: runDate, phase: 'decide', prompt_version: PROMPT_VERSION, model: agent.model, agent_id: agentId };
+  // Política de la corrida por evento (ver eventPolicy). En la corrida normal
+  // es la neutra y nada de esto aplica.
+  const policy = eventPolicy(event);
+  // Tag de la corrida dentro del día: 'd' decide, 'm' matutina por evento, 'w'
+  // vigilante, 'f' revisión de piso. Entra en el id de los compromisos Y en el
+  // client_order_id, para que dos corridas del mismo día sobre el mismo símbolo
+  // no colisionen (con la cadencia por evento eso pasa TODOS los días).
+  const runTag = policy.tag;
+  // El id lleva el TIPO de corrida: con la cadencia por evento un agente puede
+  // tener varias filas el mismo día y "arena-claude-<iso>" ya no las distingue
+  // de un vistazo en el journal.
+  const runKind = event ? (event.type === 'post_earnings_morning' ? 'morning' : event.type) : null;
+  const base = { id: 'arena-' + agentId + (runKind ? '-' + runKind : '') + '-' + now.toISOString(), run_date: runDate, phase: 'decide', prompt_version: PROMPT_VERSION, model: agent.model, agent_id: agentId };
 
   // Caches del RUN (compartidos entre agentes por el orquestador): el buffet, los
   // cierres de Yahoo y los deep-dives de Finnhub son datos de MERCADO idénticos
@@ -1029,24 +1100,46 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   const apiKey = providerKey(agent);
 
   if (event) {
-    // El slate del evento se INTERSECTA con el libro vivo: si el nombre ya no
-    // está (se vendió ayer), no hay nada sobre qué pronunciarse.
+    // El slate del evento. Dos políticas, según quién despertó al agente:
+    //   - corrida matutina post-earnings (T2 #7): se INTERSECTA con el libro
+    //     vivo. Si el nombre ya no está (se vendió ayer), no hay nada sobre qué
+    //     pronunciarse, y esa corrida NUNCA abre riesgo nuevo.
+    //   - corrida por DISPARADOR del vigilante: un candidato del buffet que
+    //     se movió 5% NO está en el libro — ése es justo el punto. El slate
+    //     viaja tal cual y el reglamento completo decide qué hacer con él.
     const held = new Set(heldSymbols);
-    candidateSymbols = (event.symbols || []).map((x) => String(x).trim().toUpperCase()).filter((x) => held.has(x));
-    candidateOrigins = new Map(candidateSymbols.map((sym) => [sym, 'post_earnings_event']));
-    // Atribución: estos nombres son del LIBRO y del canal earnings, con la meta
-    // del reporte (cifra + sesiones desde que salió) pegada, que es lo que el
-    // DIVE necesita para cerrar la tesis.
-    for (const sym of candidateSymbols) {
-      channels[sym] = { channels: ['portfolio', 'earnings'], screens: [], qualifiers: {}, earnings: (event.reports || {})[sym] || null };
+    const slateRaw = (event.symbols || []).map((x) => String(x).trim().toUpperCase()).filter(Boolean);
+    candidateSymbols = policy.allow_unheld ? [...new Set(slateRaw)] : slateRaw.filter((x) => held.has(x));
+    candidateOrigins = new Map(candidateSymbols.map((sym) => [sym, event.type]));
+    // Atribución: de dónde salió cada nombre del slate. En la matutina son del
+    // LIBRO + canal earnings, con la cifra del reporte pegada (lo que el DIVE
+    // necesita para cerrar la tesis); en la del vigilante, del libro o del
+    // buffet según lo tenga o no, con el disparador al lado.
+    const triggersBySymbol = {};
+    for (const t of (event.triggers || [])) {
+      if (!t || !t.symbol) continue;
+      (triggersBySymbol[t.symbol] = triggersBySymbol[t.symbol] || []).push({ type: t.type, detail: t.detail });
     }
-    context.scan = { skipped: 'post_earnings_event', slate: candidateSymbols.map((symbol) => ({ symbol, origin: 'post_earnings_event' })) };
+    for (const sym of candidateSymbols) {
+      channels[sym] = {
+        channels: held.has(sym) ? ['portfolio', ...(event.type === 'post_earnings_morning' ? ['earnings'] : ['watch'])] : ['watch', 'buffet'],
+        screens: [], qualifiers: {},
+        earnings: (event.reports || {})[sym] || null,
+        ...(triggersBySymbol[sym] ? { watch_triggers: triggersBySymbol[sym] } : {}),
+      };
+    }
+    context.scan = { skipped: event.type, slate: candidateSymbols.map((symbol) => ({ symbol, origin: event.type })) };
     if (!apiKey) {
       await journalInsert({ ...base, account: accountSnapshot, context, status: 'aborted_no_api_key', error: `Falta la API key de ${agent.provider} (${agentId}).` });
       return { status: 'aborted_no_api_key', orders: 0, risk_exits: 0 };
     }
     if (candidateSymbols.length === 0) {
-      await journalInsert({ ...base, account: accountSnapshot, context, status: 'ok_no_candidates', plan: 'Corrida por evento post-earnings: ninguno de los nombres que reportaron sigue en el libro de este agente.' });
+      await journalInsert({
+        ...base, account: accountSnapshot, context, status: 'ok_no_candidates',
+        plan: event.type === 'watch_floor'
+          ? 'Revisión de piso: el libro está vacío, no hay posiciones sobre las que pronunciarse.'
+          : 'Corrida por evento: ninguno de los nombres del slate sigue en el libro de este agente.',
+      });
       return { status: 'ok_no_candidates', orders: 0, candidates: 0, trigger: event.type, risk_exits: 0, breaker_stage: 'none' };
     }
   } else {
@@ -1138,6 +1231,32 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   const candidateCloses = {};
   candidateSymbols.forEach((t, i) => { candidateCloses[t] = closeArr[i]; });
 
+  // ── CADENCIA #5: INTRADÍA, la referencia de precio es el precio VIVO ──
+  // La corrida nocturna ancla todo al último cierre completo: es el número más
+  // reciente que existe cuando el mercado ya cerró. Con el mercado ABIERTO ese
+  // número es viejo — justamente porque algo se movió es que el vigilante
+  // despertó al agente. Así que en una corrida intradía el precio vivo de
+  // Alpaca (el que el vigilante ya midió) sustituye al cierre en los TRES
+  // lugares que importan, y en los tres tiene que ser el MISMO número:
+  //   (a) lo que se le MUESTRA al PM en el DIVE,
+  //   (b) contra lo que el guard valida la banda ±2%,
+  //   (c) contra lo que se calcula el marketable limit de envío.
+  // Sin esto, un nombre que subió 4% desde el cierre tendría toda orden
+  // descartada por "fuera de banda" — el guard rechazaría precisamente las
+  // corridas que la cadencia nueva existe para producir.
+  const livePrices = {};
+  if (policy.intraday) {
+    for (const [sym, px] of Object.entries((event && event.prices) || {})) {
+      const n = Number(px);
+      if (Number.isFinite(n) && n > 0) livePrices[String(sym).toUpperCase()] = n;
+    }
+    for (const t of candidateSymbols) if (livePrices[t] != null) candidateCloses[t] = livePrices[t];
+    context.intraday = {
+      prices: livePrices,
+      note: 'corrida intradía: la referencia de precio es el último trade de Alpaca, no el cierre completo',
+    };
+  }
+
   // ── FASE 2b: DIVE (LLM #2 — decide órdenes) ─────────────────────
   // La persona del agente es lo ÚNICO que varía del prompt (identidad, decisión #6).
   const diveSystem = buildDiveSystemPrompt(agent.persona);
@@ -1226,7 +1345,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // Arranca de los cierres YA mostrados al PM (mismo valor exacto → sin desfase
   // entre lo que vio y lo que se valida); solo busca símbolos de acciones que
   // no eran candidatos (p.ej. vender una posición que el scan no nombró).
-  const lastCloses = { ...heldCloses, ...candidateCloses };
+  const lastCloses = { ...heldCloses, ...candidateCloses, ...livePrices };
   const symbols = [...new Set(parsed.actions.map((a) => a && typeof a.symbol === 'string' ? a.symbol.trim().toUpperCase() : '').filter(Boolean))];
   for (const s of symbols) {
     if (s in lastCloses) continue; // ya lo tenemos del deep dive (o null, fail closed)
@@ -1242,6 +1361,10 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     actions: parsed.actions,
     equity: account.equity, cash: account.cash,
     positions, symbolMap, symbolTypes, lastCloses,
+    // cadencia #5: intradía la COMPRA también se envía marketable (la venta ya lo
+    // era). El guard sigue siendo el mismo fail-closed; solo cambia el precio
+    // de ENVÍO, y queda journaleado por orden.
+    intraday: policy.intraday,
   });
 
   // Atribución por acción (determinista, no confía en el LLM): de qué canal(es)
@@ -1273,12 +1396,20 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
       overridden.push({ ...a, result: 'discarded', reason: `${a.symbol}: compra suprimida — el breaker está desapalancando (drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico)` });
       continue;
     }
-    // T2 #7: la corrida por evento NO abre riesgo nuevo. Existe para que el PM
-    // reaccione al reporte sobre lo que YA tiene, no para darle una segunda
-    // oportunidad diaria de comprar — el objetivo declarado de la temporada es
-    // que venda cuando debe, no que opere más seguido.
-    if (event && a.side === 'buy') {
+    // Corrida por evento que NO abre riesgo nuevo (matutina post-earnings T2 #7,
+    // revisión de piso cadencia #6): existen para decidir sobre lo que YA se tiene, no
+    // para dar oportunidades extra de comprar. La del VIGILANTE sí compra — un
+    // candidato del buffet que se movió 5% es una compra o no es nada.
+    if (event && !policy.allow_buys && a.side === 'buy') {
       overridden.push({ ...a, result: 'discarded', reason: `${a.symbol}: compra suprimida — corrida por evento (${event.type}), que solo decide sobre posiciones ya abiertas` });
+      continue;
+    }
+    // ALCANCE de la corrida acotada (cadencia #5): el disparador definió el slate y
+    // fuera de él no hay contexto fresco — el PM no vio el buffet ni un deep
+    // dive de ese otro nombre. Se descarta explícito y journaleado, no en
+    // silencio: "el agente quiso irse a otro lado" es un dato del experimento.
+    if (event && policy.slate_only && !new Set(candidateSymbols).has(a.symbol)) {
+      overridden.push({ ...a, result: 'discarded', reason: `${a.symbol}: fuera del alcance de la corrida — acotada a ${candidateSymbols.join(', ')} (${event.type})` });
       continue;
     }
     llmApproved.push(a);
@@ -1291,8 +1422,15 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     ...overridden.map((o) => attribute(o)),
   ];
   let submitted = 0;
+  // El client_order_id nació con la cadencia de UNA corrida por día:
+  // `arena:<fecha>:<símbolo>:<lado>` era único por construcción. Con la cadencia
+  // por evento un agente puede pronunciarse dos veces sobre el mismo nombre el
+  // mismo día, y Alpaca rechaza el id repetido — la segunda orden, la que el
+  // disparador produjo, moriría con un 422. El tag de corrida + el minuto ET la
+  // desambiguan sin perder la legibilidad del id.
+  const orderTag = policy.tag === 'd' ? '' : `:${policy.tag}${String(now.toISOString().slice(11, 16)).replace(':', '')}`;
   for (const a of llmApproved) {
-    const clientOrderId = `arena:${runDate}:${a.symbol}:${a.side}`;
+    const clientOrderId = `arena:${runDate}:${a.symbol}:${a.side}${orderTag}`;
     try {
       const order = await createLimitOrder({ symbol: a.symbol, qty: a.qty, side: a.side, limit_price: a.limit_price, client_order_id: clientOrderId }, creds);
       journalActions.push(attribute({ ...a, result: 'approved', alpaca_order_id: order.id, client_order_id: clientOrderId, order_status: order.status }));
@@ -1332,6 +1470,108 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     review_missing: context.position_review_audit.missing.length,
     commitments_missing: context.commitments.audit.missing.length,
   };
+}
+
+// ── cadencia #8: LA RED DETERMINISTA, SOLA (sin LLM, sin buffet) ───────────
+// La red de seguridad —breaker de portafolio, stop catastrófico y trailing—
+// vivía DENTRO de la corrida nocturna. Al retirar ese cron se habría ido con
+// él, que es el modo más caro de fallar: el libro se quedaría sin stops y nadie
+// lo notaría hasta el primer desastre. Así que se extrae y corre por su cuenta,
+// UNA vez al día, en el tick de la revisión de piso.
+//
+// POR QUÉ UNA VEZ AL DÍA Y NO CADA 5 MINUTOS: las tres reglas deciden con el
+// ÚLTIMO CIERRE COMPLETO, no con el precio vivo, y eso no es una limitación que
+// haya que arreglar — es la regla (ver el encabezado de _lib/arena-exits.js:
+// sistemas de fin de día, el gap es costo inevitable). Un stop intradía sería
+// un stop APRETADO, justo lo que Kaminski & Lo desaconsejan y lo que el libro
+// decidió no usar. Lo intradía es que el PM pueda reaccionar ANTES que la red
+// (disparador `near_trailing`/`near_catastrophic`), no que la red se vuelva
+// nerviosa.
+//
+// CERO tokens: no hay llamada al LLM en este camino, ni siquiera el titular.
+export async function runArenaRiskNet({ agent, now = new Date(), caches } = {}) {
+  const runDate = now.toISOString().slice(0, 10);
+  const agentId = agent.id;
+  caches = caches || { series: new Map(), dive: new Map() };
+  const base = { id: 'arena-' + agentId + '-risknet-' + now.toISOString(), run_date: runDate, phase: 'decide', prompt_version: PROMPT_VERSION, model: null, agent_id: agentId };
+
+  const state = await getArenaState(agentId);
+  if (state.halted) return { status: 'halted', agent: agentId, orders: 0 };
+  const creds = agentAlpacaCreds(agent);
+  if (!creds) return { status: 'aborted_no_alpaca_keys', agent: agentId, orders: 0 };
+
+  // Las mismas consultas que hace el prólogo de runArenaDecide. Se repiten a
+  // propósito en vez de factorizarse a medias: esta función tiene que poder
+  // correr SOLA, sin el resto del pipeline, y una abstracción compartida entre
+  // "la red de seguridad" y "la decisión del PM" es exactamente el acoplamiento
+  // que hizo que la red dependiera del cron nocturno para empezar.
+  const [account, positions, peakRows, riskRows, fillRows] = await Promise.all([
+    getAccount(creds), getPositions(creds),
+    sql(`select max((account->>'equity')::numeric) as peak from arena_journal
+         where account is not null and agent_id = $1 and ($2::timestamptz is null or created_at > $2::timestamptz)`, [agentId, state.resumed_at]),
+    sql(`select actions from arena_journal where status = 'risk_exit' and agent_id = $1
+         and created_at > now() - interval '7 days' order by created_at desc`, [agentId]),
+    sql(`select run_date, actions from arena_journal
+         where phase = 'decide' and agent_id = $1 and actions is not null
+         and created_at > now() - interval '180 days' order by created_at asc`, [agentId]),
+  ]);
+
+  const equity = Number(account.equity);
+  const dbPeak = peakRows[0] && peakRows[0].peak != null ? Number(peakRows[0].peak) : 0;
+  const peak = Math.max(dbPeak, equity);
+  const accountSnapshot = { equity, cash: Number(account.cash), positions: positions.length };
+
+  const heldSymbols = [...new Set((positions || []).map((p) => (p && p.symbol ? String(p.symbol).trim().toUpperCase() : '')).filter(Boolean))];
+  const heldSeriesArr = await Promise.all(heldSymbols.map((s) => cachedSeries(caches, s, now)));
+  const heldCloses = {};
+  const seriesBySymbol = {};
+  heldSymbols.forEach((s, i) => {
+    seriesBySymbol[s] = heldSeriesArr[i];
+    heldCloses[s] = heldSeriesArr[i] ? heldSeriesArr[i].closes[heldSeriesArr[i].closes.length - 1] : null;
+  });
+  const positionMeta = buildPositionMeta({ positions, opens: reconstructPositionOpens(fillRows), seriesBySymbol, now });
+
+  const escalation = escalationFromRiskRows(riskRows, heldSymbols);
+  const risk = buildRiskExits({ equity, peak, positions, closes: heldCloses, escalation, peaks: peaksFromMeta(positionMeta) });
+  const riskContext = {
+    peak, drawdown: +risk.drawdown.toFixed(4), stage: risk.stage, escalation,
+    bands: { breaker: EXIT_RULES.exit_band_breaker, catastrophic: EXIT_RULES.exit_band_catastrophic, trailing: EXIT_RULES.exit_band_trailing },
+    approved: risk.approved, discarded: risk.discarded,
+    standalone: 'red determinista corrida sola (cadencia por evento): decide con cierres completos, sin LLM',
+  };
+
+  if (!risk.approved.length && !risk.discarded.length) {
+    // Nada que hacer: NO se journalea una fila por agente por día diciendo "no
+    // pasó nada". El latido del cron ya prueba que la red corrió; una fila
+    // diaria vacía por siete agentes solo ensuciaría las cards.
+    return { status: 'ok_no_exits', agent: agentId, orders: 0, breaker_stage: risk.stage, drawdown: +risk.drawdown.toFixed(4), equity };
+  }
+
+  const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate, creds);
+  const codes = new Set(risk.approved.flatMap((a) => a.reason_codes || []));
+  const plan = risk.stage === 'broadcut'
+    ? `CIRCUIT BREAKER — corte amplio. Drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)}); se liquidan ${risk.approved.length} posiciones con marketable limit.`
+    : risk.stage === 'delever'
+      ? `CIRCUIT BREAKER — desapalancando. Drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)}); recorto PRO-RATA cada posición con marketable limit.`
+      : codes.has('catastrophic_stop')
+        ? `STOP CATASTRÓFICO — ${risk.approved.length} posición(es) cerró bajo su nivel ancho (~${(EXIT_RULES.catastrophic_stop_pct * 100).toFixed(0)}% desde la entrada); se liquida(n) con marketable limit.`
+        : `TRAILING STOP — ${risk.approved.length} posición(es) devolvió ${(EXIT_RULES.trailing_give_back * 100).toFixed(0)}% desde su pico tras haber ganado ${(EXIT_RULES.trailing_arm_gain * 100).toFixed(0)}%+; se liquida(n) con marketable limit, con la ganancia adentro.`;
+
+  await journalInsert({
+    ...base, account: accountSnapshot,
+    status: risk.stage === 'broadcut' ? 'risk_broad_cut' : 'risk_exit',
+    plan, actions: [...riskActions, ...riskDiscardActions(risk.discarded)],
+    context: { risk: riskContext, positions_meta: positionMeta },
+  });
+
+  // El broadcut DETIENE al agente, igual que en la corrida nocturna: la muerte
+  // del −20% es el resultado del experimento, y revivir es manual.
+  if (risk.stage === 'broadcut') {
+    const haltReason = `circuit breaker: drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)})`;
+    await sql(`update arena_state set halted = true, halted_at = $1, halted_reason = $2 where agent_id = $3`, [now.toISOString(), haltReason, agentId]);
+    return { status: 'risk_broad_cut', agent: agentId, orders: submitted, halted: true, breaker_stage: 'broadcut', drawdown: +risk.drawdown.toFixed(4), equity };
+  }
+  return { status: 'risk_exit', agent: agentId, orders: submitted, risk_exits: submitted, breaker_stage: risk.stage, drawdown: +risk.drawdown.toFixed(4), equity };
 }
 
 // ── ORQUESTADOR de la LIGA (fase decide para TODOS los agentes activos) ──
@@ -1390,6 +1630,46 @@ export async function announceT2Rules(now = new Date()) {
        values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
       [T2_ANNOUNCEMENT_ID, T2_RULES_VERSION, PROMPT_VERSION, T2_RULES_TEXT,
        JSON.stringify({ rules_version: T2_RULES_VERSION, prompt_version: PROMPT_VERSION, applies_to: activeAgents().map((a) => a.id) })],
+    );
+  } catch (e) { /* best-effort: el anuncio no bloquea la corrida */ }
+}
+
+// ── CAMBIO DE CADENCIA (anuncio de reglamento, con fecha) ────────
+// El MISMO mecanismo que el anuncio de la T2: una fila de LIGA, idempotente por
+// id, con status `rules_changed`. Sin este corte el post-mortem compararía
+// corridas de dos cadencias distintas —una decisión diaria post-cierre contra
+// N decisiones intradía por evento— como si fueran la misma población.
+//
+// La fecha NO es la del deploy: es `watchStartDate()`, el día en que el modelo
+// por evento entra en vigor. La corrida del lunes 14 se decide con el
+// reglamento viejo y queda del lado viejo del corte, que es justo el punto de
+// tener un corte.
+export const CADENCE_VERSION = WATCH_START;
+export const CADENCE_ANNOUNCEMENT_ID = 'arena-cadencia-evento-' + CADENCE_VERSION;
+export const CADENCE_RULES_TEXT = [
+  `CAMBIO DE CADENCIA del Arena — vigente desde ${WATCH_START}. Aplica IGUAL a los siete agentes de la liga, control incluido.`,
+  'El reglamento de las 9 reglas de la Temporada 2 NO cambia: sigue vigente completo en cada corrida. Lo que cambia es CUÁNDO se corre.',
+  '1) SE RETIRA LA CORRIDA NOCTURNA. La decisión diaria post-cierre (22:40 UTC) deja de ser el latido del experimento. También se retira la corrida matutina post-earnings: el reporte del día pasa a ser uno de los disparadores.',
+  `2) VIGILANTE SIN LLM: cada ${WATCH_RULES.tick_minutes} minutos en horario de mercado se leen, vía Alpaca, los precios de las posiciones de los siete libros y de los candidatos del buffet. Mirar cuesta CERO tokens; pensar se paga solo cuando hay motivo.`,
+  `3) SEIS DISPARADORES despiertan al agente dueño de la posición: movimiento ≥ ±${(WATCH_RULES.move_since_mark * 100).toFixed(0)}% desde su último pronunciamiento; llegar a ${WATCH_RULES.near_stop_points} puntos del trailing armado o del stop catastrófico; earnings u 8-K del día; volumen ≥ ${WATCH_RULES.volume_multiple}× su promedio de ${WATCH_RULES.volume_lookback_days} días; y un candidato del buffet moviéndose ≥ ±${(WATCH_RULES.buffet_move * 100).toFixed(0)}% (ése despierta a toda la liga: la oportunidad no tiene dueño).`,
+  '4) TODO DISPARADOR SE JOURNALEA con su razón — haya corrida o no, y decida el agente operar o no. Un disparo frenado por cooldown o por tope queda con su motivo escrito.',
+  '5) CORRIDA ACOTADA al ticker que disparó, con el REGLAMENTO COMPLETO. Fuera de ese slate toda acción se descarta. Las órdenes EJECUTAN EN EL MOMENTO, a marketable limit (la compra intradía también se re-precia, no solo la venta): una decisión tomada por un movimiento de las 10:15 que se ejecuta mañana no es una reacción.',
+  `6) REVISIÓN DE PISO a la apertura +${WATCH_RULES.floor_after_open_minutes} min: el agente al que ningún disparador tocó se pronuncia igual sobre sus posiciones. El pronunciamiento obligatorio de la T2 #9 sobrevive al cambio de cadencia — un día tranquilo no deja al libro sin revisar.`,
+  `7) TOPES, para que un día loco no queme tokens ni convierta al PM en day trader: máximo ${WATCH_RULES.max_runs_per_agent_day} corridas por agente por día (la de piso cuenta) y ${WATCH_RULES.cooldown_minutes} minutos de cooldown por ticker. Los disparadores de HECHO del día (earnings, 8-K, volumen, cercanía a un stop) disparan UNA vez por nombre por día; los de PRECIO se re-arman contra el último pronunciamiento.`,
+  '8) LA RED DETERMINISTA NO SE MUEVE. Breaker, stop catastrófico y trailing siguen decidiendo con CIERRES COMPLETOS, una vez al día, en la revisión de piso — no intradía. El disparador de "a 2 puntos del stop" existe para que el PM pueda reaccionar ANTES que la red, no para que la red opine más seguido.',
+  'OBJETIVO DECLARADO: que el agente decida cuando el mercado lo obliga, no cuando el reloj lo permite. Ser despertado más seguido NO es permiso para operar más seguido — ninguna regla de arriba premia la frecuencia, y dos de ellas la castigan.',
+].join('\n');
+
+export async function announceEventCadence(now = new Date()) {
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
+       values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
+      [CADENCE_ANNOUNCEMENT_ID, CADENCE_VERSION, PROMPT_VERSION, CADENCE_RULES_TEXT,
+        JSON.stringify({
+          rules_version: CADENCE_VERSION, supersedes: T2_RULES_VERSION, prompt_version: PROMPT_VERSION,
+          cadence: 'event_driven', watch_rules: WATCH_RULES, applies_to: activeAgents().map((a) => a.id),
+        })],
     );
   } catch (e) { /* best-effort: el anuncio no bloquea la corrida */ }
 }
@@ -1561,6 +1841,11 @@ export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
   const agents = activeAgents();
   if (!agents.length) return { agents: [], league: [], status: 'no_agents' };
 
+  // CADENCIA: el reporte del día pasó a ser un DISPARADOR del vigilante (event_earnings),
+  // que además lo detecta a los 5 minutos en vez de a las 14:50 UTC fijas. Esta
+  // corrida queda retirada por la misma fecha que la nocturna.
+  if (watchCadenceActive(now)) return supersededByWatch({ phase: 'morning', now, trigger: 'post_earnings_morning' });
+
   const market = await marketClosedReason({ now });
   if (market.closed) {
     await journalInsert({
@@ -1629,9 +1914,33 @@ export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
   return { agents: results, league: results.map((r) => r.id), status: 'ok', trigger: 'post_earnings_morning', reported };
 }
 
+// ── CADENCIA #1: el cron NOCTURNO, retirado por fecha (no por borrado) ────────
+// El corte se hace EN CÓDIGO y no quitando la entrada de vercel.json a
+// propósito. Quitar el cron hace que el cambio dependa del MINUTO del deploy:
+// si este PR sale un lunes a las 19:00 UTC, la corrida de esa misma noche
+// (22:40) desaparece sin que nadie lo haya pedido, y el corte del post-mortem
+// queda en una fecha que no es la anunciada. Con el gate por fecha ET, el
+// deploy puede caer cuando sea: el día 14 corre como siempre y el 15 no.
+// La entrada del cron se queda hasta que el vigilante lleve una semana verde;
+// mientras tanto late igual (distingue "el cron corrió" de "el cron operó").
+async function supersededByWatch({ phase, now, trigger }) {
+  await announceEventCadence(now);
+  await journalInsert({
+    id: 'arena-league-' + phase + '-superseded-' + now.toISOString(),
+    run_date: now.toISOString().slice(0, 10), phase: 'decide', prompt_version: PROMPT_VERSION,
+    agent_id: 'league', status: 'skipped_superseded_by_watch',
+    plan: `Corrida ${phase} retirada: desde ${WATCH_START} el Arena corre por EVENTO. Al libro lo despierta el vigilante (/api/arena-watch) cuando el mercado hace algo que le concierne, y la revisión de piso de la apertura +${WATCH_RULES.floor_after_open_minutes} min cubre al agente que nadie tocó. Cero tokens en esta fila.`,
+    context: { superseded_by: 'arena:watch', cadence_start: WATCH_START, ...(trigger ? { trigger } : {}) },
+  });
+  return { agents: [], league: [], status: 'skipped_superseded_by_watch', cadence_start: WATCH_START };
+}
+
 export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   const agents = activeAgents();
   if (!agents.length) return { agents: [], league: [] };
+
+  // Cadencia por evento vigente → el cron nocturno no decide nada (ni gasta).
+  if (watchCadenceActive(now)) return supersededByWatch({ phase: 'decide', now });
 
   // ── Mercado cerrado hoy: chequeo GLOBAL, UNA vez antes del loop ──────────
   // "Mercado cerrado" es un hecho de la LIGA ENTERA, no de cada agente: se
