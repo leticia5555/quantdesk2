@@ -43,7 +43,7 @@ de reglamento parte la serie: por eso `PROMPT_VERSION` sube con la temporada y
 el cambio se anuncia en el journal con fecha. Meter short y opciones dentro de
 la misma temporada haría imposible atribuir un resultado a nada.
 
-> **El cambio de cadencia (2026-09-14) NO es una temporada nueva.** Las 9 reglas
+> **El cambio de cadencia (2026-09-15) NO es una temporada nueva.** Las 9 reglas
 > de la T2 siguen vigentes, completas, en cada corrida; lo único que cambió es
 > **cuándo** se corre. Por eso se anuncia como `rules_changed` dentro de la T2 y
 > no consume la etiqueta **T3**, que sigue reservada para el short. Ver la
@@ -247,14 +247,7 @@ por equity, el return vs. baseline y los caveats de siempre. Un agente sin
 equity no se rankea ni recibe un cero: sale aparte, nombrado. Sin nadie con
 equity, **no se declara un ganador inventado**.
 
-## Cambio de cadencia: del cron nocturno al modelo POR EVENTO (2026-09-14)
-
-> **El corte se adelantó del martes 15 al lunes 14**, por decisión de Lety y con
-> la sesión del 14 ya cerrada. Efecto práctico: la corrida nocturna de esa noche
-> NO se emitió y **el lunes 14 quedó sin pronunciamiento de ningún agente** — el
-> primer día en que el vigilante realmente tickea es el martes 15. Queda anotado
-> porque el post-mortem va a ver un hueco de un día en la serie, y esa es la
-> razón: una decisión de calendario, no un cron caído.
+## Cambio de cadencia: del cron nocturno al modelo POR EVENTO (2026-09-15)
 
 Hasta el 14 de septiembre el Arena era un experimento de **una decisión al día**:
 el cron de las 22:40 UTC corría la liga con el mercado ya cerrado, las órdenes
@@ -263,8 +256,14 @@ se enteraba doce horas después. Desde el **martes 15** eso se invierte: un
 **vigilante sin LLM** mira el mercado cada 5 minutos y despierta al agente
 **solo cuando pasa algo que le concierne**.
 
+**El lunes 14 queda del lado viejo del corte, a propósito:** es el día 1 de la
+Temporada 2 y la única corrida end-to-end de las siete cuentas Alpaca, de
+OpenRouter y del reglamento v3-t2 completo antes de estrenar el vigilante.
+Estrenar la cadencia nueva encima de un harness que nunca corrió entero
+mezclaría dos estrenos — si algo fallara, no se sabría cuál de los dos fue.
+
 El corte se anuncia en el journal con `status='rules_changed'`,
-`agent_id='league'` e id `arena-cadencia-evento-2026-09-14` — idempotente, con la
+`agent_id='league'` e id `arena-cadencia-evento-2026-09-15` — idempotente, con la
 **fecha del corte y no la del deploy**. Sin ese corte el post-mortem compararía
 una decisión diaria post-cierre contra N decisiones intradía como si fueran la
 misma población.
@@ -423,7 +422,7 @@ existe para los siete agentes y no solo para los de Anthropic.
 | **VIGILANTE** — estado: disparos, marcas, eventos del día | tablas `arena_watch`, `arena_watch_mark`, `arena_watch_events`, `arena_watch_meta` |
 | **RED DETERMINISTA sola** (sin LLM, 1×/día, extraída de la corrida nocturna) | `runArenaRiskNet` en `api/arena-run.js` |
 | Deep dive Finnhub por candidato (fundamentales/recommendation/news) | `api/_lib/finnhub-dive.js` |
-| Cron decide (22:40 UTC L-V) + reconcile (14:40 UTC L-V) + matutina por evento (14:50 UTC L-V, T2 #7) — **decide y matutina RETIRADAS desde 2026-09-14**, ver el cambio de cadencia | `api/arena-run.js` + `vercel.json` |
+| Cron decide (22:40 UTC L-V) + reconcile (14:40 UTC L-V) + matutina por evento (14:50 UTC L-V, T2 #7) — **decide y matutina RETIRADAS desde 2026-09-15**, ver el cambio de cadencia | `api/arena-run.js` + `vercel.json` |
 | **Cron del vigilante** (`*/5 13-21 * * 1-5`, cubre EDT y EST) | `api/arena-watch.js` + `vercel.json` (ver `docs/crons.md`) |
 | **Canal SCREENER** — screens deterministas (value/momentum) | `api/_lib/screens.js` |
 | **Canal SCREENER** — capa de datos Neon (tabla + ledger) | `api/_lib/screener-db.js` |
@@ -750,7 +749,7 @@ paréntesis y un valor inválido cae al default en silencio, como el resto):
 | Var | Default | Qué hace |
 |---|---|---|
 | `ARENA_WATCH_ENABLED` | `1` | `0` apaga **solo** el vigilante, sin apagar el Arena. El freno de mano. |
-| `ARENA_WATCH_START` | `2026-09-14` | Fecha ET del corte de cadencia. Moverla hacia adelante **devuelve** el cron nocturno sin un deploy. El id, la fecha y el texto del `rules_changed` la siguen — si no, la env var movería la compuerta sin mover el registro del corte. |
+| `ARENA_WATCH_START` | `2026-09-15` | Fecha ET del corte de cadencia. Moverla hacia adelante **devuelve** el cron nocturno sin un deploy. El id, la fecha y el texto del `rules_changed` la siguen — si no, la env var movería la compuerta sin mover el registro del corte. |
 | `ARENA_WATCH_MOVE_PCT` | `0.03` | Umbral del ±% desde el último pronunciamiento. |
 | `ARENA_WATCH_BUFFET_PCT` | `0.05` | Umbral del candidato del buffet. |
 | `ARENA_WATCH_STOP_POINTS` | `2` | Puntos porcentuales de cercanía a un stop. |
