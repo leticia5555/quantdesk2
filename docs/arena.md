@@ -243,6 +243,14 @@ del agente #6 (la liga Haiku vs Sonnet vs Opus necesita harness idéntico):
   gasta el DIVE ni se pega a Finnhub.
 - `ok_no_actions` — hubo candidatos y deep dive, pero el DIVE decidió holdear.
 
+**Filas OPERATIVAS** (no son decisiones del PM: `model` null, cero órdenes; van
+con `phase='decide'` para que el leaderboard las publique, pero quedan FUERA del
+plan anterior que se le reinyecta al PM):
+- `resumed` — reactivación manual tras un halt del breaker.
+- `season_start` — arranque de temporada de la liga, una fila por agente.
+  Se dispara a mano con `GET /api/arena-run?action=announce` (CRON_SECRET) y es
+  idempotente: repetir el curl no duplica el rastro.
+
 ## Canal SCREENER (value + momentum, precomputado en Neon)
 
 Un canal del buffet **estado-driven, no del LLM**: surface empresas sólidas a
