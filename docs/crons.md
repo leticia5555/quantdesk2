@@ -33,7 +33,7 @@ al final.
 El endpoint **`/api/liga/eventos`** (crónica de la liga) NO es un cron: es
 solo-lectura, público y cacheado en el edge, como `/api/leaderboard`.
 
-## `arena:watch` — el VIGILANTE (cadencia por evento, desde 2026-09-14)
+## `arena:watch` — el VIGILANTE (cadencia por evento, desde 2026-09-15)
 
 Es el cron más frecuente del proyecto y el único que corre **cada 5 minutos**.
 Lee precios vía Alpaca, evalúa seis disparadores y despierta al agente dueño de
@@ -65,7 +65,7 @@ día hábil**.
 ### Los dos crons RETIRADOS por este cambio
 
 `arena:decide` (22:40) y `arena:morning` (14:50) **siguen en `vercel.json` y
-siguen latiendo**, pero desde `2026-09-14` (ET) journalean una fila de liga
+siguen latiendo**, pero desde `2026-09-15` (ET) journalean una fila de liga
 `skipped_superseded_by_watch` y salen sin gastar un token.
 
 El corte se hace **en código, por fecha ET**, y no borrando la entrada del cron.
