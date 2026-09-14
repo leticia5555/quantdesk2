@@ -30,6 +30,11 @@
 // BEST-EFFORT: si la llamada falla, el titular es null y la corrida sigue
 // exactamente igual. Nunca frena una orden ni cambia un status.
 //
+// ADDENDUM (2026-09-14): el titular recibe también la decisión por posición ya
+// decidida — condición de invalidación y confianza (0–1). Sigue siendo material
+// PARA NARRAR: esta capa no puede cambiar una orden ni completar un campo que
+// el PM dejó vacío (eso lo resuelve el guard, descartando la orden).
+//
 // ENV VARS: ARENA_HEADLINES (opc; '0' lo apaga sin tocar código).
 // ═══════════════════════════════════════════════════════════════
 
@@ -58,6 +63,7 @@ REGLAS DEL TITULAR:
 - En español. Los tickers van como son (NVDA, AAPL).
 - Solo puedes usar los hechos y números que te doy. NO inventes cifras, precios, porcentajes ni noticias, y no anuncies una operación que no esté en la lista.
 - Si hoy no operaste, el titular es sobre por qué no. "No hice nada" dicho con tu voz es un titular perfectamente válido.
+- Abajo van tus decisiones por posición con lo que declaraste hoy: tu CONDICIÓN DE INVALIDACIÓN (qué te haría vender) y tu CONFIANZA (0 a 1). Son tuyas y son material de titular — citarlas es de las cosas más honestas que puedes decir. Cítalas tal como están: no redondees la confianza a tu favor ni suavices la condición.
 - Nada de consejos de inversión ni promesas de rendimiento.
 
 Responde SOLO con el titular. Nada más: ni explicación, ni JSON, ni prefijo.`;
@@ -66,7 +72,7 @@ Responde SOLO con el titular. Nada más: ni explicación, ni JSON, ni prefijo.`;
 // El user prompt es un resumen COMPACTO y ya resuelto de lo que pasó. No se le
 // manda el buffet ni el deep dive: narrar no necesita el contexto de decidir, y
 // mandárselo sería pagar tokens por tentar al modelo a inventar una tesis nueva.
-export function buildHeadlineUserPrompt({ plan, actions = [], equity = null, positions = null, breakerStage = null } = {}) {
+export function buildHeadlineUserPrompt({ plan, actions = [], decisions = [], equity = null, positions = null, breakerStage = null } = {}) {
   const label = (a) => {
     const base = `${a.side === 'buy' ? 'COMPRA' : 'VENTA'} ${a.symbol}${a.qty ? ' ×' + a.qty : ''}`;
     if (a.result === 'approved') return `${base} — ejecutada @ ${a.limit_price}`;
@@ -75,12 +81,27 @@ export function buildHeadlineUserPrompt({ plan, actions = [], equity = null, pos
     return base;
   };
   const lines = (actions || []).slice(0, 10).map(label);
+  // ── ADDENDUM 2026-09-14: la decisión por posición llega al titular ──
+  // `invalidation_condition` y `confidence` son lo más citable que produce una
+  // corrida sin órdenes ("sostengo NVDA con 0.6 y vendo si pierde los 140"
+  // es un titular; "holdeo" no lo es). Llegan YA normalizados desde
+  // _lib/arena-memory.js: acá no se recalcula nada, solo se rinden. Un hueco
+  // se dice como hueco — jamás se rellena con una confianza inventada.
+  const decisionLine = (d) => [
+    `${d.symbol} — ${d.stance}`,
+    d.confidence != null ? `confianza ${d.confidence}` : 'sin confianza declarada',
+    d.invalidation_condition ? `vendes si: ${String(d.invalidation_condition).slice(0, 200)}` : 'sin condición de venta declarada',
+  ].join(' · ');
+  const decisionLines = (decisions || []).filter((d) => d && d.symbol).slice(0, 10).map(decisionLine);
   return [
     'TU PLAN DE HOY (lo escribiste tú, en inglés; el titular va en español):',
     String(plan || '(sin plan)').slice(0, 1200),
     '',
     'LO QUE REALMENTE PASÓ CON TUS ÓRDENES:',
     lines.length ? lines.join('\n') : 'Ninguna orden: hoy no operaste.',
+    ...(decisionLines.length
+      ? ['', 'TUS DECISIONES POR POSICIÓN DE HOY (con tu condición de venta y tu confianza):', decisionLines.join('\n')]
+      : []),
     '',
     'TU LIBRO:',
     [
@@ -126,10 +147,10 @@ export function normalizeHeadline(raw, max = HEADLINE_MAX) {
 // pasarlo por parámetro deja este módulo sin I/O propio y testeable sin red).
 // Devuelve { text, archetype, model, chars } · null si está apagado, si el
 // agente no tiene arquetipo, o si la llamada no produjo nada usable.
-export async function generateHeadline({ agent, plan, actions, equity, positions, breakerStage, callLLM, now = new Date() }) {
+export async function generateHeadline({ agent, plan, actions, decisions, equity, positions, breakerStage, callLLM, now = new Date() }) {
   if (!headlinesEnabled() || !agent || !agent.archetype || typeof callLLM !== 'function') return null;
   const system = buildHeadlineSystemPrompt(agent);
-  const user = buildHeadlineUserPrompt({ plan, actions, equity, positions, breakerStage });
+  const user = buildHeadlineUserPrompt({ plan, actions, decisions, equity, positions, breakerStage });
   try {
     // 200 tokens: una línea sobra. Si el modelo se pasa, normalizeHeadline corta.
     const res = await callLLM({ agent, system, messages: [{ role: 'user', content: user }], maxTokens: 200, now });

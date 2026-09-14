@@ -48,7 +48,13 @@ const timestamps = closes.map((_, i) => (t0 + i * DAY) / 1000);
 // debe morir en la supresión de la corrida por evento, no en el guard.
 const DIVE = JSON.stringify({
   plan: 'NVDA reportó por debajo del estimado; cierro la posición y no abro nada nuevo.',
-  positions_review: [{ symbol: 'NVDA', stance: 'exit', reason: 'el reporte invalida la tesis con la que entré' }],
+  // ADDENDUM 2026-09-14: las dos decisiones llegan COMPLETAS a propósito — la
+  // de AAPL también, para que su compra muera en la SUPRESIÓN de la corrida por
+  // evento (lo que este caso mide) y no antes, en el gate del guard.
+  positions_review: [
+    { symbol: 'NVDA', stance: 'exit', reason: 'el reporte invalida la tesis con la que entré', invalidation_condition: 'ya ocurrió: el guidance quedó 8% abajo del estimado', confidence: 0.9 },
+    { symbol: 'AAPL', stance: 'hold', reason: 'setup que me gusta, pero no es el nombre del evento', invalidation_condition: 'si pierde el soporte de 190 en cierre', confidence: 0.45 },
+  ],
   commitments: [{ symbol: 'NVDA', text: 'no volver a NVDA hasta el próximo trimestre', due: null }],
   commitment_updates: [],
   actions: [
@@ -189,8 +195,10 @@ console.log('matutina: una posición del libro reportó → corrida por evento')
     'el journal dice explícitamente que la fase SCAN se saltó (no que falló)', JSON.stringify(ctx.scan));
   ok(ctx.risk && ctx.risk.skipped && ctx.risk.approved.length === 0,
     'la red determinista NO se re-evalúa a media mañana (evita duplicar las órdenes de anoche)', JSON.stringify(ctx.risk.skipped));
-  ok(ctx.positions_review.length === 1 && ctx.positions_review[0].stance === 'exit',
+  ok(ctx.positions_review[0].symbol === 'NVDA' && ctx.positions_review[0].stance === 'exit',
     'el pronunciamiento por posición queda journaleado', JSON.stringify(ctx.positions_review));
+  ok(ctx.positions_review.every((d) => d.invalidation_condition && d.confidence != null && d.complete),
+    'ADDENDUM: journaleado CON la condición de invalidación y la confianza de cada decisión', JSON.stringify(ctx.positions_review));
   ok(ctx.position_review_audit.missing.length === 0 && ctx.position_review_audit.required === 1,
     'y auditado contra los nombres del evento (no contra el libro entero: es una reacción, no la revisión diaria)',
     JSON.stringify(ctx.position_review_audit));

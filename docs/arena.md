@@ -198,6 +198,11 @@ malformados no abortan el run. La regla de "JSON malformado = cero órdenes"
 sigue cubriendo `plan` y `actions`; endurecerla con tres campos más solo subiría
 la tasa de aborts.
 
+> El **addendum del 2026-09-14** (más abajo) matiza esto en un punto y solo uno:
+> `positions_review` sigue sin abortar la corrida, pero una decisión incompleta
+> ahora **descarta la orden de ese símbolo**. Medir dejó de ser gratis para el
+> nombre que se opera; para el resto del libro sigue siéndolo.
+
 ### Addendum de la liga (2026-09-14): voz, crónica y temporada
 
 Tres piezas de **datos** — sin UI ni notificaciones todavía, a propósito:
@@ -240,6 +245,51 @@ y `weeks`; el **último día** el orquestador journalea el cierre
 por equity, el return vs. baseline y los caveats de siempre. Un agente sin
 equity no se rankea ni recibe un cero: sale aparte, nombrado. Sin nadie con
 equity, **no se declara un ganador inventado**.
+
+### Addendum del reglamento (2026-09-14): condición de invalidación y confianza
+
+Igual para los siete. La **decisión por posición** (`positions_review`, regla #9)
+deja de ser solo `stance` + `reason` y pasa a declarar **dos campos
+obligatorios**:
+
+| Campo | Qué es | Por qué |
+| --- | --- | --- |
+| `invalidation_condition` | Qué tendría que pasar para que **venda** | Una tesis sin condición que la termine es una preferencia, no una tesis. Es también lo único que permite auditar después si el PM vendió cuando dijo que vendería, en vez de racionalizar a toro pasado. |
+| `confidence` (0–1) | Cuánta confianza le tiene a **esa decisión** | Numérica y acotada, o sea comparable entre corridas y entre los siete. No es `conviction` (1–5) de la orden: esa mide cuánto quiere el nombre; ésta, cuánto cree en el juicio que acaba de emitir. |
+
+**El guard los exige.** Toda orden tiene que venir respaldada por una decisión
+**completa** para ese símbolo — los holdings y también el nombre que se abre hoy.
+Sin ella, la **orden se descarta** con su razón (`_lib/arena-guard.js`,
+`validateActions`): no se completa por el modelo, no se le asume una confianza
+que no declaró y una confianza fuera de rango **no se clampa** (un `70` puede ser
+"70%" o un dedazo, y elegir por él sería ajustarle la decisión en silencio).
+Relleno tipo `"N/A"` tampoco cuenta como condición.
+
+Por eso el contrato del prompt ahora pide una entrada de `positions_review` por
+posición del libro **y** por cada ticker que se opera. Una compra nueva sin
+condición de salida declarada no se ejecuta.
+
+**Qué NO cambia** — y es deliberado:
+
+- **La corrida no aborta.** "JSON malformado = cero órdenes" sigue cubriendo solo
+  `plan` y `actions`. Una decisión incompleta tumba **su** orden; el resto del
+  run se journalea entero, con el plan, con la razón del descarte y con la
+  decisión incompleta guardada tal cual — el post-mortem tiene que poder ver
+  **qué dijo** el PM cuando su orden se cayó.
+- **Las salidas deterministas** (trailing, time stop, breaker) no pasan por este
+  gate: son de la casa, no del modelo, y siguen ejecutándose sin pedirle permiso.
+- **La auditoría sigue midiendo** (`without_invalidation`, `without_confidence`,
+  `incomplete` y `complete_rate` en `context.position_review_audit`). `rate` se
+  deja intacta para no romper la serie de la T2 que ya está en el journal.
+- **`PROMPT_VERSION` no sube:** marca la temporada. El addendum se anuncia como
+  fila de liga aparte (`ADDENDUM_ANNOUNCEMENT_ID`, `rules_changed`, 2026-09-14),
+  para que el post-mortem corte "antes/después del addendum" sin adivinar y sin
+  reescribir el anuncio del 13.
+
+Los dos campos viajan **al journal y al titular**: van en
+`context.positions_review`, se copian en cada orden aprobada (para no tener que
+cruzar dos estructuras) y entran al prompt del titular — *"sostengo NVDA con 0.65
+y vendo si cierra dos sesiones bajo 140"* es un titular; *"holdeo"* no lo es.
 
 ### `aborted_malformed_json`: ahora dice POR QUÉ
 

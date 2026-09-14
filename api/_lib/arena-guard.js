@@ -11,6 +11,13 @@
 //   - JSON malformado → run abortado honesto, CERO órdenes.
 //   - Fail closed: si falta un dato de referencia (symbol map caído, sin
 //     precio), la acción se descarta — nunca se asume que "seguro existe".
+//
+// ADDENDUM DEL REGLAMENTO (2026-09-14, igual para los siete): toda orden tiene
+// que venir respaldada por una decisión por posición COMPLETA — con
+// `invalidation_condition` y `confidence` (0–1). Si el modelo no los llena, la
+// orden se descarta aquí, con su razón. Es el único lugar del Arena donde esos
+// dos campos tienen consecuencia: _lib/arena-memory.js los normaliza y los
+// mide, pero medir no frena nada.
 // ═══════════════════════════════════════════════════════════════
 
 // Fracción en (0,1) por env; inválida → default, en silencio (mismo criterio
@@ -137,6 +144,12 @@ export function parsePlanResponse(raw) {
   // endurecerlo con tres campos más solo subiría la tasa de aborts (justo lo
   // que la T2 intenta bajar) y castigaría al modelo por olvidar, en vez de
   // MEDIR el olvido, que es lo que la auditoría de memoria hace.
+  //
+  // El ADDENDUM (2026-09-14) no cambia esto: un `positions_review` ausente o
+  // incompleto sigue SIN abortar el run. Lo que cambia es que las ÓRDENES de
+  // los símbolos sin decisión completa se caen en validateActions — la corrida
+  // se journalea entera, con plan y con el motivo de cada descarte, en vez de
+  // desaparecer detrás de un `aborted_malformed_json`.
   return {
     ok: true,
     plan: parsed.plan.trim(),
@@ -261,12 +274,27 @@ function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 //   positions   → de GET /v2/positions: [{ symbol, qty, market_value }]
 //   symbolMap   → { SYMBOL: nombre } (getSymbolMap de earnings.js) o null
 //   lastCloses  → { SYMBOL: último cierre completo } (Yahoo, plumbing sim.js)
+//   decisions   → pronunciamiento por posición YA normalizado
+//                 (normalizePositionsReview de _lib/arena-memory.js): array o
+//                 { SYMBOL: decisión }. ADDENDUM 2026-09-14 — ver abajo.
 //   rules       → override para tests; default ARENA_RULES
 // Salida: { approved: [...con qty entera], discarded: [{ action, reason }] }
-export function validateActions({ actions, equity, cash, positions, symbolMap, symbolTypes, lastCloses, rules = ARENA_RULES }) {
+export function validateActions({ actions, equity, cash, positions, symbolMap, symbolTypes, lastCloses, decisions, rules = ARENA_RULES }) {
   const approved = [];
   const discarded = [];
   const discard = (action, reason) => discarded.push({ action, reason });
+
+  // ── ADDENDUM 2026-09-14: índice de decisiones por símbolo ───────────
+  // Acepta el array tal como sale de normalizePositionsReview o un mapa ya
+  // indexado. Ausente → mapa VACÍO, no "sin regla": fail closed, igual que el
+  // symbol map. La regla se aplica abajo, en el orden fijo de validación.
+  const decisionBy = new Map();
+  const decisionList = Array.isArray(decisions)
+    ? decisions
+    : (decisions && typeof decisions === 'object' ? Object.values(decisions) : []);
+  for (const d of decisionList) {
+    if (d && typeof d === 'object' && typeof d.symbol === 'string') decisionBy.set(d.symbol.trim().toUpperCase(), d);
+  }
 
   const held = new Map(); // symbol → { qty, value } simulado según se aprueban órdenes
   for (const p of positions || []) {
@@ -286,6 +314,37 @@ export function validateActions({ actions, equity, cash, positions, symbolMap, s
 
     if (!symbol || !side || !notional || notional <= 0 || !limitPrice || limitPrice <= 0) {
       discard(raw, 'acción malformada: se requieren symbol, side buy|sell, notional > 0 y limit_price > 0');
+      continue;
+    }
+    // ── ADDENDUM 2026-09-14: sin decisión COMPLETA, no hay orden ───────
+    // El reglamento pide dos campos obligatorios en la decisión por posición:
+    // `invalidation_condition` (qué tendría que pasar para que venda) y
+    // `confidence` (0–1). Si el modelo no los llena, la ORDEN SE DESCARTA —
+    // no se completa por él, no se le asume una confianza "razonable" y no se
+    // aborta la corrida (el contrato de JSON malformado sigue cubriendo solo
+    // `plan` y `actions`). Es la misma disciplina que el resto del guard:
+    // violación → orden descartada y loggeada con razón.
+    //
+    // Va PRIMERO, antes del universo y del sizing, a propósito: si el PM no
+    // declaró su decisión, no hay nada que validar — el número que mandó no
+    // representa un juicio que la casa pueda publicar ni auditar después.
+    //
+    // Aplica a compras Y ventas, a nombres del libro y a nombres nuevos: el
+    // símbolo que se opera tiene que aparecer en `positions_review`. Las
+    // salidas DETERMINISTAS (trailing, time stop, breaker — _lib/arena-exits.js)
+    // no pasan por aquí y siguen ejecutándose sin decisión del modelo: son de
+    // la casa, no suyas.
+    const decision = decisionBy.get(symbol);
+    if (!decision) {
+      discard(raw, `${symbol}: sin decisión por posición — el reglamento exige una entrada en positions_review (stance + invalidation_condition + confidence) para cada nombre que se opera`);
+      continue;
+    }
+    if (!decision.invalidation_condition) {
+      discard(raw, `${symbol}: la decisión no dice qué la invalidaría (invalidation_condition vacío) — una tesis sin condición de venta no ejecuta`);
+      continue;
+    }
+    if (!(typeof decision.confidence === 'number' && Number.isFinite(decision.confidence) && decision.confidence >= 0 && decision.confidence <= 1)) {
+      discard(raw, `${symbol}: la decisión no trae confidence en 0–1 (recibido: ${JSON.stringify(decision.confidence ?? null)}) — no se asume una confianza que el PM no declaró`);
       continue;
     }
     if (WARRANT_LIKE.test(symbol)) { discard(raw, `${symbol}: warrants/units/rights fuera del universo`); continue; }
@@ -376,6 +435,14 @@ export function validateActions({ actions, equity, cash, positions, symbolMap, s
       security_type: secType, // null si el free tier no lo trajo (permitido, journaleado)
       conviction: num(a.conviction),
       reasoning: typeof a.reasoning === 'string' ? a.reasoning.slice(0, 600) : null,
+      // ADDENDUM 2026-09-14: la decisión que AUTORIZÓ esta orden viaja CON la
+      // orden. Duplica lo que ya está en context.positions_review a propósito:
+      // el post-mortem lee la fila de acciones y tiene que poder contestar
+      // "¿bajo qué condición dijo que vendería?" sin cruzar dos estructuras —
+      // y el titular la narra desde aquí.
+      stance: decision.stance,
+      invalidation_condition: decision.invalidation_condition,
+      confidence: decision.confidence,
     });
   }
 

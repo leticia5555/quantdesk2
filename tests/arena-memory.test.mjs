@@ -15,6 +15,7 @@ import {
   daysBetween, reconstructPositionOpens, peakSinceEntry, buildPositionMeta, peaksFromMeta,
   normalizeCommitments, normalizeCommitmentUpdates, foldCommitments, auditCommitments,
   normalizePositionsReview, auditPositionReview, COMMITMENT_MAX_AGE_DAYS,
+  normalizeInvalidation, normalizeConfidence,
 } from '../api/_lib/arena-memory.js';
 
 let failures = 0;
@@ -159,7 +160,7 @@ ok(audit3.unknown.length === 1 && audit3.missing.length === 1,
 // ═══ pronunciamiento por posición ══════════════════════════════════
 console.log('memoria: pronunciamiento por posición (#9)');
 const review = normalizePositionsReview([
-  { symbol: 'win', stance: 'HOLD', reason: 'sigue +25% sobre la entrada' },
+  { symbol: 'win', stance: 'HOLD', reason: 'sigue +25% sobre la entrada', invalidation_condition: 'si cierra dos sesiones bajo 100', confidence: 0.75 },
   { symbol: 'MEH', stance: 'exit' },              // sin razón → cuenta, pero se marca
   { symbol: 'MEH', stance: 'hold' },              // duplicado → gana el primero
   { symbol: 'ZZZ', stance: 'comprar más' },       // stance inválido → fuera
@@ -175,6 +176,35 @@ ok(rAudit2.time_stop_missing.includes('MEH'),
   'olvidar una posición con el TIME STOP VENCIDO es el incumplimiento que se mide aparte (#4)', JSON.stringify(rAudit2));
 ok(auditPositionReview([], [], meta).rate === null,
   'libro vacío → rate null, no un 100% inventado sobre cero posiciones');
+
+// ═══ ADDENDUM 2026-09-14: condición de invalidación + confianza ════
+console.log('memoria: ADDENDUM — la decisión por posición declara qué la invalida y cuánto cree en ella');
+
+ok(review[0].invalidation_condition === 'si cierra dos sesiones bajo 100' && review[0].confidence === 0.75 && review[0].complete === true,
+  'una decisión con los dos campos queda COMPLETA (es la que el guard deja operar)', JSON.stringify(review[0]));
+ok(review[1].invalidation_condition === null && review[1].confidence === null && review[1].complete === false,
+  'una decisión sin ellos NO se tira: se guarda con los huecos en null y complete:false — el journal tiene que mostrar qué dijo el PM cuando su orden se cayó',
+  JSON.stringify(review[1]));
+
+ok(normalizeConfidence(0) === 0 && normalizeConfidence(1) === 1 && normalizeConfidence(0.6666) === 0.667,
+  'confianza: el rango [0,1] es inclusivo y se redondea a 3 decimales');
+ok([70, 1.01, -0.01, 'alta', null, undefined, NaN].every((v) => normalizeConfidence(v) === null),
+  'fuera de rango o ilegible → null, NUNCA clampada: un 70 puede ser "70%" o un dedazo, y elegir por él sería ajustarle la decisión en silencio');
+ok(normalizeConfidence('0.4') === 0.4, 'un número en string sí se lee (des-serializar no es ajustar)');
+
+ok(normalizeInvalidation('  si el guidance baja  ') === 'si el guidance baja', 'la condición se recorta, no se reescribe');
+ok(['', '   ', 'N/A', 'n/a', 'none', 'TBD', 'ninguna', '-', 'nada.'].every((v) => normalizeInvalidation(v) === null),
+  'el relleno tipo "N/A" NO cuenta como condición: pasaría el gate del guard como si el PM hubiera declarado algo');
+ok(normalizeInvalidation('x'.repeat(600)).length === 400, 'la condición se corta a 400: es una condición, no un ensayo');
+ok(normalizePositionsReview([{ symbol: 'ALT', stance: 'hold', invalidation: 'si rompe el soporte', confidence: 0.3 }])[0].invalidation_condition === 'si rompe el soporte',
+  'se tolera el alias `invalidation` (mismo criterio que text/commitment en los compromisos)');
+
+const aud = auditPositionReview(['WIN', 'MEH'], review, meta);
+ok(aud.without_invalidation.includes('MEH') && aud.without_confidence.includes('MEH') && aud.incomplete.includes('MEH'),
+  'la auditoría cuenta aparte a quién le faltó cada campo (medir, no censurar: quien frena es el guard)', JSON.stringify(aud));
+ok(aud.rate === 1 && aud.complete_rate === 0.5,
+  'se pronunció sobre las dos (rate 1) pero solo una está completa (complete_rate 0.5): la tasa exigente del addendum no contamina la serie de la T2',
+  JSON.stringify({ rate: aud.rate, complete_rate: aud.complete_rate }));
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);

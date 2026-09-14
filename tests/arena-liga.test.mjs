@@ -56,7 +56,13 @@ const timestamps = closes.map((_, i) => (t0 + i * DAY) / 1000);
 // Ambos proveedores deciden lo MISMO (comprar AAPL @200) para poder comparar el
 // harness y probar el dedupe de deep-dive (todos piden AAPL → 1 fetch).
 const SCAN = JSON.stringify({ scan_thesis: 'AAPL en actives; el resto es ruido.', candidates: ['AAPL'] });
-const DIVE = JSON.stringify({ plan: 'Entro a AAPL de calidad.', actions: [{ symbol: 'AAPL', side: 'buy', notional: 5000, limit_price: 200, conviction: 4, reasoning: 'Fundamentales sólidos.' }] });
+// ADDENDUM 2026-09-14: sin la decisión por posición de AAPL —con su condición
+// de invalidación y su confianza— el guard tumbaría la orden de los siete.
+const DIVE = JSON.stringify({
+  plan: 'Entro a AAPL de calidad.',
+  positions_review: [{ symbol: 'AAPL', stance: 'hold', reason: 'Entro hoy con la tesis intacta.', invalidation_condition: 'si el margen bruto del próximo trimestre baja de 40%', confidence: 0.7 }],
+  actions: [{ symbol: 'AAPL', side: 'buy', notional: 5000, limit_price: 200, conviction: 4, reasoning: 'Fundamentales sólidos.' }],
+});
 // TITULAR: tercera llamada por agente, con el prompt de la VOZ (arquetipo). El
 // mock la distingue por el marcador "TU VOZ:", que solo lleva ese prompt.
 const TITULAR = 'Compro AAPL y me aguanto: la tesis no cambió con el ruido de hoy.';

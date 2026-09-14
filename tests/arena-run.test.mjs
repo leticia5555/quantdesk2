@@ -85,8 +85,19 @@ let scanText = JSON.stringify({
 // KO (floor_reserved, value) se HOLDEA. HD @203 solo es válido contra el cierre
 // FRESCO 200 (banda [196,204]); contra el stale 150 [147,153] se descartaría →
 // que HD sea APROBADA es la prueba del candado de precio. ──
+// ADDENDUM 2026-09-14: toda orden viaja con su decisión por posición completa
+// (condición de invalidación + confianza 0–1). FAKEZ también la trae: así sigue
+// muriendo en el symbol map, que es lo que ese caso mide — el gate del addendum
+// no puede tapar al resto del guard.
+const dec = (symbol, over = {}) => ({
+  symbol, stance: 'hold', reason: 'decisión del día',
+  invalidation_condition: 'si el margen bruto del próximo trimestre baja de 40%',
+  confidence: 0.6,
+  ...over,
+});
 let diveText = JSON.stringify({
   plan: 'Primer día del libro: AAPL de calidad y HD que me trajo el screener de momentum; KO lo dejo en watch.',
+  positions_review: [dec('AAPL'), dec('HD'), dec('FAKEZ')],
   actions: [
     { symbol: 'AAPL', side: 'buy', notional: 10000, limit_price: 201, conviction: 4, reasoning: 'Fundamentales sólidos y recommendation buy-heavy.' },
     { symbol: 'HD', side: 'buy', notional: 8000, limit_price: 203, conviction: 3, reasoning: 'Momentum sano sobre MA50/MA200.' },
@@ -474,7 +485,7 @@ ok(upd[0].order_status === 'filled' && upd[0].filled_avg_price === 200.55 && !!u
 // KO/HD. NO es ok_no_candidates: hay research y hasta una orden del canal. ──
 console.log('arena-run: FLOOR surfacea el screener cuando el scout no lo elige');
 scanText = JSON.stringify({ scan_thesis: 'El buffet de hoy es ruido; no elijo nada por mi cuenta.', candidates: [] });
-diveText = JSON.stringify({ plan: 'El floor me trajo KO (value P/E 18, ROE 40). Entro chico y dejo HD en watch.', actions: [{ symbol: 'KO', side: 'buy', notional: 6000, limit_price: 199, conviction: 3, reasoning: 'Value sólido que el screener surfaceó.' }] });
+diveText = JSON.stringify({ plan: 'El floor me trajo KO (value P/E 18, ROE 40). Entro chico y dejo HD en watch.', positions_review: [dec('KO')], actions: [{ symbol: 'KO', side: 'buy', notional: 6000, limit_price: 199, conviction: 3, reasoning: 'Value sólido que el screener surfaceó.' }] });
 const diveCallsBefore3a = finnhubDiveCalls.length;
 const r3a = await runArenaDecide({ baseUrl: BASE_URL });
 ok(r3a.status === 'ok' && r3a.orders === 1 && r3a.candidates === 2 && r3a.floor === 'floor_applied',
@@ -584,7 +595,7 @@ positionsMock = [{ symbol: 'GNTX', qty: '50', avg_entry_price: '30', market_valu
 openOrdersMock = [{ symbol: 'AXP', side: 'buy', qty: '10', limit_price: '326.17', status: 'accepted' }];
 screenerRows = []; // aislar del floor
 scanText = JSON.stringify({ scan_thesis: 'Reevalúo GNTX (holding) y AXP (orden abierta de la corrida previa).', candidates: ['GNTX', 'AXP'] });
-diveText = JSON.stringify({ plan: 'Recorto GNTX y re-anclo AXP al precio de hoy.', actions: [
+diveText = JSON.stringify({ plan: 'Recorto GNTX y re-anclo AXP al precio de hoy.', positions_review: [dec('GNTX', { stance: 'trim', invalidation_condition: 'si pierde el nivel de 190 en cierre', confidence: 0.55 }), dec('AXP')], actions: [
   { symbol: 'GNTX', side: 'sell', notional: 800, limit_price: 199, conviction: 3, reasoning: 'Tomo ganancia parcial del holding.' },
   { symbol: 'AXP', side: 'buy', notional: 6000, limit_price: 203, conviction: 4, reasoning: 'Re-anclo al cierre fresco de hoy.' },
 ] });
@@ -611,7 +622,7 @@ screenerRows = [];
 // NVDA solo aparece en movers; con movers caído no está en ninguna sección del
 // buffet, ni en earnings/insider, ni en el libro → debe quedar con [].
 scanText = JSON.stringify({ scan_thesis: 'Pick sin anclar en ninguna fuente.', candidates: ['NVDA'] });
-diveText = JSON.stringify({ plan: 'Compro NVDA.', actions: [{ symbol: 'NVDA', side: 'buy', notional: 5000, limit_price: 201, conviction: 3, reasoning: 'x' }] });
+diveText = JSON.stringify({ plan: 'Compro NVDA.', positions_review: [dec('NVDA')], actions: [{ symbol: 'NVDA', side: 'buy', notional: 5000, limit_price: 201, conviction: 3, reasoning: 'x' }] });
 moversStatus = 401; // buffet de movers caído → NVDA no está en ninguna sección
 const rUn = await runArenaDecide({ baseUrl: BASE_URL });
 const aUn = JSON.parse(lastRow()[COL.actions]).find((a) => a.symbol === 'NVDA');
@@ -716,7 +727,7 @@ positionsMock = [{ symbol: 'NVDA', qty: '100', avg_entry_price: '100', market_va
 accountEquity = 84000; journalPeak = 100000; // drawdown 16% → delever
 screenerRows = [];
 scanText = JSON.stringify({ scan_thesis: 'El scout quiere comprar AAPL.', candidates: ['AAPL'] });
-diveText = JSON.stringify({ plan: 'Compro AAPL de calidad.', actions: [{ symbol: 'AAPL', side: 'buy', notional: 10000, limit_price: 201, conviction: 4, reasoning: 'Calidad.' }] });
+diveText = JSON.stringify({ plan: 'Compro AAPL de calidad.', positions_review: [dec('AAPL')], actions: [{ symbol: 'AAPL', side: 'buy', notional: 10000, limit_price: 201, conviction: 4, reasoning: 'Calidad.' }] });
 const insertsBeforeDL = journalInserts.length;
 const postsBeforeDL = alpacaOrderPosts.length;
 const rDL = await runArenaDecide({ baseUrl: BASE_URL });
@@ -816,6 +827,46 @@ const fab = audit.tokens.find((t) => t.value === -3.77);
 ok(fab && fab.matched === false && audit.unmatched === 1,
   'el % FABRICADO (-3.77%) queda marcado como no anclado; el plan NO se toca', fab);
 positionsMock = []; // restaurar
+
+// ── 13) ADDENDUM 2026-09-14: de punta a punta. El PM propone dos compras;
+// una trae su decisión por posición COMPLETA y la otra no. La incompleta no
+// llega a Alpaca, la completa sí, y la corrida NO aborta: se journalea entera,
+// con plan, con la razón del descarte y con la auditoría del campo faltante. ──
+console.log('arena-run: ADDENDUM — la orden sin decisión completa no llega a Alpaca (y la corrida no aborta)');
+positionsMock = []; screenerRows = [];
+scanText = JSON.stringify({ scan_thesis: 'Dos nombres.', candidates: ['AAPL', 'HD'] });
+diveText = JSON.stringify({
+  plan: 'Entro a AAPL y a HD.',
+  positions_review: [
+    dec('AAPL'),
+    dec('HD', { invalidation_condition: 'N/A', confidence: 3 }), // relleno + fuera de rango
+  ],
+  actions: [
+    { symbol: 'AAPL', side: 'buy', notional: 10000, limit_price: 201, conviction: 4, reasoning: 'Calidad.' },
+    { symbol: 'HD', side: 'buy', notional: 8000, limit_price: 203, conviction: 3, reasoning: 'Momentum.' },
+  ],
+});
+const postsBeforeAdd = alpacaOrderPosts.length;
+const rAdd = await runArenaDecide({ baseUrl: BASE_URL });
+ok(rAdd.status === 'ok' && rAdd.orders === 1, 'la corrida sigue viva: la decisión incompleta descarta SU orden, no el run', JSON.stringify(rAdd));
+const addPosts = alpacaOrderPosts.slice(postsBeforeAdd);
+ok(addPosts.length === 1 && addPosts[0].symbol === 'AAPL',
+  'solo la orden respaldada por una decisión completa llegó a Alpaca', JSON.stringify(addPosts.map((o) => o.symbol)));
+const rowAdd = lastRow();
+const addActions = JSON.parse(rowAdd[COL.actions]);
+const aHd = addActions.find((a) => a.symbol === 'HD');
+ok(aHd && aHd.result === 'discarded' && /invalidation_condition/.test(aHd.reason),
+  'HD se journalea DESCARTADA nombrando el campo que faltó (el "N/A" no cuenta como condición)', JSON.stringify(aHd && aHd.reason));
+const aAaplAdd = addActions.find((a) => a.symbol === 'AAPL');
+ok(aAaplAdd && aAaplAdd.result === 'approved' && aAaplAdd.confidence === 0.6 && !!aAaplAdd.invalidation_condition,
+  'la aprobada journalea la condición de venta y la confianza que la respaldaron', JSON.stringify(aAaplAdd && { c: aAaplAdd.confidence, i: aAaplAdd.invalidation_condition }));
+const ctxAdd = JSON.parse(rowAdd[COL.context]);
+ok(ctxAdd.positions_review.find((d) => d.symbol === 'HD').complete === false
+  && ctxAdd.position_review_audit.incomplete.includes('HD'),
+  'el journal conserva la decisión incompleta y la auditoría la cuenta: se puede ver QUÉ dijo el PM cuando su orden se cayó',
+  JSON.stringify(ctxAdd.position_review_audit));
+ok((rowAdd[COL.plan] || '').includes('Entro a AAPL'), 'y el plan se publica igual: esto descarta órdenes, no corridas');
+positionsMock = [];
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);

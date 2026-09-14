@@ -137,6 +137,23 @@ export const T2_RULES_TEXT = [
   'OBJETIVO DECLARADO: que el agente venda cuando debe y recuerde lo que prometió. NO que opere más seguido — ninguna regla de arriba premia la frecuencia.',
 ].join('\n');
 
+// ── ADDENDUM DEL REGLAMENTO T2 (2026-09-14) ─────────────────────────
+// Va APARTE del corte de la T2, con su propia fecha y su propio id: el
+// reglamento del 13 no cambia retroactivamente. El post-mortem necesita poder
+// cortar "antes del addendum" / "después del addendum" sin adivinar, igual que
+// corta T1 vs T2. PROMPT_VERSION NO sube: marca la TEMPORADA, y esto es un
+// addendum dentro de la misma temporada.
+export const ADDENDUM_VERSION = /* date-lint-ok: no es una referencia a "hoy" — es la fecha en que se amplió el reglamento, un hecho histórico fijo que ancla el corte del post-mortem */ '2026-09-14';
+export const ADDENDUM_ANNOUNCEMENT_ID = 'arena-addendum-decision-' + ADDENDUM_VERSION;
+export const ADDENDUM_RULES_TEXT = [
+  `ADDENDUM al reglamento de la TEMPORADA 2, vigente desde ${ADDENDUM_VERSION}. Aplica IGUAL a los siete agentes de la liga.`,
+  '10) DOS CAMPOS OBLIGATORIOS en la decisión por posición (positions_review), además de stance y razón:',
+  '    · invalidation_condition — QUÉ tendría que pasar para que venda. Una condición verificable después, no un estado de ánimo. Una tesis sin condición que la termine es una preferencia, no una tesis.',
+  '    · confidence (0–1) — cuánta confianza le tiene a ESA decisión. Numérica y acotada para que sea comparable entre corridas y entre los siete.',
+  '11) EL GUARD LO EXIGE: toda orden tiene que venir respaldada por una decisión COMPLETA para ese símbolo — los holdings y también el nombre que se abre hoy. Sin ella, la ORDEN SE DESCARTA con su razón; no se completa por el modelo ni se le asume una confianza que no declaró.',
+  'LO QUE NO CAMBIA: la corrida NO aborta por esto (el contrato de "JSON malformado = cero órdenes" sigue cubriendo solo plan y actions), las salidas deterministas (trailing, time stop, breaker) siguen ejecutándose sin pedirle permiso al modelo, y ninguna regla premia operar más seguido.',
+].join('\n');
+
 // El SCOUT nombra hasta este número de tickers para el deep dive. Es también
 // el tope de llamadas a Finnhub por corrida (4 endpoints × 5 = ~20, bajo el
 // cap de 60/min del tier gratis).
@@ -181,6 +198,7 @@ HARD RULES (a deterministic risk guard enforces them AFTER you — violations ar
 - Max ${ARENA_RULES.max_positions} simultaneous positions. Max ${ARENA_RULES.max_position_fraction * 100}% of equity per position. Keep at least ${ARENA_RULES.min_cash_fraction * 100}% of equity in cash.
 - LIMIT orders only, good for the day, executed at the NEXT market open. Set limit_price within ±${ARENA_RULES.price_band * 100}% of the last close you are given — wider is auto-discarded.
 - Base your decisions on the deep-dive data and portfolio provided. Do not invent prices, news or fundamentals, and do not introduce tickers you were given no data for.
+- EVERY order must be backed by a complete per-position decision. The ticker you trade must appear in positions_review with a non-empty invalidation_condition and a confidence between 0 and 1. Miss either field and the guard discards that order — it will not fill them in for you, and it will not assume a confidence you did not state.
 
 SEASON 2 RULES (deterministic layers that run around you — know them so your plan is consistent with what the book actually does):
 - A TRAILING STOP protects gains without you: once a position's peak since entry reaches +${(EXIT_RULES.trailing_arm_gain * 100).toFixed(0)}%, it is armed, and a close ${(EXIT_RULES.trailing_give_back * 100).toFixed(0)}% below that peak sells the whole position at the next open. By construction it can only sell at a profit. Each holding shows you whether it is armed and at what level.
@@ -189,13 +207,18 @@ SEASON 2 RULES (deterministic layers that run around you — know them so your p
 - You are NOT being asked to trade more often. Holding everything and placing zero orders is a fully valid outcome, every single day. What you are asked for is to DECIDE explicitly and to REMEMBER what you said you would do.
 
 MANDATORY, EVERY RUN:
-1. positions_review — ONE entry per position currently in the portfolio: stance "hold", "trim" or "exit", plus a reason that cites the numbers you were given (days in position, P&L since entry, distance from peak). A position you do not mention counts as a position you forgot.
+1. positions_review — ONE entry per position currently in the portfolio, AND one for every ticker you place an order on (including a name you are opening today). Each entry carries four things:
+   - stance: "hold", "trim" or "exit".
+   - reason: 1-2 sentences citing the numbers you were given (days in position, P&L since entry, distance from peak).
+   - invalidation_condition: what would have to happen for you to SELL this name — a condition you could check later, not a feeling. "If the Q3 gross margin comes in below 40%" is a condition; "if things get worse" is not. A thesis with no condition that ends it is a preference, not a thesis.
+   - confidence: a number between 0 and 1 for how much you believe THIS decision (not how much you like the company). 0.5 means a coin flip and is an honest answer; do not inflate it.
+   A position you do not mention counts as a position you forgot. A ticker you trade without a complete entry does not trade at all.
 2. commitment_updates — ONE entry per open commitment listed in the context, using its exact id: "cumplido" (you did it, or the condition resolved), "vigente" (still waiting — say what you are still waiting for), or "cancelado" (you are dropping it — say why).
 3. commitments — anything you promise in this plan ("I will revisit X after earnings", "holding cash for Y") goes here as a structured item so it comes back to you next run. If your plan makes a promise and this array is empty, the promise does not exist.
 
 OUTPUT: respond with ONE JSON object and NOTHING else (no markdown fences, no prose outside JSON):
-{"plan": "<your portfolio thesis for today, 2-6 sentences>", "positions_review": [{"symbol": "TICKER", "stance": "hold"|"trim"|"exit", "reason": "<1-2 sentences citing the numbers given>"}], "commitment_updates": [{"id": "<the exact id given>", "status": "cumplido"|"vigente"|"cancelado", "note": "<1 sentence>"}], "commitments": [{"symbol": "TICKER or null", "text": "<what you are committing to>", "due": "YYYY-MM-DD or null"}], "actions": [{"symbol": "TICKER", "side": "buy"|"sell", "notional": <USD number>, "limit_price": <number>, "conviction": <1-5>, "reasoning": "<1-2 sentences, specific>"}]}
-An empty actions array is a valid, often correct decision — but plan must then explain why you are holding. positions_review and commitment_updates are NOT optional when there are positions or open commitments.`;
+{"plan": "<your portfolio thesis for today, 2-6 sentences>", "positions_review": [{"symbol": "TICKER", "stance": "hold"|"trim"|"exit", "reason": "<1-2 sentences citing the numbers given>", "invalidation_condition": "<what would have to happen for you to sell>", "confidence": <number 0-1>}], "commitment_updates": [{"id": "<the exact id given>", "status": "cumplido"|"vigente"|"cancelado", "note": "<1 sentence>"}], "commitments": [{"symbol": "TICKER or null", "text": "<what you are committing to>", "due": "YYYY-MM-DD or null"}], "actions": [{"symbol": "TICKER", "side": "buy"|"sell", "notional": <USD number>, "limit_price": <number>, "conviction": <1-5>, "reasoning": "<1-2 sentences, specific>"}]}
+An empty actions array is a valid, often correct decision — but plan must then explain why you are holding. positions_review and commitment_updates are NOT optional when there are positions or open commitments, and invalidation_condition and confidence are not optional inside positions_review.`;
 }
 
 // Universo por TIPO de instrumento para el buffet: reusa los MISMOS sets del
@@ -655,8 +678,8 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
     JSON.stringify(research),
     '',
     event
-      ? 'Decide now, with the market open. Remember: ONE JSON object with plan, positions_review, commitment_updates, commitments and actions — nothing else.'
-      : 'Decide your actions for the next market open. Remember: ONE JSON object with plan, positions_review (one entry per position), commitment_updates (one per open commitment id), commitments and actions — nothing else. Trading more is not the objective; deciding explicitly and remembering what you promised is.',
+      ? 'Decide now, with the market open. Remember: ONE JSON object with plan, positions_review, commitment_updates, commitments and actions — nothing else. Every positions_review entry needs invalidation_condition and confidence (0-1), and every ticker you trade needs its entry, or the guard discards the order.'
+      : 'Decide your actions for the next market open. Remember: ONE JSON object with plan, positions_review (one entry per position AND per ticker you trade, each with invalidation_condition and confidence 0-1), commitment_updates (one per open commitment id), commitments and actions — nothing else. An order whose ticker has no complete entry is discarded by the guard. Trading more is not the objective; deciding explicitly and remembering what you promised is.',
   ].join('\n');
 }
 
@@ -1242,6 +1265,11 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     actions: parsed.actions,
     equity: account.equity, cash: account.cash,
     positions, symbolMap, symbolTypes, lastCloses,
+    // ADDENDUM 2026-09-14: la decisión por posición YA normalizada entra al
+    // guard. Sin una completa (invalidation_condition + confidence 0–1) para
+    // el símbolo, su orden se descarta con razón. `review` ya está calculada
+    // arriba — el orden importa: normalizar ANTES de validar.
+    decisions: review,
   });
 
   // Atribución por acción (determinista, no confía en el LLM): de qué canal(es)
@@ -1308,7 +1336,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // de la corrida siguiente lee `plan`, así que narrar no contamina el próximo
   // juicio. Best-effort: si falla, headline null y el run sigue igual.
   context.headline = await generateHeadline({
-    agent, plan: parsed.plan, actions: journalActions,
+    agent, plan: parsed.plan, actions: journalActions, decisions: review,
     equity, positions: positions.length, breakerStage: risk.stage,
     callLLM: callArenaLLM, now,
   });
@@ -1330,6 +1358,9 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     // Cumplimiento del reglamento T2 en esta corrida (lo que el post-mortem
     // compara entre modelos): posiciones no pronunciadas y compromisos ignorados.
     review_missing: context.position_review_audit.missing.length,
+    // ADDENDUM 2026-09-14: pronunciarse A MEDIAS también se reporta acá. Es el
+    // número que dice si el addendum está costando órdenes, sin abrir el journal.
+    review_incomplete: context.position_review_audit.incomplete.length,
     commitments_missing: context.commitments.audit.missing.length,
   };
 }
@@ -1390,6 +1421,26 @@ export async function announceT2Rules(now = new Date()) {
        values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
       [T2_ANNOUNCEMENT_ID, T2_RULES_VERSION, PROMPT_VERSION, T2_RULES_TEXT,
        JSON.stringify({ rules_version: T2_RULES_VERSION, prompt_version: PROMPT_VERSION, applies_to: activeAgents().map((a) => a.id) })],
+    );
+  } catch (e) { /* best-effort: el anuncio no bloquea la corrida */ }
+}
+
+// ── ANUNCIO DEL ADDENDUM (2026-09-14) ────────────────────────────────
+// Fila de liga aparte, con su propia fecha e id idempotente. No se mete en la
+// del 13: el reglamento de la T2 se anunció como se anunció, y reescribirlo
+// dejaría al post-mortem sin el corte que separa las corridas que corrieron
+// con el addendum de las que no. Best-effort, igual que el otro.
+export async function announceAddendum(now = new Date()) {
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
+       values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
+      [ADDENDUM_ANNOUNCEMENT_ID, ADDENDUM_VERSION, PROMPT_VERSION, ADDENDUM_RULES_TEXT,
+       JSON.stringify({
+         rules_version: T2_RULES_VERSION, addendum_version: ADDENDUM_VERSION, prompt_version: PROMPT_VERSION,
+         fields: ['invalidation_condition', 'confidence'], enforced_by: 'arena-guard.validateActions',
+         applies_to: activeAgents().map((a) => a.id),
+       })],
     );
   } catch (e) { /* best-effort: el anuncio no bloquea la corrida */ }
 }
@@ -1573,6 +1624,7 @@ export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
   }
 
   await announceT2Rules(now);
+  await announceAddendum(now);
   await announceSeasonOpen(now);
   await ensureAgentStateRows(agents.map((a) => a.id));
 
@@ -1660,6 +1712,7 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   // UNA sola vez (idempotente por id): el post-mortem necesita el corte para no
   // mezclar dos reglamentos en la misma serie.
   await announceT2Rules(now);
+  await announceAddendum(now);
   await announceSeasonOpen(now);
 
   // Siembra una fila de estado por agente (el halt/resume son UPDATE por agent_id).

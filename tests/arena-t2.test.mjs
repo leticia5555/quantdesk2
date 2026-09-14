@@ -20,6 +20,7 @@ import {
   sessionsAgo, hasReported, postEarningsTriggers,
   buildDiveSystemPrompt, buildDiveUserPrompt,
   T2_RULES_TEXT, T2_RULES_VERSION, T2_ANNOUNCEMENT_ID, PROMPT_VERSION, RECENT_REPORT_SESSIONS,
+  ADDENDUM_RULES_TEXT, ADDENDUM_VERSION, ADDENDUM_ANNOUNCEMENT_ID,
 } from '../api/arena-run.js';
 
 let failures = 0;
@@ -173,6 +174,36 @@ ok(/EVENT-DRIVEN MORNING RUN/.test(userEvento) && /NVDA ya reportó/.test(userEv
 ok(/NEW POSITIONS ARE NOT PART OF THIS RUN/.test(userEvento) && /Doing nothing is a valid outcome/.test(userEvento),
   'y deja claro que no abre riesgo nuevo y que no hacer nada es válido');
 ok(!/EVENT-DRIVEN/.test(user), 'la corrida diaria NO lleva el encuadre de evento');
+
+// ═══ ADDENDUM (2026-09-14): dos campos obligatorios por decisión ═══
+console.log('ADDENDUM: invalidation_condition + confidence, exigidos por el guard');
+
+ok(ADDENDUM_VERSION === '2026-09-14' && ADDENDUM_ANNOUNCEMENT_ID.includes(ADDENDUM_VERSION),
+  'el addendum se anuncia con SU fecha y un id idempotente derivado de ella', ADDENDUM_ANNOUNCEMENT_ID);
+ok(ADDENDUM_ANNOUNCEMENT_ID !== T2_ANNOUNCEMENT_ID && ADDENDUM_VERSION !== T2_RULES_VERSION,
+  'y NO reescribe el anuncio del 13: el post-mortem necesita el corte "antes/después del addendum"');
+ok(/^arena-pm-v3-t2$/.test(PROMPT_VERSION),
+  'PROMPT_VERSION NO sube: marca la TEMPORADA, y esto es un addendum dentro de la misma', PROMPT_VERSION);
+ok(/siete/i.test(ADDENDUM_RULES_TEXT) && ADDENDUM_RULES_TEXT.includes('10)') && ADDENDUM_RULES_TEXT.includes('11)'),
+  'el texto anunciado enumera las dos reglas nuevas y dice que aplican igual a los siete');
+ok(/invalidation_condition/.test(ADDENDUM_RULES_TEXT) && /confidence \(0–1\)/.test(ADDENDUM_RULES_TEXT)
+  && /ORDEN SE DESCARTA/.test(ADDENDUM_RULES_TEXT),
+  'y deja escrito el precio de no llenarlos: la orden se descarta, no se completa por el modelo');
+ok(/NO aborta/.test(ADDENDUM_RULES_TEXT),
+  'lo que NO cambia también queda anunciado: la corrida no aborta por esto');
+
+const sysAdd = buildDiveSystemPrompt('Claude PM');
+ok(/invalidation_condition/.test(sysAdd) && /confidence/.test(sysAdd),
+  'el DIVE pide los dos campos por decisión');
+ok(/what would have to happen for you to SELL/i.test(sysAdd),
+  'y explica invalidation_condition como lo que el reglamento dice: qué tendría que pasar para que VENDA');
+ok(/the guard discards that order/i.test(sysAdd),
+  'el PM sabe de antemano que sin ellos su orden se cae (la regla se le dice, no se le tiende una trampa)');
+ok(/"invalidation_condition": "<what would have to happen for you to sell>"/.test(sysAdd)
+  && /"confidence": <number 0-1>/.test(sysAdd),
+  'el schema de salida —que es el contrato— lleva los dos campos dentro de positions_review');
+ok(/one for every ticker you place an order on/i.test(sysAdd),
+  'y dice que el nombre que se abre HOY también necesita su decisión (si no, ninguna compra nueva pasaría)');
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);

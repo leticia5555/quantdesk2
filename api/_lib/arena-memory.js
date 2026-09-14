@@ -31,6 +31,12 @@
 // MEDICIÓN — journalean quién incumplió, igual que _lib/prose-audit.js. Lo que
 // sí fuerza una venta es el trailing stop determinista (_lib/arena-exits.js);
 // la memoria le pone al PM la obligación de hablar, no de obedecer.
+//
+// ADDENDUM DEL REGLAMENTO (2026-09-14, igual para los siete): la decisión por
+// posición ahora declara además `invalidation_condition` y `confidence` (0–1).
+// Acá se normalizan y se miden, como todo lo demás. La ÚNICA pieza con
+// consecuencia es el guard: una orden cuyo símbolo no traiga una decisión
+// COMPLETA se descarta (ver la sección 3, abajo, y _lib/arena-guard.js).
 // ═══════════════════════════════════════════════════════════════
 
 import { EXIT_RULES, trailingState, timeStopState } from './arena-exits.js';
@@ -282,13 +288,73 @@ export function auditCommitments(open = [], updates = []) {
   };
 }
 
-// ═══ 3. PRONUNCIAMIENTO POR POSICIÓN (T2 #9) ═══════════════════════
+// ═══ 3. PRONUNCIAMIENTO POR POSICIÓN (T2 #9 + ADDENDUM 2026-09-14) ═══
 
 export const STANCES = new Set(['hold', 'trim', 'exit']);
 
-// `positions_review` del modelo → [{ symbol, stance, reason }] normalizado.
-// Tolerante igual que los compromisos: lo ilegible se descarta y la auditoría
-// lo cuenta como posición NO pronunciada.
+// ── ADDENDUM del reglamento (2026-09-14), igual para los siete ───────
+// La decisión por posición deja de ser solo `stance` + `reason`. Cada una
+// declara, además, DOS campos OBLIGATORIOS:
+//
+//   invalidation_condition → qué tendría que pasar para que VENDA. Una tesis
+//     sin condición de invalidación no es una tesis: es una preferencia. Es
+//     también el único campo que permite auditar después si el PM vendió
+//     cuando dijo que vendería, en vez de racionalizar a posteriori.
+//   confidence (0–1) → cuánta confianza le tiene a ESA decisión. Numérica y
+//     acotada a propósito: comparable entre corridas y entre los siete
+//     agentes. `conviction` (1–5) de la ORDEN es otra cosa y sigue viviendo
+//     en la acción — ahí mide cuánto quiere el nombre; acá, cuánto cree en
+//     el juicio que acaba de emitir sobre la posición.
+//
+// LO QUE ESTE MÓDULO HACE con ellos es lo de siempre: normalizar y MEDIR. No
+// completa lo que falta ni castiga la corrida. Quien los vuelve obligatorios
+// de verdad es el guard: sin decisión COMPLETA para un símbolo, su orden se
+// descarta (_lib/arena-guard.js). La entrada incompleta NO se tira — se
+// guarda con los huecos en null y `complete:false`, porque el journal tiene
+// que poder mostrar QUÉ dijo el PM cuando su orden se cayó.
+
+// Tope del texto de la condición: es una condición, no un ensayo. Mismo
+// criterio (y mismo largo) que `reason`.
+export const INVALIDATION_MAX_CHARS = 400;
+
+// Rellenos que NO son una condición de invalidación. Sin esto, "N/A" pasaría
+// el gate del guard como si el PM hubiera declarado algo, que es justo lo que
+// el addendum existe para impedir.
+const INVALIDATION_FILLER = new Set([
+  'n/a', 'na', 'n.a.', 'none', 'nil', 'null', 'tbd', 'ninguna', 'ninguno',
+  'nada', 'no aplica', '-', '--', '?', '.',
+]);
+
+// string → condición utilizable · null si está vacía o es puro relleno.
+export function normalizeInvalidation(raw) {
+  const t = typeof raw === 'string' ? raw.trim() : '';
+  if (!t || INVALIDATION_FILLER.has(t.toLowerCase().replace(/[.!]+$/, ''))) return null;
+  return t.slice(0, INVALIDATION_MAX_CHARS);
+}
+
+// número → confianza en [0,1] · null si falta o cae fuera del rango.
+// FUERA DE RANGO NO SE CLAMPA: un 70 puede ser "70%" o un dedazo, y elegir por
+// él sería ajustarle la decisión en silencio — exactamente lo que la casa
+// prohíbe en el guard. Se devuelve null y la orden se cae con su razón.
+// El 0 SÍ es válido: "no le tengo ninguna confianza" es una declaración, y el
+// contrato exige que el campo esté LLENO, no que el número sea alto.
+export function normalizeConfidence(raw) {
+  // Number(null), Number(''), Number([]) y Number(false) son 0: sin este corte,
+  // un campo AUSENTE se leería como "confianza 0 DECLARADA" — una declaración
+  // que el PM nunca hizo, y encima una que el guard dejaría operar. Solo un
+  // número (o un número en string, que es des-serializar) cuenta.
+  if (typeof raw !== 'number' && typeof raw !== 'string') return null;
+  if (typeof raw === 'string' && !raw.trim()) return null;
+  const n = num(raw);
+  if (n == null || n < 0 || n > 1) return null;
+  return +n.toFixed(3);
+}
+
+// `positions_review` del modelo → [{ symbol, stance, reason,
+// invalidation_condition, confidence, complete }] normalizado.
+// Tolerante igual que los compromisos: lo ilegible se descarta (symbol vacío,
+// stance fuera del vocabulario, duplicado) y la auditoría lo cuenta como
+// posición NO pronunciada.
 export function normalizePositionsReview(raw) {
   if (!Array.isArray(raw)) return [];
   const out = [];
@@ -299,7 +365,17 @@ export function normalizePositionsReview(raw) {
     const stance = typeof r.stance === 'string' ? r.stance.trim().toLowerCase() : '';
     if (!symbol || seen.has(symbol) || !STANCES.has(stance)) continue;
     seen.add(symbol);
-    out.push({ symbol, stance, reason: typeof r.reason === 'string' ? r.reason.trim().slice(0, 400) : null });
+    const invalidation_condition = normalizeInvalidation(r.invalidation_condition ?? r.invalidation);
+    const confidence = normalizeConfidence(r.confidence);
+    out.push({
+      symbol, stance,
+      reason: typeof r.reason === 'string' ? r.reason.trim().slice(0, 400) : null,
+      invalidation_condition,
+      confidence,
+      // El guard lee ESTE flag; que lo calcule una sola vez, acá, evita que
+      // dos módulos definan "completa" de dos formas distintas.
+      complete: invalidation_condition != null && confidence != null,
+    });
   }
   return out;
 }
@@ -315,13 +391,30 @@ export function auditPositionReview(requiredSymbols = [], review = [], meta = {}
   const extra = [...bySym.keys()].filter((s) => !required.includes(s));
   const noReason = [...bySym.values()].filter((r) => !r.reason).map((r) => r.symbol);
   const timeStopMissing = missing.filter((s) => meta[s] && meta[s].time_stop && meta[s].time_stop.due);
+  // ── ADDENDUM 2026-09-14: los dos campos nuevos también se MIDEN ──────
+  // Se miden sobre TODO lo que el PM emitió (no solo sobre los holdings
+  // requeridos): una decisión a medias sobre un nombre que va a comprar es
+  // exactamente la que el guard le va a tumbar, y el journal debe poder
+  // explicarlo sin cruzar dos tablas. El que ENFORCE sigue siendo el guard.
+  const emitted = [...bySym.values()];
+  const noInvalidation = emitted.filter((r) => !r.invalidation_condition).map((r) => r.symbol);
+  const noConfidence = emitted.filter((r) => r.confidence == null).map((r) => r.symbol);
+  const incomplete = emitted.filter((r) => !r.complete).map((r) => r.symbol);
+  const completeRequired = required.filter((s) => bySym.get(s) && bySym.get(s).complete);
   return {
     required: required.length,
     reviewed: [...bySym.keys()],
     missing,
     extra,
     without_reason: noReason,
+    without_invalidation: noInvalidation,
+    without_confidence: noConfidence,
+    incomplete,
     time_stop_missing: timeStopMissing,
     rate: required.length ? +((required.length - missing.length) / required.length).toFixed(3) : null,
+    // Tasa EXIGENTE: pronunciarse a medias no cuenta como pronunciarse. Es la
+    // que compara a los siete bajo el addendum; `rate` queda intacta para no
+    // romper la serie de la T2 que ya está en el journal.
+    complete_rate: required.length ? +(completeRequired.length / required.length).toFixed(3) : null,
   };
 }

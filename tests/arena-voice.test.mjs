@@ -83,6 +83,27 @@ ok(/etapa delever/.test(buildHeadlineUserPrompt({ plan: 'x', actions: [], breake
   'pero un breaker activo SÍ se le dice (es la noticia del día)');
 ok(/hoy no operaste/.test(buildHeadlineUserPrompt({ plan: 'x', actions: [] })), 'sin órdenes, el prompt lo dice tal cual');
 
+// ── ADDENDUM 2026-09-14: la decisión por posición es material de titular ──
+console.log('voz: ADDENDUM — condición de invalidación y confianza llegan al titular');
+const userDec = buildHeadlineUserPrompt({
+  plan: 'Holdeo NVDA.',
+  actions: [],
+  decisions: [
+    { symbol: 'NVDA', stance: 'hold', invalidation_condition: 'si cierra dos sesiones bajo 140', confidence: 0.65 },
+    { symbol: 'KO', stance: 'trim', invalidation_condition: null, confidence: null },
+  ],
+});
+ok(/NVDA — hold · confianza 0.65 · vendes si: si cierra dos sesiones bajo 140/.test(userDec),
+  'la decisión llega resuelta: stance, confianza y condición de venta en una línea', userDec);
+ok(/KO — trim · sin confianza declarada · sin condición de venta declarada/.test(userDec),
+  'un hueco se dice como hueco: el titular jamás rellena una confianza que el PM no declaró');
+ok(/CONFIANZA/.test(buildHeadlineSystemPrompt(agentById('grok'))) && /no redondees la confianza a tu favor/.test(buildHeadlineSystemPrompt(agentById('grok'))),
+  'y el system le dice que puede citarlas, pero tal como están');
+ok(!/DECISIONES POR POSICIÓN/.test(buildHeadlineUserPrompt({ plan: 'x', actions: [] })),
+  'sin decisiones no se imprime un encabezado vacío (un día sin libro no inventa una sección)');
+ok(!/limit_price|max_positions/.test(userDec),
+  'sigue sin llevar reglas de trading: narrar la decisión no es poder cambiarla');
+
 // ═══ normalización (determinista) ══════════════════════════════════
 console.log('voz: normalización del titular');
 ok(normalizeHeadline('  Compro AAPL y me aguanto.  ') === 'Compro AAPL y me aguanto.', 'recorta espacios');

@@ -94,6 +94,22 @@ ok(parsePlanResponse('').ok === false, 'respuesta vacía → abort');
 console.log('arena-guard: validación determinista de acciones');
 
 // Libro base: $100k equity, $60k cash, ya hay 40k en 2 posiciones.
+// ── ADDENDUM 2026-09-14: toda orden necesita una decisión por posición
+// COMPLETA (invalidation_condition + confidence 0–1). El fixture la trae para
+// TODOS los símbolos que estas pruebas operan, para que cada caso siga midiendo
+// la regla que dice medir; los tests del addendum, al final, la quitan a
+// propósito. Forma idéntica a la que devuelve normalizePositionsReview.
+const decide = (symbol, over = {}) => ({
+  symbol, stance: 'hold', reason: 'r',
+  invalidation_condition: 'si el margen bruto del próximo trimestre baja de 40%',
+  confidence: 0.6,
+  ...over,
+});
+const SIMBOLOS_DEL_FIXTURE = [
+  'AAPL', 'MSFT', 'NVDA', 'PENNY', 'KO', 'FAKEZ', 'ACME.WS', 'TSLL', 'ZZZL', 'WXYZ',
+  'ULTG', 'SPY', 'PDI', 'NU', 'O', 'OEFX', 'WRNTX', 'UNITX', 'RGHTX', 'PREFX', 'PUBX',
+  ...Array.from({ length: 8 }, (_, i) => 'P' + i),
+];
 const BASE = {
   equity: 100000,
   cash: 60000,
@@ -103,6 +119,7 @@ const BASE = {
   ],
   symbolMap: { AAPL: 'Apple Inc', MSFT: 'Microsoft Corp', NVDA: 'Nvidia Corp', PENNY: 'Penny Trap Inc', KO: 'Coca-Cola Co' },
   lastCloses: { AAPL: 200, MSFT: 500, NVDA: 150, PENNY: 0.5, KO: 60 },
+  decisions: SIMBOLOS_DEL_FIXTURE.map((s) => decide(s)),
 };
 const act = (over) => ({ symbol: 'AAPL', side: 'buy', notional: 10000, limit_price: 201, conviction: 3, reasoning: 'r', ...over });
 
@@ -286,6 +303,60 @@ ok(t2Missing.ok && t2Missing.positions_review === undefined,
 const t2Junk = parsePlanResponse('{"plan":"holdeo","actions":[],"positions_review":"no es un array"}');
 ok(t2Junk.ok === true,
   'un campo T2 malformado NO aborta el run: el contrato duro sigue siendo plan + actions (el olvido se MIDE, no se castiga con cero órdenes)');
+
+// ═══ ADDENDUM 2026-09-14: sin decisión completa, no hay orden ══════
+console.log('arena-guard: ADDENDUM — invalidation_condition + confidence o la orden se cae');
+
+// Sin NINGUNA decisión (el modelo no emitió positions_review) → fail closed.
+r = validateActions({ ...BASE, decisions: [], actions: [act()] });
+ok(r.approved.length === 0 && /sin decisión por posición/.test(r.discarded[0].reason),
+  'sin positions_review, la orden NO se ejecuta: fail closed, igual que sin symbol map', JSON.stringify(r.discarded[0]));
+ok(validateActions({ ...BASE, decisions: undefined, actions: [act()] }).approved.length === 0,
+  'el campo AUSENTE tampoco significa "sin regla" — ausente es vacío, y vacío no autoriza nada');
+
+// Decisión que existe pero le falta un campo → se cae, con la razón que lo nombra.
+r = validateActions({ ...BASE, decisions: [decide('AAPL', { invalidation_condition: null })], actions: [act()] });
+ok(r.approved.length === 0 && /invalidation_condition/.test(r.discarded[0].reason),
+  'decisión sin condición de invalidación → orden descartada, nombrando el campo que falta', JSON.stringify(r.discarded[0]));
+r = validateActions({ ...BASE, decisions: [decide('AAPL', { confidence: null })], actions: [act()] });
+ok(r.approved.length === 0 && /confidence/.test(r.discarded[0].reason),
+  'decisión sin confidence → orden descartada', JSON.stringify(r.discarded[0]));
+
+// La confianza fuera de rango NO se clampa (mismo criterio que el resto del guard).
+for (const bad of [70, 1.5, -0.1, '0.7', NaN]) {
+  const rr = validateActions({ ...BASE, decisions: [decide('AAPL', { confidence: bad })], actions: [act()] });
+  ok(rr.approved.length === 0 && /confidence/.test(rr.discarded[0].reason),
+    `confidence ${JSON.stringify(bad)} fuera del contrato → descartada, JAMÁS clampada a 1`, JSON.stringify(rr.discarded[0]));
+}
+// 0 es una declaración válida: el contrato exige el campo LLENO, no un número alto.
+r = validateActions({ ...BASE, decisions: [decide('AAPL', { confidence: 0 })], actions: [act()] });
+ok(r.approved.length === 1 && r.approved[0].confidence === 0,
+  'confidence 0 SÍ opera: "no le tengo confianza" es una declaración honesta, no un campo vacío', JSON.stringify(r.discarded));
+
+// El guard NO confía en el flag `complete` que calcula la memoria: re-verifica.
+r = validateActions({ ...BASE, decisions: [decide('AAPL', { invalidation_condition: '', complete: true })], actions: [act()] });
+ok(r.approved.length === 0,
+  'un `complete:true` mentiroso no pasa: el guard re-verifica los campos, no confía en la bandera');
+
+// La decisión es POR SÍMBOLO: la de otro nombre no autoriza esta orden.
+r = validateActions({ ...BASE, decisions: [decide('KO')], actions: [act()] });
+ok(r.approved.length === 0 && /AAPL: sin decisión/.test(r.discarded[0].reason),
+  'la decisión de OTRO símbolo no autoriza esta orden (no hay decisión "de la corrida", hay una por posición)');
+
+// Aplica también a las VENTAS del PM: vender NVDA sin pronunciarse sobre NVDA no pasa.
+r = validateActions({ ...BASE, decisions: [], actions: [{ symbol: 'NVDA', side: 'sell', notional: 3000, limit_price: 150, reasoning: 'salgo' }] });
+ok(r.approved.length === 0 && /sin decisión por posición/.test(r.discarded[0].reason),
+  'la venta del PM también necesita su decisión (las deterministas del breaker no pasan por acá)');
+
+// La decisión que AUTORIZÓ la orden viaja CON la orden (journal + titular).
+r = validateActions({ ...BASE, actions: [act()] });
+ok(r.approved[0].invalidation_condition === 'si el margen bruto del próximo trimestre baja de 40%'
+  && r.approved[0].confidence === 0.6 && r.approved[0].stance === 'hold',
+  'la orden aprobada journalea la condición de venta y la confianza que la respaldaron', JSON.stringify(r.approved[0]));
+
+// Acepta el mapa ya indexado, no solo el array.
+r = validateActions({ ...BASE, decisions: { AAPL: decide('AAPL') }, actions: [act()] });
+ok(r.approved.length === 1, 'acepta { SYMBOL: decisión } además del array de positions_review');
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);
