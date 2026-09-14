@@ -12,6 +12,7 @@
 import {
   computeDrawdown, planBreaker, catastrophicStopLevel, planCatastrophicStops,
   mergeExits, exitReference, riskExitLimit, exitBand, buildRiskExits, EXIT_RULES,
+  trailingState, planTrailingStops, timeStopState,
 } from '../api/_lib/arena-exits.js';
 
 let failures = 0;
@@ -26,6 +27,9 @@ const RULES = {
   catastrophic_stop_pct: 0.22,
   exit_band_breaker: 0.12, exit_band_catastrophic: 0.32,
   exit_escalation_step: 0.13, exit_band_max: 0.70,
+  // T2: trailing de ganancia + time stop (el time stop NO vende, se prueba abajo).
+  trailing_arm_gain: 0.15, trailing_give_back: 0.08, exit_band_trailing: 0.12,
+  time_stop_days: 45,
 };
 
 console.log('arena-exits: drawdown desde el pico');
@@ -159,6 +163,77 @@ ok(noref.approved.length === 0 && noref.discarded.length === 1 && /sin referenci
 ok(EXIT_RULES.breaker_delever_dd < EXIT_RULES.breaker_broadcut_dd, 'EXIT_RULES: delever < broadcut');
 ok(EXIT_RULES.exit_band_breaker > 0.02 && EXIT_RULES.exit_band_catastrophic > EXIT_RULES.exit_band_breaker && EXIT_RULES.exit_band_catastrophic >= 0.30,
   'EXIT_RULES: dos bandas, catastrófica (≥30%) MUCHO más ancha que breaker, ambas > ±2% de entrada');
+
+// ── T2 #3: TRAILING STOP de ganancia ────────────────────────────────
+console.log('arena-exits: T2 #3 — trailing stop (protege ganancia, no es un stop apretado)');
+const WIN = { symbol: 'WIN', qty: '10', avg_entry_price: '100', current_price: '118' };
+const MEH = { symbol: 'MEH', qty: '10', avg_entry_price: '100', current_price: '96' };
+
+let st = trailingState(WIN, 125, RULES);
+ok(st.armed === true && st.arm_level === 115 && st.level === 115,
+  'pico 125 sobre entrada 100 → ARMADO (umbral 115) y nivel de venta 125×0.92 = 115', JSON.stringify(st));
+st = trailingState(MEH, 108, RULES);
+ok(st.armed === false && st.level === null,
+  'pico +8% NO llega al +15%: no arma y NO hay nivel de venta', JSON.stringify(st));
+ok(trailingState(WIN, null, RULES) === null && trailingState({ symbol: 'X' }, 120, RULES) === null,
+  'sin pico o sin entrada → null: el trailing NO se evalúa a ciegas');
+
+// LA propiedad que lo distingue de un stop apretado: el nivel SIEMPRE queda
+// sobre la entrada, así que una salida por trailing nunca realiza una pérdida.
+const armedLevel = trailingState(WIN, 115, RULES).level;
+ok(armedLevel > 100, 'el nivel armado más bajo posible (pico = umbral) YA está sobre la entrada: nunca vende en pérdida', String(armedLevel));
+
+let tr = planTrailingStops({ positions: [WIN], closes: { WIN: 114 }, peaks: { WIN: 125 }, rules: RULES });
+ok(tr.exits.length === 1 && tr.exits[0].qty === 10 && tr.exits[0].reason_code === 'trailing_stop',
+  'cierre 114 bajo el nivel 115 → liquida la posición ENTERA', JSON.stringify(tr.exits));
+ok(/pico/.test(tr.exits[0].detail) && /ganancia/.test(tr.exits[0].detail), 'el detail explica el pico y que sale con ganancia', tr.exits[0].detail);
+tr = planTrailingStops({ positions: [WIN], closes: { WIN: 116 }, peaks: { WIN: 125 }, rules: RULES });
+ok(tr.exits.length === 0, 'cierre 116 sobre el nivel → NO sale (todavía no devolvió el 8%)');
+tr = planTrailingStops({ positions: [MEH], closes: { MEH: 96 }, peaks: { MEH: 108 }, rules: RULES });
+ok(tr.exits.length === 0, 'una posición que nunca armó NO se vende aunque haya caído 11% desde su pico (Kaminski & Lo)');
+tr = planTrailingStops({ positions: [WIN], closes: {}, peaks: { WIN: 125 }, rules: RULES });
+ok(tr.exits.length === 0, 'sin cierre completo no se evalúa: un dato faltante no liquida por sorpresa');
+tr = planTrailingStops({ positions: [WIN], closes: { WIN: 114 }, peaks: {}, rules: RULES });
+ok(tr.exits.length === 0, 'sin pico reconstruido (posición anterior al journal) el trailing NO dispara');
+
+console.log('arena-exits: T2 #3 — banda y precedencia del trailing');
+ok(exitBand(['trailing_stop'], RULES) === RULES.exit_band_trailing, 'el trailing usa su propia banda de marketable limit');
+ok(exitBand(['trailing_stop'], RULES, 3) === RULES.exit_band_trailing,
+  'el trailing NO escala con los reintentos: su nivel se mueve con el pico, no con los intentos fallidos');
+ok(exitBand(['trailing_stop', 'catastrophic_stop'], RULES, 1) > RULES.exit_band_trailing,
+  'si un nombre cae en trailing Y catastrófico, manda la banda catastrófica (la más severa)');
+
+// Integrado: un libro sano (sin drawdown de portafolio) con una ganadora que
+// devolvió su pico → sale por trailing, con marketable limit y su atribución.
+const integ = buildRiskExits({
+  equity: 100, peak: 100,
+  positions: [WIN, MEH],
+  closes: { WIN: 114, MEH: 96 }, peaks: { WIN: 125, MEH: 108 }, rules: RULES,
+});
+ok(integ.stage === 'none' && integ.approved.length === 1 && integ.approved[0].symbol === 'WIN',
+  'buildRiskExits: sin breaker, el trailing solo saca a la ganadora que devolvió el pico', JSON.stringify(integ.approved.map((a) => a.symbol)));
+ok(integ.approved[0].origin === 'trailing_stop' && integ.approved[0].limit_price === +(114 * (1 - RULES.exit_band_trailing)).toFixed(2),
+  'sale con origin trailing_stop y marketable limit = cierre × (1 − banda)', JSON.stringify(integ.approved[0]));
+// Sin `peaks` (comportamiento T1 exacto): nada cambia.
+const sinPicos = buildRiskExits({ equity: 100, peak: 100, positions: [WIN, MEH], closes: { WIN: 114, MEH: 96 }, rules: RULES });
+ok(sinPicos.approved.length === 0, 'sin memoria de picos, buildRiskExits se comporta como en la Temporada 1 (cero salidas nuevas)');
+
+// ── T2 #4: TIME STOP — obliga a pronunciarse, NO vende ──────────────
+console.log('arena-exits: T2 #4 — el time stop no produce órdenes');
+ok(timeStopState(46, RULES).due === true && timeStopState(44, RULES).due === false,
+  'vence a los 45 días calendario', JSON.stringify([timeStopState(46, RULES).due, timeStopState(44, RULES).due]));
+ok(timeStopState(null, RULES).due === false && timeStopState(null, RULES).days === null,
+  'sin fecha de apertura no vence: no se exige sobre un dato que no existe');
+const vieja = { symbol: 'OLD', qty: '10', avg_entry_price: '100', current_price: '95' };
+const conVieja = buildRiskExits({ equity: 100, peak: 100, positions: [vieja], closes: { OLD: 95 }, peaks: { OLD: 101 }, rules: RULES });
+ok(conVieja.approved.length === 0,
+  'una posición vencida por time stop NO genera ninguna orden determinista: la obligación es de PRONUNCIARSE (la audita arena-memory)');
+
+// EXIT_RULES por default: el trailing es coherente con el resto
+ok(EXIT_RULES.trailing_arm_gain > EXIT_RULES.trailing_give_back,
+  'EXIT_RULES: el umbral de armado (+15%) es mayor que lo que se devuelve (8%) → el trailing solo puede salir en ganancia',
+  JSON.stringify({ arm: EXIT_RULES.trailing_arm_gain, give: EXIT_RULES.trailing_give_back }));
+ok(EXIT_RULES.time_stop_days === 45, 'EXIT_RULES: time stop a 45 días', String(EXIT_RULES.time_stop_days));
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
 process.exit(failures === 0 ? 0 : 1);

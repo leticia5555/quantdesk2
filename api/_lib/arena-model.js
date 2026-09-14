@@ -57,8 +57,14 @@ function normalizeOpenRouter(raw) {
   let text = (msg && msg.content) || '';
   if (Array.isArray(text)) text = text.map((p) => (p && (p.text || p.content)) || '').join('');
   const u = raw.usage || {};
+  // `finish_reason` de OpenAI → `stop_reason` de Anthropic. El caller usa esto
+  // para distinguir "el modelo no respetó el formato" de "se quedó sin tokens a
+  // mitad del JSON": sin normalizarlo, ese diagnóstico solo existiría para los
+  // agentes de Anthropic y la mitad de la liga quedaría sin explicación.
+  const finish = (raw.choices && raw.choices[0] && raw.choices[0].finish_reason) || null;
   return {
     content: [{ type: 'text', text: typeof text === 'string' ? text : String(text) }],
+    stop_reason: finish === 'length' ? 'max_tokens' : (finish === 'stop' ? 'end_turn' : finish),
     usage: { input_tokens: Number(u.prompt_tokens) || 0, output_tokens: Number(u.completion_tokens) || 0 },
   };
 }

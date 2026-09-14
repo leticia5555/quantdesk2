@@ -38,6 +38,19 @@
 //   GET  ?phase=reconcile → cron matutino (14:40 UTC L-V): trae los fills
 //        reales (precio/timestamp) de las órdenes enviadas y los guarda en
 //        el journal. Compatible con el diseño de reconciliación de Fase 1.
+//   GET  ?phase=morning → CORRIDA POR EVENTO (14:50 UTC L-V, Temporada 2 #7).
+//        NO es una segunda corrida diaria: solo gasta LLM si una posición del
+//        libro de algún agente acaba de reportar (AMC de la sesión anterior o
+//        BMO de hoy). Se salta el SCOUT (el evento ya define el slate), no
+//        re-evalúa la red determinista (decide con cierres COMPLETOS, y a media
+//        mañana no hay uno nuevo) y SUPRIME las compras: existe para decidir
+//        sobre lo que ya se tiene. Sin evento → una fila marcadora de liga.
+//
+// TEMPORADA 2 (2026-09-13, reglamento completo en docs/arena.md): memoria de
+// compromisos con fecha, recién-reportados 2 sesiones en el buffet, trailing
+// stop, time stop a 45 días, salidas marketable, flag de ratios outlier,
+// corrida por evento, NO breaker SMA200 y pronunciamiento obligatorio por
+// posición. El cambio de reglas se anuncia en el journal (announceT2Rules).
 //
 // GATES (en orden): CRON_SECRET (si existe) → ARENA_ENABLED=1 (el switch
 // que prende Lety cuando el smoke de /api/alpaca?smoke=1 esté verde en
@@ -58,6 +71,14 @@ import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpacaCreds, getCalendar } from './_lib/alpaca.js';
 import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF, NON_EQUITY_TYPES, EXCLUDED_SECURITY_TYPES } from './_lib/arena-guard.js';
 import { buildRiskExits, EXIT_RULES } from './_lib/arena-exits.js';
+// TEMPORADA 2: la memoria del agente (compromisos con fecha, historia de cada
+// posición, auditoría del pronunciamiento). JS puro, sin I/O — ver el encabezado
+// de _lib/arena-memory.js para el porqué de cada pieza.
+import {
+  reconstructPositionOpens, buildPositionMeta, peaksFromMeta,
+  normalizeCommitments, normalizeCommitmentUpdates, foldCommitments, auditCommitments,
+  normalizePositionsReview, auditPositionReview,
+} from './_lib/arena-memory.js';
 import { fetchDeepDive } from './_lib/finnhub-dive.js';
 import { auditPlanPercentages } from './_lib/prose-audit.js';
 import { relativeDayLabel } from './_lib/ai-guard.js';
@@ -67,7 +88,11 @@ import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib
 // LIGA multi-modelo: el registry (quién compite, con qué modelo/cuenta/persona)
 // y el dispatch de proveedor (Anthropic directo vs OpenRouter, forma normalizada).
 import { callArenaLLM, providerKey } from './_lib/arena-model.js';
-import { activeAgents, agentById, agentAlpacaCreds, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
+// TITULAR de la corrida (voz del arquetipo). Llamada APARTE y POSTERIOR: el
+// arquetipo NUNCA entra al prompt que decide — ver el candado del control en el
+// encabezado de _lib/arena-voice.js.
+import { generateHeadline } from './_lib/arena-voice.js';
+import { ARENA_AGENTS, ARENA_SEASON, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
 
 // Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
 // reglas de universo); el buffet (trimMovers) la reusa y los tests de
@@ -83,10 +108,34 @@ export { isLeveragedInverseETF };
 // el cap; no le estorba (termina en segundos).
 export const maxDuration = 300;
 
-// v2: flujo de DOS fases (SCAN → DEEP DIVE). v1 era un solo LLM call sobre el
-// buffet. El bump permite distinguir corridas del harness viejo vs nuevo en
-// el post-mortem a 30 días.
-export const PROMPT_VERSION = 'arena-pm-v2';
+// v3-t2: TEMPORADA 2 (2026-09-13) — memoria de compromisos, pronunciamiento
+// obligatorio por posición, trailing/time stop, salidas marketable y corrida
+// matutina por evento. v2 era el flujo de DOS fases (SCAN → DEEP DIVE); v1, un
+// solo LLM call sobre el buffet. El bump permite cortar el post-mortem por
+// temporada: las métricas de T1 y T2 NO son comparables (cambió el reglamento).
+export const PROMPT_VERSION = 'arena-pm-v3-t2';
+
+// ── REGLAMENTO DE LA TEMPORADA 2 ─────────────────────────────────────
+// El cambio de reglas se ANUNCIA en el journal con fecha, una sola vez (fila
+// idempotente por este id, agent_id='league'): sin ese corte, el post-mortem
+// compara peras con manzanas. Mismo patrón que el corte BUFFET_QUALITY_DEPLOY
+// del endpoint de auditoría, pero registrado por el propio runner en vez de
+// deducido de un merge.
+export const T2_RULES_VERSION = /* date-lint-ok: no es una referencia a "hoy" — es la fecha en que se cambió el reglamento, un hecho histórico fijo que ancla el corte del post-mortem */ '2026-09-13';
+export const T2_ANNOUNCEMENT_ID = 'arena-reglamento-t2-' + T2_RULES_VERSION;
+export const T2_RULES_TEXT = [
+  `TEMPORADA 2 del Arena — reglamento vigente desde ${T2_RULES_VERSION}. Aplica IGUAL a los siete agentes de la liga.`,
+  '1) MEMORIA DE COMPROMISOS: lo que el PM promete queda guardado con fecha y vuelve en la corrida siguiente con obligación de pronunciarse (cumplido/vigente/cancelado). Fix de la amnesia NVDA/CRM.',
+  '2) RECIÉN-REPORTADOS: una empresa que acaba de reportar permanece 2 sesiones más en el buffet, con su fecha de reporte y sus cifras — antes desaparecía el mismo día y la tesis quedaba sin cerrar.',
+  '3) TRAILING STOP determinista: un pico de +15% desde la entrada ARMA un trailing del 8% sobre ese pico. Por construcción nunca vende en pérdida: protege ganancia, no es un stop apretado.',
+  '4) TIME STOP a 45 días: no vende — OBLIGA a pronunciarse sobre la posición.',
+  '5) SALIDAS A MARKETABLE LIMIT: la venta del PM se envía por debajo del mercado para que LLENE. Cicatriz GOOGL: una venta decidida que expira sin llenar no es una venta.',
+  '6) RATIOS OUTLIER marcados como "posible artefacto contable" (caso LYFT): el número viaja igual, con la bandera al lado.',
+  '7) CORRIDA MATUTINA POR EVENTO: si una posición del libro reportó, hay una corrida extra por la mañana para reaccionar al movimiento — solo sobre esos nombres, sin abrir riesgo nuevo.',
+  '8) NO hay breaker por SMA200: descartado explícitamente (NO-GO del backtest dual-momentum). El gate de tendencia no entra al Arena.',
+  '9) PRONUNCIAMIENTO OBLIGATORIO por posición en cada corrida: hold/trim/exit + razón, con días en posición, P/L y distancia al pico ya calculados en el contexto.',
+  'OBJETIVO DECLARADO: que el agente venda cuando debe y recuerde lo que prometió. NO que opere más seguido — ninguna regla de arriba premia la frecuencia.',
+].join('\n');
 
 // El SCOUT nombra hasta este número de tickers para el deep dive. Es también
 // el tope de llamadas a Finnhub por corrida (4 endpoints × 5 = ~20, bajo el
@@ -133,9 +182,20 @@ HARD RULES (a deterministic risk guard enforces them AFTER you — violations ar
 - LIMIT orders only, good for the day, executed at the NEXT market open. Set limit_price within ±${ARENA_RULES.price_band * 100}% of the last close you are given — wider is auto-discarded.
 - Base your decisions on the deep-dive data and portfolio provided. Do not invent prices, news or fundamentals, and do not introduce tickers you were given no data for.
 
+SEASON 2 RULES (deterministic layers that run around you — know them so your plan is consistent with what the book actually does):
+- A TRAILING STOP protects gains without you: once a position's peak since entry reaches +${(EXIT_RULES.trailing_arm_gain * 100).toFixed(0)}%, it is armed, and a close ${(EXIT_RULES.trailing_give_back * 100).toFixed(0)}% below that peak sells the whole position at the next open. By construction it can only sell at a profit. Each holding shows you whether it is armed and at what level.
+- A TIME STOP at ${EXIT_RULES.time_stop_days} days does NOT sell: it obliges you to speak. Any holding with time_stop.due = true must get an explicit hold/trim/exit with a reason.
+- Your SELL orders are sent as MARKETABLE limits (priced below the market so they FILL). Your limit_price is still checked against the ±${ARENA_RULES.price_band * 100}% band as a sanity check on your price anchoring, but do not try to squeeze a better exit price by resting above the market — a sell that does not fill is not a sell.
+- You are NOT being asked to trade more often. Holding everything and placing zero orders is a fully valid outcome, every single day. What you are asked for is to DECIDE explicitly and to REMEMBER what you said you would do.
+
+MANDATORY, EVERY RUN:
+1. positions_review — ONE entry per position currently in the portfolio: stance "hold", "trim" or "exit", plus a reason that cites the numbers you were given (days in position, P&L since entry, distance from peak). A position you do not mention counts as a position you forgot.
+2. commitment_updates — ONE entry per open commitment listed in the context, using its exact id: "cumplido" (you did it, or the condition resolved), "vigente" (still waiting — say what you are still waiting for), or "cancelado" (you are dropping it — say why).
+3. commitments — anything you promise in this plan ("I will revisit X after earnings", "holding cash for Y") goes here as a structured item so it comes back to you next run. If your plan makes a promise and this array is empty, the promise does not exist.
+
 OUTPUT: respond with ONE JSON object and NOTHING else (no markdown fences, no prose outside JSON):
-{"plan": "<your portfolio thesis for today, 2-6 sentences>", "actions": [{"symbol": "TICKER", "side": "buy"|"sell", "notional": <USD number>, "limit_price": <number>, "conviction": <1-5>, "reasoning": "<1-2 sentences, specific>"}]}
-An empty actions array is a valid, often correct decision — but plan must then explain why you are holding.`;
+{"plan": "<your portfolio thesis for today, 2-6 sentences>", "positions_review": [{"symbol": "TICKER", "stance": "hold"|"trim"|"exit", "reason": "<1-2 sentences citing the numbers given>"}], "commitment_updates": [{"id": "<the exact id given>", "status": "cumplido"|"vigente"|"cancelado", "note": "<1 sentence>"}], "commitments": [{"symbol": "TICKER or null", "text": "<what you are committing to>", "due": "YYYY-MM-DD or null"}], "actions": [{"symbol": "TICKER", "side": "buy"|"sell", "notional": <USD number>, "limit_price": <number>, "conviction": <1-5>, "reasoning": "<1-2 sentences, specific>"}]}
+An empty actions array is a valid, often correct decision — but plan must then explain why you are holding. positions_review and commitment_updates are NOT optional when there are positions or open commitments.`;
 }
 
 // Universo por TIPO de instrumento para el buffet: reusa los MISMOS sets del
@@ -168,6 +228,57 @@ function trimMovers(data, symbolTypes) {
   // ser desplazadas por leveraged ETFs y small caps (TSLA -14.5%, 24-jul).
   return { gainers: pick(data.gainers, 5), losers: pick(data.losers, 5), actives: pick(data.actives, 8) };
 }
+// ── T2 #2: los RECIÉN-REPORTADOS se quedan 2 sesiones en el buffet ───
+// La T1 solo miraba hacia adelante (`/api/earnings?from=hoy`): el día que NVDA
+// reportaba, NVDA salía del buffet. El PM había escrito "espero el reporte para
+// decidir", el reporte llegaba… y el nombre ya no estaba en su contexto. La
+// tesis quedaba abierta para siempre y la prosa del día siguiente ni lo
+// mencionaba. Ahora la ventana del calendario se abre hacia ATRÁS y lo
+// reportado permanece RECENT_REPORT_SESSIONS sesiones más, con la cifra al lado.
+export const RECENT_REPORT_SESSIONS = 2;
+
+// Sesiones de mercado (L-V) transcurridas entre `dateStr` y hoy. Mismo día = 0,
+// siguiente día hábil = 1. APROXIMACIÓN DELIBERADA: no descuenta festivos —
+// errar por ese lado solo mantiene un nombre un día MÁS en el buffet, que es la
+// dirección segura para una regla cuyo propósito es no olvidar. Negativo = la
+// fecha es futura. null si no parsea.
+export function sessionsAgo(dateStr, now = new Date()) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || '').trim());
+  if (!m) return null;
+  const from = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  const to = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  if (to === from) return 0;
+  const sign = to > from ? 1 : -1;
+  let count = 0;
+  for (let t = Math.min(from, to) + 86400000; t <= Math.max(from, to); t += 86400000) {
+    const dow = new Date(t).getUTCDay();
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  return sign * count;
+}
+
+// ¿Este reporte YA ocurrió a la hora de esta corrida? Importa porque la corrida
+// matutina (14:50 UTC) y la de decide (22:40 UTC) ven el mismo calendario en
+// momentos distintos del día: un AMC de HOY ya pasó a las 22:40, pero NO a las
+// 14:50. La hora de corte (21 UTC) cubre el cierre de NYSE en verano e invierno.
+export function hasReported(e, now = new Date()) {
+  const d = String((e && e.date) || '').slice(0, 10);
+  const today = now.toISOString().slice(0, 10);
+  if (!d) return false;
+  if (d < today) return true;
+  if (d > today) return false;
+  return String((e && e.time) || '').toUpperCase() === 'BMO' || now.getUTCHours() >= 21;
+}
+
+// Sorpresa de EPS ya calculada (%). La casa NO delega aritmética al modelo: si
+// el PM va a decir "reportó 12% arriba del estimado", el 12% sale de aquí.
+// null si falta un lado o el estimado es 0 (una división que no significa nada).
+function epsSurprisePct(est, actual) {
+  const e = Number(est), a = Number(actual);
+  if (!Number.isFinite(e) || !Number.isFinite(a) || e === 0) return null;
+  return +(((a - e) / Math.abs(e)) * 100).toFixed(1);
+}
+
 function trimEarnings(data, now = new Date()) {
   // Relevancia, NO orden alfabético del feed. El calendario de Finnhub llega
   // ordenado por fecha, pero DENTRO de cada día viene alfabético — así que un
@@ -189,17 +300,43 @@ function trimEarnings(data, now = new Date()) {
   // aritmética de calendario no se delega al modelo: sale de acá resuelta. La
   // fecha absoluta se conserva al lado (auditoría y el ancla dura del label).
   const rank = (e) => (MEGA_CAPS.has(e.ticker) ? 0 : (e.company ? 1 : 2));
-  return ((data && data.earnings) || [])
+  const byRelevance = ((data && data.earnings) || [])
     .map((e, i) => ({ e, i }))
     .sort((a, b) => rank(a.e) - rank(b.e) || a.i - b.i)
-    .slice(0, 12)
-    .map(({ e }) => ({
-      ticker: e.ticker,
-      company: e.company,
-      date: e.date,
-      time: e.time,
-      when: relativeDayLabel(e.date, now, e.time && e.time !== 'TBD' ? e.time : null),
-    }));
+    .map(({ e }) => e);
+
+  const base = (e) => ({
+    ticker: e.ticker,
+    company: e.company,
+    date: e.date,
+    time: e.time,
+    when: relativeDayLabel(e.date, now, e.time && e.time !== 'TBD' ? e.time : null),
+  });
+
+  // Dos listas con SLOTS PROPIOS: si los reportados compitieran por los 12
+  // slots de la agenda, una semana cargada volvería a expulsarlos — justo el
+  // olvido que la regla T2 #2 existe para evitar.
+  const upcoming = [];
+  const reported = [];
+  for (const e of byRelevance) {
+    if (!hasReported(e, now)) {
+      if (upcoming.length < 12) upcoming.push(base(e));
+      continue;
+    }
+    const ago = sessionsAgo(e.date, now);
+    if (ago == null || ago > RECENT_REPORT_SESSIONS) continue; // fuera de la ventana de memoria
+    if (reported.length >= 8) continue;
+    reported.push({
+      ...base(e),
+      sessions_since_report: ago,
+      eps_est: e.eps_est ?? null,
+      eps_actual: e.eps_actual ?? null,
+      eps_surprise_pct: epsSurprisePct(e.eps_est, e.eps_actual),
+      revenue_est: e.revenue_est ?? null,
+      revenue_actual: e.revenue_actual ?? null,
+    });
+  }
+  return { upcoming, reported };
 }
 function trimInsiders(data) {
   return ((data && data.items) || []).slice(0, 8).map((i) => ({ insider: i.insider, role: i.role, ticker: i.ticker, value: i.value, tradeDate: i.tradeDate }));
@@ -210,7 +347,7 @@ function trimInsiders(data) {
 // A los 30 días: GROUP BY channel sobre las acciones del journal → qué canal
 // produjo decisiones y cuál fue ruido. NO viaja al prompt (buildScanUserPrompt
 // lo excluye) — es índice de journaling.
-function buildChannels({ movers, earnings, insiders, screener }) {
+function buildChannels({ movers, earnings, reported, insiders, screener }) {
   const map = {};
   const add = (sym, channel) => {
     const s = String(sym || '').trim().toUpperCase();
@@ -228,6 +365,22 @@ function buildChannels({ movers, earnings, insiders, screener }) {
     // post-earnings" sabiendo que el ticker salió del canal earnings pero sin
     // el día — y lo rellenaba de memoria, a veces con "today".
     if (entry && !entry.earnings) entry.earnings = { date: e.date, time: e.time, when: e.when };
+  }
+  // T2 #2: los recién-reportados son canal `earnings` igual que la agenda, pero
+  // su meta dice que el número YA SALIÓ (`reported:true` + sesiones desde el
+  // reporte). Es el puente por el que el DIVE —que ve candidatos, no el buffet—
+  // se entera de que el catalizador que el PM estaba esperando ya ocurrió.
+  for (const e of (reported || [])) {
+    const entry = add(e.ticker, 'earnings');
+    if (entry) {
+      entry.earnings = {
+        date: e.date, time: e.time, when: e.when, reported: true,
+        sessions_since_report: e.sessions_since_report,
+        ...(e.eps_est != null || e.eps_actual != null
+          ? { eps_est: e.eps_est, eps_actual: e.eps_actual, eps_surprise_pct: e.eps_surprise_pct }
+          : {}),
+      };
+    }
   }
   for (const i of (insiders || [])) add(i.ticker, 'insider');
   for (const name of ['value', 'momentum']) {
@@ -276,9 +429,13 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   // VC salió del buffet: son empresas privadas que el PM no puede comprar; el
   // espacio le sirve más al canal screener. El endpoint /vc-feed sigue vivo
   // para el resto de la app.
+  // T2 #2: la ventana del calendario se abre 5 días hacia ATRÁS (cubre un fin de
+  // semana largo) para traer a los que YA reportaron. El recorte fino a
+  // RECENT_REPORT_SESSIONS sesiones lo hace trimEarnings, no la URL.
+  const weekStart = new Date(now.getTime() - 5 * 86400000);
   const targets = {
     movers: baseUrl + '/api/movers?universe=market',
-    earnings: baseUrl + `/api/earnings?from=${iso(now)}&to=${iso(weekEnd)}`,
+    earnings: baseUrl + `/api/earnings?from=${iso(weekStart)}&to=${iso(weekEnd)}`,
     insiders: baseUrl + '/api/stock-tracker?cat=insider',
   };
   const out = {};
@@ -302,7 +459,7 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   const symbolTypes = await getSymbolTypes(process.env.FINNHUB_API_KEY);
 
   const movers = trimMovers(out.movers, symbolTypes);
-  const earnings_this_week = trimEarnings(out.earnings, now);
+  const { upcoming: earnings_this_week, reported: recently_reported } = trimEarnings(out.earnings, now);
   const notable_insider_buys = trimInsiders(out.insiders);
 
   // Canal SCREENER (estado-driven): se LEE de Neon (precomputado por el cron
@@ -330,10 +487,13 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
     screener_state = 'unavailable';
   }
 
-  const channelsByTicker = buildChannels({ movers, earnings: earnings_this_week, insiders: notable_insider_buys, screener });
+  const channelsByTicker = buildChannels({ movers, earnings: earnings_this_week, reported: recently_reported, insiders: notable_insider_buys, screener });
 
   return {
-    movers, earnings_this_week, notable_insider_buys,
+    movers, earnings_this_week,
+    // T2 #2: los que YA reportaron, con su cifra y cuántas sesiones pasaron.
+    recently_reported,
+    notable_insider_buys,
     screener,
     screener_state,
     unavailable,
@@ -360,33 +520,55 @@ function fmtSignedPct(v) {
 }
 
 // Snapshot del libro compartido por ambas fases.
-function portfolioSnapshot({ account, positions, openOrders }) {
+// `meta` (T2) le cuelga a cada posición su HISTORIA — días en posición, pico
+// desde la entrada, distancia a ese pico, estado del trailing y del time stop —
+// todo YA CALCULADO (_lib/arena-memory.js). Sin esto, el pronunciamiento
+// obligatorio de la regla #9 sería el PM adivinando cuánto lleva con un nombre.
+// Un dato que no se pudo derivar viaja como null y el prompt dice qué significa.
+function portfolioSnapshot({ account, positions, openOrders, meta = {} }) {
   return {
     equity: Number(account.equity),
     cash: Number(account.cash),
-    positions: (positions || []).map((p) => ({
-      symbol: p.symbol, qty: Number(p.qty), avg_entry: Number(p.avg_entry_price),
-      market_value: Number(p.market_value),
-      // Pre-formateado + rotulado (ver fmtSignedPct): P&L desde entrada, no día.
-      pnl_since_entry_pct: fmtSignedPct(p.unrealized_plpc),
-    })),
+    positions: (positions || []).map((p) => {
+      const m = meta[String(p.symbol || '').trim().toUpperCase()] || null;
+      return {
+        symbol: p.symbol, qty: Number(p.qty), avg_entry: Number(p.avg_entry_price),
+        market_value: Number(p.market_value),
+        // Pre-formateado + rotulado (ver fmtSignedPct): P&L desde entrada, no día.
+        pnl_since_entry_pct: fmtSignedPct(p.unrealized_plpc),
+        ...(m ? {
+          opened_on: m.opened_at,
+          days_in_position: m.days_in_position,
+          peak_since_entry: m.peak_since_entry,
+          from_peak_pct: m.from_peak_pct,
+          trailing_stop: m.trailing
+            ? (m.trailing.armed
+              ? { armed: true, sells_below: m.trailing.level }
+              : { armed: false, arms_above: m.trailing.arm_level })
+            : null,
+          time_stop: m.time_stop,
+        } : {}),
+      };
+    }),
     open_orders: (openOrders || []).map((o) => ({ symbol: o.symbol, side: o.side, qty: o.qty, limit_price: o.limit_price, status: o.status })),
   };
 }
 
 // ── user prompt del SCAN: portfolio + plan anterior + el buffet completo. ──
-export function buildScanUserPrompt({ account, positions, openOrders, buffet, previous }) {
+export function buildScanUserPrompt({ account, positions, openOrders, buffet, previous, meta = {} }) {
   // fetch_errors y channelsByTicker son diagnóstico/atribución interna (se
   // journalean); el LLM solo necesita `unavailable`. Se excluyen del prompt.
   const { fetch_errors, channelsByTicker, ...buffetForLlm } = buffet || {};
   return [
-    'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders })),
+    'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders, meta })),
     '',
     'PREVIOUS PLAN (yours, from the last run — build on it or change course):',
     previous ? JSON.stringify(previous) : 'none — this is your first run.',
     '',
     'MARKET CONTEXT (QuantDesk endpoints; sections listed in "unavailable" failed today — do not guess their content):',
     'EARNINGS TIMING — each entry in `earnings_this_week` carries `when`, the distance from today ALREADY COMPUTED for you ("in 2 days (Wed Aug 26, AMC)", "today (Mon Aug 24, BMO)"). Use that label as-is when you mention a report; do not re-derive it from `date`, and never call a report scheduled for a later date "today" or "tonight". BMO = before the market opens that day, AMC = after it closes.',
+    'ALREADY REPORTED — `recently_reported` holds companies whose number is ALREADY OUT (within the last 2 sessions), with the actual EPS and the surprise vs estimate already computed. These are here on purpose: if a previous plan of yours was waiting on one of these reports, the wait is over — that name is worth a deep-dive so you can close the loop instead of leaving the thesis hanging.',
+    'POSITION HISTORY — each holding carries `days_in_position`, `peak_since_entry`, `from_peak_pct`, `trailing_stop` and `time_stop`, all already computed. A holding whose `time_stop.due` is true, or that is far below its peak, is a legitimate deep-dive candidate: you will have to state hold/trim/exit for every position later, and this is the step where you buy the research to do it well.',
     JSON.stringify(buffetForLlm),
     '',
     `Pick up to ${MAX_CANDIDATES} tickers worth a deep-dive, or none. Remember: ONE JSON object, nothing else.`,
@@ -399,7 +581,7 @@ export function buildScanUserPrompt({ account, positions, openOrders, buffet, pr
 // adivinaba el límite (anclaba en el 52w-high, el único número tipo-precio de
 // Finnhub) → el guard lo descartaba por banda. Ahora se le da EL MISMO cierre
 // contra el que el guard valida, con el rango ±2% ya hecho (sin aritmética). ──
-export function buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis, candidates, deepDive, closes, channels, priceBand = ARENA_RULES.price_band }) {
+export function buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis, candidates, deepDive, closes, channels, priceBand = ARENA_RULES.price_band, meta = {}, commitments = [], event = null }) {
   const round2 = (n) => Math.round(n * 100) / 100;
   // Nota de datos ausentes para el modelo: price target es Premium (no lo
   // traemos), y un candidato puede no tener cobertura Finnhub ni cierre.
@@ -425,9 +607,37 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
       : {};
     return { ticker: t, last_close: close, limit_range, ...meta, ...((deepDive && deepDive[t]) || null) };
   });
+  // T2 #1: los compromisos ABIERTOS, con su id, su fecha y su edad. Es la
+  // memoria que el modelo no tiene: lo que prometió y todavía no cerró.
+  const commitmentBlock = (commitments || []).length
+    ? [
+      'OPEN COMMITMENTS (things YOU said you would do, in your own previous runs — each carries the id you must use to answer):',
+      JSON.stringify((commitments || []).map((c) => ({
+        id: c.id, on: c.on, symbol: c.symbol, text: c.text,
+        due: c.due, age_days: c.age_days, overdue: c.overdue,
+        ...(c.reaffirmed ? { times_reaffirmed: c.reaffirmed } : {}),
+      }))),
+      'You MUST return a commitment_updates entry for EVERY id above. "vigente" is a legitimate answer when you are still waiting — but then say what for. Silence on a commitment is how a thesis dies unnoticed; it is recorded as non-compliance.',
+      '',
+    ]
+    : ['OPEN COMMITMENTS: none open right now. Anything you promise in today\'s plan goes into `commitments` so it comes back to you.', ''];
+
+  // Corrida por EVENTO (T2 #7): el encuadre cambia — no es la revisión diaria.
+  const eventBlock = event
+    ? [
+      `EVENT-DRIVEN MORNING RUN — this is NOT your daily review. ${event.headline}`,
+      'The market is open and these names are repricing on the number. You are here to act on what you already own: hold, trim or exit, with a reason. NEW POSITIONS ARE NOT PART OF THIS RUN — any buy will be discarded by the risk layer, so do not spend actions on them.',
+      'Doing nothing is a valid outcome. What is not valid is not saying anything about a position whose report just landed.',
+      '',
+    ]
+    : [];
+
   return [
-    'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders })),
+    ...eventBlock,
+    'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders, meta })),
+    'POSITION HISTORY — each holding carries numbers that are ALREADY COMPUTED for you: `days_in_position` (calendar days since this position was opened; null = it predates the journal and could not be reconstructed — say so rather than guessing), `peak_since_entry` (highest completed close since entry, floored at your cost), `from_peak_pct` (how far below that peak it trades now), `trailing_stop` (armed and its sell level, or the level at which it would arm) and `time_stop` ({days, limit, due}). Quote these as given; do NOT recompute or invent them.',
     '',
+    ...commitmentBlock,
     'PREVIOUS PLAN (yours, from the last run — build on it or change course, but acknowledge it):',
     previous ? JSON.stringify(previous) : 'none — this is your first run.',
     '',
@@ -437,28 +647,38 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
     'DEEP-DIVE DATA (Finnhub; per candidate: last_close, limit_range, profile, fundamentals, analyst recommendation counts, recent news headlines, and — when the candidate came from the earnings calendar — its upcoming report).',
     `PRICING RULE — READ CAREFULLY: for each candidate, "last_close" is the reference close and "limit_range" {low, high} is the ONLY band the risk guard accepts (±${priceBand * 100}% of last_close). Your limit_price MUST fall inside [limit_range.low, limit_range.high] or the order is auto-discarded. Do NOT anchor your limit on 52-week highs/lows, analyst targets, or any other figure — only on last_close. If last_close is null you have no valid reference for that ticker: do not place an order for it.`,
     'NOTES: null fields mean the datum was unavailable (do not guess it). Analyst price targets are NOT provided; use the recommendation buy/hold/sell split as the rating signal. marketCapM is in millions USD.',
+    'RATIO SANITY — a candidate may carry `fundamentals_quality`, flagging ratios outside any plausible range (a P/E in the hundreds, a negative debt/equity, a margin above 100%). Those numbers are almost always an accounting artifact — a one-off charge or negative book equity — not a description of the business. If a ratio is flagged, either leave it out of your reasoning or say explicitly that it may be an artifact. Never build a thesis on a flagged ratio as if it were a clean fundamental.',
+    'EARNINGS ALREADY OUT — a candidate whose `earnings` carries `reported: true` has ALREADY reported (with `sessions_since_report`, the actual EPS and the surprise vs estimate, all given to you). If you were waiting on that number, the wait is over: close the loop in this run rather than deferring it again.',
     'NEWS RECENCY — each news item carries a `date` (YYYY-MM-DD). Before you describe any headline, compare its date to today\'s date (given in the system prompt): state how long ago it happened ("N days ago", the weekday) and reserve "today" for a date that equals today. A headline dated before today is NOT today\'s news — do not narrate a report from several days ago as if it broke today.',
     'EARNINGS TIMING — a candidate flagged by the earnings channel carries `earnings: {date, time, when}`, where `when` is the distance from today ALREADY COMPUTED for you ("in 2 days (Wed Aug 26, AMC)", "tomorrow (Tue Aug 25, BMO)"). Quote that label as-is; do not re-derive it from `date`, and never describe a report scheduled for a later date as happening "today" or "tonight" — if your plan holds cash for a post-earnings dislocation, say which day the catalyst actually lands on. BMO = before that day\'s open, AMC = after that day\'s close. A candidate WITHOUT an `earnings` field has no report date in your data: do not assert one from memory.',
     'FIGURES — when your plan cites a number (a %, a price, a P&L), use ONLY the figures given to you here or in the PORTFOLIO above, verbatim. Each holding carries `pnl_since_entry_pct`, already formatted ("+6.1%"): that is profit/loss SINCE YOUR ENTRY, not today\'s price move — quote it as-is if you mention it. Do NOT compute, rescale, round, or invent percentages you were not given.',
     JSON.stringify(research),
     '',
-    'Decide your actions for the next market open. Remember: ONE JSON object, nothing else.',
+    event
+      ? 'Decide now, with the market open. Remember: ONE JSON object with plan, positions_review, commitment_updates, commitments and actions — nothing else.'
+      : 'Decide your actions for the next market open. Remember: ONE JSON object with plan, positions_review (one entry per position), commitment_updates (one per open commitment id), commitments and actions — nothing else. Trading more is not the objective; deciding explicitly and remembering what you promised is.',
   ].join('\n');
 }
 
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 
-// Último cierre COMPLETO por símbolo — LA MISMA fuente/valor contra el que el
-// guard valida la banda ±2% (fetchDailySeries + completedSlice, plumbing Yahoo
-// del simulador). Se usa dos veces por corrida: para MOSTRARLE el cierre al PM
-// en el DIVE y para que el guard valide — el mismo número, cero desfase.
+// Serie diaria COMPLETA por símbolo (velas cerradas) — la MISMA fuente/valor
+// contra el que el guard valida la banda ±2% (fetchDailySeries + completedSlice,
+// plumbing Yahoo del simulador). De aquí salen DOS cosas con un solo request:
+//   - el ÚLTIMO cierre: el que se le muestra al PM en el DIVE y el que valida el
+//     guard (el mismo número, cero desfase);
+//   - el PICO desde la entrada de cada holding (T2 #3), que es toda la serie
+//     acotada por la fecha de apertura.
+// La ventana es 1a (era 3m): el trailing necesita cubrir el tiempo que el libro
+// lleva con el nombre, y el time stop vive a 45 días. Es el MISMO request a
+// Yahoo, solo con más velas — no agrega llamadas ni latencia por símbolo.
 // null si no hay serie (→ el guard descarta, fail closed).
-async function lastCompletedClose(symbol, now) {
+async function completedSeries(symbol, now) {
   try {
-    const raw = await fetchDailySeries(symbol, '3mo');
+    const raw = await fetchDailySeries(symbol, '1y');
     const series = raw ? completedSlice(raw, now) : null;
-    if (series && series.closes.length) return series.closes[series.closes.length - 1];
-  } catch (e) { /* sin cierre → fail closed */ }
+    if (series && series.closes.length) return series;
+  } catch (e) { /* sin serie → fail closed */ }
   return null;
 }
 
@@ -468,9 +688,13 @@ async function lastCompletedClose(symbol, now) {
 // disparan dos fetches del mismo símbolo. El cierre de Yahoo y el deep dive de
 // Finnhub son idénticos para todos (datos de mercado); lo que difiere por agente
 // es su libro y la decisión del LLM, no estos números.
-function cachedClose(caches, symbol, now) {
-  if (!caches.close.has(symbol)) caches.close.set(symbol, lastCompletedClose(symbol, now));
-  return caches.close.get(symbol);
+function cachedSeries(caches, symbol, now) {
+  if (!caches.series.has(symbol)) caches.series.set(symbol, completedSeries(symbol, now));
+  return caches.series.get(symbol);
+}
+async function cachedClose(caches, symbol, now) {
+  const series = await cachedSeries(caches, symbol, now);
+  return series ? series.closes[series.closes.length - 1] : null;
 }
 async function cachedDeepDive(caches, symbols, finnhubKey, now) {
   const per = await Promise.all((symbols || []).map(async (sym) => {
@@ -608,68 +832,29 @@ export async function runArenaResume({ agentId = FLAGSHIP_AGENT_ID, now = new Da
   return { resumed: true, agent: agentId, halted_since: state.halted_at };
 }
 
-// ── ARRANQUE DE TEMPORADA (anuncio journaleado, no una decisión) ─────
-// El journal es el rastro PÚBLICO de la liga (/api/leaderboard publica la última
-// fila de cada agente), así que el arranque de una temporada se anuncia AHÍ y no
-// en un tuit: queda fechado, por agente, y con el mismo formato que todo lo demás.
-//
-// Es una fila OPERATIVA, no una decisión del PM — mismo patrón que `resumed`:
-//   - `model: null` y `actions` vacío → NINGUNA orden sale de aquí,
-//   - `status: 'season_start'` la separa de las corridas reales en el post-mortem,
-//   - `plan` lleva el texto del anuncio (es lo que renderiza el leaderboard).
-//
-// IDEMPOTENTE: si el agente ya tiene su fila de ESTA temporada, no se duplica
-// (curlear dos veces el endpoint no ensucia el rastro). Se dispara a mano con
-// CRON_SECRET —`?action=announce`—, nunca desde el cron: una temporada arranca
-// cuando Lety lo dice, no cuando corre el reloj.
-export const SEASON = 2;
-
-const SEASON_PLAN = (season, roster) =>
-  `TEMPORADA ${season} DE LA LIGA — arranca hoy con ${roster.length} agentes en la parrilla: ` +
-  `${roster.map((a) => `${a.name} (${a.model_label})`).join(', ')}. ` +
-  `Cada uno corre el MISMO harness (SCAN → deep dive → guard determinista → orden límite) ` +
-  `sobre su PROPIO libro Alpaca paper arrancando en $100K, con la misma temperatura y el mismo prompt ` +
-  `salvo su identidad: lo único que cambia entre libros es el MODELO. ` +
-  `El Control (Haiku-B) corre el prompt byte-idéntico al de Claude en otra cuenta — es el piso de ruido: ` +
-  `cualquier delta entre modelos que no le saque distancia al Control no significa nada. ` +
-  `Todo el razonamiento se publica verbatim junto a cada trade. Que empiece.`;
-
-export async function runArenaSeasonAnnounce({ now = new Date(), season = SEASON } = {}) {
-  const roster = activeAgents();
-  if (!roster.length) return { announced: 0, season, reason: 'no hay agentes activos' };
-
-  // Quién YA tiene su fila de esta temporada (el id la lleva embebida) → no se repite.
-  const done = new Set(
-    (await sql(`select agent_id from arena_journal where status = 'season_start' and id like $1`,
-      ['arena-season-' + season + '-%'])).map((r) => r.agent_id));
-
-  const plan = SEASON_PLAN(season, roster);
-  const announced = [];
-  for (const agent of roster) {
-    if (done.has(agent.id)) continue;
-    await journalInsert({
-      id: 'arena-season-' + season + '-' + agent.id,
-      run_date: now.toISOString().slice(0, 10),
-      phase: 'decide', prompt_version: PROMPT_VERSION, model: null,
-      status: 'season_start', agent_id: agent.id, plan, actions: [],
-      context: { season, roster: roster.map((a) => ({ id: a.id, name: a.name, model: a.model, house: a.house, control: !!a.control })) },
-    });
-    announced.push(agent.id);
-  }
-  return { season, run_date: now.toISOString().slice(0, 10), announced, skipped: roster.map((a) => a.id).filter((id) => done.has(id)) };
-}
-
 // ── fase DECIDE ──────────────────────────────────────────────────────
-export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentById(FLAGSHIP_AGENT_ID), getBuffet, caches } = {}) {
+// `event` (T2 #7) convierte la corrida en una POR EVENTO, no la revisión diaria:
+//   { type:'post_earnings_morning', symbols:[...], reports:{SYM:{...}}, headline }
+// En ese modo NO hay buffet ni SCAN (el evento YA define el slate: los nombres
+// del libro que acaban de reportar), NO se re-evalúa la red determinista (el
+// trailing y el stop catastrófico deciden con CIERRES completos, y a media
+// mañana no hay uno nuevo: re-evaluarlos solo duplicaría las órdenes que la
+// corrida de las 22:40 ya emitió) y NO se abren posiciones nuevas. La corrida
+// existe para que el PM reaccione al número sobre lo que YA tiene — no para
+// operar más seguido.
+export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentById(FLAGSHIP_AGENT_ID), getBuffet, caches, event = null } = {}) {
   const runDate = now.toISOString().slice(0, 10);
   const agentId = agent.id;
-  const base = { id: 'arena-' + agentId + '-' + now.toISOString(), run_date: runDate, phase: 'decide', prompt_version: PROMPT_VERSION, model: agent.model, agent_id: agentId };
+  // Tag de la corrida dentro del día: 'd' decide, 'm' matutina por evento. Entra
+  // en el id de los compromisos para que dos corridas del mismo día no colisionen.
+  const runTag = event ? 'm' : 'd';
+  const base = { id: 'arena-' + agentId + (event ? '-morning' : '') + '-' + now.toISOString(), run_date: runDate, phase: 'decide', prompt_version: PROMPT_VERSION, model: agent.model, agent_id: agentId };
 
   // Caches del RUN (compartidos entre agentes por el orquestador): el buffet, los
   // cierres de Yahoo y los deep-dives de Finnhub son datos de MERCADO idénticos
   // para todos → se piden UNA vez por símbolo, no una por agente (dedupe con
   // in-flight promise). Standalone (un agente suelto / tests): locales, sin compartir.
-  caches = caches || { close: new Map(), dive: new Map() };
+  caches = caches || { series: new Map(), dive: new Map() };
   getBuffet = getBuffet || (() => gatherContext({ baseUrl, now }));
   const creds = agentAlpacaCreds(agent);
 
@@ -689,14 +874,24 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // Estado real del libro DEL AGENTE + plan anterior + PICO de equity + reintentos
   // previos, en paralelo. El buffet (self-fetch caro) y el LLM se posponen: si el
   // circuit breaker dispara un CORTE AMPLIO no se gastan ni el buffet ni el LLM.
-  const [account, positions, openOrders, prevRows, peakRows, riskRows] = await Promise.all([
+  const [account, positions, openOrders, prevRows, peakRows, riskRows, fillRows, commitmentRows] = await Promise.all([
     getAccount(creds), getPositions(creds), getOrders('open', 100, creds),
-    // `status <> 'season_start'`: el anuncio de temporada es una fila OPERATIVA con
-    // plan (para que el leaderboard lo publique), no una decisión del PM. Si entrara
-    // aquí, el plan reinyectado del día siguiente sería el anuncio y no el último
-    // plan real — justo la continuidad estilo nof1 que este campo existe para dar.
+    // EXCLUSIÓN DE FILAS OPERATIVAS. Varias filas llevan `plan` sin ser una
+    // decisión del PM (el leaderboard las publica, por eso tienen texto). Si una
+    // entrara aquí, el plan reinyectado al día siguiente sería el anuncio y no el
+    // último plan REAL — justo la continuidad estilo nof1 que este campo da.
+    //
+    // `season_start` se conserva en la lista AUNQUE el mecanismo manual que la
+    // escribía ya no exista: las filas que alcanzó a insertar siguen en el
+    // journal para siempre, y borrar el código no borra el rastro.
+    //
+    // Las de liga (`season_started`, `rules_changed`, `season_winner`) ya
+    // quedarían fuera por el filtro de `agent_id`, que solo trae filas del
+    // agente real. Se nombran igual: que la consulta siga siendo correcta no
+    // debe depender de que nadie journalee una de ésas con un agent_id concreto.
     sql(`select run_date, plan, actions, status from arena_journal
-         where phase = 'decide' and plan is not null and status <> 'season_start' and agent_id = $1
+         where phase = 'decide' and plan is not null and agent_id = $1
+           and status not in ('season_start', 'season_started', 'rules_changed', 'season_winner')
          order by created_at desc limit 1`, [agentId]),
     // High-water-mark del libro: el máximo equity journaleado POR ESTE AGENTE,
     // ACOTADO por resumed_at (tras revivir, el pico se re-basa al equity de ese
@@ -707,6 +902,19 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     // Stops catastróficos recientes de ESTE agente que NO llenaron → escalan la banda.
     sql(`select actions from arena_journal where status = 'risk_exit' and agent_id = $1
          and created_at > now() - interval '7 days' order by created_at desc`, [agentId]),
+    // ── T2: MEMORIA (ver _lib/arena-memory.js) ──
+    // (a) FILLS históricos → fecha de apertura de cada posición viva (días en
+    //     posición para el time stop, y la ventana del pico para el trailing).
+    //     180 días cubre de sobra un time stop de 45. Se piden SOLO `actions`:
+    //     el `context` de esas filas trae los prompts completos y pesa.
+    sql(`select run_date, actions from arena_journal
+         where phase = 'decide' and agent_id = $1 and actions is not null
+         and created_at > now() - interval '180 days' order by created_at asc`, [agentId]),
+    // (b) COMPROMISOS journaleados → el fold determina cuáles siguen abiertos.
+    //     Se proyecta SOLO context->'commitments' (no el context entero).
+    sql(`select run_date, context->'commitments' as commitments from arena_journal
+         where phase = 'decide' and agent_id = $1 and context ? 'commitments'
+         and created_at > now() - interval '60 days' order by created_at asc`, [agentId]),
   ]);
   const equity = Number(account.equity);
   const dbPeak = peakRows[0] && peakRows[0].peak != null ? Number(peakRows[0].peak) : 0;
@@ -717,19 +925,46 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
         orders: (prevRows[0].actions || []).map((a) => ({ symbol: a.symbol, side: a.side, result: a.result, order_status: a.order_status || null, filled_avg_price: a.filled_avg_price || null, reason: a.reason || null })) }
     : null;
 
-  // ── SALIDAS DE RIESGO deterministas (circuit breaker + stop catastrófico) ──
-  // Se computan ANTES del LLM: son la red de seguridad del libro y tienen
-  // precedencia. El stop catastrófico necesita el último cierre COMPLETO por
-  // holding (misma fuente que valida el guard). Estos cierres se reusan luego
-  // como semilla del guard (sin re-fetch).
+  // ── T2: la HISTORIA de cada posición, derivada (sin schema nuevo) ────
+  // La serie diaria completa por holding da DOS cosas de un solo request: el
+  // último cierre (lo de siempre: stop catastrófico + semilla del guard) y el
+  // PICO desde la entrada (trailing stop). La fecha de apertura sale de los
+  // fills del propio journal; sin ella, `days_in_position` y el pico quedan en
+  // null y ni el trailing ni el time stop disparan — fail-safe explícito: una
+  // regla nueva NO liquida una posición sobre un dato que no se pudo derivar.
   const heldSymbols = [...new Set((positions || []).map((p) => (p && p.symbol ? String(p.symbol).trim().toUpperCase() : '')).filter(Boolean))];
-  const heldCloseArr = await Promise.all(heldSymbols.map((s) => cachedClose(caches, s, now)));
+  const heldSeriesArr = await Promise.all(heldSymbols.map((s) => cachedSeries(caches, s, now)));
   const heldCloses = {};
-  heldSymbols.forEach((s, i) => { heldCloses[s] = heldCloseArr[i]; });
-  // Escalamiento por nombre: cuántas veces un stop catastrófico previo no llenó.
-  const escalation = escalationFromRiskRows(riskRows, heldSymbols);
-  const risk = buildRiskExits({ equity, peak, positions, closes: heldCloses, escalation });
-  const riskContext = { peak, drawdown: +risk.drawdown.toFixed(4), stage: risk.stage, escalation, bands: { breaker: EXIT_RULES.exit_band_breaker, catastrophic: EXIT_RULES.exit_band_catastrophic }, approved: risk.approved, discarded: risk.discarded };
+  const seriesBySymbol = {};
+  heldSymbols.forEach((s, i) => {
+    const series = heldSeriesArr[i];
+    seriesBySymbol[s] = series;
+    heldCloses[s] = series ? series.closes[series.closes.length - 1] : null;
+  });
+  const opens = reconstructPositionOpens(fillRows);
+  const positionMeta = buildPositionMeta({ positions, opens, seriesBySymbol, now });
+
+  // ── T2 #1: compromisos ABIERTOS (el fold sobre el journal del agente) ──
+  const memory = foldCommitments(
+    (commitmentRows || []).map((r) => ({ run_date: r.run_date, context: { commitments: r.commitments } })),
+    { now },
+  );
+
+  // ── SALIDAS DE RIESGO deterministas (breaker + stop catastrófico + trailing) ──
+  // Se computan ANTES del LLM: son la red de seguridad del libro y tienen
+  // precedencia. Todas deciden con el último cierre COMPLETO (misma fuente que
+  // valida el guard), así que en la corrida POR EVENTO —media mañana, sin cierre
+  // nuevo— NO se re-evalúan: repetirían las órdenes de la corrida anterior.
+  const escalation = event ? {} : escalationFromRiskRows(riskRows, heldSymbols);
+  const risk = event
+    ? { stage: 'none', drawdown: 0, approved: [], discarded: [] }
+    : buildRiskExits({ equity, peak, positions, closes: heldCloses, escalation, peaks: peaksFromMeta(positionMeta) });
+  const riskContext = {
+    peak, drawdown: +risk.drawdown.toFixed(4), stage: risk.stage, escalation,
+    bands: { breaker: EXIT_RULES.exit_band_breaker, catastrophic: EXIT_RULES.exit_band_catastrophic, trailing: EXIT_RULES.exit_band_trailing },
+    approved: risk.approved, discarded: risk.discarded,
+    ...(event ? { skipped: 'corrida por evento: la red determinista decide con cierres completos, no intradía' } : {}),
+  };
 
   // ── CORTE AMPLIO (drawdown ≥ 20% desde el pico): liquida todo, SIN LLM ──
   // Análogo del DEATH -20% de la flota validada. No se abre riesgo nuevo en un
@@ -754,95 +989,144 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   if (risk.approved.length || risk.discarded.length) {
     const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate, creds);
     riskSubmitted = submitted;
+    // El plan sintético nombra la regla que REALMENTE disparó (un nombre puede
+    // caer en más de una; se reporta la más severa que haya en el lote).
+    const codes = new Set(risk.approved.flatMap((a) => a.reason_codes || []));
     const plan = risk.stage === 'delever'
-      ? `CIRCUIT BREAKER — desapalancando. Drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)}); recorto las posiciones más débiles con marketable limit.`
-      : `STOP CATASTRÓFICO — ${risk.approved.length} posición(es) cerró bajo su nivel ancho (~${(EXIT_RULES.catastrophic_stop_pct * 100).toFixed(0)}% desde la entrada); se liquida(n) con marketable limit en la apertura.`;
+      ? `CIRCUIT BREAKER — desapalancando. Drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)}); recorto PRO-RATA cada posición con marketable limit.`
+      : codes.has('catastrophic_stop')
+        ? `STOP CATASTRÓFICO — ${risk.approved.length} posición(es) cerró bajo su nivel ancho (~${(EXIT_RULES.catastrophic_stop_pct * 100).toFixed(0)}% desde la entrada); se liquida(n) con marketable limit en la apertura.`
+        : `TRAILING STOP — ${risk.approved.length} posición(es) devolvió ${(EXIT_RULES.trailing_give_back * 100).toFixed(0)}% desde su pico tras haber ganado ${(EXIT_RULES.trailing_arm_gain * 100).toFixed(0)}%+; se liquida(n) con marketable limit en la apertura, con la ganancia adentro.`;
     await journalInsert({ ...base, id: base.id + ':risk', account: accountSnapshot, status: 'risk_exit', plan, actions: [...riskActions, ...riskDiscardActions(risk.discarded)], context: { risk: riskContext } });
   }
 
-  // No hubo corte amplio → ahora sí el buffet (self-fetch). COMPARTIDO entre
-  // agentes por el orquestador (mismo mercado para todos): el primero que llega
-  // lo computa, los demás reusan la misma promesa — cero self-fetch por agente.
-  const buffet = await getBuffet();
+  // ── Buffet + SCAN, o el SLATE DEL EVENTO (T2 #7) ────────────────
+  // Corrida normal: buffet (self-fetch COMPARTIDO entre agentes — el primero
+  // que llega lo computa, los demás reusan la promesa) → SCOUT → floor.
+  // Corrida por evento: el slate YA está dado (los nombres del LIBRO que acaban
+  // de reportar). Sin buffet y SIN la llamada del scout: no hay nada que
+  // triagear, y gastarla sería pagar por elegir lo que el evento ya eligió.
+  let buffet = null;
+  let channels = {};
+  let scanHash = null;
+  let scanText = null;
+  let scanThesis = null;
+  let candidateSymbols = [];
+  let candidateOrigins = new Map();
+  let floorReason = null;
 
-  // Atribución del canal 'portfolio', POR AGENTE. El índice base de gatherContext
-  // solo conoce el buffet (compartido). Los candidatos que el scout re-elige del
-  // LIBRO (un holding a recortar/salir, o una orden abierta a re-anclar) no están
-  // en el buffet → sin esto salían con channels:[]. Se marca sobre un CLON del
-  // índice (el libro difiere por agente; mutar el compartido contaminaría a los
-  // demás), antes de construir prompts/atribuir.
-  const channels = buffet.channelsByTicker ? structuredClone(buffet.channelsByTicker) : {};
-  addPortfolioChannels(channels, { positions, openOrders });
-
-  // ── FASE 1: SCAN ────────────────────────────────────────────────
-  const scanSystem = buildScanSystemPrompt();
-  const scanUser = buildScanUserPrompt({ account, positions, openOrders, buffet, previous });
-  const scanHash = sha256(scanSystem + '\n---\n' + scanUser);
-
-  // context journaleado desde el arranque; se enriquece por fase. El
-  // post-mortem del 24-jul quedó ciego (fetch_errors sin guardar, del prompt
-  // solo el hash). Ahora queda el texto completo de AMBAS fases, más los
-  // candidatos y los datos Finnhub — reconstruir qué vio el PM no es arqueología.
   const context = {
-    unavailable: buffet.unavailable,
-    fetch_errors: buffet.fetch_errors,
     // Salidas de riesgo del run (stage/drawdown/pico + exits deterministas):
     // por qué desapalancó o qué stop disparó, sin depender de las acciones.
     risk: riskContext,
-    scan: { prompt: { system: scanSystem, user: scanUser }, hash: scanHash, model: agent.model },
+    // T2: la historia derivada de cada posición (días, pico, trailing, time
+    // stop) y los compromisos abiertos que se le pusieron enfrente al PM.
+    positions_meta: positionMeta,
+    commitments: { open: memory.open, dropped: memory.dropped },
+    ...(event ? { event: { type: event.type, symbols: event.symbols, reports: event.reports || null } } : {}),
   };
 
   const apiKey = providerKey(agent);
-  if (!apiKey) {
-    // Dependencia documentada: sin la key del proveedor del agente (ANTHROPIC_API_KEY
-    // para claude/control, OPENROUTER_API_KEY para el resto) el run queda
-    // journaleado, con cero órdenes — el cron puede quedar prendido sin gastar.
-    await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_no_api_key', error: `Falta la API key de ${agent.provider} (${agentId}).` });
-    return { status: 'aborted_no_api_key', orders: 0, risk_exits: riskSubmitted };
-  }
 
-  const scanLlm = await callArenaLLM({ agent, system: scanSystem, messages: [{ role: 'user', content: scanUser }], maxTokens: 500, now });
-  if (scanLlm.stale || scanLlm.status !== 200 || !scanLlm.data) {
-    const reason = (scanLlm.stale ? 'fechas rotas tras retry (guard anti-alucinación)' : 'HTTP ' + scanLlm.status + ' de Anthropic') + ' [fase scan]';
-    await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_llm_error', error: reason });
-    return { status: 'aborted_llm_error', orders: 0, risk_exits: riskSubmitted };
-  }
-  const scanText = (scanLlm.data.content || []).map((b) => b.text || '').join('').trim();
-  context.scan.response = scanText;
+  if (event) {
+    // El slate del evento se INTERSECTA con el libro vivo: si el nombre ya no
+    // está (se vendió ayer), no hay nada sobre qué pronunciarse.
+    const held = new Set(heldSymbols);
+    candidateSymbols = (event.symbols || []).map((x) => String(x).trim().toUpperCase()).filter((x) => held.has(x));
+    candidateOrigins = new Map(candidateSymbols.map((sym) => [sym, 'post_earnings_event']));
+    // Atribución: estos nombres son del LIBRO y del canal earnings, con la meta
+    // del reporte (cifra + sesiones desde que salió) pegada, que es lo que el
+    // DIVE necesita para cerrar la tesis.
+    for (const sym of candidateSymbols) {
+      channels[sym] = { channels: ['portfolio', 'earnings'], screens: [], qualifiers: {}, earnings: (event.reports || {})[sym] || null };
+    }
+    context.scan = { skipped: 'post_earnings_event', slate: candidateSymbols.map((symbol) => ({ symbol, origin: 'post_earnings_event' })) };
+    if (!apiKey) {
+      await journalInsert({ ...base, account: accountSnapshot, context, status: 'aborted_no_api_key', error: `Falta la API key de ${agent.provider} (${agentId}).` });
+      return { status: 'aborted_no_api_key', orders: 0, risk_exits: 0 };
+    }
+    if (candidateSymbols.length === 0) {
+      await journalInsert({ ...base, account: accountSnapshot, context, status: 'ok_no_candidates', plan: 'Corrida por evento post-earnings: ninguno de los nombres que reportaron sigue en el libro de este agente.' });
+      return { status: 'ok_no_candidates', orders: 0, candidates: 0, trigger: event.type, risk_exits: 0, breaker_stage: 'none' };
+    }
+  } else {
+    buffet = await getBuffet();
 
-  const scan = parseScanResponse(scanText, MAX_CANDIDATES);
-  if (!scan.ok) {
-    // Regla de la casa: JSON malformado = run abortado honesto, CERO órdenes.
-    await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_scan_malformed_json', llm_response: scanText, error: scan.error });
-    return { status: 'aborted_scan_malformed_json', orders: 0, risk_exits: riskSubmitted };
-  }
-  context.scan.thesis = scan.thesis;
-  context.scan.candidates = scan.candidates; // picks crudos del scout
+    // Atribución del canal 'portfolio', POR AGENTE. El índice base de gatherContext
+    // solo conoce el buffet (compartido). Los candidatos que el scout re-elige del
+    // LIBRO (un holding a recortar/salir, o una orden abierta a re-anclar) no están
+    // en el buffet → sin esto salían con channels:[]. Se marca sobre un CLON del
+    // índice (el libro difiere por agente; mutar el compartido contaminaría a los
+    // demás), antes de construir prompts/atribuir.
+    channels = buffet.channelsByTicker ? structuredClone(buffet.channelsByTicker) : {};
+    addPortfolioChannels(channels, { positions, openOrders });
 
-  // ── FLOOR del screener ──────────────────────────────────────────
-  // Reserva hasta SCREENER_FLOOR slots para el canal screener cuando alguna
-  // screen dispara (evita que el sesgo del scout lo starve → mediría el sesgo,
-  // no la calidad del canal). Cada candidato final lleva `origin`
-  // (scout_picked / floor_reserved) para separar las dos métricas de atribución.
-  // Determinista y auditable; time-boxed (a los 30 días, SCREENER_FLOOR=0).
-  const screenerRanked = screenerRankedSymbols(buffet.screener || { value: [], momentum: [] });
-  const slate = applyScreenerFloor(scan.candidates, screenerRanked, { floor: SCREENER_FLOOR, maxCandidates: MAX_CANDIDATES, screenerState: buffet.screener_state });
-  context.scan.floor = slate.floor;       // { applied, reserved, reason, floor } — journaleado SIEMPRE (cond. #3)
-  context.scan.screener_state = buffet.screener_state; // vacía/apagada/rancia/caída/fresh — por qué el canal llegó (o no) con datos
-  context.scan.slate = slate.candidates;  // [{ symbol, origin }] — la lista final
-  const candidateSymbols = slate.candidates.map((c) => c.symbol);
-  const candidateOrigins = new Map(slate.candidates.map((c) => [c.symbol, c.origin]));
+    // ── FASE 1: SCAN ────────────────────────────────────────────────
+    const scanSystem = buildScanSystemPrompt();
+    const scanUser = buildScanUserPrompt({ account, positions, openOrders, buffet, previous, meta: positionMeta });
+    scanHash = sha256(scanSystem + '\n---\n' + scanUser);
 
-  // Cero candidatos FINALES (scout no vio nada Y el screener no aportó) → nada
-  // que investigar. Estado DISTINTO de ok_no_actions (hubo candidatos y el DIVE
-  // holdeó). `floor.reason` distingue POR QUÉ el screener no aportó: datos
-  // frescos sin qualifiers (`no_qualifying_candidates`) vs. canal sin datos
-  // (`screener_disabled/empty/stale/unavailable`) — el bug de origen era leer
-  // "tabla vacía por flag faltante" como "ninguna acción calificó". No gasta el
-  // DIVE ni pega a Finnhub.
-  if (candidateSymbols.length === 0) {
-    await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'ok_no_candidates', plan: scan.thesis || 'Scout found nothing worth a deep-dive today.', llm_response: scanText });
-    return { status: 'ok_no_candidates', orders: riskSubmitted, candidates: 0, floor: slate.floor.reason, risk_exits: riskSubmitted, breaker_stage: risk.stage };
+    // context journaleado desde el arranque; se enriquece por fase. El
+    // post-mortem del 24-jul quedó ciego (fetch_errors sin guardar, del prompt
+    // solo el hash). Ahora queda el texto completo de AMBAS fases, más los
+    // candidatos y los datos Finnhub — reconstruir qué vio el PM no es arqueología.
+    context.unavailable = buffet.unavailable;
+    context.fetch_errors = buffet.fetch_errors;
+    context.scan = { prompt: { system: scanSystem, user: scanUser }, hash: scanHash, model: agent.model };
+
+    if (!apiKey) {
+      // Dependencia documentada: sin la key del proveedor del agente (ANTHROPIC_API_KEY
+      // para claude/control, OPENROUTER_API_KEY para el resto) el run queda
+      // journaleado, con cero órdenes — el cron puede quedar prendido sin gastar.
+      await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_no_api_key', error: `Falta la API key de ${agent.provider} (${agentId}).` });
+      return { status: 'aborted_no_api_key', orders: 0, risk_exits: riskSubmitted };
+    }
+
+    const scanLlm = await callArenaLLM({ agent, system: scanSystem, messages: [{ role: 'user', content: scanUser }], maxTokens: 500, now });
+    if (scanLlm.stale || scanLlm.status !== 200 || !scanLlm.data) {
+      const reason = (scanLlm.stale ? 'fechas rotas tras retry (guard anti-alucinación)' : 'HTTP ' + scanLlm.status + ' de Anthropic') + ' [fase scan]';
+      await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_llm_error', error: reason });
+      return { status: 'aborted_llm_error', orders: 0, risk_exits: riskSubmitted };
+    }
+    scanText = (scanLlm.data.content || []).map((b) => b.text || '').join('').trim();
+    context.scan.response = scanText;
+
+    const scan = parseScanResponse(scanText, MAX_CANDIDATES);
+    if (!scan.ok) {
+      // Regla de la casa: JSON malformado = run abortado honesto, CERO órdenes.
+      await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_scan_malformed_json', llm_response: scanText, error: scan.error });
+      return { status: 'aborted_scan_malformed_json', orders: 0, risk_exits: riskSubmitted };
+    }
+    scanThesis = scan.thesis;
+    context.scan.thesis = scan.thesis;
+    context.scan.candidates = scan.candidates; // picks crudos del scout
+
+    // ── FLOOR del screener ──────────────────────────────────────────
+    // Reserva hasta SCREENER_FLOOR slots para el canal screener cuando alguna
+    // screen dispara (evita que el sesgo del scout lo starve → mediría el sesgo,
+    // no la calidad del canal). Cada candidato final lleva `origin`
+    // (scout_picked / floor_reserved) para separar las dos métricas de atribución.
+    // Determinista y auditable; time-boxed (a los 30 días, SCREENER_FLOOR=0).
+    const screenerRanked = screenerRankedSymbols(buffet.screener || { value: [], momentum: [] });
+    const slate = applyScreenerFloor(scan.candidates, screenerRanked, { floor: SCREENER_FLOOR, maxCandidates: MAX_CANDIDATES, screenerState: buffet.screener_state });
+    context.scan.floor = slate.floor;       // { applied, reserved, reason, floor } — journaleado SIEMPRE (cond. #3)
+    context.scan.screener_state = buffet.screener_state; // vacía/apagada/rancia/caída/fresh — por qué el canal llegó (o no) con datos
+    context.scan.slate = slate.candidates;  // [{ symbol, origin }] — la lista final
+    candidateSymbols = slate.candidates.map((c) => c.symbol);
+    candidateOrigins = new Map(slate.candidates.map((c) => [c.symbol, c.origin]));
+    floorReason = slate.floor.reason;
+
+    // Cero candidatos FINALES (scout no vio nada Y el screener no aportó) → nada
+    // que investigar. Estado DISTINTO de ok_no_actions (hubo candidatos y el DIVE
+    // holdeó). `floor.reason` distingue POR QUÉ el screener no aportó: datos
+    // frescos sin qualifiers (`no_qualifying_candidates`) vs. canal sin datos
+    // (`screener_disabled/empty/stale/unavailable`) — el bug de origen era leer
+    // "tabla vacía por flag faltante" como "ninguna acción calificó". No gasta el
+    // DIVE ni pega a Finnhub.
+    if (candidateSymbols.length === 0) {
+      await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'ok_no_candidates', plan: scan.thesis || 'Scout found nothing worth a deep-dive today.', llm_response: scanText });
+      return { status: 'ok_no_candidates', orders: riskSubmitted, candidates: 0, floor: floorReason, risk_exits: riskSubmitted, breaker_stage: risk.stage };
+    }
   }
 
   // ── FASE 2a: DEEP DIVE (determinista, Finnhub — sin LLM) ─────────
@@ -857,7 +1141,13 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // ── FASE 2b: DIVE (LLM #2 — decide órdenes) ─────────────────────
   // La persona del agente es lo ÚNICO que varía del prompt (identidad, decisión #6).
   const diveSystem = buildDiveSystemPrompt(agent.persona);
-  const diveUser = buildDiveUserPrompt({ account, positions, openOrders, previous, scanThesis: scan.thesis, candidates: candidateSymbols, deepDive: dive.data, closes: candidateCloses, channels });
+  const diveUser = buildDiveUserPrompt({
+    account, positions, openOrders, previous, scanThesis, candidates: candidateSymbols,
+    deepDive: dive.data, closes: candidateCloses, channels,
+    // T2: la historia de cada posición + los compromisos abiertos + el encuadre
+    // de la corrida por evento. Es el prompt completo que la auditoría guarda.
+    meta: positionMeta, commitments: memory.open, event,
+  });
   const diveHash = sha256(diveSystem + '\n---\n' + diveUser);
   // shown_closes: el cierre que se le MOSTRÓ al PM por candidato — para auditar
   // desfases contra lo que valida el guard (deberían coincidir siempre).
@@ -865,18 +1155,36 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // prompt_hash de la fila = el del DIVE (la fase que produce las órdenes).
   const withPrompt = { ...base, prompt_hash: diveHash, account: accountSnapshot, context };
 
-  const diveLlm = await callArenaLLM({ agent, system: diveSystem, messages: [{ role: 'user', content: diveUser }], maxTokens: 1500, now });
+  // maxTokens 3000 (era 1500). El contrato de la T2 pide, además del plan y las
+  // acciones, un pronunciamiento por posición y uno por compromiso abierto: con
+  // 8 holdings eso ya no cabía en 1500 tokens, y una respuesta CORTADA a la
+  // mitad es JSON inválido → `aborted_malformed_json`, cero órdenes. Subir el
+  // techo es más barato que perder una corrida entera.
+  const diveLlm = await callArenaLLM({ agent, system: diveSystem, messages: [{ role: 'user', content: diveUser }], maxTokens: 3000, now });
   if (diveLlm.stale || diveLlm.status !== 200 || !diveLlm.data) {
     const reason = (diveLlm.stale ? 'fechas rotas tras retry (guard anti-alucinación)' : 'HTTP ' + diveLlm.status + ' de Anthropic') + ' [fase dive]';
     await journalInsert({ ...withPrompt, status: 'aborted_llm_error', error: reason });
     return { status: 'aborted_llm_error', orders: 0, risk_exits: riskSubmitted };
   }
   const responseText = (diveLlm.data.content || []).map((b) => b.text || '').join('').trim();
+  // POR QUÉ PARÓ de escribir. Un `aborted_malformed_json` tiene dos causas muy
+  // distintas —el modelo envolvió/parloteó fuera del JSON, o se quedó SIN TOKENS
+  // a mitad del objeto— y el journal no las distinguía: quedaba el texto crudo y
+  // un "JSON inválido: Unexpected end of JSON input" que hay que interpretar a
+  // mano. Ahora la razón viaja en la fila.
+  const stopReason = (diveLlm.data && diveLlm.data.stop_reason) || null;
+  const truncated = stopReason === 'max_tokens';
+  context.dive.stop_reason = stopReason;
+  context.dive.response_chars = responseText.length;
+  context.dive.truncated = truncated;
 
   const parsed = parsePlanResponse(responseText);
   if (!parsed.ok) {
-    await journalInsert({ ...withPrompt, status: 'aborted_malformed_json', llm_response: responseText, error: parsed.error });
-    return { status: 'aborted_malformed_json', orders: 0, risk_exits: riskSubmitted };
+    const why = truncated
+      ? `${parsed.error} — la respuesta se CORTÓ por límite de tokens (stop_reason=max_tokens, ${responseText.length} chars): no es que el modelo no sepa el formato, es que no le alcanzó el cupo.`
+      : `${parsed.error} (stop_reason=${stopReason || 'desconocido'}, ${responseText.length} chars)`;
+    await journalInsert({ ...withPrompt, status: 'aborted_malformed_json', llm_response: responseText, error: why });
+    return { status: 'aborted_malformed_json', orders: 0, risk_exits: riskSubmitted, truncated };
   }
 
   // Auditoría post-hoc de los % de la prosa (JOURNAL-ONLY, instrumento de
@@ -888,6 +1196,28 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // Es lo único que detecta la FABRICACIÓN pura (un % sin ancla). Arranca sin
   // ser visible: la meta ~2 semanas es medir la tasa de falsos positivos.
   context.plan_number_audit = auditPlanPercentages(parsed.plan, diveSystem + '\n' + diveUser);
+
+  // ── T2 #1 y #9: MEMORIA Y PRONUNCIAMIENTO (journal-only, igual que arriba) ──
+  // Se normaliza lo que el modelo emitió, se guarda para el fold de la próxima
+  // corrida y se MIDE el incumplimiento. No censura, no corrige y NO cambia el
+  // status del run: un PM que se olvida de una posición igual opera — pero el
+  // olvido queda contado, con nombre y apellido, y es comparable entre los siete
+  // agentes de la liga (que es justo lo que el experimento quiere medir).
+  const review = normalizePositionsReview(parsed.positions_review);
+  const updates = normalizeCommitmentUpdates(parsed.commitment_updates);
+  const created = normalizeCommitments(parsed.commitments, { runDate, tag: runTag });
+  // En la corrida por evento el pronunciamiento obligatorio se limita a los
+  // nombres del evento (es una reacción a un reporte, no la revisión diaria).
+  const reviewRequired = event ? candidateSymbols : heldSymbols;
+  context.positions_review = review;
+  context.position_review_audit = auditPositionReview(reviewRequired, review, positionMeta);
+  context.commitments = {
+    open: memory.open,          // lo que se le puso enfrente (con id)
+    updates,                    // cómo respondió a cada uno
+    created,                    // lo que prometió hoy (vuelve la próxima corrida)
+    audit: auditCommitments(memory.open, updates),
+    dropped: memory.dropped,
+  };
 
   // Referencias deterministas para el guard: symbol map + tipo (comparten
   // fetch/cache: 1 request en frío) + último cierre por símbolo propuesto.
@@ -943,6 +1273,14 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
       overridden.push({ ...a, result: 'discarded', reason: `${a.symbol}: compra suprimida — el breaker está desapalancando (drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico)` });
       continue;
     }
+    // T2 #7: la corrida por evento NO abre riesgo nuevo. Existe para que el PM
+    // reaccione al reporte sobre lo que YA tiene, no para darle una segunda
+    // oportunidad diaria de comprar — el objetivo declarado de la temporada es
+    // que venda cuando debe, no que opere más seguido.
+    if (event && a.side === 'buy') {
+      overridden.push({ ...a, result: 'discarded', reason: `${a.symbol}: compra suprimida — corrida por evento (${event.type}), que solo decide sobre posiciones ya abiertas` });
+      continue;
+    }
     llmApproved.push(a);
   }
 
@@ -964,12 +1302,36 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     }
   }
 
+  // ── TITULAR de la corrida (voz del arquetipo) ───────────────────
+  // DESPUÉS de decidir y ejecutar: narra lo que YA pasó y no puede cambiarlo.
+  // Vive en `context.headline` y NO en la columna `plan` — el "PREVIOUS PLAN"
+  // de la corrida siguiente lee `plan`, así que narrar no contamina el próximo
+  // juicio. Best-effort: si falla, headline null y el run sigue igual.
+  context.headline = await generateHeadline({
+    agent, plan: parsed.plan, actions: journalActions,
+    equity, positions: positions.length, breakerStage: risk.stage,
+    callLLM: callArenaLLM, now,
+  });
+
   // El status de ESTA fila describe la decisión del PM: ok = envió órdenes;
   // ok_no_actions = holdeó (las salidas de riesgo van en su fila aparte).
   const status = submitted === 0 ? 'ok_no_actions' : 'ok';
   await journalInsert({ ...withPrompt, status, plan: parsed.plan, llm_response: responseText, actions: journalActions });
   // `orders` suma el run completo (PM + red de seguridad); `candidates` = slate final.
-  return { status, orders: submitted + riskSubmitted, approved: llmApproved.length, discarded: discarded.length, candidates: candidateSymbols.length, floor: slate.floor.reason, risk_exits: riskSubmitted, breaker_stage: risk.stage, drawdown: +risk.drawdown.toFixed(4) };
+  return {
+    status, orders: submitted + riskSubmitted, approved: llmApproved.length, discarded: discarded.length,
+    candidates: candidateSymbols.length, floor: floorReason, risk_exits: riskSubmitted,
+    // Equity del cierre de ESTA corrida: es lo que rankea el ganador de la
+    // temporada sin re-consultar Alpaca siete veces al final.
+    equity,
+    headline: context.headline ? context.headline.text : null,
+    breaker_stage: risk.stage, drawdown: +risk.drawdown.toFixed(4),
+    ...(event ? { trigger: event.type } : {}),
+    // Cumplimiento del reglamento T2 en esta corrida (lo que el post-mortem
+    // compara entre modelos): posiciones no pronunciadas y compromisos ignorados.
+    review_missing: context.position_review_audit.missing.length,
+    commitments_missing: context.commitments.audit.missing.length,
+  };
 }
 
 // ── ORQUESTADOR de la LIGA (fase decide para TODOS los agentes activos) ──
@@ -1015,6 +1377,258 @@ export async function marketClosedReason({ now = new Date(), cal = getCalendar, 
   }
 }
 
+// ── ANUNCIO del reglamento T2 en el journal (idempotente, con fecha) ──
+// El cambio de reglas se registra UNA vez, como fila de liga. Sin este corte el
+// post-mortem mezclaría dos reglamentos distintos en la misma serie. La
+// idempotencia es del id (clave primaria) + `on conflict do nothing`: se puede
+// llamar en cada corrida sin ensuciar nada. Best-effort: si falla, la corrida
+// sigue — un anuncio perdido no justifica perder un día del experimento.
+export async function announceT2Rules(now = new Date()) {
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
+       values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
+      [T2_ANNOUNCEMENT_ID, T2_RULES_VERSION, PROMPT_VERSION, T2_RULES_TEXT,
+       JSON.stringify({ rules_version: T2_RULES_VERSION, prompt_version: PROMPT_VERSION, applies_to: activeAgents().map((a) => a.id) })],
+    );
+  } catch (e) { /* best-effort: el anuncio no bloquea la corrida */ }
+}
+
+// ── APERTURA DE TEMPORADA — UN SOLO MECANISMO, AUTOMÁTICO ────────────
+// Hubo dos durante unas horas: éste y uno manual (`?action=announce`, una fila
+// `season_start` POR AGENTE) que llegó por otra rama. Se queda éste y el otro se
+// retira en este mismo PR. Por qué:
+//   - UNA fila de LIGA, no siete por agente: el arranque de temporada es un
+//     hecho de la liga entera, igual que `skipped_market_closed`. Siete copias
+//     del mismo texto ensucian la card de cada agente y el post-mortem.
+//   - AUTOMÁTICO: si la apertura depende de que alguien acuerde curlear un
+//     endpoint, el día que se olvide la temporada arranca sin rastro — y el
+//     rastro es justamente el punto.
+//   - `agent_id='league'` lo mantiene FUERA del plan anterior que se le
+//     reinyecta al PM, sin depender de una exclusión por status.
+//
+// La fecha es la del PRIMER día en que corre: el id es fijo, así que la fila
+// entra una sola vez y su `run_date`/`created_at` SON la fecha de apertura.
+//
+// GUARDA: solo se anuncia con los SIETE activos. Con `ARENA_LEAGUE` recortado,
+// anunciar "arranca la liga completa" sería falso — y como el id es idempotente,
+// quedaría sellado el día equivocado para siempre.
+export const SEASON_OPEN_ID = 'arena-temporada-' + ARENA_SEASON.id + '-apertura';
+
+export async function announceSeasonOpen(now = new Date()) {
+  const agents = activeAgents();
+  if (agents.length < ARENA_AGENTS.length) {
+    return { announced: false, reason: 'liga incompleta', active: agents.length, total: ARENA_AGENTS.length };
+  }
+  const casa = { us: '🇺🇸', china: '🇨🇳', control: 'control' };
+  const roster = agents.map((a) => `${a.name} (${a.model_label}, ${casa[a.house] || a.house})`).join(' · ');
+  const plan = [
+    `${ARENA_SEASON.name.toUpperCase()} — ARRANCA LA LIGA COMPLETA. Los ${agents.length} agentes corren desde hoy el MISMO harness, la MISMA temperatura y el MISMO reglamento (vigente desde ${T2_RULES_VERSION}), cada uno sobre su propio libro Alpaca paper.`,
+    `En pista: ${roster}.`,
+    `Ventana de la temporada: ${ARENA_SEASON.start} → ${ARENA_SEASON.end} (${ARENA_SEASON.weeks} semanas de mercado). El último día se declara al ganador por equity.`,
+    'El CONTROL (Haiku-B) comparte modelo, prompt y temperatura con Claude y solo cambia de cuenta: es el piso de ruido. Sin él, cualquier diferencia entre modelos podría ser el orden de los fills y nada más.',
+    'Experimento sin validación estadística, paper trading, no es asesoría.',
+  ].join('\n');
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
+       values ($1,$2,'decide','season_started',$3,$4,$5,'league') on conflict (id) do nothing`,
+      [SEASON_OPEN_ID, now.toISOString().slice(0, 10), PROMPT_VERSION, plan,
+       JSON.stringify({
+         season: ARENA_SEASON, rules_version: T2_RULES_VERSION, opened_on: now.toISOString().slice(0, 10),
+         agents: agents.map((a) => ({ id: a.id, name: a.name, model: a.model, house: a.house, control: !!a.control })),
+       })],
+    );
+    return { announced: true, agents: agents.length };
+  } catch (e) { return { announced: false, reason: String((e && e.message) || e) }; }
+}
+
+// ── CIERRE DE TEMPORADA: el ganador, declarado el ÚLTIMO día ─────────
+// Una liga sin final es una foto sin consecuencia: el "líder" de hoy no
+// significa nada si nunca se cierra la ventana. La temporada (ARENA_SEASON,
+// en el registry) dura 4 semanas de mercado y el último día —un viernes, para
+// que exista la corrida— se journalea el ranking final.
+//
+// Se rankea por EQUITY, con el MISMO caveat que publica el leaderboard: `claude`
+// arrastra días de ventaja de la Temporada 1, así que el return vs. baseline
+// viaja al lado. Un agente sin equity (sin keys, Alpaca caída) NO se rankea ni
+// se inventa un cero: sale aparte, nombrado.
+export const BASELINE_EQUITY = (() => {
+  const n = Number(process.env.ARENA_BASELINE_EQUITY);
+  return Number.isFinite(n) && n > 0 ? n : 100000; // las cuentas paper arrancan en $100k
+})();
+export const SEASON_WINNER_ID = 'arena-temporada-' + ARENA_SEASON.id + '-ganador';
+
+// Puro: resultados de la corrida → { standings, sin_equity, winner }.
+export function rankSeasonStandings(results = [], baseline = BASELINE_EQUITY) {
+  const conEquity = [];
+  const sinEquity = [];
+  for (const r of results) {
+    const eq = Number(r && r.equity);
+    if (Number.isFinite(eq) && eq > 0) {
+      conEquity.push({
+        id: r.id, name: r.name, equity: +eq.toFixed(2),
+        return_pct: +(((eq - baseline) / baseline) * 100).toFixed(2),
+        status: r.status || null,
+      });
+    } else {
+      sinEquity.push({ id: r.id, name: r.name, status: r.status || null, error: r.error || null });
+    }
+  }
+  conEquity.sort((a, b) => b.equity - a.equity);
+  conEquity.forEach((r, i) => { r.rank = i + 1; });
+  return { standings: conEquity, sin_equity: sinEquity, winner: conEquity[0] || null };
+}
+
+// Journalea el cierre. Idempotente por id: si el último día corren decide y la
+// matutina, o el cron se repite, la fila entra UNA vez y no cambia de ganador.
+export async function declareSeasonWinner(results, now = new Date()) {
+  if (!isSeasonFinalDay(now)) return { declared: false, reason: 'no es el último día de la temporada' };
+  const { standings, sin_equity, winner } = rankSeasonStandings(results);
+  if (!winner) return { declared: false, reason: 'ningún agente reportó equity: no se declara un ganador inventado' };
+  const podio = standings.slice(0, 3).map((r) => `${r.rank}. ${r.name} ${r.equity} (${r.return_pct >= 0 ? '+' : ''}${r.return_pct}%)`).join(' · ');
+  const plan = [
+    `${ARENA_SEASON.name.toUpperCase()} — CIERRE. Gana ${winner.name} con equity ${winner.equity} (${winner.return_pct >= 0 ? '+' : ''}${winner.return_pct}% vs. baseline).`,
+    `Podio: ${podio}.`,
+    sin_equity.length ? `Sin equity reportado (no rankean): ${sin_equity.map((r) => r.name || r.id).join(', ')}.` : null,
+    `Ventana: ${ARENA_SEASON.start} → ${ARENA_SEASON.end} (${ARENA_SEASON.weeks} semanas de mercado).`,
+    'CAVEATS, los de siempre: paper trading, una sola temporada, sin validación estadística, y el agente insignia arrastra días de ventaja de la Temporada 1 — por eso el return vs. baseline va al lado del equity. Esto no es asesoría.',
+  ].filter(Boolean).join('\n');
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
+       values ($1,$2,'decide','season_winner',$3,$4,$5,'league') on conflict (id) do nothing`,
+      [SEASON_WINNER_ID, now.toISOString().slice(0, 10), PROMPT_VERSION, plan,
+       JSON.stringify({ season: ARENA_SEASON, metric: ARENA_SEASON.metric, baseline: BASELINE_EQUITY, winner, standings, sin_equity })],
+    );
+    return { declared: true, winner };
+  } catch (e) { return { declared: false, reason: String((e && e.message) || e) }; }
+}
+
+// ── T2 #7: disparadores de la CORRIDA MATUTINA POR EVENTO ────────────
+// Qué cuenta como "acaba de reportar" a media mañana, medido contra la corrida
+// de decide de las 22:40 UTC de ayer:
+//   - HOY antes del open (BMO): ningún decide lo vio. Entra.
+//   - LA SESIÓN ANTERIOR después del cierre (AMC/TBD): el decide de anoche vio
+//     el número, pero el precio recién reacciona en el open de HOY. Entra.
+//   - Ayer BMO ya repreció ayer y el decide de anoche cerró con ese precio
+//     adentro. NO entra — sería una corrida extra sin evento nuevo.
+// Devuelve { SYMBOL: {date,time,when,reported,sessions_since_report,eps…} }.
+export function postEarningsTriggers(earnings, now = new Date()) {
+  const out = {};
+  for (const e of earnings || []) {
+    const ticker = String((e && e.ticker) || '').trim().toUpperCase();
+    if (!ticker) continue;
+    const date = String(e.date || '').slice(0, 10);
+    const time = String(e.time || '').toUpperCase();
+    const ago = sessionsAgo(date, now);
+    const todayBeforeOpen = ago === 0 && time === 'BMO';
+    const prevAfterClose = ago === 1 && (time === 'AMC' || time === 'TBD' || time === '');
+    if (!todayBeforeOpen && !prevAfterClose) continue;
+    out[ticker] = {
+      date, time: e.time, when: relativeDayLabel(date, now, time && time !== 'TBD' ? time : null),
+      reported: true, sessions_since_report: ago,
+      eps_est: e.eps_est ?? null, eps_actual: e.eps_actual ?? null,
+      eps_surprise_pct: epsSurprisePct(e.eps_est, e.eps_actual),
+      revenue_est: e.revenue_est ?? null, revenue_actual: e.revenue_actual ?? null,
+    };
+  }
+  return out;
+}
+
+// Calendario de earnings SOLO (la corrida por evento no necesita el buffet
+// entero: su slate ya está dado por el evento). Un fallo se degrada a lista
+// vacía → ningún disparador → la corrida no ocurre. Nunca inventa un reporte.
+async function fetchEarningsWindow(baseUrl, now) {
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const from = iso(new Date(now.getTime() - 5 * 86400000));
+  const to = iso(now);
+  try {
+    const data = await fetchJson(baseUrl + `/api/earnings?from=${from}&to=${to}`);
+    return (data && data.earnings) || [];
+  } catch (e) { return []; }
+}
+
+// ── CORRIDA MATUTINA POR EVENTO POST-EARNINGS (T2 #7) ────────────────
+// Corre a media mañana (cron aparte, ver vercel.json) y SOLO si alguna posición
+// del libro de algún agente reportó. No es una segunda corrida diaria: es la
+// reacción al número sobre lo que ya se tiene. Si nadie del libro reportó, se
+// journalea UNA fila marcadora de liga y no se gasta ni un token.
+//
+// El chequeo de mercado cerrado se hace igual que en decide (global, una vez):
+// un festivo entre semana no tiene open al que reaccionar.
+export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
+  const agents = activeAgents();
+  if (!agents.length) return { agents: [], league: [], status: 'no_agents' };
+
+  const market = await marketClosedReason({ now });
+  if (market.closed) {
+    await journalInsert({
+      id: 'arena-league-morning-' + now.toISOString(), run_date: now.toISOString().slice(0, 10),
+      phase: 'decide', prompt_version: PROMPT_VERSION, agent_id: 'league',
+      status: 'skipped_market_closed', error: market.reason,
+      context: { market_check: { reason: market.reason, date: market.date }, trigger: 'post_earnings_morning' },
+    });
+    return { agents: [], league: [], status: 'skipped_market_closed', market_closed: market };
+  }
+
+  await announceT2Rules(now);
+  await announceSeasonOpen(now);
+  await ensureAgentStateRows(agents.map((a) => a.id));
+
+  const reports = postEarningsTriggers(await fetchEarningsWindow(baseUrl, now), now);
+  const reported = Object.keys(reports);
+
+  // ¿Alguien del libro de algún agente está en esa lista? Las posiciones se
+  // consultan por agente (cada uno su cuenta); un agente sin keys se salta sin
+  // tumbar a los demás, igual que en decide.
+  const perAgent = await Promise.all(agents.map(async (agent) => {
+    const creds = agentAlpacaCreds(agent);
+    if (!creds || !reported.length) return { agent, symbols: [] };
+    try {
+      const positions = await getPositions(creds);
+      const held = new Set((positions || []).map((p) => String((p && p.symbol) || '').trim().toUpperCase()));
+      return { agent, symbols: reported.filter((sym) => held.has(sym)) };
+    } catch (e) { return { agent, symbols: [], error: String((e && e.message) || e) }; }
+  }));
+
+  const withEvent = perAgent.filter((x) => x.symbols.length);
+  if (!withEvent.length) {
+    // Fila marcadora de LIGA: "hoy no hubo evento" es un hecho de la liga, no de
+    // cada agente. Deja auditable que la corrida SÍ ocurrió y por qué no operó
+    // — sin una fila por agente que ensucie las cards.
+    await journalInsert({
+      id: 'arena-league-morning-' + now.toISOString(), run_date: now.toISOString().slice(0, 10),
+      phase: 'decide', prompt_version: PROMPT_VERSION, agent_id: 'league',
+      status: 'skipped_no_post_earnings_event',
+      plan: reported.length
+        ? `Corrida matutina por evento: reportaron ${reported.join(', ')}, pero ninguno está en el libro de un agente activo. Sin evento que atender, no se gasta LLM.`
+        : 'Corrida matutina por evento: ningún reporte en la ventana (hoy BMO / sesión anterior AMC). Sin evento, no se corre.',
+      context: { trigger: 'post_earnings_morning', reported, reports },
+    });
+    return { agents: [], league: [], status: 'skipped_no_post_earnings_event', reported };
+  }
+
+  // Caches del run: los deep dives de los nombres reportados y sus series son
+  // datos de mercado idénticos para todos los agentes que los tengan.
+  const caches = { series: new Map(), dive: new Map() };
+  const results = await Promise.all(withEvent.map(async ({ agent, symbols }) => {
+    const event = {
+      type: 'post_earnings_morning',
+      symbols,
+      reports: Object.fromEntries(symbols.map((sym) => [sym, reports[sym]])),
+      headline: `${symbols.join(', ')} — que tienes en el libro — ya reportó: ${symbols.map((sym) => `${sym} ${reports[sym].when}`).join(' · ')}.`,
+    };
+    try {
+      const r = await runArenaDecide({ baseUrl, now, agent, caches, event });
+      return { id: agent.id, name: agent.name, model: agent.model, event_symbols: symbols, ...r };
+    } catch (err) {
+      return { id: agent.id, name: agent.name, status: 'error', orders: 0, error: String((err && err.message) || err) };
+    }
+  }));
+  return { agents: results, league: results.map((r) => r.id), status: 'ok', trigger: 'post_earnings_morning', reported };
+}
+
 export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   const agents = activeAgents();
   if (!agents.length) return { agents: [], league: [] };
@@ -1042,12 +1656,18 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
     return { agents: [], league: [], status: 'skipped_market_closed', market_closed: market };
   }
 
+  // El reglamento de la Temporada 2 queda anunciado en el journal con fecha,
+  // UNA sola vez (idempotente por id): el post-mortem necesita el corte para no
+  // mezclar dos reglamentos en la misma serie.
+  await announceT2Rules(now);
+  await announceSeasonOpen(now);
+
   // Siembra una fila de estado por agente (el halt/resume son UPDATE por agent_id).
   await ensureAgentStateRows(agents.map((a) => a.id));
 
   let buffetPromise = null;
   const getBuffet = () => (buffetPromise = buffetPromise || gatherContext({ baseUrl, now }));
-  const caches = { close: new Map(), dive: new Map() };
+  const caches = { series: new Map(), dive: new Map() };
 
   const results = await Promise.all(agents.map(async (agent) => {
     try {
@@ -1057,7 +1677,12 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
       return { id: agent.id, name: agent.name, status: 'error', orders: 0, error: String((err && err.message) || err) };
     }
   }));
-  return { agents: results, league: results.map((r) => r.id) };
+
+  // Cierre de temporada: solo el ÚLTIMO día, con el equity que cada agente
+  // acaba de reportar (cero llamadas extra a Alpaca).
+  const season = { id: ARENA_SEASON.id, status: seasonStatus(now), day: seasonDay(now), start: ARENA_SEASON.start, end: ARENA_SEASON.end };
+  const closing = await declareSeasonWinner(results, now);
+  return { agents: results, league: results.map((r) => r.id), season, ...(closing.declared ? { season_winner: closing.winner } : {}) };
 }
 
 // ── fase RECONCILE ───────────────────────────────────────────────────
@@ -1135,7 +1760,7 @@ export default async function handler(req, res) {
   // pero el Arena no opera hasta ARENA_ENABLED=1 (post smoke verde).
   if (process.env.ARENA_ENABLED !== '1') {
     const phase = String((req.query && req.query.phase) || 'decide').toLowerCase();
-    if (phase === 'reconcile' || phase === 'decide') await beat('arena:' + phase, 'disabled');
+    if (phase === 'reconcile' || phase === 'decide' || phase === 'morning') await beat('arena:' + phase, 'disabled');
     return res.status(200).json({ disabled: true, hint: 'ARENA_ENABLED != 1 — smoke de /api/alpaca?smoke=1 primero.' });
   }
 
@@ -1152,12 +1777,6 @@ export default async function handler(req, res) {
       const result = await runArenaResume({ agentId });
       return res.status(200).json({ action: 'resume', ...result });
     }
-    // Anuncio del arranque de temporada: fila operativa por agente en el journal,
-    // idempotente. Manual a propósito (ver runArenaSeasonAnnounce).
-    if (action === 'announce') {
-      const result = await runArenaSeasonAnnounce({});
-      return res.status(200).json({ action: 'announce', ...result });
-    }
     if (action === 'status') {
       // Sin ?agent: el estado de TODOS los agentes activos. Con ?agent: uno.
       if (req.query && req.query.agent) {
@@ -1172,6 +1791,19 @@ export default async function handler(req, res) {
       const summary = await runArenaReconcile({});
       await beat('arena:reconcile', 'ok', { halted: summary && summary.halted });
       return res.status(200).json({ phase, ...summary });
+    }
+    // ── T2 #7: corrida MATUTINA POR EVENTO post-earnings ──────────────
+    // Cron aparte (vercel.json, 14:50 UTC L-V, 10 min después del reconcile).
+    // Solo corre el pipeline si alguna posición del libro reportó; si no,
+    // journalea la fila marcadora y sale. El reconcile previo hace que los
+    // fills de la apertura ya estén en el journal cuando el PM decide.
+    if (phase === 'morning') {
+      let preMorningReconcile = null;
+      try { preMorningReconcile = await runArenaReconcile({}); }
+      catch (e) { preMorningReconcile = { error: String((e && e.message) || e) }; }
+      const summary = await runArenaMorning({ baseUrl: resolveBaseUrl(req) });
+      await beat('arena:morning', 'ok', { agents: summary && summary.agents ? summary.agents.length : 0 });
+      return res.status(200).json({ phase: 'morning', ...summary, pre_morning_reconcile: preMorningReconcile });
     }
     // ── Reconcile PRE-DECIDE (true-up del journal antes de reinyectar el plan) ──
     // Los fills que aterrizan DESPUÉS del reconcile de las 14:40 eran invisibles

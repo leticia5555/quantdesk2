@@ -43,6 +43,16 @@ const today = new Date().toISOString().slice(0, 10);
 const DAY = 86400000;
 // Earnings a dos días de hoy: el buffet debe rotularlo "in 2 days", no "today".
 const inTwoDays = new Date(Date.now() + 2 * DAY).toISOString().slice(0, 10);
+const tomorrow = new Date(Date.now() + DAY).toISOString().slice(0, 10);
+// SESIÓN ANTERIOR (día hábil previo): una fecha PASADA es "ya reportó" sin
+// importar la hora del día a la que corra el test — a diferencia de un AMC de
+// HOY, que cambia de cubeta a las 21 UTC. Los fixtures de earnings usan solo
+// fechas pasadas o futuras, nunca "hoy", para que la suite no dependa del reloj.
+const prevSession = (() => {
+  const d = new Date(Date.now() - DAY);
+  while (d.getUTCDay() === 0 || d.getUTCDay() === 6) d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+})();
 const t0 = Date.UTC(2026, 4, 1); // 2026-05-01, muy anterior a "hoy"
 const closes = Array.from({ length: 30 }, (_, i) => 195 + (i % 6));
 closes[closes.length - 1] = 200;
@@ -205,10 +215,13 @@ global.fetch = async (url, opts = {}) => {
   // slice(0,12) crudo dejaría AAM (sin nombre) de PRIMERO; el ranking por
   // relevancia debe subir la mega (MSFT) y hundir la de company null.
   if (u.startsWith(BASE_URL + '/api/earnings')) return jsonReply({ earnings: [
-    { ticker: 'AAM', company: null, date: today, time: 'BMO' },              // OTC sin nombre → tier 2 (al fondo)
-    { ticker: 'AAUAF', company: 'Aura Minerals Inc', date: today, time: 'TBD' }, // named ilíquida → tier 1
-    { ticker: 'MSFT', company: 'Microsoft Corp', date: today, time: 'AMC' },  // mega curada → tier 0 (primera)
-    { ticker: 'ZED', company: 'Zed Industries', date: today, time: 'AMC' },   // named → tier 1
+    { ticker: 'AAM', company: null, date: tomorrow, time: 'BMO' },              // OTC sin nombre → tier 2 (al fondo)
+    { ticker: 'AAUAF', company: 'Aura Minerals Inc', date: tomorrow, time: 'TBD' }, // named ilíquida → tier 1
+    { ticker: 'MSFT', company: 'Microsoft Corp', date: tomorrow, time: 'AMC' },  // mega curada → tier 0 (primera)
+    { ticker: 'ZED', company: 'Zed Industries', date: tomorrow, time: 'AMC' },   // named → tier 1
+    // T2 #2: ya reportó en la sesión anterior → NO desaparece del buffet, se va
+    // a `recently_reported` con la cifra real y la sorpresa ya calculada.
+    { ticker: 'GNTX', company: 'Gentex Corp', date: prevSession, time: 'AMC', eps_est: 0.50, eps_actual: 0.60 },
     // Mega a DOS DÍAS: el caso del bug (NVDA reportando el miércoles narrado
     // como "today" el lunes). Es además el candidato que el scout elige, así
     // que su fecha tiene que llegar hasta el prompt del DIVE.
@@ -406,14 +419,31 @@ const eAapl = uEarn.find((e) => e.ticker === 'AAPL');
 const eMsft = uEarn.find((e) => e.ticker === 'MSFT');
 ok(eAapl && /^in 2 days \(/.test(eAapl.when) && eAapl.when.includes('AMC'),
   'prompt SCAN: el earnings a dos días llega rotulado "in 2 days (…, AMC)", no con fecha pelada', JSON.stringify(eAapl));
-ok(eMsft && /^today \(/.test(eMsft.when),
-  'prompt SCAN: "today" queda reservado para el que SÍ reporta hoy', JSON.stringify(eMsft));
+ok(eMsft && /^tomorrow \(/.test(eMsft.when),
+  'prompt SCAN: el reporte de mañana llega rotulado "tomorrow (…)", no con fecha pelada', JSON.stringify(eMsft));
 ok(eAapl && eAapl.date === inTwoDays,
   'prompt SCAN: la fecha absoluta se conserva junto al label relativo', JSON.stringify(eAapl && eAapl.date));
 const eTbd = uEarn.find((e) => e.ticker === 'AAUAF');
 ok(eTbd && !/TBD/.test(eTbd.when), 'prompt SCAN: hora TBD no ensucia el label (solo el día)', JSON.stringify(eTbd && eTbd.when));
 ok(/EARNINGS TIMING/.test(jctx.scan.prompt.user) && /never call a report scheduled for a later date "today"/.test(jctx.scan.prompt.user),
   'prompt SCAN: instrucción explícita de usar `when` y no re-derivar la fecha');
+
+// ── T2 #2: los RECIÉN-REPORTADOS se quedan en el buffet (amnesia NVDA/CRM) ──
+const reportados = scanBuffet.recently_reported;
+const rGntx = (reportados || []).find((e) => e.ticker === 'GNTX');
+ok(Array.isArray(reportados) && !!rGntx,
+  'prompt SCAN: el que reportó en la sesión anterior SIGUE en el buffet (recently_reported)', JSON.stringify(reportados));
+// `sessions_since_report` cuenta SESIONES (L-V), no días: un reporte del viernes
+// visto un domingo lleva 0 sesiones — el mercado no ha vuelto a abrir. Lo que se
+// exige es que esté DENTRO de la ventana de memoria y con el label ya resuelto.
+ok(rGntx && rGntx.sessions_since_report >= 0 && rGntx.sessions_since_report <= 2 && /days? ago|yesterday/.test(rGntx.when),
+  'prompt SCAN: el reportado trae sesiones desde el reporte y el label relativo ya calculado', JSON.stringify(rGntx));
+ok(rGntx && rGntx.eps_actual === 0.60 && rGntx.eps_surprise_pct === 20,
+  'prompt SCAN: la SORPRESA de EPS viene calculada (0.60 vs 0.50 = +20%), no se delega al modelo', JSON.stringify(rGntx));
+ok(!uEarn.some((e) => e.ticker === 'GNTX'),
+  'prompt SCAN: un reportado NO ocupa un slot de la agenda de próximos (listas separadas)', JSON.stringify(uEarn.map((e) => e.ticker)));
+ok(/ALREADY REPORTED/.test(jctx.scan.prompt.user),
+  'prompt SCAN: instrucción explícita de cerrar la tesis cuando el número ya salió');
 // El índice de atribución y los diagnósticos NO viajan al prompt del LLM.
 ok(!('channelsByTicker' in scanBuffet) && !('fetch_errors' in scanBuffet),
   'prompt SCAN: channelsByTicker/fetch_errors son internos, no van al prompt del LLM');

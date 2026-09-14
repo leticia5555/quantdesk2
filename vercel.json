@@ -24,6 +24,10 @@
     {
       "source": "/liga",
       "destination": "/leaderboard.html"
+    },
+    {
+      "source": "/api/liga/eventos",
+      "destination": "/api/liga-eventos"
     }
   ],
   "crons": [
@@ -38,6 +42,10 @@
     {
       "path": "/api/arena-run?phase=reconcile",
       "schedule": "40 14 * * 1-5"
+    },
+    {
+      "path": "/api/arena-run?phase=morning",
+      "schedule": "50 14 * * 1-5"
     },
     {
       "path": "/api/pead-harvest?job=hour",

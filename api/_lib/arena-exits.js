@@ -6,6 +6,11 @@
 // libro, no gestión de caídas normales:
 //   1. CIRCUIT BREAKER de portafolio (escalonado desde el pico de equity).
 //   2. STOP CATASTRÓFICO ANCHO por posición (cierre bajo el nivel → salida).
+//   3. TRAILING STOP de GANANCIA (T2, 2026-09-13): pico ≥ +15% desde la entrada
+//      ARMA un trailing del 8% sobre ese pico. Ver la nota en EXIT_RULES: por
+//      construcción nunca vende en pérdida, así que NO es el stop apretado que
+//      Kaminski & Lo desaconsejan — es lo contrario, evita que una ganadora
+//      vuelva a plano sin que nadie decida nada.
 //
 // POR QUÉ DETERMINISTA (no del LLM): la investigación (Kaminski & Lo, JFM
 // 2014) muestra que un stop APRETADO por nombre DESTRUYE valor en posiciones
@@ -35,6 +40,12 @@ function envFrac(name, def) {
   if (!Number.isFinite(v) || v <= 0 || v >= 1) return def;
   return v;
 }
+// Entero positivo (días). Inválido → default, en silencio (mismo criterio que envFrac).
+function envInt(name, def) {
+  const v = Number(process.env[name]);
+  if (!Number.isFinite(v) || v <= 0 || Math.floor(v) !== v) return def;
+  return v;
+}
 
 export const EXIT_RULES = {
   // Circuit breaker de portafolio (desde el PICO de equity):
@@ -56,18 +67,46 @@ export const EXIT_RULES = {
   // con tope exit_band_max. El intento fallido queda journaleado para medirlo.
   exit_escalation_step: envFrac('ARENA_EXIT_ESCALATION_STEP', 0.13),
   exit_band_max: envFrac('ARENA_EXIT_BAND_MAX', 0.70),
+  // ── TEMPORADA 2 (2026-09-13) ──
+  // TRAILING STOP (regla T2 #3). NO contradice el hallazgo Kaminski & Lo: no es
+  // un stop apretado sobre una posición perdedora, es protección de GANANCIA. Se
+  // ARMA solo cuando el pico desde la entrada llegó a +15%, y entonces sale si
+  // devuelve 8% desde ESE pico. Por construcción NUNCA vende en pérdida:
+  // entrada × 1.15 × 0.92 = entrada × 1.058 — el piso del trailing está siempre
+  // ARRIBA de la entrada. Lo que mata es el otro caso (stop apretado sobre una
+  // posición que revierte); éste es el caso que el libro estaba perdiendo:
+  // ganadoras que subían 20% y volvían a plano sin que el PM se pronunciara.
+  trailing_arm_gain: envFrac('ARENA_TRAILING_ARM_GAIN', 0.15),   // pico ≥ +15% desde la entrada → ARMA
+  trailing_give_back: envFrac('ARENA_TRAILING_GIVE_BACK', 0.08), // armado: devuelve 8% del pico → SALE
+  // Banda del marketable limit del trailing: salida ORDENADA de un nombre (no
+  // emergencia como el catastrófico, no desapalancamiento como el breaker).
+  // NO escala: si no llena, la corrida siguiente lo re-evalúa con el cierre
+  // nuevo y lo re-emite — el nivel se mueve con el pico, no con los intentos.
+  exit_band_trailing: envFrac('ARENA_EXIT_BAND_TRAILING', 0.12),
+  // TIME STOP (regla T2 #4). NO vende: OBLIGA A PRONUNCIARSE. A los 45 días una
+  // tesis que no se movió es una tesis muerta o una que el PM ya no recuerda;
+  // la regla lo fuerza a decir hold/trim/exit con razón (el pronunciamiento lo
+  // audita _lib/arena-memory.js, no este módulo). Días CALENDARIO desde la
+  // apertura de la posición — no sesiones: es una regla de atención, no de
+  // ejecución, y el calendario es lo que el PM lee.
+  time_stop_days: envInt('ARENA_TIME_STOP_DAYS', 45),
 };
 
 // Banda del marketable limit según la NATURALEZA de la salida + escalamiento.
 // Catastrófico (emergencia de un nombre) → banda ancha que ESCALA con cada
-// reintento fallido. Breaker (delever/broadcut, desapalancamiento ordenado) →
-// banda fija más angosta, sin escalamiento. Cap en exit_band_max.
+// reintento fallido. Trailing (T2: protección de ganancia, salida ordenada de UN
+// nombre) → su propia banda, SIN escalamiento. Breaker (delever/broadcut,
+// desapalancamiento ordenado) → banda fija más angosta. Cap en exit_band_max.
+// Precedencia cuando un nombre cae en varias reglas: catastrófico > trailing >
+// breaker (la más severa manda, igual que SEVERITY en mergeExits).
 export function exitBand(reasonCodes, rules = EXIT_RULES, escalationAttempts = 0) {
-  const isCatastrophic = (reasonCodes || []).includes('catastrophic_stop');
-  if (!isCatastrophic) return rules.exit_band_breaker;
-  const escalated = rules.exit_band_catastrophic + Math.max(0, escalationAttempts) * rules.exit_escalation_step;
-  return Math.round(Math.min(escalated, rules.exit_band_max) * 10000) / 10000; // sin ruido FP en el journal
-
+  const codes = reasonCodes || [];
+  if (codes.includes('catastrophic_stop')) {
+    const escalated = rules.exit_band_catastrophic + Math.max(0, escalationAttempts) * rules.exit_escalation_step;
+    return Math.round(Math.min(escalated, rules.exit_band_max) * 10000) / 10000; // sin ruido FP en el journal
+  }
+  if (codes.includes('trailing_stop')) return rules.exit_band_trailing;
+  return rules.exit_band_breaker;
 }
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
@@ -173,12 +212,77 @@ export function planCatastrophicStops({ positions = [], closes = {}, rules = EXI
   return { exits };
 }
 
+// ── TRAILING STOP (T2 #3): protección de GANANCIA, no stop apretado ──
+// Estado del trailing de UNA posición, a partir del PICO de precio desde la
+// entrada (`peak`, que deriva _lib/arena-memory.js de la serie diaria acotada
+// por la fecha de apertura). Devuelve SIEMPRE la misma forma para que el mismo
+// cálculo alimente (a) la decisión determinista de salir y (b) el bloque que el
+// PM ve en el prompt — un solo número, sin que el modelo haga aritmética:
+//   { armed, arm_level, level, peak, gain_at_peak_pct, from_peak_pct }
+// `armed` es false mientras el pico no haya llegado a entrada×(1+arm_gain): sin
+// armar NO hay salida por trailing (ahí es donde un stop apretado destruiría
+// valor). `level` es null mientras no esté armado.
+// null si falta la entrada o el pico (fail-safe: sin dato no se dispara nada).
+export function trailingState(position, peak, rules = EXIT_RULES) {
+  const entry = num(position && position.avg_entry_price);
+  const pk = num(peak);
+  if (entry == null || entry <= 0 || pk == null || pk <= 0) return null;
+  const arm_level = entry * (1 + rules.trailing_arm_gain);
+  const armed = pk >= arm_level;
+  const current = num(position && position.current_price);
+  return {
+    armed,
+    peak: +pk.toFixed(2),
+    arm_level: +arm_level.toFixed(2),
+    level: armed ? +(pk * (1 - rules.trailing_give_back)).toFixed(2) : null,
+    gain_at_peak_pct: +(((pk - entry) / entry) * 100).toFixed(1),
+    from_peak_pct: current != null && current > 0 ? +(((current - pk) / pk) * 100).toFixed(1) : null,
+  };
+}
+
+// Salidas por trailing: por cada posición ARMADA cuyo último cierre COMPLETO
+// cayó a `level` o por debajo → vender la posición ENTERA en la apertura
+// siguiente (misma regla de ejecución de fin de día que el stop catastrófico).
+// `peaks` es { SYMBOL: pico_desde_la_entrada }. Sin pico o sin cierre → no se
+// evalúa (fail-safe: un dato faltante NO liquida por sorpresa).
+export function planTrailingStops({ positions = [], closes = {}, peaks = {}, rules = EXIT_RULES }) {
+  const exits = [];
+  for (const p of positions) {
+    const sym = up(p.symbol);
+    const qty = heldQty(p);
+    if (qty < 1) continue;
+    const st = trailingState(p, peaks[sym], rules);
+    if (!st || !st.armed) continue;
+    const close = num(closes[sym]);
+    if (close == null || close <= 0) continue;
+    if (close <= st.level) {
+      exits.push({
+        symbol: sym, qty, reason_code: 'trailing_stop', stop_level: st.level, close, peak: st.peak,
+        detail: `trailing stop: el pico desde la entrada fue ${st.peak} (+${st.gain_at_peak_pct}%, armó sobre ${st.arm_level}) y el cierre ${close} devolvió ≥${(rules.trailing_give_back * 100).toFixed(0)}% de ese pico (nivel ${st.level}) → liquida ${qty} con ganancia, no la deja volver a plano`,
+      });
+    }
+  }
+  return { exits };
+}
+
+// ── TIME STOP (T2 #4): NO vende — obliga a pronunciarse ──────────────
+// Estado por posición para el prompt y la auditoría: { days, limit, due }.
+// `days` = días CALENDARIO desde la apertura (null si no se pudo reconstruir la
+// fecha de apertura → `due` false: nunca se exige sobre un dato que no existe).
+export function timeStopState(daysInPosition, rules = EXIT_RULES) {
+  // OJO: `num(null)` daría 0 (Number(null) === 0) y el prompt leería "0 días en
+  // posición" para una posición cuya apertura NO se pudo reconstruir — un cero
+  // que parece un hecho. Un dato ausente se queda en null.
+  const d = daysInPosition == null ? null : num(daysInPosition);
+  return { days: d, limit: rules.time_stop_days, due: d != null && d >= rules.time_stop_days };
+}
+
 // ── merge de exits deterministas (breaker + stops) ───────────────────
 // Un nombre puede caer en más de una regla (débil recortada por el breaker Y
 // bajo su stop). Se toma la qty MAYOR (capada a lo que hay), y se combinan los
 // reason_codes. El `origin` (para journaling/atribución) es el más severo:
 // broadcut > catastrophic_stop > delever.
-const SEVERITY = { breaker_broadcut: 3, catastrophic_stop: 2, breaker_delever: 1 };
+const SEVERITY = { breaker_broadcut: 4, catastrophic_stop: 3, trailing_stop: 2, breaker_delever: 1 };
 export function mergeExits(lists, positions = []) {
   const heldBySym = new Map();
   for (const p of positions) { const s = up(p.symbol); if (s) heldBySym.set(s, heldQty(p)); }
@@ -232,12 +336,18 @@ export function riskExitLimit(reference, band) {
 // reason_codes y origin — como pide el post-mortem a 30 días.
 // `escalation` (symbol → # de reintentos catastróficos fallidos previos) ensancha
 // la banda del stop de ese nombre (ver exitBand) — el caller lo deriva del journal.
-export function buildRiskExits({ equity, peak, positions = [], closes = {}, rules = EXIT_RULES, escalation = {} }) {
+export function buildRiskExits({ equity, peak, positions = [], closes = {}, rules = EXIT_RULES, escalation = {}, peaks = {} }) {
   const breaker = planBreaker({ equity, peak, positions, rules });
   // Broadcut domina: no tiene sentido evaluar stops por nombre si se liquida todo.
   const lists = breaker.stage === 'broadcut'
     ? [breaker.exits]
-    : [breaker.exits, planCatastrophicStops({ positions, closes, rules }).exits];
+    : [
+      breaker.exits,
+      planCatastrophicStops({ positions, closes, rules }).exits,
+      // T2 #3: el trailing corre junto a los otros por-nombre. `peaks` vacío
+      // (sin memoria de picos) → lista vacía, comportamiento idéntico al de T1.
+      planTrailingStops({ positions, closes, peaks, rules }).exits,
+    ];
   const merged = mergeExits(lists, positions);
 
   const approved = [];

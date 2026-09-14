@@ -49,6 +49,15 @@
 //    difieren solo por el nombre (confound conocido, documentado como el de la
 //    temperatura). El resto del harness es idéntico entre todos.
 //
+// 7. ARQUETIPO (`archetype`, 2026-09-14) — LA VOZ, NO EL CRITERIO. Cada modelo
+//    tiene un arquetipo fijo con el que narra su titular de una línea (el
+//    control es "el escéptico que no cree en nadie"). CANDADO: el arquetipo
+//    NUNCA entra al prompt que DECIDE. Vive en una llamada aparte, posterior,
+//    que solo NARRA lo ya decidido — si entrara al DIVE, claude y control
+//    dejarían de compartir prompt byte-idéntico y el control se caería como
+//    piso de ruido, que es el único motivo por el que existe (decisión #5).
+//    Hay un test que lo blinda. Ver `_lib/arena-voice.js`.
+//
 // ENV VARS: OPENROUTER_API_KEY (los 5 de OpenRouter) · ANTHROPIC_API_KEY
 //           (claude + control) · ALPACA_<ALPACA>_KEY/SECRET por agente ·
 //           ARENA_TEMPERATURE (opc, default 0.7) · ARENA_MODEL_<ID> (opc,
@@ -81,18 +90,21 @@ export const ARENA_AGENTS = [
   {
     id: 'claude', name: 'Claude', model_label: 'Haiku 4.5',
     provider: 'anthropic', model: ANTHROPIC_MODEL, persona: 'Claude PM',
+    archetype: { name: 'el analista prudente', voice: 'Mides dos veces y cortas una. Hablas de riesgo antes que de premio, sin dramatizar.' },
     alpaca: 'PAPER',            // reusa la cuenta del Agente #6 → preserva historial
     house: 'us', control: false, phase: 'A', enabled: true,
   },
   {
     id: 'openai', name: 'ChatGPT', model_label: 'GPT-5 mini',
     provider: 'openrouter', model: slug('OPENAI', 'openai/gpt-5-mini'), persona: 'GPT PM',
+    archetype: { name: 'el optimista de producto', voice: 'Ves la tesis grande y la cuentas con entusiasmo, pero sin prometer números.' },
     alpaca: 'OPENAI', house: 'us', control: false, phase: 'A', enabled: true,
   },
   {
     id: 'control', name: 'Control · Haiku-B', model_label: 'Haiku 4.5',
     provider: 'anthropic', model: ANTHROPIC_MODEL,
     persona: 'Claude PM',       // IDÉNTICA a `claude` a propósito: es el piso de ruido
+    archetype: { name: 'el escéptico que no cree en nadie', voice: 'No te crees ninguna tesis, ni la tuya. Señalas lo que puede salir mal y desconfías del consenso.' },
     alpaca: 'CONTROL', house: 'control', control: true, phase: 'A', enabled: true,
   },
 
@@ -101,21 +113,25 @@ export const ARENA_AGENTS = [
   {
     id: 'grok', name: 'Grok', model_label: 'Grok 4 Fast',
     provider: 'openrouter', model: slug('GROK', 'x-ai/grok-4-fast'), persona: 'Grok PM',
+    archetype: { name: 'el provocador', voice: 'Dices en voz alta lo que los demás callan. Irreverente y directo, nunca grosero.' },
     alpaca: 'GROK', house: 'us', control: false, phase: 'B', enabled: true,
   },
   {
     id: 'gemini', name: 'Gemini', model_label: 'Gemini 2.5 Flash',
     provider: 'openrouter', model: slug('GEMINI', 'google/gemini-2.5-flash'), persona: 'Gemini PM',
+    archetype: { name: 'el ordenado', voice: 'Todo cabe en un marco limpio. Clasificas y ordenas; tu titular suena a conclusión bien archivada.' },
     alpaca: 'GEMINI', house: 'us', control: false, phase: 'B', enabled: true,
   },
   {
     id: 'deepseek', name: 'DeepSeek', model_label: 'DeepSeek V3.1',
     provider: 'openrouter', model: slug('DEEPSEEK', 'deepseek/deepseek-chat-v3.1'), persona: 'DeepSeek PM',
+    archetype: { name: 'el frío de los números', voice: 'Solo datos. Cero épica, cero adjetivos: el titular es una medición.' },
     alpaca: 'DEEPSEEK', house: 'china', control: false, phase: 'B', enabled: true,
   },
   {
     id: 'qwen', name: 'Qwen', model_label: 'Qwen Plus',
     provider: 'openrouter', model: slug('QWEN', 'qwen/qwen-plus'), persona: 'Qwen PM',
+    archetype: { name: 'el paciente', voice: 'Juegas el largo plazo. El ruido de hoy te interesa poco; hablas en trimestres.' },
     alpaca: 'QWEN', house: 'china', control: false, phase: 'B', enabled: true,
   },
 ];
@@ -132,6 +148,63 @@ export function activeAgents() {
     return ARENA_AGENTS.filter((a) => want.has(a.id));
   }
   return ARENA_AGENTS.filter((a) => a.enabled);
+}
+
+// ═══ TEMPORADA (season) ════════════════════════════════════════════
+// La liga corre por TEMPORADAS acotadas, no para siempre. Una ventana cerrada
+// con fecha de inicio y de fin es lo que convierte el experimento en algo que
+// se puede GANAR y contar: sin un final, el "líder" de hoy es una foto sin
+// consecuencia y el post-mortem nunca tiene una población cerrada que analizar.
+//
+// CUATRO SEMANAS DE MERCADO (20 sesiones), de lunes a viernes: `end` cae en
+// VIERNES a propósito. Un cierre en sábado o domingo no tendría corrida —el
+// cron solo dispara L-V y el gate de mercado cerrado frena la liga— y el
+// ganador no se declararía nunca.
+//
+// Las fechas se comparan en horario del ESTE (el del mercado), no en UTC: la
+// corrida de decide es 22:40 UTC, que en ET sigue siendo el mismo día hábil.
+export const ARENA_SEASON = {
+  id: 'T2',
+  name: 'Temporada 2',
+  start: /* date-lint-ok: fecha declarada de apertura de la temporada, un hecho fijo, no una referencia a "hoy" */ '2026-09-14',
+  end: /* date-lint-ok: cierre declarado de la temporada (viernes, 4 semanas de mercado) */ '2026-10-09',
+  weeks: 4,
+  // Qué se mide para declarar al ganador. Equity, igual que el leaderboard:
+  // `claude` arrastra días de ventaja de la T1, así que el return vs. baseline
+  // viaja al lado — el caveat de ranking del scope sigue vigente y se publica.
+  metric: 'equity',
+};
+
+// Fecha de HOY en horario del Este ('YYYY-MM-DD'). Duplica tres líneas de
+// arena-run.js a propósito: importarlo desde acá crearía un ciclo
+// registry → arena-run → registry.
+function easternToday(now) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+}
+
+// 'pending' (aún no arranca) · 'running' · 'ended' (ya pasó el cierre).
+export function seasonStatus(now = new Date(), season = ARENA_SEASON) {
+  const today = easternToday(now);
+  if (today < season.start) return 'pending';
+  if (today > season.end) return 'ended';
+  return 'running';
+}
+
+// ¿Hoy es el ÚLTIMO día de la temporada? Es el único día en que se declara al
+// ganador (y la declaración es idempotente por id, así que un festivo o una
+// corrida repetida no la duplican ni la mueven).
+export function isSeasonFinalDay(now = new Date(), season = ARENA_SEASON) {
+  return easternToday(now) === season.end;
+}
+
+// Día de temporada (1 = el de apertura). null fuera de la ventana — nunca un
+// número negativo que se lea como si la temporada ya hubiera empezado.
+export function seasonDay(now = new Date(), season = ARENA_SEASON) {
+  if (seasonStatus(now, season) !== 'running') return null;
+  const a = Date.parse(season.start + 'T00:00:00Z');
+  const b = Date.parse(easternToday(now) + 'T00:00:00Z');
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.round((b - a) / 86400000) + 1;
 }
 
 export function agentById(id) {

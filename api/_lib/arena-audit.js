@@ -48,7 +48,13 @@ export function jsonAfterMarker(text, marker) {
   const lines = text.split('\n');
   const i = lines.findIndex((l) => l.startsWith(marker));
   if (i === -1) return null;
-  for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
+  // Ventana de 10 líneas, no de 2: entre el marcador y el JSON viven las
+  // INSTRUCCIONES de esa sección (timing de earnings, recién-reportados,
+  // historia de la posición…) y esa lista crece con cada regla nueva. Con la
+  // ventana corta, agregar una línea de prompt rompía en silencio la
+  // reconstrucción del buffet y el post-mortem reportaba `items:null` como si
+  // el canal no hubiera llegado.
+  for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
     const s = lines[j].trim();
     if (s.startsWith('{')) { try { return JSON.parse(s); } catch (e) { return null; } }
   }
@@ -85,6 +91,8 @@ export function frasesConSimbolo(plan, simbolo) {
 // distinción es justo la que se quiere auditar.
 export function buffetDeFila(context) {
   const ctx = context || {};
+  // La corrida por EVENTO (T2 #7) no tiene fase SCAN ni buffet: su slate lo da
+  // el evento. Ahí `reconstruido:false` es la verdad, no un hueco de datos.
   const buffet = jsonAfterMarker(ctx.scan && ctx.scan.prompt ? ctx.scan.prompt.user : null, 'MARKET CONTEXT');
   const unavailable = Array.isArray(ctx.unavailable) ? ctx.unavailable
     : (buffet && Array.isArray(buffet.unavailable) ? buffet.unavailable : []);
@@ -104,6 +112,8 @@ export function buffetDeFila(context) {
   const moversSyms = mv ? [...new Set([...syms(mv.gainers, 'symbol'), ...syms(mv.losers, 'symbol'), ...syms(mv.actives, 'symbol')])] : [];
   const moversN = mv ? (mv.gainers || []).length + (mv.losers || []).length + (mv.actives || []).length : 0;
   const earnings = buffet ? (buffet.earnings_this_week || []) : [];
+  // T2 #2: los recién-reportados son parte del canal earnings (slots propios).
+  const reportados = buffet ? (buffet.recently_reported || []) : [];
   const insiders = buffet ? (buffet.notable_insider_buys || []) : [];
   const scr = buffet && buffet.screener ? buffet.screener : null;
   const scrSyms = scr ? [...new Set([...syms(scr.value, 'symbol'), ...syms(scr.momentum, 'symbol')])] : [];
@@ -117,7 +127,9 @@ export function buffetDeFila(context) {
       movers: canal('movers', moversN, moversSyms, mv
         ? { gainers: (mv.gainers || []).length, losers: (mv.losers || []).length, actives: (mv.actives || []).length }
         : null),
-      earnings: canal('earnings', earnings.length, syms(earnings, 'ticker')),
+      earnings: canal('earnings', earnings.length + reportados.length,
+        [...new Set([...syms(earnings, 'ticker'), ...syms(reportados, 'ticker')])],
+        buffet ? { proximos: earnings.length, reportados: reportados.length } : null),
       insiders: canal('insiders', insiders.length, syms(insiders, 'ticker')),
       screener: canal('screener', scrSyms.length, scrSyms, scr
         ? { value: (scr.value || []).length, momentum: (scr.momentum || []).length }
@@ -128,7 +140,13 @@ export function buffetDeFila(context) {
 
 // ── el libro tal como lo vio el PM ───────────────────────────────────
 export function portafolioDeFila(context) {
-  const p = jsonAfterMarker(context && context.scan && context.scan.prompt ? context.scan.prompt.user : null, 'PORTFOLIO');
+  const ctx = context || {};
+  // El libro viaja en AMBOS prompts. La corrida por evento no tiene el del SCAN,
+  // así que se cae al del DIVE — el mismo bloque, la misma marca.
+  const fuente = (ctx.scan && ctx.scan.prompt && ctx.scan.prompt.user)
+    || (ctx.dive && ctx.dive.prompt && ctx.dive.prompt.user)
+    || null;
+  const p = jsonAfterMarker(fuente, 'PORTFOLIO');
   if (!p) return null;
   return {
     equity: isNum(p.equity) ? p.equity : null,
@@ -465,7 +483,7 @@ function mdFila(f) {
   const c = f.buffet.canales;
   L.push(mdTabla(['canal', 'llegó', 'ítems reales', 'detalle', 'error'], [
     ['movers', si(c.movers.llego), c.movers.items, c.movers.detalle ? `gainers ${c.movers.detalle.gainers} · losers ${c.movers.detalle.losers} · actives ${c.movers.detalle.actives}` : '—', c.movers.error],
-    ['earnings', si(c.earnings.llego), c.earnings.items, '—', c.earnings.error],
+    ['earnings', si(c.earnings.llego), c.earnings.items, c.earnings.detalle ? `próximos ${c.earnings.detalle.proximos} · ya reportaron ${c.earnings.detalle.reportados}` : '—', c.earnings.error],
     ['insiders', si(c.insiders.llego), c.insiders.items, '—', c.insiders.error],
     ['screener', si(c.screener.llego), c.screener.items, c.screener.detalle ? `value ${c.screener.detalle.value} · momentum ${c.screener.detalle.momentum}` : '—', c.screener.error],
   ]));

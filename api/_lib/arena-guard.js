@@ -13,12 +13,34 @@
 //     precio), la acción se descarta — nunca se asume que "seguro existe".
 // ═══════════════════════════════════════════════════════════════
 
+// Fracción en (0,1) por env; inválida → default, en silencio (mismo criterio
+// que _lib/arena-exits.js, que es el otro dueño de constantes del Arena).
+function envFrac(name, def) {
+  const v = Number(process.env[name]);
+  if (!Number.isFinite(v) || v <= 0 || v >= 1) return def;
+  return v;
+}
+
 export const ARENA_RULES = {
   max_positions: 8,            // posiciones simultáneas máximas
   max_position_fraction: 0.15, // techo de una posición: 15% del equity
   min_cash_fraction: 0.10,     // piso de cash: 10% del equity
   price_band: 0.02,            // limit_price a ±2% del último cierre
   min_price: 1,                // sin sub-$1
+  // ── T2 #5 (2026-09-13): la VENTA del PM sale a MARKETABLE LIMIT ──
+  // Cicatriz GOOGL: el PM decidió vender, puso un límite "justo" dentro de la
+  // banda ±2%, la orden `day` se quedó descansando arriba del mercado y expiró
+  // sin llenar. Al día siguiente la posición seguía ahí y el plan la narraba
+  // como "pending order, monitor". Una salida que no llena NO es una salida.
+  // Ahora la banda ±2% sigue siendo el SANITY CHECK del anclaje de precio del
+  // modelo (si su precio está fuera de banda, la orden se descarta como
+  // siempre), pero el precio que se ENVÍA es marketable: referencia × (1 −
+  // banda), por DEBAJO del mercado, para que llene en la apertura. NO es un
+  // "ajuste silencioso" de los que la casa prohíbe: es política declarada de la
+  // capa de salida, journaleada por orden (`limit_price_proposed`, `repriced`,
+  // `exit_band`) y visible en la card. Más angosta que la banda del breaker
+  // (12%): esta venta es discrecional y ordenada, no una emergencia.
+  discretionary_sell_band: envFrac('ARENA_EXIT_BAND_DISCRETIONARY', 0.04),
 };
 
 // Sufijos de warrants/units/rights que el universo excluye aunque el
@@ -107,7 +129,22 @@ export function parsePlanResponse(raw) {
   if (parsed.actions !== undefined && !Array.isArray(parsed.actions)) {
     return { ok: false, error: 'actions no es un array' };
   }
-  return { ok: true, plan: parsed.plan.trim(), actions: parsed.actions || [] };
+  // ── Campos de la Temporada 2, TOLERADOS a propósito ──────────────
+  // `positions_review` (T2 #9), `commitments` y `commitment_updates` (T2 #1)
+  // viajan CRUDOS: los normaliza _lib/arena-memory.js. Deliberadamente NO son
+  // parte del contrato duro — ausentes o malformados NO abortan el run. El
+  // contrato de "JSON malformado = cero órdenes" cubre `plan` y `actions`;
+  // endurecerlo con tres campos más solo subiría la tasa de aborts (justo lo
+  // que la T2 intenta bajar) y castigaría al modelo por olvidar, en vez de
+  // MEDIR el olvido, que es lo que la auditoría de memoria hace.
+  return {
+    ok: true,
+    plan: parsed.plan.trim(),
+    actions: parsed.actions || [],
+    positions_review: parsed.positions_review,
+    commitments: parsed.commitments,
+    commitment_updates: parsed.commitment_updates,
+  };
 }
 
 // ── parse del SCAN (fase 1): respuesta cruda → { ok, thesis, candidates } ──
@@ -314,9 +351,28 @@ export function validateActions({ actions, equity, cash, positions, symbolMap, s
       else held.delete(symbol);
     }
 
+    // ── T2 #5: precio de ENVÍO de una venta = MARKETABLE LIMIT ───────
+    // La banda ±2% ya validó el anclaje del modelo (arriba). Acá la venta se
+    // re-precia hacia ABAJO del cierre para que LLENE (cicatriz GOOGL). La
+    // compra NO se toca: un límite agresivo de compra paga de más, y ahí el
+    // precio del modelo sí es la decisión. Todo queda journaleado: el precio
+    // que pidió el PM, el que se envió y la banda usada.
+    const isSell = side === 'sell';
+    const sendPrice = isSell
+      ? Math.round(lastClose * (1 - rules.discretionary_sell_band) * 100) / 100
+      : limitPrice;
+    // Si el PM ya había puesto un límite MÁS agresivo que el marketable, se
+    // respeta el suyo (más abajo llena igual; subirlo sería empeorar su venta).
+    const finalPrice = isSell ? Math.min(limitPrice, sendPrice) : limitPrice;
+
     approved.push({
-      symbol, side, qty, limit_price: limitPrice,
-      notional: +cost.toFixed(2),
+      symbol, side, qty, limit_price: finalPrice,
+      // qty sale del límite que PIDIÓ el PM (su intención de notional); el
+      // precio de envío no la infla — y la venta ya está capada a lo que hay.
+      notional: +(qty * finalPrice).toFixed(2),
+      ...(isSell && finalPrice !== limitPrice
+        ? { limit_price_proposed: limitPrice, repriced: 'marketable_sell', exit_band: rules.discretionary_sell_band }
+        : {}),
       security_type: secType, // null si el free tier no lo trajo (permitido, journaleado)
       conviction: num(a.conviction),
       reasoning: typeof a.reasoning === 'string' ? a.reasoning.slice(0, 600) : null,

@@ -60,6 +60,53 @@ function pickFundamentals(metricResp) {
   };
 }
 
+// ── T2 #6 (2026-09-13): ratios FUERA DE RANGO PLAUSIBLE ──────────────
+// Caso LYFT: el mismo nombre se descartó el 05-ago y se aprobó el 13/14-ago, y
+// entre medio sus "fundamentales" traían ratios que no describen el negocio
+// sino un renglón contable de una sola vez (un cargo/crédito que hunde o dispara
+// el denominador). Un P/E de 900, un ROE de 4,000% o un debt/equity NEGATIVO
+// (equity contable negativo) no son señales: son artefactos. El PM los citaba
+// como si fueran fundamentales limpios.
+//
+// La respuesta de la casa NO es borrar el dato (eso sería inventar un hueco) ni
+// corregirlo (no tenemos con qué): es MARCARLO. El número sigue viajando tal
+// cual, con una bandera al lado y una instrucción en el prompt de no usarlo como
+// evidencia sin decir que puede ser un artefacto.
+//
+// Los límites son de PLAUSIBILIDAD, no de calidad: un P/E de 60 es caro pero
+// real; uno de 900 casi siempre es un denominador roto. Deliberadamente anchos
+// para no marcar lo que solo es "raro".
+export const RATIO_BOUNDS = {
+  peTTM: { min: 0, max: 150, label: 'P/E' },
+  psTTM: { min: 0, max: 50, label: 'P/S' },
+  pb: { min: 0, max: 50, label: 'P/B' },
+  roeTTM: { min: -100, max: 100, label: 'ROE %' },
+  netMarginTTM: { min: -100, max: 100, label: 'margen neto %' },
+  grossMarginTTM: { min: -100, max: 100, label: 'margen bruto %' },
+  operatingMarginTTM: { min: -100, max: 100, label: 'margen operativo %' },
+  debtToEquity: { min: 0, max: 10, label: 'deuda/equity' },
+  currentRatio: { min: 0, max: 20, label: 'current ratio' },
+};
+
+// fundamentals → { flags:[{ field, label, value, bound }], note } · null si todo
+// cae en rango (o no hay datos). Determinista, sin red: se puede probar suelto.
+export function flagRatioOutliers(fundamentals) {
+  const f = fundamentals || {};
+  const flags = [];
+  for (const [field, b] of Object.entries(RATIO_BOUNDS)) {
+    const v = num(f[field]);
+    if (v == null) continue;                       // ausente ≠ sospechoso
+    if (v >= b.min && v <= b.max) continue;
+    flags.push({ field, label: b.label, value: v, bound: v < b.min ? `< ${b.min}` : `> ${b.max}` });
+  }
+  if (!flags.length) return null;
+  return {
+    flags,
+    note: 'POSIBLE ARTEFACTO CONTABLE: ' + flags.map((x) => `${x.label} = ${x.value} (${x.bound})`).join(' · ')
+      + '. Un ratio fuera de rango plausible suele venir de un renglón de una sola vez (cargo/crédito extraordinario, equity contable negativo), no del negocio. No lo cites como fundamental limpio: o lo omites, o dices que puede ser un artefacto.',
+  };
+}
+
 // recommendation[] → el período más reciente. La señal de rating que el PM
 // pedía como "analyst ratings": el reparto de analistas por recomendación.
 function pickRecommendation(recResp) {
@@ -145,9 +192,14 @@ export async function fetchDeepDive(tickers, finnhubKey, now = new Date()) {
       const [metric, profile, rec, news] = await Promise.all([
         safeJson(metricR), safeJson(profileR), safeJson(recR), safeJson(newsR),
       ]);
+      const fundamentals = pickFundamentals(metric);
+      const quality = flagRatioOutliers(fundamentals);
       const entry = {
         profile: pickProfile(profile),
-        fundamentals: pickFundamentals(metric),
+        fundamentals,
+        // T2 #6: bandera de ratios implausibles. Solo aparece cuando hay algo
+        // que marcar — un candidato limpio no arrastra un campo vacío al prompt.
+        ...(quality ? { fundamentals_quality: quality } : {}),
         recommendation: pickRecommendation(rec),
         news: pickNews(news, now),
       };
