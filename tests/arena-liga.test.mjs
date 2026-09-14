@@ -23,6 +23,11 @@ process.env.OPENROUTER_API_KEY = 'sk-or-test';
 process.env.ALPACA_PAPER_KEY = 'PK_CLAUDE'; process.env.ALPACA_PAPER_SECRET = 'S_CLAUDE';
 process.env.ALPACA_OPENAI_KEY = 'PK_OPENAI'; process.env.ALPACA_OPENAI_SECRET = 'S_OPENAI';
 process.env.ALPACA_CONTROL_KEY = 'PK_CONTROL'; process.env.ALPACA_CONTROL_SECRET = 'S_CONTROL';
+// Fase B (encendida 2026-09-14): las cuatro cuentas restantes de la liga.
+process.env.ALPACA_GROK_KEY = 'PK_GROK'; process.env.ALPACA_GROK_SECRET = 'S_GROK';
+process.env.ALPACA_GEMINI_KEY = 'PK_GEMINI'; process.env.ALPACA_GEMINI_SECRET = 'S_GEMINI';
+process.env.ALPACA_DEEPSEEK_KEY = 'PK_DEEPSEEK'; process.env.ALPACA_DEEPSEEK_SECRET = 'S_DEEPSEEK';
+process.env.ALPACA_QWEN_KEY = 'PK_QWEN'; process.env.ALPACA_QWEN_SECRET = 'S_QWEN';
 process.env.FINNHUB_API_KEY = 'fh-test';
 delete process.env.ARENA_LEAGUE;
 delete process.env.ARENA_SCREENER_ENABLED;
@@ -135,10 +140,13 @@ global.fetch = async (url, opts = {}) => {
 console.log('liga: registry (Fase A activa, slugs, temperatura, creds)');
 {
   const ids = activeAgents().map((a) => a.id);
-  ok(ids.length === 3 && ids.includes('claude') && ids.includes('openai') && ids.includes('control'),
-    'Fase A activa: claude + openai + control (los otros 4 apagados)', JSON.stringify(ids));
-  const off = ARENA_AGENTS.filter((a) => !a.enabled).map((a) => a.id);
-  ok(['grok', 'gemini', 'deepseek', 'qwen'].every((x) => off.includes(x)), 'Fase B presente pero apagada', JSON.stringify(off));
+  ok(ids.length === 7 && ['claude', 'openai', 'control', 'grok', 'gemini', 'deepseek', 'qwen'].every((x) => ids.includes(x)),
+    'LIGA COMPLETA activa: los siete (Fase B encendida el 2026-09-14)', JSON.stringify(ids));
+  ok(ARENA_AGENTS.every((a) => a.enabled), 'ninguna fila queda apagada en el registry', JSON.stringify(ARENA_AGENTS.filter((a) => !a.enabled).map((a) => a.id)));
+  // El ángulo de contenido (chinas vs americanas) depende de este reparto.
+  const casas = ARENA_AGENTS.reduce((m, a) => ({ ...m, [a.house]: (m[a.house] || 0) + 1 }), {});
+  ok(casas.us === 4 && casas.china === 2 && casas.control === 1,
+    'reparto de casas: 4 🇺🇸 + 2 🇨🇳 + 1 control', JSON.stringify(casas));
   ok(ARENA_TEMPERATURE === 0.7, 'temperatura fija 0.7 por default', String(ARENA_TEMPERATURE));
   ok(agentById('openai').model === 'openai/gpt-5-mini' && agentById('openai').provider === 'openrouter', 'openai → slug gpt-5-mini vía OpenRouter');
   ok(agentById('deepseek').house === 'china' && agentById('qwen').house === 'china', 'DeepSeek/Qwen marcados casa china (ángulo de contenido)');
@@ -147,6 +155,16 @@ console.log('liga: registry (Fase A activa, slugs, temperatura, creds)');
   ok(agentAlpacaCreds(agentById('claude')).key === 'PK_CLAUDE', 'claude reusa ALPACA_PAPER_* (continuidad del Agente #6)');
   ok(agentAlpacaCreds(agentById('openai')).key === 'PK_OPENAI' && agentAlpacaCreds(agentById('control')).key === 'PK_CONTROL',
     'openai/control leen sus propias ALPACA_<ID>_*');
+  // Fase B: cada agente nuevo lee SU par de keys. Si falta, el agente se
+  // journalea aborted_no_alpaca_keys sin tumbar a los demás (decisión #3).
+  for (const id of ['grok', 'gemini', 'deepseek', 'qwen']) {
+    ok(agentAlpacaCreds(agentById(id)).key === 'PK_' + id.toUpperCase(),
+      `${id} lee ALPACA_${id.toUpperCase()}_KEY/SECRET`, JSON.stringify(agentAlpacaCreds(agentById(id))));
+  }
+  const savedGrok = process.env.ALPACA_GROK_KEY; delete process.env.ALPACA_GROK_KEY;
+  ok(agentAlpacaCreds(agentById('grok')) === null,
+    'sin sus keys, el agente devuelve null (el caller lo journalea y sigue con los demás)');
+  process.env.ALPACA_GROK_KEY = savedGrok;
   // ARENA_LEAGUE gana sobre enabled
   process.env.ARENA_LEAGUE = 'claude,grok';
   ok(activeAgents().map((a) => a.id).join(',') === 'claude,grok', 'ARENA_LEAGUE override enciende cualquier subconjunto (Fase B sin redeploy)');
@@ -178,20 +196,24 @@ console.log('liga: dispatch de proveedor normalizado');
 }
 
 // ── 4) Orquestador de la liga de punta a punta ──
-console.log('liga: runArenaLeague — 3 agentes, multi-cuenta, agent_id, dedupe');
+console.log('liga: runArenaLeague — LOS SIETE, multi-cuenta, agent_id, dedupe');
 anthropicCalls.length = 0; openrouterCalls.length = 0; orderPosts.length = 0;
 journalInserts.length = 0; moversFetches = 0; aaplMetricFetches.length = 0;
 const res = await runArenaLeague({ baseUrl: BASE_URL });
 {
+  const LIGA = ['claude', 'openai', 'control', 'grok', 'gemini', 'deepseek', 'qwen'];
   const byId = Object.fromEntries((res.agents || []).map((a) => [a.id, a]));
-  ok(res.agents.length === 3 && byId.claude && byId.openai && byId.control, 'corren los 3 agentes de la Fase A', JSON.stringify(res.league));
-  ok(byId.claude.status === 'ok' && byId.openai.status === 'ok' && byId.control.status === 'ok', 'los 3 deciden ok (1 orden c/u)', JSON.stringify(res.agents.map((a) => [a.id, a.status])));
+  ok(res.agents.length === 7 && LIGA.every((id) => byId[id]), 'corren LOS SIETE de la liga completa', JSON.stringify(res.league));
+  ok(LIGA.every((id) => byId[id].status === 'ok'), 'los siete deciden ok (1 orden c/u)', JSON.stringify(res.agents.map((a) => [a.id, a.status])));
 
-  // Proveedor correcto por agente: claude+control → Anthropic; openai → OpenRouter.
+  // Proveedor correcto por agente: claude+control → Anthropic (directo); los
+  // otros CINCO → OpenRouter con la MISMA key y su propio slug.
   ok(anthropicCalls.length === 4, 'Anthropic recibió 4 llamadas (claude + control, 2 fases c/u)', String(anthropicCalls.length));
-  ok(openrouterCalls.length === 2, 'OpenRouter recibió 2 llamadas (openai, 2 fases)', String(openrouterCalls.length));
+  ok(openrouterCalls.length === 10, 'OpenRouter recibió 10 llamadas (5 agentes × 2 fases)', String(openrouterCalls.length));
   ok(anthropicCalls.every((c) => c.model === 'claude-haiku-4-5'), 'Anthropic siempre con el modelo Haiku');
-  ok(openrouterCalls.every((c) => c.model === 'openai/gpt-5-mini'), 'OpenRouter siempre con el slug gpt-5-mini');
+  const slugs = [...new Set(openrouterCalls.map((c) => c.model))].sort();
+  ok(slugs.join(',') === 'deepseek/deepseek-chat-v3.1,google/gemini-2.5-flash,openai/gpt-5-mini,qwen/qwen-plus,x-ai/grok-4-fast',
+    'cada agente de OpenRouter va con SU slug (clase rápida de cada casa, no el tope de gama)', JSON.stringify(slugs));
 
   // TEMPERATURA fija 0.7 en AMBOS proveedores.
   ok(anthropicCalls.every((c) => c.temperature === 0.7) && openrouterCalls.every((c) => c.temperature === 0.7),
@@ -200,17 +222,36 @@ const res = await runArenaLeague({ baseUrl: BASE_URL });
   // MULTI-CUENTA: cada agente mandó su orden a SU cuenta.
   const acctBySym = {};
   for (const o of orderPosts) acctBySym[o.account] = (acctBySym[o.account] || 0) + 1;
-  ok(orderPosts.length === 3, 'tres órdenes (una por agente)', JSON.stringify(orderPosts.map((o) => o.account)));
-  ok(acctBySym.PK_CLAUDE === 1 && acctBySym.PK_OPENAI === 1 && acctBySym.PK_CONTROL === 1,
-    'cada orden fue a la cuenta Alpaca correcta (multi-login por header)', JSON.stringify(acctBySym));
+  ok(orderPosts.length === 7, 'siete órdenes (una por agente)', JSON.stringify(orderPosts.map((o) => o.account)));
+  ok(LIGA.every((id) => acctBySym['PK_' + (id === 'claude' ? 'CLAUDE' : id.toUpperCase())] === 1),
+    'cada orden fue a la cuenta Alpaca correcta — siete libros separados, cero cruce', JSON.stringify(acctBySym));
 
   // agent_id: cada fila del journal lleva su agente (param $14, posición 13).
   // El anuncio del reglamento T2 (fila de liga, idempotente) usa OTRO insert con
   // menos params y `'league'` literal en el SQL — se filtra por longitud para
   // contar solo las filas por-agente del pipeline.
   const agentIds = journalInserts.filter((p) => p.length === 14).map((p) => p[13]).sort();
-  ok(agentIds.length === 3 && agentIds.join(',') === 'claude,control,openai',
+  ok(agentIds.length === 7 && agentIds.join(',') === [...LIGA].sort().join(','),
     'agent_id journaleado por agente (columna $14, no tabla por agente)', JSON.stringify(agentIds));
+
+  // ── APERTURA DE LA TEMPORADA 2: fila de liga, aparte del reglamento ──
+  // Dos anuncios distintos y dos ids: el reglamento dice QUÉ reglas rigen; la
+  // apertura dice DESDE CUÁNDO y CON QUIÉNES. Sin los dos, el post-mortem no
+  // puede separar "Fase A con reglamento nuevo" de "Temporada 2 con los siete".
+  // Los dos anuncios usan un insert propio de 5 params
+  // (id, run_date, prompt_version, plan, context) — el de liga pone
+  // status/phase/agent_id literales en el SQL.
+  const anuncios = journalInserts.filter((p) => p.length === 5);
+  const apertura = anuncios.find((p) => p[0] === 'arena-temporada-2-liga-completa');
+  ok(apertura, 'se journalea la apertura de la Temporada 2 con la liga completa', JSON.stringify(anuncios.map((p) => p[0])));
+  ok(/TEMPORADA 2 — ARRANCA LA LIGA COMPLETA/.test(apertura[3]) && /Grok/.test(apertura[3]) && /Qwen/.test(apertura[3]),
+    'el anuncio nombra a los siete en pista', apertura[3].slice(0, 120));
+  ok(/piso de ruido/.test(apertura[3]), 'y explica qué es el control (sin eso, ningún delta entre modelos significa nada)');
+  const ctxApertura = JSON.parse(apertura[4]);
+  ok(ctxApertura.season === 'T2' && ctxApertura.agents.length === 7 && ctxApertura.opened_on,
+    'el context lleva la temporada, los siete agentes y la FECHA de apertura', JSON.stringify({ s: ctxApertura.season, n: ctxApertura.agents.length, d: ctxApertura.opened_on }));
+  ok(anuncios.some((p) => p[0].startsWith('arena-reglamento-t2-')),
+    'el anuncio del REGLAMENTO sigue siendo una fila distinta, con su propio id', JSON.stringify(anuncios.map((p) => p[0])));
 
   // Trabajo COMPARTIDO por corrida: buffet una vez, deep-dive de AAPL una vez.
   ok(moversFetches === 1, 'el buffet (movers) se pidió UNA vez para toda la liga (compartido)', String(moversFetches));

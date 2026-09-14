@@ -88,7 +88,7 @@ import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib
 // LIGA multi-modelo: el registry (quién compite, con qué modelo/cuenta/persona)
 // y el dispatch de proveedor (Anthropic directo vs OpenRouter, forma normalizada).
 import { callArenaLLM, providerKey } from './_lib/arena-model.js';
-import { activeAgents, agentById, agentAlpacaCreds, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
+import { ARENA_AGENTS, activeAgents, agentById, agentAlpacaCreds, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
 
 // Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
 // reglas de universo); el buffet (trimMovers) la reusa y los tests de
@@ -1360,6 +1360,48 @@ export async function announceT2Rules(now = new Date()) {
   } catch (e) { /* best-effort: el anuncio no bloquea la corrida */ }
 }
 
+// ── APERTURA DE LA TEMPORADA 2 con la LIGA COMPLETA ──────────────────
+// Segunda fila de anuncio, distinta del reglamento: el reglamento dice QUÉ
+// reglas rigen; ésta dice DESDE CUÁNDO y CON QUIÉNES. Sin las dos, el
+// post-mortem no puede separar "Fase A con reglamento nuevo" (tres agentes) de
+// "Temporada 2 con la liga completa" (siete) — son poblaciones distintas.
+//
+// La fecha es la del PRIMER día en que corre: el id es fijo, así que la fila
+// entra una sola vez y su `run_date`/`created_at` SON la fecha de apertura. No
+// se hardcodea un día que podría no coincidir con el deploy real.
+//
+// GUARDA: solo se anuncia con los SIETE activos. Con `ARENA_LEAGUE` recortado a
+// un subconjunto, anunciar "arranca la liga completa" sería falso — y como el id
+// es idempotente, quedaría sellado el día equivocado para siempre.
+export const T2_LEAGUE_OPEN_ID = 'arena-temporada-2-liga-completa';
+
+export async function announceLeagueOpen(now = new Date()) {
+  const agents = activeAgents();
+  if (agents.length < ARENA_AGENTS.length) {
+    return { announced: false, reason: 'liga incompleta', active: agents.length, total: ARENA_AGENTS.length };
+  }
+  const casa = { us: '🇺🇸', china: '🇨🇳', control: 'control' };
+  const roster = agents.map((a) => `${a.name} (${a.model_label}, ${casa[a.house] || a.house})`).join(' · ');
+  const plan = [
+    `TEMPORADA 2 — ARRANCA LA LIGA COMPLETA. Los ${agents.length} agentes corren desde hoy el MISMO harness, la MISMA temperatura y el MISMO reglamento (vigente desde ${T2_RULES_VERSION}), cada uno sobre su propio libro Alpaca paper.`,
+    `En pista: ${roster}.`,
+    'El CONTROL (Haiku-B) comparte modelo, prompt y temperatura con Claude y solo cambia de cuenta: es el piso de ruido. Sin él, cualquier diferencia entre modelos podría ser el orden de los fills y nada más.',
+    'Experimento sin validación estadística, paper trading, no es asesoría.',
+  ].join('\n');
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
+       values ($1,$2,'decide','season_started',$3,$4,$5,'league') on conflict (id) do nothing`,
+      [T2_LEAGUE_OPEN_ID, now.toISOString().slice(0, 10), PROMPT_VERSION, plan,
+       JSON.stringify({
+         season: 'T2', rules_version: T2_RULES_VERSION, opened_on: now.toISOString().slice(0, 10),
+         agents: agents.map((a) => ({ id: a.id, name: a.name, model: a.model, house: a.house, control: !!a.control })),
+       })],
+    );
+    return { announced: true, agents: agents.length };
+  } catch (e) { return { announced: false, reason: String((e && e.message) || e) }; }
+}
+
 // ── T2 #7: disparadores de la CORRIDA MATUTINA POR EVENTO ────────────
 // Qué cuenta como "acaba de reportar" a media mañana, medido contra la corrida
 // de decide de las 22:40 UTC de ayer:
@@ -1428,6 +1470,7 @@ export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
   }
 
   await announceT2Rules(now);
+  await announceLeagueOpen(now);
   await ensureAgentStateRows(agents.map((a) => a.id));
 
   const reports = postEarningsTriggers(await fetchEarningsWindow(baseUrl, now), now);
@@ -1514,6 +1557,8 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   // UNA sola vez (idempotente por id): el post-mortem necesita el corte para no
   // mezclar dos reglamentos en la misma serie.
   await announceT2Rules(now);
+  // Apertura de la temporada con la liga completa (fila aparte, idempotente).
+  await announceLeagueOpen(now);
 
   // Siembra una fila de estado por agente (el halt/resume son UPDATE por agent_id).
   await ensureAgentStateRows(agents.map((a) => a.id));

@@ -97,7 +97,21 @@ tumba a los demás** — radio de explosión mínimo.
 
 ### 4. Cadencia — construir por etapas, lanzar de una vez
 
-**Fase A (esta):** `enabled:true` para **`claude` + `openai` + `control`**. Ese
+> **ESTADO (2026-09-14): FASE B ENCENDIDA — los SIETE corren.** El flip llegó
+> DESPUÉS del reglamento de la Temporada 2 (merge del 2026-09-13) a propósito:
+> si Grok/Gemini/DeepSeek/Qwen arrancaran con el reglamento viejo, sus primeros
+> días no serían comparables con nada y el control dejaría de ser un piso de
+> ruido útil. La apertura queda anunciada en el journal en su propia fila
+> (`status='season_started'`, `agent_id='league'`, id idempotente
+> `arena-temporada-2-liga-completa`), separada del anuncio del reglamento.
+>
+> **Dependencia operativa:** cada agente nuevo necesita sus
+> `ALPACA_<AGENTE>_KEY/SECRET` en Vercel (`ALPACA_GROK_*`, `ALPACA_GEMINI_*`,
+> `ALPACA_DEEPSEEK_*`, `ALPACA_QWEN_*`). Sin ellas la bandera está encendida
+> pero el agente se journalea `aborted_no_alpaca_keys` y no opera — media liga.
+> `OPENROUTER_API_KEY` ya estaba (es una sola key para los cinco).
+
+**Fase A (cerrada):** `enabled:true` para **`claude` + `openai` + `control`**. Ese
 trío ejercita TODAS las rutas de la liga completa:
 
 - **Anthropic directo** (`claude`, `control`) · **OpenRouter** (`openai`),
@@ -108,12 +122,10 @@ trío ejercita TODAS las rutas de la liga completa:
 
 Con el mínimo radio de explosión: un bug de adapter revienta en 3 agentes, no en 7.
 
-**Fase B (después, cuando A esté verde unos días):** Grok, Gemini, DeepSeek, Qwen
-ya son **filas del registry** con `enabled:false`. Encenderlas es:
-- flip `enabled:true` + cargar sus `ALPACA_*` (y `OPENROUTER_API_KEY` ya está), **o**
-- una sola env var **`ARENA_LEAGUE=claude,openai,control,grok,gemini,deepseek,qwen`**
-  en Vercel (gana sobre las banderas `enabled`), para lanzar los 7 de golpe sin
-  redeploy.
+**Fase B (ENCENDIDA 2026-09-14):** Grok, Gemini, DeepSeek y Qwen pasaron a
+`enabled:true` en el registry. `ARENA_LEAGUE` sigue existiendo como override
+para correr un subconjunto sin tocar código (p.ej. apagar a uno cuyo slug
+retiró el proveedor, sin redeploy).
 
 **No se publica hasta que los siete corran.** El lanzamiento público (TikTok) es
 con la liga completa desde el día 1 — la comparación se ve en el primer video.

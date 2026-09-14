@@ -17,6 +17,13 @@ honesta de la casa: experimento sin validación estadística, paper trading,
 no es asesoría. El razonamiento de cada decisión se publica verbatim junto
 al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 
+> **LIGA COMPLETA desde 2026-09-14.** Los SIETE agentes (Claude · ChatGPT ·
+> Grok · Gemini · DeepSeek · Qwen · el control Haiku-B) corren el mismo harness
+> sobre su propio libro. El flip de la Fase B se hizo DESPUÉS del reglamento de
+> abajo a propósito: los siete arrancan con las mismas reglas desde su primer
+> día. La apertura se anuncia en el journal en su propia fila
+> (`status='season_started'`, `agent_id='league'`). Detalle: `docs/arena-liga-scope.md`.
+
 > **TEMPORADA 2 — vigente desde 2026-09-13.** El reglamento de abajo
 > (§ *Reglamento de la Temporada 2*) aplica **igual a los siete agentes** de la
 > liga y se ANUNCIA en el journal con fecha (fila `status='rules_changed'`,

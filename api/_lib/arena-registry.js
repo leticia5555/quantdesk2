@@ -29,12 +29,12 @@
 //    `claude` REUSA ALPACA_PAPER_* (la cuenta del Agente #6) para no perder su
 //    historial. Mapa login→agente documentado en el scope.
 //
-// 4. CADENCIA. Fase A enciende `claude` + `openai` + `control` (ese trío
+// 4. CADENCIA. Fase A encendió `claude` + `openai` + `control` (ese trío
 //    ejercita TODAS las rutas: Anthropic directo, OpenRouter, multi-cuenta,
-//    identidad de prompt y el control). Fase B agrega Grok/Gemini/DeepSeek/Qwen
-//    — ya son filas aquí con `enabled:false`: encenderlas es flip de bandera +
-//    sus keys, o un solo `ARENA_LEAGUE=<ids>` en Vercel para lanzar los 7 de
-//    golpe sin tocar código.
+//    identidad de prompt y el control). Fase B —Grok/Gemini/DeepSeek/Qwen—
+//    quedó ENCENDIDA el 2026-09-14, DESPUÉS del reglamento de la Temporada 2:
+//    los siete corren el MISMO reglamento desde su primer día, que es la única
+//    forma de que la comparación signifique algo.
 //
 // 5. CONTROL. `control` es Haiku-B: MISMO modelo, MISMO prompt (persona
 //    IDÉNTICA a `claude`), MISMA temperatura, DISTINTA cuenta. Es el piso de
@@ -72,9 +72,16 @@ const slug = (id, fallback) => process.env['ARENA_MODEL_' + id] || fallback;
 export const FLAGSHIP_AGENT_ID = 'claude';
 
 // ── LA LIGA ───────────────────────────────────────────────────────────
-// `enabled` = Fase A (los 3 primeros). Los slugs de OpenRouter apuntan a la
-// clase RÁPIDA/EFICIENTE de cada casa (comparable a Haiku), no al tope de
-// gama — así se mide el modelo y no el presupuesto (justificación en el scope).
+// FASE B ENCENDIDA (2026-09-14): los SIETE corren. La Fase A (claude/openai/
+// control) ejercitó todas las rutas —Anthropic directo, OpenRouter, multi-cuenta,
+// identidad de prompt, el control, `agent_id`—, que era la condición para
+// encender el resto. Se enciende DESPUÉS del reglamento de la Temporada 2
+// (2026-09-13) a propósito: si estos cuatro arrancaran con el reglamento viejo,
+// sus primeros días no serían comparables con nada. `ARENA_LEAGUE` sigue vivo
+// como override para correr un subconjunto sin tocar código.
+// Los slugs de OpenRouter apuntan a la clase RÁPIDA/EFICIENTE de cada casa
+// (comparable a Haiku), no al tope de gama — así se mide el modelo y no el
+// presupuesto (justificación en el scope).
 export const ARENA_AGENTS = [
   {
     id: 'claude', name: 'Claude', model_label: 'Haiku 4.5',
@@ -94,27 +101,30 @@ export const ARENA_AGENTS = [
     alpaca: 'CONTROL', house: 'control', control: true, phase: 'A', enabled: true,
   },
 
-  // ── Fase B: la liga completa. Filas presentes, apagadas. Encender =
-  //    `enabled:true` (o `ARENA_LEAGUE`) + las keys de Alpaca de cada una. ──
+  // ── Fase B (ENCENDIDA 2026-09-14): las cuatro que faltaban. ──
+  // DEPENDENCIA OPERATIVA: cada una necesita SUS `ALPACA_<ALPACA>_KEY/SECRET`
+  // cargadas en Vercel. Sin ellas la fila se journalea `aborted_no_alpaca_keys`
+  // y NO tumba a las demás (radio de explosión mínimo, decisión #3) — pero
+  // tampoco opera: encender la bandera sin cargar las keys es media liga. ──
   {
     id: 'grok', name: 'Grok', model_label: 'Grok 4 Fast',
     provider: 'openrouter', model: slug('GROK', 'x-ai/grok-4-fast'), persona: 'Grok PM',
-    alpaca: 'GROK', house: 'us', control: false, phase: 'B', enabled: false,
+    alpaca: 'GROK', house: 'us', control: false, phase: 'B', enabled: true,
   },
   {
     id: 'gemini', name: 'Gemini', model_label: 'Gemini 2.5 Flash',
     provider: 'openrouter', model: slug('GEMINI', 'google/gemini-2.5-flash'), persona: 'Gemini PM',
-    alpaca: 'GEMINI', house: 'us', control: false, phase: 'B', enabled: false,
+    alpaca: 'GEMINI', house: 'us', control: false, phase: 'B', enabled: true,
   },
   {
     id: 'deepseek', name: 'DeepSeek', model_label: 'DeepSeek V3.1',
     provider: 'openrouter', model: slug('DEEPSEEK', 'deepseek/deepseek-chat-v3.1'), persona: 'DeepSeek PM',
-    alpaca: 'DEEPSEEK', house: 'china', control: false, phase: 'B', enabled: false,
+    alpaca: 'DEEPSEEK', house: 'china', control: false, phase: 'B', enabled: true,
   },
   {
     id: 'qwen', name: 'Qwen', model_label: 'Qwen Plus',
     provider: 'openrouter', model: slug('QWEN', 'qwen/qwen-plus'), persona: 'Qwen PM',
-    alpaca: 'QWEN', house: 'china', control: false, phase: 'B', enabled: false,
+    alpaca: 'QWEN', house: 'china', control: false, phase: 'B', enabled: true,
   },
 ];
 
