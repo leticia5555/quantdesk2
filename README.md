@@ -87,9 +87,10 @@ Upcoming catalysts and corporate events:
 - Direct integration with Finnhub, Yahoo Finance, CoinGecko, SEC EDGAR
 - FRED API for macro time series
 - Anthropic Claude API for synthesis and institutional insight generation
-- Scheduled jobs (crons): daily ones in `vercel.json`; sub-daily ones (PEAD
-  earnings drip, screener refresh) in GitHub Actions — health at
-  `/api/cron-status`. See [`docs/crons.md`](docs/crons.md) for the full map.
+- Scheduled jobs (crons): daily ones plus the Arena watchdog (every 5 minutes
+  during market hours) in `vercel.json`; the screener refresh in GitHub
+  Actions — health at `/api/cron-status`. See [`docs/crons.md`](docs/crons.md)
+  for the full map and why each one lives where it does.
 
 **Quant models**
 - DCF with sector-aware fade and bounded WACC

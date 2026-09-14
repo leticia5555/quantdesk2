@@ -43,6 +43,12 @@ de reglamento parte la serie: por eso `PROMPT_VERSION` sube con la temporada y
 el cambio se anuncia en el journal con fecha. Meter short y opciones dentro de
 la misma temporada haría imposible atribuir un resultado a nada.
 
+> **El cambio de cadencia (2026-09-15) NO es una temporada nueva.** Las 9 reglas
+> de la T2 siguen vigentes, completas, en cada corrida; lo único que cambió es
+> **cuándo** se corre. Por eso se anuncia como `rules_changed` dentro de la T2 y
+> no consume la etiqueta **T3**, que sigue reservada para el short. Ver la
+> sección de abajo.
+
 ## Reglamento de la Temporada 2 (2026-09-13)
 
 Sale de lo que la T1 dejó ver en vivo. **El objetivo declarado es que el agente
@@ -241,6 +247,145 @@ por equity, el return vs. baseline y los caveats de siempre. Un agente sin
 equity no se rankea ni recibe un cero: sale aparte, nombrado. Sin nadie con
 equity, **no se declara un ganador inventado**.
 
+## Cambio de cadencia: del cron nocturno al modelo POR EVENTO (2026-09-15)
+
+Hasta el 14 de septiembre el Arena era un experimento de **una decisión al día**:
+el cron de las 22:40 UTC corría la liga con el mercado ya cerrado, las órdenes
+descansaban hasta la apertura siguiente, y si NVDA se caía 9% a las 10:15 el PM
+se enteraba doce horas después. Desde el **martes 15** eso se invierte: un
+**vigilante sin LLM** mira el mercado cada 5 minutos y despierta al agente
+**solo cuando pasa algo que le concierne**.
+
+El corte se anuncia en el journal con `status='rules_changed'`,
+`agent_id='league'` e id `arena-cadencia-evento-2026-09-15` — idempotente, con la
+**fecha del corte y no la del deploy**. Sin ese corte el post-mortem compararía
+una decisión diaria post-cierre contra N decisiones intradía como si fueran la
+misma población.
+
+**Lo que NO cambia:** las 9 reglas de la T2, el guard, el registry, la
+temporada, el control como piso de ruido, y el hecho de que los **siete corran
+el mismo harness**. El vigilante no distingue entre agentes: mismos umbrales,
+mismos topes, mismo camino — si tratara al control distinto, la liga perdería su
+única referencia.
+
+| # | Regla de cadencia | Dónde vive |
+|---|---|---|
+| 1 | **Se retira el cron nocturno** (y la matutina post-earnings) | gate por fecha ET en `runArenaLeague` / `runArenaMorning` → fila `skipped_superseded_by_watch` |
+| 2 | **Vigilante sin LLM cada 5 min** en horario de mercado, vía Alpaca | `/api/arena-watch` + `_lib/arena-watch.js` (JS puro) |
+| 3 | **Seis disparadores** despiertan al dueño de la posición | `evaluateTriggers` |
+| 4 | **Todo disparador se journalea** con su razón, dispare o no | tabla `arena_watch` + feed `/api/liga/eventos?tipo=disparador` |
+| 5 | **Corrida acotada** al ticker que disparó, reglamento completo, órdenes **marketable que ejecutan ya** | `eventPolicy('watch_trigger')` + `validateActions({intraday:true})` |
+| 6 | **Revisión de piso** a la apertura +30 min para el que nadie tocó | `floorReviewDue` + `eventPolicy('watch_floor')` |
+| 7 | **Topes**: 12 corridas/agente/día y 20 min de cooldown por ticker | `applyCaps` |
+| 8 | **La red determinista no se mueve**: sigue decidiendo con cierres completos, 1×/día | `runArenaRiskNet` (sin LLM) |
+
+### Los seis disparadores
+
+| Disparador | Umbral | Re-armado |
+|---|---|---|
+| `move_since_pronouncement` | ≥ **±3%** desde el último pronunciamiento del agente sobre ese nombre | **Contra la marca**: se re-fija cada vez que el agente habla, así hacen falta otros 3% |
+| `near_trailing` | a **≤2 puntos** del nivel del trailing **armado** | Sticky: 1×/nombre/día |
+| `near_catastrophic` | a **≤2 puntos** del stop catastrófico | Sticky: 1×/nombre/día |
+| `event_earnings` | reporta **hoy** (BMO o AMC) | Sticky: 1×/nombre/día |
+| `event_8k` | **8-K** con fecha de aceptación de hoy (SEC EDGAR) | Sticky: 1×/nombre/día |
+| `volume_spike` | volumen del día ≥ **3×** el promedio de 20 sesiones | Sticky: 1×/nombre/día |
+| `buffet_move` | un **candidato del buffet** (que NO tiene) se movió ≥ **±5%** | Contra la marca |
+
+**La MARCA (`arena_watch_mark`)** es el ancla del ±3%. Si el agente todavía no se
+pronunció sobre ese nombre, el ancla es el **cierre anterior** — que es
+exactamente el número que tuvo enfrente en su última corrida. Así el disparador
+funciona desde el primer tick del primer día, sin un periodo ciego de "sembrando
+marcas" y sin inventar un precio.
+
+**Sticky vs. re-armable** es el candado anti-quema de tokens. Un hecho del día
+(earnings, 8-K, volumen, cercanía a un stop) sigue siendo verdad todos los ticks
+que quedan de la sesión: si disparara libre, un día loco consumiría las 12
+corridas en una hora. Los dos de precio no son sticky porque su condición se
+consume al pronunciarse.
+
+**`buffet_move` es el único disparador sin dueño.** Un candidato que no está en
+ningún libro no le pertenece a nadie, así que despierta a **todos** los agentes
+que no lo tengan — la oportunidad es de la liga. Si un agente sí lo tiene, es una
+posición y manda el #1, con su umbral más bajo.
+
+### Agrupación: un tick, una corrida
+
+Si en el mismo tick disparan dos nombres del mismo agente, se corre **una sola**
+corrida acotada a los dos, no dos corridas. Sigue siendo "acotada a los tickers
+que dispararon" —el slate del evento son exactamente ellos, y toda acción fuera
+de él se descarta y se journalea— pero cuesta un prompt y **una** de las 12
+corridas. Lo contrario premiaría la volatilidad con gasto, que es justo lo que
+los topes existen para evitar.
+
+### Ejecución intradía: la compra TAMBIÉN se re-precia
+
+La T2 #5 ya mandaba las ventas a marketable limit. Con el mercado abierto y la
+orden obligada a ejecutar **en el momento**, la compra tiene el mismo problema al
+revés: un límite pasivo por debajo del mercado no ejecuta, **descansa** hasta que
+expira. Así que en una corrida del vigilante:
+
+- **compra** → referencia × (1 + `intraday_buy_band`, 4%), por **arriba**;
+- **venta** → referencia × (1 − `discretionary_sell_band`, 4%), por **abajo**;
+- **referencia = el precio VIVO de Alpaca**, no el cierre de ayer — y el mismo
+  número en los tres lugares: lo que ve el PM, lo que valida la banda ±2% del
+  guard, y lo que precia el envío. Sin eso, un nombre que ya subió 4% desde el
+  cierre tendría toda orden descartada por "fuera de banda": el guard rechazaría
+  precisamente las corridas que esta cadencia existe para producir.
+
+Sigue siendo una orden **LÍMITE day** (cicatriz Polymarket: jamás market
+orders). La banda no es el precio esperado del fill —el libro llena en el NBBO—
+es el **tope de deslizamiento** aceptado. Todo queda journaleado por orden:
+`limit_price_proposed`, `repriced: 'marketable_buy'|'marketable_sell'`,
+`exit_band`.
+
+### Costo en el peor caso — CALCULADO, no estimado a mano
+
+`GET /api/arena-watch?estimate=1` lo publica y `tests/arena-watch.test.mjs` lo
+verifica, así que no puede envejecer en un doc. El peor caso **absoluto** es que
+los siete quemen sus 12 corridas todos los días y toda respuesta llegue al techo
+de tokens:
+
+| | |
+|---|---|
+| Corridas/agente/día | 12 (tope duro) |
+| Llamadas al LLM por corrida | **2** (DIVE + titular). El SCOUT **no** corre: el disparador ya eligió el slate |
+| Tokens por corrida (techo) | ~6,600 in / ~3,100 out |
+| Llamadas al LLM del vigilante | **0** |
+| **Peor caso, los 7** | **≈ $0.91/día · ≈ $19/mes** (21 sesiones) |
+
+Un día normal son 1-3 corridas por agente, así que el gasto real esperado ronda
+**$0.10-0.25/día** — comparable al del cron nocturno que sustituye, que gastaba
+3 llamadas (SCAN + DIVE + titular) × 7 agentes todos los días corriera o no algo.
+El tope de 12 es lo que convierte "podría dispararse mucho" en un número acotado
+que se puede presupuestar.
+
+### La red determinista NO se volvió nerviosa
+
+Breaker, stop catastrófico y trailing **siguen decidiendo con cierres completos,
+una vez al día**, ahora en el **primer tick de la sesión** (`runArenaRiskNet`,
+cero tokens). En el primer tick y no en el de la revisión de piso porque el dato
+con el que deciden es el cierre de **ayer** —exactamente el que tenía la corrida
+nocturna—, así que esperar media hora solo retrasaría el fill sin mejorar la
+decisión: un stop que disparó se ejecuta ~9:35 ET, tan cerca de la apertura como
+la orden `day` de la cadencia vieja llenaba a las 9:30. No es una limitación pendiente de arreglar: **es la regla** (ver
+`_lib/arena-exits.js` — sistemas de fin de día, el gap es costo inevitable). Un
+stop intradía sería un stop *apretado*, justo lo que Kaminski & Lo desaconsejan
+y lo que este libro decidió no usar. Lo intradía es que el **PM** pueda
+reaccionar **antes** que la red (disparadores `near_trailing` /
+`near_catastrophic`), no que la red opine más seguido.
+
+> Extraer la red de la corrida nocturna era **obligatorio**, no una mejora: vivía
+> dentro de `runArenaDecide`, y retirar ese cron se la habría llevado con él. El
+> libro se habría quedado sin stops y nadie lo habría notado hasta el primer
+> desastre.
+
+### Freno de mano
+
+Dos variables de Vercel, sin deploy: `ARENA_WATCH_START` mueve (o retrasa) el
+corte de cadencia, y `ARENA_WATCH_ENABLED=0` apaga solo el vigilante sin apagar
+el Arena. Los crons nocturnos siguen desplegados y latiendo: volver al modelo
+viejo es cambiar una fecha.
+
 ### `aborted_malformed_json`: ahora dice POR QUÉ
 
 Ese status tenía dos causas muy distintas —el modelo parloteó fuera del JSON, o
@@ -264,9 +409,15 @@ existe para los siete agentes y no solo para los de Anthropic.
 | **Regla de salida** determinista (circuit breaker + stop catastrófico + **trailing stop T2 #3**) | `api/_lib/arena-exits.js` |
 | **MEMORIA (T2)** — compromisos con fecha, historia de la posición, auditoría del pronunciamiento | `api/_lib/arena-memory.js` |
 | **VOZ** — titular de una línea por corrida, con el arquetipo del agente | `api/_lib/arena-voice.js` |
-| **Crónica de la liga** (solo lectura: compras, ventas, rechazos, cambios de líder) | `api/liga-eventos.js` → `/api/liga/eventos` |
+| **Crónica de la liga** (solo lectura: compras, ventas, rechazos, cambios de líder, **disparadores**) | `api/liga-eventos.js` → `/api/liga/eventos` |
+| **VIGILANTE** — disparadores, topes, cooldown, piso, costo (JS puro, cero I/O) | `api/_lib/arena-watch.js` |
+| **VIGILANTE** — eventos del día (earnings + 8-K de SEC), cacheados en Neon | `api/_lib/arena-watch-events.js` |
+| **VIGILANTE** — el tick (cron `*/5`, cero tokens) | `api/arena-watch.js` → `/api/arena-watch` |
+| **VIGILANTE** — estado: disparos, marcas, eventos del día | tablas `arena_watch`, `arena_watch_mark`, `arena_watch_events`, `arena_watch_meta` |
+| **RED DETERMINISTA sola** (sin LLM, 1×/día, extraída de la corrida nocturna) | `runArenaRiskNet` en `api/arena-run.js` |
 | Deep dive Finnhub por candidato (fundamentales/recommendation/news) | `api/_lib/finnhub-dive.js` |
-| Cron decide (22:40 UTC L-V) + reconcile (14:40 UTC L-V) + **matutina por evento (14:50 UTC L-V, T2 #7)** | `api/arena-run.js` + `vercel.json` |
+| Cron decide (22:40 UTC L-V) + reconcile (14:40 UTC L-V) + matutina por evento (14:50 UTC L-V, T2 #7) — **decide y matutina RETIRADAS desde 2026-09-15**, ver el cambio de cadencia | `api/arena-run.js` + `vercel.json` |
+| **Cron del vigilante** (`*/5 13-21 * * 1-5`, cubre EDT y EST) | `api/arena-watch.js` + `vercel.json` (ver `docs/crons.md`) |
 | **Canal SCREENER** — screens deterministas (value/momentum) | `api/_lib/screens.js` |
 | **Canal SCREENER** — capa de datos Neon (tabla + ledger) | `api/_lib/screener-db.js` |
 | **Canal SCREENER** — universo (~150 nombres, extraído de app.html) | `api/_lib/screener-universe.js` |
@@ -275,7 +426,7 @@ existe para los siete agentes y no solo para los de Anthropic.
 | **Auditoría del run** (solo lectura, JSON/markdown + `?view=resumen`) | `api/arena-audit.js` + `api/_lib/arena-audit.js` |
 | Journal | tabla `arena_journal` (`api/_lib/db.js`) |
 | UI (sección en MIS AGENTES) | `app.html` (`qdArenaLoad`/`qdArenaHtml`) |
-| Tests | `tests/arena-guard.test.mjs` · `tests/arena-exits.test.mjs` · `tests/alpaca.test.mjs` · `tests/arena-run.test.mjs` · `tests/screens.test.mjs` · `tests/arena-audit.test.mjs` · **T2:** `tests/arena-memory.test.mjs` · `tests/arena-t2.test.mjs` · `tests/arena-morning.test.mjs` |
+| Tests | `tests/arena-guard.test.mjs` · `tests/arena-exits.test.mjs` · `tests/alpaca.test.mjs` · `tests/arena-run.test.mjs` · `tests/screens.test.mjs` · `tests/arena-audit.test.mjs` · **T2:** `tests/arena-memory.test.mjs` · `tests/arena-t2.test.mjs` · `tests/arena-morning.test.mjs` · **cadencia:** `tests/arena-watch.test.mjs` (día sintético volátil, de punta a punta) |
 
 ## Flujo de dos fases (SCAN → DEEP DIVE)
 
@@ -585,6 +736,25 @@ valor inválido (≤0 o ≥1) cae al default en silencio.
 **Addendum de la liga:** `ARENA_HEADLINES` (opc; `0` apaga los titulares sin
 tocar código) · `ARENA_BASELINE_EQUITY` (ya existía, 100000: el baseline del
 return que publica el leaderboard y el cierre de temporada).
+
+**Vigilante / cadencia por evento** (todas opcionales; el default está entre
+paréntesis y un valor inválido cae al default en silencio, como el resto):
+
+| Var | Default | Qué hace |
+|---|---|---|
+| `ARENA_WATCH_ENABLED` | `1` | `0` apaga **solo** el vigilante, sin apagar el Arena. El freno de mano. |
+| `ARENA_WATCH_START` | `2026-09-15` | Fecha ET del corte de cadencia. Moverla hacia adelante **devuelve** el cron nocturno sin un deploy. |
+| `ARENA_WATCH_MOVE_PCT` | `0.03` | Umbral del ±% desde el último pronunciamiento. |
+| `ARENA_WATCH_BUFFET_PCT` | `0.05` | Umbral del candidato del buffet. |
+| `ARENA_WATCH_STOP_POINTS` | `2` | Puntos porcentuales de cercanía a un stop. |
+| `ARENA_WATCH_VOL_MULT` | `3` | Múltiplo del volumen promedio de 20 días. |
+| `ARENA_WATCH_MAX_RUNS_DAY` | `12` | Tope de corridas por agente por día (la de piso cuenta). |
+| `ARENA_WATCH_COOLDOWN_MIN` | `20` | Cooldown por (agente, ticker). |
+| `ARENA_WATCH_MAX_RUNS_TICK` | `7` | Tope por tick (la lambda tiene 300s). Lo diferido vuelve al tick siguiente. |
+| `ARENA_WATCH_FLOOR_AFTER_OPEN_MIN` | `30` | Apertura + N min → revisión de piso. |
+| `ARENA_WATCH_EVENTS_TTL_MIN` | `30` | Cada cuánto se re-escanea SEC por 8-K del día. |
+| `ARENA_INTRADAY_BUY_BAND` | `0.04` | Banda del marketable limit de **compra** intradía (la de venta sigue siendo `ARENA_EXIT_BAND_DISCRETIONARY`). |
+| `ALPACA_DATA_FEED` | `iex` | Feed de la Market Data API. `sip` el día que haya suscripción — pedirlo sin ella devuelve 403 y deja al vigilante ciego. |
 
 **Temporada 2** (mismas reglas de validación; defaults entre paréntesis):
 `ARENA_TRAILING_ARM_GAIN` (0.15) y `ARENA_TRAILING_GIVE_BACK` (0.08) — el

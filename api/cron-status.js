@@ -25,6 +25,16 @@ const EXPECTED = [
   // haya evento (el latido dice "el cron corrió", no "operó") — por eso la
   // ventana de stale es la misma que la de los otros diarios.
   { job: 'arena:morning',   schedule: '50 14 * * 1-5',         cadence: 'días hábiles ~14:50', stale_after_h: 80 },
+  // CADENCIA: el VIGILANTE. Late en CADA tick, incluidos los que caen fuera de sesión
+  // (la ventana UTC 13-21 cubre EDT y EST) y los que no disparan nada — el
+  // latido dice "el vigilante corrió", no "operó".
+  // La ventana de stale la manda el FIN DE SEMANA, no la cadencia: el último
+  // tick es viernes ~21:00 UTC y el primero lunes ~13:00 UTC, 64h de hueco
+  // legítimo. 72h le da margen sin dar un falso rojo cada lunes. Es un umbral
+  // GRUESO a propósito — detecta "el cron murió", no "se perdieron unos ticks";
+  // para eso último el instrumento fino es `run_count`, que con esta cadencia
+  // debería subir ~108 por día hábil.
+  { job: 'arena:watch',     schedule: '*/5 13-21 * * 1-5',     cadence: 'cada 5 min en mercado', stale_after_h: 72 },
   // pead:earnings retirado con el NO-GO del PEAD: sin schedule no hay latido,
   // y dejarlo acá daba ok:false permanente. Ver docs/wheel-fase0.md §4.3.
   { job: 'pead:hour',       schedule: '30 21 * * *',           cadence: '1×/día (SEC 8-K)',    stale_after_h: 30 },

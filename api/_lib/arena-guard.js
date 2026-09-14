@@ -41,6 +41,19 @@ export const ARENA_RULES = {
   // `exit_band`) y visible en la card. Más angosta que la banda del breaker
   // (12%): esta venta es discrecional y ordenada, no una emergencia.
   discretionary_sell_band: envFrac('ARENA_EXIT_BAND_DISCRETIONARY', 0.04),
+  // ── cadencia #5 (cadencia por evento): la COMPRA intradía también es marketable ──
+  // En la corrida nocturna la compra NO se re-precia: la orden `day` descansa
+  // hasta la apertura siguiente y el precio del modelo ES la decisión. En la
+  // corrida POR DISPARADOR el encargo es otro — "las órdenes ejecutan en el
+  // momento" —, y una compra límite que descansa por debajo del mercado no
+  // ejecuta en el momento: descansa hasta que expira. Así que intradía la
+  // compra se envía por ARRIBA de la referencia, igual que la venta se envía
+  // por debajo. Sigue siendo una orden LÍMITE (la casa no manda market orders):
+  // la banda es el TOPE de deslizamiento aceptado, no el precio esperado — el
+  // libro llena en el NBBO, muy adentro de la banda en un nombre líquido.
+  // Journaleada por orden (`limit_price_proposed`, `repriced`, `exit_band`),
+  // igual que la venta marketable de T2 #5.
+  intraday_buy_band: envFrac('ARENA_INTRADAY_BUY_BAND', 0.04),
 };
 
 // Sufijos de warrants/units/rights que el universo excluye aunque el
@@ -263,7 +276,13 @@ function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 //   lastCloses  → { SYMBOL: último cierre completo } (Yahoo, plumbing sim.js)
 //   rules       → override para tests; default ARENA_RULES
 // Salida: { approved: [...con qty entera], discarded: [{ action, reason }] }
-export function validateActions({ actions, equity, cash, positions, symbolMap, symbolTypes, lastCloses, rules = ARENA_RULES }) {
+// `intraday` (cadencia por evento): la corrida la despertó el vigilante y la orden debe EJECUTAR
+// en el momento, no descansar hasta la apertura siguiente. Único efecto: la
+// COMPRA se re-precia a marketable (la venta ya lo era desde T2 #5) y el sizing
+// se calcula contra ese precio de envío, para que una compra re-preciada hacia
+// arriba no rompa el piso de cash ni el techo del 15% por posición. En la
+// corrida nocturna (`intraday=false`, el default) NADA cambia.
+export function validateActions({ actions, equity, cash, positions, symbolMap, symbolTypes, lastCloses, rules = ARENA_RULES, intraday = false }) {
   const approved = [];
   const discarded = [];
   const discard = (action, reason) => discarded.push({ action, reason });
@@ -320,7 +339,30 @@ export function validateActions({ actions, equity, cash, positions, symbolMap, s
 
     const qty = Math.floor(notional / limitPrice);
     if (qty < 1) { discard(raw, `${symbol}: notional ${notional} no alcanza 1 acción a ${limitPrice}`); continue; }
-    const cost = qty * limitPrice;
+
+    // ── PRECIO DE ENVÍO (marketable limit) ──────────────────────────
+    // La banda ±2% ya validó ARRIBA el anclaje de precio del modelo. Acá se
+    // decide a qué precio SALE la orden, que es otra cosa:
+    //   - VENTA (T2 #5, siempre): por DEBAJO de la referencia, para que llene
+    //     (cicatriz GOOGL — una venta que no llena no es una venta).
+    //   - COMPRA: solo intradía (cadencia #5), por ARRIBA, para que ejecute en el
+    //     momento. En la corrida nocturna la compra NO se toca: un límite
+    //     agresivo paga de más y ahí el precio del modelo sí es la decisión.
+    // Si el PM ya había puesto un límite MÁS agresivo que el marketable, se
+    // respeta el suyo — subirle la compra o bajarle la venta sería empeorarle
+    // el precio a alguien que ya decidió cruzar.
+    const isSell = side === 'sell';
+    const sendPrice = isSell
+      ? Math.round(lastClose * (1 - rules.discretionary_sell_band) * 100) / 100
+      : (intraday ? Math.round(lastClose * (1 + rules.intraday_buy_band) * 100) / 100 : limitPrice);
+    const finalPrice = isSell ? Math.min(limitPrice, sendPrice) : Math.max(limitPrice, sendPrice);
+
+    // El sizing de una COMPRA se cuenta contra el precio de ENVÍO: si la orden
+    // sale 4% más arriba, el cash y el techo del 15% tienen que verificarse con
+    // ese número, no con el que pidió el PM. La VENTA conserva `limitPrice` —
+    // su `cost` solo alimenta el cash simulado y usar el precio pedido es lo que
+    // ya hacía (cambiarlo movería aprobaciones de la corrida nocturna).
+    const cost = qty * (isSell ? limitPrice : finalPrice);
 
     if (side === 'buy') {
       const current = held.get(symbol) || { qty: 0, value: 0 };
@@ -351,27 +393,17 @@ export function validateActions({ actions, equity, cash, positions, symbolMap, s
       else held.delete(symbol);
     }
 
-    // ── T2 #5: precio de ENVÍO de una venta = MARKETABLE LIMIT ───────
-    // La banda ±2% ya validó el anclaje del modelo (arriba). Acá la venta se
-    // re-precia hacia ABAJO del cierre para que LLENE (cicatriz GOOGL). La
-    // compra NO se toca: un límite agresivo de compra paga de más, y ahí el
-    // precio del modelo sí es la decisión. Todo queda journaleado: el precio
-    // que pidió el PM, el que se envió y la banda usada.
-    const isSell = side === 'sell';
-    const sendPrice = isSell
-      ? Math.round(lastClose * (1 - rules.discretionary_sell_band) * 100) / 100
-      : limitPrice;
-    // Si el PM ya había puesto un límite MÁS agresivo que el marketable, se
-    // respeta el suyo (más abajo llena igual; subirlo sería empeorar su venta).
-    const finalPrice = isSell ? Math.min(limitPrice, sendPrice) : limitPrice;
-
     approved.push({
       symbol, side, qty, limit_price: finalPrice,
       // qty sale del límite que PIDIÓ el PM (su intención de notional); el
       // precio de envío no la infla — y la venta ya está capada a lo que hay.
       notional: +(qty * finalPrice).toFixed(2),
-      ...(isSell && finalPrice !== limitPrice
-        ? { limit_price_proposed: limitPrice, repriced: 'marketable_sell', exit_band: rules.discretionary_sell_band }
+      ...(finalPrice !== limitPrice
+        ? {
+          limit_price_proposed: limitPrice,
+          repriced: isSell ? 'marketable_sell' : 'marketable_buy',
+          exit_band: isSell ? rules.discretionary_sell_band : rules.intraday_buy_band,
+        }
         : {}),
       security_type: secType, // null si el free tier no lo trajo (permitido, journaleado)
       conviction: num(a.conviction),

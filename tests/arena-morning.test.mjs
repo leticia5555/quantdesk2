@@ -18,6 +18,12 @@ process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
 process.env.ALPACA_PAPER_KEY = 'PK_CLAUDE'; process.env.ALPACA_PAPER_SECRET = 'S_CLAUDE';
 process.env.FINNHUB_API_KEY = 'fh-test';
 process.env.ARENA_LEAGUE = 'claude';   // un solo agente: el foco es el flujo, no la liga
+// CADENCIA: la corrida matutina queda RETIRADA desde el corte de cadencia. El reloj
+// fijo de esta suite (16-sep) cae después del corte real, así que se empuja la
+// fecha con la env var que existe justo para eso — el foco de estos tres casos
+// sigue siendo el flujo de la matutina. El caso 4 la devuelve a su valor real y
+// verifica el retiro.
+process.env.ARENA_WATCH_START = '2026-09-20';
 delete process.env.ARENA_SCREENER_ENABLED;
 
 import { runArenaMorning } from '../api/arena-run.js';
@@ -185,7 +191,7 @@ console.log('matutina: una posición del libro reportó → corrida por evento')
   const ctx = JSON.parse(fila[COL.context]);
   ok(ctx.event && ctx.event.type === 'post_earnings_morning' && ctx.event.symbols.includes('NVDA'),
     'el journal guarda el evento que disparó la corrida', JSON.stringify(ctx.event));
-  ok(ctx.scan && ctx.scan.skipped === 'post_earnings_event' && !ctx.scan.prompt,
+  ok(ctx.scan && ctx.scan.skipped === 'post_earnings_morning' && !ctx.scan.prompt,
     'el journal dice explícitamente que la fase SCAN se saltó (no que falló)', JSON.stringify(ctx.scan));
   ok(ctx.risk && ctx.risk.skipped && ctx.risk.approved.length === 0,
     'la red determinista NO se re-evalúa a media mañana (evita duplicar las órdenes de anoche)', JSON.stringify(ctx.risk.skipped));
@@ -210,6 +216,31 @@ console.log('matutina: festivo → no hay open al que reaccionar');
     'mercado cerrado → skip global, cero LLM, cero órdenes', JSON.stringify({ s: r.status, llm: llmCalls.length }));
   const marca = filas().filter((p) => p[COL.status] === 'skipped_market_closed');
   ok(marca.length === 1 && marca[0][COL.agent] === 'league', 'una sola fila marcadora de liga', String(marca.length));
+}
+
+// ── 4) con la cadencia por evento vigente, la matutina se RETIRA ──
+console.log('matutina: desde el corte de cadencia (cadencia por evento) la corrida se retira');
+{
+  reset();
+  positionsMock = [{ symbol: 'NVDA', qty: '20', avg_entry_price: '150', market_value: '4000', current_price: '200', unrealized_plpc: '0.33' }];
+  earningsCalendar = [{ ticker: 'NVDA', company: 'Nvidia Corp', date: prevSession, time: 'AMC', eps_est: 1.0, eps_actual: 0.9 }];
+  const saved = process.env.ARENA_WATCH_START;
+  process.env.ARENA_WATCH_START = '2026-09-15';   // el corte real: el reloj de la suite ya lo pasó
+  const r = await runArenaMorning({ baseUrl: BASE_URL, now: NOW });
+  process.env.ARENA_WATCH_START = saved;
+
+  ok(r.status === 'skipped_superseded_by_watch', 'la matutina sale por el gate de cadencia', r.status);
+  ok(llmCalls.length === 0 && orderPosts.length === 0,
+    'CERO tokens y CERO órdenes: el earnings del día ahora lo detecta el vigilante',
+    JSON.stringify({ llm: llmCalls.length, ordenes: orderPosts.length }));
+  const marca = filas().filter((p) => p[COL.status] === 'skipped_superseded_by_watch');
+  ok(marca.length === 1 && marca[0][COL.agent] === 'league',
+    'UNA fila marcadora de liga deja el retiro auditable (no desaparece en silencio)', String(marca.length));
+  // El anuncio de reglamento entra por su propio insert (8 columnas, 5 params),
+  // no por journalInsert: se busca por el id, que lleva la fecha del corte.
+  const anuncio = journalInserts.filter((p) => String(p[0] || '').startsWith('arena-cadencia-evento-'));
+  ok(anuncio.length === 1 && anuncio[0][0] === 'arena-cadencia-evento-2026-09-15',
+    'y el cambio de reglamento queda anunciado con la FECHA DEL CORTE, no la del deploy', JSON.stringify(anuncio.map((p) => p[0])));
 }
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');

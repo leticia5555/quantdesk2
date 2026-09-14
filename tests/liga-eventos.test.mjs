@@ -132,6 +132,23 @@ global.fetch = async (url, opts = {}) => {
   if (!u.includes('neon.tech')) throw new Error('el endpoint NO debe llamar a nada que no sea el journal: ' + u);
   const body = JSON.parse(opts.body);
   neonQueries.push(body.query);
+  const reply = (fields, rows) => ({
+    ok: true, status: 200, headers: { get: () => 'application/json' },
+    json: async () => ({ fields, rows }), text: async () => '',
+  });
+  // CADENCIA: los DISPARADORES viven en su propia tabla (son muchos más que las
+  // corridas y la mayoría de las lecturas no los pide) → su propia consulta.
+  if (/from arena_watch\b/.test(body.query)) {
+    const WF = [['agent_id', 25], ['symbol', 25], ['trigger_type', 25], ['fired', 16], ['skip_reason', 25], ['detail', 3802], ['fired_at', 1184]];
+    const wRows = [
+      ['qwen', 'NVDA', 'move_since_pronouncement', 't', null, JSON.stringify({ price: 188, mark: 200, move_pct: -6 }), '2026-09-16T13:55:00Z'],
+      ['claude', 'KO', 'near_catastrophic', 'f', 'cooldown 20m (último despertar hace 4m)', JSON.stringify({ price: 47.5, level: 46.8, points_to_level: 1.5 }), '2026-09-16T14:00:00Z'],
+    ];
+    // El filtro por agente va en la CONSULTA (no en JS): el mock lo honra para
+    // que el test pruebe el filtro real y no una coincidencia del fixture.
+    const soloAgente = body.params && body.params[1];
+    return reply(WF.map(([name, dataTypeID]) => ({ name, dataTypeID })), soloAgente ? wRows.filter((r) => r[0] === soloAgente) : wRows);
+  }
   const F = ['id', 'agent_id', 'run_date', 'status', 'created_at', 'actions', 'equity', 'headline'];
   const rows = [
     ['r1', 'claude', '2026-09-15', 'ok', '2026-09-15T22:41:00Z', JSON.stringify([{ symbol: 'AAPL', side: 'buy', qty: 5, limit_price: 200, result: 'approved' }]), '100500', JSON.stringify({ text: 'Compro AAPL.' })],
@@ -139,11 +156,7 @@ global.fetch = async (url, opts = {}) => {
     ['r3', 'qwen', '2026-09-16', 'ok', '2026-09-16T22:41:00Z', JSON.stringify([{ symbol: 'MU', side: 'sell', qty: 3, limit_price: 90, result: 'approved', origin: 'trailing_stop' }]), '101900', null],
     ['r4', 'claude', '2026-09-16', 'ok', '2026-09-16T22:41:05Z', JSON.stringify([]), '100300', null],
   ];
-  return {
-    ok: true, status: 200, headers: { get: () => 'application/json' },
-    json: async () => ({ fields: F.map((name) => ({ name, dataTypeID: name === 'actions' || name === 'headline' ? 3802 : (name === 'equity' ? 1700 : 25) })), rows }),
-    text: async () => '',
-  };
+  return reply(F.map((name) => ({ name, dataTypeID: name === 'actions' || name === 'headline' ? 3802 : (name === 'equity' ? 1700 : 25) })), rows);
 };
 const mkRes = () => {
   const r = { headers: {}, code: null, body: null };
@@ -157,10 +170,11 @@ const mkRes = () => {
 let res = mkRes();
 await handler({ method: 'GET', query: {} }, res);
 ok(res.code === 200 && Array.isArray(res.body.eventos), 'responde 200 con el feed', String(res.code));
-ok(neonQueries.length === 1 && /^\s*select/i.test(neonQueries[0].trim()),
-  'UNA sola consulta y es un SELECT: cero writes, como la auditoría', JSON.stringify(neonQueries.length));
-ok(!/ensure|create table|alter table|insert|update/i.test(neonQueries[0]),
-  'la consulta no crea, no migra y no escribe nada');
+ok(neonQueries.length === 2 && neonQueries.every((q) => /^\s*select/i.test(q.trim())),
+  'DOS consultas (el journal y los disparadores del vigilante) y ambas son SELECT: cero writes, como la auditoría',
+  JSON.stringify(neonQueries.length));
+ok(!neonQueries.some((q) => /ensure|create table|alter table|insert|update/i.test(q)),
+  'ninguna consulta crea, migra ni escribe nada');
 ok(/context->'headline'/.test(neonQueries[0]) && !/context\s*,/.test(neonQueries[0]),
   'del context se proyecta SOLO el titular (el resto son los prompts completos: megabytes)', neonQueries[0].slice(0, 120));
 ok(/<> 'league'/.test(neonQueries[0]), "las filas marcadoras de liga quedan fuera: no son eventos de orden");
@@ -171,6 +185,20 @@ ok(tipos.filter((t) => t === 'compra').length === 1 && tipos.filter((t) => t ===
 ok(tipos.includes('cambio_lider'), 'y el cambio de líder calculado sobre el equity journaleado', JSON.stringify(tipos));
 ok(res.body.eventos[0].fecha >= res.body.eventos[res.body.eventos.length - 1].fecha,
   'ordenado del más reciente al más viejo', JSON.stringify(res.body.eventos.map((e) => e.fecha)));
+
+// CADENCIA: los disparadores del vigilante son parte de la crónica — incluidos los
+// que NO despertaron a nadie. "El mercado hizo esto y el PM no se movió" es una
+// decisión, y un disparo frenado por un tope es un hecho del experimento.
+const disparos = res.body.eventos.filter((e) => e.tipo === 'disparador');
+ok(disparos.length === 2, 'los disparadores del vigilante llegan al feed', JSON.stringify(disparos.map((d) => d.disparador)));
+const desperto = disparos.find((d) => d.desperto);
+ok(desperto && desperto.simbolo === 'NVDA' && desperto.movimiento_pct === -6 && desperto.razon === null,
+  'el que despertó al agente lleva el número que lo disparó', JSON.stringify(desperto));
+const frenado = disparos.find((d) => !d.desperto);
+ok(frenado && /cooldown/.test(frenado.razon) && frenado.puntos_al_nivel === 1.5,
+  'y el que un tope frenó lleva la razón, no desaparece del relato', JSON.stringify(frenado));
+ok(disparos.every((d) => d.titular === undefined),
+  'un disparador NO lleva titular: es anterior a la decisión, y a esa altura todavía no hay voz que narre nada');
 ok(res.body.temporada.id === 'T2' && res.body.temporada.start === ARENA_SEASON.start,
   'el feed viene con la temporada en curso', JSON.stringify(res.body.temporada));
 ok(res.body.conteos && TIPOS.every((t) => t in res.body.conteos), 'con conteos por tipo', JSON.stringify(res.body.conteos));
@@ -184,7 +212,7 @@ ok(res.body.eventos.every((e) => e.tipo === 'rechazo') && res.body.eventos.lengt
 res = mkRes();
 await handler({ method: 'GET', query: { agente: 'qwen' } }, res);
 ok(res.body.eventos.filter((e) => e.tipo !== 'cambio_lider').every((e) => e.agente === 'qwen'),
-  '?agente=qwen filtra las órdenes a ese agente', JSON.stringify(res.body.eventos.map((e) => e.agente)));
+  '?agente=qwen filtra las órdenes Y los disparadores a ese agente', JSON.stringify(res.body.eventos.map((e) => e.agente)));
 ok(res.body.eventos.some((e) => e.tipo === 'cambio_lider'),
   'el liderazgo se calcula con TODA la liga aunque se filtre por un agente (si no, sería un ranking de uno)');
 
