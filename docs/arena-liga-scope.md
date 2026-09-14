@@ -113,10 +113,22 @@ Con el mínimo radio de explosión: un bug de adapter revienta en 3 agentes, no 
 `OPENROUTER_API_KEY` cargadas en Vercel Production, la liga corre **completa**:
 2 agentes por Anthropic directo (`claude`, `control`) y 5 por OpenRouter.
 
-El arranque queda **anunciado en el journal** (una fila `season_start` por
-agente, fechada): `GET /api/arena-run?action=announce` con el `CRON_SECRET`. Es
-manual e idempotente — una temporada arranca cuando se decide, no cuando corre
-el reloj — y no manda ninguna orden. Ver `runArenaSeasonAnnounce`.
+El arranque queda **anunciado en el journal**, en **UNA fila de liga**
+(`status='season_started'`, `agent_id='league'`, id idempotente
+`arena-temporada-T2-apertura`), fechada con el día en que corre. Es
+**automático**: lo emite el propio orquestador en su primera corrida con los
+siete activos. Ver `announceSeasonOpen`.
+
+> **Hubo dos mecanismos durante unas horas** (este automático y uno manual,
+> `?action=announce`, que insertaba una fila `season_start` POR AGENTE). Se
+> consolidó en el automático y el manual se retiró. Por qué: el arranque es un
+> hecho de la **liga entera** —como `skipped_market_closed`—, no siete copias
+> del mismo texto en la card de cada agente; y si la apertura depende de que
+> alguien se acuerde de curlear un endpoint, el día que se olvide la temporada
+> arranca sin rastro, que es justo lo que el anuncio existe para evitar.
+> Las filas `season_start` que el mecanismo manual alcanzara a insertar siguen
+> en el journal y siguen excluidas del plan anterior: borrar el código no borra
+> el rastro.
 
 > **Cuidado con `ARENA_LEAGUE`.** Sigue **ganando sobre las banderas `enabled`**.
 > Si quedó puesta de la Fase A (`claude,openai,control`), la liga seguirá

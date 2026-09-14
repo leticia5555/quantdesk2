@@ -311,9 +311,15 @@ del agente #6 (la liga Haiku vs Sonnet vs Opus necesita harness idéntico):
 con `phase='decide'` para que el leaderboard las publique, pero quedan FUERA del
 plan anterior que se le reinyecta al PM):
 - `resumed` — reactivación manual tras un halt del breaker.
-- `season_start` — arranque de temporada de la liga, una fila por agente.
-  Se dispara a mano con `GET /api/arena-run?action=announce` (CRON_SECRET) y es
-  idempotente: repetir el curl no duplica el rastro.
+- `season_started` — arranque de temporada, **UNA fila de liga**
+  (`agent_id='league'`), automática e idempotente: la emite el orquestador en su
+  primera corrida con los siete activos (`announceSeasonOpen`).
+- `rules_changed` — cambio de reglamento, también fila de liga (`announceT2Rules`).
+- `season_winner` — cierre de temporada con el ranking final, el último día.
+- `season_start` (LEGADO) — el mecanismo manual `?action=announce` que insertaba
+  una fila por agente se **retiró** al consolidar en uno solo. El status se
+  conserva en la lista de exclusión del plan anterior porque las filas que
+  alcanzó a escribir siguen en el journal: borrar el código no borra el rastro.
 
 ## Canal SCREENER (value + momentum, precomputado en Neon)
 

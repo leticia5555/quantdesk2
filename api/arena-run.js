@@ -92,7 +92,7 @@ import { callArenaLLM, providerKey } from './_lib/arena-model.js';
 // arquetipo NUNCA entra al prompt que decide — ver el candado del control en el
 // encabezado de _lib/arena-voice.js.
 import { generateHeadline } from './_lib/arena-voice.js';
-import { ARENA_SEASON, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
+import { ARENA_AGENTS, ARENA_SEASON, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
 
 // Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
 // reglas de universo); el buffet (trimMovers) la reusa y los tests de
@@ -832,57 +832,6 @@ export async function runArenaResume({ agentId = FLAGSHIP_AGENT_ID, now = new Da
   return { resumed: true, agent: agentId, halted_since: state.halted_at };
 }
 
-// ── ARRANQUE DE TEMPORADA (anuncio journaleado, no una decisión) ─────
-// El journal es el rastro PÚBLICO de la liga (/api/leaderboard publica la última
-// fila de cada agente), así que el arranque de una temporada se anuncia AHÍ y no
-// en un tuit: queda fechado, por agente, y con el mismo formato que todo lo demás.
-//
-// Es una fila OPERATIVA, no una decisión del PM — mismo patrón que `resumed`:
-//   - `model: null` y `actions` vacío → NINGUNA orden sale de aquí,
-//   - `status: 'season_start'` la separa de las corridas reales en el post-mortem,
-//   - `plan` lleva el texto del anuncio (es lo que renderiza el leaderboard).
-//
-// IDEMPOTENTE: si el agente ya tiene su fila de ESTA temporada, no se duplica
-// (curlear dos veces el endpoint no ensucia el rastro). Se dispara a mano con
-// CRON_SECRET —`?action=announce`—, nunca desde el cron: una temporada arranca
-// cuando Lety lo dice, no cuando corre el reloj.
-export const SEASON = 2;
-
-const SEASON_PLAN = (season, roster) =>
-  `TEMPORADA ${season} DE LA LIGA — arranca hoy con ${roster.length} agentes en la parrilla: ` +
-  `${roster.map((a) => `${a.name} (${a.model_label})`).join(', ')}. ` +
-  `Cada uno corre el MISMO harness (SCAN → deep dive → guard determinista → orden límite) ` +
-  `sobre su PROPIO libro Alpaca paper arrancando en $100K, con la misma temperatura y el mismo prompt ` +
-  `salvo su identidad: lo único que cambia entre libros es el MODELO. ` +
-  `El Control (Haiku-B) corre el prompt byte-idéntico al de Claude en otra cuenta — es el piso de ruido: ` +
-  `cualquier delta entre modelos que no le saque distancia al Control no significa nada. ` +
-  `Todo el razonamiento se publica verbatim junto a cada trade. Que empiece.`;
-
-export async function runArenaSeasonAnnounce({ now = new Date(), season = SEASON } = {}) {
-  const roster = activeAgents();
-  if (!roster.length) return { announced: 0, season, reason: 'no hay agentes activos' };
-
-  // Quién YA tiene su fila de esta temporada (el id la lleva embebida) → no se repite.
-  const done = new Set(
-    (await sql(`select agent_id from arena_journal where status = 'season_start' and id like $1`,
-      ['arena-season-' + season + '-%'])).map((r) => r.agent_id));
-
-  const plan = SEASON_PLAN(season, roster);
-  const announced = [];
-  for (const agent of roster) {
-    if (done.has(agent.id)) continue;
-    await journalInsert({
-      id: 'arena-season-' + season + '-' + agent.id,
-      run_date: now.toISOString().slice(0, 10),
-      phase: 'decide', prompt_version: PROMPT_VERSION, model: null,
-      status: 'season_start', agent_id: agent.id, plan, actions: [],
-      context: { season, roster: roster.map((a) => ({ id: a.id, name: a.name, model: a.model, house: a.house, control: !!a.control })) },
-    });
-    announced.push(agent.id);
-  }
-  return { season, run_date: now.toISOString().slice(0, 10), announced, skipped: roster.map((a) => a.id).filter((id) => done.has(id)) };
-}
-
 // ── fase DECIDE ──────────────────────────────────────────────────────
 // `event` (T2 #7) convierte la corrida en una POR EVENTO, no la revisión diaria:
 //   { type:'post_earnings_morning', symbols:[...], reports:{SYM:{...}}, headline }
@@ -927,12 +876,22 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // circuit breaker dispara un CORTE AMPLIO no se gastan ni el buffet ni el LLM.
   const [account, positions, openOrders, prevRows, peakRows, riskRows, fillRows, commitmentRows] = await Promise.all([
     getAccount(creds), getPositions(creds), getOrders('open', 100, creds),
-    // `status <> 'season_start'`: el anuncio de temporada es una fila OPERATIVA con
-    // plan (para que el leaderboard lo publique), no una decisión del PM. Si entrara
-    // aquí, el plan reinyectado del día siguiente sería el anuncio y no el último
-    // plan real — justo la continuidad estilo nof1 que este campo existe para dar.
+    // EXCLUSIÓN DE FILAS OPERATIVAS. Varias filas llevan `plan` sin ser una
+    // decisión del PM (el leaderboard las publica, por eso tienen texto). Si una
+    // entrara aquí, el plan reinyectado al día siguiente sería el anuncio y no el
+    // último plan REAL — justo la continuidad estilo nof1 que este campo da.
+    //
+    // `season_start` se conserva en la lista AUNQUE el mecanismo manual que la
+    // escribía ya no exista: las filas que alcanzó a insertar siguen en el
+    // journal para siempre, y borrar el código no borra el rastro.
+    //
+    // Las de liga (`season_started`, `rules_changed`, `season_winner`) ya
+    // quedarían fuera por el filtro de `agent_id`, que solo trae filas del
+    // agente real. Se nombran igual: que la consulta siga siendo correcta no
+    // debe depender de que nadie journalee una de ésas con un agent_id concreto.
     sql(`select run_date, plan, actions, status from arena_journal
-         where phase = 'decide' and plan is not null and status <> 'season_start' and agent_id = $1
+         where phase = 'decide' and plan is not null and agent_id = $1
+           and status not in ('season_start', 'season_started', 'rules_changed', 'season_winner')
          order by created_at desc limit 1`, [agentId]),
     // High-water-mark del libro: el máximo equity journaleado POR ESTE AGENTE,
     // ACOTADO por resumed_at (tras revivir, el pico se re-basa al equity de ese
@@ -1435,6 +1394,55 @@ export async function announceT2Rules(now = new Date()) {
   } catch (e) { /* best-effort: el anuncio no bloquea la corrida */ }
 }
 
+// ── APERTURA DE TEMPORADA — UN SOLO MECANISMO, AUTOMÁTICO ────────────
+// Hubo dos durante unas horas: éste y uno manual (`?action=announce`, una fila
+// `season_start` POR AGENTE) que llegó por otra rama. Se queda éste y el otro se
+// retira en este mismo PR. Por qué:
+//   - UNA fila de LIGA, no siete por agente: el arranque de temporada es un
+//     hecho de la liga entera, igual que `skipped_market_closed`. Siete copias
+//     del mismo texto ensucian la card de cada agente y el post-mortem.
+//   - AUTOMÁTICO: si la apertura depende de que alguien acuerde curlear un
+//     endpoint, el día que se olvide la temporada arranca sin rastro — y el
+//     rastro es justamente el punto.
+//   - `agent_id='league'` lo mantiene FUERA del plan anterior que se le
+//     reinyecta al PM, sin depender de una exclusión por status.
+//
+// La fecha es la del PRIMER día en que corre: el id es fijo, así que la fila
+// entra una sola vez y su `run_date`/`created_at` SON la fecha de apertura.
+//
+// GUARDA: solo se anuncia con los SIETE activos. Con `ARENA_LEAGUE` recortado,
+// anunciar "arranca la liga completa" sería falso — y como el id es idempotente,
+// quedaría sellado el día equivocado para siempre.
+export const SEASON_OPEN_ID = 'arena-temporada-' + ARENA_SEASON.id + '-apertura';
+
+export async function announceSeasonOpen(now = new Date()) {
+  const agents = activeAgents();
+  if (agents.length < ARENA_AGENTS.length) {
+    return { announced: false, reason: 'liga incompleta', active: agents.length, total: ARENA_AGENTS.length };
+  }
+  const casa = { us: '🇺🇸', china: '🇨🇳', control: 'control' };
+  const roster = agents.map((a) => `${a.name} (${a.model_label}, ${casa[a.house] || a.house})`).join(' · ');
+  const plan = [
+    `${ARENA_SEASON.name.toUpperCase()} — ARRANCA LA LIGA COMPLETA. Los ${agents.length} agentes corren desde hoy el MISMO harness, la MISMA temperatura y el MISMO reglamento (vigente desde ${T2_RULES_VERSION}), cada uno sobre su propio libro Alpaca paper.`,
+    `En pista: ${roster}.`,
+    `Ventana de la temporada: ${ARENA_SEASON.start} → ${ARENA_SEASON.end} (${ARENA_SEASON.weeks} semanas de mercado). El último día se declara al ganador por equity.`,
+    'El CONTROL (Haiku-B) comparte modelo, prompt y temperatura con Claude y solo cambia de cuenta: es el piso de ruido. Sin él, cualquier diferencia entre modelos podría ser el orden de los fills y nada más.',
+    'Experimento sin validación estadística, paper trading, no es asesoría.',
+  ].join('\n');
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
+       values ($1,$2,'decide','season_started',$3,$4,$5,'league') on conflict (id) do nothing`,
+      [SEASON_OPEN_ID, now.toISOString().slice(0, 10), PROMPT_VERSION, plan,
+       JSON.stringify({
+         season: ARENA_SEASON, rules_version: T2_RULES_VERSION, opened_on: now.toISOString().slice(0, 10),
+         agents: agents.map((a) => ({ id: a.id, name: a.name, model: a.model, house: a.house, control: !!a.control })),
+       })],
+    );
+    return { announced: true, agents: agents.length };
+  } catch (e) { return { announced: false, reason: String((e && e.message) || e) }; }
+}
+
 // ── CIERRE DE TEMPORADA: el ganador, declarado el ÚLTIMO día ─────────
 // Una liga sin final es una foto sin consecuencia: el "líder" de hoy no
 // significa nada si nunca se cierra la ventana. La temporada (ARENA_SEASON,
@@ -1565,6 +1573,7 @@ export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
   }
 
   await announceT2Rules(now);
+  await announceSeasonOpen(now);
   await ensureAgentStateRows(agents.map((a) => a.id));
 
   const reports = postEarningsTriggers(await fetchEarningsWindow(baseUrl, now), now);
@@ -1651,6 +1660,7 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   // UNA sola vez (idempotente por id): el post-mortem necesita el corte para no
   // mezclar dos reglamentos en la misma serie.
   await announceT2Rules(now);
+  await announceSeasonOpen(now);
 
   // Siembra una fila de estado por agente (el halt/resume son UPDATE por agent_id).
   await ensureAgentStateRows(agents.map((a) => a.id));
@@ -1766,12 +1776,6 @@ export default async function handler(req, res) {
     if (action === 'resume') {
       const result = await runArenaResume({ agentId });
       return res.status(200).json({ action: 'resume', ...result });
-    }
-    // Anuncio del arranque de temporada: fila operativa por agente en el journal,
-    // idempotente. Manual a propósito (ver runArenaSeasonAnnounce).
-    if (action === 'announce') {
-      const result = await runArenaSeasonAnnounce({});
-      return res.status(200).json({ action: 'announce', ...result });
     }
     if (action === 'status') {
       // Sin ?agent: el estado de TODOS los agentes activos. Con ?agent: uno.
