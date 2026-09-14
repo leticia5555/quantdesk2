@@ -88,7 +88,11 @@ import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib
 // LIGA multi-modelo: el registry (quién compite, con qué modelo/cuenta/persona)
 // y el dispatch de proveedor (Anthropic directo vs OpenRouter, forma normalizada).
 import { callArenaLLM, providerKey } from './_lib/arena-model.js';
-import { activeAgents, agentById, agentAlpacaCreds, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
+// TITULAR de la corrida (voz del arquetipo). Llamada APARTE y POSTERIOR: el
+// arquetipo NUNCA entra al prompt que decide — ver el candado del control en el
+// encabezado de _lib/arena-voice.js.
+import { generateHeadline } from './_lib/arena-voice.js';
+import { ARENA_SEASON, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
 
 // Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
 // reglas de universo); el buffet (trimMovers) la reusa y los tests de
@@ -1339,6 +1343,17 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     }
   }
 
+  // ── TITULAR de la corrida (voz del arquetipo) ───────────────────
+  // DESPUÉS de decidir y ejecutar: narra lo que YA pasó y no puede cambiarlo.
+  // Vive en `context.headline` y NO en la columna `plan` — el "PREVIOUS PLAN"
+  // de la corrida siguiente lee `plan`, así que narrar no contamina el próximo
+  // juicio. Best-effort: si falla, headline null y el run sigue igual.
+  context.headline = await generateHeadline({
+    agent, plan: parsed.plan, actions: journalActions,
+    equity, positions: positions.length, breakerStage: risk.stage,
+    callLLM: callArenaLLM, now,
+  });
+
   // El status de ESTA fila describe la decisión del PM: ok = envió órdenes;
   // ok_no_actions = holdeó (las salidas de riesgo van en su fila aparte).
   const status = submitted === 0 ? 'ok_no_actions' : 'ok';
@@ -1347,6 +1362,10 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   return {
     status, orders: submitted + riskSubmitted, approved: llmApproved.length, discarded: discarded.length,
     candidates: candidateSymbols.length, floor: floorReason, risk_exits: riskSubmitted,
+    // Equity del cierre de ESTA corrida: es lo que rankea el ganador de la
+    // temporada sin re-consultar Alpaca siete veces al final.
+    equity,
+    headline: context.headline ? context.headline.text : null,
     breaker_stage: risk.stage, drawdown: +risk.drawdown.toFixed(4),
     ...(event ? { trigger: event.type } : {}),
     // Cumplimiento del reglamento T2 en esta corrida (lo que el post-mortem
@@ -1414,6 +1433,68 @@ export async function announceT2Rules(now = new Date()) {
        JSON.stringify({ rules_version: T2_RULES_VERSION, prompt_version: PROMPT_VERSION, applies_to: activeAgents().map((a) => a.id) })],
     );
   } catch (e) { /* best-effort: el anuncio no bloquea la corrida */ }
+}
+
+// ── CIERRE DE TEMPORADA: el ganador, declarado el ÚLTIMO día ─────────
+// Una liga sin final es una foto sin consecuencia: el "líder" de hoy no
+// significa nada si nunca se cierra la ventana. La temporada (ARENA_SEASON,
+// en el registry) dura 4 semanas de mercado y el último día —un viernes, para
+// que exista la corrida— se journalea el ranking final.
+//
+// Se rankea por EQUITY, con el MISMO caveat que publica el leaderboard: `claude`
+// arrastra días de ventaja de la Temporada 1, así que el return vs. baseline
+// viaja al lado. Un agente sin equity (sin keys, Alpaca caída) NO se rankea ni
+// se inventa un cero: sale aparte, nombrado.
+export const BASELINE_EQUITY = (() => {
+  const n = Number(process.env.ARENA_BASELINE_EQUITY);
+  return Number.isFinite(n) && n > 0 ? n : 100000; // las cuentas paper arrancan en $100k
+})();
+export const SEASON_WINNER_ID = 'arena-temporada-' + ARENA_SEASON.id + '-ganador';
+
+// Puro: resultados de la corrida → { standings, sin_equity, winner }.
+export function rankSeasonStandings(results = [], baseline = BASELINE_EQUITY) {
+  const conEquity = [];
+  const sinEquity = [];
+  for (const r of results) {
+    const eq = Number(r && r.equity);
+    if (Number.isFinite(eq) && eq > 0) {
+      conEquity.push({
+        id: r.id, name: r.name, equity: +eq.toFixed(2),
+        return_pct: +(((eq - baseline) / baseline) * 100).toFixed(2),
+        status: r.status || null,
+      });
+    } else {
+      sinEquity.push({ id: r.id, name: r.name, status: r.status || null, error: r.error || null });
+    }
+  }
+  conEquity.sort((a, b) => b.equity - a.equity);
+  conEquity.forEach((r, i) => { r.rank = i + 1; });
+  return { standings: conEquity, sin_equity: sinEquity, winner: conEquity[0] || null };
+}
+
+// Journalea el cierre. Idempotente por id: si el último día corren decide y la
+// matutina, o el cron se repite, la fila entra UNA vez y no cambia de ganador.
+export async function declareSeasonWinner(results, now = new Date()) {
+  if (!isSeasonFinalDay(now)) return { declared: false, reason: 'no es el último día de la temporada' };
+  const { standings, sin_equity, winner } = rankSeasonStandings(results);
+  if (!winner) return { declared: false, reason: 'ningún agente reportó equity: no se declara un ganador inventado' };
+  const podio = standings.slice(0, 3).map((r) => `${r.rank}. ${r.name} ${r.equity} (${r.return_pct >= 0 ? '+' : ''}${r.return_pct}%)`).join(' · ');
+  const plan = [
+    `${ARENA_SEASON.name.toUpperCase()} — CIERRE. Gana ${winner.name} con equity ${winner.equity} (${winner.return_pct >= 0 ? '+' : ''}${winner.return_pct}% vs. baseline).`,
+    `Podio: ${podio}.`,
+    sin_equity.length ? `Sin equity reportado (no rankean): ${sin_equity.map((r) => r.name || r.id).join(', ')}.` : null,
+    `Ventana: ${ARENA_SEASON.start} → ${ARENA_SEASON.end} (${ARENA_SEASON.weeks} semanas de mercado).`,
+    'CAVEATS, los de siempre: paper trading, una sola temporada, sin validación estadística, y el agente insignia arrastra días de ventaja de la Temporada 1 — por eso el return vs. baseline va al lado del equity. Esto no es asesoría.',
+  ].filter(Boolean).join('\n');
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
+       values ($1,$2,'decide','season_winner',$3,$4,$5,'league') on conflict (id) do nothing`,
+      [SEASON_WINNER_ID, now.toISOString().slice(0, 10), PROMPT_VERSION, plan,
+       JSON.stringify({ season: ARENA_SEASON, metric: ARENA_SEASON.metric, baseline: BASELINE_EQUITY, winner, standings, sin_equity })],
+    );
+    return { declared: true, winner };
+  } catch (e) { return { declared: false, reason: String((e && e.message) || e) }; }
 }
 
 // ── T2 #7: disparadores de la CORRIDA MATUTINA POR EVENTO ────────────
@@ -1586,7 +1667,12 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
       return { id: agent.id, name: agent.name, status: 'error', orders: 0, error: String((err && err.message) || err) };
     }
   }));
-  return { agents: results, league: results.map((r) => r.id) };
+
+  // Cierre de temporada: solo el ÚLTIMO día, con el equity que cada agente
+  // acaba de reportar (cero llamadas extra a Alpaca).
+  const season = { id: ARENA_SEASON.id, status: seasonStatus(now), day: seasonDay(now), start: ARENA_SEASON.start, end: ARENA_SEASON.end };
+  const closing = await declareSeasonWinner(results, now);
+  return { agents: results, league: results.map((r) => r.id), season, ...(closing.declared ? { season_winner: closing.winner } : {}) };
 }
 
 // ── fase RECONCILE ───────────────────────────────────────────────────

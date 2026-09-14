@@ -56,6 +56,11 @@ const timestamps = closes.map((_, i) => (t0 + i * DAY) / 1000);
 // harness y probar el dedupe de deep-dive (todos piden AAPL → 1 fetch).
 const SCAN = JSON.stringify({ scan_thesis: 'AAPL en actives; el resto es ruido.', candidates: ['AAPL'] });
 const DIVE = JSON.stringify({ plan: 'Entro a AAPL de calidad.', actions: [{ symbol: 'AAPL', side: 'buy', notional: 5000, limit_price: 200, conviction: 4, reasoning: 'Fundamentales sólidos.' }] });
+// TITULAR: tercera llamada por agente, con el prompt de la VOZ (arquetipo). El
+// mock la distingue por el marcador "TU VOZ:", que solo lleva ese prompt.
+const TITULAR = 'Compro AAPL y me aguanto: la tesis no cambió con el ruido de hoy.';
+const fase = (system) => (String(system).includes('TU VOZ:') ? 'headline' : (String(system).includes('SCOUT') ? 'scan' : 'dive'));
+const respuesta = (phase) => (phase === 'scan' ? SCAN : phase === 'dive' ? DIVE : TITULAR);
 
 // Telemetría del mock.
 const anthropicCalls = [];   // { model, temperature, phase }
@@ -82,17 +87,17 @@ global.fetch = async (url, opts = {}) => {
   if (u.includes('api.anthropic.com')) {
     const body = JSON.parse(opts.body || '{}');
     const system = String(body.system || '');
-    const phase = system.includes('SCOUT') ? 'scan' : 'dive';
-    anthropicCalls.push({ model: body.model, temperature: body.temperature, phase });
-    return jsonReply({ content: [{ type: 'text', text: phase === 'scan' ? SCAN : DIVE }], usage: { input_tokens: 10, output_tokens: 20 } });
+    const phase = fase(system);
+    anthropicCalls.push({ model: body.model, temperature: body.temperature, phase, system });
+    return jsonReply({ content: [{ type: 'text', text: respuesta(phase) }], usage: { input_tokens: 10, output_tokens: 20 } });
   }
   // OpenRouter (openai) — forma OpenAI; el system es messages[0].
   if (u.includes('openrouter.ai')) {
     const body = JSON.parse(opts.body || '{}');
     const sys = String((body.messages && body.messages[0] && body.messages[0].content) || '');
-    const phase = sys.includes('SCOUT') ? 'scan' : 'dive';
-    openrouterCalls.push({ model: body.model, temperature: body.temperature, phase });
-    return jsonReply({ choices: [{ message: { content: phase === 'scan' ? SCAN : DIVE } }], usage: { prompt_tokens: 10, completion_tokens: 20 } });
+    const phase = fase(sys);
+    openrouterCalls.push({ model: body.model, temperature: body.temperature, phase, system: sys });
+    return jsonReply({ choices: [{ message: { content: respuesta(phase) } }], usage: { prompt_tokens: 10, completion_tokens: 20 } });
   }
   // Alpaca — la cuenta se identifica por el header APCA-API-KEY-ID.
   if (u.includes('paper-api.alpaca.markets')) {
@@ -212,9 +217,11 @@ const res = await runArenaLeague({ baseUrl: BASE_URL });
   ok(res.agents.length === 7 && SIETE.every((id) => byId[id]), 'corren los 7 agentes de la Temporada 2', JSON.stringify(res.league));
   ok(SIETE.every((id) => byId[id].status === 'ok'), 'los 7 deciden ok (1 orden c/u)', JSON.stringify(res.agents.map((a) => [a.id, a.status])));
 
-  // Proveedor correcto por agente: claude+control → Anthropic; los otros 5 → OpenRouter.
-  ok(anthropicCalls.length === 4, 'Anthropic recibió 4 llamadas (claude + control, 2 fases c/u)', String(anthropicCalls.length));
-  ok(openrouterCalls.length === 10, 'OpenRouter recibió 10 llamadas (5 agentes × 2 fases)', String(openrouterCalls.length));
+  // Proveedor correcto por agente: claude+control → Anthropic (directo); los
+  // otros CINCO → OpenRouter con la MISMA key y su propio slug.
+  // TRES llamadas por agente: SCAN + DIVE (deciden) + TITULAR (solo narra).
+  ok(anthropicCalls.length === 6, 'Anthropic recibió 6 llamadas (claude + control, 3 fases c/u)', String(anthropicCalls.length));
+  ok(openrouterCalls.length === 15, 'OpenRouter recibió 15 llamadas (5 agentes × 3 fases)', String(openrouterCalls.length));
   ok(anthropicCalls.every((c) => c.model === 'claude-haiku-4-5'), 'Anthropic siempre con el modelo Haiku');
   // Cada agente de OpenRouter va con SU slug — un solo adapter, cinco modelos.
   const slugsVistos = [...new Set(openrouterCalls.map((c) => c.model))].sort();

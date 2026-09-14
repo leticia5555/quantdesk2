@@ -76,9 +76,14 @@ global.fetch = async (url, opts = {}) => {
 
   if (u.includes('api.anthropic.com')) {
     const body = JSON.parse(opts.body || '{}');
-    const phase = String(body.system || '').includes('SCOUT') ? 'scan' : 'dive';
+    const sys = String(body.system || '');
+    // Tres fases posibles: SCAN (triage), DIVE (decide) y TITULAR (solo narra).
+    const phase = sys.includes('TU VOZ:') ? 'headline' : (sys.includes('SCOUT') ? 'scan' : 'dive');
     llmCalls.push({ phase, maxTokens: body.max_tokens, user: String(body.messages[0].content) });
-    return jsonReply({ content: [{ type: 'text', text: DIVE }], stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 20 } });
+    return jsonReply({
+      content: [{ type: 'text', text: phase === 'headline' ? 'Salgo de NVDA: el número mató la tesis con la que entré.' : DIVE }],
+      stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 20 },
+    });
   }
   if (u.includes('paper-api.alpaca.markets')) {
     if (u.includes('/v2/calendar')) return jsonReply(calendarSessions);
@@ -157,8 +162,9 @@ console.log('matutina: una posición del libro reportó → corrida por evento')
     'la corrida se marca como disparada por evento', JSON.stringify(r.agents[0]));
 
   // El SCOUT no corre: el evento ya eligió el slate.
-  ok(llmCalls.length === 1 && llmCalls[0].phase === 'dive',
-    'UNA sola llamada al LLM y es el DIVE: el SCOUT no se paga para elegir lo que el evento ya eligió', JSON.stringify(llmCalls.map((c) => c.phase)));
+  ok(llmCalls.length === 2 && llmCalls[0].phase === 'dive' && llmCalls[1].phase === 'headline',
+    'DOS llamadas: el DIVE y el titular. El SCOUT no se paga para elegir lo que el evento ya eligió',
+    JSON.stringify(llmCalls.map((c) => c.phase)));
   ok(/EVENT-DRIVEN MORNING RUN/.test(llmCalls[0].user) && /NVDA/.test(llmCalls[0].user),
     'el prompt del DIVE llega con el encuadre del evento y el nombre que reportó');
 
