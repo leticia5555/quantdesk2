@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
 // api/_lib/arena-watch.js — el VIGILANTE del Arena (lógica pura, CERO tokens).
 //
-// TEMPORADA 2, cambio de cadencia (vigente 2026-09-15): el cron
+// TEMPORADA 2, cambio de cadencia (vigente 2026-09-14): el cron
 // NOCTURNO deja de ser el latido del experimento. En su lugar, un vigilante
 // SIN LLM mira el mercado cada 5 minutos en horario de sesión y solo DESPIERTA
 // al agente cuando pasa algo que le concierne. El costo de mirar es cero
@@ -122,15 +122,27 @@ const TRIGGER_SEVERITY = {
 
 // ── CORTE DE CADENCIA ───────────────────────────────────────────
 // La fecha en que el modelo POR EVENTO sustituye al cron nocturno, en horario
-// del ESTE (el del mercado). Antes de esta fecha el Arena corre EXACTAMENTE
-// como hoy: la corrida del lunes 14 no se toca. Desde esta fecha, `decide` y
-// `morning` se retiran (journalean una fila de liga, cero tokens) y el
-// vigilante es el que despierta a los agentes.
+// del ESTE (el del mercado). Antes de esta fecha el Arena corre con la cadencia
+// vieja; desde ella, `decide` y `morning` se retiran (journalean una fila de
+// liga, cero tokens) y el vigilante es el que despierta a los agentes.
+//
+// El corte se adelantó del martes 15 al LUNES 14 por decisión de Lety, con la
+// sesión del 14 ya cerrada: el efecto práctico es que la corrida nocturna de esa
+// noche NO se emite y el lunes queda sin pronunciamiento — el primer día que el
+// vigilante realmente tickea es el martes. Se deja anotado porque el post-mortem
+// va a ver un hueco de un día en la serie y esa es la razón, no un cron caído.
 //
 // Env-overridable (ARENA_WATCH_START) por la misma razón que los slugs de
 // modelo: mover el corte un día no debería requerir un deploy, y si el
 // vigilante sale mal se vuelve al cron nocturno con una variable.
-export const WATCH_START = /* date-lint-ok: no es una referencia a "hoy" — es la fecha declarada del cambio de cadencia, un hecho fijo que ancla el corte del post-mortem */ '2026-09-15';
+//
+// OJO: este export es el DEFAULT declarado. Todo lo que se DERIVA del corte —el
+// id del anuncio, su fecha, el texto del reglamento— tiene que salir de
+// `watchStartDate()`, que respeta la env var. Derivarlo de esta constante fue un
+// bug real: con `ARENA_WATCH_START` puesta, la compuerta se movía pero el
+// `rules_changed` seguía fechado en el default, y el corte del post-mortem
+// apuntaba a un día en el que no cambió nada.
+export const WATCH_START = /* date-lint-ok: no es una referencia a "hoy" — es la fecha declarada del cambio de cadencia, un hecho fijo que ancla el corte del post-mortem */ '2026-09-14';
 
 export function watchStartDate() {
   const raw = String(process.env.ARENA_WATCH_START || '').trim();
