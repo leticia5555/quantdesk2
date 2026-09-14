@@ -29,6 +29,9 @@ al final.
 | `pead:hour`        | `/api/pead-harvest?job=hour`          | `30 21 * * *`          | **vercel.json** |
 | `screener:refresh` | `/api/arena-screener?job=refresh`     | `0 */4 * * *` (cada 4h) | **GitHub Actions** → `.github/workflows/external-crons.yml` |
 
+El endpoint **`/api/liga/eventos`** (crónica de la liga) NO es un cron: es
+solo-lectura, público y cacheado en el edge, como `/api/leaderboard`.
+
 **`arena:morning` (Temporada 2, regla #7)** corre 10 minutos DESPUÉS del
 reconcile a propósito: primero se true-ean los fills de la apertura y recién
 después el PM decide. Es una corrida **por evento**, no una segunda corrida

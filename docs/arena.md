@@ -24,6 +24,25 @@ al trade (tabla `arena_journal`, card en el tab MIS AGENTES).
 > las métricas de T1 y T2 **no son comparables** y el corte queda explícito para
 > el post-mortem.
 
+## Plan de temporadas (qué entra cuándo, y qué no)
+
+La liga corre por **temporadas acotadas** (`ARENA_SEASON` en
+`_lib/arena-registry.js`): 4 semanas de mercado, apertura en lunes, cierre en
+**viernes** —para que exista la corrida que declara al ganador— y ranking por
+equity con el return vs. baseline al lado. Una liga sin final es una foto sin
+consecuencia: el "líder" de hoy no significa nada si la ventana nunca se cierra.
+
+| Temporada | Qué habilita | Estado |
+|---|---|---|
+| **T2** | **Long-only + el reglamento de 9 reglas** de abajo. Liga completa (7 agentes) desde el día 1. | **En curso** (2026-09-14 → 2026-10-09) |
+| **T3** | **Short habilitado.** El guard se adapta: hoy es long-only por diseño (`no hay posición larga que vender` es un descarte duro) y abrir cortos toca sizing, margen, el borrow y toda la regla de salida —un stop en un corto es al revés—. **PR aparte**, no un flag. | Planeada |
+| **T4 — o nunca** | **Opciones.** Condición previa e innegociable: **una fuente de datos real** (cadena, griegas, IV, vencimientos). Sin esa fuente NO se hace: un libro de opciones sobre precios inventados no es un experimento, es una demo. | Condicional |
+
+**Por qué el orden importa.** Cada temporada cambia el reglamento, y un cambio
+de reglamento parte la serie: por eso `PROMPT_VERSION` sube con la temporada y
+el cambio se anuncia en el journal con fecha. Meter short y opciones dentro de
+la misma temporada haría imposible atribuir un resultado a nada.
+
 ## Reglamento de la Temporada 2 (2026-09-13)
 
 Sale de lo que la T1 dejó ver en vivo. **El objetivo declarado es que el agente
@@ -179,6 +198,49 @@ malformados no abortan el run. La regla de "JSON malformado = cero órdenes"
 sigue cubriendo `plan` y `actions`; endurecerla con tres campos más solo subiría
 la tasa de aborts.
 
+### Addendum de la liga (2026-09-14): voz, crónica y temporada
+
+Tres piezas de **datos** — sin UI ni notificaciones todavía, a propósito:
+primero el backend estable y auditable, el resto después sin rehacerlo.
+
+**1. El titular (`_lib/arena-voice.js`).** Cada agente publica por corrida UNA
+línea en español con la voz de su **arquetipo** (fijo por modelo, en el
+registry; el control es *el escéptico que no cree en nadie*).
+
+> **EL CANDADO:** el arquetipo **JAMÁS** entra al prompt que DECIDE. El titular
+> se genera en una llamada APARTE y POSTERIOR, que recibe el plan y las órdenes
+> ya decididas y solo las narra. El motivo no es estético: `claude` y `control`
+> son el mismo modelo con el mismo prompt y distinta cuenta, y ese prompt
+> byte-idéntico es lo único que hace del control un piso de ruido válido
+> (decisión #5 del scope). Meter *"eres el escéptico"* en el DIVE del control lo
+> convertiría en otro agente y borraría la única medición que dice cuánto del
+> delta entre modelos es ruido. `tests/arena-voice.test.mjs` lo blinda.
+
+El titular vive en `context.headline`, **no** en la columna `plan` — que es la
+que alimenta el `PREVIOUS PLAN` de la corrida siguiente. Narrar no puede
+contaminar el próximo juicio. Best-effort: si la llamada falla, `headline: null`
+y la corrida sigue igual. Apagable con `ARENA_HEADLINES=0`.
+
+**2. `/api/liga/eventos`** (`api/liga-eventos.js`, reescritura en `vercel.json`;
+el archivo va plano porque el glob `api/*.js` de `functions` no alcanza a los
+anidados). Feed público de solo lectura con cuatro tipos: `compra`, `venta`
+(del PM o de la red determinista, con su `origen`), `rechazo` (con la razón
+verbatim y el motivo clasificado: `guard` / `precedencia_riesgo` / `supresion`)
+y `cambio_lider`. Mismas restricciones que `/api/arena-audit`: puros `SELECT`,
+sin `ensureSchema()`, sin `beat()`, y del `context` se proyecta **solo** el
+titular. Params: `?dias` `?agente` `?tipo` `?limit`.
+
+Un día con **un solo** agente reportando equity no genera cambio de líder
+—sería un liderazgo falso— y el primer día medible se marca `arranque`, no
+"cambio".
+
+**3. La temporada (`ARENA_SEASON` en el registry).** Ventana con `start`, `end`
+y `weeks`; el **último día** el orquestador journalea el cierre
+(`status='season_winner'`, `agent_id='league'`, id idempotente) con el ranking
+por equity, el return vs. baseline y los caveats de siempre. Un agente sin
+equity no se rankea ni recibe un cero: sale aparte, nombrado. Sin nadie con
+equity, **no se declara un ganador inventado**.
+
 ### `aborted_malformed_json`: ahora dice POR QUÉ
 
 Ese status tenía dos causas muy distintas —el modelo parloteó fuera del JSON, o
@@ -201,6 +263,8 @@ existe para los siete agentes y no solo para los de Anthropic.
 | Risk guard determinista (post-LLM, fail closed) + FLOOR del screener + **venta marketable (T2 #5)** | `api/_lib/arena-guard.js` |
 | **Regla de salida** determinista (circuit breaker + stop catastrófico + **trailing stop T2 #3**) | `api/_lib/arena-exits.js` |
 | **MEMORIA (T2)** — compromisos con fecha, historia de la posición, auditoría del pronunciamiento | `api/_lib/arena-memory.js` |
+| **VOZ** — titular de una línea por corrida, con el arquetipo del agente | `api/_lib/arena-voice.js` |
+| **Crónica de la liga** (solo lectura: compras, ventas, rechazos, cambios de líder) | `api/liga-eventos.js` → `/api/liga/eventos` |
 | Deep dive Finnhub por candidato (fundamentales/recommendation/news) | `api/_lib/finnhub-dive.js` |
 | Cron decide (22:40 UTC L-V) + reconcile (14:40 UTC L-V) + **matutina por evento (14:50 UTC L-V, T2 #7)** | `api/arena-run.js` + `vercel.json` |
 | **Canal SCREENER** — screens deterministas (value/momentum) | `api/_lib/screens.js` |
@@ -247,9 +311,15 @@ del agente #6 (la liga Haiku vs Sonnet vs Opus necesita harness idéntico):
 con `phase='decide'` para que el leaderboard las publique, pero quedan FUERA del
 plan anterior que se le reinyecta al PM):
 - `resumed` — reactivación manual tras un halt del breaker.
-- `season_start` — arranque de temporada de la liga, una fila por agente.
-  Se dispara a mano con `GET /api/arena-run?action=announce` (CRON_SECRET) y es
-  idempotente: repetir el curl no duplica el rastro.
+- `season_started` — arranque de temporada, **UNA fila de liga**
+  (`agent_id='league'`), automática e idempotente: la emite el orquestador en su
+  primera corrida con los siete activos (`announceSeasonOpen`).
+- `rules_changed` — cambio de reglamento, también fila de liga (`announceT2Rules`).
+- `season_winner` — cierre de temporada con el ranking final, el último día.
+- `season_start` (LEGADO) — el mecanismo manual `?action=announce` que insertaba
+  una fila por agente se **retiró** al consolidar en uno solo. El status se
+  conserva en la lista de exclusión del plan anterior porque las filas que
+  alcanzó a escribir siguen en el journal: borrar el código no borra el rastro.
 
 ## Canal SCREENER (value + momentum, precomputado en Neon)
 
@@ -511,6 +581,10 @@ fracciones en (0,1), time-boxed del trial): `ARENA_BREAKER_DELEVER_DD` (0.15),
 escalamiento: `ARENA_EXIT_BAND_BREAKER` (0.12), `ARENA_EXIT_BAND_CATASTROPHIC`
 (0.32), `ARENA_EXIT_ESCALATION_STEP` (0.13), `ARENA_EXIT_BAND_MAX` (0.70). Un
 valor inválido (≤0 o ≥1) cae al default en silencio.
+
+**Addendum de la liga:** `ARENA_HEADLINES` (opc; `0` apaga los titulares sin
+tocar código) · `ARENA_BASELINE_EQUITY` (ya existía, 100000: el baseline del
+return que publica el leaderboard y el cierre de temporada).
 
 **Temporada 2** (mismas reglas de validación; defaults entre paréntesis):
 `ARENA_TRAILING_ARM_GAIN` (0.15) y `ARENA_TRAILING_GIVE_BACK` (0.08) — el

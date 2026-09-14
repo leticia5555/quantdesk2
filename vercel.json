@@ -24,6 +24,10 @@
     {
       "source": "/liga",
       "destination": "/leaderboard.html"
+    },
+    {
+      "source": "/api/liga/eventos",
+      "destination": "/api/liga-eventos"
     }
   ],
   "crons": [

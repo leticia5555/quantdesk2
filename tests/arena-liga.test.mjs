@@ -33,8 +33,9 @@ delete process.env.ARENA_LEAGUE;
 delete process.env.ARENA_SCREENER_ENABLED;
 delete process.env.ARENA_TEMPERATURE;
 
-import { runArenaLeague, runArenaSeasonAnnounce, SEASON } from '../api/arena-run.js';
-import { activeAgents, agentById, agentAlpacaCreds, ARENA_TEMPERATURE, ARENA_AGENTS } from '../api/_lib/arena-registry.js';
+import { readFileSync } from 'node:fs';
+import { runArenaLeague, announceSeasonOpen, SEASON_OPEN_ID } from '../api/arena-run.js';
+import { activeAgents, agentById, agentAlpacaCreds, ARENA_TEMPERATURE, ARENA_AGENTS, ARENA_SEASON } from '../api/_lib/arena-registry.js';
 import { callArenaLLM, providerKey } from '../api/_lib/arena-model.js';
 import { buildDiveSystemPrompt } from '../api/arena-run.js';
 
@@ -56,6 +57,11 @@ const timestamps = closes.map((_, i) => (t0 + i * DAY) / 1000);
 // harness y probar el dedupe de deep-dive (todos piden AAPL → 1 fetch).
 const SCAN = JSON.stringify({ scan_thesis: 'AAPL en actives; el resto es ruido.', candidates: ['AAPL'] });
 const DIVE = JSON.stringify({ plan: 'Entro a AAPL de calidad.', actions: [{ symbol: 'AAPL', side: 'buy', notional: 5000, limit_price: 200, conviction: 4, reasoning: 'Fundamentales sólidos.' }] });
+// TITULAR: tercera llamada por agente, con el prompt de la VOZ (arquetipo). El
+// mock la distingue por el marcador "TU VOZ:", que solo lleva ese prompt.
+const TITULAR = 'Compro AAPL y me aguanto: la tesis no cambió con el ruido de hoy.';
+const fase = (system) => (String(system).includes('TU VOZ:') ? 'headline' : (String(system).includes('SCOUT') ? 'scan' : 'dive'));
+const respuesta = (phase) => (phase === 'scan' ? SCAN : phase === 'dive' ? DIVE : TITULAR);
 
 // Telemetría del mock.
 const anthropicCalls = [];   // { model, temperature, phase }
@@ -63,7 +69,7 @@ const openrouterCalls = [];  // { model, temperature, phase }
 const orderPosts = [];       // { account, symbol, side }
 const journalInserts = [];   // params de cada insert into arena_journal
 let moversFetches = 0;
-const seasonRows = [];       // agent_id con fila 'season_start' ya insertada (idempotencia)
+const seasonRows = [];       // ids de anuncio ya insertados (idempotencia del `on conflict`)
 const aaplMetricFetches = [];
 // Calendario de Alpaca: por default trae una sesión hoy (mercado ABIERTO) para
 // que las corridas normales operen. La sección de "mercado cerrado" lo vacía.
@@ -82,17 +88,17 @@ global.fetch = async (url, opts = {}) => {
   if (u.includes('api.anthropic.com')) {
     const body = JSON.parse(opts.body || '{}');
     const system = String(body.system || '');
-    const phase = system.includes('SCOUT') ? 'scan' : 'dive';
-    anthropicCalls.push({ model: body.model, temperature: body.temperature, phase });
-    return jsonReply({ content: [{ type: 'text', text: phase === 'scan' ? SCAN : DIVE }], usage: { input_tokens: 10, output_tokens: 20 } });
+    const phase = fase(system);
+    anthropicCalls.push({ model: body.model, temperature: body.temperature, phase, system });
+    return jsonReply({ content: [{ type: 'text', text: respuesta(phase) }], usage: { input_tokens: 10, output_tokens: 20 } });
   }
   // OpenRouter (openai) — forma OpenAI; el system es messages[0].
   if (u.includes('openrouter.ai')) {
     const body = JSON.parse(opts.body || '{}');
     const sys = String((body.messages && body.messages[0] && body.messages[0].content) || '');
-    const phase = sys.includes('SCOUT') ? 'scan' : 'dive';
-    openrouterCalls.push({ model: body.model, temperature: body.temperature, phase });
-    return jsonReply({ choices: [{ message: { content: phase === 'scan' ? SCAN : DIVE } }], usage: { prompt_tokens: 10, completion_tokens: 20 } });
+    const phase = fase(sys);
+    openrouterCalls.push({ model: body.model, temperature: body.temperature, phase, system: sys });
+    return jsonReply({ choices: [{ message: { content: respuesta(phase) } }], usage: { prompt_tokens: 10, completion_tokens: 20 } });
   }
   // Alpaca — la cuenta se identifica por el header APCA-API-KEY-ID.
   if (u.includes('paper-api.alpaca.markets')) {
@@ -212,9 +218,11 @@ const res = await runArenaLeague({ baseUrl: BASE_URL });
   ok(res.agents.length === 7 && SIETE.every((id) => byId[id]), 'corren los 7 agentes de la Temporada 2', JSON.stringify(res.league));
   ok(SIETE.every((id) => byId[id].status === 'ok'), 'los 7 deciden ok (1 orden c/u)', JSON.stringify(res.agents.map((a) => [a.id, a.status])));
 
-  // Proveedor correcto por agente: claude+control → Anthropic; los otros 5 → OpenRouter.
-  ok(anthropicCalls.length === 4, 'Anthropic recibió 4 llamadas (claude + control, 2 fases c/u)', String(anthropicCalls.length));
-  ok(openrouterCalls.length === 10, 'OpenRouter recibió 10 llamadas (5 agentes × 2 fases)', String(openrouterCalls.length));
+  // Proveedor correcto por agente: claude+control → Anthropic (directo); los
+  // otros CINCO → OpenRouter con la MISMA key y su propio slug.
+  // TRES llamadas por agente: SCAN + DIVE (deciden) + TITULAR (solo narra).
+  ok(anthropicCalls.length === 6, 'Anthropic recibió 6 llamadas (claude + control, 3 fases c/u)', String(anthropicCalls.length));
+  ok(openrouterCalls.length === 15, 'OpenRouter recibió 15 llamadas (5 agentes × 3 fases)', String(openrouterCalls.length));
   ok(anthropicCalls.every((c) => c.model === 'claude-haiku-4-5'), 'Anthropic siempre con el modelo Haiku');
   // Cada agente de OpenRouter va con SU slug — un solo adapter, cinco modelos.
   const slugsVistos = [...new Set(openrouterCalls.map((c) => c.model))].sort();
@@ -272,35 +280,56 @@ console.log('liga: mercado cerrado (calendario vacío) → skip global, UNA fila
   ok(!ctx0.plan_number_audit, 'el skip ocurre ANTES del DIVE (sin plan_number_audit en un día cerrado)');
 }
 
-// ── Anuncio del arranque de TEMPORADA ─────────────────────────────────────────
-// Fila OPERATIVA por agente (no una decisión): cero órdenes, model null, status
-// propio, e IDEMPOTENTE — curlear el endpoint dos veces no duplica el rastro.
-console.log('liga: anuncio de arranque de Temporada ' + SEASON + ' (fila por agente, idempotente)');
+// ── APERTURA DE TEMPORADA: UN SOLO mecanismo, automático ─────────────────────
+// Antes hubo dos (éste y uno manual, `?action=announce`, con una fila por
+// agente). Se consolidó en éste; el manual se retiró. Lo que esta sección
+// blinda es justamente que quede UNO.
+console.log('liga: apertura de temporada — una fila de LIGA, automática e idempotente');
 {
-  journalInserts.length = 0; seasonRows.length = 0;
-  const ordersBefore = orderPosts.length;
-  const hoy = new Date('2026-09-13T18:00:00Z');
-  const res = await runArenaSeasonAnnounce({ now: hoy });
-
-  ok(res.season === SEASON && res.announced.length === 7, 'anuncia a los 7 agentes de la parrilla', JSON.stringify(res.announced));
-  ok(res.run_date === '2026-09-13', 'la fila lleva la fecha del día del anuncio', res.run_date);
-  ok(orderPosts.length === ordersBefore, 'CERO órdenes: un anuncio no opera', String(orderPosts.length - ordersBefore));
-  ok(journalInserts.length === 7 && journalInserts.every((p) => p[3] === 'season_start'),
-    "las 7 filas van con status 'season_start' (separable del post-mortem)", JSON.stringify(journalInserts.map((p) => p[3])));
-  ok(journalInserts.every((p) => p[6] === null), 'model null: ningún LLM decidió esto', JSON.stringify(journalInserts.map((p) => p[6])));
-  ok(journalInserts.every((p) => JSON.parse(p[9] || '[]').length === 0), 'actions vacío en todas las filas');
-  ok(journalInserts.every((p) => p[2] === 'decide'),
-    "phase='decide' → el leaderboard la publica como la entrada visible del agente");
-  const plan0 = journalInserts[0][7];
-  ok(/TEMPORADA 2 DE LA LIGA/.test(plan0) && /7 agentes/.test(plan0), 'el plan anuncia la Temporada 2 y la parrilla', plan0);
-  ok(journalInserts.every((p) => p[7] === plan0), 'el mismo anuncio verbatim para los 7 (es un hecho de la liga)');
-  ok(JSON.parse(journalInserts[0][12]).roster.length === 7, 'context.roster deja quién arrancó la temporada (auditable)');
-
-  // Segunda pasada: idempotente.
   journalInserts.length = 0;
-  const again = await runArenaSeasonAnnounce({ now: hoy });
-  ok(again.announced.length === 0 && again.skipped.length === 7, 'segunda corrida: no duplica (idempotente)', JSON.stringify(again));
-  ok(journalInserts.length === 0, 'cero inserts en la segunda corrida', String(journalInserts.length));
+  const ordersBefore = orderPosts.length;
+  const hoy = new Date('2026-09-14T22:40:00Z');
+  const res = await announceSeasonOpen(hoy);
+
+  ok(res.announced === true && res.agents === 7, 'anuncia con los siete en pista', JSON.stringify(res));
+  ok(orderPosts.length === ordersBefore, 'CERO órdenes: un anuncio no opera', String(orderPosts.length - ordersBefore));
+  ok(journalInserts.length === 1, 'UNA sola fila, no una por agente', String(journalInserts.length));
+
+  const fila = journalInserts[0];
+  ok(fila[0] === SEASON_OPEN_ID && fila[1] === '2026-09-14',
+    'id fijo (idempotente) y run_date = el día en que corre, no una fecha hardcodeada', JSON.stringify([fila[0], fila[1]]));
+  ok(/TEMPORADA 2 — ARRANCA LA LIGA COMPLETA/.test(fila[3]) && /Grok/.test(fila[3]) && /Qwen/.test(fila[3]),
+    'el plan anuncia la temporada y nombra a los siete', fila[3].slice(0, 90));
+  ok(new RegExp(ARENA_SEASON.start + ' → ' + ARENA_SEASON.end).test(fila[3]),
+    'y publica la ventana de la temporada', ARENA_SEASON.start + ' → ' + ARENA_SEASON.end);
+  ok(/piso de ruido/.test(fila[3]), 'explica qué es el control (sin eso, ningún delta entre modelos significa nada)');
+  const ctx = JSON.parse(fila[4]);
+  ok(ctx.season.id === 'T2' && ctx.agents.length === 7 && ctx.opened_on === '2026-09-14',
+    'el context lleva temporada, los siete agentes y la fecha de apertura', JSON.stringify({ s: ctx.season.id, n: ctx.agents.length, d: ctx.opened_on }));
+
+  // GUARDA: con la liga recortada NO se anuncia (el id es idempotente; anunciar
+  // "arrancan los siete" con menos quedaría sellado el día equivocado).
+  journalInserts.length = 0;
+  process.env.ARENA_LEAGUE = 'claude,openai,control';
+  const parcial = await announceSeasonOpen(hoy);
+  delete process.env.ARENA_LEAGUE;
+  ok(parcial.announced === false && parcial.reason === 'liga incompleta' && journalInserts.length === 0,
+    'con ARENA_LEAGUE recortado no se anuncia nada', JSON.stringify(parcial));
+}
+
+// ── UN SOLO mecanismo: el manual quedó retirado ──────────────────────────────
+console.log('liga: el mecanismo manual de anuncio ya no existe');
+{
+  const runner = await import('../api/arena-run.js');
+  ok(!('runArenaSeasonAnnounce' in runner) && !('SEASON' in runner),
+    'arena-run ya no exporta runArenaSeasonAnnounce ni SEASON (mecanismo manual retirado)',
+    JSON.stringify(Object.keys(runner).filter((k) => /season/i.test(k))));
+  const src = readFileSync(new URL('../api/arena-run.js', import.meta.url), 'utf8');
+  ok(!/action === 'announce'/.test(src), "el handler ya no atiende ?action=announce");
+  // El status legado SIGUE excluido del plan anterior: las filas que el
+  // mecanismo manual alcanzó a escribir siguen en el journal para siempre.
+  ok(/status not in \('season_start', 'season_started', 'rules_changed', 'season_winner'\)/.test(src),
+    'la exclusión del plan anterior cubre el status legado Y los tres de liga', 'not in (...)');
 }
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
