@@ -106,6 +106,40 @@ export const ARENA_MAX_TOKENS = (() => {
   return Number.isFinite(n) && n >= 500 && n <= 64000 ? Math.floor(n) : 6000;
 })();
 
+// ── PRESUPUESTO DE TIEMPO ────────────────────────────────────────────
+// Techo de UNA llamada al proveedor. Existe porque el reloj que manda no es el
+// de la API sino el de Vercel: si el fetch tarda más que el `maxDuration` de la
+// función, no hay error de LLM que journalear — la función entera muere con
+// FUNCTION_INVOCATION_TIMEOUT y se pierde el resultado de TODOS los agentes,
+// incluidos los que ya habían contestado.
+//
+// Por eso este número tiene que ser MENOR que el maxDuration del endpoint que
+// llama, con margen para el resto (buffet, Alpaca, escritura al journal).
+// Con maxDuration=300 y agentes en paralelo, 90s deja aire de sobra.
+//
+// Antes esto estaba hardcodeado y ASIMÉTRICO: 45s para OpenRouter y 180s para
+// Anthropic. Los 180s eran directamente imposibles de honrar — triplicaban el
+// cap real de 60s que vercel.json imponía, así que el fetch nunca llegaba a
+// abortar por su cuenta: lo mataba la función antes, sin dejar rastro.
+export const ARENA_LLM_TIMEOUT_MS = (() => {
+  const n = Number(process.env.ARENA_LLM_TIMEOUT_MS);
+  return Number.isFinite(n) && n >= 5000 && n <= 280000 ? Math.floor(n) : 90000;
+})();
+
+// Techo del TRABAJO COMPLETO de un agente en la nocturna: scan + dive, con los
+// retries del guard de fechas incluidos. Es otro número que ARENA_LLM_TIMEOUT_MS
+// porque cubre otra cosa: aquel limita UNA conexión, éste limita la cadena.
+//
+// La cuenta que importa, con los agentes en paralelo:
+//   scan (≤90s) + dive (≤90s) + Alpaca/journal ≈ 200s  <  240s  <  300s de función
+// El margen final existe para que, cuando un agente se pase, la función siga
+// viva lo suficiente para ESCRIBIR que se pasó. Un timeout que no se journalea
+// es indistinguible de una corrida que nunca ocurrió.
+export const ARENA_AGENT_DEADLINE_MS = (() => {
+  const n = Number(process.env.ARENA_AGENT_DEADLINE_MS);
+  return Number.isFinite(n) && n >= 10000 && n <= 290000 ? Math.floor(n) : 240000;
+})();
+
 // Slug de OpenRouter con override por env (ARENA_MODEL_<ID>). Un slug que el
 // proveedor retire se corrige en Vercel sin redeploy — igual que ANTHROPIC_MODEL.
 const slug = (id, fallback) => process.env['ARENA_MODEL_' + id] || fallback;
@@ -115,9 +149,16 @@ const slug = (id, fallback) => process.env['ARENA_MODEL_' + id] || fallback;
 export const FLAGSHIP_AGENT_ID = 'claude';
 
 // ── LA LIGA ───────────────────────────────────────────────────────────
-// `enabled` = la parrilla de la TEMPORADA 2: los SIETE. Los slugs de OpenRouter
-// apuntan a la clase RÁPIDA/EFICIENTE de cada casa (comparable a Haiku), no al
-// tope de gama — así se mide el modelo y no el presupuesto (ver el scope).
+// `enabled` = la parrilla de la TEMPORADA 2: los SIETE.
+//
+// OJO CON LOS TIERS — la parrilla NO es pareja y conviene saberlo al leer la
+// tabla. El scope original (docs/arena-liga-scope.md) elegía la clase
+// RÁPIDA/EFICIENTE de cada casa para medir el modelo y no el presupuesto; el
+// relanzamiento del 2026-09-15 se fue al tope de gama (GPT-6 Astra a $10/$50
+// por MTok, Grok 4.6, DeepSeek V4 Pro, Qwen Max) y `gemini` se quedó en FLASH
+// porque Google no publica su Pro de esa generación en OpenRouter. O sea: seis
+// flagship y un flash. Cualquier lectura de la tabla que compare a `gemini`
+// contra los demás carga ese confound — no es el modelo, es el peso.
 // ── MODELOS DE LA TEMPORADA (relanzamiento 2026-09-15) ────────────────
 // Slug efectivo por agente. `ARENA_MODEL_<ID>` SIEMPRE gana: es el tornillo con
 // el que Lety corrige un slug sin redeploy, y el mecanismo por el que los slugs
@@ -127,10 +168,15 @@ export const FLAGSHIP_AGENT_ID = 'claude';
 // catálogo del proveedor:
 //   - anthropic: SÍ. El slug de Fable 5.1 (ARENA_ANTHROPIC_MODEL, definido en
 //     _lib/model.js) está en el catálogo vigente.
-//   - openrouter: NO. Los cinco defaults siguen la convención `vendor/modelo`
-//     de OpenRouter pero NO se pudieron verificar contra
+//   - openrouter · gemini: SÍ. `google/gemini-3.8-flash` salió del catálogo
+//     vivo en la corrida de /api/arena-smoke?catalog=1 del 2026-09-15.
+//   - openrouter · los otros cuatro: NO. Siguen la convención `vendor/modelo`
+//     de OpenRouter pero NO se verificaron contra
 //     https://openrouter.ai/api/v1/models (egress bloqueado desde el entorno
-//     donde se escribieron). Son CANDIDATOS, no hechos.
+//     donde se escribieron). Son CANDIDATOS, no hechos. El smoke del
+//     2026-09-15 ya devolvió `exact` para openai/grok/deepseek: falta bajar
+//     ese resultado acá, y qwen todavía espera decisión (`qwen/qwen3.8-max`
+//     no existe; el catálogo ofrece `qwen/qwen3.8-max-0902`).
 //
 // El candado: un agente con `slug_verified:false` y SIN `ARENA_MODEL_<ID>`
 // puesta NO corre — `runArenaDecide` journalea `aborted_unverified_model` y no
@@ -185,9 +231,15 @@ export const ARENA_AGENTS = [
     alpaca: 'GROK', house: 'us', control: false, phase: 'B', enabled: true,
   },
   {
-    id: 'gemini', name: 'Gemini', model_label: 'Gemini 3.8 Pro',
-    provider: 'openrouter', model: slug('GEMINI', 'google/gemini-3.8-pro'), persona: 'Gemini PM',
-    slug_verified: false, caps: CAPS_OR,
+    id: 'gemini', name: 'Gemini', model_label: 'Gemini 3.8 Flash',
+    // FLASH, no Pro, y es una decisión de Lety (2026-09-15), no un descuido:
+    // `google/gemini-3.8-pro` NO EXISTE en el catálogo de OpenRouter. El tope
+    // de gama de Google que sí está es 3.1 y en preview, así que la elección
+    // real era "una generación atrás en preview" o "la generación correcta un
+    // tier abajo". Ganó la generación. Costo: Gemini corre en otro peso que los
+    // otros cinco (ver la nota de tiers arriba) — se sabe y se acepta.
+    provider: 'openrouter', model: slug('GEMINI', 'google/gemini-3.8-flash'), persona: 'Gemini PM',
+    slug_verified: true, caps: CAPS_OR,
     archetype: { name: 'el ordenado', voice: 'Todo cabe en un marco limpio. Clasificas y ordenas; tu titular suena a conclusión bien archivada.' },
     alpaca: 'GEMINI', house: 'us', control: false, phase: 'B', enabled: true,
   },

@@ -89,12 +89,12 @@ import { ADMISSION, resolveAdmission, partitionByAdmission } from './_lib/arena-
 import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
 // LIGA multi-modelo: el registry (quién compite, con qué modelo/cuenta/persona)
 // y el dispatch de proveedor (Anthropic directo vs OpenRouter, forma normalizada).
-import { callArenaLLM, providerKey, effectiveParams, sameParams } from './_lib/arena-model.js';
+import { callArenaLLM, providerKey, effectiveParams, sameParams, withDeadline } from './_lib/arena-model.js';
 // TITULAR de la corrida (voz del arquetipo). Llamada APARTE y POSTERIOR: el
 // arquetipo NUNCA entra al prompt que decide — ver el candado del control en el
 // encabezado de _lib/arena-voice.js.
 import { generateHeadline } from './_lib/arena-voice.js';
-import { ARENA_AGENTS, ARENA_SEASON, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, modelSlugResolved, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
+import { ARENA_AGENTS, ARENA_SEASON, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, ARENA_AGENT_DEADLINE_MS, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, modelSlugResolved, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
 // CADENCIA POR EVENTO: el corte de fecha y las constantes del vigilante.
 // El runner solo necesita saber CUÁNDO deja de correr el cron nocturno y qué
 // dice el reglamento nuevo; la lógica de disparadores vive en su módulo.
@@ -2120,7 +2120,14 @@ export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
       headline: `${symbols.join(', ')} — que tienes en el libro — ya reportó: ${symbols.map((sym) => `${sym} ${reports[sym].when}`).join(' · ')}.`,
     };
     try {
-      const r = await runArenaDecide({ baseUrl, now, agent, caches, event });
+      // Mismo reloj que la liga: es el mismo runArenaDecide, con los mismos
+      // dos tiros al LLM por agente.
+      const r = await withDeadline(
+        runArenaDecide({ baseUrl, now, agent, caches, event }),
+        ARENA_AGENT_DEADLINE_MS,
+        () => ({ status: 'timeout', orders: 0,
+          error: `el agente no terminó en ${Math.round(ARENA_AGENT_DEADLINE_MS / 1000)}s (scan+dive). Los demás siguieron.` }),
+      );
       return { id: agent.id, name: agent.name, model: agent.model, event_symbols: symbols, ...r };
     } catch (err) {
       return { id: agent.id, name: agent.name, status: 'error', orders: 0, error: String((err && err.message) || err) };
@@ -2196,9 +2203,19 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   const getBuffet = () => (buffetPromise = buffetPromise || gatherContext({ baseUrl, now }));
   const caches = { series: new Map(), dive: new Map() };
 
+  // RELOJ POR AGENTE. El try/catch de acá abajo ya aislaba los ERRORES de un
+  // agente; lo que no aislaba era su LENTITUD. Con Fable y Astra una corrida
+  // tarda bastante más que con Haiku, y un solo agente colgado se lleva puesta
+  // la función entera: los otros seis pierden su decisión aunque la hubieran
+  // terminado. El deadline convierte eso en una fila `timeout` journaleable.
   const results = await Promise.all(agents.map(async (agent) => {
     try {
-      const r = await runArenaDecide({ baseUrl, now, agent, getBuffet, caches });
+      const r = await withDeadline(
+        runArenaDecide({ baseUrl, now, agent, getBuffet, caches }),
+        ARENA_AGENT_DEADLINE_MS,
+        () => ({ status: 'timeout', orders: 0,
+          error: `el agente no terminó en ${Math.round(ARENA_AGENT_DEADLINE_MS / 1000)}s (scan+dive). Los demás siguieron.` }),
+      );
       return { id: agent.id, name: agent.name, model: agent.model, ...r };
     } catch (err) {
       return { id: agent.id, name: agent.name, status: 'error', orders: 0, error: String((err && err.message) || err) };
