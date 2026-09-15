@@ -64,6 +64,10 @@
     {
       "source": "/api/liga/eventos",
       "destination": "/api/liga-eventos"
+    },
+    {
+      "source": "/api/liga/libros",
+      "destination": "/api/liga-libros"
     }
   ],
   "crons": [

@@ -575,6 +575,70 @@ veces.
 
 ---
 
+## B11 · `/api/liga/libros` — el libro de cada agente, y cómo llegó a él
+
+`api/liga-libros.js` · tests en `tests/arena-liga-libros.test.mjs`
+
+Hermano de `/api/liga/eventos`. Aquel cuenta lo que **pasó** (órdenes, rechazos,
+cambios de líder); éste cuenta lo que el agente **decidió** y, sobre todo, **cómo
+investigó** — que es lo más publicable de todo el proyecto y lo que nadie más
+está mostrando.
+
+```bash
+curl -s "$BASE/api/liga/libros?dias=1" | jq '.libros[0] | {fuente, agente, lente, portafolio, investigacion}'
+```
+
+Por agente: **portafolio objetivo** · **tesis por posición** · **secuencia de
+investigación** · **lente del día**.
+
+### La secuencia es una historia, no ocho volcados
+
+> *"buscó semis con RVOL alto → leyó las noticias de NVDA → pidió la ficha de
+> AMD → no compró ninguna"*
+
+Eso es una historia. Ocho volcados de datos no lo son. Acá viaja el **resumen**
+de cada llamada (herramienta, argumentos ya acotados, cuántas filas, si se
+truncó), **nunca** el resultado completo. El completo sí se journalea —el replay
+lo necesita— pero moverlo por un feed público que no lo usa sería pagarlo en
+cada carga.
+
+### La fuente nunca se infiere
+
+Lee `arena_journal` **y** `arena_shadow_journal`, y **cada libro dice de cuál
+vino**. Confundir una decisión de sombra con una real es exactamente el error
+que las tablas separadas existen para impedir; publicarlas juntas sin etiqueta
+sería re-crear el problema una capa más arriba.
+
+Mientras el contrato nuevo corra solo en sombra, éste es el **único** lugar
+donde se puede ver un portafolio objetivo.
+
+### El control va marcado, y el modelo va con su etiqueta
+
+El control es el **piso de ruido**: leer su resultado como el de un competidor
+más invalida la única referencia que hace significativo cualquier delta entre
+modelos. Va con una nota que explica qué significa, no solo una bandera.
+
+El modelo sale como **etiqueta legible** (`model_label`), nunca como slug de
+API: el slug cambia con un override de env var, y publicarlo haría que la tabla
+de la liga dijera cosas distintas según qué env vars estuvieran puestas ese día.
+
+### La lente viaja con su advertencia
+
+No basta con publicar `lens: "momentum"`. Va con la nota de que es un **confound
+deliberado**: dos agentes con lentes distintas el mismo día **no son comparables
+ese día**.
+
+### Una corrida del contrato viejo sale con `portafolio: null`
+
+Y eso **no es un hueco**: dice qué contrato corrió ese día.
+
+Mismas restricciones que `/eventos` y `/audit`: cero writes, sin `ensureSchema`,
+sin `beat` (latir acá enmascararía un cron muerto), sin importar nada del camino
+de decisión, y sin proyectar los prompts completos — son material para
+reconstruir la corrida, no material de show.
+
+---
+
 ## B4 · CADENCIA: tres rondas fijas y la nocturna a reporte
 
 `_lib/arena-watch.js` (`FIXED_ROUNDS`, `fixedRoundDue`, `riskNetDue`) · tests en
