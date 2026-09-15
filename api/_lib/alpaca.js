@@ -349,3 +349,43 @@ export async function getFiftyTwoWeek(symbols = [], { creds, now = new Date(), w
   }
   return out;
 }
+
+// ─────────────────── NOTICIAS (tablero B2 · herramientas B3) ───────────────────
+// Alpaca sirve el feed de Benzinga en el host de datos. Se usa ESTE y no
+// Finnhub para el tablero por una razón concreta: Alpaca devuelve las noticias
+// de UNA LISTA de símbolos en UNA llamada, y el tablero necesita los titulares
+// de ~600 nombres. Finnhub es por símbolo — 600 llamadas.
+//
+// Finnhub sigue siendo el respaldo POR TICKER (la herramienta `noticias` de B3),
+// donde la pregunta es otra y una llamada alcanza.
+//
+// `symbols` vacío = el feed general del mercado. El `limit` es de Alpaca y tope
+// 50 por página; acá NO se pagina a propósito — el tablero quiere los titulares
+// de hoy, no el archivo.
+// Tope de símbolos que caben en la URL sin que el servidor la rechace.
+export const NEWS_SYMBOL_CAP = 100;
+
+export async function getNews({ symbols = [], limit = 50, start = null, creds, includeContent = false } = {}) {
+  const params = new URLSearchParams();
+  const syms = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
+  // La URL tiene un largo máximo y ~600 símbolos no entran. Con más de
+  // NEWS_SYMBOL_CAP se pide el feed GENERAL y se filtra del lado nuestro: es
+  // preferible a mandar una URL que el servidor va a rechazar entera.
+  if (syms.length && syms.length <= NEWS_SYMBOL_CAP) params.set('symbols', syms.join(','));
+  params.set('limit', String(Math.max(1, Math.min(50, Math.floor(limit) || 50))));
+  params.set('include_content', includeContent ? 'true' : 'false');
+  params.set('exclude_contentless', 'true');
+  if (start) params.set('start', start);
+  const data = await alpacaDataFetch('/v1beta1/news?' + params.toString(), creds);
+  const list = (data && data.news) || [];
+  return (Array.isArray(list) ? list : []).map((n) => ({
+    id: n.id,
+    headline: String(n.headline || '').trim(),
+    summary: String(n.summary || '').trim(),
+    source: n.source || null,
+    created_at: n.created_at || n.updated_at || null,
+    symbols: (n.symbols || []).map((x) => String(x).toUpperCase()),
+    url: n.url || null,
+  })).filter((n) => n.headline);
+}
+

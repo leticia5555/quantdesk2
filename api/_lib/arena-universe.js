@@ -50,7 +50,7 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { sql } from './db.js';
-import { getMovers, getMostActives } from './alpaca.js';
+import { getMovers, getMostActives, getFiftyTwoWeek } from './alpaca.js';
 import { ADMISSION, resolveAdmission, isAdmissible } from './arena-admission.js';
 import { marketDay } from './arena-buffet-cache.js';
 
@@ -256,6 +256,18 @@ export async function buildUniverse({
     else rechazados.push({ symbol: sym, reason: v.reason, ...(v.missing ? { missing: v.missing } : {}) });
   }
 
+  // ── RANGO DE 52 SEMANAS del universo admitido ──────────────────
+  // Se computa ACÁ, en el cron pre-apertura, y no en la corrida: son ~600
+  // símbolos × 52 barras semanales, o sea 6 llamadas de datos que la corrida
+  // del PM no puede pagar tres veces al día. Y no hace falta que las pague: el
+  // máximo y el mínimo de 52 semanas salen de barras CERRADAS, así que son un
+  // hecho del día — el tablero los lee y los compara contra el precio vivo.
+  let fiftyTwo = {};
+  if (admitidos.length) {
+    try { fiftyTwo = await (deps.getFiftyTwoWeek || getFiftyTwoWeek)(admitidos, { creds, now }); }
+    catch (e) { errors.fifty_two_week = String((e && e.message) || e); }
+  }
+
   // De dónde salió el universo, en una palabra, para el journal.
   const source = indexSyms.size === 0
     ? (admitidos.length ? 'movers_only' : 'empty')
@@ -269,6 +281,10 @@ export async function buildUniverse({
     symbols: admitidos.sort(),
     from_index: admitidos.filter((s) => indexSyms.has(s)),
     from_day: admitidos.filter((s) => !indexSyms.has(s)),
+    // { SYMBOL: {high_52w, low_52w, last, pct_from_high, pct_from_low} }. Es el
+    // insumo de los breakouts del tablero, precomputado una vez por día.
+    fifty_two_week: fiftyTwo,
+    fifty_two_week_count: Object.keys(fiftyTwo).length,
     indices: {
       sp500: { source: sp.source, built_at: sp.built_at, count: sp.symbols.length, age_days: sp.age_days ?? null, stale: !!sp.stale, note: sp.note || null },
       nasdaq100: { source: nq.source, built_at: nq.built_at, count: nq.symbols.length, age_days: nq.age_days ?? null, stale: !!nq.stale, note: nq.note || null },

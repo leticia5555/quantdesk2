@@ -91,6 +91,8 @@ import { cachedDayFetch } from './_lib/arena-buffet-cache.js';
 import { buildBuffetV15, BUFFET_V15_TARGET } from './_lib/arena-buffet.js';
 // B1: el universo del día (~600), precomputado por su cron pre-apertura.
 import { loadUniverse } from './_lib/arena-universe.js';
+// B2: EL TABLERO — lo que los siete miran, idéntico, en el prefijo cacheado.
+import { buildBoard, renderBoard, BOARD_TOKEN_HARD_CAP } from './_lib/arena-board.js';
 // A4c: el filtro de admisión del universo, UNO para todos los canales.
 import { ADMISSION, resolveAdmission, partitionByAdmission } from './_lib/arena-admission.js';
 import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
@@ -232,6 +234,7 @@ export const estimateTokens = (s) => Math.ceil(String(s || '').length / 4);
 // cacheado y tiene que ser fácil ver que ninguno trae un dato del día; (b) un
 // test los recorre para verificar justo eso.
 export const STABLE_BLOCKS = {
+  board: "THE MARKET BOARD — the board is the market, not a list of picks. Nobody pre-selected anything in it for you: it shows what moved, what traded, what broke its range, what reports soon and what was written about, and WHICH of those deserve attention is your call. Read the column labels: a price marked `live` is the current trade and a return marked `CLOSED bars` is through the last completed session — they are different clocks and you should not mix them in one sentence. RVOL is today's volume over its 20-session average, and INTRADAY IT READS LOW because the day is not over while the average is of full sessions: a 1.0 at mid-morning is already heavy volume. A section the board says was TRUNCATED is not empty — it did not fit, so do not conclude there was nothing there. A name absent from the board is not a name that did nothing: the board shows the extremes of a ~600 name universe, not all of it.",
   universe: "TODAY'S UNIVERSE — `universe.candidates` is the day's investable list, rebuilt this morning from three DIFFERENT questions, not one: which names MOVED (the day's biggest gainers and losers), which names TRADED (highest dollar volume — a name can move 8% on no volume, or trade $2B without moving), and which names BROKE their range (at or within `universe.near_52w_pct`% of a 52-week high or low, computed from CLOSED weekly bars, so the current week is excluded). Every candidate carries `flags` naming which of those it came from. A name with SEVERAL flags is not louder, it is DIFFERENT: it moved AND traded AND broke out. Every name here already passed one admission filter (price, market cap, dollar volume) — the list is not filtered for quality, only for being investable, so a name appearing is not a recommendation. `counts` tells you how many were dropped before you saw it.",
   equity: 'EQUITY — `equity_total_incl_cash` is the TOTAL value of the book: your positions PLUS your cash. `cash_included_in_equity` is the part of that same total that is not invested — it is NOT an extra amount on top. Do not add them together, and size positions as a fraction of the total.',
   earnings_timing: 'EARNINGS TIMING — each entry in `earnings_this_week` carries `when`, the distance from today ALREADY COMPUTED for you ("in 2 days (Wed Aug 26, AMC)", "today (Mon Aug 24, BMO)"). Use that label as-is when you mention a report; do not re-derive it from `date`, and never call a report scheduled for a later date "today" or "tonight". BMO = before the market opens that day, AMC = after it closes.',
@@ -259,6 +262,7 @@ RULES:
 - Only pick tickers grounded in the context or the portfolio below. Do not invent tickers or prices.
 
 HOW TO READ WHAT YOU ARE GIVEN (these fields are pre-computed for you — quote them, do not re-derive them):
+${STABLE_BLOCKS.board}
 ${STABLE_BLOCKS.universe}
 ${STABLE_BLOCKS.equity}
 ${STABLE_BLOCKS.earnings_timing}
@@ -565,6 +569,11 @@ const BUFFET_TIMEOUT_MS = {
 // error, igual que cualquier otro canal.
 const BUFFET_V15_ENABLED = process.env.ARENA_BUFFET_V15 !== '0';
 
+// B2 · EL TABLERO. Freno de mano propio, separado del de v1.5: son dos piezas
+// distintas (una elige candidatos, la otra muestra el mercado) y tienen que
+// poder apagarse por separado. Prendido por default.
+const BOARD_ENABLED = process.env.ARENA_BOARD !== '0';
+
 const DAY_CACHED_CHANNELS = new Set(
   String(process.env.ARENA_BUFFET_DAY_CACHE || 'insiders').split(',').map((x) => x.trim()).filter(Boolean),
 );
@@ -764,6 +773,29 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
     }
   }
 
+  // ── B2 · EL TABLERO ───────────────────────────────────────────────
+  // Se arma DESPUÉS del universo y de los earnings porque los usa a los dos, y
+  // ANTES del índice de atribución porque sus nombres también cuentan como
+  // procedencia. Solo agrega lo INTRADÍA: el universo y el rango de 52 semanas
+  // ya vienen precomputados del cron pre-apertura.
+  let board = null;
+  let boardRender = null;
+  if (BOARD_ENABLED) {
+    try {
+      board = await buildBoard({
+        universe: universeBase, creds: alpacaCreds(), now,
+        earnings: earnings_this_week,
+      });
+      boardRender = renderBoard(board, { budget: BOARD_TOKEN_HARD_CAP });
+      for (const [k, v] of Object.entries(board.errors || {})) fetch_errors['board:' + k] = v;
+    } catch (e) {
+      // El tablero es la pieza más nueva y la más cara: su caída NO puede
+      // costar la corrida. Sin él, el prompt vuelve a los canales de siempre.
+      fetch_errors.board = String((e && e.message) || e);
+      unavailable.push('board');
+    }
+  }
+
   const channelsByTicker = buildChannels({ movers, earnings: earnings_this_week, reported: recently_reported, insiders: notable_insider_buys, screener });
   // El universo v1.5 también entra al índice de atribución: sin esto, una
   // acción sobre un nombre que solo llegó por ese canal se journalearía con
@@ -778,6 +810,17 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   }
 
   return {
+    // B2 · EL TABLERO, ya renderizado. Va como TEXTO y no como objeto porque
+    // el renderizador es quien respeta el presupuesto de tokens: serializar el
+    // objeto acá lo saltaría y el prefijo cacheado crecería sin control.
+    board: boardRender ? { text: boardRender.text, tokens_est: boardRender.tokens_est } : null,
+    // La medición completa del tablero, para el journal: qué sección creció,
+    // qué se recortó y cuánto del universo quedó cubierto.
+    board_meta: boardRender ? {
+      ...boardRender, text: undefined,
+      universe_size: board.universe_size, covered: board.covered, coverage_pct: board.coverage_pct,
+      errors: board.errors,
+    } : null,
     movers, earnings_this_week,
     // BUFFET v1.5 — SOLO la parte que ve el PM. El diagnóstico (unavailable,
     // errors, admission.rejected) se queda afuera a propósito: ya viaja en
@@ -950,12 +993,29 @@ export const SHARED_BUFFET_FIELDS = [
 ];
 
 export function buildSharedContext(buffet) {
+  const partes = [];
+  // B2 · EL TABLERO primero: es el encuadre del mercado y lo que el PM mira
+  // antes que nada. Va como TEXTO tabular ya renderizado — el renderizador es
+  // quien respeta el presupuesto de tokens, y volver a serializarlo acá lo
+  // saltaría.
+  if (buffet && buffet.board && buffet.board.text) {
+    partes.push('== MARKET BOARD == (identical for every agent in this run; you decide what deserves attention)');
+    partes.push(buffet.board.text);
+    partes.push('');
+  }
+  // Los canales que el tablero NO cubre (insider buys, el screener
+  // determinista, y los movers de la fuente vieja mientras se comparan las
+  // dos). Siguen en JSON: son pocas filas con campos heterogéneos, donde la
+  // tabla no compra nada.
   const buffetForLlm = {};
   for (const k of SHARED_BUFFET_FIELDS) if (buffet && buffet[k] !== undefined) buffetForLlm[k] = buffet[k];
-  return [
-    'MARKET CONTEXT (QuantDesk endpoints, identical for every agent in this run):',
-    JSON.stringify(buffetForLlm),
-  ].join('\n');
+  // OJO: el literal 'MARKET CONTEXT' es CONTRATO. `_lib/arena-audit.js` lo usa
+  // como marcador para reconstruir el buffet de una corrida (jsonAfterMarker), y
+  // las filas ya journaleadas lo tienen. Renombrarlo deja ciega la auditoría de
+  // todo el histórico sin que nada falle a la vista.
+  partes.push('MARKET CONTEXT (QuantDesk channels the board does not cover; identical for every agent in this run)');
+  partes.push(JSON.stringify(buffetForLlm));
+  return partes.join('\n');
 }
 
 // ── user prompt del DIVE: portfolio + tesis del scout + candidatos CON su

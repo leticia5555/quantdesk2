@@ -179,6 +179,22 @@ global.fetch = async (url, opts = {}) => {
     if (u.includes('/screener/stocks/most-actives')) {
       return jsonReply({ most_actives: [{ symbol: 'AAPL', volume: 9e7, trade_count: 800000 }], last_updated: today + 'T18:00:00Z' });
     }
+    // Tablero B2: snapshots (precio/volumen vivos) y noticias.
+    if (u.includes('/v2/stocks/snapshots')) {
+      const syms = decodeURIComponent((u.match(/symbols=([^&]+)/) || [])[1] || '').split(',').filter(Boolean);
+      const snapshots = {};
+      syms.forEach((sym, i) => {
+        snapshots[sym] = {
+          latestTrade: { p: 100 + i, t: today + 'T15:00:00Z' },
+          dailyBar: { o: 99, c: 100 + i, v: 5e6 + i },
+          prevDailyBar: { c: 100 },
+        };
+      });
+      return jsonReply({ snapshots });
+    }
+    if (u.includes('/v1beta1/news')) {
+      return jsonReply({ news: [{ id: 1, headline: 'Broker upgrades AAPL to Buy', symbols: ['AAPL'], created_at: today + 'T14:00:00Z', source: 'test' }] });
+    }
     if (u.includes('/v2/stocks/bars')) {
       // Barras SEMANALES para el máx/mín de 52 semanas.
       const bars = {};

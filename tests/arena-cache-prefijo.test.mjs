@@ -84,14 +84,22 @@ console.log('\n── el piso del mínimo cacheable ──');
 {
   ok(ANTHROPIC_CACHE_MIN_TOKENS === 1024, 'el piso declarado es 1.024 tokens', String(ANTHROPIC_CACHE_MIN_TOKENS));
 
+  // EL GUARD, probado con un prefijo corto sintético y NO con el system real.
+  // El system real cambia de tamaño cuando se le agrega un bloque (con B2 ya
+  // pasa el piso solo, que es mejor todavía), y atar el test a su tamaño
+  // convertiría este candado en algo que se rompe cada vez que el prompt crece.
+  // Lo que tiene que seguir siendo cierto es que un prefijo corto se DECLARA.
+  const corto = cachePrefixReport(fable, 'un system prompt cortito');
+  ok(corto.status === 'below_min', 'un prefijo corto se marca below_min — el bug original era que esto pasaba en silencio', `${corto.tokens_est} tokens`);
+  ok(/NO llega al mínimo/.test(corto.note || ''), 'y el reporte lo DICE en vez de callarlo', corto.note);
+  ok(/IGNORAR EN SILENCIO/.test(corto.note || ''), 'nombrando la consecuencia: el marcador se ignora sin avisar');
+
   const solo = cachePrefixReport(fable, scanSystem);
-  ok(solo.status === 'below_min', 'el reglamento del SCAN SOLO no llega al piso — que era exactamente el bug', `${solo.tokens_est} tokens`);
-  ok(/NO llega al mínimo/.test(solo.note || ''), 'y el reporte lo DICE en vez de callarlo', solo.note);
-  ok(/IGNORAR EN SILENCIO/.test(solo.note || ''), 'nombrando la consecuencia: el marcador se ignora sin avisar');
+  console.log(`     · system del SCAN hoy: ~${solo.tokens_est} tokens (piso ${ANTHROPIC_CACHE_MIN_TOKENS})`);
 
   const con = cachePrefixReport(fable, [scanSystem, shared]);
   ok(con.status === 'ok', 'reglamento + contexto compartido SÍ cruza el piso', `${con.tokens_est} tokens vs piso ${con.min_tokens}`);
-  ok(con.tokens_est > solo.tokens_est, 'y el contexto compartido es lo que lo cruza');
+  ok(con.tokens_est > solo.tokens_est, 'y el contexto compartido lo hace crecer todavía más');
 
   const dive = cachePrefixReport(fable, buildDiveSystemPrompt('Claude PM'));
   ok(dive.status === 'ok', 'el system del DIVE pasa el piso SOLO: cachea todos los días, no solo dentro de una corrida', `${dive.tokens_est} tokens`);

@@ -404,6 +404,88 @@ inválido, o sea una corrida entera perdida. `stop_reason` se normaliza también
 para OpenRouter (`finish_reason: 'length'` → `max_tokens`), así el diagnóstico
 existe para los siete agentes y no solo para los de Anthropic.
 
+## B2 · EL TABLERO
+
+`_lib/arena-board.js` · tests en `tests/arena-tablero.test.mjs`
+
+Lo que los siete miran, **idéntico para todos**, en el prefijo cacheado. Cambia
+qué es el prompt: el buffet era *una lista de candidatos que nosotros elegimos*;
+el tablero es *el mercado*, y quién es candidato lo decide el PM.
+
+| Sección | Reloj | De dónde sale |
+|---|---|---|
+| Índices + VIX | **vivo** (% vs cierre anterior) | snapshots de Alpaca |
+| Calor por sector (11 ETFs GICS) 1d/5d/1m | **velas cerradas** | barras diarias |
+| Top 30 gainers / losers **del universo** | **vivo** | snapshots |
+| Top 20 por RVOL | **vivo** (sesgado, ver abajo) | volumen del día / promedio 20d |
+| Breakouts de 52 semanas | **barras semanales cerradas** | precomputado por el cron |
+| Earnings, próximos 5 días | — | el canal de siempre |
+| Titulares M&A / upgrades / downgrades | hoy | Alpaca News |
+
+Once sectores y no trece: `/api/sectors` agrega SOXX e IBIT porque son los dos
+movers de titular de una audiencia retail, pero **no son sectores GICS**. Un
+"calor por sector" con dos filas que no son sectores mide otra cosa.
+
+El **libro** de cada agente y sus últimas 3 decisiones **no** están acá: son lo
+único que varía entre agentes y van del lado volátil del corte. Si entraran, los
+siete tendrían prefijos distintos y la caché no serviría para nada.
+
+### El presupuesto de tokens es una regla, no una esperanza
+
+3-4K. El renderizador es **tabular, no JSON**, y ésa es la decisión que lo hace
+caber: `NVDA 189.2 +8.1 rv3.2` son ~12 tokens; el mismo dato como
+`{"symbol":"NVDA","price":189.2,...}` son ~30. Sobre 100 filas, eso es la
+diferencia entre caber y no caber. Se **mide** por sección y se journalea.
+
+Cuando no cabe, se recorta **por la cola** y se **dice** cuál sección se cayó —
+nunca en el medio. Una sección a medias es una lista que el PM lee como
+completa. Y el recorte tiene **piso**: nunca baja de índices + calor por sector,
+porque un tablero sin encuadre es peor que uno recortado. Si el piso deja el
+texto por encima del presupuesto, `budget_respected: false` lo declara en vez de
+devolver un número pasado en silencio.
+
+### Tres relojes, etiquetados
+
+Mezclar relojes sin decirlo es publicar un número correcto con la semántica
+equivocada. El tablero etiqueta cada columna:
+
+- **RVOL intradía lee bajo** y el tablero lo avisa: a las 10:30 el volumen lleva
+  una hora contra un promedio de sesiones **completas**, así que un RVOL de 1.0
+  a esa hora ya es mucho volumen. No se "corrige" con una curva intradía
+  inventada — se declara.
+- El **calor por sector** y el **rango de 52 semanas** salen de velas cerradas.
+- El **precio del día** es vivo, a propósito: el PM decide ahora.
+
+### Lo que no se paga por corrida
+
+El universo y su rango de 52 semanas los precomputa el cron pre-apertura. El
+tablero solo agrega lo intradía. Sin eso, cada corrida pagaría ~600 símbolos ×
+52 barras **tres veces al día** por un dato que no cambia dentro del día.
+
+### Cobertura, reportada
+
+Un tablero que cubre 120 de 600 nombres **no es el mismo tablero**.
+`coverage_pct` lo dice sin que haya que reconstruirlo. Un nombre sin precio vivo
+no entra: no se inventa una fila.
+
+### El clasificador de titulares es tonto y explicable a propósito
+
+El tablero no clasifica noticias: elige cuáles de los titulares de hoy caben en
+el espacio que tiene. Un falso positivo cuesta una línea; un clasificador que
+nadie puede auditar cuesta la confianza en el tablero entero.
+
+**El orden de las reglas importa** y fue el primer bug: `"Broker upgrades NVDA
+to Buy"` contiene `to buy` y caía en M&A — el tablero publicaba una fusión que
+no existía. Las acciones de rating van **antes**: `upgrade`/`downgrade` son
+inequívocas, `to buy` no.
+
+Y solo entran titulares de nombres **del universo**: uno sobre una empresa que
+el PM no puede comprar es ruido que paga tokens.
+
+**Freno de mano:** `ARENA_BOARD=0`, sin deploy.
+
+---
+
 ## B1 · EL UNIVERSO (~600 nombres)
 
 `_lib/arena-universe.js` · cron `/api/arena-universe` · tests en
@@ -1115,6 +1197,8 @@ ya conocidos, y `job=audit` descubre los nuevos a medida que aparezcan.
 | `FMP_API_KEY` | — | Constituyentes del S&P 500 / Nasdaq 100. Sin ella el universo cae a Neon → JSON del repo → `movers_only`. Nada se rompe. |
 | `ARENA_UNIVERSE_REFRESH_DAYS` | `7` | Cada cuánto se vuelve a pedir la composición de los índices. |
 | `ARENA_UNIVERSE_MOVERS_MAX` | `100` | Tope de nombres del día que se AGREGAN al universo (los que ya están en un índice no gastan cupo). |
+| `ARENA_BOARD` | `1` | Freno de mano del tablero (B2). `0` lo apaga sin deploy. |
+| `ARENA_BOARD_TOKEN_CAP` | `5000` | Techo DURO del tablero. El objetivo declarado son 3-4K; pasarse se journalea. |
 
 
 ## Self-fetch del buffet: causa raíz 24-jul y observabilidad
