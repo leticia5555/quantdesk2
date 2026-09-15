@@ -151,7 +151,7 @@ const conIndices = () => depsBase({ fmp: (i) => ({ index: i, source: 'fmp', buil
 const TODO_ADMISIBLE = { price: 100, marketCap: 5e11, dollarVolume: 5e9 };
 const admisionTodo = async (syms) => Object.fromEntries(syms.map((s) => [s, TODO_ADMISIBLE]));
 
-console.log('\n── 4) el tope de 100 se gasta SOLO en nombres nuevos ──');
+console.log(`\n── 4) el tope de ${MOVERS_MAX} se gasta SOLO en nombres nuevos ──`);
 {
   // 30 movers: 20 YA están en el S&P 500, 10 son nuevos. Más 120 most-actives
   // nuevos, para que el tope muerda.
@@ -171,8 +171,9 @@ console.log('\n── 4) el tope de 100 se gasta SOLO en nombres nuevos ──')
   ok(u.counts.del_dia_nuevos === MOVERS_MAX,
     `del día entran exactamente ${MOVERS_MAX}: el tope aplica a los NUEVOS`, String(u.counts.del_dia_nuevos));
   ok(u.counts.del_dia_brutos === 150, 'aunque el día trajo 150 nombres en bruto', String(u.counts.del_dia_brutos));
-  ok(u.counts.admitidos === 700, '600 + 100 = 700 — los 20 que ya estaban NO gastaron cupo', String(u.counts.admitidos));
-  ok(u.from_index.length === 600 && u.from_day.length === 100, 'y se sabe cuál vino de dónde', `${u.from_index.length}/${u.from_day.length}`);
+  ok(u.counts.admitidos === 600 + MOVERS_MAX,
+    `600 + ${MOVERS_MAX} — los 20 que ya estaban NO gastaron cupo`, String(u.counts.admitidos));
+  ok(u.from_index.length === 600 && u.from_day.length === MOVERS_MAX, 'y se sabe cuál vino de dónde', `${u.from_index.length}/${u.from_day.length}`);
   ok(u.universe_source === 'fmp', 'la fuente queda journaleada', u.universe_source);
   ok(/survivorship bias/.test(u.caveat), 'el caveat de survivorship viaja CON el dato, no en un doc que nadie abre');
 }
@@ -777,6 +778,128 @@ console.log('\n── varias URLs candidatas: la primera que sirva ──');
     JSON.stringify(r.diagnostics.intentos.map((x) => x.reason || 'ok')));
   ok(r.diagnostics.url_host === 'b.test',
     'y se dice CUÁL sirvió — sin eso, "anduvo" no dice cuál de las candidatas usar', r.diagnostics.url_host);
+}
+
+// EL PISO DE VOLUMEN SE ESTABA MIDIENDO SOBRE EL FEED EQUIVOCADO.
+//
+// EL BUG (2026-09-15): 218 rechazos por volumen, con AIG entre ellos a
+// "$8.7M/día". AIG negocia cientos de millones. El volumen salía del feed IEX
+// —UNA bolsa, ~2-3% del consolidado— así que el piso de $10M se aplicaba sobre
+// el 2-3% del volumen real: en la práctica pedía ~$400M consolidados.
+//
+// El filtro no estaba midiendo liquidez: estaba midiendo cuota de mercado de
+// IEX. Y lo traicionero es que el PRECIO de IEX está bien — solo el volumen es
+// una fracción, así que todo se veía correcto salvo el número que decidía.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── el piso de volumen se ajusta al FEED que contestó ──');
+{
+  const { reglasParaFeed, isAdmissible, MIN_DOLLAR_VOLUME_POR_FEED } = await import('../api/_lib/arena-admission.js');
+
+  const sip = reglasParaFeed('sip');
+  const iex = reglasParaFeed('iex');
+  ok(sip.min_dollar_volume === 10_000_000, 'con SIP (consolidado) el piso es el real: $10M/día', String(sip.min_dollar_volume));
+  ok(iex.min_dollar_volume === 300_000,
+    'con IEX el piso baja a $0.3M ≈ $10M consolidados asumiendo ~3%', String(iex.min_dollar_volume));
+
+  // EL CASO EXACTO DEL REPORTE.
+  const aig = { symbol: 'AIG', price: 80, marketCap: 5e10, dollarVolume: 8.7e6 };
+  ok(!isAdmissible(aig, sip).ok === false || isAdmissible(aig, iex).ok,
+    'AIG con $8.7M sobre IEX ahora ENTRA', JSON.stringify(isAdmissible(aig, iex)));
+  ok(isAdmissible(aig, iex).ok, 'AIG admitido con las reglas de IEX');
+
+  // Y el piso sigue existiendo: bajarlo no puede volverlo decorativo.
+  const microcap = { symbol: 'PENNY', price: 6, marketCap: 1.2e9, dollarVolume: 2e5 };
+  ok(!isAdmissible(microcap, iex).ok,
+    'un nombre que de verdad negocia $0.2M sobre IEX SIGUE afuera: se corrigió la unidad, no se apagó el filtro',
+    isAdmissible(microcap, iex).reason);
+
+  // Un feed que no conocemos NO afloja nada.
+  const raro = reglasParaFeed('otro_feed');
+  ok(raro.min_dollar_volume === 10_000_000,
+    'un feed desconocido se queda con el piso consolidado: aflojar sin saber sobre qué se mide sería aflojar a ciegas',
+    String(raro.min_dollar_volume));
+
+  ok(/APROXIMACIÓN/i.test(iex.volume_note || '') && /no significa/i.test(iex.volume_note || ''),
+    'la nota declara que el factor es aproximado y que NO significa que el Arena opere microcaps', iex.volume_note);
+  ok(MIN_DOLLAR_VOLUME_POR_FEED.delayed_sip === 10_000_000, 'delayed_sip también es consolidado');
+}
+
+console.log('\n── SIP primero, IEX de respaldo, y se dice cuál contestó ──');
+{
+  const { getPriceAndDollarVolume, FEED_FALLBACK_STATUS } = await import('../api/_lib/alpaca.js');
+  const barra = (sym) => ({ t: '2026-09-10T00:00:00Z', c: 100, v: 1e6 });
+
+  // Cuenta SIN plan de datos: SIP devuelve 403 y se baja a IEX.
+  const pedidos = [];
+  const anterior = process.env.ALPACA_DATA_FEED;
+  delete process.env.ALPACA_DATA_FEED;
+  global.fetch = async (url) => {
+    pedidos.push(/feed=sip/.test(url) ? 'sip' : 'iex');
+    if (/feed=sip/.test(url)) return { ok: false, status: 403, text: async () => '{"message":"subscription does not permit querying recent SIP data"}' };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ bars: { AIG: [barra('AIG'), barra('AIG')] } }) };
+  };
+  const r = await getPriceAndDollarVolume(['AIG'], { creds: { key: 'k', secret: 's' }, now: new Date('2026-09-15T18:00:00Z') });
+  ok(pedidos[0] === 'sip' && pedidos[1] === 'iex',
+    'se intenta SIP primero y recién después IEX', JSON.stringify(pedidos));
+  ok(r.feed === 'iex' && r.data.AIG,
+    'y el resultado DICE que vino de IEX — sin eso, el piso se aplicaría sobre la unidad equivocada, que es el bug entero',
+    JSON.stringify({ feed: r.feed }));
+  ok(r.intentos.length === 2 && r.intentos[0].status === 403,
+    'el intento fallido queda registrado con su status', JSON.stringify(r.intentos.map((x) => `${x.feed}:${x.status || 'ok'}`)));
+
+  // Un 500 NO es "no tenés el plan": reintentar con otro feed taparía una caída.
+  global.fetch = async () => ({ ok: false, status: 500, text: async () => 'boom' });
+  let lanzo = false;
+  try { await getPriceAndDollarVolume(['AIG'], { creds: { key: 'k', secret: 's' } }); } catch { lanzo = true; }
+  ok(lanzo, 'un 500 se propaga en vez de caer a IEX: reintentar taparía una caída de Alpaca');
+  ok(FEED_FALLBACK_STATUS.has(403) && !FEED_FALLBACK_STATUS.has(500),
+    'la lista de status que justifican el fallback está acotada y declarada');
+  if (anterior === undefined) delete process.env.ALPACA_DATA_FEED; else process.env.ALPACA_DATA_FEED = anterior;
+}
+
+console.log('\n── el canal del día: los MÁS LÍQUIDOS, no los primeros ──');
+{
+  // El orden viejo cortaba a los primeros N del screener, y "los primeros N" no
+  // quería decir nada: era el orden en que el screener los devolvió. Encima
+  // cada uno gastaba un profile2 de Finnhub, y el tier gratis corta a 60/min.
+  const volumenes = { LIQ1: 9e8, LIQ2: 8e8, LIQ3: 7e8, CHICO1: 1e6, CHICO2: 5e5 };
+  const orden = ['CHICO1', 'LIQ3', 'CHICO2', 'LIQ1', 'LIQ2'];   // como los devuelve el screener
+  const u = await buildUniverse({
+    now: HOY, moversMax: 3,
+    deps: {
+      cargarCatalogo: async () => catalogoTodoComun,
+      fetchDesdeEtf: async () => null, fetchConstituents: async () => null,
+      readStored: async () => null, readStatic: async () => null, writeStored: async () => true,
+      getMovers: async () => ({ gainers: orden.map((s2) => ({ symbol: s2, price: 40, percent_change: 5 })), losers: [], last_updated: null }),
+      getMostActives: async () => ({ most_actives: [], by: 'volume', last_updated: null }),
+      getPriceAndDollarVolume: async (syms) => ({
+        feed: 'iex',
+        data: Object.fromEntries(syms.map((s2) => [s2, { price: 40, dollarVolume: volumenes[s2] ?? 1e3 }])),
+      }),
+      resolveAdmission: async (syms) => Object.fromEntries(syms.map((s2) => [s2, { symbol: s2, price: 40, dollarVolume: volumenes[s2] ?? 1e3, marketCap: 5e9 }])),
+      getFiftyTwoWeek: async () => ({}),
+    },
+  });
+  ok(u.from_day.length === 3 && ['LIQ1', 'LIQ2', 'LIQ3'].every((x) => u.from_day.includes(x)),
+    'con tope 3 entran los TRES más líquidos, no los tres primeros que llegaron',
+    JSON.stringify(u.from_day));
+  ok(!u.from_day.includes('CHICO1'),
+    'y CHICO1, que venía PRIMERO en la lista del screener, queda afuera por líquido, no por orden');
+  ok(u.admission.feed === 'iex' && u.admission.rules.min_dollar_volume === 300_000,
+    'el universo reporta el feed y las reglas EFECTIVAS, no las nominales',
+    JSON.stringify({ feed: u.admission.feed, piso: u.admission.rules.min_dollar_volume }));
+  ok(/IEX/.test(u.admission.volume_note || ''),
+    'con la nota que explica sobre qué volumen se midió', u.admission.volume_note);
+}
+
+console.log('\n── el tope del día sale de la cuota de Finnhub ──');
+{
+  ok(MOVERS_MAX === 50,
+    'son 50 y no 100 porque cada nombre del día paga un profile2 y el tier gratis corta a 60/min', String(MOVERS_MAX));
+  const { FINNHUB_CALL_BUDGET } = await import('../api/_lib/arena-admission.js');
+  ok(MOVERS_MAX <= 60 - FINNHUB_CALL_BUDGET + FINNHUB_CALL_BUDGET && MOVERS_MAX <= FINNHUB_CALL_BUDGET + 10,
+    'y el tope del canal entra en el presupuesto de llamadas declarado',
+    `tope ${MOVERS_MAX} · presupuesto ${FINNHUB_CALL_BUDGET}`);
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');

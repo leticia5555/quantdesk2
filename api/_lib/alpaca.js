@@ -325,10 +325,51 @@ export async function getMostActives({ top = SCREENER_MAX_ACTIVES, by = 'volume'
 // Devuelve { SYMBOL: { price, dollarVolume, sessions } }. Un símbolo sin barras
 // suficientes sale AUSENTE del mapa, nunca con ceros: la admisión distingue
 // "no califica" de "no hay datos", y un cero lo convertiría en lo primero.
-export async function getPriceAndDollarVolume(symbols = [], { creds, now = new Date(), days = 20 } = {}) {
+// ── EL FEED IMPORTA, Y MUCHO MÁS DE LO QUE PARECE ────────────────────
+// EL BUG QUE LO ORIGINA: el universo rechazó 218 nombres por volumen, y entre
+// ellos AIG con "$8.7M/día". AIG negocia cientos de millones por día.
+//
+// La causa: las velas salían del feed IEX, que es UNA bolsa —~2-3% del volumen
+// consolidado—. O sea que el piso de $10M/día se estaba aplicando sobre el 2-3%
+// del volumen real: en la práctica pedía ~$400M consolidados. El filtro no
+// estaba midiendo liquidez, estaba midiendo cuota de mercado de IEX.
+//
+// Lo traicionero es que el PRECIO de IEX está bien: solo el VOLUMEN es una
+// fracción. Así que todo se veía correcto salvo el número que decidía.
+//
+// SIP es el consolidado (todas las bolsas) y requiere plan de datos. Se intenta
+// SIP primero y se cae a IEX si la cuenta no lo tiene — pero NUNCA en silencio:
+// el feed que de verdad contestó viaja en el resultado, porque el umbral que
+// hay que aplicar depende de él.
+export const FEED_FALLBACK_STATUS = new Set([401, 403, 404, 422]);
+
+export async function getPriceAndDollarVolume(symbols = [], { creds, now = new Date(), days = 20, feed: feedPreferido = null } = {}) {
   const wanted = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
-  if (!wanted.length) return {};
-  const feed = alpacaDataFeed();
+  if (!wanted.length) return { data: {}, feed: null, symbols: 0 };
+  // Si ALPACA_DATA_FEED está puesta a mano, se respeta y no se prueba nada más:
+  // una preferencia explícita no se pisa. Si no, se intenta el consolidado.
+  const pinned = String(process.env.ALPACA_DATA_FEED || '').trim().toLowerCase();
+  const orden = feedPreferido ? [feedPreferido]
+    : (pinned ? [alpacaDataFeed()] : ['sip', 'iex']);
+
+  const intentos = [];
+  for (const feed of orden) {
+    try {
+      const data = await barsPorFeed(wanted, { creds, now, days, feed });
+      intentos.push({ feed, ok: true, symbols: Object.keys(data).length });
+      return { data, feed, symbols: Object.keys(data).length, intentos };
+    } catch (e) {
+      const status = (e && e.status) || 0;
+      intentos.push({ feed, ok: false, status, error: String((e && e.message) || e) });
+      // Un 403 de SIP es "no tenés el plan", y ahí SÍ se baja a IEX. Un 500 o un
+      // timeout no: reintentar con otro feed taparía una caída de Alpaca.
+      if (!FEED_FALLBACK_STATUS.has(status)) throw e;
+    }
+  }
+  return { data: {}, feed: null, symbols: 0, intentos };
+}
+
+async function barsPorFeed(wanted, { creds, now, days, feed }) {
   const hoy = now.toISOString().slice(0, 10);
   // Se piden más días de los que se promedian: fines de semana y festivos
   // hacen que N días de calendario sean menos de N sesiones.

@@ -1368,6 +1368,45 @@ en las filas que más importan.
 
 ---
 
+### El piso de volumen se medía sobre el feed equivocado
+
+**Lo reportado:** 218 rechazos por volumen, con **AIG a "$8.7M/día"** entre
+ellos. AIG negocia cientos de millones. También BIIB, ALGN, AES — large caps.
+
+**La causa:** las velas salían del feed **IEX**, que es *una* bolsa — ~2-3% del
+volumen consolidado. El piso de $10M se estaba aplicando sobre el 2-3% del
+volumen real: en la práctica pedía **~$400M consolidados**. El filtro no estaba
+midiendo liquidez; estaba midiendo **cuota de mercado de IEX**.
+
+Lo traicionero es que el **precio** de IEX está bien. Solo el volumen es una
+fracción, así que todo se veía correcto salvo el número que decidía.
+
+#### SIP primero, IEX de respaldo, y el piso se ajusta al feed
+
+| Feed | Piso | Qué es |
+|---|---|---|
+| `sip` / `delayed_sip` | **$10M/día** | consolidado: el piso real |
+| `iex` | **$0.3M/día** | ≈ $10M consolidados asumiendo ~3% |
+| desconocido | **$10M/día** | no se afloja sin saber sobre qué se mide |
+
+Se intenta SIP primero y se cae a IEX si la cuenta no tiene el plan — **nunca en
+silencio**: el feed que contestó viaja en el resultado, porque el umbral depende
+de él. Un `403` justifica el fallback; un `500` **no**, porque reintentar con otro
+feed taparía una caída de Alpaca.
+
+**El factor es una aproximación y se declara como tal.** La cuota de IEX no es
+constante: varía por nombre y por día. $0.3M usa el extremo *generoso* del rango
+(~3%) a propósito — errar hacia dejar entrar un nombre algo menos líquido es más
+barato que volver a tirar a la mitad del S&P 500. Y el piso sigue existiendo: un
+nombre que de verdad negocia $0.2M sobre IEX sigue afuera. Se corrigió la
+**unidad**, no se apagó el filtro.
+
+`admission.rules` publica ahora las reglas **efectivas**, no las nominales:
+decir "$10M/día" mientras el piso aplicado era otro fue justo lo que hizo
+ilegible el rechazo de AIG.
+
+---
+
 ### El canal del día: 100 candidatos, 0 admitidos
 
 **Lo reportado:** de 100 candidatos del día se admitieron **cero**. 69 salieron
@@ -1396,9 +1435,20 @@ respaldo, no como criterio.
 
 #### El orden importa, y es el punto
 
-El filtro corre **antes** de gastar el tope de 100 y **antes** de pedirle a
-Finnhub el market cap de un warrant. Antes, 100 cupos se iban en ~30 acciones
-reales.
+El filtro corre **antes** de gastar el tope y **antes** de pedirle a Finnhub el
+market cap de un warrant. Antes, los cupos se iban en ~30 acciones reales.
+
+Y el corte dejó de ser arbitrario: **primero se mide el volumen en dólares**
+—una llamada por lotes, que no cuesta cuota de Finnhub— y el tope se gasta en los
+más líquidos. "Los primeros N" no quería decir nada: era el orden en que el
+screener los devolvió.
+
+**El tope bajó de 100 a 50, y el número sale de una cuota, no de un gusto.** Cada
+nombre del día que no está en un índice paga un `profile2`, y el tier gratis de
+Finnhub corta a 60/min (el deep dive del mismo run gasta ~20). Con 100, la mitad
+del canal recibía 429 y salía marcada como si no tuviera datos. No es una pérdida
+de cobertura equivalente: ahora los 50 son los **50 de mayor volumen**, no los
+primeros 50 que llegaron.
 
 Y como de cada 3 nombres del screener ~2 no son acciones, se ensanchó la entrada
 bruta: movers (50 por lado, el máximo del endpoint) + most-actives por **volumen**
