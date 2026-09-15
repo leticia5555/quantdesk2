@@ -10,9 +10,10 @@
 //   GET ?dry=1                   → lo construye y lo devuelve SIN guardar
 //   GET ?refresh=1               → fuerza el refresco de constituyentes contra
 //                                  FMP, salteando la ventana semanal
-//   GET ?emit=1                  → además devuelve los constituyentes en el
-//                                  formato EXACTO de data/universe/*.json,
-//                                  para commitear el respaldo estático
+//   GET ?emit=1                  → además IMPRIME los constituyentes (solo para
+//                                  mirarlos). NO hace falta guardarlos a mano:
+//                                  la lista se persiste sola en Neon en cuanto
+//                                  se baja de FMP — ver abajo.
 //   GET ?peek=1                  → NO construye nada: muestra qué universo hay
 //                                  guardado y de cuándo es (gratis)
 //
@@ -22,6 +23,21 @@
 //
 // NO GASTA UN TOKEN: acá no hay ninguna llamada a un LLM. Es datos de mercado y
 // una lista de constituyentes.
+//
+// ── LA LISTA SE GUARDA SOLA. NADIE COMMITEA NADA ─────────────────────
+// Cuando los constituyentes se bajan de FMP, `resolveConstituents` los escribe
+// en Neon (`arena_universe`, clave `constituents:<índice>`) en el mismo paso.
+// Eso los hace sobrevivir al deploy, a una caída de FMP y al reinicio de la
+// lambda, y es lo que convierte al cron de las 13:00 UTC en autosuficiente: la
+// primera corrida encuentra Neon vacío, baja la lista y la guarda; las
+// siguientes la leen de ahí y solo vuelven a FMP cuando cumple una semana
+// (`refreshDue`, por EDAD y no por calendario, así que un cron que no corrió el
+// lunes refresca el martes en vez de esperar al lunes siguiente).
+//
+// El JSON de `data/universe/` es SOLO el arranque en frío (Neon vacío Y FMP
+// caído el mismo día). Está vacío a propósito y no hace falta llenarlo: sin él
+// el universo sigue teniendo dos fuentes por delante. `persisted` en la
+// respuesta dice, por índice, si la lista quedó guardada.
 //
 // ENV VARS: FMP_API_KEY (opc) · FINNHUB_API_KEY (market cap de la admisión) ·
 //           ALPACA_PAPER_KEY/SECRET · DATABASE_URL · CRON_SECRET ·
@@ -109,8 +125,10 @@ export default async function handler(req, res) {
       movers_max: MOVERS_MAX,
     };
 
-    // ?emit=1 — los constituyentes en el formato EXACTO de data/universe/*.json,
-    // para copiar y pegar sin editar nada a mano (ver el README de esa carpeta).
+    // ?emit=1 — los constituyentes, para MIRARLOS. La persistencia no depende de
+    // esto: ya quedaron en Neon cuando se bajaron. El formato coincide con el de
+    // data/universe/*.json por si algún día se quiere congelar un arranque en
+    // frío, pero eso es opcional y nadie tiene que hacerlo para que B1 funcione.
     if (emit) {
       const [sp, nq] = await Promise.all([
         resolveConstituents('sp500', { now, force: false }),
@@ -121,7 +139,16 @@ export default async function handler(req, res) {
         note: 'Snapshot generado por /api/arena-universe?emit=1. Respaldo de arranque en frío; la fuente viva es FMP con refresco semanal.',
       });
       out.constituents = { sp500: snap(sp, 'sp500'), nasdaq100: snap(nq, 'nasdaq100') };
-      out.emit_hint = 'Guardalo con: jq \'.constituents.sp500\' > data/universe/sp500.json (y lo mismo para nasdaq100).';
+      out.emit_hint = 'Esto es para MIRAR. No hay que guardarlo: la lista ya quedó en Neon (ver indices[].persisted) y el cron de las 13:00 UTC la refresca solo cada 7 días.';
+    }
+
+    // Si una lista vino FRESCA de FMP pero no se pudo escribir, la próxima
+    // corrida la vuelve a pedir: no se rompe nada, pero se está pagando cuota de
+    // más y conviene que se vea.
+    const sinPersistir = Object.entries(universe.indices || {})
+      .filter(([, v]) => v && v.refreshed && v.persisted === false).map(([k]) => k);
+    if (sinPersistir.length) {
+      out.persistence_warning = `No se pudo guardar en Neon: ${sinPersistir.join(', ')}. La lista de hoy sirve igual, pero mañana se va a volver a pedir a FMP en vez de leerse de la base.`;
     }
 
     out.verdict = universe.counts.admitidos === 0

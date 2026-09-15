@@ -41,6 +41,7 @@ import { buildRebalance } from './_lib/arena-rebalance.js';
 import { createToolExecutor, TOOL_BUDGET } from './_lib/arena-tools.js';
 import { runToolLoop } from './_lib/arena-tool-loop.js';
 import { buildTail, lenteDelDia } from './_lib/arena-herding.js';
+import { buildRailMeta } from './_lib/arena-meta.js';
 import { shadowBroker, shadowJournalInsert, shadowRunId, shadowReport, ensureShadowSchema } from './_lib/arena-shadow.js';
 import { currentTier, recordRunSpend, callCost } from './_lib/arena-budget.js';
 import { marketDay } from './_lib/arena-buffet-cache.js';
@@ -144,15 +145,19 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
 
   // El gasto se registra SIEMPRE, haya salido bien o mal: una corrida abortada
   // igual gastó tokens, y un contador que solo cuenta los éxitos subestima.
-  const usage = (llm.data && llm.data.usage) || {};
+  // El acumulado del LOOP, no el de la última llamada: con herramientas el
+  // prompt entero viaja en cada vuelta, así que contar solo la última es contar
+  // una llamada de nueve — y el escalón del breaker sale de este número.
+  const usage = (loop && loop.usage_total) || (llm.data && llm.data.usage) || {};
   const costo = callCost({
     anthropicUsd: agent.provider === 'anthropic' ? anthropicCostUsd(agent.model, usage) : null,
-    providerUsd: llm.data && Number.isFinite(llm.data.cost_usd) ? llm.data.cost_usd : null,
+    providerUsd: Number.isFinite(loop && loop.cost_usd_total) ? loop.cost_usd_total
+      : (llm.data && Number.isFinite(llm.data.cost_usd) ? llm.data.cost_usd : null),
   });
   await recordRunSpend({
     agentId: agent.id, runId, phase: 'shadow', usd: costo.usd, usdSource: costo.source,
     tokens: { input: usage.input_tokens, output: usage.output_tokens, cache_read: usage.cache_read_input_tokens, cache_write: usage.cache_creation_input_tokens },
-    llmCalls: loop.turns || 1, toolCalls: executor.used, now,
+    llmCalls: (loop.usage_total && loop.usage_total.calls) || loop.turns || 1, toolCalls: executor.used, now,
   });
   ctx.cost = costo;
 
@@ -170,11 +175,28 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
   }
 
   // ── RIELES ──
-  // La metadata de admisión de cortos NO está en la sombra (no se consulta
-  // `shortable`/`easy_to_borrow` por nombre todavía), así que R9 va a rechazar
-  // cualquier corto. Eso es CORRECTO y es información: la sombra está diciendo
-  // que falta ese dato antes de que un corto real se abra sin confirmación.
-  const meta = {};
+  // La metadata por nombre (precio, sector, shortable, easy-to-borrow) se
+  // resuelve ACÁ, sobre los símbolos que el objetivo realmente nombra — no
+  // sobre el universo entero. Son unidades de nombres, no centenas, y el dato
+  // de borrow viene de la MISMA fuente que después va a aceptar o rechazar la
+  // orden (Alpaca /v2/assets).
+  //
+  // Lo que falte sale ausente y los rieles lo leen como "sin dato": R9 rechaza
+  // el corto (fail closed) y el nombre cae al bucket UNKNOWN de R6. Que ahora
+  // haya datos no afloja ningún riel — deja de rechazarlos a todos por igual.
+  const simbolosDelObjetivo = [...new Set([
+    ...Object.keys(parsed.weights || {}),
+    ...(libro.positions || []).map((p) => String((p && p.symbol) || '').toUpperCase()),
+  ].filter(Boolean))];
+  let meta = {};
+  let metaDiag = null;
+  try {
+    const rm = await buildRailMeta(simbolosDelObjetivo, { creds, now });
+    meta = rm.meta; metaDiag = { ...rm.diagnostics, errors: rm.errors };
+  } catch (e) {
+    metaDiag = { error: String((e && e.message) || e), note: 'sin metadata: R9 rechaza todo corto y R6 manda todo al bucket UNKNOWN' };
+  }
+  ctx.rail_meta = metaDiag;
   const v = validateTarget(parsed.weights, meta, RAILS);
   const trims = railTrims(libro.positions, equity, meta, RAILS);
   const rebalance = v.ok
@@ -200,6 +222,11 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
     would_place: rebalance ? rebalance.legs.length : 0,
     turnover: rebalance ? rebalance.turnover : null,
     rail_trims: trims.length,
+    rail_meta: metaDiag ? {
+      shortable_ok: metaDiag.shortable_ok, with_borrow: metaDiag.with_borrow,
+      with_sector: metaDiag.with_sector, sector_unknown_bucket: metaDiag.sector_unknown_bucket,
+      symbols: metaDiag.symbols, note: metaDiag.note || metaDiag.error || null,
+    } : null,
   };
 }
 

@@ -171,7 +171,7 @@ export async function resolveConstituents(index, { now = new Date(), force = fal
 
   const stored = await fromNeon(index);
   if (stored && !force && !refreshDue(stored.built_at, now)) {
-    return { ...stored, refreshed: false, age_days: edad(stored.built_at, now) };
+    return { ...stored, refreshed: false, stored: true, age_days: edad(stored.built_at, now) };
   }
 
   const fresh = await fromFmp(index);
@@ -183,15 +183,15 @@ export async function resolveConstituents(index, { now = new Date(), force = fal
   // FMP no contestó (o no hay key, o devolvió una lista incoherente). Lo
   // guardado sirve IGUAL aunque esté vencido — y se dice cuánto.
   if (stored) {
-    return { ...stored, refreshed: false, stale: true, age_days: edad(stored.built_at, now),
+    return { ...stored, refreshed: false, stored: true, stale: true, age_days: edad(stored.built_at, now),
       note: `FMP no contestó: se usa la lista guardada de hace ${edad(stored.built_at, now)} días. Un universo de la semana pasada es un sesgo declarado.` };
   }
   const estatico = await fromRepo(index);
   if (estatico) {
-    return { ...estatico, refreshed: false, stale: true, age_days: edad(estatico.built_at, now),
+    return { ...estatico, refreshed: false, stored: false, stale: true, age_days: edad(estatico.built_at, now),
       note: 'Arranque en frío: sin FMP y sin nada guardado, se usa el JSON del repo.' };
   }
-  return { index, source: 'none', symbols: [], built_at: null, refreshed: false,
+  return { index, source: 'none', symbols: [], built_at: null, refreshed: false, stored: false,
     note: 'Sin FMP, sin lista guardada y con el JSON del repo vacío. Los índices NO entran al universo de hoy — ver data/universe/README.md.' };
 }
 
@@ -340,8 +340,11 @@ export async function buildUniverse({
     fifty_two_week: fiftyTwo,
     fifty_two_week_count: Object.keys(fiftyTwo).length,
     indices: {
-      sp500: { source: sp.source, built_at: sp.built_at, count: sp.symbols.length, age_days: sp.age_days ?? null, stale: !!sp.stale, note: sp.note || null },
-      nasdaq100: { source: nq.source, built_at: nq.built_at, count: nq.symbols.length, age_days: nq.age_days ?? null, stale: !!nq.stale, note: nq.note || null },
+      // `persisted` es la pregunta operativa: ¿esta lista sobrevive al próximo
+      // deploy sin que nadie la commitee? Si es false y la fuente es 'fmp', la
+      // escritura a Neon falló y mañana se vuelve a pedir la misma lista.
+      sp500: { source: sp.source, built_at: sp.built_at, count: sp.symbols.length, age_days: sp.age_days ?? null, stale: !!sp.stale, persisted: sp.stored !== false, refreshed: !!sp.refreshed, note: sp.note || null },
+      nasdaq100: { source: nq.source, built_at: nq.built_at, count: nq.symbols.length, age_days: nq.age_days ?? null, stale: !!nq.stale, persisted: nq.stored !== false, refreshed: !!nq.refreshed, note: nq.note || null },
     },
     counts: {
       indices: indexSyms.size,

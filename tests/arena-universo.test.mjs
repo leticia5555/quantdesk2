@@ -287,5 +287,83 @@ console.log('\n── la admisión caída NO vacía el universo ──');
   ok(/429/.test(u.errors.admission || ''), 'con el error registrado', u.errors.admission);
 }
 
+// ═══════════════════════════════════════════════════════════════
+// LA LISTA SE PERSISTE SOLA — nadie tiene que commitear nada.
+//
+// El arranque de B1 NO puede depender de que alguien corra `jq` en su terminal
+// y suba dos archivos: eso convierte un cron en un ritual manual, y un ritual
+// manual que nadie hace es una fuente que no existe. La lista se escribe en
+// Neon en el mismo paso en que se baja de FMP, y el cron de las 13:00 UTC la
+// refresca solo.
+//
+// Lo que se fija acá es que el ciclo cierra sin intervención: Neon vacío → se
+// baja → se guarda → mañana se lee de ahí → a los 7 días se vuelve a bajar.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── el ciclo se cierra solo: bajar → guardar → leer → refrescar ──');
+{
+  // La "base de datos": un objeto que sobrevive entre llamadas, como Neon.
+  const neon = {};
+  let llamadasAFmp = 0;
+  const deps = {
+    fetchConstituents: async (index) => {
+      llamadasAFmp++;
+      return { index, source: 'fmp', built_at: new Date(AHORA).toISOString(), symbols: listaDe(index) };
+    },
+    readStored: async (index) => neon[index] || null,
+    writeStored: async (index, snap) => { neon[index] = { ...snap, index, source: 'neon' }; return true; },
+    readStatic: async () => null,
+  };
+  let AHORA = HOY.getTime();
+
+  // Día 1: Neon vacío. El cron baja y guarda, sin que nadie toque nada.
+  const d1 = await resolveConstituents('sp500', { now: new Date(AHORA), deps });
+  ok(d1.source === 'fmp' && d1.stored === true,
+    'Neon vacío: la primera corrida baja de FMP y la GUARDA en el mismo paso', `${d1.source}/stored=${d1.stored}`);
+  ok(neon.sp500 && neon.sp500.symbols.length === 500,
+    'la lista quedó persistida — sobrevive al deploy sin pasar por el repo', String(neon.sp500 && neon.sp500.symbols.length));
+
+  // Día 2: la corrida siguiente NO vuelve a FMP.
+  AHORA += 86400000;
+  const d2 = await resolveConstituents('sp500', { now: new Date(AHORA), deps });
+  ok(llamadasAFmp === 1 && d2.source === 'neon',
+    'al día siguiente se lee de Neon: no se gasta cuota de FMP para recibir el mismo archivo', `fmp=${llamadasAFmp} src=${d2.source}`);
+  ok(d2.stored === true, 'y sigue reportándose como persistida');
+
+  // Día 9: vencida por EDAD → se refresca sola, sin cron especial ni humano.
+  AHORA += 8 * 86400000;
+  const d9 = await resolveConstituents('sp500', { now: new Date(AHORA), deps });
+  ok(llamadasAFmp === 2 && d9.source === 'fmp' && d9.refreshed === true,
+    'a los 9 días el refresco semanal dispara SOLO y vuelve a guardar', `fmp=${llamadasAFmp} src=${d9.source}`);
+
+  // Y si la escritura falla, se dice: la lista de hoy sirve igual, pero mañana
+  // se va a volver a pagar la cuota. Es un aviso, no una caída.
+  const dFalla = await resolveConstituents('nasdaq100', {
+    now: new Date(AHORA), deps: { ...deps, writeStored: async () => false },
+  });
+  ok(dFalla.source === 'fmp' && dFalla.stored === false,
+    'una escritura fallida NO rompe la corrida, pero queda marcada (`stored: false`)', `stored=${dFalla.stored}`);
+}
+
+console.log('\n── el JSON del repo es opcional, no un requisito ──');
+{
+  // El seed vacío NO cuenta como respaldo, y eso es lo que hace que estar vacío
+  // sea inofensivo: con FMP o con Neon vivos, el escalón 3 no se consulta nunca.
+  const conFmp = await resolveConstituents('sp500', {
+    now: HOY,
+    deps: depsBase({
+      fmp: (i) => ({ index: i, source: 'fmp', built_at: HOY.toISOString(), symbols: listaDe(i) }),
+      repo: null,
+    }),
+  });
+  ok(conFmp.source === 'fmp' && conFmp.symbols.length === 500,
+    'con FMP arriba y el JSON del repo VACÍO, el universo sale completo igual');
+  const conNeon = await resolveConstituents('sp500', {
+    now: HOY,
+    deps: depsBase({ fmp: null, neon: { index: 'sp500', source: 'neon', built_at: HOY.toISOString(), symbols: sp500 }, repo: null }),
+  });
+  ok(conNeon.source === 'neon' && conNeon.symbols.length === 500,
+    'y con FMP caído pero Neon cargado, tampoco hace falta el repo');
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
 process.exit(failures ? 1 : 0);

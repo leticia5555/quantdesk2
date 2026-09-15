@@ -163,7 +163,7 @@ function normalizeOpenRouter(raw) {
 // el mismo payload que la corrida real (un smoke que manda otra cosa no prueba
 // nada). `reasoning.effort` es el parámetro unificado de OpenRouter; un modelo
 // que no razona lo ignora, no falla.
-export function buildOpenRouterBody({ agent, model, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), tools = null, toolChoice = null }) {
+export function buildOpenRouterBody({ agent, model, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), tools = null, toolChoice = null, effort = ARENA_EFFORT }) {
   const caps = (agent && agent.caps) || {};
   const body = {
     model: model || (agent && agent.model),
@@ -175,7 +175,7 @@ export function buildOpenRouterBody({ agent, model, system, messages, maxTokens 
     messages: [{ role: 'system', content: systemSegments(system).join('\n\n') + dateDirective(now) }, ...messages],
   };
   if (caps.sampling !== false) body.temperature = ARENA_TEMPERATURE;
-  if (caps.effort === 'openrouter') body.reasoning = { effort: ARENA_EFFORT };
+  if (caps.effort === 'openrouter') body.reasoning = { effort: effort || ARENA_EFFORT };
   if (tools && tools.length) {
     body.tools = tools;
     if (toolChoice) body.tool_choice = toolChoice;
@@ -189,8 +189,8 @@ export function buildOpenRouterBody({ agent, model, system, messages, maxTokens 
   return body;
 }
 
-async function openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null }) {
-  const body = buildOpenRouterBody({ agent, model, system, messages, maxTokens, now, tools, toolChoice });
+async function openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT }) {
+  const body = buildOpenRouterBody({ agent, model, system, messages, maxTokens, now, tools, toolChoice, effort });
   const r = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
@@ -237,7 +237,7 @@ async function timedFetch(fn, timeoutMs) {
 
 // Guard-equivalente al de Anthropic, para OpenRouter: inyecta fecha, escanea
 // fechas prospectivas rotas, reintenta UNA vez, y si reincide devuelve stale.
-async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null }) {
+async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT }) {
   const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice }), timeoutMs);
   if (first.status < 200 || first.status >= 300 || !first.raw) {
     await recordAiCall({ model, now });
@@ -316,7 +316,7 @@ export function cachePrefixReport(agent, system) {
   return out;
 }
 
-export function buildAnthropicPayload({ agent, model, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), tools = null, toolChoice = null }) {
+export function buildAnthropicPayload({ agent, model, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), tools = null, toolChoice = null, effort = ARENA_EFFORT }) {
   const caps = (agent && agent.caps) || {};
   const payload = {
     model: model || (agent && agent.model),
@@ -360,7 +360,7 @@ export function buildAnthropicPayload({ agent, model, system, messages, maxToken
   if (caps.sampling !== false) payload.temperature = ARENA_TEMPERATURE;
   // `effort` sustituye a la temperatura como perilla de profundidad. Va DENTRO
   // de output_config, no top-level.
-  if (caps.effort === 'anthropic') payload.output_config = { effort: ARENA_EFFORT };
+  if (caps.effort === 'anthropic') payload.output_config = { effort: effort || ARENA_EFFORT };
   return payload;
 }
 
@@ -385,8 +385,8 @@ async function anthropicFetch({ apiKey, payload, timeoutMs = ARENA_LLM_TIMEOUT_M
 
 // Guard de fechas replicado para el Arena sobre Anthropic (ver el bloque de
 // arriba sobre por qué no se usa guardedClaudeCall).
-async function guardedAnthropicCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null }) {
-  const payload = buildAnthropicPayload({ agent, model, system, messages, maxTokens, now, tools, toolChoice });
+async function guardedAnthropicCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT }) {
+  const payload = buildAnthropicPayload({ agent, model, system, messages, maxTokens, now, tools, toolChoice, effort });
   const first = await timedFetch(() => anthropicFetch({ apiKey, payload, timeoutMs }), timeoutMs);
   if (first.status < 200 || first.status >= 300 || !first.raw) {
     await recordAiCall({ model: payload.model, now });
@@ -416,7 +416,7 @@ async function guardedAnthropicCall({ apiKey, agent, model, system, messages, ma
   // (bloques de thinking incluidos, en su orden original): reconstruirlo como
   // texto plano rompería el chequeo de historia de Fable 5.1.
   const retryPayload = buildAnthropicPayload({
-    agent, model, system, maxTokens, now, tools, toolChoice,
+    agent, model, system, maxTokens, now, tools, toolChoice, effort,
     messages: [...messages,
       { role: 'assistant', content: data.content },
       { role: 'user', content: retryReminder(hits, now) }],
@@ -461,7 +461,7 @@ export function anthropicCostUsd(model, usage) {
 // `temperature: null` NO significa 0: significa que el parámetro no viaja y que
 // el sampling lo decide el proveedor. La distinción importa — leerlo como 0
 // haría creer que ese agente corre determinista, que es lo contrario.
-export function effectiveParams(agent, maxTokens = ARENA_MAX_TOKENS) {
+export function effectiveParams(agent, maxTokens = ARENA_MAX_TOKENS, effort = ARENA_EFFORT) {
   const caps = (agent && agent.caps) || {};
   return {
     provider: agent && agent.provider,
@@ -469,7 +469,7 @@ export function effectiveParams(agent, maxTokens = ARENA_MAX_TOKENS) {
     model_label: agent && agent.model_label,
     // null = el parámetro NO se manda (la familia no lo acepta).
     temperature: caps.sampling === false ? null : ARENA_TEMPERATURE,
-    effort: caps.effort ? ARENA_EFFORT : null,
+    effort: caps.effort ? (effort || ARENA_EFFORT) : null,
     effort_channel: caps.effort || null,   // 'anthropic' | 'openrouter' | null
     max_tokens: maxTokens,
     prompt_cache: caps.cache || null,      // 'anthropic' | 'auto' | null
@@ -538,7 +538,7 @@ export async function openRouterPrices({ timeoutMs = 20000, now = Date.now() } =
 
 export function __resetPriceCache() { priceCache = { at: 0, map: null }; }
 
-export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null }) {
+export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT }) {
   // CANDADO DE SLUG: un modelo cuyo slug no se verificó contra el catálogo del
   // proveedor y que no tiene override explícito NO se llama. Ver el encabezado
   // del registry: preferimos no correr a pegarle a un slug inventado.
@@ -549,10 +549,10 @@ export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_
   if (!apiKey) return { status: 0, data: null, missingKey: true, provider: agent && agent.provider };
 
   if (agent.provider === 'anthropic') {
-    return guardedAnthropicCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice });
+    return guardedAnthropicCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort });
   }
   if (agent.provider === 'openrouter') {
-    return guardedOpenRouterCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice });
+    return guardedOpenRouterCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort });
   }
   return { status: 0, data: null, error: 'proveedor desconocido: ' + (agent && agent.provider) };
 }

@@ -638,8 +638,35 @@ const BASE_URL = 'http://qd.test';
   ok(Array.isArray(r.risk_net) && r.risk_net.length === 0,
     'y la RED DETERMINISTA no se repite: ya corrió en el primer tick, y el vigilante pasa cada 5 minutos',
     JSON.stringify(r.risk_net));
-  ok(llmCalls.length === 0,
-    'el tick entero no gasta un solo token: ni el vigilante ni la red determinista llaman a un modelo', String(llmCalls.length));
+  // ── LA RONDA FIJA DE LA APERTURA+30 (B4) ──────────────────────────
+  // TICK_2 son las 10:05 ET, o sea apertura+35: es el PRIMER tick que pasa el
+  // umbral de la ronda `open_30`, así que la ronda dispara ACÁ. Este tick ya no
+  // es "un tick que no gasta" — y la distinción importa: lo que NO gasta es el
+  // camino del VIGILANTE (disparadores + red determinista), que es lo que este
+  // bloque probaba antes de que las rondas fijas existieran.
+  ok(r.fixed_round === 'open_30',
+    'a la apertura+35 dispara la ronda fija de la apertura+30 (el tick es de 5 min: cae en el primero que pasa el umbral)', String(r.fixed_round));
+  ok(r.fixed_runs.length > 0 && r.fixed_runs.every((x) => x.round === 'open_30'),
+    'y la corre de verdad: hay corridas despachadas, todas de esa ronda', JSON.stringify(r.fixed_runs.map((x) => x.id)));
+  const gastoDelVigilante = llmCalls.filter((c) => c.kind !== 'fixed_round').length;
+  ok(gastoDelVigilante === llmCalls.length,
+    'todo el gasto del tick es de la ronda fija: el camino del vigilante (disparadores + red determinista) no llamó a ningún modelo por su cuenta',
+    `${llmCalls.length} llamadas, ${r.fixed_runs.length} corridas de ronda`);
+  ok(r.budget && r.budget.tier === 0 && r.budget.tools_max === 8,
+    'y el tick reporta bajo qué escalón de presupuesto corrió (B9): sin gasto previo, escalón 0 y 8 herramientas',
+    JSON.stringify(r.budget));
+}
+
+// ── TICK 2b: el MISMO minuto otra vez — la ronda fija NO se repite ───
+// Sin la marca de idempotencia, los seis ticks que quedan de esa media hora
+// dispararían seis rondas: siete agentes × seis = 42 corridas donde tenía que
+// haber siete.
+{
+  llmCalls = [];
+  const r = await runArenaWatch({ baseUrl: BASE_URL, now: new Date(TICK_2.getTime() + 5 * 60000) });
+  ok(r.fixed_round === null && r.fixed_runs.length === 0,
+    'cinco minutos después la ronda de la apertura+30 NO se vuelve a correr: una ronda por tipo por día',
+    JSON.stringify({ round: r.fixed_round, runs: r.fixed_runs.length }));
 }
 
 // ── TICK 3: mismo estado, pero con la cadencia todavía sin arrancar ──

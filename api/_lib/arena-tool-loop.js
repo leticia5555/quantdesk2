@@ -131,10 +131,31 @@ export function buildToolTurn(provider, data, resultados) {
 export async function runToolLoop({
   agent, system, messages, executor, maxTokens = ARENA_MAX_TOKENS,
   now = new Date(), timeoutMs, maxTurns = MAX_TURNS, toolNames = null, call = callArenaLLM,
-  budgetMs = LOOP_BUDGET_MS, clock = () => Date.now(),
+  budgetMs = LOOP_BUDGET_MS, clock = () => Date.now(), effort = undefined,
 }) {
   const tools = toolsForProvider(agent.provider, toolNames);
   const convo = [...messages];
+  // ── EL USAGE DE TODAS LAS VUELTAS, NO EL DE LA ÚLTIMA ──────────────
+  // El loop devuelve el ÚLTIMO turno del modelo, y con él su `usage`. Contar
+  // eso como el gasto del DIVE es contar una llamada de nueve: con 8
+  // herramientas el prompt viaja entero en cada vuelta, así que el costo real
+  // es varias veces el de la última. El contador de B9 lee de acá, y un
+  // breaker alimentado con un noveno del gasto dispara cuando ya no sirve.
+  const acumulado = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, reasoning_tokens: 0, calls: 0 };
+  let costoAcumulado = null;   // null (no reportado) y 0 (gratis) NO son lo mismo
+  const sumar = (r) => {
+    const u = (r && r.data && r.data.usage) || null;
+    acumulado.calls++;
+    if (u) {
+      acumulado.input_tokens += Number(u.input_tokens) || 0;
+      acumulado.output_tokens += Number(u.output_tokens) || 0;
+      acumulado.cache_read_input_tokens += Number(u.cache_read_input_tokens) || 0;
+      acumulado.cache_creation_input_tokens += Number(u.cache_creation_input_tokens) || 0;
+      acumulado.reasoning_tokens += Number(u.reasoning_tokens) || 0;
+    }
+    const c = r && r.data && r.data.cost_usd;
+    if (Number.isFinite(c)) costoAcumulado = (costoAcumulado || 0) + c;
+  };
   const t0 = clock();
   const restante = () => budgetMs - (clock() - t0);
   let turns = 0;
@@ -152,16 +173,17 @@ export async function runToolLoop({
     // siguientes y el loop termina chocando contra el deadline del agente —
     // que es justo lo que este presupuesto existe para evitar.
     const techo = Math.max(10000, Math.min(timeoutMs || Infinity, restante() - RESERVA_CIERRE_MS));
-    llm = await call({ agent, system, messages: convo, maxTokens, now, timeoutMs: techo, tools });
+    llm = await call({ agent, system, messages: convo, maxTokens, now, timeoutMs: techo, tools, ...(effort ? { effort } : {}) });
+    sumar(llm);
 
     // Cualquier cosa que no sea una respuesta usable sale ENTERA hacia arriba.
     if (llm.status !== 200 || !llm.data || llm.refusal || llm.stale || llm.missingKey || llm.unverifiedSlug) {
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', elapsed_ms: clock() - t0, budget_ms: budgetMs };
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado };
     }
 
     const pedidos = toolUseBlocks(llm.data);
     if (!pedidos.length) {
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: turns === 1 ? 'no_tools' : 'end_turn', elapsed_ms: clock() - t0, budget_ms: budgetMs };
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: turns === 1 ? 'no_tools' : 'end_turn', elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado };
     }
 
     // Las herramientas de UNA vuelta corren EN PARALELO: son lecturas
@@ -193,10 +215,12 @@ export async function runToolLoop({
   // El cierre corre contra la RESERVA, no contra lo que quede del presupuesto
   // (que puede ser cero): es la llamada que convierte una corrida perdida en
   // una decisión, y tiene su propio tiempo apartado desde el principio.
-  llm = await call({ agent, system, messages: convo, maxTokens, now, timeoutMs: Math.min(timeoutMs || RESERVA_CIERRE_MS, RESERVA_CIERRE_MS), tools: null });
+  llm = await call({ agent, system, messages: convo, maxTokens, now, timeoutMs: Math.min(timeoutMs || RESERVA_CIERRE_MS, RESERVA_CIERRE_MS), tools: null, ...(effort ? { effort } : {}) });
+  sumar(llm);
   return {
     llm, messages: convo, turns, sequence: executor.sequence,
     stopped_by: sinTiempo ? 'time_budget' : 'max_turns',
     elapsed_ms: clock() - t0, budget_ms: budgetMs,
+    usage_total: acumulado, cost_usd_total: costoAcumulado,
   };
 }

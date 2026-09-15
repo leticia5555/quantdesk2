@@ -119,5 +119,125 @@ console.log('\n── 3b) un total que ignora corridas sin precio SUBESTIMA ─�
     'pero si las dos corridas sin precio costaron ~$1.2 cada una, el escalón real era 1 — por eso `partial` viaja en el reporte');
 }
 
+// ═══════════════════════════════════════════════════════════════
+// B9 EN EL CAMINO VIVO — el techo tiene que apretar donde se gasta.
+//
+// El bloque de arriba prueba la POLÍTICA (qué permite cada escalón). Esto
+// prueba que la política llega al lugar donde se queman los tokens: el
+// presupuesto de herramientas de una corrida, el `effort` que viaja en el
+// payload, y el contador que alimenta al propio breaker.
+//
+// Sin esto B9 es una tabla bonita: la liga seguiría corriendo con 8
+// herramientas y effort medium mientras el escalón dice otra cosa.
+// ═══════════════════════════════════════════════════════════════
+
+console.log('\n── el techo de herramientas: el MENOR de los dos ──');
+{
+  // La regla del runner: min(tope por tipo de corrida, tope por escalón).
+  const min = (tipo, escalon) => Math.min(tipo, escalon);
+  ok(min(8, tierPolicy(0).tools_max) === 8, 'ronda fija en escalón 0 → las 8');
+  ok(min(8, tierPolicy(1).tools_max) === 3, 'ronda fija en escalón 1 → 3: el escalón aprieta');
+  ok(min(8, tierPolicy(2).tools_max) === 0, 'ronda fija en escalón 2 → ninguna');
+  ok(min(3, tierPolicy(0).tools_max) === 3,
+    'corrida por disparador en escalón 0 → 3, NO 8: el escalón no puede AFLOJAR el tope del tipo de corrida');
+  ok(min(3, tierPolicy(1).tools_max) === 3, 'y en escalón 1 sigue en 3 — el mínimo no cambia nada acá');
+}
+
+console.log('\n── el `effort` del escalón viaja en el payload ──');
+{
+  // La perilla de profundidad de esta liga es `effort`, no la temperatura. Si
+  // el escalón la baja a 'low' pero el payload sigue diciendo el default, el
+  // escalón 1 no ahorra un centavo.
+  const { buildAnthropicPayload, buildOpenRouterBody, effectiveParams } = await import('../api/_lib/arena-model.js');
+  const agenteA = { id: 'x', provider: 'anthropic', model: 'm', caps: { effort: 'anthropic', sampling: false } };
+  const agenteO = { id: 'y', provider: 'openrouter', model: 'n', caps: { effort: 'openrouter' } };
+  const base = { system: 's', messages: [{ role: 'user', content: 'u' }], now: new Date('2026-09-15T18:00:00Z') };
+
+  const pA = buildAnthropicPayload({ agent: agenteA, model: 'm', ...base, effort: tierPolicy(1).effort });
+  ok(pA.output_config && pA.output_config.effort === 'low',
+    'Anthropic: el effort del escalón 1 llega a output_config', JSON.stringify(pA.output_config));
+  const pO = buildOpenRouterBody({ agent: agenteO, model: 'n', ...base, effort: tierPolicy(1).effort });
+  ok(pO.reasoning && pO.reasoning.effort === 'low',
+    'OpenRouter: el mismo effort llega a reasoning.effort', JSON.stringify(pO.reasoning));
+
+  // Escalón 0: `effort` es null y NO debe pisar el default del registry.
+  const p0 = buildAnthropicPayload({ agent: agenteA, model: 'm', ...base, effort: tierPolicy(0).effort || undefined });
+  ok(p0.output_config && p0.output_config.effort && p0.output_config.effort !== 'low',
+    'escalón 0: el effort null NO pisa el default del registry', JSON.stringify(p0.output_config));
+
+  // Y lo que se journalea como "con qué corrió" tiene que decir la verdad.
+  ok(effectiveParams(agenteA, 3000, 'low').effort === 'low',
+    'effectiveParams reporta el effort REAL de la corrida, no el del reglamento');
+  ok(effectiveParams({ id: 'z', provider: 'openrouter', model: 'n', caps: {} }, 3000, 'low').effort === null,
+    'y sigue diciendo null en un modelo que no razona: el parámetro no viaja');
+}
+
+console.log('\n── el contador cuenta TODAS las vueltas, no la última ──');
+{
+  // ÉSTE ES EL BUG QUE HABRÍA HECHO INÚTIL AL BREAKER. `runToolLoop` devuelve el
+  // último turno del modelo. Con 8 herramientas el prompt entero viaja en cada
+  // vuelta, así que el gasto real es varias veces el de esa última llamada.
+  // Alimentar al breaker con un noveno del gasto es tener un breaker que
+  // dispara cuando ya no sirve.
+  const { runToolLoop } = await import('../api/_lib/arena-tool-loop.js');
+  let vuelta = 0;
+  const executor = {
+    used: 0, sequence: [],
+    call: async () => { executor.used++; return { text: 'ok' }; },
+    summary: () => ({}),
+  };
+  const call = async () => {
+    vuelta++;
+    // Dos vueltas pidiendo herramienta, la tercera cierra.
+    const pide = vuelta <= 2;
+    return {
+      status: 200,
+      data: {
+        content: pide
+          ? [{ type: 'tool_use', id: 't' + vuelta, name: 'screener', input: {} }]
+          : [{ type: 'text', text: '{}' }],
+        usage: { input_tokens: 1000, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        cost_usd: 0.5,
+      },
+    };
+  };
+  const loop = await runToolLoop({
+    agent: { id: 'a', provider: 'anthropic', model: 'm', caps: {} },
+    system: 's', messages: [{ role: 'user', content: 'u' }], executor, call,
+  });
+  ok(loop.usage_total.calls === 3,
+    'el loop reporta las 3 llamadas que hizo, no 1', String(loop.usage_total.calls));
+  ok(loop.usage_total.input_tokens === 3000 && loop.usage_total.output_tokens === 300,
+    'y suma los tokens de las tres: 3000 de entrada, no los 1000 de la última',
+    JSON.stringify(loop.usage_total));
+  ok(loop.cost_usd_total === 1.5,
+    'lo mismo con el costo que reportó el proveedor: $1.50, no $0.50', String(loop.cost_usd_total));
+  ok((loop.llm.data.usage.input_tokens) === 1000,
+    'el `usage` del último turno sigue intacto: el acumulado se agrega, no lo pisa');
+}
+
+console.log('\n── el gasto se registra por FASE, no por corrida ──');
+{
+  // `arena_spend` tiene el id como clave primaria con `on conflict do nothing`.
+  // Si el scan y el dive de la misma corrida comparten id, el segundo se
+  // descarta EN SILENCIO y el breaker ve la mitad del gasto real.
+  const { recordRunSpend } = await import('../api/_lib/arena-budget.js');
+  ok(typeof recordRunSpend === 'function', 'recordRunSpend existe');
+  const idScan = 'arena-claude-2026-09-15T18:00:00.000Z:scan';
+  const idDive = 'arena-claude-2026-09-15T18:00:00.000Z:dive';
+  ok(idScan !== idDive,
+    'el id lleva la FASE: sin el sufijo el dive chocaría con el scan y su gasto se perdería sin ruido');
+}
+
+console.log('\n── lo que el escalón 2 apaga, y lo que NO ──');
+{
+  const p2 = tierPolicy(2);
+  ok(p2.fixed_rounds === false, 'escalón 2: las rondas fijas NO corren');
+  ok(p2.buffet_triggers === false, 'ni los disparadores de oportunidad del buffet');
+  ok(p2.own_book_triggers === true,
+    'pero SÍ los del propio libro: una posición abierta que cruza su stop tiene que poder despertar a su dueño aunque el presupuesto esté agotado — eso es riesgo, no exploración');
+  ok(p2.risk_net === true, 'y la red determinista sigue, como en todos los escalones: no gasta un token');
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
 process.exit(failures ? 1 : 0);

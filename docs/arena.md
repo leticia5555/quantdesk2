@@ -450,12 +450,48 @@ Si algún camino intentara mandar una orden en sombra, la corrida falla
 que verifican que el endpoint solo use el cliente envuelto y que nunca escriba
 en la tabla real.
 
-### Lo que la sombra va a decir, y ya se sabe
+### La metadata por nombre que los rieles leen (`_lib/arena-meta.js`)
 
-Los cortos van a salir **rechazados por R9**. La metadata de `shortable` /
-`easy_to_borrow` por nombre todavía no se consulta, y R9 falla cerrado. Eso **no
-es un bug de la sombra: es la sombra funcionando** — está diciendo que falta ese
-dato *antes* de que un corto real se abra sin confirmación.
+Durante un tiempo la sombra le pasó `meta = {}` a `validateTarget`, y con el mapa
+vacío pasaban dos cosas — una dicha y otra no:
+
+- **R9 rechazaba todos los cortos.** Correcto como regla (fail closed), pero como
+  estado *permanente* convertía el riel en una mordaza: la sombra no podía decir
+  nada sobre cómo cortan los siete modelos.
+- **R6 rechazaba casi todo, y eso no saltaba a la vista.** Sin sector, los
+  nombres caen al bucket `UNKNOWN`, que suma el bruto entero: cualquier cartera
+  de más del 50% bruto violaba un tope de concentración sectorial calculado sobre
+  un único sector que la ausencia de datos había inventado.
+
+Ahora los cuatro campos se resuelven sobre **los símbolos que el objetivo nombra**
+(unidades, no centenas):
+
+| Campo | Fuente | Por qué ésa |
+|---|---|---|
+| `shortable` · `easy_to_borrow` | Alpaca `/v2/assets/{symbol}` | Es la **misma** fuente que va a aceptar o rechazar la orden. Preguntarle a otro sería validar contra una opinión distinta de la que manda |
+| `price` | snapshots de Alpaca | Una llamada multi-símbolo |
+| `sector` | `finnhubIndustry` → los 11 ETFs del tablero | — |
+
+**El mapeo de industria a sector es por reglas, no por tabla cerrada.** La
+taxonomía de `finnhubIndustry` no es GICS y no está congelada. Una tabla exacta
+se desactualiza en silencio y manda todo lo nuevo a `UNKNOWN` sin que nadie lo
+note. Es una lista **ordenada** de reglas, y el orden es el test: `Biotechnology`
+tiene que ganarle a `Technology` aunque contenga `technolog` — la misma familia
+de bug que *"Broker upgrades NVDA to Buy"* cayendo en el patrón de fusiones.
+
+**Nada de esto afloja un riel.** Un nombre sin fila de Alpaca llega **sin** los
+campos, R9 lo lee como "sin dato" y lo rechaza igual. Lo que cambió es que dejó
+de rechazarlos a *todos* por igual. Y un nombre que falló **no se cachea como "no
+shortable"**: eso volvería permanente un fallo de red.
+
+**Caché por día** (`assets:borrow`, `assets:sector`, misma tabla que los canales
+lentos del buffet): `easy_to_borrow` lo recalcula Alpaca una vez al día a la
+apertura, y la industria de una empresa cambia cada varios años. Sin caché serían
+21 consultas diarias (3 rondas × 7 agentes) por un dato que cambia una vez.
+
+`diagnostics` viaja con el resultado: cuántos nombres tienen cada campo, **cuáles**
+quedaron sin borrow y **cuáles** sin sector. Sin eso, una cartera rechazada por R6
+no se distingue de una cartera concentrada de verdad.
 
 ### B10 · El prompt
 
@@ -573,6 +609,64 @@ Cada transición se journalea **una vez por (día, escalón)**: sin esa
 idempotencia, un día en escalón 1 llenaría el journal con la misma fila doce
 veces.
 
+#### Dónde aprieta: el camino VIVO, no solo la sombra
+
+El escalón lo resuelve el **orquestador**, una vez por tick o por ronda, y viaja
+hacia abajo:
+
+| Quién lo resuelve | Qué gobierna |
+|---|---|
+| `runArenaWatch` (cada 5 min) | las tres rondas fijas, la revisión de piso, los disparadores del buffet y el techo de cada corrida que despacha |
+| `runArenaLeague` (nocturna) | la ronda de los siete |
+| `runArenaMorning` (post-earnings) | las corridas por evento |
+| `runArenaDecide` (si no le pasaron ninguno) | se lo resuelve solo — una corrida sin techo *porque entró por otra puerta* sería el agujero que este bloque tapa |
+
+**Una vez por tick y no una por agente**, por dos razones: el gasto acumulado es
+de la liga y no de nadie en particular (siete consultas para el mismo número), y
+así los siete corren bajo el **mismo** escalón. Si el agente 1 corriera en
+escalón 0 y el 7 en escalón 1 porque el gasto cruzó el umbral en el medio, la
+ronda mezclaría dos regímenes y dejaría de ser comparable.
+
+**El techo de herramientas es el MENOR de dos:** el del tipo de corrida (8 en una
+ronda fija, 3 por disparador) y el del escalón. El mínimo y no el del escalón a
+secas — el breaker puede **apretar, nunca aflojar**. Si algún día un escalón
+permitiera más que el tipo de corrida, tomar el del escalón haría que el breaker
+*regalara* llamadas: un freno que acelera.
+
+**El `effort` del escalón viaja en el payload.** La perilla de profundidad de
+esta liga es `effort`, no la temperatura, así que baja a `low` dentro de
+`output_config` (Anthropic) o `reasoning.effort` (OpenRouter). En el escalón 0
+viaja `null`, que **no** pisa el default del registry. `effectiveParams` reporta
+el effort **real** de la corrida, no el del reglamento.
+
+**Lo que el escalón 2 apaga se journalea.** Una ronda fija saltada deja su fila
+con el escalón que la causó, y un disparador de buffet apagado deja su
+`skip_reason` — igual que los que caen por tope. Un día con menos corridas tiene
+que poder explicarse sin adivinar.
+
+#### Dos bugs del contador que habrían dejado al breaker ciego
+
+**1 · El loop de herramientas descartaba el `usage` de todas las llamadas menos
+la última.** `runToolLoop` devuelve el último turno del modelo, y con él su
+`usage`. Pero con 8 herramientas el prompt entero viaja en **cada** vuelta: el
+gasto real es varias veces el de esa última llamada. Contarlo así alimentaba al
+breaker con **un noveno** del gasto — un breaker que dispara cuando ya no sirve.
+Ahora el loop devuelve `usage_total` y `cost_usd_total` acumulados.
+
+**2 · El scan y el dive compartían id en `arena_spend`.** El id es clave primaria
+con `on conflict do nothing`, así que el dive chocaba con el scan de la misma
+corrida y su gasto se descartaba **en silencio**: la mitad del gasto real,
+invisible. El id lleva la fase (`<run>:scan`, `<run>:dive`).
+
+**Lo que se sacó a propósito:** el fallback de costo por catálogo de OpenRouter
+no corre en el camino vivo. `openRouterPrices` cachea en el proceso, pero los
+cinco agentes de OpenRouter corren en paralelo y los cinco fallan la caché a la
+vez — cinco requests simultáneas a `openrouter.ai` por ronda, justo en el camino
+que decide si la liga sigue gastando. El costo real ya viene en la respuesta
+(`usage.cost`, que se pide con `usage: {include: true}`); si el proveedor no lo
+manda, queda `null` y el total se marca `partial`. La estimación por catálogo
+vive en el smoke, que corre solo y puede pagar esa llamada.
+
 ---
 
 ## B11 · `/api/liga/libros` — el libro de cada agente, y cómo llegó a él
@@ -641,8 +735,16 @@ reconstruir la corrida, no material de show.
 
 ## B4 · CADENCIA: tres rondas fijas y la nocturna a reporte
 
-`_lib/arena-watch.js` (`FIXED_ROUNDS`, `fixedRoundDue`, `riskNetDue`) · tests en
-`tests/arena-cadencia.test.mjs`
+`_lib/arena-watch.js` (`FIXED_ROUNDS`, `fixedRoundDue`, `riskNetDue`) ·
+despacho en `api/arena-watch.js` · tests en `tests/arena-cadencia.test.mjs` y
+`tests/arena-watch.test.mjs`
+
+> **Corrección.** Las tres rondas fijas se entregaron como módulo y tests pero
+> **el endpoint nunca las llamaba**: `fixedRoundDue` estaba exportada y probada,
+> y ningún camino de producción la importaba. Eran código muerto. Ya están
+> despachadas desde el tick del vigilante. Un test que ejercita la función
+> exportada no prueba que alguien la use — el que lo agarró fue el de
+> `arena-watch.test.mjs`, que corre el tick entero.
 
 | Pieza | Cuándo |
 |---|---|
@@ -664,6 +766,23 @@ El vigilante ya corre cada 5 minutos **y ya sabe en qué minuto de la sesión
 está** (`sessionPhase`, derivado del calendario **real** de Alpaca). Las rondas
 se derivan de ahí: *"cuando lleven 30 minutos de sesión"*, no *"a las 14:00
 UTC"*. Con media sesión, el cierre−30 cae donde tiene que caer sin tocar nada.
+
+### Qué es una ronda fija, en concreto
+
+Un `runArenaDecide` **completo** —con buffet y con el presupuesto de 8
+herramientas—, no una corrida acotada: es el momento en que el PM mira el mercado
+entero y no un nombre que se movió. Los siete corren en paralelo, cada uno con su
+deadline, compartiendo un buffet que se pide **una vez** por ronda.
+
+**Idempotencia por `round:<día>:<id>`.** El tick es de 5 minutos y la ventana de
+una ronda dura media hora: sin la marca, los seis ticks siguientes dispararían
+seis rondas — siete agentes × seis = 42 corridas donde tenía que haber siete.
+
+**El presupuesto manda.** En el escalón 2 las rondas fijas no corren, y la
+decisión de no correrlas se marca como hecha igual (si no, cada tick de la media
+hora siguiente volvería a evaluarla y a journalear el mismo salto) con el escalón
+que la causó. La **revisión de piso** sigue la misma regla: es una corrida
+programada, no un disparador.
 
 **La ventana no es un instante.** El tick es de 5 minutos, así que "a los 30
 exactos" casi nunca cae en un tick: la ronda dispara en el **primer tick que
@@ -1154,23 +1273,35 @@ solo **lee**. Si el cron no corrió, se usa el de ayer **y se dice**
 (`is_today: false`) — no se reconstruye a medias, que daría un universo mitad
 fresco y mitad viejo sin manera de saber cuál nombre es cuál.
 
-### Lo que falta y necesita tus ojos
+### La lista se guarda sola. Nadie commitea nada
 
-`data/universe/sp500.json` y `nasdaq100.json` están **vacíos a propósito**. Se
-generan corriendo el refresco contra FMP, y el entorno donde se escribió este
-código no tiene salida a `financialmodelingprep.com` (la política de red
-responde 403). Una lista de 500 tickers escrita de memoria estaría
-desactualizada de formas que nadie puede auditar. Con `FMP_API_KEY` puesta:
+El arranque de B1 **no depende de que alguien corra `jq` en su terminal y suba
+dos archivos**. Eso convertiría un cron en un ritual manual, y un ritual manual
+que nadie hace es una fuente que no existe.
 
-```bash
-curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" \
-  "$BASE/api/arena-universe?refresh=1&emit=1" > /tmp/u.json
-jq '.constituents.sp500'     /tmp/u.json > data/universe/sp500.json
-jq '.constituents.nasdaq100' /tmp/u.json > data/universe/nasdaq100.json
-```
+Cuando los constituyentes se bajan de FMP, `resolveConstituents` los escribe en
+Neon (`arena_universe`, clave `constituents:<índice>`) **en el mismo paso**. El
+ciclo cierra sin intervención:
 
-Mientras estén vacíos, el escalón 3 no existe y el universo depende de FMP o de
-Neon. **Nada se rompe** — sin ninguno de los dos, cae a `movers_only`.
+| Día | Qué pasa |
+|---|---|
+| 1 | Neon vacío → el cron baja de FMP y **guarda** |
+| 2…7 | se lee de Neon: cero cuota de FMP para recibir el mismo archivo |
+| 8+ | vencida por **edad** → se refresca sola y vuelve a guardar |
+
+El refresco es por edad y no por calendario, así que un cron que no corrió el
+lunes refresca el martes en vez de esperar al lunes siguiente.
+
+`indices[].persisted` dice, por índice, si la lista quedó guardada. Si una lista
+vino fresca de FMP pero la escritura falló, la corrida de hoy sirve igual y sale
+un `persistence_warning`: no se rompe nada, pero mañana se vuelve a pagar la
+cuota y eso conviene que se vea.
+
+**`data/universe/*.json` está vacío a propósito y no hace falta llenarlo.** Es
+solo el escalón 3 —arranque en frío, con Neon vacío **y** FMP caído el mismo
+día—, y el seed vacío no cuenta como respaldo. Con cualquiera de las dos fuentes
+de arriba viva, el escalón 3 no se consulta nunca. Sin ninguna de las tres, el
+universo cae a `movers_only` y el journal lo dice.
 
 ---
 

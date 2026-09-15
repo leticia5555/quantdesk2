@@ -99,13 +99,16 @@ import { RAILS } from './_lib/arena-rails.js';
 import { buildBoard, renderBoard, BOARD_TOKEN_HARD_CAP, SECTOR_ETFS } from './_lib/arena-board.js';
 // B3: las HERRAMIENTAS y el loop de tool use (uno para los dos proveedores).
 import { createToolExecutor, TOOL_BUDGET } from './_lib/arena-tools.js';
+import {
+  currentTier, recordRunSpend, callCost, tierAnnouncementId, tierAnnouncementText, DAILY_BUDGET_USD,
+} from './_lib/arena-budget.js';
 import { runToolLoop } from './_lib/arena-tool-loop.js';
 // A4c: el filtro de admisión del universo, UNO para todos los canales.
 import { ADMISSION, resolveAdmission, partitionByAdmission } from './_lib/arena-admission.js';
 import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
 // LIGA multi-modelo: el registry (quién compite, con qué modelo/cuenta/persona)
 // y el dispatch de proveedor (Anthropic directo vs OpenRouter, forma normalizada).
-import { callArenaLLM, providerKey, effectiveParams, sameParams, withDeadline, cachePrefixReport } from './_lib/arena-model.js';
+import { callArenaLLM, providerKey, effectiveParams, sameParams, withDeadline, cachePrefixReport, anthropicCostUsd } from './_lib/arena-model.js';
 // TITULAR de la corrida (voz del arquetipo). Llamada APARTE y POSTERIOR: el
 // arquetipo NUNCA entra al prompt que decide — ver el candado del control en el
 // encabezado de _lib/arena-voice.js.
@@ -1255,6 +1258,57 @@ async function cachedDeepDive(caches, symbols, finnhubKey, now) {
   return { data, errors };
 }
 
+// ── B9 · EL CONTADOR DE GASTO DE LA CORRIDA VIVA ─────────────────────
+// Una corrida son DOS llamadas al LLM como mínimo (scan + dive) y hasta once
+// con herramientas. Cada una se registra por separado, porque el escalón lo
+// decide el ACUMULADO del día: un total que se escribe una vez al final llega
+// tarde para frenar la corrida que lo disparó.
+//
+// EL ID LLEVA LA FASE, y no es cosmético: `arena_spend` tiene el id como clave
+// primaria con `on conflict do nothing`. Sin el sufijo, el dive chocaría con el
+// scan de la misma corrida y su gasto se descartaría EN SILENCIO — el breaker
+// vería la mitad de lo que la liga gastó de verdad.
+//
+// LA PROCEDENCIA DEL NÚMERO VIAJA CON EL NÚMERO (`callCost`): lo que cobró el
+// proveedor gana siempre; una estimación de catálogo se marca como estimación;
+// y si no hay ninguna de las dos se guarda null, que `todaySpend` cuenta como
+// `partial` para que el breaker sepa que está mirando un total incompleto en
+// vez de creerse un total que no lo es.
+async function registrarGasto({ agent, runId, phase, llm, now, toolCalls = 0, loop = null }) {
+  try {
+    // Con herramientas el gasto de la fase es el de TODAS las vueltas, no el de
+    // la última: el prompt entero viaja en cada una. `runToolLoop` devuelve el
+    // acumulado precisamente para esto.
+    const usage = (loop && loop.usage_total) || (llm && llm.data && llm.data.usage) || {};
+    const llmCalls = (loop && loop.usage_total && loop.usage_total.calls) || 1;
+    const reportado = loop && Number.isFinite(loop.cost_usd_total) ? loop.cost_usd_total
+      : (llm && llm.data && Number.isFinite(llm.data.cost_usd) ? llm.data.cost_usd : null);
+    // NO se va a buscar el catálogo de precios de OpenRouter acá. Se probó y se
+    // sacó: `openRouterPrices` cachea en el proceso, pero los cinco agentes de
+    // OpenRouter corren EN PARALELO y los cinco fallan la caché a la vez — cinco
+    // requests simultáneas a openrouter.ai/api/v1/models por ronda, en el camino
+    // que decide si la liga sigue gastando. El costo real ya viene en la misma
+    // respuesta (`usage.cost`, que pedimos con `usage: {include: true}`); si el
+    // proveedor no lo mandó, queda null y `todaySpend` marca el total como
+    // `partial` — el breaker sabe que está mirando un total incompleto en vez de
+    // creerse uno que no lo es. El costo estimado por catálogo vive en el smoke,
+    // que corre solo y puede pagar esa llamada.
+    const costo = callCost({
+      anthropicUsd: agent.provider === 'anthropic' ? anthropicCostUsd(agent.model, usage) : null,
+      providerUsd: reportado,
+    });
+    await recordRunSpend({
+      agentId: agent.id, runId: `${runId}:${phase}`, phase, usd: costo.usd, usdSource: costo.source,
+      tokens: {
+        input: usage.input_tokens, output: usage.output_tokens,
+        cache_read: usage.cache_read_input_tokens, cache_write: usage.cache_creation_input_tokens,
+      },
+      llmCalls, toolCalls, now,
+    });
+    return costo;
+  } catch (e) { return null; }   // el contador JAMÁS frena una corrida
+}
+
 async function journalInsert(row) {
   // agent_id va AL FINAL ($14): mantiene el orden histórico de columnas
   // (id…context) para no romper lectores por posición. null → 'claude' (insignia).
@@ -1448,7 +1502,7 @@ export function eventPolicy(event) {
 // corrida de las 22:40 ya emitió) y NO se abren posiciones nuevas. La corrida
 // existe para que el PM reaccione al número sobre lo que YA tiene — no para
 // operar más seguido.
-export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentById(FLAGSHIP_AGENT_ID), getBuffet, caches, event = null } = {}) {
+export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentById(FLAGSHIP_AGENT_ID), getBuffet, caches, event = null, tier = null } = {}) {
   const runDate = now.toISOString().slice(0, 10);
   const agentId = agent.id;
   // Política de la corrida por evento (ver eventPolicy). En la corrida normal
@@ -1485,6 +1539,19 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // su pico. Sale del estado (baseline del último reset + resumed_at), no de
   // una constante — un reset a mitad de temporada tiene que mover los dos.
   const cutoff = agentCutoff(state);
+
+  // ── B9 · EL PRESUPUESTO, EN EL CAMINO VIVO ───────────────────────────
+  // El orquestador (la liga o el vigilante) resuelve el escalón UNA vez por tick
+  // y lo pasa: siete agentes preguntándole a Neon lo mismo en paralelo serían
+  // siete consultas para un número que es de la liga entera, no de nadie en
+  // particular. Si no vino (un agente suelto, un test, un dispatch a mano) se
+  // resuelve acá: una corrida sin techo porque entró por otra puerta sería
+  // exactamente el agujero que este bloque tapa.
+  const presupuesto = tier || await currentTier(now);
+  // `effort` null en el escalón 0 = NO se pisa el default del registry. En el 1
+  // y el 2 baja a 'low', que es la perilla de profundidad de esta liga (la
+  // temperatura no lo es, y en Fable ni siquiera viaja).
+  const effortDeCorrida = presupuesto.effort || undefined;
 
   if (!creds) {
     await journalInsert({ ...base, status: 'aborted_no_alpaca_keys', error: `Faltan ALPACA_${agent.alpaca}_KEY/SECRET.` });
@@ -1775,7 +1842,11 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     // de antes era un techo para un modelo que no razona: en uno que sí, los
     // tokens de pensamiento salen del MISMO presupuesto y la respuesta se corta
     // antes del JSON. Ver la nota de ARENA_MAX_TOKENS en el registry.
-    const scanLlm = await callArenaLLM({ agent, system: [scanSystem, scanShared], messages: [{ role: 'user', content: scanUser }], maxTokens: ARENA_MAX_TOKENS, now });
+    const scanLlm = await callArenaLLM({ agent, system: [scanSystem, scanShared], messages: [{ role: 'user', content: scanUser }], maxTokens: ARENA_MAX_TOKENS, now, effort: effortDeCorrida });
+    // El gasto se registra ANTES de cualquier salida por error: una corrida que
+    // abortó igual quemó tokens, y un contador que solo cuenta los éxitos
+    // subestima justo los días caros (los que abortan son los días raros).
+    await registrarGasto({ agent, runId: base.id, phase: 'scan', llm: scanLlm, now });
     // OBSERVABILIDAD DEL SCAN. El DIVE journaleaba stop_reason/truncated desde
     // siempre; el SCAN no, y por eso un aborto de la fase 1 era indistinguible
     // entre "parloteó fuera del JSON" y "se quedó sin tokens". Los abortos de
@@ -1918,7 +1989,14 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // El PRESUPUESTO depende del tipo de corrida: 8 en una ronda fija, 3 en una
   // por disparador. Una corrida por disparador está acotada a un nombre — no
   // necesita explorar, necesita decidir sobre lo que ya se le dijo que mire.
-  const toolBudget = event ? TOOL_BUDGET.triggered : TOOL_BUDGET.fixed_round;
+  // El tope de herramientas es el MENOR de dos: el del tipo de corrida (8 en una
+  // ronda fija, 3 por disparador) y el que deja el escalón del presupuesto (3 en
+  // el 1, CERO en el 2). El mínimo, y no el del escalón a secas: el breaker
+  // puede APRETAR, nunca aflojar. Si algún día un escalón permitiera más que el
+  // tipo de corrida, tomar el del escalón haría que el breaker REGALARA
+  // llamadas — un freno que acelera.
+  const toolBudgetCorrida = event ? TOOL_BUDGET.triggered : TOOL_BUDGET.fixed_round;
+  const toolBudget = Math.min(toolBudgetCorrida, presupuesto.tools_max);
   // Las estructuras sobre las que filtran las herramientas. Son los objetos
   // CRUDOS, no el texto renderizado: `screener({min_rvol:3})` filtra filas, no
   // parsea una tabla. Una corrida por evento no tiene buffet (su slate lo dio
@@ -1928,7 +2006,10 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   const universeForTools = (buffet && buffet.universe_raw) || null;
   let executor = null;
   let diveLlm;
-  if (TOOLS_ENABLED && boardForTools) {
+  // El resultado del loop sobrevive al bloque porque el contador de gasto lo
+  // necesita: sin él contaría una llamada de nueve.
+  let diveLoop = null;
+  if (TOOLS_ENABLED && boardForTools && toolBudget > 0) {
     // El sector de cada nombre sale del deep dive que ya se pagó (Finnhub
     // profile2). Un nombre sin clasificar devuelve null y el filtro por sector
     // simplemente no lo incluye — no se inventa un sector.
@@ -1945,8 +2026,9 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     const loop = await runToolLoop({
       agent, system: [diveSystem, diveShared].filter(Boolean),
       messages: [{ role: 'user', content: diveUser }],
-      executor, maxTokens: ARENA_MAX_TOKENS, now,
+      executor, maxTokens: ARENA_MAX_TOKENS, now, effort: effortDeCorrida,
     });
+    diveLoop = loop;
     diveLlm = loop.llm;
     context.dive.tools = {
       budget: toolBudget, used: executor.used, turns: loop.turns, stopped_by: loop.stopped_by,
@@ -1958,11 +2040,26 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   } else {
     diveLlm = await callArenaLLM({
       agent, system: diveShared ? [diveSystem, diveShared] : diveSystem,
-      messages: [{ role: 'user', content: diveUser }], maxTokens: ARENA_MAX_TOKENS, now,
+      messages: [{ role: 'user', content: diveUser }], maxTokens: ARENA_MAX_TOKENS, now, effort: effortDeCorrida,
     });
-    context.dive.tools = { enabled: false, reason: TOOLS_ENABLED ? 'sin tablero en esta corrida' : 'ARENA_TOOLS=0' };
+    context.dive.tools = {
+      enabled: false,
+      reason: !TOOLS_ENABLED ? 'ARENA_TOOLS=0'
+        : (toolBudget <= 0 ? `presupuesto en escalón ${presupuesto.tier}: sin herramientas` : 'sin tablero en esta corrida'),
+    };
   }
-  context.params = effectiveParams(agent, ARENA_MAX_TOKENS);
+  context.params = effectiveParams(agent, ARENA_MAX_TOKENS, effortDeCorrida);
+  // Qué escalón regía ESTA corrida, con lo que el escalón cambió. Sin esto, una
+  // corrida con 3 herramientas en vez de 8 se lee como un modelo que investigó
+  // poco en vez de como un presupuesto que apretó.
+  context.budget = {
+    tier: presupuesto.tier, spent_before_usd: presupuesto.spent_usd, budget_usd: presupuesto.budget_usd,
+    tools_max_por_escalon: presupuesto.tools_max, tools_max_por_tipo: toolBudgetCorrida, tools_max: toolBudget,
+    effort: presupuesto.effort || null, cut: presupuesto.cut || null,
+    spend_partial: !!presupuesto.spend_partial, spend_unavailable: !!presupuesto.spend_unavailable,
+    note: presupuesto.note || null,
+  };
+  await registrarGasto({ agent, runId: base.id, phase: 'dive', llm: diveLlm, now, toolCalls: executor ? executor.used : 0, loop: diveLoop });
   if (diveLlm.data && diveLlm.data.usage) context.dive.usage = diveLlm.data.usage;
   if (diveLlm.refusal) {
     context.dive.refusal = diveLlm.refusal_details || true;
@@ -2337,6 +2434,34 @@ export async function announceT2Rules(now = new Date()) {
   } catch (e) { /* best-effort: el anuncio no bloquea la corrida */ }
 }
 
+// ── ESCALÓN DEL PRESUPUESTO (B9) — anuncio con fecha ─────────────────
+// MISMO mecanismo que los otros anuncios: una fila de liga, idempotente por id.
+// Acá la idempotencia es por (día, escalón) y no por temporada: el breaker puede
+// subir de escalón cualquier día, y sin este corte un día que terminó con menos
+// corridas de lo normal no se distingue de un día en que los modelos decidieron
+// menos. Uno es el presupuesto; el otro es el experimento.
+export async function announceSpendTier(info, now = new Date()) {
+  if (!info || !info.tier) return false;   // el escalón 0 es lo normal: no se anuncia
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
+       values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
+      [tierAnnouncementId(info.tier, now), now.toISOString().slice(0, 10), PROMPT_VERSION,
+       tierAnnouncementText(info),
+       JSON.stringify({
+         budget: {
+           tier: info.tier, spent_usd: info.spent_usd, budget_usd: info.budget_usd,
+           pct_of_budget: info.pct_of_budget, tools_max: info.tools_max, effort: info.effort,
+           fixed_rounds: info.fixed_rounds, buffet_triggers: info.buffet_triggers,
+           own_book_triggers: info.own_book_triggers, risk_net: info.risk_net,
+           cut: info.cut, spend_partial: info.spend_partial, spend_unavailable: info.spend_unavailable,
+         },
+       })],
+    );
+    return true;
+  } catch (e) { return false; }   // best-effort: el anuncio no bloquea la corrida
+}
+
 // ── CAMBIO DE CADENCIA (anuncio de reglamento, con fecha) ────────
 // El MISMO mecanismo que el anuncio de la T2: una fila de LIGA, idempotente por
 // id, con status `rules_changed`. Sin este corte el post-mortem compararía
@@ -2660,6 +2785,9 @@ export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
   // Caches del run: los deep dives de los nombres reportados y sus series son
   // datos de mercado idénticos para todos los agentes que los tengan.
   const caches = { series: new Map(), dive: new Map() };
+  // El escalón del presupuesto, UNA vez para toda la matutina (ver B9).
+  const presupuesto = await currentTier(now);
+  await announceSpendTier(presupuesto, now);
   const results = await Promise.all(withEvent.map(async ({ agent, symbols }) => {
     const event = {
       type: 'post_earnings_morning',
@@ -2671,7 +2799,7 @@ export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
       // Mismo reloj que la liga: es el mismo runArenaDecide, con los mismos
       // dos tiros al LLM por agente.
       const r = await withDeadline(
-        runArenaDecide({ baseUrl, now, agent, caches, event }),
+        runArenaDecide({ baseUrl, now, agent, caches, event, tier: presupuesto }),
         ARENA_AGENT_DEADLINE_MS,
         () => ({ status: 'timeout', orders: 0,
           error: `el agente no terminó en ${Math.round(ARENA_AGENT_DEADLINE_MS / 1000)}s (scan+dive). Los demás siguieron.` }),
@@ -2751,6 +2879,16 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   const getBuffet = () => (buffetPromise = buffetPromise || gatherContext({ baseUrl, now }));
   const caches = { series: new Map(), dive: new Map() };
 
+  // ── B9 · EL ESCALÓN, UNA VEZ PARA LA LIGA ENTERA ─────────────────────
+  // Se resuelve ACÁ y no dentro de cada agente: el gasto acumulado es de la
+  // liga, no de nadie en particular, y siete agentes preguntando lo mismo en
+  // paralelo son siete consultas para un número idéntico. Además los deja a los
+  // siete corriendo bajo el MISMO escalón, que es lo que hace comparable la
+  // ronda: si el agente 1 corriera en escalón 0 y el 7 en escalón 1 porque el
+  // gasto cruzó el umbral en el medio, la ronda mezclaría dos regímenes.
+  const presupuesto = await currentTier(now);
+  await announceSpendTier(presupuesto, now);
+
   // RELOJ POR AGENTE. El try/catch de acá abajo ya aislaba los ERRORES de un
   // agente; lo que no aislaba era su LENTITUD. Con Fable y Astra una corrida
   // tarda bastante más que con Haiku, y un solo agente colgado se lleva puesta
@@ -2759,7 +2897,7 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   const results = await Promise.all(agents.map(async (agent) => {
     try {
       const r = await withDeadline(
-        runArenaDecide({ baseUrl, now, agent, getBuffet, caches }),
+        runArenaDecide({ baseUrl, now, agent, getBuffet, caches, tier: presupuesto }),
         ARENA_AGENT_DEADLINE_MS,
         () => ({ status: 'timeout', orders: 0,
           error: `el agente no terminó en ${Math.round(ARENA_AGENT_DEADLINE_MS / 1000)}s (scan+dive). Los demás siguieron.` }),
@@ -2774,7 +2912,15 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   // acaba de reportar (cero llamadas extra a Alpaca).
   const season = { id: ARENA_SEASON.id, status: seasonStatus(now), day: seasonDay(now), start: ARENA_SEASON.start, end: ARENA_SEASON.end };
   const closing = await declareSeasonWinner(results, now);
-  return { agents: results, league: results.map((r) => r.id), season, ...(closing.declared ? { season_winner: closing.winner } : {}) };
+  return {
+    agents: results, league: results.map((r) => r.id), season,
+    budget: {
+      tier: presupuesto.tier, spent_before_usd: presupuesto.spent_usd, budget_usd: presupuesto.budget_usd,
+      pct_of_budget: presupuesto.pct_of_budget, tools_max: presupuesto.tools_max,
+      effort: presupuesto.effort || null, label: presupuesto.label, note: presupuesto.note || null,
+    },
+    ...(closing.declared ? { season_winner: closing.winner } : {}),
+  };
 }
 
 // ── fase RECONCILE ───────────────────────────────────────────────────

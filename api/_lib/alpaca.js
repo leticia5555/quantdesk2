@@ -442,3 +442,39 @@ export async function getNews({ symbols = [], limit = 50, start = null, creds, i
   })).filter((n) => n.headline);
 }
 
+
+// ── METADATA DE ACTIVO (shortable / easy-to-borrow) ──────────────────
+// R9 del reglamento de la T2 falla CERRADO: sin confirmación de que un nombre
+// es shortable Y easy-to-borrow, el corto no se abre. Ese dato vive en
+// /v2/assets/{symbol} del host de TRADING (no del de datos) y es por nombre:
+// no hay endpoint multi-símbolo que lo devuelva sin bajar el catálogo entero
+// (~11.000 activos), que es mucho más caro que pedir los pocos que importan.
+//
+// `easy_to_borrow` de Alpaca se recalcula una vez por día a la apertura, así
+// que pedirlo más de una vez por día no trae nada nuevo — la caché por día vive
+// un nivel más arriba (_lib/arena-meta.js).
+//
+// Un símbolo que no existe o que falla NO entra al mapa: R9 lo va a leer como
+// "sin dato" y va a rechazar el corto, que es exactamente lo que tiene que
+// pasar. Un default optimista acá sería un permiso inventado.
+export async function getAssets(symbols = [], { creds, concurrency = 6 } = {}) {
+  const wanted = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
+  const out = {};
+  for (let i = 0; i < wanted.length; i += concurrency) {
+    await Promise.all(wanted.slice(i, i + concurrency).map(async (sym) => {
+      try {
+        const a = await alpacaFetch('/v2/assets/' + encodeURIComponent(sym), { creds });
+        if (!a || !a.symbol) return;
+        out[String(a.symbol).toUpperCase()] = {
+          shortable: a.shortable === true,
+          easy_to_borrow: a.easy_to_borrow === true,
+          tradable: a.tradable === true,
+          fractionable: a.fractionable === true,
+          exchange: a.exchange || null,
+          status: a.status || null,
+        };
+      } catch (_) { /* ausente = sin dato = R9 rechaza. Ver el encabezado. */ }
+    }));
+  }
+  return out;
+}
