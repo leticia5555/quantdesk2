@@ -404,6 +404,131 @@ inválido, o sea una corrida entera perdida. `stop_reason` se normaliza también
 para OpenRouter (`finish_reason: 'length'` → `max_tokens`), así el diagnóstico
 existe para los siete agentes y no solo para los de Anthropic.
 
+## B5 · SALIDA = PORTAFOLIO OBJETIVO · B6 · RIELES · B7 · RED PARA CORTOS
+
+`_lib/arena-rails.js` (rieles) · `_lib/arena-rebalance.js` (el motor) ·
+`_lib/arena-exits-short.js` (la red del corto) · tests en
+`tests/arena-portafolio.test.mjs`
+
+El cambio de contrato más grande de la temporada. Antes el PM entregaba
+**órdenes** ("compro 50 de NVDA"); ahora entrega un **libro** ("quiero estar 12%
+en NVDA"). Y de paso hace imposible el bug de la omisión silenciosa.
+
+### Las cuatro decisiones de B5
+
+**1 · Omisión = 0% = SALIDA.** Un ticker que el PM no menciona **se cierra**. La
+alternativa ("lo que no menciono se queda") deja que la omisión pase por
+decisión, que es exactamente la amnesia que la T2 vino a arreglar. Con omisión =
+salida, **todo el libro se re-afirma en cada corrida o desaparece**: el
+pronunciamiento obligatorio hecho **estructura**, no hecho instrucción.
+
+> **El riesgo es real:** un modelo que no lo entienda se liquida solo en su
+> primera corrida. Va dicho tres veces en el prompt, y hay un test que verifica
+> que un objetivo vacío produce la liquidación completa — no un no-op silencioso.
+
+**2 · Banda de no-negociación: 2pp.** Sin banda, el motor negocia contra el
+drift de precios todos los días: una posición que el PM quiere al 12% y cerró en
+11.6% generaría una orden que no expresa ninguna decisión. **Excepción:** un
+cierre completo nunca se frena — "salir del 1.5%" es una decisión aunque el
+movimiento sea chico.
+
+**3 · Orden de ejecución:** ventas → coberturas → compras → cortos nuevos. Lo
+que **libera** capacidad va primero; lo que la **consume**, después. Si no, una
+rotación completa viola el riel de bruto a mitad de secuencia o se queda sin
+cash. Un **cruce de signo son dos patas** (cerrar el largo, abrir el corto):
+tratarlo como una orden sola pasaría por plano sin pasar por plano.
+
+**4 · Descarta entero, no escala.** Escalar un objetivo para que quepa lo
+convierte en uno que el PM nunca propuso, y el journal publicaría como suya una
+tesis que no corresponde a las posiciones. Y se reportan **todas** las
+violaciones, no la primera: un PM que recibe "violaste R3" arregla R3 y choca
+con R6 mañana.
+
+### La asimetría del corto — el eje de B6 y B7
+
+> **Un largo que sale mal SE ENCOGE. Un corto que sale mal CRECE.**
+
+Un largo del 25% que cae 50% pasa a pesar ~14%: el error se auto-limita y el
+riel se respeta solo. Un corto del 25% cuyo subyacente **sube** 50% pasa a ~37%
+y sigue creciendo — **viola su propio riel sin que nadie haga nada**, y la
+pérdida no tiene techo teórico. De ahí salen el tope a la mitad, los rieles que
+solo existen para cortos, y el recorte.
+
+| # | Riel | Valor |
+|---|---|---|
+| R1 | largo por nombre | 30% |
+| R2 | corto por nombre | **15%** (la mitad) |
+| R3 | exposición bruta | ≤ 100% |
+| R4 | exposición neta | −50% a +100% *(asumido)* |
+| R5 | corto total | ≤ 50% |
+| R6 | por sector | 50%, con `UNKNOWN` como un bucket más |
+| R7 | cash | 0-100% |
+| R8 | mínimo por posición | 2% |
+| R9 | `shortable` **y** `easy_to_borrow` | **fail closed** |
+| R10 | precio mínimo para cortos | $10 (contra $5 del universo) |
+| R11 | `forced_buy_in` journaleado aparte | — |
+| R12 | **el motor RECORTA** | — |
+
+**R9 falla cerrado y eso es deliberado:** un campo ausente **no es un permiso**.
+Un buy-in forzado cierra la posición sin que el PM decida — eso es ruido del
+broker metido en el resultado del experimento.
+
+**R6 con `UNKNOWN`:** prohibir operar un nombre sin sector castigaría al PM por
+una falla de cobertura **nuestra**. El bucket comparte el tope y el journal lo
+dice.
+
+**R12 · El motor recorta.** Una posición que creció por encima de su riel se
+recorta al riel **aunque el PM no lo haya pedido y aunque su objetivo la deje
+donde está**. Rechazar entradas nuevas no sirve de nada contra una posición que
+se infla sola. Es **determinista** —va con la red, no con la decisión del PM—,
+se journalea como `rail_trim` con el peso antes y después, y el PM lo ve en su
+siguiente prompt como un hecho consumado, igual que un stop que disparó.
+
+Un nombre recortado que el PM **ni menciona** queda **en el riel, no en cero**:
+el recorte es de la red, no una salida que alguien decidió.
+
+### B7 · La red del corto, con el pico invertido
+
+`_lib/arena-exits-short.js` es un **hermano** de `arena-exits.js`, no un
+reemplazo: aquel lleva meses corriendo sobre libros largos y no se toca. Podría
+haber sido un `if (esCorto)` adentro; no lo es a propósito — la red es la única
+pieza que no se puede apagar, y meterle ramas a un módulo que ya funciona es la
+forma más barata de romper el lado que andaba.
+
+| Red | Largo (vigente) | Corto |
+|---|---|---|
+| Stop catastrófico | −22% desde la entrada | **+20% en contra** |
+| Trailing: ARMA | pico +15% a favor | **el piso llegó a −15%** |
+| Trailing: DISPARA | −8% desde el pico | **+8% desde el piso** |
+| Time stop | 45 días | 45 días (es atención, no riesgo) |
+
+**+20% y no +22%** por la asimetría: a 20% en contra la posición ya creció de
+15% a ~18% del libro, y los dos puntos extra cuestan más en un corto.
+
+**El espejo del pico.** En un largo se recuerda el **máximo** desde la entrada y
+el trailing protege contra la caída. En un corto la dirección favorable es
+**hacia abajo**, así que lo que se recuerda es el **mínimo** y el trailing
+protege contra el rebote. Guardar el máximo acá daría un trailing que dispara
+**cuando la posición va bien** — un bug perfectamente silencioso, y por eso
+tiene su propio test.
+
+El mínimo se **techa a la entrada**: un corto que nunca bajó de donde se abrió
+tiene piso = entrada. Sin ese techo, el trailing armaría por aritmética en vez
+de por haber ganado algo.
+
+Y como el largo: **por construcción cubre con ganancia**.
+`entrada × 0.85 × 1.08 = entrada × 0.918` — el techo del trailing está siempre
+por debajo de la entrada, que en un corto es ganancia.
+
+### Sin slippage simulado (D6)
+
+Estas son órdenes **reales** en Alpaca paper: el fill ya trae su propia
+fricción, y cobrar bps sintéticos encima sería contar el costo dos veces. Se
+mide **turnover** como métrica de churn — un número que ya existe y no inventa
+nada.
+
+---
+
 ## B3 · LAS HERRAMIENTAS
 
 `_lib/arena-tools.js` (las cuatro + presupuesto) · `_lib/arena-tool-loop.js` (el
@@ -1355,6 +1480,12 @@ ya conocidos, y `job=audit` descubre los nuevos a medida que aparezcan.
 | `ARENA_TOOL_LOOP_MS` | `120000` | Tope de TIEMPO del loop. El que de verdad manda. Ver B12. |
 | `ARENA_AGENT_DEADLINE_MS` | `270000` | Techo del trabajo completo de un agente. **Si se toca, tocar `vercel.json` también.** |
 | `ARENA_TOOLS` | `1` | Freno de mano de las herramientas. `0` vuelve al DIVE de una sola llamada. |
+| `ARENA_RAIL_MAX_LONG` / `_SHORT` | `0.30` / `0.15` | Rieles por nombre (B6). |
+| `ARENA_RAIL_MAX_GROSS` / `_SECTOR` / `_MAX_SHORT_GROSS` | `1.00` / `0.50` / `0.50` | Rieles de cartera. |
+| `ARENA_RAIL_MIN_POSITION` / `_MIN_SHORT_PRICE` | `0.02` / `10` | Mínimo por posición y precio mínimo de corto. |
+| `ARENA_RAIL_NO_TRADE_BAND` | `0.02` | Banda de no-negociación (2pp). |
+| `ARENA_SHORT_CATASTROPHIC_PCT` | `0.20` | Stop del corto (+20%, no +22%). |
+| `ARENA_SHORT_TRAILING_ARM` / `_GIVE_BACK` | `0.15` / `0.08` | Trailing del corto, con el pico invertido. |
 
 
 ## Self-fetch del buffet: causa raíz 24-jul y observabilidad
