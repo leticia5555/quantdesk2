@@ -644,6 +644,31 @@ con el escalón que la causó, y un disparador de buffet apagado deja su
 `skip_reason` — igual que los que caen por tope. Un día con menos corridas tiene
 que poder explicarse sin adivinar.
 
+#### El estimador de costo se había quedado corto ~4×
+
+`estimateWorstCaseCost` se escribió cuando una corrida eran **dos** llamadas al
+LLM. Desde B3 el DIVE es un loop y desde B4 hay tres rondas fijas, así que el
+número que publicaba el vigilante estaba mal por un factor de cuatro — y es
+justo el número que uno mira para dimensionar el presupuesto.
+
+**Lo que no se veía no era el número de llamadas: era que el PROMPT CRECE.** Cada
+resultado de herramienta (hasta 1.500 tokens) se queda en la conversación y
+vuelve a viajar en **todas** las vueltas siguientes. Con 8 herramientas el input
+de la última vuelta es el de la primera más ~8.000 tokens, y la suma sobre el
+loop es **cuadrática**. Un estimador que multiplica `corridas × tokens_por_corrida`
+no puede verlo. El prefijo cacheado descuenta parte (a 1/40 del precio de entrada
+en Fable 5.1) y también entra en la cuenta: sin restarlo el número se pasa para
+el otro lado.
+
+| | antes | ahora |
+|---|---|---|
+| llamadas al LLM por agente/día (peor caso) | 24 | **93** |
+| peor caso diario, los 2 agentes de Anthropic | ~$5 | **$20.85** |
+
+El peor caso absoluto de la liga entera pasa de `ARENA_DAILY_BUDGET_USD`. Eso no
+es un problema: **es el breaker haciendo su trabajo** — aprieta a mitad de día
+(8→3 herramientas, effort `low`) en vez de dejarlo llegar.
+
 #### Dos bugs del contador que habrían dejado al breaker ciego
 
 **1 · El loop de herramientas descartaba el `usage` de todas las llamadas menos
