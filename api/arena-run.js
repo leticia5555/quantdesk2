@@ -1293,6 +1293,19 @@ async function cachedDeepDive(caches, symbols, finnhubKey, now) {
 // y si no hay ninguna de las dos se guarda null, que `todaySpend` cuenta como
 // `partial` para que el breaker sepa que está mirando un total incompleto en
 // vez de creerse un total que no lo es.
+// El cuerpo CRUDO de una llamada fallida, para el journal. Tres agentes
+// abortaron con "HTTP 200" y el error decía el status y nada más: sin el cuerpo,
+// diagnosticar eso es adivinar. Se acota a 800 caracteres en el origen.
+function detalleFalloLlm(llm) {
+  return {
+    status: llm && llm.status, detail: (llm && llm.error_detail) || null,
+    provider_error: (llm && llm.provider_error) || null,
+    raw_body: (llm && llm.raw_body) || null,
+    timed_out: !!(llm && llm.timedOut), stale: !!(llm && llm.stale),
+    retry_failed: !!(llm && llm.retry_failed),
+  };
+}
+
 async function registrarGasto({ agent, runId, phase, llm, now, toolCalls = 0, loop = null }) {
   try {
     // Con herramientas el gasto de la fase es el de TODAS las vueltas, no el de
@@ -1887,6 +1900,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
       const reason = (scanLlm.stale
         ? 'fechas rotas tras retry (guard anti-alucinación)'
         : 'HTTP ' + scanLlm.status + ' de ' + agent.provider + (scanLlm.error_detail ? ': ' + scanLlm.error_detail : '')) + ' [fase scan]';
+      context.scan.llm_error = detalleFalloLlm(scanLlm);
       await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_llm_error', error: reason });
       return { status: 'aborted_llm_error', orders: 0, risk_exits: riskSubmitted };
     }
@@ -2050,7 +2064,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     diveLoop = loop;
     diveLlm = loop.llm;
     context.dive.tools = {
-      budget: toolBudget, used: executor.used, turns: loop.turns, stopped_by: loop.stopped_by,
+      budget: toolBudget, used: executor.used, intentos: executor.intentos, turns: loop.turns, stopped_by: loop.stopped_by,
       // La secuencia COMPLETA (con los resultados) para el replay; el resumen
       // publicable se deriva de acá en /liga.
       sequence: executor.sequence,
@@ -2089,6 +2103,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     const reason = (diveLlm.stale
       ? 'fechas rotas tras retry (guard anti-alucinación)'
       : 'HTTP ' + diveLlm.status + ' de ' + agent.provider + (diveLlm.error_detail ? ': ' + diveLlm.error_detail : '')) + ' [fase dive]';
+    context.dive.llm_error = detalleFalloLlm(diveLlm);
     await journalInsert({ ...withPrompt, status: 'aborted_llm_error', error: reason });
     return { status: 'aborted_llm_error', orders: 0, risk_exits: riskSubmitted };
   }

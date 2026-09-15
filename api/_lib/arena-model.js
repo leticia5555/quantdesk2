@@ -203,8 +203,13 @@ async function openRouterFetch({ apiKey, agent, model, system, messages, maxToke
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  const raw = await r.json().catch(() => null);
-  return { status: r.status, raw };
+  // EL CUERPO CRUDO SE CONSERVA SIEMPRE. `r.json()` que falla devolvía null y
+  // ahí se perdía la única evidencia de qué contestó el proveedor — que es
+  // exactamente lo que dejó sin diagnóstico a los abortos con "HTTP 200".
+  const texto = await r.text().catch(() => '');
+  let raw = null;
+  try { raw = texto ? JSON.parse(texto) : null; } catch { raw = null; }
+  return { status: r.status, raw, bodySample: String(texto || '').slice(0, 800) };
 }
 
 // Deadline de nivel superior, para envolver TRABAJO, no una sola conexión.
@@ -238,12 +243,41 @@ async function timedFetch(fn, timeoutMs) {
 // Guard-equivalente al de Anthropic, para OpenRouter: inyecta fecha, escanea
 // fechas prospectivas rotas, reintenta UNA vez, y si reincide devuelve stale.
 async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT }) {
-  const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice }), timeoutMs);
+  // `effort` NO se estaba pasando: la firma lo aceptaba y las dos llamadas lo
+  // dejaban afuera, así que el escalón 1 del breaker bajaba el effort en
+  // Anthropic y NO en OpenRouter — cinco de los siete seguían caros.
+  const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort }), timeoutMs);
   if (first.status < 200 || first.status >= 300 || !first.raw) {
     await recordAiCall({ model, now });
-    return { status: first.status || 502, data: null, timedOut: !!first.timedOut, error_detail: first.netError || null };
+    return {
+      status: first.status || 502, data: null, timedOut: !!first.timedOut,
+      error_detail: first.netError || (first.bodySample ? `cuerpo no-JSON: ${first.bodySample.slice(0, 200)}` : null),
+      raw_body: first.bodySample || null,
+    };
   }
+
+  // ── OPENROUTER DEVUELVE HTTP 200 CON UN ERROR ADENTRO ────────────────
+  // Es su forma de reportar fallas del proveedor de abajo: rate limit del
+  // modelo, contexto excedido, moderación. El código leía `choices[0]`, no lo
+  // encontraba, y armaba un turno VACÍO que moría más adelante como si el
+  // modelo no hubiera respetado el formato. Un 200 con `error` es un error y se
+  // reporta como tal, con el mensaje del proveedor.
+  if (first.raw.error || !Array.isArray(first.raw.choices) || !first.raw.choices.length) {
+    const e = first.raw.error || {};
+    await recordAiCall({ model, now });
+    return {
+      status: 502, data: null,
+      error_detail: `OpenRouter HTTP 200 sin choices utilizables${e.message ? ': ' + String(e.message).slice(0, 200) : ''}${e.code ? ` (code ${e.code})` : ''}`,
+      provider_error: e.message ? { message: e.message, code: e.code ?? null, type: e.type ?? null } : null,
+      raw_body: first.bodySample || null,
+    };
+  }
+
   const data = normalizeOpenRouter(first.raw);
+  if (!data) {
+    await recordAiCall({ model, now });
+    return { status: 502, data: null, error_detail: 'no se pudo normalizar la respuesta de OpenRouter', raw_body: first.bodySample || null };
+  }
   const text = data.content.filter((b) => b.type === 'text').map((b) => b.text || '').join('').trim();
   const hits = staleProspectiveDates(text, now);
   if (!hits.length || saltarGuardPorToolUse(data)) {
@@ -253,7 +287,7 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
 
   // Retry único con recordatorio, mismo formato requerido.
   const retryMessages = [...messages, { role: 'assistant', content: text }, { role: 'user', content: retryReminder(hits, now) }];
-  const second = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages: retryMessages, maxTokens, now, timeoutMs, tools, toolChoice }), timeoutMs);
+  const second = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages: retryMessages, maxTokens, now, timeoutMs, tools, toolChoice, effort }), timeoutMs);
   if (second.status < 200 || second.status >= 300 || !second.raw) {
     // El retry falló en red: mejor la primera respuesta (con su nota de fechas)
     // que un corte — el downstream ya valida el JSON de todos modos.
@@ -261,6 +295,11 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
     return { status: 200, data, retried: true };
   }
   const data2 = normalizeOpenRouter(second.raw);
+  if (!data2 || second.raw.error || !Array.isArray(second.raw.choices) || !second.raw.choices.length) {
+    // El retry vino roto: se devuelve la PRIMERA respuesta, que era usable.
+    await recordAiCall({ model, usage: data.usage, retried: true, now });
+    return { status: 200, data, retried: true, retry_failed: true, raw_body: second.bodySample || null };
+  }
   const hits2 = staleProspectiveDates(data2.content.map((b) => b.text).join('').trim(), now);
   await recordAiCall({ model, usage: data2.usage, retried: true, stale: !!hits2.length, now });
   if (hits2.length) return { status: 502, stale: true, hits: hits2, data: null };
@@ -379,8 +418,13 @@ async function anthropicFetch({ apiKey, payload, timeoutMs = ARENA_LLM_TIMEOUT_M
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  const raw = await r.json().catch(() => null);
-  return { status: r.status, raw };
+  // EL CUERPO CRUDO SE CONSERVA SIEMPRE. `r.json()` que falla devolvía null y
+  // ahí se perdía la única evidencia de qué contestó el proveedor — que es
+  // exactamente lo que dejó sin diagnóstico a los abortos con "HTTP 200".
+  const texto = await r.text().catch(() => '');
+  let raw = null;
+  try { raw = texto ? JSON.parse(texto) : null; } catch { raw = null; }
+  return { status: r.status, raw, bodySample: String(texto || '').slice(0, 800) };
 }
 
 // Guard de fechas replicado para el Arena sobre Anthropic (ver el bloque de

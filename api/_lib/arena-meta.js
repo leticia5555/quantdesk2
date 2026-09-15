@@ -78,6 +78,30 @@ export const SECTOR_RULES = [
   [/retail|apparel|textile|luxury|hotel|restaurant|leisure|automobile|auto (parts|compon)|homebuild|consumer (disc|durab|product|service)|distributor|education/i, 'XLY'],
 ];
 
+// ── GICS → ETF, exacto ───────────────────────────────────────────────
+// El CSV de IVV trae la columna `Sector` con los once nombres GICS oficiales.
+// Eso NO es una heurística: es la clasificación del índice. Se mapea uno a uno
+// y gana sobre cualquier regla por palabra clave.
+export const GICS_A_ETF = {
+  'information technology': 'XLK',
+  financials: 'XLF',
+  'health care': 'XLV',
+  healthcare: 'XLV',
+  'consumer discretionary': 'XLY',
+  'consumer staples': 'XLP',
+  energy: 'XLE',
+  industrials: 'XLI',
+  materials: 'XLB',
+  utilities: 'XLU',
+  'real estate': 'XLRE',
+  'communication services': 'XLC',
+};
+
+export function sectorFromGics(nombre) {
+  const k = String(nombre || '').trim().toLowerCase();
+  return GICS_A_ETF[k] || null;
+}
+
 // Devuelve { etf, matched_by } o { etf: null } — nunca adivina.
 export function sectorFromIndustry(industry) {
   const s = String(industry || '').trim();
@@ -128,7 +152,7 @@ async function cachedMap(channel, symbols, fetchMissing, now) {
 // cada campo, cuántos quedaron sin sector y por qué. Sin eso, una cartera
 // rechazada por R6 no se distingue de una cartera concentrada de verdad.
 export async function buildRailMeta(symbols = [], {
-  creds, finnhubKey = process.env.FINNHUB_API_KEY, now = new Date(), deps = {},
+  creds, finnhubKey = process.env.FINNHUB_API_KEY, now = new Date(), deps = {}, sectoresConocidos = null,
 } = {}) {
   const wanted = [...new Set((symbols || []).map(up).filter(Boolean))];
   const meta = {};
@@ -157,11 +181,18 @@ export async function buildRailMeta(symbols = [], {
 
   const sinSector = [];
   const sinBorrow = [];
+  let porIndice = 0;
   for (const sym of wanted) {
     const p = precios[sym];
     const b = (borrow.map || {})[sym];
     const ind = (sectores.map || {})[sym] || null;
-    const sec = sectorFromIndustry(ind);
+    // EL SECTOR DEL ÍNDICE GANA. Viene del CSV de IVV, que es la
+    // clasificación GICS oficial del índice — no una heurística sobre el nombre
+    // de la industria. Solo se cae a Finnhub para los nombres del día, que no
+    // están en ningún índice.
+    const delIndice = sectoresConocidos ? sectorFromGics(sectoresConocidos[sym]) : null;
+    if (delIndice) porIndice++;
+    const sec = delIndice ? { etf: delIndice, matched_by: 'gics_del_indice' } : sectorFromIndustry(ind);
     if (!b) sinBorrow.push(sym);
     if (!sec.etf) sinSector.push(sym);
     meta[sym] = {
@@ -185,6 +216,8 @@ export async function buildRailMeta(symbols = [], {
       with_borrow: wanted.length - sinBorrow.length,
       shortable_ok: wanted.filter((s) => meta[s].shortable === true && meta[s].easy_to_borrow === true).length,
       with_sector: wanted.length - sinSector.length,
+      sector_del_indice: porIndice,
+      sector_de_finnhub: wanted.length - sinSector.length - porIndice,
       sector_unmapped: sinSector,
       sector_unknown_bucket: sinSector.length,
       borrow_missing: sinBorrow,

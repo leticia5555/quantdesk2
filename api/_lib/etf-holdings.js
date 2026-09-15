@@ -116,6 +116,10 @@ const COLUMNAS = {
   ticker: ['ticker', 'holdingticker', 'symbol', 'securityidentifier', 'stockticker'],
   nombre: ['name', 'securityname', 'description', 'holdingname', 'company'],
   clase: ['assetclass', 'securitytype', 'classofshares', 'type', 'assettype'],
+  // El SECTOR, que venía en el CSV y se estaba tirando. iShares lo trae con la
+  // taxonomía GICS por nombre ("Information Technology"), que es la misma que
+  // usa el tablero.
+  sector: ['sector', 'gicssector', 'sectorname', 'industry'],
 };
 
 // Columnas que no se usan para extraer nada, pero que sirven para CONFIRMAR que
@@ -172,7 +176,7 @@ export async function fetchHoldings(index, { timeoutMs = 25000, fetchImpl = fetc
     const r = await intentarUrl(url, { timeoutMs, fetchImpl });
     intentos.push({ url_host: hostDe(url), ...r.diagnostics });
     if (r.symbols.length) {
-      return { symbols: r.symbols, diagnostics: { ...base, ok: true, url_host: hostDe(url), ...r.diagnostics, intentos } };
+      return { symbols: r.symbols, sectores: r.sectores || {}, diagnostics: { ...base, ok: true, url_host: hostDe(url), ...r.diagnostics, intentos } };
     }
   }
   // Ninguna sirvió: se devuelve el diagnóstico del ÚLTIMO intento arriba y la
@@ -213,6 +217,12 @@ async function intentarUrl(url, { timeoutMs, fetchImpl }) {
   }
 
   const simbolos = [];
+  // ── EL SECTOR VIENE GRATIS EN EL MISMO CSV ─────────────────────────
+  // El CSV de IVV trae una columna `Sector` para los 502 nombres, y se estaba
+  // tirando. Por eso R6 rechazaba carteras por concentración sectorial
+  // calculada sobre un bucket UNKNOWN que la ausencia de datos había inventado.
+  // Es el dato más barato del sistema: ya está en el archivo que igual se baja.
+  const sectores = {};
   let saltadasPorClase = 0;
   let saltadasPorTicker = 0;
   for (let i = cab.fila + 1; i < filas.length; i++) {
@@ -222,13 +232,19 @@ async function intentarUrl(url, { timeoutMs, fetchImpl }) {
     if (cab.mapa.clase != null && CLASE_NO_ACCION.test(String(f[cab.mapa.clase] || ''))) { saltadasPorClase++; continue; }
     if (!TICKER_VALIDO.test(t)) { saltadasPorTicker++; continue; }
     simbolos.push(t);
+    if (cab.mapa.sector != null) {
+      const sec = String(f[cab.mapa.sector] || '').trim();
+      if (sec && sec !== '-') sectores[t] = sec;
+    }
   }
   const symbols = [...new Set(simbolos)].sort();
 
   return {
     symbols,
+    sectores,
     diagnostics: {
       ok: symbols.length > 0,
+      sectores: Object.keys(sectores).length,
       bytes: texto.length, filas_totales: filas.length,
       encabezado_en_linea: cab.fila, columnas_detectadas: Object.keys(cab.mapa),
       tenia_columna_de_clase: cab.mapa.clase != null,

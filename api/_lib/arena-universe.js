@@ -143,7 +143,9 @@ export async function fetchDesdeEtf(index, { now = new Date(), fetchImpl = fetch
     return null;
   }
   const src = HOLDINGS_SOURCES[index] || {};
-  return { index, source: 'etf', etf: src.etf || null, built_at: now.toISOString(), symbols };
+  // Los sectores del CSV viajan con la lista: es la clasificación GICS del
+  // índice, gratis, y es lo que evita que R6 mande todo al bucket UNKNOWN.
+  return { index, source: 'etf', etf: src.etf || null, built_at: now.toISOString(), symbols, sectores: r.sectores || {} };
 }
 
 // ── ESCALÓN 1b: FMP, SOLO SI HAY KEY DE PAGO ─────────────────────────
@@ -384,6 +386,10 @@ export async function buildUniverse({
     actives({ top: 100, by: 'trades', creds }).catch((e) => { errors.most_actives_trades = String((e && e.message) || e); return null; }),
   ]);
 
+  // Sectores GICS de los índices, unidos. El universo los guarda para que la
+  // corrida no tenga que volver a pedirlos: es el dato que R6 necesita y que
+  // antes no existía en ningún lado.
+  const sectoresIndice = { ...(nq.sectores || {}), ...(sp.sectores || {}) };
   const spSet = new Set(sp.symbols);
   const nqSet = new Set(nq.symbols);
   const indexSyms = new Set([...sp.symbols, ...nq.symbols]);
@@ -581,6 +587,9 @@ export async function buildUniverse({
     from_day: admitidos.filter((s) => !indexSyms.has(s)),
     // { SYMBOL: {high_52w, low_52w, last, pct_from_high, pct_from_low} }. Es el
     // insumo de los breakouts del tablero, precomputado una vez por día.
+    // { SYMBOL: 'Information Technology' } para los nombres de índice.
+    sectores: sectoresIndice,
+    sectores_count: Object.keys(sectoresIndice).length,
     fifty_two_week: fiftyTwo,
     fifty_two_week_count: Object.keys(fiftyTwo).length,
     indices: {
