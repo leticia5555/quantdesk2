@@ -47,12 +47,11 @@
 //           ARENA_UNIVERSE_MOVERS_MAX (opc, default 100)
 // ═══════════════════════════════════════════════════════════════
 
-import { readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
 import { sql } from './db.js';
 import { getMovers, getMostActives, getFiftyTwoWeek, getPriceAndDollarVolume } from './alpaca.js';
 import { ADMISSION, resolveAdmission, isAdmissible } from './arena-admission.js';
 import { marketDay } from './arena-buffet-cache.js';
+import { CONSTITUENTS } from '../../data/universe/constituents.js';
 
 const FMP_BASE = 'https://financialmodelingprep.com/api/v3';
 const INDICES = { sp500: 'sp500_constituent', nasdaq100: 'nasdaq_constituent' };
@@ -140,11 +139,18 @@ export async function writeStored(index, snapshot) {
   } catch { return false; }
 }
 
-// ── ESCALÓN 3: el JSON del repo ──────────────────────────────────────
+// ── ESCALÓN 3: la lista del repo ─────────────────────────────────────
+// SE IMPORTA, NO SE LEE DEL DISCO. Antes esto abría un .json con
+// `new URL(..., import.meta.url)` y eso tumbó producción: sin package.json, un
+// .js de /api no es un módulo ESM para el runtime de Vercel, el código se
+// transpila a CommonJS, e `import.meta` es lo único de ESM que no tiene
+// traducción a CJS. Reventaba al CARGAR el módulo —no al usar la función—, así
+// que se llevaba puesto a todo el que lo importara. Ver el encabezado de
+// data/universe/constituents.js.
 export async function readStatic(index) {
   try {
-    const url = new URL(`../../data/universe/${index}.json`, import.meta.url);
-    const j = JSON.parse(await readFile(fileURLToPath(url), 'utf8'));
+    const j = (CONSTITUENTS || {})[index];
+    if (!j) return null;
     const symbols = (Array.isArray(j.symbols) ? j.symbols : []).map(clean).filter((s) => s && VALID_TICKER.test(s));
     if (!symbols.length) return null;   // el seed vacío NO cuenta como respaldo
     return { index, source: 'static', built_at: j.built_at || null, symbols };

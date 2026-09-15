@@ -1,7 +1,0 @@
-{
-  "index": "nasdaq100",
-  "source": "seed",
-  "built_at": null,
-  "symbols": [],
-  "note": "Vacío a propósito. Se llena corriendo /api/arena-universe?refresh=1&emit=1 contra FMP y commiteando el resultado — ver data/universe/README.md. Mientras esté vacío, el universo cae al escalón siguiente (Neon, y si no, solo movers) y el journal lo dice."
-}
