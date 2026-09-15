@@ -338,10 +338,21 @@ export function createToolExecutor({
 
   const ctx = { board, universe, creds, finnhubKey, now, deps, sectorOf, newsSymbols, marketCapOf };
   const sequence = [];
+  // DOS CONTADORES, Y LA DIFERENCIA ES LA MITAD DEL BUG REPORTADO.
+  //   `used`     = llamadas EJECUTADAS. Nunca puede pasar del techo.
+  //   `intentos` = todo lo que el modelo pidió, incluidos los rechazos por
+  //                presupuesto agotado y por herramienta inexistente.
+  // Antes había uno solo que contaba las dos cosas, así que `tools_used: 15`
+  // con `tools_max: 8` se leía como "el techo no se aplicó" cuando en realidad
+  // 8 se ejecutaron y 7 se rechazaron. Los intentos importan —son parte de cómo
+  // investigó, y un modelo que pide 7 veces después de quedarse sin cupo está
+  // diciendo algo— pero mezclarlos en el mismo número hace ilegible el techo.
   let used = 0;
+  let intentos = 0;
 
   return {
     get used() { return used; },
+    get intentos() { return intentos; },
     get remaining() { return Math.max(0, budget - used); },
     get sequence() { return sequence; },
     budget,
@@ -350,18 +361,40 @@ export function createToolExecutor({
       const t0 = Date.now();
 
       // ── EL TOPE, aplicado acá y no en el prompt ──
+      //
+      // EL BUG QUE ESTO ARREGLA (reportado el 2026-09-15): con `tools_max: 8`
+      // los agentes hicieron 11, 15 y 10 llamadas. El techo SÍ estaba aplicado
+      // —el chequeo de acá abajo— pero NO era atómico: entre el `if (used >=
+      // budget)` y el `used++` había dos `await` (la caché y el runner), y el
+      // loop ejecuta TODAS las herramientas de una vuelta EN PARALELO con
+      // `Promise.all`.
+      //
+      // Así que si el modelo pedía 5 herramientas con `used` en 7 y el techo en
+      // 8, las cinco evaluaban `7 >= 8` → false ANTES de que ninguna
+      // incrementara, las cinco pasaban, y `used` terminaba en 12.
+      //
+      // LA CURA es reservar el cupo EN EL MISMO TICK del chequeo: JavaScript es
+      // de un solo hilo, así que mientras no haya un `await` entre el `if` y el
+      // `++`, la reserva es atómica. Por eso `n` se calcula acá arriba y no
+      // después del trabajo.
+      intentos++;
       if (used >= budget) {
         const text = `PRESUPUESTO DE HERRAMIENTAS AGOTADO: ya usaste las ${budget} llamadas de esta corrida. No se ejecutó nada. Decidí con lo que ya tenés — el tablero sigue completo en el contexto.`;
-        sequence.push({ n: used + 1, tool: name, args: rawArgs, refused: 'budget_exhausted', ms: 0 });
-        used++;   // se cuenta igual: el intento es parte de cómo investigó
+        // El intento se journalea (es parte de cómo investigó) pero NO consume
+        // cupo: `used` se queda en el techo.
+        sequence.push({ intento: intentos, tool: name, args: rawArgs, refused: 'budget_exhausted', ms: 0 });
         return { text, budget_exhausted: true };
       }
+
+      // RESERVA ATÓMICA DEL CUPO. Todo lo que sigue puede tener `await`; el
+      // contador ya está incrementado, así que una llamada paralela que entre
+      // ahora ve el número correcto.
+      const n = ++used;
 
       const runner = RUNNERS[name];
       if (!runner) {
         const text = `No existe una herramienta llamada "${name}". Las disponibles son: ${Object.keys(RUNNERS).join(', ')}.`;
-        sequence.push({ n: used + 1, tool: name, args: rawArgs, refused: 'unknown_tool', ms: 0 });
-        used++;
+        sequence.push({ n, intento: intentos, tool: name, args: rawArgs, refused: 'unknown_tool', ms: 0 });
         return { text, unknown_tool: true };
       }
 
@@ -393,9 +426,8 @@ export function createToolExecutor({
       let text = out.text;
       if (notes.length) text += `\n(argumentos ajustados: ${notes.join('; ')})`;
 
-      used++;
       sequence.push({
-        n: used, tool: name, args, ms: Date.now() - t0, source,
+        n, intento: intentos, tool: name, args, ms: Date.now() - t0, source,
         rows: out.rows ?? null, truncated: !!out.truncated, error: !!out.error,
         // El resultado COMPLETO, no el resumen: sin esto el replay no puede
         // reproducir la corrida — el modelo decidió mirando algo que no

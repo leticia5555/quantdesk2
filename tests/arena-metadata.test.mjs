@@ -101,13 +101,17 @@ console.log('\n── R6: sin sector, TODO caía en un bucket inventado ──')
   // Cuatro nombres de cuatro sectores distintos, 22% cada uno: 88% bruto.
   const pesos = { AAPL: 0.22, JPM: 0.22, XOM: 0.22, JNJ: 0.22 };
 
+  // ESTE BLOQUE DOCUMENTABA EL BUG, y por eso cambió. Antes se verificaba que
+  // sin sector R6 VIOLARA. En producción eso rechazó a openai y a gemini por
+  // "concentración" cuando lo único que pasaba es que no teníamos el dato. Un
+  // riel que castiga al PM por una falla NUESTRA mide otra cosa.
   const aCiegas = validateTarget(pesos, {}, RAILS);
-  const r6Ciego = aCiegas.violations.find((x) => x.rail === 'R6');
-  ok(!!r6Ciego,
-    'SIN sector: una cartera repartida en cuatro sectores VIOLA el tope sectorial');
-  ok(r6Ciego && r6Ciego.sector === SECTOR_UNKNOWN,
-    '...porque los cuatro cayeron en el mismo bucket UNKNOWN, que sumó el bruto entero',
-    r6Ciego && r6Ciego.sector);
+  ok(!aCiegas.violations.some((x) => x.rail === 'R6'),
+    'SIN sector, R6 ya NO viola: los cuatro en el bucket UNKNOWN son una falla de cobertura, no concentración');
+  const avisoCiego = (aCiegas.warnings || []).find((x) => x.rail === 'R6');
+  ok(avisoCiego && avisoCiego.sector === SECTOR_UNKNOWN && avisoCiego.es_falla_nuestra,
+    '...sale como AVISO marcado como falla nuestra, que es lo que de verdad es',
+    JSON.stringify(avisoCiego && { s: avisoCiego.sector, n: avisoCiego.es_falla_nuestra }));
 
   const conSector = validateTarget(pesos, {
     AAPL: { sector: 'XLK' }, JPM: { sector: 'XLF' }, XOM: { sector: 'XLE' }, JNJ: { sector: 'XLV' },
@@ -172,6 +176,70 @@ console.log('\n── buildRailMeta: qué arma, y qué NO afirma ──');
   const v = validateTarget({ TIESO: -0.05 }, meta, RAILS);
   ok(v.violations.some((x) => x.rail === 'R9'),
     'con la metadata REAL en la mano, el nombre sin confirmar sigue sin poder cortarse');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// R6 RECHAZÓ POR UNA FALLA NUESTRA, NO POR CONCENTRACIÓN.
+//
+// Lo que pasó el 2026-09-15: la sombra rechazó a openai y a gemini por R6 con
+// `sector: UNKNOWN`. No estaban concentrados — es que NINGÚN nombre tenía
+// sector, los catorce cayeron al mismo bucket y la suma dio 100% "en un sector".
+//
+// Rechazar el objetivo entero por eso le carga al PM un error que no cometió.
+// Es el mismo problema que tenía `data_unavailable` en el canal del día: el
+// motivo equivocado manda a buscar al lugar equivocado.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── UNKNOWN es aviso; un sector real sigue violando ──');
+{
+  const pesos = { A: 0.2, B: 0.2, C: 0.2, D: 0.2, E: 0.2 };
+  const ciego = validateTarget(pesos, {}, RAILS);
+  ok(ciego.ok === true,
+    'sin sector para nadie, el objetivo PASA: la falla es nuestra y no invalida su decisión', JSON.stringify(ciego.violations));
+  ok(ciego.warnings.length === 1 && ciego.warnings[0].rail === 'R6' && ciego.warnings[0].es_falla_nuestra === true,
+    'pero sale un AVISO de R6 marcado como falla nuestra — no desaparece en silencio',
+    JSON.stringify(ciego.warnings.map((w) => w.rail)));
+  ok(/NO es concentración sectorial/i.test(ciego.warnings[0].detail),
+    'y el aviso lo dice con todas las letras', ciego.warnings[0].detail.slice(0, 80));
+  ok(Array.isArray(ciego.warnings[0].symbols) && ciego.warnings[0].symbols.length === 5,
+    'nombrando los símbolos sin clasificar, para poder ir a buscarlos');
+
+  // Y el tope sigue existiendo donde el dato SÍ está.
+  const concentrada = validateTarget({ A: 0.3, B: 0.3 }, { A: { sector: 'XLK' }, B: { sector: 'XLK' } }, RAILS);
+  ok(!concentrada.ok && concentrada.violations.some((x) => x.rail === 'R6'),
+    '60% en un sector REAL sigue siendo violación: se arregló la ceguera, no se aflojó el riel');
+
+  // Mezcla: un sector real concentrado Y nombres sin clasificar.
+  const mixta = validateTarget({ A: 0.3, B: 0.3, C: 0.2 }, { A: { sector: 'XLK' }, B: { sector: 'XLK' } }, RAILS);
+  ok(mixta.violations.some((x) => x.rail === 'R6' && x.sector === 'XLK'),
+    'con las dos cosas a la vez, el sector real viola');
+  ok(!mixta.violations.some((x) => x.sector === 'UNKNOWN'),
+    'y el bucket UNKNOWN no se suma a las violaciones');
+}
+
+console.log('\n── el sector del ÍNDICE gana sobre la heurística ──');
+{
+  const { sectorFromGics, buildRailMeta } = await import('../api/_lib/arena-meta.js');
+  ok(sectorFromGics('Information Technology') === 'XLK' && sectorFromGics('Communication Services') === 'XLC',
+    'los once nombres GICS del CSV de IVV se mapean uno a uno — no es heurística, es la clasificación del índice');
+  ok(sectorFromGics('Vaya a saber') === null, 'y un nombre que no es GICS no se adivina');
+
+  // El CSV dice Financials; Finnhub diría otra cosa. Gana el índice.
+  const { meta, diagnostics } = await buildRailMeta(['JPM', 'DIADELDIA'], {
+    sectoresConocidos: { JPM: 'Financials' },
+    deps: {
+      getSnapshots: async (syms) => Object.fromEntries(syms.map((x) => [x, { price: 100 }])),
+      getAssets: async (syms) => Object.fromEntries(syms.map((x) => [x, { shortable: true, easy_to_borrow: true, tradable: true }])),
+      fetchIndustry: async () => 'Semiconductors',
+    },
+    now: new Date('2026-09-16T18:00:00Z'),
+  });
+  ok(meta.JPM.sector === 'XLF',
+    'JPM toma XLF del CSV del índice, NO el XLK que habría salido de la industria de Finnhub', meta.JPM.sector);
+  ok(meta.DIADELDIA.sector === 'XLK',
+    'y un nombre del día, que no está en ningún índice, sí cae a Finnhub', meta.DIADELDIA.sector);
+  ok(diagnostics.sector_del_indice === 1 && diagnostics.sector_de_finnhub === 1,
+    'el diagnóstico separa de dónde salió cada sector',
+    JSON.stringify({ i: diagnostics.sector_del_indice, f: diagnostics.sector_de_finnhub }));
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');

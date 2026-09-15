@@ -141,7 +141,7 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
   }
 
   const llm = loop.llm;
-  ctx.tools = { budget: toolsMax, used: executor.used, turns: loop.turns, stopped_by: loop.stopped_by, sequence: executor.sequence, summary: executor.summary() };
+  ctx.tools = { budget: toolsMax, used: executor.used, intentos: executor.intentos, turns: loop.turns, stopped_by: loop.stopped_by, sequence: executor.sequence, summary: executor.summary() };
 
   // El gasto se registra SIEMPRE, haya salido bien o mal: una corrida abortada
   // igual gastó tokens, y un contador que solo cuenta los éxitos subestima.
@@ -163,6 +163,15 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
 
   if (llm.status !== 200 || !llm.data) {
     const error = llm.stale ? 'fechas rotas tras retry' : `HTTP ${llm.status}${llm.error_detail ? ': ' + llm.error_detail : ''}`;
+    // EL CUERPO CRUDO AL JOURNAL. Tres agentes abortaron con "HTTP 200" y no
+    // había forma de saber qué había contestado el proveedor: el error decía el
+    // status y nada más. Sin el cuerpo, diagnosticar esto es adivinar.
+    ctx.llm_error = {
+      status: llm.status, detail: llm.error_detail || null,
+      provider_error: llm.provider_error || null,
+      raw_body: llm.raw_body || null,
+      timed_out: !!llm.timedOut, stale: !!llm.stale, retry_failed: !!llm.retry_failed,
+    };
     await shadowJournalInsert({ ...base, status: 'aborted_llm_error', error, context: ctx });
     return { agent: agent.id, status: 'aborted_llm_error', error, cost_usd: costo.usd };
   }
@@ -191,7 +200,11 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
   let meta = {};
   let metaDiag = null;
   try {
-    const rm = await buildRailMeta(simbolosDelObjetivo, { creds, now });
+    // Los sectores del universo (GICS del CSV de IVV) llegan acá: son la
+    // clasificación del índice, no una heurística, y son lo que evita que R6
+    // rechace carteras por un bucket UNKNOWN inventado por la falta de datos.
+    const sectoresUniverso = (buffet && buffet.universe_raw && buffet.universe_raw.sectores) || null;
+    const rm = await buildRailMeta(simbolosDelObjetivo, { creds, now, sectoresConocidos: sectoresUniverso });
     meta = rm.meta; metaDiag = { ...rm.diagnostics, errors: rm.errors };
   } catch (e) {
     metaDiag = { error: String((e && e.message) || e), note: 'sin metadata: R9 rechaza todo corto y R6 manda todo al bucket UNKNOWN' };
@@ -215,7 +228,7 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
 
   return {
     agent: agent.id, status: v.ok ? 'ok_target' : 'rejected_rails',
-    lens: cola.lens, tools_used: executor.used, cost_usd: costo.usd,
+    lens: cola.lens, tools_used: executor.used, tools_intentos: executor.intentos, cost_usd: costo.usd,
     weights: parsed.weights,
     exposures: v.exposures,
     violations: v.violations,

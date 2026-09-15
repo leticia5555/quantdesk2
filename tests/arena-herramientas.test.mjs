@@ -259,8 +259,29 @@ console.log('\n── un modelo en BUCLE se corta, con una vuelta final para cer
   ok(/forzado/.test(r.llm.data.content[0].text),
     'que devuelve el JSON — sin esa vuelta, un modelo en bucle daría una corrida abortada teniendo todo lo que necesitaba');
   ok(/Se acabó el presupuesto de investigación/.test(r.messages[r.messages.length - 1].content), 'y se le dice por qué');
-  ok(ex.used === 4 && ex.sequence.filter((s) => s.refused).length === 2,
-    'las llamadas de más allá del presupuesto quedan journaleadas como rechazadas', String(ex.sequence.filter((s) => s.refused).length));
+  // ESTE ASSERT DOCUMENTABA EL BUG. Pedía `used === 4` con un techo de 2,
+  // porque `used` contaba también los rechazos — y por eso en producción se vio
+  // `tools_used: 15` con `tools_max: 8` y pareció que el techo no se aplicaba.
+  // Son dos preguntas distintas y ahora tienen dos contadores:
+  //   `used`     = EJECUTADAS, nunca pasa del techo.
+  //   `intentos` = todo lo que el modelo pidió, rechazos incluidos.
+  ok(ex.used === 2,
+    'las EJECUTADAS nunca pasan del techo', String(ex.used));
+  ok(ex.intentos === 4,
+    'pero los INTENTOS se cuentan todos: un modelo que sigue pidiendo después de quedarse sin cupo está diciendo algo', String(ex.intentos));
+  ok(ex.sequence.filter((s) => s.refused).length === 2,
+    'y los de más allá del presupuesto quedan journaleados como rechazados', String(ex.sequence.filter((s) => s.refused).length));
+
+  // LA CARRERA: el loop ejecuta las herramientas de una vuelta EN PARALELO, así
+  // que el chequeo y el incremento tienen que pasar en el MISMO tick. Con los
+  // dos `await` que había en el medio (caché y runner), cinco llamadas
+  // paralelas con `used` en 7 y techo 8 pasaban las cinco.
+  const carrera = mkExec({ budget: 8 });
+  for (let v = 0; v < 3; v++) await Promise.all(Array.from({ length: 5 }, () => carrera.call('screener', {})));
+  ok(carrera.used === 8,
+    '15 llamadas en paralelo de a 5 con techo 8 → se ejecutan 8, no 15: la reserva del cupo es atómica',
+    `used=${carrera.used}`);
+  ok(carrera.intentos === 15, 'y los 15 intentos quedan contados', String(carrera.intentos));
 }
 
 console.log('\n── un error del proveedor NO se traga ──');

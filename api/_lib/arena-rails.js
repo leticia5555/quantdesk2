@@ -228,18 +228,43 @@ export function validateTarget(weights, meta = {}, rails = RAILS) {
     const s = (meta[sym] && meta[sym].sector) || SECTOR_UNKNOWN;
     porSector[s] = (porSector[s] || 0) + Math.abs(w);
   }
+  // ── R6 Y EL BUCKET UNKNOWN: AVISO, NO VIOLACIÓN ────────────────────
+  // Lo que pasó el 2026-09-15: la sombra rechazó a openai y a gemini por R6
+  // con `sector: UNKNOWN`. No estaban concentrados — es que NINGÚN nombre
+  // tenía sector, así que los catorce cayeron al mismo bucket y la suma dio
+  // 100% "en un sector".
+  //
+  // Eso no es concentración: es una falla de COBERTURA NUESTRA. Y rechazar el
+  // objetivo entero por una falla nuestra le carga al PM un error que no
+  // cometió — exactamente el mismo problema que tenía `data_unavailable` en el
+  // canal del día, donde el motivo equivocado mandaba a buscar al lugar
+  // equivocado.
+  //
+  // Así que UNKNOWN sale como `warning`, no como violación, y el objetivo pasa.
+  // Los sectores REALES siguen aplicando el tope igual: se arregló la ceguera,
+  // no se aflojó el riel.
+  const warnings = [];
   for (const [s, peso] of Object.entries(porSector)) {
-    if (peso > rails.max_sector + 1e-9) {
-      v.push({
-        rail: 'R6', sector: s,
-        detail: `sector ${s} ${(peso * 100).toFixed(1)}% > ${(rails.max_sector * 100).toFixed(0)}%` +
-          (s === SECTOR_UNKNOWN ? ' (bucket de nombres sin sector: es una falla de cobertura nuestra, pero el tope aplica igual)' : ''),
-        symbols: Object.keys(weights).filter((k) => ((meta[k] && meta[k].sector) || SECTOR_UNKNOWN) === s),
+    if (peso <= rails.max_sector + 1e-9) continue;
+    const symbols = Object.keys(weights).filter((k) => ((meta[k] && meta[k].sector) || SECTOR_UNKNOWN) === s);
+    if (s === SECTOR_UNKNOWN) {
+      warnings.push({
+        rail: 'R6', sector: s, symbols,
+        detail: `${(peso * 100).toFixed(1)}% del bruto está en nombres SIN SECTOR. Esto NO es concentración sectorial: es una falla de cobertura NUESTRA, así que no invalida el objetivo. Los nombres sin clasificar son: ${symbols.slice(0, 12).join(', ')}${symbols.length > 12 ? '…' : ''}.`,
+        es_falla_nuestra: true,
       });
+      continue;
     }
+    v.push({
+      rail: 'R6', sector: s, symbols,
+      detail: `sector ${s} ${(peso * 100).toFixed(1)}% > ${(rails.max_sector * 100).toFixed(0)}%`,
+    });
   }
 
-  return { ok: v.length === 0, violations: v, exposures: exp, by_sector: porSector };
+  // `warnings` NO cuenta para `ok`: son fallas nuestras, no del objetivo. Pero
+  // viajan, porque un objetivo que pasó CON siete nombres sin clasificar no es
+  // lo mismo que uno que pasó limpio, y el post-mortem tiene que poder verlo.
+  return { ok: v.length === 0, violations: v, warnings, exposures: exp, by_sector: porSector };
 }
 
 // ── R12 · EL RECORTE ─────────────────────────────────────────────────

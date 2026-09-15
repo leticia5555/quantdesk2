@@ -194,13 +194,30 @@ console.log('\n── B6: los topes del corto son la MITAD, y el total tiene tec
     'y un libro 0% largo / 60% corto viola el neto: en 4 semanas eso no es un portafolio, es una apuesta direccional');
 }
 
-console.log('\n── B6: el bucket UNKNOWN tiene el mismo tope, y se dice ──');
+console.log('\n── B6: el bucket UNKNOWN es AVISO, no violación ──');
 {
+  // ESTE BLOQUE ESTABA EN CONTRA DE SU PROPIO COMENTARIO. Decía "prohibir
+  // operar sin sector castigaría al PM por eso" y a la vez verificaba que R6
+  // VIOLARA. En producción eso rechazó a openai y a gemini: no estaban
+  // concentrados, era que ningún nombre tenía sector y los catorce cayeron al
+  // mismo bucket.
+  //
+  // Un riel que castiga al PM por una falla NUESTRA no está midiendo
+  // concentración. El aviso viaja igual; lo que ya no hace es invalidar el
+  // objetivo.
   const v = validateTarget({ A: 0.30, B: 0.30 }, { A: {}, B: {} });
-  const r6 = v.violations.find((x) => x.rail === 'R6');
-  ok(r6 && r6.sector === SECTOR_UNKNOWN, 'los nombres sin sector caen en UNKNOWN y el tope aplica igual');
-  ok(/falla de cobertura nuestra/.test(r6.detail),
-    'diciendo que es una falla NUESTRA — prohibir operar sin sector castigaría al PM por eso', r6.detail);
+  ok(!v.violations.some((x) => x.rail === 'R6'),
+    'sin sector NO se viola R6: la falla es de cobertura, no del objetivo');
+  const aviso = (v.warnings || []).find((x) => x.rail === 'R6');
+  ok(aviso && aviso.sector === SECTOR_UNKNOWN && aviso.es_falla_nuestra === true,
+    'sale como aviso marcado `es_falla_nuestra`', JSON.stringify(aviso && aviso.sector));
+  ok(/falla de cobertura NUESTRA/i.test(aviso.detail),
+    'diciendo de quién es la culpa, que es lo que el comentario de este bloque pedía desde el principio', aviso.detail);
+
+  // Y el tope sigue vivo donde el dato existe.
+  const real = validateTarget({ A: 0.30, B: 0.30 }, { A: { sector: 'XLK' }, B: { sector: 'XLK' } });
+  ok(real.violations.some((x) => x.rail === 'R6' && x.sector === 'XLK'),
+    'con sector REAL, 60% en uno solo sigue violando');
 }
 
 // ── B6 · R12 EL RECORTE ──────────────────────────────────────────────

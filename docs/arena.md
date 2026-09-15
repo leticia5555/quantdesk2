@@ -731,6 +731,75 @@ sería re-crear el problema una capa más arriba.
 Mientras el contrato nuevo corra solo en sombra, éste es el **único** lugar
 donde se puede ver un portafolio objetivo.
 
+### Lo que encontró la primera sombra real (2026-09-15, $1.11, 2/7 en verde)
+
+#### 1 · `tools_max: 8` y 11, 15, 10 llamadas — dos causas, no una
+
+**El techo se aplicaba, pero se contaba mal Y se chequeaba mal.**
+
+**(a) `used` contaba los rechazos.** Un intento que rebotaba por presupuesto
+agotado incrementaba el mismo contador que las ejecuciones. Con techo 8 y 15
+pedidos, `tools_used` decía 15 — y parecía que el techo no existía cuando en
+realidad 8 se ejecutaron y 7 se rechazaron. Ahora hay dos contadores: `used`
+(ejecutadas, nunca pasa del techo) e `intentos` (todo lo pedido). Los intentos
+importan —un modelo que sigue pidiendo después de quedarse sin cupo está
+diciendo algo— pero mezclarlos hacía ilegible el techo.
+
+**(b) La reserva del cupo no era atómica.** Entre el `if (used >= budget)` y el
+`used++` había **dos `await`** (la caché y el runner), y el loop ejecuta las
+herramientas de una vuelta **en paralelo** con `Promise.all`. Con `used` en 7,
+techo 8 y cinco pedidos simultáneos, los cinco evaluaban `7 >= 8` → false antes
+de que ninguno incrementara: pasaban los cinco.
+
+La cura es reservar el cupo **en el mismo tick** del chequeo. JavaScript es de un
+solo hilo: mientras no haya un `await` entre el `if` y el `++`, la reserva es
+atómica.
+
+#### 2 · R6 rechazó por una falla nuestra
+
+La sombra rechazó a `openai` y a `gemini` por R6 con `sector: UNKNOWN`. **No
+estaban concentrados**: ningún nombre tenía sector, los catorce cayeron al mismo
+bucket y la suma dio 100% "en un sector".
+
+Rechazar el objetivo entero por eso le carga al PM un error que no cometió — el
+mismo problema que tenía `data_unavailable` en el canal del día. Ahora el bucket
+`UNKNOWN` sale como **`warning`** (`es_falla_nuestra: true`), no como violación,
+y el objetivo pasa. **Los sectores reales siguen aplicando el tope igual.**
+
+> El test que cubría esto **estaba en contra de su propio comentario**: decía
+> *"prohibir operar sin sector castigaría al PM por eso"* y a la vez verificaba
+> que R6 violara.
+
+**Y el dato estaba a mano todo el tiempo:** el CSV de IVV trae una columna
+`Sector` con la clasificación **GICS oficial** para los 502 nombres, y se estaba
+tirando. Ahora se carga con la lista, se guarda en el universo y **gana sobre la
+heurística de Finnhub** — no es una regla por palabra clave, es la clasificación
+del índice. Los nombres del día, que no están en ningún índice, siguen cayendo a
+`profile2` cacheado por día.
+
+#### 3 · Tres agentes abortaron con "HTTP 200"
+
+`grok`, `deepseek` y `qwen`. El error decía el status y nada más, así que no
+había forma de saber qué había contestado el proveedor.
+
+**OpenRouter devuelve HTTP 200 con un `error` adentro** — es su forma de reportar
+fallas del proveedor de abajo (rate limit del modelo, contexto excedido,
+moderación). El código leía `choices[0]`, no lo encontraba, y armaba un turno
+**vacío** que moría más adelante como si el modelo no hubiera respetado el
+formato. Ahora un 200 con `error` se reporta como error, con el mensaje del
+proveedor.
+
+**Y el cuerpo crudo se journalea** (`llm_error.raw_body`, acotado a 800
+caracteres) en los dos proveedores. `r.json()` que fallaba devolvía `null` y ahí
+se perdía la única evidencia.
+
+> **Un bug aparte que apareció leyendo esto:** `guardedOpenRouterCall` aceptaba
+> `effort` y **no se lo pasaba** a `openRouterFetch` en ninguna de sus dos
+> llamadas. El escalón 1 del breaker bajaba el effort en Anthropic y no en
+> OpenRouter — cinco de los siete agentes seguían caros.
+
+---
+
 ### El reporte gratis (`?report=1`) contesta lo que la corrida no
 
 La corrida en vivo devuelve `agents[].tools_used` —un **número**— y no calcula
