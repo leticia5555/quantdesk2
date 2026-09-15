@@ -17,6 +17,7 @@
 
 import {
   esAccionComun, filtrarComunes, normalizarTicker, SUFIJO_CLARO, NOMBRE_NO_COMUN,
+  esFondo, NOMBRE_ES_FONDO,
 } from '../api/_lib/arena-instrumento.js';
 import { parseCsv, ubicarEncabezado, fetchHoldings, HOLDINGS_SOURCES } from '../api/_lib/etf-holdings.js';
 
@@ -196,6 +197,105 @@ console.log('\n── las fuentes declaradas ──');
     'la primera candidata del S&P 500 es la URL VERIFICADA de iShares', HOLDINGS_SOURCES.sp500.urls[0]);
   ok(HOLDINGS_SOURCES.nasdaq100.opcional === true && !HOLDINGS_SOURCES.sp500.opcional,
     'el Nasdaq 100 está marcado OPCIONAL y el S&P 500 no: sin URL verificada, arrancamos con uno');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LOS ETFs NO SON ACCIONES, Y `class` NO LOS DISTINGUE.
+//
+// EL REPORTE (2026-09-15): 21 de los 50 cupos del canal del día se los llevaron
+// ETFs —SPY, QQQ, SOXL, GLD, XLE— que después rebotaron por market cap.
+// Ocupaban lugar de acciones y encima gastaban una llamada a Finnhub cada uno.
+//
+// Y el dato que cambia el diseño: en Alpaca un ETF es `class: 'us_equity'`,
+// igual que una acción. La prueba está en el reporte mismo — SPY y QQQ pasaron
+// el filtro de instrumento, que exige exactamente esa clase.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── los ETFs del reporte, uno por uno ──');
+{
+  const etf = (s2, n) => ({ symbol: s2, name: n, class: 'us_equity', status: 'active', tradable: true });
+  const casos = [
+    ['SPY', 'SPDR S&P 500 ETF Trust'],
+    ['QQQ', 'Invesco QQQ Trust, Series 1'],
+    ['SOXL', 'Direxion Daily Semiconductor Bull 3X Shares'],
+    ['GLD', 'SPDR Gold Shares'],
+    ['XLE', 'The Energy Select Sector SPDR Fund'],
+  ];
+  for (const [sym, nombre] of casos) {
+    const v = esAccionComun(etf(sym, nombre));
+    ok(!v.ok && v.reason === 'es_fondo', `${sym} queda afuera del canal del día`, JSON.stringify(v));
+  }
+  ok(esAccionComun(etf('SPY', 'SPDR S&P 500 ETF Trust')).reason === 'es_fondo',
+    'y el motivo es `es_fondo`, distinto de `no_es_comun`: un ETF no es un warrant y el journal tiene que poder separarlos');
+}
+
+console.log('\n── `class` NO alcanza, y por eso hacen falta dos señales ──');
+{
+  const spy = { symbol: 'SPY', name: 'SPDR S&P 500 ETF Trust', class: 'us_equity', status: 'active', tradable: true };
+  ok(spy.class === 'us_equity',
+    'en Alpaca un ETF ES us_equity — el filtro por clase lo dejaba pasar, que es exactamente lo que se vio en producción');
+
+  // Señal 1: el `type` del symbol map de Finnhub (autoritativo).
+  const sinNombre = { symbol: 'XXXX', name: '', class: 'us_equity', status: 'active', tradable: true };
+  ok(esFondo(sinNombre, 'ETP').si, 'con `type=ETP` es fondo aunque el nombre no diga nada');
+  ok(esFondo(sinNombre, 'Closed-End Fund').si && esFondo(sinNombre, 'Open-End Fund').si,
+    'los tres tipos de fondo del guard se reusan — no se redefine una segunda lista que se desincronice');
+  ok(!esFondo(sinNombre, 'Common Stock').si, 'y un `type` de acción común no marca nada');
+
+  // Señal 2: el nombre del catálogo de Alpaca (sin key).
+  ok(esFondo({ symbol: 'VOO', name: 'Vanguard S&P 500 ETF' }).si,
+    'sin `type`, el nombre alcanza para los emisores conocidos');
+}
+
+console.log('\n── las reglas de nombre son ANGOSTAS a propósito ──');
+{
+  // LA TRAMPA: `/\btrust\b/` o `/\bshares\b/` habrían atrapado compañías
+  // REALES. Es la misma familia de bug que ANDW con los warrants: una palabra
+  // genérica se come empresas de verdad.
+  const acciones = [
+    ['NTRS', 'Northern Trust Corporation'],
+    ['BEN', 'Franklin Resources, Inc.'],
+    ['TROW', 'T. Rowe Price Group, Inc.'],
+    ['BLK', 'BlackRock, Inc.'],
+    ['STT', 'State Street Corporation'],
+  ];
+  for (const [sym, nombre] of acciones) {
+    const v = esAccionComun({ symbol: sym, name: nombre, class: 'us_equity', status: 'active', tradable: true });
+    ok(v.ok, `${sym} (${nombre}) SIGUE siendo una acción`, JSON.stringify(v));
+  }
+  ok(!NOMBRE_ES_FONDO.some(([re]) => re.source === '\\btrust\\b' || re.source === '\\bshares\\b'),
+    'no hay una regla que sea `trust` o `shares` a secas: son las que se comerían a Northern Trust y a BlackRock');
+}
+
+console.log('\n── el filtro sobre un lote separa fondos de warrants ──');
+{
+  const mk = (s2, n) => [s2, { symbol: s2, name: n, class: 'us_equity', status: 'active', tradable: true }];
+  const assets = Object.fromEntries([
+    mk('OKTA', 'Okta, Inc. Class A Common Stock'),
+    mk('NTRS', 'Northern Trust Corporation'),
+    mk('SPY', 'SPDR S&P 500 ETF Trust'),
+    mk('XLE', 'The Energy Select Sector SPDR Fund'),
+    mk('SPACW', 'SPAC Acquisition Warrant'),
+  ]);
+  const r = await filtrarComunes(['OKTA', 'NTRS', 'SPY', 'XLE', 'SPACW'], { catalogo: { assets, count: 5 } });
+  ok(r.comunes.length === 2 && r.comunes.includes('OKTA') && r.comunes.includes('NTRS'),
+    'pasan las dos acciones', JSON.stringify(r.comunes));
+  ok(r.diagnostics.fondos_excluidos === 2,
+    'se cuentan los fondos aparte: es el número que explica los cupos perdidos', String(r.diagnostics.fondos_excluidos));
+  ok(r.rechazados.filter((x) => x.reason === 'no_es_comun').length === 1,
+    'y el warrant sigue saliendo por su propio motivo, sin mezclarse con los fondos');
+  ok(/ETF/.test(r.diagnostics.note || '') && /tablero/.test(r.diagnostics.note || ''),
+    'la nota dice dónde SÍ van los ETFs sectoriales: al calor por sector del tablero', r.diagnostics.note);
+}
+
+console.log('\n── se puede apagar, y sigue siendo fail closed ──');
+{
+  const assets = { SPY: { symbol: 'SPY', name: 'SPDR S&P 500 ETF Trust', class: 'us_equity', status: 'active', tradable: true } };
+  const r = await filtrarComunes(['SPY'], { catalogo: { assets, count: 1 }, excluirFondos: false });
+  ok(r.comunes.includes('SPY'),
+    'con excluirFondos:false un ETF pasa — el filtro es del CANAL DEL DÍA, no una verdad universal');
+  const v = esAccionComun({ symbol: 'ZZZ', name: 'Zeta ETF', class: 'us_equity', status: 'inactive', tradable: true });
+  ok(!v.ok && v.reason === 'inactivo',
+    'y los chequeos duros siguen primero: un inactivo se rechaza por inactivo, no por fondo', v.reason);
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');

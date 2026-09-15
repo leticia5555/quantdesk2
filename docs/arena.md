@@ -1420,6 +1420,41 @@ Dos bugs en uno, y el segundo es el que costó tiempo:
    equivocado manda a buscar el problema al lugar equivocado** — y así fue: se
    sospechó de Finnhub cuando el problema estaba en el universo de entrada.
 
+#### Los ETFs no son acciones, y `class` no los distingue
+
+**Lo reportado:** 21 de los 50 cupos del canal del día se los llevaron ETFs —SPY,
+QQQ, SOXL, GLD, XLE— que después rebotaban por market cap. Ocupaban lugar de
+acciones y encima gastaban una llamada a Finnhub cada uno.
+
+**El dato que cambia el diseño:** en Alpaca un ETF es `class: "us_equity"`, igual
+que una acción. La prueba está en el reporte mismo — SPY y QQQ pasaron el filtro
+de instrumento, que exige exactamente esa clase. Así que `class` no sirve para
+esto, y hacen falta **dos señales**:
+
+| Señal | Fuente | Alcance |
+|---|---|---|
+| `type` del symbol map | Finnhub, **una** llamada cacheada para todo el mercado | autoritativo (97,6% de cobertura en prod) |
+| nombre del activo | catálogo de Alpaca, sin key | emisores y frases de fondo |
+
+El `type` reusa `EXCLUDED_SECURITY_TYPES` del guard —**se importa, no se
+redefine**: una segunda lista de "qué es un fondo" es una lista que se va a
+desincronizar de la primera.
+
+**Las reglas de nombre son angostas a propósito.** La tentación es `/\btrust\b/`
+o `/\bshares\b/`, y las dos están mal: *Northern Trust Corporation* es un banco
+del S&P 500, y BlackRock, Franklin Resources y State Street son gestoras que
+cotizan como cualquier otra acción. Es la misma trampa que `ANDW` con los
+warrants — una palabra genérica se come compañías de verdad. Por eso las reglas
+son **emisores** (SPDR, iShares, ProShares…) y frases que solo aparecen en
+fondos; lo que se escape por nombre lo agarra el `type`.
+
+**Dónde sí van los ETFs sectoriales:** al **calor por sector del tablero**, que
+ya los lleva. No compitiendo por un cupo de acción en el canal del día.
+
+El motivo se journalea aparte (`es_fondo`, distinto de `no_es_comun`) y
+`counts.del_dia_fondos` cuenta cuántos cupos se recuperaron: un ETF no es un
+warrant y el post-mortem tiene que poder separarlos.
+
 #### Por qué el sufijo no alcanzaba
 
 `arena-guard.js` ya tenía `/[.\-+](WS|WT|W|U|R|RT)$/`. Exige un **separador**, y
