@@ -53,6 +53,7 @@ import { ADMISSION, resolveAdmission, isAdmissible, reglasParaFeed } from './are
 import { marketDay } from './arena-buffet-cache.js';
 import { fetchHoldings, HOLDINGS_SOURCES } from './etf-holdings.js';
 import { filtrarComunes, cargarCatalogo } from './arena-instrumento.js';
+import { getSymbolTypes } from '../earnings.js';
 import { CONSTITUENTS } from '../../data/universe/constituents.js';
 
 // ── LAS DOS APIs DE FMP, Y POR QUÉ SE PRUEBAN LAS DOS ────────────────
@@ -418,8 +419,16 @@ export async function buildUniverse({
   const catalogo = await (deps.cargarCatalogo || cargarCatalogo)({ creds, now, deps })
     .catch((e) => { errors.catalogo = String((e && e.message) || e); return { assets: null }; });
 
+  // El `type` del symbol map de Finnhub distingue ETFs de acciones, y es UNA
+  // llamada cacheada para todo el mercado (no una por símbolo). Es el único
+  // dato que Alpaca no da: ahí un ETF también es `class: 'us_equity'`.
+  // Best-effort — sin él quedan las reglas de nombre, que son angostas.
+  let symbolTypes = null;
+  try { symbolTypes = await (deps.getSymbolTypes || getSymbolTypes)(finnhubKey); }
+  catch (e) { errors.symbol_types = String((e && e.message) || e); }
+
   const filtroDia = await (deps.filtrarComunes || filtrarComunes)(
-    delDia.filter((s2) => !indexSyms.has(s2)), { creds, now, deps, catalogo },
+    delDia.filter((s2) => !indexSyms.has(s2)), { creds, now, deps, catalogo, symbolTypes },
   ).catch((e) => { errors.filtro_instrumento = String((e && e.message) || e); return { comunes: [], rechazados: [], diagnostics: {} }; });
 
   const comunesDelDia = filtroDia.comunes.filter((s2) => !indexSyms.has(s2));
@@ -601,6 +610,10 @@ export async function buildUniverse({
       del_dia_brutos: delDia.length,
       del_dia_comunes: (filtroDia.comunes || []).length,
       del_dia_no_comunes: (filtroDia.rechazados || []).length,
+      // Los ETFs aparte: se llevaron 21 de 50 cupos y el conteo global no lo
+      // mostraba. Los ETFs sectoriales ya viajan en el tablero como calor por
+      // sector — ahí es donde van, no compitiendo por un cupo de acción.
+      del_dia_fondos: (filtroDia.rechazados || []).filter((x) => x.reason === 'es_fondo').length,
       del_dia_nuevos: nuevos.length,
       candidatos: candidatos.length,
       admitidos: admitidos.length,
