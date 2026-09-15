@@ -15,6 +15,9 @@
     "api/arena-universe.js": {
       "maxDuration": 300
     },
+    "api/arena-shadow.js": {
+      "maxDuration": 300
+    },
     "api/arena-screener.js": {
       "maxDuration": 300
     },

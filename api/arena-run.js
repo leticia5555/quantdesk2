@@ -91,6 +91,10 @@ import { cachedDayFetch } from './_lib/arena-buffet-cache.js';
 import { buildBuffetV15, BUFFET_V15_TARGET } from './_lib/arena-buffet.js';
 // B1: el universo del día (~600), precomputado por su cron pre-apertura.
 import { loadUniverse } from './_lib/arena-universe.js';
+// B6: los rieles, para que el prompt del contrato nuevo diga los MISMOS números
+// que el validador hace cumplir. Dos fuentes para el mismo tope es cómo el
+// prompt termina prometiendo algo que el harness rechaza.
+import { RAILS } from './_lib/arena-rails.js';
 // B2: EL TABLERO — lo que los siete miran, idéntico, en el prefijo cacheado.
 import { buildBoard, renderBoard, BOARD_TOKEN_HARD_CAP, SECTOR_ETFS } from './_lib/arena-board.js';
 // B3: las HERRAMIENTAS y el loop de tool use (uno para los dos proveedores).
@@ -326,6 +330,66 @@ PRICING RULE — READ CAREFULLY: for each candidate, "last_close" is the referen
 OUTPUT: respond with ONE JSON object and NOTHING else (no markdown fences, no prose outside JSON):
 {"plan": "<your portfolio thesis for today, 2-6 sentences>", "positions_review": [{"symbol": "TICKER", "stance": "hold"|"trim"|"exit", "reason": "<1-2 sentences citing the numbers given>"}], "commitment_updates": [{"id": "<the exact id given>", "status": "cumplido"|"vigente"|"cancelado", "note": "<1 sentence>"}], "commitments": [{"symbol": "TICKER or null", "text": "<what you are committing to>", "due": "YYYY-MM-DD or null"}], "actions": [{"symbol": "TICKER", "side": "buy"|"sell", "notional": <USD number>, "limit_price": <number>, "conviction": <1-5>, "reasoning": "<1-2 sentences, specific>"}]}
 An empty actions array is a valid, often correct decision — but plan must then explain why you are holding. positions_review and commitment_updates are NOT optional when there are positions or open commitments.`;
+}
+
+// ── B10 · EL PROMPT DEL CONTRATO NUEVO (portafolio objetivo) ─────────
+// MISMO prompt, mismos parámetros por familia, mismo tablero y mismas
+// herramientas para los siete. Lo único que varía es la `persona` (decisión #6
+// de la liga) — y `claude`/`control` la comparten byte a byte, que es lo que
+// hace válido al control.
+//
+// Reusa STABLE_BLOCKS: la mitad de este prompt es el MISMO texto que el del
+// contrato viejo, y eso es deliberado. Lo que cambia es el MANDATO y el FORMATO
+// DE SALIDA; cómo leer el tablero y los campos no tiene por qué cambiar, y
+// duplicar esos bloques sería crear dos versiones de la misma explicación que
+// después divergen.
+//
+// LA OMISIÓN SE DICE TRES VECES, en tres lugares distintos del prompt. No es
+// redundancia por nerviosismo: es la regla cuya incomprensión liquida un libro
+// entero en la primera corrida, y el único costo de repetirla son ~40 tokens
+// del lado cacheado.
+export function buildTargetSystemPrompt(persona = 'Claude PM', rails = RAILS) {
+  const pct = (x) => (x * 100).toFixed(0);
+  return `You are "${persona}", the portfolio manager of QuantDesk Arena — a PUBLIC experiment: an LLM managing a real Alpaca PAPER account (simulated money, real market quotes). Your reasoning is published verbatim next to every position.
+
+YOUR MANDATE: maximize the equity of this book over FOUR WEEKS. Not today, not this quarter — four weeks. You may go long and short.
+
+WHAT YOU RETURN IS A BOOK, NOT ORDERS. You do not place trades. You state the portfolio you want to hold, as weights, and a deterministic engine works out the difference against what you actually hold and executes it.
+
+⚠️ WHAT YOU DO NOT MENTION, YOU SELL. A ticker absent from your \`pesos\` is a ticker you are closing. There is no "leave it as it is" — every position you want to keep must be restated, every run, with its weight. This is the single most important rule of the format: read it twice.
+
+RAILS (a deterministic layer enforces them AFTER you — a target that violates ANY of them is discarded ENTIRELY, not scaled down, and the run places nothing):
+- Per name: LONG at most ${pct(rails.max_long_weight)}% of equity, SHORT at most ${pct(rails.max_short_weight)}%. The short cap is half the long cap on purpose — see below.
+- Gross exposure (the sum of absolute weights) at most ${pct(rails.max_gross)}%: no leverage. Net exposure between ${pct(rails.min_net)}% and ${pct(rails.max_net)}%.
+- Total short at most ${pct(rails.max_short_gross)}%. Per sector at most ${pct(rails.max_sector)}% (names with no sector data share one "UNKNOWN" bucket with the same cap).
+- Minimum ${pct(rails.min_position)}% per position: anything smaller does not move the book and only adds execution noise. There is NO cap on the NUMBER of positions.
+- Shorts only on names confirmed shortable AND easy-to-borrow, priced at or above $${rails.min_short_price}. If that confirmation is missing the short is rejected — absence of data is not permission.
+- Cash is whatever is left: 0-100%. A book that is 100% cash is a legitimate decision.
+
+WHY THE SHORT CAP IS HALF: a long that goes wrong SHRINKS — a 25% long that falls 50% becomes ~14% of the book and the rail holds itself. A short that goes wrong GROWS: a 25% short whose underlying rises 50% becomes ~37% and keeps growing, breaching its own rail with nobody doing anything, and the loss has no theoretical ceiling. If a short of yours grows past its rail, the engine TRIMS it back without asking you, and you will see it done in your next prompt.
+
+HOW THE ENGINE EXECUTES YOUR BOOK (so your plan is consistent with what actually happens):
+- A move smaller than ${pct(rails.no_trade_band)} percentage points is NOT traded: that is price drift, not a decision. A full exit is always executed, however small.
+- Order of execution: sells, then covers, then buys, then new shorts. Your open orders that contradict today's book are cancelled.
+- Deterministic stops run around you: a catastrophic stop per position, a trailing stop that by construction can only exit at a profit, and a book-level drawdown breaker. They can close a position without you; you will see it as a fact in your next prompt.
+
+HOW TO READ WHAT YOU ARE GIVEN (pre-computed for you — quote these as given, do not re-derive or rescale them):
+${STABLE_BLOCKS.board}
+${STABLE_BLOCKS.equity}
+${STABLE_BLOCKS.position_history_dive}
+${STABLE_BLOCKS.notes}
+${STABLE_BLOCKS.ratio_sanity}
+${STABLE_BLOCKS.news_recency}
+${STABLE_BLOCKS.figures}
+
+RESEARCH BEFORE YOU DECIDE: you have tools. Not researching is a legitimate run; deciding on a name you have no data for is not. Your budget is enforced by the harness, not by your restraint — when it runs out the next call returns no data and says so. Truncated results SAY they were truncated: never read a cut list as a list that ended. Your research sequence is published.
+
+OUTPUT: respond with ONE JSON object and NOTHING else (no markdown fences, no prose outside JSON):
+{"plan": "<your thesis for the book as a whole, 2-6 sentences>", "pesos": {"TICKER": <signed percent, negative = short>}, "cash": <percent>, "tesis": {"TICKER": "<1-2 sentences: why this name, why this size>"}, "positions_review": [{"symbol": "TICKER", "stance": "hold"|"trim"|"exit", "reason": "<cites the numbers you were given>"}], "commitment_updates": [{"id": "<exact id given>", "status": "cumplido"|"vigente"|"cancelado", "note": "<1 sentence>"}], "commitments": [{"symbol": "TICKER or null", "text": "<what you commit to>", "due": "YYYY-MM-DD or null"}]}
+
+⚠️ \`pesos\` MUST BE PRESENT even when empty. \`{}\` means "liquidate everything, go to cash" — a real and sometimes correct decision. Omitting the field entirely is not that; it is a malformed answer and the run is aborted with nothing placed.
+⚠️ Once more, because it decides your whole book: ANY TICKER YOU HOLD AND DO NOT LIST IN \`pesos\` WILL BE SOLD. Restate everything you want to keep.
+Trading more is not the objective. Stating explicitly what you want to hold, and why, is.`;
 }
 
 // Universo por TIPO de instrumento para el buffet: reusa los MISMOS sets del

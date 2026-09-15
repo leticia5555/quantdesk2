@@ -85,6 +85,58 @@ export const RAILS = {
 
 export const SECTOR_UNKNOWN = 'UNKNOWN';
 
+// ── PARSER DE LA RESPUESTA (B5/B10) ──────────────────────────────────
+// Hermano de `parsePlanResponse`, para el contrato NUEVO. Misma regla de la
+// casa: JSON malformado = corrida abortada honesta, CERO órdenes. Acá no se
+// arregla nada.
+//
+// El contrato DURO es `plan` + `pesos`. Lo demás (tesis, positions_review,
+// commitments) viaja crudo y su ausencia NO aborta — endurecer el contrato con
+// campos accesorios solo subiría la tasa de aborts, que es justo lo que la T2
+// intenta bajar, y castigaría al modelo por olvidar en vez de MEDIR el olvido.
+//
+// UN `pesos` VACÍO ES VÁLIDO Y SIGNIFICA ALGO: liquidar todo e irse a cash. No
+// se confunde con "faltó el campo" — por eso `pesos` tiene que ESTAR aunque
+// esté vacío. La diferencia entre `{}` y ausente es la diferencia entre "decidí
+// no tener nada" y "me olvidé de contestar", y con omisión = salida esa
+// distinción vale todo el libro.
+export function parsePortfolioResponse(raw) {
+  if (!raw || typeof raw !== 'string') return { ok: false, error: 'respuesta vacía del modelo' };
+  let text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end <= start) return { ok: false, error: 'la respuesta no contiene un objeto JSON' };
+  let parsed;
+  try { parsed = JSON.parse(text.slice(start, end + 1)); }
+  catch (e) { return { ok: false, error: 'JSON inválido: ' + e.message }; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, error: 'la raíz no es un objeto' };
+  }
+  if (typeof parsed.plan !== 'string' || !parsed.plan.trim()) {
+    return { ok: false, error: 'falta plan (string no vacío)' };
+  }
+  const pesosRaw = parsed.pesos !== undefined ? parsed.pesos : parsed.weights;
+  if (pesosRaw === undefined) {
+    return {
+      ok: false,
+      error: 'falta `pesos`. Un objetivo VACÍO ({}) es válido y significa liquidar todo e irse a cash; la AUSENCIA del campo no es lo mismo y no se interpreta como tal.',
+    };
+  }
+  const t = parseTarget({ pesos: pesosRaw, cash: parsed.cash, tesis: parsed.tesis || parsed.theses });
+  if (!t.ok) return { ok: false, error: t.error };
+  return {
+    ok: true,
+    plan: parsed.plan.trim(),
+    weights: t.weights,
+    cash: t.cash,
+    theses: t.theses || {},
+    // Crudos, como en el contrato viejo: los normaliza _lib/arena-memory.js.
+    positions_review: parsed.positions_review,
+    commitments: parsed.commitments,
+    commitment_updates: parsed.commitment_updates,
+  };
+}
+
 // ── EL OBJETIVO, normalizado ─────────────────────────────────────────
 // Entra lo que dijo el modelo; sale una forma canónica o un error. NO se
 // arregla nada: un objetivo que no se puede leer se rechaza y la corrida se

@@ -404,6 +404,85 @@ inválido, o sea una corrida entera perdida. `stop_reason` se normaliza también
 para OpenRouter (`finish_reason: 'length'` → `max_tokens`), así el diagnóstico
 existe para los siete agentes y no solo para los de Anthropic.
 
+## B13 · LA SOMBRA · B10 · EL PROMPT DEL CONTRATO NUEVO
+
+`_lib/arena-shadow.js` · `/api/arena-shadow` · el prompt en
+`buildTargetSystemPrompt` · tests en `tests/arena-sombra.test.mjs`
+
+El contrato nuevo (B5: portafolio objetivo) **no puede estrenarse contra siete
+libros reales**. La sombra lo corre con el mismo tablero, las mismas
+herramientas y el mismo mercado — y **cero órdenes**.
+
+```bash
+# El reporte del día — gratis, cero tokens.
+curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" "$BASE/api/arena-shadow?report=1" | jq
+
+# La corrida en sombra (esto SÍ gasta).
+curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" "$BASE/api/arena-shadow" \
+  | jq '{verdict, cost_usd, orders_placed, agents: [.agents[] | {agent, status, lens, tools_used, would_place, turnover, cost_usd}]}'
+```
+
+### Las dos condiciones, y las dos son estructurales
+
+**1 · Tablas aparte, no una columna.** `arena_shadow_journal`, no un `shadow
+boolean` en `arena_journal`. Una bandera en la misma tabla está a **una consulta
+mal escrita** de contaminar el post-mortem: basta que alguien olvide un
+`where shadow = false` **una vez** y las métricas de la temporada quedan
+mezcladas para siempre, sin que nada falle a la vista.
+
+Con tablas separadas esa consulta no devuelve datos de sombra — devuelve nada.
+El modo de falla pasa de *silencioso y permanente* a *ruidoso e inmediato*.
+
+**2 · La sombra gasta dinero de verdad.** Son llamadas reales a siete
+proveedores. Va contra el **mismo** `ARENA_DAILY_BUDGET_USD` y se registra con
+`phase='shadow'`. "La sombra es gratis" sería una creencia que se desmiente con
+la factura.
+
+### El candado de las órdenes
+
+No alcanza con *no llamar* a `createLimitOrder`: alcanza con que **no se pueda**.
+`shadowBroker()` devuelve un objeto con la misma forma que el cliente de Alpaca
+donde **toda escritura lanza**. Las **lecturas sí pasan** — sin el libro real, un
+rebalanceo contra un libro inventado no prueba nada.
+
+Si algún camino intentara mandar una orden en sombra, la corrida falla
+**ruidosamente** en vez de operar en silencio sobre una cuenta real. Hay lints
+que verifican que el endpoint solo use el cliente envuelto y que nunca escriba
+en la tabla real.
+
+### Lo que la sombra va a decir, y ya se sabe
+
+Los cortos van a salir **rechazados por R9**. La metadata de `shortable` /
+`easy_to_borrow` por nombre todavía no se consulta, y R9 falla cerrado. Eso **no
+es un bug de la sombra: es la sombra funcionando** — está diciendo que falta ese
+dato *antes* de que un corto real se abra sin confirmación.
+
+### B10 · El prompt
+
+Mismo prompt, mismos parámetros por familia, mismo tablero y mismas herramientas
+para los siete. Lo único que varía es la `persona`, y `claude`/`control` la
+comparten byte a byte — que es lo que hace válido al control.
+
+Reusa `STABLE_BLOCKS`: la mitad del prompt es el **mismo texto** que el del
+contrato viejo, y es deliberado. Lo que cambia es el **mandato** (equity a cuatro
+semanas) y el **formato de salida**; cómo leer el tablero no tiene por qué
+cambiar, y duplicar esos bloques sería crear dos versiones de la misma
+explicación que después divergen.
+
+Los rieles del prompt salen de `RAILS`, el mismo objeto que el validador hace
+cumplir. Dos fuentes para el mismo tope es cómo el prompt termina prometiendo
+algo que el harness rechaza.
+
+**La omisión se dice tres veces**, en tres lugares distintos. No es nerviosismo:
+es la regla cuya incomprensión **liquida un libro entero en la primera corrida**,
+y el único costo de repetirla son ~40 tokens del lado cacheado.
+
+Y `pesos: {}` vs el campo ausente se distingue explícitamente: `{}` es
+"liquidar todo e irme a cash", una decisión real; la ausencia es una respuesta
+malformada y la corrida se aborta sin colocar nada.
+
+---
+
 ## B8 · ANTI-HERDING · B9 · PRESUPUESTO
 
 `_lib/arena-herding.js` · `_lib/arena-budget.js` · tests en
