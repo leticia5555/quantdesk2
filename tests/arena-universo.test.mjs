@@ -102,11 +102,23 @@ console.log('\n── una lista incoherente de FMP NO pisa la buena ──');
   // El caso real: cuota agotada o error de la API devuelve 12 nombres para el
   // S&P 500. Guardar eso sería CORROMPER, no degradar.
   const { fetchConstituents } = await import('../api/_lib/arena-universe.js');
-  const doceNombres = async () => ({ ok: true, json: async () => Array.from({ length: 12 }, (_, i) => ({ symbol: 'X' + i })) });
-  const r = await fetchConstituents('sp500', { apiKey: 'k', fetchImpl: doceNombres });
+  // El stub imita una Response DE VERDAD: `ok`, `status` y `text()`. Antes solo
+  // tenía `json()`, y cuando `fetchConstituents` pasó a leer el cuerpo crudo
+  // —para poder guardar los primeros bytes, que es donde FMP explica el
+  // rechazo— este bloque siguió en verde POR LA RAZÓN EQUIVOCADA: el stub
+  // devolvía `undefined`, el parseo fallaba y el null venía de ahí y no del
+  // piso de cordura. Un stub que miente menos que la API real es un test que
+  // prueba otra cosa.
+  const resp200 = (body) => async () => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
+  const doceNombres = resp200(Array.from({ length: 12 }, (_, i) => ({ symbol: 'X' + i })));
+  const diagCorta = [];
+  const r = await fetchConstituents('sp500', { apiKey: 'k', fetchImpl: doceNombres, diag: diagCorta });
   ok(r === null, '12 nombres para el S&P 500 se RECHAZA: es un error de la API, no el índice');
+  ok(diagCorta.every((d) => d.reason === 'lista_corta'),
+    '...y se rechaza POR ESO, no por un parseo que falló de casualidad',
+    JSON.stringify(diagCorta.map((d) => d.reason)));
 
-  const quinientos = async () => ({ ok: true, json: async () => sp500.map((s) => ({ symbol: s })) });
+  const quinientos = resp200(sp500.map((s) => ({ symbol: s })));
   const r2 = await fetchConstituents('sp500', { apiKey: 'k', fetchImpl: quinientos });
   ok(r2 && r2.symbols.length === 500, 'y una lista sana sí se acepta', r2 && r2.symbols.length);
 
@@ -363,6 +375,139 @@ console.log('\n── el JSON del repo es opcional, no un requisito ──');
   });
   ok(conNeon.source === 'neon' && conNeon.symbols.length === 500,
     'y con FMP caído pero Neon cargado, tampoco hace falta el repo');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// "SIN FMP" TIENE QUE DECIR POR QUÉ.
+//
+// EL REPORTE QUE LO ORIGINA: la key llevaba dos horas puesta en Vercel y el
+// endpoint seguía diciendo "Sin FMP". No había forma de saber si la env var no
+// llegaba, si la rechazaban, si la cuota estaba agotada o si el endpoint era el
+// equivocado — porque `fetchConstituents` devolvía `null` pelado en SEIS
+// situaciones distintas y ninguna llegaba a `errors`.
+//
+// Un fallo que no se puede distinguir de otros cinco no es un fallo: es un
+// agujero. Acá se fija que cada uno se nombre.
+// ═══════════════════════════════════════════════════════════════
+const { fetchConstituents, motivoFmp, FMP_APIS } = await import('../api/_lib/arena-universe.js');
+
+// Respuesta falsa de fetch con el mínimo que el código toca.
+const resp = (status, body) => ({
+  ok: status >= 200 && status < 300,
+  status,
+  text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
+});
+const listaBuena = (n, pre = 'A') => Array.from({ length: n }, (_, i) => ({ symbol: `${pre}${String(i).padStart(3, '0')}` }));
+
+console.log('\n── cada causa de fallo se NOMBRA ──');
+{
+  // (a) sin key.
+  let diag = [];
+  let r = await fetchConstituents('sp500', { apiKey: '', diag, fetchImpl: async () => resp(200, []) });
+  ok(r === null && diag.length === 1 && diag[0].reason === 'sin_key',
+    'sin key: se dice `sin_key`, no un null mudo', JSON.stringify(diag));
+  ok(/entorno/i.test(diag[0].detail || ''),
+    'y el detalle avisa lo de los entornos de Vercel, que es la causa más común',
+    diag[0].detail);
+
+  // (b) HTTP de error, con el cuerpo que FMP manda.
+  diag = [];
+  r = await fetchConstituents('sp500', { apiKey: 'k', diag, fetchImpl: async () => resp(403, { 'Error Message': 'Legacy Endpoint: please use /stable' }) });
+  ok(r === null && diag.every((d) => d.reason === 'http_error' && d.status === 403),
+    'HTTP 403: se dice el status, no "no contestó"', JSON.stringify(diag.map((d) => `${d.api}:${d.status}`)));
+  ok(diag.some((d) => /Legacy Endpoint/.test(d.body_sample || '')),
+    'y los primeros bytes del cuerpo viajan: ahí es donde FMP explica el rechazo',
+    diag[0].body_sample);
+
+  // (c) EL QUE MÁS ENGAÑA: HTTP 200 con un objeto de error.
+  diag = [];
+  r = await fetchConstituents('sp500', { apiKey: 'k', diag, fetchImpl: async () => resp(200, { 'Error Message': 'Limit Reach. Please upgrade your plan' }) });
+  ok(r === null && diag.every((d) => d.reason === 'fmp_error_message'),
+    'HTTP 200 con {"Error Message"}: se lee como error de FMP, no como "FMP no contestó"',
+    JSON.stringify(diag.map((d) => d.reason)));
+  ok(diag.every((d) => /Limit Reach/.test(d.fmp_message || '')),
+    'y el mensaje de FMP se extrae tal cual — "cuota agotada" es accionable, "sin FMP" no',
+    diag[0].fmp_message);
+
+  // (d) lista corta: el piso de cordura, pero ahora dice cuánto recibió.
+  diag = [];
+  r = await fetchConstituents('sp500', { apiKey: 'k', diag, fetchImpl: async () => resp(200, listaBuena(12)) });
+  ok(r === null && diag.every((d) => d.reason === 'lista_corta' && d.recibidos === 12),
+    '12 nombres para el S&P 500: `lista_corta` CON el número, no un rechazo mudo',
+    JSON.stringify(diag.map((d) => `${d.recibidos}<${d.minimo}`)));
+
+  // (e) JSON roto.
+  diag = [];
+  r = await fetchConstituents('sp500', { apiKey: 'k', diag, fetchImpl: async () => resp(200, '<html>502 Bad Gateway</html>') });
+  ok(r === null && diag.every((d) => d.reason === 'json_invalido'),
+    'un cuerpo que no es JSON se nombra como tal (y la muestra delata el HTML)',
+    diag[0].body_sample);
+
+  // (f) timeout / red.
+  diag = [];
+  r = await fetchConstituents('sp500', { apiKey: 'k', diag, fetchImpl: async () => { throw new Error('The operation was aborted due to timeout'); } });
+  ok(r === null && diag.every((d) => d.reason === 'timeout'),
+    'un timeout se distingue de un rechazo: no es lo mismo esperar que ser rechazado',
+    JSON.stringify(diag.map((d) => d.reason)));
+}
+
+console.log('\n── las dos APIs de FMP, y cuál contestó ──');
+{
+  ok(FMP_APIS.length === 2 && FMP_APIS.some((a) => a.id === 'stable') && FMP_APIS.some((a) => a.id === 'v3'),
+    'se conocen las dos generaciones vivas de FMP (stable y v3)');
+
+  // Una key nueva: v3 la rechaza, stable la acepta. El código no tiene que
+  // saber cuál de antemano.
+  const diag = [];
+  const r = await fetchConstituents('sp500', {
+    apiKey: 'k', diag,
+    fetchImpl: async (url) => (/\/stable\//.test(url)
+      ? resp(200, listaBuena(503))
+      : resp(403, { 'Error Message': 'Legacy Endpoint' })),
+  });
+  ok(r && r.symbols.length === 503, 'si una API la acepta, el universo sale completo', r && r.symbols.length);
+  ok(r && r.fmp_api === 'stable',
+    'y se REPORTA cuál contestó: sin eso, "anduvo" no dice cuál de las dos sirve', r && r.fmp_api);
+
+  // El orden no puede importar: con la key vieja pasa al revés.
+  const diag2 = [];
+  const r2 = await fetchConstituents('nasdaq100', {
+    apiKey: 'k', diag: diag2,
+    fetchImpl: async (url) => (/\/api\/v3\//.test(url)
+      ? resp(200, listaBuena(101, 'N'))
+      : resp(403, { 'Error Message': 'Exclusive Endpoint' })),
+  });
+  ok(r2 && r2.fmp_api === 'v3',
+    'con una key vieja gana v3 — se prueban las dos y no se adivina', r2 && r2.fmp_api);
+  ok(diag2.some((d) => d.api === 'stable' && !d.ok) && diag2.some((d) => d.api === 'v3' && d.ok),
+    'y el diagnóstico guarda el intento fallido TAMBIÉN cuando el otro funcionó',
+    JSON.stringify(diag2.map((d) => `${d.api}:${d.ok}`)));
+}
+
+console.log('\n── la key nunca se journalea ──');
+{
+  const diag = [];
+  await fetchConstituents('sp500', { apiKey: 'SECRETO-NO-PUBLICAR', diag, fetchImpl: async () => resp(403, 'nope') });
+  const texto = JSON.stringify(diag);
+  ok(!texto.includes('SECRETO-NO-PUBLICAR'),
+    'la key viaja en la query string pero NO aparece en el diagnóstico: se guarda la URL sin el ?apikey=',
+    texto.slice(0, 160));
+  ok(diag.every((d) => d.url && !d.url.includes('apikey')),
+    'ninguna URL journaleada lleva el parámetro de la key');
+}
+
+console.log('\n── el resumen en una frase ──');
+{
+  const diag = [
+    { index: 'sp500', api: 'stable', ok: false, reason: 'http_error', status: 403, fmp_message: 'Legacy Endpoint' },
+    { index: 'sp500', api: 'v3', ok: false, reason: 'lista_corta', recibidos: 12, minimo: 400 },
+    { index: 'nasdaq100', api: 'v3', ok: true, status: 200 },
+  ];
+  const m = motivoFmp(diag, 'sp500');
+  ok(/stable/.test(m) && /403/.test(m) && /v3/.test(m) && /12<400/.test(m),
+    'si las dos APIs fallan DISTINTO, se dicen las dos: son pistas diferentes', m);
+  ok(motivoFmp(diag, 'nasdaq100') === 'sin_intentos',
+    'un índice que no falló no inventa un motivo', motivoFmp(diag, 'nasdaq100'));
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');

@@ -1298,6 +1298,45 @@ solo **lee**. Si el cron no corrió, se usa el de ayer **y se dice**
 (`is_today: false`) — no se reconstruye a medias, que daría un universo mitad
 fresco y mitad viejo sin manera de saber cuál nombre es cuál.
 
+### Cuando dice "Sin FMP", tiene que decir POR QUÉ
+
+**El reporte que lo originó:** la key llevaba dos horas puesta en Vercel y el
+endpoint seguía diciendo *"Sin FMP"*. No había forma de saber cuál de estas cosas
+pasaba, porque `fetchConstituents` devolvía `null` pelado en **seis** situaciones
+distintas y **ninguna llegaba a `errors`**:
+
+| Qué pasó de verdad | Qué se veía |
+|---|---|
+| la env var no llegó a ese entorno | `null` |
+| HTTP 401 / 403 / 429 / 5xx | `null` |
+| HTTP **200** con `{"Error Message": ...}` — FMP hace esto | `null` |
+| el JSON no parsea | `null` |
+| timeout o red caída | `null` |
+| lista más corta que `MIN_SANE` | `null` |
+
+Un fallo que no se puede distinguir de otros cinco no es un fallo: es un agujero.
+Ahora cada intento deja una fila en `fmp_diagnostics` con la API, el status, el
+motivo y los **primeros 200 bytes del cuerpo** — que es exactamente donde FMP
+explica el rechazo, y lo hace tanto en un 403 como en un 200.
+
+**La key nunca se journalea**, ni truncada: viaja en la query string, así que la
+URL que se guarda es la del path sin el `?apikey=`. Lo único que se publica de
+ella es `fmp_key_present`, un booleano — la pregunta más barata de todas y la que
+no se podía contestar.
+
+#### Y se prueban las DOS APIs de FMP
+
+FMP tiene dos generaciones vivas: la vieja (`/api/v3`, guiones bajos) y la nueva
+(`/stable`, guiones). Cuál acepta una key depende de **cuándo se creó la key** y
+de su plan: una key nueva suele recibir `403 Legacy Endpoint` en v3, y una vieja
+puede no tener acceso a stable.
+
+Adivinar cuál corresponde es justo lo que el código no puede hacer. Se prueban
+las dos y se reporta **cuál contestó** (`indices[].fmp_api`) — son como mucho dos
+requests por índice, una vez por semana. Lo que se gana es que *"la key no
+sirve"* deje de ser indistinguible de *"le estás pegando al endpoint
+equivocado"*.
+
 ### La lista se guarda sola. Nadie commitea nada
 
 El arranque de B1 **no depende de que alguien corra `jq` en su terminal y suba
@@ -1960,7 +1999,7 @@ ya conocidos, y `job=audit` descubre los nuevos a medida que aparezcan.
 | `ARENA_BUFFET_V15` | `1` | Freno de mano del universo del día (screener de Alpaca). `0` lo apaga sin deploy. |
 | `ARENA_BUFFET_V15_TARGET` | `100` | Cuántos candidatos ve el PM. |
 | `ARENA_BUFFET_DAY_CACHE` | `insiders` | Canales que se piden una vez por día y se leen de Neon. **No** poner `movers` ni `earnings`: cambian dentro del día. |
-| `FMP_API_KEY` | — | Constituyentes del S&P 500 / Nasdaq 100. Sin ella el universo cae a Neon → JSON del repo → `movers_only`. Nada se rompe. |
+| `FMP_API_KEY` | — | Constituyentes del S&P 500 / Nasdaq 100. **Alcanzala a Production** (los crons solo corren ahí). Sin ella el universo cae a Neon → lista del repo → `movers_only`. Nada se rompe. |
 | `ARENA_UNIVERSE_REFRESH_DAYS` | `7` | Cada cuánto se vuelve a pedir la composición de los índices. |
 | `ARENA_UNIVERSE_MOVERS_MAX` | `100` | Tope de nombres del día que se AGREGAN al universo (los que ya están en un índice no gastan cupo). |
 | `ARENA_BOARD` | `1` | Freno de mano del tablero (B2). `0` lo apaga sin deploy. |

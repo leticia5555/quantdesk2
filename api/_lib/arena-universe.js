@@ -53,8 +53,23 @@ import { ADMISSION, resolveAdmission, isAdmissible } from './arena-admission.js'
 import { marketDay } from './arena-buffet-cache.js';
 import { CONSTITUENTS } from '../../data/universe/constituents.js';
 
-const FMP_BASE = 'https://financialmodelingprep.com/api/v3';
-const INDICES = { sp500: 'sp500_constituent', nasdaq100: 'nasdaq_constituent' };
+// ── LAS DOS APIs DE FMP, Y POR QUÉ SE PRUEBAN LAS DOS ────────────────
+// FMP tiene dos generaciones vivas: la vieja (`/api/v3`, con guiones bajos) y
+// la nueva (`/stable`, con guiones). Cuál de las dos acepta una key depende de
+// CUÁNDO se creó la key y de qué plan tiene: una key nueva suele recibir 403
+// "Legacy Endpoint" en v3, y una vieja puede no tener acceso a stable.
+//
+// Adivinar cuál corresponde es justo lo que no se puede hacer desde el código.
+// Se prueban las dos y se REPORTA cuál contestó — son como mucho dos requests
+// por índice, una vez por semana. Lo que se gana es que "la key no sirve" deje
+// de ser indistinguible de "le estás pegando al endpoint equivocado".
+export const FMP_APIS = [
+  { id: 'stable', base: 'https://financialmodelingprep.com/stable',
+    paths: { sp500: 'sp500-constituent', nasdaq100: 'nasdaq-constituent' } },
+  { id: 'v3', base: 'https://financialmodelingprep.com/api/v3',
+    paths: { sp500: 'sp500_constituent', nasdaq100: 'nasdaq_constituent' } },
+];
+const INDICES = { sp500: true, nasdaq100: true };
 
 // Cada cuántos días se vuelve a pedir la composición. SEMANAL: un índice cambia
 // unas pocas veces al año.
@@ -97,21 +112,69 @@ const MIN_SANE = { sp500: 400, nasdaq100: 80 };
 
 // ── ESCALÓN 1: FMP ───────────────────────────────────────────────────
 // Nunca lanza: devuelve null y el caller baja un escalón.
-export async function fetchConstituents(index, { apiKey = process.env.FMP_API_KEY, timeoutMs = 20000, fetchImpl = fetch } = {}) {
-  const path = INDICES[index];
-  if (!path || !apiKey) return null;
-  try {
-    const r = await fetchImpl(`${FMP_BASE}/${path}?apikey=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(timeoutMs) });
-    if (!r.ok) return null;
-    const j = await r.json();
-    if (!Array.isArray(j)) return null;
-    const symbols = [...new Set(j.map((x) => clean(x && x.symbol)).filter((s) => s && VALID_TICKER.test(s)))].sort();
-    // Una lista sospechosamente corta NO se acepta: un índice que devuelve 12
-    // nombres es un error de la API o de la cuota, y guardarlo pisaría el
-    // último bueno con basura. Es la diferencia entre degradar y corromper.
-    if (symbols.length < MIN_SANE[index]) return null;
-    return { index, source: 'fmp', built_at: new Date().toISOString(), symbols };
-  } catch { return null; }
+// ── EL DIAGNÓSTICO: POR QUÉ FALLÓ, NO SOLO QUE FALLÓ ─────────────────
+// Esto devolvía `null` pelado en SEIS situaciones distintas —sin key, HTTP de
+// error, cuerpo que no es un array, JSON roto, timeout, y lista más corta que
+// el piso de cordura— y ninguna llegaba a `errors`. Todas terminaban en el
+// mismo "Sin FMP", así que una key mal alcanzada, una key rechazada, una cuota
+// agotada y un endpoint equivocado eran EL MISMO MENSAJE.
+//
+// Eso hace indebuggeable lo único que hay que debuggear acá. Ahora cada intento
+// deja una fila en `diag` con la API, el status y los primeros bytes del cuerpo
+// —que es donde FMP pone su `Error Message`, a veces con HTTP 200— y el
+// endpoint la publica.
+//
+// LA KEY NO SE JOURNALEA NUNCA, ni truncada: viaja en la query string, así que
+// la URL que se guarda es la del path sin el `?apikey=`.
+export async function fetchConstituents(index, { apiKey = process.env.FMP_API_KEY, timeoutMs = 20000, fetchImpl = fetch, diag = null } = {}) {
+  const anota = (fila) => { if (Array.isArray(diag)) diag.push({ index, ...fila }); };
+  if (!INDICES[index]) { anota({ api: null, ok: false, reason: 'index_desconocido' }); return null; }
+  if (!apiKey) {
+    anota({ api: null, ok: false, reason: 'sin_key', detail: 'process.env.FMP_API_KEY está vacía EN ESTE ENTORNO. Ojo: en Vercel una env var vive por entorno — que esté en Production no la pone en Preview.' });
+    return null;
+  }
+
+  for (const api of FMP_APIS) {
+    const path = api.paths[index];
+    const url = `${api.base}/${path}`;
+    try {
+      const r = await fetchImpl(`${url}?apikey=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(timeoutMs) });
+      const texto = await r.text().catch(() => '');
+      // Los primeros bytes SIEMPRE, salga bien o mal: es donde FMP explica el
+      // rechazo, y lo hace tanto en un 403 como en un 200.
+      const muestra = String(texto || '').slice(0, 200);
+
+      if (!r.ok) { anota({ api: api.id, url, ok: false, status: r.status, reason: 'http_error', body_sample: muestra }); continue; }
+
+      let j = null;
+      try { j = JSON.parse(texto); } catch { anota({ api: api.id, url, ok: false, status: r.status, reason: 'json_invalido', body_sample: muestra }); continue; }
+
+      if (!Array.isArray(j)) {
+        // EL CASO QUE MÁS ENGAÑA: HTTP 200 y un objeto de error. Sin esto se
+        // leía como "FMP no contestó" cuando FMP contestó, y contestó por qué.
+        const msg = (j && (j['Error Message'] || j.error || j.message)) || null;
+        anota({ api: api.id, url, ok: false, status: r.status, reason: msg ? 'fmp_error_message' : 'cuerpo_no_es_lista', fmp_message: msg, body_sample: muestra });
+        continue;
+      }
+
+      const symbols = [...new Set(j.map((x) => clean(x && x.symbol)).filter((s) => s && VALID_TICKER.test(s)))].sort();
+      // Una lista sospechosamente corta NO se acepta: un índice que devuelve 12
+      // nombres es un error de la API o de la cuota, y guardarlo pisaría el
+      // último bueno con basura. Es la diferencia entre degradar y corromper.
+      if (symbols.length < MIN_SANE[index]) {
+        anota({ api: api.id, url, ok: false, status: r.status, reason: 'lista_corta', recibidos: symbols.length, minimo: MIN_SANE[index],
+          detail: `${symbols.length} nombres para ${index} no es el índice: es cuota agotada o un plan que no cubre este endpoint. Se RECHAZA en vez de pisar la lista buena.` });
+        continue;
+      }
+
+      anota({ api: api.id, url, ok: true, status: r.status, recibidos: symbols.length });
+      return { index, source: 'fmp', fmp_api: api.id, built_at: new Date().toISOString(), symbols };
+    } catch (e) {
+      const m = String((e && e.message) || e);
+      anota({ api: api.id, url, ok: false, reason: /abort|timeout/i.test(m) ? 'timeout' : 'red', detail: m });
+    }
+  }
+  return null;
 }
 
 // ── ESCALÓN 2: Neon ──────────────────────────────────────────────────
@@ -169,7 +232,7 @@ export function refreshDue(builtAt, now = new Date(), days = REFRESH_DAYS) {
 
 // ── LOS CONSTITUYENTES, con los tres escalones ───────────────────────
 // `force` salta la ventana de refresco (lo usa el endpoint a mano).
-export async function resolveConstituents(index, { now = new Date(), force = false, deps = {} } = {}) {
+export async function resolveConstituents(index, { now = new Date(), force = false, deps = {}, diag = null } = {}) {
   const fromFmp = deps.fetchConstituents || fetchConstituents;
   const fromNeon = deps.readStored || readStored;
   const toNeon = deps.writeStored || writeStored;
@@ -180,7 +243,7 @@ export async function resolveConstituents(index, { now = new Date(), force = fal
     return { ...stored, refreshed: false, stored: true, age_days: edad(stored.built_at, now) };
   }
 
-  const fresh = await fromFmp(index);
+  const fresh = await fromFmp(index, { diag });
   if (fresh) {
     const written = await toNeon(index, fresh);
     return { ...fresh, refreshed: true, stored: written, age_days: 0 };
@@ -188,17 +251,36 @@ export async function resolveConstituents(index, { now = new Date(), force = fal
 
   // FMP no contestó (o no hay key, o devolvió una lista incoherente). Lo
   // guardado sirve IGUAL aunque esté vencido — y se dice cuánto.
+  // El PORQUÉ del fallo, en la nota, no solo en un campo aparte: quien lee
+  // `note` en una terminal tiene que ver la causa sin ir a buscarla.
+  const porque = motivoFmp(diag, index);
   if (stored) {
-    return { ...stored, refreshed: false, stored: true, stale: true, age_days: edad(stored.built_at, now),
-      note: `FMP no contestó: se usa la lista guardada de hace ${edad(stored.built_at, now)} días. Un universo de la semana pasada es un sesgo declarado.` };
+    return { ...stored, refreshed: false, stored: true, stale: true, age_days: edad(stored.built_at, now), fmp_failed: porque,
+      note: `FMP no sirvió (${porque}): se usa la lista guardada de hace ${edad(stored.built_at, now)} días. Un universo de la semana pasada es un sesgo declarado.` };
   }
   const estatico = await fromRepo(index);
   if (estatico) {
     return { ...estatico, refreshed: false, stored: false, stale: true, age_days: edad(estatico.built_at, now),
       note: 'Arranque en frío: sin FMP y sin nada guardado, se usa el JSON del repo.' };
   }
-  return { index, source: 'none', symbols: [], built_at: null, refreshed: false, stored: false,
-    note: 'Sin FMP, sin lista guardada y con el JSON del repo vacío. Los índices NO entran al universo de hoy — ver data/universe/README.md.' };
+  return { index, source: 'none', symbols: [], built_at: null, refreshed: false, stored: false, fmp_failed: porque,
+    note: `Sin FMP (${porque}), sin lista guardada y con la lista del repo vacía. Los índices NO entran al universo de hoy — ver data/universe/README.md. Si el motivo dice algo distinto de "sin_key", la key SÍ está llegando y el problema es otro: mirá \`fmp_diagnostics\` en la respuesta del endpoint.` };
+}
+
+// Resume el diagnóstico en una frase. Si los dos intentos fallaron por lo
+// mismo, se dice una vez; si fallaron distinto, se dicen los dos, porque un
+// 403 en una API y un 200-con-error en la otra son pistas diferentes.
+export function motivoFmp(diag, index) {
+  const filas = (diag || []).filter((d) => d && d.index === index && !d.ok);
+  if (!filas.length) return 'sin_intentos';
+  const partes = filas.map((f) => {
+    const pedazos = [f.api ? f.api : 'sin_api', f.reason];
+    if (f.status) pedazos.push('HTTP ' + f.status);
+    if (f.fmp_message) pedazos.push('"' + String(f.fmp_message).slice(0, 80) + '"');
+    if (f.reason === 'lista_corta') pedazos.push(`${f.recibidos}<${f.minimo}`);
+    return pedazos.filter(Boolean).join(' ');
+  });
+  return [...new Set(partes)].join(' · ');
 }
 
 function edad(builtAt, now) {
@@ -223,9 +305,13 @@ export async function buildUniverse({
   const admit = deps.resolveAdmission || resolveAdmission;
 
   const errors = {};
+  // El diagnóstico de FMP viaja compartido por los dos índices: cada intento
+  // deja su fila y después se publica entero. Sin esto, "Sin FMP" era la única
+  // salida posible para seis causas distintas.
+  const fmpDiag = [];
   const [sp, nq, mv, ac] = await Promise.all([
-    resolveConstituents('sp500', { now, force, deps }),
-    resolveConstituents('nasdaq100', { now, force, deps }),
+    resolveConstituents('sp500', { now, force, deps, diag: fmpDiag }),
+    resolveConstituents('nasdaq100', { now, force, deps, diag: fmpDiag }),
     movers({ top: 50, creds }).catch((e) => { errors.movers = String((e && e.message) || e); return null; }),
     actives({ top: 100, by: 'volume', creds }).catch((e) => { errors.most_actives = String((e && e.message) || e); return null; }),
   ]);
@@ -349,8 +435,8 @@ export async function buildUniverse({
       // `persisted` es la pregunta operativa: ¿esta lista sobrevive al próximo
       // deploy sin que nadie la commitee? Si es false y la fuente es 'fmp', la
       // escritura a Neon falló y mañana se vuelve a pedir la misma lista.
-      sp500: { source: sp.source, built_at: sp.built_at, count: sp.symbols.length, age_days: sp.age_days ?? null, stale: !!sp.stale, persisted: sp.stored !== false, refreshed: !!sp.refreshed, note: sp.note || null },
-      nasdaq100: { source: nq.source, built_at: nq.built_at, count: nq.symbols.length, age_days: nq.age_days ?? null, stale: !!nq.stale, persisted: nq.stored !== false, refreshed: !!nq.refreshed, note: nq.note || null },
+      sp500: { source: sp.source, built_at: sp.built_at, count: sp.symbols.length, age_days: sp.age_days ?? null, stale: !!sp.stale, persisted: sp.stored !== false, refreshed: !!sp.refreshed, fmp_api: sp.fmp_api || null, fmp_failed: sp.fmp_failed || null, note: sp.note || null },
+      nasdaq100: { source: nq.source, built_at: nq.built_at, count: nq.symbols.length, age_days: nq.age_days ?? null, stale: !!nq.stale, persisted: nq.stored !== false, refreshed: !!nq.refreshed, fmp_api: nq.fmp_api || null, fmp_failed: nq.fmp_failed || null, note: nq.note || null },
     },
     counts: {
       indices: indexSyms.size,
@@ -374,6 +460,14 @@ export async function buildUniverse({
       data_unavailable: rechazados.filter((r) => r.reason === 'data_unavailable').length,
     },
     errors,
+    // CADA intento contra FMP, con su status y los primeros bytes del cuerpo.
+    // Es lo que convierte "Sin FMP" en algo que se puede arreglar: dice si la
+    // key llegó, si la rechazaron, cuál de las dos APIs contestó y qué dijo.
+    // La key NUNCA aparece acá: la URL se guarda sin el `?apikey=`.
+    fmp_diagnostics: fmpDiag,
+    // La pregunta más barata de todas, y la que no se podía contestar: ¿la
+    // env var llegó a ESTE entorno? Solo el booleano — el valor jamás.
+    fmp_key_present: !!process.env.FMP_API_KEY,
     // La advertencia viaja CON el dato, no en un doc que nadie abre.
     caveat: 'La composición de los índices es la de HOY aplicada a la sesión de hoy. No es point-in-time histórico: un backtest sobre esta lista arrastra survivorship bias.',
   };
