@@ -115,6 +115,13 @@ export default async function handler(req, res) {
       market_day: universe.market_day,
       counts: universe.counts,
       indices: universe.indices,
+      // ¿La key llegó a ESTE entorno? Solo el booleano, nunca el valor.
+      fmp_key_present: universe.fmp_key_present,
+      // Cada intento contra FMP con su status y los primeros bytes del cuerpo.
+      // Sin esto, "Sin FMP" era la única salida para seis causas distintas
+      // —sin key, 403, cuota, endpoint viejo, JSON roto, timeout— y ninguna
+      // llegaba a `errors`.
+      fmp_diagnostics: universe.fmp_diagnostics,
       admission: { ...universe.admission, rejected: universe.admission.rejected.slice(0, 20) },
       errors: universe.errors,
       caveat: universe.caveat,
@@ -149,6 +156,15 @@ export default async function handler(req, res) {
       .filter(([, v]) => v && v.refreshed && v.persisted === false).map(([k]) => k);
     if (sinPersistir.length) {
       out.persistence_warning = `No se pudo guardar en Neon: ${sinPersistir.join(', ')}. La lista de hoy sirve igual, pero mañana se va a volver a pedir a FMP en vez de leerse de la base.`;
+    }
+
+    // Si la key ESTÁ y aun así FMP no sirvió, el problema no es la env var y
+    // conviene decirlo arriba de todo en vez de dejarlo en un array.
+    const fallosFmp = (universe.fmp_diagnostics || []).filter((d) => d && !d.ok);
+    if (universe.fmp_key_present && fallosFmp.length && universe.universe_source !== 'fmp') {
+      out.fmp_hint = 'La FMP_API_KEY SÍ está en este entorno y aun así FMP no sirvió: el problema no es la env var. Mirá `fmp_diagnostics[].reason` y `body_sample` — un 403 con "Legacy Endpoint" significa que la key es de la API nueva y hay que usar /stable (el código ya prueba las dos); un "Limit Reach" es cuota; un `lista_corta` es un plan que no cubre el endpoint.';
+    } else if (!universe.fmp_key_present) {
+      out.fmp_hint = 'FMP_API_KEY NO está en este entorno. En Vercel las env vars viven por entorno: que esté en Production no la pone en Preview, y viceversa. Los crons solo corren en Production.';
     }
 
     out.verdict = universe.counts.admitidos === 0
