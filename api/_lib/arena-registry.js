@@ -115,9 +115,16 @@ const slug = (id, fallback) => process.env['ARENA_MODEL_' + id] || fallback;
 export const FLAGSHIP_AGENT_ID = 'claude';
 
 // ── LA LIGA ───────────────────────────────────────────────────────────
-// `enabled` = la parrilla de la TEMPORADA 2: los SIETE. Los slugs de OpenRouter
-// apuntan a la clase RÁPIDA/EFICIENTE de cada casa (comparable a Haiku), no al
-// tope de gama — así se mide el modelo y no el presupuesto (ver el scope).
+// `enabled` = la parrilla de la TEMPORADA 2: los SIETE.
+//
+// OJO CON LOS TIERS — la parrilla NO es pareja y conviene saberlo al leer la
+// tabla. El scope original (docs/arena-liga-scope.md) elegía la clase
+// RÁPIDA/EFICIENTE de cada casa para medir el modelo y no el presupuesto; el
+// relanzamiento del 2026-09-15 se fue al tope de gama (GPT-6 Astra a $10/$50
+// por MTok, Grok 4.6, DeepSeek V4 Pro, Qwen Max) y `gemini` se quedó en FLASH
+// porque Google no publica su Pro de esa generación en OpenRouter. O sea: seis
+// flagship y un flash. Cualquier lectura de la tabla que compare a `gemini`
+// contra los demás carga ese confound — no es el modelo, es el peso.
 // ── MODELOS DE LA TEMPORADA (relanzamiento 2026-09-15) ────────────────
 // Slug efectivo por agente. `ARENA_MODEL_<ID>` SIEMPRE gana: es el tornillo con
 // el que Lety corrige un slug sin redeploy, y el mecanismo por el que los slugs
@@ -127,10 +134,15 @@ export const FLAGSHIP_AGENT_ID = 'claude';
 // catálogo del proveedor:
 //   - anthropic: SÍ. El slug de Fable 5.1 (ARENA_ANTHROPIC_MODEL, definido en
 //     _lib/model.js) está en el catálogo vigente.
-//   - openrouter: NO. Los cinco defaults siguen la convención `vendor/modelo`
-//     de OpenRouter pero NO se pudieron verificar contra
+//   - openrouter · gemini: SÍ. `google/gemini-3.8-flash` salió del catálogo
+//     vivo en la corrida de /api/arena-smoke?catalog=1 del 2026-09-15.
+//   - openrouter · los otros cuatro: NO. Siguen la convención `vendor/modelo`
+//     de OpenRouter pero NO se verificaron contra
 //     https://openrouter.ai/api/v1/models (egress bloqueado desde el entorno
-//     donde se escribieron). Son CANDIDATOS, no hechos.
+//     donde se escribieron). Son CANDIDATOS, no hechos. El smoke del
+//     2026-09-15 ya devolvió `exact` para openai/grok/deepseek: falta bajar
+//     ese resultado acá, y qwen todavía espera decisión (`qwen/qwen3.8-max`
+//     no existe; el catálogo ofrece `qwen/qwen3.8-max-0902`).
 //
 // El candado: un agente con `slug_verified:false` y SIN `ARENA_MODEL_<ID>`
 // puesta NO corre — `runArenaDecide` journalea `aborted_unverified_model` y no
@@ -185,9 +197,15 @@ export const ARENA_AGENTS = [
     alpaca: 'GROK', house: 'us', control: false, phase: 'B', enabled: true,
   },
   {
-    id: 'gemini', name: 'Gemini', model_label: 'Gemini 3.8 Pro',
-    provider: 'openrouter', model: slug('GEMINI', 'google/gemini-3.8-pro'), persona: 'Gemini PM',
-    slug_verified: false, caps: CAPS_OR,
+    id: 'gemini', name: 'Gemini', model_label: 'Gemini 3.8 Flash',
+    // FLASH, no Pro, y es una decisión de Lety (2026-09-15), no un descuido:
+    // `google/gemini-3.8-pro` NO EXISTE en el catálogo de OpenRouter. El tope
+    // de gama de Google que sí está es 3.1 y en preview, así que la elección
+    // real era "una generación atrás en preview" o "la generación correcta un
+    // tier abajo". Ganó la generación. Costo: Gemini corre en otro peso que los
+    // otros cinco (ver la nota de tiers arriba) — se sabe y se acepta.
+    provider: 'openrouter', model: slug('GEMINI', 'google/gemini-3.8-flash'), persona: 'Gemini PM',
+    slug_verified: true, caps: CAPS_OR,
     archetype: { name: 'el ordenado', voice: 'Todo cabe en un marco limpio. Clasificas y ordenas; tu titular suena a conclusión bien archivada.' },
     alpaca: 'GEMINI', house: 'us', control: false, phase: 'B', enabled: true,
   },

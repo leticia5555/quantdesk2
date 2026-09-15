@@ -13,15 +13,24 @@ siete slugs:
 |---|---|---|---|
 | claude | Claude Fable 5.1 | `ARENA_CLAUDE_MODEL` (ver `_lib/model.js`) | **Sí** — está en el catálogo vigente de Anthropic |
 | control | Claude Fable 5.1 | el mismo | **Sí** |
-| openai | GPT-6 Astra | `openai/gpt-6-astra` | **NO** |
-| gemini | Gemini 3.8 Pro | `google/gemini-3.8-pro` | **NO** |
-| grok | Grok 4.6 | `x-ai/grok-4.6` | **NO** |
-| deepseek | DeepSeek V4 Pro | `deepseek/deepseek-v4-pro` | **NO** |
-| qwen | Qwen3.8 Max | `qwen/qwen3.8-max` | **NO** |
+| openai | GPT-6 Astra | `openai/gpt-6-astra` | `exact` en el smoke del 15-09, falta bajarlo al registry |
+| gemini | Gemini 3.8 **Flash** | `google/gemini-3.8-flash` | **Sí** — salió del catálogo vivo el 15-09 |
+| grok | Grok 4.6 | `x-ai/grok-4.6` | `exact` en el smoke del 15-09, falta bajarlo al registry |
+| deepseek | DeepSeek V4 Pro | `deepseek/deepseek-v4-pro` | `exact` en el smoke del 15-09, falta bajarlo al registry |
+| qwen | Qwen3.8 Max | `qwen/qwen3.8-max` | **NO existe** — el catálogo ofrece `qwen/qwen3.8-max-0902` |
 
-Los cinco de OpenRouter siguen la convención `vendor/modelo` del proveedor, pero
-**son candidatos, no hechos**. Escribirlos como si fueran ciertos habría sido
-inventar un dato, así que el registry los marca `slug_verified:false` y
+> **`gemini` corre en FLASH, no en Pro.** `google/gemini-3.8-pro` no existe en
+> OpenRouter: el tope de gama de Google que sí está es 3.1 y en preview. La
+> elección real era "una generación atrás en preview" contra "la generación
+> correcta un tier abajo", y ganó la generación (decisión de Lety, 15-09). La
+> consecuencia hay que tenerla presente al leer el leaderboard: son **seis
+> flagship y un flash**, así que comparar a `gemini` contra el resto mide
+> también el peso, no solo el modelo.
+
+Los **cuatro** de OpenRouter que siguen sin verificar respetan la convención
+`vendor/modelo` del proveedor, pero **son candidatos, no hechos**. Escribirlos
+como si fueran ciertos habría sido inventar un dato, así que el registry los
+marca `slug_verified:false` y
 
 > **un agente con slug no verificado y sin `ARENA_MODEL_<ID>` NO CORRE.**
 > Journalea `aborted_unverified_model` y no gasta un token.
