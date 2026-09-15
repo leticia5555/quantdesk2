@@ -27,6 +27,14 @@
 // caché por día en memoria. El deep dive gasta ~20 más; el total queda bajo el
 // cap de 60/min del tier gratis. Los movers ya traen precio y volumen del
 // endpoint, así que de ésos solo se pide el market cap.
+//
+// ESE COSTO ES EL DEL BUFFET, y no escala: el universo de B1 son ~600 nombres,
+// y 600 profile2 a 60/min son 10 minutos dentro de una función de 300s. Por eso
+// `_lib/arena-universe.js` NO llega acá con las manos vacías: prellena `known`
+// con precio y volumen medidos en lote por Alpaca (6 requests para 600 nombres)
+// y con el market cap de los constituyentes de índice, que su pertenencia ya
+// acredita. Este módulo no sabe nada de eso — sigue pidiendo solo lo que le
+// falta. Si agregás un canal grande, prellenalo vos también; acá no hay batch.
 // ═══════════════════════════════════════════════════════════════
 
 import { extractYahooCandles, toYahooSymbol } from '../candles.js';

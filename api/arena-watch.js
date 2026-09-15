@@ -54,9 +54,9 @@ import { getCalendar, getPositions, getSnapshots, getAvgDailyVolume } from './_l
 import { activeAgents, agentById, agentAlpacaCreds, ARENA_AGENT_DEADLINE_MS } from './_lib/arena-registry.js';
 import { withDeadline } from './_lib/arena-model.js';
 import {
-  WATCH_RULES, watchCadenceActive, watchStartDate, easternDate, sessionPhase,
+  WATCH_RULES, watchCadenceActive, watchStartDate, easternDate, sessionPhase, easternMinutes,
   evaluateTriggers, applyCaps, floorReviewDue, buildTriggerHeadline,
-  estimateWorstCaseCost,
+  estimateWorstCaseCost, fixedRoundDue, FIXED_ROUNDS,
 } from './_lib/arena-watch.js';
 import { readDayEvents, eventsRefreshDue, refreshDayEvents } from './_lib/arena-watch-events.js';
 import { catastrophicStopLevel } from './_lib/arena-exits.js';
@@ -66,9 +66,12 @@ import { readScreenerRows } from './_lib/screener-db.js';
 import { computeScreens, screenerRankedSymbols } from './_lib/screens.js';
 import {
   runArenaDecide, runArenaRiskNet, runArenaReconcile, announceEventCadence,
-  ensureAgentStateRows, getArenaState, resolveBaseUrl,
+  ensureAgentStateRows, getArenaState, resolveBaseUrl, gatherContext, announceSpendTier,
 } from './arena-run.js';
+import { currentTier } from './_lib/arena-budget.js';
 import { beat } from './_lib/heartbeat.js';
+// La pausa dinámica del vigilante (la pone el reset mientras aplana las cuentas).
+import { watchPaused } from './_lib/arena-baseline.js';
 
 // Un tick puede despertar hasta 7 agentes, cada uno con su llamada al DIVE y su
 // titular. Mismo techo que arena-run (plan Pro): 300s.
@@ -221,6 +224,18 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
   await announceEventCadence(now);
   await ensureAgentStateRows(agents.map((a) => a.id));
 
+  // ── (1c) B9 · EL ESCALÓN DEL PRESUPUESTO, UNA VEZ POR TICK ───────────
+  // Acá es donde el breaker tiene dientes de verdad: el vigilante corre 78
+  // veces al día y es el que puede despertar a los siete agentes. Se resuelve
+  // UNA vez y rige todo el tick — rondas fijas, disparadores y el techo de
+  // herramientas de cada corrida que se despache.
+  //
+  // FAIL OPEN si Neon no contesta (`currentTier` devuelve escalón 0 y lo
+  // declara): frenar la liga entera por un problema de observabilidad sería
+  // cambiar un problema por otro peor. Queda journaleado que corrió a ciegas.
+  const presupuesto = await currentTier(now);
+  await announceSpendTier(presupuesto, now);
+
   // (2) LIBROS. Un agente sin keys o con Alpaca caída se salta sin tumbar al
   // resto — igual que en la liga.
   const books = {};
@@ -314,9 +329,26 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
 
   // (4) EVALUAR + TOPES. Todo lo que dispara se journalea, despierte o no.
   const agentsForEval = agents.map((a) => ({ id: a.id, halted: !!(states[a.id] && states[a.id].halted) }));
-  const triggers = evaluateTriggers({ agents: agentsForEval, books, quotes, marks, dayEvents, buffet });
+  const triggersCrudos = evaluateTriggers({ agents: agentsForEval, books, quotes, marks, dayEvents, buffet });
+  // ESCALÓN 2: se apagan los disparadores de OPORTUNIDAD (`buffet_move`: un
+  // nombre que el agente NO tiene y que se movió) y sobreviven los del PROPIO
+  // libro. La distinción es la que hace que el escalón 2 sea un freno y no una
+  // mordaza: una posición abierta que cruza su stop tiene que poder despertar a
+  // su dueño aunque el presupuesto esté agotado — eso es riesgo, no exploración.
+  //
+  // Los apagados NO desaparecen: se journalean con su `skip_reason`, igual que
+  // los que caen por tope. Un día con menos corridas tiene que poder explicarse.
+  const apagadosPorPresupuesto = presupuesto.buffet_triggers
+    ? []
+    : triggersCrudos.filter((t) => t.type === 'buffet_move');
+  const triggers = presupuesto.buffet_triggers
+    ? triggersCrudos
+    : triggersCrudos.filter((t) => t.type !== 'buffet_move');
   const { runs, journal } = applyCaps(triggers, { firedToday, runsToday, lastRunAt, now });
-  await journalTriggers(journal, today, now);
+  await journalTriggers([
+    ...journal,
+    ...apagadosPorPresupuesto.map((t) => ({ ...t, fired: false, skip_reason: `presupuesto en escalón ${presupuesto.tier}: los disparadores del buffet están apagados (los del propio libro no)` })),
+  ], today, now);
 
   // (5) TICK DE LA APERTURA +30: la red determinista de los siete, y la
   //     revisión de piso del que nadie tocó.
@@ -340,9 +372,71 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
     await markDone('risknet:' + today, { at: now.toISOString(), agents: riskNet.length }, now);
   }
 
+  // ── (5c) B4 · LAS TRES RONDAS FIJAS ─────────────────────────────────
+  // Viven acá y no en tres crons de Vercel, y ésa es la decisión: tres crons
+  // serían tres horas UTC fijas, y el horario del mercado no lo es (cambia con
+  // el horario de verano, y con media sesión el cierre−30 se mueve). El
+  // vigilante ya sabe en qué minuto de la sesión está, así que las rondas se
+  // derivan de ahí: "cuando lleven 30 minutos de sesión", no "a las 14:00 UTC".
+  //
+  // Una ronda fija es un `runArenaDecide` COMPLETO —con buffet y con el
+  // presupuesto de 8 herramientas—, no una corrida acotada: es el momento en que
+  // el PM mira el mercado entero y no un nombre que se movió.
+  //
+  // IDEMPOTENCIA: una ronda por tipo por día (`round:<día>:<id>`). El tick es de
+  // 5 minutos y la ventana de una ronda dura media hora, así que sin la marca
+  // los seis ticks siguientes dispararían seis rondas.
+  //
+  // EL PRESUPUESTO MANDA: en el escalón 2 no corren (`fixed_rounds: false`), y
+  // la decisión de NO correrlas se journalea con el escalón que la causó.
+  const fixedRuns = [];
+  let rondaFija = null;
+  if (!dry) {
+    const roundsDone = new Set();
+    for (const r of FIXED_ROUNDS) {
+      if (await doneToday('round:' + today + ':' + r.id)) roundsDone.add(r.id);
+    }
+    rondaFija = fixedRoundDue({ phase, easternMinutes: easternMinutes(now), done: roundsDone });
+    if (rondaFija && !presupuesto.fixed_rounds) {
+      // Se marca como hecha IGUAL: sin esto, cada tick de la media hora
+      // siguiente volvería a evaluarla y a journalear el mismo salto.
+      await markDone('round:' + today + ':' + rondaFija.id,
+        { at: now.toISOString(), skipped: true, tier: presupuesto.tier }, now);
+      fixedRuns.push({ round: rondaFija.id, status: 'skipped_budget_tier', tier: presupuesto.tier, reason: presupuesto.label });
+      rondaFija = null;
+    } else if (rondaFija) {
+      // El buffet es un self-fetch caro y es el MISMO para los siete: una vez
+      // por ronda, compartido (igual que en la liga nocturna).
+      let buffetPromise = null;
+      const getBuffet = () => (buffetPromise = buffetPromise || gatherContext({ baseUrl, now }));
+      const cachesRonda = { series: new Map(), dive: new Map() };
+      const vivos = agents.filter((a) => !(states[a.id] && states[a.id].halted));
+      const salidas = await Promise.all(vivos.map(async (agent) => {
+        try {
+          const out = await withDeadline(
+            runArenaDecide({ baseUrl, now, agent, getBuffet, caches: cachesRonda, tier: presupuesto }),
+            ARENA_AGENT_DEADLINE_MS,
+            () => ({ status: 'timeout', orders: 0,
+              error: `el agente no terminó en ${Math.round(ARENA_AGENT_DEADLINE_MS / 1000)}s (ronda ${rondaFija.label}). Los demás siguieron.` }),
+          );
+          return { id: agent.id, name: agent.name, round: rondaFija.id, ...out };
+        } catch (err) {
+          return { id: agent.id, name: agent.name, round: rondaFija.id, status: 'error', error: String((err && err.message) || err) };
+        }
+      }));
+      fixedRuns.push(...salidas);
+      await markDone('round:' + today + ':' + rondaFija.id,
+        { at: now.toISOString(), agents: salidas.map((x) => x.id), tier: presupuesto.tier }, now);
+    }
+  }
+
   const floorTick = phase.minutes_since_open != null && phase.minutes_since_open >= WATCH_RULES.floor_after_open_minutes;
+  // La revisión de piso es una corrida PROGRAMADA (no un disparador), así que
+  // sigue la misma regla que las rondas fijas: en el escalón 2 no corre. Un
+  // agente al que nadie despertó y que además está sobre presupuesto no tiene
+  // por qué gastar una corrida entera en decir que no hace nada.
   let floorAgents = [];
-  if (floorTick && !dry) {
+  if (floorTick && !dry && presupuesto.fixed_rounds) {
     // (5b) PISO: los que no fueron despertados HOY por ningún disparador.
     const floorDone = new Set();
     try {
@@ -394,7 +488,7 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
       // runArenaDecide (scan + dive), así que hereda el mismo riesgo — un
       // agente lento tumbando el tick entero — y la misma cura.
       const out = await withDeadline(
-        runArenaDecide({ baseUrl, now, agent, caches, event }),
+        runArenaDecide({ baseUrl, now, agent, caches, event, tier: presupuesto }),
         ARENA_AGENT_DEADLINE_MS,
         () => ({ status: 'timeout', orders: 0,
           error: `el agente no terminó en ${Math.round(ARENA_AGENT_DEADLINE_MS / 1000)}s. Los demás del tick siguieron.` }),
@@ -431,7 +525,7 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
       headline: `Ningún disparador te tocó hoy. Revisión de piso a la apertura +${WATCH_RULES.floor_after_open_minutes} min: te pronuncias sobre tus ${symbols.length} posición(es) igual.`,
     };
     try {
-      const out = await runArenaDecide({ baseUrl, now, agent, caches, event });
+      const out = await runArenaDecide({ baseUrl, now, agent, caches, event, tier: presupuesto });
       await setMarks(agentId, symbols, prices, 'watch_floor', now);
       floorRuns.push({ id: agentId, name: agent.name, symbols, ...out });
     } catch (err) {
@@ -452,6 +546,16 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
     status: 'ok',
     date: today,
     phase: { open: phase.open, minutes_since_open: phase.minutes_since_open, minutes_to_close: phase.minutes_to_close },
+    budget: {
+      tier: presupuesto.tier, spent_usd: presupuesto.spent_usd, budget_usd: presupuesto.budget_usd,
+      pct_of_budget: presupuesto.pct_of_budget, tools_max: presupuesto.tools_max,
+      effort: presupuesto.effort || null, fixed_rounds: presupuesto.fixed_rounds,
+      buffet_triggers: presupuesto.buffet_triggers, label: presupuesto.label,
+      buffet_triggers_apagados: apagadosPorPresupuesto.length,
+      note: presupuesto.note || null,
+    },
+    fixed_round: rondaFija ? rondaFija.id : null,
+    fixed_runs: fixedRuns,
     watched: watched.length,
     held: heldSymbols.length,
     buffet: buffet.length,
@@ -502,6 +606,27 @@ export default async function handler(req, res) {
 
   try {
     await ensureSchema();
+
+    // ── PAUSA DINÁMICA (freno de mano #3, en Neon) ───────────────────
+    // Los dos frenos de arriba son env vars: moverlos exige un redeploy. El
+    // RESET de libros (/api/arena-reset) necesita algo más chico y más rápido —
+    // apagar el vigilante por los pocos minutos que dura el aplanado y volver a
+    // prenderlo solo, sin tocar el deploy. Si el tick cayera en medio, vería
+    // siete libros a medio liquidar y despertaría a los agentes para opinar
+    // sobre un libro que está dejando de existir.
+    //
+    // La pausa VENCE sola: no existe forma de dejarla puesta para siempre. Y
+    // falla ABIERTA (watchPaused devuelve null si la DB no contesta): un
+    // vigilante que se apaga porque Neon tosió es peor que un tick de más.
+    const pausa = await watchPaused(new Date());
+    if (pausa) {
+      await beat('arena:watch', 'paused', { until: pausa.until });
+      return res.status(200).json({
+        paused: true, until: pausa.until, minutes_left: pausa.minutes_left, reason: pausa.note,
+        hint: 'Pausa dinámica en arena_flags (la pone /api/arena-reset mientras aplana las cuentas). Vence sola.',
+      });
+    }
+
     const dry = !!(req.query && (req.query.dry === '1' || req.query.dry === 'true'));
     const summary = await runArenaWatch({ baseUrl: resolveBaseUrl(req), dry });
     // El latido dice "el vigilante corrió", no "operó": late igual en un tick

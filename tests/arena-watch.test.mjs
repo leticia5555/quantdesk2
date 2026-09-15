@@ -37,6 +37,7 @@ process.env.ALPACA_CONTROL_KEY = 'PK_CTRL'; process.env.ALPACA_CONTROL_SECRET = 
 import {
   WATCH_RULES, evaluateTriggers, applyCaps, floorReviewDue, sessionPhase,
   markPrice, pointsToLevel, marketableLimit, estimateWorstCaseCost, watchCadenceActive,
+  diaTokens, faseTokens,
   buildTriggerHeadline,
 } from '../api/_lib/arena-watch.js';
 import { ARENA_AGENTS } from '../api/_lib/arena-registry.js';
@@ -274,8 +275,10 @@ console.log('\nvigilante: marcas, marketable limit y costo del peor caso');
     'el total se marca PARCIAL cuando falta algún precio, y dice a cuántos cubre', JSON.stringify({ partial: est.partial, priced: est.priced_agents, unpriced: est.unpriced }));
   ok(!est.partial || typeof est.partial_note === 'string',
     'un total parcial viaja con la nota que dice qué le falta');
-  ok(est.assumptions.runs_per_agent_per_day === WATCH_RULES.max_runs_per_agent_day && est.assumptions.watchdog_llm_calls === 0,
-    'el peor caso son los 12 topes por agente, y el vigilante en sí aporta CERO llamadas al LLM');
+  ok(est.assumptions.triggered_runs_per_agent_per_day === WATCH_RULES.max_runs_per_agent_day && est.assumptions.watchdog_llm_calls === 0,
+    'el peor caso son los 12 topes por agente MÁS las 3 rondas fijas, y el vigilante en sí aporta CERO llamadas al LLM');
+  ok(est.assumptions.fixed_rounds_per_day === 3,
+    'las tres rondas fijas entran en la cuenta: son corridas COMPLETAS (scan + dive con 8 herramientas), no disparadores');
   // EL NÚMERO SUBIÓ, Y ESO ES EL HALLAZGO. Este assert decía `< 5` cuando los
   // siete corrían Haiku y modelos baratos de OpenRouter. Con Fable 5.1 ($10/$50
   // por MTok, 10× Haiku) y el techo de salida en 6000 (2×, y en un modelo de
@@ -283,11 +286,40 @@ console.log('\nvigilante: marcas, marketable limit y costo del peor caso');
   // agentes de Anthropic solo ya pasa de eso. Aflojar el assert en silencio
   // habría escondido justo lo que hay que decidir, así que el tope se declara
   // acá con su porqué y el test falla si se vuelve a mover sin querer.
-  const TOPE_DIARIO_USD = 12;
+  //
+  // SEGUNDA SUBIDA (B3/B4), y también es el hallazgo. El estimador viejo
+  // multiplicaba `corridas × tokens_por_corrida` y se quedaba corto ~4×, porque
+  // desde B3 el DIVE es un LOOP y el PROMPT CRECE: cada resultado de herramienta
+  // se queda en la conversación y vuelve a viajar en todas las vueltas
+  // siguientes, así que la suma sobre el loop es CUADRÁTICA. Más las 3 rondas
+  // fijas de B4, que son corridas completas.
+  const TOPE_DIARIO_USD = 24;
   ok(est.daily_usd > 0 && est.daily_usd < TOPE_DIARIO_USD,
     `el peor caso de los agentes CON precio cabe bajo el tope declarado ($${TOPE_DIARIO_USD}/día)`, String(est.daily_usd));
+  ok(est.daily_usd > 12,
+    'y pasó del tope anterior de $12: las herramientas y las rondas fijas NO son gratis, y el número tiene que decirlo en vez de quedarse donde estaba',
+    String(est.daily_usd));
   console.log(`         (peor caso calculado: $${est.daily_usd}/día, ~$${est.monthly_usd}/mes — ${est.priced_agents}/${est.total_agents} agentes con precio)`);
   if (est.partial) console.log(`         (PARCIAL: faltan los precios de ${est.unpriced.join(', ')} — los resuelve /api/arena-smoke)`);
+
+  // ── EL COSTO NO ES LINEAL EN LAS LLAMADAS ─────────────────────────
+  // Es el error que tenía el estimador viejo, y vale la pena fijarlo: duplicar
+  // las herramientas MÁS que duplica el input, porque los resultados de las
+  // primeras vuelven a viajar en todas las vueltas que siguen.
+  const t4 = diaTokens({ rounds: 1, roundTools: 4, triggered: 0, outFinal: 2500 });
+  const t8 = diaTokens({ rounds: 1, roundTools: 8, triggered: 0, outFinal: 2500 });
+  ok(t8.calls === t4.calls + 4,
+    'el doble de herramientas son 4 llamadas más, no 4 veces más', `${t4.calls} → ${t8.calls}`);
+  const inputDe = (t) => t.inFresh + t.inCached;
+  ok(inputDe(t8) > inputDe(t4) * 1.5,
+    'pero el INPUT crece mucho más que proporcionalmente: cada resultado se queda en la conversación y vuelve a viajar',
+    `${inputDe(t4).toLocaleString()} → ${inputDe(t8).toLocaleString()}`);
+  ok(faseTokens({ base: 1000, tools: 2, outFinal: 100, cached: 0 }).inFresh === 1000 + 2000 + 3000,
+    'la cuenta exacta de una fase de 3 vueltas con resultados de 1.000: 1.000 + 2.000 + 3.000 = 6.000',
+    String(faseTokens({ base: 1000, tools: 2, outFinal: 100, cached: 0 }).inFresh));
+  ok(faseTokens({ base: 5000, tools: 1, outFinal: 100, cached: 2000 }).inCached === 4000,
+    'y el prefijo cacheado se descuenta en CADA vuelta, que es lo que lo hace valer la pena',
+    String(faseTokens({ base: 5000, tools: 1, outFinal: 100, cached: 2000 }).inCached));
 
   // La suite fija ARENA_WATCH_START='2026-09-15' arriba, así que acá se prueba el
   // COMPORTAMIENTO del corte contra la env var — no el default del código, que
@@ -638,8 +670,35 @@ const BASE_URL = 'http://qd.test';
   ok(Array.isArray(r.risk_net) && r.risk_net.length === 0,
     'y la RED DETERMINISTA no se repite: ya corrió en el primer tick, y el vigilante pasa cada 5 minutos',
     JSON.stringify(r.risk_net));
-  ok(llmCalls.length === 0,
-    'el tick entero no gasta un solo token: ni el vigilante ni la red determinista llaman a un modelo', String(llmCalls.length));
+  // ── LA RONDA FIJA DE LA APERTURA+30 (B4) ──────────────────────────
+  // TICK_2 son las 10:05 ET, o sea apertura+35: es el PRIMER tick que pasa el
+  // umbral de la ronda `open_30`, así que la ronda dispara ACÁ. Este tick ya no
+  // es "un tick que no gasta" — y la distinción importa: lo que NO gasta es el
+  // camino del VIGILANTE (disparadores + red determinista), que es lo que este
+  // bloque probaba antes de que las rondas fijas existieran.
+  ok(r.fixed_round === 'open_30',
+    'a la apertura+35 dispara la ronda fija de la apertura+30 (el tick es de 5 min: cae en el primero que pasa el umbral)', String(r.fixed_round));
+  ok(r.fixed_runs.length > 0 && r.fixed_runs.every((x) => x.round === 'open_30'),
+    'y la corre de verdad: hay corridas despachadas, todas de esa ronda', JSON.stringify(r.fixed_runs.map((x) => x.id)));
+  const gastoDelVigilante = llmCalls.filter((c) => c.kind !== 'fixed_round').length;
+  ok(gastoDelVigilante === llmCalls.length,
+    'todo el gasto del tick es de la ronda fija: el camino del vigilante (disparadores + red determinista) no llamó a ningún modelo por su cuenta',
+    `${llmCalls.length} llamadas, ${r.fixed_runs.length} corridas de ronda`);
+  ok(r.budget && r.budget.tier === 0 && r.budget.tools_max === 8,
+    'y el tick reporta bajo qué escalón de presupuesto corrió (B9): sin gasto previo, escalón 0 y 8 herramientas',
+    JSON.stringify(r.budget));
+}
+
+// ── TICK 2b: el MISMO minuto otra vez — la ronda fija NO se repite ───
+// Sin la marca de idempotencia, los seis ticks que quedan de esa media hora
+// dispararían seis rondas: siete agentes × seis = 42 corridas donde tenía que
+// haber siete.
+{
+  llmCalls = [];
+  const r = await runArenaWatch({ baseUrl: BASE_URL, now: new Date(TICK_2.getTime() + 5 * 60000) });
+  ok(r.fixed_round === null && r.fixed_runs.length === 0,
+    'cinco minutos después la ronda de la apertura+30 NO se vuelve a correr: una ronda por tipo por día',
+    JSON.stringify({ round: r.fixed_round, runs: r.fixed_runs.length }));
 }
 
 // ── TICK 3: mismo estado, pero con la cadencia todavía sin arrancar ──

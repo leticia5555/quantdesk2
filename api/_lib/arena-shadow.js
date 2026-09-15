@@ -1,0 +1,151 @@
+// ═══════════════════════════════════════════════════════════════
+// api/_lib/arena-shadow.js — B13: LA SOMBRA.
+//
+// El contrato nuevo (B5: portafolio objetivo) no puede estrenarse contra siete
+// libros reales. La sombra lo corre con el MISMO tablero, las MISMAS
+// herramientas y el MISMO mercado — y CERO órdenes.
+//
+// ── DOS CONDICIONES, Y LAS DOS SON ESTRUCTURALES ─────────────────────
+//
+// 1. `shadow=true` TIENE QUE SER IMPOSIBLE DE CONFUNDIR CON UNA CORRIDA REAL.
+//    Por eso son TABLAS APARTE (`arena_shadow_journal`) y no una columna
+//    booleana en `arena_journal`. Una bandera en la misma tabla está a UNA
+//    CONSULTA MAL ESCRITA de contaminar el post-mortem: basta que alguien
+//    olvide un `where shadow = false` una sola vez y las métricas de la
+//    temporada quedan mezcladas para siempre, sin que nada falle a la vista.
+//
+//    Con tablas separadas, esa consulta mal escrita no devuelve datos de
+//    sombra: devuelve un error de tabla inexistente, o nada. El modo de falla
+//    pasa de "silencioso y permanente" a "ruidoso e inmediato".
+//
+// 2. LA SOMBRA GASTA DINERO DE VERDAD. Son llamadas reales a siete
+//    proveedores. Va contra el MISMO `ARENA_DAILY_BUDGET_USD` que la liga viva
+//    — si no, "la sombra es gratis" sería una creencia que se desmiente con la
+//    factura. Su gasto se registra con `phase='shadow'` en el mismo contador.
+//
+// ── EL CANDADO DE LAS ÓRDENES ────────────────────────────────────────
+// No alcanza con "no llamar a createLimitOrder": alcanza con que NO SE PUEDA.
+// `shadowBroker()` devuelve un objeto con la misma forma que el cliente de
+// Alpaca donde toda escritura LANZA. Si algún camino intenta mandar una orden
+// en sombra, la corrida falla ruidosamente en vez de operar en silencio sobre
+// una cuenta real. Hay un test que lo verifica.
+// ═══════════════════════════════════════════════════════════════
+
+import { sql } from './db.js';
+import { marketDay } from './arena-buffet-cache.js';
+
+const SCHEMA = [
+  `create table if not exists arena_shadow_journal (
+     id            text primary key,
+     run_date      date not null,
+     agent_id      text not null,
+     phase         text,
+     status        text not null,
+     prompt_version text,
+     prompt_hash   text,
+     model         text,
+     plan          text,
+     llm_response  text,
+     target        jsonb,
+     rebalance     jsonb,
+     context       jsonb,
+     error         text,
+     created_at    timestamptz not null default now()
+   )`,
+  `create index if not exists arena_shadow_journal_idx on arena_shadow_journal (run_date, agent_id)`,
+];
+
+let ready = false;
+export async function ensureShadowSchema() {
+  if (ready) return;
+  for (const q of SCHEMA) await sql(q);
+  ready = true;
+}
+
+// ── EL BROKER QUE NO OPERA ───────────────────────────────────────────
+// Misma FORMA que _lib/alpaca.js para lo que el runner usa, pero toda escritura
+// lanza. Las LECTURAS sí pasan: la sombra necesita el libro real para calcular
+// un diff realista — un rebalanceo contra un libro inventado no prueba nada.
+export function shadowBroker(real) {
+  const prohibido = (nombre) => () => {
+    throw new Error(
+      `SOMBRA: se intentó ${nombre} durante una corrida en sombra. La sombra NO opera, por diseño. ` +
+      'Que esto lance en vez de ejecutar es el candado: una sombra que manda una orden es una corrida real mal etiquetada.',
+    );
+  };
+  return {
+    // lecturas: pasan al cliente real
+    getAccount: real.getAccount, getPositions: real.getPositions, getOrders: real.getOrders,
+    getOrder: real.getOrder, getClock: real.getClock, getCalendar: real.getCalendar,
+    // escrituras: LANZAN
+    createLimitOrder: prohibido('createLimitOrder'),
+    cancelOrder: prohibido('cancelOrder'),
+    cancelAllOrders: prohibido('cancelAllOrders'),
+    closeAllPositions: prohibido('closeAllPositions'),
+    __shadow: true,
+  };
+}
+
+// ── EL JOURNAL DE LA SOMBRA ──────────────────────────────────────────
+export async function shadowJournalInsert(row) {
+  await ensureShadowSchema();
+  await sql(
+    `insert into arena_shadow_journal
+       (id, run_date, agent_id, phase, status, prompt_version, prompt_hash, model, plan, llm_response, target, rebalance, context, error)
+     values ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+     on conflict (id) do nothing`,
+    [row.id, row.run_date, row.agent_id, row.phase || 'decide', row.status,
+     row.prompt_version || null, row.prompt_hash || null, row.model || null,
+     row.plan || null, row.llm_response || null,
+     row.target ? JSON.stringify(row.target) : null,
+     row.rebalance ? JSON.stringify(row.rebalance) : null,
+     row.context ? JSON.stringify(row.context) : null,
+     row.error || null],
+  );
+}
+
+export function shadowRunId(agentId, now = new Date()) {
+  return `shadow-${agentId}-${now.toISOString()}`;
+}
+
+// ── EL REPORTE DE LA SOMBRA ──────────────────────────────────────────
+// Lo que hay que mirar ANTES de encender el contrato nuevo en producción. No es
+// "¿corrió?": es "¿qué habría pasado?".
+export async function shadowReport(day = marketDay()) {
+  await ensureShadowSchema();
+  const rows = await sql(
+    `select agent_id, status, plan, target, rebalance, error, created_at
+     from arena_shadow_journal where run_date = $1::date order by created_at`, [day],
+  );
+  const porAgente = {};
+  for (const r of rows || []) {
+    const a = (porAgente[r.agent_id] = porAgente[r.agent_id] || { corridas: 0, estados: {}, ultimo: null });
+    a.corridas++;
+    a.estados[r.status] = (a.estados[r.status] || 0) + 1;
+    a.ultimo = {
+      status: r.status,
+      plan: r.plan ? String(r.plan).slice(0, 200) : null,
+      pesos: r.target && r.target.weights ? r.target.weights : null,
+      ordenes_que_habria_mandado: r.rebalance && r.rebalance.legs ? r.rebalance.legs.length : null,
+      turnover: r.rebalance ? r.rebalance.turnover : null,
+      error: r.error || null,
+    };
+  }
+  const total = rows ? rows.length : 0;
+  const abortadas = (rows || []).filter((r) => String(r.status).startsWith('aborted')).length;
+  return {
+    day, total, abortadas,
+    por_agente: porAgente,
+    // EL VEREDICTO ES EXPLÍCITO. Una sombra que "corrió" no es una sombra que
+    // pasó: lo que la hace pasar es que los siete produjeran un objetivo
+    // legible, y que el motor supiera qué órdenes habría mandado.
+    veredicto: total === 0
+      ? 'La sombra no corrió todavía: no hay nada que evaluar.'
+      : abortadas === 0
+        ? `VERDE: ${total} corridas en sombra, ninguna abortada. Los objetivos son legibles y el motor pudo calcular el rebalanceo.`
+        : `ROJO: ${abortadas} de ${total} corridas abortaron. NO encender el contrato nuevo hasta entender por qué — revisá `
+          + Object.entries(porAgente).filter(([, v]) => Object.keys(v.estados).some((s) => s.startsWith('aborted'))).map(([k]) => k).join(', ') + '.',
+    orders_placed: 0,
+    orders_note: 'La sombra no manda órdenes por construcción: el broker de sombra LANZA en cualquier escritura. Ver _lib/arena-shadow.js.',
+  };
+}

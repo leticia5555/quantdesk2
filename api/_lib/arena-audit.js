@@ -93,7 +93,15 @@ export function buffetDeFila(context) {
   const ctx = context || {};
   // La corrida por EVENTO (T2 #7) no tiene fase SCAN ni buffet: su slate lo da
   // el evento. Ahí `reconstruido:false` es la verdad, no un hueco de datos.
-  const buffet = jsonAfterMarker(ctx.scan && ctx.scan.prompt ? ctx.scan.prompt.user : null, 'MARKET CONTEXT');
+  // DÓNDE VIVE EL BUFFET, y por qué hay dos lugares. Desde el fix de caché del
+  // 2026-09-15 el buffet viaja en `prompt.shared` (el prefijo cacheado, idéntico
+  // para los siete agentes) y ya no en `prompt.user`. Las filas ANTERIORES a ese
+  // cambio lo tienen en `user` y siguen en el journal para siempre: leer solo el
+  // lugar nuevo dejaría toda la historia previa con `reconstruido: false`, que es
+  // indistinguible de una corrida por evento. Se miran los dos, el nuevo primero.
+  const scanPrompt = (ctx.scan && ctx.scan.prompt) || null;
+  const buffet = jsonAfterMarker(scanPrompt ? scanPrompt.shared : null, 'MARKET CONTEXT')
+    || jsonAfterMarker(scanPrompt ? scanPrompt.user : null, 'MARKET CONTEXT');
   const unavailable = Array.isArray(ctx.unavailable) ? ctx.unavailable
     : (buffet && Array.isArray(buffet.unavailable) ? buffet.unavailable : []);
   const errores = ctx.fetch_errors && typeof ctx.fetch_errors === 'object' ? ctx.fetch_errors : {};

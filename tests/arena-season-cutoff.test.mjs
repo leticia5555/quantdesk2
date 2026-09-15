@@ -69,9 +69,19 @@ console.log('\nel corte se pasa como parámetro, no interpolado');
   // Interpolar una fecha en el SQL sería inyección aunque hoy venga de una
   // constante nuestra: el día que alguien la haga configurable por env, deja de
   // serlo. Se comprueba que SEASON_CUTOFF viaje en el array de parámetros.
+  // Desde el RESET (2026-09-15) las cuatro consultas ya no reciben la constante
+  // directo: reciben `cutoff.date`, que es MAX(SEASON_CUTOFF, baseline del
+  // último reset) — ver `agentCutoff` y _lib/arena-baseline.js. La constante
+  // sigue siendo el SUELO, y lo que este lint tiene que garantizar es que el
+  // corte que viaja al SQL siga DERIVANDO de ella y siga siendo un PARÁMETRO.
   const usos = SRC.split('SEASON_CUTOFF').length - 1;
-  ok(usos >= 5, 'SEASON_CUTOFF se usa en la definición y en las cuatro consultas', String(usos));
+  ok(usos >= 2, 'SEASON_CUTOFF se define y alimenta el corte efectivo', String(usos));
+  ok(/effectiveCutoff\(SEASON_CUTOFF, state\.baseline_at\)/.test(SRC),
+    'el corte efectivo sale de SEASON_CUTOFF y del baseline del reset, no de un literal nuevo');
+  const cutoffParams = SRC.split('cutoff.date').length - 1;
+  ok(cutoffParams >= 5, 'cutoff.date viaja como parámetro en las consultas de memoria (4 de decide + fills de la red)', String(cutoffParams));
   ok(!/\$\{SEASON_CUTOFF\}/.test(SRC), 'SEASON_CUTOFF nunca se interpola dentro del SQL');
+  ok(!/\$\{cutoff\.date\}/.test(SRC), 'el corte efectivo nunca se interpola dentro del SQL');
 }
 
 console.log('\nel pico del breaker: por qué el corte lo salva del reset');

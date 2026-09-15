@@ -197,6 +197,46 @@ const SCHEMA = [
   `update arena_state set agent_id = 'claude' where agent_id is null`,
   `alter table arena_state drop constraint if exists arena_state_pkey`,
   `create unique index if not exists arena_state_agent_uidx on arena_state (agent_id)`,
+  // ── BASELINE DE TEMPORADA (RESET, 2026-09-15) ──────────────────────
+  // El corte por temporada (SEASON_CUTOFF en arena-run.js) arregló que el PM
+  // recordara una temporada muerta, pero la fecha venía de una CONSTANTE del
+  // registry: un reset a mitad de temporada —aplanar las siete cuentas y
+  // arrancar de nuevo el mismo T2— no tenía dónde anotarse, y la memoria del
+  // PM y el pico del breaker seguían mirando al arranque declarado.
+  //
+  // Estas tres columnas son ese corte, por agente y con fecha real:
+  //   · baseline_at     — el instante del aplanado. TODA la memoria que se le
+  //                       reinyecta al PM (plan anterior, fills, compromisos) y
+  //                       el pico del breaker se cortan acá. Es el mismo
+  //                       mecanismo que `resumed_at`, pero para un reset
+  //                       deliberado en vez de una reanimación tras un halt.
+  //   · baseline_equity — el equity DECLARADO de arranque ($100k). Es el
+  //                       denominador del return de la temporada y el PISO del
+  //                       pico del breaker. Que sea una columna y no una
+  //                       constante es lo que permite corregirlo sin deploy.
+  //   · baseline_id     — el id de la fila del journal que anunció el reset.
+  //                       Sin él, "¿de qué reset viene este baseline?" se
+  //                       contesta cruzando timestamps a ojo.
+  `alter table arena_state add column if not exists baseline_at timestamptz`,
+  `alter table arena_state add column if not exists baseline_equity numeric`,
+  `alter table arena_state add column if not exists baseline_id text`,
+  // ── FRENO DE MANO DEL VIGILANTE, en DB ─────────────────────────────
+  // `ARENA_WATCH_ENABLED` es una env var: apagarla exige un redeploy, y un
+  // redeploy en medio de un aplanado de siete cuentas es exactamente el momento
+  // en que no se quiere tocar el deploy. El reset necesita pausar el vigilante
+  // por unos minutos y volver a prenderlo SOLO, sin intervención.
+  //
+  // Tabla clave/valor a propósito: es el único flag dinámico que existe hoy y
+  // una tabla genérica evita una migración por cada flag futuro. El valor
+  // guarda un INSTANTE de vencimiento, no un booleano: una pausa que se olvida
+  // de despausarse deja al Arena ciego indefinidamente, y un vencimiento hace
+  // que el peor caso sea "el vigilante vuelve solo en N minutos".
+  `create table if not exists arena_flags (
+     key text primary key,
+     value jsonb,
+     note text,
+     updated_at timestamptz not null default now()
+   )`,
   // Calendario macro CURADO (decisión de producto: nada de scraping frágil).
   // Lety carga ~8 eventos/mes a mano vía el admin gated (/api/macro-events).
   // Los earnings de mega-caps NO viven aquí — se automatizan desde el

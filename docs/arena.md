@@ -404,6 +404,1132 @@ inválido, o sea una corrida entera perdida. `stop_reason` se normaliza también
 para OpenRouter (`finish_reason: 'length'` → `max_tokens`), así el diagnóstico
 existe para los siete agentes y no solo para los de Anthropic.
 
+## B13 · LA SOMBRA · B10 · EL PROMPT DEL CONTRATO NUEVO
+
+`_lib/arena-shadow.js` · `/api/arena-shadow` · el prompt en
+`buildTargetSystemPrompt` · tests en `tests/arena-sombra.test.mjs`
+
+El contrato nuevo (B5: portafolio objetivo) **no puede estrenarse contra siete
+libros reales**. La sombra lo corre con el mismo tablero, las mismas
+herramientas y el mismo mercado — y **cero órdenes**.
+
+```bash
+# El reporte del día — gratis, cero tokens.
+curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" "$BASE/api/arena-shadow?report=1" | jq
+
+# La corrida en sombra (esto SÍ gasta).
+curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" "$BASE/api/arena-shadow" \
+  | jq '{verdict, cost_usd, orders_placed, agents: [.agents[] | {agent, status, lens, tools_used, would_place, turnover, cost_usd}]}'
+```
+
+### Las dos condiciones, y las dos son estructurales
+
+**1 · Tablas aparte, no una columna.** `arena_shadow_journal`, no un `shadow
+boolean` en `arena_journal`. Una bandera en la misma tabla está a **una consulta
+mal escrita** de contaminar el post-mortem: basta que alguien olvide un
+`where shadow = false` **una vez** y las métricas de la temporada quedan
+mezcladas para siempre, sin que nada falle a la vista.
+
+Con tablas separadas esa consulta no devuelve datos de sombra — devuelve nada.
+El modo de falla pasa de *silencioso y permanente* a *ruidoso e inmediato*.
+
+**2 · La sombra gasta dinero de verdad.** Son llamadas reales a siete
+proveedores. Va contra el **mismo** `ARENA_DAILY_BUDGET_USD` y se registra con
+`phase='shadow'`. "La sombra es gratis" sería una creencia que se desmiente con
+la factura.
+
+### El candado de las órdenes
+
+No alcanza con *no llamar* a `createLimitOrder`: alcanza con que **no se pueda**.
+`shadowBroker()` devuelve un objeto con la misma forma que el cliente de Alpaca
+donde **toda escritura lanza**. Las **lecturas sí pasan** — sin el libro real, un
+rebalanceo contra un libro inventado no prueba nada.
+
+Si algún camino intentara mandar una orden en sombra, la corrida falla
+**ruidosamente** en vez de operar en silencio sobre una cuenta real. Hay lints
+que verifican que el endpoint solo use el cliente envuelto y que nunca escriba
+en la tabla real.
+
+### La metadata por nombre que los rieles leen (`_lib/arena-meta.js`)
+
+Durante un tiempo la sombra le pasó `meta = {}` a `validateTarget`, y con el mapa
+vacío pasaban dos cosas — una dicha y otra no:
+
+- **R9 rechazaba todos los cortos.** Correcto como regla (fail closed), pero como
+  estado *permanente* convertía el riel en una mordaza: la sombra no podía decir
+  nada sobre cómo cortan los siete modelos.
+- **R6 rechazaba casi todo, y eso no saltaba a la vista.** Sin sector, los
+  nombres caen al bucket `UNKNOWN`, que suma el bruto entero: cualquier cartera
+  de más del 50% bruto violaba un tope de concentración sectorial calculado sobre
+  un único sector que la ausencia de datos había inventado.
+
+Ahora los cuatro campos se resuelven sobre **los símbolos que el objetivo nombra**
+(unidades, no centenas):
+
+| Campo | Fuente | Por qué ésa |
+|---|---|---|
+| `shortable` · `easy_to_borrow` | Alpaca `/v2/assets/{symbol}` | Es la **misma** fuente que va a aceptar o rechazar la orden. Preguntarle a otro sería validar contra una opinión distinta de la que manda |
+| `price` | snapshots de Alpaca | Una llamada multi-símbolo |
+| `sector` | `finnhubIndustry` → los 11 ETFs del tablero | — |
+
+**El mapeo de industria a sector es por reglas, no por tabla cerrada.** La
+taxonomía de `finnhubIndustry` no es GICS y no está congelada. Una tabla exacta
+se desactualiza en silencio y manda todo lo nuevo a `UNKNOWN` sin que nadie lo
+note. Es una lista **ordenada** de reglas, y el orden es el test: `Biotechnology`
+tiene que ganarle a `Technology` aunque contenga `technolog` — la misma familia
+de bug que *"Broker upgrades NVDA to Buy"* cayendo en el patrón de fusiones.
+
+**Nada de esto afloja un riel.** Un nombre sin fila de Alpaca llega **sin** los
+campos, R9 lo lee como "sin dato" y lo rechaza igual. Lo que cambió es que dejó
+de rechazarlos a *todos* por igual. Y un nombre que falló **no se cachea como "no
+shortable"**: eso volvería permanente un fallo de red.
+
+**Caché por día** (`assets:borrow`, `assets:sector`, misma tabla que los canales
+lentos del buffet): `easy_to_borrow` lo recalcula Alpaca una vez al día a la
+apertura, y la industria de una empresa cambia cada varios años. Sin caché serían
+21 consultas diarias (3 rondas × 7 agentes) por un dato que cambia una vez.
+
+`diagnostics` viaja con el resultado: cuántos nombres tienen cada campo, **cuáles**
+quedaron sin borrow y **cuáles** sin sector. Sin eso, una cartera rechazada por R6
+no se distingue de una cartera concentrada de verdad.
+
+### B10 · El prompt
+
+Mismo prompt, mismos parámetros por familia, mismo tablero y mismas herramientas
+para los siete. Lo único que varía es la `persona`, y `claude`/`control` la
+comparten byte a byte — que es lo que hace válido al control.
+
+Reusa `STABLE_BLOCKS`: la mitad del prompt es el **mismo texto** que el del
+contrato viejo, y es deliberado. Lo que cambia es el **mandato** (equity a cuatro
+semanas) y el **formato de salida**; cómo leer el tablero no tiene por qué
+cambiar, y duplicar esos bloques sería crear dos versiones de la misma
+explicación que después divergen.
+
+Los rieles del prompt salen de `RAILS`, el mismo objeto que el validador hace
+cumplir. Dos fuentes para el mismo tope es cómo el prompt termina prometiendo
+algo que el harness rechaza.
+
+**La omisión se dice tres veces**, en tres lugares distintos. No es nerviosismo:
+es la regla cuya incomprensión **liquida un libro entero en la primera corrida**,
+y el único costo de repetirla son ~40 tokens del lado cacheado.
+
+Y `pesos: {}` vs el campo ausente se distingue explícitamente: `{}` es
+"liquidar todo e irme a cash", una decisión real; la ausencia es una respuesta
+malformada y la corrida se aborta sin colocar nada.
+
+---
+
+## B8 · ANTI-HERDING · B9 · PRESUPUESTO
+
+`_lib/arena-herding.js` · `_lib/arena-budget.js` · tests en
+`tests/arena-antiherding.test.mjs` y `tests/arena-presupuesto.test.mjs`
+
+### B8 · Por qué hace falta
+
+Siete modelos mirando el **mismo** tablero pueden terminar con el mismo libro, y
+si eso pasa el experimento deja de medir modelos y pasa a medir el tablero.
+
+**Cola aleatorizada.** El orden de los top-30 cambia por agente. Suena menor y
+no lo es: un modelo que lee una lista tiende a pesar más lo de arriba, así que
+un orden común es una **preferencia común disfrazada de coincidencia**. La cola
+avisa explícitamente que el orden no es un ranking.
+
+**Lente primaria rotativa** (momentum / catalizador / valor / reversión), dicha
+como *"hoy mirá primero por…"*. No prohíbe nada: cambia por dónde empieza.
+
+**Todo determinista, y no es un detalle.** Semilla `hash(agent_id + run_id)`,
+lente `LENTES[(hash(agent) + día) % 4]`. Un `Math.random()` acá haría el journal
+**irreproducible** y el replay —que existe justamente para reconstruir qué vio
+cada agente— sería inútil. Hay un lint que lo verifica sobre el código (no sobre
+los comentarios, que explican precisamente por qué no se usa).
+
+El día es el del **Este**: con UTC la lente cambiaría a las 20:00 ET, o sea a
+mitad de sesión.
+
+**Dónde vive la aleatorización (D2):** en la **cola no cacheada**, nunca en el
+prefijo. Si el orden cambiara dentro del bloque cacheado, los siete tendrían
+prefijos distintos y la caché no serviría para nada. La cola tiene su propio
+techo (≤2K tokens) y, al recortarse, **la lente sobrevive**: son 40 tokens y es
+la mitad del mecanismo.
+
+> **Advertencia honesta:** la lente rotativa es un **confound deliberado**. Dos
+> agentes con lentes distintas el mismo día **no son comparables ese día**. Mide
+> diversidad a costa de comparabilidad diaria; a lo largo de la temporada se
+> promedia, pero va dicho en el post-mortem en vez de dejar que alguien lo
+> descubra.
+
+**Las métricas.** Con portafolio objetivo el herding deja de ser una
+aproximación: el solapamiento par a par es el **coseno** entre los vectores de
+peso, un número directo. Largo contra corto del mismo nombre da **−1**: la
+dirección cuenta, no solo el nombre. Y un libro vacío devuelve **null**, no 0 ni
+1 — no se parece ni se diferencia, simplemente no hay con qué comparar.
+
+La tercera métrica, `toolVsBoardOrigin`, es la que dice si las herramientas
+sirvieron para algo o si el PM decide igual con lo que ya tenía enfrente. Un
+nombre que no vino **ni** de una herramienta **ni** del tablero se cuenta
+aparte: lo trajo de su memoria, no de los datos de hoy.
+
+### B9 · El presupuesto, en escalones
+
+Hace falta **ahora** y no antes por una razón concreta: con herramientas una
+corrida dejó de ser dos llamadas al LLM y pasó a ser hasta diez. El gasto por
+corrida se multiplicó y el techo que sobraba puede quedar corto en un día
+volátil, sin que nadie se entere hasta la factura.
+
+| Escalón | Umbral | Qué hace |
+|---|---|---|
+| 0 | < $30 | normal: 8 herramientas, effort medium, 3 rondas fijas |
+| 1 | ≥ $30 | herramientas 8→3, effort → low. **Sigue decidiendo**, más barato |
+| 2 | ≥ $45 | solo la red de riesgo y los disparadores del **propio libro** |
+
+**Por qué el diseño obvio era peor.** *"Si te pasás, apagá las rondas fijas"*
+deja vivos los **disparadores**, que en un día volátil son **más caros** que las
+rondas que se apagaron: el breaker ahorraría plata solo los días tranquilos, que
+son justo los días en que no hacía falta.
+
+El escalón 2 apaga los disparadores del **buffet** (oportunidades que se pueden
+dejar pasar) pero **no** los del propio libro: eso es una posición suya
+moviéndose.
+
+**La red de riesgo no se apaga en ningún escalón.** No consume LLM, y un
+presupuesto de tokens que apaga la protección del libro estaría cambiando plata
+por riesgo sin decirlo.
+
+**El costo no se inventa.** Gana lo que cobró el proveedor, después la tabla de
+la casa, después una estimación **marcada** como tal, y si no hay ninguna →
+`null`. Un costo ausente es un dato; uno inventado es una mentira que después
+alguien usa para presupuestar. Y un total que ignora corridas sin precio
+**subestima** el gasto — un breaker que subestima no dispara cuando debería, así
+que `partial: true` viaja en el reporte.
+
+**Sin contador, fail OPEN** (escalón 0) y declarado: frenar la liga porque Neon
+no contesta cambiaría un problema de observabilidad por uno de producto.
+
+Cada transición se journalea **una vez por (día, escalón)**: sin esa
+idempotencia, un día en escalón 1 llenaría el journal con la misma fila doce
+veces.
+
+#### Dónde aprieta: el camino VIVO, no solo la sombra
+
+El escalón lo resuelve el **orquestador**, una vez por tick o por ronda, y viaja
+hacia abajo:
+
+| Quién lo resuelve | Qué gobierna |
+|---|---|
+| `runArenaWatch` (cada 5 min) | las tres rondas fijas, la revisión de piso, los disparadores del buffet y el techo de cada corrida que despacha |
+| `runArenaLeague` (nocturna) | la ronda de los siete |
+| `runArenaMorning` (post-earnings) | las corridas por evento |
+| `runArenaDecide` (si no le pasaron ninguno) | se lo resuelve solo — una corrida sin techo *porque entró por otra puerta* sería el agujero que este bloque tapa |
+
+**Una vez por tick y no una por agente**, por dos razones: el gasto acumulado es
+de la liga y no de nadie en particular (siete consultas para el mismo número), y
+así los siete corren bajo el **mismo** escalón. Si el agente 1 corriera en
+escalón 0 y el 7 en escalón 1 porque el gasto cruzó el umbral en el medio, la
+ronda mezclaría dos regímenes y dejaría de ser comparable.
+
+**El techo de herramientas es el MENOR de dos:** el del tipo de corrida (8 en una
+ronda fija, 3 por disparador) y el del escalón. El mínimo y no el del escalón a
+secas — el breaker puede **apretar, nunca aflojar**. Si algún día un escalón
+permitiera más que el tipo de corrida, tomar el del escalón haría que el breaker
+*regalara* llamadas: un freno que acelera.
+
+**El `effort` del escalón viaja en el payload.** La perilla de profundidad de
+esta liga es `effort`, no la temperatura, así que baja a `low` dentro de
+`output_config` (Anthropic) o `reasoning.effort` (OpenRouter). En el escalón 0
+viaja `null`, que **no** pisa el default del registry. `effectiveParams` reporta
+el effort **real** de la corrida, no el del reglamento.
+
+**Lo que el escalón 2 apaga se journalea.** Una ronda fija saltada deja su fila
+con el escalón que la causó, y un disparador de buffet apagado deja su
+`skip_reason` — igual que los que caen por tope. Un día con menos corridas tiene
+que poder explicarse sin adivinar.
+
+#### El estimador de costo se había quedado corto ~4×
+
+`estimateWorstCaseCost` se escribió cuando una corrida eran **dos** llamadas al
+LLM. Desde B3 el DIVE es un loop y desde B4 hay tres rondas fijas, así que el
+número que publicaba el vigilante estaba mal por un factor de cuatro — y es
+justo el número que uno mira para dimensionar el presupuesto.
+
+**Lo que no se veía no era el número de llamadas: era que el PROMPT CRECE.** Cada
+resultado de herramienta (hasta 1.500 tokens) se queda en la conversación y
+vuelve a viajar en **todas** las vueltas siguientes. Con 8 herramientas el input
+de la última vuelta es el de la primera más ~8.000 tokens, y la suma sobre el
+loop es **cuadrática**. Un estimador que multiplica `corridas × tokens_por_corrida`
+no puede verlo. El prefijo cacheado descuenta parte (a 1/40 del precio de entrada
+en Fable 5.1) y también entra en la cuenta: sin restarlo el número se pasa para
+el otro lado.
+
+| | antes | ahora |
+|---|---|---|
+| llamadas al LLM por agente/día (peor caso) | 24 | **93** |
+| peor caso diario, los 2 agentes de Anthropic | ~$5 | **$20.85** |
+
+El peor caso absoluto de la liga entera pasa de `ARENA_DAILY_BUDGET_USD`. Eso no
+es un problema: **es el breaker haciendo su trabajo** — aprieta a mitad de día
+(8→3 herramientas, effort `low`) en vez de dejarlo llegar.
+
+#### Dos bugs del contador que habrían dejado al breaker ciego
+
+**1 · El loop de herramientas descartaba el `usage` de todas las llamadas menos
+la última.** `runToolLoop` devuelve el último turno del modelo, y con él su
+`usage`. Pero con 8 herramientas el prompt entero viaja en **cada** vuelta: el
+gasto real es varias veces el de esa última llamada. Contarlo así alimentaba al
+breaker con **un noveno** del gasto — un breaker que dispara cuando ya no sirve.
+Ahora el loop devuelve `usage_total` y `cost_usd_total` acumulados.
+
+**2 · El scan y el dive compartían id en `arena_spend`.** El id es clave primaria
+con `on conflict do nothing`, así que el dive chocaba con el scan de la misma
+corrida y su gasto se descartaba **en silencio**: la mitad del gasto real,
+invisible. El id lleva la fase (`<run>:scan`, `<run>:dive`).
+
+**Lo que se sacó a propósito:** el fallback de costo por catálogo de OpenRouter
+no corre en el camino vivo. `openRouterPrices` cachea en el proceso, pero los
+cinco agentes de OpenRouter corren en paralelo y los cinco fallan la caché a la
+vez — cinco requests simultáneas a `openrouter.ai` por ronda, justo en el camino
+que decide si la liga sigue gastando. El costo real ya viene en la respuesta
+(`usage.cost`, que se pide con `usage: {include: true}`); si el proveedor no lo
+manda, queda `null` y el total se marca `partial`. La estimación por catálogo
+vive en el smoke, que corre solo y puede pagar esa llamada.
+
+---
+
+## B11 · `/api/liga/libros` — el libro de cada agente, y cómo llegó a él
+
+`api/liga-libros.js` · tests en `tests/arena-liga-libros.test.mjs`
+
+Hermano de `/api/liga/eventos`. Aquel cuenta lo que **pasó** (órdenes, rechazos,
+cambios de líder); éste cuenta lo que el agente **decidió** y, sobre todo, **cómo
+investigó** — que es lo más publicable de todo el proyecto y lo que nadie más
+está mostrando.
+
+```bash
+curl -s "$BASE/api/liga/libros?dias=1" | jq '.libros[0] | {fuente, agente, lente, portafolio, investigacion}'
+```
+
+Por agente: **portafolio objetivo** · **tesis por posición** · **secuencia de
+investigación** · **lente del día**.
+
+### La secuencia es una historia, no ocho volcados
+
+> *"buscó semis con RVOL alto → leyó las noticias de NVDA → pidió la ficha de
+> AMD → no compró ninguna"*
+
+Eso es una historia. Ocho volcados de datos no lo son. Acá viaja el **resumen**
+de cada llamada (herramienta, argumentos ya acotados, cuántas filas, si se
+truncó), **nunca** el resultado completo. El completo sí se journalea —el replay
+lo necesita— pero moverlo por un feed público que no lo usa sería pagarlo en
+cada carga.
+
+### La fuente nunca se infiere
+
+Lee `arena_journal` **y** `arena_shadow_journal`, y **cada libro dice de cuál
+vino**. Confundir una decisión de sombra con una real es exactamente el error
+que las tablas separadas existen para impedir; publicarlas juntas sin etiqueta
+sería re-crear el problema una capa más arriba.
+
+Mientras el contrato nuevo corra solo en sombra, éste es el **único** lugar
+donde se puede ver un portafolio objetivo.
+
+### El control va marcado, y el modelo va con su etiqueta
+
+El control es el **piso de ruido**: leer su resultado como el de un competidor
+más invalida la única referencia que hace significativo cualquier delta entre
+modelos. Va con una nota que explica qué significa, no solo una bandera.
+
+El modelo sale como **etiqueta legible** (`model_label`), nunca como slug de
+API: el slug cambia con un override de env var, y publicarlo haría que la tabla
+de la liga dijera cosas distintas según qué env vars estuvieran puestas ese día.
+
+### La lente viaja con su advertencia
+
+No basta con publicar `lens: "momentum"`. Va con la nota de que es un **confound
+deliberado**: dos agentes con lentes distintas el mismo día **no son comparables
+ese día**.
+
+### Una corrida del contrato viejo sale con `portafolio: null`
+
+Y eso **no es un hueco**: dice qué contrato corrió ese día.
+
+Mismas restricciones que `/eventos` y `/audit`: cero writes, sin `ensureSchema`,
+sin `beat` (latir acá enmascararía un cron muerto), sin importar nada del camino
+de decisión, y sin proyectar los prompts completos — son material para
+reconstruir la corrida, no material de show.
+
+---
+
+## B4 · CADENCIA: tres rondas fijas y la nocturna a reporte
+
+`_lib/arena-watch.js` (`FIXED_ROUNDS`, `fixedRoundDue`, `riskNetDue`) ·
+despacho en `api/arena-watch.js` · tests en `tests/arena-cadencia.test.mjs` y
+`tests/arena-watch.test.mjs`
+
+> **Corrección.** Las tres rondas fijas se entregaron como módulo y tests pero
+> **el endpoint nunca las llamaba**: `fixedRoundDue` estaba exportada y probada,
+> y ningún camino de producción la importaba. Eran código muerto. Ya están
+> despachadas desde el tick del vigilante. Un test que ejercita la función
+> exportada no prueba que alguien la use — el que lo agarró fue el de
+> `arena-watch.test.mjs`, que corre el tick entero.
+
+| Pieza | Cuándo |
+|---|---|
+| Vigilante | cada 5 min, con los seis disparadores de siempre |
+| **Red de riesgo** | **el PRIMER tick** de la sesión (antes: apertura+30) |
+| **Rondas fijas** | apertura+30 · 12:00 ET · cierre−30 |
+| Corridas por disparador | acotadas al nombre + tablero, **máx 3 herramientas** |
+| Nocturna | **solo reporte**, sin decisiones |
+
+### Por qué las rondas viven en el vigilante y no en tres crons
+
+Tres crons de Vercel serían tres **horas UTC fijas**, y el horario del mercado
+no es fijo: cambia con el horario de verano. Un cron a las 14:00 UTC es la
+apertura+30 en EDT y la apertura+90 en EST. Peor: un festivo, una **media
+sesión** o una apertura retrasada dejarían los tres apuntando a momentos que no
+existen esa sesión.
+
+El vigilante ya corre cada 5 minutos **y ya sabe en qué minuto de la sesión
+está** (`sessionPhase`, derivado del calendario **real** de Alpaca). Las rondas
+se derivan de ahí: *"cuando lleven 30 minutos de sesión"*, no *"a las 14:00
+UTC"*. Con media sesión, el cierre−30 cae donde tiene que caer sin tocar nada.
+
+### Qué es una ronda fija, en concreto
+
+Un `runArenaDecide` **completo** —con buffet y con el presupuesto de 8
+herramientas—, no una corrida acotada: es el momento en que el PM mira el mercado
+entero y no un nombre que se movió. Los siete corren en paralelo, cada uno con su
+deadline, compartiendo un buffet que se pide **una vez** por ronda.
+
+**Idempotencia por `round:<día>:<id>`.** El tick es de 5 minutos y la ventana de
+una ronda dura media hora: sin la marca, los seis ticks siguientes dispararían
+seis rondas — siete agentes × seis = 42 corridas donde tenía que haber siete.
+
+**El presupuesto manda.** En el escalón 2 las rondas fijas no corren, y la
+decisión de no correrlas se marca como hecha igual (si no, cada tick de la media
+hora siguiente volvería a evaluarla y a journalear el mismo salto) con el escalón
+que la causó. La **revisión de piso** sigue la misma regla: es una corrida
+programada, no un disparador.
+
+**La ventana no es un instante.** El tick es de 5 minutos, así que "a los 30
+exactos" casi nunca cae en un tick: la ronda dispara en el **primer tick que
+pasa el umbral**, y la idempotencia por día es lo que evita que los seis ticks
+restantes de esa media hora disparen seis rondas.
+
+**La deuda se paga en orden.** Si el vigilante estuvo caído y vuelve a las
+12:30 sin haber corrido la de apertura, corre **esa primero**: son rondas
+distintas con propósitos distintos, no un cupo que se descarta.
+
+### La red de riesgo, al primer tick
+
+Antes corría en el tick de la apertura+30, junto con la revisión de piso. Eso
+son **30 minutos de sesión** en los que un stop que ya disparó con el cierre de
+ayer no se ejecutaba — y un **gap de apertura** es exactamente cuando más falta
+hace.
+
+No cambia **qué** decide (sigue decidiendo con cierres completos, una vez al
+día): cambia **cuándo se ejecuta** lo ya decidido. Moverla a decidir con precios
+intradía la volvería un stop de tick, que es otro producto.
+
+### El cambio de contrato de la nocturna (el que no salta a la vista)
+
+Al volverse reporte, el **"plan anterior"** que se le reinyecta al PM dejó de
+ser el de la nocturna y pasó a ser el de la **última ronda fija**.
+
+Sin ese filtro, el PM de la apertura+30 recibiría como *su plan anterior* el
+**reporte de anoche** — un texto que describe el día que pasó y no decide nada.
+Construir sobre eso es construir sobre una crónica. `report` y `nightly_report`
+se excluyen junto a las filas operativas, por el mismo motivo por el que están
+ellas: llevan `plan` sin ser una decisión del PM.
+
+---
+
+## B5 · SALIDA = PORTAFOLIO OBJETIVO · B6 · RIELES · B7 · RED PARA CORTOS
+
+`_lib/arena-rails.js` (rieles) · `_lib/arena-rebalance.js` (el motor) ·
+`_lib/arena-exits-short.js` (la red del corto) · tests en
+`tests/arena-portafolio.test.mjs`
+
+El cambio de contrato más grande de la temporada. Antes el PM entregaba
+**órdenes** ("compro 50 de NVDA"); ahora entrega un **libro** ("quiero estar 12%
+en NVDA"). Y de paso hace imposible el bug de la omisión silenciosa.
+
+### Las cuatro decisiones de B5
+
+**1 · Omisión = 0% = SALIDA.** Un ticker que el PM no menciona **se cierra**. La
+alternativa ("lo que no menciono se queda") deja que la omisión pase por
+decisión, que es exactamente la amnesia que la T2 vino a arreglar. Con omisión =
+salida, **todo el libro se re-afirma en cada corrida o desaparece**: el
+pronunciamiento obligatorio hecho **estructura**, no hecho instrucción.
+
+> **El riesgo es real:** un modelo que no lo entienda se liquida solo en su
+> primera corrida. Va dicho tres veces en el prompt, y hay un test que verifica
+> que un objetivo vacío produce la liquidación completa — no un no-op silencioso.
+
+**2 · Banda de no-negociación: 2pp.** Sin banda, el motor negocia contra el
+drift de precios todos los días: una posición que el PM quiere al 12% y cerró en
+11.6% generaría una orden que no expresa ninguna decisión. **Excepción:** un
+cierre completo nunca se frena — "salir del 1.5%" es una decisión aunque el
+movimiento sea chico.
+
+**3 · Orden de ejecución:** ventas → coberturas → compras → cortos nuevos. Lo
+que **libera** capacidad va primero; lo que la **consume**, después. Si no, una
+rotación completa viola el riel de bruto a mitad de secuencia o se queda sin
+cash. Un **cruce de signo son dos patas** (cerrar el largo, abrir el corto):
+tratarlo como una orden sola pasaría por plano sin pasar por plano.
+
+**4 · Descarta entero, no escala.** Escalar un objetivo para que quepa lo
+convierte en uno que el PM nunca propuso, y el journal publicaría como suya una
+tesis que no corresponde a las posiciones. Y se reportan **todas** las
+violaciones, no la primera: un PM que recibe "violaste R3" arregla R3 y choca
+con R6 mañana.
+
+### La asimetría del corto — el eje de B6 y B7
+
+> **Un largo que sale mal SE ENCOGE. Un corto que sale mal CRECE.**
+
+Un largo del 25% que cae 50% pasa a pesar ~14%: el error se auto-limita y el
+riel se respeta solo. Un corto del 25% cuyo subyacente **sube** 50% pasa a ~37%
+y sigue creciendo — **viola su propio riel sin que nadie haga nada**, y la
+pérdida no tiene techo teórico. De ahí salen el tope a la mitad, los rieles que
+solo existen para cortos, y el recorte.
+
+| # | Riel | Valor |
+|---|---|---|
+| R1 | largo por nombre | 30% |
+| R2 | corto por nombre | **15%** (la mitad) |
+| R3 | exposición bruta | ≤ 100% |
+| R4 | exposición neta | −50% a +100% *(asumido)* |
+| R5 | corto total | ≤ 50% |
+| R6 | por sector | 50%, con `UNKNOWN` como un bucket más |
+| R7 | cash | 0-100% |
+| R8 | mínimo por posición | 2% |
+| R9 | `shortable` **y** `easy_to_borrow` | **fail closed** |
+| R10 | precio mínimo para cortos | $10 (contra $5 del universo) |
+| R11 | `forced_buy_in` journaleado aparte | — |
+| R12 | **el motor RECORTA** | — |
+
+**R9 falla cerrado y eso es deliberado:** un campo ausente **no es un permiso**.
+Un buy-in forzado cierra la posición sin que el PM decida — eso es ruido del
+broker metido en el resultado del experimento.
+
+**R6 con `UNKNOWN`:** prohibir operar un nombre sin sector castigaría al PM por
+una falla de cobertura **nuestra**. El bucket comparte el tope y el journal lo
+dice.
+
+**R12 · El motor recorta.** Una posición que creció por encima de su riel se
+recorta al riel **aunque el PM no lo haya pedido y aunque su objetivo la deje
+donde está**. Rechazar entradas nuevas no sirve de nada contra una posición que
+se infla sola. Es **determinista** —va con la red, no con la decisión del PM—,
+se journalea como `rail_trim` con el peso antes y después, y el PM lo ve en su
+siguiente prompt como un hecho consumado, igual que un stop que disparó.
+
+Un nombre recortado que el PM **ni menciona** queda **en el riel, no en cero**:
+el recorte es de la red, no una salida que alguien decidió.
+
+### B7 · La red del corto, con el pico invertido
+
+`_lib/arena-exits-short.js` es un **hermano** de `arena-exits.js`, no un
+reemplazo: aquel lleva meses corriendo sobre libros largos y no se toca. Podría
+haber sido un `if (esCorto)` adentro; no lo es a propósito — la red es la única
+pieza que no se puede apagar, y meterle ramas a un módulo que ya funciona es la
+forma más barata de romper el lado que andaba.
+
+| Red | Largo (vigente) | Corto |
+|---|---|---|
+| Stop catastrófico | −22% desde la entrada | **+20% en contra** |
+| Trailing: ARMA | pico +15% a favor | **el piso llegó a −15%** |
+| Trailing: DISPARA | −8% desde el pico | **+8% desde el piso** |
+| Time stop | 45 días | 45 días (es atención, no riesgo) |
+
+**+20% y no +22%** por la asimetría: a 20% en contra la posición ya creció de
+15% a ~18% del libro, y los dos puntos extra cuestan más en un corto.
+
+**El espejo del pico.** En un largo se recuerda el **máximo** desde la entrada y
+el trailing protege contra la caída. En un corto la dirección favorable es
+**hacia abajo**, así que lo que se recuerda es el **mínimo** y el trailing
+protege contra el rebote. Guardar el máximo acá daría un trailing que dispara
+**cuando la posición va bien** — un bug perfectamente silencioso, y por eso
+tiene su propio test.
+
+El mínimo se **techa a la entrada**: un corto que nunca bajó de donde se abrió
+tiene piso = entrada. Sin ese techo, el trailing armaría por aritmética en vez
+de por haber ganado algo.
+
+Y como el largo: **por construcción cubre con ganancia**.
+`entrada × 0.85 × 1.08 = entrada × 0.918` — el techo del trailing está siempre
+por debajo de la entrada, que en un corto es ganancia.
+
+### Sin slippage simulado (D6)
+
+Estas son órdenes **reales** en Alpaca paper: el fill ya trae su propia
+fricción, y cobrar bps sintéticos encima sería contar el costo dos veces. Se
+mide **turnover** como métrica de churn — un número que ya existe y no inventa
+nada.
+
+---
+
+## B3 · LAS HERRAMIENTAS
+
+`_lib/arena-tools.js` (las cuatro + presupuesto) · `_lib/arena-tool-loop.js` (el
+loop multi-proveedor) · tests en `tests/arena-herramientas.test.mjs`
+
+El tablero le muestra el mercado; esto le deja **investigarlo**.
+
+| Herramienta | Qué contesta |
+|---|---|
+| `screener({sector?, min_rvol?, min_mcap_b?, ret_*, near_52w_high\|low, has_news, limit≤25})` | "¿qué nombres se parecen a X?" |
+| `noticias({ticker?\|tema?, days≤5, limit≤8})` | titulares de un nombre o de un tema |
+| `ficha({ticker})` | la hoja completa de UN nombre — la cara, para nombres que ya está considerando |
+| `sector({etf})` | un sector por dentro |
+
+### El tope es del harness, no del prompt
+
+Un tope que solo vive en el prompt es una **sugerencia** que el modelo cumple
+casi siempre, y "casi siempre" en un presupuesto es un presupuesto roto. La
+llamada 9 **no se ejecuta** y devuelve un `tool_result` que dice *"presupuesto
+agotado, decidí con lo que tenés"*. El modelo se entera en lugar de descubrirlo
+por silencio, y el intento rechazado **se journalea igual**: es parte de cómo
+investigó.
+
+8 llamadas en ronda fija, 3 en corrida por disparador (está acotada a un nombre
+— no necesita explorar).
+
+### El truncamiento viaja dentro del resultado
+
+Cada resultado se corta a ~1.5K tokens y el corte se **declara adentro**:
+`…(N filas más, TRUNCADO por presupuesto de tokens — no es que no existan, es
+que no cupieron)`. Un modelo al que le cortaron los datos sin avisarle razona
+sobre una lista que cree completa, y después escribe *"no hay ningún nombre de
+energía con RVOL alto"* cuando lo que pasó es que no cupo.
+
+La misma disciplina en los vacíos: el screener distingue *"ninguno cumple"* de
+*"no hay tablero sobre el que filtrar"*, y `noticias` distingue *"no hubo
+titulares"* de *"la fuente falló"*.
+
+### Los argumentos se acotan, no se rechazan
+
+`limit: 500` es el modelo pidiendo "dame todo", no un error: se le dan 25 y se
+le **dice** que se acotó. Rechazar la llamada le gastaría una del presupuesto
+sin darle nada.
+
+### La caché es por contenido, no por agente
+
+Si dos agentes piden lo mismo, se paga una vez. Eso **no es herding**: es el
+mismo dato, y el tablero ya es común para los siete. Lo que mide el experimento
+es **qué decidieron mirar**, y eso queda intacto — la secuencia de cada uno se
+journalea entera.
+
+### El loop multi-proveedor (el trabajo que el scope marcó como subestimado)
+
+Anthropic y OpenAI no difieren solo en nombres de campo; difieren en la **forma
+del turno que hay que devolver**:
+
+| | Anthropic | OpenAI / OpenRouter |
+|---|---|---|
+| pide | `content:[{type:'tool_use', id, name, input}]` | `message.tool_calls:[{id, function:{name, arguments}}]` — `arguments` es un **string JSON** |
+| se responde | **un** mensaje `user` con todos los `tool_result` | **un mensaje `tool` POR CADA** llamada |
+| eco | el turno del asistente **verbatim**, con los bloques de thinking | el objeto `message` **crudo**, con su `tool_calls` |
+
+Los dos detalles que rompen si se hacen "parecido" en vez de exacto:
+
+1. **Anthropic exige el eco verbatim.** Reconstruirlo como texto plano es lo que
+   el chequeo de *preserved thinking* de Fable 5.1 no perdona — la misma
+   cicatriz que ya estaba documentada en el guard de fechas.
+2. **OpenAI exige un mensaje `tool` por cada `tool_call`.** Si el modelo pidió
+   tres y se responde con uno, la API rechaza el turno entero. Agrupar (como
+   hace Anthropic) *parece* equivalente y no lo es.
+
+### El guard de fechas y el tool use no se llevan
+
+El retry del guard appendea un turno de **usuario** después del turno del
+asistente. Cuando ese turno pidió herramientas, eso es un payload **inválido en
+los dos proveedores**, y el retry devolvería un 400 que no tiene nada que ver
+con fechas. Así que en un turno con herramientas el guard **no reintenta** — y
+no se pierde nada: el turno que pide una herramienta casi no tiene prosa, y el
+turno **final**, que trae el JSON y la narrativa (donde una fecha alucinada sí
+importa), llega sin herramientas y pasa por el guard completo.
+
+### Dos topes distintos
+
+El presupuesto cuenta **llamadas**; el loop cuenta **vueltas**. Un modelo puede
+pedir tres herramientas en una vuelta, y sin el tope de vueltas uno que se queda
+en bucle gasta el reloj de la lambda aun con el presupuesto agotado. Al
+agotarse las vueltas hay **una vuelta final sin herramientas** para que pueda
+cerrar con su JSON: sin ella, un modelo en bucle produce una corrida abortada
+teniendo todo lo que necesitaba.
+
+### B12 · Los relojes: la cuenta cambió con las herramientas
+
+Antes de B3 una corrida eran **dos** llamadas y la cuenta cerraba sola:
+
+```
+scan (≤90s) + dive (≤90s) + Alpaca/journal ≈ 200s  <  240s  <  300s
+```
+
+Con el loop, el DIVE puede ser **hasta 10** llamadas. A 90s de techo cada una,
+el peor caso no es 200s — es **más de 900**. Con el deadline en 240s la corrida
+moría a mitad del loop **perdiendo todo lo que el modelo ya había investigado**,
+y el journal decía "timeout" sin decir en qué vuelta se quedó.
+
+La respuesta **no es solo subir el deadline**: un loop que no sabe qué hora es
+choca contra cualquier número que se le ponga. El loop lleva **su propio
+presupuesto de tiempo** y, cuando se le acaba, hace lo mismo que cuando se le
+acaban las vueltas — una última llamada **sin herramientas** para que cierre con
+lo que tiene.
+
+> Un cierre con menos investigación de la que quería es una **decisión**.
+> Un timeout es una **corrida perdida**.
+
+La cuenta nueva:
+
+```
+scan          ≤  90s
+loop del dive ≤ 120s   (ARENA_TOOL_LOOP_MS — el loop se AUTO-CORTA)
+cierre        ≤  45s   (última llamada, sin herramientas, con su tiempo apartado)
+──────────────────────
+total         ≈ 255s  <  270s (deadline)  <  300s (función)
+```
+
+Tres topes, y cuentan cosas distintas: **llamadas** (el presupuesto de
+herramientas), **vueltas** (el loop) y **tiempo** (éste). El del tiempo es el
+que de verdad manda, porque el reloj que mata no es el nuestro sino el de
+Vercel. Y el techo de cada llamada individual se acota contra lo que queda: sin
+eso, una llamada colgada de 90s se come el reloj de las vueltas siguientes.
+
+Los 30s entre el deadline y el cap de la función son para **escribir** el
+timeout. Un timeout que no se journalea es indistinguible de una corrida que
+nunca ocurrió — y ese margen lo exige un lint, no es un número que se pueda
+achicar para hacer caber un presupuesto más grande.
+
+`tests/arena-timeouts.test.mjs` verifica **la resta**, así que si alguien sube
+un presupuesto sin bajar otro se pone rojo antes de que una corrida real muera.
+
+---
+
+### Determinismo para el replay
+
+La secuencia se journalea con los argumentos y el **resultado completo**, no
+solo el resumen: sin él, un replay no puede reproducir la corrida — el modelo
+decidió mirando algo que no guardamos. Lo que se **publica** en `/liga` es la
+secuencia **sin** los volcados: *"buscó semis con RVOL alto → leyó las noticias
+de NVDA → pidió la ficha de AMD → no compró ninguna"* es una historia; ocho
+volcados de datos no lo son.
+
+---
+
+## B2 · EL TABLERO
+
+`_lib/arena-board.js` · tests en `tests/arena-tablero.test.mjs`
+
+Lo que los siete miran, **idéntico para todos**, en el prefijo cacheado. Cambia
+qué es el prompt: el buffet era *una lista de candidatos que nosotros elegimos*;
+el tablero es *el mercado*, y quién es candidato lo decide el PM.
+
+| Sección | Reloj | De dónde sale |
+|---|---|---|
+| Índices + VIX | **vivo** (% vs cierre anterior) | snapshots de Alpaca |
+| Calor por sector (11 ETFs GICS) 1d/5d/1m | **velas cerradas** | barras diarias |
+| Top 30 gainers / losers **del universo** | **vivo** | snapshots |
+| Top 20 por RVOL | **vivo** (sesgado, ver abajo) | volumen del día / promedio 20d |
+| Breakouts de 52 semanas | **barras semanales cerradas** | precomputado por el cron |
+| Earnings, próximos 5 días | — | el canal de siempre |
+| Titulares M&A / upgrades / downgrades | hoy | Alpaca News |
+
+Once sectores y no trece: `/api/sectors` agrega SOXX e IBIT porque son los dos
+movers de titular de una audiencia retail, pero **no son sectores GICS**. Un
+"calor por sector" con dos filas que no son sectores mide otra cosa.
+
+El **libro** de cada agente y sus últimas 3 decisiones **no** están acá: son lo
+único que varía entre agentes y van del lado volátil del corte. Si entraran, los
+siete tendrían prefijos distintos y la caché no serviría para nada.
+
+### El presupuesto de tokens es una regla, no una esperanza
+
+3-4K. El renderizador es **tabular, no JSON**, y ésa es la decisión que lo hace
+caber: `NVDA 189.2 +8.1 rv3.2` son ~12 tokens; el mismo dato como
+`{"symbol":"NVDA","price":189.2,...}` son ~30. Sobre 100 filas, eso es la
+diferencia entre caber y no caber. Se **mide** por sección y se journalea.
+
+Cuando no cabe, se recorta **por la cola** y se **dice** cuál sección se cayó —
+nunca en el medio. Una sección a medias es una lista que el PM lee como
+completa. Y el recorte tiene **piso**: nunca baja de índices + calor por sector,
+porque un tablero sin encuadre es peor que uno recortado. Si el piso deja el
+texto por encima del presupuesto, `budget_respected: false` lo declara en vez de
+devolver un número pasado en silencio.
+
+### Tres relojes, etiquetados
+
+Mezclar relojes sin decirlo es publicar un número correcto con la semántica
+equivocada. El tablero etiqueta cada columna:
+
+- **RVOL intradía lee bajo** y el tablero lo avisa: a las 10:30 el volumen lleva
+  una hora contra un promedio de sesiones **completas**, así que un RVOL de 1.0
+  a esa hora ya es mucho volumen. No se "corrige" con una curva intradía
+  inventada — se declara.
+- El **calor por sector** y el **rango de 52 semanas** salen de velas cerradas.
+- El **precio del día** es vivo, a propósito: el PM decide ahora.
+
+### Lo que no se paga por corrida
+
+El universo y su rango de 52 semanas los precomputa el cron pre-apertura. El
+tablero solo agrega lo intradía. Sin eso, cada corrida pagaría ~600 símbolos ×
+52 barras **tres veces al día** por un dato que no cambia dentro del día.
+
+### Cobertura, reportada
+
+Un tablero que cubre 120 de 600 nombres **no es el mismo tablero**.
+`coverage_pct` lo dice sin que haya que reconstruirlo. Un nombre sin precio vivo
+no entra: no se inventa una fila.
+
+### El clasificador de titulares es tonto y explicable a propósito
+
+El tablero no clasifica noticias: elige cuáles de los titulares de hoy caben en
+el espacio que tiene. Un falso positivo cuesta una línea; un clasificador que
+nadie puede auditar cuesta la confianza en el tablero entero.
+
+**El orden de las reglas importa** y fue el primer bug: `"Broker upgrades NVDA
+to Buy"` contiene `to buy` y caía en M&A — el tablero publicaba una fusión que
+no existía. Las acciones de rating van **antes**: `upgrade`/`downgrade` son
+inequívocas, `to buy` no.
+
+Y solo entran titulares de nombres **del universo**: uno sobre una empresa que
+el PM no puede comprar es ruido que paga tokens.
+
+**Freno de mano:** `ARENA_BOARD=0`, sin deploy.
+
+---
+
+## B1 · EL UNIVERSO (~600 nombres)
+
+`_lib/arena-universe.js` · cron `/api/arena-universe` · tests en
+`tests/arena-universo.test.mjs`
+
+S&P 500 + Nasdaq 100 + hasta 100 movers/most-actives del día. La diferencia con
+el buffet v1.5 **no es de tamaño, es de pregunta**: con solo los movers, lo que
+el PM puede elegir está determinado por lo que se movió — un nombre que lleva
+tres semanas construyendo una base no existe para él. Con el universo, los
+movers pasan a ser una **bandera** sobre nombres que ya estaban ahí.
+
+### Los tres escalones (D1: el tablero NUNCA se bloquea)
+
+```
+1. FMP        /api/v3/sp500_constituent · /nasdaq_constituent   (refresco SEMANAL)
+2. Neon       el último bueno que se bajó — sobrevive a un deploy
+3. data/universe/*.json                  arranque en frío
+   ↓
+   movers_only — sin ninguna lista, el universo es el día y el journal lo dice
+```
+
+Refresco **semanal** y no diario porque la composición de un índice cambia unas
+pocas veces al año; pedirla todos los días es gastar cuota para recibir el mismo
+archivo. Y la ventana se mide por **edad de lo guardado**, no por calendario: si
+el cron no corrió el lunes, el martes refresca igual.
+
+### No corromper al degradar
+
+Una lista de FMP con 12 nombres para el S&P 500 es cuota agotada o un error de
+la API, no el índice. **Se rechaza** en vez de pisar la buena que ya estaba
+(`MIN_SANE`). Degradar es servir la lista de la semana pasada diciéndolo;
+corromper es guardar basura encima de la buena.
+
+### Los índices también pasan por admisión
+
+Un constituyente que cayó bajo $5 o bajo $1B **sigue en el índice** hasta que el
+comité lo saque. El universo del Arena no hereda esa demora: el mismo filtro de
+siempre (`_lib/arena-admission.js`) corre sobre los ~600, y lo que sale queda
+nombrado con el número que lo sacó.
+
+### El costo de admitir 600 nombres (y por qué no son 1200 requests)
+
+`_lib/arena-admission.js` se escribió para el buffet: su propio encabezado dice
+"~26 llamadas a Finnhub profile2 + ~8 series de Yahoo por corrida". B1 le pasa
+~600. Tal cual, eso es **600 series de Yahoo + 600 profile2**, y los 600
+profile2 contra el tier gratis de Finnhub (60/min) son **10 minutos** dentro de
+una función de 300s: no termina, y desde el primer minuto empieza a comer 429s.
+
+Dos cambios, ninguno de los cuales afloja el criterio:
+
+**Precio y volumen se miden en lote por Alpaca.** `getPriceAndDollarVolume`
+(`_lib/alpaca.js`) pide velas diarias de 100 símbolos por request al mismo
+`/v2/stocks/bars` que ya usa el tablero: **6 requests en vez de 600**. Excluye
+la vela de hoy (point-in-time, igual que antes) y **omite** el símbolo que no
+tiene velas en vez de emitir ceros — un cero se leería como "no operó" y lo
+rechazaría por criterio en vez de por falta de dato.
+
+**La pertenencia a un índice acredita el piso de market cap.** Un nombre del
+S&P 500 o del Nasdaq 100 tiene market cap ≥ $1B por construcción del índice: no
+hay miembro de $800M. Eso se prellena en `known` en vez de pedirlo. Es un
+**supuesto**, así que viaja declarado en el journal —
+`market_cap_assumed_by_index` (cuántos), `market_cap_measured` (cuántos se
+midieron de verdad) y `market_cap_note` — no escondido en un default. Los ≤100
+nombres del día, que no están en ningún índice, **sí** pagan su profile2 real.
+
+El resultado, para un universo de ~600:
+
+| | requests a Yahoo | requests a Finnhub | requests a Alpaca | Finnhub a 60/min |
+|---|---|---|---|---|
+| antes | 600 | 600 | 0 | 10.0 min |
+| ahora | 0 | ≤100 | 6 | 1.7 min |
+
+Lo que **no** cambió: el fail-closed. Un nombre sin precio o sin volumen sigue
+sin entrar, con `reason: 'data_unavailable'` — el test lo fija pasando 300
+nombres sin velas y exigiendo que los 300 queden afuera.
+
+### El tope de 100 se gasta solo en nombres NUEVOS
+
+Un mover que ya está en el S&P 500 no consume cupo — sería gastar el presupuesto
+de nombres nuevos en nombres que ya estaban.
+
+### Survivorship bias — dicho, no disimulado
+
+La composición es la de **hoy**. No existe un endpoint gratis y confiable de
+"constituyentes del S&P 500 en tal fecha", así que un backtest sobre esta lista
+arrastra survivorship bias. El `caveat` viaja **con el dato** (no en un doc que
+nadie abre) y cada corrida journalea `source` y `built_at` de la lista con la
+que operó.
+
+Lo que sí es point-in-time es el resto: los precios y volúmenes de la admisión
+salen de velas **cerradas**.
+
+### Por qué vive en un cron
+
+~600 nombres × (precio + volumen + market cap) no cabe dentro de una corrida.
+Se reconstruye a las **9:00 ET**, media hora antes de la apertura, y la corrida
+solo **lee**. Si el cron no corrió, se usa el de ayer **y se dice**
+(`is_today: false`) — no se reconstruye a medias, que daría un universo mitad
+fresco y mitad viejo sin manera de saber cuál nombre es cuál.
+
+### La lista se guarda sola. Nadie commitea nada
+
+El arranque de B1 **no depende de que alguien corra `jq` en su terminal y suba
+dos archivos**. Eso convertiría un cron en un ritual manual, y un ritual manual
+que nadie hace es una fuente que no existe.
+
+Cuando los constituyentes se bajan de FMP, `resolveConstituents` los escribe en
+Neon (`arena_universe`, clave `constituents:<índice>`) **en el mismo paso**. El
+ciclo cierra sin intervención:
+
+| Día | Qué pasa |
+|---|---|
+| 1 | Neon vacío → el cron baja de FMP y **guarda** |
+| 2…7 | se lee de Neon: cero cuota de FMP para recibir el mismo archivo |
+| 8+ | vencida por **edad** → se refresca sola y vuelve a guardar |
+
+El refresco es por edad y no por calendario, así que un cron que no corrió el
+lunes refresca el martes en vez de esperar al lunes siguiente.
+
+`indices[].persisted` dice, por índice, si la lista quedó guardada. Si una lista
+vino fresca de FMP pero la escritura falló, la corrida de hoy sirve igual y sale
+un `persistence_warning`: no se rompe nada, pero mañana se vuelve a pagar la
+cuota y eso conviene que se vea.
+
+**`data/universe/*.json` está vacío a propósito y no hace falta llenarlo.** Es
+solo el escalón 3 —arranque en frío, con Neon vacío **y** FMP caído el mismo
+día—, y el seed vacío no cuenta como respaldo. Con cualquiera de las dos fuentes
+de arriba viva, el escalón 3 no se consulta nunca. Sin ninguna de las tres, el
+universo cae a `movers_only` y el journal lo dice.
+
+---
+
+## BUFFET v1.5 — el universo del día con ojos propios (2026-09-15)
+
+`_lib/arena-buffet.js` · tests en `tests/arena-buffet-v15.test.mjs`
+
+v1 le daba al PM ~24 nombres de UNA fuente (`/api/movers`, top-8 por lado).
+v1.5 le da ~100, de **tres preguntas distintas** que el screener de Alpaca
+contesta sin una llamada por símbolo:
+
+| Pregunta | Fuente | Tope |
+|---|---|---|
+| ¿Qué se **movió**? | `/v1beta1/screener/stocks/movers` | 50 por lado |
+| ¿Qué se **negoció**? | `/v1beta1/screener/stocks/most-actives` | 100 |
+| ¿Qué **rompió su rango**? | barras semanales cerradas, 52 semanas | — |
+
+Las tres no son la misma pregunta, y ahí está el punto: un nombre puede mover
+8% con volumen de nada, o negociar $2.000M sin moverse. v1 solo veía la primera.
+
+**Dedupe con banderas, no con prioridad.** Un nombre que aparece en gainers Y en
+most-actives Y marcando máximo de 52 semanas es **una** entrada con las **tres**
+banderas — no tres entradas, ni una con el canal que llegó primero. La
+coincidencia de canales ES la señal, y perderla al deduplicar sería tirar justo
+lo que hace interesante al nombre. El conteo de banderas es lo que ordena la
+lista cuando hay que recortar a ~100.
+
+**Un solo filtro de admisión** (`_lib/arena-admission.js`, el mismo de siempre:
+precio ≥ $5, mcap ≥ $1B, volumen $ ≥ $10M/día, fail closed) para los tres
+canales. El bug de DDDX fue exactamente lo contrario — tres canales con tres
+criterios y el más flojo mandando.
+
+**El orden importa por costo:** la admisión corre ANTES del 52w, y el rango se
+pide solo para los nombres que ya pasaron. Al revés se pagarían barras de
+nombres que quedan afuera igual.
+
+**Point-in-time.** El máximo y el mínimo de 52 semanas salen de barras
+**semanales cerradas** — la semana en curso se excluye. Si no, un nombre
+"marca nuevo máximo" contra un máximo que ya incluye el precio de este momento,
+o sea contra sí mismo. Las barras semanales no pierden precisión: el `high` de
+una semana ES el máximo de sus cinco días. Lo que cambian es el costo, 52 barras
+por símbolo en vez de ~250.
+
+**Orden total.** El ranking desempata por banderas → magnitud → volumen →
+símbolo. El símbolo al final no es decorativo: sin un desempate total, dos
+corridas con los mismos datos pueden devolver órdenes distintas y el replay deja
+de reproducir la corrida.
+
+**Va APARTE de `movers`, no lo reemplaza.** Son fuentes distintas y el
+post-mortem tiene que poder comparar qué aportó cada una antes de que alguien
+decida apagar la vieja. El canal nuevo entra al índice de atribución como
+`universe` con sus banderas, así que una acción sobre un nombre que solo llegó
+por ahí no se journalea como pick sin anclar.
+
+**Freno de mano:** `ARENA_BUFFET_V15=0` lo apaga sin deploy. Prendido por
+default. Una caída ya está cubierta — sale en `unavailable` con su error, como
+cualquier canal.
+
+Es el escalón hacia el universo de ~600 de B1: la misma forma (reconstruir,
+filtrar por admisión, deduplicar con banderas, publicar point-in-time) a una
+escala que ya cabe hoy.
+
+---
+
+## Caché de prompt: el corte, y por qué `cache_read` salía en 0 (2026-09-15)
+
+El smoke reportó `cache_read: 0` **y** `cache_write: 0` en los dos agentes de
+Anthropic, con `cache_control` viajando correctamente en el payload desde
+siempre. La causa no era la configuración:
+
+> **Por debajo del mínimo cacheable del modelo (1.024 tokens), el proveedor
+> IGNORA el marcador EN SILENCIO.** No escribe caché, no cobra de más, y no
+> avisa. Cero ahorro, cero error, cero pista.
+
+El system del SCAN medía ~330 tokens. El arreglo no fue inflar el prompt: fue
+poner cada cosa de su lado del corte.
+
+```
+system   → reglamento + "cómo leer cada campo"   (estable siempre)
+shared   → el contexto de mercado de la corrida  (idéntico para los siete)
+[BREAKPOINT — un solo cache_control, al final del bloque estable]
+user     → la fecha + el libro del agente + su plan anterior   (volátil)
+```
+
+**La regla de oro:** estable antes del último `cache_control`, volátil después.
+La directiva de fecha va SIEMPRE afuera; adentro invalidaría la caché todos los
+días y el ahorro sería exactamente cero.
+
+**Un solo breakpoint, al final.** El marcador cachea el prefijo ACUMULADO hasta
+donde está. El reglamento del SCAN marcado solo (~980 tokens) seguiría por
+debajo del piso; marcado junto con el contexto compartido, pasa. El system del
+DIVE (~1.940) pasa el piso solo, así que cachea todos los días y no solo dentro
+de una corrida.
+
+**Dos ahorros distintos, no uno:** el reglamento se reusa entre corridas y entre
+días; el contexto compartido hace que los siete agentes paguen **una** vez por
+el mismo buffet en lugar de siete.
+
+**Para que el silencio no vuelva:** `cachePrefixReport` mide el prefijo ANTES de
+llamar, el smoke lo publica y el runner lo journalea (`context.scan.cache_prefix`).
+Un prefijo corto no se bloquea — se **declara**. El smoke además separa las tres
+causas de un `cache_read: 0` que antes salían con la misma nota: prefijo corto ·
+fue el primero y por eso lee 0 (lo esperado) · pasa el piso pero ni escribió ni
+leyó (eso sí es un problema).
+
+**El candado del prefijo compartido:** nada que dependa del agente puede entrar
+al bloque cacheado. Si entrara, cada agente tendría un prefijo distinto y la
+caché no serviría para nada. Por eso el contexto compartido es **allowlist**
+(`SHARED_BUFFET_FIELDS`), no denylist: un campo de diagnóstico nuevo se queda
+afuera por default.
+
+---
+
+## Caché por día de los canales lentos (`insiders`)
+
+`_lib/arena-buffet-cache.js`
+
+El canal `insiders` le pega a `/api/stock-tracker?cat=insider`, que baja el feed
+Atom de Form 4 de SEC EDGAR y después inspecciona hasta 60 XML sueltos. Con la
+caché en memoria fría —o sea, en cada lambda nueva— son ~61 requests a un
+servidor que throttlea. El techo de 12s no alcanzaba y subirlo a 30s fue un
+torniquete: seguía costando 30 segundos de wall-clock y seguía cayéndose.
+
+La cura es no volver a pedirlo. Los Form 4 son un hecho del **día**: el mismo
+contenido para la corrida de las 14:00 y la de las 20:00. Una tabla en Neon con
+clave `(canal, día de mercado)` convierte 84 corridas del día (12 × 7 agentes)
+en **una** llamada a EDGAR.
+
+Tres cosas que esta caché NO hace, a propósito:
+
+- **No sirve rancio.** Una entrada de otro día no es un hit: se vuelve a pedir.
+  La clave es el día de **mercado** (ET), no UTC — a las 22:40 UTC de la
+  nocturna, UTC ya cambió de día pero el mercado no.
+- **No cachea vacíos.** Guardar "no había nada" convertiría un hipo de 30
+  segundos en un canal muerto hasta la medianoche.
+- **No tapa una caída.** Sin entrada de hoy y con la fuente caída, el canal sale
+  como no disponible con su error, igual que antes.
+
+Con Neon caído se degrada a pedirlo como antes: la caché acelera, no sustituye.
+`ARENA_BUFFET_DAY_CACHE` (default `insiders`) controla qué canales entran;
+`movers` y `earnings` NO están y no deben estar — cambian dentro del día, y
+cachearlos le daría al PM de la tarde el mercado de la mañana.
+
+---
+
+## RESET de libros (`/api/arena-reset`)
+
+El único endpoint del repo que cierra posiciones a **mercado** (la excepción
+declarada en `_lib/alpaca.js`) y el único que escribe `arena_state.baseline_*`.
+Lo dispara una persona con `ARENA_ADMIN_KEY`, nunca un cron ni un LLM.
+
+```bash
+# 1. PLAN — no toca nada. Siempre mirar esto primero.
+curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" "$BASE/api/arena-reset?dry=1" | jq
+
+# 2. EJECUTAR. Sin confirm=1 es dry run.
+curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" \
+  "$BASE/api/arena-reset?confirm=1&id=arena-t2-2026-09-15" | jq '{verdict, summary, warnings, accounts: [.accounts[] | {agent, flat, before: .before.position_count, after: .after.position_count, starting_drawdown_pct}]}'
+```
+
+Seis pasos: **pausa el vigilante** (en Neon, no una env var — apagar una env var
+pide redeploy, y un redeploy en medio de un aplanado es lo último que uno quiere
+tocar; la pausa vence sola) → **foto de antes** cuenta por cuenta → **cancela
+órdenes** → **liquida a mercado** → **verifica releyendo** → **re-basa y
+reactiva**.
+
+### El fix del pico, que es la mitad del trabajo
+
+Aplanar las cuentas sin re-basar el pico del breaker es el footgun: `max(equity)`
+arrastra el pico de ANTES del aplanado, un libro que vuelve a $100k desde un
+pico de $130k arranca en **−23% de drawdown**, y los siete quedan HALTED en su
+primera corrida.
+
+El corte por temporada arreglaba esto para el arranque declarado, pero salía de
+una **constante del registry**: un reset a mitad de temporada no tenía dónde
+anotarse. Ahora el corte es por agente y con fecha real:
+
+```
+corte efectivo = MAX(arranque de temporada, baseline del último reset)
+pico del breaker = MAX(máximo journaleado post-corte, equity de hoy, baseline)
+```
+
+Y llegó a la **red determinista**, que no lo tenía. Ese era el lado con dientes:
+la única pieza que no se puede apagar era la que seguía midiendo el drawdown
+contra un libro que ya no existía.
+
+### El otro lado del piso, que se avisa en vez de taparse
+
+Si el equity que queda tras liquidar está por DEBAJO del baseline declarado, el
+piso mete un drawdown de arranque real. No es un bug del piso — es el baseline
+diciendo la verdad sobre una cuenta que no vale lo que se declaró. Sale por
+cuenta en `starting_drawdown_pct` y en `warnings`, y se corrige con `&baseline=`
+o `ARENA_RESET_BASELINE_USD` sin deploy.
+
+> **Con el mercado cerrado** las ventas a mercado se **encolan** al próximo open
+> y no llenan. El baseline se escribe igual y el reporte lo dice; hay que volver
+> a correr el reset con el mercado abierto para confirmar que quedaron planas.
+> Es idempotente.
+
+Verificación en `docs/sql/arena-diagnostico-2026-09-15.sql` §3.
+
+---
+
 ## Piezas
 
 | Pieza | Archivo |
@@ -816,6 +1942,40 @@ ya conocidos, y `job=audit` descubre los nuevos a medida que aparezcan.
    → el self-fetch de la lambda a sus propios endpoints recibe **401** y los 4
    se marcan "no disponibles" (bug del 24-jul: 0 posiciones, 100% cash). El
    alias público no está protegido. Resolución en `resolveBaseUrl()`.
+
+### Env vars nuevas (2026-09-15)
+
+| Var | Default | Qué hace |
+|---|---|---|
+| `ARENA_ADMIN_KEY` | — | **Obligatoria** para `/api/arena-smoke` y `/api/arena-reset`. Sin ella los dos dan 503. |
+| `ARENA_RESET_BASELINE_USD` | `100000` | Baseline declarado de la temporada: denominador del return **y** piso del pico del breaker. |
+| `ARENA_RESET_WATCH_PAUSE_MIN` | `15` | Cuánto dura la pausa del vigilante durante el aplanado. Vence sola. |
+| `ARENA_CACHE_MIN_TOKENS` | `1024` | Mínimo cacheable del proveedor. Lo fija el proveedor, no nosotros — se corrige con env var, no con deploy. |
+| `ARENA_BUFFET_V15` | `1` | Freno de mano del universo del día (screener de Alpaca). `0` lo apaga sin deploy. |
+| `ARENA_BUFFET_V15_TARGET` | `100` | Cuántos candidatos ve el PM. |
+| `ARENA_BUFFET_DAY_CACHE` | `insiders` | Canales que se piden una vez por día y se leen de Neon. **No** poner `movers` ni `earnings`: cambian dentro del día. |
+| `FMP_API_KEY` | — | Constituyentes del S&P 500 / Nasdaq 100. Sin ella el universo cae a Neon → JSON del repo → `movers_only`. Nada se rompe. |
+| `ARENA_UNIVERSE_REFRESH_DAYS` | `7` | Cada cuánto se vuelve a pedir la composición de los índices. |
+| `ARENA_UNIVERSE_MOVERS_MAX` | `100` | Tope de nombres del día que se AGREGAN al universo (los que ya están en un índice no gastan cupo). |
+| `ARENA_BOARD` | `1` | Freno de mano del tablero (B2). `0` lo apaga sin deploy. |
+| `ARENA_BOARD_TOKEN_CAP` | `5000` | Techo DURO del tablero. El objetivo declarado son 3-4K; pasarse se journalea. |
+| `ARENA_TOOLS_MAX` | `8` | Llamadas a herramientas por ronda fija. Tope DURO del harness. |
+| `ARENA_TOOLS_MAX_TRIGGER` | `3` | Ídem en una corrida por disparador. |
+| `ARENA_TOOL_RESULT_TOKENS` | `1500` | Techo de cada resultado. El corte se declara adentro. |
+| `ARENA_TOOL_TURNS_MAX` | `10` | Tope de VUELTAS del loop (distinto del de llamadas). |
+| `ARENA_TOOL_LOOP_MS` | `120000` | Tope de TIEMPO del loop. El que de verdad manda. Ver B12. |
+| `ARENA_AGENT_DEADLINE_MS` | `270000` | Techo del trabajo completo de un agente. **Si se toca, tocar `vercel.json` también.** |
+| `ARENA_TOOLS` | `1` | Freno de mano de las herramientas. `0` vuelve al DIVE de una sola llamada. |
+| `ARENA_RAIL_MAX_LONG` / `_SHORT` | `0.30` / `0.15` | Rieles por nombre (B6). |
+| `ARENA_RAIL_MAX_GROSS` / `_SECTOR` / `_MAX_SHORT_GROSS` | `1.00` / `0.50` / `0.50` | Rieles de cartera. |
+| `ARENA_RAIL_MIN_POSITION` / `_MIN_SHORT_PRICE` | `0.02` / `10` | Mínimo por posición y precio mínimo de corto. |
+| `ARENA_RAIL_NO_TRADE_BAND` | `0.02` | Banda de no-negociación (2pp). |
+| `ARENA_SHORT_CATASTROPHIC_PCT` | `0.20` | Stop del corto (+20%, no +22%). |
+| `ARENA_SHORT_TRAILING_ARM` / `_GIVE_BACK` | `0.15` / `0.08` | Trailing del corto, con el pico invertido. |
+| `ARENA_DAILY_BUDGET_USD` | `30` | Presupuesto diario de la liga (B9). |
+| `ARENA_BUDGET_TIER2_MULT` | `1.5` | Múltiplo del escalón 2. |
+| `ARENA_TAIL_TOKEN_CAP` | `2000` | Techo de la cola NO cacheada (lente + orden aleatorizado). |
+
 
 ## Self-fetch del buffet: causa raíz 24-jul y observabilidad
 

@@ -109,6 +109,36 @@ export function cancelOrder(orderId, creds) {
   return alpacaFetch('/v2/orders/' + encodeURIComponent(orderId), { method: 'DELETE', creds });
 }
 
+// ─────────────────── APLANADO DE CUENTA (solo RESET) ───────────────────
+// LA EXCEPCIÓN A LA REGLA DE LA CASA, declarada acá y en un solo lugar.
+//
+// Todo lo que decide el Arena sale por `createLimitOrder`: límite, day, sin
+// flag que lo cambie (cicatriz Polymarket). Estas dos funciones NO son un
+// camino de decisión — son el APLANADO de una cuenta antes de arrancar una
+// temporada, y lo dispara una persona con ARENA_ADMIN_KEY, nunca un cron ni un
+// LLM. Alpaca cierra posiciones con orden de MERCADO en `DELETE /v2/positions`
+// y no ofrece una variante límite; un aplanado por límites sería N órdenes que
+// pueden no llenar, y una temporada que arranca con media cartera vieja
+// adentro es peor que un fill unos centavos peor.
+//
+// El candado que queda: estas funciones viven fuera del harness de decisión
+// (nadie en arena-run.js las importa) y hay un test que verifica que
+// `createLimitOrder` sigue siendo el único camino de escritura del runner.
+
+// Cancela TODAS las órdenes abiertas. Alpaca responde 207 con el detalle por
+// orden; el cliente devuelve ese array tal cual para poder confirmar una por
+// una en vez de reportar un "listo" que no se verificó.
+export function cancelAllOrders(creds) {
+  return alpacaFetch('/v2/orders', { method: 'DELETE', creds });
+}
+
+// Cierra TODAS las posiciones a mercado y, de paso, cancela las órdenes
+// abiertas (`cancel_orders=true`) para que una venta vieja no compita con el
+// aplanado. Devuelve el detalle por símbolo que manda Alpaca.
+export function closeAllPositions(creds, { cancelOrders = true } = {}) {
+  return alpacaFetch('/v2/positions?cancel_orders=' + (cancelOrders ? 'true' : 'false'), { method: 'DELETE', creds });
+}
+
 // ─────────────────── datos de mercado (Market Data API) ───────────────────
 // HOST DISTINTO del de trading: data.alpaca.markets, mismas keys. Lo usa el
 // VIGILANTE (api/arena-watch.js) para mirar precios intradía sin gastar un solo
@@ -214,6 +244,237 @@ export async function getAvgDailyVolume(symbols = [], { days = 20, today = null,
       if (!vols.length) continue;
       out[String(sym).toUpperCase()] = vols.reduce((a, b) => a + b, 0) / vols.length;
     }
+  }
+  return out;
+}
+
+// ─────────────────── SCREENER (Buffet v1.5) ───────────────────
+// Alpaca publica su propio screener en el host de datos: movers (gainers y
+// losers del día) y most-actives (por volumen o por número de trades). Son
+// listas YA RANKEADAS por el proveedor — nosotros no recalculamos nada.
+//
+// POR QUÉ ESTE CANAL Y NO SOLO /api/movers: el buffet traía movers de UNA
+// fuente, recortados a top-8 por lado. El screener de Alpaca devuelve hasta 50
+// por lado y los most-actives aparte, que es otra pregunta ("qué se está
+// negociando" ≠ "qué se movió"). Con los dos, el universo del día pasa de ~24
+// nombres a ~100 sin una llamada más por símbolo.
+//
+// SIN KEYS DE PAGO: estos endpoints responden con las mismas keys paper. El
+// `feed` no aplica acá (el ranking lo hace Alpaca sobre consolidado).
+const SCREENER_BASE = '/v1beta1/screener/stocks';
+
+// Tope de Alpaca por lado. Pedir más no falla, pero tampoco devuelve más.
+export const SCREENER_MAX_MOVERS = 50;
+export const SCREENER_MAX_ACTIVES = 100;
+
+// { gainers: [{symbol, price, change, percent_change}], losers: [...], last_updated }
+export async function getMovers({ top = SCREENER_MAX_MOVERS, creds } = {}) {
+  const n = Math.max(1, Math.min(SCREENER_MAX_MOVERS, Math.floor(top) || SCREENER_MAX_MOVERS));
+  const data = await alpacaDataFetch(`${SCREENER_BASE}/movers?top=${n}`, creds);
+  const norm = (list) => (Array.isArray(list) ? list : []).map((m) => ({
+    symbol: String(m.symbol || '').toUpperCase(),
+    price: Number(m.price),
+    change: Number(m.change),
+    percent_change: Number(m.percent_change),
+  })).filter((m) => m.symbol && Number.isFinite(m.price));
+  return {
+    gainers: norm(data && data.gainers),
+    losers: norm(data && data.losers),
+    last_updated: (data && data.last_updated) || null,
+  };
+}
+
+// { most_actives: [{symbol, volume, trade_count}], last_updated }
+// `by`: 'volume' (acciones negociadas) o 'trades' (número de operaciones). El
+// default es volumen: es el que se compara contra el promedio de 20 días para
+// el RVOL, así que es el que alimenta la misma pregunta.
+export async function getMostActives({ top = SCREENER_MAX_ACTIVES, by = 'volume', creds } = {}) {
+  const n = Math.max(1, Math.min(SCREENER_MAX_ACTIVES, Math.floor(top) || SCREENER_MAX_ACTIVES));
+  const modo = by === 'trades' ? 'trades' : 'volume';
+  const data = await alpacaDataFetch(`${SCREENER_BASE}/most-actives?by=${modo}&top=${n}`, creds);
+  const list = (data && (data.most_actives || data.mostActives)) || [];
+  return {
+    most_actives: (Array.isArray(list) ? list : []).map((m) => ({
+      symbol: String(m.symbol || '').toUpperCase(),
+      volume: Number(m.volume) || null,
+      trade_count: Number(m.trade_count) || null,
+    })).filter((m) => m.symbol),
+    by: modo,
+    last_updated: (data && data.last_updated) || null,
+  };
+}
+
+// ── PRECIO Y VOLUMEN EN DÓLARES, POR LOTES ──────────────────────────
+// Los dos datos que el filtro de admisión necesita por nombre, para ~600
+// nombres, en SEIS requests en vez de seiscientos.
+//
+// EL PROBLEMA QUE RESUELVE: `_lib/arena-admission.js` pedía precio y volumen a
+// Yahoo UNO POR UNO. Estaba bien dimensionado para lo que tenía enfrente —su
+// propio encabezado dice "~8 series de Yahoo por corrida"— pero el universo de
+// B1 le pone 600 nombres delante. A un request por nombre eso es media hora de
+// wall-clock contra una función de 300s.
+//
+// Alpaca sirve barras de hasta 100 símbolos por request, así que 600 nombres
+// son 6 requests. Es el mismo endpoint y el mismo lote que ya usa
+// getAvgDailyVolume: acá se devuelven las DOS cosas que la admisión mira.
+//
+// POINT-IN-TIME: la barra de HOY se excluye. El filtro decide con velas
+// CERRADAS — si entrara la viva, un nombre podría admitirse por el volumen del
+// día que se está operando, que es justo lo que no se puede usar.
+//
+// Devuelve { SYMBOL: { price, dollarVolume, sessions } }. Un símbolo sin barras
+// suficientes sale AUSENTE del mapa, nunca con ceros: la admisión distingue
+// "no califica" de "no hay datos", y un cero lo convertiría en lo primero.
+export async function getPriceAndDollarVolume(symbols = [], { creds, now = new Date(), days = 20 } = {}) {
+  const wanted = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
+  if (!wanted.length) return {};
+  const feed = alpacaDataFeed();
+  const hoy = now.toISOString().slice(0, 10);
+  // Se piden más días de los que se promedian: fines de semana y festivos
+  // hacen que N días de calendario sean menos de N sesiones.
+  const start = new Date(now.getTime() - (days + 15) * 86400000).toISOString().slice(0, 10);
+  const out = {};
+  for (const batch of chunk(wanted, DATA_CHUNK)) {
+    const data = await alpacaDataFetch(
+      `/v2/stocks/bars?symbols=${encodeURIComponent(batch.join(','))}&timeframe=1Day&start=${start}&limit=${(days + 15) * batch.length}&feed=${feed}`, creds);
+    for (const [sym, list] of Object.entries((data && data.bars) || {})) {
+      if (!Array.isArray(list) || !list.length) continue;
+      const cerradas = list.filter((b) => b && String(b.t || '').slice(0, 10) !== hoy).slice(-days);
+      if (!cerradas.length) continue;
+      const ultima = cerradas[cerradas.length - 1];
+      const price = Number(ultima.c);
+      if (!Number.isFinite(price) || price <= 0) continue;
+      const dvs = cerradas
+        .map((b) => (Number(b.c) || 0) * (Number(b.v) || 0))
+        .filter((x) => Number.isFinite(x) && x > 0);
+      out[String(sym).toUpperCase()] = {
+        price: +price.toFixed(4),
+        dollarVolume: dvs.length ? Math.round(dvs.reduce((a, b) => a + b, 0) / dvs.length) : null,
+        sessions: cerradas.length,
+      };
+    }
+  }
+  return out;
+}
+
+// ── MÁXIMOS Y MÍNIMOS DE 52 SEMANAS ─────────────────────────────────
+// Se calculan con barras SEMANALES, no diarias, y eso NO pierde precisión: el
+// high de una barra semanal ES el máximo de sus cinco días, así que el máximo
+// de 52 semanas sale exacto. Lo que cambia es el costo — 52 barras por símbolo
+// en vez de ~250. Con ~150 nombres eso es la diferencia entre una llamada que
+// cabe en el buffet y una que no.
+//
+// LA BARRA VIVA SE EXCLUYE (point-in-time). La semana en curso todavía se está
+// formando: incluirla haría que un nombre "marque nuevo máximo" contra un
+// máximo que incluye el precio de este momento, o sea contra sí mismo.
+// Devuelve { SYMBOL: { high_52w, low_52w, last, pct_from_high, pct_from_low, weeks } }.
+export async function getFiftyTwoWeek(symbols = [], { creds, now = new Date(), weeks = 52 } = {}) {
+  const wanted = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
+  if (!wanted.length) return {};
+  const feed = alpacaDataFeed();
+  const start = new Date(now.getTime() - (weeks + 2) * 7 * 86400000).toISOString().slice(0, 10);
+  const semanaViva = new Date(now.getTime() - ((now.getUTCDay() + 6) % 7) * 86400000).toISOString().slice(0, 10);
+  const out = {};
+  for (const batch of chunk(wanted, DATA_CHUNK)) {
+    const data = await alpacaDataFetch(
+      `/v2/stocks/bars?symbols=${encodeURIComponent(batch.join(','))}&timeframe=1Week&start=${start}&limit=${(weeks + 2) * batch.length}&feed=${feed}`, creds);
+    const bars = (data && data.bars) || {};
+    for (const [sym, list] of Object.entries(bars)) {
+      if (!Array.isArray(list) || !list.length) continue;
+      const cerradas = list.filter((b) => b && String(b.t || '').slice(0, 10) < semanaViva).slice(-weeks);
+      if (!cerradas.length) continue;
+      const highs = cerradas.map((b) => Number(b.h)).filter(Number.isFinite);
+      const lows = cerradas.map((b) => Number(b.l)).filter((v) => Number.isFinite(v) && v > 0);
+      if (!highs.length || !lows.length) continue;
+      const high = Math.max(...highs);
+      const low = Math.min(...lows);
+      // El último cierre COMPLETO, de la misma serie: comparar el máximo de
+      // barras cerradas contra un precio vivo mezclaría dos relojes.
+      const last = Number(cerradas[cerradas.length - 1].c);
+      if (!Number.isFinite(last) || last <= 0) continue;
+      out[String(sym).toUpperCase()] = {
+        high_52w: +high.toFixed(4), low_52w: +low.toFixed(4), last: +last.toFixed(4),
+        pct_from_high: +(((last - high) / high) * 100).toFixed(2),   // ≤ 0
+        pct_from_low: +(((last - low) / low) * 100).toFixed(2),      // ≥ 0
+        weeks: cerradas.length,
+      };
+    }
+  }
+  return out;
+}
+
+// ─────────────────── NOTICIAS (tablero B2 · herramientas B3) ───────────────────
+// Alpaca sirve el feed de Benzinga en el host de datos. Se usa ESTE y no
+// Finnhub para el tablero por una razón concreta: Alpaca devuelve las noticias
+// de UNA LISTA de símbolos en UNA llamada, y el tablero necesita los titulares
+// de ~600 nombres. Finnhub es por símbolo — 600 llamadas.
+//
+// Finnhub sigue siendo el respaldo POR TICKER (la herramienta `noticias` de B3),
+// donde la pregunta es otra y una llamada alcanza.
+//
+// `symbols` vacío = el feed general del mercado. El `limit` es de Alpaca y tope
+// 50 por página; acá NO se pagina a propósito — el tablero quiere los titulares
+// de hoy, no el archivo.
+// Tope de símbolos que caben en la URL sin que el servidor la rechace.
+export const NEWS_SYMBOL_CAP = 100;
+
+export async function getNews({ symbols = [], limit = 50, start = null, creds, includeContent = false } = {}) {
+  const params = new URLSearchParams();
+  const syms = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
+  // La URL tiene un largo máximo y ~600 símbolos no entran. Con más de
+  // NEWS_SYMBOL_CAP se pide el feed GENERAL y se filtra del lado nuestro: es
+  // preferible a mandar una URL que el servidor va a rechazar entera.
+  if (syms.length && syms.length <= NEWS_SYMBOL_CAP) params.set('symbols', syms.join(','));
+  params.set('limit', String(Math.max(1, Math.min(50, Math.floor(limit) || 50))));
+  params.set('include_content', includeContent ? 'true' : 'false');
+  params.set('exclude_contentless', 'true');
+  if (start) params.set('start', start);
+  const data = await alpacaDataFetch('/v1beta1/news?' + params.toString(), creds);
+  const list = (data && data.news) || [];
+  return (Array.isArray(list) ? list : []).map((n) => ({
+    id: n.id,
+    headline: String(n.headline || '').trim(),
+    summary: String(n.summary || '').trim(),
+    source: n.source || null,
+    created_at: n.created_at || n.updated_at || null,
+    symbols: (n.symbols || []).map((x) => String(x).toUpperCase()),
+    url: n.url || null,
+  })).filter((n) => n.headline);
+}
+
+
+// ── METADATA DE ACTIVO (shortable / easy-to-borrow) ──────────────────
+// R9 del reglamento de la T2 falla CERRADO: sin confirmación de que un nombre
+// es shortable Y easy-to-borrow, el corto no se abre. Ese dato vive en
+// /v2/assets/{symbol} del host de TRADING (no del de datos) y es por nombre:
+// no hay endpoint multi-símbolo que lo devuelva sin bajar el catálogo entero
+// (~11.000 activos), que es mucho más caro que pedir los pocos que importan.
+//
+// `easy_to_borrow` de Alpaca se recalcula una vez por día a la apertura, así
+// que pedirlo más de una vez por día no trae nada nuevo — la caché por día vive
+// un nivel más arriba (_lib/arena-meta.js).
+//
+// Un símbolo que no existe o que falla NO entra al mapa: R9 lo va a leer como
+// "sin dato" y va a rechazar el corto, que es exactamente lo que tiene que
+// pasar. Un default optimista acá sería un permiso inventado.
+export async function getAssets(symbols = [], { creds, concurrency = 6 } = {}) {
+  const wanted = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
+  const out = {};
+  for (let i = 0; i < wanted.length; i += concurrency) {
+    await Promise.all(wanted.slice(i, i + concurrency).map(async (sym) => {
+      try {
+        const a = await alpacaFetch('/v2/assets/' + encodeURIComponent(sym), { creds });
+        if (!a || !a.symbol) return;
+        out[String(a.symbol).toUpperCase()] = {
+          shortable: a.shortable === true,
+          easy_to_borrow: a.easy_to_borrow === true,
+          tradable: a.tradable === true,
+          fractionable: a.fractionable === true,
+          exchange: a.exchange || null,
+          status: a.status || null,
+        };
+      } catch (_) { /* ausente = sin dato = R9 rechaza. Ver el encabezado. */ }
+    }));
   }
   return out;
 }

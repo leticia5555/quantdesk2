@@ -433,6 +433,63 @@ export function floorReviewDue({ phase, agents = [], runsToday = {}, floorDone =
     .map((a) => a.id);
 }
 
+// ── B4 · LAS TRES RONDAS FIJAS ───────────────────────────────────────
+// Apertura+30 · 12:00 ET · cierre−30. Los siete deciden, hayan disparado o no.
+//
+// ── POR QUÉ VIVEN EN EL VIGILANTE Y NO EN TRES CRONS ─────────────────
+// Tres crons de Vercel serían tres horas UTC fijas, y el horario del mercado no
+// es fijo: cambia con el horario de verano. Un cron a las 14:00 UTC es la
+// apertura+30 en EDT y la apertura+90 en EST. Peor: un festivo, un cierre
+// anticipado (media sesión) o una apertura retrasada dejarían los tres crons
+// apuntando a momentos que no existen esa sesión.
+//
+// El vigilante ya corre cada 5 minutos Y YA SABE en qué minuto de la sesión
+// está (`sessionPhase`, que sale del calendario REAL de Alpaca). Las rondas se
+// derivan de ahí: "cuando lleven 30 minutos de sesión", no "a las 14:00 UTC".
+// Con media sesión el cierre−30 cae donde tiene que caer, sin tocar nada.
+//
+// ── LA VENTANA, Y POR QUÉ NO ES UN INSTANTE ──────────────────────────
+// El tick es de 5 minutos, así que "a los 30 minutos exactos" casi nunca cae en
+// un tick. La ronda dispara en el PRIMER tick que pasa el umbral, y la
+// idempotencia la da `roundsDone` (una ronda por tipo por día): sin eso, los
+// seis ticks que quedan de esa media hora dispararían seis rondas.
+export const FIXED_ROUNDS = [
+  { id: 'open_30', after_open_min: 30, label: 'apertura + 30' },
+  { id: 'midday', at_eastern_min: 12 * 60, label: '12:00 ET' },
+  { id: 'close_30', before_close_min: 30, label: 'cierre − 30' },
+];
+
+// Qué ronda fija toca en ESTE tick (a lo sumo una). `done` son las ya corridas
+// hoy, por id.
+export function fixedRoundDue({ phase, easternMinutes: mins = null, done = new Set() } = {}) {
+  if (!phase || !phase.open) return null;
+  for (const r of FIXED_ROUNDS) {
+    if (done.has(r.id)) continue;
+    if (r.after_open_min != null) {
+      if (phase.minutes_since_open != null && phase.minutes_since_open >= r.after_open_min) return r;
+    } else if (r.before_close_min != null) {
+      if (phase.minutes_to_close != null && phase.minutes_to_close <= r.before_close_min) return r;
+    } else if (r.at_eastern_min != null) {
+      if (mins != null && mins >= r.at_eastern_min) return r;
+    }
+  }
+  return null;
+}
+
+// ── LA RED DE RIESGO, AL PRIMER TICK ─────────────────────────────────
+// Antes corría en el tick de la apertura+30, junto con la revisión de piso.
+// Eso son 30 minutos de sesión en los que un stop que ya disparó con el cierre
+// de ayer no se ejecutaba — y un gap de apertura es exactamente cuando más
+// falta hace. Ahora corre en el PRIMER tick de la sesión.
+//
+// No cambia QUÉ decide (sigue decidiendo con cierres COMPLETOS, una vez al
+// día): cambia CUÁNDO se ejecuta lo ya decidido. Moverla a decidir con precios
+// intradía la volvería un stop de tick, que es otro producto.
+export function riskNetDue({ phase, done = false } = {}) {
+  if (!phase || !phase.open || done) return false;
+  return true;   // el primer tick con la sesión abierta
+}
+
 // ── MARKETABLE LIMIT intradía (cadencia #5) ────────────────────────────────
 // La corrida por disparador ejecuta EN EL MOMENTO, no en la apertura siguiente:
 // una decisión tomada por un movimiento de las 10:15 que se ejecuta al día
@@ -527,7 +584,36 @@ export const MODEL_PRICES = {
 // ese mismo techo. El peor caso de salida se duplicó por el techo, y el precio
 // de salida de Fable 5.1 es 10× el de Haiku: el peor caso diario de los dos
 // agentes de Anthropic sube ~20×. Que se vea en el número, no en una nota.
-export const WORST_CASE_TOKENS = { dive_in: 5800, dive_out: ARENA_MAX_TOKENS, headline_in: 800, headline_out: 100 };
+//
+// ── CORRECCIÓN (B3/B4): ESTE NÚMERO SE QUEDÓ CORTO ~4× ───────────────
+// Se escribió cuando una corrida eran DOS llamadas al LLM. Desde B3 el DIVE es
+// un LOOP: el modelo pide herramientas y el harness responde, hasta 8 veces. Y
+// desde B4 hay TRES RONDAS FIJAS por día además de las corridas por disparador.
+//
+// Lo que más pesa no es el número de llamadas: es que EL PROMPT CRECE. Cada
+// resultado de herramienta (hasta 1.500 tokens) se queda en la conversación y
+// vuelve a viajar en TODAS las vueltas siguientes. Con 8 herramientas el input
+// de la última vuelta es el de la primera más ~8.000 tokens, y la suma sobre el
+// loop es cuadrática, no lineal. Un estimador que multiplicaba
+// `corridas × tokens_por_corrida` no podía verlo.
+//
+// El prefijo cacheado descuenta parte de eso (a 1/40 del precio de entrada en
+// Fable 5.1), y por eso viaja acá: sin restarlo, el número se pasa para el otro
+// lado.
+export const WORST_CASE_TOKENS = {
+  scan_in: 4200,              // system + shared + buffet v1.5 + libro
+  scan_out: 1200,
+  dive_in: 5800,              // system + libro + meta + compromisos + deep dive
+  dive_out: ARENA_MAX_TOKENS, // techo: una respuesta más larga se CORTA, no cuesta más
+  headline_in: 800, headline_out: 100,
+  // El prefijo que de verdad se cachea (medido por `cachePrefixReport`: por
+  // debajo de 1.024 tokens el proveedor ignora el marcador en silencio).
+  cached_prefix: 1940,
+  // Resultado de una herramienta. El tope duro son 1.500 (RESULT_TOKEN_CAP).
+  tool_result: 1000,
+  // El turno que SOLO pide herramientas: corto por construcción.
+  tool_turn_out: 250,
+};
 
 export function priceForAgent(agent) {
   if (!agent) return null;
@@ -535,19 +621,70 @@ export function priceForAgent(agent) {
   return MODEL_PRICES[agent.model] || null;
 }
 
-// Costo del peor caso: CADA agente activo quema sus 12 corridas del día.
+// UNA FASE con loop de herramientas, contando el crecimiento del prompt.
+// Devuelve tokens, separando lo que entra FRESCO de lo que entra por caché —
+// la diferencia es de 40× en el precio de entrada de Fable 5.1, así que
+// mezclarlos daría un número que no sirve para presupuestar.
+export function faseTokens({ base, tools = 0, outFinal, cached = 0, tokens = WORST_CASE_TOKENS }) {
+  let inFresh = 0, inCached = 0, out = 0;
+  for (let k = 0; k <= tools; k++) {
+    // En la vuelta k ya viajaron k resultados de herramienta.
+    const total = base + k * tokens.tool_result;
+    const cacheHit = Math.min(cached, total);
+    inCached += cacheHit;
+    inFresh += total - cacheHit;
+    out += (k < tools ? tokens.tool_turn_out : outFinal);
+  }
+  return { inFresh, inCached, out, calls: tools + 1 };
+}
+
+const sumaFases = (...fs) => fs.reduce((a, b) => ({
+  inFresh: a.inFresh + b.inFresh, inCached: a.inCached + b.inCached,
+  out: a.out + b.out, calls: a.calls + b.calls,
+}), { inFresh: 0, inCached: 0, out: 0, calls: 0 });
+
+// El día de UN agente, en tokens. `rounds` son las rondas fijas (scan + dive
+// completo, con el buffet); `triggered` son las corridas por disparador, que se
+// SALTAN el scan porque el disparador ya definió el slate.
+export function diaTokens({
+  rounds = FIXED_ROUNDS.length, roundTools = 8, triggered = 0, triggeredTools = 3,
+  outFinal = null, tokens = WORST_CASE_TOKENS,
+} = {}) {
+  const out = outFinal ?? tokens.dive_out;
+  const c = tokens.cached_prefix;
+  const partes = [];
+  for (let i = 0; i < rounds; i++) {
+    partes.push(faseTokens({ base: tokens.scan_in, tools: 0, outFinal: tokens.scan_out, cached: c, tokens }));
+    partes.push(faseTokens({ base: tokens.dive_in, tools: roundTools, outFinal: out, cached: c, tokens }));
+    partes.push(faseTokens({ base: tokens.headline_in, tools: 0, outFinal: tokens.headline_out, cached: 0, tokens }));
+  }
+  for (let i = 0; i < triggered; i++) {
+    partes.push(faseTokens({ base: tokens.dive_in, tools: triggeredTools, outFinal: out, cached: c, tokens }));
+    partes.push(faseTokens({ base: tokens.headline_in, tools: 0, outFinal: tokens.headline_out, cached: 0, tokens }));
+  }
+  return sumaFases(...partes);
+}
+
+// Costo del peor caso: los tres rondas fijas con las 8 herramientas MÁS las 12
+// corridas por disparador del tope diario, y toda respuesta en su techo.
 // Devuelve { per_agent:[...], daily_usd, monthly_usd, assumptions }.
 export function estimateWorstCaseCost(agents = [], rules = WATCH_RULES, tokens = WORST_CASE_TOKENS) {
   const runs = rules.max_runs_per_agent_day;
-  const tokIn = tokens.dive_in + tokens.headline_in;
-  const tokOut = tokens.dive_out + tokens.headline_out;
+  const t = diaTokens({ triggered: runs, tokens });
   const per_agent = agents.map((a) => {
     const price = priceForAgent(a);
-    const usd = price ? runs * ((tokIn / 1e6) * price.in + (tokOut / 1e6) * price.out) : null;
+    // El precio de la entrada CACHEADA cuando existe; si el proveedor no lo
+    // publica aparte, la entrada cacheada se cobra como entrada normal.
+    const cacheIn = price ? (price.cache_read != null ? price.cache_read : price.in) : null;
+    const usd = price
+      ? (t.inFresh / 1e6) * price.in + (t.inCached / 1e6) * cacheIn + (t.out / 1e6) * price.out
+      : null;
     return {
       id: a.id, name: a.name, model: a.model,
       price_per_mtok: price,
       runs_per_day: runs,
+      llm_calls_per_day: t.calls,
+      tokens_per_day: { input_fresh: t.inFresh, input_cached: t.inCached, output: t.out },
       // null honesto si no tenemos precio de lista de ese slug: mejor un hueco
       // nombrado que un número inventado que alguien presupueste.
       usd_per_day: usd == null ? null : +usd.toFixed(4),
@@ -570,10 +707,15 @@ export function estimateWorstCaseCost(agents = [], rules = WATCH_RULES, tokens =
     total_agents: per_agent.length,
     ...(unpriced.length ? { partial_note: `daily_usd cubre ${per_agent.length - unpriced.length} de ${per_agent.length} agentes. Faltan los precios de: ${unpriced.join(', ')} — los resuelve /api/arena-smoke contra el catálogo de OpenRouter.` } : {}),
     assumptions: {
-      runs_per_agent_per_day: runs,
-      tokens_per_run: { input: tokIn, output: tokOut },
-      note: 'Peor caso ABSOLUTO: los 7 agentes queman sus 12 corridas todos los días y toda respuesta llega al techo de tokens. Un día normal son 1-3 corridas por agente.',
-      llm_calls_per_run: 2,
+      fixed_rounds_per_day: FIXED_ROUNDS.length,
+      triggered_runs_per_agent_per_day: runs,
+      llm_calls_per_agent_per_day: t.calls,
+      tokens_per_agent_per_day: { input_fresh: t.inFresh, input_cached: t.inCached, output: t.out },
+      tools_per_fixed_round: 8,
+      tools_per_triggered_run: 3,
+      note: 'Peor caso ABSOLUTO: los 7 agentes corren las 3 rondas fijas con las 8 herramientas Y queman sus 12 corridas por disparador, y toda respuesta llega al techo. Un día normal son 3 rondas + 1-3 disparadores por agente, con 3-4 herramientas: alrededor de un cuarto de este número.',
+      prompt_growth: 'El costo NO es lineal en las llamadas: cada resultado de herramienta se queda en la conversación y vuelve a viajar en todas las vueltas siguientes. La suma sobre el loop es cuadrática.',
+      breaker: 'Si este número pasa ARENA_DAILY_BUDGET_USD, el breaker de B9 aprieta a mitad de día (8→3 herramientas y effort low) en vez de dejarlo llegar.',
       watchdog_llm_calls: 0,
     },
   };

@@ -36,7 +36,7 @@ process.env.DATABASE_URL = 'postgres://u:p@ep-x-1.us-east-2.aws.neon.tech/db';
 const SECRET = 's3cret-cron';
 process.env.CRON_SECRET = SECRET;
 
-const { buildScanUserPrompt } = await import('../api/arena-run.js');
+const { buildScanUserPrompt, buildSharedContext } = await import('../api/arena-run.js');
 const { default: handler } = await import('../api/arena-audit.js');
 const { frasesConSimbolo, parsePct, jsonAfterMarker, BUFFET_QUALITY_DEPLOY } = await import('../api/_lib/arena-audit.js');
 
@@ -73,6 +73,21 @@ function scanPrompt({ buffet, positions }) {
   });
 }
 
+// Desde el fix de caché del 2026-09-15 el buffet NO viaja en el turno del
+// usuario: viaja en `prompt.shared`, el prefijo cacheado que comparten los
+// siete agentes de la corrida. El fixture refleja la forma REAL.
+function scanPromptBlock({ buffet, positions }) {
+  return { system: 'SCOUT', shared: buildSharedContext(buffet), user: scanPrompt({ buffet, positions }) };
+}
+
+// La forma VIEJA (buffet dentro del turno del usuario). Las filas anteriores al
+// fix siguen en el journal para siempre y la auditoría tiene que poder leerlas:
+// si solo mirara el lugar nuevo, toda la historia previa saldría con
+// `reconstruido: false`, indistinguible de una corrida por evento.
+function scanPromptBlockLegado({ buffet, positions }) {
+  return { system: 'SCOUT', user: [scanPrompt({ buffet, positions }), buildSharedContext(buffet)].join('\n') };
+}
+
 const auditoria = (plan, promptText) => {
   // Forma del detector #93 tal como la journalea prose-audit.js.
   const tokens = [{ token: '-2.14%', value: -2.14, matched: false, nearest: 2.9, delta: 0.76 },
@@ -98,7 +113,7 @@ const FILAS = [
       unavailable: [], fetch_errors: {},
       risk: { peak: 101000, drawdown: 0.0099, stage: 'none', approved: [], discarded: [] },
       scan: {
-        prompt: { system: 'SCOUT', user: scanPrompt({ buffet: buffetLleno, positions: [pos('MU', -0.062), pos('AAPL', 0.03)] }) },
+        prompt: scanPromptBlock({ buffet: buffetLleno, positions: [pos('MU', -0.062), pos('AAPL', 0.03)] }),
         thesis: 'LYFT y MU se movieron fuerte; KO llega del screener de valor.',
         candidates: ['LYFT', 'MU', 'KO'],
         floor: { applied: true, reserved: ['HD'], reason: 'floor_applied', floor: 2 },
@@ -119,7 +134,7 @@ const FILAS = [
       unavailable: ['earnings'], fetch_errors: { earnings: 'HTTP 502' },
       risk: { peak: 101000, drawdown: 0.0148, stage: 'none', approved: [], discarded: [] },
       scan: {
-        prompt: { system: 'SCOUT', user: scanPrompt({ buffet: buffetParcial, positions: [pos('MU', -0.071), pos('AAPL', 0.04)] }) },
+        prompt: scanPromptBlock({ buffet: buffetParcial, positions: [pos('MU', -0.071), pos('AAPL', 0.04)] }),
         thesis: 'Cinco nombres con movimiento real.',
         candidates: ['LYFT', 'MU', 'KO', 'HD', 'NVDA'],
         floor: { applied: false, reserved: [], reason: 'screener_empty', floor: 2 },
@@ -145,7 +160,7 @@ const FILAS = [
       unavailable: [], fetch_errors: {},
       risk: { peak: 101000, drawdown: 0.0198, stage: 'none', approved: [], discarded: [] },
       scan: {
-        prompt: { system: 'SCOUT', user: scanPrompt({ buffet: buffetLleno, positions: [pos('MU', -0.083), pos('AAPL', 0.05)] }) },
+        prompt: scanPromptBlockLegado({ buffet: buffetLleno, positions: [pos('MU', -0.083), pos('AAPL', 0.05)] }),
         thesis: 'LYFT corrigió; MU sigue en el libro.',
         candidates: ['LYFT', 'MU'],
         floor: { applied: false, reserved: [], reason: 'scout_met_floor', floor: 2 },
@@ -258,9 +273,18 @@ console.log('arena-audit: reconstrucción por corrida (JSON)');
   ok(a.corridas.map((c) => c.fecha).join(',') === '2026-08-05,2026-08-07,2026-08-13', 'ordenadas por fecha', a.corridas.map((c) => c.fecha).join(','));
   ok(a.corridas[2].filas.length === 2 && a.corridas[2].filas[1].tipo === 'red_de_riesgo', 'el día con red de riesgo trae 2 filas', JSON.stringify(a.corridas[2].filas.map((f) => f.tipo)));
 
+  // CANDADO DE COMPATIBILIDAD: la corrida 3 del fixture journalea el buffet con
+  // la forma VIEJA (dentro de prompt.user). La auditoría tiene que reconstruirla
+  // igual — las filas anteriores al fix de caché siguen en el journal para
+  // siempre, y leer solo el lugar nuevo las dejaría todas en `reconstruido:false`,
+  // que es indistinguible de una corrida por evento.
+  ok(a.corridas[2].filas[0].buffet.reconstruido === true,
+    'una fila con el buffet en la forma VIEJA (prompt.user) se sigue reconstruyendo',
+    JSON.stringify(a.corridas[2].filas[0].buffet.canales && a.corridas[2].filas[0].buffet.canales.movers));
+
   const f1 = a.corridas[0].filas[0];
   const c = f1.buffet.canales;
-  ok(f1.buffet.reconstruido === true, 'el buffet se reconstruye del prompt del scan');
+  ok(f1.buffet.reconstruido === true, 'el buffet se reconstruye del prefijo cacheado del scan (prompt.shared)');
   ok(c.movers.llego && c.movers.items === 18, 'movers: llegó con 18 ítems reales', JSON.stringify(c.movers));
   ok(c.movers.detalle.gainers === 5 && c.movers.detalle.losers === 5 && c.movers.detalle.actives === 8, 'movers: desglose gainers/losers/actives', JSON.stringify(c.movers.detalle));
   ok(c.earnings.llego && c.earnings.items === 12, 'earnings: 12 ítems', JSON.stringify(c.earnings));
