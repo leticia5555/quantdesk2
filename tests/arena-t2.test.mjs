@@ -158,8 +158,14 @@ ok(/OPEN COMMITMENTS/.test(user) && /2026-09-08:d#1/.test(user) && /"overdue":tr
   'los compromisos abiertos vuelven con su id, su edad y si están vencidos (#1)');
 ok(/MUST return a commitment_updates entry for EVERY id/.test(user),
   'y con la obligación explícita de pronunciarse sobre cada uno');
-ok(/RATIO SANITY/.test(user) && /POSIBLE ARTEFACTO CONTABLE/.test(user),
+// La REGLA ("RATIO SANITY") se mudó al system con el fix de caché —es estática,
+// igual para los siete y para todas las corridas—; la BANDERA del número
+// concreto sigue en el turno del usuario, que es donde viaja el dato del día.
+// Las dos tienen que llegar, y cada una de su lado del corte.
+const sysT2 = buildDiveSystemPrompt('Claude PM');
+ok(/RATIO SANITY/.test(sysT2) && /POSIBLE ARTEFACTO CONTABLE/.test(user),
   'la bandera de artefacto contable llega al prompt junto al número marcado (#6)');
+ok(!/RATIO SANITY/.test(user), 'y la regla NO se duplica en el turno volátil: se paga una vez, del lado cacheado');
 ok(/Trading more is not the objective/.test(user), 'el cierre del prompt repite el objetivo: decidir y recordar, no operar más');
 
 // Corrida por evento: el encuadre cambia y se prohíbe abrir riesgo nuevo.

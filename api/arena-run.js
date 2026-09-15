@@ -84,17 +84,19 @@ import { auditPlanPercentages } from './_lib/prose-audit.js';
 import { relativeDayLabel } from './_lib/ai-guard.js';
 import { beat } from './_lib/heartbeat.js';
 import { readScreenerRows } from './_lib/screener-db.js';
+// Caché POR DÍA de los canales cuyo contenido es un hecho del día (insiders).
+import { cachedDayFetch } from './_lib/arena-buffet-cache.js';
 // A4c: el filtro de admisión del universo, UNO para todos los canales.
 import { ADMISSION, resolveAdmission, partitionByAdmission } from './_lib/arena-admission.js';
 import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
 // LIGA multi-modelo: el registry (quién compite, con qué modelo/cuenta/persona)
 // y el dispatch de proveedor (Anthropic directo vs OpenRouter, forma normalizada).
-import { callArenaLLM, providerKey, effectiveParams, sameParams, withDeadline } from './_lib/arena-model.js';
+import { callArenaLLM, providerKey, effectiveParams, sameParams, withDeadline, cachePrefixReport } from './_lib/arena-model.js';
 // TITULAR de la corrida (voz del arquetipo). Llamada APARTE y POSTERIOR: el
 // arquetipo NUNCA entra al prompt que decide — ver el candado del control en el
 // encabezado de _lib/arena-voice.js.
 import { generateHeadline } from './_lib/arena-voice.js';
-import { ARENA_AGENTS, ARENA_SEASON, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, ARENA_AGENT_DEADLINE_MS, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, modelSlugResolved, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
+import { ARENA_AGENTS, ARENA_SEASON, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, ARENA_AGENT_DEADLINE_MS, ANTHROPIC_CACHE_MIN_TOKENS, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, modelSlugResolved, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
 // CADENCIA POR EVENTO: el corte de fecha y las constantes del vigilante.
 // El runner solo necesita saber CUÁNDO deja de correr el cron nocturno y qué
 // dice el reglamento nuevo; la lógica de disparadores vive en su módulo.
@@ -186,6 +188,58 @@ export const MAX_CANDIDATES = 5;
 // dos métricas de atribución.
 export const SCREENER_FLOOR = 2;
 
+// ── EL PREFIJO CACHEABLE (fix del smoke del 2026-09-15) ──────────────
+// El smoke reportó `cache_read: 0` Y `cache_write: 0` en los dos agentes de
+// Anthropic. No era que la caché estuviera mal configurada — el payload manda
+// `cache_control` desde siempre (ver buildAnthropicPayload). Era que el bloque
+// marcado NO LLEGABA AL MÍNIMO CACHEABLE: el system del SCAN medía ~330 tokens
+// contra un piso de 1.024. Por debajo del piso el proveedor ignora el marcador
+// en silencio: no escribe caché, no cobra de más, y no avisa. Cero ahorro, cero
+// error, cero pista.
+//
+// El arreglo NO es inflar el prompt: es PONER CADA COSA DE SU LADO DEL CORTE.
+// Estos bloques —el reglamento, cómo leer cada campo, el formato de salida— son
+// BYTE-IDÉNTICOS para los siete agentes y no cambian entre corridas. Estaban en
+// el turno del USUARIO, o sea del lado volátil, viajando enteros y a precio
+// completo en cada una de las ~12 corridas diarias × 7 agentes. Del lado
+// estable se escriben una vez y se leen ~10× más barato.
+//
+// LA REGLA DE ORO, y el orden del prompt que sale de ella:
+//     system (reglamento + cómo leer) → [BREAKPOINT] → fecha + libro + buffet
+// Estable antes del último `cache_control`, volátil después. Al revés —la fecha
+// o el libro adentro del bloque marcado— la caché se invalida cada día o cada
+// agente, y el ahorro vuelve a ser cero.
+//
+// El piso del proveedor vive en el registry (_lib/arena-registry.js) porque
+// _lib/arena-model.js también lo necesita y definirlo acá crearía un ciclo. Se
+// re-exporta para quien lo importe desde el runner.
+export { ANTHROPIC_CACHE_MIN_TOKENS };
+
+// Estimador de tokens. ~4 chars por token en inglés — deliberadamente tosco:
+// sirve para saber si un bloque está CERCA del piso, no para facturar. El
+// número que manda siempre es el `usage` del proveedor, y por eso el smoke
+// reporta los dos al lado (`tokens_est` y `cache.write`): si divergen mucho, el
+// que está mal es el estimador, no la caché.
+export const estimateTokens = (s) => Math.ceil(String(s || '').length / 4);
+
+// Los bloques ESTABLES del contexto, compartidos por las dos fases. Viven acá,
+// juntos y nombrados, por dos razones: (a) son lo que se movió al prefijo
+// cacheado y tiene que ser fácil ver que ninguno trae un dato del día; (b) un
+// test los recorre para verificar justo eso.
+export const STABLE_BLOCKS = {
+  equity: 'EQUITY — `equity_total_incl_cash` is the TOTAL value of the book: your positions PLUS your cash. `cash_included_in_equity` is the part of that same total that is not invested — it is NOT an extra amount on top. Do not add them together, and size positions as a fraction of the total.',
+  earnings_timing: 'EARNINGS TIMING — each entry in `earnings_this_week` carries `when`, the distance from today ALREADY COMPUTED for you ("in 2 days (Wed Aug 26, AMC)", "today (Mon Aug 24, BMO)"). Use that label as-is when you mention a report; do not re-derive it from `date`, and never call a report scheduled for a later date "today" or "tonight". BMO = before the market opens that day, AMC = after it closes.',
+  already_reported: 'ALREADY REPORTED — `recently_reported` holds companies whose number is ALREADY OUT (within the last 2 sessions), with the actual EPS and the surprise vs estimate already computed. These are here on purpose: if a previous plan of yours was waiting on one of these reports, the wait is over — that name is worth a deep-dive so you can close the loop instead of leaving the thesis hanging.',
+  position_history_scan: 'POSITION HISTORY — each holding carries `days_in_position`, `peak_since_entry`, `from_peak_pct`, `trailing_stop` and `time_stop`, all already computed. A holding whose `time_stop.due` is true, or that is far below its peak, is a legitimate deep-dive candidate: you will have to state hold/trim/exit for every position later, and this is the step where you buy the research to do it well.',
+  position_history_dive: 'POSITION HISTORY — each holding carries numbers that are ALREADY COMPUTED for you: `days_in_position` (calendar days since this position was opened; null = it predates the journal and could not be reconstructed — say so rather than guessing), `peak_since_entry` (highest completed close since entry, floored at your cost), `from_peak_pct` (how far below that peak it trades now), `trailing_stop` (armed and its sell level, or the level at which it would arm) and `time_stop` ({days, limit, due}). Quote these as given; do NOT recompute or invent them.',
+  notes: 'NOTES: null fields mean the datum was unavailable (do not guess it). Analyst price targets are NOT provided; use the recommendation buy/hold/sell split as the rating signal. marketCapM is in millions USD.',
+  ratio_sanity: 'RATIO SANITY — a candidate may carry `fundamentals_quality`, flagging ratios outside any plausible range (a P/E in the hundreds, a negative debt/equity, a margin above 100%). Those numbers are almost always an accounting artifact — a one-off charge or negative book equity — not a description of the business. If a ratio is flagged, either leave it out of your reasoning or say explicitly that it may be an artifact. Never build a thesis on a flagged ratio as if it were a clean fundamental.',
+  earnings_out: 'EARNINGS ALREADY OUT — a candidate whose `earnings` carries `reported: true` has ALREADY reported (with `sessions_since_report`, the actual EPS and the surprise vs estimate, all given to you). If you were waiting on that number, the wait is over: close the loop in this run rather than deferring it again.',
+  news_recency: 'NEWS RECENCY — each news item carries a `date` (YYYY-MM-DD). Before you describe any headline, compare its date to today\'s date (given in the system prompt): state how long ago it happened ("N days ago", the weekday) and reserve "today" for a date that equals today. A headline dated before today is NOT today\'s news — do not narrate a report from several days ago as if it broke today.',
+  earnings_timing_dive: 'EARNINGS TIMING — a candidate flagged by the earnings channel carries `earnings: {date, time, when}`, where `when` is the distance from today ALREADY COMPUTED for you ("in 2 days (Wed Aug 26, AMC)", "tomorrow (Tue Aug 25, BMO)"). Quote that label as-is; do not re-derive it from `date`, and never describe a report scheduled for a later date as happening "today" or "tonight" — if your plan holds cash for a post-earnings dislocation, say which day the catalyst actually lands on. BMO = before that day\'s open, AMC = after that day\'s close. A candidate WITHOUT an `earnings` field has no report date in your data: do not assert one from memory.',
+  figures: 'FIGURES — when your plan cites a number (a %, a price, a P&L), use ONLY the figures given to you here or in the PORTFOLIO above, verbatim. Each holding carries `pnl_since_entry_pct`, already formatted ("+6.1%"): that is profit/loss SINCE YOUR ENTRY, not today\'s price move — quote it as-is if you mention it. Do NOT compute, rescale, round, or invent percentages you were not given.',
+};
+
 // ── SCAN (fase 1): el SCOUT filtra el buffet a ≤5 tickers a investigar. ──
 // No decide órdenes: solo nombra candidatos. El schema es contrato.
 export function buildScanSystemPrompt() {
@@ -198,8 +252,16 @@ RULES:
 - At most ${MAX_CANDIDATES} candidates. Fewer is fine. An EMPTY list is valid and correct when nothing today warrants research — do not pad it.
 - Only pick tickers grounded in the context or the portfolio below. Do not invent tickers or prices.
 
+HOW TO READ WHAT YOU ARE GIVEN (these fields are pre-computed for you — quote them, do not re-derive them):
+${STABLE_BLOCKS.equity}
+${STABLE_BLOCKS.earnings_timing}
+${STABLE_BLOCKS.already_reported}
+${STABLE_BLOCKS.position_history_scan}
+Sections listed in "unavailable" failed to load today — do not guess their content.
+
 OUTPUT: respond with ONE JSON object and NOTHING else (no markdown fences, no prose outside JSON):
-{"scan_thesis": "<why these tickers, or why none, 1-4 sentences>", "candidates": ["TICKER", ...]}`;
+{"scan_thesis": "<why these tickers, or why none, 1-4 sentences>", "candidates": ["TICKER", ...]}
+Pick up to ${MAX_CANDIDATES} tickers worth a deep-dive, or none. ONE JSON object, nothing else.`;
 }
 
 // ── DIVE (fase 2): las reglas del PM. Mismo contrato que el v1 single-call,
@@ -227,6 +289,17 @@ MANDATORY, EVERY RUN:
 1. positions_review — ONE entry per position currently in the portfolio: stance "hold", "trim" or "exit", plus a reason that cites the numbers you were given (days in position, P&L since entry, distance from peak). A position you do not mention counts as a position you forgot.
 2. commitment_updates — ONE entry per open commitment listed in the context, using its exact id: "cumplido" (you did it, or the condition resolved), "vigente" (still waiting — say what you are still waiting for), or "cancelado" (you are dropping it — say why).
 3. commitments — anything you promise in this plan ("I will revisit X after earnings", "holding cash for Y") goes here as a structured item so it comes back to you next run. If your plan makes a promise and this array is empty, the promise does not exist.
+
+HOW TO READ WHAT YOU ARE GIVEN (pre-computed for you — quote these as given, do not re-derive or rescale them):
+${STABLE_BLOCKS.equity}
+${STABLE_BLOCKS.position_history_dive}
+${STABLE_BLOCKS.notes}
+${STABLE_BLOCKS.ratio_sanity}
+${STABLE_BLOCKS.earnings_out}
+${STABLE_BLOCKS.news_recency}
+${STABLE_BLOCKS.earnings_timing_dive}
+${STABLE_BLOCKS.figures}
+PRICING RULE — READ CAREFULLY: for each candidate, "last_close" is the reference price and "limit_range" {low, high} is the ONLY band the risk guard accepts (±${ARENA_RULES.price_band * 100}% of last_close). Your limit_price MUST fall inside [limit_range.low, limit_range.high] or the order is auto-discarded. Do NOT anchor your limit on 52-week highs/lows, analyst targets, or any other figure — only on last_close. If last_close is null you have no valid reference for that ticker: do not place an order for it.
 
 OUTPUT: respond with ONE JSON object and NOTHING else (no markdown fences, no prose outside JSON):
 {"plan": "<your portfolio thesis for today, 2-6 sentences>", "positions_review": [{"symbol": "TICKER", "stance": "hold"|"trim"|"exit", "reason": "<1-2 sentences citing the numbers given>"}], "commitment_updates": [{"id": "<the exact id given>", "status": "cumplido"|"vigente"|"cancelado", "note": "<1 sentence>"}], "commitments": [{"symbol": "TICKER or null", "text": "<what you are committing to>", "due": "YYYY-MM-DD or null"}], "actions": [{"symbol": "TICKER", "side": "buy"|"sell", "notional": <USD number>, "limit_price": <number>, "conviction": <1-5>, "reasoning": "<1-2 sentences, specific>"}]}
@@ -468,6 +541,18 @@ export function addPortfolioChannels(map, { positions = [], openOrders = [] } = 
 const BUFFET_TIMEOUT_MS = {
   insiders: Number(process.env.ARENA_BUFFET_TIMEOUT_INSIDERS_MS) || 30000,
 };
+
+// Canales que se piden UNA VEZ POR DÍA y después se leen de Neon. `insiders` es
+// el caso que lo motivó (ver el bloque de arriba y _lib/arena-buffet-cache.js):
+// su contenido es un hecho del día, así que pedirlo doce veces es pagar doce
+// veces por el mismo dato — y doce oportunidades de que EDGAR se caiga.
+//
+// `movers` y `earnings` NO entran: los dos cambian dentro del día y cachearlos
+// por día le daría al PM de la tarde el mercado de la mañana. La caché existe
+// para los canales cuyo contenido no se mueve, no para todos los lentos.
+const DAY_CACHED_CHANNELS = new Set(
+  String(process.env.ARENA_BUFFET_DAY_CACHE || 'insiders').split(',').map((x) => x.trim()).filter(Boolean),
+);
 const BUFFET_TIMEOUT_DEFAULT_MS = Number(process.env.ARENA_BUFFET_TIMEOUT_MS) || 12000;
 const buffetTimeout = (canal) => BUFFET_TIMEOUT_MS[canal] || BUFFET_TIMEOUT_DEFAULT_MS;
 
@@ -496,16 +581,40 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
     insiders: baseUrl + '/api/stock-tracker?cat=insider',
   };
   const out = {};
+  // Procedencia por canal: 'cache' (entrada de hoy en Neon), 'fetch' (se pidió
+  // de verdad) o 'none' (se cayó). Viaja al journal, no al prompt: el PM no
+  // necesita saber de dónde salió el dato, pero el post-mortem sí — un canal
+  // servido de caché y uno recién traído no se leen igual cuando algo falla.
+  const channel_source = {};
   await Promise.all(Object.entries(targets).map(async ([k, url]) => {
     const techo = buffetTimeout(k);
-    try { out[k] = await fetchJson(url, techo); }
+    const pedir = () => fetchJson(url, techo);
+
+    // CANALES CACHEADOS POR DÍA (hoy: insiders). Los Form 4 son un hecho del
+    // DÍA: el mismo contenido para la corrida de las 14:00 y la de las 20:00.
+    // Pedirlo una vez y leerlo de Neon el resto del día convierte ~61 requests
+    // a SEC EDGAR por lambda en una lectura de tabla. Ver _lib/arena-buffet-cache.js.
+    if (DAY_CACHED_CHANNELS.has(k)) {
+      const r = await cachedDayFetch(k, pedir, { now });
+      out[k] = r.data;
+      channel_source[k] = { source: r.source, fetched_at: r.fetched_at };
+      if (r.error) {
+        out[k + '_error'] = r.error.includes('timeout') || /Timeout/i.test(r.error)
+          ? `timeout (${Math.round(techo / 1000)}s) — SEC EDGAR: feed Atom + hasta 60 XML de Form 4 con caché fría. No había entrada de HOY en la caché por día.`
+          : r.error;
+      }
+      return;
+    }
+
+    try { out[k] = await pedir(); channel_source[k] = { source: 'fetch' }; }
     catch (err) {
       out[k] = null;
+      channel_source[k] = { source: 'none' };
       // El error REAL del fetch (status HTTP o timeout), con el techo que se
       // aplicó — un "timeout (12s)" fijo mentía apenas los techos dejaron de
       // ser iguales, y mandaba a buscar el problema al lugar equivocado.
       out[k + '_error'] = err && err.name === 'TimeoutError'
-        ? `timeout (${Math.round(techo / 1000)}s)` + (k === 'insiders' ? ' — SEC EDGAR: feed Atom + hasta 60 XML de Form 4 con caché fría' : '')
+        ? `timeout (${Math.round(techo / 1000)}s)`
         : String((err && err.message) || err);
     }
   }));
@@ -622,8 +731,11 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
     screener_state,
     unavailable,
     // Diagnóstico: status HTTP/timeout real por endpoint caído. NO viaja al
-    // prompt del LLM (buildScanUserPrompt lo excluye) — se journalea.
+    // prompt del LLM (buildSharedContext lo excluye) — se journalea.
     fetch_errors,
+    // De dónde salió cada canal: caché del día, fetch nuevo, o caído. Tampoco
+    // viaja al prompt.
+    channel_source,
     // Índice de atribución por ticker. NO viaja al prompt — para el journal.
     channelsByTicker,
   };
@@ -645,7 +757,10 @@ function fmtSignedPct(v) {
 
 // La aclaración del equity, en las DOS fases (un PM que entiende mal cuánta
 // pólvora tiene decide mal el tamaño en todas ellas).
-const EQUITY_NOTE = 'EQUITY — `equity_total_incl_cash` is the TOTAL value of the book: your positions PLUS your cash. `cash_included_in_equity` is the part of that same total that is not invested — it is NOT an extra amount on top. Do not add them together, and size positions as a fraction of the total.';
+// La aclaración del equity vive en STABLE_BLOCKS.equity y viaja en el SYSTEM de
+// las dos fases (prefijo cacheado). Se deja el alias para los tests y los
+// llamadores que la importen por nombre; el texto es UNO solo.
+const EQUITY_NOTE = STABLE_BLOCKS.equity;
 
 // Snapshot del libro compartido por ambas fases.
 // `meta` (T2) le cuelga a cada posición su HISTORIA — días en posición, pico
@@ -692,21 +807,51 @@ function portfolioSnapshot({ account, positions, openOrders, meta = {} }) {
 export function buildScanUserPrompt({ account, positions, openOrders, buffet, previous, meta = {} }) {
   // fetch_errors y channelsByTicker son diagnóstico/atribución interna (se
   // journalean); el LLM solo necesita `unavailable`. Se excluyen del prompt.
-  const { fetch_errors, channelsByTicker, admission, ...buffetForLlm } = buffet || {};
+  // DEL LADO VOLÁTIL DEL CORTE, y solo esto: el libro de ESTE agente y su plan
+  // anterior. Lo único del prompt que NO comparte con los otros seis.
+  //
+  // El buffet salió de acá y se fue al prefijo cacheado (buildSharedContext):
+  // es el MISMO objeto para los siete agentes de la corrida —`getBuffet` lo
+  // computa una vez y los demás reusan la promesa—, así que del lado volátil se
+  // pagaba siete veces por el mismo texto. Y lo que explicaba cómo leerlo se
+  // fue al system (STABLE_BLOCKS), que no cambia ni entre corridas ni entre días.
   return [
     'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders, meta })),
-    EQUITY_NOTE,
     '',
     'PREVIOUS PLAN (yours, from the last run — build on it or change course):',
     previous ? JSON.stringify(previous) : 'none — this is your first run.',
     '',
-    'MARKET CONTEXT (QuantDesk endpoints; sections listed in "unavailable" failed today — do not guess their content):',
-    'EARNINGS TIMING — each entry in `earnings_this_week` carries `when`, the distance from today ALREADY COMPUTED for you ("in 2 days (Wed Aug 26, AMC)", "today (Mon Aug 24, BMO)"). Use that label as-is when you mention a report; do not re-derive it from `date`, and never call a report scheduled for a later date "today" or "tonight". BMO = before the market opens that day, AMC = after it closes.',
-    'ALREADY REPORTED — `recently_reported` holds companies whose number is ALREADY OUT (within the last 2 sessions), with the actual EPS and the surprise vs estimate already computed. These are here on purpose: if a previous plan of yours was waiting on one of these reports, the wait is over — that name is worth a deep-dive so you can close the loop instead of leaving the thesis hanging.',
-    'POSITION HISTORY — each holding carries `days_in_position`, `peak_since_entry`, `from_peak_pct`, `trailing_stop` and `time_stop`, all already computed. A holding whose `time_stop.due` is true, or that is far below its peak, is a legitimate deep-dive candidate: you will have to state hold/trim/exit for every position later, and this is the step where you buy the research to do it well.',
+    `Pick up to ${MAX_CANDIDATES} tickers worth a deep-dive, or none. ONE JSON object, nothing else.`,
+  ].join('\n');
+}
+
+// ── EL CONTEXTO COMPARTIDO: la parte del prompt que es de LA CORRIDA, no de
+// un agente. Va en el prefijo cacheado, después del reglamento y antes del
+// breakpoint. Es lo que hace que el prefijo cruce el mínimo cacheable del
+// modelo y, de paso, que los siete agentes paguen UNA vez por el mismo buffet
+// en lugar de siete.
+//
+// CANDADO: acá NO puede entrar nada que dependa del agente. Si entrara, cada
+// agente tendría un prefijo distinto y la caché no serviría para nada — que es
+// exactamente el estado del que venimos. Hay un test que lo verifica. ──
+// ALLOWLIST, no denylist. Antes era `const {fetch_errors, ...resto} = buffet`,
+// o sea: todo lo que alguien agregara al buffet viajaba al prompt por default y
+// había que acordarse de excluirlo. Con el buffet ahora en el PREFIJO CACHEADO
+// eso pasó de ser un desperdicio a ser un riesgo: un campo nuevo que dependa del
+// agente rompe el prefijo compartido y la caché deja de servir, en silencio.
+// Acá hay que ENUMERAR lo que entra, y un campo nuevo se queda afuera hasta que
+// alguien decida lo contrario.
+export const SHARED_BUFFET_FIELDS = [
+  'movers', 'earnings_this_week', 'recently_reported',
+  'notable_insider_buys', 'screener', 'screener_state', 'unavailable',
+];
+
+export function buildSharedContext(buffet) {
+  const buffetForLlm = {};
+  for (const k of SHARED_BUFFET_FIELDS) if (buffet && buffet[k] !== undefined) buffetForLlm[k] = buffet[k];
+  return [
+    'MARKET CONTEXT (QuantDesk endpoints, identical for every agent in this run):',
     JSON.stringify(buffetForLlm),
-    '',
-    `Pick up to ${MAX_CANDIDATES} tickers worth a deep-dive, or none. Remember: ONE JSON object, nothing else.`,
   ].join('\n');
 }
 
@@ -785,8 +930,6 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
   return [
     ...eventBlock,
     'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders, meta })),
-    EQUITY_NOTE,
-    'POSITION HISTORY — each holding carries numbers that are ALREADY COMPUTED for you: `days_in_position` (calendar days since this position was opened; null = it predates the journal and could not be reconstructed — say so rather than guessing), `peak_since_entry` (highest completed close since entry, floored at your cost), `from_peak_pct` (how far below that peak it trades now), `trailing_stop` (armed and its sell level, or the level at which it would arm) and `time_stop` ({days, limit, due}). Quote these as given; do NOT recompute or invent them.',
     '',
     ...commitmentBlock,
     'PREVIOUS PLAN (yours, from the last run — build on it or change course, but acknowledge it):',
@@ -796,19 +939,12 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
     scanThesis || '(none provided)',
     '',
     'DEEP-DIVE DATA (Finnhub; per candidate: last_close, limit_range, profile, fundamentals, analyst recommendation counts, recent news headlines, and — when the candidate came from the earnings calendar — its upcoming report).',
-    `PRICING RULE — READ CAREFULLY: for each candidate, "last_close" is the reference price and "limit_range" {low, high} is the ONLY band the risk guard accepts (±${priceBand * 100}% of last_close). Your limit_price MUST fall inside [limit_range.low, limit_range.high] or the order is auto-discarded. Do NOT anchor your limit on 52-week highs/lows, analyst targets, or any other figure — only on last_close. If last_close is null you have no valid reference for that ticker: do not place an order for it.`,
     ...(policy.intraday
       // Honestidad de etiqueta: intradía ese campo NO es un cierre, es el
       // último trade. El nombre del campo se conserva (es contrato con el
       // guard y con el journal), pero el PM tiene que saber qué está mirando.
       ? ['INTRADAY REFERENCE — the market is open, so "last_close" for each candidate is its LIVE last trade from Alpaca, not yesterday\'s close. It is the same number the risk guard checks your limit against, so anchor on it and nothing else.']
       : []),
-    'NOTES: null fields mean the datum was unavailable (do not guess it). Analyst price targets are NOT provided; use the recommendation buy/hold/sell split as the rating signal. marketCapM is in millions USD.',
-    'RATIO SANITY — a candidate may carry `fundamentals_quality`, flagging ratios outside any plausible range (a P/E in the hundreds, a negative debt/equity, a margin above 100%). Those numbers are almost always an accounting artifact — a one-off charge or negative book equity — not a description of the business. If a ratio is flagged, either leave it out of your reasoning or say explicitly that it may be an artifact. Never build a thesis on a flagged ratio as if it were a clean fundamental.',
-    'EARNINGS ALREADY OUT — a candidate whose `earnings` carries `reported: true` has ALREADY reported (with `sessions_since_report`, the actual EPS and the surprise vs estimate, all given to you). If you were waiting on that number, the wait is over: close the loop in this run rather than deferring it again.',
-    'NEWS RECENCY — each news item carries a `date` (YYYY-MM-DD). Before you describe any headline, compare its date to today\'s date (given in the system prompt): state how long ago it happened ("N days ago", the weekday) and reserve "today" for a date that equals today. A headline dated before today is NOT today\'s news — do not narrate a report from several days ago as if it broke today.',
-    'EARNINGS TIMING — a candidate flagged by the earnings channel carries `earnings: {date, time, when}`, where `when` is the distance from today ALREADY COMPUTED for you ("in 2 days (Wed Aug 26, AMC)", "tomorrow (Tue Aug 25, BMO)"). Quote that label as-is; do not re-derive it from `date`, and never describe a report scheduled for a later date as happening "today" or "tonight" — if your plan holds cash for a post-earnings dislocation, say which day the catalyst actually lands on. BMO = before that day\'s open, AMC = after that day\'s close. A candidate WITHOUT an `earnings` field has no report date in your data: do not assert one from memory.',
-    'FIGURES — when your plan cites a number (a %, a price, a P&L), use ONLY the figures given to you here or in the PORTFOLIO above, verbatim. Each holding carries `pnl_since_entry_pct`, already formatted ("+6.1%"): that is profit/loss SINCE YOUR ENTRY, not today\'s price move — quote it as-is if you mention it. Do NOT compute, rescale, round, or invent percentages you were not given.',
     JSON.stringify(research),
     '',
     event
@@ -1342,9 +1478,16 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     addPortfolioChannels(channels, { positions, openOrders });
 
     // ── FASE 1: SCAN ────────────────────────────────────────────────
+    // EL CORTE DE CACHÉ, explícito: `[reglamento, contexto compartido]` va del
+    // lado estable (idéntico para los siete de esta corrida) y el libro del
+    // agente del lado volátil. Ver el bloque de ANTHROPIC_CACHE_MIN_TOKENS.
     const scanSystem = buildScanSystemPrompt();
+    const scanShared = buildSharedContext(buffet);
     const scanUser = buildScanUserPrompt({ account, positions, openOrders, buffet, previous, meta: positionMeta });
-    scanHash = sha256(scanSystem + '\n---\n' + scanUser);
+    // El hash sigue cubriendo TODO lo que se le mandó al modelo: mover un bloque
+    // de lado del corte no puede cambiar la huella de la corrida, o el
+    // post-mortem dejaría de poder comparar dos corridas con el mismo prompt.
+    scanHash = sha256(scanSystem + '\n---\n' + scanShared + '\n---\n' + scanUser);
 
     // context journaleado desde el arranque; se enriquece por fase. El
     // post-mortem del 24-jul quedó ciego (fetch_errors sin guardar, del prompt
@@ -1353,7 +1496,8 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     context.unavailable = buffet.unavailable;
     context.fetch_errors = buffet.fetch_errors;
     context.admission = buffet.admission;
-    context.scan = { prompt: { system: scanSystem, user: scanUser }, hash: scanHash, model: agent.model };
+    context.scan = { prompt: { system: scanSystem, shared: scanShared, user: scanUser }, hash: scanHash, model: agent.model };
+    context.scan.cache_prefix = cachePrefixReport(agent, [scanSystem, scanShared]);
 
     if (!apiKey) {
       // Dependencia documentada: sin la key del proveedor del agente (ANTHROPIC_API_KEY
@@ -1367,7 +1511,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     // de antes era un techo para un modelo que no razona: en uno que sí, los
     // tokens de pensamiento salen del MISMO presupuesto y la respuesta se corta
     // antes del JSON. Ver la nota de ARENA_MAX_TOKENS en el registry.
-    const scanLlm = await callArenaLLM({ agent, system: scanSystem, messages: [{ role: 'user', content: scanUser }], maxTokens: ARENA_MAX_TOKENS, now });
+    const scanLlm = await callArenaLLM({ agent, system: [scanSystem, scanShared], messages: [{ role: 'user', content: scanUser }], maxTokens: ARENA_MAX_TOKENS, now });
     // OBSERVABILIDAD DEL SCAN. El DIVE journaleaba stop_reason/truncated desde
     // siempre; el SCAN no, y por eso un aborto de la fase 1 era indistinguible
     // entre "parloteó fuera del JSON" y "se quedó sin tokens". Los abortos de
@@ -1482,6 +1626,10 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // shown_closes: el cierre que se le MOSTRÓ al PM por candidato — para auditar
   // desfases contra lo que valida el guard (deberían coincidir siempre).
   context.dive = { prompt: { system: diveSystem, user: diveUser }, hash: diveHash, model: agent.model, finnhub: dive.data, finnhub_errors: dive.errors, shown_closes: candidateCloses };
+  // El prefijo cacheable de ESTA llamada, medido. Si no llega al piso del
+  // modelo, el marcador se ignora EN SILENCIO — journalearlo es lo que convierte
+  // ese silencio en algo que se puede leer después (ver cachePrefixReport).
+  context.dive.cache_prefix = cachePrefixReport(agent, diveSystem);
   // prompt_hash de la fila = el del DIVE (la fase que produce las órdenes).
   const withPrompt = { ...base, prompt_hash: diveHash, account: accountSnapshot, context };
 

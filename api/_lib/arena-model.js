@@ -25,7 +25,7 @@
 
 import { dateDirective, staleProspectiveDates } from './ai-guard.js';
 import { recordAiCall } from './usage.js';
-import { ARENA_TEMPERATURE, ARENA_EFFORT, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS, modelSlugResolved } from './arena-registry.js';
+import { ARENA_TEMPERATURE, ARENA_EFFORT, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS, ANTHROPIC_CACHE_MIN_TOKENS, modelSlugResolved } from './arena-registry.js';
 import { ANTHROPIC_PRICES } from './model.js';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -123,8 +123,11 @@ export function buildOpenRouterBody({ agent, model, system, messages, maxTokens 
   const body = {
     model: model || (agent && agent.model),
     max_tokens: maxTokens,
-    // La directiva de fecha va en el system (mismo anclaje temporal que Anthropic).
-    messages: [{ role: 'system', content: (system || '') + dateDirective(now) }, ...messages],
+    // La directiva de fecha va en el system (mismo anclaje temporal que Anthropic),
+    // y por el mismo motivo va AL FINAL: en los modelos de OpenAI la caché de
+    // OpenRouter es automática sobre el PREFIJO, así que un dato volátil arriba
+    // del todo la invalida igual que un `cache_control` mal puesto.
+    messages: [{ role: 'system', content: systemSegments(system).join('\n\n') + dateDirective(now) }, ...messages],
   };
   if (caps.sampling !== false) body.temperature = ARENA_TEMPERATURE;
   if (caps.effort === 'openrouter') body.reasoning = { effort: ARENA_EFFORT };
@@ -217,6 +220,53 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
 
 // ── ANTHROPIC ────────────────────────────────────────────────────────
 // Payload EXPORTADO (misma razón que el de OpenRouter: el smoke manda esto).
+// `system` acepta un STRING o un ARRAY de segmentos. El array es el prefijo
+// cacheable por partes: `[reglamento, contexto compartido]`. Se une con '\n\n'
+// y el breakpoint de caché va al FINAL de todo el array, nunca en medio.
+//
+// POR QUÉ AL FINAL Y NO POR SEGMENTO: el marcador de Anthropic cachea el
+// prefijo ACUMULADO hasta donde está, y por debajo del mínimo del modelo (1.024
+// tokens) se IGNORA EN SILENCIO — ni escribe, ni avisa. El reglamento del SCAN
+// mide ~760 tokens: marcado solo, no cachea nada y el smoke reporta `cache_read:
+// 0` sin explicación. Marcado junto con el contexto compartido de la corrida, el
+// prefijo pasa los 2.000 y sí cachea. Un solo breakpoint, al final del bloque
+// estable.
+export function systemSegments(system) {
+  return (Array.isArray(system) ? system : [system]).map((x) => String(x || '')).filter(Boolean);
+}
+
+// ── EL CHEQUEO DEL PISO (para que el silencio sea imposible) ─────────
+// El bug original no fue "la caché está mal configurada": fue que el bloque
+// marcado no llegaba al mínimo del modelo, y por debajo del mínimo el proveedor
+// IGNORA el marcador sin escribir, sin cobrar de más y SIN DECIR NADA. Cero
+// ahorro, cero error, cero pista — y así estuvo hasta que el smoke reportó un
+// `cache_read: 0` que nadie sabía interpretar.
+//
+// Esta función convierte ese silencio en un dato. Devuelve SIEMPRE una fila que
+// el smoke publica y el runner journalea, con la estimación del prefijo, el
+// piso del modelo y el veredicto. No bloquea nada: un prefijo corto sigue
+// corriendo (la corrida vale más que el ahorro), pero deja de ser invisible.
+export function cachePrefixReport(agent, system) {
+  const caps = (agent && agent.caps) || {};
+  const segs = systemSegments(system);
+  const chars = segs.reduce((n, x) => n + x.length, 0);
+  const tokens_est = Math.ceil(chars / 4);   // ~4 chars/token: sirve para "cerca del piso", no para facturar
+  const min = ANTHROPIC_CACHE_MIN_TOKENS;
+  const out = { channel: caps.cache || null, segments: segs.length, chars, tokens_est, min_tokens: min };
+  if (caps.cache !== 'anthropic') {
+    out.status = caps.cache === 'auto' ? 'auto' : 'unsupported';
+    out.note = caps.cache === 'auto'
+      ? 'caché automática del proveedor sobre el prefijo: no hay marcador que poner, pero el orden estable→volátil igual manda.'
+      : 'esta familia no soporta caché explícita de prompt.';
+    return out;
+  }
+  out.status = tokens_est >= min ? 'ok' : 'below_min';
+  out.note = tokens_est >= min
+    ? null
+    : `El prefijo cacheable estimado (~${tokens_est} tokens) NO llega al mínimo del modelo (${min}). El marcador se va a IGNORAR EN SILENCIO: cache_write y cache_read van a salir en 0 y el ahorro va a ser cero. Mové más contexto estable al system (o revisá que el contexto compartido de la corrida esté entrando).`;
+  return out;
+}
+
 export function buildAnthropicPayload({ agent, model, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date() }) {
   const caps = (agent && agent.caps) || {};
   const payload = {
@@ -228,17 +278,17 @@ export function buildAnthropicPayload({ agent, model, system, messages, maxToken
     system: undefined,
     messages,
   };
-  const sysText = (system || '');
+  const segs = systemSegments(system);
+  const sysText = segs.join('\n\n');
   const dateText = dateDirective(now);
 
   if (caps.cache === 'anthropic') {
-    // CACHÉ DE PROMPT. El system del Arena es largo y CONGELADO (el reglamento
-    // no cambia entre corridas ni entre agentes); el recordatorio de fecha es lo
-    // único volátil. Partirlo en dos bloques con el breakpoint en medio deja el
-    // reglamento cacheable y la fecha fuera del prefijo — al revés, un solo
-    // bloque con la fecha adentro invalidaría la caché CADA DÍA y el ahorro
-    // sería cero. (Regla de oro: estable primero, volátil después del último
-    // `cache_control`.)
+    // CACHÉ DE PROMPT. Todo lo ESTABLE de la corrida —reglamento, cómo leer
+    // cada campo, y el contexto de mercado, que es IDÉNTICO para los siete
+    // agentes— va antes del marcador; el recordatorio de fecha y el libro de
+    // cada agente van después. Regla de oro: estable primero, volátil después
+    // del último `cache_control`. Al revés, la fecha adentro del bloque marcado
+    // invalidaría la caché cada día y el ahorro sería cero.
     payload.system = [
       { type: 'text', text: sysText, cache_control: { type: 'ephemeral' } },
       { type: 'text', text: dateText },

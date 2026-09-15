@@ -106,6 +106,24 @@ export const ARENA_MAX_TOKENS = (() => {
   return Number.isFinite(n) && n >= 500 && n <= 64000 ? Math.floor(n) : 6000;
 })();
 
+// ── MÍNIMO CACHEABLE DE PROMPT ───────────────────────────────────────
+// Piso del PROVEEDOR, no una preferencia nuestra: por debajo de este número de
+// tokens, Anthropic IGNORA `cache_control` en silencio — no escribe caché, no
+// cobra de más y no avisa. Eso es exactamente lo que pasaba con el system del
+// SCAN (~760 tokens contra un piso de 1.024): el smoke reportaba `cache_read: 0`
+// y `cache_write: 0` sin ninguna pista de por qué.
+//
+// Vive en el registry y no en arena-run.js porque _lib/arena-model.js lo
+// necesita para el chequeo del piso, y arena-run ya importa de arena-model:
+// definirlo allá crearía el ciclo model → run → model.
+//
+// Env-overridable porque el piso lo fija el proveedor y puede cambiar sin
+// avisarnos; la corrección tiene que poder ser una env var, no un deploy.
+export const ANTHROPIC_CACHE_MIN_TOKENS = (() => {
+  const n = Number(process.env.ARENA_CACHE_MIN_TOKENS);
+  return Number.isFinite(n) && n >= 128 ? Math.floor(n) : 1024;
+})();
+
 // ── PRESUPUESTO DE TIEMPO ────────────────────────────────────────────
 // Techo de UNA llamada al proveedor. Existe porque el reloj que manda no es el
 // de la API sino el de Vercel: si el fetch tarda más que el `maxDuration` de la

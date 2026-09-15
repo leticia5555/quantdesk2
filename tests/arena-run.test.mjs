@@ -377,8 +377,22 @@ ok(dd.profile && dd.profile.marketCapM === 3000000 && dd.profile.industry === 'T
 ok(dd.recommendation && dd.recommendation.strongBuy === 20 && dd.recommendation.hold === 5, 'deep dive: recommendation (reparto de analistas) — la señal de rating', JSON.stringify(dd.recommendation));
 ok(Array.isArray(dd.news) && dd.news.length === 1 && dd.news[0].headline.includes('beats earnings'), 'deep dive: company-news filtrada a 7 días (el titular viejo de 30d se descarta)', JSON.stringify(dd.news));
 
+// ── EL PROMPT COMPLETO vs. DE QUÉ LADO DEL CORTE DE CACHÉ está cada cosa ──
+// Desde el fix de caché del 2026-09-15 el prompt viaja en TRES piezas:
+//   system  → reglamento y "cómo leer cada campo" (estable siempre, cacheado)
+//   shared  → el contexto de mercado de la corrida (igual para los siete, cacheado)
+//   user    → el libro de ESTE agente y su plan anterior (volátil, sin cachear)
+// Lo que el modelo recibe es la suma; lo que hace que la caché sirva es CUÁL
+// pieza lleva cada bloque. Se comprueban las dos cosas por separado: `todo()`
+// para "la instrucción llegó" y aserciones sobre `system`/`user` para "está del
+// lado correcto del corte".
+const promptScan = jctx.scan.prompt;
+const promptDive = jctx.dive.prompt;
+const todoScan = [promptScan.system, promptScan.shared || '', promptScan.user].join('\n');
+const todoDive = [promptDive.system, promptDive.shared || '', promptDive.user].join('\n');
+
 // ── el DIVE prompt trae los datos y aclara que price target NO viene (Premium) ──
-ok(jctx.dive.prompt.user.includes('AAPL') && /price targets? .*NOT provided/i.test(jctx.dive.prompt.user), 'prompt DIVE: research por candidato + nota de que no hay price targets (Premium)');
+ok(jctx.dive.prompt.user.includes('AAPL') && /price targets? .*NOT provided/i.test(todoDive), 'prompt DIVE: research por candidato + nota de que no hay price targets (Premium)');
 
 // ── el cierre se le MUESTRA al PM (fix del desfase: el guard valida contra el
 // MISMO cierre). Yahoo mock → último cierre 200 → banda ±2% = [196, 204]. ──
@@ -397,7 +411,7 @@ ok(rHd && rHd.screener_qualifiers && !('last_close' in rHd.screener_qualifiers) 
   'CANDADO: los qualifiers del screener en el prompt del DIVE no traen precio (solo ratios)', JSON.stringify(rHd && rHd.screener_qualifiers));
 ok(rHd && Array.isArray(rHd.channel) && rHd.channel.includes('screener') && Array.isArray(rHd.screen) && rHd.screen.includes('momentum'),
   'prompt DIVE: el research de HD trae su procedencia (channel + screen)', JSON.stringify(rHd && { channel: rHd.channel, screen: rHd.screen }));
-ok(/limit_price MUST fall inside/i.test(jctx.dive.prompt.user) && /Do NOT anchor.*52-week/i.test(jctx.dive.prompt.user), 'prompt DIVE: regla de precio explícita (±2% del last_close, no anclar en 52w-high)');
+ok(/limit_price MUST fall inside/i.test(todoDive) && /Do NOT anchor.*52-week/i.test(todoDive), 'prompt DIVE: regla de precio explícita (±2% del last_close, no anclar en 52w-high)');
 // ── la fecha del earnings CRUZA a la fase 2: el DIVE es donde se escribió el
 // "post-market today" de un reporte que era en dos días, y hasta ahora solo
 // recibía `channel: ['earnings']` — el canal sin el día. ──
@@ -405,11 +419,11 @@ ok(rAapl && rAapl.earnings && /^in 2 days \(/.test(rAapl.earnings.when) && rAapl
   'prompt DIVE: el candidato del canal earnings lleva su reporte con días relativos ya calculados', JSON.stringify(rAapl && rAapl.earnings));
 ok(rHd && !('earnings' in rHd),
   'prompt DIVE: un candidato que NO salió del canal earnings no lleva fecha inventada', JSON.stringify(rHd && rHd.earnings));
-ok(/EARNINGS TIMING/.test(jctx.dive.prompt.user) && /do not assert one from memory/.test(jctx.dive.prompt.user),
+ok(/EARNINGS TIMING/.test(todoDive) && /do not assert one from memory/.test(todoDive),
   'prompt DIVE: instrucción de citar `when` tal cual y de no inventar fecha para quien no la trae');
 
 // ── el SCAN prompt trae el buffet; movers con top-8 + filtro leveraged + ≥$5 (main #76) ──
-const uMovers = JSON.parse(jctx.scan.prompt.user.split('\n').find((l) => l.startsWith('{') && l.includes('"movers"'))).movers;
+const uMovers = JSON.parse(todoScan.split('\n').find((l) => l.startsWith('{') && l.includes('"movers"'))).movers;
 ok(Array.isArray(uMovers.actives) && uMovers.actives.length === 8, 'prompt SCAN: actives recortado a top-8', String((uMovers.actives || []).length));
 ok(uMovers.actives.some((m) => m.symbol === 'TSLA'),
   'prompt SCAN: TSLA (-14.5%, puesto 7 por volumen) entra en top-8, antes invisible en top-5', JSON.stringify(uMovers.actives.map((m) => m.symbol)));
@@ -426,7 +440,7 @@ ok(!uMovers.actives.some((m) => m.symbol === 'WLDSW') && !uMovers.actives.some((
   'prompt SCAN: warrant (WLDSW) y unit (IPCXU) filtrados de actives por `type` del symbol map', JSON.stringify(uMovers.actives.map((m) => m.symbol)));
 
 // ── el SCAN prompt trae el canal screener (value + momentum) pero SIN VC ──
-const scanBuffet = JSON.parse(jctx.scan.prompt.user.split('\n').find((l) => l.startsWith('{') && l.includes('"movers"')));
+const scanBuffet = JSON.parse(todoScan.split('\n').find((l) => l.startsWith('{') && l.includes('"movers"')));
 ok(scanBuffet.screener && Array.isArray(scanBuffet.screener.value) && scanBuffet.screener.value.some((c) => c.symbol === 'KO'),
   'prompt SCAN: el canal screener (value) llega al SCOUT con KO', JSON.stringify(scanBuffet.screener && scanBuffet.screener.value));
 ok(scanBuffet.screener.momentum.some((c) => c.symbol === 'HD'),
@@ -450,7 +464,7 @@ ok(eAapl && eAapl.date === inTwoDays,
   'prompt SCAN: la fecha absoluta se conserva junto al label relativo', JSON.stringify(eAapl && eAapl.date));
 const eTbd = uEarn.find((e) => e.ticker === 'AAUAF');
 ok(eTbd && !/TBD/.test(eTbd.when), 'prompt SCAN: hora TBD no ensucia el label (solo el día)', JSON.stringify(eTbd && eTbd.when));
-ok(/EARNINGS TIMING/.test(jctx.scan.prompt.user) && /never call a report scheduled for a later date "today"/.test(jctx.scan.prompt.user),
+ok(/EARNINGS TIMING/.test(todoScan) && /never call a report scheduled for a later date "today"/.test(todoScan),
   'prompt SCAN: instrucción explícita de usar `when` y no re-derivar la fecha');
 
 // ── T2 #2: los RECIÉN-REPORTADOS se quedan en el buffet (amnesia NVDA/CRM) ──
@@ -467,7 +481,7 @@ ok(rGntx && rGntx.eps_actual === 0.60 && rGntx.eps_surprise_pct === 20,
   'prompt SCAN: la SORPRESA de EPS viene calculada (0.60 vs 0.50 = +20%), no se delega al modelo', JSON.stringify(rGntx));
 ok(!uEarn.some((e) => e.ticker === 'GNTX'),
   'prompt SCAN: un reportado NO ocupa un slot de la agenda de próximos (listas separadas)', JSON.stringify(uEarn.map((e) => e.ticker)));
-ok(/ALREADY REPORTED/.test(jctx.scan.prompt.user),
+ok(/ALREADY REPORTED/.test(todoScan),
   'prompt SCAN: instrucción explícita de cerrar la tesis cuando el número ya salió');
 // El índice de atribución y los diagnósticos NO viajan al prompt del LLM.
 ok(!('channelsByTicker' in scanBuffet) && !('fetch_errors' in scanBuffet),
@@ -653,15 +667,32 @@ diveText = JSON.stringify({ plan: 'Mantengo GNTX.', actions: [] }); // hold: el 
 await runArenaDecide({ baseUrl: BASE_URL });
 const ctxProse = JSON.parse(lastRow()[COL.context]);
 const diveUser = ctxProse.dive.prompt.user;
+// Las instrucciones estáticas ("cómo leer") viven en el SYSTEM desde el fix de
+// caché; el LIBRO sigue en el turno del usuario. Se comprueban por separado a
+// propósito: que una instrucción se mude al system es correcto, que el libro se
+// mude sería el bug — rompería el prefijo compartido entre los siete agentes.
+const diveSys = ctxProse.dive.prompt.system;
+const diveTodo = diveSys + '\n' + diveUser;
 ok(diveUser.includes('"pnl_since_entry_pct":"+6.1%"'),
   'Opción 1: el % de posición va pre-formateado y rotulado (+6.1%), no la fracción cruda',
   (diveUser.match(/pnl_since_entry_pct[^,}]*/) || [])[0]);
 ok(!/"unrealized_plpc"/.test(diveUser) && !/0\.061/.test(diveUser),
   'Opción 1: la fracción cruda (0.061 / unrealized_plpc) ya NO viaja al prompt');
-ok(diveUser.includes('NEWS RECENCY') && /reserve "today" for a date that equals today/.test(diveUser),
+ok(diveTodo.includes('NEWS RECENCY') && /reserve "today" for a date that equals today/.test(diveTodo),
   'Opción 2: instrucción de recencia de titulares presente en el DIVE');
-ok(diveUser.includes('FIGURES') && /Do NOT compute, rescale, round, or invent percentages/.test(diveUser),
+ok(diveTodo.includes('FIGURES') && /Do NOT compute, rescale, round, or invent percentages/.test(diveTodo),
   'Opción 2: instrucción "cita cifras verbatim, no inventes %" presente en el DIVE');
+
+// ── EL CORTE DE CACHÉ, del lado correcto ──
+ok(diveSys.includes('NEWS RECENCY') && diveSys.includes('FIGURES') && diveSys.includes('RATIO SANITY'),
+  'CORTE: las instrucciones estáticas están del lado CACHEADO (system), no en el turno volátil');
+// Se busca el DATO del agente, no el nombre del campo NI el ejemplo: el system
+// menciona `pnl_since_entry_pct` para explicar cómo leerlo y trae "+6.1%" como
+// EJEMPLO literal (que da la casualidad de coincidir con el P&L del fixture).
+// Los discriminadores buenos son el ticker y la forma del JSON del libro.
+ok(!diveSys.includes('GNTX') && !/"avg_entry"/.test(diveSys) && !/"equity_total_incl_cash":/.test(diveSys),
+  'CORTE: el libro del agente NO entra al prefijo cacheado — si entrara, los siete tendrían prefijos distintos y la caché no serviría');
+ok(diveUser.includes('GNTX'), 'y el libro sí está en el turno volátil, que es donde corresponde');
 positionsMock = []; // restaurar
 
 // ═══════════════════════════════════════════════════════════════

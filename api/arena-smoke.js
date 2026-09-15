@@ -68,16 +68,17 @@
 
 import { checkAdminAuth } from './_lib/arena-admin.js';
 import {
-  gatherContext, buildScanSystemPrompt, buildScanUserPrompt,
+  gatherContext, buildScanSystemPrompt, buildScanUserPrompt, buildSharedContext,
   buildDiveSystemPrompt, buildDiveUserPrompt, resolveBaseUrl, PROMPT_VERSION,
 } from './arena-run.js';
 import { parseScanResponse, parsePlanResponse } from './_lib/arena-guard.js';
 import {
   callArenaLLM, providerKey, buildAnthropicPayload, buildOpenRouterBody, anthropicCostUsd, withDeadline,
-  openRouterCostUsd,
+  openRouterCostUsd, cachePrefixReport,
 } from './_lib/arena-model.js';
 import {
   activeAgents, agentById, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, modelSlugResolved,
+  ANTHROPIC_CACHE_MIN_TOKENS,
 } from './_lib/arena-registry.js';
 
 // ── LA COMPUERTA: ARENA_ADMIN_KEY ────────────────────────────────────
@@ -190,6 +191,10 @@ const STAND_IN = {
   openOrders: [],
 };
 
+// `shared` es el CONTEXTO COMPARTIDO de la corrida: va en el prefijo cacheado,
+// junto al system y antes del breakpoint. El smoke lo arma igual que la corrida
+// real — si acá se mandara el prompt en un solo bloque, el smoke mediría una
+// caché que la corrida no tiene.
 function buildPrompts(phase, buffet) {
   if (phase === 'dive') {
     // Slate fijo del buffet (los primeros nombres con canal), sin deep dive:
@@ -197,6 +202,7 @@ function buildPrompts(phase, buffet) {
     const candidates = Object.keys(buffet.channelsByTicker || {}).slice(0, 3);
     return {
       system: buildDiveSystemPrompt('Claude PM'),
+      shared: null,   // el DIVE no lleva contexto compartido: su system ya pasa el piso solo
       user: buildDiveUserPrompt({
         ...STAND_IN, previous: null, scanThesis: '(smoke)',
         candidates, deepDive: {}, closes: {}, channels: buffet.channelsByTicker || {},
@@ -205,9 +211,13 @@ function buildPrompts(phase, buffet) {
   }
   return {
     system: buildScanSystemPrompt(),
+    shared: buildSharedContext(buffet),
     user: buildScanUserPrompt({ ...STAND_IN, buffet, previous: null }),
   };
 }
+
+// Los segmentos del system tal como viajan: `[reglamento, compartido]`.
+const systemFor = (prompts) => (prompts.shared ? [prompts.system, prompts.shared] : [prompts.system]);
 
 // Tamaño del payload que efectivamente se manda, por proveedor. Sirve para
 // explicar el costo de entrada sin tener que adivinarlo.
@@ -227,7 +237,12 @@ async function probeAgent(agent, phase, prompts, timeoutMs = PROBE_TIMEOUT_MS, p
     temperature: agent.caps && agent.caps.sampling === false ? null : ARENA_TEMPERATURE,
     effort: agent.caps && agent.caps.effort ? ARENA_EFFORT : null,
     max_tokens: ARENA_MAX_TOKENS,
-    payload_chars: payloadChars(agent, prompts.system, prompts.user),
+    payload_chars: payloadChars(agent, systemFor(prompts), prompts.user),
+    // EL PISO DE LA CACHÉ, medido ANTES de llamar. Si el prefijo no lo cruza,
+    // el marcador se ignora en silencio y `cache_read`/`cache_write` van a salir
+    // en 0 sin ninguna explicación — que es exactamente el reporte que abrió
+    // este pendiente.
+    cache_prefix: cachePrefixReport(agent, systemFor(prompts)),
   };
   if (!providerKey(agent)) {
     return { ...row, ok: false, failure: 'missing_api_key', detail: `Falta la key de ${agent.provider}.` };
@@ -235,7 +250,7 @@ async function probeAgent(agent, phase, prompts, timeoutMs = PROBE_TIMEOUT_MS, p
 
   const llm = await withDeadline(
     callArenaLLM({
-      agent, system: prompts.system, messages: [{ role: 'user', content: prompts.user }],
+      agent, system: systemFor(prompts), messages: [{ role: 'user', content: prompts.user }],
       maxTokens: ARENA_MAX_TOKENS, timeoutMs,
     }).catch((e) => ({ status: 0, data: null, thrown: String((e && e.message) || e) })),
     timeoutMs + 5000,   // 5s de gracia: si el fetch aborta solo, gana su error, que es más específico
@@ -298,12 +313,28 @@ async function probeAgent(agent, phase, prompts, timeoutMs = PROBE_TIMEOUT_MS, p
   // superó el mínimo cacheable del modelo); cache_read>0, que se reusó.
   if (agent.provider === 'anthropic') {
     const w = row.tokens.cache_write, r2 = row.tokens.cache_read;
+    const pre = row.cache_prefix || {};
     row.cache = {
       write: w, read: r2,
+      prefix_tokens_est: pre.tokens_est ?? null,
+      min_tokens: ANTHROPIC_CACHE_MIN_TOKENS,
       status: w > 0 || r2 > 0 ? (r2 > 0 ? 'hit' : 'written') : 'no_cache',
-      note: w > 0 || r2 > 0 ? null
-        : 'cache_creation y cache_read en 0: el prefijo cacheable no llegó al mínimo del modelo (Fable 5.1: 512 tokens). El system del SCAN mide ~330 tokens. Ver el runbook.',
     };
+    // EL DIAGNÓSTICO, no la observación. `cache_read: 0` tiene tres causas muy
+    // distintas y antes las tres salían con la misma nota: (a) el prefijo no
+    // llega al piso y el marcador se ignora; (b) llega, se escribió, y este
+    // agente fue el PRIMERO (por eso lee 0 — lo normal en la primera llamada);
+    // (c) llega pero ni escribió ni leyó, que sí es un problema.
+    if (w > 0 && r2 === 0) {
+      row.cache.note = `Caché ESCRITA (${w} tokens). Leer 0 es lo esperado en la primera llamada del prefijo: el ahorro aparece en la SIGUIENTE — los otros agentes de la corrida, o la corrida siguiente dentro del TTL.`;
+    } else if (r2 > 0) {
+      row.cache.note = `Caché VIVA: ${r2} tokens leídos a precio de caché en vez de precio de entrada.`;
+    } else if (pre.status === 'below_min') {
+      row.cache.note = pre.note;
+      row.cache.fix = 'Mové contexto ESTABLE al system (el reglamento y el contexto compartido de la corrida ya están ahí) o bajá ARENA_CACHE_MIN_TOKENS si el proveedor cambió el piso.';
+    } else {
+      row.cache.note = `El prefijo (~${pre.tokens_est} tokens) SÍ pasa el piso de ${ANTHROPIC_CACHE_MIN_TOKENS}, pero el proveedor no reportó ni escritura ni lectura. Eso ya no es el mínimo cacheable: revisá que \`cache_control\` esté viajando en el payload.`;
+    }
   }
 
   // ¿RESPETÓ EL FORMATO? Se usa el MISMO parser que la corrida real: un smoke
@@ -325,6 +356,75 @@ async function probeAgent(agent, phase, prompts, timeoutMs = PROBE_TIMEOUT_MS, p
   if (!row.ok && row.truncated) row.failure = 'truncated_at_max_tokens';
   else if (!row.ok) row.failure = 'malformed_json';
   return row;
+}
+
+// ── COSTO PROYECTADO POR CORRIDA Y POR DÍA ───────────────────────────
+// El smoke mide UNA llamada por agente. Una CORRIDA del PM son DOS (scan +
+// dive) más el titular, y un DÍA son varias corridas por agente. Sin esta
+// proyección, el `total_cost_usd` del smoke se lee como si fuera el costo de
+// operar — y es ~1/6 de eso.
+//
+// TODO ACÁ ES UNA ESTIMACIÓN Y SE MARCA COMO TAL. Las suposiciones van
+// explícitas en la respuesta (`assumptions`) en vez de escondidas en el
+// número, porque son justo lo que hay que discutir cuando la cifra sorprenda:
+//
+//   · fases por corrida: 2 (scan + dive). El titular es una llamada corta
+//     aparte y se cuenta como media fase.
+//   · el DIVE cuesta más que el SCAN: más entrada (los datos de Finnhub) y más
+//     salida (el JSON completo con positions_review y commitments). Se modela
+//     con un multiplicador declarado, no con un número tapado.
+//   · la CACHÉ no se descuenta. Es el sesgo CONSERVADOR a propósito: proyectar
+//     el ahorro de una caché que todavía no se vio funcionar sería proyectar un
+//     deseo. Cuando el smoke reporte `cache.status: 'hit'`, esto se puede
+//     afinar y el número REAL va a estar por debajo.
+const FASES_POR_CORRIDA = 2.5;        // scan + dive + el titular (corto)
+const DIVE_VS_SCAN = 1.8;             // el dive mueve más entrada y más salida
+
+export function projectRunCost(probes, { fixedRounds = 3, worstCaseRuns = 12 } = {}) {
+  // `p.cost_usd != null` PRIMERO: Number(null) es 0, y 0 es finito — sin esa
+  // guarda un agente sin precio entraba a la suma como si costara cero, y la
+  // proyección salía más barata justo por los agentes que no sabemos cuánto
+  // cuestan. Es el error que hay que evitar en un número que sirve para decidir
+  // un presupuesto.
+  const conCosto = probes.filter((p) => p.cost_usd != null && Number.isFinite(Number(p.cost_usd)));
+  if (!conCosto.length) return null;
+  const porAgente = conCosto.map((p) => {
+    const unaLlamada = Number(p.cost_usd);
+    // La llamada medida es la del SCAN (o la del DIVE si se corrió ?phase=dive).
+    const scan = p.phase === 'dive' ? unaLlamada / DIVE_VS_SCAN : unaLlamada;
+    const porCorrida = scan * (1 + DIVE_VS_SCAN) + scan * 0.5;
+    return {
+      agent: p.agent, name: p.name, provider: p.provider,
+      medido_una_llamada_usd: +unaLlamada.toFixed(6),
+      cost_source: p.cost_source || null,
+      estimado: !!p.cost_estimated,
+      pricing_per_mtok: p.pricing_per_mtok || null,
+      por_corrida_usd: +porCorrida.toFixed(4),
+      rondas_fijas_dia_usd: +(porCorrida * fixedRounds).toFixed(4),
+      peor_caso_dia_usd: +(porCorrida * worstCaseRuns).toFixed(4),
+    };
+  });
+  const suma = (k) => +porAgente.reduce((a, b) => a + b[k], 0).toFixed(4);
+  const sinCosto = probes.filter((p) => p.cost_usd == null || !Number.isFinite(Number(p.cost_usd))).map((p) => p.agent);
+  return {
+    estimado: true,
+    nota: 'ESTIMACIÓN, no una factura. Sale de escalar la única llamada que el smoke midió por agente. No descuenta caché (sesgo conservador deliberado) y no contempla descuentos ni mínimos por request.',
+    assumptions: {
+      fases_por_corrida: FASES_POR_CORRIDA,
+      dive_vs_scan: DIVE_VS_SCAN,
+      rondas_fijas_por_dia: fixedRounds,
+      peor_caso_corridas_por_dia: worstCaseRuns,
+      cache: 'no descontada',
+    },
+    por_agente: porAgente,
+    liga: {
+      agentes_con_costo: porAgente.length,
+      agentes_sin_costo: sinCosto,
+      por_corrida_usd: suma('por_corrida_usd'),
+      rondas_fijas_dia_usd: suma('rondas_fijas_dia_usd'),
+      peor_caso_dia_usd: suma('peor_caso_dia_usd'),
+    },
+  };
 }
 
 export default async function handler(req, res) {
@@ -465,8 +565,18 @@ export default async function handler(req, res) {
     ? `${estimados.length} de ${out.probes.length} son ESTIMADOS con el precio del catálogo (${estimados.join(', ')}): OpenRouter no reportó usage.cost. El resto es el cobro real.`
     : 'todos los costos son los que el proveedor reportó, ninguno estimado';
   out.sin_costo = out.probes.filter((p) => p.cost_usd == null).map((p) => p.agent);
+  // El costo de OPERAR, no el de este smoke. Marcado estimado, con las
+  // suposiciones a la vista y los precios del catálogo que las alimentan.
+  out.costo_proyectado = projectRunCost(out.probes);
+  if (out.costo_proyectado) {
+    const l = out.costo_proyectado.liga;
+    out.costo_proyectado.lectura = `Estimado: ~$${l.por_corrida_usd} por corrida de la liga completa, ~$${l.rondas_fijas_dia_usd}/día con 3 rondas fijas, ~$${l.peor_caso_dia_usd}/día en el peor caso de 12 corridas.` +
+      (l.agentes_sin_costo.length ? ` Sin precio: ${l.agentes_sin_costo.join(', ')} — el total real es MAYOR que esto.` : '');
+  }
   out.verdict = red.length === 0 && blocked.length === 0
-    ? `VERDE: los ${green.length} agentes respondieron JSON válido sin truncarse. Costo del smoke: $${out.total_cost_usd.toFixed(4)}. La nocturna puede correr con modelos nuevos.`
+    ? `VERDE: los ${green.length} agentes respondieron JSON válido sin truncarse. Costo de ESTE smoke: $${out.total_cost_usd.toFixed(4)}` +
+      (out.costo_proyectado ? `; costo ESTIMADO de operar: ~$${out.costo_proyectado.liga.rondas_fijas_dia_usd}/día con 3 rondas fijas` : '') +
+      '. La nocturna puede correr con modelos nuevos.'
     : `ROJO: ${green.length}/${out.probes.length} en verde` +
       (blocked.length ? `, ${blocked.length} sin slug resuelto` : '') +
       `. Revisá \`slugs\` y \`probes[].failure\` antes de dejar correr el cron.`;
