@@ -445,8 +445,30 @@ export function addPortfolioChannels(map, { positions = [], openOrders = [] } = 
   return m;
 }
 
-async function fetchJson(url) {
-  const r = await fetch(url, { signal: AbortSignal.timeout(12000) });
+// ── PRESUPUESTO POR CANAL DEL BUFFET ─────────────────────────────────
+// Los 12s planos servían cuando las tres fuentes eran rápidas. `insiders` no
+// lo es, y no por culpa nuestra: /api/stock-tracker?cat=insider baja el feed
+// Atom de Form 4 de SEC EDGAR y después inspecciona hasta SCAN_CAP=60 XML
+// sueltos de sec.gov/Archives. Con la caché EN MEMORIA fría —o sea, en cada
+// lambda nueva— son ~61 requests a un servidor que throttlea a propósito, y
+// 12s no alcanzan ni de casualidad.
+//
+// Los canales se piden EN PARALELO (Promise.all más abajo), así que subirle el
+// techo a insiders cuesta wall-clock solo si es el más lento: el costo del
+// buffet es max(canales), no la suma.
+//
+// Esto NO es la cura, es el torniquete. La cura es precomputar insiders en su
+// propio cron y leerlo de Neon, como ya hace el canal screener (readScreenerRows,
+// cero llamadas a terceros en la corrida). Mientras tanto, 30s hacen que un
+// EDGAR lento deje de costar un canal entero del buffet.
+const BUFFET_TIMEOUT_MS = {
+  insiders: Number(process.env.ARENA_BUFFET_TIMEOUT_INSIDERS_MS) || 30000,
+};
+const BUFFET_TIMEOUT_DEFAULT_MS = Number(process.env.ARENA_BUFFET_TIMEOUT_MS) || 12000;
+const buffetTimeout = (canal) => BUFFET_TIMEOUT_MS[canal] || BUFFET_TIMEOUT_DEFAULT_MS;
+
+async function fetchJson(url, timeoutMs = BUFFET_TIMEOUT_DEFAULT_MS) {
+  const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 }
@@ -471,12 +493,15 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   };
   const out = {};
   await Promise.all(Object.entries(targets).map(async ([k, url]) => {
-    try { out[k] = await fetchJson(url); }
+    const techo = buffetTimeout(k);
+    try { out[k] = await fetchJson(url, techo); }
     catch (err) {
       out[k] = null;
-      // El error REAL del fetch (status HTTP o timeout), no solo "no disponible".
+      // El error REAL del fetch (status HTTP o timeout), con el techo que se
+      // aplicó — un "timeout (12s)" fijo mentía apenas los techos dejaron de
+      // ser iguales, y mandaba a buscar el problema al lugar equivocado.
       out[k + '_error'] = err && err.name === 'TimeoutError'
-        ? 'timeout (12s)'
+        ? `timeout (${Math.round(techo / 1000)}s)` + (k === 'insiders' ? ' — SEC EDGAR: feed Atom + hasta 60 XML de Form 4 con caché fría' : '')
         : String((err && err.message) || err);
     }
   }));

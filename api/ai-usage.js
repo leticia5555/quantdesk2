@@ -18,6 +18,7 @@
 // ENV VARS: DATABASE_URL (para el journal) · CRON_SECRET (opcional)
 // ═══════════════════════════════════════════════════════════════
 
+import { openRouterPrices } from './_lib/arena-model.js';
 import { readDailyUsage } from './_lib/usage.js';
 
 // Precios por millón de tokens (USD), catálogo vigente jul 2026 (input/output).
@@ -44,10 +45,17 @@ function priceFor(model) {
 // El único modelo esperado es haiku; cualquier otro es una alarma de costo.
 function isHaiku(model) { return !!model && model.indexOf('haiku') !== -1; }
 
-function estCostUSD(model, inTok, outTok) {
+// Precio por modelo. Anthropic sale de la tabla de la casa (_lib/model.js);
+// los cinco de OpenRouter NO están ahí y por eso su gasto aparecía en $0 —
+// siete agentes quemando tokens todos los días y un total que solo contaba a
+// dos. Ahora el slug de OpenRouter se cotiza contra su CATÁLOGO VIVO, que es
+// un precio publicado por el proveedor, no uno que copiamos a mano.
+function estCostUSD(model, inTok, outTok, orPrices) {
   const p = priceFor(model);
-  if (!p) return null;
-  return +(((inTok || 0) / 1e6) * p.in + ((outTok || 0) / 1e6) * p.out).toFixed(4);
+  if (p) return +(((inTok || 0) / 1e6) * p.in + ((outTok || 0) / 1e6) * p.out).toFixed(4);
+  const or = orPrices && orPrices[model];
+  if (or) return +(((inTok || 0) / 1e6) * or.input + ((outTok || 0) / 1e6) * or.output).toFixed(4);
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -67,12 +75,18 @@ export default async function handler(req, res) {
   try {
     const { source, rows } = await readDailyUsage(days);
 
+    // Catálogo de OpenRouter, best-effort: si no se puede bajar, esos modelos
+    // vuelven a quedar sin precio (priced:false) — nunca con uno inventado.
+    const orPrices = rows.some((r) => String(r.model || '').includes('/'))
+      ? await openRouterPrices()
+      : null;
+
     const byDay = {};
     const totals = { calls: 0, input_tokens: 0, output_tokens: 0, retries: 0, cache_hits: 0, est_cost_usd: 0 };
     const nonHaiku = new Set();
 
     for (const r of rows) {
-      const cost = estCostUSD(r.model, r.input_tokens, r.output_tokens);
+      const cost = estCostUSD(r.model, r.input_tokens, r.output_tokens, orPrices);
       const row = {
         model: r.model,
         calls: Number(r.calls) || 0,
@@ -82,6 +96,10 @@ export default async function handler(req, res) {
         cache_hits: Number(r.cache_hits) || 0,
         est_cost_usd: cost,
         priced: cost !== null,
+        // De dónde salió el precio, para que un total no se lea como exacto
+        // cuando la mitad viene de un catálogo.
+        price_source: cost === null ? null
+          : (priceFor(r.model) ? 'anthropic_price_table' : 'openrouter_catalog'),
       };
       if (r.model && !isHaiku(r.model)) nonHaiku.add(r.model);
       (byDay[r.day] = byDay[r.day] || { day: r.day, models: [], est_cost_usd: 0 }).models.push(row);

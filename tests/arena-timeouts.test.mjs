@@ -103,8 +103,13 @@ console.log('\n── No quedan timeouts hardcodeados en el dispatch ──');
 const model = readFileSync(new URL('../api/_lib/arena-model.js', import.meta.url), 'utf8');
 ok(!/AbortSignal\.timeout\(\s*\d+\s*\)/.test(model),
   'arena-model.js no tiene AbortSignal.timeout con un número pegado (eran 45000 y 180000, asimétricos)');
-ok((model.match(/AbortSignal\.timeout\(timeoutMs\)/g) || []).length === 2,
+// >= 2: los dos proveedores. Puede haber más llamadas parametrizadas
+// (openRouterPrices baja el catálogo con su propio techo nombrado); lo que se
+// prohíbe es el NÚMERO PEGADO, que es lo que chequea la aserción de arriba.
+ok((model.match(/AbortSignal\.timeout\(timeoutMs\)/g) || []).length >= 2,
   'los dos proveedores usan el MISMO presupuesto parametrizado');
+ok(/openRouterFetch[\s\S]{0,600}AbortSignal\.timeout\(timeoutMs\)/.test(model), 'openRouterFetch lo usa');
+ok(/anthropicFetch[\s\S]{0,400}AbortSignal\.timeout\(timeoutMs\)/.test(model), 'anthropicFetch lo usa');
 
 console.log('\n── El smoke corre en paralelo, no en serie ──');
 const smoke = readFileSync(new URL('../api/arena-smoke.js', import.meta.url), 'utf8');

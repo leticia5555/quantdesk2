@@ -75,6 +75,7 @@ import {
 import { parseScanResponse, parsePlanResponse } from './_lib/arena-guard.js';
 import {
   callArenaLLM, providerKey, buildAnthropicPayload, buildOpenRouterBody, anthropicCostUsd, withDeadline,
+  openRouterCostUsd,
 } from './_lib/arena-model.js';
 import {
   activeAgents, agentById, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, modelSlugResolved,
@@ -371,7 +372,7 @@ function payloadChars(agent, system, user) {
   return JSON.stringify(p).length;
 }
 
-async function probeAgent(agent, phase, prompts, timeoutMs = PROBE_TIMEOUT_MS) {
+async function probeAgent(agent, phase, prompts, timeoutMs = PROBE_TIMEOUT_MS, pricing = null) {
   const t0 = Date.now();
   const row = {
     agent: agent.id, name: agent.name, model_label: agent.model_label,
@@ -423,10 +424,40 @@ async function probeAgent(agent, phase, prompts, timeoutMs = PROBE_TIMEOUT_MS) {
     cache_read: Number(usage.cache_read_input_tokens) || 0,
     cache_write: Number(usage.cache_creation_input_tokens) || 0,
   };
-  row.cost_usd = agent.provider === 'anthropic'
-    ? anthropicCostUsd(agent.model, usage)
-    : (llm.cost_usd != null ? llm.cost_usd : null);
-  if (row.cost_usd == null) row.cost_note = 'el proveedor no reportó costo y no hay precio verificado en la casa — no se inventa';
+  // COSTO, en orden de preferencia:
+  //   1. lo que el proveedor COBRÓ (anthropic: precio de la casa; openrouter:
+  //      usage.cost, el cobro real);
+  //   2. tokens × precio del catálogo VIVO de OpenRouter — estimación marcada;
+  //   3. null, con la nota de por qué. Nunca un número inventado.
+  if (agent.provider === 'anthropic') {
+    row.cost_usd = anthropicCostUsd(agent.model, usage);
+    row.cost_source = row.cost_usd != null ? 'anthropic_price_table' : null;
+  } else if (llm.cost_usd != null) {
+    row.cost_usd = llm.cost_usd;
+    row.cost_source = 'openrouter_reported';
+  } else {
+    row.cost_usd = openRouterCostUsd(row.tokens, pricing);
+    row.cost_source = row.cost_usd != null ? 'catalog_estimate' : null;
+    if (row.cost_usd != null) {
+      row.cost_estimated = true;
+      row.pricing_per_mtok = pricing;
+      row.cost_note = 'OpenRouter no reportó usage.cost: estimado con tokens × el precio del catálogo vivo. No contempla descuentos ni el precio distinto de los tokens cacheados.';
+    }
+  }
+  if (row.cost_usd == null) row.cost_note = 'el proveedor no reportó costo y el catálogo no trae precio para este slug — no se inventa';
+
+  // ¿LA CACHÉ ESTÁ VIVA? Se responde con el número del proveedor, no con una
+  // suposición: cache_creation>0 significa que el bloque se escribió (o sea,
+  // superó el mínimo cacheable del modelo); cache_read>0, que se reusó.
+  if (agent.provider === 'anthropic') {
+    const w = row.tokens.cache_write, r2 = row.tokens.cache_read;
+    row.cache = {
+      write: w, read: r2,
+      status: w > 0 || r2 > 0 ? (r2 > 0 ? 'hit' : 'written') : 'no_cache',
+      note: w > 0 || r2 > 0 ? null
+        : 'cache_creation y cache_read en 0: el prefijo cacheable no llegó al mínimo del modelo (Fable 5.1: 512 tokens). El system del SCAN mide ~330 tokens. Ver el runbook.',
+    };
+  }
 
   // ¿RESPETÓ EL FORMATO? Se usa el MISMO parser que la corrida real: un smoke
   // que valida el JSON con otro criterio que el harness no prueba el harness.
@@ -566,8 +597,13 @@ export default async function handler(req, res) {
   //
   // allSettled y no all: acá NADA debería rechazar (probeAgent atrapa todo),
   // pero si algo se escapa, el reporte pierde un agente en vez de los siete.
+  // Precio del catálogo por slug — ya se bajó en el PASO 1, no se vuelve a pedir.
+  const precios = {};
+  for (const sl of out.slugs) if (sl.pricing_per_mtok) precios[sl.agent] = sl.pricing_per_mtok;
+
   const settled = await Promise.allSettled(
-    probeable.map((a) => probeAgent(a, phase, prompts, PROBE_TIMEOUT_MS).then((row) => { emit(row); return row; })),
+    probeable.map((a) => probeAgent(a, phase, prompts, PROBE_TIMEOUT_MS, precios[a.id] || null)
+      .then((row) => { emit(row); return row; })),
   );
   out.probes = settled.map((r, i) => (r.status === 'fulfilled' ? r.value : {
     agent: probeable[i].id, name: probeable[i].name, ok: false, failure: 'threw',
@@ -577,6 +613,11 @@ export default async function handler(req, res) {
   const green = out.probes.filter((p) => p.ok);
   const red = out.probes.filter((p) => !p.ok);
   out.total_cost_usd = out.probes.reduce((s, p) => s + (Number(p.cost_usd) || 0), 0);
+  const estimados = out.probes.filter((p) => p.cost_estimated).map((p) => p.agent);
+  out.cost_note = estimados.length
+    ? `${estimados.length} de ${out.probes.length} son ESTIMADOS con el precio del catálogo (${estimados.join(', ')}): OpenRouter no reportó usage.cost. El resto es el cobro real.`
+    : 'todos los costos son los que el proveedor reportó, ninguno estimado';
+  out.sin_costo = out.probes.filter((p) => p.cost_usd == null).map((p) => p.agent);
   out.verdict = red.length === 0 && blocked.length === 0
     ? `VERDE: los ${green.length} agentes respondieron JSON válido sin truncarse. Costo del smoke: $${out.total_cost_usd.toFixed(4)}. La nocturna puede correr con modelos nuevos.`
     : `ROJO: ${green.length}/${out.probes.length} en verde` +
