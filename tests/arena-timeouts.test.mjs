@@ -108,7 +108,12 @@ ok(!/AbortSignal\.timeout\(\s*\d+\s*\)/.test(model),
 // prohíbe es el NÚMERO PEGADO, que es lo que chequea la aserción de arriba.
 ok((model.match(/AbortSignal\.timeout\(timeoutMs\)/g) || []).length >= 2,
   'los dos proveedores usan el MISMO presupuesto parametrizado');
-ok(/openRouterFetch[\s\S]{0,600}AbortSignal\.timeout\(timeoutMs\)/.test(model), 'openRouterFetch lo usa');
+// La ventana era de 600 chars y la firma de `openRouterFetch` creció al
+// aceptar `tools`/`toolChoice` (B3), así que el AbortSignal quedó a ~680. Se
+// ensancha en vez de reformatear el código para que quepa en el test: lo que
+// este lint tiene que garantizar es que el fetch de OpenRouter use el techo
+// PARAMETRIZADO, no que la función mida menos de N caracteres.
+ok(/openRouterFetch[\s\S]{0,1200}AbortSignal\.timeout\(timeoutMs\)/.test(model), 'openRouterFetch lo usa');
 ok(/anthropicFetch[\s\S]{0,400}AbortSignal\.timeout\(timeoutMs\)/.test(model), 'anthropicFetch lo usa');
 
 console.log('\n── El smoke corre en paralelo, no en serie ──');

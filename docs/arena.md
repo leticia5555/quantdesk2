@@ -404,6 +404,107 @@ inválido, o sea una corrida entera perdida. `stop_reason` se normaliza también
 para OpenRouter (`finish_reason: 'length'` → `max_tokens`), así el diagnóstico
 existe para los siete agentes y no solo para los de Anthropic.
 
+## B3 · LAS HERRAMIENTAS
+
+`_lib/arena-tools.js` (las cuatro + presupuesto) · `_lib/arena-tool-loop.js` (el
+loop multi-proveedor) · tests en `tests/arena-herramientas.test.mjs`
+
+El tablero le muestra el mercado; esto le deja **investigarlo**.
+
+| Herramienta | Qué contesta |
+|---|---|
+| `screener({sector?, min_rvol?, min_mcap_b?, ret_*, near_52w_high\|low, has_news, limit≤25})` | "¿qué nombres se parecen a X?" |
+| `noticias({ticker?\|tema?, days≤5, limit≤8})` | titulares de un nombre o de un tema |
+| `ficha({ticker})` | la hoja completa de UN nombre — la cara, para nombres que ya está considerando |
+| `sector({etf})` | un sector por dentro |
+
+### El tope es del harness, no del prompt
+
+Un tope que solo vive en el prompt es una **sugerencia** que el modelo cumple
+casi siempre, y "casi siempre" en un presupuesto es un presupuesto roto. La
+llamada 9 **no se ejecuta** y devuelve un `tool_result` que dice *"presupuesto
+agotado, decidí con lo que tenés"*. El modelo se entera en lugar de descubrirlo
+por silencio, y el intento rechazado **se journalea igual**: es parte de cómo
+investigó.
+
+8 llamadas en ronda fija, 3 en corrida por disparador (está acotada a un nombre
+— no necesita explorar).
+
+### El truncamiento viaja dentro del resultado
+
+Cada resultado se corta a ~1.5K tokens y el corte se **declara adentro**:
+`…(N filas más, TRUNCADO por presupuesto de tokens — no es que no existan, es
+que no cupieron)`. Un modelo al que le cortaron los datos sin avisarle razona
+sobre una lista que cree completa, y después escribe *"no hay ningún nombre de
+energía con RVOL alto"* cuando lo que pasó es que no cupo.
+
+La misma disciplina en los vacíos: el screener distingue *"ninguno cumple"* de
+*"no hay tablero sobre el que filtrar"*, y `noticias` distingue *"no hubo
+titulares"* de *"la fuente falló"*.
+
+### Los argumentos se acotan, no se rechazan
+
+`limit: 500` es el modelo pidiendo "dame todo", no un error: se le dan 25 y se
+le **dice** que se acotó. Rechazar la llamada le gastaría una del presupuesto
+sin darle nada.
+
+### La caché es por contenido, no por agente
+
+Si dos agentes piden lo mismo, se paga una vez. Eso **no es herding**: es el
+mismo dato, y el tablero ya es común para los siete. Lo que mide el experimento
+es **qué decidieron mirar**, y eso queda intacto — la secuencia de cada uno se
+journalea entera.
+
+### El loop multi-proveedor (el trabajo que el scope marcó como subestimado)
+
+Anthropic y OpenAI no difieren solo en nombres de campo; difieren en la **forma
+del turno que hay que devolver**:
+
+| | Anthropic | OpenAI / OpenRouter |
+|---|---|---|
+| pide | `content:[{type:'tool_use', id, name, input}]` | `message.tool_calls:[{id, function:{name, arguments}}]` — `arguments` es un **string JSON** |
+| se responde | **un** mensaje `user` con todos los `tool_result` | **un mensaje `tool` POR CADA** llamada |
+| eco | el turno del asistente **verbatim**, con los bloques de thinking | el objeto `message` **crudo**, con su `tool_calls` |
+
+Los dos detalles que rompen si se hacen "parecido" en vez de exacto:
+
+1. **Anthropic exige el eco verbatim.** Reconstruirlo como texto plano es lo que
+   el chequeo de *preserved thinking* de Fable 5.1 no perdona — la misma
+   cicatriz que ya estaba documentada en el guard de fechas.
+2. **OpenAI exige un mensaje `tool` por cada `tool_call`.** Si el modelo pidió
+   tres y se responde con uno, la API rechaza el turno entero. Agrupar (como
+   hace Anthropic) *parece* equivalente y no lo es.
+
+### El guard de fechas y el tool use no se llevan
+
+El retry del guard appendea un turno de **usuario** después del turno del
+asistente. Cuando ese turno pidió herramientas, eso es un payload **inválido en
+los dos proveedores**, y el retry devolvería un 400 que no tiene nada que ver
+con fechas. Así que en un turno con herramientas el guard **no reintenta** — y
+no se pierde nada: el turno que pide una herramienta casi no tiene prosa, y el
+turno **final**, que trae el JSON y la narrativa (donde una fecha alucinada sí
+importa), llega sin herramientas y pasa por el guard completo.
+
+### Dos topes distintos
+
+El presupuesto cuenta **llamadas**; el loop cuenta **vueltas**. Un modelo puede
+pedir tres herramientas en una vuelta, y sin el tope de vueltas uno que se queda
+en bucle gasta el reloj de la lambda aun con el presupuesto agotado. Al
+agotarse las vueltas hay **una vuelta final sin herramientas** para que pueda
+cerrar con su JSON: sin ella, un modelo en bucle produce una corrida abortada
+teniendo todo lo que necesitaba.
+
+### Determinismo para el replay
+
+La secuencia se journalea con los argumentos y el **resultado completo**, no
+solo el resumen: sin él, un replay no puede reproducir la corrida — el modelo
+decidió mirando algo que no guardamos. Lo que se **publica** en `/liga` es la
+secuencia **sin** los volcados: *"buscó semis con RVOL alto → leyó las noticias
+de NVDA → pidió la ficha de AMD → no compró ninguna"* es una historia; ocho
+volcados de datos no lo son.
+
+---
+
 ## B2 · EL TABLERO
 
 `_lib/arena-board.js` · tests en `tests/arena-tablero.test.mjs`
@@ -1199,6 +1300,10 @@ ya conocidos, y `job=audit` descubre los nuevos a medida que aparezcan.
 | `ARENA_UNIVERSE_MOVERS_MAX` | `100` | Tope de nombres del día que se AGREGAN al universo (los que ya están en un índice no gastan cupo). |
 | `ARENA_BOARD` | `1` | Freno de mano del tablero (B2). `0` lo apaga sin deploy. |
 | `ARENA_BOARD_TOKEN_CAP` | `5000` | Techo DURO del tablero. El objetivo declarado son 3-4K; pasarse se journalea. |
+| `ARENA_TOOLS_MAX` | `8` | Llamadas a herramientas por ronda fija. Tope DURO del harness. |
+| `ARENA_TOOLS_MAX_TRIGGER` | `3` | Ídem en una corrida por disparador. |
+| `ARENA_TOOL_RESULT_TOKENS` | `1500` | Techo de cada resultado. El corte se declara adentro. |
+| `ARENA_TOOL_TURNS_MAX` | `10` | Tope de VUELTAS del loop (distinto del de llamadas). |
 
 
 ## Self-fetch del buffet: causa raíz 24-jul y observabilidad

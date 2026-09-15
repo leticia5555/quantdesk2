@@ -76,6 +76,27 @@ function retryReminder(hits, now) {
     `If you lack knowledge of recent events, say so instead of fabricating context.`;
 }
 
+// ¿Este turno pidió herramientas? Lo necesitan los dos guards de fecha.
+function pidioHerramientas(data) {
+  return ((data && data.content) || []).some((b) => b && b.type === 'tool_use');
+}
+
+// ── EL GUARD DE FECHAS Y EL TOOL USE NO SE LLEVAN ────────────────────
+// El retry del guard appendea un turno de USUARIO después del turno del
+// asistente. Cuando ese turno del asistente pidió HERRAMIENTAS, eso es un
+// payload INVÁLIDO en los dos proveedores: Anthropic exige que el mensaje
+// siguiente traiga un `tool_result` por cada `tool_use`, y OpenAI un mensaje
+// `tool` por cada `tool_call`. El retry devolvería 400 y la corrida moriría con
+// un error que no tiene nada que ver con fechas.
+//
+// Así que en un turno con herramientas el guard NO reintenta. No se pierde
+// nada: el turno que pide una herramienta casi no tiene prosa, y el turno FINAL
+// —el que trae el JSON y la narrativa, que es donde una fecha alucinada
+// importa— llega sin herramientas y sí pasa por el guard completo.
+function saltarGuardPorToolUse(data) {
+  return pidioHerramientas(data);
+}
+
 // OpenRouter (OpenAI-compatible) → forma Anthropic. El contenido puede venir
 // como string o como array de partes; se aplana a texto.
 function normalizeOpenRouter(raw) {
@@ -97,9 +118,33 @@ function normalizeOpenRouter(raw) {
   // mitad del JSON": sin normalizarlo, ese diagnóstico solo existiría para los
   // agentes de Anthropic y la mitad de la liga quedaría sin explicación.
   const finish = (raw.choices && raw.choices[0] && raw.choices[0].finish_reason) || null;
+  // B3 · LAS LLAMADAS A HERRAMIENTAS, normalizadas a la forma de Anthropic.
+  // OpenAI las manda en `message.tool_calls` con los argumentos como STRING
+  // JSON; Anthropic las manda como bloques `tool_use` con el objeto ya
+  // parseado. Se normaliza a lo segundo para que el loop de arriba sea uno
+  // solo — dos loops es cómo se terminan corriendo dos experimentos distintos.
+  const toolCalls = (msg && msg.tool_calls) || [];
+  const toolUse = toolCalls.map((tc) => {
+    let input = {};
+    try { input = JSON.parse((tc.function && tc.function.arguments) || '{}'); }
+    catch { input = { __unparsed: (tc.function && tc.function.arguments) || '' }; }
+    return { type: 'tool_use', id: tc.id, name: tc.function && tc.function.name, input };
+  });
+  const content = [];
+  if (String(text).trim()) content.push({ type: 'text', text: typeof text === 'string' ? text : String(text) });
+  content.push(...toolUse);
+  if (!content.length) content.push({ type: 'text', text: '' });
   return {
-    content: [{ type: 'text', text: typeof text === 'string' ? text : String(text) }],
-    stop_reason: finish === 'length' ? 'max_tokens' : (finish === 'stop' ? 'end_turn' : finish),
+    content,
+    // `tool_calls` de OpenAI → `tool_use` de Anthropic. Sin esto, el loop no
+    // podría distinguir "terminó" de "quiere una herramienta" en la mitad de
+    // la liga.
+    stop_reason: toolUse.length ? 'tool_use'
+      : (finish === 'length' ? 'max_tokens' : (finish === 'stop' ? 'end_turn' : finish)),
+    // El turno CRUDO del asistente, para poder ecoarlo verbatim en el próximo
+    // mensaje: OpenAI exige que el `tool_calls` que se responde sea el mismo
+    // objeto que mandó.
+    _raw_message: msg || null,
     usage: {
       input_tokens: Number(u.prompt_tokens) || 0,
       output_tokens: Number(u.completion_tokens) || 0,
@@ -118,7 +163,7 @@ function normalizeOpenRouter(raw) {
 // el mismo payload que la corrida real (un smoke que manda otra cosa no prueba
 // nada). `reasoning.effort` es el parámetro unificado de OpenRouter; un modelo
 // que no razona lo ignora, no falla.
-export function buildOpenRouterBody({ agent, model, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date() }) {
+export function buildOpenRouterBody({ agent, model, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), tools = null, toolChoice = null }) {
   const caps = (agent && agent.caps) || {};
   const body = {
     model: model || (agent && agent.model),
@@ -131,6 +176,10 @@ export function buildOpenRouterBody({ agent, model, system, messages, maxTokens 
   };
   if (caps.sampling !== false) body.temperature = ARENA_TEMPERATURE;
   if (caps.effort === 'openrouter') body.reasoning = { effort: ARENA_EFFORT };
+  if (tools && tools.length) {
+    body.tools = tools;
+    if (toolChoice) body.tool_choice = toolChoice;
+  }
   // Caché de prompt: en los modelos de OpenAI vía OpenRouter es AUTOMÁTICA
   // (el proveedor cachea el prefijo por su cuenta, sin marcador). No se manda
   // `cache_control` — sería un campo que el endpoint de OpenAI no conoce.
@@ -140,8 +189,8 @@ export function buildOpenRouterBody({ agent, model, system, messages, maxTokens 
   return body;
 }
 
-async function openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS }) {
-  const body = buildOpenRouterBody({ agent, model, system, messages, maxTokens, now });
+async function openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null }) {
+  const body = buildOpenRouterBody({ agent, model, system, messages, maxTokens, now, tools, toolChoice });
   const r = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
@@ -188,23 +237,23 @@ async function timedFetch(fn, timeoutMs) {
 
 // Guard-equivalente al de Anthropic, para OpenRouter: inyecta fecha, escanea
 // fechas prospectivas rotas, reintenta UNA vez, y si reincide devuelve stale.
-async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS }) {
-  const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs }), timeoutMs);
+async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null }) {
+  const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice }), timeoutMs);
   if (first.status < 200 || first.status >= 300 || !first.raw) {
     await recordAiCall({ model, now });
     return { status: first.status || 502, data: null, timedOut: !!first.timedOut, error_detail: first.netError || null };
   }
   const data = normalizeOpenRouter(first.raw);
-  const text = data.content.map((b) => b.text).join('').trim();
+  const text = data.content.filter((b) => b.type === 'text').map((b) => b.text || '').join('').trim();
   const hits = staleProspectiveDates(text, now);
-  if (!hits.length) {
+  if (!hits.length || saltarGuardPorToolUse(data)) {
     await recordAiCall({ model, usage: data.usage, now });
-    return { status: 200, data };
+    return { status: 200, data, ...(hits.length ? { date_guard_skipped: 'tool_use' } : {}) };
   }
 
   // Retry único con recordatorio, mismo formato requerido.
   const retryMessages = [...messages, { role: 'assistant', content: text }, { role: 'user', content: retryReminder(hits, now) }];
-  const second = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages: retryMessages, maxTokens, now, timeoutMs }), timeoutMs);
+  const second = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages: retryMessages, maxTokens, now, timeoutMs, tools, toolChoice }), timeoutMs);
   if (second.status < 200 || second.status >= 300 || !second.raw) {
     // El retry falló en red: mejor la primera respuesta (con su nota de fechas)
     // que un corte — el downstream ya valida el JSON de todos modos.
@@ -267,7 +316,7 @@ export function cachePrefixReport(agent, system) {
   return out;
 }
 
-export function buildAnthropicPayload({ agent, model, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date() }) {
+export function buildAnthropicPayload({ agent, model, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), tools = null, toolChoice = null }) {
   const caps = (agent && agent.caps) || {};
   const payload = {
     model: model || (agent && agent.model),
@@ -295,6 +344,16 @@ export function buildAnthropicPayload({ agent, model, system, messages, maxToken
     ];
   } else {
     payload.system = sysText + dateText;
+  }
+
+  // B3 · HERRAMIENTAS. Van DESPUÉS del system en el payload pero ANTES del
+  // último `cache_control` conceptualmente: las definiciones son estables (no
+  // cambian entre corridas ni entre agentes), así que forman parte del prefijo
+  // que se cachea. Anthropic las cuenta dentro del prefijo cacheado si están
+  // antes del breakpoint, y acá lo están — el breakpoint vive en el system.
+  if (tools && tools.length) {
+    payload.tools = tools;
+    if (toolChoice) payload.tool_choice = toolChoice;
   }
 
   // Temperatura SOLO donde la API la acepta. Fable 5.1 devuelve 400 si viaja.
@@ -326,8 +385,8 @@ async function anthropicFetch({ apiKey, payload, timeoutMs = ARENA_LLM_TIMEOUT_M
 
 // Guard de fechas replicado para el Arena sobre Anthropic (ver el bloque de
 // arriba sobre por qué no se usa guardedClaudeCall).
-async function guardedAnthropicCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS }) {
-  const payload = buildAnthropicPayload({ agent, model, system, messages, maxTokens, now });
+async function guardedAnthropicCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null }) {
+  const payload = buildAnthropicPayload({ agent, model, system, messages, maxTokens, now, tools, toolChoice });
   const first = await timedFetch(() => anthropicFetch({ apiKey, payload, timeoutMs }), timeoutMs);
   if (first.status < 200 || first.status >= 300 || !first.raw) {
     await recordAiCall({ model: payload.model, now });
@@ -348,16 +407,16 @@ async function guardedAnthropicCall({ apiKey, agent, model, system, messages, ma
 
   const text = anthropicText(data);
   const hits = staleProspectiveDates(text, now);
-  if (!hits.length) {
+  if (!hits.length || saltarGuardPorToolUse(data)) {
     await recordAiCall({ model: payload.model, usage: data.usage, now });
-    return { status: 200, data };
+    return { status: 200, data, ...(hits.length ? { date_guard_skipped: 'tool_use' } : {}) };
   }
 
   // Retry único. El turno del asistente se ecoa con `data.content` VERBATIM
   // (bloques de thinking incluidos, en su orden original): reconstruirlo como
   // texto plano rompería el chequeo de historia de Fable 5.1.
   const retryPayload = buildAnthropicPayload({
-    agent, model, system, maxTokens, now,
+    agent, model, system, maxTokens, now, tools, toolChoice,
     messages: [...messages,
       { role: 'assistant', content: data.content },
       { role: 'user', content: retryReminder(hits, now) }],
@@ -479,7 +538,7 @@ export async function openRouterPrices({ timeoutMs = 20000, now = Date.now() } =
 
 export function __resetPriceCache() { priceCache = { at: 0, map: null }; }
 
-export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), timeoutMs = ARENA_LLM_TIMEOUT_MS }) {
+export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null }) {
   // CANDADO DE SLUG: un modelo cuyo slug no se verificó contra el catálogo del
   // proveedor y que no tiene override explícito NO se llama. Ver el encabezado
   // del registry: preferimos no correr a pegarle a un slug inventado.
@@ -490,10 +549,10 @@ export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_
   if (!apiKey) return { status: 0, data: null, missingKey: true, provider: agent && agent.provider };
 
   if (agent.provider === 'anthropic') {
-    return guardedAnthropicCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs });
+    return guardedAnthropicCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice });
   }
   if (agent.provider === 'openrouter') {
-    return guardedOpenRouterCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs });
+    return guardedOpenRouterCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice });
   }
   return { status: 0, data: null, error: 'proveedor desconocido: ' + (agent && agent.provider) };
 }
