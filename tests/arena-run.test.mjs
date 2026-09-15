@@ -199,7 +199,16 @@ global.fetch = async (url, opts = {}) => {
   }
   // Yahoo
   if (u.includes('yahoo')) {
-    return jsonReply({ chart: { result: [{ timestamp: timestamps, indicators: { quote: [{ close: closes }] } }] } });
+    // OHLCV completo: `fetchDailySeries` solo mira `close`, pero el filtro de
+    // admisión (_lib/arena-admission.js) usa `extractYahooCandles`, que exige
+    // open/high/low/close finitos y lee `volume` para el volumen en dólares.
+    // Con solo `close` el extractor devuelve null → todo el buffet caería como
+    // `data_unavailable` (fail closed) y el test mediría el filtro, no el flujo.
+    // Volumen 1M × ~$200 = ~$200M/día, muy por encima del piso de $10M.
+    return jsonReply({ chart: { result: [{ timestamp: timestamps, indicators: { quote: [{
+      close: closes, open: closes, high: closes, low: closes,
+      volume: closes.map(() => 1_000_000),
+    }] } }] } });
   }
   // Buffet (self-fetch a nuestros endpoints)
   if (u.startsWith(BASE_URL + '/api/movers')) return jsonReply({

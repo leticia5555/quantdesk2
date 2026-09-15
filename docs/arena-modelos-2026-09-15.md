@@ -34,7 +34,7 @@ sí llega a OpenRouter, compara contra el catálogo vivo y te devuelve el
 
 ```bash
 BASE=https://quantdesk2.vercel.app
-AUTH="Authorization: Bearer $CRON_SECRET"
+AUTH="Authorization: Bearer $ARENA_ADMIN_KEY"
 
 # ── PASO 1 — GRATIS. Resolver los cinco slugs. ───────────────────────
 curl -sS -H "$AUTH" "$BASE/api/arena-smoke?catalog=1" | jq '.slugs[] | {agent, resolution, slug, candidates, fix}'
@@ -72,7 +72,14 @@ resultado como si fuera una corrida.
 | `ARENA_CLAUDE_MODEL` | override del modelo de Anthropic del Arena | No (el default ya es Fable 5.1) |
 | `ARENA_MAX_TOKENS` | techo de salida, ambas fases | No (default 6000) |
 | `ARENA_EFFORT` | profundidad de razonamiento | No (default `medium`) |
+| `ARENA_ADMIN_KEY` | protege `/api/arena-smoke` | **Sí.** Sin ella el endpoint responde 503 |
 | `ARENA_ALLOW_UNVERIFIED_SLUGS` | levanta el candado de slug | **No lo pongas.** Existe para un smoke a mano |
+
+`/api/arena-smoke` tiene su **propia** llave y no comparte `CRON_SECRET`: lo
+dispara una persona a mano y gasta dinero real en siete proveedores. Sin
+`ARENA_ADMIN_KEY` configurada el endpoint **no queda abierto** — responde 503.
+El default "si no hay llave, dejá pasar" es cómo un endpoint que gasta se
+convierte en la factura de otro.
 
 > ⚠️ **No toques `ANTHROPIC_MODEL`.** Es el modelo de TODA la app (sim, earnings,
 > Smart $, los 6 agentes de la flota) y sigue en Haiku a propósito. Apuntarlo a
@@ -237,3 +244,117 @@ se lee en una consulta, no en un doc.
   `ANTHROPIC_MODEL`: es una llamada corta que no decide nada, y dejarla barata
   es deliberado. Si algún día `ANTHROPIC_MODEL` apunta a Fable, esa llamada
   hereda el problema de la temperatura — está anotado acá para ese día.
+
+
+---
+
+# 8. A4 — los tres fixes del journal del 14
+
+## (a) El prompt ya no arrastra temporadas anteriores
+
+**Ninguna** de las cuatro consultas de memoria que alimentan el prompt tenía
+corte por temporada:
+
+| Consulta | Ventana que tenía | Ahora |
+|---|---|---|
+| plan anterior reinyectado | el último `decide`, de la temporada que fuera | `run_date >= ARENA_SEASON.start` |
+| fills (reconstruir aperturas) | 180 días | + el mismo corte |
+| compromisos abiertos | 60 días | + el mismo corte |
+| **pico de equity del breaker** | **sin corte ninguno** | + el mismo corte |
+
+**Sobre el "ZM filled at $95.5" de claude:** encaja con este bug y no puedo
+confirmarlo sin leer Neon. El 14 fue el primer día de la T2, y con estas
+ventanas el PM recibía el plan de cierre de la T1 más 180 días de fills sobre un
+libro ya aplanado. Un fill real, de otra temporada, narrado como si fuera del
+libro actual tiene exactamente esa forma. La consulta que lo confirma:
+
+```sql
+-- ¿De qué corrida salió ese fill, y de qué temporada es esa corrida?
+select run_date, agent_id, status,
+       jsonb_path_query_array(actions, '$[*] ? (@.symbol == "ZM")') as zm
+from arena_journal
+where agent_id = 'claude' and phase = 'decide'
+  and actions @> '[{"symbol":"ZM"}]'
+order by run_date desc limit 10;
+
+-- Y qué plan se le reinyectó el 14 (si su run_date < el arranque de la T2,
+-- es este bug, confirmado):
+select run_date, left(plan, 300)
+from arena_journal
+where agent_id = 'claude' and phase = 'decide' and plan is not null
+  and status not in ('season_start','season_started','rules_changed','season_winner')
+  and run_date < '2026-09-14'
+order by created_at desc limit 1;
+```
+
+### El bug más grave que esto destapó: el breaker mataba a los siete el lunes 21
+
+El pico de equity (`max(account->>'equity')`) solo estaba acotado por
+`resumed_at`, que existe para el halt/resume manual — **no** por la temporada.
+Con el reset del lunes 21 a $100k, el pico de la T2 habría seguido contando:
+
+> pico $130k contra equity $100k = **−23% de drawdown** → `risk_broad_cut` →
+> liquidación y **HALT en la primera corrida de la temporada**, para los siete.
+
+Y el halt es persistente y se revive a mano. El relanzamiento habría durado una
+corrida. Está arreglado y cubierto por `tests/arena-season-cutoff.test.mjs`.
+
+## (b) El equity dice que incluye el cash
+
+`equity` → **`equity_total_incl_cash`**, y `cash` → `cash_included_in_equity`,
+más una línea explícita en **ambas** fases del prompt:
+
+> `equity_total_incl_cash` is the TOTAL value of the book: your positions PLUS
+> your cash. `cash_included_in_equity` is the part of that same total that is
+> not invested — it is NOT an extra amount on top.
+
+Mismo criterio que `pnl_since_entry_pct`: el **nombre del campo** carga la
+semántica, para que el PM no tenga que inferirla. Un PM que cree tener
+equity + cash de pólvora sobredimensiona todas sus posiciones.
+
+## (c) Filtro de admisión del universo — y de dónde venía DDDX
+
+**No vino del canal movers.** `trimMovers` filtra precio ≥ $5 desde julio. Vino
+del canal **insider**: `trimInsiders` tomaba los Form 4 de la SEC tal cual, sin
+un solo filtro. Y la SEC no distingue entre un director de Apple comprando $2M y
+el dueño de una shell OTC comprándose $3,000 de su propia empresa.
+
+El problema de fondo no era que faltara un filtro: era que **cada canal tenía un
+criterio distinto** (movers estricto, insider y screener inexistentes) y **el más
+flojo decidía qué veía el PM**. Ahora hay uno solo, en
+`_lib/arena-admission.js`, que aplican los tres:
+
+> **precio ≥ $5 · market cap ≥ $1B · volumen en dólares ≥ $10M/día (20 sesiones)**
+
+Cuatro decisiones de diseño que vale la pena conocer:
+
+1. **FAIL CLOSED.** Un ticker cuyos datos de admisión no se pueden resolver
+   **no entra**. "Si no sé, que pase" es literalmente cómo entró DDDX.
+2. **`data_unavailable` se cuenta aparte** de los rechazos por criterio. Son
+   problemas distintos: uno es el filtro funcionando, el otro es cobertura rota.
+   Si ese contador se dispara, el filtro está tirando nombres buenos y hay que
+   arreglar la fuente, no el umbral.
+3. **Point-in-time**: el volumen promedio se calcula sobre velas **cerradas**.
+   La vela viva no cuenta — si contara, un nombre seco parecería líquido justo
+   el día del pico de volumen, que es justo el día en que se lo intentaría
+   operar.
+4. **El guard sube su piso de $1 a $5** para coincidir. Las dos barreras tienen
+   que decir lo mismo, o el PM recibe un "no" que no puede predecir. Hay un test
+   que falla si alguien mueve una sin la otra.
+
+Los rechazos van al journal en `context.admission` (motivo + canal por nombre) y
+**no** al prompt: el PM no necesita la lista de lo que no vio.
+
+**Costo:** ~26 llamadas a Finnhub `profile2` + ~8 series de Yahoo por corrida,
+con caché por día en memoria, y reusando el precio que los movers ya traen.
+Sumado al deep-dive (~20) queda bajo el cap de 60/min del tier gratis. En B1 esto
+se reemplaza por el universo precomputado en KV y el costo por corrida baja a ~0.
+
+## Lo que sigue necesitando tus ojos
+
+| Qué | Por qué |
+|---|---|
+| `ARENA_ADMIN_KEY` en Vercel | sin ella el smoke responde 503 |
+| `ARENA_MODEL_<ID>` × 5 | lo que devuelva el paso 1 del smoke |
+| el salto de costo (§5) | ~$187/mes de peor caso solo en Anthropic |
+| confirmar el origen del "ZM" | el SQL de arriba; yo no llego a Neon |

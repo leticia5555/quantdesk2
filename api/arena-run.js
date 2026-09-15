@@ -84,6 +84,8 @@ import { auditPlanPercentages } from './_lib/prose-audit.js';
 import { relativeDayLabel } from './_lib/ai-guard.js';
 import { beat } from './_lib/heartbeat.js';
 import { readScreenerRows } from './_lib/screener-db.js';
+// A4c: el filtro de admisión del universo, UNO para todos los canales.
+import { ADMISSION, resolveAdmission, partitionByAdmission } from './_lib/arena-admission.js';
 import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
 // LIGA multi-modelo: el registry (quién compite, con qué modelo/cuenta/persona)
 // y el dispatch de proveedor (Anthropic directo vs OpenRouter, forma normalizada).
@@ -144,6 +146,31 @@ export const T2_RULES_TEXT = [
 // El SCOUT nombra hasta este número de tickers para el deep dive. Es también
 // el tope de llamadas a Finnhub por corrida (4 endpoints × 5 = ~20, bajo el
 // cap de 60/min del tier gratis).
+// ── CORTE POR TEMPORADA (fix del journal del 14) ─────────────────────
+// TODA la memoria que se le reinyecta al PM se corta en el arranque de la
+// temporada vigente. Antes NO se cortaba en ninguna de las cuatro consultas:
+//   · el PLAN ANTERIOR salía del último `decide` sin importar de qué temporada;
+//   · los FILLS para reconstruir aperturas miraban 180 días;
+//   · los COMPROMISOS abiertos miraban 60 días;
+//   · el PICO de equity del breaker no tenía corte ninguno.
+//
+// Eso producía dos bugs distintos:
+//   (a) EL PM RECUERDA UNA TEMPORADA QUE YA NO EXISTE. El 14 —primer día de la
+//       T2— el plan reinyectado era el último de la T1, y los fills de 180 días
+//       traían posiciones de un libro que se había aplanado. Un PM narrando
+//       "ZM filled at $95.5" sobre un libro que no tiene ZM es exactamente esa
+//       forma: el dato es real, pero es de otra temporada (ver §A4a del doc).
+//   (b) EL BREAKER DISPARARÍA EL DÍA DEL RESET. `max(equity)` sin corte
+//       arrastra el pico de la temporada anterior. Un libro que se aplana a
+//       $100k desde un pico de, digamos, $130k arranca con drawdown de −23% →
+//       corte amplio y el agente HALTED en su primera corrida de la temporada.
+//       Esto habría pasado el lunes 21 con el reset a $100k.
+//
+// La fecha sale del registry (ARENA_SEASON.start), no de una consulta por la
+// fila `season_started`: es la verdad declarada, y así el corte funciona aunque
+// el anuncio no se haya escrito todavía.
+const SEASON_CUTOFF = ARENA_SEASON.start;
+
 export const MAX_CANDIDATES = 5;
 
 // FLOOR del canal screener — TIME-BOXED del trial (~30 días). Reserva hasta 2
@@ -491,10 +518,74 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
     screener_state = 'unavailable';
   }
 
+  // ── FILTRO DE ADMISIÓN (A4c) ─────────────────────────────────────
+  // Se aplica DESPUÉS de armar cada canal y ANTES de construir el índice de
+  // atribución, sobre TODOS los canales a la vez. Antes cada canal tenía su
+  // propio criterio (movers ≥$5, insiders y screener ninguno) y el más flojo
+  // decidía qué veía el PM — así entró DDDX, un OTC de $0.01, por el canal
+  // insider. Ver el encabezado de _lib/arena-admission.js.
+  const moversKnown = {};
+  for (const list of [movers && movers.gainers, movers && movers.losers, movers && movers.actives]) {
+    for (const m of (list || [])) {
+      // Los movers ya traen precio del endpoint; el volumen en dólares del día
+      // NO sirve como criterio (es de una sola sesión y encima la viva), así
+      // que solo se reusa el precio y el promedio de 20 se pide igual.
+      if (m && m.symbol && Number.isFinite(m.price)) moversKnown[String(m.symbol).toUpperCase()] = { price: m.price };
+    }
+  }
+  const candidateSyms = [
+    ...Object.keys(moversKnown),
+    ...(notable_insider_buys || []).map((i) => i && i.ticker),
+    ...['value', 'momentum'].flatMap((n) => ((screener || {})[n] || []).map((c) => c && c.symbol)),
+  ].filter(Boolean);
+
+  const admissionRejected = [];
+  let admissionData = {};
+  try {
+    admissionData = await resolveAdmission(candidateSyms, { finnhubKey: process.env.FINNHUB_API_KEY, now });
+  } catch (e) {
+    // El filtro no puede tumbar la corrida. Si no se pudo resolver NADA, se
+    // journalea y los canales pasan como antes — degradar a "sin filtro" es
+    // peor que degradar a "sin buffet", pero mentir sobre ello sería lo peor.
+    fetch_errors.admission = String((e && e.message) || e);
+  }
+  const filtered = Object.keys(admissionData).length > 0;
+  if (filtered) {
+    for (const list of ['gainers', 'losers', 'actives']) {
+      if (!movers || !movers[list]) continue;
+      const { admitted, rejected } = partitionByAdmission(movers[list], admissionData, (m) => m.symbol);
+      movers[list] = admitted;
+      admissionRejected.push(...rejected.map((r) => ({ ...r, channel: 'movers' })));
+    }
+    {
+      const { admitted, rejected } = partitionByAdmission(notable_insider_buys, admissionData, (i) => i.ticker);
+      notable_insider_buys.length = 0;
+      notable_insider_buys.push(...admitted);
+      admissionRejected.push(...rejected.map((r) => ({ ...r, channel: 'insider' })));
+    }
+    for (const name of ['value', 'momentum']) {
+      if (!screener || !screener[name]) continue;
+      const { admitted, rejected } = partitionByAdmission(screener[name], admissionData, (c) => c.symbol);
+      screener[name] = admitted;
+      admissionRejected.push(...rejected.map((r) => ({ ...r, channel: 'screener:' + name })));
+    }
+  }
+
   const channelsByTicker = buildChannels({ movers, earnings: earnings_this_week, reported: recently_reported, insiders: notable_insider_buys, screener });
 
   return {
     movers, earnings_this_week,
+    // Rechazados por admisión, con su motivo y su canal. NO viaja al prompt
+    // (el PM no necesita la lista de lo que no vio) — se journalea, y es cómo
+    // se audita si el filtro está tirando micro-caps (lo que debe) o nombres
+    // buenos por falta de datos (lo que hay que arreglar).
+    admission: {
+      applied: filtered,
+      rules: ADMISSION,
+      rejected: admissionRejected,
+      rejected_count: admissionRejected.length,
+      data_unavailable: admissionRejected.filter((r) => r.reason === 'data_unavailable').length,
+    },
     // T2 #2: los que YA reportaron, con su cifra y cuántas sesiones pasaron.
     recently_reported,
     notable_insider_buys,
@@ -523,6 +614,10 @@ function fmtSignedPct(v) {
   return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
 }
 
+// La aclaración del equity, en las DOS fases (un PM que entiende mal cuánta
+// pólvora tiene decide mal el tamaño en todas ellas).
+const EQUITY_NOTE = 'EQUITY — `equity_total_incl_cash` is the TOTAL value of the book: your positions PLUS your cash. `cash_included_in_equity` is the part of that same total that is not invested — it is NOT an extra amount on top. Do not add them together, and size positions as a fraction of the total.';
+
 // Snapshot del libro compartido por ambas fases.
 // `meta` (T2) le cuelga a cada posición su HISTORIA — días en posición, pico
 // desde la entrada, distancia a ese pico, estado del trailing y del time stop —
@@ -531,8 +626,14 @@ function fmtSignedPct(v) {
 // Un dato que no se pudo derivar viaja como null y el prompt dice qué significa.
 function portfolioSnapshot({ account, positions, openOrders, meta = {} }) {
   return {
-    equity: Number(account.equity),
-    cash: Number(account.cash),
+    // FIX del journal del 14: el campo se llamaba `equity` a secas y el PM lo
+    // leía como "lo que tengo invertido", sumándole el cash por su cuenta al
+    // razonar sobre cuánta pólvora le quedaba. El nombre ahora carga la
+    // semántica (mismo criterio que `pnl_since_entry_pct`): equity TOTAL, que
+    // YA INCLUYE el cash. `cash` es la parte de ese total que está sin
+    // invertir, no un extra que se suma.
+    equity_total_incl_cash: Number(account.equity),
+    cash_included_in_equity: Number(account.cash),
     positions: (positions || []).map((p) => {
       const m = meta[String(p.symbol || '').trim().toUpperCase()] || null;
       return {
@@ -562,9 +663,10 @@ function portfolioSnapshot({ account, positions, openOrders, meta = {} }) {
 export function buildScanUserPrompt({ account, positions, openOrders, buffet, previous, meta = {} }) {
   // fetch_errors y channelsByTicker son diagnóstico/atribución interna (se
   // journalean); el LLM solo necesita `unavailable`. Se excluyen del prompt.
-  const { fetch_errors, channelsByTicker, ...buffetForLlm } = buffet || {};
+  const { fetch_errors, channelsByTicker, admission, ...buffetForLlm } = buffet || {};
   return [
     'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders, meta })),
+    EQUITY_NOTE,
     '',
     'PREVIOUS PLAN (yours, from the last run — build on it or change course):',
     previous ? JSON.stringify(previous) : 'none — this is your first run.',
@@ -654,6 +756,7 @@ export function buildDiveUserPrompt({ account, positions, openOrders, previous, 
   return [
     ...eventBlock,
     'PORTFOLIO (Alpaca paper, live):', JSON.stringify(portfolioSnapshot({ account, positions, openOrders, meta })),
+    EQUITY_NOTE,
     'POSITION HISTORY — each holding carries numbers that are ALREADY COMPUTED for you: `days_in_position` (calendar days since this position was opened; null = it predates the journal and could not be reconstructed — say so rather than guessing), `peak_since_entry` (highest completed close since entry, floored at your cost), `from_peak_pct` (how far below that peak it trades now), `trailing_stop` (armed and its sell level, or the level at which it would arm) and `time_stop` ({days, limit, due}). Quote these as given; do NOT recompute or invent them.',
     '',
     ...commitmentBlock,
@@ -963,13 +1066,15 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     sql(`select run_date, plan, actions, status from arena_journal
          where phase = 'decide' and plan is not null and agent_id = $1
            and status not in ('season_start', 'season_started', 'rules_changed', 'season_winner')
-         order by created_at desc limit 1`, [agentId]),
+           and run_date >= $2::date
+         order by created_at desc limit 1`, [agentId, SEASON_CUTOFF]),
     // High-water-mark del libro: el máximo equity journaleado POR ESTE AGENTE,
     // ACOTADO por resumed_at (tras revivir, el pico se re-basa al equity de ese
     // momento — si no, el broadcut re-dispararía sobre una cuenta ya liquidada).
     // null en el primer run → pico = equity.
     sql(`select max((account->>'equity')::numeric) as peak from arena_journal
-         where account is not null and agent_id = $1 and ($2::timestamptz is null or created_at > $2::timestamptz)`, [agentId, state.resumed_at]),
+         where account is not null and agent_id = $1 and run_date >= $3::date
+           and ($2::timestamptz is null or created_at > $2::timestamptz)`, [agentId, state.resumed_at, SEASON_CUTOFF]),
     // Stops catastróficos recientes de ESTE agente que NO llenaron → escalan la banda.
     sql(`select actions from arena_journal where status = 'risk_exit' and agent_id = $1
          and created_at > now() - interval '7 days' order by created_at desc`, [agentId]),
@@ -980,12 +1085,14 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     //     el `context` de esas filas trae los prompts completos y pesa.
     sql(`select run_date, actions from arena_journal
          where phase = 'decide' and agent_id = $1 and actions is not null
-         and created_at > now() - interval '180 days' order by created_at asc`, [agentId]),
+         and run_date >= $2::date
+         and created_at > now() - interval '180 days' order by created_at asc`, [agentId, SEASON_CUTOFF]),
     // (b) COMPROMISOS journaleados → el fold determina cuáles siguen abiertos.
     //     Se proyecta SOLO context->'commitments' (no el context entero).
     sql(`select run_date, context->'commitments' as commitments from arena_journal
          where phase = 'decide' and agent_id = $1 and context ? 'commitments'
-         and created_at > now() - interval '60 days' order by created_at asc`, [agentId]),
+         and run_date >= $2::date
+         and created_at > now() - interval '60 days' order by created_at asc`, [agentId, SEASON_CUTOFF]),
   ]);
   const equity = Number(account.equity);
   const dbPeak = peakRows[0] && peakRows[0].peak != null ? Number(peakRows[0].peak) : 0;
@@ -1180,6 +1287,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     // candidatos y los datos Finnhub — reconstruir qué vio el PM no es arqueología.
     context.unavailable = buffet.unavailable;
     context.fetch_errors = buffet.fetch_errors;
+    context.admission = buffet.admission;
     context.scan = { prompt: { system: scanSystem, user: scanUser }, hash: scanHash, model: agent.model };
 
     if (!apiKey) {

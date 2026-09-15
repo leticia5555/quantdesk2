@@ -47,10 +47,15 @@
 //   GET /api/arena-smoke?agent=grok   → un solo agente
 //   GET /api/arena-smoke?phase=dive   → prueba con el prompt del DIVE
 //
-// GATES: CRON_SECRET (si existe). NO exige ARENA_ENABLED: el smoke es
-// justamente lo que se corre ANTES de prender el switch.
+// GATES: ARENA_ADMIN_KEY (obligatoria — sin ella el endpoint responde 503 y no
+// se puede correr). NO es CRON_SECRET: este endpoint lo dispara una persona a
+// mano y gasta dinero real en siete proveedores, así que tiene su propia llave
+// y no comparte la del cron. NO exige ARENA_ENABLED: el smoke es justamente lo
+// que se corre ANTES de prender el switch.
 //
-// ENV VARS: CRON_SECRET (opc) · ANTHROPIC_API_KEY · OPENROUTER_API_KEY ·
+// Se manda como `Authorization: Bearer $ARENA_ADMIN_KEY` o `?key=`.
+//
+// ENV VARS: ARENA_ADMIN_KEY (obl) · ANTHROPIC_API_KEY · OPENROUTER_API_KEY ·
 //           ARENA_MODEL_<ID> (opc, override de slug) · PUBLIC_BASE_URL
 // ═══════════════════════════════════════════════════════════════
 
@@ -252,10 +257,16 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Método no soportado.' });
 
-  const secret = process.env.CRON_SECRET;
-  if (secret && (req.headers.authorization || '') !== `Bearer ${secret}`) {
-    return res.status(401).json({ error: 'No autorizado.' });
+  // Sin llave configurada el endpoint NO queda abierto: responde 503. Un smoke
+  // que gasta en siete proveedores no puede depender de que nadie adivine la
+  // URL — y "si no hay llave, dejá pasar" es el default que convierte eso en
+  // una factura de otro.
+  const adminKey = process.env.ARENA_ADMIN_KEY;
+  if (!adminKey) {
+    return res.status(503).json({ error: 'Falta ARENA_ADMIN_KEY: el smoke está deshabilitado hasta que se configure.' });
   }
+  const given = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || (req.query && req.query.key) || '';
+  if (given !== adminKey) return res.status(401).json({ error: 'No autorizado.' });
 
   const q = req.query || {};
   const only = String(q.agent || '').toLowerCase();

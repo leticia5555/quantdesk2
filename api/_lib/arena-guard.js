@@ -26,7 +26,12 @@ export const ARENA_RULES = {
   max_position_fraction: 0.15, // techo de una posición: 15% del equity
   min_cash_fraction: 0.10,     // piso de cash: 10% del equity
   price_band: 0.02,            // limit_price a ±2% del último cierre
-  min_price: 1,                // sin sub-$1
+  // A4c (2026-09-15): sube de $1 a $5 para coincidir con el filtro de admisión
+  // del universo (_lib/arena-admission.js). El buffet ya no le muestra al PM
+  // nada por debajo de $5; esto es la defensa en profundidad para el caso en
+  // que lo pida igual, de memoria o desde el libro. Las dos barreras tienen que
+  // decir lo mismo o el PM recibe un "no" que no puede predecir.
+  min_price: 5,
   // ── T2 #5 (2026-09-13): la VENTA del PM sale a MARKETABLE LIMIT ──
   // Cicatriz GOOGL: el PM decidió vender, puso un límite "justo" dentro de la
   // banda ±2%, la orden `day` se quedó descansando arriba del mercado y expiró
