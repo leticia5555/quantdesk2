@@ -41,7 +41,15 @@ import { buildRebalance } from './_lib/arena-rebalance.js';
 import { createToolExecutor, TOOL_BUDGET } from './_lib/arena-tools.js';
 import { runToolLoop } from './_lib/arena-tool-loop.js';
 import { buildTail, lenteDelDia } from './_lib/arena-herding.js';
-import { buildRailMeta } from './_lib/arena-meta.js';
+import { buildRailMeta, sectorFromGics } from './_lib/arena-meta.js';
+
+// Sector ETF de un simbolo, desde los sectores GICS que el universo guardó.
+// Sin esto, todo el tablero es "sin sector" para la herramienta `sector`.
+function sectorEtfDe(buffet, sym) {
+  const secs = (buffet && buffet.universe_raw && buffet.universe_raw.sectores) || null;
+  if (!secs) return null;
+  return sectorFromGics(secs[String(sym || '').toUpperCase()]);
+}
 import { shadowBroker, shadowJournalInsert, shadowRunId, shadowReport, ensureShadowSchema } from './_lib/arena-shadow.js';
 import { currentTier, recordRunSpend, callCost } from './_lib/arena-budget.js';
 import { marketDay } from './_lib/arena-buffet-cache.js';
@@ -120,7 +128,15 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
   const toolsMax = tier ? tier.tools_max : TOOL_BUDGET.fixed_round;
   const executor = createToolExecutor({
     budget: toolsMax, board: buffet.board_raw || null, universe: buffet.universe_raw || null,
-    creds, now, deps: { sectorOf: () => null },
+    creds, now,
+    // ── `sectorOf` DEVOLVÍA null LITERALMENTE ──────────────────────────
+    // Por eso `sector({etf:'XLE'})` daba 0 filas: ningún nombre del tablero
+    // podía coincidir con ningún sector, porque la función decía que nadie
+    // tiene sector. La herramienta no estaba rota — estaba conectada a nada.
+    //
+    // Ahora lee los sectores GICS del universo, que vienen del CSV de IVV. Es
+    // el MISMO dato que arregló R6: una vez cargado, sirve para los dos.
+    deps: { sectorOf: (sym) => sectorEtfDe(buffet, sym) },
   });
 
   const ctx = {

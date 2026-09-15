@@ -214,5 +214,27 @@ console.log('\n── el reporte lee el context, que es donde vive la secuencia 
     'con el caveat de la lente al lado: dos agentes con lentes distintas no son comparables ese día');
 }
 
+console.log('\n── el piso de ruido sale SOLO si comparten lente ──');
+{
+  const src = await import('node:fs').then((fs) => fs.readFileSync('api/_lib/arena-shadow.js', 'utf8'));
+  ok(/piso_de_ruido/.test(src), 'el reporte publica el piso de ruido como línea propia');
+  ok(/mismaLente/.test(src) && /NO mide ruido: mide la lente/.test(src),
+    'y cuando las lentes difieren NO publica el número: dice que ese par mide la lente, no el ruido');
+  ok(/PISO SÓLIDO|PISO MEDIO|PISO BAJO/.test(src),
+    'el número viaja con su lectura — un 0.4 entre dos corridas idénticas es el resultado más importante del día');
+  ok(/abortos:/.test(src) && /llm_error: ctx\.llm_error/.test(src),
+    'y los abortos salen juntos con su `raw_body`: se journaleaba y el reporte no lo mostraba');
+}
+
+console.log('\n── qué significa cada piso ──');
+{
+  // La lectura importa más que el número. Un piso bajo NO es un detalle
+  // técnico: dice que el experimento no puede distinguir modelos ese día.
+  const lectura = (c) => (c >= 0.9 ? 'SÓLIDO' : c >= 0.7 ? 'MEDIO' : 'BAJO');
+  ok(lectura(0.95) === 'SÓLIDO', '0.95 entre dos corridas idénticas → piso sólido');
+  ok(lectura(0.75) === 'MEDIO', '0.75 → medio: un delta menor a 0.25 entre modelos no se distingue del ruido');
+  ok(lectura(0.40) === 'BAJO', '0.40 → bajo: casi ningún delta es interpretable');
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
 process.exit(failures ? 1 : 0);

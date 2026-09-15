@@ -459,7 +459,11 @@ export async function getFiftyTwoWeek(symbols = [], { creds, now = new Date(), w
 // Tope de símbolos que caben en la URL sin que el servidor la rechace.
 export const NEWS_SYMBOL_CAP = 100;
 
-export async function getNews({ symbols = [], limit = 50, start = null, creds, includeContent = false } = {}) {
+// `pages` > 1 pagina el feed con `next_page_token`. Existe para la búsqueda
+// POR TEMA: el endpoint tope a 50 por página, y filtrar un tema sobre 50
+// titulares y contestar "no hay noticias de Hormuz" es una afirmación fuerte
+// sobre una muestra chica. Con 4 páginas son 200 y la respuesta significa algo.
+export async function getNews({ symbols = [], limit = 50, start = null, creds, includeContent = false, pages = 1 } = {}) {
   const params = new URLSearchParams();
   const syms = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
   // La URL tiene un largo máximo y ~600 símbolos no entran. Con más de
@@ -470,8 +474,17 @@ export async function getNews({ symbols = [], limit = 50, start = null, creds, i
   params.set('include_content', includeContent ? 'true' : 'false');
   params.set('exclude_contentless', 'true');
   if (start) params.set('start', start);
-  const data = await alpacaDataFetch('/v1beta1/news?' + params.toString(), creds);
-  const list = (data && data.news) || [];
+  const acumulado = [];
+  let token = null;
+  for (let i = 0; i < Math.max(1, Math.floor(pages) || 1); i++) {
+    if (token) params.set('page_token', token); else params.delete('page_token');
+    const data = await alpacaDataFetch('/v1beta1/news?' + params.toString(), creds);
+    const pagina = (data && data.news) || [];
+    if (Array.isArray(pagina)) acumulado.push(...pagina);
+    token = (data && data.next_page_token) || null;
+    if (!token) break;
+  }
+  const list = acumulado;
   return (Array.isArray(list) ? list : []).map((n) => ({
     id: n.id,
     headline: String(n.headline || '').trim(),

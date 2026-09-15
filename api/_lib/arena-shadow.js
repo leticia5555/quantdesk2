@@ -131,6 +131,10 @@ export async function shadowReport(day = marketDay()) {
       ordenes_que_habria_mandado: r.rebalance && r.rebalance.legs ? r.rebalance.legs.length : null,
       turnover: r.rebalance ? r.rebalance.turnover : null,
       error: r.error || null,
+      // EL CUERPO CRUDO DEL FALLO. Se journaleaba y el reporte no lo mostraba,
+      // así que para verlo había que entrar a Neon a mano — justo cuando lo que
+      // hace falta es leerlo rápido.
+      llm_error: ctx.llm_error || null,
       lente: ctx.lens || null,
       costo_usd: ctx.cost ? ctx.cost.usd : null,
       // ── LA SECUENCIA DE HERRAMIENTAS, NO EL CONTEO ──────────────────
@@ -172,6 +176,40 @@ export async function shadowReport(day = marketDay()) {
     : { pairs: [], mean: null, max: null, libros: Object.keys(libros).length,
       note: 'Hacen falta al menos DOS libros con pesos para que el solapamiento signifique algo.' };
 
+  // ── EL PISO DE RUIDO: claude ↔ control ─────────────────────────────
+  // Los dos corren el MISMO modelo con el MISMO prompt byte a byte. Su coseno
+  // NO es un dato más del solapamiento: es la referencia contra la que vale
+  // cualquier delta entre modelos distintos. Si es 0.4, dos modelos que
+  // difieren 0.4 no difieren en nada.
+  //
+  // SOLO CUENTA SI COMPARTEN LENTE. El 2026-09-15 claude corrió con `momentum`
+  // y control con `catalizador`, y ese par no medía ruido: medía la lente. Por
+  // eso la línea sale con la condición explícita en vez de publicarse siempre.
+  const insignia = (porAgente.claude && porAgente.claude.ultimo) || null;
+  const testigo = (porAgente.control && porAgente.control.ultimo) || null;
+  const mismaLente = !!(insignia && testigo && insignia.lente && insignia.lente === testigo.lente);
+  const parRuido = (libros.claude && libros.control)
+    ? (pairwiseOverlap({ claude: libros.claude, control: libros.control }).pairs[0] || {}).cosine
+    : null;
+
+  const pisoDeRuido = !insignia || !testigo
+    ? { disponible: false, motivo: 'falta el libro de claude o el de control en este día' }
+    : !mismaLente
+      ? {
+        disponible: false,
+        motivo: `claude corrió con lente "${insignia.lente}" y control con "${testigo.lente}". El par NO mide ruido: mide la lente. Este caso es un BUG y está corregido — el control hereda la lente del insignia.`,
+        lente_claude: insignia.lente, lente_control: testigo.lente,
+      }
+      : {
+        disponible: true, lente: insignia.lente, cosine: parRuido,
+        lectura: parRuido == null ? 'sin pesos en alguno de los dos'
+          : parRuido >= 0.9
+            ? `PISO SÓLIDO (${parRuido}): dos corridas idénticas dan casi el mismo libro, así que un delta entre modelos distintos significa algo.`
+            : parRuido >= 0.7
+              ? `PISO MEDIO (${parRuido}): hay ruido apreciable entre dos corridas idénticas. Un delta menor a ${(1 - parRuido).toFixed(2)} entre modelos distintos no se puede distinguir del ruido.`
+              : `PISO BAJO (${parRuido}): dos corridas IDÉNTICAS difieren tanto que casi ningún delta entre modelos distintos es interpretable. Es el resultado más importante del día si sale así.`,
+      };
+
   if (solapamiento.mean != null) {
     // El número solo no dice nada sin la lectura. Un coseno de 0.9 entre siete
     // modelos distintos no es "la liga funciona": es la liga midiendo ruido
@@ -188,7 +226,18 @@ export async function shadowReport(day = marketDay()) {
   return {
     day, total, abortadas,
     por_agente: porAgente,
+    piso_de_ruido: pisoDeRuido,
     solapamiento,
+    // Todos los abortos con su cuerpo crudo, juntos: es lo primero que se mira
+    // cuando algo falló y no hay que ir a buscarlo agente por agente.
+    abortos: Object.entries(porAgente)
+      .filter(([, a]) => a.ultimo && String(a.ultimo.status || '').startsWith('aborted'))
+      .map(([id, a]) => ({
+        agente: id, status: a.ultimo.status, error: a.ultimo.error,
+        herramientas_usadas: a.ultimo.herramientas_usadas ?? null,
+        herramientas_corte: a.ultimo.herramientas_corte || null,
+        llm_error: a.ultimo.llm_error || null,
+      })),
     costo: {
       total_usd: costos.length ? +costos.reduce((x, y) => x + y, 0).toFixed(4) : null,
       con_costo: costos.length,

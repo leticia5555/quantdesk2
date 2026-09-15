@@ -152,5 +152,60 @@ console.log('\n── herramienta vs tablero: ¿sirvieron las herramientas? ─�
     'y un nombre que no vino de ninguno de los dos se cuenta APARTE: lo trajo de su memoria, no de los datos de hoy');
 }
 
+// ═══════════════════════════════════════════════════════════════
+// EL CONTROL TIENE QUE COMPARTIR LA LENTE DEL INSIGNIA.
+//
+// BUG DE DISEÑO, visto en la sombra 2 (2026-09-15): `claude` corrió con
+// `momentum` y `control` con `catalizador`.
+//
+// Los dos corren el MISMO modelo con el MISMO prompt byte a byte — ésa es toda
+// la razón por la que el control existe: mide el RUIDO del sistema, el delta
+// entre dos corridas idénticas. Con lentes distintas dejan de ser idénticas, y
+// el piso de ruido deja de ser un piso: cualquier delta entre dos modelos
+// distintos se vuelve incomparable porque no hay contra qué medirlo.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── el control hereda la lente de claude, todos los días ──');
+{
+  const { lenteDelDia, comparteLenteCon, LENTES, LENTE_HEREDADA } = await import('../api/_lib/arena-herding.js');
+
+  // Un ciclo entero de lentes y algunos días más: no puede fallar ninguno.
+  let dias = 0;
+  let iguales = 0;
+  for (let d = 1; d <= 21; d++) {
+    const now = new Date(`2026-09-${String(d).padStart(2, '0')}T18:00:00Z`);
+    dias++;
+    if (lenteDelDia('claude', now).id === lenteDelDia('control', now).id) iguales++;
+  }
+  ok(iguales === dias,
+    `en los ${dias} días probados, control comparte lente con claude SIEMPRE`, `${iguales}/${dias}`);
+
+  // Y la rotación sigue existiendo: si el control heredara una lente FIJA,
+  // el par sería idéntico pero el experimento perdería la rotación.
+  const vistas = new Set();
+  for (let d = 1; d <= 21; d++) vistas.add(lenteDelDia('control', new Date(`2026-09-${String(d).padStart(2, '0')}T18:00:00Z`)).id);
+  ok(vistas.size === LENTES.length,
+    'y el control recorre las cuatro lentes: hereda la de claude, no una fija', String(vistas.size));
+
+  // Los demás siguen rotando por su cuenta — el anti-herding no se apaga.
+  const otros = ['grok', 'gemini', 'deepseek', 'qwen', 'openai'];
+  const now = new Date('2026-09-15T18:00:00Z');
+  const lentesOtros = new Set(otros.map((a) => lenteDelDia(a, now).id));
+  ok(lentesOtros.size > 1,
+    'los otros cinco NO comparten todos la misma lente: la rotación sigue viva', String(lentesOtros.size));
+
+  ok(comparteLenteCon('control') === 'claude' && comparteLenteCon('grok') === null,
+    'y se puede preguntar QUIÉN hereda de quién — el reporte lo usa para saber si el par mide ruido');
+  ok(Object.keys(LENTE_HEREDADA).length === 1,
+    'la herencia está declarada en un solo lugar, no repartida por el código');
+}
+
+console.log('\n── el determinismo no se rompió ──');
+{
+  const { lenteDelDia } = await import('../api/_lib/arena-herding.js');
+  const now = new Date('2026-09-15T18:00:00Z');
+  ok(lenteDelDia('claude', now).id === lenteDelDia('claude', now).id,
+    'dos llamadas con los mismos datos dan la misma lente — sin esto el replay no reproduce');
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
 process.exit(failures ? 1 : 0);
