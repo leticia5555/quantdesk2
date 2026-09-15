@@ -89,7 +89,7 @@ import { ADMISSION, resolveAdmission, partitionByAdmission } from './_lib/arena-
 import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
 // LIGA multi-modelo: el registry (quién compite, con qué modelo/cuenta/persona)
 // y el dispatch de proveedor (Anthropic directo vs OpenRouter, forma normalizada).
-import { callArenaLLM, providerKey } from './_lib/arena-model.js';
+import { callArenaLLM, providerKey, effectiveParams, sameParams } from './_lib/arena-model.js';
 // TITULAR de la corrida (voz del arquetipo). Llamada APARTE y POSTERIOR: el
 // arquetipo NUNCA entra al prompt que decide — ver el candado del control en el
 // encabezado de _lib/arena-voice.js.
@@ -1309,8 +1309,10 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     // grok del 14 y el 15 se diagnosticaron a ciegas por esto mismo.
     context.scan.stop_reason = (scanLlm.data && scanLlm.data.stop_reason) || null;
     context.scan.truncated = context.scan.stop_reason === 'max_tokens';
-    context.scan.max_tokens = ARENA_MAX_TOKENS;
-    context.scan.effort = ARENA_EFFORT;
+    // Los parámetros efectivos de ESTA corrida, en la fila de ESTA corrida.
+    // El anuncio de reglamento los fija una vez; acá quedan por corrida, que es
+    // lo que hace auditable un cambio de env var a mitad de temporada.
+    context.params = effectiveParams(agent, ARENA_MAX_TOKENS);
     if (scanLlm.data && scanLlm.data.usage) context.scan.usage = scanLlm.data.usage;
     if (scanLlm.refusal) {
       // Rechazo del clasificador: su propio status. No es un JSON malformado.
@@ -1424,8 +1426,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // mitad es JSON inválido → `aborted_malformed_json`, cero órdenes. Subir el
   // techo es más barato que perder una corrida entera.
   const diveLlm = await callArenaLLM({ agent, system: diveSystem, messages: [{ role: 'user', content: diveUser }], maxTokens: ARENA_MAX_TOKENS, now });
-  context.dive.max_tokens = ARENA_MAX_TOKENS;
-  context.dive.effort = ARENA_EFFORT;
+  context.params = effectiveParams(agent, ARENA_MAX_TOKENS);
   if (diveLlm.data && diveLlm.data.usage) context.dive.usage = diveLlm.data.usage;
   if (diveLlm.refusal) {
     context.dive.refusal = diveLlm.refusal_details || true;
@@ -1857,7 +1858,7 @@ export function modelsRulesText() {
     ...rows,
     `2) TECHO DE SALIDA ÚNICO de ${ARENA_MAX_TOKENS} tokens para las DOS fases (antes 500 en el scan y 3000 en el dive). En un modelo de razonamiento los tokens de pensamiento se cuentan contra el mismo techo: 500 cortaba la respuesta antes del JSON y la corrida moría como "formato inválido" sin serlo.`,
     `3) PROFUNDIDAD POR EFFORT, no por temperatura: effort '${ARENA_EFFORT}' para todos los que lo soportan.`,
-    '4) LA TEMPERATURA DEJA DE SER UNIVERSAL, y se declara: Claude Fable 5.1 rechaza `temperature` con 400 — en esa familia el sampling no es configurable. Los dos agentes de Anthropic corren sin temperatura; los cinco de OpenRouter con 0.7. La decisión #2 de la liga ("misma temperatura para todos") queda parcialmente rota. Lo que SÍ se preserva es la identidad de parámetros entre `claude` y `control`, que es donde se mide el ruido.',
+    '4) MISMOS PARÁMETROS POR FAMILIA; `claude` y `control` IDÉNTICOS. La temperatura dejó de ser universal porque dejó de existir en una de las familias: Claude Fable 5.1 rechaza `temperature` con 400 (el sampling no es configurable ahí). Así que la regla ya no es "un número igual para los siete" sino: dentro de cada familia, parámetros idénticos; y entre el insignia y su control, idénticos byte a byte — que es donde se mide el ruido y lo único que esa comparación necesita. Los parámetros EFECTIVOS de cada agente van journaleados en esta misma fila, agente por agente: quien lea el post-mortem no tiene que adivinar con qué corrió cada uno.',
     '5) CACHÉ DE PROMPT encendida donde el proveedor la soporta (Anthropic explícita, OpenAI automática). El reglamento es idéntico entre corridas y entre agentes: pagarlo entero cada vez era regalar dinero. NO cambia ni una palabra de lo que el modelo lee.',
     '6) NADA MÁS CAMBIA. Mismo prompt, mismo buffet, mismo guard determinista, mismas cuentas, misma red de seguridad.',
     'LÍMITE DECLARADO: las métricas de antes y después de esta fecha NO son comparables. El corte queda escrito acá para que el post-mortem no las mezcle.',
@@ -1873,11 +1874,13 @@ export async function announceModelChange(now = new Date()) {
         JSON.stringify({
           rules_version: MODELS_VERSION, supersedes: cadenceVersion(), prompt_version: PROMPT_VERSION,
           change: 'models', max_tokens: ARENA_MAX_TOKENS, effort: ARENA_EFFORT,
-          models: activeAgents().map((a) => ({
-            id: a.id, model_label: a.model_label, model: a.model,
-            provider: a.provider, slug_verified: !!a.slug_verified,
-            temperature: a.caps && a.caps.sampling === false ? null : ARENA_TEMPERATURE,
-          })),
+          // Parámetros EFECTIVOS por agente (lo que de verdad viaja a la API).
+          // `temperature: null` = el parámetro no se manda, NO que sea 0.
+          models: activeAgents().map((a) => ({ id: a.id, ...effectiveParams(a) })),
+          // El invariante que hace válido al control, afirmado en la fila del
+          // anuncio: si algún día deja de ser true, el piso de ruido dejó de
+          // medir ruido y el post-mortem tiene que saberlo desde acá.
+          control_params_identical: sameParams(agentById('claude'), agentById('control')),
           applies_to: activeAgents().map((a) => a.id),
         })],
     );

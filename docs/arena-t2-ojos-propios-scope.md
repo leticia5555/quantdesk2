@@ -142,11 +142,11 @@ Endoso tres de los tuyos, **propongo cambiar uno** y **agregar tres** que faltan
 
 | # | Riel | Tuyo | Mi propuesta |
 |---|---|---|---|
-| R1 | bruto por nombre, **largo** | 30% | **25%** |
-| R2 | bruto por nombre, **corto** | (30%) | **15%** |
+| R1 | bruto por nombre, **largo** | 30% | **30%** ✅ (D3: va el tuyo) |
+| R2 | bruto por nombre, **corto** | (30%) | **15%** ✅ aceptado |
 | R3 | exposición **bruta** | ≤ 100% | ≤ 100% ✅ |
-| R4 | exposición **neta** | — | **−50% a +100%** |
-| R5 | **corto** total | — | **≤ 50%** |
+| R4 | exposición **neta** | — | **−50% a +100%** ⚠️ sin confirmar |
+| R5 | **corto** total | — | **≤ 50%** ✅ aceptado |
 | R6 | por **sector** | 50% | 50% ✅ |
 | R7 | **cash** | 0-100% | 0-100% ✅ |
 | R8 | **mínimo** por posición | 2% | 2% ✅ |
@@ -157,13 +157,20 @@ bruto   = Σ |peso(n)|   ≤ 100%           neto = Σ peso(n) ∈ [−50%, +100%
 corto   = Σ |peso(n)| sobre n < 0  ≤ 50%
 ```
 
-**R1 — por qué 25 y no 30.** Sin tope de posiciones, la concentración es lo único
-que limita al modelo. A 30%, tres nombres son el 90% del libro: la temporada
-mediría "qué modelo eligió mejor sus tres nombres", no cómo construye un
-portafolio. Con 20 sesiones y siete agentes eso es ruido de selección. A 25% la
-convicción fuerte sigue siendo expresable (un cuarto del libro no es timidez) y
-hacen falta cuatro nombres para llenarlo. **Es el riel del que menos seguro
-estoy** y el primero que revisaría con los datos de §B12.
+**R1 — va 30%, el tuyo.** Yo proponía 25% y lo dejo anotado sin insistir: sin
+tope de posiciones, a 30% tres nombres son el 90% del libro, y la temporada
+mediría "qué modelo eligió mejor sus tres nombres" más que cómo construye un
+portafolio. Con 20 sesiones y siete agentes, eso es ruido de selección. Pero es
+tu número y **es medible**: el test contra T1 dice si el tope siquiera muerde. Si
+el PM nunca pasó del 15% por voluntad propia, da igual 25 que 30 y la discusión
+se cierra sola.
+
+**R4 — el único que no confirmaste.** Sin tope al neto, un agente puede irse 0%
+largo y 100% corto. En 4 semanas eso no es un portafolio: es una apuesta
+direccional que va a dominar su resultado, y el post-mortem no podrá separar
+"este modelo elige bien" de "le atinó a la dirección del mercado en septiembre".
+Lo implemento en **−50% a +100%** salvo que digas otra cosa; el límite inferior
+es −50% y no −100% por la misma asimetría de R2.
 
 **R2/R5 — la asimetría del corto. Es el punto que más me importa de todo B6:**
 
@@ -185,6 +192,14 @@ inicial: es la del peso después de que el trade salga mal.
   nombres baratos son donde viven los squeezes.
 - **R11** — un cierre de corto sin orden nuestra se journalea `forced_buy_in`,
   no como decisión del PM.
+- **R12 — EL MOTOR RECORTA, no solo rechaza.** Un corto que crece por encima de
+  su riel (porque el subyacente subió) se **recorta a 15% en la siguiente
+  corrida**, aunque el PM no lo haya pedido y aunque su portafolio objetivo lo
+  deje donde está. Es la consecuencia directa de la asimetría: rechazar entradas
+  nuevas no sirve de nada contra una posición que se infla sola. El recorte es
+  **determinista** (va con la red del §B7, no con la decisión del PM), se
+  journalea como `rail_trim` con el peso antes y después, y el PM lo ve en su
+  siguiente prompt como un hecho consumado — igual que ve un stop que disparó.
 
 **R4 — por qué falta.** Con solo `bruto ≤ 100%`, el modelo puede ponerse 0% largo
 y 100% corto. En 4 semanas eso no es un portafolio: es una apuesta direccional
@@ -268,9 +283,20 @@ queda justo en el peor caso**. Dos cosas lo mueven mucho:
 - **La caché es la palanca grande.** El tablero y el reglamento son estables; si
   caché bien puesta convierte ~10K de entrada en lectura cacheada, la entrada
   baja ~10× (§D2).
-- **El breaker que apaga las rondas fijas deja solo disparadores** — que en un
-  día volátil pueden ser *más* caros que las rondas. El breaker tiene que
-  apagar **por corrida**, no por tipo de corrida. → **D7.**
+**El breaker va EN ESCALONES** (D7), porque apagar las rondas fijas dejaba solo
+disparadores — que en un día volátil pueden ser *más* caros que las rondas que
+se apagaron. Cada escalón se journalea con el gasto que lo disparó:
+
+| Escalón | Umbral | Qué hace |
+|---|---|---|
+| 0 | < budget | normal: 8 herramientas, effort `medium`, 3 rondas fijas |
+| 1 | ≥ budget | **herramientas 8 → 3** y **effort → `low`**. Sigue decidiendo, más barato |
+| 2 | ≥ 1.5× budget | **solo la red de riesgo y los disparadores del propio libro** del agente. Ni rondas fijas ni disparadores del buffet |
+
+El escalón 1 baja el costo sin dejar al libro sin decidir, que es la falla del
+diseño anterior. El escalón 2 deja vivo lo único que no puede apagarse: la red
+determinista. Cada transición es una fila de journal con el gasto acumulado, el
+escalón nuevo y qué se recortó.
 
 # B10 · PROMPT
 
@@ -340,37 +366,71 @@ correrlo con el replay** — es literalmente para lo que sirve.
 
 ---
 
-# Decisiones que necesito
+# Decisiones — RESUELTAS (2026-09-15)
 
-**D1 — Composición de los índices (B1).** ¿Lista curada en repo, FMP de pago, o
-holdings de SPY/QQQ? Y: ¿aceptás el survivorship bias declarado, o querés
-congelar la lista el día 1 de la temporada y no tocarla?
+## Cerradas por Lety
 
-**D2 — Caché vs tablero por agente (B2/B9).** El tablero es idéntico para los
-siete salvo el libro y el orden aleatorizado. Si el bloque del libro va **al
-final** y el orden aleatorizado solo afecta secciones posteriores al breakpoint,
-los siete comparten prefijo cacheado y la entrada baja ~10×. Pero el orden
-aleatorizado **es** el anti-herding. ¿Sacrificamos algo de aleatorización por la
-caché, o pagamos la entrada completa por agente?
+**D1 · Constituyentes.** FMP `/api/v3/sp500_constituent` y `/nasdaq_constituent`
+(tier gratis), refresco **semanal**, con un **JSON estático en el repo** como
+respaldo. **El tablero nunca se bloquea por esto**: si FMP falla y el estático
+está viejo, se usa el estático y el journal dice `universe_source: 'static'` con
+su `built_at`. Un universo de la semana pasada es un sesgo declarado; un tablero
+que no sale es una corrida perdida.
 
-**D3 — ¿25% o 30% por nombre largo?** (R1). Mi propuesta es 25.
+**D2 · La caché gana.** Todo lo pesado —system prompt, universo, tablero
+completo, resultados de herramientas— va en el **prefijo cacheado e idéntico
+para los siete**. La aleatorización se limita a una **cola corta no cacheada**:
+el orden de los top-30 movers/RVOL y la lente del día. Se **mide en la sombra**
+y si la cola pasa de ~2K tokens se recorta.
 
-**D4 — El loop de tool use entre proveedores (B3).** Es el trabajo más
-subestimado del miércoles. ¿Querés que B1-B2 salgan el miércoles y B3 el jueves
-si el loop multi-proveedor no está verde, en vez de comprometer los tres?
+> Consecuencia de diseño: el bloque del **libro de cada agente** también rompe el
+> prefijo compartido, así que va **en la cola**, junto a la aleatorización. El
+> orden del prompt queda: `system → universo → tablero común → [BREAKPOINT] →
+> cola aleatorizada + libro + lente`. Si el libro fuera antes del breakpoint, los
+> siete tendrían prefijos distintos y la caché no serviría para nada.
 
-**D5 — Nombres sin sector:** ¿bucket `UNKNOWN` con tope propio, o se prohíbe
-operar sin sector?
+**D6 · Sin slippage simulado.** Solo fills reales de paper; **turnover** como
+métrica de churn en el post-mortem.
 
-**D6 — Slippage de 5 bps:** las órdenes son reales en paper y ya traen fricción.
-¿Turnover como métrica de churn (mi propuesta), o libro de fricción paralelo solo
-para scoring?
+**D7 · Breaker de gasto EN ESCALONES**, no apagando rondas. Ver §B9 reescrito.
 
-**D7 — El breaker de gasto (B9):** apagar las rondas fijas deja solo
-disparadores, que en un día volátil pueden ser más caros. ¿Lo cambiamos a un tope
-por corrida, o a "se apaga todo salvo la red determinista"?
+**D8 · Cortos desde el día 1**, con 15% por nombre y ≤50% bruto total. **Y el
+motor de rebalanceo RECORTA** un corto que crezca por encima de su riel — no
+solo rechaza entradas nuevas. Ver §B6 reescrito.
 
-**D8 — ¿Cortos desde el día 1?** Es lo que pediste y lo doy por decidido, pero lo
-dejo escrito: el lunes 21 estrena reglamento, modelos, ojos propios **y** cortos
-a la vez, y el camino de venta en corto **nunca corrió en producción**. Si algo
-se cae ese día, no vamos a saber cuál de las cuatro cosas fue.
+**Temperatura.** El reglamento ahora dice *"mismos parámetros por familia;
+`claude` y `control` idénticos"*, y los parámetros efectivos se journalean por
+agente **y por corrida**. Ya está en código (`effectiveParams`, `sameParams`).
+
+## Asumidas por mí — MARCADAS, decime si alguna va al revés
+
+**D3 · 30% por nombre largo — ASUMO EL TUYO.** Yo había propuesto 25%; vos
+pusiste 30% dos veces y no lo objetaste al aceptar los otros cambios, así que va
+**30%**. Mi reserva sigue en pie y es medible: si en T1 el PM nunca pasó del 15%
+por voluntad propia, el tope es decoración y da igual; si se pegaba al tope, a
+30% tres nombres son el 90% del libro y la temporada mide selección, no
+construcción. **Lo mide el test de §"Cómo probar los rieles contra T1" y con ese
+número lo reabro.**
+
+**D4 · Orden de entrega del miércoles — ASUMO.** B1 (universo) y B2 (tablero)
+salen el miércoles. **B3 (herramientas) sale el miércoles solo si el loop de tool
+use multi-proveedor está verde**; si no, pasa al jueves y se reporta. El loop es
+la pieza que más difiere entre Anthropic y OpenRouter y prefiero entregar dos
+bloques sólidos que tres a medias.
+
+**D5 · Sector desconocido — ASUMO.** Bucket `UNKNOWN` con el mismo tope de 50%,
+journaleado por nombre. Prohibir operar un nombre sin sector castigaría al PM por
+una falla de cobertura nuestra. Si el % de nombres sin `finnhubIndustry` sale
+alto en la medición de T1, el bucket es un agujero grande y lo reabro.
+
+**Semilla de aleatorización — ASUMO.** `hash(agent_id + run_id)`, determinista.
+Un `Math.random()` haría el journal irreproducible y el replay inútil.
+
+**Lente rotativa — ASUMO.** `LENTES[(hash(agent_id) + día_del_año) % 4]`, para
+que en 4 días cada agente pase por las cuatro y sea reproducible.
+
+**Tabla de la sombra — ASUMO.** Tablas `arena_shadow_*` separadas, **no** una
+columna `shadow` en `arena_journal`. Una bandera booleana en la misma tabla está
+a una consulta mal escrita de contaminar el post-mortem.
+
+

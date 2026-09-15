@@ -43,7 +43,7 @@ import { readFileSync } from 'node:fs';
 import { runArenaLeague, announceSeasonOpen, SEASON_OPEN_ID } from '../api/arena-run.js';
 import { activeAgents, agentById, agentAlpacaCreds, ARENA_TEMPERATURE, ARENA_AGENTS, ARENA_SEASON } from '../api/_lib/arena-registry.js';
 import { ANTHROPIC_MODEL, ARENA_ANTHROPIC_MODEL } from '../api/_lib/model.js';
-import { callArenaLLM, providerKey } from '../api/_lib/arena-model.js';
+import { callArenaLLM, providerKey, effectiveParams, sameParams } from '../api/_lib/arena-model.js';
 import { buildDiveSystemPrompt } from '../api/arena-run.js';
 
 // Los slugs de OpenRouter de la temporada nueva no están verificados contra el
@@ -283,6 +283,25 @@ const res = await runArenaLeague({ baseUrl: BASE_URL });
     .map((c) => JSON.stringify({ model: c.model, temperature: c.temperature ?? null })))];
   ok(combosAnthropic.length === 1,
     'claude y control mandan parámetros idénticos — el piso de ruido sigue siendo válido', JSON.stringify(combosAnthropic));
+
+  // El invariante, afirmado también sobre la fuente (no solo sobre lo que salió
+  // por el cable): `sameParams` es lo que el anuncio de reglamento journalea.
+  ok(sameParams(agentById('claude'), agentById('control')),
+    'sameParams(claude, control) === true — la regla "mismos parámetros por familia; insignia y control idénticos"');
+  ok(effectiveParams(agentById('claude')).temperature === null,
+    'la familia de Anthropic reporta temperature NULL (el parámetro no viaja), no 0',
+    String(effectiveParams(agentById('claude')).temperature));
+  ok(effectiveParams(agentById('grok')).temperature === ARENA_TEMPERATURE,
+    'la familia de OpenRouter sí reporta su temperatura efectiva');
+  // Dentro de cada familia, parámetros idénticos (la regla nueva).
+  const porFamilia = {};
+  for (const a of ARENA_AGENTS) {
+    const p = effectiveParams(a);
+    (porFamilia[a.provider] = porFamilia[a.provider] || []).push(
+      JSON.stringify({ t: p.temperature, e: p.effort, mt: p.max_tokens, ec: p.effort_channel }));
+  }
+  ok(Object.values(porFamilia).every((v) => new Set(v).size === 1),
+    'mismos parámetros DENTRO de cada familia', JSON.stringify(porFamilia));
 
   // MULTI-CUENTA: cada agente mandó su orden a SU cuenta.
   const acctBySym = {};

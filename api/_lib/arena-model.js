@@ -314,6 +314,39 @@ export function anthropicCostUsd(model, usage) {
   return (fresh * px.in + write * px.in * 1.25 + cached * cacheRead + out * px.out) / 1e6;
 }
 
+// ── PARÁMETROS EFECTIVOS de un agente ────────────────────────────────
+// Lo que REALMENTE se le manda a la API, no lo que el reglamento aspira a
+// mandarle. Existe porque desde el 2026-09-15 los parámetros dejaron de ser
+// iguales para los siete (Fable 5.1 rechaza `temperature` con 400), y una liga
+// donde eso no está escrito por agente es una liga donde el post-mortem tiene
+// que adivinar con qué corrió cada uno.
+//
+// `temperature: null` NO significa 0: significa que el parámetro no viaja y que
+// el sampling lo decide el proveedor. La distinción importa — leerlo como 0
+// haría creer que ese agente corre determinista, que es lo contrario.
+export function effectiveParams(agent, maxTokens = ARENA_MAX_TOKENS) {
+  const caps = (agent && agent.caps) || {};
+  return {
+    provider: agent && agent.provider,
+    model: agent && agent.model,
+    model_label: agent && agent.model_label,
+    // null = el parámetro NO se manda (la familia no lo acepta).
+    temperature: caps.sampling === false ? null : ARENA_TEMPERATURE,
+    effort: caps.effort ? ARENA_EFFORT : null,
+    effort_channel: caps.effort || null,   // 'anthropic' | 'openrouter' | null
+    max_tokens: maxTokens,
+    prompt_cache: caps.cache || null,      // 'anthropic' | 'auto' | null
+    slug_verified: !!(agent && agent.slug_verified),
+  };
+}
+
+// ¿Dos agentes corren con parámetros idénticos? Es la pregunta que decide si el
+// control sigue siendo control: `claude` y `control` TIENEN que dar true.
+export function sameParams(a, b) {
+  const norm = (x) => JSON.stringify({ ...effectiveParams(x), model_label: undefined, slug_verified: undefined });
+  return norm(a) === norm(b);
+}
+
 // ── API pública: una llamada, cualquier proveedor ────────────────────
 // Devuelve { status, data:{content:[{text}],usage} | null, stale?, hits?,
 // retried?, missingKey?, refusal?, unverifiedSlug? } — la MISMA forma sin

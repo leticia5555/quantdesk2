@@ -175,6 +175,9 @@ y los dos arreglos de causa raíz que ya entraron.
 
 ### El SQL que lo cierra
 
+> **Listo para pegar en Neon: `docs/sql/arena-diagnostico-2026-09-15.sql` §1.**
+> Incluye cómo leer cada resultado contra las cuatro hipótesis.
+
 ```sql
 select run_date, status, error,
        context -> 'scan' ->> 'stop_reason'   as scan_stop,
