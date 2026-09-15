@@ -1322,9 +1322,15 @@ vino fresca de FMP pero la escritura falló, la corrida de hoy sirve igual y sal
 un `persistence_warning`: no se rompe nada, pero mañana se vuelve a pagar la
 cuota y eso conviene que se vea.
 
-**`data/universe/*.json` está vacío a propósito y no hace falta llenarlo.** Es
-solo el escalón 3 —arranque en frío, con Neon vacío **y** FMP caído el mismo
-día—, y el seed vacío no cuenta como respaldo. Con cualquiera de las dos fuentes
+**`data/universe/constituents.js` está vacío a propósito y no hace falta
+llenarlo.** Es solo el escalón 3 —arranque en frío, con Neon vacío **y** FMP
+caído el mismo día—, y el seed vacío no cuenta como respaldo.
+
+> Era un par de `.json` leídos del disco con `import.meta.url`, y eso **tumbó
+> producción el 2026-09-15**: sin `package.json`, un `.js` de `/api` se
+> transpila a CommonJS, donde `import.meta` no existe. Ahora es un módulo que se
+> importa estáticamente — el bundler lo incluye por definición. Ver
+> `tests/arena-carga-vercel.test.mjs`. Con cualquiera de las dos fuentes
 de arriba viva, el escalón 3 no se consulta nunca. Sin ninguna de las tres, el
 universo cae a `movers_only` y el journal lo dice.
 

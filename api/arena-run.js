@@ -228,9 +228,28 @@ export const SCREENER_FLOOR = 2;
 // agente, y el ahorro vuelve a ser cero.
 //
 // El piso del proveedor vive en el registry (_lib/arena-registry.js) porque
-// _lib/arena-model.js también lo necesita y definirlo acá crearía un ciclo. Se
-// re-exporta para quien lo importe desde el runner.
-export { ANTHROPIC_CACHE_MIN_TOKENS };
+// _lib/arena-model.js también lo necesita y definirlo acá crearía un ciclo.
+//
+// ── ACÁ HABÍA UN `export { ANTHROPIC_CACHE_MIN_TOKENS }` Y TUMBÓ EL VIGILANTE ──
+//
+//   /api/arena-run.js:6
+//   TypeError: Cannot redefine property: ANTHROPIC_CACHE_MIN_TOKENS
+//
+// `import { X }` + `export { X }` del MISMO binding en un archivo es legal en
+// ESM y explota al transpilarse a CommonJS: la interoperabilidad define `X`
+// sobre `exports` como propiedad NO configurable al resolver el import, y el
+// re-export vuelve a llamar a `Object.defineProperty` sobre esa misma clave.
+// El segundo tira TypeError.
+//
+// Como revienta al CARGAR el módulo, no al usar el símbolo, se llevó puesto a
+// todo el que importa este archivo — y el que lo importa es `/api/arena-watch`,
+// que contestó 500 en CADA tick. El vigilante estuvo muerto.
+//
+// El re-export no servía para nada, además: NADIE lo importaba desde acá.
+// `arena-smoke` ya lo trae del registry, que es donde vive. Si algún día hace
+// falta re-exportarlo, la forma que SÍ sobrevive al transpilado es
+// `export { X } from './_lib/arena-registry.js'` — que no crea el binding local
+// y por lo tanto no define la propiedad dos veces.
 
 // Estimador de tokens. ~4 chars por token en inglés — deliberadamente tosco:
 // sirve para saber si un bloque está CERCA del piso, no para facturar. El
