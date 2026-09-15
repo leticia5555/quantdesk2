@@ -146,5 +146,73 @@ console.log('\n── malformado = abortado honesto, cero órdenes ──');
     'y se extrae el objeto de entre la prosa');
 }
 
+// ═══════════════════════════════════════════════════════════════
+// EL REPORTE GRATIS TIENE QUE CONTESTAR LAS PREGUNTAS QUE SE HACEN.
+//
+// Lety pidió cinco cosas de la corrida en sombra: candidatos, qué herramientas
+// llamó cada agente, portafolio objetivo, costo y SOLAPAMIENTO entre los 7.
+// Dos no existían en ninguna salida:
+//
+//   · La SECUENCIA de herramientas. La corrida en vivo devuelve `tools_used`,
+//     que es un número. Con qué filtró y en qué orden distingue a un modelo que
+//     investigó de uno que pidió ocho veces lo mismo — y ya se journaleaba.
+//   · El SOLAPAMIENTO. `pairwiseOverlap` estaba escrito y probado desde B8 y
+//     NINGÚN endpoint lo llamaba. Código muerto, igual que las rondas fijas
+//     antes de conectarlas. Un test que ejercita la función exportada no prueba
+//     que alguien la use.
+//
+// Las dos se reconstruyen del journal, así que salen por el reporte GRATIS: no
+// hay que pagar otra corrida en siete proveedores para verlas.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── el solapamiento sale del journal, sin pagar otra corrida ──');
+{
+  const { pairwiseOverlap, sharedTopTicker } = await import('../api/_lib/arena-herding.js');
+
+  // Tres libros: dos casi idénticos y uno distinto de verdad.
+  const libros = {
+    claude: { NVDA: 0.2, MSFT: 0.2, AAPL: 0.1 },
+    control: { NVDA: 0.2, MSFT: 0.2, AAPL: 0.1 },
+    grok: { XOM: 0.25, CVX: 0.2, OXY: 0.15 },
+  };
+  const ov = pairwiseOverlap(libros);
+  ok(ov.pairs.length === 3, 'con 3 libros hay 3 pares', String(ov.pairs.length));
+  const cc = ov.pairs.find((p) => p.a === 'claude' && p.b === 'control');
+  ok(cc && Math.abs(cc.cosine - 1) < 1e-6,
+    'dos libros idénticos dan coseno 1 — y claude/control idénticos es la señal de que el control sirve',
+    cc && cc.cosine);
+  const cg = ov.pairs.find((p) => p.b === 'grok' || p.a === 'grok');
+  ok(cg && cg.cosine === 0,
+    'y dos libros sin un solo nombre en común dan 0', cg && cg.cosine);
+  ok(ov.max === 1 && ov.mean < 1, 'el máximo y la media se reportan por separado', `max=${ov.max} mean=${ov.mean}`);
+
+  const top = sharedTopTicker(libros);
+  ok(top.books === 2 && ['NVDA', 'MSFT', 'AAPL'].includes(top.ticker),
+    'y el nombre más compartido dice en CUÁNTOS libros está', JSON.stringify(top));
+}
+
+console.log('\n── la lectura del número, no solo el número ──');
+{
+  // Un coseno alto entre siete modelos distintos NO es "la liga funciona": es
+  // la liga midiendo una opinión repetida siete veces. El reporte tiene que
+  // decirlo, porque el número solo se lee como quien lo mira quiera leerlo.
+  const lectura = (mean) => (mean >= 0.8 ? 'ALTO' : mean >= 0.5 ? 'MEDIO' : 'BAJO');
+  ok(lectura(0.92) === 'ALTO', '0.92 → ALTO');
+  ok(lectura(0.61) === 'MEDIO', '0.61 → MEDIO');
+  ok(lectura(0.12) === 'BAJO', '0.12 → BAJO');
+}
+
+console.log('\n── el reporte lee el context, que es donde vive la secuencia ──');
+{
+  const src = await import('node:fs').then((fs) => fs.readFileSync('api/_lib/arena-shadow.js', 'utf8'));
+  ok(/select agent_id, status, plan, target, rebalance, error, context/.test(src),
+    'la consulta trae `context`: sin esa columna la secuencia de herramientas no se puede reconstruir');
+  ok(/herramientas:/.test(src) && /ctx\.tools && Array\.isArray\(ctx\.tools\.sequence\)/.test(src),
+    'y se mapea la secuencia, no solo el conteo');
+  ok(/pairwiseOverlap/.test(src) && /sharedTopTicker/.test(src),
+    'el solapamiento se CALCULA en el reporte — antes la función existía y nadie la llamaba');
+  ok(/lente distintas|lentes distintas/i.test(src),
+    'con el caveat de la lente al lado: dos agentes con lentes distintas no son comparables ese día');
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
 process.exit(failures ? 1 : 0);

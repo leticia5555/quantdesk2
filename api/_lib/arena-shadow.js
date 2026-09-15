@@ -32,6 +32,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql } from './db.js';
+import { pairwiseOverlap, sharedTopTicker } from './arena-herding.js';
 import { marketDay } from './arena-buffet-cache.js';
 
 const SCHEMA = [
@@ -114,7 +115,7 @@ export function shadowRunId(agentId, now = new Date()) {
 export async function shadowReport(day = marketDay()) {
   await ensureShadowSchema();
   const rows = await sql(
-    `select agent_id, status, plan, target, rebalance, error, created_at
+    `select agent_id, status, plan, target, rebalance, error, context, created_at
      from arena_shadow_journal where run_date = $1::date order by created_at`, [day],
   );
   const porAgente = {};
@@ -122,6 +123,7 @@ export async function shadowReport(day = marketDay()) {
     const a = (porAgente[r.agent_id] = porAgente[r.agent_id] || { corridas: 0, estados: {}, ultimo: null });
     a.corridas++;
     a.estados[r.status] = (a.estados[r.status] || 0) + 1;
+    const ctx = r.context || {};
     a.ultimo = {
       status: r.status,
       plan: r.plan ? String(r.plan).slice(0, 200) : null,
@@ -129,13 +131,72 @@ export async function shadowReport(day = marketDay()) {
       ordenes_que_habria_mandado: r.rebalance && r.rebalance.legs ? r.rebalance.legs.length : null,
       turnover: r.rebalance ? r.rebalance.turnover : null,
       error: r.error || null,
+      lente: ctx.lens || null,
+      costo_usd: ctx.cost ? ctx.cost.usd : null,
+      // ── LA SECUENCIA DE HERRAMIENTAS, NO EL CONTEO ──────────────────
+      // La corrida en vivo solo devuelve `tools_used` (un número). Con qué
+      // filtró y en qué orden es lo que distingue a un modelo que investigó de
+      // uno que pidió ocho veces lo mismo — y eso ya se journalea, solo que
+      // nadie lo leía. Reconstruirlo acá es GRATIS: son filas que ya están.
+      herramientas: ctx.tools && Array.isArray(ctx.tools.sequence)
+        ? ctx.tools.sequence.map((t) => ({
+          n: t.n ?? null, herramienta: t.name || t.tool || null,
+          args: t.input || t.args || null,
+          filas: t.rows ?? (t.result && t.result.rows) ?? null,
+          truncado: !!(t.truncated || (t.result && t.result.truncated)),
+        }))
+        : null,
+      herramientas_usadas: ctx.tools ? ctx.tools.used ?? null : null,
+      herramientas_tope: ctx.tools ? ctx.tools.budget ?? null : null,
+      herramientas_corte: ctx.tools ? ctx.tools.stopped_by || null : null,
     };
   }
   const total = rows ? rows.length : 0;
   const abortadas = (rows || []).filter((r) => String(r.status).startsWith('aborted')).length;
+
+  // ── EL SOLAPAMIENTO ENTRE LOS SIETE ──────────────────────────────────
+  // `pairwiseOverlap` estaba escrito y probado desde B8 y NINGÚN endpoint lo
+  // llamaba: código muerto, igual que las rondas fijas antes de conectarlas. Un
+  // test que ejercita la función exportada no prueba que alguien la use.
+  //
+  // Es la métrica que dice si la liga está midiendo SIETE opiniones o una
+  // opinión repetida siete veces — que es la pregunta entera del experimento.
+  // Con portafolio objetivo deja de ser una aproximación: el coseno entre
+  // vectores de peso es un número directo.
+  const libros = {};
+  for (const [id, a] of Object.entries(porAgente)) {
+    if (a.ultimo && a.ultimo.pesos && Object.keys(a.ultimo.pesos).length) libros[id] = a.ultimo.pesos;
+  }
+  const solapamiento = Object.keys(libros).length >= 2
+    ? { ...pairwiseOverlap(libros), nombre_mas_compartido: sharedTopTicker(libros), libros: Object.keys(libros).length }
+    : { pairs: [], mean: null, max: null, libros: Object.keys(libros).length,
+      note: 'Hacen falta al menos DOS libros con pesos para que el solapamiento signifique algo.' };
+
+  if (solapamiento.mean != null) {
+    // El número solo no dice nada sin la lectura. Un coseno de 0.9 entre siete
+    // modelos distintos no es "la liga funciona": es la liga midiendo ruido
+    // alrededor de una sola opinión.
+    solapamiento.lectura = solapamiento.mean >= 0.8
+      ? `ALTO (${solapamiento.mean}): los siete están construyendo casi el mismo libro. La liga estaría midiendo una opinión repetida siete veces, no siete opiniones.`
+      : solapamiento.mean >= 0.5
+        ? `MEDIO (${solapamiento.mean}): hay un núcleo común y diferencias reales en los bordes.`
+        : `BAJO (${solapamiento.mean}): los libros difieren de verdad. Es lo que hace comparable el experimento.`;
+    solapamiento.caveat = 'OJO con la LENTE: dos agentes con lentes distintas el mismo día NO son comparables ese día — el confound es deliberado (B8). Mirá `por_agente[].ultimo.lente` antes de leer el par.';
+  }
+
+  const costos = Object.values(porAgente).map((a) => (a.ultimo && a.ultimo.costo_usd)).filter((x) => Number.isFinite(x));
   return {
     day, total, abortadas,
     por_agente: porAgente,
+    solapamiento,
+    costo: {
+      total_usd: costos.length ? +costos.reduce((x, y) => x + y, 0).toFixed(4) : null,
+      con_costo: costos.length,
+      sin_costo: Object.keys(porAgente).length - costos.length,
+      note: costos.length < Object.keys(porAgente).length
+        ? 'Hay agentes sin costo reportado: el total está SUBESTIMADO. Un costo ausente es un dato; uno inventado sería una mentira que después alguien presupuesta.'
+        : null,
+    },
     // EL VEREDICTO ES EXPLÍCITO. Una sombra que "corrió" no es una sombra que
     // pasó: lo que la hace pasar es que los siete produjeran un objetivo
     // legible, y que el motor supiera qué órdenes habría mandado.
