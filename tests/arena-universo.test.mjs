@@ -675,5 +675,109 @@ console.log('\n── Finnhub: "0 admitidos" tiene que decir de quién es la cul
     '"no lo tiene" se distingue de "no nos dejó pedir": son problemas distintos', diag3[0].reason);
 }
 
+// ═══════════════════════════════════════════════════════════════
+// UN ÍNDICE OPCIONAL QUE FALTA NO ES UNA FALLA.
+//
+// El Nasdaq 100 arranca sin URL verificada (Invesco devolvió HTML y no hay otra
+// probada desde este entorno). Que falte NO puede leerse igual que si faltara el
+// S&P 500: uno es una decisión tomada, el otro es el universo roto.
+//
+// Si se mezclaran, `partial` estaría encendido TODOS los días — y una bandera
+// que está siempre encendida deja de ser una bandera. El día que de verdad se
+// caiga el S&P 500, nadie lo notaría entre el ruido.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── el Nasdaq 100 ausente no degrada ni ensucia ──');
+{
+  const soloSp = {
+    cargarCatalogo: async () => catalogoTodoComun,
+    fetchDesdeEtf: async (i) => (i === 'sp500'
+      ? { index: i, source: 'etf', etf: 'IVV', built_at: HOY.toISOString(), symbols: sp500 }
+      : null),
+    fetchConstituents: async () => null,
+    readStored: async () => null, readStatic: async () => null, writeStored: async () => true,
+    getMovers: async () => ({ gainers: [], losers: [], last_updated: null }),
+    getMostActives: async () => ({ most_actives: [], by: 'volume', last_updated: null }),
+    getPriceAndDollarVolume: async (syms) => Object.fromEntries(syms.map((x) => [x, { price: 40, dollarVolume: 5e7 }])),
+    resolveAdmission: async (syms) => Object.fromEntries(syms.map((x) => [x, { symbol: x, price: 40, dollarVolume: 5e7, marketCap: 5e9 }])),
+    getFiftyTwoWeek: async () => ({}),
+  };
+  const u = await buildUniverse({ now: HOY, moversMax: 0, deps: soloSp });
+
+  ok(u.counts.admitidos === 500,
+    'con solo el S&P 500 el universo sale con sus 500 nombres: NO bloquea', String(u.counts.admitidos));
+  ok(u.universe_source === 'etf',
+    'y la fuente dice `etf`, NO `partial` — el opcional no cuenta para el cálculo', u.universe_source);
+  ok(u.indices.nasdaq100.opcional === true && u.indices.nasdaq100.source === 'none',
+    'el Nasdaq 100 queda VISIBLE como ausente y marcado opcional (no desaparece del reporte)',
+    JSON.stringify({ op: u.indices.nasdaq100.opcional, src: u.indices.nasdaq100.source }));
+  // El assert original buscaba que la nota NO contuviera "error" — y fallaba
+  // con la nota "No es un error", que dice exactamente lo correcto. Buscar la
+  // AUSENCIA de una palabra es frágil: lo que importa es lo que la nota AFIRMA.
+  ok(/OPCIONAL/i.test(u.indices.nasdaq100.note || '') && /no es un error/i.test(u.indices.nasdaq100.note || ''),
+    'y su nota lo dice con todas las letras: es opcional y NO es un error', u.indices.nasdaq100.note);
+  ok(/ARENA_HOLDINGS_URL_NASDAQ100/.test(u.indices.nasdaq100.note || ''),
+    'nombrando la env var exacta, que se toma sin deploy');
+  ok(!u.errors.nasdaq100 && Object.keys(u.errors).length === 0,
+    '`errors` queda LIMPIO: una decisión no es un error', JSON.stringify(u.errors));
+
+  // Y el S&P 500 caído SÍ tiene que degradar — si no, el opcional habría
+  // apagado la señal para todos.
+  const uRoto = await buildUniverse({
+    now: HOY, moversMax: 0,
+    deps: { ...soloSp, fetchDesdeEtf: async () => null },
+  });
+  ok(uRoto.universe_source !== 'etf',
+    'pero si se cae el S&P 500 —que es obligatorio— la fuente SÍ degrada: la señal sigue viva', uRoto.universe_source);
+}
+
+console.log('\n── cuánto aportaría el Nasdaq 100, medido ──');
+{
+  // La mayoría de sus miembros también están en el S&P 500. "Nos falta el 100"
+  // NO significa "nos faltan 100 nombres", y la decisión de ir a buscar la URL
+  // de QQQ merece un número en vez de una intuición.
+  const compartidos = sp500.slice(0, 80);
+  const propios = Array.from({ length: 20 }, (_, i) => 'NDXONLY' + i);
+  const u = await buildUniverse({
+    now: HOY, moversMax: 0,
+    deps: {
+      cargarCatalogo: async () => catalogoTodoComun,
+      fetchDesdeEtf: async (i) => ({ index: i, source: 'etf', built_at: HOY.toISOString(), symbols: i === 'sp500' ? sp500 : [...compartidos, ...propios] }),
+      fetchConstituents: async () => null,
+      readStored: async () => null, readStatic: async () => null, writeStored: async () => true,
+      getMovers: async () => ({ gainers: [], losers: [], last_updated: null }),
+      getMostActives: async () => ({ most_actives: [], by: 'volume', last_updated: null }),
+      getPriceAndDollarVolume: async (syms) => Object.fromEntries(syms.map((x) => [x, { price: 40, dollarVolume: 5e7 }])),
+      resolveAdmission: async (syms) => Object.fromEntries(syms.map((x) => [x, { symbol: x, price: 40, dollarVolume: 5e7, marketCap: 5e9 }])),
+      getFiftyTwoWeek: async () => ({}),
+    },
+  });
+  ok(u.indices.solo_en.nasdaq100 === 20,
+    'el journal dice cuántos nombres aporta el Nasdaq 100 que el S&P 500 no tiene', String(u.indices.solo_en.nasdaq100));
+  ok(u.indices.solo_en.en_ambos === 80,
+    'y cuántos comparten: el solapamiento es el que hace que arrancar con uno sea razonable', String(u.indices.solo_en.en_ambos));
+}
+
+console.log('\n── varias URLs candidatas: la primera que sirva ──');
+{
+  const { fetchHoldings } = await import('../api/_lib/etf-holdings.js');
+  const pedidas = [];
+  const r = await fetchHoldings('sp500', {
+    source: { etf: 'IVV', proveedor: 'iShares', urls: ['https://a.test/uno.csv', 'https://b.test/dos.csv'] },
+    fetchImpl: async (url) => {
+      pedidas.push(url);
+      return /uno/.test(url)
+        ? { ok: true, status: 200, text: async () => '<!DOCTYPE html><html>se movió</html>' }
+        : { ok: true, status: 200, text: async () => 'Ticker,Name,Asset Class\nAAPL,Apple Inc,Equity\nMSFT,Microsoft,Equity' };
+    },
+  });
+  ok(pedidas.length === 2 && r.symbols.length === 2,
+    'si la primera devuelve HTML se prueba la siguiente, y esa gana', JSON.stringify(r.symbols));
+  ok(r.diagnostics.intentos.length === 2 && r.diagnostics.intentos[0].reason === 'html_no_csv',
+    'el intento fallido NO se pierde: queda en `intentos` con su motivo',
+    JSON.stringify(r.diagnostics.intentos.map((x) => x.reason || 'ok')));
+  ok(r.diagnostics.url_host === 'b.test',
+    'y se dice CUÁL sirvió — sin eso, "anduvo" no dice cuál de las candidatas usar', r.diagnostics.url_host);
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
 process.exit(failures ? 1 : 0);

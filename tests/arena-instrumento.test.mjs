@@ -163,7 +163,7 @@ console.log('\n── cuando las tenencias no sirven, se dice POR QUÉ ──');
   ok(r2.diagnostics.reason === 'html_no_csv',
     'HTML en vez de CSV se nombra como tal: "0 filas" mandaría a revisar el parser cuando la URL se movió',
     r2.diagnostics.reason);
-  ok(/ARENA_HOLDINGS_URL_SP500/.test(r2.diagnostics.detail || ''),
+  ok(/ARENA_HOLDINGS_URL/.test(r2.diagnostics.detail || ''),
     'y el detalle dice cómo corregirlo SIN un deploy', r2.diagnostics.detail);
 
   const r3 = await fetchHoldings('sp500', { fetchImpl: async () => { throw new Error('The operation was aborted due to timeout'); } });
@@ -190,8 +190,12 @@ console.log('\n── las fuentes declaradas ──');
 {
   ok(HOLDINGS_SOURCES.sp500.etf === 'IVV' && HOLDINGS_SOURCES.nasdaq100.etf === 'QQQ',
     'S&P 500 ← IVV (iShares) · Nasdaq 100 ← QQQ (Invesco)');
-  ok(Object.values(HOLDINGS_SOURCES).every((s) => /^https:\/\//.test(s.url)),
-    'las dos URLs son https y NO llevan key: son públicas');
+  ok(Object.values(HOLDINGS_SOURCES).every((f) => f.urls.length && f.urls.every((u) => /^https:\/\//.test(u))),
+    'todas las URLs candidatas son https y NINGUNA lleva key: son públicas');
+  ok(HOLDINGS_SOURCES.sp500.urls[0].includes('latest-holdings.csv'),
+    'la primera candidata del S&P 500 es la URL VERIFICADA de iShares', HOLDINGS_SOURCES.sp500.urls[0]);
+  ok(HOLDINGS_SOURCES.nasdaq100.opcional === true && !HOLDINGS_SOURCES.sp500.opcional,
+    'el Nasdaq 100 está marcado OPCIONAL y el S&P 500 no: sin URL verificada, arrancamos con uno');
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');

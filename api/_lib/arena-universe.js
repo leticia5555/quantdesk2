@@ -296,6 +296,16 @@ export async function resolveConstituents(index, { now = new Date(), force = fal
     return { ...estatico, refreshed: false, stored: false, stale: true, age_days: edad(estatico.built_at, now),
       note: 'Arranque en frío: sin FMP y sin nada guardado, se usa el JSON del repo.' };
   }
+  // ── UN ÍNDICE OPCIONAL QUE NO CONTESTA NO ES UNA FALLA ─────────────
+  // El Nasdaq 100 arranca sin URL verificada (Invesco devolvió HTML y no hay
+  // otra probada). Que falte NO puede leerse igual que si faltara el S&P 500:
+  // uno es una decisión tomada, el otro es el universo roto. Si se mezclan, el
+  // día que de verdad se caiga el S&P 500 nadie lo va a notar entre el ruido.
+  const esOpcional = !!(HOLDINGS_SOURCES[index] && HOLDINGS_SOURCES[index].opcional);
+  if (esOpcional) {
+    return { index, source: 'none', opcional: true, symbols: [], built_at: null, refreshed: false, stored: false,
+      note: `El ${index} es OPCIONAL y hoy no se pudo bajar. No es un error: el universo sale con los índices obligatorios. Para activarlo, poné una URL de descarga directa del CSV en ARENA_HOLDINGS_URL_${String(index).toUpperCase()} — se toma sin deploy.` };
+  }
   return { index, source: 'none', symbols: [], built_at: null, refreshed: false, stored: false, fmp_failed: porque,
     note: `Sin FMP (${porque}), sin lista guardada y con la lista del repo vacía. Los índices NO entran al universo de hoy — ver data/universe/README.md. Si el motivo dice algo distinto de "sin_key", la key SÍ está llegando y el problema es otro: mirá \`fmp_diagnostics\` en la respuesta del endpoint.` };
 }
@@ -363,6 +373,8 @@ export async function buildUniverse({
     actives({ top: 100, by: 'trades', creds }).catch((e) => { errors.most_actives_trades = String((e && e.message) || e); return null; }),
   ]);
 
+  const spSet = new Set(sp.symbols);
+  const nqSet = new Set(nq.symbols);
   const indexSyms = new Set([...sp.symbols, ...nq.symbols]);
   const delDia = [...new Set([
     ...((mv && mv.gainers) || []).map((m) => m.symbol),
@@ -505,10 +517,18 @@ export async function buildUniverse({
   }
 
   // De dónde salió el universo, en una palabra, para el journal.
+  // LA FUENTE SE CALCULA SOLO SOBRE LOS ÍNDICES OBLIGATORIOS. Con el Nasdaq 100
+  // opcional, incluirlo acá haría que TODOS los días salieran `partial` — y
+  // `partial` dejaría de significar "algo se rompió" para significar "es
+  // martes". Una bandera que está siempre encendida no es una bandera.
+  const obligatorios = [sp, nq].filter((x) => !x.opcional);
+  const fuentes = obligatorios.map((x) => x.source);
   const source = indexSyms.size === 0
     ? (admitidos.length ? 'movers_only' : 'empty')
-    : (sp.source === 'fmp' && nq.source === 'fmp' ? 'fmp'
-      : (sp.source === 'none' || nq.source === 'none' ? 'partial' : (sp.source === 'static' || nq.source === 'static' ? 'static' : 'neon')));
+    : (fuentes.includes('none') ? 'partial'
+      : (fuentes.every((f) => f === 'etf') ? 'etf'
+        : (fuentes.every((f) => f === 'fmp') ? 'fmp'
+          : (fuentes.includes('static') ? 'static' : 'neon'))));
 
   return {
     built_at: now.toISOString(),
@@ -525,8 +545,18 @@ export async function buildUniverse({
       // `persisted` es la pregunta operativa: ¿esta lista sobrevive al próximo
       // deploy sin que nadie la commitee? Si es false y la fuente es 'fmp', la
       // escritura a Neon falló y mañana se vuelve a pedir la misma lista.
-      sp500: { source: sp.source, built_at: sp.built_at, count: sp.symbols.length, age_days: sp.age_days ?? null, stale: !!sp.stale, persisted: sp.stored !== false, refreshed: !!sp.refreshed, fmp_api: sp.fmp_api || null, fmp_failed: sp.fmp_failed || null, note: sp.note || null },
-      nasdaq100: { source: nq.source, built_at: nq.built_at, count: nq.symbols.length, age_days: nq.age_days ?? null, stale: !!nq.stale, persisted: nq.stored !== false, refreshed: !!nq.refreshed, fmp_api: nq.fmp_api || null, fmp_failed: nq.fmp_failed || null, note: nq.note || null },
+      sp500: { source: sp.source, opcional: !!sp.opcional, built_at: sp.built_at, count: sp.symbols.length, age_days: sp.age_days ?? null, stale: !!sp.stale, persisted: sp.stored !== false, refreshed: !!sp.refreshed, etf: sp.etf || null, fmp_api: sp.fmp_api || null, fmp_failed: sp.fmp_failed || null, note: sp.note || null },
+      nasdaq100: { source: nq.source, opcional: !!nq.opcional, built_at: nq.built_at, count: nq.symbols.length, age_days: nq.age_days ?? null, stale: !!nq.stale, persisted: nq.stored !== false, refreshed: !!nq.refreshed, etf: nq.etf || null, fmp_api: nq.fmp_api || null, fmp_failed: nq.fmp_failed || null, note: nq.note || null },
+      // CUÁNTO APORTA CADA UNO QUE EL OTRO NO. La mayoría de los miembros del
+      // Nasdaq 100 también están en el S&P 500, así que "nos falta el 100" no
+      // significa "nos faltan 100 nombres". Este número dice exactamente
+      // cuántos, para que la decisión de ir a buscar la URL de QQQ se tome con
+      // un dato en vez de con una intuición.
+      solo_en: {
+        sp500: sp.symbols.filter((x) => !nqSet.has(x)).length,
+        nasdaq100: nq.symbols.filter((x) => !spSet.has(x)).length,
+        en_ambos: sp.symbols.filter((x) => nqSet.has(x)).length,
+      },
     },
     // Qué se descartó por NO SER UNA ACCIÓN, separado de lo que se descartó por
     // criterio de admisión. Son dos preguntas distintas y antes daban la misma
@@ -571,7 +601,11 @@ export async function buildUniverse({
     // Es lo que convierte "Sin FMP" en algo que se puede arreglar: dice si la
     // key llegó, si la rechazaron, cuál de las dos APIs contestó y qué dijo.
     // La key NUNCA aparece acá: la URL se guarda sin el `?apikey=`.
-    fmp_diagnostics: fmpDiag,
+    // Cada intento contra CUALQUIER fuente de constituyentes: primero las
+    // tenencias del ETF, después FMP si hay key. Se llama así y no
+    // `fmp_diagnostics` porque FMP dejó de ser la fuente y el nombre viejo
+    // mandaría a mirar el lugar equivocado.
+    constituents_diagnostics: fmpDiag,
     // La pregunta más barata de todas, y la que no se podía contestar: ¿la
     // env var llegó a ESTE entorno? Solo el booleano — el valor jamás.
     fmp_key_present: !!process.env.FMP_API_KEY,
