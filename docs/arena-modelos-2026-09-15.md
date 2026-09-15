@@ -181,6 +181,41 @@ curl -sN -H "$AUTH" "$BASE/api/arena-smoke?stream=1" | jq -c 'select(.type=="pro
 > que con los siete en paralelo terminan casi juntos, así que el streaming es
 > una red, no un chorro de progreso.
 
+### Costo por corrida
+
+`cost_usd` sale de tres fuentes, en este orden:
+
+1. **El cobro real.** Anthropic: la tabla de la casa (`_lib/model.js`). OpenRouter: `usage.cost`, cuando lo manda.
+2. **Estimación del catálogo vivo.** Cuando OpenRouter no reporta `usage.cost`, se multiplica tokens × `pricing.prompt`/`pricing.completion` de `GET /api/v1/models` — el precio que el proveedor publica hoy, no uno copiado a mano. Viene marcado: `cost_source: "catalog_estimate"`, `cost_estimated: true`, y el `pricing_per_mtok` con el que se calculó, para poder auditarlo.
+3. **`null`,** con la nota de por qué. Nunca un cero silencioso.
+
+`/api/ai-usage` también cotiza a los cinco de OpenRouter contra ese catálogo: antes su tabla de precios solo conocía modelos de Anthropic, así que el gasto de la liga contaba **dos de siete** y el total igual salía, con pinta de correcto. Cada fila trae `price_source`.
+
+> Los `reasoning_tokens` **no** se suman aparte: OpenRouter ya los incluye en `completion_tokens`. Sumarlos contaría el razonamiento dos veces.
+
+### Caché de prompt: qué está prendido y qué no
+
+La colocación del breakpoint ya era correcta (reglamento estable primero con `cache_control`, directiva de fecha después). Lo que falla es el **tamaño**:
+
+| Fase | System | ≈ tokens | Mínimo de Fable 5.1 | ¿Cachea? |
+|---|---|---|---|---|
+| `scan` | 1.315 chars | ~330 | **512** | **No** |
+| `dive` | 3.899 chars | ~975 | 512 | **Sí** |
+
+El mínimo de Claude Fable 5.1 es **512 tokens**, no 1.024 — 1.024 es el de Opus 4.8 / Sonnet 5 / Sonnet 4.6. El mínimo no es monotónico entre generaciones, así que conviene mirarlo por modelo y no de memoria.
+
+El smoke ahora **reporta** el estado en vez de dejarlo suponer: `probes[].cache = { write, read, status }`, donde `status` es `hit` / `written` / `no_cache` — leído de `cache_creation_input_tokens` y `cache_read_input_tokens`, que son los números del proveedor.
+
+**Por qué no se movió el buffet al prefijo cacheable:** cachear ~330 tokens ahorra ~$0.003 por llamada, que es ruido. Lo que sí pesa es el buffet, pero vive en el mensaje de usuario y solo tiene **un** relector posible (`control` comparte modelo con `claude`; los otros cinco están en OpenRouter, y las cachés son por modelo). Encima los siete corren **en paralelo**, así que `claude` y `control` arrancan a la vez y ninguno alcanza a escribir la caché que el otro leería. Para cobrar ese ahorro habría que serializarlos a propósito — y eso cuesta wall-clock en un endpoint que ya murió una vez por reloj. Queda medido y anotado, no hecho.
+
+### El canal `insiders` y SEC EDGAR
+
+No es Yahoo: es **SEC EDGAR**. `/api/stock-tracker?cat=insider` baja el feed Atom de Form 4 y después inspecciona hasta `SCAN_CAP=60` XML sueltos de `sec.gov/Archives`. Con la caché en memoria fría —o sea, en cada lambda nueva— son ~61 requests a un servidor que throttlea a propósito, y los 12s planos del buffet no alcanzaban.
+
+Techo propio: **30s** (`ARENA_BUFFET_TIMEOUT_INSIDERS_MS`), y 12s para el resto (`ARENA_BUFFET_TIMEOUT_MS`). Los canales se piden en paralelo, así que el costo del buffet es `max(canales)`, no la suma.
+
+> Esto es el torniquete, no la cura. La cura es precomputar `insiders` en su propio cron y leerlo de Neon, como ya hace el canal `screener` (`readScreenerRows`: cero llamadas a terceros durante la corrida). Con EDGAR lento, 30s también se pueden acabar.
+
 > ⚠️ **No toques `ANTHROPIC_MODEL`.** Es el modelo de TODA la app (sim, earnings,
 > Smart $, los 6 agentes de la flota) y sigue en Haiku a propósito. Apuntarlo a
 > Fable 5.1 subiría la app entera de $1/$5 a $10/$50 por MTok. El Arena tiene su

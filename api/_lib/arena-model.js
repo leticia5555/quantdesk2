@@ -379,6 +379,56 @@ export function sameParams(a, b) {
 // Devuelve { status, data:{content:[{text}],usage} | null, stale?, hits?,
 // retried?, missingKey?, refusal?, unverifiedSlug? } — la MISMA forma sin
 // importar el proveedor.
+// ── COSTO DE OPENROUTER ──────────────────────────────────────────────
+// OpenRouter devuelve `usage.cost` (el cobro REAL) cuando lo reporta, y ése
+// siempre gana. Cuando no lo manda, el costo quedaba en null y la corrida no
+// tenía cifra: siete modelos gastando y un total de $0.0000.
+//
+// Este fallback multiplica tokens × el precio del CATÁLOGO VIVO del propio
+// OpenRouter (`pricing.prompt` / `pricing.completion` de GET /api/v1/models).
+// No es un precio que copiamos a mano en un archivo — es el que el proveedor
+// publica hoy. Aun así es una ESTIMACIÓN y se marca como tal
+// (`cost_source: 'catalog_estimate'`), porque no tiene en cuenta descuentos,
+// mínimos por request ni el precio distinto de los tokens cacheados.
+//
+// Los tokens de razonamiento NO se suman aparte: OpenRouter ya los incluye en
+// `completion_tokens` (vienen desglosados en completion_tokens_details). Sumar
+// ambos contaría el razonamiento dos veces.
+export function openRouterCostUsd(usage, pricing) {
+  if (!usage || !pricing) return null;
+  const inPer = Number(pricing.input), outPer = Number(pricing.output);
+  if (!Number.isFinite(inPer) || !Number.isFinite(outPer)) return null;
+  const inTok = Number(usage.input_tokens) || 0;
+  const outTok = Number(usage.output_tokens) || 0;
+  const usd = (inTok / 1e6) * inPer + (outTok / 1e6) * outPer;
+  return Number.isFinite(usd) ? +usd.toFixed(6) : null;
+}
+
+// Precios del catálogo vivo, por slug: { 'x-ai/grok-4.6': {input, output} }.
+// Cacheado en el proceso: el catálogo no cambia dentro de una corrida y son
+// 446 modelos de JSON que no hace falta bajar dos veces.
+let priceCache = { at: 0, map: null };
+const PRICE_TTL_MS = 10 * 60e3;
+export async function openRouterPrices({ timeoutMs = 20000, now = Date.now() } = {}) {
+  if (priceCache.map && now - priceCache.at < PRICE_TTL_MS) return priceCache.map;
+  try {
+    const r = await fetch('https://openrouter.ai/api/v1/models', { signal: AbortSignal.timeout(timeoutMs) });
+    if (!r.ok) return priceCache.map || null;
+    const j = await r.json();
+    const map = {};
+    for (const m of (j && j.data) || []) {
+      if (!m || !m.id || !m.pricing) continue;
+      const input = Number(m.pricing.prompt) * 1e6;
+      const output = Number(m.pricing.completion) * 1e6;
+      if (Number.isFinite(input) && Number.isFinite(output)) map[m.id] = { input: +input.toFixed(3), output: +output.toFixed(3) };
+    }
+    priceCache = { at: now, map };
+    return map;
+  } catch { return priceCache.map || null; }   // el costo es observabilidad: nunca tumba una corrida
+}
+
+export function __resetPriceCache() { priceCache = { at: 0, map: null }; }
+
 export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), timeoutMs = ARENA_LLM_TIMEOUT_MS }) {
   // CANDADO DE SLUG: un modelo cuyo slug no se verificó contra el catálogo del
   // proveedor y que no tiene override explícito NO se llama. Ver el encabezado
