@@ -57,7 +57,9 @@
 // prod) → keys de Alpaca → ANTHROPIC_API_KEY (créditos pendientes: sin
 // key el run se journalea como abortado honesto, cero órdenes).
 //
-// ENV VARS: ARENA_ENABLED · ALPACA_PAPER_KEY/SECRET · ANTHROPIC_API_KEY ·
+// ENV VARS: ARENA_ENABLED · ARENA_SHADOW (1 = modo SOMBRA: decide y journalea
+//           completo, NO envía órdenes; caduca solo el día del relanzamiento —
+//           ver _lib/arena-shadow.js) · ALPACA_PAPER_KEY/SECRET · ANTHROPIC_API_KEY ·
 //           FINNHUB_API_KEY (symbol map del guard + deep dive de candidatos) ·
 //           DATABASE_URL · CRON_SECRET (opc) ·
 //           PUBLIC_BASE_URL (dominio público estable para el self-fetch; ver
@@ -97,6 +99,10 @@ import { ARENA_AGENTS, ARENA_SEASON, activeAgents, agentById, agentAlpacaCreds, 
 // El runner solo necesita saber CUÁNDO deja de correr el cron nocturno y qué
 // dice el reglamento nuevo; la lógica de disparadores vive en su módulo.
 import { WATCH_RULES, watchCadenceActive, watchStartDate } from './_lib/arena-watch.js';
+// MODO SOMBRA (martes 15 → viernes 18): la liga corre completa y NO envía una
+// sola orden. Muerde en los DOS puntos de envío de este archivo; la decisión,
+// el guard y el journal no se enteran. Ver el encabezado de _lib/arena-shadow.js.
+import { shadowActive, shadowState, shadowAction } from './_lib/arena-shadow.js';
 
 // Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
 // reglas de universo); el buffet (trimMovers) la reusa y los tests de
@@ -769,11 +775,21 @@ function attributeRiskExit(a, extra) {
 // ±2%) + day. client_order_id con segmento `:exit` — distinto de `:buy`/`:sell`,
 // así una salida determinista NO colisiona con una venta del PM del mismo
 // símbolo el mismo día (dos ventas mismo día antes compartían client_order_id).
-async function submitRiskExits(approved, runDate, creds) {
+async function submitRiskExits(approved, runDate, creds, { shadow = false } = {}) {
   const actions = [];
   let submitted = 0;
+  let suppressed = 0;
   for (const a of approved) {
     const clientOrderId = `arena:${runDate}:${a.symbol}:exit`;
+    // SOMBRA: la salida se decidió, se journalea con todo su detalle y NO se
+    // envía. `result:'shadow'` es un valor propio para que ni el reconstructor
+    // de posiciones ni el escalador de banda la confundan con una orden real
+    // (ver _lib/arena-shadow.js).
+    if (shadow) {
+      actions.push(attributeRiskExit(a, shadowAction({ symbol: a.symbol, side: 'sell' }, { clientOrderId })));
+      suppressed++;
+      continue;
+    }
     try {
       const order = await createLimitOrder({ symbol: a.symbol, qty: a.qty, side: 'sell', limit_price: a.limit_price, client_order_id: clientOrderId }, creds);
       actions.push(attributeRiskExit(a, { result: 'approved', alpaca_order_id: order.id, client_order_id: clientOrderId, order_status: order.status }));
@@ -782,7 +798,7 @@ async function submitRiskExits(approved, runDate, creds) {
       actions.push(attributeRiskExit(a, { result: 'submit_failed', client_order_id: clientOrderId, reason: String((err && err.message) || err) }));
     }
   }
-  return { actions, submitted };
+  return { actions, submitted, suppressed };
 }
 
 // Salidas de riesgo descartadas (p.ej. sin referencia de precio) → journal.
@@ -915,6 +931,10 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // client_order_id, para que dos corridas del mismo día sobre el mismo símbolo
   // no colisionen (con la cadencia por evento eso pasa TODOS los días).
   const runTag = policy.tag;
+  // MODO SOMBRA: se resuelve UNA vez por corrida y viaja al journal. NO cambia
+  // nada río arriba (buffet, scout, deep dive, DIVE, guard, titular): solo
+  // decide si las órdenes aprobadas salen a Alpaca o se quedan en la fila.
+  const shadow = shadowActive(now);
   // El id lleva el TIPO de corrida: con la cadencia por evento un agente puede
   // tener varias filas el mismo día y "arena-claude-<iso>" ya no las distingue
   // de un vistazo en el journal.
@@ -1041,15 +1061,24 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // Análogo del DEATH -20% de la flota validada. No se abre riesgo nuevo en un
   // −20%, así que ni se pega al buffet ni se gasta Anthropic.
   if (risk.stage === 'broadcut') {
-    const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate, creds);
-    const plan = `CIRCUIT BREAKER — corte amplio. Drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)}); se liquidan ${risk.approved.length} posiciones con marketable limit y se salta el LLM (no se abre riesgo nuevo en un −20%).`;
-    await journalInsert({ ...base, account: accountSnapshot, status: 'risk_broad_cut', plan, actions: [...riskActions, ...riskDiscardActions(risk.discarded)], context: { risk: riskContext } });
+    const { actions: riskActions, submitted, suppressed } = await submitRiskExits(risk.approved, runDate, creds, { shadow });
+    const plan = `CIRCUIT BREAKER — corte amplio. Drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)}); se liquidan ${risk.approved.length} posiciones con marketable limit y se salta el LLM (no se abre riesgo nuevo en un −20%).`
+      + (shadow ? ' MODO SOMBRA: la liquidación se decidió y NO se envió; el agente tampoco queda detenido — un halt de sombra sobreviviría al reset del relanzamiento y mataría a un agente que nunca perdió ese dinero.' : '');
+    await journalInsert({ ...base, account: accountSnapshot, status: shadow ? 'risk_broad_cut_shadow' : 'risk_broad_cut', plan, actions: [...riskActions, ...riskDiscardActions(risk.discarded)], context: { risk: riskContext, shadow: shadowState(now) } });
     // DETIENE al agente (persistente): esta es la ÚNICA fila de la muerte. Las
     // corridas siguientes salen por el gate de halt, sin journalear. Revivir es
     // manual (runArenaResume) — el −20% es el resultado del experimento.
-    const haltReason = `circuit breaker: drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)})`;
-    await sql(`update arena_state set halted = true, halted_at = $1, halted_reason = $2 where agent_id = $3`, [now.toISOString(), haltReason, agentId]);
-    return { status: 'risk_broad_cut', orders: submitted, risk_exits: submitted, breaker_stage: 'broadcut', drawdown: +risk.drawdown.toFixed(4), halted: true };
+    //
+    // EN SOMBRA NO. El halt es estado PERSISTENTE y la sombra existe para no
+    // dejar estado: un broadcut de la semana de ensayo dejaría al agente muerto
+    // el lunes 21, con su libro ya reseteado a $100k y sin un solo dólar
+    // perdido que lo justifique. El corte se journalea igual (la señal es
+    // real); lo que no se hace es enterrar al agente por ella.
+    if (!shadow) {
+      const haltReason = `circuit breaker: drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)})`;
+      await sql(`update arena_state set halted = true, halted_at = $1, halted_reason = $2 where agent_id = $3`, [now.toISOString(), haltReason, agentId]);
+    }
+    return { status: shadow ? 'risk_broad_cut_shadow' : 'risk_broad_cut', orders: submitted, risk_exits: submitted, shadow_suppressed: suppressed || 0, breaker_stage: 'broadcut', drawdown: +risk.drawdown.toFixed(4), halted: !shadow };
   }
 
   // ── Delever / stops catastróficos: ejecuta la RED DE SEGURIDAD antes del LLM
@@ -1057,9 +1086,11 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // LLM luego aborte (sin API key, error, o "nada que investigar" — resultados
   // normales que NO deben frenar la red). stage 'none' → no-op (0 exits). ──
   let riskSubmitted = 0;
+  let riskSuppressed = 0;
   if (risk.approved.length || risk.discarded.length) {
-    const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate, creds);
+    const { actions: riskActions, submitted, suppressed } = await submitRiskExits(risk.approved, runDate, creds, { shadow });
     riskSubmitted = submitted;
+    riskSuppressed = suppressed || 0;
     // El plan sintético nombra la regla que REALMENTE disparó (un nombre puede
     // caer en más de una; se reporta la más severa que haya en el lote).
     const codes = new Set(risk.approved.flatMap((a) => a.reason_codes || []));
@@ -1068,7 +1099,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
       : codes.has('catastrophic_stop')
         ? `STOP CATASTRÓFICO — ${risk.approved.length} posición(es) cerró bajo su nivel ancho (~${(EXIT_RULES.catastrophic_stop_pct * 100).toFixed(0)}% desde la entrada); se liquida(n) con marketable limit en la apertura.`
         : `TRAILING STOP — ${risk.approved.length} posición(es) devolvió ${(EXIT_RULES.trailing_give_back * 100).toFixed(0)}% desde su pico tras haber ganado ${(EXIT_RULES.trailing_arm_gain * 100).toFixed(0)}%+; se liquida(n) con marketable limit en la apertura, con la ganancia adentro.`;
-    await journalInsert({ ...base, id: base.id + ':risk', account: accountSnapshot, status: 'risk_exit', plan, actions: [...riskActions, ...riskDiscardActions(risk.discarded)], context: { risk: riskContext } });
+    await journalInsert({ ...base, id: base.id + ':risk', account: accountSnapshot, status: shadow ? 'risk_exit_shadow' : 'risk_exit', plan: shadow ? plan + ' MODO SOMBRA: decidida y NO enviada.' : plan, actions: [...riskActions, ...riskDiscardActions(risk.discarded)], context: { risk: riskContext, shadow: shadowState(now) } });
   }
 
   // ── Buffet + SCAN, o el SLATE DEL EVENTO (T2 #7) ────────────────
@@ -1087,6 +1118,10 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   let floorReason = null;
 
   const context = {
+    // Modo SOMBRA de la corrida: `active:true` significa que lo que sigue se
+    // decidió de verdad y NO se envió. Va en TODA fila, activo o no, para que
+    // el post-mortem no tenga que deducirlo del calendario.
+    shadow: shadowState(now),
     // Salidas de riesgo del run (stage/drawdown/pico + exits deterministas):
     // por qué desapalancó o qué stop disparó, sin depender de las acciones.
     risk: riskContext,
@@ -1422,6 +1457,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     ...overridden.map((o) => attribute(o)),
   ];
   let submitted = 0;
+  let shadowSuppressed = 0;
   // El client_order_id nació con la cadencia de UNA corrida por día:
   // `arena:<fecha>:<símbolo>:<lado>` era único por construcción. Con la cadencia
   // por evento un agente puede pronunciarse dos veces sobre el mismo nombre el
@@ -1431,6 +1467,15 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   const orderTag = policy.tag === 'd' ? '' : `:${policy.tag}${String(now.toISOString().slice(11, 16)).replace(':', '')}`;
   for (const a of llmApproved) {
     const clientOrderId = `arena:${runDate}:${a.symbol}:${a.side}${orderTag}`;
+    // SOMBRA: la orden pasó el guard y se queda en la fila. Se journalea con
+    // TODO su detalle (símbolo, lado, qty, límite, razonamiento, atribución):
+    // el post-mortem de la semana de ensayo tiene que poder leer qué HABRÍA
+    // hecho cada libro, no solo que no hizo nada.
+    if (shadow) {
+      journalActions.push(attribute(shadowAction(a, { clientOrderId })));
+      shadowSuppressed++;
+      continue;
+    }
     try {
       const order = await createLimitOrder({ symbol: a.symbol, qty: a.qty, side: a.side, limit_price: a.limit_price, client_order_id: clientOrderId }, creds);
       journalActions.push(attribute({ ...a, result: 'approved', alpaca_order_id: order.id, client_order_id: clientOrderId, order_status: order.status }));
@@ -1453,12 +1498,22 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
 
   // El status de ESTA fila describe la decisión del PM: ok = envió órdenes;
   // ok_no_actions = holdeó (las salidas de riesgo van en su fila aparte).
-  const status = submitted === 0 ? 'ok_no_actions' : 'ok';
+  //
+  // `ok_shadow` es un tercer caso que NO se puede colapsar en ninguno de los
+  // dos: el PM SÍ decidió operar y no salió nada. Journalearlo como
+  // `ok_no_actions` diría que holdeó —una mentira sobre su decisión, que es lo
+  // único que este experimento mide— y como `ok` diría que operó. Es un status
+  // propio para que el post-mortem pueda excluir la semana de ensayo de un
+  // GROUP BY sin tener que cruzar fechas.
+  const status = shadowSuppressed > 0 ? 'ok_shadow' : (submitted === 0 ? 'ok_no_actions' : 'ok');
   await journalInsert({ ...withPrompt, status, plan: parsed.plan, llm_response: responseText, actions: journalActions });
   // `orders` suma el run completo (PM + red de seguridad); `candidates` = slate final.
   return {
     status, orders: submitted + riskSubmitted, approved: llmApproved.length, discarded: discarded.length,
     candidates: candidateSymbols.length, floor: floorReason, risk_exits: riskSubmitted,
+    // Lo que la sombra retuvo, contado aparte de `orders` (que sigue siendo
+    // "órdenes que de verdad salieron"): 0 en una corrida normal.
+    ...(shadow ? { shadow: true, shadow_suppressed: shadowSuppressed + riskSuppressed } : {}),
     // Equity del cierre de ESTA corrida: es lo que rankea el ganador de la
     // temporada sin re-consultar Alpaca siete veces al final.
     equity,
@@ -1494,6 +1549,10 @@ export async function runArenaRiskNet({ agent, now = new Date(), caches } = {}) 
   const agentId = agent.id;
   caches = caches || { series: new Map(), dive: new Map() };
   const base = { id: 'arena-' + agentId + '-risknet-' + now.toISOString(), run_date: runDate, phase: 'decide', prompt_version: PROMPT_VERSION, model: null, agent_id: agentId };
+  // MODO SOMBRA: esta función es el brazo del VIGILANTE que manda órdenes sin
+  // pasar por el LLM. Apagar el envío del PM y dejar ésta viva dejaría al
+  // "modo sombra" mandando stops de verdad — la mitad del flag no sirve.
+  const shadow = shadowActive(now);
 
   const state = await getArenaState(agentId);
   if (state.halted) return { status: 'halted', agent: agentId, orders: 0 };
@@ -1539,6 +1598,7 @@ export async function runArenaRiskNet({ agent, now = new Date(), caches } = {}) 
     approved: risk.approved, discarded: risk.discarded,
     standalone: 'red determinista corrida sola (cadencia por evento): decide con cierres completos, sin LLM',
   };
+  const shadowCtx = shadowState(now);
 
   if (!risk.approved.length && !risk.discarded.length) {
     // Nada que hacer: NO se journalea una fila por agente por día diciendo "no
@@ -1547,7 +1607,7 @@ export async function runArenaRiskNet({ agent, now = new Date(), caches } = {}) 
     return { status: 'ok_no_exits', agent: agentId, orders: 0, breaker_stage: risk.stage, drawdown: +risk.drawdown.toFixed(4), equity };
   }
 
-  const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate, creds);
+  const { actions: riskActions, submitted, suppressed } = await submitRiskExits(risk.approved, runDate, creds, { shadow });
   const codes = new Set(risk.approved.flatMap((a) => a.reason_codes || []));
   const plan = risk.stage === 'broadcut'
     ? `CIRCUIT BREAKER — corte amplio. Drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)}); se liquidan ${risk.approved.length} posiciones con marketable limit.`
@@ -1559,19 +1619,26 @@ export async function runArenaRiskNet({ agent, now = new Date(), caches } = {}) 
 
   await journalInsert({
     ...base, account: accountSnapshot,
-    status: risk.stage === 'broadcut' ? 'risk_broad_cut' : 'risk_exit',
-    plan, actions: [...riskActions, ...riskDiscardActions(risk.discarded)],
-    context: { risk: riskContext, positions_meta: positionMeta },
+    status: risk.stage === 'broadcut'
+      ? (shadow ? 'risk_broad_cut_shadow' : 'risk_broad_cut')
+      : (shadow ? 'risk_exit_shadow' : 'risk_exit'),
+    plan: shadow ? plan + ' MODO SOMBRA: decidida y NO enviada.' : plan,
+    actions: [...riskActions, ...riskDiscardActions(risk.discarded)],
+    context: { risk: riskContext, positions_meta: positionMeta, shadow: shadowCtx },
   });
 
   // El broadcut DETIENE al agente, igual que en la corrida nocturna: la muerte
-  // del −20% es el resultado del experimento, y revivir es manual.
+  // del −20% es el resultado del experimento, y revivir es manual. En SOMBRA no
+  // (mismo motivo que en decide: el halt es estado persistente y sobreviviría
+  // al reset del relanzamiento).
   if (risk.stage === 'broadcut') {
-    const haltReason = `circuit breaker: drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)})`;
-    await sql(`update arena_state set halted = true, halted_at = $1, halted_reason = $2 where agent_id = $3`, [now.toISOString(), haltReason, agentId]);
-    return { status: 'risk_broad_cut', agent: agentId, orders: submitted, halted: true, breaker_stage: 'broadcut', drawdown: +risk.drawdown.toFixed(4), equity };
+    if (!shadow) {
+      const haltReason = `circuit breaker: drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)})`;
+      await sql(`update arena_state set halted = true, halted_at = $1, halted_reason = $2 where agent_id = $3`, [now.toISOString(), haltReason, agentId]);
+    }
+    return { status: shadow ? 'risk_broad_cut_shadow' : 'risk_broad_cut', agent: agentId, orders: submitted, halted: !shadow, breaker_stage: 'broadcut', drawdown: +risk.drawdown.toFixed(4), equity, ...(shadow ? { shadow: true, shadow_suppressed: suppressed || 0 } : {}) };
   }
-  return { status: 'risk_exit', agent: agentId, orders: submitted, risk_exits: submitted, breaker_stage: risk.stage, drawdown: +risk.drawdown.toFixed(4), equity };
+  return { status: shadow ? 'risk_exit_shadow' : 'risk_exit', agent: agentId, orders: submitted, risk_exits: submitted, breaker_stage: risk.stage, drawdown: +risk.drawdown.toFixed(4), equity, ...(shadow ? { shadow: true, shadow_suppressed: suppressed || 0 } : {}) };
 }
 
 // ── ORQUESTADOR de la LIGA (fase decide para TODOS los agentes activos) ──
@@ -1997,7 +2064,9 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   // acaba de reportar (cero llamadas extra a Alpaca).
   const season = { id: ARENA_SEASON.id, status: seasonStatus(now), day: seasonDay(now), start: ARENA_SEASON.start, end: ARENA_SEASON.end };
   const closing = await declareSeasonWinner(results, now);
-  return { agents: results, league: results.map((r) => r.id), season, ...(closing.declared ? { season_winner: closing.winner } : {}) };
+  // El estado de la SOMBRA viaja en la respuesta del cron: es lo primero que se
+  // mira al abrir el log de Vercel para saber si esta corrida mandó órdenes.
+  return { agents: results, league: results.map((r) => r.id), season, shadow: shadowState(now), ...(closing.declared ? { season_winner: closing.winner } : {}) };
 }
 
 // ── fase RECONCILE ───────────────────────────────────────────────────

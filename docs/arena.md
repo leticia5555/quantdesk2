@@ -34,7 +34,7 @@ consecuencia: el "líder" de hoy no significa nada si la ventana nunca se cierra
 
 | Temporada | Qué habilita | Estado |
 |---|---|---|
-| **T2** | **Long-only + el reglamento de 9 reglas** de abajo. Liga completa (7 agentes) desde el día 1. | **En curso** (2026-09-14 → 2026-10-09) |
+| **T2** | **Long-only + el reglamento de 9 reglas** de abajo. Liga completa (7 agentes) desde el día 1. | **Relanzada.** El 14 fue un ensayo general; la temporada real arranca el **2026-09-21**. Del 15 al 18, modo SOMBRA (ver abajo). |
 | **T3** | **Short habilitado.** El guard se adapta: hoy es long-only por diseño (`no hay posición larga que vender` es un descarte duro) y abrir cortos toca sizing, margen, el borrow y toda la regla de salida —un stop en un corto es al revés—. **PR aparte**, no un flag. | Planeada |
 | **T4 — o nunca** | **Opciones.** Condición previa e innegociable: **una fuente de datos real** (cadena, griegas, IV, vencimientos). Sin esa fuente NO se hace: un libro de opciones sobre precios inventados no es un experimento, es una demo. | Condicional |
 
@@ -48,6 +48,85 @@ la misma temporada haría imposible atribuir un resultado a nada.
 > **cuándo** se corre. Por eso se anuncia como `rules_changed` dentro de la T2 y
 > no consume la etiqueta **T3**, que sigue reservada para el short. Ver la
 > sección de abajo.
+
+## La jornada del 14 fue un ENSAYO GENERAL — relanzamiento el lunes 21
+
+El lunes 14 corrió la liga completa por primera vez, de punta a punta, y eso
+fue exactamente lo que había que descubrir: **`openai` y `grok` abortaron, un
+libro narró un fill que nunca ocurrió ("ZM filled at $95.5") y el buffet tenía
+5 candidatos, de los que 4 de 5 libros compraron el mismo par.** Una temporada
+que arranca con dos de siete agentes mudos y un buffet de cinco nombres no mide
+el MODELO: mide el arnés.
+
+Así que esa población se tira y la **T2 real arranca el lunes 21 a las 13:30
+UTC**, con modelos nuevos, buffet nuevo y los siete libros reseteados a $100k.
+La fecha, el id del corte y su texto salen de **una sola función**
+(`_lib/arena-relaunch.js`), por la misma cicatriz que dejó `cadenceVersion()`:
+cuando el id se deriva de una constante y la compuerta de una env var, mover la
+fecha mueve una y no la otra, y el corte del post-mortem queda sellado en un día
+en que no cambió nada.
+
+### Del martes 15 al viernes 18: MODO SOMBRA
+
+`ARENA_SHADOW=1` (ver `_lib/arena-shadow.js`). El vigilante y la corrida
+nocturna corren **completos** —disparadores, scout, deep dive, DIVE, guard,
+titular, journal— y **no mandan una sola orden a Alpaca**.
+
+- **No es `ARENA_ENABLED=0`.** Ese apaga el endpoint entero: cero corridas, cero
+  journal, cero evidencia. Eso sirve para un incendio, no para un ensayo. Lo que
+  hace falta esta semana es correr todo el arnés nuevo y poder leer al día
+  siguiente qué habría hecho cada libro.
+- **Dónde muerde:** en los dos puntos de envío de `arena-run.js` —
+  `submitRiskExits()` (que corre también dentro del vigilante, vía
+  `runArenaRiskNet`) y el bucle de órdenes del PM. No muerde en `_lib/alpaca.js`:
+  ese cliente es la frontera de la casa y lo usa también el smoke de venta.
+- **Cómo se ve en el journal:** statuses propios (`ok_shadow`,
+  `risk_exit_shadow`, `risk_broad_cut_shadow`), acciones con
+  `result: 'shadow'` y un bloque `context.shadow` en toda fila. El veredicto
+  propio importa: como `approved` le abriría una posición fantasma al PM
+  (`reconstructPositionOpens`), y como `submit_failed` escalaría la banda de
+  salida del día siguiente por una orden que nunca existió.
+- **Un broadcut en sombra NO detiene al agente.** El halt es estado persistente
+  y sobreviviría al reset del lunes 21: mataría a un agente que nunca perdió ese
+  dinero. El corte se journalea (la señal es real); lo que no se hace es
+  enterrarlo por ella.
+- **Caduca sola** el día del relanzamiento, y **la fecha gana sobre la env
+  var**. El modo de fallar más caro de esta semana es que nadie borre
+  `ARENA_SHADOW=1` en Vercel el lunes y la temporada real corra cuatro semanas
+  sin mandar una orden, con el journal diciendo que sí decidió. Para extender la
+  sombra se mueve la FECHA (`ARENA_SHADOW_UNTIL`), que es una decisión explícita.
+
+### Limpiar la mesa: `/api/arena-admin?action=cancel_open_orders`
+
+Antes del reset hay que dejar las siete cuentas sin órdenes abiertas: una orden
+límite del 14 que llene el 22 sería una posición heredada dentro de la temporada
+nueva.
+
+```bash
+# ENSAYO — lista qué se cancelaría, por cuenta, y no toca nada
+curl -H "Authorization: Bearer $ARENA_ADMIN_KEY" \
+  "https://quantdesk2.vercel.app/api/arena-admin?action=cancel_open_orders"
+
+# DE VERDAD — el mismo curl con -X POST
+curl -X POST -H "Authorization: Bearer $ARENA_ADMIN_KEY" \
+  "https://quantdesk2.vercel.app/api/arena-admin?action=cancel_open_orders"
+```
+
+- **GET enseña, POST hace.** Un GET lo dispara cualquier cosa que toque la URL
+  (un prefetch, un bot que siga un link de un log, el retry de un proxy), y
+  cancelar las órdenes abiertas de siete libros no es una lectura.
+- **`ARENA_ADMIN_KEY` es obligatoria y fail-closed:** sin la variable el
+  endpoint responde 503. Al revés del patrón `CRON_SECRET` del resto del repo
+  ("si está puesta, se valida"), que para una lectura es razonable y aquí sería
+  una puerta abierta si alguien olvida la variable.
+- **La key va por header**, nunca por query: un secret en la URL queda en los
+  logs de Vercel y en el historial de la shell.
+- **Recorre las SIETE cuentas del registry**, no `activeAgents()`: un agente
+  apagado por `ARENA_LEAGUE` igual tiene órdenes vivas que limpiar.
+- Un **422** de Alpaca (la orden llenó entre el listado y el DELETE) no cuenta
+  como fallo: el objetivo —que no quede abierta— se cumplió igual.
+- Toda ejecución real deja **una** fila de liga en el journal
+  (`admin_cancel_open_orders`). El ensayo no journalea: no pasó nada.
 
 ## Reglamento de la Temporada 2 (2026-09-13)
 

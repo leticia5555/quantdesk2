@@ -167,7 +167,10 @@ export function portafolioDeFila(context) {
 }
 
 // ── acciones: propuesta + veredicto del guard + fill ─────────────────
-const VEREDICTO = { approved: 'aprobada', discarded: 'descartada', submit_failed: 'envio_fallido' };
+// `shadow`: la orden pasó el guard y NO se envió (semana de ensayo, ver
+// _lib/arena-shadow.js). Veredicto propio para que no se cuente ni como
+// aprobada (no salió) ni como descartada (el guard la aprobó).
+const VEREDICTO = { approved: 'aprobada', discarded: 'descartada', submit_failed: 'envio_fallido', shadow: 'sombra' };
 
 export function normalizaAccion(a) {
   const act = a && typeof a === 'object' ? a : {};
@@ -217,6 +220,13 @@ const TIPO_POR_STATUS = {
   // órdenes—, así que agruparla con las decisiones diluiría toda métrica por
   // corrida del post-mortem.
   skipped_superseded_by_watch: 'cadencia_retirada',
+  // MODO SOMBRA (martes 15 → viernes 18): la corrida ocurrió completa y no
+  // mandó órdenes. Tipo propio para que el post-mortem de la temporada real
+  // pueda excluir la semana de ensayo con un filtro, no con un rango de fechas
+  // escrito a mano que envejece.
+  ok_shadow: 'sombra',
+  risk_exit_shadow: 'sombra',
+  risk_broad_cut_shadow: 'sombra',
 };
 
 export function auditaFila(row) {
@@ -228,6 +238,7 @@ export function auditaFila(row) {
     aprobadas: acciones.filter((a) => a.veredicto === 'aprobada').length,
     descartadas: acciones.filter((a) => a.veredicto === 'descartada').length,
     envios_fallidos: acciones.filter((a) => a.veredicto === 'envio_fallido').length,
+    en_sombra: acciones.filter((a) => a.veredicto === 'sombra').length,
     motivos_descarte: acciones.filter((a) => a.veredicto === 'descartada' && a.motivo).map((a) => a.motivo),
   };
   return {
@@ -255,6 +266,9 @@ export function auditaFila(row) {
     floor: scan.floor || null,
     screener_state: scan.screener_state || null,
     riesgo: ctx.risk || null,
+    // null en toda fila anterior al flag: la ausencia significa "no había modo
+    // sombra todavía", no "se envió" — el status ya lo dice sin ambigüedad.
+    sombra: ctx.shadow || null,
     market_check: ctx.market_check || null,
     acciones,
     guard,
