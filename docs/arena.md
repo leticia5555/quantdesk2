@@ -404,6 +404,90 @@ inválido, o sea una corrida entera perdida. `stop_reason` se normaliza también
 para OpenRouter (`finish_reason: 'length'` → `max_tokens`), así el diagnóstico
 existe para los siete agentes y no solo para los de Anthropic.
 
+## B1 · EL UNIVERSO (~600 nombres)
+
+`_lib/arena-universe.js` · cron `/api/arena-universe` · tests en
+`tests/arena-universo.test.mjs`
+
+S&P 500 + Nasdaq 100 + hasta 100 movers/most-actives del día. La diferencia con
+el buffet v1.5 **no es de tamaño, es de pregunta**: con solo los movers, lo que
+el PM puede elegir está determinado por lo que se movió — un nombre que lleva
+tres semanas construyendo una base no existe para él. Con el universo, los
+movers pasan a ser una **bandera** sobre nombres que ya estaban ahí.
+
+### Los tres escalones (D1: el tablero NUNCA se bloquea)
+
+```
+1. FMP        /api/v3/sp500_constituent · /nasdaq_constituent   (refresco SEMANAL)
+2. Neon       el último bueno que se bajó — sobrevive a un deploy
+3. data/universe/*.json                  arranque en frío
+   ↓
+   movers_only — sin ninguna lista, el universo es el día y el journal lo dice
+```
+
+Refresco **semanal** y no diario porque la composición de un índice cambia unas
+pocas veces al año; pedirla todos los días es gastar cuota para recibir el mismo
+archivo. Y la ventana se mide por **edad de lo guardado**, no por calendario: si
+el cron no corrió el lunes, el martes refresca igual.
+
+### No corromper al degradar
+
+Una lista de FMP con 12 nombres para el S&P 500 es cuota agotada o un error de
+la API, no el índice. **Se rechaza** en vez de pisar la buena que ya estaba
+(`MIN_SANE`). Degradar es servir la lista de la semana pasada diciéndolo;
+corromper es guardar basura encima de la buena.
+
+### Los índices también pasan por admisión
+
+Un constituyente que cayó bajo $5 o bajo $1B **sigue en el índice** hasta que el
+comité lo saque. El universo del Arena no hereda esa demora: el mismo filtro de
+siempre (`_lib/arena-admission.js`) corre sobre los ~600, y lo que sale queda
+nombrado con el número que lo sacó.
+
+### El tope de 100 se gasta solo en nombres NUEVOS
+
+Un mover que ya está en el S&P 500 no consume cupo — sería gastar el presupuesto
+de nombres nuevos en nombres que ya estaban.
+
+### Survivorship bias — dicho, no disimulado
+
+La composición es la de **hoy**. No existe un endpoint gratis y confiable de
+"constituyentes del S&P 500 en tal fecha", así que un backtest sobre esta lista
+arrastra survivorship bias. El `caveat` viaja **con el dato** (no en un doc que
+nadie abre) y cada corrida journalea `source` y `built_at` de la lista con la
+que operó.
+
+Lo que sí es point-in-time es el resto: los precios y volúmenes de la admisión
+salen de velas **cerradas**.
+
+### Por qué vive en un cron
+
+~600 nombres × (precio + volumen + market cap) no cabe dentro de una corrida.
+Se reconstruye a las **9:00 ET**, media hora antes de la apertura, y la corrida
+solo **lee**. Si el cron no corrió, se usa el de ayer **y se dice**
+(`is_today: false`) — no se reconstruye a medias, que daría un universo mitad
+fresco y mitad viejo sin manera de saber cuál nombre es cuál.
+
+### Lo que falta y necesita tus ojos
+
+`data/universe/sp500.json` y `nasdaq100.json` están **vacíos a propósito**. Se
+generan corriendo el refresco contra FMP, y el entorno donde se escribió este
+código no tiene salida a `financialmodelingprep.com` (la política de red
+responde 403). Una lista de 500 tickers escrita de memoria estaría
+desactualizada de formas que nadie puede auditar. Con `FMP_API_KEY` puesta:
+
+```bash
+curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" \
+  "$BASE/api/arena-universe?refresh=1&emit=1" > /tmp/u.json
+jq '.constituents.sp500'     /tmp/u.json > data/universe/sp500.json
+jq '.constituents.nasdaq100' /tmp/u.json > data/universe/nasdaq100.json
+```
+
+Mientras estén vacíos, el escalón 3 no existe y el universo depende de FMP o de
+Neon. **Nada se rompe** — sin ninguno de los dos, cae a `movers_only`.
+
+---
+
 ## BUFFET v1.5 — el universo del día con ojos propios (2026-09-15)
 
 `_lib/arena-buffet.js` · tests en `tests/arena-buffet-v15.test.mjs`
@@ -1028,6 +1112,9 @@ ya conocidos, y `job=audit` descubre los nuevos a medida que aparezcan.
 | `ARENA_BUFFET_V15` | `1` | Freno de mano del universo del día (screener de Alpaca). `0` lo apaga sin deploy. |
 | `ARENA_BUFFET_V15_TARGET` | `100` | Cuántos candidatos ve el PM. |
 | `ARENA_BUFFET_DAY_CACHE` | `insiders` | Canales que se piden una vez por día y se leen de Neon. **No** poner `movers` ni `earnings`: cambian dentro del día. |
+| `FMP_API_KEY` | — | Constituyentes del S&P 500 / Nasdaq 100. Sin ella el universo cae a Neon → JSON del repo → `movers_only`. Nada se rompe. |
+| `ARENA_UNIVERSE_REFRESH_DAYS` | `7` | Cada cuánto se vuelve a pedir la composición de los índices. |
+| `ARENA_UNIVERSE_MOVERS_MAX` | `100` | Tope de nombres del día que se AGREGAN al universo (los que ya están en un índice no gastan cupo). |
 
 
 ## Self-fetch del buffet: causa raíz 24-jul y observabilidad

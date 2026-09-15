@@ -27,11 +27,36 @@ al final.
 | `arena:reconcile`  | `/api/arena-run?phase=reconcile`      | `40 14 * * 1-5`        | **vercel.json** |
 | `arena:morning`    | `/api/arena-run?phase=morning`        | `50 14 * * 1-5`        | **vercel.json** |
 | `pead:hour`        | `/api/pead-harvest?job=hour`          | `30 21 * * *`          | **vercel.json** |
+| `arena:universe`   | `/api/arena-universe`                 | `0 13 * * 1-5`         | **vercel.json** |
 | `arena:watch`      | `/api/arena-watch`                    | `*/5 13-21 * * 1-5`    | **vercel.json** |
 | `screener:refresh` | `/api/arena-screener?job=refresh`     | `0 */4 * * *` (cada 4h) | **GitHub Actions** → `.github/workflows/external-crons.yml` |
 
 El endpoint **`/api/liga/eventos`** (crónica de la liga) NO es un cron: es
 solo-lectura, público y cacheado en el edge, como `/api/leaderboard`.
+
+## `arena:universe` — el UNIVERSO, ANTES de la apertura (desde 2026-09-15)
+
+`0 13 * * 1-5` = **9:00 ET**, media hora antes de la apertura. Reconstruye los
+~600 nombres (S&P 500 + Nasdaq 100 + hasta 100 del día), los pasa por el filtro
+de admisión y guarda el resultado en Neon. La corrida del PM solo **lee** — el
+mismo patrón que `screener:refresh`.
+
+**Por qué no a demanda:** ~600 nombres × (precio + volumen + market cap) no cabe
+dentro de una corrida. Y por qué **antes** de la apertura: el universo tiene que
+estar armado con velas cerradas del día anterior, no con la vela viva del día
+que se opera.
+
+**Si este cron no corre**, la corrida usa el universo de **ayer** y lo dice
+(`loaded_from`, `is_today: false`). No se reconstruye a medias: un universo
+mitad fresco y mitad viejo no se puede auditar.
+
+**Cero tokens.** Es datos de mercado y una lista de constituyentes.
+
+Se puede disparar a mano con `ARENA_ADMIN_KEY` (además del `CRON_SECRET`):
+`?peek=1` muestra qué hay guardado sin construir nada, `?dry=1` construye sin
+guardar, `?refresh=1` fuerza el refresco semanal de constituyentes contra FMP y
+`?emit=1` devuelve los constituyentes listos para commitear en
+`data/universe/`.
 
 ## `arena:watch` — el VIGILANTE (cadencia por evento, desde 2026-09-15)
 

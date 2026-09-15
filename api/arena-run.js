@@ -89,6 +89,8 @@ import { cachedDayFetch } from './_lib/arena-buffet-cache.js';
 // BUFFET v1.5: el universo del día con ojos propios (screener de Alpaca:
 // movers + most-actives + máx/mín de 52 semanas, deduplicado con banderas).
 import { buildBuffetV15, BUFFET_V15_TARGET } from './_lib/arena-buffet.js';
+// B1: el universo del día (~600), precomputado por su cron pre-apertura.
+import { loadUniverse } from './_lib/arena-universe.js';
 // A4c: el filtro de admisión del universo, UNO para todos los canales.
 import { ADMISSION, resolveAdmission, partitionByAdmission } from './_lib/arena-admission.js';
 import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
@@ -680,6 +682,20 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   // Va APARTE de `movers` en vez de reemplazarlo: son fuentes distintas y el
   // post-mortem tiene que poder comparar qué aportó cada una antes de que
   // alguien decida apagar la vieja.
+  //
+  // B1: el UNIVERSO (~600) se LEE, no se construye acá. Lo arma el cron
+  // pre-apertura (/api/arena-universe) porque ~600 nombres × precio, volumen y
+  // market cap no cabe dentro de una corrida. Si el cron no corrió, se usa el de
+  // AYER **y se dice** — no se reconstruye a medias, que daría un universo mitad
+  // fresco y mitad viejo sin manera de saber cuál nombre es cuál.
+  //
+  // Y NUNCA BLOQUEA (D1): sin universo guardado, el buffet v1.5 sigue armándose
+  // con los movers del día como siempre. Un universo más chico es un sesgo
+  // declarado; un tablero que no sale es una corrida perdida.
+  let universeBase = null;
+  try { universeBase = await loadUniverse({ now }); }
+  catch (e) { fetch_errors.universe_load = String((e && e.message) || e); }
+
   let universe = null;
   if (BUFFET_V15_ENABLED) {
     try {
@@ -773,11 +789,31 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
       near_52w_pct: universe.near_52w_pct,
       counts: universe.counts,
       candidates: universe.candidates,
+      // B1: el universo estable sobre el que estas banderas son banderas. Va el
+      // RESUMEN, no los ~600 símbolos: la lista entera son ~5K tokens en el
+      // prefijo cacheado, y lo que el PM necesita saber es de qué tamaño y de
+      // qué frescura es el universo del que salieron sus candidatos, no
+      // recitarlo. Las herramientas de B3 son las que lo van a consultar entero.
+      base: universeBase ? {
+        source: universeBase.universe_source,
+        built_at: universeBase.built_at,
+        market_day: universeBase.loaded_from,
+        is_today: universeBase.is_today,
+        size: (universeBase.symbols || []).length,
+        from_index: (universeBase.from_index || []).length,
+        from_day: (universeBase.from_day || []).length,
+        ...(universeBase.note ? { note: universeBase.note } : {}),
+      } : null,
     } : null,
     // El diagnóstico completo del canal nuevo, para el journal.
     universe_diagnostics: universe ? {
       unavailable: universe.unavailable, errors: universe.errors, admission: universe.admission,
       last_updated: universe.last_updated,
+      base: universeBase ? {
+        universe_source: universeBase.universe_source, loaded_from: universeBase.loaded_from,
+        is_today: universeBase.is_today, counts: universeBase.counts, indices: universeBase.indices,
+        caveat: universeBase.caveat,
+      } : { loaded: false, note: 'El cron pre-apertura no dejó universo. El buffet corre solo con los nombres del día.' },
     } : null,
     // Rechazados por admisión, con su motivo y su canal. NO viaja al prompt
     // (el PM no necesita la lista de lo que no vio) — se journalea, y es cómo

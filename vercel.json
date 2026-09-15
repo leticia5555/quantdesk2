@@ -12,6 +12,9 @@
     "api/arena-reset.js": {
       "maxDuration": 300
     },
+    "api/arena-universe.js": {
+      "maxDuration": 300
+    },
     "api/arena-screener.js": {
       "maxDuration": 300
     },
@@ -80,6 +83,10 @@
     {
       "path": "/api/pead-harvest?job=hour",
       "schedule": "30 21 * * *"
+    },
+    {
+      "path": "/api/arena-universe",
+      "schedule": "0 13 * * 1-5"
     },
     {
       "path": "/api/arena-watch",
