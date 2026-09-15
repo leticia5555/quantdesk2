@@ -398,8 +398,16 @@ console.log('liga: el mecanismo manual de anuncio ya no existe');
   ok(!/action === 'announce'/.test(src), "el handler ya no atiende ?action=announce");
   // El status legado SIGUE excluido del plan anterior: las filas que el
   // mecanismo manual alcanzó a escribir siguen en el journal para siempre.
-  ok(/status not in \('season_start', 'season_started', 'rules_changed', 'season_winner'\)/.test(src),
-    'la exclusión del plan anterior cubre el status legado Y los tres de liga', 'not in (...)');
+  //
+  // La lista CRECE (B4 le sumó el reporte nocturno), así que el lint verifica
+  // que cada status siga adentro en vez de pinnear la lista exacta: pinnearla
+  // obliga a tocar este test cada vez que se excluye una fila operativa nueva,
+  // y un test que hay que editar para que pase deja de proteger algo.
+  const legados = ['season_start', 'season_started', 'rules_changed', 'season_winner'];
+  for (const st of legados) {
+    ok(new RegExp(`status not in \\([^)]*'${st}'`).test(src),
+      `la exclusión del plan anterior cubre '${st}'`);
+  }
 }
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
