@@ -55,11 +55,16 @@ const OUT_DIR = process.env.XBRL_FASE0_DIR || '.xbrl-fase0';
 /* 0. Objetivo del smoke                                                     */
 /* ========================================================================= */
 
+/*
+ * BMV publica gratis SÓLO el trimestre más reciente por emisora (§1 del doc),
+ * así que el par WALMEX/FEMSA va sobre 2T2026 y no sobre dos trimestres.
+ * El archivo viejo (4T2016, de CNBV) NO está para comparar números: está para
+ * ver si la VERSIÓN de taxonomía cambió en 10 años y si los tags sobreviven.
+ */
 const TARGETS = [
-  { emisora: 'WALMEX', anio: 2025, trim: 2, periodEnd: '2025-06-30' },
-  { emisora: 'WALMEX', anio: 2025, trim: 4, periodEnd: '2025-12-31' },
-  { emisora: 'FEMSA',  anio: 2025, trim: 2, periodEnd: '2025-06-30' },
-  { emisora: 'FEMSA',  anio: 2025, trim: 4, periodEnd: '2025-12-31' },
+  { emisora: 'WALMEX', anio: 2026, trim: 2, periodEnd: '2026-06-30', fuente: 'BMV docs-pub' },
+  { emisora: 'FEMSA',  anio: 2026, trim: 2, periodEnd: '2026-06-30', fuente: 'BMV docs-pub' },
+  { emisora: '(la que salga)', anio: 2016, trim: 4, periodEnd: '2016-12-31', fuente: 'CNBV — prueba de versión de taxonomía' },
 ];
 
 /* ========================================================================= */
@@ -163,22 +168,40 @@ const CAMPOS = [
   },
 ];
 
-// Décimo dato, no es un "campo financiero" pero se pide en el censo.
-const FECHA_PUBLICACION_CANDIDATOS = [
-  'DateOfEndOfReportingPeriod2013',  // [DESCUBRIR]
-  'DateOfAuthorisationForIssueOfFinancialStatements', // [IFRS] fecha de autorización
+/*
+ * Décimo dato del censo: la fecha del reporte. Hay que separar tres cosas que
+ * NO son lo mismo, porque confundirlas es look-ahead directo en el backtest:
+ *
+ *   1. Fecha de ENVÍO a BMV/CNBV  <- la correcta para evitar look-ahead (D8).
+ *      NO viene en el instance. Sale del listado de la página de la emisora,
+ *      con hora (ej. "23-Jul-2026 14:11"). Este script NO la resuelve.
+ *   2. Fecha de AUTORIZACIÓN del consejo <- lo mejor que hay dentro del
+ *      archivo. Es un proxy, y va antes que el envío. Se reporta como tal.
+ *   3. Fecha de CIERRE del periodo <- NO es una fecha de publicación. Se
+ *      imprime sólo como dato secundario y etiquetado, para que nadie la use
+ *      como si lo fuera.
+ */
+const FECHA_AUTORIZACION_CANDIDATOS = [
+  'DateOfAuthorisationForIssueOfFinancialStatements', // [IFRS] fecha del consejo
+];
+const FECHA_CIERRE_CANDIDATOS = [
+  'DateOfEndOfReportingPeriod2013', // [DESCUBRIR] cierre de periodo, NO publicación
 ];
 
 /* ========================================================================= */
 /* 2. Censo de red: candidatos de entrada                                    */
 /* ========================================================================= */
 /*
- * Estos son los puntos de entrada DOCUMENTADOS (ver docs/xbrl-fase0.md §1).
- * Ninguno está verificado en vivo desde el sandbox — todos dieron 403 en el
- * proxy de egress. El probe existe justamente para que corriéndolo en local se
- * sepa cuál responde y con qué.
+ * Puntos de entrada (ver docs/xbrl-fase0.md §1).
+ *
+ * El primero está VERIFICADO fuera del sandbox: BMV sirve gratis y sin sesión
+ * el XBRL del trimestre más reciente por emisora bajo docs-pub/ifrsxbrl/. El
+ * resto sigue sin verificar (403 de egress desde aquí). El probe está para
+ * cerrar esa diferencia con evidencia, no con opinión.
  */
 const ENTRADAS = [
+  { nombre: 'BMV docs-pub ifrsxbrl — VERIFICADO libre (Bimbo 2T2026)',
+    url: 'https://www.bmv.com.mx/docs-pub/ifrsxbrl/ifrsxbrl_1576474_2026-02_1.zip' },
   { nombre: 'BMV portal XBRL (empresas listadas)',
     url: 'https://www.bmv.com.mx/es/empresas-listadas/informacion-financiera-xbrl' },
   { nombre: 'BMV archivos estándar XBRL',
@@ -189,12 +212,14 @@ const ENTRADAS = [
     url: 'https://www.bmv.com.mx/es/emisoras/informacionfinanciera/FEMSA-5305-CGEN_CAPIT' },
   { nombre: 'BMV cognos InfoFinanciera (backend de las fichas)',
     url: 'https://cognos.bmv.com.mx/es/Grupo_BMV/InfoFinanciera/WALMEX-5214' },
-  { nombre: 'BMV docs-pub (ruta estática pública observada)',
-    url: 'https://www.bmv.com.mx/docs-pub/' },
+  { nombre: 'BMV pubsys2 — catálogo del XBRL histórico (de pago)',
+    url: 'https://pubsys2.bmv.com.mx/productdetails.aspx?i=1417' },
   { nombre: 'emisnet',
     url: 'https://emisnet.bmv.com.mx/' },
-  { nombre: 'CNBV visor XBRL (plan B)',
+  { nombre: 'CNBV visor XBRL — histórico público, pero robots.txt lo prohíbe',
     url: 'https://xbrl.cnbv.gob.mx/' },
+  { nombre: 'CNBV robots.txt — LEER ESTO ANTES DE COSECHAR',
+    url: 'https://xbrl.cnbv.gob.mx/robots.txt' },
   { nombre: 'BIVA emisoras (plan B)',
     url: 'https://www.biva.mx/es/emisoras' },
 ];
@@ -344,16 +369,21 @@ function resolverCampo(campo, hechos, contextos, periodEnd) {
 
     const opciones = pegan.map((h) => {
       const c = contextos.get(h.contextRef);
-      let ventana = 'instant';
+      let ventana = 'instant', ventanaKey = 'instant', meses = 0;
       if (campo.tipo === 'duration' && c.startDate) {
-        const meses = Math.round(
+        meses = Math.round(
           (Date.parse(c.endDate) - Date.parse(c.startDate)) / (1000 * 60 * 60 * 24 * 30.44)
         );
         ventana = `${meses}m (${c.startDate}→${c.endDate})`;
+        ventanaKey = `${meses}m`; // normalizada: comparable ENTRE archivos
       }
-      return { tag: h.qname, valor: aNumero(h), ventana, unidad: h.unitRef, decimals: h.decimals, ctx: c.id };
+      return { tag: h.qname, valor: aNumero(h), ventana, ventanaKey, meses,
+               unidad: h.unitRef, decimals: h.decimals, ctx: c.id };
     });
-    return { encontrado: true, tag: `${cand}`, opciones };
+    // Orden determinista (ventana más corta primero). Sin esto, "la opción [0]"
+    // dependería del orden del documento y la comparación entre archivos mentiría.
+    opciones.sort((a, b) => a.meses - b.meses);
+    return { encontrado: true, tag: `${cand}`, opciones, ambiguo: opciones.length > 1 };
   }
   return { encontrado: false, tag: null, opciones: [] };
 }
@@ -414,13 +444,25 @@ function analizarArchivo(etiqueta, periodEnd, xml, opts = {}) {
     }
   }
 
-  console.log(`\n--- FECHA DE PUBLICACIÓN / AUTORIZACIÓN ---`);
-  let fechaOk = false;
-  for (const cand of FECHA_PUBLICACION_CANDIDATOS) {
-    const h = hechos.find((x) => x.local === cand && x.valorCrudo);
-    if (h) { console.log(`  ${h.qname} = ${h.valorCrudo}`); fechaOk = true; break; }
-  }
-  if (!fechaOk) console.log(`  FALTA (probados: ${FECHA_PUBLICACION_CANDIDATOS.join(', ')}) — correr con --dump-tags`);
+  console.log(`\n--- FECHAS DEL REPORTE ---`);
+  const buscarFecha = (cands) => {
+    for (const cand of cands) {
+      const h = hechos.find((x) => x.local === cand && x.valorCrudo);
+      if (h) return h;
+    }
+    return null;
+  };
+
+  const hAut = buscarFecha(FECHA_AUTORIZACION_CANDIDATOS);
+  if (hAut) console.log(`  autorización del consejo : ${hAut.valorCrudo}   [${hAut.qname}]`);
+  else console.log(`  autorización del consejo : FALTA (probados: ${FECHA_AUTORIZACION_CANDIDATOS.join(', ')}) — correr con --dump-tags`);
+
+  const hCie = buscarFecha(FECHA_CIERRE_CANDIDATOS);
+  if (hCie) console.log(`  [SECUNDARIO — NO es publicación] cierre de periodo: ${hCie.valorCrudo}   [${hCie.qname}]`);
+
+  console.log(`  envío a BMV/CNBV         : NO ESTÁ EN EL INSTANCE.`);
+  console.log(`      Es la fecha correcta contra look-ahead (D8 del doc). Hay que`);
+  console.log(`      capturarla del listado de la emisora, con hora, p.ej. "23-Jul-2026 14:11".`);
 
   return resultado;
 }
@@ -435,45 +477,83 @@ function tablaResumen(porArchivo) {
   console.log('CAMPO'.padEnd(40) + cols.map((c) => c.padStart(w)).join(''));
   console.log('-'.repeat(40 + w * cols.length));
 
+  let hayAmbiguo = false;
   for (const campo of CAMPOS) {
     let fila = campo.label.padEnd(40);
     for (const a of porArchivo) {
       const r = a.resultado?.[campo.key];
-      fila += (r?.encontrado ? fmt(r.opciones[0].valor) : 'FALTA').padStart(w);
+      if (!r?.encontrado) { fila += 'FALTA'.padStart(w); continue; }
+      // Si el campo tiene más de una ventana con el mismo cierre, el valor de
+      // la tabla NO es un dato: es una elección. Se marca y no se disimula.
+      const marca = r.ambiguo ? '*' : '';
+      if (r.ambiguo) hayAmbiguo = true;
+      fila += (fmt(r.opciones[0].valor) + marca).padStart(w);
     }
     console.log(fila);
+
     let fTag = '   tag usado'.padEnd(40);
     for (const a of porArchivo) {
       const r = a.resultado?.[campo.key];
       fTag += (r?.encontrado ? r.opciones[0].tag.split(':')[1].slice(0, w - 2) : '—').padStart(w);
     }
     console.log(fTag);
+
+    let fVen = '   ventana'.padEnd(40);
+    for (const a of porArchivo) {
+      const r = a.resultado?.[campo.key];
+      fVen += (r?.encontrado
+        ? (r.opciones[0].ventanaKey + (r.ambiguo ? ' AMBIGUO' : ''))
+        : '—').padStart(w);
+    }
+    console.log(fVen);
+  }
+  if (hayAmbiguo) {
+    console.log(`\n  (*) AMBIGUO = el archivo trae más de una ventana que cierra en la misma`);
+    console.log(`      fecha (típico: trimestre 3m y acumulado 6m/12m). Se muestra la más`);
+    console.log(`      corta por convención, pero CUÁL es la correcta la decide D4, no el`);
+    console.log(`      script. Verificar ese campo contra el PDF antes de creerle.`);
   }
 
-  /* ----- criterio GO/NO-GO: mismos tags entre emisoras y entre trimestres --- */
+  /* --- criterio GO/NO-GO: mismo TAG y misma VENTANA en todas las celdas ---
+   *
+   * El tag por sí solo no basta. Dos archivos pueden traer ifrs-full:Revenue
+   * y aun así no ser comparables si uno lo reporta a 3 meses y el otro a 6:
+   * mismos tags, series inservibles. La ventana entra al criterio.            */
   console.log(`\n${'#'.repeat(78)}`);
-  console.log(`# ESTABILIDAD DE TAGS (criterio GO: mismo tag en las 4 celdas)`);
+  console.log(`# ESTABILIDAD (criterio GO: mismo TAG y misma VENTANA en las ${porArchivo.length} celdas)`);
   console.log(`${'#'.repeat(78)}\n`);
 
   let todosEstables = true, todosPresentes = true;
   for (const campo of CAMPOS) {
-    const tags = porArchivo.map((a) => a.resultado?.[campo.key]?.opciones?.[0]?.tag ?? null);
+    const celdas = porArchivo.map((a) => a.resultado?.[campo.key] ?? null);
+    const tags = celdas.map((r) => r?.opciones?.[0]?.tag ?? null);
+    const vens = celdas.map((r) => r?.opciones?.[0]?.ventanaKey ?? null);
+
     const faltan = tags.filter((t) => t === null).length;
-    const distintos = [...new Set(tags.filter(Boolean))];
+    const tagsDistintos = [...new Set(tags.filter(Boolean))];
+    const vensDistintas = [...new Set(vens.filter(Boolean))];
+    const ambiguos = celdas.filter((r) => r?.ambiguo).length;
+
     let veredicto;
-    if (faltan === tags.length)      { veredicto = 'FALTA EN TODOS'; todosPresentes = false; }
-    else if (faltan > 0)             { veredicto = `FALTA EN ${faltan}/${tags.length}`; todosPresentes = false; }
-    else if (distintos.length === 1) { veredicto = 'estable'; }
-    else                             { veredicto = `INESTABLE: ${distintos.join(' | ')}`; todosEstables = false; }
+    if (faltan === tags.length) { veredicto = 'FALTA EN TODOS'; todosPresentes = false; }
+    else if (faltan > 0)        { veredicto = `FALTA EN ${faltan}/${tags.length}`; todosPresentes = false; }
+    else if (tagsDistintos.length > 1) {
+      veredicto = `TAG INESTABLE: ${tagsDistintos.join(' | ')}`; todosEstables = false;
+    } else if (vensDistintas.length > 1) {
+      veredicto = `VENTANA INESTABLE: ${vensDistintas.join(' | ')} (mismo tag)`; todosEstables = false;
+    } else {
+      veredicto = `estable (${vensDistintas[0]})`;
+    }
+    if (ambiguos) veredicto += `  [${ambiguos} celda(s) AMBIGUA(s)]`;
     console.log(`  ${campo.label.padEnd(44)} ${veredicto}`);
   }
 
   console.log(`\n${'#'.repeat(78)}`);
   if (todosPresentes && todosEstables) {
-    console.log('# Criterio "9 campos con los mismos tags en ambas emisoras": SE CUMPLE');
+    console.log('# Criterio "9 campos, mismo tag y misma ventana": SE CUMPLE');
     console.log('# FALTA para GO: comparar cada número contra el PDF de IR (ver links abajo).');
   } else {
-    console.log('# Criterio "9 campos con los mismos tags en ambas emisoras": NO SE CUMPLE');
+    console.log('# Criterio "9 campos, mismo tag y misma ventana": NO SE CUMPLE');
     console.log('# -> esto apunta a NO-GO. Documentar la causa, no parchearla.');
   }
   console.log(`${'#'.repeat(78)}`);
@@ -487,49 +567,118 @@ function tablaResumen(porArchivo) {
 /* 6. Probe de red                                                           */
 /* ========================================================================= */
 
+/*
+ * Se pega con DOS user-agents a propósito. Un sitio que contesta 200 al UA de
+ * navegador y 403 al UA declarado de script no está "caído": está discriminando
+ * por cliente, y eso es dato tanto de viabilidad como de términos de uso.
+ * Disfrazar el cosechador de navegador para esquivarlo es una decisión que le
+ * toca al dueño del proyecto, no al script; aquí sólo se mide y se reporta.
+ */
+const UAS = [
+  { etiqueta: 'browser', ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' },
+  { etiqueta: 'bot',     ua: 'quantdesk-fase0/0.1' },
+];
+
 async function probe() {
   console.log(`\n${'#'.repeat(78)}`);
-  console.log(`# PROBE DE RED — puntos de entrada documentados`);
-  console.log(`# Ninguno verificado desde el sandbox del agente (403 en el proxy).`);
+  console.log(`# PROBE DE RED — puntos de entrada (2 user-agents por URL)`);
+  console.log(`# Desde el sandbox del agente todo da 403 DEL PROXY (~3ms, text/plain).`);
+  console.log(`# Corrido en local, un 403 real de BMV/CNBV se ve distinto.`);
   console.log(`${'#'.repeat(78)}\n`);
 
   for (const e of ENTRADAS) {
-    const t0 = Date.now();
-    try {
-      const res = await fetch(e.url, { redirect: 'manual', headers: { 'User-Agent': 'quantdesk-fase0/0.1' } });
-      const ms = Date.now() - t0;
-      const ct = res.headers.get('content-type') || '—';
-      const loc = res.headers.get('location');
-      const cookie = res.headers.get('set-cookie');
-      console.log(`  ${String(res.status).padEnd(4)} ${ms.toString().padStart(5)}ms  ${e.nombre}`);
-      console.log(`       ${e.url}`);
-      console.log(`       content-type: ${ct}`);
-      if (loc) console.log(`       -> redirect: ${loc}`);
-      if (cookie) console.log(`       set-cookie: ${cookie.slice(0, 120)}  <-- ¿sesión requerida?`);
-    } catch (err) {
-      console.log(`  ERR  ${' '.repeat(7)}  ${e.nombre}`);
-      console.log(`       ${e.url}`);
-      console.log(`       ${err.message}`);
+    console.log(`  ${e.nombre}`);
+    console.log(`       ${e.url}`);
+    const vistos = [];
+
+    for (const { etiqueta, ua } of UAS) {
+      const t0 = Date.now();
+      try {
+        const res = await fetch(e.url, { redirect: 'manual', headers: { 'User-Agent': ua } });
+        const ms = Date.now() - t0;
+        const ct = res.headers.get('content-type') || '—';
+        const len = res.headers.get('content-length');
+        const loc = res.headers.get('location');
+        // getSetCookie() devuelve TODAS las cabeceras Set-Cookie por separado;
+        // headers.get('set-cookie') las colapsa y pierde cookies.
+        const cookies = typeof res.headers.getSetCookie === 'function'
+          ? res.headers.getSetCookie()
+          : [res.headers.get('set-cookie')].filter(Boolean);
+
+        vistos.push(res.status);
+        console.log(`       [${etiqueta.padEnd(7)}] ${String(res.status).padEnd(4)} ${String(ms).padStart(5)}ms  ${ct}${len ? `  ${len}B` : ''}`);
+        if (loc) console.log(`                 -> redirect: ${loc}`);
+        for (const c of cookies) {
+          const nombre = c.split('=')[0];
+          const sesion = /sessionid|jsessionid|phpsessid|asp\.net_sessionid/i.test(nombre);
+          console.log(`                 set-cookie: ${nombre}${sesion ? '   <-- COOKIE DE SESIÓN' : ''}`);
+        }
+      } catch (err) {
+        vistos.push('ERR');
+        console.log(`       [${etiqueta.padEnd(7)}] ERR          ${err.message}`);
+      }
+      await new Promise((r) => setTimeout(r, 1200)); // cortesía: no martillar
     }
-    await new Promise((r) => setTimeout(r, 1200)); // cortesía: no martillar BMV
+
+    if (vistos.length === 2 && vistos[0] !== vistos[1]) {
+      console.log(`       >>> EL UA CAMBIA LA RESPUESTA (${vistos[0]} vs ${vistos[1]}) — anotarlo.`);
+    }
+    console.log('');
   }
-  console.log(`\nQué anotar de esto: status 200 sin set-cookie y con content-type de`);
-  console.log(`zip/xml = descarga directa viable. 302 a un login, o set-cookie con`);
-  console.log(`JSESSIONID/ASP.NET_SessionId antes de poder bajar = exige sesión = NO-GO.`);
+
+  console.log(`Cómo leerlo:`);
+  console.log(`  200 + content-type zip/xml + sin cookie de sesión  = descarga directa viable.`);
+  console.log(`  302 a login, o cookie de sesión antes de poder bajar = exige sesión = NO-GO.`);
+  console.log(`  200 con UA de navegador y 403 con UA de script = el sitio discrimina;`);
+  console.log(`      es decisión tuya (no del script) si eso se respeta o se rodea.`);
+  console.log(`  Y lee el robots.txt de CNBV antes de automatizar nada contra ese host.`);
 }
 
 /* ========================================================================= */
 /* 7. Main                                                                   */
 /* ========================================================================= */
 
+const cierreDe = (anio, trim) =>
+  ({ 1: `${anio}-03-31`, 2: `${anio}-06-30`, 3: `${anio}-09-30`, 4: `${anio}-12-31` })[trim];
+
+/**
+ * Infiere emisora/año/trimestre del nombre del archivo, sin renombrar nada.
+ * Soporta las dos convenciones reales que vamos a tener en la carpeta:
+ *
+ *   BMV docs-pub : ifrsxbrl_1576474_2026-02_1.zip   (id interno numérico)
+ *   CNBV         : ifrsxbrl_ALFA_2016-4.xbrl        (clave de pizarra)
+ *   libre        : walmex_2026_2.zip
+ *
+ * En el caso de BMV la "emisora" es un id numérico que NO es derivable del
+ * ticker: se reporta como id:<n> en vez de fingir que sabemos cuál es.
+ */
 function inferirDeNombre(nombre) {
-  const n = basename(nombre).toLowerCase();
-  const emisora = /walmex/.test(n) ? 'WALMEX' : /femsa/.test(n) ? 'FEMSA' : null;
-  const anio = (/(20\d{2})/.exec(n) || [])[1];
-  const trim = (/(?:_|-|t)([1-4])(?:_|-|\.|$)/.exec(n) || [])[1];
-  if (!emisora || !anio || !trim) return null;
-  const periodEnd = { 1: `${anio}-03-31`, 2: `${anio}-06-30`, 3: `${anio}-09-30`, 4: `${anio}-12-31` }[trim];
-  return { emisora, anio: Number(anio), trim: Number(trim), periodEnd };
+  const base = basename(nombre);
+
+  // (a) ifrsxbrl_<CLAVE|ID>_<AAAA>-<T>[_<n>].(xbrl|zip)
+  let m = /ifrsxbrl_([^_]+)_(20\d{2})-(\d{1,2})/i.exec(base);
+  if (m) {
+    const [, clave, anio, t] = m;
+    const trim = Number(t);
+    if (trim >= 1 && trim <= 4) {
+      return {
+        emisora: /^\d+$/.test(clave) ? `id:${clave}` : clave.toUpperCase(),
+        anio: Number(anio), trim, periodEnd: cierreDe(anio, trim),
+      };
+    }
+  }
+
+  // (b) <emisora>_<AAAA>_<T>
+  m = /^([A-Za-z&.\-]+)[_-](20\d{2})[_-]([1-4])(?:[_.\-]|$)/.exec(base);
+  if (m) {
+    const [, emisora, anio, t] = m;
+    return {
+      emisora: emisora.toUpperCase(), anio: Number(anio),
+      trim: Number(t), periodEnd: cierreDe(anio, Number(t)),
+    };
+  }
+
+  return null;
 }
 
 async function main() {
@@ -581,9 +730,10 @@ async function main() {
       }
     }
     if (porArchivo.length) tablaResumen(porArchivo);
-    if (porArchivo.length < 4) {
-      console.log(`\nOJO: se analizaron ${porArchivo.length}/4 archivos objetivo. La tabla de`);
-      console.log(`estabilidad de tags sólo es concluyente con los 4.`);
+    if (porArchivo.length < TARGETS.length) {
+      console.log(`\nOJO: se analizaron ${porArchivo.length}/${TARGETS.length} archivos objetivo:`);
+      for (const t of TARGETS) console.log(`       - ${t.emisora} ${t.trim}T${t.anio}  (${t.fuente})`);
+      console.log(`La tabla de estabilidad sólo es concluyente con todos.`);
     }
     return;
   }
@@ -591,28 +741,46 @@ async function main() {
   /* ---- modo automático ---- */
   await probe();
   console.log(`\n\n${'#'.repeat(78)}`);
+  console.log(`\n\n${'#'.repeat(78)}`);
   console.log(`# DESCARGA AUTOMÁTICA: NO IMPLEMENTADA — a propósito.`);
   console.log(`${'#'.repeat(78)}`);
   console.log(`
-La URL exacta del archivo XBRL por emisora+trimestre NO se pudo verificar desde
-el entorno del agente (todo bmv.com.mx da 403 en el proxy de egress). Escribir
-aquí un patrón de URL supuesto sería inventarlo, que es exactamente lo que este
-memo no debe hacer.
+Lo que YA sabemos (verificado fuera de este entorno):
 
-Qué hacer, en orden:
+  * BMV sirve gratis y sin sesión el XBRL del trimestre MÁS RECIENTE por
+    emisora, bajo un nombre estático:
 
-  1) Corre el probe de arriba y mira cuál entrada responde 200 sin set-cookie.
-  2) Abre la ficha de la emisora en el navegador, con la pestaña Network abierta,
-     y baja UN trimestre a mano. Copia la URL real del request del archivo.
-  3) Si esa URL es estable y parametrizable (emisora/año/trimestre), pégala en
-     ENTRADAS y automatizar es trivial. Si depende de un id de envío opaco o de
-     una cookie de sesión, eso ya es el veredicto: NO-GO por sesión.
-  4) Mientras tanto, para no bloquear el smoke, baja los 4 a mano y corre:
+        https://www.bmv.com.mx/docs-pub/ifrsxbrl/ifrsxbrl_<ID>_<AAAA>-<TT>_1.zip
+        ej. Bimbo 2T2026 -> ifrsxbrl_1576474_2026-02_1.zip
+
+  * Sólo se lista el último trimestre. El histórico BMV lo vende (pubsys2).
+  * CNBV sí tiene el histórico público, pero su robots.txt prohíbe el acceso
+    automatizado. Ver docs/xbrl-fase0.md §8 antes de escribir un cosechador.
+
+Por qué aun así no automatizo la descarga aquí:
+
+  El <ID> de docs-pub es un id interno de BMV (1576474 para Bimbo) que NO es
+  el de la ficha de emisora (WALMEX-5214, FEMSA-5305) ni se deriva del ticker.
+  Sin el mapa ticker -> id de docs-pub no se puede construir la URL, y ponerlo
+  a adivinar sería inventarlo. Ese mapa es el entregable que falta.
+
+Qué hacer:
+
+  1) node scripts/xbrl-smoke.mjs --probe
+     Confirma que el zip de ejemplo baja libre y mira si el UA cambia algo.
+
+  2) Baja a mano, con la pestaña Network abierta, WALMEX y FEMSA 2T2026 desde
+     BMV. Anota el <ID> de cada URL: con dos ya se ve si el mapa es estable.
+
+  3) Si consigues un 4T2016 de CNBV, mételo a la misma carpeta: sirve para ver
+     si la versión de taxonomía cambió en 10 años (no para comparar números).
+
+  4) Corre la extracción sobre lo que tengas:
 
        node scripts/xbrl-smoke.mjs --manual ${OUT_DIR}
 
-     nombrando los archivos walmex_2025_2.zip, walmex_2025_4.zip,
-     femsa_2025_2.zip, femsa_2025_4.zip
+     Los nombres nativos ya se entienden (ifrsxbrl_<id>_<anio>-<t>_1.zip y
+     ifrsxbrl_<CLAVE>_<anio>-<t>.xbrl); no hace falta renombrarlos.
 `);
 }
 
