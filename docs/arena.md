@@ -731,6 +731,36 @@ sería re-crear el problema una capa más arriba.
 Mientras el contrato nuevo corra solo en sombra, éste es el **único** lugar
 donde se puede ver un portafolio objetivo.
 
+### El reporte gratis (`?report=1`) contesta lo que la corrida no
+
+La corrida en vivo devuelve `agents[].tools_used` —un **número**— y no calcula
+solapamiento. Las dos cosas ya estaban en el journal o eran computables desde él,
+así que salen por el reporte, que **no gasta un token** y lee las mismas filas
+que la corrida acabó de escribir. No hay que pagar otra corrida en siete
+proveedores para verlas.
+
+| Campo | Qué contesta |
+|---|---|
+| `por_agente[].ultimo.herramientas` | la **secuencia**: qué herramienta, con qué filtros, cuántas filas, si se truncó |
+| `por_agente[].ultimo.herramientas_corte` | por qué paró el loop (presupuesto, vueltas, reloj) |
+| `solapamiento.pairs` | coseno **par a par** entre los 7 portafolios objetivo |
+| `solapamiento.lectura` | qué significa ese número, en una línea |
+| `solapamiento.nombre_mas_compartido` | el ticker que más libros tienen |
+| `costo.total_usd` | el costo del día, con `sin_costo` si algún agente no reportó |
+
+**`pairwiseOverlap` estaba escrito y probado desde B8 y ningún endpoint lo
+llamaba** — código muerto, igual que las rondas fijas antes de conectarlas. Un
+test que ejercita la función exportada no prueba que alguien la use.
+
+Y es la métrica que decide la pregunta entera del experimento: si la liga está
+midiendo **siete opiniones o una opinión repetida siete veces**. Por eso el
+número viaja con su lectura: un coseno de 0.9 entre siete modelos distintos no es
+"la liga funciona".
+
+**El caveat de la lente viaja al lado.** Dos agentes con lentes distintas el
+mismo día **no son comparables ese día** — el confound es deliberado (B8), así
+que `por_agente[].ultimo.lente` se lee antes que el par.
+
 ### El control va marcado, y el modelo va con su etiqueta
 
 El control es el **piso de ruido**: leer su resultado como el de un competidor
