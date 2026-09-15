@@ -1298,6 +1298,119 @@ solo **lee**. Si el cron no corrió, se usa el de ayer **y se dice**
 (`is_today: false`) — no se reconstruye a medias, que daría un universo mitad
 fresco y mitad viejo sin manera de saber cuál nombre es cuál.
 
+### La fuente D1: las tenencias de IVV y QQQ, no FMP
+
+**FMP cobra por los constituyentes.** `/stable` devuelve `402 Restricted Endpoint`
+y `/api/v3` un `403 Legacy`: la lista del S&P 500 estaba detrás de una
+suscripción.
+
+Los ETFs que replican esos índices publican sus tenencias **completas, a diario,
+gratis y sin registro**, porque están obligados:
+
+| Índice | ETF | Proveedor |
+|---|---|---|
+| S&P 500 | **IVV** | iShares |
+| Nasdaq 100 | **QQQ** | Invesco |
+
+Es la misma información con un día de latencia como mucho, y con una ventaja
+sobre FMP: es el **replicante** diciendo qué tiene, no un tercero diciendo qué
+cree que tiene el índice. FMP queda como respaldo y **solo se intenta si hay
+`FMP_API_KEY`** — pegarle sin plan solo produce un 402 que hay que explicar.
+
+#### Lo que no se pudo verificar, y cómo se compensa
+
+El entorno donde se escribió esto **no tiene salida a `ishares.com` ni a
+`invesco.com`**, así que no se pudo mirar un CSV real. Los nombres exactos de las
+columnas y el largo del preámbulo son lo único no confirmado. El diseño se apoya
+en eso en vez de ignorarlo:
+
+1. **El parser no exige un formato.** Busca la fila de encabezado escaneando, y
+   mapea columnas por alternativas (`Ticker` / `Holding Ticker` / `Symbol`…).
+   Pide **dos** columnas reconocibles: con una sola, una fila de *datos* que
+   dijera "ticker" se tomaba por encabezado y el parseo quedaba corrido un
+   renglón, devolviendo cero símbolos con cara de "el CSV vino vacío". Lo agarró
+   el test.
+2. **No depende de la columna de tipo.** El que decide qué es una acción es el
+   **catálogo de Alpaca**, que es autoritativo y que ya hace falta para el canal
+   del día. El CSV solo tiene que aportar tickers.
+3. **Las URLs son env vars**, para corregir un archivo movido sin un deploy.
+
+Y el CSV se parsea de verdad, no con `split(',')`: los nombres llevan comas
+(`"Berkshire Hathaway Inc, Class B"`) y partir por coma corre las columnas justo
+en las filas que más importan.
+
+---
+
+### El canal del día: 100 candidatos, 0 admitidos
+
+**Lo reportado:** de 100 candidatos del día se admitieron **cero**. 69 salieron
+`data_unavailable` y eran warrants, rights, preferentes y unidades.
+
+Dos bugs en uno, y el segundo es el que costó tiempo:
+
+1. Entraban instrumentos que no son el universo del Arena.
+2. Al rebotar se veían como falla de **cobertura** ("no pudimos resolver el
+   market cap") en vez de "no es una acción". **Un rechazo con el motivo
+   equivocado manda a buscar el problema al lugar equivocado** — y así fue: se
+   sospechó de Finnhub cuando el problema estaba en el universo de entrada.
+
+#### Por qué el sufijo no alcanzaba
+
+`arena-guard.js` ya tenía `/[.\-+](WS|WT|W|U|R|RT)$/`. Exige un **separador**, y
+Alpaca escribe muchos warrants pegados: `ABCDW`, no `ABCD.W`. La mitad pasaba de
+largo. Y al revés, un sufijo sin separador es ambiguo de verdad: **`ANDW` no es
+un warrant de `AND`**.
+
+La fuente autoritativa es el catálogo de Alpaca (`/v2/assets`, ~11.000 filas en
+**una** request, cacheado por día). El `name` resuelve la ambigüedad: un warrant
+se llama *"… Warrant"*. Eso no es heurística sobre el ticker — es lo que el
+broker dice que es el instrumento. El sufijo queda como filtro barato y como
+respaldo, no como criterio.
+
+#### El orden importa, y es el punto
+
+El filtro corre **antes** de gastar el tope de 100 y **antes** de pedirle a
+Finnhub el market cap de un warrant. Antes, 100 cupos se iban en ~30 acciones
+reales.
+
+Y como de cada 3 nombres del screener ~2 no son acciones, se ensanchó la entrada
+bruta: movers (50 por lado, el máximo del endpoint) + most-actives por **volumen**
++ most-actives por **número de operaciones** — un ranking distinto del mismo
+endpoint, que trae nombres que el de volumen no trae. ~300 brutos → ~100 comunes.
+
+**Sin catálogo, el canal del día se apaga entero** (fail closed, igual que la
+admisión) pero los índices siguen entrando: el tablero no se queda vacío por
+esto. Y se journalea que la falla es **nuestra**, no de los nombres.
+
+---
+
+### Finnhub: "0 admitidos" tiene que decir de quién es la culpa
+
+`fetchMarketCap` devolvía `null` en cinco situaciones —sin key, HTTP de error,
+**429 por rate limit**, cuerpo sin el campo, timeout— y las cinco terminaban en
+`data_unavailable`.
+
+**El 429 es el que más importa.** El tier gratis corta a 60 llamadas por minuto.
+Un lote de 100 nombres del día cruza ese techo a la mitad: los primeros ~60
+resuelven y el resto recibe 429. Visto desde afuera eso se lee como *"Finnhub no
+tiene estos nombres"* — una conclusión falsa sobre el **dato** cuando en realidad
+es un límite **nuestro**.
+
+Ahora hay un techo explícito (`ARENA_FINNHUB_CALL_BUDGET`, 40) y cuatro motivos
+distintos donde antes había uno:
+
+| Motivo | Qué significa |
+|---|---|
+| `rate_limit` | Finnhub nos frenó (429) |
+| `rate_budget` | no se pidió: el lote ya gastó su cupo |
+| `sin_cobertura` | Finnhub contestó `{}`: no tiene el nombre |
+| `sin_market_cap` | contestó, pero sin ese campo |
+
+Los dos primeros son nuestros y se arreglan subiendo el plan o bajando el lote;
+los dos últimos son del nombre. `admission.finnhub` trae el reparto y lo dice.
+
+---
+
 ### Cuando dice "Sin FMP", tiene que decir POR QUÉ
 
 **El reporte que lo originó:** la key llevaba dos horas puesta en Vercel y el
@@ -1999,7 +2112,10 @@ ya conocidos, y `job=audit` descubre los nuevos a medida que aparezcan.
 | `ARENA_BUFFET_V15` | `1` | Freno de mano del universo del día (screener de Alpaca). `0` lo apaga sin deploy. |
 | `ARENA_BUFFET_V15_TARGET` | `100` | Cuántos candidatos ve el PM. |
 | `ARENA_BUFFET_DAY_CACHE` | `insiders` | Canales que se piden una vez por día y se leen de Neon. **No** poner `movers` ni `earnings`: cambian dentro del día. |
-| `FMP_API_KEY` | — | Constituyentes del S&P 500 / Nasdaq 100. **Alcanzala a Production** (los crons solo corren ahí). Sin ella el universo cae a Neon → lista del repo → `movers_only`. Nada se rompe. |
+| `FMP_API_KEY` | — | **Respaldo opcional** de constituyentes. Los endpoints de índices de FMP son de **pago** (402/403 sin plan), así que la fuente viva son las tenencias de ETFs. Sin esta key ni se intenta. |
+| `ARENA_HOLDINGS_URL_SP500` | URL de IVV | Override de las tenencias del S&P 500. Existe para corregir una URL movida **sin deploy**. |
+| `ARENA_HOLDINGS_URL_NASDAQ100` | URL de QQQ | Ídem para el Nasdaq 100. |
+| `ARENA_FINNHUB_CALL_BUDGET` | `40` | Techo de `profile2` por lote de admisión. El tier gratis corta a 60/min y el deep dive gasta ~20. Lo que queda afuera se journalea `rate_budget`, **no** como falta de datos. |
 | `ARENA_UNIVERSE_REFRESH_DAYS` | `7` | Cada cuánto se vuelve a pedir la composición de los índices. |
 | `ARENA_UNIVERSE_MOVERS_MAX` | `100` | Tope de nombres del día que se AGREGAN al universo (los que ya están en un índice no gastan cupo). |
 | `ARENA_BOARD` | `1` | Freno de mano del tablero (B2). `0` lo apaga sin deploy. |
