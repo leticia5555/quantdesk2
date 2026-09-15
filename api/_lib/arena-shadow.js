@@ -135,6 +135,10 @@ export async function shadowReport(day = marketDay()) {
       // así que para verlo había que entrar a Neon a mano — justo cuando lo que
       // hace falta es leerlo rápido.
       llm_error: ctx.llm_error || null,
+      cierre: ctx.cierre || null,
+      // De qué libro arrancó. Es lo que decide si el par claude↔control mide
+      // ruido o mide herencia.
+      posiciones_iniciales: ctx.posiciones_iniciales || null,
       lente: ctx.lens || null,
       costo_usd: ctx.cost ? ctx.cost.usd : null,
       // ── LA SECUENCIA DE HERRAMIENTAS, NO EL CONTEO ──────────────────
@@ -192,18 +196,39 @@ export async function shadowReport(day = marketDay()) {
     ? (pairwiseOverlap({ claude: libros.claude, control: libros.control }).pairs[0] || {}).cosine
     : null;
 
+  // ── Y TAMPOCO MIDE RUIDO SI ARRANCAN DE LIBROS DISTINTOS ───────────
+  // El 0.68 de la sombra 3 no medía ruido: control tenía 6 posiciones heredadas
+  // y claude 1. Dos PMs idénticos que arrancan de carteras distintas van a
+  // producir libros distintos por HERENCIA, no por ruido del modelo. El piso
+  // solo significa algo cuando las dos condiciones se cumplen: misma lente Y
+  // mismo libro de arranque.
+  const posIns = (x) => (x && Array.isArray(x.posiciones_iniciales) ? x.posiciones_iniciales : null);
+  const posClaude = posIns(insignia);
+  const posControl = posIns(testigo);
+  const mismoLibro = !!(posClaude && posControl
+    && posClaude.length === posControl.length
+    && posClaude.every((sym, i) => sym === posControl[i]));
+
   const pisoDeRuido = !insignia || !testigo
     ? { disponible: false, motivo: 'falta el libro de claude o el de control en este día' }
     : !mismaLente
       ? {
-        disponible: false,
-        motivo: `claude corrió con lente "${insignia.lente}" y control con "${testigo.lente}". El par NO mide ruido: mide la lente. Este caso es un BUG y está corregido — el control hereda la lente del insignia.`,
+        disponible: false, comparable: false,
+        motivo: `claude corrió con lente "${insignia.lente}" y control con "${testigo.lente}". El par NO mide ruido: mide la lente.`,
         lente_claude: insignia.lente, lente_control: testigo.lente,
       }
-      : {
-        disponible: true, lente: insignia.lente, cosine: parRuido,
-        lectura: parRuido == null ? 'sin pesos en alguno de los dos'
-          : parRuido >= 0.9
+      : !mismoLibro
+        ? {
+          disponible: false, comparable: false, lente: insignia.lente,
+          cosine_observado: parRuido,
+          motivo: `claude arrancó con ${posClaude ? posClaude.length : '?'} posición(es) y control con ${posControl ? posControl.length : '?'}. El coseno entre ellos mide HERENCIA, no ruido: dos PMs idénticos que parten de carteras distintas producen libros distintos por eso solo. Para que el piso signifique algo, las dos cuentas tienen que arrancar del mismo libro — un reset las iguala.`,
+          posiciones_claude: posClaude, posiciones_control: posControl,
+        }
+        : {
+          disponible: true, comparable: true, lente: insignia.lente, cosine: parRuido,
+          posiciones_iniciales: posClaude,
+          lectura: parRuido == null ? 'sin pesos en alguno de los dos'
+            : parRuido >= 0.9
             ? `PISO SÓLIDO (${parRuido}): dos corridas idénticas dan casi el mismo libro, así que un delta entre modelos distintos significa algo.`
             : parRuido >= 0.7
               ? `PISO MEDIO (${parRuido}): hay ruido apreciable entre dos corridas idénticas. Un delta menor a ${(1 - parRuido).toFixed(2)} entre modelos distintos no se puede distinguir del ruido.`
@@ -226,6 +251,11 @@ export async function shadowReport(day = marketDay()) {
   return {
     day, total, abortadas,
     por_agente: porAgente,
+    // De qué libro arrancó cada uno. Va al lado del piso porque es la otra
+    // mitad de la pregunta: un solapamiento alto entre dos agentes que
+    // heredaron la misma cartera no dice nada sobre cómo piensan.
+    posiciones_iniciales: Object.fromEntries(Object.entries(porAgente)
+      .map(([id, a]) => [id, (a.ultimo && a.ultimo.posiciones_iniciales) || null])),
     piso_de_ruido: pisoDeRuido,
     solapamiento,
     // Todos los abortos con su cuerpo crudo, juntos: es lo primero que se mira

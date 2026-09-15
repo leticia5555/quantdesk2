@@ -111,7 +111,14 @@ function normalizeOpenRouter(raw) {
   // journal diciendo "el modelo no respetó el formato" cuando en realidad nunca
   // llegó a contestar. Si `content` viene vacío y hay `reasoning`, se usa ése:
   // el parser de JSON ya sabe extraer el objeto de un texto con prosa alrededor.
-  if (!String(text).trim() && msg && typeof msg.reasoning === 'string') text = msg.reasoning;
+  // CICATRIZ AMPLIADA: no todos los proveedores usan el mismo campo. OpenRouter
+  // normaliza a `reasoning`, pero varios modelos pasan `reasoning_content` tal
+  // cual viene de arriba. Leer solo uno deja al otro como respuesta vacía.
+  if (!String(text).trim() && msg) {
+    for (const campo of ['reasoning', 'reasoning_content']) {
+      if (typeof msg[campo] === 'string' && msg[campo].trim()) { text = msg[campo]; break; }
+    }
+  }
   const u = raw.usage || {};
   // `finish_reason` de OpenAI → `stop_reason` de Anthropic. El caller usa esto
   // para distinguir "el modelo no respetó el formato" de "se quedó sin tokens a
@@ -145,6 +152,12 @@ function normalizeOpenRouter(raw) {
     // mensaje: OpenAI exige que el `tool_calls` que se responde sea el mismo
     // objeto que mandó.
     _raw_message: msg || null,
+    // EL `choices[0]` ENTERO, para poder journalearlo cuando algo falla al
+    // LEER la respuesta. Los abortos con "HTTP 200" y todo null pasaron porque
+    // la captura estaba en la capa del fetch —que había ido bien— y no en la de
+    // la lectura. Acá queda el objeto completo: content, reasoning, tool_calls,
+    // finish_reason.
+    _raw_choice: (raw.choices && raw.choices[0]) || null,
     usage: {
       input_tokens: Number(u.prompt_tokens) || 0,
       output_tokens: Number(u.completion_tokens) || 0,

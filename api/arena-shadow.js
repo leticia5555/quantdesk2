@@ -97,6 +97,10 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
     return { agent: agent.id, status: 'aborted_alpaca_read' };
   }
   const equity = Number(libro.account.equity);
+  // POSICIONES DE ARRANQUE. El piso de ruido compara a claude con control, y
+  // eso solo mide ruido si los dos ARRANCAN del mismo libro: si uno hereda 6
+  // posiciones y el otro 1, el coseno mide herencia, no ruido.
+  const posicionesIniciales = (libro.positions || []).map((x) => String((x && x.symbol) || '').toUpperCase()).filter(Boolean).sort();
 
   // El prompt: MISMO system y MISMO contexto compartido que la liga; la cola
   // (lente + orden aleatorizado) es lo único por agente, del lado no cacheado.
@@ -137,10 +141,14 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
     // Ahora lee los sectores GICS del universo, que vienen del CSV de IVV. Es
     // el MISMO dato que arregló R6: una vez cargado, sirve para los dos.
     deps: { sectorOf: (sym) => sectorEtfDe(buffet, sym) },
+    // `marketCapOf` y `retornosOf` salen del universo por default (ver
+    // createToolExecutor): sin ellos, `min_mcap_b` y `ret_*_min` se ignoraban
+    // en silencio y el modelo creía que había filtrado.
   });
 
   const ctx = {
     prompt: { system, shared, user },
+    posiciones_iniciales: posicionesIniciales,
     cache_prefix: cachePrefixReport(agent, [system, shared]),
     lens: cola.lens, tail_tokens: cola.tokens_est,
     tier: tier ? { tier: tier.tier, tools_max: toolsMax } : null,
@@ -158,6 +166,7 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
 
   const llm = loop.llm;
   ctx.tools = { budget: toolsMax, used: executor.used, intentos: executor.intentos, turns: loop.turns, stopped_by: loop.stopped_by, sequence: executor.sequence, summary: executor.summary() };
+  if (loop.cierre_diagnostico) ctx.cierre = loop.cierre_diagnostico;
 
   // El gasto se registra SIEMPRE, haya salido bien o mal: una corrida abortada
   // igual gastó tokens, y un contador que solo cuenta los éxitos subestima.
@@ -186,6 +195,10 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
       status: llm.status, detail: llm.error_detail || null,
       provider_error: llm.provider_error || null,
       raw_body: llm.raw_body || null,
+      // EL TURNO DE CIERRE ENTERO. Los abortos llegaron con status 200 y todo
+      // lo de arriba en null: el fetch iba bien y la falla estaba al LEER la
+      // respuesta. Esto es lo que faltaba.
+      cierre: llm.cierre_diagnostico || (loop && loop.cierre_diagnostico) || null,
       timed_out: !!llm.timedOut, stale: !!llm.stale, retry_failed: !!llm.retry_failed,
     };
     await shadowJournalInsert({ ...base, status: 'aborted_llm_error', error, context: ctx });

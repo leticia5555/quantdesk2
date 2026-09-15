@@ -589,6 +589,19 @@ export async function buildUniverse({
     // insumo de los breakouts del tablero, precomputado una vez por día.
     // { SYMBOL: 'Information Technology' } para los nombres de índice.
     sectores: sectoresIndice,
+    // ── LO QUE EL SCREENER NECESITA Y NO TENÍA ─────────────────────
+    // Retornos a 5 días y a 1 mes, y el market cap medido. Los tres salen de
+    // datos que esta corrida YA pagó: los retornos de las mismas velas del
+    // volumen, el market cap de la admisión. Sin ellos, `ret_5d_min`,
+    // `ret_1m_min` y `min_mcap_b` estaban DECLARADOS al modelo y no
+    // implementados — se ignoraban en silencio, que es peor que no existir:
+    // el modelo construye una tesis creyendo que filtró.
+    retornos: Object.fromEntries(admitidos
+      .map((sym) => [sym, { ret_5d: (precios[sym] || {}).ret_5d ?? null, ret_1m: (precios[sym] || {}).ret_1m ?? null }])
+      .filter(([, v]) => v.ret_5d != null || v.ret_1m != null)),
+    market_caps: Object.fromEntries(admitidos
+      .map((sym) => [sym, (admissionData[sym] || {}).marketCap ?? null])
+      .filter(([, v]) => Number.isFinite(v))),
     sectores_count: Object.keys(sectoresIndice).length,
     fifty_two_week: fiftyTwo,
     fifty_two_week_count: Object.keys(fiftyTwo).length,

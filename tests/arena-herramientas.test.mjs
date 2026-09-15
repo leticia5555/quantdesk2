@@ -333,5 +333,79 @@ console.log('\n── constantes declaradas ──');
 ok(RESULT_TOKEN_CAP === 1500, 'cada resultado se corta a ~1.5K tokens', String(RESULT_TOKEN_CAP));
 ok(MAX_TURNS === 10, 'y el loop tiene un tope de vueltas propio, distinto del de llamadas', String(MAX_TURNS));
 
+// ═══════════════════════════════════════════════════════════════
+// TRES FILTROS SE DECLARABAN AL MODELO Y NO EXISTÍAN.
+//
+// `ret_5d_min` y `ret_1m_min` estaban en el schema que ve el modelo y
+// `runScreener` NO los implementaba. `min_mcap_b` dependía de
+// `ctx.marketCapOf`, que la sombra nunca pasaba.
+//
+// Eso es PEOR que devolver cero. Un filtro que se ignora en silencio hace que
+// el modelo construya su tesis creyendo que filtró: pide "los que subieron +5%
+// en el mes" y recibe TODOS, con la etiqueta de que cumplen.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── los filtros declarados se APLICAN de verdad ──');
+{
+  const tablero = {
+    gainers: [
+      { symbol: 'FUERTE', price: 10, change_pct: 3, rvol: 2 },
+      { symbol: 'FLOJO', price: 20, change_pct: 1, rvol: 1 },
+    ],
+    losers: [], rvol: [], breakouts: { high: [], low: [] }, sectors: [], headlines: [],
+  };
+  const universo = {
+    retornos: { FUERTE: { ret_5d: 6, ret_1m: 12 }, FLOJO: { ret_5d: 0.2, ret_1m: 1 } },
+    market_caps: { FUERTE: 2e10, FLOJO: 5e8 },
+  };
+  const ex = createToolExecutor({ board: tablero, universe: universo, cache: false, budget: 20, now: HOY });
+
+  const r1m = await ex.call('screener', { ret_1m_min: 5 });
+  ok(/FUERTE/.test(r1m.text) && !/FLOJO/.test(r1m.text),
+    'ret_1m_min filtra de verdad: antes se ignoraba y devolvía los dos', r1m.text.split('\n').slice(0, 2).join(' | '));
+
+  const r5d = await ex.call('screener', { ret_5d_min: 5 });
+  ok(/FUERTE/.test(r5d.text) && !/FLOJO/.test(r5d.text), 'ret_5d_min también');
+
+  const rcap = await ex.call('screener', { min_mcap_b: 10 });
+  ok(/FUERTE/.test(rcap.text) && !/FLOJO/.test(rcap.text),
+    'min_mcap_b aplica sin que nadie tenga que inyectar `marketCapOf`: sale del universo');
+
+  // UN NOMBRE SIN EL DATO NO PASA EL FILTRO. Dejarlo pasar sería el mismo error
+  // con otra cara: el modelo pidió "+5% en el mes" y recibiría uno del que no
+  // sabemos el retorno.
+  const parcial = createToolExecutor({
+    board: tablero, cache: false, budget: 5, now: HOY,
+    universe: { retornos: { FUERTE: { ret_5d: 6, ret_1m: 12 } } },
+  });
+  const rp = await parcial.call('screener', { ret_1m_min: 5 });
+  ok(/FUERTE/.test(rp.text) && !/FLOJO/.test(rp.text),
+    'el que no tiene el dato NO pasa: "no sabemos" no es "cumple"');
+}
+
+console.log('\n── el cero distingue "no cumple" de "no tenemos el dato" ──');
+{
+  const tablero = {
+    gainers: [{ symbol: 'AAA', price: 10, change_pct: 3, rvol: 2 }],
+    losers: [], rvol: [], breakouts: { high: [], low: [] }, sectors: [], headlines: [],
+  };
+  const sinDatos = createToolExecutor({ board: tablero, universe: {}, cache: false, budget: 5, now: HOY });
+  const r = await sinDatos.call('screener', { ret_1m_min: 5 });
+  ok(r.rows === 0 && /no trae retorno a 1 mes/.test(r.text),
+    'sin el dato para NINGÚN nombre, la respuesta es "no se puede contestar", no "ninguno cumple"', r.text.slice(0, 90));
+  ok(/NO significa que ninguno cumpla/.test(r.text),
+    'y lo dice explícitamente: son dos respuestas distintas que llevan a decisiones distintas');
+  ok(Array.isArray(r.datos_faltantes) && r.datos_faltantes.includes('retorno a 1 mes'),
+    'nombrando qué dato falta', JSON.stringify(r.datos_faltantes));
+
+  // Con el dato presente, un cero SÍ es un cero.
+  const conDatos = createToolExecutor({
+    board: tablero, cache: false, budget: 5, now: HOY,
+    universe: { retornos: { AAA: { ret_1m: 1 } } },
+  });
+  const r2 = await conDatos.call('screener', { ret_1m_min: 5 });
+  ok(r2.rows === 0 && /Ningún nombre del universo cumple/.test(r2.text),
+    'con el dato presente y nadie que cumpla, el cero es un cero de verdad', r2.text.slice(0, 60));
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
 process.exit(failures ? 1 : 0);
