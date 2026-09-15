@@ -2,3 +2,4 @@
 # para diagnóstico offline. Se regeneran corriendo la sonda; no se versionan.
 .historia-fase0/
 .congreso-phase0/
+.xbrl-fase0/
