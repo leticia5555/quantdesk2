@@ -1094,6 +1094,42 @@ comité lo saque. El universo del Arena no hereda esa demora: el mismo filtro de
 siempre (`_lib/arena-admission.js`) corre sobre los ~600, y lo que sale queda
 nombrado con el número que lo sacó.
 
+### El costo de admitir 600 nombres (y por qué no son 1200 requests)
+
+`_lib/arena-admission.js` se escribió para el buffet: su propio encabezado dice
+"~26 llamadas a Finnhub profile2 + ~8 series de Yahoo por corrida". B1 le pasa
+~600. Tal cual, eso es **600 series de Yahoo + 600 profile2**, y los 600
+profile2 contra el tier gratis de Finnhub (60/min) son **10 minutos** dentro de
+una función de 300s: no termina, y desde el primer minuto empieza a comer 429s.
+
+Dos cambios, ninguno de los cuales afloja el criterio:
+
+**Precio y volumen se miden en lote por Alpaca.** `getPriceAndDollarVolume`
+(`_lib/alpaca.js`) pide velas diarias de 100 símbolos por request al mismo
+`/v2/stocks/bars` que ya usa el tablero: **6 requests en vez de 600**. Excluye
+la vela de hoy (point-in-time, igual que antes) y **omite** el símbolo que no
+tiene velas en vez de emitir ceros — un cero se leería como "no operó" y lo
+rechazaría por criterio en vez de por falta de dato.
+
+**La pertenencia a un índice acredita el piso de market cap.** Un nombre del
+S&P 500 o del Nasdaq 100 tiene market cap ≥ $1B por construcción del índice: no
+hay miembro de $800M. Eso se prellena en `known` en vez de pedirlo. Es un
+**supuesto**, así que viaja declarado en el journal —
+`market_cap_assumed_by_index` (cuántos), `market_cap_measured` (cuántos se
+midieron de verdad) y `market_cap_note` — no escondido en un default. Los ≤100
+nombres del día, que no están en ningún índice, **sí** pagan su profile2 real.
+
+El resultado, para un universo de ~600:
+
+| | requests a Yahoo | requests a Finnhub | requests a Alpaca | Finnhub a 60/min |
+|---|---|---|---|---|
+| antes | 600 | 600 | 0 | 10.0 min |
+| ahora | 0 | ≤100 | 6 | 1.7 min |
+
+Lo que **no** cambió: el fail-closed. Un nombre sin precio o sin volumen sigue
+sin entrar, con `reason: 'data_unavailable'` — el test lo fija pasando 300
+nombres sin velas y exigiendo que los 300 queden afuera.
+
 ### El tope de 100 se gasta solo en nombres NUEVOS
 
 Un mover que ya está en el S&P 500 no consume cupo — sería gastar el presupuesto

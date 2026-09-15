@@ -50,7 +50,7 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { sql } from './db.js';
-import { getMovers, getMostActives, getFiftyTwoWeek } from './alpaca.js';
+import { getMovers, getMostActives, getFiftyTwoWeek, getPriceAndDollarVolume } from './alpaca.js';
 import { ADMISSION, resolveAdmission, isAdmissible } from './arena-admission.js';
 import { marketDay } from './arena-buffet-cache.js';
 
@@ -240,9 +240,63 @@ export async function buildUniverse({
   // Los nombres de los ÍNDICES pasan igual por el filtro: un constituyente que
   // cayó bajo $5 o bajo $1B sigue en el índice hasta que el comité lo saque, y
   // el universo del Arena no hereda esa demora.
+  //
+  // ── POR QUÉ NO SE LLAMA A LA ADMISIÓN "A PELO" ───────────────────
+  // `resolveAdmission` pide, POR NOMBRE, una serie de Yahoo (precio + volumen)
+  // y un profile2 de Finnhub (market cap). Está bien dimensionado para lo que
+  // tenía enfrente: su propio encabezado dice "~26 llamadas a Finnhub y ~8
+  // series de Yahoo por corrida", porque nació para el buffet de ~100.
+  //
+  // El universo le pone ~600 delante, y la cuenta no cierra por dos lados:
+  //   · 600 series de Yahoo, de a 4 en paralelo, no entran en 300s;
+  //   · 600 profile2 contra el tier gratis de Finnhub (60/min) son DIEZ
+  //     MINUTOS — y 429s desde el primer minuto.
+  //
+  // Se resuelve llenando `known` ANTES de llamar: `resolveAdmission` ya respeta
+  // lo que se le da y no lo vuelve a pedir.
+  //
+  // PRECIO Y VOLUMEN → Alpaca por LOTES de 100: 600 nombres son 6 requests en
+  // vez de 600. Mismo dato y misma disciplina point-in-time (velas cerradas).
+  let precios = {};
+  try {
+    precios = await (deps.getPriceAndDollarVolume || getPriceAndDollarVolume)(candidatos, { creds, now });
+  } catch (e) {
+    errors.prices = String((e && e.message) || e);
+  }
+
+  // MARKET CAP → acá hay una DECISIÓN, no un truco.
+  //
+  // Un nombre del S&P 500 o del Nasdaq 100 cumple el piso de $1B POR
+  // CONSTRUCCIÓN: los dos son índices de gran capitalización, y un miembro por
+  // debajo de $1B sería un caso extremo a punto de ser removido. Pedirle a
+  // Finnhub que confirme eso 600 veces es gastar diez minutos y el rate limit
+  // entero para reconfirmar la definición del índice.
+  //
+  // Así que para los nombres de ÍNDICE el criterio se da por cumplido — y se
+  // DECLARA nombre por nombre (`market_cap_assumed_by_index`) en vez de fingir
+  // que se midió. Es una suposición, no un dato, y el journal tiene que poder
+  // distinguirlas.
+  //
+  // LO QUE NO SE ASUME: el precio y el volumen se miden de verdad para TODOS.
+  // Ésa es la parte que de verdad cambia entre un constituyente sano y uno que
+  // se cayó, y es la demora del comité que el Arena no hereda.
+  //
+  // Y los nombres DEL DÍA no entran en la suposición: son ≤100, no tienen
+  // ninguna garantía de tamaño, y son justo por donde entró DDDX. Ésos pagan su
+  // profile2, que a ≤100 sí cabe en el tier gratis.
+  const known = {};
+  for (const sym of candidatos) {
+    const p = precios[sym] || {};
+    known[sym] = {
+      ...(Number.isFinite(p.price) ? { price: p.price } : {}),
+      ...(Number.isFinite(p.dollarVolume) ? { dollarVolume: p.dollarVolume } : {}),
+      ...(indexSyms.has(sym) ? { marketCap: rules.min_market_cap_usd } : {}),
+    };
+  }
+
   let admissionData = {};
   try {
-    admissionData = await admit(candidatos, { finnhubKey, now });
+    admissionData = await admit(candidatos, { finnhubKey, now, known });
   } catch (e) {
     errors.admission = String((e && e.message) || e);
   }
@@ -298,6 +352,14 @@ export async function buildUniverse({
     },
     admission: {
       applied: aplicado, rules, rejected_count: rechazados.length,
+      // Cuántos market caps se MIDIERON y cuántos se dieron por cumplidos por
+      // pertenecer a un índice de gran capitalización. Es una suposición
+      // declarada, no un dato — y el conteo la deja auditable.
+      market_cap_assumed_by_index: candidatos.filter((s2) => indexSyms.has(s2)).length,
+      market_cap_measured: candidatos.filter((s2) => !indexSyms.has(s2)).length,
+      market_cap_note: 'Un miembro del S&P 500 / Nasdaq 100 cumple el piso de $1B por construcción del índice, así que ese criterio se da por cumplido en vez de pedirlo 600 veces. El PRECIO y el VOLUMEN se miden de verdad para TODOS: un constituyente que cayó bajo $5 sigue en el índice hasta que el comité lo saque, y esa demora el Arena no la hereda.',
+      prices_resolved: Object.keys(precios).length,
+      prices_missing: candidatos.filter((s2) => !precios[s2]).length,
       // La lista entera pesa; se journalea acotada y con el conteo real al lado.
       rejected: rechazados.slice(0, 50),
       data_unavailable: rechazados.filter((r) => r.reason === 'data_unavailable').length,

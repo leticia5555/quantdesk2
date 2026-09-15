@@ -148,6 +148,77 @@ console.log('\n── 4) el tope de 100 se gasta SOLO en nombres nuevos ──')
   ok(/survivorship bias/.test(u.caveat), 'el caveat de survivorship viaja CON el dato, no en un doc que nadie abre');
 }
 
+// ── EL COSTO DE LA ADMISIÓN, que es lo que hace viable a B1 ──────────
+console.log('\n── el costo: 6 requests de precio, no 600 ──');
+{
+  let lotesDePrecio = 0;
+  let simbolosPedidos = 0;
+  let admisionRecibio = null;
+
+  const u = await buildUniverse({
+    now: HOY, creds: {},
+    deps: {
+      ...conIndices(),
+      getMovers: async () => ({ gainers: [{ symbol: 'DAY1', price: 50, percent_change: 9 }], losers: [], last_updated: null }),
+      getMostActives: async () => ({ most_actives: [{ symbol: 'DAY2', volume: 1e7 }], by: 'volume', last_updated: null }),
+      getPriceAndDollarVolume: async (syms) => {
+        lotesDePrecio++;
+        simbolosPedidos = syms.length;
+        return Object.fromEntries(syms.map((s2) => [s2, { price: 100, dollarVolume: 5e8, sessions: 20 }]));
+      },
+      resolveAdmission: async (syms, opts) => {
+        admisionRecibio = opts;
+        // Simula el módulo real: respeta `known` y NO vuelve a pedir lo que ya
+        // tiene. Lo que quede sin resolver es lo que costaría una request.
+        return Object.fromEntries(syms.map((s2) => [s2, { ...(opts.known || {})[s2] }]));
+      },
+      getFiftyTwoWeek: async () => ({}),
+    },
+  });
+
+  ok(lotesDePrecio === 1 && simbolosPedidos === 602,
+    'el precio y el volumen se piden EN UNA sola llamada por lotes para los 602 nombres, no uno por uno',
+    `${lotesDePrecio} llamada(s), ${simbolosPedidos} símbolos`);
+
+  const known = admisionRecibio && admisionRecibio.known;
+  ok(known && Object.keys(known).length === 602, 'y la admisión recibe `known` ya lleno', String(known && Object.keys(known).length));
+
+  // LO QUE DE VERDAD IMPORTA: cuántos market caps quedan sin resolver, porque
+  // cada uno es un profile2 de Finnhub contra un tier de 60/min.
+  const sinMcap = Object.entries(known).filter(([, v]) => !Number.isFinite(v.marketCap)).map(([k]) => k);
+  ok(sinMcap.length === 2 && sinMcap.includes('DAY1') && sinMcap.includes('DAY2'),
+    'SOLO los nombres DEL DÍA pagan un profile2 de Finnhub: 600 profile2 serían DIEZ MINUTOS contra un tier de 60/min, y la función tiene 300s',
+    `${sinMcap.length} pendientes: ${sinMcap.join(',')}`);
+
+  ok(u.admission.market_cap_assumed_by_index === 600 && u.admission.market_cap_measured === 2,
+    'y el reparto queda journaleado: 600 supuestos por índice, 2 medidos',
+    JSON.stringify({ sup: u.admission.market_cap_assumed_by_index, med: u.admission.market_cap_measured }));
+  ok(/suposición|construcción del índice/.test(u.admission.market_cap_note || ''),
+    'con la nota que dice que es una SUPOSICIÓN declarada, no un dato medido');
+  ok(/PRECIO y el VOLUMEN se miden de verdad/.test(u.admission.market_cap_note || ''),
+    'y que lo que NO se asume es el precio ni el volumen — ésa es la demora del comité que el Arena no hereda');
+}
+
+console.log('\n── un nombre sin precio NO se admite por defecto ──');
+{
+  const u = await buildUniverse({
+    now: HOY, creds: {},
+    deps: {
+      ...conIndices(),
+      getMovers: async () => ({ gainers: [], losers: [], last_updated: null }),
+      getMostActives: async () => ({ most_actives: [], by: 'volume', last_updated: null }),
+      // Solo la mitad de los nombres tiene barras.
+      getPriceAndDollarVolume: async (syms) => Object.fromEntries(
+        syms.slice(0, 300).map((s2) => [s2, { price: 100, dollarVolume: 5e8, sessions: 20 }])),
+      resolveAdmission: async (syms, opts) => Object.fromEntries(syms.map((s2) => [s2, { ...(opts.known || {})[s2] }])),
+      getFiftyTwoWeek: async () => ({}),
+    },
+  });
+  ok(u.counts.admitidos === 300,
+    'los 300 sin barras NO entran: sin precio no hay admisión posible (fail closed, la cicatriz DDDX)', String(u.counts.admitidos));
+  ok(u.admission.prices_missing === 300, 'y el conteo de los que no resolvieron precio viaja al journal', String(u.admission.prices_missing));
+}
+
 console.log('\n── 5) los ÍNDICES también pasan por admisión ──');
 {
   const caido = sp500[0];

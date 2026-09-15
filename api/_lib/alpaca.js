@@ -304,6 +304,59 @@ export async function getMostActives({ top = SCREENER_MAX_ACTIVES, by = 'volume'
   };
 }
 
+// ── PRECIO Y VOLUMEN EN DÓLARES, POR LOTES ──────────────────────────
+// Los dos datos que el filtro de admisión necesita por nombre, para ~600
+// nombres, en SEIS requests en vez de seiscientos.
+//
+// EL PROBLEMA QUE RESUELVE: `_lib/arena-admission.js` pedía precio y volumen a
+// Yahoo UNO POR UNO. Estaba bien dimensionado para lo que tenía enfrente —su
+// propio encabezado dice "~8 series de Yahoo por corrida"— pero el universo de
+// B1 le pone 600 nombres delante. A un request por nombre eso es media hora de
+// wall-clock contra una función de 300s.
+//
+// Alpaca sirve barras de hasta 100 símbolos por request, así que 600 nombres
+// son 6 requests. Es el mismo endpoint y el mismo lote que ya usa
+// getAvgDailyVolume: acá se devuelven las DOS cosas que la admisión mira.
+//
+// POINT-IN-TIME: la barra de HOY se excluye. El filtro decide con velas
+// CERRADAS — si entrara la viva, un nombre podría admitirse por el volumen del
+// día que se está operando, que es justo lo que no se puede usar.
+//
+// Devuelve { SYMBOL: { price, dollarVolume, sessions } }. Un símbolo sin barras
+// suficientes sale AUSENTE del mapa, nunca con ceros: la admisión distingue
+// "no califica" de "no hay datos", y un cero lo convertiría en lo primero.
+export async function getPriceAndDollarVolume(symbols = [], { creds, now = new Date(), days = 20 } = {}) {
+  const wanted = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
+  if (!wanted.length) return {};
+  const feed = alpacaDataFeed();
+  const hoy = now.toISOString().slice(0, 10);
+  // Se piden más días de los que se promedian: fines de semana y festivos
+  // hacen que N días de calendario sean menos de N sesiones.
+  const start = new Date(now.getTime() - (days + 15) * 86400000).toISOString().slice(0, 10);
+  const out = {};
+  for (const batch of chunk(wanted, DATA_CHUNK)) {
+    const data = await alpacaDataFetch(
+      `/v2/stocks/bars?symbols=${encodeURIComponent(batch.join(','))}&timeframe=1Day&start=${start}&limit=${(days + 15) * batch.length}&feed=${feed}`, creds);
+    for (const [sym, list] of Object.entries((data && data.bars) || {})) {
+      if (!Array.isArray(list) || !list.length) continue;
+      const cerradas = list.filter((b) => b && String(b.t || '').slice(0, 10) !== hoy).slice(-days);
+      if (!cerradas.length) continue;
+      const ultima = cerradas[cerradas.length - 1];
+      const price = Number(ultima.c);
+      if (!Number.isFinite(price) || price <= 0) continue;
+      const dvs = cerradas
+        .map((b) => (Number(b.c) || 0) * (Number(b.v) || 0))
+        .filter((x) => Number.isFinite(x) && x > 0);
+      out[String(sym).toUpperCase()] = {
+        price: +price.toFixed(4),
+        dollarVolume: dvs.length ? Math.round(dvs.reduce((a, b) => a + b, 0) / dvs.length) : null,
+        sessions: cerradas.length,
+      };
+    }
+  }
+  return out;
+}
+
 // ── MÁXIMOS Y MÍNIMOS DE 52 SEMANAS ─────────────────────────────────
 // Se calculan con barras SEMANALES, no diarias, y eso NO pierde precisión: el
 // high de una barra semanal ES el máximo de sus cinco días, así que el máximo
