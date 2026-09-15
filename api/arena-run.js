@@ -1509,9 +1509,22 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     // quedarían fuera por el filtro de `agent_id`, que solo trae filas del
     // agente real. Se nombran igual: que la consulta siga siendo correcta no
     // debe depender de que nadie journalee una de ésas con un agent_id concreto.
+    //
+    // ── B4 · EL CAMBIO DE CONTRATO DE LA NOCTURNA ────────────────────
+    // La nocturna pasa a ser REPORTE, sin decisiones. Eso mueve una pieza que
+    // no salta a la vista: el "plan anterior" que se le reinyecta al PM dejó de
+    // ser el de la nocturna y pasó a ser el de la última RONDA FIJA.
+    //
+    // Sin este filtro, el PM de la apertura+30 recibiría como "su plan
+    // anterior" el REPORTE de anoche — un texto que describe el día que pasó y
+    // no decide nada. Construir sobre eso es construir sobre una crónica.
+    //
+    // `report` se excluye junto a las filas operativas, por el mismo motivo por
+    // el que están ellas: llevan `plan` (el leaderboard las publica) sin ser
+    // una decisión del PM.
     sql(`select run_date, plan, actions, status from arena_journal
          where phase = 'decide' and plan is not null and agent_id = $1
-           and status not in ('season_start', 'season_started', 'rules_changed', 'season_winner')
+           and status not in ('season_start', 'season_started', 'rules_changed', 'season_winner', 'report', 'nightly_report')
            and run_date >= $2::date
          order by created_at desc limit 1`, [agentId, cutoff.date]),
     // High-water-mark del libro: el máximo equity journaleado POR ESTE AGENTE,

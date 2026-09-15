@@ -575,6 +575,65 @@ veces.
 
 ---
 
+## B4 · CADENCIA: tres rondas fijas y la nocturna a reporte
+
+`_lib/arena-watch.js` (`FIXED_ROUNDS`, `fixedRoundDue`, `riskNetDue`) · tests en
+`tests/arena-cadencia.test.mjs`
+
+| Pieza | Cuándo |
+|---|---|
+| Vigilante | cada 5 min, con los seis disparadores de siempre |
+| **Red de riesgo** | **el PRIMER tick** de la sesión (antes: apertura+30) |
+| **Rondas fijas** | apertura+30 · 12:00 ET · cierre−30 |
+| Corridas por disparador | acotadas al nombre + tablero, **máx 3 herramientas** |
+| Nocturna | **solo reporte**, sin decisiones |
+
+### Por qué las rondas viven en el vigilante y no en tres crons
+
+Tres crons de Vercel serían tres **horas UTC fijas**, y el horario del mercado
+no es fijo: cambia con el horario de verano. Un cron a las 14:00 UTC es la
+apertura+30 en EDT y la apertura+90 en EST. Peor: un festivo, una **media
+sesión** o una apertura retrasada dejarían los tres apuntando a momentos que no
+existen esa sesión.
+
+El vigilante ya corre cada 5 minutos **y ya sabe en qué minuto de la sesión
+está** (`sessionPhase`, derivado del calendario **real** de Alpaca). Las rondas
+se derivan de ahí: *"cuando lleven 30 minutos de sesión"*, no *"a las 14:00
+UTC"*. Con media sesión, el cierre−30 cae donde tiene que caer sin tocar nada.
+
+**La ventana no es un instante.** El tick es de 5 minutos, así que "a los 30
+exactos" casi nunca cae en un tick: la ronda dispara en el **primer tick que
+pasa el umbral**, y la idempotencia por día es lo que evita que los seis ticks
+restantes de esa media hora disparen seis rondas.
+
+**La deuda se paga en orden.** Si el vigilante estuvo caído y vuelve a las
+12:30 sin haber corrido la de apertura, corre **esa primero**: son rondas
+distintas con propósitos distintos, no un cupo que se descarta.
+
+### La red de riesgo, al primer tick
+
+Antes corría en el tick de la apertura+30, junto con la revisión de piso. Eso
+son **30 minutos de sesión** en los que un stop que ya disparó con el cierre de
+ayer no se ejecutaba — y un **gap de apertura** es exactamente cuando más falta
+hace.
+
+No cambia **qué** decide (sigue decidiendo con cierres completos, una vez al
+día): cambia **cuándo se ejecuta** lo ya decidido. Moverla a decidir con precios
+intradía la volvería un stop de tick, que es otro producto.
+
+### El cambio de contrato de la nocturna (el que no salta a la vista)
+
+Al volverse reporte, el **"plan anterior"** que se le reinyecta al PM dejó de
+ser el de la nocturna y pasó a ser el de la **última ronda fija**.
+
+Sin ese filtro, el PM de la apertura+30 recibiría como *su plan anterior* el
+**reporte de anoche** — un texto que describe el día que pasó y no decide nada.
+Construir sobre eso es construir sobre una crónica. `report` y `nightly_report`
+se excluyen junto a las filas operativas, por el mismo motivo por el que están
+ellas: llevan `plan` sin ser una decisión del PM.
+
+---
+
 ## B5 · SALIDA = PORTAFOLIO OBJETIVO · B6 · RIELES · B7 · RED PARA CORTOS
 
 `_lib/arena-rails.js` (rieles) · `_lib/arena-rebalance.js` (el motor) ·

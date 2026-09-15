@@ -433,6 +433,63 @@ export function floorReviewDue({ phase, agents = [], runsToday = {}, floorDone =
     .map((a) => a.id);
 }
 
+// ── B4 · LAS TRES RONDAS FIJAS ───────────────────────────────────────
+// Apertura+30 · 12:00 ET · cierre−30. Los siete deciden, hayan disparado o no.
+//
+// ── POR QUÉ VIVEN EN EL VIGILANTE Y NO EN TRES CRONS ─────────────────
+// Tres crons de Vercel serían tres horas UTC fijas, y el horario del mercado no
+// es fijo: cambia con el horario de verano. Un cron a las 14:00 UTC es la
+// apertura+30 en EDT y la apertura+90 en EST. Peor: un festivo, un cierre
+// anticipado (media sesión) o una apertura retrasada dejarían los tres crons
+// apuntando a momentos que no existen esa sesión.
+//
+// El vigilante ya corre cada 5 minutos Y YA SABE en qué minuto de la sesión
+// está (`sessionPhase`, que sale del calendario REAL de Alpaca). Las rondas se
+// derivan de ahí: "cuando lleven 30 minutos de sesión", no "a las 14:00 UTC".
+// Con media sesión el cierre−30 cae donde tiene que caer, sin tocar nada.
+//
+// ── LA VENTANA, Y POR QUÉ NO ES UN INSTANTE ──────────────────────────
+// El tick es de 5 minutos, así que "a los 30 minutos exactos" casi nunca cae en
+// un tick. La ronda dispara en el PRIMER tick que pasa el umbral, y la
+// idempotencia la da `roundsDone` (una ronda por tipo por día): sin eso, los
+// seis ticks que quedan de esa media hora dispararían seis rondas.
+export const FIXED_ROUNDS = [
+  { id: 'open_30', after_open_min: 30, label: 'apertura + 30' },
+  { id: 'midday', at_eastern_min: 12 * 60, label: '12:00 ET' },
+  { id: 'close_30', before_close_min: 30, label: 'cierre − 30' },
+];
+
+// Qué ronda fija toca en ESTE tick (a lo sumo una). `done` son las ya corridas
+// hoy, por id.
+export function fixedRoundDue({ phase, easternMinutes: mins = null, done = new Set() } = {}) {
+  if (!phase || !phase.open) return null;
+  for (const r of FIXED_ROUNDS) {
+    if (done.has(r.id)) continue;
+    if (r.after_open_min != null) {
+      if (phase.minutes_since_open != null && phase.minutes_since_open >= r.after_open_min) return r;
+    } else if (r.before_close_min != null) {
+      if (phase.minutes_to_close != null && phase.minutes_to_close <= r.before_close_min) return r;
+    } else if (r.at_eastern_min != null) {
+      if (mins != null && mins >= r.at_eastern_min) return r;
+    }
+  }
+  return null;
+}
+
+// ── LA RED DE RIESGO, AL PRIMER TICK ─────────────────────────────────
+// Antes corría en el tick de la apertura+30, junto con la revisión de piso.
+// Eso son 30 minutos de sesión en los que un stop que ya disparó con el cierre
+// de ayer no se ejecutaba — y un gap de apertura es exactamente cuando más
+// falta hace. Ahora corre en el PRIMER tick de la sesión.
+//
+// No cambia QUÉ decide (sigue decidiendo con cierres COMPLETOS, una vez al
+// día): cambia CUÁNDO se ejecuta lo ya decidido. Moverla a decidir con precios
+// intradía la volvería un stop de tick, que es otro producto.
+export function riskNetDue({ phase, done = false } = {}) {
+  if (!phase || !phase.open || done) return false;
+  return true;   // el primer tick con la sesión abierta
+}
+
 // ── MARKETABLE LIMIT intradía (cadencia #5) ────────────────────────────────
 // La corrida por disparador ejecuta EN EL MOMENTO, no en la apertura siguiente:
 // una decisión tomada por un movimiento de las 10:15 que se ejecuta al día
