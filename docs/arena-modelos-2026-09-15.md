@@ -34,7 +34,10 @@ sí llega a OpenRouter, compara contra el catálogo vivo y te devuelve el
 
 ```bash
 BASE=https://quantdesk2.vercel.app
-AUTH="Authorization: Bearer $ARENA_ADMIN_KEY"
+# Las tres formas son equivalentes; elegí una:
+AUTH="x-admin-key: $ARENA_ADMIN_KEY"             # header simple
+# AUTH="Authorization: Bearer $ARENA_ADMIN_KEY"  # el clásico
+# ...o sin header: "$BASE/api/arena-smoke?key=$ARENA_ADMIN_KEY"
 
 # ── PASO 1 — GRATIS. Resolver los cinco slugs. ───────────────────────
 curl -sS -H "$AUTH" "$BASE/api/arena-smoke?catalog=1" | jq '.slugs[] | {agent, resolution, slug, candidates, fix}'
@@ -80,6 +83,41 @@ dispara una persona a mano y gasta dinero real en siete proveedores. Sin
 `ARENA_ADMIN_KEY` configurada el endpoint **no queda abierto** — responde 503.
 El default "si no hay llave, dejá pasar" es cómo un endpoint que gasta se
 convierte en la factura de otro.
+
+### Si te da `{"error":"No autorizado."}`
+
+La key se lee de **tres** lugares, todos equivalentes, y se prueban **todos**
+(que uno venga mal no invalida a los otros):
+
+| Forma | Ejemplo |
+|---|---|
+| `Authorization: Bearer` | `curl -H "Authorization: Bearer $ARENA_ADMIN_KEY" "$BASE/api/arena-smoke?catalog=1"` |
+| header `x-admin-key` | `curl -H "x-admin-key: $ARENA_ADMIN_KEY" "$BASE/api/arena-smoke?catalog=1"` |
+| query `?key=` | `curl "$BASE/api/arena-smoke?catalog=1&key=$ARENA_ADMIN_KEY"` |
+
+> El `?key=` existe para pegarlo en el browser, pero una URL viaja a los logs
+> de acceso y al historial. Para la terminal, preferí el header.
+
+Se hace **`trim()` de los dos lados**: el `\n` o el espacio que se cuela al
+pegar el valor en Vercel ya no cuesta una hora de debug. Lo que el trim **no**
+perdona son las comillas (`"abc"`): Vercel guarda el valor literal, no lo
+desescapa.
+
+El 401 ya no es una pared. Trae `hint` con qué falta, `recibido[]` con **por
+dónde** llegó la key, cuántos chars traía, si el largo coincide con el de la env
+y su `huella_sha256_12`, y `headers_con_pinta_de_key` — que es lo que caza el
+caso "la mandaste por `x-api-key`, que este endpoint no lee". **La key nunca
+viaja en la respuesta**: la huella es de lo *recibido*, no de la esperada, así
+que un 401 no le regala material a nadie. Para comparar del lado tuyo:
+
+```bash
+printf %s "$ARENA_ADMIN_KEY" | shasum -a 256 | cut -c1-12   # printf %s, no echo
+```
+
+Si `recibido` viene `null`, la key no llegó por ninguna de las tres formas. Si
+viene con `mismo_largo_que_la_env: true` pero igual rebota, es **otra** key:
+casi siempre se regeneró en Vercel sin redeployar, o es la de Preview contra la
+de Production.
 
 > ⚠️ **No toques `ANTHROPIC_MODEL`.** Es el modelo de TODA la app (sim, earnings,
 > Smart $, los 6 agentes de la flota) y sigue en Haiku a propósito. Apuntarlo a
