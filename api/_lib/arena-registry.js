@@ -106,6 +106,40 @@ export const ARENA_MAX_TOKENS = (() => {
   return Number.isFinite(n) && n >= 500 && n <= 64000 ? Math.floor(n) : 6000;
 })();
 
+// ── PRESUPUESTO DE TIEMPO ────────────────────────────────────────────
+// Techo de UNA llamada al proveedor. Existe porque el reloj que manda no es el
+// de la API sino el de Vercel: si el fetch tarda más que el `maxDuration` de la
+// función, no hay error de LLM que journalear — la función entera muere con
+// FUNCTION_INVOCATION_TIMEOUT y se pierde el resultado de TODOS los agentes,
+// incluidos los que ya habían contestado.
+//
+// Por eso este número tiene que ser MENOR que el maxDuration del endpoint que
+// llama, con margen para el resto (buffet, Alpaca, escritura al journal).
+// Con maxDuration=300 y agentes en paralelo, 90s deja aire de sobra.
+//
+// Antes esto estaba hardcodeado y ASIMÉTRICO: 45s para OpenRouter y 180s para
+// Anthropic. Los 180s eran directamente imposibles de honrar — triplicaban el
+// cap real de 60s que vercel.json imponía, así que el fetch nunca llegaba a
+// abortar por su cuenta: lo mataba la función antes, sin dejar rastro.
+export const ARENA_LLM_TIMEOUT_MS = (() => {
+  const n = Number(process.env.ARENA_LLM_TIMEOUT_MS);
+  return Number.isFinite(n) && n >= 5000 && n <= 280000 ? Math.floor(n) : 90000;
+})();
+
+// Techo del TRABAJO COMPLETO de un agente en la nocturna: scan + dive, con los
+// retries del guard de fechas incluidos. Es otro número que ARENA_LLM_TIMEOUT_MS
+// porque cubre otra cosa: aquel limita UNA conexión, éste limita la cadena.
+//
+// La cuenta que importa, con los agentes en paralelo:
+//   scan (≤90s) + dive (≤90s) + Alpaca/journal ≈ 200s  <  240s  <  300s de función
+// El margen final existe para que, cuando un agente se pase, la función siga
+// viva lo suficiente para ESCRIBIR que se pasó. Un timeout que no se journalea
+// es indistinguible de una corrida que nunca ocurrió.
+export const ARENA_AGENT_DEADLINE_MS = (() => {
+  const n = Number(process.env.ARENA_AGENT_DEADLINE_MS);
+  return Number.isFinite(n) && n >= 10000 && n <= 290000 ? Math.floor(n) : 240000;
+})();
+
 // Slug de OpenRouter con override por env (ARENA_MODEL_<ID>). Un slug que el
 // proveedor retire se corrige en Vercel sin redeploy — igual que ANTHROPIC_MODEL.
 const slug = (id, fallback) => process.env['ARENA_MODEL_' + id] || fallback;

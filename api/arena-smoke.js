@@ -74,7 +74,7 @@ import {
 } from './arena-run.js';
 import { parseScanResponse, parsePlanResponse } from './_lib/arena-guard.js';
 import {
-  callArenaLLM, providerKey, buildAnthropicPayload, buildOpenRouterBody, anthropicCostUsd,
+  callArenaLLM, providerKey, buildAnthropicPayload, buildOpenRouterBody, anthropicCostUsd, withDeadline,
 } from './_lib/arena-model.js';
 import {
   activeAgents, agentById, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, modelSlugResolved,
@@ -244,9 +244,22 @@ export function checkAdminAuth(req, rawEnv) {
   };
 }
 
-// El smoke corre 7 modelos × 1 llamada con techo de 6000 tokens, más el buffet.
-// Mismo cap que el decide (plan Pro).
+// ── PRESUPUESTO DE TIEMPO ────────────────────────────────────────────
+// 300s de función, 7 agentes EN PARALELO, 90s de reloj por agente.
+//
+// OJO: este `export const maxDuration` NO alcanza por sí solo. `vercel.json`
+// declara `functions` para `api/*.js`, y ahí es donde el número se vuelve real
+// — con el glob en 60s, este 300 no servía de nada y la corrida moría con
+// FUNCTION_INVOCATION_TIMEOUT sin dejar una sola fila. Los dos tienen que decir
+// lo mismo; si cambiás uno, cambiá el otro.
 export const maxDuration = 300;
+
+// Reloj por agente. Con los siete en paralelo el techo de la corrida es
+// max(agentes) ≈ 90s + el buffet, no la suma — por eso entra holgado en 300.
+const PROBE_TIMEOUT_MS = (() => {
+  const n = Number(process.env.ARENA_SMOKE_TIMEOUT_MS);
+  return Number.isFinite(n) && n >= 5000 && n <= 280000 ? Math.floor(n) : 90000;
+})();
 
 const OPENROUTER_CATALOG = 'https://openrouter.ai/api/v1/models';
 const ANTHROPIC_CATALOG = 'https://api.anthropic.com/v1/models?limit=1000';
@@ -358,7 +371,7 @@ function payloadChars(agent, system, user) {
   return JSON.stringify(p).length;
 }
 
-async function probeAgent(agent, phase, prompts) {
+async function probeAgent(agent, phase, prompts, timeoutMs = PROBE_TIMEOUT_MS) {
   const t0 = Date.now();
   const row = {
     agent: agent.id, name: agent.name, model_label: agent.model_label,
@@ -371,11 +384,23 @@ async function probeAgent(agent, phase, prompts) {
   if (!providerKey(agent)) {
     return { ...row, ok: false, failure: 'missing_api_key', detail: `Falta la key de ${agent.provider}.` };
   }
-  const llm = await callArenaLLM({
-    agent, system: prompts.system, messages: [{ role: 'user', content: prompts.user }],
-    maxTokens: ARENA_MAX_TOKENS,
-  });
+
+  const llm = await withDeadline(
+    callArenaLLM({
+      agent, system: prompts.system, messages: [{ role: 'user', content: prompts.user }],
+      maxTokens: ARENA_MAX_TOKENS, timeoutMs,
+    }).catch((e) => ({ status: 0, data: null, thrown: String((e && e.message) || e) })),
+    timeoutMs + 5000,   // 5s de gracia: si el fetch aborta solo, gana su error, que es más específico
+    () => ({ status: 0, data: null, timedOut: true, hardStop: true }),
+  );
   row.ms = Date.now() - t0;
+
+  if (llm.timedOut || llm.hardStop) {
+    return { ...row, ok: false, failure: 'timeout',
+      detail: `No contestó en ${Math.round(timeoutMs / 1000)}s${llm.hardStop ? ' (corte duro del harness)' : ''}. ` +
+        'Los demás agentes siguieron: esta fila es de este agente, no de la corrida.' };
+  }
+  if (llm.thrown) return { ...row, ok: false, failure: 'threw', detail: llm.thrown };
 
   if (llm.unverifiedSlug) return { ...row, ok: false, failure: 'unverified_slug', detail: 'Bloqueado por el candado de slug: corré ?catalog=1 y poné ARENA_MODEL_' + agent.id.toUpperCase() + '.' };
   if (llm.refusal) return { ...row, ok: false, failure: 'refusal', detail: llm.refusal_details || 'stop_reason=refusal' };
@@ -506,12 +531,48 @@ export default async function handler(req, res) {
   out.prompt_chars = { system: prompts.system.length, user: prompts.user.length };
 
   const probeable = agents.filter((a) => exact.includes(a.id) || modelSlugResolved(a));
-  out.probes = [];
-  for (const a of probeable) {
-    // Secuencial a propósito: 7 llamadas en paralelo con techo de 6000 tokens
-    // rozan el rate limit de OpenRouter y hacen ilegible el reporte de latencia.
-    out.probes.push(await probeAgent(a, phase, prompts));
+  out.probe_timeout_ms = PROBE_TIMEOUT_MS;
+
+  // ── ?stream=1 — cada agente sale APENAS TERMINA, no al final ───────
+  // NDJSON: una línea JSON por evento. Se prende acá abajo y no antes a
+  // propósito: arriba todavía hay returns tempranos (?catalog=1, buffet roto)
+  // que responden un JSON entero, y no se puede empezar a escribir el cuerpo
+  // antes de saber si vamos por ese camino.
+  //
+  // Por qué opt-in y no el default: el runbook (y el dedo de cualquiera) hace
+  // `| jq '{verdict, probes}'`, y jq no come NDJSON sin -s. Romper eso para
+  // todos, por una corrida de debug, no vale.
+  //
+  // Lo que compra de verdad: si la función igual se pasa del reloj, las filas
+  // ya escritas LLEGARON. Con el JSON al final, un timeout se lleva todo.
+  // Lo que NO compra: con los siete en paralelo terminan casi juntos, así que
+  // esto es una red de seguridad, no un chorro de progreso.
+  const streaming = String(q.stream || '') === '1';
+  let emit = () => {};
+  if (streaming) {
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.status(200);
+    const linea = (o) => { try { res.write(JSON.stringify(o) + '\n'); } catch { /* cliente colgó */ } };
+    linea({ type: 'start', ran_at: out.ran_at, phase, probe_timeout_ms: PROBE_TIMEOUT_MS,
+            agents: probeable.map((a) => a.id), slugs: out.slugs, buffet: out.buffet });
+    emit = (row) => linea({ type: 'probe', ...row });
   }
+
+  // EN PARALELO, con allSettled. Antes era secuencial "para no rozar el rate
+  // limit de OpenRouter y no ensuciar la latencia", y el precio de esa prolijidad
+  // era que 7 llamadas de ~60s no cabían en NINGÚN maxDuration: la corrida moría
+  // entera y no quedaba ni una fila. Un 429 se lee perfecto en su propia fila
+  // (`failure: "http_429"`); una función muerta no se lee en ninguna parte.
+  //
+  // allSettled y no all: acá NADA debería rechazar (probeAgent atrapa todo),
+  // pero si algo se escapa, el reporte pierde un agente en vez de los siete.
+  const settled = await Promise.allSettled(
+    probeable.map((a) => probeAgent(a, phase, prompts, PROBE_TIMEOUT_MS).then((row) => { emit(row); return row; })),
+  );
+  out.probes = settled.map((r, i) => (r.status === 'fulfilled' ? r.value : {
+    agent: probeable[i].id, name: probeable[i].name, ok: false, failure: 'threw',
+    detail: String((r.reason && r.reason.message) || r.reason),
+  }));
 
   const green = out.probes.filter((p) => p.ok);
   const red = out.probes.filter((p) => !p.ok);
@@ -521,5 +582,10 @@ export default async function handler(req, res) {
     : `ROJO: ${green.length}/${out.probes.length} en verde` +
       (blocked.length ? `, ${blocked.length} sin slug resuelto` : '') +
       `. Revisá \`slugs\` y \`probes[].failure\` antes de dejar correr el cron.`;
+
+  if (streaming) {
+    res.write(JSON.stringify({ type: 'summary', ...out }) + '\n');
+    return res.end();
+  }
   return res.status(200).json(out);
 }

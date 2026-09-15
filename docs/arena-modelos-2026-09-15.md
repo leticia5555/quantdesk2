@@ -128,6 +128,59 @@ viene con `mismo_largo_que_la_env: true` pero igual rebota, es **otra** key:
 casi siempre se regeneró en Vercel sin redeployar, o es la de Preview contra la
 de Production.
 
+### Si te da `FUNCTION_INVOCATION_TIMEOUT`
+
+Antes de sospechar del modelo, mirá **`vercel.json`**. El techo de una función
+se declara en DOS lugares y el que manda no es el obvio:
+
+```js
+export const maxDuration = 300;   // api/arena-smoke.js
+```
+```json
+"functions": { "api/*.js": { "maxDuration": 60 } }   // vercel.json
+```
+
+Ese glob tapaba el `export` de **nueve** endpoints — `arena-run` y `arena-watch`
+incluidos. Todos creían tener 300s y tenían 60. No falla en build, ni en deploy,
+ni en import: solo se ve como una función muerta en producción. Ahora cada
+endpoint pesado tiene su entrada propia en `vercel.json`, y
+`tests/arena-timeouts.test.mjs` verifica que los dos lugares digan lo mismo.
+
+**Los tres relojes, uno dentro del otro:**
+
+| Reloj | Default | Env var | Cubre |
+|---|---|---|---|
+| una conexión al proveedor | 90s | `ARENA_LLM_TIMEOUT_MS` | un `fetch` a Anthropic/OpenRouter |
+| el trabajo de un agente | 240s | `ARENA_AGENT_DEADLINE_MS` | scan + dive + retries del guard |
+| la función | 300s | `vercel.json` + el `export` | todo, incluido escribir al journal |
+
+El margen final (240 → 300) existe para que, cuando un agente se pase, la
+función siga viva lo suficiente para **escribir que se pasó**. Un timeout que no
+se journalea es indistinguible de una corrida que nunca ocurrió.
+
+Antes de esto los timeouts de conexión estaban hardcodeados y asimétricos: 45s
+para OpenRouter y **180s** para Anthropic. Los 180s eran imposibles de honrar
+—triplicaban el cap real de 60s—, así que el `fetch` nunca llegaba a abortar por
+su cuenta: lo mataba la función antes, sin dejar rastro.
+
+**Los siete corren en paralelo**, cada uno con su reloj. Un agente colgado sale
+como una fila `failure: "timeout"` y los otros seis reportan normal; antes eran
+secuenciales y 7 × ~60s no cabían en ningún `maxDuration`.
+
+```bash
+# Un solo agente (ya existía, sirve para aislar al lento):
+curl -sS -H "$AUTH" "$BASE/api/arena-smoke?agent=openai" | jq '.probes[0]'
+
+# En vivo: cada agente sale apenas termina, en NDJSON.
+# Sirve de red de seguridad — si la función igual se pasa, lo ya escrito llegó.
+curl -sN -H "$AUTH" "$BASE/api/arena-smoke?stream=1" | jq -c 'select(.type=="probe") | {agent, ok, failure, ms}'
+```
+
+> `?stream=1` es opt-in porque `jq` no come NDJSON sin `-s`: sin el flag la
+> respuesta sigue siendo un JSON entero y el runbook de arriba no cambia. Ojo
+> que con los siete en paralelo terminan casi juntos, así que el streaming es
+> una red, no un chorro de progreso.
+
 > ⚠️ **No toques `ANTHROPIC_MODEL`.** Es el modelo de TODA la app (sim, earnings,
 > Smart $, los 6 agentes de la flota) y sigue en Haiku a propósito. Apuntarlo a
 > Fable 5.1 subiría la app entera de $1/$5 a $10/$50 por MTok. El Arena tiene su

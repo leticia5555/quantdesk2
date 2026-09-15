@@ -1,5 +1,32 @@
 {
   "functions": {
+    "api/arena-run.js": {
+      "maxDuration": 300
+    },
+    "api/arena-watch.js": {
+      "maxDuration": 300
+    },
+    "api/arena-smoke.js": {
+      "maxDuration": 300
+    },
+    "api/arena-screener.js": {
+      "maxDuration": 300
+    },
+    "api/arena-audit.js": {
+      "maxDuration": 300
+    },
+    "api/pead-analyze.js": {
+      "maxDuration": 300
+    },
+    "api/pead-harvest.js": {
+      "maxDuration": 300
+    },
+    "api/dualmom-analyze.js": {
+      "maxDuration": 300
+    },
+    "api/rotation-analyze.js": {
+      "maxDuration": 300
+    },
     "api/*.js": {
       "maxDuration": 60
     }

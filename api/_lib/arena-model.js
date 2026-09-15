@@ -25,7 +25,7 @@
 
 import { dateDirective, staleProspectiveDates } from './ai-guard.js';
 import { recordAiCall } from './usage.js';
-import { ARENA_TEMPERATURE, ARENA_EFFORT, ARENA_MAX_TOKENS, modelSlugResolved } from './arena-registry.js';
+import { ARENA_TEMPERATURE, ARENA_EFFORT, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS, modelSlugResolved } from './arena-registry.js';
 import { ANTHROPIC_PRICES } from './model.js';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -137,7 +137,7 @@ export function buildOpenRouterBody({ agent, model, system, messages, maxTokens 
   return body;
 }
 
-async function openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now }) {
+async function openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS }) {
   const body = buildOpenRouterBody({ agent, model, system, messages, maxTokens, now });
   const r = await fetch(OPENROUTER_URL, {
     method: 'POST',
@@ -149,19 +149,47 @@ async function openRouterFetch({ apiKey, agent, model, system, messages, maxToke
       'X-Title': 'QuantDesk Arena',
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(45000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const raw = await r.json().catch(() => null);
   return { status: r.status, raw };
 }
 
+// Deadline de nivel superior, para envolver TRABAJO, no una sola conexión.
+// El `timeoutMs` de los fetch de abajo aborta UNA llamada; esto cubre lo que
+// esa capa no ve: un agente que encadena scan + dive, un retry del guard de
+// fechas, un parser lento. Devuelve `alTimeout()` en vez de rechazar, porque
+// el que llama necesita una FILA que journalear, no una excepción que lo tumbe.
+export function withDeadline(promesa, ms, alTimeout) {
+  let t;
+  const reloj = new Promise((resolve) => { t = setTimeout(() => resolve(alTimeout()), ms); });
+  return Promise.race([promesa, reloj]).finally(() => clearTimeout(t));
+}
+
+// Envoltorio que convierte un abort (o una caída de red) en un RESULTADO, no en
+// una excepción: un agente que se pasa del reloj tiene que aparecer como una
+// fila `timeout` en el reporte, no tumbar a los otros seis.
+async function timedFetch(fn, timeoutMs) {
+  const t0 = Date.now();
+  try {
+    return await fn();
+  } catch (e) {
+    const name = (e && e.name) || '';
+    const timedOut = name === 'TimeoutError' || name === 'AbortError';
+    return {
+      status: 0, raw: null, timedOut,
+      netError: timedOut ? `se pasó de ${Math.round(timeoutMs / 1000)}s (abortado a los ${Date.now() - t0}ms)` : String((e && e.message) || e),
+    };
+  }
+}
+
 // Guard-equivalente al de Anthropic, para OpenRouter: inyecta fecha, escanea
 // fechas prospectivas rotas, reintenta UNA vez, y si reincide devuelve stale.
-async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now }) {
-  const first = await openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now });
+async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS }) {
+  const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs }), timeoutMs);
   if (first.status < 200 || first.status >= 300 || !first.raw) {
     await recordAiCall({ model, now });
-    return { status: first.status || 502, data: null };
+    return { status: first.status || 502, data: null, timedOut: !!first.timedOut, error_detail: first.netError || null };
   }
   const data = normalizeOpenRouter(first.raw);
   const text = data.content.map((b) => b.text).join('').trim();
@@ -173,7 +201,7 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
 
   // Retry único con recordatorio, mismo formato requerido.
   const retryMessages = [...messages, { role: 'assistant', content: text }, { role: 'user', content: retryReminder(hits, now) }];
-  const second = await openRouterFetch({ apiKey, agent, model, system, messages: retryMessages, maxTokens, now });
+  const second = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages: retryMessages, maxTokens, now, timeoutMs }), timeoutMs);
   if (second.status < 200 || second.status >= 300 || !second.raw) {
     // El retry falló en red: mejor la primera respuesta (con su nota de fechas)
     // que un corte — el downstream ya valida el JSON de todos modos.
@@ -235,12 +263,12 @@ function anthropicText(data) {
     .trim();
 }
 
-async function anthropicFetch({ apiKey, payload }) {
+async function anthropicFetch({ apiKey, payload, timeoutMs = ARENA_LLM_TIMEOUT_MS }) {
   const r = await fetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION },
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(180000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const raw = await r.json().catch(() => null);
   return { status: r.status, raw };
@@ -248,16 +276,16 @@ async function anthropicFetch({ apiKey, payload }) {
 
 // Guard de fechas replicado para el Arena sobre Anthropic (ver el bloque de
 // arriba sobre por qué no se usa guardedClaudeCall).
-async function guardedAnthropicCall({ apiKey, agent, model, system, messages, maxTokens, now }) {
+async function guardedAnthropicCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS }) {
   const payload = buildAnthropicPayload({ agent, model, system, messages, maxTokens, now });
-  const first = await anthropicFetch({ apiKey, payload });
+  const first = await timedFetch(() => anthropicFetch({ apiKey, payload, timeoutMs }), timeoutMs);
   if (first.status < 200 || first.status >= 300 || !first.raw) {
     await recordAiCall({ model: payload.model, now });
     // El mensaje de error de Anthropic viaja hacia arriba: un 400 por un
     // parámetro no soportado tiene que ser legible en el journal, no un
     // "HTTP 400" mudo que obligue a reproducir la llamada a mano.
-    const detail = first.raw && first.raw.error ? first.raw.error.message : null;
-    return { status: first.status || 502, data: null, error_detail: detail };
+    const detail = (first.raw && first.raw.error ? first.raw.error.message : null) || first.netError || null;
+    return { status: first.status || 502, data: null, timedOut: !!first.timedOut, error_detail: detail };
   }
   const data = first.raw;
 
@@ -284,7 +312,7 @@ async function guardedAnthropicCall({ apiKey, agent, model, system, messages, ma
       { role: 'assistant', content: data.content },
       { role: 'user', content: retryReminder(hits, now) }],
   });
-  const second = await anthropicFetch({ apiKey, payload: retryPayload });
+  const second = await timedFetch(() => anthropicFetch({ apiKey, payload: retryPayload, timeoutMs }), timeoutMs);
   if (second.status < 200 || second.status >= 300 || !second.raw) {
     await recordAiCall({ model: payload.model, usage: data.usage, retried: true, now });
     return { status: 200, data, retried: true };
@@ -351,7 +379,7 @@ export function sameParams(a, b) {
 // Devuelve { status, data:{content:[{text}],usage} | null, stale?, hits?,
 // retried?, missingKey?, refusal?, unverifiedSlug? } — la MISMA forma sin
 // importar el proveedor.
-export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date() }) {
+export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), timeoutMs = ARENA_LLM_TIMEOUT_MS }) {
   // CANDADO DE SLUG: un modelo cuyo slug no se verificó contra el catálogo del
   // proveedor y que no tiene override explícito NO se llama. Ver el encabezado
   // del registry: preferimos no correr a pegarle a un slug inventado.
@@ -362,10 +390,10 @@ export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_
   if (!apiKey) return { status: 0, data: null, missingKey: true, provider: agent && agent.provider };
 
   if (agent.provider === 'anthropic') {
-    return guardedAnthropicCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now });
+    return guardedAnthropicCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs });
   }
   if (agent.provider === 'openrouter') {
-    return guardedOpenRouterCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now });
+    return guardedOpenRouterCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs });
   }
   return { status: 0, data: null, error: 'proveedor desconocido: ' + (agent && agent.provider) };
 }

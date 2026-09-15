@@ -51,7 +51,8 @@
 
 import { sql, ensureSchema } from './_lib/db.js';
 import { getCalendar, getPositions, getSnapshots, getAvgDailyVolume } from './_lib/alpaca.js';
-import { activeAgents, agentById, agentAlpacaCreds } from './_lib/arena-registry.js';
+import { activeAgents, agentById, agentAlpacaCreds, ARENA_AGENT_DEADLINE_MS } from './_lib/arena-registry.js';
+import { withDeadline } from './_lib/arena-model.js';
 import {
   WATCH_RULES, watchCadenceActive, watchStartDate, easternDate, sessionPhase,
   evaluateTriggers, applyCaps, floorReviewDue, buildTriggerHeadline,
@@ -389,10 +390,26 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
       headline: buildTriggerHeadline(r.triggers),
     };
     try {
-      const out = await runArenaDecide({ baseUrl, now, agent, caches, event });
+      // MISMO RELOJ QUE LA NOCTURNA: el vigilante dispara el MISMO
+      // runArenaDecide (scan + dive), así que hereda el mismo riesgo — un
+      // agente lento tumbando el tick entero — y la misma cura.
+      const out = await withDeadline(
+        runArenaDecide({ baseUrl, now, agent, caches, event }),
+        ARENA_AGENT_DEADLINE_MS,
+        () => ({ status: 'timeout', orders: 0,
+          error: `el agente no terminó en ${Math.round(ARENA_AGENT_DEADLINE_MS / 1000)}s. Los demás del tick siguieron.` }),
+      );
       // La marca se re-fija sobre TODO el slate: el agente se pronunció sobre
       // esos nombres, opere o no. Sin esto el mismo ±3% lo despertaría otra vez
       // en el tick siguiente, y otra, hasta agotar sus 12 corridas.
+      //
+      // TAMBIÉN SE MARCA EN TIMEOUT, y es deliberado. Un timeout ya gastó
+      // tokens (recordAiCall corre dentro de la llamada, el burn es real). Si
+      // además dejáramos el disparador vivo, un modelo sistemáticamente lento
+      // se despertaría cada 5 minutos sobre el mismo ±3% y quemaría las 12
+      // corridas del día sin decidir nada. Se paga una reacción perdida a
+      // cambio de no pagar doce. La fila `timeout` queda en el journal para
+      // que se vea que pasó.
       await setMarks(agent.id, r.symbols, prices, 'watch_trigger', now);
       return { id: agent.id, name: agent.name, symbols: r.symbols, triggers: r.triggers.map((t) => t.type), ...out };
     } catch (err) {
