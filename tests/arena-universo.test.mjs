@@ -37,6 +37,22 @@ const sp500 = Array.from({ length: 500 }, (_, i) => 'SP' + i);
 const nq100 = Array.from({ length: 100 }, (_, i) => 'NQ' + i);
 const listaDe = (index) => (index === 'sp500' ? sp500 : nq100);
 
+// ── CATÁLOGO DE ALPACA PARA LOS TESTS ────────────────────────────────
+// Desde que el canal del día filtra por INSTRUMENTO, `buildUniverse` necesita
+// el catálogo de Alpaca — y sin él NADA pasa (fail closed, a propósito). Los
+// bloques que no están probando ESE filtro usan un catálogo permisivo: un Proxy
+// que responde "acción común" a lo que sea que se le pregunte, sin tener que
+// enumerar 600 símbolos.
+const catalogoTodoComun = {
+  count: 99999, from_cache: false,
+  assets: new Proxy({}, {
+    get: (_, sym) => (typeof sym === 'string'
+      ? { symbol: sym, class: 'us_equity', status: 'active', tradable: true, name: sym + ' Common Stock' }
+      : undefined),
+  }),
+};
+const conCatalogo = (deps) => ({ cargarCatalogo: async () => catalogoTodoComun, ...deps });
+
 // Fábricas de dependencias. Cada test arma el escenario que necesita.
 const depsBase = ({ fmp, neon, repo } = {}) => ({
   fetchConstituents: async (index) => (fmp === undefined ? null : (typeof fmp === 'function' ? fmp(index) : fmp)),
@@ -145,6 +161,7 @@ console.log('\n── 4) el tope de 100 se gasta SOLO en nombres nuevos ──')
     now: HOY, creds: {},
     deps: {
       ...conIndices(),
+      cargarCatalogo: async () => catalogoTodoComun,
       getMovers: async () => ({ gainers: yaEstan.map((s) => ({ symbol: s, price: 50, percent_change: 5 })), losers: [], last_updated: null }),
       getMostActives: async () => ({ most_actives: nuevos.map((s) => ({ symbol: s, volume: 1e7 })), by: 'volume', last_updated: null }),
       resolveAdmission: admisionTodo,
@@ -171,6 +188,7 @@ console.log('\n── el costo: 6 requests de precio, no 600 ──');
     now: HOY, creds: {},
     deps: {
       ...conIndices(),
+      cargarCatalogo: async () => catalogoTodoComun,
       getMovers: async () => ({ gainers: [{ symbol: 'DAY1', price: 50, percent_change: 9 }], losers: [], last_updated: null }),
       getMostActives: async () => ({ most_actives: [{ symbol: 'DAY2', volume: 1e7 }], by: 'volume', last_updated: null }),
       getPriceAndDollarVolume: async (syms) => {
@@ -217,6 +235,7 @@ console.log('\n── un nombre sin precio NO se admite por defecto ──');
     now: HOY, creds: {},
     deps: {
       ...conIndices(),
+      cargarCatalogo: async () => catalogoTodoComun,
       getMovers: async () => ({ gainers: [], losers: [], last_updated: null }),
       getMostActives: async () => ({ most_actives: [], by: 'volume', last_updated: null }),
       // Solo la mitad de los nombres tiene barras.
@@ -238,6 +257,7 @@ console.log('\n── 5) los ÍNDICES también pasan por admisión ──');
     now: HOY, creds: {},
     deps: {
       ...conIndices(),
+      cargarCatalogo: async () => catalogoTodoComun,
       getMovers: async () => ({ gainers: [], losers: [], last_updated: null }),
       getMostActives: async () => ({ most_actives: [], by: 'volume', last_updated: null }),
       resolveAdmission: async (syms) => Object.fromEntries(syms.map((s) => [s,
@@ -257,6 +277,7 @@ console.log('\n── 6) degradación: sin índices, el tablero SIGUE saliendo �
     now: HOY, creds: {},
     deps: {
       ...depsBase({}),   // los tres escalones vacíos
+      cargarCatalogo: async () => catalogoTodoComun,
       getMovers: async () => ({ gainers: [{ symbol: 'NVDA', price: 200, percent_change: 8 }], losers: [], last_updated: null }),
       getMostActives: async () => ({ most_actives: [{ symbol: 'AAPL', volume: 9e7 }], by: 'volume', last_updated: null }),
       resolveAdmission: admisionTodo,
@@ -274,6 +295,7 @@ console.log('\n── y con TODO caído, vacío honesto ──');
     now: HOY, creds: {},
     deps: {
       ...depsBase({}),
+      cargarCatalogo: async () => catalogoTodoComun,
       getMovers: async () => { throw new Error('HTTP 403'); },
       getMostActives: async () => { throw new Error('HTTP 403'); },
       resolveAdmission: admisionTodo,
@@ -289,6 +311,7 @@ console.log('\n── la admisión caída NO vacía el universo ──');
     now: HOY, creds: {},
     deps: {
       ...conIndices(),
+      cargarCatalogo: async () => catalogoTodoComun,
       getMovers: async () => ({ gainers: [], losers: [], last_updated: null }),
       getMostActives: async () => ({ most_actives: [], by: 'volume', last_updated: null }),
       resolveAdmission: async () => { throw new Error('Finnhub 429'); },
@@ -508,6 +531,148 @@ console.log('\n── el resumen en una frase ──');
     'si las dos APIs fallan DISTINTO, se dicen las dos: son pistas diferentes', m);
   ok(motivoFmp(diag, 'nasdaq100') === 'sin_intentos',
     'un índice que no falló no inventa un motivo', motivoFmp(diag, 'nasdaq100'));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EL CANAL DEL DÍA: 100 CANDIDATOS, CERO ADMITIDOS.
+//
+// Lo reportado el 2026-09-15: de 100 candidatos del día, 69 rebotaron como
+// `data_unavailable` y eran warrants, rights, preferentes y unidades.
+//
+// El tope de 100 se gastaba ANTES de saber qué eran, así que el cupo se iba en
+// instrumentos que no son el universo del Arena — y encima cada uno se llevaba
+// una llamada a Finnhub para pedirle el market cap de un warrant.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── el filtro de instrumento corre ANTES del tope ──');
+{
+  const comun = (s2) => ({ symbol: s2, class: 'us_equity', status: 'active', tradable: true, name: s2 + ' Inc Common Stock' });
+  const warrant = (s2) => ({ symbol: s2, class: 'us_equity', status: 'active', tradable: true, name: s2 + ' Acquisition Warrant' });
+
+  // 30 acciones reales y 70 warrants: el reparto que se vio en producción.
+  const acciones = Array.from({ length: 30 }, (_, i) => 'REAL' + i);
+  const basura = Array.from({ length: 70 }, (_, i) => 'WRNT' + i);
+  const catalogo = {
+    count: 100,
+    assets: Object.fromEntries([...acciones.map(comun), ...basura.map(warrant)].map((a) => [a.symbol, a])),
+  };
+
+  const u = await buildUniverse({
+    now: HOY, moversMax: 100,
+    deps: {
+      cargarCatalogo: async () => catalogo,
+      fetchConstituents: async () => null,
+      fetchDesdeEtf: async () => null,
+      readStored: async () => null,
+      readStatic: async () => null,
+      writeStored: async () => true,
+      getMovers: async () => ({ gainers: [...acciones, ...basura].map((s2) => ({ symbol: s2, price: 40, percent_change: 6 })), losers: [], last_updated: null }),
+      getMostActives: async () => ({ most_actives: [], by: 'volume', last_updated: null }),
+      getPriceAndDollarVolume: async (syms) => Object.fromEntries(syms.map((s2) => [s2, { price: 40, dollarVolume: 5e7 }])),
+      resolveAdmission: async (syms) => Object.fromEntries(syms.map((s2) => [s2, { symbol: s2, price: 40, dollarVolume: 5e7, marketCap: 5e9 }])),
+      getFiftyTwoWeek: async () => ({}),
+    },
+  });
+
+  ok(u.counts.del_dia_brutos === 100, 'entraron los 100 brutos del screener', String(u.counts.del_dia_brutos));
+  ok(u.counts.del_dia_no_comunes === 70,
+    'los 70 warrants se descartan por NO SER ACCIONES, antes de tocar el tope', String(u.counts.del_dia_no_comunes));
+  ok(u.counts.del_dia_nuevos === 30 && u.counts.admitidos === 30,
+    'y el cupo se gasta en las 30 reales — antes se gastaba en los warrants y quedaban 0',
+    `nuevos=${u.counts.del_dia_nuevos} admitidos=${u.counts.admitidos}`);
+  ok(u.instrumento.por_clase.warrant === 70,
+    'el diagnóstico dice DE QUÉ está hecho el ruido: 70 warrants', JSON.stringify(u.instrumento.por_clase));
+  ok(u.instrumento_rechazados.every((x) => x.reason === 'no_es_comun'),
+    'ninguno sale como `data_unavailable`: el motivo del rechazo ya no manda a buscar al lugar equivocado');
+}
+
+console.log('\n── sin catálogo de Alpaca: el canal del día se apaga, DECLARADO ──');
+{
+  const u = await buildUniverse({
+    now: HOY, moversMax: 100,
+    deps: {
+      cargarCatalogo: async () => ({ assets: null, error: 'Alpaca 500' }),
+      fetchConstituents: async () => null,
+      fetchDesdeEtf: async (i) => ({ index: i, source: 'etf', built_at: HOY.toISOString(), symbols: i === 'sp500' ? sp500 : nq100 }),
+      readStored: async () => null, readStatic: async () => null, writeStored: async () => true,
+      getMovers: async () => ({ gainers: [{ symbol: 'DAY1', price: 40, percent_change: 9 }], losers: [], last_updated: null }),
+      getMostActives: async () => ({ most_actives: [], by: 'volume', last_updated: null }),
+      getPriceAndDollarVolume: async (syms) => Object.fromEntries(syms.map((s2) => [s2, { price: 40, dollarVolume: 5e7 }])),
+      resolveAdmission: async (syms) => Object.fromEntries(syms.map((s2) => [s2, { symbol: s2, price: 40, dollarVolume: 5e7, marketCap: 5e9 }])),
+      getFiftyTwoWeek: async () => ({}),
+    },
+  });
+  ok(u.counts.del_dia_nuevos === 0, 'sin catálogo, ningún nombre del día entra: fail closed');
+  ok(u.counts.indices === 600 && u.counts.admitidos === 600,
+    'pero los índices siguen entrando: el tablero NO se queda vacío por esto', String(u.counts.admitidos));
+  ok(/falla NUESTRA/i.test(u.instrumento.note || ''),
+    'y se dice que la culpa es nuestra, no de los nombres', u.instrumento.note);
+}
+
+console.log('\n── las tenencias del ETF son la fuente D1; FMP es respaldo opcional ──');
+{
+  let pidioFmp = false;
+  const u = await buildUniverse({
+    now: HOY, moversMax: 0,
+    deps: {
+      cargarCatalogo: async () => catalogoTodoComun,
+      fetchDesdeEtf: async (i) => ({ index: i, source: 'etf', etf: i === 'sp500' ? 'IVV' : 'QQQ', built_at: HOY.toISOString(), symbols: i === 'sp500' ? sp500 : nq100 }),
+      fetchConstituents: async () => { pidioFmp = true; return null; },
+      readStored: async () => null, readStatic: async () => null, writeStored: async () => true,
+      getMovers: async () => ({ gainers: [], losers: [], last_updated: null }),
+      getMostActives: async () => ({ most_actives: [], by: 'volume', last_updated: null }),
+      getPriceAndDollarVolume: async (syms) => Object.fromEntries(syms.map((s2) => [s2, { price: 40, dollarVolume: 5e7 }])),
+      resolveAdmission: async (syms) => Object.fromEntries(syms.map((s2) => [s2, { symbol: s2, price: 40, dollarVolume: 5e7, marketCap: 5e9 }])),
+      getFiftyTwoWeek: async () => ({}),
+    },
+  });
+  ok(u.counts.indices === 600 && u.indices.sp500.source === 'etf',
+    'los 600 nombres salen de las tenencias de IVV y QQQ, sin key y sin plan de pago',
+    `${u.counts.indices} · ${u.indices.sp500.source}`);
+  ok(pidioFmp === false,
+    'y a FMP NI SE LE PREGUNTA cuando el ETF contestó: es respaldo, no la fuente');
+}
+
+console.log('\n── Finnhub: "0 admitidos" tiene que decir de quién es la culpa ──');
+{
+  const { resolveAdmission, _resetAdmissionCache, FINNHUB_CALL_BUDGET } = await import('../api/_lib/arena-admission.js');
+  ok(FINNHUB_CALL_BUDGET === 40,
+    'el techo de llamadas a profile2 por lote está declarado (el tier gratis corta a 60/min)', String(FINNHUB_CALL_BUDGET));
+
+  // 60 nombres del día con un presupuesto de 5: los 55 que sobran NO se piden.
+  _resetAdmissionCache();
+  const diag = [];
+  const syms = Array.from({ length: 60 }, (_, i) => 'SYM' + i);
+  await resolveAdmission(syms, {
+    finnhubKey: 'k', now: HOY, diag, maxFinnhub: 5,
+    known: Object.fromEntries(syms.map((s2) => [s2, { price: 40, dollarVolume: 5e7 }])),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ marketCapitalization: 5000 }) }),
+  });
+  const porRazon = diag.reduce((a, d) => { const k = d.ok ? 'ok' : d.reason; a[k] = (a[k] || 0) + 1; return a; }, {});
+  ok(porRazon.ok === 5 && porRazon.rate_budget === 55,
+    'con presupuesto 5: 5 consultados y 55 marcados `rate_budget` — NO "sin datos"', JSON.stringify(porRazon));
+
+  // El 429, que es el que se veía como "Finnhub no tiene estos nombres".
+  _resetAdmissionCache();
+  const diag2 = [];
+  await resolveAdmission(['AAA', 'BBB'], {
+    finnhubKey: 'k', now: HOY, diag: diag2,
+    known: { AAA: { price: 40, dollarVolume: 5e7 }, BBB: { price: 40, dollarVolume: 5e7 } },
+    fetchImpl: async () => ({ ok: false, status: 429, json: async () => ({}) }),
+  });
+  ok(diag2.length === 2 && diag2.every((d) => d.reason === 'rate_limit'),
+    'un 429 se nombra `rate_limit`: es un límite NUESTRO, no que el nombre no exista',
+    JSON.stringify(diag2.map((d) => d.reason)));
+
+  // Y la distinción fina: Finnhub contestó pero no cubre el nombre.
+  _resetAdmissionCache();
+  const diag3 = [];
+  await resolveAdmission(['ZZZ'], {
+    finnhubKey: 'k', now: HOY, diag: diag3,
+    known: { ZZZ: { price: 40, dollarVolume: 5e7 } },
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }),
+  });
+  ok(diag3[0].reason === 'sin_cobertura',
+    '"no lo tiene" se distingue de "no nos dejó pedir": son problemas distintos', diag3[0].reason);
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');

@@ -478,3 +478,25 @@ export async function getAssets(symbols = [], { creds, concurrency = 6 } = {}) {
   }
   return out;
 }
+
+// ── EL CATÁLOGO COMPLETO DE ACTIVOS (una sola request) ───────────────
+// /v2/assets sin símbolo devuelve el catálogo entero: ~11.000 filas con
+// `class`, `status`, `tradable`, `name`, `exchange` y `symbol`. Es UNA request
+// para lo que de otro modo serían cientos de `/v2/assets/{symbol}`.
+//
+// POR QUÉ IMPORTA: el canal del día trae warrants, rights, preferentes y
+// unidades mezclados con acciones comunes, y el sufijo del ticker NO alcanza
+// para distinguirlos (Alpaca escribe warrants como `ABCDW`, sin separador, así
+// que cualquier regex que exija un punto o un guion los deja pasar). Esta lista
+// es la fuente AUTORITATIVA: dice qué es cada símbolo y si se puede operar.
+//
+// También sirve de padrón de símbolos válidos: un ticker que no está acá no se
+// puede comprar, venga de donde venga.
+//
+// El caller lo cachea por día (_lib/arena-instrumento.js). Acá no se cachea
+// nada: este módulo habla con Alpaca y no sabe de Neon.
+export async function getAllAssets({ creds, status = 'active', assetClass = 'us_equity' } = {}) {
+  const qs = new URLSearchParams({ status, asset_class: assetClass });
+  const data = await alpacaFetch('/v2/assets?' + qs.toString(), { creds });
+  return Array.isArray(data) ? data : [];
+}

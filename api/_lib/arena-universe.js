@@ -51,6 +51,8 @@ import { sql } from './db.js';
 import { getMovers, getMostActives, getFiftyTwoWeek, getPriceAndDollarVolume } from './alpaca.js';
 import { ADMISSION, resolveAdmission, isAdmissible } from './arena-admission.js';
 import { marketDay } from './arena-buffet-cache.js';
+import { fetchHoldings, HOLDINGS_SOURCES } from './etf-holdings.js';
+import { filtrarComunes, cargarCatalogo } from './arena-instrumento.js';
 import { CONSTITUENTS } from '../../data/universe/constituents.js';
 
 // ── LAS DOS APIs DE FMP, Y POR QUÉ SE PRUEBAN LAS DOS ────────────────
@@ -110,7 +112,33 @@ const VALID_TICKER = /^[A-Z][A-Z0-9.]{0,6}$/;
 // nombres): es "esto claramente no es la lista".
 const MIN_SANE = { sp500: 400, nasdaq100: 80 };
 
-// ── ESCALÓN 1: FMP ───────────────────────────────────────────────────
+// ── ESCALÓN 1: LAS TENENCIAS DEL ETF ─────────────────────────────────
+// Reemplazó a FMP, que cobra por los constituyentes: `/stable` devuelve 402
+// "Restricted Endpoint" y `/api/v3` un 403 "Legacy". Las tenencias de IVV y QQQ
+// son públicas, diarias, sin key y sin plan — y son el REPLICANTE diciendo qué
+// tiene, no un tercero diciendo qué cree que tiene el índice.
+//
+// Nunca lanza: devuelve null y el caller baja un escalón, igual que antes.
+export async function fetchDesdeEtf(index, { now = new Date(), fetchImpl = fetch, diag = null } = {}) {
+  const anota = (fila) => { if (Array.isArray(diag)) diag.push(fila); };
+  const r = await fetchHoldings(index, { fetchImpl });
+  anota({ fuente: 'etf', ...r.diagnostics });
+  const symbols = (r.symbols || []).map(clean).filter((x) => x && VALID_TICKER.test(x));
+  if (!symbols.length) return null;
+  // El MISMO piso de cordura de siempre: una lista corta es un error del
+  // proveedor, no el índice, y guardarla pisaría la buena con basura.
+  if (symbols.length < MIN_SANE[index]) {
+    anota({ fuente: 'etf', index, ok: false, reason: 'lista_corta', recibidos: symbols.length, minimo: MIN_SANE[index] });
+    return null;
+  }
+  const src = HOLDINGS_SOURCES[index] || {};
+  return { index, source: 'etf', etf: src.etf || null, built_at: now.toISOString(), symbols };
+}
+
+// ── ESCALÓN 1b: FMP, SOLO SI HAY KEY DE PAGO ─────────────────────────
+// Degradado a respaldo opcional. Sin `FMP_API_KEY` ni se intenta: los
+// constituyentes son endpoint de pago y pegarle sin plan solo produce un 402
+// que hay que explicar.
 // Nunca lanza: devuelve null y el caller baja un escalón.
 // ── EL DIAGNÓSTICO: POR QUÉ FALLÓ, NO SOLO QUE FALLÓ ─────────────────
 // Esto devolvía `null` pelado en SEIS situaciones distintas —sin key, HTTP de
@@ -233,6 +261,7 @@ export function refreshDue(builtAt, now = new Date(), days = REFRESH_DAYS) {
 // ── LOS CONSTITUYENTES, con los tres escalones ───────────────────────
 // `force` salta la ventana de refresco (lo usa el endpoint a mano).
 export async function resolveConstituents(index, { now = new Date(), force = false, deps = {}, diag = null } = {}) {
+  const fromEtf = deps.fetchDesdeEtf || fetchDesdeEtf;
   const fromFmp = deps.fetchConstituents || fetchConstituents;
   const fromNeon = deps.readStored || readStored;
   const toNeon = deps.writeStored || writeStored;
@@ -243,7 +272,11 @@ export async function resolveConstituents(index, { now = new Date(), force = fal
     return { ...stored, refreshed: false, stored: true, age_days: edad(stored.built_at, now) };
   }
 
-  const fresh = await fromFmp(index, { diag });
+  // ORDEN: tenencias del ETF (gratis, diarias) → FMP (solo si hay key de pago).
+  let fresh = await fromEtf(index, { now, diag });
+  if (!fresh && (process.env.FMP_API_KEY || (deps.fetchConstituents && deps.forzarFmp !== false))) {
+    fresh = await fromFmp(index, { diag });
+  }
   if (fresh) {
     const written = await toNeon(index, fresh);
     return { ...fresh, refreshed: true, stored: written, age_days: 0 };
@@ -309,11 +342,25 @@ export async function buildUniverse({
   // deja su fila y después se publica entero. Sin esto, "Sin FMP" era la única
   // salida posible para seis causas distintas.
   const fmpDiag = [];
-  const [sp, nq, mv, ac] = await Promise.all([
+  const [sp, nq, mv, ac, acTrades] = await Promise.all([
     resolveConstituents('sp500', { now, force, deps, diag: fmpDiag }),
     resolveConstituents('nasdaq100', { now, force, deps, diag: fmpDiag }),
+    // ── DE DÓNDE SALEN LOS ~300 BRUTOS ────────────────────────────────
+    // El tope del canal del día son 100 nombres, pero ahora ese tope se gasta
+    // DESPUÉS del filtro de instrumento, y ahí está el problema de volumen: de
+    // cada 3 nombres que devuelve el screener, ~2 son warrants, unidades,
+    // rights o preferentes. Con 200 brutos quedaban ~65 acciones comunes y el
+    // cupo de 100 no se llenaba nunca.
+    //
+    // `getMovers` clampea a 50 por lado (es el máximo del endpoint), así que
+    // los movers no dan más de 100. El tercer canal —most-actives por NÚMERO DE
+    // OPERACIONES, no por volumen— es un ranking DISTINTO del mismo endpoint:
+    // trae nombres que el ranking por volumen no trae (mucha actividad
+    // minorista en papeles chicos aparece por trades y no por volumen). Una
+    // request más, ~100 nombres más.
     movers({ top: 50, creds }).catch((e) => { errors.movers = String((e && e.message) || e); return null; }),
     actives({ top: 100, by: 'volume', creds }).catch((e) => { errors.most_actives = String((e && e.message) || e); return null; }),
+    actives({ top: 100, by: 'trades', creds }).catch((e) => { errors.most_actives_trades = String((e && e.message) || e); return null; }),
   ]);
 
   const indexSyms = new Set([...sp.symbols, ...nq.symbols]);
@@ -321,11 +368,45 @@ export async function buildUniverse({
     ...((mv && mv.gainers) || []).map((m) => m.symbol),
     ...((mv && mv.losers) || []).map((m) => m.symbol),
     ...((ac && ac.most_actives) || []).map((m) => m.symbol),
+    ...((acTrades && acTrades.most_actives) || []).map((m) => m.symbol),
   ].map(clean).filter((s) => s && VALID_TICKER.test(s)))];
 
-  // Los del día que NO están ya en un índice. El tope se gasta solo acá.
-  const nuevos = delDia.filter((s) => !indexSyms.has(s)).slice(0, moversMax);
+  // ── EL FILTRO DE INSTRUMENTO, ANTES DE LA ADMISIÓN ─────────────────
+  // EL REPORTE QUE LO ORIGINA: el canal del día entregó 100 candidatos y se
+  // admitieron CERO. 69 salieron `data_unavailable` y eran warrants, rights,
+  // preferentes y unidades — cosas que nunca tuvieron que llegar al filtro de
+  // admisión, porque no son el universo del Arena.
+  //
+  // Que salieran por "faltan datos" es doblemente malo: no solo entraban, sino
+  // que al rebotar se veían como una falla de COBERTURA (no pudimos resolver el
+  // market cap) en vez de como lo que eran (no es una acción). Un rechazo con
+  // el motivo equivocado manda a buscar el problema al lugar equivocado — y eso
+  // fue exactamente lo que pasó: se sospechó de Finnhub cuando el problema
+  // estaba en el universo de entrada.
+  //
+  // EL ORDEN IMPORTA Y ES EL PUNTO. Se filtra ANTES de gastar el tope de 100 y
+  // antes de pedirle a Finnhub un market cap que un warrant no tiene. Antes el
+  // tope se gastaba en instrumentos que iban a rebotar igual: 100 cupos para
+  // ~30 acciones reales.
+  //
+  // El catálogo de Alpaca también sirve para los nombres de índice: las
+  // tenencias de ETFs escriben las clases múltiples sin punto (BRKB) y Alpaca
+  // con punto (BRK.B), y `normalizarTicker` lo resuelve preguntándole al
+  // catálogo en vez de con una tabla de alias que se desactualiza.
+  const catalogo = await (deps.cargarCatalogo || cargarCatalogo)({ creds, now, deps })
+    .catch((e) => { errors.catalogo = String((e && e.message) || e); return { assets: null }; });
 
+  const filtroDia = await (deps.filtrarComunes || filtrarComunes)(
+    delDia.filter((s2) => !indexSyms.has(s2)), { creds, now, deps, catalogo },
+  ).catch((e) => { errors.filtro_instrumento = String((e && e.message) || e); return { comunes: [], rechazados: [], diagnostics: {} }; });
+
+  // El tope se gasta sobre los que YA se sabe que son acciones comunes.
+  const nuevos = filtroDia.comunes.filter((s2) => !indexSyms.has(s2)).slice(0, moversMax);
+
+  // Los de índice también se normalizan contra el catálogo (BRKB → BRK.B), pero
+  // NO se filtran por instrumento: un constituyente del S&P 500 es una acción
+  // por definición, y si el catálogo de Alpaca no lo tiene el problema es del
+  // catálogo, no del nombre.
   const candidatos = [...indexSyms, ...nuevos];
 
   // ── ADMISIÓN ──
@@ -386,12 +467,21 @@ export async function buildUniverse({
     };
   }
 
+  // El diagnóstico de Finnhub, por la misma razón que el de FMP: "0 admitidos"
+  // tiene que poder distinguirse entre "Finnhub está caído", "nos pasamos de la
+  // cuota" y "los nombres de verdad no llegan al piso".
+  const finnhubDiag = [];
   let admissionData = {};
   try {
-    admissionData = await admit(candidatos, { finnhubKey, now, known });
+    admissionData = await admit(candidatos, { finnhubKey, now, known, diag: finnhubDiag });
   } catch (e) {
     errors.admission = String((e && e.message) || e);
   }
+  const resumenFinnhub = finnhubDiag.reduce((acc, d) => {
+    const k = d.ok ? 'ok' : (d.reason || 'desconocido');
+    acc[k] = (acc[k] || 0) + 1;
+    return acc;
+  }, {});
   const aplicado = Object.keys(admissionData).length > 0;
   const rechazados = [];
   const admitidos = [];
@@ -438,9 +528,16 @@ export async function buildUniverse({
       sp500: { source: sp.source, built_at: sp.built_at, count: sp.symbols.length, age_days: sp.age_days ?? null, stale: !!sp.stale, persisted: sp.stored !== false, refreshed: !!sp.refreshed, fmp_api: sp.fmp_api || null, fmp_failed: sp.fmp_failed || null, note: sp.note || null },
       nasdaq100: { source: nq.source, built_at: nq.built_at, count: nq.symbols.length, age_days: nq.age_days ?? null, stale: !!nq.stale, persisted: nq.stored !== false, refreshed: !!nq.refreshed, fmp_api: nq.fmp_api || null, fmp_failed: nq.fmp_failed || null, note: nq.note || null },
     },
+    // Qué se descartó por NO SER UNA ACCIÓN, separado de lo que se descartó por
+    // criterio de admisión. Son dos preguntas distintas y antes daban la misma
+    // respuesta.
+    instrumento: filtroDia.diagnostics || null,
+    instrumento_rechazados: (filtroDia.rechazados || []).slice(0, 50),
     counts: {
       indices: indexSyms.size,
       del_dia_brutos: delDia.length,
+      del_dia_comunes: (filtroDia.comunes || []).length,
+      del_dia_no_comunes: (filtroDia.rechazados || []).length,
       del_dia_nuevos: nuevos.length,
       candidatos: candidatos.length,
       admitidos: admitidos.length,
@@ -453,6 +550,16 @@ export async function buildUniverse({
       market_cap_assumed_by_index: candidatos.filter((s2) => indexSyms.has(s2)).length,
       market_cap_measured: candidatos.filter((s2) => !indexSyms.has(s2)).length,
       market_cap_note: 'Un miembro del S&P 500 / Nasdaq 100 cumple el piso de $1B por construcción del índice, así que ese criterio se da por cumplido en vez de pedirlo 600 veces. El PRECIO y el VOLUMEN se miden de verdad para TODOS: un constituyente que cayó bajo $5 sigue en el índice hasta que el comité lo saque, y esa demora el Arena no la hereda.',
+      // Cómo le fue a Finnhub, en una línea. Un `rate_limit` o `rate_budget`
+      // alto significa que el problema es NUESTRO (la cuota), no de los
+      // nombres — y eso cambia por completo dónde buscar.
+      finnhub: {
+        ...resumenFinnhub,
+        llamadas: finnhubDiag.length,
+        note: (resumenFinnhub.rate_limit || resumenFinnhub.rate_budget)
+          ? 'Hay nombres que NO se pudieron consultar por la cuota de Finnhub. Eso NO es "el nombre no tiene datos": es un límite nuestro. Subí ARENA_FINNHUB_CALL_BUDGET solo si el plan lo aguanta, o bajá el tope del canal del día.'
+          : (resumenFinnhub.sin_key ? 'FINNHUB_API_KEY no está en este entorno: ningún market cap se pudo medir.' : null),
+      },
       prices_resolved: Object.keys(precios).length,
       prices_missing: candidatos.filter((s2) => !precios[s2]).length,
       // La lista entera pesa; se journalea acotada y con el conteo real al lado.

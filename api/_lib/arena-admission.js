@@ -39,6 +39,14 @@
 
 import { extractYahooCandles, toYahooSymbol } from '../candles.js';
 
+// Techo de llamadas a profile2 por lote. El tier gratis de Finnhub corta a 60
+// por minuto y el deep dive del mismo run gasta ~20, así que 40 deja margen.
+// Lo que queda afuera se journalea como `rate_budget` y NO como falta de datos.
+export const FINNHUB_CALL_BUDGET = (() => {
+  const n = Number(process.env.ARENA_FINNHUB_CALL_BUDGET);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 40;
+})();
+
 export const ADMISSION = {
   min_price: 5,
   min_market_cap_usd: 1_000_000_000,
@@ -110,23 +118,54 @@ export async function fetchPriceAndVolume(symbol, now = new Date(), fetchImpl = 
 
 // Market cap en USD desde Finnhub profile2 (`marketCapitalization` viene en
 // MILLONES — el ×1e6 es la trampa clásica de ese campo).
-export async function fetchMarketCap(symbol, finnhubKey, fetchImpl = fetch) {
-  if (!finnhubKey) return null;
+//
+// ── POR QUÉ AHORA DEJA RASTRO ────────────────────────────────────────
+// Esto devolvía `null` en cinco situaciones —sin key, HTTP de error, 429 por
+// rate limit, cuerpo sin el campo, timeout— y las cinco terminaban en el mismo
+// `data_unavailable`. Cuando el canal del día entregó 100 candidatos y se
+// admitieron CERO, no había forma de saber si el problema era Finnhub, la
+// cuota, o que los nombres no eran acciones.
+//
+// EL 429 ES EL QUE MÁS IMPORTA. El tier gratis corta a 60 llamadas por minuto.
+// Un lote de 100 nombres del día, aunque salga de a 4 en paralelo, cruza ese
+// techo a la mitad: los primeros ~60 resuelven y el resto recibe 429. Visto
+// desde afuera eso se lee como "Finnhub no tiene estos nombres", que es una
+// conclusión falsa sobre el DATO cuando en realidad es un límite NUESTRO.
+export async function fetchMarketCap(symbol, finnhubKey, fetchImpl = fetch, diag = null) {
+  const anota = (fila) => { if (Array.isArray(diag)) diag.push({ symbol, ...fila }); };
+  if (!finnhubKey) { anota({ ok: false, reason: 'sin_key' }); return null; }
   try {
     const r = await fetchImpl(`https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${finnhubKey}`,
       { signal: AbortSignal.timeout(12000) });
+    if (!r || !r.ok) {
+      const status = (r && r.status) || 0;
+      anota({ ok: false, reason: status === 429 ? 'rate_limit' : 'http_error', status });
+      return null;
+    }
     const j = await safeJson(r);
     const m = j && Number(j.marketCapitalization);
-    return Number.isFinite(m) && m > 0 ? m * 1e6 : null;
-  } catch (_) { return null; }
+    if (!Number.isFinite(m) || m <= 0) {
+      // Finnhub devuelve `{}` para lo que no cubre. Eso NO es un fallo nuestro
+      // y conviene distinguirlo de un 429: "no lo tiene" vs "no nos dejó pedir".
+      anota({ ok: false, reason: j && Object.keys(j).length ? 'sin_market_cap' : 'sin_cobertura', status: r.status });
+      return null;
+    }
+    anota({ ok: true, status: r.status });
+    return m * 1e6;
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    anota({ ok: false, reason: /abort|timeout/i.test(msg) ? 'timeout' : 'red', detail: msg });
+    return null;
+  }
 }
 
 // Resuelve los datos de admisión de un lote. `known` trae lo que el canal ya
 // sabe (los movers vienen con precio y volumen del endpoint: eso ahorra una
 // request por nombre y no se vuelve a pedir).
-export async function resolveAdmission(symbols, { finnhubKey, now = new Date(), known = {}, fetchImpl = fetch, concurrency = 4 } = {}) {
+export async function resolveAdmission(symbols, { finnhubKey, now = new Date(), known = {}, fetchImpl = fetch, concurrency = 4, maxFinnhub = FINNHUB_CALL_BUDGET, diag = null } = {}) {
   const out = {};
   const todo = [];
+  let gastadas = 0;
   for (const raw of symbols || []) {
     const sym = String(raw || '').trim().toUpperCase();
     if (!sym || out[sym]) continue;
@@ -142,9 +181,22 @@ export async function resolveAdmission(symbols, { finnhubKey, now = new Date(), 
     await Promise.all(batch.map(async (sym) => {
       const k = known[sym] || {};
       const needPV = !Number.isFinite(k.price) || !Number.isFinite(k.dollarVolume);
+      // EL PRESUPUESTO DE LLAMADAS. Si el lote pide más profile2 de los que
+      // caben en el tier gratis, las que sobran NO se piden — y se journalean
+      // como `rate_budget`, no como "el nombre no tiene datos". La diferencia
+      // es entre "no lo sabemos porque no preguntamos" y "preguntamos y no
+      // está": la primera es nuestra y se arregla subiendo el plan o bajando el
+      // lote; la segunda es del nombre.
+      let mcapPromise;
+      if (Number.isFinite(k.marketCap)) mcapPromise = Promise.resolve(k.marketCap);
+      else if (gastadas >= maxFinnhub) {
+        if (Array.isArray(diag)) diag.push({ symbol: sym, ok: false, reason: 'rate_budget', detail: `no se pidió: el lote ya gastó ${maxFinnhub} llamadas a Finnhub` });
+        mcapPromise = Promise.resolve(null);
+      } else { gastadas++; mcapPromise = fetchMarketCap(sym, finnhubKey, fetchImpl, diag); }
+
       const [pv, mcap] = await Promise.all([
         needPV ? fetchPriceAndVolume(sym, now, fetchImpl) : Promise.resolve({ price: k.price, dollarVolume: k.dollarVolume }),
-        Number.isFinite(k.marketCap) ? Promise.resolve(k.marketCap) : fetchMarketCap(sym, finnhubKey, fetchImpl),
+        mcapPromise,
       ]);
       const row = {
         symbol: sym,
