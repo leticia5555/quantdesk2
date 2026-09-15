@@ -247,3 +247,105 @@ export async function getAvgDailyVolume(symbols = [], { days = 20, today = null,
   }
   return out;
 }
+
+// ─────────────────── SCREENER (Buffet v1.5) ───────────────────
+// Alpaca publica su propio screener en el host de datos: movers (gainers y
+// losers del día) y most-actives (por volumen o por número de trades). Son
+// listas YA RANKEADAS por el proveedor — nosotros no recalculamos nada.
+//
+// POR QUÉ ESTE CANAL Y NO SOLO /api/movers: el buffet traía movers de UNA
+// fuente, recortados a top-8 por lado. El screener de Alpaca devuelve hasta 50
+// por lado y los most-actives aparte, que es otra pregunta ("qué se está
+// negociando" ≠ "qué se movió"). Con los dos, el universo del día pasa de ~24
+// nombres a ~100 sin una llamada más por símbolo.
+//
+// SIN KEYS DE PAGO: estos endpoints responden con las mismas keys paper. El
+// `feed` no aplica acá (el ranking lo hace Alpaca sobre consolidado).
+const SCREENER_BASE = '/v1beta1/screener/stocks';
+
+// Tope de Alpaca por lado. Pedir más no falla, pero tampoco devuelve más.
+export const SCREENER_MAX_MOVERS = 50;
+export const SCREENER_MAX_ACTIVES = 100;
+
+// { gainers: [{symbol, price, change, percent_change}], losers: [...], last_updated }
+export async function getMovers({ top = SCREENER_MAX_MOVERS, creds } = {}) {
+  const n = Math.max(1, Math.min(SCREENER_MAX_MOVERS, Math.floor(top) || SCREENER_MAX_MOVERS));
+  const data = await alpacaDataFetch(`${SCREENER_BASE}/movers?top=${n}`, creds);
+  const norm = (list) => (Array.isArray(list) ? list : []).map((m) => ({
+    symbol: String(m.symbol || '').toUpperCase(),
+    price: Number(m.price),
+    change: Number(m.change),
+    percent_change: Number(m.percent_change),
+  })).filter((m) => m.symbol && Number.isFinite(m.price));
+  return {
+    gainers: norm(data && data.gainers),
+    losers: norm(data && data.losers),
+    last_updated: (data && data.last_updated) || null,
+  };
+}
+
+// { most_actives: [{symbol, volume, trade_count}], last_updated }
+// `by`: 'volume' (acciones negociadas) o 'trades' (número de operaciones). El
+// default es volumen: es el que se compara contra el promedio de 20 días para
+// el RVOL, así que es el que alimenta la misma pregunta.
+export async function getMostActives({ top = SCREENER_MAX_ACTIVES, by = 'volume', creds } = {}) {
+  const n = Math.max(1, Math.min(SCREENER_MAX_ACTIVES, Math.floor(top) || SCREENER_MAX_ACTIVES));
+  const modo = by === 'trades' ? 'trades' : 'volume';
+  const data = await alpacaDataFetch(`${SCREENER_BASE}/most-actives?by=${modo}&top=${n}`, creds);
+  const list = (data && (data.most_actives || data.mostActives)) || [];
+  return {
+    most_actives: (Array.isArray(list) ? list : []).map((m) => ({
+      symbol: String(m.symbol || '').toUpperCase(),
+      volume: Number(m.volume) || null,
+      trade_count: Number(m.trade_count) || null,
+    })).filter((m) => m.symbol),
+    by: modo,
+    last_updated: (data && data.last_updated) || null,
+  };
+}
+
+// ── MÁXIMOS Y MÍNIMOS DE 52 SEMANAS ─────────────────────────────────
+// Se calculan con barras SEMANALES, no diarias, y eso NO pierde precisión: el
+// high de una barra semanal ES el máximo de sus cinco días, así que el máximo
+// de 52 semanas sale exacto. Lo que cambia es el costo — 52 barras por símbolo
+// en vez de ~250. Con ~150 nombres eso es la diferencia entre una llamada que
+// cabe en el buffet y una que no.
+//
+// LA BARRA VIVA SE EXCLUYE (point-in-time). La semana en curso todavía se está
+// formando: incluirla haría que un nombre "marque nuevo máximo" contra un
+// máximo que incluye el precio de este momento, o sea contra sí mismo.
+// Devuelve { SYMBOL: { high_52w, low_52w, last, pct_from_high, pct_from_low, weeks } }.
+export async function getFiftyTwoWeek(symbols = [], { creds, now = new Date(), weeks = 52 } = {}) {
+  const wanted = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
+  if (!wanted.length) return {};
+  const feed = alpacaDataFeed();
+  const start = new Date(now.getTime() - (weeks + 2) * 7 * 86400000).toISOString().slice(0, 10);
+  const semanaViva = new Date(now.getTime() - ((now.getUTCDay() + 6) % 7) * 86400000).toISOString().slice(0, 10);
+  const out = {};
+  for (const batch of chunk(wanted, DATA_CHUNK)) {
+    const data = await alpacaDataFetch(
+      `/v2/stocks/bars?symbols=${encodeURIComponent(batch.join(','))}&timeframe=1Week&start=${start}&limit=${(weeks + 2) * batch.length}&feed=${feed}`, creds);
+    const bars = (data && data.bars) || {};
+    for (const [sym, list] of Object.entries(bars)) {
+      if (!Array.isArray(list) || !list.length) continue;
+      const cerradas = list.filter((b) => b && String(b.t || '').slice(0, 10) < semanaViva).slice(-weeks);
+      if (!cerradas.length) continue;
+      const highs = cerradas.map((b) => Number(b.h)).filter(Number.isFinite);
+      const lows = cerradas.map((b) => Number(b.l)).filter((v) => Number.isFinite(v) && v > 0);
+      if (!highs.length || !lows.length) continue;
+      const high = Math.max(...highs);
+      const low = Math.min(...lows);
+      // El último cierre COMPLETO, de la misma serie: comparar el máximo de
+      // barras cerradas contra un precio vivo mezclaría dos relojes.
+      const last = Number(cerradas[cerradas.length - 1].c);
+      if (!Number.isFinite(last) || last <= 0) continue;
+      out[String(sym).toUpperCase()] = {
+        high_52w: +high.toFixed(4), low_52w: +low.toFixed(4), last: +last.toFixed(4),
+        pct_from_high: +(((last - high) / high) * 100).toFixed(2),   // ≤ 0
+        pct_from_low: +(((last - low) / low) * 100).toFixed(2),      // ≥ 0
+        weeks: cerradas.length,
+      };
+    }
+  }
+  return out;
+}

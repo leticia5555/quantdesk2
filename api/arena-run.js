@@ -86,6 +86,9 @@ import { beat } from './_lib/heartbeat.js';
 import { readScreenerRows } from './_lib/screener-db.js';
 // Caché POR DÍA de los canales cuyo contenido es un hecho del día (insiders).
 import { cachedDayFetch } from './_lib/arena-buffet-cache.js';
+// BUFFET v1.5: el universo del día con ojos propios (screener de Alpaca:
+// movers + most-actives + máx/mín de 52 semanas, deduplicado con banderas).
+import { buildBuffetV15, BUFFET_V15_TARGET } from './_lib/arena-buffet.js';
 // A4c: el filtro de admisión del universo, UNO para todos los canales.
 import { ADMISSION, resolveAdmission, partitionByAdmission } from './_lib/arena-admission.js';
 import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
@@ -227,6 +230,7 @@ export const estimateTokens = (s) => Math.ceil(String(s || '').length / 4);
 // cacheado y tiene que ser fácil ver que ninguno trae un dato del día; (b) un
 // test los recorre para verificar justo eso.
 export const STABLE_BLOCKS = {
+  universe: "TODAY'S UNIVERSE — `universe.candidates` is the day's investable list, rebuilt this morning from three DIFFERENT questions, not one: which names MOVED (the day's biggest gainers and losers), which names TRADED (highest dollar volume — a name can move 8% on no volume, or trade $2B without moving), and which names BROKE their range (at or within `universe.near_52w_pct`% of a 52-week high or low, computed from CLOSED weekly bars, so the current week is excluded). Every candidate carries `flags` naming which of those it came from. A name with SEVERAL flags is not louder, it is DIFFERENT: it moved AND traded AND broke out. Every name here already passed one admission filter (price, market cap, dollar volume) — the list is not filtered for quality, only for being investable, so a name appearing is not a recommendation. `counts` tells you how many were dropped before you saw it.",
   equity: 'EQUITY — `equity_total_incl_cash` is the TOTAL value of the book: your positions PLUS your cash. `cash_included_in_equity` is the part of that same total that is not invested — it is NOT an extra amount on top. Do not add them together, and size positions as a fraction of the total.',
   earnings_timing: 'EARNINGS TIMING — each entry in `earnings_this_week` carries `when`, the distance from today ALREADY COMPUTED for you ("in 2 days (Wed Aug 26, AMC)", "today (Mon Aug 24, BMO)"). Use that label as-is when you mention a report; do not re-derive it from `date`, and never call a report scheduled for a later date "today" or "tonight". BMO = before the market opens that day, AMC = after it closes.',
   already_reported: 'ALREADY REPORTED — `recently_reported` holds companies whose number is ALREADY OUT (within the last 2 sessions), with the actual EPS and the surprise vs estimate already computed. These are here on purpose: if a previous plan of yours was waiting on one of these reports, the wait is over — that name is worth a deep-dive so you can close the loop instead of leaving the thesis hanging.',
@@ -253,6 +257,7 @@ RULES:
 - Only pick tickers grounded in the context or the portfolio below. Do not invent tickers or prices.
 
 HOW TO READ WHAT YOU ARE GIVEN (these fields are pre-computed for you — quote them, do not re-derive them):
+${STABLE_BLOCKS.universe}
 ${STABLE_BLOCKS.equity}
 ${STABLE_BLOCKS.earnings_timing}
 ${STABLE_BLOCKS.already_reported}
@@ -550,6 +555,14 @@ const BUFFET_TIMEOUT_MS = {
 // `movers` y `earnings` NO entran: los dos cambian dentro del día y cachearlos
 // por día le daría al PM de la tarde el mercado de la mañana. La caché existe
 // para los canales cuyo contenido no se mueve, no para todos los lentos.
+// BUFFET v1.5 — el canal de OJOS PROPIOS. Se puede apagar con
+// ARENA_BUFFET_V15=0 sin deploy: es un canal nuevo sobre una API de Alpaca que
+// todavía no corrió un día entero en producción, y un canal nuevo que se cae
+// no puede costar el buffet entero. Prendido por default (entra como
+// rules_changed); su caída ya está cubierta — sale en `unavailable` con su
+// error, igual que cualquier otro canal.
+const BUFFET_V15_ENABLED = process.env.ARENA_BUFFET_V15 !== '0';
+
 const DAY_CACHED_CHANNELS = new Set(
   String(process.env.ARENA_BUFFET_DAY_CACHE || 'insiders').split(',').map((x) => x.trim()).filter(Boolean),
 );
@@ -656,6 +669,32 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
     screener_state = 'unavailable';
   }
 
+  // ── BUFFET v1.5: el UNIVERSO DEL DÍA (screener de Alpaca) ────────
+  // Tres preguntas que /api/movers no contestaba: qué se movió (hasta 50 por
+  // lado, contra los 8 de antes), qué se NEGOCIÓ (most-actives: un nombre puede
+  // mover 8% sin volumen, o negociar $2.000M sin moverse) y qué rompió su rango
+  // de 52 semanas. Trae su propio filtro de admisión —el MISMO módulo— y
+  // deduplica con banderas, así que un nombre que aparece en tres canales es
+  // una entrada con tres banderas y no tres entradas.
+  //
+  // Va APARTE de `movers` en vez de reemplazarlo: son fuentes distintas y el
+  // post-mortem tiene que poder comparar qué aportó cada una antes de que
+  // alguien decida apagar la vieja.
+  let universe = null;
+  if (BUFFET_V15_ENABLED) {
+    try {
+      universe = await buildBuffetV15({ creds: alpacaCreds(), finnhubKey: process.env.FINNHUB_API_KEY, now });
+      for (const u of universe.unavailable || []) unavailable.push('universe:' + u);
+      for (const [k, v] of Object.entries(universe.errors || {})) fetch_errors['universe:' + k] = v;
+      channel_source.universe = { source: 'fetch', built_at: universe.built_at };
+    } catch (e) {
+      // Un canal NUEVO no puede tumbar el buffet que ya funcionaba.
+      fetch_errors.universe = String((e && e.message) || e);
+      unavailable.push('universe');
+      channel_source.universe = { source: 'none' };
+    }
+  }
+
   // ── FILTRO DE ADMISIÓN (A4c) ─────────────────────────────────────
   // Se aplica DESPUÉS de armar cada canal y ANTES de construir el índice de
   // atribución, sobre TODOS los canales a la vez. Antes cada canal tenía su
@@ -710,9 +749,36 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   }
 
   const channelsByTicker = buildChannels({ movers, earnings: earnings_this_week, reported: recently_reported, insiders: notable_insider_buys, screener });
+  // El universo v1.5 también entra al índice de atribución: sin esto, una
+  // acción sobre un nombre que solo llegó por ese canal se journalearía con
+  // `channels: []`, o sea como un pick sin anclar — y el post-mortem no podría
+  // medir qué aportó el canal nuevo, que es la razón de tenerlo aparte.
+  for (const c of (universe && universe.candidates) || []) {
+    if (!c || !c.symbol) continue;
+    if (!channelsByTicker[c.symbol]) channelsByTicker[c.symbol] = { channels: [], screens: [], qualifiers: {} };
+    const entry = channelsByTicker[c.symbol];
+    if (!entry.channels.includes('universe')) entry.channels.push('universe');
+    entry.universe_flags = c.flags;
+  }
 
   return {
     movers, earnings_this_week,
+    // BUFFET v1.5 — SOLO la parte que ve el PM. El diagnóstico (unavailable,
+    // errors, admission.rejected) se queda afuera a propósito: ya viaja en
+    // `fetch_errors`/`unavailable` de arriba, y este bloque va al PREFIJO
+    // CACHEADO, donde cada byte se paga una vez pero se manda siempre.
+    universe: universe ? {
+      version: universe.version,
+      built_at: universe.built_at,
+      near_52w_pct: universe.near_52w_pct,
+      counts: universe.counts,
+      candidates: universe.candidates,
+    } : null,
+    // El diagnóstico completo del canal nuevo, para el journal.
+    universe_diagnostics: universe ? {
+      unavailable: universe.unavailable, errors: universe.errors, admission: universe.admission,
+      last_updated: universe.last_updated,
+    } : null,
     // Rechazados por admisión, con su motivo y su canal. NO viaja al prompt
     // (el PM no necesita la lista de lo que no vio) — se journalea, y es cómo
     // se audita si el filtro está tirando micro-caps (lo que debe) o nombres
@@ -842,6 +908,7 @@ export function buildScanUserPrompt({ account, positions, openOrders, buffet, pr
 // Acá hay que ENUMERAR lo que entra, y un campo nuevo se queda afuera hasta que
 // alguien decida lo contrario.
 export const SHARED_BUFFET_FIELDS = [
+  'universe',            // BUFFET v1.5: ~100 nombres del día con sus banderas
   'movers', 'earnings_this_week', 'recently_reported',
   'notable_insider_buys', 'screener', 'screener_state', 'unavailable',
 ];

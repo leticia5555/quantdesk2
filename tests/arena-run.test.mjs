@@ -116,6 +116,9 @@ const journalUpdates = [];
 const finnhubDiveCalls = []; // urls de deep dive (metric/profile2/recommendation/company-news)
 let orderFilled = false;
 let moversStatus = 200; // se flipa a 401 para probar fetch_errors del buffet
+// Igual que moversStatus, para el canal del BUFFET v1.5 (screener de Alpaca):
+// deja apagar SOLO esa fuente y probar las ramas de canal caído.
+let screenerAlpacaStatus = 200;
 let positionsMock = []; // posiciones del libro (mutable: la atribución de portfolio lo usa)
 let openOrdersMock = []; // órdenes abiertas del libro (mutable)
 let accountEquity = 100000; // equity de la cuenta (mutable: para probar el circuit breaker)
@@ -159,6 +162,34 @@ global.fetch = async (url, opts = {}) => {
         : { id: 'ord-1', status: 'accepted', filled_qty: '0', filled_avg_price: null, filled_at: null });
     }
     return jsonReply({ message: 'ruta alpaca inesperada: ' + u }, 404);
+  }
+  // Alpaca MARKET DATA — el screener del BUFFET v1.5 (host distinto del de
+  // trading). Se stubbea acá y no se apaga el canal con ARENA_BUFFET_V15=0
+  // porque el test tiene que correr sobre la MISMA forma que producción: un
+  // canal apagado en el test es un canal que nadie prueba.
+  if (u.includes('data.alpaca.markets')) {
+    if (screenerAlpacaStatus !== 200) return jsonReply({ message: 'screener caído (test)' }, screenerAlpacaStatus);
+    if (u.includes('/screener/stocks/movers')) {
+      return jsonReply({
+        gainers: [{ symbol: 'NVDA', price: 200, change: 15, percent_change: 8.1 }],
+        losers: [{ symbol: 'GNTX', price: 30, change: -2.4, percent_change: -7.4 }],
+        last_updated: today + 'T18:00:00Z',
+      });
+    }
+    if (u.includes('/screener/stocks/most-actives')) {
+      return jsonReply({ most_actives: [{ symbol: 'AAPL', volume: 9e7, trade_count: 800000 }], last_updated: today + 'T18:00:00Z' });
+    }
+    if (u.includes('/v2/stocks/bars')) {
+      // Barras SEMANALES para el máx/mín de 52 semanas.
+      const bars = {};
+      for (const sym of ['NVDA', 'GNTX', 'AAPL']) {
+        bars[sym] = Array.from({ length: 53 }, (_, i) => ({
+          t: new Date(Date.now() - (53 - i) * 7 * DAY).toISOString(), o: 100, h: 210, l: 90, c: 200, v: 1e7,
+        }));
+      }
+      return jsonReply({ bars });
+    }
+    return jsonReply({ message: 'ruta de datos alpaca inesperada: ' + u }, 404);
   }
   // Finnhub symbol map (guard) — con `type` (main #79): alimenta el gate de security_type.
   if (u.includes('finnhub.io/api/v1/stock/symbol')) {
@@ -651,11 +682,12 @@ screenerRows = [];
 // buffet, ni en earnings/insider, ni en el libro → debe quedar con [].
 scanText = JSON.stringify({ scan_thesis: 'Pick sin anclar en ninguna fuente.', candidates: ['NVDA'] });
 diveText = JSON.stringify({ plan: 'Compro NVDA.', actions: [{ symbol: 'NVDA', side: 'buy', notional: 5000, limit_price: 201, conviction: 3, reasoning: 'x' }] });
-moversStatus = 401; // buffet de movers caído → NVDA no está en ninguna sección
+moversStatus = 401;          // buffet de movers caído
+screenerAlpacaStatus = 401;  // y el universo v1.5 también → NVDA no está en NINGUNA sección
 const rUn = await runArenaDecide({ baseUrl: BASE_URL });
 const aUn = JSON.parse(lastRow()[COL.actions]).find((a) => a.symbol === 'NVDA');
 ok(aUn && Array.isArray(aUn.channels) && aUn.channels.length === 0, 'sin buffet ni libro → channels [] (señal de pick sin anclar, no bug de wiring)', JSON.stringify(aUn && aUn.channels));
-moversStatus = 200; // restaurar
+moversStatus = 200; screenerAlpacaStatus = 200; // restaurar
 
 // ── 11) DISCIPLINA DE LA PROSA: valores pre-formateados/rotulados (Opción 1) +
 // instrucciones de recencia y de "cita cifras verbatim" (Opción 2) en el DIVE. ──

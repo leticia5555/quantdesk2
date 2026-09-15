@@ -44,7 +44,15 @@ const grok = agentById('grok');             // caps.cache === null
 // Buffet realista: ~30 movers, earnings, insiders y screener. El tamaño importa
 // — es lo que lleva el prefijo por encima del piso.
 const mk = (n, f) => Array.from({ length: n }, (_, i) => f(i));
+const mkCand = (n) => mk(n, (i) => ({ symbol: 'UNI' + i, flags: i % 3 ? ['gainer'] : ['gainer', 'most_active'], price: 40 + i, change_pct: 5 - i * 0.02, volume: 2e7, high_52w: 90, low_52w: 20, pct_from_high: -8, pct_from_low: 120 }));
 const buffet = {
+  // BUFFET v1.5: el universo del día. Va en el prefijo cacheado con el resto —
+  // es el MISMO para los siete agentes, que es justo lo que lo hace cacheable.
+  universe: {
+    version: 'v1.5', built_at: '2026-09-15T13:00:00Z', near_52w_pct: 2,
+    counts: { universo_bruto: 120, admitidos: 104, publicados: 100 },
+    candidates: mkCand(100),
+  },
   movers: {
     gainers: mk(10, (i) => ({ symbol: 'GAIN' + i, price: 50 + i, changePct: 9 - i * 0.2, volume: 1e7 })),
     losers: mk(10, (i) => ({ symbol: 'LOSE' + i, price: 30 + i, changePct: -9 + i * 0.2, volume: 9e6 })),
@@ -106,9 +114,14 @@ console.log('\n── estable antes del marcador, volátil después ──');
   const [cacheado, volatil] = payload.system;
   ok(cacheado.cache_control && cacheado.cache_control.type === 'ephemeral', 'el primero lleva el marcador');
   ok(!volatil.cache_control, 'el segundo NO');
-  ok(/2026-09-15/.test(volatil.text), 'la fecha está en el bloque NO cacheado', volatil.text.slice(0, 60));
-  ok(!/2026-09-15/.test(cacheado.text),
-    'LA REGLA DE ORO: la fecha NUNCA entra al bloque cacheado — adentro invalidaría la caché todos los días y el ahorro sería cero');
+  ok(/TODAY'S DATE IS 2026-09-15/.test(volatil.text), 'la DIRECTIVA DE FECHA está en el bloque NO cacheado', volatil.text.slice(0, 60));
+  // Se busca la DIRECTIVA, no la cadena de la fecha: el buffet legítimamente
+  // lleva fechas adentro (`built_at`, calendarios de earnings) y ésas cambian
+  // con el buffet, no todos los días contra un prefijo que no cambió. Lo que
+  // no puede entrar es el recordatorio diario, que cambiaría el prefijo cada
+  // día aunque el resto fuera idéntico.
+  ok(!/TODAY'S DATE IS/.test(cacheado.text),
+    'LA REGLA DE ORO: la directiva de fecha NUNCA entra al bloque cacheado — adentro invalidaría la caché todos los días y el ahorro sería cero');
   ok(cacheado.text.includes(scanSystem) && cacheado.text.includes(shared),
     'los dos segmentos estables quedan del lado cacheado, unidos bajo UN solo marcador');
 

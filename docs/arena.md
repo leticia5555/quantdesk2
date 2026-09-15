@@ -404,6 +404,206 @@ inválido, o sea una corrida entera perdida. `stop_reason` se normaliza también
 para OpenRouter (`finish_reason: 'length'` → `max_tokens`), así el diagnóstico
 existe para los siete agentes y no solo para los de Anthropic.
 
+## BUFFET v1.5 — el universo del día con ojos propios (2026-09-15)
+
+`_lib/arena-buffet.js` · tests en `tests/arena-buffet-v15.test.mjs`
+
+v1 le daba al PM ~24 nombres de UNA fuente (`/api/movers`, top-8 por lado).
+v1.5 le da ~100, de **tres preguntas distintas** que el screener de Alpaca
+contesta sin una llamada por símbolo:
+
+| Pregunta | Fuente | Tope |
+|---|---|---|
+| ¿Qué se **movió**? | `/v1beta1/screener/stocks/movers` | 50 por lado |
+| ¿Qué se **negoció**? | `/v1beta1/screener/stocks/most-actives` | 100 |
+| ¿Qué **rompió su rango**? | barras semanales cerradas, 52 semanas | — |
+
+Las tres no son la misma pregunta, y ahí está el punto: un nombre puede mover
+8% con volumen de nada, o negociar $2.000M sin moverse. v1 solo veía la primera.
+
+**Dedupe con banderas, no con prioridad.** Un nombre que aparece en gainers Y en
+most-actives Y marcando máximo de 52 semanas es **una** entrada con las **tres**
+banderas — no tres entradas, ni una con el canal que llegó primero. La
+coincidencia de canales ES la señal, y perderla al deduplicar sería tirar justo
+lo que hace interesante al nombre. El conteo de banderas es lo que ordena la
+lista cuando hay que recortar a ~100.
+
+**Un solo filtro de admisión** (`_lib/arena-admission.js`, el mismo de siempre:
+precio ≥ $5, mcap ≥ $1B, volumen $ ≥ $10M/día, fail closed) para los tres
+canales. El bug de DDDX fue exactamente lo contrario — tres canales con tres
+criterios y el más flojo mandando.
+
+**El orden importa por costo:** la admisión corre ANTES del 52w, y el rango se
+pide solo para los nombres que ya pasaron. Al revés se pagarían barras de
+nombres que quedan afuera igual.
+
+**Point-in-time.** El máximo y el mínimo de 52 semanas salen de barras
+**semanales cerradas** — la semana en curso se excluye. Si no, un nombre
+"marca nuevo máximo" contra un máximo que ya incluye el precio de este momento,
+o sea contra sí mismo. Las barras semanales no pierden precisión: el `high` de
+una semana ES el máximo de sus cinco días. Lo que cambian es el costo, 52 barras
+por símbolo en vez de ~250.
+
+**Orden total.** El ranking desempata por banderas → magnitud → volumen →
+símbolo. El símbolo al final no es decorativo: sin un desempate total, dos
+corridas con los mismos datos pueden devolver órdenes distintas y el replay deja
+de reproducir la corrida.
+
+**Va APARTE de `movers`, no lo reemplaza.** Son fuentes distintas y el
+post-mortem tiene que poder comparar qué aportó cada una antes de que alguien
+decida apagar la vieja. El canal nuevo entra al índice de atribución como
+`universe` con sus banderas, así que una acción sobre un nombre que solo llegó
+por ahí no se journalea como pick sin anclar.
+
+**Freno de mano:** `ARENA_BUFFET_V15=0` lo apaga sin deploy. Prendido por
+default. Una caída ya está cubierta — sale en `unavailable` con su error, como
+cualquier canal.
+
+Es el escalón hacia el universo de ~600 de B1: la misma forma (reconstruir,
+filtrar por admisión, deduplicar con banderas, publicar point-in-time) a una
+escala que ya cabe hoy.
+
+---
+
+## Caché de prompt: el corte, y por qué `cache_read` salía en 0 (2026-09-15)
+
+El smoke reportó `cache_read: 0` **y** `cache_write: 0` en los dos agentes de
+Anthropic, con `cache_control` viajando correctamente en el payload desde
+siempre. La causa no era la configuración:
+
+> **Por debajo del mínimo cacheable del modelo (1.024 tokens), el proveedor
+> IGNORA el marcador EN SILENCIO.** No escribe caché, no cobra de más, y no
+> avisa. Cero ahorro, cero error, cero pista.
+
+El system del SCAN medía ~330 tokens. El arreglo no fue inflar el prompt: fue
+poner cada cosa de su lado del corte.
+
+```
+system   → reglamento + "cómo leer cada campo"   (estable siempre)
+shared   → el contexto de mercado de la corrida  (idéntico para los siete)
+[BREAKPOINT — un solo cache_control, al final del bloque estable]
+user     → la fecha + el libro del agente + su plan anterior   (volátil)
+```
+
+**La regla de oro:** estable antes del último `cache_control`, volátil después.
+La directiva de fecha va SIEMPRE afuera; adentro invalidaría la caché todos los
+días y el ahorro sería exactamente cero.
+
+**Un solo breakpoint, al final.** El marcador cachea el prefijo ACUMULADO hasta
+donde está. El reglamento del SCAN marcado solo (~980 tokens) seguiría por
+debajo del piso; marcado junto con el contexto compartido, pasa. El system del
+DIVE (~1.940) pasa el piso solo, así que cachea todos los días y no solo dentro
+de una corrida.
+
+**Dos ahorros distintos, no uno:** el reglamento se reusa entre corridas y entre
+días; el contexto compartido hace que los siete agentes paguen **una** vez por
+el mismo buffet en lugar de siete.
+
+**Para que el silencio no vuelva:** `cachePrefixReport` mide el prefijo ANTES de
+llamar, el smoke lo publica y el runner lo journalea (`context.scan.cache_prefix`).
+Un prefijo corto no se bloquea — se **declara**. El smoke además separa las tres
+causas de un `cache_read: 0` que antes salían con la misma nota: prefijo corto ·
+fue el primero y por eso lee 0 (lo esperado) · pasa el piso pero ni escribió ni
+leyó (eso sí es un problema).
+
+**El candado del prefijo compartido:** nada que dependa del agente puede entrar
+al bloque cacheado. Si entrara, cada agente tendría un prefijo distinto y la
+caché no serviría para nada. Por eso el contexto compartido es **allowlist**
+(`SHARED_BUFFET_FIELDS`), no denylist: un campo de diagnóstico nuevo se queda
+afuera por default.
+
+---
+
+## Caché por día de los canales lentos (`insiders`)
+
+`_lib/arena-buffet-cache.js`
+
+El canal `insiders` le pega a `/api/stock-tracker?cat=insider`, que baja el feed
+Atom de Form 4 de SEC EDGAR y después inspecciona hasta 60 XML sueltos. Con la
+caché en memoria fría —o sea, en cada lambda nueva— son ~61 requests a un
+servidor que throttlea. El techo de 12s no alcanzaba y subirlo a 30s fue un
+torniquete: seguía costando 30 segundos de wall-clock y seguía cayéndose.
+
+La cura es no volver a pedirlo. Los Form 4 son un hecho del **día**: el mismo
+contenido para la corrida de las 14:00 y la de las 20:00. Una tabla en Neon con
+clave `(canal, día de mercado)` convierte 84 corridas del día (12 × 7 agentes)
+en **una** llamada a EDGAR.
+
+Tres cosas que esta caché NO hace, a propósito:
+
+- **No sirve rancio.** Una entrada de otro día no es un hit: se vuelve a pedir.
+  La clave es el día de **mercado** (ET), no UTC — a las 22:40 UTC de la
+  nocturna, UTC ya cambió de día pero el mercado no.
+- **No cachea vacíos.** Guardar "no había nada" convertiría un hipo de 30
+  segundos en un canal muerto hasta la medianoche.
+- **No tapa una caída.** Sin entrada de hoy y con la fuente caída, el canal sale
+  como no disponible con su error, igual que antes.
+
+Con Neon caído se degrada a pedirlo como antes: la caché acelera, no sustituye.
+`ARENA_BUFFET_DAY_CACHE` (default `insiders`) controla qué canales entran;
+`movers` y `earnings` NO están y no deben estar — cambian dentro del día, y
+cachearlos le daría al PM de la tarde el mercado de la mañana.
+
+---
+
+## RESET de libros (`/api/arena-reset`)
+
+El único endpoint del repo que cierra posiciones a **mercado** (la excepción
+declarada en `_lib/alpaca.js`) y el único que escribe `arena_state.baseline_*`.
+Lo dispara una persona con `ARENA_ADMIN_KEY`, nunca un cron ni un LLM.
+
+```bash
+# 1. PLAN — no toca nada. Siempre mirar esto primero.
+curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" "$BASE/api/arena-reset?dry=1" | jq
+
+# 2. EJECUTAR. Sin confirm=1 es dry run.
+curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" \
+  "$BASE/api/arena-reset?confirm=1&id=arena-t2-2026-09-15" | jq '{verdict, summary, warnings, accounts: [.accounts[] | {agent, flat, before: .before.position_count, after: .after.position_count, starting_drawdown_pct}]}'
+```
+
+Seis pasos: **pausa el vigilante** (en Neon, no una env var — apagar una env var
+pide redeploy, y un redeploy en medio de un aplanado es lo último que uno quiere
+tocar; la pausa vence sola) → **foto de antes** cuenta por cuenta → **cancela
+órdenes** → **liquida a mercado** → **verifica releyendo** → **re-basa y
+reactiva**.
+
+### El fix del pico, que es la mitad del trabajo
+
+Aplanar las cuentas sin re-basar el pico del breaker es el footgun: `max(equity)`
+arrastra el pico de ANTES del aplanado, un libro que vuelve a $100k desde un
+pico de $130k arranca en **−23% de drawdown**, y los siete quedan HALTED en su
+primera corrida.
+
+El corte por temporada arreglaba esto para el arranque declarado, pero salía de
+una **constante del registry**: un reset a mitad de temporada no tenía dónde
+anotarse. Ahora el corte es por agente y con fecha real:
+
+```
+corte efectivo = MAX(arranque de temporada, baseline del último reset)
+pico del breaker = MAX(máximo journaleado post-corte, equity de hoy, baseline)
+```
+
+Y llegó a la **red determinista**, que no lo tenía. Ese era el lado con dientes:
+la única pieza que no se puede apagar era la que seguía midiendo el drawdown
+contra un libro que ya no existía.
+
+### El otro lado del piso, que se avisa en vez de taparse
+
+Si el equity que queda tras liquidar está por DEBAJO del baseline declarado, el
+piso mete un drawdown de arranque real. No es un bug del piso — es el baseline
+diciendo la verdad sobre una cuenta que no vale lo que se declaró. Sale por
+cuenta en `starting_drawdown_pct` y en `warnings`, y se corrige con `&baseline=`
+o `ARENA_RESET_BASELINE_USD` sin deploy.
+
+> **Con el mercado cerrado** las ventas a mercado se **encolan** al próximo open
+> y no llenan. El baseline se escribe igual y el reporte lo dice; hay que volver
+> a correr el reset con el mercado abierto para confirmar que quedaron planas.
+> Es idempotente.
+
+Verificación en `docs/sql/arena-diagnostico-2026-09-15.sql` §3.
+
+---
+
 ## Piezas
 
 | Pieza | Archivo |
@@ -816,6 +1016,19 @@ ya conocidos, y `job=audit` descubre los nuevos a medida que aparezcan.
    → el self-fetch de la lambda a sus propios endpoints recibe **401** y los 4
    se marcan "no disponibles" (bug del 24-jul: 0 posiciones, 100% cash). El
    alias público no está protegido. Resolución en `resolveBaseUrl()`.
+
+### Env vars nuevas (2026-09-15)
+
+| Var | Default | Qué hace |
+|---|---|---|
+| `ARENA_ADMIN_KEY` | — | **Obligatoria** para `/api/arena-smoke` y `/api/arena-reset`. Sin ella los dos dan 503. |
+| `ARENA_RESET_BASELINE_USD` | `100000` | Baseline declarado de la temporada: denominador del return **y** piso del pico del breaker. |
+| `ARENA_RESET_WATCH_PAUSE_MIN` | `15` | Cuánto dura la pausa del vigilante durante el aplanado. Vence sola. |
+| `ARENA_CACHE_MIN_TOKENS` | `1024` | Mínimo cacheable del proveedor. Lo fija el proveedor, no nosotros — se corrige con env var, no con deploy. |
+| `ARENA_BUFFET_V15` | `1` | Freno de mano del universo del día (screener de Alpaca). `0` lo apaga sin deploy. |
+| `ARENA_BUFFET_V15_TARGET` | `100` | Cuántos candidatos ve el PM. |
+| `ARENA_BUFFET_DAY_CACHE` | `insiders` | Canales que se piden una vez por día y se leen de Neon. **No** poner `movers` ni `earnings`: cambian dentro del día. |
+
 
 ## Self-fetch del buffet: causa raíz 24-jul y observabilidad
 
