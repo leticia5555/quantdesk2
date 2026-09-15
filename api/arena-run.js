@@ -92,7 +92,10 @@ import { buildBuffetV15, BUFFET_V15_TARGET } from './_lib/arena-buffet.js';
 // B1: el universo del día (~600), precomputado por su cron pre-apertura.
 import { loadUniverse } from './_lib/arena-universe.js';
 // B2: EL TABLERO — lo que los siete miran, idéntico, en el prefijo cacheado.
-import { buildBoard, renderBoard, BOARD_TOKEN_HARD_CAP } from './_lib/arena-board.js';
+import { buildBoard, renderBoard, BOARD_TOKEN_HARD_CAP, SECTOR_ETFS } from './_lib/arena-board.js';
+// B3: las HERRAMIENTAS y el loop de tool use (uno para los dos proveedores).
+import { createToolExecutor, TOOL_BUDGET } from './_lib/arena-tools.js';
+import { runToolLoop } from './_lib/arena-tool-loop.js';
 // A4c: el filtro de admisión del universo, UNO para todos los canales.
 import { ADMISSION, resolveAdmission, partitionByAdmission } from './_lib/arena-admission.js';
 import { computeScreens, screenerRankedSymbols, screenerDataState } from './_lib/screens.js';
@@ -295,6 +298,14 @@ SEASON 2 RULES (deterministic layers that run around you — know them so your p
 - A TIME STOP at ${EXIT_RULES.time_stop_days} days does NOT sell: it obliges you to speak. Any holding with time_stop.due = true must get an explicit hold/trim/exit with a reason.
 - Your SELL orders are sent as MARKETABLE limits (priced below the market so they FILL). Your limit_price is still checked against the ±${ARENA_RULES.price_band * 100}% band as a sanity check on your price anchoring, but do not try to squeeze a better exit price by resting above the market — a sell that does not fill is not a sell.
 - You are NOT being asked to trade more often. Holding everything and placing zero orders is a fully valid outcome, every single day. What you are asked for is to DECIDE explicitly and to REMEMBER what you said you would do.
+
+RESEARCH BEFORE YOU DECIDE (tools):
+You have tools. Use them, or do not — an empty research budget is not a failure, and a run where you looked at the board and already knew what to do is a legitimate run. What is NOT legitimate is deciding on a name you have no data for.
+- \`screener\` answers "which names look like X" over today's universe. \`ficha\` is the expensive one: the full sheet for ONE name — use it on names you are seriously considering, not to browse. \`noticias\` gets headlines for a ticker or a topic. \`sector\` opens one sector.
+- YOUR BUDGET IS ENFORCED BY THE HARNESS, not by your own restraint. When it runs out, the next call comes back saying so and returns no data. Spend it on the decisions that are actually close; a name you were never going to buy does not deserve a \`ficha\`.
+- Tool results are TRUNCATED to fit a token budget, and a truncated result SAYS SO inside itself. A list that was cut is not a list that ended: never conclude "there are no names that qualify" from a result that says it was truncated.
+- Your research sequence is published. Someone will read what you chose to look at, in order. That is not a reason to perform — it is a reason to look at what actually matters to the decision.
+- When you are done researching, answer with the JSON. Do not narrate your tool use in \`plan\`; the sequence is already recorded.
 
 MANDATORY, EVERY RUN:
 1. positions_review — ONE entry per position currently in the portfolio: stance "hold", "trim" or "exit", plus a reason that cites the numbers you were given (days in position, P&L since entry, distance from peak). A position you do not mention counts as a position you forgot.
@@ -574,6 +585,13 @@ const BUFFET_V15_ENABLED = process.env.ARENA_BUFFET_V15 !== '0';
 // poder apagarse por separado. Prendido por default.
 const BOARD_ENABLED = process.env.ARENA_BOARD !== '0';
 
+// B3 · LAS HERRAMIENTAS. Freno de mano propio: es el cambio más grande del
+// contrato con el modelo (deja de ser una llamada y pasa a ser una
+// conversación), y tiene que poder apagarse sin deploy si un proveedor se porta
+// distinto de lo esperado en producción. Apagado vuelve al DIVE de una sola
+// llamada, que es el camino que lleva meses corriendo.
+const TOOLS_ENABLED = process.env.ARENA_TOOLS !== '0';
+
 const DAY_CACHED_CHANNELS = new Set(
   String(process.env.ARENA_BUFFET_DAY_CACHE || 'insiders').split(',').map((x) => x.trim()).filter(Boolean),
 );
@@ -814,6 +832,12 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
     // el renderizador es quien respeta el presupuesto de tokens: serializar el
     // objeto acá lo saltaría y el prefijo cacheado crecería sin control.
     board: boardRender ? { text: boardRender.text, tokens_est: boardRender.tokens_est } : null,
+    // Los OBJETOS crudos del tablero y del universo. NO viajan al prompt (no
+    // están en SHARED_BUFFET_FIELDS): son para las HERRAMIENTAS de B3, que
+    // filtran sobre estructuras y no sobre el texto renderizado. Serializarlos
+    // al prompt duplicaría el tablero y reventaría el presupuesto de tokens.
+    board_raw: board,
+    universe_raw: universeBase,
     // La medición completa del tablero, para el journal: qué sección creció,
     // qué se recortó y cuánto del universo quedó cubierto.
     board_meta: boardRender ? {
@@ -1785,14 +1809,22 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     // de la corrida por evento. Es el prompt completo que la auditoría guarda.
     meta: positionMeta, commitments: memory.open, event,
   });
-  const diveHash = sha256(diveSystem + '\n---\n' + diveUser);
+  // El contexto compartido (tablero + canales) también va al prefijo cacheado
+  // del DIVE: es el MISMO texto que ya vio en el SCAN y es idéntico para los
+  // siete, así que la caché lo cubre y el modelo no pierde el tablero al pasar
+  // de fase. Se calcula UNA vez — lo usan el hash, la medición de caché y la
+  // llamada.
+  const diveShared = buffet ? buildSharedContext(buffet) : null;
+  const diveHash = sha256(diveSystem + '\n---\n' + (diveShared || '') + '\n---\n' + diveUser);
   // shown_closes: el cierre que se le MOSTRÓ al PM por candidato — para auditar
   // desfases contra lo que valida el guard (deberían coincidir siempre).
-  context.dive = { prompt: { system: diveSystem, user: diveUser }, hash: diveHash, model: agent.model, finnhub: dive.data, finnhub_errors: dive.errors, shown_closes: candidateCloses };
+  context.dive = { prompt: { system: diveSystem, shared: diveShared, user: diveUser }, hash: diveHash, model: agent.model, finnhub: dive.data, finnhub_errors: dive.errors, shown_closes: candidateCloses };
   // El prefijo cacheable de ESTA llamada, medido. Si no llega al piso del
   // modelo, el marcador se ignora EN SILENCIO — journalearlo es lo que convierte
   // ese silencio en algo que se puede leer después (ver cachePrefixReport).
-  context.dive.cache_prefix = cachePrefixReport(agent, diveSystem);
+  // Se mide el prefijo tal como VIAJA. Medir solo el system diría que cabe
+  // holgado y ocultaría que el tablero también está del lado cacheado.
+  context.dive.cache_prefix = cachePrefixReport(agent, diveShared ? [diveSystem, diveShared] : diveSystem);
   // prompt_hash de la fila = el del DIVE (la fase que produce las órdenes).
   const withPrompt = { ...base, prompt_hash: diveHash, account: accountSnapshot, context };
 
@@ -1801,7 +1833,58 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // 8 holdings eso ya no cabía en 1500 tokens, y una respuesta CORTADA a la
   // mitad es JSON inválido → `aborted_malformed_json`, cero órdenes. Subir el
   // techo es más barato que perder una corrida entera.
-  const diveLlm = await callArenaLLM({ agent, system: diveSystem, messages: [{ role: 'user', content: diveUser }], maxTokens: ARENA_MAX_TOKENS, now });
+  // ── B3 · LA INVESTIGACIÓN ────────────────────────────────────────
+  // Con herramientas, el DIVE deja de ser UNA llamada y pasa a ser una
+  // conversación: el modelo pide, el harness ejecuta, el modelo decide. El tope
+  // es del harness (ver _lib/arena-tools.js) y la secuencia se journalea entera.
+  //
+  // El PRESUPUESTO depende del tipo de corrida: 8 en una ronda fija, 3 en una
+  // por disparador. Una corrida por disparador está acotada a un nombre — no
+  // necesita explorar, necesita decidir sobre lo que ya se le dijo que mire.
+  const toolBudget = event ? TOOL_BUDGET.triggered : TOOL_BUDGET.fixed_round;
+  // Las estructuras sobre las que filtran las herramientas. Son los objetos
+  // CRUDOS, no el texto renderizado: `screener({min_rvol:3})` filtra filas, no
+  // parsea una tabla. Una corrida por evento no tiene buffet (su slate lo dio
+  // el disparador), así que ahí no hay herramientas — y está bien: esa corrida
+  // existe para decidir sobre un nombre, no para explorar.
+  const boardForTools = (buffet && buffet.board_raw) || null;
+  const universeForTools = (buffet && buffet.universe_raw) || null;
+  let executor = null;
+  let diveLlm;
+  if (TOOLS_ENABLED && boardForTools) {
+    // El sector de cada nombre sale del deep dive que ya se pagó (Finnhub
+    // profile2). Un nombre sin clasificar devuelve null y el filtro por sector
+    // simplemente no lo incluye — no se inventa un sector.
+    const sectorPorSimbolo = {};
+    for (const [tk, d] of Object.entries(dive.data || {})) {
+      const ind = d && d.profile && d.profile.industry;
+      if (ind) sectorPorSimbolo[tk] = (SECTOR_ETFS.find((x) => x.name.toLowerCase().startsWith(String(ind).toLowerCase().slice(0, 6))) || {}).etf || null;
+    }
+    executor = createToolExecutor({
+      budget: toolBudget,
+      board: boardForTools, universe: universeForTools, creds, now,
+      deps: { sectorOf: (sym) => sectorPorSimbolo[sym] || null },
+    });
+    const loop = await runToolLoop({
+      agent, system: [diveSystem, diveShared].filter(Boolean),
+      messages: [{ role: 'user', content: diveUser }],
+      executor, maxTokens: ARENA_MAX_TOKENS, now,
+    });
+    diveLlm = loop.llm;
+    context.dive.tools = {
+      budget: toolBudget, used: executor.used, turns: loop.turns, stopped_by: loop.stopped_by,
+      // La secuencia COMPLETA (con los resultados) para el replay; el resumen
+      // publicable se deriva de acá en /liga.
+      sequence: executor.sequence,
+      summary: executor.summary(),
+    };
+  } else {
+    diveLlm = await callArenaLLM({
+      agent, system: diveShared ? [diveSystem, diveShared] : diveSystem,
+      messages: [{ role: 'user', content: diveUser }], maxTokens: ARENA_MAX_TOKENS, now,
+    });
+    context.dive.tools = { enabled: false, reason: TOOLS_ENABLED ? 'sin tablero en esta corrida' : 'ARENA_TOOLS=0' };
+  }
   context.params = effectiveParams(agent, ARENA_MAX_TOKENS);
   if (diveLlm.data && diveLlm.data.usage) context.dive.usage = diveLlm.data.usage;
   if (diveLlm.refusal) {

@@ -731,6 +731,20 @@ ok(diveTodo.includes('NEWS RECENCY') && /reserve "today" for a date that equals 
 ok(diveTodo.includes('FIGURES') && /Do NOT compute, rescale, round, or invent percentages/.test(diveTodo),
   'Opción 2: instrucción "cita cifras verbatim, no inventes %" presente en el DIVE');
 
+// ── B3 · LAS HERRAMIENTAS, cableadas de verdad ──
+// El mock del LLM nunca pide una herramienta, así que acá NO se prueba el loop
+// (eso vive en tests/arena-herramientas.test.mjs con el proveedor inyectado).
+// Lo que se prueba es que el CABLEADO existe: que la corrida real pasa por el
+// camino con herramientas y lo journalea. Sin esto, el loop podría estar
+// perfecto y no estar conectado a nada.
+ok(ctxProse.dive.tools && typeof ctxProse.dive.tools === 'object',
+  'B3: la corrida journalea el bloque de herramientas', JSON.stringify(ctxProse.dive.tools));
+ok(ctxProse.dive.tools.budget === 8 || ctxProse.dive.tools.enabled === false,
+  'con el presupuesto de la ronda fija, o diciendo por qué no hubo herramientas',
+  JSON.stringify(ctxProse.dive.tools));
+ok(ctxProse.dive.prompt.shared && /MARKET BOARD/.test(ctxProse.dive.prompt.shared),
+  'B2: el DIVE también recibe el tablero, en su prefijo cacheado — el modelo no lo pierde al cambiar de fase');
+
 // ── EL CORTE DE CACHÉ, del lado correcto ──
 ok(diveSys.includes('NEWS RECENCY') && diveSys.includes('FIGURES') && diveSys.includes('RATIO SANITY'),
   'CORTE: las instrucciones estáticas están del lado CACHEADO (system), no en el turno volátil');
