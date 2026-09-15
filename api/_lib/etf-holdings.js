@@ -40,18 +40,45 @@
 // distinguir de otros cinco no es un fallo, es un agujero.
 // ═══════════════════════════════════════════════════════════════
 
+// Cada índice puede tener VARIAS URLs candidatas: se prueban en orden y gana la
+// primera que devuelva un CSV parseable. Existe porque los proveedores mueven
+// estos archivos sin avisar, y porque una URL que YO no pude verificar no tiene
+// por qué costar un deploy cuando falle.
+//
+// El override por env var va SIEMPRE primero: es la forma de corregir esto sin
+// tocar el código.
+const urls = (envVar, ...candidatas) => [process.env[envVar], ...candidatas].filter(Boolean);
+
 export const HOLDINGS_SOURCES = {
   sp500: {
     etf: 'IVV',
     proveedor: 'iShares',
-    url: process.env.ARENA_HOLDINGS_URL_SP500
-      || 'https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf/1467271812596.ajax?fileType=csv&fileName=IVV_holdings&dataType=fund',
+    // VERIFICADA por Lety el 2026-09-15: ~9 líneas de metadatos y después el
+    // encabezado `Ticker,Name,Sector,Asset Class,...`.
+    urls: urls('ARENA_HOLDINGS_URL_SP500',
+      'https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf/latest-holdings.csv',
+      // La forma vieja del mismo archivo, por si la nueva se mueve.
+      'https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf/1467271812596.ajax?fileType=csv&fileName=IVV_holdings&dataType=fund'),
   },
   nasdaq100: {
     etf: 'QQQ',
     proveedor: 'Invesco',
-    url: process.env.ARENA_HOLDINGS_URL_NASDAQ100
-      || 'https://www.invesco.com/us/financial-products/etfs/holdings/main/holdings/0?audienceType=Investor&action=download&ticker=QQQ',
+    // ── OPCIONAL, Y ESO ES UNA DECISIÓN, NO UNA FALLA ─────────────────
+    // NO hay URL verificada. La de abajo devolvió HTML, y desde este entorno no
+    // puedo probar otra: `invesco.com` está bloqueado por el proxy de egress,
+    // igual que ishares.com. Inventar variantes de la que ya falló sería
+    // cargo-cult.
+    //
+    // Así que el Nasdaq 100 arranca como OPCIONAL: si no contesta, el universo
+    // sale con el S&P 500 y punto — no bloquea, no cuenta como error y no
+    // degrada la fuente a `partial`. La mayoría de los miembros del Nasdaq 100
+    // también están en el S&P 500, así que lo que se pierde son los nombres que
+    // SOLO están en el 100 — y el journal mide exactamente cuántos son
+    // (`indices.solo_en`), para que la decisión de buscar la URL se tome con un
+    // número en vez de con una intuición.
+    opcional: true,
+    urls: urls('ARENA_HOLDINGS_URL_NASDAQ100',
+      'https://www.invesco.com/us/financial-products/etfs/holdings/main/holdings/0?audienceType=Investor&action=download&ticker=QQQ'),
   },
 };
 
@@ -134,36 +161,55 @@ const TICKER_VALIDO = /^[A-Z][A-Z0-9.]{0,6}$/;
 // no sirvió, y el diagnóstico dice POR QUÉ.
 export async function fetchHoldings(index, { timeoutMs = 25000, fetchImpl = fetch, source = null } = {}) {
   const src = source || HOLDINGS_SOURCES[index];
-  const diag = { index, etf: src && src.etf, proveedor: src && src.proveedor };
-  if (!src) return { symbols: [], diagnostics: { ...diag, ok: false, reason: 'index_desconocido' } };
+  const base = { index, etf: src && src.etf, proveedor: src && src.proveedor, opcional: !!(src && src.opcional) };
+  if (!src) return { symbols: [], diagnostics: { ...base, ok: false, reason: 'index_desconocido' } };
 
+  const candidatas = src.urls || (src.url ? [src.url] : []);
+  if (!candidatas.length) return { symbols: [], diagnostics: { ...base, ok: false, reason: 'sin_url' } };
+
+  const intentos = [];
+  for (const url of candidatas) {
+    const r = await intentarUrl(url, { timeoutMs, fetchImpl });
+    intentos.push({ url_host: hostDe(url), ...r.diagnostics });
+    if (r.symbols.length) {
+      return { symbols: r.symbols, diagnostics: { ...base, ok: true, url_host: hostDe(url), ...r.diagnostics, intentos } };
+    }
+  }
+  // Ninguna sirvió: se devuelve el diagnóstico del ÚLTIMO intento arriba y la
+  // lista completa abajo, para no tener que elegir cuál de los fallos contar.
+  return { symbols: [], diagnostics: { ...base, ok: false, ...(intentos[intentos.length - 1] || {}), intentos } };
+}
+
+const hostDe = (u) => { try { return new URL(u).host; } catch { return null; } };
+
+async function intentarUrl(url, { timeoutMs, fetchImpl }) {
   let texto = '';
   try {
-    const r = await fetchImpl(src.url, {
+    const r = await fetchImpl(url, {
       signal: AbortSignal.timeout(timeoutMs),
       // Sin User-Agent, los dos proveedores contestan 403 desde un datacenter.
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; QuantDeskArena/1.0)', Accept: 'text/csv,*/*' },
     });
     texto = await r.text().catch(() => '');
     if (!r.ok) {
-      return { symbols: [], diagnostics: { ...diag, ok: false, reason: 'http_error', status: r.status, bytes: texto.length, body_sample: texto.slice(0, 200) } };
+      return { symbols: [], diagnostics: { ok: false, reason: 'http_error', status: r.status, bytes: texto.length, body_sample: texto.slice(0, 200) } };
     }
   } catch (e) {
     const m = String((e && e.message) || e);
-    return { symbols: [], diagnostics: { ...diag, ok: false, reason: /abort|timeout/i.test(m) ? 'timeout' : 'red', detail: m } };
+    return { symbols: [], diagnostics: { ok: false, reason: /abort|timeout/i.test(m) ? 'timeout' : 'red', detail: m } };
   }
 
-  if (!texto.trim()) return { symbols: [], diagnostics: { ...diag, ok: false, reason: 'cuerpo_vacio', bytes: 0 } };
+  if (!texto.trim()) return { symbols: [], diagnostics: { ok: false, reason: 'cuerpo_vacio', bytes: 0 } };
   // Si contestaron HTML, decirlo con esas palabras: "0 filas" mandaría a
   // revisar el parser cuando el problema es que la URL dejó de servir el CSV.
   if (/^\s*<(!doctype|html)/i.test(texto)) {
-    return { symbols: [], diagnostics: { ...diag, ok: false, reason: 'html_no_csv', bytes: texto.length, body_sample: texto.slice(0, 200), detail: 'la URL devolvió una página, no el CSV: probablemente se movió el archivo. Se puede corregir sin deploy con ARENA_HOLDINGS_URL_' + String(index).toUpperCase() } };
+    return { symbols: [], diagnostics: { ok: false, reason: 'html_no_csv', bytes: texto.length, body_sample: texto.slice(0, 200), detail: 'la URL devolvió una página, no el CSV: probablemente se movió el archivo. Se corrige SIN deploy con la env var ARENA_HOLDINGS_URL_<INDICE>.' } };
   }
 
   const filas = parseCsv(texto);
   const cab = ubicarEncabezado(filas);
   if (!cab) {
-    return { symbols: [], diagnostics: { ...diag, ok: false, reason: 'sin_encabezado', bytes: texto.length, filas_totales: filas.length, primeras_lineas: filas.slice(0, 6).map((f) => f.slice(0, 6).join(',')) } };
+    return { symbols: [], diagnostics: { ok: false, reason: 'sin_encabezado', bytes: texto.length, filas_totales: filas.length, primeras_lineas: filas.slice(0, 10).map((f) => f.slice(0, 6).join(',')) } };
   }
 
   const simbolos = [];
@@ -182,7 +228,7 @@ export async function fetchHoldings(index, { timeoutMs = 25000, fetchImpl = fetc
   return {
     symbols,
     diagnostics: {
-      ...diag, ok: symbols.length > 0, url_host: (() => { try { return new URL(src.url).host; } catch { return null; } })(),
+      ok: symbols.length > 0,
       bytes: texto.length, filas_totales: filas.length,
       encabezado_en_linea: cab.fila, columnas_detectadas: Object.keys(cab.mapa),
       tenia_columna_de_clase: cab.mapa.clase != null,

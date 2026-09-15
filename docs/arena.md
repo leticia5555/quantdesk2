@@ -1307,10 +1307,37 @@ suscripción.
 Los ETFs que replican esos índices publican sus tenencias **completas, a diario,
 gratis y sin registro**, porque están obligados:
 
-| Índice | ETF | Proveedor |
-|---|---|---|
-| S&P 500 | **IVV** | iShares |
-| Nasdaq 100 | **QQQ** | Invesco |
+| Índice | ETF | Proveedor | Estado |
+|---|---|---|---|
+| S&P 500 | **IVV** | iShares | URL **verificada** |
+| Nasdaq 100 | **QQQ** | Invesco | **opcional** — sin URL verificada |
+
+#### El Nasdaq 100 arranca OPCIONAL, y eso es una decisión
+
+La URL de descarga de Invesco devolvió HTML, y desde el entorno donde se escribe
+esto no se puede probar otra: `invesco.com` está bloqueado por el proxy de
+egress, igual que `ishares.com`. Inventar variantes de la que ya falló sería
+cargo-cult.
+
+Así que si el Nasdaq 100 no contesta: **no bloquea, no cuenta como error y no
+degrada la fuente a `partial`.** Esto último importa más de lo que parece — con
+el índice opcional fallando todos los días, `partial` estaría siempre encendido y
+dejaría de leerse. Una bandera que está siempre encendida no es una bandera, y el
+día que de verdad se caiga el S&P 500 nadie lo notaría entre el ruido. Por eso
+`universe_source` se calcula **solo sobre los índices obligatorios**.
+
+Queda visible igual (`indices.nasdaq100.opcional: true`), con la nota de cómo
+activarlo. Y `indices.solo_en` mide **cuántos nombres aportaría** que el S&P 500
+no tiene: la mayoría de sus miembros están en los dos, así que *"nos falta el
+100"* no significa *"nos faltan 100 nombres"*. Cuando aparezca una URL, la
+decisión se toma con ese número.
+
+#### Varias URLs candidatas por índice
+
+Cada índice lleva una **lista** de URLs que se prueban en orden; gana la primera
+que devuelva un CSV parseable, y se reporta cuál fue (`indices[].url_host`). Los
+intentos fallidos no se pierden: quedan en `intentos` con su motivo. El override
+por env var va siempre primero, así que una URL nueva entra **sin deploy**.
 
 Es la misma información con un día de latencia como mucho, y con una ventaja
 sobre FMP: es el **replicante** diciendo qué tiene, no un tercero diciendo qué

@@ -117,11 +117,11 @@ export default async function handler(req, res) {
       indices: universe.indices,
       // ¿La key llegó a ESTE entorno? Solo el booleano, nunca el valor.
       fmp_key_present: universe.fmp_key_present,
-      // Cada intento contra FMP con su status y los primeros bytes del cuerpo.
-      // Sin esto, "Sin FMP" era la única salida para seis causas distintas
-      // —sin key, 403, cuota, endpoint viejo, JSON roto, timeout— y ninguna
-      // llegaba a `errors`.
-      fmp_diagnostics: universe.fmp_diagnostics,
+      // Cada intento contra cada fuente de constituyentes (tenencias del ETF
+      // primero, FMP solo si hay key), con su status y los primeros bytes del
+      // cuerpo. Sin esto, "sin constituyentes" era la única salida para seis
+      // causas distintas y ninguna llegaba a `errors`.
+      constituents_diagnostics: universe.constituents_diagnostics,
       admission: { ...universe.admission, rejected: universe.admission.rejected.slice(0, 20) },
       errors: universe.errors,
       caveat: universe.caveat,
@@ -158,13 +158,25 @@ export default async function handler(req, res) {
       out.persistence_warning = `No se pudo guardar en Neon: ${sinPersistir.join(', ')}. La lista de hoy sirve igual, pero mañana se va a volver a pedir a FMP en vez de leerse de la base.`;
     }
 
-    // Si la key ESTÁ y aun así FMP no sirvió, el problema no es la env var y
-    // conviene decirlo arriba de todo en vez de dejarlo en un array.
-    const fallosFmp = (universe.fmp_diagnostics || []).filter((d) => d && !d.ok);
-    if (universe.fmp_key_present && fallosFmp.length && universe.universe_source !== 'fmp') {
-      out.fmp_hint = 'La FMP_API_KEY SÍ está en este entorno y aun así FMP no sirvió: el problema no es la env var. Mirá `fmp_diagnostics[].reason` y `body_sample` — un 403 con "Legacy Endpoint" significa que la key es de la API nueva y hay que usar /stable (el código ya prueba las dos); un "Limit Reach" es cuota; un `lista_corta` es un plan que no cubre el endpoint.';
-    } else if (!universe.fmp_key_present) {
-      out.fmp_hint = 'FMP_API_KEY NO está en este entorno. En Vercel las env vars viven por entorno: que esté en Production no la pone en Preview, y viceversa. Los crons solo corren en Production.';
+    // ── LA PISTA, SOLO CUANDO HAY ALGO QUE ARREGLAR ───────────────────
+    // Un índice OPCIONAL que no contestó NO genera pista: es una decisión
+    // tomada, no un problema. Si generara, la pista estaría encendida todos los
+    // días y dejaría de leerse — que es como se pierden las pistas que sí
+    // importan.
+    const idx = universe.indices || {};
+    const obligatoriosCaidos = Object.entries(idx)
+      .filter(([k, v]) => v && typeof v === 'object' && k !== 'solo_en' && !v.opcional && v.source === 'none')
+      .map(([k]) => k);
+
+    if (obligatoriosCaidos.length) {
+      out.constituents_hint = `No se pudieron bajar los constituyentes de: ${obligatoriosCaidos.join(', ')}. Mirá \`constituents_diagnostics\` — \`html_no_csv\` significa que la URL se movió (se corrige SIN deploy con ARENA_HOLDINGS_URL_<INDICE>); \`sin_encabezado\` significa que cambiaron los nombres de columna y ahí hacen falta las \`primeras_lineas\` para ajustarlo.`;
+    }
+    const opcionalesAusentes = Object.entries(idx)
+      .filter(([k, v]) => v && typeof v === 'object' && k !== 'solo_en' && v.opcional && v.source === 'none')
+      .map(([k]) => k);
+    if (opcionalesAusentes.length) {
+      out.opcionales_ausentes = opcionalesAusentes;
+      out.opcionales_note = `${opcionalesAusentes.join(', ')}: índice OPCIONAL sin fuente. NO es un error — el universo sale con los obligatorios. \`indices.solo_en\` dice cuántos nombres únicos aportaría si se activara.`;
     }
 
     out.verdict = universe.counts.admitidos === 0
