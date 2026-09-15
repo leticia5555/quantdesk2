@@ -69,6 +69,8 @@ import {
   ensureAgentStateRows, getArenaState, resolveBaseUrl,
 } from './arena-run.js';
 import { beat } from './_lib/heartbeat.js';
+// La pausa dinámica del vigilante (la pone el reset mientras aplana las cuentas).
+import { watchPaused } from './_lib/arena-baseline.js';
 
 // Un tick puede despertar hasta 7 agentes, cada uno con su llamada al DIVE y su
 // titular. Mismo techo que arena-run (plan Pro): 300s.
@@ -502,6 +504,27 @@ export default async function handler(req, res) {
 
   try {
     await ensureSchema();
+
+    // ── PAUSA DINÁMICA (freno de mano #3, en Neon) ───────────────────
+    // Los dos frenos de arriba son env vars: moverlos exige un redeploy. El
+    // RESET de libros (/api/arena-reset) necesita algo más chico y más rápido —
+    // apagar el vigilante por los pocos minutos que dura el aplanado y volver a
+    // prenderlo solo, sin tocar el deploy. Si el tick cayera en medio, vería
+    // siete libros a medio liquidar y despertaría a los agentes para opinar
+    // sobre un libro que está dejando de existir.
+    //
+    // La pausa VENCE sola: no existe forma de dejarla puesta para siempre. Y
+    // falla ABIERTA (watchPaused devuelve null si la DB no contesta): un
+    // vigilante que se apaga porque Neon tosió es peor que un tick de más.
+    const pausa = await watchPaused(new Date());
+    if (pausa) {
+      await beat('arena:watch', 'paused', { until: pausa.until });
+      return res.status(200).json({
+        paused: true, until: pausa.until, minutes_left: pausa.minutes_left, reason: pausa.note,
+        hint: 'Pausa dinámica en arena_flags (la pone /api/arena-reset mientras aplana las cuentas). Vence sola.',
+      });
+    }
+
     const dry = !!(req.query && (req.query.dry === '1' || req.query.dry === 'true'));
     const summary = await runArenaWatch({ baseUrl: resolveBaseUrl(req), dry });
     // El latido dice "el vigilante corrió", no "operó": late igual en un tick

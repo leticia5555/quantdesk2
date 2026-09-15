@@ -109,6 +109,36 @@ export function cancelOrder(orderId, creds) {
   return alpacaFetch('/v2/orders/' + encodeURIComponent(orderId), { method: 'DELETE', creds });
 }
 
+// ─────────────────── APLANADO DE CUENTA (solo RESET) ───────────────────
+// LA EXCEPCIÓN A LA REGLA DE LA CASA, declarada acá y en un solo lugar.
+//
+// Todo lo que decide el Arena sale por `createLimitOrder`: límite, day, sin
+// flag que lo cambie (cicatriz Polymarket). Estas dos funciones NO son un
+// camino de decisión — son el APLANADO de una cuenta antes de arrancar una
+// temporada, y lo dispara una persona con ARENA_ADMIN_KEY, nunca un cron ni un
+// LLM. Alpaca cierra posiciones con orden de MERCADO en `DELETE /v2/positions`
+// y no ofrece una variante límite; un aplanado por límites sería N órdenes que
+// pueden no llenar, y una temporada que arranca con media cartera vieja
+// adentro es peor que un fill unos centavos peor.
+//
+// El candado que queda: estas funciones viven fuera del harness de decisión
+// (nadie en arena-run.js las importa) y hay un test que verifica que
+// `createLimitOrder` sigue siendo el único camino de escritura del runner.
+
+// Cancela TODAS las órdenes abiertas. Alpaca responde 207 con el detalle por
+// orden; el cliente devuelve ese array tal cual para poder confirmar una por
+// una en vez de reportar un "listo" que no se verificó.
+export function cancelAllOrders(creds) {
+  return alpacaFetch('/v2/orders', { method: 'DELETE', creds });
+}
+
+// Cierra TODAS las posiciones a mercado y, de paso, cancela las órdenes
+// abiertas (`cancel_orders=true`) para que una venta vieja no compita con el
+// aplanado. Devuelve el detalle por símbolo que manda Alpaca.
+export function closeAllPositions(creds, { cancelOrders = true } = {}) {
+  return alpacaFetch('/v2/positions?cancel_orders=' + (cancelOrders ? 'true' : 'false'), { method: 'DELETE', creds });
+}
+
 // ─────────────────── datos de mercado (Market Data API) ───────────────────
 // HOST DISTINTO del de trading: data.alpaca.markets, mismas keys. Lo usa el
 // VIGILANTE (api/arena-watch.js) para mirar precios intradía sin gastar un solo

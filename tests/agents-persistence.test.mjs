@@ -74,6 +74,10 @@ console.log('schema: 100% CREATE TABLE IF NOT EXISTS, cero DROP/TRUNCATE en api/
   const ALLOWED_DELETES = {
     'api/agents.js': /id = \$1 and user_id = \$2/,          // doble-scoped por dueño
     'api/macro-events.js': /delete from macro_events where id = \$1/i, // admin curado, gated
+    // El kv de flags dinámicos del Arena (hoy: la pausa del vigilante que pone
+    // /api/arena-reset mientras aplana las cuentas). Borra UNA fila por clave y
+    // no guarda datos de usuario: el "dato" que vive ahí es un vencimiento.
+    'api/_lib/arena-baseline.js': /delete from arena_flags where key = \$1/i,
   };
   let deletes = [];
   for (const p of files) {

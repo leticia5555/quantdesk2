@@ -9,6 +9,9 @@
     "api/arena-smoke.js": {
       "maxDuration": 300
     },
+    "api/arena-reset.js": {
+      "maxDuration": 300
+    },
     "api/arena-screener.js": {
       "maxDuration": 300
     },

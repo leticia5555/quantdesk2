@@ -99,6 +99,10 @@ import { ARENA_AGENTS, ARENA_SEASON, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPE
 // El runner solo necesita saber CUÁNDO deja de correr el cron nocturno y qué
 // dice el reglamento nuevo; la lógica de disparadores vive en su módulo.
 import { WATCH_RULES, watchCadenceActive, watchStartDate } from './_lib/arena-watch.js';
+// EL CORTE: baseline por agente (reset) + el piso del pico del breaker.
+// Ver _lib/arena-baseline.js — SEASON_CUTOFF sigue siendo el suelo, el baseline
+// solo lo puede mover hacia ADELANTE.
+import { effectiveCutoff, breakerPeak, RESET_BASELINE_USD } from './_lib/arena-baseline.js';
 
 // Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
 // reglas de universo); el buffet (trimMovers) la reusa y los tests de
@@ -926,13 +930,38 @@ function riskDiscardActions(discarded) {
 // vacía y ya). Reactivación MANUAL (runArenaResume) — nunca automática.
 export async function getArenaState(agentId = FLAGSHIP_AGENT_ID) {
   try {
-    const rows = await sql(`select halted, halted_at, halted_reason, resumed_at from arena_state where agent_id = $1`, [agentId]);
-    return rows[0] || { halted: false, halted_at: null, halted_reason: null, resumed_at: null };
+    const rows = await sql(`select halted, halted_at, halted_reason, resumed_at,
+                                   baseline_at, baseline_equity, baseline_id
+                            from arena_state where agent_id = $1`, [agentId]);
+    return rows[0] || { halted: false, halted_at: null, halted_reason: null, resumed_at: null, baseline_at: null, baseline_equity: null, baseline_id: null };
   } catch (e) {
     // Fail-safe: si el estado no se puede leer, NO se asume detenido (no se
     // congela el agente por un hipo de DB) — el breaker se re-evaluará igual.
     return { halted: false, halted_at: null, halted_reason: null, resumed_at: null };
   }
+}
+
+// ── EL CORTE EFECTIVO de un agente ───────────────────────────────────
+// Dos números derivados del estado, usados por LAS DOS rutas que miran el
+// pasado (runArenaDecide y runArenaRiskNet). Viven acá, juntos, porque el bug
+// que arreglan es precisamente que estaban repartidos: el corte por temporada
+// se aplicó en `decide` y NO en la red determinista, así que la red seguía
+// midiendo el drawdown contra el pico de una temporada muerta.
+//
+//   · `date`  — corte de FECHA para la memoria del PM (plan anterior, fills,
+//               compromisos). MAX(arranque de temporada, baseline del reset).
+//   · `since` — corte de INSTANTE para el pico del breaker. El más reciente
+//               entre `resumed_at` (reanimación tras un halt) y `baseline_at`
+//               (aplanado deliberado). null = sin corte.
+//   · `floor` — el PISO del pico: el equity declarado de arranque.
+export function agentCutoff(state = {}) {
+  const date = effectiveCutoff(SEASON_CUTOFF, state.baseline_at);
+  const ts = [state.resumed_at, state.baseline_at]
+    .map((v) => (v ? Date.parse(new Date(v).toISOString()) : NaN))
+    .filter((n) => Number.isFinite(n));
+  const since = ts.length ? new Date(Math.max(...ts)).toISOString() : null;
+  const floor = state.baseline_equity != null ? Number(state.baseline_equity) : RESET_BASELINE_USD;
+  return { date, since, floor };
 }
 
 // Asegura una fila de estado por agente activo (idempotente). El halt/resume
@@ -1065,6 +1094,11 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     return { status: 'halted', halted_since: state.halted_at, reason: state.halted_reason };
   }
 
+  // El CORTE de este agente: hasta dónde mira su memoria y cuál es el piso de
+  // su pico. Sale del estado (baseline del último reset + resumed_at), no de
+  // una constante — un reset a mitad de temporada tiene que mover los dos.
+  const cutoff = agentCutoff(state);
+
   if (!creds) {
     await journalInsert({ ...base, status: 'aborted_no_alpaca_keys', error: `Faltan ALPACA_${agent.alpaca}_KEY/SECRET.` });
     return { status: 'aborted_no_alpaca_keys', orders: 0 };
@@ -1092,14 +1126,14 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
          where phase = 'decide' and plan is not null and agent_id = $1
            and status not in ('season_start', 'season_started', 'rules_changed', 'season_winner')
            and run_date >= $2::date
-         order by created_at desc limit 1`, [agentId, SEASON_CUTOFF]),
+         order by created_at desc limit 1`, [agentId, cutoff.date]),
     // High-water-mark del libro: el máximo equity journaleado POR ESTE AGENTE,
     // ACOTADO por resumed_at (tras revivir, el pico se re-basa al equity de ese
     // momento — si no, el broadcut re-dispararía sobre una cuenta ya liquidada).
     // null en el primer run → pico = equity.
     sql(`select max((account->>'equity')::numeric) as peak from arena_journal
          where account is not null and agent_id = $1 and run_date >= $3::date
-           and ($2::timestamptz is null or created_at > $2::timestamptz)`, [agentId, state.resumed_at, SEASON_CUTOFF]),
+           and ($2::timestamptz is null or created_at > $2::timestamptz)`, [agentId, cutoff.since, cutoff.date]),
     // Stops catastróficos recientes de ESTE agente que NO llenaron → escalan la banda.
     sql(`select actions from arena_journal where status = 'risk_exit' and agent_id = $1
          and created_at > now() - interval '7 days' order by created_at desc`, [agentId]),
@@ -1111,17 +1145,20 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     sql(`select run_date, actions from arena_journal
          where phase = 'decide' and agent_id = $1 and actions is not null
          and run_date >= $2::date
-         and created_at > now() - interval '180 days' order by created_at asc`, [agentId, SEASON_CUTOFF]),
+         and created_at > now() - interval '180 days' order by created_at asc`, [agentId, cutoff.date]),
     // (b) COMPROMISOS journaleados → el fold determina cuáles siguen abiertos.
     //     Se proyecta SOLO context->'commitments' (no el context entero).
     sql(`select run_date, context->'commitments' as commitments from arena_journal
          where phase = 'decide' and agent_id = $1 and context ? 'commitments'
          and run_date >= $2::date
-         and created_at > now() - interval '60 days' order by created_at asc`, [agentId, SEASON_CUTOFF]),
+         and created_at > now() - interval '60 days' order by created_at asc`, [agentId, cutoff.date]),
   ]);
   const equity = Number(account.equity);
   const dbPeak = peakRows[0] && peakRows[0].peak != null ? Number(peakRows[0].peak) : 0;
-  const peak = Math.max(dbPeak, equity); // monótono; incluye el equity de hoy
+  // Monótono e incluye el equity de hoy, con el PISO del baseline declarado: un
+  // libro recién aplanado no arranca midiendo el drawdown contra el pico del
+  // libro anterior (ver _lib/arena-baseline.js).
+  const peak = breakerPeak({ dbPeak, equity, baselineEquity: cutoff.floor });
   const accountSnapshot = { equity, cash: Number(account.cash), positions: positions.length };
   const previous = prevRows[0]
     ? { date: prevRows[0].run_date, plan: prevRows[0].plan,
@@ -1164,6 +1201,9 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     : buildRiskExits({ equity, peak, positions, closes: heldCloses, escalation, peaks: peaksFromMeta(positionMeta) });
   const riskContext = {
     peak, drawdown: +risk.drawdown.toFixed(4), stage: risk.stage, escalation,
+    // El corte con el que se midió ese pico. Sin esto, un drawdown journaleado
+    // no se puede auditar: no se sabe contra qué ventana se calculó.
+    cutoff: { since: cutoff.since, from_date: cutoff.date, baseline_equity: cutoff.floor, baseline_id: state.baseline_id || null },
     bands: { breaker: EXIT_RULES.exit_band_breaker, catastrophic: EXIT_RULES.exit_band_catastrophic, trailing: EXIT_RULES.exit_band_trailing },
     approved: risk.approved, discarded: risk.discarded,
     ...(event ? { skipped: 'corrida por evento: la red determinista decide con cierres completos, no intradía' } : {}),
@@ -1680,6 +1720,13 @@ export async function runArenaRiskNet({ agent, now = new Date(), caches } = {}) 
   const creds = agentAlpacaCreds(agent);
   if (!creds) return { status: 'aborted_no_alpaca_keys', agent: agentId, orders: 0 };
 
+  // EL MISMO CORTE que usa `decide`. Que acá faltara era un bug con dientes: el
+  // fix del pico por temporada se aplicó en la decisión del PM y NO en la red
+  // determinista, así que la red —la única pieza que NO se puede apagar— seguía
+  // midiendo el drawdown contra el pico de un libro que ya no existía y podía
+  // disparar un corte amplio sobre una cuenta recién aplanada.
+  const cutoff = agentCutoff(state);
+
   // Las mismas consultas que hace el prólogo de runArenaDecide. Se repiten a
   // propósito en vez de factorizarse a medias: esta función tiene que poder
   // correr SOLA, sin el resto del pipeline, y una abstracción compartida entre
@@ -1688,17 +1735,19 @@ export async function runArenaRiskNet({ agent, now = new Date(), caches } = {}) 
   const [account, positions, peakRows, riskRows, fillRows] = await Promise.all([
     getAccount(creds), getPositions(creds),
     sql(`select max((account->>'equity')::numeric) as peak from arena_journal
-         where account is not null and agent_id = $1 and ($2::timestamptz is null or created_at > $2::timestamptz)`, [agentId, state.resumed_at]),
+         where account is not null and agent_id = $1 and run_date >= $3::date
+           and ($2::timestamptz is null or created_at > $2::timestamptz)`, [agentId, cutoff.since, cutoff.date]),
     sql(`select actions from arena_journal where status = 'risk_exit' and agent_id = $1
          and created_at > now() - interval '7 days' order by created_at desc`, [agentId]),
     sql(`select run_date, actions from arena_journal
          where phase = 'decide' and agent_id = $1 and actions is not null
-         and created_at > now() - interval '180 days' order by created_at asc`, [agentId]),
+         and run_date >= $2::date
+         and created_at > now() - interval '180 days' order by created_at asc`, [agentId, cutoff.date]),
   ]);
 
   const equity = Number(account.equity);
   const dbPeak = peakRows[0] && peakRows[0].peak != null ? Number(peakRows[0].peak) : 0;
-  const peak = Math.max(dbPeak, equity);
+  const peak = breakerPeak({ dbPeak, equity, baselineEquity: cutoff.floor });
   const accountSnapshot = { equity, cash: Number(account.cash), positions: positions.length };
 
   const heldSymbols = [...new Set((positions || []).map((p) => (p && p.symbol ? String(p.symbol).trim().toUpperCase() : '')).filter(Boolean))];
@@ -1715,6 +1764,9 @@ export async function runArenaRiskNet({ agent, now = new Date(), caches } = {}) 
   const risk = buildRiskExits({ equity, peak, positions, closes: heldCloses, escalation, peaks: peaksFromMeta(positionMeta) });
   const riskContext = {
     peak, drawdown: +risk.drawdown.toFixed(4), stage: risk.stage, escalation,
+    // El corte con el que se midió ese pico. Sin esto, un drawdown journaleado
+    // no se puede auditar: no se sabe contra qué ventana se calculó.
+    cutoff: { since: cutoff.since, from_date: cutoff.date, baseline_equity: cutoff.floor, baseline_id: state.baseline_id || null },
     bands: { breaker: EXIT_RULES.exit_band_breaker, catastrophic: EXIT_RULES.exit_band_catastrophic, trailing: EXIT_RULES.exit_band_trailing },
     approved: risk.approved, discarded: risk.discarded,
     standalone: 'red determinista corrida sola (cadencia por evento): decide con cierres completos, sin LLM',
