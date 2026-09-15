@@ -144,6 +144,10 @@ export function clampArgs(name, raw) {
     num('limit', 1, 25, 25);
     num('min_rvol', 0, 100);
     num('min_mcap_b', 0, 1e5);
+    num('ret_1d_min', -100, 1000);
+    num('ret_1d_max', -100, 1000);
+    num('ret_5d_min', -100, 1000);
+    num('ret_1m_min', -100, 1000);
     up('sector');
     if (a.sector && !SECTOR_ETFS.some((s) => s.etf === a.sector)) {
       notes.push(`sector "${a.sector}" no es uno de los 11 ETFs GICS (${SECTOR_ETFS.map((s) => s.etf).join(', ')}); se ignoró`);
@@ -227,13 +231,48 @@ export async function runScreener(args, ctx) {
   if (args.near_52w_high) r = r.filter((f) => f.pct_from_high != null && f.pct_from_high >= -2);
   if (args.near_52w_low) r = r.filter((f) => f.pct_from_low != null && f.pct_from_low <= 2);
   if (args.has_news) r = r.filter((f) => conNoticia.has(f.symbol));
-  if (args.min_mcap_b != null && ctx.marketCapOf) {
-    r = r.filter((f) => { const mc = ctx.marketCapOf(f.symbol); return mc != null && mc >= args.min_mcap_b * 1e9; });
+  // ── TRES FILTROS QUE SE DECLARABAN Y NO EXISTÍAN ───────────────────
+  // `ret_5d_min`, `ret_1m_min` y `min_mcap_b` estaban en el schema que ve el
+  // modelo y NO se aplicaban: los dos primeros porque nadie los implementó, el
+  // tercero porque dependía de `ctx.marketCapOf`, que la sombra nunca pasaba.
+  //
+  // Eso es PEOR que devolver cero. Un filtro que se ignora en silencio hace que
+  // el modelo construya su tesis creyendo que filtró — "estos son los nombres
+  // con +5% en el mes" cuando son todos los nombres. Un dato faltante se puede
+  // declarar; un filtro que miente, no.
+  //
+  // Ahora los tres leen del universo, y si el dato no está para un nombre, ese
+  // nombre NO pasa el filtro: pedir "+5% en el mes" y recibir uno del que no
+  // sabemos el retorno sería el mismo error con otra cara.
+  const retDe = ctx.retornosOf || (() => null);
+  if (args.ret_5d_min != null) {
+    r = r.filter((f) => { const x = retDe(f.symbol); return x && x.ret_5d != null && x.ret_5d >= args.ret_5d_min; });
+  }
+  if (args.ret_1m_min != null) {
+    r = r.filter((f) => { const x = retDe(f.symbol); return x && x.ret_1m != null && x.ret_1m >= args.ret_1m_min; });
+  }
+  if (args.min_mcap_b != null) {
+    const mcapDe = ctx.marketCapOf || (() => null);
+    r = r.filter((f) => { const mc = mcapDe(f.symbol); return mc != null && mc >= args.min_mcap_b * 1e9; });
   }
   r = r.sort((a, b) => (Math.abs(b.change_pct || 0) - Math.abs(a.change_pct || 0)) || (a.symbol < b.symbol ? -1 : 1))
     .slice(0, args.limit || 25);
 
   if (!r.length) {
+    // EL CERO TIENE QUE DECIR DE QUÉ CERO SE TRATA. Si el filtro pedía un dato
+    // que no tenemos para NINGÚN nombre, "ninguno cumple" es falso: lo correcto
+    // es "no lo sabemos". Son dos respuestas distintas y llevan a decisiones
+    // distintas.
+    const faltantes = [];
+    if (args.ret_5d_min != null && !filas.some((f) => (retDe(f.symbol) || {}).ret_5d != null)) faltantes.push('retorno a 5 días');
+    if (args.ret_1m_min != null && !filas.some((f) => (retDe(f.symbol) || {}).ret_1m != null)) faltantes.push('retorno a 1 mes');
+    if (args.min_mcap_b != null && !filas.some((f) => (ctx.marketCapOf || (() => null))(f.symbol) != null)) faltantes.push('market cap');
+    if (faltantes.length) {
+      return {
+        text: `No se puede contestar: el universo de hoy no trae ${faltantes.join(' ni ')} para ninguno de los ${filas.length} nombres del tablero. NO significa que ninguno cumpla — significa que no tenemos ese dato en esta corrida. Probá con otro criterio.`,
+        rows: 0, datos_faltantes: faltantes,
+      };
+    }
     return { text: `Ningún nombre del universo cumple esos criterios hoy. (El screener filtra sobre los ${filas.length} nombres que el tablero cubre, no sobre el universo entero: los que no están en ningún extremo del tablero no se evalúan.)`, rows: 0 };
   }
   const header = `${r.length} nombre(s). Columnas: TICKER precio cambio_1d RVOL dist_máx52s`;
@@ -360,7 +399,14 @@ export function createToolExecutor({
   for (const h of (board && board.headlines) || []) for (const s of h.symbols || []) newsSymbols.add(s);
   const marketCapOf = deps.marketCapOf || null;
 
-  const ctx = { board, universe, creds, finnhubKey, now, deps, sectorOf, newsSymbols, marketCapOf };
+  // Retornos y market cap salen del UNIVERSO, que ya los calculó y los guardó.
+  // Se leen de ahí en vez de pedirlos de nuevo: la corrida del PM no puede
+  // pagar 600 consultas para contestar un filtro.
+  const retornosOf = deps.retornosOf
+    || ((sym) => ((universe && universe.retornos) || {})[String(sym || '').toUpperCase()] || null);
+  const capOf = marketCapOf
+    || ((sym) => ((universe && universe.market_caps) || {})[String(sym || '').toUpperCase()] ?? null);
+  const ctx = { board, universe, creds, finnhubKey, now, deps, sectorOf, newsSymbols, marketCapOf: capOf, retornosOf };
   const sequence = [];
   // DOS CONTADORES, Y LA DIFERENCIA ES LA MITAD DEL BUG REPORTADO.
   //   `used`     = llamadas EJECUTADAS. Nunca puede pasar del techo.

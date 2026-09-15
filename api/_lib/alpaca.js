@@ -388,9 +388,22 @@ async function barsPorFeed(wanted, { creds, now, days, feed }) {
       const dvs = cerradas
         .map((b) => (Number(b.c) || 0) * (Number(b.v) || 0))
         .filter((x) => Number.isFinite(x) && x > 0);
+      // ── LOS RETORNOS SALEN GRATIS DE LAS MISMAS VELAS ────────────
+      // Ya se bajan ~35 sesiones para el promedio de volumen. Calcular el
+      // retorno a 5 días y a ~1 mes acá no cuesta una request más, y sin ellos
+      // el screener declaraba filtros (`ret_5d_min`, `ret_1m_min`) que NO
+      // estaban implementados: el modelo los pedía, el harness los ignoraba en
+      // silencio, y la respuesta se leía como si el filtro hubiera corrido.
+      const retorno = (n) => {
+        const base = cerradas[cerradas.length - 1 - n];
+        const c0 = base && Number(base.c);
+        return Number.isFinite(c0) && c0 > 0 ? +(((price - c0) / c0) * 100).toFixed(2) : null;
+      };
       out[String(sym).toUpperCase()] = {
         price: +price.toFixed(4),
         dollarVolume: dvs.length ? Math.round(dvs.reduce((a, b) => a + b, 0) / dvs.length) : null,
+        ret_5d: retorno(5),
+        ret_1m: retorno(21),
         sessions: cerradas.length,
       };
     }

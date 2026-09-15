@@ -731,6 +731,65 @@ sería re-crear el problema una capa más arriba.
 Mientras el contrato nuevo corra solo en sombra, éste es el **único** lugar
 donde se puede ver un portafolio objetivo.
 
+### Lo que encontró la TERCERA sombra (5/7)
+
+#### El 0.68 del piso de ruido no era ruido
+
+`control` arrancó con **6 posiciones heredadas** y `claude` con **1**. Dos PMs
+idénticos que parten de carteras distintas producen libros distintos **por
+herencia**, no por ruido del modelo.
+
+El piso solo significa algo cuando se cumplen **las dos** condiciones: misma
+lente **y** mismo libro de arranque. Ahora el reporte exige las dos, marca
+`comparable: false` cuando falla alguna, y **no publica el número como piso** —
+lo publica como `cosine_observado` para que se vea que existe sin que se lea
+como lo que no es. Y dice cómo arreglarlo: un reset iguala las cuentas.
+
+`posiciones_iniciales` de los siete sale al lado, porque es la otra mitad de la
+pregunta: un solapamiento alto entre dos agentes que heredaron la misma cartera
+no dice nada sobre cómo piensan.
+
+#### Tres filtros del screener se declaraban al modelo y no existían
+
+| Filtro | Qué pasaba |
+|---|---|
+| `ret_5d_min` | declarado en el schema, **sin implementar** en `runScreener` |
+| `ret_1m_min` | ídem |
+| `min_mcap_b` | implementado `if (ctx.marketCapOf)` — que la sombra **nunca pasaba** |
+
+**Eso es peor que devolver cero.** Un filtro que se ignora en silencio hace que
+el modelo construya su tesis creyendo que filtró: pide *"los que subieron +5% en
+el mes"* y recibe **todos**, con la etiqueta de que cumplen.
+
+Los tres se implementaron con datos que la corrida **ya pagaba**: los retornos a
+5 días y a 1 mes salen de las mismas velas que el promedio de volumen (~35
+sesiones), y el market cap de la admisión. El universo los guarda.
+
+Y **un nombre sin el dato no pasa el filtro**: dejarlo pasar sería el mismo error
+con otra cara. Cuando el dato falta para *todos*, la respuesta es **"no se puede
+contestar"**, no "ninguno cumple" — son dos respuestas distintas que llevan a
+decisiones distintas.
+
+#### La captura del fallo estaba en la capa equivocada
+
+Los abortos llegaron con `status: 200` y `raw_body`, `detail` y `provider_error`
+**todos en null**. Eso significa que el fetch fue bien y la falla está al **leer**
+la respuesta — una capa más abajo de donde estaba puesta la captura.
+
+Ahora el turno de cierre guarda su propio diagnóstico pase lo que pase: el
+`choices[0]` **entero** (content, `reasoning`, `tool_calls`, `finish_reason`), y
+también el `stack` si algo lanza.
+
+Más los dos casos probables:
+
+- **`content` vacío con la respuesta en `reasoning`:** se leía `reasoning` pero
+  no `reasoning_content`, que es el campo que usan varios proveedores.
+- **`tool_calls` pese a `tool_choice: none`:** un reintento, uno solo, con la
+  instrucción más corta posible. Reintentar en bucle sería gastar el reloj
+  contra la misma pared.
+
+---
+
 ### Lo que encontró la SEGUNDA sombra (4/7, $1.04)
 
 #### El control corrió con otra lente que claude — el piso de ruido no medía nada

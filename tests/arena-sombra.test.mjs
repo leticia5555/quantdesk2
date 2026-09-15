@@ -236,5 +236,61 @@ console.log('\n── qué significa cada piso ──');
   ok(lectura(0.40) === 'BAJO', '0.40 → bajo: casi ningún delta es interpretable');
 }
 
+// ═══════════════════════════════════════════════════════════════
+// EL PISO DE RUIDO NECESITA DOS CONDICIONES, NO UNA.
+//
+// Sombra 3 (2026-09-15): el par claude↔control dio 0.68 y eso NO era ruido.
+// control arrancó con 6 posiciones heredadas y claude con 1. Dos PMs idénticos
+// que parten de carteras distintas producen libros distintos POR HERENCIA.
+//
+// El piso solo significa algo cuando se cumplen las DOS: misma lente Y mismo
+// libro de arranque. Publicar el número sin eso es publicar una medición de
+// otra cosa con la etiqueta de piso de ruido.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── el piso exige misma lente Y mismo libro ──');
+{
+  const src = await import('node:fs').then((fs) => fs.readFileSync('api/_lib/arena-shadow.js', 'utf8'));
+  ok(/mismoLibro/.test(src), 'el reporte compara los libros de arranque, no solo las lentes');
+  ok(/mide HERENCIA, no ruido/.test(src),
+    'y cuando difieren lo dice con esas palabras en vez de publicar el número como piso');
+  ok(/comparable: false/.test(src) && /comparable: true/.test(src),
+    'el campo `comparable` separa "no se puede medir" de "se midió"');
+  ok(/cosine_observado/.test(src),
+    'el número observado NO se esconde: viaja con otro nombre, para que se vea que existe y que no es el piso');
+  ok(/un reset las iguala/.test(src),
+    'y dice cómo arreglarlo, que es lo único accionable');
+  ok(/posiciones_iniciales: Object\.fromEntries/.test(src),
+    'las posiciones de arranque de los 7 salen al lado del piso');
+}
+
+console.log('\n── la comparación de libros es por contenido, no por largo ──');
+{
+  const iguales = (a, b) => a.length === b.length && a.every((s2, i) => s2 === b[i]);
+  ok(iguales(['AAPL', 'NVDA'], ['AAPL', 'NVDA']), 'dos libros idénticos son iguales');
+  ok(!iguales(['AAPL', 'NVDA'], ['AAPL', 'MSFT']),
+    'mismo LARGO con nombres distintos NO es el mismo libro — comparar solo la cantidad dejaría pasar el caso que importa');
+  ok(!iguales(['AAPL'], ['AAPL', 'NVDA']), 'y largos distintos tampoco');
+}
+
+console.log('\n── el cierre deja su objeto crudo pase lo que pase ──');
+{
+  const src = await import('node:fs').then((fs) => fs.readFileSync('api/_lib/arena-tool-loop.js', 'utf8'));
+  ok(/cierre_diagnostico/.test(src) && /anotarCierre/.test(src),
+    'el turno de cierre guarda su diagnóstico');
+  ok(/choice: \(r && r\.data && r\.data\._raw_choice\)/.test(src),
+    'incluido el `choices[0]` ENTERO: content, reasoning, tool_calls, finish_reason');
+  ok(/threw:/.test(src) && /stack:/.test(src),
+    'y también si LANZA — la captura anterior estaba en la capa del fetch, que había ido bien');
+  ok(/reintento_sin_herramientas/.test(src),
+    'si pide herramientas pese a tool_choice:none, se reintenta UNA vez');
+  ok(/No llames ninguna herramienta/.test(src),
+    'con la instrucción más corta posible');
+
+  const modelo = await import('node:fs').then((fs) => fs.readFileSync('api/_lib/arena-model.js', 'utf8'));
+  ok(/reasoning_content/.test(modelo),
+    'y se lee `reasoning_content` además de `reasoning`: no todos los proveedores usan el mismo campo');
+  ok(/_raw_choice/.test(modelo), 'el normalizador conserva el choice crudo para poder journalearlo');
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
 process.exit(failures ? 1 : 0);

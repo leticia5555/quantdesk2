@@ -235,16 +235,82 @@ export async function runToolLoop({
   // `tool_choice` es la forma correcta de pedir "contestá sin llamar nada", y
   // quitar el esquema no lo es.
   const cierreToolChoice = agent.provider === 'anthropic' ? { type: 'none' } : 'none';
-  llm = await call({
-    agent, system, messages: convo, maxTokens, now,
+  const llamarCierre = (msgs, extra = {}) => call({
+    agent, system, messages: msgs, maxTokens, now,
     timeoutMs: Math.min(timeoutMs || RESERVA_CIERRE_MS, RESERVA_CIERRE_MS),
-    tools, toolChoice: cierreToolChoice, ...(effort ? { effort } : {}),
+    tools, toolChoice: cierreToolChoice, ...(effort ? { effort } : {}), ...extra,
   });
+
+  // ── EL CIERRE, CON SU PROPIO DIAGNÓSTICO ───────────────────────────
+  // Los abortos de grok y qwen llegaron con `status: 200` y TODO lo demás en
+  // null. Eso significa que el fetch fue bien y la falla está al LEER la
+  // respuesta — o sea, una capa más abajo de donde estaba puesta la captura.
+  //
+  // Acá se guarda el `choices[0]` ENTERO del turno de cierre (content,
+  // reasoning, tool_calls, finish_reason) pase lo que pase, y también si algo
+  // LANZA. Sin el objeto crudo, diagnosticar esto es adivinar — y ya adiviné
+  // dos veces.
+  const diagCierre = { intentos: [] };
+  const anotarCierre = (etiqueta, r, err) => {
+    diagCierre.intentos.push({
+      etiqueta,
+      status: r ? r.status : null,
+      error_detail: (r && r.error_detail) || null,
+      threw: err ? String((err && err.message) || err) : null,
+      stack: err && err.stack ? String(err.stack).slice(0, 400) : null,
+      // El turno crudo tal cual lo devolvió el proveedor.
+      choice: (r && r.data && r.data._raw_choice) || null,
+      texto: r && r.data ? (r.data.content || []).filter((b2) => b2.type === 'text').map((b2) => b2.text || '').join('').slice(0, 400) : null,
+      tool_use: r && r.data ? toolUseBlocks(r.data).map((b2) => b2.name) : null,
+      stop_reason: (r && r.data && r.data.stop_reason) || null,
+    });
+  };
+
+  try {
+    llm = await llamarCierre(convo);
+    anotarCierre('cierre', llm, null);
+  } catch (e) {
+    anotarCierre('cierre', null, e);
+    return {
+      llm: { status: 0, data: null, error_detail: `el turno de cierre LANZÓ: ${String((e && e.message) || e)}`, cierre_diagnostico: diagCierre },
+      messages: convo, turns, sequence: executor.sequence, stopped_by: 'error_cierre',
+      elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado,
+      cierre_diagnostico: diagCierre,
+    };
+  }
   sumar(llm);
+
+  // ── CASO 2: PIDIÓ HERRAMIENTAS PESE A `tool_choice: none` ──────────
+  // Pasa. El proveedor de abajo ignora la restricción, o el modelo la ignora y
+  // el proveedor la deja pasar. Un turno con `tool_use` que nadie va a
+  // responder deja la conversación colgada y la corrida se pierde teniendo
+  // todo lo necesario para decidir.
+  //
+  // UN solo reintento, con la instrucción más corta posible. Si vuelve a pedir
+  // herramientas, se devuelve igual y el diagnóstico lo dice: reintentar en
+  // bucle sería gastar el reloj en la misma pared.
+  if (llm && llm.status === 200 && llm.data && toolUseBlocks(llm.data).length) {
+    const convo2 = [...convo, {
+      role: 'user',
+      content: 'No llames ninguna herramienta. Respondé SOLO con el JSON del portafolio objetivo, sin texto alrededor.',
+    }];
+    try {
+      const reintento = await llamarCierre(convo2);
+      anotarCierre('reintento_sin_herramientas', reintento, null);
+      if (reintento && reintento.status === 200 && reintento.data && !toolUseBlocks(reintento.data).length) {
+        llm = reintento;
+        sumar(reintento);
+        diagCierre.resuelto_por = 'reintento_sin_herramientas';
+      }
+    } catch (e) { anotarCierre('reintento_sin_herramientas', null, e); }
+  }
+
+  if (llm) llm.cierre_diagnostico = diagCierre;
   return {
     llm, messages: convo, turns, sequence: executor.sequence,
     stopped_by: sinTiempo ? 'time_budget' : 'max_turns',
     elapsed_ms: clock() - t0, budget_ms: budgetMs,
     usage_total: acumulado, cost_usd_total: costoAcumulado,
+    cierre_diagnostico: diagCierre,
   };
 }
