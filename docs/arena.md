@@ -404,6 +404,98 @@ inválido, o sea una corrida entera perdida. `stop_reason` se normaliza también
 para OpenRouter (`finish_reason: 'length'` → `max_tokens`), así el diagnóstico
 existe para los siete agentes y no solo para los de Anthropic.
 
+## B8 · ANTI-HERDING · B9 · PRESUPUESTO
+
+`_lib/arena-herding.js` · `_lib/arena-budget.js` · tests en
+`tests/arena-antiherding.test.mjs` y `tests/arena-presupuesto.test.mjs`
+
+### B8 · Por qué hace falta
+
+Siete modelos mirando el **mismo** tablero pueden terminar con el mismo libro, y
+si eso pasa el experimento deja de medir modelos y pasa a medir el tablero.
+
+**Cola aleatorizada.** El orden de los top-30 cambia por agente. Suena menor y
+no lo es: un modelo que lee una lista tiende a pesar más lo de arriba, así que
+un orden común es una **preferencia común disfrazada de coincidencia**. La cola
+avisa explícitamente que el orden no es un ranking.
+
+**Lente primaria rotativa** (momentum / catalizador / valor / reversión), dicha
+como *"hoy mirá primero por…"*. No prohíbe nada: cambia por dónde empieza.
+
+**Todo determinista, y no es un detalle.** Semilla `hash(agent_id + run_id)`,
+lente `LENTES[(hash(agent) + día) % 4]`. Un `Math.random()` acá haría el journal
+**irreproducible** y el replay —que existe justamente para reconstruir qué vio
+cada agente— sería inútil. Hay un lint que lo verifica sobre el código (no sobre
+los comentarios, que explican precisamente por qué no se usa).
+
+El día es el del **Este**: con UTC la lente cambiaría a las 20:00 ET, o sea a
+mitad de sesión.
+
+**Dónde vive la aleatorización (D2):** en la **cola no cacheada**, nunca en el
+prefijo. Si el orden cambiara dentro del bloque cacheado, los siete tendrían
+prefijos distintos y la caché no serviría para nada. La cola tiene su propio
+techo (≤2K tokens) y, al recortarse, **la lente sobrevive**: son 40 tokens y es
+la mitad del mecanismo.
+
+> **Advertencia honesta:** la lente rotativa es un **confound deliberado**. Dos
+> agentes con lentes distintas el mismo día **no son comparables ese día**. Mide
+> diversidad a costa de comparabilidad diaria; a lo largo de la temporada se
+> promedia, pero va dicho en el post-mortem en vez de dejar que alguien lo
+> descubra.
+
+**Las métricas.** Con portafolio objetivo el herding deja de ser una
+aproximación: el solapamiento par a par es el **coseno** entre los vectores de
+peso, un número directo. Largo contra corto del mismo nombre da **−1**: la
+dirección cuenta, no solo el nombre. Y un libro vacío devuelve **null**, no 0 ni
+1 — no se parece ni se diferencia, simplemente no hay con qué comparar.
+
+La tercera métrica, `toolVsBoardOrigin`, es la que dice si las herramientas
+sirvieron para algo o si el PM decide igual con lo que ya tenía enfrente. Un
+nombre que no vino **ni** de una herramienta **ni** del tablero se cuenta
+aparte: lo trajo de su memoria, no de los datos de hoy.
+
+### B9 · El presupuesto, en escalones
+
+Hace falta **ahora** y no antes por una razón concreta: con herramientas una
+corrida dejó de ser dos llamadas al LLM y pasó a ser hasta diez. El gasto por
+corrida se multiplicó y el techo que sobraba puede quedar corto en un día
+volátil, sin que nadie se entere hasta la factura.
+
+| Escalón | Umbral | Qué hace |
+|---|---|---|
+| 0 | < $30 | normal: 8 herramientas, effort medium, 3 rondas fijas |
+| 1 | ≥ $30 | herramientas 8→3, effort → low. **Sigue decidiendo**, más barato |
+| 2 | ≥ $45 | solo la red de riesgo y los disparadores del **propio libro** |
+
+**Por qué el diseño obvio era peor.** *"Si te pasás, apagá las rondas fijas"*
+deja vivos los **disparadores**, que en un día volátil son **más caros** que las
+rondas que se apagaron: el breaker ahorraría plata solo los días tranquilos, que
+son justo los días en que no hacía falta.
+
+El escalón 2 apaga los disparadores del **buffet** (oportunidades que se pueden
+dejar pasar) pero **no** los del propio libro: eso es una posición suya
+moviéndose.
+
+**La red de riesgo no se apaga en ningún escalón.** No consume LLM, y un
+presupuesto de tokens que apaga la protección del libro estaría cambiando plata
+por riesgo sin decirlo.
+
+**El costo no se inventa.** Gana lo que cobró el proveedor, después la tabla de
+la casa, después una estimación **marcada** como tal, y si no hay ninguna →
+`null`. Un costo ausente es un dato; uno inventado es una mentira que después
+alguien usa para presupuestar. Y un total que ignora corridas sin precio
+**subestima** el gasto — un breaker que subestima no dispara cuando debería, así
+que `partial: true` viaja en el reporte.
+
+**Sin contador, fail OPEN** (escalón 0) y declarado: frenar la liga porque Neon
+no contesta cambiaría un problema de observabilidad por uno de producto.
+
+Cada transición se journalea **una vez por (día, escalón)**: sin esa
+idempotencia, un día en escalón 1 llenaría el journal con la misma fila doce
+veces.
+
+---
+
 ## B5 · SALIDA = PORTAFOLIO OBJETIVO · B6 · RIELES · B7 · RED PARA CORTOS
 
 `_lib/arena-rails.js` (rieles) · `_lib/arena-rebalance.js` (el motor) ·
@@ -1486,6 +1578,9 @@ ya conocidos, y `job=audit` descubre los nuevos a medida que aparezcan.
 | `ARENA_RAIL_NO_TRADE_BAND` | `0.02` | Banda de no-negociación (2pp). |
 | `ARENA_SHORT_CATASTROPHIC_PCT` | `0.20` | Stop del corto (+20%, no +22%). |
 | `ARENA_SHORT_TRAILING_ARM` / `_GIVE_BACK` | `0.15` / `0.08` | Trailing del corto, con el pico invertido. |
+| `ARENA_DAILY_BUDGET_USD` | `30` | Presupuesto diario de la liga (B9). |
+| `ARENA_BUDGET_TIER2_MULT` | `1.5` | Múltiplo del escalón 2. |
+| `ARENA_TAIL_TOKEN_CAP` | `2000` | Techo de la cola NO cacheada (lente + orden aleatorizado). |
 
 
 ## Self-fetch del buffet: causa raíz 24-jul y observabilidad
