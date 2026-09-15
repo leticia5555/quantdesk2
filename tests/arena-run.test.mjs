@@ -21,6 +21,22 @@
 
 import { runArenaDecide, runArenaReconcile, runArenaResume, getArenaState, PROMPT_VERSION, resolveBaseUrl, isLeveragedInverseETF } from '../api/arena-run.js';
 
+// Los slugs de OpenRouter de la temporada nueva no están verificados contra el
+// catálogo (ver el candado en _lib/arena-registry.js). En los tests el catálogo
+// no existe, así que se levanta el candado explícitamente.
+process.env.ARENA_ALLOW_UNVERIFIED_SLUGS = '1';
+
+// El system de Anthropic viaja como ARRAY de bloques cuando la caché de prompt
+// está encendida (_lib/arena-model.js parte reglamento|fecha para que el
+// recordatorio de fecha, que cambia a diario, quede FUERA del prefijo
+// cacheado). Los mocks tienen que leer las dos formas o ramifican mal de fase.
+function sysText(body) {
+  const s = body && body.system;
+  if (Array.isArray(s)) return s.map((b) => (b && b.text) || '').join('');
+  return String(s || '');
+}
+
+
 let failures = 0;
 function ok(cond, name, detail) {
   if (cond) console.log('  PASS', name);
@@ -123,7 +139,7 @@ global.fetch = async (url, opts = {}) => {
   // Anthropic — branch por fase según el system prompt.
   if (u.includes('api.anthropic.com')) {
     const body = JSON.parse(opts.body || '{}');
-    const system = String(body.system || '');
+    const system = sysText(body);
     const text = system.includes('SCOUT') ? scanText : diveText;
     return jsonReply({ content: [{ type: 'text', text }] });
   }
@@ -183,7 +199,16 @@ global.fetch = async (url, opts = {}) => {
   }
   // Yahoo
   if (u.includes('yahoo')) {
-    return jsonReply({ chart: { result: [{ timestamp: timestamps, indicators: { quote: [{ close: closes }] } }] } });
+    // OHLCV completo: `fetchDailySeries` solo mira `close`, pero el filtro de
+    // admisión (_lib/arena-admission.js) usa `extractYahooCandles`, que exige
+    // open/high/low/close finitos y lee `volume` para el volumen en dólares.
+    // Con solo `close` el extractor devuelve null → todo el buffet caería como
+    // `data_unavailable` (fail closed) y el test mediría el filtro, no el flujo.
+    // Volumen 1M × ~$200 = ~$200M/día, muy por encima del piso de $10M.
+    return jsonReply({ chart: { result: [{ timestamp: timestamps, indicators: { quote: [{
+      close: closes, open: closes, high: closes, low: closes,
+      volume: closes.map(() => 1_000_000),
+    }] } }] } });
   }
   // Buffet (self-fetch a nuestros endpoints)
   if (u.startsWith(BASE_URL + '/api/movers')) return jsonReply({

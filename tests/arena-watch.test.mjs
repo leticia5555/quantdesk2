@@ -42,6 +42,22 @@ import {
 import { ARENA_AGENTS } from '../api/_lib/arena-registry.js';
 import { runArenaWatch } from '../api/arena-watch.js';
 
+// Los slugs de OpenRouter de la temporada nueva no están verificados contra el
+// catálogo (ver el candado en _lib/arena-registry.js). En los tests el catálogo
+// no existe, así que se levanta el candado explícitamente.
+process.env.ARENA_ALLOW_UNVERIFIED_SLUGS = '1';
+
+// El system de Anthropic viaja como ARRAY de bloques cuando la caché de prompt
+// está encendida (_lib/arena-model.js parte reglamento|fecha para que el
+// recordatorio de fecha, que cambia a diario, quede FUERA del prefijo
+// cacheado). Los mocks tienen que leer las dos formas o ramifican mal de fase.
+function sysText(body) {
+  const s = body && body.system;
+  if (Array.isArray(s)) return s.map((b) => (b && b.text) || '').join('');
+  return String(s || '');
+}
+
+
 let failures = 0;
 function ok(cond, name, detail) {
   if (cond) console.log('  PASS', name);
@@ -247,13 +263,31 @@ console.log('\nvigilante: marcas, marketable limit y costo del peor caso');
   ok(marketableLimit(0, 'buy', 0.04) === null, 'sin referencia válida no se precia una orden');
 
   const est = estimateWorstCaseCost(ARENA_AGENTS);
-  ok(est.per_agent.length === 7 && est.unpriced.length === 0,
-    'el costo del peor caso se CALCULA para los siete (nada de un número escrito a mano en un doc)', JSON.stringify(est.unpriced));
+  // RELANZAMIENTO 2026-09-15: los cinco slugs de OpenRouter son nuevos y sus
+  // precios se leen del catálogo (/api/arena-smoke), no se escriben a mano. El
+  // invariante que importa NO es "hay un número para los siete" — es que el
+  // estimador jamás publique un total que finja cubrir a quien no cubre.
+  ok(est.per_agent.length === 7, 'el peor caso se calcula agente por agente, para los siete', String(est.per_agent.length));
+  ok(est.unpriced.every((id) => est.per_agent.find((r) => r.id === id).usd_per_day === null),
+    'un agente sin precio de lista sale con usd_per_day null — nunca un número inventado');
+  ok(est.partial === (est.unpriced.length > 0) && est.priced_agents + est.unpriced.length === 7,
+    'el total se marca PARCIAL cuando falta algún precio, y dice a cuántos cubre', JSON.stringify({ partial: est.partial, priced: est.priced_agents, unpriced: est.unpriced }));
+  ok(!est.partial || typeof est.partial_note === 'string',
+    'un total parcial viaja con la nota que dice qué le falta');
   ok(est.assumptions.runs_per_agent_per_day === WATCH_RULES.max_runs_per_agent_day && est.assumptions.watchdog_llm_calls === 0,
     'el peor caso son los 12 topes por agente, y el vigilante en sí aporta CERO llamadas al LLM');
-  ok(est.daily_usd > 0 && est.daily_usd < 5,
-    'el peor caso absoluto de los siete cabe en unos pocos dólares al día — el tope es lo que lo garantiza', String(est.daily_usd));
-  console.log(`         (peor caso calculado: $${est.daily_usd}/día, ~$${est.monthly_usd}/mes con los 7 al tope)`);
+  // EL NÚMERO SUBIÓ, Y ESO ES EL HALLAZGO. Este assert decía `< 5` cuando los
+  // siete corrían Haiku y modelos baratos de OpenRouter. Con Fable 5.1 ($10/$50
+  // por MTok, 10× Haiku) y el techo de salida en 6000 (2×, y en un modelo de
+  // razonamiento el pensamiento se cobra como salida), el peor caso de los DOS
+  // agentes de Anthropic solo ya pasa de eso. Aflojar el assert en silencio
+  // habría escondido justo lo que hay que decidir, así que el tope se declara
+  // acá con su porqué y el test falla si se vuelve a mover sin querer.
+  const TOPE_DIARIO_USD = 12;
+  ok(est.daily_usd > 0 && est.daily_usd < TOPE_DIARIO_USD,
+    `el peor caso de los agentes CON precio cabe bajo el tope declarado ($${TOPE_DIARIO_USD}/día)`, String(est.daily_usd));
+  console.log(`         (peor caso calculado: $${est.daily_usd}/día, ~$${est.monthly_usd}/mes — ${est.priced_agents}/${est.total_agents} agentes con precio)`);
+  if (est.partial) console.log(`         (PARCIAL: faltan los precios de ${est.unpriced.join(', ')} — los resuelve /api/arena-smoke)`);
 
   // La suite fija ARENA_WATCH_START='2026-09-15' arriba, así que acá se prueba el
   // COMPORTAMIENTO del corte contra la env var — no el default del código, que
@@ -411,7 +445,7 @@ global.fetch = async (url, opts = {}) => {
 
   if (u.includes('api.anthropic.com')) {
     const body = JSON.parse(opts.body || '{}');
-    const sys = String(body.system || '');
+    const sys = sysText(body);
     const phase = sys.includes('TU VOZ:') ? 'headline' : (sys.includes('SCOUT') ? 'scan' : 'dive');
     llmCalls.push({ phase, user: String(body.messages[0].content) });
     return reply({

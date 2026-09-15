@@ -42,8 +42,25 @@ delete process.env.ARENA_TEMPERATURE;
 import { readFileSync } from 'node:fs';
 import { runArenaLeague, announceSeasonOpen, SEASON_OPEN_ID } from '../api/arena-run.js';
 import { activeAgents, agentById, agentAlpacaCreds, ARENA_TEMPERATURE, ARENA_AGENTS, ARENA_SEASON } from '../api/_lib/arena-registry.js';
-import { callArenaLLM, providerKey } from '../api/_lib/arena-model.js';
+import { ANTHROPIC_MODEL, ARENA_ANTHROPIC_MODEL } from '../api/_lib/model.js';
+import { callArenaLLM, providerKey, effectiveParams, sameParams } from '../api/_lib/arena-model.js';
 import { buildDiveSystemPrompt } from '../api/arena-run.js';
+
+// Los slugs de OpenRouter de la temporada nueva no están verificados contra el
+// catálogo (ver el candado en _lib/arena-registry.js). En los tests el catálogo
+// no existe, así que se levanta el candado explícitamente.
+process.env.ARENA_ALLOW_UNVERIFIED_SLUGS = '1';
+
+// El system de Anthropic viaja como ARRAY de bloques cuando la caché de prompt
+// está encendida (_lib/arena-model.js parte reglamento|fecha para que el
+// recordatorio de fecha, que cambia a diario, quede FUERA del prefijo
+// cacheado). Los mocks tienen que leer las dos formas o ramifican mal de fase.
+function sysText(body) {
+  const s = body && body.system;
+  if (Array.isArray(s)) return s.map((b) => (b && b.text) || '').join('');
+  return String(s || '');
+}
+
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -93,7 +110,7 @@ global.fetch = async (url, opts = {}) => {
   // Anthropic (claude, control) — branch por fase según el system.
   if (u.includes('api.anthropic.com')) {
     const body = JSON.parse(opts.body || '{}');
-    const system = String(body.system || '');
+    const system = sysText(body);
     const phase = fase(system);
     anthropicCalls.push({ model: body.model, temperature: body.temperature, phase, system });
     return jsonReply({ content: [{ type: 'text', text: respuesta(phase) }], usage: { input_tokens: 10, output_tokens: 20 } });
@@ -173,7 +190,7 @@ console.log('liga: registry (Temporada 2: los 7 activos, slugs, temperatura, cre
   ok(['grok', 'gemini', 'deepseek', 'qwen'].every((x) => agentById(x).enabled === true),
     'Grok/Gemini/DeepSeek/Qwen encendidos (el flip de la Temporada 2)');
   ok(ARENA_TEMPERATURE === 0.7, 'temperatura fija 0.7 por default', String(ARENA_TEMPERATURE));
-  ok(agentById('openai').model === 'openai/gpt-5-mini' && agentById('openai').provider === 'openrouter', 'openai → slug gpt-5-mini vía OpenRouter');
+  ok(agentById('openai').model_label === 'GPT-6 Astra' && agentById('openai').provider === 'openrouter', 'openai → GPT-6 Astra vía OpenRouter', agentById('openai').model);
   ok(agentById('deepseek').house === 'china' && agentById('qwen').house === 'china', 'DeepSeek/Qwen marcados casa china (ángulo de contenido)');
   ok(agentById('claude').model === agentById('control').model, 'control usa el MISMO modelo que claude (Haiku-B)');
   // Creds por agente, nomenclatura ALPACA_<ALPACA>_*
@@ -229,15 +246,62 @@ const res = await runArenaLeague({ baseUrl: BASE_URL });
   // TRES llamadas por agente: SCAN + DIVE (deciden) + TITULAR (solo narra).
   ok(anthropicCalls.length === 6, 'Anthropic recibió 6 llamadas (claude + control, 3 fases c/u)', String(anthropicCalls.length));
   ok(openrouterCalls.length === 15, 'OpenRouter recibió 15 llamadas (5 agentes × 3 fases)', String(openrouterCalls.length));
-  ok(anthropicCalls.every((c) => c.model === 'claude-haiku-4-5'), 'Anthropic siempre con el modelo Haiku');
+  // RELANZAMIENTO 2026-09-15: el Arena corre Fable 5.1 y el RESTO de la app se
+  // queda en Haiku. Se comprueba contra ARENA_ANTHROPIC_MODEL (no contra un ID
+  // escrito acá) y, sobre todo, que NO sea ANTHROPIC_MODEL: el día que alguien
+  // los vuelva a unir, la app entera sube 10× de precio sin pedirlo.
+  ok(anthropicCalls.every((c) => c.model === ARENA_ANTHROPIC_MODEL),
+    'Anthropic siempre con el modelo del Arena (ARENA_ANTHROPIC_MODEL)', JSON.stringify([...new Set(anthropicCalls.map((c) => c.model))]));
+  ok(ARENA_ANTHROPIC_MODEL !== ANTHROPIC_MODEL,
+    'el modelo del Arena está SEPARADO del de la app — subir la liga no sube sim/earnings/Smart $');
   // Cada agente de OpenRouter va con SU slug — un solo adapter, cinco modelos.
+  // Los slugs se leen DEL REGISTRY, no se repiten acá: escribirlos a mano en el
+  // test los convertiría en dos fuentes de verdad que se desincronizan en el
+  // próximo cambio de modelos. Lo que el test protege es el invariante —
+  // un adapter, cinco slugs DISTINTOS, uno por agente.
   const slugsVistos = [...new Set(openrouterCalls.map((c) => c.model))].sort();
-  ok(slugsVistos.join(',') === ['openai/gpt-5-mini', 'x-ai/grok-4-fast', 'google/gemini-2.5-flash', 'deepseek/deepseek-chat-v3.1', 'qwen/qwen-plus'].sort().join(','),
-    'OpenRouter recibió los 5 slugs distintos (uno por agente)', JSON.stringify(slugsVistos));
+  const slugsEsperados = ARENA_AGENTS.filter((a) => a.provider === 'openrouter').map((a) => a.model).sort();
+  ok(slugsVistos.join(',') === slugsEsperados.join(',') && slugsVistos.length === 5,
+    'OpenRouter recibió los 5 slugs distintos del registry (uno por agente)', JSON.stringify(slugsVistos));
 
-  // TEMPERATURA fija 0.7 en AMBOS proveedores.
-  ok(anthropicCalls.every((c) => c.temperature === 0.7) && openrouterCalls.every((c) => c.temperature === 0.7),
-    'temperatura 0.7 idéntica en Anthropic y OpenRouter');
+  // TEMPERATURA: la decisión #2 de la liga ("idéntica para todos") se ROMPIÓ el
+  // 2026-09-15 y el test lo dice en vez de taparlo. Claude Fable 5.1 rechaza
+  // `temperature` con 400: en esa familia el sampling no es configurable, así
+  // que los dos agentes de Anthropic corren SIN el parámetro. Lo que sigue
+  // siendo obligatorio —y es lo que hace válido al control— es que `claude` y
+  // `control` manden parámetros IDÉNTICOS entre ellos.
+  ok(anthropicCalls.every((c) => c.temperature === undefined),
+    'Anthropic corre SIN temperature (Fable 5.1 la rechaza con 400)', JSON.stringify([...new Set(anthropicCalls.map((c) => c.temperature))]));
+  ok(openrouterCalls.every((c) => c.temperature === 0.7),
+    'los cinco de OpenRouter sí corren con temperatura 0.7');
+  // Identidad de parámetros entre claude y control SIN depender del orden de
+  // llegada: la liga corre en paralelo, así que emparejar por índice sería un
+  // test flaky. El invariante real es que TODAS las llamadas de Anthropic
+  // lleven exactamente los mismos parámetros — si claude y control divergieran,
+  // habría más de una combinación.
+  const combosAnthropic = [...new Set(anthropicCalls.filter((c) => c.phase !== 'headline')
+    .map((c) => JSON.stringify({ model: c.model, temperature: c.temperature ?? null })))];
+  ok(combosAnthropic.length === 1,
+    'claude y control mandan parámetros idénticos — el piso de ruido sigue siendo válido', JSON.stringify(combosAnthropic));
+
+  // El invariante, afirmado también sobre la fuente (no solo sobre lo que salió
+  // por el cable): `sameParams` es lo que el anuncio de reglamento journalea.
+  ok(sameParams(agentById('claude'), agentById('control')),
+    'sameParams(claude, control) === true — la regla "mismos parámetros por familia; insignia y control idénticos"');
+  ok(effectiveParams(agentById('claude')).temperature === null,
+    'la familia de Anthropic reporta temperature NULL (el parámetro no viaja), no 0',
+    String(effectiveParams(agentById('claude')).temperature));
+  ok(effectiveParams(agentById('grok')).temperature === ARENA_TEMPERATURE,
+    'la familia de OpenRouter sí reporta su temperatura efectiva');
+  // Dentro de cada familia, parámetros idénticos (la regla nueva).
+  const porFamilia = {};
+  for (const a of ARENA_AGENTS) {
+    const p = effectiveParams(a);
+    (porFamilia[a.provider] = porFamilia[a.provider] || []).push(
+      JSON.stringify({ t: p.temperature, e: p.effort, mt: p.max_tokens, ec: p.effort_channel }));
+  }
+  ok(Object.values(porFamilia).every((v) => new Set(v).size === 1),
+    'mismos parámetros DENTRO de cada familia', JSON.stringify(porFamilia));
 
   // MULTI-CUENTA: cada agente mandó su orden a SU cuenta.
   const acctBySym = {};

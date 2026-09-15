@@ -58,6 +58,12 @@
 //   ARENA_WATCH_START (fecha ET del cambio de cadencia)
 // ═══════════════════════════════════════════════════════════════
 
+// Constantes compartidas: el precio por modelo vive en _lib/model.js (regla de
+// la casa) y el techo de salida en _lib/arena-registry.js. Importarlas no rompe
+// el "cero I/O" de este módulo: son números, no llamadas.
+import { ANTHROPIC_PRICES } from './model.js';
+import { ARENA_MAX_TOKENS } from './arena-registry.js';
+
 // ── helpers de env (mismo criterio que _lib/arena-exits.js: inválido → default) ──
 function envFrac(name, def) {
   const v = Number(process.env[name]);
@@ -490,27 +496,42 @@ export function buildTriggerHeadline(triggers = []) {
 // verifica. Precios de LISTA por 1M de tokens, aproximados y públicos; se
 // re-visan cuando un proveedor los mueve. La cuenta que importa es el ORDEN DE
 // MAGNITUD, no el centavo.
+// ── PRECIOS (relanzamiento 2026-09-15) ───────────────────────────────
+// Los de Anthropic salen de ANTHROPIC_PRICES (_lib/model.js), por MODELO: el
+// Arena ya no corre Haiku, y la línea `anthropic:haiku` que había acá hacía
+// que el peor caso se calculara a $1/$5 cuando el modelo real cuesta $10/$50.
+// Un estimador que subestima diez veces es peor que no tener estimador.
+//
+// Los de OpenRouter quedan VACÍOS a propósito. Las cinco filas que había eran
+// de los modelos de la temporada anterior (gpt-5-mini, grok-4-fast, …) y esos
+// slugs ya no corren; dejarlas habría hecho que el peor caso se calculara con
+// el precio de un modelo que nadie está llamando. El precio REAL de cada
+// modelo nuevo lo lee /api/arena-smoke del catálogo de OpenRouter
+// (`pricing.prompt`/`pricing.completion`) — de ahí se copian acá, con fecha.
+// Mientras tanto salen en `unpriced` y el estimador NO publica un total: un
+// número inventado en un doc es exactamente lo que este módulo existe para
+// evitar.
 export const MODEL_PRICES = {
-  // $/1M tokens { in, out }
-  'anthropic:haiku': { in: 1.00, out: 5.00 },
-  'openai/gpt-5-mini': { in: 0.25, out: 2.00 },
-  'x-ai/grok-4-fast': { in: 0.20, out: 0.50 },
-  'google/gemini-2.5-flash': { in: 0.30, out: 2.50 },
-  'deepseek/deepseek-chat-v3.1': { in: 0.27, out: 1.10 },
-  'qwen/qwen-plus': { in: 0.40, out: 1.20 },
+  // $/1M tokens { in, out } — se llenan desde el catálogo tras el smoke.
 };
 
 // Tokens del PEOR caso por corrida acotada. La corrida por disparador SE SALTA
 // el SCOUT (el disparador ya definió el slate), así que son dos llamadas:
 //   DIVE     — system + libro + meta + compromisos + deep dive de 1-3 nombres.
-//              El output se toma en su TECHO (maxTokens=3000), que es el peor
-//              caso real: una respuesta más larga se corta, no cuesta más.
+//              El output se toma en su TECHO, que es el peor caso real: una
+//              respuesta más larga se corta, no cuesta más.
 //   TITULAR  — la voz del arquetipo, corta por diseño.
-export const WORST_CASE_TOKENS = { dive_in: 5800, dive_out: 3000, headline_in: 800, headline_out: 100 };
+//
+// OJO CON EL TECHO: ahora es ARENA_MAX_TOKENS (6000, era 3000) y en un modelo
+// de razonamiento los tokens de pensamiento SE COBRAN COMO SALIDA y salen de
+// ese mismo techo. El peor caso de salida se duplicó por el techo, y el precio
+// de salida de Fable 5.1 es 10× el de Haiku: el peor caso diario de los dos
+// agentes de Anthropic sube ~20×. Que se vea en el número, no en una nota.
+export const WORST_CASE_TOKENS = { dive_in: 5800, dive_out: ARENA_MAX_TOKENS, headline_in: 800, headline_out: 100 };
 
 export function priceForAgent(agent) {
   if (!agent) return null;
-  if (agent.provider === 'anthropic') return MODEL_PRICES['anthropic:haiku'];
+  if (agent.provider === 'anthropic') return ANTHROPIC_PRICES[agent.model] || null;
   return MODEL_PRICES[agent.model] || null;
 }
 
@@ -533,12 +554,21 @@ export function estimateWorstCaseCost(agents = [], rules = WATCH_RULES, tokens =
     };
   });
   const daily = per_agent.reduce((s, r) => s + (r.usd_per_day || 0), 0);
+  const unpriced = per_agent.filter((r) => r.usd_per_day == null).map((r) => r.id);
   return {
     per_agent,
     // ~21 sesiones de mercado al mes: el vigilante no corre fines de semana.
     daily_usd: +daily.toFixed(2),
     monthly_usd: +(daily * 21).toFixed(2),
-    unpriced: per_agent.filter((r) => r.usd_per_day == null).map((r) => r.id),
+    unpriced,
+    // PARCIAL: con agentes sin precio, `daily_usd` NO es el costo de la liga —
+    // es el de los agentes que sí tienen precio. Sin esta bandera el total se
+    // lee como si cubriera a los siete y se presupuesta de menos. La bandera
+    // viaja con el número, no en una nota aparte que alguien no lea.
+    partial: unpriced.length > 0,
+    priced_agents: per_agent.length - unpriced.length,
+    total_agents: per_agent.length,
+    ...(unpriced.length ? { partial_note: `daily_usd cubre ${per_agent.length - unpriced.length} de ${per_agent.length} agentes. Faltan los precios de: ${unpriced.join(', ')} — los resuelve /api/arena-smoke contra el catálogo de OpenRouter.` } : {}),
     assumptions: {
       runs_per_agent_per_day: runs,
       tokens_per_run: { input: tokIn, output: tokOut },

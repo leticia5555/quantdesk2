@@ -7,6 +7,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF } from '../api/_lib/arena-guard.js';
+import { ADMISSION } from '../api/_lib/arena-admission.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -124,9 +125,16 @@ ok(r.approved.length === 1 && r.approved[0].qty === Math.floor(10000 / 201) && r
 r = validateActions({ ...BASE, actions: [act({ limit_price: 210 })] });
 ok(r.approved.length === 0 && /banda/.test(r.discarded[0].reason), 'limit_price a +5% del cierre → descartada');
 
-// 5) sub-$1 fuera del universo
+// 5) por debajo del piso de precio del universo.
+// A4c (2026-09-15): el piso subió de $1 a $5 para coincidir con el filtro de
+// admisión del buffet (_lib/arena-admission.js). El test lee el piso de
+// ARENA_RULES en vez de tatuar el número: las dos barreras tienen que decir lo
+// mismo, y si alguien mueve una, este test se entera.
 r = validateActions({ ...BASE, actions: [act({ symbol: 'PENNY', limit_price: 0.5, notional: 100 })] });
-ok(r.approved.length === 0 && /sub-\$1/.test(r.discarded[0].reason), 'sub-$1 → descartada');
+ok(r.approved.length === 0 && new RegExp('sub-\\$' + ARENA_RULES.min_price).test(r.discarded[0].reason),
+  `sub-$${ARENA_RULES.min_price} → descartada`, r.discarded[0] && r.discarded[0].reason);
+ok(ARENA_RULES.min_price === ADMISSION.min_price,
+  'el piso de precio del guard y el del filtro de admisión son el MISMO número');
 
 // 6) piso de cash 10%: compra que vaciaría el cash → descartada
 r = validateActions({ ...BASE, cash: 12000, actions: [act({ notional: 14000 })] });
