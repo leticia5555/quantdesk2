@@ -494,6 +494,54 @@ agotarse las vueltas hay **una vuelta final sin herramientas** para que pueda
 cerrar con su JSON: sin ella, un modelo en bucle produce una corrida abortada
 teniendo todo lo que necesitaba.
 
+### B12 · Los relojes: la cuenta cambió con las herramientas
+
+Antes de B3 una corrida eran **dos** llamadas y la cuenta cerraba sola:
+
+```
+scan (≤90s) + dive (≤90s) + Alpaca/journal ≈ 200s  <  240s  <  300s
+```
+
+Con el loop, el DIVE puede ser **hasta 10** llamadas. A 90s de techo cada una,
+el peor caso no es 200s — es **más de 900**. Con el deadline en 240s la corrida
+moría a mitad del loop **perdiendo todo lo que el modelo ya había investigado**,
+y el journal decía "timeout" sin decir en qué vuelta se quedó.
+
+La respuesta **no es solo subir el deadline**: un loop que no sabe qué hora es
+choca contra cualquier número que se le ponga. El loop lleva **su propio
+presupuesto de tiempo** y, cuando se le acaba, hace lo mismo que cuando se le
+acaban las vueltas — una última llamada **sin herramientas** para que cierre con
+lo que tiene.
+
+> Un cierre con menos investigación de la que quería es una **decisión**.
+> Un timeout es una **corrida perdida**.
+
+La cuenta nueva:
+
+```
+scan          ≤  90s
+loop del dive ≤ 120s   (ARENA_TOOL_LOOP_MS — el loop se AUTO-CORTA)
+cierre        ≤  45s   (última llamada, sin herramientas, con su tiempo apartado)
+──────────────────────
+total         ≈ 255s  <  270s (deadline)  <  300s (función)
+```
+
+Tres topes, y cuentan cosas distintas: **llamadas** (el presupuesto de
+herramientas), **vueltas** (el loop) y **tiempo** (éste). El del tiempo es el
+que de verdad manda, porque el reloj que mata no es el nuestro sino el de
+Vercel. Y el techo de cada llamada individual se acota contra lo que queda: sin
+eso, una llamada colgada de 90s se come el reloj de las vueltas siguientes.
+
+Los 30s entre el deadline y el cap de la función son para **escribir** el
+timeout. Un timeout que no se journalea es indistinguible de una corrida que
+nunca ocurrió — y ese margen lo exige un lint, no es un número que se pueda
+achicar para hacer caber un presupuesto más grande.
+
+`tests/arena-timeouts.test.mjs` verifica **la resta**, así que si alguien sube
+un presupuesto sin bajar otro se pone rojo antes de que una corrida real muera.
+
+---
+
 ### Determinismo para el replay
 
 La secuencia se journalea con los argumentos y el **resultado completo**, no
@@ -1304,6 +1352,9 @@ ya conocidos, y `job=audit` descubre los nuevos a medida que aparezcan.
 | `ARENA_TOOLS_MAX_TRIGGER` | `3` | Ídem en una corrida por disparador. |
 | `ARENA_TOOL_RESULT_TOKENS` | `1500` | Techo de cada resultado. El corte se declara adentro. |
 | `ARENA_TOOL_TURNS_MAX` | `10` | Tope de VUELTAS del loop (distinto del de llamadas). |
+| `ARENA_TOOL_LOOP_MS` | `120000` | Tope de TIEMPO del loop. El que de verdad manda. Ver B12. |
+| `ARENA_AGENT_DEADLINE_MS` | `270000` | Techo del trabajo completo de un agente. **Si se toca, tocar `vercel.json` también.** |
+| `ARENA_TOOLS` | `1` | Freno de mano de las herramientas. `0` vuelve al DIVE de una sola llamada. |
 
 
 ## Self-fetch del buffet: causa raíz 24-jul y observabilidad

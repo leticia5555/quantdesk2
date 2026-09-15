@@ -49,6 +49,40 @@ import { ARENA_MAX_TOKENS } from './arena-registry.js';
 // una, 10 vueltas dan aire de sobra; con modelos que piden de a tres, sobra más.
 export const MAX_TURNS = Number(process.env.ARENA_TOOL_TURNS_MAX) || 10;
 
+// ── EL TERCER TOPE: EL RELOJ (B12) ───────────────────────────────────
+// Los otros dos topes (llamadas y vueltas) cuentan ACCIONES. Éste cuenta
+// TIEMPO, y es el que de verdad manda, porque el reloj que mata no es el nuestro
+// sino el de Vercel.
+//
+// LA CUENTA QUE NO CERRABA. Antes de las herramientas, una corrida eran DOS
+// llamadas al LLM: scan + dive ≈ 200s contra un deadline de agente de 240s.
+// Con herramientas, el DIVE puede ser hasta 10 llamadas. A 90s de techo por
+// llamada, el peor caso no es 200s: es más de 900. El deadline del agente
+// (`withDeadline` en arena-run) mataría la corrida a los 240s **perdiendo todo
+// lo que el modelo ya había investigado** — y el journal diría "timeout" sin
+// una sola pista de en qué vuelta se quedó.
+//
+// La respuesta NO es solo subir el deadline. Un loop que no sabe qué hora es va
+// a chocar contra cualquier número que se le ponga; lo que hace falta es que
+// SEPA CUÁNDO PARAR. Así que el loop lleva su propio presupuesto de tiempo y,
+// cuando se le acaba, hace exactamente lo mismo que cuando se le acaban las
+// vueltas: una última llamada SIN herramientas para que cierre con lo que tiene.
+//
+// Un cierre con menos investigación de la que quería es una decisión. Un
+// timeout es una corrida perdida.
+//
+// EL NÚMERO SALE DE UNA RESTA, no de una intuición:
+//     scan 90s + loop 120s + cierre 45s = 255s  <  270s (deadline del agente)
+// Los 15s de diferencia son el margen para Alpaca, el deep dive y la escritura
+// al journal; el deadline a su vez deja 30s contra el cap de la función. Si alguien sube este presupuesto sin bajar otra cosa, el loop
+// termina chocando contra el deadline y se pierde la corrida entera — hay un
+// test que verifica la resta (tests/arena-timeouts).
+export const LOOP_BUDGET_MS = Number(process.env.ARENA_TOOL_LOOP_MS) || 120000;
+
+// Reserva para la vuelta final + el journal. Si al empezar una vuelta queda
+// menos que esto, no se empieza: se cierra.
+const RESERVA_CIERRE_MS = 45000;
+
 // Los bloques `tool_use` de un turno normalizado (los dos proveedores llegan
 // acá con la misma forma — ver normalizeOpenRouter).
 export function toolUseBlocks(data) {
@@ -97,24 +131,37 @@ export function buildToolTurn(provider, data, resultados) {
 export async function runToolLoop({
   agent, system, messages, executor, maxTokens = ARENA_MAX_TOKENS,
   now = new Date(), timeoutMs, maxTurns = MAX_TURNS, toolNames = null, call = callArenaLLM,
+  budgetMs = LOOP_BUDGET_MS, clock = () => Date.now(),
 }) {
   const tools = toolsForProvider(agent.provider, toolNames);
   const convo = [...messages];
+  const t0 = clock();
+  const restante = () => budgetMs - (clock() - t0);
   let turns = 0;
   let llm = null;
+  let sinTiempo = false;
 
   while (turns < maxTurns) {
+    // EL RELOJ, ANTES de empezar la vuelta. Empezarla y que la mate el deadline
+    // del agente a mitad de camino pierde todo lo investigado y journalea un
+    // "timeout" sin decir en qué vuelta se quedó.
+    if (turns > 0 && restante() < RESERVA_CIERRE_MS) { sinTiempo = true; break; }
     turns++;
-    llm = await call({ agent, system, messages: convo, maxTokens, now, timeoutMs, tools });
+    // El techo de ESTA llamada nunca puede pasarse del presupuesto que queda.
+    // Sin esto, una llamada colgada de 90s se come el reloj de las vueltas
+    // siguientes y el loop termina chocando contra el deadline del agente —
+    // que es justo lo que este presupuesto existe para evitar.
+    const techo = Math.max(10000, Math.min(timeoutMs || Infinity, restante() - RESERVA_CIERRE_MS));
+    llm = await call({ agent, system, messages: convo, maxTokens, now, timeoutMs: techo, tools });
 
     // Cualquier cosa que no sea una respuesta usable sale ENTERA hacia arriba.
     if (llm.status !== 200 || !llm.data || llm.refusal || llm.stale || llm.missingKey || llm.unverifiedSlug) {
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error' };
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', elapsed_ms: clock() - t0, budget_ms: budgetMs };
     }
 
     const pedidos = toolUseBlocks(llm.data);
     if (!pedidos.length) {
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: turns === 1 ? 'no_tools' : 'end_turn' };
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: turns === 1 ? 'no_tools' : 'end_turn', elapsed_ms: clock() - t0, budget_ms: budgetMs };
     }
 
     // Las herramientas de UNA vuelta corren EN PARALELO: son lecturas
@@ -133,11 +180,23 @@ export async function runToolLoop({
     convo.push(...buildToolTurn(agent.provider, llm.data, resultados));
   }
 
-  // Se acabaron las vueltas. Última llamada SIN herramientas: el modelo tiene
-  // que poder cerrar con su JSON en vez de quedarse pidiendo. Sin esta vuelta
-  // final, un modelo que se queda en bucle produce una corrida abortada donde
-  // en realidad ya tenía todo lo que necesitaba.
-  convo.push({ role: 'user', content: 'Se acabó el presupuesto de investigación de esta corrida. No pidas más herramientas: respondé AHORA con tu JSON final, usando lo que ya tenés.' });
-  llm = await call({ agent, system, messages: convo, maxTokens, now, timeoutMs, tools: null });
-  return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'max_turns' };
+  // Se acabaron las vueltas O el reloj. En los dos casos, lo mismo: última
+  // llamada SIN herramientas para que cierre con su JSON en vez de quedarse
+  // pidiendo. Sin esta vuelta, un modelo en bucle —o uno al que se le acabó el
+  // tiempo— produce una corrida abortada teniendo todo lo que necesitaba.
+  convo.push({
+    role: 'user',
+    content: sinTiempo
+      ? 'Se acabó el TIEMPO de esta corrida (no el presupuesto de herramientas). No pidas más: respondé AHORA con tu JSON final, usando lo que ya investigaste. Una decisión con menos investigación de la que querías sigue siendo una decisión; quedarte sin contestar no lo es.'
+      : 'Se acabó el presupuesto de investigación de esta corrida. No pidas más herramientas: respondé AHORA con tu JSON final, usando lo que ya tenés.',
+  });
+  // El cierre corre contra la RESERVA, no contra lo que quede del presupuesto
+  // (que puede ser cero): es la llamada que convierte una corrida perdida en
+  // una decisión, y tiene su propio tiempo apartado desde el principio.
+  llm = await call({ agent, system, messages: convo, maxTokens, now, timeoutMs: Math.min(timeoutMs || RESERVA_CIERRE_MS, RESERVA_CIERRE_MS), tools: null });
+  return {
+    llm, messages: convo, turns, sequence: executor.sequence,
+    stopped_by: sinTiempo ? 'time_budget' : 'max_turns',
+    elapsed_ms: clock() - t0, budget_ms: budgetMs,
+  };
 }

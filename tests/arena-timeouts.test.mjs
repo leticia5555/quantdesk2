@@ -131,5 +131,45 @@ for (const [f, etiqueta] of [['arena-run.js', 'la nocturna'], ['arena-watch.js',
   ok(/status: 'timeout'/.test(src), `${etiqueta} journalea status:'timeout', no un error genérico`);
 }
 
-console.log(failures ? `\n${failures} FALLAS\n` : '\nTodo en verde\n');
+// ═══════════════════════════════════════════════════════════════
+// B12 · LA CUENTA DE LOS RELOJES, con herramientas.
+//
+// Antes de B3 una corrida eran DOS llamadas y la cuenta cerraba sola. Con el
+// loop de herramientas el DIVE puede ser hasta 10, y el peor caso pasó de ~200s
+// a más de 900. Esta suite verifica la RESTA — no que los números sean bonitos,
+// sino que el trabajo quepa antes de que algo lo mate:
+//
+//     scan + loop + cierre  <  deadline del agente  <  maxDuration de la función
+//
+// Si alguien sube un presupuesto sin bajar otro, esto se pone rojo ANTES de que
+// una corrida real muera a mitad del loop perdiendo todo lo investigado.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── B12: una ronda fija con herramientas CABE en el reloj ──');
+{
+  const { LOOP_BUDGET_MS } = await import('../api/_lib/arena-tool-loop.js');
+  const { ARENA_AGENT_DEADLINE_MS, ARENA_LLM_TIMEOUT_MS } = await import('../api/_lib/arena-registry.js');
+  const vercel = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
+  const fnCap = (vercel.functions['api/arena-run.js'] || {}).maxDuration * 1000;
+
+  const CIERRE_MS = 45000;   // la reserva del loop para su última llamada
+  const peorCaso = ARENA_LLM_TIMEOUT_MS + LOOP_BUDGET_MS + CIERRE_MS;
+
+  console.log(`     · scan ${ARENA_LLM_TIMEOUT_MS / 1000}s + loop ${LOOP_BUDGET_MS / 1000}s + cierre ${CIERRE_MS / 1000}s = ${peorCaso / 1000}s`);
+  console.log(`     · deadline del agente ${ARENA_AGENT_DEADLINE_MS / 1000}s · función ${fnCap / 1000}s`);
+
+  ok(peorCaso < ARENA_AGENT_DEADLINE_MS,
+    'el peor caso de una ronda fija CABE en el deadline del agente — si no, la corrida muere a mitad del loop y se pierde todo lo investigado',
+    `${peorCaso / 1000}s vs ${ARENA_AGENT_DEADLINE_MS / 1000}s`);
+  ok(ARENA_AGENT_DEADLINE_MS < fnCap,
+    'y el deadline del agente cabe en el maxDuration de la función, con margen para ESCRIBIR el timeout — un timeout que no se journalea es indistinguible de una corrida que nunca ocurrió',
+    `${ARENA_AGENT_DEADLINE_MS / 1000}s vs ${fnCap / 1000}s`);
+  ok(fnCap - ARENA_AGENT_DEADLINE_MS >= 15000,
+    'con al menos 15s entre el deadline y el cap de la función para esa escritura',
+    `${(fnCap - ARENA_AGENT_DEADLINE_MS) / 1000}s`);
+  ok(LOOP_BUDGET_MS > ARENA_LLM_TIMEOUT_MS,
+    'el presupuesto del loop da para más de UNA llamada (si no, no es un loop)',
+    `${LOOP_BUDGET_MS / 1000}s vs ${ARENA_LLM_TIMEOUT_MS / 1000}s`);
+}
+
+console.log(failures ? `\n${failures} FAIL` : '\nTodo en verde');
 process.exit(failures ? 1 : 0);

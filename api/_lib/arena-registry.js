@@ -144,18 +144,41 @@ export const ARENA_LLM_TIMEOUT_MS = (() => {
   return Number.isFinite(n) && n >= 5000 && n <= 280000 ? Math.floor(n) : 90000;
 })();
 
-// Techo del TRABAJO COMPLETO de un agente en la nocturna: scan + dive, con los
-// retries del guard de fechas incluidos. Es otro número que ARENA_LLM_TIMEOUT_MS
-// porque cubre otra cosa: aquel limita UNA conexión, éste limita la cadena.
+// Techo del TRABAJO COMPLETO de un agente. Es otro número que
+// ARENA_LLM_TIMEOUT_MS porque cubre otra cosa: aquel limita UNA conexión, éste
+// limita la cadena.
 //
-// La cuenta que importa, con los agentes en paralelo:
-//   scan (≤90s) + dive (≤90s) + Alpaca/journal ≈ 200s  <  240s  <  300s de función
-// El margen final existe para que, cuando un agente se pase, la función siga
-// viva lo suficiente para ESCRIBIR que se pasó. Un timeout que no se journalea
-// es indistinguible de una corrida que nunca ocurrió.
+// ── LA CUENTA CAMBIÓ CON LAS HERRAMIENTAS (B3/B12) ───────────────────
+// ANTES, una corrida eran DOS llamadas:
+//   scan (≤90s) + dive (≤90s) + Alpaca/journal ≈ 200s  <  240s  <  300s
+//
+// AHORA el DIVE es un LOOP: el modelo pide herramientas, el harness ejecuta, el
+// modelo vuelve a pedir. Con hasta 10 vueltas a 90s de techo, el peor caso no
+// es 200s — es más de 900. Con el deadline en 240s, la corrida moría a mitad
+// del loop PERDIENDO todo lo que el modelo ya había investigado, y el journal
+// decía "timeout" sin decir en qué vuelta se quedó.
+//
+// La cuenta nueva, y por qué cierra:
+//   scan            ≤ 90s   (una llamada, sin herramientas)
+//   loop del dive   ≤ 120s  (ARENA_TOOL_LOOP_MS — el loop se AUTO-CORTA)
+//   cierre          ≤ 45s   (la última llamada, sin herramientas)
+//   ──────────────────────
+//   total           ≈ 255s  <  270s de deadline  <  300s de función
+//
+// Los 270s son deliberados y el orden importa: el loop se corta SOLO antes de
+// llegar (ver LOOP_BUDGET_MS en _lib/arena-tool-loop.js), así que este deadline
+// es la red de la red. Los 30s que quedan contra los 300s de la función existen
+// para que, cuando un agente igual se pase, la función siga viva lo suficiente
+// para ESCRIBIR que se pasó. Un timeout que no se journalea es indistinguible
+// de una corrida que nunca ocurrió — y 30s es el margen que el lint exige, no
+// un número que se pueda achicar para hacer caber un presupuesto más grande.
+//
+// SI SE TOCA ESTE NÚMERO hay que tocar `vercel.json` también: el `maxDuration`
+// del glob es el que manda de verdad, y el lint de tests/arena-timeouts lo
+// verifica. Subir uno sin el otro no cambia nada.
 export const ARENA_AGENT_DEADLINE_MS = (() => {
   const n = Number(process.env.ARENA_AGENT_DEADLINE_MS);
-  return Number.isFinite(n) && n >= 10000 && n <= 290000 ? Math.floor(n) : 240000;
+  return Number.isFinite(n) && n >= 10000 && n <= 290000 ? Math.floor(n) : 270000;
 })();
 
 // Slug de OpenRouter con override por env (ARENA_MODEL_<ID>). Un slug que el
