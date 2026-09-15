@@ -215,7 +215,31 @@ export async function runToolLoop({
   // El cierre corre contra la RESERVA, no contra lo que quede del presupuesto
   // (que puede ser cero): es la llamada que convierte una corrida perdida en
   // una decisión, y tiene su propio tiempo apartado desde el principio.
-  llm = await call({ agent, system, messages: convo, maxTokens, now, timeoutMs: Math.min(timeoutMs || RESERVA_CIERRE_MS, RESERVA_CIERRE_MS), tools: null, ...(effort ? { effort } : {}) });
+  // ── EL CIERRE MANTIENE LAS HERRAMIENTAS DECLARADAS ─────────────────
+  // Antes se llamaba con `tools: null`, lo que QUITA el parámetro `tools` del
+  // payload. Pero la conversación que se manda YA contiene turnos con
+  // `tool_calls` (OpenAI) o bloques `tool_use` (Anthropic), y los dos
+  // proveedores esperan que el esquema de las herramientas siga declarado
+  // cuando el historial las menciona. Mandar el historial sin el esquema es un
+  // payload incoherente, y vía OpenRouter un error del proveedor de abajo
+  // vuelve como HTTP 200 con un `error` adentro.
+  //
+  // Es la mejor explicación que tengo para que grok y deepseek murieran JUSTO
+  // al llegar a 8/8 y qwen con 6/8 pasara: el cierre forzado solo ocurre cuando
+  // el loop se corta por presupuesto o vueltas. Con 6/8 el modelo terminó solo
+  // y nunca pasó por acá.
+  //
+  // NO PUDE CONFIRMARLO —no tengo acceso al journal ni a los proveedores desde
+  // este entorno— así que queda como hipótesis. Lo que sí es cierto en
+  // cualquier caso: declarar las herramientas y prohibir su uso con
+  // `tool_choice` es la forma correcta de pedir "contestá sin llamar nada", y
+  // quitar el esquema no lo es.
+  const cierreToolChoice = agent.provider === 'anthropic' ? { type: 'none' } : 'none';
+  llm = await call({
+    agent, system, messages: convo, maxTokens, now,
+    timeoutMs: Math.min(timeoutMs || RESERVA_CIERRE_MS, RESERVA_CIERRE_MS),
+    tools, toolChoice: cierreToolChoice, ...(effort ? { effort } : {}),
+  });
   sumar(llm);
   return {
     llm, messages: convo, turns, sequence: executor.sequence,

@@ -247,15 +247,37 @@ console.log('\n── un modelo en BUCLE se corta, con una vuelta final para cer
   const agent = { id: 'x', provider: 'anthropic', model: 'm', caps: {} };
   let conHerramientas = 0;
   let sinHerramientas = 0;
-  const call = async ({ tools }) => {
-    if (tools) { conHerramientas++; return { status: 200, data: { content: [{ type: 'tool_use', id: 't' + conHerramientas, name: 'screener', input: {} }] } }; }
+  const payloads = [];
+  // EL CIERRE YA NO SE DISTINGUE POR `tools` AUSENTE, y eso es el arreglo. Antes
+  // la vuelta final se llamaba con `tools: null` —o sea, SIN el esquema— sobre
+  // una conversación que ya contenía llamadas a herramientas. Los dos
+  // proveedores esperan que el esquema siga declarado cuando el historial lo
+  // menciona, y vía OpenRouter un payload incoherente vuelve como HTTP 200 con
+  // un `error` adentro.
+  //
+  // La forma correcta de pedir "contestá sin llamar nada" es declarar las
+  // herramientas y prohibirlas con `tool_choice`. El stub ahora branchea por
+  // ahí, que es la señal real.
+  const call = async ({ tools, toolChoice }) => {
+    payloads.push({ tools: !!tools, toolChoice });
+    const prohibido = toolChoice === 'none' || (toolChoice && toolChoice.type === 'none');
+    if (!prohibido) { conHerramientas++; return { status: 200, data: { content: [{ type: 'tool_use', id: 't' + conHerramientas, name: 'screener', input: {} }] } }; }
     sinHerramientas++;
     return { status: 200, data: { content: [{ type: 'text', text: '{"plan":"forzado"}' }] } };
   };
   const ex = mkExec({ budget: 2 });
   const r = await runToolLoop({ agent, system: 'S', messages: [{ role: 'user', content: 'U' }], executor: ex, call, maxTurns: 4 });
   ok(r.stopped_by === 'max_turns', 'se corta por vueltas', r.stopped_by);
-  ok(sinHerramientas === 1, 'y hay UNA vuelta final SIN herramientas para que pueda cerrar', String(sinHerramientas));
+  ok(sinHerramientas === 1, 'y hay UNA vuelta final con las herramientas PROHIBIDAS para que pueda cerrar', String(sinHerramientas));
+  const cierre = payloads[payloads.length - 1];
+  ok(cierre.tools === true,
+    'el cierre SIGUE declarando el esquema de herramientas: quitarlo sobre una conversación que ya las menciona es un payload incoherente',
+    JSON.stringify(cierre));
+  ok(cierre.toolChoice && cierre.toolChoice.type === 'none',
+    'y las prohíbe con tool_choice, que es la forma correcta de decir "contestá sin llamar nada"',
+    JSON.stringify(cierre.toolChoice));
+  ok(payloads.slice(0, -1).every((p2) => p2.tools === true && !p2.toolChoice),
+    'las vueltas anteriores van con herramientas y SIN restricción');
   ok(/forzado/.test(r.llm.data.content[0].text),
     'que devuelve el JSON — sin esa vuelta, un modelo en bucle daría una corrida abortada teniendo todo lo que necesitaba');
   ok(/Se acabó el presupuesto de investigación/.test(r.messages[r.messages.length - 1].content), 'y se le dice por qué');

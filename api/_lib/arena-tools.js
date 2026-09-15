@@ -245,23 +245,47 @@ export async function runScreener(args, ctx) {
 export async function runNoticias(args, ctx) {
   const dias = args.days || 2;
   const start = new Date(ctx.now.getTime() - dias * 86400000).toISOString();
+  // ── LA BÚSQUEDA POR TEMA MIRABA 50 TITULARES ───────────────────────
+  // Y después decía "sin titulares para el tema Hormuz". Eso se lee como "no
+  // hay noticias de Hormuz" cuando lo que pasaba es "no estaba entre los 50 más
+  // recientes" — una afirmación fuerte sobre una muestra chica, que es
+  // exactamente la clase de error que el resto del sistema evita.
+  //
+  // Por tema se paginan 4 páginas (200 titulares). Por ticker alcanza con una:
+  // el feed ya viene filtrado por el servidor.
+  const porTema = !!args.tema && !args.ticker;
   let items = [];
   try {
     items = await (ctx.deps.getNews || getNews)({
       symbols: args.ticker ? [args.ticker] : [], limit: 50, start, creds: ctx.creds,
+      pages: porTema ? 4 : 1,
     });
   } catch (e) {
     return { text: `No se pudieron traer noticias: ${String((e && e.message) || e)}. No hay titulares para esta consulta — no significa que no haya noticias.`, rows: 0, error: true };
   }
+  const buscados = items.length;
   if (args.tema) {
+    // Se busca en el TITULAR Y en el RESUMEN. Un tema como "Hormuz" o "crypto"
+    // aparece muchas veces en el cuerpo y no en el título, y buscar solo el
+    // título devolvía cero sobre noticias que sí estaban ahí.
     const re = new RegExp(String(args.tema).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    items = items.filter((n) => re.test(n.headline));
+    items = items.filter((n) => re.test(n.headline) || re.test(n.summary || ''));
   }
+  const coincidencias = items.length;
   items = items.slice(0, args.limit || 8);
   if (!items.length) {
-    return { text: `Sin titulares para ${args.ticker || 'el tema "' + args.tema + '"'} en los últimos ${dias} día(s).`, rows: 0 };
+    // EL CERO HONESTO: dice sobre cuántos se buscó. "Sin titulares" a secas no
+    // distingue "no hay noticias" de "no miramos suficientes".
+    return {
+      text: args.tema
+        ? `Ningún titular menciona "${args.tema}" entre los ${buscados} más recientes de los últimos ${dias} día(s) (se buscó en título y resumen). Eso NO significa que no haya pasado nada sobre el tema: significa que no está en esta ventana.`
+        : `Sin titulares para ${args.ticker} en los últimos ${dias} día(s).`,
+      rows: 0, buscados,
+    };
   }
-  const header = `${items.length} titular(es), últimos ${dias} día(s):`;
+  const header = args.tema
+    ? `${coincidencias} titular(es) mencionan "${args.tema}" de ${buscados} revisados, últimos ${dias} día(s):`
+    : `${items.length} titular(es), últimos ${dias} día(s):`;
   const rows = items.map((n) => `${String(n.created_at || '').slice(0, 10)} [${(n.symbols || []).slice(0, 3).join(',') || '—'}] ${n.headline}`);
   const t = truncateRows(rows, { header });
   return { text: t.text, rows: t.shown, truncated: t.truncated };

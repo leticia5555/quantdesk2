@@ -99,6 +99,7 @@ import { RAILS } from './_lib/arena-rails.js';
 import { buildBoard, renderBoard, BOARD_TOKEN_HARD_CAP, SECTOR_ETFS } from './_lib/arena-board.js';
 // B3: las HERRAMIENTAS y el loop de tool use (uno para los dos proveedores).
 import { createToolExecutor, TOOL_BUDGET } from './_lib/arena-tools.js';
+import { sectorFromGics, sectorFromIndustry } from './_lib/arena-meta.js';
 import {
   currentTier, recordRunSpend, callCost, tierAnnouncementId, tierAnnouncementText, DAILY_BUDGET_USD,
 } from './_lib/arena-budget.js';
@@ -2046,10 +2047,28 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     // El sector de cada nombre sale del deep dive que ya se pagó (Finnhub
     // profile2). Un nombre sin clasificar devuelve null y el filtro por sector
     // simplemente no lo incluye — no se inventa un sector.
+    // ── EL SECTOR SALE DEL UNIVERSO, NO DE UN startsWith ──────────────
+    // Esto mapeaba la industria de Finnhub al ETF comparando los primeros SEIS
+    // caracteres del nombre del sector. "Information Technology" vs "Technology"
+    // no coinciden, así que devolvía null para casi todo — y `sector({etf})`
+    // daba 0 filas porque ningún nombre tenía sector.
+    //
+    // El universo ya guarda la clasificación GICS del CSV de IVV. Es el dato
+    // correcto y ya está pago.
+    const sectoresUni = (buffet && buffet.universe_raw && buffet.universe_raw.sectores) || {};
     const sectorPorSimbolo = {};
+    for (const [tk, gics] of Object.entries(sectoresUni)) {
+      const etf = sectorFromGics(gics);
+      if (etf) sectorPorSimbolo[tk] = etf;
+    }
+    // Para los nombres del día, que no están en ningún índice, se sigue usando
+    // la industria del deep dive — pero con el mapeo por REGLAS, no con un
+    // startsWith de seis caracteres.
     for (const [tk, d] of Object.entries(dive.data || {})) {
+      if (sectorPorSimbolo[tk]) continue;
       const ind = d && d.profile && d.profile.industry;
-      if (ind) sectorPorSimbolo[tk] = (SECTOR_ETFS.find((x) => x.name.toLowerCase().startsWith(String(ind).toLowerCase().slice(0, 6))) || {}).etf || null;
+      const etf = ind ? sectorFromIndustry(ind).etf : null;
+      if (etf) sectorPorSimbolo[tk] = etf;
     }
     executor = createToolExecutor({
       budget: toolBudget,

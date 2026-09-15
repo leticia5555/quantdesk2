@@ -57,9 +57,32 @@ export function dayIndex(now = new Date()) {
 
 // La lente de un agente HOY. Determinista y rotativa: en 4 días cada agente
 // pasa por las cuatro.
+// ── EL CONTROL HEREDA LA LENTE DEL INSIGNIA ──────────────────────────
+// BUG DE DISEÑO, reportado el 2026-09-15: `claude` corrió con `momentum` y
+// `control` con `catalizador`. Los dos corren el MISMO modelo con el MISMO
+// prompt byte a byte — ésa es toda la razón por la que el control existe: mide
+// el RUIDO del sistema, el delta que aparece entre dos corridas idénticas.
+//
+// Con lentes distintas dejan de ser idénticos. El delta entre ellos pasa a
+// mezclar ruido con "mirar el mercado por otro lado", y el piso de ruido deja de
+// ser un piso: cualquier diferencia entre dos modelos distintos se vuelve
+// incomparable, porque no hay contra qué medirla.
+//
+// La rotación hashea el id del agente, así que `claude` y `control` caían en
+// lentes distintas casi siempre. Acá se fija: el control toma la lente de su
+// insignia, no la suya.
+export const LENTE_HEREDADA = { control: 'claude' };
+
 export function lenteDelDia(agentId, now = new Date()) {
-  const i = (hashNum(agentId) + dayIndex(now)) % LENTES.length;
+  const fuente = LENTE_HEREDADA[String(agentId || '').toLowerCase()] || agentId;
+  const i = (hashNum(fuente) + dayIndex(now)) % LENTES.length;
   return LENTES[i];
+}
+
+// ¿Este agente comparte lente con otro por diseño? Lo usa el reporte para
+// decidir si el par es un piso de ruido válido ese día.
+export function comparteLenteCon(agentId) {
+  return LENTE_HEREDADA[String(agentId || '').toLowerCase()] || null;
 }
 
 // ── LA COLA ALEATORIZADA ─────────────────────────────────────────────

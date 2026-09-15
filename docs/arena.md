@@ -731,6 +731,75 @@ sería re-crear el problema una capa más arriba.
 Mientras el contrato nuevo corra solo en sombra, éste es el **único** lugar
 donde se puede ver un portafolio objetivo.
 
+### Lo que encontró la SEGUNDA sombra (4/7, $1.04)
+
+#### El control corrió con otra lente que claude — el piso de ruido no medía nada
+
+`claude` con `momentum`, `control` con `catalizador`. Los dos corren el **mismo
+modelo con el mismo prompt byte a byte**; ésa es toda la razón por la que el
+control existe: mide el **ruido** del sistema, el delta entre dos corridas
+idénticas.
+
+Con lentes distintas dejan de ser idénticas. El delta entre ellos pasa a mezclar
+ruido con *"mirar el mercado por otro lado"*, y el piso deja de ser un piso:
+cualquier diferencia entre dos modelos distintos se vuelve incomparable porque no
+hay contra qué medirla.
+
+La rotación hashea el id del agente, así que caían en lentes distintas casi
+siempre. Ahora **el control hereda la lente de su insignia** (`LENTE_HEREDADA`,
+declarado en un solo lugar). La rotación sigue viva: el control recorre las
+cuatro lentes, las de claude.
+
+Y el reporte publica **`piso_de_ruido` como línea propia**, con la condición
+explícita: si las lentes difieren, **no publica el número** — dice que ese par
+mide la lente, no el ruido.
+
+#### `sector({etf})` devolvía 0 filas porque estaba conectada a nada
+
+La sombra le pasaba al ejecutor `deps: { sectorOf: () => null }` — **literal**.
+Ningún nombre del tablero podía coincidir con ningún sector porque la función
+decía que nadie tiene sector. La herramienta no estaba rota: estaba conectada a
+una constante.
+
+En el camino vivo era casi lo mismo por otro motivo: mapeaba la industria de
+Finnhub al ETF comparando los **primeros seis caracteres** del nombre del sector.
+`"Information Technology"` vs `"Technology"` no coinciden.
+
+Los dos ahora leen los sectores **GICS del universo**, que vienen del CSV de IVV
+— el mismo dato que arregló R6. Una vez cargado, sirve para los dos.
+
+#### `noticias({tema})` miraba 50 titulares y decía "no hay"
+
+Buscaba el tema sobre **una sola página** del feed (50 items) y **solo en el
+titular**. Después contestaba *"sin titulares para el tema Hormuz"*, que se lee
+como *"no hay noticias de Hormuz"* cuando lo que pasaba era *"no estaba entre los
+50 más recientes"*. Una afirmación fuerte sobre una muestra chica — justo la
+clase de error que el resto del sistema evita.
+
+Ahora una búsqueda por tema **pagina 4 páginas** (200 titulares), busca en
+**titular y resumen**, y el cero es honesto: dice **sobre cuántos** se buscó.
+
+#### grok y deepseek mueren justo al llegar a 8/8
+
+`qwen`, con 6/8, pasó. La correlación es **tocar el techo**, y lo único que pasa
+solo entonces es el **turno de cierre forzado**.
+
+Ese turno se llamaba con `tools: null`, lo que **quita el parámetro `tools`** del
+payload — sobre una conversación que ya contiene `tool_calls` (OpenAI) o bloques
+`tool_use` (Anthropic). Los dos proveedores esperan que el esquema siga declarado
+cuando el historial lo menciona, y vía OpenRouter un payload incoherente vuelve
+como **HTTP 200 con un `error` adentro**.
+
+La forma correcta de pedir *"contestá sin llamar nada"* es declarar las
+herramientas y prohibirlas con `tool_choice: none`. Eso es lo que hace ahora.
+
+> **Es una hipótesis, no una confirmación.** No tengo acceso al journal ni a los
+> proveedores desde el entorno de desarrollo, así que no pude reproducirlo. Lo
+> que sí es cierto en cualquier caso: quitar el esquema de un payload cuyo
+> historial lo menciona es incoherente, y `tool_choice` es la forma correcta.
+
+---
+
 ### Lo que encontró la primera sombra real (2026-09-15, $1.11, 2/7 en verde)
 
 #### 1 · `tools_max: 8` y 11, 15, 10 llamadas — dos causas, no una
