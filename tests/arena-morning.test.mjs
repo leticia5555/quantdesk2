@@ -29,6 +29,22 @@ delete process.env.ARENA_SCREENER_ENABLED;
 import { runArenaMorning } from '../api/arena-run.js';
 import { ARENA_RULES } from '../api/_lib/arena-guard.js';
 
+// Los slugs de OpenRouter de la temporada nueva no están verificados contra el
+// catálogo (ver el candado en _lib/arena-registry.js). En los tests el catálogo
+// no existe, así que se levanta el candado explícitamente.
+process.env.ARENA_ALLOW_UNVERIFIED_SLUGS = '1';
+
+// El system de Anthropic viaja como ARRAY de bloques cuando la caché de prompt
+// está encendida (_lib/arena-model.js parte reglamento|fecha para que el
+// recordatorio de fecha, que cambia a diario, quede FUERA del prefijo
+// cacheado). Los mocks tienen que leer las dos formas o ramifican mal de fase.
+function sysText(body) {
+  const s = body && body.system;
+  if (Array.isArray(s)) return s.map((b) => (b && b.text) || '').join('');
+  return String(s || '');
+}
+
+
 let failures = 0;
 function ok(cond, name, detail) {
   if (cond) console.log('  PASS', name);
@@ -82,7 +98,7 @@ global.fetch = async (url, opts = {}) => {
 
   if (u.includes('api.anthropic.com')) {
     const body = JSON.parse(opts.body || '{}');
-    const sys = String(body.system || '');
+    const sys = sysText(body);
     // Tres fases posibles: SCAN (triage), DIVE (decide) y TITULAR (solo narra).
     const phase = sys.includes('TU VOZ:') ? 'headline' : (sys.includes('SCOUT') ? 'scan' : 'dive');
     llmCalls.push({ phase, maxTokens: body.max_tokens, user: String(body.messages[0].content) });

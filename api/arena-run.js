@@ -92,7 +92,7 @@ import { callArenaLLM, providerKey } from './_lib/arena-model.js';
 // arquetipo NUNCA entra al prompt que decide — ver el candado del control en el
 // encabezado de _lib/arena-voice.js.
 import { generateHeadline } from './_lib/arena-voice.js';
-import { ARENA_AGENTS, ARENA_SEASON, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
+import { ARENA_AGENTS, ARENA_SEASON, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, modelSlugResolved, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
 // CADENCIA POR EVENTO: el corte de fecha y las constantes del vigilante.
 // El runner solo necesita saber CUÁNDO deja de correr el cron nocturno y qué
 // dice el reglamento nuevo; la lógica de disparadores vive en su módulo.
@@ -1099,6 +1099,21 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
 
   const apiKey = providerKey(agent);
 
+  // ── CANDADO DE SLUG NO VERIFICADO ────────────────────────────────
+  // Antes de gastar un token: si el slug del modelo de este agente no está
+  // confirmado contra el catálogo de su proveedor y no hay `ARENA_MODEL_<ID>`
+  // puesta, el agente NO corre. Un slug inventado no falla barato — falla con
+  // un 404 por corrida, todos los días, y el journal se llena de abortos que
+  // parecen del modelo y son nuestros. /api/arena-smoke resuelve el slug real
+  // contra el catálogo y dice exactamente qué env var poner.
+  if (!modelSlugResolved(agent)) {
+    await journalInsert({
+      ...base, account: accountSnapshot, context, status: 'aborted_unverified_model',
+      error: `El slug '${agent.model}' de ${agentId} no está verificado contra el catálogo de ${agent.provider} y no hay ARENA_MODEL_${agentId.toUpperCase()}. Corré /api/arena-smoke para resolverlo.`,
+    });
+    return { status: 'aborted_unverified_model', orders: 0, risk_exits: riskSubmitted };
+  }
+
   if (event) {
     // El slate del evento. Dos políticas, según quién despertó al agente:
     //   - corrida matutina post-earnings (T2 #7): se INTERSECTA con el libro
@@ -1175,9 +1190,30 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
       return { status: 'aborted_no_api_key', orders: 0, risk_exits: riskSubmitted };
     }
 
-    const scanLlm = await callArenaLLM({ agent, system: scanSystem, messages: [{ role: 'user', content: scanUser }], maxTokens: 500, now });
+    // Techo compartido por ambas fases (ARENA_MAX_TOKENS, default 6000). El 500
+    // de antes era un techo para un modelo que no razona: en uno que sí, los
+    // tokens de pensamiento salen del MISMO presupuesto y la respuesta se corta
+    // antes del JSON. Ver la nota de ARENA_MAX_TOKENS en el registry.
+    const scanLlm = await callArenaLLM({ agent, system: scanSystem, messages: [{ role: 'user', content: scanUser }], maxTokens: ARENA_MAX_TOKENS, now });
+    // OBSERVABILIDAD DEL SCAN. El DIVE journaleaba stop_reason/truncated desde
+    // siempre; el SCAN no, y por eso un aborto de la fase 1 era indistinguible
+    // entre "parloteó fuera del JSON" y "se quedó sin tokens". Los abortos de
+    // grok del 14 y el 15 se diagnosticaron a ciegas por esto mismo.
+    context.scan.stop_reason = (scanLlm.data && scanLlm.data.stop_reason) || null;
+    context.scan.truncated = context.scan.stop_reason === 'max_tokens';
+    context.scan.max_tokens = ARENA_MAX_TOKENS;
+    context.scan.effort = ARENA_EFFORT;
+    if (scanLlm.data && scanLlm.data.usage) context.scan.usage = scanLlm.data.usage;
+    if (scanLlm.refusal) {
+      // Rechazo del clasificador: su propio status. No es un JSON malformado.
+      context.scan.refusal = scanLlm.refusal_details || true;
+      await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_llm_refusal', error: 'el modelo rechazó la petición (stop_reason=refusal) [fase scan]' });
+      return { status: 'aborted_llm_refusal', orders: 0, risk_exits: riskSubmitted };
+    }
     if (scanLlm.stale || scanLlm.status !== 200 || !scanLlm.data) {
-      const reason = (scanLlm.stale ? 'fechas rotas tras retry (guard anti-alucinación)' : 'HTTP ' + scanLlm.status + ' de Anthropic') + ' [fase scan]';
+      const reason = (scanLlm.stale
+        ? 'fechas rotas tras retry (guard anti-alucinación)'
+        : 'HTTP ' + scanLlm.status + ' de ' + agent.provider + (scanLlm.error_detail ? ': ' + scanLlm.error_detail : '')) + ' [fase scan]';
       await journalInsert({ ...base, prompt_hash: scanHash, account: accountSnapshot, context, status: 'aborted_llm_error', error: reason });
       return { status: 'aborted_llm_error', orders: 0, risk_exits: riskSubmitted };
     }
@@ -1279,9 +1315,19 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // 8 holdings eso ya no cabía en 1500 tokens, y una respuesta CORTADA a la
   // mitad es JSON inválido → `aborted_malformed_json`, cero órdenes. Subir el
   // techo es más barato que perder una corrida entera.
-  const diveLlm = await callArenaLLM({ agent, system: diveSystem, messages: [{ role: 'user', content: diveUser }], maxTokens: 3000, now });
+  const diveLlm = await callArenaLLM({ agent, system: diveSystem, messages: [{ role: 'user', content: diveUser }], maxTokens: ARENA_MAX_TOKENS, now });
+  context.dive.max_tokens = ARENA_MAX_TOKENS;
+  context.dive.effort = ARENA_EFFORT;
+  if (diveLlm.data && diveLlm.data.usage) context.dive.usage = diveLlm.data.usage;
+  if (diveLlm.refusal) {
+    context.dive.refusal = diveLlm.refusal_details || true;
+    await journalInsert({ ...withPrompt, status: 'aborted_llm_refusal', error: 'el modelo rechazó la petición (stop_reason=refusal) [fase dive]' });
+    return { status: 'aborted_llm_refusal', orders: 0, risk_exits: riskSubmitted };
+  }
   if (diveLlm.stale || diveLlm.status !== 200 || !diveLlm.data) {
-    const reason = (diveLlm.stale ? 'fechas rotas tras retry (guard anti-alucinación)' : 'HTTP ' + diveLlm.status + ' de Anthropic') + ' [fase dive]';
+    const reason = (diveLlm.stale
+      ? 'fechas rotas tras retry (guard anti-alucinación)'
+      : 'HTTP ' + diveLlm.status + ' de ' + agent.provider + (diveLlm.error_detail ? ': ' + diveLlm.error_detail : '')) + ' [fase dive]';
     await journalInsert({ ...withPrompt, status: 'aborted_llm_error', error: reason });
     return { status: 'aborted_llm_error', orders: 0, risk_exits: riskSubmitted };
   }
@@ -1680,6 +1726,56 @@ export async function announceEventCadence(now = new Date()) {
   } catch (e) { /* best-effort: el anuncio no bloquea la corrida */ }
 }
 
+// ── CAMBIO DE MODELOS (anuncio de reglamento, con fecha) ─────────
+// MISMO mecanismo que el anuncio de la T2 y el de la cadencia: una fila de
+// LIGA, idempotente por id, con status `rules_changed`. Existe porque el
+// post-mortem NO puede comparar las corridas de antes y las de después como si
+// fueran la misma población: cambió el modelo de los siete a la vez, cambió el
+// techo de salida y cambió la perilla de profundidad. Sin este corte, un salto
+// de equity el 16 se leería como mérito del PM cuando puede ser mérito del
+// modelo nuevo.
+//
+// La fecha es la del CAMBIO (el día en que corre la primera nocturna con los
+// modelos nuevos), y el id la fija: la fila entra una sola vez.
+export const MODELS_VERSION = /* date-lint-ok: fecha del cambio de modelos, hecho histórico fijo que ancla el corte del post-mortem */ '2026-09-15';
+export const MODELS_ANNOUNCEMENT_ID = 'arena-modelos-' + MODELS_VERSION;
+
+export function modelsRulesText() {
+  const rows = activeAgents().map((a) => `   · ${a.name}: ${a.model_label} (${a.provider === 'anthropic' ? 'API Anthropic directa' : 'OpenRouter'})`);
+  return [
+    `CAMBIO DE MODELOS del Arena — vigente desde ${MODELS_VERSION}. Aplica a los siete agentes de la liga, control incluido.`,
+    'El reglamento de la Temporada 2 y la cadencia por evento NO cambian. Lo que cambia es QUIÉN decide.',
+    '1) LA PARRILLA COMPLETA SUBE DE MODELO:',
+    ...rows,
+    `2) TECHO DE SALIDA ÚNICO de ${ARENA_MAX_TOKENS} tokens para las DOS fases (antes 500 en el scan y 3000 en el dive). En un modelo de razonamiento los tokens de pensamiento se cuentan contra el mismo techo: 500 cortaba la respuesta antes del JSON y la corrida moría como "formato inválido" sin serlo.`,
+    `3) PROFUNDIDAD POR EFFORT, no por temperatura: effort '${ARENA_EFFORT}' para todos los que lo soportan.`,
+    '4) LA TEMPERATURA DEJA DE SER UNIVERSAL, y se declara: Claude Fable 5.1 rechaza `temperature` con 400 — en esa familia el sampling no es configurable. Los dos agentes de Anthropic corren sin temperatura; los cinco de OpenRouter con 0.7. La decisión #2 de la liga ("misma temperatura para todos") queda parcialmente rota. Lo que SÍ se preserva es la identidad de parámetros entre `claude` y `control`, que es donde se mide el ruido.',
+    '5) CACHÉ DE PROMPT encendida donde el proveedor la soporta (Anthropic explícita, OpenAI automática). El reglamento es idéntico entre corridas y entre agentes: pagarlo entero cada vez era regalar dinero. NO cambia ni una palabra de lo que el modelo lee.',
+    '6) NADA MÁS CAMBIA. Mismo prompt, mismo buffet, mismo guard determinista, mismas cuentas, misma red de seguridad.',
+    'LÍMITE DECLARADO: las métricas de antes y después de esta fecha NO son comparables. El corte queda escrito acá para que el post-mortem no las mezcle.',
+  ].join('\n');
+}
+
+export async function announceModelChange(now = new Date()) {
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
+       values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
+      [MODELS_ANNOUNCEMENT_ID, MODELS_VERSION, PROMPT_VERSION, modelsRulesText(),
+        JSON.stringify({
+          rules_version: MODELS_VERSION, supersedes: cadenceVersion(), prompt_version: PROMPT_VERSION,
+          change: 'models', max_tokens: ARENA_MAX_TOKENS, effort: ARENA_EFFORT,
+          models: activeAgents().map((a) => ({
+            id: a.id, model_label: a.model_label, model: a.model,
+            provider: a.provider, slug_verified: !!a.slug_verified,
+            temperature: a.caps && a.caps.sampling === false ? null : ARENA_TEMPERATURE,
+          })),
+          applies_to: activeAgents().map((a) => a.id),
+        })],
+    );
+  } catch (e) { /* best-effort: el anuncio no bloquea la corrida */ }
+}
+
 // ── APERTURA DE TEMPORADA — UN SOLO MECANISMO, AUTOMÁTICO ────────────
 // Hubo dos durante unas horas: éste y uno manual (`?action=announce`, una fila
 // `season_start` POR AGENTE) que llegó por otra rama. Se queda éste y el otro se
@@ -1865,6 +1961,8 @@ export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
 
   await announceT2Rules(now);
   await announceSeasonOpen(now);
+  // Corte del post-mortem por CAMBIO DE MODELOS (idempotente por id).
+  await announceModelChange(now);
   await ensureAgentStateRows(agents.map((a) => a.id));
 
   const reports = postEarningsTriggers(await fetchEarningsWindow(baseUrl, now), now);
@@ -1931,6 +2029,7 @@ export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
 // mientras tanto late igual (distingue "el cron corrió" de "el cron operó").
 async function supersededByWatch({ phase, now, trigger }) {
   await announceEventCadence(now);
+  await announceModelChange(now);
   await journalInsert({
     id: 'arena-league-' + phase + '-superseded-' + now.toISOString(),
     run_date: now.toISOString().slice(0, 10), phase: 'decide', prompt_version: PROMPT_VERSION,
@@ -1976,6 +2075,8 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   // mezclar dos reglamentos en la misma serie.
   await announceT2Rules(now);
   await announceSeasonOpen(now);
+  // Corte del post-mortem por CAMBIO DE MODELOS (idempotente por id).
+  await announceModelChange(now);
 
   // Siembra una fila de estado por agente (el halt/resume son UPDATE por agent_id).
   await ensureAgentStateRows(agents.map((a) => a.id));

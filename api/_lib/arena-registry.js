@@ -64,14 +64,46 @@
 //           override de slug) · ARENA_LEAGUE (opc, lista de ids a correr).
 // ═══════════════════════════════════════════════════════════════
 
-import { ANTHROPIC_MODEL } from './model.js';
+import { ARENA_ANTHROPIC_MODEL, ANTHROPIC_PRICES } from './model.js';
 
+export { ANTHROPIC_PRICES };
+
+// LÍMITE NUEVO (2026-09-15): la temperatura ya NO es idéntica para todos,
+// porque dejó de ser universal. Claude Fable 5.1 RECHAZA `temperature` con 400
+// (junto con top_p/top_k): en esa familia el sampling no es configurable. Así
+// que `claude` y `control` corren SIN temperatura y los cinco de OpenRouter con
+// 0.7. La decisión #2 de la liga ("misma temperatura para todos") queda
+// PARCIALMENTE ROTA y se declara — no se finge igualada. Lo que sí se preserva
+// es lo que hacía válido al control: `claude` y `control` corren con parámetros
+// byte-idénticos entre ellos, que es donde se mide el ruido.
+//
 // Temperatura FIJA e idéntica para todos (decisión #2). No-cero: 0 colapsaría
 // a los modelos a su moda y borraría justo la variabilidad que queremos medir.
 // Override por env (validada a [0,2]); inválida → 0.7.
 export const ARENA_TEMPERATURE = (() => {
   const n = Number(process.env.ARENA_TEMPERATURE);
   return Number.isFinite(n) && n >= 0 && n <= 2 ? n : 0.7;
+})();
+
+// ── EFFORT y TECHO DE SALIDA (relanzamiento 2026-09-15) ──────────────
+// `effort` medio para todos: es la perilla que sustituye a la temperatura como
+// control de "cuánto piensa" en los modelos de razonamiento. Medio y no alto
+// porque el encargo del PM es un JSON de decisión, no una demostración — y
+// porque alto multiplica el costo de una liga de 7 que corre todos los días.
+export const ARENA_EFFORT = (() => {
+  const v = String(process.env.ARENA_EFFORT || 'medium').toLowerCase();
+  return ['low', 'medium', 'high', 'xhigh', 'max'].includes(v) ? v : 'medium';
+})();
+
+// Techo de salida ÚNICO para ambas fases. Antes eran 500 (scan) y 3000 (dive):
+// 500 tokens es un techo escrito para un modelo que responde sin razonar, y en
+// un modelo de razonamiento los tokens de pensamiento se cuentan contra el
+// MISMO techo — la respuesta se corta antes de emitir el JSON y la corrida
+// muere en `aborted_scan_malformed_json`. Es la causa raíz candidata #1 de los
+// abortos de grok (ver docs/arena-modelos-2026-09-15.md).
+export const ARENA_MAX_TOKENS = (() => {
+  const n = Number(process.env.ARENA_MAX_TOKENS);
+  return Number.isFinite(n) && n >= 500 && n <= 64000 ? Math.floor(n) : 6000;
 })();
 
 // Slug de OpenRouter con override por env (ARENA_MODEL_<ID>). Un slug que el
@@ -86,55 +118,103 @@ export const FLAGSHIP_AGENT_ID = 'claude';
 // `enabled` = la parrilla de la TEMPORADA 2: los SIETE. Los slugs de OpenRouter
 // apuntan a la clase RÁPIDA/EFICIENTE de cada casa (comparable a Haiku), no al
 // tope de gama — así se mide el modelo y no el presupuesto (ver el scope).
+// ── MODELOS DE LA TEMPORADA (relanzamiento 2026-09-15) ────────────────
+// Slug efectivo por agente. `ARENA_MODEL_<ID>` SIEMPRE gana: es el tornillo con
+// el que Lety corrige un slug sin redeploy, y el mecanismo por el que los slugs
+// que /api/arena-smoke resuelva contra el catálogo entran en vigor.
+//
+// `slug_verified` dice si el default de ABAJO está confirmado contra el
+// catálogo del proveedor:
+//   - anthropic: SÍ. El slug de Fable 5.1 (ARENA_ANTHROPIC_MODEL, definido en
+//     _lib/model.js) está en el catálogo vigente.
+//   - openrouter: NO. Los cinco defaults siguen la convención `vendor/modelo`
+//     de OpenRouter pero NO se pudieron verificar contra
+//     https://openrouter.ai/api/v1/models (egress bloqueado desde el entorno
+//     donde se escribieron). Son CANDIDATOS, no hechos.
+//
+// El candado: un agente con `slug_verified:false` y SIN `ARENA_MODEL_<ID>`
+// puesta NO corre — `runArenaDecide` journalea `aborted_unverified_model` y no
+// gasta un token. `/api/arena-smoke` es quien resuelve el slug real contra el
+// catálogo y te dice exactamente qué env var poner. Preferimos una liga que no
+// arranca a una liga que le pega a un slug inventado.
+// Desactivable con ARENA_ALLOW_UNVERIFIED_SLUGS=1 (para un smoke a mano).
+
+// El modelo de Anthropic del Arena y la tabla de precios viven en _lib/model.js
+// (regla de la casa: un ID de modelo, un solo archivo — ver el lint de
+// tests/claude-model.test.mjs y el porqué en el encabezado de ese archivo).
+
+// Capacidades por familia — lo que la API ACEPTA, no lo que nos gustaría.
+//   sampling: ¿acepta `temperature`? Fable 5.1 la RECHAZA con 400 (junto con
+//             top_p/top_k). Ver el candado de temperatura más abajo.
+//   effort:   ¿acepta `output_config.effort` (anthropic) o `reasoning.effort`
+//             (openrouter)?
+//   cache:    ¿soporta caché de prompt explícita (`cache_control`)?
+const CAPS_FABLE = { sampling: false, effort: 'anthropic', cache: 'anthropic' };
+const CAPS_OR = { sampling: true, effort: 'openrouter', cache: null };
+const CAPS_OR_OPENAI = { sampling: true, effort: 'openrouter', cache: 'auto' };
+
 export const ARENA_AGENTS = [
   {
-    id: 'claude', name: 'Claude', model_label: 'Haiku 4.5',
-    provider: 'anthropic', model: ANTHROPIC_MODEL, persona: 'Claude PM',
+    id: 'claude', name: 'Claude', model_label: 'Claude Fable 5.1',
+    provider: 'anthropic', model: slug('CLAUDE', ARENA_ANTHROPIC_MODEL), persona: 'Claude PM',
+    slug_verified: true, caps: CAPS_FABLE,
     archetype: { name: 'el analista prudente', voice: 'Mides dos veces y cortas una. Hablas de riesgo antes que de premio, sin dramatizar.' },
     alpaca: 'PAPER',            // reusa la cuenta del Agente #6 → preserva historial
     house: 'us', control: false, phase: 'A', enabled: true,
   },
   {
-    id: 'openai', name: 'ChatGPT', model_label: 'GPT-5 mini',
-    provider: 'openrouter', model: slug('OPENAI', 'openai/gpt-5-mini'), persona: 'GPT PM',
+    id: 'openai', name: 'ChatGPT', model_label: 'GPT-6 Astra',
+    provider: 'openrouter', model: slug('OPENAI', 'openai/gpt-6-astra'), persona: 'GPT PM',
+    slug_verified: false, caps: CAPS_OR_OPENAI,
     archetype: { name: 'el optimista de producto', voice: 'Ves la tesis grande y la cuentas con entusiasmo, pero sin prometer números.' },
     alpaca: 'OPENAI', house: 'us', control: false, phase: 'A', enabled: true,
   },
   {
-    id: 'control', name: 'Control · Haiku-B', model_label: 'Haiku 4.5',
-    provider: 'anthropic', model: ANTHROPIC_MODEL,
+    id: 'control', name: 'Control · Fable-B', model_label: 'Claude Fable 5.1',
+    provider: 'anthropic', model: slug('CONTROL', ARENA_ANTHROPIC_MODEL),
     persona: 'Claude PM',       // IDÉNTICA a `claude` a propósito: es el piso de ruido
+    slug_verified: true, caps: CAPS_FABLE,
     archetype: { name: 'el escéptico que no cree en nadie', voice: 'No te crees ninguna tesis, ni la tuya. Señalas lo que puede salir mal y desconfías del consenso.' },
     alpaca: 'CONTROL', house: 'control', control: true, phase: 'A', enabled: true,
   },
-
-  // ── Los cuatro que entran en la TEMPORADA 2 (eran la Fase B). Encendidos:
-  //    sus `ALPACA_<ID>_*` ya están cargadas y comparten OPENROUTER_API_KEY. ──
   {
-    id: 'grok', name: 'Grok', model_label: 'Grok 4 Fast',
-    provider: 'openrouter', model: slug('GROK', 'x-ai/grok-4-fast'), persona: 'Grok PM',
+    id: 'grok', name: 'Grok', model_label: 'Grok 4.6',
+    provider: 'openrouter', model: slug('GROK', 'x-ai/grok-4.6'), persona: 'Grok PM',
+    slug_verified: false, caps: CAPS_OR,
     archetype: { name: 'el provocador', voice: 'Dices en voz alta lo que los demás callan. Irreverente y directo, nunca grosero.' },
     alpaca: 'GROK', house: 'us', control: false, phase: 'B', enabled: true,
   },
   {
-    id: 'gemini', name: 'Gemini', model_label: 'Gemini 2.5 Flash',
-    provider: 'openrouter', model: slug('GEMINI', 'google/gemini-2.5-flash'), persona: 'Gemini PM',
+    id: 'gemini', name: 'Gemini', model_label: 'Gemini 3.8 Pro',
+    provider: 'openrouter', model: slug('GEMINI', 'google/gemini-3.8-pro'), persona: 'Gemini PM',
+    slug_verified: false, caps: CAPS_OR,
     archetype: { name: 'el ordenado', voice: 'Todo cabe en un marco limpio. Clasificas y ordenas; tu titular suena a conclusión bien archivada.' },
     alpaca: 'GEMINI', house: 'us', control: false, phase: 'B', enabled: true,
   },
   {
-    id: 'deepseek', name: 'DeepSeek', model_label: 'DeepSeek V3.1',
-    provider: 'openrouter', model: slug('DEEPSEEK', 'deepseek/deepseek-chat-v3.1'), persona: 'DeepSeek PM',
+    id: 'deepseek', name: 'DeepSeek', model_label: 'DeepSeek V4 Pro',
+    provider: 'openrouter', model: slug('DEEPSEEK', 'deepseek/deepseek-v4-pro'), persona: 'DeepSeek PM',
+    slug_verified: false, caps: CAPS_OR,
     archetype: { name: 'el frío de los números', voice: 'Solo datos. Cero épica, cero adjetivos: el titular es una medición.' },
     alpaca: 'DEEPSEEK', house: 'china', control: false, phase: 'B', enabled: true,
   },
   {
-    id: 'qwen', name: 'Qwen', model_label: 'Qwen Plus',
-    provider: 'openrouter', model: slug('QWEN', 'qwen/qwen-plus'), persona: 'Qwen PM',
+    id: 'qwen', name: 'Qwen', model_label: 'Qwen3.8 Max',
+    provider: 'openrouter', model: slug('QWEN', 'qwen/qwen3.8-max'), persona: 'Qwen PM',
+    slug_verified: false, caps: CAPS_OR,
     archetype: { name: 'el paciente', voice: 'Juegas el largo plazo. El ruido de hoy te interesa poco; hablas en trimestres.' },
     alpaca: 'QWEN', house: 'china', control: false, phase: 'B', enabled: true,
   },
 ];
+
+// ¿Puede este agente gastar tokens? Un slug no verificado sin override es un
+// disparo a ciegas contra la API de un proveedor: se frena acá.
+export function modelSlugResolved(agent) {
+  if (!agent) return false;
+  if (agent.slug_verified) return true;
+  if (process.env.ARENA_ALLOW_UNVERIFIED_SLUGS === '1') return true;
+  return !!process.env['ARENA_MODEL_' + agent.id.toUpperCase()];
+}
 
 // Los agentes que corren esta liga. `ARENA_LEAGUE` (lista de ids separada por
 // comas) gana sobre las banderas `enabled`: con los siete ya en `true`, su uso
