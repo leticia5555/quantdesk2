@@ -49,7 +49,7 @@
 
 import { sql } from './db.js';
 import { getMovers, getMostActives, getFiftyTwoWeek, getPriceAndDollarVolume } from './alpaca.js';
-import { ADMISSION, resolveAdmission, isAdmissible } from './arena-admission.js';
+import { ADMISSION, resolveAdmission, isAdmissible, reglasParaFeed } from './arena-admission.js';
 import { marketDay } from './arena-buffet-cache.js';
 import { fetchHoldings, HOLDINGS_SOURCES } from './etf-holdings.js';
 import { filtrarComunes, cargarCatalogo } from './arena-instrumento.js';
@@ -82,9 +82,19 @@ export const REFRESH_DAYS = (() => {
 
 // Tope de nombres del día que se AGREGAN al universo (los que no son de los
 // índices). El encargo dice "hasta 100".
+// Tope de nombres del DÍA que se agregan al universo.
+//
+// BAJÓ DE 100 A 50, Y EL NÚMERO SALE DE UNA CUOTA, NO DE UN GUSTO: cada nombre
+// del día que no está en un índice paga un `profile2` de Finnhub para su market
+// cap, y el tier gratis corta a 60 llamadas por minuto (el deep dive del mismo
+// run gasta ~20). Con 100, la mitad del canal recibía 429 y salía marcado como
+// si no tuviera datos. Con 50 entra entero en la cuota.
+//
+// No es una pérdida de cobertura equivalente: ahora los 50 son los 50 de MAYOR
+// volumen en dólares, no los primeros 50 que devolvió el screener.
 export const MOVERS_MAX = (() => {
   const n = Number(process.env.ARENA_UNIVERSE_MOVERS_MAX);
-  return Number.isFinite(n) && n >= 0 && n <= 500 ? Math.floor(n) : 100;
+  return Number.isFinite(n) && n >= 0 && n <= 500 ? Math.floor(n) : 50;
 })();
 
 const SCHEMA = `create table if not exists arena_universe (
@@ -412,14 +422,19 @@ export async function buildUniverse({
     delDia.filter((s2) => !indexSyms.has(s2)), { creds, now, deps, catalogo },
   ).catch((e) => { errors.filtro_instrumento = String((e && e.message) || e); return { comunes: [], rechazados: [], diagnostics: {} }; });
 
-  // El tope se gasta sobre los que YA se sabe que son acciones comunes.
-  const nuevos = filtroDia.comunes.filter((s2) => !indexSyms.has(s2)).slice(0, moversMax);
+  const comunesDelDia = filtroDia.comunes.filter((s2) => !indexSyms.has(s2));
 
   // Los de índice también se normalizan contra el catálogo (BRKB → BRK.B), pero
   // NO se filtran por instrumento: un constituyente del S&P 500 es una acción
   // por definición, y si el catálogo de Alpaca no lo tiene el problema es del
   // catálogo, no del nombre.
-  const candidatos = [...indexSyms, ...nuevos];
+  // ── PRECIO Y VOLUMEN ANTES DEL TOPE, NO DESPUÉS ────────────────────
+  // El orden viejo era: cortar a los primeros N del screener → pedirles todo.
+  // "Los primeros N" no quería decir nada: era el orden en que el screener los
+  // devolvió. Ahora se mide primero el volumen en dólares —que es UNA llamada
+  // por lotes y no cuesta cuota de Finnhub— y el tope se gasta en los N más
+  // líquidos. El corte deja de ser arbitrario y pasa a ser un ranking.
+  const paraMedir = [...indexSyms, ...comunesDelDia];
 
   // ── ADMISIÓN ──
   // Los nombres de los ÍNDICES pasan igual por el filtro: un constituyente que
@@ -443,11 +458,29 @@ export async function buildUniverse({
   // PRECIO Y VOLUMEN → Alpaca por LOTES de 100: 600 nombres son 6 requests en
   // vez de 600. Mismo dato y misma disciplina point-in-time (velas cerradas).
   let precios = {};
+  let feedPrecios = null;
+  let feedIntentos = null;
   try {
-    precios = await (deps.getPriceAndDollarVolume || getPriceAndDollarVolume)(candidatos, { creds, now });
+    const r = await (deps.getPriceAndDollarVolume || getPriceAndDollarVolume)(paraMedir, { creds, now });
+    // La forma nueva devuelve { data, feed, intentos }: el FEED importa porque
+    // el piso de volumen depende de él (IEX es ~2-3% del consolidado).
+    precios = (r && r.data) || (r && !r.feed ? r : {}) || {};
+    feedPrecios = (r && r.feed) || null;
+    feedIntentos = (r && r.intentos) || null;
   } catch (e) {
     errors.prices = String((e && e.message) || e);
   }
+
+  // LAS REGLAS SE AJUSTAN AL FEED QUE CONTESTÓ. Aplicar el piso consolidado de
+  // $10M sobre volumen de IEX fue exactamente el bug que tiró a AIG.
+  const reglas = reglasParaFeed(feedPrecios, rules);
+
+  // El tope del día se gasta en los MÁS LÍQUIDOS, no en los primeros que llegaron.
+  const nuevos = [...comunesDelDia]
+    .sort((x, y) => ((precios[y] && precios[y].dollarVolume) || 0) - ((precios[x] && precios[x].dollarVolume) || 0))
+    .slice(0, moversMax);
+
+  const candidatos = [...indexSyms, ...nuevos];
 
   // MARKET CAP → acá hay una DECISIÓN, no un truco.
   //
@@ -475,7 +508,7 @@ export async function buildUniverse({
     known[sym] = {
       ...(Number.isFinite(p.price) ? { price: p.price } : {}),
       ...(Number.isFinite(p.dollarVolume) ? { dollarVolume: p.dollarVolume } : {}),
-      ...(indexSyms.has(sym) ? { marketCap: rules.min_market_cap_usd } : {}),
+      ...(indexSyms.has(sym) ? { marketCap: reglas.min_market_cap_usd } : {}),
     };
   }
 
@@ -499,7 +532,7 @@ export async function buildUniverse({
   const admitidos = [];
   for (const sym of candidatos) {
     if (!aplicado) { admitidos.push(sym); continue; }
-    const v = isAdmissible({ symbol: sym, ...(admissionData[sym] || {}) }, rules);
+    const v = isAdmissible({ symbol: sym, ...(admissionData[sym] || {}) }, reglas);
     if (v.ok) admitidos.push(sym);
     else rechazados.push({ symbol: sym, reason: v.reason, ...(v.missing ? { missing: v.missing } : {}) });
   }
@@ -573,7 +606,15 @@ export async function buildUniverse({
       admitidos: admitidos.length,
     },
     admission: {
-      applied: aplicado, rules, rejected_count: rechazados.length,
+      applied: aplicado,
+      // LAS REGLAS EFECTIVAS, no las nominales. Publicar `rules` a secas decía
+      // "$10M/día" mientras el piso real aplicado era otro — y ése fue
+      // exactamente el número que hizo ilegible el rechazo de AIG.
+      rules: reglas,
+      feed: feedPrecios,
+      feed_intentos: feedIntentos,
+      volume_note: reglas.volume_note || null,
+      rejected_count: rechazados.length,
       // Cuántos market caps se MIDIERON y cuántos se dieron por cumplidos por
       // pertenecer a un índice de gran capitalización. Es una suposición
       // declarada, no un dato — y el conteo la deja auditable.

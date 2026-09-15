@@ -54,6 +54,49 @@ export const ADMISSION = {
   volume_lookback_days: 20,
 };
 
+// ── EL PISO DE VOLUMEN DEPENDE DEL FEED ──────────────────────────────
+// EL BUG: el universo rechazó a AIG por "$8.7M/día". AIG negocia cientos de
+// millones. El volumen salía del feed IEX, que es UNA bolsa — ~2-3% del volumen
+// consolidado—, así que el piso de $10M se estaba aplicando sobre el 2-3% del
+// volumen real: en la práctica pedía ~$400M consolidados. El filtro no medía
+// liquidez, medía cuota de mercado de IEX. Y lo traicionero es que el PRECIO de
+// IEX está bien: solo el volumen es una fracción, así que todo se veía correcto
+// salvo el número que decidía.
+//
+// EL FACTOR ES UNA APROXIMACIÓN Y SE DECLARA COMO TAL. La cuota de IEX no es
+// una constante: varía por nombre y por día. $0.3M sobre IEX ≈ $10M
+// consolidados asumiendo ~3%, que es el extremo GENEROSO del rango (2-3%) —
+// deliberadamente, porque errar hacia dejar entrar un nombre algo menos líquido
+// es más barato que volver a tirar a la mitad del S&P 500. El journal dice qué
+// feed contestó y qué piso se aplicó, para que nadie lea "$0.3M" y crea que el
+// Arena opera microcaps.
+export const MIN_DOLLAR_VOLUME_POR_FEED = {
+  sip: 10_000_000,
+  delayed_sip: 10_000_000,
+  iex: Number(process.env.ARENA_MIN_DOLLAR_VOLUME_IEX) || 300_000,
+};
+
+// Las reglas de admisión ajustadas al feed que de verdad contestó.
+// Devuelve { ...ADMISSION, min_dollar_volume, feed, volume_note }.
+export function reglasParaFeed(feed, base = ADMISSION) {
+  const f = String(feed || '').toLowerCase();
+  const piso = MIN_DOLLAR_VOLUME_POR_FEED[f];
+  if (!piso) {
+    // Feed desconocido → se queda el piso consolidado. Aflojar sin saber sobre
+    // qué universo de volumen se está midiendo sería aflojar a ciegas.
+    return { ...base, feed: f || null, volume_note: `Feed desconocido (${feed}): se aplica el piso consolidado de $${(base.min_dollar_volume / 1e6).toFixed(0)}M sin ajustar.` };
+  }
+  const consolidado = f === 'iex';
+  return {
+    ...base,
+    min_dollar_volume: piso,
+    feed: f,
+    volume_note: consolidado
+      ? `Volumen medido sobre el feed IEX (~2-3% del consolidado), así que el piso es $${(piso / 1e6).toFixed(1)}M sobre IEX ≈ $10M consolidados. Es una APROXIMACIÓN: la cuota de IEX varía por nombre y por día. NO significa que el Arena acepte nombres de $0.3M/día reales.`
+      : `Volumen consolidado (feed ${f}): el piso es el real, $${(piso / 1e6).toFixed(0)}M/día.`,
+  };
+}
+
 // Caché por DÍA. La admisión es una propiedad lenta del nombre (market cap y
 // volumen medio no cambian de una corrida a la otra); recalcularla en cada tick
 // del vigilante sería quemar el rate limit de Finnhub sin aprender nada.
