@@ -243,7 +243,7 @@ export default async function handler(req, res) {
     // Un post-mortem de temporada que recalcula el piso de HOY no sirve: el día
     // que se lee puede no tener sombra, y las filas de septiembre pueden no
     // seguir ahí en noviembre. `arena_noise_floor` guarda una fila por día con
-    // las dos condiciones que hacen válido el número (misma lente, mismo libro).
+    // las dos condiciones que hacen válido el número (mismo enfoque, mismo libro).
     let piso = null;
     let serie = [];
     try {
@@ -251,7 +251,7 @@ export default async function handler(req, res) {
       serie = await leerPisosDeRuido({ limite: 30 });
       piso = serie[0] || null;
       if (!piso) {
-        piso = { comparable: false, motivo: 'todavía no hay ningún piso de ruido archivado: se archiva solo cuando claude y control comparten lente Y libro de arranque.' };
+        piso = { comparable: false, motivo: 'todavía no hay ningún piso de ruido archivado: se archiva solo cuando claude y control comparten enfoque Y libro de arranque.' };
       }
     } catch (err) {
       piso = { comparable: false, motivo: 'no se pudo leer el piso de ruido: ' + String((err && err.message) || err) };

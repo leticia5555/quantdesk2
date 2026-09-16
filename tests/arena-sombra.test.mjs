@@ -151,13 +151,13 @@ console.log('\n── malformado = abortado honesto, cero órdenes ──');
 // EL REPORTE GRATIS TIENE QUE CONTESTAR LAS PREGUNTAS QUE SE HACEN.
 //
 // Lety pidió cinco cosas de la corrida en sombra: candidatos, qué herramientas
-// llamó cada agente, portafolio objetivo, costo y SOLAPAMIENTO entre los 7.
+// llamó cada agente, portafolio objetivo, costo y COINCIDENCIA entre los 7.
 // Dos no existían en ninguna salida:
 //
 //   · La SECUENCIA de herramientas. La corrida en vivo devuelve `tools_used`,
 //     que es un número. Con qué filtró y en qué orden distingue a un modelo que
 //     investigó de uno que pidió ocho veces lo mismo — y ya se journaleaba.
-//   · El SOLAPAMIENTO. `pairwiseOverlap` estaba escrito y probado desde B8 y
+//   · La COINCIDENCIA. `pairwiseOverlap` estaba escrito y probado desde B8 y
 //     NINGÚN endpoint lo llamaba. Código muerto, igual que las rondas fijas
 //     antes de conectarlas. Un test que ejercita la función exportada no prueba
 //     que alguien la use.
@@ -165,7 +165,7 @@ console.log('\n── malformado = abortado honesto, cero órdenes ──');
 // Las dos se reconstruyen del journal, así que salen por el reporte GRATIS: no
 // hay que pagar otra corrida en siete proveedores para verlas.
 // ═══════════════════════════════════════════════════════════════
-console.log('\n── el solapamiento sale del journal, sin pagar otra corrida ──');
+console.log('\n── la coincidencia sale del journal, sin pagar otra corrida ──');
 {
   const { pairwiseOverlap, sharedTopTicker } = await import('../api/_lib/arena-herding.js');
 
@@ -210,9 +210,9 @@ console.log('\n── el reporte lee el context, que es donde vive la secuencia 
   ok(/herramientas:/.test(src) && /ctx\.tools && Array\.isArray\(ctx\.tools\.sequence\)/.test(src),
     'y se mapea la secuencia, no solo el conteo');
   ok(/pairwiseOverlap/.test(src) && /sharedTopTicker/.test(src),
-    'el solapamiento se CALCULA en el reporte — antes la función existía y nadie la llamaba');
-  ok(/CAVEAT_LENTE/.test(src),
-    'con el caveat de la lente al lado: dos agentes con lentes distintas no son comparables ese día');
+    'la coincidencia se CALCULA en el reporte — antes la función existía y nadie la llamaba');
+  ok(/CAVEAT_ENFOQUE/.test(src),
+    'con el caveat del enfoque al lado: dos agentes con enfoques distintos no son comparables ese día');
 }
 
 // ── EL PISO SE EJERCITA, NO SE GREPEA ────────────────────────────────
@@ -221,36 +221,36 @@ console.log('\n── el reporte lee el context, que es donde vive la secuencia 
 // libros necesita el mismo número y dos implementaciones del mismo piso
 // terminan difiriendo. Ya que está exportado y es puro, se EJERCITA: un grep de
 // fuente nunca probó que el código corra, y ahora no hace falta que lo haga.
-console.log('\n── el piso de ruido sale SOLO si comparten lente ──');
+console.log('\n── el piso de ruido sale SOLO si comparten enfoque ──');
 {
   const src = readFileSync('api/_lib/arena-shadow.js', 'utf8');
   ok(/piso_de_ruido/.test(src), 'el reporte publica el piso de ruido como línea propia');
   // Y DELEGA: si algún día vuelve a calcularlo acá adentro, son dos pisos otra vez.
-  ok(/calcularPisoDeRuido\(/.test(src) && !/mismaLente/.test(src),
+  ok(/calcularPisoDeRuido\(/.test(src) && !/mismoEnfoque/.test(src),
     'el reporte DELEGA el cálculo en arena-herding y no tiene una copia propia');
 
   const mismasPos = ['AAPL', 'NVDA'];
-  const distintaLente = pisoDeRuido({
-    insignia: { lente: 'momentum', posiciones_iniciales: mismasPos },
-    testigo: { lente: 'catalizador', posiciones_iniciales: mismasPos },
+  const distintoEnfoque = pisoDeRuido({
+    insignia: { enfoque: 'momentum', posiciones_iniciales: mismasPos },
+    testigo: { enfoque: 'catalizador', posiciones_iniciales: mismasPos },
     pesos: { claude: { NVDA: 0.1 }, control: { NVDA: 0.1 } },
   });
-  ok(distintaLente.comparable === false && /NO mide ruido: mide la lente/.test(distintaLente.motivo),
-    'con lentes distintas NO publica el número como piso: dice que ese par mide la lente', distintaLente.motivo);
-  ok(distintaLente.cosine === undefined && distintaLente.cosine_observado === 1,
+  ok(distintoEnfoque.comparable === false && /NO mide ruido: mide el enfoque/.test(distintoEnfoque.motivo),
+    'con enfoques distintos NO publica el número como piso: dice que ese par mide el enfoque', distintoEnfoque.motivo);
+  ok(distintoEnfoque.cosine === undefined && distintoEnfoque.cosine_observado === 1,
     'el número observado existe y viaja con otro nombre — no es el piso, y tampoco se esconde',
-    JSON.stringify(distintaLente.cosine_observado));
+    JSON.stringify(distintoEnfoque.cosine_observado));
 
   const bueno = pisoDeRuido({
-    insignia: { lente: 'momentum', posiciones_iniciales: mismasPos },
-    testigo: { lente: 'momentum', posiciones_iniciales: mismasPos },
+    insignia: { enfoque: 'momentum', posiciones_iniciales: mismasPos },
+    testigo: { enfoque: 'momentum', posiciones_iniciales: mismasPos },
     pesos: { claude: { NVDA: 0.1, AAPL: 0.1 }, control: { NVDA: 0.1, AAPL: 0.1 } },
   });
   ok(bueno.comparable === true && bueno.cosine === 1, 'con las dos condiciones cumplidas, sí hay piso', JSON.stringify(bueno.cosine));
   ok(/PISO SÓLIDO/.test(bueno.lectura),
     'el número viaja con su lectura — un 0.4 entre dos corridas idénticas es el resultado más importante del día');
 
-  ok(pisoDeRuido({ insignia: null, testigo: { lente: 'momentum' }, pesos: {} }).comparable === false,
+  ok(pisoDeRuido({ insignia: null, testigo: { enfoque: 'momentum' }, pesos: {} }).comparable === false,
     'y si falta uno de los dos libros, no hay piso (no un piso de 0)');
 
   ok(/abortos:/.test(src) && /llm_error: ctx\.llm_error/.test(src),
@@ -276,20 +276,20 @@ console.log('\n── qué significa cada piso ──');
 // control arrancó con 6 posiciones heredadas y claude con 1. Dos PMs idénticos
 // que parten de carteras distintas producen libros distintos POR HERENCIA.
 //
-// El piso solo significa algo cuando se cumplen las DOS: misma lente Y mismo
+// El piso solo significa algo cuando se cumplen las DOS: mismo enfoque Y mismo
 // libro de arranque. Publicar el número sin eso es publicar una medición de
 // otra cosa con la etiqueta de piso de ruido.
 // ═══════════════════════════════════════════════════════════════
-console.log('\n── el piso exige misma lente Y mismo libro ──');
+console.log('\n── el piso exige mismo enfoque Y mismo libro ──');
 {
   const src = readFileSync('api/_lib/arena-shadow.js', 'utf8');
   const heredado = pisoDeRuido({
-    insignia: { lente: 'momentum', posiciones_iniciales: ['NVDA'] },
-    testigo: { lente: 'momentum', posiciones_iniciales: ['NVDA', 'AAPL', 'MSFT', 'AMD', 'GOOG', 'META'] },
+    insignia: { enfoque: 'momentum', posiciones_iniciales: ['NVDA'] },
+    testigo: { enfoque: 'momentum', posiciones_iniciales: ['NVDA', 'AAPL', 'MSFT', 'AMD', 'GOOG', 'META'] },
     pesos: { claude: { NVDA: 0.1 }, control: { NVDA: 0.1 } },
   });
   ok(heredado.comparable === false,
-    'misma lente NO alcanza: con libros de arranque distintos el par no mide ruido');
+    'mismo enfoque NO alcanza: con libros de arranque distintos el par no mide ruido');
   ok(/mide HERENCIA, no ruido/.test(heredado.motivo),
     'y lo dice con esas palabras en vez de publicar el número como piso', heredado.motivo);
   ok(/un reset las iguala/.test(heredado.motivo),

@@ -227,11 +227,11 @@ export function excesoVsBenchmark({ agentes = [], benchmarkReturn = null, pisoDe
   // publica el dato que hay y se dice qué se puede concluir con él.
   const piso = pisoDeRuido && pisoDeRuido.comparable ? pisoDeRuido : null;
   out.piso_de_ruido = piso
-    ? { cosine: piso.cosine, lente: piso.lente, comparable: true }
+    ? { cosine: piso.cosine, enfoque: piso.enfoque, comparable: true }
     : { comparable: false, motivo: (pisoDeRuido && pisoDeRuido.motivo) || 'el piso de ruido no está disponible para este día' };
 
   out.lectura = piso
     ? `El exceso de cada agente es su retorno menos el ${benchmarkReturn}% del índice. Leélo CONTRA el piso de ruido: claude y control corren el mismo modelo con el mismo prompt, así que lo que los separa a ELLOS es el ruido del sistema. Un exceso que no supera esa distancia no es habilidad.`
-    : `El exceso de cada agente es su retorno menos el ${benchmarkReturn}% del índice. OJO: sin un piso de ruido comparable este día, no hay contra qué medir si un exceso chico es habilidad o azar. El piso solo vale cuando claude y control comparten lente Y libro de arranque.`;
+    : `El exceso de cada agente es su retorno menos el ${benchmarkReturn}% del índice. OJO: sin un piso de ruido comparable este día, no hay contra qué medir si un exceso chico es habilidad o azar. El piso solo vale cuando claude y control comparten enfoque Y libro de arranque.`;
   return out;
 }

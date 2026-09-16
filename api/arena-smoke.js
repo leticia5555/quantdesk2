@@ -195,7 +195,7 @@ function tokens(s) {
 }
 
 // Candidatos del catálogo ordenados por parecido contra el slug propuesto Y la
-// etiqueta humana del modelo. Deliberadamente tonto y explicable (solapamiento
+// etiqueta humana del modelo. Deliberadamente tonto y explicable (coincidencia
 // de tokens con bonus por vendor): el humano decide, esto solo acota la lista.
 function suggest(agent, catalogIds) {
   const want = new Set([...tokens(agent.model), ...tokens(agent.model_label)]);

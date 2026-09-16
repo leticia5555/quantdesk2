@@ -100,9 +100,9 @@ console.log('\n── 1) la fuente NUNCA se infiere ──');
   ok(sombra.portafolio.tesis.NVDA === 'la demanda sigue', 'y la tesis por posición');
   ok(sombra.rebalanceo.ordenes === 2 && sombra.rebalanceo.turnover === 0.2, 'qué habría hecho el motor', JSON.stringify(sombra.rebalanceo));
 
-  ok(sombra.lente === 'momentum', 'la lente del día');
-  ok(/confound DELIBERADO/.test(sombra.lente_nota || ''),
-    'publicada CON su advertencia: dos agentes con lentes distintas el mismo día no son comparables ese día');
+  ok(sombra.enfoque === 'momentum', 'el enfoque del día');
+  ok(/confound DELIBERADO/.test(sombra.enfoque_nota || ''),
+    'publicada CON su advertencia: dos agentes con enfoques distintos el mismo día no son comparables ese día');
 
   // Una corrida del contrato VIEJO no tiene portafolio, y eso también informa.
   const vieja = libroDeFila({ ...fila, target: null, rebalance: null }, 'viva');
@@ -199,12 +199,12 @@ console.log('\n── las órdenes, y el modo que las hace legibles ──');
 }
 
 // ── EL DÍA, NO LA VENTANA ────────────────────────────────────────────
-console.log('\n── el solapamiento y el piso son hechos de UN día y de UNA fuente ──');
+console.log('\n── la coincidencia y el piso son hechos de UN día y de UNA fuente ──');
 {
-  const libro = (agente, fuente, fecha, pesos, lente, pos) => libroDeFila({
+  const libro = (agente, fuente, fecha, pesos, enfoque, pos) => libroDeFila({
     created_at: fecha, agent_id: agente, status: 'ok_target', plan: 'x',
     target: { weights: pesos, cash: 0.1, theses: {} },
-    context: { lens: lente, posiciones_iniciales: pos },
+    context: { lens: enfoque, posiciones_iniciales: pos },
   }, fuente);
 
   // Ordenados de más nuevo a más viejo, como los entrega el handler.
@@ -222,27 +222,27 @@ console.log('\n── el solapamiento y el piso son hechos de UN día y de UNA f
   ok(d17.fuente === 'sombra' && d17.corridas === 2,
     'del 17 sale la corrida de sombra con sus dos agentes — no tres: de cada agente cuenta su ÚLTIMA corrida del día',
     JSON.stringify({ f: d17.fuente, n: d17.corridas }));
-  ok(d17.solapamiento.mean === 1,
-    'dos libros idénticos solapan 1', String(d17.solapamiento.mean));
-  ok(/ALTO/.test(d17.solapamiento.lectura),
+  ok(d17.coincidencia.mean === 1,
+    'dos libros idénticos solapan 1', String(d17.coincidencia.mean));
+  ok(/ALTO/.test(d17.coincidencia.lectura),
     'y el número viaja con su lectura: un coseno alto entre modelos distintos NO es "la liga funciona"');
   ok(d17.piso_de_ruido.comparable === true && d17.piso_de_ruido.cosine === 1,
-    'con misma lente y mismo libro de arranque, claude↔control SÍ es piso de ruido');
+    'con mismo enfoque y mismo libro de arranque, claude↔control SÍ es piso de ruido');
 
   const d16 = dias.find((d) => d.dia === '2026-09-16');
-  ok(d16.fuente === 'viva' && d16.solapamiento.mean === null,
-    'un solo libro no solapa con nada, y se dice en vez de publicar un número', JSON.stringify(d16.solapamiento.mean));
+  ok(d16.fuente === 'viva' && d16.coincidencia.mean === null,
+    'un solo libro no solapa con nada, y se dice en vez de publicar un número', JSON.stringify(d16.coincidencia.mean));
   ok(d16.piso_de_ruido.comparable === false,
     'y sin control ese día, no hay piso — no un piso de 0');
 
-  // Lentes distintas: el par mide la lente, no el ruido.
-  const lentes = resumenPorDia([
+  // Enfoques distintas: el par mide el enfoque, no el ruido.
+  const enfoques = resumenPorDia([
     libro('claude', 'sombra', '2026-09-18T20:00:00Z', { NVDA: 0.2 }, 'momentum', []),
     libro('control', 'sombra', '2026-09-18T20:00:00Z', { NVDA: 0.2 }, 'catalizador', []),
   ])[0];
-  ok(lentes.piso_de_ruido.comparable === false && /mide la lente/.test(lentes.piso_de_ruido.motivo),
-    'con lentes distintas el par NO se publica como piso: mide la lente', lentes.piso_de_ruido.motivo);
-  ok(lentes.piso_de_ruido.cosine_observado === 1 && lentes.piso_de_ruido.cosine === undefined,
+  ok(enfoques.piso_de_ruido.comparable === false && /mide el enfoque/.test(enfoques.piso_de_ruido.motivo),
+    'con enfoques distintos el par NO se publica como piso: mide el enfoque', enfoques.piso_de_ruido.motivo);
+  ok(enfoques.piso_de_ruido.cosine_observado === 1 && enfoques.piso_de_ruido.cosine === undefined,
     'y el número observado no se esconde: viaja con otro nombre');
 
   // La sombra y la viva del mismo día NO se mezclan en el mismo coseno.
@@ -250,7 +250,7 @@ console.log('\n── el solapamiento y el piso son hechos de UN día y de UNA f
     libro('claude', 'viva', '2026-09-19T20:00:00Z', { NVDA: 0.2 }, 'momentum', []),
     libro('control', 'sombra', '2026-09-19T20:00:00Z', { NVDA: 0.2 }, 'momentum', []),
   ]);
-  ok(mezcla.length === 2 && mezcla.every((d) => d.solapamiento.mean === null),
+  ok(mezcla.length === 2 && mezcla.every((d) => d.coincidencia.mean === null),
     'una corrida viva y una de sombra del mismo día no son el mismo experimento: no entran al mismo coseno');
 }
 
@@ -259,7 +259,7 @@ console.log('\n── una sola implementación del piso, y acá no se archiva �
 {
   const src = readFileSync(new URL('../api/liga-libros.js', import.meta.url), 'utf8');
   ok(/from '\.\/_lib\/arena-herding\.js'/.test(src),
-    'el piso y el solapamiento salen de arena-herding: dos implementaciones del mismo número terminan difiriendo');
+    'el piso y la coincidencia salen de arena-herding: dos implementaciones del mismo número terminan difiriendo');
   // Sobre el CÓDIGO, no sobre los comentarios: el comentario sí nombra
   // `arena_noise_floor` para decir dónde vive el archivo histórico.
   const codigo = src.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');

@@ -42,7 +42,7 @@ import { legsAOrdenes, verificarOrdenesContraPesos, enviarOrdenes, mandaOrdenes 
 import { buildRebalance } from './_lib/arena-rebalance.js';
 import { createToolExecutor, TOOL_BUDGET } from './_lib/arena-tools.js';
 import { runToolLoop, relojDisponible } from './_lib/arena-tool-loop.js';
-import { buildTail, lenteDelDia } from './_lib/arena-herding.js';
+import { buildTail, enfoqueDelDia } from './_lib/arena-herding.js';
 import { buildRailMeta, sectorFromGics } from './_lib/arena-meta.js';
 
 // Sector ETF de un simbolo, desde los sectores GICS que el universo guardó.
@@ -133,7 +133,7 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   const posicionesIniciales = (libro.positions || []).map((x) => String((x && x.symbol) || '').toUpperCase()).filter(Boolean).sort();
 
   // El prompt: MISMO system y MISMO contexto compartido que la liga; la cola
-  // (lente + orden aleatorizado) es lo único por agente, del lado no cacheado.
+  // (enfoque + orden aleatorizado) es lo único por agente, del lado no cacheado.
   const system = buildTargetSystemPrompt(agent.persona);
   const shared = buildSharedContext(buffet);
   const cola = buildTail({

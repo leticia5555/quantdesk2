@@ -11,25 +11,25 @@
 //    no lo es: un modelo que lee una lista tiende a pesar más lo de arriba, así
 //    que un orden común es una preferencia común disfrazada de coincidencia.
 //
-// 2. LENTE PRIMARIA ROTATIVA (momentum / catalizador / valor / reversión),
+// 2. ENFOQUE PRIMARIO ROTATIVO (momentum / catalizador / valor / reversión),
 //    dicha en el prompt como "hoy mirá primero por…". No le prohíbe nada: le
 //    cambia por dónde empieza.
 //
 // ── TODO ES DETERMINISTA, Y NO ES UN DETALLE ─────────────────────────
-// La semilla es `hash(agent_id + run_id)` y la lente es
-// `LENTES[(hash(agent) + día) % 4]`. Un `Math.random()` acá haría el journal
+// La semilla es `hash(agent_id + run_id)` y el enfoque es
+// `ENFOQUES[(hash(agent) + día) % 4]`. Un `Math.random()` acá haría el journal
 // IRREPRODUCIBLE: el post-mortem no podría reconstruir qué vio cada agente, y
 // el replay —que existe justamente para eso— sería inútil. Determinista además
-// garantiza que en 4 días cada agente pasó por las cuatro lentes.
+// garantiza que en 4 días cada agente pasó por los cuatro enfoques.
 //
 // ── DÓNDE VIVE LA ALEATORIZACIÓN (D2: la caché gana) ─────────────────
 // En la COLA NO CACHEADA, nunca en el prefijo. Si el orden del tablero cambiara
 // por agente dentro del bloque cacheado, los siete tendrían prefijos distintos
 // y la caché no serviría para nada. Por eso lo que se aleatoriza es una cola
-// corta (≤2K tokens) que viaja del lado volátil, junto al libro y la lente.
+// corta (≤2K tokens) que viaja del lado volátil, junto al libro y el enfoque.
 //
 // ── LA ADVERTENCIA HONESTA ───────────────────────────────────────────
-// La lente rotativa es un CONFOUND DELIBERADO. Dos agentes con lentes distintas
+// El enfoque rotativo es un CONFOUND DELIBERADO. Dos agentes con enfoques distintos
 // el mismo día NO son comparables ese día. Mide diversidad a costa de
 // comparabilidad diaria; a lo largo de la temporada se promedia, pero hay que
 // decirlo en el post-mortem en vez de dejar que alguien lo descubra.
@@ -39,7 +39,7 @@
 
 import { createHash } from 'node:crypto';
 
-export const LENTES = [
+export const ENFOQUES = [
   { id: 'momentum', prompt: 'Today, look first through MOMENTUM: what is already moving, and whether the move has support (volume, breadth, a reason) or is just a gap that will close.' },
   { id: 'catalizador', prompt: 'Today, look first through CATALYSTS: what is about to happen — earnings, deals, rating changes — and what is already priced into the name before it happens.' },
   { id: 'valor', prompt: 'Today, look first through VALUE: what is cheap against its own history or its sector, and whether it is cheap for a reason you can name.' },
@@ -49,40 +49,40 @@ export const LENTES = [
 const hashNum = (s) => parseInt(createHash('sha256').update(String(s)).digest('hex').slice(0, 8), 16);
 
 // Día del año, en horario del ESTE (el del mercado). Usar UTC haría que la
-// lente cambiara a las 20:00 ET, o sea a mitad de la sesión.
+// enfoque cambiara a las 20:00 ET, o sea a mitad de la sesión.
 export function dayIndex(now = new Date()) {
   const iso = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
   return Math.floor(Date.parse(iso + 'T00:00:00Z') / 86400000);
 }
 
-// La lente de un agente HOY. Determinista y rotativa: en 4 días cada agente
+// El enfoque de un agente HOY. Determinista y rotativo: en 4 días cada agente
 // pasa por las cuatro.
-// ── EL CONTROL HEREDA LA LENTE DEL INSIGNIA ──────────────────────────
+// ── EL CONTROL HEREDA EL ENFOQUE DEL INSIGNIA ──────────────────────────
 // BUG DE DISEÑO, reportado el 2026-09-15: `claude` corrió con `momentum` y
 // `control` con `catalizador`. Los dos corren el MISMO modelo con el MISMO
 // prompt byte a byte — ésa es toda la razón por la que el control existe: mide
 // el RUIDO del sistema, el delta que aparece entre dos corridas idénticas.
 //
-// Con lentes distintas dejan de ser idénticos. El delta entre ellos pasa a
+// Con enfoques distintos dejan de ser idénticos. El delta entre ellos pasa a
 // mezclar ruido con "mirar el mercado por otro lado", y el piso de ruido deja de
 // ser un piso: cualquier diferencia entre dos modelos distintos se vuelve
 // incomparable, porque no hay contra qué medirla.
 //
 // La rotación hashea el id del agente, así que `claude` y `control` caían en
-// lentes distintas casi siempre. Acá se fija: el control toma la lente de su
+// enfoques distintos casi siempre. Acá se fija: el control toma el enfoque de su
 // insignia, no la suya.
-export const LENTE_HEREDADA = { control: 'claude' };
+export const ENFOQUE_HEREDADO = { control: 'claude' };
 
-export function lenteDelDia(agentId, now = new Date()) {
-  const fuente = LENTE_HEREDADA[String(agentId || '').toLowerCase()] || agentId;
-  const i = (hashNum(fuente) + dayIndex(now)) % LENTES.length;
-  return LENTES[i];
+export function enfoqueDelDia(agentId, now = new Date()) {
+  const fuente = ENFOQUE_HEREDADO[String(agentId || '').toLowerCase()] || agentId;
+  const i = (hashNum(fuente) + dayIndex(now)) % ENFOQUES.length;
+  return ENFOQUES[i];
 }
 
-// ¿Este agente comparte lente con otro por diseño? Lo usa el reporte para
+// ¿Este agente comparte enfoque con otro por diseño? Lo usa el reporte para
 // decidir si el par es un piso de ruido válido ese día.
-export function comparteLenteCon(agentId) {
-  return LENTE_HEREDADA[String(agentId || '').toLowerCase()] || null;
+export function comparteEnfoqueCon(agentId) {
+  return ENFOQUE_HEREDADO[String(agentId || '').toLowerCase()] || null;
 }
 
 // ── LA COLA ALEATORIZADA ─────────────────────────────────────────────
@@ -115,10 +115,10 @@ export const TAIL_TOKEN_CAP = Number(process.env.ARENA_TAIL_TOKEN_CAP) || 2000;
 const estimateTokens = (s) => Math.ceil(String(s || '').length / 4);
 
 export function buildTail({ agentId, runId, movers = [], now = new Date(), cap = TAIL_TOKEN_CAP }) {
-  const lente = lenteDelDia(agentId, now);
+  const enfoque = enfoqueDelDia(agentId, now);
   const orden = shuffleDeterministic(movers.map((m) => m.symbol || m), `${agentId}|${runId}`);
   const partes = [
-    `YOUR LENS TODAY: ${lente.prompt}`,
+    `YOUR LENS TODAY: ${enfoque.prompt}`,
     'This is where to START, not a restriction: if the board points somewhere else, go there and say so.',
     '',
     'TODAY\'S NAMES, in no particular order (the ordering is randomized per agent on purpose — it carries no ranking):',
@@ -127,13 +127,13 @@ export function buildTail({ agentId, runId, movers = [], now = new Date(), cap =
   let text = partes.join('\n');
   let truncated = false;
   if (estimateTokens(text) > cap) {
-    // Se recorta la LISTA, nunca la lente: la lente son 40 tokens y es la mitad
+    // Se recorta la LISTA, nunca el enfoque: el enfoque son 40 tokens y es la mitad
     // del mecanismo.
     const cabe = Math.max(10, Math.floor((cap * 4 - partes.slice(0, 4).join('\n').length) / 6));
     text = [...partes.slice(0, 4), orden.slice(0, cabe).join(' ') + ` …(${orden.length - cabe} más, truncado)`].join('\n');
     truncated = true;
   }
-  return { text, lens: lente.id, order: orden, tokens_est: estimateTokens(text), truncated, cap };
+  return { text, lens: enfoque.id, order: orden, tokens_est: estimateTokens(text), truncated, cap };
 }
 
 // ── LAS MÉTRICAS DEL POST-MORTEM ─────────────────────────────────────
@@ -153,7 +153,7 @@ export function sharedTopTicker(books) {
   return { ticker: mejor, books: max, pct: ids.length ? +((max / ids.length) * 100).toFixed(1) : 0 };
 }
 
-// Solapamiento par a par: coseno entre los vectores de peso. Con portafolio
+// Coincidencia par a par: coseno entre los vectores de peso. Con portafolio
 // objetivo esto deja de ser una aproximación y pasa a ser un número directo —
 // es la ventaja de medir libros en vez de órdenes.
 export function pairwiseOverlap(books) {
@@ -186,7 +186,7 @@ function cosine(a, b) {
 
 // ── EL PISO DE RUIDO: claude ↔ control ───────────────────────────────
 // Los dos corren el MISMO modelo con el MISMO prompt byte a byte. Su coseno NO
-// es un dato más del solapamiento: es la referencia contra la que vale
+// es un dato más de la coincidencia: es la referencia contra la que vale
 // cualquier delta entre modelos distintos. Si es 0.4, dos modelos que difieren
 // 0.4 no difieren en nada.
 //
@@ -201,12 +201,12 @@ function cosine(a, b) {
 // Acá es puro: sin db, sin writes. `shadowReport` lo llama y archiva el
 // resultado; la página lo llama y no archiva nada.
 //
-//   insignia / testigo: { lente, posiciones_iniciales } de claude y de control.
+//   insignia / testigo: { enfoque, posiciones_iniciales } de claude y de control.
 //   pesos:              { claude: {TICKER:peso}, control: {...} }
 //
 // LAS DOS CONDICIONES SON ESTRUCTURALES, no un refinamiento:
-//   · MISMA LENTE. El 2026-09-15 claude corrió `momentum` y control
-//     `catalizador`: ese par no medía ruido, medía la lente.
+//   · MISMO ENFOQUE. El 2026-09-15 claude corrió `momentum` y control
+//     `catalizador`: ese par no medía ruido, medía el enfoque.
 //   · MISMO LIBRO DE ARRANQUE. El 0.68 de la sombra 3 tampoco era ruido:
 //     control tenía 6 posiciones heredadas y claude 1. Dos PMs idénticos que
 //     parten de carteras distintas producen libros distintos por HERENCIA.
@@ -220,12 +220,12 @@ export function pisoDeRuido({ insignia = null, testigo = null, pesos = {} } = {}
     return { disponible: false, comparable: false, motivo: 'falta el libro de claude o el de control en este día' };
   }
 
-  const mismaLente = !!(insignia.lente && insignia.lente === testigo.lente);
-  if (!mismaLente) {
+  const mismoEnfoque = !!(insignia.enfoque && insignia.enfoque === testigo.enfoque);
+  if (!mismoEnfoque) {
     return {
       disponible: false, comparable: false,
-      motivo: `claude corrió con lente "${insignia.lente}" y control con "${testigo.lente}". El par NO mide ruido: mide la lente.`,
-      lente_claude: insignia.lente, lente_control: testigo.lente,
+      motivo: `claude corrió con enfoque "${insignia.enfoque}" y control con "${testigo.enfoque}". El par NO mide ruido: mide el enfoque.`,
+      enfoque_claude: insignia.enfoque, enfoque_control: testigo.enfoque,
       cosine_observado: parRuido,
     };
   }
@@ -239,7 +239,7 @@ export function pisoDeRuido({ insignia = null, testigo = null, pesos = {} } = {}
 
   if (!mismoLibro) {
     return {
-      disponible: false, comparable: false, lente: insignia.lente,
+      disponible: false, comparable: false, enfoque: insignia.enfoque,
       cosine_observado: parRuido,
       motivo: `claude arrancó con ${posClaude ? posClaude.length : '?'} posición(es) y control con ${posControl ? posControl.length : '?'}. El coseno entre ellos mide HERENCIA, no ruido: dos PMs idénticos que parten de carteras distintas producen libros distintos por eso solo. Para que el piso signifique algo, las dos cuentas tienen que arrancar del mismo libro — un reset las iguala.`,
       posiciones_claude: posClaude, posiciones_control: posControl,
@@ -247,7 +247,7 @@ export function pisoDeRuido({ insignia = null, testigo = null, pesos = {} } = {}
   }
 
   return {
-    disponible: true, comparable: true, lente: insignia.lente, cosine: parRuido,
+    disponible: true, comparable: true, enfoque: insignia.enfoque, cosine: parRuido,
     posiciones_iniciales: posClaude,
     lectura: lecturaDelPiso(parRuido),
   };
@@ -264,9 +264,9 @@ export function lecturaDelPiso(c) {
       : `PISO BAJO (${c}): dos corridas IDÉNTICAS difieren tanto que casi ningún delta entre modelos distintos es interpretable. Es el resultado más importante del día si sale así.`;
 }
 
-// La lectura del SOLAPAMIENTO entre todos (otra cosa que el piso: acá los
+// La lectura de la COINCIDENCIA entre todos (otra cosa que el piso: acá los
 // modelos son distintos, y un coseno alto es un problema, no una referencia).
-export function lecturaDelSolapamiento(mean) {
+export function lecturaDeCoincidencia(mean) {
   if (mean == null) return null;
   return mean >= 0.8
     ? `ALTO (${mean}): los siete están construyendo casi el mismo libro. La liga estaría midiendo una opinión repetida siete veces, no siete opiniones.`
@@ -275,7 +275,7 @@ export function lecturaDelSolapamiento(mean) {
       : `BAJO (${mean}): los libros difieren de verdad. Es lo que hace comparable el experimento.`;
 }
 
-export const CAVEAT_LENTE = 'OJO con la LENTE: dos agentes con lentes distintas el mismo día NO son comparables ese día — el confound es deliberado (B8). Mirá la lente de cada libro antes de leer el par.';
+export const CAVEAT_ENFOQUE = 'OJO con el ENFOQUE: dos agentes con enfoques distintos el mismo día NO son comparables ese día — el confound es deliberado (B8). Mirá el enfoque de cada libro antes de leer el par.';
 
 // Posiciones que vinieron de una HERRAMIENTA vs del tablero. Es la métrica que
 // dice si las herramientas sirvieron para algo o si el PM decide igual con lo

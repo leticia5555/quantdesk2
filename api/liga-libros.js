@@ -7,7 +7,7 @@
 // está mostrando.
 //
 // Por agente: portafolio objetivo · tesis por posición · secuencia de
-// investigación · lente del día. El control MARCADO y las etiquetas de modelo
+// investigación · enfoque del día. El control MARCADO y las etiquetas de modelo
 // correctas — la etiqueta legible del registry (`model_label`), nunca el slug
 // crudo de la API. El slug es un detalle de implementación que además cambia
 // con un override de env var, y publicarlo haría que la tabla de la liga dijera
@@ -49,7 +49,7 @@
 
 import { sql } from './_lib/db.js';
 import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay } from './_lib/arena-registry.js';
-import { pairwiseOverlap, sharedTopTicker, pisoDeRuido, lecturaDelSolapamiento, CAVEAT_LENTE } from './_lib/arena-herding.js';
+import { pairwiseOverlap, sharedTopTicker, pisoDeRuido, lecturaDeCoincidencia, CAVEAT_ENFOQUE } from './_lib/arena-herding.js';
 
 const int = (v, def, min, max) => {
   const n = parseInt(v, 10);
@@ -119,10 +119,10 @@ export function libroDeFila(row, fuente) {
       cash: target.cash ?? null,
       tesis: target.theses || null,
     } : null,
-    // La LENTE del día (B8). Es un confound deliberado y se publica como tal:
-    // dos agentes con lentes distintas el mismo día no son comparables ese día.
-    lente: ctx.lens || null,
-    lente_nota: ctx.lens ? 'La lente rota por agente y por día (momentum/catalizador/valor/reversión). Es un confound DELIBERADO: dos agentes con lentes distintas el mismo día no son comparables ese día.' : null,
+    // El ENFOQUE del día (B8). Es un confound deliberado y se publica como tal:
+    // dos agentes con enfoques distintos el mismo día no son comparables ese día.
+    enfoque: ctx.lens || null,
+    enfoque_nota: ctx.lens ? 'El enfoque rota por agente y por día (momentum/catalizador/valor/reversión). Es un confound DELIBERADO: dos agentes con enfoques distintos el mismo día no son comparables ese día.' : null,
     // CÓMO INVESTIGÓ.
     investigacion: secuenciaPublicable(ctx),
     // Qué habría hecho el motor con ese objetivo.
@@ -205,9 +205,9 @@ export function ejecucionPublicable(e) {
 }
 
 // ── EL DÍA, NO LA VENTANA ────────────────────────────────────────────
-// El solapamiento y el piso de ruido son hechos de UN DÍA. Promediarlos sobre
+// La coincidencia y el piso de ruido son hechos de UN DÍA. Promediarlos sobre
 // tres días daría un número que no corresponde a ninguna corrida y que además
-// mezcla lentes: el 16 claude miró momentum y el 17 valor.
+// mezcla enfoques: el 16 claude miró momentum y el 17 valor.
 //
 // Se agrupa por día Y POR FUENTE. Un libro de sombra y uno vivo del mismo día
 // no son el mismo experimento —uno movió dinero y el otro no— y meterlos en el
@@ -239,21 +239,21 @@ export function resumenPorDia(libros) {
       if (w && Object.keys(w).length) pesos[id] = w;
     }
     const n = Object.keys(pesos).length;
-    const solapamiento = n >= 2
+    const coincidencia = n >= 2
       ? {
         ...pairwiseOverlap(pesos),
         nombre_mas_compartido: sharedTopTicker(pesos),
         libros: n,
         lectura: null,
-        caveat: CAVEAT_LENTE,
+        caveat: CAVEAT_ENFOQUE,
       }
       : { pairs: [], mean: null, max: null, libros: n,
-        note: 'Hacen falta al menos DOS libros con pesos para que el solapamiento signifique algo.' };
-    if (solapamiento.mean != null) solapamiento.lectura = lecturaDelSolapamiento(solapamiento.mean);
+        note: 'Hacen falta al menos DOS libros con pesos para que la coincidencia signifique algo.' };
+    if (coincidencia.mean != null) coincidencia.lectura = lecturaDeCoincidencia(coincidencia.mean);
 
     const deAgente = (id) => {
       const l = g.ultimos.get(id);
-      return l ? { lente: l.lente, posiciones_iniciales: l.posiciones_iniciales } : null;
+      return l ? { enfoque: l.enfoque, posiciones_iniciales: l.posiciones_iniciales } : null;
     };
     const piso = pisoDeRuido({ insignia: deAgente('claude'), testigo: deAgente('control'), pesos });
 
@@ -261,8 +261,8 @@ export function resumenPorDia(libros) {
       dia: g.dia, fuente: g.fuente,
       agentes: [...g.ultimos.keys()],
       corridas: g.ultimos.size,
-      lentes: Object.fromEntries([...g.ultimos].map(([id, l]) => [id, l.lente || null])),
-      solapamiento,
+      enfoques: Object.fromEntries([...g.ultimos].map(([id, l]) => [id, l.enfoque || null])),
+      coincidencia,
       piso_de_ruido: piso,
     });
   }
@@ -361,7 +361,7 @@ export default async function handler(req, res) {
       de_sombra: libros.filter((l) => l.fuente === 'sombra').length,
     },
     nota_fuente: 'Cada libro dice si viene de la liga VIVA o de la SOMBRA. Una decisión de sombra NO movió dinero: es el contrato nuevo corriendo en paralelo, sin órdenes.',
-    // Por día y por fuente: el solapamiento entre los libros de ese día y el
+    // Por día y por fuente: la coincidencia entre los libros de ese día y el
     // piso de ruido claude↔control. El piso se CALCULA acá y no se archiva —
     // archivar escribe, y este endpoint no escribe. El archivo histórico vive
     // en /api/leaderboard?postmortem=1, que lo lee de `arena_noise_floor`.
