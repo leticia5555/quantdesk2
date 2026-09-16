@@ -48,6 +48,7 @@ import { ensureSchema } from './_lib/db.js';
 import { checkAdminAuth } from './_lib/arena-admin.js';
 import { alpacaCreds } from './_lib/alpaca.js';
 import { buildUniverse, saveUniverse, loadUniverse, resolveConstituents, REFRESH_DAYS, MOVERS_MAX } from './_lib/arena-universe.js';
+import { sectorFromGics } from './_lib/arena-meta.js';
 import { beat } from './_lib/heartbeat.js';
 
 // ~600 nombres × admisión (Finnhub profile2 + Yahoo, en lotes) es lo más lento
@@ -87,6 +88,69 @@ export default async function handler(req, res) {
 
   try {
     await ensureSchema();
+
+    // ── ?diag=DELL,COP — QUÉ SABE EL UNIVERSO DE ESTOS NOMBRES ─────────
+    // Gratis, cero construcción, cero llamadas a Alpaca: lee lo GUARDADO.
+    //
+    // Existe porque tres bugs distintos (`sector(XLE)` en 0, `with_sector` en 0,
+    // el screener en 0) tienen la misma pregunta debajo y no había forma de
+    // contestarla sin entrar a Neon a mano: ¿el dato está en el universo del
+    // día, o no está?
+    //
+    // La respuesta distingue las TRES cosas que se confunden: el nombre no está
+    // en el universo · el nombre está pero sin ese campo · el campo está y el
+    // consumidor no lo lee. Sin separarlas, cualquier arreglo es a ciegas.
+    const diag = String(q.diag || '').trim();
+    if (diag) {
+      const u = await loadUniverse({ now });
+      if (!u) return res.status(200).json({ diag: true, universe: null, hint: 'No hay universo guardado. Corré el endpoint sin ?diag= para construir uno.' });
+      const pedidos = diag.split(',').map((x) => x.trim().toUpperCase()).filter(Boolean).slice(0, 40);
+      const enUniverso = new Set(u.symbols || []);
+      const deIndice = new Set(u.from_index || []);
+      const sectores = u.sectores || {};
+      const retornos = u.retornos || {};
+      const caps = u.market_caps || {};
+      const w52 = u.fifty_two_week || {};
+      return res.status(200).json({
+        diag: true,
+        universo: {
+          built_at: u.built_at, loaded_from: u.loaded_from, is_today: u.is_today,
+          universe_source: u.universe_source,
+          symbols: (u.symbols || []).length,
+          from_index: (u.from_index || []).length,
+          from_day: (u.from_day || []).length,
+          // LOS CUATRO CONTADORES QUE DECIDEN TODO. Si `sectores` es 0, no hay
+          // nada que arreglar en los rieles ni en la herramienta `sector`: el
+          // dato no llegó a guardarse, y el bug está una capa antes.
+          sectores: Object.keys(sectores).length,
+          retornos: Object.keys(retornos).length,
+          market_caps: Object.keys(caps).length,
+          fifty_two_week: Object.keys(w52).length,
+          note: u.note || null,
+        },
+        // De dónde salieron los constituyentes, y si ESA foto trae sectores. Un
+        // snapshot guardado por una versión anterior al soporte de la columna
+        // `Sector` se relee tal cual —el refresco es semanal— y deja el universo
+        // sin sectores sin que nada falle a la vista.
+        indices: u.indices || null,
+        nombres: pedidos.map((sym) => ({
+          symbol: sym,
+          en_universo: enUniverso.has(sym),
+          origen: !enUniverso.has(sym) ? null : (deIndice.has(sym) ? 'indice' : 'canal_del_dia'),
+          sector_gics: sectores[sym] ?? null,
+          sector_etf: sectorFromGics(sectores[sym]) || null,
+          ret_5d: (retornos[sym] || {}).ret_5d ?? null,
+          ret_1m: (retornos[sym] || {}).ret_1m ?? null,
+          market_cap: caps[sym] ?? null,
+          fifty_two_week: w52[sym] || null,
+          lectura: !enUniverso.has(sym)
+            ? 'NO está en el universo de este día: ninguna herramienta ni riel lo va a encontrar.'
+            : sectores[sym] == null
+              ? 'Está en el universo pero SIN sector. Si `origen` es `canal_del_dia`, es esperado: los sectores vienen del CSV del índice y un mover de fuera del S&P no los trae. Si `origen` es `indice`, el CSV no trajo la columna Sector o el snapshot guardado es de antes de que se leyera.'
+              : 'Tiene sector en el universo. Si igual llega como UNKNOWN a los rieles o la herramienta `sector` lo ignora, el bug está en el consumidor, no en el dato.',
+        })),
+      });
+    }
 
     // ?peek=1 — gratis: qué hay guardado, sin construir nada.
     if (peek) {

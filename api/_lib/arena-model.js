@@ -202,8 +202,9 @@ export function buildOpenRouterBody({ agent, model, system, messages, maxTokens 
   return body;
 }
 
-async function openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT }) {
+async function openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null }) {
   const body = buildOpenRouterBody({ agent, model, system, messages, maxTokens, now, tools, toolChoice, effort });
+  const t0 = Date.now();
   const r = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
@@ -222,6 +223,10 @@ async function openRouterFetch({ apiKey, agent, model, system, messages, maxToke
   const texto = await r.text().catch(() => '');
   let raw = null;
   try { raw = texto ? JSON.parse(texto) : null; } catch { raw = null; }
+  // EL TRACE: el cuerpo que SALIÓ, no solo el que volvió. `bodySample` (800
+  // chars de la respuesta) nunca alcanzó para diagnosticar los abortos de
+  // OpenRouter porque el sospechoso es el payload de entrada.
+  if (trace) trace.push({ fase, provider: 'openrouter', model, request: body, response: texto, status: r.status, ms: Date.now() - t0 });
   return { status: r.status, raw, bodySample: String(texto || '').slice(0, 800) };
 }
 
@@ -239,33 +244,38 @@ export function withDeadline(promesa, ms, alTimeout) {
 // Envoltorio que convierte un abort (o una caída de red) en un RESULTADO, no en
 // una excepción: un agente que se pasa del reloj tiene que aparecer como una
 // fila `timeout` en el reporte, no tumbar a los otros seis.
-async function timedFetch(fn, timeoutMs) {
+async function timedFetch(fn, timeoutMs, trace = null, fase = null) {
   const t0 = Date.now();
   try {
     return await fn();
   } catch (e) {
     const name = (e && e.name) || '';
     const timedOut = name === 'TimeoutError' || name === 'AbortError';
+    // El STACK EXACTO del throw. Sin esto, un error de red y un TypeError
+    // nuestro se ven igual en el journal: "se pasó de 90s" o un mensaje suelto.
+    if (trace) trace.push({ fase, status: 0, ms: Date.now() - t0, threw: String((e && e.message) || e), stack: e && e.stack });
     return {
       status: 0, raw: null, timedOut,
       netError: timedOut ? `se pasó de ${Math.round(timeoutMs / 1000)}s (abortado a los ${Date.now() - t0}ms)` : String((e && e.message) || e),
+      threw_stack: (e && e.stack) ? String(e.stack).slice(0, 1200) : null,
     };
   }
 }
 
 // Guard-equivalente al de Anthropic, para OpenRouter: inyecta fecha, escanea
 // fechas prospectivas rotas, reintenta UNA vez, y si reincide devuelve stale.
-async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT }) {
+async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null }) {
   // `effort` NO se estaba pasando: la firma lo aceptaba y las dos llamadas lo
   // dejaban afuera, así que el escalón 1 del breaker bajaba el effort en
   // Anthropic y NO en OpenRouter — cinco de los siete seguían caros.
-  const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort }), timeoutMs);
+  const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase }), timeoutMs, trace, fase);
   if (first.status < 200 || first.status >= 300 || !first.raw) {
     await recordAiCall({ model, now });
     return {
       status: first.status || 502, data: null, timedOut: !!first.timedOut,
       error_detail: first.netError || (first.bodySample ? `cuerpo no-JSON: ${first.bodySample.slice(0, 200)}` : null),
       raw_body: first.bodySample || null,
+      threw_stack: first.threw_stack || null,
     };
   }
 
@@ -300,7 +310,7 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
 
   // Retry único con recordatorio, mismo formato requerido.
   const retryMessages = [...messages, { role: 'assistant', content: text }, { role: 'user', content: retryReminder(hits, now) }];
-  const second = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages: retryMessages, maxTokens, now, timeoutMs, tools, toolChoice, effort }), timeoutMs);
+  const second = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages: retryMessages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase: (fase || '') + ':retry_fechas' }), timeoutMs, trace, fase);
   if (second.status < 200 || second.status >= 300 || !second.raw) {
     // El retry falló en red: mejor la primera respuesta (con su nota de fechas)
     // que un corte — el downstream ya valida el JSON de todos modos.
@@ -424,7 +434,8 @@ function anthropicText(data) {
     .trim();
 }
 
-async function anthropicFetch({ apiKey, payload, timeoutMs = ARENA_LLM_TIMEOUT_MS }) {
+async function anthropicFetch({ apiKey, payload, timeoutMs = ARENA_LLM_TIMEOUT_MS, trace = null, fase = null }) {
+  const t0 = Date.now();
   const r = await fetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION },
@@ -437,14 +448,18 @@ async function anthropicFetch({ apiKey, payload, timeoutMs = ARENA_LLM_TIMEOUT_M
   const texto = await r.text().catch(() => '');
   let raw = null;
   try { raw = texto ? JSON.parse(texto) : null; } catch { raw = null; }
+  // El trace también acá: el par claude↔control es el CONTROL del experimento.
+  // Comparar el payload que sí funciona contra el que falla es la mitad del
+  // diagnóstico, y solo se puede si los dos se capturan igual.
+  if (trace) trace.push({ fase, provider: 'anthropic', model: payload && payload.model, request: payload, response: texto, status: r.status, ms: Date.now() - t0 });
   return { status: r.status, raw, bodySample: String(texto || '').slice(0, 800) };
 }
 
 // Guard de fechas replicado para el Arena sobre Anthropic (ver el bloque de
 // arriba sobre por qué no se usa guardedClaudeCall).
-async function guardedAnthropicCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT }) {
+async function guardedAnthropicCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null }) {
   const payload = buildAnthropicPayload({ agent, model, system, messages, maxTokens, now, tools, toolChoice, effort });
-  const first = await timedFetch(() => anthropicFetch({ apiKey, payload, timeoutMs }), timeoutMs);
+  const first = await timedFetch(() => anthropicFetch({ apiKey, payload, timeoutMs, trace, fase }), timeoutMs, trace, fase);
   if (first.status < 200 || first.status >= 300 || !first.raw) {
     await recordAiCall({ model: payload.model, now });
     // El mensaje de error de Anthropic viaja hacia arriba: un 400 por un
@@ -478,7 +493,7 @@ async function guardedAnthropicCall({ apiKey, agent, model, system, messages, ma
       { role: 'assistant', content: data.content },
       { role: 'user', content: retryReminder(hits, now) }],
   });
-  const second = await timedFetch(() => anthropicFetch({ apiKey, payload: retryPayload, timeoutMs }), timeoutMs);
+  const second = await timedFetch(() => anthropicFetch({ apiKey, payload: retryPayload, timeoutMs, trace, fase: (fase || '') + ':retry_fechas' }), timeoutMs, trace, fase);
   if (second.status < 200 || second.status >= 300 || !second.raw) {
     await recordAiCall({ model: payload.model, usage: data.usage, retried: true, now });
     return { status: 200, data, retried: true };
@@ -595,7 +610,10 @@ export async function openRouterPrices({ timeoutMs = 20000, now = Date.now() } =
 
 export function __resetPriceCache() { priceCache = { at: 0, map: null }; }
 
-export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT }) {
+// `trace` es un sink opcional (ver _lib/arena-trace.js). null en el camino
+// normal: sin él no se construye ni se recorre nada, así que una corrida de
+// producción no paga el trace que solo se mira cuando algo falla.
+export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null }) {
   // CANDADO DE SLUG: un modelo cuyo slug no se verificó contra el catálogo del
   // proveedor y que no tiene override explícito NO se llama. Ver el encabezado
   // del registry: preferimos no correr a pegarle a un slug inventado.
@@ -606,10 +624,10 @@ export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_
   if (!apiKey) return { status: 0, data: null, missingKey: true, provider: agent && agent.provider };
 
   if (agent.provider === 'anthropic') {
-    return guardedAnthropicCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort });
+    return guardedAnthropicCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase });
   }
   if (agent.provider === 'openrouter') {
-    return guardedOpenRouterCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort });
+    return guardedOpenRouterCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase });
   }
   return { status: 0, data: null, error: 'proveedor desconocido: ' + (agent && agent.provider) };
 }

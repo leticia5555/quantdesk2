@@ -239,11 +239,20 @@ export default async function handler(req, res) {
   // sombra, que es una consulta más en una ruta pública y cacheada — por eso no
   // va en el camino por defecto.
   if (String((req.query || {}).postmortem || '') === '1') {
+    // ── EL PISO SALE DEL ARCHIVO, no de recalcular el día de hoy ───────
+    // Un post-mortem de temporada que recalcula el piso de HOY no sirve: el día
+    // que se lee puede no tener sombra, y las filas de septiembre pueden no
+    // seguir ahí en noviembre. `arena_noise_floor` guarda una fila por día con
+    // las dos condiciones que hacen válido el número (misma lente, mismo libro).
     let piso = null;
+    let serie = [];
     try {
-      const { shadowReport } = await import('./_lib/arena-shadow.js');
-      const rep = await shadowReport();
-      piso = rep && rep.piso_de_ruido ? rep.piso_de_ruido : null;
+      const { leerPisosDeRuido } = await import('./_lib/arena-shadow.js');
+      serie = await leerPisosDeRuido({ limite: 30 });
+      piso = serie[0] || null;
+      if (!piso) {
+        piso = { comparable: false, motivo: 'todavía no hay ningún piso de ruido archivado: se archiva solo cuando claude y control comparten lente Y libro de arranque.' };
+      }
     } catch (err) {
       piso = { comparable: false, motivo: 'no se pudo leer el piso de ruido: ' + String((err && err.message) || err) };
     }
@@ -252,6 +261,15 @@ export default async function handler(req, res) {
       benchmarkReturn: benchReturn,
       pisoDeRuido: piso,
     });
+    // La SERIE, no solo el último. Un piso de 0.77 no significa lo mismo si los
+    // tres días previos dieron 0.93: lo primero es un día raro, lo segundo es el
+    // sistema. Sin la serie, cada piso se lee como si fuera el único que hubo.
+    body.post_mortem.piso_de_ruido_serie = serie;
+    if (serie.length >= 2) {
+      const xs = serie.map((p) => p.cosine).filter(Number.isFinite);
+      const media = +(xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(3);
+      body.post_mortem.piso_de_ruido_media = { dias: xs.length, media, min: Math.min(...xs), max: Math.max(...xs) };
+    }
   }
 
   // El equity intradía cambia poco para un ranking; el journal es diario.

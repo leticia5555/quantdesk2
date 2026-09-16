@@ -694,6 +694,155 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B16 · EL TRACE: la conversación entera, turno por turno
+
+`api/_lib/arena-trace.js` · tests en `tests/arena-trace.test.mjs`
+
+```bash
+curl -s "$BASE/api/arena-shadow?agent=qwen&trace=1&key=<ARENA_ADMIN_KEY>"
+```
+
+Tres agentes de OpenRouter (grok, qwen, deepseek) abortaron cuatro sombras
+seguidas y llevábamos **tres rondas de hipótesis**: que el cierre iba sin
+`tools` declaradas, que la captura estaba en la capa del fetch, que estaba en la
+capa de lectura. Cada una explicaba los síntomas y ninguna sobrevivió a la
+corrida siguiente.
+
+El problema no era la hipótesis: **no se veía el payload**. Todo lo journaleado
+eran resúmenes —status, 800 caracteres de la *respuesta*, la secuencia de
+herramientas— y ninguno incluía lo único que decide el caso: **qué le mandamos
+al proveedor en la vuelta que falló**.
+
+Por vuelta: el cuerpo HTTP exacto que salió, el texto crudo que volvió (4 KB cada
+uno, con el recorte declarado), status, tiempo, y el stack si algo lanzó. Exige
+`?agent=<uno>` — el trace de una vuelta lleva el prompt entero más todos los
+resultados de herramientas acumulados, y siete no caben en una respuesta. No se
+cachea y el trace **no altera el payload**: hay un test que compara byte a byte
+lo que sale con trace y sin trace.
+
+### `cierre: null` significaba dos cosas opuestas
+
+El hallazgo que salió de mirar el código en vez de los síntomas. El loop tiene
+una salida temprana cuando el proveedor devuelve algo inusable:
+
+```js
+if (llm.status !== 200 || !llm.data || …) return { …, stopped_by: 'error' };
+```
+
+Esa salida **no pasa por el bloque de cierre**, así que `cierre_diagnostico`
+queda en `undefined` y el journal muestra `cierre: null`. Leído desde afuera eso
+parece *"el cierre no falló"*; lo que significa es *"el cierre **nunca
+ocurrió**: el loop murió antes"*. Son cosas opuestas y se veían idénticas — por
+eso tres rondas de diagnóstico apuntaron al turno de cierre, que en esas
+corridas ni se ejecutó.
+
+Ahora la salida se nombra: `murio_en` con la vuelta exacta, cuántas herramientas
+llevaba contra el techo, el status, el cuerpo crudo del proveedor y el stack. Un
+`cierre: null` con `murio_en` poblado ya no se puede leer al revés.
+
+### La hipótesis de los cupos, falsificada en el código
+
+Lety propuso: *"cuando el modelo pide más herramientas de las que quedan, las
+rechazadas no reciben un mensaje `tool` con su `tool_call_id`; Anthropic y OpenAI
+lo toleran pero los otros tres no"*. Es una hipótesis buena —ese payload sí
+rompería a varios proveedores— y es **falsificable sin esperar otra corrida**.
+
+`tests/arena-trace.test.mjs` ejercita el caso exacto (3 pedidos, 1 de cupo):
+
+- `executor.call` devuelve **texto** para las rechazadas, no `undefined`;
+- `buildToolTurn` emite **3 mensajes `tool`**, uno por `tool_call_id`, las
+  rechazadas incluidas;
+- ninguno va con `content` vacío, que es la otra forma de romper el mismo payload.
+
+**El payload sale bien formado en el caso descrito.** Lo que el test *no* puede
+descartar es que rompa otra cosa dentro del mismo mensaje — el eco de
+`_raw_message`, que para los modelos de razonamiento incluye `reasoning` /
+`reasoning_details`, es el siguiente sospechoso. Eso solo se ve con el cuerpo
+real de la vuelta que falló, que es exactamente lo que el trace captura.
+
+## B17 · LOS TRES CEROS: qué dato falta y dónde
+
+### El embudo del screener
+
+`screener` encadena hasta diez filtros y devolvía `0 filas` sin decir cuál los
+dejó en cero. Con seis criterios activos, eso obliga al modelo a probar de a uno
+— y cada prueba cuesta una llamada del presupuesto.
+
+Ahora el cero nombra al culpable y publica el embudo completo:
+
+```
+Ningún nombre del universo cumple esos criterios hoy. (El screener filtra sobre
+los 118 nombres que el tablero cubre, no sobre el universo entero…)
+EL FILTRO QUE SE LLEVÓ LOS ÚLTIMOS NOMBRES: `sector=XLK` (118 → 0). Aflojá ESE
+criterio, no los otros.
+Embudo completo: sector=XLK: 118→0 · ret_1d_min=3: 0→0.
+```
+
+Y sigue distinguiendo los dos ceros que ya distinguía: *nadie cumple* vs. *no
+tenemos el dato* (`datos_faltantes`), ahora con `sector` entre los datos que se
+reportan como faltantes.
+
+**Sobre los nombres de campo**: se verificaron contra `_lib/arena-board.js`. Las
+cinco listas del tablero (`gainers`, `losers`, `rvol`, `breakouts.high`,
+`breakouts.low`) salen todas del mismo array `filas`, con la misma forma
+(`symbol`, `price`, `change_pct`, `rvol`, `pct_from_high`, `pct_from_low`), y el
+screener lee exactamente esos nombres. **No hay desalineación de campos** — que
+`near_52w_low` devolviera filas y el resto cero ya lo indicaba: si los nombres
+estuvieran mal, ese también habría dado cero.
+
+### El diagnóstico del universo
+
+```bash
+curl -s "$BASE/api/arena-universe?diag=DELL,COP&key=<ARENA_ADMIN_KEY>"
+```
+
+Gratis, cero construcción, cero llamadas a Alpaca: lee lo **guardado**. Existe
+porque los tres ceros (`sector(XLE)`, `with_sector=0`, el screener) tienen la
+misma pregunta debajo y no había forma de contestarla sin entrar a Neon a mano.
+
+Devuelve los cuatro contadores que deciden todo —`sectores`, `retornos`,
+`market_caps`, `fifty_two_week`— y, por nombre: si está en el universo, si vino
+del índice o del canal del día, su sector GICS, su ETF de sector, sus retornos y
+su market cap. Más `indices`, que dice de qué foto salieron los constituyentes y
+cuándo.
+
+Separa las **tres** cosas que se confunden y que exigen arreglos distintos:
+
+1. el nombre **no está** en el universo → ninguna herramienta lo va a encontrar;
+2. está **sin ese campo** → si vino del canal del día es esperado (los sectores
+   salen del CSV del índice); si vino del índice, el CSV no trajo la columna
+   `Sector` **o el snapshot de constituyentes guardado es anterior al soporte de
+   esa columna** — el refresco es semanal, así que una foto vieja se relee tal
+   cual sin que nada falle a la vista;
+3. el campo **está** y el consumidor no lo lee → el bug está en el consumidor.
+
+Sin separarlas, cualquier arreglo es a ciegas. `sectores_count: 0` en la salida
+significa (2) y no (3): no hay nada que arreglar en los rieles ni en la
+herramienta `sector`.
+
+## B18 · EL PISO DE RUIDO SE ARCHIVA
+
+`arena_noise_floor` — una fila por día: `cosine`, `lens`, las posiciones de
+arranque y la fecha.
+
+El piso se calculaba recorriendo el journal de la sombra de **un** día. Eso sirve
+para mirar hoy y no sirve para el post-mortem de la temporada: el piso del
+2026-09-17 es un **hecho de ese día**, y reconstruirlo en noviembre exige que las
+filas de septiembre sigan ahí con la misma forma.
+
+- Se archiva **solo si es comparable** (misma lente **y** mismo libro de
+  arranque). Un piso que no cumple las dos condiciones no es un piso bajo: no es
+  un piso, y archivarlo contaminaría el post-mortem con un número que mide
+  herencia o lente.
+- **No se pisa**: el primero del día gana. Correr la sombra tres veces no puede
+  cambiar retroactivamente el piso de un día ya registrado.
+- Se archiva **en el punto de cálculo** (`shadowReport`), no en el endpoint, para
+  que quede guardado la primera vez que alguien lo mira, venga por donde venga.
+
+`/api/leaderboard?postmortem=1` lee del archivo y publica además la **serie**:
+un piso de 0.77 no significa lo mismo si los tres días previos dieron 0.93 — lo
+primero es un día raro, lo segundo es el sistema.
+
 ## B15 · EL BASELINE ES EL EQUITY REAL, NO UN $100k DECLARADO
 
 `api/_lib/arena-baseline.js` · tests en `tests/arena-baseline-real.test.mjs`

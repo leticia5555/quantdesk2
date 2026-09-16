@@ -131,7 +131,7 @@ export function buildToolTurn(provider, data, resultados) {
 export async function runToolLoop({
   agent, system, messages, executor, maxTokens = ARENA_MAX_TOKENS,
   now = new Date(), timeoutMs, maxTurns = MAX_TURNS, toolNames = null, call = callArenaLLM,
-  budgetMs = LOOP_BUDGET_MS, clock = () => Date.now(), effort = undefined,
+  budgetMs = LOOP_BUDGET_MS, clock = () => Date.now(), effort = undefined, trace = null,
 }) {
   const tools = toolsForProvider(agent.provider, toolNames);
   const convo = [...messages];
@@ -173,12 +173,38 @@ export async function runToolLoop({
     // siguientes y el loop termina chocando contra el deadline del agente —
     // que es justo lo que este presupuesto existe para evitar.
     const techo = Math.max(10000, Math.min(timeoutMs || Infinity, restante() - RESERVA_CIERRE_MS));
-    llm = await call({ agent, system, messages: convo, maxTokens, now, timeoutMs: techo, tools, ...(effort ? { effort } : {}) });
+    llm = await call({ agent, system, messages: convo, maxTokens, now, timeoutMs: techo, tools, ...(effort ? { effort } : {}), ...(trace ? { trace, fase: `loop:vuelta_${turns}` } : {}) });
     sumar(llm);
 
     // Cualquier cosa que no sea una respuesta usable sale ENTERA hacia arriba.
+    //
+    // ── EL PUNTO CIEGO QUE DEJÓ TRES RONDAS SIN DIAGNÓSTICO ──────────
+    // Esta salida NO pasa por el bloque de cierre, así que `cierre_diagnostico`
+    // queda en undefined — y el journal muestra `cierre: null`. Leído desde
+    // afuera eso parece "el cierre no falló", cuando lo que significa es "el
+    // cierre NUNCA OCURRIÓ: el loop murió antes". Son cosas opuestas y se veían
+    // iguales.
+    //
+    // Ahora la salida se NOMBRA: en qué vuelta fue, con cuántas herramientas
+    // ejecutadas y cuántas pedidas, y qué dijo el proveedor. Es el dato que
+    // distingue "murió en la vuelta 8" de "murió en el cierre" sin tener que
+    // pedir un trace.
     if (llm.status !== 200 || !llm.data || llm.refusal || llm.stale || llm.missingKey || llm.unverifiedSlug) {
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado };
+      const dondeMurio = {
+        fase: 'loop',
+        vuelta: turns,
+        de_vueltas_max: maxTurns,
+        herramientas_usadas: executor.used,
+        herramientas_pedidas: executor.intentos,
+        herramientas_tope: executor.budget,
+        status: llm.status ?? null,
+        detail: llm.error_detail || null,
+        provider_error: llm.provider_error || null,
+        raw_body: llm.raw_body || null,
+        threw_stack: llm.threw_stack || null,
+        nota: 'El loop murió DENTRO de una vuelta de herramientas: el turno de cierre nunca llegó a ejecutarse. Un `cierre: null` en el journal significa esto, no que el cierre haya salido bien.',
+      };
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', murio_en: dondeMurio, elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado };
     }
 
     const pedidos = toolUseBlocks(llm.data);
@@ -238,7 +264,8 @@ export async function runToolLoop({
   const llamarCierre = (msgs, extra = {}) => call({
     agent, system, messages: msgs, maxTokens, now,
     timeoutMs: Math.min(timeoutMs || RESERVA_CIERRE_MS, RESERVA_CIERRE_MS),
-    tools, toolChoice: cierreToolChoice, ...(effort ? { effort } : {}), ...extra,
+    tools, toolChoice: cierreToolChoice, ...(effort ? { effort } : {}),
+    ...(trace ? { trace, fase: 'cierre' } : {}), ...extra,
   });
 
   // ── EL CIERRE, CON SU PROPIO DIAGNÓSTICO ───────────────────────────
@@ -295,7 +322,7 @@ export async function runToolLoop({
       content: 'No llames ninguna herramienta. Respondé SOLO con el JSON del portafolio objetivo, sin texto alrededor.',
     }];
     try {
-      const reintento = await llamarCierre(convo2);
+      const reintento = await llamarCierre(convo2, trace ? { fase: 'reintento_sin_herramientas' } : {});
       anotarCierre('reintento_sin_herramientas', reintento, null);
       if (reintento && reintento.status === 200 && reintento.data && !toolUseBlocks(reintento.data).length) {
         llm = reintento;

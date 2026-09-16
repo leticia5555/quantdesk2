@@ -154,6 +154,17 @@ console.log('\n── el screener filtra de verdad ──');
   ok(nada.rows === 0 && /Ningún nombre del universo cumple/.test(nada.text), 'cero resultados es una respuesta, no un error');
   ok(/no sobre el universo entero/.test(nada.text),
     'y dice sobre QUÉ filtró — que el screener mire el tablero y no los 600 es un límite que el PM tiene que saber');
+  // EL EMBUDO (2026-09-17): con seis filtros encadenados, "ninguno cumple" sin
+  // decir CUÁL obliga al modelo a probar de a uno, y cada prueba cuesta una
+  // llamada del presupuesto. El cero ahora nombra al culpable.
+  ok(/EL FILTRO QUE SE LLEVÓ LOS ÚLTIMOS NOMBRES: `min_rvol=99`/.test(nada.text),
+    'y NOMBRA el filtro que dejó la lista en cero', nada.text.split('\n')[1]);
+  ok(Array.isArray(nada.embudo) && nada.embudo[0].filtro === 'min_rvol' && nada.embudo[0].despues === 0,
+    'con el embudo estructurado al lado del texto', JSON.stringify(nada.embudo));
+  const dosFiltros = await ex.call('screener', { near_52w_high: true, min_rvol: 99 });
+  ok(/`min_rvol=99`/.test(dosFiltros.text) && !/`near_52w_high/.test(dosFiltros.text.split('EL FILTRO')[1] || ''),
+    'con dos filtros, señala al que de verdad vació la lista, no al primero que se aplicó',
+    (dosFiltros.text.split('\n')[1] || '').slice(0, 80));
 }
 
 console.log('\n── sin tablero, el screener lo dice en vez de decir "no hay nada" ──');
@@ -405,6 +416,8 @@ console.log('\n── el cero distingue "no cumple" de "no tenemos el dato" ─�
   const r2 = await conDatos.call('screener', { ret_1m_min: 5 });
   ok(r2.rows === 0 && /Ningún nombre del universo cumple/.test(r2.text),
     'con el dato presente y nadie que cumpla, el cero es un cero de verdad', r2.text.slice(0, 60));
+  ok(!r2.datos_faltantes && /`ret_1m_min=5`/.test(r2.text),
+    'y se distingue del cero por falta de dato: nombra el criterio, no reporta un hueco');
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
