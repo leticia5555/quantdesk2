@@ -722,6 +722,102 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B30 · EL ENCENDIDO DEL CONTRATO OBJETIVO (v4)
+
+`api/_lib/arena-objetivo-vivo.js` · tests en `tests/arena-contrato-vivo.test.mjs`
+
+```
+ARENA_CONTRATO = objetivo        ← manda órdenes
+ARENA_CONTRATO = objetivo_dry    ← decide y calcula las órdenes, NO manda
+ARENA_CONTRATO = 0   (o sin poner) ← contrato viejo, el de ayer
+```
+
+En Vercel, **sin deploy**. Apagarla vuelve al contrato de acciones sin tocar
+nada más.
+
+### Tres estados, no dos
+
+El escalón `objetivo_dry` existe porque **el código que manda órdenes es el
+único del Arena que no se pudo probar contra la realidad**: la sombra prueba la
+decisión, no la ejecución. `dry` decide, calcula las órdenes, las journalea
+completas y no manda ninguna. Cuesta una ronda y convierte "confío en que las
+órdenes están bien" en "vi las órdenes que iba a mandar".
+
+Y un valor que no se reconoce cae al contrato **viejo**: un typo no puede
+encender el contrato nuevo.
+
+### Una sola función, no una copia
+
+`runShadowAgent` pasó a ser un envoltorio de `runAgenteObjetivo({ vivo: false })`,
+y el camino vivo llama a **la misma función** con `vivo: true`. Tres cosas
+cambian: el broker (real en vez del que lanza en toda escritura), la tabla del
+journal, y que al final se mandan las órdenes.
+
+No es por ahorrar líneas. Una copia para producción empezaría idéntica y
+divergiría en el primer arreglo que alguien aplicara a una sola de las dos — y lo
+que llegó a 7/7 en sombra tiene que ser **ese** código, no uno que se le parece.
+Es la misma razón por la que hay un solo loop de herramientas para los dos
+proveedores. Hay un test que afirma que el prompt del contrato nuevo se
+construye en un solo lugar.
+
+La rama va **primero** en `runArenaDecide`, con `return`: con la bandera apagada
+no se ejecuta ni una línea nueva.
+
+### Patas → órdenes
+
+Cada pata se precia con el snapshot que **ya validó los rieles** — pedir precios
+otra vez abriría la puerta a que la orden se precie con un número distinto del
+que aprobó el riel. Una pata solo se convierte en orden si:
+
+- Alpaca confirma `tradable` (fail closed, igual que R11),
+- hay precio de referencia,
+- el movimiento alcanza para **una acción entera** (`floor`, no `round`:
+  redondear hacia arriba compra más de lo que el peso pedía),
+- y no es un corto (la T2 es long-only; una pata `short` acá es un bug del
+  rebalanceo y se descarta en vez de mandarse).
+
+Lo que no pasa se **nombra** con su motivo. Y el límite es **marketable en los
+dos lados** —vender por debajo, comprar por encima, redondeado a centavos— nunca
+a mercado: la regla de la casa no cambia con el contrato.
+
+### El candado
+
+> *"Si el motor manda una orden que no corresponde a ningún peso, apago la
+> bandera esa misma ronda."*
+
+Eso no puede depender de que alguien lo note leyendo el journal. Se verifica
+**antes de mandar**, y si falla **no se manda ninguna orden de esa corrida**: un
+motor que inventa una orden no se corrige mandando las otras bien.
+
+Dos cosas se comprueban: que cada orden corresponda a un peso del objetivo **o**
+a una posición del libro (una venta de algo que está en el libro y no en el
+objetivo es un cierre, que es la regla del contrato), y que el **lado sea
+coherente** con el movimiento del peso — una compra que baja el peso significa
+que el signo se invirtió en algún lado, y eso es peor que una orden de más.
+
+### El envío
+
+Secuencial y en el orden que trae el rebalanceo: lo que libera capacidad
+primero. Paralelo ahorraría segundos y dejaría al **broker** decidiendo qué orden
+llega primero, que es justo lo que ese orden existe para controlar.
+
+`client_order_id` determinista (`arena-<agente>-<tag>-<fecha>-<símbolo>-<lado>`):
+el mismo símbolo en la misma corrida no puede mandarse dos veces aunque el cron
+se repita.
+
+Una orden que falla **no aborta las siguientes**: media cartera puesta es un
+estado real que el próximo rebalanceo corrige; abortar a la mitad deja el mismo
+estado sin registro de qué faltó.
+
+### El anuncio
+
+`arena-contrato-objetivo-2026-09-17`, una fila `rules_changed` de liga,
+idempotente por id, que **solo se escribe con la bandera encendida** — anunciarlo
+apagada sería declarar un cambio que no ocurrió. Lleva el reglamento v4 completo
+y, en el contexto, el criterio de aborto y cómo se apaga: si hay que apagar a
+mitad de ronda, eso tiene que estar donde se está mirando y no en un chat de
+ayer.
+
 ## B29 · EL CATÁLOGO DE UNA FAMILIA: `?buscar=`
 
 ```bash

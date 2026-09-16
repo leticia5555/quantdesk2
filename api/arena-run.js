@@ -95,6 +95,8 @@ import { loadUniverse } from './_lib/arena-universe.js';
 // que el validador hace cumplir. Dos fuentes para el mismo tope es cómo el
 // prompt termina prometiendo algo que el harness rechaza.
 import { RAILS } from './_lib/arena-rails.js';
+import { usaObjetivo, contratoActivo } from './_lib/arena-objetivo-vivo.js';
+import { runAgenteObjetivo } from './arena-shadow.js';
 // B2: EL TABLERO — lo que los siete miran, idéntico, en el prefijo cacheado.
 import { buildBoard, renderBoard, BOARD_TOKEN_HARD_CAP, SECTOR_ETFS } from './_lib/arena-board.js';
 // B3: las HERRAMIENTAS y el loop de tool use (uno para los dos proveedores).
@@ -1375,6 +1377,39 @@ function attributeRiskExit(a, extra) {
 // ±2%) + day. client_order_id con segmento `:exit` — distinto de `:buy`/`:sell`,
 // así una salida determinista NO colisiona con una venta del PM del mismo
 // símbolo el mismo día (dos ventas mismo día antes compartían client_order_id).
+// ── EL JOURNAL DEL CONTRATO NUEVO ────────────────────────────────────
+// `runAgenteObjetivo` escribe con la forma del journal de sombra (que tiene
+// columnas propias: target, rebalance). Acá se traduce a `arena_journal`, que
+// es el que leen /liga y el post-mortem: sin esta traducción, una corrida VIVA
+// del contrato nuevo no aparecería en ningún tablero.
+async function journalObjetivoVivo(row) {
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, model, plan, llm_response, actions, context, agent_id)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) on conflict (id) do nothing`,
+      [row.id, row.run_date, row.phase || 'decide', row.status, row.prompt_version, row.model,
+       row.plan || null, row.llm_response || null,
+       // Las ÓRDENES como `actions`, que es lo que /liga ya sabe renderizar. El
+       // portafolio objetivo y el rebalanceo van en `context`: son del contrato
+       // nuevo y ninguna vista vieja los espera.
+       JSON.stringify(((row.context && row.context.ejecucion && row.context.ejecucion.enviadas) || []).map((o) => ({
+         symbol: o.symbol, side: o.side, qty: o.qty, limit_price: o.limit_price,
+         result: o.result, order_status: o.order_status || null,
+         alpaca_order_id: o.alpaca_order_id || null, client_order_id: o.client_order_id || null,
+         origin: 'objetivo',
+         reasoning: o.intencion ? `rebalanceo hacia el objetivo (${o.intencion}, ${((o.delta_weight || 0) * 100).toFixed(2)}pp)` : null,
+         ...(o.error ? { error: o.error } : {}),
+       }))),
+       JSON.stringify({ ...(row.context || {}), target: row.target || null, rebalance: row.rebalance || null, contrato: contratoActivo() }),
+       row.agent_id],
+    );
+  } catch (e) {
+    // NO se traga: una corrida que operó y no se journaleó es peor que una que
+    // no operó — las órdenes existen en Alpaca y no hay fila que las explique.
+    throw new Error('no se pudo journalear la corrida del contrato objetivo: ' + String((e && e.message) || e));
+  }
+}
+
 async function submitRiskExits(approved, runDate, creds) {
   const actions = [];
   let submitted = 0;
@@ -1536,6 +1571,23 @@ export function eventPolicy(event) {
 // existe para que el PM reaccione al número sobre lo que YA tiene — no para
 // operar más seguido.
 export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentById(FLAGSHIP_AGENT_ID), getBuffet, caches, event = null, tier = null } = {}) {
+  // ── LA BANDERA DEL CONTRATO OBJETIVO ────────────────────────────────
+  // Va PRIMERO y con un `return`: con la bandera apagada, ni una línea de lo
+  // que sigue cambia. Eso es lo que hace que "apagarla" sea de verdad volver al
+  // comportamiento de ayer y no a una versión parecida.
+  //
+  // Y lo que corre del otro lado es LA MISMA función que la sombra
+  // (`runAgenteObjetivo` con `vivo: true`), no una copia: lo que llegó a 7/7 en
+  // sombra es exactamente lo que se enciende.
+  if (usaObjetivo()) {
+    const buffet = await (getBuffet ? getBuffet() : gatherContext({ baseUrl, now }));
+    return runAgenteObjetivo({
+      agent, buffet, now, tier, vivo: true,
+      journalInsert: journalObjetivoVivo,
+      runId: 'arena-' + agent.id + '-objetivo-' + now.toISOString(),
+    });
+  }
+
   const runDate = now.toISOString().slice(0, 10);
   const agentId = agent.id;
   // Política de la corrida por evento (ver eventPolicy). En la corrida normal
@@ -2487,6 +2539,58 @@ export async function announceT2Rules(now = new Date()) {
   } catch (e) { /* best-effort: el anuncio no bloquea la corrida */ }
 }
 
+// ── ANUNCIO DEL CONTRATO OBJETIVO (v4) ───────────────────────────────
+// Mismo mecanismo que el reglamento T2: UNA fila de liga, idempotente por id.
+// Va con el id que pidió Lety para que el post-mortem pueda partir exactamente
+// acá: todo lo anterior es contrato de ACCIONES y todo lo posterior es contrato
+// de PORTAFOLIO OBJETIVO, y mezclarlos en una serie sería comparar dos
+// experimentos.
+//
+// Se anuncia solo cuando la bandera está encendida, y en la primera corrida que
+// la vea. Anunciarlo con la bandera apagada sería declarar un cambio que no
+// ocurrió.
+export const CONTRATO_ANNOUNCEMENT_ID = 'arena-contrato-objetivo-2026-09-17';
+export const CONTRATO_RULES_VERSION = 'v4';
+
+export const CONTRATO_RULES_TEXT = [
+  'REGLAMENTO v4 — CONTRATO DE PORTAFOLIO OBJETIVO. Desde esta corrida el PM ya no propone ACCIONES sueltas ("compra 30 de NVDA"): declara el LIBRO QUE QUIERE TENER, en pesos. El motor calcula la diferencia contra el libro real y manda las órdenes que faltan.',
+  'LA REGLA QUE CAMBIA TODO: lo que tenés y NO listás, se vende. Omitir un nombre es decidir salir de él. En el contrato viejo, no mencionar una posición la dejaba quieta; acá la cierra. Un PM que se olvida de una posición la liquida.',
+  'CÓMO SE EJECUTA: pesos objetivo − pesos reales = patas. Lo que libera capacidad va primero (ventas y coberturas), lo que la consume después, y dentro de cada grupo por tamaño. Un movimiento menor a la banda de no-negociación NO se ejecuta: expresa el drift del precio, no una decisión. Un cierre completo nunca se frena, aunque sea chico.',
+  'ÓRDENES: límite marketable SIEMPRE, cantidad entera, precio del mismo snapshot que validó los rieles. JAMÁS a mercado — la regla de la casa no cambia con el contrato.',
+  'LOS RIELES SIGUEN SIENDO LOS MISMOS, más uno: R11 exige que Alpaca confirme que el símbolo es OPERABLE (largos y cortos). Y antes de los rieles, cada ticker del objetivo se normaliza y se valida contra el universo del día: si alguno no existe, se rechaza el objetivo ENTERO — una cartera a la que se le saca una pata ya no es la que el PM decidió.',
+  'CANDADO DE EJECUCIÓN: si alguna orden no corresponde a ningún peso del objetivo ni a ninguna posición del libro, o si su lado contradice el movimiento del peso, NO se manda NINGUNA orden de esa corrida. Un motor que inventa una orden no se corrige mandando las otras bien.',
+  'LONG-ONLY, sin cambios: la T2 no habilita cortos. Una pata de corto que aparezca en el rebalanceo es un bug y se descarta en vez de mandarse.',
+  'QUÉ NO CAMBIA: las nueve reglas de la T2, la cadencia por evento, el presupuesto de gasto en escalones, el baseline por agente y la red de riesgo determinista. Este anuncio cambia CÓMO SE EXPRESA la decisión, no qué se le permite decidir.',
+  'EL CORTE: las métricas de antes y después de esta fila NO son comparables en turnover ni en número de órdenes — el contrato viejo proponía acciones y éste propone un libro. El return sí es comparable: el baseline no se movió.',
+  'Experimento sin validación estadística, paper trading, no es asesoría.',
+].join('\n');
+
+export async function announceContratoObjetivo(now = new Date(), env = process.env) {
+  if (!usaObjetivo(env)) return false;
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
+       values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
+      [CONTRATO_ANNOUNCEMENT_ID, now.toISOString().slice(0, 10), PROMPT_VERSION, CONTRATO_RULES_TEXT,
+       JSON.stringify({
+         rules_version: CONTRATO_RULES_VERSION,
+         contrato: contratoActivo(env),
+         prompt_version: PROMPT_VERSION,
+         applies_to: activeAgents().map((a) => a.id),
+         // Qué mirar para abortar, escrito EN el anuncio: si hay que apagar la
+         // bandera a mitad de ronda, el criterio tiene que estar donde se está
+         // mirando y no en un chat de ayer.
+         aborto: [
+           'más de DOS agentes con status rejected_rails en la misma ronda',
+           'cualquier orden que no corresponda a un peso (el candado la frena sola y lo journalea como `freno`)',
+         ],
+         apagado: 'ARENA_CONTRATO=0 en Vercel. Se toma sin deploy y vuelve al contrato de acciones sin tocar nada más.',
+       })],
+    );
+    return true;
+  } catch (e) { return false; }
+}
+
 // ── ESCALÓN DEL PRESUPUESTO (B9) — anuncio con fecha ─────────────────
 // MISMO mecanismo que los otros anuncios: una fila de liga, idempotente por id.
 // Acá la idempotencia es por (día, escalón) y no por temporada: el breaker puede
@@ -2829,6 +2933,10 @@ export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
   }
 
   await announceT2Rules(now);
+  // El contrato objetivo se anuncia junto al reglamento T2 y solo si la bandera
+  // está encendida: es idempotente por id, así que se puede llamar en cada
+  // corrida sin ensuciar el journal.
+  await announceContratoObjetivo(now);
   await announceSeasonOpen(now);
   // Corte del post-mortem por CAMBIO DE MODELOS (idempotente por id).
   await announceModelChange(now);
@@ -2953,6 +3061,10 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   // UNA sola vez (idempotente por id): el post-mortem necesita el corte para no
   // mezclar dos reglamentos en la misma serie.
   await announceT2Rules(now);
+  // El contrato objetivo se anuncia junto al reglamento T2 y solo si la bandera
+  // está encendida: es idempotente por id, así que se puede llamar en cada
+  // corrida sin ensuciar el journal.
+  await announceContratoObjetivo(now);
   await announceSeasonOpen(now);
   // Corte del post-mortem por CAMBIO DE MODELOS (idempotente por id).
   await announceModelChange(now);

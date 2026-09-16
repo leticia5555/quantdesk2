@@ -292,8 +292,14 @@ export const ARENA_AGENTS = [
     alpaca: 'DEEPSEEK', house: 'china', control: false, phase: 'B', enabled: true,
   },
   {
-    id: 'qwen', name: 'Qwen', model_label: 'Qwen3.8 Max',
-    provider: 'openrouter', model: slug('QWEN', 'qwen/qwen3.8-max'), persona: 'Qwen PM',
+    // 2026-09-17: se cambió de `qwen3.8-max` a `qwen3.8-2.4t-a95b`. El `max`
+    // tenía UN SOLO proveedor (Alibaba, `endpoint_count: 1`), así que no había
+    // ruta alternativa y el turno de cierre se pasaba de 110s corrida tras
+    // corrida — el timeout era del endpoint único, no del modelo. Éste tiene 7
+    // proveedores, mismo precio y misma generación: la clase del agente NO
+    // cambia, que es lo que hace que el resultado siga siendo comparable.
+    id: 'qwen', name: 'Qwen', model_label: 'Qwen3.8 2.4T A95B',
+    provider: 'openrouter', model: slug('QWEN', 'qwen/qwen3.8-2.4t-a95b'), persona: 'Qwen PM',
     slug_verified: false, caps: CAPS_OR,
     archetype: { name: 'el paciente', voice: 'Juegas el largo plazo. El ruido de hoy te interesa poco; hablas en trimestres.' },
     alpaca: 'QWEN', house: 'china', control: false, phase: 'B', enabled: true,
