@@ -37,6 +37,8 @@ import { activeAgents, agentById, agentAlpacaCreds, ARENA_MAX_TOKENS } from './_
 import { callArenaLLM, withDeadline, cachePrefixReport, anthropicCostUsd } from './_lib/arena-model.js';
 import { gatherContext, buildSharedContext, buildTargetSystemPrompt, resolveBaseUrl, PROMPT_VERSION } from './arena-run.js';
 import { parsePortfolioResponse, validateTarget, railTrims, normalizarTickersObjetivo, RAILS } from './_lib/arena-rails.js';
+import { orderLegs } from './_lib/arena-rebalance.js';
+import { legsAOrdenes, verificarOrdenesContraPesos, enviarOrdenes, mandaOrdenes } from './_lib/arena-objetivo-vivo.js';
 import { buildRebalance } from './_lib/arena-rebalance.js';
 import { createToolExecutor, TOOL_BUDGET } from './_lib/arena-tools.js';
 import { runToolLoop, relojDisponible } from './_lib/arena-tool-loop.js';
@@ -50,7 +52,7 @@ function sectorEtfDe(buffet, sym) {
   if (!secs) return null;
   return sectorFromGics(secs[String(sym || '').toUpperCase()]);
 }
-import { shadowBroker, shadowJournalInsert, shadowRunId, shadowReport, ensureShadowSchema } from './_lib/arena-shadow.js';
+import { shadowBroker, shadowJournalInsert as shadowJournalInsertReal, shadowRunId, shadowReport, ensureShadowSchema } from './_lib/arena-shadow.js';
 import { currentTier, recordRunSpend, callCost } from './_lib/arena-budget.js';
 import { marketDay } from './_lib/arena-buffet-cache.js';
 import { createTrace } from './_lib/arena-trace.js';
@@ -80,12 +82,38 @@ async function leerLibro(broker, creds) {
 }
 
 // ── UNA CORRIDA EN SOMBRA ────────────────────────────────────────────
+// ── UNA SOLA FUNCIÓN PARA LA SOMBRA Y PARA EL VIVO ───────────────────
+// El camino vivo del contrato objetivo es EXACTAMENTE éste con tres cosas
+// cambiadas: el broker (real en vez del que lanza), la tabla del journal, y que
+// al final se mandan las órdenes.
+//
+// Se PARAMETRIZA en vez de duplicarse, y no por ahorrar líneas: una copia para
+// producción empezaría idéntica y divergiría en el primer arreglo que alguien
+// aplicara a una sola de las dos. La sombra corrió cuatro días y llegó a 7/7 —
+// lo que se enciende mañana tiene que ser ESE código, no uno que se le parece.
+// Es la misma razón por la que hay un solo loop de herramientas para los dos
+// proveedores.
+//
+// `runShadowAgent` queda como envoltorio para que el endpoint de la sombra y
+// sus tests no cambien.
+//
 // Nunca lanza: una corrida que falla tiene que aparecer como una FILA, no
 // llevarse el reporte de los otros seis.
-export async function runShadowAgent({ agent, buffet, now = new Date(), tier = null, deps = {}, trace = null }) {
-  const runId = shadowRunId(agent.id, now);
+export function runShadowAgent(args) {
+  return runAgenteObjetivo({ ...args, vivo: false });
+}
+
+export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier = null, deps = {}, trace = null, vivo = false, journalInsert = null, runId: runIdDado = null }) {
+  const runId = runIdDado || shadowRunId(agent.id, now);
   const base = { id: runId, run_date: marketDay(now), agent_id: agent.id, phase: 'decide', prompt_version: PROMPT_VERSION, model: agent.model };
-  const broker = (deps.shadowBroker || shadowBroker)(alpaca);
+  // EN VIVO EL BROKER ES EL DE VERDAD. En sombra es el que LANZA en cualquier
+  // escritura — ese candado es lo que hace que una sombra no pueda operar ni
+  // por accidente, y por eso no se toca: se elige uno u otro acá y en ningún
+  // otro lado.
+  const broker = vivo ? alpaca : (deps.shadowBroker || shadowBroker)(alpaca);
+  // Dónde se escribe. La sombra tiene tabla propia a propósito (una bandera en
+  // la misma tabla está a una consulta mal escrita de contaminar el post-mortem).
+  const shadowJournalInsert = journalInsert || shadowJournalInsertReal;
   const creds = agentAlpacaCreds(agent);
   if (!creds) {
     await shadowJournalInsert({ ...base, status: 'aborted_no_alpaca_keys', error: `Faltan ALPACA_${agent.alpaca}_KEY/SECRET.` });
@@ -326,18 +354,70 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
     ? buildRebalance({ positions: libro.positions, openOrders: libro.openOrders, equity, target: parsed.weights, trims })
     : null;
 
+  // ── EL ÚNICO TRAMO QUE NO EXISTE EN SOMBRA: MANDAR ──────────────────
+  // Todo lo de arriba corrió cuatro días en sombra. Esto no puede correr en
+  // sombra por definición, así que es el tramo con menos kilómetros — y por eso
+  // lleva el candado más duro del repo.
+  let ejecucion = null;
+  if (vivo && rebalance) {
+    const { ordenes, descartadas } = legsAOrdenes({
+      legs: orderLegs(rebalance.legs), meta,
+      // La T2 es long-only. Una pata `short` acá es un bug del rebalanceo, y se
+      // descarta en vez de mandarse.
+      permitirCortos: false,
+    });
+
+    // EL CANDADO DE LETY, aplicado ANTES de mandar y no después de leer el
+    // journal: si alguna orden no corresponde a ningún peso, no se manda
+    // NINGUNA de esta corrida.
+    const candado = verificarOrdenesContraPesos({ ordenes, target: parsed.weights, current: rebalance.current });
+
+    ejecucion = {
+      modo: mandaOrdenes() ? 'enviado' : 'dry',
+      candado,
+      ordenes_calculadas: ordenes,
+      descartadas,
+    };
+
+    if (!candado.ok) {
+      ejecucion.enviadas = [];
+      ejecucion.freno = candado.error;
+    } else if (mandaOrdenes()) {
+      ejecucion.enviadas = await enviarOrdenes({
+        ordenes, creds, runDate: base.run_date, agentId: agent.id, runTag: 'f', now,
+      });
+    } else {
+      // `objetivo_dry`: se calculó todo y NO se mandó nada. Es el escalón que
+      // convierte "confío en que las órdenes están bien" en "vi las órdenes".
+      ejecucion.enviadas = [];
+      ejecucion.nota = 'ARENA_CONTRATO=objetivo_dry: las órdenes se calcularon y se journalearon COMPLETAS, y no se mandó ninguna. Poné `objetivo` para que se manden.';
+    }
+  }
+
   await shadowJournalInsert({
     ...base,
     status: v.ok ? 'ok_target' : 'rejected_rails',
     plan: parsed.plan, llm_response: text,
     target: { weights: parsed.weights, cash: parsed.cash, theses: parsed.theses },
     rebalance,
-    context: { ...ctx, rails: v, rail_trims: trims },
+    context: { ...ctx, rails: v, rail_trims: trims, ...(ejecucion ? { ejecucion } : {}) },
     error: v.ok ? null : `violó ${v.violations.length} riel(es): ${v.violations.map((x) => x.rail).join(', ')}`,
   });
 
   return {
     agent: agent.id, status: v.ok ? 'ok_target' : 'rejected_rails',
+    ...(ejecucion ? {
+      ejecucion: {
+        modo: ejecucion.modo,
+        candado_ok: ejecucion.candado.ok,
+        ordenes: ejecucion.ordenes_calculadas.length,
+        enviadas: (ejecucion.enviadas || []).filter((o) => o.result === 'approved').length,
+        fallidas: (ejecucion.enviadas || []).filter((o) => o.result === 'submit_failed').length,
+        descartadas: ejecucion.descartadas.length,
+        ...(ejecucion.freno ? { freno: ejecucion.freno } : {}),
+        ...(ejecucion.nota ? { nota: ejecucion.nota } : {}),
+      },
+    } : {}),
     lens: cola.lens, tools_used: executor.used, tools_intentos: executor.intentos, cost_usd: costo.usd,
     weights: parsed.weights,
     exposures: v.exposures,
