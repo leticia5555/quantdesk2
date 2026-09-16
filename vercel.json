@@ -1,5 +1,8 @@
 {
   "functions": {
+    "api/bmv-harvest.js": {
+      "maxDuration": 300
+    },
     "api/bmv-inspect.js": {
       "maxDuration": 300
     },
