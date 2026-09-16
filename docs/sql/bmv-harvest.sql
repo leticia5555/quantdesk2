@@ -205,6 +205,10 @@ alter table bmv_distribuciones add column if not exists es_efectivo boolean;
 
 alter table bmv_distribuciones add column if not exists pago_consolidado boolean;
 
+alter table bmv_distribuciones add column if not exists categoria text;
+
+alter table bmv_distribuciones add column if not exists requiere_conversion boolean;
+
 update bmv_distribuciones set fecha_pago = fecha_ex where fecha_pago is null;
 
 drop index if exists bmv_distribuciones_uidx;

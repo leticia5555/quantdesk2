@@ -25,7 +25,7 @@ import {
   aNumero, aplanarHistoricos, clavePeriodo, construirUrl, emisoraSerie,
   extraerDistribuciones, finDeTrimestre, mesPresupuesto, normalizarFinancieros,
   parseClavePeriodo, periodoApi, restaDias, DIAS_EX_APROX, UMBRAL_PLACEHOLDER,
-  consolidarDistribuciones,
+  consolidarDistribuciones, categoriaReparto, esEfectivo, requiereConversion,
   parsearRangoFechas, parsearRangoPeriodos, recortarACobertura, resolverCampo,
   trimestresEntre, urlSegura,
 } from '../api/_lib/databursatil.js';
@@ -1023,4 +1023,119 @@ test('consolidarDistribuciones deja pasar las fechas distintas intactas', () => 
   assert.equal(filas.length, 2);
   assert.equal(colapsadas, 0);
   assert.equal(sumadas, 0);
+});
+
+/* ═══════════════════════════════════════════════════════════════
+ * El censo tiene que ser DETERMINISTA. Dos corridas sobre el mismo
+ * crudo dieron 595/185 y 597/183: filas que aparecen y tipos que se
+ * pierden sin que nadie baje datos nuevos. Un censo que cambia solo
+ * no sirve para un universo point-in-time.
+ * ═══════════════════════════════════════════════════════════════ */
+
+/** Quálitas cotiza como `Q`: una pizarra de UN carácter. Ese fue el caso. */
+const CENSO_MIXTO = {
+  WALMEX: { razon_social: 'Walmart', '*': { tipo_valor_id: '1', rango_financieros: '2T_2016, 4T_2025' } },
+  Q: { razon_social: 'Quálitas', '*': { tipo_valor_id: '1', rango_financieros: '2T_2016, 4T_2025' } },
+  GFNORTE: { razon_social: 'Banorte', O: { tipo_valor_id: '1', rango_financieros: '2T_2016, 4T_2025' } },
+  NAFTRAC: { razon_social: 'iShares', ISHRS: { tipo_valor_id: '1B' } },
+};
+
+const claves = (censo) => filasDelCenso(censo).map((f) => `${f.emisora_serie}|${f.tipo_valor_id}`);
+
+test('el censo da lo MISMO se pase entero o emisora por emisora', () => {
+  // `?job=emisoras` pasa cientos de llaves de golpe; `?job=reparse` las pasaba
+  // una a una. Con `llaves.length <= 3` el heurístico de envoltorio se
+  // disparaba en el segundo caso y `Q*` salía como `*`.
+  const juntas = claves(CENSO_MIXTO);
+  const unaAUna = Object.entries(CENSO_MIXTO).flatMap(([k, v]) => claves({ [k]: v }));
+  assert.deepEqual(unaAUna, juntas, 'el mismo crudo no puede dar dos censos distintos');
+});
+
+test('una pizarra de UN carácter no se confunde con un envoltorio', () => {
+  const [f] = filasDelCenso({ Q: { razon_social: 'Quálitas', '*': { tipo_valor_id: '1' } } });
+  assert.equal(f.emisora_serie, 'Q*', 'no `*`: la emisora es Q');
+  assert.equal(f.tipo_valor_id, '1');
+});
+
+test('un envoltorio DE VERDAD sigue reconociéndose', () => {
+  // La regla nueva mira la forma —una llave cuyo valor contiene dos o más
+  // pizarras— y no el número de llaves del nivel de arriba.
+  assert.deepEqual(claves({ data: CENSO_MIXTO }), claves(CENSO_MIXTO));
+  assert.deepEqual(claves({ resultados: CENSO_MIXTO }), claves(CENSO_MIXTO));
+});
+
+test('el censo en lotes arbitrarios da siempre lo mismo', () => {
+  const entradas = Object.entries(CENSO_MIXTO);
+  const completo = claves(CENSO_MIXTO).sort();
+  for (const tam of [1, 2, 3, 4]) {
+    const porLotes = [];
+    for (let i = 0; i < entradas.length; i += tam) {
+      porLotes.push(...claves(Object.fromEntries(entradas.slice(i, i + tam))));
+    }
+    assert.deepEqual(porLotes.sort(), completo, `falló con lotes de ${tam}`);
+  }
+});
+
+/* ── categoría del reparto: decisión explícita, no efecto de un regex ── */
+
+test('categoriaReparto: el ORDEN importa — reembolso antes que efectivo', () => {
+  // "REEMBOLSO DE CAPITAL EN EFECTIVO" contiene la palabra "efectivo". Con el
+  // regex viejo habría entrado al retorno total como rendimiento, y un
+  // reembolso de capital NO es rendimiento: es la empresa devolviendo
+  // principal. Sumarlo infla el resultado con dinero que no es ganancia.
+  assert.equal(categoriaReparto('REEMBOLSO DE CAPITAL EN EFECTIVO'), 'reembolso');
+  assert.equal(esEfectivo('REEMBOLSO DE CAPITAL EN EFECTIVO'), false);
+});
+
+test('categoriaReparto clasifica los tipos observados y los que no', () => {
+  assert.equal(categoriaReparto('DISTRIBUCION DE EFECTIVO'), 'efectivo');
+  assert.equal(categoriaReparto('REEMBOLSO'), 'reembolso');
+  assert.equal(categoriaReparto('DIVIDENDO EN ACCIONES'), 'especie');
+  assert.equal(categoriaReparto('SPLIT'), 'especie');
+  assert.equal(categoriaReparto('ALGO QUE NO CONOCEMOS'), 'desconocido');
+  assert.equal(categoriaReparto(null), 'efectivo', 'sin tipo no hay nada que distinguir');
+});
+
+test('sólo `efectivo` entra al retorno total', () => {
+  for (const t of ['REEMBOLSO', 'DIVIDENDO EN ACCIONES', 'ALGO RARO']) {
+    assert.equal(esEfectivo(t), false, `${t} no debe entrar`);
+  }
+  assert.equal(esEfectivo('DISTRIBUCION DE EFECTIVO'), true);
+});
+
+/* ── divisa: nada se asume ──────────────────────────────────────── */
+
+test('requiereConversion sólo marca lo que VIENE y no es MXN', () => {
+  assert.equal(requiereConversion('USD'), true);
+  assert.equal(requiereConversion('EUR'), true);
+  assert.equal(requiereConversion('MXN'), false);
+  assert.equal(requiereConversion('mxn'), false);
+  // Un null NO se declara MXN aquí: el histórico no trae divisa, y decidirlo
+  // en el parser sería inventar. La propagación por serie se decide arriba.
+  assert.equal(requiereConversion(null), false);
+  assert.equal(requiereConversion(undefined), false);
+});
+
+test('la marca de conversión se PROPAGA al consolidar el grupo', () => {
+  // El bloque "reciente" trae divisa y el "historico" no. Si sólo se mirara la
+  // fila que gana, un reparto en USD cuya versión histórica no trae divisa
+  // quedaría sin marcar — y se reinvertiría como si fueran pesos.
+  const { filas } = consolidarDistribuciones([
+    { fecha_pago: '2025-05-05', fecha_ex: '2025-05-02', ex_aproximada: true, monto: 1.0, es_efectivo: true, requiere_conversion: false },
+    { fecha_pago: '2025-05-05', fecha_ex: '2025-05-02', ex_aproximada: false, monto: 1.0, es_efectivo: true, requiere_conversion: true },
+  ]);
+  assert.equal(filas.length, 1);
+  assert.equal(filas[0].requiere_conversion, true, 'si cualquiera del grupo la necesita, el grupo la necesita');
+});
+
+test('extraerDistribuciones cuenta categorías y conversiones', () => {
+  const r = extraerDistribuciones({
+    dividendos: {
+      '2025-01-05': { pago: 1.0, tipo: 'DISTRIBUCION DE EFECTIVO', divisa: 'MXN' },
+      '2025-02-05': { pago: 2.0, tipo: 'REEMBOLSO', divisa: 'MXN' },
+      '2025-03-05': { pago: 3.0, tipo: 'DISTRIBUCION DE EFECTIVO', divisa: 'USD' },
+    },
+  });
+  assert.deepEqual(r.categorias, { efectivo: 2, reembolso: 1 });
+  assert.equal(r.requieren_conversion, 1);
 });
