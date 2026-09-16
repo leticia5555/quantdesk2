@@ -192,5 +192,58 @@ console.log('\n── $1B asumido es una COTA, y el cero tiene que decirlo ─�
     'con el dato medido y nadie que llegue, el cero es un cero y no se disfraza de hueco', r.text.slice(0, 50));
 }
 
+// ── 4) EL RVOL INTRADÍA VACIABA LOS FILTROS DE MOMENTO ───────────────
+// Reportado el 2026-09-17: `ret_1d_min:2` + `min_rvol` daba 0 filas, y las
+// mismas llamadas SIN `min_rvol` daban 5.
+//
+// El RVOL compara el volumen PARCIAL de hoy contra sesiones COMPLETAS, así que
+// a mitad de sesión está por debajo de 1 por construcción y cualquier umbral de
+// "volumen inusual" lo vacía. El tablero ya lo etiquetaba en el prompt — pero
+// un FILTRO no lee etiquetas.
+console.log('\n── un umbral de RVOL no significa nada a mitad de sesión ──');
+{
+  const { fraccionDeSesion } = await import('../api/_lib/arena-board.js');
+  const et = (h, m) => new Date(`2026-09-17T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00-04:00`);
+  ok(fraccionDeSesion(et(9, 30)) === 0, 'en el open la sesión lleva 0%');
+  ok(Math.abs(fraccionDeSesion(et(10, 30)) - 0.154) < 0.01,
+    'a las 10:30 lleva ~15%: un nombre con volumen 3× normal leería RVOL ~0.46',
+    String(fraccionDeSesion(et(10, 30))));
+  ok(fraccionDeSesion(et(16, 0)) === 1 && fraccionDeSesion(et(20, 0)) === 1, 'después del cierre, 1');
+
+  const fila = (symbol, rvol) => ({ symbol, price: 10, change_pct: 5, rvol, pct_from_high: -2, pct_from_low: 50 });
+  const board = { gainers: [fila('AAA', 0.42), fila('BBB', 0.31)], sesion_pct: 0.25, rvol_top: ['AAA'] };
+  const ex = createToolExecutor({ budget: 9, board, cache: false });
+
+  const vacio = await ex.call('screener', { ret_1d_min: 2, min_rvol: 1.5 });
+  ok(vacio.rows === 0, 'el umbral absoluto sigue vaciando (el filtro no miente sobre lo que midió)');
+  ok(/sesión lleva 25%/.test(vacio.text),
+    'pero el cero DICE a qué hora se midió, en vez de "ninguno cumple"', vacio.text.slice(0, 60));
+  ok(/sesgado hacia abajo por construcción/.test(vacio.text),
+    'y que el sesgo es estructural, no una ausencia de volumen');
+  ok(/El RVOL más alto de todo el tablero ahora mismo es 0\.42/.test(vacio.text),
+    'con el máximo observado, para que el modelo vea la escala real de esta hora');
+  ok(vacio.sesgo_intradia && vacio.sesgo_intradia.sesion_pct === 0.25,
+    'y el dato viaja estructurado al lado del texto', JSON.stringify(vacio.sesgo_intradia));
+
+  // LA SALIDA: un RANGO no se distorsiona con la hora, porque todos los nombres
+  // se miden al mismo tiempo.
+  ok(/rvol_top: true/.test(vacio.text), 'el cero propone la alternativa que SÍ es interpretable');
+  const rango = await ex.call('screener', { ret_1d_min: 2, rvol_top: true });
+  ok(rango.rows === 1, '`rvol_top` filtra por el TOP del día y devuelve filas', String(rango.rows));
+
+  // Y con la sesión cerrada, un cero de RVOL vuelve a ser un cero de verdad: el
+  // aviso no puede convertirse en una excusa permanente.
+  const cerrado = createToolExecutor({ budget: 9, board: { ...board, sesion_pct: 1 }, cache: false });
+  const r = await cerrado.call('screener', { min_rvol: 9 });
+  ok(r.rows === 0 && !/sesgado hacia abajo/.test(r.text),
+    'con la sesión completa, el cero de RVOL es un cero y no se disculpa', r.text.slice(0, 55));
+
+  // Un booleano que llega como string no puede aplicarse al revés: "false" es
+  // truthy en JS y ese filtro se habría aplicado igual.
+  const { clampArgs } = await import('../api/_lib/arena-tools.js');
+  ok(clampArgs('screener', { rvol_top: 'false' }).args.rvol_top === false,
+    'un `rvol_top: "false"` se normaliza a false en vez de filtrar por truthy');
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
 process.exit(failures ? 1 : 0);

@@ -79,9 +79,25 @@ export const MAX_TURNS = Number(process.env.ARENA_TOOL_TURNS_MAX) || 22;
 // al journal; el deadline a su vez deja 30s contra el cap de la función. Si alguien sube este presupuesto sin bajar otra cosa, el loop
 // termina chocando contra el deadline y se pierde la corrida entera — hay un
 // test que verifica la resta (tests/arena-timeouts).
+// ── LA RESERVA DEL CIERRE ES UN PISO, NO UN TECHO ────────────────────
 // Reserva para la vuelta final + el journal. Si al empezar una vuelta queda
 // menos que esto, no se empieza: se cierra.
-export const RESERVA_CIERRE_MS = 45000;
+//
+// EL BUG DEL 2026-09-17: grok gastó sus 20 herramientas, cortó por `call_budget`
+// con reloj de sobra, y después recibió 45s para redactar el libro final sobre
+// un payload enorme. Timeout NUESTRO a los 45.003 ms. El resto del presupuesto
+// del loop —minutos, en ese caso— se tiraba sin usar.
+//
+// El turno de cierre es el que convierte una corrida en una decisión: es el
+// ÚLTIMO lugar donde hay que ahorrar tiempo. Ahora la reserva es el MÍNIMO que
+// se le garantiza, y si el loop terminó temprano se lleva además todo lo que
+// sobró (ver `relojDeCierre`).
+//
+// Subió de 45s a 70s por el mismo motivo: un modelo que razona mucho sobre un
+// libro de 8 posiciones no redacta el JSON en 45 segundos. Sale del presupuesto
+// del loop, que es tiempo de INVESTIGAR — y de nada sirve investigar si después
+// no se alcanza a decidir.
+export const RESERVA_CIERRE_MS = Number(process.env.ARENA_CIERRE_MS) || 70000;
 
 // ── EL RELOJ SE DERIVA, NO SE ESCRIBE A MANO ─────────────────────────
 // Eran 120s fijos, escritos en una constante. El problema de un número fijo es
@@ -338,6 +354,20 @@ export async function runToolLoop({
       contexto_tokens: { al_cierre: tokens, pico: Math.max(picoTokens, tokens), tope: contextTokensMax, pct: pct(Math.max(picoTokens, tokens), contextTokensMax) },
       reloj_ms: { usado: usadoMs, tope: budgetMs, pct: pct(usadoMs, budgetMs) },
       vueltas: { usadas: turns, tope: maxTurns },
+      // ── EL REPARTO ENTRE INVESTIGAR Y DECIDIR ──────────────────────
+      // Un corte por `call_budget` a los 40s de un presupuesto de 185 significa
+      // que al cierre le quedaron 70 + 145 segundos. Sin este desglose, "grok
+      // se pasó de tiempo" no dice si le faltó reloj o si le sobró y no se lo
+      // dimos — que es exactamente lo que pasaba.
+      reparto_ms: {
+        investigacion_usada: usadoMs,
+        investigacion_sobrante: Math.max(0, budgetMs - usadoMs),
+        cierre_minimo: RESERVA_CIERRE_MS,
+        cierre_concedido: cierreConcedidoMs,
+        // Cuánto llevaba la corrida cuando se repartió. `investigacion_usada` se
+        // mide al final y es posterior, así que el reparto se juzga con ÉSTE.
+        reparto_en_ms: cierreEnMs,
+      },
       compactacion: { resultados_compactados: compactados, vueltas_intactas: vueltasCompletas, activa: !!compactar },
       nota: 'Los tres topes cortan igual: se cierra con lo que haya, nunca se aborta. `stopped_by` dice cuál ganó; estos porcentajes dicen si ganó por poco o por lejos.',
     };
@@ -358,6 +388,12 @@ export async function runToolLoop({
   let cuerpoVacio = false;
   let sinContexto = false;
   let sinLlamadas = false;
+  let cierreConcedidoMs = null;
+  // El instante EXACTO del reparto. `limites()` lee el reloj más tarde, así que
+  // sin esto el invariante "investigación + cierre ≤ presupuesto + reserva" no
+  // se puede verificar: se estaría sumando un `usado` posterior al reparto
+  // contra un techo calculado antes.
+  let cierreEnMs = null;
   let compactados = 0;
   let picoTokens = 0;
 
@@ -547,13 +583,25 @@ export async function runToolLoop({
   // `tool_choice` es la forma correcta de pedir "contestá sin llamar nada", y
   // quitar el esquema no lo es.
   const cierreToolChoice = agent.provider === 'anthropic' ? { type: 'none' } : 'none';
-  // El cierre corre contra lo que QUEDE, con la reserva como techo. Si el
-  // reintento de una vuelta útil mordió parte de la reserva, el cierre se ajusta
-  // en vez de pedir 45s que ya no existen y chocar contra el deadline.
-  const relojDeCierre = () => Math.max(10000, Math.min(timeoutMs || RESERVA_CIERRE_MS, RESERVA_CIERRE_MS, Math.max(10000, restante())));
+  // ── EL CIERRE SE LLEVA LA RESERVA **MÁS** LO QUE SOBRÓ ──────────────
+  // `restante()` es lo que queda del presupuesto de INVESTIGACIÓN, que ya no se
+  // va a usar: el loop terminó. Sumarlo a la reserva es la diferencia entre
+  // darle a grok 45s tras gastar sus 20 herramientas y darle los ~2 minutos que
+  // de verdad sobraban.
+  //
+  // El techo total no se mueve: `relojDisponible` ya restó la reserva del
+  // presupuesto del loop, así que `loop_usado + cierre ≤ budgetMs + RESERVA`
+  // pase lo que pase. Lo único que cambia es quién usa el tiempo que sobra.
+  const relojDeCierre = () => {
+    const usado = clock() - t0;
+    cierreEnMs = usado;
+    const sobrante = Math.max(0, budgetMs - usado);
+    const disponible = RESERVA_CIERRE_MS + sobrante;
+    return Math.max(10000, timeoutMs ? Math.min(timeoutMs, disponible) : disponible);
+  };
   const llamarCierre = (msgs, extra = {}) => call({
     agent, system, messages: msgs, maxTokens, now,
-    timeoutMs: relojDeCierre(),
+    timeoutMs: (cierreConcedidoMs = relojDeCierre()),
     tools, toolChoice: cierreToolChoice, ...(effort ? { effort } : {}),
     // El cierre NUNCA va al proveedor que ya nos colgó en esta corrida.
     ...(proveedoresColgados.length ? { provider: providerPolicy(agent, { ignore: proveedoresColgados }) } : {}),

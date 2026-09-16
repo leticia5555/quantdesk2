@@ -694,6 +694,79 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B24 · EL REPARTO ENTRE INVESTIGAR Y DECIDIR
+
+Sombra de los siete, 2026-09-17: **6/7**. El único que cayó fue `grok`, y con el
+diagnóstico ya correcto: *"TIMEOUT NUESTRO leyendo el cuerpo"*, 45.003 ms, en el
+**cierre**, después de gastar sus 20 herramientas (`stopped_by: call_budget`).
+
+No era el proveedor. Le dimos 45 segundos para redactar el libro final sobre un
+payload enorme — y el resto del presupuesto del loop, **minutos en ese caso**, se
+tiró sin usar.
+
+**La reserva del cierre pasa a ser un piso, no un techo:**
+
+- Sube de **45s a 70s**. Un modelo que razona mucho sobre un libro de ocho
+  posiciones no redacta el JSON en 45 segundos. Sale del presupuesto del loop,
+  que es tiempo de *investigar* — y de nada sirve investigar si después no se
+  alcanza a decidir.
+- **El cierre se lleva además todo lo que sobró.** `restante()` es presupuesto de
+  investigación que ya no se va a usar: el loop terminó. Si el loop corta a los
+  40s de un presupuesto de 185, el cierre recibe 70 + 145 = **215 segundos** en
+  vez de 45.
+
+El techo total no se mueve — `relojDisponible` ya descuenta la reserva, así que
+`reparto + cierre ≤ presupuesto + reserva` pase lo que pase. Lo único que cambia
+es **quién usa el tiempo que sobra**.
+
+```
+arena-run:  scan 90s + loop 95s + cierre 70s = 255s < 270s de deadline
+sombra:                loop 185s + cierre 70s (mínimo)
+```
+
+`limites.reparto_ms` journalea los cuatro números: investigación usada,
+sobrante, mínimo del cierre y **cuánto se le concedió de verdad**. Sin ese
+desglose, "grok se pasó de tiempo" no distingue *le faltó reloj* de *le sobraba y
+no se lo dimos*, que es lo que pasaba.
+
+Lleva también `reparto_en_ms`: el instante exacto del reparto. `limites()` lee el
+reloj más tarde, así que sin él el invariante no se puede verificar — se estaría
+sumando un `usado` posterior contra un techo calculado antes. Lo encontró el
+test al ponerse rojo con un reloj falso.
+
+## B25 · EL RVOL INTRADÍA VACIABA LOS FILTROS DE MOMENTO
+
+`ret_1d_min: 2` + `min_rvol` → **0 filas**. Las mismas llamadas sin `min_rvol` →
+**5 filas**.
+
+El RVOL es el volumen **parcial** de hoy contra sesiones **completas**. A las
+10:30 la sesión lleva ~15%, así que un nombre con volumen 3× lo normal lee
+**0.46** — y cualquier umbral de "volumen inusual" lo descarta. El tablero ya lo
+etiquetaba en el prompt, pero **un filtro no lee etiquetas**.
+
+**No se "corrige" el número.** El volumen intradía tiene forma de U —pesado en el
+open y en el cierre— así que dividir por la fracción de reloj sobreestimaría el
+RVOL temprano tanto como la medición cruda lo subestima. Cambiar un sesgo
+conocido por otro inventado no es un arreglo.
+
+Lo que se hace:
+
+1. **`rvol_top: true`** — el TOP 20 por RVOL del día. Un **rango** no se
+   distorsiona con la hora, porque todos los nombres se miden al mismo tiempo. Es
+   la forma interpretable de preguntar "¿está operando raro?" antes del cierre, y
+   la descripción de la herramienta lo dice.
+2. **El cero explica la hora**: cuánto lleva la sesión, que el sesgo es
+   estructural, **el RVOL más alto de todo el tablero ahora mismo** (para que el
+   modelo vea la escala real), y la alternativa. Más `sesgo_intradia`
+   estructurado al lado del texto.
+3. **Con la sesión cerrada, el aviso desaparece**: un cero de RVOL a las 16:00 es
+   un cero de verdad y no se disculpa. El aviso no puede volverse una excusa
+   permanente.
+
+`board.sesion_pct` publica la fracción transcurrida, que es lo que vuelve
+interpretable cualquier RVOL: un `rv0.3` a las 10:30 y uno a las 15:45 significan
+cosas opuestas.
+
 ## B23 · CORRECCIÓN: el "cuerpo vacío" era NUESTRO timeout
 
 El trace de qwen del 2026-09-17 trajo el número que cerró el caso:
