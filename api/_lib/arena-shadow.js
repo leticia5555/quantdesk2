@@ -54,6 +54,23 @@ const SCHEMA = [
      created_at    timestamptz not null default now()
    )`,
   `create index if not exists arena_shadow_journal_idx on arena_shadow_journal (run_date, agent_id)`,
+  // ── EL PISO DE RUIDO, GUARDADO ───────────────────────────────────────
+  // El piso se calcula recorriendo el journal de la sombra de UN día. Eso sirve
+  // para mirar hoy y no sirve para el post-mortem de la temporada: el piso del
+  // 2026-09-17 es un HECHO de ese día, y reconstruirlo en noviembre exige que
+  // las filas de septiembre sigan ahí con la misma forma.
+  //
+  // Una fila por día, con el número y las dos condiciones que lo hacen válido
+  // (misma lente, mismo libro de arranque). Guardar el coseno sin ellas sería
+  // guardar un número que no se puede interpretar después.
+  `create table if not exists arena_noise_floor (
+     day        date primary key,
+     cosine     numeric not null,
+     lens       text,
+     agents     text,
+     positions  jsonb,
+     saved_at   timestamptz not null default now()
+   )`,
 ];
 
 let ready = false;
@@ -61,6 +78,48 @@ export async function ensureShadowSchema() {
   if (ready) return;
   for (const q of SCHEMA) await sql(q);
   ready = true;
+}
+
+// Se guarda SOLO si es comparable. Un piso que no cumple las dos condiciones no
+// es un piso bajo: no es un piso, y archivarlo como si lo fuera contaminaría el
+// post-mortem con un número que mide herencia o lente.
+//
+// Idempotente y NO pisa: el primero del día gana. Correr la sombra tres veces
+// no puede cambiar retroactivamente el piso de un día ya registrado — eso
+// convertiría el archivo en "la última corrida" en vez de en un hecho.
+export async function guardarPisoDeRuido(day, piso) {
+  if (!piso || !piso.comparable || !Number.isFinite(Number(piso.cosine))) {
+    return { guardado: false, motivo: piso && piso.motivo ? piso.motivo : 'el piso no es comparable: no se archiva' };
+  }
+  try {
+    await ensureShadowSchema();
+    await sql(
+      `insert into arena_noise_floor (day, cosine, lens, agents, positions)
+       values ($1::date,$2,$3,$4,$5) on conflict (day) do nothing`,
+      [day, Number(piso.cosine), piso.lente || null, 'claude|control',
+       JSON.stringify(piso.posiciones_iniciales || null)],
+    );
+    return { guardado: true, day, cosine: Number(piso.cosine), lente: piso.lente || null };
+  } catch (e) { return { guardado: false, motivo: String((e && e.message) || e) }; }
+}
+
+// Los pisos archivados, del más reciente al más viejo. El post-mortem los lee de
+// acá: no depende de que la sombra de HOY haya corrido ni de que las filas del
+// journal de septiembre sigan existiendo en noviembre.
+export async function leerPisosDeRuido({ limite = 30 } = {}) {
+  try {
+    await ensureShadowSchema();
+    const rows = await sql(
+      `select day, cosine, lens, agents, positions, saved_at from arena_noise_floor order by day desc limit $1`,
+      [Math.max(1, Math.min(365, limite))],
+    );
+    return (rows || []).map((r) => ({
+      day: typeof r.day === 'string' ? r.day.slice(0, 10) : new Date(r.day).toISOString().slice(0, 10),
+      cosine: Number(r.cosine), lente: r.lens || null, agentes: r.agents || null,
+      posiciones_iniciales: r.positions || null, saved_at: r.saved_at,
+      comparable: true,
+    }));
+  } catch { return []; }
 }
 
 // ── EL BROKER QUE NO OPERA ───────────────────────────────────────────
@@ -247,6 +306,13 @@ export async function shadowReport(day = marketDay()) {
     solapamiento.caveat = 'OJO con la LENTE: dos agentes con lentes distintas el mismo día NO son comparables ese día — el confound es deliberado (B8). Mirá `por_agente[].ultimo.lente` antes de leer el par.';
   }
 
+  // ── SE ARCHIVA ACÁ, donde acaba de calcularse ──
+  // No en el endpoint: `?report=1` es gratis y se corre muchas veces, pero
+  // TAMBIÉN se llama desde la corrida. Archivar en el punto de cálculo es lo
+  // que garantiza que el piso de un día quede guardado la primera vez que
+  // alguien lo mira, sin depender de qué ruta lo miró.
+  const archivo = await guardarPisoDeRuido(day, pisoDeRuido);
+
   const costos = Object.values(porAgente).map((a) => (a.ultimo && a.ultimo.costo_usd)).filter((x) => Number.isFinite(x));
   return {
     day, total, abortadas,
@@ -256,7 +322,11 @@ export async function shadowReport(day = marketDay()) {
     // heredaron la misma cartera no dice nada sobre cómo piensan.
     posiciones_iniciales: Object.fromEntries(Object.entries(porAgente)
       .map(([id, a]) => [id, (a.ultimo && a.ultimo.posiciones_iniciales) || null])),
-    piso_de_ruido: pisoDeRuido,
+    piso_de_ruido: { ...pisoDeRuido, archivado: archivo },
+    // Los pisos de los días ANTERIORES, para poder leer el de hoy contra la
+    // serie en vez de contra nada. Un piso de 0.77 no dice lo mismo si los tres
+    // días previos dieron 0.93.
+    pisos_archivados: await leerPisosDeRuido({ limite: 15 }),
     solapamiento,
     // Todos los abortos con su cuerpo crudo, juntos: es lo primero que se mira
     // cuando algo falló y no hay que ir a buscarlo agente por agente.

@@ -224,13 +224,33 @@ export async function runScreener(args, ctx) {
   const sectorDe = ctx.sectorOf || (() => null);
   const conNoticia = ctx.newsSymbols || new Set();
   let r = filas;
-  if (args.sector) r = r.filter((f) => sectorDe(f.symbol) === args.sector);
-  if (args.min_rvol != null) r = r.filter((f) => f.rvol != null && f.rvol >= args.min_rvol);
-  if (args.ret_1d_min != null) r = r.filter((f) => f.change_pct != null && f.change_pct >= args.ret_1d_min);
-  if (args.ret_1d_max != null) r = r.filter((f) => f.change_pct != null && f.change_pct <= args.ret_1d_max);
-  if (args.near_52w_high) r = r.filter((f) => f.pct_from_high != null && f.pct_from_high >= -2);
-  if (args.near_52w_low) r = r.filter((f) => f.pct_from_low != null && f.pct_from_low <= 2);
-  if (args.has_news) r = r.filter((f) => conNoticia.has(f.symbol));
+
+  // ── EL EMBUDO: QUÉ FILTRO SE LLEVÓ LAS FILAS ───────────────────────
+  // "0 filas" es la respuesta menos accionable posible: no distingue un
+  // criterio exigente de un campo que no existe en los datos. Con seis filtros
+  // encadenados, saber que `sector:XLK` dejó 0 de 118 y que `ret_1d_min` no
+  // llegó a evaluarse es la diferencia entre arreglar un bug y adivinar cuál.
+  //
+  // Se mide SIEMPRE (cuesta un contador por filtro) y se REPORTA solo cuando el
+  // resultado es cero: en una respuesta con filas, el embudo sería ruido que el
+  // modelo paga en tokens.
+  const embudo = [];
+  const aplicar = (nombre, valor, fn) => {
+    if (valor === undefined || valor === null || valor === false) return;
+    const antes = r.length;
+    r = r.filter(fn);
+    // `con_dato` separa "no cumple el criterio" de "no tenemos el dato": son
+    // dos ceros distintos y llevan a decisiones distintas.
+    embudo.push({ filtro: nombre, valor, antes, despues: r.length });
+  };
+
+  aplicar('sector', args.sector, (f) => sectorDe(f.symbol) === args.sector);
+  aplicar('min_rvol', args.min_rvol, (f) => f.rvol != null && f.rvol >= args.min_rvol);
+  aplicar('ret_1d_min', args.ret_1d_min, (f) => f.change_pct != null && f.change_pct >= args.ret_1d_min);
+  aplicar('ret_1d_max', args.ret_1d_max, (f) => f.change_pct != null && f.change_pct <= args.ret_1d_max);
+  aplicar('near_52w_high', args.near_52w_high, (f) => f.pct_from_high != null && f.pct_from_high >= -2);
+  aplicar('near_52w_low', args.near_52w_low, (f) => f.pct_from_low != null && f.pct_from_low <= 2);
+  aplicar('has_news', args.has_news, (f) => conNoticia.has(f.symbol));
   // ── TRES FILTROS QUE SE DECLARABAN Y NO EXISTÍAN ───────────────────
   // `ret_5d_min`, `ret_1m_min` y `min_mcap_b` estaban en el schema que ve el
   // modelo y NO se aplicaban: los dos primeros porque nadie los implementó, el
@@ -245,16 +265,10 @@ export async function runScreener(args, ctx) {
   // nombre NO pasa el filtro: pedir "+5% en el mes" y recibir uno del que no
   // sabemos el retorno sería el mismo error con otra cara.
   const retDe = ctx.retornosOf || (() => null);
-  if (args.ret_5d_min != null) {
-    r = r.filter((f) => { const x = retDe(f.symbol); return x && x.ret_5d != null && x.ret_5d >= args.ret_5d_min; });
-  }
-  if (args.ret_1m_min != null) {
-    r = r.filter((f) => { const x = retDe(f.symbol); return x && x.ret_1m != null && x.ret_1m >= args.ret_1m_min; });
-  }
-  if (args.min_mcap_b != null) {
-    const mcapDe = ctx.marketCapOf || (() => null);
-    r = r.filter((f) => { const mc = mcapDe(f.symbol); return mc != null && mc >= args.min_mcap_b * 1e9; });
-  }
+  const mcapDe = ctx.marketCapOf || (() => null);
+  aplicar('ret_5d_min', args.ret_5d_min, (f) => { const x = retDe(f.symbol); return !!(x && x.ret_5d != null && x.ret_5d >= args.ret_5d_min); });
+  aplicar('ret_1m_min', args.ret_1m_min, (f) => { const x = retDe(f.symbol); return !!(x && x.ret_1m != null && x.ret_1m >= args.ret_1m_min); });
+  aplicar('min_mcap_b', args.min_mcap_b, (f) => { const mc = mcapDe(f.symbol); return mc != null && mc >= args.min_mcap_b * 1e9; });
   r = r.sort((a, b) => (Math.abs(b.change_pct || 0) - Math.abs(a.change_pct || 0)) || (a.symbol < b.symbol ? -1 : 1))
     .slice(0, args.limit || 25);
 
@@ -266,14 +280,32 @@ export async function runScreener(args, ctx) {
     const faltantes = [];
     if (args.ret_5d_min != null && !filas.some((f) => (retDe(f.symbol) || {}).ret_5d != null)) faltantes.push('retorno a 5 días');
     if (args.ret_1m_min != null && !filas.some((f) => (retDe(f.symbol) || {}).ret_1m != null)) faltantes.push('retorno a 1 mes');
-    if (args.min_mcap_b != null && !filas.some((f) => (ctx.marketCapOf || (() => null))(f.symbol) != null)) faltantes.push('market cap');
+    if (args.min_mcap_b != null && !filas.some((f) => mcapDe(f.symbol) != null)) faltantes.push('market cap');
+    if (args.sector && !filas.some((f) => sectorDe(f.symbol) != null)) faltantes.push('sector');
+
+    // EL CULPABLE: el primer filtro que dejó la lista en cero. Con seis filtros
+    // encadenados, decir "ninguno cumple" sin decir CUÁL no cumple obliga al
+    // modelo a probar de a uno, y cada prueba cuesta una llamada del
+    // presupuesto.
+    const culpable = embudo.find((e) => e.despues === 0) || null;
+    const traza = embudo.map((e) => `${e.filtro}=${e.valor}: ${e.antes}→${e.despues}`).join(' · ');
+
     if (faltantes.length) {
       return {
-        text: `No se puede contestar: el universo de hoy no trae ${faltantes.join(' ni ')} para ninguno de los ${filas.length} nombres del tablero. NO significa que ninguno cumpla — significa que no tenemos ese dato en esta corrida. Probá con otro criterio.`,
-        rows: 0, datos_faltantes: faltantes,
+        text: `No se puede contestar: el universo de hoy no trae ${faltantes.join(' ni ')} para ninguno de los ${filas.length} nombres del tablero. NO significa que ninguno cumpla — significa que no tenemos ese dato en esta corrida. Probá con otro criterio.\nEmbudo: ${traza}`,
+        rows: 0, datos_faltantes: faltantes, embudo,
       };
     }
-    return { text: `Ningún nombre del universo cumple esos criterios hoy. (El screener filtra sobre los ${filas.length} nombres que el tablero cubre, no sobre el universo entero: los que no están en ningún extremo del tablero no se evalúan.)`, rows: 0 };
+    return {
+      // El caveat del alcance va en LAS DOS ramas: que el screener mire el
+      // tablero y no el universo entero es un límite que el PM tiene que saber
+      // para interpretar cualquier cero, tenga culpable identificado o no.
+      text: `Ningún nombre del universo cumple esos criterios hoy. (El screener filtra sobre los ${filas.length} nombres que el tablero cubre, no sobre el universo entero: los que no están en ningún extremo del tablero no se evalúan.)`
+        + (culpable
+          ? `\nEL FILTRO QUE SE LLEVÓ LOS ÚLTIMOS NOMBRES: \`${culpable.filtro}=${culpable.valor}\` (${culpable.antes} → 0). Aflojá ESE criterio, no los otros.\nEmbudo completo: ${traza}.`
+          : ''),
+      rows: 0, embudo,
+    };
   }
   const header = `${r.length} nombre(s). Columnas: TICKER precio cambio_1d RVOL dist_máx52s`;
   const rows = r.map((f) => `${f.symbol} ${n2(f.price)} ${sg(f.change_pct)}% rv${f.rvol ?? '—'} ${sg(f.pct_from_high)}%`);

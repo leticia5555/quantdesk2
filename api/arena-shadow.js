@@ -53,6 +53,7 @@ function sectorEtfDe(buffet, sym) {
 import { shadowBroker, shadowJournalInsert, shadowRunId, shadowReport, ensureShadowSchema } from './_lib/arena-shadow.js';
 import { currentTier, recordRunSpend, callCost } from './_lib/arena-budget.js';
 import { marketDay } from './_lib/arena-buffet-cache.js';
+import { createTrace } from './_lib/arena-trace.js';
 import { beat } from './_lib/heartbeat.js';
 
 export const maxDuration = 300;
@@ -80,7 +81,7 @@ async function leerLibro(broker, creds) {
 // ── UNA CORRIDA EN SOMBRA ────────────────────────────────────────────
 // Nunca lanza: una corrida que falla tiene que aparecer como una FILA, no
 // llevarse el reporte de los otros seis.
-export async function runShadowAgent({ agent, buffet, now = new Date(), tier = null, deps = {} }) {
+export async function runShadowAgent({ agent, buffet, now = new Date(), tier = null, deps = {}, trace = null }) {
   const runId = shadowRunId(agent.id, now);
   const base = { id: runId, run_date: marketDay(now), agent_id: agent.id, phase: 'decide', prompt_version: PROMPT_VERSION, model: agent.model };
   const broker = (deps.shadowBroker || shadowBroker)(alpaca);
@@ -157,16 +158,26 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
   let loop;
   try {
     loop = toolsMax > 0
-      ? await runToolLoop({ agent, system: [system, shared], messages: [{ role: 'user', content: user }], executor, maxTokens: ARENA_MAX_TOKENS, now })
-      : { llm: await callArenaLLM({ agent, system: [system, shared], messages: [{ role: 'user', content: user }], maxTokens: ARENA_MAX_TOKENS, now }), turns: 1, stopped_by: 'tools_disabled' };
+      ? await runToolLoop({ agent, system: [system, shared], messages: [{ role: 'user', content: user }], executor, maxTokens: ARENA_MAX_TOKENS, now, trace })
+      : { llm: await callArenaLLM({ agent, system: [system, shared], messages: [{ role: 'user', content: user }], maxTokens: ARENA_MAX_TOKENS, now, trace, fase: 'sin_herramientas' }), turns: 1, stopped_by: 'tools_disabled' };
   } catch (e) {
-    await shadowJournalInsert({ ...base, status: 'aborted_llm_threw', error: String((e && e.message) || e), context: ctx });
-    return { agent: agent.id, status: 'aborted_llm_threw' };
+    // EL STACK, no solo el mensaje. `aborted_llm_threw` con un string suelto no
+    // distingue un error de red de un TypeError nuestro, y son diagnósticos
+    // opuestos: uno se reintenta, el otro se arregla.
+    const err = { message: String((e && e.message) || e), stack: e && e.stack ? String(e.stack).slice(0, 2000) : null, name: (e && e.name) || null };
+    ctx.threw = err;
+    if (trace) ctx.trace = trace.report();
+    await shadowJournalInsert({ ...base, status: 'aborted_llm_threw', error: err.message, context: ctx });
+    return { agent: agent.id, status: 'aborted_llm_threw', threw: err, ...(trace ? { trace: trace.report() } : {}) };
   }
 
   const llm = loop.llm;
   ctx.tools = { budget: toolsMax, used: executor.used, intentos: executor.intentos, turns: loop.turns, stopped_by: loop.stopped_by, sequence: executor.sequence, summary: executor.summary() };
   if (loop.cierre_diagnostico) ctx.cierre = loop.cierre_diagnostico;
+  // DÓNDE MURIÓ. `cierre: null` significaba dos cosas opuestas —el cierre salió
+  // bien, o el loop murió antes de llegar a él— y se veían iguales. Esto las
+  // separa: si hay `murio_en`, el cierre nunca ocurrió.
+  if (loop.murio_en) ctx.murio_en = loop.murio_en;
 
   // El gasto se registra SIEMPRE, haya salido bien o mal: una corrida abortada
   // igual gastó tokens, y un contador que solo cuenta los éxitos subestima.
@@ -199,10 +210,20 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
       // lo de arriba en null: el fetch iba bien y la falla estaba al LEER la
       // respuesta. Esto es lo que faltaba.
       cierre: llm.cierre_diagnostico || (loop && loop.cierre_diagnostico) || null,
+      // Si esto viene poblado, el `cierre: null` de arriba NO es un cierre que
+      // salió bien: es un cierre que nunca se ejecutó.
+      murio_en: (loop && loop.murio_en) || null,
+      threw_stack: llm.threw_stack || null,
       timed_out: !!llm.timedOut, stale: !!llm.stale, retry_failed: !!llm.retry_failed,
     };
+    if (trace) ctx.trace = trace.report();
     await shadowJournalInsert({ ...base, status: 'aborted_llm_error', error, context: ctx });
-    return { agent: agent.id, status: 'aborted_llm_error', error, cost_usd: costo.usd };
+    return {
+      agent: agent.id, status: 'aborted_llm_error', error, cost_usd: costo.usd,
+      murio_en: (loop && loop.murio_en) || null,
+      llm_error: ctx.llm_error,
+      ...(trace ? { trace: trace.report() } : {}),
+    };
   }
 
   const text = ((llm.data.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('')).trim();
@@ -293,21 +314,56 @@ export default async function handler(req, res) {
     const agents = only ? [agentById(only)].filter(Boolean) : activeAgents();
     if (!agents.length) return res.status(400).json({ error: 'Ningún agente activo con ese id.' });
 
+    // ── ?trace=1 — LA CONVERSACIÓN ENTERA, TURNO POR TURNO ─────────────
+    // EXIGE `?agent=<uno>`. No es una restricción arbitraria: el trace de una
+    // vuelta lleva el tablero, el prompt del sistema y todos los resultados de
+    // herramientas acumulados. Siete de esos en una respuesta HTTP no caben, y
+    // el caso de uso es "este agente falla, quiero ver por qué", no "quiero
+    // siete conversaciones".
+    const quiereTrace = String(q.trace || '') === '1';
+    if (quiereTrace && !only) {
+      return res.status(400).json({
+        error: '?trace=1 exige ?agent=<id>.',
+        detalle: 'El trace de UNA vuelta lleva el prompt entero más todos los resultados de herramientas acumulados; siete agentes no caben en una respuesta. Corré uno por vez.',
+        ejemplo: '/api/arena-shadow?agent=qwen&trace=1&key=<ARENA_ADMIN_KEY>',
+      });
+    }
+
     // El presupuesto manda también acá: la sombra gasta dinero de verdad.
     const tier = await currentTier(now);
 
     const buffet = await gatherContext({ baseUrl: resolveBaseUrl(req), now });
 
+    const trazas = new Map();
     const settled = await Promise.allSettled(
-      agents.map((a) => withDeadline(
-        runShadowAgent({ agent: a, buffet, now, tier }),
-        270000,
-        () => ({ agent: a.id, status: 'timeout' }),
-      )),
+      agents.map((a) => {
+        const trace = quiereTrace ? createTrace({ label: a.id }) : null;
+        if (trace) trazas.set(a.id, trace);
+        return withDeadline(
+          runShadowAgent({ agent: a, buffet, now, tier, trace }),
+          270000,
+          // El timeout TAMBIÉN devuelve el trace: una corrida que se pasó del
+          // reloj es justo la que hay que poder mirar vuelta por vuelta, y
+          // perderlo acá deja el peor caso sin evidencia.
+          () => ({ agent: a.id, status: 'timeout', ...(trace ? { trace: trace.report() } : {}) }),
+        );
+      }),
     );
     const results = settled.map((r, i) => (r.status === 'fulfilled' ? r.value : {
-      agent: agents[i].id, status: 'threw', error: String((r.reason && r.reason.message) || r.reason),
+      agent: agents[i].id, status: 'threw',
+      error: String((r.reason && r.reason.message) || r.reason),
+      stack: r.reason && r.reason.stack ? String(r.reason.stack).slice(0, 2000) : null,
+      ...(trazas.has(agents[i].id) ? { trace: trazas.get(agents[i].id).report() } : {}),
     }));
+
+    // Red de seguridad del trace: si un agente salió por un camino que no lo
+    // adjuntó, se adjunta acá. Pedir `?trace=1` y recibir una respuesta sin
+    // trace es exactamente el fallo que este endpoint existe para no repetir.
+    if (quiereTrace) {
+      for (const r of results) {
+        if (r && !r.trace && trazas.has(r.agent)) r.trace = trazas.get(r.agent).report();
+      }
+    }
 
     const costo = results.reduce((s, r) => s + (Number(r.cost_usd) || 0), 0);
     const verdes = results.filter((r) => r.status === 'ok_target');
@@ -325,6 +381,10 @@ export default async function handler(req, res) {
         ? `VERDE: los ${verdes.length} produjeron un objetivo que pasa los rieles. Costo de la sombra: $${costo.toFixed(4)}.`
         : `${verdes.length}/${results.length} en verde. Revisá \`agents[].status\` y \`violations\` antes de encender el contrato nuevo.`,
     };
+    if (quiereTrace) {
+      out.trace_note = 'TRACE ACTIVO: `agents[].trace.turnos_detalle[]` trae, por vuelta, el CUERPO HTTP enviado y el TEXTO CRUDO recibido (4 KB c/u), más el stack de cualquier throw. Lleva los prompts completos: no se cachea y no se publica en ninguna ruta pública.';
+      res.setHeader('Cache-Control', 'no-store');
+    }
     await beat('arena:shadow', verdes.length === results.length ? 'ok' : 'partial', { verdes: verdes.length, costo: +costo.toFixed(4) });
     return res.status(200).json(out);
   } catch (err) {
