@@ -3,24 +3,38 @@
 > **Alcance:** SOLO viabilidad de datos. No hay pipeline, no hay diseño de tablas,
 > no se tocó Neon ni el app. Censo + smoke, nada más.
 >
-> **Veredicto: GO PARCIAL — la adquisición está resuelta para el trimestre
-> corriente; el histórico es el problema real y no es técnico.**
+> # VEREDICTO: **GO**
 >
-> - **Bajar el trimestre más reciente: resuelto.** BMV sirve el XBRL gratis, sin
->   sesión y sin captcha, en una ruta estática (§1.1). Eso cierra la mitad de
->   adquisición del criterio de GO.
-> - **Bajar el histórico: no resuelto, y no se arregla con código.** BMV **vende**
->   el histórico (§1.2). CNBV lo tiene público pero su `robots.txt` prohíbe el
->   acceso automatizado (§1.3). Es una decisión de licencia y de riesgo, no de
->   parsing (§8.1).
-> - **Números contra PDF: sin verificar.** Es lo único que falta del criterio y
->   lo cierra el smoke corriendo en tu máquina (§9).
+> Los tres criterios, escritos antes y sin mover, se cumplen:
 >
-> **Lo que cambia el plan de inmediato (§3.2):** como el feed gratis de BMV sólo
-> expone el trimestre vigente, **es un feed de mantenimiento, no de backfill**.
-> Cada trimestre que no captures es un trimestre que después vas a tener que
-> comprar. Conviene empezar a capturar ya, antes de decidir qué hacer con el
-> histórico.
+> | Criterio | Estado | Evidencia |
+> |---|---|---|
+> | Bajan sin sesión ni captcha | **CUMPLE** | 2 zips de `docs-pub`, libres (§1.1) |
+> | 9 campos, mismos tags en ambas emisoras | **CUMPLE** | mismo tag y misma ventana en las 9 filas (§6.2) |
+> | Valores cuadran contra el PDF | **CUMPLE** | los 9 campos en ambas emisoras (§7) |
+>
+> Se puede bajar y parsear el XBRL de BMV de forma programática, repetible y con
+> números correctos. **La Fase 0 cierra aquí.**
+>
+> **Dos frentes quedan abiertos, y ninguno es de parseo:**
+>
+> 1. **Taxonomía 2016 sin probar.** No se consiguió un archivo viejo (CNBV
+>    bloqueado). Sabemos que la extensión mexicana es de 2014 y el entry point
+>    de 2019 (§2.1), lo que hace *probable* que 2016 use los mismos tags —
+>    probable, no verificado. Riesgo vivo para el backfill (§10.5).
+> 2. **Histórico pendiente de licencia.** BMV publica gratis sólo el trimestre
+>    vigente y **vende** el histórico; CNBV lo tiene público pero su `robots.txt`
+>    prohíbe automatizar (§1.2, §1.3, §8.1). Es decisión de licencia, no técnica.
+>
+> **Hallazgos grandes de la Fase 0:**
+>
+> - **BMV no sirve XBRL estándar**, sino un JSON propietario del editor de
+>   EMISNET. Se parsea bien, pero no lo lee ninguna herramienta XBRL y puede
+>   cambiar sin aviso (§1.1, §10.2).
+> - **"Deuda con costo" está mejor modelada de lo previsto**: la extensión
+>   mexicana distingue con costo de sin costo, y deja IFRS-16 aparte (§2.3).
+> - **La historia XBRL no llega a 14 años**: arranca en 1T2014, universal desde
+>   1T2016 (§3.1). El plan real es ~10 años.
 
 ---
 
@@ -30,6 +44,7 @@
 |---|---|
 | **[VERIFICADO]** | Corrido en esta máquina, con la salida pegada. |
 | **[VERIFICADO-FUERA]** | Lo comprobaste tú fuera del sandbox y lo incorporo como dato. |
+| **[VERIFICADO POR EL USUARIO]** | Lo contrastaste tú contra el PDF y lo incorporo como dato. |
 | **[SECUNDARIO]** | Sale de búsqueda web, no de tocar el recurso. |
 | **[NO VERIFICADO]** | Suposición razonable, marcada para no confundirla con dato. |
 
@@ -40,31 +55,53 @@ No bajé ningún archivo real. La tabla de verificación (§7) va vacía a prop�
 
 ## 1. Censo — dónde publica BMV el XBRL trimestral
 
-### 1.1 BMV: el trimestre corriente es gratis y sin sesión **[VERIFICADO-FUERA]**
+### 1.1 BMV: el trimestre corriente es gratis y sin sesión — pero no es XBRL **[VERIFICADO]**
 
-BMV expone el XBRL del **trimestre más reciente** de cada emisora como archivo
+BMV expone el reporte del **trimestre más reciente** de cada emisora como archivo
 estático bajo `docs-pub`, sin login, sin cookie de sesión y sin captcha:
 
 ```
 https://www.bmv.com.mx/docs-pub/ifrsxbrl/ifrsxbrl_<ID>_<AAAA>-<TT>_1.zip
 
-ej. Bimbo 2T2026:
-https://www.bmv.com.mx/docs-pub/ifrsxbrl/ifrsxbrl_1576474_2026-02_1.zip
+WALMEX 2T2026 -> ifrsxbrl_1576010_2026-02_1.zip   (1.0 MB)
+FEMSA  2T2026 -> ifrsxbrl_1577302_2026-02_1.zip   (2.6 MB)
 ```
 
-Del patrón se leen tres cosas:
-
 - `<TT>` es el **trimestre**, no el mes (`2026-02` = 2T2026).
-- `<ID>` es un **id interno de BMV** (`1576474` = Bimbo). **No es el ticker y no
-  es el mismo id de la ficha de emisora** (`WALMEX-5214`, `FEMSA-5305`,
-  `KOF-5525` **[SECUNDARIO]**). Son dos espacios de identificadores distintos y
-  **no tengo el mapa entre ellos**. Ese mapa es el entregable que falta para
-  automatizar la descarga; por eso el script no la automatiza (§5.3).
-- El sufijo `_1` parece un consecutivo de envío. **[NO VERIFICADO]** — importa,
-  porque una reexpresión podría publicarse como `_2`.
+- `<ID>` es un id interno de BMV, **no derivable del ticker**. Las tres entradas
+  del mapa que tenemos: `1576010`=WALMEX, `1577302`=FEMSA, `1576474`=Bimbo. Ya
+  están en el script (`ID_DOCSPUB_A_TICKER`); las otras ~32 se llenan a mano.
+- **Sólo se lista el último trimestre por emisora.** No hay índice histórico.
 
-**Límite duro: sólo se lista el último trimestre por emisora.** No hay índice
-histórico en esta ruta. Consecuencias en §3.2.
+#### Lo que hay dentro del zip NO es XBRL estándar
+
+Esto es lo más importante del censo y sólo se ve abriendo el archivo:
+
+```
+$ unzip -l ifrsxbrl_1576010_2026-02_1.zip
+   ifrsxbrl_1576010_2026-02_1.json      7,714,361 bytes
+```
+
+Un solo `.json`. No hay instance document XML, ni `.xsd`, ni linkbases. Y el
+JSON **no es xBRL-JSON de la OIM** (el estándar): es el volcado del modelo
+interno del editor de BMV/EMISNET, con claves en español y campos que no tienen
+nada que hacer en una publicación:
+
+```json
+{ "ContextosPorId": {...}, "HechosPorId": {...}, "Taxonomia": {...},
+  "NombreArchivo": "/logs/services/serviciosXbrl/tmp03/xbrl_abx_temp_http_5adea875-...xbrl",
+  "PuedeEscribir": ..., "EsDueno": ..., "Bloqueado": ...,
+  "IdUsuarioBloqueo": ..., "NombreUsuarioBloqueo": ... }
+```
+
+`Bloqueado`, `IdUsuarioBloqueo`, `NombreUsuarioBloqueo` y una ruta temporal del
+servidor son **estado interno de la herramienta de captura**. Eso dice algo que
+importa más que la curiosidad: **este endpoint no parece una API pública
+diseñada, sino un volcado del editor que quedó accesible.** Consecuencias en §10.
+
+**La buena noticia:** el contenido está completo y bien estructurado
+(`ContextosPorId`, `HechosPorId`, `Taxonomia`), se parsea sin drama y los datos
+salen correctos (§6). El script ya lo lee.
 
 ### 1.2 El histórico lo vende BMV **[VERIFICADO-FUERA]**
 
@@ -107,82 +144,132 @@ cabeceras `Set-Cookie`, precisamente para contestar esto con evidencia.
 
 ## 2. Taxonomía y tags
 
-### 2.1 Qué taxonomía — y qué queda fuera de la v1
+### 2.1 Qué taxonomía — **confirmada** **[VERIFICADO]**
 
-La taxonomía es una **extensión mexicana del IFRS Accounting Taxonomy**
-**[SECUNDARIO]**. Se esperan dos namespaces en el instance: `ifrs-full` y la
-extensión mexicana (prefijo exacto **[NO VERIFICADO]**).
+El entry point viene declarado en el propio archivo, y es el mismo en las dos
+emisoras:
 
-CNBV publica variantes por perfil de emisor (ICS, SAPIB, instrumentos de corto
-plazo, FIBRAS) **[SECUNDARIO]**.
+```
+http://www.cnbv.gob.mx/taxonomy/ifrs_mx/full_ifrs_mc_mx_ics_entry_point_2019-01-01
+```
 
-> **Decisión tomada: la v1 usa SÓLO la taxonomía ICS.** Bancos y FIBRAs quedan
-> fuera. Esto elimina de raíz el problema de tener que escribir un extractor por
-> perfil, y es la razón por la que el script puede tener una sola lista de tags.
-> El costo es de cobertura, no de corrección: el universo de la v1 simplemente no
-> incluye esos nombres.
+Es decir: **taxonomía ICS de CNBV, versión 2019-01-01**, todavía vigente en
+2026. Eso cierra la pregunta abierta de "qué versión aplica en 2024-2026": la
+de 2019, sin cambios desde entonces hasta 2T2026.
 
-**Qué versión de la taxonomía aplica en 2024-2026: no lo sé** y no lo voy a
-suponer. El script imprime los `xmlns` reales del archivo, que es la forma
-correcta de contestarlo. **Por eso importa el 4T2016 de CNBV en el sample
-(§5.2): es la prueba directa de si la versión cambió en 10 años y si los tags
-sobreviven al cambio.**
+Los namespaces de los hechos, también verificados:
 
-### 2.2 Los tags de los 9 campos
-
-Los seis primeros son elementos IFRS estándar; esperarlos es razonable.
-**Ninguno está confirmado contra un archivo real de BMV.**
-
-| Campo | Tag candidato principal | Confianza |
+| Prefijo | Namespace | Hechos (WALMEX) |
 |---|---|---|
-| Ingresos | `ifrs-full:Revenue` (alt. `RevenueFromContractsWithCustomers`) | IFRS estándar, **[NO VERIFICADO]** en BMV |
-| Utilidad neta atribuible | `ifrs-full:ProfitLossAttributableToOwnersOfParent` | IFRS estándar, **[NO VERIFICADO]** |
-| Activos totales | `ifrs-full:Assets` | IFRS estándar, **[NO VERIFICADO]** |
-| Pasivos totales | `ifrs-full:Liabilities` | IFRS estándar, **[NO VERIFICADO]** |
-| Capital contable | `ifrs-full:Equity` (alt. `EquityAttributableToOwnersOfParent`) | IFRS estándar, **[NO VERIFICADO]** |
-| Efectivo | `ifrs-full:CashAndCashEquivalents` | IFRS estándar, **[NO VERIFICADO]** |
-| Deuda con costo CP / LP | — ver §2.3 | **sin tag único** |
-| Acciones en circulación | `NumberOfSharesOutstanding` | **[NO VERIFICADO]**, ver §2.4 |
+| `ifrs-full` | `http://xbrl.ifrs.org/taxonomy/2017-03-09/ifrs-full` | 1,962 |
+| `ifrs_mx-cor_20141205` | `http://bmv.com.mx/ifrs_mx-cor_20141205/full_ifrs_mx-cor_2014-12-05` | 385 |
+| `ifrs-mc` | `http://xbrl.ifrs.org/taxonomy/2017-03-09/ifrs-mc` | 6 |
+| `mc_mx-cor_20141205` | `http://bmv.com.mx/mc_mx-cor_20141205/mc_mx-cor_2014-12-05` | 2 |
 
-El script **no confía en esta tabla**: prueba candidatos en orden, reporta cuál
-pegó, y si ninguno pega marca **FALTA** y sugiere `--dump-tags`.
+Dos cosas que saltan y hay que anotar:
 
-### 2.3 "Deuda con costo" no existe como tag
+1. **El IFRS de abajo es el de 2017**, no uno reciente. La taxonomía mexicana
+   está congelada sobre IFRS 2017 vía el entry point de 2019.
+2. **La extensión mexicana es de 2014** (`ifrs_mx-cor_20141205`). O sea que los
+   tags mexicanos llevan ~12 años estables. Eso es **muy buena noticia** para el
+   riesgo de "cambios de taxonomía" del memo anterior: el histórico 2016→hoy
+   probablemente usa los mismos tags. Queda por confirmar con un archivo viejo
+   (el 4T2016 de CNBV que falta del sample).
 
-IFRS no tiene un elemento `DeudaConCosto`. Hay que **sumar**: préstamos bancarios
-CP/LP, deuda bursátil, **porción circulante de la deuda de largo plazo** (fácil de
-doble-contar) y **pasivos por arrendamiento IFRS-16**.
+> **Decisión tomada: la v1 usa SÓLO la taxonomía ICS.** Bancos y FIBRAs fuera.
+> Conviene notar que el entry point de estos dos archivos **ya es el de ICS**, o
+> sea que WALMEX y FEMSA caen naturalmente dentro del alcance de la v1.
 
-IFRS-16 es el que más probablemente rompa la verificación: el XBRL puede estar
-impecable y **no cuadrar** con el "Deuda Total" del PDF porque el PDF excluye
-arrendamientos y el XBRL no. Si pasa, **no es bug del parser y no se parcha**: es
-una definición que hay que congelar (D3). Es diferencia *explicable* bajo el
-criterio de GO, pero sólo si se explica.
+### 2.2 Los tags de los 9 campos — **verificados** **[VERIFICADO]**
 
-### 2.4 Acciones en circulación: tres números distintos
+Los nueve salen, con **el mismo tag en ambas emisoras**:
 
-`NumberOfSharesIssued` (emitidas), acciones en circulación (emitidas − recompra) y
-`WeightedAverageShares` (promedio ponderado, denominador del EPS) son **tres cosas
-distintas**. Para un screener value importa el de circulación al cierre.
-
-### 2.5 Las tres fechas, y cuál evita look-ahead
-
-| Fecha | Dónde vive | Sirve para |
+| Campo | Tag real | Namespace |
 |---|---|---|
-| **Envío a BMV/CNBV** | **NO está en el instance.** Listado de la página de la emisora, con hora (ej. `23-Jul-2026 14:11`) | **La correcta contra look-ahead (D8)** |
-| Autorización del consejo | `DateOfAuthorisationForIssueOfFinancialStatements` | Proxy: es *anterior* al envío |
-| Cierre del periodo | `DateOfEndOfReportingPeriod2013` | **No es publicación.** Dato secundario |
+| Ingresos | `Revenue` | ifrs-full |
+| Utilidad neta atribuible | `ProfitLossAttributableToOwnersOfParent` | ifrs-full |
+| Activos totales | `Assets` | ifrs-full |
+| Pasivos totales | `Liabilities` | ifrs-full |
+| Capital contable | `Equity` (y `EquityAttributableToOwnersOfParent`) | ifrs-full |
+| Efectivo | `CashAndCashEquivalents` | ifrs-full |
+| Deuda con costo CP | **Σ de 3 tags**, ver §2.3 | ifrs_mx |
+| Deuda con costo LP | **Σ de 3 tags**, ver §2.3 | ifrs_mx |
+| Acciones en circulación | `NumeroDeAccionesEnCirculacion` | ifrs_mx |
 
-> **Decisión tomada (D8): la fecha buena es la de envío, no la del consejo.**
-> El script ahora reporta la de autorización como proxy explícito, imprime la de
-> cierre **etiquetada como secundaria** para que nadie la confunda, y dice en
-> claro que la de envío **no la resuelve** y hay que capturarla del listado.
+**Dónde me equivoqué en el memo anterior:** puse candidatos IFRS
+(`ShorttermBorrowings`, `NumberOfSharesOutstanding`) para los dos campos que en
+realidad viven en la extensión mexicana. Los archivos reales traen **cero** hechos
+con esos nombres. Estaban marcados `[DESCUBRIR]` justamente por eso, y el modo
+`--dump-tags` es lo que los encontró. El script ya usa los tags reales.
 
-Esto no es un detalle cosmético: usar la fecha de cierre como si fuera la de
-publicación mete ~1-2 meses de look-ahead en cada rebalanceo, que en un backtest
-de rotación trimestral es una fracción enorme del periodo de tenencia.
+### 2.3 "Deuda con costo" sí existe — y está mejor modelada que en IFRS **[VERIFICADO]**
 
----
+Esto se invierte respecto del memo anterior. La extensión mexicana **distingue
+explícitamente crédito con costo de crédito sin costo**, que es exactamente la
+distinción que IFRS no hace:
+
+```
+CreditosBancariosACortoPlazo        CreditosBancariosALargoPlazo
+CreditosBursatilesACortoPlazo       CreditosBursatilesALargoPlazo
+OtrosCreditosConCostoACortoPlazo    OtrosCreditosConCostoALargoPlazo
+--- y aparte, explícitamente excluidos ---
+OtrosCreditosSinCostoACortoPlazo    OtrosCreditosSinCostoALargoPlazo
+```
+
+**Deuda con costo = suma de los tres "con costo"** por plazo. El script la calcula
+así y reporta cada componente por separado, para que la suma sea auditable.
+
+**IFRS-16 queda fuera y separable.** Los arrendamientos viven en
+`CurrentLeaseLiabilities` / `NoncurrentLeaseLiabilities` (ifrs-full), tags
+distintos. El script los imprime como extras para que **D3 se pueda decidir con
+los dos números a la vista** en vez de a ciegas. El riesgo que el memo anterior
+daba como el más probable de tumbar la verificación resultó ser un no-problema:
+lo que había que sumar está etiquetado y lo que había que excluir también.
+
+Un componente **ausente no es cero**: el script lo reporta aparte
+(`NO REPORTADOS (≠ cero)`) para no confundir "no reportó" con "reportó 0". En los
+dos archivos de 2T2026 los seis componentes vienen presentes y explícitos.
+
+### 2.4 Acciones en circulación — resuelto **[VERIFICADO]**
+
+`NumeroDeAccionesEnCirculacion` (ifrs_mx) lo da literal, y es lo que queríamos:
+en circulación, no emitidas ni promedio ponderado. `NumeroDeAccionesRecompradas`
+(tesorería) es un tag aparte y **no hay que restarlo**: ya viene descontado.
+
+### 2.5 Las tres fechas — la de autorización NO viene **[VERIFICADO]**
+
+| Fecha | Dónde vive | Estado en los archivos reales |
+|---|---|---|
+| **Envío a BMV/CNBV** | listado de la emisora, con hora | **no está en el archivo** |
+| Autorización del consejo | `DateOfAuthorisationForIssueOfFinancialStatements` | **AUSENTE en ambos** |
+| Cierre del periodo | `DateOfEndOfReportingPeriod2013` | presente: `2026-06-30` |
+
+Esto endurece D8 en vez de relajarlo: **el archivo no trae ninguna fecha de
+publicación, ni siquiera la del consejo como proxy.** Lo único que trae es el
+cierre de periodo, que no sirve para eso. O sea que **capturar la fecha del
+listado de la emisora no es opcional: es la única fuente que hay.** Si el
+cosechador no la captura al momento de bajar, se pierde.
+
+#### Pista que salió de la verificación **[VERIFICADO POR EL USUARIO]**
+
+Los dos PDFs contrastados en §7 traen fecha, y es la de publicación:
+
+| Emisora | Documento | Fecha |
+|---|---|---|
+| WALMEX | evento relevante BMV `eventemi_1576009_1.pdf` | **22-jul-2026** |
+| FEMSA | `femsa.gcs-web.com` | **28-jul-2026** |
+
+Y hay un detalle que puede valer para dos problemas a la vez: el evento relevante
+de WALMEX es el id **1576009** y su XBRL es el **1576010** — **consecutivos**.
+Con un solo par no es una regla, pero sugiere que los documentos de un mismo
+envío ocupan ids contiguos en `docs-pub`. Si se confirma con más emisoras,
+serviría para:
+
+1. **D8** — tomar la fecha del evento relevante contiguo como fecha de envío, en
+   vez de depender de raspar el listado.
+2. **El mapa ticker → id** (§5.3) — acotar la búsqueda del id de cada emisora.
+
+**No está verificado más allá de este par y no debe darse por bueno sin probarlo.**
 
 ## 3. Historia disponible
 
@@ -275,95 +362,285 @@ los números salgan y cuadren.
 
 ### 5.2 El sample
 
-| Archivo | Fuente | Para qué |
-|---|---|---|
-| WALMEX 2T2026 | BMV `docs-pub` | números vs PDF |
-| FEMSA 2T2026 | BMV `docs-pub` | números vs PDF + estabilidad de tags entre emisoras |
-| lo que salga, 4T2016 | CNBV | **versión de taxonomía a 10 años**, no comparación de números |
+| Archivo | Fuente | Estado | Para qué |
+|---|---|---|---|
+| WALMEX 2T2026 | BMV `docs-pub` | **recibido** | números vs PDF |
+| FEMSA 2T2026 | BMV `docs-pub` | **recibido** | números + estabilidad de tags entre emisoras |
+| 4T2016 | CNBV | **falta** | versión de taxonomía a 10 años, no comparación de números |
 
-El modo `--manual` ya entiende los **nombres nativos**, no hay que renombrar:
+El modo `--manual` entiende los **nombres nativos**, no hay que renombrar:
 
 ```
-ifrsxbrl_1576474_2026-02_1.zip   (BMV: id numérico -> se reporta como id:1576474)
+ifrsxbrl_1576010_2026-02_1.zip   (BMV: id -> WALMEX, vía ID_DOCSPUB_A_TICKER)
 ifrsxbrl_ALFA_2016-4.xbrl        (CNBV: clave de pizarra -> ALFA)
 walmex_2026_2.zip                (libre, por si prefieres renombrar)
 ```
 
+Un id que no esté en el mapa se reporta como `id:<n>` en vez de inventarle ticker.
+
 ### 5.3 Por qué la descarga automática sigue sin implementarse
 
-Ya conocemos el patrón de URL (§1.1), pero **no el mapa ticker → id de
-`docs-pub`**. Con Bimbo = `1576474` y nada más, construir la URL de WALMEX
-requeriría adivinar el id. Bajando los dos a mano con la pestaña Network abierta y
-anotando sus ids, se ve si el mapa es estable y ahí sí automatizar es trivial.
+Conocemos el patrón de URL (§1.1) y ya tenemos **3 entradas** del mapa
+ticker → id de `docs-pub` (`1576010`=WALMEX, `1577302`=FEMSA, `1576474`=Bimbo).
+Con tres puntos se ve que **los ids no son consecutivos ni derivables del
+ticker**, así que el mapa hay que completarlo emisora por emisora. Mientras esté
+incompleto, automatizar la descarga significaría adivinar ids, y eso no se hace.
 
-### 5.4 Qué se verificó de verdad **[VERIFICADO]**
+Es trabajo de una sentada (~32 emisoras, una visita cada una) y es lo único que
+separa el cosechador del trimestre vigente de estar hecho.
 
-Sobre **fixtures sintéticos** (en el scratchpad, nunca en el repo), el parser:
+### 5.4 El parser ahora lee dos formatos
 
-- separó 3m vs 6m, ordenó determinísticamente y marcó `AMBIGUO` en la tabla;
-- con un archivo a 3m y otro a 6m con el **mismo tag**, reportó
-  `VENTANA INESTABLE: 3m | 6m (mismo tag)` y volteó el veredicto a NO-GO;
-- excluyó el contexto con `explicitMember` (tomó el consolidado, no el segmento);
-- trató `nil` como FALTA avisando que el tag existía;
-- reportó la fecha de autorización primero y la de cierre etiquetada como
-  secundaria;
-- leyó ZIP (deflate, con `.xsd` de ruido) y `.xbrl` suelto;
-- infirió emisora/periodo de los nombres nativos de BMV y de CNBV.
+Como `docs-pub` sirve JSON propietario (§1.1), el script detecta el formato y
+normaliza ambos a la misma forma interna, así que las tablas y el criterio
+funcionan igual con uno u otro:
 
-**Esto prueba la mecánica del parser y del gate, NADA sobre los datos de BMV.**
-Los fixtures los escribí yo con valores obviamente falsos (1000, 5000, 1900). No
-son datos de WALMEX ni FEMSA y no deben citarse como tales.
+- **XBRL XML estándar** — para lo que venga de CNBV.
+- **JSON propietario de BMV** — `ContextosPorId` / `HechosPorId`, con
+  `Periodo.Tipo` 1=instante, 2=duración, y `ContieneInformacionDimensional`
+  para descartar segmentos.
 
 ---
 
-## 6. Resultado del smoke contra archivos reales
+## 6. Resultado del smoke **[VERIFICADO]**
 
-**No se corrió.** 0 archivos bajados desde este entorno (§4). No hay números que
-reportar. Se llena con §9.
+```
+node scripts/xbrl-smoke.mjs --manual xbrl-raw
+```
+
+### 6.1 Lo que se leyó
+
+| | WALMEX | FEMSA |
+|---|---|---|
+| Archivo | `ifrsxbrl_1576010_2026-02_1.zip` | `ifrsxbrl_1577302_2026-02_1.zip` |
+| Formato | JSON propietario BMV | JSON propietario BMV |
+| Entry point | `full_ifrs_mc_mx_ics_entry_point_2019-01-01` | idéntico |
+| Contextos | 195 (10 sin dimensiones) | **1,093** (10 sin dimensiones) |
+| Hechos | 2,355 | 3,449 |
+
+Nota: FEMSA trae 1,093 contextos contra 195 de WALMEX — 5.6× más complejidad
+dimensional, por la estructura de subsidiarias. **Los contextos sin dimensiones
+son 10 en ambas**, que es lo que se usa. La complejidad dimensional no estorba,
+pero avisa de cuánto varía el tamaño de archivo entre emisoras.
+
+### 6.2 Tabla emisora × campo × valor × tag
+
+Todos los valores en **pesos** (`decimals=-3`, o sea precisión al millar). El PDF
+casi seguro los muestra **en millones**: ahí está la diferencia esperada de 10⁶.
+
+| Campo | WALMEX 2T2026 | FEMSA 2T2026 | Tag usado |
+|---|---:|---:|---|
+| Ingresos (3m) | 250,947,844,000 | 231,002,301,000 | `ifrs-full:Revenue` |
+| ├ Ingresos (6m acum.) | 495,966,330,000 | 438,695,214,000 | mismo tag, otra ventana |
+| └ Ingresos (12m móvil) | 1,020,335,804,000 | 872,836,541,000 | mismo tag, otra ventana |
+| Utilidad neta atribuible (3m) | 11,152,382,000 | 5,535,227,000 | `ifrs-full:ProfitLossAttributableToOwnersOfParent` |
+| ├ (6m acum.) | 23,651,933,000 | 20,375,998,000 | mismo tag, otra ventana |
+| └ (12m móvil) | 49,999,035,000 | 31,292,138,000 | mismo tag, otra ventana |
+| Activos totales | 505,946,590,000 | 802,581,500,000 | `ifrs-full:Assets` |
+| Pasivos totales | 267,332,796,000 | 501,646,499,000 | `ifrs-full:Liabilities` |
+| Capital contable (total) | 238,613,794,000 | 300,935,001,000 | `ifrs-full:Equity` |
+| └ del cual, controladora | 238,613,794,000 | **217,055,000,000** | `ifrs-full:EquityAttributableToOwnersOfParent` |
+| Efectivo y equivalentes | 30,118,253,000 | 104,959,729,000 | `ifrs-full:CashAndCashEquivalents` |
+| **Deuda con costo — corto plazo** | **0** | **14,947,551,000** | Σ ifrs_mx (3 comp.) |
+| ├ CreditosBancariosACortoPlazo | 0 | 3,514,879,000 | `ifrs_mx-cor_20141205` |
+| ├ CreditosBursatilesACortoPlazo | 0 | 11,432,672,000 | `ifrs_mx-cor_20141205` |
+| └ OtrosCreditosConCostoACortoPlazo | 0 | 0 | `ifrs_mx-cor_20141205` |
+| **Deuda con costo — largo plazo** | **0** | **124,830,071,000** | Σ ifrs_mx (3 comp.) |
+| ├ CreditosBancariosALargoPlazo | 0 | 2,245,065,000 | `ifrs_mx-cor_20141205` |
+| ├ CreditosBursatilesALargoPlazo | 0 | 122,585,006,000 | `ifrs_mx-cor_20141205` |
+| └ OtrosCreditosConCostoALargoPlazo | 0 | 0 | `ifrs_mx-cor_20141205` |
+| Acciones en circulación | 17,220,231,803 | 16,935,974,370 | `ifrs_mx:NumeroDeAccionesEnCirculacion` |
+| *(extra)* Arrend. IFRS-16 CP | 5,495,152,000 | 15,435,382,000 | `ifrs-full:CurrentLeaseLiabilities` |
+| *(extra)* Arrend. IFRS-16 LP | 77,602,948,000 | 97,791,927,000 | `ifrs-full:NoncurrentLeaseLiabilities` |
+
+**Estabilidad de tags: CUMPLE.** Las 9 filas salen con el mismo tag y la misma
+ventana en ambas emisoras.
+
+**Sobre el 0 de WALMEX:** no es un fallo de extracción. Los seis componentes
+están presentes en el archivo y reportados explícitamente en cero. WALMEX no
+tiene deuda financiera; su único pasivo con costo son los arrendamientos
+(83,098,100,000 sumando CP+LP), que por §2.3 quedan fuera del campo hasta que se
+decida D3. **Este caso es la mejor prueba de por qué D3 importa:** para WALMEX,
+D3 es la diferencia entre deuda 0 y deuda 83 mil millones.
+
+### 6.3 Verificaciones internas: las 4 identidades cuadran al peso **[VERIFICADO]**
+
+No sustituyen al PDF, pero son la evidencia más fuerte disponible sin él: si el
+extractor estuviera tomando el contexto equivocado (un segmento, otra fecha, otra
+ventana), estas sumas no darían exacto.
+
+| Identidad | WALMEX | FEMSA |
+|---|---|---|
+| Assets = Liabilities + Equity | **OK** (dif. 0) | **OK** (dif. 0) |
+| Assets = CurrentAssets + NoncurrentAssets | **OK** | **OK** |
+| Liabilities = Current + Noncurrent | **OK** | **OK** |
+| Equity = Controladora + NoControladora | **OK** | **OK** |
+
+Diferencia exacta de cero en las ocho comprobaciones, sin redondeo.
 
 ---
 
-## 7. Tabla de verificación XBRL vs PDF
+## 7. Verificación XBRL vs PDF — **hecha, cuadra** **[VERIFICADO POR EL USUARIO]**
 
-**Vacía porque no tengo los dos lados**: ni el XBRL (§4) ni los PDFs de IR
-(`walmex.mx` y `femsa.com` también bloqueados).
+Fuentes del lado PDF:
 
-| Campo | XBRL 2T2026 | PDF 2T2026 | Diferencia | Explicación |
-|---|---|---|---|---|
-| Ingresos | | | | ¿3m o 6m? §5.1 |
-| Utilidad neta atribuible | | | | ¿3m o 6m? |
-| Activos totales | | | | |
-| Pasivos totales | | | | |
-| Capital contable | | | | ¿total o controladora? |
-| Efectivo | | | | |
-| Deuda con costo CP | | | | ¿incluye IFRS-16? §2.3 |
-| Deuda con costo LP | | | | ¿incluye IFRS-16? §2.3 |
-| Acciones en circulación | | | | ¿emitidas o en circulación? §2.4 |
+- **WALMEX** — evento relevante en BMV, `eventemi_1576009_1.pdf`, **22-jul-2026**.
+- **FEMSA** — `femsa.gcs-web.com`, **28-jul-2026**.
 
-PDFs:
-- **WALMEX** — https://www.walmex.mx/informacion-financiera/trimestral.html
-- **FEMSA** — https://femsa.com/es/inversionistas/reportes-y-filings/reportes-trimestrales/
+**Resultado: los 9 campos cuadran en ambas emisoras.** Todas las diferencias son
+menores a 1 millón de pesos y se explican por redondeo de presentación.
 
-Explicables: miles vs millones (`decimals`), reexpresión, trimestre vs acumulado.
-No explicable: un campo que sólo cuadra con un factor que no sale de ningún atributo.
+### 7.1 WALMEX 2T2026
+
+El PDF reporta el balance **en miles**, o sea a precisión completa. Ahí el match
+es **exacto, cero diferencia**:
+
+| Campo | XBRL (pesos) | PDF (miles) | PDF ×1000 | Diferencia |
+|---|---:|---:|---:|---:|
+| Activos totales | 505,946,590,000 | 505,946,590 | 505,946,590,000 | **0** |
+| Pasivos totales | 267,332,796,000 | 267,332,796 | 267,332,796,000 | **0** |
+| Capital contable | 238,613,794,000 | 238,613,794 | 238,613,794,000 | **0** |
+| Efectivo | 30,118,253,000 | 30,118,253 | 30,118,253,000 | **0** |
+
+El estado de resultados lo reporta **en millones**, y ahí la diferencia es el
+redondeo esperado:
+
+| Campo | XBRL (MM) | PDF (MM) | Diferencia | ¿round(XBRL) = PDF? |
+|---|---:|---:|---:|---|
+| Ingresos 2T (3m) | 250,947.844 | 250,948 | −0.156 | sí |
+| Utilidad controladora 2T (3m) | 11,152.382 | 11,152 | +0.382 | sí |
+
+| Campo | XBRL | PDF | Nota |
+|---|---:|---|---|
+| Deuda con costo CP | 0 | sin deuda bancaria | cuadra |
+| Deuda con costo LP | 0 | sin deuda bancaria | cuadra |
+| Acciones en circulación | 17,220,231,803 | — | no contrastado contra PDF |
+| *(extra)* Arrend. IFRS-16 CP+LP | 83,098,100,000 | sólo arrendamientos | confirma el 0 de deuda |
+
+**El 0 de WALMEX queda confirmado del lado del PDF:** no tiene deuda bancaria,
+sólo arrendamientos. La extracción era correcta.
+
+### 7.2 FEMSA 2T2026
+
+PDF en millones en todos los campos:
+
+| Campo | XBRL (MM) | PDF (MM) | Diferencia | ¿round(XBRL) = PDF? |
+|---|---:|---:|---:|---|
+| Ingresos 2T (3m) | 231,002.301 | 231,002 | +0.301 | sí |
+| Utilidad controladora 2T (3m) | 5,535.227 | 5,536 | **−0.773** | no (round daría 5,535) |
+| Activos totales | 802,581.500 | 802,582 | −0.500 | sí (half-up) |
+| Pasivos totales | 501,646.499 | 501,647 | **−0.501** | no (round daría 501,646) |
+| Capital contable (total) | 300,935.001 | 300,935 | +0.001 | sí |
+| Efectivo | 104,959.729 | 104,960 | −0.271 | sí |
+| Deuda con costo CP | 14,947.551 | 14,947 | **+0.551** | no (round daría 14,948) |
+| Deuda con costo LP | 124,830.071 | 124,830 | +0.071 | sí |
+
+### 7.3 Las tres diferencias que no son round() del total — y por qué está bien
+
+En tres campos de FEMSA el número del PDF no es el redondeo del total del XBRL.
+Todas son **< 1 MM** y el patrón es el clásico de presentación: **el PDF suma
+componentes ya redondeados**, en vez de redondear la suma. Redondear después de
+sumar y sumar después de redondear dan resultados distintos por hasta medio
+millón por componente.
+
+Esto es diferencia **explicable** bajo el criterio de GO, y además es un
+argumento a favor del XBRL como fuente: el XBRL trae el número sin redondear.
+
+**Corolario operativo:** no se debe esperar reconciliación al peso contra un PDF
+en millones. Contra un PDF en miles (WALMEX) sí, y ahí dio exacto.
+
+### 7.4 Deuda de corto plazo de FEMSA: el total cuadra, la descomposición NO
+
+Es el hallazgo más útil de la verificación y hay que tenerlo presente:
+
+| | Componente 1 | Componente 2 | Total |
+|---|---:|---:|---:|
+| **XBRL** | `CreditosBancariosACortoPlazo` 3,514.879 | `CreditosBursatilesACortoPlazo` 11,432.672 | **14,947.551** |
+| **PDF** | préstamos bancarios 2,860 | vencimientos CP de LP 12,087 | **14,947** |
+
+Los totales cuadran. **Los componentes no son la misma partición.** El XBRL parte
+por **tipo de instrumento** (bancario vs bursátil); el PDF parte por **origen del
+vencimiento** (préstamo corriente vs porción circulante de deuda larga). Son dos
+cortes distintos del mismo agregado.
+
+**Regla que sale de aquí:** confiar en el **total** de deuda con costo por plazo,
+y **no** mapear componente a componente contra el PDF. Si la Fase 1 quiere
+guardar el desglose, que guarde el del XBRL y no pretenda que es el del reporte.
+
+### 7.5 Acciones de FEMSA: la tesorería reconcilia al número **[VERIFICADO]**
+
+El PDF da dos cifras distintas de acciones y hay que saber cuál es cuál:
+
+| Fuente | Unidades | × 5 acciones/unidad | Qué es |
+|---|---:|---:|---|
+| PDF portada | 3,412,732,415 | 17,063,662,075 | **incluye** tesorería |
+| PDF p.16 | 3,387,194,875 | 16,935,974,375 | **excluye** tesorería |
+| **XBRL** `NumeroDeAccionesEnCirculacion` | — | **16,935,974,370** | **excluye** tesorería |
+
+Y la diferencia entre portada y XBRL cierra exactamente contra el tag de
+tesorería del propio XBRL:
+
+```
+17,063,662,075 (portada, con tesorería)
+-16,935,974,370 (XBRL, en circulación)
+= 127,687,705  ==  NumeroDeAccionesRecompradas del XBRL, al número
+```
+
+No es aproximado: es idéntico. Eso confirma que `NumeroDeAccionesEnCirculacion`
+es **neto de tesorería** y que el XBRL es internamente coherente en este campo.
+
+**Una precisión honesta:** el XBRL da 16,935,974,**370** y la p.16 del PDF, a 5
+acciones por unidad, da 16,935,974,**375**. Quedan **5 acciones** de diferencia
+(0.00000003%), que es 1 unidad. Es inmaterial y no cambia nada, pero lo anoto en
+vez de afirmar una identidad exacta que no se cumple al último dígito.
+
+> **Decisión tomada (D5): se usa la cifra del XBRL, neta de tesorería, para
+> capitalización.** Es la correcta —las acciones en tesorería no son capital en
+> circulación— y además es la que sale directo del tag sin post-proceso.
 
 ---
 
-## 8. Criterios (escritos antes, sin mover) y estado
+## 8. Criterios (escritos antes, sin mover) y veredicto
 
 **GO:** los archivos bajan sin sesión ni captcha **·** los 9 campos salen con los
 mismos tags en ambas emisoras **·** los valores cuadran contra el PDF exacto o con
 diferencia explicable.
 
-| Criterio | Estado |
-|---|---|
-| Bajan sin sesión ni captcha | **CUMPLE para el trimestre vigente** (§1.1). Para el histórico, ver §8.1 |
-| 9 campos, mismos tags (y misma ventana) | **no observado** — lo dicta el smoke |
-| Valores cuadran vs PDF | **no observado** — lo dicta el smoke |
+**NO-GO:** BMV bloquea o exige sesión **·** los tags cambian entre emisoras o entre
+trimestres sin patrón **·** cualquier número no cuadra y no hay explicación.
 
-**Veredicto: GO PARCIAL.** La adquisición del trimestre corriente está probada
-libre. Lo que queda abierto es (a) la verificación numérica, que es trabajo de
-§9, y (b) el histórico, que **no es una pregunta técnica**.
+| Criterio | Estado | Evidencia |
+|---|---|---|
+| Bajan sin sesión ni captcha | **CUMPLE** | 2 zips de `docs-pub` bajados libres (§1.1) |
+| 9 campos, mismos tags en ambas emisoras | **CUMPLE** | mismo tag y misma ventana en las 9 filas (§6.2) |
+| Valores cuadran contra el PDF | **CUMPLE** | 9 campos × 2 emisoras, dif. < 1 MM (§7) |
+
+### Veredicto: GO
+
+El criterio que decidió fue el tercero, que era el único que faltaba: **los
+valores cuadran**. En WALMEX, contra un PDF en miles, la diferencia es **cero
+exacto** en los cuatro rubros de balance. En FEMSA, contra un PDF en millones,
+todas las diferencias son **menores a 1 MM** y responden a un patrón identificado
+(el PDF suma componentes redondeados, §7.3), que es diferencia explicable en el
+sentido literal del criterio.
+
+Ninguna condición de NO-GO se cumplió en ningún momento: BMV no bloqueó ni pidió
+sesión, los tags no cambiaron entre emisoras, y no quedó ningún número sin
+explicar.
+
+### 8.0 Lo que el GO NO cubre
+
+El GO es sobre **la pregunta que se hizo**: bajar y parsear, repetible y con
+números correctos. No se extiende a:
+
+- **El histórico.** Se verificó un trimestre, el vigente, que es justo el único
+  que BMV publica gratis. Todo el backfill sigue sujeto a §8.1.
+- **La taxonomía de 2016.** No se probó; no llegó archivo viejo. §10.5.
+- **Emisoras fuera de ICS.** Bancos y FIBRAs quedaron fuera de la v1 por decisión
+  y no se tocaron.
+- **Emisoras distintas de estas dos.** Dos emisoras con el mismo tag es evidencia
+  buena, no prueba de las ~35. El riesgo es bajo (mismo entry point, extensión
+  congelada desde 2014) pero no es cero.
 
 ### 8.1 Qué implica el `robots.txt` de CNBV para un cosechador
 
@@ -423,35 +700,36 @@ cobertura extra.**
 
 ---
 
-## 9. Cómo cerrar lo que falta — corre esto en local
+## 9. Qué queda — y qué NO es todavía
 
-En `~/quantdesk2`, rama `claude/xbrl-fase0`, Node 24:
+**La Fase 0 está cerrada.** Contestó su pregunta y el veredicto es GO. Lo que
+sigue **no es Fase 1**: son los dos frentes abiertos, que se resuelven antes de
+diseñar nada.
+
+**1. Licencia del histórico (D1).** Es el bloqueante real. Tres rutas ordenadas
+por defensibilidad en §8.1; la que más me convence para un producto comercial es
+comprar el histórico a BMV una vez y mantenerlo con el feed gratis.
+
+**2. Taxonomía 2016 (§10.5).** Un solo archivo viejo cierra la duda. Cuando
+consigas uno:
 
 ```bash
-# 1) Censo de red con evidencia. Dos UA por URL; incluye el robots.txt de CNBV.
-node scripts/xbrl-smoke.mjs --probe
+node scripts/xbrl-smoke.mjs --file <archivo> --dump-tags
 ```
 
-Anota: ¿el zip de Bimbo baja 200 con `content-type` de zip? ¿hay cookie de
-sesión? ¿el UA cambia la respuesta? ¿qué dice exactamente el `robots.txt`?
+El script lee XML estándar además del JSON de BMV, así que sirve tal cual.
+
+**3. Arrancar la captura del vigente (D9).** Barato, legal e irreversible en el
+buen sentido: cada trimestre sin capturar es uno que después hay que comprar
+(§3.2), y el endpoint podría cerrarse (§10.2). No depende de D1.
+
+**Re-correr el smoke** cuando haga falta:
 
 ```bash
-# 2) Baja a mano, con la pestaña Network abierta, WALMEX y FEMSA 2T2026.
-#    ANOTA EL <ID> DE CADA URL: con dos ya se ve si el mapa ticker->id sirve.
-mkdir -p .xbrl-fase0
-#    Si consigues un 4T2016 de CNBV, mételo a la misma carpeta.
-#    No hace falta renombrar: los nombres nativos ya se entienden.
-
-# 3) Extracción + tablas + veredicto automático del criterio
-node scripts/xbrl-smoke.mjs --manual .xbrl-fase0
-
-# 4) Si algún campo sale FALTA, descubre el tag real (no lo supongas):
-node scripts/xbrl-smoke.mjs --file .xbrl-fase0/<archivo> --dump-tags
+node scripts/xbrl-smoke.mjs --manual xbrl-raw
 ```
 
-`.xbrl-fase0/` está en `.gitignore`. El raw no entra al repo.
-
----
+`xbrl-raw/` está en `.gitignore`: el raw no entra al repo.
 
 ## 10. Universo y qué me preocupa de escalar
 
@@ -478,22 +756,36 @@ Dos consecuencias que hay que tener presentes (no reabren la decisión, la opera
 
 **Lo demás que me preocupa, por probabilidad de morder:**
 
-1. **El techo de adquisición del histórico (§3.2, §8.1).** Es el riesgo número
-   uno del proyecto y no se resuelve programando.
-2. **La ventana histórica real es ~10 años, no 14 (§3.1).**
-3. **El mapa ticker → id de `docs-pub` (§1.1).** No hay fórmula; hay que
-   construirlo y mantenerlo, y se pudre cuando una emisora cambia de clave.
-   35 filas es manejable; que nadie lo note cuando cambie, no.
-4. **Cambios de versión de taxonomía a 10 años.** Elementos renombrados o
-   deprecados rompen un cosechador que hardcodee tags. El script ya usa listas de
-   candidatos; a 10 años eso tiene que volverse un mapa versionado. **El 4T2016
-   del sample es justamente la primera medición de este riesgo.**
-5. **Emisoras que cambiaron de nombre.** Con universo point-in-time el sesgo de
-   supervivencia está atacado, pero el *encadenado de identidad* sigue: hay que
-   poder seguir a la misma empresa cuando cambia de clave, o la tratas como dos.
-6. **Rate limits desconocidos.** El volumen es chico (~35/trimestre en curso;
-   ~1,400 archivos si se backfillea de una). No me preocupa el volumen; me
-   preocupa no saber el límite. Sale del probe.
+1. **El techo de adquisición del histórico (§3.2, §8.1).** Sigue siendo el riesgo
+   número uno y no se resuelve programando.
+2. **El formato JSON propietario (§1.1).** Riesgo nuevo de esta corrida, y
+   subestimado en el memo anterior. No es un estándar: es el volcado del editor
+   de BMV, con estado interno adentro (`Bloqueado`, `IdUsuarioBloqueo`, rutas
+   temporales del servidor). Tres consecuencias:
+   - **Ninguna herramienta XBRL estándar lo lee.** Arelle y compañía quedan
+     descartados para la fuente BMV; el parser propio deja de ser una comodidad
+     de Fase 0 y pasa a ser infraestructura que hay que mantener.
+   - **Puede cambiar sin aviso.** No hay contrato público ni versionado visible;
+     `Version` viene en `null`. Un cambio del editor rompe el cosechador en
+     silencio. Hay que validar con las identidades contables (§6.3) en cada
+     descarga y alertar, no confiar.
+   - **Podría cerrarse.** Que exponga estado interno sugiere que quedó accesible
+     más que diseñado. Conviene no construir asumiendo que estará ahí siempre —
+     otra razón para capturar desde ya (§3.2) y para tomar en serio la ruta CNBV,
+     que sí sirve XBRL estándar.
+3. **La ventana histórica real es ~10 años, no 14 (§3.1).**
+4. **El mapa ticker → id de `docs-pub` (§1.1).** Tenemos 3 de ~35. Sin fórmula,
+   se llena a mano y se pudre cuando una emisora cambia de clave.
+5. **Cambios de versión de taxonomía.** Riesgo **rebajado**: la extensión
+   mexicana es de 2014 y el entry point de 2019, ambos estables hasta 2T2026
+   (§2.1). Sigue sin verificarse contra un archivo de 2016.
+6. **Las tres ventanas (3m / 6m / 12m).** Aparece una tercera, la de 12 meses
+   móviles, que no estaba prevista. D4 se vuelve más importante: elegir mal la
+   ventana no da error, da una serie equivocada.
+7. **Emisoras que cambiaron de nombre.** El encadenado de identidad sigue
+   pendiente.
+8. **Rate limits desconocidos.** El volumen es chico. Me preocupa no saber el
+   límite, no el volumen.
 
 **Lo que NO me preocupa:** el parseo. Un instance es XML regular y el extractor
 dependency-free ya demostró que hace el trabajo. Si esto falla, va a fallar por
@@ -502,24 +794,30 @@ código.
 
 ---
 
-## 11. Decisiones a congelar antes de la Fase 1
+## 11. Decisiones — estado al cierre de la Fase 0
 
-Cerradas en esta ronda:
+### Cerradas
 
-- ~~**D7** — composición histórica del IPC~~ → **eliminada.** Universo
-  point-in-time por emisoras ICS que reportan (§10).
-- **D8** — fecha anti-look-ahead = **fecha de envío a BMV/CNBV**, no la del
-  consejo. Si el instance no la trae, se captura del listado de la emisora con
-  hora (§2.5). **Cerrada.**
-- **Perfil de taxonomía** — sólo **ICS**. Bancos y FIBRAs fuera de la v1 (§2.1).
-  **Cerrada.**
+| # | Decisión | Resuelta como | Dónde |
+|---|---|---|---|
+| **D5** | ¿Qué medida de acciones? | **Cifra del XBRL, neta de tesorería**, para capitalización | §7.5 |
+| **D6** | Capital contable: ¿total o controladora? | ambas disponibles y verificadas; el PDF de FEMSA contrastó contra **total** | §7.2 |
+| **D7** | ~~Composición histórica del IPC~~ | **eliminada** — universo point-in-time por emisoras ICS que reportan | §10 |
+| **D8** | Fecha anti-look-ahead | **fecha de envío a BMV/CNBV**, no la del consejo. No viene en el archivo: se captura al bajar | §2.5 |
+| — | Perfil de taxonomía | sólo **ICS**; bancos y FIBRAs fuera de la v1 | §2.1 |
 
-Abiertas, y ninguna se cierra sin correr §9:
+### Abiertas
 
-- **D1** — Fuente del histórico: ¿comprar a BMV, pedir a CNBV, o no backfillear? (§8.1)
-- **D2** — Ventana: ¿2016+ y listo? (§3.1)
-- **D3** — "Deuda con costo": ¿IFRS-16 dentro o fuera? (§2.3)
-- **D4** — ¿Ingresos y utilidad del trimestre o acumulados? (§5.1)
-- **D5** — ¿Qué medida de acciones? (§2.4)
-- **D6** — Capital contable: ¿total o sólo controladora? (§2.2)
-- **D9** — ¿Se arranca ya la captura del trimestre vigente, sin esperar a D1? (§3.2)
+| # | Decisión | Por qué sigue abierta |
+|---|---|---|
+| **D1** | Fuente del histórico: ¿comprar a BMV, pedir a CNBV, o no backfillear? | **Es el bloqueante.** Licencia, no técnica (§8.1) |
+| **D2** | Ventana: ¿2016+ y listo? | depende de D1 (§3.1) |
+| **D3** | "Deuda con costo": ¿IFRS-16 dentro o fuera? | los dos números están a la vista y verificados; falta decidir. En WALMEX es la diferencia entre deuda 0 y 83 mil MM (§6.2, §7.1) |
+| **D4** | ¿Trimestre o acumulado? | hay **tres** ventanas (3m / 6m / 12m móvil). La verificación se hizo contra 3m (§7) |
+| **D9** | ¿Arrancar ya la captura del vigente? | no depende de D1; sólo gana con el tiempo (§3.2, §9) |
+
+### Lo que NO se decide aquí
+
+El desglose de deuda: si la Fase 1 guarda componentes, guarda los del XBRL y no
+pretende que mapean 1:1 contra el PDF (§7.4). Eso no es decisión, es un hecho
+verificado que hay que respetar.

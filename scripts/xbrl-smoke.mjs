@@ -131,41 +131,57 @@ const CAMPOS = [
       'Cash',                                                         // [IFRS]
     ],
   },
+  /*
+   * Deuda con costo: [VERIFICADO en 2T2026 de WALMEX y FEMSA].
+   * La extensión mexicana resuelve lo que IFRS no: distingue explícitamente
+   * crédito CON costo de crédito SIN costo. La deuda con costo es la SUMA de
+   * tres componentes, y OtrosCreditosSinCostoA*Plazo queda FUERA a propósito.
+   * Los arrendamientos IFRS-16 viven en tags aparte (ver CAMPOS_EXTRA): no se
+   * suman aquí porque D3 sigue abierta, y tenerlos separados es justo lo que
+   * permite decidirla.
+   */
   {
     key: 'deuda_corto',
     label: 'Deuda con costo — corto plazo',
     tipo: 'instant',
-    candidatos: [
-      'ShorttermBorrowings',                     // [DESCUBRIR]
-      'CurrentPortionOfLongtermBorrowings',      // [DESCUBRIR]
-      'ShorttermBorrowingsClassifiedAsCurrent',  // [DESCUBRIR]
+    componentes: [
+      'CreditosBancariosACortoPlazo',      // [VERIFICADO] ifrs_mx
+      'CreditosBursatilesACortoPlazo',     // [VERIFICADO] ifrs_mx
+      'OtrosCreditosConCostoACortoPlazo',  // [VERIFICADO] ifrs_mx
     ],
-    nota: 'IFRS no define "deuda con costo" como un solo elemento. Es casi ' +
-          'seguro que haya que SUMAR varios tags (préstamos bancarios + ' +
-          'bursátiles + arrendamientos IFRS-16). Ver §deuda en el doc.',
   },
   {
     key: 'deuda_largo',
     label: 'Deuda con costo — largo plazo',
     tipo: 'instant',
-    candidatos: [
-      'LongtermBorrowings',                      // [DESCUBRIR]
-      'NoncurrentPortionOfNoncurrentBorrowings', // [DESCUBRIR]
+    componentes: [
+      'CreditosBancariosALargoPlazo',      // [VERIFICADO] ifrs_mx
+      'CreditosBursatilesALargoPlazo',     // [VERIFICADO] ifrs_mx
+      'OtrosCreditosConCostoALargoPlazo',  // [VERIFICADO] ifrs_mx
     ],
-    nota: 'Mismo problema que deuda_corto.',
   },
   {
     key: 'acciones_circulacion',
     label: 'Acciones en circulación',
     tipo: 'instant',
     candidatos: [
-      'NumberOfSharesOutstanding',    // [DESCUBRIR]
-      'NumberOfSharesIssued',         // [DESCUBRIR] emitidas != en circulación
-      'WeightedAverageShares',        // [DESCUBRIR] promedio ponderado, otra cosa
+      'NumeroDeAccionesEnCirculacion', // [VERIFICADO] ifrs_mx — es literal
+      'NumberOfSharesOutstanding',     // [DESCUBRIR] fallback IFRS, no visto en BMV
     ],
-    nota: 'Emitidas, en circulación y promedio ponderado son TRES números ' +
-          'distintos. Cuál trae el instance es justo lo que hay que descubrir.',
+    nota: 'La extensión mexicana lo da literal. NumeroDeAccionesRecompradas ' +
+          '(en tesorería) es otro tag y NO se resta: ya viene descontado.',
   },
+];
+
+/*
+ * Extras informativos — no son de los 9 campos, pero sin ellos no se puede
+ * cerrar D3 (¿los arrendamientos IFRS-16 cuentan como deuda con costo?).
+ */
+const CAMPOS_EXTRA = [
+  { key: 'arrend_corto', label: '(extra) Arrendamientos IFRS-16 — corto plazo',
+    tipo: 'instant', candidatos: ['CurrentLeaseLiabilities'] },
+  { key: 'arrend_largo', label: '(extra) Arrendamientos IFRS-16 — largo plazo',
+    tipo: 'instant', candidatos: ['NoncurrentLeaseLiabilities'] },
 ];
 
 /*
@@ -268,17 +284,96 @@ function leerZip(buf) {
   return archivos;
 }
 
-/** Saca el instance document (.xbrl/.xml con <xbrl>) de un zip o archivo suelto. */
+/* =========================================================================
+ * Parser del JSON propietario de BMV.
+ *
+ * OJO: docs-pub NO sirve XBRL estándar. Sirve el volcado del modelo interno
+ * del editor de BMV/EMISNET, en JSON y con claves en español (incluye cosas
+ * como PuedeEscribir, Bloqueado, IdUsuarioBloqueo). No es xBRL-JSON de la OIM,
+ * así que ninguna herramienta XBRL estándar lo lee. Ver §1.1 del doc.
+ *
+ * Se normaliza a la MISMA forma que produce el parser de XML, para que todo
+ * lo de abajo (resolución de campos, tablas, criterio) funcione igual.
+ * ========================================================================= */
+
+const soloFecha = (f) => (f ? String(f).slice(0, 10) : null);
+
+function parsearJsonBmv(txt) {
+  const j = JSON.parse(txt);
+  if (!j.HechosPorId || !j.ContextosPorId) {
+    throw new Error('JSON sin HechosPorId/ContextosPorId: no es el formato de BMV');
+  }
+
+  const contextos = new Map();
+  for (const c of Object.values(j.ContextosPorId)) {
+    const per = c.Periodo || {};
+    contextos.set(c.Id, {
+      id: c.Id,
+      // Periodo.Tipo: 1 = instante, 2 = duración [VERIFICADO en los archivos 2T2026]
+      instant: per.Tipo === 1 ? soloFecha(per.FechaInstante) : null,
+      startDate: per.Tipo === 2 ? soloFecha(per.FechaInicio) : null,
+      endDate: per.Tipo === 2 ? soloFecha(per.FechaFin) : null,
+      entidad: null,
+      dimensionado: !!c.ContieneInformacionDimensional,
+    });
+  }
+
+  const hechos = [];
+  for (const h of Object.values(j.HechosPorId)) {
+    const local = h.NombreConcepto;
+    if (!local) continue;
+    // IdConcepto viene como "<prefijo>_<NombreConcepto>"; se recorta por longitud
+    // en vez de por split("_") porque el prefijo mexicano trae guiones bajos
+    // (ifrs_mx-cor_20141205_CreditosBancariosACortoPlazo).
+    let prefijo = '';
+    if (h.IdConcepto && h.IdConcepto.endsWith('_' + local)) {
+      prefijo = h.IdConcepto.slice(0, h.IdConcepto.length - local.length - 1);
+    } else if (h.EspacioNombres) {
+      prefijo = h.EspacioNombres.split('/').pop();
+    }
+    hechos.push({
+      qname: prefijo ? `${prefijo}:${local}` : local,
+      prefijo, local,
+      contextRef: h.IdContexto,
+      unitRef: h.IdUnidad,
+      decimals: h.Decimales == null ? null : String(h.Decimales),
+      scale: null, sign: null,
+      nil: !!h.EsValorNil,
+      valorCrudo: h.EsValorNil ? null
+        : (h.ValorNumerico != null ? String(h.ValorNumerico)
+          : (h.Valor == null ? null : String(h.Valor).trim())),
+    });
+  }
+
+  const ns = {};
+  for (const h of Object.values(j.HechosPorId)) {
+    const local = h.NombreConcepto;
+    if (!local || !h.IdConcepto || !h.EspacioNombres) continue;
+    if (h.IdConcepto.endsWith('_' + local)) {
+      ns[h.IdConcepto.slice(0, h.IdConcepto.length - local.length - 1)] = h.EspacioNombres;
+    }
+  }
+  return { contextos, hechos, meta: { entryPoint: j.EspacioNombresPrincipal, ns } };
+}
+
+/** Saca el instance (.xbrl/.xml, o el .json de BMV) de un zip o archivo suelto. */
 function extraerInstance(buf, nombreArchivo) {
   const esZip = buf.length > 4 && buf.readUInt32LE(0) === 0x04034b50;
-  if (!esZip) return { xml: buf.toString('utf8'), origen: nombreArchivo };
+  if (!esZip) {
+    const txt = buf.toString('utf8');
+    const ini = txt.slice(0, 200).trimStart()[0];
+    return ini === '{' ? { json: txt, origen: nombreArchivo } : { xml: txt, origen: nombreArchivo };
+  }
 
   const archivos = leerZip(buf);
-  const candidatos = archivos.filter((a) => a.datos && /\.(xbrl|xml)$/i.test(a.nombre));
-  // El instance es el que tiene el elemento raíz xbrl; los .xsd/linkbases no.
-  for (const a of candidatos) {
+  // (1) XBRL estándar: el que tiene elemento raíz xbrl (los .xsd/linkbases no).
+  for (const a of archivos.filter((x) => x.datos && /\.(xbrl|xml)$/i.test(x.nombre))) {
     const txt = a.datos.toString('utf8');
     if (/<(\w+:)?xbrl[\s>]/.test(txt)) return { xml: txt, origen: `${nombreArchivo}!${a.nombre}` };
+  }
+  // (2) JSON propietario de BMV (lo que sirve docs-pub hoy).
+  for (const a of archivos.filter((x) => x.datos && /\.json$/i.test(x.nombre))) {
+    return { json: a.datos.toString('utf8'), origen: `${nombreArchivo}!${a.nombre}` };
   }
   throw new Error(
     `No se encontró instance document dentro del zip. Contenido: ` +
@@ -355,7 +450,42 @@ function aNumero(h) {
  * Devuelve TODOS los hechos que califican, sin elegir por nosotros cuando hay
  * ambigüedad de periodo — ahí es justo donde se rompe la comparación con PDF.
  */
+/** Suma de componentes (deuda con costo). Un componente ausente NO es cero:
+ *  se reporta aparte para que no se confunda "no reportado" con "reportó 0". */
+function resolverSuma(campo, hechos, contextos, periodEnd) {
+  const halladas = [], faltantes = [];
+  for (const comp of campo.componentes) {
+    const h = hechos.find((x) => {
+      if (x.local !== comp) return false;
+      const c = contextos.get(x.contextRef);
+      if (!c || c.dimensionado) return false;
+      if (aNumero(x) === null) return false;
+      return c.instant === periodEnd;
+    });
+    if (h) halladas.push({ comp, valor: aNumero(h), qname: h.qname, unidad: h.unitRef, decimals: h.decimals });
+    else faltantes.push(comp);
+  }
+  if (!halladas.length) return { encontrado: false, tag: null, opciones: [], faltantes };
+
+  const total = halladas.reduce((a, b) => a + b.valor, 0);
+  const pref = halladas[0].qname.split(':')[0];
+  return {
+    encontrado: true,
+    tag: `Σ ${campo.componentes.length} comp.`,
+    esSuma: true,
+    componentes: halladas,
+    faltantes,
+    opciones: [{
+      tag: `${pref}:Σ(${halladas.map((x) => x.comp).join('+')})`,
+      valor: total, ventana: 'instant', ventanaKey: 'instant', meses: 0,
+      unidad: halladas[0].unidad, decimals: halladas[0].decimals, ctx: null,
+    }],
+    ambiguo: false,
+  };
+}
+
 function resolverCampo(campo, hechos, contextos, periodEnd) {
+  if (campo.componentes) return resolverSuma(campo, hechos, contextos, periodEnd);
   for (const cand of campo.candidatos) {
     const pegan = hechos.filter((h) => {
       if (h.local !== cand) return false;
@@ -397,22 +527,30 @@ const fmt = (n) =>
     : Math.abs(n) >= 1e6 ? n.toLocaleString('en-US', { maximumFractionDigits: 0 })
     : String(n);
 
-function analizarArchivo(etiqueta, periodEnd, xml, opts = {}) {
-  const contextos = parsearContextos(xml);
-  const hechos = parsearHechos(xml);
+function analizarArchivo(etiqueta, periodEnd, fuente, opts = {}) {
+  let contextos, hechos, ns = {}, entryPoint = null, formato;
+  if (fuente.json != null) {
+    formato = 'JSON propietario BMV';
+    const r = parsearJsonBmv(fuente.json);
+    contextos = r.contextos; hechos = r.hechos; ns = r.meta.ns; entryPoint = r.meta.entryPoint;
+  } else {
+    formato = 'XBRL XML estándar';
+    contextos = parsearContextos(fuente.xml);
+    hechos = parsearHechos(fuente.xml);
+    const nsRe = /xmlns:([\w.-]+)="([^"]+)"/g; let mm;
+    while ((mm = nsRe.exec(fuente.xml.slice(0, 8000))) !== null) ns[mm[1]] = mm[2];
+  }
 
   console.log(`\n${'='.repeat(78)}`);
   console.log(`ARCHIVO: ${etiqueta}   (cierre de periodo objetivo: ${periodEnd})`);
   console.log(`${'='.repeat(78)}`);
-  console.log(`contextos: ${contextos.size}  |  hechos: ${hechos.length}`);
+  console.log(`formato: ${formato}`);
+  if (entryPoint) console.log(`entry point de taxonomía: ${entryPoint}`);
+  console.log(`contextos: ${contextos.size} (${[...contextos.values()].filter((c) => !c.dimensionado).length} sin dimensiones)  |  hechos: ${hechos.length}`);
 
   const prefijos = [...new Set(hechos.map((h) => h.prefijo))].sort();
-  console.log(`prefijos/namespaces de los hechos: ${prefijos.join(', ') || '(ninguno)'}`);
-
-  const nsRe = /xmlns:([\w.-]+)="([^"]+)"/g;
-  const ns = {}; let mm;
-  while ((mm = nsRe.exec(xml.slice(0, 8000))) !== null) ns[mm[1]] = mm[2];
-  for (const p of prefijos) if (ns[p]) console.log(`    ${p} → ${ns[p]}`);
+  console.log(`prefijos/namespaces de los hechos:`);
+  for (const p of prefijos) console.log(`    ${p}${ns[p] ? ' → ' + ns[p] : ''}`);
 
   if (opts.dumpTags) {
     const porTag = new Map();
@@ -436,12 +574,69 @@ function analizarArchivo(etiqueta, periodEnd, xml, opts = {}) {
     }
     const pri = r.opciones[0];
     console.log(`  ${campo.label.padEnd(44)} ${fmt(pri.valor).padStart(20)}  [${pri.tag}] ${pri.ventana} u=${pri.unidad || '—'} dec=${pri.decimals || '—'}`);
+    if (r.esSuma) {
+      for (const c of r.componentes) {
+        console.log(`  ${''.padEnd(44)} ${fmt(c.valor).padStart(20)}     + ${c.comp}`);
+      }
+      if (r.faltantes.length) {
+        console.log(`  ${''.padEnd(44)} ${''.padStart(20)}     ! NO REPORTADOS (≠ cero): ${r.faltantes.join(', ')}`);
+      }
+    }
     for (const alt of r.opciones.slice(1)) {
       console.log(`  ${''.padEnd(44)} ${fmt(alt.valor).padStart(20)}  ^^ OTRA VENTANA: ${alt.ventana}  <-- OJO, ambigüedad de periodo`);
     }
     if (campo.nota && r.opciones[0].tag.split(':')[1] !== campo.candidatos[0]) {
       console.log(`  ${''.padEnd(44)}        NOTA: ${campo.nota}`);
     }
+  }
+
+  /* Verificaciones internas: identidades contables que deben cumplirse dentro
+   * del propio archivo. No sustituyen la comparación contra el PDF, pero son
+   * la evidencia más fuerte que se puede producir SIN el PDF: si el extractor
+   * estuviera tomando el contexto equivocado (un segmento, otra fecha, otra
+   * ventana), estas sumas no cuadrarían. */
+  console.log(`\n--- VERIFICACIONES INTERNAS (identidades contables) ---`);
+  const unNum = (local, tipo, fecha) => {
+    const h = hechos.find((x) => {
+      if (x.local !== local) return false;
+      const c = contextos.get(x.contextRef);
+      if (!c || c.dimensionado) return false;
+      if (aNumero(x) === null) return false;
+      return tipo === 'instant' ? c.instant === fecha : c.endDate === fecha;
+    });
+    return h ? aNumero(h) : null;
+  };
+  const I = (n) => unNum(n, 'instant', periodEnd);
+  const identidades = [
+    ['Assets = Liabilities + Equity', I('Assets'), [I('Liabilities'), I('Equity')]],
+    ['Assets = CurrentAssets + NoncurrentAssets', I('Assets'), [I('CurrentAssets'), I('NoncurrentAssets')]],
+    ['Liabilities = Current + Noncurrent', I('Liabilities'), [I('CurrentLiabilities'), I('NoncurrentLiabilities')]],
+    ['Equity = Controladora + NoControladora', I('Equity'), [I('EquityAttributableToOwnersOfParent'), I('NoncontrollingInterests')]],
+  ];
+  let identidadesOk = true;
+  for (const [nombre, izq, partes] of identidades) {
+    if (izq == null || partes.some((x) => x == null)) { console.log(`  ${nombre.padEnd(48)} n/d`); continue; }
+    const dif = izq - partes.reduce((a, b) => a + b, 0);
+    if (dif !== 0) identidadesOk = false;
+    console.log(`  ${nombre.padEnd(48)} ${dif === 0 ? 'OK' : 'DESCUADRA por ' + fmt(dif)}`);
+  }
+  if (!identidadesOk) {
+    console.log(`  >>> Una identidad que no cuadra casi siempre significa que se tomó el`);
+    console.log(`      contexto equivocado, no que el emisor reportó mal. Revisar antes de seguir.`);
+  }
+
+  // D6 se decide con este número, así que se muestra siempre.
+  const eqTotal = I('Equity'), eqCtrl = I('EquityAttributableToOwnersOfParent'), nci = I('NoncontrollingInterests');
+  if (eqTotal != null && eqCtrl != null && eqTotal !== eqCtrl) {
+    console.log(`  OJO D6: Equity TOTAL ${fmt(eqTotal)} vs CONTROLADORA ${fmt(eqCtrl)} (NCI ${fmt(nci)}).`);
+    console.log(`          Son dos números distintos; el PDF puede mostrar cualquiera de los dos.`);
+  }
+
+  console.log(`\n--- EXTRAS (para decidir D3: ¿IFRS-16 es deuda con costo?) ---`);
+  for (const campo of CAMPOS_EXTRA) {
+    const r = resolverCampo(campo, hechos, contextos, periodEnd);
+    if (r.encontrado) console.log(`  ${campo.label.padEnd(44)} ${fmt(r.opciones[0].valor).padStart(20)}  [${r.opciones[0].tag}]`);
+    else console.log(`  ${campo.label.padEnd(44)} FALTA`);
   }
 
   console.log(`\n--- FECHAS DEL REPORTE ---`);
@@ -652,6 +847,16 @@ const cierreDe = (anio, trim) =>
  * En el caso de BMV la "emisora" es un id numérico que NO es derivable del
  * ticker: se reporta como id:<n> en vez de fingir que sabemos cuál es.
  */
+/*
+ * Mapa id de docs-pub -> clave de pizarra. Es el mapa que §5.3 del doc daba por
+ * faltante; se llena a mano, una entrada por emisora, al bajar su archivo.
+ * [VERIFICADO] las dos entradas, contra los zips de 2T2026.
+ */
+const ID_DOCSPUB_A_TICKER = {
+  '1576010': 'WALMEX',
+  '1577302': 'FEMSA',
+};
+
 function inferirDeNombre(nombre) {
   const base = basename(nombre);
 
@@ -661,10 +866,10 @@ function inferirDeNombre(nombre) {
     const [, clave, anio, t] = m;
     const trim = Number(t);
     if (trim >= 1 && trim <= 4) {
-      return {
-        emisora: /^\d+$/.test(clave) ? `id:${clave}` : clave.toUpperCase(),
-        anio: Number(anio), trim, periodEnd: cierreDe(anio, trim),
-      };
+      const emisora = /^\d+$/.test(clave)
+        ? (ID_DOCSPUB_A_TICKER[clave] || `id:${clave}`)
+        : clave.toUpperCase();
+      return { emisora, anio: Number(anio), trim, periodEnd: cierreDe(anio, trim) };
     }
   }
 
@@ -701,8 +906,8 @@ async function main() {
       console.error(`Pásalo explícito:  --file ${f} --period-end 2025-06-30`);
       process.exit(1);
     }
-    const { xml, origen } = extraerInstance(readFileSync(f), basename(f));
-    analizarArchivo(origen, periodEnd, xml, { dumpTags: tiene('--dump-tags') });
+    const fuente = extraerInstance(readFileSync(f), basename(f));
+    analizarArchivo(fuente.origen, periodEnd, fuente, { dumpTags: tiene('--dump-tags') });
     return;
   }
 
@@ -722,8 +927,8 @@ async function main() {
         continue;
       }
       try {
-        const { xml, origen } = extraerInstance(readFileSync(join(dir, f)), f);
-        const resultado = analizarArchivo(origen, meta.periodEnd, xml, { dumpTags: tiene('--dump-tags') });
+        const fuente = extraerInstance(readFileSync(join(dir, f)), f);
+        const resultado = analizarArchivo(fuente.origen, meta.periodEnd, fuente, { dumpTags: tiene('--dump-tags') });
         porArchivo.push({ ...meta, resultado });
       } catch (err) {
         console.log(`\n[error] ${f}: ${err.message}`);
