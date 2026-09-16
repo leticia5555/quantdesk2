@@ -283,6 +283,9 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
       proveedor: llm.proveedor || null,
       timeout_nuestro: !!llm.timedOutLeyendo,
       timed_out: !!llm.timedOut, stale: !!llm.stale, retry_failed: !!llm.retry_failed,
+      // CUÁL reloj cortó. "Se pasó de 15s" no dice si ese 15 lo puso una env
+      // var o el reparto del loop, y se arreglan en lugares opuestos.
+      techo_ms: llm.techo_ms ?? null, techo_origen: llm.techo_origen || null,
     };
     if (trace) ctx.trace = trace.report();
     const status = vacio ? 'aborted_cuerpo_vacio' : 'aborted_llm_error';

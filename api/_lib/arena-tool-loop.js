@@ -438,8 +438,17 @@ export async function runToolLoop({
     // Sin esto, una llamada colgada de 90s se come el reloj de las vueltas
     // siguientes y el loop termina chocando contra el deadline del agente —
     // que es justo lo que este presupuesto existe para evitar.
-    const techo = Math.max(10000, Math.min(timeoutMs || Infinity, restante() - RESERVA_CIERRE_MS));
-    const argsVuelta = { agent, system, messages: convo, maxTokens, now, timeoutMs: techo, tools, ...(effort ? { effort } : {}) };
+    // UNA sola lectura del reloj para las dos cosas. Leerlo dos veces no es un
+    // detalle de estilo: `clock` es inyectable y los tests lo avanzan en cada
+    // llamada, así que una lectura de más cambia POR CUÁL LÍMITE corta el loop.
+    // Lo detectó el test del reparto al ponerse rojo.
+    const restanteAqui = restante();
+    const techo = Math.max(10000, Math.min(timeoutMs || Infinity, restanteAqui - RESERVA_CIERRE_MS));
+    // DE DÓNDE SALIÓ ESE TECHO. Un aborto que solo dice "se pasó de 15s" no
+    // distingue una env var mal puesta de un loop que llegó sin reloj, y se
+    // arreglan en lugares opuestos. Acá se sabe, así que se dice.
+    const origenTecho = `reloj del loop, vuelta ${turns}: quedaban ${Math.round(restanteAqui / 1000)}s del presupuesto y ${Math.round(RESERVA_CIERRE_MS / 1000)}s están reservados para el cierre`;
+    const argsVuelta = { agent, system, messages: convo, maxTokens, now, timeoutMs: techo, origenTecho, tools, ...(effort ? { effort } : {}) };
     llm = await call({
       ...argsVuelta,
       ...(proveedoresColgados.length ? { provider: providerPolicy(agent, { ignore: proveedoresColgados }) } : {}),
@@ -643,6 +652,7 @@ export async function runToolLoop({
   const llamarCierre = (msgs, extra = {}) => call({
     agent, system, messages: msgs, maxTokens, now,
     timeoutMs: (cierreConcedidoMs = relojDeCierre()),
+    origenTecho: `turno de CIERRE del loop: se le concedieron ${Math.round((cierreConcedidoMs || 0) / 1000)}s (reserva de ${Math.round(RESERVA_CIERRE_MS / 1000)}s como piso)`,
     tools, toolChoice: cierreToolChoice, ...(effort ? { effort } : {}),
     // El cierre NUNCA va al proveedor que ya nos colgó en esta corrida.
     ...(proveedoresColgados.length ? { provider: providerPolicy(agent, { ignore: proveedoresColgados }) } : {}),

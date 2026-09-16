@@ -147,7 +147,7 @@ export function libroDeFila(row, fuente) {
     } : null,
     // ── LAS ÓRDENES ──────────────────────────────────────────────────
     // `modo` NO es decorativo: 'dry' significa que se calcularon COMPLETAS y
-    // no se mandó ninguna. Una corrida seca y una que movió dinero se
+    // no se mandó ninguna. Una corrida en simulación y una que movió dinero se
     // journalean en la misma tabla, y confundirlas sería el mismo error que
     // las tablas separadas existen para impedir del lado de la sombra.
     ordenes: ejecucionPublicable(ctx.ejecucion),
@@ -160,7 +160,7 @@ export function libroDeFila(row, fuente) {
 }
 
 // La ejecución, publicable. Las órdenes CALCULADAS son la lista (existen en
-// seco y en vivo); el resultado de cada una se pega encima cuando se mandó.
+// en simulación y en vivo); el resultado de cada una se pega encima cuando se mandó.
 export function ejecucionPublicable(e) {
   if (!e) return null;
   const enviadas = new Map();
@@ -190,7 +190,7 @@ export function ejecucionPublicable(e) {
   return {
     modo: e.modo || null,
     modo_nota: e.modo === 'dry'
-      ? 'SECO: las órdenes se calcularon completas y NO se mandó ninguna.'
+      ? 'SIMULACIÓN: las órdenes se calcularon completas y NO se mandó ninguna.'
       : e.modo === 'enviado' ? 'EN VIVO: estas órdenes se mandaron a Alpaca.' : null,
     // El candado: si alguna orden no correspondía a ningún peso, no se mandó
     // NINGUNA de esa corrida. Que se vea cuando frenó.

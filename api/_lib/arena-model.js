@@ -25,7 +25,7 @@
 
 import { dateDirective, staleProspectiveDates } from './ai-guard.js';
 import { recordAiCall } from './usage.js';
-import { ARENA_TEMPERATURE, ARENA_EFFORT, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS, ANTHROPIC_CACHE_MIN_TOKENS, modelSlugResolved } from './arena-registry.js';
+import { ARENA_TEMPERATURE, ARENA_EFFORT, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS, ARENA_LLM_TIMEOUT_ORIGEN, ANTHROPIC_CACHE_MIN_TOKENS, modelSlugResolved } from './arena-registry.js';
 import { ANTHROPIC_PRICES } from './model.js';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -334,7 +334,7 @@ export function withDeadline(promesa, ms, alTimeout) {
 // Envoltorio que convierte un abort (o una caída de red) en un RESULTADO, no en
 // una excepción: un agente que se pasa del reloj tiene que aparecer como una
 // fila `timeout` en el reporte, no tumbar a los otros seis.
-async function timedFetch(fn, timeoutMs, trace = null, fase = null) {
+async function timedFetch(fn, timeoutMs, trace = null, fase = null, origenTecho = null) {
   const t0 = Date.now();
   try {
     return await fn();
@@ -346,7 +346,14 @@ async function timedFetch(fn, timeoutMs, trace = null, fase = null) {
     if (trace) trace.push({ fase, status: 0, ms: Date.now() - t0, threw: String((e && e.message) || e), stack: e && e.stack });
     return {
       status: 0, raw: null, timedOut,
-      netError: timedOut ? `se pasó de ${Math.round(timeoutMs / 1000)}s (abortado a los ${Date.now() - t0}ms)` : String((e && e.message) || e),
+      // EL TECHO Y SU ORIGEN, en el mismo renglón. "Se pasó de 15s" no dice
+      // cuál reloj puso ese 15, y las respuestas son opuestas: una env var se
+      // arregla en Vercel, un reparto del loop se arregla en el presupuesto.
+      netError: timedOut
+        ? `se pasó de ${Math.round(timeoutMs / 1000)}s (abortado a los ${Date.now() - t0}ms; techo: ${origenTecho || ARENA_LLM_TIMEOUT_ORIGEN})`
+        : String((e && e.message) || e),
+      techo_ms: timeoutMs,
+      techo_origen: origenTecho || ARENA_LLM_TIMEOUT_ORIGEN,
       threw_stack: (e && e.stack) ? String(e.stack).slice(0, 1200) : null,
     };
   }
@@ -370,11 +377,11 @@ export function esTransitorio(err, raw) {
 
 // Guard-equivalente al de Anthropic, para OpenRouter: inyecta fecha, escanea
 // fechas prospectivas rotas, reintenta UNA vez, y si reincide devuelve stale.
-async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null, provider = undefined }) {
+async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null, provider = undefined, origenTecho = null }) {
   // `effort` NO se estaba pasando: la firma lo aceptaba y las dos llamadas lo
   // dejaban afuera, así que el escalón 1 del breaker bajaba el effort en
   // Anthropic y NO en OpenRouter — cinco de los siete seguían caros.
-  const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase, provider }), timeoutMs, trace, fase);
+  const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase, provider }), timeoutMs, trace, fase, origenTecho);
 
   // ── HTTP 200 CON EL CUERPO VACÍO ─────────────────────────────────────
   // ESTO ERA "HTTP 200 y todo lo demás en null". Durante cuatro sombras el
@@ -426,6 +433,9 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
       error_detail: first.netError || (cuerpo ? `cuerpo no-JSON: ${cuerpo.slice(0, 200)}` : null),
       raw_body: first.bodySample || null,
       threw_stack: first.threw_stack || null,
+      // El techo y QUIÉN lo puso. Un aborto sin esto obliga a adivinar entre
+      // una env var y el reparto del reloj, que se arreglan en lugares opuestos.
+      ...(first.timedOut ? { techo_ms: first.techo_ms ?? timeoutMs, techo_origen: first.techo_origen || origenTecho || ARENA_LLM_TIMEOUT_ORIGEN } : {}),
     };
   }
 
@@ -474,7 +484,7 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
 
   // Retry único con recordatorio, mismo formato requerido.
   const retryMessages = [...messages, { role: 'assistant', content: text }, { role: 'user', content: retryReminder(hits, now) }];
-  const second = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages: retryMessages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase: (fase || '') + ':retry_fechas', provider }), timeoutMs, trace, fase);
+  const second = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages: retryMessages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase: (fase || '') + ':retry_fechas', provider }), timeoutMs, trace, fase, origenTecho);
   if (second.status < 200 || second.status >= 300 || !second.raw) {
     // El retry falló en red: mejor la primera respuesta (con su nota de fechas)
     // que un corte — el downstream ya valida el JSON de todos modos.
@@ -643,9 +653,9 @@ async function anthropicFetch({ apiKey, payload, timeoutMs = ARENA_LLM_TIMEOUT_M
 
 // Guard de fechas replicado para el Arena sobre Anthropic (ver el bloque de
 // arriba sobre por qué no se usa guardedClaudeCall).
-async function guardedAnthropicCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null }) {
+async function guardedAnthropicCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null, origenTecho = null }) {
   const payload = buildAnthropicPayload({ agent, model, system, messages, maxTokens, now, tools, toolChoice, effort });
-  const first = await timedFetch(() => anthropicFetch({ apiKey, payload, timeoutMs, trace, fase }), timeoutMs, trace, fase);
+  const first = await timedFetch(() => anthropicFetch({ apiKey, payload, timeoutMs, trace, fase }), timeoutMs, trace, fase, origenTecho);
   if (first.status < 200 || first.status >= 300 || !first.raw) {
     await recordAiCall({ model: payload.model, now });
     // El mensaje de error de Anthropic viaja hacia arriba: un 400 por un
@@ -663,7 +673,11 @@ async function guardedAnthropicCall({ apiKey, agent, model, system, messages, ma
       };
     }
     const detail = (first.raw && first.raw.error ? first.raw.error.message : null) || first.netError || null;
-    return { status: first.status || 502, data: null, timedOut: !!first.timedOut, error_detail: detail, threw_stack: first.threw_stack || null };
+    return {
+      status: first.status || 502, data: null, timedOut: !!first.timedOut, error_detail: detail,
+      threw_stack: first.threw_stack || null,
+      ...(first.timedOut ? { techo_ms: first.techo_ms ?? timeoutMs, techo_origen: first.techo_origen || origenTecho || ARENA_LLM_TIMEOUT_ORIGEN } : {}),
+    };
   }
   const data = first.raw;
 
@@ -690,7 +704,7 @@ async function guardedAnthropicCall({ apiKey, agent, model, system, messages, ma
       { role: 'assistant', content: data.content },
       { role: 'user', content: retryReminder(hits, now) }],
   });
-  const second = await timedFetch(() => anthropicFetch({ apiKey, payload: retryPayload, timeoutMs, trace, fase: (fase || '') + ':retry_fechas' }), timeoutMs, trace, fase);
+  const second = await timedFetch(() => anthropicFetch({ apiKey, payload: retryPayload, timeoutMs, trace, fase: (fase || '') + ':retry_fechas' }), timeoutMs, trace, fase, origenTecho);
   if (second.status < 200 || second.status >= 300 || !second.raw) {
     await recordAiCall({ model: payload.model, usage: data.usage, retried: true, now });
     return { status: 200, data, retried: true };
@@ -810,7 +824,7 @@ export function __resetPriceCache() { priceCache = { at: 0, map: null }; }
 // `trace` es un sink opcional (ver _lib/arena-trace.js). null en el camino
 // normal: sin él no se construye ni se recorre nada, así que una corrida de
 // producción no paga el trace que solo se mira cuando algo falla.
-export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null, provider = undefined }) {
+export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null, provider = undefined, origenTecho = null }) {
   // CANDADO DE SLUG: un modelo cuyo slug no se verificó contra el catálogo del
   // proveedor y que no tiene override explícito NO se llama. Ver el encabezado
   // del registry: preferimos no correr a pegarle a un slug inventado.
@@ -821,10 +835,10 @@ export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_
   if (!apiKey) return { status: 0, data: null, missingKey: true, provider: agent && agent.provider };
 
   if (agent.provider === 'anthropic') {
-    return guardedAnthropicCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase });
+    return guardedAnthropicCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase, origenTecho });
   }
   if (agent.provider === 'openrouter') {
-    return guardedOpenRouterCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase, provider });
+    return guardedOpenRouterCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase, provider, origenTecho });
   }
   return { status: 0, data: null, error: 'proveedor desconocido: ' + (agent && agent.provider) };
 }
