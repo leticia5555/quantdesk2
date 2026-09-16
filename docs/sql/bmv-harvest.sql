@@ -28,6 +28,10 @@
 --     aproximacion podria chocar con una ex real y perderse una fila.
 --     `tipo` y `divisa` se guardan para no asumirlos: un reparto en especie
 --     no es efectivo, y una divisa que no sea MXN exige convertir.
+--     `pago_consolidado` marca las filas donde DOS pagos del mismo dia se
+--     sumaron. Los bloques "reciente" e "historico" se traslapan, y mandar la
+--     misma llave dos veces en un INSERT tumba la sentencia entera con
+--     "ON CONFLICT DO UPDATE command cannot affect row a second time".
 --   · bmv_emisoras.fin_periodos — la ENUMERACIÓN de trimestres reportados.
 --     `rango_financieros` llega como lista ("1T_2017, 1T_2018, ..., 2T_2016")
 --     y puede tener huecos: un hueco no es un trimestre que valga un request,
@@ -198,6 +202,8 @@ alter table bmv_distribuciones add column if not exists tipo text;
 alter table bmv_distribuciones add column if not exists divisa text;
 
 alter table bmv_distribuciones add column if not exists es_efectivo boolean;
+
+alter table bmv_distribuciones add column if not exists pago_consolidado boolean;
 
 update bmv_distribuciones set fecha_pago = fecha_ex where fecha_pago is null;
 

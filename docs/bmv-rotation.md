@@ -429,6 +429,44 @@ se cancela a primer orden en el exceso. Se espera que la enorme mayoría de las
 filas del histórico salgan aproximadas; eso no es un problema mientras esté
 **dicho y medido**.
 
+#### El traslape entre `reciente` e `historico`
+
+Los dos bloques **se traslapan**: NAFTRAC trae `2022-07-29` en ambos con el
+mismo pago, y `2026-08-31` en ambos también. Concatenarlos y mandarlos al insert
+reventó una corrida entera de `?job=reparse`:
+
+```
+ON CONFLICT DO UPDATE command cannot affect row a second time
+```
+
+Postgres se niega a tocar la misma fila dos veces en una sentencia, y **hace
+bien**: no hay forma de que la base sepa cuál de las dos gana. Así que se decide
+**antes** del insert, donde se puede mirar el grupo completo:
+
+| Caso | Qué se hace |
+|---|---|
+| Mismo día, **mismo monto** | Una sola fila. Gana la que traiga `fechaexcupon` **real** — es justo lo que hace valioso al bloque `reciente`. |
+| Mismo día, **montos distintos** | **Se suman** (dos repartos el mismo día son raros pero posibles) y la fila queda marcada `pago_consolidado`. |
+| Mezcla efectivo / no-efectivo | Sólo se suma el efectivo; lo que no es dinero no entra al retorno total. |
+
+**Nunca se elige uno en silencio**, porque eso pierde dinero sin dejar rastro. Y
+el duplicado exacto **no se suma**: mismo monto en los dos bloques es la misma
+distribución vista dos veces, y sumarla duplicaría el reparto.
+
+El reporte dice **cuántas filas se colapsaron** y **cuántas se sumaron**. Hay,
+además, una red de seguridad en `insertarDistribuciones` que deduplica por fecha
+de pago justo antes del `INSERT`: la lógica de verdad vive arriba, pero ninguna
+ruta futura debería poder volver a tumbar una corrida por esto.
+
+#### Los pagos de centésimas de centavo
+
+NAFTRAC trae varios repartos de **1e-07 pesos**. Casi seguro son placeholders de
+la fuente y no dinero, y reinvertir un placeholder mete ruido al retorno.
+
+**No se filtran** — esa es una decisión de producto, no del parser. Se **cuentan
+aparte**: `repartos_bajo_umbral` dice cuántos caen por debajo de 0.0001 pesos,
+para decidirlo **antes** de la Fase B y no después de ver resultados.
+
 #### Dos campos más que viajan, para no asumirlos
 
 **`divisa`.** Se guarda tal cual, y el reporte lista las que no son MXN. Si
@@ -679,7 +717,7 @@ regla aplicada dos veces, no una excepción conveniente.
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 8 jobs (con `reparse`, de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **89 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **95 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
 | **El censo** | **Corrido**: 595 filas, 185 series ICS, **137 emisoras ICS**. |
