@@ -544,6 +544,9 @@ function muestraChica(json, limite = 1200) {
 // traen objetos como valor —`rango_financieros` puede venir como
 // {inicio, fin}— y detectar series por "su valor es un objeto" las confundiría
 // con una serie llamada `rango_financieros`.
+// Llaves que, si aparecen, son contenedores del cuerpo real y no emisoras.
+const CONTENEDORES = new Set(['data', 'datos', 'resultado', 'resultados', 'emisoras', 'items']);
+
 const CAMPOS_NO_SERIE = new Set([
   'emisora', 'clave', 'clavecotizacion', 'serie', 'razonsocial', 'nombre',
   'tipovalorid', 'tipovalor', 'estatus', 'status',
@@ -642,12 +645,29 @@ function filasDelCenso(json) {
     for (const it of json) { const f = filaCenso(null, it); if (f) out.push(f); }
     return out;
   }
-  // Un envoltorio con una sola llave que contiene el cuerpo real.
+  // ── Detección de envoltorio, SIN depender de cuántas emisoras vengan ──
+  //
+  // La versión anterior decía `llaves.length <= 3`, y eso hacía que la MISMA
+  // emisora se parseara distinto según el lote: `?job=emisoras` pasa cientos de
+  // llaves de golpe (nunca envoltorio) y `?job=reparse` pasaba una a la vez
+  // (envoltorio si la pizarra no matchaba el regex). Con una pizarra de UN
+  // carácter —Quálitas cotiza como `Q`— el heurístico se disparaba y la fila
+  // salía como `*` en vez de `Q*`: filas que aparecen de la nada y tipos que se
+  // pierden, sobre el mismo crudo guardado.
+  //
+  // **Un censo que cambia solo no sirve para un universo point-in-time**, así
+  // que la regla ahora mira la FORMA y no el tamaño: es envoltorio sólo si el
+  // valor de la llave contiene, él mismo, dos o más llaves con pinta de
+  // pizarra. Eso da el mismo resultado se pase una emisora o quinientas.
   const llaves = Object.keys(json);
-  const pareceEnvoltorio = llaves.length <= 3 && llaves.every((k) => json[k] && typeof json[k] === 'object')
-    && llaves.every((k) => !/^[A-Z0-9&*.-]{2,12}$/.test(k));
-  if (pareceEnvoltorio) {
-    for (const k of llaves) out.push(...filasDelCenso(json[k]));
+  const envoltorios = llaves.filter((k) => {
+    const v = json[k];
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+    if (pareceClave(k) && !CONTENEDORES.has(normalizaLlave(k))) return false;
+    return Object.keys(v).filter((x) => pareceClave(x)).length >= 2;
+  });
+  if (envoltorios.length) {
+    for (const k of envoltorios) out.push(...filasDelCenso(json[k]));
     if (out.length) return out;
   }
   for (const [k, v] of Object.entries(json)) {
@@ -722,6 +742,9 @@ async function jobEmisoras() {
   let colapsadas = 0;
   let sumadas = 0;
   let bajoUmbral = 0;
+  let requierenConversion = 0;
+  const categoriasDividendo = {};
+  const seriesExtranjeras = [];
   for (const f of filas) {
     await upsertEmisora(f);
     const d = extraerDistribuciones(f.raw_serie || f.raw);
@@ -732,6 +755,12 @@ async function jobEmisoras() {
     colapsadas += d.colapsadas || 0;
     sumadas += d.sumadas || 0;
     bajoUmbral += d.bajo_umbral || 0;
+    requierenConversion += d.requieren_conversion || 0;
+    for (const [k, v] of Object.entries(d.categorias || {})) categoriasDividendo[k] = (categoriasDividendo[k] || 0) + v;
+    if (d.requieren_conversion) {
+      const divs = Object.keys(d.divisas || {}).filter((x) => x.toUpperCase() !== 'MXN');
+      seriesExtranjeras.push({ emisora_serie: f.emisora_serie, tipo_valor_id: f.tipo_valor_id || null, divisas: divs, n: d.requieren_conversion });
+    }
     repartosTotales += d.distribuciones.length;
     if (d.distribuciones.length) {
       distribuciones += await insertarDistribuciones(f.emisora, f.emisora_serie, d.distribuciones);
@@ -773,6 +802,14 @@ async function jobEmisoras() {
     // filtran: se cuentan para que la decisión sea tuya y no mía.
     repartos_bajo_umbral: bajoUmbral,
     umbral_placeholder: UMBRAL_PLACEHOLDER,
+    // Clasificación EXPLÍCITA: qué entra al retorno total y qué no. Antes que
+    // "REEMBOLSO" quedara fuera era efecto colateral de un regex, no decisión.
+    repartos_por_categoria: categoriasDividendo,
+    // BLOQUEANTE si toca al universo elegible: no se convierte con el tipo de
+    // cambio de hoy (sería mirar el futuro) ni se trata como pesos.
+    repartos_requieren_conversion: requierenConversion,
+    series_divisa_extranjera: seriesExtranjeras,
+    series_divisa_extranjera_ics: seriesExtranjeras.filter((x) => x.tipo_valor_id === '1'),
     dividendos_campos_vistos: [...camposDividendo],
     dividendos_por_tipo: tiposDividendo,
     // Una divisa distinta de MXN exige conversión antes de reinvertir.
@@ -824,21 +861,26 @@ async function jobReparse() {
   const previas = await sql(`select emisora, emisora_serie, raw from bmv_emisoras`);
   if (!previas.length) return { job: 'reparse', error: 'no hay censo guardado' };
 
-  // Se re-desdobla desde el crudo: una fila guardada como una sola emisora
-  // puede volver a salir como varias series.
-  const vistos = new Set();
-  const filas = [];
+  // Se re-desdobla desde el crudo pasando el censo COMPLETO de una vez, que es
+  // exactamente lo que hace `?job=emisoras`. Pasarlo emisora por emisora era la
+  // otra mitad del no-determinismo: aunque el heurístico de envoltorio ya no
+  // depende del tamaño del lote, los dos caminos deben ser el MISMO camino, no
+  // dos que casualmente coinciden.
+  const crudo = {};
   for (const p of previas) {
-    if (!p.raw || vistos.has(p.emisora)) continue;
-    vistos.add(p.emisora);
-    filas.push(...filasDelCenso({ [p.emisora]: p.raw }));
+    if (!p.raw || crudo[p.emisora]) continue;
+    crudo[p.emisora] = p.raw;
   }
+  const filas = filasDelCenso(crudo);
   let distribuciones = 0;
   let aproximadas = 0;
   let repartosTotales = 0;
   let colapsadas = 0;
   let sumadas = 0;
   let bajoUmbral = 0;
+  let requierenConversion = 0;
+  const categoriasDividendo = {};
+  const seriesExtranjeras = [];
   const tiposDividendo = {};
   const divisasDividendo = {};
   const conReparto = [];
@@ -851,17 +893,38 @@ async function jobReparse() {
     colapsadas += d.colapsadas || 0;
     sumadas += d.sumadas || 0;
     bajoUmbral += d.bajo_umbral || 0;
+    requierenConversion += d.requieren_conversion || 0;
+    for (const [k, v] of Object.entries(d.categorias || {})) categoriasDividendo[k] = (categoriasDividendo[k] || 0) + v;
+    if (d.requieren_conversion) {
+      const divs = Object.keys(d.divisas || {}).filter((x) => x.toUpperCase() !== 'MXN');
+      seriesExtranjeras.push({ emisora_serie: f.emisora_serie, tipo_valor_id: f.tipo_valor_id || null, divisas: divs, n: d.requieren_conversion });
+    }
     repartosTotales += d.distribuciones.length;
     if (d.distribuciones.length) {
       distribuciones += await insertarDistribuciones(f.emisora, f.emisora_serie, d.distribuciones);
       conReparto.push(f.emisora_serie);
     }
   }
+  // La DERIVA, explícita. Si re-derivar el mismo crudo produce filas distintas
+  // a las guardadas, eso es exactamente lo que no se puede tolerar en un censo
+  // point-in-time — y hay que verlo, no deducirlo comparando dos corridas.
+  const antes = new Set(previas.map((p) => p.emisora_serie).filter(Boolean));
+  const ahora = new Set(filas.map((f) => f.emisora_serie));
+  const aparecieron = [...ahora].filter((x) => !antes.has(x));
+  const desaparecieron = [...antes].filter((x) => !ahora.has(x));
+
   return {
     job: 'reparse',
     creditos: 0,
     filas_previas: previas.length,
     filas_rederivadas: filas.length,
+    deriva: {
+      estable: aparecieron.length === 0 && desaparecieron.length === 0,
+      aparecieron: aparecieron.slice(0, 40),
+      desaparecieron: desaparecieron.slice(0, 40),
+      n_aparecieron: aparecieron.length,
+      n_desaparecieron: desaparecieron.length,
+    },
     ics: filas.filter((f) => f.tipo_valor_id === '1').length,
     con_serie: filas.filter((f) => f.serie).length,
     con_cobertura: filas.filter((f) => f.fin_desde).length,
@@ -875,6 +938,14 @@ async function jobReparse() {
     repartos_sumados: sumadas,
     repartos_bajo_umbral: bajoUmbral,
     umbral_placeholder: UMBRAL_PLACEHOLDER,
+    // Clasificación EXPLÍCITA: qué entra al retorno total y qué no. Antes que
+    // "REEMBOLSO" quedara fuera era efecto colateral de un regex, no decisión.
+    repartos_por_categoria: categoriasDividendo,
+    // BLOQUEANTE si toca al universo elegible: no se convierte con el tipo de
+    // cambio de hoy (sería mirar el futuro) ni se trata como pesos.
+    repartos_requieren_conversion: requierenConversion,
+    series_divisa_extranjera: seriesExtranjeras,
+    series_divisa_extranjera_ics: seriesExtranjeras.filter((x) => x.tipo_valor_id === '1'),
     dividendos_por_tipo: tiposDividendo,
     dividendos_por_divisa: divisasDividendo,
     censo: await censoResumen(),
@@ -1081,6 +1152,23 @@ async function jobHistoricos(req) {
 function coberturaMd(c, est) {
   const L = [];
   L.push('# Cobertura de la cosecha DataBursatil (Fase A)', '');
+
+  // ── CAVEATS DE PRIMER ORDEN, arriba y no enterrados ──────────────
+  // Un caveat que hay que ir a buscar al pie de página no es un caveat: es una
+  // coartada. Estos tres cambian cómo se lee TODO lo que sigue, así que van
+  // antes que los números que califican.
+  const d0 = c.distribuciones_ics || {};
+  L.push('> ## Léase esto antes que los números', '>');
+  L.push(`> · **Fecha ex aproximada en ${d0.pct_ex_aproximada || 0}% de los repartos.** La API sólo trae \`fechaexcupon\` en el bloque "reciente"; el resto es pago − 3 días. Aplica igual a canasta y benchmark, así que se cancela a primer orden en el exceso — pero es una aproximación, no un dato.`);
+  if (d0.requieren_conversion) {
+    L.push(`> · **${d0.requieren_conversion} repartos en moneda extranjera.** No se convierten ni se tratan como pesos: quedan marcados \`requiere_conversion\` y **fuera** del retorno total de la v1.`);
+  }
+  const reemb = (d0.por_categoria || []).find((x) => x.categoria === 'reembolso');
+  if (reemb) {
+    L.push(`> · **${reemb.n} reembolsos de capital**, excluidos del retorno total: devolver principal no es rendimiento. La bandera \`categoria\` permite incluirlos en una sensibilidad.`);
+  }
+  L.push('>', '');
+
   L.push(`Censo: **${c.censo.total}** emisoras guardadas; **${(c.censo.por_tipo.find((t) => t.tipo === '1') || { n: 0 }).n}** con \`tipo_valor_id=1\` (ICS).`, '');
 
   L.push('## Financieros por año', '', '| Año | Filas | Emisoras | Con EPS |', '|---|---:|---:|---:|');
@@ -1106,6 +1194,28 @@ function coberturaMd(c, est) {
   L.push('## Retorno total de la canasta', '',
     `ICS con reparto: **${di.emisoras_con_reparto || 0}** · repartos: **${di.filas || 0}** · rango: ${di.desde || 'n/d'} → ${di.hasta || 'n/d'}`, '');
   L.push(`Fecha ex **aproximada** (pago − 3 días) en **${di.ex_aproximadas || 0}** de ${di.filas || 0} repartos (**${di.pct_ex_aproximada || 0}%**). La API sólo trae \`fechaexcupon\` en el bloque "reciente".`, '');
+  if ((di.por_categoria || []).length) {
+    L.push('| Categoría | N | Suma | ¿entra al retorno total v1? |', '|---|---:|---:|---|');
+    for (const cat of di.por_categoria) {
+      const entra = cat.categoria === 'efectivo' ? '**sí**' : 'no';
+      L.push(`| ${cat.categoria} | ${cat.n} | ${Number(cat.suma).toFixed(4)} | ${entra} |`);
+    }
+    L.push('');
+  }
+  const ext = di.series_divisa_extranjera || [];
+  if (ext.length) {
+    L.push('### Series con reparto en moneda extranjera', '',
+      'No se convierten con el tipo de cambio de hoy —eso sería mirar el futuro— ni se tratan como pesos. Quedan **fuera del retorno total de la v1**. Si alguna está en el universo elegible, hay que resolverlo con el tipo de cambio en la **fecha ex**.', '',
+      '| Serie | Divisa | N | Suma | tipo_valor_id | ¿ICS? |', '|---|---|---:|---:|---|---|');
+    for (const x of ext) {
+      L.push(`| ${x.emisora_serie} | ${x.divisa} | ${x.n} | ${Number(x.suma).toFixed(4)} | ${x.tipo_valor_id || 'n/d'} | ${x.tipo_valor_id === '1' ? '**SÍ**' : 'no'} |`);
+    }
+    L.push('');
+    const enIcs = (di.series_divisa_extranjera_ics || []).length;
+    L.push(enIcs
+      ? `**${enIcs} de esas series SON ICS**, o sea que pueden entrar al universo elegible. Eso hay que resolverlo bien, no excluirlo.`
+      : '**Ninguna es ICS**, así que ninguna entra al universo elegible: excluirlas de la v1 no le quita nada al backtest.', '');
+  }
   if (di.consolidados) {
     L.push(`**${di.consolidados}** repartos son DOS pagos del mismo día que se sumaron (\`pago_consolidado\`), en vez de elegir uno en silencio.`, '');
   }

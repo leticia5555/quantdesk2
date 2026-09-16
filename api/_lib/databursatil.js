@@ -652,21 +652,55 @@ const ALIAS_PAGO = ['fecha_pago', 'fechapago', 'fecha', 'date', 'fecha_reparto']
 // con T+2 más un fin de semana. Es una APROXIMACIÓN y se marca como tal.
 const DIAS_EX_APROX = 3;
 
+// La moneda que no exige conversión. Cualquier otra sí.
+const DIVISA_BASE = 'MXN';
+
 /**
- * ¿Este reparto es dinero?
+ * Clasifica un reparto por su `tipo`, con una tabla EXPLÍCITA y en un orden que
+ * importa. Antes esto era un efecto colateral de un regex `/efectivo|cash/`, y
+ * que "REEMBOLSO" cayera fuera era suerte, no decisión.
  *
- * Sin `tipo` se asume que sí — es lo que llega de las formas viejas y de los
- * arreglos, y ahí no hay nada que distinguir. Con `tipo`, se exige que diga
- * **efectivo** (o `cash`): "DIVIDENDO EN ACCIONES" contiene la palabra
- * "dividendo" pero NO es efectivo, y una regex que aceptara "dividendo" lo
- * habría reinvertido como si lo fuera — sumando retorno que nadie recibió.
+ * | categoría     | qué es                          | ¿entra al retorno total v1? |
+ * |---------------|---------------------------------|------------------------------|
+ * | `efectivo`    | distribución de efectivo        | **sí**                       |
+ * | `reembolso`   | devolución de principal         | **no** — no es rendimiento   |
+ * | `especie`     | acciones, derechos, splits      | **no** — no es dinero        |
+ * | `desconocido` | un tipo que no reconocemos      | **no**, y sale en el reporte |
  *
- * Lo que no se reconoce queda en `false`: subestimar el retorno es el lado
- * barato de equivocarse, y el conteo por tipo lo deja a la vista.
+ * **El orden importa.** `reembolso` se evalúa ANTES que `efectivo`: si algún
+ * día llega "REEMBOLSO DE CAPITAL EN EFECTIVO", la palabra "efectivo" lo habría
+ * clasificado como rendimiento — y un reembolso de capital NO es rendimiento,
+ * es la empresa devolviendo principal. Sumarlo al retorno total inflaría el
+ * resultado con dinero que no es ganancia.
+ *
+ * Sin `tipo` se asume `efectivo`: es lo que llega de los arreglos y de las
+ * formas viejas, donde no hay nada que distinguir.
  */
+function categoriaReparto(tipo) {
+  if (tipo === undefined || tipo === null || tipo === '') return 'efectivo';
+  const t = String(tipo);
+  if (/reembolso|reduccion de capital|reducción de capital|devolucion|devolución/i.test(t)) return 'reembolso';
+  if (/accion|acción|especie|split|derecho|suscripcion|suscripción/i.test(t)) return 'especie';
+  if (/efectivo|cash/i.test(t)) return 'efectivo';
+  return 'desconocido';
+}
+
+/** `es_efectivo` deriva de la categoría, no de un regex suelto. */
 function esEfectivo(tipo) {
-  if (tipo === undefined || tipo === null || tipo === '') return true;
-  return /efectivo|cash/i.test(String(tipo));
+  return categoriaReparto(tipo) === 'efectivo';
+}
+
+/**
+ * ¿Hay que convertir este reparto antes de reinvertirlo?
+ *
+ * Sólo cuando la divisa VIENE y no es MXN. Un `null` no se declara MXN aquí
+ * —el bloque histórico no trae divisa y declararlo sería inventar—, pero
+ * tampoco se marca: la propagación por serie se decide arriba, con el conteo
+ * de divisas de esa serie a la vista (§reporte).
+ */
+function requiereConversion(divisa) {
+  if (divisa === undefined || divisa === null || divisa === '') return false;
+  return String(divisa).toUpperCase() !== DIVISA_BASE;
 }
 
 /** Resta días naturales a 'AAAA-MM-DD'. */
@@ -713,6 +747,7 @@ function extraerDistribuciones(raw) {
   const campos = new Set();
   const tipos = {};
   const divisas = {};
+  const categorias = {};
 
   const tomar = (bajo, nombres) => {
     for (const n of nombres) {
@@ -738,7 +773,8 @@ function extraerDistribuciones(raw) {
       if (!f || monto === null || monto === undefined) { descartadas++; return; }
       empuja({
         fecha_pago: f[1], fecha_ex: restaDias(f[1], DIAS_EX_APROX), ex_aproximada: true,
-        monto, tipo: null, divisa: null, es_efectivo: true,
+        monto, tipo: null, divisa: null, categoria: 'efectivo', es_efectivo: true,
+        requiere_conversion: false,
       });
       return;
     }
@@ -771,7 +807,9 @@ function extraerDistribuciones(raw) {
         fecha_pago: mEx[1], fecha_ex: mEx[1], ex_aproximada: false, monto,
         tipo: tomar(bajo, ALIAS_TIPO) === undefined ? null : String(tomar(bajo, ALIAS_TIPO)),
         divisa: tomar(bajo, ALIAS_DIVISA) === undefined ? null : String(tomar(bajo, ALIAS_DIVISA)),
+        categoria: categoriaReparto(tomar(bajo, ALIAS_TIPO)),
         es_efectivo: esEfectivo(tomar(bajo, ALIAS_TIPO)),
+        requiere_conversion: requiereConversion(tomar(bajo, ALIAS_DIVISA)),
       });
       return;
     }
@@ -790,7 +828,9 @@ function extraerDistribuciones(raw) {
       monto,
       tipo: tipo === undefined ? null : String(tipo),
       divisa: divisa === undefined ? null : String(divisa),
+      categoria: categoriaReparto(tipo),
       es_efectivo: esEfectivo(tipo),
+      requiere_conversion: requiereConversion(divisa),
     });
   };
 
@@ -817,6 +857,10 @@ function extraerDistribuciones(raw) {
   caminar(raw, false, 0);
 
   const { filas, colapsadas, sumadas, bajo_umbral } = consolidarDistribuciones(out);
+  for (const f of filas) {
+    const c = f.categoria || 'efectivo';
+    categorias[c] = (categorias[c] || 0) + 1;
+  }
   const aproximadas = filas.filter((d) => d.ex_aproximada).length;
   return {
     distribuciones: filas,
@@ -828,6 +872,10 @@ function extraerDistribuciones(raw) {
     // repartos reales, y reinvertir un placeholder es meter ruido al retorno.
     bajo_umbral,
     umbral_placeholder: UMBRAL_PLACEHOLDER,
+    categorias,
+    // Repartos en moneda extranjera. NO se convierten con el tipo de cambio de
+    // hoy —eso sería mirar el futuro— ni se tratan como pesos.
+    requieren_conversion: filas.filter((f) => f.requiere_conversion).length,
     campos: [...campos],
     tipos,
     divisas,
@@ -891,7 +939,13 @@ function consolidarDistribuciones(filas) {
     if (montos.length === 1) {
       // Duplicado exacto entre `reciente` e `historico`: una fila, la mejor.
       colapsadas += grupo.length - 1;
-      out.push({ ...base, fecha_pago: fecha, pago_consolidado: false });
+      out.push({
+        ...base, fecha_pago: fecha, pago_consolidado: false,
+        // Si CUALQUIERA de las filas del grupo traía divisa extranjera, el
+        // grupo entero la necesita: el histórico no trae divisa y sería el
+        // único que quedara sin marcar.
+        requiere_conversion: grupo.some((f) => f.requiere_conversion === true),
+      });
       continue;
     }
 
@@ -911,6 +965,7 @@ function consolidarDistribuciones(filas) {
       fecha_pago: fecha,
       monto: total,
       es_efectivo: efectivo.length > 0,
+      requiere_conversion: grupo.some((f) => f.requiere_conversion === true),
       pago_consolidado: distintos.length > 1,
     });
   }
@@ -945,7 +1000,8 @@ export {
   BASE, BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
   CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL, TIMEOUT_MS,
   aNumero, aplanarHistoricos, cabecerasDeCredito, clavePeriodo, construirUrl,
-  DIAS_EX_APROX, UMBRAL_PLACEHOLDER, consolidarDistribuciones, dormir, emisoraSerie,
+  DIAS_EX_APROX, DIVISA_BASE, UMBRAL_PLACEHOLDER, categoriaReparto,
+  consolidarDistribuciones, dormir, emisoraSerie, esEfectivo, requiereConversion,
   extraerDistribuciones, finDeTrimestre,
   mesPresupuesto, restaDias,
   normalizaLlave, normalizarFinancieros, periodoApi,

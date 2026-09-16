@@ -80,6 +80,27 @@ DataBursatil, no de Yahoo**, y el benchmark es NAFTRAC, no el SPY.
 
 ---
 
+## 0.0 Los tres caveats que van en el encabezado del reporte de Fase B
+
+**No al pie.** Un caveat que hay que ir a buscar no es un caveat, es una
+coartada. Estos tres cambian cómo se lee cualquier número del backtest, así que
+van **arriba**, antes de los resultados que califican — y lo mismo hace
+`?job=cobertura&format=md`.
+
+| Caveat | Estado medido |
+|---|---|
+| **Fecha ex aproximada en ~91% de los repartos** | La API sólo trae `fechaexcupon` en el bloque `reciente`. El resto es pago − 3 días. |
+| **Repartos en moneda extranjera** | `{MXN: 134, EUR: 2, USD: 12}`. Fuera del retorno total de la v1 (§3.3). |
+| **138 reembolsos de capital** | Excluidos: devolver principal no es rendimiento (§3.3). |
+
+El 91% no es un detalle de implementación: significa que **la fecha de
+reinversión de casi toda la serie es una estimación**, no un dato. Se aplica
+igual a la canasta y al benchmark, así que se cancela a primer orden en el
+exceso — pero el lector tiene derecho a saberlo antes de leer un Sharpe, no
+después.
+
+---
+
 ## 0. Lo primero, porque cambia cómo se lee todo lo demás
 
 **Este sandbox no alcanza `api.databursatil.com`.** El proxy de egress de la
@@ -458,6 +479,55 @@ además, una red de seguridad en `insertarDistribuciones` que deduplica por fech
 de pago justo antes del `INSERT`: la lógica de verdad vive arriba, pero ninguna
 ruta futura debería poder volver a tumbar una corrida por esto.
 
+#### Moneda extranjera: fuera de la v1, y dicho con nombres
+
+El censo real trae `{MXN: 134, EUR: 2, USD: 12}`. **Esos repartos no se
+convierten.** Ni con el tipo de cambio de hoy —eso sería mirar el futuro desde
+2016— ni tratándolos como pesos, que sería peor: un dividendo de 1 USD contado
+como 1 MXN subestima el reparto en ~17×.
+
+La regla de la v1:
+
+> Un reparto con divisa presente y distinta de MXN se marca
+> **`requiere_conversion`** y **no entra** al retorno total.
+
+Y la marca **se propaga dentro del grupo consolidado**: el bloque `historico` no
+trae divisa, así que si sólo se mirara la fila que gana, un reparto en USD cuya
+versión histórica viene sin divisa quedaría sin marcar y se reinvertiría como
+pesos. Si cualquiera del grupo la necesita, el grupo la necesita.
+
+**Lo que decide si esto se puede dejar así:** `?job=cobertura` y `?job=reparse`
+listan **qué series** están afectadas y si son ICS.
+
+- Si **ninguna es ICS**, ninguna entra al universo elegible y excluirlas no le
+  quita nada al backtest.
+- Si **alguna es ICS**, hay que resolverlo bien: tipo de cambio en la **fecha
+  ex** (`/v2/divisas`), no una conversión a ojo.
+
+#### `REEMBOLSO`: excluido por decisión, no por accidente
+
+El censo trae **138 reembolsos de capital**. Un reembolso **no es un dividendo**:
+es la empresa devolviendo principal. Contarlo como rendimiento inflaría el
+retorno total con dinero que no es ganancia.
+
+Antes quedaba fuera **por casualidad** —el regex pedía "efectivo" y "REEMBOLSO"
+no lo dice—, y eso no es una decisión, es un efecto colateral. Ahora hay una
+clasificación explícita:
+
+| categoría | qué es | ¿entra al retorno total v1? |
+|---|---|---|
+| `efectivo` | distribución de efectivo | **sí** |
+| `reembolso` | devolución de principal | **no** |
+| `especie` | acciones, derechos, splits | **no** |
+| `desconocido` | un tipo que no reconocemos | **no**, y sale en el reporte |
+
+**El orden de evaluación importa, y ahí había un bug latente:** `reembolso` se
+evalúa **antes** que `efectivo`. Si algún día llega `"REEMBOLSO DE CAPITAL EN
+EFECTIVO"`, el regex viejo lo habría contado como rendimiento. Hay test.
+
+La bandera `categoria` se guarda en la tabla, así que **incluir los reembolsos
+es una sensibilidad de una línea** — exploratoria, y sin tocar el veredicto.
+
 #### Los pagos de centésimas de centavo
 
 NAFTRAC trae varios repartos de **1e-07 pesos**. Casi seguro son placeholders de
@@ -591,6 +661,42 @@ Un backtest donde el piso mandó el 90% del tiempo no probó un quintil: probó 
 top 40%. Son estrategias distintas con el mismo nombre, y un GO de una no
 autoriza a operar la otra.
 
+### El censo tiene que ser el mismo dos veces
+
+Dos corridas sobre el **mismo crudo guardado** dieron 595 filas / 185 ICS y
+597 / 183, con los tipos `(null)` pasando de 2 a 4. Nadie bajó datos nuevos:
+`?job=reparse` re-deriva de lo que ya está en Neon.
+
+**El no-determinismo era nuestro**, y la causa concreta vale anotarla:
+
+```js
+const pareceEnvoltorio = llaves.length <= 3 && …
+```
+
+`?job=emisoras` pasa **cientos** de llaves de golpe, así que el heurístico de
+envoltorio nunca se disparaba. `?job=reparse` pasaba **una emisora a la vez**,
+así que se disparaba en cuanto la pizarra no matchara el regex — y **Quálitas
+cotiza como `Q`**, de un solo carácter. Esa fila salía como `*` en vez de `Q*`:
+una emisora que se pierde y otra que aparece de la nada, sobre datos idénticos.
+
+Dos arreglos, porque uno solo dejaría la trampa armada:
+
+1. **La regla mira la forma, no el tamaño.** Es envoltorio sólo si el valor de
+   una llave contiene, él mismo, dos o más llaves con pinta de pizarra. Eso da
+   lo mismo se pase una emisora o quinientas.
+2. **`?job=reparse` pasa el censo completo de una vez**, que es literalmente lo
+   que hace `?job=emisoras`. Los dos caminos tienen que ser el **mismo** camino,
+   no dos que casualmente coincidan.
+
+Y para no volver a descubrirlo comparando dos corridas a ojo, `?job=reparse`
+ahora reporta la **deriva**: qué `emisora_serie` aparecieron y cuáles
+desaparecieron respecto de lo guardado. `deriva.estable: true` es la afirmación
+que el censo tiene que poder hacer de sí mismo.
+
+> Un censo que cambia solo no sirve para un universo point-in-time. El punto
+> entero de `rango_financieros` es decir qué existía cuándo; si la respuesta
+> depende de en qué orden se leyó el archivo, no dice nada.
+
 ### Lo que el censo resolvió
 
 Esta sección se escribió suponiendo un universo del tamaño de las **30** ICS
@@ -717,10 +823,10 @@ regla aplicada dos veces, no una excepción conveniente.
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 8 jobs (con `reparse`, de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **95 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **105 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
-| **El censo** | **Corrido**: 595 filas, 185 series ICS, **137 emisoras ICS**. |
+| **El censo** | **Corrido y verificado**: 597 filas, **165/185 series ICS con cobertura** (las 20 sin ella son bancos y casas de bolsa, fuera de la v1). 1,623 distribuciones. |
 | **La cosecha** | **Sin correr** — este sandbox no alcanza la API. |
 | **Cobertura real** | **Sin reportar** — depende de la cosecha. |
 | `/api/bmv-rotation-analyze` | **Fase B. No empezado, a propósito.** |

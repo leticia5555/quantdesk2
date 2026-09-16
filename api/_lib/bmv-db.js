@@ -179,6 +179,11 @@ const BMV_SCHEMA = [
   // Marca las filas donde dos repartos del MISMO día se sumaron. Existe porque
   // la alternativa —elegir uno en silencio— pierde dinero sin dejar rastro.
   `alter table bmv_distribuciones add column if not exists pago_consolidado boolean`,
+  // Clasificación EXPLÍCITA del reparto (efectivo/reembolso/especie/desconocido)
+  // y bandera de moneda extranjera. Las dos existen para que la decisión de qué
+  // entra al retorno total sea una consulta, no un regex enterrado en el parser.
+  `alter table bmv_distribuciones add column if not exists categoria text`,
+  `alter table bmv_distribuciones add column if not exists requiere_conversion boolean`,
   `update bmv_distribuciones set fecha_pago = fecha_ex where fecha_pago is null`,
   `drop index if exists bmv_distribuciones_uidx`,
   `create unique index if not exists bmv_distribuciones_pago_uidx on bmv_distribuciones (emisora_serie, fecha_pago)`,
@@ -307,16 +312,17 @@ async function insertarDistribuciones(emisora, emisora_serie, filas) {
 
   const valores = [];
   const partes = unicas.map((f, j) => {
-    const b = j * 10;
+    const b = j * 12;
     valores.push(emisora, emisora_serie, f.fecha_pago, f.fecha_ex,
       f.ex_aproximada === true, f.monto, f.tipo ?? null, f.divisa ?? null,
-      f.es_efectivo !== false, f.pago_consolidado === true);
-    return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10})`;
+      f.es_efectivo !== false, f.pago_consolidado === true,
+      f.categoria ?? 'efectivo', f.requiere_conversion === true);
+    return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},$${b + 11},$${b + 12})`;
   });
   await sql(
     `insert into bmv_distribuciones
        (emisora, emisora_serie, fecha_pago, fecha_ex, ex_aproximada, monto, tipo,
-        divisa, es_efectivo, pago_consolidado)
+        divisa, es_efectivo, pago_consolidado, categoria, requiere_conversion)
      values ${partes.join(', ')}
      on conflict (emisora_serie, fecha_pago) do update set
        emisora = excluded.emisora,
@@ -326,7 +332,9 @@ async function insertarDistribuciones(emisora, emisora_serie, filas) {
        tipo = excluded.tipo,
        divisa = excluded.divisa,
        es_efectivo = excluded.es_efectivo,
-       pago_consolidado = excluded.pago_consolidado`,
+       pago_consolidado = excluded.pago_consolidado,
+       categoria = excluded.categoria,
+       requiere_conversion = excluded.requiere_conversion`,
     valores);
   return unicas.length;
 }
@@ -447,7 +455,7 @@ async function gastar(mes, { requests = 1, creditos = 0, headers = null } = {}) 
  */
 async function cobertura() {
   const [censo, finPorAnio, finPorEmisora, precios, preciosPorEmisora, benchmark,
-         dist, distIcs, divisas, tipos, icsSinReparto, huecos] = await Promise.all([
+         dist, distIcs, divisas, tipos, categorias, extranjeras, icsSinReparto, huecos] = await Promise.all([
     censoResumen(),
     sql(`select anio, count(*)::int as filas, count(distinct emisora)::int as emisoras,
                 count(basicearningslosspershare)::int as con_eps
@@ -481,7 +489,8 @@ async function cobertura() {
                 count(*) filter (where d.ex_aproximada)::int as ex_aproximadas,
                 count(*) filter (where not coalesce(d.es_efectivo, true))::int as no_efectivo,
                 count(*) filter (where d.pago_consolidado)::int as consolidados,
-                count(*) filter (where abs(d.monto) < 0.0001)::int as bajo_umbral
+                count(*) filter (where abs(d.monto) < 0.0001)::int as bajo_umbral,
+                count(*) filter (where d.requiere_conversion)::int as requieren_conversion
            from bmv_distribuciones d
            join bmv_emisoras e on e.emisora = d.emisora and e.tipo_valor_id = '1'`),
     // Una divisa distinta de MXN exige conversión. Asumirla en silencio es la
@@ -490,6 +499,19 @@ async function cobertura() {
            from bmv_distribuciones group by 1 order by 2 desc`),
     sql(`select coalesce(tipo,'(sin tipo)') as tipo, count(*)::int as n
            from bmv_distribuciones group by 1 order by 2 desc`),
+    sql(`select coalesce(categoria,'(sin categoria)') as categoria, count(*)::int as n,
+                coalesce(sum(monto),0)::numeric as suma
+           from bmv_distribuciones group by 1 order by 2 desc`),
+    // QUÉ series están afectadas por la divisa extranjera, y si están en el
+    // universo ICS. Sin esta lista, "hay 14 repartos en moneda extranjera" no
+    // se puede accionar: lo que importa es a quién le pegan.
+    sql(`select d.emisora_serie, d.divisa, count(*)::int as n,
+                coalesce(sum(d.monto),0)::numeric as suma,
+                e.tipo_valor_id, e.estatus
+           from bmv_distribuciones d
+           left join bmv_emisoras e on e.emisora_serie = d.emisora_serie
+          where d.requiere_conversion
+          group by 1,2,5,6 order by 3 desc`),
     sql(`select e.emisora
            from bmv_emisoras e
            left join (select distinct emisora from bmv_distribuciones) d
@@ -525,6 +547,10 @@ async function cobertura() {
         pct_ex_aproximada: d.filas ? Math.round((100 * (d.ex_aproximadas || 0)) / d.filas) : 0,
         por_divisa: divisas,
         por_tipo: tipos,
+        por_categoria: categorias,
+        // La lista accionable: series con reparto en moneda extranjera.
+        series_divisa_extranjera: extranjeras,
+        series_divisa_extranjera_ics: extranjeras.filter((x) => x.tipo_valor_id === '1'),
         ics_sin_reparto: icsSinReparto.map((x) => x.emisora),
       };
     })(),
