@@ -33,6 +33,7 @@ import {
 import {
   CONTRATO_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, contar,
   estimarConsumo, filaCenso, filasDelCenso, nuevaCartera, pareceClave, pareceSerie,
+  pendientesFinancieros,
   paramsBenchmark, paramsFinancieros, paramsHistoricos, parsePeriodoTexto,
   seriesDeEmisora, sirveFinanciero,
 } from '../api/bmv-harvest.js';
@@ -1138,4 +1139,43 @@ test('extraerDistribuciones cuenta categorías y conversiones', () => {
   });
   assert.deepEqual(r.categorias, { efectivo: 2, reembolso: 1 });
   assert.equal(r.requieren_conversion, 1);
+});
+
+/* ── la lista de trabajo de financieros ─────────────────────────── */
+
+test('la cosecha pide los trimestres ENUMERADOS, no el rango relleno', () => {
+  // Con huecos, min..max manda requests que vuelven vacíos y mete a la emisora
+  // al universo en trimestres que no reportó. Además el estimate ya contaba con
+  // la enumeración: sin esto, la cosecha pediría más de lo presupuestado.
+  const e = {
+    emisora: 'X', emisora_serie: 'X*', tipo_valor_id: '1',
+    fin_periodos: ['2016-2', '2016-3', '2020-1'],
+    fin_desde: '2016-2', fin_hasta: '2020-1',
+  };
+  const trimestres = pendientesFinancieros([e]);
+  assert.deepEqual(trimestres.map((t) => t.clave), ['2016-2', '2016-3', '2020-1']);
+  assert.equal(trimestres.length, 3, 'tres, no los 16 que hay entre los extremos');
+});
+
+test('una emisora con dos series conserva la que SÍ tiene cobertura', () => {
+  // Los campos del censo son del instrumento, así que una serie puede traer
+  // cobertura y la otra no. Quedarse con la primera que llegue perdería los
+  // financieros de la emisora entera si la serie vacía ordena antes.
+  const sinCobertura = { emisora: 'DOBLE', emisora_serie: 'DOBLE1', tipo_valor_id: '1', fin_periodos: null, fin_desde: null };
+  const conCobertura = { emisora: 'DOBLE', emisora_serie: 'DOBLEB', tipo_valor_id: '1', fin_periodos: ['2016-2', '2016-3'], fin_desde: '2016-2', fin_hasta: '2016-3' };
+  assert.equal(pendientesFinancieros([sinCobertura, conCobertura]).length, 2, 'la vacía llega primero');
+  assert.equal(pendientesFinancieros([conCobertura, sinCobertura]).length, 2, 'y al revés también');
+});
+
+test('una emisora SIN cobertura no genera ni un request', () => {
+  // Los 20 bancos y casas de bolsa del censo caen acá: sin rango_financieros no
+  // hay nada que pedir, y tampoco entran al universo de la v1.
+  const banco = { emisora: 'GFNORTE', emisora_serie: 'GFNORTEO', tipo_valor_id: '1', fin_periodos: null, fin_desde: null, fin_hasta: null };
+  assert.deepEqual(pendientesFinancieros([banco]), []);
+});
+
+test('no se pide dos veces la misma emisora por tener dos series', () => {
+  const a = { emisora: 'LIVEPOL', emisora_serie: 'LIVEPOLC-1', tipo_valor_id: '1', fin_periodos: ['2016-2'], fin_desde: '2016-2', fin_hasta: '2016-2' };
+  const b = { emisora: 'LIVEPOL', emisora_serie: 'LIVEPOL1', tipo_valor_id: '1', fin_periodos: ['2016-2'], fin_desde: '2016-2', fin_hasta: '2016-2' };
+  assert.equal(pendientesFinancieros([a, b]).length, 1, '/v2/financieros no conoce series');
 });

@@ -90,8 +90,8 @@ van **arriba**, antes de los resultados que califican — y lo mismo hace
 | Caveat | Estado medido |
 |---|---|
 | **Fecha ex aproximada en ~91% de los repartos** | La API sólo trae `fechaexcupon` en el bloque `reciente`. El resto es pago − 3 días. |
-| **Repartos en moneda extranjera** | `{MXN: 134, EUR: 2, USD: 12}`. Fuera del retorno total de la v1 (§3.3). |
-| **138 reembolsos de capital** | Excluidos: devolver principal no es rendimiento (§3.3). |
+| **14 repartos en moneda extranjera** | 12 USD + 2 EUR, en 10 series ICS. **Excluidos** del retorno total de la v1, con los bp no contados reportados por serie (§3.3). |
+| **121 reembolsos de capital** | **Excluidos** del caso base: devolver principal no es rendimiento. Disponibles como sensibilidad (§3.3). |
 
 El 91% no es un detalle de implementación: significa que **la fecha de
 reinversión de casi toda la serie es una estimación**, no un dato. Se aplica
@@ -200,10 +200,25 @@ La forma del gasto, con la cobertura declarada 2T2016→2T2026 (41 trimestres):
 | Financieros | **emisoras × 41** (por emisora, no por serie) |
 | Históricos | **1 por serie**, más el benchmark |
 
-Con las 30 ICS de Fase 1a eso daba **1,262 requests**. Pero el censo real trae
-**cientos** de emisoras, así que el número de verdad sale de `?job=estimate`
-corrido **después** de `?job=emisoras` — y por eso ese paso está en el orden de
-ejecución dos veces.
+Con el censo **real** cerrado —185 series ICS, 137 emisoras únicas, 20 series
+sin cobertura (bancos y casas de bolsa)— el gasto queda así:
+
+| Concepto | Requests |
+|---|---:|
+| Censo | 1 |
+| Financieros: **117 emisoras** (137 − 20 sin cobertura) × sus trimestres | 3,400 – 4,700 |
+| Históricos: **185 series ICS + benchmark** | 186 |
+| **Total** | **≈ 3,600 – 4,900** |
+
+**Entre 1.8% y 2.4% del presupuesto mensual.** El rango depende de cuántos
+trimestres traiga cada emisora en su enumeración (39 para una que reporta desde
+2T2016, menos para las que listaron después).
+
+> Este número es **aritmética sobre el censo reportado**, no una corrida:
+> `?job=estimate` contra la base da el exacto, porque lee la enumeración real de
+> cada emisora. Los financieros salen de `pendientesFinancieros`, la misma
+> función que usa la cosecha — así que el estimado y lo que se pide no pueden
+> discrepar.
 
 ### 2.1 El modelo de costo, resuelto con evidencia
 
@@ -479,17 +494,47 @@ además, una red de seguridad en `insertarDistribuciones` que deduplica por fech
 de pago justo antes del `INSERT`: la lógica de verdad vive arriba, pero ninguna
 ruta futura debería poder volver a tumbar una corrida por esto.
 
-#### Moneda extranjera: fuera de la v1, y dicho con nombres
+#### Moneda extranjera: DECISIÓN CONGELADA para la v1
 
-El censo real trae `{MXN: 134, EUR: 2, USD: 12}`. **Esos repartos no se
-convierten.** Ni con el tipo de cambio de hoy —eso sería mirar el futuro desde
-2016— ni tratándolos como pesos, que sería peor: un dividendo de 1 USD contado
-como 1 MXN subestima el reparto en ~17×.
+El censo real trae `{MXN: 134, EUR: 2, USD: 12}`. Los **14** repartos en moneda
+extranjera tocan **10 series ICS** —GISSAA, PENOLES\*, HOTEL\*, ORBIA\*,
+PINFRA\*, PINFRAL, VESTA\*, VITROA, ALFAA, ALPEKA— con **un solo reparto cada
+una** en ~10 años, más BBVA, ANB, TS y FIBRAUP, que no son ICS.
 
-La regla de la v1:
+> **Decisión congelada (16-sep-2026, antes de cualquier resultado): los 12
+> repartos en USD y los 2 en EUR se EXCLUYEN del retorno total de la v1.** No se
+> convierten con el tipo de cambio de hoy ni se asumen MXN.
 
-> Un reparto con divisa presente y distinta de MXN se marca
-> **`requiere_conversion`** y **no entra** al retorno total.
+**La razón es la dirección del error, no su tamaño.** Un reparto por serie en
+una década es poco, y excluirlo **le quita retorno a la canasta** — o sea que
+el error va **en contra** de encontrar alfa, que es el lado seguro y el mismo
+en el que van los 65 días y el piso de 8. Convertirlos mal, en cambio, sería un
+error de **dirección desconocida**: con el tipo de cambio de hoy estaríamos
+mirando el futuro desde 2016, y tratándolos como pesos subestimaríamos el
+reparto ~17×, que no es conservador, es simplemente incorrecto.
+
+Mecánicamente: un reparto con divisa presente y distinta de MXN se marca
+**`requiere_conversion`** y **no entra** al retorno total.
+
+##### Y se reporta cuánto retorno quedó sin contar
+
+Excluir en silencio convertiría una decisión defendible en un hueco invisible.
+El reporte de Fase B da, **por serie y en total**, los **puntos base de retorno
+no contados**:
+
+```
+bp no contados (serie) = Σ ( monto_excluido / precio_en_fecha_ex ) × 10,000
+```
+
+Se divide entre el precio de la **fecha ex** porque eso es lo que el reparto
+habría valido como rendimiento ese día — el mismo instante en que se habría
+reinvertido.
+
+> **Umbral de revisión: 50 bp acumulados por serie.** Si alguna serie pasa de
+> ahí, la exclusión deja de ser inmaterial y hay que resolverla con
+> `/v2/divisas` en la fecha ex **antes de leer el veredicto**, no después. El
+> umbral se fija aquí, sin números a la vista, para que no se pueda mover
+> después de verlos.
 
 Y la marca **se propaga dentro del grupo consolidado**: el bloque `historico` no
 trae divisa, así que si sólo se mirara la fila que gana, un reparto en USD cuya
@@ -506,7 +551,8 @@ listan **qué series** están afectadas y si son ICS.
 
 #### `REEMBOLSO`: excluido por decisión, no por accidente
 
-El censo trae **138 reembolsos de capital**. Un reembolso **no es un dividendo**:
+El censo trae **121 reembolsos de capital** (de 1,641 repartos: `{efectivo:
+1520, reembolso: 121}`, sin ningún `desconocido`). Un reembolso **no es un dividendo**:
 es la empresa devolviendo principal. Contarlo como rendimiento inflaría el
 retorno total con dinero que no es ganancia.
 
@@ -525,8 +571,13 @@ clasificación explícita:
 evalúa **antes** que `efectivo`. Si algún día llega `"REEMBOLSO DE CAPITAL EN
 EFECTIVO"`, el regex viejo lo habría contado como rendimiento. Hay test.
 
-La bandera `categoria` se guarda en la tabla, así que **incluir los reembolsos
-es una sensibilidad de una línea** — exploratoria, y sin tocar el veredicto.
+> **Decisión congelada:** los 121 reembolsos quedan **fuera del retorno total
+> en el caso base**, y **disponibles como sensibilidad de atribución**.
+
+La bandera `categoria` se guarda en la tabla, así que incluirlos es un `where`
+de una línea. Como toda sensibilidad (§3.5): **es atribución, no promoción** —
+si el caso base sale NO-GO y la versión con reembolsos sale bonita, el veredicto
+sigue siendo NO-GO.
 
 #### Los pagos de centésimas de centavo
 
@@ -823,10 +874,11 @@ regla aplicada dos veces, no una excepción conveniente.
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 8 jobs (con `reparse`, de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **105 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **109 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
-| **El censo** | **Corrido y verificado**: 597 filas, **165/185 series ICS con cobertura** (las 20 sin ella son bancos y casas de bolsa, fuera de la v1). 1,623 distribuciones. |
+| **El censo** | **Cerrado.** `deriva.estable: true` — 0 aparecieron, 0 desaparecieron. **185 series ICS**, 165 con cobertura (las 20 sin ella son bancos y casas de bolsa, fuera de la v1 por decisión de Fase 0). 1,641 repartos: 1,520 efectivo, 121 reembolso, 0 desconocido. |
+| **Fase A, diseño** | **Cerrado.** Falta sólo correr la cosecha. |
 | **La cosecha** | **Sin correr** — este sandbox no alcanza la API. |
 | **Cobertura real** | **Sin reportar** — depende de la cosecha. |
 | `/api/bmv-rotation-analyze` | **Fase B. No empezado, a propósito.** |
