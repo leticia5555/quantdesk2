@@ -92,5 +92,61 @@ console.log('\n── el almacenamiento y el prompt NO se renombraron ──');
     'y los ids de los cuatro enfoques tampoco cambian: son valores journaleados, no prosa');
 }
 
+// ═══════════════════════════════════════════════════════════════
+// LOS SELLOS: "VIVA" Y "SOMBRA" NO VUELVEN A LA SUPERFICIE.
+//
+// ── POR QUÉ ESTA REGLA ES DE ALCANCE ACOTADO Y LA DE ARRIBA NO ───────
+// "solapamiento" y "lente" se pueden prohibir en todo el repo: no nombran
+// nada. "sombra" SÍ nombra algo — el subsistema entero (`arena-shadow.js`,
+// `arena_shadow_journal`, `shadowBroker`, `runShadowAgent`) y páginas de
+// documentación que lo explican bien. Prohibirla en todas partes obligaría a
+// renombrar una tabla, que es una migración, y a reescribir prosa correcta.
+//
+// Lo que NO puede volver es la ETIQUETA: lo que se lee en la tarjeta, en el
+// sello de la auditoría y en el valor de `fuente` que viaja en la respuesta.
+// Por eso esta parte mira lugares concretos en vez de barrer el repo — una
+// regla que no se puede cumplir se termina desactivando, y entonces no protege
+// nada.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── los sellos: EN VIVO · PRUEBA · EN VIVO · SIN ENVIAR ──');
+{
+  const html = readFileSync('libros.html', 'utf8');
+  const libros = readFileSync('api/liga-libros.js', 'utf8');
+  const audit = readFileSync('api/_lib/arena-audit.js', 'utf8');
+
+  // La página: ni una etiqueta vieja, ni como texto ni como clase.
+  ok(!/>viva<|>sombra<|>seco<|>simulación</i.test(html),
+    'la página no pinta ninguna etiqueta vieja');
+  ok(!/\btag (viva|sombra|sim)\b/.test(html) && !/\bcard\.(viva|sombra)\b/.test(html),
+    'ni quedan las clases viejas, que son por dónde vuelve el texto viejo');
+  ok(/EN VIVO · SIN ENVIAR/.test(html) && /data-f="en_vivo"/.test(html) && /data-f="prueba"/.test(html),
+    'y están los tres sellos nuevos, incluido el filtro');
+
+  // El endpoint: los valores publicados de `fuente`.
+  ok(/export const FUENTE_VIVA = 'en_vivo'/.test(libros) && /export const FUENTE_PRUEBA = 'prueba'/.test(libros),
+    '`fuente` se publica con los nombres que se leen, no con el de la tabla');
+  ok(/SELLOS = \{ en_vivo: 'EN VIVO', prueba: 'PRUEBA', sin_enviar: 'EN VIVO · SIN ENVIAR' \}/.test(libros),
+    'y los tres sellos viven en UN solo lugar, del lado del servidor');
+  ok(/viva: FUENTE_VIVA, sombra: FUENTE_PRUEBA/.test(libros),
+    'los nombres viejos siguen aceptándose COMO ENTRADA: un curl guardado no se rompe porque la etiqueta cambie');
+
+  // La auditoría dice lo mismo que la tarjeta.
+  ok(/EN VIVO · SIN ENVIAR/.test(audit) && !/SIMULACIÓN/.test(audit),
+    'la auditoría usa el mismo sello que la página — dos redacciones del mismo estado terminan difiriendo');
+  ok(/'sin enviar'/.test(audit) && !/'seca'/.test(audit) && !/'simulación'/.test(audit),
+    'incluso en la columna `estado` de la tabla de órdenes, que es la que se lee de un vistazo');
+}
+
+// ── Y LO QUE SIGUE LLAMÁNDOSE SOMBRA ─────────────────────────────────
+console.log('\n── el subsistema conserva su nombre ──');
+{
+  const shadow = readFileSync('api/_lib/arena-shadow.js', 'utf8');
+  ok(/arena_shadow_journal/.test(shadow),
+    'la tabla sigue siendo `arena_shadow_journal`: renombrarla es una migración, y el renombre es de la etiqueta, no del dato');
+  const libros = readFileSync('api/liga-libros.js', 'utf8');
+  ok(/from arena_shadow_journal/.test(libros),
+    'y el endpoint la sigue leyendo por su nombre real — la traducción ocurre al publicar');
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
 process.exit(failures ? 1 : 0);

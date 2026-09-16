@@ -21,7 +21,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { readFileSync } from 'node:fs';
-import { identidad, secuenciaPublicable, libroDeFila, ejecucionPublicable, resumenPorDia } from '../api/liga-libros.js';
+import { identidad, secuenciaPublicable, libroDeFila, ejecucionPublicable, resumenPorDia, selloDe, SELLOS } from '../api/liga-libros.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -91,10 +91,10 @@ console.log('\n── 1) la fuente NUNCA se infiere ──');
     rebalance: { legs: [1, 2], turnover: 0.2, rail_trims: [], cancel: [1] },
     context: { lens: 'momentum', tools: { budget: 8, used: 2, summary: [{ n: 1, tool: 'screener', args: {}, rows: 3 }] } },
   };
-  const sombra = libroDeFila(fila, 'sombra');
-  ok(sombra.fuente === 'sombra', 'una fila de sombra viaja etiquetada como sombra');
-  const viva = libroDeFila(fila, 'viva');
-  ok(viva.fuente === 'viva', 'y una de la liga viva, como viva');
+  const sombra = libroDeFila(fila, 'prueba');
+  ok(sombra.fuente === 'prueba', 'una fila de sombra viaja etiquetada como sombra');
+  const viva = libroDeFila(fila, 'en_vivo');
+  ok(viva.fuente === 'en_vivo', 'y una de la liga viva, como viva');
 
   ok(sombra.portafolio.pesos.ZM === -0.08, 'el portafolio objetivo, con el signo del corto', String(sombra.portafolio.pesos.ZM));
   ok(sombra.portafolio.tesis.NVDA === 'la demanda sigue', 'y la tesis por posición');
@@ -105,7 +105,7 @@ console.log('\n── 1) la fuente NUNCA se infiere ──');
     'publicada CON su advertencia: dos agentes con enfoques distintos el mismo día no son comparables ese día');
 
   // Una corrida del contrato VIEJO no tiene portafolio, y eso también informa.
-  const vieja = libroDeFila({ ...fila, target: null, rebalance: null }, 'viva');
+  const vieja = libroDeFila({ ...fila, target: null, rebalance: null }, 'en_vivo');
   ok(vieja.portafolio === null && vieja.rebalanceo === null,
     'una corrida del contrato viejo sale con portafolio null — eso dice QUÉ contrato corrió ese día, no es un hueco');
 }
@@ -126,7 +126,7 @@ console.log('\n── solo lectura, como /eventos y /audit ──');
 console.log('\n── la tabla de sombra puede no existir todavía ──');
 {
   const src = readFileSync(new URL('../api/liga-libros.js', import.meta.url), 'utf8');
-  ok(/no corrió nunca, o la tabla no existe/.test(src),
+  ok(/nunca se corrió el contrato nuevo en paralelo, o la tabla no existe/.test(src),
     'y eso NO es un error del endpoint: es un estado, y se dice como tal');
 }
 
@@ -153,8 +153,8 @@ console.log('\n── la liga VIVA guarda el objetivo dentro de context ──')
     'y los rieles: `rejected_rails` dice QUE se rechazó, `rails` dice cuál y por qué');
 }
 
-// ── LAS ÓRDENES: SIMULACIÓN Y VIVO NO SE CONFUNDEN ───────────────────
-// Una corrida en simulación y una que movió dinero se journalean en la MISMA tabla. Que
+// ── LAS ÓRDENES: SIN ENVIAR Y EN VIVO NO SE CONFUNDEN ────────────────
+// Una corrida SIN ENVIAR y una que movió dinero se journalean en la MISMA tabla. Que
 // la página no pueda distinguirlas sería el mismo error que las tablas
 // separadas existen para impedir del lado de la sombra.
 console.log('\n── las órdenes, y el modo que las hace legibles ──');
@@ -171,10 +171,10 @@ console.log('\n── las órdenes, y el modo que las hace legibles ──');
     nota: 'ARENA_CONTRATO=objetivo_dry: las órdenes se calcularon y se journalearon COMPLETAS, y no se mandó ninguna.',
   });
   // El VALOR journaleado sigue siendo `dry` —es el dato— y la ETIQUETA que se
-  // lee es "SIMULACIÓN": "seco" no se usa así en México y es el sello que
-  // separa una ronda que movió dinero de una que solo calculó las órdenes.
-  ok(simulacion.modo === 'dry' && /^SIMULACIÓN:/.test(simulacion.modo_nota) && /NO se mandó ninguna/.test(simulacion.modo_nota),
-    'una corrida en simulación se publica como tal, con lo que eso significa dicho', simulacion.modo_nota);
+  // lee es "SIN ENVIAR", que es lo que de verdad la distingue: no es otro
+  // camino, es el mismo camino sin que salga una orden.
+  ok(simulacion.modo === 'dry' && /^SIN ENVIAR:/.test(simulacion.modo_nota) && /NO se mandó ninguna/.test(simulacion.modo_nota),
+    'una corrida sin envío se publica como tal, con lo que eso significa dicho', simulacion.modo_nota);
   ok(simulacion.ordenes.length === 1 && simulacion.ordenes[0].ticker === 'NVDA' && simulacion.ordenes[0].cantidad === 12,
     'las órdenes CALCULADAS viajan igual: ese es el punto del escalón — ver las órdenes antes de mandarlas');
   ok(simulacion.ordenes[0].resultado === null,
@@ -212,17 +212,17 @@ console.log('\n── la coincidencia y el piso son hechos de UN día y de UNA f
 
   // Ordenados de más nuevo a más viejo, como los entrega el handler.
   const libros = [
-    libro('claude', 'sombra', '2026-09-17T20:00:00Z', { NVDA: 0.2, AMD: 0.1 }, 'momentum', []),
-    libro('control', 'sombra', '2026-09-17T20:00:00Z', { NVDA: 0.2, AMD: 0.1 }, 'momentum', []),
+    libro('claude', 'prueba', '2026-09-17T20:00:00Z', { NVDA: 0.2, AMD: 0.1 }, 'momentum', []),
+    libro('control', 'prueba', '2026-09-17T20:00:00Z', { NVDA: 0.2, AMD: 0.1 }, 'momentum', []),
     // La corrida VIEJA del mismo agente y del mismo día: NO debe ganarle a la última.
-    libro('claude', 'sombra', '2026-09-17T14:00:00Z', { TSLA: 0.9 }, 'momentum', []),
-    libro('claude', 'viva', '2026-09-16T20:00:00Z', { NVDA: 0.2 }, 'valor', []),
+    libro('claude', 'prueba', '2026-09-17T14:00:00Z', { TSLA: 0.9 }, 'momentum', []),
+    libro('claude', 'en_vivo', '2026-09-16T20:00:00Z', { NVDA: 0.2 }, 'valor', []),
   ];
   const dias = resumenPorDia(libros);
 
   ok(dias.length === 2, 'un bloque por día Y por fuente', String(dias.length));
   const d17 = dias.find((d) => d.dia === '2026-09-17');
-  ok(d17.fuente === 'sombra' && d17.corridas === 2,
+  ok(d17.fuente === 'prueba' && d17.corridas === 2,
     'del 17 sale la corrida de sombra con sus dos agentes — no tres: de cada agente cuenta su ÚLTIMA corrida del día',
     JSON.stringify({ f: d17.fuente, n: d17.corridas }));
   ok(d17.coincidencia.mean === 1,
@@ -233,15 +233,15 @@ console.log('\n── la coincidencia y el piso son hechos de UN día y de UNA f
     'con mismo enfoque y mismo libro de arranque, claude↔control SÍ es piso de ruido');
 
   const d16 = dias.find((d) => d.dia === '2026-09-16');
-  ok(d16.fuente === 'viva' && d16.coincidencia.mean === null,
+  ok(d16.fuente === 'en_vivo' && d16.coincidencia.mean === null,
     'un solo libro no solapa con nada, y se dice en vez de publicar un número', JSON.stringify(d16.coincidencia.mean));
   ok(d16.piso_de_ruido.comparable === false,
     'y sin control ese día, no hay piso — no un piso de 0');
 
   // Enfoques distintas: el par mide el enfoque, no el ruido.
   const enfoques = resumenPorDia([
-    libro('claude', 'sombra', '2026-09-18T20:00:00Z', { NVDA: 0.2 }, 'momentum', []),
-    libro('control', 'sombra', '2026-09-18T20:00:00Z', { NVDA: 0.2 }, 'catalizador', []),
+    libro('claude', 'prueba', '2026-09-18T20:00:00Z', { NVDA: 0.2 }, 'momentum', []),
+    libro('control', 'prueba', '2026-09-18T20:00:00Z', { NVDA: 0.2 }, 'catalizador', []),
   ])[0];
   ok(enfoques.piso_de_ruido.comparable === false && /mide el enfoque/.test(enfoques.piso_de_ruido.motivo),
     'con enfoques distintos el par NO se publica como piso: mide el enfoque', enfoques.piso_de_ruido.motivo);
@@ -250,8 +250,8 @@ console.log('\n── la coincidencia y el piso son hechos de UN día y de UNA f
 
   // La sombra y la viva del mismo día NO se mezclan en el mismo coseno.
   const mezcla = resumenPorDia([
-    libro('claude', 'viva', '2026-09-19T20:00:00Z', { NVDA: 0.2 }, 'momentum', []),
-    libro('control', 'sombra', '2026-09-19T20:00:00Z', { NVDA: 0.2 }, 'momentum', []),
+    libro('claude', 'en_vivo', '2026-09-19T20:00:00Z', { NVDA: 0.2 }, 'momentum', []),
+    libro('control', 'prueba', '2026-09-19T20:00:00Z', { NVDA: 0.2 }, 'momentum', []),
   ]);
   ok(mezcla.length === 2 && mezcla.every((d) => d.coincidencia.mean === null),
     'una corrida viva y una de sombra del mismo día no son el mismo experimento: no entran al mismo coseno');
@@ -286,7 +286,7 @@ console.log('\n── /liga/libros dibuja lo que el endpoint publica ──');
       ejecucion: { modo: 'dry', candado: { ok: true }, ordenes_calculadas: [], descartadas: [] },
       tools: { budget: 20, used: 1, turns: 2, stopped_by: 'end_turn', summary: [{ n: 1, tool: 'screener', args: {}, rows: 3 }] },
     },
-  }, 'viva');
+  }, 'en_vivo');
   const claves = new Set(Object.keys(libro));
   const leidos = new Set([...html.matchAll(/\bl\.([a-záéíóúñ_]+)/gi)].map((m) => m[1]));
   const faltantes = [...leidos].filter((k) => !claves.has(k));
@@ -294,13 +294,50 @@ console.log('\n── /liga/libros dibuja lo que el endpoint publica ──');
     'todos los campos que la página lee de un libro existen en la respuesta', faltantes.join(', '));
 
   ok(/api\/liga\/libros/.test(html), 'y pega contra /api/liga/libros');
-  ok(/tag sim">simulación/.test(html) && !/>seco</.test(html),
-    'el sello de la corrida sin envío dice SIMULACIÓN: "seco" no se usa así en México y es el sello que se mira el día del encendido');
-  ok(/tag sombra|tag viva/.test(html),
-    'con la fuente SIEMPRE visible: una decisión de sombra no movió dinero y no puede verse igual que una viva');
+  ok(/l\.sello/.test(html) && !/>seco</.test(html) && !/>simulación</.test(html),
+    'la página PINTA el sello que manda el servidor: si lo armara ella, la tarjeta y la auditoría podrían decir cosas distintas del mismo estado');
+  ok(/\.tag\.en_vivo\{/.test(html) && /\.tag\.prueba\{/.test(html) && /\.tag\.sin_enviar\{/.test(html),
+    'con un estilo propio para cada uno de los tres sellos: EN VIVO, PRUEBA y EN VIVO · SIN ENVIAR no pueden verse iguales');
+  ok(/SELLO_SIN_ENVIAR='EN VIVO · SIN ENVIAR'/.test(html),
+    'y la página conoce el sello combinado para pintarlo distinto — verde por el camino, borde ámbar porque no salió una orden');
   ok(/no comparable hoy/.test(html),
     'y si el piso no es comparable ese día, la página NO lo dibuja como piso: dice qué mide ese número');
   ok(/width=device-width/.test(html) && /max-width:640px/.test(html), 'y se ve en celular');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EL SELLO DICE DOS COSAS, NO UNA.
+//
+// Un libro tiene que contestar dos preguntas que no son la misma:
+//   1. QUÉ CAMINO corrió — la liga de verdad, o el contrato nuevo en paralelo.
+//   2. SI SALIÓ UNA ORDEN — porque una corrida en vivo con la bandera en seco
+//      calculó las órdenes completas y no mandó ninguna, en la MISMA tabla y
+//      por el MISMO camino que una que sí movió dinero.
+//
+// Antes eran dos chips sueltos y el segundo se leía como una aclaración del
+// primero. Una etiqueta que dice las dos no se puede leer a medias.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── el sello dice el camino Y si salió una orden ──');
+{
+  ok(selloDe('prueba', null) === 'PRUEBA',
+    'una corrida de prueba es PRUEBA — no movió dinero y no puede verse como una que sí');
+  ok(selloDe('prueba', { modo: 'dry' }) === 'PRUEBA',
+    'y sigue siendo PRUEBA aunque traiga modo: el camino manda sobre el envío');
+  ok(selloDe('en_vivo', null) === 'EN VIVO', 'la liga de verdad es EN VIVO');
+  ok(selloDe('en_vivo', { modo: 'enviado' }) === 'EN VIVO', 'y con órdenes mandadas, también');
+  ok(selloDe('en_vivo', { modo: 'dry' }) === 'EN VIVO · SIN ENVIAR',
+    'y la bandera en seco NO cambia el camino: dice EN VIVO, y dice que no salió una orden',
+    selloDe('en_vivo', { modo: 'dry' }));
+
+  // El sello viaja ARMADO en el libro: la página lo pinta, no lo arma.
+  const l = libroDeFila({
+    created_at: '2026-09-17T14:00:00Z', agent_id: 'claude', status: 'ok_target',
+    context: { ejecucion: { modo: 'dry', candado: { ok: true }, ordenes_calculadas: [] } },
+  }, 'en_vivo');
+  ok(l.sello === SELLOS.sin_enviar && l.fuente === 'en_vivo',
+    'el libro trae el sello ya armado, y la fuente al lado', `${l.sello} / ${l.fuente}`);
+  ok(l.ordenes.modo === 'dry',
+    'y el VALOR journaleado sigue siendo `dry`: renombrarlo rompería las filas que ya existen. Lo que cambia es la etiqueta.');
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');

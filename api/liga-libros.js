@@ -101,13 +101,44 @@ export function secuenciaPublicable(ctx) {
   };
 }
 
-// Una fila del journal (viva o de sombra) → el libro publicable.
+// ── EL SELLO: DOS COSAS DISTINTAS EN UNA ETIQUETA ────────────────────
+// Un libro tiene que decir DOS cosas que no son la misma:
+//
+//   1. QUÉ CAMINO corrió: la liga de verdad (`en_vivo`) o el contrato nuevo
+//      corriendo en paralelo sobre el mismo mercado (`prueba`).
+//   2. SI SALIÓ UNA ORDEN. Una corrida en vivo con la bandera en seco calculó
+//      las órdenes completas y no mandó ninguna — es la MISMA tabla y el mismo
+//      camino que una que sí movió dinero.
+//
+// Antes eran dos chips sueltos y la segunda se leía como una aclaración de la
+// primera. Ahora es UNA etiqueta que dice las dos: "EN VIVO · SIN ENVIAR".
+//
+// Se calcula ACÁ y no en la página: la auditoría en markdown dice lo mismo, y
+// dos lugares armando la etiqueta es la forma de que un día difieran.
+export const SELLOS = { en_vivo: 'EN VIVO', prueba: 'PRUEBA', sin_enviar: 'EN VIVO · SIN ENVIAR' };
+
+export function selloDe(fuente, ejecucion) {
+  if (fuente === FUENTE_PRUEBA) return SELLOS.prueba;
+  // `dry` es el valor journaleado; "SIN ENVIAR" es cómo se lee.
+  return ejecucion && ejecucion.modo === 'dry' ? SELLOS.sin_enviar : SELLOS.en_vivo;
+}
+
+// Los dos valores de `fuente`, que son los dos JOURNALES. Se publican con el
+// nombre que se lee, no con el de la tabla: `arena_shadow_journal` sigue
+// llamándose así —renombrar una tabla es una migración— pero nadie que lea la
+// liga tiene que saber eso para entender la etiqueta.
+export const FUENTE_VIVA = 'en_vivo';
+export const FUENTE_PRUEBA = 'prueba';
+
+// Una fila del journal (en vivo o de prueba) → el libro publicable.
 export function libroDeFila(row, fuente) {
   const ctx = row.context || {};
   const target = row.target || null;
   const reb = row.rebalance || null;
   return {
-    fuente,                                   // 'viva' | 'sombra' — NUNCA se infiere
+    fuente,                                   // 'en_vivo' | 'prueba' — NUNCA se infiere
+    // La etiqueta ya armada, con las dos cosas que tiene que decir.
+    sello: selloDe(fuente, ctx.ejecucion),
     fecha: row.created_at || row.run_date,
     agente: identidad(row.agent_id),
     estado: row.status,
@@ -147,7 +178,7 @@ export function libroDeFila(row, fuente) {
     } : null,
     // ── LAS ÓRDENES ──────────────────────────────────────────────────
     // `modo` NO es decorativo: 'dry' significa que se calcularon COMPLETAS y
-    // no se mandó ninguna. Una corrida en simulación y una que movió dinero se
+    // no se mandó ninguna. Una corrida SIN ENVIAR y una que movió dinero se
     // journalean en la misma tabla, y confundirlas sería el mismo error que
     // las tablas separadas existen para impedir del lado de la sombra.
     ordenes: ejecucionPublicable(ctx.ejecucion),
@@ -160,7 +191,7 @@ export function libroDeFila(row, fuente) {
 }
 
 // La ejecución, publicable. Las órdenes CALCULADAS son la lista (existen en
-// en simulación y en vivo); el resultado de cada una se pega encima cuando se mandó.
+// sin enviar y en vivo); el resultado de cada una se pega encima cuando se mandó.
 export function ejecucionPublicable(e) {
   if (!e) return null;
   const enviadas = new Map();
@@ -190,7 +221,7 @@ export function ejecucionPublicable(e) {
   return {
     modo: e.modo || null,
     modo_nota: e.modo === 'dry'
-      ? 'SIMULACIÓN: las órdenes se calcularon completas y NO se mandó ninguna.'
+      ? 'SIN ENVIAR: las órdenes se calcularon completas y NO se mandó ninguna.'
       : e.modo === 'enviado' ? 'EN VIVO: estas órdenes se mandaron a Alpaca.' : null,
     // El candado: si alguna orden no correspondía a ningún peso, no se mandó
     // NINGUNA de esa corrida. Que se vea cuando frenó.
@@ -277,13 +308,17 @@ export default async function handler(req, res) {
   const q = req.query || {};
   const dias = int(q.dias, 3, 1, 30);
   const agente = String(q.agente || '').trim().toLowerCase() || null;
-  const fuente = ['viva', 'sombra', 'ambas'].includes(String(q.fuente || '')) ? String(q.fuente) : 'ambas';
+  // Los nombres VIEJOS siguen funcionando como alias: un curl guardado no se
+  // rompe porque la etiqueta se lea distinto. Lo que devuelve la respuesta es
+  // siempre el nombre nuevo.
+  const ALIAS_FUENTE = { viva: FUENTE_VIVA, sombra: FUENTE_PRUEBA, en_vivo: FUENTE_VIVA, prueba: FUENTE_PRUEBA, ambas: 'ambas' };
+  const fuente = ALIAS_FUENTE[String(q.fuente || '').trim().toLowerCase()] || 'ambas';
   const desde = new Date(Date.now() - dias * 86400000).toISOString().slice(0, 10);
 
   const libros = [];
   const avisos = [];
 
-  if (fuente === 'viva' || fuente === 'ambas') {
+  if (fuente === FUENTE_VIVA || fuente === 'ambas') {
     try {
       // ── DÓNDE VIVE EL OBJETIVO EN LA TABLA VIVA ───────────────────
       // `arena_journal` no tiene columnas `target` ni `rebalance` (es la tabla
@@ -310,13 +345,13 @@ export default async function handler(req, res) {
          order by created_at desc limit 200`,
         agente ? [desde, agente] : [desde],
       );
-      for (const r of rows || []) libros.push(libroDeFila(r, 'viva'));
+      for (const r of rows || []) libros.push(libroDeFila(r, FUENTE_VIVA));
     } catch (e) {
-      avisos.push('No se pudo leer la liga viva: ' + String((e && e.message) || e));
+      avisos.push('No se pudo leer el journal EN VIVO: ' + String((e && e.message) || e));
     }
   }
 
-  if (fuente === 'sombra' || fuente === 'ambas') {
+  if (fuente === FUENTE_PRUEBA || fuente === 'ambas') {
     try {
       const rows = await sql(
         `select run_date, created_at, agent_id, status, plan, error, target, rebalance,
@@ -332,11 +367,11 @@ export default async function handler(req, res) {
          order by created_at desc limit 200`,
         agente ? [desde, agente] : [desde],
       );
-      for (const r of rows || []) libros.push(libroDeFila(r, 'sombra'));
+      for (const r of rows || []) libros.push(libroDeFila(r, FUENTE_PRUEBA));
     } catch (e) {
       // La tabla puede no existir todavía (la sombra nunca corrió). Eso NO es
       // un error del endpoint: es un estado, y se dice como tal.
-      avisos.push('Todavía no hay journal de sombra (la sombra no corrió nunca, o la tabla no existe).');
+      avisos.push('Todavía no hay corridas de PRUEBA (nunca se corrió el contrato nuevo en paralelo, o la tabla no existe).');
     }
   }
 
@@ -358,9 +393,9 @@ export default async function handler(req, res) {
       libros: libros.length,
       con_portafolio_objetivo: conObjetivo.length,
       con_investigacion: conHerramientas.length,
-      de_sombra: libros.filter((l) => l.fuente === 'sombra').length,
+      de_prueba: libros.filter((l) => l.fuente === FUENTE_PRUEBA).length,
     },
-    nota_fuente: 'Cada libro dice si viene de la liga VIVA o de la SOMBRA. Una decisión de sombra NO movió dinero: es el contrato nuevo corriendo en paralelo, sin órdenes.',
+    nota_fuente: 'Cada libro trae su sello. EN VIVO es la liga de verdad. PRUEBA es el contrato nuevo corriendo en paralelo sobre el mismo mercado y sin mandar una sola orden. EN VIVO · SIN ENVIAR es la liga de verdad con la bandera en seco: las órdenes se calcularon completas y no salió ninguna.',
     // Por día y por fuente: la coincidencia entre los libros de ese día y el
     // piso de ruido claude↔control. El piso se CALCULA acá y no se archiva —
     // archivar escribe, y este endpoint no escribe. El archivo histórico vive

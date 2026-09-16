@@ -4,7 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
 <title>LOS LIBROS — QuantDesk · cómo decidió cada IA</title>
-<meta name="description" content="El libro de cada IA y CÓMO llegó a él: el enfoque del día, qué herramienta usó con qué filtros, el plan completo, los pesos y las órdenes. Corridas vivas y de sombra, siempre etiquetadas."/>
+<meta name="description" content="El libro de cada IA y CÓMO llegó a él: el enfoque del día, qué herramienta usó con qué filtros, el plan completo, los pesos y las órdenes. Cada corrida sellada: EN VIVO o PRUEBA."/>
 <meta name="theme-color" content="#050505"/>
 <meta property="og:title" content="LOS LIBROS — QuantDesk"/>
 <meta property="og:description" content="Siete IAs, siete libros, y la secuencia de investigación completa de cada una."/>
@@ -43,8 +43,8 @@ header{padding:22px 0 14px;display:flex;align-items:baseline;justify-content:spa
   background:var(--bg1);border:1px solid var(--border2);border-radius:20px;padding:7px 13px;cursor:pointer;
   -webkit-user-select:none;user-select:none;}
 .pill.on{color:#000;background:var(--purple);border-color:var(--purple);font-weight:700;}
-.pill.on.viva{background:var(--green);border-color:var(--green);}
-.pill.on.sombra{background:var(--amber);border-color:var(--amber);}
+.pill.on.en_vivo{background:var(--green);border-color:var(--green);}
+.pill.on.prueba{background:var(--amber);border-color:var(--amber);}
 select.pill{color:var(--text);-webkit-appearance:none;appearance:none;padding-right:26px;
   background-image:linear-gradient(45deg,transparent 50%,var(--text2) 50%),linear-gradient(135deg,var(--text2) 50%,transparent 50%);
   background-position:calc(100% - 14px) 52%,calc(100% - 9px) 52%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;}
@@ -70,9 +70,9 @@ section{padding:18px 0 4px;}
 
 .card{background:var(--bg1);border:1px solid var(--border2);border-radius:10px;margin-bottom:11px;position:relative;overflow:hidden;}
 .card::before{content:'';position:absolute;top:0;left:0;bottom:0;width:3px;background:var(--border2);}
-.card.viva::before{background:var(--green);}
-.card.sombra::before{background:var(--amber);}
-.card.sombra{border-style:dashed;}
+.card.en_vivo::before{background:var(--green);}
+.card.prueba::before{background:var(--amber);}
+.card.prueba{border-style:dashed;}
 .card.roto::before{background:var(--red);}
 .chead{padding:13px 14px;display:flex;align-items:flex-start;gap:11px;cursor:pointer;}
 .cid{flex:1;min-width:0;}
@@ -86,9 +86,12 @@ section{padding:18px 0 4px;}
 .tag.china{color:var(--red);border:1px solid rgba(var(--red-rgb),.3);background:rgba(var(--red-rgb),.06);}
 .tag.eu{color:var(--purple);border:1px solid rgba(167,139,250,.3);background:rgba(167,139,250,.06);}
 .tag.control{color:var(--text2);border:1px solid var(--border2);background:var(--bg2);}
-.tag.viva{color:#000;background:var(--green);border:1px solid var(--green);}
-.tag.sombra{color:#000;background:var(--amber);border:1px solid var(--amber);}
-.tag.sim{color:var(--amber);border:1px solid rgba(255,179,71,.4);background:rgba(255,179,71,.07);}
+.tag.en_vivo{color:#000;background:var(--green);border:1px solid var(--green);}
+.tag.prueba{color:#000;background:var(--amber);border:1px solid var(--amber);}
+/* EN VIVO · SIN ENVIAR: verde porque el camino ES el vivo, con el borde ámbar
+   que dice que no salió una orden. Un sello verde liso mentiría, y uno ámbar
+   liso lo haría parecer una corrida de prueba — que es otra cosa. */
+.tag.sin_enviar{color:var(--green);background:rgba(var(--green-rgb),.08);border:1px solid var(--amber);}
 .tag.rails{color:#fca5a5;border:1px solid #7f1d1d;background:#1e0f14;}
 .tag.enfoque{color:var(--purple);border:1px solid rgba(167,139,250,.3);background:rgba(167,139,250,.06);}
 .cbody{padding:0 14px 13px;}
@@ -161,12 +164,12 @@ footer{margin-top:34px;padding-top:20px;border-top:1px solid var(--border);}
 
   <div class="hero">
     <h1>Los <span class="accent">libros</span>:<br/>cómo decidió cada IA.</h1>
-    <p>El portafolio objetivo de cada agente y, sobre todo, <b>cómo llegó a él</b>: el enfoque del día, qué herramienta usó con qué filtros y cuántas filas trajo, el plan completo, los pesos y las órdenes. Cada corrida dice si fue <b>viva</b> o de <b>sombra</b>.</p>
+    <p>El portafolio objetivo de cada agente y, sobre todo, <b>cómo llegó a él</b>: el enfoque del día, qué herramienta usó con qué filtros y cuántas filas trajo, el plan completo, los pesos y las órdenes. Cada corrida trae su sello: <b>EN VIVO</b> o <b>PRUEBA</b>.</p>
     <div class="controls" id="controls">
       <select class="pill" id="selDia"></select>
       <span class="pill on" data-f="ambas">ambas</span>
-      <span class="pill" data-f="viva">viva</span>
-      <span class="pill" data-f="sombra">sombra</span>
+      <span class="pill" data-f="en_vivo">en vivo</span>
+      <span class="pill" data-f="prueba">prueba</span>
     </div>
   </div>
 
@@ -179,9 +182,10 @@ footer{margin-top:34px;padding-top:20px;border-top:1px solid var(--border);}
 
   <footer>
     <p class="disc">
-      <strong>Experimento, no asesoría.</strong> Una corrida de <b>sombra</b> NO movió dinero: es el contrato nuevo
-      corriendo en paralelo sobre el mismo mercado y sin mandar órdenes. Una corrida <b>viva</b> sí es la cuenta paper real
-      — y si dice <b>simulación</b>, las órdenes se calcularon completas y no se mandó ninguna. El <b>control</b> es el mismo
+      <strong>Experimento, no asesoría.</strong> Una corrida de <b>PRUEBA</b> NO movió dinero: es el contrato nuevo
+      corriendo en paralelo sobre el mismo mercado y sin mandar órdenes. <b>EN VIVO</b> sí es la cuenta paper real
+      — y <b>EN VIVO · SIN ENVIAR</b> es esa misma cuenta con la bandera en seco: las órdenes se calcularon
+      completas y no salió ninguna. El <b>control</b> es el mismo
       modelo que Claude con el mismo prompt en otra cuenta: su libro es el <b>piso de ruido</b>, no el de un competidor.
       El <b>enfoque</b> del día rota por agente y es un confound deliberado: dos agentes con enfoques distintos el mismo día
       no son comparables ese día.
@@ -223,14 +227,14 @@ function houseTag(a){
   if(a.casa==='eu') return '<span class="tag eu">🇪🇺 eu</span>';
   return '';
 }
-// La fuente NO se infiere en la página tampoco: viene en cada libro.
-function fuenteTag(l){
-  // "simulación", no "seco": es el sello que se lee en México, y es el que
-  // separa una ronda que movió dinero de una que solo calculó las órdenes.
-  const simulacion = l.ordenes && l.ordenes.modo==='dry';
-  if(l.fuente==='sombra') return '<span class="tag sombra">sombra</span>';
-  return '<span class="tag viva">viva</span>'+(simulacion?' <span class="tag sim">simulación</span>':'');
+// El SELLO lo arma el servidor (`l.sello`) y la página solo lo pinta: la
+// auditoría en markdown dice lo mismo, y dos lugares armando la etiqueta es la
+// forma de que un día difieran. Acá solo se elige el color.
+function selloTag(l){
+  const clase = l.sello===SELLO_PRUEBA ? 'prueba' : (l.sello===SELLO_SIN_ENVIAR ? 'sin_enviar' : 'en_vivo');
+  return '<span class="tag '+clase+'">'+esc(l.sello||'')+'</span>';
 }
+const SELLO_PRUEBA='PRUEBA', SELLO_SIN_ENVIAR='EN VIVO · SIN ENVIAR';
 
 // ── la secuencia, como historia ──────────────────────────────────────
 function argsStr(a){
@@ -319,7 +323,7 @@ function cardHtml(l,i){
   return '<div class="card '+esc(l.fuente)+(rotos?' roto':'')+'" id="card-'+i+'">'+
     '<div class="chead" data-card="'+i+'">'+
       '<div class="cid">'+
-        '<div class="cname">'+esc(a.nombre)+' '+houseTag(a)+' '+fuenteTag(l)+' '+railTag+' '+enfoqueTag+'</div>'+
+        '<div class="cname">'+esc(a.nombre)+' '+houseTag(a)+' '+selloTag(l)+' '+railTag+' '+enfoqueTag+'</div>'+
         '<div class="cmodel">'+esc(a.modelo||'')+' · '+esc(String(l.fecha||'').replace('T',' ').slice(0,16))+'</div>'+
       '</div>'+
       '<div class="cright">'+
@@ -337,7 +341,7 @@ function cardHtml(l,i){
         '<div class="blk"><h4>Las tesis</h4>'+tesis+'</div>'+
         '<div class="blk"><h4>Las órdenes</h4>'+
           (l.ordenes?ordenesHtml(l.ordenes)
-            :'<div class="empty">Esta corrida no calculó órdenes'+(l.fuente==='sombra'?' — la sombra nunca manda.':'.')+'</div>')+'</div>'+
+            :'<div class="empty">Esta corrida no calculó órdenes'+(l.fuente==='prueba'?' — una corrida de prueba nunca manda.':'.')+'</div>')+'</div>'+
         '<div class="blk"><h4>Los rieles</h4>'+(railsHtml(l.rieles)||'<div class="empty">Sin validación journaleada.</div>')+'</div>'+
         '<div class="blk"><h4>La corrida</h4><div class="kv">'+
           'estado <b>'+esc(l.estado||'—')+'</b>'+
