@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { filasXbrl, parseFechaBmv } from '../api/xbrl-capture.js';
+import { filasXbrl, parseFechaBmv, segmentoRuta, trimestreEsperado, trimestresDeAtraso } from '../api/xbrl-capture.js';
 
 /* ── parseFechaBmv ──────────────────────────────────────────────── */
 
@@ -116,4 +116,63 @@ test('links a otros documentos de BMV no se confunden con el XBRL', () => {
   const filas = filasXbrl(html);
   assert.equal(filas.length, 1);
   assert.equal(filas[0].doc_id, '1576474');
+});
+
+/* ── el '&' de PE&OLES ──────────────────────────────────────────── */
+
+test("segmentoRuta deja el '&' literal: BMV publica PE&OLES, no PE%26OLES", () => {
+  assert.equal(segmentoRuta('PE&OLES'), 'PE&OLES');
+  assert.equal(segmentoRuta('WALMEX'), 'WALMEX');
+  assert.equal(segmentoRuta('LASITEB-1'), 'LASITEB-1');
+});
+
+test('segmentoRuta sí escapa lo que de verdad rompe una ruta', () => {
+  assert.equal(segmentoRuta('A B'), 'A%20B');
+  assert.equal(segmentoRuta('A#B'), 'A%23B');
+  assert.equal(segmentoRuta('A?B'), 'A%3FB');
+  assert.equal(segmentoRuta('A/B'), 'A%2FB');
+});
+
+test("el '&' en la fila NO rompe la fecha — en ninguna de sus formas", () => {
+  const variantes = {
+    literal: 'PE&OLES Información Del Trimestre 2 Del Año 2026',
+    entidad: 'PE&amp;OLES Información Del Trimestre 2 Del Año 2026',
+    enHref: '<a href="/es/emisoras/perfil/PE&OLES-5608">perfil</a> Trimestre 2 Del Año 2026',
+  };
+  for (const [nombre, titulo] of Object.entries(variantes)) {
+    const html = `<tr><td>23-Jul-2026 14:11</td><td>${titulo}</td>
+      <td><a href="visorXbrl.html?docins=../ifrsxbrl/ifrsxbrl_1579656_2026-02_1.zip">Ver</a></td></tr>`;
+    const f = filasXbrl(html)[0];
+    assert.ok(f, `${nombre}: no encontró la fila`);
+    assert.equal(f.fecha_publicacion, '2026-07-23T14:11:00Z', `${nombre}: perdió la fecha`);
+    assert.equal(f.doc_id, '1579656');
+  }
+});
+
+/* ── detección de emisoras que dejaron de reportar ──────────────── */
+
+test('trimestreEsperado toma el último cierre con 60 días de holgura', () => {
+  // 2026-09-16: el 2T cerró el 30-jun y ya pasaron >60 días; el 3T aún no cierra.
+  assert.deepEqual(trimestreEsperado(new Date('2026-09-16T00:00:00Z')), { anio: 2026, trimestre: 2 });
+  // Justo después del cierre del 3T todavía no se espera el 3T.
+  assert.deepEqual(trimestreEsperado(new Date('2026-10-05T00:00:00Z')), { anio: 2026, trimestre: 2 });
+  // A finales de noviembre sí.
+  assert.deepEqual(trimestreEsperado(new Date('2026-12-05T00:00:00Z')), { anio: 2026, trimestre: 3 });
+  // En enero, el esperado sigue siendo el 3T del año anterior (el 4T cierra el 31-dic).
+  assert.deepEqual(trimestreEsperado(new Date('2027-01-15T00:00:00Z')), { anio: 2026, trimestre: 3 });
+});
+
+test('trimestresDeAtraso mide el hueco, y cruza el año sin romperse', () => {
+  const esperado = { anio: 2026, trimestre: 2 };
+  assert.equal(trimestresDeAtraso({ anio: 2026, trimestre: 2 }, esperado), 0);
+  assert.equal(trimestresDeAtraso({ anio: 2026, trimestre: 1 }, esperado), 1);
+  // El caso ELEKTRA real: última fila 2025-T4.
+  assert.equal(trimestresDeAtraso({ anio: 2025, trimestre: 4 }, esperado), 2);
+  assert.equal(trimestresDeAtraso({ anio: 2025, trimestre: 1 }, esperado), 5);
+  // Adelantada (no debería pasar) no da negativo.
+  assert.equal(trimestresDeAtraso({ anio: 2026, trimestre: 3 }, esperado), 0);
+});
+
+test('sin trimestre esperado, el atraso es 0 y no explota', () => {
+  assert.equal(trimestresDeAtraso({ anio: 2026, trimestre: 2 }, null), 0);
 });

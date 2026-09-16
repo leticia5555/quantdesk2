@@ -16,52 +16,55 @@
 
 ### 1.1 Universo v1 — emisoras ICS
 
-Viven en `api/_lib/emisoras.json`. **30 emisoras: 23 con id verificado, 7 sin
-id.** El id interno de BMV no se deriva del ticker, así que cada uno se confirma
+Viven en `api/_lib/emisoras.json`. **30 emisoras: 29 con id verificado, 1 sin id.**
+El id interno de BMV no se deriva del ticker, así que cada uno se confirma
 viéndolo en una URL real; **el que no se confirmó va `id: null` y el capturador
 lo salta reportando el motivo.** Nunca se inventa un id.
 
-| Clave | id BMV | Nombre | Sector | Verificado |
-|---|---|---|---|---|
-| AMX | 6024 | América Móvil | telecom | ✅ |
-| WALMEX | 5214 | Walmart de México | consumo | ✅ |
-| FEMSA | 5305 | Fomento Económico Mexicano | consumo | ✅ |
-| GMEXICO | 6008 | Grupo México | materiales | ✅ |
-| CEMEX | 5203 | Cemex | materiales | ✅ |
-| BIMBO | 5163 | Grupo Bimbo | consumo | ✅ |
-| TLEVISA | 5720 | Grupo Televisa | telecom | ✅ |
-| ORBIA | 5188 | Orbia | materiales | ✅ |
-| KOF | 5525 | Coca-Cola FEMSA | consumo | ✅ |
-| ALFA | 5052 | Alfa | industrial | ✅ |
-| PE&OLES | 5608 | Industrias Peñoles | materiales | ✅ |
-| GRUMA | 5454 | Gruma | consumo | ✅ |
-| ALSEA | 5059 | Alsea | consumo | ✅ |
-| ASUR | 6001 | Grupo Aeroportuario del Sureste | industrial | ✅ |
-| LIVEPOL | 5536 | El Puerto de Liverpool | consumo | ✅ |
-| KIMBER | 5524 | Kimberly-Clark de México | consumo | ✅ |
-| GCARSO | 5393 | Grupo Carso | industrial | ✅ |
-| ELEKTRA | 5457 | Grupo Elektra | consumo | ✅ |
-| PINFRA | 5725 | Pinfra | industrial | ✅ |
-| CHDRAUI | 5209 | Grupo Comercial Chedraui | consumo | ✅ |
-| GCC | 5394 | Grupo Cementos de Chihuahua | materiales | ✅ |
-| BOLSA | 7029 | Bolsa Mexicana de Valores | servicios fin. no bancarios | ✅ |
-| CUERVO | 32378 | Becle (José Cuervo) | consumo | ✅ |
-| **GAP** | — | Grupo Aeroportuario del Pacífico | industrial | ❌ **[NO VERIFICADO]** |
-| **OMA** | — | Grupo Aeroportuario Centro Norte | industrial | ❌ **[NO VERIFICADO]** |
-| **AC** | — | Arca Continental | consumo | ❌ **[NO VERIFICADO]** |
-| **VESTA** | — | Vesta | inmobiliario | ❌ **[NO VERIFICADO]** |
-| **MEGA** | — | Megacable | telecom | ❌ **[NO VERIFICADO]** |
-| **LASITE** | — | Sitios Latinoamérica | telecom | ❌ **[NO VERIFICADO]** |
-| **VOLAR** | — | Volaris | industrial | ❌ **[NO VERIFICADO]** |
+| Clave | id BMV | Nombre | Sector | Estado | Verificado |
+|---|---|---|---|---|---|
+| AMX | 6024 | América Móvil | telecom | activa | ✅ |
+| WALMEX | 5214 | Walmart de México y Centroamérica | consumo | activa | ✅ |
+| FEMSA | 5305 | Fomento Económico Mexicano | consumo | activa | ✅ |
+| GMEXICO | 6008 | Grupo México | materiales | activa | ✅ |
+| CEMEX | 5203 | Cemex | materiales | activa | ✅ |
+| BIMBO | 5163 | Grupo Bimbo | consumo | activa | ✅ |
+| TLEVISA | 5720 | Grupo Televisa | telecom | activa | ✅ |
+| ORBIA | 5188 | Orbia Advance Corporation | materiales | activa | ✅ |
+| KOF | 5525 | Coca-Cola FEMSA | consumo | activa | ✅ |
+| ALFA | 5052 | Alfa | industrial | activa | ✅ |
+| PE&OLES | 5608 | Industrias Peñoles | materiales | activa | ✅ |
+| GRUMA | 5454 | Gruma | consumo | activa | ✅ |
+| ALSEA | 5059 | Alsea | consumo | activa | ✅ |
+| ASUR | 6001 | Grupo Aeroportuario del Sureste | industrial | activa | ✅ |
+| LIVEPOL | 5536 | El Puerto de Liverpool | consumo | activa | ✅ |
+| KIMBER | 5524 | Kimberly-Clark de México | consumo | activa | ✅ |
+| GCARSO | 5393 | Grupo Carso | industrial | activa | ✅ |
+| ELEKTRA | 5457 | Grupo Elektra | consumo | **deslistada** | ✅ |
+| PINFRA | 5725 | Promotora y Operadora de Infraestructura | industrial | activa | ✅ |
+| CHDRAUI | 5209 | Grupo Comercial Chedraui | consumo | activa | ✅ |
+| GCC | 5394 | Grupo Cementos de Chihuahua | materiales | activa | ✅ |
+| BOLSA | 7029 | Bolsa Mexicana de Valores | servicios financieros no bancarios | activa | ✅ |
+| CUERVO | 32378 | Becle (José Cuervo) | consumo | activa | ✅ |
+| GAP | 6579 | Grupo Aeroportuario del Pacífico | industrial | activa | ✅ |
+| OMA | 6707 | Grupo Aeroportuario Centro Norte | industrial | activa | ✅ |
+| AC | 6081 | Arca Continental | consumo | activa | ✅ |
+| VESTA | 7793 | Corporación Inmobiliaria Vesta | inmobiliario | activa | ✅ |
+| MEGA | 6854 | Megacable Holdings | telecom | activa | ✅ |
+| LASITE | — | Sitios Latinoamérica | telecom | activa | ❌ **[NO VERIFICADO]** |
+| VOLAR | 30023 | Controladora Vuela (Volaris) | industrial | activa | ✅ |
 
-Los 23 verificados salen de URLs vistas en resultados de búsqueda, del tipo
-`bmv.com.mx/es/emisoras/informacionfinanciera/GRUMA-5454-CGEN_CAPIT`. Los 7 sin
-id no aparecieron en ninguna URL que pudiera ver; **completarlos son 7 visitas
-al navegador**, y hasta entonces el `?run=1` los reporta en `saltadas`.
+**Sólo falta LASITE.** Es una visita al navegador.
+
+**El campo `estado`** (`activa` / `deslistada` / `sin_reporte`) es una anotación
+humana para saber si una fila vieja es esperada o es un problema. **No es de lo
+que depende la detección**: el capturador calcula solo el atraso contra el
+trimestre esperado (§2.4), así que el próximo ELEKTRA se detecta aunque nadie
+se acuerde de anotarlo.
 
 **Excluidas a propósito** (usan taxonomías distintas de ICS, decisión de Fase 0
-§2.1): GFNORTE, BBAJIO, RA, GENTERA, GFINBUR (bancos), Q (aseguradora — la
-taxonomía de seguros es otra), FUNO y FIBRAMQ (FIBRAs).
+§2.1): GFNORTE, BBAJIO, RA, GENTERA, GFINBUR (bancos), Q (aseguradora), FUNO y
+FIBRAMQ (FIBRAs).
 
 ### 1.2 Cómo se ve la fila del XBRL en la página
 
@@ -147,7 +150,42 @@ nothing`. Correr dos veces no duplica, y no depende de leer antes de escribir.
 
 **Cero llamadas a Claude.** Esto es determinista de punta a punta.
 
-### 2.3 Cron
+### 2.3 Reparación de `fecha_publicacion`
+
+`doc_id` es único, así que un segundo `?run=1` no reescribe nada… lo cual sería
+un problema si una fila quedó mal guardada. Por eso hay **una sola** columna que
+se repara desde la red:
+
+```sql
+on conflict (doc_id) do update
+   set fecha_publicacion = excluded.fecha_publicacion
+ where xbrl_reports.fecha_publicacion is null
+```
+
+**Por qué sólo ésa:** todo lo demás se puede recalcular de `raw_json`, que se
+guarda completo. La fecha de envío **no está en el archivo** (D8): vive
+únicamente en el listado de BMV. Si quedó `null`, la única forma de obtenerla es
+volver a leer la página — y eso deja de ser posible cuando el trimestre sale de
+la vista gratis.
+
+Y la reparación **no cuesta una descarga**: la fecha viene de la página, que el
+run ya pidió para saber el `doc_id`. Por eso el capturador localiza la fila
+primero y sólo baja el zip si la fila es nueva.
+
+### 2.4 Detección de emisoras que dejaron de reportar
+
+`trimestreEsperado()` toma el último trimestre cuyo cierre lleva más de 60 días
+—una emisora reporta ~1-2 meses después del cierre— y el run compara contra eso.
+Una fila atrasada **sale como alerta, nunca como éxito silencioso**:
+
+| Tipo de alerta | Cuándo |
+|---|---|
+| `atrasada` | la última fila está N trimestres detrás y la emisora figura como activa |
+| `deslistada_esperado` | atrasada, pero ya estaba marcada `deslistada` — se confirma, no alarma |
+| `revivio` | marcada `deslistada` pero publicó al día — hay que actualizar `emisoras.json` |
+| `sin_fecha` | la fila no trae fecha-hora legible |
+
+### 2.5 Cron
 
 ```json
 { "path": "/api/xbrl-capture?run=1", "schedule": "0 13 * * 1" }
@@ -222,54 +260,81 @@ curl -s 'https://<tu-dominio>/api/xbrl-capture' | jq
 
 ```bash
 node tests/xbrl-parse.test.mjs          # 18 tests del lector
-node tests/xbrl-capture-fila.test.mjs   # 11 tests del scraping de la fila
+node tests/xbrl-capture-fila.test.mjs   # 17 tests de la fila, el '&' y el atraso
 ```
 
 ---
 
-## 5. Qué esperar en la primera corrida
+## 5. Resultado de la primera corrida **[VERIFICADO EN PROD]**
 
-Con el universo como está hoy:
+`?run=1` en prod: **23 capturadas con 9/9 campos, 0 fallidas, 7 saltadas sin id.**
+Dos cosas salieron raras y las dos están arregladas.
+
+### 5.1 PE&OLES: `fecha_publicacion` null — y el `&` no era lo que yo creía
+
+PE&OLES capturó bien (doc 1579656, 2026-T2, 9/9 campos) pero sin fecha; las
+otras 22 sí la trajeron.
+
+**Primero descarté la hipótesis obvia.** Probé el parseo de la fila con el `&`
+en sus tres formas —literal, como `&amp;`, y dentro de un `href`— y **las tres
+sacan la fecha bien**. El `&` no rompe el parseo. Hay test para las tres.
+
+**Lo que sí estaba mal era la URL.** Yo pedía:
+
+```
+.../informacionfinanciera/PE%26OLES-5608-CGEN_CAPIT     ← encodeURIComponent
+.../informacionfinanciera/PE&OLES-5608-CGEN_CAPIT       ← lo que publica BMV
+```
+
+El `&` es un carácter **legal** dentro de un segmento de ruta (RFC 3986,
+sub-delim): escaparlo era un error mío. La captura funcionó igual —el zip salió
+bien— así que `%26` llega a *alguna* página válida; mi lectura es que cae en una
+variante que lista el documento sin la columna de fecha.
+
+**No pude comprobarlo** porque no tengo egress a BMV. Pero mandar la URL tal como
+BMV la publica es correcto de todos modos, y ahora hay dos redes por si no era
+eso: la fila sin fecha **genera alerta `sin_fecha`** en vez de un null callado, y
+el siguiente `?run=1` **repara la fila ya guardada** (§2.3) sin re-descargar nada.
+
+### 5.2 ELEKTRA: no es un bug, se deslistó
+
+Su última fila es 2025-T4 (doc 1536787, publicado 2026-02-25) porque **Grupo
+Elektra salió de la BMV**:
+
+- **27-dic-2024** — la asamblea de accionistas aprueba cancelar el registro de
+  las acciones en el RNV.
+- **30-sep-2025** — BMV **suspende la cotización**, paso previo a la cancelación
+  definitiva. Motivo formal: dejó de cumplir el mínimo de capital flotante
+  (12% en manos del público).
+- La empresa montó un fideicomiso para recomprar el ~1.08% que quedaba en manos
+  del público.
+
+Fuentes: [La Jornada](https://www.jornada.com.mx/noticia/2025/09/30/economia/bmv-suspende-cotizacion-de-grupo-elektra-tras-anuncio-previo-de-desliste),
+[Bloomberg Línea](https://www.bloomberglinea.com/latinoamerica/mexico/grupo-elektra-avanza-en-el-desliste-de-sus-acciones-en-la-bolsa-mexicana/),
+[La Silla Rota](https://lasillarota.com/negocios/2025/9/30/grupo-elektra-se-despide-de-la-bolsa-mexicana-de-valores-559495.html).
+
+O sea que **el 4T2025 fue su última obligación de reporte** y la fila vieja es el
+dato correcto, no una falla. Queda marcada `estado: "deslistada"` con su nota, y
+el run la reporta como `deslistada_esperado`.
+
+**Lo importante no es la anotación, es que ahora se detecta sola.** El atraso se
+calcula contra el trimestre esperado (§2.4): ELEKTRA sale con 2 trimestres de
+atraso aunque nadie hubiera escrito la nota. La anotación sólo cambia el tono de
+la alerta de "revisar" a "confirmado".
+
+**Consecuencia para el universo:** ELEKTRA deja de ser parte del IPC vivo. Se
+mantiene en `emisoras.json` porque su histórico ya capturado vale, pero no debe
+contarse como cobertura activa.
+
+### 5.3 Qué esperar de la próxima corrida
 
 | | |
 |---|---|
-| Emisoras intentadas | **23** (las que tienen id) |
-| Saltadas sin tocar la red | **7** (`sin id verificado`) |
-| Requests a BMV | ~46 (una página + un zip por emisora) |
-| Duración estimada | **~2 minutos** (1 req/s + descarga) |
-| Escrituras esperadas | 23 filas, una por emisora, del trimestre vigente |
-
-**Lo que me sorprendería que saliera perfecto a la primera**, en orden de
-probabilidad:
-
-1. **Alguna emisora sin fila de XBRL en la página.** No todas publican al mismo
-   ritmo, y alguna puede tener el trimestre anterior. Sale como `fallida` con
-   motivo `sin fila de XBRL`, o se captura el trimestre que haya — que igual
-   sirve, porque el `anio`/`trimestre` se leen del archivo, no se asumen.
-2. **Alguna que no use ICS.** El parser lo detecta y lo pone en `alertas`
-   (`entry point inesperado`), pero **igual guarda el raw**. BOLSA es la
-   candidata más probable a comportarse distinto.
-3. **Campos en `null` con motivo.** Esperable y correcto: WALMEX reporta deuda
-   con costo en cero explícito, pero otra emisora puede simplemente no traer
-   esos tags. `null` con motivo es el resultado bueno; un número inventado
-   sería el malo.
-4. **El import de JSON.** `api/xbrl-capture.js` hace
-   `import ... with { type: 'json' }`, que es el **primer import de JSON del
-   repo**. Funciona en Node 22 (probado local, los tests lo importan), pero si
-   Vercel corriera un Node más viejo el endpoint fallaría al cargar. **El smoke
-   lo descubre en el primer request** — si devuelve un error de módulo, es eso.
-
-**Después de la corrida, verificar en Neon:**
-
-```sql
-select clave, anio, trimestre, fecha_publicacion, identidades_ok,
-       jsonb_array_length(alertas) as n_alertas
-  from xbrl_reports order by clave;
-```
-
-Una fila por emisora, `fecha_publicacion` no nula, `identidades_ok` en `true`.
-
----
+| Emisoras intentadas | **29** (LASITE sigue sin id) |
+| Nuevas capturas | 6 — GAP, OMA, VOLAR, AC, MEGA, VESTA |
+| Reparaciones | 1 si PE&OLES ahora sí trae fecha; si no, alerta `sin_fecha` |
+| Ya existentes | 23, sin descargar el zip |
+| Alertas esperadas | al menos `deslistada_esperado` de ELEKTRA |
 
 ## 6. Qué me preocupa
 
@@ -277,9 +342,9 @@ Una fila por emisora, `fecha_publicacion` no nula, `identidades_ok` en `true`.
    antes de la primera corrida, ese trimestre hay que comprarlo. **Correr el
    smoke y el run el mismo día que leas esto** vale más que cualquier mejora al
    capturador.
-2. **Los 7 ids que faltan.** Son 7 visitas al navegador y no las puedo hacer yo.
-   Mientras tanto ese 23% del universo no se captura, y cada trimestre que pase
-   sin ellos es un trimestre suyo que se pierde.
+2. **LASITE sigue sin id.** Es una visita al navegador. Mientras tanto esa
+   emisora no se captura, y cada trimestre que pase sin ella es un trimestre
+   suyo que se pierde.
 3. **El scraping de la fila es lo frágil.** El parser del XBRL está probado
    contra archivos reales; la lectura del HTML está probada contra fixtures que
    yo escribí a partir de una descripción. Si BMV rediseña esa tabla, se rompe
