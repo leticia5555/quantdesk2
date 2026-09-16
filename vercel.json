@@ -71,6 +71,14 @@
       "destination": "/leaderboard.html"
     },
     {
+      "source": "/liga/libros",
+      "destination": "/libros.html"
+    },
+    {
+      "source": "/libros",
+      "destination": "/libros.html"
+    },
+    {
       "source": "/api/liga/eventos",
       "destination": "/api/liga-eventos"
     },
