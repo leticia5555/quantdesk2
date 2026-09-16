@@ -710,7 +710,6 @@ function restaDias(fecha, dias) {
 function extraerDistribuciones(raw) {
   const out = [];
   let descartadas = 0;
-  const visto = new Set();
   const campos = new Set();
   const tipos = {};
   const divisas = {};
@@ -723,12 +722,11 @@ function extraerDistribuciones(raw) {
     return undefined;
   };
 
-  const empuja = (fila) => {
-    const llave = fila.fecha_pago + '|' + fila.monto;
-    if (visto.has(llave)) return;
-    visto.add(llave);
-    out.push(fila);
-  };
+  // Se empuja TODO lo que se encuentre. La consolidación por
+  // (emisora_serie, fecha_pago) va después, en `consolidarDistribuciones`: los
+  // bloques "reciente" e "historico" SE TRASLAPAN y hay que mirar el grupo
+  // completo para decidir, no fila por fila.
+  const empuja = (fila) => { out.push(fila); };
 
   const fila = (clave, valor) => {
     // La llave SIEMPRE es la fecha de pago, venga el valor como objeto,
@@ -818,18 +816,111 @@ function extraerDistribuciones(raw) {
   };
   caminar(raw, false, 0);
 
-  out.sort((a, b) => (a.fecha_ex < b.fecha_ex ? -1 : a.fecha_ex > b.fecha_ex ? 1 : 0));
-  const aproximadas = out.filter((d) => d.ex_aproximada).length;
+  const { filas, colapsadas, sumadas, bajo_umbral } = consolidarDistribuciones(out);
+  const aproximadas = filas.filter((d) => d.ex_aproximada).length;
   return {
-    distribuciones: out,
+    distribuciones: filas,
     descartadas,
+    colapsadas,
+    sumadas,
+    // Pagos de centésimas de centavo. NO se filtran —esa decisión no es mía—
+    // pero se cuentan aparte: casi seguro son placeholders de la fuente y no
+    // repartos reales, y reinvertir un placeholder es meter ruido al retorno.
+    bajo_umbral,
+    umbral_placeholder: UMBRAL_PLACEHOLDER,
     campos: [...campos],
     tipos,
     divisas,
     aproximadas,
     // El porcentaje, no sólo el conteo: "12 aproximadas" no dice nada sin
     // saber si son 12 de 15 o 12 de 4,000.
-    pct_aproximadas: out.length ? Math.round((100 * aproximadas) / out.length) : 0,
+    pct_aproximadas: filas.length ? Math.round((100 * aproximadas) / filas.length) : 0,
+  };
+}
+
+// Debajo de esto un "reparto" es una centésima de centavo. NAFTRAC trae varios
+// de 1e-07, que casi seguro son placeholders de la fuente y no dinero.
+const UMBRAL_PLACEHOLDER = 0.0001;
+
+/**
+ * Colapsa los repartos a UNO por fecha de pago, que es la llave de la tabla.
+ *
+ * ── Por qué existe ─────────────────────────────────────────────────
+ * Los bloques `reciente` e `historico` **se traslapan**: NAFTRAC trae
+ * 2022-07-29 en los dos con el mismo pago, y 2026-08-31 en los dos también.
+ * Concatenarlos y mandarlos al insert reventaba con "ON CONFLICT DO UPDATE
+ * command cannot affect row a second time" — Postgres se niega a tocar la misma
+ * fila dos veces en una sentencia, y hace bien: no hay forma de saber cuál de
+ * las dos gana.
+ *
+ * Así que se decide **antes** del insert, acá, donde se puede mirar el grupo
+ * completo y dejar constancia de lo que se hizo:
+ *
+ *   · Duplicado exacto (mismo monto) → una sola fila, y gana la que traiga
+ *     `fechaexcupon` REAL. Es lo que hace valioso al bloque `reciente`: la
+ *     misma información, pero con la fecha buena.
+ *   · Montos DISTINTOS el mismo día → **no se elige en silencio**. Si todas son
+ *     efectivo, se SUMAN (dos repartos el mismo día son raros pero posibles) y
+ *     la fila queda marcada `pago_consolidado` para que se vea en el reporte.
+ *   · Si hay mezcla de efectivo y no-efectivo, sólo se suma el efectivo: lo que
+ *     no es dinero no entra al retorno total, y el resto queda contado.
+ */
+function consolidarDistribuciones(filas) {
+  const grupos = new Map();
+  for (const f of filas) {
+    if (!f || !f.fecha_pago) continue;
+    if (!grupos.has(f.fecha_pago)) grupos.set(f.fecha_pago, []);
+    grupos.get(f.fecha_pago).push(f);
+  }
+
+  const out = [];
+  let colapsadas = 0;
+  let sumadas = 0;
+
+  for (const [fecha, grupo] of grupos) {
+    // La mejor fecha ex del grupo: una real le gana a cualquier aproximada.
+    const conExReal = grupo.find((f) => f.ex_aproximada === false);
+    const base = conExReal || grupo[0];
+
+    // Montos distintos dentro del grupo (con tolerancia de punto flotante).
+    const montos = [];
+    for (const f of grupo) {
+      if (!montos.some((m) => Math.abs(m - f.monto) < 1e-12)) montos.push(f.monto);
+    }
+
+    if (montos.length === 1) {
+      // Duplicado exacto entre `reciente` e `historico`: una fila, la mejor.
+      colapsadas += grupo.length - 1;
+      out.push({ ...base, fecha_pago: fecha, pago_consolidado: false });
+      continue;
+    }
+
+    // Montos distintos: se suma lo que sea efectivo, sin elegir en silencio.
+    const efectivo = grupo.filter((f) => f.es_efectivo !== false);
+    const aSumar = efectivo.length ? efectivo : grupo;
+    const distintos = [];
+    for (const f of aSumar) {
+      if (!distintos.some((x) => Math.abs(x.monto - f.monto) < 1e-12)) distintos.push(f);
+    }
+    const total = distintos.reduce((acc, f) => acc + f.monto, 0);
+    colapsadas += grupo.length - 1;
+    if (distintos.length > 1) sumadas += 1;
+
+    out.push({
+      ...base,
+      fecha_pago: fecha,
+      monto: total,
+      es_efectivo: efectivo.length > 0,
+      pago_consolidado: distintos.length > 1,
+    });
+  }
+
+  out.sort((a, b) => (a.fecha_ex < b.fecha_ex ? -1 : a.fecha_ex > b.fecha_ex ? 1 : 0));
+  return {
+    filas: out,
+    colapsadas,
+    sumadas,
+    bajo_umbral: out.filter((f) => Math.abs(f.monto) < UMBRAL_PLACEHOLDER).length,
   };
 }
 
@@ -854,7 +945,8 @@ export {
   BASE, BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
   CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL, TIMEOUT_MS,
   aNumero, aplanarHistoricos, cabecerasDeCredito, clavePeriodo, construirUrl,
-  DIAS_EX_APROX, dormir, emisoraSerie, extraerDistribuciones, finDeTrimestre,
+  DIAS_EX_APROX, UMBRAL_PLACEHOLDER, consolidarDistribuciones, dormir, emisoraSerie,
+  extraerDistribuciones, finDeTrimestre,
   mesPresupuesto, restaDias,
   normalizaLlave, normalizarFinancieros, periodoApi,
   ordenPeriodo, parseClavePeriodo, parsearRangoFechas, parsearRangoPeriodos,

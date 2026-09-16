@@ -24,7 +24,8 @@ import {
   COBERTURA_FIN, PRESUPUESTO_MENSUAL,
   aNumero, aplanarHistoricos, clavePeriodo, construirUrl, emisoraSerie,
   extraerDistribuciones, finDeTrimestre, mesPresupuesto, normalizarFinancieros,
-  parseClavePeriodo, periodoApi, restaDias, DIAS_EX_APROX,
+  parseClavePeriodo, periodoApi, restaDias, DIAS_EX_APROX, UMBRAL_PLACEHOLDER,
+  consolidarDistribuciones,
   parsearRangoFechas, parsearRangoPeriodos, recortarACobertura, resolverCampo,
   trimestresEntre, urlSegura,
 } from '../api/_lib/databursatil.js';
@@ -925,11 +926,101 @@ test('una divisa distinta de MXN viaja hasta el reporte, no se asume', () => {
   assert.deepEqual(r.divisas, { USD: 1 });
 });
 
-test('dos repartos del mismo día con montos distintos no se colapsan', () => {
-  // La llave de deduplicación es (fecha_pago, monto): dos repartos el mismo día
-  // son raros pero posibles, y perder uno subestimaría el retorno total.
-  const { distribuciones } = extraerDistribuciones({
+test('dos repartos del mismo día con montos distintos se SUMAN, y se marca', () => {
+  // Dejarlos como dos filas fue lo que reventó el insert: la llave de la tabla
+  // es (emisora_serie, fecha_pago) y Postgres se niega a tocar la misma fila
+  // dos veces en una sentencia. Elegir uno en silencio perdería dinero sin
+  // rastro, así que se suman y la fila queda marcada.
+  const { distribuciones, sumadas } = extraerDistribuciones({
     dividendos: { reciente: { '2025-05-05': { pago: 1.0 } }, historico: { '2025-05-05': { pago: 2.0 } } },
   });
-  assert.equal(distribuciones.length, 2);
+  assert.equal(distribuciones.length, 1);
+  assert.equal(distribuciones[0].monto, 3.0, 'no se pierde ninguno de los dos');
+  assert.equal(distribuciones[0].pago_consolidado, true);
+  assert.equal(sumadas, 1);
+});
+
+/* ═══════════════════════════════════════════════════════════════
+ * El traslape entre "reciente" e "historico", que reventó el insert
+ * con "ON CONFLICT DO UPDATE command cannot affect row a second time".
+ * Postgres se niega a tocar la misma fila dos veces en una sentencia,
+ * y hace bien: no hay forma de saber cuál de las dos gana. Se decide
+ * ANTES del insert, donde se puede mirar el grupo completo.
+ * ═══════════════════════════════════════════════════════════════ */
+
+/** El crudo literal de NAFTRAC, con las dos fechas duplicadas reportadas. */
+const NAFTRAC_TRASLAPE = {
+  dividendos: {
+    reciente: {
+      '2026-08-31': { pago: 0.01387504835, tipo: 'DISTRIBUCION DE EFECTIVO', divisa: 'MXN', fechaexcupon: '2026-08-28' },
+      '2022-07-29': { pago: 1e-7, tipo: 'DISTRIBUCION DE EFECTIVO', divisa: 'MXN', fechaexcupon: '2022-07-26' },
+    },
+    historico: {
+      '2026-08-31': { pago: 0.01387504835, tipo: 'DISTRIBUCION DE EFECTIVO' },
+      '2022-07-29': { pago: 1e-7, tipo: 'DISTRIBUCION DE EFECTIVO' },
+      '2025-12-31': { pago: 0.56096644127, tipo: 'DISTRIBUCION DE EFECTIVO' },
+    },
+  },
+};
+
+test('la fecha de pago es ÚNICA después de consolidar — sin esto el insert revienta', () => {
+  const { distribuciones } = extraerDistribuciones(NAFTRAC_TRASLAPE);
+  const fechas = distribuciones.map((d) => d.fecha_pago);
+  assert.equal(new Set(fechas).size, fechas.length,
+    'una llave repetida en el mismo VALUES tumba la sentencia entera');
+  assert.equal(distribuciones.length, 3, 'de las 5 filas crudas quedan 3 fechas');
+});
+
+test('al colapsar el traslape, gana la fila con fechaexcupon REAL', () => {
+  // Es lo que hace valioso al bloque "reciente": la misma información que el
+  // histórico, pero con la fecha buena. Quedarse con la aproximada tiraría el
+  // único dato exacto que la fuente da.
+  const { distribuciones } = extraerDistribuciones(NAFTRAC_TRASLAPE);
+  const a = distribuciones.find((d) => d.fecha_pago === '2026-08-31');
+  const b = distribuciones.find((d) => d.fecha_pago === '2022-07-29');
+  assert.equal(a.fecha_ex, '2026-08-28');
+  assert.equal(a.ex_aproximada, false);
+  assert.equal(b.fecha_ex, '2022-07-26');
+  assert.equal(b.ex_aproximada, false);
+});
+
+test('el duplicado exacto se colapsa SIN sumar: 1e-07 no se vuelve 2e-07', () => {
+  // Mismo monto en los dos bloques es la MISMA distribución vista dos veces.
+  // Sumarla duplicaría el reparto y con él el retorno total.
+  const { distribuciones, colapsadas, sumadas } = extraerDistribuciones(NAFTRAC_TRASLAPE);
+  const b = distribuciones.find((d) => d.fecha_pago === '2022-07-29');
+  assert.equal(b.monto, 1e-7, 'el mismo monto, no el doble');
+  assert.equal(b.pago_consolidado, false);
+  assert.equal(colapsadas, 2, 'dos filas del traslape desaparecieron');
+  assert.equal(sumadas, 0, 'ninguna se sumó: eran duplicados exactos');
+});
+
+test('los pagos de centésimas de centavo se CUENTAN, no se filtran', () => {
+  // 1e-07 pesos casi seguro es un placeholder de la fuente y no un reparto.
+  // Filtrarlo es una decisión de producto, no del parser: se reporta.
+  const r = extraerDistribuciones(NAFTRAC_TRASLAPE);
+  assert.equal(r.bajo_umbral, 1);
+  assert.equal(r.umbral_placeholder, UMBRAL_PLACEHOLDER);
+  assert.ok(r.distribuciones.some((d) => d.monto === 1e-7),
+    'sigue ahí: la decisión de excluirlo no es del código');
+});
+
+test('consolidarDistribuciones no suma lo que no es efectivo', () => {
+  const { filas } = consolidarDistribuciones([
+    { fecha_pago: '2025-05-05', fecha_ex: '2025-05-02', ex_aproximada: true, monto: 1.0, es_efectivo: true },
+    { fecha_pago: '2025-05-05', fecha_ex: '2025-05-02', ex_aproximada: true, monto: 9.0, es_efectivo: false },
+  ]);
+  assert.equal(filas.length, 1);
+  assert.equal(filas[0].monto, 1.0, 'el reparto en especie no entra al retorno total');
+  assert.equal(filas[0].es_efectivo, true);
+});
+
+test('consolidarDistribuciones deja pasar las fechas distintas intactas', () => {
+  const { filas, colapsadas, sumadas } = consolidarDistribuciones([
+    { fecha_pago: '2025-05-05', fecha_ex: '2025-05-02', ex_aproximada: true, monto: 1.0, es_efectivo: true },
+    { fecha_pago: '2025-06-05', fecha_ex: '2025-06-02', ex_aproximada: true, monto: 2.0, es_efectivo: true },
+  ]);
+  assert.equal(filas.length, 2);
+  assert.equal(colapsadas, 0);
+  assert.equal(sumadas, 0);
 });

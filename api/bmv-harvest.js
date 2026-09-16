@@ -48,7 +48,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import {
-  BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
+  BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO, UMBRAL_PLACEHOLDER,
   CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL,
   aplanarHistoricos, clavePeriodo, construirUrl, dormir, emisoraSerie,
   extraerDistribuciones, finDeTrimestre, normalizaLlave, periodoApi,
@@ -719,6 +719,9 @@ async function jobEmisoras() {
   const divisasDividendo = {};
   let aproximadas = 0;
   let repartosTotales = 0;
+  let colapsadas = 0;
+  let sumadas = 0;
+  let bajoUmbral = 0;
   for (const f of filas) {
     await upsertEmisora(f);
     const d = extraerDistribuciones(f.raw_serie || f.raw);
@@ -726,6 +729,9 @@ async function jobEmisoras() {
     for (const [k, v] of Object.entries(d.tipos || {})) tiposDividendo[k] = (tiposDividendo[k] || 0) + v;
     for (const [k, v] of Object.entries(d.divisas || {})) divisasDividendo[k] = (divisasDividendo[k] || 0) + v;
     aproximadas += d.aproximadas || 0;
+    colapsadas += d.colapsadas || 0;
+    sumadas += d.sumadas || 0;
+    bajoUmbral += d.bajo_umbral || 0;
     repartosTotales += d.distribuciones.length;
     if (d.distribuciones.length) {
       distribuciones += await insertarDistribuciones(f.emisora, f.emisora_serie, d.distribuciones);
@@ -759,6 +765,14 @@ async function jobEmisoras() {
     // se cuenta se vuelve un dato a los dos días.
     ex_aproximadas: aproximadas,
     pct_ex_aproximada: repartosTotales ? Math.round((100 * aproximadas) / repartosTotales) : 0,
+    // "reciente" e "historico" se traslapan: esto dice cuánto de ese traslape
+    // se colapsó, y cuántas veces hubo DOS montos el mismo día que se sumaron.
+    repartos_colapsados: colapsadas,
+    repartos_sumados: sumadas,
+    // Pagos de centésimas de centavo (NAFTRAC trae varios de 1e-07). NO se
+    // filtran: se cuentan para que la decisión sea tuya y no mía.
+    repartos_bajo_umbral: bajoUmbral,
+    umbral_placeholder: UMBRAL_PLACEHOLDER,
     dividendos_campos_vistos: [...camposDividendo],
     dividendos_por_tipo: tiposDividendo,
     // Una divisa distinta de MXN exige conversión antes de reinvertir.
@@ -822,6 +836,9 @@ async function jobReparse() {
   let distribuciones = 0;
   let aproximadas = 0;
   let repartosTotales = 0;
+  let colapsadas = 0;
+  let sumadas = 0;
+  let bajoUmbral = 0;
   const tiposDividendo = {};
   const divisasDividendo = {};
   const conReparto = [];
@@ -831,6 +848,9 @@ async function jobReparse() {
     for (const [k, v] of Object.entries(d.tipos || {})) tiposDividendo[k] = (tiposDividendo[k] || 0) + v;
     for (const [k, v] of Object.entries(d.divisas || {})) divisasDividendo[k] = (divisasDividendo[k] || 0) + v;
     aproximadas += d.aproximadas || 0;
+    colapsadas += d.colapsadas || 0;
+    sumadas += d.sumadas || 0;
+    bajoUmbral += d.bajo_umbral || 0;
     repartosTotales += d.distribuciones.length;
     if (d.distribuciones.length) {
       distribuciones += await insertarDistribuciones(f.emisora, f.emisora_serie, d.distribuciones);
@@ -851,6 +871,10 @@ async function jobReparse() {
     series_con_reparto: conReparto.length,
     ex_aproximadas: aproximadas,
     pct_ex_aproximada: repartosTotales ? Math.round((100 * aproximadas) / repartosTotales) : 0,
+    repartos_colapsados: colapsadas,
+    repartos_sumados: sumadas,
+    repartos_bajo_umbral: bajoUmbral,
+    umbral_placeholder: UMBRAL_PLACEHOLDER,
     dividendos_por_tipo: tiposDividendo,
     dividendos_por_divisa: divisasDividendo,
     censo: await censoResumen(),
@@ -1082,6 +1106,12 @@ function coberturaMd(c, est) {
   L.push('## Retorno total de la canasta', '',
     `ICS con reparto: **${di.emisoras_con_reparto || 0}** · repartos: **${di.filas || 0}** · rango: ${di.desde || 'n/d'} → ${di.hasta || 'n/d'}`, '');
   L.push(`Fecha ex **aproximada** (pago − 3 días) en **${di.ex_aproximadas || 0}** de ${di.filas || 0} repartos (**${di.pct_ex_aproximada || 0}%**). La API sólo trae \`fechaexcupon\` en el bloque "reciente".`, '');
+  if (di.consolidados) {
+    L.push(`**${di.consolidados}** repartos son DOS pagos del mismo día que se sumaron (\`pago_consolidado\`), en vez de elegir uno en silencio.`, '');
+  }
+  if (di.bajo_umbral) {
+    L.push(`**${di.bajo_umbral}** repartos están por debajo de 0.0001 pesos — centésimas de centavo, casi seguro placeholders de la fuente. **No se filtran**: la decisión de excluirlos es tuya, y va tomada antes de la Fase B.`, '');
+  }
   if (di.no_efectivo) {
     L.push(`**${di.no_efectivo}** repartos NO son en efectivo y no se reinvierten como tales.`, '');
   }

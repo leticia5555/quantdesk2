@@ -176,6 +176,9 @@ const BMV_SCHEMA = [
   `alter table bmv_distribuciones add column if not exists tipo text`,
   `alter table bmv_distribuciones add column if not exists divisa text`,
   `alter table bmv_distribuciones add column if not exists es_efectivo boolean`,
+  // Marca las filas donde dos repartos del MISMO día se sumaron. Existe porque
+  // la alternativa —elegir uno en silencio— pierde dinero sin dejar rastro.
+  `alter table bmv_distribuciones add column if not exists pago_consolidado boolean`,
   `update bmv_distribuciones set fecha_pago = fecha_ex where fecha_pago is null`,
   `drop index if exists bmv_distribuciones_uidx`,
   `create unique index if not exists bmv_distribuciones_pago_uidx on bmv_distribuciones (emisora_serie, fecha_pago)`,
@@ -283,17 +286,37 @@ async function upsertFinancieros(f) {
 
 async function insertarDistribuciones(emisora, emisora_serie, filas) {
   if (!filas.length) return 0;
+
+  // RED DE SEGURIDAD, no la lógica principal. Postgres rechaza la sentencia
+  // entera con "ON CONFLICT DO UPDATE command cannot affect row a second time"
+  // si la misma llave aparece dos veces en el mismo VALUES — y eso tumbó una
+  // corrida completa de reparse. La consolidación de verdad vive en
+  // `consolidarDistribuciones`, donde se puede decidir con criterio; esto sólo
+  // garantiza que ninguna ruta futura vuelva a mandar duplicados a la base.
+  const porFecha = new Map();
+  for (const f of filas) {
+    if (!f || !f.fecha_pago) continue;
+    const previa = porFecha.get(f.fecha_pago);
+    // Ante empate, gana la que traiga la fecha ex real.
+    if (!previa || (previa.ex_aproximada === true && f.ex_aproximada === false)) {
+      porFecha.set(f.fecha_pago, f);
+    }
+  }
+  const unicas = [...porFecha.values()];
+  if (!unicas.length) return 0;
+
   const valores = [];
-  const partes = filas.map((f, j) => {
-    const b = j * 9;
+  const partes = unicas.map((f, j) => {
+    const b = j * 10;
     valores.push(emisora, emisora_serie, f.fecha_pago, f.fecha_ex,
       f.ex_aproximada === true, f.monto, f.tipo ?? null, f.divisa ?? null,
-      f.es_efectivo !== false);
-    return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9})`;
+      f.es_efectivo !== false, f.pago_consolidado === true);
+    return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10})`;
   });
   await sql(
     `insert into bmv_distribuciones
-       (emisora, emisora_serie, fecha_pago, fecha_ex, ex_aproximada, monto, tipo, divisa, es_efectivo)
+       (emisora, emisora_serie, fecha_pago, fecha_ex, ex_aproximada, monto, tipo,
+        divisa, es_efectivo, pago_consolidado)
      values ${partes.join(', ')}
      on conflict (emisora_serie, fecha_pago) do update set
        emisora = excluded.emisora,
@@ -302,9 +325,10 @@ async function insertarDistribuciones(emisora, emisora_serie, filas) {
        monto = excluded.monto,
        tipo = excluded.tipo,
        divisa = excluded.divisa,
-       es_efectivo = excluded.es_efectivo`,
+       es_efectivo = excluded.es_efectivo,
+       pago_consolidado = excluded.pago_consolidado`,
     valores);
-  return filas.length;
+  return unicas.length;
 }
 
 /* ─────────────────── precios ─────────────────── */
@@ -455,7 +479,9 @@ async function cobertura() {
                 count(*)::int as filas,
                 min(d.fecha_ex) as desde, max(d.fecha_ex) as hasta,
                 count(*) filter (where d.ex_aproximada)::int as ex_aproximadas,
-                count(*) filter (where not coalesce(d.es_efectivo, true))::int as no_efectivo
+                count(*) filter (where not coalesce(d.es_efectivo, true))::int as no_efectivo,
+                count(*) filter (where d.pago_consolidado)::int as consolidados,
+                count(*) filter (where abs(d.monto) < 0.0001)::int as bajo_umbral
            from bmv_distribuciones d
            join bmv_emisoras e on e.emisora = d.emisora and e.tipo_valor_id = '1'`),
     // Una divisa distinta de MXN exige conversión. Asumirla en silencio es la
