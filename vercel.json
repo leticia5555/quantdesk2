@@ -1,5 +1,8 @@
 {
   "functions": {
+    "api/bmv-inspect.js": {
+      "maxDuration": 300
+    },
     "api/xbrl-capture.js": {
       "maxDuration": 300
     },
