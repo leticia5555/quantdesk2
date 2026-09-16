@@ -60,11 +60,38 @@ const OUT_DIR = 'xbrl-raw/pdf-out';
 /* USD por 1M de tokens. Tomados de la tabla de modelos vigente al 2026-06-24.
  * Si cambian, esto es lo único que hay que tocar para que el costo siga bien. */
 const PRECIOS = {
-  'claude-haiku-4-5': { in: 1.00, out: 5.00 },
-  'claude-sonnet-5':  { in: 2.00, out: 10.00 },
-  'claude-opus-5':    { in: 5.00, out: 25.00 },
+  'claude-haiku-4-5':  { in: 1.00, out: 5.00 },
+  'claude-sonnet-4-6': { in: 3.00, out: 15.00 },
+  'claude-sonnet-5':   { in: 2.00, out: 10.00 },
+  'claude-opus-5':     { in: 5.00, out: 25.00 },
 };
 const MODELO_DEFAULT = 'claude-haiku-4-5';
+
+/* Modelo al que se escala cuando el refuerzo no basta (--modelo-escala).
+ * Nota: claude-sonnet-5 es más nuevo Y más barato que claude-sonnet-4-6
+ * ($2/$10 contra $3/$15). Se deja 4-6 por ser el pedido explícitamente; cambiarlo
+ * es una bandera, no un cambio de código. */
+const MODELO_ESCALA_DEFAULT = 'claude-sonnet-4-6';
+
+/* Con este número de campos INCONSISTENTE en un archivo, se reintenta. */
+const UMBRAL_REINTENTO = 3;
+
+/* Refuerzo que se añade al prompt en los reintentos. Ataca exactamente el modo
+ * de falla observado: el modelo cita bien y transcribe el número truncado. */
+const REFUERZO = `
+
+ATENCIÓN — en un intento anterior varios números NO coincidieron con su propia cita.
+El error fue truncar: se citó "394,389,471" y se reportó 394389. NO vuelvas a hacerlo.
+
+Por cada campo, antes de escribir "valor":
+  1. Localiza el número en la línea que vas a citar.
+  2. Cópialo COMPLETO, con TODOS sus grupos de dígitos, de principio a fin.
+     "394,389,471" son tres grupos -> 394389471. No dos. No redondees a miles ni
+     a millones: la escala se declara aparte en "unidad", nunca recortando dígitos.
+  3. Relee: los dígitos de "valor" deben ser exactamente los de la cita.
+
+Si un número no lo puedes copiar entero con certeza, pon null. Un null es
+aceptable; un número truncado no lo es.`;
 
 /* ========================================================================= */
 /* Los 9 campos (mismos keys que xbrl-smoke.mjs, para poder cruzar)           */
@@ -170,19 +197,45 @@ const SECCIONES_BMV = [
   [/^8\d{5}$/, 'comentarios y notas'],
 ];
 
-function paginasDelIndice(textoP1) {
-  // Líneas tipo "[210000] Estado de situación financiera ....... 12"
-  const encontradas = new Map();
+/* Máximo de páginas que se toma de una sección. Acota el costo si el índice
+ * viene raro o una sección es enorme (notas al pie de 40 páginas). */
+const MAX_PAGINAS_POR_SECCION = 6;
+
+/**
+ * Lee el índice de la p.1 y devuelve RANGOS completos por sección.
+ *
+ * Tomar sólo la página inicial (y la siguiente) no alcanzaba: en la corrida real
+ * [800100] arranca en p.43 y el desglose de créditos bancarios y bursátiles está
+ * en p.44, así que la deuda salió como "Otros pasivos financieros" con
+ * comparable=NO. Una sección se lee **desde su página hasta la anterior a la
+ * siguiente sección del índice**, sea cual sea esa siguiente — por eso se
+ * recogen TODOS los códigos, no sólo los que interesan.
+ */
+function rangosDelIndice(textoP1) {
   const re = /\[(\d{6})\][^\n\[]*?(\d{1,4})\s*$/gm;
+  const todas = [];
   let m;
   while ((m = re.exec(textoP1)) !== null) {
-    const [, codigo, pag] = m;
-    const etiqueta = SECCIONES_BMV.find(([re2]) => re2.test(codigo));
-    if (!etiqueta) continue;
-    const n = Number(pag);
-    if (n > 0 && n < 2000) encontradas.set(n, `[${codigo}] ${etiqueta[1]}`);
+    const codigo = m[1], pagina = Number(m[2]);
+    if (!(pagina > 0 && pagina < 5000)) continue;
+    const quiero = SECCIONES_BMV.find(([re2]) => re2.test(codigo));
+    todas.push({ codigo, pagina, quiero: !!quiero, etiqueta: quiero ? quiero[1] : null });
   }
-  return encontradas;
+  if (!todas.length) return null;
+
+  todas.sort((a, b) => a.pagina - b.pagina);
+  const rangos = [];
+  for (let i = 0; i < todas.length; i++) {
+    if (!todas[i].quiero) continue;
+    const ini = todas[i].pagina;
+    // Fin = una antes de la SIGUIENTE sección del índice (la que sea).
+    const sig = todas.slice(i + 1).find((x) => x.pagina > ini);
+    const finNatural = sig ? sig.pagina - 1 : ini + MAX_PAGINAS_POR_SECCION - 1;
+    const fin = Math.min(Math.max(finNatural, ini), ini + MAX_PAGINAS_POR_SECCION - 1);
+    rangos.push({ codigo: todas[i].codigo, etiqueta: todas[i].etiqueta, ini, fin,
+                  truncado: finNatural > fin });
+  }
+  return rangos.length ? rangos : null;
 }
 
 function elegirPaginas(pdf, n, maxPaginas) {
@@ -198,18 +251,15 @@ function elegirPaginas(pdf, n, maxPaginas) {
     paginas.push({ p, score, texto: t });
   }
   // (a) Si hay índice de secciones (formato BMV), manda.
-  const indice = paginasDelIndice(paginas[0]?.texto || '');
-  if (indice.size) {
+  const rangos = rangosDelIndice(paginas[0]?.texto || '');
+  if (rangos) {
     const elegidas = new Set([1, 2]); // portada + comentarios/fecha
-    for (const pg of indice.keys()) {
-      elegidas.add(pg);
-      elegidas.add(pg + 1); // las secciones suelen desbordar a la siguiente
-    }
+    for (const r of rangos) for (let pg = r.ini; pg <= r.fin; pg++) elegidas.add(pg);
     const lista = [...elegidas]
       .filter((x) => x >= 1 && x <= paginas.length)
       .sort((a, b) => a - b)
       .map((x) => paginas[x - 1]);
-    return Object.assign(lista, { via: 'índice de secciones BMV', indice });
+    return Object.assign(lista, { via: 'índice de secciones BMV', rangos });
   }
 
   // (b) Si no, puntaje por palabras clave (comunicados).
@@ -242,10 +292,22 @@ REGLAS DURAS — su incumplimiento invalida la extracción:
    nada: reporta el número tal como aparece impreso y la unidad por separado.
    Si no encuentras la unidad declarada, unidad es null.
 4. "ventana" aplica sólo a flujos (ingresos, utilidad): "3m" si es el trimestre
-   solo, "6m" si es acumulado de seis meses, "12m" si son doce meses. Estos
-   reportes suelen traer AMBAS columnas (trimestre y acumulado) una al lado de
-   la otra: mira el encabezado con cuidado y NO las confundas. Para saldos de
-   balance (activos, pasivos, capital, efectivo, deuda, acciones) usa null.
+   solo, "6m" si es acumulado de seis meses, "12m" si son doce meses. Para saldos
+   de balance (activos, pasivos, capital, efectivo, deuda, acciones) usa null.
+
+   REGLA DE PRIORIDAD — el trimestre manda:
+   Estos reportes casi siempre traen VARIAS ventanas en la MISMA tabla, en
+   columnas contiguas, con encabezados como "Por el trimestre / Trimestre /
+   3 meses" y "Acumulado / Acumulado a / 6 meses / Del 1 de enero al".
+     - Si existe la columna de TRES MESES, ése es el valor principal: va en
+       "valor" con ventana "3m". NO uses el acumulado como principal cuando el
+       trimestre está disponible.
+     - Las demás ventanas que encuentres para el mismo concepto van en
+       "otras_ventanas", cada una con su ventana, su valor y su cita.
+     - Si el documento SÓLO trae acumulado, entonces ése es el principal, con su
+       ventana real ("6m" o "12m"), y "otras_ventanas" queda en [].
+   Mira el encabezado de cada columna con cuidado antes de decidir: equivocar la
+   ventana no produce ningún error visible, produce una serie equivocada.
 5. Para el balance, toma SIEMPRE la columna del periodo MÁS RECIENTE. Estas
    tablas traen el periodo actual y el comparativo del año anterior o del cierre
    anterior; el que quiero es el actual.
@@ -274,8 +336,8 @@ ESQUEMA EXACTO:
   "periodo_fin": "YYYY-MM-DD" | null,
   "fecha_publicacion": {"valor": "YYYY-MM-DD"|null, "cita": "<literal>"|null},
   "campos": {
-    "ingresos":                 {"valor": <num>|null, "unidad": "miles"|"millones"|"pesos"|null, "ventana": "3m"|"6m"|"12m"|null, "cita": "<literal>"|null},
-    "utilidad_neta_atribuible": {"valor": ..., "unidad": ..., "ventana": ..., "cita": ...},
+    "ingresos":                 {"valor": <num>|null, "unidad": "miles"|"millones"|"pesos"|null, "ventana": "3m"|"6m"|"12m"|null, "cita": "<literal>"|null, "otras_ventanas": [{"ventana": "6m", "valor": <num>, "cita": "<literal>"}]},
+    "utilidad_neta_atribuible": {"valor": ..., "unidad": ..., "ventana": ..., "cita": ..., "otras_ventanas": [...]},
     "activos_totales":          {"valor": ..., "unidad": ..., "ventana": null, "cita": ...},
     "pasivos_totales":          {"valor": ..., "unidad": ..., "ventana": null, "cita": ...},
     "capital_contable":         {"valor": ..., "unidad": ..., "ventana": null, "cita": ...},
@@ -465,6 +527,10 @@ function reportar(nombre, r) {
   if (fp.cita) console.log(`   cita: "${String(fp.cita).slice(0, 110)}"`);
   console.log(`modelo: ${r.modelo}  |  tokens in/out: ${r.usage.input_tokens ?? '?'}/${r.usage.output_tokens ?? '?'}  |  costo: ${usd(r.costo)}`);
   if (r.stopReason && r.stopReason !== 'end_turn') console.log(`   stop_reason: ${r.stopReason}`);
+  if (r.intentos && r.intentos.length > 1) {
+    console.log(`intentos: ${r.intentos.map((x) => `${x.etiqueta}(${x.modelo}, ${x.malos} malos, ${usd(x.costo)})`).join('  ->  ')}`);
+    console.log(`   se quedó: ${r.elegido}`);
+  }
 
   console.log(`\n--- 9 CAMPOS ---`);
   for (const [k, label] of CAMPOS) {
@@ -481,6 +547,11 @@ function reportar(nombre, r) {
       console.log(`  ${''.padEnd(44)} ${val.motivo}`);
     } else {
       console.log(`  ${label.padEnd(44)} ${fmt(pesos ?? c.valor).padStart(20)}${uni}${vent}${pesos == null ? '  <-- ' + nota : ''}`);
+    }
+    if (c.otras_ventanas?.length) {
+      for (const o of c.otras_ventanas) {
+        console.log(`  ${''.padEnd(44)} ${fmt(o.valor).padStart(20)}     · también ${o.ventana}`);
+      }
     }
     if (c.componentes?.length) {
       for (const comp of c.componentes) console.log(`  ${''.padEnd(44)} ${fmt(comp.valor).padStart(20)}     + ${comp.etiqueta}`);
@@ -508,8 +579,10 @@ async function procesar(pdf, opts) {
   if (opts.raw) { mkdirSync(OUT_DIR, { recursive: true }); writeFileSync(join(OUT_DIR, nombre + '.prompt.txt'), prompt); }
 
   console.log(`\n[${nombre}] páginas: ${paginas.map((x) => x.p).join(', ')}  vía ${paginas.via}  (~${Math.round(prompt.length / 4)} tok)`);
-  if (paginas.indice) {
-    for (const [pg, etq] of [...paginas.indice].sort((a, b) => a[0] - b[0])) console.log(`     p${pg}: ${etq}`);
+  if (paginas.rangos) {
+    for (const r of paginas.rangos) {
+      console.log(`     [${r.codigo}] ${r.etiqueta}: p${r.ini}${r.fin > r.ini ? `-${r.fin}` : ''}${r.truncado ? `  (truncada a ${MAX_PAGINAS_POR_SECCION} pp.)` : ''}`);
+    }
   }
 
   if (opts.dryRun) {
@@ -519,9 +592,10 @@ async function procesar(pdf, opts) {
     return { dryRun: true, estimado: est };
   }
 
-  try {
-    const r = await llamar(prompt, opts.model);
-    if (opts.raw) writeFileSync(join(OUT_DIR, nombre + '.respuesta.json'), r.texto);
+  /* Un intento = una llamada. Devuelve el resultado ya validado. */
+  async function intento(txtPrompt, modelo, etiqueta) {
+    const r = await llamar(txtPrompt, modelo);
+    if (opts.raw) writeFileSync(join(OUT_DIR, `${nombre}.${etiqueta}.respuesta.json`), r.texto);
     const datos = parsearJson(r.texto);
 
     const norm = {}, validacion = {};
@@ -530,7 +604,7 @@ async function procesar(pdf, opts) {
       const v = validarCampo(c);
       validacion[k] = v;
       const { pesos } = aPesos(c, k === 'acciones_circulacion');
-      // Un campo que su cita no respalda NO entra a las identidades ni al total.
+      // Un valor que su cita no respalda NUNCA se acepta.
       norm[k] = v.ok === false ? null : pesos;
     }
     for (const [k] of EXTRAS) {
@@ -541,13 +615,51 @@ async function procesar(pdf, opts) {
       norm[k] = v.ok === false ? null : pesos;
     }
 
-    const p = PRECIOS[r.modelo] || PRECIOS[opts.model] || PRECIOS[MODELO_DEFAULT];
-    const costo = ((r.usage.input_tokens || 0) / 1e6) * p.in + ((r.usage.output_tokens || 0) / 1e6) * p.out;
+    const pr = PRECIOS[r.modelo] || PRECIOS[modelo] || PRECIOS[MODELO_DEFAULT];
+    const costo = ((r.usage.input_tokens || 0) / 1e6) * pr.in + ((r.usage.output_tokens || 0) / 1e6) * pr.out;
+    // Sólo cuentan los 9 campos para el umbral; los extras son informativos y
+    // contarlos dispararía reintentos que no hacen falta.
+    const malos = CAMPOS.filter(([k]) => validacion[k]?.ok === false).length;
 
-    return { datos, norm, validacion, identidades: identidades(norm), usage: r.usage, costo, modelo: r.modelo, stopReason: r.stopReason };
-  } catch (e) {
-    return { error: e.message };
+    return { datos, norm, validacion, identidades: identidades(norm),
+             usage: r.usage, costo, modelo: r.modelo, stopReason: r.stopReason, malos, etiqueta };
   }
+
+  /*
+   * Política de reintento. El disparador es la validación de cita, no una
+   * corazonada: con UMBRAL_REINTENTO campos o más sin respaldo, el archivo
+   * entero es sospechoso (en la corrida real Walmex 4T2021 salió 6/6 malo).
+   *   intento 1: prompt normal, modelo por defecto
+   *   intento 2: + REFUERZO, mismo modelo
+   *   intento 3: + REFUERZO, modelo de escala (más caro)
+   * Se queda el intento con MENOS campos inconsistentes; en empate, el primero.
+   * El costo suma TODOS los intentos, no sólo el que se queda.
+   */
+  const intentos = [];
+  try {
+    intentos.push(await intento(prompt, opts.model, 'i1'));
+
+    if (intentos[0].malos >= UMBRAL_REINTENTO) {
+      console.log(`   ${intentos[0].malos} campos sin respaldo en la cita -> reintento con refuerzo`);
+      intentos.push(await intento(prompt + REFUERZO, opts.model, 'i2-refuerzo'));
+
+      if (intentos[1].malos >= UMBRAL_REINTENTO) {
+        console.log(`   siguen ${intentos[1].malos} -> escalando a ${opts.modeloEscala}`);
+        intentos.push(await intento(prompt + REFUERZO, opts.modeloEscala, 'i3-escala'));
+      }
+    }
+  } catch (e) {
+    if (!intentos.length) return { error: e.message };
+    console.log(`   (un reintento falló: ${e.message} — me quedo con lo que haya)`);
+  }
+
+  const costoTotal = intentos.reduce((a, x) => a + x.costo, 0);
+  let mejor = intentos[0];
+  for (const x of intentos) if (x.malos < mejor.malos) mejor = x;
+
+  return { ...mejor, costo: costoTotal,
+           intentos: intentos.map((x) => ({ etiqueta: x.etiqueta, modelo: x.modelo, malos: x.malos, costo: x.costo })),
+           elegido: mejor.etiqueta };
 }
 
 async function main() {
@@ -557,6 +669,7 @@ async function main() {
 
   const opts = {
     model: valor('--model', MODELO_DEFAULT),
+    modeloEscala: valor('--modelo-escala', MODELO_ESCALA_DEFAULT),
     pages: Number(valor('--pages', '6')),
     dryRun: tiene('--dry-run'),
     raw: tiene('--raw'),
@@ -568,9 +681,11 @@ async function main() {
     console.error(`  macOS:  brew install poppler`);
     process.exit(1);
   }
-  if (!PRECIOS[opts.model]) {
-    console.error(`Modelo "${opts.model}" sin precio en la tabla PRECIOS. Agrégalo antes de correr, o el costo saldría mal.`);
-    process.exit(1);
+  for (const m of [opts.model, opts.modeloEscala]) {
+    if (!PRECIOS[m]) {
+      console.error(`Modelo "${m}" sin precio en la tabla PRECIOS. Agrégalo antes de correr, o el costo saldría mal.`);
+      process.exit(1);
+    }
   }
 
   let archivos;
@@ -582,7 +697,7 @@ async function main() {
   }
   if (!archivos.length) { console.error('Sin PDFs que procesar.'); process.exit(1); }
 
-  console.log(`modelo: ${opts.model}  |  páginas por PDF: ${opts.pages}  |  archivos: ${archivos.length}`);
+  console.log(`modelo: ${opts.model}  |  escala a: ${opts.modeloEscala}  |  páginas por PDF: ${opts.pages}  |  archivos: ${archivos.length}`);
 
   const resultados = [];
   let costoTotal = 0, estTotal = 0;
@@ -634,8 +749,22 @@ async function main() {
     console.log(`# (~${usd(estTotal / archivos.length)} por PDF; el criterio de GO es < $0.05)`);
   } else {
     const ok = resultados.filter((r) => !r.error).length;
-    console.log(`# ${ok}/${resultados.length} PDFs extraídos  |  costo total ${usd(costoTotal)}  |  ${usd(costoTotal / Math.max(ok, 1))} por PDF`);
-    console.log(`# Criterio de GO: < $0.05 por PDF -> ${costoTotal / Math.max(ok, 1) < 0.05 ? 'CUMPLE' : 'NO CUMPLE'}`);
+    const costos = resultados.filter((r) => !r.error && r.costo).map((r) => r.costo);
+    const promedio = costoTotal / Math.max(ok, 1);
+    const peor = costos.length ? Math.max(...costos) : 0;
+    const escalados = resultados.filter((r) => (r.intentos || []).length > 1);
+    console.log(`# ${ok}/${resultados.length} PDFs extraídos  |  costo total ${usd(costoTotal)}`);
+    console.log(`# promedio ${usd(promedio)} por PDF  |  el más caro ${usd(peor)}`);
+    if (escalados.length) {
+      console.log(`# ${escalados.length} PDF(s) necesitaron reintento: ${escalados.map((r) => r.archivo).join(', ')}`);
+    }
+    // El criterio está escrito POR PDF, así que se mide contra el peor, no
+    // contra el promedio. Se reportan los dos para que la diferencia se vea.
+    console.log(`# Criterio de GO (< $0.05 por PDF): promedio ${promedio < 0.05 ? 'CUMPLE' : 'NO CUMPLE'} · peor caso ${peor < 0.05 ? 'CUMPLE' : 'NO CUMPLE'}`);
+    if (peor >= 0.05 && promedio < 0.05) {
+      console.log(`# OJO: el promedio cumple y el peor caso no. Un PDF que escala los tres`);
+      console.log(`#      intentos cuesta ~5x uno limpio. Decide si el criterio es por PDF o de corpus.`);
+    }
   }
   console.log(`${'#'.repeat(80)}`);
 

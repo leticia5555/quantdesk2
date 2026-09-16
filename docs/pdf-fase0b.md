@@ -3,36 +3,42 @@
 > **Alcance:** viabilidad, no pipeline. No se tocó el app ni Neon. El raw vive en
 > `xbrl-raw/pdf/` (ignorada por git).
 >
-> # VEREDICTO: no alcanza GO todavía — y tampoco es NO-GO
+> # VEREDICTO tras la 2ª corrida: **no alcanza GO**
 >
-> La corrida real sobre los 5 PDFs (hecha en local, con API key) dejó los
-> criterios así:
+> **El criterio que lo decide es el de comunicados**, y es uno solo:
 >
-> | Criterio de GO | Estado |
+> > *"en comunicados salen al menos ingresos, controladora, activos, pasivos,
+> > capital y efectivo"*
+>
+> **Walmex 4T2021 salió con 0 de esos 6.** El modelo truncó los seis por factor
+> 1000, la validación de cita los detectó (que es lo que debía pasar) y los
+> descartó (que también). Pero descartados es **cero campos útiles** de ese
+> archivo, y el criterio pide seis. Se cumple en los otros 3 comunicados; en ese
+> no.
+>
+> | Criterio de GO | 2ª corrida |
 > |---|---|
-> | 9 campos en el formato BMV | **NO** — ingresos, controladora, acciones y fecha salieron NULL |
-> | ≥6 campos en comunicados | **SÍ** en los 4 comunicados |
-> | Identidades a ±1 de redondeo | **NO** — una falló por −1,000 |
-> | Cruce 2T2020 cuadra | **PARCIAL** — 5 de 6 comparables cuadran; deuda LP difiere por definición |
-> | Fecha de publicación en los 5 | **NO** — 4 de 5 |
-> | Costo < $0.05 por PDF | **SÍ** — $0.0167 medido |
+> | 9 campos en el formato BMV | **casi** — salen 9/9, pero deuda salió como proxy no comparable (§6.4) |
+> | ≥6 campos en comunicados | **NO** — Walmex 4T2021 quedó en 0/6 |
+> | Identidades a ±1 de redondeo | **SÍ** — 4/4 en formato BMV; el resto sin descuadres |
+> | Cruce 2T2020 cuadra | **NO todavía** — el BMV devolvió 6m y el comunicado 3m (§6.3) |
+> | Fecha de publicación en los 5 | **SÍ** — 5/5 |
+> | Costo < $0.05 por PDF | **SÍ medido** ($0.0167), pero ver §6.5 |
 >
-> **Ninguna condición de NO-GO se cumplió.** El modelo **no inventó** (los NULL
-> fueron honestos y explicados) y **no confundió ni una ventana** en los 5
-> archivos. El formato BMV **sí se parsea**.
+> **Ninguna condición de NO-GO se cumplió.** El modelo confundió la ventana en
+> **un** archivo (el criterio dice "más de un archivo"), no inventó nada —su
+> intento de sacar acciones de la UPA quedó descartado por la validación— y el
+> formato BMV se parsea bien.
 >
-> **El diagnóstico importa más que el marcador: los tres fallos son míos, no del
-> modelo.** Dos son bugs del script, ya corregidos (§6); el tercero es una
-> diferencia de definición contable, no un error (§5.5). El veredicto se decide
-> con la re-corrida (§7).
+> **Los tres fallos que quedan tienen arreglo escrito en esta rama** (§6.3-6.5) y
+> **ninguno está probado**, porque ni el PDF en formato BMV ni el `resultados.json`
+> llegaron a este entorno en ninguna de las dos rondas. El veredicto definitivo
+> sale de la 3ª corrida (§7).
 >
-> **El hallazgo más valioso de esta fase es un bug que casi pasa:** Walmex 4T2021
-> salió con **todos** los campos truncados por factor 1000, con citas correctas,
-> y **las identidades contables lo dejaron pasar** porque todo estaba truncado de
-> forma consistente. Eso motivó una validación dura nueva (§6.2).
->
-> **Corrección a mi propio memo anterior:** dije que los comunicados de Walmex no
-> traían el trimestre suelto. **Era falso** y el modelo tenía razón (§5.1).
+> **Lo que sí quedó demostrado y no depende de otra corrida:** la validación
+> contra cita funciona. Atrapó los 6 campos truncados de Walmex 4T2021 y frenó un
+> intento de derivar acciones desde la UPA (17.46). Sin ella, esos siete valores
+> habrían entrado a la base con las identidades cerrando.
 
 ---
 
@@ -356,7 +362,7 @@ misma magnitud para el mismo campo** — otra razón para marcar la fuente por c
 
 ---
 
-## 6. Los dos bugs del script, corregidos
+## 6. Los bugs del script — ronda 1 (§6.1-6.2) y ronda 2 (§6.3-6.5)
 
 Ambos fallos de la corrida real fueron míos. Los dos ya están arreglados; **ninguno
 de los dos está probado contra el archivo que los provocó** (§7).
@@ -423,6 +429,12 @@ Probado contra los 18 casos reales de tu corrida:
   (11,692); las unidades 3,578,226,270; el 744,647,464,000 del formato BMV; el
   195,619 del trimestre de Walmex; y las dos sumas de deuda.
 
+**Confirmado en la 2ª corrida:** la validación atrapó los 6 campos truncados de
+Walmex 4T2021 (`736,044` contra la cita `736,044,023`) y además frenó un intento
+de derivar acciones en circulación desde la **UPA** (17.46) — un número que no
+tiene nada que ver con el campo y que ninguna identidad contable habría
+cuestionado. Siete valores que sin esto entraban a la base.
+
 **Segunda red:** un chequeo de magnitud entre periodos de la misma emisora. Si un
 saldo cambia por factor ≥100× entre trimestres, avisa. Cubre el caso en que la
 unidad declarada esté mal pero el número se haya transcrito bien — ahí la
@@ -430,40 +442,118 @@ validación de cita no ve nada.
 
 ---
 
-## 7. Cómo cerrar el veredicto — re-corrida
+### 6.3 El formato BMV tomaba el acumulado, no el trimestre
 
-Los dos arreglos están escritos pero **no probados contra los archivos que los
-provocaron**: el PDF en formato BMV no llegó a este entorno (la carpeta de
-adjuntos trajo sólo los 4 comunicados), y sin él no puedo verificar ni el parser
-del índice de secciones ni que los 9 campos salgan completos.
+Salió `236,715,817,000` (6m) y `-3,911,491,000` (6m) aunque la columna de
+trimestre está en la **misma tabla**: `114,513,661,000` y `-11,692,223,000` (3m).
+
+**Arreglo — regla de prioridad explícita en el prompt.** Si existe la columna de
+tres meses, ésa es el valor principal con ventana `3m`; las demás ventanas del
+mismo concepto van a un arreglo `otras_ventanas` con su propia cita. Si el
+documento **sólo** trae acumulado, entonces ése es el principal con su ventana
+real. El prompt ahora nombra los encabezados que hay que buscar ("Por el
+trimestre", "Acumulado a", "Del 1 de enero al") y cierra con la razón: equivocar
+la ventana **no produce ningún error visible, produce una serie equivocada**.
+
+Guardar las otras ventanas además de la principal tiene un beneficio extra: el
+6m queda disponible para cruzarlo contra el 3m del trimestre siguiente.
+
+### 6.4 La deuda salió de una sección cortada a la mitad
+
+Salió `Otros pasivos financieros` (64,881,378,000 / 186,383,930,000) con
+`comparable=NO`. La causa no fue el modelo: **la selección por índice cortó la
+sección**. `[800100]` arranca en p.43 y el desglose de créditos bancarios y
+bursátiles está en **p.44**, que no se mandó. El modelo hizo lo correcto con lo
+que tenía y marcó honestamente que no era comparable.
+
+**Arreglo — rangos completos.** Una sección ahora se lee **desde su página hasta
+la anterior a la siguiente sección del índice**, sea cual sea. Para eso hay que
+recoger **todos** los códigos del índice, no sólo los que interesan, porque el
+final de una sección lo define el arranque de la siguiente. Con tope de
+`MAX_PAGINAS_POR_SECCION = 6` para que una sección de notas enorme no dispare el
+costo; cuando trunca, lo dice.
+
+Probado con un índice sintético con la estructura que reportaste:
+
+```
+[800100] comentarios y notas    p43-46      <- ahora sí incluye p44
+[700000] datos informativos     p27-32  (truncada)
+[310000] resultados             p14-15
+```
+
+Referencia contra la que se compara la 3ª corrida:
+
+| Campo | Esperado | Componentes |
+|---|---:|---|
+| Deuda con costo CP | 38,659,690,000 | 36,159,690,000 + 2,500,000,000 |
+| Deuda con costo LP | 184,194,285,000 | 14,207,715,000 + 169,986,570,000 |
+
+### 6.5 Política de reintento — y el conflicto de costo que abre
+
+```
+intento 1: prompt normal, claude-haiku-4-5
+   ↓  ≥3 de los 9 campos INCONSISTENTE
+intento 2: + REFUERZO, mismo modelo
+   ↓  siguen ≥3
+intento 3: + REFUERZO, modelo de escala (claude-sonnet-4-6 por defecto)
+```
+
+Se queda el intento con **menos** campos inconsistentes; en empate, el primero.
+**El costo suma todos los intentos, no sólo el que se queda.** El umbral cuenta
+sólo los 9 campos —los extras son informativos y contarlos dispararía reintentos
+de más— y **nunca se acepta un valor que no pase la validación**, en ningún
+intento.
+
+El `REFUERZO` ataca el modo de falla exacto que observamos: le muestra el error
+("se citó 394,389,471 y se reportó 394389"), le pide contar los grupos de dígitos
+y copiarlos todos, y le dice que un `null` es aceptable pero un número truncado no.
+
+> **Conflicto que esto abre, y hay que decidirlo:** un PDF que escale los tres
+> intentos cuesta **~$0.09**, contra un criterio escrito de **< $0.05 por PDF**.
+> El promedio del corpus seguiría bajo si la escalada es rara (1 de 5 archivos
+> daría ~$0.03 de promedio), pero **el criterio está escrito por PDF, no por
+> corpus**.
+>
+> No lo resuelvo por mi cuenta. El script ahora reporta **promedio y peor caso
+> por separado**, dice cuáles escalaron, y evalúa el criterio contra ambos. Si la
+> intención era un techo de corpus, el criterio hay que reescribirlo — antes de
+> correr, no después de ver el número.
+
+**Nota de modelo:** dejé `claude-sonnet-4-6` como escala porque es el que pediste,
+y está en la tabla de precios ($3.00 / $15.00 por millón). Vale saber que
+`claude-sonnet-5` es más nuevo **y más barato** ($2.00 / $10.00). Se cambia con
+`--modelo-escala claude-sonnet-5`, sin tocar código.
+
+---
+
+## 7. La 3ª corrida — y qué decide el veredicto
+
+Ninguno de los tres arreglos está probado contra los archivos que los provocaron:
+el PDF en formato BMV y el `resultados.json` no llegaron a este entorno en
+ninguna de las dos rondas (la carpeta de adjuntos sigue con los 4 comunicados).
 
 ```bash
-# 1) Revisar la selección de páginas SIN gastar tokens.
-#    Ahora imprime por qué vía eligió y qué secciones encontró.
+# 1) Revisar la selección de páginas sin gastar tokens.
 node scripts/pdf-extract.mjs --dir xbrl-raw/pdf --dry-run
 
-# 2) La corrida de verdad.
+# 2) La corrida.
 node scripts/pdf-extract.mjs --dir xbrl-raw/pdf --raw
 ```
 
-**Qué mirar, en orden:**
+**Qué decide cada criterio:**
 
-1. **Que el formato BMV diga `vía índice de secciones BMV`** y liste las páginas
-   por código. Si dice `vía puntaje por palabras clave`, el índice no se pudo
-   leer y hay que ajustar el regex — el `--dry-run` te lo dice gratis.
-2. **Que los 4 NULL se llenen** y cuadren contra la referencia de §6.1:
-   ingresos 3m `114,513,661,000`, controladora 3m `(11,692,223,000)`, acciones
-   `17,891,131,350`, fecha `2020-07-24`.
-3. **Que Walmex 4T2021 salga `INCONSISTENTE`** en los seis campos, o bien salga
-   con los valores completos. Cualquiera de las dos es un buen resultado; lo que
-   no puede volver a pasar es que salga truncado y silencioso.
-4. **Los avisos de magnitud** al final, si los hay.
-5. **Costo**: debería subir un poco en el formato BMV al mandar más páginas. El
-   criterio sigue siendo < $0.05 por PDF; la corrida anterior dio $0.0167.
+| Mirar | Criterio que cierra |
+|---|---|
+| Que el BMV liste `[800100] ... p43-46` en el dry-run | deuda comparable (§6.4) |
+| Que ingresos y controladora del BMV salgan `3m` con `otras_ventanas` para el 6m | cruce 2T2020 (§6.3) |
+| Que deuda del BMV dé 38,659,690,000 / 184,194,285,000 | los 9 campos del formato BMV |
+| **Que Walmex 4T2021 recupere sus 6 campos** vía reintento | **el criterio que hoy falla** |
+| El bloque de costo: promedio **y** peor caso | costo < $0.05 (§6.5) |
 
-Con eso emites GO o NO-GO con los criterios tal como están escritos. **Yo no lo
-emito ahora** porque los dos arreglos son míos y sin correrlos no son más que una
-hipótesis.
+Si Walmex 4T2021 sigue en 0/6 después de escalar a sonnet, **eso ya es un
+resultado**, no un bug pendiente: significa que ese PDF en particular no se deja
+extraer de forma confiable, y la pregunta pasa a ser si es un caso aislado o un
+patrón — que se contesta con más archivos, no con más reintentos.
 
 ---
 
