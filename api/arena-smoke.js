@@ -44,6 +44,12 @@
 //
 //   GET /api/arena-smoke              → pasos 1 y 2 sobre la liga activa
 //   GET /api/arena-smoke?catalog=1    → SOLO el paso 1 (gratis, 0 tokens)
+//   GET /api/arena-smoke?catalog=1&buscar=qwen
+//       → TODOS los slugs de esa familia con su `endpoint_count`, sus
+//         proveedores y su precio. Gratis, 0 tokens. Nace del callejón de qwen:
+//         `qwen3.8-max` tiene UN proveedor (Alibaba), así que no hay routing que
+//         lo salve — para elegir reemplazo hace falta ver la familia entera y no
+//         el slug que ya está configurado.
 //   GET /api/arena-smoke?agent=grok   → un solo agente
 //   GET /api/arena-smoke?phase=dive   → prueba con el prompt del DIVE
 //
@@ -122,6 +128,50 @@ async function fetchOpenRouterCatalog() {
     const models = (j && j.data) || [];
     return { ok: true, ids: models.map((m) => m.id), models };
   } catch (e) { return { ok: false, error: String((e && e.message) || e), ids: [], models: [] }; }
+}
+
+// ── LOS ENDPOINTS DE UN MODELO: quién lo sirve, y cuántos ────────────
+// `/api/v1/models` lista los MODELOS; los PROVEEDORES de cada uno viven en un
+// endpoint aparte. La diferencia no es cosmética: el 2026-09-17 qwen3.8-max
+// resultó tener `endpoint_count: 1` —Alibaba y nadie más— y por eso
+// `ARENA_PROVIDER_IGNORE_QWEN=Alibaba` devolvió "All providers have been
+// ignored". Un modelo con un solo proveedor no tiene ruta alternativa: si ese
+// proveedor es lento, el modelo es lento, y no hay routing que lo arregle.
+//
+// NO PUDE VERIFICAR LA FORMA DE ESTA RESPUESTA: el sandbox donde se escribió
+// esto no alcanza openrouter.ai (403 en el CONNECT). Así que se leen VARIOS
+// nombres de campo posibles y, si ninguno matchea, se devuelven las claves
+// crudas en `campos_vistos` en vez de inventar un cero. Un `endpoint_count: 0`
+// que en realidad significa "no supe leerlo" es peor que no traerlo.
+async function fetchEndpoints(slug) {
+  try {
+    const r = await fetch(`https://openrouter.ai/api/v1/models/${slug}/endpoints`, { signal: AbortSignal.timeout(15000) });
+    if (!r.ok) return { ok: false, error: 'HTTP ' + r.status };
+    const j = await r.json();
+    const d = (j && j.data) || j || {};
+    const lista = d.endpoints || d.providers || (Array.isArray(d) ? d : null);
+    if (!Array.isArray(lista)) {
+      return { ok: false, error: 'no se encontró la lista de endpoints', campos_vistos: Object.keys(d).slice(0, 20) };
+    }
+    return {
+      ok: true,
+      endpoint_count: lista.length,
+      proveedores: lista.map((e) => ({
+        nombre: e.provider_name || e.name || e.provider || null,
+        contexto: e.context_length ?? null,
+        max_salida: (e.max_completion_tokens ?? e.max_output_tokens) ?? null,
+        precio_in_musd: precioPorMillon(e.pricing && e.pricing.prompt),
+        precio_out_musd: precioPorMillon(e.pricing && e.pricing.completion),
+      })),
+    };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+}
+
+// OpenRouter publica el precio POR TOKEN como string. Se pasa a USD por millón,
+// que es como se habla de esto en todos lados.
+function precioPorMillon(x) {
+  const n = Number(x);
+  return Number.isFinite(n) ? +(n * 1e6).toFixed(3) : null;
 }
 
 async function fetchAnthropicCatalog(apiKey) {
@@ -485,6 +535,97 @@ export default async function handler(req, res) {
 
   const exact = out.slugs.filter((s) => s.resolution === 'exact').map((s) => s.agent);
   const blocked = out.slugs.filter((s) => s.resolution !== 'exact');
+
+  // ── ?buscar=<texto> — EL CATÁLOGO DE UNA FAMILIA ────────────────────
+  // Nace del callejón de qwen: `qwen3.8-max` tiene UN solo proveedor (Alibaba),
+  // así que no hay routing que lo salve — para elegir reemplazo hace falta ver
+  // la familia entera, no el slug que ya está configurado.
+  //
+  // Se busca en el ID y en el nombre: "qwen" matchea `qwen/…` y también un
+  // modelo de otro vendor que lo mencione, que es información y no ruido.
+  const buscar = String(q.buscar || '').trim().toLowerCase();
+  if (buscar) {
+    const hits = (orCat.models || []).filter((m) => {
+      const id = String(m.id || '').toLowerCase();
+      const nom = String(m.name || '').toLowerCase();
+      return id.includes(buscar) || nom.includes(buscar);
+    });
+
+    // Los endpoints cuestan UNA llamada por modelo. Se piden solo para los
+    // primeros `ENDPOINTS_MAX` ordenados por relevancia — traer 40 sería
+    // castigar la búsqueda amplia con un minuto de espera.
+    const ENDPOINTS_MAX = 14;
+    const porRelevancia = [...hits].sort((a, b) => {
+      // Primero los del vendor exacto (`qwen/…`), después el resto; dentro de
+      // cada grupo, los "max"/flagship arriba: son los candidatos reales.
+      const va = String(a.id || '').toLowerCase().startsWith(buscar + '/') ? 0 : 1;
+      const vb = String(b.id || '').toLowerCase().startsWith(buscar + '/') ? 0 : 1;
+      if (va !== vb) return va - vb;
+      const ma = /max|flagship|plus|large/.test(String(a.id || '').toLowerCase()) ? 0 : 1;
+      const mb = /max|flagship|plus|large/.test(String(b.id || '').toLowerCase()) ? 0 : 1;
+      if (ma !== mb) return ma - mb;
+      return String(a.id).localeCompare(String(b.id));
+    });
+
+    const conEndpoints = porRelevancia.slice(0, ENDPOINTS_MAX);
+    const eps = await Promise.all(conEndpoints.map((m) => fetchEndpoints(m.id)));
+
+    out.busqueda = {
+      texto: buscar,
+      encontrados: hits.length,
+      con_proveedores: conEndpoints.length,
+      tope_endpoints: ENDPOINTS_MAX,
+      ...(hits.length > ENDPOINTS_MAX
+        ? { nota: `Se consultaron los proveedores de los ${ENDPOINTS_MAX} más relevantes de ${hits.length}. Afiná la búsqueda para ver los demás.` }
+        : {}),
+      // Las claves crudas del primer resultado. Va porque la forma de esta
+      // respuesta NO se pudo verificar al escribirla (el sandbox no alcanza
+      // openrouter.ai): si algún campo sale null, acá se ve si es que no vino o
+      // que se está leyendo con otro nombre.
+      campos_crudos_de_ejemplo: hits[0] ? Object.keys(hits[0]) : [],
+    };
+
+    out.modelos = porRelevancia.map((m, i) => {
+      const ep = i < conEndpoints.length ? eps[i] : null;
+      const proveedores = ep && ep.ok ? ep.proveedores.map((x) => x.nombre).filter(Boolean) : null;
+      const n = ep && ep.ok ? ep.endpoint_count : null;
+      return {
+        slug: m.id,
+        nombre: m.name || null,
+        contexto: m.context_length ?? null,
+        max_salida: (m.top_provider && (m.top_provider.max_completion_tokens ?? m.top_provider.max_output_tokens)) ?? null,
+        precio_in_musd: precioPorMillon(m.pricing && m.pricing.prompt),
+        precio_out_musd: precioPorMillon(m.pricing && m.pricing.completion),
+        endpoint_count: n,
+        proveedores,
+        // LA COLUMNA QUE DECIDE. Un modelo con un solo proveedor no tiene ruta
+        // alternativa: si ese proveedor se cuelga, el modelo se cuelga, y
+        // `ARENA_PROVIDER_IGNORE_*` devuelve "All providers have been ignored".
+        ruta_alternativa: n == null ? null : n > 1,
+        ...(ep && !ep.ok ? { endpoints_error: ep.error, ...(ep.campos_vistos ? { campos_vistos: ep.campos_vistos } : {}) } : {}),
+        ...(i >= conEndpoints.length ? { proveedores_no_consultados: true } : {}),
+      };
+    });
+
+    // La regla que pidió Lety, aplicada a los datos en vez de a mi memoria: un
+    // "max" servido por más de un proveedor es el candidato.
+    const candidatos = out.modelos.filter((m) => /max/.test(m.slug.toLowerCase()) && m.ruta_alternativa === true);
+    const actual = out.modelos.find((m) => out.slugs.some((s2) => s2.slug === m.slug)) || null;
+    out.busqueda.candidatos = candidatos.map((m) => ({
+      slug: m.slug, proveedores: m.proveedores, endpoint_count: m.endpoint_count,
+      precio_in_musd: m.precio_in_musd, precio_out_musd: m.precio_out_musd,
+      env: `ARENA_MODEL_${(only || 'AGENTE').toUpperCase()}=${m.slug}`,
+    }));
+    out.busqueda.actual = actual
+      ? { slug: actual.slug, endpoint_count: actual.endpoint_count, proveedores: actual.proveedores, ruta_alternativa: actual.ruta_alternativa }
+      : null;
+    out.busqueda.lectura = candidatos.length
+      ? `${candidatos.length} modelo(s) "max" con MÁS DE UN proveedor: ésos tienen ruta alternativa si uno se cuelga. Copiá el \`env\` del elegido en Vercel — se toma sin deploy, y el candado de slug lo acepta porque es un override explícito.`
+      : `NINGÚN "max" de esta familia tiene más de un proveedor. Si el actual también tiene endpoint_count 1, el routing no puede ayudar: la elección es entre otro tamaño de la misma casa (y declarar el cambio de tier) o correr sin ese agente.`;
+
+    out.verdict = `CATÁLOGO: ${hits.length} modelo(s) con "${buscar}". Mirá \`busqueda.candidatos\` y la columna \`ruta_alternativa\`.`;
+    return res.status(200).json(out);
+  }
 
   if (catalogOnly) {
     out.verdict = blocked.length
