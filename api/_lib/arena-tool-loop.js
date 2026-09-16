@@ -41,7 +41,7 @@
 // siempre — un loop que además parsea sería un segundo camino de decisión.
 // ═══════════════════════════════════════════════════════════════
 
-import { callArenaLLM } from './arena-model.js';
+import { callArenaLLM, providerPolicy } from './arena-model.js';
 import { toolsForProvider, estimateTokens, compactarResultado, TOOL_CONTEXT_TOKENS } from './arena-tools.js';
 import { ARENA_MAX_TOKENS, ARENA_AGENT_DEADLINE_MS, ARENA_LLM_TIMEOUT_MS } from './arena-registry.js';
 
@@ -348,6 +348,13 @@ export async function runToolLoop({
   // Cuerpos vacíos vistos en todo el loop. Viaja al journal: si un agente
   // acumula varios por corrida, el problema es del proveedor y no de una vuelta.
   const vacios = [];
+  // Los proveedores que nos colgaron en ESTA corrida. Se acumulan y se excluyen
+  // de todas las llamadas siguientes: si Alibaba colgó la vuelta 4, no tiene
+  // sentido que atienda el cierre.
+  const proveedoresColgados = [];
+  // Quién atendió cada vuelta, para el journal. "Alibaba se cuelga" solo
+  // significa algo si se sabe quién contestó las vueltas que SÍ anduvieron.
+  const proveedoresPorVuelta = [];
   let cuerpoVacio = false;
   let sinContexto = false;
   let sinLlamadas = false;
@@ -387,24 +394,49 @@ export async function runToolLoop({
     // que es justo lo que este presupuesto existe para evitar.
     const techo = Math.max(10000, Math.min(timeoutMs || Infinity, restante() - RESERVA_CIERRE_MS));
     const argsVuelta = { agent, system, messages: convo, maxTokens, now, timeoutMs: techo, tools, ...(effort ? { effort } : {}) };
-    llm = await call({ ...argsVuelta, ...(trace ? { trace, fase: `loop:vuelta_${turns}` } : {}) });
+    llm = await call({
+      ...argsVuelta,
+      ...(proveedoresColgados.length ? { provider: providerPolicy(agent, { ignore: proveedoresColgados }) } : {}),
+      ...(trace ? { trace, fase: `loop:vuelta_${turns}` } : {}),
+    });
     sumar(llm);
+    if (llm && llm.proveedor) proveedoresPorVuelta.push({ vuelta: turns, proveedor: llm.proveedor, ms: llm.ms ?? null, ok: llm.status === 200 && !!llm.data });
 
     // ── CUERPO VACÍO: se reintenta la MISMA vuelta, una vez ────────────
     // Misma conversación, mismo payload: no hay nada que corregir porque el
     // proveedor no llegó a contestar. Si el segundo también vuelve vacío, se
     // sale del loop hacia el CIERRE, no hacia un abort.
     if (llm && llm.emptyBody) {
-      vacios.push({ vuelta: turns, intento: 1, bytes: llm.bytes ?? 0 });
-      const alcanzaElReloj = restante() > RESERVA_CIERRE_MS + REINTENTO_VACIO_MS;
+      const colgado = llm.proveedor || null;
+      if (colgado && !proveedoresColgados.includes(colgado)) proveedoresColgados.push(colgado);
+      vacios.push({ vuelta: turns, intento: 1, bytes: llm.bytes ?? 0, proveedor: colgado, timeout_nuestro: !!llm.timedOutLeyendo, ms: llm.ms ?? null });
+
+      // ── EL REINTENTO DE UNA VUELTA ÚTIL VALE MÁS QUE UN SEGUNDO CIERRE ─
+      // Antes el reintento se saltaba con "sin reloj" apenas el presupuesto
+      // bajaba de RESERVA + 2s, y después el CIERRE quemaba 90s en dos intentos
+      // idénticos. Eso es al revés: la vuelta 4 todavía podía traer datos; el
+      // segundo cierre solo repetía la misma llamada al mismo proveedor colgado.
+      //
+      // Ahora el reintento puede morder la reserva del cierre hasta dejarle lo
+      // mínimo para UN intento. Un cierre alcanza — si además se le cambia el
+      // proveedor, que es lo que se hace abajo.
+      const pisoReserva = Math.round(RESERVA_CIERRE_MS / 2);
+      const alcanzaElReloj = restante() > pisoReserva + REINTENTO_VACIO_MS + 10000;
       if (alcanzaElReloj) {
         await dormir(REINTENTO_VACIO_MS);
-        const techo2 = Math.max(10000, Math.min(timeoutMs || Infinity, restante() - RESERVA_CIERRE_MS));
-        llm = await call({ ...argsVuelta, timeoutMs: techo2, ...(trace ? { trace, fase: `loop:vuelta_${turns}:reintento_vacio` } : {}) });
+        const techo2 = Math.max(10000, Math.min(timeoutMs || Infinity, restante() - pisoReserva));
+        // Y NO se repite igual: se excluye al proveedor que nos colgó. Repetir
+        // la misma llamada al mismo proveedor lento es pagar el reloj dos veces
+        // por la misma respuesta.
+        llm = await call({
+          ...argsVuelta, timeoutMs: techo2,
+          ...(proveedoresColgados.length ? { provider: providerPolicy(agent, { ignore: proveedoresColgados }) } : {}),
+          ...(trace ? { trace, fase: `loop:vuelta_${turns}:reintento_otro_proveedor` } : {}),
+        });
         sumar(llm);
-        if (llm && llm.emptyBody) vacios.push({ vuelta: turns, intento: 2, bytes: llm.bytes ?? 0 });
+        if (llm && llm.emptyBody) vacios.push({ vuelta: turns, intento: 2, bytes: llm.bytes ?? 0, proveedor: llm.proveedor || null, timeout_nuestro: !!llm.timedOutLeyendo, ms: llm.ms ?? null });
       } else {
-        vacios.push({ vuelta: turns, intento: 2, omitido: 'sin reloj para reintentar: se va directo al cierre' });
+        vacios.push({ vuelta: turns, intento: 2, omitido: 'sin reloj ni para el cierre: se va directo a cerrar' });
       }
       if (!llm || llm.emptyBody) { cuerpoVacio = true; break; }
     }
@@ -437,7 +469,7 @@ export async function runToolLoop({
         threw_stack: llm.threw_stack || null,
         nota: 'El loop murió DENTRO de una vuelta de herramientas: el turno de cierre nunca llegó a ejecutarse. Un `cierre: null` en el journal significa esto, no que el cierre haya salido bien.',
       };
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', murio_en: dondeMurio, elapsed_ms: clock() - t0, budget_ms: budgetMs, limites: limites(), usage_total: acumulado, cost_usd_total: costoAcumulado, ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', murio_en: dondeMurio, elapsed_ms: clock() - t0, budget_ms: budgetMs, limites: limites(), usage_total: acumulado, cost_usd_total: costoAcumulado, ...(proveedoresPorVuelta.length ? { proveedores: proveedoresPorVuelta } : {}), ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
     }
 
     const pedidos = toolUseBlocks(llm.data);
@@ -446,7 +478,7 @@ export async function runToolLoop({
       // que el reintento recuperó sigue siendo un corte, y si se pierde acá, la
       // única evidencia de que el proveedor está inestable son las corridas que
       // además fracasaron — o sea, la mitad del cuadro.
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: turns === 1 ? 'no_tools' : 'end_turn', elapsed_ms: clock() - t0, budget_ms: budgetMs, limites: limites(), usage_total: acumulado, cost_usd_total: costoAcumulado, ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: turns === 1 ? 'no_tools' : 'end_turn', elapsed_ms: clock() - t0, budget_ms: budgetMs, limites: limites(), usage_total: acumulado, cost_usd_total: costoAcumulado, ...(proveedoresPorVuelta.length ? { proveedores: proveedoresPorVuelta } : {}), ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
     }
 
     // Las herramientas de UNA vuelta corren EN PARALELO: son lecturas
@@ -515,10 +547,16 @@ export async function runToolLoop({
   // `tool_choice` es la forma correcta de pedir "contestá sin llamar nada", y
   // quitar el esquema no lo es.
   const cierreToolChoice = agent.provider === 'anthropic' ? { type: 'none' } : 'none';
+  // El cierre corre contra lo que QUEDE, con la reserva como techo. Si el
+  // reintento de una vuelta útil mordió parte de la reserva, el cierre se ajusta
+  // en vez de pedir 45s que ya no existen y chocar contra el deadline.
+  const relojDeCierre = () => Math.max(10000, Math.min(timeoutMs || RESERVA_CIERRE_MS, RESERVA_CIERRE_MS, Math.max(10000, restante())));
   const llamarCierre = (msgs, extra = {}) => call({
     agent, system, messages: msgs, maxTokens, now,
-    timeoutMs: Math.min(timeoutMs || RESERVA_CIERRE_MS, RESERVA_CIERRE_MS),
+    timeoutMs: relojDeCierre(),
     tools, toolChoice: cierreToolChoice, ...(effort ? { effort } : {}),
+    // El cierre NUNCA va al proveedor que ya nos colgó en esta corrida.
+    ...(proveedoresColgados.length ? { provider: providerPolicy(agent, { ignore: proveedoresColgados }) } : {}),
     ...(trace ? { trace, fase: 'cierre' } : {}), ...extra,
   });
 
@@ -555,12 +593,34 @@ export async function runToolLoop({
     // rendirse en el primer corte de conexión desperdicia ocho herramientas ya
     // pagadas.
     if (llm && llm.emptyBody) {
-      vacios.push({ vuelta: 'cierre', intento: 1, bytes: llm.bytes ?? 0 });
-      await dormir(REINTENTO_VACIO_MS);
-      const reintento = await llamarCierre(convo, trace ? { fase: 'cierre:reintento_vacio' } : {});
-      anotarCierre('cierre_reintento_vacio', reintento, null);
-      if (reintento && !reintento.emptyBody) { llm = reintento; }
-      else { vacios.push({ vuelta: 'cierre', intento: 2, bytes: (reintento && reintento.bytes) ?? 0 }); }
+      const colgado = llm.proveedor || null;
+      if (colgado && !proveedoresColgados.includes(colgado)) proveedoresColgados.push(colgado);
+      vacios.push({ vuelta: 'cierre', intento: 1, bytes: llm.bytes ?? 0, proveedor: colgado, timeout_nuestro: !!llm.timedOutLeyendo, ms: llm.ms ?? null });
+
+      // ── EL SEGUNDO CIERRE VA A OTRO PROVEEDOR, O NO VA ─────────────
+      // El trace de qwen mostró dos cierres de 45.002 ms EXACTOS al mismo
+      // proveedor: 90 segundos para recibir dos veces la misma nada. Repetir la
+      // misma llamada al mismo proveedor lento no es un reintento, es esperar
+      // dos veces.
+      //
+      // Solo se reintenta si (a) sabemos a quién excluir y (b) queda reloj de
+      // verdad. Si no se sabe quién atendió, un segundo intento idéntico es el
+      // mismo error otra vez, y es mejor cerrar sin él.
+      const puedeCambiar = proveedoresColgados.length > 0;
+      const quedaReloj = restante() > 12000;
+      if (puedeCambiar && quedaReloj) {
+        const reintento = await llamarCierre(convo, trace ? { fase: 'cierre:otro_proveedor' } : {});
+        anotarCierre('cierre_otro_proveedor', reintento, null);
+        if (reintento && !reintento.emptyBody) { llm = reintento; }
+        else { vacios.push({ vuelta: 'cierre', intento: 2, bytes: (reintento && reintento.bytes) ?? 0, proveedor: (reintento && reintento.proveedor) || null, timeout_nuestro: !!(reintento && reintento.timedOutLeyendo), ms: (reintento && reintento.ms) ?? null }); }
+      } else {
+        vacios.push({
+          vuelta: 'cierre', intento: 2,
+          omitido: !puedeCambiar
+            ? 'no se sabe qué proveedor atendió: un segundo intento idéntico sería el mismo error otra vez'
+            : `quedan ${Math.round(restante() / 1000)}s: no alcanza para otro intento`,
+        });
+      }
     }
   } catch (e) {
     anotarCierre('cierre', null, e);
@@ -613,6 +673,8 @@ export async function runToolLoop({
     limites: limites(),
     usage_total: acumulado, cost_usd_total: costoAcumulado,
     cierre_diagnostico: diagCierre,
+    ...(proveedoresPorVuelta.length ? { proveedores: proveedoresPorVuelta } : {}),
+    ...(proveedoresColgados.length ? { proveedores_colgados: proveedoresColgados } : {}),
     ...(vacios.length ? { cuerpos_vacios: vacios } : {}),
   };
 }

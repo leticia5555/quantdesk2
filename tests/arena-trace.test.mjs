@@ -173,7 +173,10 @@ console.log('\n── el trace captura request y response, y declara el recorte 
     'el tope de turnos se respeta y los descartados se CUENTAN, no se ocultan',
     JSON.stringify([t3.turns.length, t3.descartados]));
 
-  ok(TRACE_MAX_BYTES === 4096, 'el default son los 4 KB por turno que pidió Lety');
+  // Subió de 4 KB a 16 KB el 2026-09-17: con 4096, los payloads reales (28-36 KB)
+  // se recortaban TODOS al mismo largo y el diff entre vueltas reportaba
+  // `delta 0` siempre. El recorte destruía justo el número que más importaba.
+  ok(TRACE_MAX_BYTES === 16384, 'el default son 16 KB por turno', String(TRACE_MAX_BYTES));
 }
 
 // ── 5) EL TRACE NO CAMBIA LA CORRIDA ─────────────────────────────────
@@ -232,8 +235,11 @@ console.log('\n── 200 + cuerpo vacío: se reintenta y se cierra, no se abort
 
     ok(loop.stopped_by === 'cuerpo_vacio',
       'el loop sale por `cuerpo_vacio`, un motivo propio y no un "HTTP 200"', loop.stopped_by);
-    ok(fases.some((f) => /reintento_vacio/.test(f || '')),
-      'la MISMA vuelta se reintenta una vez', JSON.stringify(fases));
+    // La fase se llama `reintento_otro_proveedor` desde el 2026-09-17: el
+    // reintento ya no repite la misma llamada al mismo proveedor —eso era
+    // esperar dos veces— sino que excluye al que nos colgó.
+    ok(fases.some((f) => /reintento_otro_proveedor/.test(f || '')),
+      'la MISMA vuelta se reintenta una vez, pero con OTRO proveedor', JSON.stringify(fases));
     ok(loop.llm === cierreOk,
       'y tras el segundo vacío NO se aborta: se salta al turno de CIERRE y el PM decide con lo que tiene');
     ok(loop.cuerpos_vacios && loop.cuerpos_vacios.length === 2,
@@ -332,6 +338,109 @@ console.log('\n── el trace compara una vuelta contra la anterior ──');
   ok(d2.descuadre_tool && d2.descuadre_tool.tool_calls === 2 && d2.descuadre_tool.tool_results === 1,
     'un tool_call sin su mensaje `tool` se detecta solo: 2 llamadas, 1 resultado',
     JSON.stringify(d2.descuadre_tool));
+}
+
+// ── 9) EL TIMEOUT NUESTRO, DISFRAZADO DE CUERPO VACÍO ────────────────
+// EL DIAGNÓSTICO FINAL, y una corrección al anterior. El trace de qwen mostró
+// 45.002 ms EXACTOS dos veces seguidas. 45.000 es RESERVA_CIERRE_MS: NUESTRO
+// techo del turno de cierre.
+//
+// `fetch` resuelve en cuanto llegan los HEADERS. OpenRouter manda el 200 al
+// instante y después keepalives mientras el proveedor de abajo piensa. El
+// cuerpo se lee en `r.text()`, y el AbortSignal cubre TAMBIÉN esa lectura — así
+// que nuestro reloj vencía a mitad del cuerpo, `r.text()` lanzaba, y un
+// `.catch(() => '')` lo convertía en string vacío. Reportábamos "el proveedor
+// cerró el stream" cuando el que cortaba éramos nosotros.
+console.log('\n── un timeout tragado se ve igual que una falla del otro lado ──');
+{
+  const http = await import('node:http');
+  const srv = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.write('   ');          // keepalive, igual que OpenRouter
+    // y el cuerpo nunca llega
+  });
+  await new Promise((r) => srv.listen(0, r));
+  const url = 'http://127.0.0.1:' + srv.address().port;
+
+  const t0 = Date.now();
+  const r = await fetch(url, { signal: AbortSignal.timeout(300) });
+  ok(r.status === 200, 'el fetch resuelve con 200 en cuanto llegan los headers, antes del cuerpo');
+
+  let lanzo = null;
+  try { await r.text(); } catch (e) { lanzo = e; }
+  ok(lanzo && (lanzo.name === 'TimeoutError' || lanzo.name === 'AbortError'),
+    'y es `r.text()` el que lanza cuando NUESTRO reloj vence leyendo el cuerpo', lanzo && lanzo.name);
+  ok(Date.now() - t0 >= 280,
+    'a los ~300ms: el tiempo que se ve en el trace es el NUESTRO, no el del proveedor');
+
+  // El patrón que lo escondía, escrito tal cual estaba.
+  const comoEstaba = await (async () => { try { return await r.text(); } catch { return ''; } })();
+  ok(comoEstaba === '',
+    'con `.catch(() => \'\')` eso se convierte en cuerpo vacío y el timeout desaparece del reporte');
+
+  srv.close();
+
+  const src = await import('node:fs').then((fs) => fs.readFileSync('api/_lib/arena-model.js', 'utf8'));
+  ok(/const abortadoLeyendo = !!lecturaError/.test(src),
+    'el código ya NO traga el error: distingue "nos cortamos" de "el proveedor cerró"');
+  ok(!/await r\.text\(\)\.catch\(/.test(src),
+    'y el `.catch(() => \'\')` que lo escondía ya no existe en NINGÚN proveedor');
+  // El mismo `.catch` estaba en el camino de Anthropic. Ahí importa incluso
+  // más: claude y control son el par que mide el PISO DE RUIDO, y un timeout
+  // mal etiquetado en cualquiera de los dos contamina la única referencia
+  // contra la que vale un delta entre modelos.
+  ok((src.match(/const abortadoLeyendo = !!lecturaError/g) || []).length === 2,
+    'los DOS caminos (OpenRouter y Anthropic) distinguen nuestro corte del suyo',
+    String((src.match(/const abortadoLeyendo/g) || []).length));
+}
+
+// ── 10) ROUTING DE PROVEEDOR ─────────────────────────────────────────
+console.log('\n── el proveedor que cuelga se excluye, no se reintenta igual ──');
+{
+  const { providerPolicy, buildOpenRouterBody } = await import('../api/_lib/arena-model.js');
+
+  ok(providerPolicy({ id: 'grok' }) === null,
+    'sin configuración no se toca el routing: apagar un proveedor a ciegas puede dejar al modelo sin quien lo sirva');
+
+  process.env.ARENA_PROVIDER_IGNORE_QWEN = 'Alibaba';
+  const pol = providerPolicy({ id: 'qwen' });
+  ok(pol && pol.ignore[0] === 'Alibaba', 'se configura por agente y por env, sin deploy', JSON.stringify(pol));
+  ok(pol.allow_fallbacks === true,
+    'con fallbacks: un orden es una preferencia, no un candado que deje al agente sin correr');
+  delete process.env.ARENA_PROVIDER_IGNORE_QWEN;
+
+  const adHoc = providerPolicy({ id: 'qwen' }, { ignore: ['Alibaba', 'Novita'] });
+  ok(adHoc.ignore.length === 2,
+    'y se puede excluir al vuelo a quien nos colgó en ESTA corrida, sin tocar env');
+
+  const body = buildOpenRouterBody({
+    agent: { id: 'qwen', model: 'q' }, system: 's', messages: [{ role: 'user', content: 'u' }],
+    provider: adHoc,
+  });
+  ok(body.provider && body.provider.ignore.includes('Alibaba'), 'la política viaja en el payload de OpenRouter');
+
+  const sinPol = buildOpenRouterBody({
+    agent: { id: 'gemini', model: 'g' }, system: 's', messages: [{ role: 'user', content: 'u' }],
+  });
+  ok(!('provider' in sinPol), 'y sin política, el payload no lleva el campo: cero cambios para quien no lo necesita');
+}
+
+// ── 11) EL REPARTO DEL RELOJ ─────────────────────────────────────────
+// El trace mostró la vuelta 4 saltándose su reintento por "sin reloj" y después
+// el cierre quemando 90s en DOS intentos idénticos al MISMO proveedor colgado.
+// Eso es al revés: la vuelta 4 podía traer datos, el segundo cierre no.
+console.log('\n── el reintento de una vuelta útil le gana a un segundo cierre ──');
+{
+  const src = await import('node:fs').then((fs) => fs.readFileSync('api/_lib/arena-tool-loop.js', 'utf8'));
+  ok(/const pisoReserva = Math\.round\(RESERVA_CIERRE_MS \/ 2\)/.test(src),
+    'el reintento de una vuelta puede morder la reserva del cierre hasta dejarle lo mínimo para UNO');
+  ok(/reintento_otro_proveedor/.test(src),
+    'y ese reintento va a OTRO proveedor: repetir la misma llamada al mismo proveedor lento es esperar dos veces');
+  ok(/cierre:otro_proveedor/.test(src), 'el segundo cierre también cambia de proveedor');
+  ok(/no se sabe qué proveedor atendió/.test(src),
+    'y si no se sabe a quién excluir, NO se reintenta: un intento idéntico sería el mismo error otra vez');
+  ok(/const relojDeCierre = \(\) =>/.test(src),
+    'el cierre pide lo que QUEDA, no 45s que ya no existen');
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');

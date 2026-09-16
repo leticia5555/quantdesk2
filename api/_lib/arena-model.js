@@ -176,7 +176,43 @@ function normalizeOpenRouter(raw) {
 // el mismo payload que la corrida real (un smoke que manda otra cosa no prueba
 // nada). `reasoning.effort` es el parámetro unificado de OpenRouter; un modelo
 // que no razona lo ignora, no falla.
-export function buildOpenRouterBody({ agent, model, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), tools = null, toolChoice = null, effort = ARENA_EFFORT }) {
+// ── ROUTING DE PROVEEDOR ─────────────────────────────────────────────
+// Un mismo modelo en OpenRouter lo sirven varios proveedores, y NO son
+// intercambiables en lo que importa acá: el trace de qwen del 2026-09-17
+// mostró a Alibaba colgándose hasta nuestro techo tres veces seguidas
+// (45.002 ms exactos, dos veces) mientras las vueltas 1-3 habían contestado en
+// 23s, 13s y 32s.
+//
+// OpenRouter NO hace fallback por LENTITUD: solo por error. Un proveedor que
+// tarda 200s y uno que devuelve 500 se ven distinto desde su lado y idéntico
+// desde el nuestro. Por eso hace falta decirlo explícitamente.
+//
+// Se configura por agente y SIN DEPLOY, porque cuál proveedor se cuelga cambia
+// con el día y con la hora:
+//   ARENA_PROVIDER_IGNORE_<AGENTE>  lista separada por comas  ("Alibaba,Novita")
+//   ARENA_PROVIDER_ORDER_<AGENTE>   preferencia, en orden
+//
+// El default NO ignora a nadie: apagar un proveedor a ciegas puede dejar a un
+// modelo sin quien lo sirva, y el que se cuelga hoy es el que anda mañana. Lo
+// que sí es automático es el reintento: cuando un proveedor nos cuelga, la
+// llamada siguiente lo excluye (ver `sinEsteProveedor`).
+export function providerPolicy(agent, { ignore = [], order = null } = {}) {
+  const id = String((agent && agent.id) || '').toUpperCase();
+  const lista = (v) => String(v || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const ign = [...new Set([...lista(process.env['ARENA_PROVIDER_IGNORE_' + id]), ...ignore])];
+  const ord = order || lista(process.env['ARENA_PROVIDER_ORDER_' + id]);
+  if (!ign.length && !ord.length) return null;
+  return {
+    ...(ord.length ? { order: ord } : {}),
+    ...(ign.length ? { ignore: ign } : {}),
+    // Con `order` y sin esto, OpenRouter se limitaría a los de la lista: si los
+    // dos están caídos, el agente no corre. Un orden es una preferencia, no un
+    // candado.
+    allow_fallbacks: true,
+  };
+}
+
+export function buildOpenRouterBody({ agent, model, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), tools = null, toolChoice = null, effort = ARENA_EFFORT, provider = undefined }) {
   const caps = (agent && agent.caps) || {};
   const body = {
     model: model || (agent && agent.model),
@@ -199,11 +235,13 @@ export function buildOpenRouterBody({ agent, model, system, messages, maxTokens 
   // `usage.include` pide el desglose para poder REPORTAR el ahorro en vez de
   // suponerlo.
   body.usage = { include: true };
+  const pol = provider === undefined ? providerPolicy(agent) : provider;
+  if (pol) body.provider = pol;
   return body;
 }
 
-async function openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null }) {
-  const body = buildOpenRouterBody({ agent, model, system, messages, maxTokens, now, tools, toolChoice, effort });
+async function openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null, provider = undefined }) {
+  const body = buildOpenRouterBody({ agent, model, system, messages, maxTokens, now, tools, toolChoice, effort, provider });
   const t0 = Date.now();
   const r = await fetch(OPENROUTER_URL, {
     method: 'POST',
@@ -217,17 +255,54 @@ async function openRouterFetch({ apiKey, agent, model, system, messages, maxToke
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  // EL CUERPO CRUDO SE CONSERVA SIEMPRE. `r.json()` que falla devolvía null y
-  // ahí se perdía la única evidencia de qué contestó el proveedor — que es
-  // exactamente lo que dejó sin diagnóstico a los abortos con "HTTP 200".
-  const texto = await r.text().catch(() => '');
+  // ── EL `.catch(() => '')` QUE ESCONDÍA NUESTRO PROPIO TIMEOUT ───────
+  // `fetch` resuelve en cuanto llegan los HEADERS. OpenRouter manda el 200 al
+  // instante y después keepalives de espacios mientras el proveedor de abajo
+  // piensa. El cuerpo se lee en `r.text()` — y el `AbortSignal` cubre TAMBIÉN
+  // esa lectura.
+  //
+  // Así que cuando nuestro propio reloj vencía a mitad del cuerpo, `r.text()`
+  // lanzaba `TimeoutError`, este `.catch` lo convertía en `''`, y arriba se
+  // reportaba como "HTTP 200 con el cuerpo vacío". Los 45.002 ms EXACTOS y
+  // repetidos del trace de qwen son la firma: 45.000 es RESERVA_CIERRE_MS, o
+  // sea NUESTRO techo del turno de cierre. Los 10s de la vuelta 4 son el piso
+  // de `Math.max(10000, …)` cuando ya casi no quedaba presupuesto.
+  //
+  // No era el proveedor cerrando el stream: éramos nosotros cortando, y
+  // borrando la evidencia de que habíamos cortado. Un timeout tragado se ve
+  // idéntico a una falla del otro lado, y lleva a arreglar lo que no está roto.
+  let texto = '';
+  let lecturaError = null;
+  try {
+    texto = await r.text();
+  } catch (e) {
+    lecturaError = { name: (e && e.name) || 'Error', message: String((e && e.message) || e) };
+  }
+  const abortadoLeyendo = !!lecturaError && (lecturaError.name === 'TimeoutError' || lecturaError.name === 'AbortError');
+  const ms = Date.now() - t0;
+
   let raw = null;
   try { raw = texto ? JSON.parse(texto) : null; } catch { raw = null; }
-  // EL TRACE: el cuerpo que SALIÓ, no solo el que volvió. `bodySample` (800
-  // chars de la respuesta) nunca alcanzó para diagnosticar los abortos de
-  // OpenRouter porque el sospechoso es el payload de entrada.
-  if (trace) trace.push({ fase, provider: 'openrouter', model, request: body, response: texto, status: r.status, ms: Date.now() - t0 });
-  return { status: r.status, raw, bodySample: String(texto || '').slice(0, 800) };
+
+  // QUÉ PROVEEDOR ATENDIÓ. OpenRouter lo devuelve en el cuerpo; con un cuerpo
+  // que no llegó, el header `x-or-provider` (cuando viaja) es lo único que
+  // queda — y es justo el caso en el que más hace falta saberlo.
+  const proveedor = (raw && raw.provider) || r.headers.get('x-or-provider') || null;
+
+  if (trace) {
+    trace.push({
+      fase, provider: proveedor ? `openrouter:${proveedor}` : 'openrouter', model,
+      request: body, response: texto, status: r.status, ms,
+      ...(lecturaError ? { threw: `${lecturaError.name} al LEER el cuerpo: ${lecturaError.message}`, stack: null } : {}),
+    });
+  }
+  return {
+    status: r.status, raw, ms, proveedor,
+    bodySample: String(texto || '').slice(0, 800),
+    // `abortadoLeyendo` es la diferencia entre "el proveedor no contestó" y
+    // "no lo esperamos lo suficiente". Son diagnósticos opuestos.
+    abortadoLeyendo, lecturaError,
+  };
 }
 
 // Deadline de nivel superior, para envolver TRABAJO, no una sola conexión.
@@ -264,11 +339,11 @@ async function timedFetch(fn, timeoutMs, trace = null, fase = null) {
 
 // Guard-equivalente al de Anthropic, para OpenRouter: inyecta fecha, escanea
 // fechas prospectivas rotas, reintenta UNA vez, y si reincide devuelve stale.
-async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null }) {
+async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null, provider = undefined }) {
   // `effort` NO se estaba pasando: la firma lo aceptaba y las dos llamadas lo
   // dejaban afuera, así que el escalón 1 del breaker bajaba el effort en
   // Anthropic y NO en OpenRouter — cinco de los siete seguían caros.
-  const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase }), timeoutMs, trace, fase);
+  const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase, provider }), timeoutMs, trace, fase);
 
   // ── HTTP 200 CON EL CUERPO VACÍO ─────────────────────────────────────
   // ESTO ERA "HTTP 200 y todo lo demás en null". Durante cuatro sombras el
@@ -288,9 +363,22 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
   const cuerpo = String(first.bodySample || '');
   if (first.status >= 200 && first.status < 300 && !first.raw && !cuerpo.trim()) {
     await recordAiCall({ model, now });
+    // ── DOS COSAS DISTINTAS QUE SE VEÍAN IGUAL ────────────────────────
+    // `abortadoLeyendo` = NUESTRO reloj venció mientras se leía el cuerpo. El
+    // proveedor estaba pensando, no colgado: los 45.002 ms del trace de qwen
+    // son RESERVA_CIERRE_MS, nuestro propio techo.
+    // Sin él = el proveedor cerró el stream por su cuenta.
+    // Se arreglan al revés: al primero se le da otro proveedor o más reloj; al
+    // segundo se lo reintenta igual.
+    const nuestroReloj = !!first.abortadoLeyendo;
     return {
       status: first.status, data: null, emptyBody: true,
-      error_detail: `CUERPO VACÍO: el proveedor respondió HTTP ${first.status} y cerró el stream sin mandar nada (${cuerpo.length} bytes, solo keepalive). Es un fallo de transporte, no de formato: un payload mal armado vuelve 400 o 200 con \`error\`.`,
+      timedOutLeyendo: nuestroReloj,
+      proveedor: first.proveedor || null,
+      ms: first.ms ?? null,
+      error_detail: nuestroReloj
+        ? `TIMEOUT NUESTRO leyendo el cuerpo: el proveedor${first.proveedor ? ' (' + first.proveedor + ')' : ''} mandó HTTP ${first.status} y keepalives, y nuestro reloj de ${Math.round((first.ms || 0) / 1000)}s venció antes de que llegara el cuerpo. NO es el proveedor cerrando el stream: somos nosotros cortando.`
+        : `CUERPO VACÍO: el proveedor${first.proveedor ? ' (' + first.proveedor + ')' : ''} respondió HTTP ${first.status} y cerró el stream sin mandar nada. Es un fallo de transporte, no de formato: un payload mal armado vuelve 400 o 200 con \`error\`.`,
       raw_body: '', bytes: cuerpo.length,
     };
   }
@@ -331,12 +419,15 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
   const hits = staleProspectiveDates(text, now);
   if (!hits.length || saltarGuardPorToolUse(data)) {
     await recordAiCall({ model, usage: data.usage, now });
-    return { status: 200, data, ...(hits.length ? { date_guard_skipped: 'tool_use' } : {}) };
+    // QUIÉN ATENDIÓ, también cuando salió bien: sin las vueltas buenas no hay
+    // con qué comparar las malas — "Alibaba se cuelga" solo significa algo si
+    // se sabe quién contestó las tres vueltas que sí anduvieron.
+    return { status: 200, data, proveedor: first.proveedor || null, ms: first.ms ?? null, ...(hits.length ? { date_guard_skipped: 'tool_use' } : {}) };
   }
 
   // Retry único con recordatorio, mismo formato requerido.
   const retryMessages = [...messages, { role: 'assistant', content: text }, { role: 'user', content: retryReminder(hits, now) }];
-  const second = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages: retryMessages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase: (fase || '') + ':retry_fechas' }), timeoutMs, trace, fase);
+  const second = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages: retryMessages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase: (fase || '') + ':retry_fechas', provider }), timeoutMs, trace, fase);
   if (second.status < 200 || second.status >= 300 || !second.raw) {
     // El retry falló en red: mejor la primera respuesta (con su nota de fechas)
     // que un corte — el downstream ya valida el JSON de todos modos.
@@ -468,17 +559,39 @@ async function anthropicFetch({ apiKey, payload, timeoutMs = ARENA_LLM_TIMEOUT_M
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  // EL CUERPO CRUDO SE CONSERVA SIEMPRE. `r.json()` que falla devolvía null y
-  // ahí se perdía la única evidencia de qué contestó el proveedor — que es
-  // exactamente lo que dejó sin diagnóstico a los abortos con "HTTP 200".
-  const texto = await r.text().catch(() => '');
+  // EL MISMO `.catch` QUE ESCONDÍA EL TIMEOUT EN OPENROUTER, acá también.
+  // Se arregla igual y por la misma razón: `fetch` resuelve con los headers, el
+  // AbortSignal cubre TAMBIÉN la lectura del cuerpo, y tragarse ese error
+  // convierte un corte NUESTRO en "el proveedor devolvió un cuerpo vacío".
+  //
+  // Acá importa incluso más: claude y control son el par que mide el PISO DE
+  // RUIDO. Un timeout mal etiquetado en cualquiera de los dos contamina la
+  // única referencia contra la que vale cualquier delta entre modelos.
+  let texto = '';
+  let lecturaError = null;
+  try {
+    texto = await r.text();
+  } catch (e) {
+    lecturaError = { name: (e && e.name) || 'Error', message: String((e && e.message) || e) };
+  }
+  const abortadoLeyendo = !!lecturaError && (lecturaError.name === 'TimeoutError' || lecturaError.name === 'AbortError');
   let raw = null;
   try { raw = texto ? JSON.parse(texto) : null; } catch { raw = null; }
   // El trace también acá: el par claude↔control es el CONTROL del experimento.
   // Comparar el payload que sí funciona contra el que falla es la mitad del
   // diagnóstico, y solo se puede si los dos se capturan igual.
-  if (trace) trace.push({ fase, provider: 'anthropic', model: payload && payload.model, request: payload, response: texto, status: r.status, ms: Date.now() - t0 });
-  return { status: r.status, raw, bodySample: String(texto || '').slice(0, 800) };
+  if (trace) {
+    trace.push({
+      fase, provider: 'anthropic', model: payload && payload.model,
+      request: payload, response: texto, status: r.status, ms: Date.now() - t0,
+      ...(lecturaError ? { threw: `${lecturaError.name} al LEER el cuerpo: ${lecturaError.message}` } : {}),
+    });
+  }
+  return {
+    status: r.status, raw, ms: Date.now() - t0,
+    bodySample: String(texto || '').slice(0, 800),
+    abortadoLeyendo, lecturaError,
+  };
 }
 
 // Guard de fechas replicado para el Arena sobre Anthropic (ver el bloque de
@@ -491,8 +604,19 @@ async function guardedAnthropicCall({ apiKey, agent, model, system, messages, ma
     // El mensaje de error de Anthropic viaja hacia arriba: un 400 por un
     // parámetro no soportado tiene que ser legible en el journal, no un
     // "HTTP 400" mudo que obligue a reproducir la llamada a mano.
+    // El corte NUESTRO leyendo el cuerpo se nombra igual que en OpenRouter: un
+    // 200 sin cuerpo porque no lo esperamos lo suficiente no es una falla de
+    // Anthropic, y etiquetarlo como tal manda el diagnóstico al lado equivocado.
+    if (first.abortadoLeyendo && first.status >= 200 && first.status < 300) {
+      return {
+        status: first.status, data: null, emptyBody: true, timedOutLeyendo: true,
+        proveedor: 'anthropic', ms: first.ms ?? null,
+        error_detail: `TIMEOUT NUESTRO leyendo el cuerpo: Anthropic mandó HTTP ${first.status} y nuestro reloj de ${Math.round((first.ms || 0) / 1000)}s venció antes de que llegara la respuesta.`,
+        raw_body: '', bytes: 0,
+      };
+    }
     const detail = (first.raw && first.raw.error ? first.raw.error.message : null) || first.netError || null;
-    return { status: first.status || 502, data: null, timedOut: !!first.timedOut, error_detail: detail };
+    return { status: first.status || 502, data: null, timedOut: !!first.timedOut, error_detail: detail, threw_stack: first.threw_stack || null };
   }
   const data = first.raw;
 
@@ -639,7 +763,7 @@ export function __resetPriceCache() { priceCache = { at: 0, map: null }; }
 // `trace` es un sink opcional (ver _lib/arena-trace.js). null en el camino
 // normal: sin él no se construye ni se recorre nada, así que una corrida de
 // producción no paga el trace que solo se mira cuando algo falla.
-export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null }) {
+export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null, provider = undefined }) {
   // CANDADO DE SLUG: un modelo cuyo slug no se verificó contra el catálogo del
   // proveedor y que no tiene override explícito NO se llama. Ver el encabezado
   // del registry: preferimos no correr a pegarle a un slug inventado.
@@ -653,7 +777,7 @@ export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_
     return guardedAnthropicCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase });
   }
   if (agent.provider === 'openrouter') {
-    return guardedOpenRouterCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase });
+    return guardedOpenRouterCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase, provider });
   }
   return { status: 0, data: null, error: 'proveedor desconocido: ' + (agent && agent.provider) };
 }
