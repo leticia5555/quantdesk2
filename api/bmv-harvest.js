@@ -715,10 +715,18 @@ async function jobEmisoras() {
   // guardada es la EX o la de PAGO — son días distintos y el retorno total se
   // arma con la ex, así que esto se reporta en vez de suponerse.
   const camposDividendo = new Set();
+  const tiposDividendo = {};
+  const divisasDividendo = {};
+  let aproximadas = 0;
+  let repartosTotales = 0;
   for (const f of filas) {
     await upsertEmisora(f);
     const d = extraerDistribuciones(f.raw_serie || f.raw);
     for (const c of d.campos || []) camposDividendo.add(c);
+    for (const [k, v] of Object.entries(d.tipos || {})) tiposDividendo[k] = (tiposDividendo[k] || 0) + v;
+    for (const [k, v] of Object.entries(d.divisas || {})) divisasDividendo[k] = (divisasDividendo[k] || 0) + v;
+    aproximadas += d.aproximadas || 0;
+    repartosTotales += d.distribuciones.length;
     if (d.distribuciones.length) {
       distribuciones += await insertarDistribuciones(f.emisora, f.emisora_serie, d.distribuciones);
       conReparto.push(f.emisora_serie);
@@ -746,7 +754,15 @@ async function jobEmisoras() {
     // nacimiento, así que se reporta aparte y en voz alta.
     ics_sin_rango_financieros: sinRango.map((f) => ({ emisora: f.emisora_serie, motivo: f.fin_motivo })),
     distribuciones_guardadas: distribuciones,
+    // La fecha EX viene sólo en el bloque "reciente"; el histórico se aproxima
+    // (pago − 3 días). El porcentaje se reporta porque una aproximación que no
+    // se cuenta se vuelve un dato a los dos días.
+    ex_aproximadas: aproximadas,
+    pct_ex_aproximada: repartosTotales ? Math.round((100 * aproximadas) / repartosTotales) : 0,
     dividendos_campos_vistos: [...camposDividendo],
+    dividendos_por_tipo: tiposDividendo,
+    // Una divisa distinta de MXN exige conversión antes de reinvertir.
+    dividendos_por_divisa: divisasDividendo,
     // Insumo del retorno total de la CANASTA. Una ICS sin reparto puede ser que
     // de verdad no reparta, o que el dato no venga — y la diferencia importa:
     // lo segundo mide esa emisora a precio contra un benchmark que sí trae
@@ -804,10 +820,18 @@ async function jobReparse() {
     filas.push(...filasDelCenso({ [p.emisora]: p.raw }));
   }
   let distribuciones = 0;
+  let aproximadas = 0;
+  let repartosTotales = 0;
+  const tiposDividendo = {};
+  const divisasDividendo = {};
   const conReparto = [];
   for (const f of filas) {
     await upsertEmisora(f);
     const d = extraerDistribuciones(f.raw_serie || f.raw);
+    for (const [k, v] of Object.entries(d.tipos || {})) tiposDividendo[k] = (tiposDividendo[k] || 0) + v;
+    for (const [k, v] of Object.entries(d.divisas || {})) divisasDividendo[k] = (divisasDividendo[k] || 0) + v;
+    aproximadas += d.aproximadas || 0;
+    repartosTotales += d.distribuciones.length;
     if (d.distribuciones.length) {
       distribuciones += await insertarDistribuciones(f.emisora, f.emisora_serie, d.distribuciones);
       conReparto.push(f.emisora_serie);
@@ -825,6 +849,10 @@ async function jobReparse() {
       .map((f) => ({ emisora: f.emisora_serie, motivo: f.fin_motivo })).slice(0, 20),
     distribuciones,
     series_con_reparto: conReparto.length,
+    ex_aproximadas: aproximadas,
+    pct_ex_aproximada: repartosTotales ? Math.round((100 * aproximadas) / repartosTotales) : 0,
+    dividendos_por_tipo: tiposDividendo,
+    dividendos_por_divisa: divisasDividendo,
     censo: await censoResumen(),
   };
 }
@@ -1053,6 +1081,19 @@ function coberturaMd(c, est) {
   const di = c.distribuciones_ics || {};
   L.push('## Retorno total de la canasta', '',
     `ICS con reparto: **${di.emisoras_con_reparto || 0}** · repartos: **${di.filas || 0}** · rango: ${di.desde || 'n/d'} → ${di.hasta || 'n/d'}`, '');
+  L.push(`Fecha ex **aproximada** (pago − 3 días) en **${di.ex_aproximadas || 0}** de ${di.filas || 0} repartos (**${di.pct_ex_aproximada || 0}%**). La API sólo trae \`fechaexcupon\` en el bloque "reciente".`, '');
+  if (di.no_efectivo) {
+    L.push(`**${di.no_efectivo}** repartos NO son en efectivo y no se reinvierten como tales.`, '');
+  }
+  const divs = (di.por_divisa || []).filter((d) => d.divisa && d.divisa !== 'MXN' && d.divisa !== '(sin divisa)');
+  if (divs.length) {
+    L.push(`**Divisas distintas de MXN:** ${divs.map((d) => `${d.divisa} (${d.n})`).join(', ')} — hay que convertir antes de reinvertir.`, '');
+  }
+  if ((di.por_tipo || []).length > 1) {
+    L.push('| Tipo de reparto | N |', '|---|---:|');
+    for (const t of di.por_tipo) L.push(`| ${t.tipo} | ${t.n} |`);
+    L.push('');
+  }
   const sin = di.ics_sin_reparto || [];
   if (sin.length) {
     L.push(`**ICS sin ningún reparto (${sin.length}):** ${sin.join(', ')}`, '',

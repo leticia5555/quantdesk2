@@ -620,28 +620,100 @@ function aplanarHistoricos(raw) {
 // y el crudo del censo se guarda igual — si esto falla, se re-extrae con un
 // UPDATE.
 const RE_DISTRIBUCION = /distribuc|dividend|cupon|cupón|reparto/i;
-const ALIAS_MONTO = ['monto', 'importe', 'dividendo', 'distribucion', 'distribución',
-  'valor', 'cantidad', 'amount', 'pago', 'cupon', 'cupón', 'efectivo'];
-const ALIAS_EX = ['fecha_ex', 'ex', 'excupon', 'excupón', 'fecha_excupon', 'fecha', 'date'];
+
+// La forma REAL, verificada sobre el crudo de NAFTRAC:
+//
+//   "reciente":  {"2026-08-31": {"pago": 0.01387504835,
+//                                "tipo": "DISTRIBUCION DE EFECTIVO",
+//                                "divisa": "MXN",
+//                                "fechaexcupon": "2026-08-28"}}
+//   "historico": {"2025-12-31": {"pago": 0.56096644127,
+//                                "tipo": "DISTRIBUCION DE EFECTIVO"}}
+//
+// Tres cosas de ahí, y las tres muerden:
+//
+//   1. La LLAVE de fecha es la de **pago**, no la ex. Tomarla por la ex sería
+//      reinvertir tarde.
+//   2. `fechaexcupon` sólo viene en "reciente". Todo el histórico —o sea casi
+//      todo lo que el backtest usa— llega sin ella.
+//   3. `pago` es el **monto**, no una fecha, pese al nombre.
+const ALIAS_MONTO = ['pago', 'monto', 'importe', 'dividendo', 'distribucion', 'distribución',
+  'valor', 'cantidad', 'amount', 'cupon', 'cupón', 'efectivo'];
+const ALIAS_EX = ['fechaexcupon', 'fecha_excupon', 'fecha_ex', 'excupon', 'excupón', 'ex'];
+const ALIAS_TIPO = ['tipo', 'concepto', 'type'];
+const ALIAS_DIVISA = ['divisa', 'moneda', 'currency'];
+// La fecha de pago cuando NO es la llave del mapa: en un arreglo de filas no
+// hay llave, y la fecha viaja dentro del objeto. Ojo: `pago` NO va aquí — es
+// el monto.
+const ALIAS_PAGO = ['fecha_pago', 'fechapago', 'fecha', 'date', 'fecha_reparto'];
+
+// Cuántos días naturales atrás cae la ex respecto del pago cuando el dato no la
+// trae. 3 es el delta OBSERVADO en NAFTRAC (pago 31-ago → ex 28-ago) y encaja
+// con T+2 más un fin de semana. Es una APROXIMACIÓN y se marca como tal.
+const DIAS_EX_APROX = 3;
 
 /**
- * Saca {fecha_ex, monto} de donde sea que vengan. La fecha que importa es la
- * **ex-cupón**: reinvertir en la fecha de pago adelantaría el flujo y metería
- * look-ahead por la puerta de atrás — justo lo que los 65 días cierran del
- * otro lado.
+ * ¿Este reparto es dinero?
  *
- * Los montos se toman **brutos**, como vengan. El ISR sobre dividendos aplica
- * igual a la canasta y al benchmark, así que a primer orden se cancela en el
- * exceso; aplicarlo a un solo lado sí sería un sesgo.
+ * Sin `tipo` se asume que sí — es lo que llega de las formas viejas y de los
+ * arreglos, y ahí no hay nada que distinguir. Con `tipo`, se exige que diga
+ * **efectivo** (o `cash`): "DIVIDENDO EN ACCIONES" contiene la palabra
+ * "dividendo" pero NO es efectivo, y una regex que aceptara "dividendo" lo
+ * habría reinvertido como si lo fuera — sumando retorno que nadie recibió.
+ *
+ * Lo que no se reconoce queda en `false`: subestimar el retorno es el lado
+ * barato de equivocarse, y el conteo por tipo lo deja a la vista.
+ */
+function esEfectivo(tipo) {
+  if (tipo === undefined || tipo === null || tipo === '') return true;
+  return /efectivo|cash/i.test(String(tipo));
+}
+
+/** Resta días naturales a 'AAAA-MM-DD'. */
+function restaDias(fecha, dias) {
+  const t = Date.parse(fecha + 'T00:00:00Z');
+  if (!Number.isFinite(t)) return null;
+  return new Date(t - dias * 86400000).toISOString().slice(0, 10);
+}
+
+/**
+ * Saca los repartos de donde sea que vengan, con la fecha EX resuelta.
+ *
+ * ── Por qué la ex y no la de pago ──────────────────────────────────
+ * El retorno total reinvierte el día en que el precio CAE, que es la ex. Usar
+ * la de pago acredita el flujo tarde y subestima el retorno. Como aplica igual
+ * a la canasta y al benchmark, se cancela casi entero en el exceso — pero
+ * "casi" no es "sí", y por eso cada fila dice de dónde salió su fecha.
+ *
+ * ── La aproximación, dicha en voz alta ─────────────────────────────
+ * `fechaexcupon` sólo viene en el bloque "reciente". Para el histórico se
+ * aproxima **ex = pago − 3 días naturales**. Las filas aproximadas van
+ * marcadas con `ex_aproximada`, y el reporte dice **qué porcentaje** de las
+ * distribuciones la usó: una aproximación que no se cuenta se vuelve un dato
+ * a los dos días.
+ *
+ * ── `tipo`, que no estaba en el encargo pero muerde igual ───────────
+ * "DISTRIBUCION DE EFECTIVO" es una; puede haber otras (en especie, splits,
+ * reembolsos de capital) que NO se reinvierten como efectivo. Meterlas al
+ * retorno total sumaría dinero que nadie recibió. Se guarda el tipo, se marca
+ * `es_efectivo`, y lo que no se reconoce queda en `false` — conservador y
+ * visible en el conteo por tipo, en vez de silenciosamente contado.
+ *
+ * ── `divisa` ───────────────────────────────────────────────────────
+ * Se guarda tal cual. Asumir MXN en silencio es exactamente la clase de bug
+ * que nos ha estado mordiendo: si alguna emisora reparte en USD hay que
+ * convertir, y eso sólo se sabe si el campo viaja.
+ *
+ * Los montos se toman **brutos**, de los dos lados. El ISR aplica igual a
+ * canasta y benchmark, así que a primer orden se cancela en el exceso.
  */
 function extraerDistribuciones(raw) {
   const out = [];
   let descartadas = 0;
   const visto = new Set();
-  // Los nombres de campo que se vieron. Se reportan porque de ellos depende si
-  // la fecha guardada es la EX o la de PAGO, y eso no se puede deducir del
-  // número: son días distintos y el retorno total se arma con la ex.
   const campos = new Set();
+  const tipos = {};
+  const divisas = {};
 
   const tomar = (bajo, nombres) => {
     for (const n of nombres) {
@@ -651,35 +723,77 @@ function extraerDistribuciones(raw) {
     return undefined;
   };
 
-  const fila = (clave, valor) => {
-    // Igual que los precios, un reparto puede llegar como ARREGLO
-    // ({"2025-12-17": [0.85]}) o como número suelto ({"2025-12-17": 0.85}).
-    // El parser sólo miraba objetos con llaves, así que descartaba las dos
-    // formas: 11 repartos de WALMEX salían como "sin reparto".
-    if (Array.isArray(valor)) {
-      const f = /(\d{4}-\d{2}-\d{2})/.exec(String(clave ?? ''));
-      // El monto es el primer número del arreglo que no sea una fecha.
-      const monto = valor.map(aNumero).find((x) => x !== null && x !== undefined);
-      if (!f || monto === null || monto === undefined) { descartadas++; return; }
-      const llave = f[1] + '|' + monto;
-      if (!visto.has(llave)) { visto.add(llave); out.push({ fecha_ex: f[1], monto }); }
-      return;
-    }
-    const bajo = {};
-    if (valor && typeof valor === 'object') {
-      for (const [k, v] of Object.entries(valor)) bajo[normalizaLlave(k)] = v;
-      for (const k of Object.keys(bajo)) campos.add(k);
-    }
-    const crudoFecha = tomar(bajo, ALIAS_EX) ?? clave;
-    const m = /(\d{4}-\d{2}-\d{2})/.exec(String(crudoFecha ?? ''));
-    const monto = aNumero(tomar(bajo, ALIAS_MONTO) ?? (valor && typeof valor === 'object' ? undefined : valor));
-    // Sin fecha ex o sin monto no sirve para reinvertir: se descarta y se
-    // cuenta. Inventarle un cero pasaría como "no repartió" sin serlo.
-    if (!m || monto === null) { descartadas++; return; }
-    const llave = m[1] + '|' + monto;
+  const empuja = (fila) => {
+    const llave = fila.fecha_pago + '|' + fila.monto;
     if (visto.has(llave)) return;
     visto.add(llave);
-    out.push({ fecha_ex: m[1], monto });
+    out.push(fila);
+  };
+
+  const fila = (clave, valor) => {
+    // La llave SIEMPRE es la fecha de pago, venga el valor como objeto,
+    // arreglo o número suelto.
+    const f = /(\d{4}-\d{2}-\d{2})/.exec(String(clave ?? ''));
+
+    if (Array.isArray(valor)) {
+      const monto = valor.map(aNumero).find((x) => x !== null && x !== undefined);
+      if (!f || monto === null || monto === undefined) { descartadas++; return; }
+      empuja({
+        fecha_pago: f[1], fecha_ex: restaDias(f[1], DIAS_EX_APROX), ex_aproximada: true,
+        monto, tipo: null, divisa: null, es_efectivo: true,
+      });
+      return;
+    }
+
+    const bajo = {};
+    if (valor && typeof valor === 'object') {
+      for (const [k, v] of Object.entries(valor)) {
+        bajo[normalizaLlave(k)] = v;
+        campos.add(String(k));
+      }
+    }
+    const monto = aNumero(tomar(bajo, ALIAS_MONTO)
+      ?? (valor && typeof valor === 'object' ? undefined : valor));
+    if (monto === null) { descartadas++; return; }
+
+    const exCruda = tomar(bajo, ALIAS_EX);
+    const mEx = exCruda === undefined ? null : /(\d{4}-\d{2}-\d{2})/.exec(String(exCruda));
+
+    // La fecha de pago es la LLAVE del mapa. Pero en un arreglo de filas no hay
+    // llave, así que se busca dentro; y si lo único que hay es una ex
+    // explícita, ésa manda y la de pago se iguala a ella — no se inventa una
+    // fecha de pago tres días después.
+    let fPago = f;
+    if (!fPago) {
+      const cruda = tomar(bajo, ALIAS_PAGO);
+      fPago = cruda === undefined ? null : /(\d{4}-\d{2}-\d{2})/.exec(String(cruda));
+    }
+    if (!fPago && mEx) {
+      empuja({
+        fecha_pago: mEx[1], fecha_ex: mEx[1], ex_aproximada: false, monto,
+        tipo: tomar(bajo, ALIAS_TIPO) === undefined ? null : String(tomar(bajo, ALIAS_TIPO)),
+        divisa: tomar(bajo, ALIAS_DIVISA) === undefined ? null : String(tomar(bajo, ALIAS_DIVISA)),
+        es_efectivo: esEfectivo(tomar(bajo, ALIAS_TIPO)),
+      });
+      return;
+    }
+    if (!fPago) { descartadas++; return; }
+    const f2 = fPago;
+    const tipo = tomar(bajo, ALIAS_TIPO);
+    const divisa = tomar(bajo, ALIAS_DIVISA);
+
+    if (tipo !== undefined) tipos[String(tipo)] = (tipos[String(tipo)] || 0) + 1;
+    if (divisa !== undefined) divisas[String(divisa)] = (divisas[String(divisa)] || 0) + 1;
+
+    empuja({
+      fecha_pago: f2[1],
+      fecha_ex: mEx ? mEx[1] : restaDias(f2[1], DIAS_EX_APROX),
+      ex_aproximada: !mEx,
+      monto,
+      tipo: tipo === undefined ? null : String(tipo),
+      divisa: divisa === undefined ? null : String(divisa),
+      es_efectivo: esEfectivo(tipo),
+    });
   };
 
   const caminar = (nodo, dentro, profundidad) => {
@@ -705,7 +819,18 @@ function extraerDistribuciones(raw) {
   caminar(raw, false, 0);
 
   out.sort((a, b) => (a.fecha_ex < b.fecha_ex ? -1 : a.fecha_ex > b.fecha_ex ? 1 : 0));
-  return { distribuciones: out, descartadas, campos: [...campos] };
+  const aproximadas = out.filter((d) => d.ex_aproximada).length;
+  return {
+    distribuciones: out,
+    descartadas,
+    campos: [...campos],
+    tipos,
+    divisas,
+    aproximadas,
+    // El porcentaje, no sólo el conteo: "12 aproximadas" no dice nada sin
+    // saber si son 12 de 15 o 12 de 4,000.
+    pct_aproximadas: out.length ? Math.round((100 * aproximadas) / out.length) : 0,
+  };
 }
 
 /* ─────────────────── presupuesto de créditos ─────────────────── */
@@ -729,7 +854,8 @@ export {
   BASE, BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
   CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL, TIMEOUT_MS,
   aNumero, aplanarHistoricos, cabecerasDeCredito, clavePeriodo, construirUrl,
-  dormir, emisoraSerie, extraerDistribuciones, finDeTrimestre, mesPresupuesto,
+  DIAS_EX_APROX, dormir, emisoraSerie, extraerDistribuciones, finDeTrimestre,
+  mesPresupuesto, restaDias,
   normalizaLlave, normalizarFinancieros, periodoApi,
   ordenPeriodo, parseClavePeriodo, parsearRangoFechas, parsearRangoPeriodos,
   recortarACobertura,

@@ -19,6 +19,15 @@
 --   · Las migraciones al final van como ALTER y no como CREATE porque las tablas
 --     YA existen en prod: el probe corrió ensureBmvSchema() y las creó con la
 --     forma vieja, vacías. Un `create table if not exists` no las tocaría.
+--   · bmv_distribuciones — la llave de fecha que manda la API es la de PAGO;
+--     la EX viene en `fechaexcupon` y SOLO en el bloque "reciente". Todo el
+--     historico llega sin ella, asi que se aproxima (pago - 3 dias, el delta
+--     observado en NAFTRAC) y la fila queda MARCADA con ex_aproximada. Se
+--     re-llavea por (emisora_serie, fecha_pago) y no por fecha_ex: la de pago
+--     es la que la fuente garantiza siempre, y con la ex de llave una
+--     aproximacion podria chocar con una ex real y perderse una fila.
+--     `tipo` y `divisa` se guardan para no asumirlos: un reparto en especie
+--     no es efectivo, y una divisa que no sea MXN exige convertir.
 --   · bmv_emisoras.fin_periodos — la ENUMERACIÓN de trimestres reportados.
 --     `rango_financieros` llega como lista ("1T_2017, 1T_2018, ..., 2T_2016")
 --     y puede tener huecos: un hueco no es un trimestre que valga un request,
@@ -180,4 +189,18 @@ update bmv_distribuciones set emisora_serie = emisora where emisora_serie is nul
 
 alter table bmv_distribuciones drop constraint if exists bmv_distribuciones_pkey;
 
-create unique index if not exists bmv_distribuciones_uidx on bmv_distribuciones (emisora_serie, fecha_ex);
+alter table bmv_distribuciones add column if not exists fecha_pago date;
+
+alter table bmv_distribuciones add column if not exists ex_aproximada boolean;
+
+alter table bmv_distribuciones add column if not exists tipo text;
+
+alter table bmv_distribuciones add column if not exists divisa text;
+
+alter table bmv_distribuciones add column if not exists es_efectivo boolean;
+
+update bmv_distribuciones set fecha_pago = fecha_ex where fecha_pago is null;
+
+drop index if exists bmv_distribuciones_uidx;
+
+create unique index if not exists bmv_distribuciones_pago_uidx on bmv_distribuciones (emisora_serie, fecha_pago);

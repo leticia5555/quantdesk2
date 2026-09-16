@@ -395,13 +395,58 @@ Las distribuciones vienen dentro de la respuesta de `/v2/emisoras`, así que no
 cuestan un request extra: llegan con el censo, **para cada emisora**, y se
 guardan en `bmv_distribuciones`.
 
-> **¿La fecha del censo es la EX o la de PAGO?** [ABIERTO] Son días distintos,
-> y el retorno total se arma con la **ex** — es cuando el precio cae. Si lo que
-> el censo trae es la de pago, el crédito llega tarde y el retorno total queda
-> ligeramente **subestimado**; como pasa en los dos lados, se cancela casi
-> entero en el exceso, pero "casi" no es "sí". `?job=emisoras` reporta
-> `dividendos_campos_vistos` con los nombres de campo que trajo el reparto,
-> justamente para poder contestarlo mirando el dato en vez de suponerlo.
+#### La fecha ex: contestado, y con una aproximación que hay que contar
+
+**[VERIFICADO sobre el crudo de NAFTRAC]** La llave de fecha que manda la API es
+la de **PAGO**. La ex viene en un campo aparte, `fechaexcupon` — **y sólo en el
+bloque `reciente`**:
+
+```json
+"reciente":  {"2026-08-31": {"pago": 0.01387504835, "tipo": "DISTRIBUCION DE EFECTIVO",
+                             "divisa": "MXN", "fechaexcupon": "2026-08-28"}}
+"historico": {"2025-12-31": {"pago": 0.56096644127, "tipo": "DISTRIBUCION DE EFECTIVO"}}
+```
+
+Nótese que **`pago` es el MONTO**, no una fecha, pese al nombre.
+
+La regla queda así:
+
+| Caso | Qué se hace |
+|---|---|
+| Viene `fechaexcupon` | Se usa **ésa**. El dato real gana siempre. |
+| No viene (todo el histórico) | **ex = pago − 3 días naturales**, y la fila se marca `ex_aproximada`. |
+
+**Los 3 días no son un número inventado:** es el delta observado en NAFTRAC
+(pago 31-ago → ex 28-ago) y encaja con T+2 más un fin de semana.
+
+**Y se cuenta.** `?job=emisoras`, `?job=reparse` y `?job=cobertura` reportan
+`pct_ex_aproximada` — el **porcentaje**, no sólo el conteo, porque "12
+aproximadas" no dice nada sin saber si son 12 de 15 o 12 de 4,000. Una
+aproximación que no se cuenta se vuelve un dato a los dos días.
+
+Como la aproximación se aplica **igual a la canasta y al benchmark**, el error
+se cancela a primer orden en el exceso. Se espera que la enorme mayoría de las
+filas del histórico salgan aproximadas; eso no es un problema mientras esté
+**dicho y medido**.
+
+#### Dos campos más que viajan, para no asumirlos
+
+**`divisa`.** Se guarda tal cual, y el reporte lista las que no son MXN. Si
+alguna emisora reparte en USD hay que convertir antes de reinvertir, y asumir
+MXN en silencio sería exactamente la clase de bug que este proyecto lleva varias
+rondas cazando. El histórico no trae divisa: esas filas quedan en `null`, **no
+en "MXN"**.
+
+**`tipo`.** El observado es `"DISTRIBUCION DE EFECTIVO"`, pero puede haber otros
+—en especie, splits, reembolsos de capital— que **no son dinero que nadie
+recibió**. Contarlos como efectivo sumaría retorno inexistente. Se guarda el
+tipo, se marca `es_efectivo`, y lo que no dice "efectivo" queda en `false`:
+subestimar es el lado barato de equivocarse, y el conteo por tipo lo deja a la
+vista en vez de enterrarlo.
+
+> Esto casi se nos va: la primera versión de `es_efectivo` aceptaba cualquier
+> tipo que contuviera "dividendo", así que **"DIVIDENDO EN ACCIONES" contaba
+> como efectivo**. Lo atrapó el test que se escribió para impedirlo.
 
 > **Un hueco aquí no es un hueco cualquiera.** Una ICS sin reparto puede ser que
 > de verdad no reparta, o que el dato no venga — y lo segundo la mide a precio
@@ -634,7 +679,7 @@ regla aplicada dos veces, no una excepción conveniente.
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 8 jobs (con `reparse`, de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **81 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **89 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
 | **El censo** | **Corrido**: 595 filas, 185 series ICS, **137 emisoras ICS**. |

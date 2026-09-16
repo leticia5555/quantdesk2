@@ -24,7 +24,7 @@ import {
   COBERTURA_FIN, PRESUPUESTO_MENSUAL,
   aNumero, aplanarHistoricos, clavePeriodo, construirUrl, emisoraSerie,
   extraerDistribuciones, finDeTrimestre, mesPresupuesto, normalizarFinancieros,
-  parseClavePeriodo, periodoApi,
+  parseClavePeriodo, periodoApi, restaDias, DIAS_EX_APROX,
   parsearRangoFechas, parsearRangoPeriodos, recortarACobertura, resolverCampo,
   trimestresEntre, urlSegura,
 } from '../api/_lib/databursatil.js';
@@ -511,14 +511,17 @@ test('paramsBenchmark: el benchmark ya es un emisora_serie como cualquier otro',
 
 /* ── distribuciones: el benchmark es de RETORNO TOTAL ───────────── */
 
+/** Compacta una fila de reparto a lo que el test quiere mirar. */
+const pagoMonto = (d) => ({ fecha_pago: d.fecha_pago, monto: d.monto });
+
 test('extraerDistribuciones lee el mapa por fecha y ordena', () => {
   const { distribuciones, descartadas } = extraerDistribuciones({
     distribuciones: { '2026-02-16': { monto: '0.38' }, '2026-01-15': { monto: 0.42 } },
   });
   assert.equal(descartadas, 0);
-  assert.deepEqual(distribuciones, [
-    { fecha_ex: '2026-01-15', monto: 0.42 },
-    { fecha_ex: '2026-02-16', monto: 0.38 },
+  assert.deepEqual(distribuciones.map(pagoMonto), [
+    { fecha_pago: '2026-01-15', monto: 0.42 },
+    { fecha_pago: '2026-02-16', monto: 0.38 },
   ]);
 });
 
@@ -530,7 +533,7 @@ test('extraerDistribuciones lee el arreglo y descarta lo que no sirve para reinv
       { fecha_ex: '2025-06-10', importe: 'n/d' }, // sin monto
     ],
   });
-  assert.deepEqual(distribuciones, [{ fecha_ex: '2025-03-10', monto: 1.1 }]);
+  assert.deepEqual(distribuciones.map(pagoMonto), [{ fecha_pago: '2025-03-10', monto: 1.1 }]);
   assert.equal(descartadas, 2, 'lo que no se puede reinvertir se cuenta, no se rellena con cero');
 });
 
@@ -543,8 +546,8 @@ test('extraerDistribuciones no confunde el rango del censo con un reparto', () =
 
 test('extraerDistribuciones no duplica el mismo reparto visto dos veces', () => {
   const { distribuciones } = extraerDistribuciones({
-    distribuciones: [{ fecha_ex: '2025-01-10', monto: 0.5 }],
-    dividendos: [{ fecha_ex: '2025-01-10', monto: 0.5 }],
+    distribuciones: { '2025-01-10': { monto: 0.5 } },
+    dividendos: { '2025-01-10': { monto: 0.5 } },
   });
   assert.equal(distribuciones.length, 1);
 });
@@ -569,14 +572,14 @@ test('las distribuciones se extraen de CUALQUIER emisora, no sólo del benchmark
   // atado al benchmark, la canasta se mediría a precio contra un benchmark con
   // dividendos — exactamente la asimetría que el diseño corrige.
   const filas = filasDelCenso({
-    WALMEX: { '*': { tipo_valor_id: '1', dividendos: [{ fecha_ex: '2025-11-20', monto: 0.58 }] } },
+    WALMEX: { '*': { tipo_valor_id: '1', dividendos: { '2025-11-20': { monto: 0.58 } } } },
     NAFTRAC: { ISHRS: { tipo_valor_id: '1B', distribuciones: { '2025-11-28': { monto: 0.31 } } } },
   });
   const porEmisora = Object.fromEntries(
     filas.map((f) => [f.emisora_serie, extraerDistribuciones(f.raw_serie || f.raw).distribuciones]));
 
-  assert.deepEqual(porEmisora['WALMEX*'], [{ fecha_ex: '2025-11-20', monto: 0.58 }]);
-  assert.deepEqual(porEmisora[BENCHMARK], [{ fecha_ex: '2025-11-28', monto: 0.31 }]);
+  assert.deepEqual(porEmisora['WALMEX*'].map(pagoMonto), [{ fecha_pago: '2025-11-20', monto: 0.58 }]);
+  assert.deepEqual(porEmisora[BENCHMARK].map(pagoMonto), [{ fecha_pago: '2025-11-28', monto: 0.31 }]);
 });
 
 test('una emisora sin reparto da lista vacía, no un cero inventado', () => {
@@ -748,17 +751,17 @@ test('BUG 2 · los dividendos cuelgan de la SERIE, y no se cruzan entre hermanas
     },
   });
   const por = Object.fromEntries(filas.map((f) => [f.emisora_serie, extraerDistribuciones(f.raw_serie).distribuciones]));
-  assert.deepEqual(por['LIVEPOLC-1'], [{ fecha_ex: '2025-12-17', monto: 0.85 }]);
-  assert.deepEqual(por.LIVEPOL1, [{ fecha_ex: '2025-06-10', monto: 0.40 }]);
+  assert.deepEqual(por['LIVEPOLC-1'].map(pagoMonto), [{ fecha_pago: '2025-12-17', monto: 0.85 }]);
+  assert.deepEqual(por.LIVEPOL1.map(pagoMonto), [{ fecha_pago: '2025-06-10', monto: 0.40 }]);
 });
 
 test('BUG 2b · un reparto en ARREGLO o escalar ya no se descarta', () => {
   // WALMEX trae 11 entradas y salían como "sin reparto" porque el parser sólo
   // miraba objetos con llaves.
-  assert.deepEqual(extraerDistribuciones({ dividendos: { '2025-12-17': [0.85] } }).distribuciones,
-    [{ fecha_ex: '2025-12-17', monto: 0.85 }]);
-  assert.deepEqual(extraerDistribuciones({ dividendos: { '2025-12-17': 0.85 } }).distribuciones,
-    [{ fecha_ex: '2025-12-17', monto: 0.85 }]);
+  assert.deepEqual(extraerDistribuciones({ dividendos: { '2025-12-17': [0.85] } }).distribuciones.map(pagoMonto),
+    [{ fecha_pago: '2025-12-17', monto: 0.85 }]);
+  assert.deepEqual(extraerDistribuciones({ dividendos: { '2025-12-17': 0.85 } }).distribuciones.map(pagoMonto),
+    [{ fecha_pago: '2025-12-17', monto: 0.85 }]);
 });
 
 test('BUG 3 · los precios llegan como ARREGLO [precio, importe]', () => {
@@ -832,4 +835,101 @@ test('estimarConsumo cobra los trimestres ENUMERADOS, no los del rango', () => {
       histDesde: '2016-01-01', histHasta: '2026-09-16' }],
   });
   assert.equal(e.requests.financieros, 3, 'tres, no los 16 del rango');
+});
+
+/* ═══════════════════════════════════════════════════════════════
+ * La forma REAL del reparto, con el crudo de NAFTRAC:
+ *   "reciente":  {"2026-08-31": {pago, tipo, divisa, fechaexcupon}}
+ *   "historico": {"2025-12-31": {pago, tipo}}          ← sin ex, sin divisa
+ * La LLAVE es la fecha de PAGO. `pago` es el MONTO, pese al nombre.
+ * ═══════════════════════════════════════════════════════════════ */
+
+const NAFTRAC_CRUDO = {
+  dividendos: {
+    reciente: {
+      '2026-08-31': {
+        pago: 0.01387504835,
+        tipo: 'DISTRIBUCION DE EFECTIVO',
+        divisa: 'MXN',
+        fechaexcupon: '2026-08-28',
+      },
+    },
+    historico: {
+      '2025-12-31': { pago: 0.56096644127, tipo: 'DISTRIBUCION DE EFECTIVO' },
+    },
+  },
+};
+
+test('la llave es la fecha de PAGO y `pago` es el MONTO, pese al nombre', () => {
+  const { distribuciones } = extraerDistribuciones(NAFTRAC_CRUDO);
+  const reciente = distribuciones.find((d) => d.fecha_pago === '2026-08-31');
+  assert.equal(reciente.monto, 0.01387504835, '`pago` es el monto, no una fecha');
+  assert.equal(reciente.fecha_pago, '2026-08-31');
+});
+
+test('cuando viene `fechaexcupon` se usa ESA, sin aproximar', () => {
+  const { distribuciones } = extraerDistribuciones(NAFTRAC_CRUDO);
+  const r = distribuciones.find((d) => d.fecha_pago === '2026-08-31');
+  assert.equal(r.fecha_ex, '2026-08-28', 'el dato real gana siempre');
+  assert.equal(r.ex_aproximada, false);
+  assert.equal(r.divisa, 'MXN');
+});
+
+test('sin `fechaexcupon` se aproxima pago − 3 días, Y SE MARCA', () => {
+  // Todo el bloque "historico" —o sea casi todo lo que el backtest usa— llega
+  // sin la ex. Aproximarla en silencio sería indistinguible de tenerla.
+  const { distribuciones, aproximadas, pct_aproximadas } = extraerDistribuciones(NAFTRAC_CRUDO);
+  const h = distribuciones.find((d) => d.fecha_pago === '2025-12-31');
+  assert.equal(h.fecha_ex, '2025-12-28');
+  assert.equal(h.ex_aproximada, true, 'marcada: una aproximación que no se marca se vuelve un dato');
+  assert.equal(h.divisa, null, 'el histórico no trae divisa; no se le inventa MXN');
+  assert.equal(aproximadas, 1);
+  assert.equal(pct_aproximadas, 50, 'el porcentaje, no sólo el conteo');
+});
+
+test('el delta de 3 días es el observado en NAFTRAC: 31-ago pago → 28-ago ex', () => {
+  assert.equal(DIAS_EX_APROX, 3);
+  assert.equal(restaDias('2026-08-31', DIAS_EX_APROX), '2026-08-28',
+    'el mismo delta que trae el dato real, no un número inventado');
+  assert.equal(restaDias('2026-03-01', 3), '2026-02-26', 'cruza el fin de mes');
+  assert.equal(restaDias('2024-03-01', 3), '2024-02-27', 'y el bisiesto');
+});
+
+test('`tipo` y `divisa` se cuentan, para no asumirlos en silencio', () => {
+  const r = extraerDistribuciones(NAFTRAC_CRUDO);
+  assert.deepEqual(r.tipos, { 'DISTRIBUCION DE EFECTIVO': 2 });
+  assert.deepEqual(r.divisas, { MXN: 1 }, 'sólo una de las dos trae divisa, y eso se ve');
+  assert.deepEqual(r.campos.sort(), ['divisa', 'fechaexcupon', 'pago', 'tipo']);
+});
+
+test('un reparto que NO es en efectivo no se reinvierte como tal', () => {
+  // Un split o una entrega en especie no es dinero que nadie recibió. Contarlo
+  // como efectivo sumaría retorno inexistente; dejarlo fuera lo subestima, que
+  // es el lado barato de equivocarse — y queda visible en el conteo por tipo.
+  const { distribuciones, tipos } = extraerDistribuciones({
+    dividendos: {
+      '2025-05-05': { pago: 1.0, tipo: 'DISTRIBUCION DE EFECTIVO' },
+      '2025-06-06': { pago: 1.0, tipo: 'DIVIDENDO EN ACCIONES' },
+    },
+  });
+  const efectivo = distribuciones.find((d) => d.fecha_pago === '2025-05-05');
+  const especie = distribuciones.find((d) => d.fecha_pago === '2025-06-06');
+  assert.equal(efectivo.es_efectivo, true);
+  assert.equal(especie.es_efectivo, false);
+  assert.equal(Object.keys(tipos).length, 2, 'los dos tipos quedan contados y a la vista');
+});
+
+test('una divisa distinta de MXN viaja hasta el reporte, no se asume', () => {
+  const r = extraerDistribuciones({ dividendos: { '2025-05-05': { pago: 1.0, divisa: 'USD' } } });
+  assert.equal(r.distribuciones[0].divisa, 'USD');
+  assert.deepEqual(r.divisas, { USD: 1 });
+});
+
+test('dos repartos del mismo día con montos distintos no se colapsan', () => {
+  // La llave de deduplicación es (fecha_pago, monto): dos repartos el mismo día
+  // son raros pero posibles, y perder uno subestimaría el retorno total.
+  const { distribuciones } = extraerDistribuciones({
+    dividendos: { reciente: { '2025-05-05': { pago: 1.0 } }, historico: { '2025-05-05': { pago: 2.0 } } },
+  });
+  assert.equal(distribuciones.length, 2);
 });
