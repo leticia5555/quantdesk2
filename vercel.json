@@ -1,5 +1,8 @@
 {
   "functions": {
+    "api/xbrl-capture.js": {
+      "maxDuration": 300
+    },
     "api/arena-run.js": {
       "maxDuration": 300
     },
@@ -98,6 +101,10 @@
     {
       "path": "/api/arena-watch",
       "schedule": "*/5 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/xbrl-capture?run=1",
+      "schedule": "0 13 * * 1"
     }
   ]
 }
