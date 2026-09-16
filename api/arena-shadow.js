@@ -36,7 +36,7 @@ import * as alpaca from './_lib/alpaca.js';
 import { activeAgents, agentById, agentAlpacaCreds, ARENA_MAX_TOKENS } from './_lib/arena-registry.js';
 import { callArenaLLM, withDeadline, cachePrefixReport, anthropicCostUsd } from './_lib/arena-model.js';
 import { gatherContext, buildSharedContext, buildTargetSystemPrompt, resolveBaseUrl, PROMPT_VERSION } from './arena-run.js';
-import { parsePortfolioResponse, validateTarget, railTrims, RAILS } from './_lib/arena-rails.js';
+import { parsePortfolioResponse, validateTarget, railTrims, normalizarTickersObjetivo, RAILS } from './_lib/arena-rails.js';
 import { buildRebalance } from './_lib/arena-rebalance.js';
 import { createToolExecutor, TOOL_BUDGET } from './_lib/arena-tools.js';
 import { runToolLoop, relojDisponible } from './_lib/arena-tool-loop.js';
@@ -274,6 +274,24 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
     await shadowJournalInsert({ ...base, status: 'aborted_malformed_target', error: parsed.error, llm_response: text, context: ctx });
     return { agent: agent.id, status: 'aborted_malformed_target', error: parsed.error, cost_usd: costo.usd };
   }
+
+  // ── LOS TICKERS, ANTES DE LOS RIELES ────────────────────────────────
+  // Va acá y no dentro de `validateTarget` porque es una pregunta distinta: los
+  // rieles juzgan una CARTERA (pesos, concentración, cortos); esto juzga si los
+  // NOMBRES existen. Un objetivo con un símbolo inventado no tiene una
+  // violación de riel — no tiene sentido siquiera evaluarlo.
+  const universoSimbolos = (buffet && buffet.universe_raw && buffet.universe_raw.symbols) || null;
+  const tick = normalizarTickersObjetivo(parsed.weights, { universo: universoSimbolos });
+  ctx.tickers = {
+    reparados: tick.reparados, desconocidos: tick.desconocidos, colisiones: tick.colisiones,
+    validado_contra_universo: tick.validado_contra_universo,
+  };
+  if (!tick.ok) {
+    await shadowJournalInsert({ ...base, status: 'rejected_tickers', error: tick.error, llm_response: text, context: ctx });
+    return { agent: agent.id, status: 'rejected_tickers', error: tick.error, tickers: ctx.tickers, cost_usd: costo.usd };
+  }
+  // A partir de acá se trabaja con los símbolos ya canónicos.
+  parsed.weights = tick.weights;
 
   // ── RIELES ──
   // La metadata por nombre (precio, sector, shortable, easy-to-borrow) se

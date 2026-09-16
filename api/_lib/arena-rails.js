@@ -137,6 +137,81 @@ export function parsePortfolioResponse(raw) {
   };
 }
 
+// ── LOS TICKERS DEL OBJETIVO, CONTRA EL UNIVERSO ─────────────────────
+// EL BUG (sombra del 2026-09-17): deepseek devolvió `{"EO G": 0.15, "FS LR": 0.1}`
+// — EOG y FSLR con un espacio adentro. El JSON era válido, los pesos eran
+// válidos, y los rieles lo aprobaron entero: NINGUNO exigía que el símbolo
+// EXISTIERA. En vivo, el motor habría intentado operar un ticker inexistente.
+//
+// DE DÓNDE SALE EL ESPACIO: no de nuestro código. Todos los `join` del camino
+// de salida son `join('')` —ninguno mete separadores—, la compactación solo
+// reescribe mensajes `tool` y nunca el contenido del asistente, y el turno de
+// cierre no se compacta. El JSON llegó bien formado con el espacio DENTRO de la
+// clave, así que el modelo lo emitió así. Es un artefacto de deepseek, y contra
+// eso no hay arreglo posible aguas arriba: solo defensa.
+//
+// LA DEFENSA, en dos pasos y en este orden:
+//   1. NORMALIZAR. Un ticker no puede contener espacios — eso es un hecho sobre
+//      los tickers, no una interpretación de la intención. Quitarlos es
+//      canonicalizar, no adivinar.
+//   2. VALIDAR contra el universo del día. Acá está el candado: la
+//      normalización solo se acepta si el resultado es un nombre REAL y
+//      admitido. Si no lo es, se rechaza el objetivo ENTERO — no la posición
+//      suelta, porque una cartera a la que se le sacó una pata ya no es la que
+//      el PM decidió.
+//
+// Toda reparación se REPORTA. Si un modelo empieza a corromper tickers de forma
+// sistemática, esconderlo detrás de un arreglo silencioso es cómo se deja de
+// notar.
+export function normalizarTickersObjetivo(weights, { universo = null } = {}) {
+  const conocidos = universo && universo.length
+    ? new Set(universo.map((x) => String(x || '').trim().toUpperCase()).filter(Boolean))
+    : null;
+
+  const salida = {};
+  const reparados = [];
+  const desconocidos = [];
+  const colisiones = [];
+
+  for (const [k, v] of Object.entries(weights || {})) {
+    const crudo = String(k || '').trim().toUpperCase();
+    // Espacios internos y todo lo que no sea letra, punto o guion: un ticker de
+    // acción estadounidense no lleva nada más.
+    const limpio = crudo.replace(/\s+/g, '').replace(/[^A-Z0-9.\-]/g, '');
+    if (!limpio) { desconocidos.push({ pedido: crudo, motivo: 'no queda nada después de normalizar' }); continue; }
+
+    if (limpio !== crudo) reparados.push({ pedido: crudo, normalizado: limpio });
+
+    if (conocidos && !conocidos.has(limpio)) {
+      desconocidos.push({
+        pedido: crudo, normalizado: limpio,
+        motivo: limpio !== crudo
+          ? `"${crudo}" se normalizó a "${limpio}" y ESE tampoco está en el universo de hoy`
+          : 'no está en el universo de hoy',
+      });
+      continue;
+    }
+    // Dos claves distintas que normalizan al mismo símbolo: sumarlas sería
+    // inventar un peso que el modelo no escribió.
+    if (salida[limpio] !== undefined) {
+      colisiones.push({ simbolo: limpio, pesos: [salida[limpio], v] });
+      continue;
+    }
+    salida[limpio] = v;
+  }
+
+  const ok = !desconocidos.length && !colisiones.length;
+  return {
+    ok, weights: salida, reparados, desconocidos, colisiones,
+    validado_contra_universo: !!conocidos,
+    ...(ok ? {} : {
+      error: desconocidos.length
+        ? `El objetivo nombra ${desconocidos.length} símbolo(s) que NO existen en el universo de hoy: ${desconocidos.map((d) => `"${d.pedido}"${d.normalizado && d.normalizado !== d.pedido ? ` → "${d.normalizado}"` : ''} (${d.motivo})`).join('; ')}. Se rechaza el objetivo ENTERO: una cartera a la que se le saca una pata ya no es la que el PM decidió.`
+        : `Dos claves del objetivo normalizan al mismo símbolo (${colisiones.map((c) => c.simbolo).join(', ')}). Sumarlas sería inventar un peso que el modelo no escribió.`,
+    }),
+  };
+}
+
 // ── EL OBJETIVO, normalizado ─────────────────────────────────────────
 // Entra lo que dijo el modelo; sale una forma canónica o un error. NO se
 // arregla nada: un objetivo que no se puede leer se rechaza y la corrida se
@@ -184,6 +259,26 @@ export function validateTarget(weights, meta = {}, rails = RAILS) {
   const v = [];
   const exp = exposures(weights);
 
+  // ── LA CAÍDA MAYORISTA SE NOMBRA UNA VEZ, NO N ─────────────────────
+  // Si NINGÚN símbolo trajo fila de Alpaca, no es que el modelo inventara ocho
+  // tickers: es que `/v2/assets` no contestó. R11 sigue rechazando —una orden
+  // que no se puede verificar no se manda— pero como UNA falla nuestra y no
+  // como ocho del PM.
+  //
+  // Es la misma lección que R6 con el bucket UNKNOWN, con una diferencia que
+  // importa: un sector que falta no impide ejecutar; una fila de asset que
+  // falta sí. Por eso R6 avisa y R11 rechaza — pero los dos tienen que decir
+  // de quién es la falla.
+  const simbolos = Object.keys(weights || {});
+  const conFila = simbolos.filter((s2) => (meta[s2] || {}).tradable !== undefined);
+  const caidaMayorista = simbolos.length > 1 && conFila.length === 0;
+  if (caidaMayorista) {
+    v.push({
+      rail: 'R11', symbol: null, es_falla_nuestra: true,
+      detail: `NINGUNO de los ${simbolos.length} símbolos trajo fila de Alpaca /v2/assets. Eso no es un objetivo malo: es que la consulta de activos falló entera. Se rechaza igual —una orden que no se puede verificar no se manda— pero la falla es NUESTRA. Revisá \`rail_meta.errors\` antes de mirar al modelo.`,
+    });
+  }
+
   for (const [sym, w] of Object.entries(weights || {})) {
     const m = meta[sym] || {};
     const abs = Math.abs(w);
@@ -196,6 +291,23 @@ export function validateTarget(weights, meta = {}, rails = RAILS) {
     if (abs < rails.min_position - 1e-9) {
       v.push({ rail: 'R8', symbol: sym, detail: `${(abs * 100).toFixed(2)}% < mínimo ${(rails.min_position * 100).toFixed(0)}% — una posición así no mueve la aguja y solo agrega ruido de ejecución` });
     }
+    // ── R11: EL SÍMBOLO TIENE QUE EXISTIR Y SER OPERABLE ────────────
+    // No había ningún riel que lo exigiera. R9 cubría los cortos (shortable +
+    // etb), pero un LARGO sobre un ticker inexistente pasaba los diez rieles:
+    // los topes de peso se cumplen, el mínimo se cumple, el sector cae en
+    // UNKNOWN (aviso, no violación) y nadie pregunta si el nombre existe.
+    //
+    // `tradable` solo se puebla cuando Alpaca devolvió una fila para el símbolo
+    // (ver buildRailMeta), así que `!== true` cubre los dos casos que importan:
+    // no existe, y existe pero no es operable. Fail closed, igual que R9: sin
+    // confirmación no se manda una orden.
+    if (m.tradable !== true && !caidaMayorista) {
+      v.push({
+        rail: 'R11', symbol: sym,
+        detail: `Alpaca no confirma que ${sym} sea operable (tradable=${m.tradable ?? 'sin fila en /v2/assets'}). Fail closed: no se manda una orden sobre un símbolo que no se pudo verificar. Si el objetivo trae varios así, revisá si el modelo está corrompiendo los tickers.`,
+      });
+    }
+
     if (w < 0) {
       // R9 — FAIL CLOSED. Un campo ausente NO es un permiso: un buy-in forzado
       // cierra la posición sin que el PM decida, y eso es ruido del broker

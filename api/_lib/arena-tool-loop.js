@@ -632,8 +632,12 @@ export async function runToolLoop({
   const relojDeCierre = () => {
     const usado = clock() - t0;
     cierreEnMs = usado;
-    const sobrante = Math.max(0, budgetMs - usado);
-    const disponible = RESERVA_CIERRE_MS + sobrante;
+    // Lo que queda del presupuesto TOTAL (loop + reserva) desde este instante.
+    // Escrito así en vez de `RESERVA + sobrante` porque en el segundo intento de
+    // cierre el primero ya consumió tiempo, y sumar la reserva entera otra vez
+    // le daría un techo que ya no existe — así es como el total se pasaba del
+    // deadline sin que la cuenta lo delatara.
+    const disponible = Math.max(0, (budgetMs + RESERVA_CIERRE_MS) - usado);
     return Math.max(10000, timeoutMs ? Math.min(timeoutMs, disponible) : disponible);
   };
   const llamarCierre = (msgs, extra = {}) => call({
@@ -692,7 +696,17 @@ export async function runToolLoop({
       // verdad. Si no se sabe quién atendió, un segundo intento idéntico es el
       // mismo error otra vez, y es mejor cerrar sin él.
       const puedeCambiar = proveedoresColgados.length > 0;
-      const quedaReloj = restante() > 12000;
+      // ── EL RELOJ DEL CIERRE NO ES EL DEL LOOP ──────────────────────
+      // `restante()` mide contra el presupuesto de INVESTIGACIÓN, y el cierre
+      // corre por FUERA de él (la reserva se descontó al calcularlo). Después de
+      // un cierre de 110s, `restante()` da −70s — que es aritmética correcta
+      // sobre el presupuesto equivocado, y en el reporte se lee como un
+      // descuadre.
+      //
+      // Lo que hay que medir acá es el presupuesto TOTAL: loop + reserva.
+      const totalMs = budgetMs + RESERVA_CIERRE_MS;
+      const restanteTotal = () => totalMs - (clock() - t0);
+      const quedaReloj = restanteTotal() > 12000;
       if (puedeCambiar && quedaReloj) {
         const reintento = await llamarCierre(convo, trace ? { fase: 'cierre:otro_proveedor' } : {});
         anotarCierre('cierre_otro_proveedor', reintento, null);
@@ -707,7 +721,7 @@ export async function runToolLoop({
           vuelta: 'cierre', intento: 2,
           omitido: [
             !puedeCambiar ? 'no se sabe qué proveedor atendió (OpenRouter lo manda dentro del cuerpo, y el cuerpo no llegó): un segundo intento idéntico sería el mismo error' : null,
-            !quedaReloj ? `quedan ${Math.round(restante() / 1000)}s: no alcanza para otro intento` : null,
+            !quedaReloj ? `quedan ${Math.round(restanteTotal() / 1000)}s del presupuesto total (loop + cierre): no alcanza para otro intento` : null,
           ].filter(Boolean).join(' · '),
           sin_proveedor: !puedeCambiar,
           sin_reloj: !quedaReloj,

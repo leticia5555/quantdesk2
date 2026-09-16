@@ -694,6 +694,97 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B27 · R11 · EL OBJETIVO TIENE QUE NOMBRAR SÍMBOLOS REALES
+
+`tests/arena-tickers.test.mjs`
+
+Sombra del 2026-09-17: deepseek devolvió `{"EO G": 0.15, "FS LR": 0.1}` — EOG y
+FSLR con un espacio adentro. El JSON era válido, los pesos eran válidos, y **los
+diez rieles lo aprobaron entero**. `rail_meta` lo vio ("2 nombres sin fila de
+/v2/assets") y eso no frenaba nada. En vivo, el motor habría mandado una orden
+sobre un ticker inexistente.
+
+Lo que faltaba no era un riel más estricto: **era la pregunta**. Los rieles
+juzgan una CARTERA —pesos, concentración, cortos— y ninguno preguntaba si el
+NOMBRE existe.
+
+### De dónde sale el espacio: no de nuestro código
+
+Descartado, y con un test que lo congela:
+
+- todos los `join` del camino de salida son `join('')` — ninguno mete
+  separadores;
+- la compactación reescribe mensajes `tool`, **nunca** el contenido del
+  asistente;
+- el turno de cierre no se compacta;
+- `parseTarget` hace `trim()`, que no toca los espacios internos.
+
+El JSON llegó **bien formado con el espacio DENTRO de la clave**, así que el
+modelo lo emitió así. Es un artefacto de deepseek y contra eso no hay arreglo
+aguas arriba: solo defensa.
+
+### La defensa, en dos capas y en este orden
+
+**1. Normalizar y validar contra el universo, ANTES de los rieles.**
+
+Quitar espacios no es adivinar: un ticker **no puede** contener uno — eso es un
+hecho sobre los tickers, no una interpretación de la intención. Lo que sí sería
+adivinar es aceptar el resultado sin verificarlo, y eso no pasa: el símbolo
+canonicalizado tiene que estar en el universo del día.
+
+Si alguno no está, **se rechaza el objetivo ENTERO** (`rejected_tickers`, estado
+propio, distinto de `rejected_rails`). No la posición suelta: una cartera a la
+que se le saca una pata ya no es la que el PM decidió.
+
+Toda reparación se **reporta**. Si un modelo empieza a corromper tickers de
+forma sistemática, esconderlo detrás de un arreglo silencioso es cómo se deja de
+notar. Y dos claves que colapsan al mismo símbolo se rechazan en vez de sumarse:
+sumarlas inventaría un peso que el modelo no escribió.
+
+**2. R11 — el símbolo tiene que ser operable.** El universo dice que el nombre
+existe; Alpaca dice si se puede operar hoy. Son dos preguntas. `tradable !== true`
+(no hay fila, o la hay y no es operable) es violación, para largos **y** cortos.
+Fail closed, igual que R9.
+
+### Y la lección de R6, aplicada
+
+Si **ningún** símbolo trajo fila de Alpaca, eso no es un objetivo malo: es que
+`/v2/assets` no contestó. R11 sigue rechazando —una orden que no se puede
+verificar no se manda— pero como **una** falla nuestra
+(`es_falla_nuestra: true`), no como ocho del PM.
+
+La diferencia con R6 importa y está declarada: un sector que falta **no impide
+ejecutar**; una fila de asset que falta **sí**. Por eso R6 avisa y R11 rechaza —
+pero los dos dicen de quién es la falla.
+
+### El lint que protege el encendido
+
+El camino VIVO (`arena-run.js`) todavía corre el contrato viejo, así que hoy esto
+solo vive en la sombra. Hay un test estructural que exige que **cualquier**
+archivo que llame a `validateTarget` llame también a
+`normalizarTickersObjetivo`. Cuando el contrato nuevo se encienda en producción,
+ese test se pone rojo si alguien conecta los rieles sin este paso — que es
+exactamente el momento en que el bug pasaría de la sombra a una orden real.
+
+## B28 · EL RELOJ DEL CIERRE MEDÍA CONTRA EL PRESUPUESTO EQUIVOCADO
+
+`"quedan -70s"` en el reporte de qwen. La aritmética era correcta sobre el
+presupuesto **equivocado**: `restante()` mide contra el presupuesto de
+INVESTIGACIÓN, y el cierre corre por fuera de él (la reserva se descontó al
+calcularlo). Después de un cierre de 110s, `restante()` da −70.
+
+Peor que el número feo: en un **segundo** intento de cierre, `RESERVA + sobrante`
+volvía a sumar la reserva entera, dándole un techo que ya no existía. Así es como
+el total se pasaba del deadline sin que la cuenta lo delatara.
+
+Ahora el cierre mide contra el total y el techo cierra exacto en los tres casos:
+
+| loop usó | cierre recibe | total |
+|---|---|---|
+| 40s | 215s | 255s |
+| 145s | 110s | 255s |
+| 180s | 75s | 255s |
+
 ## B26 · SOMBRA DE LOS SIETE: 5/7, y grok SÍ cerró
 
 `2026-09-16 19:00 UTC`, commit `289453f`, costo **$1.01**.
