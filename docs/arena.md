@@ -722,6 +722,41 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B31 · LA CORRIDA SECA TIENE QUE PODER REVISARSE
+
+```bash
+curl -sS "$BASE/api/arena-audit?agent=todos&limit=7&format=md&secret=$CRON_SECRET"
+```
+
+La auditoría estaba construida entera sobre el contrato de **acciones**:
+`scout`, `slate`, `acciones`, `guard`. Una corrida del contrato nuevo salía como
+una fila casi vacía — el objetivo, los rieles y las órdenes viven en `context` y
+nadie los leía.
+
+Y la corrida **seca** es el peor caso: por definición no tiene `actions` porque
+no se mandó nada. O sea que lo único que hay para revisar antes de encender era
+justamente lo que no se veía.
+
+`objetivo` entra en cada fila del contrato nuevo (y es `null` en las del viejo —
+un bloque vacío en cada fila de septiembre sería ruido en el post-mortem):
+
+- **`modo`** primero de todo. Confirmar que no se mandó nada es lo primero que
+  hay que poder ver; si dice `enviado` cuando se esperaba seco, la bandera no
+  era la que se creía.
+- **`pesos_pct`** en porcentaje, no en fracción: leer `0.12` como "12%" es el
+  error de un cero de diferencia.
+- **`rieles`** con las violaciones nombradas por riel y símbolo.
+- **`ordenes[]`** con símbolo, lado, cantidad, límite y **el monto ya hecho**.
+  Obligar a multiplicar `qty × límite` a mano es donde se cuela un error de
+  lectura.
+- **`descartadas[]`** con su motivo: un peso que desaparece sin explicación es
+  peor que uno rechazado.
+- **`tickers.reparados`**, que es la señal de que algo se está corrompiendo
+  aguas arriba.
+
+En `?format=md` sale como tablas legibles en una terminal **sin `jq`**, con un
+**NADA SE MANDÓ** en el encabezado cuando el modo es seco.
+
 ## B30 · EL ENCENDIDO DEL CONTRATO OBJETIVO (v4)
 
 `api/_lib/arena-objetivo-vivo.js` · tests en `tests/arena-contrato-vivo.test.mjs`

@@ -250,5 +250,60 @@ console.log('\n── el reglamento v4 queda escrito, con su id y su criterio de
   delete process.env.ARENA_CONTRATO;
 }
 
+// ── 9) LA CORRIDA SECA TIENE QUE PODER REVISARSE ─────────────────────
+// La auditoría está construida sobre el contrato de ACCIONES (`scout`,
+// `slate`, `acciones`). Una corrida del contrato nuevo salía como una fila casi
+// vacía — y la corrida SECA es el peor caso, porque por definición no tiene
+// `actions`: no se mandó nada. Sin este bloque, lo único que hay para revisar
+// antes de encender no se podía ver.
+console.log('\n── la corrida seca se puede auditar: objetivo, rieles y órdenes ──');
+{
+  const { auditaFila, objetivoDeFila, renderCorridasMarkdown } = await import('../api/_lib/arena-audit.js');
+
+  const ctx = {
+    contrato: 'objetivo_dry',
+    target: { weights: { NVDA: 0.12, DELL: 0.1 }, cash: 0.78 },
+    rails: { ok: true, violations: [], warnings: [], exposures: { gross: 0.22 } },
+    rebalance: { turnover: 0.22 },
+    tickers: { reparados: [{ pedido: 'EO G', normalizado: 'EOG' }] },
+    ejecucion: {
+      modo: 'dry', candado: { ok: true },
+      descartadas: [{ symbol: 'CARA', side: 'buy', motivo: 'no alcanza para una acción entera' }],
+      ordenes_calculadas: [
+        { symbol: 'NVDA', side: 'buy', qty: 66, limit_price: 180.9, notional_real: 11939.4, weight_from: 0, weight_to: 0.12, delta_weight: 0.12 },
+      ],
+      enviadas: [],
+    },
+  };
+
+  const o = objetivoDeFila(ctx, {});
+  ok(o.modo === 'dry', 'el MODO sale primero: confirmar que no se mandó nada es lo primero que hay que poder ver');
+  ok(o.pesos_pct.NVDA === 12,
+    'los pesos salen en PORCENTAJE: leer 0.12 como "12%" es el error de un cero de diferencia', String(o.pesos_pct.NVDA));
+  ok(o.rieles.paso === true, 'si pasó los rieles');
+  ok(o.ordenes[0].monto === 11939.4,
+    'y cada orden trae el MONTO ya hecho: obligar a multiplicar qty × límite a mano es donde se cuela un error de lectura');
+  ok(o.ordenes_n === 1 && o.monto_total === 11939.4, 'con el total de la corrida');
+  ok(o.descartadas.length === 1,
+    'y lo que NO llegó a orden, con su motivo: un peso que desaparece sin explicación es peor que uno rechazado');
+  ok(o.enviadas_n === 0, 'en seco, cero enviadas');
+
+  // Una fila del contrato VIEJO no gana un bloque vacío.
+  ok(objetivoDeFila({ scan: {} }, {}) === null,
+    'una fila del contrato viejo devuelve null: un bloque vacío en cada fila de septiembre sería ruido en el post-mortem');
+
+  // Y entra en la fila de auditoría, que es lo que devuelve el endpoint.
+  const fila = auditaFila({ id: 'x', run_date: '2026-09-17', status: 'ok_target', agent_id: 'claude', model: 'q', context: ctx, actions: [] });
+  ok(fila.objetivo && fila.objetivo.ordenes_n === 1, 'el bloque viaja en la fila de auditoría');
+
+  // El markdown es el formato que se lee en una terminal sin jq.
+  const md = renderCorridasMarkdown({ agente: 'claude', generado_en: 'now', total_filas: 1, corridas: [{ fecha: '2026-09-17', filas: [fila] }], rango: {} });
+  ok(/NADA SE MANDÓ/.test(md), 'el markdown grita que no se mandó nada');
+  ok(/\| NVDA \| buy \| 66 \| \$180\.9 \| \$11,939\.40 \|/.test(md),
+    'y la tabla de órdenes trae símbolo, lado, cantidad, límite y monto en una línea', md.split('\n').find((l) => /NVDA/.test(l)));
+  ok(/Tickers reparados/.test(md),
+    'y avisa si el modelo escribió mal un ticker: es la señal de que algo se está corrompiendo aguas arriba');
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
 process.exit(failures ? 1 : 0);

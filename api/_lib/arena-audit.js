@@ -215,6 +215,73 @@ export function normalizaAccion(a) {
   };
 }
 
+// ── EL BLOQUE DEL CONTRATO OBJETIVO ──────────────────────────────────
+// null cuando la fila es del contrato viejo: un bloque vacío en cada fila de
+// septiembre sería ruido en el post-mortem.
+export function objetivoDeFila(ctx = {}, row = {}) {
+  const ej = ctx.ejecucion || null;
+  const target = ctx.target || null;
+  const reb = ctx.rebalance || null;
+  if (!target && !ej && !reb) return null;
+
+  const pesos = (target && target.weights) || {};
+  const rieles = ctx.rails || null;
+
+  // Las órdenes CALCULADAS, que en seco son las únicas que hay. Se publican con
+  // el monto ya hecho: `qty × limit_price` es la pregunta que se hace quien
+  // revisa ("¿cuánto dinero mueve esto?"), y obligarla a multiplicar a mano es
+  // donde se cuela un error de lectura.
+  const orden = (o) => ({
+    simbolo: o.symbol, lado: o.side, qty: o.qty,
+    limite: o.limit_price, referencia: o.referencia ?? null,
+    monto: o.notional_real ?? (Number.isFinite(o.qty) && Number.isFinite(o.limit_price) ? +(o.qty * o.limit_price).toFixed(2) : null),
+    peso_de: o.weight_from ?? null, peso_a: o.weight_to ?? null,
+    delta_pp: Number.isFinite(o.delta_weight) ? +(o.delta_weight * 100).toFixed(2) : null,
+    cierra: !!o.closes_position,
+    intencion: o.intencion || null,
+    ...(o.result ? { resultado: o.result } : {}),
+    ...(o.order_status ? { order_status: o.order_status } : {}),
+    ...(o.error ? { error: o.error } : {}),
+  });
+
+  const calculadas = (ej && ej.ordenes_calculadas) || [];
+  const enviadas = (ej && ej.enviadas) || [];
+
+  return {
+    contrato: ctx.contrato || 'objetivo',
+    // El libro que el PM QUIERE, en porcentaje: los pesos viajan en fracción y
+    // leer 0.12 como "12%" es el error de un cero de diferencia.
+    pesos_pct: Object.fromEntries(Object.entries(pesos).map(([k, v]) => [k, +(Number(v) * 100).toFixed(2)])),
+    posiciones: Object.keys(pesos).length,
+    cash_pct: target && target.cash != null ? +(Number(target.cash) * 100).toFixed(2) : null,
+    tesis: (target && target.theses) || null,
+    rieles: rieles ? {
+      paso: !!rieles.ok,
+      violaciones: (rieles.violations || []).map((v) => ({ riel: v.rail, simbolo: v.symbol || null, detalle: v.detail })),
+      avisos: (rieles.warnings || []).map((w) => ({ riel: w.rail, detalle: w.detail })),
+      exposicion: rieles.exposures || null,
+    } : null,
+    tickers: ctx.tickers || null,
+    turnover: reb ? reb.turnover : null,
+    // MODO. `dry` = se calcularon y NO se mandaron. Es lo primero que hay que
+    // confirmar antes de mirar nada más: si dice `enviado` cuando se esperaba
+    // seco, la bandera no era la que se creía.
+    modo: ej ? ej.modo : null,
+    candado_ok: ej ? !!(ej.candado && ej.candado.ok) : null,
+    freno: (ej && ej.freno) || null,
+    ordenes: calculadas.map(orden),
+    ordenes_n: calculadas.length,
+    monto_total: calculadas.length
+      ? +calculadas.reduce((s2, o) => s2 + (Number(o.notional_real) || 0), 0).toFixed(2)
+      : 0,
+    enviadas_n: enviadas.filter((o) => o.result === 'approved').length,
+    fallidas_n: enviadas.filter((o) => o.result === 'submit_failed').length,
+    // Lo que NO llegó a orden, con su motivo. Un peso que desaparece sin
+    // explicación es peor que uno rechazado.
+    descartadas: ((ej && ej.descartadas) || []).map((d) => ({ simbolo: d.symbol, lado: d.side, motivo: d.motivo })),
+  };
+}
+
 // ── una fila de journal → una entrada de auditoría ───────────────────
 const TIPO_POR_STATUS = {
   risk_exit: 'red_de_riesgo',
@@ -264,6 +331,14 @@ export function auditaFila(row) {
     screener_state: scan.screener_state || null,
     riesgo: ctx.risk || null,
     market_check: ctx.market_check || null,
+    // ── EL CONTRATO OBJETIVO (v4) ────────────────────────────────────
+    // Sin esto, una corrida del contrato nuevo salía en la auditoría como una
+    // fila casi vacía: `scout`, `slate` y `acciones` están construidos sobre el
+    // contrato de ACCIONES, y el objetivo, los rieles y las órdenes calculadas
+    // viven en `context`. La corrida SECA es justamente la que no tiene
+    // `actions` —no se mandó nada— así que sin este bloque no habría nada que
+    // revisar antes de encender.
+    objetivo: objetivoDeFila(ctx, row),
     acciones,
     guard,
     fills: acciones.filter((a) => a.fill).map((a) => ({
@@ -478,6 +553,59 @@ function mdTabla(headers, rows) {
   ].join('\n');
 }
 
+// ── EL BLOQUE DEL CONTRATO OBJETIVO, EN MARKDOWN ─────────────────────
+// Pensado para leerse en una terminal SIN jq: una tabla de órdenes con el monto
+// ya calculado, y el modo arriba de todo. Lo primero que hay que poder
+// confirmar en una corrida seca es que NO se mandó nada.
+function mdObjetivo(o) {
+  const L = [];
+  const seco = o.modo === 'dry';
+  L.push(`**Contrato objetivo (v4)** — modo \`${val(o.modo)}\`` +
+    (seco ? ' · **NADA SE MANDÓ**: las órdenes de abajo son las que se habrían mandado.' : ''));
+
+  const rieles = o.rieles
+    ? (o.rieles.paso ? '✅ pasa los rieles' : `❌ **RECHAZADO** — ${o.rieles.violaciones.map((v) => v.riel + (v.simbolo ? ' ' + v.simbolo : '')).join(', ')}`)
+    : '—';
+  L.push(`${rieles} · ${o.posiciones} posición(es) objetivo · turnover ${o.turnover != null ? (o.turnover * 100).toFixed(1) + '%' : '—'}` +
+    (o.candado_ok === false ? ' · ⛔ **CANDADO SALTÓ**' : ''));
+  if (o.freno) L.push(`\n> ⛔ **FRENO:** ${o.freno}`);
+
+  if (o.rieles && o.rieles.violaciones.length) {
+    L.push('');
+    L.push(mdTabla(['riel', 'símbolo', 'detalle'], o.rieles.violaciones.map((v) => [v.riel, v.simbolo || '—', v.detalle])));
+  }
+
+  const pesos = Object.entries(o.pesos_pct || {});
+  if (pesos.length) {
+    L.push('\n**El libro que quiere**');
+    L.push(mdTabla(['símbolo', 'peso'], pesos.map(([k, v]) => [k, v + '%'])));
+  }
+
+  if (o.ordenes && o.ordenes.length) {
+    L.push(`\n**Órdenes ${seco ? 'que habría mandado' : 'mandadas'}** — ${o.ordenes_n}, $${nf(o.monto_total)} en total`);
+    L.push(mdTabla(
+      ['símbolo', 'lado', 'qty', 'límite', 'monto', 'peso', 'estado'],
+      o.ordenes.map((x) => [
+        x.simbolo, x.lado, x.qty, x.limite != null ? '$' + x.limite : '—',
+        x.monto != null ? '$' + nf(x.monto) : '—',
+        `${((x.peso_de || 0) * 100).toFixed(1)}% → ${((x.peso_a || 0) * 100).toFixed(1)}%`,
+        seco ? 'seca' : (x.resultado === 'approved' ? (x.order_status || 'enviada') : (x.error ? 'FALLÓ: ' + String(x.error).slice(0, 60) : val(x.resultado))),
+      ]),
+    ));
+  } else if (o.rieles && o.rieles.paso) {
+    L.push('\n_Cero órdenes: el libro real ya coincide con el objetivo (o los movimientos no pasaron la banda de no-negociación)._');
+  }
+
+  if (o.descartadas && o.descartadas.length) {
+    L.push('\n**Patas que NO llegaron a orden**');
+    L.push(mdTabla(['símbolo', 'lado', 'motivo'], o.descartadas.map((d) => [d.simbolo, d.lado || '—', d.motivo])));
+  }
+  if (o.tickers && (o.tickers.reparados || []).length) {
+    L.push(`\n> ⚠️ **Tickers reparados:** ${o.tickers.reparados.map((r) => `"${r.pedido}" → ${r.normalizado}`).join(', ')}. El modelo los escribió mal y se normalizaron contra el universo.`);
+  }
+  return L.join('\n');
+}
+
 function mdFila(f) {
   const L = [];
   const titulo = f.tipo === 'red_de_riesgo' ? 'Red de riesgo (determinista)'
@@ -487,6 +615,12 @@ function mdFila(f) {
   if (f.cuenta && f.cuenta.equity != null) meta.push(`equity **$${nf(Number(f.cuenta.equity))}** · cash $${nf(Number(f.cuenta.cash))} · ${val(f.cuenta.positions)} posiciones`);
   L.push(meta.join(' · '));
   if (f.error) L.push(`\n> **Error de la corrida:** ${f.error}`);
+
+  // ── CONTRATO OBJETIVO (v4) ──
+  // Va ARRIBA del buffet: en una corrida del contrato nuevo esto es la
+  // decisión, y el buffet es el insumo. En la corrida SECA es además lo único
+  // que hay para revisar antes de encender.
+  if (f.objetivo) L.push('\n' + mdObjetivo(f.objetivo));
 
   // Buffet
   L.push('\n**Buffet — qué canales llegaron**');
