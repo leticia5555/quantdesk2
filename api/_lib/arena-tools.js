@@ -126,7 +126,8 @@ export const TOOL_DEFS = [
     description: 'Filter today\'s ~600-name universe by quantitative criteria. Returns matching names with price, day change, RVOL and distance to their 52-week extremes. Use it to answer "which names look like X", not to look up one name you already have in mind.',
     params: {
       sector: { type: 'string', desc: 'GICS sector ETF to restrict to, e.g. XLK, XLE. Omit for the whole universe.' },
-      min_rvol: { type: 'number', desc: 'Minimum RVOL (today\'s volume / 20-session average).' },
+      min_rvol: { type: 'number', desc: "Minimum RVOL (today's volume / 20-session average). INTRADAY THIS IS BIASED LOW: today's partial volume is compared against FULL sessions, so at 10:30 ET a genuinely heavy name may read 0.3. Use `rvol_top` instead while the session is running." },
+      rvol_top: { type: 'boolean', desc: "Only names in today's TOP 20 by RVOL. This is a RANK, not a level, so it is NOT distorted by the time of day — prefer it over `min_rvol` before the close." },
       min_mcap_b: { type: 'number', desc: 'Minimum market cap in BILLIONS of USD.' },
       ret_1d_min: { type: 'number', desc: 'Minimum 1-day return in percent (can be negative).' },
       ret_1d_max: { type: 'number', desc: 'Maximum 1-day return in percent.' },
@@ -198,10 +199,19 @@ export function clampArgs(name, raw) {
     a[k] = c;
   };
   const up = (k) => { if (a[k] != null) a[k] = String(a[k]).trim().toUpperCase(); };
+  // Un booleano que llega como "true"/"false" (los modelos los mandan así a
+  // veces) se normaliza en vez de ignorarse: `"false"` es truthy en JS, y ese
+  // filtro se aplicaría al revés sin que nada falle.
+  const bool = (k) => {
+    if (a[k] == null) return;
+    const v = a[k];
+    a[k] = v === true || v === 'true' || v === 1 || v === '1';
+  };
 
   if (name === 'screener') {
     num('limit', 1, 25, 25);
     num('min_rvol', 0, 100);
+    bool('rvol_top');
     num('min_mcap_b', 0, 1e5);
     num('ret_1d_min', -100, 1000);
     num('ret_1d_max', -100, 1000);
@@ -305,6 +315,11 @@ export async function runScreener(args, ctx) {
 
   aplicar('sector', args.sector, (f) => sectorDe(f.symbol) === args.sector);
   aplicar('min_rvol', args.min_rvol, (f) => f.rvol != null && f.rvol >= args.min_rvol);
+  // El RANGO, que no sufre el sesgo intradía: todos los nombres se miden a la
+  // misma hora, así que "está entre los 20 de más RVOL" significa lo mismo a
+  // las 10:30 que a las 15:45. El nivel, no.
+  const enTopRvol = new Set(((ctx.board && ctx.board.rvol_top) || []).map((x) => String(x || '').toUpperCase()));
+  aplicar('rvol_top', args.rvol_top, (f) => enTopRvol.has(String(f.symbol || '').toUpperCase()));
   aplicar('ret_1d_min', args.ret_1d_min, (f) => f.change_pct != null && f.change_pct >= args.ret_1d_min);
   aplicar('ret_1d_max', args.ret_1d_max, (f) => f.change_pct != null && f.change_pct <= args.ret_1d_max);
   aplicar('near_52w_high', args.near_52w_high, (f) => f.pct_from_high != null && f.pct_from_high >= -2);
@@ -358,10 +373,33 @@ export async function runScreener(args, ctx) {
     // que no tenemos para NINGÚN nombre, "ninguno cumple" es falso: lo correcto
     // es "no lo sabemos". Son dos respuestas distintas y llevan a decisiones
     // distintas.
+    // La traza del embudo se arma ARRIBA de todos los ceros especializados: los
+    // tres la usan, y declararla después dejaba uno en zona muerta temporal —
+    // que la herramienta convertía en "La herramienta falló", o sea en un hueco
+    // sin causa visible.
+    const traza = embudo.map((e) => `${e.filtro}=${e.valor}: ${e.antes}→${e.despues}`).join(' · ');
     const faltantes = [];
     if (args.ret_5d_min != null && !filas.some((f) => (retDe(f.symbol) || {}).ret_5d != null)) faltantes.push('retorno a 5 días');
     if (args.ret_1m_min != null && !filas.some((f) => (retDe(f.symbol) || {}).ret_1m != null)) faltantes.push('retorno a 1 mes');
     if (args.min_mcap_b != null && !filas.some((f) => mcapDe(f.symbol) != null)) faltantes.push('market cap');
+    // ── EL CERO DE `min_rvol` A MITAD DE SESIÓN ──────────────────────
+    // Reportado el 2026-09-17: `ret_1d_min:2` + `min_rvol` daba 0 filas, y las
+    // mismas llamadas SIN `min_rvol` daban 5. No es que esos nombres no tengan
+    // volumen: es que el RVOL compara el volumen PARCIAL de hoy contra
+    // sesiones COMPLETAS, así que a mitad de sesión está estructuralmente por
+    // debajo de 1 y cualquier umbral "de volumen inusual" lo vacía.
+    //
+    // El tablero ya lo etiquetaba en el prompt, pero un filtro no lee etiquetas.
+    const corteRvol = embudo.find((e) => e.filtro === 'min_rvol' && e.despues === 0 && e.antes > 0);
+    const sesion = (ctx.board && ctx.board.sesion_pct);
+    if (corteRvol && Number.isFinite(sesion) && sesion < 0.95) {
+      const maxRvol = Math.max(0, ...filas.map((f) => f.rvol || 0));
+      return {
+        text: `El filtro \`min_rvol: ${args.min_rvol}\` dejó 0 de ${corteRvol.antes} nombres, pero NO porque no haya volumen inusual: la sesión lleva ${Math.round(sesion * 100)}% y el RVOL compara el volumen PARCIAL de hoy contra sesiones COMPLETAS, así que a esta hora está sesgado hacia abajo por construcción. El RVOL más alto de todo el tablero ahora mismo es ${maxRvol.toFixed(2)}.\nUsá \`rvol_top: true\` en su lugar: es el TOP 20 por RVOL del día, y un ranking no se distorsiona con la hora porque todos se miden al mismo tiempo.\nEmbudo: ${traza}`,
+        rows: 0, sesgo_intradia: { sesion_pct: sesion, max_rvol_tablero: +maxRvol.toFixed(2), umbral_pedido: args.min_rvol }, embudo,
+      };
+    }
+
     // El caso que parecía "ningún nombre grande cumple": todos los que tienen
     // cap lo tienen ASUMIDO, y el umbral pedido supera la cota.
     const conCap = filas.filter((f) => mcapDe(f.symbol) != null);
@@ -379,7 +417,6 @@ export async function runScreener(args, ctx) {
     // modelo a probar de a uno, y cada prueba cuesta una llamada del
     // presupuesto.
     const culpable = embudo.find((e) => e.despues === 0) || null;
-    const traza = embudo.map((e) => `${e.filtro}=${e.valor}: ${e.antes}→${e.despues}`).join(' · ');
 
     if (faltantes.length) {
       return {

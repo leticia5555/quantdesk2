@@ -131,6 +131,28 @@ export function returnsFromCloses(closes) {
 // volumen del día lleva una hora acumulada contra un promedio de sesiones
 // COMPLETAS, así que un RVOL de 1.0 a esa hora ya es mucho volumen. El tablero
 // lo etiqueta en vez de "corregirlo" con una curva intradía inventada.
+// ── CUÁNTO LLEVA LA SESIÓN ───────────────────────────────────────────
+// Fracción del horario regular (9:30-16:00 ET) transcurrida, 0 a 1. Antes del
+// open es 0; después del cierre, 1.
+//
+// NO se usa para "corregir" el RVOL: el volumen intradía es de forma de U
+// —pesado en el open y en el cierre— así que dividir por la fracción de RELOJ
+// sobreestimaría el RVOL temprano tanto como la medición cruda lo subestima.
+// Cambiar un sesgo conocido por otro inventado no es un arreglo.
+//
+// Se usa para DECIR a qué hora se midió, que es lo que vuelve interpretable el
+// número — y para que el screener sepa cuándo un umbral absoluto no significa
+// nada todavía.
+export function fraccionDeSesion(now = new Date()) {
+  const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const min = et.getHours() * 60 + et.getMinutes();
+  const abre = 9 * 60 + 30;
+  const cierra = 16 * 60;
+  if (min <= abre) return 0;
+  if (min >= cierra) return 1;
+  return +((min - abre) / (cierra - abre)).toFixed(3);
+}
+
 export function rvol(dayVolume, avgVolume) {
   // `== null` PRIMERO: Number(null) es 0 y 0 es finito, así que sin esta guarda
   // un símbolo SIN volumen del día salía con RVOL 0 — que se lee como "hoy no
@@ -238,6 +260,13 @@ export async function buildBoard({
     universe_size: symbols.length,
     covered: filas.length,
     indices, vix, sectors, gainers, losers, rvol: rvolTop, breakouts,
+    // A qué hora se midió el RVOL. Sin esto, un rv0.3 a las 10:30 y un rv0.3 a
+    // las 15:45 se leen igual y significan cosas opuestas.
+    sesion_pct: fraccionDeSesion(now),
+    // Los que están en el TOP de RVOL del día. El RANKING no sufre el sesgo
+    // intradía —todos se miden a la misma hora— así que es la forma
+    // interpretable de preguntar "¿está operando raro?" antes del cierre.
+    rvol_top: rvolTop.map((f) => f.symbol),
     earnings: (earnings || []).slice(0, 20),
     headlines,
     errors,

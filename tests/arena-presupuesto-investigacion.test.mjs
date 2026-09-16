@@ -226,5 +226,63 @@ console.log('\n── el journal conserva los resultados COMPLETOS ──');
     'los resultados del registro conservan sus filas completas');
 }
 
+// ── 8) EL REPARTO ENTRE INVESTIGAR Y DECIDIR ─────────────────────────
+// EL BUG DEL 2026-09-17 (sombra de los 7, 6/7): grok gastó sus 20 herramientas,
+// cortó por `call_budget` con reloj de sobra, y después recibió 45s para
+// redactar el libro final sobre un payload enorme. Timeout NUESTRO a los 45.003
+// ms — y el resto del presupuesto del loop, minutos en ese caso, se tiró.
+//
+// El turno de cierre es el que convierte una corrida en una decisión: es el
+// último lugar donde tiene sentido ahorrar tiempo.
+console.log('\n── el cierre se lleva la reserva MÁS lo que sobró del loop ──');
+{
+  ok(RESERVA_CIERRE_MS === 70000,
+    'la reserva mínima del cierre subió de 45s a 70s: un modelo que razona mucho no redacta el JSON en 45',
+    String(RESERVA_CIERRE_MS / 1000) + 's');
+
+  // Un loop que corta TEMPRANO (por cupo de llamadas) tiene que ceder su
+  // sobrante al cierre, no tirarlo.
+  let techoDelCierre = null;
+  let n = 0;
+  const call = async ({ toolChoice, timeoutMs }) => {
+    if (toolChoice) { techoDelCierre = timeoutMs; return cierra; }
+    return pideHerramienta(++n);
+  };
+  const ex = mkExec(2);
+  const t = { ahora: 0 };
+  const r = await runToolLoop({
+    agent, system: 'S', messages: [{ role: 'user', content: 'U' }], executor: ex, call,
+    maxTurns: 20, budgetMs: 185000, clock: () => (t.ahora += 20000),
+  });
+
+  ok(r.stopped_by === 'call_budget', 'el loop corta por cupo, con reloj de sobra', r.stopped_by);
+  ok(techoDelCierre > RESERVA_CIERRE_MS,
+    'y el cierre recibe MÁS que la reserva: se lleva lo que el loop no usó',
+    `${Math.round(techoDelCierre / 1000)}s > ${RESERVA_CIERRE_MS / 1000}s`);
+  ok(r.limites.reparto_ms.investigacion_sobrante > 0,
+    'el sobrante de investigación queda journaleado', JSON.stringify(r.limites.reparto_ms));
+  ok(r.limites.reparto_ms.cierre_concedido === techoDelCierre,
+    'y cuánto se le concedió de verdad al cierre: sin esto, "se pasó de tiempo" no dice si le faltó reloj o si le sobró y no se lo dimos');
+
+  // El techo TOTAL no se mueve: la reserva ya se descontó del presupuesto del
+  // loop, así que `loop + cierre` sigue acotado pase lo que pase.
+  // El invariante se juzga con el instante DEL REPARTO, no con el `usado` final:
+  // `limites()` lee el reloj después de conceder el cierre, así que sumar ése
+  // contra un techo calculado antes compara dos momentos distintos. Lo detectó
+  // este mismo test al ponerse rojo con un reloj falso que salta de a 20s.
+  const rep = r.limites.reparto_ms;
+  ok(rep.reparto_en_ms != null && rep.reparto_en_ms + techoDelCierre <= 185000 + RESERVA_CIERRE_MS,
+    'el total sigue acotado: lo que cambia es QUIÉN usa el tiempo que sobra',
+    `${rep.reparto_en_ms} + ${techoDelCierre} ≤ ${185000 + RESERVA_CIERRE_MS}`);
+  ok(rep.reparto_en_ms <= rep.investigacion_usada,
+    'y el instante del reparto es anterior a la medición final, como tiene que ser',
+    `${rep.reparto_en_ms} ≤ ${rep.investigacion_usada}`);
+
+  // Y la resta del deadline sigue cerrando con la reserva más grande.
+  ok(ARENA_LLM_TIMEOUT_MS + LOOP_BUDGET_MS + RESERVA_CIERRE_MS < ARENA_AGENT_DEADLINE_MS,
+    'con la reserva en 70s, el peor caso SIGUE cabiendo en el deadline',
+    `${(ARENA_LLM_TIMEOUT_MS + LOOP_BUDGET_MS + RESERVA_CIERRE_MS) / 1000}s < ${ARENA_AGENT_DEADLINE_MS / 1000}s`);
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
 process.exit(failures ? 1 : 0);
