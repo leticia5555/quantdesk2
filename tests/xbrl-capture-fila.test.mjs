@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { filasXbrl, parseFechaBmv, segmentoRuta, trimestreEsperado, trimestresDeAtraso } from '../api/xbrl-capture.js';
+import { filasXbrl, parseFechaBmv, segmentoRuta, trimestreEsperado, trimestresDeAtraso, textoDeFecha, decidirAccion } from '../api/xbrl-capture.js';
 
 /* ── parseFechaBmv ──────────────────────────────────────────────── */
 
@@ -175,4 +175,85 @@ test('trimestresDeAtraso mide el hueco, y cruza el año sin romperse', () => {
 
 test('sin trimestre esperado, el atraso es 0 y no explota', () => {
   assert.equal(trimestresDeAtraso({ anio: 2026, trimestre: 2 }, null), 0);
+});
+
+/* ── meses: BMV escribe en INGLÉS ───────────────────────────────── */
+
+test('las 12 abreviaturas de mes en inglés — que es lo que usa BMV', () => {
+  const EN = [['Jan', '01'], ['Feb', '02'], ['Mar', '03'], ['Apr', '04'], ['May', '05'], ['Jun', '06'],
+              ['Jul', '07'], ['Aug', '08'], ['Sep', '09'], ['Oct', '10'], ['Nov', '11'], ['Dec', '12']];
+  for (const [abbr, mm] of EN) {
+    assert.equal(parseFechaBmv(`15-${abbr}-2026 10:00`), `2026-${mm}-15T10:00:00Z`, `mes ${abbr}`);
+  }
+});
+
+test('las 12 en español también, por si la página cambia', () => {
+  const ES = [['Ene', '01'], ['Feb', '02'], ['Mar', '03'], ['Abr', '04'], ['May', '05'], ['Jun', '06'],
+              ['Jul', '07'], ['Ago', '08'], ['Sep', '09'], ['Oct', '10'], ['Nov', '11'], ['Dic', '12']];
+  for (const [abbr, mm] of ES) {
+    assert.equal(parseFechaBmv(`15-${abbr}-2026 10:00`), `2026-${mm}-15T10:00:00Z`, `mes ${abbr}`);
+  }
+});
+
+test('la fila real de MEGA que falló en la 2ª corrida', () => {
+  const html = `<tr><td>28-Aug-2026 15:06</td>
+    <td>Información Del Trimestre 2 Del Año 2026</td>
+    <td><a href="visorXbrl.html?docins=../ifrsxbrl/ifrsxbrl_1585294_2026-02_1.zip">Ver</a></td></tr>`;
+  const f = filasXbrl(html)[0];
+  assert.equal(f.fecha_publicacion, '2026-08-28T15:06:00Z');
+  assert.equal(f.doc_id, '1585294');
+  assert.equal(f.anio, 2026);
+  assert.equal(f.trimestre, 2);
+  assert.equal(f.fecha_texto, null);   // no hace falta el crudo: se leyó bien
+});
+
+test('los 4 meses donde inglés y español difieren — los que escondían el bug', () => {
+  // Jul y Feb son iguales en ambos idiomas: por eso 27 de 29 pasaban.
+  // Abril es cuando se publica el 1T; ahí el bug habría pegado en serio.
+  for (const [en, es] of [['Jan', 'Ene'], ['Apr', 'Abr'], ['Aug', 'Ago'], ['Dec', 'Dic']]) {
+    const a = parseFechaBmv(`15-${en}-2026 10:00`);
+    const b = parseFechaBmv(`15-${es}-2026 10:00`);
+    assert.ok(a, `inglés ${en} debe leerse`);
+    assert.equal(a, b, `${en} y ${es} deben dar la misma fecha`);
+  }
+});
+
+/* ── el fallo de fecha se diagnostica solo ──────────────────────── */
+
+test('un mes que no conozco deja el texto crudo para poder diagnosticarlo', () => {
+  const html = `<tr><td>15-Xyz-2026 10:00</td><td>Trimestre 2 Del Año 2026</td>
+    <td><a href="visorXbrl.html?docins=../ifrsxbrl/ifrsxbrl_9_2026-02_1.zip">Ver</a></td></tr>`;
+  const f = filasXbrl(html)[0];
+  assert.equal(f.fecha_publicacion, null);
+  assert.equal(f.fecha_texto, '15-Xyz-2026 10:00');   // lo que la alerta va a citar
+});
+
+test('textoDeFecha devuelve null cuando no hay nada que parezca fecha', () => {
+  assert.equal(textoDeFecha('Trimestre 2 Del Año 2026'), null);
+  assert.equal(textoDeFecha(''), null);
+});
+
+/* ── la reparación: confirmar que PE&OLES y MEGA se van a rellenar ── */
+
+test('una fila guardada con fecha nula se repara cuando la página sí la trae', () => {
+  // El estado real después de la 2ª corrida: ambas guardadas, ambas sin fecha.
+  const existentes = new Map([['1579656', null], ['1585294', null]]);
+  assert.equal(decidirAccion(existentes, '1579656', '2026-07-23T14:11:00Z'), 'reparar'); // PE&OLES
+  assert.equal(decidirAccion(existentes, '1585294', '2026-08-28T15:06:00Z'), 'reparar'); // MEGA
+});
+
+test('una fila que ya tiene fecha no se toca, y una nueva se inserta', () => {
+  const existentes = new Map([['1576010', '2026-07-23T14:11:00Z'], ['1585294', null]]);
+  assert.equal(decidirAccion(existentes, '1576010', '2026-07-23T14:11:00Z'), 'nada');
+  assert.equal(decidirAccion(existentes, '9999999', '2026-08-28T15:06:00Z'), 'insertar');
+});
+
+test('si la página sigue sin fecha, no se repara con null: se deja para la alerta', () => {
+  const existentes = new Map([['1585294', null]]);
+  assert.equal(decidirAccion(existentes, '1585294', null), 'nada');
+});
+
+test('decidirAccion no se confunde con doc_id numérico vs string', () => {
+  const existentes = new Map([['1585294', null]]);
+  assert.equal(decidirAccion(existentes, 1585294, '2026-08-28T15:06:00Z'), 'reparar');
 });
