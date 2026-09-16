@@ -1,0 +1,51 @@
+{
+  "_doc": "Semilla v1 del universo ICS para la captura de XBRL de BMV. Ver docs/xbrl-capture.md §1.",
+  "_reglas": {
+    "id": "El id interno de BMV que va en /es/emisoras/informacionfinanciera/{CLAVE}-{ID}-CGEN_CAPIT. No se deriva del ticker.",
+    "verificado": "true SOLO si el par CLAVE-ID se vio en una URL real de bmv.com.mx. Nunca se inventa un id: si no se confirmó, va id:null y el capturador la SALTA reportando el motivo.",
+    "excluidos": "Bancos, FIBRAs, fideicomisos y aseguradoras quedan fuera de la v1: usan taxonomías distintas de ICS (decisión de Fase 0, docs/xbrl-fase0.md §2.1)."
+  },
+  "emisoras": [
+    { "clave": "AMX",     "id": "6024",  "nombre": "América Móvil",                      "sector": "telecom",        "verificado": true },
+    { "clave": "WALMEX",  "id": "5214",  "nombre": "Walmart de México y Centroamérica",  "sector": "consumo",        "verificado": true },
+    { "clave": "FEMSA",   "id": "5305",  "nombre": "Fomento Económico Mexicano",         "sector": "consumo",        "verificado": true },
+    { "clave": "GMEXICO", "id": "6008",  "nombre": "Grupo México",                       "sector": "materiales",     "verificado": true },
+    { "clave": "CEMEX",   "id": "5203",  "nombre": "Cemex",                              "sector": "materiales",     "verificado": true },
+    { "clave": "BIMBO",   "id": "5163",  "nombre": "Grupo Bimbo",                        "sector": "consumo",        "verificado": true },
+    { "clave": "TLEVISA", "id": "5720",  "nombre": "Grupo Televisa",                     "sector": "telecom",        "verificado": true },
+    { "clave": "ORBIA",   "id": "5188",  "nombre": "Orbia Advance Corporation",          "sector": "materiales",     "verificado": true },
+    { "clave": "KOF",     "id": "5525",  "nombre": "Coca-Cola FEMSA",                    "sector": "consumo",        "verificado": true },
+    { "clave": "ALFA",    "id": "5052",  "nombre": "Alfa",                               "sector": "industrial",     "verificado": true },
+    { "clave": "PE&OLES", "id": "5608",  "nombre": "Industrias Peñoles",                 "sector": "materiales",     "verificado": true },
+    { "clave": "GRUMA",   "id": "5454",  "nombre": "Gruma",                              "sector": "consumo",        "verificado": true },
+    { "clave": "ALSEA",   "id": "5059",  "nombre": "Alsea",                              "sector": "consumo",        "verificado": true },
+    { "clave": "ASUR",    "id": "6001",  "nombre": "Grupo Aeroportuario del Sureste",    "sector": "industrial",     "verificado": true },
+    { "clave": "LIVEPOL", "id": "5536",  "nombre": "El Puerto de Liverpool",             "sector": "consumo",        "verificado": true },
+    { "clave": "KIMBER",  "id": "5524",  "nombre": "Kimberly-Clark de México",           "sector": "consumo",        "verificado": true },
+    { "clave": "GCARSO",  "id": "5393",  "nombre": "Grupo Carso",                        "sector": "industrial",     "verificado": true },
+    { "clave": "ELEKTRA", "id": "5457",  "nombre": "Grupo Elektra",                      "sector": "consumo",        "verificado": true },
+    { "clave": "PINFRA",  "id": "5725",  "nombre": "Promotora y Operadora de Infraestructura", "sector": "industrial", "verificado": true },
+    { "clave": "CHDRAUI", "id": "5209",  "nombre": "Grupo Comercial Chedraui",           "sector": "consumo",        "verificado": true },
+    { "clave": "GCC",     "id": "5394",  "nombre": "Grupo Cementos de Chihuahua",        "sector": "materiales",     "verificado": true },
+    { "clave": "BOLSA",   "id": "7029",  "nombre": "Bolsa Mexicana de Valores",          "sector": "servicios financieros no bancarios", "verificado": true },
+    { "clave": "CUERVO",  "id": "32378", "nombre": "Becle (José Cuervo)",                "sector": "consumo",        "verificado": true },
+
+    { "clave": "GAP",     "id": null,    "nombre": "Grupo Aeroportuario del Pacífico",   "sector": "industrial",     "verificado": false },
+    { "clave": "OMA",     "id": null,    "nombre": "Grupo Aeroportuario Centro Norte",   "sector": "industrial",     "verificado": false },
+    { "clave": "AC",      "id": null,    "nombre": "Arca Continental",                   "sector": "consumo",        "verificado": false },
+    { "clave": "VESTA",   "id": null,    "nombre": "Corporación Inmobiliaria Vesta",     "sector": "inmobiliario",   "verificado": false },
+    { "clave": "MEGA",    "id": null,    "nombre": "Megacable Holdings",                 "sector": "telecom",        "verificado": false },
+    { "clave": "LASITE",  "id": null,    "nombre": "Sitios Latinoamérica",               "sector": "telecom",        "verificado": false },
+    { "clave": "VOLAR",   "id": null,    "nombre": "Controladora Vuela (Volaris)",       "sector": "industrial",     "verificado": false }
+  ],
+  "_excluidas": [
+    { "clave": "GFNORTE", "motivo": "banco — taxonomía distinta de ICS" },
+    { "clave": "BBAJIO",  "motivo": "banco" },
+    { "clave": "RA",      "motivo": "banco (Regional)" },
+    { "clave": "GENTERA", "motivo": "banco / microfinanciera" },
+    { "clave": "GFINBUR", "motivo": "grupo financiero" },
+    { "clave": "Q",       "motivo": "aseguradora — taxonomía de seguros, no ICS" },
+    { "clave": "FUNO",    "motivo": "FIBRA" },
+    { "clave": "FIBRAMQ", "motivo": "FIBRA" }
+  ]
+}
