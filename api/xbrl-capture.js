@@ -142,13 +142,61 @@ export function filasXbrl(html) {
     .sort((a, b) => (b.anio - a.anio) || (b.trimestre - a.trimestre) || (b.secuencia - a.secuencia));
 }
 
+/*
+ * Caracteres que NO hay que escapar dentro de un segmento de ruta (RFC 3986:
+ * unreserved + sub-delims + ':' '@'). El '&' está entre ellos.
+ *
+ * Esto salió de PE&OLES en la primera corrida: yo pedía
+ *   .../informacionfinanciera/PE%26OLES-5608-CGEN_CAPIT
+ * y BMV publica
+ *   .../informacionfinanciera/PE&OLES-5608-CGEN_CAPIT
+ * La captura funcionó igual (el zip salió bien, 9/9 campos), pero la
+ * fecha_publicacion vino null y en las otras 22 no. Verifiqué que el '&' NO
+ * rompe el parseo de la fila —cuatro variantes con '&' literal, '&amp;' y '&'
+ * dentro de un href pasan—, así que lo que queda es la URL: pedir %26
+ * probablemente cae en una variante de página que lista el documento sin la
+ * columna de fecha. No pude comprobarlo desde acá (sin egress a BMV), pero
+ * mandar la URL tal como BMV la publica es lo correcto de todos modos.
+ */
+const PATH_SEGURO = /[A-Za-z0-9\-._~!$&'()*+,;=:@]/;
+export function segmentoRuta(s) {
+  return String(s).split('').map((c) => (PATH_SEGURO.test(c) ? c : encodeURIComponent(c))).join('');
+}
+
 function urlEmisora(clave, id) {
-  return `${BASE}/es/emisoras/informacionfinanciera/${encodeURIComponent(clave)}-${id}-CGEN_CAPIT`;
+  return `${BASE}/es/emisoras/informacionfinanciera/${segmentoRuta(clave)}-${id}-CGEN_CAPIT`;
+}
+
+/*
+ * Trimestre que YA debería estar publicado a una fecha dada.
+ *
+ * Una emisora reporta ~1-2 meses después del cierre; se toma el último
+ * trimestre cuyo cierre + 60 días ya pasó. Sirve para detectar solo el caso
+ * ELEKTRA —una emisora que dejó de reportar— sin depender de que alguien
+ * recuerde anotarlo a mano en emisoras.json.
+ */
+export function trimestreEsperado(ahora = new Date()) {
+  const cierres = [];
+  const anio = ahora.getUTCFullYear();
+  for (const a of [anio - 1, anio]) {
+    for (const [t, mes, dia] of [[1, 3, 31], [2, 6, 30], [3, 9, 30], [4, 12, 31]]) {
+      cierres.push({ anio: a, trimestre: t, fin: Date.UTC(a, mes - 1, dia) });
+    }
+  }
+  const limite = ahora.getTime() - 60 * 24 * 60 * 60 * 1000;
+  const pasados = cierres.filter((c) => c.fin <= limite).sort((a, b) => b.fin - a.fin);
+  return pasados[0] ? { anio: pasados[0].anio, trimestre: pasados[0].trimestre } : null;
+}
+
+/** Cuántos trimestres de atraso trae un periodo respecto del esperado. */
+export function trimestresDeAtraso(periodo, esperado) {
+  if (!esperado) return 0;
+  return Math.max(0, (esperado.anio * 4 + esperado.trimestre) - (periodo.anio * 4 + periodo.trimestre));
 }
 
 /* ── captura de una emisora ──────────────────────────────────────── */
 
-async function capturarUna(em) {
+async function localizarFila(em) {
   const pasos = [];
   const paso = (nombre, ok, detalle) => { pasos.push({ paso: nombre, ok, detalle }); return ok; };
 
@@ -168,7 +216,23 @@ async function capturarUna(em) {
     return { clave: em.clave, estado: 'fallida', motivo: 'sin fila de XBRL en la página', pasos };
   }
   const fila = filas[0];
-  paso('fila_xbrl', true, `${fila.archivo} · ${fila.anio}-T${fila.trimestre} · publicado ${fila.fecha_publicacion || '(sin fecha)'}`);
+  paso('fila_xbrl', true, `${fila.archivo} · ${fila.anio}-T${fila.trimestre} · publicado ${fila.fecha_publicacion || '(SIN FECHA)'}`);
+  // La fecha de envío NO está dentro del XBRL (D8): si la fila no la trae, no
+  // se puede recuperar re-parseando el raw. Es alerta, nunca un null callado.
+  if (!fila.fecha_publicacion) {
+    paso('fecha_publicacion', false, 'la fila no trae fecha-hora legible — no se puede derivar del archivo');
+  }
+
+  return { clave: em.clave, estado: 'fila', fila, pasos };
+}
+
+/**
+ * Baja el zip y lo parsea. Separado de localizar la fila a propósito: reparar
+ * una fecha_publicacion que quedó null NO necesita el zip —la fecha vive en la
+ * página, no en el archivo— así que esa reparación cuesta cero descargas.
+ */
+async function descargarYParsear(em, fila, pasos) {
+  const paso = (nombre, ok, detalle) => { pasos.push({ paso: nombre, ok, detalle }); return ok; };
 
   await dormir(PAUSA_MS);
   let zip;
@@ -183,6 +247,13 @@ async function capturarUna(em) {
   paso('campos', true, `${resueltos}/${CAMPOS.length} resueltos${ext.alertas.length ? ` · ${ext.alertas.length} alerta(s)` : ''}`);
 
   return { clave: em.clave, estado: 'ok', fila, ext, pasos };
+}
+
+/** Localizar + descargar + parsear, para el smoke y para la captura nueva. */
+async function capturarUna(em) {
+  const r = await localizarFila(em);
+  if (r.estado !== 'fila') return r;
+  return descargarYParsear(em, r.fila, r.pasos);
 }
 
 /* ── escritura en Neon ───────────────────────────────────────────── */
@@ -230,8 +301,12 @@ async function guardar(em, fila, ext) {
        $26,$27,$28,$29, $30,$31,$32,$33, $34,$35,$36,$37, $38,$39,$40,$41,
        $42,$43,$44,$45, $46,$47, $48,$49, $50,$51,$52
      )
-     on conflict (doc_id) do nothing
-     returning id`,
+     on conflict (doc_id) do update
+        set fecha_publicacion = excluded.fecha_publicacion,
+            alertas           = excluded.alertas
+      where xbrl_reports.fecha_publicacion is null
+        and excluded.fecha_publicacion is not null
+     returning (xmax = 0) as inserto`,
     [
       em.clave, String(em.id), fila.doc_id, fila.anio, fila.trimestre, fila.fecha_publicacion,
       fila.zip_url, ext.entryPoint, JSON.stringify(ext.raw),
@@ -249,7 +324,29 @@ async function guardar(em, fila, ext) {
       JSON.stringify(ext.identidades), identidadesOk, JSON.stringify(ext.alertas),
     ]
   );
-  return (r.rows || []).length > 0;   // false = ya existía
+  // Sin filas = ya existía y no había nada que reparar. xmax=0 = insert nuevo.
+  const devuelta = (r.rows || [])[0];
+  if (!devuelta) return 'sin_cambio';
+  return devuelta.inserto ? 'insertada' : 'reparada';
+}
+
+/**
+ * Rellena SÓLO la fecha_publicacion de una fila ya guardada.
+ *
+ * Por qué esta es la única columna que se repara desde la red: todo lo demás se
+ * puede recalcular del raw_json, que se guarda completo. La fecha de envío no
+ * está en el archivo (D8) — vive únicamente en el listado de BMV. Si quedó
+ * null, la única forma de obtenerla es volver a leer la página, y eso deja de
+ * ser posible cuando el trimestre sale de la vista gratis.
+ */
+async function repararFecha(docId, fecha) {
+  const r = await sql(
+    `update xbrl_reports set fecha_publicacion = $2
+      where doc_id = $1 and fecha_publicacion is null
+      returning doc_id`,
+    [docId, fecha]
+  );
+  return (r.rows || []).length > 0;
 }
 
 /* ── modo smoke ──────────────────────────────────────────────────── */
@@ -318,34 +415,81 @@ async function modoSmoke() {
 async function modoRun() {
   await ensureSchema();
 
-  const existentes = new Set(
-    ((await sql('select doc_id from xbrl_reports')).rows || []).map((r) => String(r.doc_id))
+  // Se trae la fecha junto al doc_id: una fila vieja con fecha null es
+  // reparable, y repararla no cuesta una descarga extra.
+  const existentes = new Map(
+    ((await sql('select doc_id, fecha_publicacion from xbrl_reports')).rows || [])
+      .map((r) => [String(r.doc_id), r.fecha_publicacion])
   );
 
-  const resumen = { capturadas: [], ya_existentes: [], saltadas: [], fallidas: [] };
+  const esperado = trimestreEsperado(new Date());
+  const resumen = { capturadas: [], reparadas: [], ya_existentes: [], saltadas: [], fallidas: [] };
+  const alertas = [];
 
   for (const em of EMISORAS.emisoras) {
-    const r = await capturarUna(em);
+    const loc = await localizarFila(em);
 
-    if (r.estado === 'saltada') { resumen.saltadas.push({ clave: em.clave, motivo: r.motivo }); continue; }
-    if (r.estado === 'fallida') { resumen.fallidas.push({ clave: em.clave, motivo: r.motivo }); await dormir(PAUSA_MS); continue; }
-
-    if (existentes.has(String(r.fila.doc_id))) {
-      resumen.ya_existentes.push({ clave: em.clave, doc_id: r.fila.doc_id, periodo: `${r.fila.anio}-T${r.fila.trimestre}` });
+    if (loc.estado === 'saltada') { resumen.saltadas.push({ clave: em.clave, motivo: loc.motivo }); continue; }
+    if (loc.estado === 'fallida') {
+      resumen.fallidas.push({ clave: em.clave, motivo: loc.motivo });
+      if (em.estado === 'deslistada') {
+        alertas.push({ clave: em.clave, tipo: 'deslistada', detalle: `falló, pero está marcada como deslistada: ${em.nota || 'sin nota'}` });
+      }
       await dormir(PAUSA_MS);
       continue;
     }
 
+    const fila = loc.fila;
+    const docId = String(fila.doc_id);
+    const atraso = trimestresDeAtraso({ anio: fila.anio, trimestre: fila.trimestre }, esperado);
+
+    /* Una emisora que dejó de reportar NO puede pasar como éxito silencioso.
+     * Se detecta sola por atraso; el campo `estado` sólo dice si ya lo sabíamos. */
+    if (atraso > 0) {
+      alertas.push({
+        clave: em.clave,
+        tipo: em.estado === 'deslistada' ? 'deslistada_esperado' : 'atrasada',
+        detalle: `última fila ${fila.anio}-T${fila.trimestre}, ${atraso} trimestre(s) detrás de ${esperado.anio}-T${esperado.trimestre}`
+               + (em.estado === 'deslistada' ? ` — esperado: ${em.nota || 'marcada deslistada'}` : ' — revisar si dejó de reportar'),
+      });
+    } else if (em.estado === 'deslistada') {
+      alertas.push({ clave: em.clave, tipo: 'revivio', detalle: `marcada deslistada pero publicó ${fila.anio}-T${fila.trimestre} — actualizar emisoras.json` });
+    }
+    if (!fila.fecha_publicacion) {
+      alertas.push({ clave: em.clave, tipo: 'sin_fecha', detalle: `la fila de ${fila.anio}-T${fila.trimestre} no trae fecha-hora: no se puede derivar del XBRL (D8)` });
+    }
+
+    // ── ya existe ──
+    if (existentes.has(docId)) {
+      const fechaGuardada = existentes.get(docId);
+      if (!fechaGuardada && fila.fecha_publicacion) {
+        try {
+          const reparo = await repararFecha(docId, fila.fecha_publicacion);
+          if (reparo) { resumen.reparadas.push({ clave: em.clave, doc_id: docId, fecha_publicacion: fila.fecha_publicacion }); continue; }
+        } catch (e) {
+          resumen.fallidas.push({ clave: em.clave, motivo: `neon (reparar fecha): ${e.message}` });
+          continue;
+        }
+      }
+      resumen.ya_existentes.push({ clave: em.clave, doc_id: docId, periodo: `${fila.anio}-T${fila.trimestre}` });
+      continue;   // sin descargar el zip
+    }
+
+    // ── nueva: ahora sí se baja y se parsea ──
+    const r = await descargarYParsear(em, fila, loc.pasos);
+    if (r.estado === 'fallida') { resumen.fallidas.push({ clave: em.clave, motivo: r.motivo }); await dormir(PAUSA_MS); continue; }
+
     try {
-      const inserto = await guardar(em, r.fila, r.ext);
-      const fila = {
-        clave: em.clave, doc_id: r.fila.doc_id, periodo: `${r.fila.anio}-T${r.fila.trimestre}`,
-        fecha_publicacion: r.fila.fecha_publicacion,
+      const estado = await guardar(em, fila, r.ext);
+      const info = {
+        clave: em.clave, doc_id: docId, periodo: `${fila.anio}-T${fila.trimestre}`,
+        fecha_publicacion: fila.fecha_publicacion,
         campos_ok: CAMPOS.filter((c) => r.ext.campos[c.key].ok).length,
         alertas: r.ext.alertas,
       };
-      if (inserto) resumen.capturadas.push(fila);
-      else resumen.ya_existentes.push(fila);   // carrera: otro corrió a la vez
+      if (estado === 'insertada') resumen.capturadas.push(info);
+      else if (estado === 'reparada') resumen.reparadas.push(info);
+      else resumen.ya_existentes.push(info);
     } catch (e) {
       resumen.fallidas.push({ clave: em.clave, motivo: `neon: ${e.message}` });
     }
@@ -354,11 +498,14 @@ async function modoRun() {
 
   return {
     modo: 'run',
+    trimestre_esperado: esperado ? `${esperado.anio}-T${esperado.trimestre}` : null,
     total: EMISORAS.emisoras.length,
     capturadas: resumen.capturadas.length,
+    reparadas: resumen.reparadas.length,
     ya_existentes: resumen.ya_existentes.length,
     saltadas: resumen.saltadas.length,
     fallidas: resumen.fallidas.length,
+    alertas,                       // nunca vacío por omisión: si hay algo raro, aquí sale
     detalle: resumen,
   };
 }
