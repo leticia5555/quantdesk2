@@ -562,32 +562,32 @@ no lo es: un modelo que lee una lista tiende a pesar más lo de arriba, así que
 un orden común es una **preferencia común disfrazada de coincidencia**. La cola
 avisa explícitamente que el orden no es un ranking.
 
-**Lente primaria rotativa** (momentum / catalizador / valor / reversión), dicha
+**Enfoque primario rotativo** (momentum / catalizador / valor / reversión), dicho
 como *"hoy mirá primero por…"*. No prohíbe nada: cambia por dónde empieza.
 
 **Todo determinista, y no es un detalle.** Semilla `hash(agent_id + run_id)`,
-lente `LENTES[(hash(agent) + día) % 4]`. Un `Math.random()` acá haría el journal
+enfoque `ENFOQUES[(hash(agent) + día) % 4]`. Un `Math.random()` acá haría el journal
 **irreproducible** y el replay —que existe justamente para reconstruir qué vio
 cada agente— sería inútil. Hay un lint que lo verifica sobre el código (no sobre
 los comentarios, que explican precisamente por qué no se usa).
 
-El día es el del **Este**: con UTC la lente cambiaría a las 20:00 ET, o sea a
+El día es el del **Este**: con UTC el enfoque cambiaría a las 20:00 ET, o sea a
 mitad de sesión.
 
 **Dónde vive la aleatorización (D2):** en la **cola no cacheada**, nunca en el
 prefijo. Si el orden cambiara dentro del bloque cacheado, los siete tendrían
 prefijos distintos y la caché no serviría para nada. La cola tiene su propio
-techo (≤2K tokens) y, al recortarse, **la lente sobrevive**: son 40 tokens y es
+techo (≤2K tokens) y, al recortarse, **el enfoque sobrevive**: son 40 tokens y es
 la mitad del mecanismo.
 
-> **Advertencia honesta:** la lente rotativa es un **confound deliberado**. Dos
-> agentes con lentes distintas el mismo día **no son comparables ese día**. Mide
+> **Advertencia honesta:** el enfoque rotativo es un **confound deliberado**. Dos
+> agentes con enfoques distintos el mismo día **no son comparables ese día**. Mide
 > diversidad a costa de comparabilidad diaria; a lo largo de la temporada se
 > promedia, pero va dicho en el post-mortem en vez de dejar que alguien lo
 > descubra.
 
 **Las métricas.** Con portafolio objetivo el herding deja de ser una
-aproximación: el solapamiento par a par es el **coseno** entre los vectores de
+aproximación: la coincidencia par a par es el **coseno** entre los vectores de
 peso, un número directo. Largo contra corto del mismo nombre da **−1**: la
 dirección cuenta, no solo el nombre. Y un libro vacío devuelve **null**, no 0 ni
 1 — no se parece ni se diferencia, simplemente no hay con qué comparar.
@@ -990,8 +990,8 @@ Ahora el cierre mide contra el total y el techo cierra exacto en los tres casos:
 
 | agente | resultado |
 |---|---|
-| claude | `ok_target` · 11 herramientas · 6 posiciones · lente `catalizador` |
-| control | `ok_target` · 9 herramientas · 7 posiciones · lente `catalizador` |
+| claude | `ok_target` · 11 herramientas · 6 posiciones · enfoque `catalizador` |
+| control | `ok_target` · 9 herramientas · 7 posiciones · enfoque `catalizador` |
 | **grok** | **`ok_target`** · 20/20 herramientas · 4 posiciones |
 | gemini | `ok_target` · 11 herramientas · 5 posiciones (2 cortos) |
 | deepseek | `ok_target` · 20/20 herramientas · 3 posiciones |
@@ -1669,10 +1669,10 @@ para mirar hoy y no sirve para el post-mortem de la temporada: el piso del
 2026-09-17 es un **hecho de ese día**, y reconstruirlo en noviembre exige que las
 filas de septiembre sigan ahí con la misma forma.
 
-- Se archiva **solo si es comparable** (misma lente **y** mismo libro de
+- Se archiva **solo si es comparable** (mismo enfoque **y** mismo libro de
   arranque). Un piso que no cumple las dos condiciones no es un piso bajo: no es
   un piso, y archivarlo contaminaría el post-mortem con un número que mide
-  herencia o lente.
+  herencia o enfoque.
 - **No se pisa**: el primero del día gana. Correr la sombra tres veces no puede
   cambiar retroactivamente el piso de un día ya registrado.
 - Se archiva **en el punto de cálculo** (`shadowReport`), no en el endpoint, para
@@ -1864,7 +1864,7 @@ que no supera esa distancia no es habilidad.**
 Y la línea que no se cruza: el piso es un **coseno entre libros**, no una
 diferencia de retorno. No se convierte a puntos porcentuales — son unidades
 distintas, y fingir lo contrario sería inventar el número justo donde no se
-puede. Cuando el piso no es comparable (lentes distintas, libros de arranque
+puede. Cuando el piso no es comparable (enfoques distintos, libros de arranque
 distintos), el bloque lo dice y avisa que sin piso no se distingue habilidad de
 azar.
 
@@ -1884,11 +1884,11 @@ investigó** — que es lo más publicable de todo el proyecto y lo que nadie m�
 está mostrando.
 
 ```bash
-curl -s "$BASE/api/liga/libros?dias=1" | jq '.libros[0] | {fuente, agente, lente, portafolio, investigacion}'
+curl -s "$BASE/api/liga/libros?dias=1" | jq '.libros[0] | {fuente, agente, enfoque, portafolio, investigacion}'
 ```
 
 Por agente: **portafolio objetivo** · **tesis por posición** · **secuencia de
-investigación** · **lente del día**.
+investigación** · **enfoque del día**.
 
 ### La secuencia es una historia, no ocho volcados
 
@@ -1920,13 +1920,13 @@ idénticos que parten de carteras distintas producen libros distintos **por
 herencia**, no por ruido del modelo.
 
 El piso solo significa algo cuando se cumplen **las dos** condiciones: misma
-lente **y** mismo libro de arranque. Ahora el reporte exige las dos, marca
+enfoque **y** mismo libro de arranque. Ahora el reporte exige las dos, marca
 `comparable: false` cuando falla alguna, y **no publica el número como piso** —
 lo publica como `cosine_observado` para que se vea que existe sin que se lea
 como lo que no es. Y dice cómo arreglarlo: un reset iguala las cuentas.
 
 `posiciones_iniciales` de los siete sale al lado, porque es la otra mitad de la
-pregunta: un solapamiento alto entre dos agentes que heredaron la misma cartera
+pregunta: una coincidencia alta entre dos agentes que heredaron la misma cartera
 no dice nada sobre cómo piensan.
 
 #### Tres filtros del screener se declaraban al modelo y no existían
@@ -1972,26 +1972,26 @@ Más los dos casos probables:
 
 ### Lo que encontró la SEGUNDA sombra (4/7, $1.04)
 
-#### El control corrió con otra lente que claude — el piso de ruido no medía nada
+#### El control corrió con otro enfoque que claude — el piso de ruido no medía nada
 
 `claude` con `momentum`, `control` con `catalizador`. Los dos corren el **mismo
 modelo con el mismo prompt byte a byte**; ésa es toda la razón por la que el
 control existe: mide el **ruido** del sistema, el delta entre dos corridas
 idénticas.
 
-Con lentes distintas dejan de ser idénticas. El delta entre ellos pasa a mezclar
+Con enfoques distintos dejan de ser idénticos. El delta entre ellos pasa a mezclar
 ruido con *"mirar el mercado por otro lado"*, y el piso deja de ser un piso:
 cualquier diferencia entre dos modelos distintos se vuelve incomparable porque no
 hay contra qué medirla.
 
-La rotación hashea el id del agente, así que caían en lentes distintas casi
-siempre. Ahora **el control hereda la lente de su insignia** (`LENTE_HEREDADA`,
+La rotación hashea el id del agente, así que caían en enfoques distintos casi
+siempre. Ahora **el control hereda el enfoque de su insignia** (`ENFOQUE_HEREDADO`,
 declarado en un solo lugar). La rotación sigue viva: el control recorre las
-cuatro lentes, las de claude.
+cuatro enfoques, los de claude.
 
 Y el reporte publica **`piso_de_ruido` como línea propia**, con la condición
-explícita: si las lentes difieren, **no publica el número** — dice que ese par
-mide la lente, no el ruido.
+explícita: si los enfoques difieren, **no publica el número** — dice que ese par
+mide el enfoque, no el ruido.
 
 #### `sector({etf})` devolvía 0 filas porque estaba conectada a nada
 
@@ -2111,7 +2111,7 @@ se perdía la única evidencia.
 ### El reporte gratis (`?report=1`) contesta lo que la corrida no
 
 La corrida en vivo devuelve `agents[].tools_used` —un **número**— y no calcula
-solapamiento. Las dos cosas ya estaban en el journal o eran computables desde él,
+coincidencia. Las dos cosas ya estaban en el journal o eran computables desde él,
 así que salen por el reporte, que **no gasta un token** y lee las mismas filas
 que la corrida acabó de escribir. No hay que pagar otra corrida en siete
 proveedores para verlas.
@@ -2120,9 +2120,9 @@ proveedores para verlas.
 |---|---|
 | `por_agente[].ultimo.herramientas` | la **secuencia**: qué herramienta, con qué filtros, cuántas filas, si se truncó |
 | `por_agente[].ultimo.herramientas_corte` | por qué paró el loop (presupuesto, vueltas, reloj) |
-| `solapamiento.pairs` | coseno **par a par** entre los 7 portafolios objetivo |
-| `solapamiento.lectura` | qué significa ese número, en una línea |
-| `solapamiento.nombre_mas_compartido` | el ticker que más libros tienen |
+| `coincidencia.pairs` | coseno **par a par** entre los 7 portafolios objetivo |
+| `coincidencia.lectura` | qué significa ese número, en una línea |
+| `coincidencia.nombre_mas_compartido` | el ticker que más libros tienen |
 | `costo.total_usd` | el costo del día, con `sin_costo` si algún agente no reportó |
 
 **`pairwiseOverlap` estaba escrito y probado desde B8 y ningún endpoint lo
@@ -2134,9 +2134,9 @@ midiendo **siete opiniones o una opinión repetida siete veces**. Por eso el
 número viaja con su lectura: un coseno de 0.9 entre siete modelos distintos no es
 "la liga funciona".
 
-**El caveat de la lente viaja al lado.** Dos agentes con lentes distintas el
+**El caveat del enfoque viaja al lado.** Dos agentes con enfoques distintos el
 mismo día **no son comparables ese día** — el confound es deliberado (B8), así
-que `por_agente[].ultimo.lente` se lee antes que el par.
+que `por_agente[].ultimo.enfoque` se lee antes que el par.
 
 ### El control va marcado, y el modelo va con su etiqueta
 
@@ -2148,10 +2148,10 @@ El modelo sale como **etiqueta legible** (`model_label`), nunca como slug de
 API: el slug cambia con un override de env var, y publicarlo haría que la tabla
 de la liga dijera cosas distintas según qué env vars estuvieran puestas ese día.
 
-### La lente viaja con su advertencia
+### El enfoque viaja con su advertencia
 
 No basta con publicar `lens: "momentum"`. Va con la nota de que es un **confound
-deliberado**: dos agentes con lentes distintas el mismo día **no son comparables
+deliberado**: dos agentes con enfoques distintos el mismo día **no son comparables
 ese día**.
 
 ### Una corrida del contrato viejo sale con `portafolio: null`
@@ -3654,7 +3654,7 @@ ya conocidos, y `job=audit` descubre los nuevos a medida que aparezcan.
 | `ARENA_SHORT_TRAILING_ARM` / `_GIVE_BACK` | `0.15` / `0.08` | Trailing del corto, con el pico invertido. |
 | `ARENA_DAILY_BUDGET_USD` | `30` | Presupuesto diario de la liga (B9). |
 | `ARENA_BUDGET_TIER2_MULT` | `1.5` | Múltiplo del escalón 2. |
-| `ARENA_TAIL_TOKEN_CAP` | `2000` | Techo de la cola NO cacheada (lente + orden aleatorizado). |
+| `ARENA_TAIL_TOKEN_CAP` | `2000` | Techo de la cola NO cacheada (enfoque + orden aleatorizado). |
 
 
 ## Self-fetch del buffet: causa raíz 24-jul y observabilidad

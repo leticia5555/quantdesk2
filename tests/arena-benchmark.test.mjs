@@ -119,7 +119,7 @@ console.log('\n── el exceso vs. SPY y el piso de ruido ──');
     { id: 'claude', name: 'claude', return_pct: 1 },
     { id: 'grok', name: 'grok', return_pct: -1 },
   ];
-  const piso = { comparable: true, cosine: 0.93, lente: 'momentum' };
+  const piso = { comparable: true, cosine: 0.93, enfoque: 'momentum' };
   const out = excesoVsBenchmark({ agentes, benchmarkReturn: 2, pisoDeRuido: piso });
 
   ok(out.agentes[0].id === 'openai' && out.agentes[0].exceso_pp === 1,
@@ -137,7 +137,7 @@ console.log('\n── el exceso vs. SPY y el piso de ruido ──');
   ok(!/"piso_pp"|"ruido_pp"/.test(json),
     'el coseno NO se convierte a puntos porcentuales: son unidades distintas');
 
-  const sinPiso = excesoVsBenchmark({ agentes, benchmarkReturn: 2, pisoDeRuido: { comparable: false, motivo: 'lentes distintas' } });
+  const sinPiso = excesoVsBenchmark({ agentes, benchmarkReturn: 2, pisoDeRuido: { comparable: false, motivo: 'enfoques distintos' } });
   ok(sinPiso.piso_de_ruido.comparable === false, 'un piso no comparable se marca como tal');
   ok(/no hay contra qué medir/.test(sinPiso.lectura),
     'y la lectura AVISA que sin piso no se distingue habilidad de azar');

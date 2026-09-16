@@ -767,7 +767,7 @@ console.log('\n── cuánto aportaría el Nasdaq 100, medido ──');
   ok(u.indices.solo_en.nasdaq100 === 20,
     'el journal dice cuántos nombres aporta el Nasdaq 100 que el S&P 500 no tiene', String(u.indices.solo_en.nasdaq100));
   ok(u.indices.solo_en.en_ambos === 80,
-    'y cuántos comparten: el solapamiento es el que hace que arrancar con uno sea razonable', String(u.indices.solo_en.en_ambos));
+    'y cuántos comparten: la coincidencia es el que hace que arrancar con uno sea razonable', String(u.indices.solo_en.en_ambos));
 }
 
 console.log('\n── varias URLs candidatas: la primera que sirva ──');

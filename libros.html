@@ -4,7 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
 <title>LOS LIBROS — QuantDesk · cómo decidió cada IA</title>
-<meta name="description" content="El libro de cada IA y CÓMO llegó a él: la lente del día, qué herramienta usó con qué filtros, el plan completo, los pesos y las órdenes. Corridas vivas y de sombra, siempre etiquetadas."/>
+<meta name="description" content="El libro de cada IA y CÓMO llegó a él: el enfoque del día, qué herramienta usó con qué filtros, el plan completo, los pesos y las órdenes. Corridas vivas y de sombra, siempre etiquetadas."/>
 <meta name="theme-color" content="#050505"/>
 <meta property="og:title" content="LOS LIBROS — QuantDesk"/>
 <meta property="og:description" content="Siete IAs, siete libros, y la secuencia de investigación completa de cada una."/>
@@ -49,7 +49,7 @@ select.pill{color:var(--text);-webkit-appearance:none;appearance:none;padding-ri
   background-image:linear-gradient(45deg,transparent 50%,var(--text2) 50%),linear-gradient(135deg,var(--text2) 50%,transparent 50%);
   background-position:calc(100% - 14px) 52%,calc(100% - 9px) 52%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;}
 
-/* EL DÍA: solapamiento y piso */
+/* EL DÍA: coincidencia y piso */
 .daybox{background:var(--bg1);border:1px solid var(--border2);border-radius:10px;padding:13px 14px;margin:16px 0 4px;}
 .daybox h3{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--text3);margin-bottom:9px;}
 .metric{display:flex;align-items:baseline;gap:9px;margin-bottom:5px;flex-wrap:wrap;}
@@ -90,7 +90,7 @@ section{padding:18px 0 4px;}
 .tag.sombra{color:#000;background:var(--amber);border:1px solid var(--amber);}
 .tag.seco{color:var(--amber);border:1px solid rgba(255,179,71,.4);background:rgba(255,179,71,.07);}
 .tag.rails{color:#fca5a5;border:1px solid #7f1d1d;background:#1e0f14;}
-.tag.lente{color:var(--purple);border:1px solid rgba(167,139,250,.3);background:rgba(167,139,250,.06);}
+.tag.enfoque{color:var(--purple);border:1px solid rgba(167,139,250,.3);background:rgba(167,139,250,.06);}
 .cbody{padding:0 14px 13px;}
 .plan{font-size:12.5px;color:var(--text2);line-height:1.6;white-space:pre-wrap;border-top:1px solid var(--border);padding-top:11px;
   display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
@@ -161,7 +161,7 @@ footer{margin-top:34px;padding-top:20px;border-top:1px solid var(--border);}
 
   <div class="hero">
     <h1>Los <span class="accent">libros</span>:<br/>cómo decidió cada IA.</h1>
-    <p>El portafolio objetivo de cada agente y, sobre todo, <b>cómo llegó a él</b>: la lente del día, qué herramienta usó con qué filtros y cuántas filas trajo, el plan completo, los pesos y las órdenes. Cada corrida dice si fue <b>viva</b> o de <b>sombra</b>.</p>
+    <p>El portafolio objetivo de cada agente y, sobre todo, <b>cómo llegó a él</b>: el enfoque del día, qué herramienta usó con qué filtros y cuántas filas trajo, el plan completo, los pesos y las órdenes. Cada corrida dice si fue <b>viva</b> o de <b>sombra</b>.</p>
     <div class="controls" id="controls">
       <select class="pill" id="selDia"></select>
       <span class="pill on" data-f="ambas">ambas</span>
@@ -183,7 +183,7 @@ footer{margin-top:34px;padding-top:20px;border-top:1px solid var(--border);}
       corriendo en paralelo sobre el mismo mercado y sin mandar órdenes. Una corrida <b>viva</b> sí es la cuenta paper real
       — y si dice <b>seco</b>, las órdenes se calcularon completas y no se mandó ninguna. El <b>control</b> es el mismo
       modelo que Claude con el mismo prompt en otra cuenta: su libro es el <b>piso de ruido</b>, no el de un competidor.
-      La <b>lente</b> del día rota por agente y es un confound deliberado: dos agentes con lentes distintas el mismo día
+      El <b>enfoque</b> del día rota por agente y es un confound deliberado: dos agentes con enfoques distintos el mismo día
       no son comparables ese día.
     </p>
     <div class="ctas">
@@ -304,7 +304,7 @@ function cardHtml(l,i){
   const rotos = l.rieles&&l.rieles.ok===false || String(l.estado||'').startsWith('aborted');
   const npos = l.portafolio&&l.portafolio.pesos ? Object.keys(l.portafolio.pesos).length : null;
   const railTag = l.rieles&&l.rieles.ok===false ? '<span class="tag rails">rieles ✕</span>' : '';
-  const lenteTag = l.lente ? '<span class="tag lente">'+esc(l.lente)+'</span>' : '';
+  const enfoqueTag = l.enfoque ? '<span class="tag enfoque">'+esc(l.enfoque)+'</span>' : '';
   const inv=l.investigacion;
   const invResumen = inv&&inv.usó_herramientas
     ? (inv.usadas||inv.pasos.length)+' herramienta'+((inv.usadas||inv.pasos.length)===1?'':'s')+
@@ -317,7 +317,7 @@ function cardHtml(l,i){
   return '<div class="card '+esc(l.fuente)+(rotos?' roto':'')+'" id="card-'+i+'">'+
     '<div class="chead" data-card="'+i+'">'+
       '<div class="cid">'+
-        '<div class="cname">'+esc(a.nombre)+' '+houseTag(a)+' '+fuenteTag(l)+' '+railTag+' '+lenteTag+'</div>'+
+        '<div class="cname">'+esc(a.nombre)+' '+houseTag(a)+' '+fuenteTag(l)+' '+railTag+' '+enfoqueTag+'</div>'+
         '<div class="cmodel">'+esc(a.modelo||'')+' · '+esc(String(l.fecha||'').replace('T',' ').slice(0,16))+'</div>'+
       '</div>'+
       '<div class="cright">'+
@@ -344,7 +344,7 @@ function cardHtml(l,i){
           (l.posiciones_iniciales?'<br/>arrancó con <b>'+(l.posiciones_iniciales.length?esc(l.posiciones_iniciales.join(', ')):'nada')+'</b>':'')+
           (inv&&inv.presupuesto!=null?'<br/>herramientas <b>'+esc(inv.usadas)+'/'+esc(inv.presupuesto)+'</b> en <b>'+esc(inv.vueltas)+'</b> vuelta(s)':'')+
         '</div>'+
-        (l.lente_nota?'<div class="nota">'+esc(l.lente_nota)+'</div>':'')+
+        (l.enfoque_nota?'<div class="nota">'+esc(l.enfoque_nota)+'</div>':'')+
         (l.error?'<div class="nota bad">'+esc(l.error)+'</div>':'')+
         '</div>'+
       '</div>'+
@@ -357,17 +357,17 @@ function clase(n,umbrales){ // [alto, medio] → clase de color
   return n>=umbrales[0]?'alto':n>=umbrales[1]?'medio':'bajo';
 }
 function dayboxHtml(d){
-  const s=d.solapamiento||{};
+  const s=d.coincidencia||{};
   const p=d.piso_de_ruido||{};
   const sol = s.mean!=null
-    ? '<div class="metric"><span class="k">Solapamiento</span><span class="v '+clase(s.mean,[0.8,0.5])+'">'+s.mean+'</span>'+
+    ? '<div class="metric"><span class="k">Coincidencia</span><span class="v '+clase(s.mean,[0.8,0.5])+'">'+s.mean+'</span>'+
       '<span class="k" style="min-width:0">entre '+(s.libros||0)+' libros</span></div>'+
       '<div class="read">'+esc(s.lectura||'')+'</div>'+
       (s.nombre_mas_compartido&&s.nombre_mas_compartido.ticker
         ? '<div class="read" style="margin-top:-6px">Nombre más compartido: <b>'+esc(s.nombre_mas_compartido.ticker)+'</b> — en '+
           s.nombre_mas_compartido.books+' de '+(s.libros||0)+' libros ('+s.nombre_mas_compartido.pct+'%).</div>'
         : '')
-    : '<div class="metric"><span class="k">Solapamiento</span><span class="v na">'+esc(s.note||'sin datos')+'</span></div>';
+    : '<div class="metric"><span class="k">Coincidencia</span><span class="v na">'+esc(s.note||'sin datos')+'</span></div>';
 
   // El piso solo se publica como piso si es comparable. Si no, se dice QUÉ
   // mide ese número en vez de mostrarlo con la etiqueta equivocada.

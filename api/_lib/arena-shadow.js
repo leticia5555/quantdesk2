@@ -32,7 +32,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql } from './db.js';
-import { pairwiseOverlap, sharedTopTicker, pisoDeRuido as calcularPisoDeRuido, lecturaDelSolapamiento, CAVEAT_LENTE } from './arena-herding.js';
+import { pairwiseOverlap, sharedTopTicker, pisoDeRuido as calcularPisoDeRuido, lecturaDeCoincidencia, CAVEAT_ENFOQUE } from './arena-herding.js';
 import { marketDay } from './arena-buffet-cache.js';
 
 const SCHEMA = [
@@ -61,7 +61,7 @@ const SCHEMA = [
   // las filas de septiembre sigan ahí con la misma forma.
   //
   // Una fila por día, con el número y las dos condiciones que lo hacen válido
-  // (misma lente, mismo libro de arranque). Guardar el coseno sin ellas sería
+  // (mismo enfoque, mismo libro de arranque). Guardar el coseno sin ellas sería
   // guardar un número que no se puede interpretar después.
   `create table if not exists arena_noise_floor (
      day        date primary key,
@@ -82,7 +82,7 @@ export async function ensureShadowSchema() {
 
 // Se guarda SOLO si es comparable. Un piso que no cumple las dos condiciones no
 // es un piso bajo: no es un piso, y archivarlo como si lo fuera contaminaría el
-// post-mortem con un número que mide herencia o lente.
+// post-mortem con un número que mide herencia o enfoque.
 //
 // Idempotente y NO pisa: el primero del día gana. Correr la sombra tres veces
 // no puede cambiar retroactivamente el piso de un día ya registrado — eso
@@ -96,10 +96,10 @@ export async function guardarPisoDeRuido(day, piso) {
     await sql(
       `insert into arena_noise_floor (day, cosine, lens, agents, positions)
        values ($1::date,$2,$3,$4,$5) on conflict (day) do nothing`,
-      [day, Number(piso.cosine), piso.lente || null, 'claude|control',
+      [day, Number(piso.cosine), piso.enfoque || null, 'claude|control',
        JSON.stringify(piso.posiciones_iniciales || null)],
     );
-    return { guardado: true, day, cosine: Number(piso.cosine), lente: piso.lente || null };
+    return { guardado: true, day, cosine: Number(piso.cosine), enfoque: piso.enfoque || null };
   } catch (e) { return { guardado: false, motivo: String((e && e.message) || e) }; }
 }
 
@@ -115,7 +115,7 @@ export async function leerPisosDeRuido({ limite = 30 } = {}) {
     );
     return (rows || []).map((r) => ({
       day: typeof r.day === 'string' ? r.day.slice(0, 10) : new Date(r.day).toISOString().slice(0, 10),
-      cosine: Number(r.cosine), lente: r.lens || null, agentes: r.agents || null,
+      cosine: Number(r.cosine), enfoque: r.lens || null, agentes: r.agents || null,
       posiciones_iniciales: r.positions || null, saved_at: r.saved_at,
       comparable: true,
     }));
@@ -198,7 +198,7 @@ export async function shadowReport(day = marketDay()) {
       // De qué libro arrancó. Es lo que decide si el par claude↔control mide
       // ruido o mide herencia.
       posiciones_iniciales: ctx.posiciones_iniciales || null,
-      lente: ctx.lens || null,
+      enfoque: ctx.lens || null,
       costo_usd: ctx.cost ? ctx.cost.usd : null,
       // ── LA SECUENCIA DE HERRAMIENTAS, NO EL CONTEO ──────────────────
       // La corrida en vivo solo devuelve `tools_used` (un número). Con qué
@@ -221,7 +221,7 @@ export async function shadowReport(day = marketDay()) {
   const total = rows ? rows.length : 0;
   const abortadas = (rows || []).filter((r) => String(r.status).startsWith('aborted')).length;
 
-  // ── EL SOLAPAMIENTO ENTRE LOS SIETE ──────────────────────────────────
+  // ── LA COINCIDENCIA ENTRE LOS SIETE ──────────────────────────────────
   // `pairwiseOverlap` estaba escrito y probado desde B8 y NINGÚN endpoint lo
   // llamaba: código muerto, igual que las rondas fijas antes de conectarlas. Un
   // test que ejercita la función exportada no prueba que alguien la use.
@@ -234,10 +234,10 @@ export async function shadowReport(day = marketDay()) {
   for (const [id, a] of Object.entries(porAgente)) {
     if (a.ultimo && a.ultimo.pesos && Object.keys(a.ultimo.pesos).length) libros[id] = a.ultimo.pesos;
   }
-  const solapamiento = Object.keys(libros).length >= 2
+  const coincidencia = Object.keys(libros).length >= 2
     ? { ...pairwiseOverlap(libros), nombre_mas_compartido: sharedTopTicker(libros), libros: Object.keys(libros).length }
     : { pairs: [], mean: null, max: null, libros: Object.keys(libros).length,
-      note: 'Hacen falta al menos DOS libros con pesos para que el solapamiento signifique algo.' };
+      note: 'Hacen falta al menos DOS libros con pesos para que la coincidencia signifique algo.' };
 
   // ── EL PISO DE RUIDO: claude ↔ control ─────────────────────────────
   // El cálculo vive en `arena-herding.js` (puro, sin db) y NO acá: la página
@@ -246,18 +246,18 @@ export async function shadowReport(day = marketDay()) {
   // barata de que un día difieran y nadie se entere.
   //
   // Lo que SÍ es de este archivo es ARCHIVARLO: eso escribe, y la página no
-  // escribe. Las dos condiciones (misma lente, mismo libro de arranque) están
+  // escribe. Las dos condiciones (mismo enfoque, mismo libro de arranque) están
   // documentadas en la función.
   const insignia = (porAgente.claude && porAgente.claude.ultimo) || null;
   const testigo = (porAgente.control && porAgente.control.ultimo) || null;
   const pisoDeRuido = calcularPisoDeRuido({ insignia, testigo, pesos: libros });
 
-  if (solapamiento.mean != null) {
+  if (coincidencia.mean != null) {
     // El número solo no dice nada sin la lectura. Un coseno de 0.9 entre siete
     // modelos distintos no es "la liga funciona": es la liga midiendo ruido
     // alrededor de una sola opinión.
-    solapamiento.lectura = lecturaDelSolapamiento(solapamiento.mean);
-    solapamiento.caveat = CAVEAT_LENTE;
+    coincidencia.lectura = lecturaDeCoincidencia(coincidencia.mean);
+    coincidencia.caveat = CAVEAT_ENFOQUE;
   }
 
   // ── SE ARCHIVA ACÁ, donde acaba de calcularse ──
@@ -272,7 +272,7 @@ export async function shadowReport(day = marketDay()) {
     day, total, abortadas,
     por_agente: porAgente,
     // De qué libro arrancó cada uno. Va al lado del piso porque es la otra
-    // mitad de la pregunta: un solapamiento alto entre dos agentes que
+    // mitad de la pregunta: una coincidencia alta entre dos agentes que
     // heredaron la misma cartera no dice nada sobre cómo piensan.
     posiciones_iniciales: Object.fromEntries(Object.entries(porAgente)
       .map(([id, a]) => [id, (a.ultimo && a.ultimo.posiciones_iniciales) || null])),
@@ -281,7 +281,7 @@ export async function shadowReport(day = marketDay()) {
     // serie en vez de contra nada. Un piso de 0.77 no dice lo mismo si los tres
     // días previos dieron 0.93.
     pisos_archivados: await leerPisosDeRuido({ limite: 15 }),
-    solapamiento,
+    coincidencia,
     // Todos los abortos con su cuerpo crudo, juntos: es lo primero que se mira
     // cuando algo falló y no hay que ir a buscarlo agente por agente.
     abortos: Object.entries(porAgente)

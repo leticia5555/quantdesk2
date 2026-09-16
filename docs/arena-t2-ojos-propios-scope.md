@@ -241,22 +241,22 @@ de 15% a ~18% del libro, y los dos puntos extra cuestan más en un corto.
 
 # B8 · ANTI-HERDING Y MÉTRICAS
 
-Orden aleatorio del tablero · **lente primaria rotativa** por agente y día
+Orden aleatorio del tablero · **enfoque primario rotativo** por agente y día
 (momentum / catalizador / valor / reversión), dicha en el prompt como "hoy mirá
 primero por…" y journaleada.
 
 Métricas de post-mortem: % de libros que comparten el ticker más común ·
-solapamiento promedio par a par · cuántas posiciones vinieron de herramientas vs
+coincidencia promedio par a par · cuántas posiciones vinieron de herramientas vs
 del tablero.
 
-- **La lente es una rotación determinista** (`lente = LENTES[(hash(agent) + día)
+- **El enfoque es una rotación determinista** (`enfoque = ENFOQUES[(hash(agent) + día)
   % 4]`), no aleatoria: tiene que ser reproducible y tiene que garantizar que en
   4 días cada agente pasó por las cuatro.
 - **Con portafolio objetivo, el herding se vuelve medible de verdad**: la
   correlación entre los vectores de peso de los siete es un número directo.
   Propongo publicarlo por corrida como métrica de primera clase.
-- **Advertencia honesta**: la lente rotativa es un **confound deliberado**. Dos
-  agentes con lentes distintas el mismo día no son comparables ese día. Mide
+- **Advertencia honesta**: el enfoque rotativo es un **confound deliberado**. Dos
+  agentes con enfoques distintos el mismo día no son comparables ese día. Mide
   diversidad a costa de comparabilidad diaria; a lo largo de la temporada se
   promedia, pero hay que decirlo en el post-mortem.
 
@@ -311,7 +311,7 @@ investigar antes de decidir.
 
 # B11 · PÁGINA /liga
 
-Por agente: portafolio objetivo, tesis, **secuencia de investigación** y lente
+Por agente: portafolio objetivo, tesis, **secuencia de investigación** y enfoque
 del día. El control sigue marcado como control.
 
 La secuencia de investigación es lo más publicable de todo el proyecto y merece
@@ -380,13 +380,13 @@ que no sale es una corrida perdida.
 **D2 · La caché gana.** Todo lo pesado —system prompt, universo, tablero
 completo, resultados de herramientas— va en el **prefijo cacheado e idéntico
 para los siete**. La aleatorización se limita a una **cola corta no cacheada**:
-el orden de los top-30 movers/RVOL y la lente del día. Se **mide en la sombra**
+el orden de los top-30 movers/RVOL y el enfoque del día. Se **mide en la sombra**
 y si la cola pasa de ~2K tokens se recorta.
 
 > Consecuencia de diseño: el bloque del **libro de cada agente** también rompe el
 > prefijo compartido, así que va **en la cola**, junto a la aleatorización. El
 > orden del prompt queda: `system → universo → tablero común → [BREAKPOINT] →
-> cola aleatorizada + libro + lente`. Si el libro fuera antes del breakpoint, los
+> cola aleatorizada + libro + enfoque`. Si el libro fuera antes del breakpoint, los
 > siete tendrían prefijos distintos y la caché no serviría para nada.
 
 **D6 · Sin slippage simulado.** Solo fills reales de paper; **turnover** como
@@ -426,7 +426,7 @@ alto en la medición de T1, el bucket es un agujero grande y lo reabro.
 **Semilla de aleatorización — ASUMO.** `hash(agent_id + run_id)`, determinista.
 Un `Math.random()` haría el journal irreproducible y el replay inútil.
 
-**Lente rotativa — ASUMO.** `LENTES[(hash(agent_id) + día_del_año) % 4]`, para
+**Enfoque rotativa — ASUMO.** `ENFOQUES[(hash(agent_id) + día_del_año) % 4]`, para
 que en 4 días cada agente pase por las cuatro y sea reproducible.
 
 **Tabla de la sombra — ASUMO.** Tablas `arena_shadow_*` separadas, **no** una
