@@ -22,17 +22,18 @@ import assert from 'node:assert/strict';
 import {
   BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
   COBERTURA_FIN, PRESUPUESTO_MENSUAL,
-  aNumero, aplanarHistoricos, clavePeriodo, construirUrl, extraerDistribuciones,
-  finDeTrimestre, mesPresupuesto, normalizarFinancieros, parseClavePeriodo,
+  aNumero, aplanarHistoricos, clavePeriodo, construirUrl, emisoraSerie,
+  extraerDistribuciones, finDeTrimestre, mesPresupuesto, normalizarFinancieros,
+  parseClavePeriodo, periodoApi,
   parsearRangoFechas, parsearRangoPeriodos, recortarACobertura, resolverCampo,
   trimestresEntre, urlSegura,
 } from '../api/_lib/databursatil.js';
 
 import {
   CONTRATO_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, contar,
-  estimarConsumo, filaCenso, filasDelCenso, nuevaCartera, pareceClave,
+  estimarConsumo, filaCenso, filasDelCenso, nuevaCartera, pareceClave, pareceSerie,
   paramsBenchmark, paramsFinancieros, paramsHistoricos, parsePeriodoTexto,
-  sirveFinanciero,
+  seriesDeEmisora, sirveFinanciero,
 } from '../api/bmv-harvest.js';
 
 /* ── calendario de trimestres ───────────────────────────────────── */
@@ -269,7 +270,8 @@ test('la cartera para por el reloj de la lambda antes del 504', () => {
 /* ── el presupuesto estimado ────────────────────────────────────── */
 
 const emisorasDemo = (n, d0 = '2016-01-01') => Array.from({ length: n }, (_, i) => ({
-  emisora: `E${i}`, finDesde: COBERTURA_FIN.desde, finHasta: COBERTURA_FIN.hasta,
+  emisora: `E${i}`, emisora_serie: `E${i}*`,
+  finDesde: COBERTURA_FIN.desde, finHasta: COBERTURA_FIN.hasta,
   histDesde: d0, histHasta: '2026-09-16',
 }));
 
@@ -325,9 +327,30 @@ test('paramsFinancieros pide resultado_trimestre, NO el acumulado', () => {
   assert.ok(!/acumulado/.test(p.financieros));
 });
 
-test('paramsHistoricos respeta la grafía descubierta', () => {
-  assert.deepEqual(paramsHistoricos({ historicos: { inicio: 'fecha_inicio', final: 'fecha_final' } }, 'WALMEX', '2016-01-01', '2026-09-16'),
-    { emisora: 'WALMEX', fecha_inicio: '2016-01-01', fecha_final: '2026-09-16' });
+test('paramsHistoricos pide por emisora_serie, que es lo que la API quiere', () => {
+  // VERIFICADO contra la API: el parámetro NO es `emisora`, y el valor lleva
+  // la serie pegada. Este test es el que impide volver a la grafía vieja.
+  assert.deepEqual(paramsHistoricos(CONTRATO_DEFECTO, 'WALMEX*', '2016-01-01', '2026-09-16'),
+    { emisora_serie: 'WALMEX*', inicio: '2016-01-01', final: '2026-09-16' });
+  // Y sigue respetando una grafía distinta si el probe descubriera otra.
+  assert.deepEqual(paramsHistoricos({ historicos: { clave: 'emisora', inicio: 'fecha_inicio', final: 'fecha_final' } }, 'WALMEX*', '2016-01-01', '2026-09-16'),
+    { emisora: 'WALMEX*', fecha_inicio: '2016-01-01', fecha_final: '2026-09-16' });
+});
+
+test('paramsFinancieros usa el formato TT_AAAA que la API pidió por su nombre', () => {
+  // El error literal de la API traía el ejemplo: "Por ejemplo: '1T_2020'".
+  // Verificado a mano: periodo=2T_2017 devuelve datos.
+  const p = paramsFinancieros(CONTRATO_DEFECTO, 'WALMEX', 2017, 2);
+  assert.equal(p.periodo, '2T_2017');
+  assert.equal(p.emisora, 'WALMEX');
+  assert.equal(paramsFinancieros(CONTRATO_DEFECTO, 'X', 2020, 1).periodo, '1T_2020');
+});
+
+test('periodoApi es el dialecto de la API, clavePeriodo es nuestra llave', () => {
+  // Separados a propósito: atar el índice del ledger al formato de un tercero
+  // sería heredar su siguiente cambio de API.
+  assert.equal(periodoApi(2020, 1), '1T_2020');
+  assert.equal(clavePeriodo(2020, 1), '2020-1');
 });
 
 test('el contrato de arranque viene marcado como NO verificado', () => {
@@ -475,16 +498,10 @@ test('el censo NO tira la fila del benchmark por el espacio de la serie', () => 
   assert.deepEqual(filas.map((f) => f.emisora), [BENCHMARK]);
 });
 
-test('paramsBenchmark usa el identificador tal cual, o emisora+serie', () => {
-  const ident = paramsBenchmark(CONTRATO_DEFECTO, '2016-01-01', '2026-09-16');
-  assert.equal(ident.emisora, 'NAFTRAC ISHRS');
-  assert.equal(ident.serie, undefined);
-
-  const partido = paramsBenchmark(
-    { historicos: { inicio: 'inicio', final: 'final' }, benchmark: { forma: 'emisora_serie' } },
-    '2016-01-01', '2026-09-16');
-  assert.equal(partido.emisora, 'NAFTRAC');
-  assert.equal(partido.serie, 'ISHRS');
+test('paramsBenchmark: el benchmark ya es un emisora_serie como cualquier otro', () => {
+  const p = paramsBenchmark(CONTRATO_DEFECTO, '2016-01-01', '2026-09-16');
+  assert.equal(p.emisora_serie, 'NAFTRAC ISHRS');
+  assert.equal(p.emisora, undefined, 'no debe mandar el parámetro viejo');
 });
 
 /* ── distribuciones: el benchmark es de RETORNO TOTAL ───────────── */
@@ -564,4 +581,99 @@ test('una emisora sin reparto da lista vacía, no un cero inventado', () => {
   const { distribuciones, descartadas } = extraerDistribuciones(fila.raw);
   assert.deepEqual(distribuciones, []);
   assert.equal(descartadas, 0);
+});
+
+/* ── la SERIE: lo que el probe reveló ───────────────────────────── */
+
+test('emisoraSerie concatena literal, sin normalizar ni separar', () => {
+  // Literal a propósito: así una serie que trae su propio espacio, como
+  // ' ISHRS', produce 'NAFTRAC ISHRS' sin necesitar un caso especial.
+  assert.equal(emisoraSerie('WALMEX', '*'), 'WALMEX*');
+  assert.equal(emisoraSerie('FEMSA', 'UBD'), 'FEMSAUBD');
+  assert.equal(emisoraSerie('AMX', 'B'), 'AMXB');
+  assert.equal(emisoraSerie('CEMEX', 'CPO'), 'CEMEXCPO');
+  assert.equal(emisoraSerie('LIVEPOL', 'C-1'), 'LIVEPOLC-1');
+  assert.equal(emisoraSerie('NAFTRAC', ' ISHRS'), 'NAFTRAC ISHRS');
+  assert.equal(emisoraSerie('GCC', null), 'GCC');
+});
+
+test('seriesDeEmisora NO confunde un campo-objeto con una serie', () => {
+  // `rango_financieros` puede venir como {inicio, fin}: detectar series por
+  // "su valor es un objeto" la tomaría por una serie llamada
+  // 'rango_financieros' y pediría precios de 'WALMEXrango_financieros'.
+  const series = seriesDeEmisora({
+    razon_social: 'Wal-Mart de México',
+    rango_financieros: { inicio: '2016-2', fin: '2026-2' },
+    rango_historicos: ['2010-01-04', '2026-09-15'],
+    distribuciones: { '2025-11-20': { monto: 0.5 } },
+    '*': { tipo_valor_id: '1' },
+  });
+  assert.deepEqual(series.map((x) => x.serie), ['*']);
+});
+
+test('pareceSerie acepta las series reales y rechaza nombres de campo', () => {
+  for (const k of ['*', 'B', 'UBD', 'CPO', 'C-1', 'CK', 'CPI', ' ISHRS']) {
+    assert.equal(pareceSerie(k), true, `debió aceptar ${JSON.stringify(k)}`);
+  }
+  for (const k of ['rango_financieros', 'razon_social', 'tipo_valor_id', '']) {
+    assert.equal(pareceSerie(k), false, `debió rechazar ${k}`);
+  }
+});
+
+test('filasDelCenso desdobla una emisora en UNA FILA POR SERIE', () => {
+  const filas = filasDelCenso({
+    LIVEPOL: {
+      razon_social: 'El Puerto de Liverpool',
+      'C-1': { tipo_valor_id: '1', rango_financieros: '2016-2/2026-2' },
+      '1': { tipo_valor_id: '1', rango_financieros: '2016-2/2026-2' },
+    },
+  });
+  assert.deepEqual(filas.map((f) => f.emisora_serie).sort(), ['LIVEPOL1', 'LIVEPOLC-1']);
+  assert.ok(filas.every((f) => f.emisora === 'LIVEPOL'), 'la emisora es la misma: los financieros son por emisora');
+});
+
+test('los campos de la SERIE ganan sobre los de la emisora', () => {
+  // tipo_valor_id y estatus son del instrumento, no de la empresa: NAFTRAC
+  // ISHRS es 1B y un CKD es 1R, aunque cuelguen de un nombre cualquiera.
+  const [n] = filasDelCenso({ NAFTRAC: { tipo_valor_id: '1', ' ISHRS': { tipo_valor_id: '1B' } } });
+  assert.equal(n.emisora_serie, 'NAFTRAC ISHRS');
+  assert.equal(n.tipo_valor_id, '1B');
+  const [ck] = filasDelCenso({ AA1CK: { razon_social: 'CKD', CK: { tipo_valor_id: '1R' } } });
+  assert.equal(ck.tipo_valor_id, '1R', 'un CKD no es ICS y el filtro de universo lo deja fuera');
+});
+
+test('una emisora sin serie se guarda igual, con serie null y sin inventarla', () => {
+  // Sin serie no se puede pedir /v2/historicos. Se guarda y se reporta; lo que
+  // no se hace es adivinarle una, que produciría un emisora_serie inexistente.
+  const [f] = filasDelCenso({ RARA: { tipo_valor_id: '1', rango_financieros: '2016-2/2026-2' } });
+  assert.equal(f.serie, null);
+  assert.equal(f.emisora_serie, 'RARA');
+});
+
+/* ── el presupuesto con series ──────────────────────────────────── */
+
+test('estimarConsumo NO cobra dos veces los financieros de una emisora con dos series', () => {
+  // /v2/financieros no conoce series: pedir LIVEPOLC-1 y LIVEPOL1 por separado
+  // sería pagar 41 requests de más por emisora con doble serie.
+  const dos = [
+    { emisora: 'LIVEPOL', emisora_serie: 'LIVEPOLC-1', finDesde: COBERTURA_FIN.desde, finHasta: COBERTURA_FIN.hasta, histDesde: '2016-01-01', histHasta: '2026-09-16' },
+    { emisora: 'LIVEPOL', emisora_serie: 'LIVEPOL1', finDesde: COBERTURA_FIN.desde, finHasta: COBERTURA_FIN.hasta, histDesde: '2016-01-01', histHasta: '2026-09-16' },
+  ];
+  const e = estimarConsumo({ emisoras: dos });
+  assert.equal(e.requests.financieros, 41, 'un solo juego de trimestres');
+  assert.equal(e.requests.historicos, 2, 'pero dos series de precios');
+  assert.equal(e.emisoras, 1);
+  assert.equal(e.series, 2);
+});
+
+test('estimarConsumo dice CÓMO partir la cosecha sólo cuando no cabe', () => {
+  const chico = estimarConsumo({ emisoras: emisorasDemo(30) });
+  assert.equal(chico.plan_si_no_cabe, null, 'si cabe, no hay nada que partir');
+
+  // Un universo absurdo para forzar el caso: 6,000 emisoras × 41 > 200,000.
+  const enorme = estimarConsumo({ emisoras: emisorasDemo(6000) });
+  assert.equal(enorme.cabe_en_un_mes.A, false);
+  assert.ok(enorme.plan_si_no_cabe.financieros_solos > 0);
+  assert.ok(enorme.plan_si_no_cabe.historicos_solos > 0);
+  assert.match(enorme.plan_si_no_cabe.mes_1, /financieros/);
 });

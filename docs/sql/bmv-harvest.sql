@@ -11,6 +11,14 @@
 -- (clave, año, trimestre) en Fase B.
 --
 -- Decisiones que vale la pena notar:
+--   · UNA FILA POR SERIE. El probe reveló que /v2/historicos se pide por
+--     `emisora_serie` (WALMEX*, FEMSAUBD, LIVEPOLC-1, NAFTRAC ISHRS) y que una
+--     emisora puede cotizar varias. Los FINANCIEROS siguen siendo por emisora
+--     —ese endpoint no conoce series—, así que `emisora` se queda como columna
+--     aparte y es por donde se cruzan precios y financieros.
+--   · Las migraciones al final van como ALTER y no como CREATE porque las tablas
+--     YA existen en prod: el probe corrió ensureBmvSchema() y las creó con la
+--     forma vieja, vacías. Un `create table if not exists` no las tocaría.
 --   · bmv_emisoras.fin_desde/fin_hasta — el rango de `rango_financieros`. Es EL
 --     dato point-in-time: define qué emisora existía en qué trimestre. Sin él,
 --     el universo sería la lista de hoy mirada hacia atrás (survivorship bias),
@@ -135,3 +143,33 @@ create index if not exists bmv_precios_fecha_idx
 
 create index if not exists bmv_ledger_estado_idx
      on bmv_harvest_ledger (job, estado);
+
+alter table bmv_emisoras add column if not exists serie text;
+
+alter table bmv_emisoras add column if not exists emisora_serie text;
+
+update bmv_emisoras set emisora_serie = emisora where emisora_serie is null;
+
+alter table bmv_emisoras drop constraint if exists bmv_emisoras_pkey;
+
+create unique index if not exists bmv_emisoras_serie_uidx on bmv_emisoras (emisora_serie);
+
+create index if not exists bmv_emisoras_emisora_idx on bmv_emisoras (emisora);
+
+alter table bmv_precios add column if not exists emisora_serie text;
+
+update bmv_precios set emisora_serie = emisora where emisora_serie is null;
+
+alter table bmv_precios drop constraint if exists bmv_precios_pkey;
+
+create unique index if not exists bmv_precios_uidx on bmv_precios (emisora_serie, fecha);
+
+create index if not exists bmv_precios_emisora_idx on bmv_precios (emisora);
+
+alter table bmv_distribuciones add column if not exists emisora_serie text;
+
+update bmv_distribuciones set emisora_serie = emisora where emisora_serie is null;
+
+alter table bmv_distribuciones drop constraint if exists bmv_distribuciones_pkey;
+
+create unique index if not exists bmv_distribuciones_uidx on bmv_distribuciones (emisora_serie, fecha_ex);
