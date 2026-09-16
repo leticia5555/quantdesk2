@@ -1,335 +1,291 @@
 # FASE 1b — Censo de fuentes para el histórico 2016→2026
 
-> **1ª corrida hecha. Hay histórico en BMV, con un tope que todavía no sé si es
-> el techo real.**
+> # El plan cambia: apareció DataBursatil
 >
-> | Lo que contestó | |
+> `databursatil.com` expone `/v2/financieros` con **estados financieros
+> trimestrales completos de 2T2016 a 2T2026** —posición, flujos, resultado del
+> trimestre y acumulado, ~60 campos con tags `ifrs-full`—, precios diarios desde
+> 2010, dividendos, y **emisoras deslistadas** (ELEKTRA aparece como `SUSPENDIDA`
+> con financieros hasta 4T2025). API gratuita, self-serve con token.
+> **Verificado por Lety con token propio.**
+>
+> **Cosechar ~1,400 PDFs ya no se justifica.** Lo que costaba semanas de
+> descubrir URLs, ~$22 de extracción y un riesgo de transcripción que Fase 0b
+> documentó a fondo, ahora son requests a una API.
+>
+> **Pero DataBursatil no lo resuelve todo, y lo que falta no es un detalle: es
+> la parte que decide si el backtest es válido.** Tres huecos (§2), y el primero
+> es el que importa.
+>
+> | Lo que aporta DataBursatil | Lo que sigue siendo nuestro |
 > |---|---|
-> | **A.1** ¿sólo el trimestre vigente? | **Sí, 5 de 5.** El supuesto de Fase 0 queda confirmado |
-> | **A.3** ¿hay histórico en eventos relevantes? | **Sí** — WALMEX y ALSEA llegan a **2021**, no sólo a 2026 |
-> | El tope | ~80-84 filas por página. **Si se rodea, el histórico podría llegar a 2016** |
+> | El núcleo `ifrs-full`: ~60 campos, 2016→2026, 40 trimestres | **La fecha real de publicación** (§2.1) |
+> | Precios diarios desde 2010, dividendos | **Acciones en circulación** (§2.2) |
+> | Deslistadas con su histórico | **El desglose de deuda con costo `ifrs_mx`** (§2.3) |
 >
-> **Tres preguntas abiertas, y una sola corrida las cierra** (§8):
->
-> ```
-> https://<tu-dominio>/api/bmv-inspect?profundo=FEMSA
-> ```
->
-> **El JSON de la 1ª corrida no llegó** — la carpeta de adjuntos sigue con los
-> PDFs de turnos anteriores. Tu resumen alcanzó para lo que sigue, pero **los 84
-> títulos de FEMSA no los tengo**, y sin verlos no puedo arreglar el
-> clasificador: tendría que adivinar el patrón, que es justo lo que no se hace
-> acá. Por eso el modo `?profundo=` devuelve **la lista completa de títulos sin
-> filtrar** (§8.1).
+> Dicho de otra forma: **DataBursatil da el núcleo IFRS; lo nuestro es la
+> extensión mexicana y el reloj.**
 
 ---
 
-## 0. Una deducción que sale de tus números
+## 1. Qué aporta DataBursatil
 
-El tope aparente (~80-84) separa las 5 emisoras en dos grupos, y eso cambia cómo
-se lee cada resultado:
+**[VERIFICADO por el usuario con token propio]**
 
-| Emisora | docs | trimestrales | ¿al tope? | Qué significa su resultado |
-|---|---:|---:|---|---|
-| FEMSA | 84 | **1** | **sí, truncada** | dos problemas superpuestos: falta histórico **y** el clasificador falla |
-| ALSEA | 82 | — | **sí, truncada** | llega a 2021 porque ahí se corta, no porque ahí empiece |
-| WALMEX | 80 | 28 | **sí, truncada** | idem |
-| GMEXICO | 26 | 0 | **no** | **listado completo** — sus 0 trimestrales no son por filas faltantes |
-| GCC | 28 | 0 | **no** | **listado completo** — idem |
-
-Dos consecuencias:
-
-1. **"2021-2026" no es el alcance del archivo de BMV, es el alcance de una
-   página.** WALMEX y ALSEA se cortan exactamente donde se acaban las filas. El
-   archivo real puede llegar mucho más atrás — **por eso la pregunta de la
-   paginación es la que decide todo.**
-2. **GMEXICO y GCC no están truncadas**, así que su cero es información: o no
-   publican su trimestral como evento relevante, o mi clasificador no reconoce
-   su título. No es que falten filas. Se distingue mirando sus títulos — que es
-   lo que `?profundo=` devuelve.
-
----
-
-## 1. Lo que ya sabemos, sin correr nada
-
-De Fase 0 y 1a, verificado:
-
-| Hecho | De dónde |
+| | |
 |---|---|
-| BMV publica gratis **sólo el trimestre vigente** bajo `docs-pub/ifrsxbrl/` | `docs/xbrl-fase0.md` §1.1, §3.2 |
-| El histórico XBRL **lo vende** BMV (pubsys2) | `docs/xbrl-fase0.md` §1.2 |
-| CNBV tiene histórico público pero su `robots.txt` prohíbe automatizar | `docs/xbrl-fase0.md` §1.3, §8.1 |
-| El XBRL empieza en **1T2014**, universal desde **1T2016** | `docs/xbrl-fase0.md` §3.1 |
-| **29 emisoras ICS con 2T2026 en Neon**, 9/9 campos y fecha | `docs/xbrl-capture.md` §5 |
-| Un PDF en **formato BMV** da los 9 campos a ~$0.02 | `docs/pdf-fase0b.md` |
-| Un **comunicado** de prensa da 6/9 (sin deuda ni acciones en WALMEX) | `docs/pdf-fase0b.md` §5.2 |
-| Evento relevante de WALMEX `1576009` y su XBRL `1576010`: **contiguos** | `docs/xbrl-fase0.md` §2.5 |
+| Endpoint | `/v2/financieros` |
+| Cobertura | **2T2016 → 2T2026** (40 trimestres) |
+| Contenido | posición financiera, flujos, resultado del trimestre **y** acumulado |
+| Campos | ~60, con tags `ifrs-full` |
+| Extras | precios diarios desde 2010, dividendos |
+| Deslistadas | sí — ELEKTRA con estatus `SUSPENDIDA` y financieros hasta 4T2025 |
+| Acceso | gratuito, self-serve con token |
 
-**La apuesta de esta fase** es que los **eventos relevantes** son la veta: ahí
-viven los comunicados trimestrales, la página es del mismo dominio que ya
-sabemos leer, y —a diferencia de `docs-pub/ifrsxbrl/`— **no hay razón para que
-BMV borre un evento relevante viejo**, porque es un archivo regulatorio, no un
-"último reporte disponible". Si eso se confirma, el histórico sale de BMV y no
-de 29 sitios de IR distintos.
+Que traiga **deslistadas** merece un párrafo aparte, porque resuelve algo que
+Fase 0 dejó marcado como amenaza seria: el **survivorship bias**. El universo
+point-in-time que congelamos (emisoras ICS que reportan en cada fecha) sólo
+funciona si el histórico incluye a las que se murieron en el camino. ELEKTRA con
+sus financieros hasta 4T2025 es exactamente ese caso, y con la captura manual
+habría sido el más difícil de conseguir — su página deja de listar y sus
+documentos se archivan.
 
-**Es una apuesta, no un hecho.** La Parte A la confirma o la tumba.
+**Operativo [SECUNDARIO, de su documentación]:** funciona con **créditos** que se
+reponen solos el **día 1 de cada mes a las 00:01 CDMX**, y el token se renueva
+como máximo una vez por semana. Es un proyecto sin fines de lucro sostenido por
+colaboración de usuarios. Conviene planear la cosecha dentro de un presupuesto de
+créditos —29 emisoras × 40 trimestres no es gratis en requests— y no martillar.
 
 ---
 
-## 2. Parte A — lo que contesta la corrida del inspector
+## 2. Los tres huecos
 
-`/api/bmv-inspect` pide dos páginas por emisora y devuelve, para cada una:
+### 2.1 La fecha de publicación — el que decide si el backtest sirve
 
-### 2.1 Primero describe, después interpreta
+DataBursatil **indexa por periodo de cierre**, no por fecha de publicación.
+Usarlo tal cual significa tratar el 2T2026 como disponible el **30 de junio**,
+cuando en realidad se publicó semanas después.
 
-Cada página trae un bloque `estructura` que dice **lo que hay, sin interpretarlo**:
-encabezados, tipos de documento encontrados con ejemplos de nombre, conteo de
-filas, años mencionados, y si el listado viene en el HTML o lo pinta JavaScript.
+**Cuánto es "semanas", con nuestros propios datos de Fase 1a:**
 
-Esto es a propósito. Mis parsers están escritos **a ciegas**, contra una
-descripción de las páginas y no contra su HTML. Pueden estar mal. Si
-`resultados_trimestrales.n` sale 0 pero `estructura.docs_pub_por_tipo` muestra
-80 enlaces bajo `eventemi/`, el problema es mi clasificador y se arregla mirando
-los ejemplos — **sin pedirte otra corrida**.
+| Emisora | Cierre | Publicado | Lag |
+|---|---|---|---:|
+| WALMEX | 2026-06-30 | 2026-07-23 | **23 días** |
+| PE&OLES | 2026-06-30 | 2026-07-23 | **23 días** |
+| MEGA | 2026-06-30 | 2026-08-28 | **59 días** |
 
-Ya pasó una vez, en los tests: mi primer regex buscaba `docs-pub/<tipo>/` y el
-link del XBRL en realidad es `visorXbrl.html?docins=../ifrsxbrl/…`, que **no
-contiene `docs-pub`**. Habría dejado ciego al inspector justo en la sección que
-esta fase existe para mirar. Lo cazó un test; ahora reconoce las dos formas.
+**De 23 a 59 días, en un solo trimestre.** Un periodo de tenencia trimestral son
+~63 días hábiles: ese error es **37% a 94% del periodo de tenencia**. No es un
+sesgo pequeño; es del tamaño de la señal que el backtest pretende medir.
 
-### 2.2 Las cuatro preguntas
+**Y el atajo obvio no funciona.** Si se aplicara un lag fijo de 45 días:
 
-| # | Pregunta | Dónde sale en el JSON |
+| Emisora | Efecto del lag fijo |
+|---|---|
+| WALMEX, PE&OLES | **22 días tarde** — se descarta información que ya era pública y negociable |
+| MEGA | **14 días temprano** — sigue habiendo look-ahead |
+
+Un lag constante **no corrige el sesgo, lo reparte**: introduce un error en una
+dirección para unas emisoras y lo deja en la otra para el resto. Y el reparto no
+es aleatorio — las emisoras que reportan tarde son sistemáticamente distintas de
+las que reportan pronto, así que el error se correlaciona con características de
+la empresa. Eso es peor que un sesgo uniforme: es uno que el backtest puede
+confundir con alfa.
+
+> **La única corrección correcta es la fecha real por emisora y por trimestre.**
+> Eso es exactamente lo que el capturador de Fase 1a produce, y lo que ninguna
+> fuente agregada tiene — porque no está en el XBRL: vive sólo en el listado de
+> BMV (decisión D8, `docs/xbrl-fase0.md` §2.5).
+
+**El hueco que queda, dicho con honestidad:** el capturador produce fechas **de
+aquí en adelante**. Para 2016→2026 no las tenemos. Eso convierte el trabajo del
+inspector (#161) en algo más específico y más fácil de lo que era — §3.2.
+
+### 2.2 Acciones en circulación
+
+`NumeroDeAccionesEnCirculacion` es un tag de la **extensión mexicana**
+(`ifrs_mx`), no de `ifrs-full`. Si DataBursatil sólo trae `ifrs-full`, no lo
+tiene.
+
+Importa porque es un insumo directo del screen: **capitalización = precio ×
+acciones**, y sin capitalización no hay book-to-market ni filtro de tamaño — dos
+piezas centrales de un value+momentum. Que DataBursatil traiga precios diarios
+desde 2010 no alcanza por sí solo: falta el otro factor del producto.
+
+**Antes de construir nada conviene verificar si publican capitalización ya
+calculada o el número de acciones bajo otro nombre.** No lo doy por ausente sin
+mirarlo; lo doy por **no confirmado**.
+
+### 2.3 El desglose de deuda con costo
+
+Fase 0 estableció que **IFRS no tiene un elemento único para "deuda con costo"**
+y que la extensión mexicana sí resuelve la distinción:
+
+```
+CreditosBancariosA{Corto,Largo}Plazo     ← con costo
+CreditosBursatilesA{Corto,Largo}Plazo    ← con costo
+OtrosCreditosConCostoA{Corto,Largo}Plazo ← con costo
+OtrosCreditosSinCostoA{Corto,Largo}Plazo ← EXCLUIDO a propósito
+Current/NoncurrentLeaseLiabilities        ← IFRS-16, aparte (D3 sigue abierta)
+```
+
+Si DataBursatil sólo trae el agregado `ifrs-full`, **no se puede reproducir esa
+definición** — y es la que quedó congelada en Fase 0 §5.5 como la de la serie.
+
+El caso WALMEX lo hace concreto: reporta los seis componentes **explícitamente en
+cero** y su único pasivo con costo son arrendamientos por 83 mil millones. Con un
+agregado `ifrs-full` no se distingue "cero deuda financiera" de "deuda incluida
+en otro renglón", y esa diferencia cambia por completo el apalancamiento de la
+emisora.
+
+---
+
+## 3. Qué se queda vivo, y por qué
+
+Nada se borra. Pero el **propósito** de dos de las tres piezas cambió, y vale la
+pena decirlo explícito para que nadie las lea con el rol viejo.
+
+### 3.1 El capturador de Fase 1a — sube de categoría
+
+`api/xbrl-capture.js` + el cron semanal **se quedan, y pasan a ser la pieza
+crítica**, no la fuente principal de datos.
+
+Su trabajo ya no es "conseguir los financieros" —eso lo hace DataBursatil mejor y
+hacia atrás— sino **producir la fecha real de publicación**, que es lo único que
+hace válido el backtest (§2.1). Además sigue guardando el `raw_json` completo,
+con el desglose `ifrs_mx` que DataBursatil no tiene (§2.3) y las acciones en
+circulación (§2.2).
+
+O sea que el capturador aporta, por trimestre y hacia adelante, **las tres cosas
+que faltan**. Apagarlo sería quedarse con el 90% que cualquiera puede bajar y
+perder justo el 10% que distingue este trabajo.
+
+### 3.2 El inspector de #161 — mismo código, pregunta nueva
+
+`api/bmv-inspect.js` se queda como herramienta, pero **lo que le vamos a
+preguntar cambió**, y para bien:
+
+| Antes | Ahora |
+|---|---|
+| ¿De dónde bajamos ~1,400 documentos con los 9 campos? | ¿De dónde sacamos **~1,160 fechas de publicación** para 2016→2026? |
+
+El problema nuevo es **mucho más fácil**. No hace falta descargar ni extraer
+nada: un evento relevante en el listado de BMV **ya es una fila con fecha**. Se
+necesita un dato por celda, no un documento por celda.
+
+Eso también **desinfla el tope de ~80 filas** que en la versión anterior de este
+documento era "la pregunta más importante". Sigue importando —determina si las
+fechas llegan a 2021 o a 2016— pero ya no decide entre "hay proyecto" y "no hay
+proyecto": decide entre "fechas reales para todo el histórico" y "fechas reales
+desde 2021 y una aproximación declarada para antes".
+
+Las tres sondas del modo `?profundo=` siguen siendo las correctas para eso, y la
+de paginación es la que más vale.
+
+### 3.3 `scripts/pdf-extract.mjs` — se queda, y no se toca
+
+No se borra. Razones concretas, no sentimentales:
+
+- Es el **plan B** si DataBursatil cambia de términos, se queda sin créditos o
+  deja de mantenerse. Es un proyecto sin fines de lucro sostenido por
+  colaboración: excelente, y también una razón para no volverse dependiente sin
+  salida.
+- Es la forma de **auditar a DataBursatil**. Fase 0b cerró GO y dejó anotado que
+  hacía falta verdad independiente para auditar a escala. Ahora la relación se
+  invierte: el PDF audita a la API. Un muestreo de 20-30 trimestres contra el PDF
+  original es barato (~$0.60) y es la única forma de saber si la API tiene
+  errores de captura.
+- El trabajo ya está hecho y probado (GO en Fase 0b, 45 tests).
+
+---
+
+## 4. El plan revisado
+
+1. **Cosechar el histórico de DataBursatil** — los ~60 campos `ifrs-full`,
+   2016→2026, dentro del presupuesto de créditos. Sustituye por completo la
+   cosecha de PDFs.
+2. **Mantener vivo el capturador de Fase 1a.** Cada trimestre agrega fecha real,
+   desglose `ifrs_mx` y acciones. No es opcional.
+3. **Resolver las fechas históricas** con el inspector (§3.2). Correr
+   `?profundo=` y ver si la paginación llega a 2016.
+4. **Verificar los dos huecos abiertos** antes de diseñar el esquema: si
+   DataBursatil trae acciones o capitalización bajo otro nombre (§2.2), y si trae
+   algo del desglose de deuda (§2.3).
+5. **Auditar por muestreo** contra el PDF con `pdf-extract.mjs` (§3.3), y contra
+   el XBRL que ya está en Neon para los trimestres que se solapan — ahí hay verdad
+   independiente gratis.
+
+**Lo que ya no se hace:** descubrir ~1,400 URLs en 29 sitios de IR, cosechar y
+extraer ~1,400 PDFs, y cargar con el riesgo de transcripción silenciosa que Fase
+0b documentó (y que costó dos corridas encontrar). Se ahorran semanas de trabajo
+manual y ~$22 de extracción, pero sobre todo se ahorra la parte frágil.
+
+---
+
+## 5. Lo que hay que decidir
+
+| # | Decisión | Estado |
 |---|---|---|
-| A.1 | ¿La sección de estados financieros lista sólo el vigente o hay histórico? | `informacion_financiera.xbrl_trimestral.veredicto` |
-| A.2 | ¿Qué cubren los reportes anuales y de qué tipo son? | `informacion_financiera.por_tipo` (anexon / infoanua / cmpcxbrl / lo que haya) |
-| A.3 | ¿Hasta qué año llegan los comunicados en eventos relevantes? | `eventos_relevantes.resultados_trimestrales` (n, año mín/máx, periodos) |
-| A.4 | ¿Los ids de docs-pub son contiguos? | `ids` |
+| **D10** | ¿Fechas históricas: eventos relevantes, o aproximación declarada para pre-2021? | depende de §3.2 |
+| **D11** | Si DataBursatil no trae acciones, ¿de dónde sale la capitalización histórica? | **[NO VERIFICADO]** — §2.2 |
+| **D12** | Sin desglose `ifrs_mx` histórico, ¿la serie de deuda usa el agregado `ifrs-full` y se declara, o se deja en `null` antes de 2026? | §2.3 |
+| **D3** | IFRS-16: ¿dentro o fuera de deuda con costo? | abierta desde Fase 0 |
 
-**A.1 es la pregunta que decide todo.** Si alguna emisora lista más de un
-trimestre, el supuesto central de Fase 0 —"sólo el vigente"— era incompleto y
-buena parte del histórico sale gratis de donde ya sabemos leer.
-
-### 2.3 Sobre A.4, y lo que NO significa
-
-El inspector mide si los ids quedan cerca y reporta los pares con delta ≤ 5.
-**Y siempre acompaña el resultado con esta advertencia, aunque salgan muchos
-pares contiguos:**
-
-> Que dos ids sean contiguos **no hace que `id−1` sea una URL válida**. El
-> contador de `docs-pub` es **global de toda la BMV**: entre dos documentos de
-> una misma emisora hay cientos de otras empresas. Un id vecino pertenece casi
-> seguro a otra emisora, o a nada.
-
-Sirve para **entender** cómo se asignan los ids —un envío genera varios
-documentos seguidos—, no para enumerar hacia atrás. Enumerar sería además
-justamente el tipo de barrido que la cortesía de 1 req/s existe para evitar:
-adivinar 1,400 ids significa miles de 404 contra BMV. **No es el plan.**
+**D12 merece una nota.** La tentación va a ser usar el agregado `ifrs-full` para
+el histórico y el desglose `ifrs_mx` de 2026 en adelante. Eso produce una **serie
+con dos definiciones distintas empalmadas**, con el corte justo donde empieza a
+mejorar la calidad del dato — exactamente el tipo de discontinuidad que un
+backtest lee como señal. Si se hace, hay que marcar la fuente por celda y probar
+que el corte no genera un salto artificial.
 
 ---
 
-## 3. Parte B — sitios de relación con inversionistas
+## Apéndice — hallazgos de la 1ª corrida del inspector
 
-**Todo `[NO VERIFICADO]`**: sale de resultados de búsqueda, sin abrir una sola
-página. Y está incompleto a propósito — la Parte B es *"sólo para lo que A no
-cubra"*, y hasta correr A no se sabe qué falta.
+Siguen siendo válidos y explican por qué el inspector conserva valor (§3.2).
 
-| Emisora | Sección de reportes | ¿formato BMV? | ¿comunicado? | Desde | Patrón de URL | Estado |
-|---|---|---|---|---|---|---|
-| AMX | `americamovil.com/Spanish/relacion-con-inversionistas/informes-financieros/reportes-trimestrales/` | **sí** — hay página aparte *"Presentaciones ante la BMV"* (`/bmv-filings/`) | sí | no determinado | no visto | [NO VERIFICADO] |
-| WALMEX | `walmex.mx/informacion-financiera/trimestral.html` | no visto | sí | ≥2016 | `informes.walmex.mx/{AÑO}/docs/…` — **el año va en la ruta** | [NO VERIFICADO] |
-| FEMSA | `femsa.gcs-web.com/financial-reports/quarterly-results` | no visto | sí | no determinado | plataforma de IR (gcs-web) | [NO VERIFICADO] |
-| GMEXICO | `gmexico.com/Pages/reportes-financieros.aspx` | **sí** | sí | **≥2017** | `gmexico.com/GMDocs/ReportesFinancieros/Esp/{AÑO}/RF_ES_{AÑO}_BMV.pdf` | [NO VERIFICADO] |
-| CEMEX | `cemex.com/investors/reports/bmv-reports` | **sí** — página dedicada | sí | no determinado | no visto | [NO VERIFICADO] |
-| BIMBO | `grupobimbo.com/en/investors/reports` | no visto | sí | ≥2022 visto | S3/CloudFront con `?VersionId=` | [NO VERIFICADO] |
-| ALFA | — | no visto | sí | ≥2021 visto | PDFs alojados en **latibex.com** y **sigmafoods.com**, no en alfa.com.mx | [NO VERIFICADO] |
-| GRUMA | `gruma.com/en/investors/…/quarterly-releases.aspx` | no visto | sí | no determinado | `gruma.com/media/{ID}/…pdf` — **id opaco** | [NO VERIFICADO] |
-| las otras 21 | — | — | — | — | — | sin censar |
+**A.1 confirmado en 5/5:** la sección financiera de BMV lista **sólo el trimestre
+vigente**. El supuesto de Fase 0 era correcto.
 
-**Lo útil que ya se ve:**
+**A.3 — hay histórico en eventos relevantes, con tope:**
 
-- **El formato BMV sí se republica en sitios de IR**: AMX y CEMEX tienen página
-  dedicada, GMEXICO publica `RF_ES_{AÑO}_BMV.pdf` con el año en la ruta. Eso es
-  9/9 campos, no 6/9.
-- **Sólo GMEXICO y WALMEX tienen patrón de URL construible.** Los demás usan ids
-  opacos (`gruma.com/media/724638/`), query strings de versión (BIMBO) o
-  plataformas de IR. **No se enumeran: hay que listar la página.**
-- **ALFA aloja en terceros.** Un cosechador que asuma "todo vive en el dominio
-  de la emisora" se queda corto.
+| Emisora | docs | trimestrales | ¿al tope? | Lectura |
+|---|---:|---:|---|---|
+| FEMSA | 84 | 1 | **sí** | truncada **y** el clasificador falla |
+| ALSEA | 82 | — | **sí** | llega a 2021 porque ahí se corta |
+| WALMEX | 80 | 28 | **sí** | idem |
+| GMEXICO | 26 | 0 | **no** | **listado completo** — su cero es real |
+| GCC | 28 | 0 | **no** | idem |
 
----
+La deducción que sigue valiendo: **"2021-2026" no es el alcance del archivo de
+BMV, es el alcance de una página.** Y GMEXICO y GCC no están truncadas, así que
+sus ceros son información, no filas faltantes.
 
-## 4. La matriz de cobertura, con lo que ya se sabe
-
-Universo: **29 emisoras × 11 años (2016-2026) × 4 trimestres = 1,276 celdas.**
-
-### 4.1 Lo confirmado
-
-| Franja | Fuente | Celdas | Estado |
-|---|---|---:|---|
-| 2026-T2 | `BMV-XBRL` (9/9 campos) | **29** | **en Neon**, Fase 1a |
-| 2021→2026 | `BMV-evento` (6/9, o 9/9 si el evento adjunta formato BMV) | **≈ 22 por emisora que publique así** | confirmado en WALMEX y ALSEA |
-| pre-2021 | ? | ~580 | **depende de la paginación** |
-| GMEXICO, GCC y similares | no por evento | — | necesitan sitio de IR |
-
-### 4.2 Por emisora, hasta donde llega la evidencia
-
-| Emisora | 2016-2020 | 2021-2026 | 2026-T2 | Fuente y estado |
-|---|---|---|---|---|
-| WALMEX | ? paginación | `BMV-evento` ✔ | `BMV-XBRL` ✔ | 28 trimestrales detectados |
-| ALSEA | ? paginación | `BMV-evento` ✔ | `BMV-XBRL` ✔ | 82 docs, mismo rango |
-| FEMSA | ? paginación | `BMV-evento` ? | `BMV-XBRL` ✔ | **clasificador falla** — §8.1 |
-| GMEXICO | `IR-formatoBMV` probable | `IR-formatoBMV` probable | `BMV-XBRL` ✔ | listado completo sin trimestrales; IR publica `RF_ES_{AÑO}_BMV.pdf` |
-| GCC | ? | ? | `BMV-XBRL` ✔ | listado completo sin trimestrales; IR sin censar |
-| otras 24 | ? | ? | `BMV-XBRL` ✔ | sin inspeccionar |
-
-**No relleno el resto.** Con 5 de 29 inspeccionadas y la pregunta de la
-paginación abierta, cualquier número por emisora sería inventado.
-
-### 4.3 Los dos escenarios que quedan
-
-| Si la paginación… | Celdas alcanzables desde BMV | Lo que queda para sitios de IR |
-|---|---:|---|
-| **funciona** (o hay consulta por rango de fechas) | hasta ~1,100 | los huecos de emisoras que no publican por evento |
-| **no funciona** — el tope es el techo | ~500 (2021→2026) | **~750 celdas en 29 sitios distintos** |
-
-La diferencia entre los dos es **~600 celdas y semanas de trabajo**, y se
-resuelve con un request. Por eso §8.2 es la pregunta prioritaria.
-
-### 4.4 Costo de extracción
-
-A $0.02 por PDF (medido en Fase 0b: $0.0193 promedio, $0.0224 peor caso):
-
-| Escenario | PDFs | Costo |
-|---|---:|---:|
-| Paginación funciona | ~1,100 | **~$22** |
-| Sólo 2021→2026 | ~500 | ~$10 |
-
-**Y si la pregunta del zip (§8.3) sale bien, el costo tiende a cero** en las
-celdas que tengan XBRL: datos estructurados no pasan por el modelo.
-
-El costo de API sigue sin ser el problema en ningún escenario. Lo caro es
-descubrir URLs y, si el tope es el techo, 29 sitios de IR.
-
-## 5. Recomendación
-
-**1. Correr `?profundo=FEMSA` antes de cualquier otra cosa** (§8). Cierra las
-tres preguntas y define si el plan es "un scraper contra BMV" o "29 scrapers
-contra sitios de IR". No tiene sentido diseñar el cosechador antes de eso.
-
-**2. Empezar la cosecha por 2024-2026, no por 2016.** Se sostiene y ahora con un
-argumento más fuerte: ahí se puede **cruzar contra el XBRL que ya está en Neon**.
-Esa es verdad independiente gratis, y es exactamente lo que Fase 0b dejó
-pendiente para auditar la extracción a escala. Si el cosechador tiene un sesgo,
-se ve con 100 documentos en vez de con 1,100.
-
-**3. Para GMEXICO y similares, ir directo al sitio de IR.** Su listado de eventos
-está completo y no trae trimestrales (§0): esperar a resolver la paginación no
-les va a servir de nada. GMEXICO además publica `RF_ES_{AÑO}_BMV.pdf` con el año
-en la ruta, que es el caso más fácil que existe — **formato BMV, 9/9 campos, URL
-construible**.
-
-**4. No enumerar ids** (§2.3). La contigüidad observada no cambia eso.
-
-## 6. Lo que necesita navegador, no script
-
-Esto no lo puede hacer un cosechador y conviene saberlo antes de intentarlo:
-
-1. **Sitios que pintan la lista con JavaScript.** El inspector marca
-   `tiene_listado_en_html: false`. Si la página muestra reportes en el navegador
-   pero el HTML viene vacío, es trabajo manual o de navegador automatizado.
-   BIMBO (S3 con `?VersionId=`) y las plataformas de IR tipo gcs-web son las
-   candidatas.
-2. **Sitios con id opaco.** GRUMA (`/media/724638/`) y similares: el id no se
-   deriva de nada, hay que leer la página que los lista.
-3. **El id de LASITE**, que sigue pendiente de Fase 1a. Una visita.
-4. **Completar la Parte B para las 21 emisoras sin censar**, si A no las cubre.
-
----
-
-## 7. Cómo correr
-
-```bash
-# Censo de más emisoras (el de la 1ª corrida, para las 24 que faltan)
-curl -s 'https://<tu-dominio>/api/bmv-inspect?claves=AMX,KOF,CEMEX,BIMBO,ORBIA' | jq
-
-# Modo profundo: UNA emisora, las tres preguntas abiertas
-curl -s 'https://<tu-dominio>/api/bmv-inspect?profundo=FEMSA' | jq
-```
-
-### Tests
-
-```bash
-node tests/bmv-inspect.test.mjs        # 22 tests de los parsers del censo
-node tests/xbrl-parse.test.mjs         # 18
-node tests/xbrl-capture-fila.test.mjs  # 27
-```
-
----
-
-## 8. Las tres preguntas abiertas, y la corrida que las cierra
+**Las tres preguntas siguen abiertas** y `?profundo=FEMSA` sigue siendo la
+corrida que las cierra — ahora para conseguir fechas, no documentos:
 
 ```
 https://<tu-dominio>/api/bmv-inspect?profundo=FEMSA
 ```
 
-Una emisora, ~6 requests, ~8 segundos. Sólo lee.
+- `titulos` — los 84 títulos completos sin filtrar, para arreglar el clasificador
+  sin adivinar el patrón.
+- `paginacion` — si hay `fechaInicial`/`fechaFinal`, se piden rangos y el tope
+  deja de importar. **Es la sonda que más vale** para D10.
+- `zip_eventemi` — si el visor envuelve un XBRL real, esas celdas traen desglose
+  `ifrs_mx` y acciones, o sea **dos de los tres huecos** para el histórico.
 
-### 8.1 ¿Por qué FEMSA salió con 1 de 84? — `titulos`
+Esa última sonda cambió de importancia: antes era "sería bueno tener datos
+estructurados"; ahora es **una vía posible para recuperar lo que DataBursatil no
+tiene, hacia atrás**.
 
-Devuelve **los 84 títulos completos, sin filtrar**, cada uno con cómo lo
-clasificó mi código. Con eso el patrón real se ve de un vistazo.
+### Tests
 
-**Lo que no voy a hacer es adivinarlo.** Sé que el PDF de FEMSA se titula
-*"FEMSA Anuncia Resultados del Segundo Trimestre de 2020"* —lo tengo de Fase
-0b— y mi clasificador **sí** reconoce esa forma; hay test. Que aun así saliera 1
-de 84 significa que **el título del evento en el listado de BMV no es el título
-del PDF**. Puede ser un asunto genérico, puede estar en inglés, puede ser
-"Información Financiera Trimestral". Cualquiera de las tres cambia el arreglo, y
-elegir sin ver los títulos sería exactamente el error que esta fase evita.
-
-**Si resulta que FEMSA no publica su trimestral como evento relevante**, eso
-también es una respuesta y va al doc como tal: FEMSA pasa a depender de su sitio
-de IR (`femsa.gcs-web.com`), como GMEXICO.
-
-### 8.2 ¿El tope de ~80 filas es el techo? — `paginacion`
-
-**Es la pregunta más importante que queda**: son ~600 celdas de diferencia (§4.3).
-
-La sonda **busca el mecanismo en la página** en vez de adivinar parámetros, y
-reporta enlaces de paginación, campos de formulario y pistas de texto. Si
-encuentra un enlace, **lo sigue una vez** y compara: si trae documentos que no
-estaban, la paginación funciona y el tope no es el techo.
-
-Busca en particular campos `fechaInicial` / `fechaFinal`. BMV los usa en su
-sección de Información Digitalizada:
-
+```bash
+node tests/bmv-inspect.test.mjs        # 22
+node tests/xbrl-parse.test.mjs         # 18
+node tests/xbrl-capture-fila.test.mjs  # 27
 ```
-/_mod/CHANGE_PAGE?claveCotiza=X&fechaInicial=&fechaFinal=&tipoDocumento=&index=9
-```
-
-**Si la página de eventos acepta rango de fechas, el tope deja de importar**: se
-pide 2016-2018 directo y no hay que paginar nada. Sería el mejor resultado
-posible de esta fase.
-
-### 8.3 ¿El zip de eventemi trae XBRL de verdad? — `zip_eventemi`
-
-Notaste que los eventemi aparecen como `.pdf` **y** como
-`visorXbrl.html?docins=../eventemi/eventemi_XXXX_1.zip`. La sonda baja hasta 3 de
-esos zips y mira qué son: revisa los bytes mágicos (¿ZIP o PDF disfrazado?) y, si
-es zip de verdad, **lista lo que trae adentro** y busca `.json` / `.xbrl` / `.xml`.
-
-Los dos desenlaces:
-
-| Si adentro hay datos estructurados | Si el visor sólo envuelve el PDF |
-|---|---|
-| **Cambia todo el plan.** 9/9 campos sin PDF, sin modelo, con el parser de Fase 1a que ya existe. Costo de API **cero** en esas celdas, y sin el riesgo de transcripción de Fase 0b | Seguimos con `pdf-extract` a $0.02, que ya está probado y da GO |
-
-Vale la pena aclarar por qué esto es plausible y no ilusión: el visor se llama
-`visorXbrl.html` y el parámetro es `docins` — *documento instancia*, que es
-justo el término XBRL. Que BMV use ese visor para un evento relevante sugiere que
-espera encontrar un instance adentro. **Pero podría ser sólo que reutilizan el
-mismo visor para todo**, y eso es exactamente lo que la sonda distingue.
 
 ---
 
