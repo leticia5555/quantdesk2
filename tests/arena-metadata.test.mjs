@@ -90,7 +90,7 @@ console.log('\n── R9 sigue fallando CERRADO: los datos no aflojan el riel �
 
   // (d) Con los dos confirmados, el corto pasa. Ésta es la línea que la sombra
   //     no podía cruzar antes.
-  const bueno = validateTarget(peso, { ZM: { sector: 'XLK', price: 80, shortable: true, easy_to_borrow: true } }, RAILS);
+  const bueno = validateTarget(peso, { ZM: { tradable: true, sector: 'XLK', price: 80, shortable: true, easy_to_borrow: true } }, RAILS);
   ok(!bueno.violations.some((x) => x.rail === 'R9'),
     'con shortable + easy-to-borrow confirmados, R9 deja pasar el corto');
   ok(bueno.ok, 'y el objetivo entero pasa los rieles', JSON.stringify(bueno.violations));
@@ -193,8 +193,21 @@ console.log('\n── UNKNOWN es aviso; un sector real sigue violando ──');
 {
   const pesos = { A: 0.2, B: 0.2, C: 0.2, D: 0.2, E: 0.2 };
   const ciego = validateTarget(pesos, {}, RAILS);
-  ok(ciego.ok === true,
-    'sin sector para nadie, el objetivo PASA: la falla es nuestra y no invalida su decisión', JSON.stringify(ciego.violations));
+  // Esta aserción pedía `ciego.ok === true` con la metadata VACÍA, y así medía
+  // dos cosas a la vez. Desde R11 (2026-09-17) una metadata vacía también
+  // significa "Alpaca no confirmó que estos símbolos sean operables", y eso SÍ
+  // frena la orden — un sector que falta no impide ejecutar, una fila de asset
+  // que falta sí.
+  //
+  // Lo que este bloque protege es otra cosa y sigue intacto: que una falla
+  // NUESTRA de cobertura de sectores no se le cobre al PM como violación. Se
+  // afirma eso, que es lo que dice el título.
+  ok(!ciego.violations.some((x) => x.rail === 'R6'),
+    'sin sector para nadie, R6 NO viola: la falla es nuestra y no invalida su decisión',
+    JSON.stringify(ciego.violations.map((x) => x.rail)));
+  ok(ciego.violations.every((x) => x.rail === 'R11' && x.es_falla_nuestra),
+    'y lo único que queda es R11 marcado como falla NUESTRA, no como ocho errores del modelo',
+    JSON.stringify(ciego.violations.map((x) => [x.rail, x.es_falla_nuestra])));
   ok(ciego.warnings.length === 1 && ciego.warnings[0].rail === 'R6' && ciego.warnings[0].es_falla_nuestra === true,
     'pero sale un AVISO de R6 marcado como falla nuestra — no desaparece en silencio',
     JSON.stringify(ciego.warnings.map((w) => w.rail)));
@@ -228,7 +241,7 @@ console.log('\n── el sector del ÍNDICE gana sobre la heurística ──');
     sectoresConocidos: { JPM: 'Financials' },
     deps: {
       getSnapshots: async (syms) => Object.fromEntries(syms.map((x) => [x, { price: 100 }])),
-      getAssets: async (syms) => Object.fromEntries(syms.map((x) => [x, { shortable: true, easy_to_borrow: true, tradable: true }])),
+      getAssets: async (syms) => Object.fromEntries(syms.map((x) => [x, { tradable: true, shortable: true, easy_to_borrow: true, tradable: true }])),
       fetchIndustry: async () => 'Semiconductors',
     },
     now: new Date('2026-09-16T18:00:00Z'),

@@ -146,7 +146,14 @@ console.log('\n── B6: las exposiciones ──');
 
 console.log('\n── B6: DESCARTA, NO ESCALA — y reporta TODAS las violaciones ──');
 {
-  const meta = { A: { sector: 'XLK', price: 100 }, B: { sector: 'XLK', price: 100 }, C: { sector: 'XLE', price: 100 } };
+  // `tradable: true` en las tres desde R11 (2026-09-17): este bloque prueba los
+  // topes de peso y de sector, y sin el campo R11 las rechazaría a todas por
+  // otra razón — el test mediría algo distinto del que dice medir.
+  const meta = {
+    A: { tradable: true, sector: 'XLK', price: 100 },
+    B: { tradable: true, sector: 'XLK', price: 100 },
+    C: { tradable: true, sector: 'XLE', price: 100 },
+  };
   const v = validateTarget({ A: 0.35, B: 0.30, C: 0.50 }, meta);
   ok(!v.ok, 'un objetivo que viola se rechaza');
   const rieles = v.violations.map((x) => x.rail);
@@ -173,7 +180,7 @@ console.log('\n── B6: el corto FALLA CERRADO ──');
   ok(/Fail closed/.test(sinDato.violations.find((x) => x.rail === 'R9').detail),
     'un campo ausente NO es un permiso: un buy-in forzado es ruido del broker metido en el resultado del experimento');
 
-  const conDato = validateTarget({ ZM: -0.10 }, { ZM: { sector: 'XLK', price: 60, shortable: true, easy_to_borrow: true } });
+  const conDato = validateTarget({ ZM: -0.10 }, { ZM: { tradable: true, sector: 'XLK', price: 60, shortable: true, easy_to_borrow: true } });
   ok(conDato.ok, 'con los dos campos en true, pasa');
 
   const barato = validateTarget({ PENNY: -0.10 }, { PENNY: { sector: 'XLK', price: 7, shortable: true, easy_to_borrow: true } });
