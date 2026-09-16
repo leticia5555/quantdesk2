@@ -298,6 +298,21 @@ export const ARENA_AGENTS = [
     archetype: { name: 'el paciente', voice: 'Juegas el largo plazo. El ruido de hoy te interesa poco; hablas en trimestres.' },
     alpaca: 'QWEN', house: 'china', control: false, phase: 'B', enabled: true,
   },
+  // ── PENDIENTE T3 · EL OCTAVO AGENTE, EUROPEO ─────────────────────────
+  // Mistral, `house: 'eu'`. Decidido el 2026-09-17 que entra en la T3 y NO en
+  // la T2, y la razón no es técnica: un agente que arranca a mitad de temporada
+  // no corre la misma ventana que los siete, así que su return no es comparable
+  // con el de ellos. Un ranking que los pone en la misma tabla sin decirlo
+  // miente.
+  //
+  // OJO con `house: 'eu'`: hoy la casa es `us`/`china` y de ahí salen la
+  // etiqueta del tablero, la descripción pública ("IAs chinas vs americanas") y
+  // la narrativa entera. Una tercera casa cambia el TITULAR del experimento —
+  // es una decisión de producto antes que una entrada en este array.
+  //
+  // El resto de lo que hace falta (keys de Alpaca, sombra previa, el efecto en
+  // el presupuesto diario, y por qué el slug se lee del catálogo en vez de
+  // escribirse de memoria) está en docs/arena.md → "Pendiente T3".
 ];
 
 // ¿Puede este agente gastar tokens? Un slug no verificado sin override es un

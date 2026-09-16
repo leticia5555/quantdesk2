@@ -35,13 +35,41 @@ consecuencia: el "líder" de hoy no significa nada si la ventana nunca se cierra
 | Temporada | Qué habilita | Estado |
 |---|---|---|
 | **T2** | **Long-only + el reglamento de 9 reglas** de abajo. Liga completa (7 agentes) desde el día 1. | **En curso** (2026-09-14 → 2026-10-09) |
-| **T3** | **Short habilitado.** El guard se adapta: hoy es long-only por diseño (`no hay posición larga que vender` es un descarte duro) y abrir cortos toca sizing, margen, el borrow y toda la regla de salida —un stop en un corto es al revés—. **PR aparte**, no un flag. | Planeada |
+| **T3** | **Short habilitado** + **el octavo agente europeo (Mistral, `house: 'eu'`)**. El guard se adapta: hoy es long-only por diseño (`no hay posición larga que vender` es un descarte duro) y abrir cortos toca sizing, margen, el borrow y toda la regla de salida —un stop en un corto es al revés—. **PR aparte**, no un flag. | Planeada |
 | **T4 — o nunca** | **Opciones.** Condición previa e innegociable: **una fuente de datos real** (cadena, griegas, IV, vencimientos). Sin esa fuente NO se hace: un libro de opciones sobre precios inventados no es un experimento, es una demo. | Condicional |
 
 **Por qué el orden importa.** Cada temporada cambia el reglamento, y un cambio
 de reglamento parte la serie: por eso `PROMPT_VERSION` sube con la temporada y
 el cambio se anuncia en el journal con fecha. Meter short y opciones dentro de
 la misma temporada haría imposible atribuir un resultado a nada.
+
+### Pendiente T3 · El octavo agente: Mistral, `house: 'eu'`
+
+Decidido el 2026-09-17: **entra en la T3, no en la T2.** La razón no es técnica.
+Un agente que arranca a mitad de temporada no corre la misma ventana que los
+siete, así que su return no es comparable con el de ellos — y un ranking que los
+pone en la misma tabla sin decirlo miente. O entra con la temporada, o `/liga`
+tiene que publicar "entró el día N" al lado de su número para siempre.
+
+Lo que hace falta cuando llegue el momento, además de la cuenta paper:
+
+1. **Entrada en el registry** (`_lib/arena-registry.js`): id, nombre,
+   `provider: 'openrouter'`, slug, `model_label`, `phase`, y **`house: 'eu'`**.
+2. **`house: 'eu'` toca más que el registry.** Hoy la casa es `us`/`china` y de
+   ahí salen la etiqueta del tablero (`leaderboard.html`), la descripción
+   pública ("IAs chinas vs americanas") y la narrativa entera. Agregar una
+   tercera casa **cambia el titular del experimento**, y eso es una decisión de
+   producto antes que de código.
+3. **`ALPACA_MISTRAL_KEY` / `_SECRET`** en Vercel.
+4. **La sombra primero**, como los siete: nadie entra a la liga sin una corrida
+   en sombra que pase los rieles.
+5. **El costo**: un octavo agente es ~14% más de gasto diario contra el mismo
+   techo de `ARENA_DAILY_BUDGET_USD`. O sube el techo, o los ocho corren con un
+   presupuesto por cabeza más chico — y eso, si no se declara, se lee como que
+   un modelo investigó menos porque quiso.
+6. **El slug exacto** hay que leerlo del catálogo de OpenRouter en su momento
+   (familia `mistralai/…`). No se escribe de memoria: un slug inventado es
+   justamente lo que el candado de `modelSlugResolved` existe para frenar.
 
 > **El cambio de cadencia (2026-09-15) NO es una temporada nueva.** Las 9 reglas
 > de la T2 siguen vigentes, completas, en cada corrida; lo único que cambió es
