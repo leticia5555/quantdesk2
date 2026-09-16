@@ -84,7 +84,31 @@ async function traer(url, { binario = false } = {}) {
 
 /* ── la fila del XBRL en la página de la emisora ─────────────────── */
 
-const MESES = { ene: 1, feb: 2, mar: 3, abr: 4, may: 5, jun: 6, jul: 7, ago: 8, sep: 9, set: 9, oct: 10, nov: 11, dic: 12 };
+/*
+ * BMV escribe el mes con abreviatura EN INGLÉS ("28-Aug-2026 15:06"), no en
+ * español. Se aceptan las dos porque no cuesta nada y porque no quiero volver a
+ * depender de cuál usa la página.
+ *
+ * Esto costó dos corridas encontrarlo y vale la pena entender por qué se
+ * escondió: de las 12 abreviaturas, 8 son IGUALES en ambos idiomas
+ * (Feb Mar May Jun Jul Sep Oct Nov). Con una tabla sólo en español, las fechas
+ * de julio y febrero — que es cuando se publican el 2T y el 4T — funcionaban
+ * perfecto, y el bug sólo asomaba en los 4 meses donde difieren:
+ *
+ *     Jan/Ene · Apr/Abr · Aug/Ago · Dec/Dic
+ *
+ * O sea que no era un caso raro de dos emisoras rezagadas: **abril es cuando se
+ * publica el 1T**. La corrida de abril habría perdido la fecha de casi todas, y
+ * como fecha_publicacion no se puede derivar del XBRL (D8), ese dato se habría
+ * perdido para siempre.
+ */
+const MESES = {
+  // inglés — lo que usa BMV
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+  // español — por si cambia, o por si alguna página vieja lo trae
+  ene: 1, abr: 4, ago: 8, set: 9, dic: 12,
+};
 
 /**
  * "23-Jul-2026 14:11" → "2026-07-23T14:11:00Z".
@@ -92,13 +116,28 @@ const MESES = { ene: 1, feb: 2, mar: 3, abr: 4, may: 5, jun: 6, jul: 7, ago: 8, 
  * (decisión D8, docs/xbrl-fase0.md §2.5). No está dentro del XBRL: sólo
  * existe aquí, en el listado. Si no se captura al bajar, se pierde.
  */
+const RE_FECHA = /(\d{1,2})-([A-Za-zÁÉÍÓÚáéíóú]{3,4})\.?-(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/;
+
 export function parseFechaBmv(txt) {
-  const m = /(\d{1,2})-([A-Za-zÁÉÍÓÚáéíóú]{3,4})\.?-(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/.exec(txt || '');
+  const m = RE_FECHA.exec(txt || '');
   if (!m) return null;
   const mes = MESES[m[2].slice(0, 3).toLowerCase()];
   if (!mes) return null;
   const p = (n) => String(n).padStart(2, '0');
   return `${m[3]}-${p(mes)}-${p(m[1])}T${p(m[4] || 0)}:${p(m[5] || 0)}:00Z`;
+}
+
+/**
+ * El pedazo de texto que PARECE una fecha, aunque no se haya podido leer.
+ *
+ * Existe para que un fallo de fecha se diagnostique solo. La primera vez que
+ * pasó, la alerta decía "no trae fecha-hora legible" y hubo que deducir el mes
+ * en inglés mirando cuáles emisoras fallaban. Con esto, la alerta dice
+ * literalmente qué vio y no pudo interpretar.
+ */
+export function textoDeFecha(txt) {
+  const m = RE_FECHA.exec(txt || '');
+  return m ? m[0] : null;
 }
 
 const limpiar = (html) => html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
@@ -130,6 +169,7 @@ export function filasXbrl(html) {
       trimestre: tt >= 1 && tt <= 4 ? tt : (trim ? Number(trim[1]) : null),
       secuencia: seq,
       fecha_publicacion: parseFechaBmv(texto),
+      fecha_texto: parseFechaBmv(texto) ? null : textoDeFecha(texto),
       titulo: texto.slice(0, 200) || null,
       zip_url: `${BASE}/docs-pub/ifrsxbrl/${archivo}`,
     });
@@ -220,7 +260,9 @@ async function localizarFila(em) {
   // La fecha de envío NO está dentro del XBRL (D8): si la fila no la trae, no
   // se puede recuperar re-parseando el raw. Es alerta, nunca un null callado.
   if (!fila.fecha_publicacion) {
-    paso('fecha_publicacion', false, 'la fila no trae fecha-hora legible — no se puede derivar del archivo');
+    paso('fecha_publicacion', false, fila.fecha_texto
+      ? `no supe interpretar "${fila.fecha_texto}" — ¿mes desconocido? revisar la tabla MESES`
+      : 'la fila no trae nada que parezca fecha-hora — no se puede derivar del archivo');
   }
 
   return { clave: em.clave, estado: 'fila', fila, pasos };
@@ -247,6 +289,21 @@ async function descargarYParsear(em, fila, pasos) {
   paso('campos', true, `${resueltos}/${CAMPOS.length} resueltos${ext.alertas.length ? ` · ${ext.alertas.length} alerta(s)` : ''}`);
 
   return { clave: em.clave, estado: 'ok', fila, ext, pasos };
+}
+
+/**
+ * Qué hacer con una fila ya localizada, dado lo que hay en la tabla.
+ *
+ * Pura a propósito: es la lógica que decide si una fila vieja con
+ * fecha_publicacion nula se repara, y quiero poder probarla sin una base.
+ *
+ * @param {Map<string, string|null>} existentes  doc_id → fecha_publicacion guardada
+ */
+export function decidirAccion(existentes, docId, fechaDeLaFila) {
+  if (!existentes.has(String(docId))) return 'insertar';
+  const guardada = existentes.get(String(docId));
+  if (!guardada && fechaDeLaFila) return 'reparar';
+  return 'nada';
 }
 
 /** Localizar + descargar + parsear, para el smoke y para la captura nueva. */
@@ -456,13 +513,18 @@ async function modoRun() {
       alertas.push({ clave: em.clave, tipo: 'revivio', detalle: `marcada deslistada pero publicó ${fila.anio}-T${fila.trimestre} — actualizar emisoras.json` });
     }
     if (!fila.fecha_publicacion) {
-      alertas.push({ clave: em.clave, tipo: 'sin_fecha', detalle: `la fila de ${fila.anio}-T${fila.trimestre} no trae fecha-hora: no se puede derivar del XBRL (D8)` });
+      alertas.push({
+        clave: em.clave, tipo: 'sin_fecha',
+        detalle: fila.fecha_texto
+          ? `la fila de ${fila.anio}-T${fila.trimestre} trae "${fila.fecha_texto}" y no supe interpretarlo — revisar la tabla MESES`
+          : `la fila de ${fila.anio}-T${fila.trimestre} no trae nada que parezca fecha-hora`,
+      });
     }
 
-    // ── ya existe ──
-    if (existentes.has(docId)) {
-      const fechaGuardada = existentes.get(docId);
-      if (!fechaGuardada && fila.fecha_publicacion) {
+    // ── ya existe: reparar o dejar como está, sin descargar el zip ──
+    const accion = decidirAccion(existentes, docId, fila.fecha_publicacion);
+    if (accion !== 'insertar') {
+      if (accion === 'reparar') {
         try {
           const reparo = await repararFecha(docId, fila.fecha_publicacion);
           if (reparo) { resumen.reparadas.push({ clave: em.clave, doc_id: docId, fecha_publicacion: fila.fecha_publicacion }); continue; }
@@ -472,7 +534,7 @@ async function modoRun() {
         }
       }
       resumen.ya_existentes.push({ clave: em.clave, doc_id: docId, periodo: `${fila.anio}-T${fila.trimestre}` });
-      continue;   // sin descargar el zip
+      continue;
     }
 
     // ── nueva: ahora sí se baja y se parsea ──

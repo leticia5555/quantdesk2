@@ -260,7 +260,7 @@ curl -s 'https://<tu-dominio>/api/xbrl-capture' | jq
 
 ```bash
 node tests/xbrl-parse.test.mjs          # 18 tests del lector
-node tests/xbrl-capture-fila.test.mjs   # 17 tests de la fila, el '&' y el atraso
+node tests/xbrl-capture-fila.test.mjs   # 27 tests: fila, meses, atraso y reparación
 ```
 
 ---
@@ -270,31 +270,56 @@ node tests/xbrl-capture-fila.test.mjs   # 17 tests de la fila, el '&' y el atras
 `?run=1` en prod: **23 capturadas con 9/9 campos, 0 fallidas, 7 saltadas sin id.**
 Dos cosas salieron raras y las dos están arregladas.
 
-### 5.1 PE&OLES: `fecha_publicacion` null — y el `&` no era lo que yo creía
+### 5.1 `fecha_publicacion` null: era el mes en inglés, no el `&`
 
-PE&OLES capturó bien (doc 1579656, 2026-T2, 9/9 campos) pero sin fecha; las
-otras 22 sí la trajeron.
+**Mi primer diagnóstico estaba equivocado y la evidencia lo tumbó.**
 
-**Primero descarté la hipótesis obvia.** Probé el parseo de la fila con el `&`
-en sus tres formas —literal, como `&amp;`, y dentro de un `href`— y **las tres
-sacan la fecha bien**. El `&` no rompe el parseo. Hay test para las tres.
+Cuando sólo PE&OLES falló, atribuí la culpa al `&` de su clave. Descarté que
+rompiera el *parseo* (probé las tres formas del `&` y ninguna falla) y apunté a
+la URL: yo pedía `PE%26OLES` y BMV publica `PE&OLES`. Arreglé eso.
 
-**Lo que sí estaba mal era la URL.** Yo pedía:
+**No era eso.** En la 2ª corrida, con la URL ya arreglada, PE&OLES **seguía** sin
+fecha — y ahora también MEGA, que no tiene `&` en la clave. Lo que sí importaba
+es lo que notaste: **las 27 que funcionaban eran de Jul o Feb, y las 2 que
+fallaban eran de agosto.**
+
+La causa real: **BMV escribe el mes con abreviatura en inglés** (`28-Aug-2026
+15:06`) y mi tabla `MESES` estaba **sólo en español**.
+
+**Por qué se escondió tanto tiempo.** De las 12 abreviaturas, **8 son idénticas
+en ambos idiomas**:
+
+| Coinciden (funcionaban) | Difieren (fallaban) |
+|---|---|
+| Feb · Mar · May · Jun · Jul · Sep · Oct · Nov | **Jan/Ene · Apr/Abr · Aug/Ago · Dec/Dic** |
+
+El 2T se publica en **julio** y el 4T en **febrero**. Los dos meses de mayor
+volumen de publicación son justamente de los que coinciden, así que el bug sólo
+asomaba con las emisoras rezagadas que publicaron en agosto.
+
+**Y era mucho peor de lo que parecía.** No eran dos emisoras rezagadas:
+**el 1T se publica en abril**, que es uno de los cuatro meses rotos. La corrida
+de abril habría perdido la fecha de **casi todas** las emisoras — y como
+`fecha_publicacion` no se puede derivar del XBRL (D8), ese dato se habría
+perdido para siempre en vez de quedar reparable.
+
+**El arreglo:** la tabla acepta las 12 abreviaturas en inglés **y** las 12 en
+español, con test para las 24.
+
+**Y para que esto no vuelva a costar dos corridas:** cuando la fecha no se puede
+interpretar, la fila ahora guarda el **texto crudo** y la alerta lo cita:
 
 ```
-.../informacionfinanciera/PE%26OLES-5608-CGEN_CAPIT     ← encodeURIComponent
-.../informacionfinanciera/PE&OLES-5608-CGEN_CAPIT       ← lo que publica BMV
+sin_fecha · MEGA · la fila de 2026-T2 trae "28-Aug-2026 15:06" y no supe
+            interpretarlo — revisar la tabla MESES
 ```
 
-El `&` es un carácter **legal** dentro de un segmento de ruta (RFC 3986,
-sub-delim): escaparlo era un error mío. La captura funcionó igual —el zip salió
-bien— así que `%26` llega a *alguna* página válida; mi lectura es que cae en una
-variante que lista el documento sin la columna de fecha.
+Eso convierte un "no trae fecha legible" —que obligó a deducir el patrón
+mirando qué emisoras fallaban— en un diagnóstico de diez segundos.
 
-**No pude comprobarlo** porque no tengo egress a BMV. Pero mandar la URL tal como
-BMV la publica es correcto de todos modos, y ahora hay dos redes por si no era
-eso: la fila sin fecha **genera alerta `sin_fecha`** en vez de un null callado, y
-el siguiente `?run=1` **repara la fila ya guardada** (§2.3) sin re-descargar nada.
+**Sobre el arreglo de la URL:** sigue siendo correcto (`&` es legal en un
+segmento de ruta, RFC 3986) y se queda. Pero **no era la causa**, y lo anoto así
+para que nadie lo lea como confirmado.
 
 ### 5.2 ELEKTRA: no es un bug, se deslistó
 
@@ -326,15 +351,30 @@ la alerta de "revisar" a "confirmado".
 mantiene en `emisoras.json` porque su histórico ya capturado vale, pero no debe
 contarse como cobertura activa.
 
-### 5.3 Qué esperar de la próxima corrida
+### 5.3 Estado tras la 2ª corrida
 
-| | |
-|---|---|
-| Emisoras intentadas | **29** (LASITE sigue sin id) |
-| Nuevas capturas | 6 — GAP, OMA, VOLAR, AC, MEGA, VESTA |
-| Reparaciones | 1 si PE&OLES ahora sí trae fecha; si no, alerta `sin_fecha` |
-| Ya existentes | 23, sin descargar el zip |
-| Alertas esperadas | al menos `deslistada_esperado` de ELEKTRA |
+29/30 capturadas con 9/9 campos, ELEKTRA con su alerta `deslistada_esperado`
+correcta, sólo LASITE saltada por falta de id. Quedaron **dos filas guardadas con
+`fecha_publicacion` nula**: PE&OLES (doc 1579656) y MEGA (doc 1585294).
+
+### 5.4 Qué va a pasar en la próxima corrida
+
+Con la tabla de meses arreglada, la lógica de reparación (§2.3) toma las dos:
+
+| Emisora | doc_id | En la tabla | La página trae | Acción |
+|---|---|---|---|---|
+| PE&OLES | 1579656 | fecha `null` | `23-Jul-2026 14:11` | **reparar** |
+| MEGA | 1585294 | fecha `null` | `28-Aug-2026 15:06` | **reparar** |
+| las otras 27 | — | fecha ya guardada | la misma | `nada` |
+| LASITE | — | — | — | saltada, sigue sin id |
+
+Está probado como función pura (`decidirAccion`) con el estado real de la tabla,
+así que la confirmación no depende de correr contra Neon: **ambas se reparan, y
+ninguna de las 27 buenas se toca.** La reparación no baja el zip — la fecha sale
+de la página que el run ya pidió.
+
+Si alguna **siguiera** sin fecha después de esto, la alerta va a citar el texto
+que no supo leer, y eso ya apunta directo a la tabla `MESES`.
 
 ## 6. Qué me preocupa
 
