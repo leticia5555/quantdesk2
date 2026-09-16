@@ -539,3 +539,29 @@ test('estimarConsumo cobra el rango de precios del benchmark, sin financieros', 
   assert.equal(e.requests.historicos, 1);
   assert.ok(e.datos.dias_precio > 2000);
 });
+
+/* ── simetría del retorno total ─────────────────────────────────── */
+
+test('las distribuciones se extraen de CUALQUIER emisora, no sólo del benchmark', () => {
+  // La simetría del retorno total depende de esto: si el extractor estuviera
+  // atado al benchmark, la canasta se mediría a precio contra un benchmark con
+  // dividendos — exactamente la asimetría que el diseño corrige.
+  const filas = filasDelCenso({
+    WALMEX: { tipo_valor_id: '1', dividendos: [{ fecha_ex: '2025-11-20', monto: 0.58 }] },
+    'NAFTRAC ISHRS': { tipo_valor_id: '1B', distribuciones: { '2025-11-28': { monto: 0.31 } } },
+  });
+  const porEmisora = Object.fromEntries(
+    filas.map((f) => [f.emisora, extraerDistribuciones(f.raw).distribuciones]));
+
+  assert.deepEqual(porEmisora.WALMEX, [{ fecha_ex: '2025-11-20', monto: 0.58 }]);
+  assert.deepEqual(porEmisora[BENCHMARK], [{ fecha_ex: '2025-11-28', monto: 0.31 }]);
+});
+
+test('una emisora sin reparto da lista vacía, no un cero inventado', () => {
+  // La diferencia importa: "no repartió" y "el dato no vino" se ven igual si se
+  // rellena con cero, y lo segundo rompe la simetría en silencio.
+  const [fila] = filasDelCenso({ GCC: { tipo_valor_id: '1', rango_financieros: '2016-2/2026-2' } });
+  const { distribuciones, descartadas } = extraerDistribuciones(fila.raw);
+  assert.deepEqual(distribuciones, []);
+  assert.equal(descartadas, 0);
+});

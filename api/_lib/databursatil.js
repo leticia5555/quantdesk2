@@ -502,14 +502,24 @@ function aplanarHistoricos(raw) {
 
 /* ─────────────────── distribuciones (retorno total) ─────────────────── */
 
-// NAFTRAC reparte, y comparar contra el precio pelón le resta ~3%/año al
-// benchmark — o sea que nos regalaría un exceso que no existe. El benchmark es
-// RETORNO TOTAL: precio + distribuciones reinvertidas en la fecha ex-cupón.
+// LOS DOS LADOS son de retorno total, y por eso esto se extrae para TODAS las
+// emisoras, no sólo para el benchmark:
+//
+//   · NAFTRAC reparte. Compararse contra su precio pelón le resta ~3%/año y nos
+//     regalaría un exceso que no existió.
+//   · Las emisoras de la canasta también reparten. Medir la canasta a precio
+//     contra un benchmark de retorno total sería el MISMO error con el signo
+//     volteado — y por un monto mayor que el margen económico entero.
+//
+// O sea: precio + distribuciones reinvertidas en la fecha EX-CUPÓN, de los dos
+// lados. Es una corrección de MEDICIÓN, no de umbral: iguala cómo se mide cada
+// serie sin tocar contra qué se comparan.
 //
 // Las distribuciones vienen dentro de la respuesta de /v2/emisoras, así que no
-// cuestan un request extra: llegan con el censo. La forma exacta NO está
-// verificada [NO VERIFICADO], así que el extractor es tolerante y el crudo del
-// censo se guarda igual — si esto falla, se re-extrae con un UPDATE.
+// cuestan un request extra: llegan con el censo, para cada emisora. La forma
+// exacta NO está verificada [NO VERIFICADO], así que el extractor es tolerante
+// y el crudo del censo se guarda igual — si esto falla, se re-extrae con un
+// UPDATE.
 const RE_DISTRIBUCION = /distribuc|dividend|cupon|cupón|reparto/i;
 const ALIAS_MONTO = ['monto', 'importe', 'dividendo', 'distribucion', 'distribución', 'valor', 'cantidad', 'amount'];
 const ALIAS_EX = ['fecha_ex', 'ex', 'excupon', 'excupón', 'fecha_excupon', 'fecha', 'date'];
@@ -519,6 +529,10 @@ const ALIAS_EX = ['fecha_ex', 'ex', 'excupon', 'excupón', 'fecha_excupon', 'fec
  * **ex-cupón**: reinvertir en la fecha de pago adelantaría el flujo y metería
  * look-ahead por la puerta de atrás — justo lo que los 65 días cierran del
  * otro lado.
+ *
+ * Los montos se toman **brutos**, como vengan. El ISR sobre dividendos aplica
+ * igual a la canasta y al benchmark, así que a primer orden se cancela en el
+ * exceso; aplicarlo a un solo lado sí sería un sesgo.
  */
 function extraerDistribuciones(raw) {
   const out = [];

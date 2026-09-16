@@ -34,12 +34,13 @@
 --   · bmv_api_budget.mes — el mes en hora de CDMX, no UTC. Los créditos se
 --     reponen el día 1 a las 00:01 CDMX; con el mes UTC, las primeras 6 horas
 --     del día 1 caerían en el mes anterior.
---   · bmv_distribuciones — repartos del benchmark por fecha EX-CUPÓN. Llegan
+--   · bmv_distribuciones — repartos de TODAS las emisoras por fecha EX-CUPÓN. Llegan
 --     dentro de la respuesta de /v2/emisoras, así que no cuestan un request.
---     Existen porque el benchmark es de RETORNO TOTAL: compararse contra el
---     precio pelón de NAFTRAC le resta ~3%/año y nos regalaría un exceso que no
---     existió. La fecha es la EX, no la de pago: reinvertir en la de pago
---     adelantaría el flujo y metería look-ahead por la puerta de atrás.
+--     Existen porque los DOS lados son de RETORNO TOTAL: el benchmark (su
+--     precio pelón resta ~3%/año) y la canasta (medirla a precio contra un
+--     benchmark total sería el mismo error con el signo volteado). La fecha es
+--     la EX, no la de pago: reinvertir en la de pago adelantaría el flujo y
+--     metería look-ahead por la puerta de atrás.
 --   · bmv_meta — el contrato de la API DESCUBIERTO por ?job=probe. Vive en la
 --     DB porque se descubre en prod (el sandbox no alcanza la API) y porque
 --     corregirlo no debe exigir un deploy a media cosecha.

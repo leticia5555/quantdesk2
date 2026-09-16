@@ -71,11 +71,13 @@ const BMV_SCHEMA = [
      primary key (emisora, fecha)
    )`,
 
-  // Distribuciones del benchmark. Llegan DENTRO de la respuesta de
-  // /v2/emisoras, así que no cuestan un request extra.
+  // Distribuciones de TODAS las emisoras, no sólo del benchmark. Llegan DENTRO
+  // de la respuesta de /v2/emisoras, así que no cuestan un request extra.
   //
-  // Existen porque el benchmark es de RETORNO TOTAL: comparar contra el precio
-  // pelón de NAFTRAC le resta ~3%/año y nos regalaría un exceso que no existe.
+  // Existen porque los DOS lados del backtest son de RETORNO TOTAL: el
+  // benchmark (NAFTRAC reparte, y su precio pelón le resta ~3%/año) y la
+  // canasta (las emisoras también reparten, y medirla a precio contra un
+  // benchmark total sería el mismo error con el signo volteado).
   // La fecha es la EX-CUPÓN, no la de pago: reinvertir en la de pago
   // adelantaría el flujo y metería look-ahead por la puerta de atrás.
   `create table if not exists bmv_distribuciones (
@@ -351,7 +353,8 @@ async function gastar(mes, { requests = 1, creditos = 0, headers = null } = {}) 
  * forma más fácil de creerle a un dataset que no lo merece.
  */
 async function cobertura() {
-  const [censo, finPorAnio, finPorEmisora, precios, preciosPorEmisora, benchmark, dist, huecos] = await Promise.all([
+  const [censo, finPorAnio, finPorEmisora, precios, preciosPorEmisora, benchmark,
+         dist, distIcs, icsSinReparto, huecos] = await Promise.all([
     censoResumen(),
     sql(`select anio, count(*)::int as filas, count(distinct emisora)::int as emisoras,
                 count(basicearningslosspershare)::int as con_eps
@@ -373,6 +376,21 @@ async function cobertura() {
     sql(`select count(*)::int as n, min(fecha_ex) as desde, max(fecha_ex) as hasta,
                 coalesce(sum(monto),0)::numeric as suma
            from bmv_distribuciones where emisora = $1`, [BENCHMARK]),
+    // Sin dividendos por emisora, la canasta NO se puede medir a retorno total
+    // y la simetría se rompe justo en los nombres que faltan. Se reporta
+    // cuántas ICS tienen reparto y cuántas no: un hueco aquí subestima a la
+    // canasta contra un benchmark que sí los trae.
+    sql(`select count(distinct d.emisora)::int as emisoras_con_reparto,
+                count(*)::int as filas,
+                min(d.fecha_ex) as desde, max(d.fecha_ex) as hasta
+           from bmv_distribuciones d
+           join bmv_emisoras e on e.emisora = d.emisora and e.tipo_valor_id = '1'`),
+    sql(`select e.emisora
+           from bmv_emisoras e
+           left join (select distinct emisora from bmv_distribuciones) d
+             on d.emisora = e.emisora
+          where e.tipo_valor_id = '1' and d.emisora is null
+          order by 1`),
     // Emisoras con precios pero sin un solo financiero, y al revés: cada lado
     // es una exclusión silenciosa del universo si no se mira.
     sql(`select 'precios_sin_financieros' as caso, p.emisora
@@ -391,6 +409,12 @@ async function cobertura() {
     financieros: { por_anio: finPorAnio, por_emisora: finPorEmisora },
     precios: { total: precios[0] || null, por_emisora: preciosPorEmisora },
     benchmark: { emisora: BENCHMARK, ...(benchmark[0] || {}), distribuciones: dist[0] || null },
+    // Insumo del retorno total de la CANASTA. Se reporta aparte del benchmark
+    // porque un hueco aquí no es un hueco cualquiera: rompe la simetría.
+    distribuciones_ics: {
+      ...(distIcs[0] || {}),
+      ics_sin_reparto: icsSinReparto.map((x) => x.emisora),
+    },
     huecos,
     ledger: await ledgerResumen(),
   };

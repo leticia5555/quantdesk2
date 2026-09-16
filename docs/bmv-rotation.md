@@ -6,8 +6,8 @@
 > momento en que congelarlos significa algo.
 
 > ### Corrección del 16-sep-2026, antes de cualquier resultado
-> Tres cambios al diseño, los tres pedidos cuando la Fase A **todavía no había
-> corrido** y no existía ni un número del backtest:
+> Cuatro cambios al diseño, los cuatro pedidos cuando la Fase A **todavía no
+> había corrido** y no existía ni un número del backtest:
 >
 > 1. El filtro de liquidez pasa de **mediana del universo** a **umbral absoluto**
 >    de 5 millones de pesos (§3.1).
@@ -15,10 +15,17 @@
 >    INCONCLUSO se muda al **universo elegible** (§3.3, §3.4).
 > 3. El benchmark queda **NAFTRAC ISHRS** y es de **retorno total**, no de
 >    precio (§3.3).
+> 4. **Los dos lados** pasan a retorno total: la canasta reinvierte los
+>    dividendos de cada emisora en su fecha ex-cupón, igual que el benchmark
+>    (§3.3). Se reportan **cuatro series** y el veredicto se lee **total vs
+>    total**.
 >
 > La fecha y el orden se anotan a propósito. Un criterio que se mueve **después**
 > de los números deja de ser un criterio, y la única prueba de que éstos no se
 > movieron así es que los números todavía no existen.
+>
+> **Los umbrales de GO no se tocaron en ninguno de los cuatro cambios**: |t| ≥ 2
+> y Sharpe ≥ NAFTRAC + 0.15 siguen donde estaban desde el principio.
 
 Espejo estructural de `/api/rotation-analyze`, el backtest gringo que en agosto
 salió **NO-GO** con t=0.49 y Sharpe por debajo del SPY. Se reutiliza lo que
@@ -67,7 +74,7 @@ publicación**, que es justo lo que DataBursatil no tiene
 | `bmv_emisoras` | El censo. `rango_financieros` → `fin_desde`/`fin_hasta`. |
 | `bmv_financieros` | Emisora × trimestre: crudo completo + 7 campos normalizados + `faltantes`. |
 | `bmv_precios` | Cierre diario e importe operado. |
-| `bmv_distribuciones` | Repartos del benchmark por fecha **ex-cupón**. Llegan con el censo: no cuestan un request. |
+| `bmv_distribuciones` | Repartos de **todas** las emisoras por fecha **ex-cupón** — canasta y benchmark. Llegan con el censo: no cuestan un request. |
 | `bmv_harvest_ledger` | Qué se pidió y cómo salió. La idempotencia vive aquí. |
 | `bmv_api_budget` | Créditos por mes **CDMX**. |
 | `bmv_meta` | El contrato descubierto por el probe. |
@@ -250,24 +257,56 @@ backtest puede confundir con alfa.
 | Costos | **10 bp por lado** sobre el turnover real. |
 | Benchmark | **NAFTRAC ISHRS** (emisora NAFTRAC, serie ISHRS, `tipo_valor_id` **1B**), de **RETORNO TOTAL**. |
 
-#### El benchmark es de retorno total, y eso no es un detalle
+#### Retorno total **de los dos lados**, y eso no es un detalle
 
 NAFTRAC reparte. Compararse contra su **precio pelón** le resta ~3% anual al
 benchmark — o sea que nos **regala** un exceso de ~3%/año que nunca existió. Con
 un umbral económico de Sharpe + 0.15, un regalo de ese tamaño no es ruido: es
 suficiente para **fabricar un GO**.
 
-Así que el benchmark es **precio + distribuciones reinvertidas en la fecha
-ex-cupón**. La fecha **ex**, no la de pago: reinvertir en la de pago adelantaría
-el flujo y metería look-ahead por la puerta de atrás — justo lo que los 65 días
-cierran del otro lado.
+Pero las emisoras de la canasta **también reparten**. Medirla a precio contra un
+benchmark de retorno total sería **el mismo error con el signo volteado**, y por
+un monto del mismo orden: en vez de regalarnos un exceso, nos cobraría uno.
 
-**Se reportan las dos series**, precio y retorno total, para que la diferencia
-quede **medida y no asumida**.
+Así que **los dos lados** son **precio + distribuciones reinvertidas en la fecha
+ex-cupón**: la canasta reinvierte los dividendos de cada emisora en la fecha ex
+de esa emisora, exactamente como el benchmark reinvierte los suyos. La fecha
+**ex**, no la de pago: reinvertir en la de pago adelantaría el flujo y metería
+look-ahead por la puerta de atrás — justo lo que los 65 días cierran del otro
+lado.
+
+Los montos se toman **brutos**, de los dos lados. El ISR sobre dividendos aplica
+igual a la canasta y al benchmark, así que a primer orden se cancela en el
+exceso; aplicarlo a un solo lado sí sería un sesgo.
+
+##### Se reportan CUATRO series
+
+| Serie | Qué deja ver |
+|---|---|
+| **Canasta — total** | **El numerador del veredicto.** |
+| **NAFTRAC — total** | **El denominador del veredicto.** |
+| Canasta — precio | Cuánto aportaron los dividendos de las emisoras. |
+| NAFTRAC — precio | Cuánto aportaron los del benchmark — el ~3%/año que motivó todo esto. |
+
+**El veredicto se lee total vs total.** Las otras dos existen para que la
+asimetría sea **auditable**: con las cuatro a la vista, cualquiera puede medir
+cuánto valían los dividendos de cada lado y comprobar que la corrección no
+fabricó el resultado. Una diferencia que se asume no se puede revisar; una que
+se reporta, sí.
+
+Y de paso queda medido si el ~3%/año era de verdad ~3%: es una cifra que este
+documento venía citando de oído, y con las cuatro series deja de hacer falta
+creerla.
 
 Las distribuciones vienen dentro de la respuesta de `/v2/emisoras`, así que no
-cuestan un request extra: llegan con el censo y se guardan en
-`bmv_distribuciones`.
+cuestan un request extra: llegan con el censo, **para cada emisora**, y se
+guardan en `bmv_distribuciones`.
+
+> **Un hueco aquí no es un hueco cualquiera.** Una ICS sin reparto puede ser que
+> de verdad no reparta, o que el dato no venga — y lo segundo la mide a precio
+> contra un benchmark que sí trae distribuciones, o sea que **rompe la simetría
+> justo donde no se ve**. Por eso `?job=emisoras` y `?job=cobertura` reportan
+> cuántas ICS traen reparto y **listan por nombre las que no**.
 
 **El benchmark no puede colarse a su propia canasta, y la razón es estructural.**
 Es `tipo_valor_id` **1B**; el universo filtra por `= '1'`, igualdad exacta de
@@ -288,6 +327,17 @@ cae si alguien cambia ese filtro por un `LIKE` o un `Number()`.
    > **ese rebalanceo se reporta aparte, con su fecha**. Con la puerta del
    > universo mediano ≥ 16 debería ser raro; si resulta frecuente, es una señal
    > sobre el dato, no un detalle de implementación.
+
+4. **Etiqueta de régimen.** El reporte dice **en qué porcentaje de los
+   rebalanceos mandó el piso** y en cuáles el quintil. Si el piso mandó en
+   **más del 50%** de las fechas, el veredicto se etiqueta
+   **«no probó un quintil»** — pase lo que pase, y aunque los umbrales 2 y 3 se
+   cumplan con holgura.
+
+   Esto no es un cuarto umbral: no puede convertir un GO en NO-GO ni al revés.
+   Es una etiqueta sobre **qué se probó**, y existe porque un GO obtenido con un
+   top 40% no autoriza a operar un quintil — son estrategias distintas con el
+   mismo nombre.
 2. **Señal** — **|t| ≥ 2** del exceso diario vs NAFTRAC, en **calendar-time**.
 3. **Economía** — **Sharpe neto ≥ Sharpe de NAFTRAC + 0.15**.
 
@@ -347,10 +397,15 @@ señal. Si hay alfa en el quintil verdadero, este diseño la **subestima**. O se
 que sesga **en contra** de un GO — el mismo lado que los 65 días. Consecuencia
 práctica: **un GO bajo estas reglas es más creíble, y un NO-GO es más ambiguo.**
 
-Por eso el reporte debe decir, en cada rebalanceo, **cuál de los tres regímenes
-estuvo activo** (piso, quintil puro, techo). Un backtest donde el piso mandó en
-el 90% de las fechas **no probó un quintil: probó un top 40%**, y merece leerse
-así.
+Por eso el reporte dice, en cada rebalanceo, **cuál de los tres regímenes estuvo
+activo** (piso, quintil puro, techo) y **en qué porcentaje de las fechas mandó
+cada uno**. Y por eso existe la etiqueta del §3.4 criterio 4: **si el piso mandó
+en más del 50% de las fechas, el veredicto se etiqueta «no probó un quintil»**,
+pase lo que pase con los umbrales.
+
+Un backtest donde el piso mandó el 90% del tiempo no probó un quintil: probó un
+top 40%. Son estrategias distintas con el mismo nombre, y un GO de una no
+autoriza a operar la otra.
 
 Y sigue siendo cierto lo que ya decía esta sección: el número de ICS que
 devuelva `?job=emisoras` es **lo primero que hay que mirar**, porque con un
@@ -387,34 +442,54 @@ metodológica: es lo que los datos permiten, y conviene no leerlo como otra cosa
 
 ---
 
-## 5. Lo que falta preguntar
+## 5. Por qué esta corrección es pre-registro y no mover la portería
 
-NAFTRAC quedó **confirmado** (§3.3), así que la pregunta abierta es otra — y es
-consecuencia directa de haberlo puesto en retorno total.
+La simetría de retorno total se decidió **después** de que este documento ya
+existía, así que merece justificarse en vez de aparecer sin más. Tres razones,
+y una precisión que conviene hacer para no venderla mejor de lo que es.
 
-### ¿La estrategia también debe ser de retorno total?
+**1. Se hizo antes de ver un solo número.** La Fase A no ha corrido. No hay
+cobertura, no hay serie de precios, no hay un retorno calculado. No existe el
+resultado contra el cual se podría haber sintonizado la regla — y esa es la
+única garantía dura, porque las otras dos dependen de un juicio.
 
-Tal como quedan congelados los criterios, el **benchmark** incluye
-distribuciones y la **canasta no**: se compara precio contra retorno total.
+**2. Corrige una asimetría de MEDICIÓN, no un umbral.** Ésta es la distinción
+que hace la diferencia. Bajar |t| de 2 a 1.7, o el margen de Sharpe de 0.15 a
+0.05, sería mover la portería: cambia **qué tan bien hay que salir** para pasar.
+Lo que se cambió aquí es **cómo se mide cada lado**, para que los dos se midan
+igual. **Los umbrales de GO no se tocaron** — |t| ≥ 2 y Sharpe ≥ NAFTRAC + 0.15
+siguen exactamente donde estaban.
 
-Eso corrige el sesgo señalado —dejar de regalarnos ~3%/año— pero **abre el
-simétrico**: ahora el arrastre de los dividendos de las emisoras juega en contra
-nuestra, y ese arrastre es **más grande que el margen económico entero**
-(Sharpe + 0.15). No es "conservador": es potencialmente **decisivo**, y podría
-convertir un GO real en NO-GO.
+Dicho de otro modo: la regla nueva se puede escribir sin mencionar el resultado
+que produce. Una regla que sólo se justifica por el número que arroja es una
+portería movida; una que se justifica por la definición de la medición, no.
 
-Lo correcto metodológicamente es que **los dos lados sean retorno total**.
-DataBursatil trae dividendos (censo de Fase 1b §1), así que es cosechable con el
-mismo mecanismo que ya existe para las distribuciones del benchmark.
+**3. Es auditable por construcción.** Las cuatro series (§3.3) dejan ver cuánto
+aportaron los dividendos de cada lado. Si la corrección hubiera fabricado el
+resultado, se vería ahí.
 
-**Mi recomendación es hacerlo así.** No lo cambié por mi cuenta porque mover un
-criterio congelado es exactamente lo que este documento existe para impedir,
-aunque el cambio parezca obviamente bueno — y porque la simetría se puede añadir
-igual de limpio antes de correr la Fase B.
+### La precisión, para no venderla mejor de lo que es
 
-Mientras no se decida, el backtest queda **como está congelado**: canasta a
-precio contra benchmark de retorno total, **con esa asimetría escrita en el
-reporte** y la nota de que sesga en contra de la estrategia.
+El argumento de que **el efecto es de signo desconocido a priori** vale para el
+paquete completo —volver total los dos lados desde un mundo donde los dos eran
+precio— y ahí sí depende de algo que no sabemos: si el rendimiento por dividendo
+de la canasta supera al de NAFTRAC. Como la canasta es **value** (EPS/precio
+alto) y los nombres value suelen repartir más que el índice, es plausible que sí,
+pero plausible no es sabido.
+
+**Este cambio en particular, en cambio, sí tiene signo conocido: nos favorece.**
+Sumarle dividendos a la canasta sube su retorno medido, y el benchmark ya los
+traía desde el cambio anterior. Conviene decirlo con todas sus letras en vez de
+apoyarse en el "signo desconocido", porque un cambio que favorece a quien lo
+propone es justo el que merece más escrutinio — y aquí lo que lo sostiene no es
+la ignorancia del signo, sino que **la regla se justifica sola**: dos series que
+se comparan tienen que medirse igual, y eso era cierto antes de saber a quién
+beneficiaba.
+
+La prueba que este documento se aplica: **la asimetría la señalé cuando jugaba
+en contra de la estrategia** (§5 de la versión anterior, con el benchmark ya en
+total y la canasta en precio). Corregirla ahora que juega a favor es la misma
+regla aplicada dos veces, no una excepción conveniente.
 
 ---
 
@@ -422,10 +497,10 @@ reporte** y la nota de que sesga en contra de la estrategia.
 
 | Pieza | Estado |
 |---|---|
-| `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones + presupuesto. |
+| `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 7 jobs, idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **57 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **59 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **La cosecha** | **Sin correr** — este sandbox no alcanza la API. |
 | **Cobertura real** | **Sin reportar** — depende de la cosecha. |

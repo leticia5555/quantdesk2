@@ -560,14 +560,17 @@ async function jobEmisoras() {
 
   const filas = filasDelCenso(r.json);
   // Las distribuciones vienen DENTRO de esta misma respuesta, así que se
-  // extraen aquí: pedirlas después costaría otro request, y el benchmark de
-  // retorno total las necesita.
+  // extraen aquí y para TODAS las emisoras: pedirlas después costaría otro
+  // request, y el retorno total las necesita de los DOS lados — el benchmark
+  // y la canasta.
   let distribuciones = 0;
+  const conReparto = [];
   for (const f of filas) {
     await upsertEmisora(f);
     const d = extraerDistribuciones(f.raw);
     if (d.distribuciones.length) {
       distribuciones += await insertarDistribuciones(f.emisora, d.distribuciones);
+      conReparto.push(f.emisora);
     }
   }
 
@@ -587,6 +590,12 @@ async function jobEmisoras() {
     // nacimiento, así que se reporta aparte y en voz alta.
     ics_sin_rango_financieros: sinRango.map((f) => ({ emisora: f.emisora, motivo: f.fin_motivo })),
     distribuciones_guardadas: distribuciones,
+    // Insumo del retorno total de la CANASTA. Una ICS sin reparto puede ser que
+    // de verdad no reparta, o que el dato no venga — y la diferencia importa:
+    // lo segundo mide esa emisora a precio contra un benchmark que sí trae
+    // distribuciones, o sea que rompe la simetría justo donde no se ve.
+    ics_con_reparto: ics.filter((f) => conReparto.includes(f.emisora)).length,
+    ics_sin_reparto: ics.filter((f) => !conReparto.includes(f.emisora)).map((f) => f.emisora),
     benchmark: bench
       ? {
           emisora: BENCHMARK,
@@ -814,8 +823,24 @@ function coberturaMd(c, est) {
 
   const b = c.benchmark || {};
   L.push('## Benchmark', '', b.dias
-    ? `NAFTRAC: **${b.dias}** días (${b.desde} → ${b.hasta}).`
-    : '**NAFTRAC SIN DATOS.** El backtest no tiene benchmark. No sustituir por el índice IPC sin preguntar: el IPC no es invertible y eso cambia el criterio, no sólo el dato.', '');
+    ? `${b.emisora || 'NAFTRAC ISHRS'}: **${b.dias}** días (${b.desde} → ${b.hasta}).`
+    : '**BENCHMARK SIN DATOS.** El backtest no tiene contra qué medirse. No sustituir por el índice IPC sin preguntar: el IPC no es invertible y eso cambia el criterio, no sólo el dato.', '');
+  const bd = b.distribuciones || {};
+  L.push(bd.n
+    ? `Distribuciones del benchmark: **${bd.n}** repartos (${bd.desde} → ${bd.hasta}).`
+    : '**El benchmark no trae distribuciones.** Sin ellas sólo se puede calcular la serie de PRECIO, y compararse contra el precio pelón de NAFTRAC le resta ~3%/año: nos regalaría un exceso que no existió.', '');
+
+  // La simetría del retorno total se rompe por el lado de la canasta, y se
+  // rompe en silencio: una emisora sin reparto se mide a precio contra un
+  // benchmark que sí lo trae.
+  const di = c.distribuciones_ics || {};
+  L.push('## Retorno total de la canasta', '',
+    `ICS con reparto: **${di.emisoras_con_reparto || 0}** · repartos: **${di.filas || 0}** · rango: ${di.desde || 'n/d'} → ${di.hasta || 'n/d'}`, '');
+  const sin = di.ics_sin_reparto || [];
+  if (sin.length) {
+    L.push(`**ICS sin ningún reparto (${sin.length}):** ${sin.join(', ')}`, '',
+      'Puede ser que de verdad no repartan, o que el dato no venga. La diferencia importa: lo segundo las mide a PRECIO contra un benchmark de retorno total, que es exactamente la asimetría que este diseño corrige.', '');
+  }
 
   L.push('## Financieros por emisora', '', '| Emisora | Trimestres | Primero | Último | Con EPS |', '|---|---:|---|---|---:|');
   for (const r of c.financieros.por_emisora) L.push(`| ${r.emisora} | ${r.trimestres} | ${r.primero} | ${r.ultimo} | ${r.con_eps} |`);
