@@ -694,6 +694,113 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B21 · EL PRESUPUESTO DE INVESTIGACIÓN: tres techos, ninguno redondo
+
+`api/_lib/arena-tools.js` · `api/_lib/arena-tool-loop.js` ·
+tests en `tests/arena-presupuesto-investigacion.test.mjs`
+
+Eran **8 llamadas y punto**. Ocho no sale del costo, ni del reloj, ni del
+contexto: es un número redondo, y cortaba la investigación a la mitad de una
+tesis con presupuesto de sobra.
+
+Ahora son **tres techos simultáneos** y gana el que se agote primero:
+
+| techo | valor | qué mide |
+|---|---|---|
+| llamadas | **20** (`ARENA_TOOLS_MAX`) | el tope grosero: veinte no es investigar, es un bucle |
+| contexto | **30K tokens** (`ARENA_TOOL_CONTEXT_TOKENS`) | el que de verdad aprieta |
+| reloj | **derivado** (`ARENA_TOOL_LOOP_MS`) | 120s en arena-run, 210s en la sombra |
+
+**Los tres cortan igual: se cierra con lo que haya. Ninguno aborta.** Lo que
+cambia entre ellos es el **nombre** — `stopped_by` es `call_budget`,
+`context_budget`, `time_budget` o `max_turns`, y el mensaje de cierre dice cuál
+se agotó. "Se acabó el presupuesto" sin decir cuál de los tres no dice nada, y
+los tres se arreglan distinto.
+
+`limites` viaja al journal con **los tres al lado** y su porcentaje de consumo:
+saber cuál ganó no alcanza, hace falta ver si ganó por poco o por lejos. Un
+corte por contexto con las llamadas en 6/20 dice que el techo de llamadas está
+de adorno y que lo que hay que mover es el otro.
+
+### El reloj se deriva, y los 240s no caben
+
+Era una constante de 120s escrita a mano. Un número fijo no sigue al deadline:
+si alguien lo sube, el loop no se entera y se corta igual aunque sobre tiempo.
+
+```
+arena-run:  deadline 270s − scan 90s − cierre 45s − margen 15s = 120s
+sombra:     deadline 270s            − cierre 45s − margen 15s = 210s
+```
+
+(Que la fórmula reproduzca exactamente los 120s que antes estaban escritos a
+mano es la señal de que deriva lo mismo, no algo nuevo.)
+
+La sombra tiene más reloj porque el contrato nuevo **no tiene fase de scan**: es
+una sola cadena que arranca directo en el loop. Usar el default le regalaría 90
+segundos de investigación por una fase que no corre.
+
+**Los 240s pedidos no caben**, y la resta es corta:
+
+```
+  función  300s   cap del plan Pro, en vercel.json
+− margen    30s   para que una corrida que se pasa alcance a ESCRIBIR que se pasó
+= deadline 270s
+− cierre    45s   la llamada que convierte una corrida perdida en una decisión
+− margen    15s   Alpaca + journal
+= loop     210s   ← el máximo honesto en la sombra
+```
+
+Los 30s que faltan solo salen de comerse uno de los dos márgenes, o sea de pagar
+un número redondo con la evidencia de los fallos: un timeout que no se journalea
+es indistinguible de una corrida que nunca ocurrió. Hay un test que deja la
+resta escrita para que 240 no se cuele después sin ella.
+
+### La compactación, que es lo que hace real el techo de 20
+
+El payload crece de forma **cuadrática**: cada resultado se queda en la
+conversación y vuelve a viajar en todas las vueltas siguientes. La vuelta 3 de
+qwen ya pesaba 36 KB **con 8 llamadas**.
+
+Los resultados de vueltas anteriores se resumen a **cabecera + primeras filas**.
+Las listas vienen ordenadas por relevancia (el screener por magnitud del
+movimiento, las noticias por fecha), así que las últimas filas son, por
+construcción, las menos informativas. Lo que se acaba de traer queda **entero**:
+el modelo está razonando sobre eso ahora mismo, y compactarlo sería cobrarle la
+llamada sin darle el resultado.
+
+Medido con resultados del tamaño real del tope (`ficha`, `noticias` a ~1.5K
+tokens):
+
+| | llamadas | pico de contexto | qué cortó |
+|---|---|---|---|
+| sin compactar | 20/20 | **30.387 tok** | `context_budget` |
+| compactando | 20/20 | **7.887 tok** | `call_budget` |
+
+Sin compactación el techo de contexto corta primero y las últimas llamadas no se
+podrían usar nunca — el techo de 20 sería decorativo. Y el pico es lo que se
+paga **en cada vuelta**, así que 3,9× menos contexto es también 3,9× menos
+tokens de entrada.
+
+**La regla que no se negocia**: el modelo tiene que **saber** que se compactó.
+Cada resultado compactado lleva `[COMPACTADO]`, cuántas líneas se omitieron, y
+que **no significa que no existan**. Un recorte en silencio hace que razone
+sobre una lista que cree completa y después afirme "no hay ningún nombre que
+cumpla" — el mismo error que `truncateRows` ya evita una capa más arriba.
+
+Y se compacta **solo lo que se re-envía**. `executor.sequence` —el registro que
+alimenta el journal y el replay— queda entero: compactar la evidencia sería
+perder de qué miró el modelo para decidir. Hay un test que lo verifica.
+
+### El cupo agotado ya no gasta vueltas
+
+Con 8 llamadas casi no se notaba. Con 20 sí: un modelo que quemaba su cupo en la
+vuelta 6 se comía las 16 vueltas restantes pidiendo herramientas que solo podían
+devolverle "presupuesto agotado" — y **cada una de esas vueltas es una llamada
+al LLM con la conversación entera adentro**. Se pagaba el contexto completo
+dieciséis veces para cosechar dieciséis rechazos.
+
+Ahora, sin cupo no hay nada que investigar: se va derecho al cierre.
+
 ## B19 · RESUELTO: los abortos eran HTTP 200 CON EL CUERPO VACÍO
 
 El trace de qwen del 2026-09-16 cerró el caso que llevaba cuatro sombras y tres

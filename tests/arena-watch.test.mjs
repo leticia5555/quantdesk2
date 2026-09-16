@@ -684,8 +684,8 @@ const BASE_URL = 'http://qd.test';
   ok(gastoDelVigilante === llmCalls.length,
     'todo el gasto del tick es de la ronda fija: el camino del vigilante (disparadores + red determinista) no llamó a ningún modelo por su cuenta',
     `${llmCalls.length} llamadas, ${r.fixed_runs.length} corridas de ronda`);
-  ok(r.budget && r.budget.tier === 0 && r.budget.tools_max === 8,
-    'y el tick reporta bajo qué escalón de presupuesto corrió (B9): sin gasto previo, escalón 0 y 8 herramientas',
+  ok(r.budget && r.budget.tier === 0 && r.budget.tools_max === 20,
+    'y el tick reporta bajo qué escalón de presupuesto corrió (B9): sin gasto previo, escalón 0 y el cupo completo de llamadas',
     JSON.stringify(r.budget));
 }
 

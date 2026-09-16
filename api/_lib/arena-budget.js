@@ -40,6 +40,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql } from './db.js';
+import { TOOL_BUDGET } from './arena-tools.js';
 import { marketDay } from './arena-buffet-cache.js';
 
 export const DAILY_BUDGET_USD = (() => {
@@ -118,12 +119,12 @@ export function tierPolicy(tier) {
       own_book_triggers: true,
       risk_net: true,
       label: 'sigue decidiendo, más barato: 3 herramientas y effort bajo',
-      cut: 'herramientas de 8 a 3, effort de medium a low',
+      cut: `herramientas de ${TOOL_BUDGET.fixed_round} a 3, effort de medium a low`,
     };
   }
   return {
     tier: 0,
-    tools_max: 8,
+    tools_max: TOOL_BUDGET.fixed_round,
     effort: null,                 // null = el default del registry
     fixed_rounds: true,
     buffet_triggers: true,

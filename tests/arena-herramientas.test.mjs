@@ -25,7 +25,7 @@
 
 import {
   createToolExecutor, clampArgs, cacheKey, truncateRows, toolsForProvider,
-  TOOL_DEFS, TOOL_BUDGET, RESULT_TOKEN_CAP,
+  TOOL_DEFS, TOOL_BUDGET, RESULT_TOKEN_CAP, TOOL_CONTEXT_TOKENS,
 } from '../api/_lib/arena-tools.js';
 import { runToolLoop, buildToolTurn, toolUseBlocks, MAX_TURNS } from '../api/_lib/arena-tool-loop.js';
 
@@ -115,8 +115,13 @@ console.log('\n── 1) el tope es del HARNESS: la llamada 9 no se ejecuta ─�
   ok(/Decidí con lo que ya tenés/.test(r4.text), 'con la instrucción de qué hacer ahora');
   ok(ex.sequence[3].refused === 'budget_exhausted',
     'el intento rechazado se journalea igual: es parte de CÓMO investigó', ex.sequence[3].refused);
-  ok(TOOL_BUDGET.fixed_round === 8 && TOOL_BUDGET.triggered === 3,
-    'los dos presupuestos declarados: 8 en ronda fija, 3 por disparador');
+  // Era 8. Ocho es un número redondo, no una medida: no sale del costo, ni del
+  // reloj, ni del contexto. Ahora la ronda fija tiene TRES techos simultáneos
+  // (20 llamadas · 30K de contexto · el reloj) y gana el que se agote primero.
+  ok(TOOL_BUDGET.fixed_round === 20 && TOOL_BUDGET.triggered === 3,
+    'los dos presupuestos de llamadas: 20 en ronda fija, 3 por disparador', String(TOOL_BUDGET.fixed_round));
+  ok(TOOL_CONTEXT_TOKENS === 30000,
+    'y el techo de CONTEXTO acumulado, que es el que de verdad aprieta', String(TOOL_CONTEXT_TOKENS));
 }
 
 console.log('\n── una herramienta que no existe tampoco tumba la corrida ──');
@@ -287,7 +292,15 @@ console.log('\n── un modelo en BUCLE se corta, con una vuelta final para cer
   };
   const ex = mkExec({ budget: 2 });
   const r = await runToolLoop({ agent, system: 'S', messages: [{ role: 'user', content: 'U' }], executor: ex, call, maxTurns: 4 });
-  ok(r.stopped_by === 'max_turns', 'se corta por vueltas', r.stopped_by);
+  // Con cupo 2 y 4 vueltas, el que se agota primero es el CUPO. Antes esto
+  // decía `max_turns` porque el loop seguía gastando vueltas en rechazos hasta
+  // topar con el tope de vueltas; ahora corta en cuanto no queda nada que
+  // investigar. Con 20 llamadas la diferencia son ~16 llamadas al LLM con la
+  // conversación entera adentro, para recibir 16 "presupuesto agotado".
+  ok(r.stopped_by === 'call_budget', 'se corta por el CUPO DE LLAMADAS, que es el que se agotó', r.stopped_by);
+  ok(r.turns < 4, 'y no gasta las vueltas que sobraban pidiendo lo que ya no se puede ejecutar', String(r.turns));
+  ok(r.limites && r.limites.llamadas.usadas === 2 && r.limites.llamadas.tope === 2,
+    'el bloque `limites` publica los tres techos con su consumo', JSON.stringify(r.limites && r.limites.llamadas));
   ok(sinHerramientas === 1, 'y hay UNA vuelta final con las herramientas PROHIBIDAS para que pueda cerrar', String(sinHerramientas));
   const cierre = payloads[payloads.length - 1];
   ok(cierre.tools === true,
@@ -300,7 +313,9 @@ console.log('\n── un modelo en BUCLE se corta, con una vuelta final para cer
     'las vueltas anteriores van con herramientas y SIN restricción');
   ok(/forzado/.test(r.llm.data.content[0].text),
     'que devuelve el JSON — sin esa vuelta, un modelo en bucle daría una corrida abortada teniendo todo lo que necesitaba');
-  ok(/Se acabó el presupuesto de investigación/.test(r.messages[r.messages.length - 1].content), 'y se le dice por qué');
+  ok(/Se acabó el presupuesto de LLAMADAS/.test(r.messages[r.messages.length - 1].content),
+    'y se le dice CUÁL de los tres techos se acabó, no un "se acabó el presupuesto" genérico',
+    r.messages[r.messages.length - 1].content.slice(0, 60));
   // ESTE ASSERT DOCUMENTABA EL BUG. Pedía `used === 4` con un techo de 2,
   // porque `used` contaba también los rechazos — y por eso en producción se vio
   // `tools_used: 15` con `tools_max: 8` y pareció que el techo no se aplicaba.
@@ -309,10 +324,40 @@ console.log('\n── un modelo en BUCLE se corta, con una vuelta final para cer
   //   `intentos` = todo lo que el modelo pidió, rechazos incluidos.
   ok(ex.used === 2,
     'las EJECUTADAS nunca pasan del techo', String(ex.used));
-  ok(ex.intentos === 4,
-    'pero los INTENTOS se cuentan todos: un modelo que sigue pidiendo después de quedarse sin cupo está diciendo algo', String(ex.intentos));
-  ok(ex.sequence.filter((s) => s.refused).length === 2,
-    'y los de más allá del presupuesto quedan journaleados como rechazados', String(ex.sequence.filter((s) => s.refused).length));
+  // Este assert pedía `intentos === 4` y `refused === 2`, y los dos venían de que
+  // el loop SEGUÍA dando vueltas con el cupo agotado: cada vuelta extra era una
+  // llamada al LLM con la conversación entera para cosechar un rechazo. Ahora
+  // corta en cuanto no queda cupo, así que esos intentos de más ya no ocurren —
+  // el contador sigue existiendo (un modelo que pide 3 en una vuelta con 1 de
+  // cupo genera 2 rechazos reales), pero dejó de contar vueltas desperdiciadas.
+  ok(ex.intentos === 2,
+    'y los INTENTOS ya no incluyen vueltas que el loop nunca debió gastar', String(ex.intentos));
+  ok(ex.sequence.filter((s) => s.refused).length === 0,
+    'sin vueltas de más, no hay rechazos por cupo que journalear en este caso', String(ex.sequence.filter((s) => s.refused).length));
+
+  // El rechazo por cupo SIGUE existiendo donde de verdad ocurre: varias
+  // herramientas pedidas en la MISMA vuelta con cupo para menos.
+  const enLaMismaVuelta = mkExec({ budget: 1 });
+  const tres = await Promise.all(['a', 'b', 'c'].map(() => enLaMismaVuelta.call('screener', {})));
+  ok(enLaMismaVuelta.used === 1 && tres.filter((x) => x.budget_exhausted).length === 2,
+    'tres pedidas en una vuelta con cupo 1: una corre, dos se rechazan y se journalean',
+    JSON.stringify([enLaMismaVuelta.used, enLaMismaVuelta.intentos]));
+
+  // Y el corte por VUELTAS sigue existiendo, con cupo de sobra. Contadores
+  // propios: compartirlos con el bloque de arriba mezclaría dos corridas.
+  {
+    let conTools = 0;
+    const call2 = async ({ toolChoice }) => {
+      const prohibido = toolChoice === 'none' || (toolChoice && toolChoice.type === 'none');
+      if (!prohibido) { conTools++; return { status: 200, data: { content: [{ type: 'tool_use', id: 'u' + conTools, name: 'screener', input: {} }] } }; }
+      return { status: 200, data: { content: [{ type: 'text', text: '{"plan":"forzado"}' }] } };
+    };
+    const ex2 = mkExec({ budget: 50 });
+    const r2 = await runToolLoop({ agent, system: 'S', messages: [{ role: 'user', content: 'U' }], executor: ex2, call: call2, maxTurns: 3 });
+    ok(r2.stopped_by === 'max_turns', 'con cupo de sobra, el que corta es el tope de VUELTAS', r2.stopped_by);
+    ok(/Se acabó el presupuesto de investigación/.test(r2.messages[r2.messages.length - 1].content),
+      'y ese cierre usa su propio mensaje');
+  }
 
   // LA CARRERA: el loop ejecuta las herramientas de una vuelta EN PARALELO, así
   // que el chequeo y el incremento tienen que pasar en el MISMO tick. Con los
@@ -351,7 +396,12 @@ console.log('\n── la secuencia journaleada ──');
 
 console.log('\n── constantes declaradas ──');
 ok(RESULT_TOKEN_CAP === 1500, 'cada resultado se corta a ~1.5K tokens', String(RESULT_TOKEN_CAP));
-ok(MAX_TURNS === 10, 'y el loop tiene un tope de vueltas propio, distinto del de llamadas', String(MAX_TURNS));
+// Subió de 10 a 22 con el cupo de llamadas: con 20 llamadas y modelos que piden
+// de a una, un tope de 10 vueltas habría sido el techo REAL — o sea, el mismo
+// número redondo de antes con otro nombre.
+ok(MAX_TURNS === 22, 'y el loop tiene un tope de vueltas propio, por encima del de llamadas', String(MAX_TURNS));
+ok(MAX_TURNS > TOOL_BUDGET.fixed_round,
+  'el tope de vueltas NO puede ser el techo efectivo: tiene que quedar por encima del cupo de llamadas');
 
 // ═══════════════════════════════════════════════════════════════
 // TRES FILTROS SE DECLARABAN AL MODELO Y NO EXISTÍAN.

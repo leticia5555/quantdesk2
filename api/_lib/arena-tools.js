@@ -46,16 +46,75 @@ import { readDayCache, writeDayCache, marketDay } from './arena-buffet-cache.js'
 
 // Tope DURO de llamadas por corrida. Las rondas fijas tienen 8; una corrida por
 // disparador tiene 3 (está acotada a un nombre — no necesita explorar).
+// ── EL PRESUPUESTO DE INVESTIGACIÓN ──────────────────────────────────
+// Eran 8 llamadas y punto. Ocho es un número redondo, no una medida de nada: no
+// sale del costo, ni del reloj, ni del contexto. Cortar la investigación ahí
+// era cortarla por la mitad de una tesis con presupuesto de sobra.
+//
+// Ahora son TRES techos simultáneos y gana el que se agote primero:
+//
+//   1. LLAMADAS (20)  — el tope grosero. Un modelo que pide veinte herramientas
+//                       no está investigando, está en bucle.
+//   2. CONTEXTO (30K) — el que de verdad aprieta. El payload crece de forma
+//                       CUADRÁTICA: cada resultado se queda en la conversación y
+//                       vuelve a viajar en cada vuelta siguiente. La vuelta 3 de
+//                       qwen ya pesaba 36 KB con 8 llamadas.
+//   3. RELOJ          — vive en el loop (ver _lib/arena-tool-loop.js), porque es
+//                       el único que depende de cuánto tardó cada llamada.
+//
+// Los tres cortan IGUAL: se cierra con lo que haya. Ninguno aborta.
 export const TOOL_BUDGET = {
-  fixed_round: Number(process.env.ARENA_TOOLS_MAX) || 8,
+  fixed_round: Number(process.env.ARENA_TOOLS_MAX) || 20,
   triggered: Number(process.env.ARENA_TOOLS_MAX_TRIGGER) || 3,
 };
+
+// Techo de CONTEXTO ACUMULADO de la conversación del loop, en tokens estimados.
+// Es el techo que más manda de los tres: con resultados de ~1.5K tokens, veinte
+// llamadas sin compactar serían ~30K solo de resultados, y cada uno viajando en
+// todas las vueltas siguientes.
+export const TOOL_CONTEXT_TOKENS = Number(process.env.ARENA_TOOL_CONTEXT_TOKENS) || 30000;
 
 // Techo de cada resultado. ~1.5K tokens ≈ 6.000 caracteres.
 export const RESULT_TOKEN_CAP = Number(process.env.ARENA_TOOL_RESULT_TOKENS) || 1500;
 const RESULT_CHAR_CAP = RESULT_TOKEN_CAP * 4;
 
 export const estimateTokens = (s) => Math.ceil(String(s || '').length / 4);
+
+// ── LA COMPACTACIÓN ──────────────────────────────────────────────────
+// El resultado de una herramienta de la vuelta 1 vuelve a viajar en las vueltas
+// 2, 3, 4… Con veinte llamadas eso es crecimiento cuadrático, y el contexto se
+// agota mucho antes que las llamadas.
+//
+// Se compactan los resultados VIEJOS: cabecera + las primeras filas, que es
+// donde está lo que el modelo usó para decidir (las listas vienen ORDENADAS por
+// relevancia — el screener por magnitud del movimiento, las noticias por
+// fecha). Las últimas filas de una lista ordenada son, por construcción, las
+// menos informativas.
+//
+// LA REGLA QUE NO SE NEGOCIA: el modelo tiene que SABER que se compactó. Un
+// resultado recortado en silencio hace que razone sobre una lista que cree
+// completa y después afirme "no hay ningún nombre que cumpla" — el mismo error
+// que `truncateRows` ya evita para el recorte por tokens, una capa más arriba.
+//
+// Y lo que se compacta es SOLO lo que se re-envía. El resultado completo sigue
+// entero en `executor.sequence`, que es lo que alimenta el journal y el replay:
+// compactar el registro sería perder la evidencia de qué miró el modelo.
+export const COMPACT_MARCA = '[COMPACTADO]';
+
+export function compactarResultado(text, { lineas = 3 } = {}) {
+  const s = String(text || '');
+  // Idempotente: el loop compacta en cada vuelta y no puede ir comiéndose el
+  // resultado de a poco hasta dejar solo la cabecera.
+  if (s.includes(COMPACT_MARCA)) return s;
+  const filas = s.split('\n');
+  if (filas.length <= lineas + 1) return s;   // nada que ganar
+  const omitidas = filas.length - 1 - lineas;
+  return [
+    filas[0],
+    ...filas.slice(1, 1 + lineas),
+    `${COMPACT_MARCA} ${omitidas} línea(s) más de este resultado se omitieron para que la conversación entrara en el presupuesto de contexto. NO significa que no existan: se mostraron completas cuando pediste la herramienta y quedaron enteras en el registro de la corrida. Si necesitás esas filas para decidir, volvé a pedirla con un filtro más angosto.`,
+  ].join('\n');
+}
 
 // ── LAS DEFINICIONES, en forma NEUTRA ────────────────────────────────
 // Una sola definición por herramienta; cada proveedor la traduce a su dialecto
