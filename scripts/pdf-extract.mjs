@@ -190,12 +190,32 @@ const SENALES = [
  * dice en pantalla — nunca falla en silencio. Compruébalo con --dry-run antes
  * de gastar tokens.
  */
+/*
+ * Secciones que se piden, y SÓLO ésas.
+ *
+ * El índice real del formato BMV trae ~14 secciones que empiezan con 7 u 8
+ * (800001, 800003, 800005, 800007, 800200, 800500, 800600, 813000...). Pedirlas
+ * todas con rangos completos da 48 páginas y ~$0.071 por PDF, que rompe el
+ * criterio de $0.05. Casi todas son notas de texto que no contienen ninguno de
+ * los 9 campos.
+ *
+ * Con estas cuatro alcanza para los 9 campos:
+ *   210000 -> activos, pasivos, capital, efectivo (y los subtotales extra)
+ *   310000/320000 -> ingresos, utilidad controladora (por función o naturaleza)
+ *   70000x -> acciones en circulación (datos informativos)
+ *   800100 -> desglose de créditos, que es la única fuente de deuda comparable
+ * La fecha sale de p.1/p.2, que van siempre.
+ */
 const SECCIONES_BMV = [
-  [/^21\d{4}$/, 'situación financiera'],
-  [/^3[12]\d{4}$/, 'resultados'],
-  [/^7\d{5}$/, 'datos informativos'],
-  [/^8\d{5}$/, 'comentarios y notas'],
+  [/^210000$/, 'situación financiera'],
+  [/^3[12]0000$/, 'resultados'],
+  [/^70000\d$/, 'datos informativos'],
+  [/^800100$/, 'desglose de créditos'],
 ];
+
+/* Tope duro de páginas por PDF. Si el índice viniera raro y se pasara, se
+ * recorta y se avisa, en vez de mandar un prompt gigante en silencio. */
+const MAX_PAGINAS_TOTAL = 24;
 
 /* Máximo de páginas que se toma de una sección. Acota el costo si el índice
  * viene raro o una sección es enorme (notas al pie de 40 páginas). */
@@ -255,11 +275,11 @@ function elegirPaginas(pdf, n, maxPaginas) {
   if (rangos) {
     const elegidas = new Set([1, 2]); // portada + comentarios/fecha
     for (const r of rangos) for (let pg = r.ini; pg <= r.fin; pg++) elegidas.add(pg);
-    const lista = [...elegidas]
-      .filter((x) => x >= 1 && x <= paginas.length)
-      .sort((a, b) => a - b)
-      .map((x) => paginas[x - 1]);
-    return Object.assign(lista, { via: 'índice de secciones BMV', rangos });
+    let nums = [...elegidas].filter((x) => x >= 1 && x <= paginas.length).sort((a, b) => a - b);
+    let recortado = 0;
+    if (nums.length > MAX_PAGINAS_TOTAL) { recortado = nums.length - MAX_PAGINAS_TOTAL; nums = nums.slice(0, MAX_PAGINAS_TOTAL); }
+    const lista = nums.map((x) => paginas[x - 1]);
+    return Object.assign(lista, { via: 'índice de secciones BMV', rangos, recortado });
   }
 
   // (b) Si no, puntaje por palabras clave (comunicados).
@@ -579,6 +599,9 @@ async function procesar(pdf, opts) {
   if (opts.raw) { mkdirSync(OUT_DIR, { recursive: true }); writeFileSync(join(OUT_DIR, nombre + '.prompt.txt'), prompt); }
 
   console.log(`\n[${nombre}] páginas: ${paginas.map((x) => x.p).join(', ')}  vía ${paginas.via}  (~${Math.round(prompt.length / 4)} tok)`);
+  if (paginas.recortado) {
+    console.log(`     OJO: se recortaron ${paginas.recortado} páginas por el tope de ${MAX_PAGINAS_TOTAL}.`);
+  }
   if (paginas.rangos) {
     for (const r of paginas.rangos) {
       console.log(`     [${r.codigo}] ${r.etiqueta}: p${r.ini}${r.fin > r.ini ? `-${r.fin}` : ''}${r.truncado ? `  (truncada a ${MAX_PAGINAS_POR_SECCION} pp.)` : ''}`);
