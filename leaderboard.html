@@ -71,6 +71,12 @@ section{padding:20px 0 4px;}
 .tag.china{color:var(--red);border:1px solid rgba(var(--red-rgb),.3);background:rgba(var(--red-rgb),.06);}
 .tag.control{color:var(--text2);border:1px solid var(--border2);background:var(--bg2);}
 .tag.halt{color:#fca5a5;border:1px solid #7f1d1d;background:#1e0f14;}
+.tag.bench{color:var(--text2);border:1px solid var(--border2);background:var(--bg2);letter-spacing:.1em;}
+/* El benchmark no compite: raya punteada y sin barra de color. Se ve que es
+   otra clase de fila sin sacarla del orden por equity. */
+.row.bench{border-style:dashed;background:transparent;}
+.row.bench::before{background:transparent;}
+.row.bench .rank{font-size:11px;letter-spacing:.06em;color:var(--text3);min-width:30px;}
 .req{text-align:right;flex:none;}
 .req .eq{font-family:var(--mono);font-size:17px;font-weight:700;}
 .req .ch{font-family:var(--mono);font-size:11px;font-weight:700;margin-top:2px;}
@@ -131,7 +137,10 @@ footer{margin-top:36px;padding-top:20px;border-top:1px solid var(--border);}
       <strong>Experimento, no asesoría.</strong> Cada agente es un LLM manejando una cuenta Alpaca paper
       (dinero simulado, cotizaciones reales) sin validación estadística. El razonamiento de cada decisión se
       publica verbatim. El <b>control</b> es el mismo modelo del líder pero en otra cuenta: es el piso de ruido
-      — sin él, ningún delta entre modelos significaría nada. Nada de esto es recomendación de inversión.
+      — sin él, ningún delta entre modelos significaría nada. La fila <b>S&amp;P 500 · SPY</b> es un
+      <b>benchmark pasivo</b>: $100,000 comprados el día del reset y nunca tocados, sin modelo ni herramientas.
+      Aparece ordenada por equity pero NO compite ni toma puesto — está para contestar si los siete le ganan al
+      índice. No incluye dividendos, así que subestima levemente al S&amp;P. Nada de esto es recomendación de inversión.
     </p>
     <div class="ctas">
       <a class="cta alt" href="/hoy">El mercado de hoy →</a>
@@ -183,6 +192,32 @@ function tradesHtml(a){
     return '<span class="trade '+side+filled+'"><b>'+esc(x.symbol||'?')+'</b> '+esc(side)+st+'</span>';
   }).join('')+'</div>';
 }
+// La fila del índice. NO lleva número: el orden por equity la pone donde le
+// toca, pero un puesto la volvería competidora — y no decidió nada.
+function benchHtml(b){
+  if(!b) return '';
+  const acct=b.account;
+  const tag='<span class="tag bench">benchmark</span>';
+  if(!acct){
+    const why = b.detalle || b.precio_error || b.error || 'todavía no se abrió.';
+    return '<div class="row bench"><div class="rtop"><div class="rank">—</div><div class="rid">'+
+      '<div class="rname">'+esc(b.name)+' '+tag+'</div><div class="rmodel">'+esc(b.model_label||'')+'</div></div></div>'+
+      '<div class="rplan" style="color:var(--text3)">'+esc(why)+'</div></div>';
+  }
+  const ret=b.return_pct;
+  const retHtml = ret!=null ? '<div class="ch '+pctClass(ret)+'">'+pctStr(ret)+' total</div>' : '';
+  return '<div class="row bench">'+
+    '<div class="rtop">'+
+      '<div class="rank">índice</div>'+
+      '<div class="rid"><div class="rname">'+esc(b.name)+' '+tag+'</div>'+
+        '<div class="rmodel">'+esc(b.model_label||'')+'</div></div>'+
+      '<div class="req"><div class="eq">'+money(acct.equity)+'</div>'+retHtml+'</div>'+
+    '</div>'+
+    '<div class="rplan" style="color:var(--text3)">'+esc(b.nota||'')+'</div>'+
+    '<div class="rfoot"><span>desde '+esc(String(b.opened_at||'').slice(0,10))+'</span>'+
+      '<span>'+(b.shares!=null?esc(String(b.shares))+' acciones a $'+esc(String(b.entry)):'')+'</span></div>'+
+  '</div>';
+}
 function rowHtml(a){
   const acct=a.account;
   const rankCls = a.rank>=1&&a.rank<=3 ? (' r'+a.rank) : '';
@@ -197,7 +232,9 @@ function rowHtml(a){
   const ret = a.return_pct;
   const day = a.day_change_pct;
   const retHtml = ret!=null ? '<div class="ch '+pctClass(ret)+'">'+pctStr(ret)+' total</div>' : '';
-  const dayHtml = day!=null ? '<div class="pos-chip">día '+pctStr(day)+'</div>' : '';
+  const exc = a.exceso_pp;
+  const excHtml = exc!=null ? ' · vs S&amp;P '+pctStr(exc) : '';
+  const dayHtml = day!=null||exc!=null ? '<div class="pos-chip">'+(day!=null?'día '+pctStr(day):'')+excHtml+'</div>' : '';
   const npos = Array.isArray(a.positions)?a.positions.length:0;
   const plan = a.journal&&a.journal.plan
     ? '<div class="rplan" id="plan-'+esc(a.id)+'">'+esc(a.journal.plan)+'</div><span class="rmore" data-plan="'+esc(a.id)+'">ver plan completo ↓</span>'
@@ -222,13 +259,26 @@ async function load(){
     return;
   }
   const live=data.agents.filter(a=>a.account).length;
-  $('rankSub').textContent = data.agents.length+' modelos';
+  const bench=data.benchmark||null;
+  $('rankSub').textContent = data.agents.length+' modelos'+(bench&&bench.abierto?' + índice':'');
+  const benchChip = bench&&bench.abierto&&bench.return_pct!=null
+    ? '<span class="chip">S&amp;P <b class="'+pctClass(bench.return_pct)+'">'+pctStr(bench.return_pct)+'</b></span>' : '';
   $('summary').innerHTML =
     '<span class="chip"><b>'+data.agents.length+'</b> modelos</span>'+
     '<span class="chip"><b>'+live+'</b> en vivo</span>'+
     '<span class="chip">baseline <b>'+money(data.baseline_equity)+'</b></span>'+
+    benchChip+
     (data.enabled?'':'<span class="chip">⏳ arrancando</span>');
-  el.innerHTML=data.agents.map(rowHtml).join('');
+  // El ORDEN lo decide el servidor (equity, con el índice entre medio y sin
+  // puesto). Acá solo se busca la fila completa por id: re-ordenar en el
+  // navegador sería tener la regla escrita dos veces y que un día difieran.
+  const porId={}; data.agents.forEach(a=>{porId[a.id]=a;});
+  const orden = Array.isArray(data.ranking)&&data.ranking.length
+    ? data.ranking : data.agents.map(a=>({id:a.id,kind:'MODELO'}));
+  el.innerHTML=orden.map(r=>{
+    if(r.kind==='BENCHMARK') return benchHtml(bench);
+    const a=porId[r.id]; return a?rowHtml(a):'';
+  }).join('');
   // Expandir plan
   el.querySelectorAll('.rmore').forEach(btn=>{
     btn.addEventListener('click',()=>{
