@@ -28,7 +28,11 @@
 // corrida — justo la que no se quiere depurar.
 // ═══════════════════════════════════════════════════════════════
 
-export const TRACE_MAX_BYTES = 4096;
+// 16 KB y no 4: con 4096 los payloads de 28-36 KB se recortaban TODOS al mismo
+// largo, así que el diff entre vueltas reportaba `delta 0` siempre — el número
+// que más importaba era el único que el recorte destruía. Ver `diffTurnos`, que
+// además ahora mide sobre el tamaño REAL y no sobre el recortado.
+export const TRACE_MAX_BYTES = Number(process.env.ARENA_TRACE_BYTES) || 16384;
 export const TRACE_MAX_ENTRIES = 40;
 
 // Recorta y DECLARA el recorte. Un payload cortado en 4 KB que no dice que lo
@@ -39,6 +43,14 @@ export function recortar(x, maxBytes = TRACE_MAX_BYTES) {
   const s = typeof x === 'string' ? x : safeStringify(x);
   if (s.length <= maxBytes) return s;
   return s.slice(0, maxBytes) + `\n…[RECORTADO: ${s.length} caracteres en total, se muestran ${maxBytes}]`;
+}
+
+// El tamaño REAL, antes de recortar. Es el número que el diff necesita: dos
+// payloads de 28 KB y 36 KB recortados a 16 KB miden lo mismo, y de ahí salía
+// el `delta 0` que no servía para nada.
+function tamanoReal(x) {
+  if (x == null) return null;
+  return (typeof x === 'string' ? x : safeStringify(x)).length;
 }
 
 // `JSON.stringify` puede lanzar con referencias circulares o BigInt. Un trace
@@ -66,7 +78,9 @@ export function diffTurnos(turns) {
     try { parsed = JSON.parse(truncado ? s.split('\n…[RECORTADO:')[0] : s); } catch { parsed = null; }
     const msgs = (parsed && Array.isArray(parsed.messages)) ? parsed.messages : null;
     return {
-      bytes: s.length,
+      // El tamaño REAL si se guardó; el recortado solo como último recurso.
+      // Medir sobre el recortado es lo que hacía que todos los diff dieran 0.
+      bytes: t.request_bytes ?? s.length,
       truncado,
       mensajes: msgs ? msgs.length : null,
       roles: msgs ? msgs.map((m) => m && m.role).join(',') : null,
@@ -94,6 +108,8 @@ export function diffTurnos(turns) {
     }
     out.push({
       de: turns[i - 1].fase, a: turns[i].fase,
+      proveedor: { antes: turns[i - 1].provider || null, despues: turns[i].provider || null },
+      ms: { antes: turns[i - 1].ms ?? null, despues: turns[i].ms ?? null },
       bytes: { antes: a.bytes, despues: b.bytes, delta: b.bytes - a.bytes },
       // Si las llamadas pedidas y los resultados devueltos no coinciden, el
       // payload está roto y se ve acá sin leer nada más.
@@ -124,6 +140,10 @@ export function createTrace({ maxBytes = TRACE_MAX_BYTES, maxEntries = TRACE_MAX
       if (turns.length >= maxEntries) { descartados++; return; }
       turns.push({
         n: turns.length + 1, fase, provider, model, status, ms,
+        // Los tamaños sin recortar, para que el diff mida lo que de verdad
+        // viajó y no lo que cupo en la respuesta.
+        request_bytes: tamanoReal(request),
+        response_bytes: tamanoReal(response),
         // El cuerpo que SALIÓ. Es el dato que no teníamos y el que decide el
         // caso: si el payload de la vuelta 8 está mal formado, se ve acá.
         request: recortar(request, maxBytes),

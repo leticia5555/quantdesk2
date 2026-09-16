@@ -189,6 +189,12 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
     // cuál ganó; `limites` dice si ganó por poco o por lejos — y eso es lo que
     // decide si el número que hay que mover es ése o el otro.
     limites: loop.limites || null,
+    // QUIÉN ATENDIÓ CADA VUELTA. Un mismo modelo en OpenRouter lo sirven varios
+    // proveedores y no rinden igual: sin esto, "qwen se cuelga" y "Alibaba se
+    // cuelga" se journalean idéntico, y son cosas distintas — la segunda se
+    // arregla con routing y la primera no se arregla.
+    proveedores: loop.proveedores || null,
+    proveedores_colgados: loop.proveedores_colgados || null,
     sequence: executor.sequence, summary: executor.summary(),
   };
   if (loop.cierre_diagnostico) ctx.cierre = loop.cierre_diagnostico;
@@ -244,6 +250,10 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
       // Todos los cortes de la corrida, con su vuelta y su intento. Si un agente
       // acumula varios, el problema es del proveedor y no de una vuelta suelta.
       cuerpos_vacios: (loop && loop.cuerpos_vacios) || null,
+      proveedores_colgados: (loop && loop.proveedores_colgados) || null,
+      // El que se colgó, y si fue NUESTRO reloj o el suyo. Se arreglan al revés.
+      proveedor: llm.proveedor || null,
+      timeout_nuestro: !!llm.timedOutLeyendo,
       timed_out: !!llm.timedOut, stale: !!llm.stale, retry_failed: !!llm.retry_failed,
     };
     if (trace) ctx.trace = trace.report();

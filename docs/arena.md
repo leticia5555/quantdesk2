@@ -694,6 +694,101 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B23 · CORRECCIÓN: el "cuerpo vacío" era NUESTRO timeout
+
+El trace de qwen del 2026-09-17 trajo el número que cerró el caso:
+
+| vuelta | duración | cuerpo |
+|---|---|---|
+| 1-3 | 23s / 13s / 32s | OK, hasta 28 KB |
+| 4 | **10.000 ms** | vacío |
+| cierre | **45.002 ms** | vacío |
+| reintento | **45.002 ms** | vacío |
+
+**45.000 es `RESERVA_CIERRE_MS`.** 10.000 es el piso de `Math.max(10000, …)`
+cuando ya casi no quedaba presupuesto. Los dos son **techos nuestros**, no del
+proveedor.
+
+### El mecanismo, reproducido
+
+```js
+const r = await fetch(url, { signal: AbortSignal.timeout(300) });
+// → resuelve con 200 a los 31 ms (los HEADERS ya llegaron)
+const texto = await r.text().catch(() => '');
+// → r.text() lanza TimeoutError a los 304 ms; el .catch lo convierte en ''
+// → se reporta "HTTP 200 con el cuerpo vacío"
+```
+
+`fetch` resuelve en cuanto llegan los **headers**. OpenRouter manda el 200 al
+instante y después keepalives de espacios mientras el proveedor de abajo piensa.
+El cuerpo se lee en `r.text()` — y el `AbortSignal` cubre **también** esa
+lectura. Cuando nuestro reloj vencía a mitad del cuerpo, `r.text()` lanzaba y el
+`.catch(() => '')` lo borraba.
+
+**Un timeout tragado se ve idéntico a una falla del otro lado, y lleva a
+arreglar lo que no está roto.** Esto invalida el diagnóstico de B19 ("el
+proveedor cierra el stream"): el que cortaba éramos nosotros.
+
+El mismo `.catch` estaba en el camino de **Anthropic**. Ahí importa incluso más:
+claude y control son el par que mide el piso de ruido, y un timeout mal
+etiquetado en cualquiera de los dos contamina la única referencia contra la que
+vale un delta entre modelos. Los dos caminos distinguen ahora `abortadoLeyendo`
+—nuestro corte— de un cuerpo que el proveedor cerró de verdad.
+
+### Routing de proveedor
+
+Un mismo modelo en OpenRouter lo sirven varios proveedores, y **no rinden
+igual**: las vueltas 1-3 de qwen contestaron en 23s, 13s y 32s, y después el
+mismo `Alibaba` se colgó tres veces hasta nuestro techo.
+
+**OpenRouter no hace fallback por lentitud**, solo por error. Un proveedor que
+tarda 200s y uno que devuelve 500 se ven distinto desde su lado e idéntico desde
+el nuestro.
+
+```
+ARENA_PROVIDER_IGNORE_<AGENTE>   lista por comas   ("Alibaba,Novita")
+ARENA_PROVIDER_ORDER_<AGENTE>    preferencia, en orden
+```
+
+Por agente y **sin deploy**, porque cuál proveedor se cuelga cambia con el día y
+la hora. **El default no ignora a nadie**: apagar un proveedor a ciegas puede
+dejar a un modelo sin quien lo sirva, y el que se cuelga hoy es el que anda
+mañana. `allow_fallbacks: true` siempre — un orden es una preferencia, no un
+candado.
+
+Lo que **sí** es automático: cuando un proveedor nos cuelga, se acumula en
+`proveedores_colgados` y **todas las llamadas siguientes de esa corrida lo
+excluyen**, el turno de cierre incluido. Eso aplica igual a los tres agentes de
+OpenRouter sin que haya que saber de antemano cuál falla — no hace falta haber
+visto el trace de grok o deepseek para que los cubra.
+
+`proveedores[]` journalea quién atendió cada vuelta, **también las buenas**:
+"Alibaba se cuelga" solo significa algo si se sabe quién contestó las tres que sí
+anduvieron.
+
+### El reparto del reloj
+
+El trace mostró el orden exactamente invertido: la vuelta 4 se saltó su reintento
+por "sin reloj", y después el cierre quemó **90 segundos en dos intentos
+idénticos al mismo proveedor colgado**.
+
+- El reintento de una vuelta útil puede **morder la reserva del cierre** hasta
+  dejarle lo mínimo para uno. Un cierre alcanza si además se le cambia el
+  proveedor.
+- El cierre pide **lo que queda**, no 45s que ya no existen.
+- El segundo cierre va a **otro proveedor**, o no va: si no se sabe a quién
+  excluir, un intento idéntico sería el mismo error otra vez, y es mejor cerrar
+  sin él.
+
+### El trace, a 16 KB
+
+Con 4096 los payloads reales (28-36 KB) se recortaban **todos al mismo largo**,
+así que el diff entre vueltas reportaba `delta 0` siempre: el recorte destruía
+justo el número que más importaba. Ahora son 16 KB (`ARENA_TRACE_BYTES`) y el
+diff mide sobre el **tamaño real** guardado aparte, así que sigue siendo útil
+aunque el cuerpo venga recortado. El diff publica además el proveedor y los ms
+de cada vuelta, que es donde se vio el patrón.
+
 ## B22 · LOS TRES HUECOS DE DATOS QUE ENCONTRÓ EL DIAG
 
 `tests/arena-universo-datos.test.mjs`
