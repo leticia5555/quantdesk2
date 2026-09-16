@@ -142,6 +142,10 @@ const BMV_SCHEMA = [
   // `emisora` se queda como columna aparte: los FINANCIEROS siguen siendo por
   // emisora (ese endpoint no conoce series), así que el cruce precio↔financiero
   // se hace por ella.
+  // La ENUMERACIÓN de trimestres reportados, no sólo los extremos:
+  // `rango_financieros` llega como lista ("1T_2017, 1T_2018, ..., 2T_2016") y
+  // puede tener huecos. Con la lista se pide sólo lo que existe.
+  `alter table bmv_emisoras add column if not exists fin_periodos jsonb`,
   `alter table bmv_emisoras add column if not exists serie text`,
   `alter table bmv_emisoras add column if not exists emisora_serie text`,
   `update bmv_emisoras set emisora_serie = emisora where emisora_serie is null`,
@@ -158,7 +162,23 @@ const BMV_SCHEMA = [
   `alter table bmv_distribuciones add column if not exists emisora_serie text`,
   `update bmv_distribuciones set emisora_serie = emisora where emisora_serie is null`,
   `alter table bmv_distribuciones drop constraint if exists bmv_distribuciones_pkey`,
-  `create unique index if not exists bmv_distribuciones_uidx on bmv_distribuciones (emisora_serie, fecha_ex)`,
+
+  // ── La forma real del reparto ─────────────────────────────────────
+  // La llave de fecha que manda la API es la de **PAGO**; la ex viene en
+  // `fechaexcupon` y SÓLO en el bloque "reciente". Todo el histórico llega sin
+  // ella, así que se aproxima (pago − 3 días) y la fila queda MARCADA.
+  //
+  // Se re-llavea por (emisora_serie, fecha_pago) y no por fecha_ex: la de pago
+  // es la que la fuente garantiza siempre. Con la ex de llave, una aproximación
+  // podría chocar con una ex real de otro reparto y perderse una fila.
+  `alter table bmv_distribuciones add column if not exists fecha_pago date`,
+  `alter table bmv_distribuciones add column if not exists ex_aproximada boolean`,
+  `alter table bmv_distribuciones add column if not exists tipo text`,
+  `alter table bmv_distribuciones add column if not exists divisa text`,
+  `alter table bmv_distribuciones add column if not exists es_efectivo boolean`,
+  `update bmv_distribuciones set fecha_pago = fecha_ex where fecha_pago is null`,
+  `drop index if exists bmv_distribuciones_uidx`,
+  `create unique index if not exists bmv_distribuciones_pago_uidx on bmv_distribuciones (emisora_serie, fecha_pago)`,
 ];
 
 let listo = false;
@@ -190,11 +210,12 @@ async function upsertEmisora(e) {
   await sql(
     `insert into bmv_emisoras
        (emisora, serie, emisora_serie, razon_social, tipo_valor_id, estatus,
-        fin_desde, fin_hasta, fin_motivo, hist_desde, hist_hasta, hist_motivo,
-        raw, actualizado_at)
-     values ($1,$12,$13,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb, now())
+        fin_desde, fin_hasta, fin_motivo, fin_periodos, hist_desde, hist_hasta,
+        hist_motivo, raw, actualizado_at)
+     values ($1,$12,$13,$2,$3,$4,$5,$6,$7,$14::jsonb,$8,$9,$10,$11::jsonb, now())
      on conflict (emisora_serie) do update set
        emisora = excluded.emisora,
+       fin_periodos = excluded.fin_periodos,
        serie = excluded.serie,
        razon_social = excluded.razon_social,
        tipo_valor_id = excluded.tipo_valor_id,
@@ -210,7 +231,8 @@ async function upsertEmisora(e) {
     [e.emisora, e.razon_social || null, e.tipo_valor_id || null, e.estatus || null,
      e.fin_desde || null, e.fin_hasta || null, e.fin_motivo || null,
      e.hist_desde || null, e.hist_hasta || null, e.hist_motivo || null,
-     JSON.stringify(e.raw ?? {}), e.serie ?? null, e.emisora_serie || e.emisora],
+     JSON.stringify(e.raw ?? {}), e.serie ?? null, e.emisora_serie || e.emisora,
+     e.fin_periodos ? JSON.stringify(e.fin_periodos) : null],
   );
 }
 
@@ -263,15 +285,24 @@ async function insertarDistribuciones(emisora, emisora_serie, filas) {
   if (!filas.length) return 0;
   const valores = [];
   const partes = filas.map((f, j) => {
-    const b = j * 4;
-    valores.push(emisora, emisora_serie, f.fecha_ex, f.monto);
-    return `($${b + 1},$${b + 2},$${b + 3},$${b + 4})`;
+    const b = j * 9;
+    valores.push(emisora, emisora_serie, f.fecha_pago, f.fecha_ex,
+      f.ex_aproximada === true, f.monto, f.tipo ?? null, f.divisa ?? null,
+      f.es_efectivo !== false);
+    return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9})`;
   });
   await sql(
-    `insert into bmv_distribuciones (emisora, emisora_serie, fecha_ex, monto)
+    `insert into bmv_distribuciones
+       (emisora, emisora_serie, fecha_pago, fecha_ex, ex_aproximada, monto, tipo, divisa, es_efectivo)
      values ${partes.join(', ')}
-     on conflict (emisora_serie, fecha_ex) do update set
-       emisora = excluded.emisora, monto = excluded.monto`,
+     on conflict (emisora_serie, fecha_pago) do update set
+       emisora = excluded.emisora,
+       fecha_ex = excluded.fecha_ex,
+       ex_aproximada = excluded.ex_aproximada,
+       monto = excluded.monto,
+       tipo = excluded.tipo,
+       divisa = excluded.divisa,
+       es_efectivo = excluded.es_efectivo`,
     valores);
   return filas.length;
 }
@@ -392,7 +423,7 @@ async function gastar(mes, { requests = 1, creditos = 0, headers = null } = {}) 
  */
 async function cobertura() {
   const [censo, finPorAnio, finPorEmisora, precios, preciosPorEmisora, benchmark,
-         dist, distIcs, icsSinReparto, huecos] = await Promise.all([
+         dist, distIcs, divisas, tipos, icsSinReparto, huecos] = await Promise.all([
     censoResumen(),
     sql(`select anio, count(*)::int as filas, count(distinct emisora)::int as emisoras,
                 count(basicearningslosspershare)::int as con_eps
@@ -422,9 +453,17 @@ async function cobertura() {
     // canasta contra un benchmark que sí los trae.
     sql(`select count(distinct d.emisora)::int as emisoras_con_reparto,
                 count(*)::int as filas,
-                min(d.fecha_ex) as desde, max(d.fecha_ex) as hasta
+                min(d.fecha_ex) as desde, max(d.fecha_ex) as hasta,
+                count(*) filter (where d.ex_aproximada)::int as ex_aproximadas,
+                count(*) filter (where not coalesce(d.es_efectivo, true))::int as no_efectivo
            from bmv_distribuciones d
            join bmv_emisoras e on e.emisora = d.emisora and e.tipo_valor_id = '1'`),
+    // Una divisa distinta de MXN exige conversión. Asumirla en silencio es la
+    // clase de bug que este proyecto lleva cuatro rondas cazando.
+    sql(`select coalesce(divisa,'(sin divisa)') as divisa, count(*)::int as n
+           from bmv_distribuciones group by 1 order by 2 desc`),
+    sql(`select coalesce(tipo,'(sin tipo)') as tipo, count(*)::int as n
+           from bmv_distribuciones group by 1 order by 2 desc`),
     sql(`select e.emisora
            from bmv_emisoras e
            left join (select distinct emisora from bmv_distribuciones) d
@@ -451,10 +490,18 @@ async function cobertura() {
     benchmark: { emisora: BENCHMARK, ...(benchmark[0] || {}), distribuciones: dist[0] || null },
     // Insumo del retorno total de la CANASTA. Se reporta aparte del benchmark
     // porque un hueco aquí no es un hueco cualquiera: rompe la simetría.
-    distribuciones_ics: {
-      ...(distIcs[0] || {}),
-      ics_sin_reparto: icsSinReparto.map((x) => x.emisora),
-    },
+    distribuciones_ics: (() => {
+      const d = distIcs[0] || {};
+      return {
+        ...d,
+        // El porcentaje, no sólo el conteo: "12 aproximadas" no dice nada sin
+        // saber si son 12 de 15 o 12 de 4,000.
+        pct_ex_aproximada: d.filas ? Math.round((100 * (d.ex_aproximadas || 0)) / d.filas) : 0,
+        por_divisa: divisas,
+        por_tipo: tipos,
+        ics_sin_reparto: icsSinReparto.map((x) => x.emisora),
+      };
+    })(),
     huecos,
     ledger: await ledgerResumen(),
   };

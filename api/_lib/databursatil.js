@@ -52,9 +52,13 @@ const COBERTURA_FIN = { desde: { anio: 2016, trimestre: 2 }, hasta: { anio: 2026
 //
 // Se cosecha aparte, por eso mismo: nunca sale en el universo, y sin él no hay
 // contra qué medir.
-const BENCHMARK = 'NAFTRAC ISHRS';       // el identificador, tal cual
+// SIN espacio. Todos los identificadores de la API van pegados —WALMEX*,
+// FEMSAUBD, LIVEPOLC-1, LACOMERUBC— y éste no es la excepción. Probarlo con
+// espacio fue lo que devolvió 400; NAFTRAC sí está en el censo (16 filas 1B),
+// el problema era cómo se armaba el identificador.
 const BENCHMARK_EMISORA = 'NAFTRAC';
 const BENCHMARK_SERIE = 'ISHRS';
+const BENCHMARK = BENCHMARK_EMISORA + BENCHMARK_SERIE;   // 'NAFTRACISHRS'
 const BENCHMARK_TIPO = '1B';
 
 const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -205,9 +209,24 @@ function clavePeriodo(anio, trimestre) {
   return `${anio}-${trimestre}`;
 }
 
+/**
+ * Acepta las DOS formas: la nuestra ('2016-2') y la de la API ('2T_2016').
+ *
+ * Aceptar la de la API no es una concesión estética: `rango_financieros` llega
+ * como una lista en ese dialecto, y rechazarlo dejaba la cobertura en CERO.
+ */
 function parseClavePeriodo(clave) {
-  const m = /^(\d{4})-([1-4])$/.exec(String(clave).trim());
-  return m ? { anio: Number(m[1]), trimestre: Number(m[2]) } : null;
+  const t = String(clave ?? '').trim();
+  const a = /^(\d{4})-([1-4])$/.exec(t);
+  if (a) return { anio: Number(a[1]), trimestre: Number(a[2]) };
+  const b = /^([1-4])T_(\d{4})$/i.exec(t);
+  if (b) return { anio: Number(b[2]), trimestre: Number(b[1]) };
+  return null;
+}
+
+/** Orden cronológico. Existe porque la API NO manda la lista ordenada así. */
+function ordenPeriodo(p) {
+  return p.anio * 4 + p.trimestre;
 }
 
 /**
@@ -257,24 +276,39 @@ function recortarACobertura(desde, hasta, cobertura = COBERTURA_FIN) {
  * universo de cada rebalanceo. Sin él, el universo sería la lista de hoy
  * mirada hacia atrás — survivorship bias puro.
  *
- * No sé su forma exacta [NO VERIFICADO], así que se aceptan las que tienen
- * sentido y se falla ABIERTO al reporte, no al dato: lo que no se entiende
- * devuelve null con motivo, y el crudo queda guardado para re-parsear sin
- * gastar créditos.
+ * ── LO QUE LA API MANDA DE VERDAD [VERIFICADO] ─────────────────────
+ * Una LISTA separada por comas, en el dialecto de la API:
  *
- * Formas aceptadas:
- *   '2016-2/2026-2'  ·  '2016-2 a 2026-2'  ·  '2016-2,2026-2'  ·  '2016-2'
+ *     "1T_2017, 1T_2018, 1T_2019, ..., 2T_2016, ..., 4T_2025"
+ *
+ * Dos cosas de esa cadena, y las dos muerden:
+ *
+ *   1. No es un rango de dos extremos: es la **enumeración** de los trimestres
+ *      que esa emisora sí reportó. Puede tener huecos, y los huecos importan —
+ *      un trimestre que no reportó no es un trimestre que valga pedir. Por eso
+ *      además del rango se devuelve la lista completa en `periodos`.
+ *   2. **No viene en orden cronológico**, sino lexicográfico: todos los 1T,
+ *      luego los 2T… Así que `1T_2017` aparece ANTES que `2T_2016`. Tomar el
+ *      primero y el último daría un inicio un año tarde. De ahí que se ordene
+ *      antes de sacar mínimo y máximo.
+ *
+ * ── Por qué esto estuvo roto ───────────────────────────────────────
+ * El fail-closed quedó demasiado estricto y rechazaba el formato BUENO: las
+ * 137 ICS salieron con motivo "no se reconoce el formato" y la cobertura en
+ * cero. Fallar cerrado protege de inventar datos; no sirve de nada si además
+ * tira los que llegan bien. El test usa la cadena literal de WALMEX.
+ *
+ * Otras formas que se siguen aceptando:
+ *   '2016-2/2026-2'  ·  '2016-2 a 2026-2'  ·  '2016-2'
  *   ['2016-2','2026-2']  ·  {inicio|desde|min, fin|hasta|max}
- *   {'2016':[2,3,4], '2017':[1,2,3,4]}  → min y max de las llaves
+ *   {'2016':[2,3,4], '2017':[1,2,3,4]}
  */
 function parsearRangoPeriodos(valor) {
-  if (valor === null || valor === undefined) return { rango: null, motivo: 'ausente' };
+  if (valor === null || valor === undefined) return { rango: null, periodos: [], motivo: 'ausente' };
 
   if (Array.isArray(valor)) {
-    const claves = valor.map((v) => parseClavePeriodo(v)).filter(Boolean);
-    if (claves.length >= 2) return { rango: { desde: claves[0], hasta: claves[claves.length - 1] }, motivo: null };
-    if (claves.length === 1) return { rango: { desde: claves[0], hasta: claves[0] }, motivo: null };
-    return { rango: null, motivo: 'arreglo sin periodos reconocibles' };
+    return deLista(valor.map((v) => parseClavePeriodo(v)).filter(Boolean),
+      'arreglo sin periodos reconocibles');
   }
 
   if (typeof valor === 'object') {
@@ -284,7 +318,7 @@ function parsearRangoPeriodos(valor) {
     const fin = bajo.fin ?? bajo.hasta ?? bajo.max ?? bajo.ultimo;
     if (ini !== undefined && fin !== undefined) {
       const a = parseClavePeriodo(ini), b = parseClavePeriodo(fin);
-      if (a && b) return { rango: { desde: a, hasta: b }, motivo: null };
+      if (a && b) return deLista([a, b], 'objeto sin forma reconocible');
     }
     // {'2016':[2,3,4], ...} — año → trimestres
     const pares = [];
@@ -294,19 +328,32 @@ function parsearRangoPeriodos(valor) {
       const trims = Array.isArray(v) ? v.map(Number).filter((n) => n >= 1 && n <= 4) : [];
       for (const t of trims) pares.push({ anio, trimestre: t });
     }
-    if (pares.length) {
-      pares.sort((x, y) => (x.anio * 4 + x.trimestre) - (y.anio * 4 + y.trimestre));
-      return { rango: { desde: pares[0], hasta: pares[pares.length - 1] }, motivo: null };
-    }
-    return { rango: null, motivo: 'objeto sin forma reconocible' };
+    if (pares.length) return deLista(pares, 'objeto sin forma reconocible');
+    return { rango: null, periodos: [], motivo: 'objeto sin forma reconocible' };
   }
 
   const s = String(valor).trim();
   const partes = s.split(/\s*(?:\/|,|;|\||\ba\b|-{2,}|→|\.\.)\s*/i).filter(Boolean);
   const claves = partes.map((p) => parseClavePeriodo(p)).filter(Boolean);
-  if (claves.length >= 2) return { rango: { desde: claves[0], hasta: claves[claves.length - 1] }, motivo: null };
-  if (claves.length === 1) return { rango: { desde: claves[0], hasta: claves[0] }, motivo: null };
-  return { rango: null, motivo: `no se reconoce el formato: ${s.slice(0, 40)}` };
+  return deLista(claves, `no se reconoce el formato: ${s.slice(0, 60)}`);
+}
+
+/**
+ * Min y max CRONOLÓGICOS de una lista de periodos, más la lista misma
+ * ordenada y sin repetidos. La lista es lo que permite pedir sólo los
+ * trimestres que la emisora de verdad reportó, en vez de rellenar los huecos
+ * con requests que van a volver vacíos.
+ */
+function deLista(claves, motivoSiVacio) {
+  if (!claves.length) return { rango: null, periodos: [], motivo: motivoSiVacio };
+  const vistos = new Map();
+  for (const c of claves) vistos.set(ordenPeriodo(c), c);
+  const orden = [...vistos.keys()].sort((a, b) => a - b).map((k) => vistos.get(k));
+  return {
+    rango: { desde: orden[0], hasta: orden[orden.length - 1] },
+    periodos: orden,
+    motivo: null,
+  };
 }
 
 /** Lo mismo para `rango_historicos`, que son FECHAS y no trimestres. */
@@ -471,8 +518,29 @@ function aplanarHistoricos(raw) {
   const filaDe = (fecha, obj) => {
     const f = /(\d{4}-\d{2}-\d{2})/.exec(String(fecha));
     if (!f) { descartadas++; return; }
+
+    // FORMATO REAL [VERIFICADO]: {"2026-06-22": [50.57, 1313556324.33]} —
+    // un ARREGLO [precio, importe], no un objeto con llaves. El parser lo
+    // trataba como objeto, no encontraba ninguna llave y descartaba la fila:
+    // 7 de 7 filas de WALMEX se perdían, e `importe_operado_presente` salía
+    // false cuando el importe SÍ venía.
+    if (Array.isArray(obj)) {
+      if (obj.length === 2 || obj.length === 1) {
+        const cierre = aNumero(obj[0]);
+        const importe = obj.length === 2 ? aNumero(obj[1]) : null;
+        if (cierre === null) { descartadas++; return; }
+        filas.push({ fecha: f[1], cierre, apertura: null, maximo: null, minimo: null, volumen: null, importe });
+        return;
+      }
+      // Un arreglo de otro largo tiene un orden de columnas que NO está
+      // verificado. Adivinarlo podría meter el volumen donde va el importe y
+      // el filtro de liquidez quedaría midiendo otra cosa, en silencio.
+      descartadas++;
+      return;
+    }
+
     const bajo = {};
-    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+    if (obj && typeof obj === 'object') {
       for (const [k, v] of Object.entries(obj)) bajo[normalizaLlave(k)] = v;
     }
     const tomar = (nombres) => {
@@ -552,23 +620,100 @@ function aplanarHistoricos(raw) {
 // y el crudo del censo se guarda igual — si esto falla, se re-extrae con un
 // UPDATE.
 const RE_DISTRIBUCION = /distribuc|dividend|cupon|cupón|reparto/i;
-const ALIAS_MONTO = ['monto', 'importe', 'dividendo', 'distribucion', 'distribución', 'valor', 'cantidad', 'amount'];
-const ALIAS_EX = ['fecha_ex', 'ex', 'excupon', 'excupón', 'fecha_excupon', 'fecha', 'date'];
+
+// La forma REAL, verificada sobre el crudo de NAFTRAC:
+//
+//   "reciente":  {"2026-08-31": {"pago": 0.01387504835,
+//                                "tipo": "DISTRIBUCION DE EFECTIVO",
+//                                "divisa": "MXN",
+//                                "fechaexcupon": "2026-08-28"}}
+//   "historico": {"2025-12-31": {"pago": 0.56096644127,
+//                                "tipo": "DISTRIBUCION DE EFECTIVO"}}
+//
+// Tres cosas de ahí, y las tres muerden:
+//
+//   1. La LLAVE de fecha es la de **pago**, no la ex. Tomarla por la ex sería
+//      reinvertir tarde.
+//   2. `fechaexcupon` sólo viene en "reciente". Todo el histórico —o sea casi
+//      todo lo que el backtest usa— llega sin ella.
+//   3. `pago` es el **monto**, no una fecha, pese al nombre.
+const ALIAS_MONTO = ['pago', 'monto', 'importe', 'dividendo', 'distribucion', 'distribución',
+  'valor', 'cantidad', 'amount', 'cupon', 'cupón', 'efectivo'];
+const ALIAS_EX = ['fechaexcupon', 'fecha_excupon', 'fecha_ex', 'excupon', 'excupón', 'ex'];
+const ALIAS_TIPO = ['tipo', 'concepto', 'type'];
+const ALIAS_DIVISA = ['divisa', 'moneda', 'currency'];
+// La fecha de pago cuando NO es la llave del mapa: en un arreglo de filas no
+// hay llave, y la fecha viaja dentro del objeto. Ojo: `pago` NO va aquí — es
+// el monto.
+const ALIAS_PAGO = ['fecha_pago', 'fechapago', 'fecha', 'date', 'fecha_reparto'];
+
+// Cuántos días naturales atrás cae la ex respecto del pago cuando el dato no la
+// trae. 3 es el delta OBSERVADO en NAFTRAC (pago 31-ago → ex 28-ago) y encaja
+// con T+2 más un fin de semana. Es una APROXIMACIÓN y se marca como tal.
+const DIAS_EX_APROX = 3;
 
 /**
- * Saca {fecha_ex, monto} de donde sea que vengan. La fecha que importa es la
- * **ex-cupón**: reinvertir en la fecha de pago adelantaría el flujo y metería
- * look-ahead por la puerta de atrás — justo lo que los 65 días cierran del
- * otro lado.
+ * ¿Este reparto es dinero?
  *
- * Los montos se toman **brutos**, como vengan. El ISR sobre dividendos aplica
- * igual a la canasta y al benchmark, así que a primer orden se cancela en el
- * exceso; aplicarlo a un solo lado sí sería un sesgo.
+ * Sin `tipo` se asume que sí — es lo que llega de las formas viejas y de los
+ * arreglos, y ahí no hay nada que distinguir. Con `tipo`, se exige que diga
+ * **efectivo** (o `cash`): "DIVIDENDO EN ACCIONES" contiene la palabra
+ * "dividendo" pero NO es efectivo, y una regex que aceptara "dividendo" lo
+ * habría reinvertido como si lo fuera — sumando retorno que nadie recibió.
+ *
+ * Lo que no se reconoce queda en `false`: subestimar el retorno es el lado
+ * barato de equivocarse, y el conteo por tipo lo deja a la vista.
+ */
+function esEfectivo(tipo) {
+  if (tipo === undefined || tipo === null || tipo === '') return true;
+  return /efectivo|cash/i.test(String(tipo));
+}
+
+/** Resta días naturales a 'AAAA-MM-DD'. */
+function restaDias(fecha, dias) {
+  const t = Date.parse(fecha + 'T00:00:00Z');
+  if (!Number.isFinite(t)) return null;
+  return new Date(t - dias * 86400000).toISOString().slice(0, 10);
+}
+
+/**
+ * Saca los repartos de donde sea que vengan, con la fecha EX resuelta.
+ *
+ * ── Por qué la ex y no la de pago ──────────────────────────────────
+ * El retorno total reinvierte el día en que el precio CAE, que es la ex. Usar
+ * la de pago acredita el flujo tarde y subestima el retorno. Como aplica igual
+ * a la canasta y al benchmark, se cancela casi entero en el exceso — pero
+ * "casi" no es "sí", y por eso cada fila dice de dónde salió su fecha.
+ *
+ * ── La aproximación, dicha en voz alta ─────────────────────────────
+ * `fechaexcupon` sólo viene en el bloque "reciente". Para el histórico se
+ * aproxima **ex = pago − 3 días naturales**. Las filas aproximadas van
+ * marcadas con `ex_aproximada`, y el reporte dice **qué porcentaje** de las
+ * distribuciones la usó: una aproximación que no se cuenta se vuelve un dato
+ * a los dos días.
+ *
+ * ── `tipo`, que no estaba en el encargo pero muerde igual ───────────
+ * "DISTRIBUCION DE EFECTIVO" es una; puede haber otras (en especie, splits,
+ * reembolsos de capital) que NO se reinvierten como efectivo. Meterlas al
+ * retorno total sumaría dinero que nadie recibió. Se guarda el tipo, se marca
+ * `es_efectivo`, y lo que no se reconoce queda en `false` — conservador y
+ * visible en el conteo por tipo, en vez de silenciosamente contado.
+ *
+ * ── `divisa` ───────────────────────────────────────────────────────
+ * Se guarda tal cual. Asumir MXN en silencio es exactamente la clase de bug
+ * que nos ha estado mordiendo: si alguna emisora reparte en USD hay que
+ * convertir, y eso sólo se sabe si el campo viaja.
+ *
+ * Los montos se toman **brutos**, de los dos lados. El ISR aplica igual a
+ * canasta y benchmark, así que a primer orden se cancela en el exceso.
  */
 function extraerDistribuciones(raw) {
   const out = [];
   let descartadas = 0;
   const visto = new Set();
+  const campos = new Set();
+  const tipos = {};
+  const divisas = {};
 
   const tomar = (bajo, nombres) => {
     for (const n of nombres) {
@@ -578,21 +723,77 @@ function extraerDistribuciones(raw) {
     return undefined;
   };
 
-  const fila = (clave, valor) => {
-    const bajo = {};
-    if (valor && typeof valor === 'object' && !Array.isArray(valor)) {
-      for (const [k, v] of Object.entries(valor)) bajo[normalizaLlave(k)] = v;
-    }
-    const crudoFecha = tomar(bajo, ALIAS_EX) ?? clave;
-    const m = /(\d{4}-\d{2}-\d{2})/.exec(String(crudoFecha ?? ''));
-    const monto = aNumero(tomar(bajo, ALIAS_MONTO) ?? (valor && typeof valor === 'object' ? undefined : valor));
-    // Sin fecha ex o sin monto no sirve para reinvertir: se descarta y se
-    // cuenta. Inventarle un cero pasaría como "no repartió" sin serlo.
-    if (!m || monto === null) { descartadas++; return; }
-    const llave = m[1] + '|' + monto;
+  const empuja = (fila) => {
+    const llave = fila.fecha_pago + '|' + fila.monto;
     if (visto.has(llave)) return;
     visto.add(llave);
-    out.push({ fecha_ex: m[1], monto });
+    out.push(fila);
+  };
+
+  const fila = (clave, valor) => {
+    // La llave SIEMPRE es la fecha de pago, venga el valor como objeto,
+    // arreglo o número suelto.
+    const f = /(\d{4}-\d{2}-\d{2})/.exec(String(clave ?? ''));
+
+    if (Array.isArray(valor)) {
+      const monto = valor.map(aNumero).find((x) => x !== null && x !== undefined);
+      if (!f || monto === null || monto === undefined) { descartadas++; return; }
+      empuja({
+        fecha_pago: f[1], fecha_ex: restaDias(f[1], DIAS_EX_APROX), ex_aproximada: true,
+        monto, tipo: null, divisa: null, es_efectivo: true,
+      });
+      return;
+    }
+
+    const bajo = {};
+    if (valor && typeof valor === 'object') {
+      for (const [k, v] of Object.entries(valor)) {
+        bajo[normalizaLlave(k)] = v;
+        campos.add(String(k));
+      }
+    }
+    const monto = aNumero(tomar(bajo, ALIAS_MONTO)
+      ?? (valor && typeof valor === 'object' ? undefined : valor));
+    if (monto === null) { descartadas++; return; }
+
+    const exCruda = tomar(bajo, ALIAS_EX);
+    const mEx = exCruda === undefined ? null : /(\d{4}-\d{2}-\d{2})/.exec(String(exCruda));
+
+    // La fecha de pago es la LLAVE del mapa. Pero en un arreglo de filas no hay
+    // llave, así que se busca dentro; y si lo único que hay es una ex
+    // explícita, ésa manda y la de pago se iguala a ella — no se inventa una
+    // fecha de pago tres días después.
+    let fPago = f;
+    if (!fPago) {
+      const cruda = tomar(bajo, ALIAS_PAGO);
+      fPago = cruda === undefined ? null : /(\d{4}-\d{2}-\d{2})/.exec(String(cruda));
+    }
+    if (!fPago && mEx) {
+      empuja({
+        fecha_pago: mEx[1], fecha_ex: mEx[1], ex_aproximada: false, monto,
+        tipo: tomar(bajo, ALIAS_TIPO) === undefined ? null : String(tomar(bajo, ALIAS_TIPO)),
+        divisa: tomar(bajo, ALIAS_DIVISA) === undefined ? null : String(tomar(bajo, ALIAS_DIVISA)),
+        es_efectivo: esEfectivo(tomar(bajo, ALIAS_TIPO)),
+      });
+      return;
+    }
+    if (!fPago) { descartadas++; return; }
+    const f2 = fPago;
+    const tipo = tomar(bajo, ALIAS_TIPO);
+    const divisa = tomar(bajo, ALIAS_DIVISA);
+
+    if (tipo !== undefined) tipos[String(tipo)] = (tipos[String(tipo)] || 0) + 1;
+    if (divisa !== undefined) divisas[String(divisa)] = (divisas[String(divisa)] || 0) + 1;
+
+    empuja({
+      fecha_pago: f2[1],
+      fecha_ex: mEx ? mEx[1] : restaDias(f2[1], DIAS_EX_APROX),
+      ex_aproximada: !mEx,
+      monto,
+      tipo: tipo === undefined ? null : String(tipo),
+      divisa: divisa === undefined ? null : String(divisa),
+      es_efectivo: esEfectivo(tipo),
+    });
   };
 
   const caminar = (nodo, dentro, profundidad) => {
@@ -618,7 +819,18 @@ function extraerDistribuciones(raw) {
   caminar(raw, false, 0);
 
   out.sort((a, b) => (a.fecha_ex < b.fecha_ex ? -1 : a.fecha_ex > b.fecha_ex ? 1 : 0));
-  return { distribuciones: out, descartadas };
+  const aproximadas = out.filter((d) => d.ex_aproximada).length;
+  return {
+    distribuciones: out,
+    descartadas,
+    campos: [...campos],
+    tipos,
+    divisas,
+    aproximadas,
+    // El porcentaje, no sólo el conteo: "12 aproximadas" no dice nada sin
+    // saber si son 12 de 15 o 12 de 4,000.
+    pct_aproximadas: out.length ? Math.round((100 * aproximadas) / out.length) : 0,
+  };
 }
 
 /* ─────────────────── presupuesto de créditos ─────────────────── */
@@ -642,8 +854,10 @@ export {
   BASE, BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
   CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL, TIMEOUT_MS,
   aNumero, aplanarHistoricos, cabecerasDeCredito, clavePeriodo, construirUrl,
-  dormir, emisoraSerie, extraerDistribuciones, finDeTrimestre, mesPresupuesto,
+  DIAS_EX_APROX, dormir, emisoraSerie, extraerDistribuciones, finDeTrimestre,
+  mesPresupuesto, restaDias,
   normalizaLlave, normalizarFinancieros, periodoApi,
-  parseClavePeriodo, parsearRangoFechas, parsearRangoPeriodos, recortarACobertura,
+  ordenPeriodo, parseClavePeriodo, parsearRangoFechas, parsearRangoPeriodos,
+  recortarACobertura,
   resolverCampo, traer, trimestresEntre, urlSegura,
 };
