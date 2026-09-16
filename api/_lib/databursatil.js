@@ -41,11 +41,21 @@ const TIMEOUT_MS = 30000;
 // Lety con token propio): 2T2016 → 2T2026.
 const COBERTURA_FIN = { desde: { anio: 2016, trimestre: 2 }, hasta: { anio: 2026, trimestre: 2 } };
 
-// El benchmark del backtest. Se cosecha aunque NO sea tipo_valor_id=1 (es un
-// ETF, no una acción): sin él no hay contra qué medir. Si no está en
-// /v2/historicos hay que PREGUNTAR antes de sustituirlo por el índice IPC —
-// el IPC no es invertible y cambiaría el criterio, no solo el dato.
-const BENCHMARK = 'NAFTRAC';
+// El benchmark del backtest, confirmado por Lety: **NAFTRAC ISHRS**, emisora
+// NAFTRAC, serie ISHRS, `tipo_valor_id` **1B**.
+//
+// Que sea 1B y no 1 es justo lo que lo mantiene FUERA del universo: el filtro
+// de emisoras es `tipo_valor_id = '1'`, igualdad exacta de texto, y el tipo se
+// guarda sin coerción — '1B' nunca empata con '1'. O sea que el benchmark no
+// puede colarse a su propia canasta, y no hace falta una excepción para
+// lograrlo: la exclusión es estructural. Hay un test que la fija.
+//
+// Se cosecha aparte, por eso mismo: nunca sale en el universo, y sin él no hay
+// contra qué medir.
+const BENCHMARK = 'NAFTRAC ISHRS';       // el identificador, tal cual
+const BENCHMARK_EMISORA = 'NAFTRAC';
+const BENCHMARK_SERIE = 'ISHRS';
+const BENCHMARK_TIPO = '1B';
 
 const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -187,11 +197,24 @@ function trimestresEntre(desde, hasta) {
   return out;
 }
 
-/** Intersección de un rango con la cobertura declarada de la API. */
+/**
+ * Intersección de un rango con la cobertura declarada de la API.
+ *
+ * FAIL-CLOSED: si falta cualquiera de los dos extremos devuelve `null`, NO la
+ * cobertura completa. Rellenar un rango ausente con "todo" es exactamente el
+ * error que el censo existe para evitar: le inventaría a la emisora una fecha
+ * de nacimiento, la metería al universo en trimestres en los que no cotizaba, y
+ * de paso cobraría 41 requests por cada rango que no se supo leer.
+ *
+ * Una emisora sin rango legible se reporta (`ics_sin_rango_financieros`) y se
+ * salta. Un ETF como el benchmark tampoco tiene financieros, y por eso tampoco
+ * se le cobran.
+ */
 function recortarACobertura(desde, hasta, cobertura = COBERTURA_FIN) {
+  if (!desde || !hasta) return null;
   const n = (p) => p.anio * 4 + p.trimestre;
-  const d = !desde || n(desde) < n(cobertura.desde) ? cobertura.desde : desde;
-  const h = !hasta || n(hasta) > n(cobertura.hasta) ? cobertura.hasta : hasta;
+  const d = n(desde) < n(cobertura.desde) ? cobertura.desde : desde;
+  const h = n(hasta) > n(cobertura.hasta) ? cobertura.hasta : hasta;
   return n(d) > n(h) ? null : { desde: d, hasta: h };
 }
 
@@ -477,6 +500,82 @@ function aplanarHistoricos(raw) {
   return { filas, descartadas };
 }
 
+/* ─────────────────── distribuciones (retorno total) ─────────────────── */
+
+// NAFTRAC reparte, y comparar contra el precio pelón le resta ~3%/año al
+// benchmark — o sea que nos regalaría un exceso que no existe. El benchmark es
+// RETORNO TOTAL: precio + distribuciones reinvertidas en la fecha ex-cupón.
+//
+// Las distribuciones vienen dentro de la respuesta de /v2/emisoras, así que no
+// cuestan un request extra: llegan con el censo. La forma exacta NO está
+// verificada [NO VERIFICADO], así que el extractor es tolerante y el crudo del
+// censo se guarda igual — si esto falla, se re-extrae con un UPDATE.
+const RE_DISTRIBUCION = /distribuc|dividend|cupon|cupón|reparto/i;
+const ALIAS_MONTO = ['monto', 'importe', 'dividendo', 'distribucion', 'distribución', 'valor', 'cantidad', 'amount'];
+const ALIAS_EX = ['fecha_ex', 'ex', 'excupon', 'excupón', 'fecha_excupon', 'fecha', 'date'];
+
+/**
+ * Saca {fecha_ex, monto} de donde sea que vengan. La fecha que importa es la
+ * **ex-cupón**: reinvertir en la fecha de pago adelantaría el flujo y metería
+ * look-ahead por la puerta de atrás — justo lo que los 65 días cierran del
+ * otro lado.
+ */
+function extraerDistribuciones(raw) {
+  const out = [];
+  let descartadas = 0;
+  const visto = new Set();
+
+  const tomar = (bajo, nombres) => {
+    for (const n of nombres) {
+      const v = bajo[normalizaLlave(n)];
+      if (v !== undefined && v !== null && v !== '') return v;
+    }
+    return undefined;
+  };
+
+  const fila = (clave, valor) => {
+    const bajo = {};
+    if (valor && typeof valor === 'object' && !Array.isArray(valor)) {
+      for (const [k, v] of Object.entries(valor)) bajo[normalizaLlave(k)] = v;
+    }
+    const crudoFecha = tomar(bajo, ALIAS_EX) ?? clave;
+    const m = /(\d{4}-\d{2}-\d{2})/.exec(String(crudoFecha ?? ''));
+    const monto = aNumero(tomar(bajo, ALIAS_MONTO) ?? (valor && typeof valor === 'object' ? undefined : valor));
+    // Sin fecha ex o sin monto no sirve para reinvertir: se descarta y se
+    // cuenta. Inventarle un cero pasaría como "no repartió" sin serlo.
+    if (!m || monto === null) { descartadas++; return; }
+    const llave = m[1] + '|' + monto;
+    if (visto.has(llave)) return;
+    visto.add(llave);
+    out.push({ fecha_ex: m[1], monto });
+  };
+
+  const caminar = (nodo, dentro, profundidad) => {
+    if (!nodo || typeof nodo !== 'object' || profundidad > 6) return;
+    if (Array.isArray(nodo)) {
+      if (dentro) for (const it of nodo) fila(null, it);
+      else for (const it of nodo) caminar(it, false, profundidad + 1);
+      return;
+    }
+    for (const [k, v] of Object.entries(nodo)) {
+      if (!v || typeof v !== 'object') continue;
+      const esAqui = dentro || RE_DISTRIBUCION.test(k);
+      if (!esAqui) { caminar(v, false, profundidad + 1); continue; }
+      if (Array.isArray(v)) { for (const it of v) fila(null, it); continue; }
+      const llaves = Object.keys(v);
+      if (llaves.some((x) => /^\d{4}-\d{2}-\d{2}/.test(x))) {
+        for (const x of llaves) fila(x, v[x]);
+        continue;
+      }
+      caminar(v, true, profundidad + 1);
+    }
+  };
+  caminar(raw, false, 0);
+
+  out.sort((a, b) => (a.fecha_ex < b.fecha_ex ? -1 : a.fecha_ex > b.fecha_ex ? 1 : 0));
+  return { distribuciones: out, descartadas };
+}
+
 /* ─────────────────── presupuesto de créditos ─────────────────── */
 
 /**
@@ -495,9 +594,11 @@ function mesPresupuesto(fecha = new Date()) {
 const PRESUPUESTO_MENSUAL = 200000;
 
 export {
-  BASE, BENCHMARK, CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL, TIMEOUT_MS,
+  BASE, BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
+  CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL, TIMEOUT_MS,
   aNumero, aplanarHistoricos, cabecerasDeCredito, clavePeriodo, construirUrl,
-  dormir, finDeTrimestre, mesPresupuesto, normalizaLlave, normalizarFinancieros,
+  dormir, extraerDistribuciones, finDeTrimestre, mesPresupuesto, normalizaLlave,
+  normalizarFinancieros,
   parseClavePeriodo, parsearRangoFechas, parsearRangoPeriodos, recortarACobertura,
   resolverCampo, traer, trimestresEntre, urlSegura,
 };

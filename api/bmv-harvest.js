@@ -48,15 +48,18 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import {
-  BENCHMARK, CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL,
-  aplanarHistoricos, clavePeriodo, construirUrl, dormir, finDeTrimestre,
+  BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
+  CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL,
+  aplanarHistoricos, clavePeriodo, construirUrl, dormir, extraerDistribuciones,
+  finDeTrimestre,
   mesPresupuesto, normalizarFinancieros, parsearRangoFechas, parsearRangoPeriodos,
   recortarACobertura, resolverCampo, traer, trimestresEntre,
 } from './_lib/databursatil.js';
 
 import {
   ensureBmvSchema, upsertEmisora, emisorasIcs, emisoraPorClave, censoResumen,
-  upsertFinancieros, insertarPrecios, ultimaFechaPrecios, marcarLedger, clavesHechas, ledgerResumen,
+  upsertFinancieros, insertarPrecios, insertarDistribuciones, ultimaFechaPrecios,
+  marcarLedger, clavesHechas, ledgerResumen,
   presupuesto, gastar, cobertura, leerMeta, guardarMeta,
 } from './_lib/bmv-db.js';
 
@@ -69,7 +72,7 @@ export const maxDuration = 300;
 // "¿dónde se quedó?" se contesta mejor con la respuesta que con una query.
 const LIMITE_MS = 240000;
 
-const TOPE_PROBE = 15;          // tope DURO de requests del probe
+const TOPE_PROBE = 18;          // tope DURO de requests del probe
 
 // Piso de la serie de precios cuando el censo no trae `rango_historicos`.
 // NO es una referencia a "hoy": es el arranque de la cobertura de financieros
@@ -106,8 +109,22 @@ function authorized(req) {
 const CONTRATO_DEFECTO = {
   financieros: { forma: 'periodo', periodo: 'periodo' },
   historicos: { inicio: 'inicio', final: 'final' },
+  // El benchmark es "NAFTRAC ISHRS" (emisora NAFTRAC, serie ISHRS). Lety dijo
+  // usarlo TAL CUAL, así que ese es el default; 'emisora_serie' queda como la
+  // alternativa que el probe intenta si el identificador completo no pega.
+  benchmark: { forma: 'identificador' },
   verificado: false,
 };
+
+/** Cómo se nombra al benchmark en /v2/historicos, según el contrato. */
+function paramsBenchmark(contrato, desde, hasta) {
+  const c = (contrato && contrato.benchmark) || CONTRATO_DEFECTO.benchmark;
+  const base = paramsHistoricos(contrato, BENCHMARK, desde, hasta);
+  if (c.forma === 'emisora_serie') {
+    return { ...base, emisora: BENCHMARK_EMISORA, serie: BENCHMARK_SERIE };
+  }
+  return base;
+}
 
 /** Las grafías candidatas del periodo en /v2/financieros. */
 function candidatosFinancieros(anio, trimestre) {
@@ -262,29 +279,46 @@ async function emisorasParaEstimar() {
   let filas = [];
   try { filas = await emisorasIcs(); } catch (e) { filas = []; }
   if (filas.length) {
+    // El benchmark no es ICS (es 1B), así que no sale en `filas` — pero su
+    // serie de precios sí se cosecha y sí cuesta. Contarlo aparte evita un
+    // presupuesto que se queda corto justo en lo único sin lo cual no hay
+    // contra qué medir.
+    let bench = null;
+    try { bench = await emisoraPorClave(BENCHMARK); } catch (e) { bench = null; }
+    const extra = [{
+      emisora: BENCHMARK,
+      finDesde: null, finHasta: null,          // un ETF no reporta financieros
+      histDesde: bench && bench.hist_desde ? String(bench.hist_desde).slice(0, 10) : PRECIOS_DESDE_DEFECTO,
+      histHasta: bench && bench.hist_hasta ? String(bench.hist_hasta).slice(0, 10) : new Date().toISOString().slice(0, 10),
+    }];
     return {
-      fuente: 'bmv_emisoras (censo real de DataBursatil)',
-      lista: filas.map((f) => ({
+      fuente: 'bmv_emisoras (censo real de DataBursatil) + benchmark',
+      lista: [...extra, ...filas.map((f) => ({
         emisora: f.emisora,
         finDesde: f.fin_desde ? { anio: Number(String(f.fin_desde).split('-')[0]), trimestre: Number(String(f.fin_desde).split('-')[1]) } : null,
         finHasta: f.fin_hasta ? { anio: Number(String(f.fin_hasta).split('-')[0]), trimestre: Number(String(f.fin_hasta).split('-')[1]) } : null,
         histDesde: f.hist_desde ? String(f.hist_desde).slice(0, 10) : null,
         histHasta: f.hist_hasta ? String(f.hist_hasta).slice(0, 10) : null,
-      })),
+      }))],
     };
   }
   // Sin censo todavía: se estima con las 30 ICS de Fase 1a y la cobertura
   // declarada, que es el PEOR caso razonable (todas con historia completa).
   const hoy = new Date().toISOString().slice(0, 10);
   return {
-    fuente: 'api/_lib/emisoras.json (Fase 1a) + cobertura declarada — PEOR CASO',
-    lista: (EMISORAS_ICS.emisoras || EMISORAS_ICS).map((e) => ({
-      emisora: e.clave || e.emisora,
-      finDesde: COBERTURA_FIN.desde,
-      finHasta: COBERTURA_FIN.hasta,
-      histDesde: PRECIOS_DESDE_DEFECTO,
-      histHasta: hoy,
-    })),
+    fuente: 'api/_lib/emisoras.json (Fase 1a) + benchmark + cobertura declarada — PEOR CASO',
+    lista: [
+      // El benchmark no reporta financieros (es un ETF), pero su serie de
+      // precios cuesta igual que la de cualquier emisora.
+      { emisora: BENCHMARK, finDesde: null, finHasta: null, histDesde: PRECIOS_DESDE_DEFECTO, histHasta: hoy },
+      ...(EMISORAS_ICS.emisoras || EMISORAS_ICS).map((e) => ({
+        emisora: e.clave || e.emisora,
+        finDesde: COBERTURA_FIN.desde,
+        finHasta: COBERTURA_FIN.hasta,
+        histDesde: PRECIOS_DESDE_DEFECTO,
+        histHasta: hoy,
+      })),
+    ],
   };
 }
 
@@ -375,20 +409,40 @@ async function jobProbe(req) {
     await dormir(PAUSA_MS);
   }
 
+  // ── 4. El benchmark se nombra distinto ("NAFTRAC ISHRS"), así que se prueba
+  // aparte: que /v2/historicos funcione con una emisora normal no garantiza
+  // que acepte el identificador con serie pegada.
+  for (const forma of ['identificador', 'emisora_serie']) {
+    if (!cartera.puedeSeguir()) break;
+    const r = await traer(construirUrl('/historicos', paramsBenchmark({ ...contrato, benchmark: { forma } }, desde, hasta)));
+    cartera.anota(r);
+    const plano = r.ok ? aplanarHistoricos(r.json) : { filas: [] };
+    pasos.push({
+      paso: 'benchmark', candidato: forma, url: r.url, status: r.status,
+      ok: r.ok, filas: plano.filas.length, primera_fila: plano.filas[0] || null,
+      cuerpo: r.ok ? undefined : r.texto,
+    });
+    if (plano.filas.length) { contrato.benchmark = { forma }; break; }
+    await dormir(PAUSA_MS);
+  }
+
   const finOk = pasos.some((p) => p.paso === 'financieros' && p.sirve);
   const histOk = pasos.some((p) => p.paso === 'historicos' && p.filas > 0);
-  contrato.verificado = finOk && histOk;
+  const benchOk = pasos.some((p) => p.paso === 'benchmark' && p.filas > 0);
+  contrato.verificado = finOk && histOk && benchOk;
   contrato.probado_at = new Date().toISOString();
 
   const gastoMes = await cerrarCartera(cartera);
-  if (finOk || histOk) {
+  if (finOk || histOk || benchOk) {
     await guardarMeta('contrato', contrato,
-      `probe ${emisora} ${anio}-${trimestre}: financieros=${finOk ? 'ok' : 'NO'} historicos=${histOk ? 'ok' : 'NO'}`);
+      `probe ${emisora} ${anio}-${trimestre}: financieros=${finOk ? 'ok' : 'NO'} historicos=${histOk ? 'ok' : 'NO'} benchmark=${benchOk ? 'ok' : 'NO'}`);
   }
 
   return {
     job: 'probe', emisora, periodo: clavePeriodo(anio, trimestre),
-    contrato, guardado: finOk || histOk,
+    contrato, guardado: finOk || histOk || benchOk,
+    // Sin benchmark no hay backtest: el criterio se mide CONTRA él.
+    benchmark: { identificador: BENCHMARK, resuelto: benchOk },
     veredicto: contrato.verificado
       ? 'contrato descubierto — ya se puede cosechar'
       : 'contrato INCOMPLETO — revisar `cuerpo` de los pasos fallidos antes de cosechar',
@@ -471,13 +525,21 @@ function filasDelCenso(json) {
   return out;
 }
 
-/** Una clave de pizarra: 'WALMEX', 'PE&OLES', 'GFNORTE', 'AC'. */
+/**
+ * Una clave de pizarra: 'WALMEX', 'PE&OLES', 'AC' — y también 'NAFTRAC ISHRS',
+ * que lleva la serie pegada con un espacio.
+ *
+ * Ese espacio importa: la primera versión de este filtro exigía una sola
+ * palabra y habría TIRADO la fila del benchmark del censo, silenciosamente.
+ * Por eso se admite UN espacio y un segundo token corto — con dos o más, ya es
+ * prosa ('RESULTADO DE LA CONSULTA') y no una pizarra.
+ */
 function pareceClave(k) {
-  return /^[A-Z][A-Z0-9&*.-]{0,11}$/.test(String(k).trim().toUpperCase());
+  return /^[A-Z][A-Z0-9&*.-]{0,11}(?: [A-Z0-9&*.-]{1,8})?$/.test(String(k).trim().toUpperCase());
 }
 
 function tieneCampoDeEmisora(v) {
-  return Object.keys(v).some((k) => /^(emisora|clave|razon_social|tipo_valor_id)/i.test(k));
+  return Object.keys(v).some((k) => /^(emisora|clave|serie|razon_social|tipo_valor_id)/i.test(k));
 }
 
 async function jobEmisoras() {
@@ -497,7 +559,17 @@ async function jobEmisoras() {
   }
 
   const filas = filasDelCenso(r.json);
-  for (const f of filas) await upsertEmisora(f);
+  // Las distribuciones vienen DENTRO de esta misma respuesta, así que se
+  // extraen aquí: pedirlas después costaría otro request, y el benchmark de
+  // retorno total las necesita.
+  let distribuciones = 0;
+  for (const f of filas) {
+    await upsertEmisora(f);
+    const d = extraerDistribuciones(f.raw);
+    if (d.distribuciones.length) {
+      distribuciones += await insertarDistribuciones(f.emisora, d.distribuciones);
+    }
+  }
 
   const ics = filas.filter((f) => f.tipo_valor_id === '1');
   const sinRango = ics.filter((f) => !f.fin_desde);
@@ -514,9 +586,23 @@ async function jobEmisoras() {
     // emisora que no se puede meter al universo sin inventarle una fecha de
     // nacimiento, así que se reporta aparte y en voz alta.
     ics_sin_rango_financieros: sinRango.map((f) => ({ emisora: f.emisora, motivo: f.fin_motivo })),
+    distribuciones_guardadas: distribuciones,
     benchmark: bench
-      ? { emisora: BENCHMARK, tipo_valor_id: bench.tipo_valor_id, estatus: bench.estatus, hist_desde: bench.hist_desde, hist_hasta: bench.hist_hasta }
-      : { emisora: BENCHMARK, presente: false, nota: 'NAFTRAC no aparece en /v2/emisoras?mercado=local — PREGUNTAR antes de sustituirlo por el índice IPC' },
+      ? {
+          emisora: BENCHMARK,
+          tipo_valor_id: bench.tipo_valor_id,
+          // El benchmark NO debe estar en el universo. Con tipo 1B la
+          // exclusión es estructural (el filtro es `= '1'`, texto exacto);
+          // esto lo verifica contra el dato real, no contra el supuesto.
+          fuera_del_universo: bench.tipo_valor_id !== '1',
+          tipo_esperado: BENCHMARK_TIPO,
+          tipo_como_esperado: bench.tipo_valor_id === BENCHMARK_TIPO,
+          estatus: bench.estatus,
+          hist_desde: bench.hist_desde,
+          hist_hasta: bench.hist_hasta,
+          distribuciones: extraerDistribuciones(bench.raw).distribuciones.length,
+        }
+      : { emisora: BENCHMARK, presente: false, nota: `${BENCHMARK} no aparece en /v2/emisoras?mercado=local — PREGUNTAR antes de sustituirlo por el índice IPC` },
     censo: await censoResumen(),
     creditos: gastoMes,
   };
@@ -671,7 +757,10 @@ async function jobHistoricos(req) {
   for (; i < pendientes.length; i++) {
     if (!cartera.puedeSeguir()) break;
     const p = pendientes[i];
-    const r = await traer(construirUrl('/historicos', paramsHistoricos(contrato, p.emisora, p.desde, p.hasta)));
+    const params = p.emisora === BENCHMARK
+      ? paramsBenchmark(contrato, p.desde, p.hasta)
+      : paramsHistoricos(contrato, p.emisora, p.desde, p.hasta);
+    const r = await traer(construirUrl('/historicos', params));
     cartera.anota(r);
 
     if (!r.ok) {
@@ -840,7 +929,8 @@ export default async function handler(req, res) {
 }
 
 export {
-  CONTRATO_DEFECTO, PRECIOS_DESDE_DEFECTO, candidatosFinancieros, candidatosHistoricos, coberturaMd,
+  CONTRATO_DEFECTO, PRECIOS_DESDE_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, coberturaMd,
   contar, estimarConsumo, filaCenso, filasDelCenso, pareceClave, muestraChica, nuevaCartera,
-  paramsFinancieros, paramsHistoricos, parsePeriodoTexto, sirveFinanciero,
+  paramsBenchmark, paramsFinancieros, paramsHistoricos, parsePeriodoTexto,
+  sirveFinanciero,
 };

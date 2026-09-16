@@ -20,16 +20,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
   COBERTURA_FIN, PRESUPUESTO_MENSUAL,
-  aNumero, aplanarHistoricos, clavePeriodo, construirUrl, finDeTrimestre,
-  mesPresupuesto, normalizarFinancieros, parseClavePeriodo, parsearRangoFechas,
-  parsearRangoPeriodos, recortarACobertura, resolverCampo, trimestresEntre, urlSegura,
+  aNumero, aplanarHistoricos, clavePeriodo, construirUrl, extraerDistribuciones,
+  finDeTrimestre, mesPresupuesto, normalizarFinancieros, parseClavePeriodo,
+  parsearRangoFechas, parsearRangoPeriodos, recortarACobertura, resolverCampo,
+  trimestresEntre, urlSegura,
 } from '../api/_lib/databursatil.js';
 
 import {
-  CONTRATO_DEFECTO, candidatosFinancieros, candidatosHistoricos, contar,
+  CONTRATO_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, contar,
   estimarConsumo, filaCenso, filasDelCenso, nuevaCartera, pareceClave,
-  paramsFinancieros, paramsHistoricos, parsePeriodoTexto, sirveFinanciero,
+  paramsBenchmark, paramsFinancieros, paramsHistoricos, parsePeriodoTexto,
+  sirveFinanciero,
 } from '../api/bmv-harvest.js';
 
 /* ── calendario de trimestres ───────────────────────────────────── */
@@ -65,6 +68,15 @@ test('recortarACobertura no deja pedir fuera de lo que la API tiene', () => {
   assert.deepEqual(tarde.desde, { anio: 2019, trimestre: 2 });
   // Y una deslistada antes del inicio de la cobertura no deja nada que pedir.
   assert.equal(recortarACobertura({ anio: 2011, trimestre: 1 }, { anio: 2014, trimestre: 4 }), null);
+});
+
+test('recortarACobertura falla CERRADO: un rango ausente no se rellena con "todo"', () => {
+  // Rellenarlo le inventaría a la emisora una fecha de nacimiento, la metería
+  // al universo en trimestres en los que no cotizaba, y cobraría 41 requests
+  // por cada rango que no se supo leer.
+  assert.equal(recortarACobertura(null, { anio: 2026, trimestre: 2 }), null);
+  assert.equal(recortarACobertura({ anio: 2016, trimestre: 2 }, null), null);
+  assert.equal(recortarACobertura(null, null), null);
 });
 
 test('parseClavePeriodo acepta AAAA-T y rechaza lo demás', () => {
@@ -326,7 +338,8 @@ test('el contrato de arranque viene marcado como NO verificado', () => {
 test('los candidatos del probe caben en el tope y no se repiten', () => {
   const f = candidatosFinancieros(2026, 2);
   const h = candidatosHistoricos('2026-06-20', '2026-06-30');
-  assert.ok(1 + f.length + h.length <= 15, 'el probe no debe poder pasarse de su tope duro');
+  // 1 censo + financieros + históricos + 2 grafías del benchmark.
+  assert.ok(1 + f.length + h.length + 2 <= TOPE_PROBE, 'el probe no debe poder pasarse de su tope duro');
   assert.equal(new Set(f.map((c) => c.etiqueta)).size, f.length);
   assert.equal(new Set(h.map((c) => c.etiqueta)).size, h.length);
 });
@@ -427,4 +440,102 @@ test('pareceClave acepta pizarras reales y rechaza prosa', () => {
 test('un objeto anidado con campos de emisora pasa aunque la llave sea rara', () => {
   const filas = filasDelCenso({ fila_1: { emisora: 'ALFA', tipo_valor_id: '1' } });
   assert.deepEqual(filas.map((f) => f.emisora), ['ALFA']);
+});
+
+/* ── el benchmark: NAFTRAC ISHRS, tipo 1B ───────────────────────── */
+
+test('el benchmark es el identificador completo, con su serie', () => {
+  assert.equal(BENCHMARK, 'NAFTRAC ISHRS');
+  assert.equal(BENCHMARK_EMISORA, 'NAFTRAC');
+  assert.equal(BENCHMARK_SERIE, 'ISHRS');
+  assert.equal(BENCHMARK_TIPO, '1B');
+});
+
+test('el benchmark NO puede colarse al universo: 1B nunca empata con 1', () => {
+  // La exclusión es ESTRUCTURAL, no una excepción escrita a mano: el filtro
+  // del universo es igualdad exacta de texto contra '1', y el censo guarda el
+  // tipo sin coerción. Si alguien cambiara el filtro a un LIKE o a un Number(),
+  // este test se cae — que es justo para lo que está.
+  const filas = filasDelCenso({
+    WALMEX: { tipo_valor_id: 1, rango_financieros: '2016-2/2026-2' },
+    'NAFTRAC ISHRS': { tipo_valor_id: '1B', rango_financieros: '2016-2/2026-2' },
+  });
+  const ics = filas.filter((f) => f.tipo_valor_id === '1');
+  assert.deepEqual(ics.map((f) => f.emisora), ['WALMEX']);
+  const bench = filas.find((f) => f.emisora === BENCHMARK);
+  assert.equal(bench.tipo_valor_id, '1B', 'el tipo se guarda como texto, sin coerción');
+  assert.notEqual(bench.tipo_valor_id, '1');
+});
+
+test('el censo NO tira la fila del benchmark por el espacio de la serie', () => {
+  // Esto es una regresión con nombre: la primera versión del filtro anti-basura
+  // exigía una sola palabra y habría desaparecido al benchmark en silencio.
+  assert.equal(pareceClave(BENCHMARK), true);
+  const filas = filasDelCenso({ 'NAFTRAC ISHRS': { tipo_valor_id: '1B', rango_historicos: '2010-01-04/2026-09-15' } });
+  assert.deepEqual(filas.map((f) => f.emisora), [BENCHMARK]);
+});
+
+test('paramsBenchmark usa el identificador tal cual, o emisora+serie', () => {
+  const ident = paramsBenchmark(CONTRATO_DEFECTO, '2016-01-01', '2026-09-16');
+  assert.equal(ident.emisora, 'NAFTRAC ISHRS');
+  assert.equal(ident.serie, undefined);
+
+  const partido = paramsBenchmark(
+    { historicos: { inicio: 'inicio', final: 'final' }, benchmark: { forma: 'emisora_serie' } },
+    '2016-01-01', '2026-09-16');
+  assert.equal(partido.emisora, 'NAFTRAC');
+  assert.equal(partido.serie, 'ISHRS');
+});
+
+/* ── distribuciones: el benchmark es de RETORNO TOTAL ───────────── */
+
+test('extraerDistribuciones lee el mapa por fecha y ordena', () => {
+  const { distribuciones, descartadas } = extraerDistribuciones({
+    distribuciones: { '2026-02-16': { monto: '0.38' }, '2026-01-15': { monto: 0.42 } },
+  });
+  assert.equal(descartadas, 0);
+  assert.deepEqual(distribuciones, [
+    { fecha_ex: '2026-01-15', monto: 0.42 },
+    { fecha_ex: '2026-02-16', monto: 0.38 },
+  ]);
+});
+
+test('extraerDistribuciones lee el arreglo y descarta lo que no sirve para reinvertir', () => {
+  const { distribuciones, descartadas } = extraerDistribuciones({
+    dividendos: [
+      { fecha_ex: '2025-03-10', importe: 1.1 },
+      { fecha_ex: 'pendiente', importe: 2 },     // sin fecha ex: no se puede reinvertir
+      { fecha_ex: '2025-06-10', importe: 'n/d' }, // sin monto
+    ],
+  });
+  assert.deepEqual(distribuciones, [{ fecha_ex: '2025-03-10', monto: 1.1 }]);
+  assert.equal(descartadas, 2, 'lo que no se puede reinvertir se cuenta, no se rellena con cero');
+});
+
+test('extraerDistribuciones no confunde el rango del censo con un reparto', () => {
+  const { distribuciones } = extraerDistribuciones({
+    rango_financieros: '2016-2/2026-2', rango_historicos: '2010-01-04/2026-09-15', tipo_valor_id: '1B',
+  });
+  assert.deepEqual(distribuciones, []);
+});
+
+test('extraerDistribuciones no duplica el mismo reparto visto dos veces', () => {
+  const { distribuciones } = extraerDistribuciones({
+    distribuciones: [{ fecha_ex: '2025-01-10', monto: 0.5 }],
+    dividendos: [{ fecha_ex: '2025-01-10', monto: 0.5 }],
+  });
+  assert.equal(distribuciones.length, 1);
+});
+
+/* ── el presupuesto cuenta al benchmark ─────────────────────────── */
+
+test('estimarConsumo cobra el rango de precios del benchmark, sin financieros', () => {
+  // Un ETF no reporta trimestres, pero su serie de precios sí cuesta — y es la
+  // única sin la cual no hay contra qué medir.
+  const e = estimarConsumo({
+    emisoras: [{ emisora: BENCHMARK, finDesde: null, finHasta: null, histDesde: '2016-01-01', histHasta: '2026-09-16' }],
+  });
+  assert.equal(e.requests.financieros, 0);
+  assert.equal(e.requests.historicos, 1);
+  assert.ok(e.datos.dias_precio > 2000);
 });
