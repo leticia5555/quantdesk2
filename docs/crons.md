@@ -175,6 +175,44 @@ Pendiente opcional: regresar `screener:refresh` a `vercel.json` y retirar el
 workflow de Actions — ya no hace falta el split, pero Actions funciona igual,
 así que no es urgente.
 
+### `disabled: true` no es una falla (2026-09-17)
+
+Volvió a pasar lo de `pead:earnings`, ahora con `screener:refresh`: correo
+diario de Actions con *"Failed in 3 seconds"* y el cron NO estaba roto. El
+endpoint contestaba HTTP 200 con `{"disabled": true}` porque
+`ARENA_SCREENER_ENABLED != 1` en Vercel, y el workflow lo trataba como fallo
+duro.
+
+El arreglo de la vez pasada fue quitar el schedule, que sirve cuando el job ya
+no hace falta. Acá **sí hace falta**: `readScreenerRows()` lo leen dos caminos
+VIVOS —`arena-run` (el canal `screener` del buffet) y `arena-watch` (los
+símbolos vigilados)—, así que el cron se queda y lo que se arregla es qué
+cuenta como falla:
+
+| cuerpo | color | por qué |
+|---|---|---|
+| refresh normal | 🟢 | corrió |
+| `disabled: true` | 🟡 aviso | el endpoint contestó **bien**: dijo que está apagado. Es configuración, no falla |
+| ledger vacío | 🟡 aviso | accionable (`?job=seed`), pero el cron no está roto |
+| HTTP 401 | 🔴 | el secret de Actions no coincide con la env var de Vercel |
+| HTTP ≥400 / `error` / no-JSON | 🔴 | roto de verdad |
+
+**La razón de fondo, que vale para cualquier alerta:** un rojo permanente se
+silencia, y el día que un cron se caiga en serio el aviso va a estar en la
+misma carpeta que todos los que se aprendieron a ignorar. Un aviso rojo que se
+ignora es peor que no tener aviso, porque además da la sensación de que hay
+vigilancia.
+
+Que el screener esté apagado NO queda sin vigilar: `screenerDataState()`
+publica `screener_state` (`disabled` | `empty` | `stale` | `fresh`) dentro del
+buffet, así que cada corrida lo declara en su propio journal, y el heartbeat
+sigue en `/api/cron-status`. Eso es vigilancia con contexto; el color de un run
+de Actions no lo es.
+
+Lo blinda `tests/external-crons.test.mjs`, que **ejecuta** el shell del
+workflow contra los siete cuerpos de la tabla. El comentario que explicaba la
+lección ya estaba en el archivo desde `pead:earnings` y no impidió repetirla.
+
 **Retirado: `pead:earnings`.** El backtest PEAD cerró con NO-GO (ledger 99/99).
 El goteo de AlphaVantage se apaga en dos lugares y hacen cosas distintas:
 `PEAD_HARVEST_ENABLED != 1` (env var de Vercel) **corta el gasto de la key**, y
