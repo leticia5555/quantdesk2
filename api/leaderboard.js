@@ -15,6 +15,21 @@
 // caen al final sin ranking. Honesto > panel roto: si algo falla, el agente
 // igual aparece con su error visible.
 //
+// ── LA FILA DEL BENCHMARK ─────────────────────────────────────────────
+// Además de los siete va una OCTAVA fila: `S&P 500 · SPY`, $100k comprados el
+// día del reset y nunca tocados (_lib/arena-benchmark.js). Se ORDENA por equity
+// junto a los agentes —un benchmark al pie de la tabla se lee como nota al pie—
+// pero NO toma número de ranking: `kind: 'BENCHMARK'`, `compite: false`, y los
+// rangos 1..N se reparten solo entre los que decidieron algo. Si el índice
+// queda arriba de todos, eso se VE en el orden; lo que no puede pasar es que
+// "va ganando el S&P" salga de una fila que no jugó.
+//
+// `exceso_pp` por agente = su return menos el del índice. Y con `?postmortem=1`
+// sale además el bloque completo con el PISO DE RUIDO (claude↔control): un
+// exceso más chico que la distancia entre dos corridas idénticas no es
+// habilidad. Va detrás de una bandera porque exige leer el journal de la
+// sombra, y esta ruta es pública y cacheada.
+//
 // ENV VARS: ARENA_ENABLED · ALPACA_<ALPACA>_KEY/SECRET por agente ·
 //           DATABASE_URL · ARENA_BASELINE_EQUITY (opc, default 100000).
 // ═══════════════════════════════════════════════════════════════
@@ -22,6 +37,9 @@
 import { sql, ensureSchema } from './_lib/db.js';
 import { getAccount, getPositions } from './_lib/alpaca.js';
 import { activeAgents, agentAlpacaCreds } from './_lib/arena-registry.js';
+import {
+  BENCHMARK, leerBenchmark, precioBenchmark, benchmarkReturnPct, filaBenchmark, excesoVsBenchmark,
+} from './_lib/arena-benchmark.js';
 
 const BASELINE = (() => {
   const n = Number(process.env.ARENA_BASELINE_EQUITY);
@@ -29,6 +47,35 @@ const BASELINE = (() => {
 })();
 
 const pct = (a, b) => (Number.isFinite(a) && Number.isFinite(b) && b !== 0 ? +(((a - b) / b) * 100).toFixed(2) : null);
+
+const eqOf = (r) => (r && r.account && Number.isFinite(r.account.equity) ? r.account.equity : null);
+
+// ── EL ORDEN DE LA TABLA ─────────────────────────────────────────────
+// Pura, sin red, para que un test la ejercite entera.
+//
+// Dos cosas distintas que la gente confunde y acá NO se confunden:
+//   - El ORDEN es por equity e incluye al benchmark. Si el índice va arriba de
+//     los siete, eso tiene que verse en la primera fila.
+//   - El RANGO (1, 2, 3…) es solo para los que compiten. El benchmark no
+//     decidió nada: no puede ganar, así que no toma número. Por eso el rango se
+//     asigna DESPUÉS de ordenar, contando solo `compite !== false` — si se
+//     asignara antes, el índice se comería un puesto y "claude va 2º" sería
+//     falso de una forma difícil de ver.
+// Sin equity (sin keys, Alpaca caída, benchmark sin abrir) → al final, sin rango.
+export function ordenarRanking({ agentes = [], bench = null } = {}) {
+  const filas = [...agentes, ...(bench ? [bench] : [])];
+  const conEquity = filas.filter((r) => eqOf(r) != null).sort((a, b) => eqOf(b) - eqOf(a));
+  const sinEquity = filas.filter((r) => eqOf(r) == null);
+  let puesto = 0;
+  const marca = (r, orden) => ({
+    id: r.id, name: r.name, kind: r.kind || 'MODELO',
+    compite: r.compite !== false,
+    orden, equity: eqOf(r),
+    return_pct: r.return_pct ?? null,
+    rank: r.compite !== false && eqOf(r) != null ? ++puesto : null,
+  });
+  return [...conEquity, ...sinEquity].map((r, i) => marca(r, i + 1));
+}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -92,17 +139,76 @@ export default async function handler(req, res) {
     return out;
   }));
 
-  // Ranking por EQUITY (decisión #6). Los que ya operan (con equity) van primero,
-  // ordenados desc; los que aún no (sin keys / Alpaca caída) caen al final sin rank.
-  const withEquity = rows.filter((r) => r.account && Number.isFinite(r.account.equity));
-  const withoutEquity = rows.filter((r) => !(r.account && Number.isFinite(r.account.equity)));
-  withEquity.sort((a, b) => b.account.equity - a.account.equity);
-  withEquity.forEach((r, i) => { r.rank = i + 1; });
-  withoutEquity.forEach((r) => { r.rank = null; });
-  const ranked = [...withEquity, ...withoutEquity];
+  // ── EL BENCHMARK ─────────────────────────────────────────────────────
+  // Best-effort de punta a punta: si Neon o Alpaca no contestan, la liga se
+  // publica igual y la fila del índice sale con su motivo. Una tabla sin
+  // benchmark es peor; una tabla que no carga es mucho peor.
+  let bench = null;
+  try {
+    const estado = await leerBenchmark();
+    // Keys de cualquier agente: `ALPACA_PAPER_KEY` (el default de la casa) puede
+    // no estar puesta — en la liga cada cuenta tiene su propio par.
+    const creds = agents.map(agentAlpacaCreds).find(Boolean) || null;
+    const precio = estado ? await precioBenchmark({ creds, preferOpen: false }) : { ok: false, reason: 'sin_abrir' };
+    bench = filaBenchmark(estado, precio.ok ? precio.price : null);
+    if (estado && !precio.ok) bench.precio_error = precio.detail || precio.reason;
+  } catch (err) {
+    bench = { ...filaBenchmark(null, null), error: String((err && err.message) || err) };
+  }
 
-  const body = { enabled, count: ranked.length, baseline_equity: BASELINE, agents: ranked };
+  // Ranking por EQUITY (decisión #6), con el benchmark ordenado entre medio
+  // pero sin tomar puesto. Ver `ordenarRanking`.
+  const ranking = ordenarRanking({ agentes: rows, bench });
+  const porId = new Map(ranking.map((r) => [r.id, r]));
+  for (const r of rows) r.rank = (porId.get(r.id) || {}).rank ?? null;
+  if (bench) bench.rank = null;
+
+  // El EXCESO vs. el índice, en la fila de cada agente. Es la única cifra que
+  // contesta "¿le ganó al mercado?", y cuesta una resta: no merece una bandera.
+  const benchReturn = bench && bench.abierto ? bench.return_pct : null;
+  for (const r of rows) {
+    r.exceso_pp = benchReturn != null && Number.isFinite(r.return_pct)
+      ? +(r.return_pct - benchReturn).toFixed(2) : null;
+  }
+
+  const ranked = [...rows].sort((a, b) => {
+    const A = porId.get(a.id), B = porId.get(b.id);
+    return ((A && A.orden) || 0) - ((B && B.orden) || 0);
+  });
+
+  const body = {
+    enabled, count: ranked.length, baseline_equity: BASELINE,
+    agents: ranked,
+    // Fuera de `agents` a propósito: los consumidores que cuentan modelos
+    // (`agents.length`) seguirían contando siete, no ocho. El benchmark no es
+    // un modelo y la forma de la respuesta no debería sugerir que lo es.
+    benchmark: bench,
+    // El orden VISUAL, liviano: id + puesto + equity. La página arma la tabla
+    // con esto y busca la fila completa por id, así el orden se decide UNA vez
+    // acá y no se re-deriva en el navegador.
+    ranking,
+  };
   if (journalErr) body.journal_error = journalErr;
+
+  // ── EL POST-MORTEM, detrás de bandera ────────────────────────────────
+  // Exceso por agente CONTRA el piso de ruido. Exige leer el journal de la
+  // sombra, que es una consulta más en una ruta pública y cacheada — por eso no
+  // va en el camino por defecto.
+  if (String((req.query || {}).postmortem || '') === '1') {
+    let piso = null;
+    try {
+      const { shadowReport } = await import('./_lib/arena-shadow.js');
+      const rep = await shadowReport();
+      piso = rep && rep.piso_de_ruido ? rep.piso_de_ruido : null;
+    } catch (err) {
+      piso = { comparable: false, motivo: 'no se pudo leer el piso de ruido: ' + String((err && err.message) || err) };
+    }
+    body.post_mortem = excesoVsBenchmark({
+      agentes: rows.filter((r) => r.compite !== false),
+      benchmarkReturn: benchReturn,
+      pisoDeRuido: piso,
+    });
+  }
 
   // El equity intradía cambia poco para un ranking; el journal es diario.
   res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');

@@ -30,6 +30,15 @@
 //      breaker van a respetar), levanta cualquier halt, journalea UNA fila
 //      `rules_changed` de liga con el id que pidió Lety, y despausa el
 //      vigilante.
+//   7. ABRE EL BENCHMARK PASIVO: $100k en SPY al precio de APERTURA de este
+//      mismo día, y nunca más se toca. Va acá y no en un endpoint aparte
+//      porque el benchmark tiene que arrancar en el MISMO instante que las
+//      siete cuentas — si arranca un día después, mide otra temporada. Es
+//      idempotente: si ya estaba abierto NO se re-abre (ver
+//      _lib/arena-benchmark.js), así que volver a correr el reset no mueve el
+//      precio de entrada. Si Alpaca no da precio, el reset NO falla: el
+//      benchmark queda sin abrir y sale en `warnings`, porque aplanar siete
+//      libros importa más que una línea de comparación.
 //
 // ── EL FIX DEL PICO, que es la mitad del trabajo ─────────────────────
 // Aplanar las cuentas sin re-basar el pico del breaker es el footgun que ya
@@ -73,6 +82,9 @@ import { activeAgents, agentById, agentAlpacaCreds, ARENA_SEASON } from './_lib/
 import {
   RESET_BASELINE_USD, setBaseline, pauseWatch, resumeWatch, startingDrawdown,
 } from './_lib/arena-baseline.js';
+import {
+  BENCHMARK, abrirBenchmark, precioBenchmark, leerBenchmark,
+} from './_lib/arena-benchmark.js';
 import { PROMPT_VERSION } from './arena-run.js';
 
 // Siete cuentas en paralelo, cada una con hasta 4 llamadas a Alpaca más el
@@ -214,15 +226,70 @@ export async function resetAccount(agent, { dry, baselineUsd, marketOpen, now })
   return row;
 }
 
+// ── PASO 7: abrir el benchmark pasivo ────────────────────────────────
+// Nunca lanza y nunca falla el reset: devuelve una fila que se puede leer. El
+// benchmark es la vara de comparación, no parte del aplanado — si Alpaca no da
+// precio de SPY, las siete cuentas igual tienen que quedar planas y re-basadas.
+//
+// En DRY no escribe NADA, ni la migración de la tabla (`migrar: false`): el
+// contrato del dry run es cero escrituras, y `create table if not exists` es
+// una escritura aunque no cambie nada.
+export async function abrirBenchmarkDelReset({ dry, now, creds = null }) {
+  const precio = await precioBenchmark({ creds });
+  if (!precio.ok) {
+    return {
+      abierto: false, motivo: precio.detail || precio.reason,
+      warning: `BENCHMARK: no se pudo leer el precio de ${BENCHMARK.symbol} (${precio.reason}). La temporada arranca SIN línea de comparación — corré el reset otra vez con el mercado abierto, o el benchmark quedará abierto a un precio que no es el de este corte.`,
+    };
+  }
+
+  if (dry) {
+    const ya = await leerBenchmark({ migrar: false });
+    return ya
+      ? { abierto: true, ya_estaba: true, ...ya, would_open: false,
+        note: `El benchmark YA está abierto a $${ya.entry} desde ${ya.opened_at}. Un reset con &confirm=1 NO lo re-abre: el precio de entrada de la temporada no se mueve.` }
+      : { abierto: false, would_open: true, symbol: BENCHMARK.symbol,
+        precio: precio.price, precio_fuente: precio.fuente,
+        shares: +(BENCHMARK.capital_usd / precio.price).toFixed(6),
+        capital: BENCHMARK.capital_usd,
+        note: `Con &confirm=1 se comprarían $${BENCHMARK.capital_usd.toLocaleString('en-US')} de ${BENCHMARK.symbol} a $${precio.price} (${precio.fuente}) y no se tocarían en toda la temporada.` };
+  }
+
+  const r = await abrirBenchmark({
+    price: precio.price, now,
+    note: `reset ${now.toISOString()} · precio de ${precio.fuente}` + (precio.as_of ? ` · as_of ${precio.as_of}` : ''),
+  });
+  if (!r.ok) {
+    return { abierto: false, motivo: r.detail || r.reason,
+      warning: `BENCHMARK: no se pudo guardar la apertura (${r.reason}: ${r.detail}). Las siete cuentas SÍ se resetearon. Volvé a correr el reset — es idempotente y el benchmark se abrirá entonces, pero al precio de ESE momento, no al de este corte.` };
+  }
+  return {
+    abierto: true, ya_estaba: !!r.ya_estaba,
+    symbol: r.symbol, entry: r.entry, shares: r.shares, capital: r.capital,
+    opened_at: r.opened_at || now.toISOString(),
+    precio_fuente: precio.fuente,
+    note: r.ya_estaba
+      ? `Ya estaba abierto a $${r.entry}: NO se re-abrió. Un benchmark que se re-abre deja de medir la temporada y pasa a medir desde el último reset.`
+      : `$${Number(r.capital).toLocaleString('en-US')} en ${r.symbol} a $${r.entry} (${precio.fuente}) = ${r.shares} acciones. No se toca hasta el final de la temporada.`,
+  };
+}
+
 // El texto del anuncio. Fuera del handler para que el test lo lea sin red.
-export function resetAnnouncement({ resetId, baselineUsd, rows, now }) {
+export function resetAnnouncement({ resetId, baselineUsd, rows, now, benchmark = null }) {
   const planas = rows.filter((r) => r.flat).length;
   const vendidas = rows.reduce((s, r) => s + ((r.before && r.before.position_count) || 0), 0);
   const canceladas = rows.reduce((s, r) => s + ((r.before && r.before.open_order_count) || 0), 0);
+  // La línea del benchmark entra en el MISMO anuncio, no en uno aparte: el
+  // `season_started` del 16 tiene que decir contra qué se va a medir la
+  // temporada, si no la comparación aparece inventada después.
+  const lineaBench = benchmark && benchmark.abierto
+    ? `BENCHMARK PASIVO: $${Number(benchmark.capital).toLocaleString('en-US')} en ${benchmark.symbol} a $${benchmark.entry} (${benchmark.shares} acciones), comprados en este mismo corte y sin tocar el resto de la temporada. Cero modelo, cero herramientas: está para contestar si los siete le ganan al índice. NO compite en el ranking — aparece ordenado por equity pero no puede ganar, porque no decidió nada.`
+    : 'BENCHMARK PASIVO: NO se abrió en este reset (' + ((benchmark && benchmark.motivo) || 'sin precio de SPY') + '). Sin él, los returns de la temporada no tienen contra qué leerse.';
   return [
     `RESET DE LIBROS — ${resetId}. Las ${rows.length} cuentas de la liga se aplanaron: ${canceladas} órdenes abiertas canceladas y ${vendidas} posiciones vendidas a mercado. ${planas} de ${rows.length} quedaron confirmadas en cero.`,
     `BASELINE de la temporada: $${Number(baselineUsd).toLocaleString('en-US')} por cuenta. Es el denominador del return Y el PISO del pico del breaker — un libro recién aplanado NO arranca con el pico de antes del aplanado.`,
     'CORTE DE MEMORIA: el plan anterior, los fills, los compromisos abiertos y el pico de equity se cortan en este instante. Nada de antes del reset se le reinyecta al PM: un libro que ya no existe no puede ser recordado como propio.',
+    lineaBench,
     'Las métricas de ANTES y DESPUÉS de este corte NO son comparables. El post-mortem tiene que partir acá.',
     'Experimento sin validación estadística, paper trading, no es asesoría.',
   ].join('\n');
@@ -270,8 +337,11 @@ export default async function handler(req, res) {
   // ¿Está abierto el mercado? Decide si tiene sentido esperar los fills y si el
   // reporte puede afirmar que las cuentas quedaron planas.
   let marketOpen = false;
+  // Las mismas keys sirven para el reloj Y para el precio de SPY del benchmark:
+  // `ALPACA_PAPER_KEY` puede no existir (cada agente tiene su par propio), así
+  // que el default de la casa no se puede dar por sentado acá.
+  const anyCreds = agents.map(agentAlpacaCreds).find(Boolean) || null;
   try {
-    const anyCreds = agents.map(agentAlpacaCreds).find(Boolean);
     const clock = anyCreds ? await getClock(anyCreds) : null;
     marketOpen = !!(clock && clock.is_open);
     out.market = clock ? { is_open: marketOpen, next_open: clock.next_open || null, next_close: clock.next_close || null } : null;
@@ -315,6 +385,17 @@ export default async function handler(req, res) {
     detail: String((r.reason && r.reason.message) || r.reason),
   }));
 
+  // ── PASO 7: el BENCHMARK PASIVO ──────────────────────────────────────
+  // Solo cuando se resetea la liga ENTERA. Con `?agent=claude` se está
+  // arreglando UNA cuenta, no arrancando una temporada, y abrir el benchmark
+  // ahí lo ataría a una fecha que no es la del reset de verdad.
+  if (only) {
+    out.benchmark = { skipped: true, motivo: 'reset de una sola cuenta: el benchmark solo se abre con el reset de la liga entera.' };
+  } else {
+    out.benchmark = await abrirBenchmarkDelReset({ dry, now, creds: anyCreds });
+    if (out.benchmark.warning) out.warnings.push(out.benchmark.warning);
+  }
+
   if (!dry) {
     // Baseline por agente. Se escribe para TODAS las cuentas que se pudieron
     // leer, plana o no (ver el comentario del paso 6).
@@ -336,10 +417,13 @@ export default async function handler(req, res) {
         `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
          values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
         [resetId, now.toISOString().slice(0, 10), PROMPT_VERSION,
-         resetAnnouncement({ resetId, baselineUsd, rows: out.accounts, now }),
+         resetAnnouncement({ resetId, baselineUsd, rows: out.accounts, now, benchmark: out.benchmark }),
          JSON.stringify({
            reset_id: resetId, baseline_usd: baselineUsd, market_open: marketOpen,
            season: ARENA_SEASON.id, baseline_at: now.toISOString(),
+           benchmark: out.benchmark && out.benchmark.abierto
+             ? { symbol: out.benchmark.symbol, entry: out.benchmark.entry, shares: out.benchmark.shares, capital: out.benchmark.capital }
+             : null,
            accounts: out.accounts.map((r) => ({
              agent: r.agent, flat: !!r.flat,
              positions_sold: (r.before && r.before.position_count) || 0,

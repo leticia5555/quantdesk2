@@ -694,6 +694,121 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B14 · EL BENCHMARK PASIVO: $100k en SPY, y nada más
+
+`api/_lib/arena-benchmark.js` · tests en `tests/arena-benchmark.test.mjs`
+
+La pregunta que contesta es la única que le importa a alguien de afuera: **¿los
+siete le ganan a comprar el índice y no hacer nada?** Sin este número, "claude
+subió 3%" no significa nada — puede ser un mercado que subió 4%.
+
+$100,000 en SPY comprados en la **apertura del día del reset**, a la misma hora
+que se aplanan las siete cuentas, y sin tocar en toda la temporada. Cero modelo,
+cero LLM, cero herramientas: solo el precio de SPY.
+
+### Por qué es una línea calculada y NO una octava cuenta Alpaca
+
+Lety la prefería real "si no complica". Complica, y de una forma que lo vuelve
+**peor** benchmark:
+
+1. **Una orden puede no llenar.** La regla de la casa prohíbe órdenes a mercado
+   (cicatriz Polymarket), así que sería una límite marketable — y una límite
+   puede no ejecutarse, o llenar parcial. Un benchmark cuyo valor depende de si
+   una orden llenó no es un benchmark: es un octavo agente con riesgo de
+   ejecución.
+2. **Es de un solo tiro.** Si no llena el miércoles a la apertura, no hay
+   segunda oportunidad de arrancar la temporada al precio correcto.
+3. **No se puede auditar desde afuera.** `acciones × precio` lo verifica
+   cualquiera contra datos públicos; el equity de una cuenta paper, no. En un
+   experimento cuyo entregable es la credibilidad, eso pesa.
+
+El precio sale de **Alpaca**, la misma fuente que alimenta a los siete. Lo único
+que no existe es el envoltorio de la cuenta. Si algún día se quiere la cuenta
+real igual, el camino queda abierto (`ALPACA_BENCH_KEY`/`SECRET`).
+
+**Acciones fraccionarias**, a propósito: con acciones enteras sobrarían ~$340 de
+efectivo, y ese efectivo haría rendir menos al benchmark por una razón que no
+tiene nada que ver con la comparación. El benchmark tiene que ser el **retorno
+del índice**, no el de una cartera que casi lo replica.
+
+**Dividendos: no se cuentan, y se declara.** SPY paga ~1.2% anual que este
+cálculo no incluye, así que el benchmark queda levemente **subestimado**. Un
+ajuste a ojo sería un número inventado justo en la línea que existe para no
+inventar números.
+
+### Se abre en el reset, una sola vez
+
+`/api/arena-reset?confirm=1` lo abre como **paso 7**, con el mismo `now` que el
+corte de las siete cuentas. Va ahí y no en un endpoint aparte porque si arranca
+un día después, mide otra temporada.
+
+- **Idempotente**: si ya hay entrada, **no se pisa**. Volver a correr el reset no
+  mueve el precio de entrada — un benchmark que se re-abre deja de medir la
+  temporada y pasa a medir desde el último reset, en silencio.
+- **Relee después de insertar**: dos resets en paralelo reportan la **misma**
+  entrada, no dos precios distintos.
+- **`?dry=1` no escribe nada**, ni la migración de la tabla (`leerBenchmark({
+  migrar: false })`): `create table if not exists` es una escritura aunque no
+  cambie nada.
+- **`?agent=claude` NO lo abre**: eso es arreglar una cuenta, no arrancar una
+  temporada.
+- **Si Alpaca no da precio, el reset NO falla.** Las siete cuentas igual quedan
+  planas y re-basadas; el benchmark sale sin abrir y con su motivo en
+  `warnings`. Aplanar siete libros importa más que una línea de comparación.
+
+El `season_started` del reset lo **nombra** en el mismo anuncio: si la
+comparación aparece recién en el post-mortem, se lee como inventada después.
+
+### En el ranking: ordenado por equity, sin puesto
+
+`/api/leaderboard` devuelve el benchmark **fuera** de `agents` (los consumidores
+que cuentan modelos siguen contando siete, no ocho) y publica el orden visual en
+`ranking`, que la página usa tal cual.
+
+La distinción que vale toda la funcionalidad:
+
+- **El ORDEN es por equity e incluye al índice.** Si el S&P va arriba de los
+  siete, eso tiene que verse en la primera fila.
+- **El RANGO (1, 2, 3…) es solo para los que compiten.** El benchmark no decidió
+  nada: no puede ganar, así que no toma número. Si lo tomara, "claude va 2º"
+  sería falso de una forma difícil de ver — 2º de ocho filas, una de las cuales
+  no jugó.
+
+```bash
+curl -s "$BASE/api/leaderboard" | jq '{benchmark: .benchmark.return_pct, orden: [.ranking[] | {id, rank, equity}]}'
+```
+
+Cada agente lleva además `exceso_pp` = su return menos el del índice. Es la
+única cifra que contesta "¿le ganó al mercado?" y cuesta una resta: no merece una
+bandera.
+
+### El post-mortem: el exceso contra el PISO DE RUIDO
+
+```bash
+curl -s "$BASE/api/leaderboard?postmortem=1" | jq .post_mortem
+```
+
+Detrás de bandera porque exige leer el journal de la sombra, y `/api/leaderboard`
+es público y cacheado.
+
+Lo que publica no es solo el exceso: es el exceso **leído contra el piso de
+ruido claude↔control**. `claude` y `control` corren el mismo modelo con el mismo
+prompt, así que lo que los separa a *ellos* es el ruido del sistema. **Un exceso
+que no supera esa distancia no es habilidad.**
+
+Y la línea que no se cruza: el piso es un **coseno entre libros**, no una
+diferencia de retorno. No se convierte a puntos porcentuales — son unidades
+distintas, y fingir lo contrario sería inventar el número justo donde no se
+puede. Cuando el piso no es comparable (lentes distintas, libros de arranque
+distintos), el bloque lo dice y avisa que sin piso no se distingue habilidad de
+azar.
+
+### La regla estructural
+
+Si `arena-benchmark.js` algún día importa el camino de decisión (`arena-run`,
+`arena-model`, `arena-tools`, los rieles) o toca `createLimitOrder`, el benchmark
+dejó de ser pasivo. Hay un test que lo prohíbe.
+
 ## B11 · `/api/liga/libros` — el libro de cada agente, y cómo llegó a él
 
 `api/liga-libros.js` · tests en `tests/arena-liga-libros.test.mjs`
