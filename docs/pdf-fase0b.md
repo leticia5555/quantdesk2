@@ -3,31 +3,36 @@
 > **Alcance:** viabilidad, no pipeline. No se tocó el app ni Neon. El raw vive en
 > `xbrl-raw/pdf/` (ignorada por git).
 >
-> # VEREDICTO: NO EVALUABLE — dos bloqueos, ninguno de diseño
+> # VEREDICTO: no alcanza GO todavía — y tampoco es NO-GO
 >
-> No puedo emitir GO ni NO-GO, y no voy a mover los criterios para poder hacerlo.
+> La corrida real sobre los 5 PDFs (hecha en local, con API key) dejó los
+> criterios así:
 >
-> 1. **Falta el PDF en formato BMV.** Llegaron 4 archivos, no 5: los dos
->    comunicados de FEMSA y los dos de WALMEX. **El FEMSA 2T2020 en formato BMV
->    (108 páginas) no está.** Sin él no se puede evaluar *"los 9 campos salen en
->    el formato BMV"* ni el cruce de verificación #1, que eran el corazón de esta
->    fase.
-> 2. **No hay `ANTHROPIC_API_KEY` en el sandbox.** `api.anthropic.com` sí
->    responde (401, o sea llega), pero sin credencial no hice ni una llamada. El
->    criterio que decide todo — *¿el modelo inventa o confunde ventanas?* — sigue
->    sin medirse.
+> | Criterio de GO | Estado |
+> |---|---|
+> | 9 campos en el formato BMV | **NO** — ingresos, controladora, acciones y fecha salieron NULL |
+> | ≥6 campos en comunicados | **SÍ** en los 4 comunicados |
+> | Identidades a ±1 de redondeo | **NO** — una falló por −1,000 |
+> | Cruce 2T2020 cuadra | **PARCIAL** — 5 de 6 comparables cuadran; deuda LP difiere por definición |
+> | Fecha de publicación en los 5 | **NO** — 4 de 5 |
+> | Costo < $0.05 por PDF | **SÍ** — $0.0167 medido |
 >
-> **Lo que sí quedó hecho, y no es poco:**
+> **Ninguna condición de NO-GO se cumplió.** El modelo **no inventó** (los NULL
+> fueron honestos y explicados) y **no confundió ni una ventana** en los 5
+> archivos. El formato BMV **sí se parsea**.
 >
-> - `scripts/pdf-extract.mjs` construido y probado en `--dry-run` sobre los 4
->   PDFs: selecciona páginas, arma el prompt y estima costo. Falta apretar el
->   botón (§6).
-> - **Verdad de referencia establecida a mano** (§4): extraje los 9 campos de los
->   4 PDFs leyendo el texto yo mismo. Es contra esto que se compara la salida del
->   modelo cuando corra. **Las 4 identidades contables cierran exactas.**
-> - **Tres hallazgos que cambian el diseño de la Fase 1** y que no dependen de
->   correr el modelo (§5): los comunicados de WALMEX **no traen el trimestre
->   suelto**, **no reportan acciones**, y **no traen línea de deuda**.
+> **El diagnóstico importa más que el marcador: los tres fallos son míos, no del
+> modelo.** Dos son bugs del script, ya corregidos (§6); el tercero es una
+> diferencia de definición contable, no un error (§5.5). El veredicto se decide
+> con la re-corrida (§7).
+>
+> **El hallazgo más valioso de esta fase es un bug que casi pasa:** Walmex 4T2021
+> salió con **todos** los campos truncados por factor 1000, con citas correctas,
+> y **las identidades contables lo dejaron pasar** porque todo estaba truncado de
+> forma consistente. Eso motivó una validación dura nueva (§6.2).
+>
+> **Corrección a mi propio memo anterior:** dije que los comunicados de Walmex no
+> traían el trimestre suelto. **Era falso** y el modelo tenía razón (§5.1).
 
 ---
 
@@ -106,7 +111,7 @@ intereses por pagar), con los componentes listados y una bandera `comparable`.
 Si el balance no muestra deuda financiera, la instrucción es devolver `null` y
 explicar — **no `0`**, porque "no reportado" y "reportó cero" no son lo mismo.
 
-### 3.1 Dry-run: páginas elegidas y costo estimado **[VERIFICADO]**
+### 3.1 Dry-run inicial: páginas elegidas y costo estimado **[VERIFICADO]**
 
 ```
 [FEMSA_resultados_2T18.pdf] páginas: 1, 2, 10, 11, 17, 29, 33   (~11,437 tok)  ~$0.0174
@@ -177,6 +182,10 @@ de acciones en circulación a la misma fecha, dividido entre 5"*. ×5 =
 | Deuda con costo LP | **no reportada** | **no reportada** | — |
 | Acciones en circulación | **no reportada** | **no reportada** | — |
 
+> Estas son las cifras de los **estados financieros consolidados** (en miles),
+> que sí son acumulados. El mismo documento trae además tablas resumen **en
+> millones** con el trimestre suelto — ver la corrección en §5.1.
+
 ### 4.3 Identidades contables — las 4 cierran exactas **[VERIFICADO]**
 
 | Documento | Pasivos + Capital | Activos | Diferencia |
@@ -195,25 +204,35 @@ correr el script (§6).
 
 ## 5. Hallazgos que cambian el diseño, independientes del modelo
 
-### 5.1 Los comunicados de WALMEX no traen el trimestre suelto
+### 5.1 CORRECCIÓN — WALMEX sí trae el trimestre, en otra tabla y otra unidad
 
-Los estados financieros de WALMEX son **acumulados**:
+En el memo anterior afirmé que los comunicados de WALMEX no traían el trimestre
+suelto. **Es falso.** Lo verifiqué en el PDF y el modelo tenía razón:
 
-- 4T2021: *"Por los años terminados el 31 de Diciembre de"* → **12 meses**.
-- 2T2022: *"Por el periodo de seis meses que terminó el 30 de junio"* → **6 meses**.
+```
+Total de Ingresos   187,844  100.0   170,757  100.0  10.0   195,619  100.0  174,674  100.0  12.0
+                     ^^^ 1T2022                              ^^^ 2T2022 (3 meses)
+```
 
-**No hay columna de 3 meses.** El dato del trimestre solo existe en la narrativa
-en forma de variación porcentual (*"Los ingresos totales crecieron 12.0%"*), no
-como cifra.
+`187,844 + 195,619 = 383,463`, que es exactamente el acumulado de seis meses.
+Comprobado.
 
-Consecuencia para un backtest trimestral: el flujo del trimestre hay que
-**construirlo restando acumulados consecutivos** (2T = 6m − 3m). Eso obliga a
-tener el trimestre anterior de la misma emisora para poder calcular el actual, y
-cualquier hueco en la serie propaga. No es bloqueante, pero es una dependencia
-real que no existía con XBRL, donde el 3m viene explícito.
+**De dónde vino mi error:** leí sólo los *estados financieros consolidados*
+(p.6-p.7), que efectivamente son acumulados —4T2021 a 12 meses, 2T2022 a seis— y
+concluí que el trimestre no existía. Pero el comunicado tiene **dos bloques
+distintos**:
 
-FEMSA sí trae ambas columnas (3m y 6m), lado a lado — que es precisamente el
-escenario donde el modelo puede confundirse.
+| Bloque | Dónde | Unidad | Ventanas |
+|---|---|---|---|
+| Tablas resumen de resultados | primeras páginas | **millones** | 1T, 2T y acumulado |
+| Estados financieros consolidados | p.6-p.8 | **miles** | sólo acumulado |
+
+O sea: **un mismo documento reporta en dos unidades distintas**, y el trimestre
+sólo existe en el bloque de millones. No hay que derivar el trimestre restando
+acumulados como dije: está impreso.
+
+Que ese mismo documento mezcle miles y millones no es trivia — es la condición
+que produjo el bug de unidad de §6.2.
 
 ### 5.2 WALMEX no reporta acciones en circulación ni deuda
 
@@ -270,37 +289,185 @@ modelo absorbe.
 
 ---
 
-## 6. Qué falta para emitir veredicto
+### 5.5 Deuda LP de FEMSA: el comunicado netea derivados, el formato BMV no
 
-**1. El PDF en formato BMV de FEMSA 2T2020.** Sin él no hay criterio #1 ni cruce.
+El cruce 2T2020 dio esto:
 
-**2. Correr el script con credencial.** `api.anthropic.com` responde desde el
-sandbox (401), así que con la key exportada corre aquí o en tu máquina:
+| | Formato BMV | Comunicado | Diferencia |
+|---|---:|---:|---:|
+| Deuda con costo LP | 184,194,285,000 | 174,014,000,000 | **10,180,285,000** |
 
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-apt-get update && apt-get install -y poppler-utils    # si falta pdftotext
-node scripts/pdf-extract.mjs --dir xbrl-raw/pdf --raw
+**No es un error de extracción: son dos definiciones.** El comunicado lo dice en
+su propia nota, que el modelo recogió: *"Incluye efecto de derivados de tipo de
+cambio y tasa de interés relacionados con los pasivos bancarios"*. O sea, la
+cifra del comunicado está **neta de la cobertura**; la del formato BMV es el
+saldo **bruto** de `CreditosBancariosALargoPlazo + CreditosBursatilesALargoPlazo`.
+
+> **Decisión congelada: la serie usa la definición del formato BMV — deuda
+> bruta, sin efecto de derivados.**
+>
+> Tres razones: es la misma definición `ifrs_mx` que ya quedó fija en Fase 0, así
+> que las series empalman; es la que no depende de la política de cobertura de
+> cada emisora, que cambia en el tiempo y entre empresas; y es la que se puede
+> reproducir a partir de tags, no de una nota al pie.
+>
+> Consecuencia: cuando una emisora sólo tenga comunicado, su deuda LP **no es
+> directamente comparable** con la de una que tenga formato BMV. Hay que marcar
+> la fuente por celda, no sólo el valor.
+
+El resto del cruce sí cuadra, con diferencias que son puro redondeo a millones:
+
+| Campo | Formato BMV | Comunicado | Diferencia |
+|---|---:|---:|---:|
+| Activos totales | 744,647,464,000 | 744,647,000,000 | 464,000 |
+| Pasivos totales | 421,130,038,000 | 421,130,000,000 | 38,000 |
+| Capital contable | 323,517,426,000 | 323,517,000,000 | 426,000 |
+| Efectivo | 140,240,015,000 | 140,240,000,000 | 15,000 |
+| Deuda con costo CP | 38,659,690,000 | 38,659,000,000 | 690,000 |
+
+Cinco de seis comparables cuadran al redondeo. Ingresos y controladora no se
+pudieron cruzar porque el formato BMV los devolvió NULL (§6.1).
+
+### 5.6 FEMSA reporta UNIDADES, no acciones — la regla es por emisora
+
+Los comunicados de FEMSA dan **3,578,226,270**, que es el número de **Unidades
+FEMSA**, no de acciones. El propio texto lo aclara: *"equivalente al número total
+de acciones en circulación a la misma fecha, dividido entre 5"*.
+
+```
+acciones en circulación = unidades × 5 = 17,891,131,350
 ```
 
-`--raw` guarda prompt y respuesta cruda en `xbrl-raw/pdf-out/` para poder auditar
-qué vio el modelo cuando algo salga raro.
+El modelo extrajo 3,578,226,270 y citó la frase completa — correcto como
+extracción, **incorrecto como "acciones en circulación"** si se toma tal cual.
 
-**Qué mirar al leer la salida**, en orden de importancia:
+> **Regla, y es por emisora, no global:** el factor unidad→acción depende de la
+> estructura de capital de cada empresa y puede cambiar (splits,
+> recomposiciones). No se puede hardcodear un ×5 para todos.
+>
+> Lo que corresponde es guardar **lo que dice el documento** (unidades, con su
+> cita) y aplicar el factor en una tabla de conversión por emisora y por fecha.
+> Convertir en el momento de la extracción pierde la trazabilidad y hace
+> imposible auditar el número después.
 
-1. **Ventanas.** ¿Le puso `3m` al trimestre de FEMSA y `6m`/`12m` a WALMEX? Es
-   el NO-GO más probable: FEMSA pone las dos columnas lado a lado.
-2. **El signo negativo.** FEMSA 2T2020 tiene utilidad controladora
-   **(11,692) negativa**. Si sale positiva, el modelo perdió el paréntesis — y
-   ese error no lo detecta ninguna identidad contable.
-3. **Deuda.** ¿Excluyó intereses por pagar y arrendamientos? ¿Devolvió `null` en
-   WALMEX en vez de inventar un 0?
-4. **Identidades.** Deben dar 0 contra §4.3.
-5. **Costo real** vs. los ~$0.017 estimados.
+Contraste útil: el XBRL de Fase 0 da `NumeroDeAccionesEnCirculacion` ya en
+acciones (16,935,974,370 para 2T2026). O sea que **XBRL y PDF no devuelven la
+misma magnitud para el mismo campo** — otra razón para marcar la fuente por celda.
 
 ---
 
-## 7. Censo — ¿qué publican otras emisoras ICS del IPC?
+## 6. Los dos bugs del script, corregidos
+
+Ambos fallos de la corrida real fueron míos. Los dos ya están arreglados; **ninguno
+de los dos está probado contra el archivo que los provocó** (§7).
+
+### 6.1 Selección de páginas ignoraba el índice del formato BMV
+
+El puntaje por palabras clave eligió `1, 12, 13, 42, 44, 56, 76`: agarró balance y
+notas, y se saltó el estado de resultados (p.14), los datos informativos con
+acciones (p.27) y la fecha (p.2 / p.47). De ahí los cuatro NULL.
+
+**Arreglo:** cuando la p.1 trae el índice de secciones de la taxonomía
+(`[210000]`, `[310000]`, `[700000]`, `[800xxx]`), se usan **esos** números de
+página y se ignora el puntaje. Se incluye también la página siguiente a cada
+sección, porque suelen desbordar. Si el índice no se deja leer, cae de vuelta al
+puntaje **y lo dice en pantalla** — el modo `--dry-run` ahora imprime por qué vía
+eligió las páginas y qué secciones encontró.
+
+Referencia independiente que diste para ese PDF, contra la que se compara la
+re-corrida:
+
+| Campo | Valor esperado |
+|---|---:|
+| Ingresos 3m | 114,513,661,000 |
+| Utilidad controladora 3m | (11,692,223,000) |
+| Acciones en circulación | 17,891,131,350 |
+| Fecha de publicación | 2020-07-24 |
+
+Nota: 114,513,661,000 del formato BMV contra 114,514 millones del comunicado —
+cuadra al redondeo. Y la controladora **negativa** aparece en ambos.
+
+### 6.2 El bug de unidad, que las identidades no detectan
+
+Es el hallazgo más valioso de la fase porque **falla en silencio**:
+
+```
+Walmex 4T2021 -> valor 394,389 [miles]      cita "Suma activos $ 394,389,471"
+Walmex 2T2022 -> valor 396,362,084 [miles]  cita "Suma activos $ 396,362,084"
+```
+
+Mismo campo, misma empresa, dos trimestres, **factor 1000**. El modelo citó bien
+y transcribió mal: truncó el número de la cita a sus primeros dígitos.
+
+Y no fue un campo: en 4T2021 salieron truncados **los seis**. Por eso las
+identidades lo dejaron pasar — `394,389 = 208,507 + 185,882` cierra perfecto
+cuando todo está truncado igual. El único rastro fue un
+`Activos = Circulante + No circulante DIFIERE por −1,000`, que parece ruido de
+redondeo y es en realidad la punta del error.
+
+**Arreglo — validación dura:** los dígitos del valor deben aparecer como un
+**token numérico completo** dentro de su propia cita. `394389` contra
+`"394,389,471"` **no pasa**, porque el token completo ahí es `394389471`. Un
+campo que no pasa se marca `INCONSISTENTE`, **no se normaliza y no entra a las
+identidades ni al conteo**.
+
+Los campos de suma (deuda con costo) son la excepción: su total no está impreso
+como tal, así que se validan porque los componentes sumen el total **y** porque
+el total o algún componente esté respaldado por la cita.
+
+Probado contra los 18 casos reales de tu corrida:
+
+- **Atrapa** los 6 campos truncados de Walmex 4T2021 (activos, pasivos, capital,
+  efectivo, ingresos, utilidad).
+- **No molesta** a los que estaban bien: FEMSA 124,708; la controladora negativa
+  (11,692); las unidades 3,578,226,270; el 744,647,464,000 del formato BMV; el
+  195,619 del trimestre de Walmex; y las dos sumas de deuda.
+
+**Segunda red:** un chequeo de magnitud entre periodos de la misma emisora. Si un
+saldo cambia por factor ≥100× entre trimestres, avisa. Cubre el caso en que la
+unidad declarada esté mal pero el número se haya transcrito bien — ahí la
+validación de cita no ve nada.
+
+---
+
+## 7. Cómo cerrar el veredicto — re-corrida
+
+Los dos arreglos están escritos pero **no probados contra los archivos que los
+provocaron**: el PDF en formato BMV no llegó a este entorno (la carpeta de
+adjuntos trajo sólo los 4 comunicados), y sin él no puedo verificar ni el parser
+del índice de secciones ni que los 9 campos salgan completos.
+
+```bash
+# 1) Revisar la selección de páginas SIN gastar tokens.
+#    Ahora imprime por qué vía eligió y qué secciones encontró.
+node scripts/pdf-extract.mjs --dir xbrl-raw/pdf --dry-run
+
+# 2) La corrida de verdad.
+node scripts/pdf-extract.mjs --dir xbrl-raw/pdf --raw
+```
+
+**Qué mirar, en orden:**
+
+1. **Que el formato BMV diga `vía índice de secciones BMV`** y liste las páginas
+   por código. Si dice `vía puntaje por palabras clave`, el índice no se pudo
+   leer y hay que ajustar el regex — el `--dry-run` te lo dice gratis.
+2. **Que los 4 NULL se llenen** y cuadren contra la referencia de §6.1:
+   ingresos 3m `114,513,661,000`, controladora 3m `(11,692,223,000)`, acciones
+   `17,891,131,350`, fecha `2020-07-24`.
+3. **Que Walmex 4T2021 salga `INCONSISTENTE`** en los seis campos, o bien salga
+   con los valores completos. Cualquiera de las dos es un buen resultado; lo que
+   no puede volver a pasar es que salga truncado y silencioso.
+4. **Los avisos de magnitud** al final, si los hay.
+5. **Costo**: debería subir un poco en el formato BMV al mandar más páginas. El
+   criterio sigue siendo < $0.05 por PDF; la corrida anterior dio $0.0167.
+
+Con eso emites GO o NO-GO con los criterios tal como están escritos. **Yo no lo
+emito ahora** porque los dos arreglos son míos y sin correrlos no son más que una
+hipótesis.
+
+---
+
+## 8. Censo — ¿qué publican otras emisoras ICS del IPC?
 
 **Todo [NO VERIFICADO]:** el sandbox no llega a estos sitios; esto sale sólo de
 resultados de búsqueda, sin abrir una sola página.
@@ -325,38 +492,47 @@ Tres cosas útiles salen de aquí:
 
 ---
 
-## 8. Qué me preocupa de escalar a ~1,400 PDFs
+## 9. Qué me preocupa de escalar a ~1,400 PDFs
 
 Por orden de probabilidad de morder:
 
-1. **El descubrimiento de URLs, no la extracción.** 5 de 5 emisoras del censo
+1. **Los errores silenciosos de transcripción.** Subió al primer lugar después de
+   esta corrida. El bug de §6.2 produjo seis campos mal por factor 1000, con citas
+   correctas, identidades cerrando y cero señales de alarma. Lo encontraste tú
+   comparando dos trimestres a ojo. **A 1,400 PDFs eso no escala como revisión
+   manual**, y la validación de cita —aunque atrapa este caso— es una red, no una
+   garantía. Antes de construir la serie hace falta decidir qué fracción se
+   audita y contra qué: los trimestres que también están en XBRL son el candidato
+   obvio, porque dan verdad independiente gratis.
+2. **El descubrimiento de URLs, no la extracción.** 5 de 5 emisoras del censo
    tienen esquemas de URL distintos, dos con ids opacos y una alojando en
    terceros. **El cuello de botella es encontrar los 1,400 PDFs, no leerlos.**
    Esto probablemente no se automatiza del todo: es trabajo manual por emisora,
    una vez, y mantenimiento cuando alguien rediseñe su sitio.
-2. **Formatos que cambian por año, dentro de la misma emisora.** WALMEX 4T2021 y
+3. **Formatos que cambian por año, dentro de la misma emisora.** WALMEX 4T2021 y
    2T2022 están a 5 meses de distancia y **ya difieren**: distinto productor de
    PDF (Word vs Adobe), distinto periodo de reporte (12m vs 6m), y uno con la
    tabla desalineada y el otro no (§5.4a). A 10 años, esperar estabilidad de
    formato dentro de una emisora no es realista.
-3. **Emisoras que sólo publican resumen.** Ya se ve en la muestra: WALMEX no da
+4. **Emisoras que sólo publican resumen.** Ya se ve en la muestra: WALMEX no da
    acciones ni deuda. La cobertura no va a ser 9/9 uniforme — va a ser una matriz
    con huecos, y el diseño tiene que aceptarlo desde el principio en vez de
    tratarlo como error.
-4. **Los flujos acumulados (§5.1).** Si varias emisoras reportan como WALMEX, el
-   trimestre hay que derivarlo restando, lo que encadena trimestres y hace que un
-   hueco contamine el siguiente. Es la diferencia entre una fila independiente y
-   una serie con dependencias.
-5. **Costo y su varianza.** ~$0.017/PDF × 1,400 ≈ **$24 USD** si el estimado se
+5. **Dos unidades en un mismo documento (§5.1).** Walmex publica las tablas
+   resumen en millones y los estados financieros en miles, en el mismo PDF. Esa
+   convivencia es exactamente lo que produjo el bug de §6.2, y no hay razón para
+   pensar que Walmex es la única. La unidad hay que capturarla **por campo**,
+   nunca por documento.
+6. **Costo y su varianza.** ~$0.017/PDF × 1,400 ≈ **$24 USD** si el estimado se
    sostiene. Barato. Pero es sobre PDFs de 8-36 páginas; uno de formato BMV de
    108 páginas es otra cosa, y es justo el que no pude medir. El presupuesto real
    depende del archivo que falta.
-6. **Verificación a escala.** Las identidades contables detectan contexto
+7. **Verificación a escala.** Las identidades contables detectan contexto
    equivocado, pero **no** detectan un signo perdido ni una ventana confundida
    (§6). Para 1,400 PDFs hace falta una segunda señal — por ejemplo, contra los
    trimestres que sí están en XBRL, o coherencia de la serie en el tiempo. Sin
    eso, un error silencioso entra a la base y nadie lo ve.
-7. **Reexpresiones.** Un comunicado publicado en 2018 puede traer cifras que la
+8. **Reexpresiones.** Un comunicado publicado en 2018 puede traer cifras que la
    emisora reexpresó después. El PDF es el dato "as reported" de esa fecha, que
    para backtest es lo correcto, pero no va a cuadrar contra fuentes actuales.
    Hay que decidirlo explícitamente, no descubrirlo.

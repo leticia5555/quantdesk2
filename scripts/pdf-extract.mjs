@@ -142,6 +142,49 @@ const SENALES = [
   [/utilidad\s+neta|participaci[oó]n\s+controladora/i, 4],
 ];
 
+/*
+ * FIX 1 — Formato BMV: usar el índice de secciones en vez de adivinar.
+ *
+ * El reporte en formato BMV (el XBRL impreso) trae en la p.1 un índice con los
+ * códigos de sección de la taxonomía y su página. La corrida real falló justo
+ * por no usarlo: el puntaje por palabras clave agarró balance y notas pero se
+ * saltó el estado de resultados, los datos informativos (acciones) y la fecha,
+ * y esos cuatro campos salieron NULL.
+ *
+ * Códigos que nos importan (los demás se ignoran):
+ *   [210000] situación financiera      -> activos, pasivos, capital, efectivo
+ *   [310000]/[320000] resultados       -> ingresos, utilidad controladora
+ *   [700000] datos informativos        -> acciones en circulación
+ *   [800200]/[800600] comentarios/notas-> deuda desglosada, fecha
+ *
+ * [NO VERIFICADO] El archivo en formato BMV no llegó a este entorno, así que
+ * este parser está escrito contra la estructura descrita, no probado contra el
+ * PDF. Si el índice no se deja leer, cae de vuelta al puntaje por palabras y lo
+ * dice en pantalla — nunca falla en silencio. Compruébalo con --dry-run antes
+ * de gastar tokens.
+ */
+const SECCIONES_BMV = [
+  [/^21\d{4}$/, 'situación financiera'],
+  [/^3[12]\d{4}$/, 'resultados'],
+  [/^7\d{5}$/, 'datos informativos'],
+  [/^8\d{5}$/, 'comentarios y notas'],
+];
+
+function paginasDelIndice(textoP1) {
+  // Líneas tipo "[210000] Estado de situación financiera ....... 12"
+  const encontradas = new Map();
+  const re = /\[(\d{6})\][^\n\[]*?(\d{1,4})\s*$/gm;
+  let m;
+  while ((m = re.exec(textoP1)) !== null) {
+    const [, codigo, pag] = m;
+    const etiqueta = SECCIONES_BMV.find(([re2]) => re2.test(codigo));
+    if (!etiqueta) continue;
+    const n = Number(pag);
+    if (n > 0 && n < 2000) encontradas.set(n, `[${codigo}] ${etiqueta[1]}`);
+  }
+  return encontradas;
+}
+
 function elegirPaginas(pdf, n, maxPaginas) {
   const total = numPaginas(pdf);
   const paginas = [];
@@ -154,9 +197,26 @@ function elegirPaginas(pdf, n, maxPaginas) {
     score += Math.min(densidad / 5, 10);
     paginas.push({ p, score, texto: t });
   }
+  // (a) Si hay índice de secciones (formato BMV), manda.
+  const indice = paginasDelIndice(paginas[0]?.texto || '');
+  if (indice.size) {
+    const elegidas = new Set([1, 2]); // portada + comentarios/fecha
+    for (const pg of indice.keys()) {
+      elegidas.add(pg);
+      elegidas.add(pg + 1); // las secciones suelen desbordar a la siguiente
+    }
+    const lista = [...elegidas]
+      .filter((x) => x >= 1 && x <= paginas.length)
+      .sort((a, b) => a - b)
+      .map((x) => paginas[x - 1]);
+    return Object.assign(lista, { via: 'índice de secciones BMV', indice });
+  }
+
+  // (b) Si no, puntaje por palabras clave (comunicados).
   const ordenadas = [...paginas].sort((a, b) => b.score - a.score).slice(0, maxPaginas);
   if (!ordenadas.some((x) => x.p === 1) && paginas[0]) ordenadas.push(paginas[0]); // portada
-  return ordenadas.sort((a, b) => a.p - b.p);
+  const lista = ordenadas.sort((a, b) => a.p - b.p);
+  return Object.assign(lista, { via: 'puntaje por palabras clave' });
 }
 
 /* ========================================================================= */
@@ -292,6 +352,66 @@ function parsearJson(texto) {
 }
 
 /* ========================================================================= */
+/* 4.bis VALIDACIÓN DURA: el número debe aparecer literal en su cita           */
+/* ========================================================================= */
+/*
+ * Esta es la clase de error más peligrosa que salió en la corrida real, porque
+ * es SILENCIOSA: el modelo cita bien y transcribe mal.
+ *
+ *   Walmex 4T2021 -> valor 394,389 [miles], cita "Suma activos $ 394,389,471"
+ *   Walmex 2T2022 -> valor 396,362,084 [miles], cita "Suma activos $ 396,362,084"
+ *
+ * Mismo campo, misma empresa, dos trimestres: factor 1000 de diferencia. El
+ * modelo truncó/redondeó el número de la cita a sus primeros dígitos. Las
+ * identidades contables NO lo detectan, porque TODOS los campos del archivo
+ * salieron redondeados igual y la suma sigue cerrando.
+ *
+ * La regla: los dígitos del valor tienen que aparecer como un token numérico
+ * COMPLETO dentro de la cita. "394389" contra la cita "394,389,471" no pasa,
+ * porque ahí el token completo es 394389471. Un campo que no pasa se marca
+ * INCONSISTENTE, no se normaliza y NO entra a las identidades.
+ */
+function citaRespalda(valor, cita) {
+  if (valor == null) return { ok: null, motivo: 'sin valor' };
+  if (!cita) return { ok: false, motivo: 'sin cita' };
+
+  const objetivo = String(Math.abs(valor)).replace(/[.,]/g, '');
+  const tokens = String(cita).match(/\d[\d.,]*/g) || [];
+  for (const t of tokens) {
+    const sinMiles = t.replace(/,/g, '');          // 394,389,471 -> 394389471
+    const sinDecimales = sinMiles.replace(/\.\d+$/, ''); // 2.652 -> 2
+    if (sinMiles.replace(/\./g, '') === objetivo) return { ok: true };
+    if (sinDecimales === objetivo) return { ok: true };
+  }
+  return { ok: false, motivo: `el valor ${valor} no aparece como número completo en la cita` };
+}
+
+/**
+ * Valida un campo completo. Los campos de SUMA (deuda con costo) son un caso
+ * aparte: su total es una suma que por definición NO está impresa como tal, así
+ * que se validan por sus componentes.
+ */
+function validarCampo(campo) {
+  if (!campo || campo.valor == null) return { ok: null, motivo: 'sin valor' };
+
+  const comps = Array.isArray(campo.componentes) ? campo.componentes.filter((c) => c && c.valor != null) : [];
+  if (comps.length) {
+    const suma = comps.reduce((a, b) => a + b.valor, 0);
+    const tol = Math.max(1, Math.abs(campo.valor) * 1e-9);
+    if (Math.abs(suma - campo.valor) > tol) {
+      return { ok: false, motivo: `los componentes suman ${suma}, no ${campo.valor}` };
+    }
+    // Basta con que el total O algún componente esté respaldado por la cita:
+    // la cita suele venir de una sola de las dos tablas (balance o resumen).
+    if (citaRespalda(campo.valor, campo.cita).ok) return { ok: true };
+    if (comps.some((c) => c.valor !== 0 && citaRespalda(c.valor, campo.cita).ok)) return { ok: true };
+    return { ok: false, motivo: 'ni el total ni ningún componente aparecen en la cita' };
+  }
+
+  return citaRespalda(campo.valor, campo.cita);
+}
+
+/* ========================================================================= */
 /* 5. Normalización a pesos                                                   */
 /* ========================================================================= */
 
@@ -353,8 +473,12 @@ function reportar(nombre, r) {
     const { pesos, nota } = aPesos(c, esConteo);
     const vent = c.ventana ? ` ${c.ventana}` : '';
     const uni = c.unidad ? ` [${c.unidad}]` : (esConteo ? '' : ' [unidad NULL]');
+    const val = (r.validacion || {})[k] || {};
     if (c.valor == null) {
       console.log(`  ${label.padEnd(44)} NULL${c.nota ? '  — ' + c.nota : ''}`);
+    } else if (val.ok === false) {
+      console.log(`  ${label.padEnd(44)} ${fmt(c.valor).padStart(20)}${uni}${vent}  <-- INCONSISTENTE, descartado`);
+      console.log(`  ${''.padEnd(44)} ${val.motivo}`);
     } else {
       console.log(`  ${label.padEnd(44)} ${fmt(pesos ?? c.valor).padStart(20)}${uni}${vent}${pesos == null ? '  <-- ' + nota : ''}`);
     }
@@ -383,7 +507,10 @@ async function procesar(pdf, opts) {
 
   if (opts.raw) { mkdirSync(OUT_DIR, { recursive: true }); writeFileSync(join(OUT_DIR, nombre + '.prompt.txt'), prompt); }
 
-  console.log(`\n[${nombre}] páginas elegidas: ${paginas.map((x) => x.p).join(', ')}  (~${Math.round(prompt.length / 4)} tokens aprox.)`);
+  console.log(`\n[${nombre}] páginas: ${paginas.map((x) => x.p).join(', ')}  vía ${paginas.via}  (~${Math.round(prompt.length / 4)} tok)`);
+  if (paginas.indice) {
+    for (const [pg, etq] of [...paginas.indice].sort((a, b) => a[0] - b[0])) console.log(`     p${pg}: ${etq}`);
+  }
 
   if (opts.dryRun) {
     const p = PRECIOS[opts.model] || PRECIOS[MODELO_DEFAULT];
@@ -397,20 +524,27 @@ async function procesar(pdf, opts) {
     if (opts.raw) writeFileSync(join(OUT_DIR, nombre + '.respuesta.json'), r.texto);
     const datos = parsearJson(r.texto);
 
-    const norm = {};
+    const norm = {}, validacion = {};
     for (const [k] of CAMPOS) {
-      const { pesos } = aPesos((datos.campos || {})[k], k === 'acciones_circulacion');
-      norm[k] = pesos;
+      const c = (datos.campos || {})[k];
+      const v = validarCampo(c);
+      validacion[k] = v;
+      const { pesos } = aPesos(c, k === 'acciones_circulacion');
+      // Un campo que su cita no respalda NO entra a las identidades ni al total.
+      norm[k] = v.ok === false ? null : pesos;
     }
     for (const [k] of EXTRAS) {
-      const { pesos } = aPesos((datos.extras || {})[k]);
-      norm[k] = pesos;
+      const c = (datos.extras || {})[k];
+      const v = validarCampo(c);
+      validacion['extra_' + k] = v;
+      const { pesos } = aPesos(c);
+      norm[k] = v.ok === false ? null : pesos;
     }
 
     const p = PRECIOS[r.modelo] || PRECIOS[opts.model] || PRECIOS[MODELO_DEFAULT];
     const costo = ((r.usage.input_tokens || 0) / 1e6) * p.in + ((r.usage.output_tokens || 0) / 1e6) * p.out;
 
-    return { datos, norm, identidades: identidades(norm), usage: r.usage, costo, modelo: r.modelo, stopReason: r.stopReason };
+    return { datos, norm, validacion, identidades: identidades(norm), usage: r.usage, costo, modelo: r.modelo, stopReason: r.stopReason };
   } catch (e) {
     return { error: e.message };
   }
@@ -460,7 +594,41 @@ async function main() {
     if (r.costo) costoTotal += r.costo;
   }
 
+  /* Chequeo de magnitud entre archivos de la misma emisora. Segunda red, por si
+   * un error de escala pasa la validación de cita (p.ej. la unidad declarada
+   * está mal pero el número se transcribió bien). */
+  const porEmisora = new Map();
+  for (const r of resultados) {
+    if (r.error || r.dryRun) continue;
+    const em = (r.datos?.emisora || r.archivo).toString().slice(0, 12).toUpperCase();
+    if (!porEmisora.has(em)) porEmisora.set(em, []);
+    porEmisora.get(em).push(r);
+  }
+  const SALDOS = ['activos_totales', 'pasivos_totales', 'capital_contable', 'efectivo'];
+  let avisosMagnitud = 0;
+  for (const [em, rs] of porEmisora) {
+    if (rs.length < 2) continue;
+    for (const k of SALDOS) {
+      const vals = rs.map((r) => ({ a: r.archivo, v: r.norm?.[k] })).filter((x) => x.v != null && x.v !== 0);
+      if (vals.length < 2) continue;
+      const min = Math.min(...vals.map((x) => x.v)), max = Math.max(...vals.map((x) => x.v));
+      if (max / min >= 100) {
+        if (!avisosMagnitud++) console.log(`\n${'#'.repeat(80)}\n# AVISOS DE MAGNITUD (misma emisora, periodos distintos)\n${'#'.repeat(80)}`);
+        console.log(`  ${em} · ${k}: factor ${Math.round(max / min)}x entre periodos — revisar unidad`);
+        for (const x of vals) console.log(`      ${x.a}: ${fmt(x.v)}`);
+      }
+    }
+  }
+
+  const inconsistentes = resultados.flatMap((r) =>
+    Object.entries(r.validacion || {}).filter(([, v]) => v.ok === false).map(([k]) => `${r.archivo}:${k}`));
+
   console.log(`\n${'#'.repeat(80)}`);
+  if (inconsistentes.length) {
+    console.log(`# ${inconsistentes.length} CAMPO(S) INCONSISTENTE(S) — descartados, no cuentan:`);
+    for (const x of inconsistentes) console.log(`#   ${x}`);
+    console.log(`${'#'.repeat(80)}`);
+  }
   if (opts.dryRun) {
     console.log(`# DRY-RUN. Costo total estimado: ${usd(estTotal)} en ${archivos.length} PDFs`);
     console.log(`# (~${usd(estTotal / archivos.length)} por PDF; el criterio de GO es < $0.05)`);
