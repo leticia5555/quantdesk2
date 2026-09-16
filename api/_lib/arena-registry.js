@@ -144,6 +144,37 @@ export const ARENA_LLM_TIMEOUT_MS = (() => {
   return Number.isFinite(n) && n >= 5000 && n <= 280000 ? Math.floor(n) : 90000;
 })();
 
+// ── DE DÓNDE SALIÓ EL TECHO ──────────────────────────────────────────
+// Un timeout journaleado como "se pasó de 15s" no dice CUÁL reloj puso ese 15.
+// Y las respuestas son opuestas: si lo puso una env var, se arregla en Vercel
+// en diez segundos; si lo puso el reparto del loop, el modelo llegó al cierre
+// sin reloj y lo que hay que mover es el presupuesto, no la variable.
+//
+// Sin esta línea, las dos se ven idénticas en el journal — y la primera vez que
+// pasó costó una ronda viva averiguarlo a mano.
+export const ARENA_LLM_TIMEOUT_ORIGEN = (() => {
+  const crudo = process.env.ARENA_LLM_TIMEOUT_MS;
+  const n = Number(crudo);
+  if (crudo == null || crudo === '') return 'default del código (90s)';
+  if (Number.isFinite(n) && n >= 5000 && n <= 280000) return `env ARENA_LLM_TIMEOUT_MS=${crudo}`;
+  return `env ARENA_LLM_TIMEOUT_MS=${crudo} IGNORADA (fuera del rango 5s-280s) → default del código (90s)`;
+})();
+
+// ── Y SI ESE TECHO ES DEMASIADO CHICO PARA PENSAR ────────────────────
+// El piso no es una opinión de estilo: una llamada del DIVE con razonamiento
+// alto y un prompt de decenas de miles de tokens no cabe en 15 segundos, y el
+// resultado no es "una corrida más lenta" sino una corrida ABORTADA — o sea,
+// un agente que no opera ese día.
+//
+// No se corrige sola a la fuerza: la env var es de Lety y sobrescribirla desde
+// el código convertiría "puse 15s" en "puse 15s y el código decidió otra cosa",
+// que es peor que el bug. Se DECLARA, y el smoke y el journal la muestran.
+export const ARENA_LLM_TIMEOUT_PISO_SANO_MS = 30000;
+export function techoLlmSospechoso(ms = ARENA_LLM_TIMEOUT_MS) {
+  if (ms >= ARENA_LLM_TIMEOUT_PISO_SANO_MS) return null;
+  return `El techo de UNA llamada al proveedor es ${Math.round(ms / 1000)}s (${ARENA_LLM_TIMEOUT_ORIGEN}). Una llamada del dive, con razonamiento y el tablero entero en el prompt, no cabe ahí: el agente no sale lento, sale ABORTADO. Por debajo de ${ARENA_LLM_TIMEOUT_PISO_SANO_MS / 1000}s esto casi siempre es una env var de prueba que quedó puesta.`;
+}
+
 // Techo del TRABAJO COMPLETO de un agente. Es otro número que
 // ARENA_LLM_TIMEOUT_MS porque cubre otra cosa: aquel limita UNA conexión, éste
 // limita la cadena.

@@ -88,7 +88,7 @@ section{padding:18px 0 4px;}
 .tag.control{color:var(--text2);border:1px solid var(--border2);background:var(--bg2);}
 .tag.viva{color:#000;background:var(--green);border:1px solid var(--green);}
 .tag.sombra{color:#000;background:var(--amber);border:1px solid var(--amber);}
-.tag.seco{color:var(--amber);border:1px solid rgba(255,179,71,.4);background:rgba(255,179,71,.07);}
+.tag.sim{color:var(--amber);border:1px solid rgba(255,179,71,.4);background:rgba(255,179,71,.07);}
 .tag.rails{color:#fca5a5;border:1px solid #7f1d1d;background:#1e0f14;}
 .tag.enfoque{color:var(--purple);border:1px solid rgba(167,139,250,.3);background:rgba(167,139,250,.06);}
 .cbody{padding:0 14px 13px;}
@@ -181,7 +181,7 @@ footer{margin-top:34px;padding-top:20px;border-top:1px solid var(--border);}
     <p class="disc">
       <strong>Experimento, no asesoría.</strong> Una corrida de <b>sombra</b> NO movió dinero: es el contrato nuevo
       corriendo en paralelo sobre el mismo mercado y sin mandar órdenes. Una corrida <b>viva</b> sí es la cuenta paper real
-      — y si dice <b>seco</b>, las órdenes se calcularon completas y no se mandó ninguna. El <b>control</b> es el mismo
+      — y si dice <b>simulación</b>, las órdenes se calcularon completas y no se mandó ninguna. El <b>control</b> es el mismo
       modelo que Claude con el mismo prompt en otra cuenta: su libro es el <b>piso de ruido</b>, no el de un competidor.
       El <b>enfoque</b> del día rota por agente y es un confound deliberado: dos agentes con enfoques distintos el mismo día
       no son comparables ese día.
@@ -225,9 +225,11 @@ function houseTag(a){
 }
 // La fuente NO se infiere en la página tampoco: viene en cada libro.
 function fuenteTag(l){
-  const seco = l.ordenes && l.ordenes.modo==='dry';
+  // "simulación", no "seco": es el sello que se lee en México, y es el que
+  // separa una ronda que movió dinero de una que solo calculó las órdenes.
+  const simulacion = l.ordenes && l.ordenes.modo==='dry';
   if(l.fuente==='sombra') return '<span class="tag sombra">sombra</span>';
-  return '<span class="tag viva">viva</span>'+(seco?' <span class="tag seco">seco</span>':'');
+  return '<span class="tag viva">viva</span>'+(simulacion?' <span class="tag sim">simulación</span>':'');
 }
 
 // ── la secuencia, como historia ──────────────────────────────────────

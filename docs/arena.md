@@ -71,6 +71,30 @@ Lo que hace falta cuando llegue el momento, además de la cuenta paper:
    (familia `mistralai/…`). No se escribe de memoria: un slug inventado es
    justamente lo que el candado de `modelSlugResolved` existe para frenar.
 
+### Pendiente · `YOUR LENS TODAY` → `YOUR FOCUS TODAY` en el prompt
+
+Decidido el 2026-09-16, al cambiar el término viejo por **enfoque** en toda la UI y
+los reportes: el prompt de los agentes **no** se tocó en ese PR. Dice
+`YOUR LENS TODAY`, está en inglés y no contenía la palabra en español, así que
+cambiarlo no era parte del renombre — habría sido cambiar el experimento por un
+motivo de traducción, y la víspera del encendido del contrato objetivo.
+
+**Cuándo:** cuando el contrato nuevo lleve varias rondas vivas estables. No
+antes.
+
+**Qué toca, y por qué no es una sola línea:**
+
+1. La línea en `_lib/arena-herding.js` (`YOUR LENS TODAY: ${enfoque.prompt}`).
+2. **Es un cambio de prompt, o sea del experimento.** Viaja en la cola NO
+   cacheada, así que no invalida el prefijo de caché — pero sí cambia el texto
+   que los siete leen. Los libros de antes y los de después no son estrictamente
+   la misma condición.
+3. Por eso se anuncia como `rules_changed` con fecha, como cualquier cambio de
+   reglamento, aunque sean dos palabras. Un cambio de prompt sin anuncio es
+   exactamente lo que hace inatribuible un cambio de resultado.
+4. `tests/vocabulario-mx.test.mjs` fija hoy que `YOUR LENS TODAY` siga ahí. Esa
+   aserción se actualiza en el mismo PR, con el motivo escrito — no se borra.
+
 > **El cambio de cadencia (2026-09-15) NO es una temporada nueva.** Las 9 reglas
 > de la T2 siguen vigentes, completas, en cada corrida; lo único que cambió es
 > **cuándo** se corre. Por eso se anuncia como `rules_changed` dentro de la T2 y

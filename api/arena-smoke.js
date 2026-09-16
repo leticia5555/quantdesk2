@@ -84,8 +84,38 @@ import {
 } from './_lib/arena-model.js';
 import {
   activeAgents, agentById, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, modelSlugResolved,
-  ANTHROPIC_CACHE_MIN_TOKENS,
+  ANTHROPIC_CACHE_MIN_TOKENS, ARENA_LLM_TIMEOUT_MS, ARENA_LLM_TIMEOUT_ORIGEN, ARENA_AGENT_DEADLINE_MS,
+  techoLlmSospechoso,
 } from './_lib/arena-registry.js';
+import { LOOP_BUDGET_MS, RESERVA_CIERRE_MS, MARGEN_MS } from './_lib/arena-tool-loop.js';
+
+// ── LOS RELOJES, EN UN SOLO LUGAR Y CON SU ORIGEN ────────────────────
+// Cuatro techos distintos gobiernan una corrida y viven en tres archivos:
+// el de UNA llamada al proveedor (env-overridable), el del loop de
+// herramientas, la reserva del cierre y el deadline del agente. Cada uno tiene
+// un motivo y ninguno se ve desde afuera.
+//
+// El modo de falla que esto cierra: `ARENA_LLM_TIMEOUT_MS=15000` puesto para
+// una prueba y nunca quitado no rompe ningún test, no falla el deploy y no
+// aparece en ninguna respuesta — hasta que corta el dive de un agente en una
+// ronda viva, y ahí se lee como "el proveedor se cayó".
+export function relojesEfectivos() {
+  const aviso = techoLlmSospechoso();
+  return {
+    una_llamada_ms: ARENA_LLM_TIMEOUT_MS,
+    una_llamada_origen: ARENA_LLM_TIMEOUT_ORIGEN,
+    loop_herramientas_ms: LOOP_BUDGET_MS,
+    reserva_cierre_ms: RESERVA_CIERRE_MS,
+    margen_ms: MARGEN_MS,
+    deadline_agente_ms: ARENA_AGENT_DEADLINE_MS,
+    funcion_max_duration_s: 300,
+    // La cuenta que tiene que cerrar, escrita: si no cierra, el agente muere
+    // sin journalear y eso es indistinguible de una corrida que nunca ocurrió.
+    cuenta: `loop ${Math.round(LOOP_BUDGET_MS / 1000)}s + cierre ${Math.round(RESERVA_CIERRE_MS / 1000)}s + margen ${Math.round(MARGEN_MS / 1000)}s = ${Math.round((LOOP_BUDGET_MS + RESERVA_CIERRE_MS + MARGEN_MS) / 1000)}s contra un deadline de ${Math.round(ARENA_AGENT_DEADLINE_MS / 1000)}s`,
+    cuenta_ok: LOOP_BUDGET_MS + RESERVA_CIERRE_MS + MARGEN_MS <= ARENA_AGENT_DEADLINE_MS,
+    ...(aviso ? { aviso } : {}),
+  };
+}
 
 // ── LA COMPUERTA: ARENA_ADMIN_KEY ────────────────────────────────────
 // La lógica vive en _lib/arena-admin.js desde que /api/arena-reset pasó a usar
@@ -500,6 +530,12 @@ export default async function handler(req, res) {
     ran_at: new Date().toISOString(),
     prompt_version: PROMPT_VERSION,
     settings: { max_tokens: ARENA_MAX_TOKENS, effort: ARENA_EFFORT, temperature_default: ARENA_TEMPERATURE },
+    // ── LOS RELOJES EFECTIVOS, CON SU ORIGEN ──────────────────────────
+    // Estaban repartidos entre cuatro archivos y una env var, y la única forma
+    // de conocerlos era esperar a que un agente abortara. Un techo puesto en
+    // una env var de prueba no se ve en ningún lado hasta que corta una ronda
+    // VIVA — y ahí ya costó un agente.
+    relojes: relojesEfectivos(),
     portfolio: 'stand_in',
     portfolio_note: 'PORTAFOLIO FICTICIO: $100k en efectivo, cero posiciones. El smoke no lee las cuentas de Alpaca. El prompt es el real en todo menos ese bloque.',
     writes: 'none',

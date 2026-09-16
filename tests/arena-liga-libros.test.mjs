@@ -153,13 +153,13 @@ console.log('\n── la liga VIVA guarda el objetivo dentro de context ──')
     'y los rieles: `rejected_rails` dice QUE se rechazó, `rails` dice cuál y por qué');
 }
 
-// ── LAS ÓRDENES: SECO Y VIVO NO SE CONFUNDEN ─────────────────────────
-// Una corrida seca y una que movió dinero se journalean en la MISMA tabla. Que
+// ── LAS ÓRDENES: SIMULACIÓN Y VIVO NO SE CONFUNDEN ───────────────────
+// Una corrida en simulación y una que movió dinero se journalean en la MISMA tabla. Que
 // la página no pueda distinguirlas sería el mismo error que las tablas
 // separadas existen para impedir del lado de la sombra.
 console.log('\n── las órdenes, y el modo que las hace legibles ──');
 {
-  const seco = ejecucionPublicable({
+  const simulacion = ejecucionPublicable({
     modo: 'dry',
     candado: { ok: true },
     ordenes_calculadas: [
@@ -170,14 +170,17 @@ console.log('\n── las órdenes, y el modo que las hace legibles ──');
     descartadas: [{ symbol: 'ZM', side: 'short', motivo: 'la T2 es long-only' }],
     nota: 'ARENA_CONTRATO=objetivo_dry: las órdenes se calcularon y se journalearon COMPLETAS, y no se mandó ninguna.',
   });
-  ok(seco.modo === 'dry' && /NO se mandó ninguna/.test(seco.modo_nota),
-    'una corrida SECA se publica como seca, con lo que eso significa dicho', seco.modo_nota);
-  ok(seco.ordenes.length === 1 && seco.ordenes[0].ticker === 'NVDA' && seco.ordenes[0].cantidad === 12,
-    'las órdenes CALCULADAS viajan igual: ese es el punto del escalón seco — ver las órdenes antes de mandarlas');
-  ok(seco.ordenes[0].resultado === null,
-    'y sin resultado, porque no se mandó: un "enviada" en seco sería la peor mentira posible de esta página');
-  ok(seco.ordenes[0].delta_pp === 4.3, 'el delta en puntos porcentuales, que es como se lee', String(seco.ordenes[0].delta_pp));
-  ok(seco.descartadas[0].motivo === 'la T2 es long-only', 'y lo descartado con su motivo');
+  // El VALOR journaleado sigue siendo `dry` —es el dato— y la ETIQUETA que se
+  // lee es "SIMULACIÓN": "seco" no se usa así en México y es el sello que
+  // separa una ronda que movió dinero de una que solo calculó las órdenes.
+  ok(simulacion.modo === 'dry' && /^SIMULACIÓN:/.test(simulacion.modo_nota) && /NO se mandó ninguna/.test(simulacion.modo_nota),
+    'una corrida en simulación se publica como tal, con lo que eso significa dicho', simulacion.modo_nota);
+  ok(simulacion.ordenes.length === 1 && simulacion.ordenes[0].ticker === 'NVDA' && simulacion.ordenes[0].cantidad === 12,
+    'las órdenes CALCULADAS viajan igual: ese es el punto del escalón — ver las órdenes antes de mandarlas');
+  ok(simulacion.ordenes[0].resultado === null,
+    'y sin resultado, porque no se mandó: un "enviada" en simulación sería la peor mentira posible de esta página');
+  ok(simulacion.ordenes[0].delta_pp === 4.3, 'el delta en puntos porcentuales, que es como se lee', String(simulacion.ordenes[0].delta_pp));
+  ok(simulacion.descartadas[0].motivo === 'la T2 es long-only', 'y lo descartado con su motivo');
 
   const vivo = ejecucionPublicable({
     modo: 'enviado', candado: { ok: true },
@@ -291,6 +294,8 @@ console.log('\n── /liga/libros dibuja lo que el endpoint publica ──');
     'todos los campos que la página lee de un libro existen en la respuesta', faltantes.join(', '));
 
   ok(/api\/liga\/libros/.test(html), 'y pega contra /api/liga/libros');
+  ok(/tag sim">simulación/.test(html) && !/>seco</.test(html),
+    'el sello de la corrida sin envío dice SIMULACIÓN: "seco" no se usa así en México y es el sello que se mira el día del encendido');
   ok(/tag sombra|tag viva/.test(html),
     'con la fuente SIEMPRE visible: una decisión de sombra no movió dinero y no puede verse igual que una viva');
   ok(/no comparable hoy/.test(html),

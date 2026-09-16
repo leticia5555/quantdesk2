@@ -227,7 +227,7 @@ export function objetivoDeFila(ctx = {}, row = {}) {
   const pesos = (target && target.weights) || {};
   const rieles = ctx.rails || null;
 
-  // Las órdenes CALCULADAS, que en seco son las únicas que hay. Se publican con
+  // Las órdenes CALCULADAS, que en simulación son las únicas que hay. Se publican con
   // el monto ya hecho: `qty × limit_price` es la pregunta que se hace quien
   // revisa ("¿cuánto dinero mueve esto?"), y obligarla a multiplicar a mano es
   // donde se cuela un error de lectura.
@@ -265,7 +265,7 @@ export function objetivoDeFila(ctx = {}, row = {}) {
     turnover: reb ? reb.turnover : null,
     // MODO. `dry` = se calcularon y NO se mandaron. Es lo primero que hay que
     // confirmar antes de mirar nada más: si dice `enviado` cuando se esperaba
-    // seco, la bandera no era la que se creía.
+    // simulación, la bandera no era la que se creía.
     modo: ej ? ej.modo : null,
     candado_ok: ej ? !!(ej.candado && ej.candado.ok) : null,
     freno: (ej && ej.freno) || null,
@@ -335,7 +335,7 @@ export function auditaFila(row) {
     // Sin esto, una corrida del contrato nuevo salía en la auditoría como una
     // fila casi vacía: `scout`, `slate` y `acciones` están construidos sobre el
     // contrato de ACCIONES, y el objetivo, los rieles y las órdenes calculadas
-    // viven en `context`. La corrida SECA es justamente la que no tiene
+    // viven en `context`. La corrida en SIMULACIÓN es justamente la que no tiene
     // `actions` —no se mandó nada— así que sin este bloque no habría nada que
     // revisar antes de encender.
     objetivo: objetivoDeFila(ctx, row),
@@ -556,12 +556,12 @@ function mdTabla(headers, rows) {
 // ── EL BLOQUE DEL CONTRATO OBJETIVO, EN MARKDOWN ─────────────────────
 // Pensado para leerse en una terminal SIN jq: una tabla de órdenes con el monto
 // ya calculado, y el modo arriba de todo. Lo primero que hay que poder
-// confirmar en una corrida seca es que NO se mandó nada.
+// confirmar en una corrida de SIMULACIÓN es que NO se mandó nada.
 function mdObjetivo(o) {
   const L = [];
-  const seco = o.modo === 'dry';
+  const simulacion = o.modo === 'dry';
   L.push(`**Contrato objetivo (v4)** — modo \`${val(o.modo)}\`` +
-    (seco ? ' · **NADA SE MANDÓ**: las órdenes de abajo son las que se habrían mandado.' : ''));
+    (simulacion ? ' · **SIMULACIÓN — NADA SE MANDÓ**: las órdenes de abajo son las que se habrían mandado.' : ''));
 
   const rieles = o.rieles
     ? (o.rieles.paso ? '✅ pasa los rieles' : `❌ **RECHAZADO** — ${o.rieles.violaciones.map((v) => v.riel + (v.simbolo ? ' ' + v.simbolo : '')).join(', ')}`)
@@ -582,14 +582,14 @@ function mdObjetivo(o) {
   }
 
   if (o.ordenes && o.ordenes.length) {
-    L.push(`\n**Órdenes ${seco ? 'que habría mandado' : 'mandadas'}** — ${o.ordenes_n}, $${nf(o.monto_total)} en total`);
+    L.push(`\n**Órdenes ${simulacion ? 'que habría mandado' : 'mandadas'}** — ${o.ordenes_n}, $${nf(o.monto_total)} en total`);
     L.push(mdTabla(
       ['símbolo', 'lado', 'qty', 'límite', 'monto', 'peso', 'estado'],
       o.ordenes.map((x) => [
         x.simbolo, x.lado, x.qty, x.limite != null ? '$' + x.limite : '—',
         x.monto != null ? '$' + nf(x.monto) : '—',
         `${((x.peso_de || 0) * 100).toFixed(1)}% → ${((x.peso_a || 0) * 100).toFixed(1)}%`,
-        seco ? 'seca' : (x.resultado === 'approved' ? (x.order_status || 'enviada') : (x.error ? 'FALLÓ: ' + String(x.error).slice(0, 60) : val(x.resultado))),
+        simulacion ? 'simulación' : (x.resultado === 'approved' ? (x.order_status || 'enviada') : (x.error ? 'FALLÓ: ' + String(x.error).slice(0, 60) : val(x.resultado))),
       ]),
     ));
   } else if (o.rieles && o.rieles.paso) {

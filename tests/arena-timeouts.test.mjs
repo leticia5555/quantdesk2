@@ -171,5 +171,71 @@ console.log('\n── B12: una ronda fija con herramientas CABE en el reloj ─�
     `${LOOP_BUDGET_MS / 1000}s vs ${ARENA_LLM_TIMEOUT_MS / 1000}s`);
 }
 
+// ═══════════════════════════════════════════════════════════════
+// UN TIMEOUT TIENE QUE DECIR CUÁL RELOJ LO CORTÓ.
+//
+// El 2026-09-16, en una ronda VIVA, control abortó con:
+//   "HTTP 502 de anthropic: se pasó de 15s (abortado a los 14967ms) [fase dive]"
+//
+// Ese mensaje no alcanza para arreglar nada, porque hay cuatro relojes que
+// pueden poner un techo y se arreglan en lugares OPUESTOS:
+//   · `ARENA_LLM_TIMEOUT_MS` en Vercel  → se corrige en la consola, sin deploy
+//   · el reparto del loop de herramientas → se corrige el presupuesto
+//   · la reserva del turno de cierre      → se corrige RESERVA_CIERRE_MS
+//   · el deadline del agente              → se corrige el deadline
+//
+// Averiguar cuál fue costó una ronda. Ahora el techo viaja con su origen.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── un timeout dice de dónde salió su techo ──');
+{
+  const { ARENA_LLM_TIMEOUT_ORIGEN, techoLlmSospechoso, ARENA_LLM_TIMEOUT_PISO_SANO_MS } =
+    await import('../api/_lib/arena-registry.js');
+
+  ok(/default del código|env ARENA_LLM_TIMEOUT_MS/.test(ARENA_LLM_TIMEOUT_ORIGEN),
+    'el techo de una llamada declara si lo puso el código o una env var', ARENA_LLM_TIMEOUT_ORIGEN);
+
+  const modelo = readFileSync(new URL('../api/_lib/arena-model.js', import.meta.url), 'utf8');
+  ok(/techo: \$\{origenTecho \|\| ARENA_LLM_TIMEOUT_ORIGEN\}/.test(modelo),
+    'y el mensaje del aborto lo incluye: "se pasó de 15s" solo no distingue una env var de un loop sin reloj');
+  ok(/techo_ms: first\.techo_ms/.test(modelo),
+    'el techo y su origen viajan en el resultado, no solo en el texto — el journal los guarda como campos');
+
+  const loop = readFileSync(new URL('../api/_lib/arena-tool-loop.js', import.meta.url), 'utf8');
+  ok(/origenTecho = `reloj del loop, vuelta/.test(loop),
+    'el loop firma sus propios techos por vuelta, con cuánto reloj quedaba');
+  ok(/origenTecho: `turno de CIERRE del loop/.test(loop),
+    'y el turno de cierre también: el 45.002 de qwen era exactamente esto y no se veía');
+
+  const run = readFileSync(new URL('../api/arena-run.js', import.meta.url), 'utf8');
+  ok(/techo_origen: \(llm && llm\.techo_origen\)/.test(run),
+    'y llega al journal de la liga viva, que es donde se lee al día siguiente');
+}
+
+// ── EL PISO DE CORDURA DEL TECHO ─────────────────────────────────────
+// Una env var de prueba que queda puesta no rompe ningún test, no falla el
+// deploy y no aparece en ninguna respuesta: solo corta el dive de un agente en
+// una ronda viva, donde se lee como "el proveedor se cayó".
+console.log('\n── un techo demasiado chico se DECLARA, no se corrige solo ──');
+{
+  const { techoLlmSospechoso, ARENA_LLM_TIMEOUT_PISO_SANO_MS, ARENA_LLM_TIMEOUT_MS } =
+    await import('../api/_lib/arena-registry.js');
+
+  ok(techoLlmSospechoso(15000) && /ABORTADO/.test(techoLlmSospechoso(15000)),
+    '15s para una llamada del dive se marca: el agente no sale lento, sale abortado', techoLlmSospechoso(15000));
+  ok(techoLlmSospechoso(90000) === null, 'y 90s no se marca: es el default y alcanza');
+  ok(ARENA_LLM_TIMEOUT_PISO_SANO_MS === 30000, 'el piso de cordura son 30s');
+
+  // NO se corrige solo: la env var es de Lety, y sobrescribirla desde el código
+  // convertiría "puse 15s" en "puse 15s y el código decidió otra cosa".
+  const registry = readFileSync(new URL('../api/_lib/arena-registry.js', import.meta.url), 'utf8');
+  const clamp = registry.slice(registry.indexOf('export const ARENA_LLM_TIMEOUT_MS'), registry.indexOf('export const ARENA_LLM_TIMEOUT_ORIGEN'));
+  ok(/n >= 5000/.test(clamp) && !/ARENA_LLM_TIMEOUT_PISO_SANO_MS/.test(clamp),
+    'el valor de la env var se respeta tal cual: el aviso informa, no sobrescribe');
+
+  const smoke = readFileSync(new URL('../api/arena-smoke.js', import.meta.url), 'utf8');
+  ok(/relojes: relojesEfectivos\(\)/.test(smoke),
+    'y el smoke publica los cuatro relojes con su origen, para verlos SIN esperar a que algo falle');
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTodo en verde');
 process.exit(failures ? 1 : 0);

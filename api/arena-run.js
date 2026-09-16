@@ -1306,6 +1306,10 @@ function detalleFalloLlm(llm) {
     raw_body: (llm && llm.raw_body) || null,
     timed_out: !!(llm && llm.timedOut), stale: !!(llm && llm.stale),
     retry_failed: !!(llm && llm.retry_failed),
+    // CUÁL reloj cortó, no solo que cortó. Una env var y el reparto del loop
+    // se ven idénticos en `timed_out` y se arreglan en lugares opuestos.
+    techo_ms: (llm && llm.techo_ms) ?? null,
+    techo_origen: (llm && llm.techo_origen) || null,
   };
 }
 
