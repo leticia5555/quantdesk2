@@ -722,6 +722,46 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B29 · EL CATÁLOGO DE UNA FAMILIA: `?buscar=`
+
+```bash
+curl -sS -H "x-admin-key: $KEY" \
+  "$BASE/api/arena-smoke?catalog=1&buscar=qwen"
+```
+
+Gratis, cero tokens. Nace de un callejón: `ARENA_PROVIDER_IGNORE_QWEN=Alibaba`
+devolvió **"All providers have been ignored"**, y el catálogo dijo por qué —
+`qwen3.8-max` tiene **`endpoint_count: 1`**. Alibaba es el único que lo sirve.
+
+Eso **cierra la hipótesis del routing**: un modelo con un solo proveedor no
+tiene ruta alternativa. Si ese proveedor tarda 110s, el modelo tarda 110s, y no
+hay `provider.ignore` que lo arregle. El timeout no era de Alibaba: era del
+modelo.
+
+Y deja ver que el diagnóstico anterior miraba el slug configurado en vez de la
+familia. Para elegir reemplazo hace falta el catálogo entero.
+
+Por modelo: `slug`, `nombre`, `contexto`, `max_salida`, precios en USD/millón,
+`endpoint_count`, `proveedores[]` y —la columna que decide—
+**`ruta_alternativa`**: `endpoint_count > 1`.
+
+`busqueda.candidatos` aplica la regla sobre los datos y no sobre la memoria de
+nadie: **un "max" servido por más de un proveedor**, con el
+`ARENA_MODEL_<AGENTE>=<slug>` ya escrito para pegar en Vercel. Si no hay
+ninguno, lo dice — y entonces la elección deja de ser técnica: otro tamaño de la
+misma casa declarando el cambio de tier, o correr sin ese agente.
+
+**Dos honestidades del diseño:**
+
+- Los proveedores viven en un endpoint **aparte** de la lista de modelos, así que
+  cuesta una llamada por modelo. Se piden para los 14 más relevantes (vendor
+  exacto primero, "max" arriba) y se **declara** cuáles quedaron sin consultar.
+- **La forma de esa respuesta no se pudo verificar al escribirla** — el sandbox
+  no alcanza openrouter.ai (403 en el CONNECT). Se leen varios nombres de campo
+  posibles y, si ninguno matchea, salen las claves crudas en `campos_vistos` /
+  `campos_crudos_de_ejemplo` en vez de un cero inventado. Un `endpoint_count: 0`
+  que en realidad significa "no supe leerlo" es peor que no traerlo.
+
 ## B27 · R11 · EL OBJETIVO TIENE QUE NOMBRAR SÍMBOLOS REALES
 
 `tests/arena-tickers.test.mjs`
