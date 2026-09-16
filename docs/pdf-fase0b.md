@@ -3,56 +3,58 @@
 > **Alcance:** viabilidad, no pipeline. No se tocó el app ni Neon. El raw vive en
 > `xbrl-raw/pdf/` (ignorada por git).
 >
-> # VEREDICTO: **NO-GO**, aplicando los criterios como están escritos
+> # VEREDICTO: **GO**
 >
-> No alcanza GO —fallan 3 de 6 criterios— y además **se dispara una condición de
-> NO-GO**. Lo digo aunque los tres fallos tengan arreglo escrito, porque
-> reinterpretar un criterio después de ver el resultado es exactamente lo que el
-> método prohíbe.
+> Los seis criterios se cumplen, y ninguna condición de NO-GO se dispara.
 >
-> ### La condición de NO-GO que se cumple
->
-> > *"el modelo inventa o confunde ventanas (3m vs 6m) en más de un archivo"*
->
-> | Archivo | Qué pasó |
-> |---|---|
-> | `BMV 2Q20` | **confundió la ventana**: tomó 6m (236,715,817,000) teniendo la columna 3m en la misma tabla |
-> | `eventemi_1165270` (Walmex 4T2021) | **inventó**: intentó derivar acciones en circulación desde la UPA, citando *"Utilidad básica por acción $ 2.528"* |
->
-> Son **dos archivos distintos**, uno con cada modo de falla. El criterio dice
-> "en más de un archivo". Se cumple.
->
-> **La lectura alternativa, y por qué no la tomo:** se podría argumentar que la
-> invención no cuenta porque la validación de cita la atrapó y la descartó —el
-> valor nunca entró a la base—. Es un argumento razonable y **la decisión es
-> tuya**, pero yo no la aplico: el criterio se escribió antes, dice lo que dice,
-> y ablandarlo ahora es moverlo después de ver el número. Que la validación lo
-> atrapara es una mitigación que vale registrar, no una razón para reescribir la
-> prueba.
->
-> ### Los criterios de GO
->
-> | Criterio | Estado | Por qué |
+> | Criterio de GO | Estado | Evidencia |
 > |---|---|---|
-> | 9 campos en formato BMV | **NO** | salen 9/9 no-nulos, pero deuda CP y LP salieron como `Otros pasivos financieros` con `comparable=NO`; el brief dice *"si no es comparable, FALTA, no proxy"* |
-> | ≥6 campos en comunicados | **NO** | Walmex 4T2021 quedó en **0/6** tras descartar los seis truncados |
-> | Identidades a ±1 | **SÍ** | ninguna `DIFIERE` en toda la corrida |
-> | Cruce 2T2020 | **NO** | cuadran activos, pasivos, capital y efectivo; ingresos y controladora no son comparables (6m vs 3m) y la deuda tampoco |
-> | Fecha en los 5 | **SÍ** | 5/5 |
-> | Costo < $0.05 por PDF | **SÍ** | $0.0208 promedio, $0.0373 el peor |
+> | 9 campos en el formato BMV | **CUMPLE** | 9/9, en ventana 3m, deuda `comparable=SÍ` |
+> | ≥6 campos en comunicados | **CUMPLE** | los 4 comunicados dan los 6 pedidos |
+> | Identidades a ±1 de redondeo | **CUMPLE** | 4/4 en el formato BMV; ninguna `DIFIERE` en toda la corrida |
+> | Cruce 2T2020 cuadra | **CUMPLE** | 7 de 8 campos con dif. < 1 MM; deuda LP explicada y etiquetada |
+> | Fecha de publicación en los 5 | **CUMPLE** | 5/5 |
+> | Costo < $0.05 por PDF | **CUMPLE** | $0.0193 promedio, **$0.0224 el peor** |
 >
-> ### Qué significa el NO-GO, en concreto
+> | Condición de NO-GO | ¿Se cumple? |
+> |---|---|
+> | Inventa o confunde ventanas en más de un archivo | **No** — cero inventos, cero ventanas mal en los 5 |
+> | Identidades fallan sin explicación | **No** |
+> | El formato BMV no se parsea | **No** |
 >
-> **No significa "los PDFs no sirven".** Significa que *esta* combinación —Haiku
-> 4.5 con este prompt y esta selección de páginas— no es confiable al nivel que
-> pediste. Los dos modos de falla tienen causa identificada y arreglo escrito en
-> esta rama (§6.3-6.6), ninguno probado. Si quieres reintentarlo, la 3ª corrida
-> (§7) es el retest; si el NO-GO se sostiene ahí, la conclusión ya es de fondo.
+> **Se puede extraer los 9 campos de Fase 0 desde PDFs viejos con un modelo, de
+> forma confiable y verificable.** La Fase 0b cierra aquí.
 >
-> **Lo que sí quedó probado y no depende de otra corrida:** la validación contra
-> cita es el componente que funciona. Atrapó los 6 campos truncados de Walmex
-> 4T2021 y frenó el intento de la UPA. Siete valores malos que, sin ella, habrían
-> entrado a la base con las identidades contables cerrando perfecto.
+> ### La advertencia que va con el GO
+>
+> **Walmex 4T2021 pasó de 6/6 truncados a 6/6 correctos con el mismo modelo, a la
+> primera y sin escalar.** Entre las dos corridas cambió el prompt, pero la salida
+> de un modelo no es determinista y **no puedo atribuir la mejora con certeza**.
+>
+> Eso significa que la truncación es un modo de falla **no observado en esta
+> corrida**, no un modo de falla eliminado. A 1,400 PDFs va a reaparecer. El GO no
+> descansa en que el modelo no falle: descansa en que **cuando falle, se note**.
+>
+> ### Las dos redes, y cuál es cuál
+>
+> **La validación contra cita es la red principal.** Es determinista, no depende
+> del modelo, y es la que atrapó los 7 valores malos de la 2ª corrida —los 6
+> truncados y el intento de derivar acciones desde la UPA—. Ninguno de ellos
+> habría sido detectado por otra vía.
+>
+> **Las identidades contables son la red secundaria**, y resultaron más flojas de
+> lo que parecían por dos razones que se vieron en las corridas:
+>
+> 1. **No detectan un error consistente.** Cuando los seis campos de Walmex 4T2021
+>    salieron truncados por el mismo factor, `394,389 = 208,507 + 185,882` cerró
+>    perfecto.
+> 2. **Su cobertura depende del documento.** Tres de las cuatro identidades salen
+>    `n/d` en los comunicados, porque esos PDFs no publican los subtotales de
+>    circulante/no circulante y el modelo los estaba derivando —lo cual la
+>    validación, correctamente, rechaza (§6.7).
+>
+> Orden de confianza para la Fase 1: **cita primero, identidades después, y ambas
+> por encima de cualquier revisión a ojo.**
 
 ---
 
@@ -590,36 +592,68 @@ depende de subtotales que muchos documentos no publican.
 
 ---
 
-## 7. La 3ª corrida — el retest del NO-GO
+## 7. Resultado de la 3ª corrida **[VERIFICADO POR EL USUARIO]**
 
-Ninguno de los arreglos de §6.3-6.6 está probado: el PDF en formato BMV no ha
-llegado a este entorno en ninguna de las tres rondas, así que el parser del
-índice sólo está verificado contra un índice sintético con la estructura que
-reportaste.
+Corrida con la rama `r2`, `claude-haiku-4-5`, sin escalar en ningún archivo.
 
-```bash
-node scripts/pdf-extract.mjs --dir xbrl-raw/pdf --dry-run   # revisa páginas gratis
-node scripts/pdf-extract.mjs --dir xbrl-raw/pdf --raw
-```
+### 7.1 Cobertura por archivo
 
-**En el dry-run, antes de gastar nada**, el BMV debe listar exactamente cuatro
-bloques y ~13 páginas. Si lista 14 secciones o pasa de 24 páginas, el filtro no
-quedó y el costo se va a $0.07.
+| Archivo | 9 campos | Ventana | Notas |
+|---|---|---|---|
+| `BMV 2Q20` (formato BMV) | **9/9** | 3m, con 6m y 12m como secundarias | deuda `comparable=SÍ` |
+| `FEMSA 2T18` (comunicado) | **9/9** | 3m + 6m | |
+| `FEMSA 2T20` (comunicado) | **9/9** | 3m + 6m | deuda LP `comparable=NO` — correcto, son derivados |
+| `Walmex 4T2021` | **6/9** | 3m (214,571) + 12m | deuda y acciones `NULL` legítimos |
+| `Walmex 2T2022` | **6/9** | 3m (195,619) + 6m | deuda y acciones `NULL` legítimos |
 
-**Qué levanta cada criterio caído:**
+**Cero campos `INCONSISTENTE` entre los 9.** Los 8 descartados son todos
+`extra_*_no_circulante`: subtotales que esos documentos no publican y que el
+modelo derivaba (§6.7).
 
-| Mirar | Criterio |
-|---|---|
-| Deuda del BMV = 38,659,690,000 / 184,194,285,000 con `comparable=SÍ` | 9 campos en formato BMV |
-| Ingresos y controladora del BMV en `3m` con `otras_ventanas` para el 6m | cruce 2T2020 **y** la mitad del NO-GO |
-| Walmex 4T2021 recupera ≥6 campos vía reintento | ≥6 en comunicados |
-| Que nadie intente derivar acciones desde la UPA | la otra mitad del NO-GO |
-| Promedio **y** peor caso del bloque de costo | costo < $0.05 |
+La selección por índice quedó en 12 páginas para el formato BMV, con
+`[800100] p42-45` —incluyendo la p44 del desglose de créditos, que era el punto
+de §6.4.
 
-Si tras la 3ª corrida el NO-GO se sostiene, ya no es un bug pendiente: sería la
-respuesta a la pregunta de la fase, y tocaría decidir entre subir de modelo por
-defecto (con el costo que eso implica) o aceptar que el histórico por PDF no da
-la confiabilidad que el backtest necesita.
+### 7.2 Cruce formato BMV vs comunicado, FEMSA 2T2020
+
+| Campo | Formato BMV | Comunicado (MM) | Diferencia |
+|---|---:|---:|---:|
+| Ingresos 3m | 114,513,661,000 | 114,514 | −339,000 |
+| Utilidad controladora 3m | −11,692,223,000 | −11,692 | −223,000 |
+| Activos totales | 744,647,464,000 | 744,647 | 464,000 |
+| Pasivos totales | 421,130,038,000 | 421,130 | 38,000 |
+| Capital contable | 323,517,426,000 | 323,517 | 426,000 |
+| Efectivo | 140,240,015,000 | 140,240 | 15,000 |
+| Deuda con costo CP | 38,659,690,000 | 38,659 | 690,000 |
+| **Deuda con costo LP** | **184,194,285,000** | **174,014** | **10,180,285,000** |
+| Acciones en circulación | 17,891,131,350 | 3,578,226,270 × 5 | **0, exacto** |
+
+**Siete de ocho campos comparables cuadran con diferencia menor a 1 millón de
+pesos**, que es exactamente el redondeo del comunicado a millones. La peor
+diferencia es 690,000 pesos sobre una cifra de 38 mil millones.
+
+**La octava, deuda LP, difiere por definición y está etiquetada**: el modelo marcó
+`comparable=NO` en el comunicado y explicó por qué (efecto de derivados). Es la
+diferencia congelada en §5.5, y el criterio admite *"diferencia explicable"*.
+
+**Las acciones cuadran al número** aplicando la regla unidades × 5 de §5.6.
+
+### 7.3 Costo medido
+
+| | |
+|---|---:|
+| Promedio por PDF | **$0.0193** |
+| Peor caso | **$0.0224** (el formato BMV) |
+| Total, 5 PDFs | $0.0966 |
+| Reintentos disparados | **ninguno** |
+
+El criterio está escrito por PDF y **se cumple incluso en el peor caso**, con
+margen de 2.2×. El conflicto de §6.5 —que un archivo que escale los tres intentos
+llegaría a ~$0.09— **no se materializó**, pero sigue vigente como riesgo: basta un
+PDF que escale para pasarse del criterio.
+
+Extrapolado a 1,400 PDFs sin escaladas: **~$27 USD**. Con un 10% escalando:
+**~$37**.
 
 ---
 
@@ -652,14 +686,18 @@ Tres cosas útiles salen de aquí:
 
 Por orden de probabilidad de morder:
 
-1. **Los errores silenciosos de transcripción.** Subió al primer lugar después de
-   esta corrida. El bug de §6.2 produjo seis campos mal por factor 1000, con citas
-   correctas, identidades cerrando y cero señales de alarma. Lo encontraste tú
-   comparando dos trimestres a ojo. **A 1,400 PDFs eso no escala como revisión
-   manual**, y la validación de cita —aunque atrapa este caso— es una red, no una
-   garantía. Antes de construir la serie hace falta decidir qué fracción se
-   audita y contra qué: los trimestres que también están en XBRL son el candidato
-   obvio, porque dan verdad independiente gratis.
+1. **Los errores silenciosos de transcripción — que el GO no elimina, sólo hace
+   visibles.** El bug de §6.2 produjo seis campos mal por factor 1000, con citas
+   correctas, identidades cerrando y cero señales de alarma; lo encontraste tú
+   comparando dos trimestres a ojo. En la 3ª corrida **el mismo modelo y el mismo
+   archivo salieron correctos a la primera**, sin escalar. Entre una y otra cambió
+   el prompt, pero la salida no es determinista: **el modo de falla no está
+   eliminado, está no observado**. A 1,400 PDFs va a reaparecer.
+   Lo que cambia es que ahora se nota: la validación contra cita es determinista y
+   no depende del modelo. Aun así sigue siendo una red, no una garantía, y hay que
+   decidir qué fracción se audita contra verdad independiente. **Los trimestres
+   que también están en XBRL son el candidato obvio** — dan esa verdad gratis, y
+   el cruce de §7.2 muestra que el empalme funciona al redondeo.
 2. **El descubrimiento de URLs, no la extracción.** 5 de 5 emisoras del censo
    tienen esquemas de URL distintos, dos con ids opacos y una alojando en
    terceros. **El cuello de botella es encontrar los 1,400 PDFs, no leerlos.**
