@@ -170,8 +170,13 @@ const mkRes = () => {
 let res = mkRes();
 await handler({ method: 'GET', query: {} }, res);
 ok(res.code === 200 && Array.isArray(res.body.eventos), 'responde 200 con el feed', String(res.code));
-ok(neonQueries.length === 2 && neonQueries.every((q) => /^\s*select/i.test(q.trim())),
-  'DOS consultas (el journal y los disparadores del vigilante) y ambas son SELECT: cero writes, como la auditoría',
+// El invariante es CERO WRITES, no un número de consultas. Antes se afirmaba
+// `length === 2` y eso ataba el test a cuántas veces se consulta, no a lo que
+// importa: la tercera consulta (los baselines por agente, para decidir el líder
+// por RETORNO y no por equity bruto) es un SELECT más y el test la marcaba como
+// fallo aunque no escriba nada. Ahora se afirma lo que se quiere garantizar.
+ok(neonQueries.length >= 2 && neonQueries.every((q) => /^\s*select/i.test(q.trim())),
+  'TODAS las consultas son SELECT: cero writes, como la auditoría',
   JSON.stringify(neonQueries.length));
 ok(!neonQueries.some((q) => /ensure|create table|alter table|insert|update/i.test(q)),
   'ninguna consulta crea, migra ni escribe nada');

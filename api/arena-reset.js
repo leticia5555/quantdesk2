@@ -30,6 +30,15 @@
 //      breaker van a respetar), levanta cualquier halt, journalea UNA fila
 //      `rules_changed` de liga con el id que pidió Lety, y despausa el
 //      vigilante.
+//
+//      EL BASELINE ES EL EQUITY REAL DE CADA CUENTA, no un $100k declarado.
+//      Aplanar a mercado deja un residuo distinto en cada libro; con un
+//      denominador compartido, ese residuo se le cobra a cada agente como
+//      pérdida el primer día. El 2026-09-16: `control` −1.45%, `claude` −0.41%.
+//      Esas dos cuentas corren el MISMO modelo con el MISMO prompt para medir
+//      el piso de ruido entre sí, y un punto de diferencia metido por el
+//      denominador es más grande que el ruido que están ahí para medir — y no
+//      se distingue de él. `?baseline=<n>` fuerza el número declarado.
 //   7. ABRE EL BENCHMARK PASIVO: $100k en SPY al precio de APERTURA de este
 //      mismo día, y nunca más se toca. Va acá y no en un endpoint aparte
 //      porque el benchmark tiene que arrancar en el MISMO instante que las
@@ -58,7 +67,8 @@
 //                                       cuenta por cuenta. CERO escrituras.
 //   GET /api/arena-reset?confirm=1    → lo hace.
 //   GET /api/arena-reset?confirm=1&agent=claude   → una sola cuenta
-//   GET /api/arena-reset?confirm=1&baseline=100000&id=arena-t2-2026-09-15
+//   GET /api/arena-reset?confirm=1&id=arena-t2-2026-09-16   → baseline = equity real
+//   GET /api/arena-reset?confirm=1&baseline=100000          → baseline DECLARADO
 //
 // SIN `confirm=1` NO HACE NADA: el default es el dry run. Un endpoint que
 // liquida siete libros no puede vaciarlos porque alguien pegó la URL sin el
@@ -111,7 +121,7 @@ const ordBrief = (o) => ({ id: o.id, symbol: o.symbol, side: o.side, qty: Number
 // ── El aplanado de UNA cuenta ────────────────────────────────────────
 // Devuelve SIEMPRE una fila, pase lo que pase: una cuenta que falló tiene que
 // aparecer nombrada en el reporte, no desaparecer de él. Nunca lanza.
-export async function resetAccount(agent, { dry, baselineUsd, marketOpen, now }) {
+export async function resetAccount(agent, { dry, baselineUsd, baselineModo = 'real', marketOpen, now }) {
   const row = { agent: agent.id, name: agent.name, alpaca: agent.alpaca, ok: false, steps: [] };
   const creds = agentAlpacaCreds(agent);
   if (!creds) {
@@ -145,8 +155,13 @@ export async function resetAccount(agent, { dry, baselineUsd, marketOpen, now })
     row.would_cancel = row.before.open_order_count;
     row.would_sell = row.before.position_count;
     row.would_sell_value = +row.before.positions.reduce((s, p) => s + (Number(p.market_value) || 0), 0).toFixed(2);
-    row.baseline_equity = baselineUsd;
-    row.starting_drawdown_pct = +(startingDrawdown(row.before.equity, baselineUsd) * 100).toFixed(2);
+    // En modo `real` el baseline es el equity que quede DESPUÉS de aplanar, que
+    // todavía no existe. El dry run lo ESTIMA con el equity de ahora y lo dice:
+    // aplanar mueve el número unos centavos por el spread, no unos dólares.
+    row.baseline_modo = baselineModo;
+    row.baseline_equity = baselineModo === 'real' ? +Number(row.before.equity).toFixed(2) : baselineUsd;
+    row.baseline_estimado = baselineModo === 'real';
+    row.starting_drawdown_pct = +(startingDrawdown(row.before.equity, row.baseline_equity) * 100).toFixed(2);
     return row;
   }
 
@@ -220,8 +235,19 @@ export async function resetAccount(agent, { dry, baselineUsd, marketOpen, now })
   // piso del pico tienen que existir igual, si no la próxima corrida le
   // reinyecta al PM un libro que ya se está liquidando.
   const equityAfter = row.after.equity != null ? row.after.equity : row.before.equity;
-  row.baseline_equity = baselineUsd;
-  row.starting_drawdown_pct = +(startingDrawdown(equityAfter, baselineUsd) * 100).toFixed(2);
+  // ── EL BASELINE: el equity REAL, no el declarado ──
+  // `real` (default): el denominador de cada agente es lo que de verdad tiene al
+  // arrancar, así que los siete parten de 0.00%. `fijo` (?baseline=<n>) mantiene
+  // el número declarado para todos.
+  //
+  // El default cambió el 2026-09-16 y la razón es medible: con $100k declarado,
+  // `control` arrancaba en −1.45% y `claude` en −0.41% solo por el residuo de su
+  // propio aplanado. Esas dos cuentas existen para medir el PISO DE RUIDO entre
+  // sí — un delta de 1 punto metido por el denominador es más grande que el ruido
+  // que están ahí para medir, y no se distingue de él.
+  row.baseline_modo = baselineModo;
+  row.baseline_equity = baselineModo === 'real' ? +Number(equityAfter).toFixed(2) : baselineUsd;
+  row.starting_drawdown_pct = +(startingDrawdown(equityAfter, row.baseline_equity) * 100).toFixed(2);
   row.ok = row.flat;
   return row;
 }
@@ -275,19 +301,31 @@ export async function abrirBenchmarkDelReset({ dry, now, creds = null }) {
 }
 
 // El texto del anuncio. Fuera del handler para que el test lo lea sin red.
-export function resetAnnouncement({ resetId, baselineUsd, rows, now, benchmark = null }) {
+export function resetAnnouncement({ resetId, baselineUsd, baselineModo = 'real', rows, now, benchmark = null }) {
   const planas = rows.filter((r) => r.flat).length;
   const vendidas = rows.reduce((s, r) => s + ((r.before && r.before.position_count) || 0), 0);
   const canceladas = rows.reduce((s, r) => s + ((r.before && r.before.open_order_count) || 0), 0);
+  // ── EL BASELINE, cuenta por cuenta ──
+  // Con baseline `real` los números NO son todos iguales, y el anuncio los
+  // LISTA en vez de resumirlos: el denominador de cada agente es lo que hace
+  // comparable (o no) su retorno con el de los demás, así que tiene que quedar
+  // escrito en el corte, no reconstruible después.
+  const conBase = rows.filter((r) => r && r.baseline_equity != null);
+  const lineaBaseline = baselineModo === 'real'
+    ? `BASELINE de la temporada: el EQUITY REAL de cada cuenta después de aplanar. Los ${rows.length} arrancan en 0.00%. ` +
+      (conBase.length ? conBase.map((r) => `${r.agent} $${Number(r.baseline_equity).toFixed(2)}`).join(' · ') + '. ' : '') +
+      'Es el denominador del return Y el PISO del pico del breaker. Un $100k declarado le habría cobrado a cada agente el residuo de su propio aplanado como si fuera pérdida — para `claude` y `control`, que existen para medirse entre sí, ese sesgo era más grande que el piso de ruido que miden.'
+    : `BASELINE de la temporada: $${Number(baselineUsd).toLocaleString('en-US')} por cuenta, DECLARADO. Es el denominador del return Y el PISO del pico del breaker — un libro recién aplanado NO arranca con el pico de antes del aplanado. Las cuentas cuyo equity real quedó por debajo arrancan con retorno negativo el primer día por el residuo de su aplanado, no por una pérdida.`;
+
   // La línea del benchmark entra en el MISMO anuncio, no en uno aparte: el
   // `season_started` del 16 tiene que decir contra qué se va a medir la
   // temporada, si no la comparación aparece inventada después.
   const lineaBench = benchmark && benchmark.abierto
-    ? `BENCHMARK PASIVO: $${Number(benchmark.capital).toLocaleString('en-US')} en ${benchmark.symbol} a $${benchmark.entry} (${benchmark.shares} acciones), comprados en este mismo corte y sin tocar el resto de la temporada. Cero modelo, cero herramientas: está para contestar si los siete le ganan al índice. NO compite en el ranking — aparece ordenado por equity pero no puede ganar, porque no decidió nada.`
+    ? `BENCHMARK PASIVO: $${Number(benchmark.capital).toLocaleString('en-US')} en ${benchmark.symbol} a $${benchmark.entry} (${benchmark.shares} acciones), comprados en este mismo corte y sin tocar el resto de la temporada. Cero modelo, cero herramientas: está para contestar si los siete le ganan al índice. NO compite en el ranking — aparece ordenado entre los agentes pero no puede ganar, porque no decidió nada.`
     : 'BENCHMARK PASIVO: NO se abrió en este reset (' + ((benchmark && benchmark.motivo) || 'sin precio de SPY') + '). Sin él, los returns de la temporada no tienen contra qué leerse.';
   return [
     `RESET DE LIBROS — ${resetId}. Las ${rows.length} cuentas de la liga se aplanaron: ${canceladas} órdenes abiertas canceladas y ${vendidas} posiciones vendidas a mercado. ${planas} de ${rows.length} quedaron confirmadas en cero.`,
-    `BASELINE de la temporada: $${Number(baselineUsd).toLocaleString('en-US')} por cuenta. Es el denominador del return Y el PISO del pico del breaker — un libro recién aplanado NO arranca con el pico de antes del aplanado.`,
+    lineaBaseline,
     'CORTE DE MEMORIA: el plan anterior, los fills, los compromisos abiertos y el pico de equity se cortan en este instante. Nada de antes del reset se le reinyecta al PM: un libro que ya no existe no puede ser recordado como propio.',
     lineaBench,
     'Las métricas de ANTES y DESPUÉS de este corte NO son comparables. El post-mortem tiene que partir acá.',
@@ -313,10 +351,13 @@ export default async function handler(req, res) {
   const agents = only ? [agentById(only)].filter(Boolean) : activeAgents();
   if (!agents.length) return res.status(400).json({ error: 'Ningún agente activo con ese id.' });
 
-  const baselineUsd = (() => {
-    const n = Number(q.baseline);
-    return Number.isFinite(n) && n > 0 ? n : RESET_BASELINE_USD;
-  })();
+  // ── EL BASELINE: `real` por default, `fijo` si se pide un número ──────
+  // Sin `?baseline=`, cada cuenta se re-basa a SU equity después de aplanar y
+  // los siete arrancan en 0.00%. Con `?baseline=<n>` vuelve el número declarado
+  // para todas — sigue disponible, ya no es el default.
+  const baselineFijo = Number(q.baseline);
+  const baselineModo = Number.isFinite(baselineFijo) && baselineFijo > 0 ? 'fijo' : 'real';
+  const baselineUsd = baselineModo === 'fijo' ? baselineFijo : RESET_BASELINE_USD;
   const now = new Date();
   const resetId = String(q.id || '').trim() || `arena-${ARENA_SEASON.id.toLowerCase()}-${now.toISOString().slice(0, 10)}`;
 
@@ -324,7 +365,11 @@ export default async function handler(req, res) {
     ran_at: now.toISOString(),
     mode: dry ? 'dry_run' : 'applied',
     reset_id: resetId,
-    baseline_usd: baselineUsd,
+    baseline_modo: baselineModo,
+    baseline_usd: baselineModo === 'fijo' ? baselineUsd : null,
+    baseline_nota: baselineModo === 'real'
+      ? 'BASELINE = EQUITY REAL por cuenta después de aplanar: los siete arrancan en 0.00% y el piso del pico del breaker es su propio equity de arranque. Es también el DENOMINADOR del retorno en /liga. Con `&baseline=100000` se fuerza el número declarado para todas.'
+      : `BASELINE FIJO de $${Number(baselineUsd).toLocaleString('en-US')} para las ${agents.length} cuentas. OJO: si el equity real tras aplanar queda por debajo, esa cuenta arranca con drawdown y con retorno negativo el primer día, por el residuo de su propio aplanado y no por una pérdida.`,
     season: { id: ARENA_SEASON.id, start: ARENA_SEASON.start, end: ARENA_SEASON.end },
     agents: agents.map((a) => a.id),
     accounts: [],
@@ -378,7 +423,7 @@ export default async function handler(req, res) {
   // allSettled y no all: una cuenta que explota no puede llevarse el reporte de
   // las otras seis — y menos en un reset, donde el reporte ES el entregable.
   const settled = await Promise.allSettled(
-    agents.map((a) => resetAccount(a, { dry, baselineUsd, marketOpen, now })),
+    agents.map((a) => resetAccount(a, { dry, baselineUsd, baselineModo, marketOpen, now })),
   );
   out.accounts = settled.map((r, i) => (r.status === 'fulfilled' ? r.value : {
     agent: agents[i].id, name: agents[i].name, ok: false, failure: 'threw',
@@ -402,7 +447,7 @@ export default async function handler(req, res) {
     for (const row of out.accounts) {
       if (row.failure === 'missing_alpaca_keys' || row.failure === 'snapshot_failed' || row.failure === 'threw') continue;
       try {
-        await setBaseline(row.agent, { at: now.toISOString(), equity: baselineUsd, id: resetId });
+        await setBaseline(row.agent, { at: now.toISOString(), equity: row.baseline_equity, id: resetId });
         row.baseline_written = true;
       } catch (e) {
         row.baseline_written = false;
@@ -417,9 +462,10 @@ export default async function handler(req, res) {
         `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
          values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
         [resetId, now.toISOString().slice(0, 10), PROMPT_VERSION,
-         resetAnnouncement({ resetId, baselineUsd, rows: out.accounts, now, benchmark: out.benchmark }),
+         resetAnnouncement({ resetId, baselineUsd, baselineModo, rows: out.accounts, now, benchmark: out.benchmark }),
          JSON.stringify({
-           reset_id: resetId, baseline_usd: baselineUsd, market_open: marketOpen,
+           reset_id: resetId, baseline_modo: baselineModo,
+           baseline_usd: baselineModo === 'fijo' ? baselineUsd : null, market_open: marketOpen,
            season: ARENA_SEASON.id, baseline_at: now.toISOString(),
            benchmark: out.benchmark && out.benchmark.abierto
              ? { symbol: out.benchmark.symbol, entry: out.benchmark.entry, shares: out.benchmark.shares, capital: out.benchmark.capital }
@@ -429,6 +475,7 @@ export default async function handler(req, res) {
              positions_sold: (r.before && r.before.position_count) || 0,
              orders_canceled: (r.before && r.before.open_order_count) || 0,
              equity_before: r.before && r.before.equity, equity_after: r.after && r.after.equity,
+             baseline_equity: r.baseline_equity ?? null,
              starting_drawdown_pct: r.starting_drawdown_pct,
            })),
          })],
@@ -450,7 +497,7 @@ export default async function handler(req, res) {
   // Aviso del drawdown de arranque: el baseline declarado contra el equity real.
   for (const r of out.accounts) {
     if (r.starting_drawdown_pct > 2) {
-      out.warnings.push(`${r.agent}: equity ${r.after && r.after.equity != null ? '$' + Number(r.after.equity).toFixed(0) : 's/d'} contra un baseline de $${baselineUsd.toLocaleString('en-US')} → arranca con ${r.starting_drawdown_pct}% de drawdown contra el pico del breaker. A −15% empieza el desapalancamiento y a −20% el corte amplio. Si no es lo que querés, volvé a correr con &baseline=<equity real> o poné ARENA_RESET_BASELINE_USD.`);
+      out.warnings.push(`${r.agent}: equity ${r.after && r.after.equity != null ? '$' + Number(r.after.equity).toFixed(0) : 's/d'} contra un baseline de $${Number(r.baseline_equity).toLocaleString('en-US')} → arranca con ${r.starting_drawdown_pct}% de drawdown contra el pico del breaker Y con ese mismo ${r.starting_drawdown_pct}% de retorno negativo en /liga el primer día, por el residuo de su propio aplanado. A −15% empieza el desapalancamiento y a −20% el corte amplio. Quitá \`&baseline=\` para re-basar a su equity real.`);
     }
   }
 
@@ -458,6 +505,10 @@ export default async function handler(req, res) {
   const fallidas = out.accounts.filter((r) => !r.ok);
   out.summary = {
     cuentas: out.accounts.length,
+    baseline_modo: baselineModo,
+    baselines: Object.fromEntries(out.accounts
+      .filter((r) => r.baseline_equity != null)
+      .map((r) => [r.agent, r.baseline_equity])),
     planas,
     con_problema: fallidas.length,
     posiciones_vendidas: out.accounts.reduce((s, r) => s + ((r.before && r.before.position_count) || 0), 0),
@@ -466,7 +517,7 @@ export default async function handler(req, res) {
   out.verdict = dry
     ? `DRY RUN — se cancelarían ${out.summary.ordenes_canceladas} órdenes y se venderían ${out.summary.posiciones_vendidas} posiciones en ${out.accounts.length} cuentas. Nada se tocó. Agregá &confirm=1 para ejecutarlo.`
     : fallidas.length === 0
-      ? `VERDE: las ${planas} cuentas quedaron planas y re-basadas a $${baselineUsd.toLocaleString('en-US')}. Vigilante reactivado. Corte journaleado como ${resetId}.`
+      ? `VERDE: las ${planas} cuentas quedaron planas y re-basadas ${baselineModo === 'real' ? 'a SU equity real (las siete arrancan en 0.00%)' : `a $${baselineUsd.toLocaleString('en-US')}`}. Vigilante reactivado. Corte journaleado como ${resetId}.`
       : `PARCIAL: ${planas}/${out.accounts.length} cuentas confirmadas planas. Revisá \`accounts[].failure\` — el reset es idempotente, se puede volver a correr.`;
 
   return res.status(200).json(out);

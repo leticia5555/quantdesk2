@@ -20,6 +20,13 @@
 //    la mitad que importa del fix: sin piso, un libro recién aplanado arranca
 //    con el pico de ANTES del aplanado y el breaker dispara el primer día.
 //
+//    El baseline es TAMBIÉN el DENOMINADOR del retorno de ese agente
+//    (`returnPct`). Las dos cosas tienen que ser el mismo número: si el piso del
+//    breaker es el equity real pero el retorno se divide por un $100k global, la
+//    misma cuenta arranca en 0% para el breaker y en −1.45% en la tabla
+//    pública. Por eso `readBaselines` y `baselineDe` viven acá y no cada
+//    endpoint con su propio fallback.
+//
 // 2. LOS FLAGS. Un kv en Neon (`arena_flags`) para lo único que hoy tiene que
 //    poder apagarse SIN redeploy: la pausa del vigilante mientras el reset
 //    liquida. Guarda un VENCIMIENTO, no un booleano — una pausa que se olvida
@@ -44,6 +51,14 @@ export const RESET_BASELINE_USD = (() => {
 export const WATCH_PAUSE_FLAG = 'watch_paused_until';
 
 // ── PURO (testeable sin DB) ──────────────────────────────────────────
+
+// Número REAL o null. `Number(null)`, `Number('')` y `Number([])` son todos 0 —
+// tres formas de que un dato ausente se publique como un cero con autoridad.
+function num(x) {
+  if (x == null || x === '') return null;
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
+}
 
 // El corte efectivo de la memoria del PM: la MÁS RECIENTE entre el arranque de
 // la temporada y el baseline del último reset. Ambos 'YYYY-MM-DD'.
@@ -77,11 +92,43 @@ export function breakerPeak({ dbPeak = 0, equity = 0, baselineEquity = 0 } = {})
   return Math.max(Number(dbPeak) || 0, Number(equity) || 0, Number(baselineEquity) || 0);
 }
 
+// ── EL RETORNO, contra el baseline PROPIO ────────────────────────────
+// El denominador de un agente es SU baseline, no un $100k global. Cuando las
+// siete cuentas no arrancan exactamente en $100k —y no arrancan: aplanar a
+// mercado deja residuos distintos en cada una— un denominador compartido le
+// cobra a cada agente el residuo de su propio aplanado como si fuera pérdida.
+// El 2026-09-16 eso valía −1.45% para `control` y −0.41% para `claude`: más que
+// el piso de ruido que esas dos cuentas existen para medir.
+//
+// null si no se puede calcular. Un retorno inventado en la tabla pública es
+// peor que un hueco.
+export function returnPct(equity, baselineEquity) {
+  // `num` y no `Number` a secas: `Number(null)` es 0 y `Number('')` también, así
+  // que un equity AUSENTE pasaría el chequeo de finitud y saldría publicado como
+  // −100%. Un agente al que no se le pudo leer la cuenta no está en −100%: no
+  // se sabe, y eso se dice con null.
+  const e = num(equity), b = num(baselineEquity);
+  if (e == null || b == null || b <= 0) return null;
+  return +(((e - b) / b) * 100).toFixed(2);
+}
+
+// El baseline de un agente desde el mapa de `readBaselines`, con el default
+// aplicado. Existe para que los cuatro consumidores no repitan el fallback cada
+// uno a su manera — que es como terminan divergiendo.
+export function baselineDe(map, agentId, fallback = RESET_BASELINE_USD) {
+  const r = map && map[agentId];
+  const n = r && r.baseline_equity != null ? Number(r.baseline_equity) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 // Drawdown con el que arranca una cuenta recién aplanada, en fracción (0.13 =
 // −13%). 0 cuando el equity alcanza o supera el baseline.
 export function startingDrawdown(equity, baselineEquity) {
-  const e = Number(equity), b = Number(baselineEquity);
-  if (!Number.isFinite(e) || !Number.isFinite(b) || b <= 0) return 0;
+  // Mismo cuidado que en `returnPct`: sin `num`, un equity null se leería como 0
+  // y la cuenta arrancaría reportando 100% de drawdown. Dato ausente → 0, que es
+  // el fail-open documentado de esta función (no sabemos ≠ está en el piso).
+  const e = num(equity), b = num(baselineEquity);
+  if (e == null || b == null || b <= 0) return 0;
   return e >= b ? 0 : +((b - e) / b).toFixed(4);
 }
 

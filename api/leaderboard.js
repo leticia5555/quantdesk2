@@ -11,9 +11,17 @@
 //   - última decisión journaleada (plan + acciones con resultado/fill),
 //   - estado de HALT del breaker,
 //   - return vs. baseline y cambio del día (last_equity de Alpaca).
-// Ordenado por equity desc; los que aún no operan (sin keys / Alpaca caída)
-// caen al final sin ranking. Honesto > panel roto: si algo falla, el agente
-// igual aparece con su error visible.
+// Ordenado por RETORNO desc (contra el baseline propio de cada agente); los que
+// aún no operan (sin keys / Alpaca caída) caen al final sin ranking. Honesto >
+// panel roto: si algo falla, el agente igual aparece con su error visible.
+//
+// ── EL DENOMINADOR ES PROPIO, NO GLOBAL ───────────────────────────────
+// `return_pct` se divide por `arena_state.baseline_equity` del agente — el
+// equity real con el que arrancó, escrito por el reset— y no por un $100k
+// global. Aplanar a mercado deja un residuo distinto en cada libro; con un
+// denominador compartido ese residuo se le cobra a cada agente como pérdida el
+// primer día (el 2026-09-16: `control` −1.45%, `claude` −0.41%). Ver
+// `_lib/arena-baseline.js`.
 //
 // ── LA FILA DEL BENCHMARK ─────────────────────────────────────────────
 // Además de los siete va una OCTAVA fila: `S&P 500 · SPY`, $100k comprados el
@@ -40,6 +48,7 @@ import { activeAgents, agentAlpacaCreds } from './_lib/arena-registry.js';
 import {
   BENCHMARK, leerBenchmark, precioBenchmark, benchmarkReturnPct, filaBenchmark, excesoVsBenchmark,
 } from './_lib/arena-benchmark.js';
+import { readBaselines, baselineDe, returnPct } from './_lib/arena-baseline.js';
 
 const BASELINE = (() => {
   const n = Number(process.env.ARENA_BASELINE_EQUITY);
@@ -53,24 +62,43 @@ const eqOf = (r) => (r && r.account && Number.isFinite(r.account.equity) ? r.acc
 // ── EL ORDEN DE LA TABLA ─────────────────────────────────────────────
 // Pura, sin red, para que un test la ejercite entera.
 //
-// Dos cosas distintas que la gente confunde y acá NO se confunden:
-//   - El ORDEN es por equity e incluye al benchmark. Si el índice va arriba de
-//     los siete, eso tiene que verse en la primera fila.
+// Tres cosas distintas que la gente confunde y acá NO se confunden:
+//
+//   - El ORDEN es por RETORNO, no por equity bruto, e incluye al benchmark. No
+//     es un cambio a la decisión #6 ("rankear por equity"): mientras las siete
+//     cuentas arranquen del MISMO capital, ordenar por retorno da exactamente
+//     el mismo orden que ordenar por equity — es una transformación monótona.
+//     Los dos órdenes solo se separan cuando el capital de arranque difiere, y
+//     ahí es donde el equity bruto deja de ser justo: aplanar a mercado dejó a
+//     `control` con ~$1,040 menos que a `claude`, y con orden por equity esa
+//     diferencia lo deja atrás para siempre aunque los dos rindan idéntico —
+//     que es justo el par que existe para rendir idéntico. El equity sigue
+//     mostrándose; lo que cambia es qué decide el puesto. Empate → desempata el
+//     equity.
 //   - El RANGO (1, 2, 3…) es solo para los que compiten. El benchmark no
 //     decidió nada: no puede ganar, así que no toma número. Por eso el rango se
 //     asigna DESPUÉS de ordenar, contando solo `compite !== false` — si se
 //     asignara antes, el índice se comería un puesto y "claude va 2º" sería
 //     falso de una forma difícil de ver.
-// Sin equity (sin keys, Alpaca caída, benchmark sin abrir) → al final, sin rango.
+//   - Sin equity (sin keys, Alpaca caída, benchmark sin abrir) → al final, sin
+//     rango. Un agente caído no es un agente en cero.
 export function ordenarRanking({ agentes = [], bench = null } = {}) {
   const filas = [...agentes, ...(bench ? [bench] : [])];
-  const conEquity = filas.filter((r) => eqOf(r) != null).sort((a, b) => eqOf(b) - eqOf(a));
+  const retOf = (r) => (r && Number.isFinite(r.return_pct) ? r.return_pct : null);
+  const conEquity = filas.filter((r) => eqOf(r) != null).sort((a, b) => {
+    const ra = retOf(a), rb = retOf(b);
+    // Una fila con equity pero sin retorno (baseline ilegible) no se cuela
+    // arriba por un null: se ordena por equity contra las demás.
+    if (ra != null && rb != null && ra !== rb) return rb - ra;
+    return eqOf(b) - eqOf(a);
+  });
   const sinEquity = filas.filter((r) => eqOf(r) == null);
   let puesto = 0;
   const marca = (r, orden) => ({
     id: r.id, name: r.name, kind: r.kind || 'MODELO',
     compite: r.compite !== false,
     orden, equity: eqOf(r),
+    baseline_equity: r.baseline_equity ?? null,
     return_pct: r.return_pct ?? null,
     rank: r.compite !== false && eqOf(r) != null ? ++puesto : null,
   });
@@ -96,12 +124,21 @@ export default async function handler(req, res) {
     for (const r of stateRows) haltByAgent[r.agent_id] = r;
   } catch (err) { journalErr = String((err && err.message) || err); }
 
+  // ── EL DENOMINADOR ES EL BASELINE PROPIO DE CADA AGENTE ──────────────
+  // No un $100k global. El reset re-basa cada cuenta a SU equity real después
+  // de aplanar (arena-reset paso 6), y ese mismo número tiene que ser el
+  // denominador acá: si el piso del breaker es el equity real pero el retorno
+  // se divide por $100k, la misma cuenta arranca en 0% para el breaker y en
+  // −1.45% en la tabla pública. Si la DB no contesta, cae al global de siempre.
+  const baselines = await readBaselines();
+
   const rows = await Promise.all(agents.map(async (agent) => {
     const creds = agentAlpacaCreds(agent);
     const out = {
       id: agent.id, name: agent.name, model: agent.model, model_label: agent.model_label,
       provider: agent.provider, house: agent.house, control: !!agent.control,
       has_keys: !!creds, account: null, positions: [], journal: null, halt: null,
+      baseline_equity: baselineDe(baselines, agent.id, BASELINE),
       return_pct: null, day_change_pct: null,
     };
 
@@ -127,7 +164,7 @@ export default async function handler(req, res) {
         const equity = Number(account.equity);
         const lastEquity = Number(account.last_equity);
         out.account = { equity, cash: Number(account.cash), status: account.status };
-        out.return_pct = pct(equity, BASELINE);
+        out.return_pct = returnPct(equity, out.baseline_equity);
         out.day_change_pct = pct(equity, lastEquity);
         out.positions = positions.map((p) => ({
           symbol: p.symbol, qty: Number(p.qty), avg_entry: Number(p.avg_entry_price),
@@ -176,8 +213,15 @@ export default async function handler(req, res) {
     return ((A && A.orden) || 0) - ((B && B.orden) || 0);
   });
 
+  // ¿Los siete arrancaron del mismo capital? Si no, un único "baseline: $100,000"
+  // en la cabecera es falso, y la página tiene que decir otra cosa.
+  const bases = [...new Set(rows.map((r) => r.baseline_equity))];
   const body = {
-    enabled, count: ranked.length, baseline_equity: BASELINE,
+    enabled, count: ranked.length,
+    // El global sigue publicándose como FALLBACK declarado; el que manda es el
+    // de cada fila (`agents[].baseline_equity`).
+    baseline_equity: BASELINE,
+    baselines_uniformes: bases.length <= 1,
     agents: ranked,
     // Fuera de `agents` a propósito: los consumidores que cuentan modelos
     // (`agents.length`) seguirían contando siete, no ocho. El benchmark no es
