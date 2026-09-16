@@ -43,6 +43,35 @@
 > Y un hallazgo que cambia el presupuesto entero: **el censo devolvió 441,543
 > caracteres** — cientos de emisoras, no 30 (§2.1, §4.1).
 
+> ### El censo corrió: 137 ICS, y cuatro bugs de la misma clase
+> **595 filas · 185 series ICS · 137 emisoras ICS únicas** (109 ACTIVA,
+> 76 SUSPENDIDA). **El universo alcanza de sobra** (§4.1).
+>
+> Los cuatro bugs eran todos la misma falla: **el dato llegaba bien y el código
+> lo tiraba.** Vale la pena nombrarla, porque es la que este proyecto más
+> repite.
+>
+> | # | Qué pasó | Por qué |
+> |---|---|---|
+> | 1 | Las **137 ICS** salieron con cobertura **CERO** | `rango_financieros` llega como lista (`"1T_2017, 1T_2018, …, 2T_2016, …"`) y el parser rechazaba el formato **bueno** |
+> | 2 | `distribuciones_guardadas: 0`, WALMEX "sin reparto" | los dividendos cuelgan de la **serie**, y llegan como arreglo — el parser sólo miraba objetos con llaves |
+> | 3 | 7 de 7 filas de precios descartadas | el formato real es `{"2026-06-22": [50.57, 1313556324.33]}` — un **arreglo**, no un objeto |
+> | 4 | El benchmark daba 400 | el identificador va **pegado**: `NAFTRACISHRS`, no `NAFTRAC ISHRS` |
+>
+> **Fallar cerrado protege de inventar datos; no sirve de nada si además tira
+> los que llegan bien.** Los cuatro tienen test con la forma **real** que la API
+> mandó, no una inventada — que es la única manera de que un fail-closed
+> demasiado estricto se note antes y no después.
+>
+> Dos que el arreglo destapó de paso:
+>
+> - La lista de trimestres viene en orden **lexicográfico** (`1T_2017` antes que
+>   `2T_2016`), así que tomar el primero y el último daba el arranque **un año
+>   tarde**. Se ordena cronológicamente.
+> - Extraer dividendos del objeto de la emisora le daba a cada serie los
+>   repartos de **todas sus hermanas** — LIVEPOL `C-1` se llevaba los de
+>   LIVEPOL `1`. Ahora sale del sub-objeto de cada serie.
+
 Espejo estructural de `/api/rotation-analyze`, el backtest gringo que en agosto
 salió **NO-GO** con t=0.49 y Sharpe por debajo del SPY. Se reutiliza lo que
 sirve de allá —la aritmética de percentiles, el turnover real, el t en
@@ -177,20 +206,25 @@ modo que si la relación deja de ser 1:1 se ve en el propio contador.
 
 ### 2.2 Con eso, el presupuesto deja de ser una restricción
 
-El censo trae **cientos** de emisoras, no 30. Aun así:
+Con el censo **real** ya corrido — 137 emisoras ICS, 185 series, 39 trimestres
+reportados por emisora:
 
-| ICS en el censo | Series | Requests totales | % de 200,000 |
-|---:|---:|---:|---:|
-| 30 | 32 | 1,263 | 0.6% |
-| 100 | 105 | 4,206 | 2.1% |
-| 150 | 158 | 6,309 | 3.2% |
-| 200 | 210 | 8,411 | 4.2% |
-| 500 | 525 | 21,026 | 10.5% |
-| 1,000 | 1,050 | 42,051 | 21.0% |
+| Concepto | Requests |
+|---|---:|
+| Censo | 1 |
+| Financieros (137 × ~39) | ~5,343 |
+| Históricos (1 por serie + benchmark) | ~138 |
+| **Total** | **~5,482** |
 
-La frontera está en **~4,700 emisoras ICS**, muy por encima de lo que la BMV
-tiene listado. **La cosecha cabe en un mes con margen de sobra**, y la pregunta
-de cómo partirla deja de ser urgente.
+**2.7% del presupuesto mensual.** Y la frontera está en ~4,700 emisoras ICS, o
+sea que ni multiplicando el universo por 30 se llegaría al tope. **La cosecha
+cabe con margen de sobra**, y la pregunta de cómo partirla deja de ser urgente.
+
+Los financieros salen de la **enumeración** de trimestres del censo, no del
+rango: `rango_financieros` lista los trimestres que la emisora sí reportó, y
+puede tener huecos. Pedir min..max rellenaría esos huecos con requests que
+vuelven vacíos —y, peor, metería a la emisora al universo en trimestres que no
+reportó.
 
 Los financieros se cuentan **por emisora** y los precios **por serie**: una
 emisora con dos series (LIVEPOL `C-1` y `1`) cuesta dos rangos de precios pero
@@ -361,6 +395,14 @@ Las distribuciones vienen dentro de la respuesta de `/v2/emisoras`, así que no
 cuestan un request extra: llegan con el censo, **para cada emisora**, y se
 guardan en `bmv_distribuciones`.
 
+> **¿La fecha del censo es la EX o la de PAGO?** [ABIERTO] Son días distintos,
+> y el retorno total se arma con la **ex** — es cuando el precio cae. Si lo que
+> el censo trae es la de pago, el crédito llega tarde y el retorno total queda
+> ligeramente **subestimado**; como pasa en los dos lados, se cancela casi
+> entero en el exceso, pero "casi" no es "sí". `?job=emisoras` reporta
+> `dividendos_campos_vistos` con los nombres de campo que trajo el reparto,
+> justamente para poder contestarlo mirando el dato en vez de suponerlo.
+
 > **Un hueco aquí no es un hueco cualquiera.** Una ICS sin reparto puede ser que
 > de verdad no reparta, o que el dato no venga — y lo segundo la mide a precio
 > contra un benchmark que sí trae distribuciones, o sea que **rompe la simetría
@@ -466,27 +508,35 @@ Un backtest donde el piso mandó el 90% del tiempo no probó un quintil: probó 
 top 40%. Son estrategias distintas con el mismo nombre, y un GO de una no
 autoriza a operar la otra.
 
-### Lo que el probe cambió aquí
+### Lo que el censo resolvió
 
 Esta sección se escribió suponiendo un universo del tamaño de las **30** ICS
-curadas de Fase 1a. El censo devolvió **441,543 caracteres** — cientos de
-emisoras, desde CKDs (`AA1CK`, `AA2CPI`, tipo `1R`) hasta lo que sea que haya
-más allá de `ALTUM`.
+curadas de Fase 1a, y con esas la canasta habría dado 3 nombres: INCONCLUSO sin
+discusión. El censo real dice otra cosa:
 
-Si de esas, digamos, 100-150 son ICS con financieros, el universo elegible tras
-el filtro de 5 millones estaría **muy por encima de 40**, y entonces el quintil
-sería **un quintil de verdad**: el piso de 8 casi nunca mandaría y la etiqueta
-«no probó un quintil» no se dispararía. La preocupación del tamaño de canasta
-queda, con mucha probabilidad, resuelta.
+| | |
+|---|---:|
+| Filas en el censo | 595 |
+| Series ICS | 185 |
+| **Emisoras ICS únicas** | **137** |
+| ACTIVA / SUSPENDIDA | 109 / 76 |
 
-**Pero "con mucha probabilidad" no es un dato**, y el filtro de liquidez es
-justamente el que puede recortar esos cientos a unas pocas decenas — para eso
-existe. Así que sigue siendo cierto lo que ya decía esta sección, y ahora con
-más razón:
+**137 ICS es holgado.** Aunque el filtro de 5 millones se llevara la mitad, el
+universo elegible rondaría 68 y el quintil daría ~14 nombres: **dentro del
+rango 8-15, o sea un quintil de verdad**, con el piso sin mandar y la etiqueta
+«no probó un quintil» sin dispararse. La preocupación del tamaño de canasta
+queda **resuelta**.
 
-> El número de ICS que devuelva `?job=emisoras`, y **cuántas sobreviven al
-> filtro de 5 millones**, es lo primero que hay que mirar. Con un universo
-> elegible mediano por debajo de 16, la Fase B **no se corre**.
+Que 76 de las 185 series ICS estén **SUSPENDIDAS** es la otra mitad de la buena
+noticia: son exactamente las emisoras que un universo "lista de hoy mirada
+hacia atrás" habría perdido. Están, con su rango, y por eso el point-in-time es
+real y no una promesa.
+
+**Lo que sigue sin saberse es cuántas sobreviven al filtro de liquidez** — para
+eso existe, y con 137 emisoras es esperable que se lleve una fracción grande.
+La regla no se mueve:
+
+> Con universo elegible mediano por debajo de 16, la Fase B **no se corre**.
 
 Y el tripwire del §3.1 pasa a ser más importante, no menos: con cientos de
 emisoras en el censo, muchas serán ilíquidas de verdad, así que **es esperable
@@ -584,9 +634,10 @@ regla aplicada dos veces, no una excepción conveniente.
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 8 jobs (con `reparse`, de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **69 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **81 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
-| **El contrato de la API** | **VERIFICADO** por el probe: `periodo=1T_2020` y `emisora_serie=WALMEX*`. 14 créditos. |
+| **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
+| **El censo** | **Corrido**: 595 filas, 185 series ICS, **137 emisoras ICS**. |
 | **La cosecha** | **Sin correr** — este sandbox no alcanza la API. |
 | **Cobertura real** | **Sin reportar** — depende de la cosecha. |
 | `/api/bmv-rotation-analyze` | **Fase B. No empezado, a propósito.** |

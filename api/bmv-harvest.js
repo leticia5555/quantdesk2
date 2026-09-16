@@ -266,7 +266,10 @@ function estimarConsumo({ emisoras, camposPorFinanciero = 60, preciosDesde = nul
   for (const e of emisoras) {
     const rango = recortarACobertura(e.finDesde, e.finHasta, COBERTURA_FIN);
     const yaContada = emisorasContadas.has(e.emisora);
-    const trimestres = rango && !yaContada ? trimestresEntre(rango.desde, rango.hasta).length : 0;
+    // La enumeración del censo gana sobre el rango: es el número exacto.
+    const trimestres = yaContada ? 0
+      : (e.finPeriodos ? e.finPeriodos
+        : (rango ? trimestresEntre(rango.desde, rango.hasta).length : 0));
     if (rango) emisorasContadas.add(e.emisora);
     reqFin += trimestres;
     datosFin += trimestres * camposPorFinanciero;
@@ -336,6 +339,10 @@ async function emisorasParaEstimar() {
       fuente: 'bmv_emisoras (censo real de DataBursatil) + benchmark',
       lista: [...extra, ...filas.map((f) => ({
         emisora: f.emisora,
+        emisora_serie: f.emisora_serie || f.emisora,
+        // Si el censo trae la enumeración de trimestres, ése es el número
+        // EXACTO de requests; el rango sólo aproxima cuando no la hay.
+        finPeriodos: Array.isArray(f.fin_periodos) ? f.fin_periodos.length : null,
         finDesde: f.fin_desde ? { anio: Number(String(f.fin_desde).split('-')[0]), trimestre: Number(String(f.fin_desde).split('-')[1]) } : null,
         finHasta: f.fin_hasta ? { anio: Number(String(f.fin_hasta).split('-')[0]), trimestre: Number(String(f.fin_hasta).split('-')[1]) } : null,
         histDesde: f.hist_desde ? String(f.hist_desde).slice(0, 10) : null,
@@ -613,7 +620,17 @@ function filaCenso(clave, valor, serieEntrada = null) {
     hist_desde: hist.rango ? hist.rango.desde : null,
     hist_hasta: hist.rango ? hist.rango.hasta : null,
     hist_motivo: hist.motivo,
+    // La ENUMERACIÓN de trimestres reportados, no sólo los extremos. Con ella
+    // la cosecha pide sólo lo que existe: un hueco en la serie no es un
+    // trimestre que valga un request, y tampoco es un trimestre en el que la
+    // emisora deba entrar al universo.
+    fin_periodos: fin.periodos && fin.periodos.length
+      ? fin.periodos.map((x) => clavePeriodo(x.anio, x.trimestre)) : null,
     raw: valor,
+    // El sub-objeto de ESTA serie. Los dividendos cuelgan de aquí, no de la
+    // emisora: extraerlos del objeto completo le daba a cada serie los
+    // repartos de TODAS sus hermanas (LIVEPOL C-1 se llevaba los de LIVEPOL 1).
+    raw_serie: serieEntrada && serieEntrada.datos ? serieEntrada.datos : null,
   };
 }
 
@@ -694,9 +711,14 @@ async function jobEmisoras() {
   // y la canasta.
   let distribuciones = 0;
   const conReparto = [];
+  // Los nombres de campo que trajo el reparto. De ellos depende si la fecha
+  // guardada es la EX o la de PAGO — son días distintos y el retorno total se
+  // arma con la ex, así que esto se reporta en vez de suponerse.
+  const camposDividendo = new Set();
   for (const f of filas) {
     await upsertEmisora(f);
-    const d = extraerDistribuciones(f.raw);
+    const d = extraerDistribuciones(f.raw_serie || f.raw);
+    for (const c of d.campos || []) camposDividendo.add(c);
     if (d.distribuciones.length) {
       distribuciones += await insertarDistribuciones(f.emisora, f.emisora_serie, d.distribuciones);
       conReparto.push(f.emisora_serie);
@@ -724,6 +746,7 @@ async function jobEmisoras() {
     // nacimiento, así que se reporta aparte y en voz alta.
     ics_sin_rango_financieros: sinRango.map((f) => ({ emisora: f.emisora_serie, motivo: f.fin_motivo })),
     distribuciones_guardadas: distribuciones,
+    dividendos_campos_vistos: [...camposDividendo],
     // Insumo del retorno total de la CANASTA. Una ICS sin reparto puede ser que
     // de verdad no reparta, o que el dato no venga — y la diferencia importa:
     // lo segundo mide esa emisora a precio contra un benchmark que sí trae
@@ -781,11 +804,13 @@ async function jobReparse() {
     filas.push(...filasDelCenso({ [p.emisora]: p.raw }));
   }
   let distribuciones = 0;
+  const conReparto = [];
   for (const f of filas) {
     await upsertEmisora(f);
-    const d = extraerDistribuciones(f.raw);
+    const d = extraerDistribuciones(f.raw_serie || f.raw);
     if (d.distribuciones.length) {
       distribuciones += await insertarDistribuciones(f.emisora, f.emisora_serie, d.distribuciones);
+      conReparto.push(f.emisora_serie);
     }
   }
   return {
@@ -795,7 +820,11 @@ async function jobReparse() {
     filas_rederivadas: filas.length,
     ics: filas.filter((f) => f.tipo_valor_id === '1').length,
     con_serie: filas.filter((f) => f.serie).length,
+    con_cobertura: filas.filter((f) => f.fin_desde).length,
+    sin_cobertura: filas.filter((f) => f.tipo_valor_id === '1' && !f.fin_desde)
+      .map((f) => ({ emisora: f.emisora_serie, motivo: f.fin_motivo })).slice(0, 20),
     distribuciones,
+    series_con_reparto: conReparto.length,
     censo: await censoResumen(),
   };
 }

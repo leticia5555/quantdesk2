@@ -142,6 +142,10 @@ const BMV_SCHEMA = [
   // `emisora` se queda como columna aparte: los FINANCIEROS siguen siendo por
   // emisora (ese endpoint no conoce series), así que el cruce precio↔financiero
   // se hace por ella.
+  // La ENUMERACIÓN de trimestres reportados, no sólo los extremos:
+  // `rango_financieros` llega como lista ("1T_2017, 1T_2018, ..., 2T_2016") y
+  // puede tener huecos. Con la lista se pide sólo lo que existe.
+  `alter table bmv_emisoras add column if not exists fin_periodos jsonb`,
   `alter table bmv_emisoras add column if not exists serie text`,
   `alter table bmv_emisoras add column if not exists emisora_serie text`,
   `update bmv_emisoras set emisora_serie = emisora where emisora_serie is null`,
@@ -190,11 +194,12 @@ async function upsertEmisora(e) {
   await sql(
     `insert into bmv_emisoras
        (emisora, serie, emisora_serie, razon_social, tipo_valor_id, estatus,
-        fin_desde, fin_hasta, fin_motivo, hist_desde, hist_hasta, hist_motivo,
-        raw, actualizado_at)
-     values ($1,$12,$13,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb, now())
+        fin_desde, fin_hasta, fin_motivo, fin_periodos, hist_desde, hist_hasta,
+        hist_motivo, raw, actualizado_at)
+     values ($1,$12,$13,$2,$3,$4,$5,$6,$7,$14::jsonb,$8,$9,$10,$11::jsonb, now())
      on conflict (emisora_serie) do update set
        emisora = excluded.emisora,
+       fin_periodos = excluded.fin_periodos,
        serie = excluded.serie,
        razon_social = excluded.razon_social,
        tipo_valor_id = excluded.tipo_valor_id,
@@ -210,7 +215,8 @@ async function upsertEmisora(e) {
     [e.emisora, e.razon_social || null, e.tipo_valor_id || null, e.estatus || null,
      e.fin_desde || null, e.fin_hasta || null, e.fin_motivo || null,
      e.hist_desde || null, e.hist_hasta || null, e.hist_motivo || null,
-     JSON.stringify(e.raw ?? {}), e.serie ?? null, e.emisora_serie || e.emisora],
+     JSON.stringify(e.raw ?? {}), e.serie ?? null, e.emisora_serie || e.emisora,
+     e.fin_periodos ? JSON.stringify(e.fin_periodos) : null],
   );
 }
 

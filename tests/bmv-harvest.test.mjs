@@ -467,10 +467,15 @@ test('un objeto anidado con campos de emisora pasa aunque la llave sea rara', ()
 
 /* ── el benchmark: NAFTRAC ISHRS, tipo 1B ───────────────────────── */
 
-test('el benchmark es el identificador completo, con su serie', () => {
-  assert.equal(BENCHMARK, 'NAFTRAC ISHRS');
-  assert.equal(BENCHMARK_EMISORA, 'NAFTRAC');
-  assert.equal(BENCHMARK_SERIE, 'ISHRS');
+test('el benchmark va PEGADO, sin espacio — el espacio fue el 400', () => {
+  // Todos los identificadores de la API van pegados: WALMEX*, FEMSAUBD,
+  // LIVEPOLC-1, LACOMERUBC. NAFTRAC no es la excepción, y probarlo con espacio
+  // devolvió 400 — el problema nunca fue que faltara en el censo (hay 16 filas
+  // tipo 1B), sino cómo se armaba el identificador.
+  assert.equal(BENCHMARK, 'NAFTRACISHRS');
+  assert.ok(!BENCHMARK.includes(' '), 'ni un espacio');
+  assert.equal(BENCHMARK, BENCHMARK_EMISORA + BENCHMARK_SERIE,
+    'se construye igual que cualquier otro emisora_serie, no a mano');
   assert.equal(BENCHMARK_TIPO, '1B');
 });
 
@@ -481,26 +486,26 @@ test('el benchmark NO puede colarse al universo: 1B nunca empata con 1', () => {
   // este test se cae — que es justo para lo que está.
   const filas = filasDelCenso({
     WALMEX: { tipo_valor_id: 1, rango_financieros: '2016-2/2026-2' },
-    'NAFTRAC ISHRS': { tipo_valor_id: '1B', rango_financieros: '2016-2/2026-2' },
+    NAFTRAC: { razon_social: 'iShares NAFTRAC', ISHRS: { tipo_valor_id: '1B' } },
   });
   const ics = filas.filter((f) => f.tipo_valor_id === '1');
   assert.deepEqual(ics.map((f) => f.emisora), ['WALMEX']);
-  const bench = filas.find((f) => f.emisora === BENCHMARK);
+  const bench = filas.find((f) => f.emisora_serie === BENCHMARK);
   assert.equal(bench.tipo_valor_id, '1B', 'el tipo se guarda como texto, sin coerción');
   assert.notEqual(bench.tipo_valor_id, '1');
 });
 
-test('el censo NO tira la fila del benchmark por el espacio de la serie', () => {
-  // Esto es una regresión con nombre: la primera versión del filtro anti-basura
-  // exigía una sola palabra y habría desaparecido al benchmark en silencio.
-  assert.equal(pareceClave(BENCHMARK), true);
-  const filas = filasDelCenso({ 'NAFTRAC ISHRS': { tipo_valor_id: '1B', rango_historicos: '2010-01-04/2026-09-15' } });
-  assert.deepEqual(filas.map((f) => f.emisora), [BENCHMARK]);
+test('el censo arma el identificador del benchmark desde la serie', () => {
+  const filas = filasDelCenso({
+    NAFTRAC: { razon_social: 'iShares NAFTRAC', ISHRS: { tipo_valor_id: '1B', rango_historicos: '2010-01-04/2026-09-15' } },
+  });
+  assert.deepEqual(filas.map((f) => f.emisora_serie), [BENCHMARK]);
+  assert.equal(filas[0].tipo_valor_id, '1B');
 });
 
 test('paramsBenchmark: el benchmark ya es un emisora_serie como cualquier otro', () => {
   const p = paramsBenchmark(CONTRATO_DEFECTO, '2016-01-01', '2026-09-16');
-  assert.equal(p.emisora_serie, 'NAFTRAC ISHRS');
+  assert.equal(p.emisora_serie, 'NAFTRACISHRS');
   assert.equal(p.emisora, undefined, 'no debe mandar el parámetro viejo');
 });
 
@@ -564,13 +569,13 @@ test('las distribuciones se extraen de CUALQUIER emisora, no sólo del benchmark
   // atado al benchmark, la canasta se mediría a precio contra un benchmark con
   // dividendos — exactamente la asimetría que el diseño corrige.
   const filas = filasDelCenso({
-    WALMEX: { tipo_valor_id: '1', dividendos: [{ fecha_ex: '2025-11-20', monto: 0.58 }] },
-    'NAFTRAC ISHRS': { tipo_valor_id: '1B', distribuciones: { '2025-11-28': { monto: 0.31 } } },
+    WALMEX: { '*': { tipo_valor_id: '1', dividendos: [{ fecha_ex: '2025-11-20', monto: 0.58 }] } },
+    NAFTRAC: { ISHRS: { tipo_valor_id: '1B', distribuciones: { '2025-11-28': { monto: 0.31 } } } },
   });
   const porEmisora = Object.fromEntries(
-    filas.map((f) => [f.emisora, extraerDistribuciones(f.raw).distribuciones]));
+    filas.map((f) => [f.emisora_serie, extraerDistribuciones(f.raw_serie || f.raw).distribuciones]));
 
-  assert.deepEqual(porEmisora.WALMEX, [{ fecha_ex: '2025-11-20', monto: 0.58 }]);
+  assert.deepEqual(porEmisora['WALMEX*'], [{ fecha_ex: '2025-11-20', monto: 0.58 }]);
   assert.deepEqual(porEmisora[BENCHMARK], [{ fecha_ex: '2025-11-28', monto: 0.31 }]);
 });
 
@@ -586,14 +591,15 @@ test('una emisora sin reparto da lista vacía, no un cero inventado', () => {
 /* ── la SERIE: lo que el probe reveló ───────────────────────────── */
 
 test('emisoraSerie concatena literal, sin normalizar ni separar', () => {
-  // Literal a propósito: así una serie que trae su propio espacio, como
-  // ' ISHRS', produce 'NAFTRAC ISHRS' sin necesitar un caso especial.
+  // Literal y sin separador: así se reproducen los identificadores tal como
+  // la API los quiere, incluido el del benchmark.
   assert.equal(emisoraSerie('WALMEX', '*'), 'WALMEX*');
   assert.equal(emisoraSerie('FEMSA', 'UBD'), 'FEMSAUBD');
   assert.equal(emisoraSerie('AMX', 'B'), 'AMXB');
   assert.equal(emisoraSerie('CEMEX', 'CPO'), 'CEMEXCPO');
   assert.equal(emisoraSerie('LIVEPOL', 'C-1'), 'LIVEPOLC-1');
-  assert.equal(emisoraSerie('NAFTRAC', ' ISHRS'), 'NAFTRAC ISHRS');
+  assert.equal(emisoraSerie('NAFTRAC', 'ISHRS'), 'NAFTRACISHRS');
+  assert.equal(emisoraSerie('LACOMER', 'UBC'), 'LACOMERUBC');
   assert.equal(emisoraSerie('GCC', null), 'GCC');
 });
 
@@ -612,7 +618,7 @@ test('seriesDeEmisora NO confunde un campo-objeto con una serie', () => {
 });
 
 test('pareceSerie acepta las series reales y rechaza nombres de campo', () => {
-  for (const k of ['*', 'B', 'UBD', 'CPO', 'C-1', 'CK', 'CPI', ' ISHRS']) {
+  for (const k of ['*', 'B', 'UBD', 'CPO', 'C-1', 'CK', 'CPI', 'ISHRS', 'UBC']) {
     assert.equal(pareceSerie(k), true, `debió aceptar ${JSON.stringify(k)}`);
   }
   for (const k of ['rango_financieros', 'razon_social', 'tipo_valor_id', '']) {
@@ -635,8 +641,8 @@ test('filasDelCenso desdobla una emisora en UNA FILA POR SERIE', () => {
 test('los campos de la SERIE ganan sobre los de la emisora', () => {
   // tipo_valor_id y estatus son del instrumento, no de la empresa: NAFTRAC
   // ISHRS es 1B y un CKD es 1R, aunque cuelguen de un nombre cualquiera.
-  const [n] = filasDelCenso({ NAFTRAC: { tipo_valor_id: '1', ' ISHRS': { tipo_valor_id: '1B' } } });
-  assert.equal(n.emisora_serie, 'NAFTRAC ISHRS');
+  const [n] = filasDelCenso({ NAFTRAC: { tipo_valor_id: '1', ISHRS: { tipo_valor_id: '1B' } } });
+  assert.equal(n.emisora_serie, 'NAFTRACISHRS');
   assert.equal(n.tipo_valor_id, '1B');
   const [ck] = filasDelCenso({ AA1CK: { razon_social: 'CKD', CK: { tipo_valor_id: '1R' } } });
   assert.equal(ck.tipo_valor_id, '1R', 'un CKD no es ICS y el filtro de universo lo deja fuera');
@@ -676,4 +682,154 @@ test('estimarConsumo dice CÓMO partir la cosecha sólo cuando no cabe', () => {
   assert.ok(enorme.plan_si_no_cabe.financieros_solos > 0);
   assert.ok(enorme.plan_si_no_cabe.historicos_solos > 0);
   assert.match(enorme.plan_si_no_cabe.mes_1, /financieros/);
+});
+
+/* ═══════════════════════════════════════════════════════════════
+ * Los cuatro bugs de la primera corrida del censo. Todos de la misma
+ * clase: el dato llegaba bien y el código lo tiraba. Cada test usa la
+ * forma REAL que la API mandó, no una inventada.
+ * ═══════════════════════════════════════════════════════════════ */
+
+/** La cadena literal de WALMEX: lista por comas, en orden LEXICOGRÁFICO. */
+function rangoWalmex() {
+  const qs = [];
+  for (const t of [1, 2, 3, 4]) {
+    for (let a = 2016; a <= 2025; a++) {
+      if (t === 1 && a === 2016) continue;      // la cobertura arranca en 2T2016
+      qs.push(`${t}T_${a}`);
+    }
+  }
+  return qs.join(', ');
+}
+
+test('BUG 1 · rango_financieros: la lista "1T_2017, ..., 2T_2016, ..." SÍ es válida', () => {
+  // Esto dejó las 137 ICS con motivo "no se reconoce el formato" y la
+  // cobertura en CERO. Fallar cerrado protege de inventar datos; no sirve de
+  // nada si además tira los que llegan bien.
+  const r = parsearRangoPeriodos(rangoWalmex());
+  assert.equal(r.motivo, null, 'el formato bueno no puede salir con motivo');
+  assert.deepEqual(r.rango.desde, { anio: 2016, trimestre: 2 });
+  assert.deepEqual(r.rango.hasta, { anio: 2025, trimestre: 4 });
+});
+
+test('BUG 1b · el mínimo es CRONOLÓGICO, no el primero de la cadena', () => {
+  // La lista viene ordenada lexicográficamente: '1T_2017' aparece ANTES que
+  // '2T_2016'. Tomar el primero y el último daría el arranque un año tarde, y
+  // eso mete a la emisora al universo en trimestres que no reportó.
+  const cadena = rangoWalmex();
+  assert.ok(cadena.startsWith('1T_2017'), 'la cadena real empieza por 1T_2017');
+  const r = parsearRangoPeriodos(cadena);
+  assert.deepEqual(r.rango.desde, { anio: 2016, trimestre: 2 }, 'pero el mínimo real es 2T2016');
+});
+
+test('BUG 1c · se conserva la ENUMERACIÓN, no sólo los extremos', () => {
+  // La lista puede tener huecos, y un hueco no es un trimestre que valga un
+  // request — ni un trimestre en el que la emisora deba entrar al universo.
+  const r = parsearRangoPeriodos('2T_2016, 3T_2016, 1T_2020');
+  assert.deepEqual(r.periodos.map((p) => `${p.anio}-${p.trimestre}`), ['2016-2', '2016-3', '2020-1']);
+  assert.equal(r.periodos.length, 3, 'tres, no los 16 que hay entre los extremos');
+});
+
+test('BUG 1d · parseClavePeriodo habla los dos dialectos', () => {
+  assert.deepEqual(parseClavePeriodo('2T_2016'), { anio: 2016, trimestre: 2 });
+  assert.deepEqual(parseClavePeriodo('2016-2'), { anio: 2016, trimestre: 2 });
+  assert.equal(parseClavePeriodo('5T_2016'), null);
+  assert.equal(parseClavePeriodo('T_2016'), null);
+});
+
+test('BUG 2 · los dividendos cuelgan de la SERIE, y no se cruzan entre hermanas', () => {
+  // Extraerlos del objeto de la emisora le daba a cada serie los repartos de
+  // TODAS sus hermanas: LIVEPOL C-1 se llevaba los de LIVEPOL 1.
+  const filas = filasDelCenso({
+    LIVEPOL: {
+      razon_social: 'Liverpool',
+      'C-1': { tipo_valor_id: '1', dividendos: { '2025-12-17': [0.85] } },
+      1: { tipo_valor_id: '1', dividendos: { '2025-06-10': [0.40] } },
+    },
+  });
+  const por = Object.fromEntries(filas.map((f) => [f.emisora_serie, extraerDistribuciones(f.raw_serie).distribuciones]));
+  assert.deepEqual(por['LIVEPOLC-1'], [{ fecha_ex: '2025-12-17', monto: 0.85 }]);
+  assert.deepEqual(por.LIVEPOL1, [{ fecha_ex: '2025-06-10', monto: 0.40 }]);
+});
+
+test('BUG 2b · un reparto en ARREGLO o escalar ya no se descarta', () => {
+  // WALMEX trae 11 entradas y salían como "sin reparto" porque el parser sólo
+  // miraba objetos con llaves.
+  assert.deepEqual(extraerDistribuciones({ dividendos: { '2025-12-17': [0.85] } }).distribuciones,
+    [{ fecha_ex: '2025-12-17', monto: 0.85 }]);
+  assert.deepEqual(extraerDistribuciones({ dividendos: { '2025-12-17': 0.85 } }).distribuciones,
+    [{ fecha_ex: '2025-12-17', monto: 0.85 }]);
+});
+
+test('BUG 3 · los precios llegan como ARREGLO [precio, importe]', () => {
+  // Formato real: {"2026-06-22": [50.57, 1313556324.33]}. El parser lo trataba
+  // como objeto, no hallaba llaves y descartaba la fila: 7 de 7 de WALMEX se
+  // perdían, e `importe_operado_presente` salía false con el importe presente.
+  const { filas, descartadas } = aplanarHistoricos({
+    '2026-06-22': [50.57, 1313556324.33],
+    '2026-06-23': [51.10, 900000.5],
+  });
+  assert.equal(descartadas, 0);
+  assert.equal(filas.length, 2);
+  assert.equal(filas[0].cierre, 50.57);
+  assert.equal(filas[0].importe, 1313556324.33, 'el importe es el segundo elemento');
+});
+
+test('BUG 3b · un arreglo de largo desconocido se descarta, no se adivina', () => {
+  // Con 5 columnas el orden NO está verificado: meter el volumen donde va el
+  // importe dejaría el filtro de liquidez midiendo otra cosa, en silencio.
+  const { filas, descartadas } = aplanarHistoricos({ '2026-06-22': [1, 2, 3, 4, 5] });
+  assert.equal(filas.length, 0);
+  assert.equal(descartadas, 1);
+});
+
+test('BUG 3c · un arreglo de un solo elemento es el cierre, sin importe', () => {
+  const { filas } = aplanarHistoricos({ '2026-06-22': [50.57] });
+  assert.equal(filas[0].cierre, 50.57);
+  assert.equal(filas[0].importe, null, 'null, no cero: un cero pasaría el filtro de liquidez');
+});
+
+test('BUG 4 · el identificador del benchmark se arma desde el censo, pegado', () => {
+  const [f] = filasDelCenso({ NAFTRAC: { ISHRS: { tipo_valor_id: '1B' } } });
+  assert.equal(f.emisora_serie, 'NAFTRACISHRS');
+  assert.equal(paramsHistoricos(CONTRATO_DEFECTO, f.emisora_serie, 'a', 'b').emisora_serie, 'NAFTRACISHRS');
+});
+
+/* ── el censo completo, de punta a punta con la forma real ──────── */
+
+test('una emisora real sale con cobertura, serie, tipo y dividendos', () => {
+  const filas = filasDelCenso({
+    WALMEX: {
+      razon_social: 'Wal-Mart de México',
+      '*': {
+        tipo_valor_id: '1',
+        estatus: 'ACTIVA',
+        rango_financieros: rangoWalmex(),
+        rango_historicos: '2010-01-04, 2026-09-15',
+        dividendos: { '2025-12-17': [0.85], '2025-06-10': [0.70] },
+      },
+    },
+  });
+  assert.equal(filas.length, 1);
+  const f = filas[0];
+  assert.equal(f.emisora_serie, 'WALMEX*');
+  assert.equal(f.tipo_valor_id, '1');
+  assert.equal(f.estatus, 'ACTIVA');
+  assert.equal(f.fin_desde, '2016-2', 'la cobertura ya NO sale en cero');
+  assert.equal(f.fin_hasta, '2025-4');
+  assert.equal(f.fin_motivo, null);
+  assert.equal(f.fin_periodos.length, 39);
+  assert.equal(f.hist_desde, '2010-01-04');
+  assert.equal(extraerDistribuciones(f.raw_serie).distribuciones.length, 2);
+});
+
+test('estimarConsumo cobra los trimestres ENUMERADOS, no los del rango', () => {
+  // Con huecos, min..max pediría requests que vuelven vacíos. La enumeración
+  // da el número exacto.
+  const e = estimarConsumo({
+    emisoras: [{ emisora: 'X', emisora_serie: 'X*', finPeriodos: 3,
+      finDesde: { anio: 2016, trimestre: 2 }, finHasta: { anio: 2020, trimestre: 1 },
+      histDesde: '2016-01-01', histHasta: '2026-09-16' }],
+  });
+  assert.equal(e.requests.financieros, 3, 'tres, no los 16 del rango');
 });

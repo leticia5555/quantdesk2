@@ -19,6 +19,12 @@
 --   · Las migraciones al final van como ALTER y no como CREATE porque las tablas
 --     YA existen en prod: el probe corrió ensureBmvSchema() y las creó con la
 --     forma vieja, vacías. Un `create table if not exists` no las tocaría.
+--   · bmv_emisoras.fin_periodos — la ENUMERACIÓN de trimestres reportados.
+--     `rango_financieros` llega como lista ("1T_2017, 1T_2018, ..., 2T_2016")
+--     y puede tener huecos: un hueco no es un trimestre que valga un request,
+--     ni uno en el que la emisora deba entrar al universo. La lista permite
+--     pedir solo lo que existe; fin_desde/fin_hasta son sus extremos, sacados
+--     en orden CRONOLOGICO porque la API la manda en orden lexicografico.
 --   · bmv_emisoras.fin_desde/fin_hasta — el rango de `rango_financieros`. Es EL
 --     dato point-in-time: define qué emisora existía en qué trimestre. Sin él,
 --     el universo sería la lista de hoy mirada hacia atrás (survivorship bias),
@@ -143,6 +149,8 @@ create index if not exists bmv_precios_fecha_idx
 
 create index if not exists bmv_ledger_estado_idx
      on bmv_harvest_ledger (job, estado);
+
+alter table bmv_emisoras add column if not exists fin_periodos jsonb;
 
 alter table bmv_emisoras add column if not exists serie text;
 

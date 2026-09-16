@@ -52,9 +52,13 @@ const COBERTURA_FIN = { desde: { anio: 2016, trimestre: 2 }, hasta: { anio: 2026
 //
 // Se cosecha aparte, por eso mismo: nunca sale en el universo, y sin él no hay
 // contra qué medir.
-const BENCHMARK = 'NAFTRAC ISHRS';       // el identificador, tal cual
+// SIN espacio. Todos los identificadores de la API van pegados —WALMEX*,
+// FEMSAUBD, LIVEPOLC-1, LACOMERUBC— y éste no es la excepción. Probarlo con
+// espacio fue lo que devolvió 400; NAFTRAC sí está en el censo (16 filas 1B),
+// el problema era cómo se armaba el identificador.
 const BENCHMARK_EMISORA = 'NAFTRAC';
 const BENCHMARK_SERIE = 'ISHRS';
+const BENCHMARK = BENCHMARK_EMISORA + BENCHMARK_SERIE;   // 'NAFTRACISHRS'
 const BENCHMARK_TIPO = '1B';
 
 const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -205,9 +209,24 @@ function clavePeriodo(anio, trimestre) {
   return `${anio}-${trimestre}`;
 }
 
+/**
+ * Acepta las DOS formas: la nuestra ('2016-2') y la de la API ('2T_2016').
+ *
+ * Aceptar la de la API no es una concesión estética: `rango_financieros` llega
+ * como una lista en ese dialecto, y rechazarlo dejaba la cobertura en CERO.
+ */
 function parseClavePeriodo(clave) {
-  const m = /^(\d{4})-([1-4])$/.exec(String(clave).trim());
-  return m ? { anio: Number(m[1]), trimestre: Number(m[2]) } : null;
+  const t = String(clave ?? '').trim();
+  const a = /^(\d{4})-([1-4])$/.exec(t);
+  if (a) return { anio: Number(a[1]), trimestre: Number(a[2]) };
+  const b = /^([1-4])T_(\d{4})$/i.exec(t);
+  if (b) return { anio: Number(b[2]), trimestre: Number(b[1]) };
+  return null;
+}
+
+/** Orden cronológico. Existe porque la API NO manda la lista ordenada así. */
+function ordenPeriodo(p) {
+  return p.anio * 4 + p.trimestre;
 }
 
 /**
@@ -257,24 +276,39 @@ function recortarACobertura(desde, hasta, cobertura = COBERTURA_FIN) {
  * universo de cada rebalanceo. Sin él, el universo sería la lista de hoy
  * mirada hacia atrás — survivorship bias puro.
  *
- * No sé su forma exacta [NO VERIFICADO], así que se aceptan las que tienen
- * sentido y se falla ABIERTO al reporte, no al dato: lo que no se entiende
- * devuelve null con motivo, y el crudo queda guardado para re-parsear sin
- * gastar créditos.
+ * ── LO QUE LA API MANDA DE VERDAD [VERIFICADO] ─────────────────────
+ * Una LISTA separada por comas, en el dialecto de la API:
  *
- * Formas aceptadas:
- *   '2016-2/2026-2'  ·  '2016-2 a 2026-2'  ·  '2016-2,2026-2'  ·  '2016-2'
+ *     "1T_2017, 1T_2018, 1T_2019, ..., 2T_2016, ..., 4T_2025"
+ *
+ * Dos cosas de esa cadena, y las dos muerden:
+ *
+ *   1. No es un rango de dos extremos: es la **enumeración** de los trimestres
+ *      que esa emisora sí reportó. Puede tener huecos, y los huecos importan —
+ *      un trimestre que no reportó no es un trimestre que valga pedir. Por eso
+ *      además del rango se devuelve la lista completa en `periodos`.
+ *   2. **No viene en orden cronológico**, sino lexicográfico: todos los 1T,
+ *      luego los 2T… Así que `1T_2017` aparece ANTES que `2T_2016`. Tomar el
+ *      primero y el último daría un inicio un año tarde. De ahí que se ordene
+ *      antes de sacar mínimo y máximo.
+ *
+ * ── Por qué esto estuvo roto ───────────────────────────────────────
+ * El fail-closed quedó demasiado estricto y rechazaba el formato BUENO: las
+ * 137 ICS salieron con motivo "no se reconoce el formato" y la cobertura en
+ * cero. Fallar cerrado protege de inventar datos; no sirve de nada si además
+ * tira los que llegan bien. El test usa la cadena literal de WALMEX.
+ *
+ * Otras formas que se siguen aceptando:
+ *   '2016-2/2026-2'  ·  '2016-2 a 2026-2'  ·  '2016-2'
  *   ['2016-2','2026-2']  ·  {inicio|desde|min, fin|hasta|max}
- *   {'2016':[2,3,4], '2017':[1,2,3,4]}  → min y max de las llaves
+ *   {'2016':[2,3,4], '2017':[1,2,3,4]}
  */
 function parsearRangoPeriodos(valor) {
-  if (valor === null || valor === undefined) return { rango: null, motivo: 'ausente' };
+  if (valor === null || valor === undefined) return { rango: null, periodos: [], motivo: 'ausente' };
 
   if (Array.isArray(valor)) {
-    const claves = valor.map((v) => parseClavePeriodo(v)).filter(Boolean);
-    if (claves.length >= 2) return { rango: { desde: claves[0], hasta: claves[claves.length - 1] }, motivo: null };
-    if (claves.length === 1) return { rango: { desde: claves[0], hasta: claves[0] }, motivo: null };
-    return { rango: null, motivo: 'arreglo sin periodos reconocibles' };
+    return deLista(valor.map((v) => parseClavePeriodo(v)).filter(Boolean),
+      'arreglo sin periodos reconocibles');
   }
 
   if (typeof valor === 'object') {
@@ -284,7 +318,7 @@ function parsearRangoPeriodos(valor) {
     const fin = bajo.fin ?? bajo.hasta ?? bajo.max ?? bajo.ultimo;
     if (ini !== undefined && fin !== undefined) {
       const a = parseClavePeriodo(ini), b = parseClavePeriodo(fin);
-      if (a && b) return { rango: { desde: a, hasta: b }, motivo: null };
+      if (a && b) return deLista([a, b], 'objeto sin forma reconocible');
     }
     // {'2016':[2,3,4], ...} — año → trimestres
     const pares = [];
@@ -294,19 +328,32 @@ function parsearRangoPeriodos(valor) {
       const trims = Array.isArray(v) ? v.map(Number).filter((n) => n >= 1 && n <= 4) : [];
       for (const t of trims) pares.push({ anio, trimestre: t });
     }
-    if (pares.length) {
-      pares.sort((x, y) => (x.anio * 4 + x.trimestre) - (y.anio * 4 + y.trimestre));
-      return { rango: { desde: pares[0], hasta: pares[pares.length - 1] }, motivo: null };
-    }
-    return { rango: null, motivo: 'objeto sin forma reconocible' };
+    if (pares.length) return deLista(pares, 'objeto sin forma reconocible');
+    return { rango: null, periodos: [], motivo: 'objeto sin forma reconocible' };
   }
 
   const s = String(valor).trim();
   const partes = s.split(/\s*(?:\/|,|;|\||\ba\b|-{2,}|→|\.\.)\s*/i).filter(Boolean);
   const claves = partes.map((p) => parseClavePeriodo(p)).filter(Boolean);
-  if (claves.length >= 2) return { rango: { desde: claves[0], hasta: claves[claves.length - 1] }, motivo: null };
-  if (claves.length === 1) return { rango: { desde: claves[0], hasta: claves[0] }, motivo: null };
-  return { rango: null, motivo: `no se reconoce el formato: ${s.slice(0, 40)}` };
+  return deLista(claves, `no se reconoce el formato: ${s.slice(0, 60)}`);
+}
+
+/**
+ * Min y max CRONOLÓGICOS de una lista de periodos, más la lista misma
+ * ordenada y sin repetidos. La lista es lo que permite pedir sólo los
+ * trimestres que la emisora de verdad reportó, en vez de rellenar los huecos
+ * con requests que van a volver vacíos.
+ */
+function deLista(claves, motivoSiVacio) {
+  if (!claves.length) return { rango: null, periodos: [], motivo: motivoSiVacio };
+  const vistos = new Map();
+  for (const c of claves) vistos.set(ordenPeriodo(c), c);
+  const orden = [...vistos.keys()].sort((a, b) => a - b).map((k) => vistos.get(k));
+  return {
+    rango: { desde: orden[0], hasta: orden[orden.length - 1] },
+    periodos: orden,
+    motivo: null,
+  };
 }
 
 /** Lo mismo para `rango_historicos`, que son FECHAS y no trimestres. */
@@ -471,8 +518,29 @@ function aplanarHistoricos(raw) {
   const filaDe = (fecha, obj) => {
     const f = /(\d{4}-\d{2}-\d{2})/.exec(String(fecha));
     if (!f) { descartadas++; return; }
+
+    // FORMATO REAL [VERIFICADO]: {"2026-06-22": [50.57, 1313556324.33]} —
+    // un ARREGLO [precio, importe], no un objeto con llaves. El parser lo
+    // trataba como objeto, no encontraba ninguna llave y descartaba la fila:
+    // 7 de 7 filas de WALMEX se perdían, e `importe_operado_presente` salía
+    // false cuando el importe SÍ venía.
+    if (Array.isArray(obj)) {
+      if (obj.length === 2 || obj.length === 1) {
+        const cierre = aNumero(obj[0]);
+        const importe = obj.length === 2 ? aNumero(obj[1]) : null;
+        if (cierre === null) { descartadas++; return; }
+        filas.push({ fecha: f[1], cierre, apertura: null, maximo: null, minimo: null, volumen: null, importe });
+        return;
+      }
+      // Un arreglo de otro largo tiene un orden de columnas que NO está
+      // verificado. Adivinarlo podría meter el volumen donde va el importe y
+      // el filtro de liquidez quedaría midiendo otra cosa, en silencio.
+      descartadas++;
+      return;
+    }
+
     const bajo = {};
-    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+    if (obj && typeof obj === 'object') {
       for (const [k, v] of Object.entries(obj)) bajo[normalizaLlave(k)] = v;
     }
     const tomar = (nombres) => {
@@ -552,7 +620,8 @@ function aplanarHistoricos(raw) {
 // y el crudo del censo se guarda igual — si esto falla, se re-extrae con un
 // UPDATE.
 const RE_DISTRIBUCION = /distribuc|dividend|cupon|cupón|reparto/i;
-const ALIAS_MONTO = ['monto', 'importe', 'dividendo', 'distribucion', 'distribución', 'valor', 'cantidad', 'amount'];
+const ALIAS_MONTO = ['monto', 'importe', 'dividendo', 'distribucion', 'distribución',
+  'valor', 'cantidad', 'amount', 'pago', 'cupon', 'cupón', 'efectivo'];
 const ALIAS_EX = ['fecha_ex', 'ex', 'excupon', 'excupón', 'fecha_excupon', 'fecha', 'date'];
 
 /**
@@ -569,6 +638,10 @@ function extraerDistribuciones(raw) {
   const out = [];
   let descartadas = 0;
   const visto = new Set();
+  // Los nombres de campo que se vieron. Se reportan porque de ellos depende si
+  // la fecha guardada es la EX o la de PAGO, y eso no se puede deducir del
+  // número: son días distintos y el retorno total se arma con la ex.
+  const campos = new Set();
 
   const tomar = (bajo, nombres) => {
     for (const n of nombres) {
@@ -579,9 +652,23 @@ function extraerDistribuciones(raw) {
   };
 
   const fila = (clave, valor) => {
+    // Igual que los precios, un reparto puede llegar como ARREGLO
+    // ({"2025-12-17": [0.85]}) o como número suelto ({"2025-12-17": 0.85}).
+    // El parser sólo miraba objetos con llaves, así que descartaba las dos
+    // formas: 11 repartos de WALMEX salían como "sin reparto".
+    if (Array.isArray(valor)) {
+      const f = /(\d{4}-\d{2}-\d{2})/.exec(String(clave ?? ''));
+      // El monto es el primer número del arreglo que no sea una fecha.
+      const monto = valor.map(aNumero).find((x) => x !== null && x !== undefined);
+      if (!f || monto === null || monto === undefined) { descartadas++; return; }
+      const llave = f[1] + '|' + monto;
+      if (!visto.has(llave)) { visto.add(llave); out.push({ fecha_ex: f[1], monto }); }
+      return;
+    }
     const bajo = {};
-    if (valor && typeof valor === 'object' && !Array.isArray(valor)) {
+    if (valor && typeof valor === 'object') {
       for (const [k, v] of Object.entries(valor)) bajo[normalizaLlave(k)] = v;
+      for (const k of Object.keys(bajo)) campos.add(k);
     }
     const crudoFecha = tomar(bajo, ALIAS_EX) ?? clave;
     const m = /(\d{4}-\d{2}-\d{2})/.exec(String(crudoFecha ?? ''));
@@ -618,7 +705,7 @@ function extraerDistribuciones(raw) {
   caminar(raw, false, 0);
 
   out.sort((a, b) => (a.fecha_ex < b.fecha_ex ? -1 : a.fecha_ex > b.fecha_ex ? 1 : 0));
-  return { distribuciones: out, descartadas };
+  return { distribuciones: out, descartadas, campos: [...campos] };
 }
 
 /* ─────────────────── presupuesto de créditos ─────────────────── */
@@ -644,6 +731,7 @@ export {
   aNumero, aplanarHistoricos, cabecerasDeCredito, clavePeriodo, construirUrl,
   dormir, emisoraSerie, extraerDistribuciones, finDeTrimestre, mesPresupuesto,
   normalizaLlave, normalizarFinancieros, periodoApi,
-  parseClavePeriodo, parsearRangoFechas, parsearRangoPeriodos, recortarACobertura,
+  ordenPeriodo, parseClavePeriodo, parsearRangoFechas, parsearRangoPeriodos,
+  recortarACobertura,
   resolverCampo, traer, trimestresEntre, urlSegura,
 };
