@@ -69,6 +69,22 @@ function contacto() {
   return process.env.XBRL_CONTACT || 'https://github.com/leticia5555/quantdesk2';
 }
 
+/**
+ * El identificador que pide /v2/historicos es **emisora + serie**, no la
+ * emisora sola: `WALMEX*`, `FEMSAUBD`, `AMXB`, `GMEXICOB`, `CEMEXCPO`,
+ * `LIVEPOLC-1`, `NAFTRAC ISHRS`. Y el parámetro se llama `emisora_serie`.
+ *
+ * La serie NO se adivina: viene en el censo como la llave del sub-objeto de
+ * cada emisora (§ filaCenso). Este concatenado es literal —sin separador,
+ * sin normalizar— justo para que una serie que traiga su propio espacio, como
+ * ` ISHRS`, produzca `NAFTRAC ISHRS` sin un caso especial.
+ */
+function emisoraSerie(emisora, serie) {
+  const e = String(emisora || '').trim();
+  if (serie === null || serie === undefined || serie === '') return e;
+  return e + String(serie);
+}
+
 /* ─────────────────── URLs ─────────────────── */
 
 /**
@@ -167,6 +183,21 @@ function finDeTrimestre(anio, trimestre) {
   const mes = trimestre * 3;                 // 3, 6, 9, 12
   const dia = new Date(Date.UTC(anio, mes, 0)).getUTCDate();
   return `${anio}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+}
+
+/**
+ * El formato de periodo que pide /v2/financieros: **'1T_2020'** — trimestre,
+ * T, guion bajo, año. VERIFICADO contra la API: ninguna de las 8 grafías que
+ * este archivo probaba primero era ésta, y el error que devolvió lo dijo con
+ * todas sus letras ("Es necesario ingresar un periodo valido... Por ejemplo:
+ * '1T_2020'"). `periodo=2T_2017` devuelve datos.
+ *
+ * Va aparte de `clavePeriodo` a propósito: aquélla es la llave del LEDGER
+ * ('2016-2', ordenable y estable), ésta es el dialecto de la API. Mezclarlas
+ * ataría nuestro índice al formato de un tercero.
+ */
+function periodoApi(anio, trimestre) {
+  return `${trimestre}T_${anio}`;
 }
 
 /** '2016-2' — la clave con la que se identifica un periodo en el ledger. */
@@ -611,8 +642,8 @@ export {
   BASE, BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
   CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL, TIMEOUT_MS,
   aNumero, aplanarHistoricos, cabecerasDeCredito, clavePeriodo, construirUrl,
-  dormir, extraerDistribuciones, finDeTrimestre, mesPresupuesto, normalizaLlave,
-  normalizarFinancieros,
+  dormir, emisoraSerie, extraerDistribuciones, finDeTrimestre, mesPresupuesto,
+  normalizaLlave, normalizarFinancieros, periodoApi,
   parseClavePeriodo, parsearRangoFechas, parsearRangoPeriodos, recortarACobertura,
   resolverCampo, traer, trimestresEntre, urlSegura,
 };

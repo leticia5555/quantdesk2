@@ -27,6 +27,22 @@
 > **Los umbrales de GO no se tocaron en ninguno de los cuatro cambios**: |t| ≥ 2
 > y Sharpe ≥ NAFTRAC + 0.15 siguen donde estaban desde el principio.
 
+> ### El probe corrió: el contrato ya no es una suposición
+> 14 requests, 14 créditos. La API **dijo por su nombre** lo que faltaba, y el
+> diseño de fallar barato se pagó solo:
+>
+> | | Lo que este doc suponía | Lo VERIFICADO |
+> |---|---|---|
+> | `/v2/financieros` | `periodo=2026-2` | **`periodo=1T_2020`** — trimestre, T, guion bajo, año |
+> | `/v2/historicos` | `emisora=WALMEX` | **`emisora_serie=WALMEX*`** — otro parámetro, y con la serie pegada |
+>
+> Ninguna de las 8 grafías probadas era la buena, y el cuerpo del error traía el
+> ejemplo literal. Costó **14 créditos de 200,000** averiguarlo, que es
+> exactamente para lo que existía el probe.
+>
+> Y un hallazgo que cambia el presupuesto entero: **el censo devolvió 441,543
+> caracteres** — cientos de emisoras, no 30 (§2.1, §4.1).
+
 Espejo estructural de `/api/rotation-analyze`, el backtest gringo que en agosto
 salió **NO-GO** con t=0.49 y Sharpe por debajo del SPY. Se reutiliza lo que
 sirve de allá —la aritmética de percentiles, el turnover real, el t en
@@ -73,7 +89,7 @@ publicación**, que es justo lo que DataBursatil no tiene
 |---|---|
 | `bmv_emisoras` | El censo. `rango_financieros` → `fin_desde`/`fin_hasta`. |
 | `bmv_financieros` | Emisora × trimestre: crudo completo + 7 campos normalizados + `faltantes`. |
-| `bmv_precios` | Cierre diario e importe operado. |
+| `bmv_precios` | Cierre diario e importe operado, **por `emisora_serie`**. |
 | `bmv_distribuciones` | Repartos de **todas** las emisoras por fecha **ex-cupón** — canasta y benchmark. Llegan con el censo: no cuestan un request. |
 | `bmv_harvest_ledger` | Qué se pidió y cómo salió. La idempotencia vive aquí. |
 | `bmv_api_budget` | Créditos por mes **CDMX**. |
@@ -126,29 +142,72 @@ Tres cosas paran una corrida, y las tres devuelven **dónde se quedó**:
 en hora de **CDMX, no UTC**: con el mes UTC, las primeras 6 horas del día 1
 caerían en el mes anterior y el mes nuevo arrancaría contado como gastado.
 
-El volumen, con las 30 ICS de Fase 1a y la cobertura declarada 2T2016→2T2026
-(41 trimestres) como **peor caso razonable**:
+La forma del gasto, con la cobertura declarada 2T2016→2T2026 (41 trimestres):
 
-| Concepto | Requests | Datos |
-|---|---:|---:|
-| Censo de emisoras | 1 | — |
-| Financieros (30 × 41) | 1,230 | ~73,800 campos |
-| Históricos (rango completo, 1 por emisora **+ el benchmark**) | 31 | ~83,638 días |
-| **Total** | **1,262** | |
+| Concepto | Requests |
+|---|---|
+| Censo de emisoras | 1 |
+| Financieros | **emisoras × 41** (por emisora, no por serie) |
+| Históricos | **1 por serie**, más el benchmark |
 
-**No sé cómo cobra DataBursatil**, así que el reporte da **tres modelos** — y la
-diferencia entre ellos no es cosmética, decide si la cosecha cabe en un mes:
+Con las 30 ICS de Fase 1a eso daba **1,262 requests**. Pero el censo real trae
+**cientos** de emisoras, así que el número de verdad sale de `?job=estimate`
+corrido **después** de `?job=emisoras` — y por eso ese paso está en el orden de
+ejecución dos veces.
 
-| Modelo | Costo | ¿Cabe en 200,000? |
-|---|---:|---|
-| **A** · por request | 1,262 | **Sí**, con muchísimo margen (0.6%) |
-| **B** · por dato devuelto | 157,438 | **Sí**, con 21% de margen |
-| **C** · por campo × día (cierre **e** importe) | 241,076 | **NO** |
+### 2.1 El modelo de costo, resuelto con evidencia
 
-**El hallazgo que vale la pena decir en voz alta: bajo el modelo C la cosecha
-no cabe en un mes.** Y si se pidieran los precios desde 2010 —el rango completo
-que la API ofrece— el modelo B sube a **204,310**: se pasa por **4,310
-créditos**. Por eso el piso de precios por defecto es 2016-01-01 y no 2010, y
+Este documento traía tres modelos de costo porque no se sabía cuál usaba la API,
+y la diferencia entre ellos decidía si la cosecha cabía en un mes. **El probe lo
+resolvió, y sin proponérselo.**
+
+| | |
+|---|---|
+| Requests que hizo el probe | 1 censo + 8 grafías de financieros + 5 de históricos = **14** |
+| Créditos que gastó | **14** |
+| Tamaño de la respuesta del censo | **441,543 caracteres** |
+
+**Un request de 441 KB costó lo mismo que uno que devolvió un error.** O sea que
+el cobro es **por request**, no por dato: el modelo A es el real y los modelos B
+y C quedan descartados **con evidencia, no con una suposición cómoda**.
+
+Es una inferencia de una sola corrida, así que no se declara verdad revelada:
+`bmv_api_budget` guarda requests y créditos por separado en cada corrida, de
+modo que si la relación deja de ser 1:1 se ve en el propio contador.
+
+### 2.2 Con eso, el presupuesto deja de ser una restricción
+
+El censo trae **cientos** de emisoras, no 30. Aun así:
+
+| ICS en el censo | Series | Requests totales | % de 200,000 |
+|---:|---:|---:|---:|
+| 30 | 32 | 1,263 | 0.6% |
+| 100 | 105 | 4,206 | 2.1% |
+| 150 | 158 | 6,309 | 3.2% |
+| 200 | 210 | 8,411 | 4.2% |
+| 500 | 525 | 21,026 | 10.5% |
+| 1,000 | 1,050 | 42,051 | 21.0% |
+
+La frontera está en **~4,700 emisoras ICS**, muy por encima de lo que la BMV
+tiene listado. **La cosecha cabe en un mes con margen de sobra**, y la pregunta
+de cómo partirla deja de ser urgente.
+
+Los financieros se cuentan **por emisora** y los precios **por serie**: una
+emisora con dos series (LIVEPOL `C-1` y `1`) cuesta dos rangos de precios pero
+**un solo** juego de 41 trimestres. Contarlos juntos habría inflado el
+presupuesto justo donde más filas hay.
+
+#### Y si algún día no cabe
+
+`?job=estimate` devuelve el plan en `plan_si_no_cabe`, y el orden es lo único
+que importa: **primero financieros, después precios**. Los financieros son el
+dato escaso y point-in-time —sin ellos no hay ranking—, mientras que los precios
+se piden por rango y llegan completos cuando toque.
+
+No hay que hacer nada especial para partirla: la cartera para sola en
+`presupuesto_mensual_agotado`, el ledger guarda dónde quedó, y el día 1 a las
+00:01 CDMX se retoma **con el mismo job**. Eso ya estaba construido; lo único
+que faltaba era decir en qué orden. Por eso el piso de precios por defecto es 2016-01-01 y no 2010, y
 por eso `?job=probe` corre primero: si la API publica el saldo en headers, el
 cosechador lo guarda y el presupuesto deja de ser una estimación.
 
@@ -164,7 +223,7 @@ que partirla no cueste nada**: el segundo mes retoma donde paró el primero.
 
 ```
 ?job=estimate                    # público, sin red ni créditos
-?job=probe                       # ≤18 requests: descubre el contrato
+?job=probe                       # ≤18 requests: descubre el contrato (ya verificado)
 ?job=emisoras                    # 1 request: el censo
 ?job=estimate                    # otra vez, ya con el censo REAL
 ?job=financieros&max=60          # repetir hasta restantes=0
@@ -407,9 +466,34 @@ Un backtest donde el piso mandó el 90% del tiempo no probó un quintil: probó 
 top 40%. Son estrategias distintas con el mismo nombre, y un GO de una no
 autoriza a operar la otra.
 
-Y sigue siendo cierto lo que ya decía esta sección: el número de ICS que
-devuelva `?job=emisoras` es **lo primero que hay que mirar**, porque con un
-universo elegible mediano por debajo de 16 la Fase B **no se corre**.
+### Lo que el probe cambió aquí
+
+Esta sección se escribió suponiendo un universo del tamaño de las **30** ICS
+curadas de Fase 1a. El censo devolvió **441,543 caracteres** — cientos de
+emisoras, desde CKDs (`AA1CK`, `AA2CPI`, tipo `1R`) hasta lo que sea que haya
+más allá de `ALTUM`.
+
+Si de esas, digamos, 100-150 son ICS con financieros, el universo elegible tras
+el filtro de 5 millones estaría **muy por encima de 40**, y entonces el quintil
+sería **un quintil de verdad**: el piso de 8 casi nunca mandaría y la etiqueta
+«no probó un quintil» no se dispararía. La preocupación del tamaño de canasta
+queda, con mucha probabilidad, resuelta.
+
+**Pero "con mucha probabilidad" no es un dato**, y el filtro de liquidez es
+justamente el que puede recortar esos cientos a unas pocas decenas — para eso
+existe. Así que sigue siendo cierto lo que ya decía esta sección, y ahora con
+más razón:
+
+> El número de ICS que devuelva `?job=emisoras`, y **cuántas sobreviven al
+> filtro de 5 millones**, es lo primero que hay que mirar. Con un universo
+> elegible mediano por debajo de 16, la Fase B **no se corre**.
+
+Y el tripwire del §3.1 pasa a ser más importante, no menos: con cientos de
+emisoras en el censo, muchas serán ilíquidas de verdad, así que **es esperable
+que el filtro excluya una fracción grande**. Si excluye más de un tercio, se
+recalibra antes de la Fase B — y con un universo así de grande, esa
+recalibración es una decisión sobre **qué es operable en BMV**, no un ajuste
+para que salgan los números.
 
 ### 4.2 Los financieros son de un tercero sin SLA
 
@@ -499,9 +583,10 @@ regla aplicada dos veces, no una excepción conveniente.
 |---|---|
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
-| `api/bmv-harvest.js` | Hecho. 7 jobs, idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **59 tests**, en verde. |
+| `api/bmv-harvest.js` | Hecho. 8 jobs (con `reparse`, de cero créditos), idempotente, con parada limpia. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **69 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
+| **El contrato de la API** | **VERIFICADO** por el probe: `periodo=1T_2020` y `emisora_serie=WALMEX*`. 14 créditos. |
 | **La cosecha** | **Sin correr** — este sandbox no alcanza la API. |
 | **Cobertura real** | **Sin reportar** — depende de la cosecha. |
 | `/api/bmv-rotation-analyze` | **Fase B. No empezado, a propósito.** |

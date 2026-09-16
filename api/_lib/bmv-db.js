@@ -127,6 +127,38 @@ const BMV_SCHEMA = [
      on bmv_precios (fecha)`,
   `create index if not exists bmv_ledger_estado_idx
      on bmv_harvest_ledger (job, estado)`,
+
+  // ── MIGRACIÓN: la SERIE ───────────────────────────────────────────
+  // El probe reveló que /v2/historicos no se pide por emisora sino por
+  // `emisora_serie` (WALMEX*, FEMSAUBD, AMXB, LIVEPOLC-1, NAFTRAC ISHRS), y
+  // que una emisora puede tener más de una serie. O sea que la llave natural
+  // de precios y del censo es la SERIE, no la emisora.
+  //
+  // Va como ALTER y no como CREATE porque las tablas YA existen en prod: el
+  // probe corrió `ensureBmvSchema()` y las creó con la forma vieja, vacías.
+  // `create table if not exists` no las tocaría, y la forma vieja se quedaría
+  // ahí en silencio hasta que la cosecha fallara.
+  //
+  // `emisora` se queda como columna aparte: los FINANCIEROS siguen siendo por
+  // emisora (ese endpoint no conoce series), así que el cruce precio↔financiero
+  // se hace por ella.
+  `alter table bmv_emisoras add column if not exists serie text`,
+  `alter table bmv_emisoras add column if not exists emisora_serie text`,
+  `update bmv_emisoras set emisora_serie = emisora where emisora_serie is null`,
+  `alter table bmv_emisoras drop constraint if exists bmv_emisoras_pkey`,
+  `create unique index if not exists bmv_emisoras_serie_uidx on bmv_emisoras (emisora_serie)`,
+  `create index if not exists bmv_emisoras_emisora_idx on bmv_emisoras (emisora)`,
+
+  `alter table bmv_precios add column if not exists emisora_serie text`,
+  `update bmv_precios set emisora_serie = emisora where emisora_serie is null`,
+  `alter table bmv_precios drop constraint if exists bmv_precios_pkey`,
+  `create unique index if not exists bmv_precios_uidx on bmv_precios (emisora_serie, fecha)`,
+  `create index if not exists bmv_precios_emisora_idx on bmv_precios (emisora)`,
+
+  `alter table bmv_distribuciones add column if not exists emisora_serie text`,
+  `update bmv_distribuciones set emisora_serie = emisora where emisora_serie is null`,
+  `alter table bmv_distribuciones drop constraint if exists bmv_distribuciones_pkey`,
+  `create unique index if not exists bmv_distribuciones_uidx on bmv_distribuciones (emisora_serie, fecha_ex)`,
 ];
 
 let listo = false;
@@ -157,11 +189,13 @@ async function guardarMeta(key, value, nota = null) {
 async function upsertEmisora(e) {
   await sql(
     `insert into bmv_emisoras
-       (emisora, razon_social, tipo_valor_id, estatus,
+       (emisora, serie, emisora_serie, razon_social, tipo_valor_id, estatus,
         fin_desde, fin_hasta, fin_motivo, hist_desde, hist_hasta, hist_motivo,
         raw, actualizado_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb, now())
-     on conflict (emisora) do update set
+     values ($1,$12,$13,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb, now())
+     on conflict (emisora_serie) do update set
+       emisora = excluded.emisora,
+       serie = excluded.serie,
        razon_social = excluded.razon_social,
        tipo_valor_id = excluded.tipo_valor_id,
        estatus = excluded.estatus,
@@ -176,16 +210,18 @@ async function upsertEmisora(e) {
     [e.emisora, e.razon_social || null, e.tipo_valor_id || null, e.estatus || null,
      e.fin_desde || null, e.fin_hasta || null, e.fin_motivo || null,
      e.hist_desde || null, e.hist_hasta || null, e.hist_motivo || null,
-     JSON.stringify(e.raw ?? {})],
+     JSON.stringify(e.raw ?? {}), e.serie ?? null, e.emisora_serie || e.emisora],
   );
 }
 
 /** ICS = tipo_valor_id '1'. Es el universo del backtest (bancos y FIBRAs fuera). */
 async function emisorasIcs() {
-  return sql(`select * from bmv_emisoras where tipo_valor_id = '1' order by emisora`);
+  return sql(`select * from bmv_emisoras where tipo_valor_id = '1' order by emisora, serie`);
 }
 async function emisoraPorClave(clave) {
-  const r = await sql(`select * from bmv_emisoras where emisora = $1`, [clave]);
+  const r = await sql(
+    `select * from bmv_emisoras where emisora_serie = $1 or emisora = $1
+      order by (emisora_serie = $1) desc limit 1`, [clave]);
   return r[0] || null;
 }
 async function censoResumen() {
@@ -223,18 +259,19 @@ async function upsertFinancieros(f) {
 
 /* ─────────────────── distribuciones ─────────────────── */
 
-async function insertarDistribuciones(emisora, filas) {
+async function insertarDistribuciones(emisora, emisora_serie, filas) {
   if (!filas.length) return 0;
   const valores = [];
   const partes = filas.map((f, j) => {
-    const b = j * 3;
-    valores.push(emisora, f.fecha_ex, f.monto);
-    return `($${b + 1},$${b + 2},$${b + 3})`;
+    const b = j * 4;
+    valores.push(emisora, emisora_serie, f.fecha_ex, f.monto);
+    return `($${b + 1},$${b + 2},$${b + 3},$${b + 4})`;
   });
   await sql(
-    `insert into bmv_distribuciones (emisora, fecha_ex, monto)
+    `insert into bmv_distribuciones (emisora, emisora_serie, fecha_ex, monto)
      values ${partes.join(', ')}
-     on conflict (emisora, fecha_ex) do update set monto = excluded.monto`,
+     on conflict (emisora_serie, fecha_ex) do update set
+       emisora = excluded.emisora, monto = excluded.monto`,
     valores);
   return filas.length;
 }
@@ -248,20 +285,21 @@ const COLS_PRECIO = ['cierre', 'apertura', 'maximo', 'minimo', 'volumen', 'impor
  * a 500 filas por sentencia son ~230, y 500 × 8 columnas = 4,000 parámetros,
  * lejos del tope de 65,535 de Postgres.
  */
-async function insertarPrecios(emisora, filas, lote = 500) {
+async function insertarPrecios(emisora, emisora_serie, filas, lote = 500) {
   let escritas = 0;
   for (let i = 0; i < filas.length; i += lote) {
     const trozo = filas.slice(i, i + lote);
     const valores = [];
     const partes = trozo.map((f, j) => {
-      const b = j * 8;
-      valores.push(emisora, f.fecha, f.cierre, f.apertura, f.maximo, f.minimo, f.volumen, f.importe);
-      return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8})`;
+      const b = j * 9;
+      valores.push(emisora, emisora_serie, f.fecha, f.cierre, f.apertura, f.maximo, f.minimo, f.volumen, f.importe);
+      return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9})`;
     });
     await sql(
-      `insert into bmv_precios (emisora, fecha, ${COLS_PRECIO.join(', ')})
+      `insert into bmv_precios (emisora, emisora_serie, fecha, ${COLS_PRECIO.join(', ')})
        values ${partes.join(', ')}
-       on conflict (emisora, fecha) do update set
+       on conflict (emisora_serie, fecha) do update set
+         emisora = excluded.emisora,
          ${COLS_PRECIO.map((c) => `${c} = excluded.${c}`).join(',\n         ')}`,
       valores,
     );
@@ -281,9 +319,9 @@ async function insertarPrecios(emisora, filas, lote = 500) {
  * con el presupuesto entero.
  */
 async function ultimaFechaPrecios() {
-  const r = await sql(`select emisora, max(fecha) as hasta from bmv_precios group by 1`);
+  const r = await sql(`select emisora_serie, max(fecha) as hasta from bmv_precios group by 1`);
   const m = new Map();
-  for (const x of r) m.set(x.emisora, String(x.hasta).slice(0, 10));
+  for (const x of r) m.set(x.emisora_serie, String(x.hasta).slice(0, 10));
   return m;
 }
 
@@ -364,18 +402,20 @@ async function cobertura() {
                 max(anio || '-' || trimestre) as ultimo,
                 count(basicearningslosspershare)::int as con_eps
            from bmv_financieros group by 1 order by 1`),
-    sql(`select count(*)::int as filas, count(distinct emisora)::int as emisoras,
+    sql(`select count(*)::int as filas, count(distinct emisora_serie)::int as series,
+                count(distinct emisora)::int as emisoras,
                 min(fecha) as desde, max(fecha) as hasta,
                 count(importe)::int as con_importe
            from bmv_precios`),
-    sql(`select emisora, count(*)::int as dias, min(fecha) as desde, max(fecha) as hasta,
+    sql(`select emisora_serie, emisora, count(*)::int as dias,
+                min(fecha) as desde, max(fecha) as hasta,
                 count(importe)::int as con_importe
-           from bmv_precios group by 1 order by 1`),
+           from bmv_precios group by 1,2 order by 1`),
     sql(`select count(*)::int as dias, min(fecha) as desde, max(fecha) as hasta
-           from bmv_precios where emisora = $1`, [BENCHMARK]),
+           from bmv_precios where emisora_serie = $1`, [BENCHMARK]),
     sql(`select count(*)::int as n, min(fecha_ex) as desde, max(fecha_ex) as hasta,
                 coalesce(sum(monto),0)::numeric as suma
-           from bmv_distribuciones where emisora = $1`, [BENCHMARK]),
+           from bmv_distribuciones where emisora_serie = $1`, [BENCHMARK]),
     // Sin dividendos por emisora, la canasta NO se puede medir a retorno total
     // y la simetría se rompe justo en los nombres que faltan. Se reporta
     // cuántas ICS tienen reparto y cuántas no: un hueco aquí subestima a la
