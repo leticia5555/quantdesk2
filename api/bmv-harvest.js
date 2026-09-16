@@ -954,6 +954,58 @@ async function jobReparse() {
 
 /* ═══════════════ job: financieros ═══════════════ */
 
+/**
+ * La lista de trabajo de financieros: qué (emisora, trimestre) falta pedir.
+ * Pura y exportada para que los tests la fijen — es donde se decide en qué
+ * gastar los créditos, así que una equivocación acá se paga en requests.
+ *
+ * Dos reglas que no son obvias:
+ *
+ * 1. **Por EMISORA, no por serie.** `/v2/financieros` no conoce series, así que
+ *    LIVEPOL `C-1` y LIVEPOL `1` son el mismo request. Pero los campos del
+ *    censo SÍ son del instrumento, así que una serie puede traer cobertura y la
+ *    otra no: al deduplicar se prefiere **la que tenga cobertura**, o se
+ *    perderían los financieros de la emisora entera según cuál ordene primero.
+ *
+ * 2. **La enumeración gana sobre el rango.** `rango_financieros` lista los
+ *    trimestres que la emisora SÍ reportó y puede tener huecos. Pedir min..max
+ *    los rellena con requests que vuelven vacíos y —peor— mete a la emisora al
+ *    universo en trimestres en los que no reportó. El `?job=estimate` ya cuenta
+ *    con la enumeración: sin esto, la cosecha pediría más de lo presupuestado.
+ */
+function pendientesFinancieros(ics, { soloEmisora = null, hechas = new Set() } = {}) {
+  const tiene = (x) => !!((Array.isArray(x.fin_periodos) && x.fin_periodos.length) || x.fin_desde);
+  const porEmisora = new Map();
+  for (const e of ics) {
+    if (soloEmisora && e.emisora !== soloEmisora) continue;
+    const previa = porEmisora.get(e.emisora);
+    if (!previa || (!tiene(previa) && tiene(e))) porEmisora.set(e.emisora, e);
+  }
+
+  const pendientes = [];
+  for (const e of porEmisora.values()) {
+    const lista = Array.isArray(e.fin_periodos) && e.fin_periodos.length
+      ? e.fin_periodos.map(parsePeriodoTexto).filter(Boolean)
+      : null;
+    let trimestres;
+    if (lista) {
+      trimestres = lista.filter((t) => recortarACobertura(t, t, COBERTURA_FIN));
+    } else {
+      const desde = e.fin_desde ? parsePeriodoTexto(e.fin_desde) : null;
+      const hasta = e.fin_hasta ? parsePeriodoTexto(e.fin_hasta) : null;
+      const rango = recortarACobertura(desde, hasta, COBERTURA_FIN);
+      if (!rango) continue;          // los bancos y casas de bolsa caen acá
+      trimestres = trimestresEntre(rango.desde, rango.hasta);
+    }
+    for (const t of trimestres) {
+      const clave = clavePeriodo(t.anio, t.trimestre);
+      if (hechas.has(`${e.emisora}|${clave}`)) continue;
+      pendientes.push({ emisora: e.emisora, anio: t.anio, trimestre: t.trimestre, clave });
+    }
+  }
+  return pendientes;
+}
+
 async function jobFinancieros(req) {
   const tope = Math.max(1, Math.min(2000, Number((req.query && req.query.max) || LOTE_DEFECTO)));
   const soloEmisora = req.query && req.query.emisora ? String(req.query.emisora).toUpperCase() : null;
@@ -971,25 +1023,8 @@ async function jobFinancieros(req) {
   // de la corrida limita lo que puede costar equivocarse.
 
   // Lista de trabajo: emisora × trimestre de SU rango, menos lo ya hecho.
-  // Los financieros son POR EMISORA: /v2/financieros no conoce series. Una
-  // emisora con dos series (LIVEPOL C-1 y 1) daría dos veces el mismo request
-  // si no se deduplicara — y eso es gastar créditos por gusto.
-  const vistas = new Set();
-  const pendientes = [];
-  for (const e of ics) {
-    if (soloEmisora && e.emisora !== soloEmisora) continue;
-    if (vistas.has(e.emisora)) continue;
-    vistas.add(e.emisora);
-    const desde = e.fin_desde ? parsePeriodoTexto(e.fin_desde) : null;
-    const hasta = e.fin_hasta ? parsePeriodoTexto(e.fin_hasta) : null;
-    const rango = recortarACobertura(desde, hasta, COBERTURA_FIN);
-    if (!rango) continue;
-    for (const t of trimestresEntre(rango.desde, rango.hasta)) {
-      const clave = clavePeriodo(t.anio, t.trimestre);
-      if (hechas.has(`${e.emisora}|${clave}`)) continue;
-      pendientes.push({ emisora: e.emisora, ...t, clave });
-    }
-  }
+  const pendientes = pendientesFinancieros(ics, { soloEmisora, hechas });
+  const vistasN = new Set(pendientes.map((p) => p.emisora)).size;
 
   const cartera = nuevaCartera({ mes, gastadoMes: saldo.creditos, tope });
   const hecho = [];
@@ -1024,7 +1059,7 @@ async function jobFinancieros(req) {
     job: 'financieros',
     contrato_verificado: !!contrato.verificado,
     aviso: contrato.verificado ? null : 'CONTRATO NO VERIFICADO — corre ?job=probe primero; lo cosechado puede venir vacío',
-    emisoras_unicas: vistas.size,
+    emisoras_unicas: vistasN,
     pendientes_al_empezar: pendientes.length,
     procesadas: hecho.length,
     restantes: Math.max(0, pendientes.length - i),
@@ -1356,6 +1391,7 @@ export default async function handler(req, res) {
 export {
   CONTRATO_DEFECTO, PRECIOS_DESDE_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, coberturaMd,
   contar, estimarConsumo, filaCenso, filasDelCenso, pareceClave, pareceSerie,
+  pendientesFinancieros,
   seriesDeEmisora, muestraChica, nuevaCartera,
   paramsBenchmark, paramsFinancieros, paramsHistoricos, parsePeriodoTexto,
   sirveFinanciero,
