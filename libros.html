@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
+<title>LOS LIBROS — QuantDesk · cómo decidió cada IA</title>
+<meta name="description" content="El libro de cada IA y CÓMO llegó a él: la lente del día, qué herramienta usó con qué filtros, el plan completo, los pesos y las órdenes. Corridas vivas y de sombra, siempre etiquetadas."/>
+<meta name="theme-color" content="#050505"/>
+<meta property="og:title" content="LOS LIBROS — QuantDesk"/>
+<meta property="og:description" content="Siete IAs, siete libros, y la secuencia de investigación completa de cada una."/>
+<meta property="og:type" content="website"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+:root{
+  --bg:#050505; --bg1:#0d0d0d; --bg2:#141414;
+  --border:#1e1e1e; --border2:#2a2a2a;
+  --text:#f0ede8; --text2:#8a8a82; --text3:#4a4a44;
+  --green:#00c97d; --green-rgb:0,201,125;
+  --red:#ff4545; --red-rgb:255,69,69;
+  --blue:#4a9eff; --amber:#ffb347; --purple:#a78bfa; --gold:#ffd35a;
+  --mono:'Space Mono',monospace; --sans:'DM Sans',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);}
+a{color:inherit;}
+.wrap{max-width:640px;margin:0 auto;padding:0 16px 64px;}
+
+header{padding:22px 0 14px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.logo{font-family:var(--mono);font-size:14px;font-weight:700;letter-spacing:.14em;}
+.logo span{color:var(--green);}
+.date{font-family:var(--mono);font-size:11px;color:var(--text2);letter-spacing:.06em;text-transform:uppercase;}
+.hero{padding:6px 0 16px;border-bottom:1px solid var(--border);}
+.hero h1{font-family:var(--mono);font-size:clamp(22px,7vw,32px);font-weight:700;line-height:1.12;letter-spacing:-.01em;}
+.hero h1 .accent{color:var(--purple);}
+.hero p{font-size:13px;color:var(--text2);margin-top:8px;line-height:1.5;}
+
+/* CONTROLES */
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 2px;}
+.pill{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--text2);text-transform:uppercase;
+  background:var(--bg1);border:1px solid var(--border2);border-radius:20px;padding:7px 13px;cursor:pointer;
+  -webkit-user-select:none;user-select:none;}
+.pill.on{color:#000;background:var(--purple);border-color:var(--purple);font-weight:700;}
+.pill.on.viva{background:var(--green);border-color:var(--green);}
+.pill.on.sombra{background:var(--amber);border-color:var(--amber);}
+select.pill{color:var(--text);-webkit-appearance:none;appearance:none;padding-right:26px;
+  background-image:linear-gradient(45deg,transparent 50%,var(--text2) 50%),linear-gradient(135deg,var(--text2) 50%,transparent 50%);
+  background-position:calc(100% - 14px) 52%,calc(100% - 9px) 52%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;}
+
+/* EL DÍA: solapamiento y piso */
+.daybox{background:var(--bg1);border:1px solid var(--border2);border-radius:10px;padding:13px 14px;margin:16px 0 4px;}
+.daybox h3{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--text3);margin-bottom:9px;}
+.metric{display:flex;align-items:baseline;gap:9px;margin-bottom:5px;flex-wrap:wrap;}
+.metric .k{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--text2);text-transform:uppercase;min-width:92px;}
+.metric .v{font-family:var(--mono);font-size:18px;font-weight:700;}
+.metric .v.alto{color:var(--red);}.metric .v.medio{color:var(--amber);}.metric .v.bajo{color:var(--green);}
+.metric .v.solido{color:var(--green);}.metric .v.na{color:var(--text3);font-size:12px;font-weight:400;}
+.read{font-size:12px;color:var(--text2);line-height:1.5;margin:2px 0 12px;}
+.read.warn{color:var(--amber);}
+.daybox .caveat{font-size:11px;color:var(--text3);line-height:1.5;border-top:1px solid var(--border);padding-top:9px;margin-top:2px;}
+
+/* TARJETA */
+section{padding:18px 0 4px;}
+.sec-head{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
+.sec-head .bar{width:18px;height:1px;background:var(--purple);}
+.sec-head h2{font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;}
+.sec-head .sub{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.08em;margin-left:auto;}
+
+.card{background:var(--bg1);border:1px solid var(--border2);border-radius:10px;margin-bottom:11px;position:relative;overflow:hidden;}
+.card::before{content:'';position:absolute;top:0;left:0;bottom:0;width:3px;background:var(--border2);}
+.card.viva::before{background:var(--green);}
+.card.sombra::before{background:var(--amber);}
+.card.sombra{border-style:dashed;}
+.card.roto::before{background:var(--red);}
+.chead{padding:13px 14px;display:flex;align-items:flex-start;gap:11px;cursor:pointer;}
+.cid{flex:1;min-width:0;}
+.cname{font-family:var(--mono);font-size:14px;font-weight:700;letter-spacing:.02em;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.cmodel{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.05em;margin-top:4px;}
+.cright{text-align:right;flex:none;}
+.cright .np{font-family:var(--mono);font-size:17px;font-weight:700;}
+.cright .cash{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.04em;margin-top:3px;}
+.tag{font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.08em;padding:2px 6px;border-radius:3px;text-transform:uppercase;white-space:nowrap;}
+.tag.us{color:var(--blue);border:1px solid rgba(74,158,255,.3);background:rgba(74,158,255,.06);}
+.tag.china{color:var(--red);border:1px solid rgba(var(--red-rgb),.3);background:rgba(var(--red-rgb),.06);}
+.tag.eu{color:var(--purple);border:1px solid rgba(167,139,250,.3);background:rgba(167,139,250,.06);}
+.tag.control{color:var(--text2);border:1px solid var(--border2);background:var(--bg2);}
+.tag.viva{color:#000;background:var(--green);border:1px solid var(--green);}
+.tag.sombra{color:#000;background:var(--amber);border:1px solid var(--amber);}
+.tag.seco{color:var(--amber);border:1px solid rgba(255,179,71,.4);background:rgba(255,179,71,.07);}
+.tag.rails{color:#fca5a5;border:1px solid #7f1d1d;background:#1e0f14;}
+.tag.lente{color:var(--purple);border:1px solid rgba(167,139,250,.3);background:rgba(167,139,250,.06);}
+.cbody{padding:0 14px 13px;}
+.plan{font-size:12.5px;color:var(--text2);line-height:1.6;white-space:pre-wrap;border-top:1px solid var(--border);padding-top:11px;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
+.card.open .plan{-webkit-line-clamp:unset;}
+.pesos{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;}
+.peso{font-family:var(--mono);font-size:9px;letter-spacing:.03em;padding:3px 7px;border-radius:3px;border:1px solid var(--border2);color:var(--text2);}
+.peso b{color:var(--text);}
+.peso.long{border-color:rgba(var(--green-rgb),.3);}
+.peso.short{border-color:rgba(var(--red-rgb),.3);}
+.toggle{font-family:var(--mono);font-size:9px;color:var(--purple);letter-spacing:.06em;margin-top:11px;display:inline-block;cursor:pointer;}
+.detalle{display:none;margin-top:12px;border-top:1px solid var(--border);padding-top:12px;}
+.card.open .detalle{display:block;}
+.blk{margin-bottom:15px;}
+.blk:last-child{margin-bottom:0;}
+.blk h4{font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--text3);margin-bottom:8px;
+  display:flex;align-items:baseline;gap:8px;}
+.blk h4 em{font-style:normal;color:var(--text2);letter-spacing:.04em;text-transform:none;font-size:9px;margin-left:auto;}
+
+/* la secuencia como historia */
+.step{display:flex;gap:9px;padding:7px 0;border-bottom:1px solid var(--border);}
+.step:last-child{border-bottom:0;}
+.stepn{font-family:var(--mono);font-size:10px;color:var(--text3);min-width:16px;padding-top:2px;}
+.stepb{flex:1;min-width:0;}
+.steptool{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.03em;}
+.stepargs{font-family:var(--mono);font-size:10px;color:var(--text2);line-height:1.5;margin-top:3px;word-break:break-word;}
+.steprows{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.04em;margin-top:3px;}
+.steprows .zero{color:var(--amber);}
+.step.ref .steptool{color:var(--red);}
+
+/* tesis / órdenes */
+.tesis{font-size:12px;color:var(--text2);line-height:1.55;padding:7px 0;border-bottom:1px solid var(--border);}
+.tesis:last-child{border-bottom:0;}
+.tesis b{font-family:var(--mono);font-size:11px;color:var(--text);}
+.ord{display:flex;align-items:baseline;gap:8px;font-family:var(--mono);font-size:10.5px;padding:6px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;}
+.ord:last-child{border-bottom:0;}
+.ord .side{font-weight:700;min-width:38px;}
+.ord .side.buy{color:var(--green);}.ord .side.sell{color:var(--red);}
+.ord .sym{font-weight:700;min-width:46px;}
+.ord .det{color:var(--text2);}
+.ord .res{margin-left:auto;font-size:9px;letter-spacing:.05em;color:var(--text3);}
+.ord .res.ok{color:var(--green);}.ord .res.bad{color:var(--red);}
+.nota{font-size:11px;color:var(--text3);line-height:1.5;margin-top:8px;}
+.nota.warn{color:var(--amber);}
+.nota.bad{color:#fca5a5;}
+.kv{font-family:var(--mono);font-size:10px;color:var(--text2);letter-spacing:.04em;line-height:1.7;}
+.kv b{color:var(--text);}
+.empty{font-size:12px;color:var(--text3);line-height:1.5;}
+
+.skel{background:linear-gradient(90deg,var(--bg1) 25%,var(--bg2) 50%,var(--bg1) 75%);
+  background-size:200% 100%;animation:sk 1.4s infinite;border-radius:10px;height:104px;margin-bottom:11px;}
+@keyframes sk{0%{background-position:200% 0;}100%{background-position:-200% 0;}}
+
+footer{margin-top:34px;padding-top:20px;border-top:1px solid var(--border);}
+.disc{font-size:11px;color:var(--text3);line-height:1.55;}
+.ctas{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;}
+.cta{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+  padding:10px 18px;border:1px solid var(--purple);color:var(--purple);border-radius:3px;text-decoration:none;}
+.cta.alt{border-color:var(--green);color:var(--green);}
+.refresh{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.06em;margin-top:14px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">QUANT<span>DESK</span></div>
+    <div class="date" id="today">—</div>
+  </header>
+
+  <div class="hero">
+    <h1>Los <span class="accent">libros</span>:<br/>cómo decidió cada IA.</h1>
+    <p>El portafolio objetivo de cada agente y, sobre todo, <b>cómo llegó a él</b>: la lente del día, qué herramienta usó con qué filtros y cuántas filas trajo, el plan completo, los pesos y las órdenes. Cada corrida dice si fue <b>viva</b> o de <b>sombra</b>.</p>
+    <div class="controls" id="controls">
+      <select class="pill" id="selDia"></select>
+      <span class="pill on" data-f="ambas">ambas</span>
+      <span class="pill" data-f="viva">viva</span>
+      <span class="pill" data-f="sombra">sombra</span>
+    </div>
+  </div>
+
+  <div id="dayboxes"></div>
+
+  <section>
+    <div class="sec-head"><span class="bar"></span><h2>Los libros</h2><span class="sub" id="cardSub">—</span></div>
+    <div id="cards"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>
+  </section>
+
+  <footer>
+    <p class="disc">
+      <strong>Experimento, no asesoría.</strong> Una corrida de <b>sombra</b> NO movió dinero: es el contrato nuevo
+      corriendo en paralelo sobre el mismo mercado y sin mandar órdenes. Una corrida <b>viva</b> sí es la cuenta paper real
+      — y si dice <b>seco</b>, las órdenes se calcularon completas y no se mandó ninguna. El <b>control</b> es el mismo
+      modelo que Claude con el mismo prompt en otra cuenta: su libro es el <b>piso de ruido</b>, no el de un competidor.
+      La <b>lente</b> del día rota por agente y es un confound deliberado: dos agentes con lentes distintas el mismo día
+      no son comparables ese día.
+    </p>
+    <div class="ctas">
+      <a class="cta alt" href="/liga">El ranking →</a>
+      <a class="cta" href="/hoy">El mercado de hoy →</a>
+    </div>
+    <div class="refresh" id="refreshNote"></div>
+  </footer>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const pp=n=>(Number(n)*100).toFixed(1)+'%';
+const money=n=>{n=Number(n);if(!isFinite(n))return '—';return '$'+Math.round(n).toLocaleString('en-US');};
+
+async function getJSON(url){
+  try{
+    const c=new AbortController();const t=setTimeout(()=>c.abort(),12000);
+    const r=await fetch(url,{signal:c.signal});clearTimeout(t);
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(e){ return null; }
+}
+(function(){
+  const d=new Date();
+  const s=d.toLocaleDateString('es-MX',{weekday:'long',day:'numeric',month:'long'});
+  $('today').textContent=s.charAt(0).toUpperCase()+s.slice(1);
+})();
+
+let DATA=null, FUENTE='ambas', DIA=null;
+
+function houseTag(a){
+  if(a.control) return '<span class="tag control">control</span>';
+  if(a.casa==='china') return '<span class="tag china">🇨🇳 china</span>';
+  if(a.casa==='us') return '<span class="tag us">🇺🇸 usa</span>';
+  if(a.casa==='eu') return '<span class="tag eu">🇪🇺 eu</span>';
+  return '';
+}
+// La fuente NO se infiere en la página tampoco: viene en cada libro.
+function fuenteTag(l){
+  const seco = l.ordenes && l.ordenes.modo==='dry';
+  if(l.fuente==='sombra') return '<span class="tag sombra">sombra</span>';
+  return '<span class="tag viva">viva</span>'+(seco?' <span class="tag seco">seco</span>':'');
+}
+
+// ── la secuencia, como historia ──────────────────────────────────────
+function argsStr(a){
+  if(!a||typeof a!=='object') return '';
+  const partes=Object.entries(a).filter(([,v])=>v!=null&&v!=='').map(([k,v])=>
+    k+': '+(Array.isArray(v)?v.join(', '):typeof v==='object'?JSON.stringify(v):String(v)));
+  return partes.join(' · ');
+}
+function seqHtml(inv){
+  if(!inv) return '<div class="empty">Esta corrida no journaleó herramientas.</div>';
+  if(inv.usó_herramientas===false)
+    return '<div class="empty">Sin herramientas'+(inv.motivo?' — '+esc(inv.motivo):'')+'. Decidió con el tablero.</div>';
+  if(!inv.pasos||!inv.pasos.length) return '<div class="empty">No llamó ninguna herramienta.</div>';
+  return inv.pasos.map(s=>{
+    const args=argsStr(s.argumentos);
+    // 0 filas se marca: un filtro que vacía el embudo es el dato, no un hueco.
+    const filas = s.filas==null ? '' :
+      '<span class="'+(s.filas===0?'zero':'')+'">'+s.filas+' fila'+(s.filas===1?'':'s')+'</span>';
+    const extra=[filas, s.truncado?'truncado':'', s.ms!=null?Math.round(s.ms)+' ms':'']
+      .filter(Boolean).join(' · ');
+    return '<div class="step'+(s.rechazada?' ref':'')+'">'+
+      '<div class="stepn">'+esc(s.n)+'</div><div class="stepb">'+
+      '<div class="steptool">'+esc(s.herramienta||'—')+(s.rechazada?' · rechazada':'')+'</div>'+
+      (args?'<div class="stepargs">'+esc(args)+'</div>':'')+
+      (extra?'<div class="steprows">'+extra+'</div>':'')+
+      (s.rechazada?'<div class="steprows">'+esc(s.rechazada)+'</div>':'')+
+      '</div></div>';
+  }).join('');
+}
+
+function pesosHtml(p){
+  if(!p||!p.pesos) return '';
+  const es=Object.entries(p.pesos).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1]));
+  if(!es.length) return '<div class="pesos"><span class="peso">todo en cash</span></div>';
+  return '<div class="pesos">'+es.map(([t,w])=>
+    '<span class="peso '+(w<0?'short':'long')+'"><b>'+esc(t)+'</b> '+pp(w)+'</span>').join('')+
+    (p.cash!=null?'<span class="peso">cash '+pp(p.cash)+'</span>':'')+'</div>';
+}
+
+function ordenesHtml(o){
+  if(!o) return '';
+  const lista=(o.ordenes||[]).map(x=>{
+    const res=x.resultado==='approved'?'<span class="res ok">enviada'+(x.estado_alpaca?' · '+esc(x.estado_alpaca):'')+'</span>'
+      :x.resultado?'<span class="res bad">'+esc(x.resultado)+'</span>'
+      :'<span class="res">calculada</span>';
+    return '<div class="ord"><span class="side '+esc(x.lado)+'">'+esc(x.lado)+'</span>'+
+      '<span class="sym">'+esc(x.ticker)+'</span>'+
+      '<span class="det">'+esc(x.cantidad)+' @ lím '+esc(x.limite)+
+      (x.monto!=null?' · '+money(x.monto):'')+
+      (x.delta_pp!=null?' · '+(x.delta_pp>0?'+':'')+x.delta_pp+'pp':'')+'</span>'+res+
+      (x.error?'<div class="nota bad">'+esc(x.error)+'</div>':'')+'</div>';
+  }).join('');
+  const desc=(o.descartadas||[]).map(d=>
+    '<div class="nota warn">descartada '+esc(d.ticker||'')+': '+esc(d.motivo||'')+'</div>').join('');
+  const cab = o.modo_nota?'<div class="nota'+(o.modo==='dry'?' warn':'')+'">'+esc(o.modo_nota)+'</div>':'';
+  const freno = o.candado_ok===false
+    ? '<div class="nota bad">CANDADO: '+esc(o.freno||'alguna orden no correspondía a ningún peso, así que no se mandó NINGUNA de esta corrida.')+'</div>'
+    : '';
+  if(!lista&&!desc) return cab+freno+'<div class="empty">Ninguna orden: el objetivo ya estaba puesto.</div>';
+  return cab+freno+lista+desc;
+}
+
+function railsHtml(r){
+  if(!r) return '';
+  if(r.ok) return '<div class="kv">Pasó los rieles.</div>';
+  return (r.violaciones||[]).map(v=>
+    '<div class="nota bad"><b>'+esc(v.riel)+'</b>'+(v.ticker?' · '+esc(v.ticker):'')+' — '+esc(v.detalle||'')+
+    (v.es_falla_nuestra?' <em>(falla nuestra, no del modelo)</em>':'')+'</div>').join('');
+}
+
+function cardHtml(l,i){
+  const a=l.agente;
+  const rotos = l.rieles&&l.rieles.ok===false || String(l.estado||'').startsWith('aborted');
+  const npos = l.portafolio&&l.portafolio.pesos ? Object.keys(l.portafolio.pesos).length : null;
+  const railTag = l.rieles&&l.rieles.ok===false ? '<span class="tag rails">rieles ✕</span>' : '';
+  const lenteTag = l.lente ? '<span class="tag lente">'+esc(l.lente)+'</span>' : '';
+  const inv=l.investigacion;
+  const invResumen = inv&&inv.usó_herramientas
+    ? (inv.usadas||inv.pasos.length)+' herramienta'+((inv.usadas||inv.pasos.length)===1?'':'s')+
+      (inv.terminó_por?' · cortó por '+inv.terminó_por:'')
+    : 'sin herramientas';
+  const tesis = l.portafolio&&l.portafolio.tesis
+    ? Object.entries(l.portafolio.tesis).map(([t,x])=>'<div class="tesis"><b>'+esc(t)+'</b> — '+esc(x)+'</div>').join('')
+    : '<div class="empty">Sin tesis por posición en esta corrida.</div>';
+
+  return '<div class="card '+esc(l.fuente)+(rotos?' roto':'')+'" id="card-'+i+'">'+
+    '<div class="chead" data-card="'+i+'">'+
+      '<div class="cid">'+
+        '<div class="cname">'+esc(a.nombre)+' '+houseTag(a)+' '+fuenteTag(l)+' '+railTag+' '+lenteTag+'</div>'+
+        '<div class="cmodel">'+esc(a.modelo||'')+' · '+esc(String(l.fecha||'').replace('T',' ').slice(0,16))+'</div>'+
+      '</div>'+
+      '<div class="cright">'+
+        '<div class="np">'+(npos!=null?npos:'—')+'</div>'+
+        '<div class="cash">'+(npos!=null?'posiciones':esc(l.estado||''))+'</div>'+
+      '</div>'+
+    '</div>'+
+    '<div class="cbody">'+
+      (a.control?'<div class="nota">'+esc(a.control_nota)+'</div>':'')+
+      (l.plan?'<div class="plan">'+esc(l.plan)+'</div>':'<div class="plan">'+esc(l.error||'Sin plan publicado.')+'</div>')+
+      pesosHtml(l.portafolio)+
+      '<span class="toggle" data-card="'+i+'" data-resumen="'+esc(invResumen)+'">ver la investigación ('+esc(invResumen)+') ↓</span>'+
+      '<div class="detalle">'+
+        '<div class="blk"><h4>La investigación<em>'+esc(invResumen)+'</em></h4>'+seqHtml(inv)+'</div>'+
+        '<div class="blk"><h4>Las tesis</h4>'+tesis+'</div>'+
+        '<div class="blk"><h4>Las órdenes</h4>'+
+          (l.ordenes?ordenesHtml(l.ordenes)
+            :'<div class="empty">Esta corrida no calculó órdenes'+(l.fuente==='sombra'?' — la sombra nunca manda.':'.')+'</div>')+'</div>'+
+        '<div class="blk"><h4>Los rieles</h4>'+(railsHtml(l.rieles)||'<div class="empty">Sin validación journaleada.</div>')+'</div>'+
+        '<div class="blk"><h4>La corrida</h4><div class="kv">'+
+          'estado <b>'+esc(l.estado||'—')+'</b>'+
+          (l.contrato?' · contrato <b>'+esc(l.contrato)+'</b>':'')+
+          (l.rebalanceo?' · turnover <b>'+(l.rebalanceo.turnover!=null?pp(l.rebalanceo.turnover):'—')+'</b>':'')+
+          (l.posiciones_iniciales?'<br/>arrancó con <b>'+(l.posiciones_iniciales.length?esc(l.posiciones_iniciales.join(', ')):'nada')+'</b>':'')+
+          (inv&&inv.presupuesto!=null?'<br/>herramientas <b>'+esc(inv.usadas)+'/'+esc(inv.presupuesto)+'</b> en <b>'+esc(inv.vueltas)+'</b> vuelta(s)':'')+
+        '</div>'+
+        (l.lente_nota?'<div class="nota">'+esc(l.lente_nota)+'</div>':'')+
+        (l.error?'<div class="nota bad">'+esc(l.error)+'</div>':'')+
+        '</div>'+
+      '</div>'+
+    '</div>'+
+  '</div>';
+}
+
+function clase(n,umbrales){ // [alto, medio] → clase de color
+  if(n==null) return 'na';
+  return n>=umbrales[0]?'alto':n>=umbrales[1]?'medio':'bajo';
+}
+function dayboxHtml(d){
+  const s=d.solapamiento||{};
+  const p=d.piso_de_ruido||{};
+  const sol = s.mean!=null
+    ? '<div class="metric"><span class="k">Solapamiento</span><span class="v '+clase(s.mean,[0.8,0.5])+'">'+s.mean+'</span>'+
+      '<span class="k" style="min-width:0">entre '+(s.libros||0)+' libros</span></div>'+
+      '<div class="read">'+esc(s.lectura||'')+'</div>'+
+      (s.nombre_mas_compartido&&s.nombre_mas_compartido.ticker
+        ? '<div class="read" style="margin-top:-6px">Nombre más compartido: <b>'+esc(s.nombre_mas_compartido.ticker)+'</b> — en '+
+          s.nombre_mas_compartido.books+' de '+(s.libros||0)+' libros ('+s.nombre_mas_compartido.pct+'%).</div>'
+        : '')
+    : '<div class="metric"><span class="k">Solapamiento</span><span class="v na">'+esc(s.note||'sin datos')+'</span></div>';
+
+  // El piso solo se publica como piso si es comparable. Si no, se dice QUÉ
+  // mide ese número en vez de mostrarlo con la etiqueta equivocada.
+  const piso = p.comparable
+    ? '<div class="metric"><span class="k">Piso de ruido</span><span class="v '+(p.cosine>=0.9?'solido':p.cosine>=0.7?'medio':'alto')+'">'+p.cosine+'</span>'+
+      '<span class="k" style="min-width:0">claude ↔ control</span></div>'+
+      '<div class="read">'+esc(p.lectura||'')+'</div>'
+    : '<div class="metric"><span class="k">Piso de ruido</span><span class="v na">no comparable hoy</span></div>'+
+      '<div class="read warn">'+esc(p.motivo||'')+
+      (p.cosine_observado!=null?' <b>(el coseno observado es '+p.cosine_observado+', y NO es el piso)</b>':'')+'</div>';
+
+  return '<div class="daybox"><h3>'+esc(d.dia)+' · corrida '+esc(d.fuente)+' · '+d.corridas+' agente(s)</h3>'+
+    sol+piso+
+    '<div class="caveat">'+esc(s.caveat||'')+'</div></div>';
+}
+
+function render(){
+  if(!DATA) return;
+  const libros=(DATA.libros||[]).filter(l=>
+    (FUENTE==='ambas'||l.fuente===FUENTE) &&
+    (!DIA||String(l.fecha||'').slice(0,10)===DIA));
+  const dias=(DATA.por_dia||[]).filter(d=>
+    (FUENTE==='ambas'||d.fuente===FUENTE) && (!DIA||d.dia===DIA));
+  $('dayboxes').innerHTML = dias.length?dias.map(dayboxHtml).join(''):'';
+
+  const el=$('cards');
+  if(!libros.length){
+    el.innerHTML='<div class="card"><div class="cbody"><div class="plan" style="border:0">Sin libros para este día y esta fuente.</div></div></div>';
+    $('cardSub').textContent='0 libros';
+    return;
+  }
+  $('cardSub').textContent=libros.length+' libro'+(libros.length===1?'':'s');
+  el.innerHTML=libros.map(cardHtml).join('');
+  el.querySelectorAll('[data-card]').forEach(n=>{
+    n.addEventListener('click',()=>{
+      const c=document.getElementById('card-'+n.getAttribute('data-card'));
+      if(!c) return;
+      const open=c.classList.toggle('open');
+      const t=c.querySelector('.toggle');
+      if(t) t.textContent=open?'ocultar el detalle ↑':('ver la investigación ('+t.getAttribute('data-resumen')+') ↓');
+    });
+  });
+}
+
+async function load(){
+  DATA=await getJSON('/api/liga/libros?dias=7');
+  if(!DATA||!Array.isArray(DATA.libros)){
+    $('cards').innerHTML='<div class="card"><div class="cbody"><div class="plan" style="border:0">Los libros no están disponibles ahora mismo. Volvé en un momento.</div></div></div>';
+    return;
+  }
+  const dias=[...new Set((DATA.libros||[]).map(l=>String(l.fecha||'').slice(0,10)).filter(Boolean))].sort().reverse();
+  DIA=dias[0]||null;
+  $('selDia').innerHTML=dias.map(d=>'<option value="'+esc(d)+'">'+esc(d)+'</option>').join('')+
+    '<option value="">todos los días</option>';
+  $('selDia').value=DIA||'';
+  $('selDia').addEventListener('change',e=>{DIA=e.target.value||null;render();});
+  $('controls').querySelectorAll('[data-f]').forEach(p=>{
+    p.addEventListener('click',()=>{
+      FUENTE=p.getAttribute('data-f');
+      $('controls').querySelectorAll('[data-f]').forEach(x=>{
+        x.className='pill'+(x===p?' on '+(FUENTE==='ambas'?'':FUENTE):'');
+      });
+      render();
+    });
+  });
+  if(DATA.avisos&&DATA.avisos.length){
+    $('dayboxes').insertAdjacentHTML('beforebegin',
+      '<div class="nota warn" style="margin-top:12px">'+DATA.avisos.map(esc).join('<br/>')+'</div>');
+  }
+  render();
+}
+load();
+$('refreshNote').textContent='Actualizado al abrir · '+new Date().toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
+</script>
+</body>
+</html>

@@ -24,6 +24,7 @@
 import { readFileSync } from 'node:fs';
 import { shadowBroker, shadowRunId } from '../api/_lib/arena-shadow.js';
 import { parsePortfolioResponse } from '../api/_lib/arena-rails.js';
+import { pisoDeRuido, lecturaDelPiso } from '../api/_lib/arena-herding.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -210,18 +211,48 @@ console.log('\n── el reporte lee el context, que es donde vive la secuencia 
     'y se mapea la secuencia, no solo el conteo');
   ok(/pairwiseOverlap/.test(src) && /sharedTopTicker/.test(src),
     'el solapamiento se CALCULA en el reporte — antes la función existía y nadie la llamaba');
-  ok(/lente distintas|lentes distintas/i.test(src),
+  ok(/CAVEAT_LENTE/.test(src),
     'con el caveat de la lente al lado: dos agentes con lentes distintas no son comparables ese día');
 }
 
+// ── EL PISO SE EJERCITA, NO SE GREPEA ────────────────────────────────
+// Estas aserciones buscaban las dos condiciones en el TEXTO de arena-shadow.js.
+// El cálculo se mudó a `arena-herding.js` (puro, sin db) porque la página de
+// libros necesita el mismo número y dos implementaciones del mismo piso
+// terminan difiriendo. Ya que está exportado y es puro, se EJERCITA: un grep de
+// fuente nunca probó que el código corra, y ahora no hace falta que lo haga.
 console.log('\n── el piso de ruido sale SOLO si comparten lente ──');
 {
-  const src = await import('node:fs').then((fs) => fs.readFileSync('api/_lib/arena-shadow.js', 'utf8'));
+  const src = readFileSync('api/_lib/arena-shadow.js', 'utf8');
   ok(/piso_de_ruido/.test(src), 'el reporte publica el piso de ruido como línea propia');
-  ok(/mismaLente/.test(src) && /NO mide ruido: mide la lente/.test(src),
-    'y cuando las lentes difieren NO publica el número: dice que ese par mide la lente, no el ruido');
-  ok(/PISO SÓLIDO|PISO MEDIO|PISO BAJO/.test(src),
+  // Y DELEGA: si algún día vuelve a calcularlo acá adentro, son dos pisos otra vez.
+  ok(/calcularPisoDeRuido\(/.test(src) && !/mismaLente/.test(src),
+    'el reporte DELEGA el cálculo en arena-herding y no tiene una copia propia');
+
+  const mismasPos = ['AAPL', 'NVDA'];
+  const distintaLente = pisoDeRuido({
+    insignia: { lente: 'momentum', posiciones_iniciales: mismasPos },
+    testigo: { lente: 'catalizador', posiciones_iniciales: mismasPos },
+    pesos: { claude: { NVDA: 0.1 }, control: { NVDA: 0.1 } },
+  });
+  ok(distintaLente.comparable === false && /NO mide ruido: mide la lente/.test(distintaLente.motivo),
+    'con lentes distintas NO publica el número como piso: dice que ese par mide la lente', distintaLente.motivo);
+  ok(distintaLente.cosine === undefined && distintaLente.cosine_observado === 1,
+    'el número observado existe y viaja con otro nombre — no es el piso, y tampoco se esconde',
+    JSON.stringify(distintaLente.cosine_observado));
+
+  const bueno = pisoDeRuido({
+    insignia: { lente: 'momentum', posiciones_iniciales: mismasPos },
+    testigo: { lente: 'momentum', posiciones_iniciales: mismasPos },
+    pesos: { claude: { NVDA: 0.1, AAPL: 0.1 }, control: { NVDA: 0.1, AAPL: 0.1 } },
+  });
+  ok(bueno.comparable === true && bueno.cosine === 1, 'con las dos condiciones cumplidas, sí hay piso', JSON.stringify(bueno.cosine));
+  ok(/PISO SÓLIDO/.test(bueno.lectura),
     'el número viaja con su lectura — un 0.4 entre dos corridas idénticas es el resultado más importante del día');
+
+  ok(pisoDeRuido({ insignia: null, testigo: { lente: 'momentum' }, pesos: {} }).comparable === false,
+    'y si falta uno de los dos libros, no hay piso (no un piso de 0)');
+
   ok(/abortos:/.test(src) && /llm_error: ctx\.llm_error/.test(src),
     'y los abortos salen juntos con su `raw_body`: se journaleaba y el reporte no lo mostraba');
 }
@@ -230,10 +261,12 @@ console.log('\n── qué significa cada piso ──');
 {
   // La lectura importa más que el número. Un piso bajo NO es un detalle
   // técnico: dice que el experimento no puede distinguir modelos ese día.
-  const lectura = (c) => (c >= 0.9 ? 'SÓLIDO' : c >= 0.7 ? 'MEDIO' : 'BAJO');
-  ok(lectura(0.95) === 'SÓLIDO', '0.95 entre dos corridas idénticas → piso sólido');
-  ok(lectura(0.75) === 'MEDIO', '0.75 → medio: un delta menor a 0.25 entre modelos no se distingue del ruido');
-  ok(lectura(0.40) === 'BAJO', '0.40 → bajo: casi ningún delta es interpretable');
+  // La de verdad, no una copia del umbral en el test: si mañana el umbral se
+  // mueve en el código y no acá, el test seguiría pasando contra su propia idea.
+  ok(/PISO SÓLIDO/.test(lecturaDelPiso(0.95)), '0.95 entre dos corridas idénticas → piso sólido');
+  ok(/PISO MEDIO/.test(lecturaDelPiso(0.75)), '0.75 → medio: un delta menor a 0.25 entre modelos no se distingue del ruido');
+  ok(/PISO BAJO/.test(lecturaDelPiso(0.40)), '0.40 → bajo: casi ningún delta es interpretable');
+  ok(lecturaDelPiso(null) === 'sin pesos en alguno de los dos', 'y sin pesos, se dice en vez de inventar un número');
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -249,16 +282,22 @@ console.log('\n── qué significa cada piso ──');
 // ═══════════════════════════════════════════════════════════════
 console.log('\n── el piso exige misma lente Y mismo libro ──');
 {
-  const src = await import('node:fs').then((fs) => fs.readFileSync('api/_lib/arena-shadow.js', 'utf8'));
-  ok(/mismoLibro/.test(src), 'el reporte compara los libros de arranque, no solo las lentes');
-  ok(/mide HERENCIA, no ruido/.test(src),
-    'y cuando difieren lo dice con esas palabras en vez de publicar el número como piso');
-  ok(/comparable: false/.test(src) && /comparable: true/.test(src),
-    'el campo `comparable` separa "no se puede medir" de "se midió"');
-  ok(/cosine_observado/.test(src),
-    'el número observado NO se esconde: viaja con otro nombre, para que se vea que existe y que no es el piso');
-  ok(/un reset las iguala/.test(src),
+  const src = readFileSync('api/_lib/arena-shadow.js', 'utf8');
+  const heredado = pisoDeRuido({
+    insignia: { lente: 'momentum', posiciones_iniciales: ['NVDA'] },
+    testigo: { lente: 'momentum', posiciones_iniciales: ['NVDA', 'AAPL', 'MSFT', 'AMD', 'GOOG', 'META'] },
+    pesos: { claude: { NVDA: 0.1 }, control: { NVDA: 0.1 } },
+  });
+  ok(heredado.comparable === false,
+    'misma lente NO alcanza: con libros de arranque distintos el par no mide ruido');
+  ok(/mide HERENCIA, no ruido/.test(heredado.motivo),
+    'y lo dice con esas palabras en vez de publicar el número como piso', heredado.motivo);
+  ok(/un reset las iguala/.test(heredado.motivo),
     'y dice cómo arreglarlo, que es lo único accionable');
+  ok(heredado.cosine_observado === 1 && heredado.cosine === undefined,
+    'el número observado NO se esconde: viaja con otro nombre, para que se vea que existe y que no es el piso');
+  ok(heredado.posiciones_claude.length === 1 && heredado.posiciones_control.length === 6,
+    'con los dos libros de arranque al lado, que son la prueba');
   ok(/posiciones_iniciales: Object\.fromEntries/.test(src),
     'las posiciones de arranque de los 7 salen al lado del piso');
 }

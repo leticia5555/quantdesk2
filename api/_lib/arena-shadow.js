@@ -32,7 +32,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql } from './db.js';
-import { pairwiseOverlap, sharedTopTicker } from './arena-herding.js';
+import { pairwiseOverlap, sharedTopTicker, pisoDeRuido as calcularPisoDeRuido, lecturaDelSolapamiento, CAVEAT_LENTE } from './arena-herding.js';
 import { marketDay } from './arena-buffet-cache.js';
 
 const SCHEMA = [
@@ -240,70 +240,24 @@ export async function shadowReport(day = marketDay()) {
       note: 'Hacen falta al menos DOS libros con pesos para que el solapamiento signifique algo.' };
 
   // ── EL PISO DE RUIDO: claude ↔ control ─────────────────────────────
-  // Los dos corren el MISMO modelo con el MISMO prompt byte a byte. Su coseno
-  // NO es un dato más del solapamiento: es la referencia contra la que vale
-  // cualquier delta entre modelos distintos. Si es 0.4, dos modelos que
-  // difieren 0.4 no difieren en nada.
+  // El cálculo vive en `arena-herding.js` (puro, sin db) y NO acá: la página
+  // de libros necesita el mismo número —y también para la liga VIVA, que este
+  // reporte no mira—, y dos implementaciones del mismo piso es la forma más
+  // barata de que un día difieran y nadie se entere.
   //
-  // SOLO CUENTA SI COMPARTEN LENTE. El 2026-09-15 claude corrió con `momentum`
-  // y control con `catalizador`, y ese par no medía ruido: medía la lente. Por
-  // eso la línea sale con la condición explícita en vez de publicarse siempre.
+  // Lo que SÍ es de este archivo es ARCHIVARLO: eso escribe, y la página no
+  // escribe. Las dos condiciones (misma lente, mismo libro de arranque) están
+  // documentadas en la función.
   const insignia = (porAgente.claude && porAgente.claude.ultimo) || null;
   const testigo = (porAgente.control && porAgente.control.ultimo) || null;
-  const mismaLente = !!(insignia && testigo && insignia.lente && insignia.lente === testigo.lente);
-  const parRuido = (libros.claude && libros.control)
-    ? (pairwiseOverlap({ claude: libros.claude, control: libros.control }).pairs[0] || {}).cosine
-    : null;
-
-  // ── Y TAMPOCO MIDE RUIDO SI ARRANCAN DE LIBROS DISTINTOS ───────────
-  // El 0.68 de la sombra 3 no medía ruido: control tenía 6 posiciones heredadas
-  // y claude 1. Dos PMs idénticos que arrancan de carteras distintas van a
-  // producir libros distintos por HERENCIA, no por ruido del modelo. El piso
-  // solo significa algo cuando las dos condiciones se cumplen: misma lente Y
-  // mismo libro de arranque.
-  const posIns = (x) => (x && Array.isArray(x.posiciones_iniciales) ? x.posiciones_iniciales : null);
-  const posClaude = posIns(insignia);
-  const posControl = posIns(testigo);
-  const mismoLibro = !!(posClaude && posControl
-    && posClaude.length === posControl.length
-    && posClaude.every((sym, i) => sym === posControl[i]));
-
-  const pisoDeRuido = !insignia || !testigo
-    ? { disponible: false, motivo: 'falta el libro de claude o el de control en este día' }
-    : !mismaLente
-      ? {
-        disponible: false, comparable: false,
-        motivo: `claude corrió con lente "${insignia.lente}" y control con "${testigo.lente}". El par NO mide ruido: mide la lente.`,
-        lente_claude: insignia.lente, lente_control: testigo.lente,
-      }
-      : !mismoLibro
-        ? {
-          disponible: false, comparable: false, lente: insignia.lente,
-          cosine_observado: parRuido,
-          motivo: `claude arrancó con ${posClaude ? posClaude.length : '?'} posición(es) y control con ${posControl ? posControl.length : '?'}. El coseno entre ellos mide HERENCIA, no ruido: dos PMs idénticos que parten de carteras distintas producen libros distintos por eso solo. Para que el piso signifique algo, las dos cuentas tienen que arrancar del mismo libro — un reset las iguala.`,
-          posiciones_claude: posClaude, posiciones_control: posControl,
-        }
-        : {
-          disponible: true, comparable: true, lente: insignia.lente, cosine: parRuido,
-          posiciones_iniciales: posClaude,
-          lectura: parRuido == null ? 'sin pesos en alguno de los dos'
-            : parRuido >= 0.9
-            ? `PISO SÓLIDO (${parRuido}): dos corridas idénticas dan casi el mismo libro, así que un delta entre modelos distintos significa algo.`
-            : parRuido >= 0.7
-              ? `PISO MEDIO (${parRuido}): hay ruido apreciable entre dos corridas idénticas. Un delta menor a ${(1 - parRuido).toFixed(2)} entre modelos distintos no se puede distinguir del ruido.`
-              : `PISO BAJO (${parRuido}): dos corridas IDÉNTICAS difieren tanto que casi ningún delta entre modelos distintos es interpretable. Es el resultado más importante del día si sale así.`,
-      };
+  const pisoDeRuido = calcularPisoDeRuido({ insignia, testigo, pesos: libros });
 
   if (solapamiento.mean != null) {
     // El número solo no dice nada sin la lectura. Un coseno de 0.9 entre siete
     // modelos distintos no es "la liga funciona": es la liga midiendo ruido
     // alrededor de una sola opinión.
-    solapamiento.lectura = solapamiento.mean >= 0.8
-      ? `ALTO (${solapamiento.mean}): los siete están construyendo casi el mismo libro. La liga estaría midiendo una opinión repetida siete veces, no siete opiniones.`
-      : solapamiento.mean >= 0.5
-        ? `MEDIO (${solapamiento.mean}): hay un núcleo común y diferencias reales en los bordes.`
-        : `BAJO (${solapamiento.mean}): los libros difieren de verdad. Es lo que hace comparable el experimento.`;
-    solapamiento.caveat = 'OJO con la LENTE: dos agentes con lentes distintas el mismo día NO son comparables ese día — el confound es deliberado (B8). Mirá `por_agente[].ultimo.lente` antes de leer el par.';
+    solapamiento.lectura = lecturaDelSolapamiento(solapamiento.mean);
+    solapamiento.caveat = CAVEAT_LENTE;
   }
 
   // ── SE ARCHIVA ACÁ, donde acaba de calcularse ──

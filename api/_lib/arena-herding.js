@@ -184,6 +184,99 @@ function cosine(a, b) {
   return +(dot / (Math.sqrt(na) * Math.sqrt(nb))).toFixed(4);
 }
 
+// ── EL PISO DE RUIDO: claude ↔ control ───────────────────────────────
+// Los dos corren el MISMO modelo con el MISMO prompt byte a byte. Su coseno NO
+// es un dato más del solapamiento: es la referencia contra la que vale
+// cualquier delta entre modelos distintos. Si es 0.4, dos modelos que difieren
+// 0.4 no difieren en nada.
+//
+// ── VIVE ACÁ Y NO EN EL REPORTE DE LA SOMBRA ─────────────────────────
+// Estaba escrito dentro de `shadowReport`, que además ARCHIVA y por lo tanto
+// escribe. Cuando la página de libros necesitó el mismo número —y la necesita
+// también para la liga VIVA, que shadowReport no mira— la alternativa era una
+// segunda implementación. Dos lugares calculando el piso es la forma más
+// barata de que un día difieran y nadie se entere: el post-mortem diría 0.93 y
+// la página 0.88 y las dos tendrían razón.
+//
+// Acá es puro: sin db, sin writes. `shadowReport` lo llama y archiva el
+// resultado; la página lo llama y no archiva nada.
+//
+//   insignia / testigo: { lente, posiciones_iniciales } de claude y de control.
+//   pesos:              { claude: {TICKER:peso}, control: {...} }
+//
+// LAS DOS CONDICIONES SON ESTRUCTURALES, no un refinamiento:
+//   · MISMA LENTE. El 2026-09-15 claude corrió `momentum` y control
+//     `catalizador`: ese par no medía ruido, medía la lente.
+//   · MISMO LIBRO DE ARRANQUE. El 0.68 de la sombra 3 tampoco era ruido:
+//     control tenía 6 posiciones heredadas y claude 1. Dos PMs idénticos que
+//     parten de carteras distintas producen libros distintos por HERENCIA.
+export function pisoDeRuido({ insignia = null, testigo = null, pesos = {} } = {}) {
+  const libros = pesos || {};
+  const parRuido = (libros.claude && libros.control)
+    ? (pairwiseOverlap({ claude: libros.claude, control: libros.control }).pairs[0] || {}).cosine
+    : null;
+
+  if (!insignia || !testigo) {
+    return { disponible: false, comparable: false, motivo: 'falta el libro de claude o el de control en este día' };
+  }
+
+  const mismaLente = !!(insignia.lente && insignia.lente === testigo.lente);
+  if (!mismaLente) {
+    return {
+      disponible: false, comparable: false,
+      motivo: `claude corrió con lente "${insignia.lente}" y control con "${testigo.lente}". El par NO mide ruido: mide la lente.`,
+      lente_claude: insignia.lente, lente_control: testigo.lente,
+      cosine_observado: parRuido,
+    };
+  }
+
+  const posIns = (x) => (x && Array.isArray(x.posiciones_iniciales) ? x.posiciones_iniciales : null);
+  const posClaude = posIns(insignia);
+  const posControl = posIns(testigo);
+  const mismoLibro = !!(posClaude && posControl
+    && posClaude.length === posControl.length
+    && posClaude.every((sym, i) => sym === posControl[i]));
+
+  if (!mismoLibro) {
+    return {
+      disponible: false, comparable: false, lente: insignia.lente,
+      cosine_observado: parRuido,
+      motivo: `claude arrancó con ${posClaude ? posClaude.length : '?'} posición(es) y control con ${posControl ? posControl.length : '?'}. El coseno entre ellos mide HERENCIA, no ruido: dos PMs idénticos que parten de carteras distintas producen libros distintos por eso solo. Para que el piso signifique algo, las dos cuentas tienen que arrancar del mismo libro — un reset las iguala.`,
+      posiciones_claude: posClaude, posiciones_control: posControl,
+    };
+  }
+
+  return {
+    disponible: true, comparable: true, lente: insignia.lente, cosine: parRuido,
+    posiciones_iniciales: posClaude,
+    lectura: lecturaDelPiso(parRuido),
+  };
+}
+
+// El número solo no dice nada. Un 0.4 entre dos corridas IDÉNTICAS es el
+// resultado más importante del día, y sin la lectura parece un dato técnico.
+export function lecturaDelPiso(c) {
+  if (c == null) return 'sin pesos en alguno de los dos';
+  return c >= 0.9
+    ? `PISO SÓLIDO (${c}): dos corridas idénticas dan casi el mismo libro, así que un delta entre modelos distintos significa algo.`
+    : c >= 0.7
+      ? `PISO MEDIO (${c}): hay ruido apreciable entre dos corridas idénticas. Un delta menor a ${(1 - c).toFixed(2)} entre modelos distintos no se puede distinguir del ruido.`
+      : `PISO BAJO (${c}): dos corridas IDÉNTICAS difieren tanto que casi ningún delta entre modelos distintos es interpretable. Es el resultado más importante del día si sale así.`;
+}
+
+// La lectura del SOLAPAMIENTO entre todos (otra cosa que el piso: acá los
+// modelos son distintos, y un coseno alto es un problema, no una referencia).
+export function lecturaDelSolapamiento(mean) {
+  if (mean == null) return null;
+  return mean >= 0.8
+    ? `ALTO (${mean}): los siete están construyendo casi el mismo libro. La liga estaría midiendo una opinión repetida siete veces, no siete opiniones.`
+    : mean >= 0.5
+      ? `MEDIO (${mean}): hay un núcleo común y diferencias reales en los bordes.`
+      : `BAJO (${mean}): los libros difieren de verdad. Es lo que hace comparable el experimento.`;
+}
+
+export const CAVEAT_LENTE = 'OJO con la LENTE: dos agentes con lentes distintas el mismo día NO son comparables ese día — el confound es deliberado (B8). Mirá la lente de cada libro antes de leer el par.';
+
 // Posiciones que vinieron de una HERRAMIENTA vs del tablero. Es la métrica que
 // dice si las herramientas sirvieron para algo o si el PM decide igual con lo
 // que ya tenía enfrente.
