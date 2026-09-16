@@ -197,7 +197,16 @@ console.log('\n── 3) el turno de respuesta difiere por proveedor, y es exact
 
   const oai = buildToolTurn('openrouter', data, resultados);
   ok(oai.length === 3, 'openai: TRES mensajes (el asistente + UNO `tool` POR CADA llamada)', String(oai.length));
-  ok(oai[0] === data._raw_message, 'el asistente va CRUDO: OpenAI exige el mismo objeto tool_calls que mandó');
+  // Esta aserción pedía el objeto CRUDO entero (`oai[0] === data._raw_message`).
+  // Cambió el 2026-09-16: lo que OpenAI exige es que el `tool_calls` que se
+  // responde sea el mismo que mandó, NO que se le devuelvan sus extensiones.
+  // El crudo de un modelo de razonamiento trae `reasoning`/`reasoning_details`,
+  // que no están en su esquema de entrada y que se acumulan vuelta a vuelta —
+  // 5 KB por vuelta en el caso de qwen.
+  ok(oai[0].tool_calls === data._raw_message.tool_calls,
+    'el `tool_calls` va CRUDO: OpenAI exige el mismo objeto que mandó');
+  ok(oai[0].role === 'assistant' && !('reasoning' in oai[0]) && !('reasoning_details' in oai[0]),
+    'pero el resto del mensaje va limpio: solo los campos del contrato', Object.keys(oai[0]).join(','));
   ok(oai[1].role === 'tool' && oai[1].tool_call_id === 'tu_1' && oai[2].tool_call_id === 'tu_2',
     'un mensaje `tool` por llamada — agruparlos como Anthropic da 400',
     JSON.stringify(oai.slice(1).map((m) => m.tool_call_id)));

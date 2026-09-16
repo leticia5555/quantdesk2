@@ -269,11 +269,37 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
   // dejaban afuera, así que el escalón 1 del breaker bajaba el effort en
   // Anthropic y NO en OpenRouter — cinco de los siete seguían caros.
   const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase }), timeoutMs, trace, fase);
+
+  // ── HTTP 200 CON EL CUERPO VACÍO ─────────────────────────────────────
+  // ESTO ERA "HTTP 200 y todo lo demás en null". Durante cuatro sombras el
+  // journal mostró `status: 200, detail: null, raw_body: null, provider_error:
+  // null` y lo leímos como "el fetch fue bien y algo falló al parsear". No:
+  // OpenRouter abrió la conexión, mandó el 200, mandó keepalives de espacios
+  // durante ~40s y CERRÓ EL STREAM SIN CUERPO. `bodySample` quedaba en `''`,
+  // que es falsy, así que el `error_detail` y el `raw_body` salían null — los
+  // nulls no eran datos faltantes, eran la firma del cuerpo vacío.
+  //
+  // Es un fallo de TRANSPORTE, no de formato: un payload mal armado vuelve 400
+  // o 200-con-`error`, y los dos ya se manejaban. Por eso ninguna hipótesis
+  // sobre la forma del payload sobrevivía.
+  //
+  // Se le da CLASE PROPIA para que el que llama pueda reintentar: un error
+  // transitorio y un error de contrato exigen respuestas opuestas.
+  const cuerpo = String(first.bodySample || '');
+  if (first.status >= 200 && first.status < 300 && !first.raw && !cuerpo.trim()) {
+    await recordAiCall({ model, now });
+    return {
+      status: first.status, data: null, emptyBody: true,
+      error_detail: `CUERPO VACÍO: el proveedor respondió HTTP ${first.status} y cerró el stream sin mandar nada (${cuerpo.length} bytes, solo keepalive). Es un fallo de transporte, no de formato: un payload mal armado vuelve 400 o 200 con \`error\`.`,
+      raw_body: '', bytes: cuerpo.length,
+    };
+  }
+
   if (first.status < 200 || first.status >= 300 || !first.raw) {
     await recordAiCall({ model, now });
     return {
       status: first.status || 502, data: null, timedOut: !!first.timedOut,
-      error_detail: first.netError || (first.bodySample ? `cuerpo no-JSON: ${first.bodySample.slice(0, 200)}` : null),
+      error_detail: first.netError || (cuerpo ? `cuerpo no-JSON: ${cuerpo.slice(0, 200)}` : null),
       raw_body: first.bodySample || null,
       threw_stack: first.threw_stack || null,
     };

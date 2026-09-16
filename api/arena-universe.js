@@ -50,6 +50,7 @@ import { alpacaCreds } from './_lib/alpaca.js';
 import { buildUniverse, saveUniverse, loadUniverse, resolveConstituents, REFRESH_DAYS, MOVERS_MAX } from './_lib/arena-universe.js';
 import { sectorFromGics } from './_lib/arena-meta.js';
 import { beat } from './_lib/heartbeat.js';
+import { buildInfo } from './_lib/build-info.js';
 
 // ~600 nombres × admisión (Finnhub profile2 + Yahoo, en lotes) es lo más lento
 // del Arena. Mismo techo que el resto (plan Pro); vercel.json tiene que decir
@@ -113,6 +114,7 @@ export default async function handler(req, res) {
       const w52 = u.fifty_two_week || {};
       return res.status(200).json({
         diag: true,
+        build: buildInfo(),
         universo: {
           built_at: u.built_at, loaded_from: u.loaded_from, is_today: u.is_today,
           universe_source: u.universe_source,
@@ -172,6 +174,10 @@ export default async function handler(req, res) {
 
     const out = {
       ran_at: now.toISOString(),
+      // Qué build contestó. Si pediste `?diag=` y esto no trae la sección de
+      // diagnóstico, comparar este commit contra el que esperabas dice si el
+      // deploy salió — sin tener que preguntar.
+      build: buildInfo(),
       mode: dry ? 'dry_run' : 'saved',
       saved,
       universe_source: universe.universe_source,

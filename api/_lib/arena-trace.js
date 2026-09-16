@@ -47,6 +47,66 @@ function safeStringify(x) {
   try { return JSON.stringify(x); } catch (e) { return `[no serializable: ${String((e && e.message) || e)}]`; }
 }
 
+// ── QUÉ CAMBIÓ ENTRE UNA VUELTA Y LA SIGUIENTE ───────────────────────
+// Lo estructural, no el texto: cuántos mensajes, de qué roles, qué claves
+// aparecieron en los mensajes `assistant`, y cuánto creció el cuerpo. Es lo que
+// contesta "¿qué tiene la vuelta 3 que no tenía la 2?" sin leer 36.000
+// caracteres a ojo.
+//
+// Trabaja sobre el texto YA RECORTADO, así que un payload grande puede venir
+// truncado y el conteo de mensajes salir corto. Se DECLARA en vez de fingir
+// precisión: un diff que miente sobre datos incompletos es peor que uno que
+// avisa.
+export function diffTurnos(turns) {
+  const forma = (t) => {
+    const s = t && t.request;
+    if (!s) return null;
+    const truncado = /\[RECORTADO:/.test(s);
+    let parsed = null;
+    try { parsed = JSON.parse(truncado ? s.split('\n…[RECORTADO:')[0] : s); } catch { parsed = null; }
+    const msgs = (parsed && Array.isArray(parsed.messages)) ? parsed.messages : null;
+    return {
+      bytes: s.length,
+      truncado,
+      mensajes: msgs ? msgs.length : null,
+      roles: msgs ? msgs.map((m) => m && m.role).join(',') : null,
+      // Las claves de los mensajes `assistant`: acá se ve si viaja `reasoning`
+      // o `reasoning_details` de vuelta al proveedor.
+      claves_assistant: msgs
+        ? [...new Set(msgs.filter((m) => m && m.role === 'assistant').flatMap((m) => Object.keys(m)))].sort()
+        : null,
+      mensajes_tool: msgs ? msgs.filter((m) => m && m.role === 'tool').length : null,
+      tool_call_ids: msgs
+        ? msgs.filter((m) => m && m.role === 'assistant' && Array.isArray(m.tool_calls)).flatMap((m) => m.tool_calls.map((c) => c.id)).length
+        : null,
+      tool_result_ids: msgs ? msgs.filter((m) => m && m.role === 'tool' && m.tool_call_id).length : null,
+    };
+  };
+  const out = [];
+  for (let i = 1; i < turns.length; i++) {
+    const a = forma(turns[i - 1]);
+    const b = forma(turns[i]);
+    if (!a || !b) continue;
+    const cambios = [];
+    for (const k of ['mensajes', 'roles', 'claves_assistant', 'mensajes_tool', 'tool_call_ids', 'tool_result_ids']) {
+      const va = JSON.stringify(a[k]); const vb = JSON.stringify(b[k]);
+      if (va !== vb) cambios.push({ campo: k, antes: a[k], despues: b[k] });
+    }
+    out.push({
+      de: turns[i - 1].fase, a: turns[i].fase,
+      bytes: { antes: a.bytes, despues: b.bytes, delta: b.bytes - a.bytes },
+      // Si las llamadas pedidas y los resultados devueltos no coinciden, el
+      // payload está roto y se ve acá sin leer nada más.
+      descuadre_tool: b.tool_call_ids != null && b.tool_result_ids != null && b.tool_call_ids !== b.tool_result_ids
+        ? { tool_calls: b.tool_call_ids, tool_results: b.tool_result_ids, nota: 'DESCUADRE: hay tool_calls sin su mensaje `tool`. Ese payload rompe en OpenAI-compatible.' }
+        : null,
+      cambios: cambios.length ? cambios : 'ninguno estructural',
+      ...(a.truncado || b.truncado ? { aviso: 'uno de los dos cuerpos viene RECORTADO: el conteo de mensajes puede quedar corto. Subí el tope si hace falta precisión.' } : {}),
+    });
+  }
+  return out;
+}
+
 // El colector. `null` es un sink válido en todas las firmas que lo aceptan, así
 // que el camino normal no paga nada: sin `?trace=1` no se construye ni se
 // recorre.
@@ -82,6 +142,11 @@ export function createTrace({ maxBytes = TRACE_MAX_BYTES, maxEntries = TRACE_MAX
         descartados_por_tope: descartados,
         max_bytes_por_turno: maxBytes,
         nota: 'Cada turno trae el CUERPO HTTP que se envió y el TEXTO CRUDO que volvió, recortados. `fase` dice en qué parte del ciclo ocurrió la vuelta.',
+        // EL DIFF, calculado acá y no a ojo. Con payloads de 36.000 caracteres
+        // recortados a 4 KB, comparar la vuelta que falló contra la anterior
+        // leyendo JSON en una terminal no es viable — y es justo la comparación
+        // que decide el diagnóstico.
+        diff_entre_turnos: diffTurnos(turns),
         turnos_detalle: turns,
       };
     },

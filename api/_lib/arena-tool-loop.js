@@ -83,6 +83,19 @@ export const LOOP_BUDGET_MS = Number(process.env.ARENA_TOOL_LOOP_MS) || 120000;
 // menos que esto, no se empieza: se cierra.
 const RESERVA_CIERRE_MS = 45000;
 
+// ── EL REINTENTO DEL CUERPO VACÍO ────────────────────────────────────
+// Un HTTP 200 con el stream cerrado y sin cuerpo es TRANSITORIO por naturaleza:
+// no hay nada en el payload que se pueda corregir, porque el proveedor ni
+// siquiera llegó a contestar. Se reintenta UNA vez, con una espera corta.
+//
+// Dos segundos y no veinte: la vuelta que falló ya se comió ~40s del
+// presupuesto del loop, y el reloj de la lambda no perdona. Si el segundo
+// intento también vuelve vacío, NO se aborta: se salta al turno de cierre. Un
+// PM que investigó ocho veces y no puede escribir su JSON es peor que uno que
+// cierra con lo que tiene.
+export const REINTENTO_VACIO_MS = Number(process.env.ARENA_EMPTY_RETRY_MS) || 2000;
+const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
+
 // Los bloques `tool_use` de un turno normalizado (los dos proveedores llegan
 // acá con la misma forma — ver normalizeOpenRouter).
 export function toolUseBlocks(data) {
@@ -107,16 +120,70 @@ export function buildToolTurn(provider, data, resultados) {
       { role: 'user', content: resultados.map((r) => ({ type: 'tool_result', tool_use_id: r.id, content: r.text })) },
     ];
   }
-  // OpenAI/OpenRouter: el mensaje del asistente CRUDO (con su `tool_calls`
-  // original) y DESPUÉS un mensaje `tool` POR CADA llamada (punto 2).
-  const asistente = data._raw_message || {
+  // OpenAI/OpenRouter: el mensaje del asistente y DESPUÉS un mensaje `tool` POR
+  // CADA llamada (punto 2).
+  const asistente = ecoAsistenteOpenAI(data);
+  return [asistente, ...resultados.map((r) => ({ role: 'tool', tool_call_id: r.id, content: r.text }))];
+}
+
+// ── EL ECO, LIMPIO ───────────────────────────────────────────────────
+// Antes se ecoaba `_raw_message` TAL CUAL: el objeto entero que devolvió el
+// proveedor, con todas sus extensiones. Para los modelos de razonamiento
+// (grok, qwen, deepseek) eso incluye `reasoning` y `reasoning_details`, que
+// pueden ser miles de caracteres — y que se re-mandan en CADA vuelta siguiente,
+// acumulándose.
+//
+// Dos razones para limpiarlo, y la segunda vale por sí sola:
+//
+//   1. NO SON DEL CONTRATO. El mensaje `assistant` de la API de OpenAI es
+//      `{role, content, tool_calls, name?, refusal?}`. `reasoning` y
+//      `reasoning_details` son extensiones de OpenRouter para la RESPUESTA;
+//      devolvérselas en la petición es mandarle campos que su esquema de
+//      entrada no declara.
+//   2. EL PAYLOAD CRECE SIN NECESIDAD. La vuelta 3 de qwen pesaba 36.489
+//      caracteres, y buena parte era razonamiento de las vueltas 1 y 2 viajando
+//      de vuelta. Eso se paga en tokens de entrada en cada vuelta.
+//
+// ── LO QUE ESTO CUESTA, declarado ────────────────────────────────────
+// Algunos proveedores usan `reasoning_details` para preservar la cadena de
+// razonamiento entre turnos, así que quitarlo PUEDE degradar la continuidad del
+// razonamiento en esos modelos. Se acepta el costo: hoy tres de siete agentes
+// abortan TODAS las corridas. Una posible pérdida de calidad le gana a una
+// pérdida segura. `ARENA_ECHO_REASONING=1` lo devuelve al comportamiento viejo
+// sin deploy, para poder medir la diferencia en vez de discutirla.
+//
+// OJO: esto es SOLO el camino de OpenAI. Anthropic EXIGE el eco verbatim con
+// los bloques de thinking en su orden original (punto 1 del encabezado), y ese
+// camino no se toca.
+export const CAMPOS_ASISTENTE_OPENAI = ['role', 'content', 'tool_calls', 'name', 'refusal'];
+
+export function ecoAsistenteOpenAI(data) {
+  const crudo = data && data._raw_message;
+  const reconstruido = {
     role: 'assistant',
     content: assistantText(data) || null,
     tool_calls: toolUseBlocks(data).map((b) => ({
       id: b.id, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input || {}) },
     })),
   };
-  return [asistente, ...resultados.map((r) => ({ role: 'tool', tool_call_id: r.id, content: r.text }))];
+  if (!crudo) return reconstruido;
+  if (process.env.ARENA_ECHO_REASONING === '1') return crudo;
+
+  const limpio = {};
+  for (const k of CAMPOS_ASISTENTE_OPENAI) {
+    if (crudo[k] !== undefined) limpio[k] = crudo[k];
+  }
+  limpio.role = 'assistant';
+  // `content: undefined` no sobrevive a JSON.stringify y el mensaje saldría sin
+  // el campo; null es lo que la API espera cuando solo hay tool_calls.
+  if (limpio.content === undefined) limpio.content = null;
+  // Si el crudo no traía `tool_calls` pero el turno sí pidió herramientas,
+  // manda la reconstrucción: un eco sin las llamadas que se están respondiendo
+  // deja los `tool` siguientes huérfanos.
+  if (!Array.isArray(limpio.tool_calls) && reconstruido.tool_calls.length) {
+    limpio.tool_calls = reconstruido.tool_calls;
+  }
+  return limpio;
 }
 
 // ── EL LOOP ──────────────────────────────────────────────────────────
@@ -161,6 +228,10 @@ export async function runToolLoop({
   let turns = 0;
   let llm = null;
   let sinTiempo = false;
+  // Cuerpos vacíos vistos en todo el loop. Viaja al journal: si un agente
+  // acumula varios por corrida, el problema es del proveedor y no de una vuelta.
+  const vacios = [];
+  let cuerpoVacio = false;
 
   while (turns < maxTurns) {
     // EL RELOJ, ANTES de empezar la vuelta. Empezarla y que la mate el deadline
@@ -173,8 +244,28 @@ export async function runToolLoop({
     // siguientes y el loop termina chocando contra el deadline del agente —
     // que es justo lo que este presupuesto existe para evitar.
     const techo = Math.max(10000, Math.min(timeoutMs || Infinity, restante() - RESERVA_CIERRE_MS));
-    llm = await call({ agent, system, messages: convo, maxTokens, now, timeoutMs: techo, tools, ...(effort ? { effort } : {}), ...(trace ? { trace, fase: `loop:vuelta_${turns}` } : {}) });
+    const argsVuelta = { agent, system, messages: convo, maxTokens, now, timeoutMs: techo, tools, ...(effort ? { effort } : {}) };
+    llm = await call({ ...argsVuelta, ...(trace ? { trace, fase: `loop:vuelta_${turns}` } : {}) });
     sumar(llm);
+
+    // ── CUERPO VACÍO: se reintenta la MISMA vuelta, una vez ────────────
+    // Misma conversación, mismo payload: no hay nada que corregir porque el
+    // proveedor no llegó a contestar. Si el segundo también vuelve vacío, se
+    // sale del loop hacia el CIERRE, no hacia un abort.
+    if (llm && llm.emptyBody) {
+      vacios.push({ vuelta: turns, intento: 1, bytes: llm.bytes ?? 0 });
+      const alcanzaElReloj = restante() > RESERVA_CIERRE_MS + REINTENTO_VACIO_MS;
+      if (alcanzaElReloj) {
+        await dormir(REINTENTO_VACIO_MS);
+        const techo2 = Math.max(10000, Math.min(timeoutMs || Infinity, restante() - RESERVA_CIERRE_MS));
+        llm = await call({ ...argsVuelta, timeoutMs: techo2, ...(trace ? { trace, fase: `loop:vuelta_${turns}:reintento_vacio` } : {}) });
+        sumar(llm);
+        if (llm && llm.emptyBody) vacios.push({ vuelta: turns, intento: 2, bytes: llm.bytes ?? 0 });
+      } else {
+        vacios.push({ vuelta: turns, intento: 2, omitido: 'sin reloj para reintentar: se va directo al cierre' });
+      }
+      if (!llm || llm.emptyBody) { cuerpoVacio = true; break; }
+    }
 
     // Cualquier cosa que no sea una respuesta usable sale ENTERA hacia arriba.
     //
@@ -204,12 +295,16 @@ export async function runToolLoop({
         threw_stack: llm.threw_stack || null,
         nota: 'El loop murió DENTRO de una vuelta de herramientas: el turno de cierre nunca llegó a ejecutarse. Un `cierre: null` en el journal significa esto, no que el cierre haya salido bien.',
       };
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', murio_en: dondeMurio, elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado };
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', murio_en: dondeMurio, elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado, ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
     }
 
     const pedidos = toolUseBlocks(llm.data);
     if (!pedidos.length) {
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: turns === 1 ? 'no_tools' : 'end_turn', elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado };
+      // `cuerpos_vacios` viaja incluso cuando la corrida terminó BIEN: un corte
+      // que el reintento recuperó sigue siendo un corte, y si se pierde acá, la
+      // única evidencia de que el proveedor está inestable son las corridas que
+      // además fracasaron — o sea, la mitad del cuadro.
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: turns === 1 ? 'no_tools' : 'end_turn', elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado, ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
     }
 
     // Las herramientas de UNA vuelta corren EN PARALELO: son lecturas
@@ -234,9 +329,11 @@ export async function runToolLoop({
   // tiempo— produce una corrida abortada teniendo todo lo que necesitaba.
   convo.push({
     role: 'user',
-    content: sinTiempo
-      ? 'Se acabó el TIEMPO de esta corrida (no el presupuesto de herramientas). No pidas más: respondé AHORA con tu JSON final, usando lo que ya investigaste. Una decisión con menos investigación de la que querías sigue siendo una decisión; quedarte sin contestar no lo es.'
-      : 'Se acabó el presupuesto de investigación de esta corrida. No pidas más herramientas: respondé AHORA con tu JSON final, usando lo que ya tenés.',
+    content: cuerpoVacio
+      ? 'Hubo un corte de conexión con el proveedor y esta corrida no puede seguir investigando. No pidas más herramientas: respondé AHORA con tu JSON final, usando lo que ya investigaste.'
+      : sinTiempo
+        ? 'Se acabó el TIEMPO de esta corrida (no el presupuesto de herramientas). No pidas más: respondé AHORA con tu JSON final, usando lo que ya investigaste. Una decisión con menos investigación de la que querías sigue siendo una decisión; quedarte sin contestar no lo es.'
+        : 'Se acabó el presupuesto de investigación de esta corrida. No pidas más herramientas: respondé AHORA con tu JSON final, usando lo que ya tenés.',
   });
   // El cierre corre contra la RESERVA, no contra lo que quede del presupuesto
   // (que puede ser cero): es la llamada que convierte una corrida perdida en
@@ -296,6 +393,18 @@ export async function runToolLoop({
   try {
     llm = await llamarCierre(convo);
     anotarCierre('cierre', llm, null);
+    // El cierre TAMBIÉN puede volver vacío. Se reintenta una vez, igual que una
+    // vuelta: es la llamada que convierte una corrida perdida en una decisión, y
+    // rendirse en el primer corte de conexión desperdicia ocho herramientas ya
+    // pagadas.
+    if (llm && llm.emptyBody) {
+      vacios.push({ vuelta: 'cierre', intento: 1, bytes: llm.bytes ?? 0 });
+      await dormir(REINTENTO_VACIO_MS);
+      const reintento = await llamarCierre(convo, trace ? { fase: 'cierre:reintento_vacio' } : {});
+      anotarCierre('cierre_reintento_vacio', reintento, null);
+      if (reintento && !reintento.emptyBody) { llm = reintento; }
+      else { vacios.push({ vuelta: 'cierre', intento: 2, bytes: (reintento && reintento.bytes) ?? 0 }); }
+    }
   } catch (e) {
     anotarCierre('cierre', null, e);
     return {
@@ -303,6 +412,7 @@ export async function runToolLoop({
       messages: convo, turns, sequence: executor.sequence, stopped_by: 'error_cierre',
       elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado,
       cierre_diagnostico: diagCierre,
+      ...(vacios.length ? { cuerpos_vacios: vacios } : {}),
     };
   }
   sumar(llm);
@@ -335,9 +445,10 @@ export async function runToolLoop({
   if (llm) llm.cierre_diagnostico = diagCierre;
   return {
     llm, messages: convo, turns, sequence: executor.sequence,
-    stopped_by: sinTiempo ? 'time_budget' : 'max_turns',
+    stopped_by: cuerpoVacio ? 'cuerpo_vacio' : sinTiempo ? 'time_budget' : 'max_turns',
     elapsed_ms: clock() - t0, budget_ms: budgetMs,
     usage_total: acumulado, cost_usd_total: costoAcumulado,
     cierre_diagnostico: diagCierre,
+    ...(vacios.length ? { cuerpos_vacios: vacios } : {}),
   };
 }
