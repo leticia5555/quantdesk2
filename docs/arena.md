@@ -694,6 +694,109 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B22 · LOS TRES HUECOS DE DATOS QUE ENCONTRÓ EL DIAG
+
+`tests/arena-universo-datos.test.mjs`
+
+Los tres tienen la misma forma, y por eso eran fáciles de no ver: **nada falla,
+nada lanza**, y el síntoma aparece lejos del origen como "la herramienta X
+devuelve 0 filas".
+
+### 1. Los sectores no sobrevivían a la escritura
+
+El diag del 2026-09-16 mostró `sectores: 0`, con DELL y COP marcados
+`origen: "indice"` y `sector_gics: null`. La explicación natural —y la que
+dimos los dos— era que la foto guardada en Neon (del 15 a las 23:53) era
+**anterior** a que se leyera la columna `Sector`, y que el refresco semanal la
+releía vieja.
+
+**No era eso.** `writeStored` guardaba esto:
+
+```js
+JSON.stringify({ symbols: snapshot.symbols })
+```
+
+Los sectores GICS se bajaban bien del CSV, viajaban bien, y se **tiraban ahí**.
+Una foto recién bajada tenía sectores; la misma foto leída de vuelta, no —
+siempre, sin importar la fecha. `readStored` tampoco los devolvía.
+
+Lo que lo hacía invisible: `symbols` **sí** se guardaba, así que el universo se
+construía con sus 502 nombres correctos y nada fallaba. El hueco aparecía tres
+capas más allá, como tres bugs distintos: `sector(XLE)` sin filas,
+`with_sector: 0` en los rieles, y el screener con `sector:XLK` vacío.
+
+Si solo se hubiera arreglado el refresco, el bug habría quedado **enmascarado**:
+se re-bajaría el CSV todos los días, obteniendo sectores frescos cada vez, y la
+copia guardada seguiría vacía para siempre.
+
+**Dos arreglos, y los dos hacen falta:**
+
+- `writeStored` persiste `sectores` y `readStored` los lee. Escribir sin leer
+  sería el mismo hueco con otra cara.
+- Un snapshot **sin sectores se refresca solo**, sin esperar los 7 días: la
+  ventana de edad contesta "¿cambió la lista?", no "¿esta foto trae lo que hoy
+  necesitamos?". `refrescado_por: 'sin_sectores'` lo deja escrito.
+
+**Las dos condiciones son independientes, a propósito.** `sin_sectores` habilita
+solo el reintento del **CSV** (gratis); `vencido` o `forzado` habilitan también
+**FMP**. Si se mezclaran, una lista de FMP —que nunca va a traer clasificación
+GICS— quedaría en `sin_sectores` para siempre y el refresco semanal **dejaría de
+dispararse**. Se reintenta donde el reintento puede arreglar algo.
+
+Y si el refresco falla con la lista sin sectores, la nota **nombra los tres
+síntomas** que eso produce, para que no vuelvan a diagnosticarse por separado.
+
+```bash
+curl -s "$BASE/api/arena-universe?refresh=1&force_constituents=1&key=<KEY>"
+```
+
+`?force_constituents=1` es una perilla **aparte** de `?refresh=1`: reconstruir el
+universo del día (precios, volumen, admisión) y re-bajar los CSV de tenencias
+son dos costos con dos cadencias distintas.
+
+### 2. `ret_1m` era null para todos, por construcción
+
+`barsPorFeed` recortaba las velas con `.slice(-days)`, y `days` es **20** — la
+ventana del promedio de **volumen**. El retorno a 1 mes mira 21 sesiones atrás:
+
+```
+cerradas[20 − 1 − 21] = cerradas[−2] = undefined → null
+cerradas[20 − 1 −  5] = cerradas[14]            → OK
+```
+
+`ret_5d` funcionaba, y eso hacía que el bug se leyera como *"a veces no hay
+dato"* en vez de *"nunca lo hubo"*. Por eso el screener con `ret_1m_min` devolvía
+0 filas — y el modelo lo leía como "ningún nombre subió 5% en el mes".
+
+**Dos ventanas se estaban pisando.** Ahora se conservan `max(days, 22)` velas y
+el promedio de volumen sigue usando **solo sus 20**: ensanchar la ventana de
+liquidez de rebote cambiaría en silencio a quién admite el universo. La ventana
+de calendario también creció (22 sesiones necesitan ~31 días hábiles, más margen
+para festivos). Y `sessions` / `sessions_volumen` se reportan: un `ret_1m: null`
+con 22 sesiones sería un bug nuestro, con 8 es una acción que cotiza hace ocho
+sesiones.
+
+### 3. `market_cap` exactamente $1B era una cota, no una medida
+
+A los nombres de índice se les **asume** el piso de $1B por pertenecer al índice,
+en vez de gastar 500 llamadas de Finnhub para confirmar lo que el comité del
+S&P ya garantiza. Para **admitir** está perfecto: el criterio es "≥ $1B" y la
+pertenencia lo prueba.
+
+Pero ese número se guardaba igual que uno medido. Con `min_mcap_b: 10`, los 502
+del índice quedaban fuera —**Apple y Microsoft incluidas**— y el modelo leía
+"ningún nombre grande cumple".
+
+**El filtro no cambia**: una cota de $1B no alcanza para un umbral de $10B, igual
+que no alcanzaría una medición de $1B. Fail-closed, como el resto de los rieles.
+Lo que cambia es el **reporte**: el cero ahora dice que el cap **no se midió**,
+desmiente explícitamente la lectura falsa, y sugiere qué hacer. Son dos
+respuestas distintas y llevan a decisiones distintas.
+
+El encabezado de la admisión ya decía que la suposición se declaraba "nombre por
+nombre". No era cierto: solo se guardaba un **conteo**. Ahora el universo publica
+`market_caps_asumidos` con los símbolos.
+
 ## B21 · EL PRESUPUESTO DE INVESTIGACIÓN: tres techos, ninguno redondo
 
 `api/_lib/arena-tools.js` · `api/_lib/arena-tool-loop.js` ·

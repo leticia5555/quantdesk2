@@ -227,17 +227,43 @@ export async function readStored(index) {
     const p = rows[0].payload || {};
     const symbols = Array.isArray(p.symbols) ? p.symbols : [];
     if (!symbols.length) return null;
-    return { index, source: 'neon', stored_source: rows[0].source || null, built_at: rows[0].built_at, symbols };
+    return {
+      index, source: 'neon', stored_source: rows[0].source || null, built_at: rows[0].built_at, symbols,
+      // LOS SECTORES, que hasta el 2026-09-17 NO se leían porque NO se
+      // escribían (ver `writeStored`). Sin esto, todo lo que sale de Neon viene
+      // sin sectores por más fresco que sea.
+      sectores: (p.sectores && typeof p.sectores === 'object') ? p.sectores : {},
+    };
   } catch { return null; }
 }
 
+// ── EL BUG QUE DEJÓ EL UNIVERSO SIN SECTORES ─────────────────────────
+// Esto guardaba `{ symbols }` y NADA MÁS. Los sectores GICS que
+// `fetchDesdeEtf` saca de la columna `Sector` del CSV se bajaban bien,
+// viajaban bien, y se TIRABAN acá, en el `JSON.stringify`.
+//
+// Por eso el universo salía con `sectores: 0` todos los días: no era que la
+// foto guardada fuera anterior a que se leyera la columna —esa era la
+// explicación natural y es la que los dos dimos— sino que los sectores NUNCA
+// sobrevivieron a la escritura. Una foto recién bajada tenía sectores; la misma
+// foto leída de vuelta, no.
+//
+// De acá salían los tres ceros que parecían bugs distintos: `sector(XLE)` sin
+// filas, `with_sector: 0` en los rieles, y el screener con `sector:` vacío.
+//
+// Lo que lo hacía invisible: `symbols` sí se guardaba, así que el universo se
+// construía con sus 502 nombres correctos y nada fallaba. El dato faltante solo
+// se notaba tres capas más allá.
 export async function writeStored(index, snapshot) {
   try {
     await ensure();
     await sql(
       `insert into arena_universe (key, payload, source, built_at) values ($1, $2, $3, now())
        on conflict (key) do update set payload = excluded.payload, source = excluded.source, built_at = now()`,
-      ['constituents:' + index, JSON.stringify({ symbols: snapshot.symbols }), snapshot.source],
+      ['constituents:' + index, JSON.stringify({
+        symbols: snapshot.symbols,
+        sectores: snapshot.sectores || {},
+      }), snapshot.source],
     );
     return true;
   } catch { return false; }
@@ -281,18 +307,58 @@ export async function resolveConstituents(index, { now = new Date(), force = fal
   const fromRepo = deps.readStatic || readStatic;
 
   const stored = await fromNeon(index);
-  if (stored && !force && !refreshDue(stored.built_at, now)) {
+
+  // ── UN SNAPSHOT SIN SECTORES ESTÁ INCOMPLETO, NO VIEJO ──────────────
+  // El 2026-09-16 el universo salió con `sectores: 0` y nadie falló: la lista
+  // del S&P guardada en Neon era del 15 a las 23:53, ANTERIOR a que se leyera
+  // la columna `Sector` del CSV. Como el refresco es SEMANAL, esa foto se
+  // releía tal cual todos los días — con sus 502 símbolos correctos y sin un
+  // solo sector.
+  //
+  // De ahí salían TRES ceros que parecían bugs distintos: `sector(XLE)` sin
+  // filas, `with_sector: 0` en los rieles, y el screener con `sector:XLK`
+  // devolviendo nada. Uno solo: el dato no estaba.
+  //
+  // La ventana de edad contesta "¿cambió la lista?". No contesta "¿esta foto
+  // trae lo que hoy necesitamos?". Cuando el formato de lo guardado se queda
+  // corto, esperar siete días es esperar por la pregunta equivocada.
+  const sinSectores = !!(stored && (stored.symbols || []).length
+    && !Object.keys(stored.sectores || {}).length);
+
+  const vencido = refreshDue(stored && stored.built_at, now);
+  if (stored && !force && !sinSectores && !vencido) {
     return { ...stored, refreshed: false, stored: true, age_days: edad(stored.built_at, now) };
   }
+  const motivoRefresco = force ? 'forzado' : vencido ? 'vencido' : 'sin_sectores';
 
   // ORDEN: tenencias del ETF (gratis, diarias) → FMP (solo si hay key de pago).
   let fresh = await fromEtf(index, { now, diag });
-  if (!fresh && (process.env.FMP_API_KEY || (deps.fetchConstituents && deps.forzarFmp !== false))) {
+  // ── FMP NO SE LLAMA CUANDO EL MOTIVO ES `sin_sectores` ─────────────
+  // FMP devuelve la LISTA, no la clasificación GICS: no puede aportar lo que
+  // falta. Llamarlo acá sería gastar cuota de una API de pago para recibir
+  // exactamente el mismo hueco, y todos los días, porque el motivo seguiría sin
+  // resolverse. El CSV del ETF sí trae la columna `Sector`, así que ése es el
+  // único reintento que puede arreglar algo — y es una descarga gratis.
+  // Son DOS condiciones independientes: `sin_sectores` sola habilita el reintento
+  // del CSV (gratis) y NO el de FMP; `vencido` o `forzado` habilitan los dos.
+  // Si se mezclaran, una lista de FMP —que nunca va a traer sectores— quedaría
+  // en `sin_sectores` para siempre y el refresco SEMANAL dejaría de dispararse.
+  const fmpSirveAca = force || vencido;
+  if (!fresh && fmpSirveAca && (process.env.FMP_API_KEY || (deps.fetchConstituents && deps.forzarFmp !== false))) {
     fresh = await fromFmp(index, { diag });
   }
   if (fresh) {
     const written = await toNeon(index, fresh);
-    return { ...fresh, refreshed: true, stored: written, age_days: 0 };
+    return {
+      ...fresh, refreshed: true, stored: written, age_days: 0,
+      // POR QUÉ se refrescó. `sin_sectores` es el caso que hay que poder ver:
+      // significa que lo guardado estaba incompleto y se corrigió solo, sin que
+      // nadie tuviera que darse cuenta.
+      refrescado_por: motivoRefresco,
+      ...(sinSectores ? {
+        note: `La lista guardada tenía los símbolos pero NINGÚN sector (foto anterior a que se leyera la columna Sector del CSV). Se refrescó sin esperar la ventana de ${REFRESH_DAYS} días: un snapshot incompleto no es un snapshot viejo.`,
+      } : {}),
+    };
   }
 
   // FMP no contestó (o no hay key, o devolvió una lista incoherente). Lo
@@ -302,7 +368,14 @@ export async function resolveConstituents(index, { now = new Date(), force = fal
   const porque = motivoFmp(diag, index);
   if (stored) {
     return { ...stored, refreshed: false, stored: true, stale: true, age_days: edad(stored.built_at, now), fmp_failed: porque,
-      note: `FMP no sirvió (${porque}): se usa la lista guardada de hace ${edad(stored.built_at, now)} días. Un universo de la semana pasada es un sesgo declarado.` };
+      ...(sinSectores ? { sin_sectores: true } : {}),
+      note: sinSectores
+        // Este caso NO se puede reportar como "stale y listo": la lista sirve
+        // para el universo pero los sectores siguen ausentes, y eso rompe R6,
+        // la herramienta `sector` y el filtro del screener a la vez. Si no se
+        // nombra acá, el síntoma vuelve a aparecer como tres bugs distintos.
+        ? `La lista guardada NO tiene sectores y el refresco tampoco funcionó (${porque}). El universo sale con los 502 símbolos pero SIN sectores: R6 va a mandar todo al bucket UNKNOWN, \`sector({etf})\` va a devolver 0 filas y el screener con \`sector:\` también. No son tres bugs — es este.`
+        : `FMP no sirvió (${porque}): se usa la lista guardada de hace ${edad(stored.built_at, now)} días. Un universo de la semana pasada es un sesgo declarado.` };
   }
   const estatico = await fromRepo(index);
   if (estatico) {
@@ -354,7 +427,7 @@ function edad(builtAt, now) {
 // nombres que ya estaban. El tope aplica a los que el universo no tenía.
 export async function buildUniverse({
   creds, finnhubKey = process.env.FINNHUB_API_KEY, now = new Date(),
-  moversMax = MOVERS_MAX, rules = ADMISSION, force = false, deps = {},
+  moversMax = MOVERS_MAX, rules = ADMISSION, force = false, forceConstituents = false, deps = {},
 } = {}) {
   const movers = deps.getMovers || getMovers;
   const actives = deps.getMostActives || getMostActives;
@@ -366,8 +439,13 @@ export async function buildUniverse({
   // salida posible para seis causas distintas.
   const fmpDiag = [];
   const [sp, nq, mv, ac, acTrades] = await Promise.all([
-    resolveConstituents('sp500', { now, force, deps, diag: fmpDiag }),
-    resolveConstituents('nasdaq100', { now, force, deps, diag: fmpDiag }),
+    // `forceConstituents` es una perilla APARTE de `force`: reconstruir el
+    // universo del día (precios, volumen, admisión) es barato y se hace seguido;
+    // re-bajar los CSV de tenencias es otra cosa y tiene su propia ventana. Que
+    // sean el mismo interruptor obligaría a elegir entre refrescar de más o no
+    // poder corregir una lista incompleta sin esperar siete días.
+    resolveConstituents('sp500', { now, force: force || forceConstituents, deps, diag: fmpDiag }),
+    resolveConstituents('nasdaq100', { now, force: force || forceConstituents, deps, diag: fmpDiag }),
     // ── DE DÓNDE SALEN LOS ~300 BRUTOS ────────────────────────────────
     // El tope del canal del día son 100 nombres, pero ahora ese tope se gasta
     // DESPUÉS del filtro de instrumento, y ahí está el problema de volumen: de
@@ -602,6 +680,21 @@ export async function buildUniverse({
     market_caps: Object.fromEntries(admitidos
       .map((sym) => [sym, (admissionData[sym] || {}).marketCap ?? null])
       .filter(([, v]) => Number.isFinite(v))),
+    // ── CUÁLES SON UNA SUPOSICIÓN Y NO UNA MEDICIÓN ─────────────────
+    // A los nombres de índice se les ASUME el piso ($1B) por pertenecer al
+    // índice, en vez de gastar 500 llamadas de Finnhub para confirmar lo que el
+    // comité del S&P ya garantiza. Para ADMITIR está perfecto: el criterio es
+    // "≥ $1B" y la pertenencia lo prueba.
+    //
+    // Pero ese número se guardaba igual que uno medido, y el screener lo leía
+    // igual. Resultado: con `min_mcap_b: 10`, los 502 nombres del índice
+    // parecían valer exactamente $1B y NINGUNO pasaba — incluidas Apple y
+    // Microsoft. El filtro no estaba roto: estaba filtrando sobre un piso
+    // disfrazado de medición.
+    //
+    // El encabezado de la admisión ya decía que esto se declara "nombre por
+    // nombre", y no era cierto: solo se guardaba un CONTEO. Ahora sí.
+    market_caps_asumidos: admitidos.filter((sym) => indexSyms.has(sym) && Number.isFinite((admissionData[sym] || {}).marketCap)),
     sectores_count: Object.keys(sectoresIndice).length,
     fifty_two_week: fiftyTwo,
     fifty_two_week_count: Object.keys(fiftyTwo).length,

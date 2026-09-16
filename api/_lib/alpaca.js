@@ -369,23 +369,49 @@ export async function getPriceAndDollarVolume(symbols = [], { creds, now = new D
   return { data: {}, feed: null, symbols: 0, intentos };
 }
 
+// ── CUÁNTAS VELAS HACEN FALTA, Y POR QUÉ ESTABA MAL ──────────────────
+// EL BUG (visto en el diag del 2026-09-16: `ret_1m: null` para DELL y COP, o
+// sea para los 535 nombres): las velas se recortaban con `.slice(-days)` y
+// `days` es 20 —la ventana del PROMEDIO DE VOLUMEN—, así que quedaban 20 velas.
+// El retorno a 1 mes mira 21 sesiones atrás: `cerradas[20 - 1 - 21]` es
+// `cerradas[-2]`, o sea `undefined`. `ret_1m` era null SIEMPRE, por
+// construcción, y por eso el screener con `ret_1m_min` devolvía 0 filas.
+// `ret_5d` funcionaba porque `cerradas[14]` sí existe — y eso hacía que el bug
+// se leyera como "a veces no hay dato" en vez de "nunca lo hubo".
+//
+// DOS VENTANAS DISTINTAS que se estaban pisando:
+//   · el promedio de volumen quiere las últimas `days` sesiones (20),
+//   · el retorno a 1 mes quiere 22 velas (la de hoy-21 y la última).
+// Se conservan las que alcanzan para la más larga, y el promedio sigue usando
+// SOLO sus 20: mezclarlas cambiaría en silencio qué mide el filtro de liquidez.
+export const RET_1M_SESIONES = 21;
+
+// Sesiones → días de calendario. 5 de cada 7 son hábiles, más margen para
+// festivos: pedir 31 días para 22 sesiones sale justo y un feriado lo rompe.
+function diasDeCalendario(sesiones) {
+  return Math.ceil((sesiones * 7) / 5) + 12;
+}
+
 async function barsPorFeed(wanted, { creds, now, days, feed }) {
   const hoy = now.toISOString().slice(0, 10);
-  // Se piden más días de los que se promedian: fines de semana y festivos
-  // hacen que N días de calendario sean menos de N sesiones.
-  const start = new Date(now.getTime() - (days + 15) * 86400000).toISOString().slice(0, 10);
+  // La ventana de velas a CONSERVAR: la mayor de las dos que se calculan.
+  const sesiones = Math.max(days, RET_1M_SESIONES + 1);
+  const start = new Date(now.getTime() - diasDeCalendario(sesiones) * 86400000).toISOString().slice(0, 10);
   const out = {};
   for (const batch of chunk(wanted, DATA_CHUNK)) {
     const data = await alpacaDataFetch(
-      `/v2/stocks/bars?symbols=${encodeURIComponent(batch.join(','))}&timeframe=1Day&start=${start}&limit=${(days + 15) * batch.length}&feed=${feed}`, creds);
+      `/v2/stocks/bars?symbols=${encodeURIComponent(batch.join(','))}&timeframe=1Day&start=${start}&limit=${diasDeCalendario(sesiones) * batch.length}&feed=${feed}`, creds);
     for (const [sym, list] of Object.entries((data && data.bars) || {})) {
       if (!Array.isArray(list) || !list.length) continue;
-      const cerradas = list.filter((b) => b && String(b.t || '').slice(0, 10) !== hoy).slice(-days);
+      const cerradas = list.filter((b) => b && String(b.t || '').slice(0, 10) !== hoy).slice(-sesiones);
       if (!cerradas.length) continue;
       const ultima = cerradas[cerradas.length - 1];
       const price = Number(ultima.c);
       if (!Number.isFinite(price) || price <= 0) continue;
-      const dvs = cerradas
+      // El promedio de volumen sigue siendo de `days` sesiones, no de las 22
+      // que ahora se conservan: ensanchar la ventana de liquidez sin decirlo
+      // cambiaría a quién admite el universo.
+      const dvs = cerradas.slice(-days)
         .map((b) => (Number(b.c) || 0) * (Number(b.v) || 0))
         .filter((x) => Number.isFinite(x) && x > 0);
       // ── LOS RETORNOS SALEN GRATIS DE LAS MISMAS VELAS ────────────
@@ -403,8 +429,12 @@ async function barsPorFeed(wanted, { creds, now, days, feed }) {
         price: +price.toFixed(4),
         dollarVolume: dvs.length ? Math.round(dvs.reduce((a, b) => a + b, 0) / dvs.length) : null,
         ret_5d: retorno(5),
-        ret_1m: retorno(21),
+        ret_1m: retorno(RET_1M_SESIONES),
+        // Cuántas velas cerradas hubo de verdad. Un `ret_1m: null` con
+        // `sessions: 22` sería un bug nuestro; con `sessions: 8` es una acción
+        // que cotiza hace ocho sesiones. Sin este número no se distinguen.
         sessions: cerradas.length,
+        sessions_volumen: Math.min(days, cerradas.length),
       };
     }
   }

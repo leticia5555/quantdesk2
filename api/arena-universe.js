@@ -83,6 +83,10 @@ export default async function handler(req, res) {
   const q = req.query || {};
   const dry = String(q.dry || '') === '1';
   const force = String(q.refresh || '') === '1';
+  // Re-baja los CSV de tenencias ignorando la ventana de refresco. Aparte de
+  // `?refresh=1` porque reconstruir el universo del día y re-bajar las listas de
+  // constituyentes son dos costos distintos con dos cadencias distintas.
+  const forceConstituents = String(q.force_constituents || '') === '1';
   const emit = String(q.emit || '') === '1';
   const peek = String(q.peek || '') === '1';
   const now = new Date();
@@ -167,7 +171,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const universe = await buildUniverse({ creds: alpacaCreds(), now, force });
+    const universe = await buildUniverse({ creds: alpacaCreds(), now, force, forceConstituents });
 
     let saved = false;
     if (!dry) saved = await saveUniverse(universe, now);
@@ -179,6 +183,9 @@ export default async function handler(req, res) {
       // deploy salió — sin tener que preguntar.
       build: buildInfo(),
       mode: dry ? 'dry_run' : 'saved',
+      // Qué se forzó en esta corrida, para que la respuesta diga por qué tardó
+      // (o por qué NO se refrescó lo que se esperaba).
+      forzado: { universo: force, constituyentes: forceConstituents },
       saved,
       universe_source: universe.universe_source,
       built_at: universe.built_at,
