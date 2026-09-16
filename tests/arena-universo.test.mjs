@@ -89,11 +89,23 @@ console.log('\n── escalón 2: FMP caído → lo guardado, MARCADO como viejo
   const hace10 = new Date(HOY.getTime() - 10 * 86400000).toISOString();
   const r = await resolveConstituents('sp500', {
     now: HOY,
-    deps: depsBase({ fmp: null, neon: { index: 'sp500', source: 'neon', built_at: hace10, symbols: sp500 } }),
+    // La foto guardada lleva SECTORES: este caso es sobre una lista VIEJA, no
+    // sobre una incompleta. Sin ellos, el que responde es el otro camino
+    // (`sin_sectores`) y el test mediría algo distinto del que dice medir.
+    deps: depsBase({ fmp: null, neon: { index: 'sp500', source: 'neon', built_at: hace10, symbols: sp500, sectores: { AAPL: 'Information Technology' } } }),
   });
   ok(r.source === 'neon' && r.symbols.length === 500, 'se usa la lista guardada', r.source);
   ok(r.stale === true && r.age_days === 10, 'marcada como vieja, con la edad EXACTA', `stale=${r.stale} age=${r.age_days}`);
   ok(/sesgo declarado/.test(r.note || ''), 'y la nota dice que es un sesgo declarado, no un dato fresco', r.note);
+
+  // Y el caso gemelo: una lista VIEJA que además viene SIN sectores no se
+  // reporta igual, porque rompe R6, `sector()` y el screener a la vez.
+  const sinSec = await resolveConstituents('sp500', {
+    now: HOY,
+    deps: depsBase({ fmp: null, neon: { index: 'sp500', source: 'neon', built_at: hace10, symbols: sp500, sectores: {} } }),
+  });
+  ok(sinSec.sin_sectores === true && /No son tres bugs — es este/.test(sinSec.note || ''),
+    'una lista sin sectores se reporta por su propio problema, no como "vieja"', (sinSec.note || '').slice(-50));
 }
 
 console.log('\n── escalón 3: arranque en frío → el JSON del repo ──');

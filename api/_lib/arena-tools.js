@@ -46,16 +46,75 @@ import { readDayCache, writeDayCache, marketDay } from './arena-buffet-cache.js'
 
 // Tope DURO de llamadas por corrida. Las rondas fijas tienen 8; una corrida por
 // disparador tiene 3 (está acotada a un nombre — no necesita explorar).
+// ── EL PRESUPUESTO DE INVESTIGACIÓN ──────────────────────────────────
+// Eran 8 llamadas y punto. Ocho es un número redondo, no una medida de nada: no
+// sale del costo, ni del reloj, ni del contexto. Cortar la investigación ahí
+// era cortarla por la mitad de una tesis con presupuesto de sobra.
+//
+// Ahora son TRES techos simultáneos y gana el que se agote primero:
+//
+//   1. LLAMADAS (20)  — el tope grosero. Un modelo que pide veinte herramientas
+//                       no está investigando, está en bucle.
+//   2. CONTEXTO (30K) — el que de verdad aprieta. El payload crece de forma
+//                       CUADRÁTICA: cada resultado se queda en la conversación y
+//                       vuelve a viajar en cada vuelta siguiente. La vuelta 3 de
+//                       qwen ya pesaba 36 KB con 8 llamadas.
+//   3. RELOJ          — vive en el loop (ver _lib/arena-tool-loop.js), porque es
+//                       el único que depende de cuánto tardó cada llamada.
+//
+// Los tres cortan IGUAL: se cierra con lo que haya. Ninguno aborta.
 export const TOOL_BUDGET = {
-  fixed_round: Number(process.env.ARENA_TOOLS_MAX) || 8,
+  fixed_round: Number(process.env.ARENA_TOOLS_MAX) || 20,
   triggered: Number(process.env.ARENA_TOOLS_MAX_TRIGGER) || 3,
 };
+
+// Techo de CONTEXTO ACUMULADO de la conversación del loop, en tokens estimados.
+// Es el techo que más manda de los tres: con resultados de ~1.5K tokens, veinte
+// llamadas sin compactar serían ~30K solo de resultados, y cada uno viajando en
+// todas las vueltas siguientes.
+export const TOOL_CONTEXT_TOKENS = Number(process.env.ARENA_TOOL_CONTEXT_TOKENS) || 30000;
 
 // Techo de cada resultado. ~1.5K tokens ≈ 6.000 caracteres.
 export const RESULT_TOKEN_CAP = Number(process.env.ARENA_TOOL_RESULT_TOKENS) || 1500;
 const RESULT_CHAR_CAP = RESULT_TOKEN_CAP * 4;
 
 export const estimateTokens = (s) => Math.ceil(String(s || '').length / 4);
+
+// ── LA COMPACTACIÓN ──────────────────────────────────────────────────
+// El resultado de una herramienta de la vuelta 1 vuelve a viajar en las vueltas
+// 2, 3, 4… Con veinte llamadas eso es crecimiento cuadrático, y el contexto se
+// agota mucho antes que las llamadas.
+//
+// Se compactan los resultados VIEJOS: cabecera + las primeras filas, que es
+// donde está lo que el modelo usó para decidir (las listas vienen ORDENADAS por
+// relevancia — el screener por magnitud del movimiento, las noticias por
+// fecha). Las últimas filas de una lista ordenada son, por construcción, las
+// menos informativas.
+//
+// LA REGLA QUE NO SE NEGOCIA: el modelo tiene que SABER que se compactó. Un
+// resultado recortado en silencio hace que razone sobre una lista que cree
+// completa y después afirme "no hay ningún nombre que cumpla" — el mismo error
+// que `truncateRows` ya evita para el recorte por tokens, una capa más arriba.
+//
+// Y lo que se compacta es SOLO lo que se re-envía. El resultado completo sigue
+// entero en `executor.sequence`, que es lo que alimenta el journal y el replay:
+// compactar el registro sería perder la evidencia de qué miró el modelo.
+export const COMPACT_MARCA = '[COMPACTADO]';
+
+export function compactarResultado(text, { lineas = 3 } = {}) {
+  const s = String(text || '');
+  // Idempotente: el loop compacta en cada vuelta y no puede ir comiéndose el
+  // resultado de a poco hasta dejar solo la cabecera.
+  if (s.includes(COMPACT_MARCA)) return s;
+  const filas = s.split('\n');
+  if (filas.length <= lineas + 1) return s;   // nada que ganar
+  const omitidas = filas.length - 1 - lineas;
+  return [
+    filas[0],
+    ...filas.slice(1, 1 + lineas),
+    `${COMPACT_MARCA} ${omitidas} línea(s) más de este resultado se omitieron para que la conversación entrara en el presupuesto de contexto. NO significa que no existan: se mostraron completas cuando pediste la herramienta y quedaron enteras en el registro de la corrida. Si necesitás esas filas para decidir, volvé a pedirla con un filtro más angosto.`,
+  ].join('\n');
+}
 
 // ── LAS DEFINICIONES, en forma NEUTRA ────────────────────────────────
 // Una sola definición por herramienta; cada proveedor la traduce a su dialecto
@@ -268,7 +327,29 @@ export async function runScreener(args, ctx) {
   const mcapDe = ctx.marketCapOf || (() => null);
   aplicar('ret_5d_min', args.ret_5d_min, (f) => { const x = retDe(f.symbol); return !!(x && x.ret_5d != null && x.ret_5d >= args.ret_5d_min); });
   aplicar('ret_1m_min', args.ret_1m_min, (f) => { const x = retDe(f.symbol); return !!(x && x.ret_1m != null && x.ret_1m >= args.ret_1m_min); });
-  aplicar('min_mcap_b', args.min_mcap_b, (f) => { const mc = mcapDe(f.symbol); return mc != null && mc >= args.min_mcap_b * 1e9; });
+  // ── EL MARKET CAP ASUMIDO ES UNA COTA, NO UNA MEDIDA ───────────────
+  // A los nombres del índice se les asume el piso de $1B sin medirlo (ver
+  // arena-universe). Ese número satisface `min_mcap_b: 1` —sabemos que valen AL
+  // MENOS eso— pero NO puede satisfacer `min_mcap_b: 10`: no sabemos si Apple
+  // vale $3.5T o el piso, porque no lo medimos.
+  //
+  // Antes pasaba lo contrario: el piso se comparaba como si fuera medición, así
+  // que `min_mcap_b: 10` dejaba fuera a los 502 del índice —Apple y Microsoft
+  // incluidas— y el modelo leía "ningún nombre grande cumple". Dejar pasar un
+  // nombre por una cota que no lo respalda sería el error simétrico.
+  // El FILTRO no cambia —una cota inferior de $1B no alcanza para un umbral de
+  // $10B, igual que no alcanzaría una medición de $1B— y ése es el
+  // comportamiento correcto: fail-closed, como el resto de los rieles. Lo que
+  // estaba mal era el REPORTE: el modelo recibía "ningún nombre cumple" cuando
+  // la verdad es "no medimos el market cap de esos nombres". Son dos respuestas
+  // distintas y llevan a decisiones distintas — la primera le dice que no hay
+  // nombres grandes (falso: están Apple y Microsoft), la segunda le dice que
+  // filtre por otra cosa.
+  const esAsumido = ctx.capEsAsumido || (() => false);
+  aplicar('min_mcap_b', args.min_mcap_b, (f) => {
+    const mc = mcapDe(f.symbol);
+    return mc != null && mc >= args.min_mcap_b * 1e9;
+  });
   r = r.sort((a, b) => (Math.abs(b.change_pct || 0) - Math.abs(a.change_pct || 0)) || (a.symbol < b.symbol ? -1 : 1))
     .slice(0, args.limit || 25);
 
@@ -281,6 +362,16 @@ export async function runScreener(args, ctx) {
     if (args.ret_5d_min != null && !filas.some((f) => (retDe(f.symbol) || {}).ret_5d != null)) faltantes.push('retorno a 5 días');
     if (args.ret_1m_min != null && !filas.some((f) => (retDe(f.symbol) || {}).ret_1m != null)) faltantes.push('retorno a 1 mes');
     if (args.min_mcap_b != null && !filas.some((f) => mcapDe(f.symbol) != null)) faltantes.push('market cap');
+    // El caso que parecía "ningún nombre grande cumple": todos los que tienen
+    // cap lo tienen ASUMIDO, y el umbral pedido supera la cota.
+    const conCap = filas.filter((f) => mcapDe(f.symbol) != null);
+    if (args.min_mcap_b != null && conCap.length && conCap.every((f) => esAsumido(f.symbol))
+        && args.min_mcap_b * 1e9 > (mcapDe(conCap[0].symbol) || 0)) {
+      return {
+        text: `No se puede contestar con este criterio. A los ${conCap.length} nombres del tablero que vienen de un índice NO se les midió el market cap: se les asume el piso de $${((mcapDe(conCap[0].symbol) || 0) / 1e9).toFixed(0)}B por pertenecer al índice, que es una COTA INFERIOR. Pedir \`min_mcap_b: ${args.min_mcap_b}\` es pedir un dato que no tenemos — no es que ninguno llegue (varios son de cientos de miles de millones). Filtrá por otra cosa, o usá \`min_mcap_b\` de 1 o menos, que la cota sí respalda.`,
+        rows: 0, datos_faltantes: ['market cap medido'], market_cap_asumido: conCap.length, embudo,
+      };
+    }
     if (args.sector && !filas.some((f) => sectorDe(f.symbol) != null)) faltantes.push('sector');
 
     // EL CULPABLE: el primer filtro que dejó la lista en cero. Con seis filtros
@@ -438,7 +529,11 @@ export function createToolExecutor({
     || ((sym) => ((universe && universe.retornos) || {})[String(sym || '').toUpperCase()] || null);
   const capOf = marketCapOf
     || ((sym) => ((universe && universe.market_caps) || {})[String(sym || '').toUpperCase()] ?? null);
-  const ctx = { board, universe, creds, finnhubKey, now, deps, sectorOf, newsSymbols, marketCapOf: capOf, retornosOf };
+  // Los nombres a los que se les ASUMIÓ el piso de $1B por pertenecer al índice.
+  // Para ellos el market cap es una COTA INFERIOR, no una medición.
+  const asumidos = new Set(((universe && universe.market_caps_asumidos) || []).map((x) => String(x || '').toUpperCase()));
+  const capEsAsumido = deps.capEsAsumido || ((sym) => asumidos.has(String(sym || '').toUpperCase()));
+  const ctx = { board, universe, creds, finnhubKey, now, deps, sectorOf, newsSymbols, marketCapOf: capOf, capEsAsumido, retornosOf };
   const sequence = [];
   // DOS CONTADORES, Y LA DIFERENCIA ES LA MITAD DEL BUG REPORTADO.
   //   `used`     = llamadas EJECUTADAS. Nunca puede pasar del techo.

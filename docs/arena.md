@@ -694,6 +694,216 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B22 · LOS TRES HUECOS DE DATOS QUE ENCONTRÓ EL DIAG
+
+`tests/arena-universo-datos.test.mjs`
+
+Los tres tienen la misma forma, y por eso eran fáciles de no ver: **nada falla,
+nada lanza**, y el síntoma aparece lejos del origen como "la herramienta X
+devuelve 0 filas".
+
+### 1. Los sectores no sobrevivían a la escritura
+
+El diag del 2026-09-16 mostró `sectores: 0`, con DELL y COP marcados
+`origen: "indice"` y `sector_gics: null`. La explicación natural —y la que
+dimos los dos— era que la foto guardada en Neon (del 15 a las 23:53) era
+**anterior** a que se leyera la columna `Sector`, y que el refresco semanal la
+releía vieja.
+
+**No era eso.** `writeStored` guardaba esto:
+
+```js
+JSON.stringify({ symbols: snapshot.symbols })
+```
+
+Los sectores GICS se bajaban bien del CSV, viajaban bien, y se **tiraban ahí**.
+Una foto recién bajada tenía sectores; la misma foto leída de vuelta, no —
+siempre, sin importar la fecha. `readStored` tampoco los devolvía.
+
+Lo que lo hacía invisible: `symbols` **sí** se guardaba, así que el universo se
+construía con sus 502 nombres correctos y nada fallaba. El hueco aparecía tres
+capas más allá, como tres bugs distintos: `sector(XLE)` sin filas,
+`with_sector: 0` en los rieles, y el screener con `sector:XLK` vacío.
+
+Si solo se hubiera arreglado el refresco, el bug habría quedado **enmascarado**:
+se re-bajaría el CSV todos los días, obteniendo sectores frescos cada vez, y la
+copia guardada seguiría vacía para siempre.
+
+**Dos arreglos, y los dos hacen falta:**
+
+- `writeStored` persiste `sectores` y `readStored` los lee. Escribir sin leer
+  sería el mismo hueco con otra cara.
+- Un snapshot **sin sectores se refresca solo**, sin esperar los 7 días: la
+  ventana de edad contesta "¿cambió la lista?", no "¿esta foto trae lo que hoy
+  necesitamos?". `refrescado_por: 'sin_sectores'` lo deja escrito.
+
+**Las dos condiciones son independientes, a propósito.** `sin_sectores` habilita
+solo el reintento del **CSV** (gratis); `vencido` o `forzado` habilitan también
+**FMP**. Si se mezclaran, una lista de FMP —que nunca va a traer clasificación
+GICS— quedaría en `sin_sectores` para siempre y el refresco semanal **dejaría de
+dispararse**. Se reintenta donde el reintento puede arreglar algo.
+
+Y si el refresco falla con la lista sin sectores, la nota **nombra los tres
+síntomas** que eso produce, para que no vuelvan a diagnosticarse por separado.
+
+```bash
+curl -s "$BASE/api/arena-universe?refresh=1&force_constituents=1&key=<KEY>"
+```
+
+`?force_constituents=1` es una perilla **aparte** de `?refresh=1`: reconstruir el
+universo del día (precios, volumen, admisión) y re-bajar los CSV de tenencias
+son dos costos con dos cadencias distintas.
+
+### 2. `ret_1m` era null para todos, por construcción
+
+`barsPorFeed` recortaba las velas con `.slice(-days)`, y `days` es **20** — la
+ventana del promedio de **volumen**. El retorno a 1 mes mira 21 sesiones atrás:
+
+```
+cerradas[20 − 1 − 21] = cerradas[−2] = undefined → null
+cerradas[20 − 1 −  5] = cerradas[14]            → OK
+```
+
+`ret_5d` funcionaba, y eso hacía que el bug se leyera como *"a veces no hay
+dato"* en vez de *"nunca lo hubo"*. Por eso el screener con `ret_1m_min` devolvía
+0 filas — y el modelo lo leía como "ningún nombre subió 5% en el mes".
+
+**Dos ventanas se estaban pisando.** Ahora se conservan `max(days, 22)` velas y
+el promedio de volumen sigue usando **solo sus 20**: ensanchar la ventana de
+liquidez de rebote cambiaría en silencio a quién admite el universo. La ventana
+de calendario también creció (22 sesiones necesitan ~31 días hábiles, más margen
+para festivos). Y `sessions` / `sessions_volumen` se reportan: un `ret_1m: null`
+con 22 sesiones sería un bug nuestro, con 8 es una acción que cotiza hace ocho
+sesiones.
+
+### 3. `market_cap` exactamente $1B era una cota, no una medida
+
+A los nombres de índice se les **asume** el piso de $1B por pertenecer al índice,
+en vez de gastar 500 llamadas de Finnhub para confirmar lo que el comité del
+S&P ya garantiza. Para **admitir** está perfecto: el criterio es "≥ $1B" y la
+pertenencia lo prueba.
+
+Pero ese número se guardaba igual que uno medido. Con `min_mcap_b: 10`, los 502
+del índice quedaban fuera —**Apple y Microsoft incluidas**— y el modelo leía
+"ningún nombre grande cumple".
+
+**El filtro no cambia**: una cota de $1B no alcanza para un umbral de $10B, igual
+que no alcanzaría una medición de $1B. Fail-closed, como el resto de los rieles.
+Lo que cambia es el **reporte**: el cero ahora dice que el cap **no se midió**,
+desmiente explícitamente la lectura falsa, y sugiere qué hacer. Son dos
+respuestas distintas y llevan a decisiones distintas.
+
+El encabezado de la admisión ya decía que la suposición se declaraba "nombre por
+nombre". No era cierto: solo se guardaba un **conteo**. Ahora el universo publica
+`market_caps_asumidos` con los símbolos.
+
+## B21 · EL PRESUPUESTO DE INVESTIGACIÓN: tres techos, ninguno redondo
+
+`api/_lib/arena-tools.js` · `api/_lib/arena-tool-loop.js` ·
+tests en `tests/arena-presupuesto-investigacion.test.mjs`
+
+Eran **8 llamadas y punto**. Ocho no sale del costo, ni del reloj, ni del
+contexto: es un número redondo, y cortaba la investigación a la mitad de una
+tesis con presupuesto de sobra.
+
+Ahora son **tres techos simultáneos** y gana el que se agote primero:
+
+| techo | valor | qué mide |
+|---|---|---|
+| llamadas | **20** (`ARENA_TOOLS_MAX`) | el tope grosero: veinte no es investigar, es un bucle |
+| contexto | **30K tokens** (`ARENA_TOOL_CONTEXT_TOKENS`) | el que de verdad aprieta |
+| reloj | **derivado** (`ARENA_TOOL_LOOP_MS`) | 120s en arena-run, 210s en la sombra |
+
+**Los tres cortan igual: se cierra con lo que haya. Ninguno aborta.** Lo que
+cambia entre ellos es el **nombre** — `stopped_by` es `call_budget`,
+`context_budget`, `time_budget` o `max_turns`, y el mensaje de cierre dice cuál
+se agotó. "Se acabó el presupuesto" sin decir cuál de los tres no dice nada, y
+los tres se arreglan distinto.
+
+`limites` viaja al journal con **los tres al lado** y su porcentaje de consumo:
+saber cuál ganó no alcanza, hace falta ver si ganó por poco o por lejos. Un
+corte por contexto con las llamadas en 6/20 dice que el techo de llamadas está
+de adorno y que lo que hay que mover es el otro.
+
+### El reloj se deriva, y los 240s no caben
+
+Era una constante de 120s escrita a mano. Un número fijo no sigue al deadline:
+si alguien lo sube, el loop no se entera y se corta igual aunque sobre tiempo.
+
+```
+arena-run:  deadline 270s − scan 90s − cierre 45s − margen 15s = 120s
+sombra:     deadline 270s            − cierre 45s − margen 15s = 210s
+```
+
+(Que la fórmula reproduzca exactamente los 120s que antes estaban escritos a
+mano es la señal de que deriva lo mismo, no algo nuevo.)
+
+La sombra tiene más reloj porque el contrato nuevo **no tiene fase de scan**: es
+una sola cadena que arranca directo en el loop. Usar el default le regalaría 90
+segundos de investigación por una fase que no corre.
+
+**Los 240s pedidos no caben**, y la resta es corta:
+
+```
+  función  300s   cap del plan Pro, en vercel.json
+− margen    30s   para que una corrida que se pasa alcance a ESCRIBIR que se pasó
+= deadline 270s
+− cierre    45s   la llamada que convierte una corrida perdida en una decisión
+− margen    15s   Alpaca + journal
+= loop     210s   ← el máximo honesto en la sombra
+```
+
+Los 30s que faltan solo salen de comerse uno de los dos márgenes, o sea de pagar
+un número redondo con la evidencia de los fallos: un timeout que no se journalea
+es indistinguible de una corrida que nunca ocurrió. Hay un test que deja la
+resta escrita para que 240 no se cuele después sin ella.
+
+### La compactación, que es lo que hace real el techo de 20
+
+El payload crece de forma **cuadrática**: cada resultado se queda en la
+conversación y vuelve a viajar en todas las vueltas siguientes. La vuelta 3 de
+qwen ya pesaba 36 KB **con 8 llamadas**.
+
+Los resultados de vueltas anteriores se resumen a **cabecera + primeras filas**.
+Las listas vienen ordenadas por relevancia (el screener por magnitud del
+movimiento, las noticias por fecha), así que las últimas filas son, por
+construcción, las menos informativas. Lo que se acaba de traer queda **entero**:
+el modelo está razonando sobre eso ahora mismo, y compactarlo sería cobrarle la
+llamada sin darle el resultado.
+
+Medido con resultados del tamaño real del tope (`ficha`, `noticias` a ~1.5K
+tokens):
+
+| | llamadas | pico de contexto | qué cortó |
+|---|---|---|---|
+| sin compactar | 20/20 | **30.387 tok** | `context_budget` |
+| compactando | 20/20 | **7.887 tok** | `call_budget` |
+
+Sin compactación el techo de contexto corta primero y las últimas llamadas no se
+podrían usar nunca — el techo de 20 sería decorativo. Y el pico es lo que se
+paga **en cada vuelta**, así que 3,9× menos contexto es también 3,9× menos
+tokens de entrada.
+
+**La regla que no se negocia**: el modelo tiene que **saber** que se compactó.
+Cada resultado compactado lleva `[COMPACTADO]`, cuántas líneas se omitieron, y
+que **no significa que no existan**. Un recorte en silencio hace que razone
+sobre una lista que cree completa y después afirme "no hay ningún nombre que
+cumpla" — el mismo error que `truncateRows` ya evita una capa más arriba.
+
+Y se compacta **solo lo que se re-envía**. `executor.sequence` —el registro que
+alimenta el journal y el replay— queda entero: compactar la evidencia sería
+perder de qué miró el modelo para decidir. Hay un test que lo verifica.
+
+### El cupo agotado ya no gasta vueltas
+
+Con 8 llamadas casi no se notaba. Con 20 sí: un modelo que quemaba su cupo en la
+vuelta 6 se comía las 16 vueltas restantes pidiendo herramientas que solo podían
+devolverle "presupuesto agotado" — y **cada una de esas vueltas es una llamada
+al LLM con la conversación entera adentro**. Se pagaba el contexto completo
+dieciséis veces para cosechar dieciséis rechazos.
+
+Ahora, sin cupo no hay nada que investigar: se va derecho al cierre.
+
 ## B19 · RESUELTO: los abortos eran HTTP 200 CON EL CUERPO VACÍO
 
 El trace de qwen del 2026-09-16 cerró el caso que llevaba cuatro sombras y tres

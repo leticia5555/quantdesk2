@@ -26,6 +26,7 @@ import {
   DAILY_BUDGET_USD, TIER2_MULTIPLIER, spendTier, tierPolicy, callCost,
   tierAnnouncementId, tierAnnouncementText,
 } from '../api/_lib/arena-budget.js';
+import { TOOL_BUDGET } from '../api/_lib/arena-tools.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -51,7 +52,7 @@ console.log('\n── 1) el escalón 1 SIGUE DECIDIENDO ──');
   ok(p1.tools_max === 3, 'lo que hace es bajar las herramientas de 8 a 3', String(p1.tools_max));
   ok(p1.effort === 'low', 'y el effort a bajo', p1.effort);
   ok(/sigue decidiendo/.test(p1.label), 'la etiqueta lo dice', p1.label);
-  ok(p1.cut && /8 a 3/.test(p1.cut), 'y se declara QUÉ se recortó', p1.cut);
+  ok(p1.cut && /20 a 3/.test(p1.cut), 'y se declara QUÉ se recortó', p1.cut);
 }
 
 console.log('\n── el escalón 2 corta lo caro, no lo que protege ──');
@@ -74,7 +75,12 @@ console.log('\n── 2) la RED DE RISGO no se apaga en NINGÚN escalón ──'
 console.log('\n── el escalón 0 no impone nada ──');
 {
   const p0 = tierPolicy(0);
-  ok(p0.tools_max === 8, 'las 8 herramientas');
+  // Era 8, un número redondo que no salía de ninguna medida. El escalón 0 usa
+  // el presupuesto declarado en TOOL_BUDGET, y lee de ahí en vez de repetir el
+  // número: dos constantes con el mismo valor son dos constantes que un día
+  // difieren.
+  ok(p0.tools_max === TOOL_BUDGET.fixed_round && p0.tools_max === 20,
+    'el escalón 0 concede el presupuesto completo de llamadas (20)', String(p0.tools_max));
   ok(p0.effort === null, 'y el effort en null = el default del registry, no un valor pisado desde acá');
   ok(p0.cut === null, 'sin recortes');
 }

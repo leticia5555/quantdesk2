@@ -20,6 +20,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { runArenaDecide, runArenaReconcile, runArenaResume, getArenaState, PROMPT_VERSION, resolveBaseUrl, isLeveragedInverseETF } from '../api/arena-run.js';
+import { TOOL_BUDGET } from '../api/_lib/arena-tools.js';
 
 // Los slugs de OpenRouter de la temporada nueva no están verificados contra el
 // catálogo (ver el candado en _lib/arena-registry.js). En los tests el catálogo
@@ -739,7 +740,9 @@ ok(diveTodo.includes('FIGURES') && /Do NOT compute, rescale, round, or invent pe
 // perfecto y no estar conectado a nada.
 ok(ctxProse.dive.tools && typeof ctxProse.dive.tools === 'object',
   'B3: la corrida journalea el bloque de herramientas', JSON.stringify(ctxProse.dive.tools));
-ok(ctxProse.dive.tools.budget === 8 || ctxProse.dive.tools.enabled === false,
+// El número se LEE del presupuesto declarado en vez de repetirse acá: cuando
+// pasó de 8 a 20, un literal en el test solo decía "cambió", no si cambió bien.
+ok(ctxProse.dive.tools.budget === TOOL_BUDGET.fixed_round || ctxProse.dive.tools.enabled === false,
   'con el presupuesto de la ronda fija, o diciendo por qué no hubo herramientas',
   JSON.stringify(ctxProse.dive.tools));
 ok(ctxProse.dive.prompt.shared && /MARKET BOARD/.test(ctxProse.dive.prompt.shared),

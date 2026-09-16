@@ -39,7 +39,7 @@ import { gatherContext, buildSharedContext, buildTargetSystemPrompt, resolveBase
 import { parsePortfolioResponse, validateTarget, railTrims, RAILS } from './_lib/arena-rails.js';
 import { buildRebalance } from './_lib/arena-rebalance.js';
 import { createToolExecutor, TOOL_BUDGET } from './_lib/arena-tools.js';
-import { runToolLoop } from './_lib/arena-tool-loop.js';
+import { runToolLoop, relojDisponible } from './_lib/arena-tool-loop.js';
 import { buildTail, lenteDelDia } from './_lib/arena-herding.js';
 import { buildRailMeta, sectorFromGics } from './_lib/arena-meta.js';
 
@@ -159,7 +159,16 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
   let loop;
   try {
     loop = toolsMax > 0
-      ? await runToolLoop({ agent, system: [system, shared], messages: [{ role: 'user', content: user }], executor, maxTokens: ARENA_MAX_TOKENS, now, trace })
+      // ── EL RELOJ DE LA SOMBRA ES MÁS LARGO QUE EL DE arena-run ────
+      // El contrato nuevo NO tiene fase de scan: es una sola cadena que arranca
+      // directo en el loop. El default de `LOOP_BUDGET_MS` descuenta un scan de
+      // 90s que acá no existe, así que usar el default regalaría 90 segundos de
+      // investigación por una fase que no se corre.
+      ? await runToolLoop({
+        agent, system: [system, shared], messages: [{ role: 'user', content: user }],
+        executor, maxTokens: ARENA_MAX_TOKENS, now, trace,
+        budgetMs: relojDisponible({ scanMs: 0 }),
+      })
       : { llm: await callArenaLLM({ agent, system: [system, shared], messages: [{ role: 'user', content: user }], maxTokens: ARENA_MAX_TOKENS, now, trace, fase: 'sin_herramientas' }), turns: 1, stopped_by: 'tools_disabled' };
   } catch (e) {
     // EL STACK, no solo el mensaje. `aborted_llm_threw` con un string suelto no
@@ -173,7 +182,15 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
   }
 
   const llm = loop.llm;
-  ctx.tools = { budget: toolsMax, used: executor.used, intentos: executor.intentos, turns: loop.turns, stopped_by: loop.stopped_by, sequence: executor.sequence, summary: executor.summary() };
+  ctx.tools = {
+    budget: toolsMax, used: executor.used, intentos: executor.intentos,
+    turns: loop.turns, stopped_by: loop.stopped_by,
+    // CUÁL DE LOS TRES TECHOS CORTÓ, con los tres al lado. `stopped_by` dice
+    // cuál ganó; `limites` dice si ganó por poco o por lejos — y eso es lo que
+    // decide si el número que hay que mover es ése o el otro.
+    limites: loop.limites || null,
+    sequence: executor.sequence, summary: executor.summary(),
+  };
   if (loop.cierre_diagnostico) ctx.cierre = loop.cierre_diagnostico;
   // DÓNDE MURIÓ. `cierre: null` significaba dos cosas opuestas —el cierre salió
   // bien, o el loop murió antes de llegar a él— y se veían iguales. Esto las

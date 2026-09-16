@@ -42,12 +42,14 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { callArenaLLM } from './arena-model.js';
-import { toolsForProvider } from './arena-tools.js';
-import { ARENA_MAX_TOKENS } from './arena-registry.js';
+import { toolsForProvider, estimateTokens, compactarResultado, TOOL_CONTEXT_TOKENS } from './arena-tools.js';
+import { ARENA_MAX_TOKENS, ARENA_AGENT_DEADLINE_MS, ARENA_LLM_TIMEOUT_MS } from './arena-registry.js';
 
-// Vueltas, no llamadas. Con 8 llamadas de presupuesto y modelos que piden de a
-// una, 10 vueltas dan aire de sobra; con modelos que piden de a tres, sobra más.
-export const MAX_TURNS = Number(process.env.ARENA_TOOL_TURNS_MAX) || 10;
+// Vueltas, no llamadas. Con 20 llamadas de presupuesto y modelos que piden de a
+// una, hacen falta al menos 20 vueltas para que el tope de vueltas no se
+// convierta en el techo real — que es justo el "número redondo" que se quitó.
+// Con modelos que piden de a tres, sobran.
+export const MAX_TURNS = Number(process.env.ARENA_TOOL_TURNS_MAX) || 22;
 
 // ── EL TERCER TOPE: EL RELOJ (B12) ───────────────────────────────────
 // Los otros dos topes (llamadas y vueltas) cuentan ACCIONES. Éste cuenta
@@ -77,11 +79,53 @@ export const MAX_TURNS = Number(process.env.ARENA_TOOL_TURNS_MAX) || 10;
 // al journal; el deadline a su vez deja 30s contra el cap de la función. Si alguien sube este presupuesto sin bajar otra cosa, el loop
 // termina chocando contra el deadline y se pierde la corrida entera — hay un
 // test que verifica la resta (tests/arena-timeouts).
-export const LOOP_BUDGET_MS = Number(process.env.ARENA_TOOL_LOOP_MS) || 120000;
-
 // Reserva para la vuelta final + el journal. Si al empezar una vuelta queda
 // menos que esto, no se empieza: se cierra.
-const RESERVA_CIERRE_MS = 45000;
+export const RESERVA_CIERRE_MS = 45000;
+
+// ── EL RELOJ SE DERIVA, NO SE ESCRIBE A MANO ─────────────────────────
+// Eran 120s fijos, escritos en una constante. El problema de un número fijo es
+// que no sigue al deadline: si alguien sube `ARENA_AGENT_DEADLINE_MS`, el loop
+// no se entera y sigue cortándose en 120 aunque sobre tiempo.
+//
+// LA RESTA, para el camino que tiene scan (arena-run):
+//   deadline 270s − scan 90s − cierre 45s − margen 15s = 120s de loop
+// Y para el que NO lo tiene (la sombra, contrato nuevo: una sola cadena):
+//   deadline 270s − cierre 45s − margen 15s = 210s de loop
+//
+// El MARGEN son los 15s de Alpaca, el journaleo y la aritmética que no es una
+// llamada al LLM. Sin él la resta da EXACTO contra el deadline, y "exacto" en
+// un presupuesto de tiempo significa que el primer hipo se lo come: el lint de
+// tests/arena-timeouts exige `<`, no `<=`, y tiene razón.
+//
+// (Que la fórmula reproduzca los 120s que antes estaban escritos a mano en el
+// camino de arena-run es la señal de que deriva lo mismo, no algo nuevo.)
+//
+// ── POR QUÉ NO SON 240s ──────────────────────────────────────────────
+// Lety pidió 240s de reloj. No caben, y la cuenta es corta:
+//
+//     función 300s  (cap del plan Pro, en vercel.json)
+//   − margen 30s    para que una corrida que se pasa alcance a ESCRIBIR que se
+//                   pasó; un timeout que no se journalea es indistinguible de
+//                   una corrida que nunca ocurrió, y el lint lo exige
+//   = deadline 270s
+//   − cierre 45s    la llamada que convierte una corrida perdida en decisión
+//   − margen 15s    Alpaca + journal
+//   = 210s de loop  ← el máximo honesto en la sombra
+//
+// Los 30s que faltan solo salen de comerse uno de los dos márgenes, o sea de
+// pagar un número redondo con la evidencia de los fallos. Se eligió el dato.
+// `ARENA_TOOL_LOOP_MS` fuerza otro valor sin deploy si se quiere medir.
+export const MARGEN_MS = 15000;
+
+export function relojDisponible({ deadlineMs = ARENA_AGENT_DEADLINE_MS, scanMs = 0, reservaMs = RESERVA_CIERRE_MS, margenMs = MARGEN_MS } = {}) {
+  return Math.max(30000, deadlineMs - scanMs - reservaMs - margenMs);
+}
+
+// El default asume que hubo un scan antes (el caso de arena-run). La sombra,
+// que no lo tiene, pasa el suyo con `scanMs: 0`.
+export const LOOP_BUDGET_MS = Number(process.env.ARENA_TOOL_LOOP_MS)
+  || relojDisponible({ scanMs: ARENA_LLM_TIMEOUT_MS });
 
 // ── EL REINTENTO DEL CUERPO VACÍO ────────────────────────────────────
 // Un HTTP 200 con el stream cerrado y sin cuerpo es TRANSITORIO por naturaleza:
@@ -186,6 +230,59 @@ export function ecoAsistenteOpenAI(data) {
   return limpio;
 }
 
+// ── COMPACTAR LA CONVERSACIÓN ────────────────────────────────────────
+// Deja INTACTOS los resultados de las últimas `completas` vueltas y compacta
+// los anteriores. Las dos formas de mensaje, porque los dos proveedores
+// guardan el resultado en lugares distintos:
+//   · OpenAI:     { role: 'tool', tool_call_id, content: '<texto>' }
+//   · Anthropic:  { role: 'user', content: [{ type: 'tool_result', content }] }
+//
+// Trabaja SOBRE LA CONVERSACIÓN, que es lo que se re-envía. `executor.sequence`
+// —el registro que alimenta el journal y el replay— no se toca: compactar la
+// evidencia sería perder de qué miró el modelo para decidir.
+//
+// Devuelve cuántos resultados compactó, para poder journalearlo. Una
+// compactación que ocurre y no se reporta es un recorte invisible.
+export function compactarConversacion(convo, { completas = 1, lineas = 3 } = {}) {
+  const indices = [];
+  for (let i = 0; i < convo.length; i++) {
+    const m = convo[i];
+    if (!m) continue;
+    if (m.role === 'tool' && typeof m.content === 'string') indices.push(i);
+    else if (m.role === 'user' && Array.isArray(m.content) && m.content.some((c) => c && c.type === 'tool_result')) indices.push(i);
+  }
+  // Los últimos `completas` grupos quedan enteros: el modelo acaba de pedirlos y
+  // está razonando sobre ellos AHORA. Compactar lo que se acaba de traer sería
+  // cobrarle la llamada y no darle el resultado.
+  const aCompactar = indices.slice(0, Math.max(0, indices.length - completas));
+  let compactados = 0;
+  for (const i of aCompactar) {
+    const m = convo[i];
+    if (m.role === 'tool') {
+      const antes = m.content;
+      m.content = compactarResultado(antes, { lineas });
+      if (m.content !== antes) compactados++;
+    } else {
+      m.content = m.content.map((c) => {
+        if (!c || c.type !== 'tool_result' || typeof c.content !== 'string') return c;
+        const nuevo = compactarResultado(c.content, { lineas });
+        if (nuevo !== c.content) compactados++;
+        return { ...c, content: nuevo };
+      });
+    }
+  }
+  return { compactados, grupos: indices.length, intactos: Math.min(completas, indices.length) };
+}
+
+// El tamaño de lo que se está por mandar, en tokens estimados. Es el techo que
+// de verdad aprieta: el payload crece de forma CUADRÁTICA porque cada resultado
+// se queda en la conversación y vuelve a viajar en todas las vueltas siguientes.
+export function tokensDeConversacion(system, convo, tools) {
+  return estimateTokens(JSON.stringify(system || ''))
+    + estimateTokens(JSON.stringify(convo || []))
+    + estimateTokens(JSON.stringify(tools || []));
+}
+
 // ── EL LOOP ──────────────────────────────────────────────────────────
 // Devuelve { llm, messages, turns, sequence, stopped_by }:
 //   · `llm`        — la ÚLTIMA respuesta del modelo (la que trae el JSON final)
@@ -199,6 +296,7 @@ export async function runToolLoop({
   agent, system, messages, executor, maxTokens = ARENA_MAX_TOKENS,
   now = new Date(), timeoutMs, maxTurns = MAX_TURNS, toolNames = null, call = callArenaLLM,
   budgetMs = LOOP_BUDGET_MS, clock = () => Date.now(), effort = undefined, trace = null,
+  contextTokensMax = TOOL_CONTEXT_TOKENS, compactar = true, vueltasCompletas = 1,
 }) {
   const tools = toolsForProvider(agent.provider, toolNames);
   const convo = [...messages];
@@ -225,6 +323,25 @@ export async function runToolLoop({
   };
   const t0 = clock();
   const restante = () => budgetMs - (clock() - t0);
+
+  // ── QUÉ CORTÓ LA CORRIDA, con los tres al lado ─────────────────────
+  // No alcanza con el nombre del que cortó: hace falta ver los tres para saber
+  // si el que ganó lo hizo por poco o por lejos. Un corte por contexto con las
+  // llamadas en 6/20 dice que el techo de llamadas está de adorno y que lo que
+  // hay que subir es el otro — o compactar más fuerte.
+  const limites = () => {
+    const usadoMs = clock() - t0;
+    const tokens = tokensDeConversacion(system, convo, tools);
+    const pct = (a, b) => (b > 0 ? +((a / b) * 100).toFixed(1) : null);
+    return {
+      llamadas: { usadas: executor.used, tope: executor.budget, intentos: executor.intentos, pct: pct(executor.used, executor.budget) },
+      contexto_tokens: { al_cierre: tokens, pico: Math.max(picoTokens, tokens), tope: contextTokensMax, pct: pct(Math.max(picoTokens, tokens), contextTokensMax) },
+      reloj_ms: { usado: usadoMs, tope: budgetMs, pct: pct(usadoMs, budgetMs) },
+      vueltas: { usadas: turns, tope: maxTurns },
+      compactacion: { resultados_compactados: compactados, vueltas_intactas: vueltasCompletas, activa: !!compactar },
+      nota: 'Los tres topes cortan igual: se cierra con lo que haya, nunca se aborta. `stopped_by` dice cuál ganó; estos porcentajes dicen si ganó por poco o por lejos.',
+    };
+  };
   let turns = 0;
   let llm = null;
   let sinTiempo = false;
@@ -232,12 +349,37 @@ export async function runToolLoop({
   // acumula varios por corrida, el problema es del proveedor y no de una vuelta.
   const vacios = [];
   let cuerpoVacio = false;
+  let sinContexto = false;
+  let sinLlamadas = false;
+  let compactados = 0;
+  let picoTokens = 0;
 
   while (turns < maxTurns) {
     // EL RELOJ, ANTES de empezar la vuelta. Empezarla y que la mate el deadline
     // del agente a mitad de camino pierde todo lo investigado y journalea un
     // "timeout" sin decir en qué vuelta se quedó.
     if (turns > 0 && restante() < RESERVA_CIERRE_MS) { sinTiempo = true; break; }
+
+    // ── EL TECHO DE CONTEXTO, también ANTES de la vuelta ──────────────
+    // Se mide lo que SE VA A MANDAR, no lo que se mandó: pasarse y enterarse
+    // después es haber pagado la llamada cara igual. Los tres techos cortan
+    // idéntico —se cierra con lo que haya— pero cada uno se NOMBRA, porque
+    // "se acabó el presupuesto" sin decir cuál de los tres no dice nada.
+    const tokensAhora = tokensDeConversacion(system, convo, tools);
+    picoTokens = Math.max(picoTokens, tokensAhora);
+    if (turns > 0 && tokensAhora >= contextTokensMax) { sinContexto = true; break; }
+
+    // ── Y EL CUPO DE LLAMADAS, ANTES DE GASTAR LA VUELTA ──────────────
+    // Esto no estaba, y con 8 llamadas casi no se notaba. Con 20 sí: un modelo
+    // que quema su cupo en la vuelta 6 se comía las 16 vueltas restantes
+    // pidiendo herramientas que solo podían devolverle "presupuesto agotado" —
+    // y CADA una de esas vueltas es una llamada al LLM con la conversación
+    // entera adentro. Se pagaba el contexto completo dieciséis veces para
+    // recibir dieciséis rechazos.
+    //
+    // Sin cupo no hay nada que investigar: se va derecho al cierre, que es
+    // exactamente lo que se quería que pasara.
+    if (turns > 0 && executor.remaining === 0) { sinLlamadas = true; break; }
     turns++;
     // El techo de ESTA llamada nunca puede pasarse del presupuesto que queda.
     // Sin esto, una llamada colgada de 90s se come el reloj de las vueltas
@@ -295,7 +437,7 @@ export async function runToolLoop({
         threw_stack: llm.threw_stack || null,
         nota: 'El loop murió DENTRO de una vuelta de herramientas: el turno de cierre nunca llegó a ejecutarse. Un `cierre: null` en el journal significa esto, no que el cierre haya salido bien.',
       };
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', murio_en: dondeMurio, elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado, ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', murio_en: dondeMurio, elapsed_ms: clock() - t0, budget_ms: budgetMs, limites: limites(), usage_total: acumulado, cost_usd_total: costoAcumulado, ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
     }
 
     const pedidos = toolUseBlocks(llm.data);
@@ -304,7 +446,7 @@ export async function runToolLoop({
       // que el reintento recuperó sigue siendo un corte, y si se pierde acá, la
       // única evidencia de que el proveedor está inestable son las corridas que
       // además fracasaron — o sea, la mitad del cuadro.
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: turns === 1 ? 'no_tools' : 'end_turn', elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado, ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: turns === 1 ? 'no_tools' : 'end_turn', elapsed_ms: clock() - t0, budget_ms: budgetMs, limites: limites(), usage_total: acumulado, cost_usd_total: costoAcumulado, ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
     }
 
     // Las herramientas de UNA vuelta corren EN PARALELO: son lecturas
@@ -321,6 +463,17 @@ export async function runToolLoop({
     }));
 
     convo.push(...buildToolTurn(agent.provider, llm.data, resultados));
+
+    // ── COMPACTAR, DESPUÉS DE AGREGAR ─────────────────────────────────
+    // Acá y no antes: lo que se acaba de traer queda entero (el modelo está
+    // razonando sobre eso ahora mismo) y lo viejo se resume. Sin esto, el techo
+    // de contexto se alcanzaría alrededor de la vuelta 8 y las otras doce
+    // llamadas del presupuesto no se podrían usar nunca — el techo de 20 sería
+    // decorativo.
+    if (compactar) {
+      const c = compactarConversacion(convo, { completas: vueltasCompletas });
+      compactados += c.compactados;
+    }
   }
 
   // Se acabaron las vueltas O el reloj. En los dos casos, lo mismo: última
@@ -331,7 +484,11 @@ export async function runToolLoop({
     role: 'user',
     content: cuerpoVacio
       ? 'Hubo un corte de conexión con el proveedor y esta corrida no puede seguir investigando. No pidas más herramientas: respondé AHORA con tu JSON final, usando lo que ya investigaste.'
-      : sinTiempo
+      : sinLlamadas
+        ? 'Se acabó el presupuesto de LLAMADAS a herramientas de esta corrida (no el reloj ni el contexto). No pidas más: respondé AHORA con tu JSON final, usando lo que ya investigaste.'
+        : sinContexto
+        ? 'Se acabó el presupuesto de CONTEXTO de esta corrida (no el de llamadas ni el reloj): lo que ya investigaste ocupa todo el espacio disponible. No pidas más herramientas: respondé AHORA con tu JSON final. Algunos resultados viejos están marcados [COMPACTADO] — de esos tenés la cabecera y las primeras filas, no la lista entera.'
+        : sinTiempo
         ? 'Se acabó el TIEMPO de esta corrida (no el presupuesto de herramientas). No pidas más: respondé AHORA con tu JSON final, usando lo que ya investigaste. Una decisión con menos investigación de la que querías sigue siendo una decisión; quedarte sin contestar no lo es.'
         : 'Se acabó el presupuesto de investigación de esta corrida. No pidas más herramientas: respondé AHORA con tu JSON final, usando lo que ya tenés.',
   });
@@ -411,7 +568,7 @@ export async function runToolLoop({
       llm: { status: 0, data: null, error_detail: `el turno de cierre LANZÓ: ${String((e && e.message) || e)}`, cierre_diagnostico: diagCierre },
       messages: convo, turns, sequence: executor.sequence, stopped_by: 'error_cierre',
       elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado,
-      cierre_diagnostico: diagCierre,
+      cierre_diagnostico: diagCierre, limites: limites(),
       ...(vacios.length ? { cuerpos_vacios: vacios } : {}),
     };
   }
@@ -445,8 +602,15 @@ export async function runToolLoop({
   if (llm) llm.cierre_diagnostico = diagCierre;
   return {
     llm, messages: convo, turns, sequence: executor.sequence,
-    stopped_by: cuerpoVacio ? 'cuerpo_vacio' : sinTiempo ? 'time_budget' : 'max_turns',
+    // Cada techo se NOMBRA. "Se acabó el presupuesto" sin decir cuál de los
+    // tres no dice nada, y los tres se arreglan distinto.
+    stopped_by: cuerpoVacio ? 'cuerpo_vacio'
+      : sinLlamadas ? 'call_budget'
+        : sinContexto ? 'context_budget'
+          : sinTiempo ? 'time_budget'
+            : 'max_turns',
     elapsed_ms: clock() - t0, budget_ms: budgetMs,
+    limites: limites(),
     usage_total: acumulado, cost_usd_total: costoAcumulado,
     cierre_diagnostico: diagCierre,
     ...(vacios.length ? { cuerpos_vacios: vacios } : {}),
