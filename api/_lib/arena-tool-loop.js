@@ -154,6 +154,12 @@ export const LOOP_BUDGET_MS = Number(process.env.ARENA_TOOL_LOOP_MS)
 // PM que investigó ocho veces y no puede escribir su JSON es peor que uno que
 // cierra con lo que tiene.
 export const REINTENTO_VACIO_MS = Number(process.env.ARENA_EMPTY_RETRY_MS) || 2000;
+
+// ── LA ESPERA DE UN 429 ──────────────────────────────────────────────
+// Más larga que la del cuerpo vacío y por una razón distinta: un rate limit es
+// una COLA, y volver a los 2 segundos es ponerse al final de la misma cola. Seis
+// segundos es lo que cabe sin comerse el turno de cierre.
+export const REINTENTO_TRANSITORIO_MS = Number(process.env.ARENA_429_RETRY_MS) || 6000;
 const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Los bloques `tool_use` de un turno normalizado (los dos proveedores llegan
@@ -389,6 +395,10 @@ export async function runToolLoop({
   let sinContexto = false;
   let sinLlamadas = false;
   let cierreConcedidoMs = null;
+  // Un solo reintento por corrida para errores transitorios: si el proveedor
+  // está en cola dos veces, insistir es gastar el reloj en la misma fila.
+  let transitorioReintentado = false;
+  const transitorios = [];
   // El instante EXACTO del reparto. `limites()` lee el reloj más tarde, así que
   // sin esto el invariante "investigación + cierre ≤ presupuesto + reserva" no
   // se puede verificar: se estaría sumando un `usado` posterior al reparto
@@ -477,6 +487,32 @@ export async function runToolLoop({
       if (!llm || llm.emptyBody) { cuerpoVacio = true; break; }
     }
 
+    // ── UN ERROR TRANSITORIO NO TIRA LA CORRIDA ───────────────────────
+    // `openai` murió el 2026-09-17 en la vuelta 2 con un 429 cuyo propio mensaje
+    // decía "Please retry shortly" — y el loop lo trató igual que a un contexto
+    // excedido: salida inmediata, cuatro herramientas ya pagadas a la basura.
+    //
+    // Una cola se espera; una pared no. Un reintento, y si vuelve a fallar sale
+    // por el camino de siempre con su diagnóstico intacto.
+    if (llm && llm.transitorio && !transitorioReintentado) {
+      transitorioReintentado = true;
+      transitorios.push({ vuelta: turns, detalle: llm.error_detail || null, proveedor: llm.proveedor || null });
+      if (restante() > RESERVA_CIERRE_MS + REINTENTO_TRANSITORIO_MS) {
+        await dormir(REINTENTO_TRANSITORIO_MS);
+        const techoT = Math.max(10000, Math.min(timeoutMs || Infinity, restante() - RESERVA_CIERRE_MS));
+        llm = await call({
+          ...argsVuelta, timeoutMs: techoT,
+          ...(trace ? { trace, fase: `loop:vuelta_${turns}:reintento_transitorio` } : {}),
+        });
+        sumar(llm);
+      } else {
+        transitorios.push({ vuelta: turns, omitido: 'sin reloj para esperar la cola: se va al cierre con lo que hay' });
+        // Sin reloj para esperar, igual se CIERRA en vez de abortar: cuatro
+        // herramientas investigadas siguen siendo una base para decidir.
+        break;
+      }
+    }
+
     // Cualquier cosa que no sea una respuesta usable sale ENTERA hacia arriba.
     //
     // ── EL PUNTO CIEGO QUE DEJÓ TRES RONDAS SIN DIAGNÓSTICO ──────────
@@ -494,6 +530,7 @@ export async function runToolLoop({
       const dondeMurio = {
         fase: 'loop',
         vuelta: turns,
+        ...(llm.transitorio ? { transitorio: true, reintentado: transitorioReintentado } : {}),
         de_vueltas_max: maxTurns,
         herramientas_usadas: executor.used,
         herramientas_pedidas: executor.intentos,
@@ -505,7 +542,7 @@ export async function runToolLoop({
         threw_stack: llm.threw_stack || null,
         nota: 'El loop murió DENTRO de una vuelta de herramientas: el turno de cierre nunca llegó a ejecutarse. Un `cierre: null` en el journal significa esto, no que el cierre haya salido bien.',
       };
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', murio_en: dondeMurio, elapsed_ms: clock() - t0, budget_ms: budgetMs, limites: limites(), usage_total: acumulado, cost_usd_total: costoAcumulado, ...(proveedoresPorVuelta.length ? { proveedores: proveedoresPorVuelta } : {}), ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', murio_en: dondeMurio, ...(transitorios.length ? { errores_transitorios: transitorios } : {}), elapsed_ms: clock() - t0, budget_ms: budgetMs, limites: limites(), usage_total: acumulado, cost_usd_total: costoAcumulado, ...(proveedoresPorVuelta.length ? { proveedores: proveedoresPorVuelta } : {}), ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
     }
 
     const pedidos = toolUseBlocks(llm.data);
@@ -514,7 +551,7 @@ export async function runToolLoop({
       // que el reintento recuperó sigue siendo un corte, y si se pierde acá, la
       // única evidencia de que el proveedor está inestable son las corridas que
       // además fracasaron — o sea, la mitad del cuadro.
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: turns === 1 ? 'no_tools' : 'end_turn', elapsed_ms: clock() - t0, budget_ms: budgetMs, limites: limites(), usage_total: acumulado, cost_usd_total: costoAcumulado, ...(proveedoresPorVuelta.length ? { proveedores: proveedoresPorVuelta } : {}), ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: turns === 1 ? 'no_tools' : 'end_turn', elapsed_ms: clock() - t0, budget_ms: budgetMs, limites: limites(), usage_total: acumulado, cost_usd_total: costoAcumulado, ...(proveedoresPorVuelta.length ? { proveedores: proveedoresPorVuelta } : {}), ...(transitorios.length ? { errores_transitorios: transitorios } : {}), ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
     }
 
     // Las herramientas de UNA vuelta corren EN PARALELO: son lecturas
@@ -662,11 +699,18 @@ export async function runToolLoop({
         if (reintento && !reintento.emptyBody) { llm = reintento; }
         else { vacios.push({ vuelta: 'cierre', intento: 2, bytes: (reintento && reintento.bytes) ?? 0, proveedor: (reintento && reintento.proveedor) || null, timeout_nuestro: !!(reintento && reintento.timedOutLeyendo), ms: (reintento && reintento.ms) ?? null }); }
       } else {
+        // Las DOS condiciones, no la primera que falle: el reporte del
+        // 2026-09-17 decía "no se sabe qué proveedor atendió" cuando además el
+        // reloj estaba agotado (105s gastados), y eso manda a arreglar una sola
+        // de las dos cosas.
         vacios.push({
           vuelta: 'cierre', intento: 2,
-          omitido: !puedeCambiar
-            ? 'no se sabe qué proveedor atendió: un segundo intento idéntico sería el mismo error otra vez'
-            : `quedan ${Math.round(restante() / 1000)}s: no alcanza para otro intento`,
+          omitido: [
+            !puedeCambiar ? 'no se sabe qué proveedor atendió (OpenRouter lo manda dentro del cuerpo, y el cuerpo no llegó): un segundo intento idéntico sería el mismo error' : null,
+            !quedaReloj ? `quedan ${Math.round(restante() / 1000)}s: no alcanza para otro intento` : null,
+          ].filter(Boolean).join(' · '),
+          sin_proveedor: !puedeCambiar,
+          sin_reloj: !quedaReloj,
         });
       }
     }
@@ -723,6 +767,7 @@ export async function runToolLoop({
     cierre_diagnostico: diagCierre,
     ...(proveedoresPorVuelta.length ? { proveedores: proveedoresPorVuelta } : {}),
     ...(proveedoresColgados.length ? { proveedores_colgados: proveedoresColgados } : {}),
+    ...(transitorios.length ? { errores_transitorios: transitorios } : {}),
     ...(vacios.length ? { cuerpos_vacios: vacios } : {}),
   };
 }

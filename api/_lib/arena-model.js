@@ -284,10 +284,22 @@ async function openRouterFetch({ apiKey, agent, model, system, messages, maxToke
   let raw = null;
   try { raw = texto ? JSON.parse(texto) : null; } catch { raw = null; }
 
-  // QUÉ PROVEEDOR ATENDIÓ. OpenRouter lo devuelve en el cuerpo; con un cuerpo
-  // que no llegó, el header `x-or-provider` (cuando viaja) es lo único que
-  // queda — y es justo el caso en el que más hace falta saberlo.
-  const proveedor = (raw && raw.provider) || r.headers.get('x-or-provider') || null;
+  // ── QUÉ PROVEEDOR ATENDIÓ, Y EL HUECO QUE ESTO TIENE ────────────────
+  // OpenRouter devuelve el proveedor DENTRO del cuerpo. Así que cuando el
+  // cuerpo no llega —el caso exacto en el que hace falta saber quién colgó— el
+  // dato no existe. El 2026-09-17 qwen abortó con `proveedor: null` en los
+  // cuatro intentos, y la exclusión automática nunca pudo dispararse: estaba
+  // esperando un nombre que, por construcción, no iba a llegar.
+  //
+  // El header es un intento, no una garantía: OpenRouter no documenta mandarlo.
+  // Lo que SÍ se sabe siempre es qué política se PIDIÓ, y por eso viaja junto —
+  // un `proveedor: null` con `politica_pedida: null` dice "no pedimos nada y no
+  // sabemos quién atendió", que es accionable (poné el ignore) en vez de un
+  // callejón sin salida.
+  const proveedor = (raw && raw.provider)
+    || r.headers.get('x-or-provider')
+    || r.headers.get('x-openrouter-provider')
+    || null;
 
   if (trace) {
     trace.push({
@@ -298,6 +310,9 @@ async function openRouterFetch({ apiKey, agent, model, system, messages, maxToke
   }
   return {
     status: r.status, raw, ms, proveedor,
+    // La política que se MANDÓ. Cuando el proveedor no se puede leer, esto es
+    // lo único que queda para saber si el routing estaba configurado o no.
+    politicaPedida: body.provider || null,
     bodySample: String(texto || '').slice(0, 800),
     // `abortadoLeyendo` es la diferencia entre "el proveedor no contestó" y
     // "no lo esperamos lo suficiente". Son diagnósticos opuestos.
@@ -335,6 +350,22 @@ async function timedFetch(fn, timeoutMs, trace = null, fase = null) {
       threw_stack: (e && e.stack) ? String(e.stack).slice(0, 1200) : null,
     };
   }
+}
+
+// Qué errores del proveedor vale la pena reintentar. La lista es CORTA a
+// propósito: reintentar un contexto excedido o una moderación es gastar el
+// reloj contra una pared que no se mueve. Estos tres sí se mueven solos.
+//   429 — rate limit del modelo aguas arriba (el propio mensaje dice "retry")
+//   502/503 — el proveedor de abajo caído o reiniciando
+export const CODIGOS_TRANSITORIOS = new Set([429, 502, 503, 529]);
+
+export function esTransitorio(err, raw) {
+  const code = Number(err && err.code);
+  if (CODIGOS_TRANSITORIOS.has(code)) return true;
+  const msg = String((err && err.message) || '').toLowerCase();
+  // El texto como respaldo: no todos los proveedores mandan `code`.
+  return /rate.?limit|temporarily|try again|overloaded|capacity/.test(msg)
+    && !/context|token|too large/.test(msg);
 }
 
 // Guard-equivalente al de Anthropic, para OpenRouter: inyecta fecha, escanea
@@ -375,6 +406,11 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
       status: first.status, data: null, emptyBody: true,
       timedOutLeyendo: nuestroReloj,
       proveedor: first.proveedor || null,
+      politica_pedida: first.politicaPedida || null,
+      // Lo dice en el mensaje, no solo en un campo: quien lee el journal en una
+      // terminal tiene que ver la salida sin ir a buscarla.
+      hint: first.proveedor ? null
+        : 'No se pudo saber QUÉ proveedor atendió: OpenRouter lo manda dentro del cuerpo, y el cuerpo no llegó. La exclusión automática no puede dispararse sin ese nombre. Si este agente se cuelga seguido, poné el proveedor sospechoso en ARENA_PROVIDER_IGNORE_<AGENTE> (se toma sin deploy) — el trace de una corrida que SÍ contestó lo dice.',
       ms: first.ms ?? null,
       error_detail: nuestroReloj
         ? `TIMEOUT NUESTRO leyendo el cuerpo: el proveedor${first.proveedor ? ' (' + first.proveedor + ')' : ''} mandó HTTP ${first.status} y keepalives, y nuestro reloj de ${Math.round((first.ms || 0) / 1000)}s venció antes de que llegara el cuerpo. NO es el proveedor cerrando el stream: somos nosotros cortando.`
@@ -406,6 +442,17 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
       status: 502, data: null,
       error_detail: `OpenRouter HTTP 200 sin choices utilizables${e.message ? ': ' + String(e.message).slice(0, 200) : ''}${e.code ? ` (code ${e.code})` : ''}`,
       provider_error: e.message ? { message: e.message, code: e.code ?? null, type: e.type ?? null } : null,
+      // ── TRANSITORIO vs. DEFINITIVO ────────────────────────────────
+      // El 2026-09-17 `openai` murió en la vuelta 2 con "gpt-6-astra is
+      // temporarily rate-limited upstream (code 429). Please retry shortly".
+      // El proveedor decía literalmente que se reintentara, y el loop lo trataba
+      // igual que a un contexto excedido: salida inmediata, corrida perdida con
+      // 4 herramientas ya pagadas.
+      //
+      // Un 429 no es un error del payload: es una cola. Se marca aparte para
+      // que quien llama pueda esperar y volver, en vez de tirar la corrida.
+      transitorio: esTransitorio(e, first.raw),
+      proveedor: first.proveedor || null,
       raw_body: first.bodySample || null,
     };
   }
