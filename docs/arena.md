@@ -694,6 +694,83 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B15 · EL BASELINE ES EL EQUITY REAL, NO UN $100k DECLARADO
+
+`api/_lib/arena-baseline.js` · tests en `tests/arena-baseline-real.test.mjs`
+
+### El bug, con los números del 2026-09-16
+
+El dry run del reset reportó que, con `baseline = $100,000` declarado, la
+temporada arrancaría así:
+
+| agente | equity tras aplanar | return el día 0 |
+|---|---|---|
+| `control` | $98,550 | **−1.45%** |
+| `claude` | $99,590 | **−0.41%** |
+
+Ninguno de los dos había perdido un centavo. Aplanar a mercado deja un residuo
+distinto en cada libro (spread, fills parciales, lo que valía la cartera vieja),
+y un denominador compartido le cobra ese residuo a cada agente como si fuera
+pérdida.
+
+No es cosmético, y menos en **ese par**: `claude` y `control` corren el mismo
+modelo con el mismo prompt precisamente para medir el **piso de ruido** entre sí.
+El sesgo del denominador entre los dos era de **1.04 pp** — más grande que el
+ruido que están ahí para medir, y **indistinguible de él**.
+
+### El arreglo: tres piezas que se mueven juntas
+
+Arreglar una sola es peor que el bug, porque deja a la misma cuenta arrancando
+en **0% para el breaker y en −1.45% en la tabla pública**, y ninguno de los dos
+números se ve mal por sí solo.
+
+**1. El reset escribe el equity real por agente.** `?baseline=` ya no es
+necesario: sin él, cada cuenta se re-basa a su propio equity después de aplanar
+y los siete arrancan en 0.00%. `?baseline=<n>` sigue disponible para forzar un
+número declarado. El anuncio del corte **lista los siete denominadores** uno por
+uno: el denominador es lo que hace comparable (o no) un retorno, así que tiene
+que quedar escrito en el corte y no reconstruirse después.
+
+**2. Los cuatro consumidores dividen por ese número.** Había tres que tenían su
+propio `ARENA_BASELINE_EQUITY` global cada uno, y escribir el baseline sin
+tocarlos no habría cambiado nada de lo que se ve:
+
+| dónde | qué usaba | qué usa |
+|---|---|---|
+| `arena-run` (pico del breaker) | `arena_state.baseline_equity` | igual — era el único bien cableado |
+| `leaderboard` (`return_pct`, `exceso_pp`) | $100k global | baseline del agente |
+| `liga-eventos` (líder de la crónica) | $100k global | baseline del agente |
+| `arena-run` (cierre de temporada) | $100k global | baseline del agente |
+
+**3. El ranking ordena por RETORNO, no por equity bruto.** Esto **no** revierte
+la decisión #6: mientras las cuentas arranquen del mismo capital, ordenar por
+retorno da **exactamente el mismo orden** que ordenar por equity — es una
+transformación monótona, y hay un test que lo afirma. Los dos órdenes solo se
+separan cuando el capital de arranque difiere, que es justo donde el equity
+bruto deja de ser justo: con `control` arrancando $1,040 por debajo de `claude`,
+el orden por equity lo deja atrás **para siempre aunque los dos rindan
+idéntico** — y ese par existe para rendir idéntico. El equity se sigue
+mostrando; lo que cambia es qué decide el puesto. Empate de retorno → desempata
+el equity.
+
+### El cero con autoridad
+
+`Number(null)`, `Number('')` y `Number([])` son todos `0`. Con `Number` a secas,
+un agente al que no se le pudo leer la cuenta habría salido publicado en
+**−100%** en vez de en "no se sabe". `returnPct` y `startingDrawdown` usan un
+`num()` que distingue **ausente** de **cero** — lo encontró un test escrito para
+otra cosa.
+
+### La alternativa que NO se tomó
+
+Igualar el capital de verdad: resetear las siete cuentas paper en el panel de
+Alpaca para que las siete tengan $100,000.00 exactos. Es la única opción donde
+`baseline = $100k` es **literalmente cierto** y el orden por equity vuelve a ser
+justo sin más. Se descartó como default porque son siete resets manuales fuera
+del repo y porque no se puede disparar desde la API de trading — pero sigue
+siendo compatible: hecho eso, los siete baselines quedan iguales, el modo `real`
+escribe $100,000.00 en los siete, y todo lo de arriba converge al caso simple.
+
 ## B14 · EL BENCHMARK PASIVO: $100k en SPY, y nada más
 
 `api/_lib/arena-benchmark.js` · tests en `tests/arena-benchmark.test.mjs`

@@ -44,6 +44,7 @@
 
 import { sql } from './_lib/db.js';
 import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay } from './_lib/arena-registry.js';
+import { readBaselines } from './_lib/arena-baseline.js';
 
 export const TIPOS = ['compra', 'venta', 'rechazo', 'cambio_lider', 'disparador'];
 
@@ -136,26 +137,55 @@ export function eventoDeDisparo(row, nombre) {
   };
 }
 
+// Baselines por agente desde `arena_state`, best-effort: si la DB no contesta,
+// {} y cada agente cae al global de siempre. Un feed de crónica no se cae
+// porque falte un denominador.
+async function baselinesDeLiga() {
+  try {
+    const map = await readBaselines();
+    const out = {};
+    for (const [id, r] of Object.entries(map)) {
+      if (r && r.baseline_equity != null) out[id] = Number(r.baseline_equity);
+    }
+    return out;
+  } catch { return {}; }
+}
+
 // Serie de equity por (fecha, agente) → eventos de CAMBIO DE LÍDER.
 // Solo se evalúa un día con AL MENOS DOS agentes reportando equity: con uno
 // solo, "líder" no significa nada y el feed se llenaría de cambios falsos el
 // día que los demás fallan. El primer día con datos NO es un cambio: es el
 // arranque, y se marca como tal.
-export function cambiosDeLider(porFecha, nombres = {}) {
+// `baselines`: { agent_id: equity de arranque }. El LÍDER se decide por RETORNO
+// contra el baseline propio, no por equity bruto: las siete cuentas no arrancan
+// del mismo capital (aplanar a mercado deja un residuo distinto en cada una), y
+// con equity bruto el que arrancó con más plata "lidera" desde el día cero sin
+// haber ganado nada. Con baselines iguales los dos criterios dan el mismo
+// líder, así que esto no cambia ninguna serie histórica de capital uniforme.
+export function cambiosDeLider(porFecha, nombres = {}, baselines = {}) {
   const fechas = Object.keys(porFecha).sort();
+  const base = (id) => {
+    const n = Number(baselines[id]);
+    return Number.isFinite(n) && n > 0 ? n : BASELINE;
+  };
   const out = [];
   let anterior = null;
   for (const fecha of fechas) {
     const fila = porFecha[fecha];
     const conEquity = Object.entries(fila).filter(([, eq]) => Number.isFinite(eq) && eq > 0);
     if (conEquity.length < 2) continue;
-    conEquity.sort((a, b) => b[1] - a[1]);
+    conEquity.sort((a, b) => {
+      const ra = (a[1] - base(a[0])) / base(a[0]);
+      const rb = (b[1] - base(b[0])) / base(b[0]);
+      return rb !== ra ? rb - ra : b[1] - a[1];
+    });
     const [lider, equity] = conEquity[0];
     if (anterior && lider === anterior.lider) { anterior = { lider, equity, fecha }; continue; }
     out.push({
       tipo: 'cambio_lider', fecha, agente: lider, agente_nombre: nombres[lider] || lider,
       equity: +equity.toFixed(2),
-      return_pct: +(((equity - BASELINE) / BASELINE) * 100).toFixed(2),
+      baseline_equity: +base(lider).toFixed(2),
+      return_pct: +(((equity - base(lider)) / base(lider)) * 100).toFixed(2),
       anterior: anterior ? { agente: anterior.lider, agente_nombre: nombres[anterior.lider] || anterior.lider, equity: +anterior.equity.toFixed(2) } : null,
       // Sin líder previo no hubo "cambio": es el primer día medible de la serie.
       arranque: !anterior,
@@ -240,7 +270,7 @@ export default async function handler(req, res) {
   // El liderazgo es un hecho de la LIGA: se calcula con todos los agentes
   // aunque se haya filtrado por uno, y solo después se filtra el evento.
   if (tipos.has('cambio_lider')) {
-    for (const e of cambiosDeLider(porFecha, nombres)) {
+    for (const e of cambiosDeLider(porFecha, nombres, await baselinesDeLiga())) {
       if (!agente || e.agente === agente || (e.anterior && e.anterior.agente === agente)) eventos.push(e);
     }
   }

@@ -122,7 +122,7 @@ import { WATCH_RULES, watchCadenceActive, watchStartDate } from './_lib/arena-wa
 // EL CORTE: baseline por agente (reset) + el piso del pico del breaker.
 // Ver _lib/arena-baseline.js — SEASON_CUTOFF sigue siendo el suelo, el baseline
 // solo lo puede mover hacia ADELANTE.
-import { effectiveCutoff, breakerPeak, RESET_BASELINE_USD } from './_lib/arena-baseline.js';
+import { effectiveCutoff, breakerPeak, RESET_BASELINE_USD, readBaselines } from './_lib/arena-baseline.js';
 
 // Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
 // reglas de universo); el buffet (trimMovers) la reusa y los tests de
@@ -2668,10 +2668,17 @@ export async function announceSeasonOpen(now = new Date()) {
 // en el registry) dura 4 semanas de mercado y el último día —un viernes, para
 // que exista la corrida— se journalea el ranking final.
 //
-// Se rankea por EQUITY, con el MISMO caveat que publica el leaderboard: `claude`
-// arrastra días de ventaja de la Temporada 1, así que el return vs. baseline
-// viaja al lado. Un agente sin equity (sin keys, Alpaca caída) NO se rankea ni
-// se inventa un cero: sale aparte, nombrado.
+// Se rankea por RETORNO contra el baseline PROPIO de cada agente, con el MISMO
+// caveat que publica el leaderboard: `claude` arrastra días de ventaja de la
+// Temporada 1. Un agente sin equity (sin keys, Alpaca caída) NO se rankea ni se
+// inventa un cero: sale aparte, nombrado.
+//
+// Por retorno y no por equity bruto porque las siete cuentas NO arrancan del
+// mismo capital: aplanar a mercado deja un residuo distinto en cada libro, y el
+// reset re-basa a ese equity real. Con capital de arranque igual los dos
+// criterios dan el MISMO ganador (ordenar por retorno es una transformación
+// monótona de ordenar por equity), así que esto no reescribe ninguna temporada
+// de capital uniforme — solo evita coronar al que arrancó con más plata.
 export const BASELINE_EQUITY = (() => {
   const n = Number(process.env.ARENA_BASELINE_EQUITY);
   return Number.isFinite(n) && n > 0 ? n : 100000; // las cuentas paper arrancan en $100k
@@ -2679,22 +2686,35 @@ export const BASELINE_EQUITY = (() => {
 export const SEASON_WINNER_ID = 'arena-temporada-' + ARENA_SEASON.id + '-ganador';
 
 // Puro: resultados de la corrida → { standings, sin_equity, winner }.
+// `baseline` acepta un número (el de siempre, para todos) o un MAPA
+// { agent_id: equity de arranque }. El mapa gana cuando existe la entrada del
+// agente; si no, cae al número global.
 export function rankSeasonStandings(results = [], baseline = BASELINE_EQUITY) {
+  const esMapa = baseline && typeof baseline === 'object';
+  const baseDe = (id) => {
+    const n = Number(esMapa ? baseline[id] : baseline);
+    return Number.isFinite(n) && n > 0 ? n : BASELINE_EQUITY;
+  };
   const conEquity = [];
   const sinEquity = [];
   for (const r of results) {
     const eq = Number(r && r.equity);
     if (Number.isFinite(eq) && eq > 0) {
+      const b = baseDe(r.id);
       conEquity.push({
         id: r.id, name: r.name, equity: +eq.toFixed(2),
-        return_pct: +(((eq - baseline) / baseline) * 100).toFixed(2),
+        baseline_equity: +b.toFixed(2),
+        return_pct: +(((eq - b) / b) * 100).toFixed(2),
         status: r.status || null,
       });
     } else {
       sinEquity.push({ id: r.id, name: r.name, status: r.status || null, error: r.error || null });
     }
   }
-  conEquity.sort((a, b) => b.equity - a.equity);
+  // Empate de retorno → desempata el equity. Dos agentes con el mismo retorno y
+  // distinto capital no están empatados de verdad, pero tampoco hay razón para
+  // que el orden entre ellos sea el de llegada del array.
+  conEquity.sort((a, b) => (b.return_pct !== a.return_pct ? b.return_pct - a.return_pct : b.equity - a.equity));
   conEquity.forEach((r, i) => { r.rank = i + 1; });
   return { standings: conEquity, sin_equity: sinEquity, winner: conEquity[0] || null };
 }
@@ -2703,22 +2723,34 @@ export function rankSeasonStandings(results = [], baseline = BASELINE_EQUITY) {
 // matutina, o el cron se repite, la fila entra UNA vez y no cambia de ganador.
 export async function declareSeasonWinner(results, now = new Date()) {
   if (!isSeasonFinalDay(now)) return { declared: false, reason: 'no es el último día de la temporada' };
-  const { standings, sin_equity, winner } = rankSeasonStandings(results);
+  // Baselines reales por agente. Best-effort: si la DB no contesta, cae al
+  // global — un cierre de temporada no se cancela porque falte un denominador,
+  // pero el denominador correcto es el que escribió el reset.
+  let baselines = BASELINE_EQUITY;
+  try {
+    const map = await readBaselines(results.map((r) => r && r.id).filter(Boolean));
+    const porId = {};
+    for (const [id, r] of Object.entries(map || {})) {
+      if (r && r.baseline_equity != null) porId[id] = Number(r.baseline_equity);
+    }
+    if (Object.keys(porId).length) baselines = porId;
+  } catch { /* cae al global */ }
+  const { standings, sin_equity, winner } = rankSeasonStandings(results, baselines);
   if (!winner) return { declared: false, reason: 'ningún agente reportó equity: no se declara un ganador inventado' };
   const podio = standings.slice(0, 3).map((r) => `${r.rank}. ${r.name} ${r.equity} (${r.return_pct >= 0 ? '+' : ''}${r.return_pct}%)`).join(' · ');
   const plan = [
-    `${ARENA_SEASON.name.toUpperCase()} — CIERRE. Gana ${winner.name} con equity ${winner.equity} (${winner.return_pct >= 0 ? '+' : ''}${winner.return_pct}% vs. baseline).`,
+    `${ARENA_SEASON.name.toUpperCase()} — CIERRE. Gana ${winner.name} con ${winner.return_pct >= 0 ? '+' : ''}${winner.return_pct}% (equity ${winner.equity} sobre un baseline de ${winner.baseline_equity}).`,
     `Podio: ${podio}.`,
     sin_equity.length ? `Sin equity reportado (no rankean): ${sin_equity.map((r) => r.name || r.id).join(', ')}.` : null,
     `Ventana: ${ARENA_SEASON.start} → ${ARENA_SEASON.end} (${ARENA_SEASON.weeks} semanas de mercado).`,
-    'CAVEATS, los de siempre: paper trading, una sola temporada, sin validación estadística, y el agente insignia arrastra días de ventaja de la Temporada 1 — por eso el return vs. baseline va al lado del equity. Esto no es asesoría.',
+    'CAVEATS, los de siempre: paper trading, una sola temporada, sin validación estadística, y el agente insignia arrastra días de ventaja de la Temporada 1. Se gana por RETORNO contra el baseline propio, no por equity bruto: las siete cuentas no arrancaron del mismo capital y coronar al que arrancó con más plata no mediría nada. Esto no es asesoría.',
   ].filter(Boolean).join('\n');
   try {
     await sql(
       `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
        values ($1,$2,'decide','season_winner',$3,$4,$5,'league') on conflict (id) do nothing`,
       [SEASON_WINNER_ID, now.toISOString().slice(0, 10), PROMPT_VERSION, plan,
-       JSON.stringify({ season: ARENA_SEASON, metric: ARENA_SEASON.metric, baseline: BASELINE_EQUITY, winner, standings, sin_equity })],
+       JSON.stringify({ season: ARENA_SEASON, metric: ARENA_SEASON.metric, baseline: baselines, winner, standings, sin_equity })],
     );
     return { declared: true, winner };
   } catch (e) { return { declared: false, reason: String((e && e.message) || e) }; }
