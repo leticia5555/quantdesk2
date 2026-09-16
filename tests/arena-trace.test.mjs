@@ -78,8 +78,16 @@ console.log('\n── 3 herramientas pedidas, 1 de cupo: ¿qué se le responde? 
   // Lo que este test NO puede descartar: que lo que rompa sea otra cosa DENTRO
   // del mismo mensaje (el eco de `reasoning` en `_raw_message`, por ejemplo).
   // Eso solo se ve con el cuerpo real de la vuelta que falló.
-  ok(turno[0] === data._raw_message,
-    'y el eco del asistente es el objeto CRUDO del proveedor, no una reconstrucción');
+  // Esta aserción afirmaba `turno[0] === data._raw_message` — el eco VERBATIM
+  // del objeto del proveedor. Cambió a propósito el 2026-09-16: el crudo de un
+  // modelo de razonamiento incluye `reasoning`/`reasoning_details`, que no son
+  // del contrato de entrada de OpenAI y se acumulan vuelta a vuelta. Lo que
+  // importa preservar es la IDENTIDAD de las llamadas —los tool_call_id que los
+  // mensajes `tool` responden—, no el objeto entero.
+  ok(turno[0].tool_calls === data._raw_message.tool_calls,
+    'y el eco preserva el `tool_calls` del proveedor tal cual: los ids que se responden son los mismos');
+  ok(turno[0].tool_calls.map((c) => c.id).sort().join(',') === ids,
+    'los ids del eco y los de los mensajes `tool` coinciden exactamente');
 }
 
 // ── 2) ANTHROPIC: la otra forma, que también responde a todas ────────
@@ -186,6 +194,144 @@ console.log('\n── el trace no altera lo que se manda ──');
   await runToolLoop({ ...base, executor: createToolExecutor({ budget: 2, board: null, universe: null, cache: false }), trace: createTrace() });
   ok(JSON.stringify(sinTrace) === JSON.stringify(payloads),
     'con trace y sin trace, el payload enviado es IDÉNTICO: el trace observa, no participa');
+}
+
+// ── 6) EL CUERPO VACÍO ───────────────────────────────────────────────
+// EL DIAGNÓSTICO REAL, confirmado por el trace de qwen del 2026-09-16: vuelta
+// 3, HTTP 200, 41.5s, cuerpo de CERO bytes. Durante cuatro sombras esto se
+// journaleó como "HTTP 200" con `detail`, `raw_body` y `provider_error` en
+// null — y los nulls no eran datos faltantes: eran la firma del cuerpo vacío,
+// porque `bodySample` quedaba en `''`, que es falsy.
+//
+// Es un fallo de TRANSPORTE. Por eso ninguna hipótesis sobre la FORMA del
+// payload sobrevivía: un payload mal armado vuelve 400 o 200-con-`error`, y los
+// dos ya se manejaban.
+console.log('\n── 200 + cuerpo vacío: se reintenta y se cierra, no se aborta ──');
+{
+  const vacio = { status: 200, data: null, emptyBody: true, bytes: 0, error_detail: 'CUERPO VACÍO: …' };
+  const conHerramienta = {
+    status: 200,
+    data: {
+      content: [{ type: 'tool_use', id: 'c1', name: 'screener', input: {} }],
+      _raw_message: { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'screener', arguments: '{}' } }] },
+    },
+  };
+  const cierreOk = { status: 200, data: { content: [{ type: 'text', text: '{"weights":{"NVDA":0.1}}' }] } };
+
+  // Vuelta 1 pide herramienta · vuelta 2 vacía · reintento vacío · cierre OK.
+  {
+    const fases = [];
+    let n = 0;
+    const call = async (a) => { fases.push(a.fase || null); n++; return n === 1 ? conHerramienta : n <= 3 ? vacio : cierreOk; };
+    const loop = await runToolLoop({
+      agent: { id: 'qwen', provider: 'openrouter', model: 'x' },
+      system: 's', messages: [{ role: 'user', content: 'u' }],
+      executor: createToolExecutor({ budget: 8, board: null, universe: null, cache: false }),
+      call, trace: createTrace(),
+    });
+
+    ok(loop.stopped_by === 'cuerpo_vacio',
+      'el loop sale por `cuerpo_vacio`, un motivo propio y no un "HTTP 200"', loop.stopped_by);
+    ok(fases.some((f) => /reintento_vacio/.test(f || '')),
+      'la MISMA vuelta se reintenta una vez', JSON.stringify(fases));
+    ok(loop.llm === cierreOk,
+      'y tras el segundo vacío NO se aborta: se salta al turno de CIERRE y el PM decide con lo que tiene');
+    ok(loop.cuerpos_vacios && loop.cuerpos_vacios.length === 2,
+      'los dos cortes quedan registrados con su vuelta e intento', JSON.stringify(loop.cuerpos_vacios));
+    const ultimoUser = [...loop.messages].reverse().find((m) => m.role === 'user');
+    ok(/corte de conexión/.test(ultimoUser.content),
+      'y el mensaje de cierre dice la verdad —hubo un corte— en vez de culpar al presupuesto',
+      ultimoUser.content.slice(0, 50));
+  }
+
+  // Si el reintento SÍ funciona, la corrida sigue normal: un corte transitorio
+  // no puede costar las herramientas que faltaban.
+  {
+    let n = 0;
+    const call = async () => { n++; return n === 1 ? vacio : n === 2 ? conHerramienta : cierreOk; };
+    const loop = await runToolLoop({
+      agent: { id: 'qwen', provider: 'openrouter', model: 'x' },
+      system: 's', messages: [{ role: 'user', content: 'u' }],
+      executor: createToolExecutor({ budget: 8, board: null, universe: null, cache: false }),
+      call,
+    });
+    ok(loop.stopped_by !== 'cuerpo_vacio',
+      'un vacío que se recupera al reintentar NO corta la corrida', loop.stopped_by);
+    ok(loop.cuerpos_vacios && loop.cuerpos_vacios.length === 1,
+      'pero queda anotado igual, incluso en una corrida que terminó bien: un corte ocurrido es un dato',
+      JSON.stringify(loop.cuerpos_vacios));
+  }
+}
+
+// ── 7) EL ECO LIMPIO ─────────────────────────────────────────────────
+// El otro sospechoso de la vuelta 3: el assistant previo se ecoaba TAL CUAL,
+// con `reasoning` y `reasoning_details` de OpenRouter, que no son del contrato
+// de entrada de OpenAI y que se acumulan vuelta a vuelta.
+console.log('\n── el eco del asistente va limpio en el camino de OpenAI ──');
+{
+  const razonamiento = 'x'.repeat(5000);
+  const data = {
+    _raw_message: {
+      role: 'assistant', content: null,
+      reasoning: razonamiento,
+      reasoning_details: [{ type: 'encrypted', data: 'zzz' }],
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'screener', arguments: '{}' } }],
+    },
+    content: [{ type: 'tool_use', id: 'c1', name: 'screener', input: {} }],
+  };
+  const turno = buildToolTurn('openrouter', data, [{ id: 'c1', name: 'screener', text: 'ok' }]);
+  const eco = turno[0];
+
+  ok(!('reasoning' in eco) && !('reasoning_details' in eco),
+    '`reasoning` y `reasoning_details` NO vuelven al proveedor', Object.keys(eco).join(','));
+  ok(eco.role === 'assistant' && eco.content === null && Array.isArray(eco.tool_calls) && eco.tool_calls[0].id === 'c1',
+    'pero el `tool_calls` sí, intacto: sin él, los mensajes `tool` que siguen quedan huérfanos');
+  ok(JSON.stringify(eco).length < 300,
+    'el payload por vuelta cae de ~5 KB a ~100 bytes, y eso se acumula en cada vuelta siguiente',
+    String(JSON.stringify(eco).length));
+
+  // El escape: poder volver al comportamiento viejo sin deploy es lo que
+  // permite MEDIR si quitar el razonamiento degrada algo, en vez de discutirlo.
+  process.env.ARENA_ECHO_REASONING = '1';
+  const conRazon = buildToolTurn('openrouter', data, [{ id: 'c1', name: 'screener', text: 'ok' }])[0];
+  ok(conRazon.reasoning === razonamiento, 'ARENA_ECHO_REASONING=1 devuelve el eco crudo, sin deploy');
+  delete process.env.ARENA_ECHO_REASONING;
+
+  // Un turno sin `_raw_message` sigue reconstruyéndose.
+  const sinCrudo = buildToolTurn('openrouter', { content: data.content }, [{ id: 'c1', name: 'screener', text: 'ok' }])[0];
+  ok(sinCrudo.tool_calls[0].function.name === 'screener',
+    'sin mensaje crudo, el eco se reconstruye desde los bloques normalizados');
+}
+
+// ── 8) EL DIFF ENTRE VUELTAS ─────────────────────────────────────────
+// La pregunta "¿qué tiene la vuelta 3 que no tenía la 2?" con payloads de
+// 36.000 caracteres no se contesta leyendo JSON en una terminal.
+console.log('\n── el trace compara una vuelta contra la anterior ──');
+{
+  const t = createTrace({ maxBytes: 100000 });
+  const assistantLimpio = { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'screener', arguments: '{}' } }] };
+  const assistantSucio = { ...assistantLimpio, reasoning: 'zzz', reasoning_details: [{ a: 1 }] };
+  t.push({ fase: 'loop:vuelta_2', request: { messages: [{ role: 'user', content: 'u' }, assistantLimpio, { role: 'tool', tool_call_id: 'c1', content: 'r' }] }, response: '{}', status: 200 });
+  t.push({ fase: 'loop:vuelta_3', request: { messages: [{ role: 'user', content: 'u' }, assistantSucio, { role: 'tool', tool_call_id: 'c1', content: 'r' }] }, response: '', status: 200 });
+
+  const d = t.report().diff_entre_turnos[0];
+  ok(d.de === 'loop:vuelta_2' && d.a === 'loop:vuelta_3', 'compara la vuelta con la anterior');
+  const claves = d.cambios.find((c) => c.campo === 'claves_assistant');
+  ok(claves && claves.despues.includes('reasoning'),
+    'y NOMBRA que aparecieron `reasoning`/`reasoning_details` en el assistant',
+    JSON.stringify(claves && claves.despues));
+  ok(d.bytes.delta > 0, 'con cuánto creció el cuerpo', JSON.stringify(d.bytes));
+
+  // El descuadre: un tool_call sin su mensaje `tool` rompe el payload, y se ve
+  // sin leer nada más. Es la hipótesis de los cupos, medida en vez de supuesta.
+  const t2 = createTrace({ maxBytes: 100000 });
+  const dosLlamadas = { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'x', arguments: '{}' } }, { id: 'c2', type: 'function', function: { name: 'x', arguments: '{}' } }] };
+  t2.push({ fase: 'v1', request: { messages: [{ role: 'user', content: 'u' }] }, status: 200 });
+  t2.push({ fase: 'v2', request: { messages: [{ role: 'user', content: 'u' }, dosLlamadas, { role: 'tool', tool_call_id: 'c1', content: 'r' }] }, status: 200 });
+  const d2 = t2.report().diff_entre_turnos[0];
+  ok(d2.descuadre_tool && d2.descuadre_tool.tool_calls === 2 && d2.descuadre_tool.tool_results === 1,
+    'un tool_call sin su mensaje `tool` se detecta solo: 2 llamadas, 1 resultado',
+    JSON.stringify(d2.descuadre_tool));
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');

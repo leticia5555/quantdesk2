@@ -54,6 +54,7 @@ import { shadowBroker, shadowJournalInsert, shadowRunId, shadowReport, ensureSha
 import { currentTier, recordRunSpend, callCost } from './_lib/arena-budget.js';
 import { marketDay } from './_lib/arena-buffet-cache.js';
 import { createTrace } from './_lib/arena-trace.js';
+import { buildInfo } from './_lib/build-info.js';
 import { beat } from './_lib/heartbeat.js';
 
 export const maxDuration = 300;
@@ -198,7 +199,15 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
   ctx.cost = costo;
 
   if (llm.status !== 200 || !llm.data) {
-    const error = llm.stale ? 'fechas rotas tras retry' : `HTTP ${llm.status}${llm.error_detail ? ': ' + llm.error_detail : ''}`;
+    // ── `cuerpo_vacio` ES UN MOTIVO PROPIO, no un "HTTP 200" ───────────
+    // Durante cuatro sombras esto se journaleó como `HTTP 200` con todo lo demás
+    // en null, y se leyó como "algo falló al parsear". Era el proveedor cerrando
+    // el stream sin mandar nada. Un motivo que se confunde con otro es un
+    // diagnóstico que no existe.
+    const vacio = !!llm.emptyBody;
+    const error = vacio
+      ? `cuerpo_vacio: el proveedor devolvió HTTP ${llm.status} y cerró el stream sin cuerpo, dos veces (con reintento). NO es un error de formato del payload.`
+      : llm.stale ? 'fechas rotas tras retry' : `HTTP ${llm.status}${llm.error_detail ? ': ' + llm.error_detail : ''}`;
     // EL CUERPO CRUDO AL JOURNAL. Tres agentes abortaron con "HTTP 200" y no
     // había forma de saber qué había contestado el proveedor: el error decía el
     // status y nada más. Sin el cuerpo, diagnosticar esto es adivinar.
@@ -214,12 +223,18 @@ export async function runShadowAgent({ agent, buffet, now = new Date(), tier = n
       // salió bien: es un cierre que nunca se ejecutó.
       murio_en: (loop && loop.murio_en) || null,
       threw_stack: llm.threw_stack || null,
+      motivo: vacio ? 'cuerpo_vacio' : null,
+      // Todos los cortes de la corrida, con su vuelta y su intento. Si un agente
+      // acumula varios, el problema es del proveedor y no de una vuelta suelta.
+      cuerpos_vacios: (loop && loop.cuerpos_vacios) || null,
       timed_out: !!llm.timedOut, stale: !!llm.stale, retry_failed: !!llm.retry_failed,
     };
     if (trace) ctx.trace = trace.report();
-    await shadowJournalInsert({ ...base, status: 'aborted_llm_error', error, context: ctx });
+    const status = vacio ? 'aborted_cuerpo_vacio' : 'aborted_llm_error';
+    await shadowJournalInsert({ ...base, status, error, context: ctx });
     return {
-      agent: agent.id, status: 'aborted_llm_error', error, cost_usd: costo.usd,
+      agent: agent.id, status, error, cost_usd: costo.usd,
+      cuerpos_vacios: (loop && loop.cuerpos_vacios) || null,
       murio_en: (loop && loop.murio_en) || null,
       llm_error: ctx.llm_error,
       ...(trace ? { trace: trace.report() } : {}),
@@ -307,7 +322,7 @@ export default async function handler(req, res) {
 
     // ?report=1 — gratis, cero tokens: qué pasó hoy en la sombra.
     if (String(q.report || '') === '1') {
-      return res.status(200).json(await shadowReport(String(q.day || marketDay(now))));
+      return res.status(200).json({ build: buildInfo(), ...(await shadowReport(String(q.day || marketDay(now)))) });
     }
 
     const only = String(q.agent || '').toLowerCase();
@@ -369,6 +384,7 @@ export default async function handler(req, res) {
     const verdes = results.filter((r) => r.status === 'ok_target');
     const out = {
       ran_at: now.toISOString(),
+      build: buildInfo(),
       shadow: true,
       orders_placed: 0,
       orders_note: 'La sombra NO manda órdenes por construcción: el broker de sombra LANZA en cualquier escritura.',

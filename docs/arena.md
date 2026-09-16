@@ -694,6 +694,107 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B19 · RESUELTO: los abortos eran HTTP 200 CON EL CUERPO VACÍO
+
+El trace de qwen del 2026-09-16 cerró el caso que llevaba cuatro sombras y tres
+hipótesis fallidas:
+
+| | |
+|---|---|
+| dónde | `loop`, vuelta 3 (la posterior al techo de herramientas) |
+| status | **200** |
+| duración | **41.5 s** |
+| cuerpo | **`""` — cero bytes** |
+| request | 36.489 caracteres |
+| herramientas | 8/8 usadas, 9 pedidas |
+
+Las vueltas 1 y 2 completaron bien, con keepalive de espacios al inicio que
+`JSON.parse` tolera sin problema.
+
+### Por qué se veía como "HTTP 200 y todo lo demás en null"
+
+```js
+error_detail: first.netError || (first.bodySample ? `cuerpo no-JSON: …` : null),
+raw_body: first.bodySample || null,
+```
+
+Con el cuerpo vacío, `bodySample` es `''` — **falsy**. Así que `error_detail` y
+`raw_body` salían `null`. **Los nulls no eran datos faltantes: eran la firma del
+cuerpo vacío.** Leerlos como "no capturamos nada" fue lo que mandó tres rondas
+de diagnóstico a buscar el problema en la capa equivocada.
+
+### Es transporte, no formato
+
+OpenRouter abre la conexión, manda el 200, manda keepalives durante ~40 s y
+cierra el stream **sin cuerpo**. Un payload mal armado no hace eso: vuelve 400 o
+200 con un `error` adentro, y los dos ya se manejaban. **Por eso ninguna
+hipótesis sobre la forma del payload sobrevivía a la corrida siguiente** — no
+había nada malo en la forma.
+
+### Los tres arreglos
+
+**1. `cuerpo_vacio` es una clase de error propia.** `emptyBody: true`, con los
+bytes y un `error_detail` que dice qué pasó. En el journal es
+`aborted_cuerpo_vacio`, no `aborted_llm_error`, y `llm_error.motivo` lo repite.
+Un motivo que se confunde con otro es un diagnóstico que no existe.
+
+**2. Se reintenta y, si falla, se CIERRA — no se aborta.** La misma vuelta, una
+vez, tras 2 s (no 20: la vuelta que falló ya se comió ~40 s del presupuesto del
+loop). Si el segundo intento también vuelve vacío, el loop **salta al turno de
+cierre** con `tool_choice: none`: un PM que investigó ocho veces y no puede
+escribir su JSON es peor que uno que cierra con lo que tiene. El mensaje de
+cierre dice la verdad —*"hubo un corte de conexión"*— en vez de culpar al
+presupuesto. El turno de cierre tiene el mismo reintento.
+
+`cuerpos_vacios[]` viaja al journal **aunque la corrida termine bien**: un corte
+que el reintento recuperó sigue siendo un corte, y perderlo dejaría como única
+evidencia de inestabilidad del proveedor las corridas que además fracasaron — la
+mitad del cuadro.
+
+**3. El eco del asistente va limpio** (camino OpenAI únicamente). Antes se
+ecoaba `_raw_message` tal cual, con `reasoning` y `reasoning_details`. Ahora solo
+los campos del contrato: `role`, `content`, `tool_calls`, `name`, `refusal`.
+
+- **No son del contrato**: el mensaje `assistant` de la API de OpenAI no declara
+  `reasoning`; son extensiones de OpenRouter **para la respuesta**.
+- **El payload crecía sin necesidad**: 5.173 → 128 bytes por vuelta en el caso
+  medido, y se acumula en cada vuelta siguiente.
+
+**Lo que cuesta, declarado**: algunos proveedores usan `reasoning_details` para
+preservar la cadena de razonamiento entre turnos, así que quitarlo *puede*
+degradar la continuidad. Se acepta: hoy tres de siete abortan todas las
+corridas, y una posible pérdida de calidad le gana a una pérdida segura.
+`ARENA_ECHO_REASONING=1` vuelve al comportamiento viejo sin deploy, para poder
+**medir** la diferencia en vez de discutirla.
+
+Anthropic **no se toca**: exige el eco verbatim con los bloques de thinking en su
+orden original.
+
+### El diff entre vueltas
+
+`trace.diff_entre_turnos[]` compara cada vuelta con la anterior y reporta lo
+estructural: cuántos mensajes, de qué roles, **qué claves aparecieron en los
+`assistant`** (ahí se ve si viaja `reasoning` de vuelta), cuánto creció el
+cuerpo, y un `descuadre_tool` si hay `tool_calls` sin su mensaje `tool`.
+
+Ese último detecta solo la hipótesis de los cupos, sin que nadie tenga que
+suponerla. Con payloads de 36.000 caracteres recortados a 4 KB, comparar a ojo en
+una terminal no es viable — y es la comparación que decide el diagnóstico.
+
+## B20 · QUÉ BUILD CONTESTÓ
+
+`api/_lib/build-info.js` — cada endpoint del Arena devuelve `build.commit`.
+
+El `?diag=DELL,COP` del 2026-09-16 devolvió una corrida normal, sin la sección de
+diagnóstico, y la pregunta razonable fue *"¿se ignora el parámetro?"*. No: el PR
+se mergeó a las **16:24:36 UTC** y la consulta salió a las **16:24**. El
+parámetro llegó a un build que no lo conocía.
+
+Eso costó una ronda entera para una pregunta que la propia respuesta podía
+contestar. Ahora la contesta: si el commit no es el que esperabas, el deploy no
+salió — no es un parámetro ignorado. Observabilidad pura, nunca lanza, y sin las
+env vars de Vercel devuelve nulls en vez de inventar.
+
 ## B16 · EL TRACE: la conversación entera, turno por turno
 
 `api/_lib/arena-trace.js` · tests en `tests/arena-trace.test.mjs`
