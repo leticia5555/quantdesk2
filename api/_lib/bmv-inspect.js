@@ -245,3 +245,63 @@ export function resumirPorTipo(filas) {
   }
   return out;
 }
+
+/* ── 6. ¿La página tiene paginación? ─────────────────────────────── */
+
+/**
+ * Busca el mecanismo de paginación EN la página, en vez de adivinar parámetros.
+ *
+ * BMV usa al menos tres formas, vistas en URLs reales del sitio:
+ *   .../_rid/624/_mod/CHANGE_PAGE?sec=0&index=9
+ *   .../_rid/40/_mod/PAGINATOR?index=27
+ *   .../_mod/CHANGE_PAGE?claveCotiza=X&fechaInicial=&fechaFinal=&index=9
+ *
+ * La tercera es la interesante: acepta **rango de fechas**. Si la página de
+ * eventos relevantes lo soporta, no hace falta paginar 80 filas a la vez —
+ * se pide directamente 2016-2018 y listo. Eso decide si el histórico llega a
+ * 2021 o a 2016.
+ *
+ * Esta función NO adivina: reporta lo que encuentra en el HTML para que la
+ * siguiente corrida lo use. Si no encuentra nada, eso también es respuesta.
+ */
+export function detectarPaginacion(html) {
+  const s = String(html || '');
+
+  const enlaces = [...new Set(
+    [...s.matchAll(/(?:href|action)\s*=\s*["']([^"']*(?:CHANGE_PAGE|PAGINATOR|index=|pagina=|page=)[^"']*)["']/gi)]
+      .map((m) => m[1])
+  )].slice(0, 25);
+
+  const formularios = [...s.matchAll(/<form[^>]*>/gi)].map((m) => m[0]).slice(0, 5);
+
+  // Campos de un formulario de búsqueda: si hay fechaInicial/fechaFinal, hay
+  // consulta por rango y el tope de filas deja de importar.
+  const campos = [...new Set(
+    [...s.matchAll(/<(?:input|select)[^>]*name\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1])
+  )].slice(0, 40);
+
+  const texto = limpiar(s).toLowerCase();
+  const pistasTexto = ['ver más', 'ver mas', 'siguiente', 'anterior', 'página', 'mostrar más', 'cargar más']
+    .filter((t) => texto.includes(t));
+
+  const camposDeFecha = campos.filter((c) => /fecha/i.test(c));
+
+  return {
+    enlaces_paginacion: enlaces,
+    formularios,
+    campos_de_formulario: campos,
+    campos_de_fecha: camposDeFecha,
+    pistas_en_texto: pistasTexto,
+    hay_indicio: enlaces.length > 0 || camposDeFecha.length > 0 || pistasTexto.length > 0,
+    lectura: camposDeFecha.length
+      ? 'HAY campos de fecha: probablemente se puede consultar por rango, que es mejor que paginar'
+      : enlaces.length
+        ? 'hay enlaces de paginación: el tope de filas se puede rodear página por página'
+        : 'ningún indicio en el HTML — o no hay paginación, o la pinta JavaScript (navegador, no script)',
+  };
+}
+
+/** Los .zip de un tipo dado que la página enlaza (vía visor o directo). */
+export function zipsDeTipo(filas, tipo) {
+  return filas.filter((f) => f.tipo === tipo && /\.zip$/i.test(f.archivo));
+}

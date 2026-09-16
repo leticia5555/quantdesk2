@@ -174,3 +174,63 @@ test('un documento sin fecha legible se cuenta aparte, no se pierde', () => {
   assert.equal(r.anexon.sin_fecha, 1);
   assert.equal(r.anexon.con_fecha, 0);
 });
+
+/* ── detectarPaginacion ─────────────────────────────────────────── */
+
+import { detectarPaginacion, zipsDeTipo } from '../api/_lib/bmv-inspect.js';
+
+test('detecta los enlaces de paginación que usa BMV', () => {
+  const html = `<div class="pager">
+    <a href="/es/emisoras/eventosrelevantes/_rid/624/_mod/CHANGE_PAGE?sec=0&index=1">2</a>
+    <a href="/es/movil/Eventos/_rid/40/_mod/PAGINATOR?index=27">Siguiente</a>
+  </div>`;
+  const p = detectarPaginacion(html);
+  assert.equal(p.enlaces_paginacion.length, 2);
+  assert.ok(p.enlaces_paginacion.some((h) => h.includes('CHANGE_PAGE')));
+  assert.equal(p.hay_indicio, true);
+  assert.match(p.lectura, /paginación/);
+});
+
+test('un formulario con fechaInicial/fechaFinal es mejor noticia que paginar', () => {
+  const html = `<form action="/es/x/_mod/CHANGE_PAGE" method="get">
+    <input name="claveCotiza"><input name="fechaInicial"><input name="fechaFinal">
+    <select name="tipoDocumento"></select></form>`;
+  const p = detectarPaginacion(html);
+  assert.deepEqual(p.campos_de_fecha.sort(), ['fechaFinal', 'fechaInicial']);
+  assert.ok(p.campos_de_formulario.includes('claveCotiza'));
+  assert.match(p.lectura, /rango/);
+});
+
+test('sin indicios, lo dice en vez de inventar un parámetro', () => {
+  const p = detectarPaginacion('<table><tr><td>una fila</td></tr></table>');
+  assert.equal(p.hay_indicio, false);
+  assert.deepEqual(p.enlaces_paginacion, []);
+  assert.match(p.lectura, /ningún indicio|JavaScript/);
+});
+
+test('reconoce las pistas de texto de "ver más"', () => {
+  const p = detectarPaginacion('<div>Mostrar más resultados</div>');
+  assert.ok(p.pistas_en_texto.length > 0);
+  assert.equal(p.hay_indicio, true);
+});
+
+/* ── zipsDeTipo: la pregunta del XBRL en eventemi ───────────────── */
+
+test('zipsDeTipo separa el .zip del visor del .pdf directo', () => {
+  const html = `<table>
+    <tr><td>23-Jul-2026 14:11</td><td>Reporte</td>
+        <td><a href="/docs-pub/eventemi/eventemi_1576009_1.pdf">PDF</a></td></tr>
+    <tr><td>23-Jul-2026 14:11</td><td>Reporte</td>
+        <td><a href="visorXbrl.html?docins=../eventemi/eventemi_1576009_1.zip">Visor</a></td></tr>
+  </table>`;
+  const d = documentos(html, parseFechaBmv);
+  const zips = zipsDeTipo(d, 'eventemi');
+  assert.equal(zips.length, 1);
+  assert.equal(zips[0].archivo, 'eventemi_1576009_1.zip');
+  assert.equal(d.length, 2);   // el pdf y el zip son documentos distintos
+});
+
+test('zipsDeTipo no devuelve nada si sólo hay PDFs', () => {
+  const html = `<tr><td><a href="/docs-pub/eventemi/eventemi_1_1.pdf">x</a></td></tr>`;
+  assert.deepEqual(zipsDeTipo(documentos(html, parseFechaBmv), 'eventemi'), []);
+});

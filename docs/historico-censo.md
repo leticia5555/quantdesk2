@@ -1,22 +1,52 @@
 # FASE 1b — Censo de fuentes para el histórico 2016→2026
 
-> **Estado: el inspector está listo; la Parte A no está corrida.**
+> **1ª corrida hecha. Hay histórico en BMV, con un tope que todavía no sé si es
+> el techo real.**
 >
-> Mi sandbox no llega a `bmv.com.mx` (mismo caso que en Fase 0, 0b y 1a), así
-> que el censo se hace como endpoint y lo corres desde prod. **Un solo request
-> contesta las cuatro preguntas de la Parte A** (§2).
+> | Lo que contestó | |
+> |---|---|
+> | **A.1** ¿sólo el trimestre vigente? | **Sí, 5 de 5.** El supuesto de Fase 0 queda confirmado |
+> | **A.3** ¿hay histórico en eventos relevantes? | **Sí** — WALMEX y ALSEA llegan a **2021**, no sólo a 2026 |
+> | El tope | ~80-84 filas por página. **Si se rodea, el histórico podría llegar a 2016** |
+>
+> **Tres preguntas abiertas, y una sola corrida las cierra** (§8):
 >
 > ```
-> https://<tu-dominio>/api/bmv-inspect?claves=WALMEX,FEMSA,GMEXICO,ALSEA,GCC
+> https://<tu-dominio>/api/bmv-inspect?profundo=FEMSA
 > ```
 >
-> ~12 segundos, 10 requests a 1/seg, no baja documentos ni escribe nada.
->
-> **Este documento no puede cerrar la matriz de cobertura todavía** (§4) y lo
-> digo de frente: la matriz depende de una respuesta que sólo da esa corrida.
-> Lo que sí está: el árbol de decisión con lo que implica cada resultado
-> posible, el conteo y costo bajo cada escenario, y el censo de sitios de IR
-> hasta donde llegué sin abrir páginas.
+> **El JSON de la 1ª corrida no llegó** — la carpeta de adjuntos sigue con los
+> PDFs de turnos anteriores. Tu resumen alcanzó para lo que sigue, pero **los 84
+> títulos de FEMSA no los tengo**, y sin verlos no puedo arreglar el
+> clasificador: tendría que adivinar el patrón, que es justo lo que no se hace
+> acá. Por eso el modo `?profundo=` devuelve **la lista completa de títulos sin
+> filtrar** (§8.1).
+
+---
+
+## 0. Una deducción que sale de tus números
+
+El tope aparente (~80-84) separa las 5 emisoras en dos grupos, y eso cambia cómo
+se lee cada resultado:
+
+| Emisora | docs | trimestrales | ¿al tope? | Qué significa su resultado |
+|---|---:|---:|---|---|
+| FEMSA | 84 | **1** | **sí, truncada** | dos problemas superpuestos: falta histórico **y** el clasificador falla |
+| ALSEA | 82 | — | **sí, truncada** | llega a 2021 porque ahí se corta, no porque ahí empiece |
+| WALMEX | 80 | 28 | **sí, truncada** | idem |
+| GMEXICO | 26 | 0 | **no** | **listado completo** — sus 0 trimestrales no son por filas faltantes |
+| GCC | 28 | 0 | **no** | **listado completo** — idem |
+
+Dos consecuencias:
+
+1. **"2021-2026" no es el alcance del archivo de BMV, es el alcance de una
+   página.** WALMEX y ALSEA se cortan exactamente donde se acaban las filas. El
+   archivo real puede llegar mucho más atrás — **por eso la pregunta de la
+   paginación es la que decide todo.**
+2. **GMEXICO y GCC no están truncadas**, así que su cero es información: o no
+   publican su trimestral como evento relevante, o mi clasificador no reconoce
+   su título. No es que falten filas. Se distingue mirando sus títulos — que es
+   lo que `?profundo=` devuelve.
 
 ---
 
@@ -129,69 +159,77 @@ cubra"*, y hasta correr A no se sabe qué falta.
 
 ---
 
-## 4. La matriz de cobertura
+## 4. La matriz de cobertura, con lo que ya se sabe
 
-**No la puedo cerrar sin la Parte A**, y rellenarla con suposiciones sería
-exactamente lo que estas fases existen para no hacer. Lo que sí está es la
-estructura y las celdas que ya se conocen:
+Universo: **29 emisoras × 11 años (2016-2026) × 4 trimestres = 1,276 celdas.**
 
-| Fuente | Qué da | Celdas que cubre hoy |
-|---|---|---|
-| `BMV-XBRL` | 9/9 campos | **29** — sólo 2026-T2, ya en Neon |
-| `BMV-evento` | 6/9 (comunicado) o 9/9 (si el evento adjunta el formato BMV) | **? — lo dice A.3** |
-| `IR-formatoBMV` | 9/9 | ? — AMX, CEMEX, GMEXICO al menos |
-| `IR-comunicado` | 6/9 | ? |
-| `ninguna` | — | ? |
+### 4.1 Lo confirmado
 
-El universo es **29 emisoras × 11 años (2016-2026) × 4 trimestres = 1,276
-celdas**, de las cuales **29 están llenas (2.3%)**.
+| Franja | Fuente | Celdas | Estado |
+|---|---|---:|---|
+| 2026-T2 | `BMV-XBRL` (9/9 campos) | **29** | **en Neon**, Fase 1a |
+| 2021→2026 | `BMV-evento` (6/9, o 9/9 si el evento adjunta formato BMV) | **≈ 22 por emisora que publique así** | confirmado en WALMEX y ALSEA |
+| pre-2021 | ? | ~580 | **depende de la paginación** |
+| GMEXICO, GCC y similares | no por evento | — | necesitan sitio de IR |
 
-### 4.1 Los tres escenarios, y qué cambia cada uno
+### 4.2 Por emisora, hasta donde llega la evidencia
 
-| Si A.3 dice… | Entonces |
-|---|---|
-| **Los eventos llegan a ~2016** | El histórico sale **casi todo de BMV**. La Parte B queda para tapar huecos. ~1,250 PDFs, un solo dominio, un solo scraper. **Es el mejor caso y es plausible**: un evento relevante es archivo regulatorio, no "el último disponible". |
-| **Llegan a ~2020-2021** | Mitad y mitad: ~600 celdas de BMV y ~650 repartidas entre 29 sitios de IR. El costo real se va al **descubrimiento**, no a la extracción. |
-| **Sólo unos meses hacia atrás** | BMV no sirve para histórico. Todo son sitios de IR, con 29 patrones distintos y varios sin patrón. Ahí hay que **reconsiderar comprar el histórico a BMV** (D1 de Fase 0) contra semanas de trabajo manual. |
+| Emisora | 2016-2020 | 2021-2026 | 2026-T2 | Fuente y estado |
+|---|---|---|---|---|
+| WALMEX | ? paginación | `BMV-evento` ✔ | `BMV-XBRL` ✔ | 28 trimestrales detectados |
+| ALSEA | ? paginación | `BMV-evento` ✔ | `BMV-XBRL` ✔ | 82 docs, mismo rango |
+| FEMSA | ? paginación | `BMV-evento` ? | `BMV-XBRL` ✔ | **clasificador falla** — §8.1 |
+| GMEXICO | `IR-formatoBMV` probable | `IR-formatoBMV` probable | `BMV-XBRL` ✔ | listado completo sin trimestrales; IR publica `RF_ES_{AÑO}_BMV.pdf` |
+| GCC | ? | ? | `BMV-XBRL` ✔ | listado completo sin trimestrales; IR sin censar |
+| otras 24 | ? | ? | `BMV-XBRL` ✔ | sin inspeccionar |
 
-### 4.2 Costo de extracción
+**No relleno el resto.** Con 5 de 29 inspeccionadas y la pregunta de la
+paginación abierta, cualquier número por emisora sería inventado.
 
-A ~$0.02 por PDF con `pdf-extract.mjs` (medido en Fase 0b: $0.0193 promedio,
-$0.0224 peor caso):
+### 4.3 Los dos escenarios que quedan
+
+| Si la paginación… | Celdas alcanzables desde BMV | Lo que queda para sitios de IR |
+|---|---:|---|
+| **funciona** (o hay consulta por rango de fechas) | hasta ~1,100 | los huecos de emisoras que no publican por evento |
+| **no funciona** — el tope es el techo | ~500 (2021→2026) | **~750 celdas en 29 sitios distintos** |
+
+La diferencia entre los dos es **~600 celdas y semanas de trabajo**, y se
+resuelve con un request. Por eso §8.2 es la pregunta prioritaria.
+
+### 4.4 Costo de extracción
+
+A $0.02 por PDF (medido en Fase 0b: $0.0193 promedio, $0.0224 peor caso):
 
 | Escenario | PDFs | Costo |
-|---|---|---|
-| Todo el histórico alcanzable | ~1,250 | **~$25 USD** |
-| Mitad | ~600 | ~$12 |
-| Sólo 2022→2026 | ~550 | ~$11 |
+|---|---:|---:|
+| Paginación funciona | ~1,100 | **~$22** |
+| Sólo 2021→2026 | ~500 | ~$10 |
 
-**El costo de la API no es el problema en ningún escenario.** Lo dije en Fase 0b
-y sigue siendo cierto: el cuello de botella es **descubrir las URLs**. Veinticinco
-dólares no compran las semanas de navegador que costaría un escenario 3.
+**Y si la pregunta del zip (§8.3) sale bien, el costo tiende a cero** en las
+celdas que tengan XBRL: datos estructurados no pasan por el modelo.
 
----
+El costo de API sigue sin ser el problema en ningún escenario. Lo caro es
+descubrir URLs y, si el tope es el techo, 29 sitios de IR.
 
-## 5. Recomendación: por dónde empezar
+## 5. Recomendación
 
-**1. Correr el inspector.** Doce segundos y contesta si hay un escenario 1.
+**1. Correr `?profundo=FEMSA` antes de cualquier otra cosa** (§8). Cierra las
+tres preguntas y define si el plan es "un scraper contra BMV" o "29 scrapers
+contra sitios de IR". No tiene sentido diseñar el cosechador antes de eso.
 
-**2. Si A.3 confirma eventos hacia atrás, empezar por ahí y por los años
-recientes.** No por 2016. Razones:
+**2. Empezar la cosecha por 2024-2026, no por 2016.** Se sostiene y ahora con un
+argumento más fuerte: ahí se puede **cruzar contra el XBRL que ya está en Neon**.
+Esa es verdad independiente gratis, y es exactamente lo que Fase 0b dejó
+pendiente para auditar la extracción a escala. Si el cosechador tiene un sesgo,
+se ve con 100 documentos en vez de con 1,100.
 
-- Los años recientes son los que más pesan en un backtest de rotación: más
-  emisoras vivas, mejor calidad de datos, régimen más parecido al actual.
-- Un cosechador probado sobre 2024-2026 —donde se puede **cruzar contra el XBRL
-  que ya está en Neon**— se valida solo. Ese cruce es verdad independiente
-  gratis, y es exactamente lo que Fase 0b dejó como pendiente para auditar la
-  extracción a escala.
-- Si algo está mal, se descubre con 100 documentos, no con 1,250.
+**3. Para GMEXICO y similares, ir directo al sitio de IR.** Su listado de eventos
+está completo y no trae trimestrales (§0): esperar a resolver la paginación no
+les va a servir de nada. GMEXICO además publica `RF_ES_{AÑO}_BMV.pdf` con el año
+en la ruta, que es el caso más fácil que existe — **formato BMV, 9/9 campos, URL
+construible**.
 
-**3. Dejar 2016-2018 para el final.** Es la parte con más riesgo de formato
-distinto y menos valor marginal, y es donde más probable es tener que comprar.
-
-**4. No enumerar ids.** Ni hacia atrás ni hacia adelante (§2.3).
-
----
+**4. No enumerar ids** (§2.3). La contigüidad observada no cambia eso.
 
 ## 6. Lo que necesita navegador, no script
 
@@ -212,31 +250,86 @@ Esto no lo puede hacer un cosechador y conviene saberlo antes de intentarlo:
 ## 7. Cómo correr
 
 ```bash
-# Las 5 de la Parte A
-curl -s 'https://<tu-dominio>/api/bmv-inspect?claves=WALMEX,FEMSA,GMEXICO,ALSEA,GCC' | jq
+# Censo de más emisoras (el de la 1ª corrida, para las 24 que faltan)
+curl -s 'https://<tu-dominio>/api/bmv-inspect?claves=AMX,KOF,CEMEX,BIMBO,ORBIA' | jq
 
-# Ayuda y lista de claves disponibles
-curl -s 'https://<tu-dominio>/api/bmv-inspect' | jq
+# Modo profundo: UNA emisora, las tres preguntas abiertas
+curl -s 'https://<tu-dominio>/api/bmv-inspect?profundo=FEMSA' | jq
 ```
-
-**Qué mirar primero, en este orden:**
-
-1. `informacion_financiera.xbrl_trimestral.veredicto` — **la pregunta que decide todo.**
-2. `eventos_relevantes.resultados_trimestrales.anio_min` — hasta dónde llega la veta.
-3. `eventos_relevantes.otros_muestra` — si ahí hay comunicados de resultados que
-   mi clasificador descartó, el clasificador está mal y se arregla mirando esos títulos.
-4. `estructura.docs_pub_por_tipo` de ambas páginas — qué tipos existen de verdad.
-5. `ids.conclusion` — y leer la advertencia completa.
-
-Si algún parser falla, `estructura` alcanza para arreglarlo sin otra corrida.
 
 ### Tests
 
 ```bash
-node tests/bmv-inspect.test.mjs        # 16 tests de los parsers del censo
+node tests/bmv-inspect.test.mjs        # 22 tests de los parsers del censo
 node tests/xbrl-parse.test.mjs         # 18
 node tests/xbrl-capture-fila.test.mjs  # 27
 ```
+
+---
+
+## 8. Las tres preguntas abiertas, y la corrida que las cierra
+
+```
+https://<tu-dominio>/api/bmv-inspect?profundo=FEMSA
+```
+
+Una emisora, ~6 requests, ~8 segundos. Sólo lee.
+
+### 8.1 ¿Por qué FEMSA salió con 1 de 84? — `titulos`
+
+Devuelve **los 84 títulos completos, sin filtrar**, cada uno con cómo lo
+clasificó mi código. Con eso el patrón real se ve de un vistazo.
+
+**Lo que no voy a hacer es adivinarlo.** Sé que el PDF de FEMSA se titula
+*"FEMSA Anuncia Resultados del Segundo Trimestre de 2020"* —lo tengo de Fase
+0b— y mi clasificador **sí** reconoce esa forma; hay test. Que aun así saliera 1
+de 84 significa que **el título del evento en el listado de BMV no es el título
+del PDF**. Puede ser un asunto genérico, puede estar en inglés, puede ser
+"Información Financiera Trimestral". Cualquiera de las tres cambia el arreglo, y
+elegir sin ver los títulos sería exactamente el error que esta fase evita.
+
+**Si resulta que FEMSA no publica su trimestral como evento relevante**, eso
+también es una respuesta y va al doc como tal: FEMSA pasa a depender de su sitio
+de IR (`femsa.gcs-web.com`), como GMEXICO.
+
+### 8.2 ¿El tope de ~80 filas es el techo? — `paginacion`
+
+**Es la pregunta más importante que queda**: son ~600 celdas de diferencia (§4.3).
+
+La sonda **busca el mecanismo en la página** en vez de adivinar parámetros, y
+reporta enlaces de paginación, campos de formulario y pistas de texto. Si
+encuentra un enlace, **lo sigue una vez** y compara: si trae documentos que no
+estaban, la paginación funciona y el tope no es el techo.
+
+Busca en particular campos `fechaInicial` / `fechaFinal`. BMV los usa en su
+sección de Información Digitalizada:
+
+```
+/_mod/CHANGE_PAGE?claveCotiza=X&fechaInicial=&fechaFinal=&tipoDocumento=&index=9
+```
+
+**Si la página de eventos acepta rango de fechas, el tope deja de importar**: se
+pide 2016-2018 directo y no hay que paginar nada. Sería el mejor resultado
+posible de esta fase.
+
+### 8.3 ¿El zip de eventemi trae XBRL de verdad? — `zip_eventemi`
+
+Notaste que los eventemi aparecen como `.pdf` **y** como
+`visorXbrl.html?docins=../eventemi/eventemi_XXXX_1.zip`. La sonda baja hasta 3 de
+esos zips y mira qué son: revisa los bytes mágicos (¿ZIP o PDF disfrazado?) y, si
+es zip de verdad, **lista lo que trae adentro** y busca `.json` / `.xbrl` / `.xml`.
+
+Los dos desenlaces:
+
+| Si adentro hay datos estructurados | Si el visor sólo envuelve el PDF |
+|---|---|
+| **Cambia todo el plan.** 9/9 campos sin PDF, sin modelo, con el parser de Fase 1a que ya existe. Costo de API **cero** en esas celdas, y sin el riesgo de transcripción de Fase 0b | Seguimos con `pdf-extract` a $0.02, que ya está probado y da GO |
+
+Vale la pena aclarar por qué esto es plausible y no ilusión: el visor se llama
+`visorXbrl.html` y el parámetro es `docins` — *documento instancia*, que es
+justo el término XBRL. Que BMV use ese visor para un evento relevante sugiere que
+espera encontrar un instance adentro. **Pero podría ser sólo que reutilizan el
+mismo visor para todo**, y eso es exactamente lo que la sonda distingue.
 
 ---
 

@@ -21,7 +21,9 @@ import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
 import { parseFechaBmv, filasXbrl, segmentoRuta } from './xbrl-capture.js';
 import {
   estructuraCruda, documentos, clasificarEvento, analizarIds, resumirPorTipo,
+  detectarPaginacion, zipsDeTipo,
 } from './_lib/bmv-inspect.js';
+import { leerZip } from './_lib/xbrl-parse.js';
 
 const BASE = 'https://www.bmv.com.mx';
 const PAUSA_MS = 1000;
@@ -129,10 +131,133 @@ async function censarEmisora(em) {
   return salida;
 }
 
+/* ═══════════════════════════════════════════════════════════════
+ * MODO PROFUNDO — las tres preguntas que quedaron abiertas tras la 1ª corrida.
+ * Una emisora, una corrida, las tres respuestas.
+ * ═══════════════════════════════════════════════════════════════ */
+
+async function modoProfundo(em) {
+  const ruta = `${segmentoRuta(em.clave)}-${em.id}-CGEN_CAPIT`;
+  const urlEv = `${BASE}/es/emisoras/eventosrelevantes/${ruta}`;
+  const out = { clave: em.clave, url: urlEv };
+
+  const ev = await traer(urlEv);
+  if (ev.error) return { ...out, error: ev.error };
+
+  const docs = documentos(ev.html, parseFechaBmv);
+
+  /* ── P1. TODOS los títulos, sin filtrar ──────────────────────────
+   * La 1ª corrida devolvió sólo 5 ejemplos de lo descartado, y con eso no
+   * alcanzó para entender por qué FEMSA salió con 1 de 84. Acá va la lista
+   * completa: son cadenas cortas, 84 no pesan nada, y con verlas se arregla
+   * el clasificador sin pedir otra corrida. */
+  out.titulos = {
+    n: docs.length,
+    nota: 'lista COMPLETA sin filtrar — es lo que hace falta para arreglar el clasificador',
+    filas: docs.map((d) => ({
+      archivo: d.archivo,
+      tipo: d.tipo,
+      fecha: d.fecha_publicacion || d.fecha_texto,
+      titulo: d.titulo,
+      clasificado_como: clasificarEvento(d.titulo || '').clase,
+    })),
+  };
+
+  /* ── P2. ¿El tope de ~80 filas se puede rodear? ──────────────── */
+  const pag = detectarPaginacion(ev.html);
+  out.paginacion = { ...pag, intento: null };
+
+  if (pag.enlaces_paginacion.length) {
+    // Se prueba UN enlace, el que apunte al índice más alto: si devuelve
+    // documentos distintos, la paginación funciona y el tope no es el techo.
+    const conIndice = pag.enlaces_paginacion
+      .map((h) => ({ href: h, idx: Number((/index=(\d+)/.exec(h) || [])[1] ?? -1) }))
+      .filter((x) => x.idx >= 0)
+      .sort((a, b) => b.idx - a.idx)[0] || { href: pag.enlaces_paginacion[0], idx: null };
+
+    const url = conIndice.href.startsWith('http') ? conIndice.href
+      : `${BASE}${conIndice.href.startsWith('/') ? '' : '/'}${conIndice.href}`;
+
+    await dormir(PAUSA_MS);
+    const p2 = await traer(url);
+    if (p2.error) out.paginacion.intento = { url, error: p2.error };
+    else {
+      const d2 = documentos(p2.html, parseFechaBmv);
+      const antes = new Set(docs.map((d) => d.archivo));
+      const nuevos = d2.filter((d) => !antes.has(d.archivo));
+      const anios = [...new Set(d2.map((d) => d.anio_titulo || d.anio_archivo).filter(Boolean))].sort();
+      out.paginacion.intento = {
+        url,
+        n_documentos: d2.length,
+        n_nuevos: nuevos.length,
+        anios_en_esta_pagina: anios,
+        muestra_nuevos: nuevos.slice(0, 5).map((d) => ({ archivo: d.archivo, fecha: d.fecha_publicacion, titulo: d.titulo })),
+        veredicto: nuevos.length > 0
+          ? 'LA PAGINACIÓN FUNCIONA — el tope de filas no es el techo del histórico'
+          : 'devolvió los mismos documentos: ese enlace no pagina de verdad',
+      };
+    }
+  }
+
+  /* ── P3. ¿El zip de eventemi trae XBRL de verdad o sólo envuelve el PDF? ──
+   * Si trae datos estructurados, cambia todo: serían 9/9 campos sin PDF ni
+   * modelo, a costo cero de API. */
+  const zips = zipsDeTipo(docs, 'eventemi').slice(0, 3);
+  out.zip_eventemi = { n_candidatos: zipsDeTipo(docs, 'eventemi').length, pruebas: [] };
+
+  for (const z of zips) {
+    await dormir(PAUSA_MS);
+    const url = `${BASE}/docs-pub/eventemi/${z.archivo}`;
+    let res;
+    try {
+      res = await fetch(url, { headers: { 'User-Agent': userAgent() }, signal: AbortSignal.timeout(TIMEOUT_MS) });
+    } catch (e) { out.zip_eventemi.pruebas.push({ url, error: `red: ${e.message}` }); continue; }
+
+    if (!res.ok) { out.zip_eventemi.pruebas.push({ url, http: res.status, veredicto: 'no existe como zip' }); continue; }
+
+    const buf = Buffer.from(await res.arrayBuffer());
+    const esZip = buf.length > 4 && buf.readUInt32LE(0) === 0x04034b50;
+    const esPdf = buf.subarray(0, 5).toString('latin1') === '%PDF-';
+    const prueba = {
+      url, http: res.status, bytes: buf.length,
+      content_type: res.headers.get('content-type'),
+      magic: esZip ? 'ZIP' : esPdf ? 'PDF' : buf.subarray(0, 8).toString('hex'),
+    };
+
+    if (esZip) {
+      try {
+        const dentro = leerZip(buf).map((a) => ({ nombre: a.nombre, bytes: a.datos ? a.datos.length : null, error: a.error }));
+        prueba.contenido = dentro;
+        const tieneDatos = dentro.some((a) => /\.(json|xbrl|xml)$/i.test(a.nombre));
+        prueba.veredicto = tieneDatos
+          ? 'ZIP CON DATOS ESTRUCTURADOS — esto cambia el plan del histórico: 9/9 campos sin PDF ni modelo'
+          : 'zip, pero adentro sólo hay documentos no estructurados: el visor sólo envuelve';
+      } catch (e) { prueba.veredicto = `zip ilegible: ${e.message}`; }
+    } else {
+      prueba.veredicto = esPdf ? 'es un PDF servido con nombre .zip: el visor sólo envuelve el PDF' : 'ni zip ni PDF';
+    }
+    out.zip_eventemi.pruebas.push(prueba);
+  }
+  if (!zips.length) out.zip_eventemi.nota = 'la página no enlaza ningún eventemi_*.zip; sólo .pdf';
+
+  return out;
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'method not allowed' });
+
+  // ── modo profundo: una emisora, las tres preguntas ──
+  const profunda = String(req.query.profundo || '').trim().toUpperCase();
+  if (profunda) {
+    const em = EMISORAS.emisoras.find((e) => e.clave === profunda);
+    if (!em) return res.status(400).json({ error: `${profunda} no está en emisoras.json` });
+    if (!em.id) return res.status(400).json({ error: `${profunda} no tiene id de BMV verificado` });
+    try {
+      return res.status(200).json({ generado: new Date().toISOString(), modo: 'profundo', ...(await modoProfundo(em)) });
+    } catch (e) { return res.status(500).json({ error: e.message }); }
+  }
 
   const pedidas = String(req.query.claves || '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
 
@@ -141,6 +266,7 @@ export default async function handler(req, res) {
       endpoint: '/api/bmv-inspect',
       que_hace: 'censo de qué guarda BMV hacia atrás. Sólo lee: no baja documentos ni escribe nada.',
       uso: `?claves=${DEFECTO.join(',')}`,
+      modo_profundo: '?profundo=FEMSA — para UNA emisora: todos los títulos sin filtrar, prueba de paginación y prueba del zip de eventemi',
       emisoras_disponibles: EMISORAS.emisoras.filter((e) => e.id).map((e) => e.clave),
       nota: 'con 5 emisoras son 10 requests a 1/seg, ~12 segundos.',
     });
