@@ -45,6 +45,9 @@
     "api/rotation-analyze.js": {
       "maxDuration": 300
     },
+    "api/earnings-beat.js": {
+      "maxDuration": 300
+    },
     "api/*.js": {
       "maxDuration": 60
     }
