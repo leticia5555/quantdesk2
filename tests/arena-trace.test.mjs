@@ -443,5 +443,87 @@ console.log('\n── el reintento de una vuelta útil le gana a un segundo cier
     'el cierre pide lo que QUEDA, no 45s que ya no existen');
 }
 
+// ── 12) UN 429 ES UNA COLA, NO UNA PARED ─────────────────────────────
+// Sombra de los siete, 2026-09-17: `openai` murió en la vuelta 2 con
+// "gpt-6-astra is temporarily rate-limited upstream (code 429). Please retry
+// shortly". El proveedor decía literalmente que se reintentara, y el loop lo
+// trataba igual que a un contexto excedido: salida inmediata, cuatro
+// herramientas ya pagadas a la basura.
+console.log('\n── un error transitorio se espera; uno definitivo no ──');
+{
+  const { esTransitorio, CODIGOS_TRANSITORIOS } = await import('../api/_lib/arena-model.js');
+
+  ok(esTransitorio({ code: 429, message: 'temporarily rate-limited upstream. Please retry shortly' }, {}),
+    'un 429 se reintenta: es una cola');
+  ok(esTransitorio({ code: null, message: 'Provider returned error: overloaded' }, {}),
+    'y el texto sirve de respaldo cuando no viene `code`');
+  ok(!esTransitorio({ code: 400, message: 'maximum context length exceeded' }, {}),
+    'un contexto excedido NO: esperar contra una pared es gastar el reloj');
+  ok(!esTransitorio({ code: 403, message: 'blocked by moderation' }, {}), 'una moderación tampoco');
+  ok(CODIGOS_TRANSITORIOS.has(503) && !CODIGOS_TRANSITORIOS.has(400),
+    'la lista es corta a propósito: solo lo que se mueve solo');
+
+  // El loop: reintenta UNA vez y sigue la corrida.
+  const rate = { status: 502, data: null, transitorio: true, error_detail: '429 rate-limited', proveedor: null };
+  const conHerramienta = {
+    status: 200,
+    data: {
+      content: [{ type: 'tool_use', id: 'c1', name: 'screener', input: {} }],
+      _raw_message: { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'screener', arguments: '{}' } }] },
+    },
+  };
+  const cierra = { status: 200, data: { content: [{ type: 'text', text: '{"weights":{}}' }] } };
+  let n = 0;
+  const fases = [];
+  const call = async (a) => { fases.push(a.fase || null); n++; return n === 1 ? rate : n === 2 ? conHerramienta : cierra; };
+  const loop = await runToolLoop({
+    agent: { id: 'openai', provider: 'openrouter', model: 'x' },
+    system: 's', messages: [{ role: 'user', content: 'u' }],
+    executor: createToolExecutor({ budget: 8, board: null, universe: null, cache: false }),
+    call, trace: createTrace(),
+  });
+
+  ok(fases.some((f) => /reintento_transitorio/.test(f || '')),
+    'el 429 se reintenta en la MISMA vuelta', JSON.stringify(fases));
+  ok(loop.stopped_by !== 'error',
+    'y la corrida NO se pierde: sigue y llega al cierre', loop.stopped_by);
+  ok(loop.errores_transitorios && loop.errores_transitorios.length === 1,
+    'el 429 queda journaleado aunque se haya recuperado: un proveedor en cola es un dato',
+    JSON.stringify(loop.errores_transitorios));
+
+  // Un SEGUNDO transitorio no se reintenta: insistir es la misma fila.
+  let m = 0;
+  const call2 = async () => { m++; return m <= 2 ? rate : cierra; };
+  const loop2 = await runToolLoop({
+    agent: { id: 'openai', provider: 'openrouter', model: 'x' },
+    system: 's', messages: [{ role: 'user', content: 'u' }],
+    executor: createToolExecutor({ budget: 8, board: null, universe: null, cache: false }),
+    call: call2,
+  });
+  ok(loop2.stopped_by === 'error' && loop2.murio_en.transitorio === true,
+    'dos veces en cola sí corta, y el diagnóstico dice que fue transitorio',
+    JSON.stringify(loop2.murio_en && loop2.murio_en.transitorio));
+  ok(loop2.murio_en.reintentado === true, 'dejando dicho que YA se reintentó una vez');
+}
+
+// ── 13) EL HUECO DE LA CAPTURA DE PROVEEDOR ──────────────────────────
+// La exclusión automática esperaba un nombre que, por construcción, no llega
+// cuando el cuerpo no llega: OpenRouter manda el proveedor DENTRO del cuerpo.
+// qwen abortó con `proveedor: null` en los cuatro intentos y la exclusión nunca
+// pudo dispararse. El hueco no se puede cerrar desde acá — pero sí se puede
+// dejar de ser un callejón sin salida.
+console.log('\n── un `proveedor: null` tiene que decir qué hacer ──');
+{
+  const src = await import('node:fs').then((fs) => fs.readFileSync('api/_lib/arena-model.js', 'utf8'));
+  ok(/politicaPedida: body\.provider \|\| null/.test(src),
+    'la política que se MANDÓ viaja con la respuesta: es lo único que queda cuando el proveedor no se puede leer');
+  ok(/ARENA_PROVIDER_IGNORE_<AGENTE>/.test(src),
+    'y el error dice la salida concreta, en el mensaje y no solo en un campo');
+
+  const loopSrc = await import('node:fs').then((fs) => fs.readFileSync('api/_lib/arena-tool-loop.js', 'utf8'));
+  ok(/sin_proveedor: !puedeCambiar/.test(loopSrc) && /sin_reloj: !quedaReloj/.test(loopSrc),
+    'el cierre omitido reporta las DOS condiciones, no la primera que falle: decir solo una manda a arreglar media cosa');
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
 process.exit(failures ? 1 : 0);

@@ -694,6 +694,76 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B26 · SOMBRA DE LOS SIETE: 5/7, y grok SÍ cerró
+
+`2026-09-16 19:00 UTC`, commit `289453f`, costo **$1.01**.
+
+| agente | resultado |
+|---|---|
+| claude | `ok_target` · 11 herramientas · 6 posiciones · lente `catalizador` |
+| control | `ok_target` · 9 herramientas · 7 posiciones · lente `catalizador` |
+| **grok** | **`ok_target`** · 20/20 herramientas · 4 posiciones |
+| gemini | `ok_target` · 11 herramientas · 5 posiciones (2 cortos) |
+| deepseek | `ok_target` · 20/20 herramientas · 3 posiciones |
+| openai | `aborted_llm_error` — **429 rate limit upstream** |
+| qwen | `aborted_cuerpo_vacio` — **timeout nuestro, proveedor desconocido** |
+
+**El reparto del reloj funcionó**: grok gastó sus 20 herramientas y cerró. Los
+rieles también — `with_sector` en 6/6, 7/7, 4/4, 5/5, 3/3 y
+`sector_unknown_bucket: 0` en todos, contra los ceros de hace dos días.
+
+### openai: un 429 no es una pared
+
+```
+openai/gpt-6-astra is temporarily rate-limited upstream.
+Please retry shortly (code 429)
+```
+
+Murió en la vuelta 2 con **cuatro herramientas ya pagadas**. El proveedor decía
+literalmente que se reintentara, y el loop lo trataba igual que a un contexto
+excedido: salida inmediata, corrida perdida.
+
+Una **cola** se espera; una **pared** no. `esTransitorio()` separa las dos con
+una lista corta a propósito —429, 502, 503, 529, más un respaldo por texto— y
+excluye explícitamente lo que no se mueve solo (contexto excedido, moderación).
+Un reintento por corrida, con 6s de espera: volver a los 2 segundos es ponerse al
+final de la misma cola.
+
+Si vuelve a fallar, sale por el camino de siempre con `murio_en.transitorio` y
+`reintentado: true`, para que no se confunda con un fallo nuevo. Y
+`errores_transitorios[]` se journalea **aunque la corrida se recupere**: un
+proveedor en cola es un dato sobre el proveedor, no solo sobre la corrida que
+falló.
+
+### qwen, y el hueco de mi propio diseño
+
+```json
+{"vuelta":5,"intento":1,"proveedor":null,"timeout_nuestro":true,"ms":34678}
+{"vuelta":5,"intento":2,"proveedor":null,"timeout_nuestro":true,"ms":32984}
+{"vuelta":"cierre","intento":1,"proveedor":null,"timeout_nuestro":true,"ms":104985}
+```
+
+**La exclusión automática de proveedor no se disparó, y no podía.** OpenRouter
+manda el proveedor **dentro del cuerpo** — así que en el caso exacto en el que
+hace falta saber quién colgó, el dato no llega. El diseño de B23 esperaba un
+nombre que por construcción no iba a existir.
+
+El hueco no se cierra desde acá. Lo que sí se arregla es que deje de ser un
+callejón sin salida:
+
+- `politica_pedida` viaja con la respuesta: qué routing se **pidió**, que es lo
+  único que se sabe con certeza cuando el proveedor no se puede leer.
+- El error dice la salida concreta —`ARENA_PROVIDER_IGNORE_<AGENTE>`, sin
+  deploy— **en el mensaje**, no en un campo que hay que ir a buscar.
+- El cierre omitido reporta las **dos** condiciones (`sin_proveedor`,
+  `sin_reloj`). El reporte decía solo "no se sabe qué proveedor atendió" cuando
+  además el reloj estaba agotado a los 105s, y eso manda a arreglar media cosa.
+
+**Y el segundo dato importa más que el primero: 105 segundos y sin cuerpo.** Más
+reloj no es la respuesta para qwen — el cierre ya recibió el doble de lo que
+recibía antes. La salida es el routing, y eso se configura con evidencia: el
+trace de una corrida que **sí** contestó dice quién atendía.
+
 ## B24 · EL REPARTO ENTRE INVESTIGAR Y DECIDIR
 
 Sombra de los siete, 2026-09-17: **6/7**. El único que cayó fue `grok`, y con el
