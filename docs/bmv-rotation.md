@@ -2,8 +2,30 @@
 
 > **Estado: Fase A construida, sin correr.** El cosechador existe y está
 > probado; los datos todavía no. Los criterios de GO/NO-GO de la Fase B están
-> **congelados en este documento y en código antes de ver un solo número** —
-> que es el único momento en que congelarlos significa algo.
+> **congelados en este documento antes de ver un solo número** — que es el único
+> momento en que congelarlos significa algo.
+
+> ### Corrección del 16-sep-2026, antes de cualquier resultado
+> Cuatro cambios al diseño, los cuatro pedidos cuando la Fase A **todavía no
+> había corrido** y no existía ni un número del backtest:
+>
+> 1. El filtro de liquidez pasa de **mediana del universo** a **umbral absoluto**
+>    de 5 millones de pesos (§3.1).
+> 2. La canasta gana **piso de 8 y techo de 15** nombres, y la puerta de
+>    INCONCLUSO se muda al **universo elegible** (§3.3, §3.4).
+> 3. El benchmark queda **NAFTRAC ISHRS** y es de **retorno total**, no de
+>    precio (§3.3).
+> 4. **Los dos lados** pasan a retorno total: la canasta reinvierte los
+>    dividendos de cada emisora en su fecha ex-cupón, igual que el benchmark
+>    (§3.3). Se reportan **cuatro series** y el veredicto se lee **total vs
+>    total**.
+>
+> La fecha y el orden se anotan a propósito. Un criterio que se mueve **después**
+> de los números deja de ser un criterio, y la única prueba de que éstos no se
+> movieron así es que los números todavía no existen.
+>
+> **Los umbrales de GO no se tocaron en ninguno de los cuatro cambios**: |t| ≥ 2
+> y Sharpe ≥ NAFTRAC + 0.15 siguen donde estaban desde el principio.
 
 Espejo estructural de `/api/rotation-analyze`, el backtest gringo que en agosto
 salió **NO-GO** con t=0.49 y Sharpe por debajo del SPY. Se reutiliza lo que
@@ -29,7 +51,7 @@ Lo que se hizo en vez de adivinar:
 
 | | |
 |---|---|
-| **`?job=probe`** | Gasta ≤15 requests y **descubre** el contrato: prueba 8 grafías del periodo y 5 del rango de fechas, y guarda la que funcione en `bmv_meta`. Si falla, falla **barato** y devuelve el cuerpo crudo del error — que es donde las APIs suelen decir exactamente qué parámetro falta. |
+| **`?job=probe`** | Gasta ≤18 requests y **descubre** el contrato: prueba 8 grafías del periodo, 5 del rango de fechas y 2 del identificador del benchmark, y guarda la que funcione en `bmv_meta`. Si falla, falla **barato** y devuelve el cuerpo crudo del error — que es donde las APIs suelen decir exactamente qué parámetro falta. |
 | **Crudo siempre** | Cada respuesta de financieros se guarda completa en `jsonb`. Si la normalización quedó mal, se corrige con un `UPDATE` sobre lo guardado, **sin gastar un crédito más**. |
 | **Fail-closed** | Un campo que no resuelve es `null` **con motivo**, nunca un cero ni un proxy. Misma regla que el XBRL. |
 
@@ -52,6 +74,7 @@ publicación**, que es justo lo que DataBursatil no tiene
 | `bmv_emisoras` | El censo. `rango_financieros` → `fin_desde`/`fin_hasta`. |
 | `bmv_financieros` | Emisora × trimestre: crudo completo + 7 campos normalizados + `faltantes`. |
 | `bmv_precios` | Cierre diario e importe operado. |
+| `bmv_distribuciones` | Repartos de **todas** las emisoras por fecha **ex-cupón** — canasta y benchmark. Llegan con el censo: no cuestan un request. |
 | `bmv_harvest_ledger` | Qué se pidió y cómo salió. La idempotencia vive aquí. |
 | `bmv_api_budget` | Créditos por mes **CDMX**. |
 | `bmv_meta` | El contrato descubierto por el probe. |
@@ -110,21 +133,21 @@ El volumen, con las 30 ICS de Fase 1a y la cobertura declarada 2T2016→2T2026
 |---|---:|---:|
 | Censo de emisoras | 1 | — |
 | Financieros (30 × 41) | 1,230 | ~73,800 campos |
-| Históricos (rango completo, 1 por emisora) | 30 | ~80,940 días |
-| **Total** | **1,261** | |
+| Históricos (rango completo, 1 por emisora **+ el benchmark**) | 31 | ~83,638 días |
+| **Total** | **1,262** | |
 
 **No sé cómo cobra DataBursatil**, así que el reporte da **tres modelos** — y la
 diferencia entre ellos no es cosmética, decide si la cosecha cabe en un mes:
 
 | Modelo | Costo | ¿Cabe en 200,000? |
 |---|---:|---|
-| **A** · por request | 1,261 | **Sí**, con muchísimo margen (0.6%) |
-| **B** · por dato devuelto | 154,740 | **Sí**, con 23% de margen |
-| **C** · por campo × día (cierre **e** importe) | 235,680 | **NO** |
+| **A** · por request | 1,262 | **Sí**, con muchísimo margen (0.6%) |
+| **B** · por dato devuelto | 157,438 | **Sí**, con 21% de margen |
+| **C** · por campo × día (cierre **e** importe) | 241,076 | **NO** |
 
 **El hallazgo que vale la pena decir en voz alta: bajo el modelo C la cosecha
 no cabe en un mes.** Y si se pidieran los precios desde 2010 —el rango completo
-que la API ofrece— el modelo B sube a **200,100**: se pasa por **100
+que la API ofrece— el modelo B sube a **204,310**: se pasa por **4,310
 créditos**. Por eso el piso de precios por defecto es 2016-01-01 y no 2010, y
 por eso `?job=probe` corre primero: si la API publica el saldo en headers, el
 cosechador lo guarda y el presupuesto deja de ser una estimación.
@@ -141,7 +164,7 @@ que partirla no cueste nada**: el segundo mes retoma donde paró el primero.
 
 ```
 ?job=estimate                    # público, sin red ni créditos
-?job=probe                       # ≤15 requests: descubre el contrato
+?job=probe                       # ≤18 requests: descubre el contrato
 ?job=emisoras                    # 1 request: el censo
 ?job=estimate                    # otra vez, ya con el censo REAL
 ?job=financieros&max=60          # repetir hasta restantes=0
@@ -156,17 +179,38 @@ Los cuatro jobs que escriben van protegidos con `Authorization: Bearer
 
 ## 3. Fase B — los criterios, congelados
 
-**Nada de esto se mueve después de ver los números.** Están escritos aquí y
-fijados en código para que, si alguien los cambia, el diff lo delate.
+**Nada de esto se mueve después de ver los números.** Lo que ya toca código —el
+identificador del benchmark, el filtro del universo, el rezago— está fijado ahí
+y con test. El resto vive en esta sección y se fijará en código al construir la
+Fase B: **el diff contra este documento es la verificación**.
 
 ### 3.1 Universo en cada rebalanceo
 
 Emisoras **ICS** (`tipo_valor_id=1`) con financieros disponibles a esa fecha
 —**incluidas las SUSPENDIDAS mientras tuvieron precios**— y con **mediana del
-importe operado de los últimos 3 meses por arriba de la mediana del universo**.
+importe operado de los últimos 3 meses ≥ 5 millones de pesos**, calculada en
+**cada** rebalanceo.
 
-Se reportan los elegibles y **las exclusiones por motivo** en cada rebalanceo.
-Una exclusión sin motivo es un universo que nadie puede auditar.
+**Umbral absoluto, no mediana del universo.** El propósito es **excluir lo no
+operable**, no partir el universo en dos. Un filtro por mediana tira siempre la
+mitad: con un universo líquido descarta emisoras perfectamente negociables, y
+con uno ilíquido deja pasar la mitad menos mala. El umbral absoluto contesta la
+pregunta que importa —**¿se puede comprar esto?**— en vez de una relativa que
+cambia de significado según con quién se compare.
+
+Se reportan los elegibles, **las exclusiones por motivo** en cada rebalanceo, y
+**cuántas caen por el filtro de liquidez en cada fecha**. Una exclusión sin
+motivo es un universo que nadie puede auditar.
+
+> ### Tripwire de calibración, entre la Fase A y la Fase B
+> Si el filtro de 5 millones excluye **más de un tercio del universo en
+> promedio**, el umbral está mal calibrado para BMV y **se baja antes de correr
+> el backtest**, no después.
+>
+> Que esto pueda hacerse sin contaminar nada no es casualidad: el porcentaje
+> excluido se calcula con **censo y precios solamente**, sin tocar un solo
+> retorno de la estrategia. O sea que recalibrar el umbral es imposible de
+> sesgar con resultados — todavía no hay resultados que mirar.
 
 ### 3.2 Value — y los 65 días
 
@@ -208,16 +252,92 @@ backtest puede confundir con alfa.
 | Momentum | **12-1** sobre precios diarios (de t−12m a t−1m). |
 | Score | **Promedio de los dos ranks percentiles** dentro del rebalanceo. |
 | Precio del ranking | **Cierre del día anterior** — la canasta tiene que quedar armada antes de la apertura en que se ejecuta, o el backtest no es replicable en vivo. |
-| Cartera | **Quintil superior**, equal-weight. |
+| Cartera | **Quintil superior con piso 8 y techo 15**, equal-weight. Si el quintil da menos de 8 → los **8 mejores**; si da más de 15 → los **15 mejores**. |
 | Rebalanceo | **Mensual**. |
 | Costos | **10 bp por lado** sobre el turnover real. |
-| Benchmark | **NAFTRAC** (ETF del IPC, invertible, misma API). |
+| Benchmark | **NAFTRAC ISHRS** (emisora NAFTRAC, serie ISHRS, `tipo_valor_id` **1B**), de **RETORNO TOTAL**. |
+
+#### Retorno total **de los dos lados**, y eso no es un detalle
+
+NAFTRAC reparte. Compararse contra su **precio pelón** le resta ~3% anual al
+benchmark — o sea que nos **regala** un exceso de ~3%/año que nunca existió. Con
+un umbral económico de Sharpe + 0.15, un regalo de ese tamaño no es ruido: es
+suficiente para **fabricar un GO**.
+
+Pero las emisoras de la canasta **también reparten**. Medirla a precio contra un
+benchmark de retorno total sería **el mismo error con el signo volteado**, y por
+un monto del mismo orden: en vez de regalarnos un exceso, nos cobraría uno.
+
+Así que **los dos lados** son **precio + distribuciones reinvertidas en la fecha
+ex-cupón**: la canasta reinvierte los dividendos de cada emisora en la fecha ex
+de esa emisora, exactamente como el benchmark reinvierte los suyos. La fecha
+**ex**, no la de pago: reinvertir en la de pago adelantaría el flujo y metería
+look-ahead por la puerta de atrás — justo lo que los 65 días cierran del otro
+lado.
+
+Los montos se toman **brutos**, de los dos lados. El ISR sobre dividendos aplica
+igual a la canasta y al benchmark, así que a primer orden se cancela en el
+exceso; aplicarlo a un solo lado sí sería un sesgo.
+
+##### Se reportan CUATRO series
+
+| Serie | Qué deja ver |
+|---|---|
+| **Canasta — total** | **El numerador del veredicto.** |
+| **NAFTRAC — total** | **El denominador del veredicto.** |
+| Canasta — precio | Cuánto aportaron los dividendos de las emisoras. |
+| NAFTRAC — precio | Cuánto aportaron los del benchmark — el ~3%/año que motivó todo esto. |
+
+**El veredicto se lee total vs total.** Las otras dos existen para que la
+asimetría sea **auditable**: con las cuatro a la vista, cualquiera puede medir
+cuánto valían los dividendos de cada lado y comprobar que la corrección no
+fabricó el resultado. Una diferencia que se asume no se puede revisar; una que
+se reporta, sí.
+
+Y de paso queda medido si el ~3%/año era de verdad ~3%: es una cifra que este
+documento venía citando de oído, y con las cuatro series deja de hacer falta
+creerla.
+
+Las distribuciones vienen dentro de la respuesta de `/v2/emisoras`, así que no
+cuestan un request extra: llegan con el censo, **para cada emisora**, y se
+guardan en `bmv_distribuciones`.
+
+> **Un hueco aquí no es un hueco cualquiera.** Una ICS sin reparto puede ser que
+> de verdad no reparta, o que el dato no venga — y lo segundo la mide a precio
+> contra un benchmark que sí trae distribuciones, o sea que **rompe la simetría
+> justo donde no se ve**. Por eso `?job=emisoras` y `?job=cobertura` reportan
+> cuántas ICS traen reparto y **listan por nombre las que no**.
+
+**El benchmark no puede colarse a su propia canasta, y la razón es estructural.**
+Es `tipo_valor_id` **1B**; el universo filtra por `= '1'`, igualdad exacta de
+texto, y el censo guarda el tipo **sin coerción**: `'1B'` nunca empata con `'1'`.
+No hace falta una excepción escrita a mano para excluirlo, y hay un test que se
+cae si alguien cambia ese filtro por un `LIKE` o un `Number()`.
 
 ### 3.4 Los criterios de GO
 
-1. **Muestra** — ≥ **30 rebalanceos** y ≥ **8 nombres** por canasta. Si no se
-   cumple → **INCONCLUSO**, que no es NO-GO: NO-GO afirma que la estrategia no
-   sirve, y sin muestra no se afirma nada.
+1. **Muestra** — ≥ **30 rebalanceos**, y **universo elegible ≥ 16 en la mediana
+   de los rebalanceos**. Si el universo elegible mediano queda por debajo de 16
+   → **INCONCLUSO por universo insuficiente, y la Fase B no se corre.** No es
+   NO-GO: NO-GO afirma que la estrategia no sirve, y sin universo no se afirma
+   nada.
+
+   > El piso de 8 no puede sacar nombres de donde no hay. Si en algún rebalanceo
+   > el universo elegible fuera menor a 8, la canasta es el universo completo y
+   > **ese rebalanceo se reporta aparte, con su fecha**. Con la puerta del
+   > universo mediano ≥ 16 debería ser raro; si resulta frecuente, es una señal
+   > sobre el dato, no un detalle de implementación.
+
+4. **Etiqueta de régimen.** El reporte dice **en qué porcentaje de los
+   rebalanceos mandó el piso** y en cuáles el quintil. Si el piso mandó en
+   **más del 50%** de las fechas, el veredicto se etiqueta
+   **«no probó un quintil»** — pase lo que pase, y aunque los umbrales 2 y 3 se
+   cumplan con holgura.
+
+   Esto no es un cuarto umbral: no puede convertir un GO en NO-GO ni al revés.
+   Es una etiqueta sobre **qué se probó**, y existe porque un GO obtenido con un
+   top 40% no autoriza a operar un quintil — son estrategias distintas con el
+   mismo nombre.
 2. **Señal** — **|t| ≥ 2** del exceso diario vs NAFTRAC, en **calendar-time**.
 3. **Economía** — **Sharpe neto ≥ Sharpe de NAFTRAC + 0.15**.
 
@@ -234,6 +354,13 @@ backtest puede confundir con alfa.
 Decil · sólo value · sólo momentum · y una con **lag de 90 días**. Todas
 comparten la **misma población elegible**.
 
+El piso y techo de 8-15 son una regla de **construcción de cartera**, no un
+criterio, así que aplican también a las variantes: si no, no serían comparables.
+Eso tiene una consecuencia que conviene anticipar — el decil da `0.10 × E`
+nombres, así que **con un universo elegible menor a 40, decil y quintil producen
+exactamente la misma canasta de 8**. En ese caso la sensibilidad de decil no
+dice nada, y se reporta como **vacía**, no como una diferencia de cero.
+
 **Ninguna promueve un NO-GO a GO.** Sirven para entender de dónde viene (o no
 viene) el resultado. Si la principal sale NO-GO y una sensibilidad sale
 bonita, el veredicto sigue siendo NO-GO y la sensibilidad es una nota al pie.
@@ -242,32 +369,47 @@ bonita, el veredicto sigue siendo NO-GO y la sensibilidad es una nota al pie.
 
 ## 4. Caveats, declarados antes de correr
 
-### 4.1 El universo es chico, y hay una aritmética que decide si esto puede concluir
+### 4.1 El universo es chico, y el piso de 8 tiene un costo que hay que decir
 
-El filtro de liquidez parte el universo por la **mediana**, o sea que deja
-~50%. El quintil de eso es el 20%. Entonces:
+La versión anterior de este documento partía el universo por la mediana, así que
+la canasta era `0.10 × N` y hacían falta ~80 emisoras para llegar a 8 nombres.
+El umbral absoluto más el piso cambian la aritmética, pero **no hacen
+desaparecer el problema: lo mueven de sitio y lo vuelven visible**.
 
-```
-nombres por canasta ≈ 0.20 × 0.50 × N  =  0.10 × N
-```
+La canasta ahora es `clamp(0.20 × E, 8, 15)` sobre el universo elegible `E`:
 
-**Para llegar a los 8 nombres del criterio 1 hacen falta N ≥ 80 emisoras ICS
-con financieros a esa fecha.** Con las **30** ICS curadas de Fase 1a la canasta
-daría **3 nombres**: INCONCLUSO, sin discusión.
+| Universo elegible `E` | Canasta | Qué fracción del universo resulta |
+|---:|---:|---|
+| 16 | 8 | **50%** — manda el piso |
+| 20 | 8 | 40% |
+| 30 | 8 | 27% |
+| **40** | **8** | **20% — aquí el quintil por fin es un quintil** |
+| 60 | 12 | 20% |
+| 75 | 15 | 20% |
+| 100 | 15 | 15% — manda el techo |
 
-Por eso el reporte de `?job=emisoras` dice **cuántas ICS salieron**, y por eso
-ese número es lo primero que hay que mirar: **decide si el backtest puede
-concluir algo antes de correrlo**. Si el censo real de DataBursatil trae ~140
-ICS locales, la canasta ronda 14 nombres y el criterio se cumple con holgura.
-Si trae 60, no.
+**Entre 16 y 40 elegibles manda el piso, y la "canasta del quintil superior" es
+en realidad un top 27-50%.** Eso no es un error: es el intercambio que el piso
+compra a propósito — estabilidad estadística a cambio de selectividad.
 
-Y si el quintil da menos de 8, **es INCONCLUSO, no "casi"**. No se baja el
-umbral a 6 ni se ensancha el quintil para que alcance. Ese es el punto entero
-de congelar los criterios antes.
+Pero tiene una **dirección**, y vale decirla: menos selectividad **diluye** la
+señal. Si hay alfa en el quintil verdadero, este diseño la **subestima**. O sea
+que sesga **en contra** de un GO — el mismo lado que los 65 días. Consecuencia
+práctica: **un GO bajo estas reglas es más creíble, y un NO-GO es más ambiguo.**
 
-> La sensibilidad de **decil** necesitaría N ≥ 160 para los mismos 8 nombres.
-> Es esperable que salga con canastas chicas — otra razón por la que las
-> sensibilidades son atribución y no promoción.
+Por eso el reporte dice, en cada rebalanceo, **cuál de los tres regímenes estuvo
+activo** (piso, quintil puro, techo) y **en qué porcentaje de las fechas mandó
+cada uno**. Y por eso existe la etiqueta del §3.4 criterio 4: **si el piso mandó
+en más del 50% de las fechas, el veredicto se etiqueta «no probó un quintil»**,
+pase lo que pase con los umbrales.
+
+Un backtest donde el piso mandó el 90% del tiempo no probó un quintil: probó un
+top 40%. Son estrategias distintas con el mismo nombre, y un GO de una no
+autoriza a operar la otra.
+
+Y sigue siendo cierto lo que ya decía esta sección: el número de ICS que
+devuelva `?job=emisoras` es **lo primero que hay que mirar**, porque con un
+universo elegible mediano por debajo de 16 la Fase B **no se corre**.
 
 ### 4.2 Los financieros son de un tercero sin SLA
 
@@ -300,13 +442,54 @@ metodológica: es lo que los datos permiten, y conviene no leerlo como otra cosa
 
 ---
 
-## 5. Lo que falta preguntar
+## 5. Por qué esta corrección es pre-registro y no mover la portería
 
-**¿NAFTRAC está en `/v2/historicos`?** Es el benchmark y es invertible. Si no
-está, **hay que preguntar antes de sustituirlo por el índice IPC**: el IPC no
-es invertible, así que cambiar a él no cambia el dato, **cambia el criterio** —
-el exceso pasaría a medirse contra algo que nadie puede comprar. `?job=emisoras`
-y `?job=cobertura` lo reportan explícitamente, con esa advertencia escrita.
+La simetría de retorno total se decidió **después** de que este documento ya
+existía, así que merece justificarse en vez de aparecer sin más. Tres razones,
+y una precisión que conviene hacer para no venderla mejor de lo que es.
+
+**1. Se hizo antes de ver un solo número.** La Fase A no ha corrido. No hay
+cobertura, no hay serie de precios, no hay un retorno calculado. No existe el
+resultado contra el cual se podría haber sintonizado la regla — y esa es la
+única garantía dura, porque las otras dos dependen de un juicio.
+
+**2. Corrige una asimetría de MEDICIÓN, no un umbral.** Ésta es la distinción
+que hace la diferencia. Bajar |t| de 2 a 1.7, o el margen de Sharpe de 0.15 a
+0.05, sería mover la portería: cambia **qué tan bien hay que salir** para pasar.
+Lo que se cambió aquí es **cómo se mide cada lado**, para que los dos se midan
+igual. **Los umbrales de GO no se tocaron** — |t| ≥ 2 y Sharpe ≥ NAFTRAC + 0.15
+siguen exactamente donde estaban.
+
+Dicho de otro modo: la regla nueva se puede escribir sin mencionar el resultado
+que produce. Una regla que sólo se justifica por el número que arroja es una
+portería movida; una que se justifica por la definición de la medición, no.
+
+**3. Es auditable por construcción.** Las cuatro series (§3.3) dejan ver cuánto
+aportaron los dividendos de cada lado. Si la corrección hubiera fabricado el
+resultado, se vería ahí.
+
+### La precisión, para no venderla mejor de lo que es
+
+El argumento de que **el efecto es de signo desconocido a priori** vale para el
+paquete completo —volver total los dos lados desde un mundo donde los dos eran
+precio— y ahí sí depende de algo que no sabemos: si el rendimiento por dividendo
+de la canasta supera al de NAFTRAC. Como la canasta es **value** (EPS/precio
+alto) y los nombres value suelen repartir más que el índice, es plausible que sí,
+pero plausible no es sabido.
+
+**Este cambio en particular, en cambio, sí tiene signo conocido: nos favorece.**
+Sumarle dividendos a la canasta sube su retorno medido, y el benchmark ya los
+traía desde el cambio anterior. Conviene decirlo con todas sus letras en vez de
+apoyarse en el "signo desconocido", porque un cambio que favorece a quien lo
+propone es justo el que merece más escrutinio — y aquí lo que lo sostiene no es
+la ignorancia del signo, sino que **la regla se justifica sola**: dos series que
+se comparan tienen que medirse igual, y eso era cierto antes de saber a quién
+beneficiaba.
+
+La prueba que este documento se aplica: **la asimetría la señalé cuando jugaba
+en contra de la estrategia** (§5 de la versión anterior, con el benchmark ya en
+total y la canasta en precio). Corregirla ahora que juega a favor es la misma
+regla aplicada dos veces, no una excepción conveniente.
 
 ---
 
@@ -314,10 +497,10 @@ y `?job=cobertura` lo reportan explícitamente, con esa advertencia escrita.
 
 | Pieza | Estado |
 |---|---|
-| `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + presupuesto. |
-| `api/_lib/bmv-db.js` | Hecho. 6 tablas nuevas, `xbrl_reports` intacta. |
+| `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
+| `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 7 jobs, idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. 47 tests, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **59 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **La cosecha** | **Sin correr** — este sandbox no alcanza la API. |
 | **Cobertura real** | **Sin reportar** — depende de la cosecha. |
