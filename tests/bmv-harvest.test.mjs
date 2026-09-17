@@ -25,6 +25,7 @@ import {
   aNumero, aplanarHistoricos, clavePeriodo, construirUrl, emisoraSerie, valorDeCampo,
   extraerDistribuciones, finDeTrimestre, mesPresupuesto, normalizarFinancieros,
   parseClavePeriodo, periodoApi, restaDias, DIAS_EX_APROX, UMBRAL_PLACEHOLDER,
+  recortarAlPeriodo, finDeClave,
   consolidarDistribuciones, categoriaReparto, esEfectivo, requiereConversion,
   parsearRangoFechas, parsearRangoPeriodos, recortarACobertura, resolverCampo,
   trimestresEntre, urlSegura,
@@ -1492,4 +1493,137 @@ test('el handler contesta los jobs públicos sin reventar por nombres', async ()
     assert.ok(!/is not defined|is not a function/.test(texto),
       `el handler devolvió un error de nombre: ${texto.slice(0, 200)}`);
   }
+});
+
+/* ═══════════════════════════════════════════════════════════════
+ * DOS PERIODOS POR RESPUESTA. Cada llamada a /v2/financieros trae el
+ * solicitado Y el comparativo del año anterior:
+ *
+ *   posicion:            { "2017-06-30", "2016-12-31" }
+ *   resultado_trimestre: { "2017-04-01_2017-06-30", "2016-04-01_2016-06-30" }
+ *
+ * `resolverCampo` veía dos valores, los declaraba AMBIGUO y fallaba
+ * cerrado. Correcto como default; equivocado acá, porque no hay
+ * ambigüedad que resolver: hay que SELECCIONAR POR FECHA.
+ * ═══════════════════════════════════════════════════════════════ */
+
+/** La respuesta real de WALMEX 2T_2017, con sus dos periodos. */
+const DOS_PERIODOS = {
+  posicion: {
+    '2017-06-30': { assets: ['activos', 1000], liabilities: ['pasivos', 400], equity: ['capital', 600], cashandcashequivalents: ['efectivo', 50] },
+    '2016-12-31': { assets: ['activos', 900], liabilities: ['pasivos', 380], equity: ['capital', 520], cashandcashequivalents: ['efectivo', 45] },
+  },
+  resultado_trimestre: {
+    '2017-04-01_2017-06-30': { revenue: ['ingresos', 135723675000], basicearningslosspershare: ['upa', 0.77], profitlossattributabletoownersofparent: ['contro', 13000] },
+    '2016-04-01_2016-06-30': { revenue: ['ingresos', 125000000000], basicearningslosspershare: ['upa', 0.70], profitlossattributabletoownersofparent: ['contro', 11800] },
+  },
+};
+
+test('finDeClave entiende las dos formas de llave', () => {
+  assert.equal(finDeClave('2017-06-30'), '2017-06-30', 'posicion: la fecha ES el cierre');
+  assert.equal(finDeClave('2017-04-01_2017-06-30'), '2017-06-30', 'resultado: el FIN es el cierre');
+  assert.equal(finDeClave('assets'), null, 'un campo no es un periodo');
+  assert.equal(finDeClave('2017'), null);
+});
+
+test('con dos periodos se elige el SOLICITADO, no se falla por ambiguo', () => {
+  const r = normalizarFinancieros(DOS_PERIODOS, '2017-06-30');
+  assert.equal(r.faltantes, null, 'cero faltantes: antes eran los 7 por AMBIGUO');
+  assert.equal(r.valores.revenue, 135723675000);
+  assert.equal(r.valores.basicearningslosspershare, 0.77);
+  assert.equal(r.valores.assets, 1000, 'el del cierre, no los 900 del año pasado');
+});
+
+test('la selección queda AUDITABLE: se guarda qué llave se usó por bloque', () => {
+  const r = normalizarFinancieros(DOS_PERIODOS, '2017-06-30');
+  assert.deepEqual(r.bloques, {
+    posicion: '2017-06-30',
+    resultado_trimestre: '2017-04-01_2017-06-30',
+  });
+});
+
+test('el comparativo se guarda aparte, con SUS fechas', () => {
+  // En `resultado_trimestre` el comparativo es el mismo trimestre del año
+  // pasado; en `posicion` es el cierre fiscal anterior (31-dic), no junio del
+  // año pasado. Se guarda con sus fechas para que nadie lo lea como "hace un
+  // año" en los dos casos.
+  const r = normalizarFinancieros(DOS_PERIODOS, '2017-06-30');
+  assert.equal(r.comparativo.valores.basicearningslosspershare, 0.70);
+  assert.equal(r.comparativo.valores.assets, 900);
+  assert.deepEqual(r.comparativo.bloques, {
+    posicion: '2016-12-31',
+    resultado_trimestre: '2016-04-01_2016-06-30',
+  });
+});
+
+test('EL CASO ACCELSA: dos periodos con el MISMO valor era un falso positivo', () => {
+  // Los dos periodos traían 0.39 por coincidencia, así que `resolverCampo` los
+  // vio idénticos, no marcó ambigüedad y guardó el valor. Quedaba "bien" por
+  // casualidad: si el año anterior hubiera diferido, habría fallado — y peor,
+  // en otra emisora el mismo mecanismo pudo haber guardado el valor de un solo
+  // periodo sin que nadie lo notara.
+  const accelsa = {
+    resultado_trimestre: {
+      '2017-04-01_2017-06-30': { basicearningslosspershare: ['upa', 0.39] },
+      '2016-04-01_2016-06-30': { basicearningslosspershare: ['upa', 0.39] },
+    },
+  };
+  const r = normalizarFinancieros(accelsa, '2017-06-30');
+  assert.equal(r.valores.basicearningslosspershare, 0.39);
+  // Lo que cambia no es el número: es que AHORA viene del periodo correcto y
+  // queda dicho cuál fue.
+  assert.equal(r.bloques.resultado_trimestre, '2017-04-01_2017-06-30');
+  assert.equal(r.comparativo.valores.basicearningslosspershare, 0.39);
+});
+
+test('si NINGUNA llave corresponde al periodo, falla con nombre — no adivina', () => {
+  // Tomar "la única que hay" es exactamente cómo se cuela el dato del año
+  // pasado en la serie.
+  const r = normalizarFinancieros(DOS_PERIODOS, '2019-03-31');
+  assert.equal(r.valores.revenue, null);
+  assert.equal(r.valores.assets, null);
+  assert.match(r.faltantes.revenue, /sin periodo correspondiente/);
+  assert.match(r.faltantes.assets, /sin periodo correspondiente/);
+  assert.deepEqual(r.bloques, {}, 'ningún bloque aportó');
+});
+
+test('con TRES periodos el comparativo es el anterior más cercano', () => {
+  const tres = {
+    resultado_trimestre: {
+      '2017-04-01_2017-06-30': { revenue: ['r', 300] },
+      '2016-04-01_2016-06-30': { revenue: ['r', 200] },
+      '2015-04-01_2015-06-30': { revenue: ['r', 100] },
+    },
+  };
+  const r = normalizarFinancieros(tres, '2017-06-30');
+  assert.equal(r.valores.revenue, 300);
+  assert.equal(r.comparativo.valores.revenue, 200, 'el más cercano hacia atrás, determinista');
+});
+
+test('la ambigüedad DENTRO del mismo periodo sigue fallando cerrado', () => {
+  // Seleccionar por fecha resuelve la ambigüedad ENTRE periodos. Dos valores
+  // distintos bajo el mismo nombre dentro del MISMO periodo siguen siendo
+  // ambiguos de verdad, y eso no se toca.
+  const r = normalizarFinancieros({
+    posicion: { '2017-06-30': { assets: ['a', 1000], otro: { assets: ['a', 2000] } } },
+  }, '2017-06-30');
+  assert.equal(r.valores.assets, null);
+  assert.match(r.faltantes.assets, /AMBIGUO/);
+});
+
+test('recortarAlPeriodo ignora bloques sin llaves de periodo', () => {
+  const corte = recortarAlPeriodo({
+    posicion: { '2017-06-30': { assets: ['a', 1] } },
+    metadatos: { emisora: 'WALMEX', creditos: 1 },
+  }, '2017-06-30');
+  assert.deepEqual(Object.keys(corte.actual), ['posicion']);
+  assert.deepEqual(corte.sin_periodo, [], 'un bloque que no es de periodos no cuenta como faltante');
+});
+
+test('sin `cierre` se mantiene la búsqueda en todo el árbol', () => {
+  // Es lo correcto sólo para respuestas de un solo periodo, y es lo que usan
+  // los tests de forma. Con dos periodos y valores distintos, falla cerrado.
+  const uno = { resultado_trimestre: { '2017-04-01_2017-06-30': { revenue: ['r', 500] } } };
+  assert.equal(normalizarFinancieros(uno).valores.revenue, 500);
+  assert.equal(normalizarFinancieros(DOS_PERIODOS).valores.revenue, null, 'dos valores distintos sin fecha que los separe');
 });

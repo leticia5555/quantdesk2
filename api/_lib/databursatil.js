@@ -506,16 +506,137 @@ function aNumero(v) {
   return negativo ? -n : n;
 }
 
-/** Los 7 campos + el motivo de cada faltante. Fail-closed por construcción. */
-function normalizarFinancieros(raw) {
+/* ─────────── seleccionar el periodo dentro de la respuesta ─────────── */
+
+/**
+ * Cada respuesta de /v2/financieros trae **DOS periodos**: el solicitado y el
+ * comparativo del año anterior. Para 2T_2017:
+ *
+ *     posicion:            { "2017-06-30", "2016-12-31" }
+ *     resultado_trimestre: { "2017-04-01_2017-06-30", "2016-04-01_2016-06-30" }
+ *
+ * `resolverCampo` veía los dos valores, los declaraba AMBIGUO y fallaba
+ * cerrado. Como default está bien —dos valores distintos bajo el mismo nombre
+ * sí son ambiguos— pero acá no hay ambigüedad que resolver: **hay que
+ * seleccionar por fecha**.
+ *
+ * Las dos formas de llave, y cómo se comparan contra el cierre del trimestre:
+ *
+ * | bloque | forma de la llave | criterio |
+ * |---|---|---|
+ * | `posicion` | `AAAA-MM-DD` | la fecha **es** el cierre |
+ * | `resultado_trimestre` | `inicio_fin` | el **fin** es el cierre |
+ *
+ * Devuelve `null` si la llave no tiene forma de periodo, para no confundir un
+ * campo suelto con un bloque.
+ */
+function finDeClave(clave) {
+  const t = String(clave).trim();
+  const simple = /^(\d{4}-\d{2}-\d{2})$/.exec(t);
+  if (simple) return simple[1];
+  const rango = /^(\d{4}-\d{2}-\d{2})[_a-zA-Z\s]+(\d{4}-\d{2}-\d{2})$/.exec(t);
+  if (rango) return rango[2];
+  return null;
+}
+
+/**
+ * Recorta la respuesta al periodo pedido: por cada bloque, se queda con la
+ * llave cuyo fin coincide con `cierre`, y aparta la mejor candidata anterior
+ * como comparativo.
+ *
+ * `comparativo` es la llave con el fin MÁS GRANDE que siga siendo anterior al
+ * cierre. Determinista aunque algún día vengan tres periodos.
+ *
+ * Un bloque sin llave que corresponda al periodo es un **fallo con nombre**
+ * (`sin periodo correspondiente`), no una invitación a adivinar: tomar
+ * "la única que hay" es exactamente cómo se cuela el dato del año pasado.
+ */
+function recortarAlPeriodo(raw, cierre) {
+  const actual = {};
+  const previo = {};
+  const bloques = {};
+  const bloquesPrevios = {};
+  const sinPeriodo = [];
+
+  for (const [bloque, contenido] of Object.entries(raw || {})) {
+    if (!contenido || typeof contenido !== 'object' || Array.isArray(contenido)) continue;
+    const claves = Object.keys(contenido)
+      .map((k) => ({ clave: k, fin: finDeClave(k) }))
+      .filter((x) => x.fin);
+    if (!claves.length) continue;          // bloque sin llaves de periodo: se ignora
+
+    const exacta = claves.find((x) => x.fin === cierre);
+    if (exacta) {
+      actual[bloque] = contenido[exacta.clave];
+      bloques[bloque] = exacta.clave;
+    } else {
+      sinPeriodo.push(bloque);
+    }
+
+    const anteriores = claves.filter((x) => x.fin < cierre).sort((a, b) => (a.fin < b.fin ? 1 : -1));
+    if (anteriores.length) {
+      previo[bloque] = contenido[anteriores[0].clave];
+      bloquesPrevios[bloque] = anteriores[0].clave;
+    }
+  }
+  return { actual, previo, bloques, bloques_previos: bloquesPrevios, sin_periodo: sinPeriodo };
+}
+
+/**
+ * Los 7 campos + el motivo de cada faltante. Fail-closed por construcción.
+ *
+ * Con `cierre`, se resuelve SÓLO dentro del periodo solicitado (§recortarAlPeriodo)
+ * y se devuelve además el **comparativo** del periodo anterior, que sirve para
+ * momentum de fundamentales más adelante. Ojo con qué es ese comparativo: en
+ * `resultado_trimestre` es el mismo trimestre del año pasado, pero en
+ * `posicion` es el **cierre fiscal anterior** (31-dic), no junio del año
+ * pasado. Por eso se guarda con su propia fecha en vez de llamarlo "hace un
+ * año" y que alguien lo lea mal.
+ *
+ * Sin `cierre` se busca en todo el árbol, que es lo correcto sólo para
+ * respuestas de un solo periodo.
+ */
+function normalizarFinancieros(raw, cierre = null) {
+  if (!cierre) {
+    const valores = {};
+    const faltantes = {};
+    for (const campo of CAMPOS) {
+      const r = resolverCampo(raw, campo);
+      valores[campo] = r.valor;
+      if (r.valor === null) faltantes[campo] = r.motivo;
+    }
+    return { valores, faltantes: Object.keys(faltantes).length ? faltantes : null, bloques: null, comparativo: null };
+  }
+
+  const corte = recortarAlPeriodo(raw, cierre);
   const valores = {};
   const faltantes = {};
   for (const campo of CAMPOS) {
-    const r = resolverCampo(raw, campo);
+    const r = resolverCampo(corte.actual, campo);
     valores[campo] = r.valor;
-    if (r.valor === null) faltantes[campo] = r.motivo;
+    if (r.valor === null) {
+      faltantes[campo] = corte.sin_periodo.length && r.motivo === 'no está en la respuesta'
+        ? `sin periodo correspondiente (${cierre}); bloques sin ese cierre: ${corte.sin_periodo.join(', ')}`
+        : r.motivo;
+    }
   }
-  return { valores, faltantes: Object.keys(faltantes).length ? faltantes : null };
+
+  const comparativo = {};
+  for (const campo of CAMPOS) {
+    const r = resolverCampo(corte.previo, campo);
+    if (r.valor !== null) comparativo[campo] = r.valor;
+  }
+
+  return {
+    valores,
+    faltantes: Object.keys(faltantes).length ? faltantes : null,
+    // Qué llave se usó por bloque: hace auditable la selección en vez de
+    // pedir fe en que el parser eligió bien.
+    bloques: corte.bloques,
+    comparativo: Object.keys(comparativo).length
+      ? { valores: comparativo, bloques: corte.bloques_previos }
+      : null,
+  };
 }
 
 /* ─────────────────── precios ─────────────────── */
@@ -1034,6 +1155,7 @@ export {
   extraerDistribuciones, finDeTrimestre,
   mesPresupuesto, restaDias,
   normalizaLlave, normalizarFinancieros, periodoApi,
+  finDeClave, recortarAlPeriodo,
   ordenPeriodo, parseClavePeriodo, parsearRangoFechas, parsearRangoPeriodos,
   recortarACobertura,
   resolverCampo, traer, trimestresEntre, urlSegura,
