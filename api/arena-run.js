@@ -1592,8 +1592,19 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // sombra es exactamente lo que se enciende.
   if (usaObjetivo()) {
     const buffet = await (getBuffet ? getBuffet() : gatherContext({ baseUrl, now }));
+    // ── EL `event` NO SE PASA, Y ESO ES LO QUE HAY QUE SABER ──────────
+    // El contrato objetivo produce un PORTAFOLIO COMPLETO: no existe la
+    // corrida "sobre NVDA". Por eso un disparador de NVDA rebalancea el libro
+    // entero — y por eso el enfriamiento del vigilante pasó a ser por agente
+    // (ver WATCH_RULES.cooldown_agent_minutes).
+    //
+    // Lo que SÍ viaja es que la corrida nació de un disparador: con eso el
+    // motor exige un piso de movimiento antes de mandar órdenes. Una ronda
+    // fija puede expresar un ajuste chico —son tres al día—; un disparador que
+    // mueve el 1% del equity es churn con otro nombre.
     return runAgenteObjetivo({
       agent, buffet, now, tier, vivo: true,
+      esDisparador: !!event,
       journalInsert: journalObjetivoVivo,
       runId: 'arena-' + agent.id + '-objetivo-' + now.toISOString(),
     });

@@ -94,6 +94,28 @@ export const WATCH_RULES = {
   // ── topes (cadencia #7) ──
   max_runs_per_agent_day: envInt('ARENA_WATCH_MAX_RUNS_DAY', 12),
   cooldown_minutes: envInt('ARENA_WATCH_COOLDOWN_MIN', 20),
+
+  // ── EL COOLDOWN POR TICKER YA NO ALCANZA (2026-09-17, primer día vivo) ──
+  // Claude corrió 16:06, 16:16 y 16:21, y cada corrida mandó órdenes. El
+  // cooldown SÍ estaba puesto — pero su llave es `agente|ticker`, y eso era
+  // correcto cuando una corrida por disparador era una corrida SOBRE ESE
+  // NOMBRE.
+  //
+  // Con el contrato objetivo dejó de serlo: `runArenaDecide` ni siquiera pasa
+  // el `event` a `runAgenteObjetivo`, así que un disparador de NVDA produce un
+  // PORTAFOLIO OBJETIVO COMPLETO y el motor rebalancea el libro entero. Tres
+  // disparadores sobre tres tickers distintos = tres rebalanceos completos en
+  // quince minutos, cada uno con su cuenta de corretaje.
+  //
+  // Eso también explica el ida y vuelta de deepseek con NKE (vendió 278 a las
+  // 18:53 y recompró 275 cinco minutos después, medio dólar más cara, sin
+  // ningún evento en NKE): el primer objetivo la puso en 0 —y un CIERRE
+  // COMPLETO está exento de la banda de no-negociación, a propósito— y el
+  // segundo la volvió a poner. La banda nunca la protegió porque nunca fue un
+  // ajuste, fueron dos decisiones distintas del mismo día.
+  //
+  // Cuando la corrida es global, el enfriamiento tiene que ser global.
+  cooldown_agent_minutes: envInt('ARENA_WATCH_COOLDOWN_AGENT_MIN', 45),
   // Tope por TICK: la lambda tiene 300s y cada corrida son 2 llamadas al LLM.
   // Lo que no entra se journalea como diferido y vuelve a evaluarse en el tick
   // siguiente — la condición que disparó sigue ahí, no se pierde nada.
@@ -360,9 +382,15 @@ export function evaluateTriggers({ agents = [], books = {}, quotes = {}, marks =
 // TODO disparador entra a `journal`, dispare o no. Es la condición #2 del
 // encargo: "cada disparador se journalea con su razón aunque el agente decida
 // no operar" — y también aunque el tope decida que no corra.
-export function applyCaps(triggers, { firedToday = new Set(), runsToday = {}, lastRunAt = {}, now = new Date(), rules = WATCH_RULES } = {}) {
+// `corridaGlobal` = la corrida que despierta un disparador rebalancea el LIBRO
+// ENTERO (contrato objetivo), no sólo el nombre que disparó. Cuando es así, el
+// enfriamiento por ticker no protege nada: tres tickers distintos abren tres
+// rebalanceos completos. Se le pasa desde el caller, que es quien sabe qué
+// contrato está corriendo — esta función sigue siendo pura.
+export function applyCaps(triggers, { firedToday = new Set(), runsToday = {}, lastRunAt = {}, lastRunAgentAt = {}, corridaGlobal = false, now = new Date(), rules = WATCH_RULES } = {}) {
   const t0 = now.getTime();
   const cooldownMs = rules.cooldown_minutes * 60000;
+  const cooldownAgenteMs = rules.cooldown_agent_minutes * 60000;
   const journal = [];
   // agente → { symbol → [triggers] } de los que SÍ pasan todos los filtros.
   const byAgent = new Map();
@@ -389,6 +417,19 @@ export function applyCaps(triggers, { firedToday = new Set(), runsToday = {}, la
       const last = num(lastRunAt[key]);
       if (last != null && t0 - last < cooldownMs) {
         skip(`cooldown ${rules.cooldown_minutes}m (último despertar hace ${Math.round((t0 - last) / 60000)}m)`);
+        continue;
+      }
+    }
+
+    // (b2) COOLDOWN POR AGENTE, cuando la corrida es GLOBAL. Ver el bloque de
+    //      WATCH_RULES: con el contrato objetivo, cualquier disparador
+    //      rebalancea el libro entero, así que el enfriamiento que importa es
+    //      el del agente, no el del ticker. Igual que arriba, si el agente YA
+    //      va a correr este tick no aplica: es la misma corrida.
+    if (corridaGlobal && !already) {
+      const lastAg = num(lastRunAgentAt[t.agent_id]);
+      if (lastAg != null && t0 - lastAg < cooldownAgenteMs) {
+        skip(`cooldown de agente ${rules.cooldown_agent_minutes}m — la corrida rebalancea el libro entero, no sólo ${t.symbol} (última hace ${Math.round((t0 - lastAg) / 60000)}m)`);
         continue;
       }
     }

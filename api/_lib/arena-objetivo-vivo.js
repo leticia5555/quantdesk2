@@ -59,6 +59,46 @@ export const mandaOrdenes = (env = process.env) => contratoActivo(env) === CONTR
 // rechaza entero.
 export const BANDA_MARKETABLE = Number(process.env.ARENA_MARKETABLE_BAND) || 0.005;
 
+// ── EL UMBRAL MÍNIMO PARA QUE UN DISPARADOR OPERE ────────────────────
+// La banda de no-negociación (2pp) frena PATA POR PATA, y tiene una excepción
+// deliberada: un cierre completo nunca se frena. Eso está bien para un ajuste
+// —"salir del 1.5%" es una decisión, no drift— y es exactamente lo que dejó
+// pasar el ida y vuelta de deepseek con NKE el primer día vivo: un objetivo la
+// puso en 0 (cierre completo, exento) y el siguiente la volvió a poner. Las
+// dos patas eran legales por separado.
+//
+// Este umbral es de otra naturaleza: mira el rebalanceo COMPLETO. Si el libro
+// que el modelo quiere se parece tanto al que ya tiene que el turnover total
+// no llega al piso, la corrida no manda NADA. No es una opinión sobre la
+// decisión: es que un disparador despertó al agente, el agente miró, y lo que
+// quiere hacer no justifica pagar el spread siete veces.
+//
+// SÓLO aplica a corridas por disparador. Las rondas fijas son el latido de la
+// liga y tienen que poder expresar un ajuste chico: son tres al día, no doce.
+export const TURNOVER_MINIMO_DISPARADOR = (() => {
+  const n = Number(process.env.ARENA_TURNOVER_MIN_DISPARADOR);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : 0.05;   // 5% del equity
+})();
+
+// ¿Este rebalanceo mueve lo suficiente como para justificar operar?
+// Devuelve null cuando SÍ (no hay nada que decir) y el motivo cuando NO.
+export function frenoPorTurnoverMinimo(rebalance, { esDisparador = false, minimo = TURNOVER_MINIMO_DISPARADOR } = {}) {
+  if (!esDisparador || !rebalance) return null;
+  // `Number(null)` es 0 y `Number('')` también: sin esta guarda, un turnover
+  // ausente se leería como "movió 0%" y frenaría una decisión real. Es el
+  // mismo trampolín que ya mordió en `returnPct`, y acá cuesta más caro: allá
+  // publicaba un −100%, acá bloquea una orden.
+  const t = rebalance.turnover == null || rebalance.turnover === '' ? NaN : Number(rebalance.turnover);
+  if (!Number.isFinite(t)) return null;          // sin dato no se frena nada
+  if (t >= minimo) return null;
+  return {
+    freno: 'turnover_bajo_el_minimo',
+    turnover: t,
+    minimo,
+    detalle: `El rebalanceo mueve ${(t * 100).toFixed(2)}% del equity y el piso para una corrida por disparador es ${(minimo * 100).toFixed(0)}%. El agente miró y lo que quiere hacer no justifica el costo de operar. NO se mandó ninguna orden; el objetivo queda journaleado igual.`,
+  };
+}
+
 export function limiteMarketable(referencia, lado, banda = BANDA_MARKETABLE) {
   const r = Number(referencia);
   const b = Number(banda);
