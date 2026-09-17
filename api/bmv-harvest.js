@@ -64,6 +64,7 @@ import {
   upsertFinancieros, insertarPrecios, insertarDistribuciones, ultimaFechaPrecios,
   marcarLedger, clavesHechas, clavesAgotadas, ledgerResumen, financierosCrudos,
   actualizarFinancieros, formasDelCrudo, financieroCrudo, financieroQueSiSirvio,
+  contarFinancieros,
   presupuesto, gastar, cobertura, leerMeta, guardarMeta,
 } from './_lib/bmv-db.js';
 
@@ -989,25 +990,68 @@ async function jobInspect(req) {
  * Va paginado por (emisora, año, trimestre) y con reloj: son 4,174 filas con un
  * jsonb grande cada una, y la lambda tiene 300s.
  */
-async function jobReparseFinancieros(req) {
-  const t0 = Date.now();
-  const lote = Math.max(1, Math.min(1000, Number((req.query && req.query.max) || 1500)));
+// Página interna del re-parseo. Fija acá para que el test pueda achicarla.
+const PAGINA_REPARSE = 200;
 
-  let cursor = null;
+// Dónde vive el avance del re-parseo entre invocaciones. En la BASE, no en una
+// variable: cada llamada al endpoint es una lambda nueva y la memoria se va con
+// ella. Ésa fue exactamente la falla — `let cursor = null` se reiniciaba en cada
+// llamada y las ~55 corridas procesaron las MISMAS 1,000 filas.
+const META_CURSOR = 'reparse_fin_cursor';
+
+/**
+ * Re-normaliza los financieros desde el `raw` ya guardado. **No toca la API.**
+ *
+ * ── AUTO-CONTENIDO A PROPÓSITO ─────────────────────────────────────
+ * El job guarda su propio avance en `bmv_meta`, así que cada llamada continúa
+ * donde quedó la anterior **sin que nadie tenga que pasar nada**. Devolver
+ * `continuar_desde` y esperar que el que llama lo reenvíe fue el error: nadie
+ * lo reenviaba, y el job no tenía forma de saberlo.
+ *
+ * `&reiniciar=1` fuerza empezar de cero. `&max=N` limita las filas por corrida.
+ *
+ * Las dependencias se inyectan para que el test recorra ESTA función —la de
+ * verdad— sobre una tabla de prueba, en vez de una reimplementación del
+ * paginado que podría pasar mientras la real falla.
+ */
+async function jobReparseFinancieros(req, deps = {}) {
+  const leerPagina = deps.financierosCrudos || financierosCrudos;
+  const actualizar = deps.actualizarFinancieros || actualizarFinancieros;
+  const marcar = deps.marcarLedger || marcarLedger;
+  const leerM = deps.leerMeta || leerMeta;
+  const guardarM = deps.guardarMeta || guardarMeta;
+  const contar = deps.contarFinancieros || contarFinancieros;
+  const pagina = deps.pagina || PAGINA_REPARSE;
+  const ahora = deps.ahora || (() => Date.now());
+  const limiteMs = deps.limiteMs ?? LIMITE_MS;
+
+  const t0 = ahora();
+  const q = req && req.query ? req.query : {};
+  const lote = Math.max(1, Math.min(5000, Number(q.max || 1000)));
+  const reiniciar = q.reiniciar === '1';
+
+  // El avance guardado: desde dónde seguir y cuánto se lleva acumulado.
+  const guardado = reiniciar ? null : await leerM(META_CURSOR);
+  const estado = (guardado && guardado.value) || {};
+  let cursor = estado.cursor || null;
+  let totalProcesadas = reiniciar ? 0 : (estado.total_procesadas || 0);
+
   let leidas = 0;
   let arregladas = 0;
   let siguenSinCampos = 0;
+  let agotado = false;          // ya no quedan filas: distinto de "se acabó el lote"
   const porAnio = {};
   const faltantesPorCampo = {};
 
-  while (leidas < lote && Date.now() - t0 < LIMITE_MS) {
-    const filas = await financierosCrudos({ limite: Math.min(200, lote - leidas), desde: cursor });
-    if (!filas.length) { cursor = null; break; }
+  while (leidas < lote && ahora() - t0 < limiteMs) {
+    const pedidas = Math.min(pagina, lote - leidas);
+    const filas = await leerPagina({ limite: pedidas, desde: cursor });
+    if (!filas.length) { agotado = true; break; }
 
     for (const f of filas) {
       const cierre = finDeTrimestre(f.anio, f.trimestre);
       const { valores, faltantes, bloques, comparativo } = normalizarFinancieros(f.raw, cierre);
-      await actualizarFinancieros({
+      await actualizar({
         emisora: f.emisora, anio: f.anio, trimestre: f.trimestre,
         valores, faltantes, bloques, comparativo,
       });
@@ -1023,14 +1067,33 @@ async function jobReparseFinancieros(req) {
 
       // El ledger se pone al día con la realidad: una fila que ahora sí
       // normaliza deja de ser `sin_campos`.
-      await marcarLedger('financieros', f.emisora, clavePeriodo(f.anio, f.trimestre),
+      await marcar('financieros', f.emisora, clavePeriodo(f.anio, f.trimestre),
         { estado: sinCampos ? 'sin_campos' : 'hecho', intentos: 0 });
     }
+
     leidas += filas.length;
     const ultima = filas[filas.length - 1];
     cursor = { emisora: ultima.emisora, anio: ultima.anio, trimestre: ultima.trimestre };
-    if (filas.length < 200) { cursor = null; break; }
+
+    // Se compara contra lo PEDIDO, no contra el tamaño de página. Comparar
+    // contra la constante hacía que una última página corta —`&max=150` pide
+    // 150, recibe 150— se leyera como "ya no quedan filas" y el job reportara
+    // `hay_mas: false` con filas pendientes. Peor que el bucle: el bucle se ve.
+    if (filas.length < pedidas) { agotado = true; break; }
   }
+
+  totalProcesadas += leidas;
+  const hayMas = !agotado;
+
+  // El avance se persiste SIEMPRE; al terminar se limpia para que una corrida
+  // futura empiece de cero en vez de creerse completada para siempre.
+  await guardarM(META_CURSOR,
+    hayMas ? { cursor, total_procesadas: totalProcesadas }
+           : { cursor: null, total_procesadas: totalProcesadas, completado_at: new Date().toISOString() },
+    hayMas ? `en curso: ${totalProcesadas} filas` : `completado: ${totalProcesadas} filas`);
+
+  let totalFilas = null;
+  try { totalFilas = await contar(); } catch (e) { totalFilas = null; }
 
   return {
     job: 'reparse-fin',
@@ -1038,13 +1101,18 @@ async function jobReparseFinancieros(req) {
     leidas,
     arregladas,
     siguen_sin_campos: siguenSinCampos,
-    // Por año, que es como el reporte de cobertura lo muestra y como se ve de
-    // un golpe si algún periodo quedó fuera.
+    // El avance ACUMULADO, no sólo el de esta tanda: es lo que deja ver si
+    // el job avanza o se quedó dando vueltas.
+    total_procesadas: totalProcesadas,
+    total_filas: totalFilas,
+    avance: totalFilas ? `${Math.min(totalProcesadas, totalFilas)}/${totalFilas}` : `${totalProcesadas}/?`,
     con_eps_por_anio: Object.fromEntries(Object.entries(porAnio).sort()),
     faltantes_por_campo: faltantesPorCampo,
-    continuar_desde: cursor,
-    hay_mas: cursor !== null,
-    nota: cursor ? 'quedan filas: vuelve a llamar con el mismo job' : 'no quedan filas',
+    continuar_desde: hayMas ? cursor : null,
+    hay_mas: hayMas,
+    nota: hayMas
+      ? 'quedan filas: vuelve a llamar al mismo job, el avance está guardado'
+      : 'no quedan filas; una llamada nueva empieza de cero',
   };
 }
 
