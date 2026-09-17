@@ -332,6 +332,13 @@ export function diagnosticoDeFila(ctx = {}) {
     detalle: err ? (err.detail || null) : null,
     stack: (ctx.threw && ctx.threw.stack) || (err && err.threw_stack) || null,
     contrato,
+    // ── LOS DOS ABORTOS QUE NO SON DEL PROVEEDOR ─────────────────────
+    // `rejected_tickers` y `aborted_malformed_target` son del MODELO, no de la
+    // red, y su detalle ya se journaleaba sin que ningún endpoint lo mostrara:
+    // había que entrar a Neon para saber QUÉ ticker se rechazó o QUÉ tenía de
+    // malformado el JSON. Son los dos abortos más accionables que hay —
+    // apuntan al prompt, no a la infraestructura.
+    tickers: ctx.tickers || null,
   };
 }
 
@@ -709,6 +716,23 @@ function mdDiagnostico(d) {
     L.push(`\n> ⏱️ **Techo de esa llamada:** ${Math.round(d.techo_ms / 1000)}s — puesto por: ${val(d.techo_origen)}`);
   }
   if (d.detalle) L.push(`\n> ${d.status_http != null ? `HTTP ${d.status_http} — ` : ''}${d.detalle}`);
+
+  // Los tickers: qué se rechazó y qué se reparó. Apunta al prompt, no a la red.
+  const t2 = d.tickers;
+  if (t2 && ((t2.desconocidos || []).length || (t2.reparados || []).length || (t2.colisiones || []).length)) {
+    if ((t2.desconocidos || []).length) {
+      L.push(`\n> ❌ **Tickers que no existen en el universo:** ${t2.desconocidos.join(', ')} — el objetivo entero se rechaza: una orden sobre un nombre inventado no se manda.`);
+    }
+    if ((t2.reparados || []).length) {
+      L.push(`\n> ⚠️ **Tickers reparados:** ${t2.reparados.map((r) => `"${r.pedido}" → ${r.normalizado}`).join(', ')}`);
+    }
+    if ((t2.colisiones || []).length) {
+      L.push(`\n> ⚠️ **Colisiones al normalizar:** ${JSON.stringify(t2.colisiones).slice(0, 200)}`);
+    }
+    if (t2.validado_contra_universo === false) {
+      L.push('\n> El universo no estaba disponible: NO se validó contra él (hueco honesto, no un visto bueno).');
+    }
+  }
   return L.join('\n');
 }
 

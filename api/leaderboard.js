@@ -142,16 +142,33 @@ export default async function handler(req, res) {
       return_pct: null, day_change_pct: null,
     };
 
-    // Última decisión journaleada del agente (plan + acciones). Best-effort.
+    // ── LA ÚLTIMA CORRIDA Y EL ÚLTIMO PLAN NO SON LO MISMO ────────────
+    // Con `limit 1`, un agente cuya última corrida abortó salía como "Sin plan
+    // publicado aún" aunque hubiera operado todo el día. El 2026-09-17 le pasó
+    // a deepseek, control y qwen a la vez.
+    //
+    // Se traen las últimas corridas y se separan dos cosas que la tarjeta
+    // necesita juntas: QUÉ PASÓ EN LA ÚLTIMA (status, hora — si abortó, eso hay
+    // que decirlo) y CUÁL FUE EL ÚLTIMO PLAN BUENO, con su hora. Sustituir uno
+    // por otro escondería el aborto, que es justo lo que no se quiere.
     try {
       const jr = await sql(
         `select run_date, status, plan, actions, account, created_at from arena_journal
-         where phase = 'decide' and agent_id = $1 order by created_at desc limit 1`, [agent.id]);
+         where phase = 'decide' and agent_id = $1 order by created_at desc limit 12`, [agent.id]);
       if (jr[0]) {
         out.journal = {
           run_date: jr[0].run_date, status: jr[0].status, plan: jr[0].plan,
           actions: jr[0].actions || [], created_at: jr[0].created_at,
         };
+        const conPlan = jr.find((r) => r && typeof r.plan === 'string' && r.plan.trim());
+        // Sólo viaja cuando es OTRA corrida: si la última ya trae plan, un
+        // duplicado sólo invita a que la página muestre dos veces lo mismo.
+        if (conPlan && conPlan.created_at !== jr[0].created_at) {
+          out.ultimo_plan = {
+            plan: conPlan.plan, status: conPlan.status,
+            run_date: conPlan.run_date, created_at: conPlan.created_at,
+          };
+        }
       }
     } catch (err) { out.journal_error = String((err && err.message) || err); }
 

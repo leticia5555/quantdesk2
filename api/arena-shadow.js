@@ -38,7 +38,7 @@ import { callArenaLLM, withDeadline, cachePrefixReport, anthropicCostUsd } from 
 import { gatherContext, buildSharedContext, buildTargetSystemPrompt, resolveBaseUrl, PROMPT_VERSION } from './arena-run.js';
 import { parsePortfolioResponse, validateTarget, railTrims, normalizarTickersObjetivo, RAILS } from './_lib/arena-rails.js';
 import { orderLegs } from './_lib/arena-rebalance.js';
-import { legsAOrdenes, verificarOrdenesContraPesos, enviarOrdenes, mandaOrdenes } from './_lib/arena-objetivo-vivo.js';
+import { legsAOrdenes, verificarOrdenesContraPesos, enviarOrdenes, mandaOrdenes, frenoPorTurnoverMinimo } from './_lib/arena-objetivo-vivo.js';
 import { snapshotCuenta } from './_lib/arena-equity.js';
 import { buildRebalance } from './_lib/arena-rebalance.js';
 import { createToolExecutor, TOOL_BUDGET } from './_lib/arena-tools.js';
@@ -104,7 +104,7 @@ export function runShadowAgent(args) {
   return runAgenteObjetivo({ ...args, vivo: false });
 }
 
-export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier = null, deps = {}, trace = null, vivo = false, journalInsert = null, runId: runIdDado = null }) {
+export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier = null, deps = {}, trace = null, vivo = false, journalInsert = null, runId: runIdDado = null, esDisparador = false }) {
   const runId = runIdDado || shadowRunId(agent.id, now);
   const base = { id: runId, run_date: marketDay(now), agent_id: agent.id, phase: 'decide', prompt_version: PROMPT_VERSION, model: agent.model };
   // EN VIVO EL BROKER ES EL DE VERDAD. En sombra es el que LANZA en cualquier
@@ -382,14 +382,25 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     // NINGUNA de esta corrida.
     const candado = verificarOrdenesContraPesos({ ordenes, target: parsed.weights, current: rebalance.current });
 
+    // ── EL PISO DE MOVIMIENTO PARA UNA CORRIDA POR DISPARADOR ────────
+    // Un disparador despertó al agente, el agente miró, y si lo que quiere
+    // hacer no mueve lo suficiente, no se paga el spread. Se evalúa ANTES del
+    // candado y del envío, y el objetivo se journalea igual: la decisión
+    // existió, sólo no se ejecutó.
+    const frenoTurnover = frenoPorTurnoverMinimo(rebalance, { esDisparador });
+
     ejecucion = {
-      modo: mandaOrdenes() ? 'enviado' : 'dry',
+      modo: frenoTurnover ? 'sin_operar' : (mandaOrdenes() ? 'enviado' : 'dry'),
       candado,
       ordenes_calculadas: ordenes,
       descartadas,
+      ...(frenoTurnover ? { turnover_minimo: frenoTurnover } : {}),
     };
 
-    if (!candado.ok) {
+    if (frenoTurnover) {
+      ejecucion.enviadas = [];
+      ejecucion.freno = frenoTurnover.detalle;
+    } else if (!candado.ok) {
       ejecucion.enviadas = [];
       ejecucion.freno = candado.error;
     } else if (mandaOrdenes()) {

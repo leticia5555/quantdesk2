@@ -236,9 +236,22 @@ function rowHtml(a){
   const excHtml = exc!=null ? ' · vs S&amp;P '+pctStr(exc) : '';
   const dayHtml = day!=null||exc!=null ? '<div class="pos-chip">'+(day!=null?'día '+pctStr(day):'')+excHtml+'</div>' : '';
   const npos = Array.isArray(a.positions)?a.positions.length:0;
-  const plan = a.journal&&a.journal.plan
-    ? '<div class="rplan" id="plan-'+esc(a.id)+'">'+esc(a.journal.plan)+'</div><span class="rmore" data-plan="'+esc(a.id)+'">ver plan completo ↓</span>'
-    : '<div class="rplan" style="color:var(--text3)">Sin plan publicado aún — el primero aparece cuando el cron corra.</div>';
+  // ── LA ÚLTIMA CORRIDA Y EL ÚLTIMO PLAN NO SON LO MISMO ──
+  // Si la última abortó, se muestra el último plan BUENO con su hora y se dice
+  // que la última falló. Sustituir uno por otro escondería el aborto.
+  const hora = ts => { const d=new Date(ts); return isFinite(d) ? d.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}) : ''; };
+  const abortada = a.journal && String(a.journal.status||'').startsWith('aborted');
+  const fuente = (a.journal&&a.journal.plan) ? a.journal : (a.ultimo_plan||null);
+  const plan = fuente && fuente.plan
+    ? '<div class="rplan" id="plan-'+esc(a.id)+'">'+esc(fuente.plan)+'</div>'+
+      (fuente!==a.journal
+        ? '<div class="rfoot" style="margin-top:6px"><span>último plan · '+esc(hora(fuente.created_at))+'</span>'+
+          '<span style="color:var(--amber)">la corrida de '+esc(hora(a.journal.created_at))+' abortó</span></div>'
+        : '')+
+      '<span class="rmore" data-plan="'+esc(a.id)+'">ver plan completo ↓</span>'
+    : '<div class="rplan" style="color:var(--text3)">'+
+      (abortada ? 'La última corrida abortó ('+esc(a.journal.status)+') y no hay plan previo en la ventana.'
+                : 'Sin plan publicado aún — el primero aparece cuando el cron corra.')+'</div>';
   return '<div class="row'+rankCls+'">'+
     '<div class="rtop">'+
       '<div class="rank">'+(a.rank||'—')+'</div>'+

@@ -52,6 +52,7 @@
 import { sql, ensureSchema } from './_lib/db.js';
 import { getCalendar, getAccount, getPositions, getSnapshots, getAvgDailyVolume } from './_lib/alpaca.js';
 import { registrarEquity } from './_lib/arena-equity.js';
+import { usaObjetivo } from './_lib/arena-objetivo-vivo.js';
 import { activeAgents, agentById, agentAlpacaCreds, ARENA_AGENT_DEADLINE_MS } from './_lib/arena-registry.js';
 import { withDeadline } from './_lib/arena-model.js';
 import {
@@ -353,12 +354,17 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
   const runsToday = Object.fromEntries(runRows.map((r) => [r.agent_id, r.n]));
   const firedToday = new Set();
   const lastRunAt = {};
+  const lastRunAgentAt = {};
   for (const r of firedRows) {
     if (!r.fired) continue;
     firedToday.add(`${r.agent_id}|${up(r.symbol)}|${r.trigger_type}`);
     const key = `${r.agent_id}|${up(r.symbol)}`;
     const at = Date.parse(r.last_at);
     if (Number.isFinite(at)) lastRunAt[key] = Math.max(lastRunAt[key] || 0, at);
+    // Y el último despertar del AGENTE, sin importar el ticker: con el
+    // contrato objetivo una corrida rebalancea el libro entero, así que el
+    // enfriamiento que protege es éste.
+    if (Number.isFinite(at)) lastRunAgentAt[r.agent_id] = Math.max(lastRunAgentAt[r.agent_id] || 0, at);
   }
   const marks = {};
   for (const r of markRows) marks[`${r.agent_id}|${up(r.symbol)}`] = { price: Number(r.price), marked_at: r.marked_at };
@@ -380,7 +386,11 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
   const triggers = presupuesto.buffet_triggers
     ? triggersCrudos
     : triggersCrudos.filter((t) => t.type !== 'buffet_move');
-  const { runs, journal } = applyCaps(triggers, { firedToday, runsToday, lastRunAt, now });
+  // Con el contrato objetivo, un disparador no despierta una revisión de SU
+  // nombre: produce un portafolio objetivo completo y el motor rebalancea todo
+  // el libro. Por eso el enfriamiento pasa a ser por agente.
+  const corridaGlobal = usaObjetivo();
+  const { runs, journal } = applyCaps(triggers, { firedToday, runsToday, lastRunAt, lastRunAgentAt, corridaGlobal, now });
   await journalTriggers([
     ...journal,
     ...apagadosPorPresupuesto.map((t) => ({ ...t, fired: false, skip_reason: `presupuesto en escalón ${presupuesto.tier}: los disparadores del buffet están apagados (los del propio libro no)` })),
