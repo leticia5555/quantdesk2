@@ -33,7 +33,7 @@ import {
 
 import {
   CONTRATO_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, contar,
-  describirCrudo, elegibilidadMd, jobElegibilidad, literal, tipoDe,
+  comparativaMd, describirCrudo, elegibilidadMd, jobElegibilidad, literal, tipoDe,
   jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros,
   jobHistoricos, jobReparse,
   estimarConsumo, filaCenso, filasDelCenso, nuevaCartera, pareceClave, pareceSerie,
@@ -1925,4 +1925,96 @@ test('el markdown de elegibilidad sale sin reventar y trae el veredicto', () => 
   assert.match(md, /# Elegibilidad por rebalanceo/);
   assert.match(md, /Elegibles mediano/);
   assert.match(md, /2017-07-03/);
+});
+
+/* ═══════════════════════════════════════════════════════════════
+ * RECALIBRACIÓN DEL UMBRAL. El tripwire se disparó con 5 MM —69.2%
+ * excluido contra el tercio acordado— y el piso mandó en 76.6% de
+ * las fechas. La tabla comparativa se calcula SIN mirar un retorno,
+ * que es lo que hace legítimo recalibrar ahora y no después.
+ * ═══════════════════════════════════════════════════════════════ */
+
+test('las series sin precios se excluyen del universo, no lo inflan', () => {
+  // VISTAC da 400 también con ventana corta: no era el rango, el identificador
+  // no vale para /v2/historicos. Dejarla dentro inflaría el denominador del
+  // tripwire con un nombre que nunca podría pasar el filtro.
+  const fechas = ['2017-07-03'];
+  const u = universoFalso({ nSeries: 10, fechas });
+  u.series.push({ emisora: 'VISTA', emisora_serie: 'VISTAC' });
+  u.cierresPorEmisora.set('VISTA', ['2016-06-30', '2016-09-30', '2016-12-31', '2017-03-31']);
+  const r = analizarElegibilidad({ fechas, ...u });
+  assert.equal(r.por_fecha[0].universo, 10, 'VISTAC no cuenta aunque tenga financieros');
+  assert.deepEqual(r.series_excluidas.lista, ['VISTAC']);
+});
+
+test('la exclusión no cambia el resultado de las series que sí operan', () => {
+  const fechas = ['2017-07-03'];
+  const sin = universoFalso({ nSeries: 10, fechas });
+  const con = universoFalso({ nSeries: 10, fechas });
+  con.series.push({ emisora: 'VISTA', emisora_serie: 'VISTAC' });
+  con.cierresPorEmisora.set('VISTA', ['2016-06-30', '2016-09-30', '2016-12-31', '2017-03-31']);
+  con.medianas.set('2017-07-03|VISTAC', 99e6);
+  assert.equal(
+    analizarElegibilidad({ fechas, ...sin }).por_fecha[0].elegibles,
+    analizarElegibilidad({ fechas, ...con }).por_fecha[0].elegibles,
+    'excluir una serie sin precios no debe mover a las demás');
+});
+
+test('las exigencias traducen las puertas a número de elegibles', () => {
+  // Es lo accionable: "falla el tripwire" no dice qué tan lejos está, ni cuál
+  // de las dos puertas manda.
+  const fechas = ['2017-07-03'];
+  const u = universoFalso({ nSeries: 128, fechas, importe: (i) => (i < 37 ? 10e6 : 1e5) });
+  const r = analizarElegibilidad({ fechas, ...u });
+  const x = r.exigencias;
+  assert.equal(x.universo_mediano, 128);
+  assert.equal(x.elegibles_para_que_mande_el_quintil, 40, '8 / 0.20');
+  assert.equal(x.elegibles_para_pasar_el_tripwire, 86, 'dos tercios de 128');
+  assert.equal(x.puerta_que_manda, 'tripwire',
+    'el tripwire exige más del doble que el piso: manda él');
+});
+
+test('con los elegibles que exige el tripwire, el régimen sería TECHO', () => {
+  // Un dato distinto del que uno espera al leer "el quintil por fin manda":
+  // 0.20 × 86 = 17.2, por encima del techo de 15.
+  const fechas = ['2017-07-03'];
+  const u = universoFalso({ nSeries: 128, fechas, importe: 10e6 });
+  const r = analizarElegibilidad({ fechas, ...u });
+  assert.equal(r.exigencias.regimen_resultante_en_el_tripwire, 'techo');
+});
+
+test('bajar el umbral sube los elegibles de forma monótona', () => {
+  // La propiedad que hace comparable la tabla: si bajar el umbral redujera los
+  // elegibles en alguna corrida, la tabla no serviría para elegir.
+  const fechas = ['2017-07-03'];
+  const u = universoFalso({ nSeries: 100, fechas, importe: (i) => (i + 1) * 1e5 });
+  const elegibles = [5e6, 2e6, 1e6, 5e5].map((umbral) =>
+    analizarElegibilidad({ fechas, ...u, umbralImporte: umbral }).resumen.mediana_elegibles);
+  for (let i = 1; i < elegibles.length; i++) {
+    assert.ok(elegibles[i] >= elegibles[i - 1],
+      `bajar el umbral no puede reducir elegibles: ${elegibles}`);
+  }
+  assert.ok(elegibles[3] > elegibles[0], 'y sí los sube');
+});
+
+test('el markdown comparativo trae las tres filas y las exigencias', () => {
+  const md = comparativaMd({
+    insumos: { fechas_rebalanceo: 111 },
+    universo_mediano: 128,
+    exigencias: {
+      universo_mediano: 128, elegibles_para_que_mande_el_quintil: 40,
+      elegibles_para_pasar_el_tripwire: 86, puerta_que_manda: 'tripwire',
+      regimen_resultante_en_el_tripwire: 'techo',
+    },
+    comparativa: [
+      { umbral: 500000, elegibles_mediano: 90, pct_excluido: 0.30, pct_fechas_piso: 0.1, canasta_mediana: 15, pasa_tripwire: true, pasa_piso: true, puede_correrse_fase_b: true },
+      { umbral: 1000000, elegibles_mediano: 70, pct_excluido: 0.45, pct_fechas_piso: 0.2, canasta_mediana: 14, pasa_tripwire: false, pasa_piso: true, puede_correrse_fase_b: false },
+      { umbral: 2000000, elegibles_mediano: 55, pct_excluido: 0.57, pct_fechas_piso: 0.4, canasta_mediana: 11, pasa_tripwire: false, pasa_piso: true, puede_correrse_fase_b: false },
+    ],
+    series_excluidas: { lista: ['VISTAC', 'GAVB'], motivo: 'sin precios' },
+  });
+  assert.match(md, /Umbral de liquidez/);
+  assert.match(md, /500,000|500.000/);
+  assert.match(md, /La puerta que manda es \*\*tripwire\*\*/);
+  assert.match(md, /VISTAC, GAVB/);
 });

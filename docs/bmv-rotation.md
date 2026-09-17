@@ -1221,6 +1221,80 @@ donde ya hay un dato.
 
 ---
 
+## 5.8 El tripwire se disparó, y eso era el plan
+
+Primera corrida de `?job=elegibilidad` con el umbral de 5 MM:
+
+| | Resultado | Límite acordado |
+|---|---:|---:|
+| Rebalanceos | 111 | ≥ 30 ✅ |
+| Universo mediano (TTM + precio) | 128 | ≥ 16 ✅ |
+| Elegibles mediano | 37 | |
+| **Excluido por liquidez** | **69.2%** | ≤ 33% ❌ |
+| **Fechas donde manda el piso** | **76.6%** | ≤ 50% ❌ |
+
+**Esto es el tripwire funcionando, no fallando.** Se acordó en §3.1 precisamente
+para esto, y se pudo leer **sin haber visto un solo retorno** — que era la
+condición que lo hacía legítimo.
+
+### La recalibración, y por qué se puede hacer ahora
+
+**5 millones diarios era intuición de mercado estadounidense, no de BMV.** El
+propósito del filtro es **excluir lo no operable**, no partir el universo; a 1
+MM diario una canasta de 8-15 nombres con capital personal entra y sale sin
+mover el precio, que es la única razón por la que el filtro existe.
+
+El valor nuevo se elige con `?job=elegibilidad&umbrales=500000,1000000,2000000`,
+que produce la tabla comparativa **en una sola llamada** —la parte cara, las
+medianas de 3 meses sobre 569,589 filas, se calcula una vez y se reutiliza— y
+que **sigue sin tocar un retorno**.
+
+### Qué exige cada puerta, en número de elegibles
+
+Con universo mediano de **128**:
+
+| Puerta | Exige |
+|---|---:|
+| Que **mande el quintil** (y no el piso) | **≥ 40** elegibles (`8 / 0.20`) |
+| **Pasar el tripwire** (≤33% excluido) | **≥ 86** elegibles (2/3 de 128) |
+
+> **La puerta que manda es el tripwire, no el piso.** Con 37 elegibles hoy, los
+> 40 del piso están a la vuelta de la esquina; los 86 del tripwire son otra
+> historia. Y con 86 elegibles el quintil daría 17.2, **por encima del techo**:
+> el régimen dominante sería `techo`, no `quintil`.
+
+### Una advertencia sobre el tripwire mismo
+
+El tripwire supone que **mucha exclusión ⇒ umbral mal calibrado**. En un mercado
+donde buena parte de las 185 series ICS genuinamente no opera, una exclusión
+alta puede ser **la verdad sobre la BMV** y no un error de calibración.
+
+Bajar el umbral hasta que el tripwire pase sería ajustar el filtro **al
+tripwire** en vez de a la operabilidad — que invierte el propósito que le dimos.
+Dicho de otro modo: si a 500 mil pesos diarios el tripwire sigue sin pasar, la
+lectura honesta no es "hay que bajar más", es **"la BMV tiene ~2/3 de series no
+operables"**, y eso es un hallazgo sobre el mercado, no un obstáculo que
+rodear.
+
+No lo resuelvo por mi cuenta: la tabla da los números y la decisión es de Lety.
+
+### VISTAC y GAVB: resueltas como exclusiones
+
+Con ventana corta (2026-06-01) **también** dan HTTP 400, así que **no era el
+rango**: el identificador `VISTAC` sencillamente no es válido para
+`/v2/historicos`. `GAVB` presenta el mismo patrón.
+
+Quedan **excluidas del universo**, contadas y con nombre, y **no se
+reintentan**. Son 2 de 185 — **1.1%**, sin efecto material. Una serie sin
+precios no puede rankearse ni operarse: su lugar correcto es fuera, dicho, no
+fallando en silencio cada corrida.
+
+Se excluyen **antes** de contar: dejarlas dentro inflaría el denominador del
+tripwire con nombres que nunca podrían pasar el filtro, y harían ver el umbral
+peor de lo que es.
+
+---
+
 ## 6. Estado
 
 | Pieza | Estado |
@@ -1228,14 +1302,15 @@ donde ya hay un dato.
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 10 jobs (`reparse`, `reparse-fin` e `inspect` son de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **167 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **173 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
 | **El censo** | **Cerrado.** `deriva.estable: true` — 0 aparecieron, 0 desaparecieron. **185 series ICS**, 165 con cobertura (las 20 sin ella son bancos y casas de bolsa, fuera de la v1 por decisión de Fase 0). 1,641 repartos: 1,520 efectivo, 121 reembolso, 0 desconocido. |
 | **Fase A, diseño** | **Cerrado.** |
 | **La cosecha** | **Corrida**: 4,174 financieros, 182 series de precios. |
 | **Normalización** | Arreglada y **verificada en prod**: 4,174/4,174 con EPS (§5.5). |
-| **Elegibilidad** | `?job=elegibilidad` construido, **sin correr** — es la última puerta antes de la Fase B (§5.7). |
+| **Elegibilidad** | **Corrida.** Tripwire disparado: 69.2% excluido, piso en 76.6% de las fechas (§5.8). |
+| **Umbral de liquidez** | **En recalibración**, con la tabla de `&umbrales=…`. Decisión pendiente. |
 | **La cosecha** | **Sin correr** — este sandbox no alcanza la API. |
 | **Cobertura real** | **Sin reportar** — depende de la cosecha. |
 | `/api/bmv-rotation-analyze` | **Fase B. No empezado, a propósito.** |

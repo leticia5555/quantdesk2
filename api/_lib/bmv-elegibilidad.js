@@ -18,6 +18,14 @@
 // Los tres números congelados en docs/bmv-rotation.md §3.1 y §3.3. Se importan
 // desde aquí para que el reporte y la Fase B no puedan divergir.
 const LAG_DIAS = 65;                  // el rezago que elimina el look-ahead
+
+// EN RECALIBRACIÓN (17-sep-2026). El tripwire del §3.1 se disparó con este
+// valor: excluyó 69.2% del universo en promedio, muy por encima del tercio
+// acordado. 5 millones era intuición de mercado estadounidense, no de BMV, y el
+// propósito del filtro es excluir lo NO OPERABLE, no partir el universo.
+//
+// El valor nuevo se elige con la tabla de `?job=elegibilidad&umbrales=…`, que
+// no mira un solo retorno — es lo que hace legítimo recalibrar ahora.
 const UMBRAL_IMPORTE = 5_000_000;     // pesos, mediana de 3 meses
 const PISO_CANASTA = 8;
 const TECHO_CANASTA = 15;
@@ -27,6 +35,22 @@ const TRIMESTRES_TTM = 4;
 // Si el filtro de liquidez se lleva más de esto en promedio, el umbral está mal
 // calibrado para BMV y se baja ANTES de la Fase B (§3.1, tripwire).
 const TRIPWIRE_EXCLUSION = 1 / 3;
+
+/**
+ * Series ICS que NO tienen precios disponibles en `/v2/historicos`.
+ *
+ * Verificado (17-sep-2026): `VISTAC` da HTTP 400 también con una ventana corta
+ * de 2026-06-01, así que **no era el rango** — el identificador sencillamente
+ * no es válido para ese endpoint. `GAVB` presenta el mismo patrón.
+ *
+ * Se excluyen del universo en vez de dejarlas fallando: una serie sin precios
+ * no puede rankearse ni operarse, así que su lugar correcto es fuera, contado y
+ * con nombre. Son 2 de 185 — 1.1% del universo, sin efecto material.
+ *
+ * NO se reintentan: un 400 no se arregla martillando, y cada reintento gasta un
+ * crédito en el mismo error.
+ */
+const SERIES_SIN_PRECIOS = new Set(['VISTAC', 'GAVB']);
 
 /** Suma días naturales a 'AAAA-MM-DD'. */
 function sumaDias(fecha, dias) {
@@ -78,7 +102,12 @@ function mediana(xs) {
 function analizarElegibilidad({
   fechas, cierresPorEmisora, medianas, series,
   umbralImporte = UMBRAL_IMPORTE, lagDias = LAG_DIAS,
+  excluidas = SERIES_SIN_PRECIOS,
 } = {}) {
+  // Las series sin precios se quitan del universo ANTES de contar: dejarlas
+  // dentro inflaría el denominador del tripwire con nombres que nunca podrían
+  // pasar el filtro, y haría ver el umbral peor de lo que es.
+  const universoSeries = series.filter((s) => !excluidas.has(s.emisora_serie));
   const porFecha = [];
 
   for (const fecha of fechas) {
@@ -93,7 +122,7 @@ function analizarElegibilidad({
     let elegibles = 0;
     let sinImporte = 0;
 
-    for (const s of series) {
+    for (const s of universoSeries) {
       const cierres = cierresPorEmisora.get(s.emisora) || [];
       const disponibles = cierres.filter((c) => c <= corte).length;
       if (disponibles >= 1) conAlguno += 1;
@@ -158,6 +187,10 @@ function analizarElegibilidad({
     // mira un retorno: se pueden leer antes de correr la Fase B sin
     // contaminar nada.
     veredicto: veredictoPrevio(porFecha, pctExcluido),
+    series_excluidas: {
+      motivo: 'sin precios en /v2/historicos (HTTP 400 también con ventana corta)',
+      lista: series.filter((s) => excluidas.has(s.emisora_serie)).map((s) => s.emisora_serie),
+    },
     criterios: {
       lag_dias: lagDias,
       umbral_importe: umbralImporte,
@@ -169,6 +202,10 @@ function analizarElegibilidad({
       min_universo_mediano: 16,
       tripwire_exclusion: TRIPWIRE_EXCLUSION,
     },
+    // Lo que cada puerta EXIGE en número de elegibles, dado el universo
+    // observado. Sin esto, "falla el tripwire" no dice qué tan lejos está ni
+    // cuál de las dos puertas manda.
+    exigencias: exigenciasDeLasPuertas(porFecha),
   };
 }
 
@@ -220,8 +257,34 @@ function veredictoPrevio(porFecha, pctExcluido) {
   };
 }
 
+/**
+ * Traduce las puertas a un número de elegibles, que es lo accionable.
+ *
+ * Con el universo observado, el tripwire (≤33% excluido) exige **muchos más**
+ * elegibles que la puerta del piso (≥40): son 2/3 del universo contra 40 a
+ * secas. O sea que la puerta que manda es el tripwire, y conviene saberlo antes
+ * de elegir umbral — si no, uno cree que basta con rozar los 40.
+ */
+function exigenciasDeLasPuertas(porFecha) {
+  const universoMediano = mediana(porFecha.map((r) => r.universo));
+  if (universoMediano === null) return null;
+  const paraTripwire = Math.ceil(universoMediano * (1 - TRIPWIRE_EXCLUSION));
+  const paraQuintil = Math.ceil(PISO_CANASTA / FRACCION_QUINTIL);   // 8 / 0.20 = 40
+  return {
+    universo_mediano: universoMediano,
+    elegibles_para_que_mande_el_quintil: paraQuintil,
+    elegibles_para_pasar_el_tripwire: paraTripwire,
+    puerta_que_manda: paraTripwire > paraQuintil ? 'tripwire' : 'piso',
+    // Con tantos elegibles el quintil se pasaría del techo, y el régimen
+    // dominante sería `techo` y no `quintil`. No es un problema — pero es un
+    // dato distinto del que uno espera al leer "el quintil por fin manda".
+    regimen_resultante_en_el_tripwire: tamanoCanasta(paraTripwire).regimen,
+  };
+}
+
 export {
   LAG_DIAS, UMBRAL_IMPORTE, PISO_CANASTA, TECHO_CANASTA, FRACCION_QUINTIL,
-  TRIMESTRES_TTM, TRIPWIRE_EXCLUSION,
-  analizarElegibilidad, mediana, sumaDias, tamanoCanasta, veredictoPrevio,
+  TRIMESTRES_TTM, TRIPWIRE_EXCLUSION, SERIES_SIN_PRECIOS,
+  analizarElegibilidad, exigenciasDeLasPuertas, mediana, sumaDias, tamanoCanasta,
+  veredictoPrevio,
 };
