@@ -491,5 +491,41 @@ console.log('\n── y se lee en el markdown, sin jq ──');
   ok(/Techo de esa llamada/.test(md), 'y el techo con su origen');
 }
 
+console.log('\n── un rechazo de tickers dice CUÁL ──');
+{
+  const { diagnosticoDeFila, auditaFila, renderCorridasMarkdown } = await import('../api/_lib/arena-audit.js');
+
+  // Un `rejected_tickers` NO tiene bloque de herramientas ni `llm_error`: el
+  // modelo contestó bien, el problema fue el contenido. Sin contar `tickers`
+  // como diagnóstico, el bloque se saltaba justo en el aborto que más se mira.
+  const soloTickers = { tickers: { desconocidos: [{ pedido: 'BRK.B', motivo: 'no está en el universo de hoy' }], reparados: [], colisiones: [] } };
+  const d = diagnosticoDeFila(soloTickers);
+  ok(d !== null && d.tickers.desconocidos.length === 1,
+    '`ctx.tickers` alcanza por sí solo para que haya diagnóstico');
+
+  const fila = auditaFila({
+    id: 'x', run_date: '2026-09-18', status: 'rejected_tickers', agent_id: 'control',
+    actions: [], context: soloTickers,
+  });
+  const md = renderCorridasMarkdown({ corridas: [{ fecha: '2026-09-18', filas: [fila] }] });
+  ok(!/\[object Object\]/.test(md),
+    'y se imprimen los SÍMBOLOS: `desconocidos` son objetos y un join los volvía "[object Object]"');
+  ok(/BRK\.B/.test(md) && /no está en el universo/.test(md),
+    'con el ticker pedido y el motivo, que es la única pregunta que se hace ante un rechazo');
+}
+
+console.log('\n── el estado de halt no se lee al revés ──');
+{
+  const { renderCorridasMarkdown } = await import('../api/_lib/arena-audit.js');
+  const sano = renderCorridasMarkdown({ corridas: [], halt: [{ agent_id: 'control', halted: false }] });
+  ok(/Ningún agente detenido/.test(sano) && !/HALT.*control.*activo/.test(sano),
+    'un agente SANO no genera una línea que empiece con "HALT" — así se leía "HALT — control activo" como si estuviera detenido');
+  const roto = renderCorridasMarkdown({ corridas: [], halt: [{ agent_id: 'control', halted: true, halted_at: 'X', halted_reason: 'broadcut' }] });
+  ok(/⛔ \*\*DETENIDO\*\* — `control`/.test(roto),
+    'y uno detenido lo dice con la palabra que manda primero');
+  ok(/phase=resume/.test(roto),
+    'con cómo revivirlo: el halt NO se levanta solo, y sin esa línea alguien espera a que pase');
+}
+
 console.log(failures ? `\n${failures} FALLAS` : '\nTodo verde');
 process.exit(failures ? 1 : 0);
