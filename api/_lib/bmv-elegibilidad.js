@@ -6,35 +6,57 @@
 // financieros disponibles con el rezago de 65 días, y operar lo suficiente.
 //
 // Esto NO es el backtest. No mira un solo retorno. Su trabajo es contestar,
-// ANTES de correr nada, la pregunta que decide si el resultado va a poder
-// leerse: ¿hay universo? Porque con un universo elegible chico el "quintil
-// superior" no es un quintil —lo dice §4.1 del doc— y el veredicto se etiqueta
-// «no probó un quintil» pase lo que pase con el t y el Sharpe.
+// ANTES de correr nada, dos preguntas: ¿hay universo suficiente para que el
+// resultado signifique algo, y qué regla acabó decidiendo el tamaño de la
+// canasta? Porque si el tamaño lo fijó el piso (8) o el techo (15) en más de la
+// mitad de las fechas, lo que se probó no es un quintil superior sino un top-N
+// fijo —lo dice §4.1— y el veredicto se etiqueta así pase lo que pase con el t
+// y el Sharpe.
 //
-// Que se pueda calcular sin tocar un retorno es lo que permite RECALIBRAR el
-// umbral de liquidez sin contaminarse: no hay resultados que mirar todavía.
+// Que se pueda calcular sin tocar un retorno es lo que permitió corregir los
+// criterios del universo —el umbral de liquidez y el tripwire retirado— sin
+// contaminarse: no había resultados que mirar todavía.
 // ═══════════════════════════════════════════════════════════════════
 
 // Los tres números congelados en docs/bmv-rotation.md §3.1 y §3.3. Se importan
 // desde aquí para que el reporte y la Fase B no puedan divergir.
 const LAG_DIAS = 65;                  // el rezago que elimina el look-ahead
 
-// EN RECALIBRACIÓN (17-sep-2026). El tripwire del §3.1 se disparó con este
-// valor: excluyó 69.2% del universo en promedio, muy por encima del tercio
-// acordado. 5 millones era intuición de mercado estadounidense, no de BMV, y el
-// propósito del filtro es excluir lo NO OPERABLE, no partir el universo.
+// CONGELADO el 17-sep-2026, antes de ver un solo retorno.
 //
-// El valor nuevo se elige con la tabla de `?job=elegibilidad&umbrales=…`, que
-// no mira un solo retorno — es lo que hace legítimo recalibrar ahora.
-const UMBRAL_IMPORTE = 5_000_000;     // pesos, mediana de 3 meses
+// El umbral se fija por su PROPÓSITO, no por cuántos nombres deja pasar: que
+// una canasta de 8-15 nombres con capital personal entre y salga sin mover el
+// precio. A 1 MM de importe mediano diario, una posición de ~$80,000 pesos es
+// menos del 10% del volumen del día, que es el estándar razonable de
+// participación. Ese cálculo no depende de cuántas emisoras sobrevivan.
+//
+// El valor anterior (5 MM) era intuición de mercado estadounidense trasplantada
+// a BMV sin recalcular el tamaño de posición que la motiva. Se corrigió antes
+// de la Fase B y sin mirar retornos — lo que hace legítimo el cambio.
+const UMBRAL_IMPORTE = 1_000_000;     // pesos, mediana de 3 meses
 const PISO_CANASTA = 8;
 const TECHO_CANASTA = 15;
 const FRACCION_QUINTIL = 0.20;
 const TRIMESTRES_TTM = 4;
 
-// Si el filtro de liquidez se lleva más de esto en promedio, el umbral está mal
-// calibrado para BMV y se baja ANTES de la Fase B (§3.1, tripwire).
-const TRIPWIRE_EXCLUSION = 1 / 3;
+// RETIRADO el 17-sep-2026: el tripwire del tercio (§3.1) era insatisfacible.
+//
+// Exigía que el filtro de liquidez excluyera ≤ 1/3 del universo, o sea ≥ 2/3 de
+// elegibles. Con el universo mediano observado (128) eso son ≥ 86 elegibles; y
+// con 86 elegibles el quintil da 17.2, que topa contra el techo de 15. Es
+// decir: cualquier umbral que pasara el tripwire garantizaba régimen `techo`, y
+// el régimen `quintil` sólo existe entre 40 y 75 elegibles. Las dos reglas
+// pedían cosas incompatibles, y una regla insatisfacible no es una regla.
+//
+// El error de fondo: el tripwire suponía que el universo de partida era todo
+// operable, de modo que una exclusión alta sólo podía significar umbral mal
+// calibrado. En BMV el universo de partida NO es todo operable, así que una
+// exclusión alta puede ser la verdad sobre el mercado. Calibrar por «cuánto
+// excluye» habría sido ajustar el filtro a la métrica en vez de a la
+// operabilidad.
+//
+// NO se sustituye por otro porcentaje. El % excluido se sigue reportando como
+// diagnóstico —es informativo— pero ya no es una puerta.
 
 /**
  * Series ICS que NO tienen precios disponibles en `/v2/historicos`.
@@ -104,9 +126,9 @@ function analizarElegibilidad({
   umbralImporte = UMBRAL_IMPORTE, lagDias = LAG_DIAS,
   excluidas = SERIES_SIN_PRECIOS,
 } = {}) {
-  // Las series sin precios se quitan del universo ANTES de contar: dejarlas
-  // dentro inflaría el denominador del tripwire con nombres que nunca podrían
-  // pasar el filtro, y haría ver el umbral peor de lo que es.
+  // Las series sin precios se quitan del universo ANTES de contar: una serie
+  // que no puede rankearse ni operarse no es universo, y dejarla dentro
+  // ensuciaría todos los conteos con nombres que nunca podrían entrar.
   const universoSeries = series.filter((s) => !excluidas.has(s.emisora_serie));
   const porFecha = [];
 
@@ -181,12 +203,18 @@ function analizarElegibilidad({
         insuficiente: cuenta('insuficiente'),
       },
       pct_fechas_piso: n ? (cuenta('piso') + cuenta('insuficiente')) / n : null,
+      pct_fechas_techo: n ? cuenta('techo') / n : null,
+      pct_fechas_quintil: n ? cuenta('quintil') / n : null,
+      // Diagnóstico, ya no puerta: el tripwire del tercio se retiró el
+      // 17-sep-2026 por insatisfacible (ver arriba). El número sigue siendo
+      // informativo —dice qué tan selectivo es el filtro— pero no decide nada.
       pct_excluido_liquidez: pctExcluido,
+      regimen: etiquetaDeRegimen(porFecha),
     },
     // Las tres puertas del §3.4, evaluadas con los números de arriba. Ninguna
     // mira un retorno: se pueden leer antes de correr la Fase B sin
     // contaminar nada.
-    veredicto: veredictoPrevio(porFecha, pctExcluido),
+    veredicto: veredictoPrevio(porFecha),
     series_excluidas: {
       motivo: 'sin precios en /v2/historicos (HTTP 400 también con ventana corta)',
       lista: series.filter((s) => excluidas.has(s.emisora_serie)).map((s) => s.emisora_serie),
@@ -200,25 +228,76 @@ function analizarElegibilidad({
       trimestres_ttm: TRIMESTRES_TTM,
       min_rebalanceos: 30,
       min_universo_mediano: 16,
-      tripwire_exclusion: TRIPWIRE_EXCLUSION,
+      tripwire_exclusion: null,  // retirado el 17-sep-2026 por insatisfacible
     },
-    // Lo que cada puerta EXIGE en número de elegibles, dado el universo
-    // observado. Sin esto, "falla el tripwire" no dice qué tan lejos está ni
-    // cuál de las dos puertas manda.
+    // En qué rango de elegibles el quintil manda de verdad. Sin esto, "mandó
+    // el piso" no dice qué tan lejos quedó ni si el techo estaba al otro lado.
     exigencias: exigenciasDeLasPuertas(porFecha),
   };
 }
 
 /**
- * Las tres puertas que se pueden juzgar SIN correr el backtest, con la
- * respuesta en los términos ya congelados — no en una escala nueva inventada
- * para la ocasión.
+ * Qué régimen mandó y en qué proporción de las fechas.
+ *
+ * La puerta del §4.1 no bloquea nada: etiqueta. Un backtest donde el tamaño de
+ * canasta lo decidió el piso (8) o el techo (15) en más de la mitad de las
+ * fechas sigue siendo un experimento válido —midió algo real— pero NO midió un
+ * quintil superior, y el veredicto tiene que decirlo con todas sus letras en
+ * vez de dejar que el lector suponga.
+ *
+ * Endurecida el 17-sep-2026: antes sólo miraba el piso. El techo produce
+ * exactamente el mismo problema por el otro lado, y salió a la luz al calcular
+ * qué exigía el tripwire (≥86 elegibles ⇒ canasta 15 ⇒ techo).
  */
-function veredictoPrevio(porFecha, pctExcluido) {
+function etiquetaDeRegimen(porFecha) {
   const n = porFecha.length;
-  const medUniverso = mediana(porFecha.map((r) => r.elegibles));
-  const pisos = porFecha.filter((r) => r.regimen === 'piso' || r.regimen === 'insuficiente').length;
-  const pctPiso = n ? pisos / n : 0;
+  if (!n) return null;
+  const cuenta = (r) => porFecha.filter((x) => x.regimen === r).length;
+  // `insuficiente` (< 8 elegibles) cuenta como piso: tampoco probó un quintil,
+  // y encima ni siquiera alcanzó el piso. Se reporta aparte, pero del lado del
+  // piso, no como un cuarto régimen neutral.
+  const pctPiso = (cuenta('piso') + cuenta('insuficiente')) / n;
+  const pctTecho = cuenta('techo') / n;
+  const pctQuintil = cuenta('quintil') / n;
+
+  let dominante = null;
+  if (pctPiso > 0.5) dominante = 'piso';
+  else if (pctTecho > 0.5) dominante = 'techo';
+
+  // El caso mixto: ni el piso ni el techo pasan de la mitad por separado, pero
+  // entre los dos dejan al quintil en minoría. La regla congelada habla de cada
+  // uno por separado, así que esto NO dispara la etiqueta — se reporta como
+  // observación para que nadie lea "el quintil mandó" donde mandó 40% del
+  // tiempo.
+  const mixto = !dominante && pctQuintil <= 0.5;
+
+  return {
+    pct_piso: pctPiso,
+    pct_techo: pctTecho,
+    pct_quintil: pctQuintil,
+    dominante,
+    etiqueta: dominante
+      ? `no probó un quintil, probó top-N fijo (${dominante === 'piso' ? `piso de ${PISO_CANASTA}` : `techo de ${TECHO_CANASTA}`})`
+      : null,
+    observacion: mixto
+      ? `régimen mixto: el quintil mandó en ${(100 * pctQuintil).toFixed(1)}% de las fechas, sin que el piso ni el techo pasaran de la mitad por separado`
+      : null,
+  };
+}
+
+/**
+ * Las puertas que se pueden juzgar SIN correr el backtest, con la respuesta en
+ * los términos ya congelados — no en una escala nueva inventada para la
+ * ocasión.
+ *
+ * Son tres desde el 17-sep-2026: se retiró el tripwire del tercio por
+ * insatisfacible (ver el bloque de constantes). Dos bloquean la Fase B; la
+ * tercera sólo etiqueta el veredicto.
+ */
+function veredictoPrevio(porFecha) {
+  const n = porFecha.length;
+  const medElegibles = mediana(porFecha.map((r) => r.elegibles));
+  const reg = etiquetaDeRegimen(porFecha) || { etiqueta: null, pct_piso: 0, pct_techo: 0 };
 
   const puertas = [];
   puertas.push({
@@ -229,62 +308,61 @@ function veredictoPrevio(porFecha, pctExcluido) {
   });
   puertas.push({
     puerta: 'universo elegible mediano ≥ 16',
-    valor: medUniverso,
-    pasa: medUniverso !== null && medUniverso >= 16,
-    consecuencia: medUniverso !== null && medUniverso >= 16
+    valor: medElegibles,
+    pasa: medElegibles !== null && medElegibles >= 16,
+    consecuencia: medElegibles !== null && medElegibles >= 16
       ? null : 'INCONCLUSO por universo insuficiente — la Fase B NO se corre',
   });
   puertas.push({
-    puerta: 'el piso manda en ≤ 50% de las fechas',
-    valor: pctPiso,
-    pasa: pctPiso <= 0.5,
-    consecuencia: pctPiso <= 0.5 ? null
-      : 'el veredicto se etiqueta «no probó un quintil», pase lo que pase con |t| y Sharpe',
-  });
-  puertas.push({
-    puerta: `el filtro de liquidez excluye ≤ ${Math.round(TRIPWIRE_EXCLUSION * 100)}% en promedio`,
-    valor: pctExcluido,
-    pasa: pctExcluido === null || pctExcluido <= TRIPWIRE_EXCLUSION,
-    consecuencia: pctExcluido === null || pctExcluido <= TRIPWIRE_EXCLUSION ? null
-      : 'TRIPWIRE: el umbral está mal calibrado para BMV; se baja ANTES de correr la Fase B',
+    puerta: 'el piso o el techo mandan en ≤ 50% de las fechas',
+    valor: Math.max(reg.pct_piso, reg.pct_techo),
+    pasa: !reg.dominante,
+    // No bloquea: el experimento se corre igual y se reporta como lo que es.
+    consecuencia: reg.etiqueta
+      ? `ETIQUETA: «${reg.etiqueta}», pase lo que pase con |t| y Sharpe`
+      : null,
   });
 
-  const bloqueantes = puertas.filter((p) => !p.pasa && /INCONCLUSO|TRIPWIRE/.test(p.consecuencia || ''));
+  const bloqueantes = puertas.filter((p) => !p.pasa && /INCONCLUSO/.test(p.consecuencia || ''));
   return {
     puede_correrse_fase_b: bloqueantes.length === 0,
+    etiqueta_veredicto: reg.etiqueta,
     puertas,
     bloqueantes: bloqueantes.map((p) => p.consecuencia),
   };
 }
 
 /**
- * Traduce las puertas a un número de elegibles, que es lo accionable.
+ * En qué rango de elegibles manda el quintil, dado el universo observado.
  *
- * Con el universo observado, el tripwire (≤33% excluido) exige **muchos más**
- * elegibles que la puerta del piso (≥40): son 2/3 del universo contra 40 a
- * secas. O sea que la puerta que manda es el tripwire, y conviene saberlo antes
- * de elegir umbral — si no, uno cree que basta con rozar los 40.
+ * El quintil sólo decide el tamaño cuando `0.20 × E` cae entre el piso y el
+ * techo, o sea entre **40 y 75** elegibles. Por debajo manda el piso, por
+ * encima el techo. Es una ventana estrecha, y saberlo antes evita leer
+ * «mandó el piso» como si bastara con un empujoncito al umbral: por el otro
+ * lado está el techo esperando.
+ *
+ * Esta función ya no evalúa el tripwire — se retiró el 17-sep-2026. Fue
+ * justamente esta aritmética la que mostró que era insatisfacible: pasarlo
+ * exigía ≥ 2/3 del universo mediano (86 elegibles), y 86 está muy por encima
+ * de 75, o sea del otro lado del techo.
  */
 function exigenciasDeLasPuertas(porFecha) {
   const universoMediano = mediana(porFecha.map((r) => r.universo));
   if (universoMediano === null) return null;
-  const paraTripwire = Math.ceil(universoMediano * (1 - TRIPWIRE_EXCLUSION));
-  const paraQuintil = Math.ceil(PISO_CANASTA / FRACCION_QUINTIL);   // 8 / 0.20 = 40
+  const minQuintil = Math.ceil(PISO_CANASTA / FRACCION_QUINTIL);    // 8  / 0.20 = 40
+  const maxQuintil = Math.floor(TECHO_CANASTA / FRACCION_QUINTIL);  // 15 / 0.20 = 75
+  const medElegibles = mediana(porFecha.map((r) => r.elegibles));
   return {
     universo_mediano: universoMediano,
-    elegibles_para_que_mande_el_quintil: paraQuintil,
-    elegibles_para_pasar_el_tripwire: paraTripwire,
-    puerta_que_manda: paraTripwire > paraQuintil ? 'tripwire' : 'piso',
-    // Con tantos elegibles el quintil se pasaría del techo, y el régimen
-    // dominante sería `techo` y no `quintil`. No es un problema — pero es un
-    // dato distinto del que uno espera al leer "el quintil por fin manda".
-    regimen_resultante_en_el_tripwire: tamanoCanasta(paraTripwire).regimen,
+    elegibles_mediano: medElegibles,
+    ventana_del_quintil: { min: minQuintil, max: maxQuintil },
+    regimen_en_la_mediana: medElegibles === null ? null : tamanoCanasta(medElegibles).regimen,
   };
 }
 
 export {
   LAG_DIAS, UMBRAL_IMPORTE, PISO_CANASTA, TECHO_CANASTA, FRACCION_QUINTIL,
-  TRIMESTRES_TTM, TRIPWIRE_EXCLUSION, SERIES_SIN_PRECIOS,
-  analizarElegibilidad, exigenciasDeLasPuertas, mediana, sumaDias, tamanoCanasta,
-  veredictoPrevio,
+  TRIMESTRES_TTM, SERIES_SIN_PRECIOS,
+  analizarElegibilidad, etiquetaDeRegimen, exigenciasDeLasPuertas, mediana,
+  sumaDias, tamanoCanasta, veredictoPrevio,
 };
