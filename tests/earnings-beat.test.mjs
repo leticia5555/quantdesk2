@@ -18,7 +18,7 @@ import {
   CRITERIOS, normalizaMercado, indiceYes, tokenYes, outcomeResuelto, pareceEarnings,
   construyeIndiceNombres, resuelveSimbolo, tickerExplicito, extraeConsensoEps,
   precioEnT24h, cruzaConPead, evaluaFuentePIT, resumenMarkdown, diasEntre, isoDia,
-  esFecha, extraeTags, extraeCluster, FRASES_BUSQUEDA,
+  esFecha, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
 } from '../api/_lib/earnings-beat.js';
 import { filasDe, aplanaMercados, cosechaDeBusqueda, formaDe } from '../api/earnings-beat.js';
 import { qs, rateHeaders } from '../api/_lib/polymarket.js';
@@ -224,6 +224,11 @@ console.log('descubrimiento dirigido: tags, racimo y cosecha de la búsqueda');
 
 ok(FRASES_BUSQUEDA.includes('beat quarterly earnings') && FRASES_BUSQUEDA.includes('beat its quarterly EPS estimate'),
   'las frases reales de estos mercados están en la lista');
+// La plantilla del slug de NKE no dice "beat" en ninguna parte: si todas las
+// frases lo exigen, esa mitad de la población no se ve y nada falla.
+ok(FRASES_BUSQUEDA.some((f) => !/beat/i.test(f) && /earnings|EPS/i.test(f)),
+  'hay al menos una frase SIN "beat" (la plantilla tipo nke-quarterly-earnings-gaap-eps)');
+ok(FRASES_BUSQUEDA.some((f) => /GAAP/i.test(f)), 'y una que busca la forma GAAP EPS');
 
 const conTags = { id: 1, tags: [{ id: '101', slug: 'earnings', label: 'Earnings' }], events: [{ id: '9', slug: 'ev', tags: [{ id: '2', slug: 'finance' }] }] };
 const tags = extraeTags(conTags);
@@ -242,6 +247,25 @@ const busq = cosechaDeBusqueda({ events: [{ slug: 'e1', markets: [{ id: 1 }, { i
 ok(busq.length === 2, 'public-search: saca los mercados de adentro de los eventos', busq.length);
 ok(cosechaDeBusqueda({ nada: 1 }).length === 0 && cosechaDeBusqueda(null).length === 0, 'forma desconocida → [] (no crashea)');
 ok(formaDe([]) === 'array' && formaDe({ a: 1 }).startsWith('objeto:'), 'formaDe describe la forma cruda');
+
+console.log('detectaTopeUniforme: el "5" no se vuelve a colar');
+
+// El modo de falla real: 8 respuestas, TODAS con 5 filas, con límite pedido 100.
+const uniforme = detectaTopeUniforme(
+  Array.from({ length: 8 }, () => ({ status: 'ok', filas: 5 })), 100);
+ok(uniforme !== null, 'todas iguales y por debajo del límite → avisa');
+ok(uniforme.valor === 5 && uniforme.intentos === 8, 'reporta el valor y cuántas respuestas', uniforme && uniforme.valor);
+ok(/no es un catálogo, es un tope/.test(uniforme.aviso), 'y lo dice en castellano, no en un campo booleano');
+
+ok(detectaTopeUniforme([{ status: 'ok', filas: 100 }, { status: 'ok', filas: 100 }, { status: 'ok', filas: 100 }], 100) === null,
+  'todas llenas AL límite → normal, no avisa (páginas completas)');
+ok(detectaTopeUniforme([{ status: 'ok', filas: 5 }, { status: 'ok', filas: 12 }, { status: 'ok', filas: 3 }], 100) === null,
+  'conteos distintos → no avisa');
+ok(detectaTopeUniforme([{ status: 'ok', filas: 5 }, { status: 'ok', filas: 5 }], 100) === null,
+  'menos de 3 respuestas → muestra insuficiente para acusar');
+ok(detectaTopeUniforme([{ status: 'ok', filas: 0 }, { status: 'ok', filas: 0 }, { status: 'ok', filas: 0 }], 100) === null,
+  'ceros uniformes → es otra cosa (no hay resultados), no un tope');
+ok(detectaTopeUniforme([], 100) === null && detectaTopeUniforme(null, 100) === null, 'vacío/null → null (no crashea)');
 
 console.log('endpoint: plomería de formas de respuesta (sin red)');
 
@@ -263,15 +287,18 @@ const md = resumenMarkdown({
   generado_en: '2026-09-16T00:00:00Z',
   ventana: { desde: '2025-09-16', hasta: '2026-09-16', meses: 12 },
   criterios_congelados: CRITERIOS,
-  sondas: [{ estrategia: 'markets_cerrados', endpoint: 'gamma/markets', status: 'ok', http: 200, ms: 120, filas: 500 }],
+  sondas: [{ estrategia: 'markets_cerrados', endpoint: 'gamma/markets', status: 'ok', http: 200, ms: 120, filas: 100, limite_de_la_sonda: 100 }],
   descubrimiento: {
     metodo: 'dirigido',
     busqueda: { intentos: [{ frase: 'beat quarterly earnings', status: 'ok', http: 200, filas: 12 }] },
     tags: { intentos: [{ tag: 'Earnings', pagina: 0, status: 'ok', http: 200, filas: 80 }], tags_vistos: [{ id: '101', slug: 'earnings', veces: 12 }] },
     cluster: { intentos: [{ via: 'serie_id', status: 'httperror', http: 404, filas: 0 }] },
+    simbolo: { intentos: [{ etiqueta: 'COST', status: 'ok', http: 200, filas: 3, nuevos: 3 }], probados: 99, de: 99 },
+    semillas: { total: 40, usadas: 8, con_tags: 40, con_racimo: 12 },
     mercados_de_earnings_por_camino: { busqueda: 12, tags: 128 },
     estrategia_ganadora: { camino: 'tags', mercados_de_earnings: 128 },
   },
+  sospecha_de_tope: { valor: 5, intentos: 8, limite_pedido: 100, aviso: 'Las 8 respuestas trajeron EXACTAMENTE 5 filas…' },
   topes_de_offset: [{ endpoint: 'gamma/markets', offset: 2500, limit: 500, mensaje: 'offset too large' }],
   barrido: { corrido: false, nota: 'apagado por defecto' },
   conteos: { mercados_de_earnings_en_ventana: 140, resueltos: 130, con_simbolo: 120, en_universo_v0: 90, universo_v0: 99, con_consenso_en_descripcion: 100, con_token_yes: 140 },
@@ -288,6 +315,11 @@ const md = resumenMarkdown({
 });
 ok(md.includes('CENSO earnings-beat') && md.includes('NVDA'), 'renderiza el censo');
 ok(md.includes('Ganó') && md.includes('tags'), 'nombra el camino que encontró más');
+ok(md.includes('LOS CONTEOS NO SON LEGIBLES'), 'el aviso de tope uniforme va ARRIBA de todo, no en una nota al pie');
+ok(md.includes('tope 100'), 'las sondas publican su propio tope al lado del conteo');
+ok(md.includes('99') && md.includes('símbolo'), 'reporta cuántos símbolos se buscaron uno por uno');
+ok(md.includes('CERRADO'), 'las revisiones salen marcadas como CERRADO / fuera de v1');
+ok(md.includes('cuello de botella es NUESTRO universo'), 'interpreta el motivo dominante de no-cruce');
 ok(md.includes('tope de offset') || md.includes('Tope de offset'), 'documenta el tope de offset como hecho del censo');
 ok(md.includes('422 no es rate limit'), 'y aclara que el 422 no es rate limit');
 ok(md.includes('eps_estimate_revision_up_trailing_7_days'), 'enseña la FILA CRUDA de la sonda de revisiones');

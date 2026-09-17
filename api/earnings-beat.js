@@ -14,6 +14,8 @@
 //                  la fecha en el código — lint tests/no-hardcoded-dates)
 //   ?desde=...     fecha exacta de corte, gana sobre ?meses
 //   ?ejemplos=3    cuántos mercados traen precio del Yes a T-24h
+//   ?simbolos=99   cuántos símbolos del universo v0 se buscan uno por uno
+//                  (camino D, el que decide el candado). &simbolos=0 lo apaga
 //   ?barrido=1     además, corre el barrido por offset como CONTROL (apagado
 //                  por defecto: Gamma topa el offset con 422 y el barrido ve
 //                  ~500 de decenas de miles — ciego, no concluyente)
@@ -44,7 +46,7 @@ import { gamma, clob } from './_lib/polymarket.js';
 import {
   CRITERIOS, normalizaMercado, pareceEarnings, resuelveSimbolo, construyeIndiceNombres,
   extraeConsensoEps, outcomeResuelto, tokenYes, precioEnT24h, cruzaConPead, evaluaFuentePIT,
-  isoDia, ts, resumenMarkdown, extraeTags, extraeCluster, FRASES_BUSQUEDA,
+  isoDia, ts, resumenMarkdown, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
 } from './_lib/earnings-beat.js';
 import { V0_UNIVERSE } from './_lib/pead-universe.js';
 import { getSymbolMap } from './earnings.js';
@@ -54,6 +56,7 @@ import { getSymbolMap } from './earnings.js';
 export const maxDuration = 300;
 
 const PRESUPUESTO_MS = 240000;   // corte duro del censo: reporta truncado, no 504
+const LIMITE_SONDA = 100;        // explícito: las sondas miran esquema, no catálogo
 
 // ─────────────────── sondas de esquema ───────────────────
 // NO se asume qué contesta cada endpoint: se sondea con `limit` chico y se
@@ -117,22 +120,114 @@ function aplanaMercados(item) {
 //   C. el racimo (evento/serie) al que pertenece un mercado de earnings.
 // El barrido queda como control opcional (&barrido=1), nunca como el método.
 
+// ── CICATRIZ #2: el "5" que hacía ver un catálogo como una muestra ────────
+// La corrida anterior devolvió EXACTAMENTE 5 filas en toda respuesta. Dos
+// causas distintas, y conviene no confundirlas porque se arreglan distinto:
+//   · las sondas del §1 llevaban un `limit: 5` MÍO (probes baratas);
+//   · la búsqueda iba con solo `q` — quité `limit_per_type` en la vuelta
+//     anterior "para no inventar parámetros", y sin él public-search sirve su
+//     DEFAULT, que resultó ser 5 por tipo.
+// O sea que la prudencia de no mandar el parámetro NO fue neutral: eligió el
+// default del servidor y lo disfrazó de resultado. La lección no es "inventar
+// parámetros", es: **mandarlo y verificar que funcionó**, con reintento pelado
+// si el servidor lo rechaza. Un límite implícito es peor que uno explícito:
+// el explícito se ve en el diff.
+const PAGINAS_BUSQUEDA = 12;      // tope de páginas por frase
+const LIMITE_BUSQUEDA = 100;      // explícito, y verificado abajo
+
+async function buscaFrase(gamma1, frase, restante, etiqueta) {
+  const intentos = [];
+  const filas = [];
+  const idsVistos = new Set();
+  let conLimite = true;
+
+  for (let pagina = 0; pagina < PAGINAS_BUSQUEDA; pagina++) {
+    if (restante() < 40000) { intentos.push({ frase, etiqueta, nota: 'corte por presupuesto de tiempo' }); break; }
+    const params = { q: frase };
+    if (conLimite) params.limit_per_type = LIMITE_BUSQUEDA;
+    if (pagina > 0) params.page = pagina + 1;
+
+    let r = await gamma1('/public-search', params);
+    // Si el parámetro explícito es el problema, se cae al pelado UNA vez y
+    // queda registrado — pero entonces el conteo sale con el default del
+    // servidor y hay que leerlo como tal.
+    if (r.status !== 'ok' && conLimite && pagina === 0) {
+      intentos.push({ frase, etiqueta, pagina, status: r.status, http: r.http ?? null,
+        nota: `limit_per_type=${LIMITE_BUSQUEDA} rechazado — reintento sin parámetros` });
+      conLimite = false;
+      r = await gamma1('/public-search', { q: frase });
+    }
+
+    const encontradas = r.status === 'ok' ? cosechaDeBusqueda(r.body) : [];
+    const ids = encontradas.map(idDeMercado).filter(Boolean);
+    const nuevos = ids.filter((i) => !idsVistos.has(i));
+    for (const i of ids) idsVistos.add(i);
+
+    intentos.push({
+      frase, etiqueta, pagina, status: r.status, http: r.http ?? null, ms: r.ms,
+      filas: encontradas.length, nuevos: nuevos.length,
+      limite: conLimite ? LIMITE_BUSQUEDA : 'default del servidor',
+      forma: r.status === 'ok' ? formaDe(r.body) : null,
+    });
+    filas.push(...encontradas);
+
+    if (r.status !== 'ok') break;
+    if (!encontradas.length) break;
+    // ¿La paginación AVANZA de verdad? Si la página 2 trae lo mismo que la 1,
+    // public-search no pagina y seguir pidiendo es gastar presupuesto en el
+    // mismo lote. Se declara, no se asume.
+    if (pagina > 0 && nuevos.length === 0) {
+      intentos.push({ frase, etiqueta, nota: 'la página no trajo ids nuevos: public-search no pagina — se corta' });
+      break;
+    }
+    // Página incompleta = última página.
+    if (conLimite && encontradas.length < LIMITE_BUSQUEDA) break;
+  }
+  return { intentos, filas };
+}
+
+function idDeMercado(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  if (raw.id !== undefined && raw.id !== null) return String(raw.id);
+  return raw.slug ? 'slug:' + raw.slug : null;
+}
+
 async function descubrePorBusqueda(ctx, gamma1, restante) {
   const intentos = [];
   const filas = [];
   for (const frase of FRASES_BUSQUEDA) {
     if (restante() < 40000) break;
-    // Solo `q`: cualquier parámetro extra sería inventado por mí, y un
-    // parámetro desconocido puede tirar 422 y matar el camino principal.
-    // Si la búsqueda recorta de más, se va a ver en el conteo y se ajusta
-    // con un dato en la mano, no con una suposición.
-    const r = await gamma1('/public-search', { q: frase });
-    const encontradas = r.status === 'ok' ? cosechaDeBusqueda(r.body) : [];
-    intentos.push({ frase, status: r.status, http: r.http ?? null, ms: r.ms, filas: encontradas.length,
-      forma: r.status === 'ok' ? formaDe(r.body) : null });
-    filas.push(...encontradas);
+    const r = await buscaFrase(gamma1, frase, restante, 'frase');
+    intentos.push(...r.intentos);
+    filas.push(...r.filas);
   }
   return { camino: 'busqueda', intentos, filas };
+}
+
+// ── Camino D: una búsqueda POR SÍMBOLO de nuestro universo ────────────────
+// Es el camino que apunta directo a la pregunta que decide el candado: no
+// "cuántos mercados de earnings hay en Polymarket", sino **cuántos hay de las
+// empresas que nosotros podemos modelar**. Las plantillas conocidas
+// ("Will X (TICKER) beat quarterly earnings?" y el slug estilo
+// "nke-quarterly-earnings-gaap-eps-…") ponen el ticker en el texto, así que
+// buscar por ticker es la consulta más específica que podemos hacer.
+async function descubrePorSimbolo(ctx, gamma1, restante, universo) {
+  const intentos = [];
+  const filas = [];
+  const simbolos = [...universo].slice(0, ctx.simbolos);
+  let probados = 0;
+  for (const sym of simbolos) {
+    if (restante() < 60000) break;
+    const r = await buscaFrase(gamma1, `${sym} quarterly earnings`, restante, sym);
+    probados++;
+    // Solo se reportan los intentos que trajeron algo o fallaron: 99 filas de
+    // "0 resultados" tapan el reporte sin decir nada que el total no diga.
+    for (const i of r.intentos) {
+      if (i.nota || i.status !== 'ok' || (i.filas ?? 0) > 0) intentos.push(i);
+    }
+    filas.push(...r.filas);
+  }
+  return { camino: 'simbolo', intentos, filas, probados, de: simbolos.length, universo: universo.size };
 }
 
 // public-search devuelve varios tipos a la vez (eventos, tags, perfiles). Se
@@ -264,11 +359,14 @@ async function corre(ctx) {
   const sondas = [];
   for (const e of ESTRATEGIAS) {
     if (restante() < 60000) break;
-    const r = await gamma1(e.path, { ...e.params(ctx, 0), limit: 5 });
+    const r = await gamma1(e.path, { ...e.params(ctx, 0), limit: LIMITE_SONDA });
     const filas = r.status === 'ok' ? filasDe(r.body) : [];
     sondas.push({
       estrategia: e.nombre, endpoint: 'gamma' + e.path, status: r.status, http: r.http ?? null,
-      ms: r.ms, filas: filas.length,
+      // `filas` de una sonda está TOPADA por su propio límite: es el censo del
+      // ESQUEMA, no un conteo del catálogo. Se publica el tope al lado para que
+      // nadie vuelva a leer "5" como si fuera el tamaño del universo.
+      ms: r.ms, filas: filas.length, limite_de_la_sonda: LIMITE_SONDA,
       forma: r.status === 'ok' ? formaDe(r.body) : null,
       claves_primera_fila: filas.length ? Object.keys(filas[0]).slice(0, 40) : null,
       mensaje: r.message ? String(r.message).slice(0, 200) : null,
@@ -297,12 +395,31 @@ async function corre(ctx) {
   const busqueda = await descubrePorBusqueda(ctx, gamma1, restante);
   suma('busqueda', busqueda.filas);
 
+  // Camino D ANTES de tags/racimo: es el que más semillas produce, y tags y
+  // racimo fallaron la vuelta pasada por falta de semillas, no por no existir.
+  const porSimbolo = ctx.simbolos > 0
+    ? await descubrePorSimbolo(ctx, gamma1, restante, universo)
+    : { camino: 'simbolo', intentos: [{ nota: 'apagado con &simbolos=0' }], filas: [], probados: 0, de: 0 };
+  suma('simbolo', porSimbolo.filas);
+
   // Semillas para B y C: los mercados de earnings que A sí encontró. Si A no
   // encontró ninguno, B y C se declaran no disponibles en vez de inventarse
   // un tag plausible.
-  const semillas = [...crudosPorId.values()]
-    .filter((raw) => pareceEarnings(normalizaMercado(raw)).si)
-    .slice(0, 5);
+  const todasLasSemillas = [...crudosPorId.values()]
+    .filter((raw) => pareceEarnings(normalizaMercado(raw)).si);
+  const semillas = todasLasSemillas.slice(0, 8);
+  // ¿Los mercados traen tags/evento cuando hay más de dos? La vuelta pasada
+  // tags y racimo quedaron "no disponibles" por falta de semillas; con este
+  // conteo se distingue "no había semillas" de "las semillas no traen tags".
+  const semillas_info = {
+    total: todasLasSemillas.length,
+    usadas: semillas.length,
+    con_tags: todasLasSemillas.filter((raw) => extraeTags(raw).length > 0).length,
+    con_racimo: todasLasSemillas.filter((raw) => {
+      const c = extraeCluster(raw);
+      return !!(c.evento_id || c.evento_slug || c.serie_id || c.serie_slug);
+    }).length,
+  };
 
   const porTags = await descubrePorTags(ctx, gamma1, restante, semillas);
   suma('tags', porTags.filas);
@@ -434,7 +551,12 @@ async function corre(ctx) {
     cruce.error = String((e && e.message) || e).slice(0, 200);
   }
 
-  // ── 6. ¿Existe fuente PIT de revisiones de estimados, gratis? ──
+  // ── 6. Revisiones de estimados — CERRADO: fuera de v1 ──
+  // Resuelto en la corrida anterior con la fila cruda a la vista: lo que hay
+  // son CONTEOS de revisiones y promedios ancla (7/30 días), sin valores
+  // fechados. No es point-in-time. La sonda se sigue corriendo (es barata y
+  // una fuente puede cambiar), pero el feature NO entra a v1 y el veredicto
+  // de la Fase 0 ya no depende de ella.
   const revisiones = [];
   if (ctx.finnhubKey && restante() > 15000) {
     for (const path of ['/stock/eps-estimate', '/stock/revision']) {
@@ -451,12 +573,22 @@ async function corre(ctx) {
     revisiones.push({ fuente: 'alphavantage', status: 'sin_key', pit: false, motivo: 'ALPHAVANTAGE_API_KEY no está en el entorno' });
   }
 
+  // Autodefensa: ¿todas las búsquedas trajeron el mismo número? Entonces lo
+  // que se está midiendo es un tope, no una población (cicatriz de la 2ª
+  // corrida). El censo lo dice arriba de todo y los conteos quedan marcados
+  // como NO legibles.
+  const sospecha_de_tope = detectaTopeUniforme(
+    [...busqueda.intentos, ...porSimbolo.intentos], LIMITE_BUSQUEDA);
+
   return {
     ventana: { desde: ctx.desde, hasta: new Date().toISOString().slice(0, 10), meses: ctx.meses },
+    sospecha_de_tope,
     sondas,
     descubrimiento: {
       metodo: 'dirigido (búsqueda → tags → racimo). El barrido por offset quedó como control opcional.',
       busqueda: { intentos: busqueda.intentos },
+      simbolo: { intentos: porSimbolo.intentos, probados: porSimbolo.probados, de: porSimbolo.de },
+      semillas: semillas_info,
       tags: { intentos: porTags.intentos, tags_vistos: porTags.tags_vistos || [] },
       cluster: { intentos: porCluster.intentos },
       aportes_crudos: aportes,
@@ -486,6 +618,7 @@ async function corre(ctx) {
     ejemplos,
     cruce,
     revisiones,
+    estado_revisiones: 'CERRADO — fuera de v1 (conteos y promedios ancla, sin valores fechados)',
     rate_limit: {
       headers_observados: headersVistos,
       http_429,
@@ -563,6 +696,9 @@ export default async function handler(req, res) {
   const ctx = {
     desde, meses,
     barrido: String(q.barrido || '') === '1',
+    // Cuántos símbolos del universo v0 se buscan uno por uno (camino D).
+    // Default: todos. &simbolos=0 lo apaga.
+    simbolos: q.simbolos === undefined ? 99 : Math.max(0, Math.min(200, Number(q.simbolos) || 0)),
     paginas: Math.max(1, Math.min(60, Number(q.paginas) || 20)),
     limite: Math.max(1, Math.min(500, Number(q.limite) || 500)),
     ejemplos: Math.max(1, Math.min(10, Number(q.ejemplos) || 3)),
