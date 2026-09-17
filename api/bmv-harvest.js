@@ -59,8 +59,10 @@ import {
 import { sql } from './_lib/db.js';
 import {
   ensureBmvSchema, upsertEmisora, emisorasIcs, emisoraPorClave, censoResumen,
+  MAX_INTENTOS,
   upsertFinancieros, insertarPrecios, insertarDistribuciones, ultimaFechaPrecios,
-  marcarLedger, clavesHechas, ledgerResumen,
+  marcarLedger, clavesHechas, clavesAgotadas, ledgerResumen, financierosCrudos,
+  actualizarFinancieros,
   presupuesto, gastar, cobertura, leerMeta, guardarMeta,
 } from './_lib/bmv-db.js';
 
@@ -847,6 +849,73 @@ function contar(lista) {
   return m;
 }
 
+/* ═══════════════ job: reparse-fin (cero créditos) ═══════════════ */
+
+/**
+ * Re-normaliza los financieros desde el `raw` ya guardado. **No toca la API.**
+ *
+ * Esta es la razón por la que `raw jsonb NOT NULL` estaba en el schema desde el
+ * primer día, y es la primera vez que se cobra la póliza: 4,174 respuestas
+ * cosechadas con la normalización rota se arreglan **sin gastar un crédito**.
+ * Si el crudo no se hubiera guardado, esto costaría otra cosecha completa.
+ *
+ * Va paginado por (emisora, año, trimestre) y con reloj: son 4,174 filas con un
+ * jsonb grande cada una, y la lambda tiene 300s.
+ */
+async function jobReparseFinancieros(req) {
+  const t0 = Date.now();
+  const lote = Math.max(1, Math.min(1000, Number((req.query && req.query.max) || 1500)));
+
+  let cursor = null;
+  let leidas = 0;
+  let arregladas = 0;
+  let siguenSinCampos = 0;
+  const porAnio = {};
+  const faltantesPorCampo = {};
+
+  while (leidas < lote && Date.now() - t0 < LIMITE_MS) {
+    const filas = await financierosCrudos({ limite: Math.min(200, lote - leidas), desde: cursor });
+    if (!filas.length) { cursor = null; break; }
+
+    for (const f of filas) {
+      const { valores, faltantes } = normalizarFinancieros(f.raw);
+      await actualizarFinancieros({ emisora: f.emisora, anio: f.anio, trimestre: f.trimestre, valores, faltantes });
+
+      const sinCampos = CAMPOS.every((c) => valores[c] === null);
+      if (sinCampos) siguenSinCampos += 1; else arregladas += 1;
+      for (const c of Object.keys(faltantes || {})) faltantesPorCampo[c] = (faltantesPorCampo[c] || 0) + 1;
+
+      if (!porAnio[f.anio]) porAnio[f.anio] = { filas: 0, con_eps: 0 };
+      porAnio[f.anio].filas += 1;
+      if (valores.basicearningslosspershare !== null) porAnio[f.anio].con_eps += 1;
+
+      // El ledger se pone al día con la realidad: una fila que ahora sí
+      // normaliza deja de ser `sin_campos`.
+      await marcarLedger('financieros', f.emisora, clavePeriodo(f.anio, f.trimestre),
+        { estado: sinCampos ? 'sin_campos' : 'hecho', intentos: 0 });
+    }
+    leidas += filas.length;
+    const ultima = filas[filas.length - 1];
+    cursor = { emisora: ultima.emisora, anio: ultima.anio, trimestre: ultima.trimestre };
+    if (filas.length < 200) { cursor = null; break; }
+  }
+
+  return {
+    job: 'reparse-fin',
+    creditos: 0,
+    leidas,
+    arregladas,
+    siguen_sin_campos: siguenSinCampos,
+    // Por año, que es como el reporte de cobertura lo muestra y como se ve de
+    // un golpe si algún periodo quedó fuera.
+    con_eps_por_anio: Object.fromEntries(Object.entries(porAnio).sort()),
+    faltantes_por_campo: faltantesPorCampo,
+    continuar_desde: cursor,
+    hay_mas: cursor !== null,
+    nota: cursor ? 'quedan filas: vuelve a llamar con el mismo job' : 'no quedan filas',
+  };
+}
+
 /* ═══════════════ job: reparse (cero créditos) ═══════════════ */
 
 /**
@@ -1012,7 +1081,8 @@ async function jobFinancieros(req) {
 
   const mes = mesPresupuesto();
   const [saldo, contrato, ics, hechas] = await Promise.all([
-    presupuesto(mes), contratoVigente(), emisorasIcs(), clavesHechas('financieros'),
+    presupuesto(mes), contratoVigente(), emisorasIcs(),
+    clavesHechas('financieros', { reintentar: req.query && req.query.reintentar === '1' }),
   ]);
 
   if (!ics.length) {
@@ -1036,11 +1106,15 @@ async function jobFinancieros(req) {
     cartera.anota(r);
 
     if (!r.ok) {
-      await marcarLedger('financieros', p.emisora, p.clave, { estado: 'error', requests: 1, error_msg: `${r.status}: ${r.error}` });
+      await marcarLedger('financieros', p.emisora, p.clave, { estado: 'error', requests: 1, error_msg: `${r.status}: ${r.error} · ${String(r.texto || '').slice(0, 200)}` });
       hecho.push({ ...p, estado: 'error', error: r.error });
     } else {
       const { valores, faltantes } = normalizarFinancieros(r.json);
-      const vacio = CAMPOS.every((c) => valores[c] === null);
+      // NO es "la respuesta venía vacía": es "no le entendí a la respuesta".
+      // Las 4,174 filas de la primera cosecha cayeron aquí porque los valores
+      // llegan como ["etiqueta", 0.77] y el parser sólo leía números sueltos.
+      // El ledger lo dijo; el nombre `vacio` lo hizo sonar benigno.
+      const sinCampos = CAMPOS.every((c) => valores[c] === null);
       await upsertFinancieros({
         emisora: p.emisora, anio: p.anio, trimestre: p.trimestre,
         fecha_cierre: finDeTrimestre(p.anio, p.trimestre),
@@ -1048,8 +1122,8 @@ async function jobFinancieros(req) {
       });
       // 'vacio' ≠ 'error': un trimestre en el que la emisora no reportó es un
       // hecho del mundo, no una falla. Se marca resuelto para no re-pedirlo.
-      await marcarLedger('financieros', p.emisora, p.clave, { estado: vacio ? 'vacio' : 'hecho', requests: 1, filas: 1 });
-      hecho.push({ ...p, estado: vacio ? 'vacio' : 'hecho', eps: valores.basicearningslosspershare });
+      await marcarLedger('financieros', p.emisora, p.clave, { estado: sinCampos ? 'sin_campos' : 'hecho', requests: 1, filas: 1 });
+      hecho.push({ ...p, estado: sinCampos ? 'sin_campos' : 'hecho', eps: valores.basicearningslosspershare });
     }
     await dormir(PAUSA_MS);
   }
@@ -1066,6 +1140,8 @@ async function jobFinancieros(req) {
     se_quedo_en: i < pendientes.length ? pendientes[i] : null,
     paro: cartera.razonParo,
     resumen: contar(hecho.map((h) => h.estado)),
+    agotadas: await clavesAgotadas('financieros'),
+    max_intentos: MAX_INTENTOS,
     creditos: { corrida: cartera.creditos, requests: cartera.requests, mes: gastoMes },
     detalle: hecho.slice(-25),
   };
@@ -1086,7 +1162,8 @@ async function jobHistoricos(req) {
 
   const mes = mesPresupuesto();
   const [saldo, contrato, ics, hechas] = await Promise.all([
-    presupuesto(mes), contratoVigente(), emisorasIcs(), clavesHechas('historicos'),
+    presupuesto(mes), contratoVigente(), emisorasIcs(),
+    clavesHechas('historicos', { reintentar: req.query && req.query.reintentar === '1' }),
   ]);
   if (!ics.length) return { job: 'historicos', error: 'no hay censo: corre ?job=emisoras primero' };
 
@@ -1148,7 +1225,9 @@ async function jobHistoricos(req) {
     cartera.anota(r);
 
     if (!r.ok) {
-      await marcarLedger('historicos', p.emisora_serie, p.clave, { estado: 'error', requests: 1, error_msg: `${r.status}: ${r.error}` });
+      // El CUERPO del 400 es donde la API dice qué no le gustó. Sin él, VISTAC y
+      // GAVB sólo dejaron "HTTP 400" repetido 6 y 10 veces.
+      await marcarLedger('historicos', p.emisora_serie, p.clave, { estado: 'error', requests: 1, error_msg: `${r.status}: ${r.error} · ${String(r.texto || '').slice(0, 200)}` });
       hecho.push({ ...p, estado: 'error', error: r.error });
     } else {
       const { filas, descartadas } = aplanarHistoricos(r.json);
@@ -1177,6 +1256,10 @@ async function jobHistoricos(req) {
     // Sin importe operado no se puede aplicar el filtro de liquidez del
     // backtest. Se dice aquí, no en Fase B, cuando ya sería tarde.
     dias_sin_importe: hecho.reduce((s, h) => s + ((h.dias || 0) - (h.con_importe || 0)), 0),
+    // Las que se dejaron de intentar tras MAX_INTENTOS. No desaparecen del
+    // reporte sólo porque el cosechador dejó de martillarlas.
+    agotadas: await clavesAgotadas('historicos'),
+    max_intentos: MAX_INTENTOS,
     creditos: { corrida: cartera.creditos, requests: cartera.requests, mes: gastoMes },
     detalle: hecho.slice(-30),
   };
@@ -1308,7 +1391,7 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Método no soportado.' });
 
   const job = String((req.query && req.query.job) || '').toLowerCase();
-  const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse']);
+  const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse', 'reparse-fin']);
 
   try {
     await ensureBmvSchema();
@@ -1355,6 +1438,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ job: 'cobertura', ...c });
     }
 
+    if (job === 'reparse-fin') return res.status(200).json(await jobReparseFinancieros(req));
     if (job === 'reparse') return res.status(200).json(await jobReparse());
     if (job === 'probe') return res.status(200).json(await jobProbe(req));
     if (job === 'emisoras') return res.status(200).json(await jobEmisoras());
@@ -1365,7 +1449,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       endpoint: '/api/bmv-harvest',
       que_es: 'Fase A del backtest BMV: cosecha DataBursatil → Neon (tablas bmv_*; xbrl_reports NO se toca).',
-      orden_sugerido: ['?job=estimate', '?job=probe', '?job=emisoras', '?job=estimate (ya con censo real)', '?job=financieros&max=60 (repetir)', '?job=historicos&max=30 (repetir)', '?job=cobertura&format=md'],
+      orden_sugerido: ['?job=estimate', '?job=probe', '?job=emisoras', '?job=estimate (ya con censo real)', '?job=financieros&max=60 (repetir)', '?job=historicos&max=30 (repetir)', '?job=reparse-fin (si la normalización cambia)', '?job=cobertura&format=md'],
       jobs: {
         'estimate': 'público, sin red: presupuesto de créditos en tres modelos de costo',
         'probe': 'protegido, ≤15 requests: descubre el contrato de la API y lo guarda',
@@ -1375,6 +1459,7 @@ export default async function handler(req, res) {
         'cobertura': 'público, &format=md: qué hay y dónde están los hoyos',
         'contrato': 'público: el contrato descubierto por el probe',
         'reparse': 'protegido, CERO créditos: re-deriva el censo desde el crudo guardado',
+        'reparse-fin': 'protegido, CERO créditos: re-normaliza los financieros desde el crudo guardado',
       },
       token_configurado: !!process.env.DATABURSATIL_TOKEN,
       escritura_habilitada: !!adminSecret(),

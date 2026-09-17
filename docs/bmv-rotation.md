@@ -298,6 +298,7 @@ que partirla no cueste nada**: el segundo mes retoma donde paró el primero.
 ?job=estimate                    # otra vez, ya con el censo REAL
 ?job=financieros&max=60          # repetir hasta restantes=0
 ?job=historicos&max=30           # repetir hasta restantes=0
+?job=reparse-fin                 # CERO créditos: re-normaliza desde el crudo
 ?job=cobertura&format=md         # el reporte
 ```
 
@@ -348,6 +349,33 @@ de los **4 trimestres cuya fecha de cierre + 65 días ≤ fecha de rebalanceo**.
 
 Se pide `resultado_trimestre`, **no** `resultado_acumulado`: el TTM es la suma
 de cuatro trimestres sueltos. Con acumulados, el 1T se contaría cuatro veces.
+
+##### El EPS es el TOTAL, no el de operaciones continuas
+
+La API devuelve tres EPS básicos, y WALMEX 2T2017 los muestra bien:
+
+| campo | valor |
+|---|---:|
+| `basicearningslosspersharefromcontinuingoperations` | 0.39 |
+| `basicearningslosspersharefromdiscontinuedoperations` | 0.38 |
+| **`basicearningslosspershare`** | **0.77** |
+
+> **Decisión congelada: se usa `basicearningslosspershare`, el total.**
+
+Dos razones, y la segunda pesa más:
+
+1. Es **lo que le tocó al accionista** en el periodo. El de continuas es una
+   medida más limpia del poder de generación *futuro*, pero deja fuera economía
+   real que sí ocurrió.
+2. Es el **único campo que todas las emisoras traen**. El desglose
+   continuas/discontinuadas sólo aparece cuando **hubo** operaciones
+   discontinuadas — usarlo obligaría a caer al total en la mayoría de los casos,
+   y entonces el TTM mezclaría dos definiciones según la emisora y el trimestre.
+   **Una serie con dos definiciones no es una serie.**
+
+El costo, dicho: el total incluye ganancias y pérdidas de una sola vez, así que
+el value queda **más ruidoso** de lo que estaría con el de continuas. Es ruido,
+no sesgo: ensancha la dispersión del ranking sin empujarlo en una dirección.
 
 **Los 65 días son deliberados y no son un lag de conveniencia.** DataBursatil
 indexa por **cierre**, no por publicación. Con nuestras fechas reales de Fase
@@ -867,18 +895,85 @@ regla aplicada dos veces, no una excepción conveniente.
 
 ---
 
+## 5.5 La cosecha corrió, y el crudo pagó su póliza
+
+**4,174 financieros y 182 series de precios.** Y un bloqueante: la columna
+"Con EPS" salía **0** en los 11 años y en las 116 emisoras.
+
+**El alcance era mayor que el EPS: los 7 campos salieron `null` en las 4,174
+filas.** El valor llega así:
+
+```json
+"basicearningslosspershare": ["utilidad (pérdida) básica por acción", 0.77]
+```
+
+Un **arreglo `[etiqueta, valor]`**, no un número suelto. `aNumero` devuelve
+`null` para un arreglo, así que nada normalizó. El crudo, en cambio, estaba
+completo y correcto en `raw jsonb` — que es exactamente para lo que se guardaba
+desde el primer día.
+
+> **Arreglarlo costó 0 créditos**: `?job=reparse-fin` re-normaliza desde lo
+> guardado. Sin el crudo, esto habría costado otra cosecha completa.
+
+### El ledger lo dijo, y yo le puse un nombre que lo escondió
+
+Las 4,174 filas quedaron en el estado que significa "ningún campo se pudo
+normalizar". Ese estado se llamaba **`vacio`**.
+
+`vacio` suena a *"la respuesta no traía nada"* — un hecho del mundo, benigno. Lo
+que de verdad decía era *"no le entendí a la respuesta"* — un bug nuestro. El
+reporte estaba gritando el problema con la voz equivocada.
+
+Ahora se llama **`sin_campos`**. El nombre de un estado de error tiene que
+doler, porque su único trabajo es que alguien lo mire.
+
+> Para el otro `vacio`, el de `historicos`, el nombre sí es correcto: ahí
+> significa que la serie no devolvió filas de precio, que es un hecho de la
+> fuente y no una falla de lectura nuestra.
+
+### Las dos series que fallan: VISTAC y GAVB
+
+HTTP **400** en el rango completo, 6 y 10 intentos. Un 400 —y no un 404— apunta
+a **parámetro mal formado** antes que a "no hay datos", pero **no lo sé**: el
+cosechador guardaba `"HTTP 400"` sin el cuerpo, y el cuerpo es donde esta API
+dice qué no le gustó (así se descubrió el formato `1T_2020`).
+
+Dos arreglos:
+
+1. **El cuerpo del error se guarda** en el ledger. La próxima corrida trae la
+   respuesta y la pregunta se contesta con el dato, no con una hipótesis.
+2. **Se dejan de reintentar a los 3 intentos.** Un 400 no se arregla
+   martillando, y cada reintento gasta un crédito en el mismo error. Las claves
+   agotadas siguen saliendo en el reporte (`agotadas`) para que no desaparezcan
+   del radar sólo porque el cosechador dejó de pedirlas.
+
+Para separar las dos hipótesis sin gastar la cosecha entera, una ventana corta
+contra el rango completo:
+
+```
+?job=historicos&emisora=VISTAC&desde=2026-06-01&reintentar=1
+```
+
+Si con la ventana corta **sí** devuelve, el problema era el rango: la serie no
+vivía en 2016. Si falla igual, el identificador `emisora_serie` está mal
+construido para esas dos.
+
+---
+
 ## 6. Estado
 
 | Pieza | Estado |
 |---|---|
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
-| `api/bmv-harvest.js` | Hecho. 8 jobs (con `reparse`, de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **109 tests**, en verde. |
+| `api/bmv-harvest.js` | Hecho. 9 jobs (con `reparse` y `reparse-fin`, de cero créditos), idempotente, con parada limpia. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **116 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
 | **El censo** | **Cerrado.** `deriva.estable: true` — 0 aparecieron, 0 desaparecieron. **185 series ICS**, 165 con cobertura (las 20 sin ella son bancos y casas de bolsa, fuera de la v1 por decisión de Fase 0). 1,641 repartos: 1,520 efectivo, 121 reembolso, 0 desconocido. |
-| **Fase A, diseño** | **Cerrado.** Falta sólo correr la cosecha. |
+| **Fase A, diseño** | **Cerrado.** |
+| **La cosecha** | **Corrida**: 4,174 financieros, 182 series de precios. |
+| **Normalización** | Arreglada (§5.5). Falta correr `?job=reparse-fin` y confirmar "Con EPS" por año. |
 | **La cosecha** | **Sin correr** — este sandbox no alcanza la API. |
 | **Cobertura real** | **Sin reportar** — depende de la cosecha. |
 | `/api/bmv-rotation-analyze` | **Fase B. No empezado, a propósito.** |

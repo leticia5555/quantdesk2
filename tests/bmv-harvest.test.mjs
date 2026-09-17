@@ -22,7 +22,7 @@ import assert from 'node:assert/strict';
 import {
   BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
   COBERTURA_FIN, PRESUPUESTO_MENSUAL,
-  aNumero, aplanarHistoricos, clavePeriodo, construirUrl, emisoraSerie,
+  aNumero, aplanarHistoricos, clavePeriodo, construirUrl, emisoraSerie, valorDeCampo,
   extraerDistribuciones, finDeTrimestre, mesPresupuesto, normalizarFinancieros,
   parseClavePeriodo, periodoApi, restaDias, DIAS_EX_APROX, UMBRAL_PLACEHOLDER,
   consolidarDistribuciones, categoriaReparto, esEfectivo, requiereConversion,
@@ -1178,4 +1178,93 @@ test('no se pide dos veces la misma emisora por tener dos series', () => {
   const a = { emisora: 'LIVEPOL', emisora_serie: 'LIVEPOLC-1', tipo_valor_id: '1', fin_periodos: ['2016-2'], fin_desde: '2016-2', fin_hasta: '2016-2' };
   const b = { emisora: 'LIVEPOL', emisora_serie: 'LIVEPOL1', tipo_valor_id: '1', fin_periodos: ['2016-2'], fin_desde: '2016-2', fin_hasta: '2016-2' };
   assert.equal(pendientesFinancieros([a, b]).length, 1, '/v2/financieros no conoce series');
+});
+
+/* ═══════════════════════════════════════════════════════════════
+ * El valor llega como ["etiqueta", 0.77], no como número suelto.
+ * `aNumero` devuelve null para un arreglo, así que los 7 campos de
+ * las 4,174 filas cosechadas salieron null. No fue un bug del EPS:
+ * fue de TODA la normalización.
+ * ═══════════════════════════════════════════════════════════════ */
+
+/** La respuesta literal de WALMEX 2T_2017, con la forma que la API manda. */
+const WALMEX_2T2017 = {
+  posicion: {
+    '2017-06-30': {
+      assets: ['activos totales', 1000],
+      liabilities: ['pasivos totales', 400],
+      equity: ['capital contable', 600],
+      cashandcashequivalents: ['efectivo y equivalentes', 50],
+    },
+  },
+  resultado_trimestre: {
+    '2017-04-01_2017-06-30': {
+      basicearningslosspershare: ['utilidad (pérdida) básica por acción', 0.77],
+      dilutedearningslosspershare: ['utilidad (pérdida) básica por acción diluida', 0.77],
+      basicearningslosspersharefromcontinuingoperations: ['de operaciones continuas', 0.39],
+      basicearningslosspersharefromdiscontinuedoperations: ['de operaciones discontinuadas', 0.38],
+      revenue: ['ingresos', 150000],
+      profitlossattributabletoownersofparent: ['utilidad de la controladora', 13000],
+    },
+  },
+};
+
+test('valorDeCampo lee el arreglo [etiqueta, valor]', () => {
+  assert.equal(valorDeCampo(['utilidad (pérdida) básica por acción', 0.77]), 0.77);
+  assert.equal(valorDeCampo(['activos totales', 1000]), 1000);
+  assert.equal(valorDeCampo(['etiqueta', '1,234.56']), 1234.56, 'y el número sigue pasando por aNumero');
+  assert.equal(valorDeCampo(42), 42, 'un número suelto sigue funcionando');
+});
+
+test('valorDeCampo NO adivina en un arreglo de forma desconocida', () => {
+  // Con dos números no hay manera de saber cuál es el valor. Adivinar la
+  // posición es cómo se meten cifras equivocadas que parecen correctas.
+  assert.equal(valorDeCampo(['etiqueta', 1, 2]), null);
+  assert.equal(valorDeCampo(['sólo etiqueta']), null);
+  assert.equal(valorDeCampo([]), null);
+});
+
+test('los 7 campos salen de la respuesta REAL — ninguno queda null', () => {
+  const { valores, faltantes } = normalizarFinancieros(WALMEX_2T2017);
+  assert.equal(faltantes, null, 'cero faltantes: antes eran los 7');
+  assert.equal(valores.revenue, 150000);
+  assert.equal(valores.assets, 1000);
+  assert.equal(valores.liabilities, 400);
+  assert.equal(valores.equity, 600);
+  assert.equal(valores.cashandcashequivalents, 50);
+  assert.equal(valores.profitlossattributabletoownersofparent, 13000);
+  assert.equal(valores.basicearningslosspershare, 0.77);
+});
+
+test('el EPS es el TOTAL, no el de operaciones continuas', () => {
+  // 0.39 (continuas) + 0.38 (discontinuadas) = 0.77 (total). Para el value
+  // queremos el total: es lo que le tocó al accionista en el periodo, y es el
+  // único campo que TODAS las emisoras traen — el desglose sólo aparece cuando
+  // hubo operaciones discontinuadas.
+  const { valores } = normalizarFinancieros(WALMEX_2T2017);
+  assert.equal(valores.basicearningslosspershare, 0.77);
+  assert.notEqual(valores.basicearningslosspershare, 0.39, 'no el de continuas');
+  assert.notEqual(valores.basicearningslosspershare, 0.38, 'ni el de discontinuadas');
+});
+
+test('el EPS diluido no contamina al básico: la llave se compara exacta', () => {
+  // `dilutedearningslosspershare` contiene la subcadena del básico si se
+  // buscara por inclusión. Se compara la llave COMPLETA, así que no hay
+  // ambigüedad aunque los dos valgan lo mismo.
+  const r = resolverCampo(WALMEX_2T2017, 'basicearningslosspershare');
+  assert.equal(r.valor, 0.77);
+  assert.match(r.ruta, /resultado_trimestre/);
+  assert.ok(!r.motivo);
+});
+
+test('el EPS sale de resultado_trimestre, no de posicion', () => {
+  const r = resolverCampo(WALMEX_2T2017, 'basicearningslosspershare');
+  assert.ok(r.ruta.startsWith('resultado_trimestre.'), `salió de ${r.ruta}`);
+});
+
+test('una emisora sin operaciones discontinuadas también resuelve', () => {
+  const simple = {
+    resultado_trimestre: { '2017-04-01_2017-06-30': { basicearningslosspershare: ['upa', 1.25] } },
+  };
+  assert.equal(normalizarFinancieros(simple).valores.basicearningslosspershare, 1.25);
 });
