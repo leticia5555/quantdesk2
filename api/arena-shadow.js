@@ -38,8 +38,11 @@ import { callArenaLLM, withDeadline, cachePrefixReport, anthropicCostUsd } from 
 import { gatherContext, buildSharedContext, buildTargetSystemPrompt, resolveBaseUrl, PROMPT_VERSION } from './arena-run.js';
 import { parsePortfolioResponse, validateTarget, railTrims, normalizarTickersObjetivo, RAILS } from './_lib/arena-rails.js';
 import { orderLegs } from './_lib/arena-rebalance.js';
-import { legsAOrdenes, verificarOrdenesContraPesos, enviarOrdenes, mandaOrdenes, frenoPorTurnoverMinimo } from './_lib/arena-objetivo-vivo.js';
+import { legsAOrdenes, verificarOrdenesContraPesos, enviarOrdenes, mandaOrdenes, frenoPorTurnoverMinimo, contratoActivo } from './_lib/arena-objetivo-vivo.js';
 import { snapshotCuenta } from './_lib/arena-equity.js';
+import { registrarAperturas } from './_lib/arena-apertura.js';
+import { fetchOptionChain } from './options.js';
+import { getNews } from './_lib/alpaca.js';
 import { buildRebalance } from './_lib/arena-rebalance.js';
 import { createToolExecutor, TOOL_BUDGET } from './_lib/arena-tools.js';
 import { runToolLoop, relojDisponible } from './_lib/arena-tool-loop.js';
@@ -415,6 +418,35 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     }
   }
 
+  // ── EL CONTEXTO DE CADA APERTURA ────────────────────────────────────
+  // DESPUÉS de mandar las órdenes y antes de journalear: una noticia que tarda
+  // en bajar no puede retrasar un fill. Y nunca lanza — perder un snapshot es
+  // perder una fila de estudio; tumbar la corrida después de operar deja
+  // órdenes en Alpaca sin la fila que las explica.
+  //
+  // Sólo en VIVO: una corrida de prueba no abre nada, así que su "apertura" no
+  // es un momento que haya existido.
+  let aperturas = null;
+  if (vivo && ejecucion && (ejecucion.enviadas || []).length) {
+    try {
+      const enviadasOk = (ejecucion.enviadas || []).filter((o) => o.result === 'approved');
+      aperturas = await registrarAperturas({
+        agentId: agent.id, runDate: base.run_date,
+        ordenes: enviadasOk,
+        target: { weights: parsed.weights, theses: parsed.theses },
+        enfoque: cola.lens, contrato: contratoActivo(),
+        universo: (buffet && buffet.universe_raw) || null, buffet,
+        deps: {
+          news: (sym) => getNews({ symbols: [sym], limit: 5, creds }),
+          chain: async (sym) => (await fetchOptionChain(sym)).res,
+        },
+        now,
+      });
+    } catch (e) {
+      aperturas = { guardadas: 0, error: String((e && e.message) || e) };
+    }
+  }
+
   await shadowJournalInsert({
     ...base,
     // El libro con el que se decidió, en estructura. Va en TODAS las salidas
@@ -425,7 +457,7 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     plan: parsed.plan, llm_response: text,
     target: { weights: parsed.weights, cash: parsed.cash, theses: parsed.theses },
     rebalance,
-    context: { ...ctx, rails: v, rail_trims: trims, ...(ejecucion ? { ejecucion } : {}) },
+    context: { ...ctx, rails: v, rail_trims: trims, ...(ejecucion ? { ejecucion } : {}), ...(aperturas ? { aperturas } : {}) },
     error: v.ok ? null : `violó ${v.violations.length} riel(es): ${v.violations.map((x) => x.rail).join(', ')}`,
   });
 
