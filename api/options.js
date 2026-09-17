@@ -34,7 +34,9 @@ async function fetchJson(url, timeoutMs = 8000) {
 }
 
 // Yahoo cae/rota entre hosts; probamos ambos antes de rendirnos.
-async function fetchOptionChain(ticker) {
+// EXPORTADA: el snapshot de apertura del Arena necesita la cadena CRUDA para
+// derivar la probabilidad implícita, que no es parte del resumen público.
+export async function fetchOptionChain(ticker) {
   for (const host of HOSTS) {
     const r = await fetchJson(`${host}/v7/finance/options/${encodeURIComponent(ticker)}`);
     const res = r.json && r.json.optionChain && Array.isArray(r.json.optionChain.result) ? r.json.optionChain.result[0] : null;
