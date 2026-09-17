@@ -210,14 +210,73 @@ function cosine(a, b) {
 //   · MISMO LIBRO DE ARRANQUE. El 0.68 de la sombra 3 tampoco era ruido:
 //     control tenía 6 posiciones heredadas y claude 1. Dos PMs idénticos que
 //     parten de carteras distintas producen libros distintos por HERENCIA.
-export function pisoDeRuido({ insignia = null, testigo = null, pesos = {} } = {}) {
+// ── EL DELTA: QUÉ CAMBIÓ CADA UNO, NO QUÉ TIENE ──────────────────────
+// El piso entre LIBROS exige que las dos cuentas arranquen iguales, y a mitad
+// de temporada no lo están. Igualarlas costaría órdenes reales y un salto en
+// la curva de equity de las dos cuentas que menos deben contaminarse.
+//
+// El delta es la salida barata: `objetivo − actual` por símbolo. Dos PMs
+// idénticos que heredan carteras distintas deberían MOVERSE parecido aunque
+// tengan libros distintos, y eso sí se puede comparar sin tocar nada.
+//
+// ── NO ES LA MISMA MÉTRICA, Y NO SE COMPARA CON LA OTRA ──────────────
+// Un vector de deltas tiene componentes NEGATIVAS (vender es un número
+// negativo), así que su coseno vive en [−1, 1]: −1 significa que uno compró
+// exactamente lo que el otro vendió, que entre dos corridas idénticas sería el
+// resultado más fuerte posible. El coseno entre libros long-only vive en
+// [0, 1] y nunca puede ser negativo.
+//
+// Poner 0.62 de deltas al lado de 0.86 de libros es comparar dos escalas
+// distintas. Por eso cada número viaja con su `metodo` y la página lo dice.
+//
+// ── LO QUE EL DELTA ARREGLA Y LO QUE NO ──────────────────────────────
+// Quita el efecto NIVEL: que un libro heredado domine el vector. NO quita del
+// todo el efecto CAMINO: lo que cada uno puede cambiar depende de lo que
+// tiene (no se puede vender lo que no se posee). Es una medición mejor, no una
+// perfecta, y se publica como tal.
+export function deltaDePesos(actuales = {}, objetivo = {}) {
+  const claves = new Set([...Object.keys(actuales || {}), ...Object.keys(objetivo || {})]);
+  const d = {};
+  for (const k of claves) {
+    const a = Number((actuales || {})[k]) || 0;
+    const b = Number((objetivo || {})[k]) || 0;
+    const delta = +(b - a).toFixed(6);
+    // Un delta de cero no es una decisión: es un nombre que no se tocó. Dejarlo
+    // adentro no cambia el coseno, pero infla el vector y hace creer que hubo
+    // más decisiones de las que hubo.
+    if (delta !== 0) d[k] = delta;
+  }
+  return d;
+}
+
+// ¿Este par de deltas tiene con qué medirse? Dos vectores vacíos (nadie movió
+// nada) no dan un coseno de 0: no dan coseno.
+function hayMovimiento(d) { return d && Object.keys(d).length > 0; }
+
+export function pisoDeRuido({ insignia = null, testigo = null, pesos = {}, deltas = {} } = {}) {
   const libros = pesos || {};
   const parRuido = (libros.claude && libros.control)
     ? (pairwiseOverlap({ claude: libros.claude, control: libros.control }).pairs[0] || {}).cosine
     : null;
 
+  // ── LOS DOS NÚMEROS, SIEMPRE QUE SE PUEDA ─────────────────────────
+  // Se guardan juntos para poder comparar los métodos después: si el de
+  // deltas y el de libros divergen sistemáticamente, eso es un hallazgo sobre
+  // la métrica, y sin las dos series no se puede ni mirar.
+  const dC = (deltas || {}).claude;
+  const dT = (deltas || {}).control;
+  const parDelta = (hayMovimiento(dC) && hayMovimiento(dT))
+    ? (pairwiseOverlap({ claude: dC, control: dT }).pairs[0] || {}).cosine
+    : null;
+  const bloqueDeltas = {
+    cosine_deltas: parDelta,
+    // Cuántas decisiones tenía cada vector: un coseno entre dos vectores de
+    // una sola posición es aritmética, no una medición.
+    movimientos: { claude: hayMovimiento(dC) ? Object.keys(dC).length : 0, control: hayMovimiento(dT) ? Object.keys(dT).length : 0 },
+  };
+
   if (!insignia || !testigo) {
-    return { disponible: false, comparable: false, motivo: 'falta el libro de claude o el de control en este día' };
+    return { disponible: false, comparable: false, motivo: 'falta el libro de claude o el de control en este día', ...bloqueDeltas };
   }
 
   const mismoEnfoque = !!(insignia.enfoque && insignia.enfoque === testigo.enfoque);
@@ -227,6 +286,10 @@ export function pisoDeRuido({ insignia = null, testigo = null, pesos = {} } = {}
       motivo: `claude corrió con enfoque "${insignia.enfoque}" y control con "${testigo.enfoque}". El par NO mide ruido: mide el enfoque.`,
       enfoque_claude: insignia.enfoque, enfoque_control: testigo.enfoque,
       cosine_observado: parRuido,
+      // El enfoque confunde LOS DOS métodos: cambia por dónde empieza a mirar
+      // cada uno, así que también cambia qué decide mover. El delta no salva
+      // un par con enfoques distintos.
+      ...bloqueDeltas, metodo: null,
     };
   }
 
@@ -238,25 +301,69 @@ export function pisoDeRuido({ insignia = null, testigo = null, pesos = {} } = {}
     && posClaude.every((sym, i) => sym === posControl[i]));
 
   if (!mismoLibro) {
-    return {
-      disponible: false, comparable: false, enfoque: insignia.enfoque,
+    // ── EL LIBRO NO SIRVE, PERO EL DELTA SÍ ──────────────────────────
+    // El coseno entre libros mide HERENCIA: dos PMs idénticos que parten de
+    // carteras distintas producen libros distintos por eso solo. Pero lo que
+    // CAMBIÓ cada uno sí es comparable, y no exige tocar las cuentas.
+    const base = {
+      enfoque: insignia.enfoque,
       cosine_observado: parRuido,
-      motivo: `claude arrancó con ${posClaude ? posClaude.length : '?'} posición(es) y control con ${posControl ? posControl.length : '?'}. El coseno entre ellos mide HERENCIA, no ruido: dos PMs idénticos que parten de carteras distintas producen libros distintos por eso solo. Para que el piso signifique algo, las dos cuentas tienen que arrancar del mismo libro — un reset las iguala.`,
       posiciones_claude: posClaude, posiciones_control: posControl,
+      ...bloqueDeltas,
+    };
+    if (parDelta != null) {
+      return {
+        ...base,
+        disponible: true, comparable: true,
+        metodo: METODO_DELTAS,
+        cosine: parDelta,
+        lectura: lecturaDelPiso(parDelta, METODO_DELTAS),
+        // El número entre LIBROS viaja al lado, con su nombre, para poder
+        // comparar los dos métodos después — pero NO es el piso de hoy.
+        nota_metodo: `Los libros de arranque son distintos (${posClaude ? posClaude.length : '?'} vs ${posControl ? posControl.length : '?'} posiciones), así que el coseno ENTRE LIBROS (${parRuido}) mide herencia, no ruido. El piso de hoy es el coseno ENTRE DELTAS: qué CAMBIÓ cada uno. Es otra escala —vive en [−1, 1] porque vender es negativo— y NO se compara con los pisos entre libros.`,
+      };
+    }
+    return {
+      ...base,
+      disponible: false, comparable: false, metodo: null,
+      motivo: `claude arrancó con ${posClaude ? posClaude.length : '?'} posición(es) y control con ${posControl ? posControl.length : '?'}, así que el coseno entre libros mide HERENCIA. Y el de deltas tampoco se puede: ${!hayMovimiento(dC) || !hayMovimiento(dT) ? 'alguno de los dos no cambió nada hoy' : 'no hay pesos para compararlos'}.`,
     };
   }
 
   return {
-    disponible: true, comparable: true, enfoque: insignia.enfoque, cosine: parRuido,
+    disponible: true, comparable: true, enfoque: insignia.enfoque,
+    metodo: METODO_LIBROS,
+    cosine: parRuido,
     posiciones_iniciales: posClaude,
-    lectura: lecturaDelPiso(parRuido),
+    lectura: lecturaDelPiso(parRuido, METODO_LIBROS),
+    ...bloqueDeltas,
   };
 }
 
+// Los dos métodos, nombrados. Cada número viaja con el suyo porque NO viven en
+// la misma escala y compararlos entre sí sería el error que esto existe para
+// impedir.
+export const METODO_LIBROS = 'libros';
+export const METODO_DELTAS = 'deltas';
+
 // El número solo no dice nada. Un 0.4 entre dos corridas IDÉNTICAS es el
 // resultado más importante del día, y sin la lectura parece un dato técnico.
-export function lecturaDelPiso(c) {
+//
+// Y la lectura DEPENDE del método: los umbrales de un coseno entre libros
+// long-only (siempre ≥ 0, con un núcleo común que lo empuja hacia arriba) no
+// son los de un coseno entre deltas, que puede ser negativo y que no arrastra
+// las posiciones que nadie tocó.
+export function lecturaDelPiso(c, metodo = METODO_LIBROS) {
   if (c == null) return 'sin pesos en alguno de los dos';
+  if (metodo === METODO_DELTAS) {
+    return c >= 0.7
+      ? `PISO SÓLIDO entre DELTAS (${c}): dos corridas idénticas mueven el libro casi igual, aunque partan de carteras distintas.`
+      : c >= 0.3
+        ? `PISO MEDIO entre DELTAS (${c}): coinciden en la dirección general y difieren en el detalle.`
+        : c >= 0
+          ? `PISO BAJO entre DELTAS (${c}): dos corridas IDÉNTICAS casi no coinciden en qué cambiar. Es el resultado más importante del día si sale así.`
+          : `PISO NEGATIVO entre DELTAS (${c}): uno compró lo que el otro vendió. Entre dos corridas idénticas eso es el resultado más fuerte posible — y el más incómodo.`;
+  }
   return c >= 0.9
     ? `PISO SÓLIDO (${c}): dos corridas idénticas dan casi el mismo libro, así que un delta entre modelos distintos significa algo.`
     : c >= 0.7

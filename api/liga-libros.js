@@ -49,7 +49,7 @@
 
 import { sql } from './_lib/db.js';
 import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay } from './_lib/arena-registry.js';
-import { pairwiseOverlap, sharedTopTicker, pisoDeRuido, lecturaDeCoincidencia, CAVEAT_ENFOQUE } from './_lib/arena-herding.js';
+import { pairwiseOverlap, sharedTopTicker, pisoDeRuido, deltaDePesos, lecturaDeCoincidencia, CAVEAT_ENFOQUE } from './_lib/arena-herding.js';
 
 const int = (v, def, min, max) => {
   const n = parseInt(v, 10);
@@ -156,6 +156,12 @@ export function libroDeFila(row, fuente) {
     enfoque_nota: ctx.lens ? 'El enfoque rota por agente y por día (momentum/catalizador/valor/reversión). Es un confound DELIBERADO: dos agentes con enfoques distintos el mismo día no son comparables ese día.' : null,
     // CÓMO INVESTIGÓ.
     investigacion: secuenciaPublicable(ctx),
+    // ── LOS PESOS ACTUALES, que son la otra mitad del delta ──────────
+    // `objetivo − actual` es lo que el agente DECIDIÓ CAMBIAR, y es lo único
+    // comparable entre dos cuentas que heredaron carteras distintas. Sin los
+    // actuales, sólo se puede comparar lo que cada uno TIENE — que a mitad de
+    // temporada mide herencia.
+    pesos_actuales: reb && reb.current ? reb.current : null,
     // Qué habría hecho el motor con ese objetivo.
     rebalanceo: reb ? {
       ordenes: (reb.legs || []).length,
@@ -286,7 +292,15 @@ export function resumenPorDia(libros) {
       const l = g.ultimos.get(id);
       return l ? { enfoque: l.enfoque, posiciones_iniciales: l.posiciones_iniciales } : null;
     };
-    const piso = pisoDeRuido({ insignia: deAgente('claude'), testigo: deAgente('control'), pesos });
+    // Los DELTAS: qué cambió cada uno. Es el piso que funciona cuando las
+    // cuentas ya no arrancan iguales, y no exige tocarlas.
+    const deltas = {};
+    for (const [id, l] of g.ultimos) {
+      const objetivo = l.portafolio && l.portafolio.pesos;
+      const actual = l.pesos_actuales;
+      if (objetivo && actual) deltas[id] = deltaDePesos(actual, objetivo);
+    }
+    const piso = pisoDeRuido({ insignia: deAgente('claude'), testigo: deAgente('control'), pesos, deltas });
 
     out.push({
       dia: g.dia, fuente: g.fuente,

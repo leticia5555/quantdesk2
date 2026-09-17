@@ -377,13 +377,35 @@ function dayboxHtml(d){
 
   // El piso solo se publica como piso si es comparable. Si no, se dice QUÉ
   // mide ese número en vez de mostrarlo con la etiqueta equivocada.
+  // ── EL MÉTODO VA EN LA ETIQUETA, NO EN LA LETRA CHICA ──────────────
+  // Hay DOS pisos y viven en escalas distintas: el de LIBROS (coseno entre lo
+  // que cada uno tiene, [0,1] en long-only) y el de DELTAS (coseno entre lo que
+  // cada uno CAMBIÓ, [-1,1] porque vender es negativo). Poner 0.62 de deltas al
+  // lado del 0.86 de libros del 16 sería comparar dos cosas distintas, así que
+  // el método va en el título del número y los umbrales de color cambian con él.
+  const porDeltas = p.metodo==='deltas';
+  const claseP = porDeltas
+    ? (p.cosine>=0.7?'solido':p.cosine>=0.3?'medio':'alto')
+    : (p.cosine>=0.9?'solido':p.cosine>=0.7?'medio':'alto');
   const piso = p.comparable
-    ? '<div class="metric"><span class="k">Piso de ruido</span><span class="v '+(p.cosine>=0.9?'solido':p.cosine>=0.7?'medio':'alto')+'">'+p.cosine+'</span>'+
+    ? '<div class="metric"><span class="k">Piso de ruido<br/><b style="color:var(--purple);font-size:9px">'+
+        (porDeltas?'entre DELTAS':'entre LIBROS')+'</b></span>'+
+      '<span class="v '+claseP+'">'+p.cosine+'</span>'+
       '<span class="k" style="min-width:0">claude ↔ control</span></div>'+
-      '<div class="read">'+esc(p.lectura||'')+'</div>'
+      '<div class="read">'+esc(p.lectura||'')+'</div>'+
+      (porDeltas
+        ? '<div class="read warn">Es el coseno entre lo que cada uno <b>cambió</b> hoy, no entre los libros que tienen. '+
+          'Vive en [−1, 1] —vender es un número negativo— y <b>NO se compara</b> con los pisos entre libros del 16 (0.76 y 0.86), que viven en [0, 1]. '+
+          'Se usa éste porque las dos cuentas ya no arrancan del mismo libro, y el coseno entre libros mediría herencia.'+
+          (p.cosine_observado!=null?' Entre libros hoy daría <b>'+p.cosine_observado+'</b>, que no es el piso.':'')+
+          ((p.movimientos&&(p.movimientos.claude!=null))?' Movimientos: claude '+p.movimientos.claude+', control '+p.movimientos.control+'.':'')+
+          '</div>'
+        : (p.cosine_deltas!=null
+          ? '<div class="read" style="margin-top:-6px">Entre deltas daría <b>'+p.cosine_deltas+'</b> — se guarda al lado para poder comparar los dos métodos después.</div>'
+          : ''))
     : '<div class="metric"><span class="k">Piso de ruido</span><span class="v na">no comparable hoy</span></div>'+
       '<div class="read warn">'+esc(p.motivo||'')+
-      (p.cosine_observado!=null?' <b>(el coseno observado es '+p.cosine_observado+', y NO es el piso)</b>':'')+'</div>';
+      (p.cosine_observado!=null?' <b>(el coseno entre libros es '+p.cosine_observado+', y NO es el piso)</b>':'')+'</div>';
 
   return '<div class="daybox"><h3>'+esc(d.dia)+' · corrida '+esc(d.fuente)+' · '+d.corridas+' agente(s)</h3>'+
     sol+piso+
