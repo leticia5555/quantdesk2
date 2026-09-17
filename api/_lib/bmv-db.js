@@ -356,6 +356,56 @@ async function financierosCrudos({ limite = 200, desde = null } = {}) {
       limit $1`, params);
 }
 
+/**
+ * El CENSO DE FORMAS del crudo guardado: cuántas filas hay de cada combinación
+ * de llaves de primer nivel.
+ *
+ * Es el discriminador más barato que existe para "¿hay dos formas distintas de
+ * crudo?". Si sale una sola fila, todas las respuestas tienen la misma forma y
+ * el problema está en el parser. Si salen varias, la cosecha guardó cosas
+ * distintas y hay que ver cuál produce campos y cuál no — por eso va con
+ * `con_eps` al lado.
+ *
+ * `jsonb_object_keys` explota si el valor no es un objeto, así que el tipo se
+ * cuenta aparte en vez de asumirlo.
+ */
+async function formasDelCrudo() {
+  const [porTipo, porForma] = await Promise.all([
+    sql(`select jsonb_typeof(raw) as tipo, count(*)::int as n from bmv_financieros group by 1 order by 2 desc`),
+    sql(`select coalesce(array_to_string(array(select k from jsonb_object_keys(f.raw) k order by 1), ', '), '(sin llaves)') as forma,
+                count(*)::int as n,
+                count(f.basicearningslosspershare)::int as con_eps,
+                count(f.assets)::int as con_assets,
+                min(f.emisora || ' ' || f.anio || '-' || f.trimestre) as ejemplo
+           from bmv_financieros f
+          where jsonb_typeof(f.raw) = 'object'
+          group by 1 order by 2 desc limit 25`),
+  ]);
+  return { por_tipo: porTipo, por_forma: porForma };
+}
+
+/** Una fila concreta, con su crudo, para mirarla sin normalizar nada. */
+async function financieroCrudo({ emisora, anio, trimestre }) {
+  const r = await sql(
+    `select emisora, anio, trimestre, fecha_cierre, raw, faltantes,
+            basicearningslosspershare, revenue, assets, cosechado_at
+       from bmv_financieros
+      where emisora = $1 and anio = $2 and trimestre = $3`,
+    [emisora, anio, trimestre]);
+  return r[0] || null;
+}
+
+/** Una fila que SÍ normalizó, para comparar las dos formas lado a lado. */
+async function financieroQueSiSirvio() {
+  const r = await sql(
+    `select emisora, anio, trimestre, fecha_cierre, raw, faltantes,
+            basicearningslosspershare, revenue, assets, cosechado_at
+       from bmv_financieros
+      where basicearningslosspershare is not null or assets is not null
+      order by emisora, anio, trimestre limit 1`);
+  return r[0] || null;
+}
+
 /** Actualiza SÓLO los campos normalizados; el crudo no se toca. */
 async function actualizarFinancieros(f) {
   const set = CAMPOS.map((c, i) => `${c} = $${4 + i}`).join(', ');
@@ -620,6 +670,6 @@ export {
   MAX_INTENTOS,
   upsertFinancieros, insertarPrecios, insertarDistribuciones, ultimaFechaPrecios,
   marcarLedger, clavesHechas, clavesAgotadas, ledgerResumen, financierosCrudos,
-  actualizarFinancieros,
+  actualizarFinancieros, formasDelCrudo, financieroCrudo, financieroQueSiSirvio,
   presupuesto, gastar, cobertura,
 };

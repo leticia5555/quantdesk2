@@ -32,6 +32,7 @@ import {
 
 import {
   CONTRATO_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, contar,
+  describirCrudo, literal, tipoDe,
   estimarConsumo, filaCenso, filasDelCenso, nuevaCartera, pareceClave, pareceSerie,
   pendientesFinancieros,
   paramsBenchmark, paramsFinancieros, paramsHistoricos, parsePeriodoTexto,
@@ -1267,4 +1268,87 @@ test('una emisora sin operaciones discontinuadas también resuelve', () => {
     resultado_trimestre: { '2017-04-01_2017-06-30': { basicearningslosspershare: ['upa', 1.25] } },
   };
   assert.equal(normalizarFinancieros(simple).valores.basicearningslosspershare, 1.25);
+});
+
+/* ═══════════════════════════════════════════════════════════════
+ * El inspector del crudo. Existe porque el arreglo del
+ * ["etiqueta", valor] NO era la causa raíz: de 1,000 filas
+ * re-parseadas sólo 65 quedaron con campos. Su trabajo es describir
+ * lo que hay SIN interpretarlo — si el parser y el inspector no
+ * coinciden, el desacuerdo es el hallazgo.
+ * ═══════════════════════════════════════════════════════════════ */
+
+test('tipoDe distingue arreglo, null y objeto — que es donde se esconden estas cosas', () => {
+  assert.equal(tipoDe(['etiqueta', 0.77]), 'array[2]');
+  assert.equal(tipoDe(null), 'null');
+  assert.equal(tipoDe({}), 'object');
+  assert.equal(tipoDe(0.77), 'number');
+  assert.equal(tipoDe('0.77'), 'string', 'un número como texto NO es lo mismo');
+});
+
+test('describirCrudo no normaliza: reporta el valor y el tipo tal cual', () => {
+  const d = describirCrudo({
+    resultado_trimestre: { '2017-04-01_2017-06-30': { basicearningslosspershare: ['upa', 0.77] } },
+  });
+  const [hallazgo] = d.campos.basicearningslosspershare;
+  assert.equal(hallazgo.tipo, 'array[2]');
+  assert.deepEqual(hallazgo.valor, ['upa', 0.77], 'el valor literal, no el interpretado');
+  assert.equal(hallazgo.ruta, 'resultado_trimestre.2017-04-01_2017-06-30.basicearningslosspershare');
+});
+
+test('hipótesis (a): un nivel extra de envoltura se ve en la ruta', () => {
+  const d = describirCrudo({ data: { posicion: { '2017-06-30': { assets: ['activos', 1000] } } } });
+  assert.deepEqual(d.nivel_1.map((x) => x.llave), ['data']);
+  assert.match(d.campos.assets[0].ruta, /^data\.posicion\./);
+});
+
+test('hipótesis (b): si sólo se pidió un bloque, el otro campo NO APARECE', () => {
+  const d = describirCrudo({ resultado_trimestre: { '2017-04-01_2017-06-30': { revenue: ['ingresos', 150000] } } });
+  assert.deepEqual(d.nivel_1.map((x) => x.llave), ['resultado_trimestre']);
+  assert.equal(d.campos.assets, 'NO APARECE en ningún nivel');
+  assert.ok(Array.isArray(d.campos.revenue));
+});
+
+test('hipótesis (c): llaveado por fecha vs campo directo se distingue en nivel_2', () => {
+  const porFecha = describirCrudo({ posicion: { '2017-06-30': { assets: ['a', 1] } } });
+  const directo = describirCrudo({ posicion: { assets: ['a', 1] } });
+  assert.deepEqual(porFecha.nivel_2.posicion.map((x) => x.llave), ['2017-06-30']);
+  assert.deepEqual(directo.nivel_2.posicion.map((x) => x.llave), ['assets']);
+  assert.equal(porFecha.campos.assets[0].ruta, 'posicion.2017-06-30.assets');
+  assert.equal(directo.campos.assets[0].ruta, 'posicion.assets');
+});
+
+test('hipótesis (d): dos formas distintas se ven en las llaves de primer nivel', () => {
+  const vieja = describirCrudo({ resultado_trimestre: {} });
+  const nueva = describirCrudo({ posicion: {}, resultado_trimestre: {} });
+  assert.notDeepEqual(vieja.nivel_1.map((x) => x.llave), nueva.nivel_1.map((x) => x.llave));
+});
+
+test('describirCrudo aguanta un crudo que NO es un objeto', () => {
+  // Si la cosecha guardó una cadena de error o un arreglo, el inspector tiene
+  // que decirlo en vez de reventar — es justo el caso que uno no anticipa.
+  for (const v of [null, 'error de la API', 42, []]) {
+    const d = describirCrudo(v);
+    assert.ok(d.tipo_raiz, `sin tipo_raiz para ${JSON.stringify(v)}`);
+    assert.equal(d.nivel_1, null);
+  }
+});
+
+test('literal recorta lo gigante pero deja ver que se recortó', () => {
+  const largo = { x: 'y'.repeat(500) };
+  const out = literal(largo, 50);
+  assert.equal(typeof out, 'string');
+  assert.match(out, /\(\+\d+\)$/, 'dice cuánto se quedó fuera');
+  assert.deepEqual(literal({ a: 1 }), { a: 1 }, 'lo chico pasa entero');
+});
+
+test('un campo que aparece en DOS rutas se reporta dos veces, sin elegir', () => {
+  // El parser falla cerrado ante la ambigüedad; el inspector la muestra. Ver
+  // las dos rutas es lo que permite decidir cuál es la buena.
+  const d = describirCrudo({
+    posicion: { '2017-06-30': { assets: ['a', 1000] } },
+    otro: { assets: ['a', 2000] },
+  });
+  assert.equal(d.campos.assets.length, 2);
+  assert.deepEqual(d.campos.assets.map((x) => x.valor[1]).sort(), [1000, 2000]);
 });
