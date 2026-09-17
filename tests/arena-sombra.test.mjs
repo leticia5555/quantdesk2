@@ -290,10 +290,15 @@ console.log('\n── el piso exige mismo enfoque Y mismo libro ──');
   });
   ok(heredado.comparable === false,
     'mismo enfoque NO alcanza: con libros de arranque distintos el par no mide ruido');
-  ok(/mide HERENCIA, no ruido/.test(heredado.motivo),
+  ok(/mide HERENCIA/.test(heredado.motivo),
     'y lo dice con esas palabras en vez de publicar el número como piso', heredado.motivo);
-  ok(/un reset las iguala/.test(heredado.motivo),
-    'y dice cómo arreglarlo, que es lo único accionable');
+  // ANTES esta aserción exigía "un reset las iguala", porque ésa era la única
+  // salida. Ya no: el piso por DELTAS mide sin tocar las cuentas, y proponer un
+  // reset a mitad de temporada sería el consejo equivocado — costaría órdenes
+  // reales y un salto en la curva de las dos cuentas que menos deben
+  // contaminarse. Cuando el delta tampoco se puede, el motivo dice POR QUÉ no.
+  ok(/Y el de deltas tampoco se puede/.test(heredado.motivo),
+    'y cuando el delta tampoco alcanza, dice por qué — no manda a resetear', heredado.motivo);
   ok(heredado.cosine_observado === 1 && heredado.cosine === undefined,
     'el número observado NO se esconde: viaja con otro nombre, para que se vea que existe y que no es el piso');
   ok(heredado.posiciones_claude.length === 1 && heredado.posiciones_control.length === 6,

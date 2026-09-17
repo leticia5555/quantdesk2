@@ -32,7 +32,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql } from './db.js';
-import { pairwiseOverlap, sharedTopTicker, pisoDeRuido as calcularPisoDeRuido, lecturaDeCoincidencia, CAVEAT_ENFOQUE } from './arena-herding.js';
+import { pairwiseOverlap, sharedTopTicker, pisoDeRuido as calcularPisoDeRuido, deltaDePesos, lecturaDeCoincidencia, CAVEAT_ENFOQUE } from './arena-herding.js';
 import { marketDay } from './arena-buffet-cache.js';
 
 const SCHEMA = [
@@ -75,6 +75,18 @@ const SCHEMA = [
      positions  jsonb,
      saved_at   timestamptz not null default now()
    )`,
+  // ── LOS DOS NÚMEROS, PARA PODER COMPARAR LOS MÉTODOS ─────────────────
+  // `cosine` es el piso PUBLICADO de ese día y `metodo` dice cuál es: entre
+  // libros (exige mismo libro de arranque) o entre deltas (qué cambió cada
+  // uno, que funciona con carteras distintas). `cosine_libros` y
+  // `cosine_deltas` guardan los dos siempre que se puedan calcular.
+  //
+  // Sin las dos series no se puede contestar la pregunta que va a surgir:
+  // ¿los métodos divergen sistemáticamente? Y esa respuesta sólo se puede
+  // construir hacia adelante — un día no archivado no se recupera.
+  `alter table arena_noise_floor add column if not exists metodo text`,
+  `alter table arena_noise_floor add column if not exists cosine_libros numeric`,
+  `alter table arena_noise_floor add column if not exists cosine_deltas numeric`,
 ];
 
 let ready = false;
@@ -97,13 +109,19 @@ export async function guardarPisoDeRuido(day, piso) {
   }
   try {
     await ensureShadowSchema();
+    const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
     await sql(
-      `insert into arena_noise_floor (day, cosine, lens, agents, positions)
-       values ($1::date,$2,$3,$4,$5) on conflict (day) do nothing`,
+      `insert into arena_noise_floor (day, cosine, lens, agents, positions, metodo, cosine_libros, cosine_deltas)
+       values ($1::date,$2,$3,$4,$5,$6,$7,$8) on conflict (day) do nothing`,
       [day, Number(piso.cosine), piso.enfoque || null, 'claude|control',
-       JSON.stringify(piso.posiciones_iniciales || null)],
+       JSON.stringify(piso.posiciones_iniciales || null),
+       piso.metodo || null,
+       // El de libros puede venir como el piso mismo (cuando ÉSE es el método)
+       // o como `cosine_observado` (cuando no lo es y viaja al lado).
+       num(piso.metodo === 'libros' ? piso.cosine : piso.cosine_observado),
+       num(piso.cosine_deltas)],
     );
-    return { guardado: true, day, cosine: Number(piso.cosine), enfoque: piso.enfoque || null };
+    return { guardado: true, day, cosine: Number(piso.cosine), metodo: piso.metodo || null, enfoque: piso.enfoque || null };
   } catch (e) { return { guardado: false, motivo: String((e && e.message) || e) }; }
 }
 
@@ -114,13 +132,19 @@ export async function leerPisosDeRuido({ limite = 30 } = {}) {
   try {
     await ensureShadowSchema();
     const rows = await sql(
-      `select day, cosine, lens, agents, positions, saved_at from arena_noise_floor order by day desc limit $1`,
+      `select day, cosine, lens, agents, positions, saved_at, metodo, cosine_libros, cosine_deltas
+         from arena_noise_floor order by day desc limit $1`,
       [Math.max(1, Math.min(365, limite))],
     );
     return (rows || []).map((r) => ({
       day: typeof r.day === 'string' ? r.day.slice(0, 10) : new Date(r.day).toISOString().slice(0, 10),
       cosine: Number(r.cosine), enfoque: r.lens || null, agentes: r.agents || null,
       posiciones_iniciales: r.positions || null, saved_at: r.saved_at,
+      // CUÁL método produjo ese número. Sin esto, la serie mezcla dos escalas
+      // y el promedio de la temporada no significa nada.
+      metodo: r.metodo || 'libros',
+      cosine_libros: r.cosine_libros != null ? Number(r.cosine_libros) : null,
+      cosine_deltas: r.cosine_deltas != null ? Number(r.cosine_deltas) : null,
       comparable: true,
     }));
   } catch { return []; }
@@ -192,6 +216,9 @@ export async function shadowReport(day = marketDay()) {
       status: r.status,
       plan: r.plan ? String(r.plan).slice(0, 200) : null,
       pesos: r.target && r.target.weights ? r.target.weights : null,
+      // Los pesos ACTUALES: la otra mitad del delta. Sin ellos sólo se puede
+      // comparar lo que cada uno TIENE, que a mitad de temporada mide herencia.
+      pesos_actuales: r.rebalance && r.rebalance.current ? r.rebalance.current : null,
       ordenes_que_habria_mandado: r.rebalance && r.rebalance.legs ? r.rebalance.legs.length : null,
       turnover: r.rebalance ? r.rebalance.turnover : null,
       error: r.error || null,
@@ -255,7 +282,12 @@ export async function shadowReport(day = marketDay()) {
   // documentadas en la función.
   const insignia = (porAgente.claude && porAgente.claude.ultimo) || null;
   const testigo = (porAgente.control && porAgente.control.ultimo) || null;
-  const pisoDeRuido = calcularPisoDeRuido({ insignia, testigo, pesos: libros });
+  const deltas = {};
+  for (const [id, a] of Object.entries(porAgente)) {
+    const u = a.ultimo;
+    if (u && u.pesos && u.pesos_actuales) deltas[id] = deltaDePesos(u.pesos_actuales, u.pesos);
+  }
+  const pisoDeRuido = calcularPisoDeRuido({ insignia, testigo, pesos: libros, deltas });
 
   if (coincidencia.mean != null) {
     // El número solo no dice nada sin la lectura. Un coseno de 0.9 entre siete
