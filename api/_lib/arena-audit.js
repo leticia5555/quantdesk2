@@ -720,6 +720,21 @@ function mdFila(f) {
   const meta = [`agente **${val(f.agente)}**`, `modelo \`${val(f.modelo)}\``, `prompt \`${val(f.prompt_version)}\``];
   if (f.cuenta && f.cuenta.equity != null) meta.push(`equity **$${nf(Number(f.cuenta.equity))}** · cash $${nf(Number(f.cuenta.cash))} · ${val(f.cuenta.positions)} posiciones`);
   L.push(meta.join(' · '));
+
+  // ── EL LIBRO CON EL QUE DECIDIÓ ──
+  // Con precio de entrada y P&L al momento de decidir. Es la mitad del
+  // contexto de una decisión: sin él, "compró NVDA" no dice si ya la tenía
+  // ganando o si estaba entrando por primera vez.
+  if (f.cuenta && Array.isArray(f.cuenta.holdings) && f.cuenta.holdings.length) {
+    L.push('\n**El libro al decidir**');
+    L.push(mdTabla(['símbolo', 'qty', 'entrada', 'precio', 'valor', 'P&L'], f.cuenta.holdings.map((h) => [
+      h.symbol, val(h.qty),
+      h.avg_entry_price != null ? '$' + h.avg_entry_price : '—',
+      h.current_price != null ? '$' + h.current_price : '—',
+      h.market_value != null ? '$' + nf(h.market_value) : '—',
+      h.unrealized_plpc != null ? ((h.unrealized_plpc >= 0 ? '+' : '') + (h.unrealized_plpc * 100).toFixed(1) + '%') : '—',
+    ])));
+  }
   if (f.error) L.push(`\n> **Error de la corrida:** ${f.error}`);
 
   // ── POR QUÉ ABORTÓ ──
