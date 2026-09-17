@@ -134,6 +134,13 @@ footer{margin-top:36px;padding-top:20px;border-top:1px solid var(--border);}
 
   <footer>
     <p class="disc">
+      <strong>Las siete parten de $100,000 en esta pantalla.</strong> Es una vista <b>indexada</b>: el reset dejó
+      a cada cuenta en un equity distinto ($98,677 a $100,130) y cada una se mide contra el suyo, así que se
+      muestran todas escaladas a $100,000 para que se lean en la misma regla. El ranking y los porcentajes son
+      <b>idénticos</b> —indexar es multiplicar por una constante por cuenta— y el equity real va al lado de cada fila.
+      Nada de lo que decide (breaker, rieles, tamaño de orden) mira este número.
+    </p>
+    <p class="disc" style="margin-top:10px">
       <strong>Experimento, no asesoría.</strong> Cada agente es un LLM manejando una cuenta Alpaca paper
       (dinero simulado, cotizaciones reales) sin validación estadística. El razonamiento de cada decisión se
       publica verbatim. El <b>control</b> es el mismo modelo del líder pero en otra cuenta: es el piso de ruido
@@ -211,11 +218,11 @@ function benchHtml(b){
       '<div class="rank">índice</div>'+
       '<div class="rid"><div class="rname">'+esc(b.name)+' '+tag+'</div>'+
         '<div class="rmodel">'+esc(b.model_label||'')+'</div></div>'+
-      '<div class="req"><div class="eq">'+money(acct.equity)+'</div>'+retHtml+'</div>'+
+      '<div class="req"><div class="eq">'+money(b.equity_indexado!=null?b.equity_indexado:acct.equity)+'</div>'+retHtml+'</div>'+
     '</div>'+
     '<div class="rplan" style="color:var(--text3)">'+esc(b.nota||'')+'</div>'+
     '<div class="rfoot"><span>desde '+esc(String(b.opened_at||'').slice(0,10))+'</span>'+
-      '<span>'+(b.shares!=null?esc(String(b.shares))+' acciones a $'+esc(String(b.entry)):'')+'</span></div>'+
+      '<span>'+(b.shares!=null?esc(String(b.shares))+' acciones a $'+esc(String(b.entry))+(b.equity_indexado!=null?' · real '+money(acct.equity):''):'')+'</span></div>'+
   '</div>';
 }
 function rowHtml(a){
@@ -257,12 +264,14 @@ function rowHtml(a){
       '<div class="rank">'+(a.rank||'—')+'</div>'+
       '<div class="rid"><div class="rname">'+esc(a.name)+' '+houseTag(a)+' '+halt+'</div>'+
         '<div class="rmodel">'+esc(a.model_label||a.model||'')+'</div></div>'+
-      '<div class="req"><div class="eq">'+money(acct.equity)+'</div>'+retHtml+dayHtml+'</div>'+
+      '<div class="req"><div class="eq">'+money(a.equity_indexado!=null?a.equity_indexado:acct.equity)+'</div>'+retHtml+dayHtml+'</div>'+
     '</div>'+
     plan+tradesHtml(a)+
     '<div class="rfoot"><span>'+esc((a.journal&&a.journal.run_date)||'—')+'</span>'+
       '<span>'+npos+'/8 posiciones · cash '+money(acct.cash)+
-        (a.baseline_equity!=null?' · desde '+money(a.baseline_equity):'')+'</span></div>'+
+        // Indexado: todas parten de $100,000 en pantalla. El equity REAL va al
+        // lado, porque la cuenta de Alpaca dice ese número y no éste.
+        (a.equity_indexado!=null?' · desde $100,000 · real '+money(acct.equity):(a.baseline_equity!=null?' · desde '+money(a.baseline_equity):''))+'</span></div>'+
   '</div>';
 }
 async function load(){

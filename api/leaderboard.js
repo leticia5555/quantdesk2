@@ -48,7 +48,7 @@ import { activeAgents, agentAlpacaCreds } from './_lib/arena-registry.js';
 import {
   BENCHMARK, leerBenchmark, precioBenchmark, benchmarkReturnPct, filaBenchmark, excesoVsBenchmark,
 } from './_lib/arena-benchmark.js';
-import { readBaselines, baselineDe, returnPct } from './_lib/arena-baseline.js';
+import { readBaselines, baselineDe, returnPct, indexarEquity, BASE_INDEX_USD } from './_lib/arena-baseline.js';
 
 const BASELINE = (() => {
   const n = Number(process.env.ARENA_BASELINE_EQUITY);
@@ -182,6 +182,16 @@ export default async function handler(req, res) {
         const lastEquity = Number(account.last_equity);
         out.account = { equity, cash: Number(account.cash), status: account.status };
         out.return_pct = returnPct(equity, out.baseline_equity);
+        // ── LA VISTA INDEXADA ───────────────────────────────────────
+        // Las siete arrancaron con baselines distintos (el reset aplanó y
+        // aplanar no las dejó parejas). Indexar a 100,000 hace legible la
+        // pantalla sin mover un dato: el ranking y los porcentajes salen
+        // idénticos porque es multiplicar por una constante por cuenta.
+        //
+        // El equity REAL se queda donde estaba, con su nombre: nada del camino
+        // de decisión lee el indexado. El breaker mide drawdown contra el real
+        // — uno que mirara el indexado estaría midiendo una pantalla.
+        out.equity_indexado = indexarEquity(equity, out.baseline_equity);
         out.day_change_pct = pct(equity, lastEquity);
         out.positions = positions.map((p) => ({
           symbol: p.symbol, qty: Number(p.qty), avg_entry: Number(p.avg_entry_price),
