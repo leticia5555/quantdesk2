@@ -19,6 +19,7 @@ import {
   construyeIndiceNombres, resuelveSimbolo, tickerExplicito, extraeConsensoEps,
   precioEnT24h, cruzaConPead, evaluaFuentePIT, resumenMarkdown, diasEntre, isoDia,
   esFecha, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
+  analizaDesfases, clasificaT24h,
 } from '../api/_lib/earnings-beat.js';
 import { filasDe, aplanaMercados, cosechaDeBusqueda, formaDe } from '../api/earnings-beat.js';
 import { qs, rateHeaders } from '../api/_lib/polymarket.js';
@@ -248,6 +249,51 @@ ok(busq.length === 2, 'public-search: saca los mercados de adentro de los evento
 ok(cosechaDeBusqueda({ nada: 1 }).length === 0 && cosechaDeBusqueda(null).length === 0, 'forma desconocida → [] (no crashea)');
 ok(formaDe([]) === 'array' && formaDe({ a: 1 }).startsWith('objeto:'), 'formaDe describe la forma cruda');
 
+console.log('clasificaT24h: sólo "válido" cuenta para el candado');
+
+ok(clasificaT24h({ precio: 0.61, rancio: false }) === 'valido', 'tick real en ventana → válido');
+ok(clasificaT24h({ precio: 0.41, rancio: true }) === 'rancio', 'tick viejo → rancio (existe, pero no cuenta)');
+ok(clasificaT24h({ precio: null, motivo: 'sin_ticks_antes_de_t24h' }) === 'sin_ticks_antes', 'sin ticks previos → categoría propia');
+ok(clasificaT24h({ precio: null, motivo: 'historial_vacio' }) === 'sin_ticks', 'historial vacío → categoría propia');
+ok(clasificaT24h(null) === 'error', 'null → error (no crashea)');
+
+console.log('analizaDesfases: sistemático vs ruido, y PROPONE sin cambiar');
+
+// Desfase sistemático: 8 de 10 caen exactamente a +2 días.
+const sistematico = analizaDesfases([
+  ...Array.from({ length: 8 }, (_, i) => ({ symbol: 'X' + i, fecha_resolucion: '2026-02-26', cruce: null,
+    motivo_sin_cruce: 'fecha_fuera_de_tolerancia', cercano_fuera_de_tolerancia: { reported_date: '2026-02-24', dias: 2 } })),
+  { symbol: 'Y', fecha_resolucion: '2026-02-26', cruce: null, motivo_sin_cruce: 'fecha_fuera_de_tolerancia',
+    cercano_fuera_de_tolerancia: { reported_date: '2026-02-19', dias: 7 } },
+  { symbol: 'Z', fecha_resolucion: '2026-02-26', cruce: null, motivo_sin_cruce: 'fecha_fuera_de_tolerancia',
+    cercano_fuera_de_tolerancia: { reported_date: '2026-03-01', dias: -3 } },
+]);
+ok(sistematico.veredicto === 'sistematico', '8 de 10 a +2 días → sistemático', sistematico.veredicto);
+ok(sistematico.propuesta && sistematico.propuesta.tolerancia_propuesta === 2, 'propone tolerancia 2', sistematico.propuesta && sistematico.propuesta.tolerancia_propuesta);
+ok(sistematico.propuesta.recuperaria === 8, 'dice cuántos recuperaría', sistematico.propuesta.recuperaria);
+ok(/PROPUESTA/.test(sistematico.nota), 'deja claro que PROPONE, no aplica — los CRITERIOS están congelados');
+ok(CRITERIOS.tolerancia_dias_cruce === 1, 'y la tolerancia congelada NO se movió sola', CRITERIOS.tolerancia_dias_cruce);
+
+// Disperso: cada caso a una distancia distinta.
+const ruido = analizaDesfases([2, 5, 9, -4, 13].map((d, i) => ({
+  symbol: 'S' + i, fecha_resolucion: '2026-02-26', cruce: null, motivo_sin_cruce: 'fecha_fuera_de_tolerancia',
+  cercano_fuera_de_tolerancia: { reported_date: '2026-02-01', dias: d } })));
+ok(ruido.veredicto === 'ruido' && ruido.propuesta === null, 'desfases dispersos → ruido, sin propuesta', ruido.veredicto);
+
+// Un desfase dominante pero ENORME tampoco se propone.
+const lejano = analizaDesfases(Array.from({ length: 6 }, (_, i) => ({
+  symbol: 'L' + i, fecha_resolucion: '2026-02-26', cruce: null, motivo_sin_cruce: 'fecha_fuera_de_tolerancia',
+  cercano_fuera_de_tolerancia: { reported_date: '2026-01-26', dias: 31 } })));
+ok(lejano.veredicto === 'ruido', 'dominante pero a 31 días → no se propone (tope de 3 días)', lejano.veredicto);
+ok(analizaDesfases([]).veredicto === 'sin_casos' && analizaDesfases(null).casos === 0, 'vacío/null → sin casos (no crashea)');
+
+// El cruce ahora guarda el más cercano aunque no entre en tolerancia.
+const conCercano = cruzaConPead(
+  [{ symbol: 'NVDA', fecha_resolucion: '2026-02-28' }],
+  [{ symbol: 'NVDA', reported_date: '2026-02-26' }]);
+ok(!conCercano[0].cruce && conCercano[0].cercano_fuera_de_tolerancia.dias === 2,
+  'fuera de tolerancia → guarda por CUÁNTO no entró (2 días)', conCercano[0].cercano_fuera_de_tolerancia && conCercano[0].cercano_fuera_de_tolerancia.dias);
+
 console.log('detectaTopeUniforme: el "5" no se vuelve a colar');
 
 // El modo de falla real: 8 respuestas, TODAS con 5 filas, con límite pedido 100.
@@ -295,6 +341,10 @@ const md = resumenMarkdown({
     cluster: { intentos: [{ via: 'serie_id', status: 'httperror', http: 404, filas: 0 }] },
     simbolo: { intentos: [{ etiqueta: 'COST', status: 'ok', http: 200, filas: 3, nuevos: 3 }], probados: 99, de: 99 },
     semillas: { total: 40, usadas: 8, con_tags: 40, con_racimo: 12 },
+    ruido_por_subcadena: { umbral: 100, simbolos: [
+      { symbol: 'NOW', filas_traidas: 545, aceptados: 4, descartadas: 541, aceptados_con_otro_simbolo: 0,
+        muestra_aceptados: [{ pregunta: 'Will ServiceNow (NOW) beat quarterly earnings?', symbol_resuelto: 'NOW', coincide_con_la_busqueda: true }] },
+    ], aceptados_totales_de_ruidosos: 4, aceptados_con_simbolo_distinto: 0 },
     mercados_de_earnings_por_camino: { busqueda: 12, tags: 128 },
     estrategia_ganadora: { camino: 'tags', mercados_de_earnings: 128 },
   },
@@ -302,8 +352,17 @@ const md = resumenMarkdown({
   topes_de_offset: [{ endpoint: 'gamma/markets', offset: 2500, limit: 500, mensaje: 'offset too large' }],
   barrido: { corrido: false, nota: 'apagado por defecto' },
   conteos: { mercados_de_earnings_en_ventana: 140, resueltos: 130, con_simbolo: 120, en_universo_v0: 90, universo_v0: 99, con_consenso_en_descripcion: 100, con_token_yes: 140 },
-  ejemplos: [{ slug: 'nvda', symbol: 'NVDA', fecha_resolucion: '2026-02-26', outcome: 'Yes', clob: { status: 'ok', forma: 'startTs/endTs', puntos: 200 }, yes_t24h: { precio: 0.61, horas_antes_real: 25, rancio: false } }],
-  cruce: { consultado: true, filas_pead: 400, cruzados: 88, en_universo_v0: 80, sin_cruce: { simbolo_no_esta_en_pead_earnings: 40 } },
+  ejemplos: [{ slug: 'nvda', symbol: 'NVDA', fecha_resolucion: '2026-02-26', reported_date: '2026-02-26', outcome: 'Yes', clob: { status: 'ok', forma: 'startTs/endTs', puntos: 72 }, yes_t24h: { precio: 0.61, horas_antes_real: 25, rancio: false } }],
+  t24h: { sobre: 'mercados_cruzados', total: 145, procesados: 145, truncado: false,
+    conteo: { valido: 118, rancio: 12, sin_ticks: 9, sin_ticks_antes: 4, sin_precio: 0, error: 2, sin_token: 0 },
+    formas: { 'startTs/endTs': 140, 'interval=max': 5 } },
+  cruce: { consultado: true, filas_pead: 400, cruzados: 145, en_universo_v0: 140,
+    sin_cruce: { simbolo_no_esta_en_pead_earnings: 54, fecha_fuera_de_tolerancia: 31 },
+    desfases: { casos: 31, histograma: { '2': 20, '4': 6, '-3': 5 }, dominante: { dias: 2, n: 20 },
+      fraccion_dominante: 0.645, veredicto: 'sistematico',
+      propuesta: { tolerancia_actual: 1, tolerancia_propuesta: 2, recuperaria: 20, por_que: '20 de 31 casos caen a 2 días' },
+      nota: 'PROPUESTA — los CRITERIOS están congelados.',
+      muestra: [{ symbol: 'MU', resolucion: '2026-03-20', reported_date: '2026-03-18', dias: 2 }] } },
   revisiones: [
     { fuente: 'finnhub/stock/revision', status: 'premium_o_sin_permiso', http: 403, pit: false, motivo: 'HTTP 403' },
     { fuente: 'alphavantage/EARNINGS_ESTIMATES', status: 'ok', http: 200, pit: false, filas: 4,
@@ -320,6 +379,10 @@ ok(md.includes('tope 100'), 'las sondas publican su propio tope al lado del cont
 ok(md.includes('99') && md.includes('símbolo'), 'reporta cuántos símbolos se buscaron uno por uno');
 ok(md.includes('CERRADO'), 'las revisiones salen marcadas como CERRADO / fuera de v1');
 ok(md.includes('cuello de botella es NUESTRO universo'), 'interpreta el motivo dominante de no-cruce');
+ok(md.includes('EL CONTEO DEL CANDADO') && md.includes('118'), 'el §4 es el conteo del candado, no tres ejemplos');
+ok(md.includes('SE CUMPLE'), '118 ≥ 100 → dice que el candado se cumple');
+ok(md.includes('545') && md.includes('no se coló basura'), 'audita el ruido de la búsqueda por subcadena');
+ok(md.includes('PROPUESTA (no aplicada)'), 'propone tolerancia sin aplicarla');
 ok(md.includes('tope de offset') || md.includes('Tope de offset'), 'documenta el tope de offset como hecho del censo');
 ok(md.includes('422 no es rate limit'), 'y aclara que el 422 no es rate limit');
 ok(md.includes('eps_estimate_revision_up_trailing_7_days'), 'enseña la FILA CRUDA de la sonda de revisiones');

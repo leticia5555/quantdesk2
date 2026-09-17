@@ -14,6 +14,9 @@
 //                  la fecha en el código — lint tests/no-hardcoded-dates)
 //   ?desde=...     fecha exacta de corte, gana sobre ?meses
 //   ?ejemplos=3    cuántos mercados traen precio del Yes a T-24h
+//   ?max_precios=250  tope de mercados a los que se les pide el precio T-24h
+//                  (el conteo del candado). Si no entran, trunca y lo declara
+//   ?detalle=1     incluye el detalle mercado por mercado del T-24h
 //   ?simbolos=99   cuántos símbolos del universo v0 se buscan uno por uno
 //                  (camino D, el que decide el candado). &simbolos=0 lo apaga
 //   ?barrido=1     además, corre el barrido por offset como CONTROL (apagado
@@ -47,6 +50,7 @@ import {
   CRITERIOS, normalizaMercado, pareceEarnings, resuelveSimbolo, construyeIndiceNombres,
   extraeConsensoEps, outcomeResuelto, tokenYes, precioEnT24h, cruzaConPead, evaluaFuentePIT,
   isoDia, ts, resumenMarkdown, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
+  analizaDesfases, clasificaT24h,
 } from './_lib/earnings-beat.js';
 import { V0_UNIVERSE } from './_lib/pead-universe.js';
 import { getSymbolMap } from './earnings.js';
@@ -57,6 +61,11 @@ export const maxDuration = 300;
 
 const PRESUPUESTO_MS = 240000;   // corte duro del censo: reporta truncado, no 504
 const LIMITE_SONDA = 100;        // explícito: las sondas miran esquema, no catálogo
+// El CLOB se pide en paralelo de a pocos: 145 requests en serie no entran en
+// el presupuesto, y 145 de golpe es una forma elegante de que te limiten.
+// Mismo criterio que CONCURRENCIA en _lib/yahoo-daily.js.
+const CONCURRENCIA_CLOB = 6;
+const UMBRAL_RUIDO = 100;        // filas traídas por un símbolo para llamarlo ruidoso
 
 // ─────────────────── sondas de esquema ───────────────────
 // NO se asume qué contesta cada endpoint: se sondea con `limit` chico y se
@@ -134,14 +143,15 @@ function aplanaMercados(item) {
 // el explícito se ve en el diff.
 const PAGINAS_BUSQUEDA = 12;      // tope de páginas por frase
 const LIMITE_BUSQUEDA = 100;      // explícito, y verificado abajo
+const PAGINAS_POR_SIMBOLO = 3;    // 99 búsquedas: acá el presupuesto manda
 
-async function buscaFrase(gamma1, frase, restante, etiqueta) {
+async function buscaFrase(gamma1, frase, restante, etiqueta, maxPaginas = PAGINAS_BUSQUEDA) {
   const intentos = [];
   const filas = [];
   const idsVistos = new Set();
   let conLimite = true;
 
-  for (let pagina = 0; pagina < PAGINAS_BUSQUEDA; pagina++) {
+  for (let pagina = 0; pagina < maxPaginas; pagina++) {
     if (restante() < 40000) { intentos.push({ frase, etiqueta, nota: 'corte por presupuesto de tiempo' }); break; }
     const params = { q: frase };
     if (conLimite) params.limit_per_type = LIMITE_BUSQUEDA;
@@ -215,19 +225,28 @@ async function descubrePorSimbolo(ctx, gamma1, restante, universo) {
   const intentos = [];
   const filas = [];
   const simbolos = [...universo].slice(0, ctx.simbolos);
+  const traidas = {};   // filas crudas por símbolo, ANTES de filtrar intentos
   let probados = 0;
   for (const sym of simbolos) {
     if (restante() < 60000) break;
-    const r = await buscaFrase(gamma1, `${sym} quarterly earnings`, restante, sym);
+    // Tope de páginas MÁS BAJO que el de las frases: son 99 búsquedas, y un
+    // ticker que es palabra común ("NOW", "ON") puede paginar sin fin sin
+    // aportar un solo mercado de earnings. El presupuesto vale más que la
+    // página 4 de "Now You See Me".
+    const r = await buscaFrase(gamma1, `${sym} quarterly earnings`, restante, sym, PAGINAS_POR_SIMBOLO);
     probados++;
+    traidas[sym] = r.intentos.reduce((a, i) => a + (typeof i.filas === 'number' ? i.filas : 0), 0);
     // Solo se reportan los intentos que trajeron algo o fallaron: 99 filas de
     // "0 resultados" tapan el reporte sin decir nada que el total no diga.
     for (const i of r.intentos) {
       if (i.nota || i.status !== 'ok' || (i.filas ?? 0) > 0) intentos.push(i);
     }
-    filas.push(...r.filas);
+    // Cada fila recuerda QUÉ búsqueda la trajo: la búsqueda por símbolo es por
+    // SUBCADENA y hay tickers que son palabras comunes (NOW, ON, ALL). Sin la
+    // etiqueta no se puede auditar si por ahí se coló basura.
+    filas.push(...r.filas.map((f) => ({ ...f, _etiqueta: sym })));
   }
-  return { camino: 'simbolo', intentos, filas, probados, de: simbolos.length, universo: universo.size };
+  return { camino: 'simbolo', intentos, filas, traidas, probados, de: simbolos.length, universo: universo.size };
 }
 
 // public-search devuelve varios tipos a la vez (eventos, tags, perfiles). Se
@@ -326,6 +345,35 @@ function formaDe(body) {
   return typeof body;
 }
 
+// Precio del Yes a T-24h de UN mercado. Dos formas de parámetros probadas en
+// orden; se reporta cuál funcionó. Nunca lanza: un fallo del CLOB es una
+// categoría del conteo, no el final del censo.
+async function precioDeUnMercado(m, clob1) {
+  const base = { slug: m.slug, pregunta: m.pregunta, symbol: m.symbol, fecha_resolucion: m.fecha_resolucion,
+    outcome: m.outcome, consenso_pm: m.consenso_pm, reported_date: m.cruce ? m.cruce.reported_date : null };
+  if (!m.token_yes) return { clase: 'sin_token', forma: 'n/a', fila: { ...base, yes_t24h: null, motivo: 'sin_token_yes' } };
+  const finMs = ts(m.fin_real || m.fin_declarado);
+  if (!finMs) return { clase: 'sin_precio', forma: 'n/a', fila: { ...base, yes_t24h: null, motivo: 'sin_fecha_de_resolucion' } };
+
+  const desdeTs = Math.floor((finMs - 72 * 3600 * 1000) / 1000);
+  const hastaTs = Math.floor(finMs / 1000);
+  let r = await clob1('/prices-history', { market: m.token_yes, startTs: desdeTs, endTs: hastaTs, fidelity: 60 });
+  let forma = 'startTs/endTs';
+  if (r.status !== 'ok' || !(r.body && Array.isArray(r.body.history) && r.body.history.length)) {
+    r = await clob1('/prices-history', { market: m.token_yes, interval: 'max', fidelity: 60 });
+    forma = 'interval=max';
+  }
+  if (r.status !== 'ok') {
+    return { clase: 'error', forma, fila: { ...base, yes_t24h: null, clob: { status: r.status, http: r.http ?? null } } };
+  }
+  const history = r.body ? (Array.isArray(r.body.history) ? r.body.history : filasDe(r.body)) : [];
+  const precio = precioEnT24h(history, finMs);
+  return {
+    clase: clasificaT24h(precio), forma,
+    fila: { ...base, clob: { status: r.status, http: r.http ?? null, ms: r.ms, forma, puntos: history.length }, yes_t24h: precio },
+  };
+}
+
 // ─────────────────── el censo ───────────────────
 
 async function corre(ctx) {
@@ -385,7 +433,7 @@ async function corre(ctx) {
         : raw && raw.slug ? 'slug:' + raw.slug : null;
       if (!id) { sinId++; continue; }
       if (crudosPorId.has(id)) continue;
-      crudosPorId.set(id, { ...raw, _via: camino });
+      crudosPorId.set(id, { ...raw, _via: camino, _etiqueta: raw._etiqueta || null });
       nuevos++;
     }
     aportes[camino] = (aportes[camino] || 0) + nuevos;
@@ -399,7 +447,7 @@ async function corre(ctx) {
   // racimo fallaron la vuelta pasada por falta de semillas, no por no existir.
   const porSimbolo = ctx.simbolos > 0
     ? await descubrePorSimbolo(ctx, gamma1, restante, universo)
-    : { camino: 'simbolo', intentos: [{ nota: 'apagado con &simbolos=0' }], filas: [], probados: 0, de: 0 };
+    : { camino: 'simbolo', intentos: [{ nota: 'apagado con &simbolos=0' }], filas: [], traidas: {}, probados: 0, de: 0 };
   suma('simbolo', porSimbolo.filas);
 
   // Semillas para B y C: los mercados de earnings que A sí encontró. Si A no
@@ -473,7 +521,7 @@ async function corre(ctx) {
     const consenso = extraeConsensoEps(m.descripcion || '') || extraeConsensoEps(m.pregunta || '');
     const outcome = outcomeResuelto(m);
     mercados.push({
-      id: m.id, slug: m.slug, pregunta: m.pregunta, via: raw._via || null,
+      id: m.id, slug: m.slug, pregunta: m.pregunta, via: raw._via || null, etiqueta: raw._etiqueta || null,
       fecha_resolucion: fecha, fin_declarado: m.fin_declarado, fin_real: m.fin_real,
       cerrado: m.cerrado, uma: m.uma, volumen: m.volumen,
       senales: esEarnings.senales,
@@ -488,6 +536,39 @@ async function corre(ctx) {
     });
   }
 
+  // ── Auditoría del ruido de la búsqueda por subcadena ──
+  // "NOW" trae las películas "Now You See Me"; "ON", "ALL" y "KEY" son peores.
+  // El filtro de earnings los descarta, pero "el filtro descartó bien" es una
+  // afirmación que hay que PODER COMPROBAR: por eso se publica, por cada
+  // símbolo ruidoso, cuántas filas trajo, cuántas sobrevivieron, y una muestra
+  // de las ACEPTADAS para leerlas a ojo.
+  const traidasPorEtiqueta = new Map(Object.entries(porSimbolo.traidas || {}));
+  const aceptadasPorEtiqueta = new Map();
+  for (const m of mercados) {
+    if (!m.etiqueta) continue;
+    if (!aceptadasPorEtiqueta.has(m.etiqueta)) aceptadasPorEtiqueta.set(m.etiqueta, []);
+    aceptadasPorEtiqueta.get(m.etiqueta).push(m);
+  }
+  const ruidosos = [...traidasPorEtiqueta.entries()]
+    .filter(([, n]) => n >= UMBRAL_RUIDO)
+    .sort((a, b) => b[1] - a[1])
+    .map(([sym, traidas]) => {
+      const aceptados = aceptadasPorEtiqueta.get(sym) || [];
+      return {
+        symbol: sym, filas_traidas: traidas, aceptados: aceptados.length,
+        descartadas: traidas - aceptados.length,
+        // La prueba de que no se coló basura no es un porcentaje: son las
+        // preguntas aceptadas, leídas.
+        muestra_aceptados: aceptados.slice(0, 3).map((m) => ({
+          pregunta: (m.pregunta || m.slug || '').slice(0, 90),
+          symbol_resuelto: m.symbol, coincide_con_la_busqueda: m.symbol === sym,
+        })),
+        // Un aceptado cuyo símbolo resuelto NO es el que se buscó es
+        // exactamente el modo de falla que esta auditoría persigue.
+        aceptados_con_otro_simbolo: aceptados.filter((m) => m.symbol && m.symbol !== sym).length,
+      };
+    });
+
   // Qué camino encontró MÁS mercados de earnings (no crudos: earnings).
   const porCamino = {};
   for (const m of mercados) porCamino[m.via || 'desconocido'] = (porCamino[m.via || 'desconocido'] || 0) + 1;
@@ -496,38 +577,13 @@ async function corre(ctx) {
   const resueltos = mercados.filter((m) => m.outcome !== null);
   const conSimbolo = mercados.filter((m) => m.symbol);
 
-  // ── 4. Precio del Yes a T-24h ──
-  const candidatos = [...mercados]
-    .filter((m) => m.token_yes && m.fecha_resolucion)
-    .sort((a, b) => (Number(b.en_universo_v0) - Number(a.en_universo_v0))
-      || (Number(b.outcome !== null) - Number(a.outcome !== null))
-      || String(b.fecha_resolucion).localeCompare(String(a.fecha_resolucion)));
-
-  const ejemplos = [];
-  for (const m of candidatos) {
-    if (ejemplos.length >= ctx.ejemplos || restante() < 25000) break;
-    const finMs = ts(m.fin_real || m.fin_declarado);
-    if (!finMs) continue;   // sin instante de resolución no hay T-24h que pedir
-    const desdeTs = Math.floor((finMs - 72 * 3600 * 1000) / 1000);
-    const hastaTs = Math.floor(finMs / 1000);
-    let r = await clob1('/prices-history', { market: m.token_yes, startTs: desdeTs, endTs: hastaTs, fidelity: 60 });
-    let forma = 'startTs/endTs';
-    if (r.status !== 'ok' || !(r.body && Array.isArray(r.body.history) && r.body.history.length)) {
-      r = await clob1('/prices-history', { market: m.token_yes, interval: 'max', fidelity: 60 });
-      forma = 'interval=max';
-    }
-    const history = r.status === 'ok' && r.body ? (Array.isArray(r.body.history) ? r.body.history : filasDe(r.body)) : [];
-    const precio = precioEnT24h(history, finMs);
-    ejemplos.push({
-      slug: m.slug, pregunta: m.pregunta, symbol: m.symbol, fecha_resolucion: m.fecha_resolucion,
-      outcome: m.outcome, consenso_pm: m.consenso_pm,
-      clob: { status: r.status, http: r.http ?? null, ms: r.ms, forma, puntos: history.length },
-      yes_t24h: precio,
-    });
-  }
-
-  // ── 5. Cruce con pead_earnings (SELECT, nada más) ──
+  // ── 4. Cruce con pead_earnings (SELECT, nada más) ──
+  // VA PRIMERO, antes del CLOB: el conteo del candado se mide sobre los
+  // mercados CRUZADOS, así que hay que saber cuáles son antes de gastar el
+  // presupuesto pidiendo precios.
   const cruce = { consultado: false, filas_pead: 0, error: null, cruzados: 0, en_universo_v0: 0, sin_cruce: {} };
+  let cruzados = [];
+  let desfases = null;
   try {
     const filas = await sql(
       `select symbol, to_char(reported_date, 'YYYY-MM-DD') as reported_date
@@ -539,17 +595,61 @@ async function corre(ctx) {
     );
     cruce.consultado = true;
     cruce.filas_pead = filas.length;
-    const cruzados = cruzaConPead(mercados, filas);
-    cruce.cruzados = cruzados.filter((m) => m.cruce).length;
-    cruce.en_universo_v0 = cruzados.filter((m) => m.cruce && m.en_universo_v0).length;
-    for (const m of cruzados) {
+    const todos = cruzaConPead(mercados, filas);
+    cruzados = todos.filter((m) => m.cruce);
+    cruce.cruzados = cruzados.length;
+    cruce.en_universo_v0 = cruzados.filter((m) => m.en_universo_v0).length;
+    for (const m of todos) {
       if (m.cruce) continue;
       const k = m.motivo_sin_cruce || 'desconocido';
       cruce.sin_cruce[k] = (cruce.sin_cruce[k] || 0) + 1;
     }
+    // ¿Los que no cruzan por fecha son un desfase sistemático o ruido?
+    desfases = analizaDesfases(todos);
   } catch (e) {
     cruce.error = String((e && e.message) || e).slice(0, 200);
   }
+
+  // ── 5. EL CONTEO DEL CANDADO: precio del Yes a T-24h en TODOS los cruzados ──
+  // Tres ejemplos no miden nada: el candado exige ≥100 mercados cruzados CON
+  // precio a T-24h, así que hay que pedirle el precio a CADA uno. Se procesa
+  // en lotes con concurrencia, y si el presupuesto se acaba se declara
+  // truncado con cuántos alcanzó a ver — un conteo parcial que se sabe parcial
+  // sigue siendo útil; uno parcial que se cree total, no.
+  const objetivo = cruzados.length ? cruzados
+    : mercados.filter((m) => m.token_yes && m.fecha_resolucion).slice(0, ctx.max_precios);
+  const sobre = cruzados.length ? 'mercados_cruzados' : 'mercados_de_earnings (sin cruce disponible)';
+
+  const t24 = {
+    sobre, total: objetivo.length, procesados: 0, truncado: false, motivo_corte: null,
+    conteo: { valido: 0, rancio: 0, sin_ticks: 0, sin_ticks_antes: 0, sin_precio: 0, error: 0, sin_token: 0 },
+    formas: {}, detalle: [],
+  };
+
+  for (let i = 0; i < objetivo.length; i += CONCURRENCIA_CLOB) {
+    if (restante() < 35000) {
+      t24.truncado = true;
+      t24.motivo_corte = `presupuesto_de_tiempo tras ${t24.procesados} de ${objetivo.length}`;
+      break;
+    }
+    if (t24.procesados >= ctx.max_precios) {
+      t24.truncado = true;
+      t24.motivo_corte = `tope &max_precios=${ctx.max_precios}`;
+      break;
+    }
+    const lote = objetivo.slice(i, i + CONCURRENCIA_CLOB);
+    const resultados = await Promise.all(lote.map((m) => precioDeUnMercado(m, clob1)));
+    for (const r of resultados) {
+      t24.procesados++;
+      t24.conteo[r.clase] = (t24.conteo[r.clase] || 0) + 1;
+      t24.formas[r.forma] = (t24.formas[r.forma] || 0) + 1;
+      t24.detalle.push(r.fila);
+    }
+  }
+
+  // Los "ejemplos" salen del mismo lote: cero requests extra.
+  const ejemplos = t24.detalle.filter((d) => d.yes_t24h && d.yes_t24h.precio !== null).slice(0, ctx.ejemplos);
+  if (!ctx.detalle_precios) t24.detalle = undefined;
 
   // ── 6. Revisiones de estimados — CERRADO: fuera de v1 ──
   // Resuelto en la corrida anterior con la fila cruda a la vista: lo que hay
@@ -589,6 +689,13 @@ async function corre(ctx) {
       busqueda: { intentos: busqueda.intentos },
       simbolo: { intentos: porSimbolo.intentos, probados: porSimbolo.probados, de: porSimbolo.de },
       semillas: semillas_info,
+      ruido_por_subcadena: {
+        umbral: UMBRAL_RUIDO,
+        nota: 'La búsqueda por símbolo es por SUBCADENA: un ticker que es palabra común trae de todo. Acá se ve cuánto trajo, cuánto sobrevivió al filtro, y una muestra de lo aceptado.',
+        simbolos: ruidosos,
+        aceptados_totales_de_ruidosos: ruidosos.reduce((a, r) => a + r.aceptados, 0),
+        aceptados_con_simbolo_distinto: ruidosos.reduce((a, r) => a + r.aceptados_con_otro_simbolo, 0),
+      },
       tags: { intentos: porTags.intentos, tags_vistos: porTags.tags_vistos || [] },
       cluster: { intentos: porCluster.intentos },
       aportes_crudos: aportes,
@@ -616,7 +723,8 @@ async function corre(ctx) {
       nombres_finnhub: nombres ? Object.keys(nombres).length : 0,
     },
     ejemplos,
-    cruce,
+    t24h: t24,
+    cruce: { ...cruce, desfases },
     revisiones,
     estado_revisiones: 'CERRADO — fuera de v1 (conteos y promedios ancla, sin valores fechados)',
     rate_limit: {
@@ -699,6 +807,9 @@ export default async function handler(req, res) {
     // Cuántos símbolos del universo v0 se buscan uno por uno (camino D).
     // Default: todos. &simbolos=0 lo apaga.
     simbolos: q.simbolos === undefined ? 99 : Math.max(0, Math.min(200, Number(q.simbolos) || 0)),
+    // Tope de mercados a los que se les pide precio (el conteo del candado).
+    max_precios: Math.max(1, Math.min(500, Number(q.max_precios) || 250)),
+    detalle_precios: String(q.detalle || '') === '1',
     paginas: Math.max(1, Math.min(60, Number(q.paginas) || 20)),
     limite: Math.max(1, Math.min(500, Number(q.limite) || 500)),
     ejemplos: Math.max(1, Math.min(10, Number(q.ejemplos) || 3)),

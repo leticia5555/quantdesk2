@@ -390,18 +390,107 @@ function cruzaConPead(mercados, filas, { tolerancia = CRITERIOS.tolerancia_dias_
     if (!s || !fecha) { salida.push({ ...m, cruce: null, motivo_sin_cruce: 'sin_simbolo_o_fecha' }); continue; }
     const candidatos = porSimbolo.get(s) || [];
     let mejor = null;
+    // El más cercano SIN importar la tolerancia. Sirve para dos cosas: elegir
+    // el match cuando entra, y —cuando NO entra— medir POR CUÁNTO no entró.
+    // Sin esto, "31 fuera de tolerancia" es un número sin diagnóstico: no se
+    // puede distinguir un desfase sistemático de ruido.
+    let cercano = null;
     for (const d of candidatos) {
       const dias = diasEntre(fecha, d);
-      if (dias === null || Math.abs(dias) > tolerancia) continue;
+      if (dias === null) continue;
+      if (!cercano || Math.abs(dias) < Math.abs(cercano.dias)) cercano = { reported_date: d, dias };
+      if (Math.abs(dias) > tolerancia) continue;
       if (!mejor || Math.abs(dias) < Math.abs(mejor.dias)) mejor = { reported_date: d, dias };
     }
     salida.push({
       ...m,
       cruce: mejor,
+      cercano_fuera_de_tolerancia: mejor ? null : cercano,
       motivo_sin_cruce: mejor ? null : candidatos.length ? 'fecha_fuera_de_tolerancia' : 'simbolo_no_esta_en_pead_earnings',
     });
   }
   return salida;
+}
+
+// ── ¿El desfase es SISTEMÁTICO o es ruido? ────────────────────────────────
+// Regla fijada ANTES de ver los números, para que el diagnóstico no se acomode
+// al resultado que convenga:
+//   · sistemático  = un MISMO desfase (mismo valor con signo) explica ≥ 50% de
+//     los casos fuera de tolerancia Y ese valor es ≤ 3 días;
+//   · si no, es RUIDO y esos mercados se quedan afuera.
+// La función PROPONE una tolerancia; no la cambia. Los CRITERIOS están
+// congelados y se mueven a mano, en un diff que se vea.
+const MAX_TOLERANCIA_PROPONIBLE = 3;
+
+function analizaDesfases(cruzados, { tolerancia = CRITERIOS.tolerancia_dias_cruce } = {}) {
+  const fuera = (cruzados || []).filter(
+    (m) => m && !m.cruce && m.motivo_sin_cruce === 'fecha_fuera_de_tolerancia' && m.cercano_fuera_de_tolerancia);
+  if (!fuera.length) return { casos: 0, histograma: {}, veredicto: 'sin_casos', propuesta: null };
+
+  const histograma = {};
+  for (const m of fuera) {
+    const d = m.cercano_fuera_de_tolerancia.dias;
+    histograma[d] = (histograma[d] || 0) + 1;
+  }
+  const orden = Object.entries(histograma)
+    .map(([dias, n]) => ({ dias: Number(dias), n }))
+    .sort((a, b) => b.n - a.n || Math.abs(a.dias) - Math.abs(b.dias));
+  const dominante = orden[0];
+  const fraccion = dominante.n / fuera.length;
+  const sistematico = fraccion >= 0.5 && Math.abs(dominante.dias) <= MAX_TOLERANCIA_PROPONIBLE;
+
+  // Cuántos mercados se recuperarían si la tolerancia subiera a |dominante|.
+  const recuperables = fuera.filter(
+    (m) => Math.abs(m.cercano_fuera_de_tolerancia.dias) <= Math.abs(dominante.dias)).length;
+
+  return {
+    casos: fuera.length,
+    histograma,
+    dominante,
+    fraccion_dominante: Number(fraccion.toFixed(3)),
+    veredicto: sistematico ? 'sistematico' : 'ruido',
+    // PROPUESTA, no cambio. La decide una persona mirando el diff.
+    propuesta: sistematico
+      ? {
+          tolerancia_actual: tolerancia,
+          tolerancia_propuesta: Math.abs(dominante.dias),
+          recuperaria: recuperables,
+          por_que: `${dominante.n} de ${fuera.length} casos (${Math.round(fraccion * 100)}%) caen exactamente a ${dominante.dias} día(s) de la fecha de reporte: eso es un desfase de calendario, no dispersión.`,
+        }
+      : null,
+    nota: sistematico
+      ? 'PROPUESTA — los CRITERIOS están congelados; subir la tolerancia es una decisión a mano y se ve en el diff.'
+      : 'Desfase disperso: no hay un patrón que justifique tocar la tolerancia. Estos mercados se quedan afuera.',
+    // Una muestra con el mismo símbolo cinco veces no es una muestra: se
+    // toma uno por símbolo para que se vea la variedad real de los casos.
+    muestra: (() => {
+      const vistos = new Set();
+      const out = [];
+      for (const m of fuera) {
+        if (vistos.has(m.symbol)) continue;
+        vistos.add(m.symbol);
+        out.push({ symbol: m.symbol, resolucion: m.fecha_resolucion,
+          reported_date: m.cercano_fuera_de_tolerancia.reported_date,
+          dias: m.cercano_fuera_de_tolerancia.dias });
+        if (out.length >= 5) break;
+      }
+      return out;
+    })(),
+  };
+}
+
+// ── El conteo del candado: T-24h sobre TODOS los cruzados ─────────────────
+// Clasifica el resultado de precioEnT24h() en las categorías que decide el
+// candado. `valido` es el único que cuenta: un precio rancio existe pero no
+// dice lo que creemos, y uno sin ticks no existe.
+function clasificaT24h(resultado) {
+  if (!resultado) return 'error';
+  if (resultado.precio === null || resultado.precio === undefined) {
+    return resultado.motivo === 'historial_vacio' ? 'sin_ticks'
+      : resultado.motivo === 'sin_ticks_antes_de_t24h' ? 'sin_ticks_antes'
+      : 'sin_precio';
+  }
+  return resultado.rancio ? 'rancio' : 'valido';
 }
 
 // ─────────────────── ¿hay fuente point-in-time de revisiones? ───────────────────
@@ -685,6 +774,32 @@ function resumenMarkdown(c) {
   }
   L.push('');
 
+  // La búsqueda por subcadena trae de todo cuando el ticker es palabra común.
+  // "El filtro descartó bien" tiene que poder comprobarse, no creerse.
+  const ruido = d.ruido_por_subcadena;
+  if (ruido && (ruido.simbolos || []).length) {
+    L.push('### Ruido de la búsqueda por subcadena');
+    L.push('');
+    L.push('| Símbolo | Filas traídas | Aceptados | Descartados | Aceptados con OTRO símbolo |');
+    L.push('|---|---|---|---|---|');
+    for (const r of ruido.simbolos) {
+      L.push(`| ${r.symbol} | ${r.filas_traidas} | ${r.aceptados} | ${r.descartadas} | ${r.aceptados_con_otro_simbolo} |`);
+    }
+    L.push('');
+    L.push(`De los símbolos ruidosos salieron **${ruido.aceptados_totales_de_ruidosos}** mercados aceptados, de los cuales **${ruido.aceptados_con_simbolo_distinto}** resolvieron a un símbolo distinto del buscado.`);
+    if (ruido.aceptados_con_simbolo_distinto === 0) {
+      L.push('');
+      L.push('> Cero aceptados con símbolo distinto: **no se coló basura por la subcadena**. La muestra de abajo es para confirmarlo a ojo.');
+    }
+    L.push('');
+    for (const r of ruido.simbolos.slice(0, 4)) {
+      if (!r.muestra_aceptados.length) continue;
+      L.push(`**Aceptados de \`${r.symbol}\`:**`);
+      for (const m of r.muestra_aceptados) L.push(`- ${m.coincide_con_la_busqueda ? '✓' : '✗ (' + m.symbol_resuelto + ')'} ${m.pregunta}`);
+      L.push('');
+    }
+  }
+
   // El tope de offset es un HECHO del censo: queda escrito para que no vuelva
   // a morder (la primera corrida lo leyó como "no hay mercados de earnings").
   const topes = c.topes_de_offset || [];
@@ -721,22 +836,47 @@ function resumenMarkdown(c) {
   L.push(`| …con token del "Yes" | ${n.con_token_yes ?? 0} | ${pct(n.con_token_yes, n.mercados_de_earnings_en_ventana)} |`);
   L.push('');
 
-  L.push('## 4. Precio del Yes a T-24h (los ejemplos)');
+  const t = c.t24h || {};
+  const cn = t.conteo || {};
+  const crit = c.criterios_congelados || {};
+  L.push('## 4. EL CONTEO DEL CANDADO — precio del Yes a T-24h');
   L.push('');
-  if (!(c.ejemplos || []).length) {
-    L.push('Ninguno: sin mercados con token del Yes y fecha de resolución no hay qué pedirle al CLOB.');
+  L.push(`Medido sobre **${t.total ?? 0}** ${t.sobre || 'mercados'} · procesados: **${t.procesados ?? 0}**${t.truncado ? ` · **TRUNCADO** (${t.motivo_corte})` : ''}.`);
+  L.push('');
+  L.push('| Resultado | Cuántos | ¿Cuenta para el candado? |');
+  L.push('|---|---|---|');
+  L.push(`| **válido** (tick real ≤ T-24h, en ventana) | **${cn.valido ?? 0}** | **SÍ** |`);
+  L.push(`| rancio (hay tick previo, pero muy viejo) | ${cn.rancio ?? 0} | no — existe, pero no dice lo que creemos |`);
+  L.push(`| sin ticks antes de T-24h | ${cn.sin_ticks_antes ?? 0} | no |`);
+  L.push(`| historial vacío | ${cn.sin_ticks ?? 0} | no |`);
+  L.push(`| sin token del Yes | ${cn.sin_token ?? 0} | no |`);
+  L.push(`| sin precio por otro motivo | ${cn.sin_precio ?? 0} | no |`);
+  L.push(`| error del CLOB | ${cn.error ?? 0} | no |`);
+  L.push('');
+  const minimo = crit.min_mercados_cruzados ?? 100;
+  const validos = cn.valido ?? 0;
+  if (t.truncado) {
+    L.push(`> **El conteo está TRUNCADO**: ${validos} válidos sobre ${t.procesados} procesados de ${t.total}. Es un **piso**. Re-correr con más presupuesto antes de leer el candado.`);
+  } else if (validos >= minimo) {
+    L.push(`> **Candado de muestra: SE CUMPLE.** ${validos} ≥ ${minimo} mercados cruzados con precio válido a T-24h.`);
   } else {
-    L.push('| Mercado | Símbolo | Resolución | Outcome | CLOB | Puntos | Yes T-24h |');
+    L.push(`> **Candado de muestra: NO se cumple.** ${validos} < ${minimo}. Con esta muestra el veredicto de la Fase 2 sería INCONCLUSO, no "casi".`);
+  }
+  L.push('');
+  const formas = Object.entries(t.formas || {});
+  if (formas.length) { L.push(`Formas del CLOB que funcionaron: ${formas.map(([k, v]) => k + '=' + v).join(' · ')}.`); L.push(''); }
+
+  if ((c.ejemplos || []).length) {
+    L.push('Ejemplos (del mismo lote, sin requests extra):');
+    L.push('');
+    L.push('| Mercado | Símbolo | Resolución | reportedDate | Outcome | Puntos | Yes T-24h |');
     L.push('|---|---|---|---|---|---|---|');
     for (const e of c.ejemplos) {
       const p = e.yes_t24h || {};
-      const precio = p.precio !== null && p.precio !== undefined
-        ? `${p.precio} (${p.horas_antes_real}h antes${p.rancio ? ', RANCIO' : ''})`
-        : `— (${p.motivo || 'sin dato'})`;
-      L.push(`| ${(e.slug || e.pregunta || '—').slice(0, 44)} | ${e.symbol || '—'} | ${e.fecha_resolucion || '—'} | ${e.outcome || '—'} | ${e.clob ? e.clob.status + '/' + e.clob.forma : '—'} | ${e.clob ? e.clob.puntos : '—'} | ${precio} |`);
+      L.push(`| ${(e.slug || e.pregunta || '—').slice(0, 40)} | ${e.symbol || '—'} | ${e.fecha_resolucion || '—'} | ${e.reported_date || '—'} | ${e.outcome || '—'} | ${e.clob ? e.clob.puntos : '—'} | ${p.precio} (${p.horas_antes_real}h antes${p.rancio ? ', RANCIO' : ''}) |`);
     }
+    L.push('');
   }
-  L.push('');
 
   const x = c.cruce || {};
   L.push('## 5. Cruce con `pead_earnings` (símbolo + fecha ±1 día)');
@@ -764,9 +904,37 @@ function resumenMarkdown(c) {
     }
     L.push('');
     const cand = c.criterios_congelados ? c.criterios_congelados.min_mercados_cruzados : 100;
-    L.push(`**Candado de la Fase 2:** se exigen ≥ ${cand} mercados cruzados CON precio a T-24h. Hoy el cruce da ${x.cruzados} (sin verificar todavía el precio de cada uno).`);
+    const validos = ((c.t24h || {}).conteo || {}).valido;
+    L.push(`**Candado de la Fase 2:** se exigen ≥ ${cand} mercados cruzados **con precio válido a T-24h**. El cruce da ${x.cruzados}; el conteo que manda es el del §4: **${validos ?? '—'} válidos**.`);
   }
   L.push('');
+
+  const des = (c.cruce || {}).desfases;
+  if (des && des.casos) {
+    L.push('### Los que cruzan de símbolo pero no de fecha');
+    L.push('');
+    L.push(`**${des.casos}** casos. Desfase entre la resolución de Polymarket y el \`reportedDate\` del PEAD:`);
+    L.push('');
+    L.push('| Días | Casos |');
+    L.push('|---|---|');
+    for (const [dias, n] of Object.entries(des.histograma).sort((a, b) => Number(a[0]) - Number(b[0]))) {
+      L.push(`| ${dias > 0 ? '+' + dias : dias} | ${n} |`);
+    }
+    L.push('');
+    if (des.veredicto === 'sistematico' && des.propuesta) {
+      L.push(`> **Desfase SISTEMÁTICO.** ${des.propuesta.por_que}`);
+      L.push('>');
+      L.push(`> **PROPUESTA (no aplicada):** tolerancia ${des.propuesta.tolerancia_actual} → **${des.propuesta.tolerancia_propuesta}** día(s), recuperaría **${des.propuesta.recuperaria}** mercados. ${des.nota}`);
+    } else {
+      L.push(`> **Ruido, no patrón.** ${des.nota}`);
+    }
+    L.push('');
+    if ((des.muestra || []).length) {
+      L.push('Muestra:');
+      for (const m of des.muestra) L.push(`- ${m.symbol}: resolvió ${m.resolucion}, reportó ${m.reported_date} → ${m.dias > 0 ? '+' : ''}${m.dias} día(s)`);
+      L.push('');
+    }
+  }
 
   L.push('## 6. Revisiones de estimados — **CERRADO: fuera de v1**');
   L.push('');
@@ -824,4 +992,5 @@ export {
   construyeIndiceNombres, tickerExplicito, resuelveSimbolo,
   extraeConsensoEps, precioEnT24h, cruzaConPead, evaluaFuentePIT, resumenMarkdown,
   esFecha, recortaFila, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
+  analizaDesfases, clasificaT24h, MAX_TOLERANCIA_PROPONIBLE,
 };
