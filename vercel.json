@@ -96,6 +96,10 @@
     {
       "source": "/api/liga/equity",
       "destination": "/api/liga-equity"
+    },
+    {
+      "source": "/api/liga/toma-ganancias",
+      "destination": "/api/liga-tomaganancias"
     }
   ],
   "crons": [

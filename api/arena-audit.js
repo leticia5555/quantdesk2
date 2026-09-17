@@ -39,6 +39,7 @@
 
 import { sql } from './_lib/db.js';
 import { FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
+import { checkLecturaAuth } from './_lib/arena-admin.js';
 import {
   auditaFila, agrupaCorridas, construyeResumen,
   renderCorridasMarkdown, renderResumenMarkdown, BUFFET_QUALITY_DEPLOY,
@@ -64,12 +65,15 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Método no soportado.' });
 
   const q = (req.query || {});
-  const secret = process.env.CRON_SECRET;
-  if (secret) {
-    const porHeader = (req.headers && req.headers.authorization) === `Bearer ${secret}`;
-    const porQuery = String(q.secret || '') === secret;
-    if (!porHeader && !porQuery) return res.status(401).json({ error: 'No autorizado.' });
-  }
+  // ── DOS LLAVES, LAS DOS VÁLIDAS ────────────────────────────────────
+  // `CRON_SECRET` (la del cron) o `ARENA_ADMIN_KEY` (la de admin, por
+  // `x-admin-key`, `Authorization: Bearer` o `?key=`). En Vercel `CRON_SECRET`
+  // quedó marcada como Secret y no se puede volver a leer, así que la única
+  // llave del endpoint era ilegible para quien lo necesita. Dos llaves
+  // secretas no debilitan nada; una llave ilegible sí, porque termina pegada
+  // en un archivo para no perderla.
+  const auth = checkLecturaAuth(req);
+  if (!auth.ok) return res.status(auth.status).json(auth.body);
 
   const agentParam = String(q.agent || FLAGSHIP_AGENT_ID).toLowerCase();
   const todos = agentParam === 'todos' || agentParam === 'all';
