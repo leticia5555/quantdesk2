@@ -406,5 +406,90 @@ console.log('arena-audit: filtros y helpers');
   ok(jsonAfterMarker('X:\n{"a":1}', 'X:').a === 1 && jsonAfterMarker('X:\nno-json', 'X:') === null, 'jsonAfterMarker tolera basura');
 }
 
+// ═══════════════════════════════════════════════════════════════
+// POR QUÉ ABORTÓ, LEGIBLE SIN ENTRAR A NEON.
+//
+// El 2026-09-17, con el contrato objetivo ya encendido, qwen abortó por cuerpo
+// vacío y las tres preguntas de siempre —qué vuelta, cuántos ms, qué proveedor
+// atendió— no se podían contestar desde ningún endpoint: los datos estaban
+// journaleados y `arena-audit` no proyectaba `llm_error` ni `tools`.
+//
+// Un aborto sin diagnóstico legible es un agente que no operó y nadie sabe por
+// qué. En sombra eso es una molestia; en vivo es una cuenta que se queda fuera
+// de la ronda.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── el diagnóstico de un aborto ──');
+{
+  const { diagnosticoDeFila } = await import('../api/_lib/arena-audit.js');
+
+  const ctx = {
+    contrato: 'objetivo_dry',
+    tools: {
+      budget: 20, used: 8, turns: 4, stopped_by: 'error',
+      proveedores: [
+        { vuelta: 1, proveedor: 'DeepInfra', ms: 18400, ok: true },
+        { vuelta: 2, proveedor: 'DeepInfra', ms: 22100, ok: true },
+        { vuelta: 3, proveedor: 'Novita', ms: 31900, ok: true },
+      ],
+    },
+    llm_error: {
+      status: 200, detail: 'cuerpo_vacio',
+      cuerpos_vacios: [
+        { vuelta: 4, intento: 1, bytes: 0, proveedor: null, timeout_nuestro: false, ms: 9800 },
+        { vuelta: 4, intento: 2, bytes: 0, proveedor: null, timeout_nuestro: true, ms: 45002 },
+      ],
+      timeout_nuestro: true, techo_ms: 45002,
+      techo_origen: 'turno de CIERRE del loop: se le concedieron 45s (reserva de 70s como piso)',
+    },
+    murio_en: { fase: 'loop:vuelta_4' },
+  };
+  const d = diagnosticoDeFila(ctx);
+
+  ok(d.cuerpos_vacios.length === 2 && d.cuerpos_vacios[0].vuelta === 4,
+    'en QUÉ vuelta se cayó, con cada intento por separado');
+  ok(d.cuerpos_vacios[1].ms === 45002 && d.cuerpos_vacios[1].timeout_nuestro === true,
+    'cuántos ms tardó, y si el corte fue del proveedor o NUESTRO — se arreglan al revés');
+  ok(d.proveedores.length === 3 && d.proveedores[2].proveedor === 'Novita',
+    'y quién atendió cada vuelta que sí contestó: es lo que dice si el corte cae siempre sobre el mismo proveedor o rota');
+  ok(d.techo_origen && /CIERRE del loop/.test(d.techo_origen),
+    'con el techo de esa llamada Y quién lo puso');
+  ok(d.murio_en.fase === 'loop:vuelta_4' && d.cierre === null,
+    'y dónde murió: `cierre: null` con `murio_en` poblado significa que el cierre NUNCA corrió');
+
+  // `proveedor: null` en un cuerpo vacío NO es un hueco de registro.
+  ok(d.cuerpos_vacios.every((v) => v.proveedor === null),
+    'el proveedor del turno que falló sale null — y eso es la CONSECUENCIA de la falla, no un dato perdido: OpenRouter manda el nombre DENTRO del cuerpo, y el cuerpo nunca llegó');
+
+  // Los dos contratos guardan esto en lugares distintos.
+  const viejo = diagnosticoDeFila({ dive: { tools: { used: 3, budget: 8 }, llm_error: { status: 502, detail: 'boom' } } });
+  ok(viejo && viejo.herramientas.usadas === 3 && viejo.status_http === 502,
+    'y una corrida del contrato VIEJO también se diagnostica: guarda esto bajo `dive`, no arriba');
+  ok(viejo.contrato === 'acciones', 'marcada con su contrato, para que un bloque ausente no se lea como "no se journaleó"');
+
+  ok(diagnosticoDeFila({}) === null,
+    'una corrida que no abortó no arrastra un bloque vacío: null, y el markdown no lo imprime');
+}
+
+console.log('\n── y se lee en el markdown, sin jq ──');
+{
+  const { auditaFila, renderCorridasMarkdown } = await import('../api/_lib/arena-audit.js');
+  const fila = auditaFila({
+    id: 'x', run_date: '2026-09-17', status: 'aborted_llm_error', agent_id: 'qwen',
+    model: 'qwen/qwen3.8-2.4t-a95b', error: 'cuerpo vacío tras reintento',
+    actions: [],
+    context: {
+      tools: { budget: 20, used: 8, turns: 4, stopped_by: 'error', proveedores: [{ vuelta: 1, proveedor: 'DeepInfra', ms: 18400, ok: true }] },
+      llm_error: { status: 200, detail: 'cuerpo_vacio', techo_ms: 45002, techo_origen: 'turno de CIERRE del loop',
+        cuerpos_vacios: [{ vuelta: 4, intento: 2, bytes: 0, proveedor: null, timeout_nuestro: true, ms: 45002 }] },
+    },
+  });
+  const md = renderCorridasMarkdown({ corridas: [{ fecha: '2026-09-17', filas: [fila] }] });
+  ok(/Cuerpos vacíos/.test(md) && /45002/.test(md), 'la tabla de cortes, con sus ms');
+  ok(/Quién atendió cada vuelta/.test(md) && /DeepInfra/.test(md), 'la tabla de proveedores por vuelta');
+  ok(/el cuerpo no llegó: el nombre viaja adentro/.test(md),
+    'y el null se EXPLICA en la celda, para que no se lea como un bug de registro');
+  ok(/Techo de esa llamada/.test(md), 'y el techo con su origen');
+}
+
 console.log(failures ? `\n${failures} FALLAS` : '\nTodo verde');
 process.exit(failures ? 1 : 0);
