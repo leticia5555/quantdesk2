@@ -339,6 +339,34 @@ async function insertarDistribuciones(emisora, emisora_serie, filas) {
   return unicas.length;
 }
 
+/**
+ * Las filas de financieros con su crudo, paginadas. Es el insumo del re-parseo
+ * de 0 créditos: la respuesta completa ya está guardada, así que corregir la
+ * normalización no cuesta nada más que CPU.
+ */
+async function financierosCrudos({ limite = 200, desde = null } = {}) {
+  const cond = desde
+    ? `where (emisora, anio, trimestre) > ($2, $3, $4)`
+    : '';
+  const params = desde ? [limite, desde.emisora, desde.anio, desde.trimestre] : [limite];
+  return sql(
+    `select emisora, anio, trimestre, raw
+       from bmv_financieros ${cond}
+      order by emisora, anio, trimestre
+      limit $1`, params);
+}
+
+/** Actualiza SÓLO los campos normalizados; el crudo no se toca. */
+async function actualizarFinancieros(f) {
+  const set = CAMPOS.map((c, i) => `${c} = $${4 + i}`).join(', ');
+  await sql(
+    `update bmv_financieros set ${set}, faltantes = $${4 + CAMPOS.length}::jsonb
+      where emisora = $1 and anio = $2 and trimestre = $3`,
+    [f.emisora, f.anio, f.trimestre,
+     ...CAMPOS.map((c) => (f.valores && f.valores[c] !== undefined ? f.valores[c] : null)),
+     f.faltantes ? JSON.stringify(f.faltantes) : null]);
+}
+
 /* ─────────────────── precios ─────────────────── */
 
 const COLS_PRECIO = ['cierre', 'apertura', 'maximo', 'minimo', 'volumen', 'importe'];
@@ -406,12 +434,36 @@ async function marcarLedger(job, emisora, clave, campos = {}) {
   );
 }
 
-/** Lo ya resuelto NO se vuelve a pedir: ahí vive la idempotencia. */
-async function clavesHechas(job) {
+// Tope de reintentos por clave. Un 400 no se arregla martillando: VISTAC llevaba
+// 6 intentos y GAVB 10, y cada corrida los volvía a pedir porque 'error' no
+// contaba como resuelto. A la tercera se deja de intentar y se reporta.
+const MAX_INTENTOS = 3;
+
+/**
+ * Lo ya resuelto NO se vuelve a pedir: ahí vive la idempotencia.
+ *
+ * `vacio`/`sin_campos` también cuentan como resueltos: la respuesta está
+ * guardada en crudo, así que arreglarlos es re-parsear (0 créditos), no
+ * re-pedirlos. Y un `error` con demasiados intentos se para: seguir pidiéndolo
+ * cada corrida es gastar créditos en el mismo 400.
+ */
+async function clavesHechas(job, { reintentar = false } = {}) {
   const r = await sql(
     `select emisora, clave from bmv_harvest_ledger
-      where job = $1 and estado in ('hecho','vacio')`, [job]);
+      where job = $1
+        and (estado in ('hecho','vacio','sin_campos')
+             or (estado = 'error' and intentos >= $2))`,
+    [job, reintentar ? 1e9 : MAX_INTENTOS]);
   return new Set(r.map((x) => `${x.emisora}|${x.clave}`));
+}
+
+/** Las claves que se dejaron de intentar, para que no desaparezcan del reporte. */
+async function clavesAgotadas(job) {
+  return sql(
+    `select emisora, clave, intentos, error_msg
+       from bmv_harvest_ledger
+      where job = $1 and estado = 'error' and intentos >= $2
+      order by intentos desc limit 25`, [job, MAX_INTENTOS]);
 }
 
 async function ledgerResumen() {
@@ -458,7 +510,9 @@ async function cobertura() {
          dist, distIcs, divisas, tipos, categorias, extranjeras, icsSinReparto, huecos] = await Promise.all([
     censoResumen(),
     sql(`select anio, count(*)::int as filas, count(distinct emisora)::int as emisoras,
-                count(basicearningslosspershare)::int as con_eps
+                count(basicearningslosspershare)::int as con_eps,
+                count(revenue)::int as con_revenue,
+                count(assets)::int as con_assets
            from bmv_financieros group by 1 order by 1`),
     sql(`select emisora, count(*)::int as trimestres,
                 min(anio || '-' || trimestre) as primero,
@@ -563,7 +617,9 @@ export {
   BMV_SCHEMA, ensureBmvSchema,
   leerMeta, guardarMeta,
   upsertEmisora, emisorasIcs, emisoraPorClave, censoResumen,
+  MAX_INTENTOS,
   upsertFinancieros, insertarPrecios, insertarDistribuciones, ultimaFechaPrecios,
-  marcarLedger, clavesHechas, ledgerResumen,
+  marcarLedger, clavesHechas, clavesAgotadas, ledgerResumen, financierosCrudos,
+  actualizarFinancieros,
   presupuesto, gastar, cobertura,
 };

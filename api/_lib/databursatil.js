@@ -418,7 +418,7 @@ function resolverCampo(raw, nombre) {
     for (const [k, v] of Object.entries(nodo)) {
       const aqui = [...ruta, k];
       if (normalizaLlave(k) === objetivo) {
-        const num = aNumero(v);
+        const num = valorDeCampo(v);
         if (num !== null) hallazgos.push({ valor: num, ruta: aqui.join('.') });
       }
       if (v && typeof v === 'object') caminar(v, aqui);
@@ -427,6 +427,7 @@ function resolverCampo(raw, nombre) {
   caminar(raw, []);
 
   if (!hallazgos.length) return { valor: null, ruta: null, motivo: 'no está en la respuesta' };
+
 
   const distintos = [...new Set(hallazgos.map((h) => h.valor))];
   if (distintos.length > 1) {
@@ -437,6 +438,33 @@ function resolverCampo(raw, nombre) {
     };
   }
   return { valor: hallazgos[0].valor, ruta: hallazgos[0].ruta, motivo: null };
+}
+
+/**
+ * El valor de un campo de /v2/financieros.
+ *
+ * ── LA FORMA REAL [VERIFICADO] ─────────────────────────────────────
+ *     "basicearningslosspershare": ["utilidad (pérdida) básica por acción", 0.77]
+ *
+ * Un **arreglo `[etiqueta, valor]`**, no un número suelto. `aNumero` devuelve
+ * null para un arreglo, así que TODOS los campos de TODAS las filas salieron
+ * null: 4,174 respuestas guardadas y cero datos normalizados.
+ *
+ * El ledger sí lo dijo —las 4,174 quedaron en el estado que marca "ningún campo
+ * se pudo normalizar"— pero ese estado se llamaba `vacio`, que suena a "no
+ * había nada" en vez de a "no entendí nada". Por eso ahora se llama
+ * `sin_campos`: el nombre de un estado de error tiene que doler.
+ *
+ * Se acepta el arreglo SÓLO en la forma verificada (etiqueta + número) o con un
+ * único número. Cualquier otra forma devuelve null con motivo: adivinar qué
+ * posición es el valor en un arreglo de tres es cómo se meten cifras
+ * equivocadas que parecen correctas.
+ */
+function valorDeCampo(v) {
+  if (!Array.isArray(v)) return aNumero(v);
+  const numeros = v.map(aNumero).filter((x) => x !== null);
+  if (numeros.length === 1) return numeros[0];
+  return null;
 }
 
 /**
@@ -1000,6 +1028,7 @@ export {
   BASE, BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
   CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL, TIMEOUT_MS,
   aNumero, aplanarHistoricos, cabecerasDeCredito, clavePeriodo, construirUrl,
+  valorDeCampo,
   DIAS_EX_APROX, DIVISA_BASE, UMBRAL_PLACEHOLDER, categoriaReparto,
   consolidarDistribuciones, dormir, emisoraSerie, esEfectivo, requiereConversion,
   extraerDistribuciones, finDeTrimestre,
