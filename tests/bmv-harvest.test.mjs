@@ -33,11 +33,14 @@ import {
 import {
   CONTRATO_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, contar,
   describirCrudo, literal, tipoDe,
+  jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros,
+  jobHistoricos, jobReparse,
   estimarConsumo, filaCenso, filasDelCenso, nuevaCartera, pareceClave, pareceSerie,
   pendientesFinancieros,
   paramsBenchmark, paramsFinancieros, paramsHistoricos, parsePeriodoTexto,
   seriesDeEmisora, sirveFinanciero,
 } from '../api/bmv-harvest.js';
+import handler from '../api/bmv-harvest.js';
 
 /* ── calendario de trimestres ───────────────────────────────────── */
 
@@ -1351,4 +1354,142 @@ test('un campo que aparece en DOS rutas se reporta dos veces, sin elegir', () =>
   });
   assert.equal(d.campos.assets.length, 2);
   assert.deepEqual(d.campos.assets.map((x) => x.valor[1]).sort(), [1000, 2000]);
+});
+
+/* ═══════════════════════════════════════════════════════════════
+ * LA RUTA REAL DE CADA JOB.
+ *
+ * `?job=inspect` salió a prod con `parseClavePeriodo is not defined`:
+ * la función existía en databursatil.js pero no estaba importada.
+ * `node --check` pasó —valida sintaxis, no resolución de nombres— y
+ * los tests sólo tocaban `describirCrudo` aislado, así que la línea
+ * que la llamaba nunca se ejecutó.
+ *
+ * Es el mismo caso de la colisión del parámetro `fila`. La lección se
+ * repite: un módulo que no se EJECUTA no está probado.
+ *
+ * Estos tests llaman a cada job y sólo exigen una cosa: que la falla
+ * sea la de la base (no hay DATABASE_URL) y NO un ReferenceError. O
+ * sea, que la ruta de entrada resuelva todos sus nombres.
+ * ═══════════════════════════════════════════════════════════════ */
+
+const JOBS = [
+  ['inspect', jobInspect, { emisora: 'WALMEX', periodo: '2T_2017' }],
+  ['inspect (sin params)', jobInspect, {}],
+  ['reparse-fin', jobReparseFinancieros, { max: '10' }],
+  ['reparse', jobReparse, {}],
+  ['probe', jobProbe, { emisora: 'WALMEX' }],
+  ['emisoras', jobEmisoras, {}],
+  ['financieros', jobFinancieros, { max: '1' }],
+  ['historicos', jobHistoricos, { max: '1' }],
+];
+
+for (const [nombre, job, query] of JOBS) {
+  test(`job ${nombre}: su ruta de entrada resuelve todos sus nombres`, async () => {
+    // Sin DATABASE_URL todos deben morir en el MISMO punto: la frontera de la
+    // base. Cualquier otra cosa —sobre todo un ReferenceError— es un nombre sin
+    // importar, que es exactamente lo que se escapó a prod.
+    const previa = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    try {
+      await job({ query });
+      // Si no lanzó, también está bien: significa que llegó hasta el final.
+    } catch (e) {
+      assert.ok(!(e instanceof ReferenceError),
+        `${nombre} lanzó ReferenceError — hay un nombre sin definir ni importar: ${e.message}`);
+      assert.match(e.message, /DATABASE_URL|Neon|fetch|red:/i,
+        `${nombre} falló por algo que no es la frontera de la base: ${e.message}`);
+    } finally {
+      if (previa !== undefined) process.env.DATABASE_URL = previa;
+    }
+  });
+}
+
+test('el handler despacha los jobs protegidos sin rebotar en auth', async () => {
+  // OJO CON LO QUE ESTE TEST *NO* PRUEBA. El handler corre `ensureBmvSchema()`
+  // ANTES del dispatch, así que sin DATABASE_URL muere ahí y nunca entra al
+  // cuerpo del job. Se verificó: con el bug de `parseClavePeriodo` puesto, este
+  // test PASA.
+  //
+  // O sea que la protección real son los tests de `job …` de arriba, que llaman
+  // a cada job directamente. Éste sólo cubre el árbol de auth y despacho —que
+  // también es código— y queda escrito así para que nadie lea de más en él.
+  const previaDb = process.env.DATABASE_URL;
+  const previaSecret = process.env.ADMIN_SECRET;
+  delete process.env.DATABASE_URL;
+  process.env.ADMIN_SECRET = 'secreto-de-prueba';
+  const respuestas = [];
+  const res = {
+    setHeader() {}, status(c) { this._c = c; return this; },
+    json(b) { respuestas.push({ codigo: this._c, cuerpo: b }); return this; },
+    send(b) { respuestas.push({ codigo: this._c, cuerpo: b }); return this; },
+    end() { return this; },
+  };
+  try {
+    for (const job of ['inspect', 'reparse', 'reparse-fin']) {
+      await handler({
+        method: 'GET',
+        headers: { authorization: 'Bearer secreto-de-prueba' },
+        query: { job, emisora: 'WALMEX', periodo: '2T_2017' },
+      }, res);
+    }
+  } finally {
+    if (previaDb !== undefined) process.env.DATABASE_URL = previaDb;
+    if (previaSecret === undefined) delete process.env.ADMIN_SECRET;
+    else process.env.ADMIN_SECRET = previaSecret;
+  }
+  assert.equal(respuestas.length, 3);
+  for (const r of respuestas) {
+    assert.notEqual(r.codigo, 401, 'con el secret correcto no debe rebotar en auth');
+    const texto = JSON.stringify(r.cuerpo);
+    assert.ok(!/is not defined|is not a function/.test(texto),
+      `el handler devolvió un error de nombre: ${texto.slice(0, 200)}`);
+  }
+});
+
+test('sin ADMIN_SECRET los jobs protegidos SÍ rebotan en 401', async () => {
+  const previaDb = process.env.DATABASE_URL;
+  const previaSecret = process.env.ADMIN_SECRET;
+  delete process.env.DATABASE_URL;
+  delete process.env.ADMIN_SECRET;
+  delete process.env.CRON_SECRET;
+  let salida = null;
+  const res = {
+    setHeader() {}, status(c) { this._c = c; return this; },
+    json(b) { salida = { codigo: this._c, cuerpo: b }; return this; },
+    send() { return this; }, end() { return this; },
+  };
+  try {
+    await handler({ method: 'GET', headers: {}, query: { job: 'inspect' } }, res);
+  } finally {
+    if (previaDb !== undefined) process.env.DATABASE_URL = previaDb;
+    if (previaSecret !== undefined) process.env.ADMIN_SECRET = previaSecret;
+  }
+  assert.equal(salida.codigo, 401, 'fail closed: sin secret no se lee la base');
+});
+
+test('el handler contesta los jobs públicos sin reventar por nombres', async () => {
+  // El handler es la otra ruta de entrada, y tiene su propio árbol de ifs.
+  const previa = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+  const respuestas = [];
+  const res = {
+    setHeader() {}, status(c) { this._c = c; return this; },
+    json(b) { respuestas.push({ codigo: this._c, cuerpo: b }); return this; },
+    send(b) { respuestas.push({ codigo: this._c, cuerpo: b }); return this; },
+    end() { return this; },
+  };
+  try {
+    for (const job of ['estimate', 'contrato', 'cobertura', 'inspect', '']) {
+      await handler({ method: 'GET', headers: {}, query: { job } }, res);
+    }
+  } finally {
+    if (previa !== undefined) process.env.DATABASE_URL = previa;
+  }
+  assert.equal(respuestas.length, 5);
+  for (const r of respuestas) {
+    const texto = JSON.stringify(r.cuerpo);
+    assert.ok(!/is not defined|is not a function/.test(texto),
+      `el handler devolvió un error de nombre: ${texto.slice(0, 200)}`);
+  }
 });

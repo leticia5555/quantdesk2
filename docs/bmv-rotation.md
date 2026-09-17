@@ -949,6 +949,45 @@ envoltura extra (se ve en la ruta), un solo bloque pedido (el otro campo sale
 `NO APARECE`), llaveado por fecha contra campo directo (se ve en `nivel_2`), y
 dos formas conviviendo (se ve en `nivel_1`).
 
+##### Y salió a prod roto, por probar sólo las funciones puras
+
+`?job=inspect` murió en su primera llamada con `parseClavePeriodo is not
+defined`: la función existía en `databursatil.js` pero **no estaba importada**.
+`node --check` pasó —valida sintaxis, no resolución de nombres— y los tests sólo
+tocaban `describirCrudo` **aislado**, así que la línea que la llamaba nunca se
+ejecutó.
+
+Es el mismo caso de la colisión del parámetro `fila` en Fase 1a. La lección se
+repite y conviene escribirla de una vez: **un módulo que no se EJECUTA no está
+probado.**
+
+La protección que quedó: cada job se llama **directamente** en un test, sin
+`DATABASE_URL`, y se exige que la falla sea la de la base y **no** un
+`ReferenceError`. Verificado al revés — con el bug puesto, el test se pone rojo
+y `node --check` sigue pasando.
+
+> **Lo que ese test NO cubre, dicho para que nadie lea de más:** el handler
+> corre `ensureBmvSchema()` antes del despacho, así que sin base muere ahí y
+> nunca entra al cuerpo del job. Se comprobó: con el bug puesto, el test del
+> handler **pasaba**. La protección real son los tests que llaman a cada job
+> directamente.
+
+Intenté además un lint general de nombres no definidos sobre los tres módulos.
+**No se mandó:** produjo 12 falsos positivos (cadenas, métodos abreviados), y un
+chequeo con ese ruido es uno que la gente aprende a ignorar — peor que no
+tenerlo.
+
+##### Un hallazgo de paso: el auth iba después de la base
+
+Al escribir el test de que un job protegido sin secret devuelve 401, salió que
+devolvía **500**: `ensureBmvSchema()` corría **antes** del chequeo de
+autorización, así que una petición sin credenciales abría conexión a Neon y
+disparaba las migraciones antes de recibir su 401.
+
+Las DDL son idempotentes y el daño era acotado, pero el orden contradecía el
+fail-closed que este endpoint dice tener: **no se hace trabajo para quien
+todavía no demostró que puede pedirlo.** Ahora el auth va primero.
+
 ### El ledger lo dijo, y yo le puse un nombre que lo escondió
 
 Las 4,174 filas quedaron en el estado que significa "ningún campo se pudo
@@ -1001,7 +1040,7 @@ construido para esas dos.
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 10 jobs (`reparse`, `reparse-fin` e `inspect` son de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **125 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **136 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
 | **El censo** | **Cerrado.** `deriva.estable: true` — 0 aparecieron, 0 desaparecieron. **185 series ICS**, 165 con cobertura (las 20 sin ella son bancos y casas de bolsa, fuera de la v1 por decisión de Fase 0). 1,641 repartos: 1,520 efectivo, 121 reembolso, 0 desconocido. |
