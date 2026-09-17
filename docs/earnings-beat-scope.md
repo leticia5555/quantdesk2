@@ -1,7 +1,11 @@
 # SCOPE — Experimento "earnings-beat": ¿QuantDesk le gana a Polymarket?
 
-> **Estado: FASE 0 (censo + smoke).** Entregado: este documento y
-> `/api/earnings-beat?smoke=1`. **Cero código de modelo** — no hay una línea de
+> **Estado: FASE 0, segunda vuelta.** La primera corrida desde Vercel dio
+> **INCONCLUSO por descubrimiento, no por fuente** (§1.0): el barrido por
+> paginación se quedó ciego y su "0 mercados de earnings" no era un hallazgo.
+> Esta versión cambia el descubrimiento por **búsqueda dirigida** y corrige un
+> **falso positivo** de la sonda de revisiones (§1.4). Entregado: este documento
+> y `/api/earnings-beat?smoke=1`. **Cero código de modelo** — no hay una línea de
 > regresión en el repo y no la va a haber hasta que la Fase 0 pase. Los
 > criterios de la Fase 2 ya están **congelados en código**
 > (`CRITERIOS` en `api/_lib/earnings-beat.js`, fijados sin haber visto un solo
@@ -41,8 +45,11 @@ cosas distintas y se pueden fallar independientemente:
 El censo de la API de Polymarket **no se corrió desde el sandbox del agente**:
 la política de egreso del entorno contesta `403` al CONNECT hacia
 `gamma-api.polymarket.com` (registrado en el proxy como
-`connect_rejected … policy denial`). O sea que **ningún campo, endpoint ni
-límite de esta sección está verificado desde acá**.
+`connect_rejected … policy denial`). Re-sondeado en la segunda vuelta: sigue
+bloqueado, y también `clob.polymarket.com` y `www.alphavantage.co`. O sea que
+**ningún campo, endpoint ni límite de esta sección está verificado desde acá**,
+y tampoco se pudo mirar la fila cruda de AV desde el sandbox — por eso la sonda
+la **imprime** (§1.4) en vez de que yo la describa de memoria.
 
 Eso no es un obstáculo del encargo: el encargo pedía explícitamente que el
 smoke corriera **desde Vercel y no desde el sandbox**, por la misma razón por
@@ -70,6 +77,33 @@ marcadas como tales. Fuente caída = declarada, nunca inventada.
 | 2 | ¿Se puede bajar el **historial de precios del token "Yes"** y leer el precio a T-24h? | `?smoke=1` → `ejemplos[].yes_t24h` |
 | 3 | ¿Cuántos de esos mercados **cruzan** con `pead_earnings` (símbolo + fecha ±1 día) y cuántos caen en nuestro universo? | `?smoke=1` → `cruce` |
 | 4 | ¿Existe fuente **gratis y point-in-time** de revisiones de estimados? | `?smoke=1` → `revisiones` |
+
+### 1.0 Lo que enseñó la primera corrida (dos hechos, ninguno sobre Polymarket)
+
+**Hecho 1 — Gamma tiene TOPE DE OFFSET, y no es rate limit.** Paginar
+`/markets` con offset creciente murió con **HTTP 422 en la página 6**. El
+barrido alcanzó a ver **~500 mercados de decenas de miles**, así que su
+resultado —"0 mercados de earnings"— **no dice nada sobre Polymarket**: dice
+que el método era ciego. Un censo que confunde *no vi* con *no hay* miente con
+números, y ése es exactamente el error que un censo existe para no cometer.
+
+> El veredicto de esa corrida fue **INCONCLUSO por descubrimiento, no por
+> fuente**. Sabemos además que los mercados existen: hay earnings resueltos
+> desde el arranque de la ventana (p. ej. NMAX, resuelto en marzo).
+
+El 422 queda registrado en el censo (`topes_de_offset`, con su offset y su
+límite) para que **no vuelva a morder**. Va **aparte** de `rate_limit`: mezclar
+"topé el offset" con "me estás limitando" llevaría a esperar y reintentar un
+problema que no se arregla esperando.
+
+**Hecho 2 — la sonda de revisiones tenía un falso positivo.** Marcó
+`pit: SÍ` una respuesta que no es point-in-time. Ver §1.4: se corrigió la regla
+y ahora la sonda **enseña la fila cruda**.
+
+**Consecuencia de diseño:** el descubrimiento pasa de **barrido** a **búsqueda
+dirigida** (§1.1b). El barrido queda como **control opcional** (`&barrido=1`),
+nunca como el método — y cuando corre, sirve sobre todo para volver a registrar
+el tope.
 
 ### 1.1 Censo de la API pública de Polymarket (hipótesis del smoke)
 
@@ -102,26 +136,37 @@ L1/L2 es para operar, no para leer). El smoke clasifica `401/403` como status
 `auth` y lo reporta: si aparece, es un hallazgo de Fase 0, no un error.
 
 **Rate limits:** no se asume ninguno. El smoke captura **todos** los headers
-que matcheen `x-ratelimit*` / `retry-after`, cuenta los `429` del barrido y los
+que matcheen `x-ratelimit*` / `retry-after`, cuenta las respuestas `429` y los
 publica en `rate_limit`. Si Polymarket no publica presupuesto, la Fase 1 fija
 cadencia conservadora y la mide con 429s — no con un número inventado.
 
-**Cobertura del barrido:** Gamma se pagina (`limit`/`offset`). El smoke corta
-por tope de páginas o por presupuesto de tiempo y **declara `truncado` con su
-motivo**. Un barrido truncado da un **piso**, no un total, y el markdown lo dice
-en letras. Esto importa para el candado de ≥100 mercados: un piso de 60 no es
-"hay 60", es "vi 60".
+**Un conteo que se cuida aparte:** `sin_fecha_de_resolucion` (mercados de
+earnings cuya fecha no se pudo leer). **No se descartan** —se verían como
+inexistentes— pero quedan fuera del cruce y de los ejemplos por su cuenta.
 
-**Corte temprano por fecha:** solo si el orden descendente se sostuvo página a
-página (`orden_desc_confirmado`). Si el servidor ignora `order`, cortar por
-fecha se comería mercados buenos en silencio.
+### 1.1b Descubrimiento dirigido: tres caminos, medidos por separado
 
-**Dos conteos que se cuidan aparte**, porque los dos pueden falsear un candado:
-`duplicados_descartados` (el mismo mercado en dos páginas, si la paginación se
-corre mientras cierran mercados — inflaría el total) y
-`sin_fecha_de_resolucion` (mercados de earnings cuya fecha no se pudo leer:
-**no se descartan** —se verían como inexistentes— pero quedan fuera del cruce y
-de los ejemplos por su cuenta).
+El método ya no es "traer todo y filtrar". Son tres caminos, y cada uno reporta
+**cuántos mercados de earnings aportó**, para que la Fase 1 herede el que
+funciona en vez del que suena bien:
+
+| Camino | Qué hace | Por qué puede fallar |
+|---|---|---|
+| **A. Búsqueda** | `gamma/public-search` con las **frases reales** con que se redactan estos mercados: `"beat quarterly earnings"`, `"beat its quarterly EPS estimate"` (+ dos genéricas). | Si la búsqueda solo indexa mercados vivos, los resueltos no aparecen. |
+| **B. Tags** | De los mercados que A encontró saca sus **tags** (del mercado y del evento), y pagina **DENTRO** del filtro. | Si Gamma ignora `tag_id`, devuelve catálogo suelto: se detecta porque aporta filas pero **0 de earnings**. |
+| **C. Racimo** | Desde un mercado de earnings salta a su **evento/serie** para enumerar los hermanos. | Si el mercado no expone `eventId`/`seriesId`, el camino se declara **no disponible**. |
+
+Dos decisiones que sostienen la honestidad del conteo:
+
+- **B y C se alimentan de lo que A encontró**, no de tags que a mí me parezcan
+  plausibles. Si A no encuentra nada, B y C se declaran *no disponibles* en vez
+  de inventarse una semilla.
+- **Paginar dentro del filtro sí alcanza**: el tope de offset muerde al
+  catálogo entero, no a un tag con cientos de mercados.
+
+Los tres se unen **deduplicando por `id`**, y cada mercado recuerda **por qué
+camino entró** (`via`). De ahí sale `estrategia_ganadora`, que es el dato que
+importa para la Fase 1.
 
 ### 1.2 Precio del "Yes" a T-24h (CLOB)
 
@@ -179,24 +224,61 @@ usa y esta heurística se retira.
 Regla dura, congelada en `evaluaFuentePIT()` y testeada:
 
 > Una fuente sirve para revisiones **solo si** da (a) una **fecha de corte por
-> estimado** y (b) **más de un valor para el mismo período** con fechas de corte
-> distintas.
+> estimado** —una fecha de verdad, no un número— y (b) **más de un VALOR del
+> estimado para el mismo período** con fechas de corte distintas.
 
 Un endpoint que devuelve "el estimado de **hoy**" para trimestres futuros **no
 es point-in-time**: no permite saber qué se creía *antes* del reporte, que es
 exactamente lo que el modelo usaría. Aceptarlo sería meter look-ahead por la
 puerta de atrás.
 
+#### El falso positivo de la primera corrida, y qué se arregló
+
+La sonda marcó **`pit: SÍ`** a `alphavantage/EARNINGS_ESTIMATES`. **Era falso**,
+por dos bugs encadenados en la heurística:
+
+1. la clave de corte se buscaba con `/revision/`, así que un campo de **conteo**
+   de revisiones (del tipo `eps_estimate_revision_up_trailing_7_days`) pasaba
+   por "fecha de corte";
+2. no se validaba que el **valor** fuera una fecha, así que dos filas del mismo
+   período con conteos distintos parecían "dos cortes".
+
+**Un conteo de cuántos analistas revisaron arriba/abajo en los últimos 7/30 días
+es un snapshot de HOY.** No dice qué se creía antes de un reporte de hace dos
+años, que es lo único que serviría para entrenar sin look-ahead. La regla no se
+relajó para acomodarlo: se apretó la implementación para que la regla se cumpla
+de verdad.
+
+Lo que cambió, y queda como regresión en `tests/earnings-beat.test.mjs`:
+
+- la clave de corte tiene que **parecer fecha en su valor** (`esFecha`);
+- las claves de **conteo** (`*_up`, `*_down`, `last_N_days`, `*_count`,
+  `*_average`) quedan explícitamente excluidas como "fecha de corte";
+- lo que tiene que variar entre cortes es el **valor del estimado**, no
+  cualquier campo;
+- se nombra el hallazgo cuando aparece:
+  `las_revisiones_vienen_como_CONTEOS_no_como_valores_fechados`;
+- **la sonda devuelve `fila_cruda`** (y el markdown la imprime) **siempre**, no
+  solo cuando falla. Un `pit: SÍ` que nadie puede auditar no sirve de nada: la
+  heurística propone, la fila cruda dispone.
+
 El smoke sondea Finnhub (`/stock/eps-estimate`, `/stock/revision`) y Alpha
 Vantage (`EARNINGS_ESTIMATES`) con las keys reales del entorno y reporta
-`status` / `http` / `pit` / motivo. Detecta además la trampa conocida de AV:
-rate-limit y premium vienen como **HTTP 200** con `{"Note"|"Information"}`, no
-como 429 (`api/_lib/av-earnings.js`).
+`status` / `http` / `pit` / motivo **+ la fila cruda**. Detecta además la trampa
+conocida de AV: rate-limit y premium vienen como **HTTP 200** con
+`{"Note"|"Information"}`, no como 429 (`api/_lib/av-earnings.js`).
 
 > **Si ninguna fuente cumple la regla, las revisiones quedan FUERA de v1** y se
 > documenta acá con el resultado de la sonda. **No se inventa proxy**: "cambio
 > del estimado actual contra el reportado" no es una revisión, es aritmética
 > contaminada con el resultado.
+
+**Camino que sí queda abierto, y no es un proxy:** si una fuente publica el
+estimado **de hoy** (aunque sea sin historia), capturarlo **nosotros, día a
+día, de hoy en adelante** construye una serie point-in-time legítima — con
+fecha de corte propia y auditable. Lo que no se puede es **rellenar el pasado**:
+para el histórico, sin fuente PIT gratis, no hay revisiones. Eso es Fase 1 si
+alguna vez se decide, y se decide con la fila cruda a la vista.
 
 ### 1.5 Uso del smoke
 
@@ -205,7 +287,9 @@ curl -s -H "Authorization: Bearer $CRON_SECRET" \
   "https://quantdesk2.vercel.app/api/earnings-beat?smoke=1" | jq
 # resumen en español, se abre directo en el navegador:
 #   /api/earnings-beat?smoke=1&format=md&secret=<CRON_SECRET>
-# opcionales: &meses=12 · &desde=YYYY-MM-DD · &paginas=20 · &ejemplos=3
+# opcionales: &meses=12 · &desde=YYYY-MM-DD · &ejemplos=3
+# &barrido=1 corre además el barrido por offset como CONTROL (apagado por
+#   defecto: topa en 422 y ve ~500 de decenas de miles — ciego, no concluyente)
 ```
 
 La ventana por defecto es **12 meses hacia atrás calculados en runtime**, que
@@ -232,8 +316,14 @@ Se lee el censo contra esto. **El censo reporta; no se auto-aprueba.**
 | Resultado | Condición |
 |---|---|
 | **GO a Fase 1** | Gamma y CLOB contestan sin auth, hay mercados de earnings resueltos en la ventana con outcome legible y token del Yes, **y** al menos un ejemplo trae precio del Yes a T-24h. |
-| **INCONCLUSO** | El barrido truncó y el piso de mercados no alcanza para proyectar ≥100 cruzados; o `pead_earnings` está vacía (cruce no medible todavía). → se re-corre con `&paginas` mayor o después de la cosecha del PEAD. |
-| **NO-GO** | Falta estructuralmente algo: sin `clobTokenIds`, sin fecha de resolución, sin outcome, o la lectura exige auth de pago. |
+| **INCONCLUSO por descubrimiento** | Los tres caminos de §1.1b aportaron 0 mercados de earnings, o solo A funcionó y devolvió un puñado. **Un cero no es un hallazgo mientras el método no sepa buscar**: se ajustan frases/tags y se re-corre. Éste fue el veredicto de la primera corrida. |
+| **INCONCLUSO por datos nuestros** | `pead_earnings` está vacía → el cruce no es medible todavía. Se re-corre después de la cosecha del PEAD. |
+| **NO-GO** | Falta estructuralmente algo **y se sabe que se buscó bien**: mercados encontrados pero sin `clobTokenIds`, sin fecha de resolución, sin outcome; o la lectura exige auth de pago. |
+
+**La asimetría es deliberada.** Para decir GO alcanza con que las piezas estén;
+para decir NO-GO hay que haber buscado bien primero. Un NO-GO barato mata un
+experimento por un bug del censo — que es justo lo que casi pasa en la primera
+corrida.
 
 Las revisiones PIT **no** deciden esta compuerta: su resultado define si el
 feature entra a v1 o queda fuera documentado.

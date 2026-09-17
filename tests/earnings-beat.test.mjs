@@ -8,7 +8,9 @@
 //   - extraeConsensoEps: el consenso que Polymarket declara en la descripción
 //   - precioEnT24h: NUNCA un tick posterior a T-24h (look-ahead)
 //   - cruzaConPead: símbolo + fecha ±1 día, gana el más cercano
-//   - evaluaFuentePIT: "el estimado de hoy" NO es point-in-time
+//   - evaluaFuentePIT: "el estimado de hoy" NO es point-in-time, y un CONTEO
+//     de revisiones tampoco (regresión del falso positivo de la 1ª corrida)
+//   - descubrimiento dirigido: tags, racimo y cosecha de public-search
 // Correr con `node tests/earnings-beat.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
@@ -16,8 +18,9 @@ import {
   CRITERIOS, normalizaMercado, indiceYes, tokenYes, outcomeResuelto, pareceEarnings,
   construyeIndiceNombres, resuelveSimbolo, tickerExplicito, extraeConsensoEps,
   precioEnT24h, cruzaConPead, evaluaFuentePIT, resumenMarkdown, diasEntre, isoDia,
+  esFecha, extraeTags, extraeCluster, FRASES_BUSQUEDA,
 } from '../api/_lib/earnings-beat.js';
-import { filasDe, aplanaMercados } from '../api/earnings-beat.js';
+import { filasDe, aplanaMercados, cosechaDeBusqueda, formaDe } from '../api/earnings-beat.js';
 import { qs, rateHeaders } from '../api/_lib/polymarket.js';
 
 let failures = 0;
@@ -172,19 +175,73 @@ ok(cercano[0].cruce.dias === 0, 'con dos candidatos gana el más cercano', cerca
 ok(cruzaConPead([], []).length === 0 && cruzaConPead(null, null).length === 0, 'vacío/null → [] (no crashea)');
 ok(diasEntre('2026-01-02', '2026-01-01') === 1 && isoDia('2026-02-26T21:04:11Z') === '2026-02-26', 'primitivas de fecha');
 
-console.log('evaluaFuentePIT: "el estimado de hoy" NO es point-in-time');
+console.log('evaluaFuentePIT: ni "el estimado de hoy" ni un CONTEO son point-in-time');
 
 const actual = { data: [{ period: '2026-03-31', epsAvg: 1.2 }, { period: '2026-06-30', epsAvg: 1.4 }] };
 ok(evaluaFuentePIT(actual).pit === false, 'estimados actuales por período futuro → NO es PIT');
 ok(evaluaFuentePIT(actual).motivo === 'sin_fecha_de_corte_por_estimado', 'y dice por qué', evaluaFuentePIT(actual).motivo);
+
+// ── REGRESIÓN del falso positivo de la primera corrida ────────────────────
+// La sonda marcó `pit: SÍ` una respuesta cuyas "revisiones" son CONTEOS de
+// analistas (up/down últimos 7/30 días), no valores fechados. Dos filas del
+// mismo período con conteos distintos parecían "dos cortes". No lo son: un
+// conteo de hoy no dice qué se creía antes de un reporte de hace dos años.
+const conteos = { estimates: [
+  { horizon: 'next fiscal quarter', date: '2026-09-30', eps_estimate_average: '2.35',
+    eps_estimate_revision_up_trailing_7_days: '2', eps_estimate_revision_down_trailing_7_days: '0',
+    eps_estimate_revision_up_trailing_30_days: '5', eps_estimate_analyst_count: '12' },
+  { horizon: 'current fiscal year', date: '2026-09-30', eps_estimate_average: '9.10',
+    eps_estimate_revision_up_trailing_7_days: '4', eps_estimate_revision_down_trailing_7_days: '1',
+    eps_estimate_revision_up_trailing_30_days: '9', eps_estimate_analyst_count: '14' },
+]};
+const rc = evaluaFuentePIT(conteos);
+ok(rc.pit === false, 'CONTEOS de revisiones → NO es PIT (el falso positivo queda cerrado)', rc.pit);
+ok(rc.motivo === 'las_revisiones_vienen_como_CONTEOS_no_como_valores_fechados', 'y nombra el hallazgo', rc.motivo);
+ok(rc.revisiones_como_conteo === true, 'marca que la fuente trae revisiones como conteo');
+ok(rc.fila_cruda && rc.fila_cruda.eps_estimate_average === '2.35', 'devuelve la FILA CRUDA para revisar a ojo');
+
+// Una clave con nombre de fecha pero VALOR numérico tampoco alcanza.
+const fechaFalsa = { data: [
+  { period: '2026-03-31', as_of: 7, epsAvg: 1.1 }, { period: '2026-03-31', as_of: 30, epsAvg: 1.2 },
+]};
+ok(evaluaFuentePIT(fechaFalsa).pit === false, 'as_of numérico (no fecha) → NO es PIT', evaluaFuentePIT(fechaFalsa).motivo);
+
 const conCorte = { data: [
-  { period: '2026-03-31', asOf: '2026-01-15', epsAvg: 1.10 },
-  { period: '2026-03-31', asOf: '2026-02-15', epsAvg: 1.18 },
+  { period: '2026-03-31', asOf: '2026-01-15', eps_estimate_average: 1.10 },
+  { period: '2026-03-31', asOf: '2026-02-15', eps_estimate_average: 1.18 },
 ] };
-ok(evaluaFuentePIT(conCorte).pit === true, 'dos cortes para el MISMO período → sí es PIT');
-const unCorte = { data: [{ period: '2026-03-31', asOf: '2026-02-15', epsAvg: 1.18 }] };
+const rp = evaluaFuentePIT(conCorte);
+ok(rp.pit === true, 'dos VALORES fechados del MISMO período → sí es PIT');
+ok(rp.clave_corte === 'asOf' && rp.clave_valor === 'eps_estimate_average', 'reporta qué claves usó', rp.clave_corte + '/' + rp.clave_valor);
+const unCorte = { data: [{ period: '2026-03-31', asOf: '2026-02-15', eps_estimate_average: 1.18 }] };
 ok(evaluaFuentePIT(unCorte).pit === false && evaluaFuentePIT(unCorte).motivo === 'un_solo_corte_por_periodo_no_es_point_in_time', 'un corte por período → NO alcanza');
 ok(evaluaFuentePIT({}).pit === false && evaluaFuentePIT(null).pit === false, 'vacío/null → no PIT (no crashea)');
+
+ok(esFecha('2026-02-26') && esFecha('2026-02-26T21:00:00Z'), 'esFecha: ISO sí');
+ok(!esFecha(7) && !esFecha('7') && !esFecha('') && !esFecha(null), 'esFecha: números y basura, no');
+
+console.log('descubrimiento dirigido: tags, racimo y cosecha de la búsqueda');
+
+ok(FRASES_BUSQUEDA.includes('beat quarterly earnings') && FRASES_BUSQUEDA.includes('beat its quarterly EPS estimate'),
+  'las frases reales de estos mercados están en la lista');
+
+const conTags = { id: 1, tags: [{ id: '101', slug: 'earnings', label: 'Earnings' }], events: [{ id: '9', slug: 'ev', tags: [{ id: '2', slug: 'finance' }] }] };
+const tags = extraeTags(conTags);
+ok(tags.length === 2 && tags.some((t) => t.slug === 'earnings') && tags.some((t) => t.slug === 'finance'),
+  'junta tags del mercado Y del evento que lo contiene', JSON.stringify(tags));
+ok(extraeTags({ tags: [{ id: '1', slug: 'a' }, { id: '1', slug: 'a' }] }).length === 1, 'deduplica tags');
+ok(extraeTags({}).length === 0 && extraeTags(null).length === 0, 'sin tags → [] (no crashea)');
+
+const cl = extraeCluster({ id: 1, eventId: 77, events: [{ id: '77', slug: 'nvda-earnings' }], seriesId: 5, groupItemTitle: 'Q3' });
+ok(cl.evento_id === '77' && cl.evento_slug === 'nvda-earnings' && cl.serie_id === '5' && cl.grupo === 'Q3',
+  'extrae evento/serie/grupo del racimo', JSON.stringify(cl));
+ok(Object.values(extraeCluster({ id: 1 })).every((v) => v === null), 'mercado sin racimo → todo null');
+ok(Object.keys(extraeCluster(null)).length === 0, 'null → {} (no crashea)');
+
+const busq = cosechaDeBusqueda({ events: [{ slug: 'e1', markets: [{ id: 1 }, { id: 2 }] }], tags: [{ id: 9 }] });
+ok(busq.length === 2, 'public-search: saca los mercados de adentro de los eventos', busq.length);
+ok(cosechaDeBusqueda({ nada: 1 }).length === 0 && cosechaDeBusqueda(null).length === 0, 'forma desconocida → [] (no crashea)');
+ok(formaDe([]) === 'array' && formaDe({ a: 1 }).startsWith('objeto:'), 'formaDe describe la forma cruda');
 
 console.log('endpoint: plomería de formas de respuesta (sin red)');
 
@@ -207,16 +264,33 @@ const md = resumenMarkdown({
   ventana: { desde: '2025-09-16', hasta: '2026-09-16', meses: 12 },
   criterios_congelados: CRITERIOS,
   sondas: [{ estrategia: 'markets_cerrados', endpoint: 'gamma/markets', status: 'ok', http: 200, ms: 120, filas: 500 }],
-  barrido: { estrategia: 'markets_cerrados', paginas: 3, filas: 1500, truncado: true, motivo_corte: 'tope_de_paginas' },
+  descubrimiento: {
+    metodo: 'dirigido',
+    busqueda: { intentos: [{ frase: 'beat quarterly earnings', status: 'ok', http: 200, filas: 12 }] },
+    tags: { intentos: [{ tag: 'Earnings', pagina: 0, status: 'ok', http: 200, filas: 80 }], tags_vistos: [{ id: '101', slug: 'earnings', veces: 12 }] },
+    cluster: { intentos: [{ via: 'serie_id', status: 'httperror', http: 404, filas: 0 }] },
+    mercados_de_earnings_por_camino: { busqueda: 12, tags: 128 },
+    estrategia_ganadora: { camino: 'tags', mercados_de_earnings: 128 },
+  },
+  topes_de_offset: [{ endpoint: 'gamma/markets', offset: 2500, limit: 500, mensaje: 'offset too large' }],
+  barrido: { corrido: false, nota: 'apagado por defecto' },
   conteos: { mercados_de_earnings_en_ventana: 140, resueltos: 130, con_simbolo: 120, en_universo_v0: 90, universo_v0: 99, con_consenso_en_descripcion: 100, con_token_yes: 140 },
   ejemplos: [{ slug: 'nvda', symbol: 'NVDA', fecha_resolucion: '2026-02-26', outcome: 'Yes', clob: { status: 'ok', forma: 'startTs/endTs', puntos: 200 }, yes_t24h: { precio: 0.61, horas_antes_real: 25, rancio: false } }],
   cruce: { consultado: true, filas_pead: 400, cruzados: 88, en_universo_v0: 80, sin_cruce: { simbolo_no_esta_en_pead_earnings: 40 } },
-  revisiones: [{ fuente: 'finnhub/stock/revision', status: 'premium_o_sin_permiso', http: 403, pit: false, motivo: 'HTTP 403' }],
+  revisiones: [
+    { fuente: 'finnhub/stock/revision', status: 'premium_o_sin_permiso', http: 403, pit: false, motivo: 'HTTP 403' },
+    { fuente: 'alphavantage/EARNINGS_ESTIMATES', status: 'ok', http: 200, pit: false, filas: 4,
+      motivo: 'las_revisiones_vienen_como_CONTEOS_no_como_valores_fechados', revisiones_como_conteo: true,
+      fila_cruda: { horizon: 'next fiscal quarter', date: '2026-09-30', eps_estimate_revision_up_trailing_7_days: '2' } },
+  ],
   rate_limit: { headers_observados: {}, hubo_429: false },
   muestras: { earnings: [{ pregunta: 'Will NVIDIA beat?', symbol: 'NVDA', via: 'alias', fecha: '2026-02-26', outcome: 'Yes', consenso: 0.75 }], sin_simbolo: [], descartados_por_el_filtro: [] },
 });
 ok(md.includes('CENSO earnings-beat') && md.includes('NVDA'), 'renderiza el censo');
-ok(md.includes('piso'), 'avisa que un barrido truncado da un PISO, no el total');
+ok(md.includes('Ganó') && md.includes('tags'), 'nombra el camino que encontró más');
+ok(md.includes('tope de offset') || md.includes('Tope de offset'), 'documenta el tope de offset como hecho del censo');
+ok(md.includes('422 no es rate limit'), 'y aclara que el 422 no es rate limit');
+ok(md.includes('eps_estimate_revision_up_trailing_7_days'), 'enseña la FILA CRUDA de la sonda de revisiones');
 ok(resumenMarkdown({ error: 'todo caído', sondas: [], revisiones: [] }).includes('FUENTE CAÍDA'), 'censo con fuente caída → lo dice');
 ok(typeof resumenMarkdown({}) === 'string', 'censo vacío → string, no excepción');
 

@@ -406,44 +406,163 @@ function cruzaConPead(mercados, filas, { tolerancia = CRITERIOS.tolerancia_dias_
 
 // ─────────────────── ¿hay fuente point-in-time de revisiones? ───────────────────
 
-// Regla dura, decidida ANTES de probar: una fuente sirve para revisiones solo
-// si da (a) una FECHA DE CORTE por estimado y (b) más de un valor para el
-// MISMO período con fechas de corte distintas. Un endpoint que devuelve "el
-// estimado de hoy" para trimestres futuros NO es point-in-time: no permite
-// saber qué se creía antes del reporte, que es justo lo que el modelo usaría.
-// Sin las dos cosas → las revisiones quedan FUERA de v1. No se inventa proxy.
+// Regla dura, decidida ANTES de probar y NO relajada después: una fuente sirve
+// para revisiones solo si da (a) una FECHA DE CORTE por estimado —una fecha de
+// verdad, no un número— y (b) más de un VALOR del estimado para el MISMO
+// período con fechas de corte distintas. Un endpoint que devuelve "el estimado
+// de hoy" para trimestres futuros NO es point-in-time: no permite saber qué se
+// creía antes del reporte, que es justo lo que el modelo usaría.
+//
+// ── CICATRIZ (falso positivo de la primera corrida) ────────────────────────
+// La primera versión marcó `pit: true` una respuesta que NO es point-in-time.
+// Dos bugs encadenados:
+//   1. la clave de corte se buscaba con /revision/, así que un campo de
+//      CONTEO de revisiones (`eps_revisions_last_7_days_up`) pasaba por
+//      "fecha de corte";
+//   2. no se validaba que el VALOR fuera una fecha, así que dos filas del
+//      mismo período con conteos distintos parecían "dos cortes".
+// Un conteo de cuántos analistas revisaron arriba/abajo en los últimos 7/30
+// días es un snapshot de HOY: no dice qué se creía antes de un reporte de
+// 2024, que es lo único que serviría. Ahora se exige que el valor PAREZCA
+// FECHA y se descartan explícitamente las claves de conteo — y la sonda
+// devuelve `fila_cruda` para que la decisión se pueda revisar a ojo en vez de
+// confiar en la heurística.
+const CLAVE_CORTE = /(as[_-]?of|asof|updated_?(at|on)?|revision_?date|revised_?(at|on|date)|snapshot|retrieved|effective_?date|estimate_?date)/i;
+// Claves que PARECEN de revisión pero son conteos/agregados, no fechas de corte.
+const CLAVE_CONTEO = /(count|total|number|_up$|_down$|up_?\d|down_?\d|last_?\d+_?days|_high$|_low$|_average$|_avg$|analysts?)/i;
+// Forma típica de "revisiones como conteo": el hallazgo que hay que nombrar.
+const CLAVE_REVISION_CONTEO = /revisions?.*(up|down)|revisions?_?last_?\d+|(up|down).*revisions?/i;
+const CLAVE_PERIODO = /(period|fiscal|quarter|horizon|date)/i;
+
 function evaluaFuentePIT(body) {
-  const evidencia = { tiene_fecha_de_corte: false, tiene_varias_cortes_por_periodo: false, filas: 0, claves: [] };
   const filas = Array.isArray(body) ? body
     : body && Array.isArray(body.data) ? body.data
     : body && Array.isArray(body.quarterlyEarnings) ? body.quarterlyEarnings
     : body && Array.isArray(body.estimates) ? body.estimates
     : null;
-  if (!filas || !filas.length) return { pit: false, motivo: 'sin_filas', ...evidencia };
+  const base = {
+    tiene_fecha_de_corte: false, tiene_varios_valores_por_periodo: false,
+    revisiones_como_conteo: false, filas: 0, claves: [], fila_cruda: null,
+  };
+  if (!filas || !filas.length) return { pit: false, motivo: 'sin_filas', ...base };
 
-  evidencia.filas = filas.length;
-  evidencia.claves = Object.keys(filas[0] || {});
-  const CLAVE_CORTE = /(as[_-]?of|asof|updated|revision|revised|snapshot|date_?stamp|report_?date)/i;
-  const CLAVE_PERIODO = /(period|fiscal|quarter|date)/i;
-  const claveCorte = evidencia.claves.find((k) => CLAVE_CORTE.test(k));
-  const clavePeriodo = evidencia.claves.find((k) => CLAVE_PERIODO.test(k) && k !== claveCorte);
-  if (!claveCorte) return { pit: false, motivo: 'sin_fecha_de_corte_por_estimado', ...evidencia };
-  evidencia.tiene_fecha_de_corte = true;
+  const claves = Object.keys(filas[0] || {});
+  const ev = {
+    ...base,
+    filas: filas.length,
+    claves,
+    // La fila cruda viaja SIEMPRE, no solo cuando falla: es lo que permite
+    // desmentir a la heurística sin volver a pedirle nada a la fuente.
+    fila_cruda: recortaFila(filas[0]),
+    revisiones_como_conteo: claves.some((k) => CLAVE_REVISION_CONTEO.test(k)),
+  };
 
-  if (clavePeriodo) {
-    const porPeriodo = new Map();
-    for (const f of filas) {
-      const k = String(f[clavePeriodo]);
-      if (!porPeriodo.has(k)) porPeriodo.set(k, new Set());
-      porPeriodo.get(k).add(String(f[claveCorte]));
-    }
-    evidencia.tiene_varias_cortes_por_periodo = [...porPeriodo.values()].some((s) => s.size > 1);
+  const claveCorte = claves.find((k) => CLAVE_CORTE.test(k) && !CLAVE_CONTEO.test(k) && esFecha(filas[0][k]));
+  if (!claveCorte) {
+    return {
+      pit: false,
+      motivo: ev.revisiones_como_conteo
+        ? 'las_revisiones_vienen_como_CONTEOS_no_como_valores_fechados'
+        : 'sin_fecha_de_corte_por_estimado',
+      ...ev,
+    };
   }
-  return evidencia.tiene_varias_cortes_por_periodo
-    ? { pit: true, motivo: null, ...evidencia }
-    : { pit: false, motivo: 'un_solo_corte_por_periodo_no_es_point_in_time', ...evidencia };
+  ev.tiene_fecha_de_corte = true;
+
+  const clavePeriodo = claves.find((k) => CLAVE_PERIODO.test(k) && k !== claveCorte);
+  if (!clavePeriodo) return { pit: false, motivo: 'sin_clave_de_periodo', ...ev, clave_corte: claveCorte };
+
+  // El valor que tiene que variar es el ESTIMADO, no cualquier campo: un
+  // conteo distinto entre dos filas no convierte una foto en una serie.
+  const claveValor = claves.find((k) => /(eps|estimate|value|avg|average)/i.test(k)
+    && !CLAVE_REVISION_CONTEO.test(k) && k !== claveCorte && k !== clavePeriodo);
+
+  const porPeriodo = new Map();
+  for (const f of filas) {
+    const k = String(f[clavePeriodo]);
+    if (!porPeriodo.has(k)) porPeriodo.set(k, new Map());
+    if (esFecha(f[claveCorte])) porPeriodo.get(k).set(String(f[claveCorte]), claveValor ? f[claveValor] : null);
+  }
+  ev.tiene_varios_valores_por_periodo = [...porPeriodo.values()].some((m) => m.size > 1);
+
+  return ev.tiene_varios_valores_por_periodo
+    ? { pit: true, motivo: null, ...ev, clave_corte: claveCorte, clave_periodo: clavePeriodo, clave_valor: claveValor || null }
+    : { pit: false, motivo: 'un_solo_corte_por_periodo_no_es_point_in_time', ...ev, clave_corte: claveCorte, clave_periodo: clavePeriodo };
 }
 
+// ¿El VALOR parece una fecha? No basta con que la clave se llame bonito.
+function esFecha(v) {
+  if (v instanceof Date) return !Number.isNaN(v.getTime());
+  if (typeof v !== 'string') return false;              // un número NO es fecha acá
+  const s = v.trim();
+  if (!/^\d{4}-\d{2}-\d{2}/.test(s) && !/^\d{2}\/\d{2}\/\d{4}/.test(s)) return false;
+  return !Number.isNaN(new Date(s).getTime());
+}
+
+// La fila cruda se muestra, pero acotada: un censo no es un volcado.
+function recortaFila(fila, maxClaves = 24, maxLargo = 80) {
+  if (!fila || typeof fila !== 'object') return null;
+  const out = {};
+  for (const [k, v] of Object.entries(fila).slice(0, maxClaves)) {
+    out[k] = typeof v === 'string' && v.length > maxLargo ? v.slice(0, maxLargo) + '…' : v;
+  }
+  return out;
+}
+
+// ─────────────────── descubrimiento dirigido ───────────────────
+
+// Frases REALES con las que Polymarket redacta estos mercados. No son
+// palabras clave inventadas: salen de mercados que existen y ya resolvieron.
+// El barrido por paginación no sirve para encontrarlos (ver el tope de offset
+// en docs/earnings-beat-scope.md §1.1); la búsqueda dirigida sí.
+const FRASES_BUSQUEDA = [
+  'beat quarterly earnings',
+  'beat its quarterly EPS estimate',
+  'quarterly EPS estimate',
+  'earnings',
+];
+
+// Tags/categorías que trae un mercado crudo, en cualquiera de las formas en
+// que Gamma los cuelga (del mercado, o del evento que lo contiene).
+function extraeTags(raw) {
+  const out = [];
+  const empuja = (t) => {
+    if (!t) return;
+    if (typeof t === 'string') { out.push({ id: null, slug: t, label: t }); return; }
+    if (typeof t !== 'object') return;
+    const id = t.id !== undefined && t.id !== null ? String(t.id) : null;
+    const slug = t.slug || t.label || t.name || null;
+    if (id || slug) out.push({ id, slug, label: t.label || t.name || slug });
+  };
+  for (const t of (Array.isArray(raw && raw.tags) ? raw.tags : [])) empuja(t);
+  for (const ev of (Array.isArray(raw && raw.events) ? raw.events : [])) {
+    for (const t of (Array.isArray(ev && ev.tags) ? ev.tags : [])) empuja(t);
+  }
+  const vistos = new Set();
+  return out.filter((t) => {
+    const k = (t.id || '') + '|' + (t.slug || '');
+    if (vistos.has(k)) return false;
+    vistos.add(k);
+    return true;
+  });
+}
+
+// Desde UN mercado de earnings, los identificadores que pueden llevar al resto
+// del racimo: su evento, su serie, su grupo. Si alguno existe, es el segundo
+// camino para enumerar sin paginar el catálogo entero.
+function extraeCluster(raw) {
+  if (!raw || typeof raw !== 'object') return {};
+  const ev = Array.isArray(raw.events) && raw.events.length ? raw.events[0] : null;
+  const serie = Array.isArray(raw.series) && raw.series.length ? raw.series[0] : (raw.series || null);
+  const id = (v) => (v === undefined || v === null || v === '' ? null : String(v));
+  return {
+    evento_id: id(raw.eventId) || id(ev && ev.id),
+    evento_slug: raw.eventSlug || (ev && ev.slug) || null,
+    serie_id: id(raw.seriesId) || id(serie && serie.id) || (typeof serie === 'string' ? serie : null),
+    serie_slug: (serie && serie.slug) || (ev && ev.seriesSlug) || null,
+    grupo: raw.groupItemTitle || (ev && ev.groupItemTitle) || null,
+  };
+}
 
 // ─────────────────── resumen en español ───────────────────
 
@@ -452,7 +571,6 @@ function evaluaFuentePIT(body) {
 function resumenMarkdown(c) {
   const L = [];
   const pct = (a, b) => (b ? (100 * a / b).toFixed(0) + '%' : '—');
-  const si = (v) => (v ? 'sí' : 'no');
 
   L.push('# CENSO earnings-beat — FASE 0');
   L.push('');
@@ -477,15 +595,57 @@ function resumenMarkdown(c) {
   L.push(`**Auth:** ${conAuth.length ? 'SÍ la pide (' + conAuth.map((s) => s.endpoint).join(', ') + ')' : 'no la pidió en esta corrida — lectura pública.'}`);
   const rl = c.rate_limit || {};
   const hs = Object.entries(rl.headers_observados || {});
-  L.push(`**Rate limit:** ${hs.length ? hs.map(([k, v]) => k + '=' + v).join(' · ') : 'sin headers de presupuesto'} · 429 durante el barrido: ${si(rl.hubo_429)}.`);
+  L.push(`**Rate limit:** ${hs.length ? hs.map(([k, v]) => k + '=' + v).join(' · ') : 'sin headers de presupuesto'} · respuestas 429: ${rl.http_429 ?? 0}. ${rl.nota || ''}`);
   L.push('');
 
-  const b = c.barrido || {};
-  L.push('## 2. Barrido');
+  const d = c.descubrimiento || {};
+  L.push('## 2. Descubrimiento dirigido');
   L.push('');
-  L.push(`Estrategia usada: \`${b.estrategia || '—'}\` · páginas: ${b.paginas ?? 0} · filas: ${b.filas ?? 0} · truncado: ${si(b.truncado)}${b.motivo_corte ? ' (' + b.motivo_corte + ')' : ''}.`);
-  if (b.truncado) L.push('');
-  if (b.truncado) L.push('> El barrido NO vio el catálogo completo: los conteos de abajo son un **piso**, no el total.');
+  L.push(d.metodo || '—');
+  L.push('');
+  L.push('| Camino | Intento | Status | Filas |');
+  L.push('|---|---|---|---|');
+  for (const i of (d.busqueda && d.busqueda.intentos) || []) {
+    L.push(`| búsqueda | "${i.frase || i.nota || '—'}" | ${i.status || '—'}${i.http ? '/' + i.http : ''} | ${i.filas ?? '—'} |`);
+  }
+  for (const i of (d.tags && d.tags.intentos) || []) {
+    const etiqueta = i.tag !== undefined && i.pagina !== undefined ? `${i.tag} p${i.pagina}` : (i.nota || i.tag || '—');
+    const filas = i.filas === undefined ? '—' : `${i.filas}${i.de_earnings !== undefined ? ' (' + i.de_earnings + ' de earnings)' : ''}`;
+    L.push(`| tags | ${etiqueta} | ${i.status || '—'} | ${filas} |`);
+  }
+  for (const i of (d.cluster && d.cluster.intentos) || []) {
+    L.push(`| racimo | ${i.via || i.nota || '—'} | ${i.status || '—'}${i.http ? '/' + i.http : ''} | ${i.filas ?? '—'} |`);
+  }
+  L.push('');
+  const porCamino = Object.entries(d.mercados_de_earnings_por_camino || {});
+  L.push(`**Mercados de earnings por camino:** ${porCamino.length ? porCamino.map(([k, v]) => k + '=' + v).join(' · ') : 'ninguno'}.`);
+  if (d.estrategia_ganadora) {
+    L.push('');
+    L.push(`**Ganó \`${d.estrategia_ganadora.camino}\`** con ${d.estrategia_ganadora.mercados_de_earnings} mercados de earnings. Ése es el camino que hereda la Fase 1.`);
+  }
+  L.push('');
+
+  // El tope de offset es un HECHO del censo: queda escrito para que no vuelva
+  // a morder (la primera corrida lo leyó como "no hay mercados de earnings").
+  const topes = c.topes_de_offset || [];
+  L.push('### Tope de offset de Gamma (hecho del censo)');
+  L.push('');
+  if (!topes.length) {
+    L.push('No se topó ningún 422 en esta corrida.');
+  } else {
+    L.push('| Endpoint | offset | limit | Mensaje |');
+    L.push('|---|---|---|---|');
+    for (const t of topes) L.push(`| ${t.endpoint} | ${t.offset ?? '—'} | ${t.limit ?? '—'} | ${(t.mensaje || '').slice(0, 70)} |`);
+    L.push('');
+    L.push('> **422 no es rate limit: es tope de offset.** Paginar el catálogo entero es imposible, y un barrido que ve ~500 de decenas de miles no puede concluir "no hay mercados de earnings" — eso sería ceguera del método, no un hallazgo.');
+  }
+  L.push('');
+  const b = c.barrido || {};
+  if (b.corrido) {
+    L.push(`Barrido de control: páginas ${b.paginas ?? 0} · filas ${b.filas ?? 0} · corte: ${b.motivo_corte || '—'}.`);
+  } else {
+    L.push(`Barrido de control: **apagado** (${b.nota || 'no corrió'}).`);
+  }
   L.push('');
 
   const n = c.conteos || {};
@@ -546,14 +706,26 @@ function resumenMarkdown(c) {
     L.push(`| ${r.fuente} | ${r.status} | ${r.http ?? '—'} | ${r.pit ? 'SÍ' : 'no'} | ${(r.motivo || '').slice(0, 80)} |`);
   }
   L.push('');
-  L.push('Regla congelada: una fuente sirve solo si da **fecha de corte por estimado** y **más de un valor para el mismo período**. Si ninguna la cumple, las revisiones quedan **FUERA de v1** y se documenta. No se inventa proxy.');
+  L.push('Regla congelada: una fuente sirve solo si da **fecha de corte por estimado** (una fecha de verdad, no un número) y **más de un VALOR del estimado para el mismo período**. Si ninguna la cumple, las revisiones quedan **FUERA de v1** y se documenta. No se inventa proxy.');
   L.push('');
+  // La fila cruda va SIEMPRE: un `pit: SÍ` que nadie puede auditar no sirve.
+  // La primera corrida marcó PIT una respuesta de CONTEOS de revisiones; se
+  // detectó leyendo la fila, no confiando en la heurística.
+  for (const r of c.revisiones || []) {
+    if (!r.fila_cruda) continue;
+    L.push(`**Fila cruda de \`${r.fuente}\`** (${r.filas ?? '?'} filas · ${r.revisiones_como_conteo ? '**trae revisiones como CONTEO**' : 'sin conteos de revisión'}):`);
+    L.push('');
+    L.push('```json');
+    L.push(JSON.stringify(r.fila_cruda, null, 1).slice(0, 1200));
+    L.push('```');
+    L.push('');
+  }
 
   const m = c.muestras || {};
   if ((m.earnings || []).length) {
     L.push('## 7. Muestras (para revisar el filtro a ojo)');
     L.push('');
-    for (const e of m.earnings) L.push(`- ${e.symbol || '¿?'} (${e.via || 'sin resolver'}) · ${e.fecha || '—'} · outcome=${e.outcome || '—'} · consenso=${e.consenso ?? '—'} · ${String(e.pregunta || '').slice(0, 90)}`);
+    for (const e of m.earnings) L.push(`- ${e.symbol || '¿?'} (${e.via || 'sin resolver'}, vía ${e.camino || '—'}) · ${e.fecha || '—'} · outcome=${e.outcome || '—'} · consenso=${e.consenso ?? '—'} · ${String(e.pregunta || '').slice(0, 90)}`);
     if ((m.sin_simbolo || []).length) {
       L.push('');
       L.push('Sin símbolo resuelto:');
@@ -579,4 +751,5 @@ export {
   normalizaMercado, indiceYes, tokenYes, outcomeResuelto, pareceEarnings,
   construyeIndiceNombres, tickerExplicito, resuelveSimbolo,
   extraeConsensoEps, precioEnT24h, cruzaConPead, evaluaFuentePIT, resumenMarkdown,
+  esFecha, recortaFila, extraeTags, extraeCluster, FRASES_BUSQUEDA,
 };
