@@ -1,137 +1,112 @@
-
 # QuantDesk
 
-> AI-native hedge fund research engine for 650M Spanish-speaking retail traders.
-> Bloomberg-grade analysis. In Spanish. 
+**Seven frontier LLMs each run a real portfolio. Same market, same prompt, same rails. The only variable is the model.**
 
-**Live:** [quantdesk2.vercel.app](https://quantdesk2.vercel.app)
-
----
-
-## What it does
-
-QuantDesk gives retail investors in LATAM the same class of quantitative research that hedge funds and Bloomberg subscribers pay $24K-$77K/year for — accessible, in Spanish, and AI-native from the ground up.
-
-The core product is a suite of **specialized research agents** that each tackle one dimension of institutional research, ship outputs in seconds, and integrate into a unified ticker analysis workflow.
+Live: **[quantdesk2.vercel.app/liga](https://quantdesk2.vercel.app/liga)**
 
 ---
 
-## Specialized Research Agents
+## The Arena
 
-Four agents in production. Six planned. (AI-Native Hedge Funds).
+Seven models. Seven brokerage accounts. Paper money, live market data, real order routing through Alpaca.
 
-### 📑 Filings Agent
-SEC 10-K / 10-Q + 20-F LATAM coverage. Surfaces inventory commitments, FX exposure, capital controls, regulatory risks. Citation-backed extraction from filings.
+Three times a day each model gets the same board — index moves, sector heat, gainers and losers, 52-week extremes, upcoming earnings, headlines — and its own set of research tools. It researches whatever it wants, publishes a target portfolio in weights, and the engine turns that into orders. Every decision is journaled: which tool it called, with which filters, how many rows came back, what it concluded, and what it bought.
 
-### 💰 Fundamental Agent
-Quant-grade DCF with sector-aware calibration:
-- Bull / Base / Bear scenarios
-- Stage-based revenue fade (no naive linear projection)
-- Trimmed-mean FCF margin with sector caps
-- Bounded WACC with EM risk premium for LATAM ADRs
-- Margin of Safety badges (6 categories)
-- Confidence indicator (HIGH / MEDIUM / LOW)
-- Wall Street consensus comparison
+| | Model |
+|---|---|
+| Claude | Claude Fable 5.1 |
+| ChatGPT | GPT-6 Astra |
+| Grok | Grok 4.6 |
+| Gemini | Gemini 3.8 Flash |
+| DeepSeek | DeepSeek V4 Pro |
+| Qwen | Qwen3.8 2.4T A95B |
+| **Control** | Claude Fable 5.1 *(again)* |
 
-### 🌍 Macro Agent
-Macroeconomic context for any ticker:
-- US rate environment (Fed cycle, yield curve regime, real rates, VIX)
-- Local FX analysis (USD/BRL, USD/ARS, USD/MXN) with regime detection
-- Sector-specific commodity context (mining, energy, agriculture)
-- LATAM ADR aware — operational country override for tickers domiciled in Cayman / Luxembourg / Uruguay
+### The control account is the point
 
-### 📅 Event Agent
-Upcoming catalysts and corporate events:
-- Earnings calendar with beat-rate analytics
-- M&A signal detection (16 deal keywords)
-- LATAM-aware regulatory detection (CADE, COFECE, Banxico, CNV, CVM + US agencies)
-- Insider activity with founder-CEO weighting
-- Dividend frequency inference
-- Primary catalyst thesis + positioning considerations
+Two accounts run the identical model, prompt, and parameters. Whatever gap opens between them is noise — the same model disagreeing with itself.
 
-### Coming next
-- Sentiment Agent (NLP on news + social)
-- Risk Anomaly Agent (volatility, correlation breakdown, regime shifts)
-- Investor Council 2.0 — 10 personalities citing the research agents
+Measured twice on 2026-09-16, the cosine similarity between those two books came out **0.76 and 0.86**. Read that backwards: a gap smaller than roughly 0.15–0.25 between *different* models is indistinguishable from luck.
 
----
+Those two were measured book-to-book, which only works while both accounts start the day holding the same thing. Once they diverge, the same comparison measures inheritance instead of noise, so the floor is now computed between *deltas* — what each account decided to change. That number lives on a different scale (it can go negative, since selling is a negative weight) and the pages label which method produced it. Both are archived for every day, so the two can be compared later.
 
-## Other modules
+No other public LLM trading arena publishes this number. Without it, "model X beat model Y" is a coin flip with a leaderboard on top.
 
-- **SIM** — Monte Carlo with GBM, jump diffusion, regime switching. Ruin simulator with 100-account animation.
-- **COMPARE** — Side-by-side ticker analysis with correlation matrices.
-- **PORTFOLIO** — Construction + risk metrics (VaR, Sharpe, max drawdown).
-- **SMART $** — Smart-money tab, layout by content: price chart (Lightweight
-  Charts) up top, then panels that reflow to fill space and collapse to a single
-  line when a source has no data. Real data only — insider transactions (SEC
-  Form 4 via Finnhub), short-selling pressure (FINRA Reg SHO daily short volume,
-  free/no-key), institutional 13F moves (reuses the TRACKER source, filtered to
-  the ticker), and options positioning (Yahoo front-expiry: put/call by OI, ATM
-  IV, max pain). The AI verdict is the only synthesized block and is anchored to
-  those real inputs. Tickers and rows are clickable → chart or EDGAR.
-- **TRACKER** — Stock Tracker: notable insider buys (SEC Form 4, open-market P-code buys by officers/directors ≥ $100k) and quarter-over-quarter 13F diffs of famous funds, straight from EDGAR with the legal reporting lag labeled on every card.
-- **SCREENER** — ~260 tickers across US / LATAM / crypto with live-data fundamental filters.
-- **AGENTS** — Investor personality agents (Buffett, Burry, Wood, Munger, Dalio + LATAM personas in development).
-- **GALLERY** — Public simulation history.
+### An index that doesn't think
+
+A single SPY purchase on reset day, untouched for the season, sits in the ranking with no rank. Zero LLM calls, zero tools, zero decisions.
+
+It's there to answer the only question that matters: **do any of them beat just buying the index?**
+
+### Their own eyes
+
+The first version fed every model the same pre-chewed candidate list. Four of five books ended up holding the same two names — herding by construction.
+
+Now each model gets a ~600-name universe (S&P 500 and Nasdaq 100 constituents plus up to 100 of the day's movers, deduplicated) and four tools to explore it: a screener, news, a company sheet, and sector data. Budgets are 20 calls, 30K tokens of context, and a 95-second research clock with 70 seconds held back for writing the final book — whichever runs out first. It closes with whatever it has.
+
+Book overlap dropped from **0.56 to 0.235**.
+
+Each model also gets a rotating research angle — momentum, catalyst, value, mean reversion — assigned per agent per day. It's a deliberate confound: two models with different angles on the same day are not comparable that day, and the pages say so where the numbers appear.
+
+### Rails
+
+Weights are checked before a single order goes out: max 30% per name, max 50% per sector, gross under 100%, minimum 2% to take a position, and every ticker must exist in the universe. Failing the rails rejects the whole target — a fabricated ticker never reaches the broker.
+
+A deterministic risk layer runs independently of any model: catastrophic stop, drawdown breaker, trailing stops. No LLM can turn it off.
+
+T2 is long-only. Shorts are scoped for T3, because a stop on a short runs the other way and the risk layer isn't written for it yet.
+
+### Three pages
+
+- **[/liga](https://quantdesk2.vercel.app/liga)** — the leaderboard, ranked by return, with the index alongside
+- **[/liga/libros](https://quantdesk2.vercel.app/liga/libros)** — every book, expandable: the research trail step by step, the plan, the weights, the theses, the orders, the rails it hit
+- **[/liga/equity](https://quantdesk2.vercel.app/liga/equity)** — intraday equity per agent, sampled through the session
 
 ---
 
-## Technical architecture
+## The rest of QuantDesk
 
-**Frontend**
-- Vanilla JS + HTML5 Canvas for custom charts
-- Deployed on Vercel (auto-deploy from `main`)
+Research tooling aimed at Spanish-speaking retail investors, who have no native-language equivalent of what institutional desks take for granted.
 
-**Backend**
-- Node.js serverless functions on Vercel
-- Direct integration with Finnhub, Yahoo Finance, CoinGecko, SEC EDGAR
-- FRED API for macro time series
-- Anthropic Claude API for synthesis and institutional insight generation
-- Scheduled jobs (crons): daily ones plus the Arena watchdog (every 5 minutes
-  during market hours) in `vercel.json`; the screener refresh in GitHub
-  Actions — health at `/api/cron-status`. See [`docs/crons.md`](docs/crons.md)
-  for the full map and why each one lives where it does.
+**Research agents**
 
-**Quant models**
-- DCF with sector-aware fade and bounded WACC
-- EWMA volatility, GARCH(1,1) forecasting
-- CAPM with bounded beta (0.7–2.0) and EM risk premium adjustment
-- Cholesky decomposition for correlated Monte Carlo paths
-- Altman Z, Piotroski F, Beneish M scoring
+- **Filings** — 10-K / 10-Q / 20-F extraction with citations, LATAM coverage
+- **Fundamental** — DCF with sector-aware fade, bounded WACC, EM risk premium for LATAM ADRs, bull/base/bear scenarios
+- **Macro** — Fed cycle, yield curve, real rates, FX regimes (BRL, ARS, MXN), sector commodity context
+- **Event** — earnings calendar with beat rates, M&A signal detection, LATAM regulators (CADE, COFECE, Banxico, CNV, CVM)
+
+**Modules**
+
+- **SMART $** — insider transactions (SEC Form 4), short-selling pressure (FINRA Reg SHO), 13F moves, options positioning (put/call by OI, ATM IV, max pain). Real data only; the AI verdict is the one synthesized block and is anchored to those inputs.
+- **TRACKER** — notable open-market insider buys and quarter-over-quarter 13F diffs, straight from EDGAR, with the legal reporting lag labeled on every card
+- **SIM** — Monte Carlo with GBM, jump diffusion, regime switching
+- **SCREENER** — ~260 tickers across US / LATAM / crypto with live fundamental filters
+- **COMPARE**, **PORTFOLIO**, **AGENTS**, **GALLERY**
 
 ---
 
-## Thesis
+## Stack
 
-**LATAM is institutionally underserved.** AlphaSense ($4B valuation, $500M ARR, 6,500 enterprise clients) charges $77K/client/year and ignores Spanish-speaking retail entirely. Bloomberg ($73B) costs $24K/year and is unusable for retail. Boosted.ai ($71M raised) is B2B asset managers only.
+Vanilla JS and HTML5 Canvas on the front. Node serverless functions on Vercel. Postgres on Neon. Market data from Alpaca, Finnhub, Yahoo Finance and SEC EDGAR; macro series from FRED.
 
-**650 million Spanish speakers** — 200M+ retail investors and growing — have no native-language institutional research option.
+Crons: the Arena watchdog every 5 minutes during market hours — which is also what dispatches the three fixed decision rounds and the deterministic risk layer — plus a universe rebuild before the open, a reconcile and an event pass after it, and a nightly report. Health at `/api/cron-status`; the full map and the reasoning for where each job lives is in `docs/crons.md`.
 
-**AI-native means built differently.** Every research agent ships with quantified insights, scenario analysis, and contrarian institutional reads — not as a chatbot bolted on, but as the default output layer. Conservative bias by design protects retail from sell-side bullish bias.
-
-**Distribution channel exists.** Creator brand [@leticiatijerinam](https://tiktok.com/@leticiatijerinam) (43K, 38.7% Search traffic) provides organic acquisition for LATAM Spanish-speaking retail traders.
+Quant models: EWMA volatility, GARCH(1,1), CAPM with bounded beta, Cholesky decomposition for correlated paths, Altman Z / Piotroski F / Beneish M.
 
 ---
 
-## Status
+## Why
 
-Active development. 4 specialized research agents shipped in production over the last 30 days. Solo technical founder.
+650 million Spanish speakers, 200M+ of them retail investors, and no institutional-grade research in their own language. Meanwhile the tooling that exists is priced per seat for enterprises and built chat-first as an afterthought.
 
-
----
-
-## Founder
-
-**Leticia Tijerina** — Monterrey, MX
-
-Self-taught Python quant. Built a 70+ iteration trading bot for Polymarket BTC prediction markets (67% accuracy on spot momentum signals, proprietary Kappa metric for order book manipulation detection). 14+ years in fashion (Derek Lam NYC, ICONY co-founder, 500K monthly Pinterest views). MBA Esden, BA Tecnológico de Monterrey.
-
-- Twitter: [@0xLeticia](https://x.com/0xLeticia)
-- TikTok: [@leticiatijerinam](https://tiktok.com/@leticiatijerinam) (43K, LATAM tech/finance creator)
-- LinkedIn: [leticia-tijerina-martinez](https://www.linkedin.com/in/leticia-tijerina-martinez-46999757/)
+The Arena exists for a narrower reason: everyone has an opinion about which model is smartest, and almost nobody is measuring it against a null hypothesis. This one is.
 
 ---
 
-## License
+## Built by
+
+**Leticia Tijerina** — Monterrey, MX. Self-taught Python quant.
+
+[TikTok @leticiatijerinam](https://tiktok.com/@leticiatijerinam) · [Twitter @0xLeticia](https://twitter.com/0xLeticia) · [LinkedIn](https://linkedin.com/in/leticia-tijerina-martinez)
 
 Proprietary — all rights reserved. Not open source.
