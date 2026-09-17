@@ -515,12 +515,47 @@ function recortaFila(fila, maxClaves = 24, maxLargo = 80) {
 // palabras clave inventadas: salen de mercados que existen y ya resolvieron.
 // El barrido por paginación no sirve para encontrarlos (ver el tope de offset
 // en docs/earnings-beat-scope.md §1.1); la búsqueda dirigida sí.
+// Dos PLANTILLAS observadas en los mercados que el censo ya trajo, y la
+// diferencia importa porque una no matchea a la otra:
+//   1. pregunta:  "Will Costco (COST) beat quarterly earnings?"
+//   2. slug NKE:  "nke-quarterly-earnings-gaap-eps-…"
+// La 2 no dice "beat" en ninguna parte: buscar solo por "beat" se comería
+// media población sin que nada fallara. De ahí las frases de abajo, y de ahí
+// el camino D (búsqueda por ticker), que es el que atraviesa las dos formas.
 const FRASES_BUSQUEDA = [
   'beat quarterly earnings',
   'beat its quarterly EPS estimate',
-  'quarterly EPS estimate',
+  'quarterly earnings GAAP EPS',
+  'quarterly earnings',
+  'GAAP EPS',
   'earnings',
 ];
+
+// ── Autodefensa contra el "5" (cicatriz de la 2ª corrida) ─────────────────
+// Si TODAS las respuestas traen el mismo número y ese número es menor que el
+// límite que pedimos, no estamos viendo el catálogo: estamos viendo un tope
+// —nuestro o del servidor— disfrazado de resultado. El censo tiene que
+// gritarlo solo; confiar en que alguien note la coincidencia a ojo ya falló
+// una vez.
+function detectaTopeUniforme(intentos, limitePedido, minIntentos = 3) {
+  const conteos = (intentos || [])
+    .filter((i) => i && i.status === 'ok' && typeof i.filas === 'number')
+    .map((i) => i.filas);
+  if (conteos.length < minIntentos) return null;
+  const distintos = [...new Set(conteos)];
+  if (distintos.length !== 1) return null;
+  const valor = distintos[0];
+  if (valor === 0) return null;                       // cero uniforme es otra cosa
+  if (limitePedido && valor >= limitePedido) return null;  // llenó el límite: normal
+  return {
+    valor,
+    intentos: conteos.length,
+    limite_pedido: limitePedido || null,
+    aviso: `Las ${conteos.length} respuestas trajeron EXACTAMENTE ${valor} filas` +
+      (limitePedido ? `, por debajo del límite pedido (${limitePedido})` : '') +
+      '. Eso no es un catálogo, es un tope: del cliente o el default del servidor. Los conteos NO son legibles hasta resolverlo.',
+  };
+}
 
 // Tags/categorías que trae un mercado crudo, en cualquiera de las formas en
 // que Gamma los cuelga (del mercado, o del evento que lo contiene).
@@ -583,13 +618,21 @@ function resumenMarkdown(c) {
     L.push('');
   }
 
+  if (c.sospecha_de_tope) {
+    L.push('## ⚠ LOS CONTEOS NO SON LEGIBLES');
+    L.push('');
+    L.push('> ' + c.sospecha_de_tope.aviso);
+    L.push('');
+  }
   L.push('## 1. ¿Contesta la API pública de Polymarket?');
   L.push('');
-  L.push('| Estrategia | Endpoint | Status | HTTP | ms | Filas |');
+  L.push('| Estrategia | Endpoint | Status | HTTP | ms | Filas (topadas) |');
   L.push('|---|---|---|---|---|---|');
   for (const s of c.sondas || []) {
-    L.push(`| ${s.estrategia} | ${s.endpoint} | ${s.status} | ${s.http ?? '—'} | ${s.ms ?? '—'} | ${s.filas ?? '—'} |`);
+    L.push(`| ${s.estrategia} | ${s.endpoint} | ${s.status} | ${s.http ?? '—'} | ${s.ms ?? '—'} | ${s.filas ?? '—'}${s.limite_de_la_sonda ? ' / tope ' + s.limite_de_la_sonda : ''} |`);
   }
+  L.push('');
+  L.push('> Las filas de una sonda están **topadas por el límite de la propia sonda**: miden el ESQUEMA, no el catálogo. Si todas muestran el mismo número, es el tope hablando — no un hallazgo.');
   L.push('');
   const conAuth = (c.sondas || []).filter((s) => s.status === 'auth');
   L.push(`**Auth:** ${conAuth.length ? 'SÍ la pide (' + conAuth.map((s) => s.endpoint).join(', ') + ')' : 'no la pidió en esta corrida — lectura pública.'}`);
@@ -613,10 +656,27 @@ function resumenMarkdown(c) {
     const filas = i.filas === undefined ? '—' : `${i.filas}${i.de_earnings !== undefined ? ' (' + i.de_earnings + ' de earnings)' : ''}`;
     L.push(`| tags | ${etiqueta} | ${i.status || '—'} | ${filas} |`);
   }
+  for (const i of (d.simbolo && d.simbolo.intentos) || []) {
+    const et = i.etiqueta ? `${i.etiqueta}${i.pagina ? ' p' + i.pagina : ''}` : (i.nota || '—');
+    L.push(`| símbolo | ${et} | ${i.status || '—'}${i.http ? '/' + i.http : ''} | ${i.filas ?? '—'}${i.nuevos !== undefined ? ' (' + i.nuevos + ' nuevos)' : ''} |`);
+  }
   for (const i of (d.cluster && d.cluster.intentos) || []) {
     L.push(`| racimo | ${i.via || i.nota || '—'} | ${i.status || '—'}${i.http ? '/' + i.http : ''} | ${i.filas ?? '—'} |`);
   }
   L.push('');
+  if (d.simbolo) {
+    L.push(`Búsqueda por símbolo: **${d.simbolo.probados ?? 0} de ${d.simbolo.de ?? 0}** símbolos del universo v0 probados uno por uno.`);
+    L.push('');
+  }
+  // Tags y racimo pueden fallar por dos motivos MUY distintos: no había
+  // semillas, o las semillas no traen tags. Sin este conteo no se distinguen.
+  const sem = d.semillas;
+  if (sem) {
+    L.push(`Semillas para tags/racimo: **${sem.total}** mercados de earnings (${sem.usadas} usadas) · con tags: **${sem.con_tags}** · con evento/serie: **${sem.con_racimo}**.`);
+    if (sem.total > 0 && sem.con_tags === 0) L.push('');
+    if (sem.total > 0 && sem.con_tags === 0) L.push('> Había semillas y **ninguna trae tags**: el camino B no existe para estos mercados, no es falta de material.');
+    L.push('');
+  }
   const porCamino = Object.entries(d.mercados_de_earnings_por_camino || {});
   L.push(`**Mercados de earnings por camino:** ${porCamino.length ? porCamino.map(([k, v]) => k + '=' + v).join(' · ') : 'ninguno'}.`);
   if (d.estrategia_ganadora) {
@@ -691,6 +751,16 @@ function resumenMarkdown(c) {
     if (motivos.length) {
       L.push('');
       L.push('Sin cruce, por motivo: ' + motivos.map(([k, v]) => `${k}=${v}`).join(' · '));
+      // Los dos motivos apuntan a culpables opuestos, y de eso depende qué se
+      // arregla después: nuestra cosecha, o la fuente externa.
+      const fueraDeUniverso = x.sin_cruce.simbolo_no_esta_en_pead_earnings || 0;
+      const fueraDeFecha = x.sin_cruce.fecha_fuera_de_tolerancia || 0;
+      L.push('');
+      if (fueraDeUniverso > fueraDeFecha) {
+        L.push(`> **El cuello de botella es NUESTRO universo, no Polymarket.** ${fueraDeUniverso} mercados quedaron fuera porque su símbolo no está en \`pead_earnings\` (universo v0 = 99 símbolos). Ampliar la cosecha del PEAD sube el cruce; pelearse con Gamma no.`);
+      } else if (fueraDeFecha > 0) {
+        L.push(`> El grueso (${fueraDeFecha}) cruza de símbolo pero **no de fecha**: revisar la tolerancia de ±${(c.criterios_congelados && c.criterios_congelados.tolerancia_dias_cruce) ?? 1} día antes de tocar el universo.`);
+      }
     }
     L.push('');
     const cand = c.criterios_congelados ? c.criterios_congelados.min_mercados_cruzados : 100;
@@ -698,7 +768,9 @@ function resumenMarkdown(c) {
   }
   L.push('');
 
-  L.push('## 6. Revisiones de estimados: ¿hay fuente point-in-time gratis?');
+  L.push('## 6. Revisiones de estimados — **CERRADO: fuera de v1**');
+  L.push('');
+  L.push('Resuelto con la fila cruda a la vista: lo que publica Alpha Vantage son **conteos de revisiones y promedios ancla** (7/30 días), **sin valores fechados**. No es point-in-time y no se va a fingir que lo es. La sonda se sigue corriendo por si alguna fuente cambia, pero **el feature no entra a v1**.');
   L.push('');
   L.push('| Fuente | Status | HTTP | ¿PIT? | Motivo |');
   L.push('|---|---|---|---|---|');
@@ -751,5 +823,5 @@ export {
   normalizaMercado, indiceYes, tokenYes, outcomeResuelto, pareceEarnings,
   construyeIndiceNombres, tickerExplicito, resuelveSimbolo,
   extraeConsensoEps, precioEnT24h, cruzaConPead, evaluaFuentePIT, resumenMarkdown,
-  esFecha, recortaFila, extraeTags, extraeCluster, FRASES_BUSQUEDA,
+  esFecha, recortaFila, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
 };

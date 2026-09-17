@@ -1,6 +1,6 @@
 # SCOPE — Experimento "earnings-beat": ¿QuantDesk le gana a Polymarket?
 
-> **Estado: FASE 0, segunda vuelta.** La primera corrida desde Vercel dio
+> **Estado: FASE 0, tercera vuelta.** La primera corrida desde Vercel dio
 > **INCONCLUSO por descubrimiento, no por fuente** (§1.0): el barrido por
 > paginación se quedó ciego y su "0 mercados de earnings" no era un hallazgo.
 > Esta versión cambia el descubrimiento por **búsqueda dirigida** y corrige un
@@ -105,6 +105,40 @@ dirigida** (§1.1b). El barrido queda como **control opcional** (`&barrido=1`),
 nunca como el método — y cuando corre, sirve sobre todo para volver a registrar
 el tope.
 
+### 1.0b El "5" de la segunda corrida: un tope del cliente, no un catálogo
+
+La segunda corrida devolvió **exactamente 5 filas en toda respuesta** — las 4
+sondas del §1 y las 4 búsquedas del §2. Los "10 mercados de earnings" eran
+**4×5 deduplicados**, no una población. Dos causas distintas, y se arreglan
+distinto:
+
+| Causa | Dónde | Por qué pasó |
+|---|---|---|
+| `limit: 5` explícito | las sondas del §1 | mío, para que las probes fueran baratas |
+| `limit_per_type` **ausente** | la búsqueda del §2 | lo quité en la vuelta anterior "para no inventar parámetros", y sin él public-search sirve su **default**, que resultó ser 5 por tipo |
+
+> **La lección no es "inventar parámetros".** Es que **no mandar un parámetro
+> tampoco es neutral**: elige el default del servidor y lo disfraza de
+> resultado. Un límite implícito es peor que uno explícito, porque el
+> explícito se ve en el diff. Ahora el límite se **manda y se verifica**, con
+> reintento pelado registrado si el servidor lo rechaza.
+
+Y lo que la corrida sí dejó, que es material de verdad: el descubrimiento
+dirigido **funciona**. Mercados con símbolo, consenso en la descripción, token
+del Yes, y **precio real a T-24h** en COST y MU con 72 puntos de CLOB. El
+problema nunca fue la fuente.
+
+**Tres cosas cambian a partir de esto:**
+
+1. La búsqueda **pagina** hasta agotar resultados, topar 422 o detectar que
+   *la paginación no avanza* (si la página 2 trae los mismos ids que la 1,
+   `public-search` no pagina: se declara y se corta, no se asume).
+2. Las sondas publican **su propio tope** (`limite_de_la_sonda`) al lado del
+   conteo, para que un número topado no se vuelva a leer como el tamaño del
+   universo.
+3. Entra el **camino D: búsqueda por símbolo** (§1.1b), que es el que apunta a
+   la pregunta que decide el candado.
+
 ### 1.1 Censo de la API pública de Polymarket (hipótesis del smoke)
 
 Son **dos** APIs distintas y confundirlas es la trampa principal:
@@ -144,9 +178,9 @@ cadencia conservadora y la mide con 429s — no con un número inventado.
 earnings cuya fecha no se pudo leer). **No se descartan** —se verían como
 inexistentes— pero quedan fuera del cruce y de los ejemplos por su cuenta.
 
-### 1.1b Descubrimiento dirigido: tres caminos, medidos por separado
+### 1.1b Descubrimiento dirigido: cuatro caminos, medidos por separado
 
-El método ya no es "traer todo y filtrar". Son tres caminos, y cada uno reporta
+El método ya no es "traer todo y filtrar". Son cuatro caminos, y cada uno reporta
 **cuántos mercados de earnings aportó**, para que la Fase 1 herede el que
 funciona en vez del que suena bien:
 
@@ -155,6 +189,27 @@ funciona en vez del que suena bien:
 | **A. Búsqueda** | `gamma/public-search` con las **frases reales** con que se redactan estos mercados: `"beat quarterly earnings"`, `"beat its quarterly EPS estimate"` (+ dos genéricas). | Si la búsqueda solo indexa mercados vivos, los resueltos no aparecen. |
 | **B. Tags** | De los mercados que A encontró saca sus **tags** (del mercado y del evento), y pagina **DENTRO** del filtro. | Si Gamma ignora `tag_id`, devuelve catálogo suelto: se detecta porque aporta filas pero **0 de earnings**. |
 | **C. Racimo** | Desde un mercado de earnings salta a su **evento/serie** para enumerar los hermanos. | Si el mercado no expone `eventId`/`seriesId`, el camino se declara **no disponible**. |
+| **D. Símbolo** | Una búsqueda **por cada símbolo del universo v0** (`"<TICKER> quarterly earnings"`). | Si la búsqueda no indexa el ticker, aporta 0 — y eso también es dato. |
+
+**Por qué el camino D es el que importa.** La pregunta que decide el candado no
+es "¿cuántos mercados de earnings hay en Polymarket?" sino **"¿cuántos hay de
+las empresas que nosotros podemos modelar?"**. Buscar ticker por ticker es la
+consulta más específica que podemos hacer, y atraviesa **las dos plantillas
+observadas**, que es justo lo que una sola frase no logra:
+
+| # | Forma | Ejemplo |
+|---|---|---|
+| 1 | pregunta con ticker | `Will Costco (COST) beat quarterly earnings?` |
+| 2 | slug sin "beat" | `nke-quarterly-earnings-gaap-eps-…` |
+
+La forma 2 **no dice "beat" en ninguna parte**: buscar solo por `"beat"` se
+comería media población sin que nada fallara. De ahí que las frases del camino
+A incluyan también `"quarterly earnings"` y `"GAAP EPS"`, y de ahí el camino D.
+
+**Semillas, declaradas:** tags y racimo dependen de lo que A y D encuentren. El
+censo publica cuántas semillas hubo y **cuántas traen tags o evento**, para
+distinguir *"no había semillas"* de *"las semillas no traen tags"* — la vuelta
+pasada esos dos casos se veían igual y no son lo mismo.
 
 Dos decisiones que sostienen la honestidad del conteo:
 
@@ -164,7 +219,7 @@ Dos decisiones que sostienen la honestidad del conteo:
 - **Paginar dentro del filtro sí alcanza**: el tope de offset muerde al
   catálogo entero, no a un tag con cientos de mercados.
 
-Los tres se unen **deduplicando por `id`**, y cada mercado recuerda **por qué
+Los cuatro se unen **deduplicando por `id`**, y cada mercado recuerda **por qué
 camino entró** (`via`). De ahí sale `estrategia_ganadora`, que es el dato que
 importa para la Fase 1.
 
@@ -200,6 +255,17 @@ con el candidato más cercano cuando hay varios. La tolerancia no es cosmética:
 la **fecha de resolución del mercado no es la fecha del reporte** — un mercado
 AMC suele resolver al día siguiente.
 
+**Los dos motivos de no-cruce apuntan a culpables opuestos**, y de eso depende
+qué se arregla después:
+
+| Motivo | Quién es el cuello de botella | Qué se hace |
+|---|---|---|
+| `simbolo_no_esta_en_pead_earnings` | **nuestro** universo v0 (99 símbolos) | ampliar la cosecha del PEAD sube el cruce; pelearse con Gamma no |
+| `fecha_fuera_de_tolerancia` | el emparejamiento | revisar la tolerancia de ±1 día antes de tocar el universo |
+
+El markdown del censo dice cuál de los dos manda, en letras, para que la
+decisión no dependa de leer bien una tabla de conteos.
+
 Se reportan tres números distintos, que responden tres preguntas distintas:
 
 - `mercados_de_earnings_en_ventana` — cuántos hay (piso, si truncó).
@@ -219,7 +285,16 @@ que esos mercados salen marcados `symbol_ambiguo` y se cuentan aparte. Si el
 `esquema_observado` del smoke revela un campo de ticker en Gamma, la Fase 1 lo
 usa y esta heurística se retira.
 
-### 1.4 Revisiones de estimados: la regla se fijó ANTES de probar
+### 1.4 Revisiones de estimados — **CERRADO: fuera de v1**
+
+> **Veredicto, con la fila cruda a la vista:** lo que publica Alpha Vantage son
+> **conteos de revisiones y promedios ancla** (7/30 días), **sin valores
+> fechados**. No cumple la regla congelada, y no se va a fingir que sí. **Las
+> revisiones quedan FUERA de v1.** La sonda se sigue corriendo (es barata y una
+> fuente puede cambiar), pero el veredicto de la Fase 0 ya no depende de ella y
+> el modelo v1 no lleva ese feature.
+
+#### La regla, y por qué se fijó ANTES de probar
 
 Regla dura, congelada en `evaluaFuentePIT()` y testeada:
 
@@ -288,6 +363,8 @@ curl -s -H "Authorization: Bearer $CRON_SECRET" \
 # resumen en español, se abre directo en el navegador:
 #   /api/earnings-beat?smoke=1&format=md&secret=<CRON_SECRET>
 # opcionales: &meses=12 · &desde=YYYY-MM-DD · &ejemplos=3
+# &simbolos=99 busca uno por uno los símbolos del universo v0 (camino D, el que
+#   decide el candado). &simbolos=0 lo apaga si hay poco presupuesto de tiempo.
 # &barrido=1 corre además el barrido por offset como CONTROL (apagado por
 #   defecto: topa en 422 y ve ~500 de decenas de miles — ciego, no concluyente)
 ```
@@ -316,7 +393,7 @@ Se lee el censo contra esto. **El censo reporta; no se auto-aprueba.**
 | Resultado | Condición |
 |---|---|
 | **GO a Fase 1** | Gamma y CLOB contestan sin auth, hay mercados de earnings resueltos en la ventana con outcome legible y token del Yes, **y** al menos un ejemplo trae precio del Yes a T-24h. |
-| **INCONCLUSO por descubrimiento** | Los tres caminos de §1.1b aportaron 0 mercados de earnings, o solo A funcionó y devolvió un puñado. **Un cero no es un hallazgo mientras el método no sepa buscar**: se ajustan frases/tags y se re-corre. Éste fue el veredicto de la primera corrida. |
+| **INCONCLUSO por descubrimiento** | Los caminos de §1.1b aportaron 0 mercados de earnings; o solo A funcionó y devolvió un puñado; o **todas las respuestas traen el mismo número redondo** (señal de tope del cliente o default del servidor, §1.0b). **Un cero no es un hallazgo mientras el método no sepa buscar**: se ajustan frases/tags y se re-corre. Éste fue el veredicto de la primera corrida. |
 | **INCONCLUSO por datos nuestros** | `pead_earnings` está vacía → el cruce no es medible todavía. Se re-corre después de la cosecha del PEAD. |
 | **NO-GO** | Falta estructuralmente algo **y se sabe que se buscó bien**: mercados encontrados pero sin `clobTokenIds`, sin fecha de resolución, sin outcome; o la lectura exige auth de pago. |
 
@@ -386,7 +463,7 @@ Logística simple. **Solo features calculables con datos anteriores a
 | Racha actual de beats/misses | `pead_earnings` | idem |
 | Sorpresa % promedio | `pead_earnings` | idem |
 | Pares: % de beats de empresas del **mismo sector Finnhub** que ya reportaron antes en la misma temporada (mismo mes calendario) | `pead_earnings` + sector de Finnhub | solo empresas con `reported_date < report_date` |
-| Revisiones de estimados | — | **solo si la Fase 0 encontró fuente PIT.** Si no: fuera, documentado |
+| ~~Revisiones de estimados~~ | — | **FUERA de v1** (§1.4, cerrado): no hay fuente PIT gratis. No se sustituye por un proxy |
 
 ### Partición temporal
 
