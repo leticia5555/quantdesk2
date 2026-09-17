@@ -64,10 +64,13 @@ import {
   upsertFinancieros, insertarPrecios, insertarDistribuciones, ultimaFechaPrecios,
   marcarLedger, clavesHechas, clavesAgotadas, ledgerResumen, financierosCrudos,
   actualizarFinancieros, formasDelCrudo, financieroCrudo, financieroQueSiSirvio,
-  contarFinancieros,
+  contarFinancieros, fechasRebalanceo, cierresConEps, seriesIcs, medianasImporte,
   presupuesto, gastar, cobertura, leerMeta, guardarMeta,
 } from './_lib/bmv-db.js';
 
+import {
+  analizarElegibilidad, LAG_DIAS, UMBRAL_IMPORTE,
+} from './_lib/bmv-elegibilidad.js';
 import EMISORAS_ICS from './_lib/emisoras.json' with { type: 'json' };
 
 export const maxDuration = 300;
@@ -851,6 +854,111 @@ function contar(lista) {
   return m;
 }
 
+/* ═══════════════ job: elegibilidad (SELECT-only, 0 créditos) ═══════════════ */
+
+// La ventana de rebalanceos. Arranca en 2017-07 porque el primer TTM completo
+// necesita 4 trimestres desde 2T2016, y con el rezago de 65 días el cuarto
+// (1T2017, cierre 31-mar) recién está disponible el 4 de junio de 2017.
+const REBAL_DESDE = /* date-lint-ok: arranque declarado de la ventana de rebalanceos, fijado por la cobertura de datos */ '2017-07-01';
+const REBAL_HASTA = /* date-lint-ok: cierre declarado de la ventana de rebalanceos */ '2026-09-30';
+
+/**
+ * `?job=elegibilidad` — SELECT-only, cero créditos, cero retornos.
+ *
+ * Contesta la pregunta que decide si el backtest puede concluir algo, ANTES de
+ * correrlo: ¿cuántos nombres sobreviven, en cada rebalanceo, a las dos puertas
+ * del universo? Si el universo elegible mediano queda por debajo de 16, la Fase
+ * B **no se corre** (§3.4); si el piso manda en más de la mitad de las fechas,
+ * el veredicto se etiqueta «no probó un quintil» pase lo que pase.
+ *
+ * Que no mire un solo retorno es lo que permite recalibrar el umbral de
+ * liquidez sin contaminarse: todavía no hay resultados que mirar.
+ */
+async function jobElegibilidad(req) {
+  const q = (req && req.query) || {};
+  const desde = q.desde ? String(q.desde).slice(0, 10) : REBAL_DESDE;
+  const hasta = q.hasta ? String(q.hasta).slice(0, 10) : REBAL_HASTA;
+  const umbral = Number(q.umbral || UMBRAL_IMPORTE);
+
+  const [fechas, cierres, series, medianasRaw] = await Promise.all([
+    fechasRebalanceo(desde, hasta),
+    cierresConEps(),
+    seriesIcs(),
+    medianasImporte(desde, hasta),
+  ]);
+
+  const cierresPorEmisora = new Map();
+  for (const c of cierres) {
+    if (!cierresPorEmisora.has(c.emisora)) cierresPorEmisora.set(c.emisora, []);
+    cierresPorEmisora.get(c.emisora).push(c.fecha_cierre);
+  }
+  const medianas = new Map();
+  for (const m of medianasRaw) {
+    medianas.set(`${m.fecha}|${m.emisora_serie}`, m.mediana === null ? null : Number(m.mediana));
+  }
+
+  const out = analizarElegibilidad({
+    fechas, cierresPorEmisora, medianas, series,
+    umbralImporte: umbral, lagDias: LAG_DIAS,
+  });
+
+  return {
+    job: 'elegibilidad',
+    creditos: 0,
+    ventana: { desde, hasta },
+    insumos: {
+      fechas_rebalanceo: fechas.length,
+      series_ics: series.length,
+      emisoras_con_eps: cierresPorEmisora.size,
+      medianas_calculadas: medianasRaw.length,
+    },
+    ...out,
+  };
+}
+
+/** El reporte de elegibilidad en markdown, que es como se lee de un vistazo. */
+function elegibilidadMd(e) {
+  const pct = (x) => (x === null || x === undefined ? 'n/d' : `${(100 * x).toFixed(1)}%`);
+  const L = [];
+  L.push('# Elegibilidad por rebalanceo (Fase A → B)', '');
+
+  const v = e.veredicto;
+  L.push(v.puede_correrse_fase_b
+    ? '> ## ✅ Las puertas previas pasan: la Fase B se puede correr'
+    : '> ## ⛔ Hay puertas que NO pasan', '>');
+  for (const p of v.puertas) {
+    const val = typeof p.valor === 'number' && p.valor <= 1 && p.puerta.includes('%')
+      ? pct(p.valor) : p.valor;
+    L.push(`> · ${p.pasa ? '✅' : '❌'} **${p.puerta}** — ${val}${p.consecuencia ? ` → ${p.consecuencia}` : ''}`);
+  }
+  L.push('>', '');
+
+  const r = e.resumen;
+  L.push('## Resumen', '', '| | |', '|---|---:|');
+  L.push(`| Rebalanceos | ${e.rebalanceos} |`);
+  L.push(`| Universo mediano (TTM + precio) | ${r.mediana_universo} |`);
+  L.push(`| **Elegibles mediano** (tras liquidez) | **${r.mediana_elegibles}** |`);
+  L.push(`| Elegibles mín / máx | ${r.minimo_elegibles} / ${r.maximo_elegibles} |`);
+  L.push(`| Canasta mediana | ${r.mediana_canasta} |`);
+  L.push(`| Fechas donde mandó el piso | ${pct(r.pct_fechas_piso)} |`);
+  L.push(`| Excluido por liquidez (promedio) | ${pct(r.pct_excluido_liquidez)} |`);
+  L.push('');
+
+  L.push('## Régimen de la canasta', '', '| Régimen | Fechas |', '|---|---:|');
+  for (const [k, n] of Object.entries(r.regimenes)) L.push(`| ${k} | ${n} |`);
+  L.push('');
+
+  L.push('## Por rebalanceo', '',
+    '| Fecha | Con TTM | Universo | Elegibles | Excl. liquidez | Canasta | Régimen |',
+    '|---|---:|---:|---:|---:|---:|---|');
+  for (const f of e.por_fecha) {
+    L.push(`| ${f.fecha} | ${f.con_ttm} | ${f.universo} | ${f.elegibles} | ${f.excluidos_liquidez} (${pct(f.pct_excluido)}) | ${f.canasta} | ${f.regimen} |`);
+  }
+  L.push('');
+  L.push(`Criterios: rezago **${e.criterios.lag_dias} días** · umbral **${e.criterios.umbral_importe.toLocaleString('es-MX')}** pesos · canasta \`clamp(0.20 × E, ${e.criterios.piso}, ${e.criterios.techo})\` · TTM = ${e.criterios.trimestres_ttm} trimestres.`);
+  return L.join('\n');
+}
+
 /* ═══════════════ job: inspect (cero créditos, NO normaliza) ═══════════════ */
 
 // Los tres campos que se miran literales: uno de `posicion`, uno de
@@ -1482,7 +1590,10 @@ function coberturaMd(c, est) {
   L.push('> ## Léase esto antes que los números', '>');
   L.push(`> · **Fecha ex aproximada en ${d0.pct_ex_aproximada || 0}% de los repartos.** La API sólo trae \`fechaexcupon\` en el bloque "reciente"; el resto es pago − 3 días. Aplica igual a canasta y benchmark, así que se cancela a primer orden en el exceso — pero es una aproximación, no un dato.`);
   if (d0.requieren_conversion) {
-    L.push(`> · **${d0.requieren_conversion} repartos en moneda extranjera.** No se convierten ni se tratan como pesos: quedan marcados \`requiere_conversion\` y **fuera** del retorno total de la v1.`);
+    // "en series ICS" no es un adorno: este conteo viene de una consulta unida
+    // a `tipo_valor_id = '1'`, mientras que `dividendos_por_divisa` cuenta TODAS
+    // las series. Sin la etiqueta, los dos números parecen contradecirse.
+    L.push(`> · **${d0.requieren_conversion} repartos en moneda extranjera, en series ICS.** No se convierten ni se tratan como pesos: quedan marcados \`requiere_conversion\` y **fuera** del retorno total de la v1. (El total incluyendo no-ICS sale en la tabla por divisa.)`);
   }
   const reemb = (d0.por_categoria || []).find((x) => x.categoria === 'reembolso');
   if (reemb) {
@@ -1575,7 +1686,7 @@ function coberturaMd(c, est) {
   for (const r of c.ledger.por_estado) L.push(`| ${r.job} | ${r.estado} | ${r.n} | ${r.requests} |`);
   if (c.ledger.errores.length) {
     L.push('', '### Errores recientes', '', '| Job | Emisora | Clave | Intentos | Error |', '|---|---|---|---:|---|');
-    for (const e of c.ledger.errores) L.push(`| ${e.job} | ${e.emisora} | ${e.clave} | ${e.intentos} | ${String(e.error_msg || '').slice(0, 80)} |`);
+    for (const e of c.ledger.errores) L.push(`| ${e.job} | ${e.emisora} | ${e.clave} | ${e.intentos} | ${String(e.error_msg || '').replace(/\|/g, '¦').slice(0, 300)} |`);
   }
   if (est) {
     L.push('', '## Presupuesto', '',
@@ -1594,6 +1705,7 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Método no soportado.' });
 
   const job = String((req.query && req.query.job) || '').toLowerCase();
+  const q2 = (req.query) || {};
   const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse', 'reparse-fin', 'inspect']);
 
   try {
@@ -1647,6 +1759,14 @@ export default async function handler(req, res) {
       return res.status(200).json({ job: 'cobertura', ...c });
     }
 
+    if (job === 'elegibilidad') {
+      const e = await jobElegibilidad(req);
+      if (String(q2.format || '') === 'md') {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        return res.status(200).send(elegibilidadMd(e));
+      }
+      return res.status(200).json(e);
+    }
     if (job === 'inspect') return res.status(200).json(await jobInspect(req));
     if (job === 'reparse-fin') return res.status(200).json(await jobReparseFinancieros(req));
     if (job === 'reparse') return res.status(200).json(await jobReparse());
@@ -1671,6 +1791,7 @@ export default async function handler(req, res) {
         'reparse': 'protegido, CERO créditos: re-deriva el censo desde el crudo guardado',
         'reparse-fin': 'protegido, CERO créditos: re-normaliza los financieros desde el crudo guardado',
         'inspect': 'protegido, CERO créditos: describe la forma del crudo guardado, sin normalizar nada',
+        'elegibilidad': 'público, SELECT-only y CERO créditos: simula los rebalanceos y dice si la Fase B puede concluir (&format=md, &umbral=N)',
       },
       token_configurado: !!process.env.DATABURSATIL_TOKEN,
       escritura_habilitada: !!adminSecret(),
@@ -1691,7 +1812,8 @@ export {
   // importar sólo se ve ejecutando (ya nos pasó con la colisión de `fila`).
   jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros, jobHistoricos,
   jobReparse,
-  contar, describirCrudo, estimarConsumo, filaCenso, filasDelCenso, literal,
+  contar, describirCrudo, elegibilidadMd, estimarConsumo, filaCenso, filasDelCenso,
+  jobElegibilidad, literal,
   pareceClave, pareceSerie, tipoDe,
   pendientesFinancieros,
   seriesDeEmisora, muestraChica, nuevaCartera,
