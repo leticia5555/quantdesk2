@@ -939,10 +939,13 @@ async function jobElegibilidad(req) {
       elegibles_max: resultado.resumen.maximo_elegibles,
       pct_excluido: resultado.resumen.pct_excluido_liquidez,
       pct_fechas_piso: resultado.resumen.pct_fechas_piso,
+      pct_fechas_techo: resultado.resumen.pct_fechas_techo,
+      pct_fechas_quintil: resultado.resumen.pct_fechas_quintil,
       canasta_mediana: resultado.resumen.mediana_canasta,
       regimenes: resultado.resumen.regimenes,
-      pasa_tripwire: resultado.veredicto.puertas.find((p) => p.puerta.includes('liquidez')).pasa,
-      pasa_piso: resultado.veredicto.puertas.find((p) => p.puerta.includes('piso')).pasa,
+      regimen_dominante: resultado.resumen.regimen && resultado.resumen.regimen.dominante,
+      etiqueta: resultado.veredicto.etiqueta_veredicto,
+      pasa_regimen: resultado.veredicto.puertas.find((p) => p.puerta.includes('techo')).pasa,
       puede_correrse_fase_b: resultado.veredicto.puede_correrse_fase_b,
     })),
     // Iguales en las tres corridas (no dependen del umbral), así que van una vez.
@@ -950,7 +953,8 @@ async function jobElegibilidad(req) {
     exigencias: corridas[0].resultado.exigencias,
     series_excluidas: corridas[0].resultado.series_excluidas,
     criterios: corridas[0].resultado.criterios,
-    nota: 'La parte cara (medianas de 3 meses) se calculó UNA vez y se reutilizó para los tres umbrales.',
+    nota: 'La parte cara (medianas de 3 meses) se calculó UNA vez y se reutilizó para todos los umbrales. '
+      + `El umbral CONGELADO es ${UMBRAL_IMPORTE.toLocaleString('es-MX')}: esta tabla es documentación de qué habría pasado con cada valor, no un menú para elegir.`,
   };
 }
 
@@ -962,19 +966,25 @@ function comparativaMd(e) {
   L.push('# Umbral de liquidez: tabla comparativa', '');
   L.push(`Universo mediano (TTM + precio): **${e.universo_mediano}** · rebalanceos: **${e.insumos.fechas_rebalanceo}**`, '');
 
+  L.push(`> **El umbral congelado es ${mx(e.criterios.umbral_importe)}** (17-sep-2026), fijado por operabilidad:`);
+  L.push('> a 1 MM de importe mediano diario, una posición de ~$80,000 pesos es <10% del volumen del día.');
+  L.push('> Esta tabla NO es un menú para elegir — es el registro de qué habría pasado con cada valor.', '>');
+
   const x = e.exigencias || {};
-  L.push('> ## Qué exige cada puerta, en número de elegibles', '>');
-  L.push(`> · Para que **mande el quintil** (y no el piso): **≥ ${x.elegibles_para_que_mande_el_quintil}**`);
-  L.push(`> · Para **pasar el tripwire** (≤33% excluido): **≥ ${x.elegibles_para_pasar_el_tripwire}**`);
-  L.push(`> · La puerta que manda es **${x.puerta_que_manda}**. Con ${x.elegibles_para_pasar_el_tripwire} elegibles el régimen sería \`${x.regimen_resultante_en_el_tripwire}\`, no \`quintil\`.`);
+  if (x.ventana_del_quintil) {
+    L.push(`> El régimen \`quintil\` sólo manda entre **${x.ventana_del_quintil.min} y ${x.ventana_del_quintil.max}** elegibles`);
+    L.push(`> (por debajo manda el piso de ${e.criterios.piso}, por encima el techo de ${e.criterios.techo}).`);
+  }
   L.push('>', '');
 
-  L.push('| Umbral | Elegibles mediano | % excluido | % fechas piso | Canasta mediana | Tripwire | Piso | Fase B |',
-    '|---:|---:|---:|---:|---:|:-:|:-:|:-:|');
+  L.push('| Umbral | Elegibles mediano | % excluido | % fechas piso | % fechas techo | % fechas quintil | Canasta mediana | Régimen | Fase B |',
+    '|---:|---:|---:|---:|---:|---:|---:|:--|:-:|');
   for (const c of e.comparativa) {
-    L.push(`| ${mx(c.umbral)} | ${c.elegibles_mediano} | ${pct(c.pct_excluido)} | ${pct(c.pct_fechas_piso)} | ${c.canasta_mediana} | ${c.pasa_tripwire ? '✅' : '❌'} | ${c.pasa_piso ? '✅' : '❌'} | ${c.puede_correrse_fase_b ? '✅' : '❌'} |`);
+    const reg = c.pasa_regimen ? 'quintil o mixto' : `**${c.regimen_dominante}**`;
+    L.push(`| ${mx(c.umbral)} | ${c.elegibles_mediano} | ${pct(c.pct_excluido)} | ${pct(c.pct_fechas_piso)} | ${pct(c.pct_fechas_techo)} | ${pct(c.pct_fechas_quintil)} | ${c.canasta_mediana} | ${reg} | ${c.puede_correrse_fase_b ? '✅' : '❌'} |`);
   }
   L.push('');
+  L.push('El % excluido se reporta como diagnóstico. **Ya no es una puerta**: el tripwire del tercio se retiró el 17-sep-2026 por insatisfacible — exigía ≥86 elegibles, y con 86 el quintil topa contra el techo.', '');
   const se = e.series_excluidas || {};
   if (se.lista && se.lista.length) {
     L.push(`Series excluidas del universo: **${se.lista.join(', ')}** — ${se.motivo}.`, '');
@@ -992,6 +1002,9 @@ function elegibilidadMd(e) {
   L.push(v.puede_correrse_fase_b
     ? '> ## ✅ Las puertas previas pasan: la Fase B se puede correr'
     : '> ## ⛔ Hay puertas que NO pasan', '>');
+  if (v.etiqueta_veredicto) {
+    L.push(`> ⚠️ **El veredicto va etiquetado: «${v.etiqueta_veredicto}».** No bloquea la Fase B —el experimento es válido— pero lo que mide no es un quintil superior.`, '>');
+  }
   for (const p of v.puertas) {
     const val = typeof p.valor === 'number' && p.valor <= 1 && p.puerta.includes('%')
       ? pct(p.valor) : p.valor;
@@ -1007,12 +1020,19 @@ function elegibilidadMd(e) {
   L.push(`| Elegibles mín / máx | ${r.minimo_elegibles} / ${r.maximo_elegibles} |`);
   L.push(`| Canasta mediana | ${r.mediana_canasta} |`);
   L.push(`| Fechas donde mandó el piso | ${pct(r.pct_fechas_piso)} |`);
-  L.push(`| Excluido por liquidez (promedio) | ${pct(r.pct_excluido_liquidez)} |`);
+  L.push(`| Fechas donde mandó el techo | ${pct(r.pct_fechas_techo)} |`);
+  L.push(`| Fechas donde mandó el quintil | ${pct(r.pct_fechas_quintil)} |`);
+  L.push(`| Excluido por liquidez (promedio, diagnóstico) | ${pct(r.pct_excluido_liquidez)} |`);
   L.push('');
 
   L.push('## Régimen de la canasta', '', '| Régimen | Fechas |', '|---|---:|');
   for (const [k, n] of Object.entries(r.regimenes)) L.push(`| ${k} | ${n} |`);
   L.push('');
+  if (r.regimen && r.regimen.observacion) L.push(`> ${r.regimen.observacion}`, '');
+  if (e.exigencias && e.exigencias.ventana_del_quintil) {
+    const x = e.exigencias;
+    L.push(`El régimen \`quintil\` sólo manda entre **${x.ventana_del_quintil.min}** y **${x.ventana_del_quintil.max}** elegibles; con la mediana observada (${x.elegibles_mediano}) el régimen es \`${x.regimen_en_la_mediana}\`.`, '');
+  }
 
   L.push('## Por rebalanceo', '',
     '| Fecha | Con TTM | Universo | Elegibles | Excl. liquidez | Canasta | Régimen |',
@@ -1021,7 +1041,8 @@ function elegibilidadMd(e) {
     L.push(`| ${f.fecha} | ${f.con_ttm} | ${f.universo} | ${f.elegibles} | ${f.excluidos_liquidez} (${pct(f.pct_excluido)}) | ${f.canasta} | ${f.regimen} |`);
   }
   L.push('');
-  L.push(`Criterios: rezago **${e.criterios.lag_dias} días** · umbral **${e.criterios.umbral_importe.toLocaleString('es-MX')}** pesos · canasta \`clamp(0.20 × E, ${e.criterios.piso}, ${e.criterios.techo})\` · TTM = ${e.criterios.trimestres_ttm} trimestres.`);
+  L.push(`Criterios: rezago **${e.criterios.lag_dias} días** · umbral **${e.criterios.umbral_importe.toLocaleString('es-MX')}** pesos (congelado 17-sep-2026, por operabilidad) · canasta \`clamp(0.20 × E, ${e.criterios.piso}, ${e.criterios.techo})\` · TTM = ${e.criterios.trimestres_ttm} trimestres.`);
+  L.push('El tripwire del tercio se retiró el 17-sep-2026 por insatisfacible; el % excluido queda como diagnóstico.');
   return L.join('\n');
 }
 

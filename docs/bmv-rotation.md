@@ -10,7 +10,8 @@
 > había corrido** y no existía ni un número del backtest:
 >
 > 1. El filtro de liquidez pasa de **mediana del universo** a **umbral absoluto**
->    de 5 millones de pesos (§3.1).
+>    (§3.1). *El valor quedó en 1,000,000 de pesos el 17-sep-2026, fijado por
+>    operabilidad y todavía antes de cualquier resultado; ver §5.8.*
 > 2. La canasta gana **piso de 8 y techo de 15** nombres, y la puerta de
 >    INCONCLUSO se muda al **universo elegible** (§3.3, §3.4).
 > 3. El benchmark queda **NAFTRAC ISHRS** y es de **retorno total**, no de
@@ -318,8 +319,19 @@ Fase B: **el diff contra este documento es la verificación**.
 
 Emisoras **ICS** (`tipo_valor_id=1`) con financieros disponibles a esa fecha
 —**incluidas las SUSPENDIDAS mientras tuvieron precios**— y con **mediana del
-importe operado de los últimos 3 meses ≥ 5 millones de pesos**, calculada en
+importe operado de los últimos 3 meses ≥ 1,000,000 de pesos**, calculada en
 **cada** rebalanceo.
+
+> **Umbral congelado el 17-sep-2026, antes de ver un solo retorno.** Se fija por
+> su **propósito**: que una canasta de 8-15 nombres con capital personal entre y
+> salga sin mover el precio. A 1 MM de importe mediano diario, una posición de
+> ~$80,000 pesos es **menos del 10% del volumen del día**, que es el estándar
+> razonable de participación.
+>
+> El valor anterior (5 MM) era intuición de mercado estadounidense trasplantada
+> a BMV sin recalcular el tamaño de posición que la motiva. **No se eligió
+> mirando cuál umbral daba mejores números de elegibles** — se eligió por el
+> cálculo de arriba, que no depende de cuántas emisoras sobrevivan.
 
 **Umbral absoluto, no mediana del universo.** El propósito es **excluir lo no
 operable**, no partir el universo en dos. Un filtro por mediana tira siempre la
@@ -332,15 +344,27 @@ Se reportan los elegibles, **las exclusiones por motivo** en cada rebalanceo, y
 **cuántas caen por el filtro de liquidez en cada fecha**. Una exclusión sin
 motivo es un universo que nadie puede auditar.
 
-> ### Tripwire de calibración, entre la Fase A y la Fase B
-> Si el filtro de 5 millones excluye **más de un tercio del universo en
-> promedio**, el umbral está mal calibrado para BMV y **se baja antes de correr
-> el backtest**, no después.
+> ### ~~Tripwire de calibración~~ — RETIRADO el 17-sep-2026
+> La regla decía: si el filtro excluye **más de un tercio del universo en
+> promedio**, el umbral está mal calibrado y se baja antes de correr el
+> backtest. **Se retiró por insatisfacible**, y se retiró sin ver un solo
+> retorno. El detalle está en §5.8; el argumento, en tres líneas:
 >
-> Que esto pueda hacerse sin contaminar nada no es casualidad: el porcentaje
-> excluido se calcula con **censo y precios solamente**, sin tocar un solo
-> retorno de la estrategia. O sea que recalibrar el umbral es imposible de
-> sesgar con resultados — todavía no hay resultados que mirar.
+> Pasar el tripwire exigía ≥ 2/3 de elegibles, o sea **≥ 86** con el universo
+> mediano observado (128). Pero el régimen `quintil` sólo existe **entre 40 y 75
+> elegibles** —`0.20 × E` entre el piso de 8 y el techo de 15—, así que
+> cualquier umbral que pasara el tripwire garantizaba régimen `techo`. **El
+> tripwire y el régimen quintil pedían cosas incompatibles.**
+>
+> El error de fondo: el tripwire suponía que el universo de partida era **todo
+> operable**, de modo que una exclusión alta sólo podía significar umbral mal
+> calibrado. En BMV el universo de partida **no** es todo operable, así que una
+> exclusión alta puede ser **la verdad sobre el mercado**.
+>
+> **No se sustituye por otro porcentaje.** El filtro se calibra por
+> **operabilidad**, no por cuánto excluye. El % excluido se sigue reportando
+> como **diagnóstico** en cada rebalanceo — es informativo — pero ya no es una
+> puerta.
 
 ### 3.2 Value — y los 65 días
 
@@ -661,16 +685,30 @@ cae si alguien cambia ese filtro por un `LIKE` o un `Number()`.
    > universo mediano ≥ 16 debería ser raro; si resulta frecuente, es una señal
    > sobre el dato, no un detalle de implementación.
 
-4. **Etiqueta de régimen.** El reporte dice **en qué porcentaje de los
-   rebalanceos mandó el piso** y en cuáles el quintil. Si el piso mandó en
-   **más del 50%** de las fechas, el veredicto se etiqueta
-   **«no probó un quintil»** — pase lo que pase, y aunque los umbrales 2 y 3 se
-   cumplan con holgura.
+4. **Etiqueta de régimen** *(endurecida el 17-sep-2026)*. El reporte dice **qué
+   régimen decidió el tamaño de la canasta** —`piso` / `quintil` / `techo`— y
+   **en qué porcentaje de las fechas mandó cada uno**. Si el **piso** o el
+   **techo** mandaron en **más del 50%** de las fechas, el veredicto se etiqueta
+   **«no probó un quintil, probó top-N fijo»** — pase lo que pase, y aunque los
+   umbrales 2 y 3 se cumplan con holgura.
+
+   **Sigue siendo un experimento válido**, y se corre: midió algo real. Lo que
+   la etiqueta impide es que se lea como otra cosa.
+
+   > **El techo entró en la regla porque produce el mismo problema por el otro
+   > lado.** La versión original sólo miraba el piso, y eso dejaba un hueco: con
+   > muchos elegibles, `0.20 × E` se pasa de 15 y la canasta vuelve a ser un
+   > top-N fijo. Salió a la luz al calcular qué exigía el tripwire —86 elegibles
+   > ⇒ canasta 15 ⇒ régimen `techo`— y es el mismo hallazgo que lo retiró.
 
    Esto no es un cuarto umbral: no puede convertir un GO en NO-GO ni al revés.
    Es una etiqueta sobre **qué se probó**, y existe porque un GO obtenido con un
    top 40% no autoriza a operar un quintil — son estrategias distintas con el
    mismo nombre.
+
+   > **La ventana del quintil es estrecha, y conviene tenerlo presente al leer
+   > el resultado:** `quintil` sólo manda con **40 a 75 elegibles**. Por debajo
+   > manda el piso; por encima, el techo.
 2. **Señal** — **|t| ≥ 2** del exceso diario vs NAFTRAC, en **calendar-time**.
 3. **Economía** — **Sharpe neto ≥ Sharpe de NAFTRAC + 0.15**.
 
@@ -789,11 +827,16 @@ discusión. El censo real dice otra cosa:
 | **Emisoras ICS únicas** | **137** |
 | ACTIVA / SUSPENDIDA | 109 / 76 |
 
-**137 ICS es holgado.** Aunque el filtro de 5 millones se llevara la mitad, el
-universo elegible rondaría 68 y el quintil daría ~14 nombres: **dentro del
-rango 8-15, o sea un quintil de verdad**, con el piso sin mandar y la etiqueta
-«no probó un quintil» sin dispararse. La preocupación del tamaño de canasta
-queda **resuelta**.
+**137 ICS es holgado.** Si el filtro se llevara la mitad, el universo elegible
+rondaría 68 y el quintil daría ~14 nombres: **dentro del rango 8-15, o sea un
+quintil de verdad**, con el piso sin mandar y la etiqueta «no probó un quintil»
+sin dispararse. La preocupación del tamaño de canasta queda **resuelta**.
+
+> **Lo que esta proyección no anticipó** (17-sep-2026): el filtro con 5 MM se
+> llevó **69.2%**, no la mitad, y el elegible mediano fue **37**, no 68. La
+> conclusión de arriba se sostiene —el universo alcanza— pero el margen era
+> menor de lo supuesto, y la ventana donde el quintil manda de verdad resultó
+> más estrecha de lo que sugiere este párrafo. Ver §5.8.
 
 Que 76 de las 185 series ICS estén **SUSPENDIDAS** es la otra mitad de la buena
 noticia: son exactamente las emisoras que un universo "lista de hoy mirada
@@ -806,12 +849,17 @@ La regla no se mueve:
 
 > Con universo elegible mediano por debajo de 16, la Fase B **no se corre**.
 
-Y el tripwire del §3.1 pasa a ser más importante, no menos: con cientos de
-emisoras en el censo, muchas serán ilíquidas de verdad, así que **es esperable
-que el filtro excluya una fracción grande**. Si excluye más de un tercio, se
-recalibra antes de la Fase B — y con un universo así de grande, esa
-recalibración es una decisión sobre **qué es operable en BMV**, no un ajuste
-para que salgan los números.
+Con cientos de emisoras en el censo, muchas serán ilíquidas de verdad, así que
+**es esperable que el filtro excluya una fracción grande**.
+
+> **Aquí estaba el error que se corrigió el 17-sep-2026.** El párrafo original
+> decía que si el filtro excluía más de un tercio se recalibraba el umbral
+> (el tripwire del §3.1). Pero «el filtro excluye mucho» y «el umbral está mal
+> calibrado» no son lo mismo cuando el universo de partida **no es todo
+> operable** — y la frase de arriba, escrita antes de ver un número, ya
+> anticipaba justamente eso. El tripwire se retiró por insatisfacible; el
+> umbral se fija por **qué es operable en BMV**, que sigue siendo lo correcto.
+> Ver §5.8.
 
 ### 4.2 Los financieros son de un tercero sin SLA
 
@@ -1201,18 +1249,17 @@ value es EPS **TTM** y el TTM necesita **cuatro** trimestres: contar con uno
 solo sobreestimaría el universo que el backtest puede usar de verdad. Van los
 dos, y el que decide la canasta es el de TTM.
 
-Al final, las **cuatro puertas** que se pueden juzgar sin correr nada:
+Al final, las **tres puertas** que se pueden juzgar sin correr nada *(eran
+cuatro hasta el 17-sep-2026; el tripwire se retiró, §5.8)*:
 
 | Puerta | Si no pasa |
 |---|---|
 | Rebalanceos ≥ 30 | INCONCLUSO por muestra |
 | **Universo elegible mediano ≥ 16** | **INCONCLUSO — la Fase B no se corre** |
-| El piso manda en ≤ 50% de las fechas | el veredicto se etiqueta «no probó un quintil» |
-| El filtro excluye ≤ 33% en promedio | **TRIPWIRE: se recalibra el umbral ANTES de la Fase B** |
+| El piso **o el techo** mandan en ≤ 50% de las fechas | el veredicto se etiqueta «no probó un quintil, probó top-N fijo» |
 
-Que nada de esto mire un retorno es lo que permite **recalibrar el umbral sin
-contaminarse**: todavía no hay resultados que mirar. Ésa era la condición que
-hacía legítimo el tripwire cuando se acordó, y sigue siéndolo.
+Que nada de esto mire un retorno es lo que permitió **corregir los criterios del
+universo sin contaminarse**: todavía no hay resultados que mirar.
 
 La fecha de rebalanceo es el **primer día con precio** de cada mes, tomado de
 `bmv_precios` — el calendario real de la BMV, con sus puentes y asuetos, en vez
@@ -1221,7 +1268,7 @@ donde ya hay un dato.
 
 ---
 
-## 5.8 El tripwire se disparó, y eso era el plan
+## 5.8 El tripwire se retiró por insatisfacible
 
 Primera corrida de `?job=elegibilidad` con el umbral de 5 MM:
 
@@ -1233,50 +1280,84 @@ Primera corrida de `?job=elegibilidad` con el umbral de 5 MM:
 | **Excluido por liquidez** | **69.2%** | ≤ 33% ❌ |
 | **Fechas donde manda el piso** | **76.6%** | ≤ 50% ❌ |
 
-**Esto es el tripwire funcionando, no fallando.** Se acordó en §3.1 precisamente
-para esto, y se pudo leer **sin haber visto un solo retorno** — que era la
-condición que lo hacía legítimo.
+Leído sin haber visto **un solo retorno**, que es la condición que hace legítimo
+tocar los criterios en este punto.
 
-### La recalibración, y por qué se puede hacer ahora
-
-**5 millones diarios era intuición de mercado estadounidense, no de BMV.** El
-propósito del filtro es **excluir lo no operable**, no partir el universo; a 1
-MM diario una canasta de 8-15 nombres con capital personal entra y sale sin
-mover el precio, que es la única razón por la que el filtro existe.
-
-El valor nuevo se elige con `?job=elegibilidad&umbrales=500000,1000000,2000000`,
-que produce la tabla comparativa **en una sola llamada** —la parte cara, las
-medianas de 3 meses sobre 569,589 filas, se calcula una vez y se reutiliza— y
-que **sigue sin tocar un retorno**.
-
-### Qué exige cada puerta, en número de elegibles
+### La aritmética que mostró que la regla era imposible
 
 Con universo mediano de **128**:
 
 | Puerta | Exige |
 |---|---:|
 | Que **mande el quintil** (y no el piso) | **≥ 40** elegibles (`8 / 0.20`) |
+| Que **no se pase del techo** | **≤ 75** elegibles (`15 / 0.20`) |
 | **Pasar el tripwire** (≤33% excluido) | **≥ 86** elegibles (2/3 de 128) |
 
-> **La puerta que manda es el tripwire, no el piso.** Con 37 elegibles hoy, los
-> 40 del piso están a la vuelta de la esquina; los 86 del tripwire son otra
-> historia. Y con 86 elegibles el quintil daría 17.2, **por encima del techo**:
-> el régimen dominante sería `techo`, no `quintil`.
+El régimen `quintil` sólo existe **entre 40 y 75 elegibles**. El tripwire exigía
+**86**, que está del otro lado del techo. O sea: **cualquier umbral que pasara
+el tripwire garantizaba régimen `techo`**, y el reporte habría dicho a la vez
+«el filtro está bien calibrado» y «no probó un quintil». Las dos reglas pedían
+cosas incompatibles.
 
-### Una advertencia sobre el tripwire mismo
+**Una regla insatisfacible no es una regla.** Se retira, con fecha.
 
-El tripwire supone que **mucha exclusión ⇒ umbral mal calibrado**. En un mercado
-donde buena parte de las 185 series ICS genuinamente no opera, una exclusión
-alta puede ser **la verdad sobre la BMV** y no un error de calibración.
+### Por qué estaba mal desde el principio
 
-Bajar el umbral hasta que el tripwire pase sería ajustar el filtro **al
-tripwire** en vez de a la operabilidad — que invierte el propósito que le dimos.
-Dicho de otro modo: si a 500 mil pesos diarios el tripwire sigue sin pasar, la
-lectura honesta no es "hay que bajar más", es **"la BMV tiene ~2/3 de series no
-operables"**, y eso es un hallazgo sobre el mercado, no un obstáculo que
-rodear.
+El tripwire suponía que el universo de partida era **todo operable**, de modo
+que una exclusión alta sólo podía significar **umbral mal calibrado**. En BMV
+el universo de partida **no** es todo operable: buena parte de las 185 series
+ICS genuinamente no opera. Ahí una exclusión alta puede ser **la verdad sobre el
+mercado**.
 
-No lo resuelvo por mi cuenta: la tabla da los números y la decisión es de Lety.
+Calibrar por «cuánto excluye» habría sido ajustar el filtro **a la métrica** en
+vez de a la operabilidad, que invierte el propósito que le dimos. Dicho de otro
+modo: que a 500 mil pesos diarios el filtro siguiera excluyendo dos tercios no
+sería un obstáculo que rodear — sería **un hallazgo sobre la BMV**.
+
+**No se sustituye por otro porcentaje.** El % excluido queda como diagnóstico.
+
+### El umbral, fijado por su propósito
+
+**1,000,000 de pesos**, congelado el **17-sep-2026**, antes de ver un retorno.
+
+No se eligió mirando cuál valor daba mejores números de elegibles. Se eligió por
+el cálculo que motiva el filtro: a 1 MM de importe mediano diario, una posición
+de **~$80,000 pesos** es **menos del 10% del volumen del día** — el estándar
+razonable de participación para entrar y salir sin mover el precio. Ese cálculo
+no depende de cuántas emisoras sobrevivan, que es exactamente lo que lo hace
+inmune a la tentación de ajustarlo a un resultado.
+
+`?job=elegibilidad&umbrales=500000,1000000,2000000` sigue produciendo la tabla
+comparativa en una sola llamada —la parte cara, las medianas de 3 meses sobre
+569,589 filas, se calcula una vez y se reutiliza—, pero ahora es **documentación
+de qué habría pasado con cada valor**, no un menú para elegir. La elección ya
+está tomada, y por una razón que no está en la tabla.
+
+### La puerta del régimen se queda, y se endurece
+
+Se le agregó el **techo**, que es el mismo problema por el otro lado y que sólo
+se hizo visible con la aritmética de arriba. El reporte dice ahora qué régimen
+mandó —`piso` / `quintil` / `techo`— y en qué porcentaje de las fechas. Si el
+piso o el techo mandan en más del 50%, el veredicto se etiqueta **«no probó un
+quintil, probó top-N fijo»**.
+
+**No bloquea la Fase B.** El experimento es válido y se corre; lo que la
+etiqueta impide es que se lea como otra cosa.
+
+### Lo que esto implica para la Fase B
+
+Las dos puertas bloqueantes ya se pueden dar por pasadas **sin correr nada más**:
+
+- **Rebalanceos = 111 ≥ 30.** No depende del umbral: son las fechas del
+  calendario real de la BMV.
+- **Elegibles mediano ≥ 16.** Con 5 MM ya eran **37**. Bajar el umbral a 1 MM
+  sólo puede **agregar** nombres —el conjunto elegible a 1 MM contiene al de 5
+  MM—, así que la mediana a 1 MM es **≥ 37**. No hace falta correr el job para
+  saber que pasa; es una propiedad del filtro, no una medición.
+
+Lo que sí queda abierto es **el régimen**: a 37 elegibles manda el piso, y la
+ventana del quintil (40-75) está cerca por abajo. Con 1 MM los elegibles suben,
+pero hacia dónde —quintil o techo— sólo lo dice la corrida.
 
 ### VISTAC y GAVB: resueltas como exclusiones
 
@@ -1289,9 +1370,8 @@ reintentan**. Son 2 de 185 — **1.1%**, sin efecto material. Una serie sin
 precios no puede rankearse ni operarse: su lugar correcto es fuera, dicho, no
 fallando en silencio cada corrida.
 
-Se excluyen **antes** de contar: dejarlas dentro inflaría el denominador del
-tripwire con nombres que nunca podrían pasar el filtro, y harían ver el umbral
-peor de lo que es.
+Se excluyen **antes** de contar: dejarlas dentro ensuciaría todos los conteos
+—universo, elegibles, % excluido— con nombres que nunca podrían entrar.
 
 ---
 
@@ -1302,14 +1382,14 @@ peor de lo que es.
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 10 jobs (`reparse`, `reparse-fin` e `inspect` son de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **173 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **175 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
 | **El censo** | **Cerrado.** `deriva.estable: true` — 0 aparecieron, 0 desaparecieron. **185 series ICS**, 165 con cobertura (las 20 sin ella son bancos y casas de bolsa, fuera de la v1 por decisión de Fase 0). 1,641 repartos: 1,520 efectivo, 121 reembolso, 0 desconocido. |
 | **Fase A, diseño** | **Cerrado.** |
 | **La cosecha** | **Corrida**: 4,174 financieros, 182 series de precios. |
 | **Normalización** | Arreglada y **verificada en prod**: 4,174/4,174 con EPS (§5.5). |
-| **Elegibilidad** | **Corrida.** Tripwire disparado: 69.2% excluido, piso en 76.6% de las fechas (§5.8). |
+| **Elegibilidad** | **Corrida** con 5 MM: 111 rebalanceos, universo mediano 128, elegibles 37, 69.2% excluido, piso en 76.6% de las fechas. El tripwire del tercio se **retiró por insatisfacible** y el umbral quedó congelado en **1 MM** (§5.8). |
 | **Umbral de liquidez** | **En recalibración**, con la tabla de `&umbrales=…`. Decisión pendiente. |
 | **La cosecha** | **Sin correr** — este sandbox no alcanza la API. |
 | **Cobertura real** | **Sin reportar** — depende de la cosecha. |
