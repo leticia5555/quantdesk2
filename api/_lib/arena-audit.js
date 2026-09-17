@@ -304,7 +304,11 @@ export function diagnosticoDeFila(ctx = {}) {
   const dive = ctx.dive || {};
   const t = ctx.tools || dive.tools || null;
   const err = ctx.llm_error || dive.llm_error || null;
-  if (!t && !err && !ctx.murio_en && !ctx.cierre && !ctx.threw) return null;
+  // `ctx.tickers` cuenta como diagnóstico POR SÍ SOLO: un `rejected_tickers`
+  // no tiene bloque de herramientas ni `llm_error` —el modelo contestó bien, el
+  // problema fue el contenido— así que sin esto el bloque se saltaba justo en
+  // el aborto que más se mira.
+  if (!t && !err && !ctx.tickers && !ctx.murio_en && !ctx.cierre && !ctx.threw) return null;
   // Qué contrato la produjo: sin esto, un bloque vacío se lee como "no se
   // journaleó" en vez de "esta corrida no tenía esa fase".
   const contrato = ctx.contrato || (ctx.dive ? 'acciones' : null);
@@ -721,7 +725,17 @@ function mdDiagnostico(d) {
   const t2 = d.tickers;
   if (t2 && ((t2.desconocidos || []).length || (t2.reparados || []).length || (t2.colisiones || []).length)) {
     if ((t2.desconocidos || []).length) {
-      L.push(`\n> ❌ **Tickers que no existen en el universo:** ${t2.desconocidos.join(', ')} — el objetivo entero se rechaza: una orden sobre un nombre inventado no se manda.`);
+      // `desconocidos` son OBJETOS ({pedido, normalizado?, motivo}), no strings:
+      // un `join` los imprimía como "[object Object]" y el reporte decía que
+      // algo se rechazó sin decir QUÉ — que es la única pregunta que se hace
+      // ante un rechazo de tickers.
+      L.push(`\n> ❌ **Tickers que no existen en el universo** (${t2.desconocidos.length}) — el objetivo ENTERO se rechaza: una orden sobre un nombre inventado no se manda.`);
+      L.push('');
+      L.push(mdTabla(['pedido', 'normalizado', 'por qué'], t2.desconocidos.map((d) => [
+        '`' + val(d.pedido) + '`',
+        d.normalizado && d.normalizado !== d.pedido ? '`' + d.normalizado + '`' : '—',
+        val(d.motivo),
+      ])));
     }
     if ((t2.reparados || []).length) {
       L.push(`\n> ⚠️ **Tickers reparados:** ${t2.reparados.map((r) => `"${r.pedido}" → ${r.normalizado}`).join(', ')}`);
@@ -853,8 +867,19 @@ export function renderCorridasMarkdown(audit) {
   L.push('');
   L.push('_Solo lectura: este endpoint no escribe en ninguna tabla, no late heartbeats y no toca el camino de decisión._');
   if (audit.halt && audit.halt.length) {
+    const detenidos = audit.halt.filter((h) => h.halted);
+    if (!detenidos.length) {
+      L.push(`\n> ✅ Ningún agente detenido por el breaker (${audit.halt.length} revisado(s)).`);
+    }
     for (const h of audit.halt) {
-      L.push(`\n> **HALT** — \`${h.agent_id}\` ${h.halted ? `**detenido** desde ${val(h.halted_at)}: ${val(h.halted_reason)}` : 'activo'}${h.resumed_at ? ` · revivido ${h.resumed_at}` : ''}`);
+      // ── "HALT — control activo" SE LEÍA AL REVÉS ───────────────────
+      // El encabezado decía HALT y el estado decía "activo", así que un agente
+      // SANO parecía detenido. La palabra que manda tiene que ser la primera.
+      // Y una línea por agente sano es ruido: sólo se listan los detenidos, y
+      // si no hay ninguno se dice una vez.
+      if (h.halted) {
+        L.push(`\n> ⛔ **DETENIDO** — \`${h.agent_id}\` desde ${val(h.halted_at)}: ${val(h.halted_reason)}. No vuelve solo: se reactiva a mano con \`/api/arena-run?phase=resume&agent=${h.agent_id}\`.`);
+      }
     }
   }
   if (!audit.corridas.length) L.push('\n_Sin corridas en el journal para este agente._');

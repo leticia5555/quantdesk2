@@ -1590,6 +1590,23 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // Y lo que corre del otro lado es LA MISMA función que la sombra
   // (`runAgenteObjetivo` con `vivo: true`), no una copia: lo que llegó a 7/7 en
   // sombra es exactamente lo que se enciende.
+  // ── EL HALT VA ANTES QUE TODO, INCLUIDA LA BANDERA ──────────────────
+  // ESTO ERA UN AGUJERO: el chequeo de halt vivía DESPUÉS de esta rama, que
+  // tiene un `return`. O sea que con el contrato objetivo encendido, un agente
+  // detenido por el breaker −20% seguía decidiendo y MANDANDO ÓRDENES.
+  //
+  // Estaba tapado a medias porque `arena-watch` filtra a los detenidos antes
+  // de despachar las rondas fijas y los disparadores. Pero `runArenaLeague`
+  // —el cron nocturno— NO filtra: confiaba en este chequeo. Así que en esa
+  // ronda el interruptor de emergencia no existía.
+  //
+  // La guarda va en la función que DECIDE, no sólo en un llamador: un segundo
+  // llamador que se olvide de filtrar no puede volver a abrir el agujero.
+  const estadoHalt = await getArenaState(agent.id);
+  if (estadoHalt.halted) {
+    return { status: 'halted', agent: agent.id, halted_since: estadoHalt.halted_at, reason: estadoHalt.halted_reason };
+  }
+
   if (usaObjetivo()) {
     const buffet = await (getBuffet ? getBuffet() : gatherContext({ baseUrl, now }));
     // ── EL `event` NO SE PASA, Y ESO ES LO QUE HAY QUE SABER ──────────
@@ -1637,10 +1654,10 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // ── HALT del breaker (POR AGENTE): si este agente está DETENIDO, no corre
   // decide ni journalea (la muerte se journaleó UNA vez al dispararse el
   // broadcut; nada de filas diarias). Reactivación solo manual (runArenaResume). ──
-  const state = await getArenaState(agentId);
-  if (state.halted) {
-    return { status: 'halted', halted_since: state.halted_at, reason: state.halted_reason };
-  }
+  // El halt ya se verificó ARRIBA, antes de la bandera del contrato: se reusa
+  // ese mismo estado en vez de volver a consultarlo. `state` sigue haciendo
+  // falta para el corte (baseline + resumed_at).
+  const state = estadoHalt;
 
   // El CORTE de este agente: hasta dónde mira su memoria y cuál es el piso de
   // su pico. Sale del estado (baseline del último reset + resumed_at), no de

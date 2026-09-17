@@ -135,5 +135,51 @@ console.log('\n── la última corrida y el último plan no son lo mismo ─�
     'la tarjeta muestra el último plan con su hora Y dice que la última corrida abortó — sustituir uno por otro escondería el aborto');
 }
 
+// ═══════════════════════════════════════════════════════════════
+// EL HALT TIENE QUE FRENAR TAMBIÉN AL CONTRATO NUEVO.
+//
+// El chequeo de halt vivía DESPUÉS de la rama de la bandera, que tiene un
+// `return`. Con el contrato objetivo encendido, un agente detenido por el
+// breaker −20% seguía decidiendo y MANDANDO ÓRDENES.
+//
+// Estaba tapado a medias: `arena-watch` filtra a los detenidos antes de las
+// rondas fijas y los disparadores. Pero `runArenaLeague` —el cron nocturno—
+// NO filtra: confiaba en el chequeo de adentro. En esa ronda el interruptor
+// de emergencia no existía.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── el halt frena ANTES que la bandera del contrato ──');
+{
+  const run = readFileSync(new URL('../api/arena-run.js', import.meta.url), 'utf8');
+  const decide = run.slice(run.indexOf('export async function runArenaDecide'));
+  const iHalt = decide.indexOf('if (estadoHalt.halted)');
+  const iFlag = decide.indexOf('if (usaObjetivo())');
+  ok(iHalt > 0 && iFlag > 0 && iHalt < iFlag,
+    'la guarda de halt está ANTES de la rama del contrato objetivo: si no, un agente detenido opera',
+    `halt@${iHalt} flag@${iFlag}`);
+
+  // Y la guarda vive en la función que DECIDE, no sólo en un llamador: el cron
+  // nocturno no filtra, y un segundo llamador que se olvide no puede volver a
+  // abrir el agujero.
+  const liga = run.slice(run.indexOf('export async function runArenaLeague'));
+  const ligaCorta = liga.slice(0, liga.indexOf('export async function', 10));
+  ok(!/halted/.test(ligaCorta),
+    'runArenaLeague sigue sin filtrar por halt — por eso la guarda TIENE que estar adentro de runArenaDecide');
+}
+
+console.log('\n── el reporte dice QUÉ ticker se rechazó ──');
+{
+  const audit = readFileSync(new URL('../api/_lib/arena-audit.js', import.meta.url), 'utf8');
+  ok(!/t2\.desconocidos\.join/.test(audit),
+    '`desconocidos` son OBJETOS: un join los imprimía como "[object Object]" y el reporte no decía cuál ticker');
+  ok(/mdTabla\(\['pedido', 'normalizado', 'por qué'\]/.test(audit),
+    'ahora sale una tabla con el pedido, el normalizado y el motivo');
+
+  // Y el estado de halt no puede leerse al revés.
+  ok(!/\$\{h\.halted \? `\*\*detenido\*\*/.test(audit),
+    '"HALT — control activo" decía HALT arriba y "activo" abajo: un agente SANO parecía detenido');
+  ok(/⛔ \*\*DETENIDO\*\*/.test(audit) && /Ningún agente detenido por el breaker/.test(audit),
+    'la palabra que manda va primero, y cuando no hay ninguno se dice una vez en vez de una línea por agente sano');
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
 process.exit(failures ? 1 : 0);
