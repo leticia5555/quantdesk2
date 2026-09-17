@@ -109,6 +109,60 @@ export const ADMIN_ENDPOINTS = ['/api/arena-smoke', '/api/arena-reset'];
 
 // Devuelve { ok:true } o { ok:false, status, body }. Exportada para que el
 // test pruebe LA MISMA función que corre en producción.
+// ── LA COMPUERTA DE LOS ENDPOINTS DE LECTURA ─────────────────────────
+// `arena-audit` nació detrás de `CRON_SECRET` porque lo llamaba un cron. Pero
+// también lo lee Lety desde una terminal, y en Vercel `CRON_SECRET` quedó
+// marcada como Secret: no se puede volver a leer una vez guardada. O sea que
+// el endpoint estaba efectivamente cerrado para la persona que lo necesita.
+//
+// Acepta CUALQUIERA de las dos: la del cron o la de admin (por header
+// `x-admin-key`, `Authorization: Bearer` o `?key=`, las mismas tres puertas
+// que el smoke). Dos llaves válidas no debilitan nada mientras las dos sean
+// secretas — lo que debilita es que la única llave sea ilegible y termine
+// pegada en un archivo para no perderla.
+//
+// SIN NINGUNA DE LAS DOS CONFIGURADA el endpoint queda abierto, como antes:
+// es solo lectura y cerrarlo de golpe dejaría a un deploy existente sin
+// auditoría. Pero deja de ser silencioso — la respuesta lo DICE, para que un
+// despliegue sin protección se vea en vez de suponerse.
+export function checkLecturaAuth(req, { cronSecret = process.env.CRON_SECRET, adminKey = process.env.ARENA_ADMIN_KEY } = {}) {
+  const cron = String(cronSecret || '').trim();
+  const admin = String(adminKey || '').trim();
+
+  if (!cron && !admin) {
+    return { ok: true, abierto: true, aviso: 'Ni CRON_SECRET ni ARENA_ADMIN_KEY están configuradas: este endpoint de lectura está ABIERTO. Poné una de las dos en Vercel y redeployá.' };
+  }
+
+  const cands = adminKeyCandidates(req);
+  // `?secret=` es la puerta histórica del cron y se conserva: hay curls
+  // guardados que la usan.
+  const q = (req && req.query) || {};
+  const secretQuery = firstString(q.secret).trim();
+  if (secretQuery) cands.push({ source: '?secret=', value: secretQuery });
+
+  for (const c of cands) {
+    if (cron && sameSecret(c.value, cron)) return { ok: true, via: 'CRON_SECRET', fuente: c.source };
+    if (admin && sameSecret(c.value, admin)) return { ok: true, via: 'ARENA_ADMIN_KEY', fuente: c.source };
+  }
+
+  return {
+    ok: false,
+    status: 401,
+    body: {
+      error: 'No autorizado.',
+      // QUÉ llaves acepta y por qué puertas. Nunca cuál es el valor.
+      acepta: [
+        ...(admin ? ['x-admin-key: <ARENA_ADMIN_KEY>', 'Authorization: Bearer <ARENA_ADMIN_KEY>', '?key=<ARENA_ADMIN_KEY>'] : []),
+        ...(cron ? ['Authorization: Bearer <CRON_SECRET>', '?secret=<CRON_SECRET>'] : []),
+      ],
+      recibido: cands.length ? cands.map((c) => ({ fuente: c.source, chars: c.value.length })) : 'ninguna llave en la petición',
+      ejemplo: admin
+        ? 'curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" "$BASE/api/arena-audit?agent=control&format=md"'
+        : 'curl -sS "$BASE/api/arena-audit?agent=control&format=md&secret=$CRON_SECRET"',
+    },
+  };
+}
+
 export function checkAdminAuth(req, rawEnv) {
   const raw = rawEnv == null ? '' : String(rawEnv);
   const expected = raw.trim();
