@@ -96,6 +96,45 @@ export async function registrarEquity({ agentId, equity, cash = null, posiciones
   }
 }
 
+// ── EL SNAPSHOT DEL LIBRO EN EL MOMENTO DE DECIDIR ───────────────────
+// El camino vivo del contrato objetivo NO escribía la columna `account`: el
+// equity, el cash y las posiciones de una ronda viva quedaban SÓLO dentro del
+// texto del prompt. Se podían parsear —es prosa— y eso es exactamente la
+// derivación frágil que ya mordió con el buffet.
+//
+// Es el estado de ESE día: si no se guarda cuando pasa, mañana no existe.
+//
+// ── LA FORMA VIEJA, MÁS EL DETALLE ───────────────────────────────────
+// `{equity, cash, positions}` es lo que journaleaba el contrato viejo y lo que
+// leen las vistas de hoy: se conserva tal cual, con `positions` como CONTEO.
+// `holdings` se agrega al lado, con lo que hace falta para estudiar una
+// decisión después: precio de entrada promedio, valor de mercado y el P&L no
+// realizado de cada nombre en ese instante.
+//
+// Un campo que Alpaca no mande viaja como null. Nunca 0: un 0 en un precio de
+// entrada se lee como una posición regalada.
+export function snapshotCuenta(account = {}, positions = []) {
+  const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+  const holdings = (Array.isArray(positions) ? positions : []).map((p) => ({
+    symbol: String((p && p.symbol) || '').toUpperCase() || null,
+    qty: n(p && p.qty),
+    avg_entry_price: n(p && p.avg_entry_price),
+    market_value: n(p && p.market_value),
+    unrealized_plpc: n(p && p.unrealized_plpc),
+    current_price: n(p && p.current_price),
+  })).filter((h) => h.symbol);
+  return {
+    equity: n(account.equity),
+    cash: n(account.cash),
+    // CONTEO, como en el contrato viejo: hay vistas que lo leen así. Se deriva
+    // de `holdings` y no del array crudo para que los dos NO puedan diferir:
+    // un `positions: 7` al lado de seis holdings se lee como un dato perdido y
+    // manda a buscar un bug que no existe.
+    positions: holdings.length,
+    holdings,
+  };
+}
+
 // ── LA SERIE DE UN DÍA ───────────────────────────────────────────────
 // Devuelve, por agente, los puntos y los tres números que se miran primero:
 // apertura (la PRIMERA muestra del día), máximo y último.

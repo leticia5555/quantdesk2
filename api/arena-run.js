@@ -1389,8 +1389,14 @@ function attributeRiskExit(a, extra) {
 async function journalObjetivoVivo(row) {
   try {
     await sql(
-      `insert into arena_journal (id, run_date, phase, status, prompt_version, model, plan, llm_response, actions, context, agent_id)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) on conflict (id) do nothing`,
+      // ── `account` NO ESTABA, Y SE PERDÍA CADA RONDA ─────────────────
+      // `arena_journal` tiene la columna desde siempre y el contrato viejo la
+      // escribía; el objetivo no. Resultado: el equity, el cash y las
+      // posiciones de una ronda VIVA quedaban sólo dentro del texto del
+      // prompt. Es el estado de ese día: si no se guarda cuando pasa, mañana
+      // no existe.
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, model, plan, llm_response, actions, context, agent_id, account)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) on conflict (id) do nothing`,
       [row.id, row.run_date, row.phase || 'decide', row.status, row.prompt_version, row.model,
        row.plan || null, row.llm_response || null,
        // Las ÓRDENES como `actions`, que es lo que /liga ya sabe renderizar. El
@@ -1405,7 +1411,8 @@ async function journalObjetivoVivo(row) {
          ...(o.error ? { error: o.error } : {}),
        }))),
        JSON.stringify({ ...(row.context || {}), target: row.target || null, rebalance: row.rebalance || null, contrato: contratoActivo() }),
-       row.agent_id],
+       row.agent_id,
+       row.account ? JSON.stringify(row.account) : null],
     );
   } catch (e) {
     // NO se traga: una corrida que operó y no se journaleó es peor que una que
@@ -3125,16 +3132,50 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
 }
 
 // ── fase RECONCILE ───────────────────────────────────────────────────
-// Fills reales (precio/timestamp de Alpaca) → journal. Estados terminales
-// se dejan de consultar; lo demás se re-chequea hasta 7 días.
+// Fills reales (precio/timestamp de Alpaca) → journal. Estados terminales se
+// dejan de consultar.
 const TERMINAL = new Set(['filled', 'canceled', 'expired', 'rejected', 'replaced', 'done_for_day']);
+
+// ── LA VENTANA ERA DE 7 DÍAS Y PERDÍA DATOS PARA SIEMPRE ─────────────
+// Una orden que no se conciliara dentro de esos 7 días se quedaba con
+// `order_status: 'accepted'` PARA SIEMPRE: sin `filled_avg_price` y sin
+// `filled_at`. O sea, una posición sin precio ni hora de entrada — que es
+// justo lo que hace falta para estudiar una decisión después. Alpaca sigue
+// teniendo la orden; simplemente nadie se la volvía a pedir.
+//
+// El arreglo NO es sólo estirar la ventana. La ventana existía para acotar el
+// trabajo, y el acotador correcto no es la fecha: es "¿queda algo por
+// conciliar en esta fila?". Con el `exists` de abajo, una fila cuyas órdenes
+// están todas en estado terminal no se trae aunque sea de ayer, y una con una
+// orden viva se trae aunque sea de hace un mes. El costo en Alpaca no cambia
+// —el bucle ya saltaba las terminales—; lo que cambia es que dejan de
+// perderse las que quedaron colgadas.
+//
+// La ventana se conserva, mucho más ancha, como tope duro: una fila con una
+// orden que Alpaca ya no reconoce no puede quedarse en la cola para siempre.
+export const RECONCILE_VENTANA_DIAS = Number(process.env.ARENA_RECONCILE_DIAS) || 60;
 
 export async function runArenaReconcile({ now = new Date() } = {}) {
   const rows = await sql(
     `select id, agent_id, actions from arena_journal
-     where phase = 'decide' and actions is not null and created_at > now() - interval '7 days'
-     order by created_at desc`);
-  const summary = { rows_checked: rows.length, orders_checked: 0, updated: 0, filled: 0 };
+     where phase = 'decide' and actions is not null
+       and created_at > now() - ($1 || ' days')::interval
+       -- Sólo filas con algo REALMENTE pendiente: una orden con id de Alpaca
+       -- cuyo estado no es terminal (o que todavía no tiene estado).
+       and jsonb_typeof(actions) = 'array'
+       and exists (
+         select 1 from jsonb_array_elements(actions) a
+         where a->>'alpaca_order_id' is not null
+           and coalesce(a->>'order_status', '') <> all($2::text[])
+       )
+     order by created_at desc`,
+    [String(RECONCILE_VENTANA_DIAS), [...TERMINAL]]);
+  const summary = {
+    rows_checked: rows.length, orders_checked: 0, updated: 0, filled: 0,
+    // Con qué ventana corrió. Sin esto, "0 filas" no distingue "no había nada
+    // pendiente" de "la ventana dejó todo afuera".
+    ventana_dias: RECONCILE_VENTANA_DIAS,
+  };
 
   for (const row of rows) {
     // Las órdenes viven en la cuenta Alpaca DEL AGENTE de la fila → se consultan

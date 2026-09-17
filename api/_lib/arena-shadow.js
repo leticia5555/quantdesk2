@@ -54,6 +54,10 @@ const SCHEMA = [
      created_at    timestamptz not null default now()
    )`,
   `create index if not exists arena_shadow_journal_idx on arena_shadow_journal (run_date, agent_id)`,
+  // EL LIBRO CON EL QUE SE DECIDIÓ. Migración idempotente: la tabla en prod se
+  // creó sin esta columna, y sin ella el equity, el cash y las posiciones de
+  // una corrida quedaban sólo dentro del texto del prompt — prosa, no dato.
+  `alter table arena_shadow_journal add column if not exists account jsonb`,
   // ── EL PISO DE RUIDO, GUARDADO ───────────────────────────────────────
   // El piso se calcula recorriendo el journal de la sombra de UN día. Eso sirve
   // para mirar hoy y no sirve para el post-mortem de la temporada: el piso del
@@ -151,8 +155,8 @@ export async function shadowJournalInsert(row) {
   await ensureShadowSchema();
   await sql(
     `insert into arena_shadow_journal
-       (id, run_date, agent_id, phase, status, prompt_version, prompt_hash, model, plan, llm_response, target, rebalance, context, error)
-     values ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       (id, run_date, agent_id, phase, status, prompt_version, prompt_hash, model, plan, llm_response, target, rebalance, context, error, account)
+     values ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
      on conflict (id) do nothing`,
     [row.id, row.run_date, row.agent_id, row.phase || 'decide', row.status,
      row.prompt_version || null, row.prompt_hash || null, row.model || null,
@@ -160,7 +164,8 @@ export async function shadowJournalInsert(row) {
      row.target ? JSON.stringify(row.target) : null,
      row.rebalance ? JSON.stringify(row.rebalance) : null,
      row.context ? JSON.stringify(row.context) : null,
-     row.error || null],
+     row.error || null,
+     row.account ? JSON.stringify(row.account) : null],
   );
 }
 

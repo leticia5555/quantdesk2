@@ -335,7 +335,10 @@ global.fetch = async (url, opts = {}) => {
     }
     if (q.includes('insert into arena_journal')) { journalInserts.push(body); return jsonReply({ fields: [], rows: [] }); }
     if (q.includes('update arena_journal')) { journalUpdates.push(body); return jsonReply({ fields: [], rows: [] }); }
-    if (q.includes('select') && q.includes('arena_journal') && q.includes("interval '7 days'")) {
+    // El reconcile ya NO se reconoce por "interval '7 days'": la ventana se
+    // ensanchó a 60 días y el acotador real pasó a ser el `exists` sobre las
+    // órdenes vivas. Se reconoce por eso, que es lo que lo hace único.
+    if (q.includes('select') && q.includes('arena_journal') && q.includes('jsonb_array_elements(actions)')) {
       // fila canned para el reconcile: una orden enviada sin fill todavía
       return jsonReply({
         fields: [{ name: 'id', dataTypeID: 25 }, { name: 'actions', dataTypeID: 3802 }],

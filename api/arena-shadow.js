@@ -39,6 +39,7 @@ import { gatherContext, buildSharedContext, buildTargetSystemPrompt, resolveBase
 import { parsePortfolioResponse, validateTarget, railTrims, normalizarTickersObjetivo, RAILS } from './_lib/arena-rails.js';
 import { orderLegs } from './_lib/arena-rebalance.js';
 import { legsAOrdenes, verificarOrdenesContraPesos, enviarOrdenes, mandaOrdenes } from './_lib/arena-objetivo-vivo.js';
+import { snapshotCuenta } from './_lib/arena-equity.js';
 import { buildRebalance } from './_lib/arena-rebalance.js';
 import { createToolExecutor, TOOL_BUDGET } from './_lib/arena-tools.js';
 import { runToolLoop, relojDisponible } from './_lib/arena-tool-loop.js';
@@ -176,6 +177,12 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     // en silencio y el modelo creía que había filtrado.
   });
 
+  // EL LIBRO CON EL QUE SE DECIDIÓ, en estructura. Iba sólo dentro del texto
+  // del prompt, y el prompt es prosa: parsear precios de ahí es la derivación
+  // frágil que ya mordió con el buffet. Es el estado de ESE día — si no se
+  // guarda cuando pasa, mañana no existe.
+  const cuenta = snapshotCuenta(libro.account, libro.positions);
+
   const ctx = {
     prompt: { system, shared, user },
     posiciones_iniciales: posicionesIniciales,
@@ -205,7 +212,7 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     const err = { message: String((e && e.message) || e), stack: e && e.stack ? String(e.stack).slice(0, 2000) : null, name: (e && e.name) || null };
     ctx.threw = err;
     if (trace) ctx.trace = trace.report();
-    await shadowJournalInsert({ ...base, status: 'aborted_llm_threw', error: err.message, context: ctx });
+    await shadowJournalInsert({ ...base, account: cuenta, status: 'aborted_llm_threw', error: err.message, context: ctx });
     return { agent: agent.id, status: 'aborted_llm_threw', threw: err, ...(trace ? { trace: trace.report() } : {}) };
   }
 
@@ -289,7 +296,7 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     };
     if (trace) ctx.trace = trace.report();
     const status = vacio ? 'aborted_cuerpo_vacio' : 'aborted_llm_error';
-    await shadowJournalInsert({ ...base, status, error, context: ctx });
+    await shadowJournalInsert({ ...base, account: cuenta, status, error, context: ctx });
     return {
       agent: agent.id, status, error, cost_usd: costo.usd,
       cuerpos_vacios: (loop && loop.cuerpos_vacios) || null,
@@ -302,7 +309,7 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   const text = ((llm.data.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('')).trim();
   const parsed = parsePortfolioResponse(text);
   if (!parsed.ok) {
-    await shadowJournalInsert({ ...base, status: 'aborted_malformed_target', error: parsed.error, llm_response: text, context: ctx });
+    await shadowJournalInsert({ ...base, account: cuenta, status: 'aborted_malformed_target', error: parsed.error, llm_response: text, context: ctx });
     return { agent: agent.id, status: 'aborted_malformed_target', error: parsed.error, cost_usd: costo.usd };
   }
 
@@ -318,7 +325,7 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     validado_contra_universo: tick.validado_contra_universo,
   };
   if (!tick.ok) {
-    await shadowJournalInsert({ ...base, status: 'rejected_tickers', error: tick.error, llm_response: text, context: ctx });
+    await shadowJournalInsert({ ...base, account: cuenta, status: 'rejected_tickers', error: tick.error, llm_response: text, context: ctx });
     return { agent: agent.id, status: 'rejected_tickers', error: tick.error, tickers: ctx.tickers, cost_usd: costo.usd };
   }
   // A partir de acá se trabaja con los símbolos ya canónicos.
@@ -399,6 +406,10 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
 
   await shadowJournalInsert({
     ...base,
+    // El libro con el que se decidió, en estructura. Va en TODAS las salidas
+    // que ocurren después de leerlo, incluidas las abortadas: una corrida que
+    // falló igual tenía un libro, y sin él no se puede estudiar por qué falló.
+    account: cuenta,
     status: v.ok ? 'ok_target' : 'rejected_rails',
     plan: parsed.plan, llm_response: text,
     target: { weights: parsed.weights, cash: parsed.cash, theses: parsed.theses },

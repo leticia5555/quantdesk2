@@ -23,7 +23,7 @@
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { serieDe, minutoDe, MUESTREO_MS } from '../api/_lib/arena-equity.js';
+import { serieDe, minutoDe, MUESTREO_MS, snapshotCuenta } from '../api/_lib/arena-equity.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -181,6 +181,87 @@ global.document={getElementById(id){return nodes[id]||(nodes[id]=mk());}};
   const fila = filaHtml(series[0]);
   ok(/máximo del día/.test(fila) && /103,800|103800/.test(fila.replace(/,/g, ',')), 'la fila muestra el máximo del día');
   ok(/pico → ahora/.test(fila), 'y cuánto se devolvió desde el pico');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EL LIBRO CON EL QUE SE DECIDIÓ, EN ESTRUCTURA.
+//
+// El camino vivo del contrato objetivo NO escribía `account`: el equity, el
+// cash y las posiciones de una ronda viva quedaban SÓLO dentro del texto del
+// prompt. Prosa, no dato — y es el estado de ESE día: si no se guarda cuando
+// pasa, mañana no existe.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── el snapshot del libro ──');
+{
+  const snap = snapshotCuenta(
+    { equity: '101234.5', cash: '20000' },
+    [{ symbol: 'nvda', qty: '12', avg_entry_price: '180.6', market_value: '2178', unrealized_plpc: '0.043', current_price: '181.5' }],
+  );
+  ok(snap.equity === 101234.5 && snap.cash === 20000,
+    'equity y cash numéricos: Alpaca los manda como strings y un string no se promedia');
+  ok(snap.positions === 1 && snap.holdings.length === 1,
+    'la forma VIEJA se conserva (`positions` es un CONTEO) y el detalle va al lado');
+  ok(snap.holdings[0].symbol === 'NVDA' && snap.holdings[0].avg_entry_price === 180.6,
+    'con el precio de entrada, que es la mitad del contexto de una decisión');
+  ok(snap.holdings[0].unrealized_plpc === 0.043,
+    'y el P&L al momento de decidir: sin él, "compró NVDA" no dice si ya la tenía ganando');
+
+  // Un campo ausente viaja null, nunca 0.
+  const parcial = snapshotCuenta({ equity: '100' }, [{ symbol: 'ZM' }]);
+  ok(parcial.cash === null && parcial.holdings[0].avg_entry_price === null,
+    'lo que Alpaca no manda viaja null — un 0 en un precio de entrada se lee como una posición regalada');
+
+  // El conteo y el detalle NO pueden diferir.
+  const sucio = snapshotCuenta({ equity: '100' }, [{ symbol: 'NVDA' }, {}, { symbol: '' }]);
+  ok(sucio.positions === sucio.holdings.length && sucio.positions === 1,
+    '`positions` se deriva de `holdings`: un 3 al lado de un holding manda a buscar un bug que no existe');
+
+  ok(snapshotCuenta({}, []).positions === 0 && snapshotCuenta({}, null).holdings.length === 0,
+    'y sin posiciones no revienta: una cuenta 100% en cash es un estado normal');
+}
+
+console.log('\n── y se escribe en los DOS caminos ──');
+{
+  const run = readFileSync(new URL('../api/arena-run.js', import.meta.url), 'utf8');
+  ok(/insert into arena_journal \(id, run_date, phase, status, prompt_version, model, plan, llm_response, actions, context, agent_id, account\)/.test(run),
+    'el camino VIVO del contrato objetivo escribe `account` — antes tenía 11 columnas y ésta no era una de ellas');
+  const shadowLib = readFileSync(new URL('../api/_lib/arena-shadow.js', import.meta.url), 'utf8');
+  ok(/alter table arena_shadow_journal add column if not exists account jsonb/.test(shadowLib),
+    'y la tabla de PRUEBA gana la columna con una migración idempotente');
+  const shadow = readFileSync(new URL('../api/arena-shadow.js', import.meta.url), 'utf8');
+  const n = (shadow.match(/account: cuenta/g) || []).length;
+  ok(n >= 5,
+    'el snapshot va en TODAS las salidas posteriores a leer el libro, incluidas las abortadas: una corrida que falló igual tenía un libro',
+    String(n));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LA VENTANA DEL RECONCILE PERDÍA ENTRADAS PARA SIEMPRE.
+//
+// Una orden no conciliada en 7 días se quedaba con `order_status: 'accepted'`
+// sin `filled_avg_price` ni `filled_at`: una posición sin precio ni hora de
+// entrada, que es justo lo que hace falta para estudiarla después.
+// ═══════════════════════════════════════════════════════════════
+console.log('\n── el reconcile deja de perder fills ──');
+{
+  const run = readFileSync(new URL('../api/arena-run.js', import.meta.url), 'utf8');
+  // Acotado a la función del reconcile: hay OTRAS ventanas de 7 días en el
+  // archivo (stops recientes que no llenaron) que son recencia deliberada y no
+  // tienen nada que ver con ésta. La reconstrucción de aperturas usa 180 días.
+  const reconcile = run.slice(run.indexOf('export async function runArenaReconcile'));
+  ok(!/interval '7 days'/.test(reconcile),
+    'la ventana de 7 días del reconcile ya no está');
+  ok(/RECONCILE_VENTANA_DIAS = Number\(process\.env\.ARENA_RECONCILE_DIAS\) \|\| 60/.test(run),
+    'la ventana se ensancha a 60 días y es env-overridable sin deploy');
+  // El acotador correcto no es la fecha: es si queda algo por conciliar.
+  ok(/from jsonb_array_elements\(actions\) a/.test(run) && /a->>'alpaca_order_id' is not null/.test(run),
+    'pero el acotador de verdad es "¿queda una orden viva en esta fila?", no la fecha');
+  ok(/coalesce\(a->>'order_status', ''\) <> all\(\$2::text\[\]\)/.test(run),
+    'las filas con todo en estado terminal no se traen aunque sean de ayer — el costo en Alpaca no sube');
+  ok(/jsonb_typeof\(actions\) = 'array'/.test(run),
+    'con guarda de tipo: una fila cuyo `actions` no sea un array reventaría la consulta entera');
+  ok(/ventana_dias: RECONCILE_VENTANA_DIAS/.test(run),
+    'y el resumen dice con qué ventana corrió: "0 filas" no distingue "nada pendiente" de "la ventana dejó todo afuera"');
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
