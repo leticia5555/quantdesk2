@@ -282,6 +282,59 @@ export function objetivoDeFila(ctx = {}, row = {}) {
   };
 }
 
+// ── EL DIAGNÓSTICO DE UN ABORTO ──────────────────────────────────────
+// Contesta las tres preguntas que se hacen SIEMPRE que un agente no operó: en
+// qué vuelta se cayó, cuántos ms tardó en caerse, y quién lo atendió.
+//
+// ── OJO CON `proveedor: null` EN UN CUERPO VACÍO ─────────────────────
+// No es un hueco: es la CONSECUENCIA de la falla. OpenRouter manda el nombre
+// del proveedor DENTRO del cuerpo de la respuesta, así que cuando el cuerpo
+// nunca llega no hay nombre que journalear. Un `proveedor: null` en un corte
+// por cuerpo vacío significa "el cuerpo no llegó", no "no lo registramos".
+//
+// Lo que SÍ se sabe son las vueltas ANTERIORES (`proveedores[]`), que sí
+// trajeron cuerpo: con eso se ve si el corte cae siempre sobre el mismo
+// proveedor o si rota — que son diagnósticos opuestos.
+export function diagnosticoDeFila(ctx = {}) {
+  // Los DOS contratos guardan esto en lugares distintos: el objetivo lo pone
+  // al nivel de arriba (`runAgenteObjetivo` es una sola cadena) y el viejo lo
+  // pone bajo `dive` (tenía scan y dive). Leer solo uno dejaría media historia
+  // sin diagnóstico justo en las corridas viejas, que son las que hay que
+  // comparar cuando algo cambia de comportamiento.
+  const dive = ctx.dive || {};
+  const t = ctx.tools || dive.tools || null;
+  const err = ctx.llm_error || dive.llm_error || null;
+  if (!t && !err && !ctx.murio_en && !ctx.cierre && !ctx.threw) return null;
+  // Qué contrato la produjo: sin esto, un bloque vacío se lee como "no se
+  // journaleó" en vez de "esta corrida no tenía esa fase".
+  const contrato = ctx.contrato || (ctx.dive ? 'acciones' : null);
+  return {
+    // Cuál de los tres techos cortó la investigación, con los tres al lado.
+    herramientas: t ? {
+      usadas: t.used ?? null, tope: t.budget ?? null, vueltas: t.turns ?? null,
+      corte: t.stopped_by || null, limites: t.limites || null,
+    } : null,
+    // Quién atendió CADA vuelta que sí contestó.
+    proveedores: (t && t.proveedores) || null,
+    proveedores_colgados: (t && t.proveedores_colgados) || (err && err.proveedores_colgados) || null,
+    // Los cortes por cuerpo vacío, con vuelta, intento, ms y bytes.
+    cuerpos_vacios: (err && err.cuerpos_vacios) || (t && t.cuerpos_vacios) || null,
+    // DÓNDE murió: dentro de una vuelta, o en el turno de cierre. Un
+    // `cierre: null` significaba las dos cosas y se veían iguales.
+    murio_en: ctx.murio_en || (err && err.murio_en) || null,
+    cierre: ctx.cierre || (err && err.cierre) || null,
+    // Y cuál RELOJ cortó, con su origen: una env var y el reparto del loop se
+    // arreglan en lugares opuestos.
+    techo_ms: (err && err.techo_ms) ?? null,
+    techo_origen: (err && err.techo_origen) || null,
+    timeout_nuestro: err ? !!err.timeout_nuestro : null,
+    status_http: err ? (err.status ?? null) : null,
+    detalle: err ? (err.detail || null) : null,
+    stack: (ctx.threw && ctx.threw.stack) || (err && err.threw_stack) || null,
+    contrato,
+  };
+}
+
 // ── una fila de journal → una entrada de auditoría ───────────────────
 const TIPO_POR_STATUS = {
   risk_exit: 'red_de_riesgo',
@@ -316,6 +369,13 @@ export function auditaFila(row) {
     prompt_version: row.prompt_version || null,
     prompt_hash: row.prompt_hash || null,
     error: row.error || null,
+    // ── POR QUÉ ABORTÓ, LEGIBLE ──────────────────────────────────────
+    // `status: 'aborted_llm_error'` dice QUE murió. Todo lo que dice POR QUÉ
+    // —qué vuelta, cuántos ms, qué proveedor atendió, cuál reloj cortó— ya se
+    // journaleaba y NINGÚN endpoint lo proyectaba: la única forma de leerlo era
+    // entrar a Neon a mano. Con el contrato objetivo EN VIVO, un aborto sin
+    // diagnóstico legible es un agente que no operó y nadie sabe por qué.
+    diagnostico: diagnosticoDeFila(ctx),
     cuenta: row.account || null,
     buffet: buffetDeFila(ctx),
     portafolio: portafolioDeFila(ctx),
@@ -608,6 +668,50 @@ function mdObjetivo(o) {
   return L.join('\n');
 }
 
+// ── EL DIAGNÓSTICO, EN MARKDOWN ──────────────────────────────────────
+// Las tres preguntas de siempre, en tres renglones: qué vuelta, cuántos ms,
+// qué proveedor. Y la cuarta que nadie hace hasta que la necesita: cuál reloj.
+function mdDiagnostico(d) {
+  const L = [];
+  const h = d.herramientas;
+  if (h) {
+    L.push(`**Investigación** — ${val(h.usadas)}/${val(h.tope)} herramientas en ${val(h.vueltas)} vuelta(s) · cortó por \`${val(h.corte)}\``);
+  }
+
+  // Los cortes por cuerpo vacío: vuelta, intento, ms, bytes y quién atendió.
+  if (d.cuerpos_vacios && d.cuerpos_vacios.length) {
+    L.push('\n**Cuerpos vacíos** — el proveedor abrió la conexión y la cerró sin mandar respuesta');
+    L.push(mdTabla(['vuelta', 'intento', 'ms', 'bytes', 'proveedor', '¿reloj nuestro?'], d.cuerpos_vacios.map((v) => [
+      val(v.vuelta), v.omitido ? `— (${v.omitido})` : val(v.intento), val(v.ms), val(v.bytes),
+      // `null` acá NO es un hueco: OpenRouter manda el nombre del proveedor
+      // DENTRO del cuerpo, así que un cuerpo que no llegó no trae nombre.
+      v.proveedor || '_(el cuerpo no llegó: el nombre viaja adentro)_',
+      v.timeout_nuestro ? '**SÍ**' : 'no',
+    ])));
+  }
+
+  // Quién atendió cada vuelta que SÍ contestó. Es lo que dice si el corte cae
+  // siempre sobre el mismo proveedor o si rota.
+  if (d.proveedores && d.proveedores.length) {
+    L.push('\n**Quién atendió cada vuelta**');
+    L.push(mdTabla(['vuelta', 'proveedor', 'ms', 'ok'], d.proveedores.map((p2) => [
+      val(p2.vuelta), val(p2.proveedor), val(p2.ms), p2.ok ? '✅' : '❌',
+    ])));
+  }
+  if (d.proveedores_colgados && d.proveedores_colgados.length) {
+    L.push(`\n> Proveedores que se colgaron: ${d.proveedores_colgados.join(', ')}`);
+  }
+
+  // Dónde murió, y cuál reloj lo cortó.
+  const donde = d.murio_en ? `murió en \`${val(d.murio_en.fase || d.murio_en)}\`` : (d.cierre ? 'llegó al turno de cierre' : null);
+  if (donde) L.push(`\n${donde}`);
+  if (d.techo_ms != null) {
+    L.push(`\n> ⏱️ **Techo de esa llamada:** ${Math.round(d.techo_ms / 1000)}s — puesto por: ${val(d.techo_origen)}`);
+  }
+  if (d.detalle) L.push(`\n> ${d.status_http != null ? `HTTP ${d.status_http} — ` : ''}${d.detalle}`);
+  return L.join('\n');
+}
+
 function mdFila(f) {
   const L = [];
   const titulo = f.tipo === 'red_de_riesgo' ? 'Red de riesgo (determinista)'
@@ -617,6 +721,11 @@ function mdFila(f) {
   if (f.cuenta && f.cuenta.equity != null) meta.push(`equity **$${nf(Number(f.cuenta.equity))}** · cash $${nf(Number(f.cuenta.cash))} · ${val(f.cuenta.positions)} posiciones`);
   L.push(meta.join(' · '));
   if (f.error) L.push(`\n> **Error de la corrida:** ${f.error}`);
+
+  // ── POR QUÉ ABORTÓ ──
+  // Va inmediatamente después del error y antes que nada más: si la corrida no
+  // decidió, lo único que importa de esa fila es por qué.
+  if (f.diagnostico) L.push('\n' + mdDiagnostico(f.diagnostico));
 
   // ── CONTRATO OBJETIVO (v4) ──
   // Va ARRIBA del buffet: en una corrida del contrato nuevo esto es la

@@ -50,7 +50,8 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql, ensureSchema } from './_lib/db.js';
-import { getCalendar, getPositions, getSnapshots, getAvgDailyVolume } from './_lib/alpaca.js';
+import { getCalendar, getAccount, getPositions, getSnapshots, getAvgDailyVolume } from './_lib/alpaca.js';
+import { registrarEquity } from './_lib/arena-equity.js';
 import { activeAgents, agentById, agentAlpacaCreds, ARENA_AGENT_DEADLINE_MS } from './_lib/arena-registry.js';
 import { withDeadline } from './_lib/arena-model.js';
 import {
@@ -246,13 +247,48 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
     const creds = agentAlpacaCreds(agent);
     if (!creds) { bookErrors[agent.id] = 'sin keys de Alpaca'; books[agent.id] = { positions: [], meta: {} }; return; }
     try {
-      const positions = await getPositions(creds);
-      books[agent.id] = { positions: positions || [], meta: {} };
+      // La CUENTA junto con las posiciones: es el mismo viaje a Alpaca y el
+      // equity total es el número con el que se mide el retorno. Pedir sólo
+      // posiciones dejaba el cash afuera, y una cuenta que vendió todo tiene
+      // cero posiciones y su equity intacto.
+      const [positions, account] = await Promise.all([
+        getPositions(creds),
+        getAccount(creds).catch(() => null),
+      ]);
+      books[agent.id] = { positions: positions || [], meta: {}, account: account || null };
     } catch (err) {
       bookErrors[agent.id] = String((err && err.message) || err);
       books[agent.id] = { positions: [], meta: {} };
     }
   }));
+
+  // ── (2a) EL EQUITY INTRADÍA, MUESTREADO ─────────────────────────────
+  // Una muestra por agente por tick (~5 min). Antes el equity existía en dos
+  // momentos —el snapshot de la corrida nocturna y lo que /leaderboard lee en
+  // vivo sin guardar— así que no había curva ni máximo del día, y "¿llegó a
+  // estar arriba y lo devolvió?" no se podía contestar.
+  //
+  // VA DESPUÉS de leer los libros y ANTES de cualquier decisión, y CADA
+  // escritura traga su error: esto cuelga del mismo tick que dispara la red
+  // determinista y las rondas fijas. Perder una muestra es perder un punto de
+  // una gráfica; tumbar el tick es perder un stop. No se cambia lo segundo por
+  // lo primero — por eso `registrarEquity` nunca lanza y esto no lo espera
+  // dentro de un try que pudiera propagar.
+  const equitySamples = [];
+  if (!dry) {
+    for (const agent of agents) {
+      const acc = books[agent.id] && books[agent.id].account;
+      if (!acc) continue;
+      equitySamples.push(await registrarEquity({
+        agentId: agent.id,
+        equity: acc.equity,
+        cash: acc.cash,
+        posiciones: (books[agent.id].positions || []).length,
+        sessionDate: today,
+        now,
+      }));
+    }
+  }
 
   // Niveles del día por agente (trailing armado + stop catastrófico).
   await Promise.all(agents.map(async (agent) => {
@@ -568,6 +604,14 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
     reconcile,
     events_refresh: eventsRefresh,
     book_errors: Object.keys(bookErrors).length ? bookErrors : undefined,
+    // Cuántas muestras de equity entraron en ESTE tick, y cuáles no. Un
+    // contador que sólo cuenta los éxitos hace que una serie con huecos se vea
+    // igual que una completa.
+    equity: {
+      guardadas: equitySamples.filter((x) => x && x.guardado).length,
+      de: agents.length,
+      fallidas: equitySamples.filter((x) => x && !x.guardado).map((x) => ({ agente: x.agente || null, motivo: x.motivo })),
+    },
     dry: dry || undefined,
   };
 }

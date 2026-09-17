@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
+<title>EQUITY DEL DÍA — QuantDesk</title>
+<meta name="description" content="El equity de cada IA durante la sesión, muestreado cada 5 minutos: apertura, máximo del día y cuánto se devolvió desde el pico."/>
+<meta name="theme-color" content="#050505"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+:root{
+  --bg:#050505; --bg1:#0d0d0d; --bg2:#141414;
+  --border:#1e1e1e; --border2:#2a2a2a;
+  --text:#f0ede8; --text2:#8a8a82; --text3:#4a4a44;
+  --green:#00c97d; --green-rgb:0,201,125;
+  --red:#ff4545; --red-rgb:255,69,69;
+  --blue:#4a9eff; --amber:#ffb347; --purple:#a78bfa; --gold:#ffd35a;
+  --mono:'Space Mono',monospace; --sans:'DM Sans',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);}
+a{color:inherit;}
+.wrap{max-width:640px;margin:0 auto;padding:0 16px 64px;}
+header{padding:22px 0 14px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.logo{font-family:var(--mono);font-size:14px;font-weight:700;letter-spacing:.14em;}
+.logo span{color:var(--green);}
+.date{font-family:var(--mono);font-size:11px;color:var(--text2);letter-spacing:.06em;text-transform:uppercase;}
+.hero{padding:6px 0 16px;border-bottom:1px solid var(--border);}
+.hero h1{font-family:var(--mono);font-size:clamp(22px,7vw,32px);font-weight:700;line-height:1.12;}
+.hero h1 .accent{color:var(--gold);}
+.hero p{font-size:13px;color:var(--text2);margin-top:8px;line-height:1.5;}
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 2px;align-items:center;}
+.pill{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--text2);text-transform:uppercase;
+  background:var(--bg1);border:1px solid var(--border2);border-radius:20px;padding:7px 13px;cursor:pointer;-webkit-user-select:none;user-select:none;}
+.pill.on{color:#000;background:var(--gold);border-color:var(--gold);font-weight:700;}
+select.pill{color:var(--text);-webkit-appearance:none;appearance:none;padding-right:26px;
+  background-image:linear-gradient(45deg,transparent 50%,var(--text2) 50%),linear-gradient(135deg,var(--text2) 50%,transparent 50%);
+  background-position:calc(100% - 14px) 52%,calc(100% - 9px) 52%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;}
+
+/* GRÁFICA */
+.chart{background:var(--bg1);border:1px solid var(--border2);border-radius:10px;padding:12px 10px 8px;margin:16px 0 6px;}
+.chart svg{display:block;width:100%;height:auto;overflow:visible;}
+.grid{stroke:var(--border);stroke-width:1;}
+.zero{stroke:var(--text3);stroke-width:1;stroke-dasharray:3 3;}
+.line{fill:none;stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round;}
+.peak{fill:var(--gold);}
+.axis{font-family:var(--mono);font-size:8px;fill:var(--text3);}
+.leyenda{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;}
+.lg{font-family:var(--mono);font-size:9px;letter-spacing:.04em;color:var(--text2);display:flex;align-items:center;gap:5px;cursor:pointer;}
+.lg i{width:10px;height:2px;display:inline-block;border-radius:2px;}
+.lg.off{opacity:.3;}
+
+/* FILAS */
+section{padding:18px 0 4px;}
+.sec-head{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
+.sec-head .bar{width:18px;height:1px;background:var(--gold);}
+.sec-head h2{font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;}
+.sec-head .sub{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.08em;margin-left:auto;}
+.row{background:var(--bg1);border:1px solid var(--border2);border-radius:10px;padding:12px 13px;margin-bottom:10px;position:relative;overflow:hidden;}
+.row::before{content:'';position:absolute;top:0;left:0;bottom:0;width:3px;}
+.rtop{display:flex;align-items:flex-start;gap:10px;}
+.rname{font-family:var(--mono);font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.rmodel{font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:3px;}
+.rright{margin-left:auto;text-align:right;}
+.rright .eq{font-family:var(--mono);font-size:16px;font-weight:700;}
+.rright .ch{font-family:var(--mono);font-size:10px;font-weight:700;margin-top:2px;}
+.tag{font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.08em;padding:2px 6px;border-radius:3px;text-transform:uppercase;}
+.tag.control{color:var(--text2);border:1px solid var(--border2);background:var(--bg2);}
+.metrics{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;padding-top:9px;border-top:1px solid var(--border);}
+.m{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.04em;}
+.m b{display:block;font-size:13px;color:var(--text);margin-top:2px;letter-spacing:0;}
+.m b.pos{color:var(--green);} .m b.neg{color:var(--red);} .m b.peak{color:var(--gold);}
+.nota{font-size:11px;color:var(--text3);line-height:1.5;margin-top:9px;}
+.nota.warn{color:var(--amber);}
+.skel{background:linear-gradient(90deg,var(--bg1) 25%,var(--bg2) 50%,var(--bg1) 75%);background-size:200% 100%;
+  animation:sk 1.4s infinite;border-radius:10px;height:78px;margin-bottom:10px;}
+@keyframes sk{0%{background-position:200% 0;}100%{background-position:-200% 0;}}
+footer{margin-top:34px;padding-top:20px;border-top:1px solid var(--border);}
+.disc{font-size:11px;color:var(--text3);line-height:1.55;}
+.ctas{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;}
+.cta{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.08em;padding:10px 18px;
+  border:1px solid var(--gold);color:var(--gold);border-radius:3px;text-decoration:none;}
+.refresh{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.06em;margin-top:14px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">QUANT<span>DESK</span></div>
+    <div class="date" id="today">—</div>
+  </header>
+
+  <div class="hero">
+    <h1>Equity del <span class="accent">día</span>.</h1>
+    <p>El equity de cada agente durante la sesión, muestreado cada 5 minutos. El punto dorado es el <b>máximo del día</b> — lo que contesta si una cuenta llegó a estar arriba y lo devolvió.</p>
+    <div class="controls" id="controls">
+      <select class="pill" id="selDia"></select>
+      <span class="pill on" data-modo="pct">% desde la apertura</span>
+      <span class="pill" data-modo="usd">dólares</span>
+    </div>
+  </div>
+
+  <div class="chart" id="chartBox"><div class="skel" style="height:200px"></div></div>
+
+  <section>
+    <div class="sec-head"><span class="bar"></span><h2>Por agente</h2><span class="sub" id="sub">—</span></div>
+    <div id="filas"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>
+  </section>
+
+  <footer>
+    <p class="disc">
+      <strong>El máximo es el máximo de las MUESTRAS.</strong> La serie se toma cada ~5 minutos desde el tick de la liga:
+      si el equity tocó su pico entre dos muestras, ese pico no está aquí. Para preguntas del tipo "¿llegó a +2% hoy?",
+      esto es un <b>piso</b>: si las muestras dicen que sí, sí; si dicen que no, pudo haber pasado igual.
+      El % es contra la <b>primera muestra del día</b>, no contra el baseline de temporada — son dos preguntas distintas
+      y las dos viajan en la respuesta.
+    </p>
+    <div class="ctas">
+      <a class="cta" href="/liga">El ranking →</a>
+      <a class="cta" href="/liga/libros">Los libros →</a>
+    </div>
+    <div class="refresh" id="refreshNote"></div>
+  </footer>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const money=n=>{n=Number(n);if(!isFinite(n))return '—';return '$'+Math.round(n).toLocaleString('en-US');};
+const pct=n=>{n=Number(n);if(!isFinite(n))return '—';return (n>=0?'+':'')+n.toFixed(2)+'%';};
+const cls=n=>{n=Number(n);if(!isFinite(n)||n===0)return '';return n>0?'pos':'neg';};
+const hora=ts=>String(ts||'').slice(11,16);
+
+// Un color por agente, estable: la gráfica y la lista tienen que coincidir.
+const COLORES={claude:'#a78bfa',control:'#8a8a82',openai:'#00c97d',gemini:'#4a9eff',grok:'#f0ede8',deepseek:'#ff4545',qwen:'#ffb347',mistral:'#ffd35a'};
+const color=id=>COLORES[id]||'#8a8a82';
+
+let DATA=null, MODO='pct', OCULTOS=new Set();
+
+async function getJSON(url){
+  try{
+    const c=new AbortController();const t=setTimeout(()=>c.abort(),12000);
+    const r=await fetch(url,{signal:c.signal});clearTimeout(t);
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(e){ return null; }
+}
+(function(){
+  const d=new Date();
+  const s=d.toLocaleDateString('es-MX',{weekday:'long',day:'numeric',month:'long'});
+  $('today').textContent=s.charAt(0).toUpperCase()+s.slice(1);
+})();
+
+// ── LA GRÁFICA ───────────────────────────────────────────────────────
+// SVG a mano, sin librería: son polilíneas y una escala. Una dependencia de
+// 90 KB para dibujar siete líneas se paga en cada carga del celular.
+function chart(series){
+  const W=600,H=230,L=38,R=8,T=10,B=20;
+  const vivos=series.filter(s=>!OCULTOS.has(s.id)&&s.puntos.length);
+  if(!vivos.length) return '<div class="nota">Sin muestras para este día todavía. La primera entra en el próximo tick de la sesión.</div>';
+
+  const val=p=>MODO==='pct'?p.pctApertura:p.equity;
+  let min=Infinity,max=-Infinity,t0=Infinity,t1=-Infinity;
+  for(const s of vivos) for(const p of s.puntos){
+    const v=val(p); if(v<min)min=v; if(v>max)max=v;
+    if(p.t<t0)t0=p.t; if(p.t>t1)t1=p.t;
+  }
+  if(!isFinite(min)||!isFinite(max)) return '<div class="nota">Sin datos numéricos.</div>';
+  // Un rango plano (una sola muestra, o un día sin movimiento) dividiría por
+  // cero y dibujaría una línea en el borde. Se abre a mano.
+  if(max-min<1e-9){ max+=Math.abs(max||1)*0.01+0.01; min-=Math.abs(min||1)*0.01+0.01; }
+  if(t1-t0<1000) t1=t0+1000;
+  const pad=(max-min)*0.08; min-=pad; max+=pad;
+  const x=t=>L+((t-t0)/(t1-t0))*(W-L-R);
+  const y=v=>T+(1-((v-min)/(max-min)))*(H-T-B);
+
+  const ejes=[];
+  for(let i=0;i<=4;i++){
+    const v=min+((max-min)*i)/4, yy=y(v);
+    ejes.push('<line class="grid" x1="'+L+'" y1="'+yy.toFixed(1)+'" x2="'+(W-R)+'" y2="'+yy.toFixed(1)+'"/>');
+    ejes.push('<text class="axis" x="2" y="'+(yy+3).toFixed(1)+'">'+(MODO==='pct'?v.toFixed(1)+'%':'$'+Math.round(v/1000)+'k')+'</text>');
+  }
+  // La línea del 0% es la referencia que importa en modo %: arriba ganó, abajo perdió.
+  if(MODO==='pct'&&min<0&&max>0) ejes.push('<line class="zero" x1="'+L+'" y1="'+y(0).toFixed(1)+'" x2="'+(W-R)+'" y2="'+y(0).toFixed(1)+'"/>');
+  // Horas
+  for(let i=0;i<=3;i++){
+    const t=t0+((t1-t0)*i)/3;
+    ejes.push('<text class="axis" text-anchor="middle" x="'+x(t).toFixed(1)+'" y="'+(H-6)+'">'+new Date(t).toISOString().slice(11,16)+'</text>');
+  }
+
+  const lineas=vivos.map(s=>{
+    const d=s.puntos.map((p,i)=>(i?'L':'M')+x(p.t).toFixed(1)+' '+y(val(p)).toFixed(1)).join(' ');
+    const pk=s.maxPunto;
+    const marca=pk?'<circle class="peak" cx="'+x(pk.t).toFixed(1)+'" cy="'+y(val(pk)).toFixed(1)+'" r="2.6"/>':'';
+    return '<path class="line" d="'+d+'" stroke="'+color(s.id)+'"/>'+marca;
+  }).join('');
+
+  return '<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="Equity por agente durante la sesión">'+
+    ejes.join('')+lineas+'</svg>'+
+    '<div class="leyenda">'+series.map(s=>
+      '<span class="lg'+(OCULTOS.has(s.id)?' off':'')+'" data-ag="'+esc(s.id)+'">'+
+      '<i style="background:'+color(s.id)+'"></i>'+esc(s.nombre)+'</span>').join('')+'</div>';
+}
+
+function filaHtml(s){
+  const m=s.maximo,u=s.ultimo,a=s.apertura;
+  return '<div class="row" style="--c:'+color(s.id)+'">'+
+    '<div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:'+color(s.id)+'"></div>'+
+    '<div class="rtop">'+
+      '<div><div class="rname">'+esc(s.nombre)+(s.control?' <span class="tag control">control</span>':'')+'</div>'+
+        '<div class="rmodel">'+esc(s.modelo||'')+' · '+s.puntos.length+' muestras</div></div>'+
+      '<div class="rright"><div class="eq">'+money(u?u.equity:null)+'</div>'+
+        '<div class="ch '+cls(u?u.pct:null)+'">'+pct(u?u.pct:null)+' hoy</div></div>'+
+    '</div>'+
+    '<div class="metrics">'+
+      '<div class="m">apertura<b>'+money(a?a.equity:null)+'</b></div>'+
+      '<div class="m">máximo del día<b class="peak">'+money(m?m.equity:null)+'</b></div>'+
+      '<div class="m">a las<b style="font-size:11px">'+esc(m?hora(m.ts):'—')+'</b></div>'+
+      '<div class="m">pico → ahora<b class="'+cls(s.devuelto)+'">'+pct(s.devuelto)+'</b></div>'+
+      '<div class="m">temporada<b class="'+cls(s.retornoTemporada)+'">'+pct(s.retornoTemporada)+'</b></div>'+
+    '</div>'+
+    (s.control?'<div class="nota">'+esc(s.controlNota||'')+'</div>':'')+
+  '</div>';
+}
+
+function normaliza(data){
+  const out=[];
+  for(const [id,d] of Object.entries(data.por_agente||{})){
+    const ap=d.apertura?d.apertura.equity:null;
+    const puntos=(d.puntos||[]).map(p=>({
+      t:Date.parse(p.ts), equity:p.equity,
+      pctApertura: ap>0?((p.equity-ap)/ap)*100:0,
+    })).filter(p=>isFinite(p.t));
+    const mx=d.maximo?puntos.find(p=>p.t===Date.parse(d.maximo.ts)):null;
+    out.push({
+      id, nombre:(d.agente&&d.agente.nombre)||id, modelo:(d.agente&&d.agente.modelo)||null,
+      control:!!(d.agente&&d.agente.control), controlNota:(d.agente&&d.agente.control_nota)||null,
+      puntos, maxPunto:mx||null,
+      apertura:d.apertura, maximo:d.maximo?{...d.maximo}:null,
+      ultimo:d.ultimo?{equity:d.ultimo.equity,pct:d.ultimo.pct_desde_apertura}:null,
+      devuelto:d.devuelto_desde_maximo_pct, retornoTemporada:d.retorno_temporada_pct,
+    });
+  }
+  // Orden por retorno del día, de mejor a peor: es como se lee una liga.
+  out.sort((a,b)=>((b.ultimo&&b.ultimo.pct)||-1e9)-((a.ultimo&&a.ultimo.pct)||-1e9));
+  return out;
+}
+
+function render(){
+  if(!DATA) return;
+  const series=normaliza(DATA);
+  $('chartBox').innerHTML=chart(series);
+  $('sub').textContent=series.length+' agentes · '+(DATA.dia||'—');
+  $('filas').innerHTML=series.length?series.map(filaHtml).join('')
+    :'<div class="row"><div class="nota">Sin muestras para este día.</div></div>';
+  $('chartBox').querySelectorAll('[data-ag]').forEach(n=>{
+    n.addEventListener('click',()=>{
+      const id=n.getAttribute('data-ag');
+      if(OCULTOS.has(id)) OCULTOS.delete(id); else OCULTOS.add(id);
+      render();
+    });
+  });
+}
+
+async function load(){
+  DATA=await getJSON('/api/liga/equity');
+  if(!DATA){
+    $('chartBox').innerHTML='<div class="nota">La serie no está disponible ahora mismo.</div>';
+    $('filas').innerHTML='';
+    return;
+  }
+  const dias=DATA.dias||[];
+  $('selDia').innerHTML=dias.length?dias.map(d=>'<option value="'+esc(d)+'">'+esc(d)+'</option>').join('')
+    :'<option value="">sin días</option>';
+  if(DATA.dia) $('selDia').value=DATA.dia;
+  $('selDia').addEventListener('change',async e=>{
+    const d=e.target.value; if(!d) return;
+    DATA=await getJSON('/api/liga/equity?dia='+encodeURIComponent(d))||DATA;
+    render();
+  });
+  $('controls').querySelectorAll('[data-modo]').forEach(p=>{
+    p.addEventListener('click',()=>{
+      MODO=p.getAttribute('data-modo');
+      $('controls').querySelectorAll('[data-modo]').forEach(x=>{x.className='pill'+(x===p?' on':'');});
+      render();
+    });
+  });
+  if(DATA.nota) $('chartBox').insertAdjacentHTML('afterend','<div class="nota warn">'+esc(DATA.nota)+'</div>');
+  render();
+}
+load();
+// La sesión es en vivo: se refresca sola, al ritmo del muestreo.
+setInterval(async()=>{
+  const fresco=await getJSON('/api/liga/equity'+(DATA&&DATA.dia?'?dia='+encodeURIComponent(DATA.dia):''));
+  if(fresco){ DATA=fresco; render(); $('refreshNote').textContent='Actualizado '+new Date().toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}); }
+},60000);
+$('refreshNote').textContent='Actualizado al abrir · '+new Date().toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
+</script>
+</body>
+</html>

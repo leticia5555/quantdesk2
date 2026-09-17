@@ -78,6 +78,10 @@
       "destination": "/libros.html"
     },
     {
+      "source": "/liga/equity",
+      "destination": "/equity.html"
+    },
+    {
       "source": "/libros",
       "destination": "/libros.html"
     },
@@ -88,6 +92,10 @@
     {
       "source": "/api/liga/libros",
       "destination": "/api/liga-libros"
+    },
+    {
+      "source": "/api/liga/equity",
+      "destination": "/api/liga-equity"
     }
   ],
   "crons": [
