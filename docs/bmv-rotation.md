@@ -1046,6 +1046,61 @@ advertencia que evita leerlo mal: en `resultado_trimestre` el comparativo es el
 anterior** (31-dic), no junio del año pasado. Por eso viaja con sus propias
 fechas en vez de llamarse "hace un año".
 
+### El paginado en bucle: memoria de lambda para un estado que sobrevive
+
+La primera tanda de `?job=reparse-fin` salió perfecta —1,000 filas, 1,000
+arregladas, EPS y comparativo al 100%— y las **~55 siguientes devolvieron
+exactamente lo mismo**, con `continuar_desde` clavado en CHDRAUI 2020-4.
+
+La causa cabe en una línea:
+
+```js
+let cursor = null;   // se reinicia en CADA invocación
+```
+
+Cada llamada al endpoint es una lambda nueva y la memoria se va con ella. El job
+**devolvía** `continuar_desde` y esperaba que quien llamara lo reenviara — y eso
+no es un contrato, es una suposición. Nadie lo reenviaba, y el job no tenía cómo
+enterarse.
+
+**Ahora el avance vive en `bmv_meta`.** Cada llamada continúa donde quedó la
+anterior sin que nadie pase nada. `&reiniciar=1` fuerza empezar de cero.
+
+#### Y un segundo bug, más silencioso que el bucle
+
+```js
+if (filas.length < 200) { … }      // contra la CONSTANTE
+```
+
+Se comparaba contra el tamaño de página fijo, no contra lo **pedido**. Con
+`&max=150` se piden 150, llegan 150, y `150 < 200` se leía como *"ya no quedan
+filas"*: **`hay_mas: false` con filas pendientes**.
+
+Ese es peor que el bucle. El bucle se ve —55 llamadas idénticas son difíciles de
+ignorar— y éste habría dejado la mitad de la tabla sin re-parsear mientras el
+job reportaba éxito.
+
+#### Lo que descarté, para que no siga bajo sospecha
+
+La comparación de tupla `(emisora, anio, trimestre) > ($2, $3, $4)` **sí** es
+lexicográfica en Postgres, y el `ORDER BY` **sí** coincide con el cursor. Las
+dos estaban bien.
+
+#### El test corre la función de verdad
+
+Tres llamadas seguidas sobre una tabla falsa de 7 filas con páginas de 3, y se
+exige que la unión cubra **todas** sin repetir ninguna, que `hay_mas` sea `false`
+sólo al final, y que el cursor sobreviva **sin que el test reenvíe nada**.
+
+Las dependencias se inyectan para que el test recorra `jobReparseFinancieros`
+—la de verdad— y no una reimplementación del paginado, que podría pasar mientras
+la real falla. Verificado al revés: con el bucle reintroducido caen 4 tests; con
+el `< 200`, cae el de la página corta.
+
+El output trae ahora **`avance: "3/7"`** acumulado entre llamadas, que es
+justamente lo que habría delatado el bucle a la segunda corrida en vez de a la
+cincuenta y cinco.
+
 ### El ledger lo dijo, y yo le puse un nombre que lo escondió
 
 Las 4,174 filas quedaron en el estado que significa "ningún campo se pudo
@@ -1098,7 +1153,7 @@ construido para esas dos.
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 10 jobs (`reparse`, `reparse-fin` e `inspect` son de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **146 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **154 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
 | **El censo** | **Cerrado.** `deriva.estable: true` — 0 aparecieron, 0 desaparecieron. **185 series ICS**, 165 con cobertura (las 20 sin ella son bancos y casas de bolsa, fuera de la v1 por decisión de Fase 0). 1,641 repartos: 1,520 efectivo, 121 reembolso, 0 desconocido. |

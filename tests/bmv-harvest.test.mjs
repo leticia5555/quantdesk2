@@ -1627,3 +1627,147 @@ test('sin `cierre` se mantiene la búsqueda en todo el árbol', () => {
   assert.equal(normalizarFinancieros(uno).valores.revenue, 500);
   assert.equal(normalizarFinancieros(DOS_PERIODOS).valores.revenue, null, 'dos valores distintos sin fecha que los separe');
 });
+
+/* ═══════════════════════════════════════════════════════════════
+ * EL PAGINADO DE reparse-fin.
+ *
+ * Estuvo en bucle: ~55 llamadas procesando las MISMAS 1,000 filas,
+ * con `continuar_desde` siempre en CHDRAUI 2020-4. La causa era
+ * `let cursor = null` — memoria de una lambda que muere con ella.
+ * Devolver el cursor y esperar que el que llama lo reenvíe no es un
+ * contrato: es una suposición.
+ *
+ * Estos tests corren la función DE VERDAD sobre una tabla falsa, no
+ * una reimplementación del paginado — una reimplementación puede
+ * pasar mientras la real falla.
+ * ═══════════════════════════════════════════════════════════════ */
+
+/** Una tabla de prueba con su meta, que imita lo que hace la base. */
+function tablaFalsa(nFilas) {
+  const filas = [];
+  for (let i = 0; i < nFilas; i++) {
+    const emisora = `E${String(i).padStart(3, '0')}`;
+    filas.push({
+      emisora, anio: 2017, trimestre: 2,
+      raw: { resultado_trimestre: { '2017-04-01_2017-06-30': { basicearningslosspershare: ['upa', 1 + i] } } },
+    });
+  }
+  const orden = (a, b) => (a.emisora < b.emisora ? -1 : a.emisora > b.emisora ? 1 : 0);
+  filas.sort(orden);
+
+  const meta = new Map();
+  const actualizadas = [];
+  return {
+    filas,
+    actualizadas,
+    deps: {
+      pagina: 3,                       // páginas chicas para forzar varias vueltas
+      financierosCrudos: async ({ limite, desde }) => {
+        const arranque = desde
+          ? filas.findIndex((f) => f.emisora > desde.emisora
+              || (f.emisora === desde.emisora && (f.anio > desde.anio
+                  || (f.anio === desde.anio && f.trimestre > desde.trimestre))))
+          : 0;
+        if (arranque < 0) return [];
+        return filas.slice(arranque, arranque + limite);
+      },
+      actualizarFinancieros: async (f) => { actualizadas.push(f.emisora); },
+      marcarLedger: async () => {},
+      leerMeta: async (k) => (meta.has(k) ? { value: meta.get(k) } : null),
+      guardarMeta: async (k, v) => { meta.set(k, v); },
+      contarFinancieros: async () => filas.length,
+    },
+  };
+}
+
+test('tres llamadas seguidas cubren TODAS las filas sin repetir ninguna', async () => {
+  // 7 filas, páginas de 3, tope de 3 por corrida: hacen falta 3 llamadas.
+  const t = tablaFalsa(7);
+  const salidas = [];
+  for (let i = 0; i < 3; i++) {
+    salidas.push(await jobReparseFinancieros({ query: { max: '3' } }, t.deps));
+  }
+
+  assert.deepEqual(salidas.map((s) => s.leidas), [3, 3, 1], 'cada tanda avanza');
+  assert.equal(t.actualizadas.length, 7, 'ni una fila de más');
+  assert.equal(new Set(t.actualizadas).size, 7, 'ni una repetida');
+  assert.deepEqual([...t.actualizadas].sort(), t.filas.map((f) => f.emisora).sort(),
+    'la unión de las tres páginas es la tabla completa');
+});
+
+test('hay_mas es false exactamente cuando ya no quedan filas', async () => {
+  const t = tablaFalsa(7);
+  const s1 = await jobReparseFinancieros({ query: { max: '3' } }, t.deps);
+  const s2 = await jobReparseFinancieros({ query: { max: '3' } }, t.deps);
+  const s3 = await jobReparseFinancieros({ query: { max: '3' } }, t.deps);
+  assert.equal(s1.hay_mas, true);
+  assert.equal(s2.hay_mas, true);
+  assert.equal(s3.hay_mas, false, 'la última tanda no debe pedir otra vuelta');
+  assert.equal(s3.continuar_desde, null);
+});
+
+test('el avance ACUMULADO se ve contra el total, no sólo el de la tanda', async () => {
+  const t = tablaFalsa(7);
+  const s1 = await jobReparseFinancieros({ query: { max: '3' } }, t.deps);
+  const s2 = await jobReparseFinancieros({ query: { max: '3' } }, t.deps);
+  assert.equal(s1.avance, '3/7');
+  assert.equal(s2.avance, '6/7', 'acumula entre llamadas: es lo que delata un bucle');
+  assert.equal(s2.total_procesadas, 6);
+  assert.equal(s2.total_filas, 7);
+});
+
+test('el cursor sobrevive entre llamadas SIN que nadie lo reenvíe', async () => {
+  // El corazón del bug: el que llama no pasa nada, y aun así la segunda tanda
+  // empieza donde terminó la primera.
+  const t = tablaFalsa(7);
+  await jobReparseFinancieros({ query: { max: '3' } }, t.deps);
+  const primeras = [...t.actualizadas];
+  await jobReparseFinancieros({ query: { max: '3' } }, t.deps);
+  const segundas = t.actualizadas.slice(3);
+  assert.equal(primeras.length, 3);
+  assert.equal(segundas.length, 3);
+  assert.equal(segundas.filter((e) => primeras.includes(e)).length, 0,
+    'la segunda tanda no vuelve a tocar las de la primera');
+});
+
+test('&reiniciar=1 vuelve a empezar de cero', async () => {
+  const t = tablaFalsa(7);
+  await jobReparseFinancieros({ query: { max: '3' } }, t.deps);
+  const s = await jobReparseFinancieros({ query: { max: '3', reiniciar: '1' } }, t.deps);
+  assert.equal(s.total_procesadas, 3, 'el acumulado se reinicia');
+  assert.deepEqual(t.actualizadas.slice(3), t.actualizadas.slice(0, 3),
+    'y vuelve a procesar las mismas tres primeras');
+});
+
+test('una última página CORTA no se confunde con "ya no quedan filas"', async () => {
+  // El otro bug, más silencioso que el bucle: se comparaba contra el tamaño de
+  // página fijo (200) en vez de contra lo PEDIDO. Con `&max=2` y páginas de 3,
+  // se piden 2, llegan 2, y `2 < 3` decía "se acabó" con 5 filas pendientes.
+  const t = tablaFalsa(7);
+  const s = await jobReparseFinancieros({ query: { max: '2' } }, t.deps);
+  assert.equal(s.leidas, 2);
+  assert.equal(s.hay_mas, true, 'quedan 5: no puede declararse completado');
+});
+
+test('terminado el trabajo, una llamada nueva empieza de cero', async () => {
+  // Alternativa a dejar un `completado` pegajoso: re-parsear es gratis y
+  // determinista, así que volver a correrlo es inofensivo — y mucho menos
+  // sorprendente que un job que se niega a trabajar.
+  const t = tablaFalsa(4);
+  await jobReparseFinancieros({ query: { max: '10' } }, t.deps);
+  assert.equal(t.actualizadas.length, 4);
+  const s = await jobReparseFinancieros({ query: { max: '10' } }, t.deps);
+  assert.equal(s.leidas, 4, 'vuelve a recorrer la tabla');
+  assert.equal(s.hay_mas, false);
+});
+
+test('el reloj corta la tanda sin perder el avance', async () => {
+  const t = tablaFalsa(7);
+  let reloj = 0;
+  const s = await jobReparseFinancieros({ query: { max: '99' } },
+    { ...t.deps, ahora: () => (reloj += 100), limiteMs: 150 });
+  assert.ok(s.leidas > 0 && s.leidas < 7, `cortó a mitad: ${s.leidas}`);
+  assert.equal(s.hay_mas, true, 'cortar por reloj no es haber terminado');
+  const s2 = await jobReparseFinancieros({ query: { max: '99' } }, t.deps);
+  assert.equal(s.leidas + s2.leidas, 7, 'entre las dos cubren todo');
+});

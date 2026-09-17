@@ -395,6 +395,12 @@ async function formasDelCrudo() {
   return { por_tipo: porTipo, por_forma: porForma };
 }
 
+/** Cuántas filas hay en total, para que el avance se vea contra un denominador. */
+async function contarFinancieros() {
+  const r = await sql(`select count(*)::int as n from bmv_financieros`);
+  return r[0] ? r[0].n : 0;
+}
+
 /** Una fila concreta, con su crudo, para mirarla sin normalizar nada. */
 async function financieroCrudo({ emisora, anio, trimestre }) {
   const r = await sql(
@@ -694,5 +700,6 @@ export {
   upsertFinancieros, insertarPrecios, insertarDistribuciones, ultimaFechaPrecios,
   marcarLedger, clavesHechas, clavesAgotadas, ledgerResumen, financierosCrudos,
   actualizarFinancieros, formasDelCrudo, financieroCrudo, financieroQueSiSirvio,
+  contarFinancieros,
   presupuesto, gastar, cobertura,
 };
