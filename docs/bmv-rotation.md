@@ -915,6 +915,40 @@ desde el primer día.
 > **Arreglarlo costó 0 créditos**: `?job=reparse-fin` re-normaliza desde lo
 > guardado. Sin el crudo, esto habría costado otra cosecha completa.
 
+### El `["etiqueta", valor]` era real, pero NO era la causa raíz
+
+El re-parseo de las primeras 1,000 filas arregló **65**. `faltantes_por_campo`
+dijo el resto: 993/1000 sin `assets`, `liabilities`, `equity` ni
+`cashandcashequivalents`, y 992 sin `revenue`. O sea que **casi ninguna fila
+tiene ningún campo** — y las 65 que sí, prueban que en la tabla conviven **dos
+formas distintas de crudo**.
+
+Arreglar el arreglo era necesario y no suficiente. Lo que seguía faltando no era
+otra hipótesis mejor: era **mirar el dato**.
+
+#### `?job=inspect` — cero créditos, cero interpretación
+
+```
+?job=inspect&emisora=WALMEX&periodo=2T_2017
+```
+
+Devuelve, **sin normalizar nada**:
+
+| | |
+|---|---|
+| `formas_del_crudo` | Cuántas filas hay de cada combinación de llaves de primer nivel, con `con_eps` al lado. **El discriminador**: una sola forma ⇒ el problema es el parser; varias ⇒ la cosecha guardó cosas distintas. |
+| `solicitada` | La fila pedida: tipo de la raíz, llaves de nivel 1 y 2, y `assets` / `revenue` / `basicearningslosspershare` con su **ruta, tipo y valor literales**. |
+| `ejemplo_que_si_sirvio` | Lo mismo para una de las filas que **sí** normalizó, para compararlas lado a lado. |
+
+Está escrito a propósito **sin usar `resolverCampo` ni `valorDeCampo`**: el punto
+es ver qué hay, no qué entiende el parser. **Si el parser y el inspector no
+coinciden, el desacuerdo es el hallazgo.**
+
+Los tests lo fijan contra las cuatro hipótesis que tiene que poder separar:
+envoltura extra (se ve en la ruta), un solo bloque pedido (el otro campo sale
+`NO APARECE`), llaveado por fecha contra campo directo (se ve en `nivel_2`), y
+dos formas conviviendo (se ve en `nivel_1`).
+
 ### El ledger lo dijo, y yo le puse un nombre que lo escondió
 
 Las 4,174 filas quedaron en el estado que significa "ningún campo se pudo
@@ -966,14 +1000,14 @@ construido para esas dos.
 |---|---|
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
-| `api/bmv-harvest.js` | Hecho. 9 jobs (con `reparse` y `reparse-fin`, de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **116 tests**, en verde. |
+| `api/bmv-harvest.js` | Hecho. 10 jobs (`reparse`, `reparse-fin` e `inspect` son de cero créditos), idempotente, con parada limpia. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **125 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
 | **El censo** | **Cerrado.** `deriva.estable: true` — 0 aparecieron, 0 desaparecieron. **185 series ICS**, 165 con cobertura (las 20 sin ella son bancos y casas de bolsa, fuera de la v1 por decisión de Fase 0). 1,641 repartos: 1,520 efectivo, 121 reembolso, 0 desconocido. |
 | **Fase A, diseño** | **Cerrado.** |
 | **La cosecha** | **Corrida**: 4,174 financieros, 182 series de precios. |
-| **Normalización** | Arreglada (§5.5). Falta correr `?job=reparse-fin` y confirmar "Con EPS" por año. |
+| **Normalización** | **Abierta.** El `["etiqueta", valor]` era real pero no la causa raíz: 65 de 1,000. `?job=inspect` es el siguiente paso (§5.5). |
 | **La cosecha** | **Sin correr** — este sandbox no alcanza la API. |
 | **Cobertura real** | **Sin reportar** — depende de la cosecha. |
 | `/api/bmv-rotation-analyze` | **Fase B. No empezado, a propósito.** |

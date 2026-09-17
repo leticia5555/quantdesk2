@@ -62,7 +62,7 @@ import {
   MAX_INTENTOS,
   upsertFinancieros, insertarPrecios, insertarDistribuciones, ultimaFechaPrecios,
   marcarLedger, clavesHechas, clavesAgotadas, ledgerResumen, financierosCrudos,
-  actualizarFinancieros,
+  actualizarFinancieros, formasDelCrudo, financieroCrudo, financieroQueSiSirvio,
   presupuesto, gastar, cobertura, leerMeta, guardarMeta,
 } from './_lib/bmv-db.js';
 
@@ -849,6 +849,132 @@ function contar(lista) {
   return m;
 }
 
+/* ═══════════════ job: inspect (cero créditos, NO normaliza) ═══════════════ */
+
+// Los tres campos que se miran literales: uno de `posicion`, uno de
+// `resultado_trimestre`, y el que bloquea el backtest.
+const CAMPOS_INSPECCION = ['assets', 'revenue', 'basicearningslosspershare'];
+
+/** El tipo de dato REAL, con arreglo y null distinguidos de 'object'. */
+function tipoDe(v) {
+  if (v === null) return 'null';
+  if (Array.isArray(v)) return `array[${v.length}]`;
+  return typeof v;
+}
+
+/** Un valor recortado para que quepa en la respuesta sin dejar de ser literal. */
+function literal(v, limite = 200) {
+  const s = JSON.stringify(v);
+  if (s === undefined) return String(v);
+  return s.length <= limite ? v : s.slice(0, limite) + `… (+${s.length - limite})`;
+}
+
+/**
+ * Describe la forma de un crudo SIN interpretarla: llaves de primer nivel con
+ * su tipo, llaves de segundo nivel de cada bloque, y dónde aparece cada campo
+ * de interés con su valor y tipo literales.
+ *
+ * Deliberadamente no usa `resolverCampo` ni `valorDeCampo`: el punto es ver qué
+ * hay, no qué entiende el parser. Si el parser y esto no coinciden, el
+ * desacuerdo es el hallazgo.
+ */
+function describirCrudo(raw) {
+  const tipoRaiz = tipoDe(raw);
+  // Un ARREGLO también entra por `typeof === 'object'`, y describirlo como
+  // "objeto con 0 llaves" sería exactamente la clase de descripción engañosa
+  // que este job existe para no producir. Si la raíz no es un objeto plano, se
+  // dice qué es y se muestra el valor.
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { tipo_raiz: tipoRaiz, valor: literal(raw), nivel_1: null, nivel_2: null, campos: null };
+  }
+
+  const nivel1 = Object.entries(raw).map(([k, v]) => ({
+    llave: k,
+    tipo: tipoDe(v),
+    n_llaves: v && typeof v === 'object' && !Array.isArray(v) ? Object.keys(v).length : null,
+  }));
+
+  const nivel2 = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+    nivel2[k] = Object.keys(v).slice(0, 12).map((x) => ({ llave: x, tipo: tipoDe(v[x]) }));
+    if (Object.keys(v).length > 12) nivel2[k].push({ llave: `… (+${Object.keys(v).length - 12})`, tipo: '' });
+  }
+
+  // Dónde está cada campo de interés, en CUALQUIER nivel, tal cual.
+  const campos = {};
+  for (const nombre of CAMPOS_INSPECCION) {
+    const objetivo = normalizaLlave(nombre);
+    const hallazgos = [];
+    const visto = new Set();
+    const caminar = (nodo, ruta) => {
+      if (!nodo || typeof nodo !== 'object' || visto.has(nodo) || ruta.length > 8) return;
+      visto.add(nodo);
+      for (const [k, v] of Object.entries(nodo)) {
+        const aqui = [...ruta, k];
+        if (normalizaLlave(k) === objetivo) {
+          hallazgos.push({ ruta: aqui.join('.'), tipo: tipoDe(v), valor: literal(v) });
+        }
+        if (v && typeof v === 'object') caminar(v, aqui);
+      }
+    };
+    caminar(raw, []);
+    campos[nombre] = hallazgos.length ? hallazgos : 'NO APARECE en ningún nivel';
+  }
+
+  return { tipo_raiz: tipoRaiz, nivel_1: nivel1, nivel_2: nivel2, campos };
+}
+
+/**
+ * `?job=inspect&emisora=WALMEX&periodo=2T_2017` — cero créditos, cero
+ * normalización. Devuelve la forma del crudo guardado y la de una fila que SÍ
+ * produjo campos, para compararlas lado a lado.
+ *
+ * Existe porque el arreglo del `["etiqueta", valor]` no fue la causa raíz: de
+ * 1,000 filas re-parseadas sólo 65 quedaron con campos. Dos formas distintas de
+ * crudo conviven en la tabla, y la única manera de saber cuáles es mirarlas.
+ */
+async function jobInspect(req) {
+  const q = req.query || {};
+  const emisora = q.emisora ? String(q.emisora).toUpperCase() : null;
+  const periodo = q.periodo ? parseClavePeriodo(String(q.periodo)) : null;
+
+  const [formas, ok] = await Promise.all([formasDelCrudo(), financieroQueSiSirvio()]);
+
+  let fila = null;
+  if (emisora && periodo) {
+    fila = await financieroCrudo({ emisora, anio: periodo.anio, trimestre: periodo.trimestre });
+  }
+
+  const resumen = (f) => (f ? {
+    emisora: f.emisora,
+    periodo: clavePeriodo(f.anio, f.trimestre),
+    cosechado_at: f.cosechado_at,
+    normalizado: {
+      basicearningslosspershare: f.basicearningslosspershare,
+      revenue: f.revenue,
+      assets: f.assets,
+    },
+    faltantes: f.faltantes,
+    crudo: describirCrudo(f.raw),
+  } : null);
+
+  return {
+    job: 'inspect',
+    creditos: 0,
+    // EL DISCRIMINADOR: cuántas formas distintas de crudo hay en la tabla, y
+    // cuál produce campos. Si aquí sale una sola forma, el problema es del
+    // parser; si salen varias, la cosecha guardó cosas distintas.
+    formas_del_crudo: formas,
+    solicitada: emisora && periodo
+      ? (resumen(fila) || { error: `no hay fila para ${emisora} ${q.periodo}` })
+      : { nota: 'pasa &emisora=WALMEX&periodo=2T_2017 para inspeccionar una fila concreta' },
+    // Una fila que SÍ normalizó, para ver en qué se diferencia.
+    ejemplo_que_si_sirvio: resumen(ok) || { nota: 'ninguna fila tiene campos normalizados' },
+    campos_inspeccionados: CAMPOS_INSPECCION,
+  };
+}
+
 /* ═══════════════ job: reparse-fin (cero créditos) ═══════════════ */
 
 /**
@@ -1391,7 +1517,7 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Método no soportado.' });
 
   const job = String((req.query && req.query.job) || '').toLowerCase();
-  const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse', 'reparse-fin']);
+  const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse', 'reparse-fin', 'inspect']);
 
   try {
     await ensureBmvSchema();
@@ -1438,6 +1564,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ job: 'cobertura', ...c });
     }
 
+    if (job === 'inspect') return res.status(200).json(await jobInspect(req));
     if (job === 'reparse-fin') return res.status(200).json(await jobReparseFinancieros(req));
     if (job === 'reparse') return res.status(200).json(await jobReparse());
     if (job === 'probe') return res.status(200).json(await jobProbe(req));
@@ -1460,6 +1587,7 @@ export default async function handler(req, res) {
         'contrato': 'público: el contrato descubierto por el probe',
         'reparse': 'protegido, CERO créditos: re-deriva el censo desde el crudo guardado',
         'reparse-fin': 'protegido, CERO créditos: re-normaliza los financieros desde el crudo guardado',
+        'inspect': 'protegido, CERO créditos: describe la forma del crudo guardado, sin normalizar nada',
       },
       token_configurado: !!process.env.DATABURSATIL_TOKEN,
       escritura_habilitada: !!adminSecret(),
@@ -1475,7 +1603,8 @@ export default async function handler(req, res) {
 
 export {
   CONTRATO_DEFECTO, PRECIOS_DESDE_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, coberturaMd,
-  contar, estimarConsumo, filaCenso, filasDelCenso, pareceClave, pareceSerie,
+  contar, describirCrudo, estimarConsumo, filaCenso, filasDelCenso, literal,
+  pareceClave, pareceSerie, tipoDe,
   pendientesFinancieros,
   seriesDeEmisora, muestraChica, nuevaCartera,
   paramsBenchmark, paramsFinancieros, paramsHistoricos, parsePeriodoTexto,
