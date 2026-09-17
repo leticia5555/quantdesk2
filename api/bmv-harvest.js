@@ -52,7 +52,8 @@ import {
   CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL,
   aplanarHistoricos, clavePeriodo, construirUrl, dormir, emisoraSerie,
   extraerDistribuciones, finDeTrimestre, normalizaLlave, periodoApi,
-  mesPresupuesto, normalizarFinancieros, parsearRangoFechas, parsearRangoPeriodos,
+  mesPresupuesto, normalizarFinancieros, parseClavePeriodo, parsearRangoFechas,
+  parsearRangoPeriodos,
   recortarACobertura, resolverCampo, traer, trimestresEntre,
 } from './_lib/databursatil.js';
 
@@ -1520,8 +1521,12 @@ export default async function handler(req, res) {
   const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse', 'reparse-fin', 'inspect']);
 
   try {
-    await ensureBmvSchema();
-
+    // AUTH PRIMERO, base después. Estaba al revés: `ensureBmvSchema()` corría
+    // antes del chequeo, así que una petición SIN credenciales abría conexión a
+    // Neon y disparaba las migraciones antes de recibir su 401. Las DDL son
+    // idempotentes y el daño era acotado, pero el orden contradecía el
+    // fail-closed que este endpoint dice tener: no se hace trabajo para quien
+    // todavía no demostró que puede pedirlo.
     if (protegidos.has(job) && !authorized(req)) {
       return res.status(401).json({
         error: 'No autorizado.',
@@ -1530,6 +1535,8 @@ export default async function handler(req, res) {
           : 'ADMIN_SECRET no configurado — escritura deshabilitada (fail closed)',
       });
     }
+
+    await ensureBmvSchema();
 
     if (job === 'estimate') {
       const { fuente, lista } = await emisorasParaEstimar();
@@ -1603,6 +1610,11 @@ export default async function handler(req, res) {
 
 export {
   CONTRATO_DEFECTO, PRECIOS_DESDE_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, coberturaMd,
+  // Los jobs se exportan para que los tests recorran su ruta REAL de entrada,
+  // no sólo sus funciones puras. `node --check` valida sintaxis; un nombre sin
+  // importar sólo se ve ejecutando (ya nos pasó con la colisión de `fila`).
+  jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros, jobHistoricos,
+  jobReparse,
   contar, describirCrudo, estimarConsumo, filaCenso, filasDelCenso, literal,
   pareceClave, pareceSerie, tipoDe,
   pendientesFinancieros,
