@@ -1,6 +1,6 @@
 # SCOPE — Experimento "earnings-beat": ¿QuantDesk le gana a Polymarket?
 
-> **Estado: FASE 0, tercera vuelta.** La primera corrida desde Vercel dio
+> **Estado: FASE 0, cuarta vuelta.** La primera corrida desde Vercel dio
 > **INCONCLUSO por descubrimiento, no por fuente** (§1.0): el barrido por
 > paginación se quedó ciego y su "0 mercados de earnings" no era un hallazgo.
 > Esta versión cambia el descubrimiento por **búsqueda dirigida** y corrige un
@@ -243,6 +243,49 @@ atractivo y **no** se elige). Dos casos más, reportados y no barridos:
   (> 24h + 12h de tolerancia). **Sí entra**, marcado: en un mercado ilíquido el
   "precio a 24h" existe pero no dice lo que uno cree.
 
+### 1.2b El conteo del candado: T-24h en TODOS los cruzados
+
+Tres ejemplos no miden nada. El candado exige **≥100 mercados cruzados con
+precio válido a T-24h**, así que hay que pedirle el precio **a cada uno**.
+
+- Se pide en **lotes con concurrencia 6** (145 requests en serie no entran en
+  el presupuesto; 145 de golpe es una forma elegante de que te limiten).
+- Si el presupuesto se acaba, **se declara truncado con cuántos alcanzó a
+  ver**. Un conteo parcial que se sabe parcial sirve; uno parcial que se cree
+  total, no.
+- Los "ejemplos" salen **del mismo lote**: cero requests extra.
+
+Y el resultado se parte en las categorías que deciden, porque no todas cuentan:
+
+| Categoría | ¿Cuenta para el candado? | Por qué |
+|---|---|---|
+| **válido** | **SÍ** | hay tick real ≤ T-24h y no está rancio |
+| rancio | no | el precio existe, pero el último tick es mucho más viejo que T-24h: no dice lo que creemos |
+| sin ticks antes de T-24h | no | el mercado no existía 24h antes de resolver |
+| historial vacío / sin token / error | no | no hay dato, y se dice cuál de los tres |
+
+El markdown compara el conteo de **válidos** contra el umbral congelado y dice
+en letras si el candado se cumple, no se cumple, o si el conteo está truncado y
+por lo tanto es un **piso**.
+
+### 1.2c El ruido de la búsqueda por subcadena
+
+La búsqueda por símbolo es **por subcadena**, y hay tickers que son palabras
+comunes: `NOW` trajo 545 filas (las películas *"Now You See Me"*), `FTNT` 709,
+`SNPS` 123. El filtro de earnings las descartó — pero **"el filtro descartó
+bien" es una afirmación que hay que poder comprobar**, no creer.
+
+Por cada símbolo que traiga ≥100 filas, el censo publica: cuántas trajo,
+cuántas sobrevivieron, cuántas se descartaron, **una muestra de las aceptadas
+para leerlas a ojo**, y el número que de verdad importa —
+**`aceptados_con_otro_simbolo`**: un mercado aceptado cuyo símbolo resuelto no
+es el que se buscó. Ése es exactamente el modo de falla que esta auditoría
+persigue; si es 0, no se coló basura por la subcadena.
+
+Además, la búsqueda por símbolo pagina **máximo 3 páginas** (las frases,
+12): son 99 búsquedas, y el presupuesto vale más que la página 4 de
+*"Now You See Me"*.
+
 ### 1.3 Cruce con la cosecha del PEAD
 
 **Corrección de nomenclatura:** el encargo dice `pead_events`; esa tabla no
@@ -265,6 +308,22 @@ qué se arregla después:
 
 El markdown del censo dice cuál de los dos manda, en letras, para que la
 decisión no dependa de leer bien una tabla de conteos.
+
+**Y el segundo motivo se diagnostica, no solo se cuenta.** "31 fuera de
+tolerancia" es un número sin diagnóstico: no distingue un desfase de calendario
+de dispersión. Ahora el cruce guarda, para cada caso que no entró, **por cuánto
+no entró** (`cercano_fuera_de_tolerancia`), y `analizaDesfases()` publica el
+histograma en días con una regla **fijada antes de ver los números**:
+
+> **Sistemático** = un mismo desfase (mismo valor con signo) explica **≥50%** de
+> los casos **y** ese valor es **≤3 días**. Si no, es **ruido** y esos mercados
+> se quedan afuera.
+
+Cuando sale sistemático, la función **propone** una tolerancia y dice cuántos
+mercados recuperaría. **Propone: no cambia.** Los `CRITERIOS` están congelados y
+se mueven a mano, en un diff que se vea — que es justo el punto de haberlos
+congelado. Hay test que verifica que la tolerancia congelada **no se movió
+sola**.
 
 Se reportan tres números distintos, que responden tres preguntas distintas:
 
@@ -365,6 +424,9 @@ curl -s -H "Authorization: Bearer $CRON_SECRET" \
 # opcionales: &meses=12 · &desde=YYYY-MM-DD · &ejemplos=3
 # &simbolos=99 busca uno por uno los símbolos del universo v0 (camino D, el que
 #   decide el candado). &simbolos=0 lo apaga si hay poco presupuesto de tiempo.
+# &max_precios=250 tope de mercados a los que se les pide el precio T-24h.
+#   Si no entran en el presupuesto, el censo trunca y lo declara.
+# &detalle=1 incluye el detalle mercado por mercado del T-24h.
 # &barrido=1 corre además el barrido por offset como CONTROL (apagado por
 #   defecto: topa en 422 y ve ~500 de decenas de miles — ciego, no concluyente)
 ```
@@ -392,7 +454,7 @@ Se lee el censo contra esto. **El censo reporta; no se auto-aprueba.**
 
 | Resultado | Condición |
 |---|---|
-| **GO a Fase 1** | Gamma y CLOB contestan sin auth, hay mercados de earnings resueltos en la ventana con outcome legible y token del Yes, **y** al menos un ejemplo trae precio del Yes a T-24h. |
+| **GO a Fase 1** | Gamma y CLOB contestan sin auth, hay mercados de earnings resueltos con outcome legible y token del Yes, **y** el conteo de T-24h **válidos** sobre los cruzados (§1.2b) alcanza el umbral congelado de ≥100 — o queda lo bastante cerca como para que ampliar la cosecha del PEAD lo cierre. |
 | **INCONCLUSO por descubrimiento** | Los caminos de §1.1b aportaron 0 mercados de earnings; o solo A funcionó y devolvió un puñado; o **todas las respuestas traen el mismo número redondo** (señal de tope del cliente o default del servidor, §1.0b). **Un cero no es un hallazgo mientras el método no sepa buscar**: se ajustan frases/tags y se re-corre. Éste fue el veredicto de la primera corrida. |
 | **INCONCLUSO por datos nuestros** | `pead_earnings` está vacía → el cruce no es medible todavía. Se re-corre después de la cosecha del PEAD. |
 | **NO-GO** | Falta estructuralmente algo **y se sabe que se buscó bien**: mercados encontrados pero sin `clobTokenIds`, sin fecha de resolución, sin outcome; o la lectura exige auth de pago. |
