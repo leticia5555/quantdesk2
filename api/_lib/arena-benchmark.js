@@ -196,6 +196,20 @@ export function filaBenchmark(estado, price) {
     entry: estado.entry, shares: estado.shares, opened_at: estado.opened_at,
     account: equity == null ? null : { equity, cash: 0 },
     return_pct: benchmarkReturnPct(estado, price),
+    // ── LA VISTA INDEXADA ────────────────────────────────────────────
+    // El benchmark se indexa contra SU PROPIO capital inicial (shares × entry),
+    // no contra el baseline de ningún agente: es lo que hace que la línea del
+    // índice y la de los agentes se puedan leer en la misma escala sin que una
+    // arrastre a la otra. Su retorno no cambia — indexar es multiplicar por una
+    // constante.
+    // `estado.capital` es el mismo denominador que usa `benchmarkReturnPct`:
+    // se reusa en vez de recalcular shares × entry, para que el retorno y el
+    // equity indexado NO puedan discrepar por un redondeo distinto.
+    equity_indexado: (() => {
+      const capital = Number(estado.capital);
+      if (!Number.isFinite(equity) || !Number.isFinite(capital) || capital <= 0) return null;
+      return +((100000 * equity) / capital).toFixed(2);
+    })(),
     caveat_dividendos: 'No incluye dividendos (SPY paga ~1,2% anual), así que este número SUBESTIMA levemente al índice. Se declara en vez de estimarse: un ajuste a ojo sería un número inventado justo en la línea que existe para no inventar números.',
   };
 }

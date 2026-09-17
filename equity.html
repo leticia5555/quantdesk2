@@ -95,7 +95,7 @@ footer{margin-top:34px;padding-top:20px;border-top:1px solid var(--border);}
 
   <div class="hero">
     <h1>Equity del <span class="accent">día</span>.</h1>
-    <p>El equity de cada agente durante la sesión, muestreado cada 5 minutos. El punto dorado es el <b>máximo del día</b> — lo que contesta si una cuenta llegó a estar arriba y lo devolvió.</p>
+    <p>El equity de cada agente durante la sesión, muestreado cada 5 minutos. El punto dorado es el <b>máximo del día</b> — lo que contesta si una cuenta llegó a estar arriba y lo devolvió. Las siete se muestran <b>indexadas a $100,000</b> para que se lean en la misma regla; el equity real va en cada tarjeta.</p>
     <div class="controls" id="controls">
       <select class="pill" id="selDia"></select>
       <span class="pill on" data-modo="pct">% desde la apertura</span>
@@ -117,6 +117,9 @@ footer{margin-top:34px;padding-top:20px;border-top:1px solid var(--border);}
       esto es un <b>piso</b>: si las muestras dicen que sí, sí; si dicen que no, pudo haber pasado igual.
       El % es contra la <b>primera muestra del día</b>, no contra el baseline de temporada — son dos preguntas distintas
       y las dos viajan en la respuesta.
+      <b>Las curvas están indexadas</b>: cada cuenta escalada a $100,000 contra su propio baseline, porque el reset
+      no las dejó parejas y en una misma gráfica eso se lee como una ventaja que no existió. La forma de cada curva
+      es idéntica — indexar multiplica por una constante.
     </p>
     <div class="ctas">
       <a class="cta" href="/liga">El ranking →</a>
@@ -221,6 +224,7 @@ function filaHtml(s){
       '<div class="m">a las<b style="font-size:11px">'+esc(m?hora(m.ts):'—')+'</b></div>'+
       '<div class="m">pico → ahora<b class="'+cls(s.devuelto)+'">'+pct(s.devuelto)+'</b></div>'+
       '<div class="m">temporada<b class="'+cls(s.retornoTemporada)+'">'+pct(s.retornoTemporada)+'</b></div>'+
+      ((u&&u.equityReal!=null&&u.equityReal!==u.equity)?'<div class="m">equity real<b style="font-size:11px">'+money(u.equityReal)+'</b></div>':'')+
     '</div>'+
     (s.control?'<div class="nota">'+esc(s.controlNota||'')+'</div>':'')+
   '</div>';
@@ -230,8 +234,14 @@ function normaliza(data){
   const out=[];
   for(const [id,d] of Object.entries(data.por_agente||{})){
     const ap=d.apertura?d.apertura.equity:null;
+    // `equity` es el indexado cuando existe: las siete cuentas arrancaron con
+    // equities distintos y en la misma gráfica eso se lee como una ventaja que
+    // no existió. La forma de cada curva es idéntica —indexar multiplica por
+    // una constante— y el real viaja al lado para la tarjeta.
     const puntos=(d.puntos||[]).map(p=>({
-      t:Date.parse(p.ts), equity:p.equity,
+      t:Date.parse(p.ts),
+      equity:(p.equity_indexado!=null?p.equity_indexado:p.equity),
+      equityReal:p.equity,
       pctApertura: ap>0?((p.equity-ap)/ap)*100:0,
     })).filter(p=>isFinite(p.t));
     const mx=d.maximo?puntos.find(p=>p.t===Date.parse(d.maximo.ts)):null;
@@ -239,8 +249,9 @@ function normaliza(data){
       id, nombre:(d.agente&&d.agente.nombre)||id, modelo:(d.agente&&d.agente.modelo)||null,
       control:!!(d.agente&&d.agente.control), controlNota:(d.agente&&d.agente.control_nota)||null,
       puntos, maxPunto:mx||null,
-      apertura:d.apertura, maximo:d.maximo?{...d.maximo}:null,
-      ultimo:d.ultimo?{equity:d.ultimo.equity,pct:d.ultimo.pct_desde_apertura}:null,
+      apertura:d.apertura&&d.apertura.equity_indexado!=null?{...d.apertura,equity:d.apertura.equity_indexado}:d.apertura,
+      maximo:d.maximo?{...d.maximo, equity:(d.maximo.equity_indexado!=null?d.maximo.equity_indexado:d.maximo.equity), equityReal:d.maximo.equity}:null,
+      ultimo:d.ultimo?{equity:(d.ultimo.equity_indexado!=null?d.ultimo.equity_indexado:d.ultimo.equity), equityReal:d.ultimo.equity, pct:d.ultimo.pct_desde_apertura}:null,
       devuelto:d.devuelto_desde_maximo_pct, retornoTemporada:d.retorno_temporada_pct,
     });
   }
