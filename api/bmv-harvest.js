@@ -878,7 +878,12 @@ async function jobElegibilidad(req) {
   const q = (req && req.query) || {};
   const desde = q.desde ? String(q.desde).slice(0, 10) : REBAL_DESDE;
   const hasta = q.hasta ? String(q.hasta).slice(0, 10) : REBAL_HASTA;
-  const umbral = Number(q.umbral || UMBRAL_IMPORTE);
+  // `&umbrales=500000,1000000,2000000` evalúa varios en UNA llamada. La parte
+  // cara —las medianas de 3 meses sobre 569,589 filas— se calcula una sola vez
+  // y se reutiliza: correr tres veces el job costaría tres veces ese trabajo
+  // para comparar números que sólo se distinguen por una constante.
+  const umbrales = String(q.umbrales || q.umbral || UMBRAL_IMPORTE)
+    .split(',').map((x) => Number(String(x).trim())).filter((x) => Number.isFinite(x) && x >= 0);
 
   const [fechas, cierres, series, medianasRaw] = await Promise.all([
     fechasRebalanceo(desde, hasta),
@@ -897,23 +902,84 @@ async function jobElegibilidad(req) {
     medianas.set(`${m.fecha}|${m.emisora_serie}`, m.mediana === null ? null : Number(m.mediana));
   }
 
-  const out = analizarElegibilidad({
-    fechas, cierresPorEmisora, medianas, series,
-    umbralImporte: umbral, lagDias: LAG_DIAS,
-  });
+  const corridas = umbrales.map((u) => ({
+    umbral: u,
+    resultado: analizarElegibilidad({
+      fechas, cierresPorEmisora, medianas, series,
+      umbralImporte: u, lagDias: LAG_DIAS,
+    }),
+  }));
+
+  const insumos = {
+    fechas_rebalanceo: fechas.length,
+    series_ics: series.length,
+    emisoras_con_eps: cierresPorEmisora.size,
+    medianas_calculadas: medianasRaw.length,
+  };
+
+  // Con un solo umbral se devuelve el reporte completo, como antes. Con varios,
+  // la tabla comparativa: es lo que sirve para ELEGIR, y el detalle por fecha de
+  // tres corridas sería ilegible.
+  if (corridas.length === 1) {
+    return {
+      job: 'elegibilidad', creditos: 0, ventana: { desde, hasta }, insumos,
+      ...corridas[0].resultado,
+    };
+  }
 
   return {
     job: 'elegibilidad',
     creditos: 0,
     ventana: { desde, hasta },
-    insumos: {
-      fechas_rebalanceo: fechas.length,
-      series_ics: series.length,
-      emisoras_con_eps: cierresPorEmisora.size,
-      medianas_calculadas: medianasRaw.length,
-    },
-    ...out,
+    insumos,
+    comparativa: corridas.map(({ umbral, resultado }) => ({
+      umbral,
+      elegibles_mediano: resultado.resumen.mediana_elegibles,
+      elegibles_min: resultado.resumen.minimo_elegibles,
+      elegibles_max: resultado.resumen.maximo_elegibles,
+      pct_excluido: resultado.resumen.pct_excluido_liquidez,
+      pct_fechas_piso: resultado.resumen.pct_fechas_piso,
+      canasta_mediana: resultado.resumen.mediana_canasta,
+      regimenes: resultado.resumen.regimenes,
+      pasa_tripwire: resultado.veredicto.puertas.find((p) => p.puerta.includes('liquidez')).pasa,
+      pasa_piso: resultado.veredicto.puertas.find((p) => p.puerta.includes('piso')).pasa,
+      puede_correrse_fase_b: resultado.veredicto.puede_correrse_fase_b,
+    })),
+    // Iguales en las tres corridas (no dependen del umbral), así que van una vez.
+    universo_mediano: corridas[0].resultado.resumen.mediana_universo,
+    exigencias: corridas[0].resultado.exigencias,
+    series_excluidas: corridas[0].resultado.series_excluidas,
+    criterios: corridas[0].resultado.criterios,
+    nota: 'La parte cara (medianas de 3 meses) se calculó UNA vez y se reutilizó para los tres umbrales.',
   };
+}
+
+/** La tabla comparativa en markdown, que es como se elige de un vistazo. */
+function comparativaMd(e) {
+  const pct = (x) => (x === null || x === undefined ? 'n/d' : `${(100 * x).toFixed(1)}%`);
+  const mx = (x) => Number(x).toLocaleString('es-MX');
+  const L = [];
+  L.push('# Umbral de liquidez: tabla comparativa', '');
+  L.push(`Universo mediano (TTM + precio): **${e.universo_mediano}** · rebalanceos: **${e.insumos.fechas_rebalanceo}**`, '');
+
+  const x = e.exigencias || {};
+  L.push('> ## Qué exige cada puerta, en número de elegibles', '>');
+  L.push(`> · Para que **mande el quintil** (y no el piso): **≥ ${x.elegibles_para_que_mande_el_quintil}**`);
+  L.push(`> · Para **pasar el tripwire** (≤33% excluido): **≥ ${x.elegibles_para_pasar_el_tripwire}**`);
+  L.push(`> · La puerta que manda es **${x.puerta_que_manda}**. Con ${x.elegibles_para_pasar_el_tripwire} elegibles el régimen sería \`${x.regimen_resultante_en_el_tripwire}\`, no \`quintil\`.`);
+  L.push('>', '');
+
+  L.push('| Umbral | Elegibles mediano | % excluido | % fechas piso | Canasta mediana | Tripwire | Piso | Fase B |',
+    '|---:|---:|---:|---:|---:|:-:|:-:|:-:|');
+  for (const c of e.comparativa) {
+    L.push(`| ${mx(c.umbral)} | ${c.elegibles_mediano} | ${pct(c.pct_excluido)} | ${pct(c.pct_fechas_piso)} | ${c.canasta_mediana} | ${c.pasa_tripwire ? '✅' : '❌'} | ${c.pasa_piso ? '✅' : '❌'} | ${c.puede_correrse_fase_b ? '✅' : '❌'} |`);
+  }
+  L.push('');
+  const se = e.series_excluidas || {};
+  if (se.lista && se.lista.length) {
+    L.push(`Series excluidas del universo: **${se.lista.join(', ')}** — ${se.motivo}.`, '');
+  }
+  return L.join('\n');
 }
 
 /** El reporte de elegibilidad en markdown, que es como se lee de un vistazo. */
@@ -1763,7 +1829,7 @@ export default async function handler(req, res) {
       const e = await jobElegibilidad(req);
       if (String(q2.format || '') === 'md') {
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        return res.status(200).send(elegibilidadMd(e));
+        return res.status(200).send(e.comparativa ? comparativaMd(e) : elegibilidadMd(e));
       }
       return res.status(200).json(e);
     }
@@ -1791,7 +1857,7 @@ export default async function handler(req, res) {
         'reparse': 'protegido, CERO créditos: re-deriva el censo desde el crudo guardado',
         'reparse-fin': 'protegido, CERO créditos: re-normaliza los financieros desde el crudo guardado',
         'inspect': 'protegido, CERO créditos: describe la forma del crudo guardado, sin normalizar nada',
-        'elegibilidad': 'público, SELECT-only y CERO créditos: simula los rebalanceos y dice si la Fase B puede concluir (&format=md, &umbral=N)',
+        'elegibilidad': 'público, SELECT-only y CERO créditos: simula los rebalanceos y dice si la Fase B puede concluir (&format=md, &umbral=N, &umbrales=a,b,c para la tabla comparativa)',
       },
       token_configurado: !!process.env.DATABURSATIL_TOKEN,
       escritura_habilitada: !!adminSecret(),
@@ -1812,7 +1878,8 @@ export {
   // importar sólo se ve ejecutando (ya nos pasó con la colisión de `fila`).
   jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros, jobHistoricos,
   jobReparse,
-  contar, describirCrudo, elegibilidadMd, estimarConsumo, filaCenso, filasDelCenso,
+  comparativaMd, contar, describirCrudo, elegibilidadMd, estimarConsumo, filaCenso,
+  filasDelCenso,
   jobElegibilidad, literal,
   pareceClave, pareceSerie, tipoDe,
   pendientesFinancieros,
