@@ -1005,16 +1005,21 @@ async function jobReparseFinancieros(req) {
     if (!filas.length) { cursor = null; break; }
 
     for (const f of filas) {
-      const { valores, faltantes } = normalizarFinancieros(f.raw);
-      await actualizarFinancieros({ emisora: f.emisora, anio: f.anio, trimestre: f.trimestre, valores, faltantes });
+      const cierre = finDeTrimestre(f.anio, f.trimestre);
+      const { valores, faltantes, bloques, comparativo } = normalizarFinancieros(f.raw, cierre);
+      await actualizarFinancieros({
+        emisora: f.emisora, anio: f.anio, trimestre: f.trimestre,
+        valores, faltantes, bloques, comparativo,
+      });
 
       const sinCampos = CAMPOS.every((c) => valores[c] === null);
       if (sinCampos) siguenSinCampos += 1; else arregladas += 1;
       for (const c of Object.keys(faltantes || {})) faltantesPorCampo[c] = (faltantesPorCampo[c] || 0) + 1;
 
-      if (!porAnio[f.anio]) porAnio[f.anio] = { filas: 0, con_eps: 0 };
+      if (!porAnio[f.anio]) porAnio[f.anio] = { filas: 0, con_eps: 0, con_comparativo: 0 };
       porAnio[f.anio].filas += 1;
       if (valores.basicearningslosspershare !== null) porAnio[f.anio].con_eps += 1;
+      if (comparativo) porAnio[f.anio].con_comparativo += 1;
 
       // El ledger se pone al día con la realidad: una fila que ahora sí
       // normaliza deja de ser `sin_campos`.
@@ -1236,7 +1241,10 @@ async function jobFinancieros(req) {
       await marcarLedger('financieros', p.emisora, p.clave, { estado: 'error', requests: 1, error_msg: `${r.status}: ${r.error} · ${String(r.texto || '').slice(0, 200)}` });
       hecho.push({ ...p, estado: 'error', error: r.error });
     } else {
-      const { valores, faltantes } = normalizarFinancieros(r.json);
+      // El cierre del trimestre es lo que selecciona el periodo dentro de la
+      // respuesta: cada una trae el solicitado Y el comparativo del año pasado.
+      const cierre = finDeTrimestre(p.anio, p.trimestre);
+      const { valores, faltantes, bloques, comparativo } = normalizarFinancieros(r.json, cierre);
       // NO es "la respuesta venía vacía": es "no le entendí a la respuesta".
       // Las 4,174 filas de la primera cosecha cayeron aquí porque los valores
       // llegan como ["etiqueta", 0.77] y el parser sólo leía números sueltos.
@@ -1244,8 +1252,8 @@ async function jobFinancieros(req) {
       const sinCampos = CAMPOS.every((c) => valores[c] === null);
       await upsertFinancieros({
         emisora: p.emisora, anio: p.anio, trimestre: p.trimestre,
-        fecha_cierre: finDeTrimestre(p.anio, p.trimestre),
-        raw: r.json, valores, faltantes,
+        fecha_cierre: cierre,
+        raw: r.json, valores, faltantes, bloques, comparativo,
       });
       // 'vacio' ≠ 'error': un trimestre en el que la emisora no reportó es un
       // hecho del mundo, no una falla. Se marca resuelto para no re-pedirlo.

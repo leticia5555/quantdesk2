@@ -145,6 +145,13 @@ const BMV_SCHEMA = [
   // La ENUMERACIÓN de trimestres reportados, no sólo los extremos:
   // `rango_financieros` llega como lista ("1T_2017, 1T_2018, ..., 2T_2016") y
   // puede tener huecos. Con la lista se pide sólo lo que existe.
+  // Cada respuesta de /v2/financieros trae DOS periodos. `bloques` guarda QUÉ
+  // llave se usó por bloque —hace auditable la selección— y `comparativo` el
+  // periodo anterior, que sirve para momentum de fundamentales. Ojo: en
+  // `posicion` el comparativo es el cierre fiscal anterior (31-dic), no el
+  // mismo trimestre del año pasado; por eso viaja con sus propias fechas.
+  `alter table bmv_financieros add column if not exists bloques jsonb`,
+  `alter table bmv_financieros add column if not exists comparativo jsonb`,
   `alter table bmv_emisoras add column if not exists fin_periodos jsonb`,
   `alter table bmv_emisoras add column if not exists serie text`,
   `alter table bmv_emisoras add column if not exists emisora_serie text`,
@@ -273,17 +280,21 @@ async function upsertFinancieros(f) {
   const set = CAMPOS.map((c) => `${c} = excluded.${c}`).join(',\n       ');
   await sql(
     `insert into bmv_financieros
-       (emisora, anio, trimestre, fecha_cierre, raw, ${cols}, faltantes, cosechado_at)
-     values ($1,$2,$3,$4,$5::jsonb, ${ph}, $${6 + CAMPOS.length}::jsonb, now())
+       (emisora, anio, trimestre, fecha_cierre, raw, ${cols}, faltantes, bloques, comparativo, cosechado_at)
+     values ($1,$2,$3,$4,$5::jsonb, ${ph}, $${6 + CAMPOS.length}::jsonb, $${7 + CAMPOS.length}::jsonb, $${8 + CAMPOS.length}::jsonb, now())
      on conflict (emisora, anio, trimestre) do update set
        fecha_cierre = excluded.fecha_cierre,
        raw = excluded.raw,
        ${set},
        faltantes = excluded.faltantes,
+       bloques = excluded.bloques,
+       comparativo = excluded.comparativo,
        cosechado_at = now()`,
     [f.emisora, f.anio, f.trimestre, f.fecha_cierre, JSON.stringify(f.raw ?? {}),
      ...CAMPOS.map((c) => (f.valores && f.valores[c] !== undefined ? f.valores[c] : null)),
-     f.faltantes ? JSON.stringify(f.faltantes) : null],
+     f.faltantes ? JSON.stringify(f.faltantes) : null,
+     f.bloques ? JSON.stringify(f.bloques) : null,
+     f.comparativo ? JSON.stringify(f.comparativo) : null],
   );
 }
 
@@ -407,14 +418,26 @@ async function financieroQueSiSirvio() {
 }
 
 /** Actualiza SÓLO los campos normalizados; el crudo no se toca. */
+/**
+ * Actualiza SÓLO los campos normalizados; el crudo no se toca.
+ *
+ * Asigna con `=` y no con `coalesce`, a propósito: re-parsear tiene que poder
+ * **corregir** un valor anterior, no sólo rellenar huecos. Es lo que permite
+ * sobreescribir los 65 falsos positivos que la regla vieja había dado por
+ * buenos.
+ */
 async function actualizarFinancieros(f) {
   const set = CAMPOS.map((c, i) => `${c} = $${4 + i}`).join(', ');
+  const b = 4 + CAMPOS.length;
   await sql(
-    `update bmv_financieros set ${set}, faltantes = $${4 + CAMPOS.length}::jsonb
+    `update bmv_financieros
+        set ${set}, faltantes = $${b}::jsonb, bloques = $${b + 1}::jsonb, comparativo = $${b + 2}::jsonb
       where emisora = $1 and anio = $2 and trimestre = $3`,
     [f.emisora, f.anio, f.trimestre,
      ...CAMPOS.map((c) => (f.valores && f.valores[c] !== undefined ? f.valores[c] : null)),
-     f.faltantes ? JSON.stringify(f.faltantes) : null]);
+     f.faltantes ? JSON.stringify(f.faltantes) : null,
+     f.bloques ? JSON.stringify(f.bloques) : null,
+     f.comparativo ? JSON.stringify(f.comparativo) : null]);
 }
 
 /* ─────────────────── precios ─────────────────── */

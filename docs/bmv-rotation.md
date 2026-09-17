@@ -988,6 +988,64 @@ Las DDL son idempotentes y el daño era acotado, pero el orden contradecía el
 fail-closed que este endpoint dice tener: **no se hace trabajo para quien
 todavía no demostró que puede pedirlo.** Ahora el auth va primero.
 
+### La causa raíz: DOS periodos por respuesta
+
+El inspector cerró el caso: **una sola forma de crudo** en las 4,174 filas, y el
+dato completo — WALMEX 2T_2017 con `revenue` 135,723,675,000 y EPS 0.77
+guardados correctamente.
+
+Lo que pasa es que **cada respuesta trae dos periodos**: el solicitado y el
+comparativo del año anterior.
+
+```
+posicion:            { "2017-06-30", "2016-12-31" }
+resultado_trimestre: { "2017-04-01_2017-06-30", "2016-04-01_2016-06-30" }
+```
+
+`resolverCampo` veía dos valores bajo el mismo nombre, los declaraba **AMBIGUO**
+y fallaba cerrado. **Como default está bien** —dos valores distintos bajo el
+mismo nombre sí son ambiguos— pero aquí no hay ambigüedad que resolver: hay que
+**seleccionar por fecha**.
+
+#### La regla, congelada
+
+| bloque | forma de la llave | criterio |
+|---|---|---|
+| `posicion` | `AAAA-MM-DD` | la fecha **es** el cierre del trimestre |
+| `resultado_trimestre` | `inicio_fin` | el **fin** es ese mismo cierre |
+
+Y la parte que no es opcional:
+
+> **Si ninguna llave corresponde al periodo solicitado, eso SÍ es un fallo:**
+> `null` con motivo `sin periodo correspondiente`. Tomar "la única que hay" es
+> exactamente cómo se cuela el dato del año pasado en la serie.
+
+La selección queda **auditable**: se guarda en `bloques` qué llave se usó por
+bloque, en vez de pedir fe en que el parser eligió bien.
+
+#### Los 65 que "sí funcionaron" eran falsos positivos
+
+ACCELSA guardó EPS 0.39 porque **los dos periodos traían 0.39 por
+coincidencia**: `resolverCampo` los vio idénticos, no marcó ambigüedad y guardó
+el valor. Quedaba bien por casualidad — y en otra emisora el mismo mecanismo
+pudo haber guardado un número sin que nadie supiera de qué periodo venía.
+
+**Son peores que las 4,109 que fallaron**, porque las fallas se reportaron y
+éstas no.
+
+`?job=reparse-fin` los sobreescribe, y se puede afirmar mirando el código:
+`financierosCrudos` **no filtra por nulos** —lee todas las filas— y
+`actualizarFinancieros` asigna con `=`, no con `coalesce`. Re-parsear tiene que
+poder **corregir**, no sólo rellenar huecos.
+
+#### El comparativo se guarda, con sus fechas
+
+Columna `comparativo`, para momentum de fundamentales más adelante. Con una
+advertencia que evita leerlo mal: en `resultado_trimestre` el comparativo es el
+**mismo trimestre del año pasado**, pero en `posicion` es el **cierre fiscal
+anterior** (31-dic), no junio del año pasado. Por eso viaja con sus propias
+fechas en vez de llamarse "hace un año".
+
 ### El ledger lo dijo, y yo le puse un nombre que lo escondió
 
 Las 4,174 filas quedaron en el estado que significa "ningún campo se pudo
@@ -1040,13 +1098,13 @@ construido para esas dos.
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 10 jobs (`reparse`, `reparse-fin` e `inspect` son de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **136 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **146 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
 | **El censo** | **Cerrado.** `deriva.estable: true` — 0 aparecieron, 0 desaparecieron. **185 series ICS**, 165 con cobertura (las 20 sin ella son bancos y casas de bolsa, fuera de la v1 por decisión de Fase 0). 1,641 repartos: 1,520 efectivo, 121 reembolso, 0 desconocido. |
 | **Fase A, diseño** | **Cerrado.** |
 | **La cosecha** | **Corrida**: 4,174 financieros, 182 series de precios. |
-| **Normalización** | **Abierta.** El `["etiqueta", valor]` era real pero no la causa raíz: 65 de 1,000. `?job=inspect` es el siguiente paso (§5.5). |
+| **Normalización** | Arreglada: el `["etiqueta", valor]` **y** la selección por fecha entre los dos periodos (§5.5). Falta `?job=reparse-fin` completo. |
 | **La cosecha** | **Sin correr** — este sandbox no alcanza la API. |
 | **Cobertura real** | **Sin reportar** — depende de la cosecha. |
 | `/api/bmv-rotation-analyze` | **Fase B. No empezado, a propósito.** |
