@@ -22,6 +22,8 @@ Three times a day each model gets the same board — index moves, sector heat, g
 | Qwen | Qwen3.8 2.4T A95B |
 | **Control** | Claude Fable 5.1 *(again)* |
 
+Gemini is the only flash-tier model on the grid: six flagships and one flash. That is a confound, not a footnote. Whatever Gemini does — win or lose — is a smaller model doing it, and the comparison is not clean until a Gemini flagship sits in that seat.
+
 ### The control account is the point
 
 Two accounts run the identical model, prompt, and parameters. Whatever gap opens between them is noise — the same model disagreeing with itself.
