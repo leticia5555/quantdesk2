@@ -13,9 +13,11 @@
 //                  septiembre del año pasado" y 12 meses la cubre SIN tatuar
 //                  la fecha en el código — lint tests/no-hardcoded-dates)
 //   ?desde=...     fecha exacta de corte, gana sobre ?meses
-//   ?paginas=20    tope de páginas de Gamma (el censo reporta si truncó)
-//   ?limite=500    tamaño de página
 //   ?ejemplos=3    cuántos mercados traen precio del Yes a T-24h
+//   ?barrido=1     además, corre el barrido por offset como CONTROL (apagado
+//                  por defecto: Gamma topa el offset con 422 y el barrido ve
+//                  ~500 de decenas de miles — ciego, no concluyente)
+//   ?paginas=20 · ?limite=500   solo aplican al barrido de control
 //
 // ── POR QUÉ ESTO CORRE EN VERCEL Y NO EN UNA LAPTOP ────────────────
 // La Fase 0 no pregunta "¿existe la API?" sino "¿la vemos DESDE DONDE VA A
@@ -42,7 +44,7 @@ import { gamma, clob } from './_lib/polymarket.js';
 import {
   CRITERIOS, normalizaMercado, pareceEarnings, resuelveSimbolo, construyeIndiceNombres,
   extraeConsensoEps, outcomeResuelto, tokenYes, precioEnT24h, cruzaConPead, evaluaFuentePIT,
-  isoDia, ts, resumenMarkdown,
+  isoDia, ts, resumenMarkdown, extraeTags, extraeCluster, FRASES_BUSQUEDA,
 } from './_lib/earnings-beat.js';
 import { V0_UNIVERSE } from './_lib/pead-universe.js';
 import { getSymbolMap } from './earnings.js';
@@ -53,10 +55,12 @@ export const maxDuration = 300;
 
 const PRESUPUESTO_MS = 240000;   // corte duro del censo: reporta truncado, no 504
 
-// ─────────────────── estrategias de descubrimiento ───────────────────
-// NO se asume cuál funciona. Se sondea cada una con UNA página, se reporta lo
-// que contestó, y el barrido usa la primera que devolvió filas. Un endpoint
-// que contesta 404 es un hecho del censo, no un crash.
+// ─────────────────── sondas de esquema ───────────────────
+// NO se asume qué contesta cada endpoint: se sondea con `limit` chico y se
+// reporta status, HTTP y LAS CLAVES REALES de la primera fila. Son el censo
+// del ESQUEMA, no el método para juntar mercados — eso lo hace el
+// descubrimiento dirigido de más abajo. Un 404 es un hecho del censo, no un
+// crash; y un 422 queda anotado en `topes_de_offset`.
 const ESTRATEGIAS = [
   {
     nombre: 'markets_cerrados_por_fecha', api: 'gamma', path: '/markets',
@@ -96,75 +100,238 @@ function aplanaMercados(item) {
   return [item];
 }
 
+// ─────────────────── descubrimiento dirigido ───────────────────
+//
+// POR QUÉ NO SE BARRE EL CATÁLOGO (cicatriz de la primera corrida):
+// paginar `/markets` con offset creciente muere con **HTTP 422 en la página 6**
+// — Gamma tiene un TOPE DE OFFSET, no es rate limit. El barrido llegó a ver
+// ~500 mercados de decenas de miles, así que su "0 mercados de earnings" no
+// era un hallazgo sobre Polymarket: era ceguera del método. Un censo que
+// confunde "no vi" con "no hay" miente con números.
+//
+// Ahora el descubrimiento es DIRIGIDO, por tres caminos que se miden por
+// separado para saber cuál vale la pena en la Fase 1:
+//   A. búsqueda por las frases reales con que se redactan estos mercados;
+//   B. tags/categorías sacados de los mercados que A encontró, paginando
+//      DENTRO del filtro (ahí el offset sí alcanza);
+//   C. el racimo (evento/serie) al que pertenece un mercado de earnings.
+// El barrido queda como control opcional (&barrido=1), nunca como el método.
+
+async function descubrePorBusqueda(ctx, gamma1, restante) {
+  const intentos = [];
+  const filas = [];
+  for (const frase of FRASES_BUSQUEDA) {
+    if (restante() < 40000) break;
+    // Solo `q`: cualquier parámetro extra sería inventado por mí, y un
+    // parámetro desconocido puede tirar 422 y matar el camino principal.
+    // Si la búsqueda recorta de más, se va a ver en el conteo y se ajusta
+    // con un dato en la mano, no con una suposición.
+    const r = await gamma1('/public-search', { q: frase });
+    const encontradas = r.status === 'ok' ? cosechaDeBusqueda(r.body) : [];
+    intentos.push({ frase, status: r.status, http: r.http ?? null, ms: r.ms, filas: encontradas.length,
+      forma: r.status === 'ok' ? formaDe(r.body) : null });
+    filas.push(...encontradas);
+  }
+  return { camino: 'busqueda', intentos, filas };
+}
+
+// public-search devuelve varios tipos a la vez (eventos, tags, perfiles). Se
+// toma lo que tenga mercados adentro, venga como venga.
+function cosechaDeBusqueda(body) {
+  const out = [];
+  const candidatos = [];
+  if (Array.isArray(body)) candidatos.push(...body);
+  else if (body && typeof body === 'object') {
+    for (const k of ['events', 'markets', 'data', 'results']) {
+      if (Array.isArray(body[k])) candidatos.push(...body[k]);
+    }
+  }
+  for (const item of candidatos) for (const m of aplanaMercados(item)) out.push(m);
+  return out;
+}
+
+async function descubrePorTags(ctx, gamma1, restante, semillas) {
+  const intentos = [];
+  const filas = [];
+  // Tags de los mercados de earnings que ya encontramos: los que importan son
+  // los que esos mercados comparten, no los que a mí me parezcan.
+  const cuenta = new Map();
+  for (const raw of semillas) {
+    for (const t of extraeTags(raw)) {
+      const k = (t.id || '') + '|' + (t.slug || '');
+      const prev = cuenta.get(k) || { ...t, n: 0 };
+      prev.n++;
+      cuenta.set(k, prev);
+    }
+  }
+  const top = [...cuenta.values()].sort((a, b) => b.n - a.n).slice(0, 3);
+  if (!top.length) {
+    return { camino: 'tags', intentos: [{ nota: 'ningún mercado semilla trajo tags — camino no disponible' }], filas, tags_vistos: [] };
+  }
+
+  for (const tag of top) {
+    // Con id se filtra `/markets` (tag_id); sin id, el slug se le pregunta a
+    // `/events`, que es quien los entiende. Pedirle un slug a /markets sería
+    // inventar un parámetro, y un filtro ignorado devuelve catálogo suelto.
+    const path = tag.id ? '/markets' : '/events';
+    // Paginado DENTRO del filtro: acá el offset se queda corto y no topa.
+    for (let pagina = 0; pagina < 4; pagina++) {
+      if (restante() < 40000) break;
+      const params = tag.id
+        ? { tag_id: tag.id, closed: 'true', limit: 100, offset: pagina * 100 }
+        : { tag_slug: tag.slug, closed: 'true', limit: 100, offset: pagina * 100 };
+      const r = await gamma1(path, params);
+      const encontradas = r.status === 'ok' ? filasDe(r.body).flatMap(aplanaMercados) : [];
+      const deEarnings = encontradas.filter((raw) => pareceEarnings(normalizaMercado(raw)).si).length;
+      intentos.push({ tag: tag.label || tag.slug || tag.id, endpoint: 'gamma' + path, pagina,
+        status: r.status, http: r.http ?? null, filas: encontradas.length, de_earnings: deEarnings });
+      filas.push(...encontradas);
+      if (r.status !== 'ok' || encontradas.length === 0) break;
+      // Filas sí, earnings no → el filtro se está ignorando y esto es catálogo
+      // suelto. Seguir paginando sería gastar presupuesto en ruido.
+      if (deEarnings === 0) {
+        intentos.push({ tag: tag.label || tag.slug || tag.id, nota: 'trajo filas pero ninguna de earnings: el filtro parece ignorado — se corta' });
+        break;
+      }
+    }
+  }
+  return { camino: 'tags', intentos, filas, tags_vistos: top.map((t) => ({ id: t.id, slug: t.slug, veces: t.n })) };
+}
+
+async function descubrePorCluster(ctx, gamma1, restante, semillas) {
+  const intentos = [];
+  const filas = [];
+  const clusters = semillas.map(extraeCluster).filter((c) => c.evento_slug || c.evento_id || c.serie_id || c.serie_slug);
+  if (!clusters.length) {
+    return { camino: 'cluster', intentos: [{ nota: 'los mercados semilla no exponen evento ni serie — camino no disponible' }], filas };
+  }
+  const probados = new Set();
+  for (const c of clusters.slice(0, 3)) {
+    const tiros = [
+      c.serie_id ? { que: 'serie_id', path: '/markets', params: { series_id: c.serie_id, closed: 'true', limit: 200 } } : null,
+      c.serie_slug ? { que: 'serie_slug', path: '/events', params: { series_slug: c.serie_slug, closed: 'true', limit: 200 } } : null,
+      c.evento_slug ? { que: 'evento_slug', path: '/events', params: { slug: c.evento_slug } } : null,
+    ].filter(Boolean);
+    for (const t of tiros) {
+      const clave = t.que + ':' + JSON.stringify(t.params);
+      if (probados.has(clave) || restante() < 35000) continue;
+      probados.add(clave);
+      const r = await gamma1(t.path, t.params);
+      const encontradas = r.status === 'ok' ? filasDe(r.body).flatMap(aplanaMercados) : [];
+      intentos.push({ via: t.que, endpoint: 'gamma' + t.path, status: r.status, http: r.http ?? null, filas: encontradas.length });
+      filas.push(...encontradas);
+    }
+  }
+  return { camino: 'cluster', intentos, filas };
+}
+
+function formaDe(body) {
+  if (Array.isArray(body)) return 'array';
+  if (body && typeof body === 'object') return 'objeto:' + Object.keys(body).slice(0, 8).join(',');
+  return typeof body;
+}
+
 // ─────────────────── el censo ───────────────────
 
 async function corre(ctx) {
   const t0 = Date.now();
   const restante = () => PRESUPUESTO_MS - (Date.now() - t0);
   const headersVistos = {};
-  const anota = (r) => { for (const [k, v] of Object.entries((r && r.headers) || {})) headersVistos[k] = v; return r; };
+  const topes_de_offset = [];
+  let http_429 = 0;
+  // Envoltorio de gamma(): anota headers de rate limit y — sobre todo — deja
+  // registrado cada 422 con su offset. El tope de offset es un HECHO del censo
+  // y tiene que quedar escrito para que no vuelva a morder.
+  const gamma1 = async (path, params, opts) => {
+    const r = await gamma(path, params, opts);
+    for (const [k, v] of Object.entries((r && r.headers) || {})) headersVistos[k] = v;
+    if (r && r.status === 'ratelimit') http_429++;
+    if (r && r.http === 422) {
+      topes_de_offset.push({ endpoint: 'gamma' + path, offset: (params && params.offset) ?? null,
+        limit: (params && params.limit) ?? null, mensaje: String(r.message || '').slice(0, 160) });
+    }
+    return r;
+  };
+  const clob1 = async (path, params, opts) => {
+    const r = await clob(path, params, opts);
+    for (const [k, v] of Object.entries((r && r.headers) || {})) headersVistos[k] = v;
+    if (r && r.status === 'ratelimit') http_429++;
+    return r;
+  };
 
   // ── 1. Sondas: ¿qué contesta cada endpoint, y con qué esquema? ──
+  // Con `limit` chico: son para el CENSO del esquema, no para juntar datos.
   const sondas = [];
-  let elegida = null;
   for (const e of ESTRATEGIAS) {
-    const r = anota(await gamma(e.path, e.params(ctx, 0)));
+    if (restante() < 60000) break;
+    const r = await gamma1(e.path, { ...e.params(ctx, 0), limit: 5 });
     const filas = r.status === 'ok' ? filasDe(r.body) : [];
     sondas.push({
-      estrategia: e.nombre, endpoint: e.api + e.path, status: r.status, http: r.http ?? null,
+      estrategia: e.nombre, endpoint: 'gamma' + e.path, status: r.status, http: r.http ?? null,
       ms: r.ms, filas: filas.length,
-      forma: r.status === 'ok' ? (Array.isArray(r.body) ? 'array' : 'objeto:' + Object.keys(r.body || {}).slice(0, 6).join(',')) : null,
+      forma: r.status === 'ok' ? formaDe(r.body) : null,
       claves_primera_fila: filas.length ? Object.keys(filas[0]).slice(0, 40) : null,
       mensaje: r.message ? String(r.message).slice(0, 200) : null,
     });
-    if (!elegida && filas.length) elegida = e;
-    if (restante() < 60000) break;
-  }
-  // Sonda aparte: ¿existe búsqueda pública? Ahorraría paginar todo el catálogo
-  // en la Fase 1 si existe. Se reporta exista o no.
-  const busqueda = anota(await gamma('/public-search', { q: 'earnings' }));
-  sondas.push({
-    estrategia: 'busqueda_publica', endpoint: 'gamma/public-search', status: busqueda.status,
-    http: busqueda.http ?? null, ms: busqueda.ms,
-    forma: busqueda.status === 'ok' ? (Array.isArray(busqueda.body) ? 'array' : 'objeto:' + Object.keys(busqueda.body || {}).slice(0, 8).join(',')) : null,
-    mensaje: busqueda.message ? String(busqueda.message).slice(0, 200) : null,
-  });
-
-  if (!elegida) {
-    return {
-      error: 'Ninguna estrategia de Gamma devolvió filas — fuente CAÍDA o esquema cambiado.',
-      sondas, headers_de_rate_limit: headersVistos,
-    };
   }
 
-  // ── 2. Barrido paginado con la estrategia que sí contestó ──
-  const crudos = [];
-  const barrido = { estrategia: elegida.nombre, paginas: 0, filas: 0, truncado: false, motivo_corte: null, orden_desc_confirmado: true, http_429: 0 };
-  let ultimoFin = null;
-  for (let pagina = 0; pagina < ctx.paginas; pagina++) {
-    if (restante() < 70000) { barrido.truncado = true; barrido.motivo_corte = 'presupuesto_de_tiempo'; break; }
-    const r = anota(await gamma(elegida.path, elegida.params(ctx, pagina * ctx.limite)));
-    if (r.status === 'ratelimit') { barrido.http_429++; barrido.truncado = true; barrido.motivo_corte = 'rate_limit_429'; break; }
-    if (r.status !== 'ok') { barrido.truncado = true; barrido.motivo_corte = r.status + (r.http ? ':' + r.http : ''); break; }
-    const filas = filasDe(r.body);
-    barrido.paginas++;
-    barrido.filas += filas.length;
-    if (!filas.length) { barrido.motivo_corte = 'fin_del_catalogo'; break; }
-
-    for (const item of filas) for (const m of aplanaMercados(item)) crudos.push(m);
-
-    // Corte temprano SOLO si el orden descendente se sostuvo hasta acá: si el
-    // servidor ignoró `order`, cortar por fecha se comería mercados buenos.
-    const fines = filas.map((f) => isoDia(f.endDate || f.closedTime)).filter(Boolean);
-    const ultimo = fines.length ? fines[fines.length - 1] : null;
-    if (ultimo && ultimoFin && ultimo > ultimoFin) barrido.orden_desc_confirmado = false;
-    if (ultimo) ultimoFin = ultimo;
-    if (barrido.orden_desc_confirmado && ultimo && ultimo < ctx.desde) { barrido.motivo_corte = 'alcanzo_la_fecha_de_corte'; break; }
-    if (pagina === ctx.paginas - 1) { barrido.truncado = true; barrido.motivo_corte = 'tope_de_paginas'; }
-  }
-
-  // ── 3. Clasificación: ¿cuáles son de earnings, de qué símbolo, resueltos? ──
+  // ── 2. Descubrimiento dirigido (A → B/C, que se apoyan en lo que A halló) ──
   const universo = new Set(V0_UNIVERSE);
+  const crudosPorId = new Map();
+  const aportes = {};
+  let sinId = 0;
+  const suma = (camino, filas) => {
+    let nuevos = 0;
+    for (const raw of filas || []) {
+      const id = raw && raw.id !== undefined && raw.id !== null ? String(raw.id)
+        : raw && raw.slug ? 'slug:' + raw.slug : null;
+      if (!id) { sinId++; continue; }
+      if (crudosPorId.has(id)) continue;
+      crudosPorId.set(id, { ...raw, _via: camino });
+      nuevos++;
+    }
+    aportes[camino] = (aportes[camino] || 0) + nuevos;
+    return nuevos;
+  };
+
+  const busqueda = await descubrePorBusqueda(ctx, gamma1, restante);
+  suma('busqueda', busqueda.filas);
+
+  // Semillas para B y C: los mercados de earnings que A sí encontró. Si A no
+  // encontró ninguno, B y C se declaran no disponibles en vez de inventarse
+  // un tag plausible.
+  const semillas = [...crudosPorId.values()]
+    .filter((raw) => pareceEarnings(normalizaMercado(raw)).si)
+    .slice(0, 5);
+
+  const porTags = await descubrePorTags(ctx, gamma1, restante, semillas);
+  suma('tags', porTags.filas);
+  const porCluster = await descubrePorCluster(ctx, gamma1, restante, semillas);
+  suma('cluster', porCluster.filas);
+
+  // ── 2b. Barrido: CONTROL opcional, nunca el método ──
+  const barrido = { corrido: false, nota: 'apagado por defecto: el tope de offset lo vuelve ciego (&barrido=1 para correrlo igual)' };
+  if (ctx.barrido) {
+    delete barrido.nota;   // corrió: la nota de "apagado" dejaría de ser cierta
+    Object.assign(barrido, { corrido: true, paginas: 0, filas: 0, truncado: false, motivo_corte: null });
+    for (let pagina = 0; pagina < ctx.paginas; pagina++) {
+      if (restante() < 70000) { barrido.truncado = true; barrido.motivo_corte = 'presupuesto_de_tiempo'; break; }
+      const r = await gamma1('/markets', { closed: 'true', limit: ctx.limite, offset: pagina * ctx.limite, order: 'endDate', ascending: 'false' });
+      if (r.status !== 'ok') {
+        barrido.truncado = true;
+        barrido.motivo_corte = (r.http === 422 ? 'tope_de_offset_422' : r.status) + ' en offset ' + (pagina * ctx.limite);
+        break;
+      }
+      const filas = filasDe(r.body);
+      barrido.paginas++;
+      barrido.filas += filas.length;
+      if (!filas.length) { barrido.motivo_corte = 'fin_del_catalogo'; break; }
+      suma('barrido', filas.flatMap(aplanaMercados));
+      if (pagina === ctx.paginas - 1) { barrido.truncado = true; barrido.motivo_corte = 'tope_de_paginas'; }
+    }
+  }
+
+  // ── 3. Clasificación ──
   let nombres = null;
   if (ctx.finnhubKey) {
     try { nombres = await getSymbolMap(ctx.finnhubKey); } catch (e) { nombres = null; }
@@ -174,17 +341,7 @@ async function corre(ctx) {
   const claves = new Map();
   const mercados = [];
   const descartados = [];
-  // Dedup por id: si la paginación se corre (mercados que cierran mientras
-  // paginamos), el mismo mercado puede venir en dos páginas y contarse dos
-  // veces. Un conteo inflado es peor que uno corto: decide un candado.
-  const vistos = new Set();
-  let duplicados = 0;
-  for (const raw of crudos) {
-    const idCrudo = raw && raw.id !== undefined && raw.id !== null ? String(raw.id) : null;
-    if (idCrudo) {
-      if (vistos.has(idCrudo)) { duplicados++; continue; }
-      vistos.add(idCrudo);
-    }
+  for (const raw of crudosPorId.values()) {
     for (const k of Object.keys(raw || {})) claves.set(k, (claves.get(k) || 0) + 1);
     const m = normalizaMercado(raw);
     if (!m) continue;
@@ -199,7 +356,7 @@ async function corre(ctx) {
     const consenso = extraeConsensoEps(m.descripcion || '') || extraeConsensoEps(m.pregunta || '');
     const outcome = outcomeResuelto(m);
     mercados.push({
-      id: m.id, slug: m.slug, pregunta: m.pregunta,
+      id: m.id, slug: m.slug, pregunta: m.pregunta, via: raw._via || null,
       fecha_resolucion: fecha, fin_declarado: m.fin_declarado, fin_real: m.fin_real,
       cerrado: m.cerrado, uma: m.uma, volumen: m.volumen,
       senales: esEarnings.senales,
@@ -214,13 +371,15 @@ async function corre(ctx) {
     });
   }
 
+  // Qué camino encontró MÁS mercados de earnings (no crudos: earnings).
+  const porCamino = {};
+  for (const m of mercados) porCamino[m.via || 'desconocido'] = (porCamino[m.via || 'desconocido'] || 0) + 1;
+  const ganadora = Object.entries(porCamino).sort((a, b) => b[1] - a[1])[0] || null;
+
   const resueltos = mercados.filter((m) => m.outcome !== null);
   const conSimbolo = mercados.filter((m) => m.symbol);
-  const enUniverso = mercados.filter((m) => m.en_universo_v0);
 
-  // ── 4. Precio del Yes a T-24h: los ejemplos pedidos por la Fase 0 ──
-  // Se priorizan los resueltos, en nuestro universo y con token: si esos
-  // fallan, el estudio no existe, así que son los que hay que ver fallar.
+  // ── 4. Precio del Yes a T-24h ──
   const candidatos = [...mercados]
     .filter((m) => m.token_yes && m.fecha_resolucion)
     .sort((a, b) => (Number(b.en_universo_v0) - Number(a.en_universo_v0))
@@ -234,11 +393,10 @@ async function corre(ctx) {
     if (!finMs) continue;   // sin instante de resolución no hay T-24h que pedir
     const desdeTs = Math.floor((finMs - 72 * 3600 * 1000) / 1000);
     const hastaTs = Math.floor(finMs / 1000);
-    let r = anota(await clob('/prices-history', { market: m.token_yes, startTs: desdeTs, endTs: hastaTs, fidelity: 60 }));
+    let r = await clob1('/prices-history', { market: m.token_yes, startTs: desdeTs, endTs: hastaTs, fidelity: 60 });
     let forma = 'startTs/endTs';
     if (r.status !== 'ok' || !(r.body && Array.isArray(r.body.history) && r.body.history.length)) {
-      // Segunda forma documentada del endpoint. Si tampoco, se reporta el fallo.
-      r = anota(await clob('/prices-history', { market: m.token_yes, interval: 'max', fidelity: 60 }));
+      r = await clob1('/prices-history', { market: m.token_yes, interval: 'max', fidelity: 60 });
       forma = 'interval=max';
     }
     const history = r.status === 'ok' && r.body ? (Array.isArray(r.body.history) ? r.body.history : filasDe(r.body)) : [];
@@ -253,7 +411,6 @@ async function corre(ctx) {
 
   // ── 5. Cruce con pead_earnings (SELECT, nada más) ──
   const cruce = { consultado: false, filas_pead: 0, error: null, cruzados: 0, en_universo_v0: 0, sin_cruce: {} };
-  let mercadosCruzados = [];
   try {
     const filas = await sql(
       `select symbol, to_char(reported_date, 'YYYY-MM-DD') as reported_date
@@ -265,10 +422,10 @@ async function corre(ctx) {
     );
     cruce.consultado = true;
     cruce.filas_pead = filas.length;
-    mercadosCruzados = cruzaConPead(mercados, filas);
-    cruce.cruzados = mercadosCruzados.filter((m) => m.cruce).length;
-    cruce.en_universo_v0 = mercadosCruzados.filter((m) => m.cruce && m.en_universo_v0).length;
-    for (const m of mercadosCruzados) {
+    const cruzados = cruzaConPead(mercados, filas);
+    cruce.cruzados = cruzados.filter((m) => m.cruce).length;
+    cruce.en_universo_v0 = cruzados.filter((m) => m.cruce && m.en_universo_v0).length;
+    for (const m of cruzados) {
       if (m.cruce) continue;
       const k = m.motivo_sin_cruce || 'desconocido';
       cruce.sin_cruce[k] = (cruce.sin_cruce[k] || 0) + 1;
@@ -281,8 +438,8 @@ async function corre(ctx) {
   const revisiones = [];
   if (ctx.finnhubKey && restante() > 15000) {
     for (const path of ['/stock/eps-estimate', '/stock/revision']) {
-      const url = `https://finnhub.io/api/v1${path}?symbol=AAPL&freq=quarterly&token=${ctx.finnhubKey}`;
-      revisiones.push(await sondaPIT('finnhub' + path, url));
+      revisiones.push(await sondaPIT('finnhub' + path,
+        `https://finnhub.io/api/v1${path}?symbol=AAPL&freq=quarterly&token=${ctx.finnhubKey}`));
     }
   } else {
     revisiones.push({ fuente: 'finnhub', status: 'sin_key', pit: false, motivo: 'FINNHUB_API_KEY no está en el entorno' });
@@ -297,24 +454,32 @@ async function corre(ctx) {
   return {
     ventana: { desde: ctx.desde, hasta: new Date().toISOString().slice(0, 10), meses: ctx.meses },
     sondas,
+    descubrimiento: {
+      metodo: 'dirigido (búsqueda → tags → racimo). El barrido por offset quedó como control opcional.',
+      busqueda: { intentos: busqueda.intentos },
+      tags: { intentos: porTags.intentos, tags_vistos: porTags.tags_vistos || [] },
+      cluster: { intentos: porCluster.intentos },
+      aportes_crudos: aportes,
+      mercados_de_earnings_por_camino: porCamino,
+      estrategia_ganadora: ganadora ? { camino: ganadora[0], mercados_de_earnings: ganadora[1] } : null,
+      sin_id_descartados: sinId,
+    },
+    topes_de_offset,
     barrido,
     esquema_observado: {
       claves_mas_frecuentes: [...claves.entries()].sort((a, b) => b[1] - a[1]).slice(0, 30).map(([k, n]) => `${k} (${n})`),
-      mercados_crudos: crudos.length,
+      mercados_crudos: crudosPorId.size,
     },
     conteos: {
       mercados_de_earnings_en_ventana: mercados.length,
       resueltos: resueltos.length,
       con_simbolo: conSimbolo.length,
       sin_simbolo: mercados.length - conSimbolo.length,
-      en_universo_v0: enUniverso.length,
+      en_universo_v0: mercados.filter((m) => m.en_universo_v0).length,
       con_consenso_en_descripcion: mercados.filter((m) => m.consenso_pm !== null).length,
       con_token_yes: mercados.filter((m) => m.token_yes).length,
       simbolo_ambiguo: mercados.filter((m) => m.symbol_ambiguo).length,
-      // Sin fecha legible NO se descartan (se verían como "no existen"): se
-      // cuentan acá y quedan fuera del cruce y de los ejemplos por su cuenta.
       sin_fecha_de_resolucion: mercados.filter((m) => !m.fecha_resolucion).length,
-      duplicados_descartados: duplicados,
       universo_v0: universo.size,
       nombres_finnhub: nombres ? Object.keys(nombres).length : 0,
     },
@@ -323,11 +488,11 @@ async function corre(ctx) {
     revisiones,
     rate_limit: {
       headers_observados: headersVistos,
-      hubo_429: barrido.http_429 > 0,
-      nota: 'Si no hay headers, Polymarket no publicó presupuesto en esta corrida: la cadencia de la Fase 1 se fija conservadora y se mide con 429s.',
+      http_429,
+      nota: 'El 422 NO es rate limit: es tope de offset de Gamma, y va aparte en topes_de_offset.',
     },
     muestras: {
-      earnings: mercados.slice(0, 5).map((m) => ({ pregunta: m.pregunta, symbol: m.symbol, via: m.symbol_via, fecha: m.fecha_resolucion, outcome: m.outcome, consenso: m.consenso_pm })),
+      earnings: mercados.slice(0, 5).map((m) => ({ pregunta: m.pregunta, symbol: m.symbol, via: m.symbol_via, camino: m.via, fecha: m.fecha_resolucion, outcome: m.outcome, consenso: m.consenso_pm })),
       sin_simbolo: mercados.filter((m) => !m.symbol).slice(0, 5).map((m) => m.pregunta),
       descartados_por_el_filtro: descartados,
     },
@@ -397,6 +562,7 @@ export default async function handler(req, res) {
   }
   const ctx = {
     desde, meses,
+    barrido: String(q.barrido || '') === '1',
     paginas: Math.max(1, Math.min(60, Number(q.paginas) || 20)),
     limite: Math.max(1, Math.min(500, Number(q.limite) || 500)),
     ejemplos: Math.max(1, Math.min(10, Number(q.ejemplos) || 3)),
@@ -423,4 +589,4 @@ export default async function handler(req, res) {
   }
 }
 
-export { corre, ESTRATEGIAS, filasDe, aplanaMercados };
+export { corre, ESTRATEGIAS, filasDe, aplanaMercados, cosechaDeBusqueda, formaDe };
