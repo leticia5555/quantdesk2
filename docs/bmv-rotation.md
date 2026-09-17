@@ -89,8 +89,8 @@ van **arriba**, antes de los resultados que califican — y lo mismo hace
 
 | Caveat | Estado medido |
 |---|---|
-| **Fecha ex aproximada en ~91% de los repartos** | La API sólo trae `fechaexcupon` en el bloque `reciente`. El resto es pago − 3 días. |
-| **14 repartos en moneda extranjera** | 12 USD + 2 EUR, en 10 series ICS. **Excluidos** del retorno total de la v1, con los bp no contados reportados por serie (§3.3). |
+| **Fecha ex aproximada en ~88% de los repartos** | La API sólo trae `fechaexcupon` en el bloque `reciente`. El resto es pago − 3 días. **El número vivo lo da `?job=cobertura`**; éste es una copia y puede quedar atrás. |
+| **Repartos en moneda extranjera** | `{USD: 12, EUR: 2}` sobre **todas** las series; el encabezado del reporte cuenta sólo las **ICS**, que son menos. **Excluidos** del retorno total de la v1, con los bp no contados por serie (§3.3). |
 | **121 reembolsos de capital** | **Excluidos** del caso base: devolver principal no es rendimiento. Disponibles como sensibilidad (§3.3). |
 
 El 91% no es un detalle de implementación: significa que **la fecha de
@@ -1146,6 +1146,81 @@ construido para esas dos.
 
 ---
 
+## 5.6 Fase A cerrada
+
+| | |
+|---|---|
+| Financieros | **4,174 filas**, "Con EPS" = 4,174 en los 11 años y las 116 emisoras |
+| Ledger | `financieros: hecho` |
+| Precios | **569,589 filas** con importe operado |
+| Benchmark | **4,207 días**, 62 distribuciones |
+| Censo | `deriva.estable: true` |
+
+### Lo que queda anotado y no resuelto
+
+**VISTAC y GAVB** siguen en 400, y **el cuerpo del error todavía no está
+guardado**: esas filas llegaron a `MAX_INTENTOS` **antes** del cambio que lo
+captura, así que su `error_msg` es el viejo (`400: HTTP 400`, sin cuerpo) y
+ahora el cosechador las salta. Para obtenerlo hace falta un reintento explícito,
+2 créditos:
+
+```
+?job=historicos&emisora=VISTAC&desde=2026-06-01&reintentar=1
+?job=historicos&emisora=GAVB&desde=2026-06-01&reintentar=1
+```
+
+La ventana corta separa las dos hipótesis de una vez: si con ella **sí**
+devuelve, el problema era el rango (la serie no vivía en 2016); si falla igual,
+el `emisora_serie` está mal construido. Y en cualquier caso el cuerpo queda en
+el ledger, visible en `?job=cobertura`.
+
+**Los dos números del encabezado** cuentan poblaciones distintas, y eso
+explicaba la confusión: `requieren_conversion` viene de una consulta unida a
+`tipo_valor_id = '1'` —**sólo ICS**— mientras que `dividendos_por_divisa` cuenta
+**todas** las series. Ahora el encabezado lo dice con todas sus letras en vez de
+dejar dos cifras que parecen contradecirse.
+
+---
+
+## 5.7 La última puerta antes de la Fase B: `?job=elegibilidad`
+
+SELECT-only, **cero créditos, cero retornos**. Simula los rebalanceos mensuales
+de 2017-07 a 2026-09 y reporta, por fecha:
+
+| Columna | Qué es |
+|---|---|
+| `con_algun_financiero` | emisoras con **al menos un** cierre + 65 días ≤ fecha |
+| `con_ttm` | con los **cuatro** trimestres disponibles — es el que manda |
+| `universo` | con TTM **y** precio en la ventana |
+| `elegibles` | los que pasan la mediana de importe de 3 meses ≥ 5 M |
+| `canasta` / `regimen` | `clamp(0.20 × E, 8, 15)` y quién lo decidió |
+
+**Se reportan dos universos a propósito.** El encargo pedía "financieros
+disponibles (cierre + 65 días ≤ fecha)", que es tener **al menos uno**. Pero el
+value es EPS **TTM** y el TTM necesita **cuatro** trimestres: contar con uno
+solo sobreestimaría el universo que el backtest puede usar de verdad. Van los
+dos, y el que decide la canasta es el de TTM.
+
+Al final, las **cuatro puertas** que se pueden juzgar sin correr nada:
+
+| Puerta | Si no pasa |
+|---|---|
+| Rebalanceos ≥ 30 | INCONCLUSO por muestra |
+| **Universo elegible mediano ≥ 16** | **INCONCLUSO — la Fase B no se corre** |
+| El piso manda en ≤ 50% de las fechas | el veredicto se etiqueta «no probó un quintil» |
+| El filtro excluye ≤ 33% en promedio | **TRIPWIRE: se recalibra el umbral ANTES de la Fase B** |
+
+Que nada de esto mire un retorno es lo que permite **recalibrar el umbral sin
+contaminarse**: todavía no hay resultados que mirar. Ésa era la condición que
+hacía legítimo el tripwire cuando se acordó, y sigue siéndolo.
+
+La fecha de rebalanceo es el **primer día con precio** de cada mes, tomado de
+`bmv_precios` — el calendario real de la BMV, con sus puentes y asuetos, en vez
+de un "primer día hábil" calculado aparte que agregaría una fuente de error
+donde ya hay un dato.
+
+---
+
 ## 6. Estado
 
 | Pieza | Estado |
@@ -1153,13 +1228,14 @@ construido para esas dos.
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 10 jobs (`reparse`, `reparse-fin` e `inspect` son de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **154 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **167 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
 | **El censo** | **Cerrado.** `deriva.estable: true` — 0 aparecieron, 0 desaparecieron. **185 series ICS**, 165 con cobertura (las 20 sin ella son bancos y casas de bolsa, fuera de la v1 por decisión de Fase 0). 1,641 repartos: 1,520 efectivo, 121 reembolso, 0 desconocido. |
 | **Fase A, diseño** | **Cerrado.** |
 | **La cosecha** | **Corrida**: 4,174 financieros, 182 series de precios. |
-| **Normalización** | Arreglada: el `["etiqueta", valor]` **y** la selección por fecha entre los dos periodos (§5.5). Falta `?job=reparse-fin` completo. |
+| **Normalización** | Arreglada y **verificada en prod**: 4,174/4,174 con EPS (§5.5). |
+| **Elegibilidad** | `?job=elegibilidad` construido, **sin correr** — es la última puerta antes de la Fase B (§5.7). |
 | **La cosecha** | **Sin correr** — este sandbox no alcanza la API. |
 | **Cobertura real** | **Sin reportar** — depende de la cosecha. |
 | `/api/bmv-rotation-analyze` | **Fase B. No empezado, a propósito.** |

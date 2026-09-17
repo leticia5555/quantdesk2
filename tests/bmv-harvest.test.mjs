@@ -33,7 +33,7 @@ import {
 
 import {
   CONTRATO_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, contar,
-  describirCrudo, literal, tipoDe,
+  describirCrudo, elegibilidadMd, jobElegibilidad, literal, tipoDe,
   jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros,
   jobHistoricos, jobReparse,
   estimarConsumo, filaCenso, filasDelCenso, nuevaCartera, pareceClave, pareceSerie,
@@ -42,6 +42,7 @@ import {
   seriesDeEmisora, sirveFinanciero,
 } from '../api/bmv-harvest.js';
 import handler from '../api/bmv-harvest.js';
+import { analizarElegibilidad, tamanoCanasta } from '../api/_lib/bmv-elegibilidad.js';
 
 /* ── calendario de trimestres ───────────────────────────────────── */
 
@@ -1375,6 +1376,7 @@ test('un campo que aparece en DOS rutas se reporta dos veces, sin elegir', () =>
  * ═══════════════════════════════════════════════════════════════ */
 
 const JOBS = [
+  ['elegibilidad', jobElegibilidad, {}],
   ['inspect', jobInspect, { emisora: 'WALMEX', periodo: '2T_2017' }],
   ['inspect (sin params)', jobInspect, {}],
   ['reparse-fin', jobReparseFinancieros, { max: '10' }],
@@ -1770,4 +1772,157 @@ test('el reloj corta la tanda sin perder el avance', async () => {
   assert.equal(s.hay_mas, true, 'cortar por reloj no es haber terminado');
   const s2 = await jobReparseFinancieros({ query: { max: '99' } }, t.deps);
   assert.equal(s.leidas + s2.leidas, 7, 'entre las dos cubren todo');
+});
+
+/* ═══════════════════════════════════════════════════════════════
+ * ELEGIBILIDAD. La pregunta que decide si el backtest puede
+ * concluir algo, contestada ANTES de correrlo y sin mirar un solo
+ * retorno — que es justo lo que permite recalibrar el umbral de
+ * liquidez sin contaminarse.
+ * ═══════════════════════════════════════════════════════════════ */
+
+test('tamanoCanasta reproduce la tabla congelada del §4.1', () => {
+  assert.deepEqual(tamanoCanasta(16), { canasta: 8, regimen: 'piso' });
+  assert.deepEqual(tamanoCanasta(30), { canasta: 8, regimen: 'piso' });
+  assert.deepEqual(tamanoCanasta(40), { canasta: 8, regimen: 'quintil' }, '0.20×40 = 8: aquí el quintil por fin es quintil');
+  assert.deepEqual(tamanoCanasta(60), { canasta: 12, regimen: 'quintil' });
+  assert.deepEqual(tamanoCanasta(75), { canasta: 15, regimen: 'quintil' });
+  assert.deepEqual(tamanoCanasta(100), { canasta: 15, regimen: 'techo' });
+});
+
+test('con menos de 8 elegibles el piso no inventa nombres', () => {
+  // El piso no puede sacar de donde no hay. Se marca `insuficiente` y se
+  // reporta aparte, en vez de fingir que el piso se cumplió.
+  assert.deepEqual(tamanoCanasta(5), { canasta: 5, regimen: 'insuficiente' });
+  assert.deepEqual(tamanoCanasta(0), { canasta: 0, regimen: 'insuficiente' });
+});
+
+/** Un universo de prueba: N series, todas con TTM desde el inicio. */
+function universoFalso({ nSeries, fechas, importe = 10e6, cierres = ['2016-06-30', '2016-09-30', '2016-12-31', '2017-03-31'] }) {
+  const series = Array.from({ length: nSeries }, (_, i) => ({
+    emisora: `E${String(i).padStart(3, '0')}`, emisora_serie: `E${String(i).padStart(3, '0')}*`,
+  }));
+  const cierresPorEmisora = new Map(series.map((s) => [s.emisora, cierres]));
+  const medianas = new Map();
+  for (const f of fechas) {
+    for (const [i, s] of series.entries()) {
+      medianas.set(`${f}|${s.emisora_serie}`, typeof importe === 'function' ? importe(i) : importe);
+    }
+  }
+  return { series, cierresPorEmisora, medianas };
+}
+
+test('el rezago de 65 días decide cuándo una emisora entra al universo', () => {
+  // 1T2017 cierra el 31-mar; con 65 días está disponible el 4 de junio. Un
+  // rebalanceo del 1 de junio NO debe contarlo: contarlo sería look-ahead.
+  const fechas = ['2017-06-01', '2017-07-03'];
+  const u = universoFalso({ nSeries: 20, fechas });
+  const r = analizarElegibilidad({ fechas, ...u });
+  assert.equal(r.por_fecha[0].con_ttm, 0, '1-jun: el 4º trimestre aún no es público');
+  assert.equal(r.por_fecha[1].con_ttm, 20, '3-jul: ya lo es');
+  assert.equal(r.por_fecha[0].universo, 0);
+  assert.equal(r.por_fecha[1].universo, 20);
+});
+
+test('se reportan DOS universos: con un trimestre y con TTM completo', () => {
+  // Contar "tiene al menos un financiero" sobreestimaría lo que el backtest
+  // puede usar: el value es EPS TTM y el TTM necesita cuatro.
+  const fechas = ['2016-12-01'];
+  const u = universoFalso({ nSeries: 10, fechas });
+  const r = analizarElegibilidad({ fechas, ...u });
+  assert.equal(r.por_fecha[0].con_algun_financiero, 10, '2T2016 ya está disponible');
+  assert.equal(r.por_fecha[0].con_ttm, 0, 'pero sólo hay 2 de los 4 trimestres');
+  assert.equal(r.por_fecha[0].universo, 0, 'el universo que manda es el de TTM');
+});
+
+test('el filtro de liquidez cuenta excluidos y porcentaje por fecha', () => {
+  const fechas = ['2017-07-03'];
+  // La mitad opera 10M y la otra mitad 1M: la mitad debe caer.
+  const u = universoFalso({ nSeries: 40, fechas, importe: (i) => (i < 20 ? 10e6 : 1e6) });
+  const r = analizarElegibilidad({ fechas, ...u });
+  const f = r.por_fecha[0];
+  assert.equal(f.universo, 40);
+  assert.equal(f.elegibles, 20);
+  assert.equal(f.excluidos_liquidez, 20);
+  assert.equal(f.pct_excluido, 0.5);
+});
+
+test('una serie con precio pero SIN importe no es lo mismo que una sin precio', () => {
+  // `percentile_cont` ignora nulos, así que una serie que cotizó sin importe
+  // reportado sale con mediana nula. Tratarla como "no cotizó" escondería un
+  // hueco de datos; se cuenta aparte.
+  const fechas = ['2017-07-03'];
+  const u = universoFalso({ nSeries: 3, fechas });
+  u.medianas.set('2017-07-03|E001*', null);      // cotizó, sin importe
+  u.medianas.delete('2017-07-03|E002*');          // no cotizó
+  const r = analizarElegibilidad({ fechas, ...u });
+  const f = r.por_fecha[0];
+  assert.equal(f.con_precio, 2, 'E002 no tiene ventana de precios');
+  assert.equal(f.universo, 2, 'E000 y E001');
+  assert.equal(f.sin_importe, 1, 'E001 está en el universo pero no se puede filtrar por liquidez');
+  assert.equal(f.elegibles, 1, 'sólo E000 pasa');
+});
+
+test('el tripwire del tercio dispara cuando el filtro se lleva demasiado', () => {
+  const fechas = ['2017-07-03', '2017-08-01'];
+  const u = universoFalso({ nSeries: 40, fechas, importe: (i) => (i < 10 ? 10e6 : 1e6) });
+  const r = analizarElegibilidad({ fechas, ...u });
+  assert.equal(r.resumen.pct_excluido_liquidez, 0.75);
+  const tripwire = r.veredicto.puertas.find((p) => p.puerta.includes('liquidez'));
+  assert.equal(tripwire.pasa, false);
+  assert.match(tripwire.consecuencia, /TRIPWIRE/);
+  assert.equal(r.veredicto.puede_correrse_fase_b, false, 'recalibrar ANTES, no después');
+});
+
+test('universo elegible mediano < 16 bloquea la Fase B', () => {
+  const fechas = Array.from({ length: 40 }, (_, i) => `2018-${String((i % 12) + 1).padStart(2, '0')}-0${(i % 9) + 1}`);
+  const u = universoFalso({ nSeries: 10, fechas });
+  const r = analizarElegibilidad({ fechas, ...u });
+  assert.equal(r.resumen.mediana_elegibles, 10);
+  const puerta = r.veredicto.puertas.find((p) => p.puerta.includes('mediano'));
+  assert.equal(puerta.pasa, false);
+  assert.match(puerta.consecuencia, /la Fase B NO se corre/);
+});
+
+test('si el piso manda en más de la mitad de las fechas, se etiqueta', () => {
+  // 20 elegibles: el quintil da 4, así que manda el piso. No bloquea la Fase B
+  // —es una etiqueta sobre QUÉ se probó— pero tiene que salir.
+  const fechas = Array.from({ length: 40 }, (_, i) => `2018-${String((i % 12) + 1).padStart(2, '0')}-0${(i % 9) + 1}`);
+  const u = universoFalso({ nSeries: 20, fechas });
+  const r = analizarElegibilidad({ fechas, ...u });
+  assert.equal(r.resumen.pct_fechas_piso, 1);
+  const puerta = r.veredicto.puertas.find((p) => p.puerta.includes('piso'));
+  assert.equal(puerta.pasa, false);
+  assert.match(puerta.consecuencia, /no probó un quintil/);
+  assert.equal(r.veredicto.puede_correrse_fase_b, true, 'etiqueta, no bloqueo');
+});
+
+test('un universo holgado pasa las cuatro puertas', () => {
+  const fechas = Array.from({ length: 40 }, (_, i) => `2018-${String((i % 12) + 1).padStart(2, '0')}-0${(i % 9) + 1}`);
+  const u = universoFalso({ nSeries: 60, fechas });
+  const r = analizarElegibilidad({ fechas, ...u });
+  assert.equal(r.resumen.mediana_elegibles, 60);
+  assert.equal(r.resumen.mediana_canasta, 12, '0.20 × 60');
+  assert.equal(r.veredicto.puede_correrse_fase_b, true);
+  assert.deepEqual(r.veredicto.bloqueantes, []);
+});
+
+test('los criterios que devuelve el reporte son los congelados, no otros', () => {
+  // Si alguien afloja el umbral o el piso, el diff lo delata acá.
+  const r = analizarElegibilidad({ fechas: [], cierresPorEmisora: new Map(), medianas: new Map(), series: [] });
+  assert.equal(r.criterios.lag_dias, 65);
+  assert.equal(r.criterios.umbral_importe, 5_000_000);
+  assert.equal(r.criterios.piso, 8);
+  assert.equal(r.criterios.techo, 15);
+  assert.equal(r.criterios.min_universo_mediano, 16);
+  assert.equal(r.criterios.trimestres_ttm, 4);
+});
+
+test('el markdown de elegibilidad sale sin reventar y trae el veredicto', () => {
+  const fechas = ['2017-07-03', '2017-08-01'];
+  const u = universoFalso({ nSeries: 60, fechas });
+  const md = elegibilidadMd({ ...analizarElegibilidad({ fechas, ...u }), rebalanceos: 2 });
+  assert.match(md, /# Elegibilidad por rebalanceo/);
+  assert.match(md, /Elegibles mediano/);
+  assert.match(md, /2017-07-03/);
 });

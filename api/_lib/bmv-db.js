@@ -577,6 +577,80 @@ async function gastar(mes, { requests = 1, creditos = 0, headers = null } = {}) 
   return r[0] || { requests: 0, creditos: 0 };
 }
 
+/* ─────────────────── elegibilidad (SELECT-only) ─────────────────── */
+
+/**
+ * Las fechas de rebalanceo: el PRIMER DÍA CON PRECIO de cada mes.
+ *
+ * No un "primer día hábil" calculado con un calendario nuestro: el calendario
+ * real de la BMV ya está en `bmv_precios`, con sus puentes y sus días de asueto
+ * mexicanos. Inventarlo aparte sería agregar una fuente de error donde ya hay
+ * un dato.
+ */
+async function fechasRebalanceo(desde, hasta) {
+  const r = await sql(
+    `select min(fecha)::text as fecha
+       from bmv_precios
+      where fecha >= $1::date and fecha <= $2::date
+      group by date_trunc('month', fecha)
+      order by 1`, [desde, hasta]);
+  return r.map((x) => x.fecha);
+}
+
+/**
+ * Por emisora, los cierres que tienen EPS. Es lo que decide, en cada fecha,
+ * cuántos trimestres hay disponibles para el TTM con el rezago de 65 días.
+ *
+ * Se filtra por `basicearningslosspershare is not null` a propósito: un
+ * trimestre sin EPS no sirve para el value aunque la fila exista.
+ */
+async function cierresConEps() {
+  return sql(
+    `select emisora, fecha_cierre::text as fecha_cierre
+       from bmv_financieros
+      where basicearningslosspershare is not null
+      order by emisora, fecha_cierre`);
+}
+
+/** Las series ICS, que son el universo candidato. */
+async function seriesIcs() {
+  return sql(
+    `select emisora_serie, emisora
+       from bmv_emisoras
+      where tipo_valor_id = '1' and emisora_serie is not null
+      order by 1`);
+}
+
+/**
+ * Mediana del importe operado de los 3 meses previos, por (fecha, serie).
+ *
+ * La mediana se calcula en Postgres sobre los importes DIARIOS: traerse las
+ * 569,589 filas a la lambda para medianearlas en JS sería mover el problema de
+ * lugar. Lo que sale son ~20,000 filas agregadas.
+ *
+ * `percentile_cont` ignora los nulos, así que una serie que cotizó pero sin
+ * importe reportado sale con `mediana` nula — y eso NO es lo mismo que no haber
+ * cotizado. El reporte los cuenta aparte (`sin_importe`).
+ */
+async function medianasImporte(desde, hasta) {
+  return sql(
+    `with fechas as (
+       select min(fecha) as fecha
+         from bmv_precios
+        where fecha >= $1::date and fecha <= $2::date
+        group by date_trunc('month', fecha)
+     )
+     select f.fecha::text as fecha,
+            p.emisora_serie,
+            percentile_cont(0.5) within group (order by p.importe) as mediana,
+            count(*)::int as dias
+       from fechas f
+       join bmv_precios p
+         on p.fecha > f.fecha - interval '3 months' and p.fecha <= f.fecha
+      group by 1, 2
+      order by 1, 2`, [desde, hasta]);
+}
+
 /* ─────────────────── cobertura ─────────────────── */
 
 /**
@@ -700,6 +774,6 @@ export {
   upsertFinancieros, insertarPrecios, insertarDistribuciones, ultimaFechaPrecios,
   marcarLedger, clavesHechas, clavesAgotadas, ledgerResumen, financierosCrudos,
   actualizarFinancieros, formasDelCrudo, financieroCrudo, financieroQueSiSirvio,
-  contarFinancieros,
+  contarFinancieros, fechasRebalanceo, cierresConEps, seriesIcs, medianasImporte,
   presupuesto, gastar, cobertura,
 };
