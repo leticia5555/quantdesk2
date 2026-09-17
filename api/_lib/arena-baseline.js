@@ -102,6 +102,37 @@ export function breakerPeak({ dbPeak = 0, equity = 0, baselineEquity = 0 } = {})
 //
 // null si no se puede calcular. Un retorno inventado en la tabla pública es
 // peor que un hueco.
+// ── LA VISTA INDEXADA A 100,000 ──────────────────────────────────────
+// Las siete cuentas arrancaron en $98,677–$100,130 porque el reset las aplanó
+// y aplanar no las dejó parejas. Eso es correcto para medir —cada una contra su
+// propio baseline— y confuso para mirar: la pantalla parece decir que unas
+// empezaron con ventaja.
+//
+// Indexar arregla la lectura sin tocar nada:
+//
+//     equity_mostrado = 100,000 × equity_real / baseline
+//
+// ── ES UNA VISTA, NO UN DATO ─────────────────────────────────────────
+// El ranking y los porcentajes salen IDÉNTICOS: indexar es multiplicar por una
+// constante positiva por cuenta, y eso no cambia ni el orden ni el retorno
+// (que ya se calcula contra el baseline propio de cada una).
+//
+// Lo que sí cambiaría es cualquier cosa que sume dólares entre cuentas o que
+// compare contra un umbral en dólares. Por eso el equity REAL viaja siempre al
+// lado, con su nombre, y nada del camino de decisión —breaker, rieles,
+// tamaño de orden— lee este número. El breaker mide drawdown contra el equity
+// real; un breaker que mirara el indexado estaría midiendo una pantalla.
+export const BASE_INDEX_USD = 100000;
+
+export function indexarEquity(equity, baselineEquity, base = BASE_INDEX_USD) {
+  const e = num(equity);
+  const b = num(baselineEquity);
+  // Sin baseline utilizable NO se inventa un índice: devolver el equity crudo
+  // lo haría pasar por indexado, que es peor que no tenerlo.
+  if (e == null || b == null || b <= 0) return null;
+  return +((base * e) / b).toFixed(2);
+}
+
 export function returnPct(equity, baselineEquity) {
   // `num` y no `Number` a secas: `Number(null)` es 0 y `Number('')` también, así
   // que un equity AUSENTE pasaría el chequeo de finitud y saldría publicado como

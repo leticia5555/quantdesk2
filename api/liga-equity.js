@@ -28,7 +28,7 @@
 
 import { leerEquityDia, diasConMuestras, MUESTREO_MS } from './_lib/arena-equity.js';
 import { ARENA_AGENTS } from './_lib/arena-registry.js';
-import { readBaselines, returnPct, baselineDe } from './_lib/arena-baseline.js';
+import { readBaselines, returnPct, baselineDe, indexarEquity, BASE_INDEX_USD } from './_lib/arena-baseline.js';
 
 function identidad(agentId) {
   const a = ARENA_AGENTS.find((x) => x.id === agentId) || null;
@@ -73,9 +73,21 @@ export default async function handler(req, res) {
   const salida = {};
   for (const [id, serie] of Object.entries(por_agente)) {
     const base = baselineDe(baselines, id);
+    // ── LA SERIE INDEXADA ────────────────────────────────────────────
+    // Cada punto escalado contra el baseline de SU cuenta, para que las siete
+    // curvas se lean en la misma regla. La forma de cada curva no cambia —es
+    // multiplicar por una constante— y el equity real viaja en cada punto.
+    const puntosIndexados = (serie.puntos || []).map((p2) => ({
+      ...p2, equity_indexado: indexarEquity(p2.equity, base),
+    }));
+    const idx = (x) => (x ? { ...x, equity_indexado: indexarEquity(x.equity, base) } : x);
+
     salida[id] = {
       agente: identidad(id),
       ...serie,
+      puntos: puntosIndexados,
+      apertura: idx(serie.apertura), maximo: idx(serie.maximo),
+      minimo: idx(serie.minimo), ultimo: idx(serie.ultimo),
       baseline_equity: base,
       retorno_temporada_pct: serie.ultimo ? returnPct(serie.ultimo.equity, base) : null,
     };
@@ -86,6 +98,11 @@ export default async function handler(req, res) {
     dia,
     dias: dias.map((d) => d.dia),
     filtros: { agente },
+    // Qué significa el número indexado, al lado del número.
+    indexado: {
+      base: BASE_INDEX_USD,
+      nota: 'Cada cuenta arrancó la temporada con un equity distinto (el reset aplanó y aplanar no las dejó parejas). `equity_indexado` escala cada una a 100,000 contra SU baseline para que las siete se lean en la misma regla. Los porcentajes y el orden son idénticos: indexar es multiplicar por una constante por cuenta. El `equity` real viaja en cada punto y es el que mira el breaker.',
+    },
     // La resolución de la serie, explícita. Ver la cabecera: sin esto, el
     // máximo del día se lee como el máximo real y no lo es.
     muestreo: {
