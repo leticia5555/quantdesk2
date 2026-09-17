@@ -16,10 +16,29 @@
 # Los crons DIARIOS siguen en vercel.json (agents-run, arena decide/reconcile,
 # pead hour). Ver docs/crons.md para el mapa completo.
 #
-# Cada job falla RUIDOSAMENTE si el endpoint devuelve error: curl --fail-with-body
-# corta en HTTP >=400 (401/500), y además revisamos el cuerpo por fallos lógicos
-# que el handler devuelve como HTTP 200 (`error` / `disabled`). Un cron muerto
-# aquí = un run rojo en la pestaña Actions (+ el heartbeat en /api/cron-status).
+# ── QUÉ CUENTA COMO FALLA, Y QUÉ NO ─────────────────────────────────
+# ROJO (algo se rompió y hay que ir a verlo):
+#   • curl no completó (red, timeout)
+#   • HTTP >= 400 — 401 es secreto mal puesto, 5xx es el endpoint caído
+#   • el cuerpo no es JSON (página de error de Vercel)
+#   • el cuerpo trae `error`
+#
+# AMARILLO, no rojo (es un ESTADO configurado, no una falla):
+#   • `disabled: true` — ARENA_SCREENER_ENABLED != 1 en Vercel. El endpoint
+#     contestó perfecto: dijo que está apagado. Tratarlo como falla dura es
+#     exactamente el bug que ya tuvimos con `pead:earnings` (ver abajo): deja
+#     la pestaña Actions en rojo TODOS LOS DÍAS, el rojo permanente se
+#     silencia, y el día que un cron se caiga de verdad nadie lo va a mirar.
+#     Un aviso rojo que se ignora es peor que no tener aviso, porque además
+#     da la sensación de que hay vigilancia.
+#   • ledger vacío — hay que correr `?job=seed` una vez. Es accionable y se
+#     dice, pero no es el cron el que está roto.
+#
+# El consumidor ya sabe convivir con las dos: `screenerDataState()` publica
+# `screener_state` (disabled | empty | stale | fresh) dentro del buffet, así
+# que una corrida con el screener apagado lo DECLARA en su propio journal. La
+# vigilancia real de eso está ahí y en /api/cron-status, no en el color de un
+# run de Actions.
 #
 # SETUP (una vez): en GitHub → Settings → Secrets and variables → Actions
 #   • Secret  CRON_SECRET     = el mismo valor que la env var CRON_SECRET en Vercel.
@@ -64,13 +83,30 @@ jobs:
           if [ "$curl_exit" -ne 0 ]; then
             echo "::error::curl falló (exit $curl_exit) — red/timeout, sin respuesta HTTP completa."; exit 1
           fi
+          if [ "$http_code" = "401" ]; then
+            echo "::error::401: el secret CRON_SECRET de GitHub no coincide con la env var CRON_SECRET de Vercel. Se arregla en Settings → Secrets and variables → Actions."; exit 1
+          fi
           if [ "$http_code" -ge 400 ]; then
             echo "::error::arena-screener refresh devolvió HTTP $http_code — ver body arriba."; exit 1
           fi
           if ! echo "$body" | jq -e . >/dev/null 2>&1; then
             echo "::error::Respuesta no es JSON válido (¿página de error de Vercel?)."; exit 1
           fi
-          if echo "$body" | jq -e 'has("error") or (.disabled == true)' >/dev/null; then
-            echo "::error::arena-screener refresh devolvió error/disabled — revisar body."; exit 1
+          if echo "$body" | jq -e 'has("error")' >/dev/null; then
+            echo "::error::arena-screener refresh devolvió un error — revisar body arriba."; exit 1
+          fi
+          # ── APAGADO NO ES ROTO ──────────────────────────────────────
+          # El endpoint contestó bien y dijo que está apagado. Eso es una
+          # decisión de configuración, no una falla del cron: se AVISA y el run
+          # queda verde. Ver el bloque de arriba sobre por qué el rojo
+          # permanente es peor que no avisar.
+          if echo "$body" | jq -e '.disabled == true' >/dev/null; then
+            echo "::warning::screener APAGADO en Vercel (ARENA_SCREENER_ENABLED != 1). El canal screener del buffet corre con datos viejos, y cada corrida lo declara como screener_state=disabled en su journal. Para encenderlo: ARENA_SCREENER_ENABLED=1 en Vercel."
+            exit 0
+          fi
+          # Ledger vacío: accionable, y tampoco es el cron el que está roto.
+          if echo "$body" | jq -e '.done == true and (.note // "" | test("ledger"))' >/dev/null; then
+            echo "::warning::El ledger del screener está vacío — corré una vez GET /api/arena-screener?job=seed para sembrarlo."
+            exit 0
           fi
           echo "OK — screener corrió."
