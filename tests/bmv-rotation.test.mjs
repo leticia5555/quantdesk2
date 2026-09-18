@@ -66,7 +66,7 @@ function fabrica({
   nSeries = 20, desde = '2016-01-01', hasta = '2020-12-31',
   driftPorSerie = () => 0.0004, driftBench = 0.0003,
   eps = () => 1, importe = () => 5e6, dividendos = [], divisaExcluida = [],
-  precioInicial = () => 100,
+  divisaConvertida = [], precioInicial = () => 100,
 } = {}) {
   const calendario = diasHabiles(desde, hasta);
   const series = [];
@@ -102,7 +102,7 @@ function fabrica({
     }
   }
 
-  return { calendario, series, precios, financieros, importe, dividendos, divisaExcluida };
+  return { calendario, series, precios, financieros, importe, dividendos, divisaExcluida, divisaConvertida };
 }
 
 /* ═══════════════ un Neon de mentiras ═══════════════ */
@@ -205,13 +205,21 @@ function mockFetch(mundo) {
     // dividendos por ventanas
     if (/jsonb_array_elements/.test(q) && /bmv_distribuciones/.test(q)) {
       assert.match(q, /categoria = 'efectivo'/, 'sólo efectivo entra al retorno total');
-      assert.match(q, /requiere_conversion, false\) = false/, 'la moneda extranjera queda fuera');
+      assert.match(q, /or tc\.tasa is not null/, 'la moneda extranjera entra SÓLO con tasa de su fecha ex');
+      assert.match(q, /tc\.divisa = d\.divisa and tc\.fecha = d\.fecha_ex/,
+        'el join es por fecha EXACTA: la tasa de otro día sería un dato inventado');
       const ventanas = JSON.parse(p[0]);
       const filas = [];
       for (const [serie, ini, fin] of ventanas) {
         for (const d of mundo.dividendos) {
           if (d.emisora_serie === serie && d.fecha >= ini && d.fecha <= fin) {
             filas.push([serie, d.fecha, texto(d.monto)]);
+          }
+        }
+        // Los convertidos entran YA en pesos, como haría el `coalesce(tasa,1)`.
+        for (const d of (mundo.divisaConvertida || [])) {
+          if (d.emisora_serie === serie && d.fecha >= ini && d.fecha <= fin) {
+            filas.push([serie, d.fecha, texto(d.monto * d.tasa)]);
           }
         }
       }
@@ -230,8 +238,20 @@ function mockFetch(mundo) {
         .map((d) => [d.fecha, texto(d.monto)]);
       return responde([['fecha', T], ['monto', N]], filas);
     }
-    // repartos excluidos por divisa
+    // conversiones APLICADAS — se distingue por el join INTERNO a la tabla de
+    // tasas. Ojo: las dos consultas de divisa traen `requiere_conversion =
+    // true`, así que un mock que sólo mirara eso contestaría lo mismo a las
+    // dos y daría un verde falso. Ya pasó una vez.
+    if (/join bmv_tipos_cambio/.test(q) && !/tc\.tasa is null/.test(q)) {
+      return responde(
+        [['emisora_serie', T], ['fecha', T], ['divisa', T], ['monto', N], ['tasa', N], ['monto_mxn', N], ['precio', N]],
+        (mundo.divisaConvertida || []).map((d) => [
+          d.emisora_serie, d.fecha, d.divisa, texto(d.monto), texto(d.tasa),
+          texto(d.monto * d.tasa), texto(d.precio)]));
+    }
+    // repartos excluidos por divisa que SIGUEN sin tasa
     if (/requiere_conversion = true/.test(q)) {
+      assert.match(q, /tc\.tasa is null/, 'los excluidos son los que NO tienen tasa');
       return responde([['emisora_serie', T], ['fecha', T], ['monto', N], ['divisa', T], ['precio', N]],
         mundo.divisaExcluida.map((d) => [d.emisora_serie, d.fecha, texto(d.monto), d.divisa, texto(d.precio)]));
     }
@@ -808,4 +828,64 @@ test('reporteMd sobrevive a un análisis sin canastas', () => {
     resultados: { base: { titulo: 'x', error: 'sin canastas' } },
   });
   assert.match(md, /No hubo canastas que simular/);
+});
+
+/* ═══════════════════ 13. moneda extranjera convertida ═══════════════════ */
+
+test('un reparto en USD CON tasa de su fecha ex entra al retorno total', async () => {
+  // El pendiente de disciplina que HOTEL* destapó: §3.3 excluía estos repartos
+  // de la v1 y ponía un umbral de 50 bp por serie. Pasado el umbral, la
+  // exclusión se resuelve con el tipo de cambio de la FECHA EX — no con el de
+  // hoy, que sería mirar el futuro desde 2016.
+  const convertido = [{ emisora_serie: 'E000*', fecha: '2018-03-01', divisa: 'USD', monto: 1, tasa: 18.7, precio: 100 }];
+  global.fetch = mockFetch(fabrica({
+    nSeries: 12, desde: '2016-01-01', hasta: '2019-12-31', divisaConvertida: convertido,
+  }));
+  const conTasa = mockRes();
+  await handler(GET({ sensibilidades: '0' }, AUTH), conTasa);
+
+  global.fetch = mockFetch(fabrica({ nSeries: 12, desde: '2016-01-01', hasta: '2019-12-31' }));
+  const sinNada = mockRes();
+  await handler(GET({ sensibilidades: '0' }, AUTH), sinNada);
+
+  const a = conTasa.body.resultados.base.series.canasta_total.retorno_anualizado;
+  const b = sinNada.body.resultados.base.series.canasta_total.retorno_anualizado;
+  assert.ok(a > b, `convertir sólo puede SUMAR retorno a la canasta: ${a} vs ${b}`);
+});
+
+test('la conversión se reporta con su tasa, no sólo con el resultado', async () => {
+  global.fetch = mockFetch(fabrica({
+    nSeries: 12, desde: '2016-01-01', hasta: '2019-12-31',
+    divisaConvertida: [{ emisora_serie: 'E000*', fecha: '2018-03-01', divisa: 'USD', monto: 2, tasa: 18.5, precio: 100 }],
+  }));
+  const res = mockRes();
+  await handler(GET({ sensibilidades: '0' }, AUTH), res);
+  const cv = res.body.encabezado.conversiones_aplicadas;
+  assert.equal(cv.repartos, 1);
+  assert.equal(cv.detalle[0].tasa, 18.5, 'la tasa viaja, para que la conversión sea auditable');
+  assert.equal(cv.detalle[0].monto_mxn, 37);
+  assert.ok(Math.abs(cv.bp_recuperados - 3700) < 1e-6, '37 pesos sobre 100 son 3,700 bp');
+});
+
+test('un reparto en USD SIN tasa sigue excluido y sigue contándose como hueco', async () => {
+  global.fetch = mockFetch(fabrica({
+    nSeries: 12, desde: '2016-01-01', hasta: '2019-12-31',
+    divisaExcluida: [{ emisora_serie: 'E001*', fecha: '2018-03-01', monto: 2, divisa: 'USD', precio: 100 }],
+  }));
+  const res = mockRes();
+  await handler(GET({ format: 'md', sensibilidades: '0' }, AUTH), res);
+  assert.match(res.body, /bp de retorno no contados/);
+  assert.match(res.body, /SIN tipo de cambio/, 'el encabezado distingue "sin tasa" de "excluido por política"');
+});
+
+test('el encabezado dice las DOS cosas: lo convertido y lo que sigue sin contar', async () => {
+  global.fetch = mockFetch(fabrica({
+    nSeries: 12, desde: '2016-01-01', hasta: '2019-12-31',
+    divisaConvertida: [{ emisora_serie: 'E000*', fecha: '2018-03-01', divisa: 'USD', monto: 1, tasa: 18.7, precio: 100 }],
+    divisaExcluida: [{ emisora_serie: 'E001*', fecha: '2018-06-01', monto: 2, divisa: 'EUR', precio: 100 }],
+  }));
+  const res = mockRes();
+  await handler(GET({ format: 'md', sensibilidades: '0' }, AUTH), res);
+  assert.match(res.body, /1 repartos en moneda extranjera CONVERTIDOS/);
+  assert.match(res.body, /bp de retorno no contados/);
 });

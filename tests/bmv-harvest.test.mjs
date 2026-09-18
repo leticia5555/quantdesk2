@@ -23,6 +23,7 @@ import {
   BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
   COBERTURA_FIN, PRESUPUESTO_MENSUAL,
   aNumero, aplanarHistoricos, clavePeriodo, construirUrl, emisoraSerie, valorDeCampo,
+  candidatosDivisas, normalizarTiposCambio,
   extraerDistribuciones, finDeTrimestre, mesPresupuesto, normalizarFinancieros,
   parseClavePeriodo, periodoApi, restaDias, DIAS_EX_APROX, UMBRAL_PLACEHOLDER,
   recortarAlPeriodo, finDeClave,
@@ -35,7 +36,7 @@ import {
   CONTRATO_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, contar,
   comparativaMd, describirCrudo, elegibilidadMd, jobElegibilidad, literal, tipoDe,
   jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros,
-  jobHistoricos, jobReparse,
+  jobHistoricos, jobReparse, jobDivisas,
   estimarConsumo, filaCenso, filasDelCenso, nuevaCartera, pareceClave, pareceSerie,
   pendientesFinancieros,
   paramsBenchmark, paramsFinancieros, paramsHistoricos, parsePeriodoTexto,
@@ -2094,4 +2095,84 @@ test('el markdown comparativo trae las tres filas y dice que el umbral ya está 
   assert.match(md, /entre \*\*40 y 75\*\* elegibles/);
   assert.match(md, /Ya no es una puerta/);
   assert.match(md, /VISTAC, GAVB/);
+});
+
+/* ═══════════════════════════════════════════════════════════
+ * TIPO DE CAMBIO EN LA FECHA EX. §3.3 excluyó los 14 repartos en
+ * moneda extranjera de la v1 y puso un umbral: 50 bp acumulados por
+ * serie. HOTEL* lo superó, así que la exclusión se resuelve —no se
+ * asume— con /v2/divisas en la FECHA EX.
+ *
+ * El contrato de ese endpoint NO está verificado: este sandbox no
+ * alcanza la API. Por eso el job prueba grafías antes de cosechar, y
+ * el parser acepta las formas que la API ya usa en otros endpoints
+ * sin inventar las que no.
+ * ═══════════════════════════════════════════════════════════ */
+
+test('el parser de divisas acepta el mapa fecha→número', () => {
+  const r = normalizarTiposCambio({ '2018-03-01': 18.75, '2018-03-02': 18.8 });
+  assert.equal(r.filas.length, 2);
+  assert.deepEqual(r.filas[0], { fecha: '2018-03-01', tasa: 18.75 });
+});
+
+test('acepta el mapa fecha→arreglo de UN número, como /v2/historicos', () => {
+  const r = normalizarTiposCambio({ '2018-03-01': [18.75] });
+  assert.equal(r.filas[0].tasa, 18.75);
+});
+
+test('un arreglo de DOS números es ambiguo y se descarta, no se adivina', () => {
+  // ¿Compra y venta? ¿FIX y spot? Elegir uno metería un error de dirección
+  // desconocida — justo lo que §3.3 quería evitar al excluir estos repartos.
+  const r = normalizarTiposCambio({ '2018-03-01': [18.70, 18.80] });
+  assert.equal(r.filas.length, 0);
+  assert.equal(r.descartadas, 1);
+  assert.match(r.motivo, /ambiguo/);
+});
+
+test('acepta un nivel de envoltorio (divisa → mapa de fechas)', () => {
+  const r = normalizarTiposCambio({ USD: { '2018-03-01': 18.75 } });
+  assert.deepEqual(r.filas, [{ fecha: '2018-03-01', tasa: 18.75 }]);
+});
+
+test('acepta el arreglo de objetos con campo de fecha', () => {
+  const r = normalizarTiposCambio([{ fecha: '2018-03-01', valor: 18.75 }]);
+  assert.deepEqual(r.filas, [{ fecha: '2018-03-01', tasa: 18.75 }]);
+});
+
+test('una tasa cero o negativa NO se guarda: no existe un tipo de cambio así', () => {
+  assert.equal(normalizarTiposCambio({ '2018-03-01': 0 }).filas.length, 0);
+  assert.equal(normalizarTiposCambio({ '2018-03-01': -18 }).filas.length, 0);
+});
+
+test('cuando nada calza, el parser DICE por qué en vez de devolver vacío mudo', () => {
+  const r = normalizarTiposCambio({ mensaje: 'token invalido' });
+  assert.equal(r.filas.length, 0);
+  assert.ok(r.motivo, 'un vacío sin motivo es indistinguible de "no hubo repartos"');
+});
+
+test('los candidatos de /v2/divisas son varios y ninguno se da por verificado', () => {
+  const c = candidatosDivisas('USD', '2018-03-01', '2018-03-01');
+  assert.ok(c.length >= 4, 'probar una sola grafía es adivinar');
+  for (const x of c) {
+    assert.ok(x.etiqueta && x.params, 'cada candidato se identifica para el reporte');
+  }
+  const json = JSON.stringify(c);
+  assert.match(json, /USD/);
+  assert.match(json, /2018-03-01/);
+});
+
+test('?job=divisas entra sin ReferenceError aunque no haya base', async () => {
+  // El caso del `node --check` que no sustituye correr el módulo: la ruta
+  // completa del job tiene que ejecutarse, no sólo compilar.
+  const guardado = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+  try {
+    await jobDivisas({ query: {} });
+    assert.fail('debería fallar por falta de DATABASE_URL');
+  } catch (e) {
+    assert.doesNotMatch(e.message, /is not defined/, `ReferenceError en la ruta del job: ${e.message}`);
+    assert.match(e.message, /DATABASE_URL/);
+  } finally {
+    if (guardado !== undefined) process.env.DATABASE_URL = guardado;
+  }
 });

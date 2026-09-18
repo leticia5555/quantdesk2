@@ -1145,6 +1145,104 @@ function mesPresupuesto(fecha = new Date()) {
 
 const PRESUPUESTO_MENSUAL = 200000;
 
+/* ═══════════════ /v2/divisas — tipo de cambio en la fecha ex ═══════════════ */
+
+/**
+ * Las grafías candidatas para `/v2/divisas`. NO VERIFICADO.
+ *
+ * El contrato de este endpoint no se conoce: el sandbox donde se escribió
+ * esto no alcanza `api.databursatil.com` (el proxy contesta 403 al CONNECT).
+ * Igual que con `/v2/financieros` y `/v2/historicos`, se PRUEBAN las grafías
+ * en vez de adivinar una y lanzar la cosecha contra la suposición — que es la
+ * forma cara de equivocarse.
+ *
+ * El orden va de lo más probable a lo menos, según el estilo ya observado en
+ * la API: parámetros en español, rangos con `inicio`/`final`, y el mismo
+ * patrón de `emisora_serie` donde la clave es un par pegado.
+ */
+function candidatosDivisas(divisa, inicio, final) {
+  return [
+    { etiqueta: 'divisa + inicio/final', params: { divisa, inicio, final } },
+    { etiqueta: 'divisas + inicio/final', params: { divisas: divisa, inicio, final } },
+    { etiqueta: 'divisa + fecha', params: { divisa, fecha: inicio } },
+    { etiqueta: 'moneda + inicio/final', params: { moneda: divisa, inicio, final } },
+    { etiqueta: 'par pegado + inicio/final', params: { divisa: `${divisa}MXN`, inicio, final } },
+    { etiqueta: 'par con diagonal + inicio/final', params: { divisa: `${divisa}/MXN`, inicio, final } },
+  ];
+}
+
+/**
+ * Parser tolerante de la respuesta de `/v2/divisas` → [{fecha, tasa}].
+ *
+ * Como no se conoce la forma, se aceptan las cuatro que la API ya usa en otros
+ * endpoints: mapa fecha→número, mapa fecha→arreglo, mapa con un nivel de
+ * envoltorio (divisa→mapa), y arreglo de objetos. Lo que no calce NO se
+ * inventa: se cuenta como descartado y se dice por qué.
+ *
+ * **Una tasa que no se entiende vale menos que ninguna.** Si el número es
+ * ambiguo —un arreglo con dos números, sin saber cuál es compra y cuál venta—
+ * se descarta: convertir con el número equivocado metería un error de
+ * dirección desconocida, que es justo lo que §3.3 quería evitar al excluir.
+ */
+function normalizarTiposCambio(raw) {
+  const filas = [];
+  let descartadas = 0;
+  const motivos = [];
+
+  const empuja = (fecha, valor) => {
+    const f = /(\d{4}-\d{2}-\d{2})/.exec(String(fecha));
+    if (!f) { descartadas += 1; return; }
+    let tasa = null;
+    if (Array.isArray(valor)) {
+      const nums = valor.map(aNumero).filter((x) => x !== null);
+      // Un solo número es la tasa. Dos o más son ambiguos (¿compra? ¿venta?
+      // ¿FIX?) y adivinar cuál es peor que no convertir.
+      if (nums.length === 1) tasa = nums[0];
+      else { descartadas += 1; motivos.push(`arreglo de ${nums.length} números en ${f[1]}: ambiguo`); return; }
+    } else if (valor && typeof valor === 'object') {
+      const bajo = {};
+      for (const [k, v] of Object.entries(valor)) bajo[normalizaLlave(k)] = v;
+      for (const n of ['fix', 'tipo_cambio', 'tipocambio', 'valor', 'cierre', 'tasa', 'precio']) {
+        const num = aNumero(bajo[normalizaLlave(n)]);
+        if (num !== null) { tasa = num; break; }
+      }
+    } else {
+      tasa = aNumero(valor);
+    }
+    if (tasa === null || !(tasa > 0)) { descartadas += 1; return; }
+    filas.push({ fecha: f[1], tasa });
+  };
+
+  const recorre = (obj, profundidad) => {
+    if (!obj || typeof obj !== 'object') return;
+    if (Array.isArray(obj)) {
+      for (const it of obj) {
+        if (it && typeof it === 'object' && !Array.isArray(it)) {
+          const bajo = {};
+          for (const [k, v] of Object.entries(it)) bajo[normalizaLlave(k)] = v;
+          const fecha = bajo.fecha || bajo.dia || bajo.date;
+          if (fecha) empuja(fecha, it);
+          else descartadas += 1;
+        } else descartadas += 1;
+      }
+      return;
+    }
+    for (const [k, v] of Object.entries(obj)) {
+      if (/(\d{4}-\d{2}-\d{2})/.test(String(k))) empuja(k, v);
+      else if (profundidad > 0) recorre(v, profundidad - 1);
+      else descartadas += 1;
+    }
+  };
+
+  recorre(raw, 2);
+  filas.sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0));
+  return {
+    filas,
+    descartadas,
+    motivo: filas.length ? null : (motivos[0] || 'ninguna llave con forma de fecha y valor numérico'),
+  };
+}
+
 export {
   BASE, BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
   CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL, TIMEOUT_MS,
@@ -1159,4 +1257,5 @@ export {
   ordenPeriodo, parseClavePeriodo, parsearRangoFechas, parsearRangoPeriodos,
   recortarACobertura,
   resolverCampo, traer, trimestresEntre, urlSegura,
+  candidatosDivisas, normalizarTiposCambio,
 };

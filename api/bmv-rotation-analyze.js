@@ -170,7 +170,14 @@ async function preciosDeVentanas(ventanas) {
  * Repartos que SÍ entran al retorno total, en las mismas ventanas.
  *
  * El `where` es la decisión congelada de §3.3 hecha consulta: efectivo, no
- * reembolso ni especie, y sin moneda extranjera pendiente de convertir.
+ * reembolso ni especie. Un reparto en moneda extranjera entra **sólo si hay
+ * tipo de cambio de SU fecha ex** en `bmv_tipos_cambio`, y entra convertido
+ * por esa tasa.
+ *
+ * El `join` es por `(divisa, fecha_ex)`, no por la fecha más cercana: usar la
+ * tasa de otro día sería inventar un dato con cara de dato. Sin tasa, el
+ * reparto sigue fuera y el encabezado reporta los bp que quedaron sin contar
+ * — el hueco medido es mejor que una conversión adivinada.
  */
 async function dividendosDeVentanas(ventanas) {
   if (!ventanas.length) return [];
@@ -179,12 +186,15 @@ async function dividendosDeVentanas(ventanas) {
        select x->>0 as serie, (x->>1)::date as ini, (x->>2)::date as fin
          from jsonb_array_elements($1::jsonb) as x
      )
-     select v.serie as emisora_serie, d.fecha_ex::text as fecha, sum(d.monto) as monto
+     select v.serie as emisora_serie, d.fecha_ex::text as fecha,
+            sum(d.monto * coalesce(tc.tasa, 1)) as monto
        from v
        join bmv_distribuciones d
          on d.emisora_serie = v.serie and d.fecha_ex >= v.ini and d.fecha_ex <= v.fin
+       left join bmv_tipos_cambio tc
+         on tc.divisa = d.divisa and tc.fecha = d.fecha_ex
       where d.categoria = 'efectivo'
-        and coalesce(d.requiere_conversion, false) = false
+        and (coalesce(d.requiere_conversion, false) = false or tc.tasa is not null)
       group by 1, 2`,
     [JSON.stringify(ventanas)]);
 }
@@ -197,11 +207,14 @@ async function serieDelBenchmark(desde, hasta) {
           where emisora_serie = $1 and fecha >= $2::date and fecha <= $3::date
             and cierre is not null
           order by 1`, [BENCHMARK, desde, hasta]),
-    sql(`select fecha_ex::text as fecha, sum(monto) as monto
-           from bmv_distribuciones
-          where emisora_serie = $1 and fecha_ex >= $2::date and fecha_ex <= $3::date
-            and categoria = 'efectivo'
-            and coalesce(requiere_conversion, false) = false
+    // La MISMA regla que para la canasta: simetría o no hay comparación.
+    sql(`select d.fecha_ex::text as fecha, sum(d.monto * coalesce(tc.tasa, 1)) as monto
+           from bmv_distribuciones d
+           left join bmv_tipos_cambio tc
+             on tc.divisa = d.divisa and tc.fecha = d.fecha_ex
+          where d.emisora_serie = $1 and d.fecha_ex >= $2::date and d.fecha_ex <= $3::date
+            and d.categoria = 'efectivo'
+            and (coalesce(d.requiere_conversion, false) = false or tc.tasa is not null)
           group by 1 order by 1`, [BENCHMARK, desde, hasta]),
   ]);
   return { precios, dividendos };
@@ -219,6 +232,24 @@ async function repartosExcluidosPorDivisa(desde, hasta) {
     `select d.emisora_serie, d.fecha_ex::text as fecha, d.monto, d.divisa, p.cierre as precio
        from bmv_distribuciones d
        join bmv_emisoras e on e.emisora_serie = d.emisora_serie and e.tipo_valor_id = '1'
+       left join bmv_precios p
+         on p.emisora_serie = d.emisora_serie and p.fecha = d.fecha_ex
+       left join bmv_tipos_cambio tc
+         on tc.divisa = d.divisa and tc.fecha = d.fecha_ex
+      where d.requiere_conversion = true
+        and tc.tasa is null
+        and d.fecha_ex >= $1::date and d.fecha_ex <= $2::date
+      order by 1, 2`, [desde, hasta]);
+}
+
+/** Cuántos repartos en moneda extranjera se CONVIRTIERON, y con qué tasas. */
+async function conversionesAplicadas(desde, hasta) {
+  return sql(
+    `select d.emisora_serie, d.fecha_ex::text as fecha, d.divisa, d.monto,
+            tc.tasa, (d.monto * tc.tasa) as monto_mxn, p.cierre as precio
+       from bmv_distribuciones d
+       join bmv_tipos_cambio tc
+         on tc.divisa = d.divisa and tc.fecha = d.fecha_ex
        left join bmv_precios p
          on p.emisora_serie = d.emisora_serie and p.fecha = d.fecha_ex
       where d.requiere_conversion = true
@@ -358,7 +389,7 @@ function pp(total, precio) {
 /* ═══════════════ el análisis completo ═══════════════ */
 
 async function analiza({ desde = DESDE, hasta = HASTA, conSensibilidades = true, conCanastas = false } = {}) {
-  const [calendario, fechas, series, eps, mensuales, medianasRaw, bench, excluidosDivisa, exAprox] =
+  const [calendario, fechas, series, eps, mensuales, medianasRaw, bench, excluidosDivisa, convertidos, exAprox] =
     await Promise.all([
       calendarioBmv(desde, hasta),
       fechasRebalanceo(desde, hasta),
@@ -368,6 +399,7 @@ async function analiza({ desde = DESDE, hasta = HASTA, conSensibilidades = true,
       medianasImporte(desde, hasta),
       serieDelBenchmark(desde, hasta),
       repartosExcluidosPorDivisa(desde, hasta),
+      conversionesAplicadas(desde, hasta),
       coberturaFechaEx(),
     ]);
 
@@ -442,6 +474,17 @@ async function analiza({ desde = DESDE, hasta = HASTA, conSensibilidades = true,
       fechas_ex: exAprox,
       regimen: resultados.base && resultados.base.regimen,
       bp_no_contados_por_divisa: divisa,
+      // El otro lado del mismo hecho: qué SÍ se convirtió, con qué tasa y en
+      // qué fecha. Sin esto, «HOTEL* resuelto» sería una afirmación que nadie
+      // puede revisar.
+      conversiones_aplicadas: {
+        repartos: convertidos.length,
+        bp_recuperados: bpNoContados(convertidos.map((c) => ({ ...c, monto: c.monto_mxn }))).total_bp,
+        detalle: convertidos.map((c) => ({
+          emisora_serie: c.emisora_serie, fecha: c.fecha, divisa: c.divisa,
+          monto: Number(c.monto), tasa: Number(c.tasa), monto_mxn: Number(c.monto_mxn),
+        })),
+      },
       series_excluidas: {
         lista: [...SERIES_SIN_PRECIOS],
         motivo: 'sin precios en /v2/historicos (HTTP 400 también con ventana corta)',
@@ -498,7 +541,11 @@ function reporteMd(a) {
     else if (e.regimen.observacion) L.push(`>   ${e.regimen.observacion}`);
   }
   const d = e.bp_no_contados_por_divisa;
-  L.push(`> · **${num(d.total_bp, 1)} bp de retorno no contados** por repartos en moneda extranjera (${d.series.length} series).`);
+  const cv = e.conversiones_aplicadas;
+  if (cv && cv.repartos) {
+    L.push(`> · **${cv.repartos} repartos en moneda extranjera CONVERTIDOS** con el tipo de cambio de su fecha ex: **+${num(cv.bp_recuperados, 1)} bp** recuperados.`);
+  }
+  L.push(`> · **${num(d.total_bp, 1)} bp de retorno no contados** por repartos en moneda extranjera SIN tipo de cambio (${d.series.length} series).`);
   L.push(`>   Umbral de revisión: **${d.umbral_bp} bp por serie**. ${d.series_sobre_umbral.length
     ? `⚠️ Lo superan: **${d.series_sobre_umbral.join(', ')}** — hay que resolverlo con /v2/divisas ANTES de leer el veredicto.`
     : 'Ninguna serie lo supera: la exclusión es inmaterial.'}`);
