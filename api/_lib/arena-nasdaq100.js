@@ -99,10 +99,12 @@ export function esTickerPlausible(t, { yaNormalizado = false } = {}) {
   return TICKER.test(s) && !RUIDO.has(s);
 }
 
-function horquilla(symbols, fuente) {
+// `origen`, NO `fuente`. Ver la nota de `anota` abajo: llamarle `fuente` a
+// esto chocaba con la clave del sobre del diagnóstico y borraba filas enteras.
+function horquilla(symbols, origen) {
   const n = symbols.length;
-  if (n < MIN_NOMBRES) return { ok: false, reason: 'lista_corta', fuente, recibidos: n, minimo: MIN_NOMBRES };
-  if (n > MAX_NOMBRES) return { ok: false, reason: 'lista_larga', fuente, recibidos: n, maximo: MAX_NOMBRES,
+  if (n < MIN_NOMBRES) return { ok: false, reason: 'lista_corta', origen, recibidos: n, minimo: MIN_NOMBRES };
+  if (n > MAX_NOMBRES) return { ok: false, reason: 'lista_larga', origen, recibidos: n, maximo: MAX_NOMBRES,
     detail: `${n} nombres no son un índice de 100: el parser agarró de más y estaría metiendo basura al universo.` };
   return { ok: true };
 }
@@ -251,7 +253,21 @@ export function desdeEnv(env = process.env) {
 }
 
 export async function fetchNasdaq100({ now = new Date(), fetchImpl = fetch, diag = null, deps = {}, env = process.env } = {}) {
-  const anota = (fila) => { if (Array.isArray(diag)) diag.push({ fuente: 'tabla_publica', index: 'nasdaq100', ...fila }); };
+  // ── EL SOBRE GANA, Y ESTO ES UN BUG REAL QUE YA PASÓ ───────────────
+  // Estaba al revés: `{ fuente: 'tabla_publica', ...fila }`. El spread al
+  // final deja que la fila PISE las claves del sobre — y `horquilla` devolvía
+  // una clave llamada `fuente` con el valor 'wikipedia'.
+  //
+  // Resultado en producción (2026-09-18): Wikipedia se llamó, contestó, no
+  // pasó la horquilla, y su fila se guardó con `fuente: 'wikipedia'`. El
+  // filtro del endpoint —y `resumenTablaPublica`— buscan
+  // `fuente === 'tabla_publica'`, así que la fila EXISTÍA y no se veía. Se leyó
+  // como "Wikipedia no se está llamando", que es una conclusión falsa sobre la
+  // única fuente primaria que hay.
+  //
+  // Un diagnóstico que se pierde a sí mismo es peor que no tenerlo: manda a
+  // investigar el lugar equivocado. El sobre va DESPUÉS del spread.
+  const anota = (fila) => { if (Array.isArray(diag)) diag.push({ ...fila, fuente: 'tabla_publica', index: 'nasdaq100' }); };
   const wiki = deps.fetchWikipedia || fetchWikipedia;
   const slick = deps.fetchSlickcharts || fetchSlickcharts;
 
@@ -277,7 +293,14 @@ export async function fetchNasdaq100({ now = new Date(), fetchImpl = fetch, diag
     }
     const symbols = res.value || [];
     const h = horquilla(symbols, fuente);
-    if (!h.ok) { anota({ origen: fuente, ok: false, ...h }); return null; }
+    if (!h.ok) {
+      // LA MUESTRA ES EL DATO QUE ARREGLA EL PARSER. Saber que llegaron 7
+      // nombres no dice nada; saber CUÁLES dice si se leyó la columna
+      // equivocada, si se agarró la tabla de otra sección, o si la página
+      // cambió de forma. Es el mismo patrón que `primeras_lineas` en el CSV.
+      anota({ origen: fuente, ok: false, ...h, muestra: symbols.slice(0, 12) });
+      return null;
+    }
     anota({ origen: fuente, ok: true, recibidos: symbols.length });
     return symbols;
   };
