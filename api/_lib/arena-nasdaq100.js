@@ -37,11 +37,33 @@ const TICKER = /^[A-Z][A-Z0-9]{0,4}$/;   // Nasdaq: sin puntos ni clases de acci
 // páginas. Existe porque el regex de arriba no puede distinguir "GICS" de
 // "AAPL" — los dos son cuatro mayúsculas.
 export const RUIDO = new Set([
-  'GICS', 'ISIN', 'CIK', 'USD', 'ETF', 'NYSE', 'ICB', 'CUSIP', 'SIC',
-  'INC', 'CORP', 'PLC', 'LTD', 'NV', 'SA', 'AG', 'CO',
-  'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC',
+  // Encabezados y jerga de tabla. Ninguno es un ticker de Nasdaq.
+  'GICS', 'ISIN', 'CIK', 'CUSIP', 'SIC', 'ICB', 'USD', 'ETF', 'NYSE',
+  // Cromo de wiki que puede quedar en una celda.
   'EDIT', 'HELP', 'MAIN', 'TALK', 'VIEW', 'PAGE', 'LIST', 'DATE', 'NAME', 'TICKER',
 ]);
+
+// ── LO QUE SE SACÓ DE ESTA LISTA, Y POR QUÉ IMPORTA ──────────────────
+// La primera versión traía las abreviaturas de los meses ('JAN'..'DEC') y los
+// sufijos societarios ('INC', 'CORP', 'PLC', 'LTD', 'NV', 'SA', 'AG', 'CO').
+// Las dos tandas estaban MAL:
+//
+//   · MAR es Marriott International, constituyente REAL del Nasdaq 100. La
+//     lista lo habría borrado en silencio de las DOS fuentes a la vez — o sea
+//     sin que el cruce lo notara, porque las dos se filtran igual. Un nombre
+//     desaparecido que ningún guard puede ver es el peor tipo de bug acá.
+//   · Varios sufijos societarios también son tickers reales (CO cotiza).
+//
+// Y no compraban nada: un sufijo societario nunca aparece SOLO en una celda
+// (va dentro de "Apple Inc.", que es Title Case y se descarta por el caso), y
+// una columna de fechas trae "2019-11-21" o "November 21, 2019", no "MAR". La
+// selección de columna por consistencia posicional ya descarta esas columnas
+// enteras. Filtrar por lista lo que la estructura ya filtra solo agrega
+// falsos positivos sobre nombres verdaderos.
+//
+// REGLA: en esta lista solo entra un token que NO PUEDE ser un ticker de este
+// índice. Ante la duda, se deja pasar: un nombre de más lo tira la admisión;
+// un nombre de menos no lo nota nadie.
 
 // La horquilla. El índice tiene ~100 nombres (a veces 101: una empresa puede
 // tener dos clases de acción). Un parseo que devuelve 300 agarró la página
@@ -201,10 +223,50 @@ export async function fetchSlickcharts({ fetchImpl = fetch, timeoutMs = 20000 } 
 // ── EL CRUCE, que es el guard de verdad ──────────────────────────────
 // Devuelve { symbols, source, cruce } o null. NUNCA lanza: el caller baja un
 // escalón igual que con las otras fuentes.
-export async function fetchNasdaq100({ now = new Date(), fetchImpl = fetch, diag = null, deps = {} } = {}) {
+// ── LA LISTA PEGADA A MANO, QUE NO DEPENDE DE NINGUNA RED ────────────
+// `ARENA_NASDAQ100_SYMBOLS`: los tickers separados por coma, pegados en Vercel
+// y tomados SIN deploy. Existe porque puede que producción no alcance ni a
+// Wikipedia ni a slickcharts —el entorno donde se programó esto no las
+// alcanzaba— y en ese caso ninguna cantidad de parsers arregla nada.
+//
+// Gana sobre todo lo demás: es lo único que alguien escribió a propósito. Pero
+// pasa por la MISMA horquilla que las fuentes bajadas: una lista pegada con un
+// error de copiar y pegar no entra por venir de una persona.
+export const ENV_SIMBOLOS = 'ARENA_NASDAQ100_SYMBOLS';
+
+export function desdeEnv(env = process.env) {
+  const crudo = String((env && env[ENV_SIMBOLOS]) || '').trim();
+  if (!crudo) return null;
+  const visto = new Set();
+  const out = [];
+  for (const parte of crudo.split(/[,\s;]+/)) {
+    const t = limpiar(parte);
+    if (!t || visto.has(t)) continue;
+    // `yaNormalizado`: quien la pega puede escribirla en minúsculas y eso no
+    // es señal de nada — no viene de una tabla con columnas.
+    if (!esTickerPlausible(t, { yaNormalizado: true })) continue;
+    visto.add(t); out.push(t);
+  }
+  return out.length ? out : null;
+}
+
+export async function fetchNasdaq100({ now = new Date(), fetchImpl = fetch, diag = null, deps = {}, env = process.env } = {}) {
   const anota = (fila) => { if (Array.isArray(diag)) diag.push({ fuente: 'tabla_publica', index: 'nasdaq100', ...fila }); };
   const wiki = deps.fetchWikipedia || fetchWikipedia;
   const slick = deps.fetchSlickcharts || fetchSlickcharts;
+
+  // La lista pegada a mano gana, y no se pide nada por red.
+  const pegada = desdeEnv(env);
+  if (pegada) {
+    const h = horquilla(pegada, 'env');
+    if (!h.ok) {
+      anota({ origen: 'env', ok: false, ...h, detail: `${ENV_SIMBOLOS} está puesta pero la lista no pasa la horquilla. NO se usa: una lista pegada con un error de copiar y pegar no entra por venir de una persona.` });
+    } else {
+      anota({ origen: 'env', ok: true, recibidos: pegada.length, detail: `${ENV_SIMBOLOS} está puesta: se usa esa lista y no se pide nada por red.` });
+      return { index: 'nasdaq100', source: 'tabla_publica', origen: 'env', built_at: now.toISOString(), symbols: pegada, sectores: {},
+        cruce: { estado: 'pegada_a_mano', origen: ENV_SIMBOLOS, n: pegada.length } };
+    }
+  }
 
   const [rw, rs] = await Promise.allSettled([wiki({ fetchImpl }), slick({ fetchImpl })]);
 

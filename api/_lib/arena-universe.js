@@ -407,11 +407,39 @@ export async function resolveConstituents(index, { now = new Date(), force = fal
   // día que de verdad se caiga el S&P 500 nadie lo va a notar entre el ruido.
   const esOpcional = !!(HOLDINGS_SOURCES[index] && HOLDINGS_SOURCES[index].opcional);
   if (esOpcional) {
+    // ── EL NOTE TIENE QUE NOMBRAR LA CAUSA, NO MANDARTE A OTRO CAMPO ──
+    // Este mensaje se escribió cuando la única fuente era el CSV de Invesco, y
+    // por eso solo hablaba de ARENA_HOLDINGS_URL_*. Con las tablas públicas
+    // cableadas hay TRES formas distintas de terminar acá —ninguna fuente
+    // contestó, una lista quedó fuera de la horquilla, o las dos no se
+    // cruzaron— y las tres daban exactamente este mismo texto. Leerlo así
+    // manda a buscar una URL de CSV cuando el problema puede ser otro.
+    const motivoTabla = resumenTablaPublica(diag, index);
     return { index, source: 'none', opcional: true, symbols: [], built_at: null, refreshed: false, stored: false,
-      note: `El ${index} es OPCIONAL y hoy no se pudo bajar. No es un error: el universo sale con los índices obligatorios. Para activarlo, poné una URL de descarga directa del CSV en ARENA_HOLDINGS_URL_${String(index).toUpperCase()} — se toma sin deploy.` };
+      tabla_publica: motivoTabla,
+      note: `El ${index} es OPCIONAL y hoy no se pudo bajar. No es un error: el universo sale con los índices obligatorios.`
+        + (motivoTabla ? ` TABLAS PÚBLICAS: ${motivoTabla}.` : '')
+        + ` También se puede forzar con una URL de descarga directa del CSV en ARENA_HOLDINGS_URL_${String(index).toUpperCase()} — se toma sin deploy.` };
   }
   return { index, source: 'none', symbols: [], built_at: null, refreshed: false, stored: false, fmp_failed: porque,
     note: `Sin FMP (${porque}), sin lista guardada y con la lista del repo vacía. Los índices NO entran al universo de hoy — ver data/universe/README.md. Si el motivo dice algo distinto de "sin_key", la key SÍ está llegando y el problema es otro: mirá \`fmp_diagnostics\` en la respuesta del endpoint.` };
+}
+
+// Resume en una frase qué pasó con las tablas públicas (Wikipedia +
+// slickcharts). Devuelve null si ni se intentaron — que es en sí una respuesta:
+// significa que el código nuevo NO está corriendo en este deploy.
+export function resumenTablaPublica(diag, index) {
+  const filas = (diag || []).filter((d) => d && d.fuente === 'tabla_publica' && d.index === index);
+  if (!filas.length) return null;
+  const partes = filas.filter((f) => !f.ok).map((f) => {
+    const pedazos = [f.origen || 'cruce', f.reason];
+    if (f.status) pedazos.push('HTTP ' + f.status);
+    if (f.recibidos != null) pedazos.push(`${f.recibidos} nombres`);
+    if (f.ratio != null) pedazos.push(`coincidencia ${(f.ratio * 100).toFixed(0)}%`);
+    if (f.detail) pedazos.push('— ' + String(f.detail).slice(0, 140));
+    return pedazos.filter(Boolean).join(' ');
+  });
+  return partes.length ? [...new Set(partes)].join(' · ') : 'se intentaron y ninguna falló (revisá constituents_diagnostics)';
 }
 
 // Resume el diagnóstico en una frase. Si los dos intentos fallaron por lo
@@ -727,7 +755,7 @@ export async function buildUniverse({
       // deploy sin que nadie la commitee? Si es false y la fuente es 'fmp', la
       // escritura a Neon falló y mañana se vuelve a pedir la misma lista.
       sp500: { source: sp.source, opcional: !!sp.opcional, built_at: sp.built_at, count: sp.symbols.length, age_days: sp.age_days ?? null, stale: !!sp.stale, persisted: sp.stored !== false, refreshed: !!sp.refreshed, etf: sp.etf || null, fmp_api: sp.fmp_api || null, fmp_failed: sp.fmp_failed || null, note: sp.note || null },
-      nasdaq100: { source: nq.source, opcional: !!nq.opcional, built_at: nq.built_at, count: nq.symbols.length, age_days: nq.age_days ?? null, stale: !!nq.stale, persisted: nq.stored !== false, refreshed: !!nq.refreshed, etf: nq.etf || null, fmp_api: nq.fmp_api || null, fmp_failed: nq.fmp_failed || null, note: nq.note || null },
+      nasdaq100: { source: nq.source, opcional: !!nq.opcional, tabla_publica: nq.tabla_publica ?? null, built_at: nq.built_at, count: nq.symbols.length, age_days: nq.age_days ?? null, stale: !!nq.stale, persisted: nq.stored !== false, refreshed: !!nq.refreshed, etf: nq.etf || null, fmp_api: nq.fmp_api || null, fmp_failed: nq.fmp_failed || null, note: nq.note || null },
       // CUÁNTO APORTA CADA UNO QUE EL OTRO NO. La mayoría de los miembros del
       // Nasdaq 100 también están en el S&P 500, así que "nos falta el 100" no
       // significa "nos faltan 100 nombres". Este número dice exactamente

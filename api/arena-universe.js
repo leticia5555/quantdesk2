@@ -253,7 +253,36 @@ export default async function handler(req, res) {
       .map(([k]) => k);
     if (opcionalesAusentes.length) {
       out.opcionales_ausentes = opcionalesAusentes;
-      out.opcionales_note = `${opcionalesAusentes.join(', ')}: índice OPCIONAL sin fuente. NO es un error — el universo sale con los obligatorios. \`indices.solo_en\` dice cuántos nombres únicos aportaría si se activara.`;
+      out.opcionales_note = `${opcionalesAusentes.join(', ')}: índice OPCIONAL sin fuente. NO es un error — el universo sale con los obligatorios. \`indices.solo_en\` (OJO: DENTRO de \`indices\`, no en la raíz) dice cuántos nombres únicos aportaría si se activara.`;
+    }
+
+    // ── ¿CORRIÓ EL PASO DE LAS TABLAS PÚBLICAS? AL NIVEL DE ARRIBA ────
+    // Esto existe por un ida y vuelta concreto del 2026-09-18: el Nasdaq 100
+    // volvía `source: "none"` y no había forma de distinguir "el código nuevo
+    // no está en este deploy" de "corrió y falló", porque la respuesta lo decía
+    // en `constituents_diagnostics` —que es largo, va al final, y se filtra sin
+    // querer con cualquier jq— y el `note` no lo mencionaba.
+    //
+    // La regla que sale de eso: un diagnóstico que hay que SABER BUSCAR no es
+    // un diagnóstico. Va arriba, en una frase, y dice las tres cosas que se
+    // pueden querer saber: si corrió, qué contestó cada fuente, y qué se hizo.
+    const nq = idx.nasdaq100;
+    if (nq) {
+      const filasTabla = (universe.constituents_diagnostics || [])
+        .filter((d) => d && d.fuente === 'tabla_publica' && d.index === 'nasdaq100');
+      out.nasdaq100_paso = filasTabla.length
+        ? {
+          corrio: true,
+          publicados: nq.count || 0,
+          resumen: nq.tabla_publica || (nq.count ? `Publicó ${nq.count} nombres.` : null),
+          intentos: filasTabla,
+        }
+        : {
+          corrio: false,
+          publicados: 0,
+          resumen: 'El paso de tablas públicas (Wikipedia + slickcharts) NO dejó una sola fila de diagnóstico, y siempre deja al menos dos. O este deploy no trae el código, o `resolveConstituents` devolvió antes de llegar ahí (lista guardada vigente en Neon, o el índice resuelto por otra fuente). Comparar `build.commit` con el commit esperado separa los dos casos.',
+          intentos: [],
+        };
     }
 
     out.verdict = universe.counts.admitidos === 0
