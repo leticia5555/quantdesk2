@@ -57,6 +57,7 @@ function sectorEtfDe(buffet, sym) {
   return sectorFromGics(secs[String(sym || '').toUpperCase()]);
 }
 import { shadowBroker, shadowJournalInsert as shadowJournalInsertReal, shadowRunId, shadowReport, ensureShadowSchema } from './_lib/arena-shadow.js';
+import { rechazosPrevios, bloqueDeRechazos } from './_lib/arena-rechazos.js';
 import { currentTier, recordRunSpend, callCost } from './_lib/arena-budget.js';
 import { marketDay } from './_lib/arena-buffet-cache.js';
 import { createTrace } from './_lib/arena-trace.js';
@@ -145,6 +146,21 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     movers: ((buffet.board_raw && buffet.board_raw.gainers) || []).concat((buffet.board_raw && buffet.board_raw.losers) || []),
     now,
   });
+  // ── LO QUE LE FUE RECHAZADO LA CORRIDA PASADA ──────────────────────
+  // Cada corrida arrancaba SIN memoria de la anterior: el prompt decía qué
+  // tiene y qué puede pedir, nunca qué pidió y le fue rechazado. Sin esa
+  // línea, insistir con el mismo nombre no es obstinación del modelo — es la
+  // única conducta posible, y deepseek pasó un día entero sin operar por eso.
+  //
+  // Va DESPUÉS del libro y ANTES de la instrucción final, que es donde el
+  // modelo ya está decidiendo. Si no hay nada que enseñar el bloque es '' y el
+  // prompt queda idéntico al de siempre: un prompt no lleva secciones vacías
+  // que el modelo tenga que aprender a ignorar.
+  const rechazos = deps.rechazosPrevios
+    ? await deps.rechazosPrevios(agent.id, { vivo })
+    : await rechazosPrevios(agent.id, { vivo });
+  const avisoRechazos = bloqueDeRechazos(rechazos);
+
   const user = [
     cola.text,
     '',
@@ -160,6 +176,7 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
       open_orders: libro.openOrders.map((o) => ({ symbol: o.symbol, side: o.side, qty: o.qty, status: o.status })),
     }),
     '',
+    ...(avisoRechazos ? [avisoRechazos, ''] : []),
     'State the book you want to hold. Remember: anything you hold and do not list gets sold.',
   ].join('\n');
 
@@ -326,6 +343,10 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   ctx.tickers = {
     reparados: tick.reparados, desconocidos: tick.desconocidos, colisiones: tick.colisiones,
     validado_contra_universo: tick.validado_contra_universo,
+    // Si el aviso viajó Y el modelo volvió a pedir el mismo nombre, eso ya no
+    // es falta de información: es el modelo ignorando un hecho que tenía
+    // enfrente, y el post-mortem tiene que poder distinguir las dos cosas.
+    aviso_previo: avisoRechazos ? { habia: true, nombres: rechazos.length } : { habia: false },
   };
   if (!tick.ok) {
     await shadowJournalInsert({ ...base, account: cuenta, status: 'rejected_tickers', error: tick.error, llm_response: text, context: ctx });
