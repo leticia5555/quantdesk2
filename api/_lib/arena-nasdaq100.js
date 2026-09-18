@@ -37,11 +37,33 @@ const TICKER = /^[A-Z][A-Z0-9]{0,4}$/;   // Nasdaq: sin puntos ni clases de acci
 // páginas. Existe porque el regex de arriba no puede distinguir "GICS" de
 // "AAPL" — los dos son cuatro mayúsculas.
 export const RUIDO = new Set([
-  'GICS', 'ISIN', 'CIK', 'USD', 'ETF', 'NYSE', 'ICB', 'CUSIP', 'SIC',
-  'INC', 'CORP', 'PLC', 'LTD', 'NV', 'SA', 'AG', 'CO',
-  'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC',
+  // Encabezados y jerga de tabla. Ninguno es un ticker de Nasdaq.
+  'GICS', 'ISIN', 'CIK', 'CUSIP', 'SIC', 'ICB', 'USD', 'ETF', 'NYSE',
+  // Cromo de wiki que puede quedar en una celda.
   'EDIT', 'HELP', 'MAIN', 'TALK', 'VIEW', 'PAGE', 'LIST', 'DATE', 'NAME', 'TICKER',
 ]);
+
+// ── LO QUE SE SACÓ DE ESTA LISTA, Y POR QUÉ IMPORTA ──────────────────
+// La primera versión traía las abreviaturas de los meses ('JAN'..'DEC') y los
+// sufijos societarios ('INC', 'CORP', 'PLC', 'LTD', 'NV', 'SA', 'AG', 'CO').
+// Las dos tandas estaban MAL:
+//
+//   · MAR es Marriott International, constituyente REAL del Nasdaq 100. La
+//     lista lo habría borrado en silencio de las DOS fuentes a la vez — o sea
+//     sin que el cruce lo notara, porque las dos se filtran igual. Un nombre
+//     desaparecido que ningún guard puede ver es el peor tipo de bug acá.
+//   · Varios sufijos societarios también son tickers reales (CO cotiza).
+//
+// Y no compraban nada: un sufijo societario nunca aparece SOLO en una celda
+// (va dentro de "Apple Inc.", que es Title Case y se descarta por el caso), y
+// una columna de fechas trae "2019-11-21" o "November 21, 2019", no "MAR". La
+// selección de columna por consistencia posicional ya descarta esas columnas
+// enteras. Filtrar por lista lo que la estructura ya filtra solo agrega
+// falsos positivos sobre nombres verdaderos.
+//
+// REGLA: en esta lista solo entra un token que NO PUEDE ser un ticker de este
+// índice. Ante la duda, se deja pasar: un nombre de más lo tira la admisión;
+// un nombre de menos no lo nota nadie.
 
 // La horquilla. El índice tiene ~100 nombres (a veces 101: una empresa puede
 // tener dos clases de acción). Un parseo que devuelve 300 agarró la página

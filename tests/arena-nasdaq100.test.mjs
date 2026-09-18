@@ -38,6 +38,22 @@ console.log('\n── el discriminante: mayúscula antes de normalizar ──');
   ok(esTickerPlausible('aapl', { yaNormalizado: true }), 'con yaNormalizado se salta la prueba de caso (el href de slickcharts)');
 }
 
+console.log('\n── la lista de ruido NO puede comerse nombres verdaderos ──');
+{
+  // EL BUG: la primera versión traía las abreviaturas de los meses. MAR es
+  // Marriott International, constituyente REAL del Nasdaq 100 — se habría
+  // borrado en silencio de las DOS fuentes, o sea sin que el cruce lo notara,
+  // porque las dos se filtran igual. Un nombre desaparecido que ningún guard
+  // puede ver es el peor tipo de bug acá.
+  ok(esTickerPlausible('MAR'), 'MAR pasa: es Marriott, no el mes de marzo');
+  ok(['JAN', 'MAY', 'JUN', 'AUG', 'DEC'].every((t) => esTickerPlausible(t)),
+    'y ninguna abreviatura de mes se filtra: una columna de fechas trae "2019-11-21", no "MAR"');
+  ok(['ON', 'CO', 'ALL', 'IT', 'SA', 'AG'].every((t) => esTickerPlausible(t)),
+    'los sufijos societarios tampoco: varios son tickers reales, y uno solo en una celda nunca es un sufijo');
+  ok(!esTickerPlausible('GICS') && !esTickerPlausible('CUSIP') && !esTickerPlausible('USD'),
+    'en la lista solo queda lo que NO PUEDE ser un ticker de este índice');
+}
+
 console.log('\n── el parser de wikitext contra lo que rodea a la tabla ──');
 {
   const sucio = `
