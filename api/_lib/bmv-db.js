@@ -116,11 +116,20 @@ const BMV_SCHEMA = [
   // un deploy a media cosecha.
   // El tipo de cambio en la FECHA EX de cada reparto en moneda extranjera.
   //
-  // Existe porque §3.3 excluyó esos repartos del retorno total de la v1 y puso
-  // un umbral: si alguna serie superaba 50 bp acumulados sin contar, había que
-  // resolverlo con /v2/divisas EN LA FECHA EX —no con el tipo de cambio de
-  // hoy, que sería mirar el futuro desde 2016— antes de leer el veredicto.
-  // HOTEL* lo superó.
+  // ⚠️ VACÍA EN LA v1, A PROPÓSITO. No hay ningún job que la escriba.
+  //
+  // Se intentó llenarla con /v2/divisas y resultó que ese endpoint NO sirve
+  // para esto: toma un solo parámetro (`ticker`: USDMXN, EURMXN) y devuelve
+  // únicamente el precio MÁS RECIENTE. Es spot, no histórico. La fuente
+  // correcta es Banxico SIE —FIX diario con décadas de historia—, que es otra
+  // integración y queda fuera del alcance de la v1 (§3.3, §5.10).
+  //
+  // La tabla se queda porque el consumidor ya existe y está probado: las
+  // consultas de dividendos hacen LEFT JOIN por (divisa, fecha_ex) y
+  // convierten si hay tasa. Con la tabla vacía el join es un no-op y el
+  // comportamiento es EXACTAMENTE la decisión congelada —los 14 repartos en
+  // moneda extranjera quedan fuera, con sus bp reportados—, así que el día que
+  // llegue Banxico sólo falta el cosechador.
   //
   // Tabla aparte y no una columna en `bmv_distribuciones`: la tasa es un dato
   // de mercado con su propia fuente y su propia fecha de cosecha, y guardarla
@@ -171,6 +180,12 @@ const BMV_SCHEMA = [
   // periodo anterior, que sirve para momentum de fundamentales. Ojo: en
   // `posicion` el comparativo es el cierre fiscal anterior (31-dic), no el
   // mismo trimestre del año pasado; por eso viaja con sus propias fechas.
+  // Los BYTES transmitidos, que son lo que la API de verdad cobra: «por cada
+  // KiB (1024 bytes) de datos transmitidos, 1 crédito». La columna se agrega
+  // porque `creditos` venía contando requests —un error de ~18×— y sin los
+  // bytes crudos no hay forma de auditar el crédito después.
+  `alter table bmv_api_budget add column if not exists bytes bigint default 0`,
+
   `alter table bmv_financieros add column if not exists bloques jsonb`,
   `alter table bmv_financieros add column if not exists comparativo jsonb`,
   `alter table bmv_emisoras add column if not exists fin_periodos jsonb`,
@@ -584,18 +599,19 @@ async function presupuesto(mes) {
   return r[0] || { mes, requests: 0, creditos: 0, headers: null };
 }
 
-async function gastar(mes, { requests = 1, creditos = 0, headers = null } = {}) {
+async function gastar(mes, { requests = 1, creditos = 0, bytes = 0, headers = null } = {}) {
   const r = await sql(
-    `insert into bmv_api_budget (mes, requests, creditos, headers, actualizado_at)
-     values ($1,$2,$3,$4::jsonb, now())
+    `insert into bmv_api_budget (mes, requests, creditos, bytes, headers, actualizado_at)
+     values ($1,$2,$3,$5,$4::jsonb, now())
      on conflict (mes) do update set
        requests = bmv_api_budget.requests + $2,
        creditos = bmv_api_budget.creditos + $3,
+       bytes    = coalesce(bmv_api_budget.bytes, 0) + $5,
        headers  = coalesce($4::jsonb, bmv_api_budget.headers),
        actualizado_at = now()
-     returning requests, creditos`,
-    [mes, requests, creditos, headers ? JSON.stringify(headers) : null]);
-  return r[0] || { requests: 0, creditos: 0 };
+     returning requests, creditos, bytes`,
+    [mes, requests, creditos, headers ? JSON.stringify(headers) : null, bytes]);
+  return r[0] || { requests: 0, creditos: 0, bytes: 0 };
 }
 
 /* ─────────────────── elegibilidad (SELECT-only) ─────────────────── */
@@ -787,70 +803,8 @@ async function cobertura() {
   };
 }
 
-/* ─────────────────── tipos de cambio ─────────────────── */
-
-/**
- * Los pares (divisa, fecha_ex) que hacen falta y TODAVÍA no se tienen.
- *
- * Es lo que hace la cosecha idempotente y barata: si ya se guardó la tasa de
- * un día, no se vuelve a pedir. Sólo se piden los repartos marcados
- * `requiere_conversion`, que son 14 en todo el censo.
- */
-async function paresDeCambioPendientes() {
-  return sql(
-    `select distinct d.divisa, d.fecha_ex::text as fecha
-       from bmv_distribuciones d
-       left join bmv_tipos_cambio tc
-         on tc.divisa = d.divisa and tc.fecha = d.fecha_ex
-      where d.requiere_conversion = true
-        and d.divisa is not null
-        and tc.tasa is null
-      order by 1, 2`);
-}
-
-/** Todo lo pendiente, tenga tasa o no — para reportar cobertura. */
-async function paresDeCambioTodos() {
-  return sql(
-    `select d.divisa, d.fecha_ex::text as fecha, d.emisora_serie, d.monto,
-            tc.tasa
-       from bmv_distribuciones d
-       left join bmv_tipos_cambio tc
-         on tc.divisa = d.divisa and tc.fecha = d.fecha_ex
-      where d.requiere_conversion = true and d.divisa is not null
-      order by 1, 2`);
-}
-
-async function insertarTiposCambio(divisa, filas) {
-  if (!filas.length) return 0;
-  const valores = [];
-  const partes = filas.map((f, j) => {
-    const b = j * 4;
-    valores.push(divisa, f.fecha, f.tasa, JSON.stringify(f.raw ?? null));
-    return `($${b + 1},$${b + 2},$${b + 3},$${b + 4}::jsonb)`;
-  });
-  await sql(
-    `insert into bmv_tipos_cambio (divisa, fecha, tasa, raw)
-     values ${partes.join(', ')}
-     on conflict (divisa, fecha) do update set
-       tasa = excluded.tasa, raw = excluded.raw, cosechado_at = now()`,
-    valores);
-  return filas.length;
-}
-
-/** Cuántos repartos en moneda extranjera ya tienen su tasa. */
-async function coberturaTipoCambio() {
-  const r = await sql(
-    `select count(*)::int as total,
-            count(tc.tasa)::int as con_tasa
-       from bmv_distribuciones d
-       left join bmv_tipos_cambio tc
-         on tc.divisa = d.divisa and tc.fecha = d.fecha_ex
-      where d.requiere_conversion = true`);
-  return r[0] || { total: 0, con_tasa: 0 };
-}
 
 export {
-  paresDeCambioPendientes, paresDeCambioTodos, insertarTiposCambio, coberturaTipoCambio,
   BMV_SCHEMA, ensureBmvSchema,
   leerMeta, guardarMeta,
   upsertEmisora, emisorasIcs, emisoraPorClave, censoResumen,

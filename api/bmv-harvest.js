@@ -44,18 +44,19 @@
 // CERO llamadas a Claude. Determinista de punta a punta.
 //
 // ENV VARS: DATABASE_URL · DATABURSATIL_TOKEN · ADMIN_SECRET (o CRON_SECRET)
-//           BMV_CREDITOS_POR_REQUEST (opcional, default 1) · XBRL_CONTACT
+//           BMV_CREDITOS_RESERVA (opcional: créditos a reservar por request
+//           antes de medirlo; el costo real se mide, no se supone) · XBRL_CONTACT
 // ═══════════════════════════════════════════════════════════════════
 
 import {
   BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO, UMBRAL_PLACEHOLDER,
   CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL,
-  aplanarHistoricos, clavePeriodo, construirUrl, dormir, emisoraSerie,
+  aNumero, aplanarHistoricos, clavePeriodo, construirUrl, dormir, emisoraSerie,
   extraerDistribuciones, finDeTrimestre, normalizaLlave, periodoApi,
   mesPresupuesto, normalizarFinancieros, parseClavePeriodo, parsearRangoFechas,
   parsearRangoPeriodos,
   recortarACobertura, resolverCampo, traer, trimestresEntre,
-  candidatosDivisas, normalizarTiposCambio,
+  BYTES_POR_CREDITO, creditosDeBytes,
 } from './_lib/databursatil.js';
 
 import { sql } from './_lib/db.js';
@@ -67,7 +68,6 @@ import {
   actualizarFinancieros, formasDelCrudo, financieroCrudo, financieroQueSiSirvio,
   contarFinancieros, fechasRebalanceo, cierresConEps, seriesIcs, medianasImporte,
   presupuesto, gastar, cobertura, leerMeta, guardarMeta,
-  paresDeCambioPendientes, insertarTiposCambio, coberturaTipoCambio,
 } from './_lib/bmv-db.js';
 
 import {
@@ -92,9 +92,22 @@ const TOPE_PROBE = 18;          // tope DURO de requests del probe
 const PRECIOS_DESDE_DEFECTO = /* date-lint-ok: arranque declarado de la cobertura de DataBursatil, un hecho fijo */ '2016-01-01';
 const LOTE_DEFECTO = 60;        // requests por corrida si no se pide otra cosa
 
-function creditosPorRequest() {
-  const n = Number(process.env.BMV_CREDITOS_POR_REQUEST);
-  return Number.isFinite(n) && n > 0 ? n : 1;
+/**
+ * Lo que se RESERVA por request antes de hacerlo, para el chequeo de
+ * presupuesto.
+ *
+ * No es el costo —ése sólo se sabe cuando llega la respuesta y se miden sus
+ * bytes— sino una cota para decidir si vale la pena intentar uno más. Arranca
+ * en un valor conservador y, en cuanto hay respuestas medidas, usa el
+ * PROMEDIO OBSERVADO de la corrida: es la estimación honesta disponible.
+ *
+ * `BMV_CREDITOS_RESERVA` permite fijarlo a mano si algún día hace falta.
+ */
+const RESERVA_DEFECTO = 32;     // ~32 KiB por respuesta, conservador
+
+function reservaPorRequest() {
+  const n = Number(process.env.BMV_CREDITOS_RESERVA);
+  return Number.isFinite(n) && n > 0 ? n : RESERVA_DEFECTO;
 }
 
 function adminSecret() {
@@ -213,25 +226,48 @@ async function contratoVigente() {
  * decide parar, para que no haya dos criterios de parada compitiendo.
  */
 function nuevaCartera({ mes, gastadoMes, tope, t0 = Date.now(), limiteMs = LIMITE_MS }) {
-  const porRequest = creditosPorRequest();
+  const reservaBase = reservaPorRequest();
   return {
-    mes, porRequest, tope,
+    mes, tope,
     gastadoMes,
     requests: 0,
     creditos: 0,
+    bytes: 0,
     razonParo: null,
     headers: null,
+    /** Lo que se espera que cueste el SIGUIENTE request. */
+    reserva() {
+      // Con respuestas ya medidas, el promedio de la corrida es mejor
+      // estimador que cualquier constante: las respuestas de un mismo job se
+      // parecen entre sí.
+      return this.requests ? Math.max(1, Math.ceil(this.creditos / this.requests)) : reservaBase;
+    },
     puedeSeguir() {
       if (Date.now() - t0 > limiteMs) { this.razonParo = 'reloj_de_la_lambda'; return false; }
       if (this.requests >= tope) { this.razonParo = 'tope_de_la_corrida'; return false; }
-      if (this.gastadoMes + this.creditos + porRequest > PRESUPUESTO_MENSUAL) {
+      if (this.gastadoMes + this.creditos + this.reserva() > PRESUPUESTO_MENSUAL) {
         this.razonParo = 'presupuesto_mensual_agotado'; return false;
       }
       return true;
     },
+    /**
+     * Anota lo que costó el request, MEDIDO.
+     *
+     * Aquí estaba el bug silencioso: esto sumaba una constante por request
+     * (1 por defecto), así que el contador reportaba «4,405 créditos» cuando
+     * la API había cobrado ~81,000 — un error de ~18×. La API cobra por KiB
+     * transmitido, no por llamada, y una respuesta de 441 KB cuesta 432
+     * créditos ella sola.
+     *
+     * Un request sin bytes medidos (fallo de red, sin respuesta) cuenta como
+     * request y cuesta 0: no hubo datos transmitidos que cobrar.
+     */
     anota(res) {
       this.requests += 1;
-      this.creditos += porRequest;
+      const bytes = res && Number.isFinite(Number(res.bytes)) ? Number(res.bytes) : 0;
+      this.bytes += bytes;
+      this.creditos += res && Number.isFinite(Number(res.creditos))
+        ? Number(res.creditos) : creditosDeBytes(bytes);
       if (res && res.creditos_header) this.headers = res.creditos_header;
     },
   };
@@ -240,13 +276,31 @@ function nuevaCartera({ mes, gastadoMes, tope, t0 = Date.now(), limiteMs = LIMIT
 async function cerrarCartera(cartera) {
   if (!cartera.requests) return { requests: 0, creditos: 0 };
   return gastar(cartera.mes, {
-    requests: cartera.requests, creditos: cartera.creditos, headers: cartera.headers,
+    requests: cartera.requests, creditos: cartera.creditos,
+    bytes: cartera.bytes, headers: cartera.headers,
   });
 }
 
 /* ═══════════════ job: estimate (sin red, sin créditos) ═══════════════ */
 
 const DIAS_HABILES_POR_ANIO = 252;
+
+// Tamaños MEDIDOS en la cosecha de sep-2026, no supuestos. Son lo que convierte
+// el estimado de «requests» en el de créditos, ahora que se sabe que la API
+// cobra por KiB transmitido y no por llamada.
+//
+// El censo es el caso extremo y por eso va aparte: 441,543 caracteres en una
+// sola respuesta, o sea ~432 créditos él solo. Bajo el modelo viejo contaba
+// como 1.
+const BYTES_CENSO_OBSERVADOS = 441_543;
+// Despejado del ÚNICO dato no circular que hay: /v2/creditos dijo ~81,000
+// consumidos por la cosecha completa (4,174 financieros + 182 series de
+// precios + el censo). Restando el censo y los precios, los financieros
+// explican ~62,600 créditos, o sea ~15 por respuesta. No es una medición
+// directa —esas hay que hacerlas con la columna `bytes`, que desde ahora se
+// guarda— pero es mucho mejor que la suposición que reemplaza.
+const BYTES_FINANCIERO_OBSERVADOS = 14_700;
+const BYTES_POR_DIA_PRECIO = 40;             // {"AAAA-MM-DD":[cierre,importe]} por día
 
 /**
  * El presupuesto ANTES de correr. Pura aritmética: se exporta para que el
@@ -266,7 +320,7 @@ const DIAS_HABILES_POR_ANIO = 252;
  */
 function estimarConsumo({ emisoras, camposPorFinanciero = 60, preciosDesde = null } = {}) {
   const det = [];
-  let reqFin = 0, datosFin = 0, reqHist = 0, diasHist = 0;
+  let reqFin = 0, datosFin = 0, reqHist = 0, diasHist = 0, creditosHist = 0;
   // Los financieros son por EMISORA y los precios por SERIE. Una emisora con
   // dos series cuesta DOS rangos de precios pero UN solo juego de trimestres;
   // contarlos juntos inflaría el presupuesto justo donde más filas hay.
@@ -289,36 +343,71 @@ function estimarConsumo({ emisoras, camposPorFinanciero = 60, preciosDesde = nul
       const ms = Date.parse(e.histHasta) - Date.parse(d0);
       dias = ms > 0 ? Math.round((ms / 86400000) * (DIAS_HABILES_POR_ANIO / 365.25)) : 0;
     }
-    if (dias > 0) { reqHist += 1; diasHist += dias; }
+    // El `ceil` es POR RESPUESTA, así que los créditos de precios se acumulan
+    // serie por serie. Sumar los días primero y redondear al final daría otro
+    // número, y el que la API cobra es éste.
+    if (dias > 0) {
+      reqHist += 1;
+      diasHist += dias;
+      creditosHist += creditosDeBytes(dias * BYTES_POR_DIA_PRECIO);
+    }
 
     det.push({ emisora: e.emisora_serie || e.emisora, trimestres, dias_habiles_estimados: dias });
   }
 
   const reqTotal = 1 + reqFin + reqHist;    // +1 por el censo de emisoras
+
+  // El costo REAL, con el modelo verificado en la documentación: 1 crédito por
+  // KiB transmitido. Lo que se estima ya no son requests sino BYTES, y para
+  // eso hacen falta tamaños medidos — no inventados.
+  const bytesCenso = BYTES_CENSO_OBSERVADOS;
+  const bytesFin = reqFin * BYTES_FINANCIERO_OBSERVADOS;
+  const bytesHist = diasHist * BYTES_POR_DIA_PRECIO;
+  const bytesTotal = bytesCenso + bytesFin + bytesHist;
+  const creditosTotal = creditosDeBytes(bytesCenso)
+    + reqFin * creditosDeBytes(BYTES_FINANCIERO_OBSERVADOS)
+    + creditosHist;
+
   return {
     series: emisoras.length,
     emisoras: emisorasContadas.size,
     requests: { emisoras: 1, financieros: reqFin, historicos: reqHist, total: reqTotal },
     datos: { campos_financieros: datosFin, dias_precio: diasHist },
-    modelos: {
+    // ── El modelo VERIFICADO ──
+    // «cada solicitud exitosa consume por cada KiB (1024 bytes) de datos
+    // transmitidos, 1 crédito» (databursatil.com/docs.html). El costo NO es
+    // por request: es por tamaño.
+    costo: {
+      regla: 'ceil(bytes / 1024) por respuesta',
+      bytes: { censo: bytesCenso, financieros: bytesFin, historicos: bytesHist, total: bytesTotal },
+      creditos: creditosTotal,
+      // De dónde salen los tamaños: medidos, no supuestos. Si cambian, este
+      // número cambia — y `?job=creditos` lo delata contra el saldo real.
+      tamanos_observados: {
+        censo_bytes: BYTES_CENSO_OBSERVADOS,
+        financiero_bytes: BYTES_FINANCIERO_OBSERVADOS,
+        dia_de_precio_bytes: BYTES_POR_DIA_PRECIO,
+        fuente: 'medidos en la cosecha de sep-2026; se recalibran con ?job=creditos',
+      },
+    },
+    // Los modelos viejos se dejan sólo como REGISTRO de lo que se creyó, con
+    // su etiqueta. El que manda es `costo`.
+    modelos_descartados: {
       A_por_request: reqTotal,
       B_por_dato: datosFin + diasHist,
-      C_por_campo_dia: datosFin + diasHist * 2,       // cierre + importe
+      C_por_campo_dia: datosFin + diasHist * 2,
+      nota: 'A se creyó verificado hasta el 18-sep-2026. Lo desmintió /v2/creditos: el contador que lo "midió" contaba requests por construcción.',
     },
     presupuesto_mensual: PRESUPUESTO_MENSUAL,
-    cabe_en_un_mes: {
-      A: reqTotal <= PRESUPUESTO_MENSUAL,
-      B: datosFin + diasHist <= PRESUPUESTO_MENSUAL,
-      C: datosFin + diasHist * 2 <= PRESUPUESTO_MENSUAL,
-    },
+    cabe_en_un_mes: creditosTotal <= PRESUPUESTO_MENSUAL,
     // Si no cabe, el ledger ya hace que partirla no cueste nada: la corrida se
     // corta sola y el mes siguiente retoma donde quedó. Lo único que importa es
     // el ORDEN, y por eso va escrito acá y no improvisado el día que pase.
-    plan_si_no_cabe: reqTotal <= PRESUPUESTO_MENSUAL ? null : {
+    plan_si_no_cabe: creditosTotal <= PRESUPUESTO_MENSUAL ? null : {
       mes_1: 'financieros — son el dato escaso y point-in-time; sin ellos no hay ranking, y los precios no se van a ningún lado',
       mes_2: 'historicos — se piden por rango, así que llegan completos cuando toque',
-      financieros_solos: 1 + reqFin,
-      historicos_solos: reqHist,
+      financieros_solos_creditos: creditosDeBytes(bytesCenso) + creditosDeBytes(bytesFin),
+      historicos_solos_creditos: creditosDeBytes(bytesHist),
       nota: 'No hay que hacer nada especial: la cartera para en `presupuesto_mensual_agotado`, el ledger guarda dónde quedó, y el día 1 a las 00:01 CDMX se retoma con el mismo job.',
     },
     detalle: det.slice(0, 50),
@@ -856,119 +945,92 @@ function contar(lista) {
   return m;
 }
 
-/* ═══════════════ job: divisas (tipo de cambio en la fecha ex) ═══════════════ */
+/* ═══════════════ job: creditos (el contador contra la realidad) ═══════════════ */
 
-const META_CONTRATO_DIVISAS = 'contrato_divisas';
-const TOPE_DIVISAS = 40;   // tope DURO: los pares pendientes son ~14
+// Si el contador local y el saldo real divergen más que esto, algo está mal en
+// el modelo de costo y hay que mirarlo ANTES de seguir gastando.
+const DIVERGENCIA_MAXIMA = 0.10;
 
 /**
- * `?job=divisas` — el tipo de cambio de cada reparto en moneda extranjera,
- * **en su fecha ex**.
+ * `?job=creditos` — contrasta el contador de la casa contra `/v2/creditos`.
  *
- * Existe porque §3.3 puso un umbral y HOTEL* lo superó: más de 50 bp
- * acumulados de retorno sin contar dejan de ser inmateriales, y entonces la
- * exclusión hay que resolverla —no asumirla— con el tipo de cambio de la
- * fecha ex. Con el de hoy estaríamos mirando el futuro desde 2016.
+ * ── Por qué existe ─────────────────────────────────────────────────
+ * El contador decía 4,405 créditos cuando la API había cobrado ~81,000: un
+ * error de **~18×**. La causa fue de la clase silenciosa: se había concluido
+ * «1 crédito por request» a partir de una corrida del probe que «midió» 14
+ * créditos para 14 requests — pero ese 14 salía del contador de la casa, que
+ * sumaba 1 por request **por construcción**. La medición confirmaba su propia
+ * premisa.
  *
- * ── Descubre el contrato antes de cosechar ─────────────────────────
- * El contrato de `/v2/divisas` NO está verificado: este sandbox no alcanza la
- * API. Así que la primera llamada prueba las grafías candidatas contra UN par
- * pendiente y guarda en `bmv_meta` la que sirva; las demás ya van derechas.
- * Es el mismo movimiento de `?job=probe`, y por la misma razón: adivinar y
- * lanzar la cosecha contra la suposición es la forma cara de equivocarse.
+ * **Un presupuesto que se mide a sí mismo no es un presupuesto.** Este job
+ * existe para que eso no pueda volver a pasar: `/v2/creditos` es la única
+ * fuente que no es nuestra, y la divergencia se reporta con nombre y umbral en
+ * vez de quedar para que alguien la note por casualidad.
  *
- * ── Idempotente y fail-closed ──────────────────────────────────────
- * Sólo pide los pares que faltan. Un par que no se pueda resolver **se queda
- * sin tasa**, su reparto sigue excluido del retorno total, y el reporte lo
- * dice: una tasa inventada sería peor que el hueco que ya está medido.
+ * Cuesta un request (unos pocos bytes), y ese costo también se anota.
  */
-async function jobDivisas(req) {
-  const q = (req && req.query) || {};
-  const tope = Math.max(1, Math.min(TOPE_DIVISAS, Number(q.max) || TOPE_DIVISAS));
+async function jobCreditos() {
   const mes = mesPresupuesto();
-  const saldo = await presupuesto(mes);
-  const cartera = nuevaCartera({ mes, gastadoMes: saldo.creditos, tope });
+  const local = await presupuesto(mes);
 
-  const pendientes = await paresDeCambioPendientes();
-  const guardado = await leerMeta(META_CONTRATO_DIVISAS);
-  let contrato = (guardado && guardado.value) || null;
+  const r = await traer(construirUrl('/creditos', {}));
+  // El propio chequeo cuesta, y se cobra con la misma regla que todo lo demás.
+  if (r && r.status) await gastar(mes, { requests: 1, creditos: r.creditos || 0, bytes: r.bytes || 0 });
 
-  const pasos = [];
-  let guardadas = 0;
+  const saldo = saldoDeCreditos(r && r.json);
+  const consumidoReal = saldo.restantes === null ? null : PRESUPUESTO_MENSUAL - saldo.restantes;
+  const divergencia = (consumidoReal === null || !consumidoReal)
+    ? null : (consumidoReal - local.creditos) / consumidoReal;
 
-  // ── 1. Descubrimiento, sólo si no hay contrato verificado ──
-  if (!contrato && pendientes.length && cartera.puedeSeguir()) {
-    const par = pendientes[0];
-    for (const cand of candidatosDivisas(par.divisa, par.fecha, par.fecha)) {
-      if (!cartera.puedeSeguir()) break;
-      const r = await traer(construirUrl('/divisas', cand.params));
-      cartera.anota(r);
-      const v = r.ok ? normalizarTiposCambio(r.json) : { filas: [], motivo: r.error };
-      pasos.push({
-        paso: 'contrato', candidato: cand.etiqueta, status: r.status, ok: r.ok,
-        filas: v.filas.length, motivo: v.motivo || null,
-        // El cuerpo del error es donde las APIs dicen qué parámetro falta.
-        cuerpo: r.ok ? undefined : r.texto,
-        muestra: r.ok ? v.filas.slice(0, 3) : undefined,
-      });
-      if (v.filas.length) {
-        contrato = { candidato: cand.etiqueta, params: Object.keys(cand.params), verificado: true };
-        await guardarMeta(META_CONTRATO_DIVISAS, contrato,
-          `descubierto por ?job=divisas con ${par.divisa} ${par.fecha}`);
-        guardadas += await insertarTiposCambio(par.divisa, v.filas.map((f) => ({ ...f, raw: r.json })));
-        break;
-      }
-      await dormir(PAUSA_MS);
-    }
-  }
-
-  // ── 2. Cosecha de los pares que faltan ──
-  if (contrato) {
-    for (const par of await paresDeCambioPendientes()) {
-      if (!cartera.puedeSeguir()) break;
-      // Se pide con la MISMA grafía que funcionó. Reconstruirla desde la
-      // etiqueta y no desde los params guardados sería una segunda fuente de
-      // verdad para el mismo hecho.
-      const cand = candidatosDivisas(par.divisa, par.fecha, par.fecha)
-        .find((c) => c.etiqueta === contrato.candidato);
-      if (!cand) break;
-      const r = await traer(construirUrl('/divisas', cand.params));
-      cartera.anota(r);
-      const v = r.ok ? normalizarTiposCambio(r.json) : { filas: [], motivo: r.error };
-      // Sólo se guarda la fecha PEDIDA. Si la respuesta trae un rango, las
-      // demás fechas también sirven —son el mismo dato— así que se guardan:
-      // salen gratis y evitan un request futuro.
-      if (v.filas.length) guardadas += await insertarTiposCambio(par.divisa, v.filas.map((f) => ({ ...f, raw: null })));
-      pasos.push({
-        paso: 'cosecha', divisa: par.divisa, fecha: par.fecha, status: r.status,
-        ok: r.ok, filas: v.filas.length, motivo: v.filas.length ? null : (v.motivo || 'sin tasa'),
-      });
-      await dormir(PAUSA_MS);
-    }
-  }
-
-  if (cartera.requests) await gastar(mes, cartera.requests, cartera.creditos, cartera.headers);
-
-  const cobertura = await coberturaTipoCambio();
-  const faltan = await paresDeCambioPendientes();
   return {
-    job: 'divisas',
-    contrato: contrato || { verificado: false, nota: 'ninguna grafía candidata funcionó; ver `pasos`' },
-    requests: cartera.requests,
-    creditos: cartera.creditos,
-    razon_paro: cartera.razonParo,
-    tasas_guardadas: guardadas,
-    cobertura: {
-      repartos_en_moneda_extranjera: cobertura.total,
-      con_tasa: cobertura.con_tasa,
-      // Los que quedan sin tasa SIGUEN excluidos del retorno total. No se
-      // rellenan con la tasa de otro día ni con la de hoy: el hueco medido es
-      // mejor que una conversión inventada.
-      sin_tasa: cobertura.total - cobertura.con_tasa,
-      pendientes: faltan.map((f) => `${f.divisa} ${f.fecha}`),
+    job: 'creditos',
+    mes,
+    api: {
+      status: r ? r.status : null,
+      restantes: saldo.restantes,
+      consumido_estimado: consumidoReal,
+      crudo: r && r.ok ? r.json : undefined,
+      cuerpo: r && !r.ok ? r.texto : undefined,
+      motivo: saldo.motivo,
     },
-    pasos,
+    local: { requests: local.requests, creditos: local.creditos, bytes: local.bytes || 0 },
+    modelo: {
+      regla: 'ceil(bytes / 1024) por respuesta — “por cada KiB de datos transmitidos, 1 crédito”',
+      bytes_por_credito: BYTES_POR_CREDITO,
+      // Con los bytes guardados, el crédito local se puede REDERIVAR sin
+      // volver a pedir nada: si esto no cuadra con `local.creditos`, el que
+      // está mal es el acumulador, no el modelo.
+      creditos_rederivados: creditosDeBytes(local.bytes || 0),
+    },
+    divergencia,
+    alerta: divergencia === null
+      ? 'no se pudo leer el saldo real: el contraste queda SIN hacer, que no es lo mismo que “cuadra”'
+      : (Math.abs(divergencia) > DIVERGENCIA_MAXIMA
+        ? `⚠️ el contador local difiere ${(100 * divergencia).toFixed(1)}% del saldo real (umbral ${100 * DIVERGENCIA_MAXIMA}%) — revisar el modelo de costo ANTES de seguir cosechando`
+        : `cuadra dentro del ${100 * DIVERGENCIA_MAXIMA}%`),
   };
+}
+
+/**
+ * El saldo restante dentro de la respuesta de `/v2/creditos`.
+ *
+ * La forma no está verificada, así que se buscan las llaves plausibles en vez
+ * de asumir una. Si ninguna aparece, se dice **por qué** no se pudo leer: un
+ * null mudo acá es indistinguible de «cuadra», y ése es justo el error que
+ * este job existe para no repetir.
+ */
+function saldoDeCreditos(json) {
+  if (!json || typeof json !== 'object') return { restantes: null, motivo: 'respuesta vacía o no es JSON' };
+  const bajo = {};
+  for (const [k, v] of Object.entries(json)) bajo[normalizaLlave(k)] = v;
+  for (const n of ['creditos', 'creditos_restantes', 'restantes', 'disponibles', 'saldo', 'credits', 'remaining']) {
+    const num = aNumero(bajo[normalizaLlave(n)]);
+    if (num !== null) return { restantes: num, motivo: null };
+  }
+  // Un solo número suelto en la raíz también cuenta.
+  const suelto = aNumero(json);
+  if (suelto !== null) return { restantes: suelto, motivo: null };
+  return { restantes: null, motivo: `ninguna llave de saldo reconocida en {${Object.keys(json).slice(0, 8).join(', ')}}` };
 }
 
 /* ═══════════════ job: elegibilidad (SELECT-only, 0 créditos) ═══════════════ */
@@ -1924,7 +1986,7 @@ export default async function handler(req, res) {
 
   const job = String((req.query && req.query.job) || '').toLowerCase();
   const q2 = (req.query) || {};
-  const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse', 'reparse-fin', 'inspect', 'divisas']);
+  const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse', 'reparse-fin', 'inspect', 'creditos']);
 
   try {
     // AUTH PRIMERO, base después. Estaba al revés: `ensureBmvSchema()` corría
@@ -1950,7 +2012,8 @@ export default async function handler(req, res) {
       const mes = mesPresupuesto();
       return res.status(200).json({
         job: 'estimate', fuente, mes, gastado: await presupuesto(mes),
-        creditos_por_request_supuestos: creditosPorRequest(),
+        creditos_reserva_por_request: reservaPorRequest(),
+        bytes_por_credito: BYTES_POR_CREDITO,
         nota: 'Los tres modelos existen porque el costo por request de DataBursatil NO está verificado desde este sandbox. `?job=probe` lo calibra contra headers reales si la API los publica.',
         ...est,
       });
@@ -1985,6 +2048,7 @@ export default async function handler(req, res) {
       }
       return res.status(200).json(e);
     }
+    if (job === 'creditos') return res.status(200).json(await jobCreditos());
     if (job === 'inspect') return res.status(200).json(await jobInspect(req));
     if (job === 'reparse-fin') return res.status(200).json(await jobReparseFinancieros(req));
     if (job === 'reparse') return res.status(200).json(await jobReparse());
@@ -1992,13 +2056,12 @@ export default async function handler(req, res) {
     if (job === 'emisoras') return res.status(200).json(await jobEmisoras());
     if (job === 'financieros') return res.status(200).json(await jobFinancieros(req));
     if (job === 'historicos') return res.status(200).json(await jobHistoricos(req));
-    if (job === 'divisas') return res.status(200).json(await jobDivisas(req));
 
     const mes = mesPresupuesto();
     return res.status(200).json({
       endpoint: '/api/bmv-harvest',
       que_es: 'Fase A del backtest BMV: cosecha DataBursatil → Neon (tablas bmv_*; xbrl_reports NO se toca).',
-      orden_sugerido: ['?job=estimate', '?job=probe', '?job=emisoras', '?job=estimate (ya con censo real)', '?job=financieros&max=60 (repetir)', '?job=historicos&max=30 (repetir)', '?job=reparse-fin (si la normalización cambia)', '?job=divisas', '?job=cobertura&format=md'],
+      orden_sugerido: ['?job=estimate', '?job=probe', '?job=emisoras', '?job=estimate (ya con censo real)', '?job=financieros&max=60 (repetir)', '?job=historicos&max=30 (repetir)', '?job=reparse-fin (si la normalización cambia)', '?job=creditos', '?job=cobertura&format=md'],
       jobs: {
         'estimate': 'público, sin red: presupuesto de créditos en tres modelos de costo',
         'probe': 'protegido, ≤15 requests: descubre el contrato de la API y lo guarda',
@@ -2010,8 +2073,8 @@ export default async function handler(req, res) {
         'reparse': 'protegido, CERO créditos: re-deriva el censo desde el crudo guardado',
         'reparse-fin': 'protegido, CERO créditos: re-normaliza los financieros desde el crudo guardado',
         'inspect': 'protegido, CERO créditos: describe la forma del crudo guardado, sin normalizar nada',
+        'creditos': 'protegido, 1 request chico: contrasta el contador local contra /v2/creditos y alerta si divergen más de 10%',
         'elegibilidad': 'público, SELECT-only y CERO créditos: simula los rebalanceos y dice si la Fase B puede concluir (&format=md, &umbral=N, &umbrales=a,b,c para la tabla comparativa)',
-        'divisas': 'protegido, ~14 requests: tipo de cambio en la FECHA EX de cada reparto en moneda extranjera. Descubre el contrato de /v2/divisas antes de cosechar',
       },
       token_configurado: !!process.env.DATABURSATIL_TOKEN,
       escritura_habilitada: !!adminSecret(),
@@ -2033,7 +2096,7 @@ export {
   jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros, jobHistoricos,
   jobReparse,
   comparativaMd, contar, describirCrudo, elegibilidadMd, estimarConsumo, filaCenso,
-  jobDivisas,
+  jobCreditos, saldoDeCreditos,
   filasDelCenso,
   jobElegibilidad, literal,
   pareceClave, pareceSerie, tipoDe,
