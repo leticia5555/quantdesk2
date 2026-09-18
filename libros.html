@@ -379,8 +379,10 @@ function dayboxHtml(d){
   // mide ese número en vez de mostrarlo con la etiqueta equivocada.
   // ── EL MÉTODO VA EN LA ETIQUETA, NO EN LA LETRA CHICA ──────────────
   // Hay DOS pisos y viven en escalas distintas: el de LIBROS (coseno entre lo
-  // que cada uno tiene, [0,1] en long-only) y el de DELTAS (coseno entre lo que
-  // cada uno CAMBIÓ, [-1,1] porque vender es negativo). Poner 0.62 de deltas al
+  // que cada uno tiene: [0,1] mientras la liga fue long-only, y [-1,1] desde
+  // que los cortos entraron el 2026-09-18, porque un peso negativo es un corto)
+  // y el de DELTAS (coseno entre lo que cada uno CAMBIÓ, [-1,1] siempre, porque
+  // vender es negativo). Poner 0.62 de deltas al
   // lado del 0.86 de libros del 16 sería comparar dos cosas distintas, así que
   // el método va en el título del número y los umbrales de color cambian con él.
   const porDeltas = p.metodo==='deltas';

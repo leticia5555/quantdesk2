@@ -35,8 +35,18 @@
 // comparación— daría un trailing que dispara cuando la posición VA BIEN.
 // ═══════════════════════════════════════════════════════════════
 
-import { EXIT_RULES } from './arena-exits.js';
-
+// ── POR QUÉ ESTE MÓDULO NO IMPORTA NADA DE `arena-exits.js` ──────────
+// Lo hacía: traía las reglas del lado LARGO y las threadeaba como default de
+// `rules` en cada firma... sin leerlas nunca. Los números del lado corto son
+// OTROS (SHORT_RULES) justamente porque la asimetría es el punto de todo este
+// archivo.
+//
+// El import era decorativo Y peligroso: al cablear la red corta dentro de
+// `buildRiskExits`, `arena-exits.js` pasa a importar ESTE archivo, y el import
+// de vuelta cerraba un CICLO. ESM lo resuelve —los `const` de arriba se leen en
+// tiempo de LLAMADA, no de evaluación— pero "funciona por cómo ordena el loader
+// las TDZ" no es una garantía sobre la que se cuelga la única pieza que no se
+// puede apagar. La dependencia va en UNA sola dirección: exits → exits-short.
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 const up = (s) => String(s || '').trim().toUpperCase();
 
@@ -49,16 +59,6 @@ export function shortQty(position) {
 }
 
 export const isShort = (p) => shortQty(p) > 0;
-
-// ── STOP CATASTRÓFICO del corto ──────────────────────────────────────
-// Nivel POR ENCIMA de la entrada. Un cierre por encima → cubrir.
-export function shortCatastrophicLevel(position, rules = EXIT_RULES, override = null) {
-  const sym = up(position && position.symbol);
-  if (override && num(override[sym]) != null) return num(override[sym]);
-  const entry = num(position && position.avg_entry_price);
-  if (entry == null || entry <= 0) return null;
-  return entry * (1 + SHORT_RULES.catastrophic_stop_pct);
-}
 
 export const SHORT_RULES = {
   // +20%, no +22%. Ver el encabezado: a 20% en contra el corto ya creció de 15%
@@ -81,7 +81,17 @@ export const SHORT_RULES = {
   })(),
 };
 
-export function planShortCatastrophicStops({ positions = [], closes = {}, rules = EXIT_RULES, stopLevels = null }) {
+// ── STOP CATASTRÓFICO del corto ──────────────────────────────────────
+// Nivel POR ENCIMA de la entrada. Un cierre por encima → cubrir.
+export function shortCatastrophicLevel(position, rules = SHORT_RULES, override = null) {
+  const sym = up(position && position.symbol);
+  if (override && num(override[sym]) != null) return num(override[sym]);
+  const entry = num(position && position.avg_entry_price);
+  if (entry == null || entry <= 0) return null;
+  return entry * (1 + SHORT_RULES.catastrophic_stop_pct);
+}
+
+export function planShortCatastrophicStops({ positions = [], closes = {}, rules = SHORT_RULES, stopLevels = null }) {
   const exits = [];
   for (const p of positions) {
     const qty = shortQty(p);
@@ -106,7 +116,7 @@ export function planShortCatastrophicStops({ positions = [], closes = {}, rules 
 // ── TRAILING del corto, con el pico invertido ────────────────────────
 // `lows[sym]` = el MÍNIMO cierre desde la entrada, techado a la entrada (el
 // espejo de `peaks` del lado largo, que va pisado a la entrada por abajo).
-export function shortTrailingState(position, low, rules = EXIT_RULES) {
+export function shortTrailingState(position, low, rules = SHORT_RULES) {
   const entry = num(position && position.avg_entry_price);
   const piso = num(low);
   if (entry == null || entry <= 0 || piso == null || piso <= 0) return null;
@@ -121,7 +131,7 @@ export function shortTrailingState(position, low, rules = EXIT_RULES) {
   };
 }
 
-export function planShortTrailingStops({ positions = [], closes = {}, lows = {}, rules = EXIT_RULES }) {
+export function planShortTrailingStops({ positions = [], closes = {}, lows = {}, rules = SHORT_RULES }) {
   const exits = [];
   for (const p of positions) {
     const qty = shortQty(p);

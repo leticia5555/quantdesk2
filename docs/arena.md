@@ -35,7 +35,7 @@ consecuencia: el "líder" de hoy no significa nada si la ventana nunca se cierra
 | Temporada | Qué habilita | Estado |
 |---|---|---|
 | **T2** | **Long-only + el reglamento de 9 reglas** de abajo. Liga completa (7 agentes) desde el día 1. | **En curso** (2026-09-14 → 2026-10-09) |
-| **T3** | **Short habilitado** + **el octavo agente europeo (Mistral, `house: 'eu'`)**. El guard se adapta: hoy es long-only por diseño (`no hay posición larga que vender` es un descarte duro) y abrir cortos toca sizing, margen, el borrow y toda la regla de salida —un stop en un corto es al revés—. **PR aparte**, no un flag. | Planeada |
+| **T3** | **El octavo agente europeo (Mistral, `house: 'eu'`)**. Los cortos ya NO son de la T3: entraron a la T2 el 2026-09-18 por la decisión D8, que estaba cerrada desde el 2026-09-15 y que el reglamento v4 contradijo por un error de redacción. Ver el anuncio `arena-cortos-t2-2026-09-18`. | Planeada |
 | **T4 — o nunca** | **Opciones.** Condición previa e innegociable: **una fuente de datos real** (cadena, griegas, IV, vencimientos). Sin esa fuente NO se hace: un libro de opciones sobre precios inventados no es un experimento, es una demo. | Condicional |
 
 **Por qué el orden importa.** Cada temporada cambia el reglamento, y un cambio
@@ -832,8 +832,9 @@ que aprobó el riel. Una pata solo se convierte en orden si:
 - hay precio de referencia,
 - el movimiento alcanza para **una acción entera** (`floor`, no `round`:
   redondear hacia arriba compra más de lo que el peso pedía),
-- y no es un corto (la T2 es long-only; una pata `short` acá es un bug del
-  rebalanceo y se descarta en vez de mandarse).
+- y, si es un corto, los cortos están habilitados (lo están desde el
+  2026-09-18; `ARENA_CORTOS=0` los apaga en vivo sin deploy, y entonces una
+  pata `short` se descarta nombrando el motivo en vez de mandarse).
 
 Lo que no pasa se **nombra** con su motivo. Y el límite es **marketable en los
 dos lados** —vender por debajo, comprar por encima, redondeado a centavos— nunca
@@ -3409,6 +3410,14 @@ empresas privadas que no puede comprar; el espacio le sirve más al screener). E
 endpoint `/api/vc-feed` sigue vivo para el resto de la app.
 
 ## Reglas del PM (deterministas, fuera del LLM)
+
+> **Esta sección describe el CONTRATO DE ACCIONES (el guard), que el contrato de
+> portafolio objetivo sustituyó el 2026-09-17.** Sus números —8 posiciones, 15%
+> por posición, long-only— son los del guard y siguen siendo ciertos EN ESE
+> camino, que ya no es el que corre en vivo. Los límites vigentes son los rieles
+> (R1-R12, `api/_lib/arena-rails.js`): 30% por nombre largo, 15% por nombre
+> corto, y cortos habilitados desde el 2026-09-18. Se deja por historia, no como
+> referencia.
 
 Universo equities US (sin warrants/units, sin sub-$1, **sin ETFs
 apalancados/inversos**, long-only) · máx 8 posiciones · máx 15% del equity por

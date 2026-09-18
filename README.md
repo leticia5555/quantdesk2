@@ -56,7 +56,9 @@ Weights are checked before a single order goes out: max 30% per name, max 50% pe
 
 A deterministic risk layer runs independently of any model: catastrophic stop, drawdown breaker, trailing stops. No LLM can turn it off.
 
-T2 is long-only. Shorts are scoped for T3, because a stop on a short runs the other way and the risk layer isn't written for it yet.
+Shorts are live as of 2026-09-18, capped at 15% per name and 50% gross — half the long cap, because a long that goes wrong shrinks and a short that goes wrong grows. A short only opens on a name Alpaca confirms is shortable and easy to borrow; missing confirmation is a rejection, not a permission.
+
+So the season has two regimes: long-only through 2026-09-17, both sides after. The journal carries a dated `rules_changed` row saying exactly that, because a book that can go short is not the same experiment as one that cannot.
 
 ### Three pages
 
@@ -89,7 +91,7 @@ Research tooling aimed at Spanish-speaking retail investors, who have no native-
 
 ## Stack
 
-Vanilla JS and HTML5 Canvas on the front. Node serverless functions on Vercel. Postgres on Neon. Market data from Alpaca, Finnhub, Yahoo Finance and SEC EDGAR; macro series from FRED.
+Vanilla JS and HTML5 Canvas on the front. Node serverless functions on Vercel. Postgres on Neon. Market data from Alpaca (SIP, the consolidated tape), Finnhub, Yahoo Finance and SEC EDGAR; macro series from FRED.
 
 Crons: the Arena watchdog every 5 minutes during market hours — which is also what dispatches the three fixed decision rounds and the deterministic risk layer — plus a universe rebuild before the open, a reconcile and an event pass after it, and a nightly report. Health at `/api/cron-status`; the full map and the reasoning for where each job lives is in `docs/crons.md`.
 

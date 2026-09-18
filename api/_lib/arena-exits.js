@@ -35,6 +35,14 @@
 // ── constantes, configurables por env (time-boxed del trial) ─────────
 // Defaults elegidos por la investigación; se pueden ajustar sin tocar código.
 // Fracciones en (0,1). El breaker escalonado: delever < broadcut.
+// La red del lado CORTO vive entera en su propio archivo (sus números no son
+// el espejo de éstos: ver el encabezado de arena-exits-short.js). Acá solo se
+// la CABLEA: a partir del 2026-09-18 `buildRiskExits` planea los dos lados y
+// los mezcla, para que un corto nunca corra sin stop.
+import {
+  shortQty, planShortCatastrophicStops, planShortTrailingStops, SHORT_RULES,
+} from './arena-exits-short.js';
+
 function envFrac(name, def) {
   const v = Number(process.env[name]);
   if (!Number.isFinite(v) || v <= 0 || v >= 1) return def;
@@ -101,11 +109,11 @@ export const EXIT_RULES = {
 // breaker (la más severa manda, igual que SEVERITY en mergeExits).
 export function exitBand(reasonCodes, rules = EXIT_RULES, escalationAttempts = 0) {
   const codes = reasonCodes || [];
-  if (codes.includes('catastrophic_stop')) {
+  if (codes.includes('catastrophic_stop') || codes.includes('short_catastrophic_stop')) {
     const escalated = rules.exit_band_catastrophic + Math.max(0, escalationAttempts) * rules.exit_escalation_step;
     return Math.round(Math.min(escalated, rules.exit_band_max) * 10000) / 10000; // sin ruido FP en el journal
   }
-  if (codes.includes('trailing_stop')) return rules.exit_band_trailing;
+  if (codes.includes('trailing_stop') || codes.includes('short_trailing_stop')) return rules.exit_band_trailing;
   return rules.exit_band_breaker;
 }
 
@@ -113,9 +121,34 @@ function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 const up = (s) => String(s || '').trim().toUpperCase();
 
 // qty entera larga de una posición ({ qty } de Alpaca, string o número).
+// SIGUE SIENDO LARGA A PROPÓSITO: los planificadores del lado largo la usan
+// para saltarse los cortos sin filtrar antes, igual que shortQty se salta los
+// largos. Los dos ceros son la forma de que cada lado vea solo lo suyo.
 function heldQty(position) {
   const q = num(position && position.qty);
   return q && q > 0 ? Math.floor(q) : 0;
+}
+
+// ── EL LADO DE UNA POSICIÓN, Y POR QUÉ HACE FALTA ────────────────────
+// Hasta el cableado del corto, TODA salida de riesgo era una venta: el `side`
+// estaba escrito a mano como 'sell' en buildRiskExits y otra vez en
+// submitRiskExits. Con cortos eso manda una VENTA para cerrar una posición que
+// ya es corta — o sea, duplica el riesgo exacto que el stop venía a cortar.
+// Por eso el lado viaja con cada exit desde que se planea.
+//   'sell'  → cerrar/recortar un LARGO   (límite por DEBAJO del mercado)
+//   'cover' → cubrir un CORTO            (límite por ENCIMA; en Alpaca es buy)
+export const LADO_VENTA = 'sell';
+export const LADO_COBERTURA = 'cover';
+export const ALPACA_SIDE = { sell: 'sell', cover: 'buy' };
+
+// Cantidad y lado de una posición, sea del lado que sea. { qty, side } con
+// qty 0 cuando no hay nada que cerrar.
+export function posicionCerrable(position) {
+  const largo = heldQty(position);
+  if (largo >= 1) return { qty: largo, side: LADO_VENTA };
+  const corto = shortQty(position);
+  if (corto >= 1) return { qty: corto, side: LADO_COBERTURA };
+  return { qty: 0, side: null };
 }
 
 // ── drawdown desde el pico ───────────────────────────────────────────
@@ -140,11 +173,15 @@ export function planBreaker({ equity, peak, positions = [], rules = EXIT_RULES }
 
   if (drawdown >= rules.breaker_broadcut_dd) {
     for (const p of positions) {
-      const qty = heldQty(p);
+      // `posicionCerrable`, no `heldQty`: con heldQty un CORTO daba 0 y el
+      // corte amplio lo SALTABA. Un −20% habría liquidado todos los largos y
+      // dejado los cortos abiertos, que es exactamente al revés de lo que hace
+      // un breaker — el corto es la exposición que crece sola.
+      const { qty, side } = posicionCerrable(p);
       if (qty < 1) continue;
       exits.push({
-        symbol: up(p.symbol), qty, reason_code: 'breaker_broadcut',
-        detail: `corte amplio: drawdown ${(drawdown * 100).toFixed(1)}% ≥ ${(rules.breaker_broadcut_dd * 100).toFixed(0)}% desde el pico → liquida ${qty}`,
+        symbol: up(p.symbol), qty, side, reason_code: 'breaker_broadcut',
+        detail: `corte amplio: drawdown ${(drawdown * 100).toFixed(1)}% ≥ ${(rules.breaker_broadcut_dd * 100).toFixed(0)}% desde el pico → ${side === LADO_COBERTURA ? 'cubre' : 'liquida'} ${qty}`,
       });
     }
     return { stage: 'broadcut', drawdown, exits };
@@ -158,12 +195,15 @@ export function planBreaker({ equity, peak, positions = [], rules = EXIT_RULES }
     // delever es BAJAR EXPOSICIÓN, no adivinar cuál rebota: menos de todo, sin
     // apostar a nada.
     for (const p of positions) {
-      const held = heldQty(p);
+      // PRO-RATA de VERDAD incluye los cortos: bajar exposición bruta y dejar
+      // el lado corto intacto sería elegir qué apuesta sobrevive, que es
+      // justamente lo que este stage se niega a hacer.
+      const { qty: held, side } = posicionCerrable(p);
       const qty = Math.floor(held * rules.breaker_delever_trim);
       if (qty < 1) continue; // recorte que no alcanza 1 acción → no se ajusta en silencio
       exits.push({
-        symbol: up(p.symbol), qty, reason_code: 'breaker_delever',
-        detail: `desapalanca PRO-RATA: drawdown ${(drawdown * 100).toFixed(1)}% ≥ ${(rules.breaker_delever_dd * 100).toFixed(0)}% desde el pico → recorta ${(rules.breaker_delever_trim * 100).toFixed(0)}% de ${up(p.symbol)} (${qty}/${held}), sin apostar a cuál rebota`,
+        symbol: up(p.symbol), qty, side, reason_code: 'breaker_delever',
+        detail: `desapalanca PRO-RATA: drawdown ${(drawdown * 100).toFixed(1)}% ≥ ${(rules.breaker_delever_dd * 100).toFixed(0)}% desde el pico → recorta ${(rules.breaker_delever_trim * 100).toFixed(0)}% de ${up(p.symbol)} (${qty}/${held}${side === LADO_COBERTURA ? ' cortas' : ''}), sin apostar a cuál rebota`,
       });
     }
     return { stage: 'delever', drawdown, exits };
@@ -282,17 +322,38 @@ export function timeStopState(daysInPosition, rules = EXIT_RULES) {
 // bajo su stop). Se toma la qty MAYOR (capada a lo que hay), y se combinan los
 // reason_codes. El `origin` (para journaling/atribución) es el más severo:
 // broadcut > catastrophic_stop > delever.
-const SEVERITY = { breaker_broadcut: 4, catastrophic_stop: 3, trailing_stop: 2, breaker_delever: 1 };
+// Los códigos del corto pesan IGUAL que su equivalente largo: un stop
+// catastrófico es un stop catastrófico venga del lado que venga.
+const SEVERITY = {
+  breaker_broadcut: 4,
+  catastrophic_stop: 3, short_catastrophic_stop: 3,
+  trailing_stop: 2, short_trailing_stop: 2,
+  breaker_delever: 1,
+};
 export function mergeExits(lists, positions = []) {
+  // El tope se toma del LADO de la posición: con `heldQty` un corto daba 0 y
+  // el `Math.min` de abajo borraba la salida entera. El stop corto se planeaba
+  // bien y se perdía en el merge — un fallo silencioso, el peor tipo.
   const heldBySym = new Map();
-  for (const p of positions) { const s = up(p.symbol); if (s) heldBySym.set(s, heldQty(p)); }
+  for (const p of positions) { const s = up(p.symbol); if (s) heldBySym.set(s, posicionCerrable(p).qty); }
   const bySym = new Map();
   for (const list of lists) {
     for (const e of (list || [])) {
       const sym = up(e.symbol);
       if (!sym) continue;
+      const side = e.side || LADO_VENTA;
       const prev = bySym.get(sym);
-      if (!prev) { bySym.set(sym, { symbol: sym, qty: e.qty, reason_codes: [e.reason_code], details: [e.detail], origin: e.reason_code }); continue; }
+      if (!prev) { bySym.set(sym, { symbol: sym, side, qty: e.qty, reason_codes: [e.reason_code], details: [e.detail], origin: e.reason_code }); continue; }
+      // Un símbolo no puede estar largo y corto a la vez en Alpaca, así que
+      // esto no debería pasar nunca. Si pasa, es un bug de arriba y NO se
+      // resuelve fusionando lados: se deja el primero y se journalea el choque.
+      if (prev.side !== side) {
+        if (!prev.reason_codes.includes('lado_en_conflicto')) {
+          prev.reason_codes.push('lado_en_conflicto');
+          prev.details.push(`CHOQUE DE LADOS en ${sym}: se planearon salidas '${prev.side}' y '${side}' sobre el mismo nombre. Se conserva '${prev.side}'. Esto es un bug aguas arriba, no una condición de mercado.`);
+        }
+        continue;
+      }
       prev.qty = Math.max(prev.qty, e.qty);
       if (!prev.reason_codes.includes(e.reason_code)) prev.reason_codes.push(e.reason_code);
       prev.details.push(e.detail);
@@ -317,13 +378,23 @@ export function exitReference(position, closes = {}) {
   return num(closes[sym]) ?? num(position && position.current_price) ?? num(position && position.avg_entry_price);
 }
 
-// limit del marketable-limit: referencia × (1 − banda), por DEBAJO del mercado
-// para asegurar el fill. `band` ya resuelto (por naturaleza + escalamiento, ver
-// exitBand). Redondeo a centavos (Alpaca exige tick de $0.01).
-export function riskExitLimit(reference, band) {
+// limit del marketable-limit, SIMÉTRICO POR LADO. `band` ya resuelto (por
+// naturaleza + escalamiento, ver exitBand). Redondeo a centavos (Alpaca exige
+// tick de $0.01).
+//
+//   sell  (cerrar un largo) → referencia × (1 − banda): por DEBAJO del mercado.
+//   cover (cubrir un corto) → referencia × (1 + banda): por ENCIMA.
+//
+// En los dos casos el límite es AGRESIVO para que llene, y en los dos casos
+// EXISTE: es el techo que una orden a mercado no tiene. Restar la banda en una
+// cobertura daría un límite por debajo del mercado que no llena nunca — o sea,
+// un stop que se ve verde en el journal y no cerró nada.
+export function riskExitLimit(reference, band, side = LADO_VENTA) {
   const r = num(reference), bnd = num(band);
   if (r == null || r <= 0 || bnd == null || bnd < 0 || bnd >= 1) return null;
-  return Math.round(r * (1 - bnd) * 100) / 100;
+  const p = side === LADO_COBERTURA ? r * (1 + bnd) : r * (1 - bnd);
+  const redondeado = Math.round(p * 100) / 100;
+  return redondeado > 0 ? redondeado : null;
 }
 
 // ── orquestador: estado del libro → órdenes de venta ejecutables ─────
@@ -336,7 +407,7 @@ export function riskExitLimit(reference, band) {
 // reason_codes y origin — como pide el post-mortem a 30 días.
 // `escalation` (symbol → # de reintentos catastróficos fallidos previos) ensancha
 // la banda del stop de ese nombre (ver exitBand) — el caller lo deriva del journal.
-export function buildRiskExits({ equity, peak, positions = [], closes = {}, rules = EXIT_RULES, escalation = {}, peaks = {} }) {
+export function buildRiskExits({ equity, peak, positions = [], closes = {}, rules = EXIT_RULES, escalation = {}, peaks = {}, lows = {} }) {
   const breaker = planBreaker({ equity, peak, positions, rules });
   // Broadcut domina: no tiene sentido evaluar stops por nombre si se liquida todo.
   const lists = breaker.stage === 'broadcut'
@@ -347,6 +418,15 @@ export function buildRiskExits({ equity, peak, positions = [], closes = {}, rule
       // T2 #3: el trailing corre junto a los otros por-nombre. `peaks` vacío
       // (sin memoria de picos) → lista vacía, comportamiento idéntico al de T1.
       planTrailingStops({ positions, closes, peaks, rules }).exits,
+      // ── LADO CORTO (cableado 2026-09-18) ─────────────────────────
+      // Los planificadores del lado largo se saltan los cortos por `heldQty`
+      // y éstos se saltan los largos por `shortQty`: cada lado ve solo lo
+      // suyo, sin filtrar antes ni pisarse. Un libro sin cortos produce dos
+      // listas vacías y el comportamiento es IDÉNTICO al de antes del cable.
+      planShortCatastrophicStops({ positions, closes }).exits,
+      // `lows` vacío (sin memoria de pisos) → lista vacía. Mismo fail-safe que
+      // `peaks`: una regla nueva NO cierra una posición sobre un dato ausente.
+      planShortTrailingStops({ positions, closes, lows }).exits,
     ];
   const merged = mergeExits(lists, positions);
 
@@ -357,16 +437,19 @@ export function buildRiskExits({ equity, peak, positions = [], closes = {}, rule
     const reference = exitReference(pos, closes);
     const attempts = Math.max(0, Number(escalation[e.symbol]) || 0);
     const band = exitBand(e.reason_codes, rules, attempts);
-    const limit_price = riskExitLimit(reference, band);
+    const limit_price = riskExitLimit(reference, band, e.side);
     if (limit_price == null) {
       // Sin ninguna referencia de precio → no se puede preciar el marketable
       // limit. Se DESCARTA y se journalea (fail closed, pero RUIDOSO).
-      discarded.push({ symbol: e.symbol, qty: e.qty, origin: e.origin, reason_codes: e.reason_codes, reason: `${e.symbol}: sin referencia de precio para el marketable limit — fail closed` });
+      discarded.push({ symbol: e.symbol, side: e.side, qty: e.qty, origin: e.origin, reason_codes: e.reason_codes, reason: `${e.symbol}: sin referencia de precio para el marketable limit — fail closed` });
       continue;
     }
     const escNote = attempts > 0 ? `[reintento ${attempts + 1}, banda ${(band * 100).toFixed(0)}% tras ${attempts} sin llenar] ` : '';
     approved.push({
-      symbol: e.symbol, side: 'sell', qty: e.qty, limit_price,
+      // El lado sale del PLAN, ya no escrito a mano: 'sell' cierra un largo,
+      // 'cover' cubre un corto. `alpaca_side` es la traducción para el broker
+      // (cover → buy) y viaja junta para que el journal muestre las dos.
+      symbol: e.symbol, side: e.side, alpaca_side: ALPACA_SIDE[e.side] || 'sell', qty: e.qty, limit_price,
       reference: +Number(reference).toFixed(2),
       origin: e.origin, reason_codes: e.reason_codes,
       exit_band: band, exit_attempt: attempts + 1, // journaleados: mide con qué frecuencia no llena
