@@ -208,7 +208,7 @@ export async function buildBoard({
   const [snapEtf, avg, closes, titulares] = await Promise.all([
     snaps(etfs, creds).catch((e) => { errors.etf_snapshots = String((e && e.message) || e); return {}; }),
     symbols.length ? avgVol(symbols, { days: 20, today: now.toISOString().slice(0, 10), creds, feed: feedUsado }).catch((e) => { errors.avg_volume = String((e && e.message) || e); return {}; }) : Promise.resolve({}),
-    bars(etfs, { creds, now, days: 40 }).catch((e) => { errors.sector_bars = String((e && e.message) || e); return {}; }),
+    bars(etfs, { creds, now, days: 40, feed: feedUsado }).catch((e) => { errors.sector_bars = String((e && e.message) || e); return {}; }),
     news({ symbols: [], limit: 50, creds }).catch((e) => { errors.news = String((e && e.message) || e); return []; }),
   ]);
 
@@ -302,19 +302,36 @@ export async function buildBoard({
 // Cierres diarios por símbolo, para los retornos de sector. Vive acá y no en
 // alpaca.js porque es una forma que solo el tablero usa (getAvgDailyVolume ya
 // cubre el caso "volumen" desde el mismo endpoint).
-async function getDailyCloses(symbols, { creds, now = new Date(), days = 40 } = {}) {
-  const { alpacaDataFeed, alpacaDataBase } = await import('./alpaca.js');
+// El feed sale del veredicto compartido del módulo de Alpaca, no de
+// `alpacaDataFeed()`: el calor por sector compara el retorno de cada ETF
+// contra los demás, y aunque un retorno es casi invariante al feed, mezclar
+// cierres de IEX con precios consolidados en la misma página es justo el tipo
+// de inconsistencia que después nadie puede explicar.
+async function getDailyCloses(symbols, { creds, now = new Date(), days = 40, feed: feedPedido = null } = {}) {
+  const { alpacaDataBase, alpacaCreds, conFeedDeDatos } = await import('./alpaca.js');
   const hoy = now.toISOString().slice(0, 10);
   const start = new Date(now.getTime() - (days + 15) * 86400000).toISOString().slice(0, 10);
-  const url = `${alpacaDataBase()}/v2/stocks/bars?symbols=${encodeURIComponent(symbols.join(','))}&timeframe=1Day&start=${start}&limit=${(days + 15) * symbols.length}&feed=${alpacaDataFeed()}`;
-  const c = creds || (await import('./alpaca.js')).alpacaCreds();
+  const c = creds || alpacaCreds();
   if (!c) throw new Error('Faltan keys de Alpaca para las barras del tablero.');
-  const r = await fetch(url, {
-    headers: { 'APCA-API-KEY-ID': c.key, 'APCA-API-SECRET-KEY': c.secret },
-    signal: AbortSignal.timeout(20000),
-  });
-  if (!r.ok) throw new Error('Alpaca data ' + r.status);
-  const j = await r.json();
+
+  const pedir = async (feed) => {
+    const url = `${alpacaDataBase()}/v2/stocks/bars?symbols=${encodeURIComponent(symbols.join(','))}&timeframe=1Day&start=${start}&limit=${(days + 15) * symbols.length}&feed=${feed}`;
+    const r = await fetch(url, {
+      headers: { 'APCA-API-KEY-ID': c.key, 'APCA-API-SECRET-KEY': c.secret },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) {
+      // El status tiene que VIAJAR en el error: sin él, `conFeedDeDatos` no
+      // puede distinguir "no tenés SIP" (baja a IEX) de "Alpaca se cayó" (se
+      // propaga), y trataría las dos igual.
+      const err = new Error('Alpaca data ' + r.status);
+      err.status = r.status;
+      throw err;
+    }
+    return r.json();
+  };
+
+  const j = feedPedido ? await pedir(feedPedido) : (await conFeedDeDatos(pedir)).data;
   const out = {};
   for (const [sym, list] of Object.entries((j && j.bars) || {})) {
     // La barra de HOY se excluye: los retornos del calor por sector se miden

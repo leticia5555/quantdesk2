@@ -91,7 +91,7 @@ Research tooling aimed at Spanish-speaking retail investors, who have no native-
 
 ## Stack
 
-Vanilla JS and HTML5 Canvas on the front. Node serverless functions on Vercel. Postgres on Neon. Market data from Alpaca, Finnhub, Yahoo Finance and SEC EDGAR; macro series from FRED.
+Vanilla JS and HTML5 Canvas on the front. Node serverless functions on Vercel. Postgres on Neon. Market data from Alpaca (SIP, the consolidated tape), Finnhub, Yahoo Finance and SEC EDGAR; macro series from FRED.
 
 Crons: the Arena watchdog every 5 minutes during market hours — which is also what dispatches the three fixed decision rounds and the deterministic risk layer — plus a universe rebuild before the open, a reconcile and an event pass after it, and a nightly report. Health at `/api/cron-status`; the full map and the reasoning for where each job lives is in `docs/crons.md`.
 

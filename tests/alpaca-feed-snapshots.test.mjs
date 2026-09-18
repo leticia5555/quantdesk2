@@ -14,7 +14,7 @@
 // Correr con `node tests/alpaca-feed-snapshots.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import { getSnapshots, getSnapshotsConFeed, resetFeedSnapshots } from '../api/_lib/alpaca.js';
+import { getSnapshots, getSnapshotsConFeed, getAvgDailyVolume, feedDatosResuelto, resetFeedDatos as resetFeedSnapshots } from '../api/_lib/alpaca.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -95,6 +95,47 @@ console.log('\n── getSnapshots conserva su firma: ningún llamador cambia �
   ok(mapa.NVDA && mapa.NVDA.price === 180 && mapa.NVDA.prev_close === 175,
     'devuelve el mapa pelado de siempre, sin envoltorio', JSON.stringify(mapa.NVDA));
   ok((await getSnapshots([])).NVDA === undefined, 'y una lista vacía sigue devolviendo {} sin pedir nada');
+}
+
+console.log('\n── EL VEREDICTO ES UNO SOLO PARA TODO EL MÓDULO ──');
+{
+  // ESTE es el bug que importa con SIP contratado: el vigilante pide el volumen
+  // de HOY por snapshot y el promedio de 20 sesiones por bars. Si los snapshots
+  // resuelven SIP y el promedio se queda en IEX, el RVOL sale inflado ~30-50× y
+  // el vigilante marca el mercado entero como "volumen inusual" cada 5 minutos.
+  resetFeedSnapshots();
+  const feedsPedidos = [];
+  global.fetch = async (url) => {
+    const u = new URL(url);
+    feedsPedidos.push({ ruta: u.pathname.includes('snapshots') ? 'snapshots' : 'bars', feed: u.searchParams.get('feed') });
+    return { ok: true, status: 200, text: async () => JSON.stringify({ snapshots: CUERPO.snapshots, bars: { NVDA: [{ t: '2026-09-17T00:00:00Z', v: 900, c: 179 }] } }) };
+  };
+  await getSnapshots(['NVDA']);
+  await getAvgDailyVolume(['NVDA'], { days: 20, today: '2026-09-18' });
+  const snap = feedsPedidos.find((f) => f.ruta === 'snapshots');
+  const bars = feedsPedidos.find((f) => f.ruta === 'bars');
+  ok(snap.feed === 'sip' && bars.feed === 'sip',
+    'el promedio de volumen sigue al snapshot: numerador y denominador del RVOL NO pueden quedar en feeds distintos',
+    JSON.stringify(feedsPedidos));
+  ok(feedDatosResuelto() === 'sip', 'y el veredicto queda legible desde afuera', String(feedDatosResuelto()));
+}
+
+console.log('\n── el 403 de SIP también se comparte, no se re-paga por función ──');
+{
+  resetFeedSnapshots();
+  const feedsPedidos = [];
+  global.fetch = async (url) => {
+    const u = new URL(url);
+    const feed = u.searchParams.get('feed');
+    feedsPedidos.push(feed);
+    if (feed === 'sip') return { ok: false, status: 403, text: async () => '{"message":"no plan"}' };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ snapshots: CUERPO.snapshots, bars: { NVDA: [{ t: '2026-09-17T00:00:00Z', v: 900, c: 179 }] } }) };
+  };
+  await getSnapshots(['NVDA']);
+  await getAvgDailyVolume(['NVDA'], { days: 20, today: '2026-09-18' });
+  ok(feedsPedidos.join(',') === 'sip,iex,iex',
+    'el 403 se paga UNA vez en todo el proceso: la segunda función ya arranca en IEX',
+    feedsPedidos.join(','));
 }
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
