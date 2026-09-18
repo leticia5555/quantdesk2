@@ -135,7 +135,10 @@ const MIN_SANE = { sp500: 400, nasdaq100: 80 };
 export async function fetchDesdeEtf(index, { now = new Date(), fetchImpl = fetch, diag = null } = {}) {
   const anota = (fila) => { if (Array.isArray(diag)) diag.push(fila); };
   const r = await fetchHoldings(index, { fetchImpl });
-  anota({ fuente: 'etf', ...r.diagnostics });
+  // El sobre DESPUÉS del spread: si `r.diagnostics` trajera su propia `fuente`,
+  // pisaría la del sobre y esta fila desaparecería de cualquier filtro que
+  // busque `fuente === 'etf'`. Es el mismo bug que borró la fila de Wikipedia.
+  anota({ ...r.diagnostics, fuente: 'etf' });
   const symbols = (r.symbols || []).map(clean).filter((x) => x && VALID_TICKER.test(x));
   if (!symbols.length) return null;
   // El MISMO piso de cordura de siempre: una lista corta es un error del

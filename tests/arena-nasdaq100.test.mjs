@@ -174,6 +174,35 @@ console.log('\n── nada puede tumbar el universo desde acá ──');
   ok(basura === null, 'y una lista hecha solo de ruido no llega a ningún lado');
 }
 
+console.log('\n── REGRESIÓN: el sobre del diagnóstico no puede ser pisado ──');
+{
+  // EL BUG (producción, 2026-09-18): `anota` armaba { fuente:'tabla_publica',
+  // ...fila } con el spread AL FINAL, y `horquilla` devolvía una clave llamada
+  // `fuente` con el valor 'wikipedia'. La fila de Wikipedia se guardaba con
+  // `fuente: 'wikipedia'`, el filtro del endpoint busca 'tabla_publica', y la
+  // fila EXISTÍA sin verse. Se leyó como "Wikipedia no se está llamando" —
+  // conclusión falsa sobre la única fuente primaria que hay.
+  const diag = [];
+  await fetchNasdaq100({ diag, deps: {
+    fetchWikipedia: async () => ['AAPL', 'MSFT'],                              // pasa, pero corta
+    fetchSlickcharts: async () => { const e = new Error('HTTP 403'); e.status = 403; throw e; },
+  } });
+
+  ok(diag.every((d) => d.fuente === 'tabla_publica'),
+    'TODAS las filas llevan el sobre correcto, incluida la que falló por horquilla',
+    JSON.stringify(diag.map((d) => d.fuente)));
+
+  const fw = diag.find((d) => d.origen === 'wikipedia');
+  ok(fw, 'la fila de Wikipedia aparece — antes se perdía y parecía que la fuente no se llamaba');
+  ok(fw.reason === 'lista_corta' && fw.recibidos === 2, 'con su motivo y cuántos llegaron', JSON.stringify(fw));
+  ok(Array.isArray(fw.muestra) && fw.muestra.join(',') === 'AAPL,MSFT',
+    'y con la MUESTRA de lo que extrajo: saber que llegaron 2 no arregla nada, saber cuáles sí',
+    JSON.stringify(fw.muestra));
+
+  const fs = diag.find((d) => d.origen === 'slickcharts');
+  ok(fs && fs.status === 403, 'y la de slickcharts con su status', JSON.stringify(fs));
+}
+
 console.log('\n── la lista pegada a mano: la salida si producción no alcanza las fuentes ──');
 {
   ok(desdeEnv({}) === null && desdeEnv({ [ENV_SIMBOLOS]: '   ' }) === null, 'sin la env var no pasa nada');
