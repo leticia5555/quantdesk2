@@ -40,7 +40,7 @@
 // propio tablero para que no la tenga que adivinar.
 // ═══════════════════════════════════════════════════════════════
 
-import { getSnapshots, getAvgDailyVolume, getNews } from './alpaca.js';
+import { getSnapshots, getSnapshotsConFeed, getAvgDailyVolume, getNews } from './alpaca.js';
 
 // Los 11 sectores GICS. Se listan ACÁ y no se importan de /api/sectors porque
 // aquel set trae 13 (agrega SOXX e IBIT, que no son sectores GICS sino los dos
@@ -179,6 +179,14 @@ export async function buildBoard({
 } = {}) {
   const snaps = deps.getSnapshots || getSnapshots;
   const avgVol = deps.getAvgDailyVolume || getAvgDailyVolume;
+  // El RVOL es un COCIENTE: volumen de hoy (snapshots) sobre el promedio de 20
+  // sesiones (bars). Los dos tienen que salir del MISMO feed o el número no
+  // significa nada — dividir volumen consolidado entre volumen de IEX daría un
+  // RVOL inflado ~30-50×. Por eso el snapshot del universo se resuelve PRIMERO
+  // y su feed se le pasa al promedio, en vez de que cada uno elija por su lado.
+  // Un `deps.getSnapshots` inyectado (tests) no conoce feeds: se envuelve.
+  const snapsConFeed = deps.getSnapshotsConFeed
+    || (deps.getSnapshots ? async (sy, c) => ({ data: await deps.getSnapshots(sy, c), feed: null }) : getSnapshotsConFeed);
   const news = deps.getNews || getNews;
   const bars = deps.getDailyCloses || getDailyCloses;
 
@@ -187,10 +195,19 @@ export async function buildBoard({
   const f52 = (universe && universe.fifty_two_week) || {};
   const etfs = [...INDEX_ETFS.map((x) => x.etf), VIX_PROXY.etf, ...SECTOR_ETFS.map((x) => x.etf)];
 
-  const [snapUni, snapEtf, avg, closes, titulares] = await Promise.all([
-    symbols.length ? snaps(symbols, creds).catch((e) => { errors.snapshots = String((e && e.message) || e); return {}; }) : Promise.resolve({}),
+  // Este await va ANTES del Promise.all a propósito: el promedio de volumen
+  // necesita saber qué feed contestó acá. Es un viaje serializado en un camino
+  // que corre antes de la apertura y tiene presupuesto de sobra; el precio de
+  // paralelizarlo sería un RVOL que no se puede leer.
+  const uni = symbols.length
+    ? await snapsConFeed(symbols, creds).catch((e) => { errors.snapshots = String((e && e.message) || e); return { data: {}, feed: null }; })
+    : { data: {}, feed: null };
+  const snapUni = uni.data || {};
+  const feedUsado = uni.feed || null;
+
+  const [snapEtf, avg, closes, titulares] = await Promise.all([
     snaps(etfs, creds).catch((e) => { errors.etf_snapshots = String((e && e.message) || e); return {}; }),
-    symbols.length ? avgVol(symbols, { days: 20, today: now.toISOString().slice(0, 10), creds }).catch((e) => { errors.avg_volume = String((e && e.message) || e); return {}; }) : Promise.resolve({}),
+    symbols.length ? avgVol(symbols, { days: 20, today: now.toISOString().slice(0, 10), creds, feed: feedUsado }).catch((e) => { errors.avg_volume = String((e && e.message) || e); return {}; }) : Promise.resolve({}),
     bars(etfs, { creds, now, days: 40 }).catch((e) => { errors.sector_bars = String((e && e.message) || e); return {}; }),
     news({ symbols: [], limit: 50, creds }).catch((e) => { errors.news = String((e && e.message) || e); return []; }),
   ]);
@@ -263,6 +280,11 @@ export async function buildBoard({
     // A qué hora se midió el RVOL. Sin esto, un rv0.3 a las 10:30 y un rv0.3 a
     // las 15:45 se leen igual y significan cosas opuestas.
     sesion_pct: fraccionDeSesion(now),
+    // Y CON QUÉ FEED. El RVOL es un cociente feed-consistente (numerador y
+    // denominador del mismo lado), pero el volumen ABSOLUTO no: sobre IEX es
+    // el ~2-3% del consolidado. Sin este campo, dos días medidos con feeds
+    // distintos se leen como si fueran el mismo experimento.
+    feed_datos: feedUsado,
     // Los que están en el TOP de RVOL del día. El RANKING no sufre el sesgo
     // intradía —todos se miden a la misma hora— así que es la forma
     // interpretable de preguntar "¿está operando raro?" antes del cierre.

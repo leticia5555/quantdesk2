@@ -192,10 +192,58 @@ function chunk(arr, n) {
 // VIVO, volumen acumulado de HOY y cierre ANTERIOR (el ancla de la marca).
 // Devuelve { SYMBOL: { price, day_volume, prev_close, day_open, as_of } }.
 // Un símbolo sin datos sale AUSENTE del mapa, nunca con ceros.
-export async function getSnapshots(symbols = [], creds) {
+// ── LA TRAMPA DE PAGAR SIP Y SEGUIR EN IEX ───────────────────────────
+// Esto usaba `alpacaDataFeed()` a secas, que sin `ALPACA_DATA_FEED` devuelve
+// 'iex' y NO prueba nada más. El universo (`getPriceAndDollarVolume`) sí
+// intenta SIP primero y cae a IEX con un 403 — así que las dos mitades del
+// Arena podían estar leyendo feeds distintos, y el día que se contratara SIP
+// los PRECIOS DE REFERENCIA DE LOS LÍMITES habrían seguido saliendo de IEX sin
+// que nada lo dijera. Se paga el consolidado y se siguen preciando las órdenes
+// con una bolsa que es el ~2-3% del volumen.
+//
+// Misma disciplina que el universo: se intenta el consolidado, se cae a IEX
+// solo con los status que significan "no tenés el plan", y el feed que de
+// verdad contestó VIAJA en el resultado (`getSnapshotsConFeed`) en vez de
+// quedar implícito. `getSnapshots` conserva su firma y su forma de retorno:
+// ningún llamador cambia.
+//
+// La caché es por proceso y dura lo que dura la lambda: sin ella cada llamada
+// pagaría otra vez el 403 de SIP. No se cachea un fallo de red (eso sí hay que
+// reintentarlo), solo el veredicto "esta cuenta no tiene SIP".
+let feedSnapshotsResuelto = null;
+
+export function resetFeedSnapshots() { feedSnapshotsResuelto = null; }   // para los tests
+
+export async function getSnapshotsConFeed(symbols = [], creds) {
   const wanted = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
-  if (!wanted.length) return {};
-  const feed = alpacaDataFeed();
+  if (!wanted.length) return { data: {}, feed: null };
+  // Una preferencia explícita no se pisa; si no hay, se prueba el consolidado.
+  const pinned = String(process.env.ALPACA_DATA_FEED || '').trim().toLowerCase();
+  const orden = pinned ? [alpacaDataFeed()]
+    : (feedSnapshotsResuelto ? [feedSnapshotsResuelto] : ['sip', 'iex']);
+
+  let ultimo = null;
+  for (const feed of orden) {
+    try {
+      const data = await snapshotsPorFeed(wanted, creds, feed);
+      if (!pinned) feedSnapshotsResuelto = feed;
+      return { data, feed };
+    } catch (e) {
+      ultimo = e;
+      // 403 de SIP = "no tenés el plan" → se baja a IEX. Un 500 o un timeout
+      // NO: reintentar con otro feed taparía una caída de Alpaca.
+      if (!FEED_FALLBACK_STATUS.has((e && e.status) || 0)) throw e;
+    }
+  }
+  throw ultimo || new Error('Alpaca snapshots: ningún feed contestó');
+}
+
+export async function getSnapshots(symbols = [], creds) {
+  const { data } = await getSnapshotsConFeed(symbols, creds);
+  return data;
+}
+
+async function snapshotsPorFeed(wanted, creds, feed) {
   const out = {};
   for (const batch of chunk(wanted, DATA_CHUNK)) {
     const data = await alpacaDataFetch(`/v2/stocks/snapshots?symbols=${encodeURIComponent(batch.join(','))}&feed=${feed}`, creds);
@@ -228,10 +276,21 @@ export async function getSnapshots(symbols = [], creds) {
 // se excluye: comparar el volumen del día contra un promedio que ya lo incluye
 // diluiría justo el pico que se quiere detectar.
 // Devuelve { SYMBOL: promedio }. Símbolo sin historia suficiente → ausente.
-export async function getAvgDailyVolume(symbols = [], { days = 20, today = null, creds } = {}) {
+// ── EL FEED TIENE QUE SER EL MISMO QUE EL DEL NUMERADOR ──────────────
+// Este promedio es el DENOMINADOR del RVOL; el numerador es el volumen del día
+// que sale de `getSnapshots`. Hasta ahora los dos salían de IEX y la cuota de
+// IEX se CANCELABA en el cociente: el RVOL estaba bien aunque el volumen
+// absoluto fuera una fracción.
+//
+// Desde que los snapshots intentan SIP, dejar esto en `alpacaDataFeed()` sería
+// dividir volumen CONSOLIDADO entre volumen de UNA bolsa: un RVOL inflado ~30-50×
+// que marcaría el mercado entero como "volumen inusual". Por eso el llamador
+// pasa el feed que de verdad contestó arriba, y el default sigue siendo el de
+// siempre para quien no lo pase.
+export async function getAvgDailyVolume(symbols = [], { days = 20, today = null, creds, feed: feedPedido = null } = {}) {
   const wanted = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
   if (!wanted.length) return {};
-  const feed = alpacaDataFeed();
+  const feed = feedPedido || alpacaDataFeed();
   const out = {};
   for (const batch of chunk(wanted, DATA_CHUNK)) {
     const data = await alpacaDataFetch(
