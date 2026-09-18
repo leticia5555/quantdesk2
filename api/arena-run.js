@@ -71,6 +71,7 @@ import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpacaCreds, getCalendar } from './_lib/alpaca.js';
 import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF, NON_EQUITY_TYPES, EXCLUDED_SECURITY_TYPES } from './_lib/arena-guard.js';
 import { buildRiskExits, EXIT_RULES } from './_lib/arena-exits.js';
+import { lowsFromSeries } from './_lib/arena-exits-short.js';
 // TEMPORADA 2: la memoria del agente (compromisos con fecha, historia de cada
 // posición, auditoría del pronunciamiento). JS puro, sin I/O — ver el encabezado
 // de _lib/arena-memory.js para el porqué de cada pieza.
@@ -1421,13 +1422,43 @@ async function journalObjetivoVivo(row) {
   }
 }
 
-async function submitRiskExits(approved, runDate, creds) {
+// ── LOS PISOS DESDE LA ENTRADA (trailing del CORTO) ──────────────────
+// Espejo de `peaksFromMeta`. Vive acá, en UNA función, porque hay DOS caminos
+// que arman salidas de riesgo —`runArenaDecide` y `runArenaRiskNet`— y el bug
+// clásico de esta casa es que una regla nueva entre por uno y no por el otro
+// (ya pasó con el corte por temporada: se aplicó en `decide` y no en la red).
+//
+// `reconstructPositionOpens` devuelve { SYM: { opened_at } } y `lowsFromSeries`
+// quiere { SYM: 'YYYY-MM-DD' }. Sin el mapeo la ventana no se abre y el piso
+// saldría de la serie COMPLETA —anterior a la apertura del corto—, o sea un
+// trailing que arma por aritmética y no por haber ganado nada.
+//
+// Un libro sin cortos devuelve {} y el comportamiento es idéntico al de antes.
+function pisosDesdeAperturas(positions, seriesBySymbol, opens) {
+  const fechas = Object.fromEntries(
+    Object.entries(opens || {})
+      .map(([sym, o]) => [sym, (o && o.opened_at) || null])
+      .filter(([, d]) => d),
+  );
+  return lowsFromSeries(positions, seriesBySymbol, fechas);
+}
+
+// `enviar` es una costura para el test: por default es createLimitOrder. Sin
+// ella no hay forma de probar DE PUNTA A PUNTA que un stop de corto llega al
+// broker como `buy` — y ése es justo el paso donde un literal 'sell' duplicaba
+// el riesgo en vez de cerrarlo.
+export async function submitRiskExits(approved, runDate, creds, enviar = createLimitOrder) {
   const actions = [];
   let submitted = 0;
   for (const a of approved) {
     const clientOrderId = `arena:${runDate}:${a.symbol}:exit`;
     try {
-      const order = await createLimitOrder({ symbol: a.symbol, qty: a.qty, side: 'sell', limit_price: a.limit_price, client_order_id: clientOrderId }, creds);
+      // EL LADO SALE DEL PLAN, no de un literal. Estaba escrito 'sell' a mano:
+      // con cortos cableados eso mandaba una VENTA para cerrar una posición ya
+      // corta —o sea, DUPLICABA el riesgo que el stop venía a cortar—. `side`
+      // del plan es 'sell'|'cover'; Alpaca solo conoce buy/sell.
+      const ladoAlpaca = a.alpaca_side || (a.side === 'cover' ? 'buy' : 'sell');
+      const order = await enviar({ symbol: a.symbol, qty: a.qty, side: ladoAlpaca, limit_price: a.limit_price, client_order_id: clientOrderId }, creds);
       actions.push(attributeRiskExit(a, { result: 'approved', alpaca_order_id: order.id, client_order_id: clientOrderId, order_status: order.status }));
       submitted++;
     } catch (err) {
@@ -1440,7 +1471,7 @@ async function submitRiskExits(approved, runDate, creds) {
 // Salidas de riesgo descartadas (p.ej. sin referencia de precio) → journal.
 function riskDiscardActions(discarded) {
   return (discarded || []).map((d) => ({
-    symbol: d.symbol, side: 'sell', qty: d.qty, channels: ['risk_exit'],
+    symbol: d.symbol, side: d.side || 'sell', qty: d.qty, channels: ['risk_exit'],
     origin: d.origin, reason_codes: d.reason_codes, result: 'discarded', reason: d.reason,
   }));
 }
@@ -1787,9 +1818,10 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // valida el guard), así que en la corrida POR EVENTO —media mañana, sin cierre
   // nuevo— NO se re-evalúan: repetirían las órdenes de la corrida anterior.
   const escalation = event ? {} : escalationFromRiskRows(riskRows, heldSymbols);
+  const lows = pisosDesdeAperturas(positions, seriesBySymbol, opens);
   const risk = event
     ? { stage: 'none', drawdown: 0, approved: [], discarded: [] }
-    : buildRiskExits({ equity, peak, positions, closes: heldCloses, escalation, peaks: peaksFromMeta(positionMeta) });
+    : buildRiskExits({ equity, peak, positions, closes: heldCloses, escalation, peaks: peaksFromMeta(positionMeta), lows });
   const riskContext = {
     peak, drawdown: +risk.drawdown.toFixed(4), stage: risk.stage, escalation,
     // El corte con el que se midió ese pico. Sin esto, un drawdown journaleado
@@ -2470,10 +2502,17 @@ export async function runArenaRiskNet({ agent, now = new Date(), caches } = {}) 
     seriesBySymbol[s] = heldSeriesArr[i];
     heldCloses[s] = heldSeriesArr[i] ? heldSeriesArr[i].closes[heldSeriesArr[i].closes.length - 1] : null;
   });
-  const positionMeta = buildPositionMeta({ positions, opens: reconstructPositionOpens(fillRows), seriesBySymbol, now });
+  const opensRed = reconstructPositionOpens(fillRows);
+  const positionMeta = buildPositionMeta({ positions, opens: opensRed, seriesBySymbol, now });
 
   const escalation = escalationFromRiskRows(riskRows, heldSymbols);
-  const risk = buildRiskExits({ equity, peak, positions, closes: heldCloses, escalation, peaks: peaksFromMeta(positionMeta) });
+  // MISMOS pisos que el camino de `decide`: la red sin LLM no puede ser la que
+  // se queda sin el trailing del corto.
+  const risk = buildRiskExits({
+    equity, peak, positions, closes: heldCloses, escalation,
+    peaks: peaksFromMeta(positionMeta),
+    lows: pisosDesdeAperturas(positions, seriesBySymbol, opensRed),
+  });
   const riskContext = {
     peak, drawdown: +risk.drawdown.toFixed(4), stage: risk.stage, escalation,
     // El corte con el que se midió ese pico. Sin esto, un drawdown journaleado
