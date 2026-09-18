@@ -1,9 +1,15 @@
 # Backtest: rotación Value + Momentum sobre la BMV
 
-> **Estado: Fase A construida, sin correr.** El cosechador existe y está
-> probado; los datos todavía no. Los criterios de GO/NO-GO de la Fase B están
-> **congelados en este documento antes de ver un solo número** — que es el único
-> momento en que congelarlos significa algo.
+> **Estado: CERRADO. Veredicto NO-GO** (18-sep-2026).
+>
+> Exceso 0.0%/año, t = −0.007, Sharpe 0.35 contra 0.32 de NAFTRAC — necesitaba
+> +0.15. Fallan las dos puertas que importan, con 111 rebalanceos y 44
+> elegibles medianos: **no es INCONCLUSO, es NO-GO**. El detalle en §5.10 y lo
+> que deja para el siguiente backtest en §5.11.
+>
+> Los criterios de GO/NO-GO se congelaron en este documento **antes de ver un
+> solo número**, que es el único momento en que congelarlos significa algo.
+> Ninguno se movió después. El diff de este archivo es la prueba.
 
 > ### Corrección del 16-sep-2026, antes de cualquier resultado
 > Cuatro cambios al diseño, los cuatro pedidos cuando la Fase A **todavía no
@@ -609,6 +615,12 @@ reinvertido.
 > `/v2/divisas` en la fecha ex **antes de leer el veredicto**, no después. El
 > umbral se fija aquí, sin números a la vista, para que no se pueda mover
 > después de verlos.
+>
+> **Qué pasó (18-sep-2026): HOTEL\* superó el umbral, y el veredicto se leyó
+> primero.** El umbral no se movió y los criterios no se tocaron; lo que se
+> rompió fue el **orden**. Se resolvió después, con `?job=divisas`, y se
+> verificó que no cambiara el resultado en vez de asumirlo. Queda escrito en
+> §5.10 sin suavizarlo.
 
 Y la marca **se propaga dentro del grupo consolidado**: el bloque `historico` no
 trae divisa, así que si sólo se mirara la fila que gana, un reparto en USD cuya
@@ -1472,6 +1484,147 @@ construye un mercado donde la canasta pierde de forma significativa y exige que
 el dictamen sea **NO-GO FUERTE**. Si algún día alguien reordena las ramas del
 `if`, truena.
 
+---
+
+## 5.10 El veredicto: **NO-GO**
+
+Corrida el **18-sep-2026**, con los criterios congelados en §3 y sin mover
+ninguno.
+
+| | Canasta (total) | NAFTRAC (total) |
+|---|---:|---:|
+| Sharpe | **0.35** | **0.32** |
+| Exceso anualizado | **0.0%** | — |
+| t del exceso diario | **−0.007** | — |
+
+| Puerta (§3.4) | Valor | |
+|---|---:|:-:|
+| Rebalanceos ≥ 30 | 111 | ✅ |
+| Universo elegible mediano ≥ 16 | 44 | ✅ |
+| \|t\| ≥ 2 | 0.007 | ❌ |
+| Sharpe ≥ NAFTRAC + 0.15 | +0.03 | ❌ |
+
+**NO-GO por las dos puertas que importan.** No es INCONCLUSO: hubo muestra
+(111 rebalanceos) y hubo universo (44 elegibles medianos, con el quintil
+mandando en **77.5%** de las fechas). La estrategia se midió bien y no bate al
+índice.
+
+El exceso no sólo no es significativo — es **cero**. Un t de −0.007 no dice
+«casi»; dice que la canasta y el benchmark son indistinguibles día a día.
+
+### Sensibilidades — atribución, no promoción
+
+| Especificación | Exceso anual | t |
+|---|---:|---:|
+| **Caso base** (quintil, value + momentum) | **0.0%** | **−0.007** |
+| Sólo value | −3.6% | −0.89 |
+| Sólo momentum | +0.3% | 0.08 |
+| Decil superior | −1.5% | — |
+| Rezago de 90 días | −0.1% | — |
+
+**Momentum-solo no se promueve**, y no por formalismo: su t de 0.08 no pasa
+ninguna puerta. Si saliera espectacular tampoco se promovería —§3.5 lo congeló
+así antes de correr— pero acá ni siquiera hay tentación que resistir.
+
+Lo que estas filas sí dicen es **de dónde viene el cero**: el value restó 3.6
+puntos al año y el momentum sumó 0.3. El caso base no es «nada pasó»; es **un
+lastre y un empujón que se cancelan**.
+
+### El pendiente de disciplina, escrito como pasó
+
+El reporte marcó que **HOTEL\* superaba los 50 bp** de repartos en USD sin
+contar. §3.3 decía, textual, que si alguna serie pasaba de ahí había que
+resolverlo con `/v2/divisas` **antes de leer el veredicto**, no después.
+
+**Se leyó primero.** Queda anotado así, sin suavizarlo: el pre-registro se
+cumplió en los criterios —ninguno se movió— y se rompió en el **orden**. Es la
+clase de desvío que no cambia este resultado y que, en otro, sí podría: si el
+veredicto hubiera quedado a 10 bp del umbral, resolver la divisa **después** de
+verlo habría vuelto imposible distinguir «se resolvió porque tocaba» de «se
+resolvió porque faltaba poquito».
+
+Se resolvió igual, y se verificó en vez de asumirse. La aritmética decía que
+convertir **sólo puede sumar** retorno a la canasta y que el hueco hasta GO era
+de **0.12 de Sharpe** — o sea que no podía voltear el veredicto. Pero eso es un
+argumento, y un argumento no es una medición: `?job=divisas` trae el tipo de
+cambio de **la fecha ex** de cada reparto, el retorno total los reinvierte
+convertidos, y el reporte dice cuántos se convirtieron, con qué tasa, y cuántos
+bp quedan todavía sin contar.
+
+> **Lo que NO se hizo, y es deliberado:** un reparto sin tipo de cambio de su
+> fecha ex **sigue excluido**. No se rellena con la tasa del día más cercano ni
+> con la de hoy. Un hueco medido es mejor que una conversión inventada, y esa
+> fue la razón original para excluirlos.
+
+---
+
+## 5.11 Lo que este backtest deja para el siguiente
+
+Tres hallazgos que valen más que el veredicto, porque el veredicto es sobre una
+estrategia y esto es sobre **cómo diseñar la próxima**.
+
+### 1. El value fue lastre en DOS mercados independientes
+
+| Mercado | Fecha | Value solo |
+|---|---|---:|
+| EE. UU. (`/api/rotation-analyze`) | ago-2026 | lastre |
+| BMV (`/api/bmv-rotation-analyze`) | sep-2026 | **−3.6%/año**, t = −0.89 |
+
+Ventanas distintas, universos distintos, fuentes de datos distintas, y el mismo
+signo. **Ya no es casualidad de una ventana.** Un value construido como
+earnings yield sobre EPS TTM con rezago honesto no está pagando en ninguno de
+los dos mercados que este proyecto ha medido.
+
+Eso no dice que «el value no sirve» —hay muchas formas de construirlo, y ésta
+es una— pero sí dice que **esta** construcción ya tuvo dos oportunidades y no
+las aprovechó. La próxima estrategia que lo incluya tiene que justificar por
+qué esta vez sería distinto, antes de correr.
+
+### 2. El momentum de EE. UU. era el régimen de IA, no una propiedad del factor
+
+| Mercado | Momentum solo, t |
+|---|---:|
+| EE. UU., ago-2026 | 1.87 |
+| BMV, sep-2026 | **0.08** |
+
+1.87 nunca pasó la puerta de 2, así que nunca se promovió — pero **invitaba a
+pensar que faltaba poco**. Con 0.08 en otro mercado, esa lectura se cae: aquel
+1.87 venía del **régimen concreto** que dominó las acciones estadounidenses en
+esa ventana, no de una propiedad universal del momentum.
+
+La lección es sobre inferencia, no sobre el factor: **un t de 1.87 en un solo
+mercado no es evidencia débil de un efecto real, es una observación que todavía
+no distingue efecto de régimen.** Replicar en otro mercado costó una Fase A
+entera y contestó la pregunta que ninguna sensibilidad dentro del mismo mercado
+podía contestar.
+
+### 3. La información fundamental llega con MÁS DE UN AÑO de antigüedad
+
+**Antigüedad mediana del TTM: 397 días.**
+
+No es un defecto de implementación: es lo que sale de sumar cuatro trimestres
+cuando el más viejo de los cuatro ya tiene tres trimestres encima, y de esperar
+los 65 días que eliminan el look-ahead. Cualquier estrategia sobre fundamentales
+trimestrales **con rezago honesto** opera con información de más de un año.
+
+Eso acota qué se le puede pedir a este tipo de señal en BMV:
+
+- Un fundamental de hace 397 días no puede capturar un cambio reciente en el
+  negocio. Compite contra un precio que ya incorporó cuatro trimestres de
+  noticias.
+- Reducir el rezago **no** arregla esto. Los 65 días son ~16% de los 397; el
+  resto es la ventana TTM misma, y acortarla la haría más ruidosa.
+- Lo que sí podría cambiarlo es otra clase de dato: algo que se actualice más
+  seguido que un trimestre. **La fecha real de publicación** —que es justo lo
+  que la serie de Fase 1a produce y DataBursatil no tiene— es el candidato
+  natural, porque convierte «cierre + 65 días» en «el día que de verdad se
+  supo».
+
+> Los tres hallazgos se escribieron **después** de ver el resultado, y eso está
+> bien: son lecturas, no criterios. Ninguno mueve el veredicto, y ninguno
+> podría — las puertas se cerraron en §3.4 antes de correr, y el NO-GO salió de
+> ellas.
+
 ## 6. Estado
 
 | Pieza | Estado |
@@ -1479,10 +1632,10 @@ el dictamen sea **NO-GO FUERTE**. Si algún día alguien reordena las ramas del
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 10 jobs (`reparse`, `reparse-fin` e `inspect` son de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **176 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **185 tests**, en verde. |
 | `api/_lib/bmv-rotation.js` | Hecho. Lógica pura de la Fase B: TTM, momentum, ranks, canastas, simulación, veredicto. |
 | `api/bmv-rotation-analyze.js` | Hecho. SELECT-only, `ADMIN_SECRET`, `?format=md`, 0 créditos. |
-| `tests/bmv-rotation.test.mjs` | Hecho. **43 tests**, en verde. |
+| `tests/bmv-rotation.test.mjs` | Hecho. **47 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
 | **El censo** | **Cerrado.** `deriva.estable: true` — 0 aparecieron, 0 desaparecieron. **185 series ICS**, 165 con cobertura (las 20 sin ella son bancos y casas de bolsa, fuera de la v1 por decisión de Fase 0). 1,641 repartos: 1,520 efectivo, 121 reembolso, 0 desconocido. |
@@ -1490,12 +1643,13 @@ el dictamen sea **NO-GO FUERTE**. Si algún día alguien reordena las ramas del
 | **La cosecha** | **Corrida**: 4,174 financieros, 182 series de precios. |
 | **Normalización** | Arreglada y **verificada en prod**: 4,174/4,174 con EPS (§5.5). |
 | **Elegibilidad** | **Corrida.** Con 1 MM: 111 rebalanceos, elegibles mediano 44, piso 21.6%, techo 0%, **quintil 78.4%**. Las cuatro puertas pasan (§5.9). |
-| **Fase B** | **Construida, sin correr.** `/api/bmv-rotation-analyze` (§5.9). |
+| **Fase B** | **Corrida. NO-GO** (§5.10). Exceso 0.0%/año, t = −0.007, Sharpe +0.03 contra el +0.15 exigido. |
+| **Moneda extranjera** | **Resuelta.** `?job=divisas` trae el tipo de cambio de la fecha ex; lo que sigue sin tasa sigue excluido y contado (§5.10). |
 | **Umbral de liquidez** | **Congelado en 1,000,000** (17-sep-2026), por operabilidad (§3.1, §5.8). |
 | **La cosecha** | **Completa.** 4,174 financieros, 569,589 filas de precio, 182 series. |
 | **Cobertura real** | **Reportada.** EPS en 4,174/4,174 filas; benchmark 4,207 días con 62 distribuciones. |
-| `/api/bmv-rotation-analyze` | **Construido y probado, sin correr** — este sandbox no alcanza Neon. |
+| `/api/bmv-rotation-analyze` | **Corrido desde prod.** Veredicto NO-GO (§5.10). |
 
-El backtest se corre **desde prod**. Nada de lo que produzca puede mover un
-criterio: todos están congelados arriba, con fecha, y el diff contra este
+El backtest se corrió **desde prod** y dio **NO-GO**. Nada de lo que produjo
+movió un criterio: todos siguen congelados arriba, con fecha, y el diff de este
 documento es la verificación.

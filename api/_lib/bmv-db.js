@@ -114,6 +114,27 @@ const BMV_SCHEMA = [
   // respuesta. Vive en la DB y no en una constante porque se descubre en
   // prod (el sandbox no alcanza la API) y porque cambiarlo no debe exigir
   // un deploy a media cosecha.
+  // El tipo de cambio en la FECHA EX de cada reparto en moneda extranjera.
+  //
+  // Existe porque §3.3 excluyó esos repartos del retorno total de la v1 y puso
+  // un umbral: si alguna serie superaba 50 bp acumulados sin contar, había que
+  // resolverlo con /v2/divisas EN LA FECHA EX —no con el tipo de cambio de
+  // hoy, que sería mirar el futuro desde 2016— antes de leer el veredicto.
+  // HOTEL* lo superó.
+  //
+  // Tabla aparte y no una columna en `bmv_distribuciones`: la tasa es un dato
+  // de mercado con su propia fuente y su propia fecha de cosecha, y guardarla
+  // aparte deja auditable QUÉ tasa se usó, en vez de un monto ya convertido
+  // del que nadie puede reconstruir el tipo de cambio.
+  `create table if not exists bmv_tipos_cambio (
+     divisa       text not null,
+     fecha        date not null,
+     tasa         numeric not null,
+     raw          jsonb,
+     cosechado_at timestamptz not null default now(),
+     primary key (divisa, fecha)
+   )`,
+
   `create table if not exists bmv_meta (
      key        text primary key,
      value      jsonb,
@@ -766,7 +787,70 @@ async function cobertura() {
   };
 }
 
+/* ─────────────────── tipos de cambio ─────────────────── */
+
+/**
+ * Los pares (divisa, fecha_ex) que hacen falta y TODAVÍA no se tienen.
+ *
+ * Es lo que hace la cosecha idempotente y barata: si ya se guardó la tasa de
+ * un día, no se vuelve a pedir. Sólo se piden los repartos marcados
+ * `requiere_conversion`, que son 14 en todo el censo.
+ */
+async function paresDeCambioPendientes() {
+  return sql(
+    `select distinct d.divisa, d.fecha_ex::text as fecha
+       from bmv_distribuciones d
+       left join bmv_tipos_cambio tc
+         on tc.divisa = d.divisa and tc.fecha = d.fecha_ex
+      where d.requiere_conversion = true
+        and d.divisa is not null
+        and tc.tasa is null
+      order by 1, 2`);
+}
+
+/** Todo lo pendiente, tenga tasa o no — para reportar cobertura. */
+async function paresDeCambioTodos() {
+  return sql(
+    `select d.divisa, d.fecha_ex::text as fecha, d.emisora_serie, d.monto,
+            tc.tasa
+       from bmv_distribuciones d
+       left join bmv_tipos_cambio tc
+         on tc.divisa = d.divisa and tc.fecha = d.fecha_ex
+      where d.requiere_conversion = true and d.divisa is not null
+      order by 1, 2`);
+}
+
+async function insertarTiposCambio(divisa, filas) {
+  if (!filas.length) return 0;
+  const valores = [];
+  const partes = filas.map((f, j) => {
+    const b = j * 4;
+    valores.push(divisa, f.fecha, f.tasa, JSON.stringify(f.raw ?? null));
+    return `($${b + 1},$${b + 2},$${b + 3},$${b + 4}::jsonb)`;
+  });
+  await sql(
+    `insert into bmv_tipos_cambio (divisa, fecha, tasa, raw)
+     values ${partes.join(', ')}
+     on conflict (divisa, fecha) do update set
+       tasa = excluded.tasa, raw = excluded.raw, cosechado_at = now()`,
+    valores);
+  return filas.length;
+}
+
+/** Cuántos repartos en moneda extranjera ya tienen su tasa. */
+async function coberturaTipoCambio() {
+  const r = await sql(
+    `select count(*)::int as total,
+            count(tc.tasa)::int as con_tasa
+       from bmv_distribuciones d
+       left join bmv_tipos_cambio tc
+         on tc.divisa = d.divisa and tc.fecha = d.fecha_ex
+      where d.requiere_conversion = true`);
+  return r[0] || { total: 0, con_tasa: 0 };
+}
+
 export {
+  paresDeCambioPendientes, paresDeCambioTodos, insertarTiposCambio, coberturaTipoCambio,
   BMV_SCHEMA, ensureBmvSchema,
   leerMeta, guardarMeta,
   upsertEmisora, emisorasIcs, emisoraPorClave, censoResumen,

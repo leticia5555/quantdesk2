@@ -55,6 +55,7 @@ import {
   mesPresupuesto, normalizarFinancieros, parseClavePeriodo, parsearRangoFechas,
   parsearRangoPeriodos,
   recortarACobertura, resolverCampo, traer, trimestresEntre,
+  candidatosDivisas, normalizarTiposCambio,
 } from './_lib/databursatil.js';
 
 import { sql } from './_lib/db.js';
@@ -66,6 +67,7 @@ import {
   actualizarFinancieros, formasDelCrudo, financieroCrudo, financieroQueSiSirvio,
   contarFinancieros, fechasRebalanceo, cierresConEps, seriesIcs, medianasImporte,
   presupuesto, gastar, cobertura, leerMeta, guardarMeta,
+  paresDeCambioPendientes, insertarTiposCambio, coberturaTipoCambio,
 } from './_lib/bmv-db.js';
 
 import {
@@ -852,6 +854,121 @@ function contar(lista) {
   const m = {};
   for (const x of lista) m[x] = (m[x] || 0) + 1;
   return m;
+}
+
+/* ═══════════════ job: divisas (tipo de cambio en la fecha ex) ═══════════════ */
+
+const META_CONTRATO_DIVISAS = 'contrato_divisas';
+const TOPE_DIVISAS = 40;   // tope DURO: los pares pendientes son ~14
+
+/**
+ * `?job=divisas` — el tipo de cambio de cada reparto en moneda extranjera,
+ * **en su fecha ex**.
+ *
+ * Existe porque §3.3 puso un umbral y HOTEL* lo superó: más de 50 bp
+ * acumulados de retorno sin contar dejan de ser inmateriales, y entonces la
+ * exclusión hay que resolverla —no asumirla— con el tipo de cambio de la
+ * fecha ex. Con el de hoy estaríamos mirando el futuro desde 2016.
+ *
+ * ── Descubre el contrato antes de cosechar ─────────────────────────
+ * El contrato de `/v2/divisas` NO está verificado: este sandbox no alcanza la
+ * API. Así que la primera llamada prueba las grafías candidatas contra UN par
+ * pendiente y guarda en `bmv_meta` la que sirva; las demás ya van derechas.
+ * Es el mismo movimiento de `?job=probe`, y por la misma razón: adivinar y
+ * lanzar la cosecha contra la suposición es la forma cara de equivocarse.
+ *
+ * ── Idempotente y fail-closed ──────────────────────────────────────
+ * Sólo pide los pares que faltan. Un par que no se pueda resolver **se queda
+ * sin tasa**, su reparto sigue excluido del retorno total, y el reporte lo
+ * dice: una tasa inventada sería peor que el hueco que ya está medido.
+ */
+async function jobDivisas(req) {
+  const q = (req && req.query) || {};
+  const tope = Math.max(1, Math.min(TOPE_DIVISAS, Number(q.max) || TOPE_DIVISAS));
+  const mes = mesPresupuesto();
+  const saldo = await presupuesto(mes);
+  const cartera = nuevaCartera({ mes, gastadoMes: saldo.creditos, tope });
+
+  const pendientes = await paresDeCambioPendientes();
+  const guardado = await leerMeta(META_CONTRATO_DIVISAS);
+  let contrato = (guardado && guardado.value) || null;
+
+  const pasos = [];
+  let guardadas = 0;
+
+  // ── 1. Descubrimiento, sólo si no hay contrato verificado ──
+  if (!contrato && pendientes.length && cartera.puedeSeguir()) {
+    const par = pendientes[0];
+    for (const cand of candidatosDivisas(par.divisa, par.fecha, par.fecha)) {
+      if (!cartera.puedeSeguir()) break;
+      const r = await traer(construirUrl('/divisas', cand.params));
+      cartera.anota(r);
+      const v = r.ok ? normalizarTiposCambio(r.json) : { filas: [], motivo: r.error };
+      pasos.push({
+        paso: 'contrato', candidato: cand.etiqueta, status: r.status, ok: r.ok,
+        filas: v.filas.length, motivo: v.motivo || null,
+        // El cuerpo del error es donde las APIs dicen qué parámetro falta.
+        cuerpo: r.ok ? undefined : r.texto,
+        muestra: r.ok ? v.filas.slice(0, 3) : undefined,
+      });
+      if (v.filas.length) {
+        contrato = { candidato: cand.etiqueta, params: Object.keys(cand.params), verificado: true };
+        await guardarMeta(META_CONTRATO_DIVISAS, contrato,
+          `descubierto por ?job=divisas con ${par.divisa} ${par.fecha}`);
+        guardadas += await insertarTiposCambio(par.divisa, v.filas.map((f) => ({ ...f, raw: r.json })));
+        break;
+      }
+      await dormir(PAUSA_MS);
+    }
+  }
+
+  // ── 2. Cosecha de los pares que faltan ──
+  if (contrato) {
+    for (const par of await paresDeCambioPendientes()) {
+      if (!cartera.puedeSeguir()) break;
+      // Se pide con la MISMA grafía que funcionó. Reconstruirla desde la
+      // etiqueta y no desde los params guardados sería una segunda fuente de
+      // verdad para el mismo hecho.
+      const cand = candidatosDivisas(par.divisa, par.fecha, par.fecha)
+        .find((c) => c.etiqueta === contrato.candidato);
+      if (!cand) break;
+      const r = await traer(construirUrl('/divisas', cand.params));
+      cartera.anota(r);
+      const v = r.ok ? normalizarTiposCambio(r.json) : { filas: [], motivo: r.error };
+      // Sólo se guarda la fecha PEDIDA. Si la respuesta trae un rango, las
+      // demás fechas también sirven —son el mismo dato— así que se guardan:
+      // salen gratis y evitan un request futuro.
+      if (v.filas.length) guardadas += await insertarTiposCambio(par.divisa, v.filas.map((f) => ({ ...f, raw: null })));
+      pasos.push({
+        paso: 'cosecha', divisa: par.divisa, fecha: par.fecha, status: r.status,
+        ok: r.ok, filas: v.filas.length, motivo: v.filas.length ? null : (v.motivo || 'sin tasa'),
+      });
+      await dormir(PAUSA_MS);
+    }
+  }
+
+  if (cartera.requests) await gastar(mes, cartera.requests, cartera.creditos, cartera.headers);
+
+  const cobertura = await coberturaTipoCambio();
+  const faltan = await paresDeCambioPendientes();
+  return {
+    job: 'divisas',
+    contrato: contrato || { verificado: false, nota: 'ninguna grafía candidata funcionó; ver `pasos`' },
+    requests: cartera.requests,
+    creditos: cartera.creditos,
+    razon_paro: cartera.razonParo,
+    tasas_guardadas: guardadas,
+    cobertura: {
+      repartos_en_moneda_extranjera: cobertura.total,
+      con_tasa: cobertura.con_tasa,
+      // Los que quedan sin tasa SIGUEN excluidos del retorno total. No se
+      // rellenan con la tasa de otro día ni con la de hoy: el hueco medido es
+      // mejor que una conversión inventada.
+      sin_tasa: cobertura.total - cobertura.con_tasa,
+      pendientes: faltan.map((f) => `${f.divisa} ${f.fecha}`),
+    },
+    pasos,
+  };
 }
 
 /* ═══════════════ job: elegibilidad (SELECT-only, 0 créditos) ═══════════════ */
@@ -1807,7 +1924,7 @@ export default async function handler(req, res) {
 
   const job = String((req.query && req.query.job) || '').toLowerCase();
   const q2 = (req.query) || {};
-  const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse', 'reparse-fin', 'inspect']);
+  const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse', 'reparse-fin', 'inspect', 'divisas']);
 
   try {
     // AUTH PRIMERO, base después. Estaba al revés: `ensureBmvSchema()` corría
@@ -1875,12 +1992,13 @@ export default async function handler(req, res) {
     if (job === 'emisoras') return res.status(200).json(await jobEmisoras());
     if (job === 'financieros') return res.status(200).json(await jobFinancieros(req));
     if (job === 'historicos') return res.status(200).json(await jobHistoricos(req));
+    if (job === 'divisas') return res.status(200).json(await jobDivisas(req));
 
     const mes = mesPresupuesto();
     return res.status(200).json({
       endpoint: '/api/bmv-harvest',
       que_es: 'Fase A del backtest BMV: cosecha DataBursatil → Neon (tablas bmv_*; xbrl_reports NO se toca).',
-      orden_sugerido: ['?job=estimate', '?job=probe', '?job=emisoras', '?job=estimate (ya con censo real)', '?job=financieros&max=60 (repetir)', '?job=historicos&max=30 (repetir)', '?job=reparse-fin (si la normalización cambia)', '?job=cobertura&format=md'],
+      orden_sugerido: ['?job=estimate', '?job=probe', '?job=emisoras', '?job=estimate (ya con censo real)', '?job=financieros&max=60 (repetir)', '?job=historicos&max=30 (repetir)', '?job=reparse-fin (si la normalización cambia)', '?job=divisas', '?job=cobertura&format=md'],
       jobs: {
         'estimate': 'público, sin red: presupuesto de créditos en tres modelos de costo',
         'probe': 'protegido, ≤15 requests: descubre el contrato de la API y lo guarda',
@@ -1893,6 +2011,7 @@ export default async function handler(req, res) {
         'reparse-fin': 'protegido, CERO créditos: re-normaliza los financieros desde el crudo guardado',
         'inspect': 'protegido, CERO créditos: describe la forma del crudo guardado, sin normalizar nada',
         'elegibilidad': 'público, SELECT-only y CERO créditos: simula los rebalanceos y dice si la Fase B puede concluir (&format=md, &umbral=N, &umbrales=a,b,c para la tabla comparativa)',
+        'divisas': 'protegido, ~14 requests: tipo de cambio en la FECHA EX de cada reparto en moneda extranjera. Descubre el contrato de /v2/divisas antes de cosechar',
       },
       token_configurado: !!process.env.DATABURSATIL_TOKEN,
       escritura_habilitada: !!adminSecret(),
@@ -1914,6 +2033,7 @@ export {
   jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros, jobHistoricos,
   jobReparse,
   comparativaMd, contar, describirCrudo, elegibilidadMd, estimarConsumo, filaCenso,
+  jobDivisas,
   filasDelCenso,
   jobElegibilidad, literal,
   pareceClave, pareceSerie, tipoDe,
