@@ -112,6 +112,20 @@ export default async function handler(req, res) {
       const pedidos = diag.split(',').map((x) => x.trim().toUpperCase()).filter(Boolean).slice(0, 40);
       const enUniverso = new Set(u.symbols || []);
       const deIndice = new Set(u.from_index || []);
+      // ── POR QUÉ NO ESTÁ: LAS TRES RESPUESTAS SON DISTINTAS ────────
+      // `en_universo: false` contesta "¿está?" y no "¿por qué no?", y ésas son
+      // preguntas distintas con arreglos distintos:
+      //   · lo RECHAZÓ la admisión (precio, volumen, market cap) → el nombre
+      //     existe y no califica hoy; puede volver mañana solo.
+      //   · NUNCA FUE CANDIDATO → no está en los constituyentes de hoy ni
+      //     entre los movers. Si es un nombre grande, eso apunta a la lista de
+      //     índices, no al filtro.
+      //   · está y le falta un campo → el bug está en el consumidor.
+      // Sin separarlas, "OKTA no está" manda a revisar el filtro de volumen
+      // cuando el problema puede ser que la lista del índice no lo trae.
+      const rechazoDe = new Map(
+        (((u.admission || {}).rejected) || []).map((r) => [String(r.symbol || '').toUpperCase(), r]),
+      );
       const sectores = u.sectores || {};
       const retornos = u.retornos || {};
       const caps = u.market_caps || {};
@@ -149,8 +163,20 @@ export default async function handler(req, res) {
           ret_1m: (retornos[sym] || {}).ret_1m ?? null,
           market_cap: caps[sym] ?? null,
           fifty_two_week: w52[sym] || null,
+          // El veredicto de admisión, cuando lo hubo: trae el motivo EXACTO
+          // ("volumen $8.7M/día < $10M", "market cap no disponible"), que es
+          // lo que se necesita para saber si el nombre volverá solo o si hay
+          // algo que arreglar.
+          rechazo_admision: rechazoDe.get(sym) || null,
+          por_que: enUniverso.has(sym)
+            ? 'admitido'
+            : rechazoDe.get(sym)
+              ? 'rechazado_por_admision'
+              : 'nunca_fue_candidato',
           lectura: !enUniverso.has(sym)
-            ? 'NO está en el universo de este día: ninguna herramienta ni riel lo va a encontrar.'
+            ? (rechazoDe.get(sym)
+              ? `NO está porque la ADMISIÓN lo rechazó: ${rechazoDe.get(sym).reason}. El nombre existe y hoy no califica; si el motivo es precio o volumen, puede volver solo mañana sin que nadie toque nada.`
+              : 'NO está y NI SIQUIERA FUE CANDIDATO: no aparece en los constituyentes de índice de hoy ni entre los movers del día. Si es un nombre grande, el problema NO es el filtro de admisión — mirá `indices` (¿se bajó la lista?, ¿de cuándo es?) y si salió del índice de verdad. OJO: la lista de rechazados se journalea acotada a 50, así que en un día con muchos rechazos un nombre rechazado puede caer acá; el conteo real está en `admission.rejected_count`.')
             : sectores[sym] == null
               ? 'Está en el universo pero SIN sector. Si `origen` es `canal_del_dia`, es esperado: los sectores vienen del CSV del índice y un mover de fuera del S&P no los trae. Si `origen` es `indice`, el CSV no trajo la columna Sector o el snapshot guardado es de antes de que se leyera.'
               : 'Tiene sector en el universo. Si igual llega como UNKNOWN a los rieles o la herramienta `sector` lo ignora, el bug está en el consumidor, no en el dato.',
