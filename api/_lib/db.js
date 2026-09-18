@@ -308,6 +308,19 @@ const SCHEMA = [
      updated_at timestamptz not null default now()
    )`,
 
+  // arena_market_cap — la foto del market cap por nombre, para NO volver a
+  // pedirle a Finnhub lo que ya sabíamos. La caché del proceso muere con la
+  // lambda; ésta no, y por eso los 10 nombres que el 2026-09-18 se cayeron por
+  // `rate_budget` dejan de caerse. La VIGENCIA no está acá sino en
+  // _lib/arena-mcap-cache.js: depende de qué tan cerca del piso de $1B está el
+  // nombre, y eso es una regla, no un esquema.
+  `create table if not exists arena_market_cap (
+     symbol     text primary key,
+     market_cap numeric not null,
+     fetched_at timestamptz not null default now(),
+     source     text
+   )`,
+
   // xbrl_reports — captura trimestral del XBRL de BMV (docs/xbrl-capture.md).
   // doc_id es UNIQUE: es lo que hace idempotente a /api/xbrl-capture?run=1.
   `create table if not exists xbrl_reports (

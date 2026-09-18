@@ -205,7 +205,10 @@ export async function fetchMarketCap(symbol, finnhubKey, fetchImpl = fetch, diag
 // Resuelve los datos de admisión de un lote. `known` trae lo que el canal ya
 // sabe (los movers vienen con precio y volumen del endpoint: eso ahorra una
 // request por nombre y no se vuelve a pedir).
-export async function resolveAdmission(symbols, { finnhubKey, now = new Date(), known = {}, fetchImpl = fetch, concurrency = 4, maxFinnhub = FINNHUB_CALL_BUDGET, diag = null } = {}) {
+// `mcapCache` es la caché PERSISTIDA del market cap ({ leer, guardar }), que
+// se INYECTA en vez de importarse: este módulo sigue sin conocer la DB y se
+// prueba entero sin Neon. Sin ella el comportamiento es el de siempre.
+export async function resolveAdmission(symbols, { finnhubKey, now = new Date(), known = {}, fetchImpl = fetch, concurrency = 4, maxFinnhub = FINNHUB_CALL_BUDGET, diag = null, mcapCache = null } = {}) {
   const out = {};
   const todo = [];
   let gastadas = 0;
@@ -217,6 +220,15 @@ export async function resolveAdmission(symbols, { finnhubKey, now = new Date(), 
     out[sym] = null;
     todo.push(sym);
   }
+
+  // ── LA FOTO PERSISTIDA, ANTES DE GASTAR UNA SOLA LLAMADA ───────────
+  // Se lee en UN viaje para todo el lote. Lo que venga de acá entra por la
+  // misma puerta que `known`: ni siquiera cuenta contra el presupuesto, porque
+  // no se pide nada. Los nombres del borde del piso vuelven vacíos a propósito
+  // (su foto vence en un día) y ésos sí se preguntan.
+  const persistidos = mcapCache && mcapCache.leer ? await mcapCache.leer(todo).catch(() => ({})) : {};
+  let deCache = 0;
+  const frescos = {};
   // Lotes chicos y secuenciales entre lotes: el tier gratis de Finnhub corta a
   // 60/min y un burst de 30 en paralelo lo roza con el deep dive del mismo run.
   for (let i = 0; i < todo.length; i += concurrency) {
@@ -232,7 +244,11 @@ export async function resolveAdmission(symbols, { finnhubKey, now = new Date(), 
       // lote; la segunda es del nombre.
       let mcapPromise;
       if (Number.isFinite(k.marketCap)) mcapPromise = Promise.resolve(k.marketCap);
-      else if (gastadas >= maxFinnhub) {
+      else if (Number.isFinite(persistidos[sym])) {
+        deCache++;
+        if (Array.isArray(diag)) diag.push({ symbol: sym, ok: true, reason: 'cache_persistida', detail: 'no se pidió a Finnhub: la foto guardada en Neon sigue vigente' });
+        mcapPromise = Promise.resolve(persistidos[sym]);
+      } else if (gastadas >= maxFinnhub) {
         if (Array.isArray(diag)) diag.push({ symbol: sym, ok: false, reason: 'rate_budget', detail: `no se pidió: el lote ya gastó ${maxFinnhub} llamadas a Finnhub` });
         mcapPromise = Promise.resolve(null);
       } else { gastadas++; mcapPromise = fetchMarketCap(sym, finnhubKey, fetchImpl, diag); }
@@ -249,7 +265,17 @@ export async function resolveAdmission(symbols, { finnhubKey, now = new Date(), 
       };
       out[sym] = row;
       cache.set(dayKey(sym, now), row);
+      // Solo se persiste lo que se acaba de PEDIR. Reescribir una foto que vino
+      // de la caché le renovaría la fecha sin haber mirado nada — una foto que
+      // no envejece nunca es peor que no tener caché.
+      if (Number.isFinite(mcap) && !Number.isFinite(persistidos[sym]) && !Number.isFinite(k.marketCap)) frescos[sym] = mcap;
     }));
+  }
+  if (mcapCache && mcapCache.guardar && Object.keys(frescos).length) {
+    await mcapCache.guardar(frescos).catch(() => 0);
+  }
+  if (Array.isArray(diag) && deCache) {
+    diag.push({ symbol: null, ok: true, reason: 'cache_persistida_resumen', detail: `${deCache} nombres resueltos desde Neon sin gastar cuota de Finnhub (de ${todo.length} del lote)` });
   }
   return out;
 }
