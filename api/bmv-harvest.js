@@ -67,7 +67,7 @@ import {
   marcarLedger, clavesHechas, clavesAgotadas, ledgerResumen, financierosCrudos,
   actualizarFinancieros, formasDelCrudo, financieroCrudo, financieroQueSiSirvio,
   contarFinancieros, fechasRebalanceo, cierresConEps, seriesIcs, medianasImporte,
-  presupuesto, gastar, cobertura, leerMeta, guardarMeta,
+  presupuesto, gastar, reconciliarCreditos, cobertura, leerMeta, guardarMeta,
 } from './_lib/bmv-db.js';
 
 import {
@@ -969,22 +969,51 @@ const DIVERGENCIA_MAXIMA = 0.10;
  *
  * Cuesta un request (unos pocos bytes), y ese costo también se anota.
  */
-async function jobCreditos() {
+async function jobCreditos(req) {
+  const q = (req && req.query) || {};
+  const reconciliar = String(q.reconciliar || '') === '1';
   const mes = mesPresupuesto();
-  const local = await presupuesto(mes);
 
   const r = await traer(construirUrl('/creditos', {}));
   // El propio chequeo cuesta, y se cobra con la misma regla que todo lo demás.
+  // Va ANTES de leer el contador: si se leyera primero, el reporte nunca
+  // mostraría su propio costo y `bytes` se vería en 0 incluso funcionando.
   if (r && r.status) await gastar(mes, { requests: 1, creditos: r.creditos || 0, bytes: r.bytes || 0 });
 
-  const saldo = saldoDeCreditos(r && r.json);
+  // Sólo se confía en el cuerpo de una respuesta OK. `traer()` parsea el JSON
+  // aunque el status sea 500 —para poder mostrar el error— y un cuerpo de
+  // error puede traer una llave que se parezca a un saldo. Reconciliar el
+  // contador contra eso sería escribir un número sacado de una falla.
+  const saldo = r && r.ok
+    ? saldoDeCreditos(r.json)
+    : { restantes: null, motivo: r ? `la API contestó HTTP ${r.status}: no hay saldo en el que confiar` : 'sin respuesta' };
   const consumidoReal = saldo.restantes === null ? null : PRESUPUESTO_MENSUAL - saldo.restantes;
+
+  // El ajuste va como JOB y no como UPDATE a mano: por SQL el número cambiaría
+  // sin que quede dicho por qué, y un contador corregido sin rastro es un
+  // contador en el que tampoco se puede confiar.
+  let ajuste = null;
+  if (reconciliar) {
+    ajuste = consumidoReal === null
+      ? { ajustado: false, motivo: 'no se pudo leer el saldo real: no hay contra qué reconciliar' }
+      : await reconciliarCreditos(mes, {
+        creditosReales: consumidoReal,
+        motivo: 'el contador cobraba 1 crédito por request; la API cobra 1 por KiB transmitido (error ~18×)',
+        fuente: '/v2/creditos',
+      });
+  }
+
+  // El contador se lee AL FINAL: después de cobrar este request y después del
+  // ajuste, para que lo que se reporta sea el estado en el que queda la base.
+  const local = await presupuesto(mes);
   const divergencia = (consumidoReal === null || !consumidoReal)
     ? null : (consumidoReal - local.creditos) / consumidoReal;
 
   return {
     job: 'creditos',
     mes,
+    reconciliar,
+    ajuste,
     api: {
       status: r ? r.status : null,
       restantes: saldo.restantes,
@@ -993,7 +1022,16 @@ async function jobCreditos() {
       cuerpo: r && !r.ok ? r.texto : undefined,
       motivo: saldo.motivo,
     },
-    local: { requests: local.requests, creditos: local.creditos, bytes: local.bytes || 0 },
+    local: {
+      requests: local.requests, creditos: local.creditos, bytes: local.bytes || 0,
+      ajustes: local.ajustes || [], ajustado_at: local.ajustado_at || null,
+    },
+    // Lo que ESTE request midió. Es la prueba en vivo de que la medición
+    // funciona, sin depender de un fixture: si acá sale 0 con un status 200,
+    // `traer()` no está reportando el tamaño.
+    medicion_de_este_request: r ? {
+      status: r.status, bytes: r.bytes, content_length: r.content_length, creditos: r.creditos,
+    } : null,
     modelo: {
       regla: 'ceil(bytes / 1024) por respuesta — “por cada KiB de datos transmitidos, 1 crédito”',
       bytes_por_credito: BYTES_POR_CREDITO,
@@ -1001,12 +1039,20 @@ async function jobCreditos() {
       // volver a pedir nada: si esto no cuadra con `local.creditos`, el que
       // está mal es el acumulador, no el modelo.
       creditos_rederivados: creditosDeBytes(local.bytes || 0),
+      // ⚠️ ABIERTO: `bytes` es el cuerpo YA DESCOMPRIMIDO y `content_length`
+      // lo que viajó por el cable. Con gzip difieren ~3×, y la documentación
+      // dice «datos transmitidos» sin aclarar cuál. Se cobra sobre el
+      // descomprimido, que es la lectura CARA — si resulta ser la otra, el
+      // presupuesto habrá sido conservador, no optimista. Esta reconciliación
+      // es justo lo que lo va a decidir con datos.
+      nota_compresion: 'bytes = cuerpo descomprimido; content_length = bytes en el cable. Se cobra sobre el descomprimido (lectura conservadora).',
     },
     divergencia,
     alerta: divergencia === null
       ? 'no se pudo leer el saldo real: el contraste queda SIN hacer, que no es lo mismo que “cuadra”'
       : (Math.abs(divergencia) > DIVERGENCIA_MAXIMA
         ? `⚠️ el contador local difiere ${(100 * divergencia).toFixed(1)}% del saldo real (umbral ${100 * DIVERGENCIA_MAXIMA}%) — revisar el modelo de costo ANTES de seguir cosechando`
+          + (reconciliar ? '' : '. Para corregir el histórico con rastro: ?job=creditos&reconciliar=1')
         : `cuadra dentro del ${100 * DIVERGENCIA_MAXIMA}%`),
   };
 }
@@ -2048,7 +2094,7 @@ export default async function handler(req, res) {
       }
       return res.status(200).json(e);
     }
-    if (job === 'creditos') return res.status(200).json(await jobCreditos());
+    if (job === 'creditos') return res.status(200).json(await jobCreditos(req));
     if (job === 'inspect') return res.status(200).json(await jobInspect(req));
     if (job === 'reparse-fin') return res.status(200).json(await jobReparseFinancieros(req));
     if (job === 'reparse') return res.status(200).json(await jobReparse());
@@ -2073,7 +2119,7 @@ export default async function handler(req, res) {
         'reparse': 'protegido, CERO créditos: re-deriva el censo desde el crudo guardado',
         'reparse-fin': 'protegido, CERO créditos: re-normaliza los financieros desde el crudo guardado',
         'inspect': 'protegido, CERO créditos: describe la forma del crudo guardado, sin normalizar nada',
-        'creditos': 'protegido, 1 request chico: contrasta el contador local contra /v2/creditos y alerta si divergen más de 10%',
+        'creditos': 'protegido, 1 request chico: contrasta el contador local contra /v2/creditos y alerta si divergen más de 10%. Con &reconciliar=1 fija el contador al valor real y deja el ajuste anotado (idempotente)',
         'elegibilidad': 'público, SELECT-only y CERO créditos: simula los rebalanceos y dice si la Fase B puede concluir (&format=md, &umbral=N, &umbrales=a,b,c para la tabla comparativa)',
       },
       token_configurado: !!process.env.DATABURSATIL_TOKEN,
