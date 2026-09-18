@@ -185,6 +185,13 @@ const BMV_SCHEMA = [
   // porque `creditos` venía contando requests —un error de ~18×— y sin los
   // bytes crudos no hay forma de auditar el crédito después.
   `alter table bmv_api_budget add column if not exists bytes bigint default 0`,
+  // El rastro de los AJUSTES manuales al contador. Existe porque el histórico
+  // quedó mal contado (~18×) y corregirlo con un UPDATE a mano dejaría un
+  // número que apareció sin explicación. Cada ajuste guarda de cuánto a
+  // cuánto, por qué, cuándo y con qué fuente — un contador corregido sin
+  // rastro es un contador en el que tampoco se puede confiar.
+  `alter table bmv_api_budget add column if not exists ajustes jsonb default '[]'::jsonb`,
+  `alter table bmv_api_budget add column if not exists ajustado_at timestamptz`,
 
   `alter table bmv_financieros add column if not exists bloques jsonb`,
   `alter table bmv_financieros add column if not exists comparativo jsonb`,
@@ -804,7 +811,53 @@ async function cobertura() {
 }
 
 
+/**
+ * Fija el contador de créditos del mes al valor REAL que reporta la API, y
+ * deja el ajuste anotado.
+ *
+ * Es un SET absoluto, no un incremento: el contador local estaba equivocado en
+ * ~18× y sumarle algo sólo movería un número malo. El valor que manda es el de
+ * `/v2/creditos`, que es la única fuente que no es nuestra.
+ *
+ * **Idempotente por construcción.** Si el contador ya coincide con el valor
+ * real no se escribe nada y no se agrega entrada al rastro: correrlo dos veces
+ * deja exactamente el mismo estado que correrlo una. El ajuste converge solo,
+ * porque la propia llamada de reconciliación cuesta unos créditos que la
+ * siguiente corrida ya ve reflejados en los dos lados.
+ */
+async function reconciliarCreditos(mes, { creditosReales, motivo, fuente }) {
+  const actual = await presupuesto(mes);
+  const antes = Number(actual.creditos) || 0;
+  const despues = Number(creditosReales);
+  if (!Number.isFinite(despues) || despues < 0) {
+    return { ajustado: false, motivo: 'el valor real no es un número usable', antes, despues: null };
+  }
+  if (antes === despues) {
+    return { ajustado: false, motivo: 'el contador ya coincide con la API: nada que ajustar', antes, despues };
+  }
+
+  const entrada = {
+    fecha: new Date().toISOString(),
+    motivo,
+    fuente,
+    creditos_antes: antes,
+    creditos_despues: despues,
+    diferencia: despues - antes,
+  };
+  const r = await sql(
+    `insert into bmv_api_budget (mes, requests, creditos, bytes, ajustes, ajustado_at)
+     values ($1, 0, $2, 0, jsonb_build_array($3::jsonb), now())
+     on conflict (mes) do update set
+       creditos    = $2,
+       ajustes     = coalesce(bmv_api_budget.ajustes, '[]'::jsonb) || $3::jsonb,
+       ajustado_at = now()
+     returning requests, creditos, bytes, ajustes`,
+    [mes, despues, JSON.stringify(entrada)]);
+  return { ajustado: true, antes, despues, fila: r[0] || null, entrada };
+}
+
 export {
+  reconciliarCreditos,
   BMV_SCHEMA, ensureBmvSchema,
   leerMeta, guardarMeta,
   upsertEmisora, emisorasIcs, emisoraPorClave, censoResumen,

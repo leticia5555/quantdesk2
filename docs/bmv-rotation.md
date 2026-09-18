@@ -282,6 +282,63 @@ créditos** para la forma real de la cosecha (4,174 financieros + 182 series de
 precios + el censo). La cosecha completa costó **~40% del presupuesto
 mensual**, no el ~2% que se creyó.
 
+#### El contraste, corrido
+
+`?job=creditos`, 18-sep-2026:
+
+| | |
+|---|---:|
+| Restantes según la API | 119,025 |
+| **Consumido real** | **80,975** |
+| Contador local | 4,405 |
+| **Divergencia** | **94.6%** |
+
+La alerta se disparó con el aviso de revisar antes de seguir cosechando, que
+era exactamente su trabajo.
+
+#### La corrección del histórico va como JOB, no como UPDATE
+
+`?job=creditos&reconciliar=1` fija el contador del mes al valor real y **deja
+el ajuste anotado**: de cuánto a cuánto, por qué, cuándo y con qué fuente.
+
+Por SQL a mano el número cambiaría sin que quede dicho por qué, y **un contador
+corregido sin rastro es un contador en el que tampoco se puede confiar** — que
+es justo el problema que se está arreglando.
+
+Es **idempotente por construcción**: es un SET absoluto, no un incremento, y el
+rastro sólo crece cuando el valor de verdad cambió. Correrlo dos veces deja el
+mismo estado que correrlo una.
+
+> **Sin saldo confiable no se ajusta nada.** Si la API contesta un error, no se
+> reconcilia: `traer()` parsea el JSON aunque el status sea 500 —para poder
+> mostrar el error— y un cuerpo de falla puede traer una llave que se parezca a
+> un saldo. Escribir el contador con un número sacado de una falla sería
+> repetir el error original con otro disfraz.
+
+#### Sobre el `bytes: 0` del primer reporte
+
+No era el arreglo fallando. Eran dos cosas distintas que conviene no confundir:
+
+1. La columna `bytes` es **nueva** y la cosecha corrió **antes** del arreglo,
+   así que el acumulado histórico no tiene bytes que mostrar. Eso es correcto.
+2. El job leía el contador **antes** de cobrarse a sí mismo, así que su propio
+   request tampoco aparecía. Eso sí era un defecto del reporte, y está
+   corregido: ahora el contador se lee al final y el reporte trae además
+   `medicion_de_este_request`, que es la prueba en vivo — **si ahí sale 0 con un
+   status 200, la medición no funciona**.
+
+Verificado con un request real, no con un fixture: `traer()` contra un archivo
+de 41,882 bytes devolvió `bytes: 41882` y `creditos: 41`.
+
+> **Y ahí salió algo abierto:** ese mismo request reportó `content-length:
+> 12,226` — el cuerpo **comprimido**. La documentación dice «datos
+> transmitidos» sin aclarar si cobra el comprimido o el descomprimido, y entre
+> los dos hay ~3.4×. **Se cobra sobre el descomprimido**, que es la lectura
+> cara: si resulta ser la otra, el presupuesto habrá sido conservador y no
+> optimista. Las dos cifras viajan en el reporte, y la reconciliación contra
+> `/v2/creditos` es lo que lo va a decidir **con datos** — esta vez sí contra
+> una fuente que no es nuestra.
+
 #### Qué cambió para que no vuelva a pasar
 
 1. **`traer()` mide los bytes reales** de cada respuesta —en bytes UTF-8, no en
@@ -295,6 +352,8 @@ mensual**, no el ~2% que se creyó.
 4. La reserva que la cartera aparta antes de cada request ya no es 1 crédito
    fijo: arranca conservadora y luego usa el **promedio observado de la
    corrida**.
+5. **`?job=creditos&reconciliar=1`** corrige el histórico dejando rastro, en vez
+   de un UPDATE a mano que no explica nada.
 
 > **La lección, que es de método y no de aritmética:** una medición que sólo
 > puede confirmar su premisa no es una medición. Cuando la conclusión fue «el
@@ -1721,7 +1780,7 @@ Eso acota qué se le puede pedir a este tipo de señal en BMV:
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 10 jobs (`reparse`, `reparse-fin` e `inspect` son de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **188 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **194 tests**, en verde. |
 | `api/_lib/bmv-rotation.js` | Hecho. Lógica pura de la Fase B: TTM, momentum, ranks, canastas, simulación, veredicto. |
 | `api/bmv-rotation-analyze.js` | Hecho. SELECT-only, `ADMIN_SECRET`, `?format=md`, 0 créditos. |
 | `tests/bmv-rotation.test.mjs` | Hecho. **47 tests**, en verde. |
@@ -1734,7 +1793,7 @@ Eso acota qué se le puede pedir a este tipo de señal en BMV:
 | **Elegibilidad** | **Corrida.** Con 1 MM: 111 rebalanceos, elegibles mediano 44, piso 21.6%, techo 0%, **quintil 78.4%**. Las cuatro puertas pasan (§5.9). |
 | **Fase B** | **Corrida. NO-GO** (§5.10). Exceso 0.0%/año, t = −0.007, Sharpe +0.03 contra el +0.15 exigido. |
 | **Moneda extranjera** | **Fuera de la v1, por decisión.** `/v2/divisas` es spot y no sirve; la vía real es Banxico SIE, otra integración. Los 14 repartos van fuera con sus bp reportados (§3.3, §5.10). |
-| **Contador de créditos** | **Corregido** (18-sep-2026). Cobraba por request y la API cobra por KiB: error de ~18×. `?job=creditos` lo contrasta contra la API (§2.1). |
+| **Contador de créditos** | **Corregido y reconciliado** (18-sep-2026). Cobraba por request y la API cobra por KiB: 4,405 contra 80,975 reales, 94.6% de divergencia. `?job=creditos` contrasta contra la API; `&reconciliar=1` corrige el histórico con rastro (§2.1). |
 | **Umbral de liquidez** | **Congelado en 1,000,000** (17-sep-2026), por operabilidad (§3.1, §5.8). |
 | **La cosecha** | **Completa.** 4,174 financieros, 569,589 filas de precio, 182 series. |
 | **Cobertura real** | **Reportada.** EPS en 4,174/4,174 filas; benchmark 4,207 días con 62 distribuciones. |

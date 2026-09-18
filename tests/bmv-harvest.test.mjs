@@ -2223,8 +2223,183 @@ test('?job=creditos entra sin ReferenceError aunque no haya base', async () => {
     assert.fail('debería fallar por falta de DATABASE_URL');
   } catch (e) {
     assert.doesNotMatch(e.message, /is not defined/, `ReferenceError en la ruta del job: ${e.message}`);
-    assert.match(e.message, /DATABASE_URL/);
+    // Falla por una env var que falta —cuál de las dos depende del orden— y
+    // no por un nombre sin resolver, que es lo que este test cuida.
+    assert.match(e.message, /DATABASE_URL|DATABURSATIL_TOKEN/);
   } finally {
     if (guardado !== undefined) process.env.DATABASE_URL = guardado;
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════
+ * RECONCILIACIÓN DEL HISTÓRICO.
+ *
+ * El contador traía 4,405 créditos cuando la API decía ~80,975:
+ * 94.6% de divergencia. Corregirlo por SQL a mano dejaría un número
+ * que apareció sin explicación, así que el ajuste va como JOB y
+ * escribe su propio rastro: de cuánto a cuánto, por qué, cuándo y
+ * con qué fuente.
+ * ═══════════════════════════════════════════════════════════ */
+
+/** Un Neon + una API de mentiras, para correr el job de punta a punta. */
+function mockCreditos({ restantes = 119_025, filaInicial = null, statusApi = 200 } = {}) {
+  // `construirUrl` exige el token antes de armar la URL, y el fetch está
+  // mockeado: sin esto el job fallaría por la razón equivocada.
+  const tokenAnterior = process.env.DATABURSATIL_TOKEN;
+  process.env.DATABURSATIL_TOKEN = 'token-de-prueba';
+  const dbAnterior = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = 'postgres://u:p@ep-falso.us-east-1.aws.neon.tech/db';
+  const estado = { fila: filaInicial || { mes: '2026-09', requests: 0, creditos: 0, bytes: 0, ajustes: [] } };
+  const sqls = [];
+  const fetchAnterior = global.fetch;
+  global.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('/sql')) {
+      const body = JSON.parse(opts.body);
+      const lista = body.queries || [body];
+      for (const qy of lista) {
+        sqls.push(qy.query);
+        const q = qy.query;
+        const p = qy.params || [];
+        if (/^\s*select \* from bmv_api_budget/i.test(q)) continue;
+        if (/insert into bmv_api_budget/i.test(q) && /ajustes/.test(q)) {
+          // reconciliarCreditos: SET absoluto + append al rastro
+          estado.fila.creditos = Number(p[1]);
+          estado.fila.ajustes = [...(estado.fila.ajustes || []), JSON.parse(p[2])];
+          estado.fila.ajustado_at = new Date().toISOString();
+        } else if (/insert into bmv_api_budget/i.test(q)) {
+          // gastar: incrementos
+          estado.fila.requests += Number(p[1]);
+          estado.fila.creditos += Number(p[2]);
+          estado.fila.bytes += Number(p[4]);
+        }
+      }
+      const f = estado.fila;
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          fields: [['mes', 25], ['requests', 23], ['creditos', 23], ['bytes', 20], ['ajustes', 3802], ['ajustado_at', 25]]
+            .map(([name, dataTypeID]) => ({ name, dataTypeID })),
+          rows: [[f.mes, String(f.requests), String(f.creditos), String(f.bytes),
+            JSON.stringify(f.ajustes || []), f.ajustado_at || null]],
+        }),
+      };
+    }
+    // /v2/creditos
+    const cuerpo = JSON.stringify({ creditos: restantes });
+    return {
+      ok: statusApi === 200, status: statusApi,
+      headers: { get: (k) => (k === 'content-length' ? String(cuerpo.length) : null) },
+      text: async () => cuerpo,
+    };
+  };
+  return {
+    estado, sqls,
+    restaurar: () => {
+      global.fetch = fetchAnterior;
+      if (tokenAnterior === undefined) delete process.env.DATABURSATIL_TOKEN;
+      else process.env.DATABURSATIL_TOKEN = tokenAnterior;
+      if (dbAnterior === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = dbAnterior;
+    },
+  };
+}
+
+test('?job=creditos&reconciliar=1 fija el contador al valor real de la API', async () => {
+  const m = mockCreditos({ restantes: 119_025, filaInicial: { mes: '2026-09', requests: 4405, creditos: 4405, bytes: 0, ajustes: [] } });
+  try {
+    const r = await jobCreditos({ query: { reconciliar: '1' } });
+    assert.equal(r.api.restantes, 119_025);
+    assert.equal(r.api.consumido_estimado, 200_000 - 119_025);
+    assert.equal(r.ajuste.ajustado, true);
+    assert.equal(r.ajuste.antes, 4405 + r.medicion_de_este_request.creditos,
+      'el ajuste parte de lo que había DESPUÉS de cobrar este request');
+    assert.equal(r.ajuste.despues, 80_975);
+    assert.equal(m.estado.fila.creditos, 80_975, 'la base quedó con el valor real');
+  } finally {
+    m.restaurar();
+  }
+});
+
+test('el ajuste deja rastro: de cuánto a cuánto, por qué, cuándo y con qué fuente', async () => {
+  const m = mockCreditos({ restantes: 119_025, filaInicial: { mes: '2026-09', requests: 4405, creditos: 4405, bytes: 0, ajustes: [] } });
+  try {
+    await jobCreditos({ query: { reconciliar: '1' } });
+    const e = m.estado.fila.ajustes[0];
+    assert.ok(e.fecha, 'cuándo');
+    assert.match(e.motivo, /KiB/, 'por qué, en el rastro y no sólo en un commit');
+    assert.equal(e.fuente, '/v2/creditos', 'con qué fuente');
+    assert.equal(e.creditos_despues, 80_975);
+    assert.ok(e.creditos_antes < e.creditos_despues);
+    assert.equal(e.diferencia, e.creditos_despues - e.creditos_antes);
+  } finally {
+    m.restaurar();
+  }
+});
+
+test('correrlo DOS veces no duplica el ajuste', async () => {
+  const guardado = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = 'postgres://u:p@ep-falso.us-east-1.aws.neon.tech/db';
+  // La segunda corrida ve el saldo ya movido por el costo de la primera, así
+  // que los dos lados convergen y no hay nada que ajustar.
+  const m = mockCreditos({ restantes: 119_025, filaInicial: { mes: '2026-09', requests: 4405, creditos: 4405, bytes: 0, ajustes: [] } });
+  try {
+    await jobCreditos({ query: { reconciliar: '1' } });
+    assert.equal(m.estado.fila.ajustes.length, 1);
+    const despuesDeLaPrimera = m.estado.fila.creditos;
+
+    // Segunda corrida: el contador local ya vale lo que dice la API (más el
+    // costo del propio chequeo, que la API también habría cobrado).
+    m.estado.fila.creditos = 80_975 - (await Promise.resolve(1));   // el chequeo cuesta 1
+    const r2 = await jobCreditos({ query: { reconciliar: '1' } });
+    assert.equal(r2.ajuste.ajustado, false, 'nada que ajustar en la segunda');
+    assert.match(r2.ajuste.motivo, /ya coincide/);
+    assert.equal(m.estado.fila.ajustes.length, 1, 'el rastro NO crece cuando no hubo cambio');
+    assert.ok(despuesDeLaPrimera > 0);
+  } finally {
+    m.restaurar();
+  }
+});
+
+test('sin &reconciliar=1 el job NO escribe el ajuste, sólo reporta', async () => {
+  const m = mockCreditos({ restantes: 119_025, filaInicial: { mes: '2026-09', requests: 4405, creditos: 4405, bytes: 0, ajustes: [] } });
+  try {
+    const r = await jobCreditos({ query: {} });
+    assert.equal(r.ajuste, null);
+    assert.equal(m.estado.fila.ajustes.length, 0, 'el default no toca el contador');
+    assert.ok(Math.abs(r.divergencia) > 0.9, 'y reporta la divergencia enorme');
+    assert.match(r.alerta, /reconciliar=1/, 'y dice cómo corregirla');
+  } finally {
+    m.restaurar();
+  }
+});
+
+test('si la API no contesta el saldo, NO se ajusta nada a ciegas', async () => {
+  const m = mockCreditos({ restantes: 119_025, statusApi: 500, filaInicial: { mes: '2026-09', requests: 10, creditos: 10, bytes: 0, ajustes: [] } });
+  try {
+    const r = await jobCreditos({ query: { reconciliar: '1' } });
+    assert.equal(r.ajuste.ajustado, false);
+    assert.match(r.ajuste.motivo, /no se pudo leer el saldo/);
+    assert.equal(m.estado.fila.ajustes.length, 0, 'sin fuente confiable no se escribe');
+  } finally {
+    m.restaurar();
+  }
+});
+
+test('el job reporta lo que SU PROPIO request midió, no sólo el acumulado', async () => {
+  // Es la prueba en vivo de que la medición funciona: si acá sale bytes 0 con
+  // un status 200, `traer()` no está reportando el tamaño y el arreglo de
+  // medición no sirve. `bytes` en el acumulado puede ser 0 legítimamente
+  // —nada se cosechó desde el arreglo— y confundir las dos cosas costaría
+  // otra ronda de no saber si el contador está midiendo.
+  const m = mockCreditos({ restantes: 119_025 });
+  try {
+    const r = await jobCreditos({ query: {} });
+    assert.equal(r.medicion_de_este_request.status, 200);
+    assert.ok(r.medicion_de_este_request.bytes > 0, 'el request midió su tamaño');
+    assert.ok(r.medicion_de_este_request.creditos >= 1);
+    assert.ok(m.estado.fila.bytes > 0, 'y los bytes se acumularon en la base');
+  } finally {
+    m.restaurar();
   }
 });
