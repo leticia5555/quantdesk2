@@ -196,8 +196,32 @@ function limpiarCelda(celdaCruda) {
 // es la única forma en que se pudo probar.
 const UA = 'QuantDesk-Arena/1.0 (experimento público de paper trading; contacto en github.com/leticia5555/quantdesk2)';
 
-export const URL_WIKIPEDIA = 'https://en.wikipedia.org/w/api.php?action=parse&page=Nasdaq-100&prop=wikitext&format=json&formatversion=2';
+// ── POR QUÉ YA NO SE PIDE EL WIKITEXT ────────────────────────────────
+// La primera versión pedía `prop=wikitext` de `page=Nasdaq-100`. En producción
+// eso devolvió HTTP 200, JSON válido, wikitext presente... y CERO tickers.
+// Dos causas, las dos invisibles desde el texto de un error:
+//
+//   1. `action=parse` NO SIGUE REDIRECCIONES salvo que se pida `redirects=1`.
+//      Si el título es una redirección, lo que vuelve es `#REDIRECT [[...]]`:
+//      un wikitext perfectamente válido, con cero filas de tabla.
+//   2. Una tabla de constituyentes puede estar TRANSCLUIDA desde otra página.
+//      Entonces el wikitext del artículo trae `{{Plantilla}}`, no las filas.
+//
+// `prop=text` resuelve las dos: devuelve el HTML ya RENDERIZADO, con las
+// redirecciones seguidas y las plantillas expandidas. Se paga más bytes y se
+// gana que lo que se parsea sea lo que un humano ve en la página.
+//
+// El wikitext queda como segundo intento, no como primero: si un día el HTML
+// cambia de forma, sigue habiendo una segunda lectura.
+export const TITULOS_WIKIPEDIA = ['Nasdaq-100', 'NASDAQ-100'];
 export const URL_SLICKCHARTS = 'https://www.slickcharts.com/nasdaq100';
+
+export function urlWikipedia(titulo, prop = 'text') {
+  return 'https://en.wikipedia.org/w/api.php?action=parse&page=' + encodeURIComponent(titulo)
+    + '&prop=' + prop + '&redirects=1&format=json&formatversion=2';
+}
+// Compat: algún test o llamador viejo puede seguir importando esto.
+export const URL_WIKIPEDIA = urlWikipedia(TITULOS_WIKIPEDIA[0]);
 
 async function bajar(url, { fetchImpl = fetch, timeoutMs = 20000 } = {}) {
   const r = await fetchImpl(url, { headers: { 'User-Agent': UA, Accept: '*/*' }, signal: AbortSignal.timeout(timeoutMs) });
@@ -209,17 +233,88 @@ async function bajar(url, { fetchImpl = fetch, timeoutMs = 20000 } = {}) {
   return r.text();
 }
 
-export async function fetchWikipedia({ fetchImpl = fetch, timeoutMs = 20000 } = {}) {
-  const texto = await bajar(URL_WIKIPEDIA, { fetchImpl, timeoutMs });
-  let j = null;
-  try { j = JSON.parse(texto); } catch { const e = new Error('respuesta no es JSON'); e.reason = 'json_invalido'; throw e; }
-  const wikitext = j && j.parse && (typeof j.parse.wikitext === 'string' ? j.parse.wikitext : (j.parse.wikitext && j.parse.wikitext['*']));
-  if (!wikitext) { const e = new Error('la respuesta no trae wikitext'); e.reason = 'sin_wikitext'; throw e; }
-  return parseWikitextNasdaq(wikitext);
+// ── TABLAS DE HTML, CON LA MISMA REGLA DE COLUMNA ────────────────────
+// Mismo criterio que el wikitext: la columna del ticker es la que es ticker en
+// TODAS las filas. Acá además hay varias tablas por página (infobox, notas,
+// "see also"), así que se evalúa CADA UNA y gana la que produce más tickers.
+// Eso hace que no importe en qué posición de la página esté la de componentes.
+const ENTIDADES = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&nbsp;': ' ' };
+function textoDeCelda(html) {
+  return String(html || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&[a-z]+;|&#\d+;/gi, (e) => ENTIDADES[e.toLowerCase()] ?? ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
+export function parseTablasHtml(html) {
+  const texto = String(html || '');
+  let mejorLista = [];
+  for (const tabla of texto.match(/<table[\s\S]*?<\/table>/gi) || []) {
+    const filas = [];
+    for (const tr of tabla.match(/<tr[\s\S]*?<\/tr>/gi) || []) {
+      const celdas = (tr.match(/<t[dh][\s\S]*?<\/t[dh]>/gi) || []).map(textoDeCelda);
+      if (celdas.length) filas.push(celdas);
+    }
+    if (!filas.length) continue;
+    const columnas = Math.max(...filas.map((f) => f.length));
+    let mejor = -1;
+    let mejorCuenta = 0;
+    for (let c = 0; c < columnas; c++) {
+      let cuenta = 0;
+      for (const f of filas) if (esTickerPlausible(f[c])) cuenta++;
+      if (cuenta > mejorCuenta) { mejorCuenta = cuenta; mejor = c; }
+    }
+    if (mejor < 0) continue;
+    const out = [];
+    const visto = new Set();
+    for (const f of filas) {
+      if (!esTickerPlausible(f[mejor])) continue;
+      const t = limpiar(f[mejor]);
+      if (visto.has(t)) continue;
+      visto.add(t); out.push(t);
+    }
+    if (out.length > mejorLista.length) mejorLista = out;
+  }
+  return mejorLista;
+}
+
+// Devuelve { symbols, crudo } — `crudo` son los primeros bytes de lo que se
+// parseó. Va al diagnóstico cuando la lista sale vacía: sin eso, "cero
+// tickers" tiene media docena de causas y ninguna se distingue de las otras.
+// Es el mismo patrón que `primeras_lineas` del CSV, y es exactamente lo que
+// faltó para no perder tres corridas adivinando.
+export async function fetchWikipedia({ fetchImpl = fetch, timeoutMs = 20000, titulos = TITULOS_WIKIPEDIA } = {}) {
+  let ultimoCrudo = '';
+  for (const titulo of titulos) {
+    for (const prop of ['text', 'wikitext']) {
+      let j = null;
+      try {
+        const texto = await bajar(urlWikipedia(titulo, prop), { fetchImpl, timeoutMs });
+        j = JSON.parse(texto);
+      } catch (e) {
+        // Un título que no existe da `error` con HTTP 200, o un 404. Se sigue
+        // con el siguiente en vez de abortar: son dos intentos baratos.
+        ultimoCrudo = ultimoCrudo || String((e && e.message) || e);
+        continue;
+      }
+      const campo = j && j.parse && j.parse[prop];
+      const cuerpo = typeof campo === 'string' ? campo : (campo && campo['*']);
+      if (!cuerpo) continue;
+      ultimoCrudo = String(cuerpo).slice(0, 300);
+      const symbols = prop === 'text' ? parseTablasHtml(cuerpo) : parseWikitextNasdaq(cuerpo);
+      if (symbols.length) return { symbols, crudo: null, titulo, prop };
+    }
+  }
+  return { symbols: [], crudo: ultimoCrudo || 'sin cuerpo' };
+}
+
+// Misma forma que fetchWikipedia: { symbols, crudo }. Que las dos devuelvan
+// lo mismo es lo que deja a `evaluar` sin ramas por fuente.
 export async function fetchSlickcharts({ fetchImpl = fetch, timeoutMs = 20000 } = {}) {
-  return parseSlickcharts(await bajar(URL_SLICKCHARTS, { fetchImpl, timeoutMs }));
+  const html = await bajar(URL_SLICKCHARTS, { fetchImpl, timeoutMs });
+  const symbols = parseSlickcharts(html);
+  return { symbols, crudo: symbols.length ? null : String(html).slice(0, 300) };
 }
 
 // ── EL CRUCE, que es el guard de verdad ──────────────────────────────
@@ -291,14 +386,23 @@ export async function fetchNasdaq100({ now = new Date(), fetchImpl = fetch, diag
       anota({ origen: fuente, ok: false, reason: res.reason && res.reason.reason ? res.reason.reason : 'fallo', status: res.reason && res.reason.status, detail: String((res.reason && res.reason.message) || res.reason) });
       return null;
     }
-    const symbols = res.value || [];
+    // Las fuentes devuelven { symbols, crudo }; un array pelado se acepta para
+    // no romper un `deps` inyectado en los tests.
+    const v = res.value;
+    const symbols = (Array.isArray(v) ? v : (v && v.symbols)) || [];
+    const crudo = Array.isArray(v) ? null : (v && v.crudo) || null;
     const h = horquilla(symbols, fuente);
     if (!h.ok) {
       // LA MUESTRA ES EL DATO QUE ARREGLA EL PARSER. Saber que llegaron 7
       // nombres no dice nada; saber CUÁLES dice si se leyó la columna
       // equivocada, si se agarró la tabla de otra sección, o si la página
       // cambió de forma. Es el mismo patrón que `primeras_lineas` en el CSV.
-      anota({ origen: fuente, ok: false, ...h, muestra: symbols.slice(0, 12) });
+      // `crudo` SOLO cuando la lista salió vacía. Con 0 símbolos la `muestra`
+      // también es [] y las dos juntas no dicen nada — ésa fue exactamente la
+      // corrida del 2026-09-18 que no se pudo diagnosticar. Los primeros bytes
+      // de lo que se parseó distinguen de una: un `#REDIRECT`, una página de
+      // error, un HTML sin tablas, o una tabla que sí está y se leyó mal.
+      anota({ origen: fuente, ok: false, ...h, muestra: symbols.slice(0, 12), ...(symbols.length ? {} : { crudo }) });
       return null;
     }
     anota({ origen: fuente, ok: true, recibidos: symbols.length });

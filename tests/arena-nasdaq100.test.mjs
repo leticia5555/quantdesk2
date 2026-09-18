@@ -13,7 +13,8 @@
 
 import {
   parseWikitextNasdaq, parseSlickcharts, esTickerPlausible, fetchNasdaq100,
-  desdeEnv, ENV_SIMBOLOS, MIN_NOMBRES, MAX_NOMBRES, CRUCE_MINIMO, RUIDO,
+  desdeEnv, ENV_SIMBOLOS, parseTablasHtml, urlWikipedia, fetchWikipedia,
+  MIN_NOMBRES, MAX_NOMBRES, CRUCE_MINIMO, RUIDO,
 } from '../api/_lib/arena-nasdaq100.js';
 
 let failures = 0;
@@ -174,6 +175,72 @@ console.log('\n── nada puede tumbar el universo desde acá ──');
   ok(basura === null, 'y una lista hecha solo de ruido no llega a ningún lado');
 }
 
+console.log('\n── el HTML renderizado, que es lo que se pide ahora ──');
+{
+  // POR QUÉ SE CAMBIÓ: `prop=wikitext` de `page=Nasdaq-100` devolvió en
+  // producción HTTP 200, JSON válido, wikitext presente y CERO tickers. Dos
+  // causas invisibles desde el error: `action=parse` no sigue redirecciones
+  // sin `redirects=1`, y una tabla transcluida deja `{{Plantilla}}` en el
+  // wikitext. `prop=text` resuelve las dos.
+  ok(/redirects=1/.test(urlWikipedia('Nasdaq-100')), 'la URL pide redirects=1: sin eso una redirección devuelve "#REDIRECT" y cero filas');
+  ok(/prop=text/.test(urlWikipedia('Nasdaq-100')), 'y pide el HTML renderizado, con las plantillas ya expandidas');
+
+  const pagina = '<table class="infobox"><tr><td>Fundado</td><td>1985</td></tr></table>'
+    + '<table class="wikitable sortable"><tr><th>Company</th><th>Ticker</th><th>GICS Sector</th></tr>'
+    + '<tr><td><a href="/wiki/Apple_Inc.">Apple Inc.</a></td><td><a>AAPL</a></td><td>Information Technology</td></tr>'
+    + '<tr><td>Microsoft</td><td>MSFT</td><td>Information Technology</td></tr>'
+    + '<tr><td>Marriott International</td><td>MAR</td><td>Consumer Discretionary</td></tr></table>'
+    + '<table><tr><td>See also</td></tr></table>';
+  const r = parseTablasHtml(pagina);
+  ok(r.join(',') === 'AAPL,MSFT,MAR', 'de varias tablas en la página gana la que produce más tickers', JSON.stringify(r));
+  ok(r.includes('MAR'), 'y Marriott sobrevive: la lista de ruido ya no se come los meses');
+  ok(parseTablasHtml('<p>sin tablas</p>').length === 0, 'una página sin tablas da lista vacía, no ruido');
+  ok(parseTablasHtml('').length === 0 && parseTablasHtml(null).length === 0, 'vacío o null tampoco explota');
+}
+
+console.log('\n── el CRUDO: lo que faltó para no perder tres corridas adivinando ──');
+{
+  // Con 0 símbolos la `muestra` también es [] y las dos juntas no dicen nada.
+  // Los primeros bytes de lo que se parseó distinguen de una: un #REDIRECT, una
+  // página de error, un HTML sin tablas, o una tabla leída mal.
+  const diag = [];
+  await fetchNasdaq100({ diag, deps: {
+    fetchWikipedia: async () => ({ symbols: [], crudo: '#REDIRECT [[NASDAQ-100]]' }),
+    fetchSlickcharts: async () => { const e = new Error('HTTP 403'); e.status = 403; throw e; },
+  } });
+  const fw = diag.find((d) => d.origen === 'wikipedia');
+  ok(fw.crudo === '#REDIRECT [[NASDAQ-100]]',
+    'con cero símbolos, el diagnóstico lleva los primeros bytes de lo que se parseó', JSON.stringify(fw.crudo));
+
+  // Pero NO cuando sí hubo símbolos: ahí la muestra ya dice todo y el crudo
+  // solo sería ruido en el journal.
+  const diag2 = [];
+  await fetchNasdaq100({ diag: diag2, deps: {
+    fetchWikipedia: async () => ({ symbols: ['AAPL', 'MSFT'], crudo: 'no debería viajar' }),
+    fetchSlickcharts: async () => ({ symbols: [], crudo: 'x' }),
+  } });
+  const fw2 = diag2.find((d) => d.origen === 'wikipedia');
+  ok(fw2.crudo === undefined && fw2.muestra.join(',') === 'AAPL,MSFT',
+    'y cuando hubo símbolos viaja la muestra, no el crudo', JSON.stringify(fw2));
+}
+
+console.log('\n── fetchWikipedia prueba títulos y props hasta encontrar la tabla ──');
+{
+  const pedidas = [];
+  const fake = async (url) => {
+    pedidas.push(url);
+    const u = new URL(url);
+    const prop = u.searchParams.get('prop');
+    // El primer intento (text) devuelve una redirección renderizada sin tablas.
+    if (prop === 'text') return { ok: true, status: 200, text: async () => JSON.stringify({ parse: { text: '<p>Redirect to…</p>' } }) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ parse: { wikitext: cien.map((t) => `|-\n| [[${t} Corp]] || ${t} || Tech`).join('\n') } }) };
+  };
+  const r = await fetchWikipedia({ fetchImpl: fake });
+  ok(r.symbols.length === 100, 'si el HTML no trae tabla, cae al wikitext en vez de rendirse', String(r.symbols.length));
+  ok(r.prop === 'wikitext', 'y dice con cuál lo resolvió', String(r.prop));
+  ok(pedidas.length === 2, 'sin pedir de más: para en cuanto encuentra la lista', String(pedidas.length));
+}
+
 console.log('\n── REGRESIÓN: el sobre del diagnóstico no puede ser pisado ──');
 {
   // EL BUG (producción, 2026-09-18): `anota` armaba { fuente:'tabla_publica',
@@ -184,7 +251,7 @@ console.log('\n── REGRESIÓN: el sobre del diagnóstico no puede ser pisado 
   // conclusión falsa sobre la única fuente primaria que hay.
   const diag = [];
   await fetchNasdaq100({ diag, deps: {
-    fetchWikipedia: async () => ['AAPL', 'MSFT'],                              // pasa, pero corta
+    fetchWikipedia: async () => ({ symbols: ['AAPL', 'MSFT'] }),               // pasa, pero corta
     fetchSlickcharts: async () => { const e = new Error('HTTP 403'); e.status = 403; throw e; },
   } });
 
