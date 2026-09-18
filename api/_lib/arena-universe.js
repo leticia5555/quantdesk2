@@ -50,6 +50,8 @@
 import { sql } from './db.js';
 import { getMovers, getMostActives, getFiftyTwoWeek, getPriceAndDollarVolume } from './alpaca.js';
 import { ADMISSION, resolveAdmission, isAdmissible, reglasParaFeed } from './arena-admission.js';
+import { cachePersistente } from './arena-mcap-cache.js';
+import { fetchNasdaq100 } from './arena-nasdaq100.js';
 import { marketDay } from './arena-buffet-cache.js';
 import { fetchHoldings, HOLDINGS_SOURCES } from './etf-holdings.js';
 import { filtrarComunes, cargarCatalogo } from './arena-instrumento.js';
@@ -331,8 +333,24 @@ export async function resolveConstituents(index, { now = new Date(), force = fal
   }
   const motivoRefresco = force ? 'forzado' : vencido ? 'vencido' : 'sin_sectores';
 
-  // ORDEN: tenencias del ETF (gratis, diarias) → FMP (solo si hay key de pago).
+  // ORDEN: tenencias del ETF (gratis, diarias) → tablas públicas (solo el
+  // Nasdaq 100) → FMP (solo si hay key de pago).
   let fresh = await fromEtf(index, { now, diag });
+
+  // ── ESCALÓN 1a: LAS TABLAS PÚBLICAS (solo nasdaq100) ───────────────
+  // Invesco dejó de servir el CSV de QQQ (devuelve HTML: protección anti-bot),
+  // así que el escalón del ETF no puede resolver este índice. Wikipedia y
+  // slickcharts publican la lista de constituyentes, que es dato público, y
+  // se CRUZAN entre sí — ver arena-nasdaq100.js para por qué el cruce es el
+  // guard y no un lujo. Nunca lanza: si no se puede afirmar la lista, devuelve
+  // null y el índice se queda vacío, que es lo que hace hoy.
+  if (!fresh && index === 'nasdaq100') {
+    const desdeTabla = deps.fetchNasdaq100 || fetchNasdaq100;
+    fresh = await desdeTabla({ now, diag }).catch((e) => {
+      if (Array.isArray(diag)) diag.push({ fuente: 'tabla_publica', index, ok: false, reason: 'excepcion', detail: String((e && e.message) || e) });
+      return null;
+    });
+  }
   // ── FMP NO SE LLAMA CUANDO EL MOTIVO ES `sin_sectores` ─────────────
   // FMP devuelve la LISTA, no la clasificación GICS: no puede aportar lo que
   // falta. Llamarlo acá sería gastar cuota de una API de pago para recibir
@@ -611,7 +629,13 @@ export async function buildUniverse({
   const finnhubDiag = [];
   let admissionData = {};
   try {
-    admissionData = await admit(candidatos, { finnhubKey, now, known, diag: finnhubDiag });
+    // La caché de market cap vive en Neon y se inyecta: acá es donde de verdad
+    // pesa, porque este lote son los ≤100 nombres DEL DÍA y la mayoría se
+    // repite de una jornada a la otra.
+    admissionData = await admit(candidatos, {
+      finnhubKey, now, known, diag: finnhubDiag,
+      mcapCache: deps.mcapCache || cachePersistente({ now, piso: reglas.min_market_cap_usd }),
+    });
   } catch (e) {
     errors.admission = String((e && e.message) || e);
   }

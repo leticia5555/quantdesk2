@@ -41,6 +41,7 @@
 
 import { getMovers, getMostActives, getFiftyTwoWeek } from './alpaca.js';
 import { ADMISSION, resolveAdmission, isAdmissible } from './arena-admission.js';
+import { cachePersistente } from './arena-mcap-cache.js';
 
 // Cuántos nombres ve el PM. ~100 es el número del encargo: suficiente para que
 // la elección sea suya y no nuestra, y chico para que el bloque siga siendo
@@ -171,7 +172,11 @@ export async function buildBuffetV15({
   // se pagaría por el rango de nombres que van a quedar afuera igual.
   let admissionData = {};
   try {
-    admissionData = await admit(universo, { finnhubKey, now });
+    // Mismo pozo que el universo: el buffet corre varias veces al día sobre
+    // nombres que se repiten, y sin la caché cada corrida pagaba cuota otra vez.
+    admissionData = await admit(universo, {
+      finnhubKey, now, mcapCache: deps.mcapCache || cachePersistente({ now }),
+    });
   } catch (e) {
     errors.admission = String((e && e.message) || e);
   }
