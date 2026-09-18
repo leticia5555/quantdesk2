@@ -13,7 +13,7 @@
 
 import {
   parseWikitextNasdaq, parseSlickcharts, esTickerPlausible, fetchNasdaq100,
-  MIN_NOMBRES, MAX_NOMBRES, CRUCE_MINIMO, RUIDO,
+  desdeEnv, ENV_SIMBOLOS, MIN_NOMBRES, MAX_NOMBRES, CRUCE_MINIMO, RUIDO,
 } from '../api/_lib/arena-nasdaq100.js';
 
 let failures = 0;
@@ -172,6 +172,35 @@ console.log('\n── nada puede tumbar el universo desde acá ──');
     fetchSlickcharts: async () => [...RUIDO],
   } });
   ok(basura === null, 'y una lista hecha solo de ruido no llega a ningún lado');
+}
+
+console.log('\n── la lista pegada a mano: la salida si producción no alcanza las fuentes ──');
+{
+  ok(desdeEnv({}) === null && desdeEnv({ [ENV_SIMBOLOS]: '   ' }) === null, 'sin la env var no pasa nada');
+  const parseada = desdeEnv({ [ENV_SIMBOLOS]: 'aapl, MSFT;GOOGL  NVDA' });
+  ok(parseada.join(',') === 'AAPL,MSFT,GOOGL,NVDA',
+    'tolera comas, puntoycoma, espacios y minúsculas: quien la pega no debería pelear con el formato', JSON.stringify(parseada));
+  ok(desdeEnv({ [ENV_SIMBOLOS]: 'AAPL,AAPL,MSFT' }).length === 2, 'y deduplica');
+
+  // GANA sobre las fuentes, y no pide NADA por red.
+  const diag = [];
+  const r = await fetchNasdaq100({ diag, env: { [ENV_SIMBOLOS]: cien.join(',') }, deps: {
+    fetchWikipedia: async () => { throw new Error('no debería llamarse'); },
+    fetchSlickcharts: async () => { throw new Error('no debería llamarse'); },
+  } });
+  ok(r && r.symbols.length === 100, 'la lista pegada gana: es lo único que alguien escribió a propósito');
+  ok(r.cruce.estado === 'pegada_a_mano', 'y el journal no la disfraza de cruce', JSON.stringify(r.cruce));
+  ok(diag.some((d) => d.origen === 'env' && d.ok), 'con su fila de diagnóstico');
+
+  // Pero pasa por la MISMA horquilla: venir de una persona no la exime.
+  const diag2 = [];
+  const corta = await fetchNasdaq100({ diag: diag2, env: { [ENV_SIMBOLOS]: 'AAPL,MSFT' }, deps: {
+    fetchWikipedia: async () => null, fetchSlickcharts: async () => null,
+  } });
+  ok(corta === null, 'una lista pegada con un error de copiar y pegar NO entra por venir de una persona');
+  ok(diag2.some((d) => d.origen === 'env' && d.ok === false && d.reason === 'lista_corta'),
+    'y se dice por qué se ignoró, en vez de usarla en silencio o descartarla en silencio',
+    JSON.stringify(diag2.filter((d) => d.origen === 'env')));
 }
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');

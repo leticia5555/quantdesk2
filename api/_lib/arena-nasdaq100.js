@@ -223,10 +223,50 @@ export async function fetchSlickcharts({ fetchImpl = fetch, timeoutMs = 20000 } 
 // ── EL CRUCE, que es el guard de verdad ──────────────────────────────
 // Devuelve { symbols, source, cruce } o null. NUNCA lanza: el caller baja un
 // escalón igual que con las otras fuentes.
-export async function fetchNasdaq100({ now = new Date(), fetchImpl = fetch, diag = null, deps = {} } = {}) {
+// ── LA LISTA PEGADA A MANO, QUE NO DEPENDE DE NINGUNA RED ────────────
+// `ARENA_NASDAQ100_SYMBOLS`: los tickers separados por coma, pegados en Vercel
+// y tomados SIN deploy. Existe porque puede que producción no alcance ni a
+// Wikipedia ni a slickcharts —el entorno donde se programó esto no las
+// alcanzaba— y en ese caso ninguna cantidad de parsers arregla nada.
+//
+// Gana sobre todo lo demás: es lo único que alguien escribió a propósito. Pero
+// pasa por la MISMA horquilla que las fuentes bajadas: una lista pegada con un
+// error de copiar y pegar no entra por venir de una persona.
+export const ENV_SIMBOLOS = 'ARENA_NASDAQ100_SYMBOLS';
+
+export function desdeEnv(env = process.env) {
+  const crudo = String((env && env[ENV_SIMBOLOS]) || '').trim();
+  if (!crudo) return null;
+  const visto = new Set();
+  const out = [];
+  for (const parte of crudo.split(/[,\s;]+/)) {
+    const t = limpiar(parte);
+    if (!t || visto.has(t)) continue;
+    // `yaNormalizado`: quien la pega puede escribirla en minúsculas y eso no
+    // es señal de nada — no viene de una tabla con columnas.
+    if (!esTickerPlausible(t, { yaNormalizado: true })) continue;
+    visto.add(t); out.push(t);
+  }
+  return out.length ? out : null;
+}
+
+export async function fetchNasdaq100({ now = new Date(), fetchImpl = fetch, diag = null, deps = {}, env = process.env } = {}) {
   const anota = (fila) => { if (Array.isArray(diag)) diag.push({ fuente: 'tabla_publica', index: 'nasdaq100', ...fila }); };
   const wiki = deps.fetchWikipedia || fetchWikipedia;
   const slick = deps.fetchSlickcharts || fetchSlickcharts;
+
+  // La lista pegada a mano gana, y no se pide nada por red.
+  const pegada = desdeEnv(env);
+  if (pegada) {
+    const h = horquilla(pegada, 'env');
+    if (!h.ok) {
+      anota({ origen: 'env', ok: false, ...h, detail: `${ENV_SIMBOLOS} está puesta pero la lista no pasa la horquilla. NO se usa: una lista pegada con un error de copiar y pegar no entra por venir de una persona.` });
+    } else {
+      anota({ origen: 'env', ok: true, recibidos: pegada.length, detail: `${ENV_SIMBOLOS} está puesta: se usa esa lista y no se pide nada por red.` });
+      return { index: 'nasdaq100', source: 'tabla_publica', origen: 'env', built_at: now.toISOString(), symbols: pegada, sectores: {},
+        cruce: { estado: 'pegada_a_mano', origen: ENV_SIMBOLOS, n: pegada.length } };
+    }
+  }
 
   const [rw, rs] = await Promise.allSettled([wiki({ fetchImpl }), slick({ fetchImpl })]);
 
