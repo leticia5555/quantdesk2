@@ -227,41 +227,103 @@ trimestres traiga cada emisora en su enumeración (39 para una que reporta desde
 > función que usa la cosecha — así que el estimado y lo que se pide no pueden
 > discrepar.
 
-### 2.1 El modelo de costo, resuelto con evidencia
+### 2.1 El modelo de costo — resuelto mal, y cómo se supo
 
-Este documento traía tres modelos de costo porque no se sabía cuál usaba la API,
-y la diferencia entre ellos decidía si la cosecha cabía en un mes. **El probe lo
-resolvió, y sin proponérselo.**
+> **⚠️ CORREGIDO el 18-sep-2026. Lo que decía esta sección era falso, y el
+> error fue de ~18×.** Se conserva el razonamiento original porque el *cómo*
+> se llegó a él vale más que la conclusión.
+
+#### Lo que decía, y por qué convencía
+
+Este documento traía tres modelos de costo porque no se sabía cuál usaba la
+API. Se dio por resuelto con esto:
 
 | | |
 |---|---|
 | Requests que hizo el probe | 1 censo + 8 grafías de financieros + 5 de históricos = **14** |
-| Créditos que gastó | **14** |
+| Créditos que «gastó» | **14** |
 | Tamaño de la respuesta del censo | **441,543 caracteres** |
 
-**Un request de 441 KB costó lo mismo que uno que devolvió un error.** O sea que
-el cobro es **por request**, no por dato: el modelo A es el real y los modelos B
-y C quedan descartados **con evidencia, no con una suposición cómoda**.
+Y la conclusión: «un request de 441 KB costó lo mismo que uno que devolvió un
+error, o sea que el cobro es **por request**». Sonaba a evidencia. Incluso
+traía la salvaguarda de que «si la relación deja de ser 1:1 se ve en el propio
+contador».
 
-Es una inferencia de una sola corrida, así que no se declara verdad revelada:
-`bmv_api_budget` guarda requests y créditos por separado en cada corrida, de
-modo que si la relación deja de ser 1:1 se ve en el propio contador.
+#### Por qué era circular
 
-### 2.2 Con eso, el presupuesto deja de ser una restricción
+**Ese 14 de créditos salía del contador de la casa, que sumaba 1 por request
+por construcción.** No había forma de que diera otra cosa. La «medición»
+confirmaba su propia premisa, y la salvaguarda era peor que inútil: vigilaba
+que el contador coincidiera **consigo mismo**.
+
+#### Lo que dice la documentación
+
+> «cada solicitud exitosa a la API consume por cada KiB (1024 bytes) de datos
+> transmitidos, solo 1 crédito»
+> — `databursatil.com/docs.html`
+
+El cobro es **por tamaño**, no por llamada. Esa sola respuesta del censo, de
+441,543 bytes, costó **432 créditos** — no 1.
+
+#### Cuánto costó de verdad la cosecha
+
+Contrastado contra `/v2/creditos`, que es la única fuente que no es nuestra:
+
+| | |
+|---|---:|
+| Presupuesto mensual | 200,000 |
+| Restantes según la API | **119,026** |
+| **Consumido real** | **~81,000** |
+| Consumido según nuestro contador | 4,405 |
+| **Error** | **~18×** |
+
+Con el modelo correcto, el estimador reproduce el gasto observado: **81,192
+créditos** para la forma real de la cosecha (4,174 financieros + 182 series de
+precios + el censo). La cosecha completa costó **~40% del presupuesto
+mensual**, no el ~2% que se creyó.
+
+#### Qué cambió para que no vuelva a pasar
+
+1. **`traer()` mide los bytes reales** de cada respuesta —en bytes UTF-8, no en
+   caracteres UTF-16— y el crédito es `ceil(bytes / 1024)`.
+2. **`bmv_api_budget` guarda `bytes`**, así que el crédito se puede *rederivar*
+   sin volver a pedir nada. Si el acumulado no cuadra con los bytes, el que
+   está mal es el acumulador.
+3. **`?job=creditos`** contrasta el contador local contra `/v2/creditos` y
+   **alerta si divergen más del 10%**. Ésta es la parte que faltaba: un
+   presupuesto que se mide a sí mismo no es un presupuesto.
+4. La reserva que la cartera aparta antes de cada request ya no es 1 crédito
+   fijo: arranca conservadora y luego usa el **promedio observado de la
+   corrida**.
+
+> **La lección, que es de método y no de aritmética:** una medición que sólo
+> puede confirmar su premisa no es una medición. Cuando la conclusión fue «el
+> cobro es por request», la evidencia citada era un contador que contaba
+> requests. La pregunta que faltaba hacerse —y que ahora hace `?job=creditos`—
+> es: *¿qué dato tendría que ver para saber que estoy equivocado, y viene de
+> una fuente que no controlo?*
+
+### 2.2 El presupuesto, con el modelo corregido
 
 Con el censo **real** ya corrido — 137 emisoras ICS, 185 series, 39 trimestres
 reportados por emisora:
 
-| Concepto | Requests |
-|---|---:|
-| Censo | 1 |
-| Financieros (137 × ~39) | ~5,343 |
-| Históricos (1 por serie + benchmark) | ~138 |
-| **Total** | **~5,482** |
+| Concepto | Requests | Créditos (KiB) |
+|---|---:|---:|
+| Censo | 1 | ~432 |
+| Financieros (137 × ~39) | ~5,343 | ~62,600 |
+| Históricos (1 por serie + benchmark) | ~138 | ~17,800 |
+| **Total** | **~5,482** | **~81,000** |
 
-**2.7% del presupuesto mensual.** Y la frontera está en ~4,700 emisoras ICS, o
-sea que ni multiplicando el universo por 30 se llegaría al tope. **La cosecha
-cabe con margen de sobra**, y la pregunta de cómo partirla deja de ser urgente.
+**~40% del presupuesto mensual**, no el 2.7% que decía este documento cuando
+creía que el costo era por request. La cosecha **sigue cabiendo en un mes**,
+pero el margen es de 2.5×, no de 36×: un segundo backtest sobre otro universo
+en el mismo mes ya habría que planearlo.
+
+> Los requests nunca se contaron mal — **~5,482 fue siempre correcto**. Lo que
+> estaba mal era creer que el request *era* la unidad de cobro. La diferencia
+> entre «contamos mal» y «medimos la cosa equivocada» importa para saber qué
+> revisar: el contador de requests está bien, el modelo de costo no lo estaba.
 
 Los financieros salen de la **enumeración** de trimestres del censo, no del
 rango: `rango_financieros` lista los trimestres que la emisora sí reportó, y
@@ -288,9 +350,11 @@ que faltaba era decir en qué orden. Por eso el piso de precios por defecto es 2
 por eso `?job=probe` corre primero: si la API publica el saldo en headers, el
 cosechador lo guarda y el presupuesto deja de ser una estimación.
 
-Si resulta ser el modelo C, la cosecha se parte en dos meses (financieros el
-primero, precios el segundo) o se recorta el rango de precios. **El ledger hace
-que partirla no cueste nada**: el segundo mes retoma donde paró el primero.
+Con el modelo de KiB, partirla dejó de ser hipotético: a ~81,000 créditos por
+cosecha completa, **dos universos de este tamaño no caben en el mismo mes**. El
+ledger hace que partirla no cueste nada — el segundo mes retoma donde paró el
+primero — y `?job=creditos` dice cuánto queda **según la API**, no según
+nosotros.
 
 > 2016-01-01 no es un recorte arbitrario. El primer rebalanceo con un TTM
 > completo cae a mediados de **2017** (§3.2), y el momentum 12-1 necesita los 12
@@ -611,16 +675,27 @@ habría valido como rendimiento ese día — el mismo instante en que se habría
 reinvertido.
 
 > **Umbral de revisión: 50 bp acumulados por serie.** Si alguna serie pasa de
-> ahí, la exclusión deja de ser inmaterial y hay que resolverla con
-> `/v2/divisas` en la fecha ex **antes de leer el veredicto**, no después. El
-> umbral se fija aquí, sin números a la vista, para que no se pueda mover
-> después de verlos.
+> ahí, la exclusión deja de ser inmaterial y hay que resolverla con el tipo de
+> cambio de la fecha ex **antes de leer el veredicto**, no después. El umbral
+> se fija aquí, sin números a la vista, para que no se pueda mover después de
+> verlos.
 >
-> **Qué pasó (18-sep-2026): HOTEL\* superó el umbral, y el veredicto se leyó
-> primero.** El umbral no se movió y los criterios no se tocaron; lo que se
-> rompió fue el **orden**. Se resolvió después, con `?job=divisas`, y se
-> verificó que no cambiara el resultado en vez de asumirlo. Queda escrito en
-> §5.10 sin suavizarlo.
+> **Corrección de la vía (18-sep-2026):** el texto original decía resolverlo
+> con **`/v2/divisas`**. **Esa vía no existe.** Ese endpoint toma un solo
+> parámetro, `ticker` (`USDMXN`, `EURMXN`), y devuelve **únicamente el precio
+> más reciente**: es spot, no histórico, y no acepta fechas ni rangos
+> (verificado contra `databursatil.com/docs.html` y contra la API).
+>
+> La fuente correcta es **Banxico SIE** —API gratuita, FIX diario con décadas
+> de historia, y también EUR—, que es **otra integración** y queda **fuera del
+> alcance de la v1**.
+>
+> **Qué pasó: HOTEL\* superó el umbral, y el veredicto se leyó primero.** El
+> umbral no se movió y los criterios no se tocaron; lo que se rompió fue el
+> **orden**. Y la vía de resolución que el pre-registro nombraba resultó no
+> existir, así que la decisión de la v1 **se queda como está**: los 14 repartos
+> en moneda extranjera van **fuera**, con los bp no contados reportados. Queda
+> escrito en §5.10 sin suavizarlo.
 
 Y la marca **se propaga dentro del grupo consolidado**: el bloque `historico` no
 trae divisa, así que si sólo se mirara la fila que gana, un reparto en USD cuya
@@ -1543,18 +1618,32 @@ veredicto hubiera quedado a 10 bp del umbral, resolver la divisa **después** de
 verlo habría vuelto imposible distinguir «se resolvió porque tocaba» de «se
 resolvió porque faltaba poquito».
 
-Se resolvió igual, y se verificó en vez de asumirse. La aritmética decía que
-convertir **sólo puede sumar** retorno a la canasta y que el hueco hasta GO era
-de **0.12 de Sharpe** — o sea que no podía voltear el veredicto. Pero eso es un
-argumento, y un argumento no es una medición: `?job=divisas` trae el tipo de
-cambio de **la fecha ex** de cada reparto, el retorno total los reinvierte
-convertidos, y el reporte dice cuántos se convirtieron, con qué tasa, y cuántos
-bp quedan todavía sin contar.
+#### Y la vía que el pre-registro nombraba no existía
 
-> **Lo que NO se hizo, y es deliberado:** un reparto sin tipo de cambio de su
-> fecha ex **sigue excluido**. No se rellena con la tasa del día más cercano ni
-> con la de hoy. Un hueco medido es mejor que una conversión inventada, y esa
-> fue la razón original para excluirlos.
+Se intentó resolver con `/v2/divisas`, y **ninguna grafía iba a funcionar**:
+ese endpoint toma un solo parámetro, `ticker` (`USDMXN`, `EURMXN`), y devuelve
+**únicamente el precio más reciente**. Es un endpoint de **spot**, no
+histórico: no acepta fechas ni rangos. Los seis intentos del descubrimiento no
+fallaron por el contrato — fallaron porque **le estábamos pidiendo algo que no
+hace**. Verificado contra `databursatil.com/docs.html` y contra la API.
+
+La fuente correcta para tipo de cambio histórico es **Banxico SIE**: API
+gratuita, FIX diario con décadas de historia, y también EUR. Es **otra
+integración**, con su propio contrato y su propia cosecha, y queda **fuera del
+alcance de la v1**.
+
+> **La decisión de la v1 se queda como está:** los 14 repartos en moneda
+> extranjera van **fuera del retorno total**, con los bp no contados
+> **reportados por serie** y el umbral de 50 bp a la vista. Un hueco medido es
+> mejor que una conversión inventada — que fue la razón original para
+> excluirlos, y sigue siéndolo.
+
+**El veredicto NO-GO se sostiene, y por aritmética, no por conveniencia.**
+Convertir **sólo puede sumar** retorno a la canasta (los repartos son entradas,
+nunca salidas), y el hueco hasta GO es de **0.12 de Sharpe**. Los bp no
+contados están muy por debajo de eso. Que la verificación directa no se pueda
+hacer en la v1 no deja el resultado en el aire: lo deja acotado, con la cota
+escrita.
 
 ---
 
@@ -1632,7 +1721,7 @@ Eso acota qué se le puede pedir a este tipo de señal en BMV:
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 10 jobs (`reparse`, `reparse-fin` e `inspect` son de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **185 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **188 tests**, en verde. |
 | `api/_lib/bmv-rotation.js` | Hecho. Lógica pura de la Fase B: TTM, momentum, ranks, canastas, simulación, veredicto. |
 | `api/bmv-rotation-analyze.js` | Hecho. SELECT-only, `ADMIN_SECRET`, `?format=md`, 0 créditos. |
 | `tests/bmv-rotation.test.mjs` | Hecho. **47 tests**, en verde. |
@@ -1644,7 +1733,8 @@ Eso acota qué se le puede pedir a este tipo de señal en BMV:
 | **Normalización** | Arreglada y **verificada en prod**: 4,174/4,174 con EPS (§5.5). |
 | **Elegibilidad** | **Corrida.** Con 1 MM: 111 rebalanceos, elegibles mediano 44, piso 21.6%, techo 0%, **quintil 78.4%**. Las cuatro puertas pasan (§5.9). |
 | **Fase B** | **Corrida. NO-GO** (§5.10). Exceso 0.0%/año, t = −0.007, Sharpe +0.03 contra el +0.15 exigido. |
-| **Moneda extranjera** | **Resuelta.** `?job=divisas` trae el tipo de cambio de la fecha ex; lo que sigue sin tasa sigue excluido y contado (§5.10). |
+| **Moneda extranjera** | **Fuera de la v1, por decisión.** `/v2/divisas` es spot y no sirve; la vía real es Banxico SIE, otra integración. Los 14 repartos van fuera con sus bp reportados (§3.3, §5.10). |
+| **Contador de créditos** | **Corregido** (18-sep-2026). Cobraba por request y la API cobra por KiB: error de ~18×. `?job=creditos` lo contrasta contra la API (§2.1). |
 | **Umbral de liquidez** | **Congelado en 1,000,000** (17-sep-2026), por operabilidad (§3.1, §5.8). |
 | **La cosecha** | **Completa.** 4,174 financieros, 569,589 filas de precio, 182 series. |
 | **Cobertura real** | **Reportada.** EPS en 4,174/4,174 filas; benchmark 4,207 días con 62 distribuciones. |

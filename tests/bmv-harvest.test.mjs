@@ -23,7 +23,7 @@ import {
   BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO,
   COBERTURA_FIN, PRESUPUESTO_MENSUAL,
   aNumero, aplanarHistoricos, clavePeriodo, construirUrl, emisoraSerie, valorDeCampo,
-  candidatosDivisas, normalizarTiposCambio,
+  BYTES_POR_CREDITO, creditosDeBytes, tamanoEnBytes,
   extraerDistribuciones, finDeTrimestre, mesPresupuesto, normalizarFinancieros,
   parseClavePeriodo, periodoApi, restaDias, DIAS_EX_APROX, UMBRAL_PLACEHOLDER,
   recortarAlPeriodo, finDeClave,
@@ -36,7 +36,7 @@ import {
   CONTRATO_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, contar,
   comparativaMd, describirCrudo, elegibilidadMd, jobElegibilidad, literal, tipoDe,
   jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros,
-  jobHistoricos, jobReparse, jobDivisas,
+  jobHistoricos, jobReparse, jobCreditos, saldoDeCreditos,
   estimarConsumo, filaCenso, filasDelCenso, nuevaCartera, pareceClave, pareceSerie,
   pendientesFinancieros,
   paramsBenchmark, paramsFinancieros, paramsHistoricos, parsePeriodoTexto,
@@ -262,12 +262,20 @@ test('la cartera para por tope de la corrida', () => {
 });
 
 test('la cartera para ANTES de pasarse del presupuesto mensual, no después', () => {
+  // Con el presupuesto casi agotado ni siquiera la RESERVA del siguiente
+  // request cabe, así que para de entrada. Antes este test pasaba porque la
+  // reserva era 1 crédito fijo — la misma suposición que resultó estar 18×
+  // equivocada.
   const c = nuevaCartera({ mes: '2026-09', gastadoMes: PRESUPUESTO_MENSUAL - 1, tope: 100 });
-  assert.equal(c.puedeSeguir(), true);
-  c.anota(null);
-  assert.equal(c.puedeSeguir(), false);
+  assert.equal(c.puedeSeguir(), false, 'con 1 crédito libre no cabe ninguna respuesta real');
   assert.equal(c.razonParo, 'presupuesto_mensual_agotado');
-  assert.ok(c.gastadoMes + c.creditos <= PRESUPUESTO_MENSUAL);
+
+  // Con holgura sí arranca, y para en cuanto lo gastado más la reserva se pasa.
+  const d = nuevaCartera({ mes: '2026-09', gastadoMes: PRESUPUESTO_MENSUAL - 1000, tope: 100 });
+  assert.equal(d.puedeSeguir(), true);
+  d.anota({ bytes: 1000 * 1024, creditos: 1000 });
+  assert.equal(d.puedeSeguir(), false);
+  assert.ok(d.gastadoMes + d.creditos <= PRESUPUESTO_MENSUAL);
 });
 
 test('la cartera para por el reloj de la lambda antes del 504', () => {
@@ -289,18 +297,15 @@ test('estimarConsumo: 30 emisoras × 41 trimestres + 30 rangos + 1 censo', () =>
   assert.equal(e.requests.financieros, 30 * 41);
   assert.equal(e.requests.historicos, 30);
   assert.equal(e.requests.total, 1 + 1230 + 30);
-  assert.equal(e.modelos.A_por_request, 1261);
+  assert.equal(e.modelos_descartados.A_por_request, 1261, 'el conteo de requests sigue siendo correcto — lo que estaba mal era creer que ERA el costo');
 });
 
-test('estimarConsumo: bajo el modelo más caro la cosecha NO cabe en un mes', () => {
-  // Este test existe para que el hallazgo no se pierda: si el costo se cobra
-  // por campo × día, 200,000 no alcanzan y hay que partir la cosecha en dos
-  // meses o recortar el rango de precios. Es el motivo de que el reporte
-  // muestre los tres modelos en vez de uno.
+test('los requests siguen contándose bien; lo que cambió es cuánto cuesta cada uno', () => {
+  // La distinción importa para leer el historial: el estimador nunca contó mal
+  // los requests. Contó mal los CRÉDITOS, porque los igualaba a los requests.
   const e = estimarConsumo({ emisoras: emisorasDemo(30) });
-  assert.equal(e.cabe_en_un_mes.A, true);
-  assert.equal(e.cabe_en_un_mes.C, false);
-  assert.ok(e.modelos.C_por_campo_dia > PRESUPUESTO_MENSUAL);
+  assert.equal(e.costo.creditos > e.requests.total * 5, true,
+    'una respuesta promedio pesa muchos KiB, no uno');
 });
 
 test('estimarConsumo: una emisora con rango corto cuesta menos, no lo mismo', () => {
@@ -688,11 +693,13 @@ test('estimarConsumo dice CÓMO partir la cosecha sólo cuando no cabe', () => {
   const chico = estimarConsumo({ emisoras: emisorasDemo(30) });
   assert.equal(chico.plan_si_no_cabe, null, 'si cabe, no hay nada que partir');
 
-  // Un universo absurdo para forzar el caso: 6,000 emisoras × 41 > 200,000.
+  // Un universo absurdo para forzar el caso. Con el modelo de KiB basta MUCHO
+  // menos que antes: el punto en que la cosecha deja de caber llegó mucho más
+  // temprano de lo que el modelo viejo hacía creer.
   const enorme = estimarConsumo({ emisoras: emisorasDemo(6000) });
-  assert.equal(enorme.cabe_en_un_mes.A, false);
-  assert.ok(enorme.plan_si_no_cabe.financieros_solos > 0);
-  assert.ok(enorme.plan_si_no_cabe.historicos_solos > 0);
+  assert.equal(enorme.cabe_en_un_mes, false);
+  assert.ok(enorme.plan_si_no_cabe.financieros_solos_creditos > 0);
+  assert.ok(enorme.plan_si_no_cabe.historicos_solos_creditos > 0);
   assert.match(enorme.plan_si_no_cabe.mes_1, /financieros/);
 });
 
@@ -2098,76 +2105,121 @@ test('el markdown comparativo trae las tres filas y dice que el umbral ya está 
 });
 
 /* ═══════════════════════════════════════════════════════════
- * TIPO DE CAMBIO EN LA FECHA EX. §3.3 excluyó los 14 repartos en
- * moneda extranjera de la v1 y puso un umbral: 50 bp acumulados por
- * serie. HOTEL* lo superó, así que la exclusión se resuelve —no se
- * asume— con /v2/divisas en la FECHA EX.
+ * EL COSTO REAL: CRÉDITOS POR KiB.
  *
- * El contrato de ese endpoint NO está verificado: este sandbox no
- * alcanza la API. Por eso el job prueba grafías antes de cosechar, y
- * el parser acepta las formas que la API ya usa en otros endpoints
- * sin inventar las que no.
+ * [VERIFICADO contra databursatil.com/docs.html, 18-sep-2026]
+ *   «cada solicitud exitosa a la API consume por cada KiB (1024
+ *    bytes) de datos transmitidos, solo 1 crédito»
+ *
+ * El contador de la casa decía 4,405 créditos cuando /v2/creditos
+ * reportaba ~81,000 consumidos: error de ~18×. Y la causa no fue un
+ * descuido de aritmética sino de MÉTODO: se concluyó «1 crédito por
+ * request» de una corrida que «midió» 14 créditos en 14 requests,
+ * pero ese 14 salía del propio contador, que sumaba 1 por request
+ * POR CONSTRUCCIÓN. La medición confirmaba su premisa.
+ *
+ * Estas pruebas fijan el modelo correcto y, sobre todo, fijan que el
+ * contraste sea contra una fuente que NO es nuestra.
  * ═══════════════════════════════════════════════════════════ */
 
-test('el parser de divisas acepta el mapa fecha→número', () => {
-  const r = normalizarTiposCambio({ '2018-03-01': 18.75, '2018-03-02': 18.8 });
-  assert.equal(r.filas.length, 2);
-  assert.deepEqual(r.filas[0], { fecha: '2018-03-01', tasa: 18.75 });
+test('el crédito se cobra por KiB, redondeando HACIA ARRIBA', () => {
+  assert.equal(BYTES_POR_CREDITO, 1024);
+  assert.equal(creditosDeBytes(0), 0, 'una respuesta vacía no transmite datos');
+  assert.equal(creditosDeBytes(1), 1, 'un byte ya es un KiB empezado');
+  assert.equal(creditosDeBytes(1024), 1);
+  assert.equal(creditosDeBytes(1025), 2, 'ceil, no round: subestimar el gasto es el lado caro');
 });
 
-test('acepta el mapa fecha→arreglo de UN número, como /v2/historicos', () => {
-  const r = normalizarTiposCambio({ '2018-03-01': [18.75] });
-  assert.equal(r.filas[0].tasa, 18.75);
+test('la respuesta de 441 KB del censo cuesta 432 créditos, no 1', () => {
+  // El caso que destapa el error de un golpe: bajo el modelo viejo esta
+  // respuesta —la del censo, medida— contaba como UN crédito.
+  assert.equal(creditosDeBytes(441_543), 432);
 });
 
-test('un arreglo de DOS números es ambiguo y se descarta, no se adivina', () => {
-  // ¿Compra y venta? ¿FIX y spot? Elegir uno metería un error de dirección
-  // desconocida — justo lo que §3.3 quería evitar al excluir estos repartos.
-  const r = normalizarTiposCambio({ '2018-03-01': [18.70, 18.80] });
-  assert.equal(r.filas.length, 0);
-  assert.equal(r.descartadas, 1);
-  assert.match(r.motivo, /ambiguo/);
+test('el tamaño se mide en BYTES, no en caracteres UTF-16', () => {
+  // Las razones sociales mexicanas vienen llenas de acentos y eñes. Contar
+  // `texto.length` subestimaría el costo justo en el endpoint más grande.
+  assert.equal(tamanoEnBytes('abc'), 3);
+  assert.equal(tamanoEnBytes('PEÑOLES'), 8, 'la ñ son dos bytes en UTF-8');
+  assert.ok(tamanoEnBytes('ÁÉÍÓÚ') > 'ÁÉÍÓÚ'.length);
 });
 
-test('acepta un nivel de envoltorio (divisa → mapa de fechas)', () => {
-  const r = normalizarTiposCambio({ USD: { '2018-03-01': 18.75 } });
-  assert.deepEqual(r.filas, [{ fecha: '2018-03-01', tasa: 18.75 }]);
+test('la cartera cobra lo que la respuesta MIDIÓ, no una constante por request', () => {
+  const c = nuevaCartera({ mes: '2026-09', gastadoMes: 0, tope: 10 });
+  c.anota({ bytes: 441_543, creditos: creditosDeBytes(441_543) });
+  c.anota({ bytes: 2_000, creditos: creditosDeBytes(2_000) });
+  assert.equal(c.requests, 2);
+  assert.equal(c.creditos, 432 + 2, 'dos requests NO cuestan dos créditos');
+  assert.equal(c.bytes, 443_543);
 });
 
-test('acepta el arreglo de objetos con campo de fecha', () => {
-  const r = normalizarTiposCambio([{ fecha: '2018-03-01', valor: 18.75 }]);
-  assert.deepEqual(r.filas, [{ fecha: '2018-03-01', tasa: 18.75 }]);
+test('un request sin bytes (falla de red) cuenta como request y cuesta 0', () => {
+  const c = nuevaCartera({ mes: '2026-09', gastadoMes: 0, tope: 10 });
+  c.anota({ ok: false, status: 0, error: 'red' });
+  assert.equal(c.requests, 1);
+  assert.equal(c.creditos, 0, 'no hubo datos transmitidos que cobrar');
 });
 
-test('una tasa cero o negativa NO se guarda: no existe un tipo de cambio así', () => {
-  assert.equal(normalizarTiposCambio({ '2018-03-01': 0 }).filas.length, 0);
-  assert.equal(normalizarTiposCambio({ '2018-03-01': -18 }).filas.length, 0);
+test('la reserva del siguiente request usa el promedio OBSERVADO de la corrida', () => {
+  // Sin respuestas todavía no hay nada que promediar, así que va una cota
+  // conservadora; en cuanto hay datos, mandan los datos.
+  const c = nuevaCartera({ mes: '2026-09', gastadoMes: 0, tope: 10 });
+  const inicial = c.reserva();
+  assert.ok(inicial > 1, 'reservar 1 crédito por request es el error viejo otra vez');
+  c.anota({ bytes: 100 * 1024, creditos: 100 });
+  assert.equal(c.reserva(), 100, 'con una respuesta de 100 KiB, la siguiente se estima igual');
 });
 
-test('cuando nada calza, el parser DICE por qué en vez de devolver vacío mudo', () => {
-  const r = normalizarTiposCambio({ mensaje: 'token invalido' });
-  assert.equal(r.filas.length, 0);
-  assert.ok(r.motivo, 'un vacío sin motivo es indistinguible de "no hubo repartos"');
+test('la cartera para cuando la RESERVA no cabe en el presupuesto, no cuando ya se pasó', () => {
+  const c = nuevaCartera({ mes: '2026-09', gastadoMes: PRESUPUESTO_MENSUAL - 10, tope: 100 });
+  c.anota({ bytes: 50 * 1024, creditos: 50 });   // una respuesta cara
+  assert.equal(c.puedeSeguir(), false);
+  assert.equal(c.razonParo, 'presupuesto_mensual_agotado');
 });
 
-test('los candidatos de /v2/divisas son varios y ninguno se da por verificado', () => {
-  const c = candidatosDivisas('USD', '2018-03-01', '2018-03-01');
-  assert.ok(c.length >= 4, 'probar una sola grafía es adivinar');
-  for (const x of c) {
-    assert.ok(x.etiqueta && x.params, 'cada candidato se identifica para el reporte');
-  }
-  const json = JSON.stringify(c);
-  assert.match(json, /USD/);
-  assert.match(json, /2018-03-01/);
+test('el estimado usa el modelo de KiB y ya no el de requests', () => {
+  const em = [{ emisora: 'W', emisora_serie: 'W*', finPeriodos: 30, histDesde: '2016-01-01', histHasta: '2026-09-01' }];
+  const e = estimarConsumo({ emisoras: em });
+  assert.ok(e.costo, 'el estimado tiene que hablar de créditos por bytes');
+  assert.match(e.costo.regla, /1024/);
+  assert.ok(e.costo.creditos > e.requests.total,
+    'con el modelo correcto, los créditos superan por mucho al número de requests');
+  // El modelo viejo se conserva SÓLO como registro de lo que se creyó.
+  assert.ok(e.modelos_descartados.A_por_request);
+  assert.match(e.modelos_descartados.nota, /contaba requests por construcción/);
 });
 
-test('?job=divisas entra sin ReferenceError aunque no haya base', async () => {
-  // El caso del `node --check` que no sustituye correr el módulo: la ruta
-  // completa del job tiene que ejecutarse, no sólo compilar.
+test('el estimado reproduce los ~81,000 créditos que la cosecha real costó', () => {
+  // La calibración se despejó del único dato no circular que hay (/v2/creditos).
+  // Si alguien toca los tamaños observados, este test dice cuánto se movió.
+  const em = [];
+  for (let i = 0; i < 137; i++) em.push({ emisora: `E${i}`, emisora_serie: `E${i}*`, finPeriodos: 30, histDesde: '2016-01-01', histHasta: '2026-09-01' });
+  for (let i = 0; i < 45; i++) em.push({ emisora: `E${i}`, emisora_serie: `E${i}B`, histDesde: '2016-01-01', histHasta: '2026-09-01' });
+  const e = estimarConsumo({ emisoras: em });
+  assert.ok(Math.abs(e.costo.creditos - 81_000) < 5_000,
+    `el modelo debería dar ~81,000 y dio ${e.costo.creditos}`);
+});
+
+test('saldoDeCreditos lee las llaves plausibles', () => {
+  assert.equal(saldoDeCreditos({ creditos: 119026 }).restantes, 119026);
+  assert.equal(saldoDeCreditos({ restantes: 500 }).restantes, 500);
+  assert.equal(saldoDeCreditos({ remaining: 7 }).restantes, 7);
+});
+
+test('cuando no puede leer el saldo lo DICE, en vez de devolver un null mudo', () => {
+  // Un null callado acá es indistinguible de «cuadra», que es exactamente el
+  // error que este job existe para no repetir.
+  const r = saldoDeCreditos({ mensaje: 'token invalido' });
+  assert.equal(r.restantes, null);
+  assert.match(r.motivo, /ninguna llave de saldo/);
+  assert.match(saldoDeCreditos(null).motivo, /vacía|no es JSON/);
+});
+
+test('?job=creditos entra sin ReferenceError aunque no haya base', async () => {
   const guardado = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
   try {
-    await jobDivisas({ query: {} });
+    await jobCreditos();
     assert.fail('debería fallar por falta de DATABASE_URL');
   } catch (e) {
     assert.doesNotMatch(e.message, /is not defined/, `ReferenceError en la ruta del job: ${e.message}`);

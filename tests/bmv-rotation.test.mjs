@@ -833,10 +833,12 @@ test('reporteMd sobrevive a un análisis sin canastas', () => {
 /* ═══════════════════ 13. moneda extranjera convertida ═══════════════════ */
 
 test('un reparto en USD CON tasa de su fecha ex entra al retorno total', async () => {
-  // El pendiente de disciplina que HOTEL* destapó: §3.3 excluía estos repartos
-  // de la v1 y ponía un umbral de 50 bp por serie. Pasado el umbral, la
-  // exclusión se resuelve con el tipo de cambio de la FECHA EX — no con el de
-  // hoy, que sería mirar el futuro desde 2016.
+  // `bmv_tipos_cambio` está VACÍA en la v1 —/v2/divisas es spot y la vía real
+  // es Banxico SIE, otra integración—, así que en producción este camino no se
+  // ejercita y los 14 repartos quedan fuera, que es la decisión congelada.
+  //
+  // El test se queda igual: prueba que el consumidor esté bien construido para
+  // el día que haya tasas. Un camino sin probar es un camino que se pudre.
   const convertido = [{ emisora_serie: 'E000*', fecha: '2018-03-01', divisa: 'USD', monto: 1, tasa: 18.7, precio: 100 }];
   global.fetch = mockFetch(fabrica({
     nSeries: 12, desde: '2016-01-01', hasta: '2019-12-31', divisaConvertida: convertido,
