@@ -56,7 +56,9 @@ Weights are checked before a single order goes out: max 30% per name, max 50% pe
 
 A deterministic risk layer runs independently of any model: catastrophic stop, drawdown breaker, trailing stops. No LLM can turn it off.
 
-T2 is long-only. Shorts are scoped for T3, because a stop on a short runs the other way and the risk layer isn't written for it yet.
+Shorts are live as of 2026-09-18, capped at 15% per name and 50% gross — half the long cap, because a long that goes wrong shrinks and a short that goes wrong grows. A short only opens on a name Alpaca confirms is shortable and easy to borrow; missing confirmation is a rejection, not a permission.
+
+So the season has two regimes: long-only through 2026-09-17, both sides after. The journal carries a dated `rules_changed` row saying exactly that, because a book that can go short is not the same experiment as one that cannot.
 
 ### Three pages
 

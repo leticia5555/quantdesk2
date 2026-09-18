@@ -135,7 +135,11 @@ console.log('\n── una pata solo se convierte en orden si TODO está confirma
   };
   const { ordenes, descartadas } = legsAOrdenes({ legs, meta });
 
-  ok(ordenes.length === 1 && ordenes[0].symbol === 'NVDA', 'solo pasa la que tiene todo', JSON.stringify(ordenes.map((o) => o.symbol)));
+  // Desde el 2026-09-18 (D8) la pata de CORTO también pasa: tiene precio y
+  // `tradable`. Antes se descartaba por reglamento, no por falta de dato.
+  ok(ordenes.length === 2 && ordenes.map((o) => o.symbol).join(',') === 'NVDA,CORTO',
+    'pasan las dos que tienen todo — la de corto incluida, desde que D8 los habilitó',
+    JSON.stringify(ordenes.map((o) => o.symbol)));
   ok(ordenes[0].qty === 66 && ordenes[0].limit_price === 180.9,
     'cantidad ENTERA hacia abajo y límite marketable', JSON.stringify([ordenes[0].qty, ordenes[0].limit_price]));
   ok(ordenes[0].intencion === 'buy',
@@ -146,8 +150,26 @@ console.log('\n── una pata solo se convierte en orden si TODO está confirma
   ok(/no confirma que NOOPERABLE sea operable/.test(motivo('NOOPERABLE')), 'sin fila de Alpaca tampoco');
   ok(/no alcanza para una acción entera/.test(motivo('CARA')),
     'y un movimiento más chico que una acción se NOMBRA, no desaparece');
-  ok(/long-only/.test(motivo('CORTO')),
-    'una pata de corto en la T2 es un bug del rebalanceo y se descarta en vez de mandarse');
+  ok(motivo('CORTO') === '', 'y la de corto ya NO se descarta: el motivo está vacío porque no hay motivo');
+
+  // EL LADO Y EL LÍMITE DEL CORTO, que es donde se cuela el error caro.
+  const corto = ordenes.find((o) => o.symbol === 'CORTO');
+  ok(corto.side === 'sell' && corto.intencion === 'short',
+    'abrir un corto es un `sell` para Alpaca, y la intención original viaja para que el journal no los confunda',
+    JSON.stringify([corto.side, corto.intencion]));
+  ok(corto.limit_price === 39.8,
+    'y su límite es marketable HACIA ABAJO (40 × 0.995): abrir un corto es vender, se preica como una venta',
+    String(corto.limit_price));
+
+  // ── LA BANDERA DE APAGADO, que es para lo único que existe ──────────
+  const apagados = legsAOrdenes({ legs, meta, permitirCortos: false });
+  ok(apagados.ordenes.length === 1 && apagados.ordenes[0].symbol === 'NVDA',
+    'con los cortos APAGADOS (ARENA_CORTOS=0) la pata de corto vuelve a quedarse afuera',
+    JSON.stringify(apagados.ordenes.map((o) => o.symbol)));
+  const motivoApagado = (apagados.descartadas.find((d) => d.symbol === 'CORTO') || {}).motivo || '';
+  ok(/APAGADOS/.test(motivoApagado),
+    'y el motivo dice que fue la bandera, no el reglamento: un descarte tiene que nombrar su causa real',
+    motivoApagado.slice(0, 90));
 }
 
 // ── 6) EL CANDADO: FRENA LA CORRIDA, NO LA ORDEN ─────────────────────

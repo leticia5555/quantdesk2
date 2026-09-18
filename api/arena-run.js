@@ -71,7 +71,7 @@ import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getAccount, getPositions, getOrders, getOrder, createLimitOrder, alpacaCreds, getCalendar } from './_lib/alpaca.js';
 import { parseScanResponse, parsePlanResponse, validateActions, applyScreenerFloor, ARENA_RULES, isLeveragedInverseETF, NON_EQUITY_TYPES, EXCLUDED_SECURITY_TYPES } from './_lib/arena-guard.js';
 import { buildRiskExits, EXIT_RULES } from './_lib/arena-exits.js';
-import { lowsFromSeries } from './_lib/arena-exits-short.js';
+import { lowsFromSeries, SHORT_RULES } from './_lib/arena-exits-short.js';
 // TEMPORADA 2: la memoria del agente (compromisos con fecha, historia de cada
 // posición, auditoría del pronunciamiento). JS puro, sin I/O — ver el encabezado
 // de _lib/arena-memory.js para el porqué de cada pieza.
@@ -96,7 +96,7 @@ import { loadUniverse } from './_lib/arena-universe.js';
 // que el validador hace cumplir. Dos fuentes para el mismo tope es cómo el
 // prompt termina prometiendo algo que el harness rechaza.
 import { RAILS } from './_lib/arena-rails.js';
-import { usaObjetivo, contratoActivo } from './_lib/arena-objetivo-vivo.js';
+import { usaObjetivo, contratoActivo, permiteCortos } from './_lib/arena-objetivo-vivo.js';
 import { runAgenteObjetivo } from './arena-shadow.js';
 // B2: EL TABLERO — lo que los siete miran, idéntico, en el prefijo cacheado.
 import { buildBoard, renderBoard, BOARD_TOKEN_HARD_CAP, SECTOR_ETFS } from './_lib/arena-board.js';
@@ -397,7 +397,7 @@ WHY THE SHORT CAP IS HALF: a long that goes wrong SHRINKS — a 25% long that fa
 HOW THE ENGINE EXECUTES YOUR BOOK (so your plan is consistent with what actually happens):
 - A move smaller than ${pct(rails.no_trade_band)} percentage points is NOT traded: that is price drift, not a decision. A full exit is always executed, however small.
 - Order of execution: sells, then covers, then buys, then new shorts. Your open orders that contradict today's book are cancelled.
-- Deterministic stops run around you: a catastrophic stop per position, a trailing stop that by construction can only exit at a profit, and a book-level drawdown breaker. They can close a position without you; you will see it as a fact in your next prompt.
+- Deterministic stops run around you, on BOTH sides. Long: a catastrophic stop ${pct(EXIT_RULES.catastrophic_stop_pct)}% below entry, and a trailing stop that arms once the peak reaches +${pct(EXIT_RULES.trailing_arm_gain)}% and fires ${pct(EXIT_RULES.trailing_give_back)}% off that peak. Short: a catastrophic stop ${pct(SHORT_RULES.catastrophic_stop_pct)}% AGAINST you from entry (tighter than the long one — see the asymmetry above), and a trailing that arms once the low reaches -${pct(SHORT_RULES.trailing_arm_drop)}% and covers on a +${pct(SHORT_RULES.trailing_give_back)}% bounce off that low. Both trailings can, by construction, only exit at a profit. On top of those, a book-level drawdown breaker. They can close a position without you; you will see it as a fact in your next prompt.
 
 HOW TO READ WHAT YOU ARE GIVEN (pre-computed for you — quote these as given, do not re-derive or rescale them):
 ${STABLE_BLOCKS.board}
@@ -2637,7 +2637,7 @@ export const CONTRATO_RULES_TEXT = [
   'ÓRDENES: límite marketable SIEMPRE, cantidad entera, precio del mismo snapshot que validó los rieles. JAMÁS a mercado — la regla de la casa no cambia con el contrato.',
   'LOS RIELES SIGUEN SIENDO LOS MISMOS, más uno: R11 exige que Alpaca confirme que el símbolo es OPERABLE (largos y cortos). Y antes de los rieles, cada ticker del objetivo se normaliza y se valida contra el universo del día: si alguno no existe, se rechaza el objetivo ENTERO — una cartera a la que se le saca una pata ya no es la que el PM decidió.',
   'CANDADO DE EJECUCIÓN: si alguna orden no corresponde a ningún peso del objetivo ni a ninguna posición del libro, o si su lado contradice el movimiento del peso, NO se manda NINGUNA orden de esa corrida. Un motor que inventa una orden no se corrige mandando las otras bien.',
-  'LONG-ONLY, sin cambios: la T2 no habilita cortos. Una pata de corto que aparezca en el rebalanceo es un bug y se descarta en vez de mandarse.',
+  'CORTOS: habilitados desde el 2026-09-18 (ver el anuncio `arena-cortos-t2-2026-09-18`). Peso objetivo NEGATIVO = corto. Rieles propios: ≤15% por nombre corto, ≤50% de corto bruto, neto entre −50% y +100%, y el nombre tiene que estar confirmado como shortable + easy-to-borrow y cotizar sobre $10. La red determinista del corto sale a +20% en contra y su trailing arma cuando el piso llegó a −15%.',
   'QUÉ NO CAMBIA: las nueve reglas de la T2, la cadencia por evento, el presupuesto de gasto en escalones, el baseline por agente y la red de riesgo determinista. Este anuncio cambia CÓMO SE EXPRESA la decisión, no qué se le permite decidir.',
   'EL CORTE: las métricas de antes y después de esta fila NO son comparables en turnover ni en número de órdenes — el contrato viejo proponía acciones y éste propone un libro. El return sí es comparable: el baseline no se movió.',
   'Experimento sin validación estadística, paper trading, no es asesoría.',
@@ -2663,6 +2663,78 @@ export async function announceContratoObjetivo(now = new Date(), env = process.e
            'cualquier orden que no corresponda a un peso (el candado la frena sola y lo journalea como `freno`)',
          ],
          apagado: 'ARENA_CONTRATO=0 en Vercel. Se toma sin deploy y vuelve al contrato de acciones sin tocar nada más.',
+       })],
+    );
+    return true;
+  } catch (e) { return false; }
+}
+
+// ── CORTOS HABILITADOS (D8) — el segundo régimen de la T2 ────────────
+// MISMO mecanismo que los otros anuncios: una fila `rules_changed` de liga,
+// idempotente por id. La fecha está en el id a propósito: el post-mortem tiene
+// que poder partir la temporada en DOS y no mezclar un libro que no podía
+// ponerse corto con uno que sí.
+//
+// POR QUÉ EXISTE ESTE ANUNCIO Y NO UN SILENCIOSO CAMBIO DE FLAG: D8 del scope
+// de la T2 ("Cortos desde el día 1", cerrada por Lety el 2026-09-15) decía una
+// cosa y el reglamento v4 que salió en PR #171 decía la contraria. La liga
+// corrió long-only del 17 al 18 de septiembre por esa contradicción, no por
+// una decisión. Un régimen que existió tiene que quedar en el registro aunque
+// haya nacido de un error — borrarlo sería peor que haberlo tenido.
+export const CORTOS_ANNOUNCEMENT_ID = 'arena-cortos-t2-2026-09-18';
+export const CORTOS_RULES_VERSION = 'v4.1';
+
+export const CORTOS_RULES_TEXT = [
+  'REGLAMENTO v4.1 — CORTOS HABILITADOS. Desde esta corrida un peso objetivo NEGATIVO es un corto y el motor lo ejecuta. Hasta ayer una pata de corto se descartaba; hoy se manda si pasa los rieles.',
+  'POR QUÉ CAMBIA: el scope de la T2 (decisión D8, cerrada el 2026-09-15) habilitaba cortos desde el día 1 con 15% por nombre y ≤50% bruto. El reglamento v4 que se publicó el 2026-09-17 decía lo contrario por un error de redacción, no por una decisión. Esta fila corrige el reglamento, no la decisión.',
+  'LOS RIELES DEL CORTO, que ya estaban en el motor: R2 ≤15% por nombre corto (la mitad del 30% del largo). R5 ≤50% de corto bruto. R4 exposición neta entre −50% y +100%. R9 solo nombres que Alpaca confirme shortable Y easy-to-borrow — sin el dato NO se abre (fail closed). R10 precio mínimo $10 para cortos, contra $5 del universo: los nombres baratos son donde viven los squeezes. R12 el motor RECORTA un corto que crezca por encima de su riel, aunque el PM no lo pida.',
+  'LA RED DETERMINISTA DEL CORTO, cableada hoy y no antes: stop catastrófico a +20% en contra de la entrada (no +22% como el largo — a 20% en contra un corto del 15% ya creció a ~18% del libro). Trailing que ARMA cuando el piso desde la entrada llegó a −15% y DISPARA con un rebote de +8% desde ese piso; por construcción solo cubre en ganancia. El corte amplio del breaker y el desapalancamiento PRO-RATA ahora alcanzan a los cortos: antes los saltaban.',
+  'LA ASIMETRÍA, que es el motivo de todos esos números: un largo que sale mal SE ENCOGE; un corto que sale mal CRECE. Un largo del 30% que cae 50% pasa a ~18% del libro y el riel se respeta solo. Un corto del 15% cuyo subyacente sube 50% pasa a ~23% y sigue creciendo. La pérdida de un corto no tiene techo teórico.',
+  'BUY-IN FORZADO: un corto que desaparece del libro sin una orden nuestra es el broker cerrándolo porque se acabó el préstamo. Se journalea como `forced_buy_in` y NO cuenta como decisión del PM en el post-mortem.',
+  'QUÉ NO CAMBIA: el contrato de portafolio objetivo, la cadencia, el presupuesto, los baselines y la regla de la casa — límite marketable SIEMPRE, jamás a mercado, de los dos lados.',
+  'EL CORTE: la T2 tuvo DOS regímenes. Del 2026-09-13 al 2026-09-17 inclusive, long-only. Desde el 2026-09-18, cortos habilitados. El return sigue siendo comparable (el baseline no se movió); el perfil de riesgo NO — un libro que puede ponerse corto no es el mismo experimento que uno que no puede.',
+  'Experimento sin validación estadística, paper trading, no es asesoría.',
+].join('\n');
+
+export async function announceCortos(now = new Date(), env = process.env) {
+  if (!usaObjetivo(env)) return false;
+  if (!permiteCortos(env)) return false;
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
+       values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
+      [CORTOS_ANNOUNCEMENT_ID, now.toISOString().slice(0, 10), PROMPT_VERSION, CORTOS_RULES_TEXT,
+       JSON.stringify({
+         rules_version: CORTOS_RULES_VERSION,
+         reemplaza_a: CONTRATO_RULES_VERSION,
+         decision: 'D8 del scope de la T2, cerrada por Lety el 2026-09-15',
+         // Los BORDES de los dos regímenes de la T2: hechos históricos fijos,
+         // no referencias a "hoy". Derivarlos de un reloj movería el corte solo
+         // y el post-mortem partiría la temporada por donde no fue.
+         regimenes: [
+           { desde: /* date-lint-ok: borde histórico del régimen long-only */ '2026-09-13', hasta: '2026-09-17', cortos: false },
+           { desde: /* date-lint-ok: borde histórico del régimen con cortos */ '2026-09-18', hasta: null, cortos: true },
+         ],
+         applies_to: activeAgents().map((a) => a.id),
+         rieles_corto: {
+           max_short_weight: RAILS.max_short_weight,
+           max_short_gross: RAILS.max_short_gross,
+           min_net: RAILS.min_net, max_net: RAILS.max_net,
+           min_short_price: RAILS.min_short_price,
+         },
+         red_corto: {
+           catastrophic_stop_pct: SHORT_RULES.catastrophic_stop_pct,
+           trailing_arm_drop: SHORT_RULES.trailing_arm_drop,
+           trailing_give_back: SHORT_RULES.trailing_give_back,
+         },
+         // Igual que el anuncio del contrato: el criterio de aborto va EN el
+         // anuncio, no en un chat de ayer.
+         aborto: [
+           'cualquier corto que llegue al broker con lado `sell` (sería duplicar la posición, no cerrarla)',
+           'un corto abierto sin fila de shortable/easy-to-borrow — R9 debe rechazarlo solo',
+           'más de DOS agentes con rejected_rails por rieles de corto en la misma ronda',
+         ],
+         apagado: 'ARENA_CORTOS=0 en Vercel. Se toma sin deploy: vuelve a descartar las patas de corto y la liga sigue corriendo long-only.',
        })],
     );
     return true;
@@ -3015,6 +3087,7 @@ export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
   // está encendida: es idempotente por id, así que se puede llamar en cada
   // corrida sin ensuciar el journal.
   await announceContratoObjetivo(now);
+  await announceCortos(now);
   await announceSeasonOpen(now);
   // Corte del post-mortem por CAMBIO DE MODELOS (idempotente por id).
   await announceModelChange(now);
@@ -3143,6 +3216,7 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   // está encendida: es idempotente por id, así que se puede llamar en cada
   // corrida sin ensuciar el journal.
   await announceContratoObjetivo(now);
+  await announceCortos(now);
   await announceSeasonOpen(now);
   // Corte del post-mortem por CAMBIO DE MODELOS (idempotente por id).
   await announceModelChange(now);

@@ -38,7 +38,7 @@ import { callArenaLLM, withDeadline, cachePrefixReport, anthropicCostUsd } from 
 import { gatherContext, buildSharedContext, buildTargetSystemPrompt, resolveBaseUrl, PROMPT_VERSION } from './arena-run.js';
 import { parsePortfolioResponse, validateTarget, railTrims, normalizarTickersObjetivo, RAILS } from './_lib/arena-rails.js';
 import { orderLegs } from './_lib/arena-rebalance.js';
-import { legsAOrdenes, verificarOrdenesContraPesos, enviarOrdenes, mandaOrdenes, frenoPorTurnoverMinimo, contratoActivo } from './_lib/arena-objetivo-vivo.js';
+import { legsAOrdenes, verificarOrdenesContraPesos, enviarOrdenes, mandaOrdenes, frenoPorTurnoverMinimo, contratoActivo, permiteCortos } from './_lib/arena-objetivo-vivo.js';
 import { snapshotCuenta } from './_lib/arena-equity.js';
 import { registrarAperturas } from './_lib/arena-apertura.js';
 import { fetchOptionChain } from './options.js';
@@ -375,9 +375,13 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   if (vivo && rebalance) {
     const { ordenes, descartadas } = legsAOrdenes({
       legs: orderLegs(rebalance.legs), meta,
-      // La T2 es long-only. Una pata `short` acá es un bug del rebalanceo, y se
-      // descarta en vez de mandarse.
-      permitirCortos: false,
+      // ÉSTA ES LA COMPUERTA DE LOS CORTOS (D8, 2026-09-18). Estaba en `false`
+      // duro: el reglamento v4 decía long-only por un error de redacción, así
+      // que el motor DESCARTABA cada pata de corto aunque el prompt le dijera
+      // al PM "you may go long and short" y los rieles del corto existieran.
+      // Ahora depende de la bandera, que solo sirve para APAGARLOS en vivo
+      // (ARENA_CORTOS=0) — nunca para encenderlos sin la red cableada.
+      permitirCortos: permiteCortos(),
     });
 
     // EL CANDADO DE LETY, aplicado ANTES de mandar y no después de leer el

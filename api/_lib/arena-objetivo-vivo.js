@@ -49,6 +49,24 @@ export function contratoActivo(env = process.env) {
 export const usaObjetivo = (env = process.env) => contratoActivo(env) !== CONTRATO_VIEJO;
 export const mandaOrdenes = (env = process.env) => contratoActivo(env) === CONTRATO_OBJETIVO;
 
+// ── CORTOS (D8, habilitados el 2026-09-18) ───────────────────────────
+// Default ENCENDIDO: la decisión D8 del scope de la T2 —cerrada por Lety el
+// 2026-09-15— habilitaba cortos desde el día 1, y el reglamento v4 los
+// prohibió por un error de redacción, no por una decisión.
+//
+// La bandera existe para APAGARLOS sin deploy si algo sale mal en vivo
+// (`ARENA_CORTOS=0` en Vercel), no para encenderlos: encender un corto sin la
+// red de salida cableada es lo que este bloque vino a evitar, y por eso el
+// cable entró ANTES que el permiso, en su propio commit.
+//
+// FAIL-SAFE DE LA BANDERA: cualquier valor distinto de '0'/'false'/'no' deja
+// los cortos encendidos, PERO los rieles siguen siendo los que deciden. La
+// bandera no es un riel: apaga una capacidad, no relaja un límite.
+export function permiteCortos(env = process.env) {
+  const v = String((env && env.ARENA_CORTOS) ?? '').trim().toLowerCase();
+  return !(v === '0' || v === 'false' || v === 'no' || v === 'off');
+}
+
 // ── EL LÍMITE MARKETABLE, SIMÉTRICO ──────────────────────────────────
 // Vender: por DEBAJO del mercado. Comprar: por ENCIMA. En los dos casos el
 // límite es agresivo para que llene, y en los dos casos existe: es el techo que
@@ -119,9 +137,12 @@ const LADO_ALPACA = { buy: 'buy', cover: 'buy', sell: 'sell', short: 'sell' };
 // Se reusa a propósito — pedir precios otra vez acá abriría la puerta a que la
 // orden se precie con un número distinto del que validó el riel.
 //
-// `permitirCortos` es explícito y default false: la T2 es long-only por diseño,
-// y una pata `short` que aparezca acá es un bug, no una oportunidad.
-export function legsAOrdenes({ legs = [], meta = {}, banda = BANDA_MARKETABLE, permitirCortos = false } = {}) {
+// `permitirCortos` sigue siendo EXPLÍCITO, pero su default cambió el
+// 2026-09-18: la T2 habilita cortos (D8). El parámetro no desaparece porque la
+// sombra y los tests necesitan poder correr el motor con los cortos apagados
+// sin tocar env — y porque un default no es un permiso: los rieles del corto
+// (R2/R4/R5/R9/R10) se evalúan igual y rechazan antes de llegar acá.
+export function legsAOrdenes({ legs = [], meta = {}, banda = BANDA_MARKETABLE, permitirCortos = permiteCortos() } = {}) {
   const ordenes = [];
   const descartadas = [];
 
@@ -135,7 +156,7 @@ export function legsAOrdenes({ legs = [], meta = {}, banda = BANDA_MARKETABLE, p
       continue;
     }
     if (!permitirCortos && (leg.side === 'short' || leg.side === 'cover')) {
-      descartadas.push({ ...leg, motivo: `la T2 es long-only: una pata "${leg.side}" acá es un bug del rebalanceo, no una oportunidad. No se manda.` });
+      descartadas.push({ ...leg, motivo: `los cortos están APAGADOS en esta corrida (ARENA_CORTOS=0), así que una pata "${leg.side}" no se manda. La T2 los habilita por reglamento desde el 2026-09-18; si esto aparece sin que nadie haya apagado la bandera, es un bug.` });
       continue;
     }
     // Fail closed, igual que R11: sin confirmación de Alpaca no se manda nada.

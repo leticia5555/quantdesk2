@@ -223,8 +223,14 @@ function cosine(a, b) {
 // Un vector de deltas tiene componentes NEGATIVAS (vender es un número
 // negativo), así que su coseno vive en [−1, 1]: −1 significa que uno compró
 // exactamente lo que el otro vendió, que entre dos corridas idénticas sería el
-// resultado más fuerte posible. El coseno entre libros long-only vive en
-// [0, 1] y nunca puede ser negativo.
+// resultado más fuerte posible. El coseno entre LIBROS vivía en [0, 1]
+// mientras la liga era long-only — todos los pesos positivos, coseno nunca
+// negativo. Desde que los cortos entraron (2026-09-18) un libro puede tener
+// pesos negativos, así que ese piso también puede bajar de 0: dos libros
+// opuestos —uno largo en lo que el otro shortea— darían negativo. La
+// aritmética ya lo soportaba; lo que cambió es el RANGO que hay que leer, y
+// por eso los pisos del 16 (0.76 y 0.86) siguen siendo comparables entre sí
+// pero pertenecen a un régimen que ya no corre.
 //
 // Poner 0.62 de deltas al lado de 0.86 de libros es comparar dos escalas
 // distintas. Por eso cada número viaja con su `metodo` y la página lo dice.
@@ -349,10 +355,15 @@ export const METODO_DELTAS = 'deltas';
 // El número solo no dice nada. Un 0.4 entre dos corridas IDÉNTICAS es el
 // resultado más importante del día, y sin la lectura parece un dato técnico.
 //
-// Y la lectura DEPENDE del método: los umbrales de un coseno entre libros
-// long-only (siempre ≥ 0, con un núcleo común que lo empuja hacia arriba) no
-// son los de un coseno entre deltas, que puede ser negativo y que no arrastra
-// las posiciones que nadie tocó.
+// Y la lectura DEPENDE del método: los umbrales de un coseno entre LIBROS (con
+// un núcleo común que lo empuja hacia arriba) no son los de un coseno entre
+// deltas, que no arrastra las posiciones que nadie tocó.
+//
+// OJO CON EL RANGO: los umbrales de abajo se calibraron sobre libros long-only,
+// donde el coseno no podía bajar de 0. Con cortos habilitados (2026-09-18) sí
+// puede. Un piso NEGATIVO entre libros no está contemplado en estos cortes y
+// hay que leerlo como lo que es —dos libros opuestos— antes de publicarlo como
+// "piso alto de coincidencia".
 export function lecturaDelPiso(c, metodo = METODO_LIBROS) {
   if (c == null) return 'sin pesos en alguno de los dos';
   if (metodo === METODO_DELTAS) {
