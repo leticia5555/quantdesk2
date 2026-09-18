@@ -333,6 +333,28 @@ importe operado de los últimos 3 meses ≥ 1,000,000 de pesos**, calculada en
 > mirando cuál umbral daba mejores números de elegibles** — se eligió por el
 > cálculo de arriba, que no depende de cuántas emisoras sobrevivan.
 
+> ### ⚠️ Hubo una discrepancia, y se resolvió a favor de lo decidido
+> **18-sep-2026.** La constante en el código decía `1_000_000` desde el
+> principio, pero el reporte de `?job=elegibilidad&umbrales=…` imprimía
+> «**El umbral congelado es 500,000**» — y debajo, la justificación de 1 MM.
+> El argumento no correspondía al valor.
+>
+> **Causa:** el bloque comparativo tomaba `criterios` de `corridas[0]`, o sea
+> de la **primera corrida de la lista**, que con
+> `&umbrales=500000,1000000,2000000` es la de 500 mil. Nunca fue una decisión;
+> fue un índice.
+>
+> **Por qué no era un detalle cosmético:** 500,000 es justo el umbral que da
+> los mejores números de la tabla (quintil en 95.5% de las fechas contra
+> 78.4%). Dejarlo habría sido **indistinguible de haber elegido mirando
+> resultados**, que es exactamente lo que todo este documento existe para
+> impedir. Un lector futuro no tiene forma de saber que fue un bug.
+>
+> **Resuelto a favor de lo decidido antes de ver la tabla: 1,000,000.** El
+> umbral congelado ahora sale de la constante y nunca de una corrida, la fila
+> vigente va marcada en la tabla, y hay un test que falla si el reporte vuelve
+> a imprimir el primero de la lista como si fuera el congelado.
+
 **Umbral absoluto, no mediana del universo.** El propósito es **excluir lo no
 operable**, no partir el universo en dos. Un filtro por mediana tira siempre la
 mitad: con un universo líquido descarta emisoras perfectamente negociables, y
@@ -1375,6 +1397,81 @@ Se excluyen **antes** de contar: dejarlas dentro ensuciaría todos los conteos
 
 ---
 
+---
+
+## 5.9 Fase B autorizada, y construida
+
+**18-sep-2026.** Con el umbral en 1,000,000 las cuatro puertas previas pasan,
+todas leídas **sin tocar un retorno**:
+
+| Puerta | Valor | Límite |
+|---|---:|---:|
+| Rebalanceos | 111 | ≥ 30 ✅ |
+| Elegibles mediano | 44 | ≥ 16 ✅ |
+| Fechas donde manda el piso | 21.6% | ≤ 50% ✅ |
+| Fechas donde manda el techo | 0% | ≤ 50% ✅ |
+| Fechas donde manda el **quintil** | **78.4%** | — |
+
+Con 44 elegibles el quintil da 8.8, apenas dentro de la ventana 40-75 que
+§5.8 identificó. O sea que **esta corrida sí prueba un quintil** en la gran
+mayoría de las fechas, que era justo lo que el diseño quería y lo que el
+tripwire, de haberse quedado, habría hecho imposible.
+
+### `/api/bmv-rotation-analyze`
+
+SELECT-only, `ADMIN_SECRET`, `?format=md`, **0 créditos**. No llama a
+`ensureBmvSchema()` —eso hace `CREATE TABLE` y `ALTER`— ni toca el ledger ni el
+presupuesto. `tests/bmv-rotation.test.mjs` captura toda consulta que cruce la
+frontera y falla si alguna no empieza con `SELECT` o `WITH`.
+
+Los criterios **no se definen en el endpoint**: viven en
+`_lib/bmv-rotation.js` y `_lib/bmv-elegibilidad.js` como constantes que copian,
+número por número, lo congelado en §3. El endpoint trae filas y las pasa por
+esas funciones; no tiene un solo umbral propio.
+
+#### Por qué no se traen 569,589 filas
+
+El ranking sólo necesita el **cierre del día anterior** al rebalanceo y **dos
+anclas de momentum**. Los tres caben en los **cierres mensuales** (~22,000
+filas): para un rebalanceo en el primer día operado del mes M, el cierre del
+día anterior **es** el último cierre de M−1. Los precios diarios se piden sólo
+para los nombres que la canasta llegó a tener y sólo durante los días que los
+tuvo, con los intervalos de una misma serie **fusionados** — un nombre que
+sobrevive doce rebalanceos vale un intervalo, no doce.
+
+#### El bug del ancla, que se delató solo
+
+La primera versión derivaba el precio del ranking como «fecha − 1 día». El 1 de
+julio de 2017 cayó en **sábado**, así que el primer día operado fue el lunes 3;
+«fecha − 1 día» daba el 2 de julio, que **sigue siendo julio**, y en julio el
+único cierre mensual es el del 31 — un precio del **futuro**.
+
+El guardia de «el precio del ranking tiene que ser anterior al rebalanceo» lo
+atrapó: el nombre quedaba fuera y el universo salía **vacío**. Es la forma
+barata de equivocarse —un error que hace ruido en vez de callarse— pero error
+al fin. Ahora el ancla se toma por **índice de mes** (`mes(fecha) − 1`), que es
+lo que el dato de verdad significa, y el guardia se quedó: si algún día los
+rebalanceos dejan de ser el primer día del mes, esto falla cerrado.
+
+Hay dos tests: uno sobre julio de 2017 en particular, y otro que recorre
+**todos** los rebalanceos exigiendo que ningún precio de ranking sea del mismo
+día ni posterior.
+
+#### Lo que el reporte pone ARRIBA
+
+Los cuatro caveats van en el encabezado, no enterrados: **pct_ex_aproximada**,
+el **régimen que mandó**, los **puntos base no contados** por los repartos en
+moneda extranjera (con su umbral de revisión de 50 bp por serie), y **GAVB y
+VISTAC** excluidas. Son lo que cambia cómo se lee todo lo demás.
+
+#### La advertencia de signo, con test
+
+Un `|t|` alto sólo dice que el exceso no es ruido — **no dice de qué lado
+está**. El veredicto evalúa el signo **antes** de decidir, y hay una prueba que
+construye un mercado donde la canasta pierde de forma significativa y exige que
+el dictamen sea **NO-GO FUERTE**. Si algún día alguien reordena las ramas del
+`if`, truena.
+
 ## 6. Estado
 
 | Pieza | Estado |
@@ -1382,18 +1479,23 @@ Se excluyen **antes** de contar: dejarlas dentro ensuciaría todos los conteos
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 10 jobs (`reparse`, `reparse-fin` e `inspect` son de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **175 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **176 tests**, en verde. |
+| `api/_lib/bmv-rotation.js` | Hecho. Lógica pura de la Fase B: TTM, momentum, ranks, canastas, simulación, veredicto. |
+| `api/bmv-rotation-analyze.js` | Hecho. SELECT-only, `ADMIN_SECRET`, `?format=md`, 0 créditos. |
+| `tests/bmv-rotation.test.mjs` | Hecho. **43 tests**, en verde. |
 | `docs/sql/bmv-harvest.sql` | Hecho. Generado del schema real. |
 | **El contrato de la API** | **VERIFICADO**: `periodo=1T_2020`, `emisora_serie=WALMEX*`, precios como `[precio, importe]`, benchmark `NAFTRACISHRS`. |
 | **El censo** | **Cerrado.** `deriva.estable: true` — 0 aparecieron, 0 desaparecieron. **185 series ICS**, 165 con cobertura (las 20 sin ella son bancos y casas de bolsa, fuera de la v1 por decisión de Fase 0). 1,641 repartos: 1,520 efectivo, 121 reembolso, 0 desconocido. |
 | **Fase A, diseño** | **Cerrado.** |
 | **La cosecha** | **Corrida**: 4,174 financieros, 182 series de precios. |
 | **Normalización** | Arreglada y **verificada en prod**: 4,174/4,174 con EPS (§5.5). |
-| **Elegibilidad** | **Corrida** con 5 MM: 111 rebalanceos, universo mediano 128, elegibles 37, 69.2% excluido, piso en 76.6% de las fechas. El tripwire del tercio se **retiró por insatisfacible** y el umbral quedó congelado en **1 MM** (§5.8). |
-| **Umbral de liquidez** | **En recalibración**, con la tabla de `&umbrales=…`. Decisión pendiente. |
-| **La cosecha** | **Sin correr** — este sandbox no alcanza la API. |
-| **Cobertura real** | **Sin reportar** — depende de la cosecha. |
-| `/api/bmv-rotation-analyze` | **Fase B. No empezado, a propósito.** |
+| **Elegibilidad** | **Corrida.** Con 1 MM: 111 rebalanceos, elegibles mediano 44, piso 21.6%, techo 0%, **quintil 78.4%**. Las cuatro puertas pasan (§5.9). |
+| **Fase B** | **Construida, sin correr.** `/api/bmv-rotation-analyze` (§5.9). |
+| **Umbral de liquidez** | **Congelado en 1,000,000** (17-sep-2026), por operabilidad (§3.1, §5.8). |
+| **La cosecha** | **Completa.** 4,174 financieros, 569,589 filas de precio, 182 series. |
+| **Cobertura real** | **Reportada.** EPS en 4,174/4,174 filas; benchmark 4,207 días con 62 distribuciones. |
+| `/api/bmv-rotation-analyze` | **Construido y probado, sin correr** — este sandbox no alcanza Neon. |
 
-El backtest **no se corre** hasta que la Fase A esté completa y la cobertura
-real esté reportada.
+El backtest se corre **desde prod**. Nada de lo que produzca puede mover un
+criterio: todos están congelados arriba, con fecha, y el diff contra este
+documento es la verificación.
