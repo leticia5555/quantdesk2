@@ -89,8 +89,11 @@ function sumaDias(fecha, dias) {
  * el universo completo y el rebalanceo se marca `insuficiente` — se reporta
  * aparte en vez de fingir que el piso se cumplió.
  */
-function tamanoCanasta(elegibles) {
-  const quintil = FRACCION_QUINTIL * elegibles;
+function tamanoCanasta(elegibles, fraccion = FRACCION_QUINTIL) {
+  // `fraccion` existe SÓLO para la sensibilidad de decil (§3.5). El caso base
+  // usa el quintil congelado; pasar otra cosa produce una corrida de
+  // atribución, que nunca promueve un veredicto.
+  const quintil = fraccion * elegibles;
   if (elegibles < PISO_CANASTA) return { canasta: elegibles, regimen: 'insuficiente' };
   if (quintil < PISO_CANASTA) return { canasta: PISO_CANASTA, regimen: 'piso' };
   if (quintil > TECHO_CANASTA) return { canasta: TECHO_CANASTA, regimen: 'techo' };

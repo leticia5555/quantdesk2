@@ -42,7 +42,7 @@ import {
   seriesDeEmisora, sirveFinanciero,
 } from '../api/bmv-harvest.js';
 import handler from '../api/bmv-harvest.js';
-import { analizarElegibilidad, tamanoCanasta } from '../api/_lib/bmv-elegibilidad.js';
+import { analizarElegibilidad, tamanoCanasta, UMBRAL_IMPORTE } from '../api/_lib/bmv-elegibilidad.js';
 
 /* ── calendario de trimestres ───────────────────────────────────── */
 
@@ -2045,10 +2045,36 @@ test('bajar el umbral sube los elegibles de forma monótona', () => {
   assert.ok(elegibles[3] > elegibles[0], 'y sí los sube');
 });
 
+test('el umbral que se imprime como CONGELADO es la constante, no el primero de la lista', () => {
+  // El bug del 17-sep-2026: `criterios` venía de `corridas[0]`, así que con
+  // &umbrales=500000,1000000,2000000 el reporte decía «el umbral congelado es
+  // 500,000» debajo de la justificación de 1 MM. Y 500,000 es justo el que da
+  // los mejores números de la tabla: dejarlo habría sido indistinguible de
+  // haber elegido mirando resultados.
+  const md = comparativaMd({
+    insumos: { fechas_rebalanceo: 111 },
+    universo_mediano: 128,
+    umbral_congelado: UMBRAL_IMPORTE,
+    criterios: { umbral_importe: UMBRAL_IMPORTE, piso: 8, techo: 15 },
+    exigencias: { ventana_del_quintil: { min: 40, max: 75 } },
+    comparativa: [
+      { umbral: 500000, elegibles_mediano: 90, pct_excluido: 0.3, pct_fechas_piso: 0.04, pct_fechas_techo: 0, pct_fechas_quintil: 0.955, canasta_mediana: 15, regimen_dominante: null, pasa_regimen: true, puede_correrse_fase_b: true },
+      { umbral: 1000000, elegibles_mediano: 44, pct_excluido: 0.65, pct_fechas_piso: 0.216, pct_fechas_techo: 0, pct_fechas_quintil: 0.784, canasta_mediana: 9, regimen_dominante: null, pasa_regimen: true, puede_correrse_fase_b: true },
+    ],
+    series_excluidas: { lista: [], motivo: '' },
+  });
+  assert.match(md, /\*\*El umbral congelado es 1,000,000\*\*/);
+  assert.doesNotMatch(md, /El umbral congelado es 500,000/);
+  // Y la fila congelada va marcada, para que la tabla no se lea como menú.
+  assert.match(md, /\| 1,000,000 ◀ \*\*congelado\*\*/);
+  assert.doesNotMatch(md, /\| 500,000 ◀/);
+});
+
 test('el markdown comparativo trae las tres filas y dice que el umbral ya está fijo', () => {
   const md = comparativaMd({
     insumos: { fechas_rebalanceo: 111 },
     universo_mediano: 128,
+    umbral_congelado: 1_000_000,
     criterios: { umbral_importe: 1_000_000, piso: 8, techo: 15 },
     exigencias: {
       universo_mediano: 128, elegibles_mediano: 37,

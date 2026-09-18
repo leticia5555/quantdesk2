@@ -952,7 +952,18 @@ async function jobElegibilidad(req) {
     universo_mediano: corridas[0].resultado.resumen.mediana_universo,
     exigencias: corridas[0].resultado.exigencias,
     series_excluidas: corridas[0].resultado.series_excluidas,
-    criterios: corridas[0].resultado.criterios,
+    // El umbral CONGELADO, tomado de la constante — nunca de una corrida.
+    //
+    // Aquí estuvo el bug del 17-sep-2026: esto era `corridas[0].resultado.criterios`,
+    // o sea los criterios de la PRIMERA corrida de la lista. Con
+    // `&umbrales=500000,1000000,2000000` el reporte imprimía «el umbral congelado
+    // es 500,000» —el primero de la lista— debajo de la justificación de 1 MM.
+    // El argumento no correspondía al valor, y 500,000 resulta ser el que da los
+    // mejores números de la tabla: dejarlo habría sido indistinguible de elegir
+    // mirando resultados. Por eso `umbral_importe` ya no puede venir de una
+    // corrida; la corrida sólo aporta lo que de verdad es común a todas.
+    umbral_congelado: UMBRAL_IMPORTE,
+    criterios: { ...corridas[0].resultado.criterios, umbral_importe: UMBRAL_IMPORTE },
     nota: 'La parte cara (medianas de 3 meses) se calculó UNA vez y se reutilizó para todos los umbrales. '
       + `El umbral CONGELADO es ${UMBRAL_IMPORTE.toLocaleString('es-MX')}: esta tabla es documentación de qué habría pasado con cada valor, no un menú para elegir.`,
   };
@@ -966,7 +977,7 @@ function comparativaMd(e) {
   L.push('# Umbral de liquidez: tabla comparativa', '');
   L.push(`Universo mediano (TTM + precio): **${e.universo_mediano}** · rebalanceos: **${e.insumos.fechas_rebalanceo}**`, '');
 
-  L.push(`> **El umbral congelado es ${mx(e.criterios.umbral_importe)}** (17-sep-2026), fijado por operabilidad:`);
+  L.push(`> **El umbral congelado es ${mx(e.umbral_congelado)}** (17-sep-2026), fijado por operabilidad:`);
   L.push('> a 1 MM de importe mediano diario, una posición de ~$80,000 pesos es <10% del volumen del día.');
   L.push('> Esta tabla NO es un menú para elegir — es el registro de qué habría pasado con cada valor.', '>');
 
@@ -981,7 +992,10 @@ function comparativaMd(e) {
     '|---:|---:|---:|---:|---:|---:|---:|:--|:-:|');
   for (const c of e.comparativa) {
     const reg = c.pasa_regimen ? 'quintil o mixto' : `**${c.regimen_dominante}**`;
-    L.push(`| ${mx(c.umbral)} | ${c.elegibles_mediano} | ${pct(c.pct_excluido)} | ${pct(c.pct_fechas_piso)} | ${pct(c.pct_fechas_techo)} | ${pct(c.pct_fechas_quintil)} | ${c.canasta_mediana} | ${reg} | ${c.puede_correrse_fase_b ? '✅' : '❌'} |`);
+    // La fila congelada va marcada: una tabla donde no se distingue el valor
+    // vigente del resto es una tabla que invita a leerla como menú.
+    const marca = c.umbral === e.umbral_congelado ? ' ◀ **congelado**' : '';
+    L.push(`| ${mx(c.umbral)}${marca} | ${c.elegibles_mediano} | ${pct(c.pct_excluido)} | ${pct(c.pct_fechas_piso)} | ${pct(c.pct_fechas_techo)} | ${pct(c.pct_fechas_quintil)} | ${c.canasta_mediana} | ${reg} | ${c.puede_correrse_fase_b ? '✅' : '❌'} |`);
   }
   L.push('');
   L.push('El % excluido se reporta como diagnóstico. **Ya no es una puerta**: el tripwire del tercio se retiró el 17-sep-2026 por insatisfacible — exigía ≥86 elegibles, y con 86 el quintil topa contra el techo.', '');
