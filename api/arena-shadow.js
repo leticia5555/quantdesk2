@@ -36,7 +36,7 @@ import * as alpaca from './_lib/alpaca.js';
 import { activeAgents, agentById, agentAlpacaCreds, ARENA_MAX_TOKENS } from './_lib/arena-registry.js';
 import { callArenaLLM, withDeadline, cachePrefixReport, anthropicCostUsd } from './_lib/arena-model.js';
 import { gatherContext, buildSharedContext, buildTargetSystemPrompt, resolveBaseUrl, PROMPT_VERSION } from './arena-run.js';
-import { parsePortfolioResponse, validateTarget, railTrims, normalizarTickersObjetivo, RAILS } from './_lib/arena-rails.js';
+import { parsePortfolioResponse, validateTarget, railTrims, normalizarTickersObjetivo, rescatarObjetivo, RAILS } from './_lib/arena-rails.js';
 import { orderLegs } from './_lib/arena-rebalance.js';
 import { legsAOrdenes, verificarOrdenesContraPesos, enviarOrdenes, mandaOrdenes, frenoPorTurnoverMinimo, contratoActivo, permiteCortos } from './_lib/arena-objetivo-vivo.js';
 import { snapshotCuenta } from './_lib/arena-equity.js';
@@ -348,11 +348,25 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     // enfrente, y el post-mortem tiene que poder distinguir las dos cosas.
     aviso_previo: avisoRechazos ? { habia: true, nombres: rechazos.length } : { habia: false },
   };
+  // ── EL RESCATE (2026-09-18) ─────────────────────────────────────────
+  // Antes, un solo ticker malo rechazaba el objetivo ENTERO y el agente se
+  // quedaba con el libro de AYER —incluidas las posiciones que había decidido
+  // cerrar—. Rechazar no era neutral: era ejecutar la cartera vieja.
+  //
+  // Ahora se intenta descartar SOLO esa pata. La decisión vive en
+  // `rescatarObjetivo` (pura, con sus dos topes); acá solo se actúa sobre ella.
+  let rescate = null;
   if (!tick.ok) {
-    await shadowJournalInsert({ ...base, account: cuenta, status: 'rejected_tickers', error: tick.error, llm_response: text, context: ctx });
-    return { agent: agent.id, status: 'rejected_tickers', error: tick.error, tickers: ctx.tickers, cost_usd: costo.usd };
+    rescate = rescatarObjetivo(tick);
+    ctx.tickers.rescate = rescate;
+    if (!rescate.rescatable) {
+      await shadowJournalInsert({ ...base, account: cuenta, status: 'rejected_tickers', error: tick.error, llm_response: text, context: ctx });
+      return { agent: agent.id, status: 'rejected_tickers', error: tick.error, motivo_rescate: rescate.motivo, tickers: ctx.tickers, cost_usd: costo.usd };
+    }
   }
-  // A partir de acá se trabaja con los símbolos ya canónicos.
+  // A partir de acá se trabaja con los símbolos ya canónicos. Si hubo rescate,
+  // `tick.weights` ya viene SIN las patas descartadas y SIN reescalar: el peso
+  // huérfano queda en cash, que es lo que el PM no eligió pero tampoco apostó.
   parsed.weights = tick.weights;
 
   // ── RIELES ──
@@ -478,16 +492,30 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     // que ocurren después de leerlo, incluidas las abortadas: una corrida que
     // falló igual tenía un libro, y sin él no se puede estudiar por qué falló.
     account: cuenta,
-    status: v.ok ? 'ok_target' : 'rejected_rails',
+    // `ejecutado_parcial` es un estado PROPIO y no un `ok_target` con una nota
+    // al pie: el post-mortem tiene que poder contar por separado las corridas
+    // que se ejecutaron enteras y las que se ejecutaron sin una pata. Si se
+    // mezclaran, un agente al que se le descarta una posición cada día se
+    // vería igual de sano que uno que nunca falla.
+    status: !v.ok ? 'rejected_rails' : (rescate && rescate.rescatable ? 'ejecutado_parcial' : 'ok_target'),
     plan: parsed.plan, llm_response: text,
     target: { weights: parsed.weights, cash: parsed.cash, theses: parsed.theses },
     rebalance,
     context: { ...ctx, rails: v, rail_trims: trims, ...(ejecucion ? { ejecucion } : {}), ...(aperturas ? { aperturas } : {}) },
-    error: v.ok ? null : `violó ${v.violations.length} riel(es): ${v.violations.map((x) => x.rail).join(', ')}`,
+    // Un rescate NO es un error, pero tampoco es silencio: si el campo `error`
+    // queda null, la única huella del descarte estaría dentro de `context` y
+    // nadie la mira al escanear el journal.
+    error: !v.ok
+      ? `violó ${v.violations.length} riel(es): ${v.violations.map((x) => x.rail).join(', ')}`
+      : (rescate && rescate.rescatable
+        ? `ejecución parcial: se descartaron ${rescate.nombres} pata(s) que no existen en el universo (${rescate.descartados.map((d) => d.symbol).join(', ')}), ${(rescate.fraccion * 100).toFixed(1)}% del bruto, y su peso quedó en cash sin reescalar el resto.`
+        : null),
   });
 
   return {
-    agent: agent.id, status: v.ok ? 'ok_target' : 'rejected_rails',
+    agent: agent.id,
+    status: !v.ok ? 'rejected_rails' : (rescate && rescate.rescatable ? 'ejecutado_parcial' : 'ok_target'),
+    ...(rescate && rescate.rescatable ? { rescate: { nombres: rescate.nombres, fraccion: rescate.fraccion, descartados: rescate.descartados.map((d) => d.symbol) } } : {}),
     ...(ejecucion ? {
       ejecucion: {
         modo: ejecucion.modo,

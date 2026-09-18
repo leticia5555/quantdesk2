@@ -95,7 +95,7 @@ import { loadUniverse } from './_lib/arena-universe.js';
 // B6: los rieles, para que el prompt del contrato nuevo diga los MISMOS números
 // que el validador hace cumplir. Dos fuentes para el mismo tope es cómo el
 // prompt termina prometiendo algo que el harness rechaza.
-import { RAILS } from './_lib/arena-rails.js';
+import { RAILS, RESCATE } from './_lib/arena-rails.js';
 import { usaObjetivo, contratoActivo, permiteCortos } from './_lib/arena-objetivo-vivo.js';
 import { runAgenteObjetivo } from './arena-shadow.js';
 // B2: EL TABLERO — lo que los siete miran, idéntico, en el prefijo cacheado.
@@ -2741,6 +2741,61 @@ export async function announceCortos(now = new Date(), env = process.env) {
   } catch (e) { return false; }
 }
 
+// ── EJECUCIÓN PARCIAL — el tercer régimen de la T2 ───────────────────
+// MISMO mecanismo que los otros anuncios: una fila `rules_changed` de liga,
+// idempotente por id, con la fecha en el id.
+//
+// POR QUÉ ES UN CAMBIO DE REGLAS Y NO UN ARREGLO: hasta hoy, un objetivo con
+// un ticker inexistente se rechazaba ENTERO. Desde hoy, si es una sola pata
+// chica, se descarta esa pata y el resto se ejecuta. Eso cambia QUÉ ÓRDENES
+// llegan al broker ante la misma respuesta del modelo, y por lo tanto cambia
+// el experimento: dos corridas idénticas de antes y después del corte NO son
+// comparables en número de órdenes ni en turnover.
+export const PARCIAL_ANNOUNCEMENT_ID = 'arena-ejecucion-parcial-2026-09-18';
+export const PARCIAL_RULES_VERSION = 'v4.2';
+
+export const PARCIAL_RULES_TEXT = [
+  'REGLAMENTO v4.2 — EJECUCIÓN PARCIAL. Hasta hoy, un objetivo que nombraba UN ticker inexistente se rechazaba ENTERO y no se ejecutaba ninguna de sus decisiones. Desde esta corrida, si lo desconocido es chico, esa pata se descarta y el resto del libro se ejecuta.',
+  'POR QUÉ CAMBIA: rechazar no era neutral. Dejaba el libro del día ANTERIOR —incluidas las posiciones que el PM había decidido cerrar—, así que las dos opciones ejecutaban una cartera que nadie eligió hoy. deepseek pasó el 2026-09-18 entero sin operar: cuatro corridas, tres rechazadas por el mismo nombre, y el libro congelado desde el día previo.',
+  'EL PESO HUÉRFANO VA A CASH Y NO SE REESCALA NADA. Subir los demás pesos para que sumen lo mismo sería inventar números que el modelo no escribió. El hueco queda en efectivo, que es la resolución más neutra que hay: no es una apuesta. El resto del objetivo es EXACTAMENTE el que el PM escribió.',
+  'EL LIBRO QUE QUEDA VUELVE A PASAR LOS RIELES, como cualquier otro. Descartar una pata no exime de R1-R12: si lo que queda los viola, se rechaza igual.',
+  'LOS DOS TOPES, y son dos porque un error de tipeo y un modelo corrompiendo símbolos se ven igual desde el motor: (1) POR PESO — si lo desconocido pasa un tercio del bruto, lo que queda ya no se parece al libro pedido y se rechaza entero; (2) POR CANTIDAD — más de DOS nombres desconocidos no es un tipeo, es una falla del modelo, y rescatarla la taparía detrás de una ejecución que se ve normal.',
+  'UNA COLISIÓN NO SE RESCATA NUNCA. Dos claves que normalizan al mismo símbolo no dejan un hueco que se pueda poner en cash: dejan una ambigüedad sobre qué peso quiso el modelo. Elegir uno sería adivinar y sumarlos sería inventar.',
+  'SE JOURNALEA COMO `ejecutado_parcial`, un estado PROPIO y no un `ok_target` con nota al pie. Si se mezclaran, un agente al que se le descarta una posición cada día se vería igual de sano que uno que nunca falla.',
+  'ADEMÁS, desde hoy el prompt le dice al PM qué tickers le fueron rechazados en sus corridas anteriores y cuántas veces los pidió. Un rechazo que no vuelve al que lo causó se repite siempre.',
+  'EL CORTE: las corridas de antes y después de esta fila NO son comparables en número de órdenes ni en turnover — ante la misma respuesta del modelo, antes se mandaban cero órdenes y ahora se mandan las que no dependían del nombre malo. El return sigue siendo comparable: el baseline no se movió.',
+  'Experimento sin validación estadística, paper trading, no es asesoría.',
+].join('\n');
+
+export async function announceEjecucionParcial(now = new Date(), env = process.env) {
+  if (!usaObjetivo(env)) return false;
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
+       values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
+      [PARCIAL_ANNOUNCEMENT_ID, now.toISOString().slice(0, 10), PROMPT_VERSION, PARCIAL_RULES_TEXT,
+       JSON.stringify({
+         rules_version: PARCIAL_RULES_VERSION,
+         reemplaza_a: CORTOS_RULES_VERSION,
+         motivo: 'deepseek pasó un día entero sin operar por un ticker inexistente repetido',
+         topes: {
+           max_nombres_desconocidos: RESCATE.max_nombres,
+           max_fraccion_del_bruto: RESCATE.max_fraccion_bruto,
+         },
+         estado_nuevo: 'ejecutado_parcial',
+         desde: /* date-lint-ok: borde histórico del régimen de rechazo total, un hecho fijo que ancla el corte del post-mortem */ '2026-09-18',
+         applies_to: activeAgents().map((a) => a.id),
+         aborto: [
+           'una corrida `ejecutado_parcial` cuyo libro resultante no se parezca al pedido (revisar `context.tickers.rescate.fraccion`)',
+           'más de DOS agentes con `ejecutado_parcial` en la misma ronda: eso ya no es un tipeo suelto, es el universo o el prompt',
+         ],
+         apagado: 'ARENA_RESCATE_MAX_NOMBRES=0 en Vercel. Se toma sin deploy y vuelve a rechazar el objetivo entero ante cualquier ticker desconocido.',
+       })],
+    );
+    return true;
+  } catch (e) { return false; }
+}
+
 // ── ESCALÓN DEL PRESUPUESTO (B9) — anuncio con fecha ─────────────────
 // MISMO mecanismo que los otros anuncios: una fila de liga, idempotente por id.
 // Acá la idempotencia es por (día, escalón) y no por temporada: el breaker puede
@@ -3088,6 +3143,7 @@ export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
   // corrida sin ensuciar el journal.
   await announceContratoObjetivo(now);
   await announceCortos(now);
+  await announceEjecucionParcial(now);
   await announceSeasonOpen(now);
   // Corte del post-mortem por CAMBIO DE MODELOS (idempotente por id).
   await announceModelChange(now);
@@ -3217,6 +3273,7 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   // corrida sin ensuciar el journal.
   await announceContratoObjetivo(now);
   await announceCortos(now);
+  await announceEjecucionParcial(now);
   await announceSeasonOpen(now);
   // Corte del post-mortem por CAMBIO DE MODELOS (idempotente por id).
   await announceModelChange(now);

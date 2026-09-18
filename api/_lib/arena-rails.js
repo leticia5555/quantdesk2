@@ -178,13 +178,16 @@ export function normalizarTickersObjetivo(weights, { universo = null } = {}) {
     // Espacios internos y todo lo que no sea letra, punto o guion: un ticker de
     // acción estadounidense no lleva nada más.
     const limpio = crudo.replace(/\s+/g, '').replace(/[^A-Z0-9.\-]/g, '');
-    if (!limpio) { desconocidos.push({ pedido: crudo, motivo: 'no queda nada después de normalizar' }); continue; }
+    // EL PESO VIAJA CON EL DESCONOCIDO. Sin él no se puede medir cuánto del
+    // libro se estaría descartando, y esa medida es la que decide si el
+    // objetivo se rescata o se rechaza entero (ver `rescatarObjetivo`).
+    if (!limpio) { desconocidos.push({ pedido: crudo, peso: v, motivo: 'no queda nada después de normalizar' }); continue; }
 
     if (limpio !== crudo) reparados.push({ pedido: crudo, normalizado: limpio });
 
     if (conocidos && !conocidos.has(limpio)) {
       desconocidos.push({
-        pedido: crudo, normalizado: limpio,
+        pedido: crudo, normalizado: limpio, peso: v,
         motivo: limpio !== crudo
           ? `"${crudo}" se normalizó a "${limpio}" y ESE tampoco está en el universo de hoy`
           : 'no está en el universo de hoy',
@@ -209,6 +212,104 @@ export function normalizarTickersObjetivo(weights, { universo = null } = {}) {
         ? `El objetivo nombra ${desconocidos.length} símbolo(s) que NO existen en el universo de hoy: ${desconocidos.map((d) => `"${d.pedido}"${d.normalizado && d.normalizado !== d.pedido ? ` → "${d.normalizado}"` : ''} (${d.motivo})`).join('; ')}. Se rechaza el objetivo ENTERO: una cartera a la que se le saca una pata ya no es la que el PM decidió.`
         : `Dos claves del objetivo normalizan al mismo símbolo (${colisiones.map((c) => c.simbolo).join(', ')}). Sumarlas sería inventar un peso que el modelo no escribió.`,
     }),
+  };
+}
+
+// ── EL RESCATE DE UN OBJETIVO CON UN TICKER MALO (2026-09-18) ────────
+//
+// EL CASO: deepseek pasó un día entero sin operar. Cuatro corridas, tres
+// rechazadas por pedir el MISMO nombre inexistente, y el libro congelado desde
+// el día anterior — con las posiciones que había decidido cerrar todavía
+// abiertas.
+//
+// ── POR QUÉ LA REGLA VIEJA PARECÍA BIEN Y NO LO ESTABA ───────────────
+// El argumento era: "una cartera a la que se le saca una pata ya no es la que
+// el PM decidió". Es cierto. Pero asume que RECHAZAR es neutral, y no lo es:
+// rechazar deja el libro de AYER, que es exactamente la cartera que el PM
+// acaba de revocar. Las dos opciones ejecutan algo que nadie eligió hoy; la
+// única pregunta es cuál se parece más a la decisión.
+//
+// Descartar la pata mala deja TODAS las demás decisiones tal como el PM las
+// escribió —las ventas, las compras, los ajustes— y el peso huérfano en cash,
+// que es la resolución más neutra que hay: no es una apuesta.
+//
+// ── LO QUE NO SE HACE, Y ES LA MITAD DE LA REGLA ─────────────────────
+// NO SE REESCALA. Subir los demás pesos para que sumen lo mismo sería inventar
+// números que el modelo no escribió, y ahí "descarta, no ajusta" aplica con
+// toda su fuerza. El hueco queda en cash y se dice.
+//
+// ── LOS DOS TOPES, Y POR QUÉ SON DOS ─────────────────────────────────
+// Un typo y un modelo corrompiendo tickers sistemáticamente se ven igual desde
+// acá —ambos son "nombres que no existen"— pero son problemas distintos y solo
+// uno se puede rescatar:
+//   · POR PESO: si lo desconocido pasa un tercio del bruto, lo que queda ya no
+//     se parece al libro que se pidió. Ahí rescatar sería operar otra cosa.
+//   · POR CANTIDAD: más de dos nombres desconocidos no es un error de tipeo,
+//     es el artefacto que este archivo ya documenta arriba. Rescatar eso sería
+//     tapar una falla del modelo detrás de una ejecución parcial que se ve
+//     normal en el journal.
+// Con UN solo tope, el otro caso pasa.
+export const RESCATE = {
+  max_nombres: Number(process.env.ARENA_RESCATE_MAX_NOMBRES) || 2,
+  max_fraccion_bruto: (() => {
+    const n = Number(process.env.ARENA_RESCATE_MAX_FRACCION);
+    return Number.isFinite(n) && n > 0 && n < 1 ? n : 1 / 3;
+  })(),
+};
+
+// Decide si un objetivo con tickers desconocidos se puede ejecutar sin ellos.
+// PURA: no toca DB ni red, y no modifica `tick`.
+//
+// Devuelve { rescatable, motivo, pesos, descartados, peso_descartado, bruto,
+//            fraccion, nombres }.
+export function rescatarObjetivo(tick, { reglas = RESCATE } = {}) {
+  const desconocidos = (tick && tick.desconocidos) || [];
+  const colisiones = (tick && tick.colisiones) || [];
+  const pesos = (tick && tick.weights) || {};
+
+  // UNA COLISIÓN NO SE RESCATA. Dos claves que normalizan al mismo símbolo no
+  // dejan un hueco que se pueda poner en cash: dejan una ambigüedad sobre qué
+  // peso quiso el modelo. Elegir uno sería adivinar, y sumarlos sería inventar.
+  if (colisiones.length) {
+    return { rescatable: false, motivo: 'colision', nombres: colisiones.length,
+      detalle: 'Dos claves del objetivo normalizan al mismo símbolo. Eso no es un hueco que se pueda dejar en cash: es una ambigüedad sobre qué peso quiso el modelo, y no se resuelve descartando.' };
+  }
+  if (!desconocidos.length) {
+    return { rescatable: false, motivo: 'nada_que_rescatar', nombres: 0 };
+  }
+
+  const abs = (x) => { const n = Number(x); return Number.isFinite(n) ? Math.abs(n) : 0; };
+  const pesoDescartado = desconocidos.reduce((a, d) => a + abs(d.peso), 0);
+  const pesoVivo = Object.values(pesos).reduce((a, w) => a + abs(w), 0);
+  const bruto = pesoVivo + pesoDescartado;
+  const fraccion = bruto > 0 ? pesoDescartado / bruto : 1;
+
+  const comun = {
+    nombres: desconocidos.length,
+    descartados: desconocidos.map((d) => ({ symbol: d.normalizado || d.pedido, pedido: d.pedido, peso: Number(d.peso) || 0, motivo: d.motivo })),
+    peso_descartado: +pesoDescartado.toFixed(6),
+    bruto: +bruto.toFixed(6),
+    fraccion: +fraccion.toFixed(4),
+  };
+
+  if (desconocidos.length > reglas.max_nombres) {
+    return { ...comun, rescatable: false, motivo: 'demasiados_nombres',
+      detalle: `${desconocidos.length} nombres desconocidos (tope ${reglas.max_nombres}). Eso no es un error de tipeo: es el modelo corrompiendo símbolos, y rescatarlo taparía la falla detrás de una ejecución que se ve normal.` };
+  }
+  if (fraccion > reglas.max_fraccion_bruto) {
+    return { ...comun, rescatable: false, motivo: 'demasiado_peso',
+      detalle: `Lo desconocido es el ${(fraccion * 100).toFixed(1)}% del bruto (tope ${(reglas.max_fraccion_bruto * 100).toFixed(0)}%). Lo que queda ya no se parece al libro que se pidió: ejecutarlo sería operar otra cosa.` };
+  }
+  // NO HAY UN TERCER TOPE PARA "no queda libro". Se escribió y se sacó: si
+  // descartar deja el objetivo vacío, entonces el peso vivo es 0, la fracción
+  // es 1, y el tope de peso ya lo rechazó una línea antes. Era código
+  // inalcanzable con un comentario que afirmaba que hacía falta — peor que no
+  // tenerlo, porque el próximo que lea creería que ese caso está cubierto acá.
+  // (Lo está: por `demasiado_peso`.)
+
+  return {
+    ...comun, rescatable: true, motivo: 'rescatado', pesos,
+    detalle: `Se descartan ${desconocidos.length} pata(s) (${(fraccion * 100).toFixed(1)}% del bruto) y su peso queda en CASH, sin reescalar las demás. El resto del objetivo es exactamente el que el PM escribió, y vuelve a pasar los rieles como cualquier otro.`,
   };
 }
 
