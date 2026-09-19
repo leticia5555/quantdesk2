@@ -37,8 +37,8 @@ console.log('\n── el caso de deepseek ──');
     corrida({ pedido: 'OKTA', motivo: 'no está en el universo de hoy' })]);
   ok(/OKTA/.test(b), 'nombra el ticker');
   ok(/3 times/.test(b), 'y dice cuántas veces lo pidió: una vez es un error, tres es un patrón', b.split('\n')[1]);
-  ok(/rejected ENTIRELY/.test(b) && /book is unchanged/.test(b),
-    'dice LA CONSECUENCIA: el objetivo entero se rechazó y el libro no cambió. Sin eso, el modelo puede leerlo como una nota de color');
+  ok(/rejected ENTIRELY/.test(b) && /positions you meant to exit/.test(b),
+    'dice LA CONSECUENCIA: el objetivo entero se rechazó y el libro sigue con lo que quería cerrar. Sin eso, el modelo puede leerlo como una nota de color');
   ok(/positions you meant to exit/.test(b),
     'incluido que las posiciones que quería cerrar SIGUEN ahí — que es lo que de verdad le pasó');
   ok(/Do not ask for it again/.test(b), 'y qué hacer en su lugar');
@@ -126,6 +126,29 @@ console.log('\n── un ticker que VOLVIÓ al universo no se menciona ──');
   const norm = [corrida({ pedido: 'SUPER MICRO', normalizado: 'SMCI', motivo: 'x' })];
   ok(bloqueDeRechazos(norm, { universo: ['SMCI'] }) === '',
     'y si lo que volvió es la forma NORMALIZADA, tampoco se menciona');
+}
+
+console.log('\n── una EJECUCIÓN PARCIAL también alimenta la memoria ──');
+{
+  // Desde el reglamento v4.2 un objetivo con UNA pata mala no se rechaza: se
+  // descarta esa pata y el resto se ejecuta. La corrida no se cae, así que el
+  // agente no se entera — pero la decisión sobre ESE nombre sí se perdió.
+  const parcial = (...d) => ({ status: 'ejecutado_parcial', tickers: { desconocidos: d } });
+  const b = bloqueDeRechazos([parcial({ pedido: 'XENE', motivo: 'x' }), parcial({ pedido: 'XENE', motivo: 'x' })]);
+  ok(/XENE/.test(b), 'un nombre descartado en una ejecución parcial entra a la memoria igual');
+  ok(!/rejected ENTIRELY/.test(b),
+    'pero NO se le dice que el libro quedó congelado: sí se ejecutó, y decirle la consecuencia equivocada le haría dejar de creerle al aviso');
+  ok(/WAS executed/.test(b) && /you do not hold/.test(b),
+    'se le dice lo que de verdad pasó: el resto se ejecutó y esa posición no la tiene', b.split('\n').slice(-2)[0]);
+
+  // Mezcla: una rechazada entera y una parcial. Son consecuencias distintas y
+  // las dos tienen que aparecer.
+  const mix = bloqueDeRechazos([
+    { status: 'rejected_tickers', tickers: { desconocidos: [{ pedido: 'ZM', motivo: 'x' }] } },
+    parcial({ pedido: 'XENE', motivo: 'x' }),
+  ]);
+  ok(/rejected ENTIRELY/.test(mix) && /WAS executed/.test(mix),
+    'con las dos clases de corrida se dicen las dos consecuencias, no una sola promediada', mix.split('\n').slice(-2)[0]);
 }
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');
