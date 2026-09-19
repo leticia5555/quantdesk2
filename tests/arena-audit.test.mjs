@@ -527,5 +527,77 @@ console.log('\n── el estado de halt no se lee al revés ──');
     'con cómo revivirlo: el halt NO se levanta solo, y sin esa línea alguien espera a que pase');
 }
 
+// ═══ CADENCIA — por qué un agente corrió más veces de las que debía ═══
+// EL CASO (viernes 2026-09-18): claude corrió ~20 veces con un tope diario de
+// 12 y un enfriamiento de 45 min por agente. Dos piezas tenían que frenarlo y
+// ninguna lo hizo, y no había forma de saber CUÁL sin entrar a Neon a mano.
+{
+  const { cadenciaPorAgente } = await import('../api/_lib/arena-audit.js');
+  const corrida = (agente, fecha, ev) => ({ agente, fecha, context: ev ? { event: { type: ev } } : {} });
+
+  console.log('\n── separa las dos causas posibles ──');
+  {
+    // 1) El TOPE DIARIO muerto: hay corridas pero ninguna trae context.event.
+    const sinEvento = cadenciaPorAgente(
+      Array.from({ length: 8 }, () => corrida('claude', '2026-09-18')),
+      [{ agent_id: 'claude', fired: true }, { agent_id: 'claude', fired: true }],
+      { dia: '2026-09-18' });
+    ok(sinEvento.agentes[0].con_evento === 0 && /tope diario/.test(sinEvento.agentes[0].lectura),
+      'ocho corridas y cero `context.event` → señala el TOPE DIARIO, que cuenta por ese campo',
+      sinEvento.agentes[0].lectura);
+
+    // 2) El ENFRIAMIENTO ciego: las corridas traen evento pero el vigilante no
+    //    dejó filas `fired`, que es de donde sale `lastRunAgentAt`.
+    const sinWatch = cadenciaPorAgente(
+      Array.from({ length: 8 }, () => corrida('claude', '2026-09-18', 'watch_trigger')),
+      [], { dia: '2026-09-18' });
+    ok(sinWatch.agentes[0].con_evento === 8 && /enfriamiento/.test(sinWatch.agentes[0].lectura),
+      'ocho corridas por evento y cero disparos registrados → señala el ENFRIAMIENTO, que los lee de arena_watch',
+      sinWatch.agentes[0].lectura);
+
+    // 3) Registro parcial: hay evento pero menos disparos que corridas.
+    const parcial = cadenciaPorAgente(
+      Array.from({ length: 8 }, () => corrida('claude', '2026-09-18', 'watch_trigger')),
+      Array.from({ length: 3 }, () => ({ agent_id: 'claude', fired: true })),
+      { dia: '2026-09-18' });
+    ok(/NO registró todo/.test(parcial.agentes[0].lectura),
+      'y 8 corridas con 3 disparos dice que el registro se perdió parte, que es la tercera causa posible',
+      parcial.agentes[0].lectura);
+
+    // 4) Todo coherente: si corrió de más, no fue por falta de registro.
+    const sano = cadenciaPorAgente(
+      Array.from({ length: 4 }, () => corrida('claude', '2026-09-18', 'watch_trigger')),
+      Array.from({ length: 4 }, () => ({ agent_id: 'claude', fired: true })),
+      { dia: '2026-09-18' });
+    ok(/se corresponden/.test(sano.agentes[0].lectura),
+      'cuando las tres cifras cuadran lo dice, en vez de insinuar un problema que no está',
+      sano.agentes[0].lectura);
+  }
+
+  console.log('\n── detalles que hacen falta para que el número signifique algo ──');
+  {
+    const otroDia = cadenciaPorAgente(
+      [corrida('claude', '2026-09-17', 'watch_trigger'), corrida('claude', '2026-09-18', 'watch_trigger')],
+      [], { dia: '2026-09-18' });
+    ok(otroDia.agentes[0].corridas === 1, 'solo cuenta el día pedido: mezclar días haría ilegible el número');
+
+    // Neon devuelve booleanos como boolean o como 't'/'true' según el driver.
+    const bool = cadenciaPorAgente([corrida('a', '2026-09-18')],
+      [{ agent_id: 'a', fired: true }, { agent_id: 'a', fired: 't' }, { agent_id: 'a', fired: 'true' }, { agent_id: 'a', fired: false }],
+      { dia: '2026-09-18' });
+    ok(bool.agentes[0].disparos_watch === 3 && bool.agentes[0].filas_watch === 4,
+      'acepta las tres formas de `true` que devuelven los drivers, y no cuenta el false',
+      JSON.stringify({ d: bool.agentes[0].disparos_watch, f: bool.agentes[0].filas_watch }));
+
+    const varios = cadenciaPorAgente(
+      [corrida('claude', '2026-09-18'), corrida('claude', '2026-09-18'), corrida('grok', '2026-09-18')],
+      [], { dia: '2026-09-18' });
+    ok(varios.agentes[0].agente === 'claude', 'ordena por corridas: el que más corrió va primero');
+    ok(varios.total_corridas === 3, 'y el total cuadra');
+
+    ok(cadenciaPorAgente([], [], { dia: '2026-09-18' }).agentes.length === 0, 'sin datos no inventa filas');
+  }
+}
+
 console.log(failures ? `\n${failures} FALLAS` : '\nTodo verde');
 process.exit(failures ? 1 : 0);

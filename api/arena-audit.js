@@ -43,6 +43,7 @@ import { checkLecturaAuth } from './_lib/arena-admin.js';
 import {
   auditaFila, agrupaCorridas, construyeResumen,
   renderCorridasMarkdown, renderResumenMarkdown, BUFFET_QUALITY_DEPLOY,
+  cadenciaPorAgente, renderCadenciaMarkdown,
 } from './_lib/arena-audit.js';
 
 // El journal ya es largo (semanas de corridas × contexto completo por fila:
@@ -123,14 +124,38 @@ export default async function handler(req, res) {
     // Sin cache: lleva el secret en la URL y es una auditoría puntual.
     res.setHeader('Cache-Control', 'no-store');
 
+    // ── CADENCIA: por qué un agente corrió más veces de las que debía ──
+    // Se lee `arena_watch` del día pedido y se compara contra las corridas del
+    // journal. Es la comparación que el viernes hubo que hacer a mano en Neon
+    // para saber si falló el tope diario o el enfriamiento por agente.
+    //
+    // Best-effort: una auditoría que no puede leer esta tabla sigue siendo
+    // útil, así que su fallo se reporta y no tumba el reporte.
+    let cadencia = null;
+    if (esResumen) {
+      const diaCadencia = String(q.dia || '').trim() || fechas[fechas.length - 1] || null;
+      let watchRows = [];
+      let watchError = null;
+      if (diaCadencia) {
+        try {
+          watchRows = await sql(
+            `select agent_id, fired from arena_watch where run_date = $1::date`, [diaCadencia]);
+        } catch (e) { watchError = String((e && e.message) || e); }
+      }
+      cadencia = {
+        ...cadenciaPorAgente(filas, watchRows, { dia: diaCadencia }),
+        ...(watchError ? { watch_error: watchError } : {}),
+      };
+    }
+
     if (esResumen) {
       const resumen = construyeResumen(filas, { deploy });
       // La vista agregada NO re-emite el detalle: es el panorama del run.
-      const salida = { ...audit, resumen };
+      const salida = { ...audit, resumen, ...(cadencia ? { cadencia } : {}) };
       delete salida.corridas;
       if (format === 'md' || format === 'markdown') {
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        return res.status(200).send(renderResumenMarkdown(salida));
+        return res.status(200).send(renderResumenMarkdown(salida) + renderCadenciaMarkdown(cadencia));
       }
       return res.status(200).json(salida);
     }
