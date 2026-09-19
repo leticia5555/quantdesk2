@@ -225,33 +225,70 @@ function chunk(arr, n) {
 // cayó"). Declarado ANTES de su primer uso a propósito.
 export const FEED_FALLBACK_STATUS = new Set([401, 403, 404, 422]);
 
-let feedResuelto = null;
+// ── EL VEREDICTO ES POR CUENTA, NO POR PROCESO ───────────────────────
+// ASÍ SE ROMPIÓ LA LIGA EL VIERNES 2026-09-18, Y ES UN ERROR DE DISEÑO MÍO.
+//
+// El Arena usa OCHO cuentas de Alpaca: la maestra (`ALPACA_PAPER_*`, que arma
+// el tablero y el universo) y una por agente (`ALPACA_<AGENTE>_*`, que lee su
+// libro y sus precios). La suscripción a SIP es POR CUENTA. La maestra la
+// tiene; las siete de los agentes, no necesariamente.
+//
+// El veredicto estaba en UNA variable de módulo, compartida por las ocho. La
+// secuencia del viernes:
+//   1. el tablero corre con la maestra, SIP contesta, `feedResuelto = 'sip'`;
+//   2. cada agente pide sus precios con SU cuenta, que no tiene SIP → 403;
+//   3. y ahí está el segundo error: el veredicto no ORDENABA los intentos,
+//      los RESTRINGÍA — `[feedResuelto]` era la lista COMPLETA. Sin IEX detrás,
+//      el 403 no tenía a dónde caer y la llamada LANZABA;
+//   4. `arena-meta.js` traga ese error y devuelve `{}`, así que el objetivo
+//      llegaba a la ejecución sin un solo precio de referencia;
+//   5. cada pata se descartaba con "sin precio de referencia para X" y la
+//      corrida terminaba con CERO ÓRDENES — "pasa los rieles" y no opera.
+// Siete agentes, todo el viernes, los libros congelados desde el jueves.
+//
+// LOS DOS ARREGLOS, porque uno solo deja el filo puesto:
+//   · la clave es la CUENTA (el id de la key, nunca el secreto);
+//   · y un veredicto guardado ORDENA los intentos, no los limita. Aunque la
+//     clave fuera perfecta, una suscripción que caduca volvería a dejar una
+//     cuenta sin salida. Un caché que quita la alternativa no es un caché: es
+//     un candado.
+const feedPorCuenta = new Map();
+const claveDeCuenta = (creds) => String((creds && creds.key) || 'sin_cuenta');
 
-export function feedDatosResuelto() { return feedResuelto; }
-export function resetFeedDatos() { feedResuelto = null; }                 // para los tests
+export function feedDatosResuelto(creds) { return feedPorCuenta.get(claveDeCuenta(creds)) || null; }
+export function resetFeedDatos() { feedPorCuenta.clear(); }              // para los tests
 export const resetFeedSnapshots = resetFeedDatos;                        // nombre viejo
 
-// Orden de intento: una preferencia explícita no se pisa; un veredicto ya
-// resuelto no se vuelve a probar; si no hay ninguno, se prueba el consolidado.
-function ordenDeFeeds() {
+const FEEDS = ['sip', 'iex'];
+
+// Orden de intento. Una preferencia explícita no se pisa. Un veredicto
+// guardado va PRIMERO —para no re-pagar el 403 de una cuenta sin SIP— pero el
+// otro feed queda detrás como salida.
+function ordenDeFeeds(creds) {
   const pinned = String(process.env.ALPACA_DATA_FEED || '').trim().toLowerCase();
   if (pinned) return [alpacaDataFeed()];
-  return feedResuelto ? [feedResuelto] : ['sip', 'iex'];
+  const recordado = feedPorCuenta.get(claveDeCuenta(creds));
+  if (!recordado) return [...FEEDS];
+  return [recordado, ...FEEDS.filter((f) => f !== recordado)];
 }
 
 // Corre `fn(feed)` con el primer feed que conteste. Un 401/403/404/422 sobre
 // SIP significa "no tenés el plan" y baja a IEX; un 500 o un timeout NO —
 // reintentar con otro feed taparía una caída de Alpaca.
-function recordarFeed(feed) { feedResuelto = feed; }
+function recordarFeed(creds, feed) { feedPorCuenta.set(claveDeCuenta(creds), feed); }
 
-export async function conFeedDeDatos(fn) {
+// `creds` NO es opcional en la práctica: sin ella todas las cuentas comparten
+// la clave 'sin_cuenta', que es exactamente el bug que esto arregla. Se deja
+// con default para no romper un llamador viejo, pero cada uno de este módulo
+// la pasa.
+export async function conFeedDeDatos(fn, creds = null) {
   let ultimo = null;
   const intentos = [];
-  for (const feed of ordenDeFeeds()) {
+  for (const feed of ordenDeFeeds(creds)) {
     try {
       const data = await fn(feed);
       intentos.push({ feed, ok: true });
-      recordarFeed(feed);
+      recordarFeed(creds, feed);
       return { data, feed, intentos };
     } catch (e) {
       const status = (e && e.status) || 0;
@@ -266,7 +303,7 @@ export async function conFeedDeDatos(fn) {
 export async function getSnapshotsConFeed(symbols = [], creds) {
   const wanted = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
   if (!wanted.length) return { data: {}, feed: null };
-  const { data, feed } = await conFeedDeDatos((f) => snapshotsPorFeed(wanted, creds, f));
+  const { data, feed } = await conFeedDeDatos((f) => snapshotsPorFeed(wanted, creds, f), creds);
   return { data, feed };
 }
 
@@ -322,7 +359,7 @@ export async function getAvgDailyVolume(symbols = [], { days = 20, today = null,
   const wanted = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
   if (!wanted.length) return {};
   const traer = (feed) => avgVolumePorFeed(wanted, { days, today, creds, feed });
-  const { data } = feedPedido ? { data: await traer(feedPedido) } : await conFeedDeDatos(traer);
+  const { data } = feedPedido ? { data: await traer(feedPedido) } : await conFeedDeDatos(traer, creds);
   return data;
 }
 
@@ -447,14 +484,14 @@ export async function getPriceAndDollarVolume(symbols = [], { creds, now = new D
   // vez de morirse. Lo que sí comparte es el VEREDICTO: lo lee para no volver
   // a probar SIP, y lo escribe para que el promedio de volumen y los snapshots
   // de esta misma lambda no queden en otro feed.
-  const orden = feedPreferido ? [feedPreferido] : ordenDeFeeds();
+  const orden = feedPreferido ? [feedPreferido] : ordenDeFeeds(creds);
 
   const intentos = [];
   for (const feed of orden) {
     try {
       const data = await barsPorFeed(wanted, { creds, now, days, feed });
       intentos.push({ feed, ok: true, symbols: Object.keys(data).length });
-      recordarFeed(feed);
+      recordarFeed(creds, feed);
       return { data, feed, symbols: Object.keys(data).length, intentos };
     } catch (e) {
       const status = (e && e.status) || 0;
@@ -556,7 +593,7 @@ async function barsPorFeed(wanted, { creds, now, days, feed }) {
 export async function getFiftyTwoWeek(symbols = [], { creds, now = new Date(), weeks = 52 } = {}) {
   const wanted = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
   if (!wanted.length) return {};
-  const { data } = await conFeedDeDatos((f) => fiftyTwoWeekPorFeed(wanted, { creds, now, weeks, feed: f }));
+  const { data } = await conFeedDeDatos((f) => fiftyTwoWeekPorFeed(wanted, { creds, now, weeks, feed: f }), creds);
   return data;
 }
 

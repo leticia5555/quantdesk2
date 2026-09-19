@@ -331,7 +331,7 @@ async function getDailyCloses(symbols, { creds, now = new Date(), days = 40, fee
     return r.json();
   };
 
-  const j = feedPedido ? await pedir(feedPedido) : (await conFeedDeDatos(pedir)).data;
+  const j = feedPedido ? await pedir(feedPedido) : (await conFeedDeDatos(pedir, c)).data;
   const out = {};
   for (const [sym, list] of Object.entries((j && j.bars) || {})) {
     // La barra de HOY se excluye: los retornos del calor por sector se miden
