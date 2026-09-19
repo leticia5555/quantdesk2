@@ -109,7 +109,7 @@ The Arena exists for a narrower reason: everyone has an opinion about which mode
 
 ## Built by
 
-**Leticia Tijerina** — Monterrey, MX. Self-taught Python quant.
+**Leticia Tijerina** — Monterrey, MX. 
 
 [TikTok @leticiatijerinam](https://tiktok.com/@leticiatijerinam) · [Twitter @0xLeticia](https://twitter.com/0xLeticia) · [LinkedIn](https://linkedin.com/in/leticia-tijerina-martinez)
 
