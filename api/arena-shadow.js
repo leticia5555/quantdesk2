@@ -108,7 +108,11 @@ export function runShadowAgent(args) {
   return runAgenteObjetivo({ ...args, vivo: false });
 }
 
-export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier = null, deps = {}, trace = null, vivo = false, journalInsert = null, runId: runIdDado = null, esDisparador = false }) {
+// `evento` viaja SOLO PARA JOURNALEAR, y esa distinción es todo el punto: el
+// contrato objetivo produce un portafolio COMPLETO, así que no existe la
+// corrida "sobre NVDA" y el evento NO cambia ninguna decisión. Pero el registro
+// sí tiene que decir QUÉ despertó la corrida — ver el bloque de `ctx.event`.
+export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier = null, deps = {}, trace = null, vivo = false, journalInsert = null, runId: runIdDado = null, esDisparador = false, evento = null }) {
   const runId = runIdDado || shadowRunId(agent.id, now);
   const base = { id: runId, run_date: marketDay(now), agent_id: agent.id, phase: 'decide', prompt_version: PROMPT_VERSION, model: agent.model };
   // EN VIVO EL BROKER ES EL DE VERDAD. En sombra es el que LANZA en cualquier
@@ -340,6 +344,22 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   // violación de riel — no tiene sentido siquiera evaluarlo.
   const universoSimbolos = (buffet && buffet.universe_raw && buffet.universe_raw.symbols) || null;
   const tick = normalizarTickersObjetivo(parsed.weights, { universo: universoSimbolos });
+  // ── QUÉ DESPERTÓ ESTA CORRIDA (2026-09-19) ──────────────────────────
+  // ESTO FALTABA Y DEJÓ MUERTO EL TOPE DIARIO. El vigilante cuenta las
+  // corridas del día con:
+  //     where context->'event'->>'type' in ('watch_trigger','watch_floor')
+  // y el contrato objetivo NUNCA escribía `context.event` — `grep event` en
+  // este archivo daba CERO. Así que `runsToday` era {} para todos los agentes
+  // todos los días, `used` era 0, y el tope de 12 corridas/agente/día no
+  // frenaba nada: el viernes claude corrió ~20 veces.
+  //
+  // El evento se journalea y NO se usa para decidir: el objetivo sigue siendo
+  // el libro entero, igual que antes. Lo que cambia es que el registro ahora
+  // dice de dónde vino la corrida, que es lo que el tope necesita para contar.
+  if (evento && evento.type) {
+    ctx.event = { type: evento.type, symbol: evento.symbol || null, detail: evento.detail || null };
+  }
+
   ctx.tickers = {
     reparados: tick.reparados, desconocidos: tick.desconocidos, colisiones: tick.colisiones,
     validado_contra_universo: tick.validado_contra_universo,

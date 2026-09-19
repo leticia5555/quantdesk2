@@ -1653,6 +1653,11 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     return runAgenteObjetivo({
       agent, buffet, now, tier, vivo: true,
       esDisparador: !!event,
+      // SOLO PARA EL REGISTRO. El objetivo sigue sin mirar el evento —una
+      // corrida rebalancea el libro entero venga de donde venga— pero sin esto
+      // el journal no decía qué la despertó, y el tope diario del vigilante
+      // (que cuenta por `context.event.type`) contaba CERO corridas siempre.
+      evento: event || null,
       journalInsert: journalObjetivoVivo,
       runId: 'arena-' + agent.id + '-objetivo-' + now.toISOString(),
     });
