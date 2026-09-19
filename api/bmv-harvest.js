@@ -52,6 +52,7 @@ import {
   BENCHMARK, BENCHMARK_EMISORA, BENCHMARK_SERIE, BENCHMARK_TIPO, UMBRAL_PLACEHOLDER,
   CAMPOS, COBERTURA_FIN, PAUSA_MS, PRESUPUESTO_MENSUAL,
   aNumero, aplanarHistoricos, clavePeriodo, construirUrl, dormir, emisoraSerie,
+  valorDeCampo,
   extraerDistribuciones, finDeTrimestre, normalizaLlave, periodoApi,
   mesPresupuesto, normalizarFinancieros, parseClavePeriodo, parsearRangoFechas,
   parsearRangoPeriodos,
@@ -1279,6 +1280,275 @@ function muestraMd(m) {
   return L.join('\n');
 }
 
+/* ═══════════════ job: diagnostico (SELECT-only, 0 créditos) ═══════════════ */
+
+// Las tres preguntas que abrió `?job=muestra` al mirar filas reales. Cada una
+// se contesta CON DATO GUARDADO —el crudo está en la base desde la Fase A— y
+// ninguna gasta un crédito.
+const DIAG_EPS_DEFECTO = { emisora: 'FEMSA', anio: 2026, trimestre: 2 };
+
+// Llaves del crudo que hablan de acciones o de utilidad por acción. Se buscan
+// por SUBCADENA sobre la llave normalizada porque el taxonómico de IFRS tiene
+// nombres largos y variados, y fijar la lista exacta dejaría fuera justo la
+// que importa.
+const PISTAS_EPS = ['pershare', 'earningspershare', 'shares', 'acciones', 'sharesoutstanding'];
+
+/**
+ * `?job=diagnostico` — contesta con datos guardados, sin red y sin créditos.
+ *
+ *   ?que=eps|fibras|cobertura   una sola sección (default: las tres)
+ *   ?emisora= ?periodo=2T_2026  parametriza la sección de EPS y la de cobertura
+ */
+async function jobDiagnostico(req) {
+  const q = (req && req.query) || {};
+  const que = String(q.que || '').trim().toLowerCase();
+  const quiere = (x) => !que || que === x;
+  const out = { job: 'diagnostico', creditos: 0, solo_lectura: true };
+  if (quiere('eps')) out.eps = await diagEps(q);
+  if (quiere('fibras')) out.fibras = await diagFibras();
+  if (quiere('cobertura')) out.cobertura = await diagCobertura(q);
+  return out;
+}
+
+/**
+ * ¿El EPS que manda la API es utilidad ÷ acciones AL CIERRE o ÷ PROMEDIO
+ * PONDERADO del periodo?
+ *
+ * La respuesta normativa es inequívoca —**IAS 33 define el EPS básico sobre el
+ * promedio ponderado de acciones ordinarias en circulación durante el
+ * periodo**, no sobre el saldo al cierre— pero una norma no es una medición.
+ * Así que esto no se limita a citarla: saca del CRUDO todas las llaves que
+ * hablan de acciones, divide la utilidad entre cada una, y marca **cuál
+ * reproduce el EPS guardado**. Si ninguna lo reproduce, también lo dice.
+ *
+ * Importa para leer el value del backtest: si el denominador es el promedio
+ * ponderado, una emisora que recompró o emitió acciones a mitad del trimestre
+ * tiene un EPS que NO corresponde a las acciones que hoy cotizan, y el
+ * `EPS ÷ precio` mezcla dos denominadores distintos.
+ */
+async function diagEps(q) {
+  const emisora = (q.emisora ? String(q.emisora) : DIAG_EPS_DEFECTO.emisora).toUpperCase();
+  const per = q.periodo ? parseClavePeriodo(String(q.periodo)) : null;
+  const anio = per ? per.anio : (Number(q.anio) || DIAG_EPS_DEFECTO.anio);
+  const trimestre = per ? per.trimestre : (Number(q.trimestre) || DIAG_EPS_DEFECTO.trimestre);
+
+  const fila = await financieroCrudo({ emisora, anio, trimestre });
+  if (!fila) {
+    return { emisora, anio, trimestre, error: 'no hay fila guardada para ese periodo', norma: NORMA_EPS };
+  }
+
+  // Todas las llaves del crudo que hablan de acciones o de per-share, a
+  // cualquier profundidad. Se guarda la RUTA para que se vea de qué bloque
+  // salió cada número.
+  const candidatos = [];
+  const recorre = (obj, ruta, prof) => {
+    if (!obj || typeof obj !== 'object' || prof > 4) return;
+    for (const [k, v] of Object.entries(obj)) {
+      const norm = normalizaLlave(k);
+      const aqui = ruta ? `${ruta}.${k}` : k;
+      if (PISTAS_EPS.some((p) => norm.includes(p))) {
+        const valor = valorDeCampo(v);
+        candidatos.push({ ruta: aqui, llave: k, valor, crudo: Array.isArray(v) ? v : undefined });
+      }
+      if (v && typeof v === 'object') recorre(v, aqui, prof + 1);
+    }
+  };
+  recorre(fila.raw, '', 0);
+
+  const utilidad = Number(fila.profitlossattributabletoownersofparent);
+  const epsGuardado = fila.basicearningslosspershare === null ? null : Number(fila.basicearningslosspershare);
+
+  // La prueba: dividir la utilidad entre cada denominador candidato y ver cuál
+  // reproduce el EPS. Un denominador que cuadra al 0.5% es el que se usó.
+  const pruebas = [];
+  for (const c of candidatos) {
+    const den = Number(c.valor);
+    // Un denominador plausible de acciones: positivo y grande. Un EPS de 0.28
+    // no es un número de acciones, y dividir entre él daría un "cuadre"
+    // espurio.
+    if (!Number.isFinite(den) || den <= 1000) continue;
+    const implicito = utilidad / den;
+    const error = epsGuardado === null || !epsGuardado ? null : Math.abs(implicito / epsGuardado - 1);
+    pruebas.push({
+      denominador: c.llave, ruta: c.ruta, acciones: den,
+      eps_implicito: implicito,
+      error_relativo: error,
+      reproduce_el_guardado: error !== null && error <= 0.005,
+    });
+  }
+  pruebas.sort((a, b) => (a.error_relativo ?? 9e9) - (b.error_relativo ?? 9e9));
+  const gana = pruebas.find((p) => p.reproduce_el_guardado) || null;
+
+  return {
+    emisora, anio, trimestre,
+    fecha_cierre: fila.fecha_cierre,
+    utilidad_controladora: utilidad,
+    eps_guardado: epsGuardado,
+    // Si el crudo NO trae ningún campo de acciones, eso es el hallazgo: el EPS
+    // viene precalculado por la fuente y su denominador no es auditable desde
+    // acá. Decirlo es más útil que una tabla vacía.
+    campos_de_acciones_en_el_crudo: candidatos.length,
+    candidatos: candidatos.slice(0, 20),
+    pruebas,
+    denominador_que_cuadra: gana,
+    veredicto: gana
+      ? `el EPS guardado se reproduce con \`${gana.denominador}\` (${gana.acciones.toLocaleString('es-MX')} acciones)`
+      : (candidatos.length
+        ? 'NINGÚN campo de acciones del crudo reproduce el EPS guardado: el denominador no está en la respuesta, así que la fuente lo manda precalculado'
+        : 'el crudo NO trae ningún campo de acciones: el EPS viene precalculado y su denominador no es auditable desde lo cosechado'),
+    norma: NORMA_EPS,
+  };
+}
+
+const NORMA_EPS = {
+  regla: 'IAS 33 define el EPS BÁSICO sobre el PROMEDIO PONDERADO de acciones ordinarias en circulación durante el periodo, no sobre el saldo al cierre.',
+  implicacion_para_el_value: 'Si el denominador es el promedio ponderado, el EPS de una emisora que recompró o emitió acciones a mitad del trimestre NO corresponde a las acciones que hoy cotizan. '
+    + 'El `EPS ÷ precio` del backtest mezcla entonces un numerador por acción promedio con un precio por acción actual. '
+    + 'El efecto es de segundo orden salvo en emisoras con cambios grandes de capital, y NO se corrigió en la v1 — queda dicho, no arreglado.',
+  advertencia: 'Esta regla es la NORMA. Lo que la fuente haya hecho de verdad lo dicen las `pruebas` de arriba, que dividen contra el dato guardado.',
+};
+
+/**
+ * ¿Las FIBRAs entran al universo del backtest?
+ *
+ * No: el universo filtra `tipo_valor_id = '1'` por **igualdad exacta de
+ * texto**, y los fideicomisos tienen otro tipo. Pero la tabla de
+ * distribuciones SÍ las guarda, y con razón — llegan DENTRO de la respuesta de
+ * `/v2/emisoras`, así que guardarlas no costó un request extra y tirarlas
+ * habría sido perder dato gratis.
+ *
+ * Esto lo comprueba con los conteos reales en vez de repetir el argumento.
+ */
+async function diagFibras() {
+  const porTipo = await sql(
+    `select coalesce(e.tipo_valor_id, '(null)') as tipo_valor_id,
+            count(distinct d.emisora_serie)::int as series,
+            count(*)::int as distribuciones
+       from bmv_distribuciones d
+       left join bmv_emisoras e on e.emisora_serie = d.emisora_serie
+      group by 1
+      order by 3 desc`);
+
+  // Las dos que aparecieron en la muestra, por su nombre: ¿están en el
+  // universo ICS? La pregunta se contesta con la MISMA consulta que usa la
+  // Fase B, no con una parecida.
+  const crudas = await sql(
+    `select emisora_serie, emisora, tipo_valor_id, estatus
+       from bmv_emisoras
+      where emisora_serie in ('FMTY14', 'DANHOS13')
+      order by 1`);
+  // La bandera se deriva EN JS y no se le pide a Postgres. Un booleano que
+  // cruza el driver puede llegar como `true`, `'t'` o `'true'` según el
+  // camino, y `'false'` en una cadena es un valor VERDADERO en JavaScript: el
+  // mismo tropiezo que ya se cazó con el `fired` de arena_watch. Acá la
+  // comparación es la misma que usa la Fase B, hecha donde se puede leer.
+  const sospechosas = crudas.map((c) => ({ ...c, entra_al_universo: c.tipo_valor_id === '1' }));
+
+  const universo = await sql(
+    `select count(*)::int as series_ics from bmv_emisoras where tipo_valor_id = '1'`);
+
+  const intrusas = sospechosas.filter((s) => s.entra_al_universo);
+  return {
+    distribuciones_por_tipo_valor: porTipo,
+    series_nombradas: sospechosas,
+    series_ics_en_el_universo: universo[0] ? universo[0].series_ics : null,
+    veredicto: intrusas.length
+      ? `⚠️ ${intrusas.length} de las series nombradas SÍ entran al universo: ${intrusas.map((x) => x.emisora_serie).join(', ')}`
+      : 'ninguna de las series nombradas entra al universo: el filtro `tipo_valor_id = \'1\'` las deja fuera',
+    porque_se_guardan: 'Las distribuciones llegan DENTRO de la respuesta de /v2/emisoras, para TODAS las emisoras. '
+      + 'Guardarlas no costó un request extra y tirarlas habría sido perder dato gratis. '
+      + 'El universo del backtest es otra consulta, y ésa sí filtra por tipo.',
+  };
+}
+
+/**
+ * ¿Por qué una emisora del censo no tiene financieros?
+ *
+ * Contesta con el CRUDO del censo, que está guardado: si la API mandó
+ * `rango_financieros` y el parseo lo tiró, se arregla con `?job=reparse` y
+ * CERO créditos. Si la API nunca lo mandó, ninguna cosecha lo va a traer y el
+ * hueco es de la fuente.
+ *
+ * Distinguir esas dos cosas es todo el diagnóstico, y se puede hacer sin
+ * gastar un crédito porque el crudo se guardó desde el principio — que es
+ * exactamente para lo que se guardó.
+ */
+async function diagCobertura(q) {
+  const emisora = (q.emisora ? String(q.emisora) : 'Q').toUpperCase();
+
+  const censo = await sql(
+    `select emisora_serie, emisora, serie, razon_social, tipo_valor_id, estatus,
+            fin_desde, fin_hasta, fin_motivo, fin_periodos,
+            hist_desde::text as hist_desde, hist_hasta::text as hist_hasta, hist_motivo,
+            raw
+       from bmv_emisoras where emisora = $1 order by emisora_serie`, [emisora]);
+
+  const filas = await sql(
+    `select count(*)::int as n from bmv_financieros where emisora = $1`, [emisora]);
+  const ledger = await sql(
+    `select job, clave, estado, intentos, filas, error_msg
+       from bmv_harvest_ledger where emisora = $1 order by job, clave limit 20`, [emisora]);
+
+  // Lo que el CRUDO del censo trae sobre el rango de financieros. Es la
+  // pregunta que decide si esto se arregla gratis o no se arregla.
+  const enElCrudo = censo.map((c) => {
+    const bajo = {};
+    const raiz = (c.raw && typeof c.raw === 'object') ? c.raw : {};
+    for (const [k, v] of Object.entries(raiz)) bajo[normalizaLlave(k)] = { llave: k, valor: v };
+    const rango = bajo[normalizaLlave('rango_financieros')]
+      || bajo[normalizaLlave('rangofinancieros')]
+      || bajo[normalizaLlave('financieros')] || null;
+    return {
+      emisora_serie: c.emisora_serie,
+      llaves_del_crudo: Object.keys(raiz).slice(0, 15),
+      rango_financieros_en_el_crudo: rango ? { llave: rango.llave, valor: rango.valor } : null,
+    };
+  });
+
+  const laApiLoMando = enElCrudo.some((x) => x.rango_financieros_en_el_crudo
+    && String(x.rango_financieros_en_el_crudo.valor || '').trim() !== '');
+  const parseado = censo.some((c) => (Array.isArray(c.fin_periodos) && c.fin_periodos.length) || c.fin_desde);
+
+  // El costo de traerlos, con el modelo de KiB verificado. NO se cosecha nada:
+  // esto es el presupuesto para decidir, no la decisión.
+  const trimestresProbables = 41;
+  const creditos = trimestresProbables * creditosDeBytes(BYTES_FINANCIERO_OBSERVADOS);
+
+  return {
+    emisora,
+    censo: censo.map(({ raw, ...resto }) => resto),
+    // `Number()` explícito: el conteo llega como texto o como número según el
+    // OID que reporte el driver, y comparar contra 0 sin coerción es el mismo
+    // tropiezo del booleano de arriba con otro disfraz.
+    financieros_guardados: filas[0] ? Number(filas[0].n) : 0,
+    ledger,
+    crudo_del_censo: enElCrudo,
+    diagnostico: {
+      la_api_mando_el_rango: laApiLoMando,
+      el_parseo_lo_guardo: parseado,
+      // El mecanismo exacto, no una conjetura: `pendientesFinancieros` descarta
+      // a las emisoras sin `fin_periodos` NI `fin_desde` —cae en el `continue`
+      // que existe para los bancos y casas de bolsa— así que nunca generan un
+      // request. Sin rango no hay pendientes, y sin pendientes no hay cosecha.
+      mecanismo: !parseado
+        ? 'SIN rango en el censo: `pendientesFinancieros` descarta a la emisora (el `continue` que filtra bancos y casas de bolsa), así que NUNCA se le pidió un solo trimestre. No falló la cosecha: no se intentó.'
+        : 'el censo SÍ tiene rango, así que la ausencia de financieros es otra cosa — revisar el ledger de arriba.',
+      se_arregla_gratis: laApiLoMando && !parseado,
+      que_hacer: laApiLoMando && !parseado
+        ? '`?job=reparse` re-deriva el censo desde el crudo guardado con CERO créditos; después `?job=financieros` ya la vería como pendiente.'
+        : (laApiLoMando
+          ? 'el rango está y el censo lo guardó: el hueco no es de cobertura, hay que mirar el ledger.'
+          : 'la API NO mandó rango de financieros para esta emisora: ninguna cosecha lo va a traer. El hueco es de la fuente, no nuestro.'),
+    },
+    costo_si_se_cosechara: {
+      trimestres_estimados: trimestresProbables,
+      creditos: creditos,
+      pct_del_presupuesto_mensual: creditos / PRESUPUESTO_MENSUAL,
+      nota: 'Estimado con el modelo verificado (1 crédito por KiB). NO se cosecha nada acá: esto es el presupuesto para decidir.',
+    },
+  };
+}
+
 /* ═══════════════ job: creditos (el contador contra la realidad) ═══════════════ */
 
 // Si el contador local y el saldo real divergen más que esto, algo está mal en
@@ -2416,7 +2686,7 @@ export default async function handler(req, res) {
 
   const job = String((req.query && req.query.job) || '').toLowerCase();
   const q2 = (req.query) || {};
-  const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse', 'reparse-fin', 'inspect', 'creditos', 'muestra']);
+  const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse', 'reparse-fin', 'inspect', 'creditos', 'muestra', 'diagnostico']);
 
   try {
     // AUTH PRIMERO, base después. Estaba al revés: `ensureBmvSchema()` corría
@@ -2486,6 +2756,7 @@ export default async function handler(req, res) {
       }
       return res.status(200).json(m);
     }
+    if (job === 'diagnostico') return res.status(200).json(await jobDiagnostico(req));
     if (job === 'creditos') return res.status(200).json(await jobCreditos(req));
     if (job === 'inspect') return res.status(200).json(await jobInspect(req));
     if (job === 'reparse-fin') return res.status(200).json(await jobReparseFinancieros(req));
@@ -2511,6 +2782,7 @@ export default async function handler(req, res) {
         'reparse': 'protegido, CERO créditos: re-deriva el censo desde el crudo guardado',
         'reparse-fin': 'protegido, CERO créditos: re-normaliza los financieros desde el crudo guardado',
         'inspect': 'protegido, CERO créditos: describe la forma del crudo guardado, sin normalizar nada',
+        'diagnostico': 'protegido, SELECT-only y CERO créditos: contesta con el crudo guardado (&que=eps|fibras|cobertura, &emisora=, &periodo=)',
         'muestra': 'protegido, SELECT-only y CERO créditos: filas REALES de cada tabla sin abrir Neon (&format=md, &tabla=..., &emisora=...)',
         'creditos': 'protegido, 1 request chico: contrasta el contador local contra /v2/creditos y alerta si divergen más de 10%. Con &reconciliar=1 fija el contador al valor real y deja el ajuste anotado (idempotente)',
         'elegibilidad': 'público, SELECT-only y CERO créditos: simula los rebalanceos y dice si la Fase B puede concluir (&format=md, &umbral=N, &umbrales=a,b,c para la tabla comparativa)',
@@ -2536,6 +2808,7 @@ export {
   jobReparse,
   comparativaMd, contar, describirCrudo, elegibilidadMd, estimarConsumo, filaCenso,
   jobCreditos, saldoDeCreditos, banderaVerdadera, jobMuestra, muestraMd,
+  jobDiagnostico, diagEps, diagFibras, diagCobertura, NORMA_EPS,
   filasDelCenso,
   jobElegibilidad, literal,
   pareceClave, pareceSerie, tipoDe,
