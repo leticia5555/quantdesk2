@@ -36,7 +36,7 @@ import {
   CONTRATO_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, contar,
   comparativaMd, describirCrudo, elegibilidadMd, jobElegibilidad, literal, tipoDe,
   jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros,
-  jobHistoricos, jobReparse, jobCreditos, saldoDeCreditos, banderaVerdadera,
+  jobHistoricos, jobReparse, jobCreditos, saldoDeCreditos, banderaVerdadera, jobMuestra, muestraMd,
   estimarConsumo, filaCenso, filasDelCenso, nuevaCartera, pareceClave, pareceSerie,
   pendientesFinancieros,
   paramsBenchmark, paramsFinancieros, paramsHistoricos, parsePeriodoTexto,
@@ -2530,5 +2530,214 @@ test('`ajuste` NUNCA es null, en ninguno de los cuatro caminos', async () => {
     assert.ok(a && typeof a === 'object', `ajuste nulo con query ${JSON.stringify(query)}`);
     assert.equal(typeof a.ajustado, 'boolean');
     assert.ok(a.motivo || a.ajustado, 'si no ajustó, tiene que decir por qué');
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════
+ * ?job=muestra — filas REALES, sin abrir Neon a mano.
+ *
+ * Varias veces en este proyecto el conteo dijo una cosa y la fila
+ * dijo otra: el EPS en 0 con 4,174 filas "cosechadas", los DOS
+ * periodos por respuesta, los 65 falsos positivos. Todas se
+ * resolvieron mirando renglones. Esta herramienta existe para que
+ * mirarlos no cueste una sesión de SQL.
+ *
+ * Lo que los tests cuidan: que sea SOLO LECTURA, que esté
+ * protegida, y que lo que NO encuentra lo diga con nombre en vez
+ * de devolver una tabla más corta sin avisar.
+ * ═══════════════════════════════════════════════════════════ */
+
+/** Neon falso que responde por patrón y registra cada consulta. */
+function mockMuestra({ filas = {}, vacias = [] } = {}) {
+  const sqls = [];
+  const tokenPrevio = process.env.DATABURSATIL_TOKEN;
+  const dbPrevio = process.env.DATABASE_URL;
+  process.env.DATABURSATIL_TOKEN = 'token-de-prueba';
+  process.env.DATABASE_URL = 'postgres://u:p@ep-falso.us-east-1.aws.neon.tech/db';
+  const fetchPrevio = global.fetch;
+
+  const campos = (nombres) => nombres.map((n) => ({ name: n, dataTypeID: 25 }));
+  global.fetch = async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    const qy = (body.queries || [body])[0];
+    sqls.push(qy.query);
+    const q = qy.query;
+    let clave = null;
+    if (/from bmv_financieros/.test(q)) clave = 'financieros';
+    else if (/from bmv_precios/.test(q)) clave = 'precios';
+    else if (/from bmv_distribuciones/.test(q)) clave = 'distribuciones';
+    else if (/from bmv_emisoras/.test(q)) clave = 'emisoras';
+    else if (/count\(\*\) from bmv_emisoras/.test(q) || /bmv_harvest_ledger\)::int/.test(q)) clave = 'conteos';
+    if (/bmv_harvest_ledger\)::int/.test(q)) clave = 'conteos';
+
+    const datos = vacias.includes(clave) ? [] : (filas[clave] || []);
+    const nombres = datos.length ? Object.keys(datos[0]) : ['x'];
+    return {
+      ok: true, status: 200,
+      json: async () => ({
+        fields: campos(nombres),
+        rows: datos.map((d) => nombres.map((n) => (d[n] === null || d[n] === undefined ? null : String(d[n])))),
+      }),
+    };
+  };
+  return {
+    sqls,
+    restaurar: () => {
+      global.fetch = fetchPrevio;
+      if (tokenPrevio === undefined) delete process.env.DATABURSATIL_TOKEN; else process.env.DATABURSATIL_TOKEN = tokenPrevio;
+      if (dbPrevio === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = dbPrevio;
+    },
+  };
+}
+
+const FILA_FIN = {
+  emisora: 'WALMEX', anio: 2026, trimestre: 2, fecha_cierre: '2026-06-30',
+  revenue: 250000, profitlossattributabletoownersofparent: 13000,
+  basicearningslosspershare: 0.77, assets: 500000, liabilities: 200000,
+  equity: 300000, cashandcashequivalents: 40000,
+  faltantes: null, bloques: null, raw_bytes: 6123, cosechado_at: '2026-09-17',
+};
+
+test('?job=muestra es SOLO LECTURA: ninguna consulta escribe', async () => {
+  const m = mockMuestra({ filas: { financieros: [FILA_FIN], precios: [], distribuciones: [], emisoras: [], conteos: [{ bmv_emisoras: 595 }] } });
+  try {
+    await jobMuestra({ query: {} });
+    assert.ok(m.sqls.length > 5);
+    for (const q of m.sqls) {
+      assert.match(q.trim().slice(0, 6).toLowerCase(), /^select|^with/, `consulta que no es de lectura: ${q.slice(0, 80)}`);
+      assert.doesNotMatch(q, /\b(insert|update|delete|create|alter|drop|truncate)\b/i);
+    }
+  } finally { m.restaurar(); }
+});
+
+test('el job está PROTEGIDO aunque no escriba', async () => {
+  // No escribe, pero expone la cosecha renglón por renglón: eso no es una
+  // vista pública.
+  const secretPrevio = process.env.ADMIN_SECRET;
+  process.env.ADMIN_SECRET = 'secreto-de-prueba';
+  const m = mockMuestra({ filas: {} });
+  const res = { codigo: null, cuerpo: null, setHeader() {}, status(c) { this.codigo = c; return this; }, json(b) { this.cuerpo = b; return this; }, send(b) { this.cuerpo = b; return this; }, end() { return this; } };
+  try {
+    await handler({ method: 'GET', headers: {}, query: { job: 'muestra' } }, res);
+    assert.equal(res.codigo, 401, 'sin credenciales no se muestran filas');
+    assert.equal(m.sqls.length, 0, 'y un 401 no toca la base');
+  } finally {
+    m.restaurar();
+    if (secretPrevio === undefined) delete process.env.ADMIN_SECRET; else process.env.ADMIN_SECRET = secretPrevio;
+  }
+});
+
+test('una fila pedida que NO está se reporta por su nombre', async () => {
+  // Devolver dos filas en vez de tres, sin decirlo, dejaría un hueco que nadie
+  // nota — y este job existe justo para que no haya huecos silenciosos.
+  const m = mockMuestra({ vacias: ['financieros'], filas: { conteos: [{ bmv_financieros: 4174 }] } });
+  try {
+    const r = await jobMuestra({ query: { tabla: 'financieros' } });
+    assert.equal(r.financieros.filas.length, 0);
+    assert.equal(r.financieros.faltan.length, 3, 'las tres pedidas se reportan como ausentes');
+    assert.match(r.financieros.faltan[0].nota, /NO está/);
+  } finally { m.restaurar(); }
+});
+
+test('las columnas pedidas que la tabla NO tiene se listan, no se omiten', async () => {
+  const m = mockMuestra({ filas: { financieros: [FILA_FIN], conteos: [{}] } });
+  try {
+    const r = await jobMuestra({ query: { tabla: 'financieros' } });
+    const nombres = r.financieros.columnas_pedidas_que_no_existen.map((c) => c.columna).join(' ');
+    assert.match(nombres, /fecha_publicacion/);
+    assert.match(nombres, /deuda/);
+    assert.match(nombres, /acciones/);
+    const pub = r.financieros.columnas_pedidas_que_no_existen.find((c) => c.columna === 'fecha_publicacion');
+    assert.match(pub.porque, /65 días/, 'y explica que esa ausencia ES el motivo del rezago');
+  } finally { m.restaurar(); }
+});
+
+test('las distribuciones se piden UNA DE CADA CLASE, no cinco al azar', async () => {
+  const m = mockMuestra({ filas: { distribuciones: [{ emisora_serie: 'X*', fecha_ex: '2026-08-28' }], conteos: [{}] } });
+  try {
+    const r = await jobMuestra({ query: { tabla: 'distribuciones' } });
+    const claves = r.distribuciones.grupos.map((g) => g.clave);
+    assert.deepEqual(claves, ['ex_real', 'ex_aproximada', 'moneda_extranjera', 'reembolso']);
+    // Y cada consulta busca su clase, no un limit 5 a secas.
+    const texto = m.sqls.join(' ');
+    assert.match(texto, /ex_aproximada = true/);
+    assert.match(texto, /divisa <> 'MXN'/);
+    assert.match(texto, /categoria = 'reembolso'/);
+  } finally { m.restaurar(); }
+});
+
+test('una clase de distribución SIN filas se reporta como hallazgo, no como vacío mudo', async () => {
+  const m = mockMuestra({ vacias: ['distribuciones'], filas: { conteos: [{}] } });
+  try {
+    const r = await jobMuestra({ query: { tabla: 'distribuciones' } });
+    for (const g of r.distribuciones.grupos) {
+      assert.ok(g.vacio, `el grupo ${g.clave} debería decir que está vacío`);
+      assert.match(g.vacio, /no hay NINGUNA/);
+    }
+  } finally { m.restaurar(); }
+});
+
+test('?tabla= pide UNA sola y no consulta las demás', async () => {
+  const m = mockMuestra({ filas: { precios: [{ emisora_serie: 'WALMEX*', fecha: '2026-06-01', cierre: 50 }], conteos: [{}] } });
+  try {
+    const r = await jobMuestra({ query: { tabla: 'precios' } });
+    assert.ok(r.precios, 'trae precios');
+    assert.equal(r.financieros, undefined, 'y NO consulta financieros');
+    assert.equal(r.emisoras, undefined);
+    // La consulta de CONTEOS sí nombra todas las tablas —para eso es—, así que
+    // se excluye: lo que no debe existir es una consulta de MUESTRA de las
+    // otras tablas.
+    const deMuestra = m.sqls.filter((q) => !/bmv_harvest_ledger\)::int/.test(q));
+    assert.equal(deMuestra.some((q) => /from bmv_financieros/.test(q)), false,
+      'no debe haber consulta de muestra de financieros');
+    assert.equal(deMuestra.some((q) => /from bmv_emisoras/.test(q)), false);
+  } finally { m.restaurar(); }
+});
+
+test('?emisora= filtra, y con una fuera de la lista fija trae sus más recientes', async () => {
+  const m = mockMuestra({ filas: { financieros: [FILA_FIN], conteos: [{}] } });
+  try {
+    const r = await jobMuestra({ query: { tabla: 'financieros', emisora: 'gissa' } });
+    assert.equal(r.filtro.emisora, 'GISSA', 'se normaliza a mayúsculas');
+    assert.match(r.financieros.filas[0].porque, /más recientes/);
+    assert.equal(m.sqls.some((q) => /order by anio desc, trimestre desc/.test(q)), true);
+  } finally { m.restaurar(); }
+});
+
+test('el markdown sale sin reventar y trae las cuatro tablas y el conteo', async () => {
+  const m = mockMuestra({
+    filas: {
+      financieros: [FILA_FIN],
+      precios: [{ emisora_serie: 'WALMEX*', fecha: '2026-06-01', cierre: 50.5, importe: 1e9, apertura: null, maximo: null, minimo: null, volumen: null }],
+      distribuciones: [{ emisora_serie: 'NAFTRACISHRS', fecha_ex: '2026-08-28', fecha_pago: '2026-08-31', monto: 0.0138, divisa: 'MXN', categoria: 'efectivo', ex_aproximada: false, requiere_conversion: false, tipo: 'DISTRIBUCION DE EFECTIVO' }],
+      emisoras: [{ emisora_serie: 'WALMEX*', razon_social: 'Wal-Mart', tipo_valor_id: '1', estatus: 'ACTIVA', fin_desde: '2016-2', fin_hasta: '2026-2', fin_periodos_n: 39, hist_desde: '2016-01-01', hist_hasta: '2026-09-16' }],
+      conteos: [{ bmv_emisoras: 595, bmv_financieros: 4174, bmv_precios: 569589, bmv_distribuciones: 1641 }],
+    },
+  });
+  try {
+    const md = muestraMd(await jobMuestra({ query: {} }));
+    assert.match(md, /# Muestra de las tablas BMV/);
+    assert.match(md, /bmv_financieros/);
+    assert.match(md, /bmv_precios/);
+    assert.match(md, /bmv_distribuciones/);
+    assert.match(md, /bmv_emisoras/);
+    assert.match(md, /Conteo de filas/);
+    assert.match(md, /569,589|569.589/, 'el conteo va formateado');
+    assert.match(md, /Columnas pedidas que NO existen/);
+    assert.match(md, /0 créditos/);
+  } finally { m.restaurar(); }
+});
+
+test('?job=muestra entra sin ReferenceError aunque no haya base', async () => {
+  const guardado = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+  try {
+    await jobMuestra({ query: {} });
+    assert.fail('debería fallar por falta de DATABASE_URL');
+  } catch (e) {
+    assert.doesNotMatch(e.message, /is not defined/, `ReferenceError en la ruta del job: ${e.message}`);
+    assert.match(e.message, /DATABASE_URL/);
+  } finally {
+    if (guardado !== undefined) process.env.DATABASE_URL = guardado;
   }
 });

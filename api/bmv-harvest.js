@@ -945,6 +945,340 @@ function contar(lista) {
   return m;
 }
 
+/* ═══════════════ job: muestra (SELECT-only, 0 créditos) ═══════════════ */
+
+// Las filas que se piden por nombre, para ver el dato REAL y no una
+// descripción suya. Van fijas en el código y no en la URL porque el punto es
+// mirar siempre las mismas y notar cuando cambian.
+const MUESTRA_FINANCIEROS = [
+  { emisora: 'WALMEX', anio: 2026, trimestre: 2, porque: 'el trimestre más reciente de la emisora más líquida' },
+  { emisora: 'FEMSA', anio: 2026, trimestre: 2, porque: 'el mismo trimestre, otra emisora: contrasta cobertura' },
+  { emisora: 'WALMEX', anio: 2017, trimestre: 2, porque: 'el caso que destapó los DOS periodos por respuesta (§5.5)' },
+];
+
+// Columnas PEDIDAS que la tabla no tiene. Se listan en el reporte en vez de
+// omitirlas en silencio: una muestra que calla lo que falta es justo lo que
+// esta herramienta existe para evitar.
+const COLUMNAS_INEXISTENTES = [
+  {
+    columna: 'fecha_publicacion',
+    porque: 'DataBursatil indexa por CIERRE, no por publicación — no manda la fecha en que el reporte se hizo público. '
+      + 'Esa ausencia es el motivo entero del rezago de 65 días (§3.2): sin fecha real de publicación hay que cotizar la peor espera observada. '
+      + 'La fecha real sí existe, pero en la serie de Fase 1a (`xbrl_reports`), que es otra tabla y otra fuente.',
+  },
+  { columna: 'deuda_corto_plazo / deuda_largo_plazo', porque: 'nunca estuvo en CAMPOS: se piden 7 campos normalizados y la deuda no es uno. El crudo puede traerla; habría que re-normalizar con ?job=reparse-fin.' },
+  { columna: 'acciones_en_circulacion', porque: 'igual: no está entre los 7. El EPS ya viene por acción, así que el backtest no la necesitó.' },
+];
+
+/**
+ * `?job=muestra` — filas REALES de cada tabla, sin abrir Neon a mano.
+ *
+ * SELECT-only, cero créditos, cero escrituras. Es una herramienta de
+ * INSPECCIÓN: sirve para mirar el dato cosechado con los ojos en vez de
+ * confiar en que las agregaciones lo describen bien. Varias veces en este
+ * proyecto el conteo decía una cosa y la fila decía otra —el EPS en 0, los dos
+ * periodos por respuesta, los 65 falsos positivos— y todas se resolvieron
+ * mirando filas.
+ *
+ * Va PROTEGIDO aunque no escriba: expone datos de la cosecha renglón por
+ * renglón, y eso no es una vista pública.
+ *
+ *   ?tabla=financieros|precios|distribuciones|emisoras   una sola
+ *   ?emisora=WALMEX                                      filtra por emisora
+ *   ?format=md                                           el reporte legible
+ */
+async function jobMuestra(req) {
+  const q = (req && req.query) || {};
+  const tabla = String(q.tabla || '').trim().toLowerCase();
+  const emisora = q.emisora ? String(q.emisora).trim().toUpperCase() : null;
+  const quiere = (t) => !tabla || tabla === t;
+
+  const out = {
+    job: 'muestra',
+    creditos: 0,
+    solo_lectura: true,
+    filtro: { tabla: tabla || '(todas)', emisora: emisora || '(sin filtro)' },
+  };
+
+  if (quiere('financieros')) out.financieros = await muestraFinancieros(emisora);
+  if (quiere('precios')) out.precios = await muestraPrecios(emisora);
+  if (quiere('distribuciones')) out.distribuciones = await muestraDistribuciones(emisora);
+  if (quiere('emisoras')) out.emisoras = await muestraEmisoras(emisora);
+  out.conteos = await conteosDeTablas();
+  return out;
+}
+
+/**
+ * Financieros: los 7 campos normalizados, QUÉ llave se eligió por bloque, y el
+ * TAMAÑO del crudo — no el crudo. Un jsonb de 6 KB por fila haría el reporte
+ * ilegible, y para mirarlo entero ya está `?job=inspect`.
+ */
+async function muestraFinancieros(emisora) {
+  const pedidas = emisora
+    ? MUESTRA_FINANCIEROS.filter((m) => m.emisora === emisora)
+    : MUESTRA_FINANCIEROS;
+  // Con un `?emisora=` que no está en la lista fija, se muestran sus 3
+  // trimestres más recientes: el filtro sirve para explorar, no sólo para
+  // recortar lo que ya estaba.
+  const filas = [];
+  const faltan = [];
+
+  if (emisora && !pedidas.length) {
+    const r = await sql(
+      `select emisora, anio, trimestre, fecha_cierre::text as fecha_cierre,
+              revenue, profitlossattributabletoownersofparent,
+              basicearningslosspershare, assets, liabilities, equity,
+              cashandcashequivalents, faltantes, bloques,
+              octet_length(raw::text) as raw_bytes,
+              cosechado_at::text as cosechado_at
+         from bmv_financieros
+        where emisora = $1
+        order by anio desc, trimestre desc
+        limit 3`, [emisora]);
+    filas.push(...r.map((f) => ({ ...f, porque: 'los 3 más recientes de la emisora pedida' })));
+  } else {
+    for (const m of pedidas) {
+      const r = await sql(
+        `select emisora, anio, trimestre, fecha_cierre::text as fecha_cierre,
+                revenue, profitlossattributabletoownersofparent,
+                basicearningslosspershare, assets, liabilities, equity,
+                cashandcashequivalents, faltantes, bloques,
+                octet_length(raw::text) as raw_bytes,
+                cosechado_at::text as cosechado_at
+           from bmv_financieros
+          where emisora = $1 and anio = $2 and trimestre = $3`,
+        [m.emisora, m.anio, m.trimestre]);
+      // Una fila pedida que NO está se reporta por su nombre. Devolver menos
+      // filas sin decirlo dejaría un hueco que nadie nota.
+      if (r[0]) filas.push({ ...r[0], porque: m.porque });
+      else faltan.push({ ...m, nota: 'la fila NO está en la tabla' });
+    }
+  }
+
+  return {
+    filas,
+    faltan,
+    columnas_pedidas_que_no_existen: COLUMNAS_INEXISTENTES,
+    nota_bloques: '`bloques` dice QUÉ llave de fecha se eligió por bloque. Es lo que hace auditable la selección: '
+      + 'cada respuesta de /v2/financieros trae DOS periodos, y elegir el equivocado fue el bug de §5.5.',
+  };
+}
+
+// La ventana de la muestra de precios. Va FIJA y no relativa a hoy: el punto
+// de esta herramienta es mirar siempre los mismos renglones y notar cuando
+// cambian. Una ventana móvil daría filas distintas cada día y volvería inútil
+// la comparación entre dos corridas.
+const MUESTRA_PRECIOS_DESDE = /* date-lint-ok: ventana de inspección FIJA, elegida para que la muestra sea comparable entre corridas */ '2026-06-01';
+const MUESTRA_PRECIOS_HASTA = /* date-lint-ok: ídem, el cierre de la misma ventana fija */ '2026-06-30';
+const MUESTRA_PRECIOS_ETIQUETA = /* date-lint-ok: la etiqueta legible de esa misma ventana fija */ 'junio 2026';
+
+/** Precios: 5 días de WALMEX* en la ventana fija, con cierre e importe. */
+async function muestraPrecios(emisora) {
+  const serie = emisora ? null : 'WALMEX*';
+  const filas = serie
+    ? await sql(
+      `select emisora_serie, emisora, fecha::text as fecha, cierre, apertura,
+              maximo, minimo, volumen, importe
+         from bmv_precios
+        where emisora_serie = $1
+          and fecha >= $2::date and fecha <= $3::date
+        order by fecha
+        limit 5`, [serie, MUESTRA_PRECIOS_DESDE, MUESTRA_PRECIOS_HASTA])
+    : await sql(
+      `select emisora_serie, emisora, fecha::text as fecha, cierre, apertura,
+              maximo, minimo, volumen, importe
+         from bmv_precios
+        where emisora = $1
+        order by fecha desc
+        limit 5`, [emisora]);
+  return {
+    filas,
+    ventana: serie ? `${serie}, ${MUESTRA_PRECIOS_ETIQUETA}` : `${emisora}, los 5 días más recientes`,
+    // `apertura`, `maximo`, `minimo` y `volumen` salen SIEMPRE en null y eso no
+    // es un hueco de la cosecha: /v2/historicos devuelve [cierre, importe] y
+    // nada más. Decirlo evita que alguien los busque creyendo que se perdieron.
+    nota_columnas_vacias: 'apertura/maximo/minimo/volumen van en null a propósito: /v2/historicos devuelve [cierre, importe] y nada más. '
+      + 'Por eso el backtest rankea con el cierre del día anterior y ejecuta al cierre — fingir una apertura sería inventar un dato.',
+  };
+}
+
+/**
+ * Distribuciones: una de cada clase que importa, buscada a propósito.
+ *
+ * Las cuatro consultas van por separado —y no como un `limit 5` a secas—
+ * porque el punto es ver **una de cada tipo**: con fecha ex real, aproximada,
+ * en moneda extranjera y de reembolso. Un muestreo al azar podría devolver
+ * cinco filas idénticas y no enseñar nada.
+ *
+ * Cuando una clase no tiene ninguna fila, eso TAMBIÉN se reporta: «no hay
+ * ninguna con fecha ex real» es un hallazgo, no un vacío.
+ */
+async function muestraDistribuciones(emisora) {
+  const criterios = [
+    { clave: 'ex_real', donde: 'coalesce(d.ex_aproximada, false) = false', porque: 'fecha ex REAL, del bloque `reciente` de la API' },
+    { clave: 'ex_aproximada', donde: 'd.ex_aproximada = true', porque: 'fecha ex APROXIMADA (pago − 3 días): ~91% del histórico' },
+    { clave: 'moneda_extranjera', donde: "d.divisa is not null and d.divisa <> 'MXN'", porque: 'en USD o EUR — excluidas del retorno total de la v1 (§3.3)' },
+    { clave: 'reembolso', donde: "d.categoria = 'reembolso'", porque: 'devolución de principal, NO es rendimiento (§3.3)' },
+  ];
+  const grupos = [];
+  for (const c of criterios) {
+    const params = emisora ? [emisora] : [];
+    const filtroEmisora = emisora ? ' and d.emisora = $1' : '';
+    const filas = await sql(
+      `select d.emisora_serie, d.emisora, d.fecha_ex::text as fecha_ex,
+              d.fecha_pago::text as fecha_pago, d.monto, d.divisa, d.tipo,
+              d.categoria, d.ex_aproximada, d.es_efectivo,
+              d.requiere_conversion, d.pago_consolidado
+         from bmv_distribuciones d
+        where ${c.donde}${filtroEmisora}
+        order by d.fecha_ex desc
+        limit 2`, params);
+    grupos.push({
+      ...c,
+      filas,
+      // El vacío con nombre: sin esto, una clase sin filas se vería igual que
+      // una clase que nadie pidió.
+      vacio: filas.length ? null : `no hay NINGUNA distribución que cumpla: ${c.porque}`,
+    });
+  }
+  return { grupos };
+}
+
+/**
+ * Emisoras: cuatro casos elegidos para que el censo se vea completo —
+ * una activa, una suspendida, una de clave corta, y una sin cobertura.
+ */
+async function muestraEmisoras(emisora) {
+  const cols = `emisora_serie, emisora, serie, razon_social, tipo_valor_id, estatus,
+                fin_desde, fin_hasta, fin_motivo,
+                hist_desde::text as hist_desde, hist_hasta::text as hist_hasta, hist_motivo,
+                jsonb_array_length(coalesce(fin_periodos, '[]'::jsonb)) as fin_periodos_n`;
+
+  if (emisora) {
+    const filas = await sql(
+      `select ${cols} from bmv_emisoras where emisora = $1 order by emisora_serie`, [emisora]);
+    return { filas: filas.map((f) => ({ ...f, porque: 'la emisora pedida' })) };
+  }
+
+  const pedidas = [
+    { serie: 'WALMEX*', porque: 'ACTIVA y líquida: el caso normal' },
+    { serie: 'ELEKTRA*', porque: 'SUSPENDIDA: entra al universo mientras tuvo precios (§1.1)' },
+    { serie: 'Q*', porque: 'clave de UN carácter — la que rompió el parseo del censo (§5.4)' },
+  ];
+  const filas = [];
+  const faltan = [];
+  for (const p of pedidas) {
+    const r = await sql(`select ${cols} from bmv_emisoras where emisora_serie = $1`, [p.serie]);
+    if (r[0]) filas.push({ ...r[0], porque: p.porque });
+    else faltan.push({ ...p, nota: 'la serie NO está en el censo con ese nombre exacto' });
+  }
+  // La cuarta: una SIN cobertura de precios. Se busca en vez de nombrarla
+  // porque cuál sea depende de la cosecha, y fijarla a mano envejecería mal.
+  const sinCobertura = await sql(
+    `select ${cols} from bmv_emisoras
+      where tipo_valor_id = '1' and (hist_desde is null or hist_hasta is null)
+      order by emisora_serie limit 1`);
+  if (sinCobertura[0]) filas.push({ ...sinCobertura[0], porque: 'SIN rango de históricos: no tiene precios que cosechar' });
+  else faltan.push({ serie: '(alguna sin cobertura)', nota: 'no hay ninguna ICS sin rango de históricos — eso es buena noticia' });
+
+  return { filas, faltan };
+}
+
+/** Cuántas filas tiene cada tabla. El fondo contra el que se lee la muestra. */
+async function conteosDeTablas() {
+  const r = await sql(
+    `select (select count(*) from bmv_emisoras)::int        as bmv_emisoras,
+            (select count(*) from bmv_financieros)::int     as bmv_financieros,
+            (select count(*) from bmv_precios)::int         as bmv_precios,
+            (select count(*) from bmv_distribuciones)::int  as bmv_distribuciones,
+            (select count(*) from bmv_harvest_ledger)::int  as bmv_harvest_ledger,
+            (select count(*) from bmv_tipos_cambio)::int    as bmv_tipos_cambio`);
+  return r[0] || {};
+}
+
+/** La muestra en markdown, que es como se mira de verdad. */
+function muestraMd(m) {
+  const L = [];
+  const v = (x) => (x === null || x === undefined ? '—' : String(x));
+  const n = (x) => (x === null || x === undefined ? '—' : Number(x).toLocaleString('es-MX'));
+  const tabla = (encabezados, filas) => {
+    L.push(`| ${encabezados.join(' | ')} |`, `|${encabezados.map(() => '---').join('|')}|`);
+    for (const f of filas) L.push(`| ${f.join(' | ')} |`);
+    L.push('');
+  };
+
+  L.push('# Muestra de las tablas BMV', '');
+  L.push(`Filtro: **${m.filtro.tabla}** · emisora **${m.filtro.emisora}** · SELECT-only · **0 créditos**.`, '');
+
+  if (m.financieros) {
+    L.push('## `bmv_financieros`', '');
+    tabla(
+      ['emisora', 'año', 'T', 'cierre', 'ingresos', 'utilidad contr.', 'activos', 'pasivos', 'capital', 'efectivo', 'EPS', 'raw (bytes)'],
+      m.financieros.filas.map((f) => [
+        f.emisora, f.anio, f.trimestre, f.fecha_cierre,
+        n(f.revenue), n(f.profitlossattributabletoownersofparent), n(f.assets),
+        n(f.liabilities), n(f.equity), n(f.cashandcashequivalents),
+        v(f.basicearningslosspershare), n(f.raw_bytes),
+      ]));
+    for (const f of m.financieros.filas) {
+      L.push(`**${f.emisora} ${f.trimestre}T_${f.anio}** — ${f.porque}.`);
+      L.push(`· llave elegida por bloque: \`${JSON.stringify(f.bloques)}\``);
+      if (f.faltantes && Object.keys(f.faltantes).length) L.push(`· faltantes: \`${JSON.stringify(f.faltantes)}\``);
+      L.push('');
+    }
+    for (const f of m.financieros.faltan || []) {
+      L.push(`> ⚠️ **${f.emisora} ${f.trimestre}T_${f.anio}** — ${f.nota}.`, '');
+    }
+    L.push(`> ${m.financieros.nota_bloques}`, '');
+    if (m.financieros.columnas_pedidas_que_no_existen) {
+      L.push('### Columnas pedidas que NO existen en la tabla', '');
+      for (const c of m.financieros.columnas_pedidas_que_no_existen) {
+        L.push(`- **\`${c.columna}\`** — ${c.porque}`);
+      }
+      L.push('');
+    }
+  }
+
+  if (m.precios) {
+    L.push('## `bmv_precios`', '');
+    L.push(`${m.precios.ventana}`, '');
+    tabla(['serie', 'fecha', 'cierre', 'importe', 'apertura', 'máximo', 'mínimo', 'volumen'],
+      m.precios.filas.map((f) => [
+        f.emisora_serie, f.fecha, v(f.cierre), n(f.importe),
+        v(f.apertura), v(f.maximo), v(f.minimo), v(f.volumen)]));
+    L.push(`> ${m.precios.nota_columnas_vacias}`, '');
+  }
+
+  if (m.distribuciones) {
+    L.push('## `bmv_distribuciones`', '');
+    for (const g of m.distribuciones.grupos) {
+      L.push(`### ${g.clave} — ${g.porque}`, '');
+      if (g.vacio) { L.push(`> ⚠️ ${g.vacio}`, ''); continue; }
+      tabla(['serie', 'fecha ex', 'fecha pago', 'monto', 'divisa', 'categoría', 'ex aprox.', 'req. conversión', 'tipo'],
+        g.filas.map((f) => [
+          f.emisora_serie, f.fecha_ex, v(f.fecha_pago), v(f.monto), v(f.divisa),
+          v(f.categoria), f.ex_aproximada ? 'sí' : 'no',
+          f.requiere_conversion ? 'sí' : 'no', v(f.tipo)]));
+    }
+  }
+
+  if (m.emisoras) {
+    L.push('## `bmv_emisoras`', '');
+    tabla(['serie', 'razón social', 'tipo', 'estatus', 'financieros', 'trim.', 'históricos'],
+      m.emisoras.filas.map((f) => [
+        f.emisora_serie, v(f.razon_social), v(f.tipo_valor_id), v(f.estatus),
+        `${v(f.fin_desde)} → ${v(f.fin_hasta)}`, v(f.fin_periodos_n),
+        `${v(f.hist_desde)} → ${v(f.hist_hasta)}`]));
+    for (const f of m.emisoras.filas) L.push(`**${f.emisora_serie}** — ${f.porque}.`);
+    L.push('');
+    for (const f of m.emisoras.faltan || []) L.push(`> ⚠️ **${f.serie}** — ${f.nota}.`, '');
+  }
+
+  L.push('## Conteo de filas', '');
+  tabla(['tabla', 'filas'], Object.entries(m.conteos || {}).map(([k, x]) => [`\`${k}\``, n(x)]));
+  return L.join('\n');
+}
+
 /* ═══════════════ job: creditos (el contador contra la realidad) ═══════════════ */
 
 // Si el contador local y el saldo real divergen más que esto, algo está mal en
@@ -2082,7 +2416,7 @@ export default async function handler(req, res) {
 
   const job = String((req.query && req.query.job) || '').toLowerCase();
   const q2 = (req.query) || {};
-  const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse', 'reparse-fin', 'inspect', 'creditos']);
+  const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse', 'reparse-fin', 'inspect', 'creditos', 'muestra']);
 
   try {
     // AUTH PRIMERO, base después. Estaba al revés: `ensureBmvSchema()` corría
@@ -2144,6 +2478,14 @@ export default async function handler(req, res) {
       }
       return res.status(200).json(e);
     }
+    if (job === 'muestra') {
+      const m = await jobMuestra(req);
+      if (String(q2.format || '') === 'md') {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        return res.status(200).send(muestraMd(m));
+      }
+      return res.status(200).json(m);
+    }
     if (job === 'creditos') return res.status(200).json(await jobCreditos(req));
     if (job === 'inspect') return res.status(200).json(await jobInspect(req));
     if (job === 'reparse-fin') return res.status(200).json(await jobReparseFinancieros(req));
@@ -2169,6 +2511,7 @@ export default async function handler(req, res) {
         'reparse': 'protegido, CERO créditos: re-deriva el censo desde el crudo guardado',
         'reparse-fin': 'protegido, CERO créditos: re-normaliza los financieros desde el crudo guardado',
         'inspect': 'protegido, CERO créditos: describe la forma del crudo guardado, sin normalizar nada',
+        'muestra': 'protegido, SELECT-only y CERO créditos: filas REALES de cada tabla sin abrir Neon (&format=md, &tabla=..., &emisora=...)',
         'creditos': 'protegido, 1 request chico: contrasta el contador local contra /v2/creditos y alerta si divergen más de 10%. Con &reconciliar=1 fija el contador al valor real y deja el ajuste anotado (idempotente)',
         'elegibilidad': 'público, SELECT-only y CERO créditos: simula los rebalanceos y dice si la Fase B puede concluir (&format=md, &umbral=N, &umbrales=a,b,c para la tabla comparativa)',
       },
@@ -2192,7 +2535,7 @@ export {
   jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros, jobHistoricos,
   jobReparse,
   comparativaMd, contar, describirCrudo, elegibilidadMd, estimarConsumo, filaCenso,
-  jobCreditos, saldoDeCreditos, banderaVerdadera,
+  jobCreditos, saldoDeCreditos, banderaVerdadera, jobMuestra, muestraMd,
   filasDelCenso,
   jobElegibilidad, literal,
   pareceClave, pareceSerie, tipoDe,
