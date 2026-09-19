@@ -46,6 +46,26 @@ export const MAX_NOMBRES = 5;
 
 const up = (s) => String(s || '').trim().toUpperCase();
 
+// Qué le pasó de verdad al libro. Tres casos, tres frases:
+//   · todo rechazado     → el libro no se movió, ni siquiera las salidas;
+//   · todo parcial       → el libro SÍ se movió, pero sin esas posiciones;
+//   · mezcla             → se dicen los dos, porque son consecuencias distintas.
+function consecuencia(corridas, parciales) {
+  const rechazadas = corridas - parciales;
+  const partes = [];
+  if (rechazadas > 0) {
+    partes.push(rechazadas > 1
+      ? `${rechazadas} of your recent targets were rejected ENTIRELY for this, so NONE of those decisions were executed and your book still holds positions you meant to exit.`
+      : 'One of your recent targets was rejected ENTIRELY for this, so NONE of those decisions were executed and your book still holds positions you meant to exit.');
+  }
+  if (parciales > 0) {
+    partes.push(parciales > 1
+      ? `In ${parciales} other runs the rest of your book WAS executed, but those positions were dropped — you do not hold them, and you never will while the name stays out of the universe.`
+      : 'In another run the rest of your book WAS executed, but that position was dropped — you do not hold it, and you never will while the name stays out of the universe.');
+  }
+  return partes.join(' ');
+}
+
 // ── EL BLOQUE DEL PROMPT (puro: se prueba sin DB) ────────────────────
 // `filas` son corridas recientes, más nueva primero:
 //   { status, created_at, tickers: { desconocidos: [{pedido, normalizado, motivo}] } }
@@ -68,10 +88,18 @@ export function bloqueDeRechazos(filas = [], { universo = null } = {}) {
   // `= []` solo cubre `undefined`, no `null` — y `null` es justo lo que
   // devuelve un lector que falló. Sin esta guarda, un hipo de Neon no dejaba
   // al agente sin memoria: lo dejaba sin corrida.
+  let parciales = 0;
   for (const f of (Array.isArray(filas) ? filas : [])) {
     const desconocidos = (f && f.tickers && f.tickers.desconocidos) || [];
     if (!desconocidos.length) continue;
     corridas++;
+    // ── UNA EJECUCIÓN PARCIAL TAMBIÉN ES UN NOMBRE PERDIDO ───────────
+    // Desde el reglamento v4.2 un objetivo con UNA pata mala no se rechaza:
+    // se descarta esa pata y el resto se ejecuta. La corrida no se cayó, así
+    // que el agente no se entera de nada — pero la decisión sobre ESE nombre
+    // sí se perdió, y si descarta el mismo tres días seguidos nadie se lo
+    // dice. El estado es distinto; el aprendizaje que falta es el mismo.
+    if (String(f.status || '') === 'ejecutado_parcial') parciales++;
     for (const d of desconocidos) {
       // El ticker que se muestra es el que el MODELO escribió, no el
       // normalizado: es el que tiene que dejar de escribir. Si además se
@@ -104,9 +132,10 @@ export function bloqueDeRechazos(filas = [], { universo = null } = {}) {
     '',
     // LA CONSECUENCIA, dicha. Sin ella el modelo puede leer esto como una nota
     // de color y volver a pedirlo: el punto es que ya pagó por hacerlo.
-    corridas > 1
-      ? `Your last ${corridas} targets were rejected ENTIRELY for this, so NONE of your decisions were executed and your book is unchanged — including the positions you meant to exit.`
-      : 'Your last target was rejected ENTIRELY for this, so NONE of your decisions were executed and your book is unchanged — including the positions you meant to exit.',
+    // LA CONSECUENCIA CAMBIA SEGÚN QUÉ PASÓ, y decir la equivocada es peor que
+    // no decir nada: a un agente cuyo libro SÍ se ejecutó no se le puede decir
+    // que quedó congelado — dejaría de creerle al aviso.
+    consecuencia(corridas, parciales),
     'A name that is not in the universe cannot be held today, no matter how good the thesis is. Use the screener to find a name that IS in it, or state your book without that position. Do not ask for it again.',
   ].join('\n');
 }
@@ -129,7 +158,7 @@ export async function rechazosPrevios(agentId, { vivo = true, corridas = CORRIDA
       `select status, created_at, context->'tickers' as tickers
          from ${tabla}
         where agent_id = $1
-          and status = 'rejected_tickers'
+          and status in ('rejected_tickers', 'ejecutado_parcial')
           and created_at > now() - ($3 || ' days')::interval
         order by created_at desc
         limit $2`,

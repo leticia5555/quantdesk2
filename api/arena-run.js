@@ -382,6 +382,8 @@ YOUR MANDATE: maximize the equity of this book over FOUR WEEKS. Not today, not t
 
 WHAT YOU RETURN IS A BOOK, NOT ORDERS. You do not place trades. You state the portfolio you want to hold, as weights, and a deterministic engine works out the difference against what you actually hold and executes it.
 
+⚠️ SOME NAMES IN YOUR MARKET CONTEXT ARE MARKED \`no_admitido: true\`. Those are shown for CONTEXT ONLY — a stock down 30% tells you something about its sector even when you cannot own it. You CANNOT hold them today: naming one in your \`pesos\` gets that leg discarded, and if several are bad the whole book is rejected. They appear because the day's channels are live while the tradable universe is fixed before the open, so a mid-session collapse shows up in one and not the other. Read the flag before you write a thesis about the name.
+
 ⚠️ WHAT YOU DO NOT MENTION, YOU SELL. A ticker absent from your \`pesos\` is a ticker you are closing. There is no "leave it as it is" — every position you want to keep must be restated, every run, with its weight. This is the single most important rule of the format: read it twice.
 
 RAILS (a deterministic layer enforces them AFTER you — a target that violates ANY of them is discarded ENTIRELY, not scaled down, and the run places nothing):
@@ -567,6 +569,46 @@ function trimInsiders(data) {
 // A los 30 días: GROUP BY channel sobre las acciones del journal → qué canal
 // produjo decisiones y cuál fue ruido. NO viaja al prompt (buildScanUserPrompt
 // lo excluye) — es índice de journaling.
+// Marca EN SITIO los nombres de los canales que no están en el universo del
+// día, y devuelve el resumen para el journal. Devuelve null cuando no hay
+// universo: sin él no se puede afirmar nada, y marcar todo como "no admitido"
+// sería peor que no marcar.
+export function marcarNoAdmitidos({ movers, screener, notable_insider_buys }, universoSimbolos) {
+  if (!universoSimbolos || !universoSimbolos.length) return null;
+  const enUniverso = new Set(universoSimbolos.map((x) => String(x || '').trim().toUpperCase()));
+  const fuera = new Map();
+
+  const marca = (fila, sym, canal) => {
+    const s = String(sym || '').trim().toUpperCase();
+    if (!s || enUniverso.has(s)) return;
+    // La bandera va EN LA FILA que el modelo lee, no en una lista aparte que
+    // tendría que cruzar a mano. Y el texto explica la consecuencia: sin ella,
+    // "no_admitido: true" es un campo que se puede leer como un detalle.
+    fila.no_admitido = true;
+    fila.nota_admision = 'NOT in today\'s universe — you CANNOT hold this name today. Naming it in your book gets that leg discarded.';
+    const prev = fuera.get(s) || { symbol: s, canales: [] };
+    if (!prev.canales.includes(canal)) prev.canales.push(canal);
+    fuera.set(s, prev);
+  };
+
+  for (const lista of ['gainers', 'losers', 'actives']) {
+    for (const m of ((movers && movers[lista]) || [])) marca(m, m && m.symbol, 'movers:' + lista);
+  }
+  for (const nombre of ['value', 'momentum']) {
+    for (const c of ((screener && screener[nombre]) || [])) marca(c, c && c.symbol, 'screener:' + nombre);
+  }
+  for (const i of (notable_insider_buys || [])) marca(i, i && i.ticker, 'insider');
+
+  const lista = [...fuera.values()];
+  return {
+    total: lista.length,
+    simbolos: lista.slice(0, 40),
+    nota: lista.length
+      ? 'Estos nombres se MUESTRAN por contexto de mercado y están marcados `no_admitido` en su fila: el PM no puede tenerlos hoy. Aparecen porque los canales del día y el universo usan admisiones distintas — el universo ajusta el piso al feed, capa los movers del día y se construye ANTES de la apertura, así que un desplome de media sesión entra en los canales y no en el universo.'
+      : 'Todos los nombres de los canales están en el universo del día.',
+  };
+}
+
 function buildChannels({ movers, earnings, reported, insiders, screener }) {
   const map = {};
   const add = (sym, channel) => {
@@ -928,6 +970,33 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
     // al prompt duplicaría el tablero y reventaría el presupuesto de tokens.
     board_raw: board,
     universe_raw: universeBase,
+    // ── LO QUE SE MUESTRA CONTRA LO QUE SE PUEDE COMPRAR ──────────────
+    // EL CASO (2026-09-19): XENE salió en el tablero como el gran perdedor
+    // del día (−30%), todos los agentes lo mencionaron, y el objetivo se
+    // rechazó porque XENE NO estaba en el universo. Le enseñamos un nombre
+    // que no podía comprar. Eso es una contradicción NUESTRA, no un error
+    // del modelo — y explica también lo de ZM.
+    //
+    // POR QUÉ PASABA, y no es que faltara un filtro: hay DOS admisiones.
+    // Los canales del día corren `resolveAdmission` sobre sus candidatos, con
+    // las reglas nominales. El universo corre la SUYA, con el piso ajustado
+    // al feed, y además CAPA los movers del día a los 50 de mayor volumen y
+    // se construye ANTES DE LA APERTURA. Un nombre que se desploma 30% a
+    // media sesión pasa la primera y no está en el segundo — no por un
+    // descuido, por construcción.
+    //
+    // El único conjunto que decide de verdad es `universe_raw.symbols`: es
+    // contra ÉSE que `normalizarTickersObjetivo` valida el objetivo. Así que
+    // se marca contra ése, no re-corriendo admisiones.
+    //
+    // SE MARCA EN VEZ DE ESCONDER. Un nombre que cae 30% es contexto de
+    // mercado real —dice algo de su sector— y borrarlo dejaría al PM sin ver
+    // el hecho más grande del día. Lo que no puede pasar es que lo vea SIN
+    // SABER que no lo puede comprar.
+    no_admitidos: marcarNoAdmitidos(
+      { movers, screener, notable_insider_buys },
+      (universeBase && universeBase.symbols) || null,
+    ),
     // La medición completa del tablero, para el journal: qué sección creció,
     // qué se recortó y cuánto del universo quedó cubierto.
     board_meta: boardRender ? {
