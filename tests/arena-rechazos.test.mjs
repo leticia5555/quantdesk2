@@ -10,7 +10,7 @@
 // única conducta posible. Correr con `node tests/arena-rechazos.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import { bloqueDeRechazos, rechazosPrevios, MAX_NOMBRES, CORRIDAS_ATRAS } from '../api/_lib/arena-rechazos.js';
+import { bloqueDeRechazos, rechazosPrevios, MAX_NOMBRES, CORRIDAS_ATRAS, DIAS_ATRAS } from '../api/_lib/arena-rechazos.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -91,6 +91,41 @@ console.log('\n── leer el journal nunca puede tumbar la corrida ──');
   await rechazosPrevios('deepseek', { vivo: false, deps: { sql: async (q) => { capturado = { q }; return []; } } });
   ok(/arena_shadow_journal/.test(capturado.q),
     'y la sombra lee el SUYO: una bandera en la misma tabla está a una consulta mal escrita de contaminar el post-mortem');
+}
+
+console.log('\n── el caso de claude: ZM y XENE, y el fin de semana ──');
+{
+  // Reportado el 2026-09-19: claude pasó el viernes rechazado pidiendo ZM y
+  // XENE una y otra vez, el mismo patrón de deepseek con OKTA.
+  const f = [corrida({ pedido: 'ZM', motivo: 'no está en el universo de hoy' }, { pedido: 'XENE', motivo: 'no está en el universo de hoy' }),
+    corrida({ pedido: 'ZM', motivo: 'no está en el universo de hoy' })];
+  const b = bloqueDeRechazos(f);
+  ok(/ZM/.test(b) && /XENE/.test(b), 'el aviso cubre los DOS tickers de una misma corrida, no solo el primero', b);
+  ok(/asked for it 2 times/.test(b), 'y cuenta ZM dos veces, que es lo que lo vuelve un patrón');
+
+  // LA VENTANA. Del viernes al lunes hay TRES días: con la de 2 días, el
+  // aprendizaje se borraba justo cuando más falta hacía.
+  ok(DIAS_ATRAS >= 4, `la ventana cruza el fin de semana (${DIAS_ATRAS} días): viernes → lunes son tres`, String(DIAS_ATRAS));
+}
+
+console.log('\n── un ticker que VOLVIÓ al universo no se menciona ──');
+{
+  // Ampliar la ventana solo es seguro por esto: el universo se reconstruye
+  // cada día y los movers cambian. Decir "no pidas ZM" cuando ZM SÍ está hoy
+  // sería enseñarle algo falso al PM.
+  const f = [corrida({ pedido: 'ZM', motivo: 'x' }, { pedido: 'XENE', motivo: 'x' })];
+  const conZm = bloqueDeRechazos(f, { universo: ['NVDA', 'ZM'] });
+  ok(!/ZM/.test(conZm.split('\n').filter((l) => l.startsWith('- ')).join()) && /XENE/.test(conZm),
+    'ZM volvió al universo → se calla; XENE sigue afuera → se nombra', conZm.split('\n').filter((l) => l.startsWith('- ')).join(' '));
+  ok(bloqueDeRechazos(f, { universo: ['ZM', 'XENE'] }) === '',
+    'si los dos volvieron no hay nada que enseñar y el bloque desaparece entero');
+  ok(/ZM/.test(bloqueDeRechazos(f)) , 'sin universo no filtra: degrada al comportamiento anterior en vez de callarse');
+
+  // La forma normalizada también cuenta: el modelo escribió una y el universo
+  // conoce la otra.
+  const norm = [corrida({ pedido: 'SUPER MICRO', normalizado: 'SMCI', motivo: 'x' })];
+  ok(bloqueDeRechazos(norm, { universo: ['SMCI'] }) === '',
+    'y si lo que volvió es la forma NORMALIZADA, tampoco se menciona');
 }
 
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');

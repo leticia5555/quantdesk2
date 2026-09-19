@@ -76,14 +76,36 @@ export default async function handler(req, res) {
   const auth = checkLecturaAuth(req);
   if (!auth.ok) return res.status(auth.status).json(auth.body);
 
-  const agentParam = String(q.agent || FLAGSHIP_AGENT_ID).toLowerCase();
+  // ── LOS NOMBRES QUE LA GENTE ESCRIBE, NO SOLO LOS CANÓNICOS ────────
+  // Un parámetro mal escrito se IGNORABA EN SILENCIO y el endpoint devolvía
+  // otra cosa sin decirlo: `agente=todos&resumen=1&dia=...` dio el historial
+  // completo de claude desde julio, porque los tres nombres reales son otros.
+  // Media hora perdida mirando datos que no eran los pedidos.
+  //
+  // Dos arreglos: se aceptan los alias naturales, y lo que NO se reconoce se
+  // DICE en la respuesta. Un endpoint de diagnóstico que miente por omisión
+  // sobre qué entendió es peor que uno que falla.
+  const agentParam = String(q.agent || q.agente || FLAGSHIP_AGENT_ID).toLowerCase();
   const todos = agentParam === 'todos' || agentParam === 'all';
   const format = String(q.format || 'json').toLowerCase();
   const view = String(q.view || '').toLowerCase();
-  const esResumen = view === 'resumen' || view === 'summary';
+  const esResumen = view === 'resumen' || view === 'summary'
+    || ['1', 'true', 'si', 'sí'].includes(String(q.resumen || '').toLowerCase());
   const deploy = String(q.deploy || BUFFET_QUALITY_DEPLOY);
-  // Fecha ISO o nada. Se valida acá (nunca se interpola cruda: viaja como $2).
-  const desde = /^\d{4}-\d{2}-\d{2}$/.test(String(q.desde || '')) ? String(q.desde) : null;
+  const esFecha = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
+  // `dia` IMPLICA `desde`. Sin esto, pedir `dia=2026-09-18` traía las filas más
+  // VIEJAS del journal (la consulta ordena asc y corta por `limit`), así que la
+  // cadencia del día pedido salía vacía mientras la respuesta mostraba julio.
+  const diaParam = esFecha(q.dia) ? String(q.dia) : null;
+  const desde = esFecha(q.desde) ? String(q.desde) : diaParam;
+
+  // Qué llegó y no se entendió. `key` va aparte porque es una de las llaves.
+  const CONOCIDOS = new Set(['agent', 'agente', 'format', 'view', 'resumen', 'deploy', 'desde', 'dia', 'limit', 'key']);
+  const ignorados = Object.keys(q).filter((k) => !CONOCIDOS.has(k));
+  const avisos = [];
+  if (ignorados.length) avisos.push(`Parámetros no reconocidos (se IGNORARON): ${ignorados.join(', ')}. Los válidos son: agent, view=resumen, dia, desde, format, limit.`);
+  if (q.dia && !diaParam) avisos.push(`\`dia=${q.dia}\` no es una fecha AAAA-MM-DD y se ignoró.`);
+  if (q.desde && !esFecha(q.desde)) avisos.push(`\`desde=${q.desde}\` no es una fecha AAAA-MM-DD y se ignoró.`);
   // Interpolado, no parametrizado: Neon tipa mal un $n en LIMIT. Seguro
   // porque pasa por Number + clamp — nunca llega texto del cliente al SQL.
   const limit = Math.max(1, Math.min(2000, Number(q.limit) || 500));
@@ -116,6 +138,10 @@ export default async function handler(req, res) {
       limite: limit,
       truncado: filas.length === limit,   // honesto: hay más journal del que cupo
       desde: desde,
+      // Lo que el endpoint ENTENDIÓ de la consulta. Va siempre, no solo cuando
+      // hay avisos: así se ve de un vistazo si contestó lo que se le pidió.
+      pedido: { agent: agentParam, view: esResumen ? 'resumen' : 'corridas', dia: diaParam, desde, format, limit },
+      ...(avisos.length ? { avisos } : {}),
       rango: { desde: fechas[0] || null, hasta: fechas[fechas.length - 1] || null },
       halt,
       corridas: agrupaCorridas(filas),
