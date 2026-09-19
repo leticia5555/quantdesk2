@@ -163,7 +163,12 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   const rechazos = deps.rechazosPrevios
     ? await deps.rechazosPrevios(agent.id, { vivo })
     : await rechazosPrevios(agent.id, { vivo });
-  const avisoRechazos = bloqueDeRechazos(rechazos);
+  // El universo de HOY se le pasa al bloque: un ticker rechazado el viernes
+  // puede estar admitido el lunes, y nombrarlo entonces sería enseñarle algo
+  // falso al PM. Sin universo el bloque no filtra y degrada al comportamiento
+  // anterior, que es lo correcto cuando no se sabe.
+  const universoHoy = (buffet && buffet.universe_raw && buffet.universe_raw.symbols) || null;
+  const avisoRechazos = bloqueDeRechazos(rechazos, { universo: universoHoy });
 
   const user = [
     cola.text,

@@ -24,6 +24,20 @@ import { sql } from './db.js';
 // son 3 rondas fijas) sin arrastrar el error de anteayer a una sesión nueva.
 export const CORRIDAS_ATRAS = 3;
 
+// ── LA VENTANA TIENE QUE CRUZAR EL FIN DE SEMANA ─────────────────────
+// Estaba en 2 días, y eso borraba el aprendizaje justo cuando más falta hace:
+// del viernes al lunes hay TRES días, así que un ticker rechazado cuatro veces
+// el viernes llegaba al lunes sin memoria y el agente lo volvía a pedir. Es el
+// caso real de claude con ZM y XENE.
+//
+// Se puede ampliar sin riesgo de enseñar algo viejo PORQUE el bloque valida
+// contra el universo de HOY: un nombre que volvió a estar admitido no se
+// menciona. Sin esa validación, ampliar la ventana sería peor que no tenerla.
+export const DIAS_ATRAS = (() => {
+  const n = Number(process.env.ARENA_RECHAZOS_DIAS);
+  return Number.isFinite(n) && n > 0 && n <= 30 ? Math.floor(n) : 4;
+})();
+
 // Tope de nombres que viajan al prompt. Si un modelo emitió veinte símbolos
 // inventados, el problema no se arregla listándoselos: se arregla mirando el
 // `llm_response`. Cinco alcanzan para el caso real —uno o dos nombres— y
@@ -37,7 +51,17 @@ const up = (s) => String(s || '').trim().toUpperCase();
 //   { status, created_at, tickers: { desconocidos: [{pedido, normalizado, motivo}] } }
 // Devuelve '' cuando no hay nada que enseñar — un prompt no lleva secciones
 // vacías que el modelo tenga que aprender a ignorar.
-export function bloqueDeRechazos(filas = []) {
+// `universo` son los símbolos admitidos HOY. Un ticker rechazado el viernes
+// puede estar en el universo del lunes —la lista se reconstruye cada día y los
+// movers cambian—, y decirle al PM "no pidas ZM" cuando ZM SÍ está hoy sería
+// enseñarle algo falso. Se valida contra hoy antes de nombrarlo.
+//
+// Sin `universo` no se filtra nada: el aviso degrada al comportamiento de
+// antes en vez de desaparecer.
+export function bloqueDeRechazos(filas = [], { universo = null } = {}) {
+  const vigentes = universo && universo.length
+    ? new Set(universo.map((x) => up(x)).filter(Boolean))
+    : null;
   const porNombre = new Map();
   let corridas = 0;
 
@@ -55,6 +79,8 @@ export function bloqueDeRechazos(filas = []) {
       // errores distintos.
       const clave = up(d && (d.pedido || d.normalizado));
       if (!clave) continue;
+      // Si volvió al universo, el rechazo ya no es cierto y no se menciona.
+      if (vigentes && (vigentes.has(clave) || (d.normalizado && vigentes.has(up(d.normalizado))))) continue;
       const prev = porNombre.get(clave) || { pedido: clave, normalizado: null, motivo: null, veces: 0 };
       prev.veces++;
       if (d.normalizado && up(d.normalizado) !== clave) prev.normalizado = up(d.normalizado);
@@ -104,10 +130,10 @@ export async function rechazosPrevios(agentId, { vivo = true, corridas = CORRIDA
          from ${tabla}
         where agent_id = $1
           and status = 'rejected_tickers'
-          and created_at > now() - interval '2 days'
+          and created_at > now() - ($3 || ' days')::interval
         order by created_at desc
         limit $2`,
-      [agentId, corridas],
+      [agentId, corridas, String(DIAS_ATRAS)],
     );
     return (filas || []).map((f) => ({
       status: f.status,
