@@ -1798,6 +1798,80 @@ Eso acota qué se le puede pedir a este tipo de señal en BMV:
 > podría — las puertas se cerraron en §3.4 antes de correr, y el NO-GO salió de
 > ellas.
 
+---
+
+## 5.12 Lo que la muestra destapó, y cómo se diagnostica
+
+`?job=muestra` confirmó el carryover pendiente —**`bloques` de WALMEX 2T_2017
+dice `posicion: 2017-06-30`**, o sea que se eligió el periodo pedido y no el
+comparativo— y abrió tres preguntas nuevas. Las tres se contestan con
+`?job=diagnostico`, **con el crudo ya guardado y cero créditos**: el crudo se
+guardó desde la Fase A justamente para poder preguntarle cosas que entonces no
+se habían pensado.
+
+### 1. ¿Sobre qué acciones está calculado el EPS?
+
+El reporte da EPS de FEMSA 2T_2026 = **0.28**, pero
+`5,535,227,000 ÷ 16,935,974,370 = 0.327`. La diferencia es de **17%**, y no es
+ruido: implica un denominador de ~19.8 mil millones de acciones, no de 16.9.
+
+**La norma es inequívoca:** IAS 33 define el EPS **básico** sobre el
+**promedio ponderado** de acciones ordinarias en circulación durante el
+periodo, no sobre el saldo al cierre.
+
+Pero una norma no es una medición. `?job=diagnostico&que=eps` saca del crudo
+**todas** las llaves que hablan de acciones, divide la utilidad entre cada una,
+y marca **cuál reproduce el EPS guardado**. Si ninguna lo reproduce, lo dice —
+eso significaría que la fuente manda el EPS precalculado y su denominador no
+viaja, que también es una respuesta.
+
+> **Lo que implica para el value, dicho y NO corregido en la v1:** si el
+> denominador es el promedio ponderado, el EPS de una emisora que recompró o
+> emitió acciones a mitad del trimestre no corresponde a las acciones que hoy
+> cotizan. El `EPS ÷ precio` mezcla entonces un numerador por acción *promedio*
+> con un precio por acción *actual*. El efecto es de segundo orden salvo en
+> emisoras con cambios grandes de capital.
+
+### 2. Las FIBRAs están en distribuciones, no en el universo
+
+Son dos cosas distintas y conviene no confundirlas:
+
+- **El universo del backtest** filtra `tipo_valor_id = '1'` por **igualdad
+  exacta de texto**. Los fideicomisos tienen otro tipo y no empatan — la misma
+  mecánica que mantiene fuera al benchmark (`1B`).
+- **La tabla de distribuciones guarda TODAS las emisoras**, y con razón: los
+  repartos llegan **dentro** de la respuesta de `/v2/emisoras`, así que
+  guardarlos no costó un request extra y tirarlos habría sido perder dato
+  gratis.
+
+`?job=diagnostico&que=fibras` lo comprueba con conteos reales —distribuciones
+agrupadas por `tipo_valor_id`, y FMTY14 y DANHOS13 evaluadas con la **misma
+condición** que usa la Fase B— en vez de repetir el argumento.
+
+### 3. Quálitas no falló la cosecha: nunca se intentó
+
+`Q*` sale con **0 trimestres y rango vacío**. El mecanismo, leído en el código:
+`pendientesFinancieros` descarta a toda emisora que no tenga `fin_periodos` ni
+`fin_desde` — es el mismo `continue` que filtra bancos y casas de bolsa. **Sin
+rango no hay pendientes, y sin pendientes nunca se pidió un solo trimestre.**
+
+Lo que decide si esto se arregla gratis o no se arregla está en el **crudo del
+censo**, que está guardado:
+
+| Si el crudo trae `rango_financieros` | Entonces |
+|---|---|
+| **Sí**, y el censo no lo guardó | el parseo lo tiró → **`?job=reparse` lo arregla con CERO créditos** |
+| **No** | la API nunca lo mandó → ninguna cosecha lo va a traer; **el hueco es de la fuente** |
+
+`?job=diagnostico&que=cobertura&emisora=Q` contesta eso y, si hiciera falta
+cosechar, da el presupuesto con el modelo verificado: **41 trimestres ≈ 615
+créditos**, o sea **0.3% del presupuesto mensual**. No cosecha nada — es el
+número para decidir, no la decisión.
+
+> Lo que este diagnóstico NO puede contestar: si la API *tiene* los financieros
+> de Quálitas cuando su censo no trae el rango. Eso sólo se sabe pidiéndole uno,
+> y eso ya cuesta créditos. La decisión queda de este lado del gasto.
+
 ## 6. Estado
 
 | Pieza | Estado |
@@ -1805,7 +1879,7 @@ Eso acota qué se le puede pedir a este tipo de señal en BMV:
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 10 jobs (`reparse`, `reparse-fin` e `inspect` son de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **210 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **219 tests**, en verde. |
 | `api/_lib/bmv-rotation.js` | Hecho. Lógica pura de la Fase B: TTM, momentum, ranks, canastas, simulación, veredicto. |
 | `api/bmv-rotation-analyze.js` | Hecho. SELECT-only, `ADMIN_SECRET`, `?format=md`, 0 créditos. |
 | `tests/bmv-rotation.test.mjs` | Hecho. **47 tests**, en verde. |
@@ -1819,6 +1893,7 @@ Eso acota qué se le puede pedir a este tipo de señal en BMV:
 | **Fase B** | **Corrida. NO-GO** (§5.10). Exceso 0.0%/año, t = −0.007, Sharpe +0.03 contra el +0.15 exigido. |
 | **Moneda extranjera** | **Fuera de la v1, por decisión.** `/v2/divisas` es spot y no sirve; la vía real es Banxico SIE, otra integración. Los 14 repartos van fuera con sus bp reportados (§3.3, §5.10). |
 | **Inspección** | `?job=muestra` — filas reales de cada tabla sin abrir Neon. SELECT-only, 0 créditos, protegido. |
+| **Diagnóstico** | `?job=diagnostico` — EPS/FIBRAs/cobertura contestados con el crudo guardado (§5.12). |
 | **Contador de créditos** | **Corregido y reconciliado** (18-sep-2026). Cobraba por request y la API cobra por KiB: 4,405 contra 80,975 reales, 94.6% de divergencia. `?job=creditos` contrasta contra la API; `&reconciliar=1` corrige el histórico con rastro (§2.1). |
 | **Umbral de liquidez** | **Congelado en 1,000,000** (17-sep-2026), por operabilidad (§3.1, §5.8). |
 | **La cosecha** | **Completa.** 4,174 financieros, 569,589 filas de precio, 182 series. |

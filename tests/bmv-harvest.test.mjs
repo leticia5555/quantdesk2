@@ -37,6 +37,7 @@ import {
   comparativaMd, describirCrudo, elegibilidadMd, jobElegibilidad, literal, tipoDe,
   jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros,
   jobHistoricos, jobReparse, jobCreditos, saldoDeCreditos, banderaVerdadera, jobMuestra, muestraMd,
+  jobDiagnostico, diagEps, diagFibras, diagCobertura,
   estimarConsumo, filaCenso, filasDelCenso, nuevaCartera, pareceClave, pareceSerie,
   pendientesFinancieros,
   paramsBenchmark, paramsFinancieros, paramsHistoricos, parsePeriodoTexto,
@@ -2733,6 +2734,228 @@ test('?job=muestra entra sin ReferenceError aunque no haya base', async () => {
   delete process.env.DATABASE_URL;
   try {
     await jobMuestra({ query: {} });
+    assert.fail('debería fallar por falta de DATABASE_URL');
+  } catch (e) {
+    assert.doesNotMatch(e.message, /is not defined/, `ReferenceError en la ruta del job: ${e.message}`);
+    assert.match(e.message, /DATABASE_URL/);
+  } finally {
+    if (guardado !== undefined) process.env.DATABASE_URL = guardado;
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════
+ * ?job=diagnostico — las tres preguntas que abrió la muestra.
+ *
+ * Las tres se contestan con dato YA GUARDADO. El crudo se guardó
+ * desde la Fase A justamente para esto: poder preguntarle cosas
+ * nuevas sin volver a pagarle a la API.
+ * ═══════════════════════════════════════════════════════════ */
+
+/** Neon falso que contesta por patrón, para el diagnóstico. */
+function mockDiag(porPatron = {}) {
+  const sqls = [];
+  const dbPrevio = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = 'postgres://u:p@ep-falso.us-east-1.aws.neon.tech/db';
+  const fetchPrevio = global.fetch;
+  global.fetch = async (url, opts) => {
+    const qy = (JSON.parse(opts.body).queries || [JSON.parse(opts.body)])[0];
+    sqls.push(qy.query);
+    let datos = [];
+    for (const [patron, filas] of Object.entries(porPatron)) {
+      if (new RegExp(patron).test(qy.query)) { datos = filas; break; }
+    }
+    const nombres = datos.length ? Object.keys(datos[0]) : ['x'];
+    const tipo = (n, d) => (d && typeof d[n] === 'object' && d[n] !== null ? 3802 : 25);
+    return {
+      ok: true, status: 200,
+      json: async () => ({
+        fields: nombres.map((n) => ({ name: n, dataTypeID: tipo(n, datos[0]) })),
+        rows: datos.map((d) => nombres.map((n) => {
+          const v = d[n];
+          if (v === null || v === undefined) return null;
+          return typeof v === 'object' ? JSON.stringify(v) : String(v);
+        })),
+      }),
+    };
+  };
+  return {
+    sqls,
+    restaurar: () => {
+      global.fetch = fetchPrevio;
+      if (dbPrevio === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = dbPrevio;
+    },
+  };
+}
+
+test('EPS: encuentra el denominador que reproduce el guardado', async () => {
+  // Utilidad 5,535,227,000 con EPS 0.28 ⇒ el denominador real es ~19.77 mil
+  // millones, NO los 16.94 mil millones de acciones al cierre. El job lo
+  // muestra dividiendo contra cada candidato en vez de afirmarlo.
+  const m = mockDiag({
+    'from bmv_financieros\\s*\\n\\s*where emisora = \\$1 and anio': [{
+      emisora: 'FEMSA', anio: 2026, trimestre: 2, fecha_cierre: '2026-06-30',
+      profitlossattributabletoownersofparent: 5535227000,
+      basicearningslosspershare: 0.28,
+      revenue: 1, assets: 1, faltantes: null, cosechado_at: '2026-09-17',
+      raw: {
+        resultado_trimestre: {
+          '2026-06-30': {
+            WeightedAverageNumberOfOrdinarySharesOutstanding: 19768667857,
+            NumberOfSharesOutstanding: 16935974370,
+            BasicEarningsLossPerShare: 0.28,
+          },
+        },
+      },
+    }],
+  });
+  try {
+    const r = await diagEps({ emisora: 'FEMSA', periodo: '2T_2026' });
+    assert.ok(r.denominador_que_cuadra, 'debería identificar el denominador');
+    assert.match(r.denominador_que_cuadra.denominador, /WeightedAverage/,
+      'el que cuadra es el PROMEDIO PONDERADO, no el saldo al cierre');
+    const alCierre = r.pruebas.find((p) => /NumberOfSharesOutstanding$/.test(p.denominador));
+    assert.equal(alCierre.reproduce_el_guardado, false, 'el saldo al cierre NO lo reproduce');
+    assert.ok(alCierre.eps_implicito > 0.32, 'y da 0.327, que es justo la discrepancia observada');
+  } finally { m.restaurar(); }
+});
+
+test('EPS: si ningún campo del crudo lo reproduce, lo DICE', async () => {
+  // El caso incómodo: la fuente manda el EPS precalculado y su denominador no
+  // viaja. Inventar una explicación sería peor que decir que no se puede saber.
+  const m = mockDiag({
+    'from bmv_financieros\\s*\\n\\s*where emisora = \\$1 and anio': [{
+      emisora: 'X', anio: 2026, trimestre: 2, fecha_cierre: '2026-06-30',
+      profitlossattributabletoownersofparent: 1000,
+      basicearningslosspershare: 0.28, revenue: 1, assets: 1,
+      faltantes: null, cosechado_at: '2026-09-17',
+      raw: { resultado_trimestre: { '2026-06-30': { revenue: 5 } } },
+    }],
+  });
+  try {
+    const r = await diagEps({ emisora: 'X', periodo: '2T_2026' });
+    assert.equal(r.denominador_que_cuadra, null);
+    assert.equal(r.campos_de_acciones_en_el_crudo, 0);
+    assert.match(r.veredicto, /NO trae ningún campo de acciones/);
+  } finally { m.restaurar(); }
+});
+
+test('EPS: la norma se cita como norma, y las pruebas como medición', async () => {
+  const m = mockDiag({ 'where emisora = \\$1 and anio': [] });
+  try {
+    const r = await diagEps({ emisora: 'NADA', periodo: '2T_2026' });
+    assert.match(r.norma.regla, /IAS 33/);
+    assert.match(r.norma.regla, /PROMEDIO PONDERADO/);
+    assert.match(r.norma.advertencia, /Esta regla es la NORMA/,
+      'no se presenta una norma como si fuera una medición');
+    assert.match(r.norma.implicacion_para_el_value, /NO se corrigió en la v1/,
+      'y dice que el efecto queda dicho, no arreglado');
+  } finally { m.restaurar(); }
+});
+
+test('FIBRAS: el universo las excluye por tipo, y se comprueba con la misma consulta', async () => {
+  const m = mockDiag({
+    'group by 1': [{ tipo_valor_id: '1', series: 165, distribuciones: 1200 },
+      { tipo_valor_id: '11', series: 20, distribuciones: 300 }],
+    "in \\('FMTY14', 'DANHOS13'\\)": [
+      { emisora_serie: 'FMTY14', emisora: 'FMTY', tipo_valor_id: '11', estatus: 'ACTIVA', entra_al_universo: false },
+      { emisora_serie: 'DANHOS13', emisora: 'DANHOS', tipo_valor_id: '11', estatus: 'ACTIVA', entra_al_universo: false },
+    ],
+    "count\\(\\*\\)::int as series_ics": [{ series_ics: 185 }],
+  });
+  try {
+    const r = await diagFibras();
+    assert.match(r.veredicto, /ninguna de las series nombradas entra/);
+    assert.equal(r.series_nombradas.every((x) => x.entra_al_universo === false), true);
+    assert.match(r.porque_se_guardan, /no costó un request extra/);
+    // Y la comprobación usa la MISMA condición que la Fase B.
+    assert.ok(m.sqls.some((q) => /tipo_valor_id = '1'/.test(q)));
+  } finally { m.restaurar(); }
+});
+
+test('FIBRAS: si alguna SÍ entrara, el veredicto lo grita', async () => {
+  const m = mockDiag({
+    'group by 1': [],
+    "in \\('FMTY14', 'DANHOS13'\\)": [
+      { emisora_serie: 'FMTY14', emisora: 'FMTY', tipo_valor_id: '1', estatus: 'ACTIVA', entra_al_universo: true },
+    ],
+    'series_ics': [{ series_ics: 185 }],
+  });
+  try {
+    const r = await diagFibras();
+    assert.match(r.veredicto, /⚠️/);
+    assert.match(r.veredicto, /SÍ entran/);
+  } finally { m.restaurar(); }
+});
+
+test('COBERTURA: sin rango en el censo, el mecanismo es que NUNCA se pidió', async () => {
+  // Q (Quálitas): 0 trimestres y rango vacío. `pendientesFinancieros` descarta
+  // a las emisoras sin `fin_periodos` NI `fin_desde` —el mismo `continue` que
+  // filtra bancos— así que no falló la cosecha: no se intentó.
+  const m = mockDiag({
+    'from bmv_emisoras where emisora = \\$1': [{
+      emisora_serie: 'Q*', emisora: 'Q', serie: '*', razon_social: 'Quálitas',
+      tipo_valor_id: '1', estatus: 'ACTIVA',
+      fin_desde: null, fin_hasta: null, fin_motivo: null, fin_periodos: [],
+      hist_desde: '2016-01-01', hist_hasta: '2026-09-16', hist_motivo: null,
+      raw: { emisora: 'Q', rango_financieros: '1T_2017, 2T_2017, 3T_2017' },
+    }],
+    'count\\(\\*\\)::int as n from bmv_financieros': [{ n: 0 }],
+    'from bmv_harvest_ledger': [],
+  });
+  try {
+    const r = await diagCobertura({ emisora: 'Q' });
+    assert.equal(r.financieros_guardados, 0);
+    assert.equal(r.diagnostico.la_api_mando_el_rango, true, 'la API SÍ lo mandó, está en el crudo');
+    assert.equal(r.diagnostico.el_parseo_lo_guardo, false, 'pero el censo no lo guardó');
+    assert.equal(r.diagnostico.se_arregla_gratis, true);
+    assert.match(r.diagnostico.que_hacer, /reparse/, 'y se arregla con CERO créditos');
+    assert.match(r.diagnostico.mecanismo, /no se intentó/);
+  } finally { m.restaurar(); }
+});
+
+test('COBERTURA: si la API nunca mandó el rango, ninguna cosecha lo arregla', async () => {
+  const m = mockDiag({
+    'from bmv_emisoras where emisora = \\$1': [{
+      emisora_serie: 'Q*', emisora: 'Q', serie: '*', razon_social: 'Quálitas',
+      tipo_valor_id: '1', estatus: 'ACTIVA',
+      fin_desde: null, fin_hasta: null, fin_motivo: null, fin_periodos: [],
+      hist_desde: '2016-01-01', hist_hasta: '2026-09-16', hist_motivo: null,
+      raw: { emisora: 'Q', rango_historicos: '2016-01-01 a 2026-09-16' },
+    }],
+    'as n from bmv_financieros': [{ n: 0 }],
+    'from bmv_harvest_ledger': [],
+  });
+  try {
+    const r = await diagCobertura({ emisora: 'Q' });
+    assert.equal(r.diagnostico.la_api_mando_el_rango, false);
+    assert.equal(r.diagnostico.se_arregla_gratis, false);
+    assert.match(r.diagnostico.que_hacer, /El hueco es de la fuente/);
+  } finally { m.restaurar(); }
+});
+
+test('COBERTURA: el costo se estima con el modelo de KiB y NO se cosecha', async () => {
+  const m = mockDiag({
+    'from bmv_emisoras where emisora = \\$1': [],
+    'as n from bmv_financieros': [{ n: 0 }],
+    'from bmv_harvest_ledger': [],
+  });
+  try {
+    const r = await diagCobertura({ emisora: 'Q' });
+    assert.equal(r.costo_si_se_cosechara.trimestres_estimados, 41);
+    // 41 × ceil(14700/1024) = 41 × 15 = 615 créditos.
+    assert.equal(r.costo_si_se_cosechara.creditos, 615);
+    assert.ok(r.costo_si_se_cosechara.pct_del_presupuesto_mensual < 0.01);
+    assert.match(r.costo_si_se_cosechara.nota, /NO se cosecha nada/);
+    // Y ninguna consulta del diagnóstico escribe.
+    for (const q of m.sqls) assert.match(q.trim().slice(0, 6).toLowerCase(), /^select|^with/);
+  } finally { m.restaurar(); }
+});
+
+test('?job=diagnostico entra sin ReferenceError aunque no haya base', async () => {
+  const guardado = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+  try {
+    await jobDiagnostico({ query: {} });
     assert.fail('debería fallar por falta de DATABASE_URL');
   } catch (e) {
     assert.doesNotMatch(e.message, /is not defined/, `ReferenceError en la ruta del job: ${e.message}`);
