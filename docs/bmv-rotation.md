@@ -315,6 +315,31 @@ mismo estado que correrlo una.
 > un saldo. Escribir el contador con un número sacado de una falla sería
 > repetir el error original con otro disfraz.
 
+##### Y el primer intento no corrió, y tampoco lo dijo
+
+La primera corrida en prod **no aplicó el ajuste**, y la respuesta **no traía
+`ajuste` por ningún lado**: ni `ajustado: true` ni `ajustado: false` con
+motivo. Dos fallos, y el segundo es el que importa.
+
+**El primero** fue que el parámetro no llegó. La causa más probable: en una
+shell el `&` separa comandos, así que `?job=creditos&reconciliar=1` **sin
+comillas** llega al servidor como `?job=creditos` pelón.
+
+**El segundo, y el de fondo:** con `ajuste: null` cuando no se pedía, era
+**imposible distinguir «no me lo pediste» de «lo intenté y falló»**. Un job que
+recibe una instrucción y no la ejecuta tiene que decirlo — es la misma clase de
+fallo callado que el contador midiéndose a sí mismo.
+
+| Arreglo | Qué resuelve |
+|---|---|
+| `ajuste` es **siempre** un objeto con `ajustado` y `motivo`, nunca null | El estado «no pasó nada» deja de ser mudo |
+| `parametros_recibidos` en la respuesta | Un `&` comido se ve de un vistazo, sin leer código |
+| La alerta dice **siempre** qué pasó con el ajuste | Antes sólo aparecía en la rama divergente, así que un ajuste exitoso tampoco dejaba rastro |
+| La bandera pelona (`&reconciliar` sin valor) prende | Escribirla a secas es lo natural; que significara «no» en silencio era otra trampa igual |
+
+Los tests nuevos corren la **ruta completa por el handler** —no la función
+suelta— y exigen que `ajuste` exista en los cuatro caminos posibles.
+
 #### Sobre el `bytes: 0` del primer reporte
 
 No era el arreglo fallando. Eran dos cosas distintas que conviene no confundir:
@@ -1780,7 +1805,7 @@ Eso acota qué se le puede pedir a este tipo de señal en BMV:
 | `api/_lib/databursatil.js` | Hecho. Cliente + parseo tolerante + distribuciones (todas las emisoras) + presupuesto. |
 | `api/_lib/bmv-db.js` | Hecho. **7 tablas nuevas**, `xbrl_reports` intacta. |
 | `api/bmv-harvest.js` | Hecho. 10 jobs (`reparse`, `reparse-fin` e `inspect` son de cero créditos), idempotente, con parada limpia. |
-| `tests/bmv-harvest.test.mjs` | Hecho. **194 tests**, en verde. |
+| `tests/bmv-harvest.test.mjs` | Hecho. **200 tests**, en verde. |
 | `api/_lib/bmv-rotation.js` | Hecho. Lógica pura de la Fase B: TTM, momentum, ranks, canastas, simulación, veredicto. |
 | `api/bmv-rotation-analyze.js` | Hecho. SELECT-only, `ADMIN_SECRET`, `?format=md`, 0 créditos. |
 | `tests/bmv-rotation.test.mjs` | Hecho. **47 tests**, en verde. |
