@@ -36,7 +36,7 @@ import {
   CONTRATO_DEFECTO, TOPE_PROBE, candidatosFinancieros, candidatosHistoricos, contar,
   comparativaMd, describirCrudo, elegibilidadMd, jobElegibilidad, literal, tipoDe,
   jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros,
-  jobHistoricos, jobReparse, jobCreditos, saldoDeCreditos,
+  jobHistoricos, jobReparse, jobCreditos, saldoDeCreditos, banderaVerdadera,
   estimarConsumo, filaCenso, filasDelCenso, nuevaCartera, pareceClave, pareceSerie,
   pendientesFinancieros,
   paramsBenchmark, paramsFinancieros, paramsHistoricos, parsePeriodoTexto,
@@ -2365,7 +2365,9 @@ test('sin &reconciliar=1 el job NO escribe el ajuste, sólo reporta', async () =
   const m = mockCreditos({ restantes: 119_025, filaInicial: { mes: '2026-09', requests: 4405, creditos: 4405, bytes: 0, ajustes: [] } });
   try {
     const r = await jobCreditos({ query: {} });
-    assert.equal(r.ajuste, null);
+    // `ajuste` existe SIEMPRE: lo que cambia es que diga que no se pidió.
+    assert.equal(r.ajuste.ajustado, false);
+    assert.match(r.ajuste.motivo, /no se pidió reconciliar/);
     assert.equal(m.estado.fila.ajustes.length, 0, 'el default no toca el contador');
     assert.ok(Math.abs(r.divergencia) > 0.9, 'y reporta la divergencia enorme');
     assert.match(r.alerta, /reconciliar=1/, 'y dice cómo corregirla');
@@ -2401,5 +2403,132 @@ test('el job reporta lo que SU PROPIO request midió, no sólo el acumulado', as
     assert.ok(m.estado.fila.bytes > 0, 'y los bytes se acumularon en la base');
   } finally {
     m.restaurar();
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════
+ * EL AJUSTE QUE NO CORRIÓ Y NO LO DIJO (18-sep-2026).
+ *
+ * `?job=creditos&reconciliar=1` en prod: la medición funcionó
+ * (bytes 24, créditos 1) pero el ajuste NO se aplicó y la
+ * respuesta no traía `ajuste` por ningún lado. Dos fallos:
+ *
+ *   1. La rama no corrió — el parámetro nunca llegó.
+ *   2. PEOR: no reportó nada. Con `ajuste: null` era imposible
+ *      distinguir «no me lo pediste» de «lo intenté y falló».
+ *
+ * Es la misma clase de fallo callado que el contador midiéndose
+ * a sí mismo y que el `hay_mas` que nunca avanzaba. Estos tests
+ * corren la RUTA COMPLETA por el handler, no la función suelta.
+ * ═══════════════════════════════════════════════════════════ */
+
+/** Respuesta falsa de Vercel, para correr el handler de verdad. */
+function respuestaFalsa() {
+  const r = { codigo: null, cuerpo: null, headers: {} };
+  r.setHeader = (k, v) => { r.headers[k] = v; };
+  r.status = (c) => { r.codigo = c; return r; };
+  r.json = (b) => { r.cuerpo = b; return r; };
+  r.send = (b) => { r.cuerpo = b; return r; };
+  r.end = () => r;
+  return r;
+}
+
+const AUTH_H = { authorization: 'Bearer secreto-de-prueba' };
+
+async function correHandlerCreditos(query, opciones = {}) {
+  const secretPrevio = process.env.ADMIN_SECRET;
+  process.env.ADMIN_SECRET = 'secreto-de-prueba';
+  const m = mockCreditos(opciones);
+  const res = respuestaFalsa();
+  try {
+    await handler({ method: 'GET', headers: AUTH_H, query: { job: 'creditos', ...query } }, res);
+  } finally {
+    m.restaurar();
+    if (secretPrevio === undefined) delete process.env.ADMIN_SECRET;
+    else process.env.ADMIN_SECRET = secretPrevio;
+  }
+  return { res, estado: m.estado };
+}
+
+test('RUTA COMPLETA: con reconciliar=1 el handler ajusta y lo reporta', async () => {
+  const { res, estado } = await correHandlerCreditos({ reconciliar: '1' }, {
+    restantes: 119_025,
+    filaInicial: { mes: '2026-09', requests: 4405, creditos: 4405, bytes: 0, ajustes: [] },
+  });
+  assert.equal(res.codigo, 200);
+  assert.ok(res.cuerpo.ajuste, 'el objeto `ajuste` TIENE que existir');
+  assert.equal(res.cuerpo.ajuste.ajustado, true);
+  assert.equal(res.cuerpo.ajuste.despues, 80_975);
+  assert.equal(estado.fila.creditos, 80_975, 'y la base quedó ajustada');
+  assert.match(res.cuerpo.alerta, /SÍ se ajustó/);
+});
+
+test('RUTA COMPLETA: SIN la bandera, `ajuste` existe igual y dice que no se pidió', async () => {
+  // El fallo exacto del 18-sep: la respuesta salía sin nada que explicara por
+  // qué no había pasado nada. Ahora `ajuste` nunca es null.
+  const { res, estado } = await correHandlerCreditos({}, {
+    restantes: 119_025,
+    filaInicial: { mes: '2026-09', requests: 4405, creditos: 4405, bytes: 0, ajustes: [] },
+  });
+  assert.ok(res.cuerpo.ajuste, '`ajuste` no puede faltar aunque no se haya pedido');
+  assert.equal(res.cuerpo.ajuste.ajustado, false);
+  assert.match(res.cuerpo.ajuste.motivo, /no se pidió reconciliar/);
+  assert.match(res.cuerpo.ajuste.pista, /comillas/, 'y apunta a la causa más común');
+  assert.equal(estado.fila.ajustes.length, 0);
+});
+
+test('RUTA COMPLETA: pedido pero sin saldo confiable, `ajuste` explica por qué NO', async () => {
+  const { res, estado } = await correHandlerCreditos({ reconciliar: '1' }, {
+    restantes: 119_025, statusApi: 500,
+    filaInicial: { mes: '2026-09', requests: 10, creditos: 10, bytes: 0, ajustes: [] },
+  });
+  assert.equal(res.cuerpo.ajuste.ajustado, false);
+  assert.match(res.cuerpo.ajuste.motivo, /no se pudo leer el saldo real/);
+  assert.match(res.cuerpo.ajuste.motivo, /HTTP 500/, 'y dice QUÉ pasó, no sólo que falló');
+  assert.equal(estado.fila.ajustes.length, 0, 'sin fuente confiable no se escribe');
+});
+
+test('el reporte hace VISIBLE lo que recibió, para que un & comido se vea', async () => {
+  // La causa más probable de la corrida fallida: en una shell el `&` separa
+  // comandos, así que una URL sin comillas llega como `?job=creditos` pelón.
+  // Con los parámetros recibidos a la vista, eso se diagnostica de un vistazo
+  // en vez de leyendo código.
+  const { res } = await correHandlerCreditos({}, { restantes: 119_025 });
+  assert.deepEqual(res.cuerpo.parametros_recibidos, { job: 'creditos' },
+    'se ve exactamente qué llegó: sólo `job`, el resto se perdió');
+
+  const conBandera = await correHandlerCreditos({ reconciliar: '1' }, { restantes: 119_025 });
+  assert.equal(conBandera.res.cuerpo.parametros_recibidos.reconciliar, '1');
+});
+
+test('la bandera PELONA (&reconciliar sin valor) también prende', () => {
+  // Escribir `&reconciliar` a secas es lo más natural, y que eso significara
+  // «no» en silencio sería otra trampa de la misma familia.
+  assert.equal(banderaVerdadera({ reconciliar: '' }, 'reconciliar'), true);
+  assert.equal(banderaVerdadera({ reconciliar: '1' }, 'reconciliar'), true);
+  assert.equal(banderaVerdadera({ reconciliar: 'true' }, 'reconciliar'), true);
+  assert.equal(banderaVerdadera({ reconciliar: 'sí' }, 'reconciliar'), true);
+  // Y lo que apaga, apaga.
+  assert.equal(banderaVerdadera({}, 'reconciliar'), false);
+  assert.equal(banderaVerdadera({ reconciliar: '0' }, 'reconciliar'), false);
+  assert.equal(banderaVerdadera({ reconciliar: 'false' }, 'reconciliar'), false);
+  assert.equal(banderaVerdadera({ reconciliar: 'no' }, 'reconciliar'), false);
+});
+
+test('`ajuste` NUNCA es null, en ninguno de los cuatro caminos', async () => {
+  // La invariante, sobre todos los casos de una vez: si mañana alguien agrega
+  // un quinto camino que devuelva null, esto truena.
+  const casos = [
+    [{}, { restantes: 119_025 }],
+    [{ reconciliar: '1' }, { restantes: 119_025 }],
+    [{ reconciliar: '1' }, { restantes: 119_025, statusApi: 500 }],
+    [{ reconciliar: '0' }, { restantes: 119_025 }],
+  ];
+  for (const [query, opciones] of casos) {
+    const { res } = await correHandlerCreditos(query, opciones);
+    const a = res.cuerpo.ajuste;
+    assert.ok(a && typeof a === 'object', `ajuste nulo con query ${JSON.stringify(query)}`);
+    assert.equal(typeof a.ajustado, 'boolean');
+    assert.ok(a.motivo || a.ajustado, 'si no ajustó, tiene que decir por qué');
   }
 });

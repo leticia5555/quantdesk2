@@ -969,9 +969,27 @@ const DIVERGENCIA_MAXIMA = 0.10;
  *
  * Cuesta un request (unos pocos bytes), y ese costo también se anota.
  */
+/**
+ * ¿La bandera está prendida?
+ *
+ * Acepta `=1`, `=true`, `=si`, `=sí`, `=yes` y la bandera **pelona**
+ * (`&reconciliar` sin valor, que llega como cadena vacía). Esa última es la
+ * trampa que motivó esta función: escribir `&reconciliar` a secas es lo más
+ * natural del mundo, y que eso significara «no» en silencio es justo la clase
+ * de fallo callado que este job existe para no tener.
+ *
+ * Lo que apaga: ausente, `=0`, `=false`, `=no`.
+ */
+function banderaVerdadera(q, nombre) {
+  if (!q || !(nombre in q)) return false;
+  const v = String(q[nombre] ?? '').trim().toLowerCase();
+  if (v === '') return true;                       // `&bandera` pelona
+  return ['1', 'true', 'si', 'sí', 'yes', 'y'].includes(v);
+}
+
 async function jobCreditos(req) {
   const q = (req && req.query) || {};
-  const reconciliar = String(q.reconciliar || '') === '1';
+  const reconciliar = banderaVerdadera(q, 'reconciliar');
   const mes = mesPresupuesto();
 
   const r = await traer(construirUrl('/creditos', {}));
@@ -992,15 +1010,31 @@ async function jobCreditos(req) {
   // El ajuste va como JOB y no como UPDATE a mano: por SQL el número cambiaría
   // sin que quede dicho por qué, y un contador corregido sin rastro es un
   // contador en el que tampoco se puede confiar.
-  let ajuste = null;
-  if (reconciliar) {
-    ajuste = consumidoReal === null
-      ? { ajustado: false, motivo: 'no se pudo leer el saldo real: no hay contra qué reconciliar' }
-      : await reconciliarCreditos(mes, {
-        creditosReales: consumidoReal,
-        motivo: 'el contador cobraba 1 crédito por request; la API cobra 1 por KiB transmitido (error ~18×)',
-        fuente: '/v2/creditos',
-      });
+  //
+  // `ajuste` SIEMPRE es un objeto con `ajustado` y `motivo`. Nunca null.
+  // Antes era null cuando no se pedía, y eso hizo imposible distinguir «no me
+  // lo pediste» de «lo intenté y falló»: la corrida del 18-sep-2026 quedó sin
+  // ajustar y el reporte no dijo ni una palabra del asunto. Un job que recibe
+  // una instrucción y no la ejecuta tiene que decirlo — es la misma clase de
+  // fallo callado que el contador midiéndose a sí mismo.
+  let ajuste;
+  if (!reconciliar) {
+    ajuste = {
+      ajustado: false,
+      motivo: 'no se pidió reconciliar: falta &reconciliar=1 en la URL',
+      // La causa más común, y la más difícil de ver desde el otro lado: en una
+      // shell el `&` separa comandos, así que una URL sin comillas pierde todo
+      // lo que va después del primer `&` y llega sólo `?job=creditos`.
+      pista: 'si SÍ lo pediste, revisa que la URL vaya entre comillas: la shell corta en el & y el parámetro nunca llega',
+    };
+  } else if (consumidoReal === null) {
+    ajuste = { ajustado: false, motivo: `no se pudo leer el saldo real (${saldo.motivo || 'sin motivo'}): no hay contra qué reconciliar` };
+  } else {
+    ajuste = await reconciliarCreditos(mes, {
+      creditosReales: consumidoReal,
+      motivo: 'el contador cobraba 1 crédito por request; la API cobra 1 por KiB transmitido (error ~18×)',
+      fuente: '/v2/creditos',
+    });
   }
 
   // El contador se lee AL FINAL: después de cobrar este request y después del
@@ -1014,6 +1048,11 @@ async function jobCreditos(req) {
     mes,
     reconciliar,
     ajuste,
+    // Lo que el job REALMENTE recibió. Sin esto, un parámetro que se perdió en
+    // el camino —la shell cortando en el `&`, un proxy, un typo— es
+    // indistinguible de un job que lo ignoró.
+    parametros_recibidos: Object.fromEntries(
+      Object.entries(q).map(([k, v]) => [k, typeof v === 'string' ? v : String(v)])),
     api: {
       status: r ? r.status : null,
       restantes: saldo.restantes,
@@ -1048,12 +1087,23 @@ async function jobCreditos(req) {
       nota_compresion: 'bytes = cuerpo descomprimido; content_length = bytes en el cable. Se cobra sobre el descomprimido (lectura conservadora).',
     },
     divergencia,
-    alerta: divergencia === null
-      ? 'no se pudo leer el saldo real: el contraste queda SIN hacer, que no es lo mismo que “cuadra”'
-      : (Math.abs(divergencia) > DIVERGENCIA_MAXIMA
-        ? `⚠️ el contador local difiere ${(100 * divergencia).toFixed(1)}% del saldo real (umbral ${100 * DIVERGENCIA_MAXIMA}%) — revisar el modelo de costo ANTES de seguir cosechando`
-          + (reconciliar ? '' : '. Para corregir el histórico con rastro: ?job=creditos&reconciliar=1')
-        : `cuadra dentro del ${100 * DIVERGENCIA_MAXIMA}%`),
+    // La alerta dice DOS cosas, siempre las dos: cómo quedó el contraste y qué
+    // pasó con el ajuste. Antes lo segundo sólo aparecía en la rama divergente,
+    // así que una reconciliación exitosa —que deja la divergencia en ~0— no
+    // dejaba rastro en el texto, y una que no corrió tampoco. El estado en el
+    // que se calla es justo el que hay que poder ver.
+    alerta: [
+      divergencia === null
+        ? 'no se pudo leer el saldo real: el contraste queda SIN hacer, que no es lo mismo que “cuadra”'
+        : (Math.abs(divergencia) > DIVERGENCIA_MAXIMA
+          ? `⚠️ el contador local difiere ${(100 * divergencia).toFixed(1)}% del saldo real (umbral ${100 * DIVERGENCIA_MAXIMA}%) — revisar el modelo de costo ANTES de seguir cosechando`
+          : `cuadra dentro del ${100 * DIVERGENCIA_MAXIMA}%`),
+      reconciliar
+        ? (ajuste.ajustado
+          ? `Se pidió reconciliar y SÍ se ajustó: ${ajuste.antes} → ${ajuste.despues}`
+          : `Se pidió reconciliar y NO se ajustó: ${ajuste.motivo}`)
+        : 'NO se pidió reconciliar. Para corregir el histórico con rastro: "?job=creditos&reconciliar=1" (con la URL ENTRE COMILLAS: la shell corta en el &)',
+    ].join('. '),
   };
 }
 
@@ -2142,7 +2192,7 @@ export {
   jobInspect, jobReparseFinancieros, jobProbe, jobEmisoras, jobFinancieros, jobHistoricos,
   jobReparse,
   comparativaMd, contar, describirCrudo, elegibilidadMd, estimarConsumo, filaCenso,
-  jobCreditos, saldoDeCreditos,
+  jobCreditos, saldoDeCreditos, banderaVerdadera,
   filasDelCenso,
   jobElegibilidad, literal,
   pareceClave, pareceSerie, tipoDe,
