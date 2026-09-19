@@ -891,6 +891,73 @@ export function renderCorridasMarkdown(audit) {
   return L.join('\n') + '\n';
 }
 
+// ── CADENCIA: LAS CORRIDAS CONTRA LO QUE EL VIGILANTE REGISTRÓ ───────
+// EL CASO (viernes 2026-09-18): claude corrió ~20 veces con un tope diario de
+// 12 y un enfriamiento por agente de 45 minutos. Dos piezas distintas tenían
+// que haberlo frenado y ninguna lo hizo, y no había forma de saber cuál falló
+// sin entrar a Neon a mano.
+//
+// LAS TRES CIFRAS QUE SEPARAN LAS CAUSAS, y por eso van juntas:
+//   · `corridas`        — lo que de verdad pasó (filas del journal).
+//   · `con_evento`      — cuántas traen `context.event`. El tope diario cuenta
+//                         POR AHÍ, así que si es 0 el tope estaba muerto sin
+//                         importar cuántas corridas hubo.
+//   · `disparos_watch`  — filas de `arena_watch` con fired=true. El
+//                         enfriamiento por agente se calcula CON ESTAS, así que
+//                         si son muchas menos que las corridas, el vigilante no
+//                         registró lo que despertó y el enfriamiento miró un
+//                         historial vacío.
+//
+// Comparar las tres dice cuál de las dos piezas falló, sin hipótesis.
+export function cadenciaPorAgente(filas = [], watchRows = [], { dia = null } = {}) {
+  const porAgente = new Map();
+  const toca = (id) => {
+    const k = String(id || 'desconocido');
+    if (!porAgente.has(k)) porAgente.set(k, { agente: k, corridas: 0, con_evento: 0, disparos_watch: 0, filas_watch: 0 });
+    return porAgente.get(k);
+  };
+
+  for (const f of filas || []) {
+    if (dia && String(f.fecha || '').slice(0, 10) !== dia) continue;
+    const r = toca(f.agente);
+    r.corridas++;
+    const ev = f.context && f.context.event;
+    if (ev && ev.type) r.con_evento++;
+  }
+  for (const w of watchRows || []) {
+    const r = toca(w.agent_id);
+    r.filas_watch++;
+    if (w.fired === true || w.fired === 't' || w.fired === 'true') r.disparos_watch++;
+  }
+
+  const agentes = [...porAgente.values()].sort((a, b) => b.corridas - a.corridas);
+  for (const a of agentes) {
+    a.lectura = a.corridas === 0
+      ? 'sin corridas ese día'
+      : a.con_evento === 0 && a.corridas > 3
+        ? 'NINGUNA corrida trae `context.event`: el tope diario cuenta por ese campo, así que contaba CERO y no frenaba nada.'
+        : a.disparos_watch === 0 && a.corridas > 3
+          ? 'sin filas `fired` en arena_watch: el enfriamiento por agente se calcula con ellas, así que miró un historial vacío.'
+          : a.disparos_watch < a.con_evento
+            ? `hay ${a.con_evento} corridas por evento y solo ${a.disparos_watch} disparos registrados: el vigilante NO registró todo lo que despertó.`
+            : 'las tres cifras se corresponden: si hubo corridas de más, no fue por falta de registro.';
+  }
+  return { dia, agentes, total_corridas: agentes.reduce((n, a) => n + a.corridas, 0) };
+}
+
+export function renderCadenciaMarkdown(cad) {
+  if (!cad || !cad.agentes || !cad.agentes.length) return '';
+  const L = [];
+  L.push(`\n## Cadencia${cad.dia ? ' del ' + cad.dia : ''} — corridas contra registro del vigilante\n`);
+  L.push(mdTabla(
+    ['agente', 'corridas', 'con evento', 'disparos watch', 'filas watch', 'lectura'],
+    cad.agentes.map((a) => [a.agente, String(a.corridas), String(a.con_evento), String(a.disparos_watch), String(a.filas_watch), a.lectura]),
+  ));
+  L.push('');
+  L.push('> `corridas` es lo que pasó. `con evento` es lo que el TOPE DIARIO puede contar (cuenta por `context.event.type`). `disparos watch` es lo que el ENFRIAMIENTO POR AGENTE puede ver (sale de `arena_watch` con fired). Las tres juntas dicen cuál de las dos piezas falló.');
+  return L.join('\n');
+}
+
 export function renderResumenMarkdown(audit) {
   const r = audit.resumen;
   const L = [];
