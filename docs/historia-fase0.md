@@ -522,13 +522,14 @@ vez de tres. Es un descuento directo en el contexto que se paga por corrida.
 
 | Fase B — el lector | horas |
 |---|---|
+| Rebanada G: paquete de evidencia, aritmética resuelta, inventario de citas (§11.3) | 5–7 |
 | Prompt congelado en código + las 7 secciones + "Dónde se rompe la historia" | 8–12 |
 | **Guard de citas**: toda `[accession]` de la salida tiene que existir en el contexto que se mandó; si no, se corta | 5–7 |
 | **Guard anti-opinión**: prohibido precio, calificación y recomendación, con tests que lo intenten | 5–7 |
 | Retiro del AI verdict de SMART $ + i18n + tests (§9) | 3–5 |
-| **Subtotal Fase B** | **21–31** |
+| **Subtotal Fase B** | **26–38** |
 
-**Total: 66–96 horas.** Más, si G5 empuja a extraer guía de prosa: **+10–16**
+**Total: 71–103 horas.** Más, si G5 empuja a extraer guía de prosa: **+10–16**
 por la salida 2 de §3 (y por eso la recomendación es la salida 1).
 
 Las dos líneas que más pueden moverse y hay que vigilar:
@@ -1201,6 +1202,108 @@ de la pregunta: bajo "cuál es el catalizador" puede salir `1× 5.02`, porque
 ese mismo 8-K traía las dos cosas. Es cierto y es confuso, así que va
 etiquetado ("Temas de estos filings:"). Si molesta en datos reales, la salida
 es separar los temas de la pregunta de los del papel, no ocultar los segundos.
+
+---
+
+## 11.3. El paquete de evidencia (rebanada G)
+
+*2026-09-20. Lo que la Fase B le va a pasar al modelo. Sin prompt y sin
+llamada: eso es la H.*
+
+`api/_lib/historia-evidencia.js`. La regla que lo gobierna la aprendió el
+Arena con un bug, y está escrita en `api/_lib/ai-guard.js`: al PM le llegaban
+las noticias con fecha absoluta y "calculá vos qué tan vieja es", y el modelo
+narró unos earnings a DOS DÍAS como "post-market today". **La aritmética no se
+delega al LLM.** Acá eso se traduce en cuatro cosas concretas:
+
+- **El YoY llega resuelto**, y cuando no es comparable llega el **motivo** en
+  vez de un hueco. Un `null` pelado invita a que el modelo haga su propia
+  resta contra el trimestre que tenga a mano — que es exactamente el error.
+  Por eso el campo `yoy_pct` **no existe** cuando no se puede calcular: en su
+  lugar va `yoy_motivo`.
+- **El margen bruto y el neto en porcentaje se calculan acá**, con las citas
+  de los DOS hechos que entraron a la división, y **solo** cuando el periodo
+  coincide exacto (inicio, fin y unidad). Mismo fin y distinto inicio —un
+  trimestre contra un acumulado de nueve meses— se ve parecido y es otro
+  número: no se divide.
+- **La distancia entre dos papeles viene contada, y nombrando contra cuál.**
+  Sin el accession, "45 días desde el anterior" es un número que el modelo no
+  puede citar y el lector no puede verificar.
+- **Una racha de 34 filings de campaña entra como UN episodio** con su
+  conteo, su rango y su desglose, más el primero y el último como anclas
+  citables. Contar es justamente lo que no se delega.
+
+### Por qué no hay nada relativo a hoy
+
+La tentación era mandar "hace 3 días", como hace `relativeDayLabel` en el
+Arena. Acá no, y la razón es la decisión 3 de la Fase B: *la historia cambia
+cuando cambia un filing, no cuando alguien abre la página*. La narración se
+guarda con el hash de su evidencia. Si la evidencia dijera "hace 3 días", el
+hash cambiaría todos los días —y se re-narrarían las cuatro mil empresas por
+abrir la página— o, peor, no cambiaría y la narración cacheada diría "hace 3
+días" cuando ya pasaron cuarenta. Una mentira con cita.
+
+Así que el paquete lleva **fechas absolutas y distancias entre eventos**, que
+son estables. `dateDirective` sí se inyecta en la llamada —para que el modelo
+no ancle al presente de su entrenamiento— pero queda **fuera del hash**, por
+la misma razón; y la narración tiene prohibido el lenguaje relativo a hoy, lo
+cual es trabajo del guard de la rebanada I.
+
+### Lo que entra al prompt es lo que la página muestra
+
+El paquete se arma del **cuerpo de `/api/historia`**, no de la base. Eso hace
+imposible que la narración cite algo que el usuario no pueda encontrar en la
+pantalla. Leer la base por separado habría dejado que las dos vistas se
+separaran sin que nadie se enterara.
+
+### El inventario de lo citable
+
+La pieza sobre la que descansa el guard de citas (rebanada I): la lista
+cerrada de accessions que el modelo puede nombrar. Se construye **recorriendo
+el paquete**, no en paralelo — una segunda lista escrita a mano se separaría
+en el primer cambio, y nadie lo notaría hasta que una cita válida quedara
+rechazada o, peor, una inválida aceptada. Un accession sin metadata (sin URL
+abrible) sale por `huerfanos`: es un defecto del armado, no un dato, y se ve
+antes de que llegue al guard. Una cita que no abre es un identificador bonito.
+
+### El presupuesto, medido
+
+| emisor duro (159 filings en la ventana, pelea de 34, 12 trimestres × 4 familias) | |
+|---|---|
+| primera versión | 58.2 KB (~17.000 tokens) |
+| con el glosario deduplicado y los campos vacíos podados | **41.4 KB (~12.000 tokens)** |
+| techo declarado (`TECHO_BYTES`), con prueba | 80 KB |
+
+Las dos podas no son microoptimización. La glosa del 5.02 —"salida,
+nombramiento o compensación de directivos o consejeros"— son 60 caracteres que
+se repetían en cada 5.02 de la línea: en un emisor con 120 filings, **la mitad
+del peso del paquete eran glosas copiadas**. Va un diccionario arriba, una
+vez, y los eventos llevan solo el código. Lo mismo con los `false` y los `[]`
+repetidos en 120 renglones: su ausencia dice exactamente lo mismo.
+
+El techo está probado: si una rebanada futura lo empuja arriba, la prueba lo
+dice antes de que aparezca en la factura.
+
+### La puerta de inspección
+
+`GET /api/historia?ticker=MELI&evidencia=1` devuelve **exactamente** lo que se
+le va a pasar al modelo —más el hash, el peso medido, el inventario y los
+huérfanos— **sin llamarlo**. Existe para poder mirar el paquete antes de
+gastar, y para medir el presupuesto con datos reales en vez de adivinarlo.
+Sigue siendo lectura: cero escrituras, cero IA.
+
+El armado de esa respuesta vive en `historia-evidencia.js`, no en el endpoint:
+meterle un seam de prueba al handler habría sido una puerta trasera en
+producción para ahorrarse una función.
+
+### La evidencia tampoco opina
+
+El guard anti-opinión de la rebanada I mira la **salida**. Pero si la entrada
+ya trae una calificación, el guard tendría que distinguir lo que el modelo
+inventó de lo que nosotros le dimos, y esa distinción no se puede hacer desde
+el texto. Más barato: que no entre. Hay pruebas de que el paquete no lleva
+vocabulario de recomendación, ningún campo de veredicto o score, y ningún
+precio — lo que el mercado ya cree vive en otro panel (§8, pregunta 6).
 
 ---
 
