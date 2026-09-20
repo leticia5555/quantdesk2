@@ -371,7 +371,7 @@ Con la tabla de meses arreglada, la lógica de reparación (§2.3) toma las dos:
 
 | Emisora | doc_id | En la tabla | La página trae | Acción |
 |---|---|---|---|---|
-| PE&OLES | 1579656 | fecha `null` | `23-Jul-2026 14:11` | **reparar** |
+| PE&OLES | 1579656 | fecha `null` | ~~`23-Jul-2026 14:11`~~ ⚠️ **mal transcrito** | **reparar** |
 | MEGA | 1585294 | fecha `null` | `28-Aug-2026 15:06` | **reparar** |
 | las otras 27 | — | fecha ya guardada | la misma | `nada` |
 | LASITE | — | — | — | saltada entonces por falta de id; **ya tiene el suyo (36025)** |
@@ -380,6 +380,14 @@ Está probado como función pura (`decidirAccion`) con el estado real de la tabl
 así que la confirmación no depende de correr contra Neon: **ambas se reparan, y
 ninguna de las 27 buenas se toca.** La reparación no baja el zip — la fecha sale
 de la página que el run ya pidió.
+
+> ⚠️ **La celda tachada estaba mal, y el error era mío al redactar, no del
+> capturador.** `23-Jul-2026 14:11` es la fecha de **BIMBO** (doc 1576474,
+> `2026-07-23T14:11:00Z`) — coincide **al minuto**. La copié de la fila
+> equivocada. Lo que la página de PE&OLES traía, y lo que la corrida guardó, es
+> `2026-08-04T09:48Z`. Se marca en vez de borrarse porque esta tabla es una
+> predicción escrita antes de correr y su valor está en poder contrastarla;
+> §5.6 cuenta cómo se destapó.
 
 Si alguna **siguiera** sin fecha después de esto, la alerta va a citar el texto
 que no supo leer, y eso ya apunta directo a la tabla `MESES`.
@@ -420,46 +428,59 @@ Lo mismo vale para el rango observado de **23 a 59 días**: sale de ese único
 trimestre, así que es una **cota inferior de la dispersión**, no una
 distribución.
 
-### 5.6 Las dos fechas nulas: reparadas, y una no fue la que predije
+### 5.6 Las dos fechas nulas: reparadas, y un error de transcripción destapado
 
 La reparación de §5.4 **corrió y funcionó**. Las dos filas que habían quedado
 con `fecha_publicacion` nula ya la tienen, y ambas con los **9/9 campos**:
 
 | Emisora | doc_id | Predicho en §5.4 | Guardado en la corrida | Lag vs cierre 2026-06-30 |
 |---|---|---|---|---:|
-| MEGA | 1585294 | `28-Aug-2026 15:06` | `2026-08-28T15:06Z` | 59 días |
-| PE&OLES | 1579656 | `23-Jul-2026 14:11` | **`2026-08-04T09:48Z`** | **35 días** |
+| MEGA | 1585294 | `28-Aug-2026 15:06` | `2026-08-28T15:06Z` | **59 días** |
+| PE&OLES | 1579656 | ~~`23-Jul-2026 14:11`~~ | `2026-08-04T09:48Z` | 35 días |
 
-MEGA cayó exactamente donde decía la predicción. **PE&OLES no**: la página que
-leí al escribir §5.4 mostraba el 23 de julio, y lo que quedó guardado es el 4 de
-agosto — doce días después, mismo `doc_id`.
+MEGA cayó exactamente donde decía la predicción. PE&OLES no, y la diferencia
+—doce días, mismo `doc_id`— se resolvió: **la predicción de §5.4 estaba mal
+transcrita.**
 
-**No sé cuál de las dos es la buena, y no lo voy a adivinar.** Las dos lecturas
-son de la misma página y del mismo documento, así que una de estas tres:
+**`23-Jul-2026 14:11` es la fecha de BIMBO**, doc 1576474, `2026-07-23T14:11:00Z`.
+Coincide **al minuto**: no es una coincidencia de fecha, es la misma celda. Se
+copió de la fila equivocada al redactar el doc. El capturador nunca leyó ese
+valor para PE&OLES y la tabla nunca lo tuvo guardado.
 
-1. la página de PE&OLES cambió su fecha entre las dos lecturas, bajo el mismo
-   `doc_id`. **Es la menos probable de las tres**: una reexpresión llega como
-   `_2` con `doc_id` propio y entra como fila nueva (§6.5), no repisa la fecha
-   de la anterior;
-2. la predicción de §5.4 leyó la fila de otro periodo;
-3. la transcripción de §5.4 estaba mal desde el principio.
-
-**Qué lo resuelve, y es gratis:** la fecha sale de la página que el run ya pide
-—no baja el zip, no gasta créditos— así que la próxima corrida del capturador
-vuelve a leerla. Si sale `2026-08-04`, (1) o (3); si sale `23-Jul`, la tabla
-tiene un valor que la página no respalda y hay que mirar el parseo de la fila.
-Hasta entonces **mando el valor guardado**, que es el que el backtest leería.
+**Y encaja con lo demás.** PE&OLES publicó en **agosto**, que es precisamente lo
+que la hace una de las dos emisoras que destaparon el bug de los meses en inglés
+(§5.1). Si de verdad hubiera publicado el 23 de julio, su fecha **nunca habría
+salido nula** —`Jul` coincide en ambos idiomas— y no habría estado en esa lista.
+El valor mal transcrito contradecía la explicación del bug que el propio doc ya
+tenía escrita dos secciones antes, y nadie lo notó hasta que la corrida guardó
+la fecha buena.
 
 **Lo que esto NO mueve:** el rango observado sigue siendo **23 a 59 días**. El
-piso lo pone WALMEX (23), no PE&OLES, así que los 65 días de espera de
-`bmv-rotation.md` §3.2 cubren lo observado igual que antes. Lo único que cambia
-es el renglón de PE&OLES en esa tabla, de 23 a 35 días — y cambia hacia el
-centro del rango, no hacia el borde.
+piso lo pone WALMEX (23) y el techo MEGA (59), verificado contra la corrida;
+PE&OLES no toca ninguno de los dos extremos. Y como el error fue de copia
+en esta misma tabla, verifiqué los dos extremos contra algo que no sea ella:
 
-**Por qué esto merece un apartado y no una corrección silenciosa:** §5.4 es una
-predicción escrita antes de correr. Sobrescribirla para que coincida con el
-resultado destruiría lo único que la hacía útil —que era falsable— y dejaría sin
-registro que una de las dos falló. La predicción se queda como está.
+- **El techo (MEGA, 59 días)** lo confirmó la corrida: predicho
+  `28-Aug-2026 15:06`, guardado `2026-08-28T15:06Z`.
+- **El piso (WALMEX, 23 días)** lo corrobora un artefacto independiente:
+  `xbrl-fase0.md` §8 fecha su **evento relevante** (`eventemi_1576009_1.pdf`) el
+  **22-jul-2026**, y su XBRL es el id **1576010**, consecutivo. No prueba el día
+  exacto, pero sí que WALMEX publicó ese par de días — y ese dato salió de un
+  PDF, no de copiar un renglón. Los 65 días de espera de
+`bmv-rotation.md` §3.2 cubren lo observado exactamente igual que antes. Lo único
+que cambia es el renglón de PE&OLES en esa tabla, de 23 a 35 días — y cambia
+**hacia el centro** del rango, no hacia el borde.
+
+**Por qué §5.4 se marca en vez de borrarse:** es una predicción escrita antes de
+correr, y su valor está en ser falsable. Sobrescribirla para que coincida con el
+resultado dejaría sin registro que una de las dos filas estaba mal y que el
+error era de redacción. Queda tachada, con la causa anotada.
+
+**La lección, que no es sobre fechas:** el dato mal transcrito era *verosímil* —
+una fecha con el formato correcto, del trimestre correcto, de una emisora real.
+Lo que lo delató no fue revisarlo, fue **chocar contra un dato observado**. Las
+tablas escritas a mano a partir de otra tabla son un punto de copia sin
+verificación, y el doc tenía la contradicción adentro desde el principio.
 
 ## 6. Qué me preocupa
 
@@ -495,6 +516,3 @@ registro que una de las dos falló. La predicción se queda como está.
    consulte la tabla tiene que quedarse con la última por `(clave, anio,
    trimestre)`, no asumir que hay una sola.
 
----
-
-PR listo — no more pushes.
