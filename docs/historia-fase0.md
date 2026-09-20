@@ -667,18 +667,33 @@ ingerido queda bien guardado.
 
 ### Cómo cerrar G7 entera
 
-La ingesta existe desde la rebanada C. Con `DATABASE_URL` y `ADMIN_SECRET`
-configurados, son dos llamadas:
+La ingesta existe desde la rebanada C. Con `DATABASE_URL` y **una** de
+`ADMIN_SECRET`, `CRON_SECRET` o `ARENA_ADMIN_KEY` configuradas, son dos
+llamadas. El endpoint sin `?job=` dice cuáles están puestas —los nombres,
+nunca los valores— así que la primera consulta es gratis:
 
 ```bash
+# 0. ¿Está habilitada la escritura, y con qué llave?
+curl -sS "https://<host>/api/historia-harvest" | jq .escritura
+
 # 1. Sembrar el universo: resuelve tickers a CIK y los deja pendientes.
-curl -H "Authorization: Bearer $ADMIN_SECRET" \
+curl -H "x-admin-key: $ARENA_ADMIN_KEY" \
   "https://<host>/api/historia-harvest?job=sembrar&tickers=LULU,MSFT,MELI,VIST"
 
 # 2. Un turno del goteo. ~42 s por ticker (G4), maxDuration 300.
-curl -H "Authorization: Bearer $ADMIN_SECRET" \
+curl -H "x-admin-key: $ARENA_ADMIN_KEY" \
   "https://<host>/api/historia-harvest?job=goteo&limite=4"
 ```
+
+Sirven las tres llaves por cuatro puertas (`x-admin-key`,
+`Authorization: Bearer`, `?key=`, `?secret=`), por la misma razón que
+`api/arena-audit.js`: en Vercel una env var marcada como Secret no se puede
+volver a leer, y un endpoint con una sola llave termina con una llave
+ilegible para quien la necesita. Varias llaves válidas no debilitan nada;
+una ilegible sí, porque termina pegada en un archivo para no perderla.
+
+**Sin ninguna configurada el endpoint contesta 503, no queda abierto** —
+escribe en Neon y le pega a EDGAR con nuestro User-Agent.
 
 La respuesta del goteo es el veredicto de G7, y se lee contra §11:
 
