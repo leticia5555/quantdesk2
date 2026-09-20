@@ -1,36 +1,52 @@
 // ═══════════════════════════════════════════════════════════════
-// api/_lib/historia-lectura.js — las 7 secciones, como DOCUMENTOS.
+// api/_lib/historia-lectura.js — UNA línea de tiempo, siete filtros.
 //
-// Esta fase no narra. Cada sección devuelve los filings que le corresponden
-// con su fecha, su enlace y su cita; la serie trimestral devuelve los números
-// que salieron de un filing, con el `accession` del que salieron. Nada más.
-// El lector con prompt congelado es la Fase B y acá no existe.
+// Esta fase no narra. Lo que devuelve son los filings con su fecha, su enlace
+// y su cita, y la serie trimestral con el `accession` del que salió cada
+// número. El lector con prompt congelado es la Fase B y acá no existe.
+//
+// ── POR QUÉ UNA LÍNEA Y NO SIETE LISTAS ─────────────────────────────
+// La versión anterior corría siete consultas, una por pregunta, y armaba
+// siete listas. Eso tenía tres problemas, y el tercero no se veía:
+//
+//   1. **El mismo documento salía tres veces.** Un 8-K con 2.02, 5.02 y 1.01
+//      aparecía en la sección 1, en la 3 y en la 7 sin decir que era el mismo
+//      papel. Un documento es UN evento: o se muestra una vez con todos sus
+//      temas, o miente sobre cuántas cosas pasaron.
+//   2. **Siete cubetas no son una historia.** El orden cronológico cuenta más
+//      que el orden por categoría: lo que pasó en marzo de 2022 se entiende
+//      junto a lo de abril, no junto a otro 5.02 de 2019.
+//   3. **Los resúmenes contaban ese documento tres veces.** "12 filings" en
+//      tres secciones sobre un universo de 20 papeles distintos es un número
+//      correcto sobre el conjunto equivocado, que es la peor clase.
+//
+// Ahora hay UNA consulta y UNA lista. Las secciones son filtros: cada una
+// dice qué `accessions` de la línea le tocan, no una copia de los documentos.
+// Que un evento aparezca exactamente una vez deja de ser una convención y
+// pasa a ser una propiedad de la estructura.
+//
+// ── LOS ITEMS NO PESAN LO MISMO ─────────────────────────────────────
+// El 9.01 aparece en casi todos los 8-K y solo dice "adjunté un archivo".
+// Mostrarlo al mismo nivel que un 4.02 es ruido con formato de señal. La
+// jerarquía vive en el glosario (`partirItems`) y acá solo se usa: el item
+// principal manda, los secundarios viajan aparte y la página los apaga.
 //
 // ── LAS TRES MANERAS DE NO TENER ALGO, Y POR QUÉ SE DISTINGUEN ──────
-// Un hueco sin etiqueta es indistinguible de un error, y el usuario que ve un
-// vacío asume lo que le conviene. Por eso hay tres estados y significan cosas
-// distintas:
-//
 //   · `sin_documentos`  — la sección SÍ se cubre, se buscó, y no hay nada.
 //                         Es una afirmación falsable sobre la empresa.
 //   · `no_cubierta`     — el módulo no cubre esa fuente (transcripts, alt
 //                         data). Es una afirmación sobre NOSOTROS, no sobre
 //                         la empresa, y decirla es obligación (§8).
-//   · `fuera_del_modulo`— el dato existe en QuantDesk pero no sale de EDGAR
-//                         (el próximo earnings, el short volume). Se dice de
-//                         dónde sale en vez de fingir que no existe.
+//   · `fuera_del_modulo`— el dato existe en QuantDesk pero no sale de EDGAR.
 //
 // Confundir el primero con el segundo sería lo más fácil y lo más dañino:
 // "no hay 13D" y "no miramos 13D" llevan a decisiones opuestas.
 //
 // ── LA CITA ES EL PRODUCTO ──────────────────────────────────────────
 // Decisión 8 de §10: el identificador se VE — `[0000320193-25-000073]`,
-// enlazado al documento primario. No un "fuente: SEC" genérico. Que el
-// usuario pueda abrir el papel y contar los mismos números es lo que separa
-// esto de un resumen bonito.
-//
-// Un Q4 derivado lleva DOS citas porque salió de una resta entre dos filings
-// (§5). Se muestran las dos; mostrar solo el 10-K sería citar la mitad.
+// enlazado al documento primario. Un Q4 derivado lleva DOS citas porque salió
+// de una resta entre dos filings (§5); mostrar solo el 10-K sería citar la
+// mitad.
 //
 // ── LO QUE ACÁ NO PASA ──────────────────────────────────────────────
 // No se escribe nada. No se dispara ingesta. Un emisor que no está ingerido
@@ -41,7 +57,10 @@
 import { sql as sqlReal } from './db.js';
 import { NUCLEO } from './historia-db.js';
 import { urlIndice } from './edgar.js';
-import { glosarItem, glosarForma, agruparEpisodios, resumirDocumentos, esContienda } from './historia-glosario.js';
+import {
+  glosarItem, glosarForma, agruparEpisodios, resumirDocumentos, esContienda,
+  partirItems, preguntasDe, ITEMS_CONTRAEVIDENCIA,
+} from './historia-glosario.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // El catálogo de declaraciones. Los textos de §8 viven acá UNA vez: el
@@ -88,6 +107,18 @@ export const DECLARACIONES = {
     es: 'No encontramos contraevidencia en los filings.',
     en: 'We found no counter-evidence in the filings.',
   },
+  // La línea de tiempo no es "todo lo que la empresa presentó": es lo que
+  // alimenta las siete preguntas. Decirlo importa porque el vacío se lee como
+  // ausencia. Las Formas 3/4/5 —las compras y ventas de los insiders— son el
+  // caso ruidoso: LULU tiene 196 y taparían la línea entera.
+  linea_perimetro: {
+    es: 'La línea de tiempo muestra los documentos que alimentan las siete preguntas, no todos los filings del emisor. Quedan fuera, entre otros, los 10-K y 10-Q completos y las Formas 3/4/5 de insiders.',
+    en: 'The timeline shows the documents that feed the seven questions, not every filing. Full 10-Ks and 10-Qs and insider Forms 3/4/5 are among those left out.',
+  },
+  linea_truncada: {
+    es: 'La línea de tiempo está recortada: hay más documentos de los que se muestran. El conteo es del total; la lista es una muestra.',
+    en: 'The timeline is truncated: there are more documents than shown. The count is of the total; the list is a sample.',
+  },
 };
 
 export const declarar = (codigo, lang = 'es') => ({
@@ -96,20 +127,32 @@ export const declarar = (codigo, lang = 'es') => ({
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// Qué formas e items alimentan cada sección.
+// Qué formas e items entran a la línea. El mapa item/forma → pregunta vive en
+// el glosario (`preguntasDe`); acá solo se define el perímetro de la consulta.
+// Las dos cosas tienen que cuadrar: un item que entre y no mapee a ninguna
+// pregunta aparecería en la línea sin filtro que lo alcance, y la prueba
+// `todo evento cae en al menos una pregunta` es la que lo caza.
 // ─────────────────────────────────────────────────────────────────────────
-export const ITEMS_DIRECCION = ['5.02'];                 // altas y bajas de directivos
+export const ITEMS_DIRECCION = ['5.02'];                 // altas, bajas y paquetes
 export const ITEMS_RESULTADOS = ['2.02', '7.01'];        // resultados y la guía en prosa
-export const ITEMS_CATALIZADOR = ['1.01', '2.01', '8.01']; // acuerdos, adquisiciones, otros eventos
-export const ITEMS_RUPTURA = ['4.02'];                   // "no confíen en los estados anteriores"
+export const ITEMS_CATALIZADOR = ['1.01', '2.01', '8.01']; // acuerdos, adquisiciones, otros
+export const ITEMS_RUPTURA = ITEMS_CONTRAEVIDENCIA;      // 4.02 — "no confíen en lo anterior"
 export const FORMAS_DIRECCION = ['DEF 14A'];
 export const FORMAS_PROPIEDAD = ['SC 13D', 'SC 13D/A', 'SC 13G', 'SC 13G/A'];
 export const FORMAS_PELEA = ['PREC14A', 'DEFC14A', 'PRRN14A', 'DFAN14A'];
 
-const LIMITE_DOCS = 40;
-// La pelea por el consejo se trae ENTERA, no paginada: un episodio calculado
-// sobre 40 de 34… o sobre 40 de 200 empezaría y terminaría donde no es.
-const LIMITE_CONTIENDA = 500;
+export const ITEMS_INTERES = [...new Set([
+  ...ITEMS_DIRECCION, ...ITEMS_RESULTADOS, ...ITEMS_CATALIZADOR, ...ITEMS_RUPTURA,
+])];
+export const FORMAS_INTERES = [...new Set([
+  ...FORMAS_DIRECCION, ...FORMAS_PROPIEDAD, ...FORMAS_PELEA,
+])];
+
+// Tope de seguridad, no paginación. La pelea por el consejo se trae ENTERA
+// —un episodio calculado sobre 40 de 200 empezaría y terminaría donde no es—
+// y los conteos por sección solo son exactos si la línea vino completa. Si
+// alguna vez se pasa, el total verdadero viaja igual y se declara `truncado`.
+export const LIMITE_EVENTOS = 1500;
 
 // `[0000320193-25-000073]` — el identificador visible de la decisión 8.
 export const cita = (accession) => (accession ? `[${accession}]` : null);
@@ -126,38 +169,6 @@ function enLista(valores, desde) {
 }
 
 export function crearLectura({ sql = sqlReal, lang = 'es' } = {}) {
-  const doc = (r) => {
-    const items = r.items_raw ? String(r.items_raw).split(',').map((s) => s.trim()).filter(Boolean) : [];
-    return {
-      accession: r.accession,
-      form: r.form,
-      // El código se queda Y se traduce. `oficial` es la cita textual de la
-      // SEC; `glosa` es nuestra y va marcada como tal en el glosario.
-      forma_glosa: glosarForma(r.form, lang),
-      items,
-      items_glosa: items.map((i) => glosarItem(i, lang)),
-      contienda: esContienda(r.form),
-      filed: r.filed,
-      report_date: r.report_date ?? null,
-      url: r.url,
-      index_url: r.index_url,
-      cita: cita(r.accession),
-    };
-  };
-
-  // El total y el rango salen de TODOS los que matchearon, no de la página
-  // que se alcanza a mostrar. Las funciones de ventana se evalúan antes del
-  // LIMIT, así que esto no cuesta una consulta extra.
-  const AGREGADOS = `count(*) over () as total_general,
-                     min(filed) over () as primero,
-                     max(filed) over () as ultimo`;
-  const conAgregados = (filas) => ({
-    documentos: filas.map(doc),
-    total: filas.length ? Number(filas[0].total_general) : 0,
-    desde: filas.length ? filas[0].primero : null,
-    hasta: filas.length ? filas[0].ultimo : null,
-  });
-
   return {
     async emisorPorTicker(ticker) {
       const filas = await sql(
@@ -168,33 +179,31 @@ export function crearLectura({ sql = sqlReal, lang = 'es' } = {}) {
       return filas[0] || null;
     },
 
-    async porItems(cik, items, limite = LIMITE_DOCS) {
-      if (!items.length) return { documentos: [], total: 0, desde: null, hasta: null };
+    // UNA consulta para toda la línea. El `exists` sobre company_filing_items
+    // —en vez del join con distinct de antes— es lo que garantiza un renglón
+    // por filing aunque el filing tenga tres items de interés: el duplicado se
+    // evita en la consulta, no a mano después.
+    async eventos(cik, { limite = LIMITE_EVENTOS } = {}) {
+      const params = [cik, ...FORMAS_INTERES, ...ITEMS_INTERES];
+      const pForm = enLista(FORMAS_INTERES, 2);
+      const pItem = enLista(ITEMS_INTERES, 2 + FORMAS_INTERES.length);
       const filas = await sql(
-        `select distinct f.accession, f.form, f.items_raw, f.filed, f.report_date, f.url, f.index_url,
-                ${AGREGADOS}
+        `select f.accession, f.form, f.items_raw, f.filed, f.report_date, f.url, f.index_url,
+                count(*) over () as total_general
            from company_filings f
-           join company_filing_items i on i.cik = f.cik and i.accession = f.accession
-          where f.cik = $1 and i.item in (${enLista(items, 2)})
-          order by f.filed desc
+          where f.cik = $1
+            and (f.form in (${pForm})
+                 or exists (select 1 from company_filing_items i
+                             where i.cik = f.cik and i.accession = f.accession
+                               and i.item in (${pItem})))
+          order by f.filed desc, f.accession desc
           limit ${Number(limite)}`,
-        [cik, ...items],
+        params,
       );
-      return conAgregados(filas);
-    },
-
-    async porFormas(cik, formas, limite = LIMITE_DOCS) {
-      if (!formas.length) return { documentos: [], total: 0, desde: null, hasta: null };
-      const filas = await sql(
-        `select accession, form, items_raw, filed, report_date, url, index_url,
-                ${AGREGADOS}
-           from company_filings
-          where cik = $1 and form in (${enLista(formas, 2)})
-          order by filed desc
-          limit ${Number(limite)}`,
-        [cik, ...formas],
-      );
-      return conAgregados(filas);
+      return {
+        filas,
+        total: filas.length ? Number(filas[0].total_general) : 0,
+      };
     },
 
     // La serie sale de la VISTA, no de la tabla: la vista ya eligió qué tag
@@ -232,40 +241,62 @@ export function crearLectura({ sql = sqlReal, lang = 'es' } = {}) {
         url_aux: r.accession_aux ? (r.url_aux || urlIndice(cik, r.accession_aux)) : null,
       }));
     },
+
+    lang,
   };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// El armado de las secciones. Puro: recibe datos, devuelve la respuesta.
+// De renglón a evento. Un evento es UN documento con TODOS sus temas.
+// ─────────────────────────────────────────────────────────────────────────
+export function armarEvento(r, lang = 'es') {
+  const items = r.items_raw
+    ? String(r.items_raw).split(',').map((s) => s.trim()).filter(Boolean)
+    : (r.items || []);
+  const { principal, destacados, secundarios } = partirItems(items);
+  const preguntas = preguntasDe({ form: r.form, items });
+
+  return {
+    accession: r.accession,
+    form: r.form,
+    // El código se queda Y se traduce. `oficial` es la cita textual de la
+    // SEC; `glosa` es nuestra y va marcada como tal en el glosario.
+    forma_glosa: glosarForma(r.form, lang),
+    items,
+    items_glosa: items.map((i) => glosarItem(i, lang)),
+    // El 9.01 no es el evento: es el adjunto del evento. Separarlos acá es lo
+    // que le permite a la página mandarlo al final en gris sin esconderlo.
+    // Los destacados pueden ser varios —un 8-K con 5.02 y 1.01 anunció dos
+    // cosas— y se muestran todos: quedarse con uno sería elegir por el lector.
+    item_principal: principal,
+    items_destacados: destacados,
+    items_destacados_glosa: destacados.map((i) => glosarItem(i, lang)),
+    items_secundarios: secundarios,
+    items_secundarios_glosa: secundarios.map((i) => glosarItem(i, lang)),
+    // Bajo qué preguntas se puede ver este mismo evento. Es la lista de
+    // filtros que lo alcanzan, no una copia por cada uno.
+    preguntas,
+    contraevidencia: items.some((i) => ITEMS_CONTRAEVIDENCIA.includes(i)),
+    contienda: esContienda(r.form),
+    filed: r.filed,
+    report_date: r.report_date ?? null,
+    url: r.url,
+    index_url: r.index_url,
+    cita: cita(r.accession),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// El armado. Puro: recibe datos, devuelve la respuesta.
 // ─────────────────────────────────────────────────────────────────────────
 
-// Un grupo de documentos puede llegar como arreglo (los tests, y cualquier
-// llamador viejo) o como {documentos, total, desde, hasta} desde la consulta.
-// Normalizar acá evita que el total verdadero se pierda por el camino.
-const norm = (x) => (Array.isArray(x)
-  ? { documentos: x, total: x.length, desde: null, hasta: null }
-  : { documentos: [], total: 0, desde: null, hasta: null, ...(x || {}) });
-
-const unir = (...grupos) => {
-  const documentos = grupos.flatMap((g) => g.documentos);
-  documentos.sort((a, b) => String(b.filed).localeCompare(String(a.filed)));
-  const fechas = grupos.flatMap((g) => [g.desde, g.hasta]).filter(Boolean).sort();
-  return {
-    documentos,
-    total: grupos.reduce((a, g) => a + g.total, 0),
-    desde: fechas[0] || null,
-    hasta: fechas[fechas.length - 1] || null,
-  };
-};
-
 const seccion = (id, pregunta, datos, lang) => {
-  const grupo = norm(datos.grupo || datos.documentos);
-  const docs = grupo.documentos;
+  const eventos = datos.eventos || [];
   const serie = datos.serie || [];
   const decls = (datos.declaraciones || []).map((c) => declarar(c, lang));
 
   let estado = datos.estado;
-  if (!estado) estado = (docs.length || serie.length) ? 'con_documentos' : 'sin_documentos';
+  if (!estado) estado = (eventos.length || serie.length) ? 'con_documentos' : 'sin_documentos';
 
   return {
     id,
@@ -274,38 +305,42 @@ const seccion = (id, pregunta, datos, lang) => {
     // Contar lo que ya está es aritmética sobre los documentos, de la misma
     // clase que derivar un Q4. No dice qué significan: dice cuántos hay y
     // entre qué fechas.
-    resumen: resumirDocumentos(docs, { total: grupo.total, desde: grupo.desde, hasta: grupo.hasta }),
-    documentos: docs,
+    resumen: resumirDocumentos(eventos, { truncado: !!datos.truncado }),
+    // La sección es un FILTRO, no una cubeta: apunta a los eventos de la
+    // línea en vez de copiarlos. Por eso un 8-K con tres temas se cuenta una
+    // vez en la línea y aparece bajo las tres preguntas sin multiplicarse.
+    accessions: eventos.map((e) => e.accession),
     ...(datos.serie ? { serie } : {}),
     ...(datos.episodios ? { episodios: datos.episodios } : {}),
     declaraciones: decls,
   };
 };
 
-export function armarSecciones({ emisor, direccion = [], proxies = [], propiedad = [], pelea = [],
-  resultados = [], serie = [], catalizador = [], ruptura = [] }, { lang = 'es' } = {}) {
+export function armarSecciones({ emisor, eventos = [], serie = [], truncado = false }, { lang = 'es' } = {}) {
   const parcial = emisor.cobertura === 'parcial';
 
   // La serie re-expresada es contraevidencia de primera: la empresa se
   // corrigió a sí misma, con fecha y documento.
   const revisados = serie.filter((s) => s.revisado);
 
-  const gDireccion = unir(norm(direccion), norm(proxies));
-  const gPropiedad = unir(norm(propiedad), norm(pelea));
+  const de = (q) => eventos.filter((e) => e.preguntas.includes(q));
+  const ruptura = eventos.filter((e) => e.contraevidencia);
 
   const secciones = [
-    seccion('direccion', 1, { grupo: gDireccion }, lang),
+    seccion('direccion', 1, { eventos: de(1), truncado }, lang),
 
     seccion('propiedad', 2, {
-      grupo: gPropiedad,
+      eventos: de(2),
+      truncado,
       // La pelea por el consejo se pierde en una lista plana: hay que contar
       // 34 filings a mano para darse cuenta de que pasó algo. Agruparlos por
       // rachas contiguas los vuelve visibles sin afirmar quién ganó.
-      episodios: agruparEpisodios(gPropiedad.documentos),
+      episodios: agruparEpisodios(de(2)),
     }, lang),
 
     seccion('prometido_vs_entregado', 3, {
-      grupo: norm(resultados),
+      eventos: de(3),
+      truncado,
       serie,
       // G5 midió 0/4 emisores con guía etiquetada: no se guarda ni se muestra
       // un número de guía. Se enlaza el 8-K y el usuario lee el documento.
@@ -328,7 +363,8 @@ export function armarSecciones({ emisor, direccion = [], proxies = [], propiedad
     }, lang),
 
     seccion('catalizador', 7, {
-      grupo: norm(catalizador),
+      eventos: de(7),
+      truncado,
       declaraciones: ['earnings_no_edgar'],
     }, lang),
   ];
@@ -340,7 +376,7 @@ export function armarSecciones({ emisor, direccion = [], proxies = [], propiedad
   const contraevidencia = {
     id: 'donde_se_rompe',
     estado: hayRuptura ? 'con_documentos' : 'sin_contraevidencia',
-    documentos: norm(ruptura).documentos,
+    accessions: ruptura.map((e) => e.accession),
     periodos_reexpresados: revisados.map((r) => ({
       familia: r.familia, period_end: r.period_end, cita: r.cita, url: r.url, filed: r.filed,
     })),
@@ -377,22 +413,21 @@ export async function armarHistoria(L, ticker, { lang = 'es' } = {}) {
   }
 
   const { cik } = emisor;
-  // Lecturas independientes: secuenciarlas solo sumaría latencia.
-  const [direccion, proxies, propiedad, pelea, resultados, catalizador, ruptura, serie] = await Promise.all([
-    L.porItems(cik, ITEMS_DIRECCION),
-    L.porFormas(cik, FORMAS_DIRECCION),
-    L.porFormas(cik, FORMAS_PROPIEDAD),
-    L.porFormas(cik, FORMAS_PELEA, LIMITE_CONTIENDA),
-    L.porItems(cik, ITEMS_RESULTADOS),
-    L.porItems(cik, ITEMS_CATALIZADOR),
-    L.porItems(cik, ITEMS_RUPTURA),
+  // Dos lecturas, no ocho. Independientes: secuenciarlas solo sumaría latencia.
+  const [crudo, serie] = await Promise.all([
+    L.eventos(cik),
     L.serie(cik, NUCLEO),
   ]);
 
+  const eventos = crudo.filas.map((r) => armarEvento(r, lang));
+  const truncado = crudo.total > eventos.length;
+
   const { secciones, contraevidencia } = armarSecciones(
-    { emisor, direccion, proxies, propiedad, pelea, resultados, serie, catalizador, ruptura },
+    { emisor, eventos, serie, truncado },
     { lang },
   );
+
+  const fechas = eventos.map((e) => e.filed).filter(Boolean).sort();
 
   return {
     status: 200,
@@ -407,6 +442,21 @@ export async function armarHistoria(L, ticker, { lang = 'es' } = {}) {
         ultima_ingesta: emisor.ultima_ingesta,
       },
       formato_cita: '[0000320193-25-000073] — el identificador se ve y enlaza al documento primario',
+      // La línea es la respuesta; las secciones son vistas de la línea. Los
+      // eventos viven acá UNA vez y las siete preguntas los referencian por
+      // accession.
+      linea_de_tiempo: {
+        eventos,
+        total: crudo.total,
+        mostrados: eventos.length,
+        truncado,
+        desde: fechas[0] || null,
+        hasta: fechas[fechas.length - 1] || null,
+        declaraciones: [
+          declarar('linea_perimetro', lang),
+          ...(truncado ? [declarar('linea_truncada', lang)] : []),
+        ],
+      },
       secciones,
       contraevidencia,
       no_cubierto: declaracionesGlobales(emisor, lang),

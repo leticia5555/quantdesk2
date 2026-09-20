@@ -58,7 +58,10 @@ input.tick:focus{border-color:var(--purple);}
 .emisor{font-family:var(--mono);font-size:11px;color:var(--text2);margin:14px 0 2px;line-height:1.7;}
 .emisor .cik{color:var(--text3);}
 
-/* SECCIONES */
+/* LOS PANELES DE LAS PREGUNTAS — contexto, no una segunda lista.
+   Los documentos viven UNA vez, en la línea. Acá va lo que la pregunta
+   agrega: cuántos hay, qué no cubrimos, y —en la 3 y la 2— la serie y los
+   episodios, que no son documentos sueltos. */
 .sec{border-top:1px solid var(--border);padding:20px 0 6px;}
 .sec-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px;}
 .sec-num{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--purple);letter-spacing:.08em;}
@@ -95,19 +98,56 @@ input.tick:focus{border-color:var(--purple);}
 .episodio .formas{font-family:var(--mono);font-size:10.5px;color:var(--text2);margin-top:5px;letter-spacing:.03em;}
 .episodio .umbral{font-size:11px;color:var(--text3);line-height:1.5;margin-top:7px;}
 
-/* DOCUMENTOS */
-.doc{padding:9px 0;border-bottom:1px solid var(--border);}
-.doc:last-child{border-bottom:none;}
-.doc .l1{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
-.doc .f{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--text);min-width:66px;}
-.doc .d{font-family:var(--mono);font-size:11px;color:var(--text2);min-width:84px;}
-.doc .cod{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.04em;}
-.doc .cita{font-family:var(--mono);font-size:10px;color:var(--text3);text-decoration:none;border-bottom:1px dotted var(--text3);margin-left:auto;}
-.doc .cita:hover{color:var(--green);border-bottom-color:var(--green);}
+/* LOS SIETE FILTROS — no siete cubetas. La misma línea, mirada de siete
+   maneras. Una pregunta sin documentos sigue siendo clickeable: ahí es
+   donde vive la explicación de por qué no los hay. */
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:16px 0 2px;}
+.chip{font-family:var(--mono);font-size:10px;letter-spacing:.04em;color:var(--text2);
+  background:var(--bg1);border:1px solid var(--border2);border-radius:16px;padding:6px 11px;
+  cursor:pointer;-webkit-user-select:none;user-select:none;line-height:1.3;}
+.chip:hover{border-color:var(--text3);color:var(--text);}
+.chip.on{color:#000;background:var(--purple);border-color:var(--purple);font-weight:700;}
+.chip .n{color:var(--text3);margin-left:5px;}
+.chip.on .n{color:rgba(0,0,0,.6);}
+.chip.nada{color:var(--text3);}
+.chip.nada.on{color:#000;}
+.chips-nota{font-size:11.5px;color:var(--text3);line-height:1.5;margin:7px 0 0;}
+
+/* LA LÍNEA DE TIEMPO — un documento, un renglón, una vez.
+   El orden cronológico cuenta más que el orden por categoría: lo de marzo
+   se entiende junto a lo de abril, no junto a otro 5.02 de hace siete años. */
+.linea{margin-top:14px;border-top:1px solid var(--border);}
+.linea-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:14px 0 2px;}
+.linea-head h2{font-family:var(--mono);font-size:14px;font-weight:700;}
+.linea-head .cuantos{font-family:var(--mono);font-size:11px;color:var(--text2);}
+.anio{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--text3);
+  padding:14px 0 5px;border-bottom:1px solid var(--border);}
+.ev{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);}
+.ev-d{font-family:var(--mono);font-size:11px;color:var(--text2);min-width:80px;flex:none;padding-top:1px;}
+.ev-b{flex:1;min-width:0;}
+.ev .l1{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;}
+.ev .f{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--text);}
+.ev .cod{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.04em;}
+.ev .cita{font-family:var(--mono);font-size:10px;color:var(--text3);text-decoration:none;
+  border-bottom:1px dotted var(--text3);margin-left:auto;}
+.ev .cita:hover{color:var(--green);border-bottom-color:var(--green);}
 /* La traducción del código: lo que hace legible la fila. */
-.doc .glosa{font-size:12.5px;color:var(--text2);line-height:1.45;margin-top:3px;}
-.doc .glosa .sin{color:var(--text3);font-style:italic;}
-.mas{font-family:var(--mono);font-size:10px;color:var(--text3);padding-top:8px;}
+.ev .glosa{font-size:12.5px;color:var(--text);line-height:1.45;margin-top:3px;}
+.ev .glosa .sin{color:var(--text3);font-style:italic;}
+/* El sobre, no el evento. El 9.01 sale en 30 de 30 filings y solo dice
+   "adjunté un archivo": va al final y en gris, pero NO se borra. */
+.ev .sobre{font-size:11px;color:var(--text3);line-height:1.45;margin-top:3px;}
+.ev.rota{border-left:2px solid var(--red);padding-left:10px;margin-left:-12px;}
+.ev.rota .f{color:#ffb0b0;}
+/* Bajo qué preguntas se ve este MISMO papel. Son etiquetas, no copias. */
+.qs{display:flex;gap:4px;flex-wrap:wrap;margin-top:5px;}
+.qs span{font-family:var(--mono);font-size:9px;line-height:1;padding:3px 5px;border-radius:9px;
+  border:1px solid var(--border2);color:var(--text3);cursor:pointer;}
+.qs span:hover{color:var(--purple);border-color:var(--purple);}
+.qs span.on{color:#000;background:var(--purple);border-color:var(--purple);}
+.mas{font-family:var(--mono);font-size:10px;color:var(--text2);padding:12px 0;cursor:pointer;
+  background:var(--bg1);border:1px solid var(--border2);border-radius:8px;margin-top:10px;text-align:center;}
+.mas:hover{border-color:var(--purple);color:var(--text);}
 
 /* SERIE */
 .serie{margin-top:12px;}
@@ -130,6 +170,7 @@ input.tick:focus{border-color:var(--purple);}
 .rompe{border:1px solid rgba(255,69,69,.26);background:rgba(255,69,69,.04);border-radius:10px;padding:14px;margin-top:26px;}
 .rompe h2{font-family:var(--mono);font-size:13px;font-weight:700;color:#ffb0b0;margin-bottom:8px;}
 .rompe .por{font-size:12px;color:var(--text2);line-height:1.55;margin-bottom:10px;}
+.rompe .por.repetido{font-size:11.5px;color:var(--text3);font-style:italic;margin-bottom:6px;}
 .rompe.limpio{border-color:var(--border2);background:var(--bg1);}
 .rompe.limpio h2{color:var(--text);}
 
@@ -164,7 +205,19 @@ footer{margin-top:32px;padding-top:16px;border-top:1px solid var(--border);
 
 <script>
 // ═══════════════════════════════════════════════════════════════
-// HISTORIA — la página. Siete secciones, cada una con sus documentos.
+// HISTORIA — la página. UNA línea de tiempo, siete filtros.
+//
+// La versión anterior dibujaba siete listas, y el 8-K del 2022-03-29 salía
+// en la 1, en la 3 y en la 7 sin decir que era el mismo papel. Siete listas
+// tampoco son una historia: el orden cronológico cuenta más que el orden por
+// categoría, porque lo que pasó en marzo se entiende junto a lo de abril y
+// no junto a otro 5.02 de hace siete años.
+//
+// Ahora hay una sola línea. Cada documento sale UNA vez con todos sus temas
+// y lleva las etiquetas de las preguntas que contesta; las siete preguntas
+// son chips que filtran esa línea, y sus paneles traen lo que la pregunta
+// agrega —el conteo, lo que no cubrimos, la serie, los episodios— en vez de
+// una segunda copia de los documentos.
 //
 // NO NARRA. No hay IA acá: los documentos se listan, la serie se tabula, y
 // nada se interpreta. El lector con prompt congelado es la Fase B.
@@ -181,6 +234,9 @@ footer{margin-top:32px;padding-top:16px;border-top:1px solid var(--border);
 //  3. Un YoY nulo NO se dibuja como 0%. Cuando falta el trimestre de
 //     comparación el endpoint manda null, y acá se muestra "—" con su
 //     motivo. Un cero inventado en una serie de ingresos no se ve nunca.
+//  4. El 9.01 se apaga, no se borra. Aparece en casi todos los 8-K y solo
+//     dice "adjunté un archivo": va al final y en gris. Esconderlo sería
+//     decidir por el lector qué hay en el papel.
 //
 // El perímetro de lo NO cubierto va ARRIBA, no en el pie: §8 del memo pide
 // que se diga donde el usuario está por sacar una conclusión.
@@ -191,6 +247,19 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
 
 let LANG = (localStorage.getItem('historia:lang') === 'en') ? 'en' : 'es';
 
+// El estado de la vista. `FILTRO` null = la línea entera.
+const TOPE_INICIAL = 120;
+let DATOS = null;
+let FILTRO = null;
+let TOPE = TOPE_INICIAL;
+
+// Las siete preguntas van en el orden del esqueleto y ese orden es el
+// contrato: la pregunta N es la sección N-ésima.
+const ID_DE_PREGUNTA = {
+  1: 'direccion', 2: 'propiedad', 3: 'prometido_vs_entregado', 4: 'gerencia',
+  5: 'competencia', 6: 'mercado', 7: 'catalizador',
+};
+
 const T = {
   es: {
     sub: 'Siete preguntas sobre una empresa, contestadas SOLO con documentos de la SEC. Cada dato trae el filing del que salió. Esta página no narra ni recomienda.',
@@ -199,15 +268,25 @@ const T = {
     perimetro: 'Lo que este módulo NO cubre',
     emisor: 'CIK', ingesta: 'Última ingesta',
     cobertura_parcial: 'Cobertura parcial',
+    ya_en_linea: 'Estos documentos ya están en la línea de arriba. Se repiten acá porque la contraevidencia va al final y no se busca: es el mismo papel, no uno nuevo.',
     sin_docs: 'Sin documentos.',
     sin_docs_q: 'Se buscó en el índice de filings de este emisor y no hay ninguno de este tipo en la ventana. No es que no lo hayamos mirado.',
     badge_ok: 'con documentos', badge_vacio: 'sin documentos',
     badge_nocubre: 'no cubierta', badge_fuera: 'fuera del módulo',
-    mas: (n) => `+${n} documento(s) más en EDGAR`,
+    mas: (n) => `Mostrar ${n} documento(s) más`,
     filings: (n) => (n === 1 ? '1 filing' : `${n} filings`),
     entre: 'entre',
     y: 'y',
     mostrando: (n, t) => `mostrando ${n} de ${t}`,
+    linea: 'La línea de tiempo',
+    todo: 'Todo',
+    filtro_nota: 'Un documento es UN evento: sale una vez con todos sus temas. Las siete preguntas filtran esta misma línea — no son siete listas distintas.',
+    bajo_q: 'También se ve bajo:',
+    sobre: 'Además adjunta:',
+    temas_de: 'Temas de estos filings:',
+    vacio_filtro: 'Ningún documento de este emisor contesta esta pregunta.',
+    vacio_nocubre: 'Esta pregunta no se contesta con documentos de EDGAR, así que la línea no tiene nada que mostrar. El motivo está arriba — y no es que hayamos buscado y no hubiera.',
+    contesta_q: (n) => `Pregunta ${n}`,
     episodio: 'Solicitación de poderes impugnada',
     episodio_dias: (d) => `${d} días`,
     episodio_umbral: (d) => `Agrupados como un episodio porque entre un filing y el siguiente nunca pasan más de ${d} días. El umbral es NUESTRO, no de la SEC: solo dice que estos documentos son contiguos, no quién ganó ni si sigue abierta.`,
@@ -234,15 +313,25 @@ const T = {
     perimetro: 'What this module does NOT cover',
     emisor: 'CIK', ingesta: 'Last ingest',
     cobertura_parcial: 'Partial coverage',
+    ya_en_linea: 'These documents are already in the timeline above. They repeat here because counter-evidence goes at the end and is not something you go looking for: same paper, not a new one.',
     sin_docs: 'No documents.',
     sin_docs_q: 'We searched this issuer’s filing index and there are none of this type in the window. It is not that we did not look.',
     badge_ok: 'with documents', badge_vacio: 'no documents',
     badge_nocubre: 'not covered', badge_fuera: 'outside this module',
-    mas: (n) => `+${n} more document(s) on EDGAR`,
+    mas: (n) => `Show ${n} more document(s)`,
     filings: (n) => (n === 1 ? '1 filing' : `${n} filings`),
     entre: 'between',
     y: 'and',
     mostrando: (n, t) => `showing ${n} of ${t}`,
+    linea: 'The timeline',
+    todo: 'All',
+    filtro_nota: 'A document is ONE event: it appears once with all its topics. The seven questions filter this same timeline — they are not seven separate lists.',
+    bajo_q: 'Also shown under:',
+    sobre: 'Also attaches:',
+    temas_de: 'Topics in these filings:',
+    vacio_filtro: 'No document from this issuer answers this question.',
+    vacio_nocubre: 'This question is not answered with EDGAR documents, so the timeline has nothing to show. The reason is above — and it is not that we looked and found nothing.',
+    contesta_q: (n) => `Question ${n}`,
     episodio: 'Contested proxy solicitation',
     episodio_dias: (d) => `${d} days`,
     episodio_umbral: (d) => `Grouped as one episode because no two consecutive filings are more than ${d} days apart. The threshold is OURS, not the SEC's: it only says these documents are contiguous — not who won, nor whether it is still open.`,
@@ -282,6 +371,19 @@ const TITULOS = {
     competencia: 'Who is eating their market',
     mercado: 'What the market already believes',
     catalizador: 'What the catalyst is',
+  },
+};
+
+// Las etiquetas de los chips. Cortas porque van en una fila de siete; el
+// título completo sigue estando en el panel de la pregunta.
+const CORTOS = {
+  es: {
+    direccion: 'Quién dirige', propiedad: 'Quién posee', prometido_vs_entregado: 'Prometido vs. entregado',
+    gerencia: 'Qué dice la gerencia', competencia: 'Competencia', mercado: 'El mercado', catalizador: 'Catalizador',
+  },
+  en: {
+    direccion: 'Who runs it', propiedad: 'Who owns it', prometido_vs_entregado: 'Promised vs. delivered',
+    gerencia: 'Management', competencia: 'Competition', mercado: 'The market', catalizador: 'Catalyst',
   },
 };
 
@@ -329,38 +431,61 @@ function mesAnio(iso) {
 // una cita textual— y el texto visible lleva nuestra glosa. Un código que no
 // está en el diccionario se muestra crudo y se dice que no lo tenemos: un
 // diccionario que adivina deja de ser un diccionario.
-function glosasDe(d) {
+function glosas(lista) {
   const t = T[LANG];
-  const gs = (d.items_glosa && d.items_glosa.length) ? d.items_glosa : [d.forma_glosa].filter(Boolean);
+  const gs = (lista || []).filter(Boolean);
   if (!gs.length) return '';
   return gs.map((g) => (g.glosa
     ? `<span title="${esc(g.oficial || '')}">${esc(g.glosa)}</span>`
     : `<span class="sin" title="${esc(t.sin_glosa)}">${esc(g.codigo)} — ${esc(t.sin_glosa)}</span>`)).join(' · ');
 }
 
-const docHTML = (d) => `<div class="doc">
-  <div class="l1">
-    <span class="f" title="${esc((d.forma_glosa && d.forma_glosa.oficial) || '')}">${esc(d.form)}</span>
-    <span class="d">${esc(d.filed)}</span>
-    ${(d.items || []).length ? `<span class="cod">${esc(d.items.join(' · '))}</span>` : ''}
-    <a class="cita" href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.cita)}</a>
-  </div>
-  <div class="glosa">${glosasDe(d)}</div>
-</div>`;
+// Un renglón de la línea = un documento, con todos sus temas y ninguna copia.
+//
+// El 9.01 —y el 7.01 cuando acompaña a otro item— bajan a la línea gris de
+// "además adjunta". Se apagan, no se borran: esconderlos sería decidir por el
+// lector qué hay en el papel, y ya pasó una vez que un 7.01 SOLO fuera el
+// único contenido del filing.
+function evHTML(e, filtro) {
+  const t = T[LANG];
+  const destacadas = (e.items_destacados_glosa && e.items_destacados_glosa.length)
+    ? e.items_destacados_glosa : [e.forma_glosa].filter(Boolean);
+  const cods = (e.items_destacados && e.items_destacados.length) ? e.items_destacados : [];
+  return `<div class="ev${e.contraevidencia ? ' rota' : ''}">
+    <div class="ev-d">${esc(e.filed)}</div>
+    <div class="ev-b">
+      <div class="l1">
+        <span class="f" title="${esc((e.forma_glosa && e.forma_glosa.oficial) || '')}">${esc(e.form)}</span>
+        ${cods.length ? `<span class="cod">${esc(cods.join(' · '))}</span>` : ''}
+        <a class="cita" href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.cita)}</a>
+      </div>
+      <div class="glosa">${glosas(destacadas)}</div>
+      ${(e.items_secundarios || []).length
+        ? `<div class="sobre">${esc(t.sobre)} ${glosas(e.items_secundarios_glosa)} <span>(${esc(e.items_secundarios.join(' · '))})</span></div>`
+        : ''}
+      ${(e.preguntas || []).length ? `<div class="qs">${e.preguntas.map((q) =>
+        `<span class="${q === filtro ? 'on' : ''}" data-q="${q}" title="${esc(t.contesta_q(q))}">${q} · ${esc(CORTOS[LANG][ID_DE_PREGUNTA[q]] || q)}</span>`).join('')}</div>` : ''}
+    </div>
+  </div>`;
+}
 
 // "14 filings entre dic 2021 y sep 2026" — aritmética sobre los documentos,
 // de la misma clase que derivar un Q4. No dice qué significan.
 function resumenHTML(r) {
   const t = T[LANG];
   if (!r || !r.total) return '';
-  const desglose = Object.entries(r.por_item || {}).length
-    ? Object.entries(r.por_item).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v}× ${k}`).join(' · ')
-    : Object.entries(r.por_forma || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v}× ${k}`).join(' · ');
+  const cuenta = (o) => Object.entries(o || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v}× ${k}`).join(' · ');
+  // El desglose cuenta TEMAS, no adjuntos. Contar el 9.01 acá daría
+  // "9.01: 30" como el tema más frecuente de la empresa: verdad sobre los
+  // sobres y mentira sobre lo que pasó. Los adjuntos van en su propia línea.
+  const desglose = Object.keys(r.por_item || {}).length ? cuenta(r.por_item) : cuenta(r.por_forma);
+  const sobres = cuenta(r.por_item_secundario);
   return `<div class="resumen">
     <b>${esc(t.filings(r.total))}</b>
     <span class="rango">${esc(t.entre)} ${esc(mesAnio(r.desde))} ${esc(t.y)} ${esc(mesAnio(r.hasta))}</span>
     ${r.truncado ? `<span class="rango">· ${esc(t.mostrando(r.mostrados, r.total))}</span>` : ''}
-    ${desglose ? `<div class="desglose">${esc(desglose)}</div>` : ''}
+    ${desglose ? `<div class="desglose">${esc(t.temas_de)} ${esc(desglose)}</div>` : ''}
+    ${sobres ? `<div class="desglose">${esc(t.sobre)} ${esc(sobres)}</div>` : ''}
   </div>`;
 }
 
@@ -404,7 +529,12 @@ function serieHTML(serie) {
   }).join('') + '</div>';
 }
 
-function seccionHTML(s, i) {
+// El panel de una pregunta. NO repite los documentos: esos viven una vez en
+// la línea, y copiarlos acá es exactamente lo que hacía que un papel se
+// contara tres veces. Lo que sí va es lo que la pregunta agrega — el conteo,
+// lo que no cubrimos, la serie (pregunta 3) y los episodios (pregunta 2),
+// que no son documentos sueltos sino aritmética sobre ellos.
+function panelHTML(s) {
   const t = T[LANG];
   const titulo = TITULOS[LANG][s.id] || s.id;
   const badge = { con_documentos: ['ok', t.badge_ok], sin_documentos: ['vacio', t.badge_vacio],
@@ -412,10 +542,7 @@ function seccionHTML(s, i) {
 
   let cuerpo = '';
   if (s.estado === 'con_documentos') {
-    cuerpo = resumenHTML(s.resumen)
-      + episodiosHTML(s.episodios)
-      + (s.documentos || []).map(docHTML).join('')
-      + serieHTML(s.serie);
+    cuerpo = resumenHTML(s.resumen) + episodiosHTML(s.episodios) + serieHTML(s.serie);
   } else if (s.estado === 'sin_documentos') {
     // El vacío que habla de LA EMPRESA. Se dice que se buscó.
     cuerpo = `<div class="sindocs">${esc(t.sin_docs)}<span class="q">${esc(t.sin_docs_q)}</span></div>`;
@@ -426,9 +553,9 @@ function seccionHTML(s, i) {
     return `<div class="decl ${clase}">${esc(d.texto)}</div>`;
   }).join('');
 
-  return `<section class="sec">
+  return `<section class="sec" data-sec="${esc(s.id)}">
     <div class="sec-head">
-      <span class="sec-num">${i + 1}</span>
+      <span class="sec-num">${esc(s.pregunta)}</span>
       <h2>${esc(titulo)}</h2>
       <span class="badge ${badge[0]}">${esc(badge[1])}</span>
     </div>
@@ -436,8 +563,66 @@ function seccionHTML(s, i) {
   </section>`;
 }
 
+// Los chips. Una pregunta sin documentos NO se apaga ni se esconde: se puede
+// elegir igual, y ahí es donde vive la explicación de por qué no los hay. Es
+// la diferencia entre "no hay 13D" y "no miramos 13D", que es toda.
+function chipsHTML(d, filtro) {
+  const t = T[LANG];
+  const total = (d.linea_de_tiempo || {}).total || 0;
+  const uno = (id, etiqueta, q, n, hay) =>
+    `<div class="chip${q === filtro ? ' on' : ''}${hay ? '' : ' nada'}" data-q="${q == null ? '' : q}">${esc(etiqueta)}<span class="n">${esc(n)}</span></div>`;
+  return `<div class="chips">
+    ${uno('todo', t.todo, null, total, true)}
+    ${(d.secciones || []).map((s) => uno(s.id, `${s.pregunta} · ${CORTOS[LANG][s.id] || s.id}`,
+      s.pregunta, (s.accessions || []).length || '—', (s.accessions || []).length > 0)).join('')}
+  </div>
+  <p class="chips-nota">${esc(t.filtro_nota)}</p>`;
+}
+
+// La línea. Un renglón por documento, del más nuevo al más viejo, agrupados
+// por año para que la distancia entre dos cosas se vea sin restar fechas.
+function lineaHTML(d, filtro, tope) {
+  const t = T[LANG];
+  const L = d.linea_de_tiempo || { eventos: [] };
+  const sel = (d.secciones || []).find((x) => x.pregunta === filtro);
+  const todos = L.eventos || [];
+  const eventos = filtro == null ? todos : todos.filter((e) => (e.preguntas || []).includes(filtro));
+  const visibles = eventos.slice(0, tope);
+
+  let filas = '';
+  let anio = null;
+  for (const e of visibles) {
+    const a = String(e.filed || '').slice(0, 4);
+    if (a !== anio) { anio = a; filas += `<div class="anio">${esc(a)}</div>`; }
+    filas += evHTML(e, filtro);
+  }
+
+  const cabeza = `<div class="linea-head"><h2>${esc(t.linea)}</h2>
+    <span class="cuantos">${esc(t.filings(eventos.length))}${eventos.length > visibles.length ? ` · ${esc(t.mostrando(visibles.length, eventos.length))}` : ''}</span></div>`;
+
+  const decls = (L.declaraciones || []).map((x) => `<div class="decl nota">${esc(x.texto)}</div>`).join('');
+
+  if (!eventos.length) {
+    // La trampa del filtro vacío: las preguntas 4, 5 y 6 no tienen documentos
+    // porque NO MIRAMOS esa fuente, no porque buscáramos y no hubiera. Poner
+    // acá el texto de "se buscó en el índice y no hay" sería decir sobre la
+    // empresa algo que en realidad es sobre nosotros — el error exacto que
+    // este módulo existe para no cometer.
+    const noMirado = sel && (sel.estado === 'no_cubierta' || sel.estado === 'fuera_del_modulo');
+    return `<div class="linea">${cabeza}
+      <div class="sindocs">${noMirado
+        ? esc(t.vacio_nocubre)
+        : esc(filtro == null ? t.sin_docs : t.vacio_filtro) + `<span class="q">${esc(t.sin_docs_q)}</span>`}</div>
+      ${decls}</div>`;
+  }
+  return `<div class="linea">${cabeza}${filas}
+    ${eventos.length > visibles.length ? `<div class="mas" id="mas">${esc(t.mas(eventos.length - visibles.length))}</div>` : ''}
+    ${decls}</div>`;
+}
+
 function render(d) {
   const t = T[LANG];
+  DATOS = d;
   $('sub').textContent = t.sub;
   $('lang').textContent = LANG === 'es' ? 'EN' : 'ES';
   $('foot').innerHTML = esc(t.fuente) + '<br/>' + esc(t.nodata);
@@ -471,14 +656,23 @@ function render(d) {
     (d.no_cubierto || []).filter((x) => x.codigo !== 'cobertura_parcial').map((x) => `<li>${esc(x.texto)}</li>`).join('')
   }</ul></div>`;
 
-  const secs = (d.secciones || []).map(seccionHTML).join('');
+  // Cuando hay un filtro puesto, el panel de esa pregunta va ARRIBA: es el
+  // encabezado de la lista filtrada, no una nota al pie. Sin filtro, los
+  // siete van abajo y la línea manda, que es el punto de la línea.
+  const paneles = (d.secciones || []).filter((x) => FILTRO == null || x.pregunta === FILTRO)
+    .map(panelHTML).join('');
+  const linea = lineaHTML(d, FILTRO, TOPE);
 
+  // La contraevidencia apunta a la línea por accession. El papel no se copia:
+  // se resuelve contra la misma lista que ya está en pantalla.
   const c = d.contraevidencia || {};
   const limpio = c.estado !== 'con_documentos';
+  const porAcc = new Map(((d.linea_de_tiempo || {}).eventos || []).map((e) => [e.accession, e]));
   const rompe = `<div class="rompe${limpio ? ' limpio' : ''}">
     <h2>${esc(t.rompe)}</h2>
     <p class="por">${esc(t.rompe_por)}</p>
-    ${(c.documentos || []).map(docHTML).join('')}
+    ${(c.accessions || []).length ? `<p class="por repetido">${esc(t.ya_en_linea)}</p>` : ''}
+    ${(c.accessions || []).map((a) => (porAcc.has(a) ? evHTML(porAcc.get(a), FILTRO) : '')).join('')}
     ${(c.periodos_reexpresados || []).length ? `<div class="fam">${esc(t.reexpresado)}</div>` +
       c.periodos_reexpresados.map((p) => `<div class="pt"><span class="per">${esc(p.period_end)}</span>
         <span class="val">${esc(FAMILIAS[LANG][p.familia] || p.familia)}</span>
@@ -486,12 +680,39 @@ function render(d) {
     ${(c.declaraciones || []).map((x) => `<div class="decl nota">${esc(x.texto)}</div>`).join('')}
   </div>`;
 
-  $('app').innerHTML = cab + parcial + perim + secs + rompe;
+  $('app').innerHTML = cab + parcial + perim + chipsHTML(d, FILTRO)
+    + (FILTRO == null ? linea + paneles : paneles + linea) + rompe;
 }
+
+// El filtro y el tope viven acá y no en el DOM: volver a pintar es barato y
+// tener el estado en dos lugares es cómo empiezan a decir cosas distintas.
+function filtrar(q) {
+  FILTRO = q;
+  TOPE = TOPE_INICIAL;
+  render(DATOS);
+  const chips = document.querySelector('.chips');
+  if (chips) chips.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+
+// Un solo listener en el contenedor: los chips y las etiquetas de cada
+// renglón se repintan en cada render, y colgarles un handler a cada uno
+// dejaría listeners viejos apuntando a nodos que ya no existen.
+$('app').addEventListener('click', (ev) => {
+  const chip = ev.target.closest('.chip');
+  if (chip) return filtrar(chip.dataset.q ? Number(chip.dataset.q) : null);
+  // Desde un renglón: la etiqueta de una pregunta lleva al mismo filtro. Es
+  // la manera de ver "¿qué más contesta esta pregunta?" sin volver arriba.
+  const et = ev.target.closest('.qs span');
+  if (et) return filtrar(Number(et.dataset.q) === FILTRO ? null : Number(et.dataset.q));
+  if (ev.target.closest('#mas')) { TOPE += TOPE_INICIAL; render(DATOS); }
+});
 
 async function cargar(ticker) {
   const t = T[LANG];
   $('app').innerHTML = `<div class="estado"><p>${esc(t.cargando)}</p></div>`;
+  // Otra empresa, otra línea: el filtro de la anterior no se arrastra.
+  FILTRO = null;
+  TOPE = TOPE_INICIAL;
   try {
     const ctl = new AbortController();
     const to = setTimeout(() => ctl.abort(), 20000);

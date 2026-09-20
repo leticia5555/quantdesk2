@@ -171,6 +171,97 @@ export function glosarForma(forma, lang = 'es') {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Jerarquía de items: cuál es el evento y cuál es el sobre
+// ─────────────────────────────────────────────────────────────────────────
+//
+// El 9.01 ("Financial Statements and Exhibits") aparece en casi todos los 8-K
+// y lo único que dice es "adjunté un archivo". Mostrarlo con el mismo peso que
+// un 5.02 hace que 30 de 30 filings se vean iguales.
+//
+// El 7.01 (Reg FD) es distinto y hay que mirarlo de frente: **acompañando a
+// otro item es el sobre; SOLO, es el evento.** Un 8-K que trae únicamente 7.01
+// es una divulgación Reg FD, y degradarlo siempre escondería filings cuyo
+// único contenido es ése. Por eso la regla depende del resto de los items, no
+// del item aislado.
+export const ITEMS_SIEMPRE_SECUNDARIOS = ['9.01'];
+export const ITEMS_SECUNDARIOS_SI_ACOMPAÑAN = ['7.01'];
+
+export function esSecundario(item, todosLosItems = []) {
+  const i = String(item).trim();
+  if (ITEMS_SIEMPRE_SECUNDARIOS.includes(i)) return true;
+  if (!ITEMS_SECUNDARIOS_SI_ACOMPAÑAN.includes(i)) return false;
+  // Solo es secundario si hay OTRO item que no lo sea.
+  return todosLosItems.some((o) => {
+    const x = String(o).trim();
+    return x !== i && !ITEMS_SIEMPRE_SECUNDARIOS.includes(x) && !ITEMS_SECUNDARIOS_SI_ACOMPAÑAN.includes(x);
+  });
+}
+
+// Parte los items en los que SON el evento y los que lo acompañan.
+//
+// `destacados` puede traer varios y eso es lo correcto: un 8-K con 5.02 y
+// 1.01 anunció dos cosas, y quedarse con una sería elegir por el lector. Lo
+// que se degrada es el sobre (el 9.01), no el segundo tema.
+//
+// `principal` es el primero de los destacados y existe para ordenar y
+// contar. Si TODOS son secundarios —un 8-K que solo trae 9.01— gana el
+// primero: el documento existe y no se va a esconder por no tener un item
+// "bueno".
+export function partirItems(items = []) {
+  const limpios = items.map((i) => String(i).trim()).filter(Boolean);
+  const destacados = limpios.filter((i) => !esSecundario(i, limpios));
+  return {
+    principal: destacados[0] || limpios[0] || null,
+    destacados: destacados.length ? destacados : limpios.slice(0, 1),
+    secundarios: destacados.length ? limpios.filter((i) => !destacados.includes(i)) : limpios.slice(1),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Qué pregunta del esqueleto contesta cada documento
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Un documento puede contestar VARIAS. Ésa es justamente la razón de la línea
+// de tiempo: con siete cubetas, el 8-K del 2022-03-29 salía tres veces y se
+// contaba tres veces. Acá sale una vez y lleva sus tres etiquetas.
+//
+// El mapa tiene que cuadrar EXACTAMENTE con el perímetro de la consulta
+// (`ITEMS_INTERES` en historia-lectura.js), en los dos sentidos. Un item del
+// perímetro sin pregunta sería un evento que ningún filtro alcanza; una
+// pregunta para un item que no se consulta es cobertura anunciada que no
+// existe. Hay una prueba que lo verifica en las dos direcciones.
+//
+// **Hueco conocido:** el 5.07 —el resultado de la votación en la asamblea— es
+// evidencia directa de la pregunta 2 y hoy NO está en el perímetro. Meterlo
+// es ampliar qué documentos muestra el módulo, así que no entra de contrabando
+// en una rebanada de formato.
+export const PREGUNTAS_DE_ITEM = {
+  '5.02': [1],
+  '2.02': [3],
+  '7.01': [3],
+  '4.02': [3],   // además marca contraevidencia
+  '1.01': [7],
+  '2.01': [7],
+  '8.01': [7],
+};
+
+export const PREGUNTAS_DE_FORMA = {
+  'DEF 14A': [1],
+  'SC 13D': [2], 'SC 13D/A': [2], 'SC 13G': [2], 'SC 13G/A': [2],
+  PREC14A: [2], DEFC14A: [2], PRRN14A: [2], DFAN14A: [2],
+};
+
+// El item que ES la contraevidencia: "no confíen en los estados anteriores".
+export const ITEMS_CONTRAEVIDENCIA = ['4.02'];
+
+export function preguntasDe({ form, items = [] }) {
+  const set = new Set(PREGUNTAS_DE_FORMA[String(form || '').trim().toUpperCase()]
+    || PREGUNTAS_DE_FORMA[String(form || '').trim()] || []);
+  for (const i of items) for (const q of (PREGUNTAS_DE_ITEM[String(i).trim()] || [])) set.add(q);
+  return [...set].sort((a, b) => a - b);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // La pelea por el consejo
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -238,24 +329,39 @@ export function agruparEpisodios(documentos, { umbralDias = UMBRAL_EPISODIO_DIAS
 // sobre los que se alcanzan a mostrar. Contar los 40 de una página y decir
 // "40 filings" cuando hay 196 sería una cifra correcta sobre el subconjunto
 // equivocado — la peor clase de número, porque nadie la revisa.
-export function resumirDocumentos(documentos, { total = null, desde = null, hasta = null } = {}) {
+//
+// `por_item` cuenta SOLO los items destacados. Contar el 9.01 acá daría
+// "9.01: 30" como el tema más frecuente de la empresa, que es verdad sobre
+// los adjuntos y mentira sobre lo que pasó. Los secundarios se cuentan
+// aparte, para que se puedan ver y no se puedan confundir.
+export function resumirDocumentos(documentos, { total = null, desde = null, hasta = null, truncado = null } = {}) {
   const docs = documentos || [];
   const porForma = {};
   const porItem = {};
+  const porItemSecundario = {};
   for (const d of docs) {
     porForma[d.form] = (porForma[d.form] || 0) + 1;
-    for (const i of d.items || []) porItem[i] = (porItem[i] || 0) + 1;
+    // Un evento ya clasificado trae su jerarquía; una lista cruda de
+    // documentos (los tests viejos, un llamador que solo tiene `items`) se
+    // parte acá mismo, para que el conteo no dependa de quién llamó.
+    const partes = partirItems(d.items || []);
+    const destacados = 'items_destacados' in d ? d.items_destacados : partes.destacados;
+    const secundarios = 'items_secundarios' in d ? d.items_secundarios : partes.secundarios;
+    for (const i of destacados || []) porItem[i] = (porItem[i] || 0) + 1;
+    for (const i of secundarios || []) porItemSecundario[i] = (porItemSecundario[i] || 0) + 1;
   }
   const fechas = docs.map((d) => d.filed).filter(Boolean).sort();
+  const totalReal = total == null ? docs.length : Number(total);
   return {
-    total: total == null ? docs.length : Number(total),
+    total: totalReal,
     mostrados: docs.length,
     desde: desde || fechas[0] || null,
     hasta: hasta || fechas[fechas.length - 1] || null,
     por_forma: porForma,
     por_item: porItem,
+    por_item_secundario: porItemSecundario,
     // Si se mostró menos de lo que hay, se dice: el conteo es del total y la
     // lista es una muestra, y confundirlos es lo que hay que evitar.
-    truncado: total != null && Number(total) > docs.length,
+    truncado: truncado == null ? totalReal > docs.length : !!truncado,
   };
 }
