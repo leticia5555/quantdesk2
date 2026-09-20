@@ -92,6 +92,10 @@
       "destination": "/libros.html"
     },
     {
+      "source": "/api/historia/:ticker",
+      "destination": "/api/historia?ticker=:ticker"
+    },
+    {
       "source": "/api/liga/eventos",
       "destination": "/api/liga-eventos"
     },
