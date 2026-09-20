@@ -31,6 +31,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { crearLectura, armarHistoria } from './_lib/historia-lectura.js';
+import { respuestaEvidencia } from './_lib/historia-evidencia.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -40,6 +41,11 @@ export default async function handler(req, res) {
 
   const ticker = String(req.query.ticker || '').trim().toUpperCase();
   const lang = String(req.query.lang || 'es').toLowerCase() === 'en' ? 'en' : 'es';
+  // `?evidencia=1` devuelve EXACTAMENTE lo que la Fase B le va a pasar al
+  // modelo, sin llamarlo. Existe para que se pueda mirar el paquete antes de
+  // gastar en la llamada —y para medir su peso con datos reales en vez de
+  // adivinarlo. Sigue siendo lectura: cero escrituras, cero IA.
+  const verEvidencia = ['1', 'true', 'si', 'yes'].includes(String(req.query.evidencia || '').toLowerCase());
 
   if (!ticker) return res.status(400).json({ error: 'falta el ticker', ruta: '/api/historia/:ticker' });
 
@@ -47,6 +53,11 @@ export default async function handler(req, res) {
     // El idioma entra también en la lectura: las glosas de los códigos se
     // resuelven donde se arman los documentos, no en la página.
     const { status, cuerpo } = await armarHistoria(crearLectura({ lang }), ticker, { lang });
+
+    if (verEvidencia) {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json(respuestaEvidencia(cuerpo, { ticker }));
+    }
     // Los filings son inmutables y la ingesta es diaria: media hora de caché
     // en el CDN no envejece nada y descarga a Neon. Lo que todavía no se
     // ingirió no se cachea: su estado cambia en cuanto corre el goteo.
