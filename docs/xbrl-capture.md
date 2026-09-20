@@ -16,10 +16,12 @@
 
 ### 1.1 Universo v1 — emisoras ICS
 
-Viven en `api/_lib/emisoras.json`. **30 emisoras: 29 con id verificado, 1 sin id.**
+Viven en `api/_lib/emisoras.json`. **30 emisoras, las 30 con id verificado**
+(LASITE se completó el 20-sep-2026 y con eso ya no salta ninguna).
 El id interno de BMV no se deriva del ticker, así que cada uno se confirma
-viéndolo en una URL real; **el que no se confirmó va `id: null` y el capturador
-lo salta reportando el motivo.** Nunca se inventa un id.
+viéndolo en una URL real; **el que no se confirme va `id: null` y el capturador
+lo salta reportando el motivo.** Nunca se inventa un id — la regla se queda
+aunque hoy no haya ninguno pendiente, porque el universo puede crecer.
 
 | Clave | id BMV | Nombre | Sector | Estado | Verificado |
 |---|---|---|---|---|---|
@@ -51,10 +53,12 @@ lo salta reportando el motivo.** Nunca se inventa un id.
 | AC | 6081 | Arca Continental | consumo | activa | ✅ |
 | VESTA | 7793 | Corporación Inmobiliaria Vesta | inmobiliario | activa | ✅ |
 | MEGA | 6854 | Megacable Holdings | telecom | activa | ✅ |
-| LASITE | — | Sitios Latinoamérica | telecom | activa | ❌ **[NO VERIFICADO]** |
+| LASITE | 36025 | Sitios Latinoamérica | telecom | activa | ✅ |
 | VOLAR | 30023 | Controladora Vuela (Volaris) | industrial | activa | ✅ |
 
-**Sólo falta LASITE.** Es una visita al navegador.
+**No falta ninguna.** LASITE era la última: su id se confirmó el 20-sep-2026
+viendo `bmv.com.mx/es/emisoras/informacionfinanciera/LASITE-36025-CGEN_CAPIT`,
+que es exactamente la URL que el capturador arma con `{CLAVE}-{ID}-CGEN_CAPIT`.
 
 **El campo `estado`** (`activa` / `deslistada` / `sin_reporte`) es una anotación
 humana para saber si una fila vieja es esperada o es un problema. **No es de lo
@@ -354,7 +358,9 @@ contarse como cobertura activa.
 ### 5.3 Estado tras la 2ª corrida
 
 29/30 capturadas con 9/9 campos, ELEKTRA con su alerta `deslistada_esperado`
-correcta, sólo LASITE saltada por falta de id. Quedaron **dos filas guardadas con
+correcta, sólo LASITE saltada por falta de id. *(Ese id se completó el
+20-sep-2026: la próxima corrida debería dar 30/30 y no saltar ninguna. El
+número de arriba es el que se observó entonces y se deja como quedó.)* Quedaron **dos filas guardadas con
 `fecha_publicacion` nula**: PE&OLES (doc 1579656) y MEGA (doc 1585294).
 
 ### 5.4 Qué va a pasar en la próxima corrida
@@ -366,7 +372,7 @@ Con la tabla de meses arreglada, la lógica de reparación (§2.3) toma las dos:
 | PE&OLES | 1579656 | fecha `null` | `23-Jul-2026 14:11` | **reparar** |
 | MEGA | 1585294 | fecha `null` | `28-Aug-2026 15:06` | **reparar** |
 | las otras 27 | — | fecha ya guardada | la misma | `nada` |
-| LASITE | — | — | — | saltada, sigue sin id |
+| LASITE | — | — | — | saltada entonces por falta de id; **ya tiene el suyo (36025)** |
 
 Está probado como función pura (`decidirAccion`) con el estado real de la tabla,
 así que la confirmación no depende de correr contra Neon: **ambas se reparan, y
@@ -382,9 +388,14 @@ que no supo leer, y eso ya apunta directo a la tabla `MESES`.
    antes de la primera corrida, ese trimestre hay que comprarlo. **Correr el
    smoke y el run el mismo día que leas esto** vale más que cualquier mejora al
    capturador.
-2. **LASITE sigue sin id.** Es una visita al navegador. Mientras tanto esa
-   emisora no se captura, y cada trimestre que pase sin ella es un trimestre
-   suyo que se pierde.
+2. ~~**LASITE sigue sin id.**~~ **RESUELTO el 20-sep-2026:** id `36025`,
+   verificado en la URL real. El universo queda en **30/30 con id** y la
+   próxima corrida no debería saltar ninguna.
+
+   Lo que sí sigue en pie de esa preocupación: **los trimestres que LASITE se
+   perdió mientras no tuvo id no se recuperan solos.** La captura toma lo que
+   la página publica hoy; los reportes viejos siguen en BMV, así que el hueco
+   es recuperable, pero hay que ir por él a propósito.
 3. **El scraping de la fila es lo frágil.** El parser del XBRL está probado
    contra archivos reales; la lectura del HTML está probada contra fixtures que
    yo escribí a partir de una descripción. Si BMV rediseña esa tabla, se rompe

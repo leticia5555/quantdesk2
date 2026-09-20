@@ -234,11 +234,11 @@
     },
     {
       "clave": "LASITE",
-      "id": null,
+      "id": "36025",
       "nombre": "Sitios Latinoamérica",
       "sector": "telecom",
       "estado": "activa",
-      "verificado": false
+      "verificado": true
     },
     {
       "clave": "VOLAR",
