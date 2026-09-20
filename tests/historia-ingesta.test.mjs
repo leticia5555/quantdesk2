@@ -34,6 +34,7 @@ import {
   aplanarSubmissions, itemsDe, perfilDe, filingsParaGuardar,
   clasePeriodo, dias, sumarDias, restarAnios, hechosDe,
   derivarQ4, normalizarFacts, ingerirEmisor, sembrarUniverso, correrGoteo, aNumero,
+  dedupePorClave, claveNatural,
 } from '../api/_lib/historia-ingesta.js';
 
 let failures = 0;
@@ -276,7 +277,8 @@ console.log('\n── normalizarFacts');
     eq(filas[0].period_class, 'Q', 'clasificado por largo de periodo');
     eq(filas[0].accession, 'acc-1', 'y su cita');
     eq(filas[0].derived, false, 'no es derivado');
-    hondo(descartados, { sin_accn: 0, sin_valor: 0, sin_fecha: 0 }, 'sin descartes');
+    hondo(descartados, { sin_accn: 0, sin_valor: 0, sin_fecha: 0, duplicados: 0, clave_ambigua: 0 },
+      'sin descartes de ningún tipo');
   }
 
   // Lo que no se puede citar no entra — y se CUENTA.
@@ -566,6 +568,109 @@ console.log('\n── sembrarUniverso y correrGoteo');
   ok(marcas[0][2].error.includes('429'), '…y su motivo en la misma tabla donde se elige a quién ingerir');
   eq(marcas[1][2].estado, 'ok', 'y el que salió bien, bien');
   ok(repo.nombres().includes('asegurarEsquema'), 'el goteo asegura el esquema antes de empezar');
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+console.log('\n── La colisión que tumbó a MSFT y MELI en el goteo');
+{
+  // El síntoma: "ON CONFLICT DO UPDATE command cannot affect row a second
+  // time". La causa: un concepto donde el 10-K trae el Q4 DIRECTO además del
+  // año. Derivarlo igual producía dos filas con el mismo (concepto, unidad,
+  // periodo, accession) — el 10-K es el mismo documento en las dos.
+  //
+  // Se ve solo en emisores con muchos conceptos porque la sonda miraba 11
+  // familias y la ingesta procesa los 431-627 conceptos del emisor.
+  const conQ4Directo = [
+    fy('2025-01-01', '2025-12-31', 1000, 'acc-10K', '2026-02-20'),
+    m9('2025-01-01', '2025-09-30', 700, 'acc-10Q3', '2025-11-01'),
+    // El mismo 10-K que trae el año trae también el trimestre.
+    q('2025-10-01', '2025-12-31', 300, 'acc-10K', '2026-02-20'),
+  ];
+  eq(derivarQ4(conQ4Directo).length, 0,
+    'si la empresa YA reportó el Q4, no se deriva: el suyo es el dato, el nuestro aritmética');
+
+  // Y sigue derivando cuando de verdad falta.
+  eq(derivarQ4([conQ4Directo[0], conQ4Directo[1]]).length, 1, 'sin Q4 directo se deriva igual');
+
+  // El cierre manda sobre el inicio exacto: un 4-5-4 puede arrancar un día
+  // corrido y seguiría siendo el mismo trimestre reportado.
+  eq(derivarQ4([
+    fy('2025-01-01', '2025-12-31', 1000, 'a', '2026-02-20'),
+    m9('2025-01-01', '2025-09-30', 700, 'b', '2025-11-01'),
+    q('2025-09-29', '2025-12-31', 300, 'c', '2026-02-20'),
+  ]).length, 0, 'el Q4 reportado se reconoce por el cierre, no por el inicio al día');
+
+  // Un trimestre de OTRO periodo no bloquea la derivación.
+  eq(derivarQ4([
+    fy('2025-01-01', '2025-12-31', 1000, 'a', '2026-02-20'),
+    m9('2025-01-01', '2025-09-30', 700, 'b', '2025-11-01'),
+    q('2025-01-01', '2025-03-31', 250, 'c', '2025-05-01'),
+  ]).length, 1, 'un Q1 reportado no impide derivar el Q4');
+
+  // Y una unidad distinta tampoco.
+  eq(derivarQ4([
+    fy('2025-01-01', '2025-12-31', 1000, 'a', '2026-02-20'),
+    m9('2025-01-01', '2025-09-30', 700, 'b', '2025-11-01'),
+    { ...q('2025-10-01', '2025-12-31', 300, 'c', '2026-02-20'), unit: 'shares' },
+  ]).length, 1, 'un Q4 reportado en otra unidad no bloquea el de ésta');
+
+  // De punta a punta: el lote que salía con la clave repetida ya no lo hace.
+  const { filas, descartados } = normalizarFacts({ facts: { 'us-gaap': { Revenues: nodo(conQ4Directo) } } }, { cik: '1' });
+  const claves = filas.map(claveNatural);
+  eq(new Set(claves).size, claves.length, 'ninguna clave natural se repite en el lote');
+  eq(filas.filter((f) => f.derived).length, 0, 'y el Q4 que sale es el reportado, no uno derivado');
+  eq(descartados.clave_ambigua, 0, 'sin ambigüedad que reportar');
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+console.log('\n── dedupePorClave: la red de seguridad');
+{
+  const base = { cik: '1', taxonomy: 'us-gaap', concept: 'Revenues', unit: 'USD',
+    period_start: '2025-01-01', period_end: '2025-03-31', accession: 'a-1', val: 100,
+    derived: false, filed: '2025-05-01' };
+
+  // Mismo hecho repetido: colapsa sin perder nada.
+  {
+    const r = dedupePorClave([base, { ...base }]);
+    eq(r.filas.length, 1, 'dos filas idénticas quedan en una');
+    eq(r.duplicados, 1, 'y se cuenta como duplicado');
+    eq(r.clave_ambigua, 0, 'no como ambigüedad: el valor era el mismo');
+  }
+
+  // Misma clave, valor DISTINTO: eso no es un duplicado, es la clave fallando.
+  {
+    const r = dedupePorClave([base, { ...base, val: 111 }]);
+    eq(r.filas.length, 1, 'se colapsa igual, porque si no el lote entero se cae');
+    eq(r.clave_ambigua, 1, 'pero se cuenta como CLAVE AMBIGUA, que es otra cosa');
+    eq(r.duplicados, 0, 'y no se disfraza de duplicado inocente');
+  }
+
+  // La regla de desempate: lo reportado le gana a lo derivado.
+  {
+    const derivada = { ...base, derived: true, accession_aux: 'x', val: 999 };
+    eq(dedupePorClave([derivada, base]).filas[0].val, 100, 'lo reportado le gana a lo derivado…');
+    eq(dedupePorClave([base, derivada]).filas[0].val, 100, '…sin importar en qué orden lleguen');
+  }
+
+  // Entre dos reportados, la última palabra de la empresa.
+  {
+    const tarde = { ...base, val: 95, filed: '2026-05-01' };
+    eq(dedupePorClave([base, tarde]).filas[0].val, 95, 'entre dos reportados gana el presentado más tarde');
+    eq(dedupePorClave([tarde, base]).filas[0].val, 95, 'tampoco depende del orden');
+  }
+
+  // Claves distintas no se tocan: la re-expresión son DOS filas y sigue siéndolo.
+  {
+    const otra = { ...base, accession: 'a-2', val: 95 };
+    eq(dedupePorClave([base, otra]).filas.length, 2, 'dos accession distintos son dos filas: la re-expresión se conserva');
+    const instante = { ...base, period_start: null, period_end: '2025-03-31' };
+    eq(dedupePorClave([base, instante]).filas.length, 2, 'un instante y una duración del mismo cierre no se confunden');
+  }
+
+  eq(claveNatural({ ...base, period_start: null }), '1|us-gaap|Revenues|USD|2025-03-31|1900-01-01|a-1',
+    'la clave usa el mismo centinela que la columna generada de Postgres');
+
+  hondo(dedupePorClave([]).filas, [], 'una lista vacía no rompe');
 }
 
 console.log(failures ? `\n${failures} FALLA(S)\n` : '\nTODO EN VERDE\n');

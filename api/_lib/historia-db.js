@@ -482,6 +482,24 @@ export function crearRepo({ sql = sqlReal, sqlBatch = sqlBatchReal } = {}) {
           );
         }
       }
+      // Dos filas del MISMO lote con la clave natural repetida hacen que
+      // Postgres rechace el INSERT entero con "ON CONFLICT DO UPDATE command
+      // cannot affect row a second time" — un mensaje que no dice qué fila ni
+      // de qué emisor, y que costó dos emisores completos en el primer goteo.
+      // La ingesta ya deduplica (historia-ingesta.js), así que llegar acá con
+      // la clave repetida es un bug de quien llama: se dice cuál es.
+      const vistas = new Map();
+      for (const f of facts) {
+        const k = [f.cik, f.taxonomy, f.concept, f.unit, f.period_end, f.period_start || '1900-01-01', f.accession].join('|');
+        if (vistas.has(k)) {
+          throw new Error(
+            `company_facts: dos filas del lote comparten la clave natural (${k}). ` +
+            `Valores: ${vistas.get(k).val} y ${f.val}. Postgres rechazaría el lote entero; ` +
+            'deduplicá antes de guardar (dedupePorClave en historia-ingesta.js).',
+          );
+        }
+        vistas.set(k, f);
+      }
       const sentencias = trozos(facts, FILAS_POR_SENTENCIA).map((lote) => {
         const { tuplas, params } = valores(lote, COLS_FACT);
         return [
