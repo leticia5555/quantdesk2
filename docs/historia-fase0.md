@@ -639,7 +639,11 @@ Consecuencias, que son de diseño y no de logística:
    presenta como captura de EDGAR mientras no lo sea.
 3. **Queda una compuerta abierta y declarada: G7.**
 
-### G7 — verificación contra EDGAR real *(abierta)*
+### G7 — verificación contra EDGAR real *(mitad cerrada)*
+
+**La ingesta ya está verificada contra la fuente y contra la base** — el goteo
+del 2026-09-20 corrió los cuatro emisores y sus números están en §11. Lo que
+queda es la vista.
 
 > **Verde si:** la ingesta corre contra EDGAR en vivo para LULU, MSFT, MELI y
 > VIST, y para cada uno: los conteos de la serie trimestral coinciden con los
@@ -725,6 +729,20 @@ select concept, period_end, count(distinct val) as versiones
 Ese segundo query es el que contesta de verdad cuántas re-expresiones tiene
 MELI. El 19 del tablero mezcla re-expresión con diferencia entre alias; esto
 las separa.
+
+**Los tres están en un solo comando**, con su criterio codificado para que no
+se pueda mover después de ver el número:
+
+```bash
+DATABASE_URL=... node scripts/historia-g7.mjs
+```
+
+Solo lee. Sale 0 si G7 cierra y 1 si no, y siempre imprime el número al lado
+del veredicto: un "VERDE" sin el dato no se puede auditar. El criterio vive
+aparte de las consultas y está probado —incluido **el rojo**: si LULU vuelve a
+salir con inventario revisado al 100%, la compuerta se pone roja
+(`tests/historia-g7.test.mjs`). Una compuerta que solo se ha visto en verde no
+está probada.
 
 El número que originó el encargo —"MELI: 19 revisiones del concepto de
 ingresos"— apareció en la corrida 2, así que ya tiene respaldo. Lo que **no**
@@ -1005,12 +1023,66 @@ es el registro durable, pero el JSON crudo de esta corrida es el mejor insumo
 para los fixtures de la rebanada C. Si sigue en la Mac, vale la pena guardarlo
 antes de que se pierda como el de la corrida 1.
 
+### El goteo real — 2026-09-20
+
+La ingesta corrió contra EDGAR en vivo y escribió en Neon. Dos turnos: el
+primero con LULU y VIST, el segundo con MSFT y MELI después del arreglo de la
+colisión (§11.1).
+
+| | filings | items | hechos | derivados | `sinCita` | `claveAmbigua` | cobertura |
+|---|---|---|---|---|---|---|---|
+| LULU | 414 | 103 | 3.735 | 353 | **0** | n/d | completa |
+| VIST | n/r | n/r | n/r | **0** | **0** | n/d | **parcial** |
+| MSFT | n/r | n/r | 5.379 | 503 | **0** | **0** | completa |
+| MELI | n/r | n/r | 5.091 | 380 | **0** | **0** | completa |
+
+`n/d` = el campo no existía en el primer turno; se agregó con el arreglo.
+`n/r` = no quedó en el reporte que se pegó acá. **No se rellena con una
+estimación**: lo que no se reportó, no se sabe.
+
+Lo que estos números cierran:
+
+- **`sinCita` = 0 en los cuatro, contra la base real.** La corrida 2 lo había
+  medido sobre el JSON de EDGAR; esto lo confirma sobre lo que efectivamente
+  se guardó. Ningún hecho de la tabla se puede mostrar sin poder citarlo.
+- **`derivados` > 0 en los tres domésticos y 0 en VIST.** Un 20-F no tiene 9M
+  que restar, así que su cero no es una falla: es la definición de emisor
+  extranjero, medida de punta a punta.
+- **`claveAmbigua` = 0 y `duplicados` = 0.** La red de seguridad del arreglo
+  quedó **sin atrapar nada**, y eso es lo que confirma el diagnóstico: la
+  colisión era enteramente el Q4 derivado pisando al reportado, no una clave
+  natural que no distinguiera hechos distintos. La red se queda igual — no
+  depende de haber previsto todas las formas en que EDGAR repite un hecho.
+
+### §11.1 — La colisión del primer goteo, y por qué no eran los dos tags
+
+El primer turno perdió a MSFT y MELI enteros con
+`ON CONFLICT DO UPDATE command cannot affect row a second time`: dos filas del
+mismo lote con la clave de conflicto repetida hacen que Postgres rechace el
+INSERT completo.
+
+**No eran los dos tags.** La clave incluye `concept`, así que dos alias nunca
+colisionan — y el contraejemplo está en el tablero de arriba: LULU también
+tiene `inventario` con 2 tags y 12 revisiones, y pasó limpio.
+
+Lo que separa a los que fallaron es otra columna de la corrida 2, **el número
+de conceptos**: MELI 627 y MSFT 565 contra LULU 431 y VIST 304. La sonda
+miraba 11 familias; la ingesta procesa todos los conceptos del emisor, y hay
+conceptos donde **el 10-K trae el trimestre directo además del año**.
+Derivarlo igual producía una segunda fila con el mismo `(concepto, unidad,
+periodo, accession)` — el 10-K es el mismo documento en las dos.
+
+El arreglo, y la regla que deja escrita: **lo que la empresa ya reportó no se
+calcula.** Entre el trimestre que presentó y una resta nuestra, gana el suyo —
+el suyo es el dato, el nuestro es aritmética sobre el dato.
+
 ### Lo que sigue abierto
 
-**G7** (§10): que la ingesta guarde bien lo que baja. Las compuertas de la Fase 0
-dicen que el dato existe, es citable y se puede clasificar. No dicen que nuestro
-código lo persista sin perderlo ni deformarlo — eso se gana en la rebanada C y
-se verifica contra estos mismos cuatro emisores.
+**La otra mitad de G7: la vista.** El goteo prueba que la ingesta baja y
+guarda. No prueba que `company_quarterly` devuelva lo correcto — y la vista es
+donde vivían los tres errores que la rebanada B tuvo que arreglar (el alias
+confundido con re-expresión, el Q4 con una sola cita, el YoY contando cuatro
+filas). Se cierra con `scripts/historia-g7.mjs` (§10).
 
 ## 12. Fuentes
 
