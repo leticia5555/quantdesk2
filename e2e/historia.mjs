@@ -45,6 +45,7 @@ const G = {
   '1.01': { codigo: '1.01', oficial: 'Entry into a Material Definitive Agreement', glosa: 'firmó un contrato material' },
   '4.02': { codigo: '4.02', oficial: 'Non-Reliance on Previously Issued Financial Statements or a Related Audit Report or Completed Interim Review', glosa: 'avisó que no se puede confiar en estados financieros ya publicados' },
   '7.01': { codigo: '7.01', oficial: 'Regulation FD Disclosure', glosa: 'divulgación bajo Regulation FD' },
+  '5.07': { codigo: '5.07', oficial: 'Submission of Matters to a Vote of Security Holders', glosa: 'resultados de la votación de accionistas' },
   '9.01': { codigo: '9.01', oficial: 'Financial Statements and Exhibits', glosa: 'estados financieros y anexos' },
 };
 const F = {
@@ -79,6 +80,10 @@ const evento = (accession, form, items, filed, preguntas, { contraevidencia = fa
 // tres veces y se contaba tres veces.
 const MULTI = evento('0001-26-1', '8-K', ['5.02', '2.02', '1.01', '9.01'], '2026-02-20', [1, 3, 7]);
 const EVENTOS = [
+  // El cierre de la pelea: el único documento que dice cómo terminó la
+  // votación. Va en la línea con los filings de campaña, en su lugar
+  // cronológico — y sin decir quién ganó, que es Fase B.
+  evento('0001-26-7', '8-K', ['5.07', '9.01'], '2026-06-10', [2]),
   evento('0001-26-3', 'DFAN14A', [], '2026-05-20', [2]),
   evento('0001-26-5', 'PRRN14A', [], '2026-04-01', [2]),
   evento('0001-26-9', '8-K', ['4.02'], '2026-03-01', [3], { contraevidencia: true }),
@@ -105,8 +110,8 @@ const D = (lang = 'es') => ({
       resumen: { total: 14, mostrados: 1, desde: '2021-12-03', hasta: '2026-09-15', por_item: { '5.02': 14 }, por_item_secundario: { '9.01': 14 }, por_forma: { '8-K': 14 }, truncado: true } },
     // La pelea por el consejo, que en una lista plana se pierde.
     { id: 'propiedad', pregunta: 2, estado: 'con_documentos', declaraciones: [],
-      accessions: ['0001-26-3', '0001-26-5'],
-      resumen: { total: 34, mostrados: 2, desde: '2025-12-15', hasta: '2026-05-20', por_forma: { DFAN14A: 30, PRRN14A: 2, DEFC14A: 2 }, por_item: {}, por_item_secundario: {}, truncado: true },
+      accessions: ['0001-26-7', '0001-26-3', '0001-26-5'],
+      resumen: { total: 35, mostrados: 3, desde: '2025-12-15', hasta: '2026-06-10', por_forma: { DFAN14A: 30, PRRN14A: 2, DEFC14A: 2, '8-K': 1 }, por_item: { '5.07': 1 }, por_item_secundario: { '9.01': 1 }, truncado: true },
       episodios: [{ desde: '2025-12-15', hasta: '2026-05-20', dias: 156, total: 34,
         por_forma: { DFAN14A: 30, PRRN14A: 2, DEFC14A: 2 }, umbral_dias: 120, documentos: [] }] },
     { id: 'prometido_vs_entregado', pregunta: 3, estado: 'con_documentos',
@@ -234,6 +239,18 @@ async function abrir(respuesta, ruta = '/historia.html?ticker=MELI') {
   report('la línea va de lo más nuevo a lo más viejo',
     fechas.join() === [...fechas].sort().reverse().join(), fechas.join(' | '));
   report('…y marca los años', (await page.locator('.anio').count()) === 2);
+
+  // EL DESENLACE. Sin el 5.07 la línea mostraba la campaña y no el resultado.
+  const cierre = page.locator('.linea .ev').filter({ hasText: '[0001-26-7]' });
+  report('el resultado de la votación está en la línea', (await cierre.count()) === 1);
+  report('…traducido a qué ES el documento', /resultados de la votación/i.test(await cierre.locator('.glosa').first().innerText()));
+  report('…bajo la pregunta 2, con la campaña', /2 · Quién posee/.test((await cierre.locator('.qs span').allInnerTexts()).join(' ')));
+  // La línea que no se cruza: el papel se muestra, el veredicto no se saca.
+  const txtCierre = await cierre.innerText();
+  report('…y NO dice cómo salió la votación',
+    !/(gan[óo]|perdi[óo]|aprob|rechaz|derrot|triunf)/i.test(txtCierre), txtCierre.replace(/\n/g, ' '));
+  report('…va después de los filings de campaña, en su lugar cronológico',
+    (await page.locator('.linea .ev-d').allInnerTexts())[0] === '2026-06-10');
   report('la línea declara su perímetro', /Formas 3\/4\/5/.test(await page.locator('.linea').innerText()));
 
   await page.screenshot({ path: '/tmp/claude-0/-home-user-quantdesk2/c183cedc-10de-5593-8388-72ecf3a8e2f4/scratchpad/historia-es.png', fullPage: true });
@@ -406,6 +423,14 @@ async function abrir(respuesta, ruta = '/historia.html?ticker=MELI') {
   const prohibidas = ['comprar', 'vender', 'recomendamos', 'precio objetivo', 'strong buy', 'sobreponderar', 'infraponderar'];
   const halladas = prohibidas.filter((w) => texto.includes(w));
   report('cero vocabulario de recomendación en pantalla', halladas.length === 0, halladas.join(', '));
+
+  // Y cero vocabulario de DESENLACE. El 5.07 trae los votos; quién ganó la
+  // pelea es una lectura, y la lectura es Fase B. La única mención permitida
+  // es el descargo del episodio, que dice justamente que NO lo dice.
+  const sinDescargo = texto.replace(/no qui[ée]n gan[óo][^.]*\./g, '');
+  const desenlace = ['ganó', 'gano la', 'perdió', 'fue derrotad', 'se aprobó', 'fue rechazad', 'triunf'];
+  const veredicto = desenlace.filter((w) => sinDescargo.includes(w));
+  report('cero vocabulario de desenlace: el 5.07 se muestra, no se interpreta', veredicto.length === 0, veredicto.join(', '));
 
   await page.close();
 }

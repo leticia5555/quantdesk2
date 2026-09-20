@@ -239,6 +239,30 @@ console.log('\n── El mapa item/forma → pregunta');
     'un 8-K que solo adjunta no contesta ninguna pregunta');
   hondo(preguntasDe({ form: '10-Q', items: [] }), [], 'una forma fuera del perímetro tampoco');
 
+  // El 5.07 es el DESENLACE de la pelea: el único documento que dice cómo
+  // terminó la votación. Va a la pregunta 2, con la línea entera: mostrar el
+  // documento NO es decir quién ganó.
+  hondo(preguntasDe({ form: '8-K', items: ['5.07'] }), [2], 'el resultado de la asamblea es la pregunta 2');
+  hondo(preguntasDe({ form: '8-K', items: ['5.07', '9.01'] }), [2], 'con su adjunto, la misma');
+  {
+    const g = ITEMS_8K['5.07'];
+    // El item trae los votos —a favor, en contra, abstenciones, non-votes—.
+    // Cualquier palabra de desenlace acá sería interpretar el margen, y eso
+    // es Fase B, no un diccionario.
+    const desenlace = /(gan[óo]|perdi[óo]|aprob|rechaz|derrot|triunf|won|lost|approv|reject|defeat|prevail)/i;
+    ok(!desenlace.test(g.es) && !desenlace.test(g.en) && !desenlace.test(g.oficial),
+      'la glosa del 5.07 dice qué ES el documento, no cómo salió la votación',
+      `${g.es} | ${g.en} | ${g.oficial}`);
+    ok(/votaci|vote/i.test(g.es) && /vote/i.test(g.en), 'y sí nombra la votación: es lo que el papel trae');
+  }
+
+  // Un 5.07 no es un filing de campaña: no entra al episodio de la pelea.
+  // El episodio cuenta solicitaciones impugnadas; el 5.07 es el cierre, y
+  // sumarlo inflaría un conteo que ya es delicado.
+  ok(!esContienda('8-K'), 'un 8-K con 5.07 no cuenta como filing de solicitación impugnada');
+  eq(agruparEpisodios([{ form: '8-K', filed: '2026-06-01', items: ['5.07'] }]).length, 0,
+    'y por lo tanto no arma ni engorda un episodio');
+
   // El 4.02 vive en dos lugares a la vez y eso es correcto: contradice los
   // resultados publicados (pregunta 3) Y es contraevidencia (§8).
   hondo(ITEMS_CONTRAEVIDENCIA, ['4.02'], 'el 4.02 es la contraevidencia más literal que EDGAR produce');

@@ -134,6 +134,11 @@ export const declarar = (codigo, lang = 'es') => ({
 // `todo evento cae en al menos una pregunta` es la que lo caza.
 // ─────────────────────────────────────────────────────────────────────────
 export const ITEMS_DIRECCION = ['5.02'];                 // altas, bajas y paquetes
+// El 5.07 es el DESENLACE de la pelea: sin él la línea mostraba 34 filings de
+// campaña y cero del resultado de la votación, que sí está en EDGAR. Mostrarlo
+// no es decir quién ganó — el documento trae los votos y punto; interpretarlos
+// es Fase B.
+export const ITEMS_PROPIEDAD = ['5.07'];                 // resultados de la asamblea
 export const ITEMS_RESULTADOS = ['2.02', '7.01'];        // resultados y la guía en prosa
 export const ITEMS_CATALIZADOR = ['1.01', '2.01', '8.01']; // acuerdos, adquisiciones, otros
 export const ITEMS_RUPTURA = ITEMS_CONTRAEVIDENCIA;      // 4.02 — "no confíen en lo anterior"
@@ -142,7 +147,8 @@ export const FORMAS_PROPIEDAD = ['SC 13D', 'SC 13D/A', 'SC 13G', 'SC 13G/A'];
 export const FORMAS_PELEA = ['PREC14A', 'DEFC14A', 'PRRN14A', 'DFAN14A'];
 
 export const ITEMS_INTERES = [...new Set([
-  ...ITEMS_DIRECCION, ...ITEMS_RESULTADOS, ...ITEMS_CATALIZADOR, ...ITEMS_RUPTURA,
+  ...ITEMS_DIRECCION, ...ITEMS_PROPIEDAD, ...ITEMS_RESULTADOS,
+  ...ITEMS_CATALIZADOR, ...ITEMS_RUPTURA,
 ])];
 export const FORMAS_INTERES = [...new Set([
   ...FORMAS_DIRECCION, ...FORMAS_PROPIEDAD, ...FORMAS_PELEA,
