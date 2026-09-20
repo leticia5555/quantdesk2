@@ -25,7 +25,10 @@
 
 import {
   ITEMS_8K, FORMAS, FORMAS_CONTIENDA, UMBRAL_EPISODIO_DIAS,
+  ITEMS_SIEMPRE_SECUNDARIOS, ITEMS_SECUNDARIOS_SI_ACOMPAÑAN, ITEMS_CONTRAEVIDENCIA,
+  PREGUNTAS_DE_ITEM, PREGUNTAS_DE_FORMA,
   glosarItem, glosarForma, esContienda, agruparEpisodios, resumirDocumentos,
+  esSecundario, partirItems, preguntasDe,
 } from '../api/_lib/historia-glosario.js';
 
 let failures = 0;
@@ -182,6 +185,69 @@ console.log('\n── El resumen cuenta el TOTAL, no la página');
   eq(v.total, 0, 'sin documentos, cero');
   eq(v.desde, null, 'y sin rango inventado');
   eq(v.hasta, null, 'ninguna de las dos puntas');
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+console.log('\n── Los items no pesan lo mismo');
+{
+  // El 9.01 aparece en 30 de 30 8-K y solo dice "adjunté un archivo".
+  // Mostrarlo al mismo nivel que un 4.02 es ruido con formato de señal.
+  hondo(ITEMS_SIEMPRE_SECUNDARIOS, ['9.01'], 'el 9.01 es siempre secundario: es el adjunto, no el evento');
+  hondo(ITEMS_SECUNDARIOS_SI_ACOMPAÑAN, ['7.01'], 'el 7.01 depende: es el complemento cuando hay algo más');
+
+  ok(esSecundario('9.01', ['2.02', '9.01']), 'con un 2.02 al lado, el adjunto es secundario');
+  ok(esSecundario('9.01', ['9.01']), 'y también solo: un adjunto nunca es el tema');
+  ok(esSecundario('7.01', ['2.02', '7.01']), 'el 7.01 que acompaña un 2.02 es el complemento');
+
+  // La corrección que importa: un 7.01 SOLO es el evento. Ahí la empresa no
+  // presentó resultados ni firmó nada; lo único que hizo fue decir algo.
+  ok(!esSecundario('7.01', ['7.01']), 'un 7.01 solo SÍ es el evento');
+  ok(!esSecundario('7.01', ['7.01', '9.01']), 'y sigue siéndolo si lo único que lo acompaña es el adjunto');
+  ok(!esSecundario('2.02', ['2.02', '9.01']), 'un 2.02 nunca es secundario');
+
+  hondo(partirItems(['2.02', '7.01', '9.01']),
+    { principal: '2.02', destacados: ['2.02'], secundarios: ['7.01', '9.01'] },
+    'el tema queda arriba y el sobre baja, en orden');
+  hondo(partirItems(['9.01']), { principal: '9.01', destacados: ['9.01'], secundarios: [] },
+    'si lo único que hay es el adjunto, el adjunto es lo que hay: no se devuelve un evento sin tema');
+  hondo(partirItems([]), { principal: null, destacados: [], secundarios: [] }, 'sin items no se inventa uno');
+
+  // Lo que se degrada es el SOBRE, no el segundo tema. Un 8-K con 5.02 y 1.01
+  // anunció dos cosas, y quedarse con una sería elegir por el lector.
+  hondo(partirItems(['5.02', '1.01']),
+    { principal: '5.02', destacados: ['5.02', '1.01'], secundarios: [] },
+    'dos temas siguen siendo dos temas: ninguno baja a gris');
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+console.log('\n── El mapa item/forma → pregunta');
+{
+  hondo(preguntasDe({ form: '8-K', items: ['5.02'] }), [1], 'un cambio de directivos es la pregunta 1');
+  hondo(preguntasDe({ form: 'DEF 14A' }), [1], 'el proxy anual también');
+  hondo(preguntasDe({ form: 'SC 13D' }), [2], 'un 13D es la pregunta 2');
+  hondo(preguntasDe({ form: 'DFAN14A' }), [2], 'y la pelea por el consejo también');
+  hondo(preguntasDe({ form: '8-K', items: ['2.02'] }), [3], 'los resultados son la 3');
+  hondo(preguntasDe({ form: '8-K', items: ['1.01'] }), [7], 'un contrato material es la 7');
+
+  // Lo que hace falta para que la línea funcione: un documento con tres temas
+  // devuelve TRES preguntas, ordenadas y sin repetir.
+  hondo(preguntasDe({ form: '8-K', items: ['5.02', '2.02', '1.01'] }), [1, 3, 7],
+    'un 8-K de tres temas alcanza las tres preguntas');
+  hondo(preguntasDe({ form: '8-K', items: ['2.02', '7.01', '9.01'] }), [3],
+    'dos items de la misma pregunta no la duplican, y el adjunto no agrega ninguna');
+  hondo(preguntasDe({ form: '8-K', items: ['9.01'] }), [],
+    'un 8-K que solo adjunta no contesta ninguna pregunta');
+  hondo(preguntasDe({ form: '10-Q', items: [] }), [], 'una forma fuera del perímetro tampoco');
+
+  // El 4.02 vive en dos lugares a la vez y eso es correcto: contradice los
+  // resultados publicados (pregunta 3) Y es contraevidencia (§8).
+  hondo(ITEMS_CONTRAEVIDENCIA, ['4.02'], 'el 4.02 es la contraevidencia más literal que EDGAR produce');
+  hondo(PREGUNTAS_DE_ITEM['4.02'], [3], 'y además contradice lo que se reportó: cuenta en la pregunta 3');
+
+  ok(Object.values(PREGUNTAS_DE_ITEM).every((v) => v.every((q) => q >= 1 && q <= 7)),
+    'ninguna pregunta se sale del esqueleto de siete');
+  ok(Object.values(PREGUNTAS_DE_FORMA).every((v) => v.every((q) => q >= 1 && q <= 7)),
+    'ni las de las formas');
 }
 
 console.log(failures ? `\n${failures} FALLA(S)\n` : '\nTODO EN VERDE\n');

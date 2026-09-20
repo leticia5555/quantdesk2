@@ -19,6 +19,11 @@
 > corre desde la máquina del operador.
 >
 > Fecha del reconocimiento: 2026-09-12. Cerrada con la corrida 2: 2026-09-20.
+>
+> **Enmienda posterior:** §11.2 (2026-09-20) cambia la FORMA de la lectura —
+> una línea de tiempo con las siete preguntas como filtros, en vez de siete
+> listas. No toca el esquema ni la ingesta; sí corrige un conteo que
+> triplicaba documentos sin que se viera.
 
 ---
 
@@ -505,6 +510,16 @@ El delta no es alcance nuevo que alguien haya pedido: es trabajo que el memo no
 vio porque la enmienda a G1/G2 y el bloqueo de egress son posteriores a §7. Las
 dos líneas que más pueden moverse siguen siendo las mismas de abajo.
 
+**Enmienda del 2026-09-20 (2) — la línea de tiempo:**
+
+| Línea nueva | horas |
+|---|---|
+| Rebanada F: jerarquía de items, consulta única de eventos, las 7 secciones como filtros, línea de tiempo en la página (§11.2) | 6–10 |
+
+Va **antes** de la Fase B y no por estética: el lector recibe la evidencia ya
+ordenada y sin triplicados, así que cada documento entra al prompt una vez en
+vez de tres. Es un descuento directo en el contexto que se paga por corrida.
+
 | Fase B — el lector | horas |
 |---|---|
 | Prompt congelado en código + las 7 secciones + "Dónde se rompe la historia" | 8–12 |
@@ -513,7 +528,7 @@ dos líneas que más pueden moverse siguen siendo las mismas de abajo.
 | Retiro del AI verdict de SMART $ + i18n + tests (§9) | 3–5 |
 | **Subtotal Fase B** | **21–31** |
 
-**Total: 60–86 horas.** Más, si G5 empuja a extraer guía de prosa: **+10–16**
+**Total: 66–96 horas.** Más, si G5 empuja a extraer guía de prosa: **+10–16**
 por la salida 2 de §3 (y por eso la recomendación es la salida 1).
 
 Las dos líneas que más pueden moverse y hay que vigilar:
@@ -1083,6 +1098,84 @@ guarda. No prueba que `company_quarterly` devuelva lo correcto — y la vista es
 donde vivían los tres errores que la rebanada B tuvo que arreglar (el alias
 confundido con re-expresión, el Q4 con una sola cita, el YoY contando cuatro
 filas). Se cierra con `scripts/historia-g7.mjs` (§10).
+
+## 11.2. Enmienda de formato — una línea de tiempo, siete filtros (rebanada F)
+
+*2026-09-20. Posterior al cierre de la Fase A. Cambia la forma de la lectura,
+no la capa de datos: ni el esquema ni la ingesta se tocan.*
+
+La Fase A entregó las siete secciones y el operador las leyó. El diagnóstico
+fue corto y correcto: **"sigue siendo un catálogo, no una historia"**. Tres
+cosas concretas, más una cuarta que el diagnóstico no mencionaba y que era la
+peor de las cuatro porque nadie la veía.
+
+**1. El 9.01 es ruido con formato de señal.** Aparece en 30 de 30 filings y lo
+único que dice es "adjunté un archivo". Mostrarlo al mismo nivel que un 4.02
+no es neutralidad: es gastar la atención del lector en el sobre. Se degrada,
+**no se esconde** — baja al final y en gris, y sigue contándose aparte. Lo
+mismo con el 7.01… **salvo cuando va solo**. Un 8-K cuyo único item es 7.01 es
+una divulgación Reg FD y ése *es* el evento; degradarlo siempre escondería
+filings cuyo contenido completo es ése. La regla, entonces, depende del resto
+de los items y no del item aislado (`esSecundario` en el glosario).
+
+**2. El mismo 8-K salía en tres secciones.** El del 2022-03-29 aparecía en la
+1, en la 3 y en la 7 sin decir que era el mismo papel. La regla que quedó:
+*un documento es un evento — o se muestra una vez con todos sus temas, o se
+marca claramente que es el mismo*. Hoy se muestra una vez y lleva las
+etiquetas de las preguntas que contesta. El único lugar donde se repite a
+propósito es "dónde se rompe la historia" (§8 lo pone al final, y ahí el
+lector no va a buscar) — y ahí se declara en pantalla que es el mismo papel.
+
+**3. Siete listas no son una historia.** El orden cronológico cuenta más que
+el orden por categoría: lo que pasó en marzo se entiende junto a lo de abril,
+no junto a otro 5.02 de hace siete años. Ahora hay **una línea**, y las siete
+preguntas son filtros sobre ella.
+
+**4. Lo que el diagnóstico no mencionaba: ese documento se contaba tres
+veces.** Con siete consultas y siete listas, cada resumen sumaba 1 por el
+mismo papel. "12 filings" en tres secciones sobre un universo de 20
+documentos distintos es una cifra correcta sobre el conjunto equivocado, que
+es la peor clase de número porque nadie la revisa. No se arregló contando con
+más cuidado: se arregló **quitando la posibilidad**. Hay una sola consulta
+(`eventos()`, con `exists` en vez de un join con `distinct`) y las secciones
+guardan `accessions`, no copias de los documentos. Que un evento aparezca una
+vez dejó de ser una convención y pasó a ser una propiedad de la estructura.
+
+### Dos decisiones que esto obligó, y que se declaran
+
+- **El perímetro de la línea.** La línea no es "todo lo que la empresa
+  presentó": es lo que alimenta las siete preguntas. Los 10-K y 10-Q completos
+  y las **Formas 3/4/5** de insiders quedan fuera — LULU tiene 196 Formas 4 y
+  taparían la línea entera. No es un recorte nuevo (la Fase A tampoco las
+  mostraba), pero ahora que hay UNA lista el vacío se lee como ausencia, así
+  que se dice en pantalla (`linea_perimetro`).
+- **Una pregunta no cubierta se puede filtrar, y ahí no se miente.** Los chips
+  de las preguntas 4, 5 y 6 son clickeables aunque no tengan documentos: ahí
+  es donde vive la explicación. Lo que la línea vacía **no** puede decir en
+  ese caso es "se buscó en el índice y no hay" — eso sería afirmar sobre la
+  empresa algo que en realidad es sobre nosotros, que es el error exacto que
+  este módulo existe para no cometer. Tiene su propio texto y su propia
+  prueba de e2e.
+
+### Lo que sigue abierto
+
+**El 5.07 no está en el perímetro.** El resultado de la votación en la asamblea
+es evidencia directa de la pregunta 2 —quién posee y quién pelea— y el tablero
+de la corrida 2 lo midió: **5 por emisor en los cuatro** (§11). Hoy la consulta
+no lo trae. Meterlo amplía qué documentos muestra el módulo, así que no entra
+de contrabando en una rebanada de formato; queda como decisión con su número
+al lado. Mientras tanto, una prueba obliga a que el mapa item→pregunta y el
+perímetro de la consulta cuadren en **las dos direcciones**: un item del
+perímetro sin pregunta sería invisible con los filtros puestos, y una pregunta
+para un item que no se consulta sería cobertura anunciada que no existe.
+
+El desglose de un panel cuenta los temas de **los papeles del filtro**, no los
+de la pregunta: bajo "cuál es el catalizador" puede salir `1× 5.02`, porque
+ese mismo 8-K traía las dos cosas. Es cierto y es confuso, así que va
+etiquetado ("Temas de estos filings:"). Si molesta en datos reales, la salida
+es separar los temas de la pregunta de los del papel, no ocultar los segundos.
+
+---
 
 ## 12. Fuentes
 
