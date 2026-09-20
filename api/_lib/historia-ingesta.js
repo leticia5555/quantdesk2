@@ -211,9 +211,30 @@ export function hechosDe(nodo, unidadesMax = Infinity) {
 export function derivarQ4(hechos) {
   const anuales = hechos.filter((h) => h.start && h.end && clasePeriodo(dias(h.start, h.end)) === 'FY');
   const nueveMeses = hechos.filter((h) => h.start && h.end && clasePeriodo(dias(h.start, h.end)) === '9M');
+
+  // LO QUE LA EMPRESA YA REPORTÓ NO SE CALCULA.
+  //
+  // No todos los emisores dejan el Q4 sin reportar: hay conceptos donde el
+  // 10-K trae el trimestre DIRECTO además del año. Derivarlo igual producía
+  // dos filas con el MISMO (concepto, unidad, periodo, accession) —el 10-K es
+  // el mismo documento en las dos— y Postgres rechazaba el lote entero con
+  // "ON CONFLICT DO UPDATE command cannot affect row a second time".
+  //
+  // El arreglo no es solo técnico. Entre el trimestre que la empresa presentó
+  // y una resta nuestra, gana el de la empresa: el suyo es el dato, el nuestro
+  // es aritmética sobre el dato. Se compara por (fin, unidad) y no por el
+  // inicio exacto porque un 4-5-4 puede arrancar un día antes o después del
+  // día siguiente al 9M, y ahí el que manda es el cierre.
+  const yaReportados = new Set(
+    hechos
+      .filter((h) => h.start && h.end && clasePeriodo(dias(h.start, h.end)) === 'Q')
+      .map((h) => `${h.end}|${h.unit}`),
+  );
+
   const out = [];
 
   for (const fy of anuales) {
+    if (yaReportados.has(`${fy.end}|${fy.unit}`)) continue;
     if (!fy.accn || !Number.isFinite(aNumero(fy.val))) continue;
     const candidatos = nueveMeses.filter((m) => (
       m.start === fy.start                      // mismo año fiscal
@@ -252,9 +273,47 @@ export function derivarQ4(hechos) {
 //                   emisores: si aparece uno, es nuestro, no de EDGAR (§10, G7).
 //   · `sin_valor` — val ausente o no numérico.
 //   · `sin_fecha` — sin `end` o sin `filed` no se ubica en el tiempo.
+// La clave EXACTA del índice único de company_facts. Si dos filas del mismo
+// lote la comparten, Postgres rechaza el INSERT entero — no la fila: el lote.
+export const claveNatural = (f) =>
+  [f.cik, f.taxonomy, f.concept, f.unit, f.period_end, f.period_start || '1900-01-01', f.accession].join('|');
+
+// Colapsa las filas que comparten clave natural. Devuelve el conteo separado
+// en dos, porque significan cosas distintas:
+//
+//   · `duplicados` — misma clave, MISMO valor. EDGAR repite el mismo hecho en
+//     contextos distintos del mismo filing; quedarse con uno no pierde nada.
+//   · `clave_ambigua` — misma clave, valor DISTINTO. Eso no es un duplicado:
+//     es la clave natural fallando en distinguir dos hechos que sí lo son, y
+//     colapsarlos en silencio sería elegir un número por sorteo. Se colapsa
+//     con una regla explícita —gana lo reportado sobre lo derivado, y después
+//     lo presentado más tarde— y se CUENTA, para que aparezca en el resultado
+//     de la ingesta en vez de desaparecer.
+export function dedupePorClave(filas) {
+  const porClave = new Map();
+  let duplicados = 0;
+  let clave_ambigua = 0;
+
+  for (const f of filas) {
+    const k = claveNatural(f);
+    const previo = porClave.get(k);
+    if (!previo) { porClave.set(k, f); continue; }
+
+    if (Number(previo.val) === Number(f.val)) duplicados++;
+    else clave_ambigua++;
+
+    // Lo reportado le gana a lo derivado; entre dos iguales, lo más reciente.
+    const ganaNuevo = (previo.derived && !f.derived)
+      || (previo.derived === f.derived && String(f.filed) > String(previo.filed));
+    if (ganaNuevo) porClave.set(k, f);
+  }
+
+  return { filas: [...porClave.values()], duplicados, clave_ambigua };
+}
+
 export function normalizarFacts(companyfacts, { cik, desde = null } = {}) {
   const filas = [];
-  const descartados = { sin_accn: 0, sin_valor: 0, sin_fecha: 0 };
+  const descartados = { sin_accn: 0, sin_valor: 0, sin_fecha: 0, duplicados: 0, clave_ambigua: 0 };
   const taxonomias = companyfacts?.facts || {};
 
   for (const [taxonomy, conceptos] of Object.entries(taxonomias)) {
@@ -297,7 +356,15 @@ export function normalizarFacts(companyfacts, { cik, desde = null } = {}) {
       }
     }
   }
-  return { filas, descartados };
+
+  // La red de seguridad. `derivarQ4` ya no pisa lo reportado, pero esto no
+  // depende de haber previsto TODAS las formas en que EDGAR repite un hecho:
+  // un lote que llega a Neon con la clave repetida se rechaza entero, y perder
+  // un emisor completo por una fila duplicada es un precio absurdo.
+  const limpio = dedupePorClave(filas);
+  descartados.duplicados = limpio.duplicados;
+  descartados.clave_ambigua = limpio.clave_ambigua;
+  return { filas: limpio.filas, descartados };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -361,6 +428,9 @@ export async function ingerirEmisor(cli, repo, { cik, ticker = null, nombre = nu
     descartados,
     // El que importa vigilar: la corrida 2 midió 0 en los cuatro emisores.
     sinCita: descartados.sin_accn,
+    // Si esto sale > 0, la clave natural no distingue dos hechos que sí son
+    // distintos y hay que mirarlo — no es ruido que se limpia y ya.
+    claveAmbigua: descartados.clave_ambigua,
     ms: Date.now() - t0,
   };
 }

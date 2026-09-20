@@ -92,6 +92,14 @@
       "destination": "/libros.html"
     },
     {
+      "source": "/historia",
+      "destination": "/historia.html"
+    },
+    {
+      "source": "/historia/:ticker",
+      "destination": "/historia.html"
+    },
+    {
       "source": "/api/historia/:ticker",
       "destination": "/api/historia?ticker=:ticker"
     },

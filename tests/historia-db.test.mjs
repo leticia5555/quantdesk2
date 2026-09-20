@@ -297,6 +297,26 @@ console.log('\n── guardarFacts: la cita es una invariante, no una buena inte
   eq(pd[13], '0001-26-1', 'el derivado cita el 10-K…');
   eq(pd[14], '0001-25-3', '…y el 10-Q de los nueve meses');
 
+  // La clave repetida se detiene acá, con un mensaje que dice cuál es. El
+  // de Postgres —"cannot affect row a second time"— no dice ni la fila ni el
+  // emisor, y costó dos emisores completos en el primer goteo.
+  const { repo: r6, lotes: l6 } = repoDePrueba();
+  await tira(
+    () => r6.guardarFacts([hecho(), hecho({ val: 999 })]),
+    'dos filas con la clave natural repetida se rechazan',
+    (e, name) => {
+      ok(/clave natural/.test(e.message), name + ' nombrando el problema');
+      ok(/RevenueFromContract/.test(e.message) && /2025-12-31/.test(e.message), name + ' y la clave exacta');
+      ok(/6000000000 y 999/.test(e.message), name + ' con los dos valores en conflicto');
+      eq(l6.length, 0, 'sin mandar nada a la base');
+    },
+  );
+  // Dos accession distintos NO son la misma clave: la re-expresión pasa.
+  const { repo: r7, lotes: l7 } = repoDePrueba();
+  eq(await r7.guardarFacts([hecho(), hecho({ accession: '0001-25-9', val: 5900000000 })]), 2,
+    'dos presentaciones del mismo periodo sí entran: eso es la re-expresión, no un duplicado');
+  eq(l7[0][0][1].length, 34, 'y viajan las dos filas');
+
   // Un hecho sin familia se guarda igual: el crudo no se tira.
   const { repo: r5, lotes: l5 } = repoDePrueba();
   await r5.guardarFacts([hecho({ familia: null, familia_rango: null, concept: 'AlgoRaro' })]);

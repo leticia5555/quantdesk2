@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
+<title>HISTORIA — QuantDesk · la empresa contada por sus documentos</title>
+<meta name="description" content="Siete preguntas sobre una empresa, contestadas solo con filings de la SEC. Cada dato con su accession, y lo que no cubrimos dicho en la pantalla."/>
+<meta name="theme-color" content="#050505"/>
+<meta property="og:title" content="HISTORIA — QuantDesk"/>
+<meta property="og:description" content="La historia de una empresa en documentos citables. Sin narración, sin veredicto."/>
+<meta property="og:type" content="website"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+:root{
+  --bg:#050505; --bg1:#0d0d0d; --bg2:#141414;
+  --border:#1e1e1e; --border2:#2a2a2a;
+  --text:#f0ede8; --text2:#8a8a82; --text3:#4a4a44;
+  --green:#00c97d; --red:#ff4545; --blue:#4a9eff; --amber:#ffb347;
+  --purple:#a78bfa; --gold:#ffd35a;
+  --mono:'Space Mono',monospace; --sans:'DM Sans',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);}
+a{color:inherit;}
+.wrap{max-width:680px;margin:0 auto;padding:0 16px 72px;}
+
+header{padding:22px 0 14px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.logo{font-family:var(--mono);font-size:14px;font-weight:700;letter-spacing:.14em;}
+.logo span{color:var(--purple);}
+.hero{padding:6px 0 14px;border-bottom:1px solid var(--border);}
+.hero h1{font-family:var(--mono);font-size:clamp(22px,7vw,30px);font-weight:700;line-height:1.14;letter-spacing:-.01em;}
+.hero h1 .accent{color:var(--purple);}
+.hero p{font-size:13px;color:var(--text2);margin-top:8px;line-height:1.5;}
+
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 2px;align-items:center;}
+.pill{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--text2);text-transform:uppercase;
+  background:var(--bg1);border:1px solid var(--border2);border-radius:20px;padding:7px 13px;cursor:pointer;
+  -webkit-user-select:none;user-select:none;}
+.pill.on{color:#000;background:var(--purple);border-color:var(--purple);font-weight:700;}
+input.tick{font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--text);
+  background:var(--bg1);border:1px solid var(--border2);border-radius:20px;padding:7px 14px;width:132px;outline:none;}
+input.tick:focus{border-color:var(--purple);}
+
+/* PERÍMETRO — lo que NO cubrimos, arriba y siempre visible. */
+.perimetro{background:var(--bg1);border:1px solid var(--border2);border-left:3px solid var(--text3);
+  border-radius:8px;padding:12px 14px;margin:16px 0;}
+.perimetro h3{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--text3);margin-bottom:8px;}
+.perimetro li{font-size:12px;color:var(--text2);line-height:1.55;margin-left:16px;margin-bottom:3px;}
+
+.cobertura{background:rgba(255,179,71,.07);border:1px solid rgba(255,179,71,.34);border-left:3px solid var(--amber);
+  border-radius:8px;padding:12px 14px;margin:16px 0;}
+.cobertura b{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber);display:block;margin-bottom:6px;}
+.cobertura p{font-size:12.5px;color:var(--text2);line-height:1.55;}
+
+.emisor{font-family:var(--mono);font-size:11px;color:var(--text2);margin:14px 0 2px;line-height:1.7;}
+.emisor .cik{color:var(--text3);}
+
+/* SECCIONES */
+.sec{border-top:1px solid var(--border);padding:20px 0 6px;}
+.sec-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px;}
+.sec-num{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--purple);letter-spacing:.08em;}
+.sec-head h2{font-family:var(--mono);font-size:15px;font-weight:700;letter-spacing:-.01em;line-height:1.25;}
+.badge{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:12px;
+  border:1px solid var(--border2);color:var(--text3);white-space:nowrap;}
+.badge.ok{color:var(--green);border-color:rgba(0,201,125,.35);}
+.badge.vacio{color:var(--text2);}
+.badge.nocubre{color:var(--amber);border-color:rgba(255,179,71,.35);}
+.badge.fuera{color:var(--blue);border-color:rgba(74,158,255,.35);}
+
+/* Los tres vacíos se ven DISTINTO: el que dice algo de la empresa, el que
+   dice algo de nosotros, y el que manda a otro panel. */
+.sindocs{font-size:12.5px;color:var(--text2);line-height:1.55;background:var(--bg1);border:1px dashed var(--border2);
+  border-radius:8px;padding:11px 13px;margin-top:8px;}
+.sindocs .q{color:var(--text3);font-size:11.5px;display:block;margin-top:4px;}
+.decl{font-size:12.5px;line-height:1.55;border-radius:8px;padding:11px 13px;margin-top:8px;}
+.decl.nocubre{color:#ffd9a8;background:rgba(255,179,71,.06);border:1px solid rgba(255,179,71,.26);}
+.decl.fuera{color:#bcd9ff;background:rgba(74,158,255,.06);border:1px solid rgba(74,158,255,.24);}
+.decl.nota{color:var(--text2);background:var(--bg1);border:1px solid var(--border2);}
+
+/* DOCUMENTOS */
+.doc{display:flex;align-items:baseline;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;}
+.doc:last-child{border-bottom:none;}
+.doc .f{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--text);min-width:66px;}
+.doc .d{font-family:var(--mono);font-size:11px;color:var(--text2);min-width:84px;}
+.doc .it{font-family:var(--mono);font-size:10px;color:var(--purple);letter-spacing:.04em;}
+.doc .cita{font-family:var(--mono);font-size:10px;color:var(--text3);text-decoration:none;border-bottom:1px dotted var(--text3);margin-left:auto;}
+.doc .cita:hover{color:var(--green);border-bottom-color:var(--green);}
+.mas{font-family:var(--mono);font-size:10px;color:var(--text3);padding-top:8px;}
+
+/* SERIE */
+.serie{margin-top:12px;}
+.fam{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);
+  margin:12px 0 4px;padding-top:8px;border-top:1px solid var(--border);}
+.pt{display:flex;align-items:baseline;gap:10px;padding:6px 0;flex-wrap:wrap;}
+.pt .per{font-family:var(--mono);font-size:11px;color:var(--text2);min-width:84px;}
+.pt .val{font-family:var(--mono);font-size:12.5px;font-weight:700;min-width:132px;}
+.pt .yoy{font-family:var(--mono);font-size:11px;min-width:64px;}
+.pt .yoy.up{color:var(--green);} .pt .yoy.down{color:var(--red);}
+.pt .yoy.na{color:var(--text3);}
+.tag{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;padding:2px 6px;border-radius:10px;}
+.tag.rev{color:var(--amber);border:1px solid rgba(255,179,71,.32);}
+.tag.der{color:var(--blue);border:1px solid rgba(74,158,255,.3);}
+.citas{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;}
+.citas a{font-family:var(--mono);font-size:10px;color:var(--text3);text-decoration:none;border-bottom:1px dotted var(--text3);}
+.citas a:hover{color:var(--green);border-bottom-color:var(--green);}
+
+/* DÓNDE SE ROMPE */
+.rompe{border:1px solid rgba(255,69,69,.26);background:rgba(255,69,69,.04);border-radius:10px;padding:14px;margin-top:26px;}
+.rompe h2{font-family:var(--mono);font-size:13px;font-weight:700;color:#ffb0b0;margin-bottom:8px;}
+.rompe .por{font-size:12px;color:var(--text2);line-height:1.55;margin-bottom:10px;}
+.rompe.limpio{border-color:var(--border2);background:var(--bg1);}
+.rompe.limpio h2{color:var(--text);}
+
+.estado{background:var(--bg1);border:1px solid var(--border2);border-radius:10px;padding:18px 16px;margin-top:22px;}
+.estado h2{font-family:var(--mono);font-size:14px;margin-bottom:8px;}
+.estado p{font-size:13px;color:var(--text2);line-height:1.6;}
+.estado code{font-family:var(--mono);font-size:11.5px;color:var(--purple);}
+
+footer{margin-top:32px;padding-top:16px;border-top:1px solid var(--border);
+  font-family:var(--mono);font-size:10px;color:var(--text3);line-height:1.8;letter-spacing:.04em;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">QUANT<span>DESK</span></div>
+    <div class="controls" style="margin:0">
+      <input class="tick" id="tk" placeholder="TICKER" autocomplete="off" spellcheck="false"/>
+      <div class="pill" id="lang">EN</div>
+    </div>
+  </header>
+
+  <div class="hero">
+    <h1 id="h1">HISTORIA<span class="accent">.</span></h1>
+    <p id="sub"></p>
+  </div>
+
+  <div id="app"></div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// HISTORIA — la página. Siete secciones, cada una con sus documentos.
+//
+// NO NARRA. No hay IA acá: los documentos se listan, la serie se tabula, y
+// nada se interpreta. El lector con prompt congelado es la Fase B.
+//
+// LAS TRES REGLAS QUE ESTA PÁGINA TIENE QUE SOSTENER:
+//
+//  1. Ningún número sin su cita visible. La `[accession]` se ve y enlaza al
+//     documento; un Q4 derivado muestra SUS DOS citas, porque salió de una
+//     resta entre dos filings y enseñar solo el 10-K sería citar la mitad.
+//  2. Los tres vacíos se ven distinto. "Sin documentos" (buscamos y no hay)
+//     no se parece a "no cubierta" (no miramos esa fuente) ni a "fuera del
+//     módulo" (está en otro panel). Un hueco sin etiqueta es indistinguible
+//     de un error, y el usuario llena el silencio con lo que le conviene.
+//  3. Un YoY nulo NO se dibuja como 0%. Cuando falta el trimestre de
+//     comparación el endpoint manda null, y acá se muestra "—" con su
+//     motivo. Un cero inventado en una serie de ingresos no se ve nunca.
+//
+// El perímetro de lo NO cubierto va ARRIBA, no en el pie: §8 del memo pide
+// que se diga donde el usuario está por sacar una conclusión.
+// ═══════════════════════════════════════════════════════════════
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+let LANG = (localStorage.getItem('historia:lang') === 'en') ? 'en' : 'es';
+
+const T = {
+  es: {
+    sub: 'Siete preguntas sobre una empresa, contestadas SOLO con documentos de la SEC. Cada dato trae el filing del que salió. Esta página no narra ni recomienda.',
+    buscar: 'Escribí un ticker y dale Enter.',
+    cargando: 'Buscando…',
+    perimetro: 'Lo que este módulo NO cubre',
+    emisor: 'CIK', ingesta: 'Última ingesta',
+    cobertura_parcial: 'Cobertura parcial',
+    sin_docs: 'Sin documentos.',
+    sin_docs_q: 'Se buscó en el índice de filings de este emisor y no hay ninguno de este tipo en la ventana. No es que no lo hayamos mirado.',
+    badge_ok: 'con documentos', badge_vacio: 'sin documentos',
+    badge_nocubre: 'no cubierta', badge_fuera: 'fuera del módulo',
+    mas: (n) => `+${n} documento(s) más en EDGAR`,
+    rompe: 'Dónde se rompe la historia',
+    rompe_por: 'La contraevidencia. Sin esta sección el módulo sería un generador de sesgo de confirmación con citas: más peligroso que uno sin citas, porque parece riguroso.',
+    reexpresado: 'Periodos que la empresa volvió a presentar con otro valor:',
+    yoy_na: 'sin trimestre comparable',
+    rev: 'revisado', der: 'derivado',
+    der_nota: 'Q4 derivado (año − nueve meses): lleva las dos citas de las que sale.',
+    desconocido: 'Este ticker no está en el catálogo de Historia.',
+    desconocido_q: 'No significa que la empresa no exista ni que no tenga filings: significa que todavía no la sembramos.',
+    sin_ingesta: 'Está en el catálogo, pero todavía no se ingirió.',
+    sin_ingesta_q: 'La ingesta corre por goteo y toma ~42 segundos por emisor. Volvé después de la próxima corrida.',
+    error: 'No se pudo leer la historia.',
+    fuente: 'Fuente: SEC EDGAR · Cada afirmación enlaza a su documento.',
+    nodata: 'Sin datos · sin IA · sin recomendaciones',
+  },
+  en: {
+    sub: 'Seven questions about a company, answered ONLY with SEC documents. Every figure carries the filing it came from. This page does not narrate or recommend.',
+    buscar: 'Type a ticker and hit Enter.',
+    cargando: 'Loading…',
+    perimetro: 'What this module does NOT cover',
+    emisor: 'CIK', ingesta: 'Last ingest',
+    cobertura_parcial: 'Partial coverage',
+    sin_docs: 'No documents.',
+    sin_docs_q: 'We searched this issuer’s filing index and there are none of this type in the window. It is not that we did not look.',
+    badge_ok: 'with documents', badge_vacio: 'no documents',
+    badge_nocubre: 'not covered', badge_fuera: 'outside this module',
+    mas: (n) => `+${n} more document(s) on EDGAR`,
+    rompe: 'Where the story breaks',
+    rompe_por: 'The counter-evidence. Without this section the module would be a confirmation-bias generator with citations: more dangerous than one without, because it looks rigorous.',
+    reexpresado: 'Periods the company later refiled with a different value:',
+    yoy_na: 'no comparable quarter',
+    rev: 'restated', der: 'derived',
+    der_nota: 'Derived Q4 (year − nine months): it carries both of the citations it comes from.',
+    desconocido: 'This ticker is not in the Historia catalog.',
+    desconocido_q: 'It does not mean the company does not exist or has no filings: it means we have not seeded it yet.',
+    sin_ingesta: 'It is in the catalog, but has not been ingested yet.',
+    sin_ingesta_q: 'Ingestion runs as a trickle job and takes ~42 seconds per issuer. Come back after the next run.',
+    error: 'Could not read the story.',
+    fuente: 'Source: SEC EDGAR · Every claim links to its document.',
+    nodata: 'No AI · no ratings · no recommendations',
+  },
+};
+
+const TITULOS = {
+  es: {
+    direccion: 'Quién la dirige, y si son estables',
+    propiedad: 'Quién la posee, y quién pelea',
+    prometido_vs_entregado: 'Qué prometieron vs. qué entregaron',
+    gerencia: 'Qué dice y qué evade la gerencia',
+    competencia: 'Quién le come el mercado',
+    mercado: 'Qué cree ya el mercado',
+    catalizador: 'Cuál es el catalizador',
+  },
+  en: {
+    direccion: 'Who runs it, and whether they stay',
+    propiedad: 'Who owns it, and who is fighting',
+    prometido_vs_entregado: 'What they promised vs. what they delivered',
+    gerencia: 'What management says and dodges',
+    competencia: 'Who is eating their market',
+    mercado: 'What the market already believes',
+    catalizador: 'What the catalyst is',
+  },
+};
+
+const FAMILIAS = {
+  es: { ingresos: 'Ingresos', margen: 'Margen bruto', inventario: 'Inventario', neto: 'Resultado neto' },
+  en: { ingresos: 'Revenue', margen: 'Gross profit', inventario: 'Inventory', neto: 'Net income' },
+};
+
+// EL NÚMERO SE MUESTRA COMPLETO, NO COMPACTO. La primera versión usaba
+// `notation:'compact'` y 6.100 millones de dólares salían como "6100 MUSD":
+// legible solo si ya sabías qué decía, y a un parpadeo de leerse como 6.100
+// dólares. Y en español la escala corta es peor todavía — "B" es billion en
+// inglés y billón (10¹²) en español, así que el sufijo que ahorra espacio es
+// justo el que cambia el número por mil.
+//
+// Un dígito de más en pantalla no le cuesta nada a nadie. Un dígito mal leído
+// en una serie de ingresos sí, y este módulo existe para que eso no pase.
+function monto(v, unit) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '—';
+  const loc = LANG === 'en' ? 'en-US' : 'es-MX';
+  if (unit === 'USD') {
+    return new Intl.NumberFormat(loc, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
+  }
+  return new Intl.NumberFormat(loc, { maximumFractionDigits: 2 }).format(n) + (unit && unit !== 'pure' ? ' ' + unit : '');
+}
+// El hover trae la unidad completa, que en un EPS (USD/shares) es la mitad
+// del dato.
+const exacto = (v, unit) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '';
+  return new Intl.NumberFormat(LANG === 'en' ? 'en-US' : 'es-MX').format(n) + (unit ? ' ' + unit : '');
+};
+
+const docHTML = (d) => `<div class="doc">
+  <span class="f">${esc(d.form)}</span>
+  <span class="d">${esc(d.filed)}</span>
+  ${(d.items || []).length ? `<span class="it">${esc((d.items || []).join(' · '))}</span>` : ''}
+  <a class="cita" href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.cita)}</a>
+</div>`;
+
+function serieHTML(serie) {
+  const t = T[LANG];
+  if (!serie || !serie.length) return '';
+  const porFam = {};
+  for (const p of serie) (porFam[p.familia] = porFam[p.familia] || []).push(p);
+
+  return '<div class="serie">' + Object.keys(porFam).map((fam) => {
+    const puntos = porFam[fam].map((p) => {
+      // Un YoY nulo se dibuja como "—" con su motivo, NUNCA como 0%.
+      const y = (p.yoy_pct == null || p.yoy_pct === '')
+        ? `<span class="yoy na" title="${esc(t.yoy_na)}">—</span>`
+        : `<span class="yoy ${Number(p.yoy_pct) >= 0 ? 'up' : 'down'}">${Number(p.yoy_pct) >= 0 ? '+' : ''}${esc(p.yoy_pct)}%</span>`;
+      const citas = [`<a href="${esc(p.url)}" target="_blank" rel="noopener" title="${esc(p.form || '')} ${esc(p.filed || '')}">${esc(p.cita)}</a>`]
+        .concat(p.cita_aux ? [`<a href="${esc(p.url_aux)}" target="_blank" rel="noopener" title="${esc(t.der_nota)}">${esc(p.cita_aux)}</a>`] : []);
+      return `<div class="pt">
+        <span class="per">${esc(p.period_end)}</span>
+        <span class="val" title="${esc(exacto(p.val, p.unit))}">${esc(monto(p.val, p.unit))}</span>
+        ${y}
+        ${p.revisado ? `<span class="tag rev">${esc(t.rev)}</span>` : ''}
+        ${p.derived ? `<span class="tag der" title="${esc(t.der_nota)}">${esc(t.der)}</span>` : ''}
+        <span class="citas">${citas.join('')}</span>
+      </div>`;
+    }).join('');
+    return `<div class="fam">${esc(FAMILIAS[LANG][fam] || fam)}</div>${puntos}`;
+  }).join('') + '</div>';
+}
+
+function seccionHTML(s, i) {
+  const t = T[LANG];
+  const titulo = TITULOS[LANG][s.id] || s.id;
+  const badge = { con_documentos: ['ok', t.badge_ok], sin_documentos: ['vacio', t.badge_vacio],
+    no_cubierta: ['nocubre', t.badge_nocubre], fuera_del_modulo: ['fuera', t.badge_fuera] }[s.estado] || ['vacio', s.estado];
+
+  let cuerpo = '';
+  if (s.estado === 'con_documentos') {
+    cuerpo = (s.documentos || []).map(docHTML).join('') + serieHTML(s.serie);
+  } else if (s.estado === 'sin_documentos') {
+    // El vacío que habla de LA EMPRESA. Se dice que se buscó.
+    cuerpo = `<div class="sindocs">${esc(t.sin_docs)}<span class="q">${esc(t.sin_docs_q)}</span></div>`;
+  }
+
+  const decls = (s.declaraciones || []).map((d) => {
+    const clase = s.estado === 'no_cubierta' ? 'nocubre' : s.estado === 'fuera_del_modulo' ? 'fuera' : 'nota';
+    return `<div class="decl ${clase}">${esc(d.texto)}</div>`;
+  }).join('');
+
+  return `<section class="sec">
+    <div class="sec-head">
+      <span class="sec-num">${i + 1}</span>
+      <h2>${esc(titulo)}</h2>
+      <span class="badge ${badge[0]}">${esc(badge[1])}</span>
+    </div>
+    ${cuerpo}${decls}
+  </section>`;
+}
+
+function render(d) {
+  const t = T[LANG];
+  $('sub').textContent = t.sub;
+  $('lang').textContent = LANG === 'es' ? 'EN' : 'ES';
+  $('foot').innerHTML = esc(t.fuente) + '<br/>' + esc(t.nodata);
+
+  if (!d) { $('app').innerHTML = `<div class="estado"><p>${esc(t.buscar)}</p></div>`; return; }
+
+  if (d.estado === 'desconocido' || d.estado === 'sin_ingesta') {
+    // No es un error ni un 404. "Todavía no la bajamos" y "esta empresa no
+    // tiene historia" son cosas distintas y la página no las confunde.
+    const titulo = d.estado === 'desconocido' ? t.desconocido : t.sin_ingesta;
+    const nota = d.estado === 'desconocido' ? t.desconocido_q : t.sin_ingesta_q;
+    $('app').innerHTML = `<div class="estado"><h2>${esc(d.ticker)}</h2><p>${esc(titulo)}<br/><br/>${esc(nota)}</p></div>`;
+    return;
+  }
+  if (d.estado !== 'ok') {
+    $('app').innerHTML = `<div class="estado"><h2>${esc(t.error)}</h2><p>${esc(d.error || d.detalle || '')}</p></div>`;
+    return;
+  }
+
+  const e = d.emisor || {};
+  const cab = `<div class="emisor"><b>${esc(e.nombre || d.ticker)}</b><br/>
+    <span class="cik">${esc(t.emisor)} ${esc(e.cik)} · ${esc(e.forma_anual || '')} · ${esc(t.ingesta)}: ${esc(String(e.ultima_ingesta || '').slice(0, 10))}</span></div>`;
+
+  // La cobertura parcial va arriba y en ámbar: es lo que cambia cómo se lee
+  // TODO lo de abajo, así que llega antes y no como nota al pie.
+  const parcial = e.cobertura === 'parcial'
+    ? `<div class="cobertura"><b>${esc(t.cobertura_parcial)}</b><p>${esc((d.no_cubierto.find((x) => x.codigo === 'cobertura_parcial') || {}).texto || '')}</p></div>`
+    : '';
+
+  const perim = `<div class="perimetro"><h3>${esc(t.perimetro)}</h3><ul>${
+    (d.no_cubierto || []).filter((x) => x.codigo !== 'cobertura_parcial').map((x) => `<li>${esc(x.texto)}</li>`).join('')
+  }</ul></div>`;
+
+  const secs = (d.secciones || []).map(seccionHTML).join('');
+
+  const c = d.contraevidencia || {};
+  const limpio = c.estado !== 'con_documentos';
+  const rompe = `<div class="rompe${limpio ? ' limpio' : ''}">
+    <h2>${esc(t.rompe)}</h2>
+    <p class="por">${esc(t.rompe_por)}</p>
+    ${(c.documentos || []).map(docHTML).join('')}
+    ${(c.periodos_reexpresados || []).length ? `<div class="fam">${esc(t.reexpresado)}</div>` +
+      c.periodos_reexpresados.map((p) => `<div class="pt"><span class="per">${esc(p.period_end)}</span>
+        <span class="val">${esc(FAMILIAS[LANG][p.familia] || p.familia)}</span>
+        <span class="citas"><a href="${esc(p.url || '#')}" target="_blank" rel="noopener">${esc(p.cita)}</a></span></div>`).join('') : ''}
+    ${(c.declaraciones || []).map((x) => `<div class="decl nota">${esc(x.texto)}</div>`).join('')}
+  </div>`;
+
+  $('app').innerHTML = cab + parcial + perim + secs + rompe;
+}
+
+async function cargar(ticker) {
+  const t = T[LANG];
+  $('app').innerHTML = `<div class="estado"><p>${esc(t.cargando)}</p></div>`;
+  try {
+    const ctl = new AbortController();
+    const to = setTimeout(() => ctl.abort(), 20000);
+    const r = await fetch(`/api/historia?ticker=${encodeURIComponent(ticker)}&lang=${LANG}`, { signal: ctl.signal });
+    clearTimeout(to);
+    render(await r.json());
+  } catch (err) {
+    render({ estado: 'error', error: String(err && err.message ? err.message : err) });
+  }
+}
+
+function tickerDeLaURL() {
+  const m = /^\/historia\/([A-Za-z0-9.\-]+)/.exec(location.pathname);
+  if (m) return m[1].toUpperCase();
+  const q = new URLSearchParams(location.search).get('ticker');
+  return q ? q.toUpperCase() : '';
+}
+
+let TICKER = tickerDeLaURL();
+$('tk').value = TICKER;
+$('tk').addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Enter') return;
+  TICKER = $('tk').value.trim().toUpperCase();
+  if (!TICKER) return;
+  history.replaceState(null, '', `/historia/${encodeURIComponent(TICKER)}`);
+  cargar(TICKER);
+});
+$('lang').addEventListener('click', () => {
+  LANG = LANG === 'es' ? 'en' : 'es';
+  localStorage.setItem('historia:lang', LANG);
+  document.documentElement.lang = LANG;
+  // Se vuelve a pedir en vez de traducir acá: las declaraciones de §8 viven
+  // en el servidor y tener dos copias del mismo texto es cómo empiezan a
+  // decir cosas distintas.
+  if (TICKER) cargar(TICKER); else render(null);
+});
+
+document.documentElement.lang = LANG;
+if (TICKER) cargar(TICKER); else render(null);
+</script>
+</body>
+</html>

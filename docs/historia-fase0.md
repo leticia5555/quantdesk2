@@ -700,6 +700,8 @@ La respuesta del goteo es el veredicto de G7, y se lee contra §11:
 | Qué mirar | Verde si |
 |---|---|
 | `sinCita` | **0**. La corrida 2 midió 0 hechos sin `accn` en los cuatro emisores: cualquier otro número es nuestro, no de EDGAR |
+| `claveAmbigua` | **0**. Si sale > 0, la clave natural NO distingue dos hechos que sí son distintos, y hay que agregarle columnas — no es ruido que se limpia y ya |
+| `descartados.duplicados` | > 0 está bien: EDGAR repite el mismo hecho en varios contextos del mismo filing. Colapsarlos no pierde nada |
 | `descartados` | `sin_valor` y `sin_fecha` en 0, o explicados |
 | `derivados` | > 0 en los tres domésticos (los Q4), **0 en VIST** (un 20-F no tiene 9M que restar) |
 | `perfil.cobertura` | `completa` en LULU, MSFT y MELI · **`parcial` en VIST** |
