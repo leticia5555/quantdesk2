@@ -34,7 +34,9 @@
 import { autorizar } from './_lib/historia-auth.js';
 import { crearLectura, armarHistoria } from './_lib/historia-lectura.js';
 import { respuestaEvidencia } from './_lib/historia-evidencia.js';
-import { narrar, hashNarracion } from './_lib/historia-narrador.js';
+import {
+  narrar, hashNarracion, sumarCostos, MAX_TOKENS, MAX_TOKENS_REINTENTO, MAX_INTENTOS,
+} from './_lib/historia-narrador.js';
 import { repo } from './_lib/historia-db.js';
 
 export const config = { maxDuration: 300 };
@@ -63,6 +65,11 @@ export async function correrNarracion(ticker, {
 
   const hash = hashNarracion(paq.evidencia);
   const cik = cuerpo.emisor.cik;
+
+  // Lo que hubo antes en este hash, sirva o no: hace falta para las dos
+  // decisiones de abajo (no re-narrar lo que ya está, y no reintentar para
+  // siempre lo que ya se pagó dos veces).
+  const previo = almacen.intentoPrevio ? await almacen.intentoPrevio(cik, hash) : null;
 
   // Lo que ya está no se vuelve a pagar.
   if (!forzar) {
@@ -94,7 +101,42 @@ export async function correrNarracion(ticker, {
     };
   }
 
-  const r = await llamar(paq.evidencia, { apiKey });
+  // ── EL REINTENTO, CON TOPE ──────────────────────────────────────────
+  //
+  // Una narración cortada con la misma evidencia, el mismo prompt y el mismo
+  // modelo se vuelve a cortar: el reintento ciego son dos llamadas pagadas
+  // por cada narración que no cabe, y falla en silencio.
+  //
+  // Lo único que puede cambiar el resultado es el techo, así que el reintento
+  // lo sube UNA vez y después se para. Y como el conteo se acumula en la
+  // fila, una narración que ya gastó sus dos intentos no se vuelve a intentar
+  // en la visita siguiente — que es como un tope se convierte en infinito en
+  // cuotas.
+  const gastados = (previo && previo.intentos) || 0;
+  if (!forzar && previo && previo.estado === 'cortada' && gastados >= MAX_INTENTOS) {
+    return {
+      status: 409,
+      cuerpo: {
+        ticker, cik, hash, estado: 'cortada_definitiva', narrada: false, costo: null,
+        intentos_gastados: gastados,
+        detalle: `Se cortó ${gastados} veces, la segunda con el techo en ${MAX_TOKENS_REINTENTO}. No se reintenta: con la misma evidencia el resultado no cambia. Usá forzar=1 si querés pagarlo igual.`,
+      },
+    };
+  }
+
+  const intentos = [];
+  let r = await llamar(paq.evidencia, { apiKey, maxTokens: MAX_TOKENS });
+  intentos.push(r);
+
+  if (r.estado === 'cortada' && gastados + intentos.length < MAX_INTENTOS) {
+    r = await llamar(paq.evidencia, { apiKey, maxTokens: MAX_TOKENS_REINTENTO });
+    intentos.push(r);
+  }
+
+  // El costo es la SUMA de lo que se pagó, no lo del último intento. Si no,
+  // el número miente hacia abajo y el intento que falló —el que más ganas dan
+  // de no mirar— desaparece de la cuenta justamente porque falló.
+  const costo = sumarCostos(intentos.map((i) => i.costo));
 
   // SE GUARDA SIEMPRE, cualquiera sea el estado.
   await almacen.guardarNarracion({
@@ -105,10 +147,12 @@ export async function correrNarracion(ticker, {
     modelo: r.modelo_servido || r.modelo,
     huella_prompt: r.huella_prompt,
     secciones: r.estado === 'ok' ? r.secciones : null,
+    // La cruda del ÚLTIMO intento, que es el que decidió el estado.
     crudo: r.crudo,
-    costo: r.costo,
+    costo,
     detalle: r.detalle || r.categoria || null,
     evidencia_bytes: paq.bytes,
+    intentos: intentos.length,
   });
 
   return {
@@ -120,9 +164,11 @@ export async function correrNarracion(ticker, {
       cacheada: false,
       detalle: r.detalle || null,
       evidencia_bytes: paq.bytes,
+      // Cuántas llamadas se pagaron en ESTA corrida, a la vista.
+      intentos: intentos.length,
       // El costo se devuelve SIEMPRE que haya habido llamada, incluso cuando
       // falló: se pagó igual, y no verlo es cómo una factura sorprende.
-      costo: r.costo,
+      costo,
       secciones: r.estado === 'ok' ? r.secciones : null,
     },
   };

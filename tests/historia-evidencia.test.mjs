@@ -414,6 +414,94 @@ console.log('\n── Lo que no se puede citar, NO entra (se decide antes de la 
 }
 
 // ═════════════════════════════════════════════════════════════════════════
+console.log('\n── El vecino podado: la distancia NO puede nombrar un ausente');
+{
+  // EL CASO EXACTO, construido a propósito: un evento que SE QUEDA, cuyo
+  // vecino es el huérfano que se poda. Si la distancia sobreviviera
+  // apuntando a él, el modelo lo citaría, la compuerta de la página no lo
+  // resolvería, y se perdería la historia entera por un papel que ni se
+  // muestra.
+  const viejo = ev('acc-huerfano', '8-K', '5.02', '2026-01-01');
+  const bueno = ev('acc-bueno', '8-K', '2.02', '2026-02-15');
+  const r = eventosParaPrompt([bueno, viejo], []);
+
+  // Antes de podar, la distancia sí lo nombra: es lo correcto mientras el
+  // vecino sea citable.
+  eq(r.eventos.find((e) => e.accession === 'acc-bueno').anterior.accession, 'acc-huerfano',
+    'antes de podar, la distancia nombra al vecino');
+  eq(r.eventos.find((e) => e.accession === 'acc-bueno').anterior.dias, 45, 'con los días contados');
+
+  const sucio = { narrable: true, linea: { ...r }, serie: [], razones: [], contraevidencia: {} };
+  const { paquete, excluidos } = podarSinCita(sucio, ['acc-huerfano']);
+  const sobrevive = paquete.linea.eventos.find((e) => e.accession === 'acc-bueno');
+
+  ok(sobrevive, 'el evento citable se queda');
+  // Se cae ENTERA, no solo el accession. Dejar el número sin referencia sería
+  // una afirmación que el modelo puede escribir y no puede citar.
+  ok(!('anterior' in sobrevive), 'y la distancia se cae ENTERA: ni el accession ni los días');
+  ok(!JSON.stringify(sobrevive).includes('acc-huerfano'), 'el evento no nombra al ausente por ningún lado');
+  ok(![...accessionsDe(paquete)].includes('acc-huerfano'),
+    'y el paquete entero deja de nombrarlo como cita');
+  eq(excluidos.vecinos, 1, 'lo perdido se declara a nivel del paquete, que es donde se puede');
+
+  // El conteo no suma dos veces el mismo papel: un evento que se poda entero
+  // Y que además era el vecino de otro no es "un evento y un vecino".
+  const encadenado = eventosParaPrompt([
+    ev('c', '8-K', '2.02', '2026-03-01'),
+    ev('b', '8-K', '5.02', '2026-02-01'),
+    ev('a', '8-K', '1.01', '2026-01-01'),
+  ], []);
+  const p2 = podarSinCita(
+    { narrable: true, linea: { ...encadenado }, serie: [], razones: [], contraevidencia: {} },
+    ['b'],
+  );
+  eq(p2.excluidos.eventos, 1, 'se poda un evento');
+  eq(p2.excluidos.vecinos, 1, 'y solo el que sobrevive pierde su vecino — el podado no se cuenta dos veces');
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+console.log('\n── La invariante: ningún accession del paquete queda sin resolver');
+{
+  // Ésta es la propiedad que importa, y vale para TODO lo que cita: los
+  // eventos, los vecinos, las anclas de los episodios, la serie y la
+  // contraevidencia. Probar un caso a mano deja los otros cuatro sueltos.
+  const conTodo = [
+    fila('acc-402', '8-K', '4.02', '2026-03-01'),
+    fila('acc-502', '8-K', '5.02,2.02,1.01,9.01', '2026-02-20'),
+    fila('acc-13d', 'SC 13D', '', '2025-11-04'),
+  ];
+  for (let i = 0; i < 6; i++) {
+    conTodo.push(fila(`camp-${i}`, 'DFAN14A', '', `2025-12-0${i + 1}`));
+  }
+  conTodo.sort((a, b) => String(b.filed).localeCompare(String(a.filed)));
+
+  const { cuerpo: cx } = await armarHistoria(lecturaFalsa(conTodo, SERIE), 'MELI', {});
+  const rx = respuestaEvidencia(cx, { ticker: 'MELI' });
+
+  hondo(rx.huerfanos, [], 'con episodio, serie, contraevidencia y vecinos: cero huérfanos');
+
+  // Y la comprobación directa: cada accession nombrado resuelve a una URL.
+  const porAcc = new Map(rx.inventario.map((x) => [x.accession, x]));
+  const nombrados = [...accessionsDe(rx.evidencia)];
+  ok(nombrados.length > 5, `el paquete nombra varias citas (${nombrados.length})`);
+  const colgados = nombrados.filter((a) => !porAcc.has(a) || !porAcc.get(a).url);
+  hondo(colgados, [], 'y TODAS resuelven a un documento abrible');
+
+  // El episodio colapsó filings que NO están en la lista de eventos, y sus
+  // anclas se citan igual: estar colapsado no es estar ausente.
+  const ep = rx.evidencia.linea.episodios[0];
+  ok(ep && ep.citas.length === 2, 'el episodio trae sus dos anclas');
+  ok(ep.citas.every((c) => porAcc.has(c)), 'y las dos resuelven, aunque el resto de la racha no se liste');
+
+  // Un vecino colapsado también: se nombra desde `anterior` y tiene que
+  // resolver, porque es un papel real que el lector puede abrir.
+  const conVecinoColapsado = rx.evidencia.linea.eventos.filter((e) => e.anterior);
+  ok(conVecinoColapsado.length > 0, 'hay eventos con vecino');
+  ok(conVecinoColapsado.every((e) => porAcc.has(e.anterior.accession)),
+    'y todo vecino nombrado resuelve, esté listado o colapsado');
+}
+
+// ═════════════════════════════════════════════════════════════════════════
 console.log('\n── El hash: la historia cambia cuando cambia un filing');
 {
   // Mover un campo de lugar no re-narra cuatro mil empresas.

@@ -205,6 +205,10 @@ create table if not exists company_narracion (
      costo          jsonb,
      detalle        text,
      evidencia_bytes int,
+     -- Cuántas llamadas se pagaron por esta fila. Una narración cortada se
+     -- reintenta UNA vez con el techo al doble y después se para: sin el
+     -- conteo, cada lectura de la página dispararía dos llamadas nuevas.
+     intentos       int not null default 1,
      creado_en      timestamptz not null default now(),
      primary key (cik, hash)
    );

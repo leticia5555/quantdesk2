@@ -463,6 +463,18 @@ export const hashEvidencia = (paquete) => hashDe(paquete);
 // Un matiz que importa: si lo que no resuelve es el VECINO de un evento (su
 // `anterior`), el evento se queda y lo que se cae es la referencia al vecino.
 // Tirar un papel bueno porque el de al lado no abre sería pagar dos veces.
+//
+// **Y se cae ENTERA, no solo el accession.** La tentación es dejar el número
+// de días sin la referencia —"45 días desde el anterior"— pero eso sería una
+// afirmación que el modelo puede escribir y no puede citar, que es
+// exactamente lo que este módulo no hace. Un evento sin `anterior` se lee
+// igual que el más viejo de la ventana; lo que se perdió se cuenta en
+// `excluidos.vecinos`, a nivel del paquete, donde sí se puede declarar.
+//
+// La invariante que sale de acá y que hay una prueba que la fija: **después
+// de podar, ningún accession que el paquete nombre como cita puede quedar sin
+// resolver en el inventario.** Vale para los eventos, los vecinos, las anclas
+// de los episodios, las citas de la serie y las de la contraevidencia.
 export function podarSinCita(paquete, huerfanos = []) {
   const malo = new Set(huerfanos);
   if (!malo.size || !paquete || !paquete.narrable) return { paquete, excluidos: null };
@@ -480,13 +492,17 @@ export function podarSinCita(paquete, huerfanos = []) {
   const c = paquete.contraevidencia || {};
   const reexpresados = (c.periodos_reexpresados || []).filter(limpio);
 
+  const sobrevivientes = (linea.eventos || []).filter((e) => !malo.has(e.accession));
   const excluidos = {
     eventos: (linea.eventos || []).length - eventos.length,
     episodios: (linea.episodios || []).length - episodios.length,
     serie: (paquete.serie || []).length - serie.length,
     razones: (paquete.razones || []).length - razones.length,
     periodos_reexpresados: (c.periodos_reexpresados || []).length - reexpresados.length,
-    vecinos: (linea.eventos || []).filter((e) => e.anterior && malo.has(e.anterior.accession)).length,
+    // Sobre los que SOBREVIVEN. Contar sobre la lista original sumaría los
+    // eventos que se podaron enteros, y el mismo papel quedaría contado dos
+    // veces: una como evento excluido y otra como vecino perdido.
+    vecinos: sobrevivientes.filter((e) => e.anterior && malo.has(e.anterior.accession)).length,
     // OJO con el nombre. Esta lista DECLARA lo que se sacó por no ser
     // citable; si se llamara `accessions`, `accessionsDe` la recorrería como
     // si fuera una cita y el huérfano volvería a entrar al inventario — que

@@ -524,12 +524,13 @@ vez de tres. Es un descuento directo en el contexto que se paga por corrida.
 |---|---|
 | Rebanada G: paquete de evidencia, aritmética resuelta, inventario de citas (§11.3) | 5–7 |
 | Rebanada H: prompt congelado + versión en el hash + la llamada + persistencia + puerta autenticada (§11.4) | 9–13 |
+| Correcciones sobre la H: invariante de citas colgadas, tope del reintento, tres estados en pantalla (§11.5) | 3–4 |
 | **Guard de citas**: toda `[accession]` de la salida tiene que existir en el contexto que se mandó; si no, se corta | 5–7 |
 | **Guard anti-opinión**: prohibido precio, calificación y recomendación, con tests que lo intenten | 5–7 |
 | Retiro del AI verdict de SMART $ + i18n + tests (§9) | 3–5 |
-| **Subtotal Fase B** | **27–39** |
+| **Subtotal Fase B** | **30–43** |
 
-**Total: 72–104 horas.** Más, si G5 empuja a extraer guía de prosa: **+10–16**
+**Total: 75–108 horas.** Más, si G5 empuja a extraer guía de prosa: **+10–16**
 por la salida 2 de §3 (y por eso la recomendación es la salida 1).
 
 Las dos líneas que más pueden moverse y hay que vigilar:
@@ -1463,6 +1464,109 @@ antes de los cuatro.
 página no muestre, pero en bucle le pega a Neon gratis y además enseña
 exactamente qué se le manda al modelo. Ahora pide la misma llave: son cinco
 líneas y ninguna de las dos cosas tiene por qué estar abierta.
+
+---
+
+## 11.5. Tres correcciones sobre la H
+
+*2026-09-20. Tres huecos que el operador señaló al aprobar la H.*
+
+### 1. El vecino podado: qué pasa con la distancia
+
+El planteo: si el huérfano que se poda era el vecino de un evento que sí se
+queda, la distancia entre papeles —que en la G viene *nombrando contra cuál*—
+seguiría apuntando a un accession ausente. El modelo lo citaría, la compuerta
+de la página no lo resolvería, y **se perdería la historia entera por un papel
+que ni se muestra**.
+
+Construí el caso exacto antes de decidir. `podarSinCita` ya hacía la opción
+correcta —y la más fuerte de las dos que el encargo ofrecía—: cuando el vecino
+se poda, **se cae el `anterior` entero, no solo el accession**. Dejar el número
+de días sin referencia habría sido una afirmación que el modelo puede escribir
+y no puede citar, que es exactamente lo que este módulo no hace.
+
+Lo que estaba mal era que eso fuera un accidente del código en vez de una
+propiedad probada. Ahora hay tres pruebas:
+
+- **El caso exacto**, construido a mano: evento que sobrevive, vecino
+  huérfano, y la verificación de que el paquete entero deja de nombrarlo.
+- **La invariante general**, que es la que importa: *después de podar, ningún
+  accession que el paquete nombre como cita puede quedar sin resolver en el
+  inventario*. Vale para los eventos, los vecinos, las anclas de los
+  episodios, la serie y la contraevidencia — probar un caso a mano deja los
+  otros cuatro sueltos.
+- Dos mutaciones deliberadas —dejar el `anterior` entero, y dejar solo los
+  días— y las dos rompen pruebas.
+
+Y un conteo mal hecho que apareció mirando: `excluidos.vecinos` se calculaba
+sobre la lista original, así que un evento podado que además era vecino de
+otro se contaba dos veces, una como evento excluido y otra como vecino
+perdido.
+
+**Lo que no se hace, y por qué:** el evento que pierde su vecino queda igual
+que el más viejo de la ventana. No se le pone una marca de "acá había un
+vecino que no puedo citar", porque el modelo no tiene nada útil que escribir
+con eso. Lo perdido se cuenta en `excluidos.vecinos`, a nivel del paquete, que
+es donde se puede declarar sin invitar a narrarlo.
+
+### 2. El reintento de una narración cortada, con tope
+
+El planteo: misma evidencia, mismo prompt, mismo modelo → el segundo intento
+trunca igual. Sin límite son **dos llamadas pagadas por cada narración que no
+cabe, y falla en silencio.**
+
+Se hicieron las dos cosas que el encargo ofrecía como alternativas, porque son
+complementarias:
+
+- **El reintento sube el techo una sola vez** (16.000 → 32.000). Es lo único
+  que puede cambiar el resultado; repetir con el mismo techo es pagar dos
+  veces por el mismo fracaso.
+- **Tope de dos intentos, acumulado en la fila.** `company_narracion.intentos`
+  suma en el `on conflict`, y un hash que ya gastó sus dos intentos contesta
+  **409 `cortada_definitiva`** sin llamar. Sin el acumulado, el tope se
+  reiniciaría en cada visita y sería un infinito en cuotas. `forzar=1` sigue
+  siendo la salida de emergencia.
+- Un final que **no** es `cortada` —un rechazo del clasificador, un 500— no se
+  reintenta: subir el techo no arregla ninguno de los dos.
+
+**Y el costo suma los dos intentos.** El encargo lo dijo mejor que yo: si no,
+*el número miente hacia abajo*. El intento que falló es el que más ganas dan
+de no mirar, y por eso tiene que estar en la cuenta. `sumarCostos` suma tokens
+y dólares y reporta `intentos`; si alguno de los intentos no tiene precio, el
+total va `null` y se dicen los tokens, que sí se saben — nunca un parcial que
+se lea como completo.
+
+### 3. Las tres maneras de no mostrar una lectura
+
+Antes las tres se veían igual: nada. Es la doctrina de `sin_documentos` /
+`no_cubierta` / `fuera_del_modulo` (§8), sin aplicar a la narración.
+
+| estado | qué pasó | qué hacer |
+|---|---|---|
+| `sin_narracion` | todavía no se escribió | esperar a que corra el job |
+| `fallida` | se escribió y salió mal | ir a mirar qué pasó |
+| `retenida` | se escribió bien, pero una cita no resuelve acá | arreglar un inventario **nuestro** |
+
+Tres bloques distintos en pantalla —gris, rojo, ámbar—, y `fallida` dice el
+motivo en categoría (`cortada`, `rechazo_modelo`, `http`…) y cuántas llamadas
+se pagaron. El texto crudo del modelo **no** sale ahí: vive en la fila y se
+mira con la llave, no en una página pública.
+
+Hay una prueba de que los cuatro estados son distintos entre sí, y una de e2e
+de que las tres clases CSS lo son: si dos colapsaran, la página mostraría lo
+mismo para situaciones que piden acciones opuestas.
+
+### Sobre el caché de prefijo: medirlo, no exprimirlo
+
+Instrucción del operador, y la aritmética le da la razón: prefijo de ~1.400
+tokens contra ~12.000 de evidencia que **no se comparte entre tickers**. El
+techo del ahorro es ~10%, y escribir el caché cuesta 1,25× la entrada, así que
+en la primera corrida de cada empresa es más caro que no cachear. Se mide para
+saber que no hay nada que exprimir ahí.
+
+**El número que importa es el costo por historia a secas**, y con el hash de
+contenido cada empresa se narra una vez por cambio de filing — no una vez por
+visita.
 
 ---
 

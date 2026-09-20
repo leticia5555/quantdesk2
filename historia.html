@@ -122,6 +122,11 @@ input.tick:focus{border-color:var(--purple);}
 .lectura.falta h3{color:var(--text3);}
 .lectura.retenida{border-left-color:var(--amber);background:rgba(255,179,71,.05);}
 .lectura.retenida h3{color:var(--amber);}
+/* Se intentó y salió mal. No es lo mismo que no haberlo intentado, y verlos
+   iguales borra justo el dato que decide qué hacer: esperar, o ir a mirar. */
+.lectura.fallida{border-left-color:var(--red);background:rgba(255,69,69,.05);}
+.lectura.fallida h3{color:#ffb0b0;}
+.lectura .porque{font-family:var(--mono);font-size:10.5px;color:var(--text3);margin-top:7px;letter-spacing:.03em;}
 .lectura .motivo{font-size:12.5px;color:var(--text2);line-height:1.55;}
 .lectura .cuales{font-family:var(--mono);font-size:10.5px;color:var(--amber);margin-top:7px;}
 
@@ -314,6 +319,16 @@ const T = {
     lectura: 'La lectura',
     lectura_falta: 'Todavía sin lectura escrita',
     lectura_retenida: 'Lectura retenida',
+    lectura_fallida: 'La lectura falló',
+    motivo: {
+      cortada: 'el modelo llegó al techo de tokens y la narración quedó cortada',
+      rechazo_modelo: 'el clasificador del modelo declinó la petición',
+      json_invalido: 'la salida no tenía la forma esperada',
+      modelo_distinto: 'contestó un modelo distinto del configurado',
+      http: 'la API devolvió un error',
+      red: 'se cayó la conexión',
+    },
+    intentos: (n) => `${n} intento(s) pagado(s)`,
     proc: (m, v, f) => `Escrita por ${m} · prompt v${v}${f ? ' · ' + f : ''}. Cada afirmación enlaza al documento del que sale. Sin predicciones, sin calificaciones, sin recomendaciones.`,
     citas_malas: 'Citas que no resuelven:',
     vacio_filtro: 'Ningún documento de este emisor contesta esta pregunta.',
@@ -364,6 +379,16 @@ const T = {
     lectura: 'The reading',
     lectura_falta: 'No written reading yet',
     lectura_retenida: 'Reading withheld',
+    lectura_fallida: 'The reading failed',
+    motivo: {
+      cortada: 'the model hit the token ceiling and the narration was truncated',
+      rechazo_modelo: 'the model classifier declined the request',
+      json_invalido: 'the output did not have the expected shape',
+      modelo_distinto: 'a different model than the configured one answered',
+      http: 'the API returned an error',
+      red: 'the connection dropped',
+    },
+    intentos: (n) => `${n} paid attempt(s)`,
     proc: (m, v, f) => `Written by ${m} · prompt v${v}${f ? ' · ' + f : ''}. Every claim links to the document it comes from. No predictions, no ratings, no recommendations.`,
     citas_malas: 'Citations that do not resolve:',
     vacio_filtro: 'No document from this issuer answers this question.',
@@ -616,14 +641,28 @@ function lecturaHTML(d) {
   const n = d.narracion;
   if (!n) return '';
 
+  // TRES maneras de no mostrar una lectura, y las tres se ven distinto. Es la
+  // misma doctrina de `sin_documentos` / `no_cubierta` / `fuera_del_modulo`
+  // aplicada a la narración: verlas iguales —las tres como un hueco— borra
+  // justo el dato que decide qué hacer.
+  //
+  //   · falta     — todavía no se escribió. Se espera a que corra el job.
+  //   · fallida   — se escribió y salió mal. Se va a mirar qué pasó.
+  //   · retenida  — se escribió bien pero una cita no resuelve acá. Es un
+  //                 problema nuestro, no del modelo.
   if (n.estado !== 'ok') {
-    const clase = n.estado === 'retenida' ? 'retenida' : 'falta';
-    const titulo = n.estado === 'retenida' ? t.lectura_retenida : t.lectura_falta;
+    const mapa = {
+      retenida: ['retenida', t.lectura_retenida],
+      fallida: ['fallida', t.lectura_fallida],
+    };
+    const [clase, titulo] = mapa[n.estado] || ['falta', t.lectura_falta];
     return `<div class="lectura ${clase}">
       <h3>${esc(titulo)}</h3>
       ${(n.declaraciones || []).map((x) => `<p class="motivo">${esc(x.texto)}</p>`).join('')}
       ${(n.citas_desconocidas || []).length
         ? `<div class="cuales">${esc(t.citas_malas)} ${esc(n.citas_desconocidas.join(' · '))}</div>` : ''}
+      ${n.estado === 'fallida' && n.motivo
+        ? `<div class="porque">${esc(t.motivo[n.motivo] || n.motivo)}${n.intentos ? ' · ' + esc(t.intentos(n.intentos)) : ''}</div>` : ''}
     </div>`;
   }
 

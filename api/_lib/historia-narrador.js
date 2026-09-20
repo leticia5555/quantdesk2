@@ -54,6 +54,18 @@ const VERSION_API = /* date-lint-ok: versión del protocolo de Anthropic, no una
 // se paga lo que se genera.
 export const MAX_TOKENS = 16000;
 
+// ── EL REINTENTO DE UNA NARRACIÓN CORTADA ───────────────────────────
+// Misma evidencia, mismo prompt, mismo modelo: el segundo intento trunca
+// igual. Un reintento ciego son dos llamadas pagadas por cada narración que
+// no cabe, y falla en silencio.
+//
+// Así que el reintento **sube el techo una sola vez** —que es lo único que
+// puede cambiar el resultado— y después se para. Dos intentos en total: si
+// con el doble tampoco entra, el problema no es el techo y seguir pagando no
+// lo va a descubrir.
+export const MAX_TOKENS_REINTENTO = 32000;
+export const MAX_INTENTOS = 2;
+
 // Los precios salen de _lib/model.js, que es la tabla única del repo. No se
 // duplica acá: dos tablas de precios son dos tablas que con el tiempo dicen
 // cosas distintas, y la que miente es siempre la que nadie mira.
@@ -100,10 +112,10 @@ export const hashNarracion = (evidencia) => hashDe({
 // ─────────────────────────────────────────────────────────────────────────
 // El cuerpo del request
 // ─────────────────────────────────────────────────────────────────────────
-export function armarRequest(evidencia, { ahora = new Date() } = {}) {
+export function armarRequest(evidencia, { ahora = new Date(), maxTokens = MAX_TOKENS } = {}) {
   return {
     model: MODELO,
-    max_tokens: MAX_TOKENS,
+    max_tokens: maxTokens,
     // Adaptativo: es el modo de Opus 5 y `budget_tokens` devuelve 400.
     thinking: { type: 'adaptive' },
     output_config: {
@@ -170,6 +182,66 @@ export function costoDe(usage = {}, modelo = MODELO) {
   };
 }
 
+// Suma el costo de varios intentos en uno solo.
+//
+// Sin esto el número miente HACIA ABAJO, que es la peor dirección: una
+// narración que costó dos llamadas se reporta como si hubiera costado una, y
+// el intento que falló —el que más ganas dan de no mirar— desaparece de la
+// cuenta justamente porque falló.
+const CERO_TOK = { entrada: 0, salida: 0, cache_escritura: 0, cache_lectura: 0 };
+
+export function sumarCostos(costos = []) {
+  // Se normaliza antes de sumar. Un costo a medias —de un doble de prueba, de
+  // una versión vieja de la fila— no puede tumbar el guardado de una llamada
+  // que YA se pagó: perder el registro por un campo faltante sería perder la
+  // única prueba de que se gastó.
+  const reales = costos.filter(Boolean).map((c) => ({
+    ...c,
+    tokens: { ...CERO_TOK, ...(c.tokens || {}) },
+    usd: c.usd == null ? null : { entrada: 0, salida: 0, cache_escritura: 0, cache_lectura: 0, ...c.usd },
+  }));
+  if (!reales.length) return null;
+  if (reales.length === 1) return { ...reales[0], intentos: 1 };
+  if (reales.some((c) => c.usd_total == null || c.usd == null)) {
+    // Si alguno no tiene precio, el total no se puede afirmar. Se dicen los
+    // tokens, que sí se saben, y el costo va null — jamás un número parcial
+    // que se lea como completo.
+    return {
+      modelo: reales[0].modelo,
+      tokens: reales.reduce((a, c) => ({
+        entrada: a.entrada + c.tokens.entrada,
+        salida: a.salida + c.tokens.salida,
+        cache_escritura: a.cache_escritura + c.tokens.cache_escritura,
+        cache_lectura: a.cache_lectura + c.tokens.cache_lectura,
+      }), { entrada: 0, salida: 0, cache_escritura: 0, cache_lectura: 0 }),
+      usd: null, usd_total: null, cache_pego_pct: null, sin_precio: true,
+      intentos: reales.length,
+    };
+  }
+  const sum = (f) => reales.reduce((a, c) => a + f(c), 0);
+  const tokens = {
+    entrada: sum((c) => c.tokens.entrada),
+    salida: sum((c) => c.tokens.salida),
+    cache_escritura: sum((c) => c.tokens.cache_escritura),
+    cache_lectura: sum((c) => c.tokens.cache_lectura),
+  };
+  const usd = {
+    entrada: sum((c) => c.usd.entrada),
+    salida: sum((c) => c.usd.salida),
+    cache_escritura: sum((c) => c.usd.cache_escritura),
+    cache_lectura: sum((c) => c.usd.cache_lectura),
+  };
+  const cacheables = tokens.cache_lectura + tokens.cache_escritura;
+  return {
+    modelo: reales[0].modelo,
+    tokens,
+    usd,
+    usd_total: Math.round(sum((c) => c.usd_total) * 1e6) / 1e6,
+    cache_pego_pct: cacheables ? Math.round((tokens.cache_lectura / cacheables) * 1000) / 10 : 0,
+    intentos: reales.length,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // La llamada
 // ─────────────────────────────────────────────────────────────────────────
@@ -181,6 +253,7 @@ export async function narrar(evidencia, {
   fetchImpl = globalThis.fetch,
   ahora = new Date(),
   timeoutMs = 120000,
+  maxTokens = MAX_TOKENS,
 } = {}) {
   const base = {
     ...identidadPrompt(),
@@ -191,7 +264,7 @@ export async function narrar(evidencia, {
     return { ...base, estado: 'sin_llave', detalle: 'falta ANTHROPIC_API_KEY', crudo: null, costo: null };
   }
 
-  const cuerpo = armarRequest(evidencia, { ahora });
+  const cuerpo = armarRequest(evidencia, { ahora, maxTokens });
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
 
@@ -254,7 +327,7 @@ export async function narrar(evidencia, {
   // citas bien y leerse como una narración completa. No hay nada adentro que
   // diga "acá me cortaron", así que la única defensa es esta.
   if (crudo.stop_reason === 'max_tokens') {
-    return conCrudo({ estado: 'cortada', detalle: `el modelo llegó al techo de ${MAX_TOKENS} tokens`, costo });
+    return conCrudo({ estado: 'cortada', detalle: `el modelo llegó al techo de ${maxTokens} tokens`, max_tokens: maxTokens, costo });
   }
 
   const bloques = Array.isArray(crudo.content) ? crudo.content : [];

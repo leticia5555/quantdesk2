@@ -364,6 +364,10 @@ export const HISTORIA_SCHEMA = [
      costo          jsonb,
      detalle        text,
      evidencia_bytes int,
+     -- Cuántas llamadas se pagaron por esta fila. Una narración cortada se
+     -- reintenta UNA vez con el techo al doble y después se para: sin el
+     -- conteo, cada lectura de la página dispararía dos llamadas nuevas.
+     intentos       int not null default 1,
      creado_en      timestamptz not null default now(),
      primary key (cik, hash)
    )`,
@@ -612,6 +616,10 @@ export function crearRepo({ sql = sqlReal, sqlBatch = sqlBatchReal } = {}) {
            costo = excluded.costo,
            detalle = excluded.detalle,
            evidencia_bytes = excluded.evidencia_bytes,
+           -- Los intentos se ACUMULAN: la fila nueva trae los de esta corrida
+           -- y se suman a los ya pagados. Pisarlos haría que el tope no
+           -- llegara nunca y el reintento fuera infinito en cuotas.
+           intentos = company_narracion.intentos + excluded.intentos,
            creado_en = now()`,
         [
           n.cik, n.hash, n.estado, n.prompt_version, n.modelo, n.huella_prompt,
@@ -620,9 +628,22 @@ export function crearRepo({ sql = sqlReal, sqlBatch = sqlBatchReal } = {}) {
           n.costo ? JSON.stringify(n.costo) : null,
           n.detalle ?? null,
           n.evidencia_bytes ?? null,
+          n.intentos ?? 1,
         ],
       );
       return 1;
+    },
+
+    // Lo que hubo en este hash, sirva o no. Es lo que deja (a) no reintentar
+    // para siempre una narración que ya se pagó dos veces, y (b) decirle a la
+    // página que la lectura FALLÓ, que no es lo mismo que que no exista.
+    async intentoPrevio(cik, hash) {
+      const filas = await sql(
+        `select estado, intentos, detalle, creado_en
+           from company_narracion where cik = $1 and hash = $2 limit 1`,
+        [cik, hash],
+      );
+      return filas[0] || null;
     },
 
     // La lectura de la página: SOLO por hash y SOLO si sirve. Devolver la

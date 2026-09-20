@@ -73,6 +73,9 @@ export default async function handler(req, res) {
     if (cuerpo.estado === 'ok') {
       cuerpo.narracion = await armarNarracion(cuerpo, {
         buscar: (cik, hash) => repo.narracionPorHash(cik, hash),
+        // El intento previo distingue "todavía no se escribió" de "se
+        // escribió y falló", que llevan a acciones opuestas.
+        intento: (cik, hash) => repo.intentoPrevio(cik, hash),
         lang,
       });
     }

@@ -190,6 +190,14 @@ const RETENIDA = () => {
   return d;
 };
 
+// Se intentó y falló. NO es lo mismo que no haberlo intentado.
+const FALLIDA = () => {
+  const d = D();
+  d.narracion = { estado: 'fallida', hash: 'abc123', secciones: [], motivo: 'cortada', intentos: 2,
+    declaraciones: [{ codigo: 'narracion_fallida', texto: 'Se intentó escribir la lectura y falló. No se muestra nada a medias: una narración cortada o rechazada, con las citas correctas hasta donde llegó, se lee como completa.' }] };
+  return d;
+};
+
 const PARCIAL = () => {
   const d = D();
   d.ticker = 'VIST';
@@ -514,6 +522,17 @@ async function abrir(respuesta, ruta = '/historia.html?ticker=MELI') {
   await page.close();
 }
 {
+  const { page } = await abrir(FALLIDA);
+  report('una lectura que falló tiene su propio bloque', (await page.locator('.lectura.fallida').count()) === 1);
+  report('…distinto del de "todavía no hay"', (await page.locator('.lectura.falta').count()) === 0);
+  const t = await page.locator('.lectura.fallida').innerText();
+  report('…con el motivo en palabras', /techo de tokens/.test(t), t.replace(/\n/g, ' ').slice(0, 120));
+  report('…y cuántas llamadas se pagaron', /2 intento/.test(t));
+  report('…diciendo por qué no se muestra el pedazo que llegó', /se lee como completa/.test(t));
+  report('…y los documentos siguen estando', (await page.locator('.linea .ev').count()) === EVENTOS.length);
+  await page.close();
+}
+{
   const { page } = await abrir(RETENIDA);
   report('una cita que no resuelve retiene la lectura', (await page.locator('.lectura.retenida').count()) === 1);
   report('…y NO se muestra ninguna sección', (await page.locator('.lectura .parte').count()) === 0);
@@ -521,6 +540,19 @@ async function abrir(respuesta, ruta = '/historia.html?ticker=MELI') {
   report('…y los documentos siguen estando: se cae a la Fase A',
     (await page.locator('.linea .ev').count()) === EVENTOS.length);
   await page.close();
+}
+{
+  // LAS TRES SE VEN DISTINTO. Si dos colapsaran, la página mostraría lo mismo
+  // para situaciones que piden acciones opuestas: esperar a que corra el job,
+  // ir a mirar qué falló, o arreglar un inventario nuestro.
+  const clases = [];
+  for (const [nombre, datos] of [['falta', SIN_LECTURA], ['fallida', FALLIDA], ['retenida', RETENIDA]]) {
+    const { page } = await abrir(datos);
+    clases.push(await page.evaluate(() => document.querySelector('.lectura').className));
+    await page.close();
+  }
+  report('las tres maneras de no mostrar una lectura se ven distinto',
+    new Set(clases).size === 3, clases.join(' | '));
 }
 
 // ═════════════════════════════════════════════════════════════════════════

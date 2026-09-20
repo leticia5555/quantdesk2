@@ -107,6 +107,10 @@ export const DECLARACIONES = {
     es: 'Todavía no hay una lectura escrita de esta empresa. Los documentos de abajo sí están: la narración se genera aparte y se guarda, no se escribe cada vez que alguien abre la página.',
     en: 'There is no written reading of this company yet. The documents below are here: the narration is generated separately and stored, not written every time someone opens the page.',
   },
+  narracion_fallida: {
+    es: 'Se intentó escribir la lectura y falló. No se muestra nada a medias: una narración cortada o rechazada, con las citas correctas hasta donde llegó, se lee como completa. Los documentos de abajo no dependen de eso.',
+    en: 'A reading was attempted and failed. Nothing partial is shown: a truncated or refused narration, with correct citations as far as it got, reads as complete. The documents below do not depend on it.',
+  },
   narracion_retenida: {
     es: 'La lectura escrita existe pero no se muestra: una de sus citas no resuelve a un documento de esta página. Un hueco declarado es un dato; una cita que no abre es un texto que parece riguroso y no lo es.',
     en: 'A written reading exists but is withheld: one of its citations does not resolve to a document on this page. A declared gap is data; a citation that does not open is text that looks rigorous and is not.',
@@ -507,7 +511,7 @@ export function verificarCitas(secciones = [], citables = new Set()) {
 // Arma el bloque de narración del cuerpo. Vive acá —y recibe `buscar` por
 // parámetro— para que las tres salidas (hay / no hay / retenida) se puedan
 // probar sin base de datos, que es donde este módulo miente más fácil.
-export async function armarNarracion(cuerpo, { buscar, lang = 'es' } = {}) {
+export async function armarNarracion(cuerpo, { buscar, intento, lang = 'es' } = {}) {
   const { armarEvidencia, inventarioDe, podarSinCita } = await import('./historia-evidencia.js');
   const { hashNarracion } = await import('./historia-narrador.js');
 
@@ -516,8 +520,28 @@ export async function armarNarracion(cuerpo, { buscar, lang = 'es' } = {}) {
   const { paquete } = podarSinCita(crudo, huerfanos);
   const hash = hashNarracion(paquete);
 
-  const guardada = buscar ? await buscar(cuerpo.emisor.cik, hash) : null;
+  const cik = cuerpo.emisor.cik;
+  const guardada = buscar ? await buscar(cik, hash) : null;
+
   if (!guardada || !guardada.secciones) {
+    // LAS DOS MANERAS DE NO TENER LECTURA, y son distintas por la misma razón
+    // que `sin_documentos` y `no_cubierta` lo son: una dice que todavía no se
+    // hizo, la otra que se hizo y salió mal. Verlas iguales —las dos como un
+    // hueco— borra justo la información que decide qué hacer: esperar a que
+    // corra, o ir a mirar qué pasó.
+    const fallo = intento ? await intento(cik, hash) : null;
+    if (fallo && fallo.estado && fallo.estado !== 'ok') {
+      return {
+        estado: 'fallida',
+        hash,
+        secciones: [],
+        // El motivo en categoría, no el texto crudo del modelo: eso vive en
+        // la fila y se mira con la llave, no en una página pública.
+        motivo: fallo.estado,
+        intentos: fallo.intentos ?? null,
+        declaraciones: [declarar('narracion_fallida', lang)],
+      };
+    }
     return { estado: 'sin_narracion', hash, secciones: [], declaraciones: [declarar('sin_narracion', lang)] };
   }
 
