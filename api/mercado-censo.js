@@ -43,7 +43,7 @@ import {
   censoUniversoUs, capMxCandidatas, veredictoCapMx,
   presupuestoPrecios, censoRetornoTotal, anclaYtd,
   coberturaMetric, ventanaUpa, proximoReporte,
-  coberturaCompanyFacts, censoForm4, tablero,
+  coberturaCompanyFacts, censoForm4, veredictoFeed, censoFeeds, tablero,
 } from './_lib/mercado-fase0.js';
 
 // El censo abre ~40 requests contra cuatro fuentes con cortesía de por medio.
@@ -66,6 +66,65 @@ const TICKER_FICHA = 'AAPL';
 const CIK_FICHA = '0000320193';       // Apple Inc — CIK permanente, no es una fecha
 // Las 5 emisoras que el encargo pide verificar contra su cap pública.
 const MX_VERIFICAR = ['WALMEX', 'FEMSA', 'AMX', 'GMEXICO', 'GFNORTE'];
+
+// ── Punto 0.10 (adenda) · los feeds de noticias ──────────────────────
+//
+// ESTA LISTA NO ES LA DE LA ADENDA. La adenda no llegó a este contenedor, y
+// el proyecto no inventa una URL que no verificó — inventarlas sería
+// exactamente lo que la regla 2 prohíbe, con la agravante de que un feed
+// inventado que devuelve 404 se lee igual que uno real que se cayó.
+//
+// Lo que SÍ es: el censo de lo que el repo ya usa para noticias, que es
+// poco y no cubre México (ver docs/mercado-fase0.md §3.10).
+//
+// La lista se puede REEMPLAZAR sin redeploy, que es lo que hace que el
+// hueco no cueste nada:
+//
+//   ?feeds=eleconomista=https://...|mx , reuters=https://...
+//
+// Formato: `nombre=url` separados por coma; un sufijo `|mx` marca el feed
+// como mexicano (el censo cuenta la cobertura de México aparte, porque
+// "lo de hoy" mezcla EE.UU. y México y tres feeds gringos no llenan la
+// mitad mexicana). El país NO se adivina por el dominio: se declara.
+const FEEDS_DEFAULT = [
+  // Lo único de noticias generales que el repo puede pedir hoy: Finnhub.
+  // No es RSS, es API — el censo lo mide aparte, más abajo.
+  // Los RSS que sí existen en el repo son de VC, no de mercado (vc-feed.js),
+  // y están acá para medir si el canal RSS funciona desde Vercel, no porque
+  // /mercado vaya a mostrar rondas de inversión en "lo de hoy".
+  { nombre: 'techcrunch_venture', url: 'https://techcrunch.com/category/venture/feed/', pais: 'us' },
+  { nombre: 'crunchbase_news', url: 'https://news.crunchbase.com/feed/', pais: 'us' },
+  { nombre: 'latamlist_funding', url: 'https://latamlist.com/category/funding/feed/', pais: 'latam' },
+  // Control NEGATIVO a propósito: vc-feed ya documentó que Cloudflare la
+  // bloquea desde IPs de Vercel. Si sale 403, el instrumento funciona; si
+  // saliera 200, cambió algo y hay que revisar el resto del censo.
+  { nombre: 'finsmes_control_negativo', url: 'https://www.finsmes.com/feed/', pais: 'us' },
+];
+
+const BLOG_UA = 'Mozilla/5.0 (compatible; QuantDesk/1.0; research@quantdesk.app)';
+
+// `?feeds=nombre=url|mx,otro=url` → la lista de la adenda, sin redeploy.
+// Una entrada mal formada NO se descarta en silencio: se reporta, porque un
+// feed que falta por un typo se lee igual que un feed que no existe.
+export function parseFeedsParam(raw) {
+  const txt = String(raw || '').trim();
+  if (!txt) return { feeds: null, invalidas: [] };
+  const feeds = [], invalidas = [];
+  for (const parte of txt.split(',')) {
+    const t = parte.trim();
+    if (!t) continue;
+    const i = t.indexOf('=');
+    if (i <= 0) { invalidas.push({ entrada: t, motivo: 'falta el "=" entre nombre y url' }); continue; }
+    const nombre = t.slice(0, i).trim();
+    let url = t.slice(i + 1).trim();
+    let pais = 'us';
+    const bar = url.lastIndexOf('|');
+    if (bar > 0) { pais = url.slice(bar + 1).trim().toLowerCase() || 'us'; url = url.slice(0, bar).trim(); }
+    if (!/^https?:\/\//i.test(url)) { invalidas.push({ entrada: t, motivo: 'la url no empieza con http(s)://' }); continue; }
+    feeds.push({ nombre, url, pais });
+  }
+  return { feeds: feeds.length ? feeds : null, invalidas };
+}
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -501,6 +560,62 @@ async function smokeQ9(finnhubKey) {
   return salida;
 }
 
+// Punto 0.10 (adenda) · feeds de noticias + el canal de noticias de Finnhub.
+//
+// Dos cosas distintas en la misma pregunta, y conviene no mezclarlas:
+//   · los FEEDS RSS/Atom, que son de donde saldría "lo de hoy" (R3), y
+//   · `/news` de Finnhub, que es lo ÚNICO de noticias generales que el repo
+//     puede pedir hoy y que no cubre México.
+async function smokeQ11(feeds, finnhubKey) {
+  // Los feeds, en paralelo pero con techo: son dominios ajenos y un censo no
+  // es una razón para golpearlos.
+  const medidos = [];
+  for (let i = 0; i < feeds.length; i += 4) {
+    const tanda = await Promise.all(feeds.slice(i, i + 4).map(async (f) => {
+      const r = await medir(f.url, { headers: { 'User-Agent': BLOG_UA }, timeoutMs: 12000 });
+      // `medir` deja el cuerpo en `texto` cuando no es JSON, que es el caso de
+      // todo feed; cuando falla, en `cuerpo`.
+      const v = veredictoFeed(f.nombre, f.url, { ...r, texto: r.texto || r.cuerpo || '' });
+      return { ...v, pais: f.pais };
+    }));
+    medidos.push(...tanda);
+    if (i + 4 < feeds.length) await dormir(500);
+  }
+
+  const agregado = censoFeeds(medidos);
+
+  // El canal de Finnhub, medido aparte: no es un feed y no compite con ellos.
+  let finnhub = { ok: false, motivo: 'FINNHUB_API_KEY no configurada' };
+  if (finnhubKey) {
+    const r = await medir(`https://finnhub.io/api/v1/news?category=general&token=${finnhubKey}`);
+    const arr = Array.isArray(r.json) ? r.json : [];
+    const conLink = arr.filter((n) => n && n.url).length;
+    const conHora = arr.filter((n) => n && Number.isFinite(Number(n.datetime)) && Number(n.datetime) > 0).length;
+    const fuentes = [...new Set(arr.map((n) => n && n.source).filter(Boolean))].sort();
+    finnhub = {
+      status: r.status, ms: r.ms, items: arr.length,
+      con_link: conLink, con_hora: conHora,
+      fuentes_distintas: fuentes.length, fuentes: fuentes.slice(0, 25),
+      ok: arr.length > 0 && conLink === arr.length && conHora === arr.length,
+      // La pregunta que decide si R3 puede llenar la mitad mexicana con esto.
+      nota: 'el censo lista las fuentes para poder ver si alguna es mexicana: /news?category=general es prensa financiera en inglés',
+    };
+  }
+
+  const razones = [...agregado.razones];
+  if (!finnhub.ok && finnhub.motivo) razones.push(`finnhub /news: ${finnhub.motivo}`);
+  return {
+    ...agregado,
+    finnhub_news: finnhub,
+    // Se devuelve la lista USADA para que el JSON sea auto-contenido: dos
+    // corridas con listas distintas no son comparables, y sin esto no habría
+    // manera de notarlo al leer el resultado.
+    lista_usada: feeds.map((f) => ({ nombre: f.nombre, url: f.url, pais: f.pais })),
+    verde: agregado.verde,
+    razones,
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════════
 
 export default async function handler(req, res) {
@@ -562,6 +677,14 @@ export default async function handler(req, res) {
       parciales.g8 = { verde: fh.q8.verde, razones: fh.q8.razones };
       out.q9_form4 = q9;            parciales.g9 = q9;
 
+      // Punto 0.10 de la adenda. La lista sale de `?feeds=` si vino; si no,
+      // de FEEDS_DEFAULT, y el JSON dice cuál usó.
+      const { feeds: feedsParam, invalidas } = parseFeedsParam(req.query && req.query.feeds);
+      const q11 = await smokeQ11(feedsParam || FEEDS_DEFAULT, finnhubKey);
+      q11.origen_lista = feedsParam ? 'parámetro ?feeds=' : 'FEEDS_DEFAULT del repo (NO es la lista de la adenda)';
+      if (invalidas.length) q11.entradas_invalidas = invalidas;
+      out.q11_feeds_noticias = q11; parciales.g11 = q11;
+
       // G10 es el smoke mismo: que las 9 cotizaciones de la muestra hayan
       // llegado con su serie.
       parciales.g10 = {
@@ -571,6 +694,7 @@ export default async function handler(req, res) {
       out.q10_smoke = {
         us: MUESTRA_US, mx: MUESTRA_MX, indices: MUESTRA_IDX,
         ficha_completa: TICKER_FICHA,
+        feeds_en_punto_0_10: q11.feeds,
         verde: parciales.g10.verde, razones: parciales.g10.razones,
       };
     }

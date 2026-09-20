@@ -21,8 +21,10 @@ import {
   censoUniversoUs, capMxCandidatas, errorPct, veredictoCapMx,
   presupuestoPrecios, censoRetornoTotal, anclaYtd,
   coberturaMetric, ventanaUpa, proximoReporte,
-  coberturaCompanyFacts, censoForm4, tablero,
+  coberturaCompanyFacts, censoForm4,
+  contarItemsFeed, veredictoFeed, censoFeeds, tablero,
 } from '../api/_lib/mercado-fase0.js';
+import { parseFeedsParam } from '../api/mercado-censo.js';
 
 // Reloj fijo para todo el archivo. Nada acá mide la hora en que corrió.
 const AHORA = new Date(Date.UTC(2026, 8, 20, 12, 0, 0));   // 20-sep-2026 12:00Z
@@ -444,13 +446,133 @@ test('Q9: una fila sin remanente rompe el verde aunque los códigos estén', () 
   assert.equal(r.verde, false);
 });
 
+// ─────────────── punto 0.10 (adenda) · feeds de noticias ────────────
+
+const itemRss = (t, l, f) => `<item><title>${t}</title><link>${l}</link><pubDate>${f}</pubDate></item>`;
+const feedRss = (items) => `<?xml version="1.0"?><rss version="2.0"><channel>${items.join('')}</channel></rss>`;
+const FECHA_RSS = 'Sat, 19 Sep 2026 14:30:00 GMT';
+
+test('0.10: un feed RSS sano se cuenta entero', () => {
+  const xml = feedRss(Array.from({ length: 7 }, (_, i) => itemRss(`T${i}`, `https://x/${i}`, FECHA_RSS)));
+  const m = contarItemsFeed(xml);
+  assert.equal(m.dialecto, 'rss');
+  assert.equal(m.items, 7);
+  assert.equal(m.usables, 7);
+  assert.equal(m.pct_con_fecha, 100);
+});
+
+test('0.10: un feed ATOM también se cuenta — contar solo <item> sería un rojo inventado', () => {
+  // Éste es el caso que importa: media web de noticias publica Atom, y
+  // `parseRss` de vc-feed solo entiende <item>. Reportar "0 items" sobre un
+  // feed sano cerraría una puerta que estaba abierta.
+  const entries = Array.from({ length: 6 }, (_, i) =>
+    `<entry><title>T${i}</title><link href="https://x/${i}"/><updated>2026-09-19T14:30:00Z</updated></entry>`);
+  const m = contarItemsFeed(`<feed xmlns="http://www.w3.org/2005/Atom">${entries.join('')}</feed>`);
+  assert.equal(m.dialecto, 'atom');
+  assert.equal(m.items, 6);
+  assert.equal(m.usables, 6);
+});
+
+test('0.10: un feed SIN fecha parseable no sirve para "lo de hoy"', () => {
+  // 200, items de sobra, títulos y links… y ninguna hora. "Lo de hoy"
+  // muestra la hora del titular: con este feed habría que inventarla.
+  const items = Array.from({ length: 10 }, (_, i) => `<item><title>T${i}</title><link>https://x/${i}</link></item>`);
+  const v = veredictoFeed('sinfecha', 'https://x/rss', { ok: true, status: 200, ms: 40, texto: feedRss(items) });
+  assert.equal(v.items, 10);
+  assert.equal(v.pct_con_fecha, 0);
+  assert.equal(v.vivo, false);
+  assert.match(v.motivo, /no puede mostrar la hora/);
+});
+
+test('0.10: un 403 de Cloudflare se nombra por su nombre, no como "no disponible"', () => {
+  // La lección de FinSMEs en vc-feed: responde desde una laptop y no desde
+  // Vercel. Un 403 así se arregla distinto que una URL mal escrita, y por eso
+  // el censo los distingue.
+  const v = veredictoFeed('finsmes', 'https://www.finsmes.com/feed/', {
+    ok: false, status: 403, ms: 120, texto: '<html><title>Attention Required! | Cloudflare</title></html>',
+  });
+  assert.equal(v.vivo, false);
+  assert.equal(v.motivo, 'bloqueado_cloudflare');
+  assert.match(v.pista, /IP de datacenter/);
+
+  const otro = veredictoFeed('typo', 'https://x/rs', { ok: false, status: 404, ms: 10, texto: 'Not Found' });
+  assert.equal(otro.motivo, 'HTTP 404');
+  assert.equal(otro.pista, undefined);
+});
+
+test('0.10: una respuesta que no es un feed se dice, no se cuenta como cero items', () => {
+  const v = veredictoFeed('portada', 'https://x/', { ok: true, status: 200, ms: 30, texto: '<html><body>hola</body></html>' });
+  assert.equal(v.dialecto, null);
+  assert.equal(v.vivo, false);
+  assert.match(v.motivo, /no parece un feed/);
+});
+
+test('0.10: tres feeds vivos pasan G11', () => {
+  const vivo = (n) => ({ nombre: n, vivo: true, usables: 8, pais: 'us' });
+  const c = censoFeeds([vivo('a'), vivo('b'), vivo('c')]);
+  assert.equal(c.vivos, 3);
+  assert.equal(c.items_usables_totales, 24);
+  assert.ok(c.verde);
+});
+
+test('0.10: feeds MX declarados y TODOS muertos → rojo, aunque sobren los gringos', () => {
+  // "Lo de hoy" mezcla EE.UU. y México. Cinco feeds gringos vivos no llenan
+  // la mitad mexicana, y un total sano lo escondería.
+  const c = censoFeeds([
+    { nombre: 'us1', vivo: true, usables: 10, pais: 'us' },
+    { nombre: 'us2', vivo: true, usables: 10, pais: 'us' },
+    { nombre: 'us3', vivo: true, usables: 10, pais: 'us' },
+    { nombre: 'mx1', vivo: false, pais: 'mx', motivo: 'HTTP 403' },
+  ]);
+  assert.equal(c.vivos, 3);
+  assert.deepEqual(c.mx, { declarados: 1, vivos: 0 });
+  assert.equal(c.verde, false);
+  assert.match(c.razones.join(' '), /mitad mexicana/);
+});
+
+test('0.10: sin feeds MX declarados no se inventa un rojo de México', () => {
+  // El país se DECLARA, no se adivina por el dominio. Si la lista no trae
+  // ninguno marcado `mx`, el censo no puede concluir nada sobre México — y
+  // no concluir es distinto de concluir que está bien.
+  const c = censoFeeds([
+    { nombre: 'a', vivo: true, usables: 9, pais: 'us' },
+    { nombre: 'b', vivo: true, usables: 9, pais: 'us' },
+    { nombre: 'c', vivo: true, usables: 9, pais: 'us' },
+  ]);
+  assert.deepEqual(c.mx, { declarados: 0, vivos: 0 });
+  assert.ok(c.verde);
+});
+
+test('0.10: ?feeds= acepta la lista de la adenda sin redeploy, y marca los MX', () => {
+  const { feeds, invalidas } = parseFeedsParam(
+    'eleconomista=https://eleconomista.com.mx/rss|mx, reuters=https://reuters.com/feed');
+  assert.equal(feeds.length, 2);
+  assert.deepEqual(feeds[0], { nombre: 'eleconomista', url: 'https://eleconomista.com.mx/rss', pais: 'mx' });
+  assert.equal(feeds[1].pais, 'us');
+  assert.deepEqual(invalidas, []);
+});
+
+test('0.10: una entrada mal formada se REPORTA, no se descarta en silencio', () => {
+  // Un feed que falta por un typo se lee igual que un feed que no existe.
+  const { feeds, invalidas } = parseFeedsParam('bueno=https://x/rss, sinigual, malo=ftp://y/rss');
+  assert.equal(feeds.length, 1);
+  assert.equal(invalidas.length, 2);
+  assert.match(invalidas[0].motivo, /falta el "="/);
+  assert.match(invalidas[1].motivo, /no empieza con http/);
+});
+
+test('0.10: sin parámetro, la lista es null y el endpoint cae al default declarado', () => {
+  assert.equal(parseFeedsParam(undefined).feeds, null);
+  assert.equal(parseFeedsParam('  ').feeds, null);
+});
+
 // ────────────────────────── el tablero ──────────────────────────────
 
 test('tablero: una compuerta SIN MEDIR no es verde ni roja — y bloquea el GO', () => {
   const t = tablero({
     g1: { verde: true }, g2: { verde: true }, g3: { verde: true }, g4: { verde: true },
     g5: { verde: true }, g6: { verde: true }, g7: { verde: true }, g8: { verde: true },
-    g9: { verde: true },
+    g9: { verde: true }, g11: { verde: true },
     // g10 ausente a propósito
   });
   assert.deepEqual(t.sin_medir, ['g10']);
@@ -459,7 +581,7 @@ test('tablero: una compuerta SIN MEDIR no es verde ni roja — y bloquea el GO',
 
 test('tablero: todas verdes → GO; una roja → NO-GO con su razón', () => {
   const todas = {};
-  for (const g of ['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'g7', 'g8', 'g9', 'g10']) todas[g] = { verde: true };
+  for (const g of ['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'g7', 'g8', 'g9', 'g10', 'g11']) todas[g] = { verde: true };
   assert.equal(tablero(todas).veredicto, 'GO');
 
   const conRojo = { ...todas, g2: { verde: false, motivo: 'FEMSA no cuadra' } };

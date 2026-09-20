@@ -64,7 +64,7 @@ contestaría otra pregunta.
 2. **El instrumento** — `api/mercado-censo.js`, que contesta las diez
    preguntas en una corrida desde prod, y `api/_lib/mercado-fase0.js` con toda
    la lógica de medición PURA.
-3. **El medidor, probado** — `tests/mercado-fase0.test.mjs`, 35 casos contra
+3. **El medidor, probado** — `tests/mercado-fase0.test.mjs`, 46 casos contra
    fixtures con la respuesta plantada. Sin red no se ganan los números de las
    fuentes; sí se puede probar que el instrumento mide bien. La Fase 0 del
    Congreso perdió dos corridas por un extractor que reportaba rojo sin estar
@@ -113,6 +113,7 @@ EE.UU.; y es falso para insiders.** El desarrollo está en §3 y §4.
 | 8 | Analistas + precio objetivo | **hay dos afirmaciones opuestas en el repo** | §3.8 · G8 |
 | 9 | Form 4 completo | **NO: el parser filtra a `P`** | §3.9 · G9 |
 | 10 | Smoke desde Vercel | el instrumento está listo | §6 · G10 |
+| **0.10** | **Feeds de noticias (adenda)** | **medible; falta la lista** | §3.10 · G11 |
 
 ---
 
@@ -552,6 +553,76 @@ informativo de todos se reportaría como falta de cobertura. Hay un test.
 
 ---
 
+### 3.10 · Punto 0.10 (adenda) — feeds de noticias
+
+**Primero, lo que no tengo: la lista de la adenda no llegó a este
+contenedor.** Y no la invento. Escribir cinco URLs de medios mexicanos de
+memoria sería exactamente lo que la regla 2 prohíbe, con un agravante propio
+de esta pregunta: **un feed inventado que devuelve 404 se lee igual que un
+feed real que se cayó**, así que un censo con URLs adivinadas no reporta
+ignorancia — reporta un rojo falso, que es peor.
+
+**Por eso la lista es un parámetro, no una constante.** El punto 0.10 corre
+sobre lo que le pases, sin redeploy:
+
+```
+?feeds=eleconomista=https://…|mx , elfinanciero=https://…|mx , reuters=https://…
+```
+
+`nombre=url`, separados por coma; el sufijo `|mx` marca el feed como
+mexicano. **El país se declara, nunca se adivina por el dominio** — y la
+respuesta incluye `lista_usada` y `origen_lista`, para que dos corridas con
+listas distintas no se puedan confundir al leerlas. Una entrada mal formada
+sale en `entradas_invalidas` en vez de desaparecer: un feed que falta por un
+typo se lee igual que uno que no existe.
+
+Sin el parámetro, corre sobre `FEEDS_DEFAULT`, y el JSON lo dice con todas
+sus letras: *"NO es la lista de la adenda"*.
+
+**Segundo, el censo de lo que hay — y es el hallazgo:**
+
+| Fuente | Dónde | Qué da para "lo de hoy" |
+|---|---|---|
+| Finnhub `company-news` | `api/news.js` | titulares **por ticker**, ventana de 14 días. Sirve para la ficha de ticker (R6), no para la portada |
+| Finnhub `/news?category=general` | **nadie lo usa todavía** | prensa financiera en inglés. El censo lista sus `source` distintas para ver si alguna es mexicana |
+| RSS de `vc-feed.js` | TechCrunch, Crunchbase News, LatamList, Contxto | **rondas de VC**, no mercado. No van en "lo de hoy" |
+
+**El repo no tiene NINGUNA fuente de noticias de México.** Ni una. R3 pide
+"titulares con hora, fuente y chips de ticker tocables; **EE.UU. y México
+mezclados**", y la mitad mexicana hoy no tiene de dónde salir. Eso es lo que
+la lista de la adenda viene a llenar, y por eso el punto 0.10 existe.
+
+**Lo que G11 mide, y por qué no es "¿contesta 200?":**
+
+1. **Items usables**, no items. La regla 3 del encargo pide titular original +
+   fuente + link. Un item sin link no se puede atribuir.
+2. **Fecha parseable en ≥90% de los items.** "Lo de hoy" muestra la hora del
+   titular; un feed sin `pubDate` obligaría a inventarla. Hay un test con un
+   feed de 10 items, títulos y links perfectos, y cero fechas: sale **rojo**.
+3. **RSS *y* Atom.** `parseRss` de `vc-feed.js` solo entiende `<item>`, y
+   media web de noticias publica Atom (`<entry>`). Contar solo `<item>`
+   reportaría "0 items" sobre un feed sano — un rojo inventado que cerraría
+   una puerta abierta. `contarItemsFeed` entiende los dos y **dice cuál
+   detectó**.
+4. **Cobertura de México aparte del total.** Tres feeds gringos vivos no
+   llenan la mitad mexicana, y un total sano lo escondería. Si la lista
+   declara feeds `mx` y **ninguno** vive, G11 sale rojo aunque sobren los
+   demás. Si la lista no declara ninguno, el censo **no concluye nada** sobre
+   México — que es distinto de concluir que está bien. Hay un test para cada
+   caso.
+5. **Un 403 de Cloudflare se nombra `bloqueado_cloudflare`**, no "no
+   disponible". `vc-feed` ya documentó que FinSMEs responde desde una laptop y
+   **no** desde una IP de Vercel. Los dos fallos se arreglan distinto —uno
+   cambiando de fuente o metiendo proxy, el otro corrigiendo una URL— así que
+   el censo los distingue. FinSMES va en la lista por defecto como **control
+   negativo**: si sale 403, el instrumento funciona; si saliera 200, cambió
+   algo y hay que releer el resto del censo con desconfianza.
+
+**G11 verde:** ≥3 feeds vivos · ≥5 items usables por feed · ≥90% con fecha ·
+y si hay feeds MX declarados, al menos uno vivo.
+
+---
+
 ## 4. Los seis hallazgos que cambian el plan
 
 Resumidos, por si alguien lee solo esta sección:
@@ -587,6 +658,7 @@ auto-contenido.
 | **G8** | analistas | `recommendation` devuelve filas | el bloque de analistas entero va punteado |
 | **G9** | Form 4 | ≥4 códigos distintos · "le quedan" en el 100% · hora de aceptación en el 100% | **es el resultado esperado** (§3.9): R5 se replantea como pipeline y se re-estima |
 | **G10** | smoke | los 9 de la muestra con precio y serie | se diagnostica símbolo por símbolo antes de tocar UI |
+| **G11** | feeds (0.10) | ≥3 feeds vivos · ≥5 items usables c/u · ≥90% con fecha · ≥1 feed MX vivo si se declaró alguno | R3 se recorta a la mitad estadounidense y la mexicana espera una fuente. **No** se traduce prensa gringa para fingir cobertura de México |
 
 **Una compuerta AUSENTE no cuenta como verde: cuenta como `sin_medir`, y con
 una sin medir el veredicto global no puede ser GO.** Es la diferencia entre
@@ -601,9 +673,9 @@ test.
 
 | Archivo | Qué es | Líneas |
 |---|---|---|
-| `api/_lib/mercado-fase0.js` | el medidor: **todo puro**, sin fetch, sin DB, sin `Date.now()` escondido | 603 |
-| `api/mercado-censo.js` | el endpoint que corre desde prod y contesta las 10 | 584 |
-| `tests/mercado-fase0.test.mjs` | 35 casos contra fixtures con la respuesta plantada | 479 |
+| `api/_lib/mercado-fase0.js` | el medidor: **todo puro**, sin fetch, sin DB, sin `Date.now()` escondido | 726 |
+| `api/mercado-censo.js` | el endpoint que corre desde prod y contesta las 10 + el punto 0.10 | 708 |
+| `tests/mercado-fase0.test.mjs` | 46 casos contra fixtures con la respuesta plantada | 601 |
 | `vercel.json` | `maxDuration: 300` para el endpoint (el glob de 60 s no alcanza — la lección de `arena-smoke`) | +3 |
 
 **Cero cambios a `app.html`.** Cero UI. Cero llamadas de IA. El endpoint no
@@ -612,7 +684,13 @@ escribe una sola fila, ni siquiera cachés.
 ### 6.2 Cómo se corre
 
 ```bash
-# las diez preguntas
+# las diez preguntas + el punto 0.10, CON la lista de la adenda
+curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" --get \
+  --data-urlencode "job=todo" \
+  --data-urlencode "feeds=eleconomista=https://…|mx,elfinanciero=https://…|mx,reuters=https://…" \
+  "https://quantdesk2.vercel.app/api/mercado-censo" | jq
+
+# sin la lista: corre igual, y el JSON avisa que el 0.10 midió otra cosa
 curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" \
   "https://quantdesk2.vercel.app/api/mercado-censo?job=todo" | jq
 
@@ -664,13 +742,24 @@ hábiles antes de la apertura, en `arena_universe`.
 de precios llena con cap + sector + industria cruda. El `profile2` por símbolo
 se paga una vez y se refresca semanal.
 
-**Decisión que necesito de vos:** ¿el mapa US pinta los **~600** de
-`arena_universe`, o un **top-N por capitalización** (digamos 300)? Mi
-recomendación es **top 300 por cap**: un treemap de 600 cuadros en 390 px de
-ancho hace cuadros de 6 px, que no se pueden tocar (la regla 8 pide tap ≥44
-px) y no caben una etiqueta. Con 300 y agrupado por sector, los cuadros
-chicos siguen siendo tocables. El número es reversible — sale de un `limit` —
-así que si querés los 600 se cambia en un renglón.
+**DECIDIDO (Lety, al dar el GO): top 300 por capitalización + un cuadro
+"+N más = X%".** Un treemap de 600 cuadros en 390 px hace cuadros de 6 px,
+que no se pueden tocar (la regla 8 pide tap ≥44 px) ni caben una etiqueta.
+
+El cuadro "+N más" no es decoración: es lo que evita que el recorte **mienta
+sobre el tamaño del mercado**. Sin él, un mapa de 300 nombres se lee como si
+fuera todo el universo. Con él, dice cuántos quedaron fuera y qué porcentaje
+de la capitalización total representan — el mismo recurso que R4 ya usa para
+la tira de componentes de un índice, así que es un patrón, no una excepción.
+
+Consecuencias concretas para R1:
+- El `limit 300` va **sobre la cap**, y la cap tiene que existir para los 600
+  antes de poder ordenar: `mercado_universo_us` se llena entera y el recorte
+  es de render, no de ingesta.
+- `X%` se calcula sobre la **suma de las caps de los que quedaron fuera**,
+  no estimado. Un nombre del universo sin cap no puede entrar en esa suma:
+  se cuenta aparte, como "N sin capitalización", igual que el gris punteado
+  de México.
 
 ### 7.2 · "Si el cron de precios choca con el límite Hobby de Vercel"
 
@@ -707,13 +796,29 @@ ICS** (`docs/xbrl-fase0.md` §2.1). Un banco no reporta "ingresos" en el mismo
 tag que una embotelladora, y el parser de `xbrl-parse.js` está escrito contra
 ICS.
 
-Tres caminos, y prefiero que elijas vos:
+**DECIDIDO (Lety, al dar el GO): opción C, con la fuente a la vista — y B
+como caída.**
 
-| Opción | Qué implica | Mi lectura |
-|---|---|---|
-| **A. GFNORTE fuera del mapa MX (v1)** | El mapa MX abre con las ~29 emisoras ICS. GFNORTE simplemente no está. | **Recomendada.** Es la decisión que ya se tomó una vez, por una razón que sigue siendo válida. Cero trabajo. |
-| **B. GFNORTE gris punteado** | Aparece en el mapa, sin tamaño, con "sin capitalización verificada". | Honesto pero raro: un hueco permanente que nunca se va a llenar no es lo mismo que uno que espera un dato. |
-| **C. Cap de GFNORTE por Yahoo directo** | Se salta el XBRL: `marketCap` de `GFNORTEO.MX`. | Rompe la regla 3 (cada número dice su fuente, y ésta sería distinta a la del resto del mapa). Abre la puerta a "para éste usamos otra fuente" como hábito. |
+- La cap de GFNORTE sale de `marketCap` de Yahoo para `GFNORTEO.MX`.
+- El cuadro del mapa **y** la hoja/hover llevan la etiqueta **`cap: yahoo`**,
+  en el gris de fuente que la regla 3 ya define. No es una nota al pie: es la
+  columna de fuente que todo número de este producto lleva.
+- **Si Yahoo no devuelve cap, cae a B**: gris punteado, "sin capitalización
+  verificada". Nunca a un número de otra parte.
+
+Por qué esto NO rompe la regla 3, que era mi objeción: la regla 3 no pide que
+todos los números salgan de la misma fuente — pide que **cada número diga la
+suya**. Un mapa donde 29 cuadros dicen `calc · xbrl+bmv` y uno dice
+`cap: yahoo` cumple la regla al pie de la letra. Lo que la rompería sería
+mezclar fuentes **en silencio**, y la etiqueta es justamente lo que lo impide.
+
+Dos cosas que R1 tiene que cuidar para que esto no se vuelva un hábito:
+1. **La etiqueta es obligatoria, no opcional.** Si el render puede pintar un
+   cuadro con cap de Yahoo sin la etiqueta, la decisión se degrada sola en
+   tres meses. Va con la misma forma que `qdPctTag`: sin fuente, no pinta.
+2. **La caída a B es automática**, no manual. `veredictoCapMx` ya devuelve
+   `sin_referencia` cuando Yahoo no contesta, y ese estado ya se pinta gris
+   punteado. No hace falta lógica nueva: hace falta no saltársela.
 
 Y una advertencia que la corrida va a confirmar o desmentir: **las tres
 aeroportuarias (GAP, ASUR, OMA) y CEMEX son candidatas al caso de unidad
@@ -734,17 +839,28 @@ compra, quién vende".
 
 Lo que esta Fase 0 agrega a esa lista:
 
-1. **El mapa US se arma sobre `arena_universe`**, no sobre `arena_screener`.
+1. **El mapa US se arma sobre `arena_universe`**, no sobre `arena_screener`,
+   y pinta el **top 300 por capitalización + un cuadro "+N más = X%"**
+   (Lety, §7.1). El recorte es de render; la ingesta llena los ~600.
 2. **`mercado_universo_us` es el primer entregable de R1**, antes del treemap.
 3. **El endpoint del mapa manda series de ≥1 año con timestamps.** Sin eso el
    toggle YTD no puede existir sin mentir.
 4. **`QD_PERIODS` gana `'YTD'` con ancla por fecha**, con `anclaYtd` como
-   implementación y el `pct-lint` extendido a los archivos nuevos.
+   implementación y el `pct-lint` extendido a los archivos nuevos. **Entra en
+   R1** (Lety), no se pospone.
 5. **Una emisora MX sin cap verificada se pinta gris punteada, sin tamaño.**
    Nunca un tamaño estimado.
-6. **R6 lee la UPA de `pead_earnings`**, no de Finnhub.
-7. **R5 incluye un pipeline de Form 4 con tabla en Neon.** No es reuso del
+6. **GFNORTE lleva cap de Yahoo con la etiqueta `cap: yahoo` visible en el
+   cuadro y en la hoja; si Yahoo no da cap, cae a gris punteado** (Lety,
+   §7.3). La etiqueta es obligatoria: sin fuente, no pinta.
+7. **R6 lee la UPA de `pead_earnings`**, no de Finnhub.
+8. **R5 incluye un pipeline de Form 4 con tabla en Neon**, presupuestado en
+   **30–40 h**, y **se queda en su lugar del orden** (Lety). No es reuso del
    TRACKER.
+9. **Las dos suites rojas pre-existentes no se tocan** (Lety, §10). Quedan
+   documentadas y fuera del alcance de este encargo.
+10. **El punto 0.10 corre con la lista de la adenda vía `?feeds=`**, y el país
+    de cada feed se declara, nunca se adivina (§3.10).
 
 ---
 
@@ -772,10 +888,18 @@ Lo que esta Fase 0 agrega a esa lista:
 | G8 | verde en `recommendation`; precio objetivo, incógnita | baja |
 | G9 | **rojo** — es el hallazgo de §3.9 | muy alta |
 | G10 | verde | alta |
+| G11 | **depende de la lista.** Con `FEEDS_DEFAULT` predigo verde en los 3 de VC y 403 en el control negativo; con la lista de la adenda, no tengo base para predecir | — |
 
 Un NO-GO en G1, G2 y G9 **no cancela nada**: las tres tienen su rama escrita en
 §5. Lo que cambia es el orden y el tamaño de R1 y R5, que es exactamente para
 lo que sirve una Fase 0.
+
+**Sobre G11 no predigo nada**, y quiero que quede escrito por qué: no tengo la
+lista de la adenda, y una predicción sobre feeds que no conozco no sería una
+predicción sino un relleno. Si corrés sin `?feeds=`, el JSON va a decir
+`origen_lista: "FEEDS_DEFAULT del repo (NO es la lista de la adenda)"` y G11
+va a estar midiendo el canal RSS, no las fuentes de noticias del producto —
+sigue siendo útil (dice si Vercel puede leer RSS), pero no es la pregunta.
 
 ---
 
@@ -785,7 +909,7 @@ La regla 10 del encargo pide "suite `node --test` verde" al cierre de cada
 rebanada. **Hoy la suite no está verde**, y no por nada de esta fase. Medido
 antes y después de tocar nada, el resultado es idéntico: **106 de 108 suites
 en verde**, las mismas dos rojas en los dos casos. La 108 es la nueva de esta
-fase, y pasa 35/35.
+fase, y pasa 46/46.
 
 ### 10.1 · El candado de `DELETE`
 

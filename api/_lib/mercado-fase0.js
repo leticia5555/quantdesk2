@@ -60,6 +60,16 @@ export const CRITERIOS = {
   g7_min_trimestres_facts: 8,
   // G9 — Form 4 completo.
   g9_min_codigos: 4,                // además de P: al menos S, A, M y uno más
+
+  // G11 — punto 0.10 de la adenda: feeds de noticias.
+  //
+  // El piso NO es "cuántos feeds contestan 200": es cuántos entregan items
+  // USABLES bajo la regla 3 del encargo (titular original + fuente + link) y
+  // con FECHA parseable, porque "lo de hoy" muestra la hora del titular y un
+  // feed sin pubDate la obligaría a inventarse.
+  g11_min_feeds_vivos: 3,           // menos que esto y "lo de hoy" no se llena
+  g11_min_items_por_feed: 5,        // un feed con 2 items es un feed muerto con 200
+  g11_min_pct_con_fecha: 90,        // % de items del feed con pubDate parseable
 };
 
 // Los 12 campos que la ficha de ticker pide de `metric` de Finnhub (§2.5 del
@@ -573,6 +583,119 @@ export function censoForm4(txs) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Punto 0.10 (adenda) — feeds de noticias
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Cuenta items de un feed SIN saber de antemano su dialecto.
+ *
+ * `parseRss` de api/vc-feed.js solo entiende `<item>` (RSS 2.0). Media web de
+ * noticias publica **Atom** (`<entry>`), empezando por Google News y varios
+ * medios mexicanos. Contar solo `<item>` reportaría "0 items" sobre un feed
+ * perfectamente sano, y eso sería un rojo inventado — el peor resultado
+ * posible de un censo, porque cierra una puerta que estaba abierta.
+ *
+ * Además del conteo, mide lo que la regla 3 del encargo necesita de verdad:
+ * cuántos items traen TÍTULO, cuántos traen LINK, y cuántos traen una FECHA
+ * parseable. Un feed que contesta 200 con 40 items sin `pubDate` no sirve
+ * para "lo de hoy": la hora del titular tendría que inventarse.
+ *
+ * NO republica cuerpo, ni lo guarda: solo cuenta. Misma regla que vc-feed.
+ */
+export function contarItemsFeed(xml) {
+  const s = String(xml || '');
+  const items = s.match(/<item(?:\s[^>]*)?>[\s\S]*?<\/item>/gi) || [];
+  const entries = s.match(/<entry(?:\s[^>]*)?>[\s\S]*?<\/entry>/gi) || [];
+  const dialecto = items.length >= entries.length
+    ? (items.length ? 'rss' : null)
+    : 'atom';
+  const bloques = dialecto === 'atom' ? entries : items;
+
+  const tag = (b, t) => {
+    const m = new RegExp(`<${t}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${t}>`, 'i').exec(b);
+    return m ? m[1].trim() : '';
+  };
+  let conTitulo = 0, conLink = 0, conFecha = 0;
+  for (const b of bloques) {
+    if (tag(b, 'title')) conTitulo++;
+    // Atom pone el link en un atributo href, RSS en el texto del tag.
+    if (tag(b, 'link') || /<link[^>]*href="[^"]+"/i.test(b)) conLink++;
+    const fecha = tag(b, 'pubDate') || tag(b, 'updated') || tag(b, 'published') || tag(b, 'dc:date');
+    if (fecha && Number.isFinite(Date.parse(fecha))) conFecha++;
+  }
+  const n = bloques.length;
+  return {
+    dialecto,
+    items: n,
+    con_titulo: conTitulo,
+    con_link: conLink,
+    con_fecha: conFecha,
+    pct_con_fecha: n ? Math.round((conFecha / n) * 1000) / 10 : 0,
+    // Usable = lo que la regla 3 puede pintar sin inventar nada.
+    usables: Math.min(conTitulo, conLink, conFecha),
+  };
+}
+
+/**
+ * Veredicto de UN feed, ya medido. `resp` es lo que devolvió el fetch
+ * instrumentado: { ok, status, ms, texto }.
+ *
+ * Un 403 acá NO es un fallo del censo: es LA RESPUESTA. El smoke de vc-feed
+ * ya encontró que FinSMEs devuelve 403 de Cloudflare desde IPs de Vercel
+ * mientras funciona perfecto desde una laptop — por eso este censo corre
+ * desde prod y por eso el motivo se reporta con su nombre real
+ * (`bloqueado_cloudflare`) y no como "no disponible".
+ */
+export function veredictoFeed(nombre, url, resp) {
+  const base = { nombre, url, status: resp && resp.status, ms: resp && resp.ms };
+  if (!resp || (!resp.ok && !resp.texto)) {
+    return { ...base, vivo: false, motivo: (resp && resp.error) || `HTTP ${resp && resp.status}` };
+  }
+  if (!resp.ok) {
+    const cf = /cloudflare|just a moment|attention required/i.test(resp.texto || '');
+    return {
+      ...base, vivo: false,
+      motivo: cf ? 'bloqueado_cloudflare' : `HTTP ${resp.status}`,
+      // Se distingue a propósito de un 403 cualquiera: uno se arregla con un
+      // proxy o cambiando de fuente; el otro puede ser una URL mal escrita.
+      pista: cf ? 'responde desde una laptop pero no desde una IP de datacenter (mismo caso que FinSMEs en vc-feed)' : undefined,
+    };
+  }
+  const m = contarItemsFeed(resp.texto);
+  const razones = [];
+  if (!m.dialecto) razones.push('la respuesta no parece un feed (ni <item> ni <entry>)');
+  if (m.items < CRITERIOS.g11_min_items_por_feed) razones.push(`${m.items} items (piso ${CRITERIOS.g11_min_items_por_feed})`);
+  if (m.pct_con_fecha < CRITERIOS.g11_min_pct_con_fecha) razones.push(`solo ${m.pct_con_fecha}% de los items trae fecha parseable (piso ${CRITERIOS.g11_min_pct_con_fecha}%) — "lo de hoy" no puede mostrar la hora`);
+  return { ...base, vivo: razones.length === 0, ...m, motivo: razones.length ? razones.join(' · ') : null };
+}
+
+/** El agregado de G11 sobre los feeds ya juzgados. */
+export function censoFeeds(feeds = []) {
+  const vivos = feeds.filter((f) => f.vivo);
+  const razones = [];
+  if (vivos.length < CRITERIOS.g11_min_feeds_vivos) {
+    razones.push(`${vivos.length} feeds vivos (piso ${CRITERIOS.g11_min_feeds_vivos})`);
+  }
+  // La cobertura de MÉXICO se cuenta aparte del total: "lo de hoy" mezcla
+  // EE.UU. y México, y tres feeds gringos vivos no llenan la mitad mexicana.
+  // Un feed se cuenta como MX solo si quien arma la lista lo marcó — nunca se
+  // adivina por el dominio.
+  const mx = feeds.filter((f) => f.pais === 'mx');
+  const mxVivos = mx.filter((f) => f.vivo);
+  if (mx.length && !mxVivos.length) razones.push('ningún feed de México vivo: la mitad mexicana de "lo de hoy" queda vacía');
+  return {
+    feeds: feeds.length,
+    vivos: vivos.length,
+    muertos: feeds.length - vivos.length,
+    mx: { declarados: mx.length, vivos: mxVivos.length },
+    items_usables_totales: feeds.reduce((a, f) => a + (f.usables || 0), 0),
+    detalle: feeds,
+    verde: razones.length === 0,
+    razones,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // El tablero de compuertas
 // ═══════════════════════════════════════════════════════════════════
 
@@ -585,7 +708,7 @@ export function censoForm4(txs) {
  * probó", que es justo la que un tablero mal hecho borra.
  */
 export function tablero(parciales = {}) {
-  const claves = ['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'g7', 'g8', 'g9', 'g10'];
+  const claves = ['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'g7', 'g8', 'g9', 'g10', 'g11'];
   const filas = claves.map((k) => {
     const p = parciales[k];
     if (p === undefined || p === null) return { gate: k, estado: 'sin_medir' };
