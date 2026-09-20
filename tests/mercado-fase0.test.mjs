@@ -740,8 +740,48 @@ test('registro: toda fuente sondeable tiene id único, idioma, tipo, sección y 
   }
 });
 
-test('registro: el smoke arranca en null — "no medido" no es "no sirve"', () => {
-  for (const f of FUENTES.fuentes) assert.equal(f.smoke, null, `${f.id} ya trae resultado de smoke`);
+test('registro: el smoke ya está CONGELADO con la corrida, y cada fuente dice su veredicto', () => {
+  // Nació en null ("no medido" no es "no sirve"). La corrida del 2026-09-20 lo
+  // llenó vía scripts/mercado-congelar-fuentes.mjs, así que ahora la
+  // invariante es la contraria: ninguna fuente puede quedar muda.
+  const VEREDICTOS = new Set(['GO', 'NO-GO', 'ASUMIDO_NO']);
+  for (const f of FUENTES.fuentes) {
+    assert.ok(f.smoke && VEREDICTOS.has(f.smoke.veredicto), `${f.id}: sin veredicto de smoke`);
+    if (f.smoke.veredicto === 'GO') {
+      assert.match(f.feed || '', /^https:\/\//, `${f.id}: GO sin url ganadora`);
+      // La ganadora queda PRIMERA y las candidatas no se borran: si mañana
+      // muere, la siguiente ya está escrita.
+      assert.equal(f.feeds[0], f.feed, `${f.id}: la ganadora no quedó primera`);
+      assert.ok(f.verificado_en, `${f.id}: GO sin fecha de verificación`);
+    } else {
+      assert.equal(f.feed, null, `${f.id}: no es GO y sin embargo tiene feed`);
+    }
+  }
+});
+
+test('registro: 22 GO y 6 NO-GO, con las 2 asumidas fuera del denominador', () => {
+  const v = (x) => FUENTES.fuentes.filter((f) => f.smoke.veredicto === x).length;
+  assert.equal(v('GO'), 22);
+  assert.equal(v('NO-GO'), 6);
+  assert.equal(v('ASUMIDO_NO'), 2);
+});
+
+test('registro: Banxico y BMV quedan como fuente NO-RSS con su plan B, no como agujero', () => {
+  // Un NO-GO de RSS no vacía la sección de oficiales cuando el repo ya sabe
+  // cosechar la fuente de otra manera.
+  for (const id of ['banxico', 'bmv_emisnet']) {
+    const f = FUENTES.fuentes.find((x) => x.id === id);
+    assert.equal(f.smoke.veredicto, 'NO-GO');
+    assert.equal(f.plan_b, 'no_rss');
+    assert.ok(f.plan_b_detalle && f.plan_b_detalle.length > 40, `${id}: plan B sin detalle`);
+  }
+});
+
+test('registro: al menos una fuente en español quedó viva — la mitad mexicana existe', () => {
+  // Era la condición de G11 que podía caer con el conteo global en verde.
+  const esVivas = FUENTES.fuentes.filter((f) => f.idioma === 'es' && f.smoke.veredicto === 'GO');
+  assert.ok(esVivas.length >= 4, `solo ${esVivas.length} fuentes ES vivas`);
+  assert.ok(esVivas.some((f) => f.seccion === 'mexico_latam'));
 });
 
 test('registro: hay fuentes en español, y Valor va como pt (el filtro tiene que distinguirlas)', () => {

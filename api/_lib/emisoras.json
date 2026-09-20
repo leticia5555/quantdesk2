@@ -138,9 +138,10 @@
       "estado": "activa",
       "verificado": true,
       "acciones_por_unidad": 1,
-      "serie_liquida": "PE&OLES*",
-      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
-      "unidad_verificado": false
+      "serie_liquida": null,
+      "unidad_fuente": "no aplica: sin serie de precio",
+      "unidad_verificado": false,
+      "sin_precio": "bmv_precios no tiene NINGUNA serie de esta emisora (corrida 2026-09-20). Sin precio no hay cap: sale gris punteada hasta que la cosecha la traiga."
     },
     {
       "clave": "GRUMA",
@@ -355,8 +356,8 @@
       "estado": "activa",
       "verificado": true,
       "acciones_por_unidad": 1,
-      "serie_liquida": "LASITEB",
-      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "serie_liquida": "LASITE*",
+      "unidad_fuente": "serie corregida por la corrida 2026-09-20: el registro declaraba LASITEB, que NO existe en bmv_precios (las reales son LASITE*, LASITEB-1, LASITEB-2)",
       "unidad_verificado": false
     },
     {

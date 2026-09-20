@@ -1,0 +1,12 @@
+{
+  "_doc": "Capitalizaciones de REFERENCIA para verificar G2. No se pintan nunca: el numero que el mapa muestra sale de `calc` (acciones x precio / acciones_por_unidad). Esto solo dice si ese calculo cuadra.",
+  "_por_que_existe": "La corrida del 2026-09-20 dejo las dos fuentes automaticas cerradas. Yahoo quoteSummary devuelve 401 Invalid Crumb desde Vercel para las cinco emisoras Y para el precio objetivo de AAPL, o sea que no es un problema del simbolo .MX sino del endpoint entero. Y el censo de Fase 1b ya habia medido que DataBursatil no trae acciones en circulacion (docs/bmv-rotation.md §4.4). Sin referencia no hay verificacion, y sin verificacion las 30 emisoras salen gris punteadas.",
+  "_reglas": {
+    "procedencia": "Cada fila dice QUIEN la capturo, DE DONDE y CUANDO. Una cap sin las tres cosas no entra: es lo que separa una referencia de un numero suelto.",
+    "no_se_pinta": "Estas cifras NUNCA se muestran en el mapa ni en la hoja. Son el patron de verificacion del §3.2 de la Fase 0: se comparan contra `calc` y lo unico que viaja al render es el veredicto (verificada | gris_punteado) y el error %.",
+    "caducidad": "Una cap de referencia envejece con el precio. `vigencia_dias` acota cuanto vale: pasado eso, la verificacion se marca `referencia_vencida` y la emisora vuelve a gris punteado en vez de arrastrar un verde viejo.",
+    "manual_no_es_peor": "Una referencia capturada a mano y fechada es MAS auditable que una de una API que devuelve 401: se sabe quien la vio y cuando. Lo que no puede pasar es que se use sin decir que es manual."
+  },
+  "vigencia_dias": 14,
+  "referencias": []
+}

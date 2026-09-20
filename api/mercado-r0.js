@@ -26,7 +26,9 @@ import {
   capConUnidades, verificaDivisor, estadoEmisora,
   buscarPistas, PISTAS_ACCIONES, PISTAS_CAP,
   filaUniversoUs, recorteMapa,
+  referenciaManual, parseManualParam,
 } from './_lib/mercado-r0.js';
+import REFERENCIAS_CAP from './_lib/mercado-cap-referencia.json' with { type: 'json' };
 
 export const maxDuration = 300;
 
@@ -323,7 +325,7 @@ async function jobRefcap({ limite = 40 }) {
 // R0(b) — verificar los divisores contra la referencia
 // ═══════════════════════════════════════════════════════════════════
 
-async function jobUnidades({ ahora }) {
+async function jobUnidades({ ahora, manual }) {
   const acciones = await sql(
     `select distinct on (clave) clave, anio, trimestre, acciones_circulacion
        from xbrl_reports order by clave, anio desc, trimestre desc`).catch(() => []);
@@ -339,10 +341,16 @@ async function jobUnidades({ ahora }) {
     preciosPor.get(k).push(p);
   }
 
-  // La referencia: lo que R0(c) haya establecido. Mientras no esté resuelto,
-  // el job corre igual y reporta `sin_referencia` — que NO es un verde.
+  // LA REFERENCIA. Dos caminos, en este orden:
+  //   1. DataBursatil, si `?job=refcap` encontró con qué (R0c).
+  //   2. El registro manual, fechado y con fuente (_lib/mercado-cap-referencia.json
+  //      o `?manual=CLAVE:CAP`), que es el camino que la corrida del
+  //      2026-09-20 dejó abierto al cerrar los dos automáticos.
   const ref = await jobRefcap({ limite: 20 });
   const referenciaDisponible = ref.hay_cap === true;
+  const registroManual = manual && manual.referencias && manual.referencias.length
+    ? { vigencia_dias: REFERENCIAS_CAP.vigencia_dias, referencias: manual.referencias }
+    : REFERENCIAS_CAP;
 
   const salida = EMISORAS.emisoras.map((em) => {
     const clave = String(em.clave).toUpperCase();
@@ -360,8 +368,9 @@ async function jobUnidades({ ahora }) {
       precio: elegida ? elegida.cierre : null,
       serie_liquida: em.serie_liquida, acciones_por_unidad: em.acciones_por_unidad,
     });
+    const refMan = referenciaManual(registroManual, clave, ahora);
     const verif = verificaDivisor({
-      capCalculada: calc.cap, capReferencia: null,   // se llena cuando R0(c) resuelva
+      capCalculada: calc.cap, capReferencia: refMan.cap,
       acciones_por_unidad: em.acciones_por_unidad,
     });
     const estado = estadoEmisora(verif, { cap: calc.cap, fuente_cap: 'calc' });
@@ -377,11 +386,30 @@ async function jobUnidades({ ahora }) {
       serie_mas_operada: masOperada ? masOperada.emisora_serie : null,
       serie_discrepa: !!serieDiscrepa,
       verificacion: verif, estado: estado.estado, etiqueta: estado.etiqueta,
+      referencia: refMan.cap != null
+        ? { cap: refMan.cap, fuente: refMan.fuente, capturada_en: refMan.capturada_en, dias: refMan.dias }
+        : { cap: null, motivo: refMan.motivo, vencida: refMan.vencida === true },
     };
   });
 
   const conCap = salida.filter((s) => s.cap_calculada != null);
   const discrepan = salida.filter((s) => s.serie_discrepa);
+  const verificadas = salida.filter((s) => s.estado === 'verificada');
+  const conRef = salida.filter((s) => s.referencia && s.referencia.cap != null);
+  // El divisor implícito de las que NO cuadran: es el entregable de R0(b),
+  // porque dice cuál ES el divisor en vez de solo decir que el declarado
+  // está mal.
+  const implicitos = salida
+    .filter((s) => s.verificacion && s.verificacion.divisor_implicito != null
+      && s.verificacion.divisor_implicito !== s.acciones_por_unidad)
+    .map((s) => ({
+      clave: s.clave, declarado: s.acciones_por_unidad,
+      implicito: s.verificacion.divisor_implicito, exacto: s.verificacion.exacto,
+      error_pct: s.verificacion.error_pct,
+    }));
+  const noSonDeUnidad = salida
+    .filter((s) => s.verificacion && s.verificacion.estado === 'no_es_de_unidad')
+    .map((s) => ({ clave: s.clave, motivo: s.verificacion.motivo }));
   return {
     job: 'unidades', generado_en: ahora.toISOString(),
     emisoras: salida.length,
@@ -395,8 +423,15 @@ async function jobUnidades({ ahora }) {
       nota: referenciaDisponible ? null
         : 'SIN REFERENCIA NO HAY VERIFICACIÓN: las caps calculadas de arriba no están validadas y TODAS las emisoras salen gris punteadas. Resolver R0(c) primero.',
     },
+    divisores_implicitos: implicitos,
+    no_son_de_unidad: noSonDeUnidad,
     detalle: salida,
-    g2_proyectado: { verificadas: 0, verde: false, motivo: 'la referencia de cap no está resuelta (R0c)' },
+    g2_proyectado: {
+      con_referencia: conRef.length,
+      verificadas: verificadas.length,
+      verde: verificadas.length >= 5 && conRef.length >= 5,
+      motivo: conRef.length ? null : 'ninguna emisora tiene capitalización de referencia: cargar _lib/mercado-cap-referencia.json o pasar ?manual=',
+    },
   };
 }
 
@@ -462,13 +497,20 @@ export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   const job = String(q.job || 'universo').toLowerCase();
   const dry = q.dry === '1' || q.dry === 'true';
+  // `?manual=WALMEX:784e9,FEMSA:7e11&fuente=...&capturada_en=...` — la
+  // referencia a mano, para verificar sin redeploy. `fuente` y `capturada_en`
+  // valen para todas las de la corrida: si vinieron en la misma sesión,
+  // vinieron del mismo lado y el mismo día.
+  const manual = parseManualParam(q.manual, {
+    fuente: q.fuente, capturada_en: q.capturada_en,
+  });
   const ahora = new Date();
   const t0 = Date.now();
 
   try {
     let out;
     if (job === 'universo') out = await jobUniverso({ ahora, dry, finnhubKey: process.env.FINNHUB_API_KEY });
-    else if (job === 'unidades') out = await jobUnidades({ ahora });
+    else if (job === 'unidades') out = await jobUnidades({ ahora, manual });
     else if (job === 'refcap') out = await jobRefcap({ limite: Number(q.limite) || 40 });
     else if (job === 'gfnorte') out = await jobGfnorte();
     else return res.status(400).json({ error: 'job debe ser universo | unidades | refcap | gfnorte' });
@@ -477,6 +519,10 @@ export default async function handler(req, res) {
     // marcarlos vivos haría que /api/cron-status mintiera.
     if (job === 'universo' && !dry) await beat('mercado:universo').catch(() => {});
 
+    if (manual.invalidas.length) out.manual_invalidas = manual.invalidas;
+    if (manual.referencias.length) {
+      out.manual_usado = { n: manual.referencias.length, fuente: q.fuente || null, capturada_en: q.capturada_en || null };
+    }
     out.ms = Date.now() - t0;
     out.doc = 'docs/mercado-r0.md';
     return res.status(200).json(out);

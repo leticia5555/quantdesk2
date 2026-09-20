@@ -202,6 +202,85 @@ export function buscarPistas(raw, { pistas = [...PISTAS_ACCIONES, ...PISTAS_CAP]
   };
 }
 
+/**
+ * La referencia MANUAL: lee el JSON de referencias y devuelve la cap vigente
+ * de una emisora, o null con motivo.
+ *
+ * Por qué existe: la corrida del 2026-09-20 cerró las dos fuentes
+ * automáticas a la vez. Yahoo `quoteSummary` devolvió **401 Invalid Crumb**
+ * para las cinco emisoras Y para el precio objetivo de AAPL — o sea que no es
+ * el símbolo `.MX`, es el endpoint entero. Y el censo de Fase 1b ya había
+ * medido que DataBursatil no trae acciones en circulación.
+ *
+ * Una referencia capturada a mano y FECHADA es más auditable que una API que
+ * contesta 401: se sabe quién la vio y cuándo. Lo que no puede pasar es que se
+ * use sin decir que es manual — de ahí que `fuente` y `capturada_en` sean
+ * obligatorias y que una fila sin ellas se rechace.
+ *
+ * `vigencia_dias` acota cuánto vale: una cap de referencia envejece con el
+ * precio, y arrastrar un verde viejo es peor que volver a gris punteado.
+ */
+export function referenciaManual(registro, clave, ahora) {
+  const now = ahora instanceof Date ? ahora : new Date(ahora);
+  const filas = (registro && registro.referencias) || [];
+  const vigenciaDias = num(registro && registro.vigencia_dias) ?? 14;
+  const fila = filas.find((f) => up(f && f.clave) === up(clave));
+  if (!fila) return { cap: null, motivo: 'sin referencia manual para esta emisora' };
+
+  const cap = num(fila.market_cap);
+  if (cap == null || cap <= 0) return { cap: null, motivo: 'la referencia no trae market_cap numérico' };
+  // Las tres cosas que separan una referencia de un número suelto.
+  if (!fila.fuente) return { cap: null, motivo: 'la referencia no dice de dónde salió (`fuente`)' };
+  if (!fila.capturada_en) return { cap: null, motivo: 'la referencia no dice cuándo se capturó (`capturada_en`)' };
+
+  const t = Date.parse(fila.capturada_en);
+  if (!Number.isFinite(t)) return { cap: null, motivo: `\`capturada_en\` no es una fecha: ${fila.capturada_en}` };
+  const dias = (now.getTime() - t) / 86400000;
+  if (dias < 0) return { cap: null, motivo: 'la referencia está fechada en el futuro' };
+  if (dias > vigenciaDias) {
+    return {
+      cap: null, dias: Math.round(dias),
+      motivo: `referencia vencida: ${Math.round(dias)} días (vigencia ${vigenciaDias})`,
+      vencida: true,
+    };
+  }
+  return {
+    cap, motivo: null, dias: Math.round(dias),
+    fuente: fila.fuente, capturada_en: fila.capturada_en,
+    capturada_por: fila.capturada_por || null,
+    // Lo que viaja al render: la etiqueta dice que el número que se PINTA es
+    // calc, y que lo que vino de afuera fue solo el verificador.
+    etiqueta_verificacion: `verificada vs ${fila.fuente} (${fila.capturada_en})`,
+  };
+}
+
+/**
+ * Parsea `?job=...&manual=CLAVE:CAP,CLAVE:CAP` para una verificación puntual
+ * sin redeploy. `fuente` y `capturada_en` se pasan aparte y valen para todas
+ * las de esa corrida — porque si vinieron en la misma sesión, vinieron del
+ * mismo lado y el mismo día.
+ */
+export function parseManualParam(raw, { fuente, capturada_en } = {}) {
+  const txt = String(raw || '').trim();
+  if (!txt) return { referencias: [], invalidas: [] };
+  const referencias = [], invalidas = [];
+  for (const parte of txt.split(',')) {
+    const t = parte.trim();
+    if (!t) continue;
+    const i = t.lastIndexOf(':');
+    if (i <= 0) { invalidas.push({ entrada: t, motivo: 'falta el ":" entre clave y capitalización' }); continue; }
+    const clave = up(t.slice(0, i));
+    const cap = num(t.slice(i + 1).replace(/[\s,_]/g, ''));
+    if (cap == null || cap <= 0) { invalidas.push({ entrada: t, motivo: 'la capitalización no es un número positivo' }); continue; }
+    referencias.push({
+      clave, market_cap: cap,
+      fuente: fuente || 'manual (sin fuente declarada)',
+      capturada_en: capturada_en || null,
+    });
+  }
+  return { referencias, invalidas };
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // R0(a) — la fila del universo US
 // ═══════════════════════════════════════════════════════════════════
@@ -297,6 +376,15 @@ export function parseFechaFeed(raw) {
   const s = String(raw || '').trim();
   if (!s) return { ms: null, motivo: 'campo de fecha vacío o ausente' };
 
+  // ¿La cadena trae HORA? `Date.parse` acepta muchas formas sin hora y las
+  // aterriza en medianoche sin chistar — incluido "17 septiembre 2026", que
+  // V8 resuelve por el prefijo "sep". El resultado es correcto como FECHA y
+  // mudo como HORA, y "lo de hoy" ordena por hora: un feed entero a las 00:00
+  // se ordena al azar mientras se ve perfecto. Se marca, no se rechaza.
+  const viaSegunHora = (txt, via) => (/\d{1,2}:\d{2}/.test(txt)
+    ? via
+    : `${via} — SIN HORA en el feed: se aterriza a medianoche y el orden por hora no es real`);
+
   // La fecha SOLA va primero, antes del Date.parse genérico. `Date.parse`
   // resuelve '2026-09-17' sin chistar (medianoche UTC), así que si se lo
   // dejáramos atender él, el aviso de "la hora no viene" no se emitiría
@@ -309,7 +397,7 @@ export function parseFechaFeed(raw) {
   }
 
   const directo = Date.parse(s);
-  if (Number.isFinite(directo)) return { ms: directo, motivo: null, via: 'Date.parse' };
+  if (Number.isFinite(directo)) return { ms: directo, motivo: null, via: viaSegunHora(s, 'Date.parse') };
 
   // Zona alfabética al final que Date.parse no conoce → se cambia por su
   // offset numérico y se reintenta. No se ADIVINA la zona: solo se traduce una
@@ -322,7 +410,7 @@ export function parseFechaFeed(raw) {
     const hh = String(Math.floor(abs / 60)).padStart(2, '0');
     const mm = String(abs % 60).padStart(2, '0');
     const t = Date.parse(s.replace(/\s[A-Z]{2,5}$/, ` ${signo}${hh}${mm}`));
-    if (Number.isFinite(t)) return { ms: t, motivo: null, via: `zona ${m[1]} traducida a ${signo}${hh}${mm}` };
+    if (Number.isFinite(t)) return { ms: t, motivo: null, via: viaSegunHora(s, `zona ${m[1]} traducida a ${signo}${hh}${mm}`) };
   }
   if (m) return { ms: null, motivo: `zona horaria desconocida: "${m[1]}"` };
 

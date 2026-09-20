@@ -15,11 +15,21 @@ import {
   buscarPistas, PISTAS_ACCIONES,
   filaUniversoUs, recorteMapa,
   parseFechaFeed, diagnosticoFechas, ZONAS_EXTRA,
+  referenciaManual, parseManualParam,
 } from '../api/_lib/mercado-r0.js';
+import { contarItemsFeed } from '../api/_lib/mercado-fase0.js';
+import REFERENCIAS from '../api/_lib/mercado-cap-referencia.json' with { type: 'json' };
 import { congelar, resumen } from '../scripts/mercado-congelar-fuentes.mjs';
 import EMISORAS from '../api/_lib/emisoras.json' with { type: 'json' };
 
 const AHORA = new Date(Date.UTC(2026, 8, 20, 12, 0, 0));
+
+// Constructores de feed para los tests de fecha. Locales a propósito: la
+// suite de Fase 0 tiene los suyos y compartirlos por import acoplaría dos
+// suites que se leen por separado.
+const itemRss = (t, l, f) => `<item><title>${t}</title><link>${l}</link><pubDate>${f}</pubDate></item>`;
+const feedRss = (items) => `<?xml version="1.0"?><rss version="2.0"><channel>${items.join('')}</channel></rss>`;
+const FECHA_RSS = 'Sat, 19 Sep 2026 14:30:00 GMT';
 
 // ───────────────── R0(b) · unidades vinculadas ──────────────────────
 
@@ -123,14 +133,19 @@ test('emisoras.json: los cuatro divisores del encargo están, y NINGUNO se decla
   }
 });
 
-test('emisoras.json: las 30 tienen divisor y serie líquida, y el default es 1', () => {
+test('emisoras.json: las 30 tienen divisor; la serie puede faltar, pero solo CON MOTIVO', () => {
   for (const e of EMISORAS.emisoras) {
     assert.ok(Number.isInteger(e.acciones_por_unidad) && e.acciones_por_unidad >= 1, `${e.clave}: divisor inválido`);
-    assert.ok(e.serie_liquida, `${e.clave}: sin serie líquida`);
     assert.equal(e.unidad_verificado, false, `${e.clave}: nada está verificado hasta la corrida`);
+    // Una serie ausente es aceptable; una serie ausente Y MUDA, no. Sin el
+    // motivo, "sin cap" no se distingue de un typo — que es exactamente lo
+    // que pasó con LASITE antes de la corrida.
+    assert.ok(e.serie_liquida || e.sin_precio, `${e.clave}: sin serie líquida y sin motivo`);
   }
   const conDivisor = EMISORAS.emisoras.filter((e) => e.acciones_por_unidad > 1).map((e) => e.clave).sort();
   assert.deepEqual(conDivisor, ['CEMEX', 'FEMSA', 'KOF', 'TLEVISA']);
+  // 29 con serie, 1 (PE&OLES) sin ninguna en bmv_precios — medido, no supuesto.
+  assert.equal(EMISORAS.emisoras.filter((e) => e.serie_liquida).length, 29);
 });
 
 // ───────────────── R0(c) · la referencia de cap ─────────────────────
@@ -353,4 +368,133 @@ test('R0f: el resumen nombra las que ganaron con una candidata que no era la pri
   const txt = resumen(reporte);
   assert.match(txt, /ganó una candidata que NO era la primera/);
   assert.match(txt, /a → candidata #2/);
+});
+
+// ───── R0(c bis) · la referencia MANUAL que la corrida hizo necesaria ─────
+
+const REG_REF = {
+  vigencia_dias: 14,
+  referencias: [
+    { clave: 'WALMEX', market_cap: 784e9, fuente: 'Yahoo Finance (web)', capturada_en: '2026-09-20', capturada_por: 'Lety' },
+    { clave: 'FEMSA', market_cap: 700e9, fuente: 'Yahoo Finance (web)', capturada_en: '2026-08-01' },
+    { clave: 'AMX', market_cap: 1e12, capturada_en: '2026-09-20' },
+    { clave: 'GMEXICO', market_cap: 1.6e12, fuente: 'Yahoo Finance (web)' },
+  ],
+};
+const HOY_REF = new Date('2026-09-25T00:00:00Z');
+
+test('R0c: una referencia vigente trae cap Y la etiqueta que dice que el número pintado es calc', () => {
+  const r = referenciaManual(REG_REF, 'walmex', HOY_REF);
+  assert.equal(r.cap, 784e9);
+  assert.equal(r.dias, 5);
+  assert.match(r.etiqueta_verificacion, /verificada vs Yahoo Finance \(web\) \(2026-09-20\)/);
+});
+
+test('R0c: una referencia VENCIDA no vale — arrastrar un verde viejo es peor que gris', () => {
+  // Una cap de referencia envejece con el precio.
+  const r = referenciaManual(REG_REF, 'FEMSA', HOY_REF);
+  assert.equal(r.cap, null);
+  assert.equal(r.vencida, true);
+  assert.match(r.motivo, /vencida: 55 días/);
+});
+
+test('R0c: sin fuente o sin fecha de captura NO es una referencia, es un número suelto', () => {
+  assert.match(referenciaManual(REG_REF, 'AMX', HOY_REF).motivo, /no dice de dónde salió/);
+  assert.match(referenciaManual(REG_REF, 'GMEXICO', HOY_REF).motivo, /no dice cuándo se capturó/);
+});
+
+test('R0c: una emisora sin referencia se distingue de una con referencia mala', () => {
+  assert.match(referenciaManual(REG_REF, 'GAP', HOY_REF).motivo, /sin referencia manual/);
+});
+
+test('R0c: una referencia fechada en el futuro se rechaza', () => {
+  const reg = { vigencia_dias: 14, referencias: [{ clave: 'X', market_cap: 1e9, fuente: 'y', capturada_en: '2027-01-01' }] };
+  assert.match(referenciaManual(reg, 'X', HOY_REF).motivo, /fechada en el futuro/);
+});
+
+test('R0c: ?manual= parsea claves y caps, y reporta lo mal formado', () => {
+  const { referencias, invalidas } = parseManualParam('WALMEX:784000000000,FEMSA:7.0e11,malo,GAP:-5', {
+    fuente: 'Yahoo Finance (web)', capturada_en: '2026-09-20',
+  });
+  assert.equal(referencias.length, 2);
+  assert.equal(referencias[0].clave, 'WALMEX');
+  assert.equal(referencias[1].market_cap, 7e11);
+  assert.equal(referencias[0].fuente, 'Yahoo Finance (web)');
+  assert.equal(invalidas.length, 2);
+});
+
+test('el JSON de referencias nace VACÍO y con vigencia declarada', () => {
+  // Nace vacío a propósito: una referencia inventada es peor que ninguna.
+  assert.deepEqual(REFERENCIAS.referencias, []);
+  assert.equal(REFERENCIAS.vigencia_dias, 14);
+  assert.ok(REFERENCIAS._reglas.no_se_pinta);
+});
+
+// ───── R0(e bis) · el diagnóstico que va a hacer hablar a la Fed ─────
+
+test('R0e: un feed con fechas ilegibles entrega las CADENAS CRUDAS y los tags presentes', () => {
+  // Éste es el caso Fed: HTTP 200, items de sobra, 0% de fechas parseables y
+  // ni una pista de por qué. Ahora la corrida trae la cadena y el motivo.
+  const items = [1, 2, 3].map((i) =>
+    `<item><title>T${i}</title><link>https://f/${i}</link><pubDate>el 17 del mes pasado</pubDate></item>`);
+  const r = contarItemsFeed(`<rss><channel>${items.join('')}</channel></rss>`);
+  assert.equal(r.items, 3);
+  assert.equal(r.pct_con_fecha, 0);
+  assert.equal(r.fechas_que_fallaron.length, 3);
+  assert.deepEqual(r.fechas_que_fallaron[0].tags_presentes, ['pubDate']);
+  assert.equal(r.fechas_que_fallaron[0].cruda, 'el 17 del mes pasado');
+  assert.match(r.fechas_que_fallaron[0].motivo, /formato no reconocido/);
+});
+
+test('R0e: "no hay campo de fecha" se distingue de "hay uno y no se deja leer"', () => {
+  const sinTag = contarItemsFeed('<rss><channel><item><title>A</title><link>https://x/a</link></item></channel></rss>');
+  assert.deepEqual(sinTag.fechas_que_fallaron[0].tags_presentes, []);
+  assert.match(sinTag.fechas_que_fallaron[0].motivo, /vacío o ausente/);
+});
+
+test('R0e: un feed sano NO arrastra el diagnóstico', () => {
+  const ok = contarItemsFeed(feedRss([itemRss('A', 'https://x/a', FECHA_RSS)]));
+  assert.equal(ok.fechas_que_fallaron, undefined);
+});
+
+test('R0e: una fecha sin hora EN CUALQUIER formato se marca, no solo la ISO', () => {
+  // V8 resuelve "17 septiembre 2026" por el prefijo "sep" y la aterriza a
+  // medianoche. La fecha sale bien y la HORA es una ficción — y "lo de hoy"
+  // ordena por hora, así que un feed entero a las 00:00 se ordena al azar
+  // mientras se ve perfecto.
+  const r = parseFechaFeed('17 septiembre 2026');
+  assert.ok(r.ms != null);
+  assert.match(r.via, /SIN HORA en el feed/);
+
+  const conHora = parseFechaFeed('Wed, 17 Sep 2026 14:00:00 EDT');
+  assert.equal(conHora.via, 'Date.parse');
+});
+
+test('R0e: el diagnóstico se apoya en el MISMO parser que el censo — no en una copia', () => {
+  // Dos parsers de fecha que se desincronizan es cómo un feed pasa en un lado
+  // y falla en el otro sin que nadie entienda por qué.
+  const cet = contarItemsFeed(feedRss([
+    '<item><title>A</title><link>https://x/a</link><pubDate>Wed, 17 Sep 2026 14:00:00 CET</pubDate></item>',
+  ]));
+  assert.equal(cet.pct_con_fecha, 100);
+  assert.equal(cet.fechas_que_fallaron, undefined);
+});
+
+// ───── lo que la corrida del 2026-09-20 corrigió en el registro ─────
+
+test('registro: LASITE apunta a una serie que EXISTE', () => {
+  // La corrida lo cazó: el registro declaraba LASITEB, que no existe en
+  // bmv_precios (las reales son LASITE*, LASITEB-1, LASITEB-2), así que
+  // LASITE salía sin cap por un typo y no por falta de datos.
+  const l = EMISORAS.emisoras.find((e) => e.clave === 'LASITE');
+  assert.equal(l.serie_liquida, 'LASITE*');
+  assert.match(l.unidad_fuente, /corregida por la corrida/);
+});
+
+test('registro: PE&OLES queda SIN serie y con el motivo, no con una inventada', () => {
+  // bmv_precios no tiene ninguna serie de PE&OLES. Poner una para que la fila
+  // se vea completa habría producido una cap de una serie que no cotiza.
+  const p = EMISORAS.emisoras.find((e) => e.clave === 'PE&OLES');
+  assert.equal(p.serie_liquida, null);
+  assert.match(p.sin_precio, /no tiene NINGUNA serie/);
 });

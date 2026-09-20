@@ -7,285 +7,791 @@
     "idioma": "es | en. 'Solo español' de R3b filtra por ESTE campo, no por detección automática del titular.",
     "tipo": "medio | newsletter | oficial.",
     "seccion": "mercado | mexico_latam | acciones | etfs | cripto | oficiales. Es la sección POR DEFECTO; una nota con ticker puede reclasificarse a 'acciones' en R3b.",
-    "smoke": "Lo llena la corrida de /api/mercado-censo?job=todo. Hasta entonces es null: un campo vacío es 'no medido', que no es lo mismo que 'no sirve'."
+    "smoke": "Lo llena la corrida de /api/mercado-censo?job=todo. Hasta entonces es null: un campo vacío es 'no medido', que no es lo mismo que 'no sirve'.",
+    "feed": "La URL GANADORA, escrita por scripts/mercado-congelar-fuentes.mjs a partir del JSON de /api/mercado-censo. null = NO-GO. `feeds` conserva TODAS las candidatas con la ganadora primera: si manana muere, la siguiente ya esta escrita y probada.",
+    "plan_b": "'no_rss' = la fuente NO tiene feed y se cosecha de otra manera, con el mecanismo que el repo YA tiene probado. NO es un NO-GO de la seccion: es un cosechador distinto dentro del mismo registro. Hoy aplica a Banxico (API del SIE) y BMV emisnet (HTML a 1 req/s).",
+    "verificado_en": "Fecha de la corrida que dejo la fuente en GO con su url ganadora. Sin este campo, la fuente no esta verificada — y el [NO VERIFICADO] de su nota sigue valiendo."
   },
-
   "fuentes": [
     {
       "id": "reuters_business",
       "nombre": "Reuters",
-      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "idioma": "en",
+      "tipo": "medio",
+      "seccion": "mercado",
       "feeds": [
         "https://www.reuters.com/arc/outboundfeeds/rss/category/business/?outputType=xml",
         "https://feeds.reuters.com/reuters/businessNews"
       ],
       "nota": "[NO VERIFICADO] Reuters retiró sus feeds públicos clásicos (feeds.reuters.com) hace años; la ruta de arc/outboundfeeds es la que quedó y puede estar detrás de bloqueo. Candidata de alto riesgo — justo por eso se mide.",
-      "smoke": null
+      "smoke": {
+        "veredicto": "NO-GO",
+        "motivo": "ninguna de las 2 candidatas respondió con un feed usable",
+        "bloqueado_cloudflare": false,
+        "candidatas_probadas": 2
+      },
+      "feed": null
     },
     {
       "id": "cnbc",
       "nombre": "CNBC",
-      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "idioma": "en",
+      "tipo": "medio",
+      "seccion": "mercado",
       "feeds": [
         "https://www.cnbc.com/id/100003114/device/rss/rss.html",
         "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10001147"
       ],
-      "nota": "[NO VERIFICADO] CNBC publica feeds por sección con ids numéricos; 100003114 es el de 'Top News' según su propia página de RSS.",
-      "smoke": null
+      "nota": "CNBC publica feeds por sección con ids numéricos; 100003114 es el de 'Top News' según su propia página de RSS.",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 30,
+        "usables": 30,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 0,
+        "vias_imagen": {},
+        "pct_con_categoria": 0,
+        "categorias_ejemplo": []
+      },
+      "feed": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "marketwatch",
       "nombre": "MarketWatch",
-      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "idioma": "en",
+      "tipo": "medio",
+      "seccion": "mercado",
       "feeds": [
         "https://feeds.content.dowjones.io/public/rss/mw_topstories",
         "https://feeds.marketwatch.com/marketwatch/topstories/"
       ],
-      "nota": "[NO VERIFICADO] MarketWatch migró sus feeds al dominio de Dow Jones; la ruta vieja puede redirigir o morir.",
-      "smoke": null
+      "nota": "MarketWatch migró sus feeds al dominio de Dow Jones; la ruta vieja puede redirigir o morir.",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 10,
+        "usables": 10,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 100,
+        "vias_imagen": {
+          "media:content": 10
+        },
+        "pct_con_categoria": 0,
+        "categorias_ejemplo": []
+      },
+      "feed": "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "wsj_markets",
       "nombre": "WSJ (titulares)",
-      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "idioma": "en",
+      "tipo": "medio",
+      "seccion": "mercado",
       "feeds": [
         "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain",
         "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"
       ],
-      "nota": "[NO VERIFICADO] Solo titulares — el cuerpo es de paga y NUNCA se republica (regla del proyecto, no solo de WSJ).",
-      "smoke": null
+      "nota": "Solo titulares — el cuerpo es de paga y NUNCA se republica (regla del proyecto, no solo de WSJ).",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 61,
+        "usables": 61,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 91.8,
+        "vias_imagen": {
+          "media:content": 56
+        },
+        "pct_con_categoria": 0,
+        "categorias_ejemplo": []
+      },
+      "feed": "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "seeking_alpha",
       "nombre": "Seeking Alpha",
-      "idioma": "en", "tipo": "medio", "seccion": "acciones",
+      "idioma": "en",
+      "tipo": "medio",
+      "seccion": "acciones",
       "feeds": [
         "https://seekingalpha.com/market_currents.xml",
         "https://seekingalpha.com/feed.xml"
       ],
-      "nota": "[NO VERIFICADO] Candidata de riesgo alto: Seeking Alpha filtra agresivamente por user-agent e IP. Es el caso FinSMEs por excelencia.",
-      "smoke": null
+      "nota": "Candidata de riesgo alto: Seeking Alpha filtra agresivamente por user-agent e IP. Es el caso FinSMEs por excelencia.",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 7,
+        "usables": 7,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 0,
+        "vias_imagen": {},
+        "pct_con_categoria": 100,
+        "categorias_ejemplo": [
+          "ppa",
+          "xar",
+          "ita",
+          "xbi",
+          "srpt",
+          "vrtx",
+          "tsla",
+          "spcx",
+          "apo",
+          "msft",
+          "goog",
+          "googl",
+          "amc",
+          "sony",
+          "imax"
+        ]
+      },
+      "feed": "https://seekingalpha.com/market_currents.xml",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "zerohedge",
       "nombre": "ZeroHedge",
-      "idioma": "en", "tipo": "medio", "seccion": "mercado",
-      "feeds": ["https://feeds.feedburner.com/zerohedge/feed", "https://www.zerohedge.com/fullrss2.xml"],
-      "nota": "[NO VERIFICADO] Sirve de feedburner históricamente.",
-      "smoke": null
+      "idioma": "en",
+      "tipo": "medio",
+      "seccion": "mercado",
+      "feeds": [
+        "https://feeds.feedburner.com/zerohedge/feed",
+        "https://www.zerohedge.com/fullrss2.xml"
+      ],
+      "nota": "Sirve de feedburner históricamente.",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 25,
+        "usables": 25,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 0,
+        "vias_imagen": {},
+        "pct_con_categoria": 0,
+        "categorias_ejemplo": []
+      },
+      "feed": "https://feeds.feedburner.com/zerohedge/feed",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "yahoo_finance",
       "nombre": "Yahoo Finance",
-      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "idioma": "en",
+      "tipo": "medio",
+      "seccion": "mercado",
       "feeds": [
         "https://finance.yahoo.com/news/rssindex",
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC&region=US&lang=en-US"
       ],
-      "nota": "[NO VERIFICADO] La segunda candidata es POR SÍMBOLO — si vive, R6 la puede usar para 'noticias del ticker' sin gastar cuota de Finnhub. Vale la pena medirla aunque la primera pase.",
-      "smoke": null
+      "nota": "La segunda candidata es POR SÍMBOLO — si vive, R6 la puede usar para 'noticias del ticker' sin gastar cuota de Finnhub. Vale la pena medirla aunque la primera pase.",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 50,
+        "usables": 50,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 100,
+        "vias_imagen": {
+          "media:content": 50
+        },
+        "pct_con_categoria": 0,
+        "categorias_ejemplo": []
+      },
+      "feed": "https://finance.yahoo.com/news/rssindex",
+      "verificado_en": "2026-09-20"
     },
-
     {
       "id": "el_financiero",
       "nombre": "El Financiero",
-      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
-      "feeds": ["https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/?outputType=xml", "https://www.elfinanciero.com.mx/rss/"],
-      "nota": "[NO VERIFICADO] Corre sobre Arc (misma plataforma que Reuters), de ahí la ruta de outboundfeeds.",
-      "smoke": null
+      "idioma": "es",
+      "tipo": "medio",
+      "seccion": "mexico_latam",
+      "feeds": [
+        "https://www.elfinanciero.com.mx/rss/",
+        "https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/?outputType=xml"
+      ],
+      "nota": "Corre sobre Arc (misma plataforma que Reuters), de ahí la ruta de outboundfeeds.",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 95,
+        "usables": 95,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 100,
+        "vias_imagen": {
+          "media:content": 95
+        },
+        "pct_con_categoria": 0,
+        "categorias_ejemplo": []
+      },
+      "feed": "https://www.elfinanciero.com.mx/rss/",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "expansion",
       "nombre": "Expansión",
-      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
-      "feeds": ["https://expansion.mx/rss", "https://expansion.mx/rss/economia"],
-      "nota": "[NO VERIFICADO]",
-      "smoke": null
+      "idioma": "es",
+      "tipo": "medio",
+      "seccion": "mexico_latam",
+      "feeds": [
+        "https://expansion.mx/rss",
+        "https://expansion.mx/rss/economia"
+      ],
+      "nota": null,
+      "smoke": {
+        "veredicto": "GO",
+        "items": 44,
+        "usables": 43,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 100,
+        "vias_imagen": {
+          "media:content": 44
+        },
+        "pct_con_categoria": 100,
+        "categorias_ejemplo": [
+          "Tecnología",
+          "Donald Trump",
+          "Inteligencia artificial",
+          "Disney+",
+          "Streaming",
+          "Sismos",
+          "Empresas",
+          "Telecomunicaciones",
+          "Mercadotecnia",
+          "Starbucks",
+          "empresas",
+          "Economía",
+          "Secretaría de Hacienda y Crédito Público",
+          "Gasolina",
+          "Internacional"
+        ]
+      },
+      "feed": "https://expansion.mx/rss",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "el_economista",
       "nombre": "El Economista",
-      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
+      "idioma": "es",
+      "tipo": "medio",
+      "seccion": "mexico_latam",
       "feeds": [
         "https://www.eleconomista.com.mx/rss/mercados.xml",
         "https://www.eleconomista.com.mx/rss.xml",
         "https://www.eleconomista.com.mx/arc/outboundfeeds/rss/?outputType=xml"
       ],
       "nota": "[NO VERIFICADO] Tres candidatas porque es la fuente MX más importante para el mapa: si alguna vive, la mitad mexicana de 'lo de hoy' deja de estar vacía.",
-      "smoke": null
+      "smoke": {
+        "veredicto": "NO-GO",
+        "motivo": "ninguna de las 3 candidatas respondió con un feed usable",
+        "bloqueado_cloudflare": false,
+        "candidatas_probadas": 3
+      },
+      "feed": null
     },
     {
       "id": "bloomberg_linea",
       "nombre": "Bloomberg Línea",
-      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
-      "feeds": ["https://www.bloomberglinea.com/arc/outboundfeeds/rss/?outputType=xml", "https://www.bloomberglinea.com/feed/"],
-      "nota": "[NO VERIFICADO] OJO: Bloomberg Línea NO es Bloomberg. El encargo asume NO para Bloomberg; ésta es otra empresa (Falic Media) y sí se sondea.",
-      "smoke": null
+      "idioma": "es",
+      "tipo": "medio",
+      "seccion": "mexico_latam",
+      "feeds": [
+        "https://www.bloomberglinea.com/arc/outboundfeeds/rss/?outputType=xml",
+        "https://www.bloomberglinea.com/feed/"
+      ],
+      "nota": "OJO: Bloomberg Línea NO es Bloomberg. El encargo asume NO para Bloomberg; ésta es otra empresa (Falic Media) y sí se sondea.",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 100,
+        "usables": 100,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 100,
+        "vias_imagen": {
+          "media:content": 100
+        },
+        "pct_con_categoria": 0,
+        "categorias_ejemplo": []
+      },
+      "feed": "https://www.bloomberglinea.com/arc/outboundfeeds/rss/?outputType=xml",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "reuters_es",
       "nombre": "Reuters en español",
-      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
+      "idioma": "es",
+      "tipo": "medio",
+      "seccion": "mexico_latam",
       "feeds": [
         "https://www.reuters.com/arc/outboundfeeds/rss/category/world/americas/?outputType=xml",
         "https://feeds.reuters.com/reuters/MXbusinessNews"
       ],
       "nota": "[NO VERIFICADO] Reuters recortó fuerte su edición en español. Si `reuters_business` falla, ésta casi seguro también — se miden las dos para poder decirlo como hecho y no como suposición.",
-      "smoke": null
+      "smoke": {
+        "veredicto": "NO-GO",
+        "motivo": "ninguna de las 2 candidatas respondió con un feed usable",
+        "bloqueado_cloudflare": false,
+        "candidatas_probadas": 2
+      },
+      "feed": null
     },
     {
       "id": "investing_es",
       "nombre": "Investing.com ES",
-      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
-      "feeds": ["https://es.investing.com/rss/news.rss", "https://es.investing.com/rss/market_overview.rss"],
-      "nota": "[NO VERIFICADO] Riesgo de bloqueo por IP de datacenter.",
-      "smoke": null
+      "idioma": "es",
+      "tipo": "medio",
+      "seccion": "mexico_latam",
+      "feeds": [
+        "https://es.investing.com/rss/news.rss",
+        "https://es.investing.com/rss/market_overview.rss"
+      ],
+      "nota": "Riesgo de bloqueo por IP de datacenter.",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 10,
+        "usables": 10,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 80,
+        "vias_imagen": {
+          "enclosure": 8
+        },
+        "pct_con_categoria": 0,
+        "categorias_ejemplo": []
+      },
+      "feed": "https://es.investing.com/rss/news.rss",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "infobae_economia",
       "nombre": "Infobae Economía",
-      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
-      "feeds": ["https://www.infobae.com/arc/outboundfeeds/rss/category/economia/?outputType=xml", "https://www.infobae.com/feeds/rss/"],
-      "nota": "[NO VERIFICADO]",
-      "smoke": null
+      "idioma": "es",
+      "tipo": "medio",
+      "seccion": "mexico_latam",
+      "feeds": [
+        "https://www.infobae.com/arc/outboundfeeds/rss/category/economia/?outputType=xml",
+        "https://www.infobae.com/feeds/rss/"
+      ],
+      "nota": null,
+      "smoke": {
+        "veredicto": "GO",
+        "items": 100,
+        "usables": 100,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 100,
+        "vias_imagen": {
+          "media:content": 100
+        },
+        "pct_con_categoria": 0,
+        "categorias_ejemplo": []
+      },
+      "feed": "https://www.infobae.com/arc/outboundfeeds/rss/category/economia/?outputType=xml",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "la_republica_co",
       "nombre": "La República (CO)",
-      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
-      "feeds": ["https://www.larepublica.co/rss", "https://www.larepublica.co/rss/economia"],
-      "nota": "[NO VERIFICADO]",
-      "smoke": null
+      "idioma": "es",
+      "tipo": "medio",
+      "seccion": "mexico_latam",
+      "feeds": [
+        "https://www.larepublica.co/rss",
+        "https://www.larepublica.co/rss/economia"
+      ],
+      "nota": null,
+      "smoke": {
+        "veredicto": "GO",
+        "items": 60,
+        "usables": 60,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 0,
+        "vias_imagen": {},
+        "pct_con_categoria": 100,
+        "categorias_ejemplo": [
+          "Globoeconomía",
+          "Economía",
+          "Analistas",
+          "Internet Economy",
+          "Ocio",
+          "Alta Gerencia",
+          "Finanzas",
+          "Catástrofe nacional",
+          "Caja Fuerte"
+        ]
+      },
+      "feed": "https://www.larepublica.co/rss",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "valor_br",
       "nombre": "Valor (BR)",
-      "idioma": "pt", "tipo": "medio", "seccion": "mexico_latam",
-      "feeds": ["https://pox.globo.com/rss/valor/", "https://valor.globo.com/rss/"],
-      "nota": "[NO VERIFICADO] Portugués, no español: el toggle 'Solo español' de R3b la deja FUERA. Se registra con su idioma real en vez de forzarla a 'es' — el filtro tiene que poder distinguirlas.",
-      "smoke": null
+      "idioma": "pt",
+      "tipo": "medio",
+      "seccion": "mexico_latam",
+      "feeds": [
+        "https://pox.globo.com/rss/valor/",
+        "https://valor.globo.com/rss/"
+      ],
+      "nota": "Portugués, no español: el toggle 'Solo español' de R3b la deja FUERA. Se registra con su idioma real en vez de forzarla a 'es' — el filtro tiene que poder distinguirlas.",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 100,
+        "usables": 100,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 90,
+        "vias_imagen": {
+          "media:content": 90
+        },
+        "pct_con_categoria": 100,
+        "categorias_ejemplo": [
+          "valor"
+        ]
+      },
+      "feed": "https://pox.globo.com/rss/valor/",
+      "verificado_en": "2026-09-20"
     },
-
     {
       "id": "stratechery",
       "nombre": "Stratechery",
-      "idioma": "en", "tipo": "newsletter", "seccion": "mercado",
-      "feeds": ["https://stratechery.com/feed/"],
-      "nota": "[NO VERIFICADO] El feed público trae los artículos gratuitos; los de paga salen truncados. Como solo se muestra el titular, eso no cambia nada para nosotros.",
-      "smoke": null
+      "idioma": "en",
+      "tipo": "newsletter",
+      "seccion": "mercado",
+      "feeds": [
+        "https://stratechery.com/feed/"
+      ],
+      "nota": "El feed público trae los artículos gratuitos; los de paga salen truncados. Como solo se muestra el titular, eso no cambia nada para nosotros.",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 10,
+        "usables": 10,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 0,
+        "vias_imagen": {},
+        "pct_con_categoria": 100,
+        "categorias_ejemplo": [
+          "<![CDATA[This Week in Stratechery]]>",
+          "<![CDATA[Daily Update]]>",
+          "<![CDATA[Interviews]]>",
+          "<![CDATA[Articles]]>"
+        ]
+      },
+      "feed": "https://stratechery.com/feed/",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "doomberg",
       "nombre": "Doomberg",
-      "idioma": "en", "tipo": "newsletter", "seccion": "mercado",
-      "feeds": ["https://doomberg.substack.com/feed"],
-      "nota": "[NO VERIFICADO] Substack sirve /feed de forma estándar.",
-      "smoke": null
+      "idioma": "en",
+      "tipo": "newsletter",
+      "seccion": "mercado",
+      "feeds": [
+        "https://doomberg.substack.com/feed"
+      ],
+      "nota": "Substack sirve /feed de forma estándar.",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 20,
+        "usables": 20,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 100,
+        "vias_imagen": {
+          "enclosure": 20
+        },
+        "pct_con_categoria": 0,
+        "categorias_ejemplo": []
+      },
+      "feed": "https://doomberg.substack.com/feed",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "net_interest",
       "nombre": "Net Interest",
-      "idioma": "en", "tipo": "newsletter", "seccion": "mercado",
-      "feeds": ["https://www.netinterest.co/feed", "https://netinterest.substack.com/feed"],
-      "nota": "[NO VERIFICADO] Dominio propio sobre Substack: se prueban las dos rutas.",
-      "smoke": null
+      "idioma": "en",
+      "tipo": "newsletter",
+      "seccion": "mercado",
+      "feeds": [
+        "https://www.netinterest.co/feed",
+        "https://netinterest.substack.com/feed"
+      ],
+      "nota": "Dominio propio sobre Substack: se prueban las dos rutas.",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 20,
+        "usables": 20,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 100,
+        "vias_imagen": {
+          "enclosure": 20
+        },
+        "pct_con_categoria": 0,
+        "categorias_ejemplo": []
+      },
+      "feed": "https://www.netinterest.co/feed",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "semianalysis",
       "nombre": "SemiAnalysis",
-      "idioma": "en", "tipo": "newsletter", "seccion": "acciones",
-      "feeds": ["https://semianalysis.com/feed/", "https://semianalysis.substack.com/feed"],
-      "nota": "[NO VERIFICADO] Migró de Substack a sitio propio; se prueban las dos.",
-      "smoke": null
+      "idioma": "en",
+      "tipo": "newsletter",
+      "seccion": "acciones",
+      "feeds": [
+        "https://semianalysis.com/feed/",
+        "https://semianalysis.substack.com/feed"
+      ],
+      "nota": "Migró de Substack a sitio propio; se prueban las dos.",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 10,
+        "usables": 10,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 0,
+        "vias_imagen": {},
+        "pct_con_categoria": 100,
+        "categorias_ejemplo": [
+          "<![CDATA[Archive]]>",
+          "<![CDATA[Accelerators]]>",
+          "<![CDATA[AI Infrastructure]]>"
+        ]
+      },
+      "feed": "https://semianalysis.com/feed/",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "app_economy_insights",
       "nombre": "App Economy Insights",
-      "idioma": "en", "tipo": "newsletter", "seccion": "acciones",
-      "feeds": ["https://www.appeconomyinsights.com/feed", "https://appeconomyinsights.substack.com/feed"],
-      "nota": "[NO VERIFICADO]",
-      "smoke": null
+      "idioma": "en",
+      "tipo": "newsletter",
+      "seccion": "acciones",
+      "feeds": [
+        "https://www.appeconomyinsights.com/feed",
+        "https://appeconomyinsights.substack.com/feed"
+      ],
+      "nota": null,
+      "smoke": {
+        "veredicto": "GO",
+        "items": 20,
+        "usables": 20,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 100,
+        "vias_imagen": {
+          "enclosure": 20
+        },
+        "pct_con_categoria": 0,
+        "categorias_ejemplo": []
+      },
+      "feed": "https://www.appeconomyinsights.com/feed",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "abnormal_returns",
       "nombre": "Abnormal Returns",
-      "idioma": "en", "tipo": "newsletter", "seccion": "mercado",
-      "feeds": ["https://abnormalreturns.com/feed/"],
-      "nota": "[NO VERIFICADO] WordPress clásico.",
-      "smoke": null
+      "idioma": "en",
+      "tipo": "newsletter",
+      "seccion": "mercado",
+      "feeds": [
+        "https://abnormalreturns.com/feed/"
+      ],
+      "nota": "WordPress clásico.",
+      "smoke": {
+        "veredicto": "GO",
+        "items": 14,
+        "usables": 14,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 0,
+        "vias_imagen": {},
+        "pct_con_categoria": 100,
+        "categorias_ejemplo": [
+          "<![CDATA[Links]]>",
+          "<![CDATA[Self Promotion]]>",
+          "<![CDATA[Personal Finance]]>"
+        ]
+      },
+      "feed": "https://abnormalreturns.com/feed/",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "klement",
       "nombre": "Klement on Investing",
-      "idioma": "en", "tipo": "newsletter", "seccion": "mercado",
-      "feeds": ["https://klementoninvesting.substack.com/feed"],
-      "nota": "[NO VERIFICADO]",
-      "smoke": null
+      "idioma": "en",
+      "tipo": "newsletter",
+      "seccion": "mercado",
+      "feeds": [
+        "https://klementoninvesting.substack.com/feed"
+      ],
+      "nota": null,
+      "smoke": {
+        "veredicto": "GO",
+        "items": 20,
+        "usables": 20,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 100,
+        "vias_imagen": {
+          "enclosure": 20
+        },
+        "pct_con_categoria": 0,
+        "categorias_ejemplo": []
+      },
+      "feed": "https://klementoninvesting.substack.com/feed",
+      "verificado_en": "2026-09-20"
     },
     {
       "id": "the_bear_cave",
       "nombre": "The Bear Cave",
-      "idioma": "en", "tipo": "newsletter", "seccion": "acciones",
-      "feeds": ["https://thebearcave.substack.com/feed"],
-      "nota": "[NO VERIFICADO]",
-      "smoke": null
+      "idioma": "en",
+      "tipo": "newsletter",
+      "seccion": "acciones",
+      "feeds": [
+        "https://thebearcave.substack.com/feed"
+      ],
+      "nota": null,
+      "smoke": {
+        "veredicto": "GO",
+        "items": 20,
+        "usables": 20,
+        "dialecto": "rss",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 100,
+        "vias_imagen": {
+          "enclosure": 20
+        },
+        "pct_con_categoria": 0,
+        "categorias_ejemplo": []
+      },
+      "feed": "https://thebearcave.substack.com/feed",
+      "verificado_en": "2026-09-20"
     },
-
     {
       "id": "fed_fomc",
       "nombre": "Fed (FOMC)",
-      "idioma": "en", "tipo": "oficial", "seccion": "oficiales",
+      "idioma": "en",
+      "tipo": "oficial",
+      "seccion": "oficiales",
       "feeds": [
         "https://www.federalreserve.gov/feeds/press_monetary.xml",
         "https://www.federalreserve.gov/feeds/press_all.xml"
       ],
       "nota": "[NO VERIFICADO] La Fed publica feeds por tipo de comunicado; `press_monetary` es el de política monetaria.",
-      "smoke": null
+      "smoke": {
+        "veredicto": "NO-GO",
+        "motivo": "ninguna de las 2 candidatas respondió con un feed usable",
+        "bloqueado_cloudflare": false,
+        "candidatas_probadas": 2
+      },
+      "feed": null
     },
     {
       "id": "banxico",
       "nombre": "Banxico (política monetaria)",
-      "idioma": "es", "tipo": "oficial", "seccion": "oficiales",
+      "idioma": "es",
+      "tipo": "oficial",
+      "seccion": "oficiales",
       "feeds": [
         "https://www.banxico.org.mx/rss/rss-anuncios-politica-monetaria.xml",
         "https://www.banxico.org.mx/publicaciones-y-prensa/anuncios-de-las-decisiones-de-politica-monetaria/rss.xml"
       ],
       "nota": "[NO VERIFICADO] El proyecto YA habla con Banxico por API (api/banxico.js, SIE). Si el RSS no existe, el plan B no es scrapear: es derivar los anuncios del calendario del SIE, que ya está integrado.",
-      "smoke": null
+      "smoke": {
+        "veredicto": "NO-GO",
+        "motivo": "ninguna de las 2 candidatas respondió con un feed usable",
+        "bloqueado_cloudflare": false,
+        "candidatas_probadas": 2
+      },
+      "feed": null,
+      "plan_b": "no_rss",
+      "plan_b_detalle": "El RSS no existe (404 en las dos rutas). Banxico YA esta integrado por API: api/banxico.js habla con el SIE. Los anuncios de politica monetaria salen del calendario del SIE, no de un scrape. R3b lo consume como fuente NO-RSS: mismo registro, cosechador distinto."
     },
     {
       "id": "bmv_emisnet",
       "nombre": "BMV emisnet (eventos relevantes)",
-      "idioma": "es", "tipo": "oficial", "seccion": "oficiales",
-      "feeds": ["https://www.bmv.com.mx/es/emisoras/eventos-relevantes/rss", "https://www.bmv.com.mx/rss/eventos-relevantes.xml"],
+      "idioma": "es",
+      "tipo": "oficial",
+      "seccion": "oficiales",
+      "feeds": [
+        "https://www.bmv.com.mx/es/emisoras/eventos-relevantes/rss",
+        "https://www.bmv.com.mx/rss/eventos-relevantes.xml"
+      ],
       "nota": "[NO VERIFICADO] Riesgo ALTO de que no exista feed. Plan B ya probado: el proyecto lee eventos relevantes de BMV por HTML (api/bmv-inspect.js, docs/historico-censo.md). Si el RSS no existe, esto NO es un NO-GO de la sección oficiales: es un cosechador distinto, con 1 req/s de cortesía, que ya sabemos escribir.",
-      "smoke": null
+      "smoke": {
+        "veredicto": "NO-GO",
+        "motivo": "ninguna de las 2 candidatas respondió con un feed usable",
+        "bloqueado_cloudflare": false,
+        "candidatas_probadas": 2
+      },
+      "feed": null,
+      "plan_b": "no_rss",
+      "plan_b_detalle": "El RSS no existe (404 en las dos rutas) — el riesgo que docs/mercado-fase0.md §3.10 marcaba como ALTO. Plan B ya probado: api/bmv-inspect.js lee eventos relevantes de bmv.com.mx por HTML con 1 req/s de cortesia y User-Agent identificado. R3b lo consume como fuente NO-RSS."
     },
     {
       "id": "sec_8k",
       "nombre": "SEC EDGAR 8-K (universo)",
-      "idioma": "en", "tipo": "oficial", "seccion": "oficiales",
-      "feeds": ["https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&company=&dateb=&owner=include&count=40&output=atom"],
+      "idioma": "en",
+      "tipo": "oficial",
+      "seccion": "oficiales",
+      "feeds": [
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&company=&dateb=&owner=include&count=40&output=atom"
+      ],
       "nota": "VERIFICADO EN EL REPO: es el mismo endpoint atom (getcurrent) que api/stock-tracker.js y api/vc-feed.js ya usan en producción, cambiando el type. Requiere User-Agent identificado y techo de 10 req/s. Se filtra a los tickers del universo del lado nuestro, como pide la adenda.",
       "ua": "sec",
-      "smoke": null
+      "smoke": {
+        "veredicto": "GO",
+        "items": 40,
+        "usables": 40,
+        "dialecto": "atom",
+        "pct_con_fecha": 100,
+        "pct_con_imagen": 0,
+        "vias_imagen": {},
+        "pct_con_categoria": 100,
+        "categorias_ejemplo": [
+          "8-K",
+          "8-K/A"
+        ]
+      },
+      "feed": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&company=&dateb=&owner=include&count=40&output=atom",
+      "verificado_en": "2026-09-20"
     },
-
     {
       "id": "bloomberg",
       "nombre": "Bloomberg",
-      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "idioma": "en",
+      "tipo": "medio",
+      "seccion": "mercado",
       "feeds": [],
       "asumido_no": "el encargo lo declara NO de antemano. No se sondea: confirmar una decisión ya tomada no mide nada.",
-      "smoke": null
+      "smoke": {
+        "veredicto": "ASUMIDO_NO",
+        "motivo": "el encargo lo declara NO de antemano. No se sondea: confirmar una decisión ya tomada no mide nada."
+      },
+      "feed": null
     },
     {
       "id": "nyt",
       "nombre": "New York Times",
-      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "idioma": "en",
+      "tipo": "medio",
+      "seccion": "mercado",
       "feeds": [],
       "asumido_no": "el encargo lo declara NO de antemano. No se sondea.",
-      "smoke": null
+      "smoke": {
+        "veredicto": "ASUMIDO_NO",
+        "motivo": "el encargo lo declara NO de antemano. No se sondea."
+      },
+      "feed": null
     }
   ]
 }

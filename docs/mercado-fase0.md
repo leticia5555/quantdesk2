@@ -8,10 +8,10 @@
 > rojas** — las tres que este documento predijo antes de correr. R0 (§13) abre
 > G1 y G2; G9 se queda para R5.
 >
-> El instrumento está escrito y probado, y corrió desde producción. **El JSON
-> crudo no está pegado en §9** y eso es una deuda declarada (§9.1): sin él,
-> este documento registra el veredicto, no la medición. Este contenedor no
-> tiene salida a Yahoo, Finnhub, EDGAR ni Neon (§0).
+> El instrumento está escrito, probado y corrido desde producción, y **el JSON
+> llegó**: §9.1 bis tiene sus números y `docs/mercado-r0.md` §9–§11 el
+> análisis. Este contenedor no tiene salida a Yahoo, Finnhub, EDGAR ni Neon
+> (§0), así que todo número de este documento viene de esa corrida.
 >
 > Lo que SÍ trae, y es la mitad del trabajo: el censo de **lo que ya existe en
 > el repo**, leído del código, con archivo y línea. Ahí salieron seis
@@ -935,7 +935,20 @@ Lo que esta Fase 0 agrega a esa lista:
 correr**, y las tres tienen su rama ya escrita en §5. Eso es lo que hace que un
 NO-GO no sea una sorpresa sino un plan: R0 (§13) las ataca en orden.
 
-### 9.1 · El JSON crudo no está pegado, y eso es una deuda
+### 9.1 · El JSON crudo — deuda SALDADA
+
+> **Saldada el 2026-09-20.** El JSON llegó completo y se procesó: las 22 URLs
+> ganadoras quedaron congeladas en `api/_lib/news-sources.json` (vía
+> `scripts/mercado-congelar-fuentes.mjs`, sin copiarlas a mano), y G1 y G2
+> están dimensionadas con sus números en `docs/mercado-r0.md` §9.
+>
+> Lo que sigue es el texto original de la deuda, porque explica por qué el
+> JSON hacía falta y no solo que faltaba.
+
+<details>
+<summary>La deuda, como estaba escrita</summary>
+
+
 
 Este documento prometía en §6.2 pegar la respuesta **entera y sin editar**, y
 no la tengo: llegó el veredicto y el conteo, no el cuerpo. Dejarlo escrito
@@ -952,6 +965,28 @@ importa por dos razones concretas, no por prolijidad:
 
 Hasta que el JSON se pegue acá, este documento registra **el veredicto, no la
 medición** — y la diferencia está dicha a propósito.
+
+</details>
+
+### 9.1 bis · Lo que el JSON dijo
+
+| | |
+|---|---|
+| G1 | 579 candidatos · **45** con cap · **0** con sector · 0 con ambos |
+| G2 | 30 emisoras `sin_referencia` — Yahoo `quoteSummary` dio **401 Invalid Crumb** en las 5, y también en AAPL |
+| G9 | 2 transacciones, ambas `S`, y **0 con hora de aceptación** |
+| G11 | **22 GO de 28 sondeables**; 6 NO-GO (Reuters ×2, El Economista, Fed, Banxico, BMV) |
+
+Los tres rojos quedaron dimensionados y el análisis completo vive en
+`docs/mercado-r0.md` §9–§11. Dos hallazgos que valen para todo el producto, no
+solo para R0:
+
+1. **Yahoo `quoteSummary` está cerrado desde Vercel** (401 para cualquier
+   símbolo). `api/fundamentals.js` todavía lo usa: no es urgente para
+   `/mercado`, pero es un panel que está devolviendo vacío en producción hoy.
+2. **Finnhub no expone la hora de aceptación de un Form 4 en ninguna fila.**
+   Esa hora solo existe en el `<updated>` del atom de EDGAR, que sí responde.
+   R5 ordena por hora de filing, así que esto fija la fuente de esa columna.
 
 ### 9.2 · Lo que sí se puede leer del conteo
 

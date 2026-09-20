@@ -52,7 +52,11 @@ export function congelar(registro, censo) {
 
     if (r.veredicto === 'ASUMIDO_NO') {
       reporte.asumidas_no.push(f.id);
-      return { ...f, smoke: { veredicto: 'ASUMIDO_NO', motivo: r.motivo || f.asumido_no || null } };
+      // `feed: null` explícito: que TODAS las fuentes tengan la misma forma es
+      // lo que deja a R3b consumir el registro sin un caso especial por
+      // veredicto. Un `undefined` y un `null` se leen distinto en JS y el que
+      // escriba el cosechador no tiene por qué saber cuál toca.
+      return { ...f, feed: null, smoke: { veredicto: 'ASUMIDO_NO', motivo: r.motivo || f.asumido_no || null } };
     }
 
     if (r.veredicto === 'GO') {
