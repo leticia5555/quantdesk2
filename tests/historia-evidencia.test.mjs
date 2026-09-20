@@ -30,6 +30,7 @@ import {
   VERSION_EVIDENCIA, LIMITE_EVENTOS, MIN_EPISODIO_COLAPSA, RAZONES, MOTIVO_SIN_YOY, TECHO_BYTES,
   diasEntre, razonesDe, serieParaPrompt, eventosParaPrompt,
   armarEvidencia, accessionsDe, inventarioDe, canonico, hashDe, hashEvidencia, respuestaEvidencia,
+  podarSinCita,
 } from '../api/_lib/historia-evidencia.js';
 import { armarHistoria, armarEvento } from '../api/_lib/historia-lectura.js';
 
@@ -350,6 +351,66 @@ console.log('\n── El inventario: la lista cerrada de lo citable');
   hondo([...enc].sort(), ['x-1', 'x-2', 'x-3'], 'encuentra citas anidadas a cualquier profundidad');
   hondo([...accessionsDe({ nota: 'acc-999 va en un texto' })], [],
     'y NO recoge un accession suelto en prosa: solo los campos que SON citas');
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+console.log('\n── Lo que no se puede citar, NO entra (se decide antes de la llamada)');
+{
+  // Un hecho sin accession válido no tiene contra qué verificarse en el
+  // guard. La alternativa —dejarlo entrar marcado "no citable"— le pide al
+  // prompt una segunda regla en un módulo cuya promesa entera es que toda
+  // afirmación lleva su accession. Un hecho sin cita ahí no vale menos: no
+  // vale.
+  const sucio = {
+    ...P,
+    linea: {
+      ...P.linea,
+      eventos: [
+        { fecha: '2026-08-01', form: '8-K', items: ['5.02'], preguntas: [1], accession: 'fantasma' },
+        { fecha: '2026-07-01', form: '8-K', items: ['2.02'], preguntas: [3], accession: 'acc-502',
+          anterior: { accession: 'fantasma', fecha: '2026-06-01', dias: 30 } },
+        ...P.linea.eventos,
+      ],
+    },
+    serie: [{ familia: 'ingresos', period_end: '2024-12-31', valor: 1, unidad: 'USD', citas: ['fantasma'] }, ...P.serie],
+  };
+
+  const { paquete: limpio, excluidos } = podarSinCita(sucio, ['fantasma']);
+
+  // Lo que importa no es que la cadena desaparezca del JSON —el descargo la
+  // nombra, y debe nombrarla— sino que deje de ser una CITA.
+  ok(![...accessionsDe(limpio)].includes('fantasma'),
+    'el accession sin documento abrible deja de contar como cita');
+  eq(excluidos.eventos, 1, 'se cuenta el evento excluido');
+  eq(excluidos.serie, 1, 'y el punto de serie');
+  hondo(excluidos.accessions_excluidos, ['fantasma'], 'con el accession que lo causó, a la vista');
+
+  // La trampa que esto evita: si el descargo se llamara `accessions`, el
+  // recorrido lo leería como cita y el huérfano volvería al inventario — la
+  // puerta diría "podé esto" y seguiría reportándolo como huérfano, para
+  // siempre.
+  const inv = inventarioDe(limpio, cuerpo);
+  ok(!inv.huerfanos.includes('fantasma'),
+    'y después de podar ya no vuelve a salir como huérfano: el descargo no es una cita');
+
+  // El matiz que importa: si lo que no resuelve es el VECINO, el evento se
+  // queda y lo que se cae es la referencia. Tirar un papel bueno porque el de
+  // al lado no abre sería pagar dos veces.
+  const sobrevive = limpio.linea.eventos.find((e) => e.accession === 'acc-502');
+  ok(sobrevive, 'un evento citable NO se cae porque su vecino no lo sea');
+  ok(!('anterior' in sobrevive), 'lo que se cae es la referencia al vecino, no el papel');
+  eq(excluidos.vecinos, 1, 'y eso también se cuenta');
+
+  // Sin huérfanos no se toca nada, y no se inventa un campo de exclusiones.
+  const { paquete: igual, excluidos: nada } = podarSinCita(P, []);
+  eq(nada, null, 'sin huérfanos no hay nada que declarar');
+  eq(hashEvidencia(igual), hashEvidencia(P), 'y el paquete queda idéntico: el hash no se mueve');
+
+  // La puerta de inspección poda ANTES de hashear: lo que no se puede citar
+  // no entra al paquete, así que tampoco entra al hash ni al prompt.
+  const r = respuestaEvidencia(cuerpo, { ticker: 'MELI' });
+  eq(r.excluidos_sin_cita, null, 'con datos sanos no se excluye nada');
+  hondo(r.huerfanos, [], 'y no hay huérfanos que podar');
 }
 
 // ═════════════════════════════════════════════════════════════════════════

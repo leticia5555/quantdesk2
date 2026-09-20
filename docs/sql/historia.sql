@@ -181,3 +181,33 @@ select e.cik,
   left join company_quarterly q
     on q.cik = e.cik and q.familia = n.familia
  group by e.cik, e.ticker, e.nombre, e.forma_anual, e.cobertura, n.familia;
+
+-- ═════════════════════════════════════════════════════════════════════════
+-- La narración (Fase B)
+--
+-- La clave es (cik, hash) y el hash cubre la evidencia, la VERSIÓN DEL PROMPT
+-- y el MODELO. Un filing nuevo cambia el hash; una línea del prompt también.
+-- Abrir la página no cambia nada — que es el punto entero.
+--
+-- `crudo` guarda la respuesta del modelo SIEMPRE, incluso cuando el estado no
+-- es 'ok': si un guardia la rechaza hay que poder ver qué dijo, no solamente
+-- que la rechazó.
+-- ═════════════════════════════════════════════════════════════════════════
+create table if not exists company_narracion (
+     cik            text not null,
+     hash           text not null,
+     estado         text not null,
+     prompt_version int  not null,
+     modelo         text not null,
+     huella_prompt  text not null,
+     secciones      jsonb,
+     crudo          jsonb,
+     costo          jsonb,
+     detalle        text,
+     evidencia_bytes int,
+     creado_en      timestamptz not null default now(),
+     primary key (cik, hash)
+   );
+
+create index if not exists company_narracion_servible
+     on company_narracion (cik, creado_en desc) where estado = 'ok';

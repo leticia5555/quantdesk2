@@ -103,6 +103,14 @@ export const DECLARACIONES = {
     es: 'Se usa short volume (Reg SHO, diario). No es short interest (FINRA, quincenal): no son lo mismo y no se mezclan.',
     en: 'Short volume (Reg SHO, daily) is used. It is not short interest (FINRA, biweekly): they are different and are not mixed.',
   },
+  sin_narracion: {
+    es: 'Todavía no hay una lectura escrita de esta empresa. Los documentos de abajo sí están: la narración se genera aparte y se guarda, no se escribe cada vez que alguien abre la página.',
+    en: 'There is no written reading of this company yet. The documents below are here: the narration is generated separately and stored, not written every time someone opens the page.',
+  },
+  narracion_retenida: {
+    es: 'La lectura escrita existe pero no se muestra: una de sus citas no resuelve a un documento de esta página. Un hueco declarado es un dato; una cita que no abre es un texto que parece riguroso y no lo es.',
+    en: 'A written reading exists but is withheld: one of its citations does not resolve to a document on this page. A declared gap is data; a citation that does not open is text that looks rigorous and is not.',
+  },
   sin_contraevidencia: {
     es: 'No encontramos contraevidencia en los filings.',
     en: 'We found no counter-evidence in the filings.',
@@ -468,6 +476,76 @@ export async function armarHistoria(L, ticker, { lang = 'es' } = {}) {
       no_cubierto: declaracionesGlobales(emisor, lang),
       fuente: 'SEC EDGAR',
     },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// La lectura escrita, y la compuerta de sus citas
+// ─────────────────────────────────────────────────────────────────────────
+//
+// **Compuerta provisional, y dice de qué tamaño es.** El guardia completo es
+// la rebanada I: corta la afirmación si se puede aislar, la sección si no, y
+// dice en pantalla que cortó. Esto es lo mínimo que hay que tener ANTES de
+// mostrar una narración: si alguna cita no resuelve a un documento de esta
+// misma página, no se muestra NINGUNA.
+//
+// Todo-o-nada es más tosco que lo que viene, y es la dirección correcta para
+// equivocarse: una narración con una cita que no abre es un texto que parece
+// riguroso y no lo es, que es peor que no tener narración.
+export function citasDe(texto) {
+  return [...String(texto || '').matchAll(/\[([A-Za-z0-9][A-Za-z0-9.\-]{2,})\]/g)].map((m) => m[1]);
+}
+
+export function verificarCitas(secciones = [], citables = new Set()) {
+  const desconocidas = new Set();
+  for (const s of secciones) {
+    for (const c of citasDe(s && s.texto)) if (!citables.has(c)) desconocidas.add(c);
+  }
+  return { ok: desconocidas.size === 0, desconocidas: [...desconocidas].sort() };
+}
+
+// Arma el bloque de narración del cuerpo. Vive acá —y recibe `buscar` por
+// parámetro— para que las tres salidas (hay / no hay / retenida) se puedan
+// probar sin base de datos, que es donde este módulo miente más fácil.
+export async function armarNarracion(cuerpo, { buscar, lang = 'es' } = {}) {
+  const { armarEvidencia, inventarioDe, podarSinCita } = await import('./historia-evidencia.js');
+  const { hashNarracion } = await import('./historia-narrador.js');
+
+  const crudo = armarEvidencia(cuerpo);
+  const { huerfanos } = inventarioDe(crudo, cuerpo);
+  const { paquete } = podarSinCita(crudo, huerfanos);
+  const hash = hashNarracion(paquete);
+
+  const guardada = buscar ? await buscar(cuerpo.emisor.cik, hash) : null;
+  if (!guardada || !guardada.secciones) {
+    return { estado: 'sin_narracion', hash, secciones: [], declaraciones: [declarar('sin_narracion', lang)] };
+  }
+
+  // Las citas se verifican contra los documentos de ESTA página, no contra
+  // el inventario de cuando se narró: si un filing se re-ingirió y la URL
+  // cambió, lo que importa es que el lector pueda abrirla ahora.
+  const { inventario } = inventarioDe(paquete, cuerpo);
+  const citables = new Set(inventario.map((x) => x.accession));
+  const { ok, desconocidas } = verificarCitas(guardada.secciones, citables);
+
+  if (!ok) {
+    return {
+      estado: 'retenida',
+      hash,
+      secciones: [],
+      citas_desconocidas: desconocidas,
+      declaraciones: [declarar('narracion_retenida', lang)],
+    };
+  }
+
+  return {
+    estado: 'ok',
+    hash,
+    modelo: guardada.modelo,
+    prompt_version: guardada.prompt_version,
+    creado_en: guardada.creado_en,
+    secciones: guardada.secciones,
+    declaraciones: [],
   };
 }
 

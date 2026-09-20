@@ -523,13 +523,13 @@ vez de tres. Es un descuento directo en el contexto que se paga por corrida.
 | Fase B — el lector | horas |
 |---|---|
 | Rebanada G: paquete de evidencia, aritmética resuelta, inventario de citas (§11.3) | 5–7 |
-| Prompt congelado en código + las 7 secciones + "Dónde se rompe la historia" | 8–12 |
+| Rebanada H: prompt congelado + versión en el hash + la llamada + persistencia + puerta autenticada (§11.4) | 9–13 |
 | **Guard de citas**: toda `[accession]` de la salida tiene que existir en el contexto que se mandó; si no, se corta | 5–7 |
 | **Guard anti-opinión**: prohibido precio, calificación y recomendación, con tests que lo intenten | 5–7 |
 | Retiro del AI verdict de SMART $ + i18n + tests (§9) | 3–5 |
-| **Subtotal Fase B** | **26–38** |
+| **Subtotal Fase B** | **27–39** |
 
-**Total: 71–103 horas.** Más, si G5 empuja a extraer guía de prosa: **+10–16**
+**Total: 72–104 horas.** Más, si G5 empuja a extraer guía de prosa: **+10–16**
 por la salida 2 de §3 (y por eso la recomendación es la salida 1).
 
 Las dos líneas que más pueden moverse y hay que vigilar:
@@ -1304,6 +1304,165 @@ inventó de lo que nosotros le dimos, y esa distinción no se puede hacer desde
 el texto. Más barato: que no entre. Hay pruebas de que el paquete no lleva
 vocabulario de recomendación, ningún campo de veredicto o score, y ningún
 precio — lo que el mercado ya cree vive en otro panel (§8, pregunta 6).
+
+---
+
+## 11.4. El prompt congelado y la llamada (rebanada H)
+
+*2026-09-20. Cinco condiciones puestas por el operador antes de escribir una
+línea. Las cinco están abajo con lo que se hizo.*
+
+### 1. El hash tiene que cubrir el prompt y el modelo
+
+El agujero, en las palabras del encargo: *"Si cambia una línea del prompt, las
+narraciones guardadas siguen pasando el hash y son del prompt viejo. Hueco
+silencioso."* Correcto y no lo había visto.
+
+`hashNarracion` cubre ahora **(evidencia, `PROMPT_VERSION`, modelo)**. La
+versión es una constante entera, explícita, legible en una columna.
+
+Y como una constante que hay que acordarse de subir es una constante que
+alguien va a olvidar, además se guarda `HUELLA_PROMPT` —el sha del TEXTO de
+las instrucciones— y hay una prueba que la compara contra un valor clavado en
+`tests/historia-narrador.test.mjs`. Si alguien edita el prompt sin subir la
+versión, la prueba falla y dice las dos cosas que hay que hacer. No se hashea
+el archivo entero a propósito: los comentarios cambian sin que cambie ninguna
+instrucción, y re-narrar cuatro mil empresas por una coma en un comentario es
+costo sin contrapartida.
+
+**La fecha NO entra al hash.** `dateDirective` se inyecta en cada llamada para
+que el modelo no ancle al presente de su entrenamiento, pero si entrara se
+re-narraría todo cada medianoche. Lo que lo sostiene es que el prompt prohíbe
+el lenguaje relativo a hoy (§11.3).
+
+### 2. La llamada no se dispara al abrir la página
+
+*"Si /api/historia narra on-demand, cada visita es una llamada a Opus pagada."*
+Y sería una factura invisible: la página se vería igual de bien.
+
+`/api/historia-narrar` es una puerta aparte, con las mismas tres llaves y
+cuatro puertas del goteo y el mismo **fail-closed 503**. La autorización se
+movió a `_lib/historia-auth.js` porque ahora la comparten dos endpoints, y
+tener dos copias de "quién puede gastar plata nuestra" es tener dos reglas que
+con el tiempo dicen cosas distintas.
+
+`/api/historia` **lee** lo guardado. Tres salidas, las tres visibles:
+
+| estado | qué se ve |
+|---|---|
+| `ok` | la lectura, con sus citas enlazadas y su procedencia (qué modelo, qué versión de prompt) |
+| `sin_narracion` | se declara, igual que `sin_documentos`, y los documentos de la Fase A siguen ahí |
+| `retenida` | **compuerta provisional**: si una cita no resuelve a un documento de esta página, no se muestra NINGUNA sección |
+
+La tercera es más tosca que el guardia de la rebanada I —que corta la
+afirmación, o la sección, y dice qué cortó— y es la dirección correcta para
+equivocarse mientras tanto: una narración con una cita que no abre es un texto
+que parece riguroso y no lo es.
+
+**El pie de la página decía "sin IA" desde la Fase A.** Ahora es falso, y una
+promesa falsa en el pie es peor que no tener pie. Dice lo que sigue siendo
+cierto: sin predicciones de precio, sin calificaciones, sin recomendaciones.
+
+### 3. Los episodios se citan como bloque
+
+*"El modelo solo puede citar la primera y la última; si narra lo que pasó en
+medio, el guardia le va a rechazar una frase que es cierta."* Eso sería culpa
+del prompt, no del modelo.
+
+La instrucción está **dentro** del prompt congelado, con un ejemplo correcto y
+uno incorrecto, y con el porqué —"no tenés los documentos del medio y no podés
+citarlos"—, que es la parte que se recuerda. Más la línea que no cruza: el
+episodio no dice quién ganó; si hay un 5.07, se cita como el documento que es,
+que trae los votos.
+
+### 4. Los huérfanos: se excluyen, no se marcan
+
+Decidido antes de la llamada, como pedía el encargo. Un hecho cuyo accession
+no resuelve a un documento abrible **sale del paquete**, y lo que sale se
+cuenta en `excluidos_sin_cita`.
+
+La alternativa —dejarlo entrar marcado "no citable"— le pide al prompt cargar
+una segunda regla en un módulo cuya promesa entera es *toda afirmación lleva su
+accession*. Un hecho sin cita ahí no vale menos: no vale. Y una regla más es
+una regla más que el modelo puede no seguir, con el guardia rechazando después
+una frase que nosotros habilitamos.
+
+Un matiz: si lo que no resuelve es el **vecino** de un evento (el `anterior`),
+el evento se queda y se cae la referencia al vecino. Tirar un papel bueno
+porque el de al lado no abre sería pagar dos veces.
+
+**Un bug que esta poda destapó:** el campo que declara lo excluido se llamaba
+`accessions`, que es justo una de las claves que `accessionsDe` recorre como
+cita. El huérfano volvía a entrar al inventario y la puerta habría dicho "podé
+esto" y seguido reportándolo como huérfano, para siempre. Se llama
+`accessions_excluidos`, y hay una prueba: el nombre distinto es lo que separa
+una cita de un descargo.
+
+### 5. `stop_reason: max_tokens`
+
+*"Una narración cortada a la mitad, con citas correctas hasta donde llegó, se
+lee como completa."* Exacto: no hay nada en el texto que diga "acá me
+cortaron". Se descarta, se registra el motivo y **no se guarda como narración
+servible** — pero sí se guarda la fila, con estado `cortada`, y se reintenta la
+próxima vez porque `narracionPorHash` solo devuelve `estado = 'ok'`.
+
+Los otros finales que no son un éxito: `rechazo_modelo` (el clasificador
+declinó), `json_invalido`, `modelo_distinto` (contestó otro modelo y guardar el
+texto bajo un hash que dice éste sería mentir sobre su procedencia), `http` y
+`red`.
+
+### La respuesta cruda se guarda siempre
+
+Pedido explícito, y es la regla correcta: *"Si el guardia la rechaza quiero ver
+qué dijo, no nada más que la rechazó."* `company_narracion.crudo` se llena en
+todos los caminos, incluso cuando la respuesta no es JSON en absoluto (se
+guarda como texto). Sin eso el guardia es una caja negra que dice "no".
+
+### El modelo, donde va
+
+`HISTORIA_ANTHROPIC_MODEL` vive en `_lib/model.js`, la tercera perilla junto a
+la de la app (Haiku) y la del Arena (Fable). No es preferencia: el lint de
+`tests/claude-model.test.mjs` existe porque el retiro de un modelo tumbó la IA
+entera por tener el ID en 26 sitios, y me agarró escribiéndolo en dos archivos
+nuevos —incluso en un comentario, que también se copia—. Los precios salen de
+la misma tabla, que ya tenía su doctrina escrita: *un modelo ausente devuelve
+costo null, jamás un precio supuesto*.
+
+### Lo que falta medir, y cómo
+
+Este contenedor **alcanza `api.anthropic.com`** (probado: 401, o sea llegó)
+pero **no tiene `ANTHROPIC_API_KEY`**. La corrida real la hace el operador,
+igual que el goteo. Un ticker primero:
+
+```bash
+# 0. Ver qué se va a mandar y cuánto pesa, SIN pagar.
+curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" \
+  "$BASE/api/historia-narrar?ticker=MELI&simular=1" | jq
+
+# 1. La corrida real de UN ticker. El costo viene en la respuesta.
+curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" \
+  "$BASE/api/historia-narrar?ticker=MELI" | jq '{estado, costo, evidencia_bytes}'
+
+# 2. La segunda corrida mide el caché de prefijo: el prompt congelado son
+#    ~1.400 tokens y el mínimo cacheable de este modelo es 512.
+curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" \
+  "$BASE/api/historia-narrar?ticker=MELI&forzar=1" | jq '.costo'
+```
+
+`costo` viene desglosado en `entrada`, `salida`, `cache_escritura` y
+`cache_lectura`, más `cache_pego_pct`. El desglose no es decorativo: **si
+`cache_lectura` sale en cero corrida tras corrida, algo está invalidando el
+prefijo y se está pagando 10× de más sin que nada falle.**
+
+El saldo lo comparte con la liga, así que va un ticker y se mira el número
+antes de los cuatro.
+
+### Anotado sin urgencia, y hecho igual
+
+`?evidencia=1` colgaba de ruta pública sin autenticar. No filtra nada que la
+página no muestre, pero en bucle le pega a Neon gratis y además enseña
+exactamente qué se le manda al modelo. Ahora pide la misma llave: son cinco
+líneas y ninguna de las dos cosas tiene por qué estar abierta.
 
 ---
 

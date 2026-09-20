@@ -438,6 +438,80 @@ export const hashDe = (x) => createHash('sha256').update(canonico(x)).digest('he
 export const hashEvidencia = (paquete) => hashDe(paquete);
 
 // ─────────────────────────────────────────────────────────────────────────
+// Lo que no se puede citar, no entra
+// ─────────────────────────────────────────────────────────────────────────
+//
+// **La decisión, tomada antes de la llamada y no después.** Un hecho cuyo
+// accession no resuelve a un documento abrible no tiene contra qué
+// verificarse en el guard de citas. Hay dos salidas:
+//
+//   (a) marcarlo como "no citable" y dejarlo entrar, o
+//   (b) sacarlo del paquete.
+//
+// Va la (b). La (a) le pide al prompt que cargue una segunda regla —"este
+// dato lo podés mencionar pero no citar"— en un módulo cuya promesa entera es
+// *toda afirmación lleva su accession*. Un hecho sin cita ahí no vale menos:
+// no vale. Y una regla más en el prompt es una regla más que el modelo puede
+// no seguir, con el guard rechazando después una frase que nosotros
+// habilitamos.
+//
+// Lo que se saca se CUENTA y se declara en `excluidos_sin_cita`. Un hueco
+// declarado es un dato; uno silencioso es un bug. Y como hoy `huerfanos`
+// siempre sale vacío, cualquier cosa que aparezca acá es un defecto del
+// armado —no de los datos— y tiene que verse.
+//
+// Un matiz que importa: si lo que no resuelve es el VECINO de un evento (su
+// `anterior`), el evento se queda y lo que se cae es la referencia al vecino.
+// Tirar un papel bueno porque el de al lado no abre sería pagar dos veces.
+export function podarSinCita(paquete, huerfanos = []) {
+  const malo = new Set(huerfanos);
+  if (!malo.size || !paquete || !paquete.narrable) return { paquete, excluidos: null };
+
+  const limpio = (x) => !(x.citas || []).some((c) => malo.has(c));
+  const linea = paquete.linea || {};
+  const eventos = (linea.eventos || [])
+    .filter((e) => !malo.has(e.accession))
+    .map((e) => (e.anterior && malo.has(e.anterior.accession)
+      ? (({ anterior, ...resto }) => resto)(e)
+      : e));
+  const episodios = (linea.episodios || []).filter(limpio);
+  const serie = (paquete.serie || []).filter(limpio);
+  const razones = (paquete.razones || []).filter(limpio);
+  const c = paquete.contraevidencia || {};
+  const reexpresados = (c.periodos_reexpresados || []).filter(limpio);
+
+  const excluidos = {
+    eventos: (linea.eventos || []).length - eventos.length,
+    episodios: (linea.episodios || []).length - episodios.length,
+    serie: (paquete.serie || []).length - serie.length,
+    razones: (paquete.razones || []).length - razones.length,
+    periodos_reexpresados: (c.periodos_reexpresados || []).length - reexpresados.length,
+    vecinos: (linea.eventos || []).filter((e) => e.anterior && malo.has(e.anterior.accession)).length,
+    // OJO con el nombre. Esta lista DECLARA lo que se sacó por no ser
+    // citable; si se llamara `accessions`, `accessionsDe` la recorrería como
+    // si fuera una cita y el huérfano volvería a entrar al inventario — que
+    // es justo lo contrario de lo que esta función hace. El nombre distinto
+    // no es cosmético: es lo que separa una cita de un descargo.
+    accessions_excluidos: [...malo].sort(),
+  };
+
+  return {
+    paquete: {
+      ...paquete,
+      linea: { ...linea, eventos, episodios, excluidos_sin_cita: excluidos },
+      serie,
+      razones,
+      contraevidencia: {
+        ...c,
+        accessions: (c.accessions || []).filter((a) => !malo.has(a)),
+        periodos_reexpresados: reexpresados,
+      },
+    },
+    excluidos,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // La respuesta de la puerta de inspección
 // ─────────────────────────────────────────────────────────────────────────
 //
@@ -446,11 +520,18 @@ export const hashEvidencia = (paquete) => hashDe(paquete);
 // prueba sin una base de datos. Meterle un seam de prueba al handler habría
 // sido una puerta trasera en producción para ahorrarse una función.
 export function respuestaEvidencia(cuerpo, { ticker = null, limite = LIMITE_EVENTOS } = {}) {
-  const evidencia = armarEvidencia(cuerpo, { limite });
-  const { inventario, huerfanos } = inventarioDe(evidencia, cuerpo);
+  const crudo = armarEvidencia(cuerpo, { limite });
+  const { huerfanos } = inventarioDe(crudo, cuerpo);
+  // Se poda ANTES de cualquier cosa: lo que no se puede citar no entra al
+  // paquete, así que tampoco entra al hash ni al prompt.
+  const { paquete: evidencia, excluidos } = podarSinCita(crudo, huerfanos);
+  const { inventario } = inventarioDe(evidencia, cuerpo);
   return {
     ticker: ticker || (cuerpo && cuerpo.ticker) || null,
     narrable: evidencia.narrable,
+    // Lo que se sacó por no tener contra qué verificarse. `null` cuando no se
+    // sacó nada, que es lo normal: un huérfano es un defecto del armado.
+    excluidos_sin_cita: excluidos,
     // El hash con el que se guarda la narración: la historia cambia cuando
     // cambia un filing, no cuando alguien abre la página.
     hash: evidencia.narrable ? hashEvidencia(evidencia) : null,
