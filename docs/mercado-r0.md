@@ -1,0 +1,515 @@
+# R0 — Cimientos del mapa
+
+> **Qué es:** la rebanada previa a R1, abierta después del **NO-GO** de la
+> Fase 0 (`docs/mercado-fase0.md` §9). Ataca las dos compuertas rojas que
+> dependen de datos nuestros.
+>
+> **Ya corrió el censo** (2026-09-20). Este documento está escrito contra sus
+> números, no contra suposiciones: §9 los dimensiona, §10 lista lo que la
+> corrida rompió y §11 lo que corrigió.
+>
+> **Qué NO es:** no hay UI, no se toca `app.html`, no hay treemap. R0 construye
+> y verifica tablas; R1 pinta.
+>
+> **G9 (Form 4) no se toca acá.** Sigue siendo el pipeline de R5, con sus
+> 30–40 h. O sea que **la re-corrida al final de R0 va a seguir dando NO-GO
+> global**, y está bien: el criterio de avance que fijaste es más fino que el
+> tablero — **GO a R1 con G1 y G2 en verde**, no con el tablero entero.
+>
+> | Gate rojo | Lo abre |
+> |---|---|
+> | **G1** universo US | R0(a) |
+> | **G2** capitalización MX | R0(b) + R0(c) + R0(d) |
+> | **G9** Form 4 | **R5**, no R0 |
+
+---
+
+## 0. Lo que tenés que leer antes que nada
+
+**Hay un bloqueante en la instrucción (c), y no lo descubrí escribiendo
+código: ya estaba medido en el repo.**
+
+`docs/bmv-rotation.md` §4.4, del censo de Fase 1b que corrió con token real:
+
+> Del censo de Fase 1b: **acciones en circulación** históricas y el desglose
+> `ifrs_mx` de deuda con costo **son de la extensión mexicana, no de
+> `ifrs-full`**. **Sin acciones no hay capitalización**, y por eso este
+> backtest usa EPS/precio y no book-to-market ni un filtro de tamaño. *No es
+> una preferencia metodológica: es lo que los datos permiten.*
+
+O sea: **está medido que `/v2/financieros` de DataBursatil no trae acciones en
+circulación**, y tampoco hay en el repo evidencia de un endpoint de
+capitalización (el censo cubrió `/v2/emisoras`, `/v2/financieros`,
+`/v2/historicos` y `/v2/creditos`; ninguno es de cap).
+
+No lo doy por cerrado, porque "no lo vio el censo de Fase 1b" no es lo mismo
+que "no existe", y porque la instrucción es tuya y merece medirse antes de
+contradecirla. Así que **R0(c) es un job que lo resuelve — y que no cuesta un
+solo crédito**, porque el cosechador guarda el JSON crudo completo en
+`bmv_financieros.raw` y la búsqueda corre sobre lo ya guardado (§3).
+
+**Lo que esto implica para el orden de R0:** (c) va **primero**. Sin
+referencia de cap no hay verificación, y sin verificación **todas** las
+emisoras salen gris punteadas — G2 no puede ponerse verde. Los jobs (a), (b) y
+(d) corren igual y entregan valor, pero G2 depende de (c).
+
+Y una consecuencia de la misma medición, que además resuelve (d) sola: **los
+bancos quedan fuera de `/v2/financieros`**. `pendientesFinancieros` descarta a
+toda emisora sin `fin_periodos` — "el mismo `continue` que filtra bancos y
+casas de bolsa", el que dejó a Quálitas con 0 trimestres
+(`docs/bmv-rotation.md` §3). GFNORTE es un banco. Tu propia instrucción ya
+escribió el desenlace: *"si no, gris punteado (B)"*.
+
+---
+
+## 1. R0(a) — `mercado_universo_us`
+
+**El problema que resuelve** (Fase 0 §3.1): el sector no está precomputado. Vive
+como industria cruda de Finnhub en la caché por día del buffet, que se llena
+solo con los símbolos que el Arena tocó ese día — unidades, no centenas.
+
+```sql
+create table if not exists mercado_universo_us (
+  symbol       text primary key,
+  nombre       text,
+  industria    text,          -- la cadena cruda de Finnhub, para auditar el mapeo
+  sector_etf   text,          -- XLK · XLF · … vía sectorFromIndustry
+  market_cap   numeric,
+  cap_fuente   text,          -- 'finnhub:metric' | 'neon:arena_market_cap' | 'previa'
+  actualizado  timestamptz not null default now()
+);
+```
+
+**Los símbolos salen de `arena_universe`**, que ya se reconstruye por cron a
+las 9:00 ET con S&P 500 + Nasdaq 100 + movers (~600). R0 **no duplica** ese
+trabajo: lo consume.
+
+### Tres decisiones que vale la pena justificar
+
+**1. Una fila incompleta ENTRA a la tabla, con `faltan`.** Un símbolo ausente
+y uno sin cap se ven igual en un `count(*)` y son problemas distintos. El
+render decide qué hacer; la tabla no esconde.
+
+**2. Solo se pide a Finnhub lo que hace falta.** Esto es lo que decide si cabe
+en el tier gratis (60 req/min):
+
+| Dato | Cuándo se pide | Por qué |
+|---|---|---|
+| `profile2` (nombre + industria) | solo si no hay industria guardada | la industria de una empresa cambia cada varios años — el mismo argumento que ya justifica la caché por día del Arena |
+| `metric` (cap) | solo si la cap tiene más de 36 h **y** el Arena no la midió ya | `arena_market_cap` es gratis y tiene su propia política de TTL; pedirla otra vez sería pagar dos veces por el mismo número |
+
+En régimen, el cron diario pide **~0 profiles y N caps**. La primera corrida
+es la cara.
+
+**3. `marketCapitalization` de Finnhub viene en MILLONES**, y se convierte al
+guardar. Guardarla cruda habría hecho que Apple midiera lo mismo que una small
+cap con la cap en unidades — y el treemap dimensiona por ese número.
+
+### Lo que el job reporta
+
+`g1_proyectado` adelanta si G1 va a pasar, sin esperar al censo completo. Y
+`industrias_sin_mapear` cuenta lo que **ninguna regla** de `SECTOR_RULES`
+tocó: una falla de cobertura tiene que verse como falla de cobertura, no
+disolverse en un bucket.
+
+**Cron:** `30 13 * * 1-5` en `vercel.json` (30 min después de `arena:universe`,
+que le da los símbolos), registrado en `/api/cron-status` como
+`mercado:universo` — si no, el día que se caiga nadie se entera.
+
+---
+
+## 2. R0(b) — las unidades MX
+
+```
+cap = acciones_circulacion × precio_serie_liquida / acciones_por_unidad
+```
+
+`emisoras.json` gana tres campos por emisora: `acciones_por_unidad`,
+`serie_liquida` y `unidad_verificado`.
+
+### Los cuatro divisores: declarados por vos, NO verificados por mí
+
+| Emisora | Serie | Divisor | Fuente |
+|---|---|---|---|
+| FEMSA | `FEMSAUBD` | 5 | operador (encargo R0b) |
+| KOF | `KOFUBL` | 8 | operador (encargo R0b) |
+| CEMEX | `CEMEXCPO` | 3 | operador (encargo R0b) |
+| TLEVISA | `TLEVISACPO` | 117 | operador (encargo R0b) |
+
+Pediste "verifica cada una contra el prospecto/BMV y reporta la fuente". **No
+puedo**: este contenedor no llega a `bmv.com.mx` ni a un prospecto (§0 de la
+Fase 0). Marcarlos verificados sería inventar una fuente, así que los cuatro
+entran con **`unidad_verificado: false`** y `unidad_fuente: "operador"`. Hay un
+test que falla si alguien los marca verificados sin medirlos.
+
+### Pero un divisor sí se puede MEDIR — y contra el dato mismo
+
+Si el divisor es correcto, `acciones × precio / apu` tiene que cuadrar con la
+cap de referencia. Si no cuadra, **el cociente da el divisor implícito**. Eso
+es mejor que leer un prospecto: el dato que se usa es el mismo que se verifica.
+
+`verificaDivisor` tiene tres desenlaces, y los tres se reportan distinto:
+
+| Estado | Qué significa | Qué hacer |
+|---|---|---|
+| `cuadra` | el divisor declarado produce la cap correcta | `unidad_verificado: true` |
+| `divisor_corregido` | el implícito es **otro entero limpio** | el declarado está mal y el dato dice cuál es. Accionable sin preguntarle a nadie |
+| `no_es_de_unidad` | el implícito **no** es un entero limpio | el error NO viene del empaquetado: acciones mal extraídas, serie que no cotiza, recompras. Mirar a mano |
+
+**El tercero es el que importa.** Un "redondeá al entero más cercano" lo
+escondería: un implícito de 1.37 se volvería un divisor de 1 y el error
+quedaría archivado como "cuadra". Hay un test que planta ese caso.
+
+Dos detalles que el código cuida y que rompen si se los olvida:
+
+- **El implícito se COMPONE con el declarado.** Con `apu=5` y un factor 2
+  sobrante, el real es 10, no 2. Olvidarlo daba divisores al cuadrado.
+- **Hay un techo (`max_divisor: 500`).** 117 es un divisor real (TLEVISA CPO);
+  4,812 es un error de unidades (miles vs unidades) disfrazado de divisor.
+
+### La serie líquida también se contrasta
+
+El registro declara una `serie_liquida` por emisora. El job **no le cree**: la
+compara contra la serie con más importe operado en `bmv_precios` y reporta
+`series_que_discrepan`. Una serie declarada mal produce una cap mal con todos
+los demás campos correctos, que es el error más difícil de ver.
+
+---
+
+## 3. R0(c) — la referencia de capitalización
+
+`?job=refcap` recorre el **crudo ya guardado** en `bmv_financieros.raw` y
+devuelve **toda** llave que hable de acciones o de capitalización, con su ruta
+y su valor. No adivina cuál es la buena: las encuentra todas y las reporta.
+
+Es el mismo criterio que el `?job=diagnostico&que=eps` de `bmv-rotation`, que
+saca todas las llaves de acciones y marca cuál reproduce el EPS guardado.
+
+| Veredicto | Qué sigue |
+|---|---|
+| `GO` — hay cap | R0(b) verifica contra ella. G2 puede ponerse verde |
+| `GO PARCIAL` — no hay cap pero **sí acciones** | la referencia se calcula con el precio. Sirve igual |
+| `NO-GO` — ni una ni otra | **decisión tuya**, no un default que yo elija (§6) |
+
+**Costo: cero créditos de DataBursatil.** Corre sobre lo que ya está en Neon.
+
+Una llave presente y **vacía** se reporta igual que una con valor: "la fuente
+no tiene el campo" y "lo tiene en null" cierran puertas distintas. Hay un test.
+
+---
+
+## 4. R0(d) — GFNORTE
+
+`?job=gfnorte` mira tres cosas por separado, porque fallan por motivos
+distintos: si hay **precio** en `bmv_precios`, si hay **financieros** de
+DataBursatil, y si hay **XBRL**.
+
+- **Precio:** probablemente sí. `bmv_precios` guarda todas las series del
+  censo; el filtro `tipo_valor_id = '1'` se aplica al consultar el universo,
+  no al cosechar.
+- **Acciones:** probablemente no, por partida doble. Los bancos quedaron fuera
+  de ICS (`xbrl-fase0` §2.1) **y** fuera de `/v2/financieros`
+  (`bmv-rotation` §3).
+
+Tu instrucción ya escribió las dos ramas, así que el job solo reporta cuál
+toca: **"ENTRA con etiqueta `cap: databursatil`"** o **"GRIS PUNTEADO
+(opción B)"**.
+
+**El job NO agrega GFNORTE a `emisoras.json`.** Agregarlo sin cap sería crear
+un cuadro que nunca se puede pintar; se agrega cuando el veredicto sea el
+primero.
+
+---
+
+## 5. R0(e) — el parser de fechas de la Fed
+
+Pediste revisar el manejo de EDT/EST. **Lo medí antes de escribir una línea de
+arreglo, y la hipótesis no se sostiene:**
+
+```
+OK   Wed, 17 Sep 2026 14:00:00 EST  → 2026-09-17T19:00:00.000Z
+OK   Wed, 17 Sep 2026 14:00:00 EDT  → 2026-09-17T18:00:00.000Z
+OK   … CST, CDT, MST, MDT, PST, PDT, GMT, UT
+NaN  Wed, 17 Sep 2026 14:00:00 CET
+```
+
+**El parser heredado de V8 ya conoce las zonas de EE.UU.** Si el feed de la Fed
+falló, no fue por eso — y "arreglarlo" habría sido código muerto que disimula
+el problema real. Hay un test que falla si alguien mete `EST` en la tabla de
+zonas extra, justamente para que no se agregue por las dudas.
+
+### Lo que sí hice, que es más útil que el arreglo pedido
+
+1. **Las zonas que Date.parse SÍ falla, ahora se traducen**: CET/CEST, BST,
+   JST, IST, y las latinoamericanas **BRT, ART, CLT, COT** — que nos importan
+   porque Valor (BR) y La República (CO) están en el registro de noticias.
+2. **Una zona desconocida se NOMBRA** (`zona horaria desconocida: "XYZ"`) en
+   vez de contarse como "sin fecha".
+3. **Una fecha sin hora se acepta y se advierte.** Un titular fechado a
+   medianoche no es un titular de medianoche, y "lo de hoy" ordena por hora.
+   *(Un test encontró que `Date.parse` se comía este caso antes de que el aviso
+   se emitiera: la rama tuvo que ir primero.)*
+4. **`diagnosticoFechas` guarda las cadenas crudas que fallaron, agrupadas por
+   motivo.** Sin esto, "0% con fecha" es un callejón sin salida; con esto, la
+   próxima corrida entrega las tres cadenas y el motivo se ve solo.
+
+**Así que el GO de la Fed no lo puedo declarar desde acá.** Lo que puedo decir
+es que la causa que suponíamos está descartada, y que la próxima corrida va a
+traer el motivo real en vez de un booleano.
+
+---
+
+## 6. R0(f) — congelar las 22 URLs ganadoras
+
+**Me falta el JSON del censo.** Cuál candidata ganó por fuente vive ahí y en
+ningún otro lado: el registro quedó con las candidatas en orden, no con el
+resultado.
+
+Así que en vez de pedírtelo y esperar, la congelación es **mecánica**:
+
+```bash
+node scripts/mercado-congelar-fuentes.mjs censo.json --dry   # ver qué haría
+node scripts/mercado-congelar-fuentes.mjs censo.json         # escribir
+```
+
+- La ganadora queda en `feed` **y primera en `feeds`**; las demás candidatas
+  **no se borran** — si mañana muere, la siguiente ya está escrita.
+- Un NO-GO deja `feed: null` **con motivo**, no borra la fuente.
+- Una fuente que el JSON no menciona **se deja intacta** y se reporta.
+- Un GO **sin** url ganadora es un JSON roto: se reporta y **no se escribe**.
+  Preferimos un registro viejo a uno con un `feed` indefinido que después nadie
+  sabe de dónde salió.
+- El resumen nombra las que ganaron con una candidata **que no era la
+  primera** — ese dato vale guardarlo.
+
+**Banxico y BMV emisnet** quedan como fuente **no-RSS** en el registro, con su
+plan B ya probado en el repo (`api/banxico.js` sobre el SIE;
+`api/bmv-inspect.js` por HTML a 1 req/s). Eso lo escribe el mismo script
+cuando el JSON diga que salieron NO-GO.
+
+---
+
+## 7. Lo que necesito de vos
+
+1. **El JSON del censo** (`?job=todo`), para R0(f) y para dimensionar R0(a).
+   Sin él, "G1 rojo" no dice si faltaron 20 nombres o 400.
+2. **Una decisión, si `?job=refcap` sale NO-GO** (§0 y §3): sin referencia de
+   cap, G2 no puede ponerse verde. Las opciones, y mi lectura:
+
+| | Qué implica | Mi lectura |
+|---|---|---|
+| **Volver a Yahoo** solo como *verificador* | la cap que se PINTA sigue siendo `calc`; Yahoo solo dice si cuadra | **La que yo elegiría.** Lo que rechazaste fue Yahoo como fuente del número, y esto no lo es: es el patrón de referencia del §3.2 de la Fase 0, que ya funcionó |
+| **Verificar con EPS** | `utilidad ÷ EPS` da el denominador implícito del emisor, y se contrasta con `acciones_circulacion` | Elegante y sin fuentes nuevas, pero mide otra cosa: el EPS va sobre promedio ponderado (IAS 33), no sobre el saldo al cierre. `bmv-rotation` §1 ya midió un 17% de brecha en FEMSA por esto |
+| **Sin verificar** | las 30 emisoras salen gris punteadas | Honesto, pero deja el mapa MX vacío y G2 roja para siempre |
+
+3. **Confirmar que R0 no toca G9** — está escrito arriba, pero prefiero que
+   quede dicho: la re-corrida del final de R0 va a seguir dando **NO-GO
+   global** y eso no es un fracaso de R0.
+
+---
+
+## 8. Estado
+
+| Ítem | Estado |
+|---|---|
+| (a) `mercado_universo_us` + cron | **escrito**, sin correr (no hay Neon acá) |
+| (b) unidades en `emisoras.json` + verificador | **escrito y probado** con fixtures; los 4 divisores sin verificar contra prospecto |
+| (c) referencia de cap | **job escrito**; hay evidencia medida de que DataBursatil no la tiene (§0) |
+| (d) GFNORTE | **job escrito**; las dos ramas ya decididas por el encargo |
+| (e) parser de fechas | **hecho** — y la hipótesis del encargo, descartada con la medición |
+| (f) congelar 22 URLs | **herramienta escrita y probada**; falta el JSON |
+| re-corrida `?job=todo` | pendiente de (a) y (c) |
+
+
+---
+
+## 9. Lo que la corrida del 2026-09-20 dice, medido
+
+### 9.1 · G1 — el tamaño exacto del hueco
+
+| | |
+|---|---|
+| candidatos en `arena_universe` | **579** (6 llaves: 5 días de universo + `constituents:sp500` con 502) |
+| con capitalización | **45** |
+| **con sector** | **0** |
+| con cap **y** sector | **0** |
+| cap más vieja | 65.7 h (dentro del techo de 192 h) |
+| industrias en la caché del buffet | **0** — `assets:sector` vacía ese día |
+
+**El hueco no es de frescura ni de universo: es de cobertura, y es casi
+total.** `arena_market_cap` tiene 132 filas pero solo **45** cruzan con los 579
+del universo — el Arena mide la cap de lo que mira, y mira poco. Y el sector
+es **cero**, exactamente como §3.1 de la Fase 0 predijo: la caché del buffet
+se llena con los símbolos que el Arena tocó ese día, y ese día no tocó
+ninguno.
+
+**Lo que R0(a) tiene que producir, en números:** 579 símbolos con sector
+(hoy 0) y al menos 120 con cap **y** sector (hoy 0). O sea **534 caps nuevas y
+579 industrias**. Con el tier gratis a 60 req/min y tandas de 8:
+
+- primera corrida ≈ **579 `profile2` + 534 `metric` ≈ 19 minutos** de reloj,
+  partida en varias invocaciones o dejada correr dentro de los 300 s por tanda;
+- en régimen, ~0 `profile2` (la industria no cambia) y las caps que venzan.
+
+Es la corrida cara de la que hablaba §1, ahora con número.
+
+### 9.2 · G2 — las dos fuentes de referencia se cerraron el mismo día
+
+Las 30 emisoras salieron **`sin_referencia`**. Ninguna gris punteada por error
+de cálculo: gris punteadas por no tener contra qué compararse.
+
+```
+WALMEX   WALMEX*.MX     401   sin marketCap (HTTP 401)
+FEMSA    FEMSAB.MX      401
+AMX      AMXA.MX        401
+GMEXICO  GMEXICOB.MX    401
+GFNORTE  GFNORTEO.MX    401
+```
+
+Y en `q8`, el precio objetivo de AAPL por la misma ruta: **401, `Invalid
+Crumb`**. O sea que **no es el símbolo `.MX`: es `quoteSummary` entero**, para
+cualquier símbolo, desde Vercel. Yahoo cerró la ruta sin crumb que
+`api/fundamentals.js` todavía usa.
+
+Eso deja el cuadro completo:
+
+| Fuente de referencia | Estado | Evidencia |
+|---|---|---|
+| DataBursatil | sin acciones en circulación | medido en Fase 1b (`bmv-rotation` §4.4) |
+| Yahoo `quoteSummary` | **401 Invalid Crumb** | esta corrida, 5 emisoras + AAPL |
+| **Manual, fechada** | **el camino que queda** | §12 |
+
+**De paso, un bug del censo que la corrida expuso:** el símbolo se armaba con
+`series[0]` —la serie alfabéticamente primera— en vez de la líquida. Salió
+`AMXA.MX` (serie A) en vez de la que opera, y `FEMSAB.MX`, que ni siquiera
+aparece entre las candidatas con precio. Da igual para el resultado (todas
+dieron 401), pero estaba mal y quedó arreglado: ahora sale de `serie_liquida`
+del registro.
+
+### 9.3 · G9 — confirmado, y peor de lo que decía la Fase 0
+
+`Finnhub insider-transactions` devolvió **2 transacciones, las dos código
+`S`**, y —el dato nuevo— **`con_hora_aceptacion: 0`**. O sea que Finnhub no
+expone la hora de aceptación **en ninguna fila**. R5 ordena por hora de
+filing: esa hora solo existe en el `<updated>` del atom de EDGAR, que sí
+contestó (40 entries, 41 `<updated>`).
+
+Nada de esto cambia R0: G9 es de R5.
+
+---
+
+## 10. Los divisores: el resultado, y por qué la razón entre series NO sirve
+
+Pediste el implícito de las 9 emisoras con varias series. Con las caps
+calculadas con divisor:
+
+| emisora | apu | serie líquida | cap con divisor | razón precio unidad/serie base | ¿la razón respalda el apu? |
+|---|---|---|---|---|---|
+| AMX | 1 | AMXB | 1,195.7 bn | 1.24 | n/a |
+| **FEMSA** | **5** | FEMSAUBD | **703.4 bn** | 1.26 | **NO** (1.26 vs 5) |
+| **CEMEX** | **3** | CEMEXCPO | **253.4 bn** | 4.62 | **NO** (4.62 vs 3) |
+| **TLEVISA** | **117** | TLEVISACPO | **20.1 bn** | 42.39 | **NO** (42.39 vs 117) |
+| **KOF** | **8** | KOFUBL | **401.7 bn** | 11.75 | **NO** (11.75 vs 8) |
+| LIVEPOL | 1 | LIVEPOLC-1 | 134.7 bn | 0.99 | n/a |
+| KIMBER | 1 | KIMBERA | 115.0 bn | 0.99 | n/a |
+| PINFRA | 1 | PINFRA* | 110.9 bn | 1.32 | n/a |
+| LASITE | 1 | LASITE* | — | — | n/a (ver §11) |
+
+**Ninguna de las cuatro razones respalda su divisor. Y el dato dice por qué,
+sin que haya que suponerlo:**
+
+```
+CEMEX:    CEMEXA = CEMEXB = 3.8
+TLEVISA:  TLEVISAB = TLEVISAD = TLEVISAL = 0.205
+KOF:      KOFA = KOFD = 16.270452
+```
+
+Series distintas con el **precio idéntico**, una de ellas a seis decimales.
+Eso no es un mercado: es una cotización de referencia o un valor convertido.
+**Las series no líquidas de estas emisoras no tienen precio de mercado**, así
+que la razón entre series no mide el empaquetado — mide un número puesto a
+mano.
+
+**Conclusión que vale para R0(b):** la razón entre series **no es un
+verificador**, y no puede reemplazar a la referencia externa. Era la idea
+elegante de "verificar sin fuentes nuevas", y los datos la descartan. Queda
+escrito para que nadie la reintente dentro de tres meses.
+
+Lo que sí se puede decir de los cuatro divisores: **producen caps de un orden
+de magnitud coherente con emisoras de su tamaño**, mientras que sin divisor
+FEMSA daría 3,517 bn y KOF 3,214 bn — más que GMEXICO, que es la más grande
+del índice por cap. Eso es un **indicio fuerte a favor**, y no es una
+verificación: el umbral del 5% necesita un número contra el cual restar.
+
+---
+
+## 11. Lo que la corrida corrigió en el registro
+
+**LASITE apuntaba a una serie que no existe.** El registro declaraba
+`LASITEB`; las series reales en `bmv_precios` son `LASITE*`, `LASITEB-1` y
+`LASITEB-2`. O sea que LASITE salía sin cap **por un typo mío**, no por falta
+de datos — que es justo la confusión que el campo `sin_precio` existe para
+evitar. Corregido a `LASITE*`, con la procedencia anotada.
+
+**PE&OLES no tiene ninguna serie en `bmv_precios`.** No es un typo: son 0
+series. Queda con `serie_liquida: null` y un `sin_precio` que lo dice. Poner
+una serie para que la fila se viera completa habría producido la cap de algo
+que no cotiza.
+
+Las dos son la clase de error que solo aparece corriendo, y las dos tienen
+test ahora.
+
+---
+
+## 12. La referencia manual, como la previste
+
+`api/_lib/mercado-cap-referencia.json`, vacío a propósito, más
+`?job=unidades&manual=CLAVE:CAP,…&fuente=…&capturada_en=…` para verificar sin
+redeploy.
+
+Tres reglas que hacen que "manual" no signifique "flojo":
+
+1. **`fuente` y `capturada_en` son obligatorias.** Una cap sin las dos no
+   entra: es lo que separa una referencia de un número suelto. Hay test.
+2. **Caduca a los 14 días.** Una cap de referencia envejece con el precio, y
+   arrastrar un verde viejo es peor que volver a gris punteado. Pasada la
+   vigencia, la emisora vuelve a gris y el motivo dice cuántos días tiene.
+3. **Nunca se pinta.** El número que el mapa muestra sigue siendo `calc`
+   (acciones × precio / divisor). La referencia solo produce el veredicto y el
+   error %, exactamente como el patrón del §3.2 de la Fase 0.
+
+Y una observación que no es autocomplaciente: **una cap capturada a mano y
+fechada es más auditable que una API que devuelve 401.** Se sabe quién la vio
+y cuándo. Lo que no puede pasar es que se use sin decir que es manual — de ahí
+la etiqueta `verificada vs <fuente> (<fecha>)`.
+
+**Lo que necesito:** las 5 caps que ofreciste, en
+`api/_lib/mercado-cap-referencia.json` o por `?manual=`. Con ellas, G2 se
+puede medir de verdad por primera vez.
+
+---
+
+## 13. El estado real, y qué falta para la re-corrida
+
+| Ítem | Estado |
+|---|---|
+| (a) `mercado_universo_us` + cron | escrito y cableado; **falta correrlo** (579 símbolos, ~19 min la primera vez) |
+| (b) unidades + verificador | **escrito, probado y corregido con la corrida** (§11). Los 4 divisores siguen `unidad_verificado: false` |
+| (c) referencia | DataBursatil pendiente de `?job=refcap`; **Yahoo descartado (401)**; camino manual **listo** (§12) |
+| (d) GFNORTE | **B — gris punteado**, confirmado por vos y por el 401 de la corrida |
+| (e) fechas | hipótesis EDT/EST descartada; **diagnóstico cableado**: la próxima corrida trae la cadena cruda y los tags presentes del feed de la Fed |
+| (f) 22 URLs | **congeladas** en `news-sources.json`, con Banxico y BMV como fuente `no_rss` con su plan B |
+
+**La re-corrida de `?job=todo` NO la puedo hacer yo**: este contenedor no
+tiene egress (§0 de la Fase 0) y, más importante, G1 no puede ponerse verde
+hasta que `?job=universo` haya poblado la tabla desde prod. El orden es:
+
+```
+1. /api/mercado-r0?job=universo          (puebla; ~19 min la primera vez)
+2. /api/mercado-r0?job=refcap            (¿DataBursatil tiene con qué?)
+3. /api/mercado-r0?job=unidades&manual=…  (con tus 5 caps)
+4. /api/mercado-censo?job=todo           (la re-corrida)
+```
+
+Y lo que esa re-corrida **va a seguir dando es NO-GO global**, porque G9 no se
+toca en R0. Lo que hay que mirar es G1 y G2.

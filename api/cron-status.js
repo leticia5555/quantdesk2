@@ -39,6 +39,10 @@ const EXPECTED = [
   // y dejarlo acá daba ok:false permanente. Ver docs/wheel-fase0.md §4.3.
   { job: 'pead:hour',       schedule: '30 21 * * *',           cadence: '1×/día (SEC 8-K)',    stale_after_h: 30 },
   { job: 'screener:refresh',schedule: '0 */4 * * *',           cadence: 'cada 4h',             stale_after_h: 9 },
+  // R0(a): puebla mercado_universo_us (sector + cap) antes de la apertura, 30
+  // min después del arena:universe que le da los símbolos. La ventana de stale
+  // la manda el fin de semana, igual que los otros diarios hábiles.
+  { job: 'mercado:universo', schedule: '30 13 * * 1-5',         cadence: 'días hábiles ~13:30', stale_after_h: 80 },
 ];
 
 const HOUR_MS = 3600 * 1000;

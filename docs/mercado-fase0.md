@@ -4,10 +4,14 @@
 > treemap, ni un rewrite nuevo en `vercel.json`. Si las compuertas abren, R1
 > arranca de las decisiones congeladas de §8.
 >
-> **Estado: ABIERTA — esperando UNA corrida.** El instrumento está escrito y
-> probado; los números se ganan corriendo `/api/mercado-censo?job=todo` desde
-> producción (§6). Este contenedor no tiene salida a Yahoo, Finnhub, EDGAR ni
-> Neon (§0), así que **este documento no trae ni un número de esas fuentes**.
+> **Estado: CERRADA con NO-GO** (§9). 8 compuertas verdes; **G1, G2 y G9
+> rojas** — las tres que este documento predijo antes de correr. R0 (§13) abre
+> G1 y G2; G9 se queda para R5.
+>
+> El instrumento está escrito, probado y corrido desde producción, y **el JSON
+> llegó**: §9.1 bis tiene sus números y `docs/mercado-r0.md` §9–§11 el
+> análisis. Este contenedor no tiene salida a Yahoo, Finnhub, EDGAR ni Neon
+> (§0), así que todo número de este documento viene de esa corrida.
 >
 > Lo que SÍ trae, y es la mitad del trabajo: el censo de **lo que ya existe en
 > el repo**, leído del código, con archivo y línea. Ahí salieron seis
@@ -909,40 +913,95 @@ Lo que esta Fase 0 agrega a esa lista:
 
 ---
 
-## 9. La corrida
+## 9. La corrida — CERRADA: **NO-GO**
 
-> **PENDIENTE.** Acá va pegado, entero y sin editar, el JSON de
-> `/api/mercado-censo?job=todo`. Entero: un censo recortado es una opinión.
+**Veredicto: NO-GO.** 8 compuertas verdes; **G1, G2 y G9 rojas**.
 
-```json
-(pendiente — corré el comando de §6.2 y pegá la salida acá)
-```
-
-**Tablero esperado en la primera corrida**, para que se vea si acerté o no
-(esto es una predicción, no un resultado):
-
-| Gate | Predicción | Confianza |
+| Gate | Resultado | Lo predije |
 |---|---|---|
-| G1 | **rojo** — el sector no está precomputado | alta |
-| G2 | **rojo parcial** — FEMSA por unidad vinculada, GFNORTE por ausencia | alta |
-| G3 | verde con `cron_neon`, rojo con `on_request` | alta |
-| G4 | verde en US; incógnita en `.MX`; **rojo en YTD** por la ventana corta | media |
-| G5 | verde, ~9–10 de 12 | media |
-| G6 | verde | alta |
-| G7 | verde | media |
-| G8 | verde en `recommendation`; precio objetivo, incógnita | baja |
-| G9 | **rojo** — es el hallazgo de §3.9 | muy alta |
-| G10 | verde | alta |
-| G11 | **verde en el conteo, con bajas.** Predigo GO en las newsletters (Substack sirve `/feed` parejo) y en Fed y SEC; NO-GO en Reuters (retiró sus feeds) y riesgo alto de Cloudflare en Seeking Alpha e Investing. La incógnita que decide es **El Economista**: si vive, la mitad mexicana existe | media |
+| G1 · universo US | **ROJO** | sí (alta) |
+| G2 · capitalización MX | **ROJO** | sí (alta) |
+| G3 · precios batch | verde | sí |
+| G4 · retorno total | verde | parcial — predije rojo en YTD |
+| G5 · `metric` | verde | sí |
+| G6 · UPA | verde | sí |
+| G7 · companyfacts | verde | sí |
+| G8 · analistas | verde | sí |
+| G9 · Form 4 | **ROJO** | sí (muy alta) |
+| G10 · smoke | verde | sí |
+| G11 · feeds (0.10) | verde — **22 de 28 sondeables GO** | parcial |
 
-Un NO-GO en G1, G2 y G9 **no cancela nada**: las tres tienen su rama escrita en
-§5. Lo que cambia es el orden y el tamaño de R1 y R5, que es exactamente para
-lo que sirve una Fase 0.
+**Las tres rojas son las tres que este documento predijo en §9 antes de
+correr**, y las tres tienen su rama ya escrita en §5. Eso es lo que hace que un
+NO-GO no sea una sorpresa sino un plan: R0 (§13) las ataca en orden.
 
-**Sobre G11, la predicción vale poco y conviene saberlo:** las URLs son
-candidatas, así que un NO-GO puede ser la ruta y no la fuente. Por eso el
-resultado que importa de esa tabla no es el conteo sino **cuáles rutas
-ganaron** — eso es lo que se congela en el registro y lo que R3b va a usar.
+### 9.1 · El JSON crudo — deuda SALDADA
+
+> **Saldada el 2026-09-20.** El JSON llegó completo y se procesó: las 22 URLs
+> ganadoras quedaron congeladas en `api/_lib/news-sources.json` (vía
+> `scripts/mercado-congelar-fuentes.mjs`, sin copiarlas a mano), y G1 y G2
+> están dimensionadas con sus números en `docs/mercado-r0.md` §9.
+>
+> Lo que sigue es el texto original de la deuda, porque explica por qué el
+> JSON hacía falta y no solo que faltaba.
+
+<details>
+<summary>La deuda, como estaba escrita</summary>
+
+
+
+Este documento prometía en §6.2 pegar la respuesta **entera y sin editar**, y
+no la tengo: llegó el veredicto y el conteo, no el cuerpo. Dejarlo escrito
+importa por dos razones concretas, no por prolijidad:
+
+1. **Las 22 URLs ganadoras del punto 0.10 viven ahí y en ningún otro lado.**
+   R0(f) las tiene que congelar en `news-sources.json`, y sin el JSON no se
+   sabe **cuál** de las candidatas ganó por fuente. La herramienta que las
+   congela ya está escrita (`scripts/mercado-congelar-fuentes.mjs`); lo que
+   falta es el archivo que come.
+2. **Los números de G1 y G2 son el punto de partida de R0.** "G1 rojo" no dice
+   si faltaron 20 nombres o 400, ni qué sectores quedaron bajo el piso. R0(a)
+   se dimensiona distinto en cada caso.
+
+Hasta que el JSON se pegue acá, este documento registra **el veredicto, no la
+medición** — y la diferencia está dicha a propósito.
+
+</details>
+
+### 9.1 bis · Lo que el JSON dijo
+
+| | |
+|---|---|
+| G1 | 579 candidatos · **45** con cap · **0** con sector · 0 con ambos |
+| G2 | 30 emisoras `sin_referencia` — Yahoo `quoteSummary` dio **401 Invalid Crumb** en las 5, y también en AAPL |
+| G9 | 2 transacciones, ambas `S`, y **0 con hora de aceptación** |
+| G11 | **22 GO de 28 sondeables**; 6 NO-GO (Reuters ×2, El Economista, Fed, Banxico, BMV) |
+
+Los tres rojos quedaron dimensionados y el análisis completo vive en
+`docs/mercado-r0.md` §9–§11. Dos hallazgos que valen para todo el producto, no
+solo para R0:
+
+1. **Yahoo `quoteSummary` está cerrado desde Vercel** (401 para cualquier
+   símbolo). `api/fundamentals.js` todavía lo usa: no es urgente para
+   `/mercado`, pero es un panel que está devolviendo vacío en producción hoy.
+2. **Finnhub no expone la hora de aceptación de un Form 4 en ninguna fila.**
+   Esa hora solo existe en el `<updated>` del atom de EDGAR, que sí responde.
+   R5 ordena por hora de filing, así que esto fija la fuente de esa columna.
+
+### 9.2 · Lo que sí se puede leer del conteo
+
+Aunque falte el cuerpo, tres cosas se deducen del tablero y valen para R0:
+
+- **G4 salió verde**, y yo había predicho rojo por la ventana de YTD. O la
+  serie de `range=1y` alcanzó (que es lo que el censo pide desde §3.4) o
+  `adjclose` llegó también para los `.MX`. En cualquiera de los dos casos, la
+  decisión de R1 no cambia: YTD por fecha + `range=1y` siguen entrando.
+- **G11 verde con 22 de 28**: seis fuentes sondeables no pasaron, y por tu
+  encargo de R0 sé que dos de ellas son **Banxico y BMV emisnet** —las dos que
+  §3.10 ya marcaba de riesgo alto y con plan B ya probado en el repo— y una
+  tercera es **la Fed**. Las otras tres no las sé.
+- **Ninguna compuerta quedó `sin_medir`**, así que el tablero es un NO-GO
+  medido y no un INCOMPLETO disfrazado.
 
 ---
 
@@ -1074,3 +1133,23 @@ Para que no se cuele después como "ah, pero se suponía que…":
   esa cadena vive hoy en `app.html:9739`. Las pantallas nuevas no la usan, y
   el `app.html` no se toca en este encargo — así que sigue ahí y está bien que
   siga ahí hasta que R8 lo reordene.
+
+---
+
+## 13. R0 — la rebanada que abre las tres rojas
+
+R0 va en **rama y PR propios**, antes de R1, y su contrato vive en
+`docs/mercado-r0.md`. El resumen de por qué existe:
+
+| Gate rojo | Qué lo abre en R0 |
+|---|---|
+| **G1** | (a) tabla `mercado_universo_us` con sector, industria y cap, poblada por cron diario |
+| **G2** | (b) tabla de unidades MX (`acciones_por_unidad`, `serie_liquida`) + (c) referencia de cap + (d) GFNORTE |
+| **G9** | **no lo abre R0.** Sigue siendo el pipeline de Form 4 de R5, con sus 30–40 h |
+
+**G9 se queda rojo a propósito y conviene decirlo fuerte**: R0 no lo toca, así
+que la re-corrida del final de R0 va a seguir dando NO-GO global. El criterio
+que fijaste es el correcto y es más fino que el tablero: **GO a R1 con G1 y G2
+en verde**, no con el tablero entero. El tablero global se pondrá verde en R5.
+
+---

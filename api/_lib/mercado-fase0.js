@@ -100,6 +100,11 @@ export const CAMPOS_METRIC = [
 // "Todas las transacciones"), así que el censo cuenta cuáles aparecen.
 export const CODIGOS_FORM4 = ['P', 'S', 'A', 'M', 'F', 'G', 'C', 'D', 'X', 'J', 'K'];
 
+// El parser de fechas vive en mercado-r0.js y se importa en vez de
+// duplicarse: dos parsers de fecha que se desincronizan es cómo un feed
+// pasa en un lado y falla en el otro sin que nadie entienda por qué.
+import { parseFechaFeed } from './mercado-r0.js';
+
 const num = (v) => {
   if (v === null || v === undefined || v === '' || v === 'None') return null;
   const n = Number(v);
@@ -617,12 +622,29 @@ export function contarItemsFeed(xml) {
   };
   let conTitulo = 0, conLink = 0, conFecha = 0, conImagen = 0, conCategoria = 0;
   const viasImagen = {}, ejemplosCategoria = new Set();
+  const muestrasFecha = [];
   for (const b of bloques) {
     if (tag(b, 'title')) conTitulo++;
     // Atom pone el link en un atributo href, RSS en el texto del tag.
     if (tag(b, 'link') || /<link[^>]*href="[^"]+"/i.test(b)) conLink++;
-    const fecha = tag(b, 'pubDate') || tag(b, 'updated') || tag(b, 'published') || tag(b, 'dc:date');
-    if (fecha && Number.isFinite(Date.parse(fecha))) conFecha++;
+    // La FECHA, y —cuando falla— la cadena cruda. Sin la cruda, "0% con fecha"
+    // es un callejón sin salida: fue exactamente lo que pasó con el feed de la
+    // Fed, que contestó 200 con items y 0% de fechas parseables sin decir por
+    // qué. Se guardan hasta 5 muestras: alcanzan para ver el patrón y no
+    // inflan el JSON del censo.
+    const fecha = tag(b, 'pubDate') || tag(b, 'updated') || tag(b, 'published')
+      || tag(b, 'dc:date') || tag(b, 'date');
+    const pf = parseFechaFeed(fecha);
+    if (pf.ms != null) conFecha++;
+    else if (muestrasFecha.length < 5) {
+      muestrasFecha.push({
+        // Qué tags de fecha trae el item, aunque ninguno sirva: distingue
+        // "no hay campo de fecha" de "hay uno y no se pudo leer".
+        tags_presentes: ['pubDate', 'updated', 'published', 'dc:date', 'date'].filter((t) => tag(b, t)),
+        cruda: String(fecha || '').slice(0, 60),
+        motivo: pf.motivo,
+      });
+    }
 
     // ── IMAGEN (punto 0.10 de la adenda) ─────────────────────────────
     // R3b pone foto SOLO si el feed la trae; si no, bloque de color. O sea
@@ -678,6 +700,8 @@ export function contarItemsFeed(xml) {
     con_link: conLink,
     con_fecha: conFecha,
     pct_con_fecha: pct(conFecha),
+    // Solo viaja cuando hay algo que explicar.
+    fechas_que_fallaron: muestrasFecha.length ? muestrasFecha : undefined,
     con_imagen: conImagen,
     pct_con_imagen: pct(conImagen),
     vias_imagen: viasImagen,

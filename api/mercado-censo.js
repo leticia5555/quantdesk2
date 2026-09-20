@@ -261,9 +261,25 @@ async function censoQ2(ahora) {
 
   // La referencia pública, solo para las 5 que el encargo nombra. Cortesía de
   // 1 req/s: cinco requests, cinco segundos.
+  //
+  // DOS COSAS QUE LA CORRIDA DEL 2026-09-20 DEJÓ CLARAS Y QUE ESTE BLOQUE
+  // ARRASTRABA MAL:
+  //
+  // 1. El símbolo se armaba con `series[0]`, que es la serie ALFABÉTICAMENTE
+  //    primera, no la líquida. Salió `AMXA.MX` (serie A) en vez de la que
+  //    opera, y `FEMSAB.MX` — una serie que ni siquiera aparece entre las
+  //    candidatas con precio. Ahora sale de `serie_liquida` del registro.
+  // 2. Da igual, porque **Yahoo quoteSummary devuelve 401 Invalid Crumb**
+  //    desde Vercel: las cinco emisoras fallaron, y el precio objetivo de
+  //    AAPL también. No es el símbolo `.MX`, es el endpoint entero. Se deja
+  //    la llamada porque un 401 medido es un dato, pero la referencia de
+  //    verdad vive ahora en _lib/mercado-cap-referencia.json (R0c).
+  const serieLiquidaDe = new Map(EMISORAS.emisoras.map((e) => [String(e.clave).toUpperCase(), e.serie_liquida]));
   const referencias = {};
   for (const clave of MX_VERIFICAR) {
-    const serie = (preciosPorEmisora.get(clave) || [])[0];
+    const series = preciosPorEmisora.get(clave) || [];
+    const liquida = serieLiquidaDe.get(clave);
+    const serie = series.find((x) => x.emisora_serie === liquida) || series[0];
     // El símbolo Yahoo de una emisora BMV es emisora+serie+'.MX'.
     const symYahoo = serie ? `${serie.emisora_serie}.MX` : `${clave}.MX`;
     const r = await medir(
