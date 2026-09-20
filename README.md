@@ -89,6 +89,64 @@ Research tooling aimed at Spanish-speaking retail investors, who have no native-
 
 ---
 
+## The BMV dataset
+
+A point-in-time database of the Mexican stock exchange, 2016–2026. It is the part of this repo that exists nowhere else.
+
+| | |
+|---|---:|
+| Unique ICS issuers | **137** |
+| Series in the census, with status | **185** (109 active / 76 suspended) |
+| Quarters of financials | **4,174** |
+| Daily price rows, with traded amount | **569,589** |
+| Distributions, classified by type and currency | **1,641** |
+| Benchmark days (NAFTRAC ISHRS) | **4,207** |
+
+Each quarter carries seven normalized fields — revenue, profit attributable to owners, basic EPS, assets, liabilities, equity, cash — plus the comparative period the source ships alongside it, and the full raw JSON. The raw is kept on purpose: when the normalization turned out to be wrong, 4,174 rows were repaired from storage for **zero** API credits.
+
+### Why point-in-time
+
+Two things, and both are the difference between a backtest and a story.
+
+**The 76 suspended series are in.** They stay in the universe for as long as they had prices. A dataset built from today's listing would have quietly dropped every issuer that was delisted, acquired or suspended — and those are exactly the ones that did badly. Survivorship bias inflates every number downstream of it.
+
+**The universe at each date is derived, not assumed.** Membership comes from the range of financials actually available on that date, not from a list read backwards. An issuer enters when its first quarter becomes available and leaves when it stops trading.
+
+### The piece that isn't available anywhere else
+
+A weekly capture of BMV's XBRL filings that records **the real publication date** of each report — 30 issuers, all with BMV ids verified against a live URL.
+
+No public Mexican source exposes it. DataBursatil, the best available, indexes by *period close*: it tells you the quarter ended March 31, not the day the market could first read it. The gap between those two dates ranged from **23 to 59 days** across the issuers measured.
+
+Without the real date, any backtest over fundamentals has look-ahead — it trades on numbers nobody had yet. The workaround here was to lag everything by **65 days**, past the worst observed delay, which removes the bias at the cost of trading on stale information. The captured dates are what make that workaround unnecessary next time.
+
+### What it was used for
+
+A pre-registered backtest of a value + momentum rotation, with every GO/NO-GO criterion frozen in the document before a single number was seen.
+
+**Verdict: NO-GO.** Excess 0.0%/year, t = −0.007, Sharpe 0.35 against NAFTRAC's 0.32 where +0.15 was required. 111 rebalances, 44 median eligible names. Not inconclusive — there was sample and there was universe, and the strategy does not beat the index. No criterion moved after the fact; the diff of [`docs/bmv-rotation.md`](docs/bmv-rotation.md) is the proof.
+
+Three findings outlived the verdict:
+
+- **Value was a drag in two independent markets** — US in August 2026 and Mexico in September, different windows, universes and data sources, same sign. No longer a quirk of one window.
+- **The momentum that showed t = 1.87 in the US gives t = 0.08 here.** That 1.87 never passed the threshold of 2, but it invited the reading that it was close. It wasn't a weak effect; it was a regime.
+- **Median age of the trailing-twelve-month fundamentals: 397 days.** Any strategy on quarterly fundamentals with an honest lag is trading on information more than a year old. Cutting the lag doesn't fix it — the 65 days are ~16% of the 397, the rest is the TTM window itself.
+
+### What it is not
+
+Research infrastructure, not a product. What makes it worth anything is that it is verified, not that it is large.
+
+The limits, stated rather than discovered later:
+
+- **The financials come from DataBursatil**, a third party with no SLA. The series is reproducible for as long as that service exists — which is part of why the raw is stored.
+- **The ex-dividend date is approximated in ~91% of the history.** The API only ships `fechaexcupon` in its recent block; the rest is payment date minus three days. It is applied identically to the basket and the benchmark, so it cancels to first order in the excess — but it is an estimate, not a fact.
+- **Foreign-currency distributions are excluded** from total return in v1, with the uncounted basis points reported per series. `/v2/divisas` turned out to be a spot endpoint with no history; the right source is Banxico SIE, which is a different integration.
+- **Banks, FIBRAs and insurers are out of v1.** They file under different taxonomies than ICS, and mixing them would mean one series with two definitions.
+
+Full design, frozen criteria and post-mortem in [`docs/bmv-rotation.md`](docs/bmv-rotation.md); the XBRL capture in [`docs/xbrl-capture.md`](docs/xbrl-capture.md).
+
+---
+
 ## Stack
 
 Vanilla JS and HTML5 Canvas on the front. Node serverless functions on Vercel. Postgres on Neon. Market data from Alpaca (SIP, the consolidated tape), Finnhub, Yahoo Finance and SEC EDGAR; macro series from FRED.
