@@ -40,6 +40,7 @@
 
 import { sql as sqlReal } from './db.js';
 import { NUCLEO } from './historia-db.js';
+import { urlIndice } from './edgar.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // El catálogo de declaraciones. Los textos de §8 viven acá UNA vez: el
@@ -175,12 +176,18 @@ export function crearLectura({ sql = sqlReal } = {}) {
     // a equivocar— las tres cosas.
     async serie(cik, familias = NUCLEO, limite = 400) {
       if (!familias.length) return [];
+      // El join con company_filings es lo que hace que la cita ENLACE. Una
+      // cita que no se puede abrir es un identificador bonito: el producto es
+      // que el usuario vaya al papel y cuente los mismos números.
       const filas = await sql(
-        `select familia, concept, unit, period_start, period_end, val,
-                yoy_pct, revisado, derived, accession, accession_aux, filed, form
-           from company_quarterly
-          where cik = $1 and familia in (${enLista(familias, 2)})
-          order by familia asc, period_end desc
+        `select q.familia, q.concept, q.unit, q.period_start, q.period_end, q.val,
+                q.yoy_pct, q.revisado, q.derived, q.accession, q.accession_aux,
+                q.filed, q.form, f.url as url, fa.url as url_aux
+           from company_quarterly q
+           left join company_filings f  on f.cik  = q.cik and f.accession  = q.accession
+           left join company_filings fa on fa.cik = q.cik and fa.accession = q.accession_aux
+          where q.cik = $1 and q.familia in (${enLista(familias, 2)})
+          order by q.familia asc, q.period_end desc
           limit ${Number(limite)}`,
         [cik, ...familias],
       );
@@ -190,6 +197,12 @@ export function crearLectura({ sql = sqlReal } = {}) {
         // Un Q4 derivado salió de una resta entre dos filings: se muestran las
         // dos citas, porque enseñar solo el 10-K sería citar la mitad.
         cita_aux: cita(r.accession_aux),
+        // La serie mira 3 años y el índice de filings 5, así que normalmente
+        // el join encuentra la URL. Cuando no —un hecho re-expresado que cita
+        // un filing más viejo que la ventana— se arma la del directorio, que
+        // lleva al mismo lugar. Nunca se devuelve una cita sin destino.
+        url: r.url || urlIndice(cik, r.accession),
+        url_aux: r.accession_aux ? (r.url_aux || urlIndice(cik, r.accession_aux)) : null,
       }));
     },
   };
@@ -272,7 +285,7 @@ export function armarSecciones({ emisor, direccion = [], proxies = [], propiedad
     estado: hayRuptura ? 'con_documentos' : 'sin_contraevidencia',
     documentos: ruptura,
     periodos_reexpresados: revisados.map((r) => ({
-      familia: r.familia, period_end: r.period_end, cita: r.cita, filed: r.filed,
+      familia: r.familia, period_end: r.period_end, cita: r.cita, url: r.url, filed: r.filed,
     })),
     declaraciones: hayRuptura ? [] : [declarar('sin_contraevidencia', lang)],
   };
