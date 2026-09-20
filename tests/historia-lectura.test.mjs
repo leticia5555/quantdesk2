@@ -282,8 +282,8 @@ console.log('\n── Las consultas');
   // Una lista vacía no genera una consulta con un `in ()` inválido.
   {
     const { hechas, lectura } = capturar();
-    hondo(await lectura.porItems('1', []), [], 'sin items no hay consulta');
-    hondo(await lectura.porFormas('1', []), [], 'sin formas tampoco');
+    hondo((await lectura.porItems('1', [])).documentos, [], 'sin items no hay consulta');
+    hondo((await lectura.porFormas('1', [])).documentos, [], 'sin formas tampoco');
     eq(hechas.length, 0, 'y no se manda un `in ()` que Postgres rechazaría');
   }
 }

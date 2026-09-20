@@ -40,9 +40,23 @@ const D = (lang = 'es') => ({
   formato_cita: '[0000320193-25-000073]',
   secciones: [
     { id: 'direccion', pregunta: 1, estado: 'con_documentos', declaraciones: [],
-      documentos: [{ accession: '0001-26-1', form: '8-K', items: ['5.02'], filed: '2026-02-20', url: 'https://www.sec.gov/x.htm', cita: '[0001-26-1]' }] },
-    // El vacío que habla de la EMPRESA.
-    { id: 'propiedad', pregunta: 2, estado: 'sin_documentos', documentos: [], declaraciones: [] },
+      resumen: { total: 14, mostrados: 1, desde: '2021-12-03', hasta: '2026-09-15', por_item: { '5.02': 14 }, por_forma: { '8-K': 14 }, truncado: true },
+      documentos: [{ accession: '0001-26-1', form: '8-K', items: ['5.02'], filed: '2026-02-20',
+        url: 'https://www.sec.gov/x.htm', cita: '[0001-26-1]',
+        forma_glosa: { codigo: '8-K', oficial: 'Current Report', glosa: 'reporte de evento' },
+        items_glosa: [{ codigo: '5.02', oficial: 'Departure of Directors or Certain Officers; Election of Directors; Appointment of Certain Officers; Compensatory Arrangements of Certain Officers', glosa: 'salida, nombramiento o compensación de directivos o consejeros' }] }] },
+    // La pelea por el consejo, que en una lista plana se pierde.
+    { id: 'propiedad', pregunta: 2, estado: 'con_documentos', declaraciones: [],
+      resumen: { total: 34, mostrados: 2, desde: '2025-12-15', hasta: '2026-05-20', por_forma: { DFAN14A: 30, PREC14A: 2, DEFC14A: 2 }, por_item: {}, truncado: true },
+      episodios: [{ desde: '2025-12-15', hasta: '2026-05-20', dias: 156, total: 34,
+        por_forma: { DFAN14A: 30, PREC14A: 2, DEFC14A: 2 }, umbral_dias: 120, documentos: [] }],
+      documentos: [
+        { accession: '0001-26-3', form: 'DFAN14A', items: [], filed: '2026-05-20', url: 'https://www.sec.gov/p.htm', cita: '[0001-26-3]',
+          forma_glosa: { codigo: 'DFAN14A', oficial: 'Additional Definitive Proxy Soliciting Materials Filed by Non-Management', glosa: 'material de solicitación presentado por un tercero, no por la empresa' }, items_glosa: [] },
+        // Un código que NO está en el diccionario: se muestra crudo y se dice.
+        { accession: '0001-26-4', form: 'SC 14D9', items: [], filed: '2026-04-01', url: 'https://www.sec.gov/q.htm', cita: '[0001-26-4]',
+          forma_glosa: { codigo: 'SC 14D9', oficial: null, glosa: null }, items_glosa: [] },
+      ] },
     { id: 'prometido_vs_entregado', pregunta: 3, estado: 'con_documentos',
       documentos: [{ accession: '0001-26-2', form: '8-K', items: ['2.02'], filed: '2026-02-20', url: 'https://www.sec.gov/y.htm', cita: '[0001-26-2]' }],
       serie: [
@@ -115,8 +129,10 @@ async function abrir(respuesta, ruta = '/historia.html?ticker=MELI') {
   report('se pintan las 7 secciones', (await page.locator('.sec').count()) === 7);
 
   // 1. Los tres vacíos se ven distinto.
-  const txtSinDocs = await page.locator('.sec', { hasText: 'Quién la posee' }).locator('.sindocs').innerText();
+  const txtSinDocs = await page.locator('.sec', { hasText: 'Cuál es el catalizador' }).locator('.sindocs').innerText();
   report('el vacío de la empresa dice "Sin documentos"', /Sin documentos/.test(txtSinDocs));
+  report('una sección con documentos NO muestra el bloque de vacío',
+    (await page.locator('.sec', { hasText: 'Quién la posee' }).locator('.sindocs').count()) === 0);
   report('…y aclara que SÍ se buscó', /no es que no lo hayamos mirado/i.test(txtSinDocs));
 
   const gerencia = page.locator('.sec', { hasText: 'gerencia' });
@@ -142,6 +158,48 @@ async function abrir(respuesta, ruta = '/historia.html?ticker=MELI') {
     vals.some((v) => /6[.,]100[.,]000[.,]000/.test(v)), vals.join(' | '));
   report('…y ningún valor usa un sufijo de escala',
     !vals.some((v) => /\b(M|MM|B|K|mil M)\b/.test(v)), vals.join(' | '));
+
+  // El código legal traducido: lo que hacía la pantalla ilegible.
+  const dir = page.locator('.sec', { hasText: 'Quién la dirige' });
+  const glosa = await dir.locator('.doc .glosa').first().innerText();
+  report('el item 5.02 sale traducido, no como código pelado', /salida, nombramiento o compensación/i.test(glosa), glosa);
+  report('…y el código crudo sigue visible al lado', (await dir.locator('.doc .cod').first().innerText()).includes('5.02'));
+  const oficial = await dir.locator('.doc .glosa span').first().getAttribute('title');
+  report('el nombre OFICIAL de la SEC está en el hover, textual',
+    /Departure of Directors/.test(oficial || '') && /Compensatory Arrangements/.test(oficial || ''), oficial);
+
+  // La glosa de 5.02 NO puede decir solo "cambio de directivos": el item
+  // cubre también la compensación, y un 5.02 puede ser solo eso.
+  report('la glosa de 5.02 nombra la compensación', /compensaci/i.test(glosa));
+
+  // Un código sin traducción se dice, no se inventa.
+  const prop = page.locator('.sec', { hasText: 'Quién la posee' });
+  const sinGlosa = await prop.locator('.doc .glosa .sin').first().innerText();
+  report('un código que no está en el diccionario se muestra crudo y se declara',
+    /SC 14D9/.test(sinGlosa) && /sin traducción/i.test(sinGlosa), sinGlosa);
+
+  // Contar lo que ya está.
+  const resumen = await dir.locator('.resumen').first().innerText();
+  report('la sección dice cuántos filings hay', /14 filings/.test(resumen), resumen.replace(/\n/g, ' '));
+  report('…y entre qué fechas', /2021/.test(resumen) && /2026/.test(resumen));
+  report('…y avisa que está mostrando una muestra', /mostrando 1 de 14/i.test(resumen));
+
+  // La pelea por el consejo, agrupada.
+  const ep = await prop.locator('.episodio').first().innerText();
+  report('la pelea por el consejo se agrupa como episodio', /impugnada/i.test(ep), ep.replace(/\n/g, ' ').slice(0, 90));
+  report('…con su conteo', /34 filings/.test(ep));
+  report('…su rango de fechas', /2025/.test(ep) && /2026/.test(ep));
+  report('…su desglose por forma', /30× DFAN14A/.test(ep));
+  report('…y el umbral declarado como NUESTRO', /120 días/.test(ep) && /no de la SEC/i.test(ep), null);
+  // Ojo con el grep ingenuo: el descargo del umbral SÍ dice "no quién ganó",
+  // y eso es correcto. Lo que no puede tener vocabulario de desenlace son las
+  // líneas que AFIRMAN — el conteo y el desglose.
+  const afirma = (await prop.locator('.episodio .cuenta').first().innerText())
+    + ' ' + (await prop.locator('.episodio .formas').first().innerText());
+  report('las líneas que afirman no dicen quién ganó',
+    !/(ganó|gano|perdió|perdio|exitos|fracas|activista)/i.test(afirma), afirma);
+  report('…y el descargo sí aclara que no lo dice',
+    /no quién ganó/i.test(await prop.locator('.episodio .umbral').first().innerText()));
 
   // 3. Toda cita enlaza.
   const citas = page.locator('.citas a, .doc .cita');

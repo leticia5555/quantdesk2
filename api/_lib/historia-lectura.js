@@ -41,6 +41,7 @@
 import { sql as sqlReal } from './db.js';
 import { NUCLEO } from './historia-db.js';
 import { urlIndice } from './edgar.js';
+import { glosarItem, glosarForma, agruparEpisodios, resumirDocumentos, esContienda } from './historia-glosario.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // El catálogo de declaraciones. Los textos de §8 viven acá UNA vez: el
@@ -106,6 +107,9 @@ export const FORMAS_PROPIEDAD = ['SC 13D', 'SC 13D/A', 'SC 13G', 'SC 13G/A'];
 export const FORMAS_PELEA = ['PREC14A', 'DEFC14A', 'PRRN14A', 'DFAN14A'];
 
 const LIMITE_DOCS = 40;
+// La pelea por el consejo se trae ENTERA, no paginada: un episodio calculado
+// sobre 40 de 34… o sobre 40 de 200 empezaría y terminaría donde no es.
+const LIMITE_CONTIENDA = 500;
 
 // `[0000320193-25-000073]` — el identificador visible de la decisión 8.
 export const cita = (accession) => (accession ? `[${accession}]` : null);
@@ -121,16 +125,37 @@ function enLista(valores, desde) {
   return valores.map((_, i) => `$${desde + i}`).join(', ');
 }
 
-export function crearLectura({ sql = sqlReal } = {}) {
-  const doc = (r) => ({
-    accession: r.accession,
-    form: r.form,
-    items: r.items_raw ? String(r.items_raw).split(',').map((s) => s.trim()).filter(Boolean) : [],
-    filed: r.filed,
-    report_date: r.report_date ?? null,
-    url: r.url,
-    index_url: r.index_url,
-    cita: cita(r.accession),
+export function crearLectura({ sql = sqlReal, lang = 'es' } = {}) {
+  const doc = (r) => {
+    const items = r.items_raw ? String(r.items_raw).split(',').map((s) => s.trim()).filter(Boolean) : [];
+    return {
+      accession: r.accession,
+      form: r.form,
+      // El código se queda Y se traduce. `oficial` es la cita textual de la
+      // SEC; `glosa` es nuestra y va marcada como tal en el glosario.
+      forma_glosa: glosarForma(r.form, lang),
+      items,
+      items_glosa: items.map((i) => glosarItem(i, lang)),
+      contienda: esContienda(r.form),
+      filed: r.filed,
+      report_date: r.report_date ?? null,
+      url: r.url,
+      index_url: r.index_url,
+      cita: cita(r.accession),
+    };
+  };
+
+  // El total y el rango salen de TODOS los que matchearon, no de la página
+  // que se alcanza a mostrar. Las funciones de ventana se evalúan antes del
+  // LIMIT, así que esto no cuesta una consulta extra.
+  const AGREGADOS = `count(*) over () as total_general,
+                     min(filed) over () as primero,
+                     max(filed) over () as ultimo`;
+  const conAgregados = (filas) => ({
+    documentos: filas.map(doc),
+    total: filas.length ? Number(filas[0].total_general) : 0,
+    desde: filas.length ? filas[0].primero : null,
+    hasta: filas.length ? filas[0].ultimo : null,
   });
 
   return {
@@ -144,9 +169,10 @@ export function crearLectura({ sql = sqlReal } = {}) {
     },
 
     async porItems(cik, items, limite = LIMITE_DOCS) {
-      if (!items.length) return [];
+      if (!items.length) return { documentos: [], total: 0, desde: null, hasta: null };
       const filas = await sql(
-        `select distinct f.accession, f.form, f.items_raw, f.filed, f.report_date, f.url, f.index_url
+        `select distinct f.accession, f.form, f.items_raw, f.filed, f.report_date, f.url, f.index_url,
+                ${AGREGADOS}
            from company_filings f
            join company_filing_items i on i.cik = f.cik and i.accession = f.accession
           where f.cik = $1 and i.item in (${enLista(items, 2)})
@@ -154,20 +180,21 @@ export function crearLectura({ sql = sqlReal } = {}) {
           limit ${Number(limite)}`,
         [cik, ...items],
       );
-      return filas.map(doc);
+      return conAgregados(filas);
     },
 
     async porFormas(cik, formas, limite = LIMITE_DOCS) {
-      if (!formas.length) return [];
+      if (!formas.length) return { documentos: [], total: 0, desde: null, hasta: null };
       const filas = await sql(
-        `select accession, form, items_raw, filed, report_date, url, index_url
+        `select accession, form, items_raw, filed, report_date, url, index_url,
+                ${AGREGADOS}
            from company_filings
           where cik = $1 and form in (${enLista(formas, 2)})
           order by filed desc
           limit ${Number(limite)}`,
         [cik, ...formas],
       );
-      return filas.map(doc);
+      return conAgregados(filas);
     },
 
     // La serie sale de la VISTA, no de la tabla: la vista ya eligió qué tag
@@ -212,8 +239,28 @@ export function crearLectura({ sql = sqlReal } = {}) {
 // El armado de las secciones. Puro: recibe datos, devuelve la respuesta.
 // ─────────────────────────────────────────────────────────────────────────
 
+// Un grupo de documentos puede llegar como arreglo (los tests, y cualquier
+// llamador viejo) o como {documentos, total, desde, hasta} desde la consulta.
+// Normalizar acá evita que el total verdadero se pierda por el camino.
+const norm = (x) => (Array.isArray(x)
+  ? { documentos: x, total: x.length, desde: null, hasta: null }
+  : { documentos: [], total: 0, desde: null, hasta: null, ...(x || {}) });
+
+const unir = (...grupos) => {
+  const documentos = grupos.flatMap((g) => g.documentos);
+  documentos.sort((a, b) => String(b.filed).localeCompare(String(a.filed)));
+  const fechas = grupos.flatMap((g) => [g.desde, g.hasta]).filter(Boolean).sort();
+  return {
+    documentos,
+    total: grupos.reduce((a, g) => a + g.total, 0),
+    desde: fechas[0] || null,
+    hasta: fechas[fechas.length - 1] || null,
+  };
+};
+
 const seccion = (id, pregunta, datos, lang) => {
-  const docs = datos.documentos || [];
+  const grupo = norm(datos.grupo || datos.documentos);
+  const docs = grupo.documentos;
   const serie = datos.serie || [];
   const decls = (datos.declaraciones || []).map((c) => declarar(c, lang));
 
@@ -224,8 +271,13 @@ const seccion = (id, pregunta, datos, lang) => {
     id,
     pregunta,
     estado,
+    // Contar lo que ya está es aritmética sobre los documentos, de la misma
+    // clase que derivar un Q4. No dice qué significan: dice cuántos hay y
+    // entre qué fechas.
+    resumen: resumirDocumentos(docs, { total: grupo.total, desde: grupo.desde, hasta: grupo.hasta }),
     documentos: docs,
     ...(datos.serie ? { serie } : {}),
+    ...(datos.episodios ? { episodios: datos.episodios } : {}),
     declaraciones: decls,
   };
 };
@@ -238,17 +290,22 @@ export function armarSecciones({ emisor, direccion = [], proxies = [], propiedad
   // corrigió a sí misma, con fecha y documento.
   const revisados = serie.filter((s) => s.revisado);
 
+  const gDireccion = unir(norm(direccion), norm(proxies));
+  const gPropiedad = unir(norm(propiedad), norm(pelea));
+
   const secciones = [
-    seccion('direccion', 1, {
-      documentos: [...direccion, ...proxies],
-    }, lang),
+    seccion('direccion', 1, { grupo: gDireccion }, lang),
 
     seccion('propiedad', 2, {
-      documentos: [...propiedad, ...pelea],
+      grupo: gPropiedad,
+      // La pelea por el consejo se pierde en una lista plana: hay que contar
+      // 34 filings a mano para darse cuenta de que pasó algo. Agruparlos por
+      // rachas contiguas los vuelve visibles sin afirmar quién ganó.
+      episodios: agruparEpisodios(gPropiedad.documentos),
     }, lang),
 
     seccion('prometido_vs_entregado', 3, {
-      documentos: resultados,
+      grupo: norm(resultados),
       serie,
       // G5 midió 0/4 emisores con guía etiquetada: no se guarda ni se muestra
       // un número de guía. Se enlaza el 8-K y el usuario lee el documento.
@@ -271,7 +328,7 @@ export function armarSecciones({ emisor, direccion = [], proxies = [], propiedad
     }, lang),
 
     seccion('catalizador', 7, {
-      documentos: catalizador,
+      grupo: norm(catalizador),
       declaraciones: ['earnings_no_edgar'],
     }, lang),
   ];
@@ -283,7 +340,7 @@ export function armarSecciones({ emisor, direccion = [], proxies = [], propiedad
   const contraevidencia = {
     id: 'donde_se_rompe',
     estado: hayRuptura ? 'con_documentos' : 'sin_contraevidencia',
-    documentos: ruptura,
+    documentos: norm(ruptura).documentos,
     periodos_reexpresados: revisados.map((r) => ({
       familia: r.familia, period_end: r.period_end, cita: r.cita, url: r.url, filed: r.filed,
     })),
@@ -325,7 +382,7 @@ export async function armarHistoria(L, ticker, { lang = 'es' } = {}) {
     L.porItems(cik, ITEMS_DIRECCION),
     L.porFormas(cik, FORMAS_DIRECCION),
     L.porFormas(cik, FORMAS_PROPIEDAD),
-    L.porFormas(cik, FORMAS_PELEA),
+    L.porFormas(cik, FORMAS_PELEA, LIMITE_CONTIENDA),
     L.porItems(cik, ITEMS_RESULTADOS),
     L.porItems(cik, ITEMS_CATALIZADOR),
     L.porItems(cik, ITEMS_RUPTURA),
