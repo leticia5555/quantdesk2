@@ -4,7 +4,10 @@
     "id": "El id interno de BMV que va en /es/emisoras/informacionfinanciera/{CLAVE}-{ID}-CGEN_CAPIT. No se deriva del ticker.",
     "verificado": "true SOLO si el par CLAVE-ID se vio en una URL real de bmv.com.mx. Nunca se inventa un id: si no se confirmó, va id:null y el capturador la SALTA reportando el motivo.",
     "excluidos": "Bancos, FIBRAs, fideicomisos y aseguradoras quedan fuera de la v1: usan taxonomías distintas de ICS (decisión de Fase 0, docs/xbrl-fase0.md §2.1).",
-    "estado": "activa | deslistada | sin_reporte. Una emisora deslistada deja de publicar: su última fila es legítimamente vieja y NO es un error del capturador, pero tampoco es un éxito — el run la reporta como alerta. El estado es una anotación humana; el capturador además detecta el atraso solo, comparando contra el trimestre esperado."
+    "estado": "activa | deslistada | sin_reporte. Una emisora deslistada deja de publicar: su última fila es legítimamente vieja y NO es un error del capturador, pero tampoco es un éxito — el run la reporta como alerta. El estado es una anotación humana; el capturador además detecta el atraso solo, comparando contra el trimestre esperado.",
+    "unidades": "acciones_por_unidad + serie_liquida resuelven la trampa de la Fase 0 §3.2: acciones_circulacion del XBRL cuenta ACCIONES, y el precio de la BMV es el de un TITULO, que en varias emisoras es una UNIDAD VINCULADA (un paquete de N acciones). cap = acciones x precio_serie_liquida / acciones_por_unidad.",
+    "unidad_verificado": "SIEMPRE false al nacer. Los cuatro divisores conocidos (FEMSA UBD=5, KOF UBL=8, CEMEX CPO=3, TLEVISA CPO=117) los declaro el operador en el encargo de R0; el contenedor donde se escribio esto NO llega a la BMV ni a un prospecto, asi que marcarlos verificados seria inventar una fuente. Se vuelven true cuando la corrida de /api/mercado-r0?job=unidades mide que el divisor reproduce la cap de referencia dentro del 5% — un divisor MEDIDO vale mas que uno leido, porque el dato que se usa es el mismo que se verifica.",
+    "serie_liquida": "La serie cuyo precio se usa. Para las que no son unidad vinculada es la serie mas operada, y sale del censo de bmv_emisoras — el job=unidades la CONTRASTA contra el importe operado real y reporta si eligio mal, en vez de confiar en esta lista."
   },
   "emisoras": [
     {
@@ -13,7 +16,11 @@
       "nombre": "América Móvil",
       "sector": "telecom",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "AMXB",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "WALMEX",
@@ -21,7 +28,11 @@
       "nombre": "Walmart de México y Centroamérica",
       "sector": "consumo",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "WALMEX*",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "FEMSA",
@@ -29,7 +40,11 @@
       "nombre": "Fomento Económico Mexicano",
       "sector": "consumo",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 5,
+      "serie_liquida": "FEMSAUBD",
+      "unidad_fuente": "operador (encargo R0b)",
+      "unidad_verificado": false
     },
     {
       "clave": "GMEXICO",
@@ -37,7 +52,11 @@
       "nombre": "Grupo México",
       "sector": "materiales",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "GMEXICOB",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "CEMEX",
@@ -45,7 +64,11 @@
       "nombre": "Cemex",
       "sector": "materiales",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 3,
+      "serie_liquida": "CEMEXCPO",
+      "unidad_fuente": "operador (encargo R0b)",
+      "unidad_verificado": false
     },
     {
       "clave": "BIMBO",
@@ -53,7 +76,11 @@
       "nombre": "Grupo Bimbo",
       "sector": "consumo",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "BIMBOA",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "TLEVISA",
@@ -61,7 +88,11 @@
       "nombre": "Grupo Televisa",
       "sector": "telecom",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 117,
+      "serie_liquida": "TLEVISACPO",
+      "unidad_fuente": "operador (encargo R0b)",
+      "unidad_verificado": false
     },
     {
       "clave": "ORBIA",
@@ -69,7 +100,11 @@
       "nombre": "Orbia Advance Corporation",
       "sector": "materiales",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "ORBIA*",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "KOF",
@@ -77,7 +112,11 @@
       "nombre": "Coca-Cola FEMSA",
       "sector": "consumo",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 8,
+      "serie_liquida": "KOFUBL",
+      "unidad_fuente": "operador (encargo R0b)",
+      "unidad_verificado": false
     },
     {
       "clave": "ALFA",
@@ -85,7 +124,11 @@
       "nombre": "Alfa",
       "sector": "industrial",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "ALFAA",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "PE&OLES",
@@ -93,7 +136,11 @@
       "nombre": "Industrias Peñoles",
       "sector": "materiales",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "PE&OLES*",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "GRUMA",
@@ -101,7 +148,11 @@
       "nombre": "Gruma",
       "sector": "consumo",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "GRUMAB",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "ALSEA",
@@ -109,7 +160,11 @@
       "nombre": "Alsea",
       "sector": "consumo",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "ALSEA*",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "ASUR",
@@ -117,7 +172,11 @@
       "nombre": "Grupo Aeroportuario del Sureste",
       "sector": "industrial",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "ASURB",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "LIVEPOL",
@@ -125,7 +184,11 @@
       "nombre": "El Puerto de Liverpool",
       "sector": "consumo",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "LIVEPOLC-1",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "KIMBER",
@@ -133,7 +196,11 @@
       "nombre": "Kimberly-Clark de México",
       "sector": "consumo",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "KIMBERA",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "GCARSO",
@@ -141,7 +208,11 @@
       "nombre": "Grupo Carso",
       "sector": "industrial",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "GCARSOA1",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "ELEKTRA",
@@ -150,7 +221,11 @@
       "sector": "consumo",
       "estado": "deslistada",
       "verificado": true,
-      "nota": "Asamblea aprobó el desliste el 27-dic-2024; BMV suspendió su cotización el 30-sep-2025 previo a la cancelación. Último XBRL: 4T2025 (doc 1536787, publicado 2026-02-25). No se esperan reportes nuevos."
+      "nota": "Asamblea aprobó el desliste el 27-dic-2024; BMV suspendió su cotización el 30-sep-2025 previo a la cancelación. Último XBRL: 4T2025 (doc 1536787, publicado 2026-02-25). No se esperan reportes nuevos.",
+      "acciones_por_unidad": 1,
+      "serie_liquida": "ELEKTRA*",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "PINFRA",
@@ -158,7 +233,11 @@
       "nombre": "Promotora y Operadora de Infraestructura",
       "sector": "industrial",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "PINFRA*",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "CHDRAUI",
@@ -166,7 +245,11 @@
       "nombre": "Grupo Comercial Chedraui",
       "sector": "consumo",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "CHDRAUIB",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "GCC",
@@ -174,7 +257,11 @@
       "nombre": "Grupo Cementos de Chihuahua",
       "sector": "materiales",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "GCC*",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "BOLSA",
@@ -182,7 +269,11 @@
       "nombre": "Bolsa Mexicana de Valores",
       "sector": "servicios financieros no bancarios",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "BOLSAA",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "CUERVO",
@@ -190,7 +281,11 @@
       "nombre": "Becle (José Cuervo)",
       "sector": "consumo",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "CUERVO*",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "GAP",
@@ -198,7 +293,11 @@
       "nombre": "Grupo Aeroportuario del Pacífico",
       "sector": "industrial",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "GAPB",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "OMA",
@@ -206,7 +305,11 @@
       "nombre": "Grupo Aeroportuario Centro Norte",
       "sector": "industrial",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "OMAB",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "AC",
@@ -214,7 +317,11 @@
       "nombre": "Arca Continental",
       "sector": "consumo",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "AC*",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "VESTA",
@@ -222,7 +329,11 @@
       "nombre": "Corporación Inmobiliaria Vesta",
       "sector": "inmobiliario",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "VESTA*",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "MEGA",
@@ -230,7 +341,11 @@
       "nombre": "Megacable Holdings",
       "sector": "telecom",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "MEGACPO",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "LASITE",
@@ -238,7 +353,11 @@
       "nombre": "Sitios Latinoamérica",
       "sector": "telecom",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "LASITEB",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     },
     {
       "clave": "VOLAR",
@@ -246,7 +365,11 @@
       "nombre": "Controladora Vuela (Volaris)",
       "sector": "industrial",
       "estado": "activa",
-      "verificado": true
+      "verificado": true,
+      "acciones_por_unidad": 1,
+      "serie_liquida": "VOLARA",
+      "unidad_fuente": "supuesto por defecto (1 accion = 1 titulo)",
+      "unidad_verificado": false
     }
   ],
   "_excluidas": [

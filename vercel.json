@@ -57,6 +57,9 @@
     "api/mercado-censo.js": {
       "maxDuration": 300
     },
+    "api/mercado-r0.js": {
+      "maxDuration": 300
+    },
     "api/*.js": {
       "maxDuration": 60
     }
@@ -159,6 +162,10 @@
     {
       "path": "/api/xbrl-capture?run=1",
       "schedule": "0 13 * * 1"
+    },
+    {
+      "path": "/api/mercado-r0?job=universo",
+      "schedule": "30 13 * * 1-5"
     }
   ]
 }
