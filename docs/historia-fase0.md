@@ -663,7 +663,51 @@ Diez llamadas, sin keys, sin DB, sin escribir nada. Contesta si el UA es
 aceptado, si las URLs de documento primario resuelven, cuánto pesa
 `companyfacts` de verdad (el insumo de G4) y qué formas presenta cada emisor
 (el dato de G6, medido en vez de asumido). Lo que **no** contesta es si lo
-ingerido queda bien guardado: eso es G7 entera y necesita la rebanada C.
+ingerido queda bien guardado.
+
+### Cómo cerrar G7 entera
+
+La ingesta existe desde la rebanada C. Con `DATABASE_URL` y `ADMIN_SECRET`
+configurados, son dos llamadas:
+
+```bash
+# 1. Sembrar el universo: resuelve tickers a CIK y los deja pendientes.
+curl -H "Authorization: Bearer $ADMIN_SECRET" \
+  "https://<host>/api/historia-harvest?job=sembrar&tickers=LULU,MSFT,MELI,VIST"
+
+# 2. Un turno del goteo. ~42 s por ticker (G4), maxDuration 300.
+curl -H "Authorization: Bearer $ADMIN_SECRET" \
+  "https://<host>/api/historia-harvest?job=goteo&limite=4"
+```
+
+La respuesta del goteo es el veredicto de G7, y se lee contra §11:
+
+| Qué mirar | Verde si |
+|---|---|
+| `sinCita` | **0**. La corrida 2 midió 0 hechos sin `accn` en los cuatro emisores: cualquier otro número es nuestro, no de EDGAR |
+| `descartados` | `sin_valor` y `sin_fecha` en 0, o explicados |
+| `derivados` | > 0 en los tres domésticos (los Q4), **0 en VIST** (un 20-F no tiene 9M que restar) |
+| `perfil.cobertura` | `completa` en LULU, MSFT y MELI · **`parcial` en VIST** |
+| `indiceTruncado` | `false`. Si sale `true`, la ventana de 5 años se quedó corta y hay que subir `maxPaginas` |
+| `red.reintentos` | 0 o pocos. Muchos reintentos significan que 6 req/s sigue siendo demasiado |
+
+Y después, en SQL, las dos que los tests **no** pueden probar sin Postgres:
+
+```sql
+-- El arreglo del alias: LULU inventario NO debe salir revisado al 100%.
+select familia, count(*) filter (where revisado) as revisados, count(*) as trimestres
+  from company_quarterly where cik = '0001397187' group by familia;
+
+-- Las re-expresiones de MELI en ingresos, contadas POR TAG (§11).
+select concept, period_end, count(distinct val) as versiones
+  from company_facts
+ where cik = '0001099590' and familia = 'ingresos' and period_class = 'Q'
+ group by 1, 2 having count(distinct val) > 1 order by 2 desc;
+```
+
+Ese segundo query es el que contesta de verdad cuántas re-expresiones tiene
+MELI. El 19 del tablero mezcla re-expresión con diferencia entre alias; esto
+las separa.
 
 El número que originó el encargo —"MELI: 19 revisiones del concepto de
 ingresos"— apareció en la corrida 2, así que ya tiene respaldo. Lo que **no**
