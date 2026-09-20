@@ -362,7 +362,8 @@ correcta, sólo LASITE saltada por falta de id. Quedaron **dos filas guardadas
 con `fecha_publicacion` nula**: PE&OLES (doc 1579656) y MEGA (doc 1585294).
 
 *(Cifras de esa corrida, que se dejan como quedaron. El id de LASITE se
-completó después y la 3ª corrida sí dio 30/30 — §5.5.)*
+completó después y la 3ª corrida sí dio 30/30 — §5.5; las dos fechas nulas se
+repararon — §5.6.)*
 
 ### 5.4 Qué va a pasar en la próxima corrida
 
@@ -370,7 +371,7 @@ Con la tabla de meses arreglada, la lógica de reparación (§2.3) toma las dos:
 
 | Emisora | doc_id | En la tabla | La página trae | Acción |
 |---|---|---|---|---|
-| PE&OLES | 1579656 | fecha `null` | `23-Jul-2026 14:11` | **reparar** |
+| PE&OLES | 1579656 | fecha `null` | ~~`23-Jul-2026 14:11`~~ ⚠️ **mal transcrito** | **reparar** |
 | MEGA | 1585294 | fecha `null` | `28-Aug-2026 15:06` | **reparar** |
 | las otras 27 | — | fecha ya guardada | la misma | `nada` |
 | LASITE | — | — | — | saltada entonces por falta de id; **ya tiene el suyo (36025)** |
@@ -379,6 +380,14 @@ Está probado como función pura (`decidirAccion`) con el estado real de la tabl
 así que la confirmación no depende de correr contra Neon: **ambas se reparan, y
 ninguna de las 27 buenas se toca.** La reparación no baja el zip — la fecha sale
 de la página que el run ya pidió.
+
+> ⚠️ **La celda tachada estaba mal, y el error era mío al redactar, no del
+> capturador.** `23-Jul-2026 14:11` es la fecha de **BIMBO** (doc 1576474,
+> `2026-07-23T14:11:00Z`) — coincide **al minuto**. La copié de la fila
+> equivocada. Lo que la página de PE&OLES traía, y lo que la corrida guardó, es
+> `2026-08-04T09:48Z`. Se marca en vez de borrarse porque esta tabla es una
+> predicción escrita antes de correr y su valor está en poder contrastarla;
+> §5.6 cuenta cómo se destapó.
 
 Si alguna **siguiera** sin fecha después de esto, la alerta va a citar el texto
 que no supo leer, y eso ya apunta directo a la tabla `MESES`.
@@ -419,6 +428,60 @@ Lo mismo vale para el rango observado de **23 a 59 días**: sale de ese único
 trimestre, así que es una **cota inferior de la dispersión**, no una
 distribución.
 
+### 5.6 Las dos fechas nulas: reparadas, y un error de transcripción destapado
+
+La reparación de §5.4 **corrió y funcionó**. Las dos filas que habían quedado
+con `fecha_publicacion` nula ya la tienen, y ambas con los **9/9 campos**:
+
+| Emisora | doc_id | Predicho en §5.4 | Guardado en la corrida | Lag vs cierre 2026-06-30 |
+|---|---|---|---|---:|
+| MEGA | 1585294 | `28-Aug-2026 15:06` | `2026-08-28T15:06Z` | **59 días** |
+| PE&OLES | 1579656 | ~~`23-Jul-2026 14:11`~~ | `2026-08-04T09:48Z` | 35 días |
+
+MEGA cayó exactamente donde decía la predicción. PE&OLES no, y la diferencia
+—doce días, mismo `doc_id`— se resolvió: **la predicción de §5.4 estaba mal
+transcrita.**
+
+**`23-Jul-2026 14:11` es la fecha de BIMBO**, doc 1576474, `2026-07-23T14:11:00Z`.
+Coincide **al minuto**: no es una coincidencia de fecha, es la misma celda. Se
+copió de la fila equivocada al redactar el doc. El capturador nunca leyó ese
+valor para PE&OLES y la tabla nunca lo tuvo guardado.
+
+**Y encaja con lo demás.** PE&OLES publicó en **agosto**, que es precisamente lo
+que la hace una de las dos emisoras que destaparon el bug de los meses en inglés
+(§5.1). Si de verdad hubiera publicado el 23 de julio, su fecha **nunca habría
+salido nula** —`Jul` coincide en ambos idiomas— y no habría estado en esa lista.
+El valor mal transcrito contradecía la explicación del bug que el propio doc ya
+tenía escrita dos secciones antes, y nadie lo notó hasta que la corrida guardó
+la fecha buena.
+
+**Lo que esto NO mueve:** el rango observado sigue siendo **23 a 59 días**. El
+piso lo pone WALMEX (23) y el techo MEGA (59), verificado contra la corrida;
+PE&OLES no toca ninguno de los dos extremos. Y como el error fue de copia
+en esta misma tabla, verifiqué los dos extremos contra algo que no sea ella:
+
+- **El techo (MEGA, 59 días)** lo confirmó la corrida: predicho
+  `28-Aug-2026 15:06`, guardado `2026-08-28T15:06Z`.
+- **El piso (WALMEX, 23 días)** lo corrobora un artefacto independiente:
+  `xbrl-fase0.md` §8 fecha su **evento relevante** (`eventemi_1576009_1.pdf`) el
+  **22-jul-2026**, y su XBRL es el id **1576010**, consecutivo. No prueba el día
+  exacto, pero sí que WALMEX publicó ese par de días — y ese dato salió de un
+  PDF, no de copiar un renglón. Los 65 días de espera de
+`bmv-rotation.md` §3.2 cubren lo observado exactamente igual que antes. Lo único
+que cambia es el renglón de PE&OLES en esa tabla, de 23 a 35 días — y cambia
+**hacia el centro** del rango, no hacia el borde.
+
+**Por qué §5.4 se marca en vez de borrarse:** es una predicción escrita antes de
+correr, y su valor está en ser falsable. Sobrescribirla para que coincida con el
+resultado dejaría sin registro que una de las dos filas estaba mal y que el
+error era de redacción. Queda tachada, con la causa anotada.
+
+**La lección, que no es sobre fechas:** el dato mal transcrito era *verosímil* —
+una fecha con el formato correcto, del trimestre correcto, de una emisora real.
+Lo que lo delató no fue revisarlo, fue **chocar contra un dato observado**. Las
+tablas escritas a mano a partir de otra tabla son un punto de copia sin
+verificación, y el doc tenía la contradicción adentro desde el principio.
+
 ## 6. Qué me preocupa
 
 1. **El reloj.** Es el riesgo que no se arregla con código. Si el 2T2026 se cae
@@ -427,10 +490,12 @@ distribución.
    capturador.
 2. ~~**LASITE sigue sin id.**~~ **CERRADO el 20-sep-2026:** id `36025`, y la
    corrida siguiente dio **30/30 observado** — 0 saltadas, 0 fallidas, LASITE
-   con doc 1578536 y sus 9/9 campos (§5.5).
+   con doc 1578536 y sus 9/9 campos (§5.5). Con las dos `fecha_publicacion`
+   nulas ya reparadas (§5.6), **no queda ninguna fila incompleta**.
 
-   Lo que sí sigue en pie de esa preocupación: **los trimestres que LASITE se
-   perdió mientras no tuvo id no se recuperan solos.** La captura toma lo que
+   Lo único que sigue en pie de esa preocupación, y es el único pendiente de
+   captura que queda abierto: **los trimestres que
+   LASITE se perdió mientras no tuvo id no se recuperan solos.** La captura toma lo que
    la página publica hoy; los reportes viejos siguen en BMV, así que el hueco
    es recuperable, pero hay que ir por él a propósito.
 
@@ -451,6 +516,3 @@ distribución.
    consulte la tabla tiene que quedarse con la última por `(clave, anio,
    trimestre)`, no asumir que hay una sola.
 
----
-
-PR listo — no more pushes.

@@ -602,8 +602,15 @@ indexa por **cierre**, no por publicación. Con nuestras fechas reales de Fase
 | Emisora | Cierre | Publicado | Lag |
 |---|---|---|---:|
 | WALMEX | 2026-06-30 | 2026-07-23 | 23 días |
-| PE&OLES | 2026-06-30 | 2026-07-23 | 23 días |
+| PE&OLES | 2026-06-30 | 2026-08-04 | 35 días |
 | MEGA | 2026-06-30 | 2026-08-28 | **59 días** |
+
+> El valor de PE&OLES es el que guardó la corrida que reparó su
+> `fecha_publicacion` nula. Una versión anterior de esta tabla decía
+> `2026-07-23` (23 días): estaba **mal transcrita** —esa es la fecha de BIMBO,
+> al minuto— y la corrección se cuenta en `xbrl-capture.md` §5.6. **El rango no
+> se mueve**: el piso lo pone WALMEX (23) y el techo MEGA (59); PE&OLES no toca
+> ninguno de los dos.
 
 65 > 59, el máximo observado. Eso **elimina** el look-ahead en vez de
 repartirlo. El costo es información rancia —se descarta lo que ya era público
