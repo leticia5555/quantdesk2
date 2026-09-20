@@ -358,9 +358,20 @@ MELI resulta ser 20-F, el reporte desmiente este párrafo con datos.
 ## 5. El esquema
 
 Postgres sobre la frontera de `api/_lib/db.js` (Neon, SQL sobre HTTP), como
-`pead-db.js`. Tres tablas y dos vistas.
+`pead-db.js`.
 
-### Dos desviaciones de lo que pidió el encargo, y por qué
+> **El esquema ya no vive en este documento.** Está en
+> `api/_lib/historia-db.js` y se lee en `docs/sql/historia.sql`, que se genera
+> desde ahí y tiene un test que falla si los dos se separan. Lo que queda acá
+> son las decisiones y el porqué — que es lo que un memo sí tiene que
+> conservar. Tener el DDL en dos lados fue el error que cerró la rebanada 0
+> (§0.1): dos versiones del mismo criterio, y la de papel era la vieja.
+
+Cuatro tablas —`company_emisor`, `company_filings`, `company_filing_items`,
+`company_facts`— y dos vistas: `company_quarterly` (el gancho al Arena) y
+`company_cobertura` (la regla del 20-F, ejecutable).
+
+### Dos desviaciones de lo que pidió el encargo
 
 **1. `item` (singular) → tabla hija.** El encargo pide
 `company_filings (cik, accession, form, item, fecha, url)`. Pero un 8-K trae
@@ -370,122 +381,69 @@ los 8-K con 5.02 de este CIK" se vuelve un `like '%5.02%'` que también matchea
 normalizada para consultar.
 
 **2. `company_facts` necesita más que `(cik, concepto, periodo, valor,
-accession)`.** Faltan tres columnas sin las cuales el módulo no funciona:
-`period_start` (sin ella no se distingue un trimestre de un año que terminan
-el mismo día), `period_class` (la clasificación Q/9M/FY que hace derivable el
-Q4) y `filed` (sin ella no se ordenan las re-expresiones y no se sabe cuál es
-la última palabra de la empresa).
+accession)`.** Faltan `period_start` (sin ella no se distingue un trimestre de
+un año que terminan el mismo día), `period_class` (la clasificación Q/9M/FY que
+hace derivable el Q4) y `filed` (sin ella no se ordenan las re-expresiones y no
+se sabe cuál es la última palabra de la empresa).
 
-```sql
-create table if not exists company_filings (
-  cik           text not null,
-  accession     text not null,
-  form          text not null,          -- '8-K', 'SC 13D/A', 'DEF 14A'…
-  items_raw     text not null default '', -- '5.02,9.01' tal cual el índice
-  filed         date not null,
-  report_date   date,
-  primary_doc   text,
-  url           text not null,          -- documento primario, listo para citar
-  index_url     text not null,          -- index.json del filing (exhibits)
-  is_xbrl       boolean not null default false,
-  size_bytes    bigint,
-  ingested_at   timestamptz not null default now(),
-  primary key (cik, accession)
-);
-create index if not exists company_filings_cik_form on company_filings (cik, form, filed desc);
+Y `accession` va en la **clave**, no como columna decorativa: un mismo periodo
+presentado dos veces con dos valores son **dos filas**, no un update. Eso es la
+materia prima de la pregunta 3, no ruido a limpiar.
 
--- Tabla hija: un renglón por item de 8-K. Lo que hace consultable la
--- pregunta 1 ("dame cada 5.02 en orden") sin un like frágil.
-create table if not exists company_filing_items (
-  cik       text not null,
-  accession text not null,
-  item      text not null,              -- '5.02'
-  primary key (cik, accession, item),
-  foreign key (cik, accession) references company_filings (cik, accession) on delete cascade
-);
-create index if not exists company_filing_items_item on company_filing_items (cik, item);
+### Tres correcciones que obligó la corrida 2
 
-create table if not exists company_facts (
-  id            bigserial primary key,
-  cik           text not null,
-  taxonomy      text not null,          -- 'us-gaap' | 'ifrs-full' | 'dei'
-  concept       text not null,          -- el tag crudo, sin traducir
-  familia       text,                   -- 'ingresos' | 'margen' | … (nuestro mapeo; null si no mapea)
-  unit          text not null,          -- 'USD' | 'shares' | 'USD/shares'
-  period_start  date,                   -- null en instantes (inventario, caja)
-  period_end    date not null,
-  period_class  text not null,          -- 'Q' | 'H1' | '9M' | 'FY' | 'INSTANT' | 'OTRO'
-  fy            int,
-  fp            text,
-  form          text,                   -- '10-Q' | '10-K' | '20-F'
-  filed         date not null,          -- ordena las re-expresiones
-  accession     text not null,          -- LA CITA. Sin esto el hecho no se puede afirmar.
-  val           numeric not null,
-  derived       boolean not null default false,  -- true si es un Q4 = FY − 9M
-  ingested_at   timestamptz not null default now()
-);
--- Clave natural. Va como índice único y no como PK porque period_start es
--- nullable en los instantes y una PK no admite nulos.
-create unique index if not exists company_facts_natural on company_facts (
-  cik, taxonomy, concept, unit, period_end,
-  coalesce(period_start, date '1900-01-01'), accession
-);
-create index if not exists company_facts_serie on company_facts (cik, familia, period_end desc);
-```
+**1. `familia_rango`: el alias no es una re-expresión.** La familia une los
+alias de un concepto porque la serie cruza el cambio de taxonomía. Pero dos
+alias pueden medir cosas distintas —`InventoryNet` es el inventario y
+`InventoryFinishedGoods` una de sus partes— y contar "valores distintos por
+periodo" después de unirlos marca como re-expresión lo que es diferencia entre
+tags. La corrida 2 lo dejó ver: **toda familia de dos tags salió revisada al
+100%** (§11). Con rango, **por periodo gana un solo tag** —el mejor rankeado
+que tenga dato— y las revisiones se cuentan **dentro** de ése. La serie sigue
+pudiendo cambiar de tag entre periodos, que es justo para lo que la familia
+existe.
+
+**2. `accession_aux`: un Q4 derivado tiene dos fuentes, así que dos citas.**
+`Q4 = FY − 9M` depende del 10-K **y** del último 10-Q. Con una sola columna se
+mostraría citando el 10-K y la mitad de la resta quedaría sin respaldo — una
+afirmación citada a medias. Un `CHECK` lo vuelve invariante en vez de buena
+intención: `derived = true` sin `accession_aux` no entra.
+
+**3. El YoY no se calcula contando cuatro filas.** `lag(val, 4)` asume que
+cuatro filas atrás es un año atrás; con un trimestre faltante compara contra el
+periodo equivocado y **nadie se entera**, porque el número sale bien formado.
+Es la doctrina de `ai-guard.js` —la aritmética de calendario se resuelve antes
+y se verifica, no se delega— aplicada al SQL. La vista trae el `period_end` de
+la fila comparada y solo emite `yoy_pct` si está a 330–400 días. Si no, null:
+sin YoY es honesto; un YoY contra el trimestre equivocado, no.
 
 ### El gancho al Arena: la vista, no la tabla
 
 > *"La serie trimestral es la película que le falta al PM — mismo módulo, dos
 > consumidores. Diseñá la tabla para que `ai-guard.js` la pueda leer después."*
 
-`ai-guard.js` tiene una doctrina explícita, escrita tras un bug real: **la
-aritmética de calendario no se delega al LLM, se resuelve antes y viaja al
-prompt ya hecha** (el comentario de `relativeDayLabel`: el PM narró unos
-earnings a dos días como "post-market today"). La misma doctrina aplica acá:
-el PM no debe recibir 12 filas crudas y calcular el YoY de cabeza. Recibe el
-YoY ya calculado, con su fecha y su `accession`.
+`ai-guard.js` tiene una doctrina escrita tras un bug real: **la aritmética de
+calendario no se delega al LLM, se resuelve antes y viaja al prompt ya hecha**
+(el comentario de `relativeDayLabel`: el PM narró unos earnings a dos días como
+"post-market today"). Por eso el consumidor del Arena no es la tabla: es
+`company_quarterly`, que ya resolvió las cuatro cosas difíciles — qué tag manda
+en cada periodo, cuál es la última palabra de la empresa, el Q4 derivado y el
+YoY (o ningún YoY, dicho como null).
 
-Por eso el consumidor del Arena no es la tabla: es **una vista que ya resolvió
-las tres cosas difíciles** — la re-expresión (se queda la última palabra), el
-Q4 derivado y el YoY fiscal.
+Cada fila que sale de ahí trae `accession`, `accession_aux` y `filed`. Es la
+condición para que tanto el lector de Historia como el PM del Arena puedan
+afirmar algo: **el dato y su documento viajan juntos, siempre.**
 
-```sql
--- Una fila por (cik, familia, trimestre), con la ÚLTIMA presentación de ese
--- periodo. `revisado` marca que hubo una anterior con otro valor: eso no se
--- esconde, es la pregunta 3.
-create or replace view company_quarterly as
-with ultima as (
-  select distinct on (cik, familia, period_end)
-         cik, familia, period_end, period_start, unit, val,
-         accession, filed, form, derived
-    from company_facts
-   where familia is not null
-     and period_class = 'Q'
-   order by cik, familia, period_end, filed desc, accession desc
-),
-conteo as (
-  select cik, familia, period_end, count(distinct val) as versiones
-    from company_facts
-   where familia is not null and period_class = 'Q'
-   group by 1, 2, 3
-)
-select u.*,
-       (c.versiones > 1) as revisado,
-       lag(u.val, 4) over (partition by u.cik, u.familia order by u.period_end) as val_hace_un_anio,
-       case when lag(u.val, 4) over (partition by u.cik, u.familia order by u.period_end) > 0
-            then round(100.0 * (u.val - lag(u.val, 4) over (partition by u.cik, u.familia order by u.period_end))
-                       / lag(u.val, 4) over (partition by u.cik, u.familia order by u.period_end), 1)
-       end as yoy_pct
-  from ultima u
-  join conteo c using (cik, familia, period_end);
-```
+**Este PR no toca el Arena.** La vista se crea y queda ahí; quién la conecte al
+PM es otra decisión y otro PR.
 
-Cada fila que sale de ahí trae `accession` y `filed`. Es la condición para que
-tanto el lector de Historia como el PM del Arena puedan afirmar algo: **el dato
-y su documento viajan juntos, siempre.**
+### La regla del 20-F, ejecutable
 
-**Este PR no toca el Arena.** La vista se crea en la Fase A y queda ahí; quién
-la conecte al PM es otra decisión y otro PR.
+`company_cobertura` expone `cuenta_para_cobertura`, que es la enmienda de §4
+escrita **una sola vez**: el emisor extranjero sale del **cálculo de cobertura**,
+no del módulo. Se ingiere, se muestra y se etiqueta "cobertura parcial" (§8).
+Quien mida cobertura filtra por esa columna en vez de reimplementar el criterio
+—que es como aparecieron dos versiones de él la primera vez.
 
 ---
 
