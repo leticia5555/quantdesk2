@@ -54,6 +54,9 @@
     "api/historia-harvest.js": {
       "maxDuration": 300
     },
+    "api/mercado-censo.js": {
+      "maxDuration": 300
+    },
     "api/*.js": {
       "maxDuration": 60
     }

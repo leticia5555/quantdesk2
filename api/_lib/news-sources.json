@@ -1,0 +1,291 @@
+{
+  "_doc": "Registro de fuentes de noticias de /mercado. Lo consume el punto 0.10 de la Fase 0 (api/mercado-censo.js) y, cuando exista, la rebanada R3b (/mercado/noticias). Agregar una fuente = agregar una fila. Ver docs/mercado-fase0.md §3.10.",
+  "_reglas": {
+    "candidatas": "`feeds` es una LISTA DE CANDIDATAS, no una URL verificada. Ninguna se probó desde este contenedor (no tiene egress). El smoke prueba las candidatas EN ORDEN y reporta cuál contestó, o que ninguna lo hizo. Es el mismo patrón que api/vc-feed.js ya usa con latamlist/contxto (dos candidatas cada una) y el mismo que docs/historico-censo.md §3 usa para los sitios de IR: describir primero, verificar después, y marcar [NO VERIFICADO] lo que no se vio.",
+    "por_que_candidatas_y_no_una": "Una sola URL adivinada que devuelve 404 es indistinguible de una fuente que se cayó, y eso convierte un censo en un rojo falso. Con varias candidatas y el reporte de cuál respondió, un NO-GO significa 'ninguna de estas N rutas sirve', que sí es un hecho medido.",
+    "asumido_no": "Fuentes que el encargo declara NO de antemano (Bloomberg, NYT). NO se sondean: gastar requests en confirmar una decisión ya tomada no mide nada. Van en el registro para que el hueco sea explícito y nadie las vuelva a proponer.",
+    "idioma": "es | en. 'Solo español' de R3b filtra por ESTE campo, no por detección automática del titular.",
+    "tipo": "medio | newsletter | oficial.",
+    "seccion": "mercado | mexico_latam | acciones | etfs | cripto | oficiales. Es la sección POR DEFECTO; una nota con ticker puede reclasificarse a 'acciones' en R3b.",
+    "smoke": "Lo llena la corrida de /api/mercado-censo?job=todo. Hasta entonces es null: un campo vacío es 'no medido', que no es lo mismo que 'no sirve'."
+  },
+
+  "fuentes": [
+    {
+      "id": "reuters_business",
+      "nombre": "Reuters",
+      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "feeds": [
+        "https://www.reuters.com/arc/outboundfeeds/rss/category/business/?outputType=xml",
+        "https://feeds.reuters.com/reuters/businessNews"
+      ],
+      "nota": "[NO VERIFICADO] Reuters retiró sus feeds públicos clásicos (feeds.reuters.com) hace años; la ruta de arc/outboundfeeds es la que quedó y puede estar detrás de bloqueo. Candidata de alto riesgo — justo por eso se mide.",
+      "smoke": null
+    },
+    {
+      "id": "cnbc",
+      "nombre": "CNBC",
+      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "feeds": [
+        "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+        "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10001147"
+      ],
+      "nota": "[NO VERIFICADO] CNBC publica feeds por sección con ids numéricos; 100003114 es el de 'Top News' según su propia página de RSS.",
+      "smoke": null
+    },
+    {
+      "id": "marketwatch",
+      "nombre": "MarketWatch",
+      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "feeds": [
+        "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+        "https://feeds.marketwatch.com/marketwatch/topstories/"
+      ],
+      "nota": "[NO VERIFICADO] MarketWatch migró sus feeds al dominio de Dow Jones; la ruta vieja puede redirigir o morir.",
+      "smoke": null
+    },
+    {
+      "id": "wsj_markets",
+      "nombre": "WSJ (titulares)",
+      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "feeds": [
+        "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain",
+        "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"
+      ],
+      "nota": "[NO VERIFICADO] Solo titulares — el cuerpo es de paga y NUNCA se republica (regla del proyecto, no solo de WSJ).",
+      "smoke": null
+    },
+    {
+      "id": "seeking_alpha",
+      "nombre": "Seeking Alpha",
+      "idioma": "en", "tipo": "medio", "seccion": "acciones",
+      "feeds": [
+        "https://seekingalpha.com/market_currents.xml",
+        "https://seekingalpha.com/feed.xml"
+      ],
+      "nota": "[NO VERIFICADO] Candidata de riesgo alto: Seeking Alpha filtra agresivamente por user-agent e IP. Es el caso FinSMEs por excelencia.",
+      "smoke": null
+    },
+    {
+      "id": "zerohedge",
+      "nombre": "ZeroHedge",
+      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "feeds": ["https://feeds.feedburner.com/zerohedge/feed", "https://www.zerohedge.com/fullrss2.xml"],
+      "nota": "[NO VERIFICADO] Sirve de feedburner históricamente.",
+      "smoke": null
+    },
+    {
+      "id": "yahoo_finance",
+      "nombre": "Yahoo Finance",
+      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "feeds": [
+        "https://finance.yahoo.com/news/rssindex",
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC&region=US&lang=en-US"
+      ],
+      "nota": "[NO VERIFICADO] La segunda candidata es POR SÍMBOLO — si vive, R6 la puede usar para 'noticias del ticker' sin gastar cuota de Finnhub. Vale la pena medirla aunque la primera pase.",
+      "smoke": null
+    },
+
+    {
+      "id": "el_financiero",
+      "nombre": "El Financiero",
+      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
+      "feeds": ["https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/?outputType=xml", "https://www.elfinanciero.com.mx/rss/"],
+      "nota": "[NO VERIFICADO] Corre sobre Arc (misma plataforma que Reuters), de ahí la ruta de outboundfeeds.",
+      "smoke": null
+    },
+    {
+      "id": "expansion",
+      "nombre": "Expansión",
+      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
+      "feeds": ["https://expansion.mx/rss", "https://expansion.mx/rss/economia"],
+      "nota": "[NO VERIFICADO]",
+      "smoke": null
+    },
+    {
+      "id": "el_economista",
+      "nombre": "El Economista",
+      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
+      "feeds": [
+        "https://www.eleconomista.com.mx/rss/mercados.xml",
+        "https://www.eleconomista.com.mx/rss.xml",
+        "https://www.eleconomista.com.mx/arc/outboundfeeds/rss/?outputType=xml"
+      ],
+      "nota": "[NO VERIFICADO] Tres candidatas porque es la fuente MX más importante para el mapa: si alguna vive, la mitad mexicana de 'lo de hoy' deja de estar vacía.",
+      "smoke": null
+    },
+    {
+      "id": "bloomberg_linea",
+      "nombre": "Bloomberg Línea",
+      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
+      "feeds": ["https://www.bloomberglinea.com/arc/outboundfeeds/rss/?outputType=xml", "https://www.bloomberglinea.com/feed/"],
+      "nota": "[NO VERIFICADO] OJO: Bloomberg Línea NO es Bloomberg. El encargo asume NO para Bloomberg; ésta es otra empresa (Falic Media) y sí se sondea.",
+      "smoke": null
+    },
+    {
+      "id": "reuters_es",
+      "nombre": "Reuters en español",
+      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
+      "feeds": [
+        "https://www.reuters.com/arc/outboundfeeds/rss/category/world/americas/?outputType=xml",
+        "https://feeds.reuters.com/reuters/MXbusinessNews"
+      ],
+      "nota": "[NO VERIFICADO] Reuters recortó fuerte su edición en español. Si `reuters_business` falla, ésta casi seguro también — se miden las dos para poder decirlo como hecho y no como suposición.",
+      "smoke": null
+    },
+    {
+      "id": "investing_es",
+      "nombre": "Investing.com ES",
+      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
+      "feeds": ["https://es.investing.com/rss/news.rss", "https://es.investing.com/rss/market_overview.rss"],
+      "nota": "[NO VERIFICADO] Riesgo de bloqueo por IP de datacenter.",
+      "smoke": null
+    },
+    {
+      "id": "infobae_economia",
+      "nombre": "Infobae Economía",
+      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
+      "feeds": ["https://www.infobae.com/arc/outboundfeeds/rss/category/economia/?outputType=xml", "https://www.infobae.com/feeds/rss/"],
+      "nota": "[NO VERIFICADO]",
+      "smoke": null
+    },
+    {
+      "id": "la_republica_co",
+      "nombre": "La República (CO)",
+      "idioma": "es", "tipo": "medio", "seccion": "mexico_latam",
+      "feeds": ["https://www.larepublica.co/rss", "https://www.larepublica.co/rss/economia"],
+      "nota": "[NO VERIFICADO]",
+      "smoke": null
+    },
+    {
+      "id": "valor_br",
+      "nombre": "Valor (BR)",
+      "idioma": "pt", "tipo": "medio", "seccion": "mexico_latam",
+      "feeds": ["https://pox.globo.com/rss/valor/", "https://valor.globo.com/rss/"],
+      "nota": "[NO VERIFICADO] Portugués, no español: el toggle 'Solo español' de R3b la deja FUERA. Se registra con su idioma real en vez de forzarla a 'es' — el filtro tiene que poder distinguirlas.",
+      "smoke": null
+    },
+
+    {
+      "id": "stratechery",
+      "nombre": "Stratechery",
+      "idioma": "en", "tipo": "newsletter", "seccion": "mercado",
+      "feeds": ["https://stratechery.com/feed/"],
+      "nota": "[NO VERIFICADO] El feed público trae los artículos gratuitos; los de paga salen truncados. Como solo se muestra el titular, eso no cambia nada para nosotros.",
+      "smoke": null
+    },
+    {
+      "id": "doomberg",
+      "nombre": "Doomberg",
+      "idioma": "en", "tipo": "newsletter", "seccion": "mercado",
+      "feeds": ["https://doomberg.substack.com/feed"],
+      "nota": "[NO VERIFICADO] Substack sirve /feed de forma estándar.",
+      "smoke": null
+    },
+    {
+      "id": "net_interest",
+      "nombre": "Net Interest",
+      "idioma": "en", "tipo": "newsletter", "seccion": "mercado",
+      "feeds": ["https://www.netinterest.co/feed", "https://netinterest.substack.com/feed"],
+      "nota": "[NO VERIFICADO] Dominio propio sobre Substack: se prueban las dos rutas.",
+      "smoke": null
+    },
+    {
+      "id": "semianalysis",
+      "nombre": "SemiAnalysis",
+      "idioma": "en", "tipo": "newsletter", "seccion": "acciones",
+      "feeds": ["https://semianalysis.com/feed/", "https://semianalysis.substack.com/feed"],
+      "nota": "[NO VERIFICADO] Migró de Substack a sitio propio; se prueban las dos.",
+      "smoke": null
+    },
+    {
+      "id": "app_economy_insights",
+      "nombre": "App Economy Insights",
+      "idioma": "en", "tipo": "newsletter", "seccion": "acciones",
+      "feeds": ["https://www.appeconomyinsights.com/feed", "https://appeconomyinsights.substack.com/feed"],
+      "nota": "[NO VERIFICADO]",
+      "smoke": null
+    },
+    {
+      "id": "abnormal_returns",
+      "nombre": "Abnormal Returns",
+      "idioma": "en", "tipo": "newsletter", "seccion": "mercado",
+      "feeds": ["https://abnormalreturns.com/feed/"],
+      "nota": "[NO VERIFICADO] WordPress clásico.",
+      "smoke": null
+    },
+    {
+      "id": "klement",
+      "nombre": "Klement on Investing",
+      "idioma": "en", "tipo": "newsletter", "seccion": "mercado",
+      "feeds": ["https://klementoninvesting.substack.com/feed"],
+      "nota": "[NO VERIFICADO]",
+      "smoke": null
+    },
+    {
+      "id": "the_bear_cave",
+      "nombre": "The Bear Cave",
+      "idioma": "en", "tipo": "newsletter", "seccion": "acciones",
+      "feeds": ["https://thebearcave.substack.com/feed"],
+      "nota": "[NO VERIFICADO]",
+      "smoke": null
+    },
+
+    {
+      "id": "fed_fomc",
+      "nombre": "Fed (FOMC)",
+      "idioma": "en", "tipo": "oficial", "seccion": "oficiales",
+      "feeds": [
+        "https://www.federalreserve.gov/feeds/press_monetary.xml",
+        "https://www.federalreserve.gov/feeds/press_all.xml"
+      ],
+      "nota": "[NO VERIFICADO] La Fed publica feeds por tipo de comunicado; `press_monetary` es el de política monetaria.",
+      "smoke": null
+    },
+    {
+      "id": "banxico",
+      "nombre": "Banxico (política monetaria)",
+      "idioma": "es", "tipo": "oficial", "seccion": "oficiales",
+      "feeds": [
+        "https://www.banxico.org.mx/rss/rss-anuncios-politica-monetaria.xml",
+        "https://www.banxico.org.mx/publicaciones-y-prensa/anuncios-de-las-decisiones-de-politica-monetaria/rss.xml"
+      ],
+      "nota": "[NO VERIFICADO] El proyecto YA habla con Banxico por API (api/banxico.js, SIE). Si el RSS no existe, el plan B no es scrapear: es derivar los anuncios del calendario del SIE, que ya está integrado.",
+      "smoke": null
+    },
+    {
+      "id": "bmv_emisnet",
+      "nombre": "BMV emisnet (eventos relevantes)",
+      "idioma": "es", "tipo": "oficial", "seccion": "oficiales",
+      "feeds": ["https://www.bmv.com.mx/es/emisoras/eventos-relevantes/rss", "https://www.bmv.com.mx/rss/eventos-relevantes.xml"],
+      "nota": "[NO VERIFICADO] Riesgo ALTO de que no exista feed. Plan B ya probado: el proyecto lee eventos relevantes de BMV por HTML (api/bmv-inspect.js, docs/historico-censo.md). Si el RSS no existe, esto NO es un NO-GO de la sección oficiales: es un cosechador distinto, con 1 req/s de cortesía, que ya sabemos escribir.",
+      "smoke": null
+    },
+    {
+      "id": "sec_8k",
+      "nombre": "SEC EDGAR 8-K (universo)",
+      "idioma": "en", "tipo": "oficial", "seccion": "oficiales",
+      "feeds": ["https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&company=&dateb=&owner=include&count=40&output=atom"],
+      "nota": "VERIFICADO EN EL REPO: es el mismo endpoint atom (getcurrent) que api/stock-tracker.js y api/vc-feed.js ya usan en producción, cambiando el type. Requiere User-Agent identificado y techo de 10 req/s. Se filtra a los tickers del universo del lado nuestro, como pide la adenda.",
+      "ua": "sec",
+      "smoke": null
+    },
+
+    {
+      "id": "bloomberg",
+      "nombre": "Bloomberg",
+      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "feeds": [],
+      "asumido_no": "el encargo lo declara NO de antemano. No se sondea: confirmar una decisión ya tomada no mide nada.",
+      "smoke": null
+    },
+    {
+      "id": "nyt",
+      "nombre": "New York Times",
+      "idioma": "en", "tipo": "medio", "seccion": "mercado",
+      "feeds": [],
+      "asumido_no": "el encargo lo declara NO de antemano. No se sondea.",
+      "smoke": null
+    }
+  ]
+}
