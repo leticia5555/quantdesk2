@@ -11,8 +11,9 @@
 >
 > Lo que SÍ trae, y es la mitad del trabajo: el censo de **lo que ya existe en
 > el repo**, leído del código, con archivo y línea. Ahí salieron seis
-> hallazgos que cambian el tamaño de tres rebanadas (§4) — y dos de ellos
-> contradicen supuestos del encargo.
+> hallazgos que cambian el tamaño de tres rebanadas (§4) —dos de ellos
+> contradicen supuestos del encargo— y un séptimo del punto 0.10: **el repo no
+> tiene ninguna fuente de noticias de México** (§3.10).
 >
 > Fecha del reconocimiento: 2026-09-20.
 
@@ -64,7 +65,7 @@ contestaría otra pregunta.
 2. **El instrumento** — `api/mercado-censo.js`, que contesta las diez
    preguntas en una corrida desde prod, y `api/_lib/mercado-fase0.js` con toda
    la lógica de medición PURA.
-3. **El medidor, probado** — `tests/mercado-fase0.test.mjs`, 46 casos contra
+3. **El medidor, probado** — `tests/mercado-fase0.test.mjs`, 63 casos contra
    fixtures con la respuesta plantada. Sin red no se ganan los números de las
    fuentes; sí se puede probar que el instrumento mide bien. La Fase 0 del
    Congreso perdió dos corridas por un extractor que reportaba rojo sin estar
@@ -113,7 +114,7 @@ EE.UU.; y es falso para insiders.** El desarrollo está en §3 y §4.
 | 8 | Analistas + precio objetivo | **hay dos afirmaciones opuestas en el repo** | §3.8 · G8 |
 | 9 | Form 4 completo | **NO: el parser filtra a `P`** | §3.9 · G9 |
 | 10 | Smoke desde Vercel | el instrumento está listo | §6 · G10 |
-| **0.10** | **Feeds de noticias (adenda)** | **medible; falta la lista** | §3.10 · G11 |
+| **0.10** | **Feeds de noticias (adenda)** | **30 fuentes en el registro; URLs candidatas** | §3.10 · G11 |
 
 ---
 
@@ -555,71 +556,109 @@ informativo de todos se reportaría como falta de cobertura. Hay un test.
 
 ### 3.10 · Punto 0.10 (adenda) — feeds de noticias
 
-**Primero, lo que no tengo: la lista de la adenda no llegó a este
-contenedor.** Y no la invento. Escribir cinco URLs de medios mexicanos de
-memoria sería exactamente lo que la regla 2 prohíbe, con un agravante propio
-de esta pregunta: **un feed inventado que devuelve 404 se lee igual que un
-feed real que se cayó**, así que un censo con URLs adivinadas no reporta
-ignorancia — reporta un rojo falso, que es peor.
+**La lista llegó** (30 fuentes) y vive en **`api/_lib/news-sources.json`** — el
+mismo archivo que la adenda pide para R3b, así que nace acá en vez de
+duplicarse después. Agregar una fuente es agregar una fila, como pide el
+contrato.
 
-**Por eso la lista es un parámetro, no una constante.** El punto 0.10 corre
-sobre lo que le pases, sin redeploy:
+#### Lo único que hay que entender antes de leer la tabla: son CANDIDATAS
 
-```
-?feeds=eleconomista=https://…|mx , elfinanciero=https://…|mx , reuters=https://…
-```
+La adenda da **nombres de fuentes**, no URLs de feed. Y este contenedor no
+puede verificar una sola URL. Así que cada fuente entra con **una lista de
+rutas candidatas marcadas `[NO VERIFICADO]`**, y el smoke las prueba **en
+orden** hasta que una responda.
 
-`nombre=url`, separados por coma; el sufijo `|mx` marca el feed como
-mexicano. **El país se declara, nunca se adivina por el dominio** — y la
-respuesta incluye `lista_usada` y `origen_lista`, para que dos corridas con
-listas distintas no se puedan confundir al leerlas. Una entrada mal formada
-sale en `entradas_invalidas` en vez de desaparecer: un feed que falta por un
-typo se lee igual que uno que no existe.
+Eso resuelve la objeción que yo mismo puse en la versión anterior de esta
+sección ("un feed inventado que da 404 se lee igual que uno real que se
+cayó"). Con varias candidatas y el reporte de cuál ganó, un NO-GO ya no dice
+"la fuente no existe": dice **"ninguna de las N rutas probadas sirve"**, que
+sí es un hecho medido, y deja ver si el problema es la ruta o la fuente.
 
-Sin el parámetro, corre sobre `FEEDS_DEFAULT`, y el JSON lo dice con todas
-sus letras: *"NO es la lista de la adenda"*.
+No es un invento para esta fase: `vc-feed.js` ya prueba dos rutas para
+LatamList y dos para Contxto, y `docs/historico-censo.md` §3 es una tabla
+entera de sitios de IR marcados `[NO VERIFICADO]` a la espera de una corrida.
+**Describir primero, verificar después.**
 
-**Segundo, el censo de lo que hay — y es el hallazgo:**
+Las que salgan GO se congelan en el registro con su URL ganadora, y el campo
+`smoke` deja de ser `null`.
 
-| Fuente | Dónde | Qué da para "lo de hoy" |
+#### Qué mide, por fuente
+
+La adenda pregunta cuatro cosas y el censo las contesta por separado, porque
+se arreglan distinto:
+
+| Pregunta de la adenda | Cómo se mide | Por qué importa |
 |---|---|---|
-| Finnhub `company-news` | `api/news.js` | titulares **por ticker**, ventana de 14 días. Sirve para la ficha de ticker (R6), no para la portada |
-| Finnhub `/news?category=general` | **nadie lo usa todavía** | prensa financiera en inglés. El censo lista sus `source` distintas para ver si alguna es mexicana |
-| RSS de `vc-feed.js` | TechCrunch, Crunchbase News, LatamList, Contxto | **rondas de VC**, no mercado. No van en "lo de hoy" |
+| ¿tiene RSS/Atom público? | responde alguna candidata con `<item>` o `<entry>` | **Atom cuenta.** `parseRss` de `vc-feed` solo entiende `<item>`; contar solo eso habría reportado "0 items" sobre feeds sanos — un rojo inventado que cierra una puerta abierta |
+| ¿responde sin Cloudflare? | el 403 se clasifica `bloqueado_cloudflare` | Es el caso FinSMEs: responde desde una laptop y no desde una IP de datacenter. Se arregla cambiando de fuente o metiendo proxy; un 404 se arregla corrigiendo la URL |
+| ¿trae imagen? | `media:content` · `media:thumbnail` · `enclosure`, y **reporta por cuál** | R3b pone foto **solo** si el feed la trae. Un `enclosure` **sin `type`** NO se cuenta: los podcasts lo usan para audio, y una foto que resulta ser un mp3 es peor que el bloque de color que ya está previsto como caída |
+| ¿trae categoría o tickers? | `<category>` (RSS) y `term=` (Atom), con ejemplos | Si el feed ya trae categorías, la sección de R3b sale **del feed** en vez de una regla nuestra |
 
-**El repo no tiene NINGUNA fuente de noticias de México.** Ni una. R3 pide
-"titulares con hora, fuente y chips de ticker tocables; **EE.UU. y México
-mezclados**", y la mitad mexicana hoy no tiene de dónde salir. Eso es lo que
-la lista de la adenda viene a llenar, y por eso el punto 0.10 existe.
+**La imagen NO entra en el conteo de "usables", y la fecha sí.** Un feed sin
+fotos es usable, solo que más feo — R3b cae al bloque de color. Un feed sin
+`pubDate` **no** lo es: "lo de hoy" muestra la hora del titular y habría que
+inventarla. Hay un test para cada mitad de esa distinción.
 
-**Lo que G11 mide, y por qué no es "¿contesta 200?":**
+#### Bloomberg y NYT: `ASUMIDO_NO`, que no es un NO-GO
 
-1. **Items usables**, no items. La regla 3 del encargo pide titular original +
-   fuente + link. Un item sin link no se puede atribuir.
-2. **Fecha parseable en ≥90% de los items.** "Lo de hoy" muestra la hora del
-   titular; un feed sin `pubDate` obligaría a inventarla. Hay un test con un
-   feed de 10 items, títulos y links perfectos, y cero fechas: sale **rojo**.
-3. **RSS *y* Atom.** `parseRss` de `vc-feed.js` solo entiende `<item>`, y
-   media web de noticias publica Atom (`<entry>`). Contar solo `<item>`
-   reportaría "0 items" sobre un feed sano — un rojo inventado que cerraría
-   una puerta abierta. `contarItemsFeed` entiende los dos y **dice cuál
-   detectó**.
-4. **Cobertura de México aparte del total.** Tres feeds gringos vivos no
-   llenan la mitad mexicana, y un total sano lo escondería. Si la lista
-   declara feeds `mx` y **ninguno** vive, G11 sale rojo aunque sobren los
-   demás. Si la lista no declara ninguno, el censo **no concluye nada** sobre
-   México — que es distinto de concluir que está bien. Hay un test para cada
-   caso.
-5. **Un 403 de Cloudflare se nombra `bloqueado_cloudflare`**, no "no
-   disponible". `vc-feed` ya documentó que FinSMEs responde desde una laptop y
-   **no** desde una IP de Vercel. Los dos fallos se arreglan distinto —uno
-   cambiando de fuente o metiendo proxy, el otro corrigiendo una URL— así que
-   el censo los distingue. FinSMES va en la lista por defecto como **control
-   negativo**: si sale 403, el instrumento funciona; si saliera 200, cambió
-   algo y hay que releer el resto del censo con desconfianza.
+El encargo los declara NO de antemano, así que **no se sondean**: gastar
+requests en confirmar una decisión ya tomada no mide nada. Van en el registro
+con veredicto propio y **fuera del denominador**. Contarlos como NO-GO haría
+parecer que se probó algo que nunca se probó — y con 30 fuentes, dos falsos
+NO-GO mueven el porcentaje lo suficiente como para cambiar una decisión.
 
-**G11 verde:** ≥3 feeds vivos · ≥5 items usables por feed · ≥90% con fecha ·
-y si hay feeds MX declarados, al menos uno vivo.
+#### Las tres fuentes donde ya sé que el RSS puede no existir
+
+Y las tres tienen plan B **ya probado en este repo**, así que un NO-GO ahí no
+vacía la sección de oficiales:
+
+| Fuente | Riesgo | Plan B, ya en el repo |
+|---|---|---|
+| **BMV emisnet** | alto — puede no haber feed | leer eventos relevantes por HTML con 1 req/s, que es lo que `api/bmv-inspect.js` ya hace (`docs/historico-censo.md`) |
+| **Banxico** | medio | el proyecto ya habla con el SIE por API (`api/banxico.js`); los anuncios salen del calendario, no de un scrape |
+| **Reuters** (en y es) | alto — retiró sus feeds públicos hace años | ninguno. Si cae, cae; y por eso se miden las dos ediciones, para poder decirlo como hecho |
+
+**SEC EDGAR 8-K es el único VERIFICADO del registro**: es el mismo endpoint
+atom `getcurrent` que `stock-tracker.js` y `vc-feed.js` ya corren en
+producción, cambiando el `type`. Se filtra a los tickers del universo del lado
+nuestro, como pide la adenda.
+
+#### Detalles de medición que valen su línea
+
+- **Timeout de 5 s por candidata**, que es el que la adenda fija para el cron
+  de R3b. El censo mide bajo la condición en la que el producto va a correr,
+  no bajo una más generosa: un feed que tarda 9 s es un `source_down` en
+  producción aunque el censo lo hubiera esperado.
+- **Si la candidata 1 sirve, la 2 no se pide.** Existe por si la primera
+  falla, no para completar una estadística.
+- **Valor (BR) va como `pt`, no como `es`.** El toggle "Solo español" de R3b
+  filtra por el idioma **declarado**, y forzarla a `es` metería portugués en
+  un filtro que promete español. Hay un test.
+- **Bloomberg Línea NO es Bloomberg.** Es otra empresa y sí se sondea; el
+  registro lo dice para que nadie la borre por confusión.
+
+#### G11, y qué pasa si sale rojo
+
+**Verde:** ≥3 fuentes GO · **al menos una en español** · y ninguna de las
+cuatro secciones del layout de R3b (`mercado`, `mexico_latam`, `acciones`,
+`oficiales`) sin fuentes.
+
+Las tres condiciones son independientes a propósito. Cuatro fuentes gringas
+vivas pasan el conteo y dejan **vacía** la mitad mexicana de "lo de hoy" y el
+toggle "Solo español"; y una sección sin fuentes no es un detalle estético,
+es **una pestaña que se abre en blanco**. Hay un test para cada caso.
+
+Si sale rojo: R3 se recorta a la mitad estadounidense y la mexicana espera una
+fuente. **No se traduce prensa gringa para fingir cobertura de México** — el
+encargo ya prohíbe la reescritura, y traducir para llenar un hueco sería la
+misma trampa con otro nombre.
+
+#### El canal de Finnhub, medido aparte
+
+`/news?category=general` no es un feed y no compite con los del registro, pero
+es lo único de noticias generales que el repo puede pedir hoy. El censo lista
+sus `source` distintas para poder ver **si alguna es mexicana** — y ya
+adelanto la sospecha: es prensa financiera en inglés.
 
 ---
 
@@ -658,7 +697,7 @@ auto-contenido.
 | **G8** | analistas | `recommendation` devuelve filas | el bloque de analistas entero va punteado |
 | **G9** | Form 4 | ≥4 códigos distintos · "le quedan" en el 100% · hora de aceptación en el 100% | **es el resultado esperado** (§3.9): R5 se replantea como pipeline y se re-estima |
 | **G10** | smoke | los 9 de la muestra con precio y serie | se diagnostica símbolo por símbolo antes de tocar UI |
-| **G11** | feeds (0.10) | ≥3 feeds vivos · ≥5 items usables c/u · ≥90% con fecha · ≥1 feed MX vivo si se declaró alguno | R3 se recorta a la mitad estadounidense y la mexicana espera una fuente. **No** se traduce prensa gringa para fingir cobertura de México |
+| **G11** | feeds (0.10) | ≥3 fuentes GO · ≥1 en español · ninguna sección de R3b vacía. Por feed: ≥5 items usables y ≥90% con fecha | R3 se recorta a la mitad estadounidense y la mexicana espera una fuente. **No** se traduce prensa gringa para fingir cobertura de México. Las fuentes con plan B (BMV, Banxico) pasan a cosechador propio |
 
 **Una compuerta AUSENTE no cuenta como verde: cuenta como `sin_medir`, y con
 una sin medir el veredicto global no puede ser GO.** Es la diferencia entre
@@ -673,9 +712,10 @@ test.
 
 | Archivo | Qué es | Líneas |
 |---|---|---|
-| `api/_lib/mercado-fase0.js` | el medidor: **todo puro**, sin fetch, sin DB, sin `Date.now()` escondido | 726 |
-| `api/mercado-censo.js` | el endpoint que corre desde prod y contesta las 10 + el punto 0.10 | 708 |
-| `tests/mercado-fase0.test.mjs` | 46 casos contra fixtures con la respuesta plantada | 601 |
+| `api/_lib/mercado-fase0.js` | el medidor: **todo puro**, sin fetch, sin DB, sin `Date.now()` escondido | 886 |
+| `api/mercado-censo.js` | el endpoint que corre desde prod y contesta las 10 + el punto 0.10 | 710 |
+| `tests/mercado-fase0.test.mjs` | 63 casos contra fixtures con la respuesta plantada | 804 |
+| `api/_lib/news-sources.json` | el registro de las 30 fuentes de la adenda, con candidatas `[NO VERIFICADO]`. **Es el mismo archivo que R3b consume** | 30 fuentes |
 | `vercel.json` | `maxDuration: 300` para el endpoint (el glob de 60 s no alcanza — la lección de `arena-smoke`) | +3 |
 
 **Cero cambios a `app.html`.** Cero UI. Cero llamadas de IA. El endpoint no
@@ -684,15 +724,15 @@ escribe una sola fila, ni siquiera cachés.
 ### 6.2 Cómo se corre
 
 ```bash
-# las diez preguntas + el punto 0.10, CON la lista de la adenda
-curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" --get \
-  --data-urlencode "job=todo" \
-  --data-urlencode "feeds=eleconomista=https://…|mx,elfinanciero=https://…|mx,reuters=https://…" \
-  "https://quantdesk2.vercel.app/api/mercado-censo" | jq
-
-# sin la lista: corre igual, y el JSON avisa que el 0.10 midió otra cosa
+# las diez preguntas + el punto 0.10 sobre las 30 fuentes del registro
 curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" \
   "https://quantdesk2.vercel.app/api/mercado-censo?job=todo" | jq
+
+# ¿una ruta candidata nueva, sin redeploy? (anulación ad-hoc del registro)
+curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" --get \
+  --data-urlencode "job=smoke" \
+  --data-urlencode "feeds=eleconomista=https://otra-ruta.xml|mx" \
+  "https://quantdesk2.vercel.app/api/mercado-censo" | jq .q11_feeds_noticias
 
 # solo Neon (rápido, sin gastar cuota de Finnhub)
 curl -sS -H "x-admin-key: $ARENA_ADMIN_KEY" \
@@ -859,8 +899,13 @@ Lo que esta Fase 0 agrega a esa lista:
    TRACKER.
 9. **Las dos suites rojas pre-existentes no se tocan** (Lety, §10). Quedan
    documentadas y fuera del alcance de este encargo.
-10. **El punto 0.10 corre con la lista de la adenda vía `?feeds=`**, y el país
-    de cada feed se declara, nunca se adivina (§3.10).
+10. **Las fuentes de noticias viven en `api/_lib/news-sources.json`**, un
+    registro con idioma, tipo, sección y el resultado de su smoke. Agregar una
+    fuente es agregar una fila — el mismo archivo para la Fase 0 y para R3b.
+11. **El idioma de una fuente se declara, nunca se detecta del titular.**
+    Valor (BR) queda como `pt` y fuera del toggle "Solo español".
+12. **R3b entra entre R3 y R4** (§11.1), y "lo de hoy" (R3) y "noticias del
+    ticker" (R6) leen de su tabla.
 
 ---
 
@@ -888,18 +933,16 @@ Lo que esta Fase 0 agrega a esa lista:
 | G8 | verde en `recommendation`; precio objetivo, incógnita | baja |
 | G9 | **rojo** — es el hallazgo de §3.9 | muy alta |
 | G10 | verde | alta |
-| G11 | **depende de la lista.** Con `FEEDS_DEFAULT` predigo verde en los 3 de VC y 403 en el control negativo; con la lista de la adenda, no tengo base para predecir | — |
+| G11 | **verde en el conteo, con bajas.** Predigo GO en las newsletters (Substack sirve `/feed` parejo) y en Fed y SEC; NO-GO en Reuters (retiró sus feeds) y riesgo alto de Cloudflare en Seeking Alpha e Investing. La incógnita que decide es **El Economista**: si vive, la mitad mexicana existe | media |
 
 Un NO-GO en G1, G2 y G9 **no cancela nada**: las tres tienen su rama escrita en
 §5. Lo que cambia es el orden y el tamaño de R1 y R5, que es exactamente para
 lo que sirve una Fase 0.
 
-**Sobre G11 no predigo nada**, y quiero que quede escrito por qué: no tengo la
-lista de la adenda, y una predicción sobre feeds que no conozco no sería una
-predicción sino un relleno. Si corrés sin `?feeds=`, el JSON va a decir
-`origen_lista: "FEEDS_DEFAULT del repo (NO es la lista de la adenda)"` y G11
-va a estar midiendo el canal RSS, no las fuentes de noticias del producto —
-sigue siendo útil (dice si Vercel puede leer RSS), pero no es la pregunta.
+**Sobre G11, la predicción vale poco y conviene saberlo:** las URLs son
+candidatas, así que un NO-GO puede ser la ruta y no la fuente. Por eso el
+resultado que importa de esa tabla no es el conteo sino **cuáles rutas
+ganaron** — eso es lo que se congela en el registro y lo que R3b va a usar.
 
 ---
 
@@ -909,7 +952,7 @@ La regla 10 del encargo pide "suite `node --test` verde" al cierre de cada
 rebanada. **Hoy la suite no está verde**, y no por nada de esta fase. Medido
 antes y después de tocar nada, el resultado es idéntico: **106 de 108 suites
 en verde**, las mismas dos rojas en los dos casos. La 108 es la nueva de esta
-fase, y pasa 46/46.
+fase, y pasa 63/63.
 
 ### 10.1 · El candado de `DELETE`
 
@@ -966,12 +1009,46 @@ estimación hecha antes de la corrida.
 | R1 mapa | ~16 h | **24–30 h** | +tabla de universo con sector, +YTD, +cron de precios. El treemap es la parte fácil |
 | R2 mundo + pesos | ~10 h | **8–12 h** | `/api/macro-markets` ya trae los índices; falta USD/MXN y el chip por bolsa |
 | R3 tablas + noticias | ~12 h | **10–14 h** | casi todo ya existe (movers, calendario, news, Arena) |
+| **R3b noticias (adenda)** | — | **22–30 h** | ver §11.1 |
 | R4 ficha de índice | ~12 h | **12–16 h** | el modal y las velas están; los componentes por peso no |
 | R5 insiders | ~14 h | **30–40 h** | §3.9. Pipeline nuevo: parser + tabla + cron + backfill |
 | R6 ficha de ticker | ~20 h | **16–22 h** | −retorno total, −UPA (ya están); +analistas y valuación |
 | R7 compartir | ~8 h | **8–10 h** | OG image + PNG, sin sorpresas a la vista |
 
 **Lo que más mueve la aguja es R5**, y por eso el censo se detuvo tanto ahí.
+
+### 11.1 · R3b — qué es 22–30 h y qué NO lo es
+
+La adenda la describe como "el mismo mecanismo que `api/vc-feed.js`,
+generalizado". Eso es exacto, y por eso el número no es más grande: el parser
+de RSS, el patrón de caché doble, la honestidad de fuente caída y la regla de
+"solo titular + link, nunca el cuerpo" **ya están escritos y en producción**.
+Lo que falta es real pero acotado:
+
+| Pieza | Horas | Nota |
+|---|---|---|
+| Cosechador sobre el registro + tabla en Neon + cron de 10 min | 6–8 | `vc-feed` cosecha a memoria; R3b necesita persistir, porque "lo de hoy" y R6 leen de ahí |
+| Dedupe por URL canónica + titular normalizado | 3–4 | la parte que se subestima: la misma nota llega por 4 feeds con 4 URLs de tracking distintas |
+| Chips de ticker por coincidencia + lista de exclusión | 3–4 | sin IA, como pide la adenda. La lista de exclusión (AI, IT, NOW, ALL, ON, CAR…) es el trabajo fino |
+| Layout desktop (6 secciones, 2 toggles, chips, buscador) + móvil | 8–12 | la parte grande, y la que depende de cuántas secciones tengan fuentes (§3.10) |
+| Fotos con caída a bloque de color | 2 | el `<img>` con `onerror` al bloque; sin scrapear `og:image`, como pide la adenda |
+
+**Tres avisos que salen del censo y conviene tener antes de empezar:**
+
+1. **El layout depende de G11.** Si `acciones` o `oficiales` quedan sin
+   fuentes, esas pestañas abren en blanco. El censo las cuenta justamente
+   para poder decidir el layout **antes** de maquetarlo, no después.
+2. **Las fotos dependen de cuántas fuentes traigan `media:content`.** Si
+   ninguna trae, las 4 destacadas salen como bloque de color y el diseño
+   cambia de carácter. `fuentes_con_foto` en el JSON del censo contesta eso.
+3. **El dedupe es el riesgo escondido.** Reuters, Investing y El Economista
+   publican la misma nota de agencia; sin dedupe, "lo de hoy" se llena de
+   repetidos y parece roto. La adenda ya lo pide por URL canónica **y**
+   titular normalizado — las dos, porque la canónica sola no atrapa la misma
+   nota republicada por otro medio.
+
+**Fuera de v1, confirmado por la adenda:** reescritura en tu voz, resumen por
+IA, "por qué se mueve", traducción, y scrapeo de `og:image`.
 
 ---
 

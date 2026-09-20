@@ -22,9 +22,11 @@ import {
   presupuestoPrecios, censoRetornoTotal, anclaYtd,
   coberturaMetric, ventanaUpa, proximoReporte,
   coberturaCompanyFacts, censoForm4,
-  contarItemsFeed, veredictoFeed, censoFeeds, tablero,
+  contarItemsFeed, veredictoFeed, censoFeeds,
+  veredictoFuente, tablaFuentes, tablero,
 } from '../api/_lib/mercado-fase0.js';
-import { parseFeedsParam } from '../api/mercado-censo.js';
+import { parseFeedsParam, fuenteAdHoc } from '../api/mercado-censo.js';
+import FUENTES from '../api/_lib/news-sources.json' with { type: 'json' };
 
 // Reloj fijo para todo el archivo. Nada acá mide la hora en que corrió.
 const AHORA = new Date(Date.UTC(2026, 8, 20, 12, 0, 0));   // 20-sep-2026 12:00Z
@@ -564,6 +566,207 @@ test('0.10: una entrada mal formada se REPORTA, no se descarta en silencio', () 
 test('0.10: sin parámetro, la lista es null y el endpoint cae al default declarado', () => {
   assert.equal(parseFeedsParam(undefined).feeds, null);
   assert.equal(parseFeedsParam('  ').feeds, null);
+});
+
+// ───────── punto 0.10 · imagen, categoría y tabla por fuente ────────
+
+test('0.10: media:content cuenta como imagen; un enclosure de AUDIO no', () => {
+  // R3b pone foto SOLO si el feed la trae. Un enclosure sin type lo usan los
+  // podcasts para audio: contarlo pintaría un <img> roto, que es peor que el
+  // bloque de color que ya está previsto como caída.
+  const xml = feedRss([
+    `<item><title>A</title><link>https://x/a</link><pubDate>${FECHA_RSS}</pubDate>`
+      + '<media:content url="https://i/1.jpg" type="image/jpeg"/></item>',
+    `<item><title>B</title><link>https://x/b</link><pubDate>${FECHA_RSS}</pubDate>`
+      + '<enclosure url="https://a/x.mp3" type="audio/mpeg"/></item>',
+    `<item><title>C</title><link>https://x/c</link><pubDate>${FECHA_RSS}</pubDate>`
+      + '<enclosure url="https://i/2.jpg" type="image/jpeg"/></item>',
+    `<item><title>D</title><link>https://x/d</link><pubDate>${FECHA_RSS}</pubDate>`
+      + '<media:thumbnail url="https://i/3.jpg"/></item>',
+  ]);
+  const m = contarItemsFeed(xml);
+  assert.equal(m.items, 4);
+  assert.equal(m.con_imagen, 3);
+  assert.deepEqual(m.vias_imagen, { 'media:content': 1, 'enclosure': 1, 'media:thumbnail': 1 });
+  assert.equal(m.pct_con_imagen, 75);
+});
+
+test('0.10: un enclosure SIN type no se cuenta como imagen', () => {
+  const xml = feedRss([`<item><title>A</title><link>https://x/a</link><pubDate>${FECHA_RSS}</pubDate>`
+    + '<enclosure url="https://algo/sin-extension"/></item>']);
+  assert.equal(contarItemsFeed(xml).con_imagen, 0);
+});
+
+test('0.10: la imagen NO entra en "usables" — R3b ya tiene su caída', () => {
+  // Un feed sin fotos es usable, solo que más feo (bloque de color con la
+  // fuente). Un feed sin FECHA no lo es. La distinción tiene que estar en el
+  // número, no solo en el comentario.
+  const xml = feedRss(Array.from({ length: 6 }, (_, i) =>
+    itemRss(`T${i}`, `https://x/${i}`, FECHA_RSS)));
+  const m = contarItemsFeed(xml);
+  assert.equal(m.con_imagen, 0);
+  assert.equal(m.usables, 6);
+});
+
+test('0.10: categorías en RSS (<category>) y en Atom (term=)', () => {
+  const rss = contarItemsFeed(feedRss([
+    `<item><title>A</title><link>https://x/a</link><pubDate>${FECHA_RSS}</pubDate>`
+      + '<category>Markets</category><category>Earnings</category></item>',
+    `<item><title>B</title><link>https://x/b</link><pubDate>${FECHA_RSS}</pubDate></item>`,
+  ]));
+  assert.equal(rss.con_categoria, 1);
+  assert.equal(rss.pct_con_categoria, 50);
+  assert.deepEqual(rss.categorias_ejemplo, ['Markets', 'Earnings']);
+
+  const atom = contarItemsFeed('<feed><entry><title>A</title><link href="https://x/a"/>'
+    + '<updated>2026-09-19T10:00:00Z</updated><category term="Tech"/></entry></feed>');
+  assert.equal(atom.con_categoria, 1);
+  assert.deepEqual(atom.categorias_ejemplo, ['Tech']);
+});
+
+test('0.10: una fuente con 2 candidatas — la 1 muere, la 2 gana, y se reportan las dos', () => {
+  const fuente = { id: 'x', nombre: 'X', idioma: 'es', tipo: 'medio', seccion: 'mexico_latam',
+    feeds: ['https://x/viejo.xml', 'https://x/nuevo.xml'] };
+  const bueno = feedRss(Array.from({ length: 6 }, (_, i) => itemRss(`T${i}`, `https://x/${i}`, FECHA_RSS)));
+  const v = veredictoFuente(fuente, [
+    { url: 'https://x/viejo.xml', resp: { ok: false, status: 404, ms: 20, texto: 'Not Found' } },
+    { url: 'https://x/nuevo.xml', resp: { ok: true, status: 200, ms: 90, texto: bueno } },
+  ]);
+  assert.equal(v.veredicto, 'GO');
+  assert.equal(v.feed, 'https://x/nuevo.xml');
+  assert.equal(v.candidatas.length, 2);
+  assert.equal(v.candidatas[0].vivo, false);
+  assert.equal(v.candidatas[1].vivo, true);
+});
+
+test('0.10: si ninguna candidata sirve, el NO-GO dice CUÁNTAS se probaron', () => {
+  // "Ninguna de las 3 rutas sirve" es un hecho. "Probé una URL adivinada" no
+  // lo sería, y el motivo tiene que dejar ver la diferencia.
+  const fuente = { id: 'y', nombre: 'Y', idioma: 'en', tipo: 'medio', seccion: 'mercado',
+    feeds: ['https://y/1', 'https://y/2', 'https://y/3'] };
+  const muerta = (u) => ({ url: u, resp: { ok: false, status: 404, ms: 5, texto: '' } });
+  const v = veredictoFuente(fuente, [muerta('https://y/1'), muerta('https://y/2'), muerta('https://y/3')]);
+  assert.equal(v.veredicto, 'NO-GO');
+  assert.match(v.motivo, /ninguna de las 3 candidatas/);
+  assert.equal(v.bloqueado_cloudflare, false);
+});
+
+test('0.10: Cloudflare se propaga al veredicto de la fuente', () => {
+  const v = veredictoFuente(
+    { id: 'sa', nombre: 'Seeking Alpha', idioma: 'en', tipo: 'medio', seccion: 'acciones', feeds: ['https://sa/x'] },
+    [{ url: 'https://sa/x', resp: { ok: false, status: 403, ms: 30, texto: '<title>Just a moment...</title>' } }]);
+  assert.equal(v.veredicto, 'NO-GO');
+  assert.equal(v.bloqueado_cloudflare, true);
+});
+
+test('0.10: ASUMIDO_NO no es un NO-GO medido — y no se sondea', () => {
+  // Bloomberg y NYT los declara NO el encargo. Contarlos como NO-GO haría
+  // parecer que se probó algo que nunca se probó.
+  const v = veredictoFuente(
+    { id: 'bbg', nombre: 'Bloomberg', idioma: 'en', tipo: 'medio', seccion: 'mercado',
+      feeds: [], asumido_no: 'el encargo lo declara NO de antemano' }, []);
+  assert.equal(v.veredicto, 'ASUMIDO_NO');
+  assert.equal(v.candidatas.length, 0);
+
+  const t = tablaFuentes([v]);
+  assert.equal(t.asumidas_no, 1);
+  assert.equal(t.medidas, 0);
+  assert.equal(t.no_go, 0);
+});
+
+test('0.10: la tabla avisa qué secciones de R3b quedarían VACÍAS', () => {
+  // Una sección sin fuentes no es un detalle estético: es una pestaña que se
+  // abre en blanco.
+  const go = (id, seccion, idioma, pctImg) => ({
+    id, nombre: id, tipo: 'medio', seccion, idioma, veredicto: 'GO', pct_con_imagen: pctImg,
+  });
+  const t = tablaFuentes([
+    go('a', 'mercado', 'en', 90), go('b', 'mercado', 'en', 10), go('c', 'mexico_latam', 'es', 80),
+  ]);
+  assert.equal(t.go, 3);
+  assert.deepEqual(t.secciones_vacias, ['acciones', 'oficiales']);
+  assert.equal(t.fuentes_con_foto, 2);
+  assert.equal(t.verde, false);
+  assert.match(t.razones.join(' '), /secciones de R3b sin ninguna fuente/);
+});
+
+test('0.10: sin NINGUNA fuente en español, G11 es rojo aunque sobren las gringas', () => {
+  const go = (id, seccion) => ({ id, nombre: id, tipo: 'medio', seccion, idioma: 'en', veredicto: 'GO', pct_con_imagen: 90 });
+  const t = tablaFuentes([go('a', 'mercado'), go('b', 'acciones'), go('c', 'oficiales'), go('d', 'mexico_latam')]);
+  assert.equal(t.go, 4);
+  assert.deepEqual(t.secciones_vacias, []);
+  assert.equal(t.verde, false);
+  assert.match(t.razones.join(' '), /ninguna fuente en español/);
+});
+
+test('0.10: una tabla completa y en español sale verde', () => {
+  const go = (id, seccion, idioma) => ({ id, nombre: id, tipo: 'medio', seccion, idioma, veredicto: 'GO', pct_con_imagen: 70 });
+  const t = tablaFuentes([
+    go('a', 'mercado', 'en'), go('b', 'acciones', 'en'),
+    go('c', 'mexico_latam', 'es'), go('d', 'oficiales', 'es'),
+  ]);
+  assert.ok(t.verde, t.razones.join(' · '));
+  assert.deepEqual(t.por_idioma, { en: 2, es: 2 });
+});
+
+// ───────────── el registro de fuentes (news-sources.json) ───────────
+
+test('registro: están las 30 fuentes de la adenda, con Bloomberg y NYT asumidas NO', () => {
+  const f = FUENTES.fuentes;
+  assert.equal(f.length, 30);
+  const asumidas = f.filter((x) => x.asumido_no).map((x) => x.nombre).sort();
+  assert.deepEqual(asumidas, ['Bloomberg', 'New York Times']);
+  // Y las asumidas NO no llevan candidatas: sondearlas sería gastar requests
+  // en confirmar una decisión ya tomada.
+  for (const x of f.filter((y) => y.asumido_no)) assert.deepEqual(x.feeds, []);
+});
+
+test('registro: toda fuente sondeable tiene id único, idioma, tipo, sección y candidatas', () => {
+  const ids = new Set();
+  const TIPOS = new Set(['medio', 'newsletter', 'oficial']);
+  const SECCIONES = new Set(['mercado', 'mexico_latam', 'acciones', 'etfs', 'cripto', 'oficiales']);
+  for (const f of FUENTES.fuentes) {
+    assert.ok(f.id && !ids.has(f.id), `id duplicado o ausente: ${f.id}`);
+    ids.add(f.id);
+    assert.ok(f.nombre, `sin nombre: ${f.id}`);
+    assert.ok(TIPOS.has(f.tipo), `tipo inválido en ${f.id}: ${f.tipo}`);
+    assert.ok(SECCIONES.has(f.seccion), `sección inválida en ${f.id}: ${f.seccion}`);
+    assert.ok(f.idioma, `sin idioma: ${f.id}`);
+    assert.ok(Object.prototype.hasOwnProperty.call(f, 'smoke'), `sin campo smoke: ${f.id}`);
+    if (!f.asumido_no) {
+      assert.ok(Array.isArray(f.feeds) && f.feeds.length, `sin candidatas: ${f.id}`);
+      for (const u of f.feeds) assert.match(u, /^https:\/\//, `candidata no https en ${f.id}: ${u}`);
+    }
+  }
+});
+
+test('registro: el smoke arranca en null — "no medido" no es "no sirve"', () => {
+  for (const f of FUENTES.fuentes) assert.equal(f.smoke, null, `${f.id} ya trae resultado de smoke`);
+});
+
+test('registro: hay fuentes en español, y Valor va como pt (el filtro tiene que distinguirlas)', () => {
+  const es = FUENTES.fuentes.filter((f) => f.idioma === 'es');
+  assert.ok(es.length >= 6, `solo ${es.length} fuentes en español`);
+  const valor = FUENTES.fuentes.find((f) => f.id === 'valor_br');
+  assert.equal(valor.idioma, 'pt');
+});
+
+test('registro: las cuatro secciones del layout de R3b tienen fuentes candidatas', () => {
+  const sondeables = FUENTES.fuentes.filter((f) => !f.asumido_no);
+  for (const sec of ['mercado', 'mexico_latam', 'acciones', 'oficiales']) {
+    assert.ok(sondeables.some((f) => f.seccion === sec), `ninguna candidata para la sección ${sec}`);
+  }
+});
+
+test('registro: una entrada de ?feeds= se convierte en fuente con idioma y sección coherentes', () => {
+  const mx = fuenteAdHoc({ nombre: 'eco', url: 'https://x.mx/rss', pais: 'mx' });
+  assert.equal(mx.idioma, 'es');
+  assert.equal(mx.seccion, 'mexico_latam');
+  assert.deepEqual(mx.feeds, ['https://x.mx/rss']);
+
+  const us = fuenteAdHoc({ nombre: 'reu', url: 'https://r.com/feed', pais: 'us' });
+  assert.equal(us.idioma, 'en');
+  assert.equal(us.seccion, 'mercado');
 });
 
 // ────────────────────────── el tablero ──────────────────────────────

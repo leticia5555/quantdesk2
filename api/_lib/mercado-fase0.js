@@ -615,23 +615,79 @@ export function contarItemsFeed(xml) {
     const m = new RegExp(`<${t}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${t}>`, 'i').exec(b);
     return m ? m[1].trim() : '';
   };
-  let conTitulo = 0, conLink = 0, conFecha = 0;
+  let conTitulo = 0, conLink = 0, conFecha = 0, conImagen = 0, conCategoria = 0;
+  const viasImagen = {}, ejemplosCategoria = new Set();
   for (const b of bloques) {
     if (tag(b, 'title')) conTitulo++;
     // Atom pone el link en un atributo href, RSS en el texto del tag.
     if (tag(b, 'link') || /<link[^>]*href="[^"]+"/i.test(b)) conLink++;
     const fecha = tag(b, 'pubDate') || tag(b, 'updated') || tag(b, 'published') || tag(b, 'dc:date');
     if (fecha && Number.isFinite(Date.parse(fecha))) conFecha++;
+
+    // ── IMAGEN (punto 0.10 de la adenda) ─────────────────────────────
+    // R3b pone foto SOLO si el feed la trae; si no, bloque de color. O sea
+    // que este conteo decide cuántas de las 4 destacadas pueden llevar
+    // foto de verdad. Se buscan las tres formas que se usan en la práctica,
+    // y se reporta CUÁL — porque `enclosure` puede traer un audio o un PDF
+    // y contarlo como imagen pintaría un <img> roto.
+    let via = null;
+    const mc = /<media:content[^>]*\burl\s*=\s*"([^"]+)"[^>]*>/i.exec(b);
+    if (mc && /^https?:/i.test(mc[1])) {
+      const tipo = /\btype\s*=\s*"([^"]+)"/i.exec(mc[0]);
+      const medium = /\bmedium\s*=\s*"([^"]+)"/i.exec(mc[0]);
+      // Sin type ni medium se acepta: media:content sin atributos es, en la
+      // práctica, siempre la imagen del artículo.
+      if (!tipo && !medium) via = 'media:content';
+      else if ((tipo && /^image\//i.test(tipo[1])) || (medium && /^image$/i.test(medium[1]))) via = 'media:content';
+    }
+    if (!via) {
+      const mt = /<media:thumbnail[^>]*\burl\s*=\s*"([^"]+)"/i.exec(b);
+      if (mt && /^https?:/i.test(mt[1])) via = 'media:thumbnail';
+    }
+    if (!via) {
+      const en = /<enclosure[^>]*>/i.exec(b);
+      if (en) {
+        const url = /\burl\s*=\s*"([^"]+)"/i.exec(en[0]);
+        const tipo = /\btype\s*=\s*"([^"]+)"/i.exec(en[0]);
+        // Un enclosure SIN type no se cuenta: los podcasts lo usan para
+        // audio, y una foto que resulta ser un mp3 es peor que no tener foto.
+        if (url && /^https?:/i.test(url[1]) && tipo && /^image\//i.test(tipo[1])) via = 'enclosure';
+      }
+    }
+    if (via) { conImagen++; viasImagen[via] = (viasImagen[via] || 0) + 1; }
+
+    // ── CATEGORÍA / TICKERS (punto 0.10 de la adenda) ────────────────
+    // R3b clasifica por sección y marca chips de ticker. Si el feed ya trae
+    // categorías, la sección sale del feed en vez de una regla nuestra.
+    const cats = [...b.matchAll(/<category(?:\s[^>]*)?>([\s\S]*?)<\/category>/gi)]
+      .map((m) => m[1].trim()).filter(Boolean);
+    const catsAttr = [...b.matchAll(/<category[^>]*\bterm\s*=\s*"([^"]+)"/gi)]
+      .map((m) => m[1].trim()).filter(Boolean);   // Atom
+    const todas = [...cats, ...catsAttr];
+    if (todas.length) {
+      conCategoria++;
+      for (const c of todas.slice(0, 3)) if (ejemplosCategoria.size < 15) ejemplosCategoria.add(c.slice(0, 40));
+    }
   }
   const n = bloques.length;
+  const pct = (x) => (n ? Math.round((x / n) * 1000) / 10 : 0);
   return {
     dialecto,
     items: n,
     con_titulo: conTitulo,
     con_link: conLink,
     con_fecha: conFecha,
-    pct_con_fecha: n ? Math.round((conFecha / n) * 1000) / 10 : 0,
-    // Usable = lo que la regla 3 puede pintar sin inventar nada.
+    pct_con_fecha: pct(conFecha),
+    con_imagen: conImagen,
+    pct_con_imagen: pct(conImagen),
+    vias_imagen: viasImagen,
+    con_categoria: conCategoria,
+    pct_con_categoria: pct(conCategoria),
+    categorias_ejemplo: [...ejemplosCategoria],
+    // Usable = lo que la regla 3 puede pintar sin inventar nada. La imagen NO
+    // entra: R3b ya tiene su caída (bloque de color con la fuente), así que un
+    // feed sin fotos es usable, solo que más feo. La fecha sí entra: sin hora,
+    // "lo de hoy" tendría que inventarla.
     usables: Math.min(conTitulo, conLink, conFecha),
   };
 }
@@ -667,6 +723,110 @@ export function veredictoFeed(nombre, url, resp) {
   if (m.items < CRITERIOS.g11_min_items_por_feed) razones.push(`${m.items} items (piso ${CRITERIOS.g11_min_items_por_feed})`);
   if (m.pct_con_fecha < CRITERIOS.g11_min_pct_con_fecha) razones.push(`solo ${m.pct_con_fecha}% de los items trae fecha parseable (piso ${CRITERIOS.g11_min_pct_con_fecha}%) — "lo de hoy" no puede mostrar la hora`);
   return { ...base, vivo: razones.length === 0, ...m, motivo: razones.length ? razones.join(' · ') : null };
+}
+
+/**
+ * Veredicto de una FUENTE del registro, que puede tener varias candidatas.
+ *
+ * `intentos` = [{ url, resp }] en el orden en que se probaron. Gana la
+ * primera que esté viva, y se reportan TODAS — porque "la candidata 1 dio 404
+ * y la 2 funcionó" es información que hay que guardar en el registro, no
+ * descubrir otra vez el mes que viene.
+ *
+ * Una fuente `asumido_no` no se sondea y sale con veredicto propio: no es un
+ * NO-GO medido, es una decisión, y mezclarlas haría parecer que se probó algo
+ * que nunca se probó.
+ */
+export function veredictoFuente(fuente, intentos = []) {
+  const base = {
+    id: fuente.id, nombre: fuente.nombre, idioma: fuente.idioma,
+    tipo: fuente.tipo, seccion: fuente.seccion,
+  };
+  if (fuente.asumido_no) {
+    return { ...base, veredicto: 'ASUMIDO_NO', motivo: fuente.asumido_no, feed: null, candidatas: [] };
+  }
+  if (!intentos.length) {
+    return { ...base, veredicto: 'NO-GO', motivo: 'sin candidatas en el registro', feed: null, candidatas: [] };
+  }
+  const juzgadas = intentos.map(({ url, resp }) => veredictoFeed(fuente.id, url, resp));
+  const ganadora = juzgadas.find((j) => j.vivo) || null;
+  const candidatas = juzgadas.map((j) => ({
+    url: j.url, status: j.status, ms: j.ms, vivo: j.vivo,
+    motivo: j.motivo || undefined, pista: j.pista || undefined,
+  }));
+  if (!ganadora) {
+    return {
+      ...base, veredicto: 'NO-GO', feed: null, candidatas,
+      // El motivo agregado nombra cuántas rutas se probaron: un NO-GO de
+      // "ninguna de 3 rutas sirve" es un hecho; uno de "probé una que inventé"
+      // no lo sería.
+      motivo: `ninguna de las ${candidatas.length} candidatas respondió con un feed usable`,
+      bloqueado_cloudflare: candidatas.some((c) => c.motivo === 'bloqueado_cloudflare'),
+    };
+  }
+  return {
+    ...base, veredicto: 'GO', feed: ganadora.url, candidatas,
+    items: ganadora.items, usables: ganadora.usables,
+    pct_con_fecha: ganadora.pct_con_fecha,
+    // Las dos mediciones que pide la adenda, por fuente.
+    pct_con_imagen: ganadora.pct_con_imagen,
+    vias_imagen: ganadora.vias_imagen,
+    pct_con_categoria: ganadora.pct_con_categoria,
+    categorias_ejemplo: ganadora.categorias_ejemplo,
+    dialecto: ganadora.dialecto,
+  };
+}
+
+/**
+ * La tabla GO/NO-GO por fuente que pide la adenda, más lo que R3b necesita
+ * saber ANTES de escribirse: cuántas secciones del layout se pueden llenar y
+ * cuántas destacadas pueden llevar foto de verdad.
+ */
+export function tablaFuentes(veredictos = []) {
+  const medidas = veredictos.filter((v) => v.veredicto !== 'ASUMIDO_NO');
+  const go = medidas.filter((v) => v.veredicto === 'GO');
+
+  const porTipo = {}, porSeccion = {}, porIdioma = {};
+  for (const v of go) {
+    porTipo[v.tipo] = (porTipo[v.tipo] || 0) + 1;
+    porSeccion[v.seccion] = (porSeccion[v.seccion] || 0) + 1;
+    porIdioma[v.idioma] = (porIdioma[v.idioma] || 0) + 1;
+  }
+  // Las secciones del layout de R3b que quedarían VACÍAS. Una sección vacía no
+  // es un detalle estético: es una pestaña que se abre en blanco.
+  const SECCIONES_R3B = ['mercado', 'mexico_latam', 'acciones', 'oficiales'];
+  const seccionesVacias = SECCIONES_R3B.filter((s) => !porSeccion[s]);
+
+  // Cuántas fuentes GO traen imagen en la mayoría de sus items. R3b pone 4
+  // destacadas con foto: si ninguna fuente trae imagen, las 4 salen como
+  // bloque de color y el diseño cambia de carácter.
+  const conFoto = go.filter((v) => (v.pct_con_imagen || 0) >= 50);
+
+  const razones = [];
+  if (go.length < CRITERIOS.g11_min_feeds_vivos) {
+    razones.push(`${go.length} fuentes GO (piso ${CRITERIOS.g11_min_feeds_vivos})`);
+  }
+  if (!porIdioma.es) {
+    razones.push('ninguna fuente en español viva: la mitad mexicana de "lo de hoy" (R3) y el toggle "Solo español" (R3b) quedan vacíos');
+  }
+  if (seccionesVacias.length) {
+    razones.push(`secciones de R3b sin ninguna fuente: ${seccionesVacias.join(', ')}`);
+  }
+  return {
+    fuentes: veredictos.length,
+    medidas: medidas.length,
+    asumidas_no: veredictos.length - medidas.length,
+    go: go.length,
+    no_go: medidas.length - go.length,
+    por_tipo: porTipo, por_seccion: porSeccion, por_idioma: porIdioma,
+    secciones_vacias: seccionesVacias,
+    fuentes_con_foto: conFoto.length,
+    fuentes_con_foto_nombres: conFoto.map((v) => v.nombre),
+    bloqueadas_cloudflare: medidas.filter((v) => v.bloqueado_cloudflare).map((v) => v.nombre),
+    tabla: veredictos,
+    verde: razones.length === 0,
+    razones,
+  };
 }
 
 /** El agregado de G11 sobre los feeds ya juzgados. */
