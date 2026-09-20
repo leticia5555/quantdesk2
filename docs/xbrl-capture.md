@@ -358,10 +358,11 @@ contarse como cobertura activa.
 ### 5.3 Estado tras la 2ª corrida
 
 29/30 capturadas con 9/9 campos, ELEKTRA con su alerta `deslistada_esperado`
-correcta, sólo LASITE saltada por falta de id. *(Ese id se completó el
-20-sep-2026: la próxima corrida debería dar 30/30 y no saltar ninguna. El
-número de arriba es el que se observó entonces y se deja como quedó.)* Quedaron **dos filas guardadas con
-`fecha_publicacion` nula**: PE&OLES (doc 1579656) y MEGA (doc 1585294).
+correcta, sólo LASITE saltada por falta de id. Quedaron **dos filas guardadas
+con `fecha_publicacion` nula**: PE&OLES (doc 1579656) y MEGA (doc 1585294).
+
+*(Cifras de esa corrida, que se dejan como quedaron. El id de LASITE se
+completó después y la 3ª corrida sí dio 30/30 — §5.5.)*
 
 ### 5.4 Qué va a pasar en la próxima corrida
 
@@ -382,20 +383,61 @@ de la página que el run ya pidió.
 Si alguna **siguiera** sin fecha después de esto, la alerta va a citar el texto
 que no supo leer, y eso ya apunta directo a la tabla `MESES`.
 
+### 5.5 Estado tras la 3ª corrida: 30/30
+
+Con el id de LASITE en su lugar, el universo queda **completo y observado**, no
+sólo configurado:
+
+| | |
+|---|---:|
+| Total | **30** |
+| Ya existentes | 30 |
+| Saltadas | **0** |
+| Fallidas | **0** |
+
+`LASITE` entró con **doc 1578536**, publicado el **2026-07-30T17:31Z**, con los
+**9/9 campos**. Era la última que faltaba y no trajo sorpresas: la misma
+estructura de página que las otras 29.
+
+> Las cifras de §5.3 (29/30) se quedan como están. Son lo que se observó
+> entonces, y reescribirlas haría parecer que aquella corrida fue mejor de lo
+> que fue.
+
+#### Lo que 30/30 NO significa
+
+La serie de fechas reales tiene **un trimestre**: 2T2026. El capturador acumula
+**hacia adelante desde septiembre de 2026**, porque las páginas de BMV sirven lo
+que está publicado ahora, no un archivo.
+
+Con una fecha por emisora **no se reemplaza el rezago** de un backtest de diez
+años. Eso exige años de acumulación. Dentro de algunos años esta serie será
+suficiente para fechar los fundamentales por **publicación real** en vez de por
+una espera estimada de 65 días; hoy no lo es, y el backtest de §5.10 de
+`bmv-rotation.md` corrió con la espera estimada, no con estas fechas.
+
+Lo mismo vale para el rango observado de **23 a 59 días**: sale de ese único
+trimestre, así que es una **cota inferior de la dispersión**, no una
+distribución.
+
 ## 6. Qué me preocupa
 
 1. **El reloj.** Es el riesgo que no se arregla con código. Si el 2T2026 se cae
    antes de la primera corrida, ese trimestre hay que comprarlo. **Correr el
    smoke y el run el mismo día que leas esto** vale más que cualquier mejora al
    capturador.
-2. ~~**LASITE sigue sin id.**~~ **RESUELTO el 20-sep-2026:** id `36025`,
-   verificado en la URL real. El universo queda en **30/30 con id** y la
-   próxima corrida no debería saltar ninguna.
+2. ~~**LASITE sigue sin id.**~~ **CERRADO el 20-sep-2026:** id `36025`, y la
+   corrida siguiente dio **30/30 observado** — 0 saltadas, 0 fallidas, LASITE
+   con doc 1578536 y sus 9/9 campos (§5.5).
 
    Lo que sí sigue en pie de esa preocupación: **los trimestres que LASITE se
    perdió mientras no tuvo id no se recuperan solos.** La captura toma lo que
    la página publica hoy; los reportes viejos siguen en BMV, así que el hueco
    es recuperable, pero hay que ir por él a propósito.
+
+   Y la versión grande del mismo problema, que no es de LASITE sino de toda la
+   serie: **hay un solo trimestre capturado.** La utilidad de estas fechas
+   —fechar los fundamentales por publicación real en vez de por una espera
+   estimada— llega cuando haya años, no ahora (§5.5).
 3. **El scraping de la fila es lo frágil.** El parser del XBRL está probado
    contra archivos reales; la lectura del HTML está probada contra fixtures que
    yo escribí a partir de una descripción. Si BMV rediseña esa tabla, se rompe
