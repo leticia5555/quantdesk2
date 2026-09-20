@@ -44,7 +44,9 @@ export default async function handler(req, res) {
   if (!ticker) return res.status(400).json({ error: 'falta el ticker', ruta: '/api/historia/:ticker' });
 
   try {
-    const { status, cuerpo } = await armarHistoria(crearLectura(), ticker, { lang });
+    // El idioma entra también en la lectura: las glosas de los códigos se
+    // resuelven donde se arman los documentos, no en la página.
+    const { status, cuerpo } = await armarHistoria(crearLectura({ lang }), ticker, { lang });
     // Los filings son inmutables y la ingesta es diaria: media hora de caché
     // en el CDN no envejece nada y descarga a Neon. Lo que todavía no se
     // ingirió no se cachea: su estado cambia en cuanto corre el goteo.

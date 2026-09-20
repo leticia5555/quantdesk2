@@ -80,14 +80,33 @@ input.tick:focus{border-color:var(--purple);}
 .decl.fuera{color:#bcd9ff;background:rgba(74,158,255,.06);border:1px solid rgba(74,158,255,.24);}
 .decl.nota{color:var(--text2);background:var(--bg1);border:1px solid var(--border2);}
 
+/* RESUMEN — contar lo que ya está */
+.resumen{font-size:12.5px;color:var(--text);line-height:1.5;margin:8px 0 2px;}
+.resumen b{font-family:var(--mono);font-size:13px;}
+.resumen .rango{font-family:var(--mono);font-size:11px;color:var(--text2);}
+.resumen .desglose{font-family:var(--mono);font-size:10.5px;color:var(--text3);margin-top:3px;letter-spacing:.03em;}
+
+/* EPISODIO — la pelea por el consejo, que en una lista plana se pierde */
+.episodio{background:rgba(167,139,250,.06);border:1px solid rgba(167,139,250,.28);
+  border-left:3px solid var(--purple);border-radius:8px;padding:11px 13px;margin:12px 0 4px;}
+.episodio b{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--purple);display:block;margin-bottom:5px;}
+.episodio .cuenta{font-size:13px;color:var(--text);line-height:1.45;}
+.episodio .formas{font-family:var(--mono);font-size:10.5px;color:var(--text2);margin-top:5px;letter-spacing:.03em;}
+.episodio .umbral{font-size:11px;color:var(--text3);line-height:1.5;margin-top:7px;}
+
 /* DOCUMENTOS */
-.doc{display:flex;align-items:baseline;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;}
+.doc{padding:9px 0;border-bottom:1px solid var(--border);}
 .doc:last-child{border-bottom:none;}
+.doc .l1{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
 .doc .f{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--text);min-width:66px;}
 .doc .d{font-family:var(--mono);font-size:11px;color:var(--text2);min-width:84px;}
-.doc .it{font-family:var(--mono);font-size:10px;color:var(--purple);letter-spacing:.04em;}
+.doc .cod{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.04em;}
 .doc .cita{font-family:var(--mono);font-size:10px;color:var(--text3);text-decoration:none;border-bottom:1px dotted var(--text3);margin-left:auto;}
 .doc .cita:hover{color:var(--green);border-bottom-color:var(--green);}
+/* La traducción del código: lo que hace legible la fila. */
+.doc .glosa{font-size:12.5px;color:var(--text2);line-height:1.45;margin-top:3px;}
+.doc .glosa .sin{color:var(--text3);font-style:italic;}
 .mas{font-family:var(--mono);font-size:10px;color:var(--text3);padding-top:8px;}
 
 /* SERIE */
@@ -185,6 +204,15 @@ const T = {
     badge_ok: 'con documentos', badge_vacio: 'sin documentos',
     badge_nocubre: 'no cubierta', badge_fuera: 'fuera del módulo',
     mas: (n) => `+${n} documento(s) más en EDGAR`,
+    filings: (n) => (n === 1 ? '1 filing' : `${n} filings`),
+    entre: 'entre',
+    y: 'y',
+    mostrando: (n, t) => `mostrando ${n} de ${t}`,
+    episodio: 'Solicitación de poderes impugnada',
+    episodio_dias: (d) => `${d} días`,
+    episodio_umbral: (d) => `Agrupados como un episodio porque entre un filing y el siguiente nunca pasan más de ${d} días. El umbral es NUESTRO, no de la SEC: solo dice que estos documentos son contiguos, no quién ganó ni si sigue abierta.`,
+    sin_glosa: 'código sin traducción en nuestro diccionario',
+    glosa_nota: 'El nombre oficial de la SEC está en el hover; el resumen en una línea es nuestro.',
     rompe: 'Dónde se rompe la historia',
     rompe_por: 'La contraevidencia. Sin esta sección el módulo sería un generador de sesgo de confirmación con citas: más peligroso que uno sin citas, porque parece riguroso.',
     reexpresado: 'Periodos que la empresa volvió a presentar con otro valor:',
@@ -211,6 +239,15 @@ const T = {
     badge_ok: 'with documents', badge_vacio: 'no documents',
     badge_nocubre: 'not covered', badge_fuera: 'outside this module',
     mas: (n) => `+${n} more document(s) on EDGAR`,
+    filings: (n) => (n === 1 ? '1 filing' : `${n} filings`),
+    entre: 'between',
+    y: 'and',
+    mostrando: (n, t) => `showing ${n} of ${t}`,
+    episodio: 'Contested proxy solicitation',
+    episodio_dias: (d) => `${d} days`,
+    episodio_umbral: (d) => `Grouped as one episode because no two consecutive filings are more than ${d} days apart. The threshold is OURS, not the SEC's: it only says these documents are contiguous — not who won, nor whether it is still open.`,
+    sin_glosa: 'code not in our dictionary',
+    glosa_nota: 'The SEC official name is in the hover; the one-line summary is ours.',
     rompe: 'Where the story breaks',
     rompe_por: 'The counter-evidence. Without this section the module would be a confirmation-bias generator with citations: more dangerous than one without, because it looks rigorous.',
     reexpresado: 'Periods the company later refiled with a different value:',
@@ -279,12 +316,66 @@ const exacto = (v, unit) => {
   return new Intl.NumberFormat(LANG === 'en' ? 'en-US' : 'es-MX').format(n) + (unit ? ' ' + unit : '');
 };
 
+// Un mes-año legible. La fecha exacta sigue estando en cada fila.
+function mesAnio(iso) {
+  if (!iso) return '—';
+  const d = new Date(`${String(iso).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return new Intl.DateTimeFormat(LANG === 'en' ? 'en-US' : 'es-MX',
+    { year: 'numeric', month: 'short', timeZone: 'UTC' }).format(d);
+}
+
+// La traducción del código. El `title` lleva el nombre OFICIAL de la SEC —
+// una cita textual— y el texto visible lleva nuestra glosa. Un código que no
+// está en el diccionario se muestra crudo y se dice que no lo tenemos: un
+// diccionario que adivina deja de ser un diccionario.
+function glosasDe(d) {
+  const t = T[LANG];
+  const gs = (d.items_glosa && d.items_glosa.length) ? d.items_glosa : [d.forma_glosa].filter(Boolean);
+  if (!gs.length) return '';
+  return gs.map((g) => (g.glosa
+    ? `<span title="${esc(g.oficial || '')}">${esc(g.glosa)}</span>`
+    : `<span class="sin" title="${esc(t.sin_glosa)}">${esc(g.codigo)} — ${esc(t.sin_glosa)}</span>`)).join(' · ');
+}
+
 const docHTML = (d) => `<div class="doc">
-  <span class="f">${esc(d.form)}</span>
-  <span class="d">${esc(d.filed)}</span>
-  ${(d.items || []).length ? `<span class="it">${esc((d.items || []).join(' · '))}</span>` : ''}
-  <a class="cita" href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.cita)}</a>
+  <div class="l1">
+    <span class="f" title="${esc((d.forma_glosa && d.forma_glosa.oficial) || '')}">${esc(d.form)}</span>
+    <span class="d">${esc(d.filed)}</span>
+    ${(d.items || []).length ? `<span class="cod">${esc(d.items.join(' · '))}</span>` : ''}
+    <a class="cita" href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.cita)}</a>
+  </div>
+  <div class="glosa">${glosasDe(d)}</div>
 </div>`;
+
+// "14 filings entre dic 2021 y sep 2026" — aritmética sobre los documentos,
+// de la misma clase que derivar un Q4. No dice qué significan.
+function resumenHTML(r) {
+  const t = T[LANG];
+  if (!r || !r.total) return '';
+  const desglose = Object.entries(r.por_item || {}).length
+    ? Object.entries(r.por_item).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v}× ${k}`).join(' · ')
+    : Object.entries(r.por_forma || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v}× ${k}`).join(' · ');
+  return `<div class="resumen">
+    <b>${esc(t.filings(r.total))}</b>
+    <span class="rango">${esc(t.entre)} ${esc(mesAnio(r.desde))} ${esc(t.y)} ${esc(mesAnio(r.hasta))}</span>
+    ${r.truncado ? `<span class="rango">· ${esc(t.mostrando(r.mostrados, r.total))}</span>` : ''}
+    ${desglose ? `<div class="desglose">${esc(desglose)}</div>` : ''}
+  </div>`;
+}
+
+// La pelea por el consejo: en una lista plana hay que contar 34 filings a
+// mano para darse cuenta de que pasó algo.
+function episodiosHTML(eps) {
+  const t = T[LANG];
+  if (!eps || !eps.length) return '';
+  return eps.map((e) => `<div class="episodio">
+    <b>${esc(t.episodio)}</b>
+    <div class="cuenta">${esc(t.filings(e.total))} ${esc(t.entre)} ${esc(mesAnio(e.desde))} ${esc(t.y)} ${esc(mesAnio(e.hasta))} · ${esc(t.episodio_dias(e.dias))}</div>
+    <div class="formas">${esc(Object.entries(e.por_forma).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v}× ${k}`).join(' · '))}</div>
+    <div class="umbral">${esc(t.episodio_umbral(e.umbral_dias))}</div>
+  </div>`).join('');
+}
 
 function serieHTML(serie) {
   const t = T[LANG];
@@ -321,7 +412,10 @@ function seccionHTML(s, i) {
 
   let cuerpo = '';
   if (s.estado === 'con_documentos') {
-    cuerpo = (s.documentos || []).map(docHTML).join('') + serieHTML(s.serie);
+    cuerpo = resumenHTML(s.resumen)
+      + episodiosHTML(s.episodios)
+      + (s.documentos || []).map(docHTML).join('')
+      + serieHTML(s.serie);
   } else if (s.estado === 'sin_documentos') {
     // El vacío que habla de LA EMPRESA. Se dice que se buscó.
     cuerpo = `<div class="sindocs">${esc(t.sin_docs)}<span class="q">${esc(t.sin_docs_q)}</span></div>`;
