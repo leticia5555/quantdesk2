@@ -4,13 +4,18 @@
 > endpoint, ni página, ni prompt. Si las compuertas abren, la Fase A arranca
 > de la lista de decisiones congeladas (§10).
 >
-> **Estado: LA SONDA ESTÁ ESCRITA Y PROBADA, PERO NO CORRIDA.** El contenedor
-> donde se escribió esto tiene el egress a `*.sec.gov` cerrado por política de
-> la organización (§0). Los seis criterios de compuerta quedan **fijados antes
-> de la corrida** (§4) y `scripts/historia-phase0-probe.mjs` los mide en una
-> sola pasada desde cualquier máquina con internet abierto.
+> **Estado: HUBO UNA CORRIDA (la "corrida 1"), Y SU SALIDA NO QUEDÓ EN EL
+> REPO.** Se corrió desde una máquina con internet abierto, cambió el criterio
+> de G1 y G2 (§4, §11) y dejó su rastro en el código — pero los payloads van a
+> `.historia-fase0/`, que está en `.gitignore`, así que **no sobrevivió ni un
+> número**. §11 dice exactamente qué se sabe y qué no.
 >
-> Fecha del reconocimiento: 2026-09-12.
+> El contenedor donde se escribió esto —y el de la Fase A— tiene el egress a
+> `*.sec.gov` cerrado por política de la organización (§0). La sonda,
+> `scripts/historia-phase0-probe.mjs`, mide las seis compuertas en una sola
+> pasada desde cualquier máquina con salida.
+>
+> Fecha del reconocimiento: 2026-09-12. Enmendado: 2026-09-20 (§0.1, §4, §10, §11).
 
 ---
 
@@ -77,6 +82,51 @@ node scripts/historia-phase0-probe.mjs
 ~5 min, 4 tickers, sin keys. Imprime el tablero de compuertas y deja los
 payloads crudos en `./.historia-fase0/`. Pegar la salida en §11 y el
 veredicto queda ganado.
+
+---
+
+## 0.1. Enmienda del 2026-09-20: la corrida 1 existió, y su salida se perdió
+
+Lo de arriba se escribió el 2026-09-12 y dice "no corrida". **Es falso desde
+que alguien corrió la sonda.** La corrida ocurrió, no está fechada, y el único
+lugar donde dejó rastro es el código que modificó.
+
+La evidencia, textual, en `veredicto()` de la sonda:
+
+> *"Corrida 1: G1 y G2 salieron rojas por un solo emisor, VIST, que es
+> justamente el CONTROL de cobertura parcial (§4 del memo)."*
+
+y, en la medición de G2:
+
+> *"En la corrida 1 esto imprimia 'VIST 0.0%', que leia como fallo cuando era
+> ausencia de muestra."*
+
+**Qué se puede afirmar con eso, y nada más:**
+
+| Se sabe | Cómo se sabe |
+|---|---|
+| La sonda corrió contra EDGAR en vivo al menos una vez | el comentario describe una salida concreta que solo existe corriendo |
+| Con el criterio original, G1 y G2 salieron **rojas** | textual |
+| El único emisor que las reprobó fue **VIST** | "por un solo emisor, VIST" |
+| VIST tenía **0 8-K** en la ventana | el "VIST 0.0%" que se imprimía |
+| LULU, MSFT y MELI **no** reprobaron G1 ni G2 | se deduce de "un solo emisor" |
+
+**Qué NO se sabe, y no se va a adivinar:** ningún número por emisor
+(trimestres efectivos, % de 8-K con item, hechos sin `accn`, re-expresiones),
+nada de G3, G4 ni G5, ninguna latencia, ningún peso de `companyfacts`. Es
+decir: **todo lo que §11 tenía que traer.**
+
+⚠️ **Trampa para el próximo lector:** los números que aparecen en
+`tests/historia-phase0-probe.test.mjs` (`efectivos: 12`, `ochoK: 47`…) son
+**fixtures sintéticos con la respuesta plantada**, puestos ahí para probar que
+el medidor mide. **No son resultados de la corrida 1.** Copiarlos a §11 sería
+exactamente el número inventado que este módulo existe para no producir.
+
+**La causa raíz, para que no se repita:** `.historia-fase0/` está en
+`.gitignore` (línea 3). Está bien que los payloads crudos no entren al repo
+—son varios MB por emisor—, pero entonces **la salida del tablero tiene que
+pegarse en §11 en el mismo momento de la corrida**, o se pierde. La sonda
+corre en ~5 min; el costo de recuperarlo es volver a correrla.
 
 ---
 
@@ -185,22 +235,66 @@ que este módulo existe para no repetir.
 
 ## 4. Las compuertas — criterio fijado ANTES de la corrida
 
-Seis. El criterio está escrito acá y **codificado** en la función `veredicto()`
-de la sonda, así que no se puede mover después de ver el número.
+Seis, más una séptima que abrió la Fase A (**G7**, §10). El criterio está
+escrito acá y **codificado** en la función `veredicto()` de la sonda, así que
+mover un umbral obliga a moverlo en los dos lados y deja diff.
+
+**G1 y G2 se tocaron después de la corrida 1.** No se movió ningún umbral: se
+corrigió a qué emisores se les aplica. El caso está argumentado abajo, antes de
+G1, para que el próximo lector lo juzgue en vez de descubrirlo.
+
+### Enmienda a G1 y G2 tras la corrida 1 — y por qué no es una racionalización
+
+Este documento dice, en §0, que *"un umbral escrito después de ver el número
+no es un umbral, es una racionalización"*. G1 y G2 se tocaron
+**después** de ver el resultado de la corrida 1. Entonces hay que sostenerlo o
+retirarlo, no dejarlo pasar.
+
+Lo que cambió **no es el umbral: es la población.** ≥11/12 sigue siendo
+≥11/12, y ≥95% con 0 mal formados sigue igual — no se movió ni una unidad. Lo
+que se corrigió es **a quién se le aplica la vara**: VIST entró a la muestra
+como *control de cobertura parcial* ("La corrección al set de tickers", más
+abajo en este mismo §4),
+o sea como el emisor que por definición **no** reporta trimestres ni presenta
+8-K. Medirlo con la vara del emisor doméstico hacía que el control reprobara
+por ser el control. Eso no es un hallazgo sobre EDGAR; es un error de diseño
+del medidor, y lo que un 20-F sí tiene que contestar ya lo pregunta **G6**.
+
+La prueba de que no es conveniencia: con la enmienda puesta, **un doméstico
+roto sigue mandando G1 a rojo** — está testeado
+(`tests/historia-phase0-probe.test.mjs`, "veredicto: el perfil del emisor
+decide qué compuerta aplica"). La compuerta no se ablandó, se enfocó.
+
+Tres detalles del criterio enmendado, ya en `veredicto()`:
+
+- **Sin emisores domésticos, la compuerta es `INCONCLUSO`** — ni verde por
+  vacío ni roja. Una compuerta sin muestra no opina.
+- **Sin 8-K, la cobertura de G2 es `n/a`, no `0%`.** En la corrida 1 se
+  imprimía "0.0%", que leía como fallo cuando era ausencia de muestra.
+- Los extranjeros **se siguen listando**, aparte y con el motivo escrito. No
+  se esconden: se clasifican en G6.
+
+La misma regla baja al producto en la Fase A: el 20-F **sale del denominador
+de la cobertura, no del módulo** — se ingiere, se muestra y se etiqueta
+"cobertura parcial" (§8).
 
 ### G1 — ¿existe la película trimestral, y es citable?
 > **Verde si:** para los **4 conceptos del núcleo** (ingresos, margen bruto,
-> inventario, resultado neto), cada emisor tiene **≥ 11 de 12 trimestres
-> efectivos** en 3 años, contando los Q4 derivables.
+> inventario, resultado neto), **cada emisor doméstico** tiene **≥ 11 de 12
+> trimestres efectivos** en 3 años, contando los Q4 derivables.
+> *(Enmendado tras la corrida 1: el emisor extranjero queda fuera de criterio
+> y lo clasifica G6. El umbral no se movió.)*
 >
 > Se reporta además, sin que decida la compuerta: cuántos hechos vienen **sin
 > `accn`** (cada uno es una afirmación que no se va a poder citar) y cuántos
 > periodos tienen **re-expresiones**.
 
 ### G2 — ¿el 8-K se puede clasificar sin leerlo?
-> **Verde si:** **≥ 95%** de los 8-K de los últimos 5 años traen la columna
-> `items` en el índice **y 0 vienen mal formados** (todo item tiene que
-> matchear `N.NN`).
+> **Verde si:** **≥ 95%** de los 8-K de los últimos 5 años **de cada emisor
+> doméstico** traen la columna `items` en el índice **y 0 vienen mal
+> formados** (todo item tiene que matchear `N.NN`).
+> *(Enmendado tras la corrida 1: el extranjero presenta 6-K y no 8-K — queda
+> fuera de criterio, y un emisor sin 8-K se reporta `n/a`, no 0%.)*
 >
 > Hipótesis H2: **el full-text search no hace falta para clasificar.** El
 > encargo lo pide "para items de 8-K", pero `submissions.json` ya trae los
@@ -437,6 +531,18 @@ costaron PEAD y Congreso en este mismo repo.
 | **(G)** Mapa de pares curado (pregunta 5) | 3–5 |
 | **Subtotal Fase A** | **39–55** |
 
+**Enmienda del 2026-09-20 — dos líneas que §7 no coteó:**
+
+| Línea nueva | horas |
+|---|---|
+| Bajar la regla del 20-F al cálculo de cobertura del producto (§4, enmienda) | 2–3 |
+| Tarifa fixture-first: `fetch` inyectable, captura y mantenimiento de fixtures | 4–5 |
+| **Subtotal Fase A enmendado** | **45–63** |
+
+El delta no es alcance nuevo que alguien haya pedido: es trabajo que el memo no
+vio porque la enmienda a G1/G2 y el bloqueo de egress son posteriores a §7. Las
+dos líneas que más pueden moverse siguen siendo las mismas de abajo.
+
 | Fase B — el lector | horas |
 |---|---|
 | Prompt congelado en código + las 7 secciones + "Dónde se rompe la historia" | 8–12 |
@@ -529,25 +635,115 @@ sabe por qué.
    vea el identificador —y no un "fuente: SEC" genérico— es parte del
    producto: es lo que hace la afirmación verificable por el usuario.
 
+### Acta de congelamiento — 2026-09-20
+
+Las ocho quedan congeladas **en la propuesta del memo**, sin veto. Lo que rige
+la Fase A:
+
+| # | Decisión | Congelada en |
+|---|---|---|
+| 1 | Universo | bajo demanda con caché; sin precalentado por cron en el MVP |
+| 2 | Frescura | diario para tickers cubiertos · 6 h bajo demanda para el resto |
+| 3 | Profundidad | **5 años** de índice de filings · **3 años** de serie trimestral |
+| 4 | Guía | **salida 1 de §3**: se cita el 8-K 2.02, **no se guarda ningún número de guía** |
+| 5 | Pares (pregunta 5) | lista curada a mano, 3–5 por ticker, estilo `MEGA_CAPS` |
+| 6 | Short interest | se queda con **short volume** y la UI dice que no es short interest |
+| 7 | `#marketSignalsPanel` | se queda, sin el 🤖 — **es Fase B, no se toca acá** |
+| 8 | Formato de la cita | `[0000320193-25-000073]` visible y enlazado al documento primario |
+
+La 4 la refuerza el encargo de la Fase A: **sin IA en esta fase.** Las siete
+secciones se muestran como documentos, no como narración; el lector con prompt
+congelado sigue siendo Fase B.
+
+### La restricción que no estaba en el plan: fixture-first
+
+El contenedor de la Fase A **tampoco alcanza EDGAR** — verificado, no supuesto:
+
+```
+000  https://www.sec.gov/files/company_tickers.json
+000  https://data.sec.gov/submissions/CIK0001397187.json
+000  https://data.sec.gov/api/xbrl/companyfacts/CIK0001397187.json
+     connect_rejected — el proxy de egress deniega el CONNECT (política de la organización)
+```
+
+Consecuencias, que son de diseño y no de logística:
+
+1. **El `fetch` va inyectable desde el primer archivo.** La capa de datos
+   recibe su cliente HTTP por parámetro; en test entra uno que lee fixtures.
+   No es un refactor para después: es la única forma de que la ingesta sea
+   probable desde acá.
+2. **Los fixtures nacen sintéticos y marcados como tales.** Ninguno se
+   presenta como captura de EDGAR mientras no lo sea.
+3. **Queda una compuerta abierta y declarada: G7.**
+
+### G7 — verificación contra EDGAR real *(abierta)*
+
+> **Verde si:** la ingesta corre contra EDGAR en vivo para LULU, MSFT, MELI y
+> VIST, y para cada uno: los conteos de la serie trimestral coinciden con lo
+> que reporta la sonda, **0 hechos sin `accn`** llegan a la tabla, y las
+> re-expresiones de MELI quedan guardadas con su `filed` y su `accession`.
+>
+> **Hasta que G7 cierre, la Fase A está probada contra fixtures, no contra la
+> fuente.** Se dice así en el PR y no se declara "funciona con EDGAR".
+
+El número que originó el encargo —"MELI: 19 revisiones del concepto de
+ingresos"— **no tiene respaldo en el repo**: no está en la sonda, ni en los
+tests, ni en ningún payload. Viene de un resumen de conversación. No se usa
+como aserción de ningún test; el conteo real de re-expresiones de MELI lo
+contesta G7 cuando corra.
+
 ---
 
 ## 11. Resultados de la corrida
 
-**Vacío a propósito.** Se llena pegando la salida de la sonda. No hay número
-acá hasta que haya una corrida real; ver §0.
+**Sigue sin haber un solo número de EDGAR en este documento**, y ahora por una
+razón distinta a la de §0: la corrida 1 ocurrió y su salida se perdió en
+`.gitignore` (§0.1). Lo que sigue es lo que la evidencia sostiene y nada más.
 
 ```
-(pendiente — node scripts/historia-phase0-probe.mjs)
+(la salida cruda de la corrida 1 no existe — .historia-fase0/ es gitignored)
+(para reponerla:  node scripts/historia-phase0-probe.mjs)
 ```
 
 | Compuerta | Criterio | LULU | MSFT | MELI | VIST | Estado |
 |---|---|---|---|---|---|---|
-| G1 company-facts | ≥11/12 trimestres efectivos en el núcleo | — | — | — | — | ⬜ |
-| G2 items de 8-K | ≥95% con item, 0 mal formados | — | — | — | — | ⬜ |
-| G3 13D / proxies | toda URL muestreada da 200 | — | — | — | — | ⬜ |
-| G4 latencia | sin umbral (dimensionamiento) | — | — | — | — | ⬜ |
-| G5 guía en XBRL | bifurcación de diseño | — | — | — | — | ⬜ |
-| G6 perfil de emisor | etiqueta de cobertura | — | — | — | — | ⬜ |
+| G1 company-facts | ≥11/12 trimestres efectivos en el núcleo · solo domésticos | no reprobó | no reprobó | no reprobó | fuera de criterio | 🟡 **sin números** |
+| G2 items de 8-K | ≥95% con item, 0 mal formados · solo domésticos | no reprobó | no reprobó | no reprobó | n/a (0 8-K) | 🟡 **sin números** |
+| G3 13D / proxies | toda URL muestreada da 200 | — | — | — | — | ⬜ sin dato |
+| G4 latencia | sin umbral (dimensionamiento) | — | — | — | — | ⬜ sin dato |
+| G5 guía en XBRL | bifurcación de diseño | — | — | — | — | ⬜ sin dato |
+| G6 perfil de emisor | etiqueta de cobertura | — | — | — | 20-F → parcial | 🟡 **solo VIST** |
+
+Cómo leer esa tabla, porque la distinción es el punto:
+
+- **"no reprobó"** no es "verde". Sale de que la corrida 1 dijo que reprobó
+  *un solo* emisor y que fue VIST (§0.1). Es una cota, no una medición: no
+  tenemos el 11/12 ni el 12/12 de nadie.
+- **"⬜ sin dato"** es literal: G3, G4 y G5 se midieron en esa corrida y su
+  salida no la vio nadie que la escribiera.
+- **G5 no está resuelta**, y eso importa: la bifurcación de §3 se congela en la
+  **salida 1** (§10, decisión 4) por el encargo —sin IA, sin guardar números de
+  guía—, no porque la sonda haya confirmado H1. Si G5 algún día da > 0, la
+  decisión se revisa con dato en mano.
+
+**Qué falta para cerrar §11 de verdad:** una corrida, ~5 min, sin keys, desde
+cualquier máquina con salida a `sec.gov`:
+
+```bash
+node scripts/historia-phase0-probe.mjs          # LULU, MSFT, MELI + control VIST
+node scripts/historia-phase0-probe.mjs --sin-control   # solo los tres del encargo
+```
+
+Pegar el tablero acá **en el momento**, antes de cerrar la terminal.
+
+### Lo que esto NO bloquea
+
+La Fase A arranca igual, y no es un atajo. El diseño no depende de los números
+que faltan: el esquema (§5), la derivación de Q4, la clave con `accession` y la
+regla del 20-F están decididos y son independientes de si LULU tiene 11 o 12
+trimestres. Lo que los números condicionan es **G7** (§10): declarar que el
+módulo funciona contra EDGAR real. Hasta entonces se dice que funciona contra
+fixtures, que es distinto y se escribe distinto.
 
 ---
 
