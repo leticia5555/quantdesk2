@@ -4,18 +4,21 @@
 > endpoint, ni página, ni prompt. Si las compuertas abren, la Fase A arranca
 > de la lista de decisiones congeladas (§10).
 >
-> **Estado: HUBO UNA CORRIDA (la "corrida 1"), Y SU SALIDA NO QUEDÓ EN EL
-> REPO.** Se corrió desde una máquina con internet abierto, cambió el criterio
-> de G1 y G2 (§4, §11) y dejó su rastro en el código — pero los payloads van a
-> `.historia-fase0/`, que está en `.gitignore`, así que **no sobrevivió ni un
-> número**. §11 dice exactamente qué se sabe y qué no.
+> **Estado: CERRADA.** La corrida 2 (2026-09-20) está pegada entera en §11.
+> **G1, G2 y G3 verdes · G4 medida · G5 resuelve la bifurcación (la guía no
+> está etiquetada) · G6 clasifica a los cuatro emisores.** La Fase A no espera
+> ningún dato de reconocimiento.
+>
+> Hubo una corrida anterior —la "corrida 1"— cuya salida se perdió en
+> `.gitignore` aunque sí alcanzó a cambiar el criterio de G1 y G2. Está contada
+> en §0.1 y se deja escrita porque explica por qué el criterio de §4 tiene una
+> enmienda.
 >
 > El contenedor donde se escribió esto —y el de la Fase A— tiene el egress a
-> `*.sec.gov` cerrado por política de la organización (§0). La sonda,
-> `scripts/historia-phase0-probe.mjs`, mide las seis compuertas en una sola
-> pasada desde cualquier máquina con salida.
+> `*.sec.gov` cerrado por política de la organización (§0), así que la sonda
+> corre desde la máquina del operador.
 >
-> Fecha del reconocimiento: 2026-09-12. Enmendado: 2026-09-20 (§0.1, §4, §10, §11).
+> Fecha del reconocimiento: 2026-09-12. Cerrada con la corrida 2: 2026-09-20.
 
 ---
 
@@ -111,10 +114,11 @@ y, en la medición de G2:
 | VIST tenía **0 8-K** en la ventana | el "VIST 0.0%" que se imprimía |
 | LULU, MSFT y MELI **no** reprobaron G1 ni G2 | se deduce de "un solo emisor" |
 
-**Qué NO se sabe, y no se va a adivinar:** ningún número por emisor
-(trimestres efectivos, % de 8-K con item, hechos sin `accn`, re-expresiones),
-nada de G3, G4 ni G5, ninguna latencia, ningún peso de `companyfacts`. Es
-decir: **todo lo que §11 tenía que traer.**
+**Qué NO se supo nunca de esa corrida:** ningún número por emisor, nada de G3,
+G4 ni G5, ninguna latencia, ningún peso de `companyfacts`. Todo eso lo trajo la
+**corrida 2** y está en §11 — pero de la corrida 1 no queda más que lo de
+arriba, y este apartado se conserva para que se entienda de dónde salió la
+enmienda de §4.
 
 ⚠️ **Trampa para el próximo lector:** los números que aparecen en
 `tests/historia-phase0-probe.test.mjs` (`efectivos: 12`, `ochoK: 47`…) son
@@ -578,7 +582,7 @@ conclusión.
 | Alt data (tráfico, tarjetas, satélite) | pagada | *"Sin datos alternativos."* |
 | Expert networks | pagada | *"Sin expert networks."* |
 | Emisor extranjero 20-F/6-K | reporta anual, no trimestral | *"Cobertura parcial: este emisor presenta 20-F. La serie es anual, no trimestral."* |
-| Guía, si G5 confirma H1 | no está etiquetada en XBRL | *"La guía no viene estructurada: se enlaza el 8-K donde la empresa la dio."* |
+| Guía — **confirmado** (G5: 0/4 emisores) | no está etiquetada en XBRL | *"La guía no viene estructurada: se enlaza el 8-K donde la empresa la dio."* |
 | Pre-2001 en full-text | EDGAR no indexa antes | *"La búsqueda de texto completo cubre desde 2001."* |
 
 Y una sección que **no es opcional**, al final de cada historia:
@@ -642,18 +646,19 @@ la Fase A:
 
 | # | Decisión | Congelada en |
 |---|---|---|
-| 1 | Universo | bajo demanda con caché; sin precalentado por cron en el MVP |
+| 1 | Universo | **goteo reanudable por cron** — la corrida 2 midió 42 s/ticker y un lambda de 60 s no alcanza (§11, G4) |
 | 2 | Frescura | diario para tickers cubiertos · 6 h bajo demanda para el resto |
 | 3 | Profundidad | **5 años** de índice de filings · **3 años** de serie trimestral |
-| 4 | Guía | **salida 1 de §3**: se cita el 8-K 2.02, **no se guarda ningún número de guía** |
+| 4 | Guía | **salida 1 de §3**: se cita el 8-K 2.02, **no se guarda ningún número de guía**. Confirmada por G5: 0/4 emisores con guía etiquetada, y 5/5 filings 2.02 con `EX-99` (§11) |
 | 5 | Pares (pregunta 5) | lista curada a mano, 3–5 por ticker, estilo `MEGA_CAPS` |
 | 6 | Short interest | se queda con **short volume** y la UI dice que no es short interest |
 | 7 | `#marketSignalsPanel` | se queda, sin el 🤖 — **es Fase B, no se toca acá** |
 | 8 | Formato de la cita | `[0000320193-25-000073]` visible y enlazado al documento primario |
 
-La 4 la refuerza el encargo de la Fase A: **sin IA en esta fase.** Las siete
-secciones se muestran como documentos, no como narración; el lector con prompt
-congelado sigue siendo Fase B.
+La 4 tiene ahora dos respaldos independientes: el encargo de la Fase A —**sin
+IA en esta fase**, las siete secciones se muestran como documentos y el lector
+con prompt congelado sigue siendo Fase B— y la medición de G5, que descarta el
+XBRL como fuente de guía en los cuatro emisores.
 
 ### La restricción que no estaba en el plan: fixture-first
 
@@ -679,73 +684,314 @@ Consecuencias, que son de diseño y no de logística:
 ### G7 — verificación contra EDGAR real *(abierta)*
 
 > **Verde si:** la ingesta corre contra EDGAR en vivo para LULU, MSFT, MELI y
-> VIST, y para cada uno: los conteos de la serie trimestral coinciden con lo
-> que reporta la sonda, **0 hechos sin `accn`** llegan a la tabla, y las
-> re-expresiones de MELI quedan guardadas con su `filed` y su `accession`.
+> VIST, y para cada uno: los conteos de la serie trimestral coinciden con los
+> de §11, **0 hechos sin `accn`** llegan a la tabla (la corrida 2 midió 0 en
+> todas las familias de los cuatro: si aparece uno, es nuestro), y las
+> re-expresiones de MELI quedan guardadas con su `filed` y su `accession`,
+> contadas **por tag y no por familia** — el 19 del tablero mezcla
+> re-expresión con diferencia entre alias, y §11 explica por qué.
 >
 > **Hasta que G7 cierre, la Fase A está probada contra fixtures, no contra la
 > fuente.** Se dice así en el PR y no se declara "funciona con EDGAR".
 
+G7 se gana por partes, y la primera ya se puede cobrar sin esquema ni ingesta:
+el **transporte** (`api/_lib/edgar.js`) tiene su propio smoke contra EDGAR real.
+
+```bash
+node scripts/historia-edgar-smoke.mjs        # LULU, MSFT, MELI, VIST
+```
+
+Diez llamadas, sin keys, sin DB, sin escribir nada. Contesta si el UA es
+aceptado, si las URLs de documento primario resuelven, cuánto pesa
+`companyfacts` de verdad (el insumo de G4) y qué formas presenta cada emisor
+(el dato de G6, medido en vez de asumido). Lo que **no** contesta es si lo
+ingerido queda bien guardado: eso es G7 entera y necesita la rebanada C.
+
 El número que originó el encargo —"MELI: 19 revisiones del concepto de
-ingresos"— **no tiene respaldo en el repo**: no está en la sonda, ni en los
-tests, ni en ningún payload. Viene de un resumen de conversación. No se usa
-como aserción de ningún test; el conteo real de re-expresiones de MELI lo
-contesta G7 cuando corra.
+ingresos"— apareció en la corrida 2, así que ya tiene respaldo. Lo que **no**
+tiene respaldo es su lectura: 19 es el conteo de periodos con más de un valor
+tras unir los dos alias de ingresos, y eso mezcla re-expresión con diferencia
+entre tags (§11). No se usa como aserción de ningún test mientras no esté
+separado por tag.
 
 ---
 
 ## 11. Resultados de la corrida
 
-**Sigue sin haber un solo número de EDGAR en este documento**, y ahora por una
-razón distinta a la de §0: la corrida 1 ocurrió y su salida se perdió en
-`.gitignore` (§0.1). Lo que sigue es lo que la evidencia sostiene y nada más.
+**Corrida 2 — 2026-09-20**, desde la Mac del operador, con salida abierta a
+`sec.gov`. Ésta sí quedó registrada. La salida va textual; el análisis viene
+después y está separado a propósito: primero el dato, después su lectura.
 
 ```
-(la salida cruda de la corrida 1 no existe — .historia-fase0/ es gitignored)
-(para reponerla:  node scripts/historia-phase0-probe.mjs)
+━━━ LULU · CIK 0001397187 · lululemon athletica inc.
+  · índice: 1628 filings en 2 página(s), 0.27 MB, desde 2007-04-30
+  · 8-K (5a): 48 · con item en el índice: 48 (100.0%) · mal formados: 0
+    items clave → 1.01:3  2.02:20  5.02:14  5.07:5  7.01:10  8.01:8
+  · formas (5a): 4:196  8-K:48  DEF 14A:4  SC 13D/A:4  SC 13G/A:17  PREC14A:2  DEFC14A:2  DFAN14A:32  10-Q:15  10-K:5
+  · URLs de documento primario resueltas: 10/10
+  · perfil: anual=10-K · 10-Q=true · 6-K=false · 20-F=false
+  · company-facts: 2.97 MB · taxonomías [dei, us-gaap, srt, ecd, ffd] · 431 conceptos
+    familia           tags   Q    FY   9M   Q4-deriv  efectivos  revisiones  sin-accn
+    ingresos         1      9    3    3    3         12         0           0
+    costo            1      9    3    3    3         12         0           0
+    margen           1      9    3    3    3         12         0           0
+    sgya             1      9    3    3    3         12         0           0
+    op               1      9    3    3    3         12         0           0
+    neto             1      9    3    3    3         12         0           0
+    eps              1      9    3    3    3         12         0           0
+    inventario       2      12   -    -    0         12         12          0
+    caja             0      0    -    -    0         0          0           0
+    deuda             —      AUSENTE
+    acciones         2      24   -    -    0         24         0           0
+    conceptos de guía en XBRL: 0  ← la guía NO está etiquetada
+  · 8-K item 2.02 revisados: 5 · con exhibit EX-99: 5
+  · full-text search: OK · 144 hits
+
+━━━ MSFT · CIK 0000789019 · MICROSOFT CORP
+  · índice: 4525 filings en 3 página(s), 0.73 MB, desde 1994-02-14
+  · 8-K (5a): 44 · con item en el índice: 44 (100.0%) · mal formados: 0
+    items clave → 1.01:0  2.02:20  5.02:5  5.07:5  7.01:9  8.01:5
+  · formas (5a): 4:599  8-K:43  DEF 14A:5  SC 13G/A:6  10-Q:15  10-K:5
+  · URLs de documento primario resueltas: 6/6
+  · perfil: anual=10-K · 10-Q=true · 6-K=false · 20-F=false
+  · company-facts: 4.88 MB · taxonomías [dei, us-gaap] · 565 conceptos
+    familia           tags   Q    FY   9M   Q4-deriv  efectivos  revisiones  sin-accn
+    ingresos         1      9    3    3    3         12         0           0
+    costo            1      9    3    3    3         12         0           0
+    margen           1      9    3    3    3         12         0           0
+    sgya             1      9    3    3    3         12         0           0
+    op               1      9    3    3    3         12         0           0
+    neto             1      9    3    3    3         12         0           0
+    eps              1      9    3    3    3         12         0           0
+    inventario       1      12   -    -    0         12         0           0
+    caja             1      12   -    -    0         12         0           0
+    deuda            2      12   -    -    0         12         12          0
+    acciones         2      24   -    -    0         24         0           0
+    conceptos de guía en XBRL: 0  ← la guía NO está etiquetada
+  · 8-K item 2.02 revisados: 5 · con exhibit EX-99: 5
+  · full-text search: OK · 243 hits
+
+━━━ MELI · CIK 0001099590 · MERCADOLIBRE INC
+  · índice: 812 filings en 1 página(s), 0.13 MB, desde 2007-05-11
+  · 8-K (5a): 53 · con item en el índice: 53 (100.0%) · mal formados: 0
+    items clave → 1.01:7  2.02:21  5.02:9  5.07:5  7.01:6  8.01:7
+  · formas (5a): 4:53  8-K:52  DEF 14A:5  SC 13D:1  SC 13D/A:1  SC 13G:1  SC 13G/A:13  10-Q:15  10-K:5
+  · URLs de documento primario resueltas: 9/9
+  · perfil: anual=10-K · 10-Q=true · 6-K=false · 20-F=false
+  · company-facts: 3.90 MB · taxonomías [dei, srt, us-gaap, ecd] · 627 conceptos
+    familia           tags   Q    FY   9M   Q4-deriv  efectivos  revisiones  sin-accn
+    ingresos         2      10   3    3    3         13         19          0
+    costo            1      10   3    3    3         13         3           0
+    margen           1      10   3    3    3         13         4           0
+    sgya             1      10   3    3    3         13         0           0
+    op               1      10   3    3    3         13         3           0
+    neto             1      10   3    3    3         13         0           0
+    eps              1      10   3    3    3         13         0           0
+    inventario       1      12   -    -    0         12         0           0
+    caja             1      12   -    -    0         12         0           0
+    deuda            1      12   -    -    0         12         0           0
+    acciones         2      24   -    -    0         24         0           0
+    conceptos de guía en XBRL: 0  ← la guía NO está etiquetada
+  · 8-K item 2.02 revisados: 5 · con exhibit EX-99: 5
+  · full-text search: OK · 168 hits
+
+━━━ VIST · CIK 0001762506 · Vista Energy, S.A.B. de C.V.
+  · índice: 396 filings en 1 página(s), 0.06 MB, desde 2019-01-24
+  · 8-K (5a): 0 · con item en el índice: 0 (n/a) · mal formados: 0
+    items clave → 1.01:0  2.02:0  5.02:0  5.07:0  7.01:0  8.01:0
+  · formas (5a): 4:10  SC 13D:1  SC 13D/A:1  SC 13G:2  SC 13G/A:2  20-F:5  6-K:249
+  · URLs de documento primario resueltas: 7/7
+  · perfil: anual=20-F · 10-Q=false · 6-K=true · 20-F=true
+  · company-facts: 0.57 MB · taxonomías [dei, ifrs-full, srt] · 304 conceptos
+    familia           tags   Q    FY   9M   Q4-deriv  efectivos  revisiones  sin-accn
+    ingresos         1      0    2    0    0         0          0           0
+    costo             —      AUSENTE
+    margen           1      0    2    0    0         0          0           0
+    sgya              —      AUSENTE
+    op               1      0    2    0    0         0          0           0
+    neto             1      0    2    0    0         0          0           0
+    eps              1      0    2    0    0         0          0           0
+    inventario       1      2    -    -    0         2          0           0
+    caja             1      2    -    -    0         2          0           0
+    deuda             —      AUSENTE
+    acciones         2      2    -    -    0         2          1           0
+    conceptos de guía en XBRL: 0  ← la guía NO está etiquetada
+  · 8-K item 2.02 revisados: 0 · con exhibit EX-99: 0
+  · full-text search: OK · 0 hits
+
+━━━ G4 — latencia por tipo de llamada
+  endpoint          n     p50     p95     max     bytes-prom   no-200
+  head-doc          32    2500ms  3919ms  4813ms  0            0
+  filing-index      15    659ms   3492ms  3492ms  2594         0
+  submissions       4     4080ms  4413ms  4413ms  138814       0
+  companyfacts      4     5463ms  6910ms  6910ms  3077984      0
+  fts               4     3640ms  5172ms  5172ms  41990        0
+  submissions-old   3     1308ms  1340ms  1340ms  215298       0
+  ticker-map        1     5083ms  5083ms  5083ms  799073       0
+
+━━━ G4b — ráfaga contra el techo de 10 req/s
+  · 10 concurrentes en 5323 ms → {"200":10}
+
+═══════════════════════════════════════════════════════════
+  COMPUERTAS — criterio fijado ANTES de la corrida
+═══════════════════════════════════════════════════════════
+  G1 company-facts   🟢 VERDE  (criterio: ≥11/12 trimestres efectivos en ingresos+margen+inventario+neto · SOLO emisores domésticos)
+       LULU   peor familia del núcleo: 12/12
+       MSFT   peor familia del núcleo: 12/12
+       MELI   peor familia del núcleo: 12/12
+       VIST   0/12 — FUERA DE CRITERIO: emisor extranjero, no reporta trimestres. Lo clasifica G6.
+  G2 items de 8-K    🟢 VERDE  (criterio: ≥95% con item y 0 mal formados, desde el índice · SOLO emisores domésticos)
+       LULU   100.0% · mal formados 0
+       MSFT   100.0% · mal formados 0
+       MELI   100.0% · mal formados 0
+       VIST   n/a — FUERA DE CRITERIO: emisor extranjero, presenta 6-K y no 8-K. Lo clasifica G6.
+  G3 13D / proxies   🟢 VERDE  (criterio: toda URL de documento primario muestreada da 200)
+       LULU   URLs 10/10 · filings de pelea (13D/PREC14A/DEFC14A): 8
+       MSFT   URLs 6/6 · filings de pelea (13D/PREC14A/DEFC14A): 0
+       MELI   URLs 9/9 · filings de pelea (13D/PREC14A/DEFC14A): 2
+       VIST   URLs 7/7 · filings de pelea (13D/PREC14A/DEFC14A): 2
+  G5 guía en XBRL    🔴 NO EXISTE  (0/4 emisores con algún concepto de guía etiquetado)
+       → si es 0, la pregunta 3 NO se contesta con XBRL solo: la guía vive en prosa del EX-99.1.
+  G6 perfil de emisor
+       LULU   emisor doméstico (10-K/10-Q) → cobertura completa
+       MSFT   emisor doméstico (10-K/10-Q) → cobertura completa
+       MELI   emisor doméstico (10-K/10-Q) → cobertura completa
+       VIST   emisor privado extranjero (20-F/6-K) → COBERTURA PARCIAL
+
+  corrida: 167.9s · 63 llamadas HTTP · 14.52 MB bajados
+  costo por ticker (extrapolado): 16 llamadas, 42.0s
+  reporte completo: .historia-fase0/reporte.json
 ```
 
 | Compuerta | Criterio | LULU | MSFT | MELI | VIST | Estado |
 |---|---|---|---|---|---|---|
-| G1 company-facts | ≥11/12 trimestres efectivos en el núcleo · solo domésticos | no reprobó | no reprobó | no reprobó | fuera de criterio | 🟡 **sin números** |
-| G2 items de 8-K | ≥95% con item, 0 mal formados · solo domésticos | no reprobó | no reprobó | no reprobó | n/a (0 8-K) | 🟡 **sin números** |
-| G3 13D / proxies | toda URL muestreada da 200 | — | — | — | — | ⬜ sin dato |
-| G4 latencia | sin umbral (dimensionamiento) | — | — | — | — | ⬜ sin dato |
-| G5 guía en XBRL | bifurcación de diseño | — | — | — | — | ⬜ sin dato |
-| G6 perfil de emisor | etiqueta de cobertura | — | — | — | 20-F → parcial | 🟡 **solo VIST** |
+| G1 company-facts | ≥11/12 trimestres efectivos · solo domésticos | 12/12 | 12/12 | 12/12 | fuera de criterio | 🟢 **VERDE** |
+| G2 items de 8-K | ≥95% con item, 0 mal formados · solo domésticos | 100% | 100% | 100% | n/a (0 8-K) | 🟢 **VERDE** |
+| G3 13D / proxies | toda URL muestreada da 200 | 10/10 | 6/6 | 9/9 | 7/7 | 🟢 **VERDE** |
+| G4 latencia | sin umbral (dimensionamiento) | — | — | — | — | 📏 **medido** |
+| G5 guía en XBRL | bifurcación de diseño | 0 | 0 | 0 | 0 | 🔴 **NO EXISTE** — H1 confirmada |
+| G6 perfil de emisor | etiqueta de cobertura | completa | completa | completa | **parcial** | 🟢 **clasificados** |
 
-Cómo leer esa tabla, porque la distinción es el punto:
+**La Fase 0 queda cerrada.** Tres compuertas verdes, G4 medida, G5 resuelta como
+bifurcación y G6 con los cuatro emisores clasificados. La Fase A ya no espera
+ningún dato de reconocimiento.
 
-- **"no reprobó"** no es "verde". Sale de que la corrida 1 dijo que reprobó
-  *un solo* emisor y que fue VIST (§0.1). Es una cota, no una medición: no
-  tenemos el 11/12 ni el 12/12 de nadie.
-- **"⬜ sin dato"** es literal: G3, G4 y G5 se midieron en esa corrida y su
-  salida no la vio nadie que la escribiera.
-- **G5 no está resuelta**, y eso importa: la bifurcación de §3 se congela en la
-  **salida 1** (§10, decisión 4) por el encargo —sin IA, sin guardar números de
-  guía—, no porque la sonda haya confirmado H1. Si G5 algún día da > 0, la
-  decisión se revisa con dato en mano.
+### Lo que el tablero confirma
 
-**Qué falta para cerrar §11 de verdad:** una corrida, ~5 min, sin keys, desde
-cualquier máquina con salida a `sec.gov`:
+- **La película trimestral existe y es citable.** 12/12 en los tres domésticos,
+  y **`sin-accn` = 0 en todas las familias de todos los emisores**. Ése es el
+  número que hacía falta: cada hecho que vamos a guardar trae su `accession`, así
+  que no hay ninguno que se pueda mostrar pero no citar.
+- **H2 confirmada: el full-text search no hace falta para clasificar.** 100% de
+  los 8-K traen `items` en el índice, 0 mal formados, en los tres domésticos. FTS
+  baja de infraestructura a herramienta de diagnóstico, y eso borra una fuente
+  entera del diseño de la Fase A.
+- **H1 confirmada: la guía no está etiquetada.** 0 conceptos de guía en los
+  cuatro. Y el complemento: **5 de 5 filings con item 2.02 traen un `EX-99`** en
+  los tres domésticos. La guía existe, está en prosa y cuelga de un exhibit con
+  su `accession` — que es exactamente la salida 1 de §3.
+- **H4 confirmada: los 13D aparecen bajo el CIK de la empresa sujeto.** MELI
+  tiene `SC 13D:1` y `SC 13D/A:1` en su propio índice; LULU trae la pelea
+  completa (`PREC14A:2`, `DEFC14A:2`, `DFAN14A:32`). La pregunta 2 no necesita
+  otra ruta de descubrimiento.
+- **VIST se comportó como control.** 20-F, 6-K, cero 8-K, cero trimestres,
+  `ifrs-full` en vez de `us-gaap`. La enmienda de §4 era correcta: medirlo con la
+  vara doméstica lo convertía en falla siendo el control.
 
-```bash
-node scripts/historia-phase0-probe.mjs          # LULU, MSFT, MELI + control VIST
-node scripts/historia-phase0-probe.mjs --sin-control   # solo los tres del encargo
-```
+### El asterisco sobre las 19 revisiones de MELI
 
-Pegar el tablero acá **en el momento**, antes de cerrar la terminal.
+**El 19 es real como medición y ambiguo como hecho.** No se puede usar tal cual
+como ground truth de un test, y la razón está dentro de esta misma corrida.
 
-### Lo que esto NO bloquea
+`revisiones` cuenta **periodos con más de un valor distinto** *después* de unir
+todos los alias de la familia. Eso mezcla dos cosas que no son la misma:
 
-La Fase A arranca igual, y no es un atajo. El diseño no depende de los números
-que faltan: el esquema (§5), la derivación de Q4, la clave con `accession` y la
-regla del 20-F están decididos y son independientes de si LULU tiene 11 o 12
-trimestres. Lo que los números condicionan es **G7** (§10): declarar que el
-módulo funciona contra EDGAR real. Hasta entonces se dice que funciona contra
-fixtures, que es distinto y se escribe distinto.
+1. una **re-expresión** de verdad — el mismo concepto, el mismo periodo,
+   presentado otra vez con otro valor en un filing posterior; y
+2. **dos tags distintos** de la misma familia que miden cosas distintas y por
+   eso difieren en el mismo periodo.
 
----
+La corrida se desmiente sola si se ordena por la columna `tags`:
+
+| Emisor · familia | tags | periodos | revisiones |
+|---|---|---|---|
+| LULU · inventario | **2** | 12 | **12** (el 100%) |
+| MSFT · deuda | **2** | 12 | **12** (el 100%) |
+| MELI · ingresos | **2** | 13+ | **19** |
+| MELI · costo | 1 | 13 | 3 |
+| MELI · margen | 1 | 13 | 4 |
+| MELI · op | 1 | 13 | 3 |
+| MSFT · inventario | 1 | 12 | 0 |
+| LULU · ingresos | 1 | 12 | 0 |
+
+Que **todas** las familias de dos tags salgan revisadas al 100% y las de un tag
+salgan en cero o en tres no es una propiedad de los emisores: es el artefacto.
+`InventoryNet` y `InventoryFinishedGoods` **tienen** que diferir — son conceptos
+distintos. `LongTermDebt` y `LongTermDebtNoncurrent` también. Y en ingresos,
+`RevenueFromContractWithCustomerExcludingAssessedTax` e `…IncludingAssessedTax`
+difieren por construcción: son la misma venta con y sin impuesto.
+
+**Qué sí se sostiene:** que MELI se re-expresa y que LULU y MSFT no. Las
+familias de **un solo tag** de MELI —costo 3, margen 4, op 3— son
+re-expresiones genuinas, y ninguna otra empresa de la muestra tiene una sola.
+MELI sigue siendo el fixture correcto para la pregunta 3. Lo que no se sostiene
+es el número 19 como "19 re-expresiones de ingresos".
+
+**Lo que la Fase A tiene que producir** es el conteo **por tag**, no por familia.
+El esquema de §5 ya lo permite —`concept` está en la clave natural—, así que es
+una cuestión de cómo se consulta, no de cómo se guarda.
+
+### Tres cosas que el tablero delata y que la Fase A arregla
+
+**1. La vista `company_quarterly` de §5 tiene el mismo defecto.** Está escrita
+con `distinct on (cik, familia, period_end) … order by filed desc`, que elige
+entre tags distintos por fecha de presentación, y con
+`count(distinct val)` por `(cik, familia, period_end)`, que marca `revisado`
+cuando lo único que pasó es que dos alias miden cosas distintas. Tal cual, le
+mandaría al PM del Arena un "revisado" falso en el 100% de los inventarios de
+LULU. **Se arregla en la rebanada B**, con prioridad de tag dentro de la familia
+y el conteo de revisiones *dentro* del tag.
+
+**2. LULU no tiene caja: 0 tags, 0 hechos.** No es que LULU no reporte efectivo
+—lo reporta bajo el tag posterior a ASU 2016-18, que nuestra lista de alias no
+incluye. La familia `caja` no es del núcleo de G1, así que no movió ninguna
+compuerta, pero en la página produciría un **"sin documentos" falso**, que es
+peor que un hueco: parece honesto. La lista de alias se amplía en la rebanada C
+y el caso de LULU queda como su test.
+
+**3. El censo de 8-K no cuadra consigo mismo por ±1.** MSFT: `8-K (5a): 44` en
+la línea del censo, `8-K:43` en la de formas. MELI: 53 contra 52. LULU cuadra
+(48 y 48) y VIST también (0). No mueve G2 —100% es 100% con 43 o con 44— pero es
+un descuadre real entre dos conteos del mismo reporte, casi seguro por el borde
+de la ventana de 5 años. La ingesta cuenta lo que guarda y ése es el número que
+vale; queda anotado para que nadie lo persiga como bug.
+
+### G4 — el dimensionamiento, que decide la decisión 1 de §10
+
+**42 segundos y 16 llamadas por ticker.** El peso está en `companyfacts`
+(p50 5.463 ms, 3,08 MB de promedio) y en los `head-doc` (32 llamadas, p50
+2.500 ms). Eso resuelve el universo:
+
+- **Un lambda de 60 s no alcanza para un ticker con margen.** La ingesta bajo
+  demanda dentro de un request queda descartada por medición, no por opinión.
+- Con `maxDuration: 300` —lo que ya usan `xbrl-capture` y los jobs del Arena en
+  `vercel.json`— entran **~7 tickers por invocación**. La ingesta es un job de
+  goteo reanudable, como dice la decisión 1.
+- **La ráfaga de 10 concurrentes dio 10/10 en 200.** La SEC tolera su techo. El
+  default de 6 req/s del cliente (`api/_lib/edgar.js`) es conservador a
+  propósito: el margen es para los otros siete clientes que comparten la IP.
+
+⚠️ **`reporte.json` vuelve a estar en `.gitignore`.** El tablero de acá arriba ya
+es el registro durable, pero el JSON crudo de esta corrida es el mejor insumo
+para los fixtures de la rebanada C. Si sigue en la Mac, vale la pena guardarlo
+antes de que se pierda como el de la corrida 1.
+
+### Lo que sigue abierto
+
+**G7** (§10): que la ingesta guarde bien lo que baja. Las compuertas de la Fase 0
+dicen que el dato existe, es citable y se puede clasificar. No dicen que nuestro
+código lo persista sin perderlo ni deformarlo — eso se gana en la rebanada C y
+se verifica contra estos mismos cuatro emisores.
 
 ## 12. Fuentes
 
