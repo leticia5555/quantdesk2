@@ -114,11 +114,13 @@ Two things, and both are the difference between a backtest and a story.
 
 ### The piece that isn't available anywhere else
 
-A weekly capture of BMV's XBRL filings that records **the real publication date** of each report — 30 issuers, all with BMV ids verified against a live URL.
+A weekly capture of BMV's XBRL filings that records **the real publication date** of each report — 30 issuers, 30 captured, 0 skipped, 9 of 9 fields each.
 
-No public Mexican source exposes it. DataBursatil, the best available, indexes by *period close*: it tells you the quarter ended March 31, not the day the market could first read it. The gap between those two dates ranged from **23 to 59 days** across the issuers measured.
+No public Mexican source exposes it. DataBursatil, the best available, indexes by *period close*: it tells you the quarter ended March 31, not the day the market could first read it. The gap between those two dates ranged from **23 to 59 days** across the issuers measured — in that same single quarter, so it is a floor on the dispersion, not a distribution.
 
-Without the real date, any backtest over fundamentals has look-ahead — it trades on numbers nobody had yet. The workaround here was to lag everything by **65 days**, past the worst observed delay, which removes the bias at the cost of trading on stale information. The captured dates are what make that workaround unnecessary next time.
+Without the real date, any backtest over fundamentals has look-ahead — it trades on numbers nobody had yet. The workaround here is to lag everything by **65 days**, past the worst observed delay, which removes the bias at the cost of trading on stale information.
+
+**The captured series is one quarter old.** It holds 2Q2026 and nothing before it: the capture accumulates forward from September 2026, because BMV's pages serve what is published now, not an archive. One date per issuer does not replace a lag across ten years of backtest — that takes years of accumulation. In some years this series will be long enough to date fundamentals by real publication instead of by an estimated wait. Not today.
 
 ### What it was used for
 

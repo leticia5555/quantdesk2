@@ -309,6 +309,24 @@ Es **idempotente por construcción**: es un SET absoluto, no un incremento, y el
 rastro sólo crece cuando el valor de verdad cambió. Correrlo dos veces deja el
 mismo estado que correrlo una.
 
+##### Corrido (20-sep-2026)
+
+| | |
+|---|---:|
+| `ajustado` | **true** |
+| Contador antes | 4,408 |
+| Contador después | **80,977** |
+| Divergencia contra la API | **0** |
+| Veredicto | «cuadra dentro del 10%» |
+
+El contador y la API dicen ahora lo mismo, y el ajuste quedó anotado en
+`bmv_api_budget.ajustes` con su motivo y su fuente. Lo que sigue midiéndose
+solo, de aquí en adelante, son los **bytes** de cada respuesta: la columna
+`bytes` arranca en el gasto posterior al arreglo, así que `creditos_rederivados`
+no va a cuadrar con `creditos` por un tiempo. **No es un error** — son dos
+números con historias distintas, y rellenar bytes hacia atrás sería fabricar un
+dato.
+
 > **Sin saldo confiable no se ajusta nada.** Si la API contesta un error, no se
 > reconcilia: `traer()` parsea el JSON aunque el status sea 500 —para poder
 > mostrar el error— y un cuerpo de falla puede traer una llave que se parezca a
@@ -1872,6 +1890,30 @@ número para decidir, no la decisión.
 > de Quálitas cuando su censo no trae el rango. Eso sólo se sabe pidiéndole uno,
 > y eso ya cuesta créditos. La decisión queda de este lado del gasto.
 
+#### Corrido (20-sep-2026): el hueco es de la fuente
+
+`se_arregla_gratis: false`. **La API no manda `rango_financieros` para
+Quálitas**, así que no fue el parseo el que lo tiró: nunca llegó. `?job=reparse`
+no tiene qué re-derivar, y los **615 créditos** del presupuesto de arriba no
+comprarían nada — la cosecha pediría trimestres que la fuente no indexa.
+
+El caso queda **cerrado como hueco de la fuente**, no como deuda nuestra.
+
+> **Una hipótesis, marcada como hipótesis.** `api/_lib/emisoras.json` excluye a
+> Quálitas del universo del capturador con el motivo «aseguradora — taxonomía de
+> seguros, no ICS». Que DataBursatil tampoco le publique rango de financieros
+> **encaja** con eso: las dos fuentes estarían dejándola fuera por la misma
+> razón estructural.
+>
+> **No está verificado.** Sería fácil darlo por bueno porque explica
+> limpiamente los dos hechos, y ése es justo el momento de no hacerlo: lo que
+> se observó es que falta el rango, no *por qué* falta. Confirmarlo exigiría
+> mirar qué taxonomía publica Quálitas y contra qué indexa la API — y ninguna
+> de las dos cosas se hizo.
+>
+> Lo que sí se puede afirmar sin hipótesis: **el hueco no se cierra desde acá**,
+> y cualquier estrategia sobre este universo opera sin Quálitas.
+
 ## 6. Estado
 
 | Pieza | Estado |
@@ -1893,8 +1935,8 @@ número para decidir, no la decisión.
 | **Fase B** | **Corrida. NO-GO** (§5.10). Exceso 0.0%/año, t = −0.007, Sharpe +0.03 contra el +0.15 exigido. |
 | **Moneda extranjera** | **Fuera de la v1, por decisión.** `/v2/divisas` es spot y no sirve; la vía real es Banxico SIE, otra integración. Los 14 repartos van fuera con sus bp reportados (§3.3, §5.10). |
 | **Inspección** | `?job=muestra` — filas reales de cada tabla sin abrir Neon. SELECT-only, 0 créditos, protegido. |
-| **Diagnóstico** | `?job=diagnostico` — EPS/FIBRAs/cobertura contestados con el crudo guardado (§5.12). |
-| **Contador de créditos** | **Corregido y reconciliado** (18-sep-2026). Cobraba por request y la API cobra por KiB: 4,405 contra 80,975 reales, 94.6% de divergencia. `?job=creditos` contrasta contra la API; `&reconciliar=1` corrige el histórico con rastro (§2.1). |
+| **Diagnóstico** | `?job=diagnostico` — EPS/FIBRAs/cobertura contestados con el crudo guardado (§5.12). **Quálitas: `se_arregla_gratis: false`** — la API no manda su rango, el hueco es de la fuente. |
+| **Contador de créditos** | **Corregido y reconciliado.** Cobraba por request y la API cobra por KiB: 94.6% de divergencia. El ajuste corrió el **20-sep-2026** — `ajustado: true`, de **4,408 a 80,977**, divergencia **0**, «cuadra dentro del 10%» (§2.1). |
 | **Umbral de liquidez** | **Congelado en 1,000,000** (17-sep-2026), por operabilidad (§3.1, §5.8). |
 | **La cosecha** | **Completa.** 4,174 financieros, 569,589 filas de precio, 182 series. |
 | **Cobertura real** | **Reportada.** EPS en 4,174/4,174 filas; benchmark 4,207 días con 62 distribuciones. |
