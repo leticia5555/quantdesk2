@@ -34,11 +34,28 @@ const ARENA_ANTHROPIC_MODEL = process.env.ARENA_CLAUDE_MODEL || 'claude-fable-5-
 //
 // Actualizada: 2026-09-15. Si un precio cambia y esta tabla no, el costo
 // reportado miente: la fecha está acá para que se note.
+// ── El modelo de HISTORIA, la tercera perilla (2026-09-20) ──────────
+// Misma lógica que la del Arena y el mismo motivo: blast radius distinto.
+// HISTORIA narra con Opus 5 porque la tarea es leer ~12k tokens de evidencia
+// citada y escribir cinco secciones sin inventar una cita; la app sigue en
+// Haiku y la liga en Fable. Apuntar ANTHROPIC_MODEL acá habría subido sim,
+// earnings, Smart $ y los seis agentes de $1/$5 a $5/$25 sin que nadie lo
+// pidiera.
+//
+// Vive ACÁ y no en _lib/historia-prompt.js por la cicatriz de siempre: el
+// retiro de claude-sonnet-4-20250514 tumbó la IA entera porque el ID estaba
+// en 26 sitios. Un ID de modelo nuevo no se escribe fuera de este archivo.
+const HISTORIA_ANTHROPIC_MODEL = process.env.HISTORIA_CLAUDE_MODEL || 'claude-opus-5';
+
 const ANTHROPIC_PRICES = {
   'claude-fable-5-1': { in: 10, out: 50, cache_read: 0.25 },
-  'claude-opus-5': { in: 5, out: 25 },
+  // `cache_write` es 1,25× la entrada y `cache_read` 0,1×. Están acá porque
+  // HISTORIA reporta el costo desglosado: sin separar la lectura de caché de
+  // la entrada fresca no hay manera de saber si el prefijo congelado está
+  // pegando, y se pagaría 10× de más sin que nada falle.
+  'claude-opus-5': { in: 5, out: 25, cache_read: 0.5, cache_write: 6.25 },
   'claude-sonnet-5': { in: 2, out: 10 },
   'claude-haiku-4-5': { in: 1, out: 5 },
 };
 
-export { ANTHROPIC_MODEL, ARENA_ANTHROPIC_MODEL, ANTHROPIC_PRICES };
+export { ANTHROPIC_MODEL, ARENA_ANTHROPIC_MODEL, HISTORIA_ANTHROPIC_MODEL, ANTHROPIC_PRICES };

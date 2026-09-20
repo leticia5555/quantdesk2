@@ -30,8 +30,10 @@
 // ENV VARS: DATABASE_URL.
 // ═══════════════════════════════════════════════════════════════
 
-import { crearLectura, armarHistoria } from './_lib/historia-lectura.js';
+import { crearLectura, armarHistoria, armarNarracion } from './_lib/historia-lectura.js';
 import { respuestaEvidencia } from './_lib/historia-evidencia.js';
+import { autorizar } from './_lib/historia-auth.js';
+import { repo } from './_lib/historia-db.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -55,8 +57,24 @@ export default async function handler(req, res) {
     const { status, cuerpo } = await armarHistoria(crearLectura({ lang }), ticker, { lang });
 
     if (verEvidencia) {
+      // La puerta de inspección va autenticada aunque no filtre nada: en
+      // bucle le pega a Neon gratis desde una ruta pública, y además enseña
+      // exactamente qué se le manda al modelo. Ninguna de las dos cosas tiene
+      // por qué estar abierta.
+      const auth = autorizar(req);
+      if (!auth.ok) return res.status(auth.status).json(auth.cuerpo);
       res.setHeader('Cache-Control', 'no-store');
       return res.status(200).json(respuestaEvidencia(cuerpo, { ticker }));
+    }
+
+    // La lectura escrita se LEE, no se genera acá: generarla bajo demanda
+    // haría que cada visita fuera una llamada a Opus pagada. La genera
+    // /api/historia-narrar, que está autenticada.
+    if (cuerpo.estado === 'ok') {
+      cuerpo.narracion = await armarNarracion(cuerpo, {
+        buscar: (cik, hash) => repo.narracionPorHash(cik, hash),
+        lang,
+      });
     }
     // Los filings son inmutables y la ingesta es diaria: media hora de caché
     // en el CDN no envejece nada y descarga a Neon. Lo que todavía no se

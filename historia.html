@@ -98,6 +98,33 @@ input.tick:focus{border-color:var(--purple);}
 .episodio .formas{font-family:var(--mono);font-size:10.5px;color:var(--text2);margin-top:5px;letter-spacing:.03em;}
 .episodio .umbral{font-size:11px;color:var(--text3);line-height:1.5;margin-top:7px;}
 
+/* LA LECTURA ESCRITA — lo que la Fase B agrega. Va arriba porque es el
+   producto, y con su procedencia a la vista: qué modelo, qué versión de
+   prompt. Una narración sin procedencia es una opinión anónima. */
+.lectura{border:1px solid var(--border2);border-left:3px solid var(--purple);background:var(--bg1);
+  border-radius:10px;padding:16px 16px 12px;margin:18px 0 6px;}
+.lectura h3{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--purple);margin-bottom:10px;}
+.lectura .parte{margin-bottom:12px;}
+.lectura .parte:last-of-type{margin-bottom:6px;}
+.lectura .parte b{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--text);display:block;margin-bottom:3px;}
+.lectura .parte p{font-size:13.5px;line-height:1.62;color:var(--text);}
+.lectura .parte.rompe-parte{border-top:1px solid var(--border);padding-top:11px;margin-top:14px;}
+.lectura .parte.rompe-parte b{color:#ffb0b0;}
+/* La cita dentro de la prosa: se ve y se abre. Es la diferencia entre esto
+   y un resumen bonito. */
+.lectura a.c{font-family:var(--mono);font-size:10.5px;color:var(--text3);text-decoration:none;
+  border-bottom:1px dotted var(--text3);white-space:nowrap;}
+.lectura a.c:hover{color:var(--green);border-bottom-color:var(--green);}
+.lectura .proc{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.04em;
+  border-top:1px solid var(--border);padding-top:9px;margin-top:12px;line-height:1.6;}
+.lectura.falta{border-left-color:var(--text3);}
+.lectura.falta h3{color:var(--text3);}
+.lectura.retenida{border-left-color:var(--amber);background:rgba(255,179,71,.05);}
+.lectura.retenida h3{color:var(--amber);}
+.lectura .motivo{font-size:12.5px;color:var(--text2);line-height:1.55;}
+.lectura .cuales{font-family:var(--mono);font-size:10.5px;color:var(--amber);margin-top:7px;}
+
 /* LOS SIETE FILTROS — no siete cubetas. La misma línea, mirada de siete
    maneras. Una pregunta sin documentos sigue siendo clickeable: ahí es
    donde vive la explicación de por qué no los hay. */
@@ -284,6 +311,11 @@ const T = {
     bajo_q: 'También se ve bajo:',
     sobre: 'Además adjunta:',
     temas_de: 'Temas de estos filings:',
+    lectura: 'La lectura',
+    lectura_falta: 'Todavía sin lectura escrita',
+    lectura_retenida: 'Lectura retenida',
+    proc: (m, v, f) => `Escrita por ${m} · prompt v${v}${f ? ' · ' + f : ''}. Cada afirmación enlaza al documento del que sale. Sin predicciones, sin calificaciones, sin recomendaciones.`,
+    citas_malas: 'Citas que no resuelven:',
     vacio_filtro: 'Ningún documento de este emisor contesta esta pregunta.',
     vacio_nocubre: 'Esta pregunta no se contesta con documentos de EDGAR, así que la línea no tiene nada que mostrar. El motivo está arriba — y no es que hayamos buscado y no hubiera.',
     contesta_q: (n) => `Pregunta ${n}`,
@@ -304,7 +336,7 @@ const T = {
     sin_ingesta_q: 'La ingesta corre por goteo y toma ~42 segundos por emisor. Volvé después de la próxima corrida.',
     error: 'No se pudo leer la historia.',
     fuente: 'Fuente: SEC EDGAR · Cada afirmación enlaza a su documento.',
-    nodata: 'Sin datos · sin IA · sin recomendaciones',
+    nodata: 'Sin predicciones de precio · sin calificaciones · sin recomendaciones',
   },
   en: {
     sub: 'Seven questions about a company, answered ONLY with SEC documents. Every figure carries the filing it came from. This page does not narrate or recommend.',
@@ -329,6 +361,11 @@ const T = {
     bajo_q: 'Also shown under:',
     sobre: 'Also attaches:',
     temas_de: 'Topics in these filings:',
+    lectura: 'The reading',
+    lectura_falta: 'No written reading yet',
+    lectura_retenida: 'Reading withheld',
+    proc: (m, v, f) => `Written by ${m} · prompt v${v}${f ? ' · ' + f : ''}. Every claim links to the document it comes from. No predictions, no ratings, no recommendations.`,
+    citas_malas: 'Citations that do not resolve:',
     vacio_filtro: 'No document from this issuer answers this question.',
     vacio_nocubre: 'This question is not answered with EDGAR documents, so the timeline has nothing to show. The reason is above — and it is not that we looked and found nothing.',
     contesta_q: (n) => `Question ${n}`,
@@ -349,7 +386,7 @@ const T = {
     sin_ingesta_q: 'Ingestion runs as a trickle job and takes ~42 seconds per issuer. Come back after the next run.',
     error: 'Could not read the story.',
     fuente: 'Source: SEC EDGAR · Every claim links to its document.',
-    nodata: 'No AI · no ratings · no recommendations',
+    nodata: 'No price predictions · no ratings · no recommendations',
   },
 };
 
@@ -563,6 +600,63 @@ function panelHTML(s) {
   </section>`;
 }
 
+// LA LECTURA ESCRITA. Tres salidas, y las tres se ven distinto:
+//
+//   · `ok`            — se muestra, con su procedencia.
+//   · `sin_narracion` — se declara, igual que "sin documentos". La narración
+//                       se genera aparte y se guarda; no se escribe cada vez
+//                       que alguien abre la página, porque eso sería una
+//                       llamada pagada por visita.
+//   · `retenida`      — existe pero una cita no resuelve a un documento de
+//                       esta página, así que NO se muestra ninguna sección.
+//                       Todo-o-nada es tosco a propósito: un texto con una
+//                       cita que no abre parece riguroso y no lo es.
+function lecturaHTML(d) {
+  const t = T[LANG];
+  const n = d.narracion;
+  if (!n) return '';
+
+  if (n.estado !== 'ok') {
+    const clase = n.estado === 'retenida' ? 'retenida' : 'falta';
+    const titulo = n.estado === 'retenida' ? t.lectura_retenida : t.lectura_falta;
+    return `<div class="lectura ${clase}">
+      <h3>${esc(titulo)}</h3>
+      ${(n.declaraciones || []).map((x) => `<p class="motivo">${esc(x.texto)}</p>`).join('')}
+      ${(n.citas_desconocidas || []).length
+        ? `<div class="cuales">${esc(t.citas_malas)} ${esc(n.citas_desconocidas.join(' · '))}</div>` : ''}
+    </div>`;
+  }
+
+  // El índice de lo citable sale de lo que ESTA página ya tiene. Una cita que
+  // no está acá no se enlaza — y el servidor ya retuvo la narración entera en
+  // ese caso, así que llegar acá con una desconocida no debería pasar.
+  const url = new Map();
+  for (const e of ((d.linea_de_tiempo || {}).eventos || [])) url.set(e.accession, e.url);
+  for (const s of (d.secciones || [])) {
+    for (const p of (s.serie || [])) {
+      if (p.accession) url.set(p.accession, p.url);
+      if (p.accession_aux) url.set(p.accession_aux, p.url_aux);
+    }
+  }
+
+  // Se escapa PRIMERO y se enlaza después, sobre el texto ya escapado: al
+  // revés, el href entraría al escape y la cita quedaría rota.
+  const conCitas = (texto) => esc(texto).replace(/\[([A-Za-z0-9][A-Za-z0-9.\-]{2,})\]/g, (m, a) => (url.has(a)
+    ? `<a class="c" href="${esc(url.get(a))}" target="_blank" rel="noopener">[${esc(a)}]</a>`
+    : m));
+
+  const titulo = (id) => (id === 'donde_se_rompe' ? t.rompe : (TITULOS[LANG][id] || id));
+
+  return `<div class="lectura">
+    <h3>${esc(t.lectura)}</h3>
+    ${(n.secciones || []).map((s) => `<div class="parte${s.id === 'donde_se_rompe' ? ' rompe-parte' : ''}">
+      <b>${esc(titulo(s.id))}</b>
+      <p>${conCitas(s.texto)}</p>
+    </div>`).join('')}
+    <div class="proc">${esc(t.proc(n.modelo || '', n.prompt_version || '', String(n.creado_en || '').slice(0, 10)))}</div>
+  </div>`;
+}
+
 // Los chips. Una pregunta sin documentos NO se apaga ni se esconde: se puede
 // elegir igual, y ahí es donde vive la explicación de por qué no los hay. Es
 // la diferencia entre "no hay 13D" y "no miramos 13D", que es toda.
@@ -680,7 +774,7 @@ function render(d) {
     ${(c.declaraciones || []).map((x) => `<div class="decl nota">${esc(x.texto)}</div>`).join('')}
   </div>`;
 
-  $('app').innerHTML = cab + parcial + perim + chipsHTML(d, FILTRO)
+  $('app').innerHTML = cab + parcial + perim + lecturaHTML(d) + chipsHTML(d, FILTRO)
     + (FILTRO == null ? linea + paneles : paneles + linea) + rompe;
 }
 

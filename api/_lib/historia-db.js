@@ -336,6 +336,40 @@ export const HISTORIA_SCHEMA = [
      left join company_quarterly q
        on q.cik = e.cik and q.familia = n.familia
     group by e.cik, e.ticker, e.nombre, e.forma_anual, e.cobertura, n.familia`,
+
+  // ── La narración (Fase B) ────────────────────────────────────────────
+  //
+  // La clave es `(cik, hash)` y el hash cubre la evidencia, la VERSIÓN DEL
+  // PROMPT y el MODELO. Un filing nuevo cambia el hash; una línea del prompt
+  // también. Abrir la página no cambia nada — que es el punto entero.
+  //
+  // `crudo` guarda la respuesta del modelo SIEMPRE, incluso cuando el estado
+  // no es 'ok': si un guardia la rechaza hay que poder ver qué dijo, no
+  // solamente que la rechazó. Por eso `secciones` es nullable y `crudo` no
+  // depende de que la narración sirva.
+  //
+  // `estado` distingue los finales: 'ok' · 'cortada' (llegó al techo de
+  // tokens y se lee como completa, que es el modo de falla peligroso) ·
+  // 'rechazo_modelo' · 'json_invalido' · 'modelo_distinto' · 'http' · 'red'
+  // · y los que agregue el guardia de citas.
+  `create table if not exists company_narracion (
+     cik            text not null,
+     hash           text not null,
+     estado         text not null,
+     prompt_version int  not null,
+     modelo         text not null,
+     huella_prompt  text not null,
+     secciones      jsonb,
+     crudo          jsonb,
+     costo          jsonb,
+     detalle        text,
+     evidencia_bytes int,
+     creado_en      timestamptz not null default now(),
+     primary key (cik, hash)
+   )`,
+  // Para "dame la última narración servible de este emisor" sin escanear.
+  `create index if not exists company_narracion_servible
+     on company_narracion (cik, creado_en desc) where estado = 'ok'`,
 ];
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -553,6 +587,57 @@ export function crearRepo({ sql = sqlReal, sqlBatch = sqlBatchReal } = {}) {
           limit $1`,
         [limite, masViejoQue],
       );
+    },
+
+    // ── La narración ──────────────────────────────────────────────────
+    //
+    // Se guarda SIEMPRE, cualquiera sea el estado. Una narración rechazada no
+    // es basura: es la evidencia de por qué se rechazó, y sin ella el guardia
+    // es una caja negra que dice "no" sin mostrar qué vio.
+    //
+    // `on conflict do update` en vez de `do nothing`: si se vuelve a correr
+    // el mismo hash —porque el primer intento fue 'http' o 'cortada'— el
+    // segundo resultado tiene que pisar al primero. Dejar el error viejo
+    // haría que un reintento exitoso no se vea.
+    async guardarNarracion(n) {
+      await sql(
+        `insert into company_narracion
+           (cik, hash, estado, prompt_version, modelo, huella_prompt,
+            secciones, crudo, costo, detalle, evidencia_bytes)
+         values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11)
+         on conflict (cik, hash) do update set
+           estado = excluded.estado,
+           secciones = excluded.secciones,
+           crudo = excluded.crudo,
+           costo = excluded.costo,
+           detalle = excluded.detalle,
+           evidencia_bytes = excluded.evidencia_bytes,
+           creado_en = now()`,
+        [
+          n.cik, n.hash, n.estado, n.prompt_version, n.modelo, n.huella_prompt,
+          n.secciones ? JSON.stringify(n.secciones) : null,
+          n.crudo ? JSON.stringify(n.crudo) : null,
+          n.costo ? JSON.stringify(n.costo) : null,
+          n.detalle ?? null,
+          n.evidencia_bytes ?? null,
+        ],
+      );
+      return 1;
+    },
+
+    // La lectura de la página: SOLO por hash y SOLO si sirve. Devolver la
+    // última narración de este emisor sin mirar el hash serviría el texto de
+    // un filing que ya cambió — un dato viejo con citas correctas, que es
+    // indistinguible de uno bueno.
+    async narracionPorHash(cik, hash) {
+      const filas = await sql(
+        `select estado, prompt_version, modelo, secciones, costo, creado_en
+           from company_narracion
+          where cik = $1 and hash = $2 and estado = 'ok'
+          limit 1`,
+        [cik, hash],
+      );
+      return filas[0] || null;
     },
   };
 }

@@ -150,6 +150,14 @@ const D = (lang = 'es') => ({
     { codigo: 'alt_data', texto: 'Sin datos alternativos.' },
     { codigo: 'expert_networks', texto: 'Sin expert networks.' },
   ],
+  narracion: {
+    estado: 'ok', hash: 'abc123', modelo: 'claude-opus-5', prompt_version: 1, creado_en: '2026-09-20T10:00:00Z',
+    secciones: [
+      { id: 'direccion', texto: 'El 2026-02-20 la empresa reportó un cambio de directivos junto con sus resultados [0001-26-1].' },
+      { id: 'donde_se_rompe', texto: 'El 2026-03-01 avisó que no se puede confiar en estados financieros ya publicados [0001-26-9].' },
+    ],
+    declaraciones: [],
+  },
   fuente: 'SEC EDGAR',
 });
 
@@ -163,6 +171,22 @@ const VACIO = () => {
     : { ...s, accessions: [] }));
   d.contraevidencia = { id: 'donde_se_rompe', estado: 'sin_contraevidencia', accessions: [], periodos_reexpresados: [],
     declaraciones: [{ codigo: 'sin_contraevidencia', texto: 'No encontramos contraevidencia en los filings.' }] };
+  return d;
+};
+
+// Sin lectura escrita: se declara, no se esconde.
+const SIN_LECTURA = () => {
+  const d = D();
+  d.narracion = { estado: 'sin_narracion', hash: 'abc123', secciones: [],
+    declaraciones: [{ codigo: 'sin_narracion', texto: 'Todavía no hay una lectura escrita de esta empresa. La narración se genera aparte y se guarda, no se escribe cada vez que alguien abre la página.' }] };
+  return d;
+};
+
+// Con una cita que no resuelve: se retiene ENTERA.
+const RETENIDA = () => {
+  const d = D();
+  d.narracion = { estado: 'retenida', hash: 'abc123', secciones: [], citas_desconocidas: ['0009-99-9'],
+    declaraciones: [{ codigo: 'narracion_retenida', texto: 'La lectura escrita existe pero no se muestra: una de sus citas no resuelve a un documento de esta página.' }] };
   return d;
 };
 
@@ -432,6 +456,70 @@ async function abrir(respuesta, ruta = '/historia.html?ticker=MELI') {
   const veredicto = desenlace.filter((w) => sinDescargo.includes(w));
   report('cero vocabulario de desenlace: el 5.07 se muestra, no se interpreta', veredicto.length === 0, veredicto.join(', '));
 
+  await page.close();
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 3b. LA LECTURA ESCRITA, Y LAS DOS MANERAS DE NO MOSTRARLA
+// ═════════════════════════════════════════════════════════════════════════
+{
+  const { page, errores } = await abrir(D);
+  report('la lectura escrita se pinta', (await page.locator('.lectura').count()) === 1);
+  report('…sin errores de JS', errores.length === 0, errores.join(' · '));
+  report('…con sus secciones', (await page.locator('.lectura .parte').count()) === 2);
+
+  // LA CITA ES EL PRODUCTO: adentro de la prosa, visible y abrible.
+  const cita = page.locator('.lectura a.c').first();
+  report('las citas de la prosa son enlaces', (await page.locator('.lectura a.c').count()) === 2);
+  report('…que abren el documento', /sec\.gov/.test(await cita.getAttribute('href') || ''));
+  report('…y se ven como cita, con corchetes', /^\[0001-26-1\]$/.test((await cita.innerText()).trim()));
+
+  // La procedencia. Una narración sin procedencia es una opinión anónima.
+  const proc = await page.locator('.lectura .proc').innerText();
+  report('la lectura declara qué modelo la escribió', /claude-opus-5/.test(proc), proc);
+  report('…y con qué versión de prompt', /prompt v1/.test(proc));
+  report('…y que no predice ni recomienda', /Sin predicciones/.test(proc));
+
+  // Va ARRIBA: es el producto, no una nota al pie.
+  report('la lectura va antes de la línea', await page.evaluate(() => {
+    const l = document.querySelector('.lectura'); const t = document.querySelector('.linea');
+    return l && t ? (l.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING) > 0 : false;
+  }));
+
+  // La contraevidencia también va en la lectura, y al final.
+  report('"dónde se rompe" es la última parte de la lectura',
+    (await page.locator('.lectura .parte').last().innerText()).includes('no se puede confiar'));
+
+  const texto = (await page.locator('.lectura').innerText()).toLowerCase();
+  const prohibidas = ['comprar', 'vender', 'recomendamos', 'precio objetivo', 'atractiv', 'barata', 'cara'];
+  report('cero vocabulario de recomendación en la lectura',
+    prohibidas.filter((w) => texto.includes(w)).length === 0);
+
+  // El pie decía "sin IA" desde la Fase A. Ahora la página SÍ muestra una
+  // lectura escrita por un modelo: esa línea pasó a ser falsa, y una promesa
+  // falsa en el pie es peor que no tener pie.
+  const pie = await page.locator('#foot').innerText();
+  report('el pie ya no dice "sin IA": la página ahora narra', !/sin IA/i.test(pie), pie.replace(/\n/g, ' '));
+  report('…y sí dice lo que sigue siendo cierto', /sin predicciones de precio/i.test(pie) && /sin recomendaciones/i.test(pie));
+
+  await page.screenshot({ path: '/tmp/claude-0/-home-user-quantdesk2/c183cedc-10de-5593-8388-72ecf3a8e2f4/scratchpad/historia-lectura.png', fullPage: true });
+  await page.close();
+}
+{
+  const { page } = await abrir(SIN_LECTURA);
+  report('sin lectura escrita se DECLARA, no se esconde', (await page.locator('.lectura.falta').count()) === 1);
+  report('…diciendo que no se escribe al abrir la página',
+    /no se escribe cada vez/.test(await page.locator('.lectura.falta').innerText()));
+  report('…y los documentos siguen estando', (await page.locator('.linea .ev').count()) === EVENTOS.length);
+  await page.close();
+}
+{
+  const { page } = await abrir(RETENIDA);
+  report('una cita que no resuelve retiene la lectura', (await page.locator('.lectura.retenida').count()) === 1);
+  report('…y NO se muestra ninguna sección', (await page.locator('.lectura .parte').count()) === 0);
+  report('…se dice cuál cita falló', /0009-99-9/.test(await page.locator('.lectura.retenida').innerText()));
+  report('…y los documentos siguen estando: se cae a la Fase A',
+    (await page.locator('.linea .ev').count()) === EVENTOS.length);
   await page.close();
 }
 
