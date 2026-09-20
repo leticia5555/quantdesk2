@@ -602,8 +602,14 @@ indexa por **cierre**, no por publicación. Con nuestras fechas reales de Fase
 | Emisora | Cierre | Publicado | Lag |
 |---|---|---|---:|
 | WALMEX | 2026-06-30 | 2026-07-23 | 23 días |
-| PE&OLES | 2026-06-30 | 2026-07-23 | 23 días |
+| PE&OLES | 2026-06-30 | 2026-08-04 | 35 días |
 | MEGA | 2026-06-30 | 2026-08-28 | **59 días** |
+
+> El valor de PE&OLES viene de la corrida que reparó su `fecha_publicacion`
+> nula. La página decía `23-Jul-2026` cuando se escribió la predicción de
+> `xbrl-capture.md` §5.4 y `2026-08-04` cuando se guardó; mando el guardado,
+> que es el que el backtest leería, y la discrepancia queda anotada en §5.6 de
+> ese doc. **El rango no se mueve**: el piso lo pone WALMEX, no PE&OLES.
 
 65 > 59, el máximo observado. Eso **elimina** el look-ahead en vez de
 repartirlo. El costo es información rancia —se descarta lo que ya era público

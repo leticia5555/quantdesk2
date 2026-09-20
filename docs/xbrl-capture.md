@@ -362,7 +362,8 @@ correcta, sólo LASITE saltada por falta de id. Quedaron **dos filas guardadas
 con `fecha_publicacion` nula**: PE&OLES (doc 1579656) y MEGA (doc 1585294).
 
 *(Cifras de esa corrida, que se dejan como quedaron. El id de LASITE se
-completó después y la 3ª corrida sí dio 30/30 — §5.5.)*
+completó después y la 3ª corrida sí dio 30/30 — §5.5; las dos fechas nulas se
+repararon — §5.6.)*
 
 ### 5.4 Qué va a pasar en la próxima corrida
 
@@ -419,6 +420,47 @@ Lo mismo vale para el rango observado de **23 a 59 días**: sale de ese único
 trimestre, así que es una **cota inferior de la dispersión**, no una
 distribución.
 
+### 5.6 Las dos fechas nulas: reparadas, y una no fue la que predije
+
+La reparación de §5.4 **corrió y funcionó**. Las dos filas que habían quedado
+con `fecha_publicacion` nula ya la tienen, y ambas con los **9/9 campos**:
+
+| Emisora | doc_id | Predicho en §5.4 | Guardado en la corrida | Lag vs cierre 2026-06-30 |
+|---|---|---|---|---:|
+| MEGA | 1585294 | `28-Aug-2026 15:06` | `2026-08-28T15:06Z` | 59 días |
+| PE&OLES | 1579656 | `23-Jul-2026 14:11` | **`2026-08-04T09:48Z`** | **35 días** |
+
+MEGA cayó exactamente donde decía la predicción. **PE&OLES no**: la página que
+leí al escribir §5.4 mostraba el 23 de julio, y lo que quedó guardado es el 4 de
+agosto — doce días después, mismo `doc_id`.
+
+**No sé cuál de las dos es la buena, y no lo voy a adivinar.** Las dos lecturas
+son de la misma página y del mismo documento, así que una de estas tres:
+
+1. la página de PE&OLES cambió su fecha entre las dos lecturas, bajo el mismo
+   `doc_id`. **Es la menos probable de las tres**: una reexpresión llega como
+   `_2` con `doc_id` propio y entra como fila nueva (§6.5), no repisa la fecha
+   de la anterior;
+2. la predicción de §5.4 leyó la fila de otro periodo;
+3. la transcripción de §5.4 estaba mal desde el principio.
+
+**Qué lo resuelve, y es gratis:** la fecha sale de la página que el run ya pide
+—no baja el zip, no gasta créditos— así que la próxima corrida del capturador
+vuelve a leerla. Si sale `2026-08-04`, (1) o (3); si sale `23-Jul`, la tabla
+tiene un valor que la página no respalda y hay que mirar el parseo de la fila.
+Hasta entonces **mando el valor guardado**, que es el que el backtest leería.
+
+**Lo que esto NO mueve:** el rango observado sigue siendo **23 a 59 días**. El
+piso lo pone WALMEX (23), no PE&OLES, así que los 65 días de espera de
+`bmv-rotation.md` §3.2 cubren lo observado igual que antes. Lo único que cambia
+es el renglón de PE&OLES en esa tabla, de 23 a 35 días — y cambia hacia el
+centro del rango, no hacia el borde.
+
+**Por qué esto merece un apartado y no una corrección silenciosa:** §5.4 es una
+predicción escrita antes de correr. Sobrescribirla para que coincida con el
+resultado destruiría lo único que la hacía útil —que era falsable— y dejaría sin
+registro que una de las dos falló. La predicción se queda como está.
+
 ## 6. Qué me preocupa
 
 1. **El reloj.** Es el riesgo que no se arregla con código. Si el 2T2026 se cae
@@ -427,10 +469,12 @@ distribución.
    capturador.
 2. ~~**LASITE sigue sin id.**~~ **CERRADO el 20-sep-2026:** id `36025`, y la
    corrida siguiente dio **30/30 observado** — 0 saltadas, 0 fallidas, LASITE
-   con doc 1578536 y sus 9/9 campos (§5.5).
+   con doc 1578536 y sus 9/9 campos (§5.5). Con las dos `fecha_publicacion`
+   nulas ya reparadas (§5.6), **no queda ninguna fila incompleta**.
 
-   Lo que sí sigue en pie de esa preocupación: **los trimestres que LASITE se
-   perdió mientras no tuvo id no se recuperan solos.** La captura toma lo que
+   Lo único que sigue en pie de esa preocupación, y es el único pendiente de
+   captura que queda abierto: **los trimestres que
+   LASITE se perdió mientras no tuvo id no se recuperan solos.** La captura toma lo que
    la página publica hoy; los reportes viejos siguen en BMV, así que el hueco
    es recuperable, pero hay que ir por él a propósito.
 
