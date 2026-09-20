@@ -686,6 +686,19 @@ Consecuencias, que son de diseño y no de logística:
 > **Hasta que G7 cierre, la Fase A está probada contra fixtures, no contra la
 > fuente.** Se dice así en el PR y no se declara "funciona con EDGAR".
 
+G7 se gana por partes, y la primera ya se puede cobrar sin esquema ni ingesta:
+el **transporte** (`api/_lib/edgar.js`) tiene su propio smoke contra EDGAR real.
+
+```bash
+node scripts/historia-edgar-smoke.mjs        # LULU, MSFT, MELI, VIST
+```
+
+Diez llamadas, sin keys, sin DB, sin escribir nada. Contesta si el UA es
+aceptado, si las URLs de documento primario resuelven, cuánto pesa
+`companyfacts` de verdad (el insumo de G4) y qué formas presenta cada emisor
+(el dato de G6, medido en vez de asumido). Lo que **no** contesta es si lo
+ingerido queda bien guardado: eso es G7 entera y necesita la rebanada C.
+
 El número que originó el encargo —"MELI: 19 revisiones del concepto de
 ingresos"— **no tiene respaldo en el repo**: no está en la sonda, ni en los
 tests, ni en ningún payload. Viene de un resumen de conversación. No se usa
