@@ -1091,6 +1091,43 @@ El arreglo, y la regla que deja escrita: **lo que la empresa ya reportó no se
 calcula.** Entre el trimestre que presentó y una resta nuestra, gana el suyo —
 el suyo es el dato, el nuestro es aritmética sobre el dato.
 
+### El 5.07 — la enmienda del desenlace *(decidida el 2026-09-20)*
+
+La rebanada F dejó el 5.07 anotado como hueco con su número al lado. El
+operador lo cerró en el mismo turno, y el argumento es mejor que el que yo
+tenía:
+
+> *"Es el único documento que dice cómo terminó la pelea. Hoy la línea muestra
+> 34 filings de campaña y cero del resultado de la votación — el desenlace
+> existe en EDGAR y lo estamos dejando fuera."*
+
+Eso reencuadra el asunto. Yo lo estaba tratando como "cinco documentos más por
+emisor", que es una pregunta de escala; visto así es una pregunta de
+**completitud del relato**: la pregunta 2 tenía toda la campaña y nada del
+resultado, que es la única parte que un lector no puede reconstruir solo. El
+tablero de la corrida 2 acota el costo: **5 por emisor en los cuatro** (§11),
+así que no hay cambio de escala que discutir.
+
+**Y la línea que esto NO cruza.** Que el 5.07 aparezca en la pregunta 2 no es
+decir quién ganó. El documento trae los votos —a favor, en contra,
+abstenciones, non-votes— y la glosa dice "resultados de la votación de
+accionistas", que es qué **es** el papel. Quién ganó, si la propuesta era del
+consejo o del disidente, y qué significa el margen, es lectura, y la lectura
+es Fase B. Hay tres pruebas que lo sostienen: la glosa no puede contener
+vocabulario de desenlace, ni el evento ni la sección pueden traer un campo de
+votos, y la pantalla entera se revisa contra ese mismo vocabulario (con el
+descargo del episodio excluido, porque ése dice justamente que NO lo dice).
+
+Un detalle que había que cuidar: **el 5.07 no engorda el episodio de la
+pelea.** `agruparEpisodios` cuenta filings de solicitación impugnada; el 5.07
+es un 8-K y es el cierre, no campaña. Sumarlo habría inflado un conteo que ya
+es delicado ("34 filings en 156 días"), y hay una prueba que lo fija.
+
+**No requiere re-ingesta.** `itemsDe` guarda todos los items del índice sin
+lista blanca, así que los 5.07 de los cuatro emisores ya están en
+`company_filing_items` desde la corrida del goteo. El cambio es de perímetro
+de lectura, no de datos.
+
 ### Lo que sigue abierto
 
 **La otra mitad de G7: la vista.** El goteo prueba que la ingesta baja y
@@ -1158,16 +1195,6 @@ vez dejó de ser una convención y pasó a ser una propiedad de la estructura.
   prueba de e2e.
 
 ### Lo que sigue abierto
-
-**El 5.07 no está en el perímetro.** El resultado de la votación en la asamblea
-es evidencia directa de la pregunta 2 —quién posee y quién pelea— y el tablero
-de la corrida 2 lo midió: **5 por emisor en los cuatro** (§11). Hoy la consulta
-no lo trae. Meterlo amplía qué documentos muestra el módulo, así que no entra
-de contrabando en una rebanada de formato; queda como decisión con su número
-al lado. Mientras tanto, una prueba obliga a que el mapa item→pregunta y el
-perímetro de la consulta cuadren en **las dos direcciones**: un item del
-perímetro sin pregunta sería invisible con los filtros puestos, y una pregunta
-para un item que no se consulta sería cobertura anunciada que no existe.
 
 El desglose de un panel cuenta los temas de **los papeles del filtro**, no los
 de la pregunta: bajo "cuál es el catalizador" puede salir `1× 5.02`, porque

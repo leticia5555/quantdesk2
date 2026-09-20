@@ -193,6 +193,40 @@ console.log('\n── Las 7 secciones con documentos');
 }
 
 // ═════════════════════════════════════════════════════════════════════════
+console.log('\n── El 5.07: el desenlace entra a la línea, el veredicto no');
+{
+  // Sin el 5.07, la pregunta 2 mostraba 34 filings de campaña y CERO del
+  // resultado de la votación. El desenlace existe en EDGAR.
+  ok(ITEMS_INTERES.includes('5.07'), 'el 5.07 está en el perímetro de la consulta');
+
+  const campania = ev('acc-dfan', 'DFAN14A', '', '2026-05-20');
+  const cierre = ev('acc-507', '8-K', '5.07,9.01', '2026-06-10');
+  hondo(cierre.preguntas, [2], 'el resultado de la asamblea cae bajo la pregunta 2');
+  eq(cierre.item_principal, '5.07', 'y el 5.07 es el tema, no el adjunto');
+
+  const r = armarSecciones({ emisor: EMISOR, eventos: [cierre, campania] }, {});
+  const s2 = sec(r, 'propiedad');
+  hondo(s2.accessions, ['acc-507', 'acc-dfan'], 'la pregunta 2 ahora tiene la campaña Y su cierre');
+
+  // La línea que no se cruza: mostrar el documento no es decir quién ganó.
+  // El 5.07 trae los votos; interpretarlos es Fase B.
+  const json = JSON.stringify({ evento: cierre, seccion: s2 });
+  ok(!/(gan[óo]|perdi[óo]|aprob|rechaz|derrot|triunf|won|lost|approv|reject|defeat)/i.test(json),
+    'ni el evento ni la sección dicen cómo salió la votación');
+  ok(!/"resultado_votacion"|"votos"|"a_favor"|"en_contra"|"margen"/.test(json),
+    'y no se inventa ningún campo de votos: el papel se enlaza, no se resume');
+
+  // El 5.07 NO es un filing de campaña: el episodio no lo cuenta.
+  eq(s2.episodios.length, 1, 'el episodio de la pelea sigue existiendo');
+  eq(s2.episodios[0].total, 1, 'y cuenta solo el filing de solicitación, no el cierre');
+  eq(s2.episodios[0].por_forma['8-K'], undefined, 'el 8-K del resultado no engorda el conteo de la pelea');
+
+  // Y sigue siendo UN documento: el 5.07 con adjunto no se parte en dos.
+  hondo(cierre.items_destacados, ['5.07'], 'el tema queda destacado');
+  hondo(cierre.items_secundarios, ['9.01'], 'y el adjunto baja, como en cualquier otro 8-K');
+}
+
+// ═════════════════════════════════════════════════════════════════════════
 console.log('\n── Los tres vacíos NO son el mismo vacío');
 {
   const r = armarSecciones({ emisor: EMISOR }, {});

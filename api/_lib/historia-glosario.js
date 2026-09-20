@@ -231,12 +231,20 @@ export function partirItems(items = []) {
 // pregunta para un item que no se consulta es cobertura anunciada que no
 // existe. Hay una prueba que lo verifica en las dos direcciones.
 //
-// **Hueco conocido:** el 5.07 —el resultado de la votación en la asamblea— es
-// evidencia directa de la pregunta 2 y hoy NO está en el perímetro. Meterlo
-// es ampliar qué documentos muestra el módulo, así que no entra de contrabando
-// en una rebanada de formato.
+// ── EL 5.07, Y LA LÍNEA QUE NO CRUZA ────────────────────────────────
+// El 5.07 es el **único documento que dice cómo terminó la pelea**. Sin él la
+// línea mostraba 34 filings de campaña y cero del desenlace: el resultado
+// existe en EDGAR y lo estábamos dejando fuera. Va a la pregunta 2.
+//
+// Que aparezca ahí NO es decir quién ganó. El 5.07 trae los votos —a favor,
+// en contra, abstenciones, non-votes— y ni siquiera la glosa se acerca a
+// interpretarlos: dice "resultados de la votación de accionistas", que es
+// qué ES el documento. Quién ganó, si la propuesta era del consejo o del
+// disidente, y qué significa el margen, es lectura, y la lectura es Fase B.
+// La línea lo muestra como el documento que es.
 export const PREGUNTAS_DE_ITEM = {
   '5.02': [1],
+  '5.07': [2],
   '2.02': [3],
   '7.01': [3],
   '4.02': [3],   // además marca contraevidencia
