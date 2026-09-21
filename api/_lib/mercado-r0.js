@@ -282,6 +282,87 @@ export function parseManualParam(raw, { fuente, capturada_en } = {}) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// R0(a bis) — el RITMO, y el presupuesto de una corrida
+//
+// LA CORRIDA DEL 2026-09-21 LO DEJÓ CLARO: 553 `profile2` + 508 `metric` en
+// 150 s, con 433 y 448 errores. No eran datos faltantes: era el techo de
+// Finnhub free (60 req/min) devolviendo 429.
+//
+// El error era aritmético y estaba escrito en un comentario que decía lo
+// contrario: 8 en vuelo con 1.1 s entre tandas son **436 req/min**, no 55.
+// "Concurrencia con pausa entre tandas" no es un limitador — es una ráfaga
+// con intervalos. Un limitador espacia CADA arranque.
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * El espaciador, como función PURA de estado → estado.
+ *
+ * Se modela así, y no como un `await sleep` escondido, para poder probar el
+ * ritmo sin esperar minutos de reloj: se le pasa el instante y devuelve
+ * cuánto hay que esperar y el estado siguiente. El envoltorio asíncrono vive
+ * en el endpoint y no tiene lógica que probar.
+ *
+ * `proxima` es el instante en que se puede ARRANCAR la próxima llamada. Se
+ * reserva la ranura al pedirla, no al terminar: así una llamada lenta no
+ * corre las de atrás, y una rápida tampoco adelanta el cupo.
+ */
+export function proximaRanura(estado, ahoraMs, intervaloMs) {
+  const prev = (estado && Number.isFinite(estado.proxima)) ? estado.proxima : 0;
+  const cuando = Math.max(ahoraMs, prev);
+  return {
+    espera: Math.max(0, cuando - ahoraMs),
+    estado: { proxima: cuando + intervaloMs },
+  };
+}
+
+/** req/min → ms entre arranques. 55/min = 1091 ms. */
+export function intervaloDe(porMinuto) {
+  const n = num(porMinuto);
+  if (n == null || n <= 0) return 60000;
+  return Math.ceil(60000 / n);
+}
+
+/**
+ * Un 429 significa que el techo real está por debajo del que creíamos —
+ * casi siempre porque OTRO proceso nuestro también está pegándole a Finnhub
+ * (el Arena tiene sus propios crons). La respuesta no es reintentar en el
+ * acto: es correr la ranura y dejar que el símbolo caiga en la próxima
+ * corrida, que es justo lo que el diseño reanudable permite.
+ */
+export function penalizarPor429(estado, ahoraMs, castigoMs = 5000) {
+  const prev = (estado && Number.isFinite(estado.proxima)) ? estado.proxima : 0;
+  return { proxima: Math.max(ahoraMs, prev) + castigoMs };
+}
+
+/**
+ * ¿Cuánto entra en ESTA corrida, y cuántas faltan?
+ *
+ * `maxDuration` de Vercel es 300 s. El presupuesto se deja por debajo para
+ * que quepan la escritura en Neon y la respuesta: una corrida que muere por
+ * timeout pierde TODO lo que juntó, porque el upsert va al final.
+ *
+ * Devuelve también `corridas_estimadas`, que es el número que decide si el
+ * cron diario alcanza o hace falta uno más frecuente. Con 1061 pendientes a
+ * 55/min y 270 s de presupuesto, son 5 corridas — o sea que un cron diario
+ * tardaría cinco días en sembrar la tabla.
+ */
+export function planCorrida({ pendientes, presupuesto_ms = 270000, por_minuto = 55 }) {
+  const n = Math.max(0, Math.floor(num(pendientes) ?? 0));
+  const intervalo = intervaloDe(por_minuto);
+  const caben = Math.max(0, Math.floor(presupuesto_ms / intervalo));
+  const enEsta = Math.min(n, caben);
+  return {
+    pendientes: n,
+    caben_por_corrida: caben,
+    en_esta_corrida: enEsta,
+    restantes_despues: n - enEsta,
+    corridas_estimadas: caben > 0 ? Math.ceil(n / caben) : null,
+    intervalo_ms: intervalo,
+    por_minuto,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // R0(a) — la fila del universo US
 // ═══════════════════════════════════════════════════════════════════
 

@@ -16,6 +16,7 @@ import {
   filaUniversoUs, recorteMapa,
   parseFechaFeed, diagnosticoFechas, ZONAS_EXTRA,
   referenciaManual, parseManualParam,
+  proximaRanura, intervaloDe, penalizarPor429, planCorrida,
 } from '../api/_lib/mercado-r0.js';
 import { contarItemsFeed } from '../api/_lib/mercado-fase0.js';
 import REFERENCIAS from '../api/_lib/mercado-cap-referencia.json' with { type: 'json' };
@@ -497,4 +498,96 @@ test('registro: PE&OLES queda SIN serie y con el motivo, no con una inventada', 
   const p = EMISORAS.emisoras.find((e) => e.clave === 'PE&OLES');
   assert.equal(p.serie_liquida, null);
   assert.match(p.sin_precio, /no tiene NINGUNA serie/);
+});
+
+// ───────── R0(a bis) · el RITMO, y el error que costó una corrida ─────────
+
+test('R0a: el limitador da EXACTAMENTE el ritmo pedido, no un múltiplo', () => {
+  // ÉSTE es el test que habría evitado la corrida del 2026-09-21. La versión
+  // vieja hacía 8 en vuelo con 1.1 s entre tandas y el comentario decía "deja
+  // margen": eran 436 req/min contra un techo de 60, y 433 de 553 llamadas
+  // volvieron 429.
+  const intervalo = intervaloDe(55);
+  let estado = { proxima: 0 };
+  const t0 = 1_000_000;
+  const arranques = [];
+  // 60 solicitudes pedidas TODAS en el mismo instante: el peor caso, y el que
+  // la versión vieja convertía en ráfaga.
+  for (let i = 0; i < 60; i++) {
+    const r = proximaRanura(estado, t0, intervalo);
+    estado = r.estado;
+    arranques.push(t0 + r.espera);
+  }
+  const ventana = arranques[arranques.length - 1] - arranques[0];
+  const porMinuto = (60 / ventana) * 60000;
+  assert.ok(porMinuto <= 60, `el limitador deja pasar ${porMinuto.toFixed(0)} req/min, por encima del techo de Finnhub`);
+  assert.ok(porMinuto >= 50, `el limitador va a ${porMinuto.toFixed(0)} req/min: innecesariamente lento`);
+});
+
+test('R0a: la ranura se reserva al PEDIRLA, no al terminar', () => {
+  // Si se reservara al terminar, una llamada lenta correría a las de atrás y
+  // el ritmo dependería de la latencia de Finnhub en vez del techo.
+  const intervalo = intervaloDe(55);
+  let e = { proxima: 0 };
+  const a = proximaRanura(e, 1000, intervalo); e = a.estado;
+  const b = proximaRanura(e, 1000, intervalo); e = b.estado;
+  assert.equal(a.espera, 0);
+  assert.equal(b.espera, intervalo);
+});
+
+test('R0a: una llamada que tarda MÁS que el intervalo no atrasa a la siguiente', () => {
+  const intervalo = intervaloDe(55);
+  let e = { proxima: 0 };
+  proximaRanura(e, 1000, intervalo);
+  e = proximaRanura(e, 1000, intervalo).estado;
+  // La siguiente se pide 10 s después (la anterior tardó mucho): no espera.
+  const c = proximaRanura(e, 11000, intervalo);
+  assert.equal(c.espera, 0);
+});
+
+test('R0a: intervaloDe redondea HACIA ARRIBA — 55/min nunca son 56', () => {
+  assert.equal(intervaloDe(55), 1091);
+  assert.ok(60000 / intervaloDe(55) <= 55);
+  assert.equal(intervaloDe(60), 1000);
+  // Defensivo: un valor absurdo no produce una ráfaga.
+  assert.equal(intervaloDe(0), 60000);
+  assert.equal(intervaloDe(null), 60000);
+});
+
+test('R0a: un 429 CORRE la ranura en vez de reintentar en el acto', () => {
+  // Reintentar un 429 inmediatamente es pedirle a un servidor saturado que se
+  // sature más. El símbolo queda pendiente y lo toma la próxima corrida —
+  // para eso el job es reanudable.
+  const e = penalizarPor429({ proxima: 0 }, 5000, 5000);
+  assert.equal(e.proxima, 10000);
+  // Y respeta una ranura futura ya reservada en vez de pisarla.
+  const f = penalizarPor429({ proxima: 20000 }, 5000, 5000);
+  assert.equal(f.proxima, 25000);
+});
+
+test('R0a: el plan dice cuántas corridas faltan — y con 1061 pendientes son 5', () => {
+  // El número que decide si un cron DIARIO alcanza. Con 5 corridas, un cron
+  // diario habría tardado cinco días en sembrar la tabla; por eso pasó a
+  // 2×/hora auto-gateado.
+  const p = planCorrida({ pendientes: 1061, presupuesto_ms: 250000, por_minuto: 55 });
+  assert.equal(p.caben_por_corrida, 229);
+  assert.equal(p.en_esta_corrida, 229);
+  assert.equal(p.restantes_despues, 832);
+  assert.equal(p.corridas_estimadas, 5);
+});
+
+test('R0a: sin pendientes, el plan es cero corridas — el cron se auto-gatea', () => {
+  const p = planCorrida({ pendientes: 0 });
+  assert.equal(p.en_esta_corrida, 0);
+  assert.equal(p.corridas_estimadas, 0);
+  assert.equal(p.restantes_despues, 0);
+});
+
+test('R0a: el presupuesto de la corrida queda por debajo del maxDuration', () => {
+  // Una corrida que muere por timeout pierde TODO lo que juntó, porque el
+  // upsert va al final. 250 s contra los 300 de Vercel dejan 50 s para la
+  // escritura y la respuesta.
+  const p = planCorrida({ pendientes: 10000, presupuesto_ms: 250000, por_minuto: 55 });
+  assert.ok(p.caben_por_corrida * p.intervalo_ms <= 250000);
+  assert.ok(250000 < 300000);
 });
