@@ -827,6 +827,76 @@ function extraeCluster(raw) {
   };
 }
 
+// ─────────────────── base histórica de beats (vista EN VIVO) ─────────────
+//
+// Lo que esto ES: el conteo de cuántas veces una empresa superó el estimado,
+// leído de pead_earnings. Lo que esto NO ES: una probabilidad. La diferencia
+// no es cosmética — es la razón por la que la tarjeta dice "superó 26 de 32"
+// y NUNCA "probabilidad 81%". QuantDesk no emite probabilidad propia hasta
+// que la Fase 2 la valide; si algún día la emite, va a ser un campo distinto
+// con su propio nombre, no este número renombrado.
+//
+// `beat` = reportado > estimado, estricto. Los empates NO son beats. Y los
+// que caen dentro de la frontera de $0.01 se cuentan aparte (`frontera`),
+// porque ahí la definición de "superó" depende de qué consenso se use —
+// exactamente el problema que el scope documenta en §"Consenso y frontera".
+function estadisticasHistoricas(filas, { ultimos = 8, frontera = CRITERIOS.frontera_eps } = {}) {
+  const ordenadas = (filas || [])
+    .filter((f) => f && f.reported_date)
+    .map((f) => ({
+      fecha: isoDia(f.reported_date),
+      reportado: num(f.reported_eps),
+      estimado: num(f.estimated_eps),
+      sorpresa_pct: num(f.surprise_pct),
+    }))
+    .filter((f) => f.fecha)
+    .sort((a, b) => b.fecha.localeCompare(a.fecha));   // más reciente primero
+
+  // Solo los trimestres con las DOS cifras pueden decir si superó o no.
+  const comparables = ordenadas.filter((f) => f.reportado !== null && f.estimado !== null);
+  if (!comparables.length) {
+    return { total: 0, beats: 0, pct: null, racha: null, sorpresa_promedio_pct: null,
+      ultimos: [], sin_datos: true, motivo: 'sin trimestres comparables en pead_earnings' };
+  }
+
+  const marcados = comparables.map((f) => ({
+    ...f,
+    beat: f.reportado > f.estimado,
+    frontera: Math.abs(f.reportado - f.estimado) <= frontera,
+  }));
+
+  const beats = marcados.filter((f) => f.beat).length;
+
+  // Racha ACTUAL: cuántos trimestres seguidos, desde el más reciente hacia
+  // atrás, repiten el mismo resultado. Se devuelve el tipo y el largo por
+  // separado — un "3" sin decir de qué no significa nada.
+  const tipo = marcados[0].beat ? 'beats' : 'misses';
+  let racha = 0;
+  for (const f of marcados) {
+    if (f.beat !== marcados[0].beat) break;
+    racha++;
+  }
+
+  const conSorpresa = marcados.filter((f) => f.sorpresa_pct !== null);
+  const sorpresaProm = conSorpresa.length
+    ? conSorpresa.reduce((a, f) => a + f.sorpresa_pct, 0) / conSorpresa.length
+    : null;
+
+  return {
+    total: marcados.length,
+    beats,
+    pct: Math.round((beats / marcados.length) * 100),
+    frontera: marcados.filter((f) => f.frontera).length,
+    racha: { tipo, largo: racha },
+    sorpresa_promedio_pct: sorpresaProm === null ? null : Number(sorpresaProm.toFixed(2)),
+    ultimos: marcados.slice(0, ultimos).map((f) => ({
+      fecha: f.fecha, estimado: f.estimado, reportado: f.reportado,
+      beat: f.beat, frontera: f.frontera,
+    })),
+    sin_datos: false,
+  };
+}
+
 // ─────────────────── resumen en español ───────────────────
 
 // El censo se lee en el navegador (?format=md). Reporta lo que VIO, incluidos
@@ -1181,4 +1251,5 @@ export {
   extraeConsensoEps, precioEnT24h, cruzaConPead, evaluaFuentePIT, resumenMarkdown,
   esFecha, recortaFila, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
   analizaDesfases, clasificaT24h, MAX_TOLERANCIA_PROPONIBLE, comparaEmparejamiento,
+  estadisticasHistoricas,
 };

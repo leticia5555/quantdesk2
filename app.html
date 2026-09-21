@@ -1022,6 +1022,21 @@ td:first-child{color:var(--text);font-weight:500;}
       <button onclick="runEarningsIntel()" style="font-family:var(--mono);font-size:10px;padding:4px 12px;background:#ff6600;border:none;color:#000;font-weight:700;border-radius:2px;cursor:pointer;" data-i18n="analyze">ANALYZE</button>
     </div>
   </div>
+  <!-- ── POLYMARKET · MERCADOS DE EARNINGS ABIERTOS (vista en vivo) ──
+       Lo que se pinta acá es un CONTEO histórico y un PRECIO de mercado, con
+       su fuente al lado. NO hay probabilidad de QuantDesk: la Fase 2 todavía
+       no la validó, y el endpoint devuelve `probabilidad_quantdesk: null` a
+       propósito para que la ausencia sea una decisión visible. Si algún día
+       aparece, va a ser un campo nuevo con su nombre — no este % renombrado. -->
+  <div style="background:#0d0d0d;padding:16px;margin-top:1px;border-bottom:1px solid #1a1a1a;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;flex-wrap:wrap;">
+      <span style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;" data-i18n="pmOpenMarkets">POLYMARKET · OPEN EARNINGS MARKETS</span>
+      <span id="ebLiveMeta" style="font-family:var(--mono);font-size:9px;color:#444;"></span>
+      <button onclick="loadEarningsBeatLive(true)" style="margin-left:auto;font-family:var(--mono);font-size:9px;padding:2px 8px;background:none;border:1px solid #333;color:#888;border-radius:2px;cursor:pointer;" data-i18n="refresh">↻ refresh</button>
+    </div>
+    <div id="ebLiveDisclaimer" style="font-family:var(--mono);font-size:9px;line-height:1.5;color:#7a6a45;background:#141109;border:1px solid #2a2212;border-radius:2px;padding:8px 10px;margin-bottom:12px;"></div>
+    <div id="ebLivePanel"><div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:24px 0;">…</div></div>
+  </div>
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:#111;margin-top:1px;">
     <div style="background:#0d0d0d;padding:16px;">
       <div style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;margin-bottom:12px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;" data-i18n="epsHistory">EPS HISTORY · SURPRISES</div>
@@ -2434,9 +2449,160 @@ function openFromScreener(ticker){
 let earningsLoadedAt=0;
 
 async function initEarningsPage(){
+  loadEarningsBeatLive();          // TTL propio (5 min): el precio se mueve
   if(Date.now()-earningsLoadedAt<QD_CAL_TTL_MS) return; // TTL 30 min, no page-lifetime
   earningsLoadedAt=Date.now();
   loadUpcomingEarnings();
+}
+
+// ─── POLYMARKET · MERCADOS DE EARNINGS ABIERTOS ──────────────────────
+// Tarjeta por EMPRESA: precio de Polymarket + base histórica de beats desde
+// pead_earnings. Las dos cosas con su fuente al lado.
+//
+// LA REGLA QUE NO SE TOCA: el histórico se pinta como CONTEO ("superó 26 de
+// 32"), nunca como probabilidad. Un "81%" a secas se lee como pronóstico, y
+// QuantDesk no tiene pronóstico validado todavía — la Fase 2 decide si algún
+// día lo hay. Si mañana alguien quiere poner un número propio, que agregue un
+// campo con su nombre; este no se renombra.
+let _ebLiveAt=0, _ebLiveLoading=false;
+const EB_LIVE_TTL_MS=5*60*1000;
+
+async function loadEarningsBeatLive(forzar){
+  if(_ebLiveLoading) return;
+  if(!forzar && Date.now()-_ebLiveAt<EB_LIVE_TTL_MS) return;
+  const panel=document.getElementById('ebLivePanel');
+  if(!panel) return;
+  _ebLiveLoading=true;
+  ebLiveDisclaimer();
+  panel.innerHTML='<div style="color:#444;font-family:var(--mono);font-size:11px;text-align:center;padding:24px 0;">'
+    +smL('Consultando Polymarket…','Querying Polymarket…')+'</div>';
+  try{
+    const r=await fetch('/api/earnings-beat?vista=live');
+    const d=await r.json();
+    _ebLiveAt=Date.now();
+    renderEbLive(d);
+  }catch(e){
+    // Un fallo de red NO se pinta como "no hay mercados": son cosas distintas.
+    panel.innerHTML=ebLiveAviso(smL('No se pudo consultar Polymarket. Es un fallo de conexión, no que no haya mercados abiertos.',
+      'Could not reach Polymarket. This is a connection failure, not an absence of open markets.'));
+  }finally{ _ebLiveLoading=false; }
+}
+
+function ebLiveDisclaimer(){
+  const el=document.getElementById('ebLiveDisclaimer');
+  if(!el) return;
+  const es='⚠ El histórico es un CONTEO de trimestres pasados, no una predicción. QuantDesk todavía no emite probabilidad propia: está en validación.';
+  const en='⚠ The track record COUNTS past quarters — it is not a forecast. QuantDesk does not publish its own probability yet: it is still being validated.';
+  const primero=smL(es,en), segundo=smL(en,es);
+  el.innerHTML='<div>'+primero+'</div><div style="color:#4a4130;margin-top:3px;">'+segundo+'</div>';
+}
+
+function ebLiveAviso(txt){
+  return '<div style="color:#666;font-family:var(--mono);font-size:11px;text-align:center;padding:24px 16px;line-height:1.6;">'+txt+'</div>';
+}
+
+function renderEbLive(d){
+  const panel=document.getElementById('ebLivePanel');
+  const meta=document.getElementById('ebLiveMeta');
+  if(!panel) return;
+  if(meta) meta.textContent='';
+
+  if(d && d.error){
+    panel.innerHTML=ebLiveAviso(smL('Polymarket no respondió: ','Polymarket did not respond: ')+String(d.error).slice(0,140));
+    return;
+  }
+  const empresas=(d&&d.empresas)||[];
+  if(!empresas.length){
+    // Estado vacío HONESTO: el motivo que dio el endpoint, no un genérico.
+    const motivo=(d&&d.vacio&&d.vacio.motivo)||smL('sin datos','no data');
+    panel.innerHTML=ebLiveAviso(smL('Ningún mercado abierto ahora mismo. Motivo: ','No open markets right now. Reason: ')+motivo
+      +'<div style="color:#444;margin-top:6px;font-size:10px;">'
+      +smL('Revisados: ','Reviewed: ')+((d&&d.vacio&&d.vacio.revisados)||0)+'</div>');
+    return;
+  }
+
+  if(meta){
+    const c=(d&&d.cobertura)||{};
+    let txt=empresas.length+smL(' empresa(s) · ',' compan'+(empresas.length===1?'y':'ies')+' · ')+(d.mercados_abiertos||0)+smL(' mercado(s) abierto(s)',' open market(s)');
+    if(c.parcial) txt+=smL(' · cobertura parcial ('+(c.simbolos_probados||0)+'/'+(c.de||0)+' símbolos)',' · partial coverage ('+(c.simbolos_probados||0)+'/'+(c.de||0)+' symbols)');
+    meta.textContent=txt;
+  }
+
+  panel.innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px;">'
+    +empresas.map(ebLiveCard).join('')+'</div>';
+}
+
+function ebLiveCard(e){
+  const h=e.historico||{};
+  const m=(e.mercados&&e.mercados[0])||{};
+  const dias=ebDiasHasta(e.fecha_resolucion);
+
+  // "Histórico: superó 26 de 32 (81%)" — conteo, nunca probabilidad.
+  const historicoTxt = (h.sin_datos||!h.total)
+    ? smL('Histórico: sin trimestres comparables en nuestra base','Track record: no comparable quarters in our data')
+    : smL('Histórico: superó '+h.beats+' de '+h.total+' ('+h.pct+'%)',
+          'Track record: beat '+h.beats+' of '+h.total+' ('+h.pct+'%)');
+
+  // "Polymarket hoy: 68%" — con la fuente citada.
+  const pmTxt = (m.polymarket_yes_pct===null||m.polymarket_yes_pct===undefined)
+    ? smL('Polymarket hoy: sin precio','Polymarket today: no price')
+    : smL('Polymarket hoy: '+m.polymarket_yes_pct+'%','Polymarket today: '+m.polymarket_yes_pct+'%');
+
+  const racha = h.racha&&h.racha.largo
+    ? smL('Racha: '+h.racha.largo+' '+(h.racha.tipo==='beats'?'trimestre(s) superando':'trimestre(s) fallando')+' al hilo',
+          'Streak: '+h.racha.largo+' quarter(s) '+(h.racha.tipo==='beats'?'beating':'missing')+' in a row')
+    : '';
+  const sorpresa = (h.sorpresa_promedio_pct===null||h.sorpresa_promedio_pct===undefined)
+    ? '' : smL('Sorpresa promedio: ','Average surprise: ')+(h.sorpresa_promedio_pct>0?'+':'')+h.sorpresa_promedio_pct+'%';
+
+  const quarters=(h.ultimos||[]).map(q=>{
+    const marca=q.beat?'<span style="color:#00c97d;">✓</span>':'<span style="color:#ff4444;">✗</span>';
+    const est=(q.estimado===null||q.estimado===undefined)?'—':Number(q.estimado).toFixed(2);
+    const rep=(q.reportado===null||q.reportado===undefined)?'—':Number(q.reportado).toFixed(2);
+    const front=q.frontera?'<span title="'+smL('dentro de 1 centavo del estimado','within one cent of the estimate')+'" style="color:#7a6a45;"> ~</span>':'';
+    return '<div style="display:flex;gap:6px;justify-content:space-between;font-size:9px;color:#666;padding:1px 0;">'
+      +'<span>'+marca+front+' '+q.fecha+'</span>'
+      +'<span style="color:#555;">'+smL('est ','est ')+est+' → '+rep+'</span></div>';
+  }).join('');
+
+  const consenso=(m.consenso_eps===null||m.consenso_eps===undefined)?'' :
+    '<div style="font-size:9px;color:#666;margin-top:2px;">'+smL('Consenso del mercado: ','Market consensus: ')+Number(m.consenso_eps).toFixed(2)+'</div>';
+
+  const titulo=m.titulo?String(m.titulo).slice(0,90):(m.slug||'');
+  const link=m.url?'<a href="'+m.url+'" target="_blank" rel="noopener noreferrer" style="color:#ff6600;text-decoration:none;">'+titulo+' ↗</a>':titulo;
+  const otros=(e.mercados&&e.mercados.length>1)
+    ? '<div style="font-size:9px;color:#555;margin-top:3px;">+'+(e.mercados.length-1)+smL(' mercado(s) más de esta empresa',' more market(s) for this company')+'</div>' : '';
+
+  return '<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;padding:12px;">'
+    +'<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px;">'
+      +'<span style="font-family:var(--mono);font-size:14px;color:#fff;font-weight:700;">'+e.symbol+'</span>'
+      +'<span style="font-family:var(--mono);font-size:9px;color:#666;">'+(e.fecha_resolucion||'—')+(dias!==null?' · '+dias:'')+'</span>'
+    +'</div>'
+    +'<div style="font-family:var(--mono);font-size:11px;color:#ff6600;">'+pmTxt+'</div>'
+    +'<div style="font-size:8px;color:#444;margin-bottom:8px;">'+smL('fuente: ','source: ')+(m.fuente_precio||'Polymarket')+'</div>'
+    +'<div style="font-family:var(--mono);font-size:11px;color:#ccc;">'+historicoTxt+'</div>'
+    +(racha?'<div style="font-size:9px;color:#888;margin-top:2px;">'+racha+'</div>':'')
+    +(sorpresa?'<div style="font-size:9px;color:#888;">'+sorpresa+'</div>':'')
+    +'<div style="font-size:8px;color:#444;margin-bottom:6px;">'+smL('fuente: historial de EPS (Alpha Vantage)','source: EPS history (Alpha Vantage)')+'</div>'
+    +(quarters?'<div style="border-top:1px solid #161616;padding-top:6px;margin-bottom:6px;">'
+      +'<div style="font-size:8px;color:#555;letter-spacing:.08em;margin-bottom:3px;">'+smL('ÚLTIMOS TRIMESTRES','LAST QUARTERS')+'</div>'+quarters+'</div>':'')
+    +'<div style="border-top:1px solid #161616;padding-top:6px;font-size:9px;color:#777;line-height:1.4;">'+link+consenso+otros+'</div>'
+    +'<div style="margin-top:6px;font-size:8px;color:#5a4f38;line-height:1.4;">'
+      +smL('El histórico no es predicción · Track record is not a forecast',
+           'Track record is not a forecast · El histórico no es predicción')+'</div>'
+  +'</div>';
+}
+
+// Días hasta la fecha, calculados en runtime (nunca una fecha tatuada).
+function ebDiasHasta(iso){
+  if(!iso) return null;
+  const hoy=new Date(); hoy.setHours(0,0,0,0);
+  const d=new Date(iso+'T00:00:00');
+  if(isNaN(d.getTime())) return null;
+  const n=Math.round((d-hoy)/86400000);
+  if(n===0) return smL('hoy','today');
+  if(n<0) return smL('hace '+Math.abs(n)+'d',Math.abs(n)+'d ago');
+  return smL('en '+n+'d','in '+n+'d');
 }
 
 // Safe JSON parse - never throws, returns null on failure
@@ -9902,6 +10068,7 @@ const i18n = {
     aiSmartVerdict:'AI SMART MONEY VERDICT 🤖',
     marketWideSignals:'MARKET-WIDE SMART MONEY SIGNALS 🤖',
     // EARNINGS
+    pmOpenMarkets:'POLYMARKET · OPEN EARNINGS MARKETS',
     earningsIntel:'EARNINGS INTELLIGENCE',
     earningsSubtitle:'EPS · SURPRISES · REACTIONS · WHISPER NUMBERS',
     epsHistory:'EPS HISTORY · SURPRISES',
@@ -10134,6 +10301,7 @@ const i18n = {
     aiSmartVerdict:'VEREDICTO IA · DINERO LISTO 🤖',
     marketWideSignals:'SEÑALES DE DINERO LISTO · MERCADO COMPLETO 🤖',
     // EARNINGS
+    pmOpenMarkets:'POLYMARKET · MERCADOS DE EARNINGS ABIERTOS',
     earningsIntel:'INTELIGENCIA DE RESULTADOS',
     earningsSubtitle:'EPS · SORPRESAS · REACCIONES · WHISPER',
     epsHistory:'HISTORIAL EPS · SORPRESAS',
