@@ -428,11 +428,26 @@ test('R0c: ?manual= parsea claves y caps, y reporta lo mal formado', () => {
   assert.equal(invalidas.length, 2);
 });
 
-test('el JSON de referencias nace VACÍO y con vigencia declarada', () => {
-  // Nace vacío a propósito: una referencia inventada es peor que ninguna.
-  assert.deepEqual(REFERENCIAS.referencias, []);
+test('el registro de referencias: cada fila dice QUÉ, DE DÓNDE y CUÁNDO', () => {
+  // Nació vacío a propósito —una referencia inventada es peor que ninguna— y
+  // hoy tiene las 11 que Lety capturó a mano el 2026-09-20. Lo que este test
+  // cuida no es cuántas hay: es que ninguna entre sin procedencia. Una cap
+  // sin fuente y sin fecha es un número suelto, y `referenciaManual` la
+  // descarta — pero mejor que no llegue hasta ahí.
   assert.equal(REFERENCIAS.vigencia_dias, 14);
   assert.ok(REFERENCIAS._reglas.no_se_pinta);
+  assert.ok(REFERENCIAS.referencias.length >= 10);
+  for (const f of REFERENCIAS.referencias) {
+    assert.ok(f.clave, 'una fila sin clave no verifica a nadie');
+    assert.ok(Number.isFinite(f.market_cap) && f.market_cap > 0, `${f.clave}: market_cap no numérico`);
+    assert.ok(f.fuente, `${f.clave}: sin fuente declarada`);
+    assert.match(String(f.capturada_en), /^\d{4}-\d{2}-\d{2}$/, `${f.clave}: sin fecha de captura`);
+  }
+  // FEMSA lleva DOS, de fuentes distintas, y las dos se guardan: que no
+  // coincidan es información, no un problema a esconder.
+  const femsa = REFERENCIAS.referencias.filter((f) => f.clave === 'FEMSA');
+  assert.equal(femsa.length, 2);
+  assert.equal(new Set(femsa.map((f) => f.fuente)).size, 2);
 });
 
 // ───── R0(e bis) · el diagnóstico que va a hacer hablar a la Fed ─────
@@ -1283,4 +1298,147 @@ test('los DOS endpoints importan el mismo evaluador de G2', () => {
   // Y el censo ya no tiene su propio veredicto contra Yahoo.
   assert.doesNotMatch(censo.replace(/\/\/[^\n]*/g, ''), /veredictoCapMx\(/,
     'el censo volvió a evaluar G2 por su cuenta');
+});
+
+// ───── `?manual=` como OVERRIDE, no como fuente adicional ─────
+// Mientras el registro estuvo vacío, concatenar y reemplazar eran lo mismo.
+// Con 11 filas persistidas ya no: por `varias_por_emisora`, dos referencias
+// que no coinciden dan `discrepancia_entre_fuentes` — o sea GRIS. Sumando,
+// probar una cap corregida en prod habría puesto gris a una emisora ya
+// verificada: el ensayo cambiando el veredicto en vez de medirlo.
+
+import { registroConOverride } from '../api/_lib/mercado-r0.js';
+
+const REG = {
+  vigencia_dias: 14,
+  referencias: [
+    { clave: 'WALMEX', market_cap: 797641000000, fuente: 'yahoo-finance-market-cap-intraday', capturada_en: '2026-09-20' },
+    { clave: 'AMX', market_cap: 1159000000000, fuente: 'yahoo-finance-market-cap-intraday', capturada_en: '2026-09-20' },
+    { clave: 'FEMSA', market_cap: 837300000000, fuente: 'yahoo-finance-market-cap-intraday', capturada_en: '2026-09-20' },
+    { clave: 'FEMSA', market_cap: 628380000000, fuente: 'google-finance-market-cap', capturada_en: '2026-09-20' },
+  ],
+};
+
+test('sin ?manual=, el registro pasa tal cual', () => {
+  const o = registroConOverride(REG, []);
+  assert.equal(o.registro.referencias.length, 4);
+  assert.deepEqual(o.claves, []);
+  assert.deepEqual(o.desplazadas, []);
+});
+
+test('?manual= REEMPLAZA las filas de su clave, y no toca las demás', () => {
+  const o = registroConOverride(REG, [
+    { clave: 'WALMEX', market_cap: 800e9, fuente: 'prueba', capturada_en: '2026-09-21' },
+  ]);
+  const walmex = o.registro.referencias.filter((f) => f.clave === 'WALMEX');
+  assert.equal(walmex.length, 1, 'quedó una sola referencia para WALMEX');
+  assert.equal(walmex[0].market_cap, 800e9);
+  assert.equal(walmex[0].fuente, 'prueba');
+  // AMX y las dos de FEMSA siguen intactas.
+  assert.equal(o.registro.referencias.filter((f) => f.clave === 'AMX').length, 1);
+  assert.equal(o.registro.referencias.filter((f) => f.clave === 'FEMSA').length, 2);
+});
+
+test('el override APARTA las dos de FEMSA, no una', () => {
+  const o = registroConOverride(REG, [
+    { clave: 'FEMSA', market_cap: 700e9, fuente: 'prueba', capturada_en: '2026-09-21' },
+  ]);
+  assert.equal(o.registro.referencias.filter((f) => f.clave === 'FEMSA').length, 1);
+  assert.equal(o.desplazadas.length, 2);
+  assert.deepEqual(o.desplazadas.map((d) => d.fuente).sort(),
+    ['google-finance-market-cap', 'yahoo-finance-market-cap-intraday']);
+});
+
+test('lo desplazado se REPORTA: un override callado es una referencia perdida', () => {
+  const o = registroConOverride(REG, [
+    { clave: 'WALMEX', market_cap: 800e9, fuente: 'prueba', capturada_en: '2026-09-21' },
+  ]);
+  assert.deepEqual(o.claves, ['WALMEX']);
+  assert.equal(o.desplazadas.length, 1);
+  assert.equal(o.desplazadas[0].market_cap, 797641000000);
+  assert.equal(o.desplazadas[0].capturada_en, '2026-09-20');
+});
+
+test('override en minúsculas: la clave se normaliza antes de comparar', () => {
+  const o = registroConOverride(REG, [{ clave: 'walmex', market_cap: 1, fuente: 'p', capturada_en: '2026-09-21' }]);
+  assert.deepEqual(o.claves, ['WALMEX']);
+  assert.equal(o.desplazadas.length, 1);
+});
+
+test('el override NO puede convertir una verificada en discrepancia', () => {
+  // La prueba de fondo, con el evaluador de verdad: una emisora de serie
+  // única con su referencia en el registro, y un ?manual= que la corrige.
+  const base = {
+    emisoras: [{ clave: 'W', nombre: 'W', sector: 'X', serie_liquida: 'W*', acciones_por_unidad: 1 }],
+    acciones: [{ clave: 'W', anio: 2026, trimestre: 2, acciones_circulacion: 1e9 }],
+    precios: [{ emisora: 'W', emisora_serie: 'W*', fecha: '2026-09-18', cierre: 20, importe: 5e8 }],
+    volumenes: [{ emisora_serie: 'W*', volumen_ventana: null, importe_ventana: 9e9, filas_ventana: 20 }],
+    frescura: FRESCA, ahora: AHORA_G2, criterios: CRITERIOS,
+  };
+  const registro = {
+    vigencia_dias: 14,
+    referencias: [{ clave: 'W', market_cap: 20e9, fuente: 'registro', capturada_en: '2026-09-20' }],
+  };
+  // Un ?manual= con OTRO número, que por sí solo no cuadra.
+  const manual = [{ clave: 'W', market_cap: 30e9, fuente: 'prueba', capturada_en: '2026-09-21' }];
+
+  const conOverride = evaluaG2({ ...base, referencias: registroConOverride(registro, manual).registro });
+  // Reemplazó: se mide contra 30e9 y no cuadra. Es un NO, pero es el NO de la
+  // cifra que se quiso probar.
+  assert.equal(conOverride.detalle[0].verificacion.estado, 'no_cuadra');
+  assert.equal(conOverride.detalle[0].referencias.vigentes, 1);
+
+  // Y así se veía sumando, que es lo que esto evita: dos fuentes, una cuadra
+  // y la otra no → discrepancia. El ensayo habría cambiado el veredicto.
+  const sumando = evaluaG2({
+    ...base,
+    referencias: { ...registro, referencias: [...registro.referencias, ...manual] },
+  });
+  assert.equal(sumando.detalle[0].verificacion.estado, 'discrepancia_entre_fuentes');
+});
+
+// ───── la caducidad, que es la que va a apagar esto sola ─────
+
+import { vigenciaDelRegistro } from '../api/_lib/mercado-r0.js';
+import REFERENCIAS_VIVAS from '../api/_lib/mercado-cap-referencia.json' with { type: 'json' };
+
+test('vigencia: dice la fecha en que el registro se apaga', () => {
+  const v = vigenciaDelRegistro(REG, new Date('2026-09-21T20:00:00Z'));
+  // Capturadas el 20-sep con vigencia 14 → vencen el 4-oct.
+  assert.equal(v.vence_el, '2026-10-04');
+  assert.equal(v.dias_restantes, 12);
+  assert.equal(v.vencidas, 0);
+  assert.equal(v.lectura, null);
+});
+
+test('vigencia: avisa ANTES de vencer, no después', () => {
+  const v = vigenciaDelRegistro(REG, new Date('2026-10-02T20:00:00Z'));
+  assert.equal(v.dias_restantes, 1);
+  assert.match(v.lectura, /vencen en 1 días/);
+});
+
+test('vigencia: una vez vencidas lo dice, y cuántas', () => {
+  const v = vigenciaDelRegistro(REG, new Date('2026-10-10T20:00:00Z'));
+  assert.equal(v.vencidas, 4);
+  assert.match(v.lectura, /re-capturalas/);
+});
+
+test('vigencia: el registro real caduca y la corrida lo va a decir', () => {
+  // No es un test de "está fresco hoy" —eso se pudre solo—: es que la fecha
+  // EXISTE y se puede leer. Un registro sin fecha de caducidad es el que se
+  // cae por sorpresa.
+  const v = vigenciaDelRegistro(REFERENCIAS_VIVAS, new Date('2026-09-21T20:00:00Z'));
+  assert.equal(v.filas, REFERENCIAS_VIVAS.referencias.length);
+  assert.match(String(v.vence_el), /^\d{4}-\d{2}-\d{2}$/);
+  assert.ok(v.dias_restantes != null);
+});
+
+test('G2 vencido: las razones lo nombran en vez de dejar un cero sin explicar', () => {
+  const u = universoG2(20);
+  // Las mismas 20, pero capturadas hace un mes.
+  u.referencias.referencias = u.referencias.referencias.map((r) => ({ ...r, capturada_en: '2026-08-10' }));
+  const g2 = evaluaG2({ ...u, frescura: FRESCA, ahora: AHORA_G2, criterios: CRITERIOS });
+  assert.equal(g2.verde, false);
+  assert.match(g2.razones.join(' · '), /vencidas/);
+  assert.equal(g2.vigencia_referencias.vencidas, 20);
 });

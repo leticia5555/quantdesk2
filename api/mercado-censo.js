@@ -301,6 +301,9 @@ async function censoQ2(ahora) {
     razones: g2.razones,
     medido_con: 'evaluaG2(SQL_G2) — el mismo que /api/mercado-r0?job=unidades',
     fuente_referencia: `_lib/mercado-cap-referencia.json (${REFERENCIAS_CAP.referencias.length} referencias, vigencia ${REFERENCIAS_CAP.vigencia_dias} días)`,
+    // El censo NO acepta `?manual=`: mide lo que hay guardado, a propósito.
+    // Si un número solo existe en una URL, no existe para la compuerta.
+    vigencia_referencias: g2.vigencia_referencias,
     metodo: { valido: g2.metodo.valido, lectura: g2.metodo.lectura },
     requieren_desglose: g2.requieren_desglose,
     faltan_referencia_individual: g2.faltan_referencia_individual,

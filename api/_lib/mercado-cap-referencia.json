@@ -9,8 +9,90 @@
     "varias_por_emisora": "Una emisora puede tener VARIAS filas, de fuentes distintas. Se verifican TODAS y se reportan todas. Si una cuadra y otra no, el estado NO es 'verificada': es 'discrepancia_entre_fuentes', y significa que dos fuentes publicas no coinciden entre si — el problema puede no ser nuestro. Quedarse con la que conviene seria elegir el dato que da el resultado buscado.",
     "dos_vias": "Hay dos caminos a 'verificada' y no son intercambiables. INDIVIDUAL: la emisora tiene su propia referencia y cuadra a <=5%; es OBLIGATORIO donde la formula tiene parametros libres (varias series, o divisor > 1) — son 9 emisoras. POR METODO: la formula no tiene nada que elegir (una serie, divisor 1) y el instrumento quedo validado con >=3 muestras independientes a <=2%. Ver api/_lib/mercado-r0.js → 'R0(b ter)'.",
     "femsa": "FEMSA NO se arregla con mas referencias: Yahoo 837B, Google 628B y nuestro calculo 703B, tres numeros distintos. La causa esta identificada y es estructural: UB cotiza a 165 y UBD a 207.66 — las dos son unidades de 5 acciones, o sea comparables, y difieren 26%. El calculo le aplica el precio de UBD a TODO el capital. La cap correcta es Σ(acciones_serie × precio_serie)/apu y el XBRL da un TOTAL, no un desglose. Hasta tener el desglose (sitio de IR de FEMSA), va gris punteada con motivo 'series con precio distinto, sin desglose'. Que las tres cifras publicas no coincidan entre si es consistente con eso.",
-    "fuentes_validas": "Dos fuentes manuales validas hoy: Yahoo Finance (web) y Google Finance (google.com/finance/quote/TICKER:BMV). Cada fila dice CUAL uso — dos fuentes que no coinciden entre si es informacion, no un problema a esconder."
+    "fuentes_validas": "Dos fuentes manuales validas hoy: Yahoo Finance (web) y Google Finance (google.com/finance/quote/TICKER:BMV). Cada fila dice CUAL uso — dos fuentes que no coinciden entre si es informacion, no un problema a esconder.",
+    "manual_es_override": "El parametro ?manual=CLAVE:CAP de /api/mercado-r0 REEMPLAZA las filas de este archivo para las claves que nombra, no se suma a ellas. Es un banco de pruebas: sirve para probar una correccion en produccion antes de persistirla aca. Si se sumara, una emisora ya verificada pasaria a discrepancia_entre_fuentes por la regla varias_por_emisora y el ensayo cambiaria el veredicto en vez de medirlo. Lo desplazado se REPORTA en la salida.",
+    "de_donde_salieron": "Las 11 filas de abajo las capturo Lety a mano el 2026-09-20 y se corrieron primero por ?manual= (26 verificadas en ?job=unidades). Estan aca porque el censo lee ESTE archivo: mientras vivieron solo en la URL, /api/mercado-censo daba 0 verificadas el mismo dia que /api/mercado-r0 daba 26."
   },
   "vigencia_dias": 14,
-  "referencias": []
+  "referencias": [
+    {
+      "clave": "WALMEX",
+      "market_cap": 797641000000,
+      "fuente": "yahoo-finance-market-cap-intraday",
+      "capturada_en": "2026-09-20",
+      "capturada_por": "Lety"
+    },
+    {
+      "clave": "FEMSA",
+      "market_cap": 837300000000,
+      "fuente": "yahoo-finance-market-cap-intraday",
+      "capturada_en": "2026-09-20",
+      "capturada_por": "Lety"
+    },
+    {
+      "clave": "AMX",
+      "market_cap": 1159000000000,
+      "fuente": "yahoo-finance-market-cap-intraday",
+      "capturada_en": "2026-09-20",
+      "capturada_por": "Lety"
+    },
+    {
+      "clave": "GMEXICO",
+      "market_cap": 1658000000000,
+      "fuente": "yahoo-finance-market-cap-intraday",
+      "capturada_en": "2026-09-20",
+      "capturada_por": "Lety"
+    },
+    {
+      "clave": "KOF",
+      "market_cap": 412518000000,
+      "fuente": "yahoo-finance-market-cap-intraday",
+      "capturada_en": "2026-09-20",
+      "capturada_por": "Lety"
+    },
+    {
+      "clave": "CEMEX",
+      "market_cap": 251795000000,
+      "fuente": "yahoo-finance-market-cap-intraday",
+      "capturada_en": "2026-09-20",
+      "capturada_por": "Lety"
+    },
+    {
+      "clave": "TLEVISA",
+      "market_cap": 21293000000,
+      "fuente": "yahoo-finance-market-cap-intraday",
+      "capturada_en": "2026-09-20",
+      "capturada_por": "Lety"
+    },
+    {
+      "clave": "LIVEPOL",
+      "market_cap": 141145000000,
+      "fuente": "yahoo-finance-market-cap-intraday",
+      "capturada_en": "2026-09-20",
+      "capturada_por": "Lety"
+    },
+    {
+      "clave": "KIMBER",
+      "market_cap": 117237000000,
+      "fuente": "yahoo-finance-market-cap-intraday",
+      "capturada_en": "2026-09-20",
+      "capturada_por": "Lety"
+    },
+    {
+      "clave": "LASITE",
+      "market_cap": 33972000000,
+      "fuente": "yahoo-finance-market-cap-intraday",
+      "capturada_en": "2026-09-20",
+      "capturada_por": "Lety"
+    },
+    {
+      "clave": "FEMSA",
+      "market_cap": 628380000000,
+      "fuente": "google-finance-market-cap",
+      "capturada_en": "2026-09-20",
+      "capturada_por": "Lety",
+      "refleja": "cierre del 2026-09-18",
+      "nota": "Segunda fuente para FEMSA. NO coincide con Yahoo (837.3B) ni con el calculo (~703B): tres cifras distintas, que es lo que se espera cuando UB y UBD cotizan a precios distintos y el XBRL no desglosa acciones por serie. Se guardan LAS DOS a proposito."
+    }
+  ]
 }

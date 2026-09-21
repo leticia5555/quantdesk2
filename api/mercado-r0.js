@@ -24,7 +24,7 @@ import { beat } from './_lib/heartbeat.js';
 import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
 import {
   buscarPistas, PISTAS_ACCIONES, PISTAS_CAP,
-  filaUniversoUs, parseManualParam,
+  filaUniversoUs, parseManualParam, registroConOverride,
   proximaRanura, intervaloDe, penalizarPor429, planCorrida,
   // El veredicto de G2 entero: los tres pasos viven en la librería desde que
   // el censo tuvo que dar el MISMO número, no uno parecido.
@@ -517,9 +517,11 @@ async function jobUnidades({ ahora, manual }) {
   const frescura = frescuraPrecios({ ultima_fecha: hastaFecha, ahora });
 
   const ref = await jobRefcap({ limite: 20 });
-  const registroManual = manual && manual.referencias && manual.referencias.length
-    ? { vigencia_dias: REFERENCIAS_CAP.vigencia_dias, referencias: [...REFERENCIAS_CAP.referencias, ...manual.referencias] }
-    : REFERENCIAS_CAP;
+  // `?manual=` REEMPLAZA las filas del registro para las claves que nombra.
+  // Sumarlas pondría gris —por `varias_por_emisora`— a una emisora ya
+  // verificada, o sea que el ensayo cambiaría el veredicto en vez de medirlo.
+  const ovr = registroConOverride(REFERENCIAS_CAP, (manual && manual.referencias) || []);
+  const registroManual = ovr.registro;
 
   // ── EL VEREDICTO, con el evaluador compartido ───────────────────────
   // Los tres pasos (calcular, validar el método, decidir el estado) viven en
@@ -583,6 +585,22 @@ async function jobUnidades({ ahora, manual }) {
     series_que_discrepan: salida.filter((s2) => s2.serie_discrepa)
       .map((s2) => ({ clave: s2.clave, declarada: s2.serie_liquida, mas_operada: s2.serie_mas_operada })),
     refcap: { veredicto: ref.veredicto },
+    // DE DÓNDE SALIERON LAS REFERENCIAS de esta corrida. Sin esto, dos
+    // corridas con distinto `?manual=` dan números distintos y el JSON no
+    // dice por qué.
+    referencias_usadas: {
+      registro: `_lib/mercado-cap-referencia.json (${REFERENCIAS_CAP.referencias.length} filas, vigencia ${REFERENCIAS_CAP.vigencia_dias} días)`,
+      override_manual: ovr.claves,
+      // Lo que el override APARTÓ. Un override silencioso es una referencia
+      // que desapareció sin que nadie lo dijera.
+      desplazadas_por_override: ovr.desplazadas,
+      nota: ovr.claves.length
+        ? '`?manual=` REEMPLAZA las filas del registro para esas claves; el resto sale del archivo'
+        : 'sin override: todo salió del archivo',
+      // Cuándo caducan. Sin esto, G2 se cae solo un día cualquiera y hay que
+      // averiguar por qué; con esto, la fecha viene en cada corrida.
+      vigencia: g2.vigencia_referencias,
+    },
     detalle: salida,
 
     // El MISMO veredicto que va a dar `/api/mercado-censo?job=censo`.
