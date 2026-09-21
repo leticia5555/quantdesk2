@@ -1059,3 +1059,63 @@ verde viejo sería peor—. Lo que no puede pasar es que se caiga **por
 sorpresa**. Por eso `vigenciaDelRegistro` viaja en cada corrida de los dos
 endpoints (`vigencia_referencias`), avisa tres días antes, y una vez vencidas
 lo dice como **razón** de G2 en vez de dejar un cero sin explicar.
+
+---
+
+## 21. La vigencia atada al trimestre, no al calendario
+
+Las 11 referencias se capturaron el 20-sep con `vigencia_dias: 14`, así que
+vencían **todas el 4 de octubre** y G2 pasaba de 26 verificadas a 0 sin que
+nadie tocara nada. Eso convertía la captura manual en una **tarea quincenal**
+— y una tarea quincenal que sostiene un mapa entero se olvida.
+
+**La pregunta que lo ordena: ¿qué valida realmente una cap de referencia?**
+No el precio de hoy. Valida el **divisor** (`acciones_por_unidad`) y el
+**conteo de acciones**. Las dos cosas son estructurales: cambian cuando la
+emisora publica un trimestre nuevo, no cuando el mercado se mueve.
+
+De ahí salen los dos cambios:
+
+### 21.1 · Los dos lados, fechados igual
+
+```
+acciones_del_trimestre_vigente_entonces × cierre_de_ese_día / apu   vs   cap capturada ese día
+```
+
+`bmv_precios` tiene ese cierre: no hay que pedirle nada a nadie. Si la captura
+cayó en domingo, vale el cierre del viernes y la salida dice **qué fecha usó**
+(`fecha_precio_captura`). Si la cosecha no tiene ese rango, se cae al cálculo
+de hoy y **lo declara** (`base_de_comparacion`) — "no se pudo fechar" no es
+"no cuadra".
+
+Comparar contra el cálculo de hoy metía el movimiento del precio adentro del
+error. Un 20% de movimiento desde la captura mandaba a gris a una emisora cuyo
+divisor y conteo estaban perfectos.
+
+### 21.2 · Caduca cuando entra un trimestre nuevo
+
+| Estado | Cuándo | Qué pasa |
+|---|---|---|
+| `vigente` | el trimestre de la captura sigue siendo el actual | verifica normal |
+| `en_gracia` | entró un trimestre nuevo hace ≤3 días | **sigue verificando**, con aviso: el divisor sigue validado, el conteo nuevo no |
+| `vencida` | pasó la gracia, o pasó el tope duro | la emisora va a gris con su motivo |
+
+`tope_dias: 120` es el **freno de mano**, no el instrumento: una emisora que
+deja de reportar tendría el mismo trimestre para siempre y su referencia sería
+eterna. Y una emisora **sin** trimestres XBRL a la vista se marca
+`sin_periodo` — sólo la sostiene el tope duro, y eso se dice en vez de
+parecer que la regla del periodo la aprobó.
+
+### 21.3 · El aviso, donde se mira
+
+`/api/cron-status` gana `referencias_cap`: cuántas vigentes, cuántas en
+gracia, cuántas vencidas, y **`referencias_a_recapturar`** con los nombres.
+Entra en el `ok` del endpoint — un aviso que no baja el semáforo no es un
+aviso.
+
+No es un cron y no tiene latido: es una **tarea humana con vencimiento**, que
+se descuida igual que un cron y cuyo olvido se paga en cuadros grises. Ahora
+se ve venir con días de gracia en vez de descubrirse cuando G2 ya está rojo.
+
+**La captura manual pasa a ser trimestral y avisada**, no quincenal y por
+sorpresa.

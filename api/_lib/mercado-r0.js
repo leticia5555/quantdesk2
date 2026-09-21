@@ -268,22 +268,166 @@ export function buscarPistas(raw, { pistas = [...PISTAS_ACCIONES, ...PISTAS_CAP]
  * fuentes, y esconderla quedándose con la que conviene sería exactamente lo
  * que este proyecto no hace.
  */
-export function referenciasManuales(registro, clave, ahora) {
+export function referenciasManuales(registro, clave, ahora, ctx = {}) {
   const filas = (registro && registro.referencias) || [];
   const mias = filas.filter((f) => up(f && f.clave) === up(clave));
   const vigentes = [], descartadas = [];
   for (const fila of mias) {
-    const r = referenciaManual({ ...registro, referencias: [fila] }, clave, ahora);
+    const r = referenciaManual({ ...registro, referencias: [fila] }, clave, ahora, ctx);
     if (r.cap != null) vigentes.push(r);
     else descartadas.push({ fuente: fila.fuente || null, capturada_en: fila.capturada_en || null, motivo: r.motivo });
   }
   return { vigentes, descartadas, total: mias.length };
 }
 
-export function referenciaManual(registro, clave, ahora) {
+// ═══════════════════════════════════════════════════════════════════
+// LA VIGENCIA, ATADA A LO QUE DE VERDAD LA INVALIDA
+//
+// La referencia arrancó con 14 días de vigencia contra el reloj, y eso
+// convertía la captura manual en una tarea QUINCENAL: el 2026-10-04 vencían
+// las 11 juntas y G2 pasaba de 26 a 0 sin que nadie tocara nada.
+//
+// Pero una referencia de capitalización NO valida el precio de hoy: valida
+// el DIVISOR (`acciones_por_unidad`) y el CONTEO de acciones. Las dos cosas
+// son estructurales — cambian cuando la emisora publica un trimestre nuevo,
+// no cuando el mercado se mueve.
+//
+// Así que la comparación se hace EN LA FECHA DE CAPTURA:
+//
+//     acciones_del_periodo_vigente_entonces × precio_de_ese_día / apu
+//
+// contra la cap que se capturó ese día. Los dos lados quedan fechados igual,
+// y el precio deja de ser una fuente de error. `bmv_precios` tiene ese
+// cierre: no hay que pedirle nada a nadie.
+//
+// Y la vigencia deja de contar días: **caduca cuando entra un trimestre
+// nuevo de acciones para esa emisora**, con días de gracia para re-capturar.
+// La captura manual pasa a ser trimestral y AVISADA, no quincenal y por
+// sorpresa.
+// ═══════════════════════════════════════════════════════════════════
+
+/** Días de gracia tras un trimestre nuevo, antes de que la referencia caiga. */
+export const GRACIA_PERIODO_DIAS = 3;
+/**
+ * Tope duro, por si una emisora deja de reportar y su trimestre nunca cambia.
+ * No es el instrumento: es el freno de mano. 120 días = un trimestre y pico.
+ */
+export const TOPE_REFERENCIA_DIAS = 120;
+
+const clavePeriodoXbrl = (p) => (p && p.anio != null && p.trimestre != null ? `${p.anio}T${p.trimestre}` : null);
+
+/** Cuándo pasó a ser el trimestre vigente: publicación, o captura si falta. */
+function vigenteDesde(p) {
+  const t = Date.parse((p && (p.fecha_publicacion || p.fecha_captura)) || '');
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * El trimestre que estaba vigente en una fecha: el último publicado en o
+ * antes de ella. Devuelve también con qué campo se fechó, porque
+ * `fecha_publicacion` es nullable y caer a `fecha_captura` mide otra cosa
+ * (cuándo lo bajamos, no cuándo salió).
+ */
+export function periodoEn(periodos = [], fechaIso) {
+  const t = Date.parse(`${String(fechaIso || '').slice(0, 10)}T23:59:59Z`);
+  if (!Number.isFinite(t)) return null;
+  let mejor = null, mejorT = null;
+  for (const p of periodos) {
+    const d = vigenteDesde(p);
+    if (d == null || d > t) continue;
+    if (mejorT == null || d > mejorT) { mejor = p; mejorT = d; }
+  }
+  if (!mejor) return null;
+  return {
+    periodo: clavePeriodoXbrl(mejor),
+    acciones_circulacion: num(mejor.acciones_circulacion),
+    vigente_desde: new Date(mejorT).toISOString().slice(0, 10),
+    fechado_con: mejor.fecha_publicacion ? 'fecha_publicacion' : 'fecha_captura',
+  };
+}
+
+/** El cierre de una serie en una fecha, o el último anterior (findes, asuetos). */
+export function precioEn(cierres = [], fechaIso) {
+  const f = String(fechaIso || '').slice(0, 10);
+  if (!f) return null;
+  let mejor = null;
+  for (const c of cierres) {
+    const d = String((c && c.fecha) || '').slice(0, 10);
+    if (!d || d > f) continue;
+    if (!mejor || d > mejor.fecha) mejor = { fecha: d, cierre: num(c.cierre) };
+  }
+  return mejor && mejor.cierre != null && mejor.cierre > 0 ? mejor : null;
+}
+
+/**
+ * ¿Sigue valiendo esta referencia? La pregunta ya no es "cuántos días tiene"
+ * sino "¿cambió el conteo de acciones desde que se capturó?".
+ */
+export function vigenciaPorPeriodo({
+  capturada_en, periodos = [], ahora = new Date(),
+  gracia_dias = GRACIA_PERIODO_DIAS, tope_dias = TOPE_REFERENCIA_DIAS,
+} = {}) {
+  const now = ahora instanceof Date ? ahora : new Date(ahora);
+  const t = Date.parse(capturada_en);
+  if (!Number.isFinite(t)) return { estado: 'sin_fecha', motivo: `\`capturada_en\` no es una fecha: ${capturada_en}` };
+  // FLOOR, no round: "30 días después" tiene que leerse 30, no 31. Medio día
+  // de más no debería adelantar un vencimiento.
+  const dias = Math.floor((now.getTime() - t) / 86400000);
+  if (dias < 0) return { estado: 'futuro', dias, motivo: 'la referencia está fechada en el futuro' };
+
+  const enCaptura = periodoEn(periodos, capturada_en);
+  const actual = periodoEn(periodos, now.toISOString().slice(0, 10));
+
+  // Sin trimestres que mirar, el único freno es el tope duro. Se DICE, para
+  // que no parezca que la regla del periodo la aprobó.
+  if (!enCaptura || !actual) {
+    return dias > tope_dias
+      ? { estado: 'vencida', dias, motivo: `referencia vencida: ${dias} días y sin trimestres XBRL contra qué atarla (tope duro ${tope_dias})` }
+      : { estado: 'vigente', dias, sin_periodo: true, periodo_en_captura: null, periodo_actual: null,
+          motivo: null, nota: 'sin trimestres XBRL: la vigencia sólo se apoya en el tope duro' };
+  }
+
+  if (dias > tope_dias) {
+    return { estado: 'vencida', dias, periodo_en_captura: enCaptura.periodo, periodo_actual: actual.periodo,
+             motivo: `referencia vencida: ${dias} días, pasó el tope duro de ${tope_dias} aunque el trimestre no haya cambiado` };
+  }
+
+  if (enCaptura.periodo === actual.periodo) {
+    return {
+      estado: 'vigente', dias,
+      periodo_en_captura: enCaptura.periodo, periodo_actual: actual.periodo,
+      acciones_en_captura: enCaptura.acciones_circulacion,
+      fechado_con: enCaptura.fechado_con,
+      motivo: null,
+    };
+  }
+
+  // Trimestre nuevo: el conteo de acciones que el mapa pinta HOY no es el que
+  // esta referencia validó. Se dan `gracia_dias` para re-capturar.
+  const desde = Date.parse(`${actual.vigente_desde}T00:00:00Z`);
+  const diasDesdeTrimestre = Math.floor((now.getTime() - desde) / 86400000);
+  const restantes = gracia_dias - diasDesdeTrimestre;
+  if (restantes >= 0) {
+    return {
+      estado: 'en_gracia', dias,
+      periodo_en_captura: enCaptura.periodo, periodo_actual: actual.periodo,
+      acciones_en_captura: enCaptura.acciones_circulacion,
+      dias_de_gracia_restantes: restantes,
+      fechado_con: actual.fechado_con,
+      motivo: `entró ${actual.periodo} (el ${actual.vigente_desde}) y la referencia es de ${enCaptura.periodo}: quedan ${restantes} días para re-capturarla`,
+    };
+  }
+  return {
+    estado: 'vencida', dias,
+    periodo_en_captura: enCaptura.periodo, periodo_actual: actual.periodo,
+    acciones_en_captura: enCaptura.acciones_circulacion,
+    motivo: `el conteo de acciones cambió de ${enCaptura.periodo} a ${actual.periodo} el ${actual.vigente_desde}: la referencia ya no valida el número que se pinta`,
+  };
+}
+
+export function referenciaManual(registro, clave, ahora, ctx = {}) {
   const now = ahora instanceof Date ? ahora : new Date(ahora);
   const filas = (registro && registro.referencias) || [];
-  const vigenciaDias = num(registro && registro.vigencia_dias) ?? 14;
   const fila = filas.find((f) => up(f && f.clave) === up(clave));
   if (!fila) return { cap: null, motivo: 'sin referencia manual para esta emisora' };
 
@@ -293,21 +437,31 @@ export function referenciaManual(registro, clave, ahora) {
   if (!fila.fuente) return { cap: null, motivo: 'la referencia no dice de dónde salió (`fuente`)' };
   if (!fila.capturada_en) return { cap: null, motivo: 'la referencia no dice cuándo se capturó (`capturada_en`)' };
 
-  const t = Date.parse(fila.capturada_en);
-  if (!Number.isFinite(t)) return { cap: null, motivo: `\`capturada_en\` no es una fecha: ${fila.capturada_en}` };
-  const dias = (now.getTime() - t) / 86400000;
-  if (dias < 0) return { cap: null, motivo: 'la referencia está fechada en el futuro' };
-  if (dias > vigenciaDias) {
-    return {
-      cap: null, dias: Math.round(dias),
-      motivo: `referencia vencida: ${Math.round(dias)} días (vigencia ${vigenciaDias})`,
-      vencida: true,
-    };
+  const vig = vigenciaPorPeriodo({
+    capturada_en: fila.capturada_en,
+    periodos: ctx.periodos || [],
+    ahora: now,
+    gracia_dias: num(registro && registro.gracia_dias) ?? GRACIA_PERIODO_DIAS,
+    tope_dias: num(registro && registro.tope_dias) ?? num(registro && registro.vigencia_dias) ?? TOPE_REFERENCIA_DIAS,
+  });
+  if (vig.estado === 'vencida' || vig.estado === 'futuro' || vig.estado === 'sin_fecha') {
+    return { cap: null, dias: vig.dias, motivo: vig.motivo, vencida: vig.estado === 'vencida', vigencia: vig };
   }
+
+  // El precio DE ESE DÍA. Si la cosecha no lo tiene, se dice: comparar contra
+  // el precio de hoy mide otra cosa, y "no se pudo" no es "no cuadra".
+  const px = precioEn(ctx.cierres || [], fila.capturada_en);
+
   return {
-    cap, motivo: null, dias: Math.round(dias),
+    cap, motivo: null, dias: vig.dias,
     fuente: fila.fuente, capturada_en: fila.capturada_en,
     capturada_por: fila.capturada_por || null,
+    vigencia: vig,
+    en_gracia: vig.estado === 'en_gracia',
+    // Los dos lados de la comparación, fechados igual.
+    acciones_en_captura: vig.acciones_en_captura ?? null,
+    precio_en_captura: px ? px.cierre : null,
+    fecha_precio_captura: px ? px.fecha : null,
     // Lo que viaja al render: la etiqueta dice que el número que se PINTA es
     // calc, y que lo que vino de afuera fue solo el verificador.
     etiqueta_verificacion: `verificada vs ${fila.fuente} (${fila.capturada_en})`,
@@ -354,31 +508,63 @@ export function parseManualParam(raw, { fuente, capturada_en } = {}) {
  * un verde viejo sería peor. Lo que no puede pasar es que se caiga **por
  * sorpresa**, así que la fecha viaja en cada corrida.
  */
-export function vigenciaDelRegistro(registro, ahora = new Date()) {
+export function vigenciaDelRegistro(registro, ahora = new Date(), { periodos = [] } = {}) {
   const now = ahora instanceof Date ? ahora : new Date(ahora);
   const filas = (registro && registro.referencias) || [];
-  const dias = num(registro && registro.vigencia_dias) ?? 14;
-  let primera = null;
-  let vencidas = 0;
-  for (const f of filas) {
-    const t = Date.parse(f && f.capturada_en);
-    if (!Number.isFinite(t)) continue;
-    const vence = t + dias * 86400000;
-    if (vence < now.getTime()) vencidas++;
-    if (primera == null || vence < primera) primera = vence;
+  const gracia = num(registro && registro.gracia_dias) ?? GRACIA_PERIODO_DIAS;
+  const tope = num(registro && registro.tope_dias) ?? num(registro && registro.vigencia_dias) ?? TOPE_REFERENCIA_DIAS;
+
+  const porClave = new Map();
+  for (const p of periodos) {
+    const k = up(p && p.clave);
+    if (!k) continue;
+    if (!porClave.has(k)) porClave.set(k, []);
+    porClave.get(k).push(p);
   }
-  if (primera == null) return { filas: filas.length, vence_el: null, dias_restantes: null, vencidas, lectura: null };
-  const restantes = Math.floor((primera - now.getTime()) / 86400000);
+
+  const porEmisora = filas.map((f) => {
+    const clave = up(f && f.clave);
+    const v = vigenciaPorPeriodo({
+      capturada_en: f && f.capturada_en,
+      periodos: porClave.get(clave) || [],
+      ahora: now, gracia_dias: gracia, tope_dias: tope,
+    });
+    return {
+      clave, fuente: (f && f.fuente) || null, capturada_en: (f && f.capturada_en) || null,
+      estado: v.estado, dias: v.dias ?? null,
+      periodo_en_captura: v.periodo_en_captura ?? null,
+      periodo_actual: v.periodo_actual ?? null,
+      dias_de_gracia_restantes: v.dias_de_gracia_restantes ?? null,
+      sin_periodo: !!v.sin_periodo,
+      motivo: v.motivo || null,
+    };
+  });
+
+  const cuenta = (e) => porEmisora.filter((x) => x.estado === e).length;
+  const vencidas = cuenta('vencida');
+  const enGracia = cuenta('en_gracia');
+  const sinPeriodo = porEmisora.filter((x) => x.sin_periodo).length;
+  // La que menos días de gracia le quedan: es la que hay que re-capturar ya.
+  const urgentes = porEmisora.filter((x) => x.estado === 'en_gracia')
+    .sort((a, b) => (a.dias_de_gracia_restantes ?? 0) - (b.dias_de_gracia_restantes ?? 0));
+
   return {
     filas: filas.length,
-    vigencia_dias: dias,
-    vence_el: new Date(primera).toISOString().slice(0, 10),
-    dias_restantes: restantes,
+    regla: 'la referencia caduca cuando entra un trimestre nuevo de acciones para esa emisora, no a los N días',
+    gracia_dias: gracia,
+    tope_dias: tope,
+    vigentes: cuenta('vigente'),
+    en_gracia: enGracia,
     vencidas,
+    sin_periodo_xbrl: sinPeriodo,
+    por_emisora: porEmisora,
+    // Lo que hay que hacer, si hay algo que hacer.
+    a_recapturar: [...new Set(porEmisora.filter((x) => x.estado === 'vencida' || x.estado === 'en_gracia').map((x) => x.clave))],
+    alerta: vencidas > 0 || enGracia > 0,
     lectura: vencidas
-      ? `${vencidas} referencias ya vencieron: re-capturalas o esas emisoras vuelven a gris`
-      : restantes <= 3
-        ? `las referencias vencen en ${restantes} días (${new Date(primera).toISOString().slice(0, 10)}): re-capturalas antes o G2 se cae solo`
+      ? `${vencidas} referencias vencieron (trimestre nuevo de acciones o tope duro): esas emisoras están en gris hasta re-capturarlas`
+      : enGracia
+        ? `${enGracia} referencias quedaron atrás de su trimestre; a la más urgente (${urgentes[0].clave}) le quedan ${urgentes[0].dias_de_gracia_restantes} días de gracia`
         : null,
   };
 }
@@ -605,6 +791,18 @@ export const SQL_G2 = {
   acciones: `select distinct on (clave) clave, anio, trimestre, acciones_circulacion,
                     acciones_circulacion_tag, acciones_circulacion_motivo
                from xbrl_reports order by clave, anio desc, trimestre desc`,
+  // TODOS los trimestres, no sólo el último: la vigencia de una referencia se
+  // ata al trimestre que estaba vigente CUANDO SE CAPTURÓ, y para saber cuál
+  // era hay que poder mirar atrás. Son ~30 emisoras × ~40 trimestres.
+  periodos: `select clave, anio, trimestre, acciones_circulacion,
+                    fecha_publicacion, fecha_captura
+               from xbrl_reports order by clave, anio, trimestre`,
+  // Los cierres alrededor de las fechas de captura. El rango lo pone el
+  // llamador ($1 = desde, $2 = hasta) a partir de las fechas del registro:
+  // traerse la tabla entera para leer 11 cierres sería mover el problema.
+  cierres_captura: `select emisora, emisora_serie, fecha::text as fecha, cierre
+                      from bmv_precios
+                     where fecha >= $1::date and fecha <= $2::date`,
   precios: `select distinct on (emisora_serie) emisora, emisora_serie, fecha, cierre, importe
               from bmv_precios order by emisora_serie, fecha desc`,
   corte: 'select max(fecha) hasta from bmv_precios',
@@ -621,6 +819,25 @@ export const SQL_G2 = {
              where p.fecha > c.hasta - ($1::int * interval '1 day')
              group by 1`,
 };
+
+/**
+ * El rango de fechas que hay que pedirle a `bmv_precios` para poder fechar
+ * las referencias. Se saca del propio registro: pedir la tabla entera para
+ * leer 11 cierres sería mover el problema de lugar.
+ *
+ * Se estira 10 días hacia atrás porque una captura puede caer en domingo y
+ * el cierre bueno es el del viernes.
+ */
+export function rangoDeCapturas(registro, { margen_dias = 10 } = {}) {
+  const fechas = ((registro && registro.referencias) || [])
+    .map((f) => String((f && f.capturada_en) || '').slice(0, 10))
+    .filter((f) => /^\d{4}-\d{2}-\d{2}$/.test(f))
+    .sort();
+  if (!fechas.length) return null;
+  const desde = new Date(Date.parse(`${fechas[0]}T00:00:00Z`) - margen_dias * 86400000)
+    .toISOString().slice(0, 10);
+  return { desde, hasta: fechas[fechas.length - 1] };
+}
 
 /**
  * EL VEREDICTO DE G2, entero y puro.
@@ -640,6 +857,10 @@ export const SQL_G2 = {
  */
 export function evaluaG2({
   emisoras = [], acciones = [], precios = [], volumenes = [],
+  // `periodos` = todos los trimestres XBRL; `cierres_captura` = los cierres
+  // de las fechas en que se capturaron las referencias. Los dos entran por
+  // parámetro para que esto siga siendo puro y probable con fixtures.
+  periodos = [], cierres_captura = [],
   referencias = { referencias: [] }, frescura = null, ahora = new Date(),
   criterios = {}, ventana_dias = VENTANA_DIAS_G2,
 } = {}) {
@@ -653,6 +874,20 @@ export function evaluaG2({
   const reloj = ahora instanceof Date ? ahora : new Date(ahora);
 
   const accPor = new Map(acciones.map((a) => [up(a.clave), a]));
+  const periodosPor = new Map();
+  for (const p of periodos) {
+    const k = up(p && p.clave);
+    if (!k) continue;
+    if (!periodosPor.has(k)) periodosPor.set(k, []);
+    periodosPor.get(k).push(p);
+  }
+  const cierresPor = new Map();
+  for (const c of cierres_captura) {
+    const k = String((c && c.emisora_serie) || '');
+    if (!k) continue;
+    if (!cierresPor.has(k)) cierresPor.set(k, []);
+    cierresPor.get(k).push(c);
+  }
   const volPor = new Map(volumenes.map((v) => [v.emisora_serie, v]));
   const preciosPor = new Map();
   for (const p of precios) {
@@ -699,7 +934,10 @@ export function evaluaG2({
       precio: elegida ? elegida.cierre : null,
       serie_liquida: em.serie_liquida, acciones_por_unidad: em.acciones_por_unidad,
     });
-    const refs = referenciasManuales(referencias, clave, reloj);
+    const refs = referenciasManuales(referencias, clave, reloj, {
+      periodos: periodosPor.get(clave) || [],
+      cierres: cierresPor.get(em.serie_liquida) || [],
+    });
     const verif = verificaConReferencias({
       capCalculada: calc.cap, referencias: refs.vigentes,
       acciones_por_unidad: em.acciones_por_unidad,
@@ -826,9 +1064,9 @@ export function evaluaG2({
   if (!metodo.valido && porMetodo.length === 0) {
     razones.push(`el método no está validado: ${metodo.razones.join(' · ')}`);
   }
-  const vig = vigenciaDelRegistro(referencias, reloj);
+  const vig = vigenciaDelRegistro(referencias, reloj, { periodos });
   if (vig.vencidas) {
-    razones.push(`${vig.vencidas} referencias del registro están vencidas (vigencia ${vig.vigencia_dias} días): hay que re-capturarlas`);
+    razones.push(`${vig.vencidas} referencias caducaron —trimestre nuevo de acciones o tope duro— y hay que re-capturarlas: ${vig.a_recapturar.join(', ')}`);
   }
 
   return {
@@ -861,7 +1099,7 @@ export function evaluaG2({
     // Cuándo se apaga esto solo. Las referencias manuales caducan, y cuando
     // caducan se lleva puesto también al método: sin muestras no hay
     // instrumento validado.
-    vigencia_referencias: vigenciaDelRegistro(referencias, reloj),
+    vigencia_referencias: vigenciaDelRegistro(referencias, reloj, { periodos }),
     criterios: {
       max_error_pct: C.g2_max_error_pct,
       min_emisoras_verificadas: C.g2_min_emisoras_verificadas,
@@ -1064,15 +1302,46 @@ export function verificaConReferencias({
   if (!referencias.length) {
     return { estado: 'sin_referencia', por_referencia: [], motivo: 'sin referencia individual vigente' };
   }
-  const porRef = referencias.map((ref) => ({
-    fuente: ref.fuente, capturada_en: ref.capturada_en, cap: ref.cap,
-    ...verificaDivisor({ capCalculada, capReferencia: ref.cap, acciones_por_unidad, tolerancia_pct }),
-    conteo: conteoImplicito({ capReferencia: ref.cap, precio, acciones_por_unidad, acciones_circulacion }),
-  }));
+  const porRef = referencias.map((ref) => {
+    // ── LOS DOS LADOS, FECHADOS IGUAL ─────────────────────────────────
+    // Se compara la cap que se habría calculado EL DÍA DE LA CAPTURA
+    // —acciones de ese trimestre × cierre de ese día / apu— contra la cap
+    // capturada ese día. Comparar contra el cálculo de HOY metía el
+    // movimiento del precio adentro del error, y eso no es lo que la
+    // referencia valida: valida el divisor y el conteo de acciones.
+    const acc = num(ref.acciones_en_captura) ?? num(acciones_circulacion);
+    const px = num(ref.precio_en_captura);
+    const apu = num(acciones_por_unidad) || 1;
+    const capEnCaptura = (acc != null && px != null && acc > 0 && px > 0) ? (acc * px) / apu : null;
+    const base = capEnCaptura != null ? 'precio_y_acciones_de_la_captura' : 'cálculo de hoy (sin cierre guardado de esa fecha)';
+    const usada = capEnCaptura != null ? capEnCaptura : capCalculada;
+    return {
+      fuente: ref.fuente, capturada_en: ref.capturada_en, cap: ref.cap,
+      base_de_comparacion: base,
+      cap_en_captura: capEnCaptura,
+      precio_en_captura: px ?? null,
+      fecha_precio_captura: ref.fecha_precio_captura || null,
+      acciones_en_captura: acc ?? null,
+      periodo_en_captura: ref.vigencia ? ref.vigencia.periodo_en_captura : null,
+      en_gracia: !!ref.en_gracia,
+      ...verificaDivisor({ capCalculada: usada, capReferencia: ref.cap, acciones_por_unidad, tolerancia_pct }),
+      conteo: conteoImplicito({ capReferencia: ref.cap, precio: px ?? precio, acciones_por_unidad, acciones_circulacion: acc ?? acciones_circulacion }),
+    };
+  });
 
   const cuadran = porRef.filter((r) => r.estado === 'cuadra');
+  const enGracia = porRef.filter((r) => r.en_gracia);
   if (cuadran.length === porRef.length) {
-    return { estado: 'verificada', por_referencia: porRef, motivo: null, referencias_usadas: porRef.length };
+    return {
+      estado: 'verificada', por_referencia: porRef, motivo: null, referencias_usadas: porRef.length,
+      // Verificada SÍ, pero el conteo que se pinta hoy es de un trimestre
+      // que esta referencia no vio. El divisor sigue validado; el conteo
+      // nuevo, no. Se dice en vez de disolverse en el verde.
+      en_gracia: enGracia.length > 0,
+      aviso: enGracia.length
+        ? `el conteo de acciones cambió de trimestre y la referencia todavía es del anterior: el divisor sigue validado, el conteo nuevo no. Quedan ${Math.min(...enGracia.map((r) => r.dias_de_gracia_restantes ?? 0))} días de gracia`
+        : null,
+    };
   }
   if (cuadran.length === 0) {
     return {

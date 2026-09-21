@@ -434,7 +434,13 @@ test('el registro de referencias: cada fila dice QUÉ, DE DÓNDE y CUÁNDO', () 
   // cuida no es cuántas hay: es que ninguna entre sin procedencia. Una cap
   // sin fuente y sin fecha es un número suelto, y `referenciaManual` la
   // descarta — pero mejor que no llegue hasta ahí.
-  assert.equal(REFERENCIAS.vigencia_dias, 14);
+  // La vigencia ya no se cuenta en días de calendario: se ata al trimestre
+  // XBRL. Quedan los dos parámetros del borde — la gracia tras un trimestre
+  // nuevo y el tope duro para quien deja de reportar.
+  assert.equal(REFERENCIAS.gracia_dias, 3);
+  assert.equal(REFERENCIAS.tope_dias, 120);
+  assert.equal(REFERENCIAS.vigencia_dias, undefined, 'el campo viejo no puede quedar de adorno');
+  assert.match(REFERENCIAS._reglas.caducidad, /TRIMESTRE NUEVO/);
   assert.ok(REFERENCIAS._reglas.no_se_pinta);
   assert.ok(REFERENCIAS.referencias.length >= 10);
   for (const f of REFERENCIAS.referencias) {
@@ -1397,48 +1403,219 @@ test('el override NO puede convertir una verificada en discrepancia', () => {
   assert.equal(sumando.detalle[0].verificacion.estado, 'discrepancia_entre_fuentes');
 });
 
-// ───── la caducidad, que es la que va a apagar esto sola ─────
+// ═══════════════════════════════════════════════════════════════════
+// LA CADUCIDAD, atada al trimestre y no al calendario
+//
+// Con 14 días contra el reloj, las 11 referencias vencían el 2026-10-04 y G2
+// pasaba de 26 a 0 sin que nadie tocara nada: captura manual QUINCENAL.
+// Pero la referencia no valida el precio de hoy — valida el divisor y el
+// conteo de acciones, que cambian cuando la emisora publica un trimestre.
+// ═══════════════════════════════════════════════════════════════════
 
-import { vigenciaDelRegistro } from '../api/_lib/mercado-r0.js';
+import {
+  vigenciaDelRegistro, vigenciaPorPeriodo, periodoEn, precioEn,
+  GRACIA_PERIODO_DIAS, TOPE_REFERENCIA_DIAS,
+} from '../api/_lib/mercado-r0.js';
 import REFERENCIAS_VIVAS from '../api/_lib/mercado-cap-referencia.json' with { type: 'json' };
 
-test('vigencia: dice la fecha en que el registro se apaga', () => {
-  const v = vigenciaDelRegistro(REG, new Date('2026-09-21T20:00:00Z'));
-  // Capturadas el 20-sep con vigencia 14 → vencen el 4-oct.
-  assert.equal(v.vence_el, '2026-10-04');
-  assert.equal(v.dias_restantes, 12);
-  assert.equal(v.vencidas, 0);
+// Trimestres de una emisora: 2T2026 publicado en julio, 3T2026 en octubre.
+const PERIODOS = [
+  { clave: 'W', anio: 2026, trimestre: 1, acciones_circulacion: 17.4e9, fecha_publicacion: '2026-04-28T00:00:00Z' },
+  { clave: 'W', anio: 2026, trimestre: 2, acciones_circulacion: 17.46e9, fecha_publicacion: '2026-07-22T00:00:00Z' },
+];
+const CON_3T = [...PERIODOS,
+  { clave: 'W', anio: 2026, trimestre: 3, acciones_circulacion: 17.5e9, fecha_publicacion: '2026-10-21T00:00:00Z' }];
+
+test('periodoEn: el trimestre vigente en una fecha es el último publicado antes', () => {
+  assert.equal(periodoEn(PERIODOS, '2026-09-20').periodo, '2026T2');
+  assert.equal(periodoEn(PERIODOS, '2026-05-01').periodo, '2026T1');
+  // Antes del primero no hay ninguno: no se inventa el más viejo.
+  assert.equal(periodoEn(PERIODOS, '2026-01-01'), null);
+  assert.equal(periodoEn(CON_3T, '2026-10-22').periodo, '2026T3');
+});
+
+test('periodoEn: dice si se fechó con publicación o con captura', () => {
+  const sinPub = [{ clave: 'W', anio: 2026, trimestre: 2, acciones_circulacion: 1, fecha_captura: '2026-07-25T00:00:00Z' }];
+  assert.equal(periodoEn(sinPub, '2026-09-20').fechado_con, 'fecha_captura');
+  assert.equal(periodoEn(PERIODOS, '2026-09-20').fechado_con, 'fecha_publicacion');
+});
+
+test('precioEn: toma el cierre del día, o el último anterior si fue finde', () => {
+  const cierres = [
+    { fecha: '2026-09-17', cierre: 60 },
+    { fecha: '2026-09-18', cierre: 61.5 },
+  ];
+  assert.equal(precioEn(cierres, '2026-09-18').cierre, 61.5);
+  // Capturada un domingo: vale el viernes, y la salida dice qué fecha usó.
+  assert.equal(precioEn(cierres, '2026-09-20').fecha, '2026-09-18');
+  // Antes de que hubiera serie no se inventa un precio.
+  assert.equal(precioEn(cierres, '2026-09-01'), null);
+});
+
+test('CADUCIDAD: 30 días después sigue vigente si el trimestre no cambió', () => {
+  // Con la regla vieja de 14 días, esto estaba vencido hace rato.
+  const v = vigenciaPorPeriodo({
+    capturada_en: '2026-09-20', periodos: PERIODOS, ahora: new Date('2026-10-20T12:00:00Z'),
+  });
+  assert.equal(v.estado, 'vigente');
+  assert.equal(v.dias, 30);
+  assert.equal(v.periodo_en_captura, '2026T2');
+  assert.equal(v.periodo_actual, '2026T2');
+  assert.equal(v.acciones_en_captura, 17.46e9);
+});
+
+test('CADUCIDAD: entra un trimestre nuevo → gracia de 3 días, contada desde la publicación', () => {
+  const v = vigenciaPorPeriodo({
+    capturada_en: '2026-09-20', periodos: CON_3T, ahora: new Date('2026-10-23T12:00:00Z'),
+  });
+  assert.equal(v.estado, 'en_gracia');
+  assert.equal(v.periodo_en_captura, '2026T2');
+  assert.equal(v.periodo_actual, '2026T3');
+  assert.equal(v.dias_de_gracia_restantes, 1);
+  assert.match(v.motivo, /re-capturarla/);
+});
+
+test('CADUCIDAD: pasada la gracia, vencida y con el porqué', () => {
+  const v = vigenciaPorPeriodo({
+    capturada_en: '2026-09-20', periodos: CON_3T, ahora: new Date('2026-10-30T12:00:00Z'),
+  });
+  assert.equal(v.estado, 'vencida');
+  assert.match(v.motivo, /el conteo de acciones cambió de 2026T2 a 2026T3/);
+});
+
+test('CADUCIDAD: el tope duro frena a una emisora que dejó de reportar', () => {
+  // Mismo trimestre para siempre no puede significar referencia eterna.
+  const v = vigenciaPorPeriodo({
+    capturada_en: '2026-09-20', periodos: PERIODOS, ahora: new Date('2027-03-01T12:00:00Z'),
+  });
+  assert.equal(v.estado, 'vencida');
+  assert.match(v.motivo, /tope duro/);
+  assert.equal(TOPE_REFERENCIA_DIAS, 120);
+  assert.equal(GRACIA_PERIODO_DIAS, 3);
+});
+
+test('CADUCIDAD: sin trimestres XBRL se DECLARA que sólo hay tope duro', () => {
+  const v = vigenciaPorPeriodo({ capturada_en: '2026-09-20', periodos: [], ahora: new Date('2026-10-01T12:00:00Z') });
+  assert.equal(v.estado, 'vigente');
+  assert.equal(v.sin_periodo, true);
+  assert.match(v.nota, /sólo se apoya en el tope duro/);
+});
+
+// ───── la comparación, fechada de los dos lados ─────
+
+test('la referencia se compara con el precio DEL DÍA DE CAPTURA, no el de hoy', () => {
+  // El precio se movió 20% desde la captura. Con el cálculo de hoy, el error
+  // sería 20% y la emisora saldría gris; con el precio de ese día, cuadra.
+  const g2 = evaluaG2({
+    emisoras: [{ clave: 'W', nombre: 'W', sector: 'X', serie_liquida: 'W*', acciones_por_unidad: 1 }],
+    acciones: [{ clave: 'W', anio: 2026, trimestre: 2, acciones_circulacion: 17.46e9 }],
+    precios: [{ emisora: 'W', emisora_serie: 'W*', fecha: '2026-10-19', cierre: 54, importe: 5e8 }],
+    volumenes: [{ emisora_serie: 'W*', volumen_ventana: null, importe_ventana: 9e9, filas_ventana: 20 }],
+    periodos: PERIODOS,
+    cierres_captura: [{ emisora: 'W', emisora_serie: 'W*', fecha: '2026-09-18', cierre: 45 }],
+    referencias: { referencias: [{ clave: 'W', market_cap: 17.46e9 * 45, fuente: 'Yahoo', capturada_en: '2026-09-20' }] },
+    frescura: FRESCA, ahora: new Date('2026-10-20T12:00:00Z'), criterios: CRITERIOS,
+  });
+  const w = g2.detalle[0];
+  assert.equal(w.estado, 'verificada');
+  const ref = w.verificacion.por_referencia[0];
+  assert.equal(ref.base_de_comparacion, 'precio_y_acciones_de_la_captura');
+  assert.equal(ref.precio_en_captura, 45);
+  assert.equal(ref.fecha_precio_captura, '2026-09-18');
+  assert.equal(ref.error_pct, 0);
+});
+
+test('sin cierre guardado de esa fecha, se cae al cálculo de hoy Y lo dice', () => {
+  const g2 = evaluaG2({
+    emisoras: [{ clave: 'W', nombre: 'W', sector: 'X', serie_liquida: 'W*', acciones_por_unidad: 1 }],
+    acciones: [{ clave: 'W', anio: 2026, trimestre: 2, acciones_circulacion: 17.46e9 }],
+    precios: [{ emisora: 'W', emisora_serie: 'W*', fecha: '2026-10-19', cierre: 45, importe: 5e8 }],
+    volumenes: [{ emisora_serie: 'W*', volumen_ventana: null, importe_ventana: 9e9, filas_ventana: 20 }],
+    periodos: PERIODOS,
+    cierres_captura: [],
+    referencias: { referencias: [{ clave: 'W', market_cap: 17.46e9 * 45, fuente: 'Yahoo', capturada_en: '2026-09-20' }] },
+    frescura: FRESCA, ahora: new Date('2026-10-20T12:00:00Z'), criterios: CRITERIOS,
+  });
+  const ref = g2.detalle[0].verificacion.por_referencia[0];
+  assert.match(ref.base_de_comparacion, /sin cierre guardado/);
+  assert.equal(ref.precio_en_captura, null);
+});
+
+test('en gracia: verificada SÍ, pero el aviso dice que el conteo nuevo no se validó', () => {
+  const g2 = evaluaG2({
+    emisoras: [{ clave: 'W', nombre: 'W', sector: 'X', serie_liquida: 'W*', acciones_por_unidad: 1 }],
+    acciones: [{ clave: 'W', anio: 2026, trimestre: 3, acciones_circulacion: 17.5e9 }],
+    precios: [{ emisora: 'W', emisora_serie: 'W*', fecha: '2026-10-22', cierre: 46, importe: 5e8 }],
+    volumenes: [{ emisora_serie: 'W*', volumen_ventana: null, importe_ventana: 9e9, filas_ventana: 20 }],
+    periodos: CON_3T,
+    cierres_captura: [{ emisora: 'W', emisora_serie: 'W*', fecha: '2026-09-18', cierre: 45 }],
+    referencias: { referencias: [{ clave: 'W', market_cap: 17.46e9 * 45, fuente: 'Yahoo', capturada_en: '2026-09-20' }] },
+    frescura: FRESCA, ahora: new Date('2026-10-23T12:00:00Z'), criterios: CRITERIOS,
+  });
+  const w = g2.detalle[0];
+  assert.equal(w.estado, 'verificada');
+  assert.equal(w.verificacion.en_gracia, true);
+  assert.match(w.verificacion.aviso, /el divisor sigue validado, el conteo nuevo no/);
+  // Y la comparación usó las acciones del trimestre de la CAPTURA, no las de hoy.
+  assert.equal(w.verificacion.por_referencia[0].acciones_en_captura, 17.46e9);
+});
+
+// ───── el resumen que lee /api/cron-status ─────
+
+const REG_VIG = {
+  gracia_dias: 3, tope_dias: 120,
+  referencias: [
+    { clave: 'W', market_cap: 1e9, fuente: 'Yahoo', capturada_en: '2026-09-20' },
+    { clave: 'W', market_cap: 1.01e9, fuente: 'Google', capturada_en: '2026-09-20' },
+  ],
+};
+
+test('resumen: todo vigente no alerta', () => {
+  const v = vigenciaDelRegistro(REG_VIG, new Date('2026-10-20T12:00:00Z'), { periodos: PERIODOS });
+  assert.equal(v.vigentes, 2);
+  assert.equal(v.alerta, false);
   assert.equal(v.lectura, null);
+  assert.deepEqual(v.a_recapturar, []);
 });
 
-test('vigencia: avisa ANTES de vencer, no después', () => {
-  const v = vigenciaDelRegistro(REG, new Date('2026-10-02T20:00:00Z'));
-  assert.equal(v.dias_restantes, 1);
-  assert.match(v.lectura, /vencen en 1 días/);
+test('resumen: en gracia alerta ANTES de perder la emisora, y dice a quién', () => {
+  const v = vigenciaDelRegistro(REG_VIG, new Date('2026-10-23T12:00:00Z'), { periodos: CON_3T });
+  assert.equal(v.en_gracia, 2);
+  assert.equal(v.alerta, true);
+  assert.match(v.lectura, /le quedan 1 días de gracia/);
+  assert.deepEqual(v.a_recapturar, ['W']);
 });
 
-test('vigencia: una vez vencidas lo dice, y cuántas', () => {
-  const v = vigenciaDelRegistro(REG, new Date('2026-10-10T20:00:00Z'));
-  assert.equal(v.vencidas, 4);
-  assert.match(v.lectura, /re-capturalas/);
+test('resumen: vencida alerta y nombra a las que hay que re-capturar', () => {
+  const v = vigenciaDelRegistro(REG_VIG, new Date('2026-10-30T12:00:00Z'), { periodos: CON_3T });
+  assert.equal(v.vencidas, 2);
+  assert.equal(v.alerta, true);
+  assert.match(v.lectura, /en gris hasta re-capturarlas/);
+  assert.deepEqual(v.a_recapturar, ['W']);
 });
 
-test('vigencia: el registro real caduca y la corrida lo va a decir', () => {
-  // No es un test de "está fresco hoy" —eso se pudre solo—: es que la fecha
-  // EXISTE y se puede leer. Un registro sin fecha de caducidad es el que se
-  // cae por sorpresa.
-  const v = vigenciaDelRegistro(REFERENCIAS_VIVAS, new Date('2026-09-21T20:00:00Z'));
+test('el registro real: 11 filas, y la regla ya no cuenta días de calendario', () => {
+  const v = vigenciaDelRegistro(REFERENCIAS_VIVAS, new Date('2026-09-21T20:00:00Z'), { periodos: [] });
   assert.equal(v.filas, REFERENCIAS_VIVAS.referencias.length);
-  assert.match(String(v.vence_el), /^\d{4}-\d{2}-\d{2}$/);
-  assert.ok(v.dias_restantes != null);
+  assert.match(v.regla, /trimestre nuevo de acciones/);
+  assert.equal(v.tope_dias, 120);
+  assert.equal(v.gracia_dias, 3);
+  // Sin trimestres a la vista sólo queda el tope duro, y se cuenta aparte.
+  assert.equal(v.sin_periodo_xbrl, REFERENCIAS_VIVAS.referencias.length);
 });
 
-test('G2 vencido: las razones lo nombran en vez de dejar un cero sin explicar', () => {
+test('G2: si caducan, la razón las nombra en vez de dejar un cero sin explicar', () => {
   const u = universoG2(20);
-  // Las mismas 20, pero capturadas hace un mes.
-  u.referencias.referencias = u.referencias.referencias.map((r) => ({ ...r, capturada_en: '2026-08-10' }));
-  const g2 = evaluaG2({ ...u, frescura: FRESCA, ahora: AHORA_G2, criterios: CRITERIOS });
+  // Mismo trimestre en la captura, otro hoy: caducaron todas.
+  const periodos = u.emisoras.flatMap((e) => ([
+    { clave: e.clave, anio: 2026, trimestre: 2, acciones_circulacion: 1e9, fecha_publicacion: '2026-07-22T00:00:00Z' },
+    { clave: e.clave, anio: 2026, trimestre: 3, acciones_circulacion: 1e9, fecha_publicacion: '2026-10-21T00:00:00Z' },
+  ]));
+  const g2 = evaluaG2({
+    ...u, periodos, frescura: FRESCA, ahora: new Date('2026-11-01T12:00:00Z'), criterios: CRITERIOS,
+  });
   assert.equal(g2.verde, false);
-  assert.match(g2.razones.join(' · '), /vencidas/);
+  assert.match(g2.razones.join(' · '), /caducaron/);
   assert.equal(g2.vigencia_referencias.vencidas, 20);
+  assert.equal(g2.vigencia_referencias.a_recapturar.length, 20);
 });

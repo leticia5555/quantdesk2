@@ -28,7 +28,7 @@ import {
   proximaRanura, intervaloDe, penalizarPor429, planCorrida,
   // El veredicto de G2 entero: los tres pasos viven en la librería desde que
   // el censo tuvo que dar el MISMO número, no uno parecido.
-  evaluaG2, SQL_G2, VENTANA_DIAS_G2,
+  evaluaG2, SQL_G2, VENTANA_DIAS_G2, rangoDeCapturas,
 } from './_lib/mercado-r0.js';
 import { CRITERIOS, censoUniversoUsDesdeTabla, SQL_UNIVERSO_US } from './_lib/mercado-fase0.js';
 import { frescuraPrecios } from './_lib/bmv-frescura.js';
@@ -502,11 +502,22 @@ async function jobRefcap({ limite = 40 }) {
 async function jobUnidades({ ahora, manual }) {
   // Las CUATRO consultas de `SQL_G2`, las mismas que corre /api/mercado-censo.
   const VENTANA_DIAS = VENTANA_DIAS_G2;
-  const [acciones, precios, volumenes, corteFilas] = await Promise.all([
+  // `?manual=` REEMPLAZA las filas del registro para las claves que nombra.
+  // Sumarlas pondría gris —por `varias_por_emisora`— a una emisora ya
+  // verificada, o sea que el ensayo cambiaría el veredicto en vez de medirlo.
+  const ovr = registroConOverride(REFERENCIAS_CAP, (manual && manual.referencias) || []);
+  const registroManual = ovr.registro;
+  // Los cierres de las fechas de captura: la referencia se compara contra el
+  // precio DE ESE DÍA, no contra el de hoy.
+  const rango = rangoDeCapturas(registroManual);
+
+  const [acciones, precios, volumenes, corteFilas, periodos, cierresCaptura] = await Promise.all([
     sql(SQL_G2.acciones).catch(() => []),
     sql(SQL_G2.precios).catch(() => []),
     sql(SQL_G2.ventana, [VENTANA_DIAS]).catch(() => []),
     sql(SQL_G2.corte).catch(() => [{}]),
+    sql(SQL_G2.periodos).catch(() => []),
+    rango ? sql(SQL_G2.cierres_captura, [rango.desde, rango.hasta]).catch(() => []) : Promise.resolve([]),
   ]);
   const corte = corteFilas[0] || {};
   const hastaFecha = corte && corte.hasta ? String(corte.hasta).slice(0, 10) : null;
@@ -517,18 +528,12 @@ async function jobUnidades({ ahora, manual }) {
   const frescura = frescuraPrecios({ ultima_fecha: hastaFecha, ahora });
 
   const ref = await jobRefcap({ limite: 20 });
-  // `?manual=` REEMPLAZA las filas del registro para las claves que nombra.
-  // Sumarlas pondría gris —por `varias_por_emisora`— a una emisora ya
-  // verificada, o sea que el ensayo cambiaría el veredicto en vez de medirlo.
-  const ovr = registroConOverride(REFERENCIAS_CAP, (manual && manual.referencias) || []);
-  const registroManual = ovr.registro;
-
   // ── EL VEREDICTO, con el evaluador compartido ───────────────────────
   // Los tres pasos (calcular, validar el método, decidir el estado) viven en
   // `_lib/mercado-r0.js` desde que el censo tuvo que dar el MISMO número.
   const g2 = evaluaG2({
     emisoras: EMISORAS.emisoras,
-    acciones, precios, volumenes,
+    acciones, precios, volumenes, periodos, cierres_captura: cierresCaptura,
     referencias: registroManual,
     frescura, ahora, criterios: CRITERIOS, ventana_dias: VENTANA_DIAS,
   });
@@ -589,7 +594,8 @@ async function jobUnidades({ ahora, manual }) {
     // corridas con distinto `?manual=` dan números distintos y el JSON no
     // dice por qué.
     referencias_usadas: {
-      registro: `_lib/mercado-cap-referencia.json (${REFERENCIAS_CAP.referencias.length} filas, vigencia ${REFERENCIAS_CAP.vigencia_dias} días)`,
+      registro: `_lib/mercado-cap-referencia.json (${REFERENCIAS_CAP.referencias.length} filas; caducan por trimestre XBRL, gracia ${REFERENCIAS_CAP.gracia_dias}d, tope duro ${REFERENCIAS_CAP.tope_dias}d)`,
+      rango_de_cierres_pedido: rango,
       override_manual: ovr.claves,
       // Lo que el override APARTÓ. Un override silencioso es una referencia
       // que desapareció sin que nadie lo dijera.
