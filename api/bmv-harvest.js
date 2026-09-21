@@ -10,6 +10,7 @@
 //   GET ?job=emisoras          → protegido. 1 request. El censo point-in-time.
 //   GET ?job=financieros&max=N → protegido. Reanudable e idempotente.
 //   GET ?job=historicos&max=N  → protegido. Reanudable e idempotente.
+//   GET ?job=precios           → protegido. La COLA DIARIA de precios (cron).
 //
 // GATING de escritura: `Authorization: Bearer <ADMIN_SECRET>` (fallback a
 // CRON_SECRET). Sin secret configurado NO se escribe: fail closed. Mismo
@@ -61,6 +62,8 @@ import {
 } from './_lib/databursatil.js';
 
 import { sql } from './_lib/db.js';
+import { beat } from './_lib/heartbeat.js';
+import { frescuraPrecios } from './_lib/bmv-frescura.js';
 import {
   ensureBmvSchema, upsertEmisora, emisorasIcs, emisoraPorClave, censoResumen,
   MAX_INTENTOS,
@@ -2556,6 +2559,195 @@ async function jobHistoricos(req) {
   };
 }
 
+/* ═══════════════ job: precios (la cola del día) ═══════════════ */
+
+// Una serie que se quedó ESTE TANTO atrás DEL RESTO DE LA TABLA está
+// suspendida o dejó de cotizar. 76 de las 185 ICS lo están
+// (docs/bmv-rotation.md): pedirles la cola todos los días sería gastar la
+// mitad del presupuesto en silencio.
+//
+// El ancla es `max(fecha)` de la tabla y NO la sesión esperada, por la misma
+// razón que en `?job=unidades`: si se anclara en el calendario, una cosecha
+// parada seis semanas dejaría a TODAS las series del lado de "suspendida" y
+// el job diario no pediría nada — callado y quieto, que es justo el modo de
+// falla que este job existe para no tener.
+const PRECIOS_SERIE_VIVA_DIAS = 30;
+
+const masUnDia = (f) => new Date(Date.parse(`${f}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+const diasEntre = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000);
+
+/**
+ * QUÉ SE LE PIDE A CADA SERIE. Pura y exportada: es la parte del job que
+ * decide, y decidir mal acá es un hueco permanente en la tabla o media
+ * cartera gastada en series suspendidas. Se prueba con fixtures.
+ *
+ *   `yaTengo`   Map serie → última fecha guardada (de `ultimaFechaPrecios`)
+ *   `maxTabla`  max(fecha) de toda la tabla: el ancla de "suspendida"
+ *   `hasta`     la última sesión esperada (o la que se forzó)
+ */
+function planPrecios({
+  series = [], yaTengo = new Map(), maxTabla = null, hasta,
+  desdeForzado = null, soloEmisora = null, incluirSuspendidas = false,
+  vivaDias = PRECIOS_SERIE_VIVA_DIAS,
+} = {}) {
+  const pendientes = [];
+  const saltadas = { al_dia: 0, sin_historia: [], suspendidas: [] };
+  for (const e of series) {
+    const clave = e.emisora_serie || e.emisora;
+    if (!clave) continue;
+    if (soloEmisora && e.emisora !== soloEmisora && clave !== soloEmisora) continue;
+
+    const ultima = yaTengo.get(clave) || null;
+    if (!ultima) {
+      // Sembrar diez años es trabajo de `?job=historicos`. Se reporta para
+      // que una serie que nunca entró no desaparezca de la vista.
+      saltadas.sin_historia.push(clave);
+      continue;
+    }
+    const atrasoRelativo = maxTabla ? diasEntre(ultima, maxTabla) : 0;
+    if (!incluirSuspendidas && atrasoRelativo > vivaDias) {
+      saltadas.suspendidas.push({ emisora_serie: clave, ultima_fecha: ultima, dias_detras_de_la_tabla: atrasoRelativo });
+      continue;
+    }
+
+    // Sin recorte de ventana: la cola arranca en el día siguiente al último
+    // precio GUARDADO. Recortarla dejaría un hueco que la corrida siguiente
+    // ya no vería —su cota de abajo sería la fecha nueva— y el hueco se
+    // volvería permanente sin que nada lo reportara.
+    const desde = desdeForzado || masUnDia(ultima);
+    if (desde > hasta) { saltadas.al_dia++; continue; }
+    pendientes.push({ emisora: e.emisora, emisora_serie: clave, desde, hasta });
+  }
+  return { pendientes, saltadas };
+}
+
+/**
+ * LA COLA DIARIA, que es lo que `?job=historicos` no podía ser.
+ *
+ * `historicos` cierra su rango en `hist_hasta` —la fecha del censo, que es
+ * point-in-time—, así que en cuanto la cosecha alcanza al censo TODA emisora
+ * cae en `d >= h` y se salta. Es un job de relleno histórico, y como cron
+ * diario se habría quedado callado y quieto. Este pide contra la última
+ * SESIÓN esperada (calendario, no censo), que es lo que se mueve cada día.
+ *
+ * Idempotente sin ledger: la cota de abajo es `max(fecha)` real de cada
+ * serie en `bmv_precios`. Correrlo dos veces el mismo día no pide nada la
+ * segunda vez. No se escriben filas de ledger a propósito: la clave de una
+ * cola diaria cambia todos los días y en un año serían ~25,000 filas que no
+ * responden ninguna pregunta.
+ *
+ *   ?job=precios                          → la cola de hoy
+ *   ?job=precios&desde=2026-09-16&hasta=2026-09-18 → relleno de un hueco
+ *   ?job=precios&emisora=WALMEX           → una sola
+ *   ?job=precios&todas=1                  → incluye las suspendidas
+ */
+async function jobPrecios(req) {
+  const q = (req && req.query) || {};
+  const tope = Math.max(1, Math.min(500, Number(q.max || 250)));
+  const desdeForzado = q.desde ? String(q.desde).slice(0, 10) : null;
+  const hastaForzado = q.hasta ? String(q.hasta).slice(0, 10) : null;
+  const soloEmisora = q.emisora ? String(q.emisora).toUpperCase() : null;
+  const incluirSuspendidas = String(q.todas || '') === '1';
+  const ahora = new Date();
+
+  const mes = mesPresupuesto();
+  const [saldo, contrato, ics, yaTengo] = await Promise.all([
+    presupuesto(mes), contratoVigente(), emisorasIcs(), ultimaFechaPrecios(),
+  ]);
+  if (!ics.length) return { job: 'precios', error: 'no hay censo: corre ?job=emisoras primero' };
+
+  const objetivo = [...ics];
+  if (!objetivo.some((e) => e.emisora_serie === BENCHMARK)) {
+    const b = await emisoraPorClave(BENCHMARK);
+    objetivo.push(b || { emisora: BENCHMARK_EMISORA, emisora_serie: BENCHMARK });
+  }
+
+  // La foto ANTES: es el número que dispara la alerta de /api/cron-status, y
+  // que esta corrida tiene que mover.
+  let maxTabla = null;
+  for (const f of yaTengo.values()) if (!maxTabla || f > maxTabla) maxTabla = f;
+  const antes = frescuraPrecios({ ultima_fecha: maxTabla, ahora });
+  const hasta = hastaForzado || antes.sesion_esperada;
+
+  const { pendientes, saltadas } = planPrecios({
+    series: objetivo, yaTengo, maxTabla, hasta,
+    desdeForzado, soloEmisora, incluirSuspendidas,
+  });
+
+  const cartera = nuevaCartera({ mes, gastadoMes: saldo.creditos, tope });
+  const hecho = [];
+  let i = 0;
+  for (; i < pendientes.length; i++) {
+    if (!cartera.puedeSeguir()) break;
+    const p = pendientes[i];
+    const params = p.emisora_serie === BENCHMARK
+      ? paramsBenchmark(contrato, p.desde, p.hasta)
+      : paramsHistoricos(contrato, p.emisora_serie, p.desde, p.hasta);
+    const r = await traer(construirUrl('/historicos', params));
+    cartera.anota(r);
+
+    if (!r.ok) {
+      hecho.push({ ...p, estado: 'error', error: `${r.status}: ${r.error} · ${String(r.texto || '').slice(0, 120)}` });
+    } else {
+      const { filas, descartadas } = aplanarHistoricos(r.json);
+      const escritas = filas.length ? await insertarPrecios(p.emisora, p.emisora_serie, filas) : 0;
+      hecho.push({ ...p, estado: filas.length ? 'hecho' : 'vacio', dias: escritas, descartadas });
+    }
+    await dormir(PAUSA_MS);
+  }
+
+  const gastoMes = await cerrarCartera(cartera);
+
+  // La foto DESPUÉS, leída de la tabla y no deducida de los contadores: es
+  // la única que prueba que la corrida sirvió de algo.
+  const [fin] = await sql('select max(fecha)::text as hasta from bmv_precios').catch(() => [{}]);
+  const despues = frescuraPrecios({ ultima_fecha: fin && fin.hasta, ahora });
+
+  const errores = hecho.filter((h) => h.estado === 'error');
+  const salida = {
+    job: 'precios',
+    contrato_verificado: !!contrato.verificado,
+    ventana: { desde: desdeForzado, hasta, forzada: !!(desdeForzado || hastaForzado) },
+    frescura_antes: antes,
+    frescura_despues: despues,
+    // Lo que se movió. Si `avanzo` es false con pendientes procesadas, la
+    // fuente contestó pero no trajo nada — y eso NO es lo mismo que "al día".
+    avanzo: !!(despues.ultima_fecha && antes.ultima_fecha && despues.ultima_fecha > antes.ultima_fecha),
+    pendientes_al_empezar: pendientes.length,
+    procesadas: hecho.length,
+    restantes: Math.max(0, pendientes.length - i),
+    paro: cartera.razonParo,
+    resumen: contar(hecho.map((h) => h.estado)),
+    filas_escritas: hecho.reduce((s, h) => s + (h.dias || 0), 0),
+    saltadas: {
+      al_dia: saltadas.al_dia,
+      sin_historia: saltadas.sin_historia.length,
+      sin_historia_series: saltadas.sin_historia.slice(0, 20),
+      suspendidas: saltadas.suspendidas.length,
+      suspendidas_series: saltadas.suspendidas.slice(0, 20),
+      regla: `${PRECIOS_SERIE_VIVA_DIAS} días detrás de max(fecha) de la tabla = suspendida (se salta; &todas=1 las incluye). Sin ninguna fila = la siembra es de ?job=historicos.`,
+    },
+    errores: errores.length,
+    errores_detalle: errores.slice(0, 10),
+    creditos: { corrida: cartera.creditos, requests: cartera.requests, mes: gastoMes },
+    detalle: hecho.filter((h) => h.estado !== 'vacio').slice(-30),
+  };
+
+  // El latido lleva lo que hace falta para leer la salud sin abrir el JSON:
+  // si el cron corre y NO avanza, el detalle lo dice y la alerta de datos de
+  // /api/cron-status sigue roja. Un 200 no es una cosecha.
+  await beat('bmv:precios', errores.length && !salida.filas_escritas ? 'error' : 'ok', {
+    ultima_fecha: despues.ultima_fecha,
+    dias_habiles_atraso: despues.dias_habiles_atraso,
+    filas: salida.filas_escritas,
+    series: hecho.length,
+    errores: errores.length,
+    restantes: salida.restantes,
+  });
+
+  return salida;
+}
+
 /* ═══════════════ cobertura en markdown ═══════════════ */
 
 function coberturaMd(c, est) {
@@ -2686,7 +2878,7 @@ export default async function handler(req, res) {
 
   const job = String((req.query && req.query.job) || '').toLowerCase();
   const q2 = (req.query) || {};
-  const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'reparse', 'reparse-fin', 'inspect', 'creditos', 'muestra', 'diagnostico']);
+  const protegidos = new Set(['probe', 'emisoras', 'financieros', 'historicos', 'precios', 'reparse', 'reparse-fin', 'inspect', 'creditos', 'muestra', 'diagnostico']);
 
   try {
     // AUTH PRIMERO, base después. Estaba al revés: `ensureBmvSchema()` corría
@@ -2765,18 +2957,20 @@ export default async function handler(req, res) {
     if (job === 'emisoras') return res.status(200).json(await jobEmisoras());
     if (job === 'financieros') return res.status(200).json(await jobFinancieros(req));
     if (job === 'historicos') return res.status(200).json(await jobHistoricos(req));
+    if (job === 'precios') return res.status(200).json(await jobPrecios(req));
 
     const mes = mesPresupuesto();
     return res.status(200).json({
       endpoint: '/api/bmv-harvest',
       que_es: 'Fase A del backtest BMV: cosecha DataBursatil → Neon (tablas bmv_*; xbrl_reports NO se toca).',
-      orden_sugerido: ['?job=estimate', '?job=probe', '?job=emisoras', '?job=estimate (ya con censo real)', '?job=financieros&max=60 (repetir)', '?job=historicos&max=30 (repetir)', '?job=reparse-fin (si la normalización cambia)', '?job=creditos', '?job=cobertura&format=md'],
+      orden_sugerido: ['?job=estimate', '?job=probe', '?job=emisoras', '?job=estimate (ya con censo real)', '?job=financieros&max=60 (repetir)', '?job=historicos&max=30 (repetir)', '?job=precios (diario, ya con la serie sembrada)', '?job=reparse-fin (si la normalización cambia)', '?job=creditos', '?job=cobertura&format=md'],
       jobs: {
         'estimate': 'público, sin red: presupuesto de créditos en tres modelos de costo',
         'probe': 'protegido, ≤15 requests: descubre el contrato de la API y lo guarda',
         'emisoras': 'protegido, 1 request: el censo point-in-time (rango_financieros)',
         'financieros': 'protegido, &max=N: emisora × trimestre, idempotente',
         'historicos': 'protegido, &max=N, &chunk=anio, &desde=AAAA-MM-DD',
+        'precios': 'protegido, la COLA DIARIA: pide sólo desde el último precio guardado hasta la última sesión esperada. Idempotente, sin ledger. &desde=&hasta= para rellenar un hueco, &emisora=, &todas=1 (incluye suspendidas), &max=N',
         'cobertura': 'público, &format=md: qué hay y dónde están los hoyos',
         'contrato': 'público: el contrato descubierto por el probe',
         'reparse': 'protegido, CERO créditos: re-deriva el censo desde el crudo guardado',
@@ -2813,7 +3007,7 @@ export {
   jobElegibilidad, literal,
   pareceClave, pareceSerie, tipoDe,
   pendientesFinancieros,
-  seriesDeEmisora, muestraChica, nuevaCartera,
+  seriesDeEmisora, muestraChica, nuevaCartera, planPrecios, PRECIOS_SERIE_VIVA_DIAS,
   paramsBenchmark, paramsFinancieros, paramsHistoricos, parsePeriodoTexto,
   sirveFinanciero,
 };

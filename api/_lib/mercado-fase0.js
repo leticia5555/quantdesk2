@@ -152,6 +152,60 @@ const up = (s) => String(s || '').trim().toUpperCase();
  * `ahora` se INYECTA: la frescura es una resta contra un reloj, y un reloj
  * escondido hace que el test mida la hora en que corrió en vez del dato.
  */
+/**
+ * LA CONSULTA, una sola, compartida por los dos instrumentos.
+ *
+ * `/api/mercado-r0?job=universo` ESCRIBE la tabla y `/api/mercado-censo`
+ * la MIDE. Mientras cada uno traía sus propias filas, el censo seguía
+ * leyendo las tablas viejas del Arena (`arena_market_cap` + el canal
+ * `assets:sector` del buffet) y reportaba G1 en rojo —45 con cap, 0 con
+ * sector— con 538 filas completas en `mercado_universo_us`. Dos instrumentos
+ * midiendo cosas distintas y llamándolas igual.
+ *
+ * El texto del SELECT se exporta para que no haya dos versiones que se
+ * puedan desincronizar.
+ */
+export const SQL_UNIVERSO_US = `select symbol, nombre, sector_etf, market_cap, cap_fuente, cap_actualizado
+  from mercado_universo_us`;
+
+/**
+ * Las filas de `mercado_universo_us` → el veredicto G1, con el mismo medidor
+ * de siempre. La tabla ya trae cap y sector juntos, así que el "universo
+ * candidato" son sus propias filas.
+ *
+ * `cap_actualizado` (cuándo se MIDIÓ la cap) es lo que entra como
+ * `fetched_at`: `actualizado` es cuándo se tocó la fila y mide otra cosa.
+ */
+export function censoUniversoUsDesdeTabla(filas = [], { ahora } = {}) {
+  const caps = [];
+  const sectores = {};
+  const universo = [];
+  const fuentes = {};
+  const sinFecha = [];
+  for (const f of filas) {
+    const sym = up(f && f.symbol);
+    if (!sym) continue;
+    universo.push(sym);
+    if (num(f.market_cap) != null) {
+      caps.push({ symbol: sym, market_cap: f.market_cap, fetched_at: f.cap_actualizado || null });
+      const cf = f.cap_fuente || 'sin fuente declarada';
+      fuentes[cf] = (fuentes[cf] || 0) + 1;
+      // Una cap sin fecha de medición no entra en la frescura: no la vuelve
+      // vieja ni la vuelve fresca, la vuelve NO MEDIDA. Se cuenta aparte para
+      // que un hueco así no desaparezca detrás del promedio de los demás.
+      if (!f.cap_actualizado) sinFecha.push(sym);
+    }
+    if (f.sector_etf) sectores[sym] = f.sector_etf;
+  }
+  const r = censoUniversoUs({ screener: [], caps, sectores, universo, ahora });
+  return {
+    ...r,
+    cap_por_fuente: fuentes,
+    caps_sin_fecha_de_medicion: sinFecha.length,
+    caps_sin_fecha_ejemplos: sinFecha.slice(0, 10),
+  };
+}
+
 export function censoUniversoUs({ screener = [], caps = [], sectores = {}, universo = [], ahora }) {
   const now = ahora instanceof Date ? ahora : new Date(ahora);
   const capOf = new Map();

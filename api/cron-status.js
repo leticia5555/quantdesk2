@@ -9,22 +9,32 @@
 // da margen sobre su cadencia real (los crons de días hábiles toleran el fin
 // de semana). Si algo está stale, `ok:false` → fácil de monitorear/alertar.
 //
+// ── Y TAMBIÉN EL DATO, no sólo el latido ───────────────────────────
+// Un latido contesta "¿corrió el cron?". La pregunta que costó seis días el
+// 2026-09-21 fue otra: "¿está al día la tabla?". `bmv_precios` llevaba desde
+// el martes 15 sin una fila nueva y nada acá se puso rojo, porque no había
+// cron que latiera — y un cron que corre, contesta 200 y no escribe nada
+// habría dejado el latido igual de verde. Por eso `datos[]` mide la tabla,
+// que es lo que el consumidor realmente necesita.
+//
 // Metadata operativa (nombres de job + timestamps), sin secretos → sin gate.
 // ═══════════════════════════════════════════════════════════════════
 
 import { readHeartbeats } from './_lib/heartbeat.js';
+import { sql } from './_lib/db.js';
+import { frescuraPrecios } from './_lib/bmv-frescura.js';
 
 // Cadencia esperada por job, alineada con vercel.json. `stale_after_h` es el
 // umbral de "algo anda mal": > 2× el intervalo, y para los crons de 1-5
 // (lun-vie) se estira para cubrir el hueco del fin de semana (vie→lun ≈ 72h).
-const EXPECTED = [
-  { job: 'agents:run',      schedule: '30 22 * * 1-5',         cadence: 'días hábiles ~22:30', stale_after_h: 80 },
-  { job: 'arena:decide',    schedule: '40 22 * * 1-5',         cadence: 'días hábiles ~22:40', stale_after_h: 80 },
-  { job: 'arena:reconcile', schedule: '40 14 * * 1-5',         cadence: 'días hábiles ~14:40', stale_after_h: 80 },
+export const EXPECTED = [
+  { job: 'agents:run',      path: '/api/agents-run',                 schedule: '30 22 * * 1-5',         cadence: 'días hábiles ~22:30', stale_after_h: 80 },
+  { job: 'arena:decide',    path: '/api/arena-run',                  schedule: '40 22 * * 1-5',         cadence: 'días hábiles ~22:40', stale_after_h: 80 },
+  { job: 'arena:reconcile', path: '/api/arena-run?phase=reconcile',  schedule: '40 14 * * 1-5',         cadence: 'días hábiles ~14:40', stale_after_h: 80 },
   // T2 #7: corrida matutina POR EVENTO. Late TODOS los días hábiles aunque no
   // haya evento (el latido dice "el cron corrió", no "operó") — por eso la
   // ventana de stale es la misma que la de los otros diarios.
-  { job: 'arena:morning',   schedule: '50 14 * * 1-5',         cadence: 'días hábiles ~14:50', stale_after_h: 80 },
+  { job: 'arena:morning',   path: '/api/arena-run?phase=morning',    schedule: '50 14 * * 1-5',         cadence: 'días hábiles ~14:50', stale_after_h: 80 },
   // CADENCIA: el VIGILANTE. Late en CADA tick, incluidos los que caen fuera de sesión
   // (la ventana UTC 13-21 cubre EDT y EST) y los que no disparan nada — el
   // latido dice "el vigilante corrió", no "operó".
@@ -34,11 +44,11 @@ const EXPECTED = [
   // GRUESO a propósito — detecta "el cron murió", no "se perdieron unos ticks";
   // para eso último el instrumento fino es `run_count`, que con esta cadencia
   // debería subir ~108 por día hábil.
-  { job: 'arena:watch',     schedule: '*/5 13-21 * * 1-5',     cadence: 'cada 5 min en mercado', stale_after_h: 72 },
+  { job: 'arena:watch',     path: '/api/arena-watch',                schedule: '*/5 13-21 * * 1-5',     cadence: 'cada 5 min en mercado', stale_after_h: 72 },
   // pead:earnings retirado con el NO-GO del PEAD: sin schedule no hay latido,
   // y dejarlo acá daba ok:false permanente. Ver docs/wheel-fase0.md §4.3.
-  { job: 'pead:hour',       schedule: '30 21 * * *',           cadence: '1×/día (SEC 8-K)',    stale_after_h: 30 },
-  { job: 'screener:refresh',schedule: '0 */4 * * *',           cadence: 'cada 4h',             stale_after_h: 9 },
+  { job: 'pead:hour',       path: '/api/pead-harvest?job=hour',      schedule: '30 21 * * *',           cadence: '1×/día (SEC 8-K)',    stale_after_h: 30 },
+  { job: 'screener:refresh',path: '/api/arena-screener?job=refresh', schedule: '0 */4 * * *',           cadence: 'cada 4h',             stale_after_h: 9, vive_en: 'github-actions' },
   // R0(a): puebla mercado_universo_us (sector + cap) antes de la apertura, 30
   // min después del arena:universe que le da los símbolos. La ventana de stale
   // la manda el fin de semana, igual que los otros diarios hábiles.
@@ -49,7 +59,40 @@ const EXPECTED = [
   // un cron diario habría tardado cinco días en sembrar la tabla.
   // La ventana de stale la manda el FIN DE SEMANA: viernes 21:45 → lunes
   // 13:30 son ~64 h.
-  { job: 'mercado:universo', schedule: '30,45 13-21 * * 1-5',   cadence: '2×/hora en mercado', stale_after_h: 80 },
+  { job: 'mercado:universo',path: '/api/mercado-r0?job=universo',    schedule: '30,45 13-21 * * 1-5',   cadence: '2×/hora en mercado', stale_after_h: 80 },
+  // Estaba agendado en vercel.json y latiendo, pero NO en esta lista: salía
+  // en `untracked`, que no pone nada en rojo. El universo es el insumo de
+  // mercado:universo y de la corrida del Arena.
+  { job: 'arena:universe',  path: '/api/arena-universe',             schedule: '0 13 * * 1-5',          cadence: 'días hábiles ~13:00', stale_after_h: 80 },
+  // La cola diaria de precios BMV. Corre 22:10 UTC = 16:10 CDMX, una hora
+  // después del cierre de la bolsa. Hasta el 2026-09-21 NO EXISTÍA: la
+  // cosecha de Fase 1b fue a mano y nunca se agendó, así que la tabla se
+  // quedó en el 15-sep sin que nada lo dijera. El latido vigila que el cron
+  // corra; `datos[]` vigila que además traiga algo.
+  { job: 'bmv:precios',     path: '/api/bmv-harvest?job=precios',    schedule: '10 22 * * 1-5',         cadence: 'días hábiles ~22:10', stale_after_h: 80 },
+];
+
+// Crons de vercel.json que a propósito NO se vigilan acá, con el porqué. La
+// lista existe para que `tests/crons-declarados.test.mjs` pueda exigir que
+// todo lo demás esté vigilado: un cron sin latido y sin excepción declarada
+// es justo cómo `bmv_precios` se quedó seis días atrás sin que nada lo dijera.
+export const SIN_VIGILANCIA = [
+  {
+    path: '/api/xbrl-capture?run=1',
+    porque: 'no emite latido. Su salud se lee en la cobertura de xbrl_reports, no en un heartbeat; meterlo acá lo dejaría en rojo permanente, que es peor que no avisar.',
+  },
+];
+
+// ── Frescura de DATOS (no de latidos) ───────────────────────────────
+// Cada entrada es una tabla cuyo atraso se mide contra el calendario de su
+// mercado. `alerta: true` baja el `ok` del endpoint igual que un stale.
+const DATOS = [
+  {
+    clave: 'bmv_precios',
+    que_es: 'cierre diario de la BMV — lo que usan las caps MX de /mercado y el backtest',
+    sql: 'select max(fecha)::text as hasta from bmv_precios',
+    lo_llena: 'bmv:precios',
+  },
 ];
 
 const HOUR_MS = 3600 * 1000;
@@ -100,12 +143,34 @@ export default async function handler(req, res) {
       run_count: b.run_count, tracked: false,
     }));
 
+    // El dato. Si la consulta falla, la tabla queda como NO MEDIDA y eso
+    // cuenta como alerta: "no sé" y "está al día" no son lo mismo, y el
+    // silencio es justo el modo de falla que este bloque existe para cerrar.
+    const datos = [];
+    for (const d of DATOS) {
+      try {
+        const r = await sql(d.sql);
+        const hasta = r && r[0] ? r[0].hasta : null;
+        datos.push({ ...frescuraPrecios({ ultima_fecha: hasta, ahora: new Date(now), tabla: d.clave }),
+          que_es: d.que_es, lo_llena: d.lo_llena });
+      } catch (e) {
+        datos.push({
+          tabla: d.clave, que_es: d.que_es, lo_llena: d.lo_llena,
+          ultima_fecha: null, dias_habiles_atraso: null, alerta: true,
+          motivo: `no se pudo medir: ${String((e && e.message) || e)}`,
+        });
+      }
+    }
+
     const staleJobs = jobs.filter((j) => j.stale).map((j) => j.job);
+    const datosEnAlerta = datos.filter((d) => d.alerta).map((d) => d.tabla);
     return res.status(200).json({
-      ok: staleJobs.length === 0,
+      ok: staleJobs.length === 0 && datosEnAlerta.length === 0,
       checked_at: new Date(now).toISOString(),
       stale: staleJobs,
+      datos_en_alerta: datosEnAlerta,
       jobs,
+      datos,
       untracked: extra,
     });
   } catch (err) {

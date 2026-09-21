@@ -30,7 +30,8 @@ import {
   proximaRanura, intervaloDe, penalizarPor429, planCorrida,
   elegibleMetodo, validaMetodo, verificaConReferencias, dispersionPrecios, clasificaSeries, METODO,
 } from './_lib/mercado-r0.js';
-import { CRITERIOS } from './_lib/mercado-fase0.js';
+import { CRITERIOS, censoUniversoUsDesdeTabla, SQL_UNIVERSO_US } from './_lib/mercado-fase0.js';
+import { frescuraPrecios } from './_lib/bmv-frescura.js';
 import REFERENCIAS_CAP from './_lib/mercado-cap-referencia.json' with { type: 'json' };
 
 export const maxDuration = 300;
@@ -347,18 +348,22 @@ async function jobUniverso({ ahora, dry, finnhubKey, t0 }) {
        from mercado_universo_us`).catch(() => []);
   const est = despues[0] || {};
 
-  const porSector = dry ? {} : Object.fromEntries(
-    (await sql(`select sector_etf, count(*)::int n from mercado_universo_us
-                 where sector_etf is not null and market_cap is not null
-                 group by 1 order by 2 desc`).catch(() => []))
-      .map((x) => [x.sector_etf, x.n]));
+  // G1 se mide con EL MISMO instrumento y LA MISMA consulta que
+  // /api/mercado-censo. Antes este bloque tenía su propio conteo y sus
+  // propios umbrales (120 y 9 a mano, sin frescura): dos medidores sobre la
+  // misma tabla que podían discrepar, y el 2026-09-21 discreparon.
+  // Se lee también en `dry`: es un SELECT, y ver el G1 que la tabla da HOY
+  // es justo lo que un ensayo tiene que mostrar.
+  const filasTabla = await sql(SQL_UNIVERSO_US).catch(() => []);
+  const g1 = censoUniversoUsDesdeTabla(filasTabla, { ahora });
+  const porSector = g1.por_sector || {};
 
   const pendientesRestantes = (r.pendientes.profile2 - r.procesados.profile2)
     + (r.pendientes.metric - r.procesados.metric);
   const plan = planCorrida({ pendientes: pendientesRestantes, presupuesto_ms: PRESUPUESTO_MS, por_minuto: POR_MINUTO });
   const total429 = r.contadores.profile2.rate_429 + r.contadores.metric.rate_429;
 
-  const sectoresConPiso = Object.entries(porSector).filter(([, n]) => n >= 5).map(([x]) => x).sort();
+  const sectoresConPiso = g1.sectores_con_piso || [];
 
   return {
     job: 'universo', dry: !!dry,
@@ -405,10 +410,18 @@ async function jobUniverso({ ahora, dry, finnhubKey, t0 }) {
     por_sector: porSector,
     sectores_con_piso: sectoresConPiso,
 
+    // El MISMO veredicto que va a dar `/api/mercado-censo?job=censo` sobre
+    // esta tabla, con los umbrales congelados de CRITERIOS —frescura de la
+    // cap incluida, que el conteo a mano no miraba.
     g1_proyectado: {
-      con_cap_y_sector: est.completas ?? 0,
-      sectores_con_piso: sectoresConPiso.length,
-      verde: (est.completas ?? 0) >= 120 && sectoresConPiso.length >= 9,
+      ...g1,
+      criterios: {
+        min_tickers_con_cap: CRITERIOS.g1_min_tickers_con_cap,
+        min_por_sector: CRITERIOS.g1_min_por_sector,
+        min_sectores: CRITERIOS.g1_min_sectores,
+        max_horas_frescura_cap: CRITERIOS.g1_max_horas_frescura_cap,
+      },
+      medido_con: 'censoUniversoUsDesdeTabla(mercado_universo_us) — el mismo que el censo',
       falta: pendientesRestantes === 0 ? null
         : `${pendientesRestantes} símbolos sin pedir — corré de nuevo (${plan.corridas_estimadas} corridas más)`,
     },
@@ -513,6 +526,10 @@ async function jobUnidades({ ahora, manual }) {
   const [corte] = await sql('select max(fecha) hasta from bmv_precios').catch(() => [{}]);
   const hastaFecha = corte && corte.hasta ? String(corte.hasta).slice(0, 10) : null;
   const diasAtraso = hastaFecha ? Math.round((ahora - new Date(hastaFecha)) / 86400000) : null;
+  // El atraso en SESIONES, que es el que importa: 6 días de calendario sobre
+  // un puente pueden ser dos sesiones, y un lunes a las 9 am no hay ninguna
+  // sesión que reclamar. Mismo medidor que /api/cron-status.
+  const frescura = frescuraPrecios({ ultima_fecha: hastaFecha, ahora });
 
   const accPor = new Map(acciones.map((a) => [String(a.clave).toUpperCase(), a]));
   const preciosPor = new Map();
@@ -709,8 +726,18 @@ async function jobUnidades({ ahora, manual }) {
       dias_atraso: diasAtraso,
       ventana_dias: VENTANA_DIAS,
       emisoras_con_datos_rancios: salida.filter((s2) => s2.datos_rancios).map((s2) => s2.clave),
-      lectura: diasAtraso != null && diasAtraso > VENTANA_DIAS
-        ? `la cosecha de precios tiene ${diasAtraso} días de atraso, más que la ventana de ${VENTANA_DIAS}: la prueba de "serie sin mercado" no es confiable en esta corrida`
+      sesiones_de_atraso: frescura.dias_habiles_atraso,
+      sesiones_faltantes: frescura.sesiones_faltantes,
+      // AVISO A TIEMPO. Este umbral estaba en `> VENTANA_DIAS` (30 días), así
+      // que la corrida del 2026-09-21 —27 de 27 emisoras en `datos_rancios`,
+      // G2 en 2/15— reportó `lectura: null`. El aviso llegaba justo cuando ya
+      // no servía de nada. Ahora suena con la primera sesión perdida, que es
+      // cuando todavía se puede arreglar con una cosecha.
+      lectura: frescura.alerta
+        ? `la cosecha de precios lleva ${frescura.dias_habiles_atraso} sesiones sin correr (última ${hastaFecha}, se esperaba ${frescura.sesion_esperada}): corré /api/bmv-harvest?job=precios ANTES de leer este resultado` +
+          (diasAtraso != null && diasAtraso > VENTANA_DIAS
+            ? `. Y el atraso (${diasAtraso} días) ya pasó la ventana de ${VENTANA_DIAS}: la prueba de "serie sin mercado" no es confiable en esta corrida`
+            : '')
         : null,
     },
     series_sin_mercado: salida.filter((s2) => s2.series_sin_mercado.length)

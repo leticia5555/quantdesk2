@@ -18,7 +18,8 @@ import assert from 'node:assert/strict';
 
 import {
   CRITERIOS, CAMPOS_METRIC,
-  censoUniversoUs, capMxCandidatas, errorPct, veredictoCapMx,
+  censoUniversoUs, censoUniversoUsDesdeTabla, SQL_UNIVERSO_US,
+  capMxCandidatas, errorPct, veredictoCapMx,
   presupuestoPrecios, censoRetornoTotal, anclaYtd,
   coberturaMetric, ventanaUpa, proximoReporte,
   coberturaCompanyFacts, censoForm4,
@@ -105,6 +106,77 @@ test('Q1: el screener sin sector cuenta como cobertura faltante, no como sector 
   assert.equal(r.con_cap_y_sector, 0);
   assert.deepEqual(r.por_sector, {});
   assert.equal(r.verde, false);
+});
+
+// ── Q1 desde mercado_universo_us: EL MISMO medidor, la MISMA tabla ──
+// El 2026-09-21 `?job=universo` reportó 538/553 completas y G1 verde, y el
+// censo del mismo día dijo `con_sector: 0` y G1 rojo. No era un desacuerdo
+// sobre los datos: el censo leía las tablas viejas del Arena.
+
+const filaUs = (symbol, sector_etf, cap, horas = 6, cap_fuente = 'finnhub:metric') => ({
+  symbol, nombre: symbol, sector_etf,
+  market_cap: cap, cap_fuente,
+  cap_actualizado: cap == null ? null : horasAntes(horas),
+});
+
+test('Q1 tabla: 11 sectores × 12 nombres desde mercado_universo_us pasa G1', () => {
+  const etfs = ['XLK', 'XLF', 'XLV', 'XLY', 'XLP', 'XLE', 'XLI', 'XLB', 'XLU', 'XLRE', 'XLC'];
+  const filas = [];
+  etfs.forEach((etf, i) => { for (let j = 0; j < 12; j++) filas.push(filaUs(`W${i}_${j}`, etf, 5e9, 10)); });
+  const r = censoUniversoUsDesdeTabla(filas, { ahora: AHORA });
+  assert.equal(r.candidatos, 132);
+  assert.equal(r.con_cap_y_sector, 132);
+  assert.equal(r.sectores_con_piso.length, 11);
+  assert.equal(r.horas_frescura_cap_mas_vieja, 10);
+  assert.ok(r.verde, r.razones.join(' · '));
+  // De dónde salió cada cap viaja en la salida: regla 3 del encargo.
+  assert.deepEqual(r.cap_por_fuente, { 'finnhub:metric': 132 });
+});
+
+test('Q1 tabla: la frescura se mide con cap_actualizado, no con `actualizado`', () => {
+  // La fila se tocó hace un minuto, pero la cap se midió hace 30 días. El
+  // bug que esto cierra es el de creer que tocar la fila refresca el número.
+  const etfs = ['XLK', 'XLF', 'XLV', 'XLY', 'XLP', 'XLE', 'XLI', 'XLB', 'XLU', 'XLRE', 'XLC'];
+  const filas = [];
+  etfs.forEach((etf, i) => {
+    for (let j = 0; j < 12; j++) {
+      const f = filaUs(`V${i}_${j}`, etf, 4e9, i === 0 && j === 0 ? 720 : 6);
+      f.actualizado = AHORA.toISOString();
+      filas.push(f);
+    }
+  });
+  const r = censoUniversoUsDesdeTabla(filas, { ahora: AHORA });
+  assert.equal(r.verde, false);
+  assert.match(r.razones.join(' '), /720h/);
+});
+
+test('Q1 tabla: una fila sin sector cuenta como cobertura faltante', () => {
+  const r = censoUniversoUsDesdeTabla([
+    filaUs('AAPL', 'XLK', 3e12, 2),
+    filaUs('MSFT', null, 2e12, 2),
+    filaUs('XYZ', 'XLF', null),
+  ], { ahora: AHORA });
+  assert.equal(r.candidatos, 3);
+  assert.equal(r.con_cap, 2);
+  assert.equal(r.con_sector, 2);
+  assert.equal(r.con_cap_y_sector, 1);
+  assert.equal(r.verde, false);
+});
+
+test('Q1 tabla: sin filas no hay verde por descuido', () => {
+  const r = censoUniversoUsDesdeTabla([], { ahora: AHORA });
+  assert.equal(r.candidatos, 0);
+  assert.equal(r.con_cap_y_sector, 0);
+  assert.equal(r.verde, false);
+});
+
+test('Q1: la consulta compartida apunta a mercado_universo_us y trae cap_actualizado', () => {
+  // Si alguien la cambia, que sea en UN lugar. Los dos endpoints importan
+  // esta misma constante.
+  assert.match(SQL_UNIVERSO_US, /from mercado_universo_us/);
+  assert.match(SQL_UNIVERSO_US, /cap_actualizado/);
+  assert.match(SQL_UNIVERSO_US, /sector_etf/);
+  assert.doesNotMatch(SQL_UNIVERSO_US, /arena_/);
 });
 
 // ───────────────────── Q2 · capitalización MX ───────────────────────
@@ -845,4 +917,16 @@ test('los criterios están congelados y versionados', () => {
   assert.equal(CRITERIOS.g2_max_error_pct, 5);
   assert.equal(CRITERIOS.g6_min_trimestres_upa, 4);
   assert.equal(tablero({}).criterios_version, 2);
+});
+
+test('Q1 tabla: una cap sin fecha de medición se cuenta, no se promedia', () => {
+  const filas = [
+    { symbol: 'AAPL', sector_etf: 'XLK', market_cap: 3e12, cap_fuente: 'finnhub:metric', cap_actualizado: horasAntes(3) },
+    { symbol: 'MSFT', sector_etf: 'XLK', market_cap: 2e12, cap_fuente: 'previa', cap_actualizado: null },
+  ];
+  const r = censoUniversoUsDesdeTabla(filas, { ahora: AHORA });
+  assert.equal(r.caps_sin_fecha_de_medicion, 1);
+  assert.deepEqual(r.caps_sin_fecha_ejemplos, ['MSFT']);
+  // La frescura se mide con las que SÍ tienen fecha, no se inventa para la otra.
+  assert.equal(r.horas_frescura_cap_mas_vieja, 3);
 });
