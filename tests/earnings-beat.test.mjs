@@ -19,7 +19,7 @@ import {
   construyeIndiceNombres, resuelveSimbolo, tickerExplicito, extraeConsensoEps,
   precioEnT24h, cruzaConPead, evaluaFuentePIT, resumenMarkdown, diasEntre, isoDia,
   esFecha, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
-  analizaDesfases, clasificaT24h,
+  analizaDesfases, clasificaT24h, clasificaParaV1, comparaEmparejamiento,
 } from '../api/_lib/earnings-beat.js';
 import { filasDe, aplanaMercados, cosechaDeBusqueda, formaDe } from '../api/earnings-beat.js';
 import { qs, rateHeaders } from '../api/_lib/polymarket.js';
@@ -249,6 +249,65 @@ ok(busq.length === 2, 'public-search: saca los mercados de adentro de los evento
 ok(cosechaDeBusqueda({ nada: 1 }).length === 0 && cosechaDeBusqueda(null).length === 0, 'forma desconocida → [] (no crashea)');
 ok(formaDe([]) === 'array' && formaDe({ a: 1 }).startsWith('objeto:'), 'formaDe describe la forma cruda');
 
+console.log('clasificaParaV1: v1 es SOLO beat/miss de EPS');
+
+const UNIV_V1 = new Set(['COST', 'NKE', 'GEV', 'GE', 'MO', 'LYFT', 'NOW']);
+const v1 = (texto, symbol, etiqueta) =>
+  clasificaParaV1({ pregunta: texto, slug: texto, symbol }, { etiqueta, universo: UNIV_V1 });
+
+ok(v1('Will Costco (COST) beat quarterly earnings?', 'COST', 'COST').acepta, 'la plantilla con ticker entra');
+ok(v1('nke-quarterly-earnings-gaap-eps-above-1-20', 'NKE', 'NKE').acepta, 'la plantilla del slug GAAP EPS entra');
+
+// Mercados de MENCIÓN: ocurren en un earnings call, pero no predicen beat/miss.
+// 26 de 36 aceptados de símbolos ruidosos eran de esta forma.
+const mencion = v1('Will GE Vernova say "tariffs" during the earnings call?', 'GEV', 'GE');
+ok(!mencion.acepta && mencion.motivo === 'mercado_de_menciones', 'mercado de mención → fuera', mencion.motivo);
+ok(!v1('How many times will Musk say "robotaxi" on the Q3 earnings call?', 'TSLA', 'TSLA').acepta, '"how many times" → fuera');
+ok(mencion.forma === 'mencion_con_frase', 'y se excluye POR LA FORMA del título, no por símbolo', mencion.forma);
+
+// Otras métricas de earnings: reales, pero no son EPS. Fuera de v1.
+const mo = v1('Will Altria report cigarette volume above 20B this quarter? earnings', 'MO', 'MO');
+ok(!mo.acepta && mo.motivo === 'no_es_beat_miss_de_eps', 'volumen de cigarros (MO) → fuera de v1', mo.motivo);
+
+// Regla dura del símbolo.
+const otro = v1('Will Lyft beat quarterly earnings?', 'LYFT', 'NOW');
+ok(!otro.acepta && otro.motivo === 'simbolo_distinto_al_buscado', 'resuelto != buscado → descarta', otro.motivo);
+const nombrado = v1('Will $LYFT beat quarterly earnings estimates?', 'LYFT', 'NOW');
+ok(nombrado.acepta, 'salvo que el título nombre explícitamente al resuelto ($LYFT)', nombrado.motivo);
+ok(v1('Will Lyft beat quarterly earnings?', 'LYFT', null).acepta, 'sin símbolo buscado (vino de una frase) la regla no aplica');
+ok(!v1('Who wins the Super Bowl?', 'X', null).acepta, 'lo que ni parece earnings sigue afuera');
+
+console.log('comparaEmparejamiento: el reporte tiene que ser POSTERIOR a la creación');
+
+const FILAS_Q = [
+  { symbol: 'MU', reported_date: '2026-06-25' },   // trimestre ANTERIOR
+  { symbol: 'MU', reported_date: '2026-09-29' },   // el que el mercado pregunta
+  { symbol: 'KO', reported_date: '2026-06-20' },   // el de sept no está cosechado
+];
+const comp = comparaEmparejamiento([
+  { id: 'mu', symbol: 'MU', fecha_resolucion: '2026-09-30', creado: '2026-08-01' },
+  { id: 'ko', symbol: 'KO', fecha_resolucion: '2026-09-30', creado: '2026-08-01' },
+], FILAS_Q);
+const mu = comp.ahora.find((m) => m.id === 'mu');
+ok(mu.cruce && mu.cruce.reported_date === '2026-09-29', 'MU casa con el reporte de SEPTIEMBRE, no con el de junio', mu.cruce && mu.cruce.reported_date);
+const ko = comp.ahora.find((m) => m.id === 'ko');
+ok(!ko.cruce && ko.motivo_sin_cruce === 'sin_reporte_posterior_a_la_creacion',
+  'sin reporte posterior cosechado → motivo propio (es NUESTRA cosecha, no un desfase raro)', ko.motivo_sin_cruce);
+ok(comp.destino_de_esos_casos.sin_reporte_posterior === 1, 'el reporte dice cuántos esperan cosecha');
+ok(comp.sin_fecha_de_creacion === 0, 'cuenta los mercados sin fecha de creación');
+
+// El modo de falla silencioso: sin `creado` la regla no actúa y hay que verlo.
+const sinCreado = comparaEmparejamiento([{ id: 'x', symbol: 'MU', fecha_resolucion: '2026-09-30' }], FILAS_Q);
+ok(sinCreado.sin_fecha_de_creacion === 1 && /NO traen fecha de creación/.test(sinCreado.nota_sin_creacion || ''),
+  'sin fecha de creación → lo dice en vez de no aplicar la regla en silencio');
+
+// Un emparejamiento FALSO contra el trimestre anterior se elimina.
+const falso = comparaEmparejamiento(
+  [{ id: 'f', symbol: 'MU', fecha_resolucion: '2026-06-26', creado: '2026-07-01' }],
+  [{ symbol: 'MU', reported_date: '2026-06-25' }]);
+ok(falso.cruzados_antes === 1 && falso.cruzados_ahora === 0 && falso.dejaron_de_casar_con_la_regla_nueva === 1,
+  'un reporte anterior a la creación deja de casar (era falso)', `${falso.cruzados_antes}→${falso.cruzados_ahora}`);
+
 console.log('clasificaT24h: sólo "válido" cuenta para el candado');
 
 ok(clasificaT24h({ precio: 0.61, rancio: false }) === 'valido', 'tick real en ventana → válido');
@@ -353,10 +412,17 @@ const md = resumenMarkdown({
   barrido: { corrido: false, nota: 'apagado por defecto' },
   conteos: { mercados_de_earnings_en_ventana: 140, resueltos: 130, con_simbolo: 120, en_universo_v0: 90, universo_v0: 99, con_consenso_en_descripcion: 100, con_token_yes: 140 },
   ejemplos: [{ slug: 'nvda', symbol: 'NVDA', fecha_resolucion: '2026-02-26', reported_date: '2026-02-26', outcome: 'Yes', clob: { status: 'ok', forma: 'startTs/endTs', puntos: 72 }, yes_t24h: { precio: 0.61, horas_antes_real: 25, rancio: false } }],
-  t24h: { sobre: 'mercados_cruzados', total: 145, procesados: 145, truncado: false,
+  filtro_v1: { regla: 'v1 = SOLO beat/miss de EPS.',
+    motivos: { ok: 426, mercado_de_menciones: 26, no_es_beat_miss_de_eps: 12, simbolo_distinto_al_buscado: 4 },
+    muestras: { mercado_de_menciones: [{ texto: 'Will GE Vernova say "tariffs" during the earnings call?', buscado: 'GE', resuelto: 'GEV' }] } },
+  t24h: { sobre: 'mercados_cruzados', universo: 312, indice_inicial: 0, indice_final: 311, restantes_despues_de_esta_corrida: 0, total: 312, procesados: 312, truncado: false,
     conteo: { valido: 118, rancio: 12, sin_ticks: 9, sin_ticks_antes: 4, sin_precio: 0, error: 2, sin_token: 0 },
     formas: { 'startTs/endTs': 140, 'interval=max': 5 } },
   cruce: { consultado: true, filas_pead: 400, cruzados: 145, en_universo_v0: 140,
+    emparejamiento: { regla: 'el reporte tiene que ser POSTERIOR a la creación del mercado',
+      cruzados_con_regla_vieja: 145, cruzados_ahora: 152, casos_que_antes_caian_fuera_de_tolerancia: 69,
+      destino_de_esos_casos: { recuperados: 7, sin_reporte_posterior: 55, sigue_fuera_de_tolerancia: 7, otro: 0 },
+      dejaron_de_casar_con_la_regla_nueva: 0, sin_fecha_de_creacion: 0, nota_sin_creacion: null },
     sin_cruce: { simbolo_no_esta_en_pead_earnings: 54, fecha_fuera_de_tolerancia: 31 },
     desfases: { casos: 31, histograma: { '2': 20, '4': 6, '-3': 5 }, dominante: { dias: 2, n: 20 },
       fraccion_dominante: 0.645, veredicto: 'sistematico',
@@ -383,6 +449,9 @@ ok(md.includes('EL CONTEO DEL CANDADO') && md.includes('118'), 'el §4 es el con
 ok(md.includes('SE CUMPLE'), '118 ≥ 100 → dice que el candado se cumple');
 ok(md.includes('545') && md.includes('no se coló basura'), 'audita el ruido de la búsqueda por subcadena');
 ok(md.includes('PROPUESTA (no aplicada)'), 'propone tolerancia sin aplicarla');
+ok(md.includes('Filtro v1') && md.includes('mercado_de_menciones'), 'publica los motivos del filtro v1');
+ok(md.includes('GE Vernova'), 'y una muestra de lo descartado, para leerla a ojo');
+ok(md.includes('esperan cosecha') && md.includes('55'), 'separa "espera cosecha" de "ruido de verdad"');
 ok(md.includes('tope de offset') || md.includes('Tope de offset'), 'documenta el tope de offset como hecho del censo');
 ok(md.includes('422 no es rate limit'), 'y aclara que el 422 no es rate limit');
 ok(md.includes('eps_estimate_revision_up_trailing_7_days'), 'enseña la FILA CRUDA de la sonda de revisiones');
