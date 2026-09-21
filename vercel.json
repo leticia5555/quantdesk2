@@ -165,7 +165,7 @@
     },
     {
       "path": "/api/mercado-r0?job=universo",
-      "schedule": "30 13 * * 1-5"
+      "schedule": "30,45 13-21 * * 1-5"
     }
   ]
 }

@@ -42,7 +42,14 @@ const EXPECTED = [
   // R0(a): puebla mercado_universo_us (sector + cap) antes de la apertura, 30
   // min después del arena:universe que le da los símbolos. La ventana de stale
   // la manda el fin de semana, igual que los otros diarios hábiles.
-  { job: 'mercado:universo', schedule: '30 13 * * 1-5',         cadence: 'días hábiles ~13:30', stale_after_h: 80 },
+  // Dos veces por hora en horario de mercado, y AUTO-GATEADO: cuando no hay
+  // nada pendiente cuesta tres consultas a Neon y devuelve `completo`. Es
+  // frecuente porque el backfill inicial no cabe en una corrida (553 símbolos
+  // × 2 llamadas a 55 req/min son ~19 min contra un maxDuration de 300 s), y
+  // un cron diario habría tardado cinco días en sembrar la tabla.
+  // La ventana de stale la manda el FIN DE SEMANA: viernes 21:45 → lunes
+  // 13:30 son ~64 h.
+  { job: 'mercado:universo', schedule: '30,45 13-21 * * 1-5',   cadence: '2×/hora en mercado', stale_after_h: 80 },
 ];
 
 const HOUR_MS = 3600 * 1000;

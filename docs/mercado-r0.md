@@ -90,18 +90,23 @@ trabajo: lo consume.
 y uno sin cap se ven igual en un `count(*)` y son problemas distintos. El
 render decide qué hacer; la tabla no esconde.
 
-**2. Solo se pide a Finnhub lo que hace falta.** Esto es lo que decide si cabe
+**2. El RITMO, que es lo que la primera corrida en prod rompió.** Ver §14 —
+la versión inicial hacía **436 req/min** contra un techo de 60, y 433 de 553
+llamadas volvieron 429. Ahora hay una cola que espacia **cada arranque** a 55
+req/min, con presupuesto de reloj y reanudación entre corridas.
+
+**3. Solo se pide a Finnhub lo que hace falta.** Esto es lo que decide si cabe
 en el tier gratis (60 req/min):
 
 | Dato | Cuándo se pide | Por qué |
 |---|---|---|
 | `profile2` (nombre + industria) | solo si no hay industria guardada | la industria de una empresa cambia cada varios años — el mismo argumento que ya justifica la caché por día del Arena |
-| `metric` (cap) | solo si la cap tiene más de 36 h **y** el Arena no la midió ya | `arena_market_cap` es gratis y tiene su propia política de TTL; pedirla otra vez sería pagar dos veces por el mismo número |
+| `metric` (cap) | solo si **`cap_actualizado`** tiene más de 36 h **y** el Arena no la midió ya | `arena_market_cap` es gratis y tiene su propia política de TTL; pedirla otra vez sería pagar dos veces por el mismo número |
 
 En régimen, el cron diario pide **~0 profiles y N caps**. La primera corrida
 es la cara.
 
-**3. `marketCapitalization` de Finnhub viene en MILLONES**, y se convierte al
+**4. `marketCapitalization` de Finnhub viene en MILLONES**, y se convierte al
 guardar. Guardarla cruda habría hecho que Apple midiera lo mismo que una small
 cap con la cap en unidades — y el treemap dimensiona por ese número.
 
@@ -112,9 +117,12 @@ cap con la cap en unidades — y el treemap dimensiona por ese número.
 tocó: una falla de cobertura tiene que verse como falla de cobertura, no
 disolverse en un bucket.
 
-**Cron:** `30 13 * * 1-5` en `vercel.json` (30 min después de `arena:universe`,
-que le da los símbolos), registrado en `/api/cron-status` como
-`mercado:universo` — si no, el día que se caiga nadie se entera.
+**Cron:** `30,45 13-21 * * 1-5` en `vercel.json` — dos veces por hora en
+horario de mercado, y **auto-gateado**: cuando no hay nada pendiente cuesta
+tres consultas a Neon y devuelve `completo`. Registrado en `/api/cron-status`
+como `mercado:universo`, con el AVANCE en el detalle del heartbeat: un verde
+que no dice cuánto falta no informa nada. El porqué de la frecuencia está en
+§14.
 
 ---
 
@@ -513,3 +521,109 @@ hasta que `?job=universo` haya poblado la tabla desde prod. El orden es:
 
 Y lo que esa re-corrida **va a seguir dando es NO-GO global**, porque G9 no se
 toca en R0. Lo que hay que mirar es G1 y G2.
+
+
+---
+
+## 14. La primera corrida en prod, y los dos bugs que destapó
+
+`?job=universo` corrió el 2026-09-21: **553 `profile2` + 508 `metric` en
+150 s, con 433 y 448 errores.** No faltaban datos: era el techo de Finnhub
+free devolviendo 429.
+
+### 14.1 · El error era aritmético, y estaba en un comentario que decía lo contrario
+
+```js
+const CONCURRENCIA = 8;
+const PAUSA_TANDA_MS = 1100;   // "deja margen para que el Arena corra en paralelo"
+```
+
+**8 en vuelo cada 1.1 s son 436 req/min.** El techo es 60. El comentario
+afirmaba lo contrario de lo que hacía el código, que es la peor clase de
+comentario: uno que tranquiliza.
+
+El problema de fondo es conceptual, no de números: **una tanda concurrente con
+pausa no es un limitador**. Es una ráfaga con intervalos. Un limitador espacia
+**cada arranque**.
+
+```
+cola espaciada a 55 req/min → 1091 ms entre arranques
+60 solicitudes pedidas a la vez → la última arranca 64 s después
+```
+
+Hay un test que pide 60 ranuras en el mismo instante y falla si el ritmo pasa
+de 60/min. Es el test que habría evitado esta corrida.
+
+**La ranura se reserva al PEDIRLA, no al terminar.** Si se reservara al
+terminar, una llamada lenta correría a las de atrás y el ritmo dependería de
+la latencia de Finnhub en vez del techo.
+
+**Un 429 corre la ranura y deja el símbolo pendiente**, sin reintentar en el
+acto — reintentar es pedirle a un servidor saturado que se sature más. El
+símbolo lo toma la corrida siguiente, que es justo para lo que el job es
+reanudable.
+
+### 14.2 · El segundo bug, que el primero tapaba
+
+El upsert ponía `actualizado = now()` en las 553 filas de cada corrida, y el
+TTL de 36 h leía **ese** campo. O sea que en cuanto un símbolo conseguía su
+cap, la corrida siguiente lo veía fresco **para siempre**, y la cap no se
+refrescaba nunca más. El mapa habría congelado el tamaño de sus cuadros en la
+primera corrida que funcionara, sin avisar.
+
+No se había notado porque, con los 429, **ninguna cap llegaba a escribirse**.
+
+El arreglo separa las dos fechas:
+
+| Columna | Qué es |
+|---|---|
+| `actualizado` | cuándo se **tocó** la fila |
+| `cap_actualizado` | cuándo se **midió** la cap — y es la que manda el TTL |
+
+Con dos cuidados: el upsert **nunca retrocede** `cap_actualizado` (si esta
+corrida no midió, la fecha de antes sigue siendo la buena), y una cap heredada
+del Arena **conserva la fecha de medición del Arena** en vez de sellarse con
+la hora de esta corrida.
+
+Y ahora **solo se escriben las filas que cambian**. Escribir las 553 en cada
+corrida no solo era gasto: era lo que pisaba `actualizado`.
+
+### 14.3 · Por qué el cron dejó de ser diario
+
+```
+1061 requests ÷ 55/min      = 19.3 min
+presupuesto por corrida     = 250 s  (maxDuration 300 s, menos la escritura)
+caben por corrida           = 229
+corridas necesarias         = 5
+```
+
+**Un cron diario habría tardado cinco días en sembrar la tabla.** Por eso pasó
+a `30,45 13-21 * * 1-5` — dos veces por hora en horario de mercado — y se
+auto-gatea: sin pendientes cuesta tres consultas a Neon. El backfill se
+completa en ~2.5 horas el primer día; después, la mayoría de los ticks no
+tienen nada que hacer.
+
+Es el mismo patrón de `arena:watch`, que ya corre cada 5 minutos con la misma
+lógica de "el handler decide si hay trabajo".
+
+### 14.4 · Lo que el JSON reporta ahora
+
+`errores_fuente: 433` era un número que no distinguía "me cortaron" de "no hay
+dato" — y esa desambiguación la tuviste que hacer vos, a mano. Ahora:
+
+```jsonc
+"ritmo":   { "por_minuto": 55, "intervalo_ms": 1091,
+             "ms_usados": …, "cortada_por_presupuesto": false },
+"finnhub": { "profile2": { "ok": …, "rate_429": …, "sin_datos": …, "red": … },
+             "metric":   { … },
+             "total_429": …, "pausas_por_429": …,
+             "lectura": "sin 429: el limitador aguanta" },
+"avance":  { "pendientes_al_empezar": …, "procesados_en_esta": …,
+             "pendientes_al_terminar": …, "completo": false,
+             "corridas_mas_estimadas": 4 }
+```
+
+`lectura` dice qué hacer cuando hay 429 con el limitador puesto: significa que
+el techo real está por debajo de 55/min —casi siempre porque el Arena está
+pidiendo a la vez— y se baja con `MERCADO_R0_POR_MINUTO`, sin redeploy de
+código.

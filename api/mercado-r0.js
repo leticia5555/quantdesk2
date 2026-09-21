@@ -25,18 +25,37 @@ import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
 import {
   capConUnidades, verificaDivisor, estadoEmisora,
   buscarPistas, PISTAS_ACCIONES, PISTAS_CAP,
-  filaUniversoUs, recorteMapa,
+  filaUniversoUs,
   referenciaManual, parseManualParam,
+  proximaRanura, intervaloDe, penalizarPor429, planCorrida,
 } from './_lib/mercado-r0.js';
 import REFERENCIAS_CAP from './_lib/mercado-cap-referencia.json' with { type: 'json' };
 
 export const maxDuration = 300;
 
 const FINNHUB = 'https://finnhub.io/api/v1';
-// Tier gratis: 60 req/min. 8 en vuelo con pausa entre tandas deja margen para
-// que el cron del Arena corra en paralelo sin que ninguno de los dos coma 429.
-const CONCURRENCIA = 8;
-const PAUSA_TANDA_MS = 1100;
+
+// ── EL RITMO ────────────────────────────────────────────────────────
+// Finnhub free: 60 req/min. Vamos a 55 para dejarle aire al Arena, que
+// también le pega con sus propios crons.
+//
+// La versión anterior decía "8 en vuelo con 1.1 s entre tandas deja margen".
+// Eran **436 req/min**, y la corrida del 2026-09-21 cobró la cuenta: 433 de
+// 553 `profile2` y 448 de 508 `metric` fallaron con 429. No faltaban datos:
+// sobraban requests. Una tanda concurrente con pausa NO es un limitador.
+const POR_MINUTO = (() => {
+  const n = Number(process.env.MERCADO_R0_POR_MINUTO);
+  return Number.isFinite(n) && n > 0 && n <= 60 ? Math.floor(n) : 55;
+})();
+
+// Presupuesto de reloj. `maxDuration` es 300 s; se corta antes para que
+// quepan el upsert y la respuesta — una corrida que muere por timeout pierde
+// TODO lo que juntó, porque la escritura va al final.
+const PRESUPUESTO_MS = (() => {
+  const n = Number(process.env.MERCADO_R0_PRESUPUESTO_MS);
+  return Number.isFinite(n) && n >= 10000 && n <= 285000 ? Math.floor(n) : 250000;
+})();
+
 const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 
@@ -50,6 +69,18 @@ const SCHEMA = [
      cap_fuente    text,
      actualizado   timestamptz not null default now()
    )`,
+  // `cap_actualizado` es CUÁNDO SE MIDIÓ LA CAP, y no es lo mismo que
+  // `actualizado` (cuándo se tocó la fila).
+  //
+  // Mezclarlos era un bug de verdad y de los callados: el upsert ponía
+  // `actualizado = now()` en las 553 filas de cada corrida, y el TTL de 36 h
+  // leía ESE campo. O sea que en cuanto un símbolo conseguía su cap, la
+  // corrida siguiente lo veía "fresco" para siempre y **la cap no se
+  // refrescaba nunca más**. El mapa habría congelado el tamaño de sus cuadros
+  // en la primera corrida que funcionara, sin avisar.
+  //
+  // Antes no se notaba porque, con los 429, ninguna cap llegaba a escribirse.
+  `alter table mercado_universo_us add column if not exists cap_actualizado timestamptz`,
   `create index if not exists mercado_universo_us_cap_idx
      on mercado_universo_us (market_cap desc nulls last)`,
   `create index if not exists mercado_universo_us_sector_idx
@@ -65,12 +96,17 @@ async function ensureSchema() {
 async function json(url, timeoutMs = 12000) {
   try {
     const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    // El 429 se distingue del resto A PROPÓSITO: "429" y "no hay datos" son
+    // problemas opuestos y el reporte anterior los sumaba en un solo
+    // `errores_fuente`, que fue justo lo que hizo falta desambiguar a mano.
+    if (r.status === 429) return { ok: false, status: 429, rate: true, json: null };
     if (!r.ok) return { ok: false, status: r.status, json: null };
     const ct = r.headers.get('content-type') || '';
-    if (!ct.includes('application/json')) return { ok: false, status: r.status, json: null };
+    if (!ct.includes('application/json')) return { ok: false, status: r.status, json: null, noJson: true };
     return { ok: true, status: r.status, json: await r.json() };
   } catch (e) {
-    return { ok: false, status: 0, json: null, error: String((e && e.message) || e) };
+    const to = e && e.name === 'TimeoutError';
+    return { ok: false, status: 0, json: null, red: true, error: to ? `timeout (${timeoutMs}ms)` : String((e && e.message) || e) };
   }
 }
 
@@ -111,10 +147,10 @@ async function simbolosDelUniverso() {
  * guardada, y `metric` solo para los que tienen la cap vencida. En régimen,
  * el cron diario pide ~0 profiles y N caps.
  */
-async function refrescarSimbolos(simbolos, { finnhubKey, ahora, soloFaltantes = true, maxCap = 600 }) {
+async function refrescarSimbolos(simbolos, { finnhubKey, ahora, deadline }) {
   await ensureSchema();
   const previas = new Map(
-    (await sql('select symbol, nombre, industria, sector_etf, market_cap, cap_fuente, actualizado from mercado_universo_us'))
+    (await sql('select symbol, nombre, industria, sector_etf, market_cap, cap_fuente, actualizado, cap_actualizado from mercado_universo_us'))
       .map((r) => [r.symbol, r]));
 
   // Caps ya medidas por el Arena: gratis, y con su propia política de TTL
@@ -124,71 +160,134 @@ async function refrescarSimbolos(simbolos, { finnhubKey, ahora, soloFaltantes = 
     (await sql('select symbol, market_cap, fetched_at from arena_market_cap').catch(() => []))
       .map((r) => [String(r.symbol).toUpperCase(), r]));
 
+  // ── QUÉ FALTA, que es lo único que se pide ──────────────────────────
+  // El TTL de la cap se mide contra `cap_actualizado` —cuándo se MIDIÓ— y no
+  // contra `actualizado` —cuándo se tocó la fila—. Ver el comentario del
+  // schema: confundirlos congelaba la cap para siempre.
   const necesitaPerfil = [];
   const necesitaCap = [];
   for (const sym of simbolos) {
     const p = previas.get(sym);
     if (!p || !p.industria) necesitaPerfil.push(sym);
     const capArena = capsArena.get(sym);
-    const tieneCapFresca = (p && num(p.market_cap) != null
-      && (ahora - new Date(p.actualizado)) < 36 * 3600e3);
-    if (!tieneCapFresca && !(capArena && num(capArena.market_cap) != null)) necesitaCap.push(sym);
+    const medida = p && p.cap_actualizado ? new Date(p.cap_actualizado) : null;
+    const capFresca = p && num(p.market_cap) != null && medida
+      && (ahora - medida) < 36 * 3600e3;
+    if (!capFresca && !(capArena && num(capArena.market_cap) != null)) necesitaCap.push(sym);
+  }
+
+  // ── LA COLA, espaciada de verdad ────────────────────────────────────
+  // Una sola cola para los DOS endpoints: el techo de Finnhub es por cuenta,
+  // no por ruta. Dos colas de 55/min serían 110/min y el mismo 429 de antes
+  // con otro disfraz.
+  const intervalo = intervaloDe(POR_MINUTO);
+  let ritmo = { proxima: 0 };
+  const contadores = {
+    profile2: { ok: 0, rate_429: 0, sin_datos: 0, red: 0 },
+    metric: { ok: 0, rate_429: 0, sin_datos: 0, red: 0 },
+  };
+  let pausas429 = 0;
+  let sinPresupuesto = false;
+
+  // Pide una ranura y espera a que llegue. Devuelve false si ya no hay
+  // presupuesto: el llamador corta la cola y lo que falte queda para la
+  // próxima corrida, que es exactamente para lo que sirve ser reanudable.
+  async function ranura() {
+    const r = proximaRanura(ritmo, Date.now(), intervalo);
+    ritmo = r.estado;
+    if (Date.now() + r.espera > deadline) { sinPresupuesto = true; return false; }
+    if (r.espera > 0) await dormir(r.espera);
+    return true;
   }
 
   const perfiles = new Map(), caps = new Map();
-  const errores = { profile2: 0, metric: 0 };
 
-  const enTandas = async (lista, fn) => {
-    for (let i = 0; i < lista.length; i += CONCURRENCIA) {
-      await Promise.all(lista.slice(i, i + CONCURRENCIA).map(fn));
-      if (i + CONCURRENCIA < lista.length) await dormir(PAUSA_TANDA_MS);
+  // ── profile2 ────────────────────────────────────────────────────────
+  for (const sym of necesitaPerfil) {
+    if (!(await ranura())) break;
+    const r = await json(`${FINNHUB}/stock/profile2?symbol=${encodeURIComponent(sym)}&token=${finnhubKey}`);
+    if (r.rate) {
+      contadores.profile2.rate_429++;
+      // Un 429 con el limitador puesto significa que el techo real está más
+      // abajo (casi siempre porque el Arena está pidiendo a la vez). Se corre
+      // la ranura y el símbolo queda pendiente — no se reintenta en el acto.
+      ritmo = penalizarPor429(ritmo, Date.now());
+      pausas429++;
+      continue;
     }
-  };
-
-  if (finnhubKey) {
-    await enTandas(soloFaltantes ? necesitaPerfil : simbolos, async (sym) => {
-      const r = await json(`${FINNHUB}/stock/profile2?symbol=${encodeURIComponent(sym)}&token=${finnhubKey}`);
-      if (!r.ok || !r.json) { errores.profile2++; return; }
-      perfiles.set(sym, { nombre: r.json.name || null, industria: r.json.finnhubIndustry || null });
-    });
-    await enTandas((soloFaltantes ? necesitaCap : simbolos).slice(0, maxCap), async (sym) => {
-      const r = await json(`${FINNHUB}/stock/metric?symbol=${encodeURIComponent(sym)}&metric=all&token=${finnhubKey}`);
-      const m = r.ok && r.json && r.json.metric;
-      const cap = m ? num(m.marketCapitalization) : null;
-      // Finnhub da la cap en MILLONES. Guardarla sin convertir habría hecho
-      // que Apple midiera lo mismo que una small cap con la cap en unidades.
-      if (cap != null && cap > 0) caps.set(sym, cap * 1e6);
-      else errores.metric++;
-    });
+    if (r.red) { contadores.profile2.red++; continue; }
+    if (!r.ok || !r.json) { contadores.profile2.sin_datos++; continue; }
+    contadores.profile2.ok++;
+    perfiles.set(sym, { nombre: r.json.name || null, industria: r.json.finnhubIndustry || null });
   }
 
-  const filas = simbolos.map((sym) => {
+  // ── metric ──────────────────────────────────────────────────────────
+  for (const sym of necesitaCap) {
+    if (sinPresupuesto || !(await ranura())) break;
+    const r = await json(`${FINNHUB}/stock/metric?symbol=${encodeURIComponent(sym)}&metric=all&token=${finnhubKey}`);
+    if (r.rate) {
+      contadores.metric.rate_429++;
+      ritmo = penalizarPor429(ritmo, Date.now());
+      pausas429++;
+      continue;
+    }
+    if (r.red) { contadores.metric.red++; continue; }
+    const m = r.ok && r.json && r.json.metric;
+    const cap = m ? num(m.marketCapitalization) : null;
+    // Finnhub da la cap en MILLONES. Guardarla sin convertir habría hecho
+    // que Apple midiera lo mismo que una small cap con la cap en unidades.
+    if (cap != null && cap > 0) { caps.set(sym, cap * 1e6); contadores.metric.ok++; }
+    else contadores.metric.sin_datos++;
+  }
+
+  // ── Las filas ───────────────────────────────────────────────────────
+  // Solo viajan a Neon las que CAMBIAN. Escribir las 553 en cada corrida no
+  // solo era gasto: era lo que pisaba `actualizado` y congelaba el TTL.
+  const filas = [];
+  for (const sym of simbolos) {
     const prev = previas.get(sym) || {};
     const perfil = perfiles.get(sym);
+    const capFresca = caps.get(sym) ?? null;
+    const capArena = capsArena.get(sym);
+
+    let cap = capFresca, fuente = capFresca != null ? 'finnhub:metric' : null, capMedidaAhora = capFresca != null;
+    if (cap == null && capArena && num(capArena.market_cap) != null) {
+      cap = num(capArena.market_cap); fuente = 'neon:arena_market_cap';
+      // La cap del Arena trae SU fecha de medición: se respeta en vez de
+      // sellarla con la hora de esta corrida.
+      capMedidaAhora = false;
+    }
+    const huboNovedad = !!perfil || capFresca != null
+      || (cap != null && num(prev.market_cap) == null);
+    if (!huboNovedad && previas.has(sym)) continue;   // nada que escribir
+
     const industria = (perfil && perfil.industria) || prev.industria || null;
     const nombre = (perfil && perfil.nombre) || prev.nombre || null;
     const { etf } = sectorFromIndustry(industria);
-
-    let cap = caps.get(sym) ?? null, fuente = cap != null ? 'finnhub:metric' : null;
-    if (cap == null) {
-      const ca = capsArena.get(sym);
-      if (ca && num(ca.market_cap) != null) { cap = num(ca.market_cap); fuente = 'neon:arena_market_cap'; }
-    }
     if (cap == null && num(prev.market_cap) != null) { cap = num(prev.market_cap); fuente = prev.cap_fuente || 'previa'; }
 
-    return filaUniversoUs({
+    const fila = filaUniversoUs({
       symbol: sym, nombre, industria, sector_etf: etf,
       market_cap: cap, cap_fuente: fuente, ahora,
     });
-  });
+    // Solo se sella la medición cuando la cap se midió DE VERDAD en esta
+    // corrida; si vino del Arena, se hereda su fecha; si no, se conserva la
+    // que hubiera.
+    fila.cap_actualizado = capMedidaAhora ? ahora.toISOString()
+      : (capArena && capArena.fetched_at && cap != null && fuente === 'neon:arena_market_cap'
+        ? new Date(capArena.fetched_at).toISOString()
+        : (prev.cap_actualizado ? new Date(prev.cap_actualizado).toISOString() : null));
+    filas.push(fila);
+  }
 
-  // Los que ninguna regla de sector tocó. Se CUENTAN — una falla de cobertura
-  // tiene que verse como falla de cobertura, no disolverse en un bucket.
-  const sinMapear = filas
-    .filter((f) => f.industria && !f.sector_etf)
-    .map((f) => ({ symbol: f.symbol, industria: f.industria }));
-
-  return { filas, sinMapear, errores, pedidos: { profile2: necesitaPerfil.length, metric: necesitaCap.length } };
+  return {
+    filas, contadores, pausas429, sinPresupuesto,
+    pendientes: { profile2: necesitaPerfil.length, metric: necesitaCap.length },
+    procesados: {
+      profile2: contadores.profile2.ok + contadores.profile2.rate_429 + contadores.profile2.sin_datos + contadores.profile2.red,
+      metric: contadores.metric.ok + contadores.metric.rate_429 + contadores.metric.sin_datos + contadores.metric.red,
+    },
+  };
 }
 
 async function guardarUniverso(filas) {
@@ -198,24 +297,29 @@ async function guardarUniverso(filas) {
   for (let i = 0; i < filas.length; i += lote) {
     const trozo = filas.slice(i, i + lote);
     await sql(
-      `insert into mercado_universo_us (symbol, nombre, industria, sector_etf, market_cap, cap_fuente, actualizado)
-       select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::numeric[], $6::text[], $7::timestamptz[])
+      `insert into mercado_universo_us (symbol, nombre, industria, sector_etf, market_cap, cap_fuente, actualizado, cap_actualizado)
+       select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::numeric[], $6::text[], $7::timestamptz[], $8::timestamptz[])
        on conflict (symbol) do update set
          nombre = coalesce(excluded.nombre, mercado_universo_us.nombre),
          industria = coalesce(excluded.industria, mercado_universo_us.industria),
          sector_etf = coalesce(excluded.sector_etf, mercado_universo_us.sector_etf),
          market_cap = coalesce(excluded.market_cap, mercado_universo_us.market_cap),
          cap_fuente = coalesce(excluded.cap_fuente, mercado_universo_us.cap_fuente),
-         actualizado = excluded.actualizado`,
+         actualizado = excluded.actualizado,
+         -- NUNCA se retrocede la fecha de medición: si esta corrida no midió
+         -- la cap, la de antes sigue siendo la buena.
+         cap_actualizado = greatest(
+           coalesce(excluded.cap_actualizado, mercado_universo_us.cap_actualizado),
+           coalesce(mercado_universo_us.cap_actualizado, excluded.cap_actualizado))`,
       [trozo.map((f) => f.symbol), trozo.map((f) => f.nombre), trozo.map((f) => f.industria),
        trozo.map((f) => f.sector_etf), trozo.map((f) => f.market_cap), trozo.map((f) => f.cap_fuente),
-       trozo.map((f) => f.actualizado)]);
+       trozo.map((f) => f.actualizado), trozo.map((f) => f.cap_actualizado ?? null)]);
     escritas += trozo.length;
   }
   return escritas;
 }
 
-async function jobUniverso({ ahora, dry, finnhubKey }) {
+async function jobUniverso({ ahora, dry, finnhubKey, t0 }) {
   const { simbolos, formas } = await simbolosDelUniverso();
   if (!simbolos.length) {
     return {
@@ -223,34 +327,89 @@ async function jobUniverso({ ahora, dry, finnhubKey }) {
       fuentes: formas, escritas: 0,
     };
   }
-  const { filas, sinMapear, errores, pedidos } = await refrescarSimbolos(simbolos, { finnhubKey, ahora });
-  const escritas = dry ? 0 : await guardarUniverso(filas);
+  if (!finnhubKey) {
+    return { job: 'universo', error: 'FINNHUB_API_KEY no configurada', simbolos: simbolos.length, escritas: 0 };
+  }
 
-  const completas = filas.filter((f) => f.completa);
-  const porSector = {};
-  for (const f of completas) porSector[f.sector_etf] = (porSector[f.sector_etf] || 0) + 1;
-  const recorte = recorteMapa(completas, 300);
+  const deadline = t0 + PRESUPUESTO_MS;
+  const r = await refrescarSimbolos(simbolos, { finnhubKey, ahora, deadline });
+  const escritas = dry ? 0 : await guardarUniverso(r.filas);
+
+  // El estado DESPUÉS de escribir: es lo que decide si hace falta otra
+  // corrida, y se lee de la tabla en vez de deducirse de los contadores.
+  const despues = dry ? [] : await sql(
+    `select count(*)::int total,
+            count(*) filter (where sector_etf is not null)::int con_sector,
+            count(*) filter (where market_cap is not null)::int con_cap,
+            count(*) filter (where sector_etf is not null and market_cap is not null)::int completas
+       from mercado_universo_us`).catch(() => []);
+  const est = despues[0] || {};
+
+  const porSector = dry ? {} : Object.fromEntries(
+    (await sql(`select sector_etf, count(*)::int n from mercado_universo_us
+                 where sector_etf is not null and market_cap is not null
+                 group by 1 order by 2 desc`).catch(() => []))
+      .map((x) => [x.sector_etf, x.n]));
+
+  const pendientesRestantes = (r.pendientes.profile2 - r.procesados.profile2)
+    + (r.pendientes.metric - r.procesados.metric);
+  const plan = planCorrida({ pendientes: pendientesRestantes, presupuesto_ms: PRESUPUESTO_MS, por_minuto: POR_MINUTO });
+  const total429 = r.contadores.profile2.rate_429 + r.contadores.metric.rate_429;
+
+  const sectoresConPiso = Object.entries(porSector).filter(([, n]) => n >= 5).map(([x]) => x).sort();
 
   return {
     job: 'universo', dry: !!dry,
-    simbolos: simbolos.length, escritas,
+    simbolos: simbolos.length,
     fuentes: formas,
-    completas: completas.length,
-    sin_sector: filas.filter((f) => !f.sector_etf).length,
-    sin_cap: filas.filter((f) => f.market_cap == null).length,
-    por_sector: porSector,
-    sectores_con_piso: Object.entries(porSector).filter(([, n]) => n >= 5).map(([s]) => s).sort(),
-    industrias_sin_mapear: sinMapear.slice(0, 25),
-    industrias_sin_mapear_total: sinMapear.length,
-    requests: pedidos, errores_fuente: errores,
-    // Lo que G1 va a leer en la re-corrida, adelantado acá para no tener que
-    // esperar al censo completo para saber si sirvió.
-    g1_proyectado: {
-      con_cap_y_sector: completas.length,
-      sectores_con_piso: Object.keys(porSector).filter((s) => porSector[s] >= 5).length,
-      verde: completas.length >= 120 && Object.values(porSector).filter((n) => n >= 5).length >= 9,
+
+    // ── EL RITMO, que es lo que la corrida anterior no dejaba ver ──────
+    ritmo: {
+      por_minuto: POR_MINUTO,
+      intervalo_ms: intervaloDe(POR_MINUTO),
+      presupuesto_ms: PRESUPUESTO_MS,
+      ms_usados: Date.now() - t0,
+      cortada_por_presupuesto: r.sinPresupuesto,
     },
-    recorte_top300: { dentro: recorte.dentro.length, resto: recorte.resto },
+    // 429 SEPARADO de "sin datos": son problemas opuestos y el reporte
+    // anterior los sumaba en un solo `errores_fuente`.
+    finnhub: {
+      profile2: r.contadores.profile2,
+      metric: r.contadores.metric,
+      total_429: total429,
+      pausas_por_429: r.pausas429,
+      lectura: total429 === 0
+        ? 'sin 429: el limitador aguanta'
+        : `${total429} respuestas 429 — el techo real está por debajo de ${POR_MINUTO}/min (¿otro cron pidiendo a la vez?). Bajá MERCADO_R0_POR_MINUTO`,
+    },
+
+    // ── EL AVANCE entre corridas ──────────────────────────────────────
+    avance: {
+      pendientes_al_empezar: r.pendientes,
+      procesados_en_esta: r.procesados,
+      pendientes_al_terminar: pendientesRestantes,
+      escritas: escritas,
+      completo: pendientesRestantes === 0,
+      corridas_mas_estimadas: pendientesRestantes === 0 ? 0 : plan.corridas_estimadas,
+      plan,
+    },
+
+    tabla: {
+      filas: est.total ?? null,
+      con_sector: est.con_sector ?? null,
+      con_cap: est.con_cap ?? null,
+      completas: est.completas ?? null,
+    },
+    por_sector: porSector,
+    sectores_con_piso: sectoresConPiso,
+
+    g1_proyectado: {
+      con_cap_y_sector: est.completas ?? 0,
+      sectores_con_piso: sectoresConPiso.length,
+      verde: (est.completas ?? 0) >= 120 && sectoresConPiso.length >= 9,
+      falta: pendientesRestantes === 0 ? null
+        : `${pendientesRestantes} símbolos sin pedir — corré de nuevo (${plan.corridas_estimadas} corridas más)`,
+    },
   };
 }
 
@@ -509,7 +668,7 @@ export default async function handler(req, res) {
 
   try {
     let out;
-    if (job === 'universo') out = await jobUniverso({ ahora, dry, finnhubKey: process.env.FINNHUB_API_KEY });
+    if (job === 'universo') out = await jobUniverso({ ahora, dry, finnhubKey: process.env.FINNHUB_API_KEY, t0 });
     else if (job === 'unidades') out = await jobUnidades({ ahora, manual });
     else if (job === 'refcap') out = await jobRefcap({ limite: Number(q.limite) || 40 });
     else if (job === 'gfnorte') out = await jobGfnorte();
@@ -517,7 +676,17 @@ export default async function handler(req, res) {
 
     // Solo el job que construye late: los de diagnóstico no son un cron y
     // marcarlos vivos haría que /api/cron-status mintiera.
-    if (job === 'universo' && !dry) await beat('mercado:universo').catch(() => {});
+    //
+    // El detalle lleva el AVANCE, no solo "corrió": con el backfill repartido
+    // en varias corridas, un heartbeat verde que no dice cuánto falta deja al
+    // operador mirando un ok que no informa nada.
+    if (job === 'universo' && !dry) {
+      const a = out.avance || {};
+      const det = a.completo
+        ? `completo · ${(out.tabla || {}).completas ?? '?'} filas con cap y sector`
+        : `parcial · faltan ${a.pendientes_al_terminar} (${a.corridas_mas_estimadas} corridas más)`;
+      await beat('mercado:universo', 'ok', det).catch(() => {});
+    }
 
     if (manual.invalidas.length) out.manual_invalidas = manual.invalidas;
     if (manual.referencias.length) {
