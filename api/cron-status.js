@@ -48,6 +48,13 @@ export const EXPECTED = [
   // pead:earnings retirado con el NO-GO del PEAD: sin schedule no hay latido,
   // y dejarlo acá daba ok:false permanente. Ver docs/wheel-fase0.md §4.3.
   { job: 'pead:hour',       path: '/api/pead-harvest?job=hour',      schedule: '30 21 * * *',           cadence: '1×/día (SEC 8-K)',    stale_after_h: 30 },
+  // Fase 1 de earnings-beat. Dos jobs separados a propósito: `mercados`
+  // descubre y filtra (Gamma), `precios` completa el T-24h de lo que quedó
+  // pendiente y re-mira los abiertos (CLOB). Partirlos evita que un CLOB lento
+  // se coma el presupuesto del descubrimiento, y deja que cada uno late por su
+  // cuenta: si el que se muere es `precios`, la tabla sigue creciendo y se ve.
+  { job: 'earnings-beat:mercados', path: '/api/earnings-beat-harvest?job=mercados', schedule: '0 23 * * *',  cadence: '1×/día (Polymarket)', stale_after_h: 30 },
+  { job: 'earnings-beat:precios',  path: '/api/earnings-beat-harvest?job=precios',  schedule: '40 23 * * *', cadence: '1×/día (CLOB)',       stale_after_h: 30 },
   { job: 'screener:refresh',path: '/api/arena-screener?job=refresh', schedule: '0 */4 * * *',           cadence: 'cada 4h',             stale_after_h: 9, vive_en: 'github-actions' },
   // R0(a): puebla mercado_universo_us (sector + cap) antes de la apertura, 30
   // min después del arena:universe que le da los símbolos. La ventana de stale

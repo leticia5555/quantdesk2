@@ -5,6 +5,8 @@
 //   GET /api/pead-harvest?job=hour                 — etiqueta BMO/AMC vía SEC
 //   GET /api/pead-harvest?job=seed                 — siembra el ledger v0
 //   GET /api/pead-harvest?job=status               — stats (sin escribir)
+//   GET /api/pead-harvest?job=refresh              — re-encola símbolos viejos
+//                                                    (&dias=95 &dry=1)
 //
 // GATES (en orden): CRON_SECRET (si existe) → PEAD_HARVEST_ENABLED=1.
 // El goteo respeta AV free = 25 req/día (guard pead_api_budget) y ~5/min
@@ -21,6 +23,7 @@
 import {
   ensurePeadSchema, seedLedger, pickPending, markLedger, ledgerStats,
   upsertEarnings, eventsMissingHour, upsertEventHour, budgetUsed, budgetAdd,
+  symbolsStale, requeueSymbols,
 } from './_lib/pead-db.js';
 import { fetchEarnings } from './_lib/av-earnings.js';
 import { classifyHourFromET, match8K, collect8Ks, loadTickerMap } from './_lib/pead-hour.js';
@@ -156,6 +159,38 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'No autorizado.' });
   }
   const job = String((req.query && req.query.job) || 'earnings').toLowerCase();
+
+  // `refresh` corre ANTES del gate de PEAD_HARVEST_ENABLED, a propósito: no
+  // gasta un solo request de Alpha Vantage (solo lee y marca el ledger), y su
+  // razón de ser es DECIDIR si vale la pena volver a prender el goteo. Detrás
+  // del gate sería inalcanzable justo cuando hace falta — que es hoy, con el
+  // goteo apagado y el cupo de AV asignado al wheel.
+  if (job === 'refresh') {
+    try {
+      await ensurePeadSchema();
+    // ── refresh: poner al día el historial reciente ──────────────────
+    // CERO llamadas a Alpha Vantage: solo devuelve los símbolos cuyo último
+    // trimestre quedó viejo y (sin ?dry=1) los devuelve a 'pending' para que
+    // el goteo los tome. El gasto real lo decide PEAD_HARVEST_ENABLED, y hoy
+    // ese cupo de AV es del wheel (docs/wheel-fase0.md §4.3): por eso este job
+    // reporta el costo que implicaría en vez de asumirlo por su cuenta.
+      const dias = Math.max(1, Math.min(400, Number(req.query.dias) || 95));
+      const seco = String(req.query.dry || '') === '1';
+      const viejos = await symbolsStale(dias, 200);
+      const reencolados = seco ? 0 : await requeueSymbols(viejos.map((v) => v.symbol));
+      return res.status(200).json({
+        job: 'refresh', dias_de_corte: dias, dry_run: seco,
+        simbolos_viejos: viejos.length, reencolados,
+        costo_en_llamadas_av: viejos.length,
+        dias_de_goteo_a_25_por_dia: Math.ceil(viejos.length / DAILY_CAP),
+        nota: 'Re-encolar NO gasta AV. El goteo solo corre con PEAD_HARVEST_ENABLED=1 y un schedule; hoy ese cupo es del wheel (docs/wheel-fase0.md §4.3).',
+        muestra: viejos.slice(0, 10),
+        ledger: await ledgerStats(),
+      });
+    } catch (err) {
+      return res.status(500).json({ error: 'pead-harvest refresh: ' + ((err && err.message) || 'unknown') });
+    }
+  }
 
   if (process.env.PEAD_HARVEST_ENABLED !== '1') {
     if (job === 'earnings' || job === 'hour') await beat('pead:' + job, 'disabled');

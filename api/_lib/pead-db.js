@@ -111,6 +111,49 @@ async function ledgerStats() {
   return out;
 }
 
+// ── Refresh: símbolos cuyo último trimestre quedó viejo ───────────────────
+// El goteo original marca `done` y no vuelve a pedir el símbolo — correcto
+// para bajar 30 años de historia, insuficiente para mantenerla al día. Cada
+// trimestre que pasa, los earnings recientes faltan, y un mercado de
+// Polymarket de este trimestre se queda sin con qué emparejarse
+// (`sin_reporte_posterior_a_la_creacion`, docs/earnings-beat-scope.md §1.3).
+//
+// Esto NO llama a Alpha Vantage: solo devuelve/marca. El gasto lo decide
+// quien prenda `PEAD_HARVEST_ENABLED` — y hoy ese cupo es del wheel
+// (docs/wheel-fase0.md §4.3), así que re-encenderlo es una decisión con costo
+// para otro proyecto, no un efecto colateral de esta función.
+async function symbolsStale(dias = 95, limite = 200) {
+  return sql(
+    `select l.symbol,
+            to_char(max(e.reported_date), 'YYYY-MM-DD') as ultimo_reporte,
+            (current_date - max(e.reported_date))::int   as dias_de_atraso
+       from pead_harvest_ledger l
+       left join pead_earnings e on e.symbol = l.symbol
+      where l.status = 'done'
+      group by l.symbol
+     having max(e.reported_date) is null
+         or max(e.reported_date) < current_date - ($1)::int
+      order by max(e.reported_date) asc nulls first
+      limit $2`,
+    [dias, limite]
+  );
+}
+
+// Los devuelve a 'pending' para que el goteo existente los tome por prioridad.
+// Idempotente: re-encolar algo ya pendiente no hace nada.
+async function requeueSymbols(symbols) {
+  if (!symbols || !symbols.length) return 0;
+  const ph = symbols.map((_, i) => `$${i + 1}`).join(', ');
+  const rows = await sql(
+    `update pead_harvest_ledger
+        set status = 'pending', error_msg = null
+      where symbol in (${ph}) and status <> 'pending'
+      returning symbol`,
+    symbols
+  );
+  return rows.length;
+}
+
 // ─────────────────── Earnings (upsert TODA la historia) ───────────────────
 
 // events: [{fiscal_date_ending, reported_date, reported_eps, estimated_eps,
@@ -218,6 +261,7 @@ async function budgetAdd(day, n) {
 }
 
 export {
+  symbolsStale, requeueSymbols,
   ensurePeadSchema,
   PEAD_SCHEMA,
   dedupeByReportedDate,

@@ -51,6 +51,9 @@
     "api/earnings-beat.js": {
       "maxDuration": 300
     },
+    "api/earnings-beat-harvest.js": {
+      "maxDuration": 300
+    },
     "api/historia-harvest.js": {
       "maxDuration": 300
     },
@@ -150,6 +153,14 @@
     {
       "path": "/api/pead-harvest?job=hour",
       "schedule": "30 21 * * *"
+    },
+    {
+      "path": "/api/earnings-beat-harvest?job=mercados",
+      "schedule": "0 23 * * *"
+    },
+    {
+      "path": "/api/earnings-beat-harvest?job=precios",
+      "schedule": "40 23 * * *"
     },
     {
       "path": "/api/arena-universe",
