@@ -28,7 +28,13 @@
 // Un umbral escrito después de ver el número no es un umbral, es una
 // racionalización — y si alguien mueve una portería, el diff lo delata.
 export const CRITERIOS = {
-  version: 1,
+  // v2 (2026-09-21): cambia CÓMO se cuenta G2, no su umbral. Ver
+  // `g2_min_emisoras_verificadas` abajo. El 5% de error por emisora NO se
+  // movió — mover ESE número después de ver los resultados sí habría sido
+  // racionalizar. Lo que cambió es qué cuenta como verificada, y queda
+  // versionado justamente para que el cambio se vea en el diff en vez de
+  // aparecer sin firma.
+  version: 2,
 
   // G1 — universo US. Un mapa por sector necesita que CADA sector tenga con
   // qué llenarse. Con 3 nombres en Utilities el cuadro no es un sector, es
@@ -40,9 +46,27 @@ export const CRITERIOS = {
   g1_max_horas_frescura_cap: 192,   // 8 días: el TTL largo de arena_market_cap (7d) + margen
 
   // G2 — capitalización MX. El encargo lo fija: >5% de error → gris punteado.
-  // El umbral de ACEPTACIÓN es el mismo número leído al revés.
+  // El umbral de ACEPTACIÓN es el mismo número leído al revés. NO se movió.
   g2_max_error_pct: 5,
-  g2_min_emisoras_verificadas: 15,  // de las 30 de emisoras.json; menos = el mapa MX no sale
+
+  // Las 15 siguen siendo 15. Lo que cambió (v2) es que ahora se cuentan DOS
+  // caminos hacia "verificada", porque son dos cosas distintas:
+  //
+  //   · individual        — la emisora tiene su propia referencia y cuadra.
+  //                         Obligatorio donde la fórmula tiene parámetros
+  //                         libres: varias series, o divisor > 1. Son 9.
+  //   · por método        — la fórmula no tiene nada que elegir (una serie,
+  //                         divisor 1) y el INSTRUMENTO quedó validado con
+  //                         ≥3 muestras independientes a ≤2%.
+  //
+  // Por qué no es aflojar: con referencias manuales, exigir 15 individuales
+  // dejaba 26 emisoras grises por falta de TRÁMITE, no de dato. Y el camino
+  // por método es más estricto que el individual (2% contra 5%) porque se
+  // extrapola. Los detalles y el riesgo declarado están en
+  // api/_lib/mercado-r0.js → "R0(b ter)".
+  g2_min_emisoras_verificadas: 15,
+  g2_metodo_min_muestras: 3,
+  g2_metodo_max_error_pct: 2,
 
   // G3 — precios en batch. La meta de producto es /mercado interactivo en
   // <1.5s en 4G. El presupuesto del SERVIDOR es más chico que eso: el cliente

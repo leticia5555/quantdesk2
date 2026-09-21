@@ -83,7 +83,18 @@ export function capConUnidades({ clave, acciones_circulacion, precio, serie_liqu
  * implícito de 117 es real (TLEVISA CPO), uno de 4,812 es un error de unidades
  * (miles vs unidades) disfrazado de divisor.
  */
-export function verificaDivisor({ capCalculada, capReferencia, acciones_por_unidad = 1, tolerancia_pct = 5, max_divisor = 500 }) {
+// Un divisor es un entero ESTRUCTURAL: o la unidad empaqueta 5 acciones o no.
+// La tolerancia para declararlo "entero limpio" NO puede ser la misma que la
+// del error de capitalización — esa es de 5% porque un precio y un conteo de
+// acciones de fuentes distintas se mueven. Un divisor no se mueve.
+//
+// Y no es una sutileza: FEMSA salió con implícito 4.200, que contra el 5% da
+// |4.2−4|/4 = 0.050000000000000044 — se salvó por un ULP de coma flotante, no
+// por diseño. Con 1% no hay suerte que valga: 4.2 no es 4, y el problema de
+// FEMSA está en el conteo de acciones, no en el empaquetado.
+export const MAX_DESVIO_ENTERO_PCT = 1;
+
+export function verificaDivisor({ capCalculada, capReferencia, acciones_por_unidad = 1, tolerancia_pct = 5, max_divisor = 500, max_desvio_entero_pct = MAX_DESVIO_ENTERO_PCT }) {
   const c = num(capCalculada), r = num(capReferencia), apu = num(acciones_por_unidad);
   if (c == null || r == null || r === 0) {
     return { estado: 'sin_referencia', error_pct: null, divisor_declarado: apu, divisor_implicito: null };
@@ -100,7 +111,7 @@ export function verificaDivisor({ capCalculada, capReferencia, acciones_por_unid
   const implicito = (apu || 1) * factor;
   const redondeado = Math.round(implicito);
   const limpio = redondeado >= 1 && redondeado <= max_divisor
-    && Math.abs(implicito - redondeado) / redondeado <= tolerancia_pct / 100;
+    && Math.abs(implicito - redondeado) / redondeado <= max_desvio_entero_pct / 100;
 
   if (limpio && redondeado !== apu) {
     return {
@@ -114,6 +125,35 @@ export function verificaDivisor({ capCalculada, capReferencia, acciones_por_unid
     estado: 'no_es_de_unidad', error_pct: errorPct,
     divisor_declarado: apu, divisor_implicito: null, exacto: implicito,
     motivo: `error ${errorPct.toFixed(1)}% y el divisor implícito (${implicito.toFixed(3)}) no es un entero limpio: el problema NO es el empaquetado`,
+  };
+}
+
+/**
+ * EL NÚMERO QUE EXPLICA A FEMSA.
+ *
+ * Cuando el implícito NO es un entero, la pregunta "¿cuál es el divisor?" es
+ * la equivocada. La buena es: **¿cuántas acciones cree la referencia que hay?**
+ *
+ *   unidades que implica la referencia = capReferencia / precio
+ *   acciones que implica               = unidades × acciones_por_unidad
+ *
+ * Con FEMSA eso da 20,161,874,250 contra las 16,935,974,370 del XBRL: **+19%
+ * de diferencia de CONTEO**, no de empaquetado. El divisor 5 puede estar
+ * perfecto y la discrepancia venir de que Yahoo cuenta las acciones de otra
+ * forma (otra fecha de corte, series que nosotros no contamos, su propio
+ * ajuste). Reformularlo así convierte "no cuadra" en algo accionable.
+ */
+export function conteoImplicito({ capReferencia, precio, acciones_por_unidad = 1, acciones_circulacion }) {
+  const cr = num(capReferencia), p = num(precio), apu = num(acciones_por_unidad) || 1;
+  const acc = num(acciones_circulacion);
+  if (cr == null || p == null || p <= 0) return null;
+  const unidades = cr / p;
+  const accionesImp = unidades * apu;
+  return {
+    unidades_implicitas: unidades,
+    acciones_implicitas: accionesImp,
+    acciones_xbrl: acc,
+    delta_pct: acc != null && acc > 0 ? ((accionesImp - acc) / acc) * 100 : null,
   };
 }
 
@@ -220,6 +260,26 @@ export function buscarPistas(raw, { pistas = [...PISTAS_ACCIONES, ...PISTAS_CAP]
  * `vigencia_dias` acota cuánto vale: una cap de referencia envejece con el
  * precio, y arrastrar un verde viejo es peor que volver a gris punteado.
  */
+/**
+ * TODAS las referencias de una emisora, no la primera.
+ *
+ * FEMSA necesita dos de fuentes distintas y las dos tienen que verse: si una
+ * cuadra y la otra no, eso NO es "verificada" — es una discrepancia entre
+ * fuentes, y esconderla quedándose con la que conviene sería exactamente lo
+ * que este proyecto no hace.
+ */
+export function referenciasManuales(registro, clave, ahora) {
+  const filas = (registro && registro.referencias) || [];
+  const mias = filas.filter((f) => up(f && f.clave) === up(clave));
+  const vigentes = [], descartadas = [];
+  for (const fila of mias) {
+    const r = referenciaManual({ ...registro, referencias: [fila] }, clave, ahora);
+    if (r.cap != null) vigentes.push(r);
+    else descartadas.push({ fuente: fila.fuente || null, capturada_en: fila.capturada_en || null, motivo: r.motivo });
+  }
+  return { vigentes, descartadas, total: mias.length };
+}
+
 export function referenciaManual(registro, clave, ahora) {
   const now = ahora instanceof Date ? ahora : new Date(ahora);
   const filas = (registro && registro.referencias) || [];
@@ -279,6 +339,254 @@ export function parseManualParam(raw, { fuente, capturada_en } = {}) {
     });
   }
   return { referencias, invalidas };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// R0(b ter) — VERIFICAR EL MÉTODO, no cada emisora
+//
+// El problema, con los números de la corrida: con 4 referencias manuales
+// cuadraron 3 (WALMEX 1.7%, AMX 1.0%, GMEXICO 0.3%) y G2 pedía 15
+// verificadas. Juntar 15 referencias a mano para desbloquear un mapa de 30
+// cuadros no compra precisión: compra papeleo, y deja 26 emisoras grises por
+// falta de trámite, no por falta de dato.
+//
+// LA DISTINCIÓN QUE LO ORDENA: validar un INSTRUMENTO no es validar cada
+// MEDICIÓN. La fórmula
+//
+//     cap = acciones_circulacion × precio_serie_liquida / acciones_por_unidad
+//
+// no tiene ningún parámetro libre cuando la emisora tiene UNA serie y apu=1:
+// no hay serie que elegir ni divisor que acertar. Si el instrumento cuadra
+// tres veces contra referencias independientes, lo que queda por verificar en
+// esas emisoras es ARITMÉTICA, y la aritmética no falla distinto según la
+// empresa.
+//
+// Donde SÍ hay parámetros libres —varias series, o un divisor— la validación
+// del método no dice nada: puede fallar por la serie equivocada sin que la
+// fórmula tenga nada de malo. Esas nueve siguen necesitando referencia
+// individual, y sin ella van gris punteadas.
+//
+// EL RIESGO, DICHO: las tres muestras son emisoras grandes y líquidas. Una
+// chica puede fallar por un motivo que estas tres no ejercitan (precio
+// rancio, acciones de un trimestre viejo). Por eso el umbral del método es
+// MÁS ESTRICTO que el individual —2% contra 5%—: lo que se extrapola tiene
+// que medirse mejor que lo que se mide una sola vez. Y por eso el reporte
+// lista una por una las que heredan sin control propio.
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * LA PRUEBA DE FEMSA — y por qué el cálculo de una emisora multi-serie puede
+ * estar mal aunque el divisor sea correcto.
+ *
+ * `cap = acciones_TOTALES × precio_de_UNA_serie / apu` le aplica el precio de
+ * la serie líquida a **todas** las acciones. Eso es correcto solo si las demás
+ * series valen lo mismo, o si no pesan.
+ *
+ * FEMSA lo rompe: UB cotiza a 165 y UBD a 207.66 — las dos son unidades de 5
+ * acciones, o sea **comparables**, y difieren 21%. Aplicarle el precio de UBD
+ * a todo el capital infla la cap. La correcta sería
+ *
+ *     cap = Σ (acciones_de_la_serie × precio_de_la_serie) / apu
+ *
+ * y el XBRL **no desglosa acciones por serie**: reporta un total. Sin ese
+ * desglose la cap de FEMSA no se puede calcular, y ningún ajuste la arregla.
+ * Las tres cifras de la corrida lo confirman: Yahoo 837B, Google 628B,
+ * nuestro cálculo 703B — tres números distintos, ninguno cuadra, y la
+ * dispersión entre fuentes públicas es justo lo que se espera cuando la
+ * estructura de capital confunde a todo el mundo.
+ *
+ * ── QUÉ CUENTA COMO "PRECIOS DISTINTOS" ─────────────────────────────
+ * Dos trampas que hay que esquivar para no marcar a todas:
+ *
+ * 1. **Cotizaciones de referencia idénticas.** CEMEXA = CEMEXB = 3.8 exacto,
+ *    KOFA = KOFD = 16.270452 a seis decimales, TLEVISAB = D = L = 0.205. Eso
+ *    no es un mercado: es un valor puesto a mano. Un grupo de precios
+ *    idénticos cuenta como UN solo precio.
+ * 2. **Unidad contra acción suelta.** CEMEXCPO a 17.56 y CEMEXA a 3.8 no
+ *    están en desacuerdo: una es un paquete de tres. Solo se comparan series
+ *    del MISMO tipo de instrumento, y el proxy —sin saber cuál es unidad y
+ *    cuál no— es la razón de precios: dentro de [0.5, 2] son comparables;
+ *    fuera, casi seguro son instrumentos distintos y no se comparan.
+ *
+ * Devuelve `requiere_desglose: true` cuando quedan ≥2 precios comparables que
+ * difieren más que la tolerancia. Esas emisoras van gris punteadas hasta
+ * tener el desglose por serie, venga de donde venga.
+ */
+export function dispersionPrecios({ series = [], serie_liquida, tolerancia_pct = 5, banda = [0.5, 2] } = {}) {
+  const vivas = series
+    .map((x) => ({ serie: String((x && x.emisora_serie) || ''), precio: num(x && x.cierre) }))
+    .filter((x) => x.serie && x.precio != null && x.precio > 0);
+  if (vivas.length <= 1) {
+    return { requiere_desglose: false, motivo: null, comparables: vivas.length, grupos_identicos: [] };
+  }
+
+  const liquida = vivas.find((x) => x.serie === serie_liquida) || vivas[0];
+
+  // Trampa 1: colapsar los grupos de precio IDÉNTICO a un representante.
+  const porPrecio = new Map();
+  for (const v of vivas) {
+    const k = String(v.precio);
+    if (!porPrecio.has(k)) porPrecio.set(k, []);
+    porPrecio.get(k).push(v.serie);
+  }
+  const gruposIdenticos = [...porPrecio.entries()]
+    .filter(([, ss]) => ss.length > 1)
+    .map(([precio, ss]) => ({ precio: Number(precio), series: ss }));
+  const representantes = [...porPrecio.entries()].map(([k, ss]) => ({ precio: Number(k), serie: ss[0], n: ss.length }));
+
+  // Trampa 2: solo las que están en la misma banda que la líquida.
+  const comparables = representantes.filter((r) => {
+    const razon = r.precio / liquida.precio;
+    return razon >= banda[0] && razon <= banda[1];
+  });
+
+  if (comparables.length <= 1) {
+    return {
+      requiere_desglose: false, comparables: comparables.length,
+      grupos_identicos: gruposIdenticos,
+      motivo: null,
+      nota: representantes.length > 1
+        ? 'las otras series no son comparables con la líquida (razón fuera de [0.5, 2]): son otro instrumento, no otro precio'
+        : null,
+    };
+  }
+
+  const precios = comparables.map((c) => c.precio);
+  const max = Math.max(...precios), min = Math.min(...precios);
+  const spreadPct = ((max - min) / min) * 100;
+  const material = spreadPct > tolerancia_pct;
+
+  return {
+    requiere_desglose: material,
+    comparables: comparables.length,
+    series_comparables: comparables.map((c) => ({ serie: c.serie, precio: c.precio })),
+    grupos_identicos: gruposIdenticos,
+    spread_pct: spreadPct,
+    motivo: material
+      ? `series con precio distinto, sin desglose: ${comparables.map((c) => `${c.serie} ${c.precio}`).join(' vs ')} (${spreadPct.toFixed(1)}% de diferencia). El XBRL da un total de acciones, no un desglose por serie, así que aplicarle el precio de una a todas infla o desinfla la cap`
+      : null,
+  };
+}
+
+export const METODO = {
+  min_muestras: 3,
+  // Muestras LIMPIAS (una serie, divisor 1) que tienen que cuadrar. El método
+  // se aplica a emisoras limpias, así que tiene que estar respaldado por
+  // emisoras limpias — extrapolar desde casos que no se parecen al destino no
+  // es validar.
+  min_muestras_limpias: 2,
+  max_error_pct: 2,   // más estricto que el 5% individual, a propósito
+};
+
+/**
+ * ¿Esta emisora puede heredar la validación del método?
+ *
+ * Solo si la fórmula no tiene nada que elegir: UNA serie de precio y divisor
+ * 1. Con varias series hay que acertar cuál; con divisor > 1 hay que acertar
+ * cuánto. El método no valida ninguna de las dos cosas.
+ */
+export function elegibleMetodo({ n_series, acciones_por_unidad } = {}) {
+  return num(n_series) === 1 && (num(acciones_por_unidad) ?? 1) === 1;
+}
+
+/**
+ * Valida el instrumento con las emisoras que SÍ tienen referencia individual.
+ *
+ * `muestras` = [{ clave, error_pct, n_series, acciones_por_unidad }].
+ *
+ * Una muestra que NO cuadra no se ignora: si el instrumento falla en una
+ * emisora que tiene referencia, extrapolarlo a veinte que no la tienen sería
+ * elegir los datos que convienen. Con una sola que falle, el método queda
+ * marcado como NO uniforme y el reporte la nombra.
+ */
+export function validaMetodo(muestras = [], {
+  min = METODO.min_muestras, maxPct = METODO.max_error_pct,
+  minLimpias = METODO.min_muestras_limpias,
+} = {}) {
+  const conError = muestras.filter((m) => m && num(m.error_pct) != null);
+  const cuadran = conError.filter((m) => Math.abs(num(m.error_pct)) <= maxPct);
+  const noCuadran = conError.filter((m) => Math.abs(num(m.error_pct)) > maxPct);
+  const limpias = cuadran.filter((m) => elegibleMetodo(m));
+
+  // UNA FALLA NO ES IGUAL QUE OTRA, y confundirlas hacía imposible validar
+  // nada. Si falla una emisora LIMPIA —sin serie que elegir ni divisor que
+  // acertar— eso es evidencia contra la ARITMÉTICA y tumba el método. Si
+  // falla una con parámetros libres, lo que está mal son SUS parámetros (la
+  // serie, el divisor, el desglose), y no dice nada de la aritmética.
+  //
+  // Sin esta distinción, TLEVISA (5.6%, divisor 117) y FEMSA (sin desglose)
+  // habrían tumbado el método para las 20 emisoras de una sola serie, que no
+  // tienen nada que ver con el problema de esas dos.
+  const fallanLimpias = noCuadran.filter((m) => elegibleMetodo(m));
+  const fallanConParametros = noCuadran.filter((m) => !elegibleMetodo(m));
+
+  const razones = [];
+  if (cuadran.length < min) razones.push(`${cuadran.length} muestras cuadran a ≤${maxPct}% (piso ${min})`);
+  if (limpias.length < minLimpias) {
+    // El método se extrapola a emisoras limpias: hacen falta muestras limpias
+    // que lo respalden, no solo muestras.
+    razones.push(`solo ${limpias.length} de las que cuadran son limpias (una serie, divisor 1; piso ${minLimpias}): extrapolar desde casos que no se parecen al destino no es validar`);
+  }
+  if (fallanLimpias.length) {
+    razones.push(`${fallanLimpias.length} emisoras LIMPIAS con referencia NO cuadran (${fallanLimpias.map((m) => `${m.clave} ${num(m.error_pct).toFixed(1)}%`).join(', ')}): la aritmética falla, no los parámetros`);
+  }
+
+  return {
+    muestras_con_referencia: conError.length,
+    cuadran: cuadran.length,
+    no_cuadran: noCuadran.length,
+    claves_que_cuadran: cuadran.map((m) => m.clave),
+    claves_que_no: noCuadran.map((m) => m.clave),
+    // Cuántas de las que cuadran son del MISMO tipo al que se extrapola.
+    // Tres muestras que cuadran son tres muestras; si ninguna es limpia, el
+    // método se extrapola desde casos que no se parecen a su destino.
+    limpias_entre_las_que_cuadran: limpias.length,
+    fallan_limpias: fallanLimpias.map((m) => m.clave),
+    fallan_con_parametros_libres: fallanConParametros.map((m) => ({ clave: m.clave, error_pct: num(m.error_pct) })),
+    peor_error_pct: cuadran.length ? Math.max(...cuadran.map((m) => Math.abs(num(m.error_pct)))) : null,
+    umbral_pct: maxPct, min_muestras: min,
+    valido: razones.length === 0,
+    razones,
+  };
+}
+
+/**
+ * Verifica una emisora contra TODAS sus referencias y devuelve el consenso.
+ *
+ * Con dos fuentes distintas hay tres desenlaces y los tres importan:
+ *   · las dos cuadran  → verificada, y el acuerdo entre fuentes lo refuerza;
+ *   · las dos fallan   → el problema es nuestro;
+ *   · una sí y una no  → DISCREPANCIA ENTRE FUENTES. No es "verificada": es
+ *                        que dos fuentes públicas no coinciden, y el reporte
+ *                        lo dice en vez de quedarse con la cómoda.
+ */
+export function verificaConReferencias({
+  capCalculada, referencias = [], acciones_por_unidad = 1,
+  precio, acciones_circulacion, tolerancia_pct = 5,
+}) {
+  if (!referencias.length) {
+    return { estado: 'sin_referencia', por_referencia: [], motivo: 'sin referencia individual vigente' };
+  }
+  const porRef = referencias.map((ref) => ({
+    fuente: ref.fuente, capturada_en: ref.capturada_en, cap: ref.cap,
+    ...verificaDivisor({ capCalculada, capReferencia: ref.cap, acciones_por_unidad, tolerancia_pct }),
+    conteo: conteoImplicito({ capReferencia: ref.cap, precio, acciones_por_unidad, acciones_circulacion }),
+  }));
+
+  const cuadran = porRef.filter((r) => r.estado === 'cuadra');
+  if (cuadran.length === porRef.length) {
+    return { estado: 'verificada', por_referencia: porRef, motivo: null, referencias_usadas: porRef.length };
+  }
+  if (cuadran.length === 0) {
+    return {
+      estado: 'no_cuadra', por_referencia: porRef, referencias_usadas: porRef.length,
+      motivo: porRef.length === 1 ? porRef[0].motivo : `ninguna de las ${porRef.length} referencias cuadra`,
+    };
+  }
+  return {
+    estado: 'discrepancia_entre_fuentes', por_referencia: porRef, referencias_usadas: porRef.length,
+    motivo: `${cuadran.length} de ${porRef.length} referencias cuadran: las fuentes no coinciden entre sí, así que el problema puede no ser nuestro`,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════

@@ -26,9 +26,11 @@ import {
   capConUnidades, verificaDivisor, estadoEmisora,
   buscarPistas, PISTAS_ACCIONES, PISTAS_CAP,
   filaUniversoUs,
-  referenciaManual, parseManualParam,
+  referenciaManual, referenciasManuales, parseManualParam,
   proximaRanura, intervaloDe, penalizarPor429, planCorrida,
+  elegibleMetodo, validaMetodo, verificaConReferencias, dispersionPrecios, METODO,
 } from './_lib/mercado-r0.js';
+import { CRITERIOS } from './_lib/mercado-fase0.js';
 import REFERENCIAS_CAP from './_lib/mercado-cap-referencia.json' with { type: 'json' };
 
 export const maxDuration = 300;
@@ -500,96 +502,178 @@ async function jobUnidades({ ahora, manual }) {
     preciosPor.get(k).push(p);
   }
 
-  // LA REFERENCIA. Dos caminos, en este orden:
-  //   1. DataBursatil, si `?job=refcap` encontró con qué (R0c).
-  //   2. El registro manual, fechado y con fuente (_lib/mercado-cap-referencia.json
-  //      o `?manual=CLAVE:CAP`), que es el camino que la corrida del
-  //      2026-09-20 dejó abierto al cerrar los dos automáticos.
   const ref = await jobRefcap({ limite: 20 });
-  const referenciaDisponible = ref.hay_cap === true;
   const registroManual = manual && manual.referencias && manual.referencias.length
-    ? { vigencia_dias: REFERENCIAS_CAP.vigencia_dias, referencias: manual.referencias }
+    ? { vigencia_dias: REFERENCIAS_CAP.vigencia_dias, referencias: [...REFERENCIAS_CAP.referencias, ...manual.referencias] }
     : REFERENCIAS_CAP;
 
-  const salida = EMISORAS.emisoras.map((em) => {
+  // ── PASO 1: calcular, y verificar SOLO las que tienen referencia ─────
+  const base = EMISORAS.emisoras.map((em) => {
     const clave = String(em.clave).toUpperCase();
     const a = accPor.get(clave);
     const series = preciosPor.get(clave) || [];
-    const elegida = series.find((s) => s.emisora_serie === em.serie_liquida) || null;
-
-    // ¿La serie declarada es de verdad la más líquida? Se CONTRASTA contra el
-    // importe operado en vez de creerle al registro.
+    const elegida = series.find((x) => x.emisora_serie === em.serie_liquida) || null;
     const masOperada = series.slice().sort((x, y) => (num(y.importe) || 0) - (num(x.importe) || 0))[0] || null;
-    const serieDiscrepa = masOperada && em.serie_liquida && masOperada.emisora_serie !== em.serie_liquida;
+
+    // ¿Las series de esta emisora cotizan a precios COMPARABLES y distintos?
+    // Si sí, el cálculo le aplica el precio de una a todas las acciones y la
+    // cap sale mal aunque el divisor esté bien (el caso FEMSA).
+    const disp = dispersionPrecios({
+      series, serie_liquida: em.serie_liquida, tolerancia_pct: CRITERIOS.g2_max_error_pct,
+    });
 
     const calc = capConUnidades({
       clave, acciones_circulacion: a ? a.acciones_circulacion : null,
       precio: elegida ? elegida.cierre : null,
       serie_liquida: em.serie_liquida, acciones_por_unidad: em.acciones_por_unidad,
     });
-    const refMan = referenciaManual(registroManual, clave, ahora);
-    const verif = verificaDivisor({
-      capCalculada: calc.cap, capReferencia: refMan.cap,
+    const refs = referenciasManuales(registroManual, clave, ahora);
+    const verif = verificaConReferencias({
+      capCalculada: calc.cap, referencias: refs.vigentes,
       acciones_por_unidad: em.acciones_por_unidad,
+      precio: elegida ? elegida.cierre : null,
+      acciones_circulacion: a ? a.acciones_circulacion : null,
+      tolerancia_pct: CRITERIOS.g2_max_error_pct,
     });
-    const estado = estadoEmisora(verif, { cap: calc.cap, fuente_cap: 'calc' });
 
     return {
       clave, nombre: em.nombre, sector: em.sector,
-      serie_liquida: em.serie_liquida,
+      serie_liquida: em.serie_liquida, n_series: series.length,
       acciones_por_unidad: em.acciones_por_unidad,
-      unidad_fuente: em.unidad_fuente, unidad_verificado: em.unidad_verificado,
+      unidad_fuente: em.unidad_fuente,
       periodo_xbrl: a ? `${a.anio}T${a.trimestre}` : null,
+      // La FECHA del precio usado. Sin ella, un 5.6% de error no se distingue
+      // de un precio rancio — que es justo la duda que dejó TLEVISA.
+      fecha_precio: elegida ? String(elegida.fecha).slice(0, 10) : null,
+      dias_precio: elegida && elegida.fecha
+        ? Math.round((ahora - new Date(elegida.fecha)) / 86400000) : null,
       cap_calculada: calc.cap, motivo_calculo: calc.motivo,
-      series_vistas: series.length,
+      dispersion: disp,
       serie_mas_operada: masOperada ? masOperada.emisora_serie : null,
-      serie_discrepa: !!serieDiscrepa,
-      verificacion: verif, estado: estado.estado, etiqueta: estado.etiqueta,
-      referencia: refMan.cap != null
-        ? { cap: refMan.cap, fuente: refMan.fuente, capturada_en: refMan.capturada_en, dias: refMan.dias }
-        : { cap: null, motivo: refMan.motivo, vencida: refMan.vencida === true },
+      serie_discrepa: !!(masOperada && em.serie_liquida && masOperada.emisora_serie !== em.serie_liquida),
+      referencias: { vigentes: refs.vigentes.length, descartadas: refs.descartadas },
+      verificacion: verif,
+      // El error de la MEJOR referencia: es lo que alimenta la validación del
+      // método, y solo existe si hubo contra qué comparar.
+      error_pct: verif.por_referencia.length
+        ? verif.por_referencia.reduce((mejor, r) => (mejor == null || Math.abs(num(r.error_pct) ?? Infinity) < Math.abs(mejor) ? (num(r.error_pct) ?? mejor) : mejor), null)
+        : null,
+      // Elegible para heredar el método: una serie, divisor 1. Se calcula con
+      // las series REALES de bmv_precios, no con lo que declare el registro.
+      elegible_metodo: elegibleMetodo({ n_series: series.length, acciones_por_unidad: em.acciones_por_unidad }),
     };
   });
 
-  const conCap = salida.filter((s) => s.cap_calculada != null);
-  const discrepan = salida.filter((s) => s.serie_discrepa);
-  const verificadas = salida.filter((s) => s.estado === 'verificada');
-  const conRef = salida.filter((s) => s.referencia && s.referencia.cap != null);
-  // El divisor implícito de las que NO cuadran: es el entregable de R0(b),
-  // porque dice cuál ES el divisor en vez de solo decir que el declarado
-  // está mal.
-  const implicitos = salida
-    .filter((s) => s.verificacion && s.verificacion.divisor_implicito != null
-      && s.verificacion.divisor_implicito !== s.acciones_por_unidad)
-    .map((s) => ({
-      clave: s.clave, declarado: s.acciones_por_unidad,
-      implicito: s.verificacion.divisor_implicito, exacto: s.verificacion.exacto,
-      error_pct: s.verificacion.error_pct,
+  // ── PASO 2: ¿el INSTRUMENTO quedó validado? ──────────────────────────
+  const metodo = validaMetodo(
+    base.filter((b) => b.error_pct != null).map((b) => ({
+      clave: b.clave, error_pct: b.error_pct,
+      n_series: b.n_series, acciones_por_unidad: b.acciones_por_unidad,
+    })),
+    { min: CRITERIOS.g2_metodo_min_muestras, maxPct: CRITERIOS.g2_metodo_max_error_pct },
+  );
+
+  // ── PASO 3: el estado final de cada emisora ──────────────────────────
+  const salida = base.map((b) => {
+    let estado, etiqueta = null, motivo = null, via = null;
+
+    if (b.cap_calculada == null) {
+      estado = 'gris_punteado'; motivo = b.motivo_calculo;
+    } else if (b.dispersion.requiere_desglose) {
+      // Manda sobre la verificación individual A PROPÓSITO: si las series
+      // cotizan distinto, el número está estructuralmente mal aunque una
+      // referencia coincida — y una referencia que coincide con un cálculo
+      // mal hecho puede estar haciendo el mismo cálculo mal.
+      estado = 'gris_punteado'; via = 'requiere_desglose'; motivo = b.dispersion.motivo;
+    } else if (b.verificacion.estado === 'verificada') {
+      estado = 'verificada'; via = 'individual';
+      etiqueta = `cap: calc · verificada vs ${b.verificacion.por_referencia.map((r) => r.fuente).join(' + ')}`;
+    } else if (b.verificacion.estado === 'discrepancia_entre_fuentes') {
+      // NO es verificada: dos fuentes públicas no coinciden entre sí.
+      estado = 'gris_punteado'; via = 'discrepancia'; motivo = b.verificacion.motivo;
+    } else if (b.verificacion.estado === 'no_cuadra') {
+      estado = 'gris_punteado'; via = 'individual'; motivo = b.verificacion.motivo;
+    } else if (b.elegible_metodo && metodo.valido) {
+      // La fórmula no tiene nada que elegir acá, y el instrumento está
+      // validado. La etiqueta DICE que no hay control propio.
+      estado = 'verificada_por_metodo'; via = 'metodo';
+      etiqueta = `cap: calc · método validado (${metodo.cuadran} muestras ≤${metodo.umbral_pct}%)`;
+    } else if (b.elegible_metodo) {
+      estado = 'gris_punteado'; via = 'metodo';
+      motivo = `el método no está validado: ${metodo.razones.join(' · ')}`;
+    } else {
+      // Las 9: parámetros libres, así que referencia individual o nada.
+      estado = 'gris_punteado'; via = 'individual_obligatoria';
+      motivo = b.n_series > 1
+        ? `${b.n_series} series: la serie líquida es una elección, y el método no la valida — hace falta referencia individual`
+        : `divisor ${b.acciones_por_unidad}: el empaquetado es una elección, y el método no lo valida — hace falta referencia individual`;
+    }
+    return { ...b, estado, etiqueta, motivo_estado: motivo, via };
+  });
+
+  const porEstado = (x) => salida.filter((s2) => s2.estado === x);
+  const individuales = porEstado('verificada');
+  const porMetodo = porEstado('verificada_por_metodo');
+  const verificadasTotal = individuales.length + porMetodo.length;
+
+  // Las 9 que exigen referencia individual y todavía no la tienen: es la
+  // lista de lo que falta, nombre por nombre.
+  const requierenDesglose = salida.filter((s2) => s2.dispersion.requiere_desglose)
+    .map((s2) => ({
+      clave: s2.clave,
+      series: s2.dispersion.series_comparables,
+      spread_pct: +s2.dispersion.spread_pct.toFixed(1),
+      verificaba_igual: s2.verificacion.estado === 'verificada',
     }));
-  const noSonDeUnidad = salida
-    .filter((s) => s.verificacion && s.verificacion.estado === 'no_es_de_unidad')
-    .map((s) => ({ clave: s.clave, motivo: s.verificacion.motivo }));
+
+  const faltanReferencia = salida
+    .filter((s2) => !s2.elegible_metodo && s2.estado === 'gris_punteado' && s2.referencias.vigentes === 0)
+    .map((s2) => ({ clave: s2.clave, n_series: s2.n_series, apu: s2.acciones_por_unidad, motivo: s2.motivo_estado }));
+
   return {
     job: 'unidades', generado_en: ahora.toISOString(),
+    criterios_version: CRITERIOS.version,
     emisoras: salida.length,
-    con_cap_calculada: conCap.length,
-    sin_cap: salida.length - conCap.length,
-    series_que_discrepan: discrepan.map((d) => ({ clave: d.clave, declarada: d.serie_liquida, mas_operada: d.serie_mas_operada })),
-    referencia: {
-      disponible: referenciaDisponible,
-      veredicto_refcap: ref.veredicto,
-      bloqueante: !referenciaDisponible,
-      nota: referenciaDisponible ? null
-        : 'SIN REFERENCIA NO HAY VERIFICACIÓN: las caps calculadas de arriba no están validadas y TODAS las emisoras salen gris punteadas. Resolver R0(c) primero.',
+
+    metodo: {
+      ...metodo,
+      lectura: metodo.valido
+        ? `instrumento validado con ${metodo.cuadran} muestras (peor ${metodo.peor_error_pct?.toFixed(1)}%); ${porMetodo.length} emisoras lo heredan`
+        : `instrumento NO validado — ninguna emisora hereda: ${metodo.razones.join(' · ')}`,
+      // El riesgo, a la vista y no en un comentario: cuántas heredan sin
+      // control propio, y desde cuántas muestras del mismo tipo.
+      heredan_sin_control_propio: porMetodo.map((s2) => s2.clave),
     },
-    divisores_implicitos: implicitos,
-    no_son_de_unidad: noSonDeUnidad,
+
+    resumen: {
+      verificadas_individual: individuales.length,
+      verificadas_por_metodo: porMetodo.length,
+      verificadas_total: verificadasTotal,
+      gris_punteado: porEstado('gris_punteado').length,
+      con_cap_calculada: salida.filter((s2) => s2.cap_calculada != null).length,
+      con_referencia_vigente: salida.filter((s2) => s2.referencias.vigentes > 0).length,
+      discrepancias_entre_fuentes: salida.filter((s2) => s2.via === 'discrepancia').map((s2) => s2.clave),
+      requieren_desglose: requierenDesglose.length,
+    },
+    // LA PRUEBA DE FEMSA, aplicada a las nueve.
+    requieren_desglose: requierenDesglose,
+    faltan_referencia_individual: faltanReferencia,
+    // Precios viejos: lo que hace falta para saber si un error es del método
+    // o de una cotización rancia (la duda de TLEVISA).
+    precios_mas_viejos: salida.filter((s2) => s2.dias_precio != null)
+      .sort((x, y) => y.dias_precio - x.dias_precio).slice(0, 5)
+      .map((s2) => ({ clave: s2.clave, serie: s2.serie_liquida, fecha: s2.fecha_precio, dias: s2.dias_precio })),
+    series_que_discrepan: salida.filter((s2) => s2.serie_discrepa)
+      .map((s2) => ({ clave: s2.clave, declarada: s2.serie_liquida, mas_operada: s2.serie_mas_operada })),
+    refcap: { veredicto: ref.veredicto },
     detalle: salida,
+
     g2_proyectado: {
-      con_referencia: conRef.length,
-      verificadas: verificadas.length,
-      verde: verificadas.length >= 5 && conRef.length >= 5,
-      motivo: conRef.length ? null : 'ninguna emisora tiene capitalización de referencia: cargar _lib/mercado-cap-referencia.json o pasar ?manual=',
+      verificadas: verificadasTotal,
+      piso: CRITERIOS.g2_min_emisoras_verificadas,
+      verde: verificadasTotal >= CRITERIOS.g2_min_emisoras_verificadas,
+      falta: verificadasTotal >= CRITERIOS.g2_min_emisoras_verificadas ? null
+        : `faltan ${CRITERIOS.g2_min_emisoras_verificadas - verificadasTotal} — ${faltanReferencia.length} esperan referencia individual`,
     },
   };
 }

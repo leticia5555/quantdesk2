@@ -627,3 +627,150 @@ dato" — y esa desambiguación la tuviste que hacer vos, a mano. Ahora:
 el techo real está por debajo de 55/min —casi siempre porque el Arena está
 pidiendo a la vez— y se baja con `MERCADO_R0_POR_MINUTO`, sin redeploy de
 código.
+
+
+---
+
+## 15. La regla de verificación, v2 — y el hallazgo de FEMSA
+
+### 15.1 · Dos vías hacia "verificada", porque son dos cosas distintas
+
+Con 4 referencias manuales cuadraron 3 y G2 pedía 15: juntar 15 referencias a
+mano para desbloquear un mapa de 30 cuadros dejaba **26 emisoras grises por
+falta de trámite, no de dato**.
+
+**Validar un INSTRUMENTO no es validar cada MEDICIÓN.** La fórmula
+
+```
+cap = acciones_circulacion × precio_serie_liquida / acciones_por_unidad
+```
+
+no tiene **ningún parámetro libre** cuando la emisora tiene una serie y
+divisor 1: no hay serie que elegir ni divisor que acertar. Si el instrumento
+cuadra contra varias referencias independientes, lo que queda por verificar
+ahí es aritmética.
+
+| Vía | Quién | Umbral |
+|---|---|---|
+| **individual** | obligatoria donde hay parámetros libres (varias series o divisor > 1) — las 9 | ≤5% |
+| **por método** | una serie, divisor 1 — las 20 | el instrumento: ≥3 muestras, **≥2 limpias**, ≤2% |
+
+**El umbral del método es más estricto que el individual (2% vs 5%) a
+propósito**: lo que se extrapola tiene que medirse mejor que lo que se mide
+una sola vez. Y hacen falta **≥2 muestras limpias**: extrapolar a emisoras de
+una serie apoyándose solo en multi-serie sería validar desde casos que no se
+parecen al destino.
+
+**Una falla no es igual que otra.** Si falla una emisora limpia, eso es
+evidencia contra la aritmética y tumba el método. Si falla una con parámetros
+libres, lo que está mal son *sus* parámetros. Sin esa distinción, TLEVISA
+(5.6%) y FEMSA habrían tumbado el método para las 20 que no tienen nada que
+ver con su problema.
+
+`CRITERIOS.version` pasa a **2**. El 5% del encargo **no se movió** — cambió
+qué cuenta como verificada, y queda versionado para que el cambio se vea en el
+diff en vez de aparecer sin firma.
+
+### 15.2 · FEMSA no era el divisor: es que no hay desglose
+
+Tres cifras públicas, ninguna coincide:
+
+| | |
+|---|---|
+| Yahoo | 837 B |
+| Google Finance | 628 B |
+| nuestro cálculo | 703 B |
+
+**La causa es estructural.** FEMSA **UB** cotiza a 165 y **UBD** a 207.66 —
+las dos son unidades de 5 acciones, o sea **comparables**, y difieren 26%. El
+cálculo le aplica el precio de UBD a **todo** el capital. La cap correcta es
+
+```
+cap = Σ (acciones_de_la_serie × precio_de_la_serie) / apu
+```
+
+y **el XBRL da un total de acciones, no un desglose por serie**. Sin ese
+desglose la cap no se puede calcular, y ninguna referencia más lo arregla: que
+tres fuentes públicas no coincidan **entre sí** es exactamente lo que se
+espera cuando la estructura de capital confunde a todos.
+
+FEMSA va **gris punteada**, motivo `series con precio distinto, sin desglose`,
+hasta tener el desglose del sitio de IR.
+
+### 15.3 · La misma prueba, aplicada a las nueve
+
+Dos trampas que hay que esquivar para no marcarlas a todas:
+
+1. **Cotizaciones idénticas.** `CEMEXA = CEMEXB = 3.8`, `KOFA = KOFD =
+   16.270452`, `TLEVISAB = D = L = 0.205`. Un grupo de precios idénticos
+   cuenta como **un** precio: es un valor puesto a mano, no un mercado.
+2. **Unidad contra acción suelta.** CPO a 17.56 y A a 3.8 no están en
+   desacuerdo: una es un paquete de tres. Solo se comparan series del mismo
+   tipo — el proxy es la razón de precios dentro de `[0.5, 2]`.
+
+| emisora | series | comparables | spread | ¿desglose? |
+|---|---|---|---|---|
+| **AMX** | 3 | 3 | **23.7%** | **SÍ** |
+| **FEMSA** | 2 | 2 | **25.9%** | **SÍ** |
+| CEMEX | 3 | 1 | — | no (otro instrumento) |
+| TLEVISA | 5 | 1 | — | no (otro instrumento) |
+| KOF | 3 | 1 | — | no (otro instrumento) |
+| LIVEPOL | 2 | 2 | 1.5% | no |
+| KIMBER | 2 | 2 | 0.9% | no |
+| **PINFRA** | 2 | 2 | **31.7%** | **SÍ** |
+| LASITE | 3 | 1 | — | no (otro instrumento) |
+
+**El desglose manda sobre la verificación individual.** Si las series cotizan
+distinto, el número está estructuralmente mal aunque una referencia coincida —
+y una referencia que coincide con un cálculo mal hecho puede estar haciendo el
+mismo cálculo mal. Es el argumento que FEMSA vuelve concreto: Yahoo y Google
+difieren 33% entre ellos.
+
+### 15.4 · El conteo — y la única decisión que te queda
+
+**25 verificadas · 5 grises · G2 VERDE** (piso 15).
+
+| | |
+|---|---|
+| por método (una serie, divisor 1) | **20** |
+| individuales (CEMEX, KOF, LIVEPOL, KIMBER, LASITE) | **5** |
+| **total** | **25** |
+
+Las 5 grises, con su motivo:
+
+| emisora | motivo |
+|---|---|
+| **AMX** | series con precio distinto, 23.7% — **pero verificaba a 1.0%** |
+| FEMSA | series con precio distinto, 25.9% (§15.2) |
+| TLEVISA | error 5.6% > 5% — ver §15.5 |
+| PINFRA | series con precio distinto, 31.7%, y sin referencia |
+| PE&OLES | sin ninguna serie de precio en `bmv_precios` |
+
+**AMX es la decisión que te queda.** Verificó a 1.0% contra una referencia, y
+la regla nueva la manda a gris por 23.7% de dispersión. Las dos lecturas son
+defendibles:
+
+- **gris** (lo que implementé, siguiendo tu regla): el 1.0% puede ser
+  circular, porque Yahoo podría estar haciendo el mismo cálculo naíf;
+- **verificada**: AMX consolidó su capital en la serie B, así que las otras
+  dos casi no pesan y la aproximación se sostiene — pero *eso no lo sabemos
+  sin el desglose*, lo estamos suponiendo.
+
+Cuesta una emisora de 30 y **G2 queda verde en los dos casos**. Implementé
+gris porque es lo que pediste; decime si la querés verificada y es un renglón.
+
+### 15.5 · TLEVISA: para contestar si el precio está viejo
+
+No puedo mirar `bmv_precios` desde acá, así que el job ahora **reporta la
+fecha del precio usado y su antigüedad en días**, más un top 5 de los precios
+más viejos. Con eso, el 5.6% se separa solo: si el CPO trae fecha fresca, el
+problema es el divisor 117 o el conteo de acciones; si trae semanas, es una
+cotización rancia y no hay nada que arreglar en la fórmula.
+
+### 15.6 · Google Finance queda como segunda fuente
+
+`google.com/finance/quote/TICKER:BMV`, registrada en
+`mercado-cap-referencia.json`. Y el registro acepta **varias referencias por
+emisora**: si una cuadra y otra no, el estado **no** es "verificada" — es
+`discrepancia_entre_fuentes`, porque dos fuentes públicas que no coinciden es
+información, no un problema a esconder quedándose con la cómoda.
