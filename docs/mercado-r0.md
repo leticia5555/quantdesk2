@@ -1009,3 +1009,53 @@ el propio objeto. **Ningún umbral se movió:** el 5% por emisora sigue en 5, y
 el piso de verificadas sigue en 15. Queda versionado para que el cambio se lea
 en el diff en vez de aparecer sin firma — que es exactamente para lo que se
 congelaron los criterios.
+
+---
+
+## 20. Un número que solo existe en una URL no existe para la compuerta
+
+Con el evaluador ya unificado (#245), `?job=todo` seguía dando `g2` rojo:
+
+```
+"solo 0 emisoras verificadas: 0 con referencia individual + 0 por método"
+```
+
+Cero, no 26. El evaluador era el mismo; lo que no era el mismo era **la
+entrada**. Las 10 referencias capturadas el 20-sep se habían pasado por
+`?manual=CLAVE:CAP` en la URL de `?job=unidades`, y
+`_lib/mercado-cap-referencia.json` —que es lo único que el censo lee— seguía
+vacío. Un parámetro de URL no es un estado del sistema: vive lo que dura la
+petición.
+
+Las 11 filas (las 10 de Yahoo más la segunda de FEMSA desde Google Finance)
+quedan **persistidas en el registro**, cada una con su `fuente`, su
+`capturada_en` y quién la capturó — las tres cosas que separan una referencia
+de un número suelto.
+
+### 20.1 · `?manual=` pasa a ser override, y por una razón concreta
+
+Mientras el registro estuvo vacío, sumar y reemplazar eran lo mismo. Con 11
+filas adentro ya no, y la diferencia **cambia veredictos**: por la regla
+`varias_por_emisora`, una emisora con dos referencias que no coinciden sale
+`discrepancia_entre_fuentes`, o sea **gris**. Sumando, probar una cap
+corregida en prod pondría gris a una emisora ya verificada — el ensayo
+cambiaría el resultado en vez de medirlo.
+
+Así que `?manual=` **aparta** las filas del archivo para las claves que
+nombra, y lo apartado **se reporta** (`desplazadas_por_override`): un override
+silencioso es una referencia que desapareció sin que nadie lo dijera. El censo
+no acepta `?manual=` en absoluto, a propósito: mide lo que está guardado.
+
+### 20.2 · La fecha en que esto se apaga solo
+
+Las 11 se capturaron el mismo día, así que **vencen el mismo día**:
+`capturada_en` 2026-09-20 + `vigencia_dias` 14 = **2026-10-04**. Y ese día G2
+no baja un poco: se cae entero. Sin referencias individuales no hay muestras
+que validen el método, así que se van también las que verificaban **por**
+método.
+
+Que se caiga está bien —es la regla de caducidad funcionando, y arrastrar un
+verde viejo sería peor—. Lo que no puede pasar es que se caiga **por
+sorpresa**. Por eso `vigenciaDelRegistro` viaja en cada corrida de los dos
+endpoints (`vigencia_referencias`), avisa tres días antes, y una vez vencidas
+lo dice como **razón** de G2 en vez de dejar un cero sin explicar.

@@ -341,6 +341,81 @@ export function parseManualParam(raw, { fuente, capturada_en } = {}) {
   return { referencias, invalidas };
 }
 
+/**
+ * CUÁNDO SE APAGA ESTO SOLO.
+ *
+ * Una referencia manual envejece con el precio: `vigencia_dias` la acota, y
+ * pasada esa fecha `referenciaManual` la descarta por vencida. Con las 11
+ * capturadas el mismo día, TODAS vencen el mismo día — y ese día G2 se cae
+ * de golpe: sin referencias individuales no hay muestras que validen el
+ * método, así que se van también las que verificaban por método.
+ *
+ * Que se caiga está bien: es la regla de caducidad funcionando, y arrastrar
+ * un verde viejo sería peor. Lo que no puede pasar es que se caiga **por
+ * sorpresa**, así que la fecha viaja en cada corrida.
+ */
+export function vigenciaDelRegistro(registro, ahora = new Date()) {
+  const now = ahora instanceof Date ? ahora : new Date(ahora);
+  const filas = (registro && registro.referencias) || [];
+  const dias = num(registro && registro.vigencia_dias) ?? 14;
+  let primera = null;
+  let vencidas = 0;
+  for (const f of filas) {
+    const t = Date.parse(f && f.capturada_en);
+    if (!Number.isFinite(t)) continue;
+    const vence = t + dias * 86400000;
+    if (vence < now.getTime()) vencidas++;
+    if (primera == null || vence < primera) primera = vence;
+  }
+  if (primera == null) return { filas: filas.length, vence_el: null, dias_restantes: null, vencidas, lectura: null };
+  const restantes = Math.floor((primera - now.getTime()) / 86400000);
+  return {
+    filas: filas.length,
+    vigencia_dias: dias,
+    vence_el: new Date(primera).toISOString().slice(0, 10),
+    dias_restantes: restantes,
+    vencidas,
+    lectura: vencidas
+      ? `${vencidas} referencias ya vencieron: re-capturalas o esas emisoras vuelven a gris`
+      : restantes <= 3
+        ? `las referencias vencen en ${restantes} días (${new Date(primera).toISOString().slice(0, 10)}): re-capturalas antes o G2 se cae solo`
+        : null,
+  };
+}
+
+/**
+ * `?manual=` es un OVERRIDE, no una fuente más.
+ *
+ * Mientras el registro estuvo vacío daba igual: concatenar era lo mismo que
+ * reemplazar. Con las 11 referencias persistidas ya no, y la diferencia
+ * cambia veredictos: por la regla `varias_por_emisora`, una emisora con dos
+ * referencias que no coinciden sale `discrepancia_entre_fuentes`, o sea
+ * GRIS. Sumando, probar una cap corregida en prod pondría gris a una emisora
+ * ya verificada — el ensayo cambiaría el resultado en vez de medirlo.
+ *
+ * Así que para cada clave que `?manual=` nombra, sus filas del archivo se
+ * APARTAN. Y se reportan: un override silencioso es una referencia que
+ * desapareció sin que nadie lo dijera.
+ */
+export function registroConOverride(registro, manuales = []) {
+  const base = (registro && registro.referencias) || [];
+  const claves = [...new Set(manuales.map((m) => up(m && m.clave)).filter(Boolean))];
+  if (!claves.length) {
+    return { registro: registro || { referencias: [] }, claves: [], desplazadas: [] };
+  }
+  const set = new Set(claves);
+  const desplazadas = base.filter((f) => set.has(up(f && f.clave)))
+    .map((f) => ({ clave: up(f.clave), fuente: f.fuente || null, market_cap: num(f.market_cap), capturada_en: f.capturada_en || null }));
+  return {
+    registro: {
+      ...registro,
+      referencias: [...base.filter((f) => !set.has(up(f && f.clave))), ...manuales],
+    },
+    claves,
+    desplazadas,
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // R0(b ter) — VERIFICAR EL MÉTODO, no cada emisora
 //
@@ -751,6 +826,10 @@ export function evaluaG2({
   if (!metodo.valido && porMetodo.length === 0) {
     razones.push(`el método no está validado: ${metodo.razones.join(' · ')}`);
   }
+  const vig = vigenciaDelRegistro(referencias, reloj);
+  if (vig.vencidas) {
+    razones.push(`${vig.vencidas} referencias del registro están vencidas (vigencia ${vig.vigencia_dias} días): hay que re-capturarlas`);
+  }
 
   return {
     detalle,
@@ -779,6 +858,10 @@ export function evaluaG2({
     verde: verificadas >= C.g2_min_emisoras_verificadas,
     razones,
     ventana_dias,
+    // Cuándo se apaga esto solo. Las referencias manuales caducan, y cuando
+    // caducan se lleva puesto también al método: sin muestras no hay
+    // instrumento validado.
+    vigencia_referencias: vigenciaDelRegistro(referencias, reloj),
     criterios: {
       max_error_pct: C.g2_max_error_pct,
       min_emisoras_verificadas: C.g2_min_emisoras_verificadas,
