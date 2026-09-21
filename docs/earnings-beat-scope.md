@@ -731,6 +731,29 @@ La distinción quedó en el código, porque confundirlas fue el error:
 | `denominador_chico` (\|est\| < $0.05) | el % **es un artefacto**: dividir por ~0 | `causa_probable: artefacto de denominador` |
 | `estimado_no_positivo` (est ≤ 0) | el trimestre es **real**; su % es menos comparable | `causa_probable: colas reales … ojo: N con estimado negativo` |
 
+### Cicatriz bis: el mismo error, impreso en la tarjeta
+
+Corregido el endpoint, **la tarjeta siguió afirmando la causa por su cuenta**.
+BA salió con `distorsionado: true` y `denominador_chico: 0`, y la pantalla
+imprimía *"distorsionado por **0** trimestre(s) con estimado cerca de cero"*.
+Falso: el extremo de BA es **est 0.09 → −6.18** — el 737 MAX, un trimestre
+real.
+
+> **Mismo texto para las dos causas es lo que nos tuvo equivocados dos
+> vueltas.** Ahora la causa la decide **un solo lugar** (el endpoint) y viaja
+> como **código**, no como prosa: `causa: 'artefacto_denominador' |
+> 'colas_reales'`. La UI elige su frase —en el idioma que toque— a partir de
+> ese código, y **cada causa tiene palabras propias**:
+
+| `causa` | Qué dice la tarjeta |
+|---|---|
+| `artefacto_denominador` | *N trimestre(s) con estimado de centavos: ahí el % no significa nada* |
+| `colas_reales` | *trimestres de pérdida o sorpresas muy grandes REALES (N con estimado negativo)* |
+
+Pineado por lint: la tarjeta **debe** ramificar por `sp.causa`, y toda mención
+a "estimados de centavos" tiene que vivir **dentro** de la rama del artefacto.
+El lint ignora los comentarios — ahí el bug se explica a propósito.
+
 ### El porcentaje se recalcula, y el signo se verifica
 
 `pead_earnings.surprise_pct` viene de **Alpha Vantage** cuando AV lo trae
@@ -748,6 +771,10 @@ Dos defensas, las dos con test:
 2. `signo_discrepante` cuenta las filas donde AV y nosotros **no coincidimos en
    el signo**. Si ese contador deja de ser cero, hay algo que mirar en la
    fuente — en vez de heredarlo callado.
+
+**Confirmado en producción** (diag sobre 5 símbolos): BA est −0.67 → −0.20 da
+**+70%** con `beat: true`, y est −2.38 → −7.47 da **−214%** con `beat: false`.
+El signo es correcto en los dos sentidos. **Cerrado.**
 
 Y lo que de verdad protege el titular: **`beat` no usa el porcentaje.** Sale de
 comparar reportado contra estimado, así que el conteo y la racha son inmunes a
@@ -773,6 +800,28 @@ El track record usaba **todo** el historial — 121 trimestres de MU son ~30 añ
 mira 20 trimestres y la racha mira 121, la tarjeta se contradice sola. Cuando
 toda la ventana es del mismo signo, la racha se marca con `+` (`tope: true`):
 puede ser más larga, pero afirmarlo sería inventar el trimestre 21.
+
+### Propuesta abierta: fragilidad por ESCALA del estimado
+
+`frontera` mide beats de ≤ $0.01 **en dólares absolutos**, y por eso **se le
+escapa INTC**: sus últimos estimados rondan el centavo, así que un beat de
+$0.28 es **+2800%** y no cae en "frontera" — pero una racha construida sobre
+estimados de un centavo es frágil de otra manera: cualquier ruido de redondeo
+la da vuelta. Para apostar beat/miss, **la escala del estimado dice qué tan
+sólida es la racha**.
+
+**La señal NO se muestra.** Primero la medición, después la decisión de
+pantalla:
+
+```bash
+/api/earnings-beat?vista=live&diag=escala
+# → escala_chica: cuántos de los 99 tienen estimado mediano (últimos 4T) < $0.20
+#   percentiles: p10/p25/mediana/p75, para calibrar el piso con datos
+```
+
+Si son tres símbolos, es una nota al pie. Si son treinta, es una columna. Si el
+p25 del universo ya está debajo de $0.20, el piso propuesto está mal elegido y
+hay que moverlo antes de mostrar nada.
 
 ### La regla que esta pantalla existe para no romper
 
@@ -846,12 +895,48 @@ medido:
 - reportar el desempeño del modelo **partido por sector**, no solo agregado —
   si el edge vive entero en semiconductores durante una subida de ciclo, eso
   es un hallazgo sobre el ciclo, no sobre el modelo;
-- tratar la **brecha entre la tasa de 5 años y la del historial completo** como
-  una señal de ciclicidad medible (MU: 26 puntos; una empresa estable ronda
-  cero), y mirarla al interpretar cualquier GO;
+- tratar la **|brecha| entre la tasa de 5 años y la del historial completo**
+  como señal de ciclicidad medible — en valor absoluto, porque se invierte
+  según la fase (MU +26, BA −24; una empresa estable ronda cero) — y mirarla al
+  interpretar cualquier GO;
 - y recordar que el candado de ≥100 mercados **no protege de esto**: una
   muestra grande concentrada en una fase del ciclo sigue siendo una fase del
   ciclo.
+
+### Riesgo conocido: la tasa histórica SATURA
+
+**PFE salió 20/20 con la racha en tope.** Una tasa de **100% no es habilidad**:
+es **guía conservadora sistemática** — la empresa orienta el estimado por
+debajo de lo que espera entregar, trimestre tras trimestre, y lo supera
+siempre.
+
+Consecuencia para el feature: **arriba de cierto punto la tasa histórica deja
+de discriminar.** Entre una empresa de 100% y otra de 95% no hay diferencia de
+información útil, y el modelo va a tratarlas como el extremo de una escala que
+ahí ya no mide nada. Peor: el mercado también lo sabe, así que es justo donde
+menos probable es que quede edge — el precio de Polymarket ya va a estar
+pegado a 1.
+
+Qué hacer con eso en la Fase 2: **mirar la calibración por tramo**, no solo el
+Brier agregado. Si el modelo acierta todo en el tramo 90-100% y nada en el
+tramo 50-70%, el Brier total puede verse bien y la apuesta —que vive en el
+desacuerdo con el mercado— no existir.
+
+### La brecha de ciclicidad va en los DOS sentidos
+
+MU: **90% en ventana vs 64% completo** (+26). **BA: 40% vs 64% (−24).** La
+brecha se invierte según dónde esté la empresa en su ciclo, así que como medida
+de ciclicidad lo que sirve es el **valor absoluto de la diferencia**, no la
+diferencia con signo.
+
+- **|brecha| grande** → la ventana de 5 años está capturando una fase del
+  ciclo, para arriba (MU) o para abajo (BA). La tasa de 5 años es frágil en las
+  dos direcciones.
+- **|brecha| ≈ 0** → empresa estable; la tasa de 5 años y la de 30 años dicen
+  lo mismo, y el feature es más confiable.
+
+El signo por separado sigue siendo informativo (dice **en qué fase** está), pero
+la magnitud es la que mide **cuánto desconfiar del feature**.
 
 ### Partición temporal
 

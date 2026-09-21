@@ -2571,9 +2571,20 @@ function ebLiveCard(e){
   const sp=h.sorpresa||{};
   const sorpresa = (sp.mediana_pct===null||sp.mediana_pct===undefined) ? ''
     : smL('Sorpresa mediana: ','Median surprise: ')+(sp.mediana_pct>0?'+':'')+sp.mediana_pct+'%';
-  const sorpresaNota = sp.distorsionado
-    ? smL('promedio '+(sp.promedio_pct>0?'+':'')+sp.promedio_pct+'% — distorsionado por '+sp.denominador_chico+' trimestre(s) con estimado cerca de cero',
-          'mean '+(sp.promedio_pct>0?'+':'')+sp.promedio_pct+'% — distorted by '+sp.denominador_chico+' quarter(s) with a near-zero estimate')
+  // LA CAUSA LA DECIDE EL ENDPOINT, no esta función. Esta frase ya estuvo mal
+  // una vez: con BA imprimía "distorsionado por 0 trimestre(s) con estimado
+  // cerca de cero" — y el extremo de BA es est 0.09 → −6.18, el 737 MAX, un
+  // trimestre real. Armar el texto acá es lo que permitió que la pantalla
+  // afirmara una causa que el dato no decía. Ahora se elige por `sp.causa`.
+  const causaTxt = sp.causa==='artefacto_denominador'
+    ? smL(sp.denominador_chico+' trimestre(s) con estimado de centavos: ahí el % no significa nada',
+          sp.denominador_chico+' quarter(s) with a pennies-sized estimate: the % means nothing there')
+    : sp.causa==='colas_reales'
+      ? smL('trimestres de pérdida o sorpresas muy grandes REALES'+(sp.estimado_no_positivo?' ('+sp.estimado_no_positivo+' con estimado negativo)':''),
+            'REAL loss quarters or very large surprises'+(sp.estimado_no_positivo?' ('+sp.estimado_no_positivo+' with a negative estimate)':''))
+      : '';
+  const sorpresaNota = (sp.distorsionado&&causaTxt)
+    ? smL('promedio '+(sp.promedio_pct>0?'+':'')+sp.promedio_pct+'% — ','mean '+(sp.promedio_pct>0?'+':'')+sp.promedio_pct+'% — ')+causaTxt
     : '';
 
   const quarters=(h.ultimos||[]).map(q=>{

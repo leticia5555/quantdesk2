@@ -994,19 +994,31 @@ function estadisticasHistoricas(filas, {
       extremos,
       // El motivo de la distorsión, dicho: artefacto de denominador, o colas
       // reales de una empresa que de verdad tuvo trimestres extremos.
-      // OJO con la distinción, que es la que se entendió mal la primera vez:
+      // OJO con la distinción, que es la que se entendió mal DOS VECES:
       //   · denominador de CENTAVOS  → el % es un artefacto (dividir por ~0);
-      //   · estimado NEGATIVO        → el trimestre es REAL (una pérdida de
-      //     verdad), solo que su % es menos comparable contra otros trimestres.
-      // Meter los dos en la misma bolsa fue exactamente el diagnóstico falso
-      // de MU: sus extremos eran pérdidas reales de una cíclica, no basura.
+      //   · estimado NEGATIVO o cola grande → el trimestre es REAL (una pérdida
+      //     de verdad), solo que su % es menos comparable contra otros.
+      // Meter los dos en la misma bolsa fue el diagnóstico falso de MU, y
+      // después el texto de la tarjeta lo repitió con BA: `distorsionado:true`
+      // con `denominador_chico:0` y aun así imprimía "estimado cerca de cero",
+      // cuando el extremo de BA es est 0.09 → −6.18, el 737 MAX. Real.
+      //
+      // `causa` es el CÓDIGO (lo que consume la UI para elegir su texto en el
+      // idioma que toque); `causa_probable` es la explicación en prosa para
+      // quien lee el JSON. Un solo lugar decide cuál de las dos es: si la UI
+      // arma su propia frase, vuelve a pasar lo de BA.
+      causa: !distorsionado ? null : chicos > 0 ? 'artefacto_denominador' : 'colas_reales',
       causa_probable: !distorsionado ? null
         : chicos > 0
-          ? 'artefacto de denominador: hay trimestres con estimado de centavos, donde el % no significa nada'
-          : 'colas reales — la empresa tuvo trimestres de sorpresa muy grande (típico en cíclicas)'
-            + (noPositivos ? '. Ojo: ' + noPositivos + ' con estimado negativo, donde el % es menos comparable aunque el trimestre sea real.' : ''),
+          ? 'artefacto de denominador: ' + chicos + ' trimestre(s) con estimado de centavos, donde el % no significa nada'
+          // Describe lo que ES. La versión anterior terminaba con "no hay
+          // ningún estimado cerca de cero acá" y volvía a meter la frase de la
+          // otra causa en esta rama — que es justo la mezcla que nos tuvo
+          // equivocados dos vueltas.
+          : 'trimestres de pérdida o sorpresas muy grandes REALES'
+            + (noPositivos ? ' (' + noPositivos + ' con estimado negativo, donde el % es menos comparable aunque el trimestre sea real)' : ''),
       nota: distorsionado
-        ? 'Promedio y mediana no coinciden. Se muestra la MEDIANA; el promedio queda al lado para que la divergencia se vea.'
+        ? 'Promedio y mediana no coinciden. Se muestra la MEDIANA; el promedio queda al lado para que la divergencia se vea. La CAUSA está en `causa`/`causa_probable` — no se asume.'
         : null,
     },
     frontera: enVentana.filter((f) => f.frontera).length,
@@ -1014,6 +1026,36 @@ function estadisticasHistoricas(filas, {
       fecha: f.fecha, estimado: f.estimado, reportado: f.reportado,
       beat: f.beat, frontera: f.frontera, sorpresa_pct: f.sorpresa_pct,
     })),
+  };
+}
+
+// ── Escala del estimado: qué tan frágil es una racha ──────────────────────
+//
+// `frontera` mide beats de ≤ $0.01 en dólares ABSOLUTOS, y por eso se le
+// escapa INTC: sus últimos estimados son de $0.01, así que un beat de $0.28 es
+// +2800% y NO cae en "frontera" — pero la racha de una empresa cuyo estimado
+// ronda el centavo es frágil de otra manera: cualquier ruido de redondeo la da
+// vuelta. Para apostar beat/miss, la ESCALA del estimado es lo que dice qué
+// tan sólida es la racha.
+//
+// Esto NO se muestra todavía. Primero hay que saber a cuántos de los 99
+// símbolos les aplica: si son tres, es una nota al pie; si son treinta, es una
+// columna. La medición va primero, la decisión de pantalla después.
+const PISO_ESCALA = 0.20;   // estimado mediano de los últimos 4 trimestres
+
+// Mediana del |estimado| de los últimos `n` trimestres con cifra.
+function escalaDelEstimado(filas, { n = 4 } = {}) {
+  const vals = (filas || [])
+    .filter((f) => f && f.reported_date && num(f.estimated_eps) !== null)
+    .sort((a, b) => String(isoDia(b.reported_date)).localeCompare(String(isoDia(a.reported_date))))
+    .slice(0, n)
+    .map((f) => Math.abs(num(f.estimated_eps)));
+  const med = mediana(vals);
+  return {
+    trimestres_usados: vals.length,
+    estimado_mediano: med === null ? null : Number(med.toFixed(4)),
+    escala_chica: med !== null && med < PISO_ESCALA,
+    piso: PISO_ESCALA,
   };
 }
 
@@ -1372,4 +1414,5 @@ export {
   esFecha, recortaFila, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
   analizaDesfases, clasificaT24h, MAX_TOLERANCIA_PROPONIBLE, comparaEmparejamiento,
   estadisticasHistoricas, mediana, sorpresaPct, VENTANA_TRIMESTRES, PISO_ESTIMADO,
+  escalaDelEstimado, PISO_ESCALA,
 };
