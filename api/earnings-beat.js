@@ -9,6 +9,10 @@
 //   GET /api/earnings-beat?vista=live         → vista EN VIVO (pública, para
 //                                               la tab EARNINGS): mercados
 //                                               abiertos + base histórica
+//   GET /api/earnings-beat?vista=live&diag=MU,COST
+//                                             → base histórica de esos
+//                                               símbolos (solo DB), con los
+//                                               3 trimestres más extremos
 //   GET /api/earnings-beat                    → qué es esto + en qué fase va
 //
 // Parámetros del censo (todos opcionales):
@@ -115,6 +119,38 @@ const ESTRATEGIAS = [
 //      DENTRO del filtro (ahí el offset sí alcanza);
 //   C. el racimo (evento/serie) al que pertenece un mercado de earnings.
 // El barrido queda como control opcional (&barrido=1), nunca como el método.
+
+// ── Diagnóstico por símbolo (?vista=live&diag=MU,COST) ────────────────────
+// Solo DB, sin tocar Gamma: sirve para mirar la base histórica de una empresa
+// AUNQUE no tenga mercados abiertos. Nació de un número que se veía imposible
+// en la tarjeta (MU: promedio −26% con 13 beats al hilo) y la evidencia estaba
+// en la tabla, no en la pantalla. Ahora la evidencia se pide sin re-desplegar.
+async function diagnosticoSimbolos(simbolos) {
+  const limpios = [...new Set(simbolos.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))].slice(0, 10);
+  if (!limpios.length) return { diag: [], error: 'sin símbolos' };
+  const ph = limpios.map((_, i) => `$${i + 1}`).join(', ');
+  const filas = await sql(
+    `select symbol, to_char(reported_date, 'YYYY-MM-DD') as reported_date,
+            reported_eps, estimated_eps, surprise_pct
+       from pead_earnings
+      where symbol in (${ph})
+      order by reported_date desc`,
+    limpios
+  );
+  const porSimbolo = new Map();
+  for (const f of filas) {
+    if (!porSimbolo.has(f.symbol)) porSimbolo.set(f.symbol, []);
+    porSimbolo.get(f.symbol).push(f);
+  }
+  return {
+    diag: limpios.map((s) => ({
+      symbol: s,
+      trimestres_en_tabla: (porSimbolo.get(s) || []).length,
+      historico: estadisticasHistoricas(porSimbolo.get(s) || []),
+    })),
+    como_leerlo: 'Mirá historico.sorpresa: si `distorsionado` es true, el promedio está arrastrado por los trimestres de `extremos` con `denominador_chico` (estimado cerca de cero). El número que se muestra en la tarjeta es la MEDIANA.',
+  };
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // VISTA EN VIVO (?vista=live) — lo que ve la tab EARNINGS.
@@ -750,6 +786,12 @@ export default async function handler(req, res) {
   // EPS. El censo (?smoke=1) sigue detrás del gate.
   if (String(q.vista || '').toLowerCase() === 'live') {
     try {
+      // ?diag=MU,COST → base histórica de esos símbolos, sin pasar por Gamma.
+      if (q.diag) {
+        const out = await diagnosticoSimbolos(String(q.diag).split(','));
+        res.setHeader('Cache-Control', 'public, s-maxage=60');
+        return res.status(200).json(out);
+      }
       const out = await vistaLive({});
       // El precio se mueve, pero no cada segundo: 5 min de CDN con revalidación
       // en segundo plano. Sin esto, cada visita pagaría ~100 requests a Gamma.

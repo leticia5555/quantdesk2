@@ -831,16 +831,51 @@ function extraeCluster(raw) {
 //
 // Lo que esto ES: el conteo de cuántas veces una empresa superó el estimado,
 // leído de pead_earnings. Lo que esto NO ES: una probabilidad. La diferencia
-// no es cosmética — es la razón por la que la tarjeta dice "superó 26 de 32"
-// y NUNCA "probabilidad 81%". QuantDesk no emite probabilidad propia hasta
-// que la Fase 2 la valide; si algún día la emite, va a ser un campo distinto
-// con su propio nombre, no este número renombrado.
+// no es cosmética — es la razón por la que la tarjeta dice "superó 15 de 20"
+// y NUNCA "probabilidad 75%". QuantDesk no emite probabilidad propia hasta
+// que la Fase 2 la valide.
 //
-// `beat` = reportado > estimado, estricto. Los empates NO son beats. Y los
-// que caen dentro de la frontera de $0.01 se cuentan aparte (`frontera`),
-// porque ahí la definición de "superó" depende de qué consenso se use —
-// exactamente el problema que el scope documenta en §"Consenso y frontera".
-function estadisticasHistoricas(filas, { ultimos = 8, frontera = CRITERIOS.frontera_eps } = {}) {
+// ── CICATRIZ: el promedio de sorpresa mentía ───────────────────────────────
+// MU salió con "Average surprise: -26.06%" teniendo 13 beats al hilo y los
+// últimos 8 trimestres todos positivos. No era un bug de render: era el
+// PROMEDIO. `surprise_pct` es (reportado − estimado) / |estimado|, así que un
+// solo trimestre con estimado ≈ $0.01 mete un −3000% que arrastra ciento y
+// pico de trimestres. El mismo modo de falla ya estaba documentado en el PEAD
+// (api/pead-analyze.js, corte EXPLORATORIO "surprise_pct explota cuando
+// estimated_eps ≈ 0"); lo que faltó fue aplicarlo acá.
+//
+// Tres cambios, y ninguno es "quitar los feos":
+//   1. El número principal es la MEDIANA, que no la mueve un outlier. El
+//      promedio se sigue publicando al lado, porque cuando los dos se separan
+//      mucho eso ES el hallazgo, no algo que esconder (`distorsionado`).
+//   2. Se cuentan aparte los trimestres con |estimado| < PISO_ESTIMADO: ahí el
+//      porcentaje no es "grande", es que el denominador no significa nada.
+//   3. Se publican SIEMPRE los 3 trimestres de |sorpresa| más extrema, con sus
+//      cifras crudas. Es el diagnóstico permanente: la próxima vez que un
+//      número se vea raro, la evidencia ya está en la respuesta.
+//
+// ── Y la ventana ───────────────────────────────────────────────────────────
+// El track record usaba TODO el historial: 121 trimestres de MU son ~30 años.
+// Micron en 1998 no informa sobre Micron hoy. El número principal pasa a los
+// últimos VENTANA_TRIMESTRES (5 años) y el total queda como secundario. La
+// racha y la sorpresa se calculan sobre ESA MISMA ventana — si el titular
+// mira 20 trimestres y la racha mira 121, la tarjeta se contradice sola.
+const VENTANA_TRIMESTRES = 20;   // 5 años
+const PISO_ESTIMADO = 0.05;      // por debajo de esto el % de sorpresa no significa nada
+
+function mediana(valores) {
+  const v = (valores || []).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = Math.floor(v.length / 2);
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+
+function estadisticasHistoricas(filas, {
+  ventana = VENTANA_TRIMESTRES,
+  ultimos = 8,
+  frontera = CRITERIOS.frontera_eps,
+  pisoEstimado = PISO_ESTIMADO,
+} = {}) {
   const ordenadas = (filas || [])
     .filter((f) => f && f.reported_date)
     .map((f) => ({
@@ -855,45 +890,81 @@ function estadisticasHistoricas(filas, { ultimos = 8, frontera = CRITERIOS.front
   // Solo los trimestres con las DOS cifras pueden decir si superó o no.
   const comparables = ordenadas.filter((f) => f.reportado !== null && f.estimado !== null);
   if (!comparables.length) {
-    return { total: 0, beats: 0, pct: null, racha: null, sorpresa_promedio_pct: null,
-      ultimos: [], sin_datos: true, motivo: 'sin trimestres comparables en pead_earnings' };
+    return { sin_datos: true, motivo: 'sin trimestres comparables en pead_earnings',
+      ventana: null, completo: null, racha: null, sorpresa: null, ultimos: [] };
   }
 
-  const marcados = comparables.map((f) => ({
+  const marcar = (f) => ({
     ...f,
     beat: f.reportado > f.estimado,
     frontera: Math.abs(f.reportado - f.estimado) <= frontera,
-  }));
+    denominador_chico: Math.abs(f.estimado) < pisoEstimado,
+  });
+  const todos = comparables.map(marcar);
+  const enVentana = todos.slice(0, ventana);
 
-  const beats = marcados.filter((f) => f.beat).length;
+  const cuenta = (lista) => ({
+    beats: lista.filter((f) => f.beat).length,
+    total: lista.length,
+    pct: lista.length ? Math.round((lista.filter((f) => f.beat).length / lista.length) * 100) : null,
+  });
 
-  // Racha ACTUAL: cuántos trimestres seguidos, desde el más reciente hacia
-  // atrás, repiten el mismo resultado. Se devuelve el tipo y el largo por
-  // separado — un "3" sin decir de qué no significa nada.
-  const tipo = marcados[0].beat ? 'beats' : 'misses';
+  // Racha sobre la MISMA ventana que el titular. Si toda la ventana es del
+  // mismo signo, `tope` avisa que la racha puede ser más larga de lo que se
+  // puede afirmar con estos datos — decir "20" cuando el dato se acaba en 20
+  // sería inventar el 21.
   let racha = 0;
-  for (const f of marcados) {
-    if (f.beat !== marcados[0].beat) break;
+  for (const f of enVentana) {
+    if (f.beat !== enVentana[0].beat) break;
     racha++;
   }
 
-  const conSorpresa = marcados.filter((f) => f.sorpresa_pct !== null);
-  const sorpresaProm = conSorpresa.length
-    ? conSorpresa.reduce((a, f) => a + f.sorpresa_pct, 0) / conSorpresa.length
-    : null;
+  const pcts = enVentana.map((f) => f.sorpresa_pct).filter((x) => Number.isFinite(x));
+  const med = mediana(pcts);
+  const prom = pcts.length ? pcts.reduce((a, b) => a + b, 0) / pcts.length : null;
+  // "Distorsionado" = el promedio y la mediana cuentan historias distintas.
+  // No se esconde el promedio: se marca, que es lo que habría delatado a MU.
+  const distorsionado = med !== null && prom !== null
+    && (Math.abs(prom - med) > 15 || (med > 0 && prom < 0) || (med < 0 && prom > 0));
+
+  const extremos = [...enVentana]
+    .filter((f) => Number.isFinite(f.sorpresa_pct))
+    .sort((a, b) => Math.abs(b.sorpresa_pct) - Math.abs(a.sorpresa_pct))
+    .slice(0, 3)
+    .map((f) => ({
+      fecha: f.fecha, estimado: f.estimado, reportado: f.reportado,
+      sorpresa_pct: Number(f.sorpresa_pct.toFixed(2)),
+      denominador_chico: f.denominador_chico,
+    }));
 
   return {
-    total: marcados.length,
-    beats,
-    pct: Math.round((beats / marcados.length) * 100),
-    frontera: marcados.filter((f) => f.frontera).length,
-    racha: { tipo, largo: racha },
-    sorpresa_promedio_pct: sorpresaProm === null ? null : Number(sorpresaProm.toFixed(2)),
-    ultimos: marcados.slice(0, ultimos).map((f) => ({
-      fecha: f.fecha, estimado: f.estimado, reportado: f.reportado,
-      beat: f.beat, frontera: f.frontera,
-    })),
     sin_datos: false,
+    // EL NÚMERO PRINCIPAL: los últimos `ventana` trimestres.
+    ventana: { trimestres: ventana, ...cuenta(enVentana), anios: Math.round(ventana / 4) },
+    // Secundario, para que no se pierda la profundidad del historial.
+    completo: cuenta(todos),
+    racha: {
+      tipo: enVentana[0].beat ? 'beats' : 'misses',
+      largo: racha,
+      sobre: 'ventana',
+      tope: racha === enVentana.length && todos.length > enVentana.length,
+    },
+    sorpresa: {
+      mediana_pct: med === null ? null : Number(med.toFixed(2)),
+      promedio_pct: prom === null ? null : Number(prom.toFixed(2)),
+      distorsionado,
+      denominador_chico: enVentana.filter((f) => f.denominador_chico).length,
+      piso_estimado: pisoEstimado,
+      extremos,
+      nota: distorsionado
+        ? 'El promedio y la mediana no coinciden: hay trimestres con estimado cerca de cero que inflan el porcentaje. El número que se muestra es la MEDIANA.'
+        : null,
+    },
+    frontera: enVentana.filter((f) => f.frontera).length,
+    ultimos: enVentana.slice(0, ultimos).map((f) => ({
+      fecha: f.fecha, estimado: f.estimado, reportado: f.reportado,
+      beat: f.beat, frontera: f.frontera, sorpresa_pct: f.sorpresa_pct,
+    })),
   };
 }
 
@@ -1251,5 +1322,5 @@ export {
   extraeConsensoEps, precioEnT24h, cruzaConPead, evaluaFuentePIT, resumenMarkdown,
   esFecha, recortaFila, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
   analizaDesfases, clasificaT24h, MAX_TOLERANCIA_PROPONIBLE, comparaEmparejamiento,
-  estadisticasHistoricas,
+  estadisticasHistoricas, mediana, VENTANA_TRIMESTRES, PISO_ESTIMADO,
 };

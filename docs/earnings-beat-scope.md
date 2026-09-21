@@ -698,12 +698,57 @@ con precios distintos al lado sería ruido):
 
 | De Polymarket | De `pead_earnings` |
 |---|---|
-| título, fecha de resolución, consenso EPS | superó N de M y su % |
-| precio actual del Yes (`outcomePrices`) | racha actual (beats o misses al hilo) |
-| enlace al mercado | sorpresa promedio % · últimos 8 trimestres con ✓/✗ |
+| título, fecha de resolución, consenso EPS | superó N de M (5 años) y el total completo |
+| precio actual del Yes (`outcomePrices`) | racha actual, sobre la misma ventana |
+| enlace al mercado | sorpresa **mediana** % · últimos 8 trimestres con ✓/✗ |
 
 Ordenado por **fecha de reporte más próxima**: es el orden en que la
 información caduca.
+
+### Cicatriz: el promedio de sorpresa mentía
+
+MU salió en la tarjeta con **"Average surprise: −26.06%"** teniendo **13 beats
+al hilo** y los últimos 8 trimestres todos positivos. No era un bug de render:
+era el **promedio**. `surprise_pct` es (reportado − estimado) / |estimado|, así
+que **un solo trimestre con estimado ≈ $0.01 mete un −3000%** que arrastra
+ciento y pico de trimestres. COST igual: +0.44% con beats visibles de ~+9%.
+
+El modo de falla ya estaba documentado en el PEAD (`api/pead-analyze.js`, corte
+EXPLORATORIO *"surprise_pct explota cuando estimated_eps ≈ 0"*). **Lo que faltó
+fue aplicarlo acá** — la lección estaba escrita y la pantalla nueva la repitió.
+
+Tres cambios, y ninguno es "quitar los feos":
+
+1. **El número principal es la MEDIANA.** No la mueve un outlier. El promedio
+   se sigue publicando al lado, porque cuando los dos se separan **eso ES el
+   hallazgo** (`distorsionado: true`), no algo que esconder.
+2. **Se cuentan aparte los trimestres con |estimado| < $0.05**
+   (`denominador_chico`): ahí el porcentaje no es "grande", es que el
+   denominador no significa nada.
+3. **Se publican siempre los 3 trimestres de |sorpresa| más extrema**, con sus
+   cifras crudas. Es el diagnóstico permanente: la próxima vez que un número se
+   vea raro, la evidencia ya está en la respuesta.
+
+Para mirarlo sin esperar a que la empresa tenga mercado abierto:
+
+```bash
+/api/earnings-beat?vista=live&diag=MU,COST
+# → trimestres_en_tabla · sorpresa.mediana_pct vs promedio_pct · distorsionado
+#   · denominador_chico · extremos[] con estimado/reportado crudos
+```
+
+### Ventana: 5 años manda, 30 años acompañan
+
+El track record usaba **todo** el historial — 121 trimestres de MU son ~30 años.
+**Micron en 1998 no informa sobre Micron hoy.** El número principal pasa a los
+últimos **20 trimestres (5 años)** y el total queda como secundario:
+
+> `Histórico: superó 15 de 20 (75%) · histórico completo: 77 de 121 (64%)`
+
+**Y la racha y la sorpresa se calculan sobre esa misma ventana.** Si el titular
+mira 20 trimestres y la racha mira 121, la tarjeta se contradice sola. Cuando
+toda la ventana es del mismo signo, la racha se marca con `+` (`tope: true`):
+puede ser más larga, pero afirmarlo sería inventar el trimestre 21.
 
 ### La regla que esta pantalla existe para no romper
 
