@@ -905,3 +905,51 @@ Las tablas viejas siguen contándose, pero **aparte y etiquetadas**
 (`legado_no_es_la_medicion`): sirven para explicar una divergencia como esta,
 no para producir un número. Y una tabla vacía no se disimula cayendo al
 legado: se dice, con el comando que la llena.
+
+---
+
+## 18. La columna que la cosecha nunca llenó
+
+Con los precios al día —`ultima_fecha: 2026-09-18`, `sesiones_de_atraso: 0`,
+`avanzo: true`— las 27 emisoras seguían en `datos_rancios` y G2 en 2 de 15.
+
+**La bandera nunca leyó `dias_atraso`.** Leía volumen, y el problema estaba un
+nivel más abajo: **`bmv_precios.volumen` está vacía en las ~570,000 filas.**
+`/v2/historicos` devuelve `[cierre, importe]` y nada más — está escrito en el
+propio cosechador desde la Fase 1b (`nota_columnas_vacias`). La consulta de
+`?job=unidades` hacía:
+
+```sql
+sum(coalesce(p.volumen, 0)) as volumen_ventana
+```
+
+y ese `coalesce` convertía **"no medido" en "cero"**. Cero actividad en la
+serie líquida es, por la regla de #239, "cosecha atrasada": las 27, incluida su
+serie líquida, gris punteado. El ancla que escribimos para no abrir un verde
+falso abrió un gris falso por el otro lado.
+
+Tres cosas cambian:
+
+1. **`sum(p.volumen)` sin `coalesce`.** En Postgres, la suma de una columna
+   toda nula es `NULL`, y `NULL` es el dato: *no se midió*. Se agrega
+   `sum(p.importe)`, que sí viene lleno, y los conteos de filas con cada uno.
+2. **La actividad se mide con `volumen` o, si no hay, con `importe`**, y el
+   JSON dice con cuál (`actividad_medida`). Si no hay ninguno de los dos, la
+   emisora sale como `actividad_no_medible` — que **no es rancio**: la tabla
+   puede estar al día y lo que falta es la columna. No se excluye ninguna
+   serie y la dispersión decide, como antes de #239.
+3. **El atraso de la cosecha entra como veredicto en SESIONES**, calculado por
+   `bmv-frescura` y pasado a `clasificaSeries`; ya no se deduce de ceros. Un
+   lunes son dos o tres días de calendario y cero sesiones.
+
+`datos_rancios` conserva el nombre pero ahora dice su causa: `cosecha_atrasada`
+(en sesiones) o `serie_liquida_sin_actividad` (con la tabla al día: o la serie
+del registro está mal, o la emisora dejó de cotizar). Son dos arreglos
+distintos y antes salían con el mismo texto.
+
+**La lección, que es la cara y no el parche.** Las pruebas de #239 pasaban en
+verde con fixtures que traían `volumen_ventana` con números. La tabla real
+nunca los tuvo. *Un instrumento validado contra una columna que la cosecha no
+llena mide otra cosa* — y lo hace en silencio, porque el fixture y el código
+están de acuerdo entre ellos. Por eso las pruebas de esta rebanada incluyen el
+caso que la producción sí entrega: `volumen` y `importe` los dos en `null`.
