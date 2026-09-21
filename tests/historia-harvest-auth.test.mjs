@@ -19,7 +19,8 @@
 // Correr con `node tests/historia-harvest-auth.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import { autorizar, llavesDeLaPeticion, llavesConfiguradas, LLAVES } from '../api/historia-harvest.js';
+import handler, { autorizar, llavesDeLaPeticion, llavesConfiguradas, LLAVES } from '../api/historia-harvest.js';
+import { conErrorJson, sinSecretos } from '../api/_lib/historia-http.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -140,6 +141,170 @@ console.log('\n── Detalles de la comparación');
   hondo(llavesDeLaPeticion(pedir({})), [], 'sin nada en la petición no hay candidatas');
   eq(llavesDeLaPeticion(pedir({ headers: { 'x-admin-key': 'a' }, query: { key: 'b', secret: 'c' } })).length, 3,
     'se juntan todas las candidatas: una puerta equivocada no descarta a las otras');
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+console.log('\n── La puerta de diagnóstico (GET sin ?job=)');
+//
+// Esta rama no tenía NINGUNA prueba, y por eso se rompió sin que nadie se
+// enterara hasta el día que hizo falta. La causa fue un `export … from`, que
+// re-exporta sin crear binding local: `llavesConfiguradas` quedó sin definir
+// en el módulo, la rama de diagnóstico la usaba y las otras no, así que solo
+// se caía ésa. Un diagnóstico que se cae cuando lo necesitás no es un
+// diagnóstico.
+{
+  const resFalso = () => {
+    const r = { code: null, cuerpo: null, headers: {} };
+    r.setHeader = (k, v) => { r.headers[k] = v; };
+    r.status = (c) => { r.code = c; return r; };
+    r.json = (b) => { r.cuerpo = b; return r; };
+    r.end = () => r;
+    return r;
+  };
+  const pedir = async (req, env = {}) => {
+    const previo = {};
+    for (const k of LLAVES) { previo[k] = process.env[k]; delete process.env[k]; }
+    Object.assign(process.env, env);
+    const res = resFalso();
+    try { await handler({ method: 'GET', headers: {}, ...req }, res); } finally {
+      for (const k of LLAVES) { delete process.env[k]; if (previo[k] !== undefined) process.env[k] = previo[k]; }
+    }
+    return res;
+  };
+
+  // LA REGRESIÓN, directa.
+  {
+    const res = await pedir({ query: {} }, { ADMIN_SECRET: 'valor-que-no-debe-salir' });
+    eq(res.code, 200, 'el diagnóstico contesta 200, no 500');
+    eq(res.cuerpo.modulo, 'historia', 'y devuelve el estado del módulo');
+    ok(!res.cuerpo.error, 'sin error adentro');
+    eq(res.cuerpo.escritura.estado, 'protegida', 'dice que la escritura está protegida');
+    hondo(res.cuerpo.escritura.llaves, ['ADMIN_SECRET'], 'nombrando QUÉ llave está configurada');
+    // El valor NUNCA sale. Es la razón de ser de este endpoint: se puede
+    // mirar sin miedo cuando la llave no entra.
+    ok(!JSON.stringify(res.cuerpo).includes('valor-que-no-debe-salir'),
+      'y jamás el valor de la llave');
+  }
+
+  // Fail-closed también se ve acá: sin ninguna llave, el diagnóstico avisa
+  // que hoy no escribiría nada aunque tuvieras la llave.
+  {
+    const res = await pedir({ query: {} });
+    eq(res.code, 200, 'sin llaves configuradas sigue contestando 200');
+    eq(res.cuerpo.escritura.estado, 'DESHABILITADA', 'y lo dice');
+    ok(/fail closed/.test(res.cuerpo.escritura.detalle), 'explicando que es fail closed');
+    ok(LLAVES.every((k) => res.cuerpo.escritura.detalle.includes(k)), 'y qué llaves acepta');
+  }
+
+  // La pregunta que se hace quien llega acá: "¿mi llave está entrando?".
+  {
+    const buena = await pedir(
+      { query: {}, headers: { 'x-admin-key': 'la-correcta' } }, { ADMIN_SECRET: 'la-correcta' },
+    );
+    eq(buena.cuerpo.escritura.la_tuya_sirve, true, 'con la llave correcta, lo dice');
+    hondo(buena.cuerpo.escritura.recibido, [{ fuente: 'x-admin-key', chars: 11 }],
+      'y por dónde llegó y de qué largo — nunca el valor');
+    ok(!JSON.stringify(buena.cuerpo).includes('la-correcta'), 'sin filtrar lo que se mandó');
+
+    const mala = await pedir(
+      { query: {}, headers: { 'x-admin-key': 'la-vieja' } }, { ADMIN_SECRET: 'la-correcta' },
+    );
+    eq(mala.cuerpo.escritura.la_tuya_sirve, false, 'con la llave equivocada, también lo dice');
+    eq(mala.cuerpo.escritura.recibido[0].chars, 8, 'con el largo, que ahorra media hora de "pero si la mandé"');
+
+    const nada = await pedir({ query: {} }, { ADMIN_SECRET: 'la-correcta' });
+    eq(nada.cuerpo.escritura.la_tuya_sirve, null, 'sin mandar llave no se afirma nada sobre ella');
+    eq(nada.cuerpo.escritura.recibido, 'ninguna llave en esta petición', 'y se dice que no llegó ninguna');
+  }
+
+  // El diagnóstico es lo que se agarra cuando todo lo demás falla: tiene que
+  // aguantar hasta una petición sin `query`.
+  {
+    const res = await pedir({}, { ADMIN_SECRET: 'x' });
+    eq(res.code, 200, 'sin `query` en la petición sigue contestando');
+  }
+
+  // Y la rama protegida sigue pidiendo llave, que es lo que no se rompió.
+  {
+    const res = await pedir({ query: { job: 'goteo' } }, { ADMIN_SECRET: 'x' });
+    eq(res.code, 401, 'un job sin llave sigue dando 401');
+    ok(res.cuerpo.error, 'con su JSON de error');
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+console.log('\n── Un 500 en /api/ sale como JSON, no como HTML');
+//
+// Todo esto se consume con `jq`. La página de error de Vercel convierte un
+// `ReferenceError` con nombre y todo en "parse error: Invalid numeric
+// literal", que no dice absolutamente nada.
+{
+  const resFalso = () => {
+    const r = { code: null, cuerpo: null, headers: {}, headersSent: false };
+    r.setHeader = (k, v) => { r.headers[k] = v; };
+    r.status = (c) => { r.code = c; return r; };
+    r.json = (b) => { r.cuerpo = b; return r; };
+    return r;
+  };
+
+  {
+    const revienta = conErrorJson(async () => { throw new ReferenceError('algoConfiguradas is not defined'); },
+      { ruta: '/api/prueba' });
+    const res = resFalso();
+    await revienta({}, res);
+    eq(res.code, 500, 'una excepción sale como 500');
+    eq(res.cuerpo.tipo, 'ReferenceError', 'con el TIPO del error');
+    eq(res.cuerpo.detalle, 'algoConfiguradas is not defined', 'y el mensaje, que es lo que se necesita para arreglarlo');
+    eq(res.cuerpo.ruta, '/api/prueba', 'más la ruta');
+    ok(/json/i.test(res.headers['Content-Type'] || ''), 'con Content-Type JSON');
+    eq(res.headers['Cache-Control'], 'no-store', 'y sin cachear un error');
+  }
+
+  // Un handler que anda no se toca.
+  {
+    const ok200 = conErrorJson(async (req, res) => res.status(200).json({ bien: true }));
+    const res = resFalso();
+    await ok200({}, res);
+    eq(res.code, 200, 'un handler que anda pasa igual');
+    eq(res.cuerpo.bien, true, 'con su cuerpo intacto');
+  }
+
+  // Si ya se empezó a escribir, no se pisa media respuesta con un JSON que el
+  // cliente pegaría al final de lo anterior.
+  {
+    const tarde = conErrorJson(async (req, res) => { res.headersSent = true; throw new Error('tarde'); });
+    const res = resFalso();
+    let relanzo = false;
+    try { await tarde({}, res); } catch { relanzo = true; }
+    ok(relanzo, 'con headers ya enviados se relanza en vez de pisar la respuesta');
+    eq(res.code, null, 'y no se escribe un 500 a destiempo');
+  }
+
+  // El tamiz: el motivo va, los secretos no. Neon mete la URL completa —con
+  // contraseña— en algunos errores de conexión.
+  {
+    ok(!/cl4v3/.test(sinSecretos('postgres://user:cl4v3@host/db')), 'una contraseña en una URL se borra');
+    ok(/host\/db/.test(sinSecretos('postgres://user:cl4v3@host/db')), 'pero el resto del mensaje queda');
+    ok(!/AAAABBBBCCCC/.test(sinSecretos('bad key sk-ant-AAAABBBBCCCCDDDD1234')), 'una llave con prefijo se borra');
+    eq(sinSecretos('llavesConfiguradas is not defined'), 'llavesConfiguradas is not defined',
+      'y un mensaje sin secretos pasa entero: taparlo dejaría al operador donde estaba');
+    ok(sinSecretos('x'.repeat(2000)).length <= 400, 'y no se devuelve un mensaje interminable');
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+console.log('\n── Todo endpoint de Historia sale como JSON ante una excepción');
+{
+  // Sin esto, el próximo endpoint que se agregue repite el mismo bug: un 500
+  // que llega como HTML a algo que se consume con jq.
+  const { readdirSync, readFileSync } = await import('node:fs');
+  const dir = new URL('../api/', import.meta.url);
+  const archivos = readdirSync(dir).filter((f) => /^historia.*\.js$/.test(f));
+  ok(archivos.length >= 3, `hay endpoints de historia que revisar (${archivos.length})`);
+  for (const f of archivos) {
+    const src = readFileSync(new URL(f, dir), 'utf8');
+    ok(/export default conErrorJson\(/.test(src), `api/${f} envuelve su handler en conErrorJson`);
+  }
 }
 
 console.log(failures ? `\n${failures} FALLA(S)\n` : '\nTODO EN VERDE\n');

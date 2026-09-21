@@ -33,21 +33,25 @@
 import { crearLectura, armarHistoria, armarNarracion } from './_lib/historia-lectura.js';
 import { respuestaEvidencia } from './_lib/historia-evidencia.js';
 import { autorizar } from './_lib/historia-auth.js';
+import { conErrorJson } from './_lib/historia-http.js';
 import { repo } from './_lib/historia-db.js';
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'solo GET: este endpoint es de lectura' });
 
-  const ticker = String(req.query.ticker || '').trim().toUpperCase();
-  const lang = String(req.query.lang || 'es').toLowerCase() === 'en' ? 'en' : 'es';
+  // `req.query` puede no venir según el runtime; que falte no puede ser un
+  // 500 en una ruta de lectura.
+  const q = req.query || {};
+  const ticker = String(q.ticker || '').trim().toUpperCase();
+  const lang = String(q.lang || 'es').toLowerCase() === 'en' ? 'en' : 'es';
   // `?evidencia=1` devuelve EXACTAMENTE lo que la Fase B le va a pasar al
   // modelo, sin llamarlo. Existe para que se pueda mirar el paquete antes de
   // gastar en la llamada —y para medir su peso con datos reales en vez de
   // adivinarlo. Sigue siendo lectura: cero escrituras, cero IA.
-  const verEvidencia = ['1', 'true', 'si', 'yes'].includes(String(req.query.evidencia || '').toLowerCase());
+  const verEvidencia = ['1', 'true', 'si', 'yes'].includes(String(q.evidencia || '').toLowerCase());
 
   if (!ticker) return res.status(400).json({ error: 'falta el ticker', ruta: '/api/historia/:ticker' });
 
@@ -95,3 +99,8 @@ export default async function handler(req, res) {
     });
   }
 }
+
+// Envuelto para que CUALQUIER excepción salga como JSON y no como la página
+// HTML de Vercel: esto se consume con `jq`, y un error legible es la
+// diferencia entre leerlo y adivinarlo (§11.6).
+export default conErrorJson(handler, { ruta: '/api/historia' });

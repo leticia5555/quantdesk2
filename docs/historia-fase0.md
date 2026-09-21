@@ -525,12 +525,13 @@ vez de tres. Es un descuento directo en el contexto que se paga por corrida.
 | Rebanada G: paquete de evidencia, aritmética resuelta, inventario de citas (§11.3) | 5–7 |
 | Rebanada H: prompt congelado + versión en el hash + la llamada + persistencia + puerta autenticada (§11.4) | 9–13 |
 | Correcciones sobre la H: invariante de citas colgadas, tope del reintento, tres estados en pantalla (§11.5) | 3–4 |
+| Arreglo del diagnóstico + errores JSON en /api/ + pruebas de handler (§11.6) | 1–2 |
 | **Guard de citas**: toda `[accession]` de la salida tiene que existir en el contexto que se mandó; si no, se corta | 5–7 |
 | **Guard anti-opinión**: prohibido precio, calificación y recomendación, con tests que lo intenten | 5–7 |
 | Retiro del AI verdict de SMART $ + i18n + tests (§9) | 3–5 |
-| **Subtotal Fase B** | **30–43** |
+| **Subtotal Fase B** | **31–45** |
 
-**Total: 75–108 horas.** Más, si G5 empuja a extraer guía de prosa: **+10–16**
+**Total: 76–110 horas.** Más, si G5 empuja a extraer guía de prosa: **+10–16**
 por la salida 2 de §3 (y por eso la recomendación es la salida 1).
 
 Las dos líneas que más pueden moverse y hay que vigilar:
@@ -1567,6 +1568,75 @@ saber que no hay nada que exprimir ahí.
 **El número que importa es el costo por historia a secas**, y con el hash de
 contenido cada empresa se narra una vez por cambio de filing — no una vez por
 visita.
+
+---
+
+## 11.6. El diagnóstico que se caía justo cuando hacía falta
+
+*2026-09-21. Un bug de una línea que costó media hora por cómo se veía.*
+
+`GET /api/historia-harvest` sin `?job=` —la puerta de diagnóstico, la que dice
+qué llaves están configuradas sin enseñar valores— devolvía **500**. Y era la
+que hacía falta justamente en ese momento: la llave no entraba y ésa es la
+pregunta que contesta.
+
+### La causa
+
+La rebanada H movió la autorización a `_lib/historia-auth.js` y dejó esto en
+el endpoint:
+
+```js
+import { autorizar } from './_lib/historia-auth.js';
+export { LLAVES, llavesDeLaPeticion, llavesConfiguradas, autorizar } from './_lib/historia-auth.js';
+```
+
+**`export … from` re-exporta sin crear binding local.** `autorizar` estaba
+importado y funcionaba; `llavesConfiguradas` y `LLAVES` no existían en el
+módulo. La rama de diagnóstico es la única que las usa, así que fue la única
+que se cayó — los jobs y `/api/historia-narrar` seguían contestando 401 bien
+formado, que es lo que hizo que el diagnóstico apuntara a otro lado.
+
+El arreglo es importar los bindings y re-exportarlos:
+
+```js
+import { LLAVES, llavesDeLaPeticion, llavesConfiguradas, autorizar } from './_lib/historia-auth.js';
+export { LLAVES, llavesDeLaPeticion, llavesConfiguradas, autorizar };
+```
+
+### Lo que faltaba, y es lo que importa
+
+**No había ninguna prueba que pegara a esa rama.** Por eso se rompió en
+silencio y se descubrió el día que hizo falta. Un diagnóstico que se cae
+cuando lo necesitás no es un diagnóstico.
+
+Ahora hay pruebas de handler para el GET sin `job`: que contesta 200, que
+nombra las llaves configuradas, que **nunca** sale el valor de ninguna, que
+fail-closed se ve desde ahí, y que aguanta una petición sin `query`. Las dos
+mutaciones —volver al `export … from`, y sacar el envoltorio— rompen pruebas.
+
+### Y un 500 que se pueda leer
+
+Lo que convirtió un bug de una línea en media hora fue la **forma** del error.
+Vercel devuelve su página HTML y todo esto se consume con `jq`, así que un
+`ReferenceError` con nombre y todo llegaba como *"parse error: Invalid numeric
+literal"* — que no dice absolutamente nada.
+
+`_lib/historia-http.js` envuelve los tres endpoints de Historia para que
+cualquier excepción salga como JSON con su **tipo** y su **mensaje**. No un
+"error interno" pelado: eso deja al operador exactamente donde estaba, que es
+el mismo problema. El mensaje pasa por un tamiz que borra lo que parece
+secreto —una URL con credenciales (Neon mete la contraseña en algunos errores
+de conexión), una llave con prefijo, un token largo— y el resto pasa entero.
+
+Hay un lint que recorre `api/historia*.js` y exige el envoltorio, para que el
+próximo endpoint no repita el mismo bug.
+
+### De paso, el diagnóstico contesta la pregunta que se le hace
+
+Quien llega ahí está preguntando *"¿mi llave está entrando?"*. Ahora lo dice:
+por qué puerta llegó, de cuántos caracteres, y si sirve — un booleano. Nunca
+el valor. Es la misma información que el 401 ya daba, así que no expone nada
+nuevo, y ahorra el viaje de probar contra un job de verdad.
 
 ---
 

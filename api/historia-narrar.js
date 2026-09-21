@@ -32,6 +32,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { autorizar } from './_lib/historia-auth.js';
+import { conErrorJson } from './_lib/historia-http.js';
 import { crearLectura, armarHistoria } from './_lib/historia-lectura.js';
 import { respuestaEvidencia } from './_lib/historia-evidencia.js';
 import {
@@ -174,7 +175,7 @@ export async function correrNarracion(ticker, {
   };
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET' && req.method !== 'POST') {
@@ -201,3 +202,8 @@ export default async function handler(req, res) {
     return res.status(500).json({ ticker, error: 'narración fallida: ' + ((e && e.message) || 'desconocido') });
   }
 }
+
+// Envuelto para que CUALQUIER excepción salga como JSON y no como la página
+// HTML de Vercel: esto se consume con `jq`, y un error legible es la
+// diferencia entre leerlo y adivinarlo (§11.6).
+export default conErrorJson(handler, { ruta: '/api/historia-narrar' });

@@ -37,7 +37,8 @@
 //           · SEC_USER_AGENT (opc)
 // ═══════════════════════════════════════════════════════════════
 
-import { autorizar } from './_lib/historia-auth.js';
+import { LLAVES, llavesDeLaPeticion, llavesConfiguradas, autorizar } from './_lib/historia-auth.js';
+import { conErrorJson } from './_lib/historia-http.js';
 import { crearCliente, ErrorEdgar } from './_lib/edgar.js';
 import { repo } from './_lib/historia-db.js';
 import { sembrarUniverso, correrGoteo, ANIOS_FILINGS, ANIOS_FACTS } from './_lib/historia-ingesta.js';
@@ -45,14 +46,23 @@ import { sembrarUniverso, correrGoteo, ANIOS_FILINGS, ANIOS_FACTS } from './_lib
 // La autorización vive en _lib/historia-auth.js: la comparten este endpoint y
 // el narrador, y tener dos copias de "quién puede gastar plata nuestra" es
 // tener dos reglas que con el tiempo dicen cosas distintas.
-export { LLAVES, llavesDeLaPeticion, llavesConfiguradas, autorizar } from './_lib/historia-auth.js';
+//
+// Se RE-EXPORTAN LOS BINDINGS IMPORTADOS, no con `export … from`. Esa forma
+// re-exporta sin crear binding local, y así fue como la rama de diagnóstico
+// —la única que usa `llavesConfiguradas`— quedó tirando un ReferenceError
+// mientras las demás seguían andando (2026-09-21, §11.6).
+export { LLAVES, llavesDeLaPeticion, llavesConfiguradas, autorizar };
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
 
-  const job = String(req.query.job || '').toLowerCase();
+  // `req.query` puede no venir según el runtime. La puerta de diagnóstico es
+  // justo la que tiene que aguantar todo: si se cae, no diagnostica nada.
+  const q = req.query || {};
+  const job = String(q.job || '').toLowerCase();
 
   if (!job) {
+    const candidatas = llavesDeLaPeticion(req);
     return res.status(200).json({
       modulo: 'historia',
       estado: 'listo',
@@ -68,6 +78,15 @@ export default async function handler(req, res) {
           // estado diga cuáles están puestas ahorra el viaje de adivinar.
           llaves: llavesConfiguradas(),
           puertas: ['x-admin-key', 'Authorization: Bearer', '?key=', '?secret='],
+          // Qué llegó EN ESTA petición, por dónde y de qué largo. Nunca el
+          // valor. Es la pregunta que se hace quien llega acá —"¿mi llave
+          // está entrando?"— y la misma información que ya da el 401.
+          recibido: candidatas.length
+            ? candidatas.map((c) => ({ fuente: c.fuente, chars: c.valor.length }))
+            : 'ninguna llave en esta petición',
+          // Y si la que mandó sirve. Un booleano no enseña nada y ahorra el
+          // viaje de probar contra un job de verdad.
+          la_tuya_sirve: candidatas.length ? autorizar(req).ok : null,
         }
         : {
           estado: 'DESHABILITADA',
@@ -83,7 +102,7 @@ export default async function handler(req, res) {
 
   try {
     if (job === 'sembrar') {
-      const tickers = String(req.query.tickers || '').split(',').map((t) => t.trim()).filter(Boolean);
+      const tickers = String(q.tickers || '').split(',').map((t) => t.trim()).filter(Boolean);
       if (!tickers.length) return res.status(400).json({ error: 'falta ?tickers=LULU,MSFT' });
       await repo.asegurarEsquema();
       const r = await sembrarUniverso(cli, repo, tickers);
@@ -91,8 +110,8 @@ export default async function handler(req, res) {
     }
 
     if (job === 'goteo') {
-      const limite = Math.min(Number(req.query.limite) || 7, 20);
-      const masViejoQue = req.query.mas_viejo_que || null;
+      const limite = Math.min(Number(q.limite) || 7, 20);
+      const masViejoQue = q.mas_viejo_que || null;
       const r = await correrGoteo(cli, repo, { limite, masViejoQue });
       const s = cli.stats();
       return res.status(200).json({
@@ -115,3 +134,8 @@ export default async function handler(req, res) {
     });
   }
 }
+
+// Envuelto para que CUALQUIER excepción salga como JSON. Antes, un
+// ReferenceError con nombre y todo llegaba como la página HTML de Vercel —
+// "parse error: Invalid numeric literal" en `jq`, que no dice nada.
+export default conErrorJson(handler, { ruta: '/api/historia-harvest' });
