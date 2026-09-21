@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>/mercado — QuantDesk</title>
+<meta name="description" content="Mapa de mercado de EE.UU. y México por capitalización, con el cambio del periodo que elijas.">
+<!--
+  ═══════════════════════════════════════════════════════════════════
+  /mercado — R1: el mapa.
+
+  TRES REGLAS QUE ESTE ARCHIVO NO PUEDE ROMPER, y dónde se ven:
+
+  1. TODO % pasa por qdPeriodChange + qdPctTag (qd-periods.js). Acá no se
+     resta ni se divide un precio en ninguna parte. qdPctTag LANZA si le
+     falta la etiqueta de periodo, así que un % mudo no llega a pintarse.
+  2. Dato que falta es "—" en gris CON SU CAUSA, nunca un estimado. El
+     endpoint manda el motivo por cuadro y la hoja lo muestra; el color de
+     "sin dato" es distinto del gris de "sin cambio" a propósito.
+  3. El endpoint LEE. La página hace UNA petición por mapa y el toggle no
+     vuelve a pedir nada: los cuatro periodos se calculan sobre lo que ya
+     viajó.
+
+  POR QUÉ EL NIVEL SUPERIOR ES POR SECTOR, Y NO 300 CUADROS.
+  En 390 px de ancho, 300 cuadros dan ~10 px por lado. El encargo pide tap
+  ≥44 px, y las dos cosas no caben juntas: un mapa de 300 nombres en un
+  teléfono es una textura, no una interfaz. Así que el primer nivel son los
+  11 sectores —cada uno holgadamente tocable— y al tocar uno se entra a sus
+  nombres. En escritorio (pointer:fine) el sector se puede recorrer con
+  hover sin entrar. El recorte del mapa NO cambia con el dispositivo: los
+  300 son los mismos, y el "+N más = X%" también.
+  ═══════════════════════════════════════════════════════════════════
+-->
+<style>
+  :root{
+    --bg:#0a0a0a; --panel:#111; --linea:#222; --texto:#e8e8e8; --tenue:#888;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --tap:44px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--texto);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    -webkit-text-size-adjust:100%}
+  body{display:flex;flex-direction:column;min-height:100vh;min-height:100dvh;overflow:hidden}
+  header{display:flex;align-items:center;gap:10px;padding:10px 16px 8px;
+    padding-top:calc(10px + env(safe-area-inset-top));border-bottom:1px solid var(--linea)}
+  .marca{font-family:var(--mono);font-size:15px;letter-spacing:.5px}
+  .marca b{color:#00c97d;font-weight:600}
+  .chip{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--tenue);
+    border:1px solid var(--linea);border-radius:3px;padding:3px 7px;white-space:nowrap}
+  .chip.abierto{color:#00c97d}
+  nav,.toggle{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid var(--linea)}
+  nav button,.toggle button{flex:1;min-height:var(--tap);min-width:var(--tap);
+    background:transparent;border:1px solid var(--linea);border-radius:6px;color:var(--tenue);
+    font-family:var(--mono);font-size:13px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  nav button[aria-selected="true"],.toggle button[aria-pressed="true"]{
+    background:#1a1a1a;border-color:#3a3a3a;color:var(--texto)}
+  main{flex:1;position:relative;margin:8px 16px;min-height:0}
+  /* overflow:hidden NO es cosmético: sin él, un cuadro calculado con una
+     altura vieja se dibuja encima del pie y tapa la fuente del dato. */
+  #lienzo{position:absolute;inset:0;overflow:hidden}
+  .cuadro{position:absolute;overflow:hidden;border:1px solid #0a0a0a;border-radius:2px;
+    display:flex;flex-direction:column;justify-content:center;align-items:center;
+    cursor:pointer;-webkit-tap-highlight-color:transparent;padding:2px}
+  .cuadro .sym{font-family:var(--mono);font-weight:600;line-height:1.05;
+    color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+  .cuadro .val{font-family:var(--mono);line-height:1.05;color:rgba(255,255,255,.92)}
+  .cuadro.punteado{border:1px dashed #555}
+  /* La ruta vive en su propia franja. Flotando sobre el lienzo tapaba el
+     cuadro de arriba a la izquierda, que además es el más grande del sector. */
+  #ruta{display:none;padding:0 16px 8px}
+  #ruta[data-visible="1"]{display:block}
+  .volver{min-height:var(--tap);padding:0 14px;background:#151515;
+    border:1px solid var(--linea);border-radius:6px;
+    color:var(--texto);font-family:var(--mono);font-size:13px;cursor:pointer}
+  #mas{padding:0 16px 6px;font-family:var(--mono);font-size:11px;color:var(--tenue)}
+  footer{padding:8px 16px calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--linea);
+    font-family:var(--mono);font-size:10px;color:var(--tenue);line-height:1.5}
+  .qd-pct{font-family:var(--mono);font-weight:600;white-space:nowrap}
+  .qd-pct-per{margin-left:3px;font-size:.78em;font-weight:400;color:var(--tenue);vertical-align:.08em}
+  /* La hoja. En móvil sube desde abajo; en escritorio es un panel lateral. */
+  .hoja{position:fixed;left:0;right:0;bottom:0;z-index:10;background:var(--panel);
+    border-top:1px solid var(--linea);border-radius:14px 14px 0 0;padding:14px 16px;
+    padding-bottom:calc(16px + env(safe-area-inset-bottom));
+    transform:translateY(102%);transition:transform .18s ease-out;max-height:70vh;overflow:auto}
+  .hoja[data-abierta="1"]{transform:translateY(0)}
+  .hoja h2{margin:0 0 2px;font-family:var(--mono);font-size:18px}
+  .hoja .sub{color:var(--tenue);font-size:12px;margin-bottom:10px}
+  .hoja dl{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;margin:0;font-size:13px}
+  .hoja dt{color:var(--tenue);font-family:var(--mono);font-size:11px}
+  .hoja dd{margin:0;font-family:var(--mono)}
+  .hoja .motivo{margin-top:10px;padding:8px 10px;border-left:2px solid #555;background:#161616;
+    color:#ccc;font-size:12px;line-height:1.45}
+  .cerrar{position:absolute;right:10px;top:10px;min-height:var(--tap);min-width:var(--tap);
+    background:transparent;border:0;color:var(--tenue);font-size:22px;cursor:pointer}
+  #tip{position:fixed;z-index:20;display:none;pointer-events:none;background:#161616;
+    border:1px solid var(--linea);border-radius:6px;padding:6px 9px;font-family:var(--mono);font-size:11px}
+  /* Hover SÓLO donde hay puntero fino. En táctil, :hover se queda pegado. */
+  @media (pointer:fine){ .cuadro:hover{outline:1px solid rgba(255,255,255,.55);outline-offset:-1px} }
+  @media (min-width:900px){
+    header,nav,.toggle,#mas,footer{padding-left:24px;padding-right:24px}
+    nav,.toggle{justify-content:flex-start}
+    nav button,.toggle button{flex:0 0 auto;padding:0 18px}
+    main{margin:10px 24px}
+    .hoja{left:auto;right:0;top:0;bottom:0;width:380px;border-radius:0;border-left:1px solid var(--linea);
+      border-top:0;max-height:none;transform:translateX(102%)}
+    .hoja[data-abierta="1"]{transform:translateX(0)}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="marca">/<b>mercado</b></div>
+  <div class="chip" id="chip">—</div>
+</header>
+
+<nav role="tablist" aria-label="Mercado">
+  <button role="tab" id="tab-us" data-mapa="us" aria-selected="true">EE.UU.</button>
+  <button role="tab" id="tab-mx" data-mapa="mx" aria-selected="false">México</button>
+</nav>
+
+<div class="toggle" id="toggle" role="group" aria-label="Periodo"></div>
+
+<div id="ruta"></div>
+<main><div id="lienzo"></div></main>
+<div id="mas"></div>
+<footer id="pie">cargando…</footer>
+
+<aside class="hoja" id="hoja" aria-hidden="true">
+  <button class="cerrar" id="cerrar" aria-label="Cerrar">×</button>
+  <div id="hojaCuerpo"></div>
+</aside>
+<div id="tip"></div>
+
+<script src="/qd-periods.js"></script>
+<script src="/qd-treemap.js"></script>
+<script>
+(function(){
+  'use strict';
+
+  var SECTORES = {
+    XLK:'Tecnología', XLF:'Finanzas', XLV:'Salud', XLY:'Consumo discrecional',
+    XLP:'Consumo básico', XLE:'Energía', XLI:'Industriales', XLB:'Materiales',
+    XLU:'Servicios públicos', XLRE:'Inmobiliario', XLC:'Comunicaciones'
+  };
+  var PERIODOS = ['1D','1S','1M','YTD'];
+  var cache = {};           // mapa → payload
+  var estado = leerUrl();
+
+  // ── URL = ESTADO ──────────────────────────────────────────────────
+  // Compartir la vista tiene que compartir LO QUE SE ESTÁ VIENDO. Y el botón
+  // atrás del teléfono tiene que salir del sector, no de la página.
+  function leerUrl(){
+    var p = new URLSearchParams(location.search);
+    var mapa = p.get('mapa')==='mx' ? 'mx' : 'us';
+    var per  = PERIODOS.indexOf(p.get('periodo'))>=0 ? p.get('periodo') : '1D';
+    return { mapa:mapa, periodo:per, sector:p.get('sector')||null, symbol:p.get('symbol')||null };
+  }
+  function escribirUrl(push){
+    var p = new URLSearchParams();
+    p.set('mapa', estado.mapa); p.set('periodo', estado.periodo);
+    if(estado.sector) p.set('sector', estado.sector);
+    if(estado.symbol) p.set('symbol', estado.symbol);
+    var url = location.pathname + '?' + p.toString();
+    if(push) history.pushState(estado, '', url); else history.replaceState(estado, '', url);
+  }
+  window.addEventListener('popstate', function(){ estado = leerUrl(); render(); });
+
+  // ── El % de un cuadro. ÚNICA vía: qdPeriodChange. ────────────────
+  // YTD se arma con [ancla, último] porque el ancla es una FECHA y viaja
+  // como punto; los demás periodos usan la ventana de cierres recientes.
+  function cambio(c){
+    if(estado.periodo==='YTD'){
+      if(!c.ytd || !c.serie || !c.serie.length)
+        return { pct:null, periodLabel:'YTD', motivo: c.ytd_motivo || 'no hay serie para este instrumento' };
+      return qdPeriodChange([c.ytd, c.serie[c.serie.length-1]], 'YTD');
+    }
+    var r = qdPeriodChange(c.serie||[], estado.periodo);
+    if(r.pct==null && !r.motivo) r.motivo = 'la serie no alcanza para este periodo';
+    return r;
+  }
+
+  function fmtCap(v){
+    if(!Number.isFinite(v)) return '—';
+    if(v>=1e12) return (v/1e12).toFixed(2)+' B';   // billones (10^12)
+    if(v>=1e9)  return (v/1e9).toFixed(1)+' mm';   // miles de millones
+    if(v>=1e6)  return (v/1e6).toFixed(0)+' m';
+    return String(Math.round(v));
+  }
+
+  // ── Render ────────────────────────────────────────────────────────
+  function render(){
+    document.getElementById('tab-us').setAttribute('aria-selected', estado.mapa==='us');
+    document.getElementById('tab-mx').setAttribute('aria-selected', estado.mapa==='mx');
+    pintarToggle();
+    var d = cache[estado.mapa];
+    if(!d){ cargar(estado.mapa); return; }
+    pintarChip(d);
+    // El "+N más" y el pie se pintan ANTES del mapa: los dos cambian de alto
+    // al llenarse, y el treemap se dibuja con píxeles medidos. Al revés, el
+    // mapa se calculaba contra una altura que después se encogía y los
+    // cuadros de abajo terminaban encima del pie.
+    pintarMas(d);
+    pintarPie(d);
+    pintarRuta();
+    pintarMapa(d);
+    if(estado.symbol) abrirHoja(d, estado.symbol); else cerrarHoja(true);
+  }
+
+  function pintarToggle(){
+    var t = document.getElementById('toggle');
+    t.innerHTML = PERIODOS.map(function(p){
+      return '<button type="button" data-per="'+p+'" aria-pressed="'+(p===estado.periodo)+'">'+p+'</button>';
+    }).join('');
+  }
+
+  function pintarChip(d){
+    var e = qdEstadoMercado(d.bolsa || estado.mapa);
+    var el = document.getElementById('chip');
+    el.className = 'chip' + (e.abierto ? ' abierto' : '');
+    el.textContent = (e.abierto?'● ':'○ ') + e.etiqueta + ': ' + e.texto;
+  }
+
+  function cuadrosVisibles(d){
+    var cs = (d.cuadros||[]).filter(function(c){ return Number.isFinite(c.cap) && c.cap>0; });
+    if(estado.sector) return cs.filter(function(c){ return (c.sector||'—')===estado.sector; });
+    return cs;
+  }
+
+  function pintarMapa(d){
+    var l = document.getElementById('lienzo');
+    l.innerHTML = '';
+    var w = l.clientWidth, h = l.clientHeight;
+    // Si el layout todavía no se aplicó (primer pintado), se reintenta en el
+    // siguiente cuadro en vez de dibujar contra un cero.
+    if(!w || !h){ requestAnimationFrame(function(){ pintarMapa(d); }); return; }
+    var cs = cuadrosVisibles(d);
+    if(!cs.length){
+      l.innerHTML = '<div style="padding:24px;color:#888;font:12px var(--mono)">'
+        + (d.error ? esc(d.error) : 'no hay cuadros con capitalización medida para pintar')
+        + '</div>';
+      return;
+    }
+
+    var items, nivelSector = !estado.sector;
+    if(nivelSector){
+      var porSector = {};
+      cs.forEach(function(c){ var k=c.sector||'—'; (porSector[k]=porSector[k]||[]).push(c); });
+      items = Object.keys(porSector).map(function(k){
+        var g = porSector[k];
+        var cap = g.reduce(function(a,c){ return a+c.cap; },0);
+        // El % del sector se pondera por capitalización: un sector no sube
+        // lo que sube el promedio de sus nombres, sube lo que sube su peso.
+        var num=0, den=0, sinDato=0;
+        g.forEach(function(c){ var p=cambio(c).pct; if(Number.isFinite(p)){ num+=p*c.cap; den+=c.cap; } else sinDato++; });
+        return { key:k, value:cap, sector:k, n:g.length, sinDato:sinDato,
+                 pct: den>0 ? num/den : null,
+                 motivo: den>0 ? null : 'ninguno de los '+g.length+' nombres tiene serie para este periodo' };
+      });
+    } else {
+      items = cs.map(function(c){ var r=cambio(c);
+        return { key:c.symbol, value:c.cap, cuadro:c, pct:r.pct, motivo:r.motivo }; });
+    }
+
+    var rects = squarify(items, { x:0, y:0, w:w, h:h });
+    var frag = document.createDocumentFragment();
+    rects.forEach(function(r){
+      var it = r.item;
+      var div = document.createElement('div');
+      div.className = 'cuadro' + (!Number.isFinite(it.pct) ? ' punteado' : '');
+      div.style.cssText = 'left:'+r.x+'px;top:'+r.y+'px;width:'+r.w+'px;height:'+r.h+'px;background:'+colorDe(it.pct);
+      var titulo = nivelSector ? (SECTORES[it.sector]||it.sector) : it.key;
+      div.setAttribute('aria-label', titulo);
+      // La etiqueta sólo entra si CABE. Un texto recortado a la mitad dice
+      // otra cosa que el nombre real.
+      if(r.w>=46 && r.h>=30){
+        var fs = Math.max(9, Math.min(15, Math.round(Math.min(r.w/5.2, r.h/2.6))));
+        // Un −0.04% redondeado a un decimal es "−0.0%", que es un signo
+        // inventado: si redondea a cero, se pinta cero y sin signo.
+        var txt = '—';
+        if(Number.isFinite(it.pct)){
+          var r1 = Math.round(it.pct*10)/10;
+          txt = r1===0 ? '0.0%' : ((r1>0?'+':'')+r1.toFixed(1)+'%');
+        }
+        div.innerHTML = '<div class="sym" style="font-size:'+fs+'px">'+esc(nivelSector?(SECTORES[it.sector]||it.sector):it.key)+'</div>'
+          + '<div class="val" style="font-size:'+Math.max(8,fs-3)+'px">'+txt+'</div>';
+      }
+      div.addEventListener('click', function(){
+        if(nivelSector){ estado.sector = it.sector; escribirUrl(true); render(); }
+        else { estado.symbol = it.key; escribirUrl(true); abrirHoja(cache[estado.mapa], it.key); }
+      });
+      if(window.matchMedia && window.matchMedia('(pointer:fine)').matches){
+        div.addEventListener('mousemove', function(ev){ mostrarTip(ev, it, nivelSector); });
+        div.addEventListener('mouseleave', ocultarTip);
+      }
+      frag.appendChild(div);
+    });
+    l.appendChild(frag);
+
+  }
+
+  function pintarRuta(){
+    var r = document.getElementById('ruta');
+    r.innerHTML = '';
+    r.setAttribute('data-visible', estado.sector ? '1' : '0');
+    if(!estado.sector) return;
+    var b = document.createElement('button');
+    b.className = 'volver'; b.type = 'button';
+    b.textContent = '← ' + (SECTORES[estado.sector]||estado.sector);
+    b.addEventListener('click', function(){ estado.sector=null; estado.symbol=null; escribirUrl(true); render(); });
+    r.appendChild(b);
+  }
+
+  function mostrarTip(ev, it, nivelSector){
+    var t = document.getElementById('tip');
+    var etq = nivelSector ? (SECTORES[it.sector]||it.sector)+' · '+it.n+' nombres' : it.key;
+    t.innerHTML = '<div>'+esc(etq)+'</div>'
+      + '<div>'+qdPctTag(it.pct, estado.periodo, { motivo: it.motivo })+'</div>';
+    t.style.display='block';
+    var x = Math.min(ev.clientX+12, window.innerWidth-t.offsetWidth-8);
+    t.style.left = x+'px'; t.style.top = Math.max(8, ev.clientY-40)+'px';
+  }
+  function ocultarTip(){ document.getElementById('tip').style.display='none'; }
+
+  function pintarMas(d){
+    var el = document.getElementById('mas');
+    if(!d.mas || !d.mas.n){ el.textContent=''; return; }
+    var pct = Number.isFinite(d.mas.pct) ? d.mas.pct.toFixed(1)+'%' : '—';
+    // Sin esta línea, un mapa de 300 se lee como si fuera el mercado entero.
+    el.textContent = '+' + d.mas.n + ' más = ' + pct + ' de la capitalización'
+      + (d.mas.sin_cap_excluidos ? ' · ' + d.mas.sin_cap_excluidos + ' sin capitalización medida, fuera del porcentaje' : '');
+  }
+
+  function pintarPie(d){
+    var f = d.fuente || {};
+    var partes = [];
+    partes.push('fuente: ' + (f.series || '—'));
+    if(d.cosecha && d.cosecha.ultima_fecha) partes.push('último cierre: ' + d.cosecha.ultima_fecha);
+    if(d.cosecha && d.cosecha.alerta) partes.push('⚠ cosecha atrasada ' + d.cosecha.sesiones_de_atraso + ' sesiones');
+    if(d.faltantes && d.faltantes.total) partes.push(d.faltantes.total + ' cuadros sin dato completo');
+    partes.push('generado ' + new Date(d.generado_en).toLocaleString('es-MX'));
+    document.getElementById('pie').textContent = partes.join(' · ');
+  }
+
+  // ── La hoja ───────────────────────────────────────────────────────
+  function abrirHoja(d, symbol){
+    var c = (d.cuadros||[]).find(function(x){ return x.symbol===symbol; });
+    if(!c) return;
+    var r = cambio(c);
+    var filas = [
+      ['cambio', qdPctTag(r.pct, estado.periodo, { motivo: r.motivo })],
+      ['precio', c.precio!=null ? fmtPrice(c.precio) : '—'],
+      ['al cierre de', c.fecha_precio || '—'],
+      ['capitalización', fmtCap(c.cap)],
+      ['fuente de la cap', esc(c.cap_fuente || '—')],
+      ['sector', esc(SECTORES[c.sector]||c.sector||'—')]
+    ];
+    if(c.cap_medida_en) filas.push(['cap medida el', esc(c.cap_medida_en)]);
+    if(c.serie_liquida) filas.push(['serie', esc(c.serie_liquida)]);
+    if(c.acciones_por_unidad && c.acciones_por_unidad!==1) filas.push(['acciones por unidad', String(c.acciones_por_unidad)]);
+    if(c.etiqueta) filas.push(['verificación', esc(c.etiqueta)]);
+    filas.push(['puntos de serie', String(c.puntos||0)]);
+
+    var motivo = c.motivo || r.motivo || c.ytd_motivo;
+    document.getElementById('hojaCuerpo').innerHTML =
+      '<h2>'+esc(c.symbol)+'</h2><div class="sub">'+esc(c.nombre||'')+'</div>'
+      + '<dl>' + filas.map(function(f){ return '<dt>'+f[0]+'</dt><dd>'+f[1]+'</dd>'; }).join('') + '</dl>'
+      // Regla 2: el dato que falta dice POR QUÉ falta.
+      + (motivo ? '<div class="motivo">'+esc(motivo)+'</div>' : '');
+    var h = document.getElementById('hoja');
+    h.setAttribute('data-abierta','1'); h.setAttribute('aria-hidden','false');
+  }
+  function cerrarHoja(silencioso){
+    var h = document.getElementById('hoja');
+    h.setAttribute('data-abierta','0'); h.setAttribute('aria-hidden','true');
+    if(!silencioso && estado.symbol){ estado.symbol=null; escribirUrl(true); }
+  }
+
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+
+  // ── Carga: UNA petición por mapa, y el toggle no vuelve a pedir ───
+  function cargar(mapa){
+    document.getElementById('pie').textContent = 'cargando ' + (mapa==='us'?'EE.UU.':'México') + '…';
+    fetch('/api/mercado-mapa?map='+encodeURIComponent(mapa))
+      .then(function(r){ return r.json(); })
+      .then(function(d){ cache[mapa]=d; render(); })
+      .catch(function(e){
+        document.getElementById('pie').textContent = 'no se pudo cargar el mapa: ' + e.message;
+      });
+  }
+
+  // ── Eventos ───────────────────────────────────────────────────────
+  document.querySelector('nav').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-mapa]'); if(!b) return;
+    estado.mapa = b.dataset.mapa; estado.sector=null; estado.symbol=null;
+    escribirUrl(true); render();
+  });
+  document.getElementById('toggle').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-per]'); if(!b) return;
+    estado.periodo = b.dataset.per; escribirUrl(true); render();
+  });
+  document.getElementById('cerrar').addEventListener('click', function(){ cerrarHoja(); });
+  document.addEventListener('keydown', function(ev){ if(ev.key==='Escape') cerrarHoja(); });
+  var rt; window.addEventListener('resize', function(){
+    clearTimeout(rt); rt=setTimeout(function(){ if(cache[estado.mapa]) pintarMapa(cache[estado.mapa]); }, 120);
+  });
+
+  escribirUrl(false);
+  render();
+})();
+</script>
+</body>
+</html>

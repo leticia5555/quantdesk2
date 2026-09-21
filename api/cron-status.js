@@ -86,6 +86,11 @@ export const EXPECTED = [
   // quedó en el 15-sep sin que nada lo dijera. El latido vigila que el cron
   // corra; `datos[]` vigila que además traiga algo.
   { job: 'bmv:precios',     path: '/api/bmv-harvest?job=precios',    schedule: '10 22 * * 1-5',         cadence: 'días hábiles ~22:10', stale_after_h: 80 },
+  // R1(a): la serie diaria fechada de EE.UU., que es lo que YTD necesita.
+  // Tres veces por hora después del cierre (21:00 UTC) porque la SIEMBRA de
+  // 300 nombres a 100/min no cabe en una corrida; una vez sembrada, la cola
+  // diaria termina en la primera y las otras dos no piden nada.
+  { job: 'mercado:precios', path: '/api/mercado-precios?job=us',      schedule: '20,35,50 21 * * 1-5',   cadence: '3×/hora tras el cierre US', stale_after_h: 80 },
 ];
 
 // Crons de vercel.json que a propósito NO se vigilan acá, con el porqué. La
