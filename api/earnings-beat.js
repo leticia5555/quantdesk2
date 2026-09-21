@@ -146,9 +146,17 @@ async function diagnosticoSimbolos(simbolos) {
     diag: limpios.map((s) => ({
       symbol: s,
       trimestres_en_tabla: (porSimbolo.get(s) || []).length,
+      // `trimestres_en_tabla` cuenta filas; `completo.total` cuenta las que
+      // tienen reportado Y estimado. La diferencia está en
+      // `historico.descartados_sin_cifras` y NO es un error de conteo.
       historico: estadisticasHistoricas(porSimbolo.get(s) || []),
     })),
-    como_leerlo: 'Mirá historico.sorpresa: si `distorsionado` es true, el promedio está arrastrado por los trimestres de `extremos` con `denominador_chico` (estimado cerca de cero). El número que se muestra en la tarjeta es la MEDIANA.',
+    como_leerlo: [
+      'historico.sorpresa.distorsionado = el promedio y la mediana cuentan historias distintas. `causa_probable` dice cuál de las dos: artefacto de denominador (estimado cero/negativo/de centavos) o COLAS REALES (una cíclica con trimestres de pérdida de verdad).',
+      'historico.sorpresa.signo_discrepante = filas donde el % de Alpha Vantage y el nuestro no coinciden en el SIGNO. Lo que se muestra es siempre el nuestro, calculado con |estimado|. Si este contador deja de ser cero, hay algo que mirar en la fuente.',
+      'filas_en_tabla vs completo.total: la diferencia son los trimestres a los que AV no les dio estimado (o reportado). Sin las dos cifras no se puede decir si superó, así que no se cuentan — `descartados_sin_cifras` los cuenta.',
+      'ventana vs completo: el titular mira 5 años. En una empresa CÍCLICA los dos números difieren de verdad, y esa diferencia es información, no un error.',
+    ],
   };
 }
 
