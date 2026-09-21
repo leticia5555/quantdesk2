@@ -293,7 +293,9 @@ export function crearCliente({
         throw new ErrorEdgar(`${kind}: HTTP ${r.status}`, { status: r.status, clase: 'http', url, kind });
       }
 
-      return { cuerpo, bytes, status: r.status };
+      // Las cabeceras viajan porque una HEAD no trae cuerpo: el peso del
+      // documento está en `content-length` y en ningún otro lado.
+      return { cuerpo, bytes, status: r.status, cabeceras: r.headers || null };
     }
     throw ultimo;
   }
@@ -315,6 +317,20 @@ export function crearCliente({
           { status: 200, clase: 'formato', url, kind: opciones.kind || null },
         );
       }
+    },
+
+    // Una HEAD: el peso del documento SIN bajarlo. Es lo que hace que medir
+    // 160 filings sea una request por documento en vez de 160 descargas.
+    //
+    // `content-length` puede no venir (transfer-encoding chunked, un proxy
+    // que lo saca). En ese caso devuelve null y NO se inventa un número —
+    // quien llama decide si baja el documento para medirlo o lo descarta de
+    // la muestra.
+    async cabeza(url, opciones = {}) {
+      const { status, cabeceras } = await traer(url, { ...opciones, metodo: 'HEAD' });
+      const crudo = cabeceras && typeof cabeceras.get === 'function' ? cabeceras.get('content-length') : null;
+      const n = crudo == null ? NaN : Number(crudo);
+      return { status, bytes: Number.isFinite(n) ? n : null };
     },
 
     async texto(url, opciones = {}) {

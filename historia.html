@@ -138,6 +138,11 @@ input.tick:focus{border-color:var(--purple);}
 .lectura .cortado .cuenta{font-family:var(--mono);font-size:10.5px;color:var(--text3);margin-top:6px;}
 .lectura .proc{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.04em;
   border-top:1px solid var(--border);padding-top:9px;margin-top:12px;line-height:1.6;}
+/* Qué garantiza la cita y qué NO. El lector tiene el mismo derecho a saberlo
+   que el memo: el guardia verifica que el documento exista, no que la
+   afirmación diga lo que el documento dice. */
+.lectura .alcance{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.04em;
+  line-height:1.6;margin-top:6px;}
 .lectura.falta{border-left-color:var(--text3);}
 .lectura.falta h3{color:var(--text3);}
 .lectura.retenida{border-left-color:var(--amber);background:rgba(255,179,71,.05);}
@@ -349,7 +354,8 @@ const T = {
       red: 'se cayó la conexión',
     },
     intentos: (n) => `${n} intento(s) pagado(s)`,
-    proc: (m, v, f) => `Escrita por ${m} · prompt v${v}${f ? ' · ' + f : ''}. Cada afirmación enlaza al documento del que sale. Sin predicciones, sin calificaciones, sin recomendaciones.`,
+    proc: (m, v, f) => `Escrita por ${m} · prompt v${v}${f ? ' · ' + f : ''}. Sin predicciones, sin calificaciones, sin recomendaciones.`,
+    alcance: 'Cada afirmación enlaza al documento del que sale, y un guardia verifica que ese documento exista en la evidencia — no que la afirmación diga lo que el documento dice. Eso se comprueba abriéndolo.',
     citas_malas: 'Citas que no resuelven:',
     fuentes: 'Fuentes:',
     cortado: 'El guardia cortó parte de esta lectura',
@@ -418,7 +424,8 @@ const T = {
       red: 'the connection dropped',
     },
     intentos: (n) => `${n} paid attempt(s)`,
-    proc: (m, v, f) => `Written by ${m} · prompt v${v}${f ? ' · ' + f : ''}. Every claim links to the document it comes from. No predictions, no ratings, no recommendations.`,
+    proc: (m, v, f) => `Written by ${m} · prompt v${v}${f ? ' · ' + f : ''}. No predictions, no ratings, no recommendations.`,
+    alcance: 'Every claim links to the document it comes from, and a guard verifies that the document exists in the evidence — not that the claim says what the document says. That you check by opening it.',
     citas_malas: 'Citations that do not resolve:',
     fuentes: 'Sources:',
     cortado: 'The guard cut part of this reading',
@@ -782,6 +789,7 @@ function lecturaHTML(d) {
     ${partes}
     ${cortado}
     <div class="proc">${esc(t.proc(n.modelo || '', n.prompt_version || '', String(n.creado_en || '').slice(0, 10)))}</div>
+    <div class="alcance">${esc(t.alcance)}</div>
   </div>`;
 }
 

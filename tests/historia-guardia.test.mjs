@@ -22,6 +22,7 @@
 import {
   normalizarEspacios, apareceLiteral, partirAfirmaciones, citasDe,
   tieneOpinion, tieneRelativoAHoy, guardar, RAICES_OPINION, RAICES_RELATIVAS,
+  RAICES_CONSEJO, RAICES_VALUACION, entrecomillados, verificarEntrecomillados,
 } from '../api/_lib/historia-guardia.js';
 
 let failures = 0;
@@ -177,8 +178,97 @@ console.log('\n── Intentos de pasar el guardia de opinión');
   }
 
   ok(RAICES_OPINION.length >= 15, 'la lista de opinión cubre varias formas, no una');
-  ok(!RAICES_OPINION.some((x) => /^riesgo$|^problema$/.test(x)),
+  ok(!RAICES_OPINION.some((x) => /riesgo|problema/.test(x)),
     'y no incluye palabras que aparecen legítimamente al describir un filing');
+  ok(RAICES_CONSEJO.length && RAICES_VALUACION.length, 'la lista está partida en consejo y valuación');
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+console.log('\n── El consejo de OTRO es un hecho; el nuestro es una recomendación');
+{
+  const intentar = (texto) => guardar([{ id: 'x', texto: `${texto} [acc-1].` }], CITABLES);
+
+  // EL BUG QUE ESTO ARREGLA. La primera versión tenía la raíz `recomend` y
+  // cortaba esto — un hecho sobre un proxy, y justamente lo que la pregunta 2
+  // existe para decir. Peor: de forma arbitraria, porque en español el tallo
+  // alterna y `recomend` agarra "recomendó" pero no "recomienda".
+  for (const p of [
+    'El consejo recomendó votar a favor de la propuesta',
+    'Un tercero recomendó a los accionistas rechazar el acuerdo',
+    'La empresa recomienda a sus accionistas votar en contra',
+    'El material de solicitación incluye una recomendación del consejo',
+    'La propuesta fue aconsejada por el comité',
+  ]) {
+    eq(intentar(p).secciones.length, 1, `discurso referido NO se corta: "${p.slice(0, 42)}…"`);
+  }
+
+  // Y en NUESTRA voz sigue cayendo, que es de lo que se trata.
+  for (const p of [
+    'Recomendamos votar a favor',
+    'Recomiendo mirar el próximo reporte',
+    'Sería aconsejable tomar una posición',
+    'Sugerimos esperar al cierre del trimestre',
+    'Deberías mirar el 4.02 antes que nada',
+  ]) {
+    eq(intentar(p).secciones.length, 0, `nuestra voz SÍ se corta: "${p.slice(0, 42)}…"`);
+  }
+
+  // El tiempo verbal no puede cambiar el veredicto. Era el síntoma del bug.
+  eq(intentar('El consejo recomendó X').secciones.length,
+    intentar('El consejo recomienda X').secciones.length,
+    'el mismo hecho en dos tiempos verbales se trata igual');
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+console.log('\n── La cita textual verificada se exime; la no verificada se corta');
+{
+  // La colisión que iba a pasar seguro: la extracción trae frases TEXTUALES
+  // de los documentos, y una carta de un activista dice "la acción está
+  // infravalorada" con todas las letras. Sin exención, el guardia cortaría
+  // una cita literal verificada — lo más verificable que el módulo tiene.
+  const CUERPO = new Map([['acc-1', 'El consejo cree que la acción está infravalorada y que el mercado no lo ve.']]);
+  const conCuerpo = (texto) => guardar([{ id: 'x', texto }], CITABLES, { cuerpos: CUERPO });
+
+  {
+    const r = conCuerpo('La carta del disidente dice «la acción está infravalorada» [acc-1].');
+    eq(r.estado, 'ok', 'una cita textual verificada pasa, aunque diga una valuación');
+    ok(/infravalorada/.test(r.secciones[0].texto), 'y el texto queda entero, con sus comillas');
+  }
+
+  // FAIL-CLOSED: sin cuerpo no hay verificación, y sin verificación no hay
+  // exención. Una comilla sin respaldo lava la voz del narrador como si
+  // fuera la de la empresa, que es peor que decir la opinión de frente.
+  {
+    const r = guardar([{ id: 'x', texto: 'La carta dice «la acción está infravalorada» [acc-1].' }], CITABLES);
+    eq(r.estado, 'rechazada', 'sin cuerpo guardado, la cita textual NO se exime');
+    eq(r.cortes[0].motivo, 'cita_textual_no_verificada', 'y el motivo lo dice');
+    hondo(r.cortes[0].frases, ['la acción está infravalorada'], 'nombrando la frase que no verificó');
+  }
+
+  // Una frase que NO está en el cuerpo tampoco pasa, aunque el cuerpo exista.
+  eq(conCuerpo('La carta dice «la acción está regalada» [acc-1].').estado, 'rechazada',
+    'una frase que no aparece en el cuerpo no verifica');
+
+  // Ni con un acento cambiado: el verificador es literal.
+  eq(conCuerpo('La carta dice «la accion está infravalorada» [acc-1].').estado, 'rechazada',
+    'ni con un acento distinto');
+
+  // Se verifica contra el cuerpo del documento QUE LA AFIRMACIÓN CITA, no
+  // contra cualquiera: si no, se le atribuiría a un papel lo que dijo otro.
+  eq(guardar([{ id: 'x', texto: 'El 8-K dice «la acción está infravalorada» [acc-2].' }],
+    CITABLES, { cuerpos: CUERPO }).estado, 'rechazada',
+  'la frase tiene que estar en el cuerpo del documento citado, no en otro');
+
+  // La exención cubre lo entrecomillado y NADA MÁS: la opinión propia
+  // pegada al lado de una cita válida sigue cayendo.
+  eq(conCuerpo('La carta dice «la acción está infravalorada» [acc-1] y recomendamos comprar.').estado,
+    'rechazada', 'una cita válida no habilita una opinión nuestra en la misma oración');
+
+  // El extractor de comillas, aparte.
+  hondo(entrecomillados('dice «uno» y también «dos»'), ['uno', 'dos'], 'saca todas las citas textuales');
+  hondo(entrecomillados('sin comillas'), [], 'y ninguna cuando no hay');
+  hondo(verificarEntrecomillados('«x» [acc-1]', { 'acc-1': 'algo con x adentro' }).map((c) => c.verificada),
+    [true], 'acepta un objeto además de un Map');
 }
 
 // ═════════════════════════════════════════════════════════════════════════

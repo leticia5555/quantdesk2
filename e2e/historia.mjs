@@ -522,6 +522,18 @@ async function abrir(respuesta, ruta = '/historia.html?ticker=MELI') {
   report('…y con qué versión de prompt', /prompt v1/.test(proc));
   report('…y que no predice ni recomienda', /Sin predicciones/.test(proc));
 
+  // QUÉ GARANTIZA LA CITA Y QUÉ NO. El lector tiene el mismo derecho a
+  // saberlo que el memo: el guardia verifica que el documento exista en la
+  // evidencia, no que la afirmación diga lo que el documento dice.
+  const alcance = await page.locator('.lectura .alcance').innerText();
+  report('la página declara qué verifica el guardia', /exista en la evidencia/.test(alcance), alcance);
+  report('…y qué NO verifica', /no que la afirmación diga lo que el documento dice/.test(alcance));
+  report('…diciendo cómo se comprueba eso', /abriéndolo/.test(alcance));
+  // Una clase, una cosa. `.proc` llegó a nombrar la procedencia Y el alcance,
+  // y el modo estricto de Playwright lo cazó — el mismo tropiezo que el
+  // `.vacio` de la Fase A.
+  report('cada bloque del pie tiene su propia clase', (await page.locator('.lectura .proc').count()) === 1);
+
   // Va ARRIBA: es el producto, no una nota al pie.
   report('la lectura va antes de la línea', await page.evaluate(() => {
     const l = document.querySelector('.lectura'); const t = document.querySelector('.linea');

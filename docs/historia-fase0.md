@@ -1745,6 +1745,19 @@ La fila del 2.02 importa: para lo que ya está en XBRL, el cuerpo es **peor
 fuente**, no mejor. Leerlo ahí sería cambiar un número etiquetado por uno
 parafraseado.
 
+### Lo que el guardia de citas verifica, y lo que no
+
+*Anotado acá y no solo en el reporte, por pedido del operador — y también en
+la página, porque el lector tiene el mismo derecho a saberlo.*
+
+> **El guardia de la rebanada I verifica que el documento EXISTA en la
+> evidencia, no que la afirmación DIGA lo que el documento dice.**
+
+Es la frase que hay que tener presente en todo lo que sigue. Hoy alcanza,
+porque el modelo no tiene contenido con el que equivocarse: solo índices y
+hechos XBRL. En cuanto entre la extracción, deja de alcanzar — y la cita
+textual verificada contra el cuerpo es lo que cubre la diferencia.
+
 ### El problema de la cita, que es el problema del módulo
 
 Hoy una afirmación cita un accession y el lector abre **un** documento y
@@ -1787,12 +1800,34 @@ guarda), así que **H1 es una sonda, no una consulta**: un `HEAD` por filing y
 leer el `Content-Length`. No se baja el cuerpo, es una request por documento y
 entra holgada en el techo de 10 req/s (§4, G4).
 
+**El script está escrito: `scripts/historia-h1.mjs`.**
+
+```bash
+DATABASE_URL=... SEC_USER_AGENT="QuantDesk tu@correo" node scripts/historia-h1.mjs
+#  --muestra=5          cuántos documentos se bajan enteros para el factor
+#  --formas=8-K,10-Q    qué formularios medir
 ```
-para cada 8-K de los cuatro emisores:
-    HEAD company_filings.url   →  Content-Length
-reportar: mediana y p90 en bytes y en tokens (≈ bytes/4 para HTML en inglés),
-          por emisor y en total
-```
+
+Las cuatro condiciones, cada una por un motivo:
+
+1. **Solo el documento principal.** Una `HEAD` por filing sobre
+   `company_filings.url`: una request, sin bajar el cuerpo.
+2. **Bytes de HTML no son tokens.** En un filing de EDGAR el marcado se come
+   la mitad o más, así que la aritmética sobre bytes crudos queda inflada dos
+   o tres veces. De una muestra chica se bajan los documentos enteros, se les
+   quitan las etiquetas y se mide la razón texto/bytes — y el informe imprime
+   **el tamaño de la muestra al lado del factor**, porque un factor medido
+   sobre tres documentos es eso y decirlo es parte del número. Los tokens se
+   cuentan con `count_tokens` cuando hay llave (no genera, no cuesta) y con
+   chars/4 cuando no, declarado como estimación.
+   La muestra sale de los **8-K**: medir el factor sobre 10-K daría un número
+   correcto sobre los documentos equivocados.
+3. **Mediana y p95, no promedio.** Un 10-K con anexos mueve un promedio y no
+   representa nada.
+4. **Separado por formulario.** Un 8-K y un 10-K difieren en un orden de
+   magnitud, y los que importan para la sección de dirección son los 8-K, que
+   son los chicos. Un número agregado haría descartar la extracción por el
+   peso de documentos que ni se van a extraer.
 
 Eso da el peso del documento primario **sin exhibits**, que es la cifra de la
 que cuelga toda la aritmética de arriba.
@@ -1894,7 +1929,7 @@ Con criterio fijado ANTES, como las compuertas de §4:
 
 | | qué mide | criterio |
 |---|---|---|
-| **H1** | peso real del **documento primario** de un 8-K (mediana y p90), por `HEAD` sobre su URL — no `size_bytes`, que es la submission entera | si la mediana pasa de ~6.000 tokens, (a) queda descartada sin discusión |
+| **H1** | peso real del **documento primario** (mediana y **p95**, por formulario) por `HEAD` sobre su URL — no `size_bytes`, que es la submission entera. `scripts/historia-h1.mjs` | si la mediana del **8-K** pasa de ~6.000 tokens, (a) queda descartada sin discusión |
 | **H2** | ¿se puede aislar el item 5.02 del HTML? | < 90% de documentos donde el encabezado se encuentra → (c) descartada |
 | **H3** | ¿la extracción con cita textual verifica? Ver la definición de abajo | **< 95% → no se hace.** Es la compuerta que manda |
 | **H4** | costo por filing de la extracción y cuántos filings por emisor | define si (b) es viable a 4.000 emisores |
@@ -2020,12 +2055,57 @@ confirmar que anda. Dos resultados:
    de abreviaturas, en cambio, sí hace falta: al mutarla, `EE.UU.` se parte al
    medio.
 
+### La colisión con las citas textuales, resuelta antes de que aparezca
+
+*Enmienda del 2026-09-21. El operador la vio venir: la extracción va a traer
+frases textuales de los documentos, y una carta de un activista dice "la
+acción está infravalorada" con todas las letras. El guardia cortaría una cita
+literal verificada — lo más verificable que el módulo tiene.*
+
+**La prohibición es sobre la voz del narrador, no sobre texto entre comillas
+comprobado contra el cuerpo.** Dos cambios:
+
+**1. El consejo de otro es un hecho; el nuestro es una recomendación.** La
+lista se partió en dos. `RAICES_CONSEJO` está marcada por persona —primera
+persona, imperativo, adjetivo deóntico— y el discurso referido no entra.
+`RAICES_VALUACION` sigue siendo ancha, porque "la acción está barata" no tiene
+primera persona y es una calificación igual.
+
+Esto arregló un bug que ya estaba vivo: la raíz `recomend` cortaba **"El
+consejo recomendó votar a favor [acc]"**, que es un hecho sobre un proxy y
+justamente lo que la pregunta 2 existe para decir. Y lo hacía de forma
+arbitraria, porque en español el tallo alterna: agarraba "recomendó" y
+"recomendamos" pero **no** "recomienda", así que la misma frase pasaba o se
+cortaba según el tiempo verbal.
+
+**2. La exención de la cita textual, fail-closed.** Lo entrecomillado con
+`«…»` se exime de los guardias de opinión y de fecha **solo si aparece
+literal en el cuerpo de alguno de los documentos que la propia afirmación
+cita**. Si no verifica, se corta con el motivo `cita_textual_no_verificada`.
+
+Tres decisiones adentro:
+
+- **`«…»` y no comillas rectas.** El delimitador decide qué se exime de un
+  guardia, así que es load-bearing; las comillas rectas aparecen solas en
+  prosa y un delimitador inequívoco vale más que uno natural.
+- **Contra el cuerpo del documento CITADO**, no contra cualquiera: si no, se
+  le atribuiría a un papel lo que dijo otro.
+- **La exención cubre lo entrecomillado y nada más.** La opinión propia
+  pegada al lado de una cita válida sigue cayendo.
+
+Hoy no hay cuerpos guardados, así que **ninguna cita textual verifica y
+ninguna pasa**. Es el estado correcto: la exención existe, está probada y está
+cerrada hasta que la extracción la abra. Por eso tampoco se tocó el prompt: una
+instrucción de "podés citar textual" sin cuerpos de dónde citar es una
+invitación a inventar comillas, y el guardia se las cortaría después de pagar
+la llamada.
+
 ### Lo que este guardia NO hace
 
-No verifica que una afirmación **diga** lo que el documento dice: verifica que
-el documento **exista** en la evidencia. La verificación de contenido es la
-cita textual, y es la que entra con la extracción (§11.8, H3) — usando este
-mismo verificador literal.
+**Verifica que el documento EXISTA en la evidencia, no que la afirmación DIGA
+lo que el documento dice.** La verificación de contenido es la cita textual, y
+es la que entra con la extracción (§11.8, H3) — usando este mismo verificador
+literal.
 
 ---
 

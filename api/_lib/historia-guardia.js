@@ -120,26 +120,91 @@ export const citasDe = (texto) => [...String(texto || '').matchAll(CITA_RE)].map
 // conclusión nuestra. Por eso la lista tiene verbos de consejo y adjetivos de
 // valuación, y NO tiene palabras como "riesgo" o "problema", que aparecen
 // legítimamente al describir lo que un 8-K dice de sí mismo.
-export const RAICES_OPINION = [
-  // consejo directo
-  'recomend', 'aconsej', 'suger(imos|encia)', 'deberías? (comprar|vender)',
-  // acción de mercado
-  'comprar (la )?(acción|acciones)', 'vender (la )?(acción|acciones)',
+// ── LA PROHIBICIÓN ES SOBRE LA VOZ DEL NARRADOR ─────────────────────
+//
+// La primera versión tenía una sola lista con la raíz `recomend`, y eso
+// cortaba **"El consejo recomendó votar a favor [acc]"** — un hecho sobre un
+// proxy, y justamente lo que la pregunta 2 existe para decir. Peor: lo hacía
+// de forma arbitraria, porque en español el tallo alterna. `recomend` agarra
+// "recomendó" y "recomendamos" pero NO "recomienda", así que la misma frase
+// pasaba o se cortaba según el tiempo verbal.
+//
+// El consejo en boca de otro es un HECHO; en la nuestra es una recomendación.
+// Por eso la lista de consejo está marcada por persona: primera persona,
+// imperativo o adjetivo deóntico. El discurso referido —"el consejo
+// recomendó", "la empresa recomienda a sus accionistas"— no entra.
+export const RAICES_CONSEJO = [
+  'recomendamos', 'recomiendo', 'recomendaría(mos)?', 'recomendable',
+  'aconsejamos', 'aconsejo', 'aconsejable',
+  'sugerimos', 'sugiero', 'nuestra sugerencia',
+  'conviene (comprar|vender|tomar|salir|entrar)',
+  'deberías?', 'habría que (comprar|vender)',
+  'vale la pena (comprar|invertir)',
   'tomar (una )?posición', 'salir de la posición',
-  // calificación
+];
+
+// El juicio de valuación, en cambio, es voz del narrador **sin importar la
+// persona**: "la acción está barata" no tiene primera persona y es una
+// calificación igual. Ésta es la lista que una cita textual sí puede
+// necesitar —la carta de un activista dice exactamente esto— y por eso la
+// exención de abajo existe.
+export const RAICES_VALUACION = [
   'sobreponder', 'infraponder', 'strong buy', 'strong sell',
   'precio objetivo', 'valuación atractiva', 'atractiva a estos precios',
   'está (barata|cara)', 'sobrevalorad', 'infravalorad', 'subvalorad',
-  // predicción de precio
+  '(buena|mala) inversión',
+  'comprar (la )?(acción|acciones)', 'vender (la )?(acción|acciones)',
   'la acción (va a|debería) (subir|bajar)', 'el precio (va a|debería) (subir|bajar)',
   'esperamos que (la acción|el precio)',
-  // veredicto de inversión
-  '(buena|mala) inversión', 'vale la pena (comprar|invertir)',
 ];
+
+export const RAICES_OPINION = [...RAICES_CONSEJO, ...RAICES_VALUACION];
 
 const RE_OPINION = new RegExp(`(${RAICES_OPINION.join('|')})`, 'i');
 
 export const tieneOpinion = (texto) => RE_OPINION.test(String(texto || ''));
+
+// ─────────────────────────────────────────────────────────────────────────
+// La exención de la cita textual
+// ─────────────────────────────────────────────────────────────────────────
+//
+// **El problema, previsto antes de que apareciera.** La extracción (§11.8) va
+// a traer frases TEXTUALES de los documentos, y una carta de un activista
+// dice "la acción está infravalorada" con todas las letras. Sin esto, el
+// guardia cortaría una cita literal verificada — lo más verificable que el
+// módulo tiene. La prohibición es sobre la voz del narrador, no sobre texto
+// entre comillas comprobado contra el cuerpo.
+//
+// Las comillas son `«…»` y no `"…"` a propósito: el delimitador es
+// load-bearing —decide qué se exime de un guardia— y las comillas rectas
+// aparecen solas en prosa. Un delimitador inequívoco vale más que uno
+// natural cuando de él cuelga una propiedad de seguridad.
+//
+// **FAIL-CLOSED, y es la parte que importa.** Una cita que NO se puede
+// verificar contra el cuerpo se corta, no se exime. Una comilla sin respaldo
+// lava la voz del narrador como si fuera la de la empresa, que es peor que
+// decir la misma opinión de frente.
+//
+// Hoy no hay cuerpos guardados, así que ninguna cita textual verifica y
+// ninguna pasa. Es el estado correcto: la exención existe y está cerrada
+// hasta que la extracción la abra.
+export const COMILLAS_RE = /«([^»]*)»/g;
+
+export const entrecomillados = (texto) => [...String(texto || '').matchAll(COMILLAS_RE)].map((m) => m[1]);
+
+// Devuelve las citas textuales de una afirmación, cada una con si verificó
+// contra alguno de los cuerpos de los documentos que la afirmación cita.
+export function verificarEntrecomillados(afirmacion, cuerpos) {
+  const mapa = cuerpos instanceof Map ? cuerpos : new Map(Object.entries(cuerpos || {}));
+  const accs = citasDe(afirmacion);
+  return entrecomillados(afirmacion).map((frase) => ({
+    frase,
+    // Tiene que aparecer literal en el cuerpo de ALGUNO de los documentos que
+    // la propia afirmación cita. Verificar contra cualquier cuerpo dejaría
+    // atribuir a un papel lo que dijo otro.
+    verificada: accs.some((a) => mapa.has(a) && apareceLiteral(frase, mapa.get(a))),
+  }));
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Guardia 3 — lo relativo a hoy
@@ -174,7 +239,7 @@ export const tieneRelativoAHoy = (texto) => RE_RELATIVA.test(String(texto || '')
 // El texto cortado viaja en el registro. La tentación es no guardarlo —"es
 // texto malo"— pero sin él no se puede ver qué dijo el modelo, que es
 // exactamente la queja que originó "la cruda se guarda siempre" (§11.4).
-export function guardar(secciones = [], citables = new Set()) {
+export function guardar(secciones = [], citables = new Set(), { cuerpos = new Map() } = {}) {
   const validas = citables instanceof Set ? citables : new Set(citables || []);
   const cortes = [];
   const salida = [];
@@ -189,11 +254,29 @@ export function guardar(secciones = [], citables = new Set()) {
         cortes.push({ seccion: s.id, motivo: 'cita_desconocida', citas: malas, texto: a });
         continue;
       }
-      if (tieneOpinion(a)) {
+
+      // Una cita textual sin respaldo se corta ANTES que nada más: lava la
+      // voz del narrador como si fuera la de la empresa.
+      const comillas = verificarEntrecomillados(a, cuerpos);
+      const sinRespaldo = comillas.filter((c) => !c.verificada);
+      if (sinRespaldo.length) {
+        cortes.push({
+          seccion: s.id, motivo: 'cita_textual_no_verificada',
+          frases: sinRespaldo.map((c) => c.frase), texto: a,
+        });
+        continue;
+      }
+
+      // Lo entrecomillado y VERIFICADO no es voz nuestra, así que sale del
+      // texto antes de buscar opinión. Lo de afuera de las comillas sigue
+      // bajo las mismas reglas de siempre.
+      const propio = comillas.reduce((t, c) => t.replace(`«${c.frase}»`, ' '), a);
+
+      if (tieneOpinion(propio)) {
         cortes.push({ seccion: s.id, motivo: 'opinion', texto: a });
         continue;
       }
-      if (tieneRelativoAHoy(a)) {
+      if (tieneRelativoAHoy(propio)) {
         cortes.push({ seccion: s.id, motivo: 'relativo_a_hoy', texto: a });
         continue;
       }
