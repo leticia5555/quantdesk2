@@ -18,6 +18,7 @@ import {
   referenciaManual, referenciasManuales, parseManualParam,
   proximaRanura, intervaloDe, penalizarPor429, planCorrida,
   elegibleMetodo, validaMetodo, verificaConReferencias, conteoImplicito, dispersionPrecios,
+  clasificaSeries,
   METODO, MAX_DESVIO_ENTERO_PCT,
 } from '../api/_lib/mercado-r0.js';
 import { CRITERIOS } from '../api/_lib/mercado-fase0.js';
@@ -922,4 +923,107 @@ test('el caso REAL de la corrida valida el método: 3 cuadran, 2 limpias', () =>
   assert.ok(m.valido);
   assert.equal(m.cuadran, 3);
   assert.equal(m.limpias_entre_las_que_cuadran, 2);
+});
+
+// ───── serie sin mercado: una serie que no opera no es un precio ─────
+
+const SV = (serie, precio, volumen_ventana, filas_ventana = 20) =>
+  ({ emisora_serie: serie, cierre: precio, volumen_ventana, filas_ventana });
+
+test('AMX: con A y L sin volumen, la dispersión cae a una sola serie', () => {
+  // Es el caso que pediste: A y L no operan, así que el capital cotiza
+  // entero como B y aplicarle el precio de B a todo deja de ser una
+  // aproximación.
+  const c = clasificaSeries({
+    series: [SV('AMXA', 19.5, 0), SV('AMXB', 19.91, 4.2e9), SV('AMXL', 16.1, 0, 0)],
+    serie_liquida: 'AMXB',
+  });
+  assert.equal(c.datos_rancios, false);
+  assert.deepEqual(c.con_mercado.map((x) => x.serie), ['AMXB']);
+  assert.deepEqual(c.sin_mercado.map((x) => x.serie).sort(), ['AMXA', 'AMXL']);
+
+  const d = dispersionPrecios({
+    series: c.con_mercado.map((x) => ({ emisora_serie: x.serie, cierre: x.precio })),
+    serie_liquida: 'AMXB',
+  });
+  assert.equal(d.requiere_desglose, false);
+  // Y con una sola serie viva, la fórmula deja de tener parámetros libres.
+  assert.equal(elegibleMetodo({ n_series: c.con_mercado.length, acciones_por_unidad: 1 }), true);
+});
+
+test('PINFRA: lo mismo si L no opera — y eso la vuelve resoluble sin referencia', () => {
+  const c = clasificaSeries({
+    series: [SV('PINFRA*', 258.14, 1.1e7), SV('PINFRAL', 195.99, 0)],
+    serie_liquida: 'PINFRA*',
+  });
+  assert.deepEqual(c.con_mercado.map((x) => x.serie), ['PINFRA*']);
+  assert.equal(elegibleMetodo({ n_series: c.con_mercado.length, acciones_por_unidad: 1 }), true);
+});
+
+test('FEMSA sigue gris: UB y UBD operan LAS DOS', () => {
+  const c = clasificaSeries({
+    series: [SV('FEMSAUB', 165, 3.4e6), SV('FEMSAUBD', 207.66, 9.8e7)],
+    serie_liquida: 'FEMSAUBD',
+  });
+  assert.equal(c.sin_mercado.length, 0);
+  const d = dispersionPrecios({
+    series: c.con_mercado.map((x) => ({ emisora_serie: x.serie, cierre: x.precio })),
+    serie_liquida: 'FEMSAUBD',
+  });
+  assert.equal(d.requiere_desglose, true, 'FEMSA no puede salvarse por esta regla');
+  assert.ok(d.spread_pct > 25);
+});
+
+test('COSECHA RANCIA: si la líquida tampoco opera, NO se excluye nada', () => {
+  // El modo de falla que esta regla podía abrir: con la cosecha atrasada,
+  // todas las series dan volumen 0, la dispersión desaparece y FEMSA, AMX y
+  // PINFRA se ponen verdes SOLAS. Un verde por falta de datos es peor que un
+  // gris: el gris se ve.
+  const c = clasificaSeries({
+    series: [SV('FEMSAUB', 165, 0, 0), SV('FEMSAUBD', 207.66, 0, 0)],
+    serie_liquida: 'FEMSAUBD',
+  });
+  assert.equal(c.datos_rancios, true);
+  assert.equal(c.sin_mercado.length, 0, 'con datos rancios no se excluye ninguna serie');
+  assert.equal(c.con_mercado.length, 2);
+  assert.match(c.motivo_rancio, /atraso de la cosecha/);
+
+  // Y la dispersión sigue viéndose, o sea que FEMSA sigue gris.
+  const d = dispersionPrecios({
+    series: c.con_mercado.map((x) => ({ emisora_serie: x.serie, cierre: x.precio })),
+    serie_liquida: 'FEMSAUBD',
+  });
+  assert.equal(d.requiere_desglose, true);
+});
+
+test('la serie LÍQUIDA nunca se declara sin mercado', () => {
+  // Excluirla dejaría a la emisora sin el precio que usa el cálculo.
+  const c = clasificaSeries({
+    series: [SV('XB', 10, 0), SV('XA', 9, 5e6)], serie_liquida: 'XB',
+  });
+  assert.equal(c.datos_rancios, true);
+  assert.ok(c.con_mercado.some((x) => x.serie === 'XB'));
+});
+
+test('volumen NULL cuenta como CON mercado — no saber no es saber que no', () => {
+  // Mantener la serie en la dispersión empuja hacia el gris, que es el lado
+  // seguro cuando falta el dato.
+  const c = clasificaSeries({
+    series: [SV('YA', 100, null), SV('YB', 130, 7e6)], serie_liquida: 'YB',
+  });
+  assert.equal(c.sin_mercado.length, 0);
+  assert.equal(c.con_mercado.length, 2);
+});
+
+test('se distingue "cotiza sin volumen" de "sin operaciones"', () => {
+  // Dos causas distintas, dos arreglos distintos: una serie con filas y
+  // volumen 0 existe y está quieta; una sin filas puede ser un problema de
+  // cosecha de ESA serie.
+  const c = clasificaSeries({
+    series: [SV('ZA', 5, 0, 22), SV('ZC', 5.2, 0, 0), SV('ZB', 20, 9e6)],
+    serie_liquida: 'ZB',
+  });
+  const por = Object.fromEntries(c.sin_mercado.map((x) => [x.serie, x.motivo]));
+  assert.match(por.ZA, /cotiza pero con volumen 0/);
+  assert.match(por.ZC, /sin operaciones/);
 });

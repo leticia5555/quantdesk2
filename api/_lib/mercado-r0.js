@@ -375,6 +375,77 @@ export function parseManualParam(raw, { fuente, capturada_en } = {}) {
 // ═══════════════════════════════════════════════════════════════════
 
 /**
+ * SERIE SIN MERCADO — una serie que no opera no es un precio, es un rótulo.
+ *
+ * Una cotización sin volumen no es una opinión del mercado sobre esa serie:
+ * es el último número que quedó pegado, o un valor de referencia. Meterla en
+ * la dispersión hace que una serie muerta mande a gris a una emisora cuyo
+ * capital, en los hechos, cotiza entero en otra serie.
+ *
+ * Regla: **volumen acumulado 0 en la ventana → la serie no cuenta**, ni para
+ * la dispersión ni para el cálculo. Y se REPORTA: "no cuenta" no es lo mismo
+ * que "no existe".
+ *
+ * ── EL MODO DE FALLA QUE ESTA FUNCIÓN EXISTE PARA CERRAR ─────────────
+ * Si la ventana se ancla en `now()` y la cosecha de precios está atrasada,
+ * TODAS las series dan volumen cero, toda la dispersión desaparece y FEMSA,
+ * AMX y PINFRA se ponen verdes **solas**. Un verde por falta de datos es
+ * peor que un gris: el gris se ve, el verde falso no.
+ *
+ * Dos anclas lo impiden:
+ *
+ *   1. La ventana se ancla en `max(fecha)` DE LA TABLA, no en el reloj. Así
+ *      se mide "los últimos 30 días de datos que tenemos", y el atraso de la
+ *      cosecha se reporta aparte en vez de disfrazarse de series muertas.
+ *   2. **La serie líquida nunca se puede declarar sin mercado.** Si ELLA no
+ *      operó en la ventana, el problema son los datos, no la serie: se
+ *      devuelve `datos_rancios` y NO se excluye nada. Fail closed.
+ *
+ * Y el volumen `null` (columna vacía) cuenta como CON mercado: no saber no
+ * es saber que no. Mantener la serie en la dispersión empuja hacia el gris,
+ * que es el lado seguro.
+ */
+export function clasificaSeries({ series = [], serie_liquida } = {}) {
+  const vivas = series
+    .map((x) => ({
+      serie: String((x && x.emisora_serie) || ''),
+      precio: num(x && x.cierre),
+      // null ≠ 0: sin dato de volumen la serie se conserva (fail closed).
+      volumen_ventana: x && x.volumen_ventana === undefined ? null : num(x.volumen_ventana),
+      filas_ventana: num(x && x.filas_ventana),
+    }))
+    .filter((x) => x.serie && x.precio != null && x.precio > 0);
+
+  const esLiquida = (x) => x.serie === serie_liquida;
+  const sinMercado = (x) => x.volumen_ventana != null && x.volumen_ventana <= 0;
+
+  const liquida = vivas.find(esLiquida) || null;
+  // Ancla 2: si la líquida no operó, esto es atraso de cosecha, no una serie
+  // muerta. No se excluye NADA.
+  if (liquida && sinMercado(liquida)) {
+    return {
+      con_mercado: vivas,
+      sin_mercado: [],
+      datos_rancios: true,
+      motivo_rancio: `la serie líquida (${serie_liquida}) no registra volumen en la ventana: eso es atraso de la cosecha de precios, no una serie sin mercado — no se excluye ninguna`,
+    };
+  }
+
+  const conMercado = vivas.filter((x) => esLiquida(x) || !sinMercado(x));
+  const muertas = vivas.filter((x) => !esLiquida(x) && sinMercado(x));
+
+  return {
+    con_mercado: conMercado,
+    sin_mercado: muertas.map((x) => ({
+      serie: x.serie, precio: x.precio, filas_ventana: x.filas_ventana,
+      motivo: x.filas_ventana ? 'cotiza pero con volumen 0 en la ventana' : 'sin operaciones en la ventana',
+    })),
+    datos_rancios: false,
+    motivo_rancio: null,
+  };
+}
+
+/**
  * LA PRUEBA DE FEMSA — y por qué el cálculo de una emisora multi-serie puede
  * estar mal aunque el divisor sea correcto.
  *

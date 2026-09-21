@@ -28,7 +28,7 @@ import {
   filaUniversoUs,
   referenciaManual, referenciasManuales, parseManualParam,
   proximaRanura, intervaloDe, penalizarPor429, planCorrida,
-  elegibleMetodo, validaMetodo, verificaConReferencias, dispersionPrecios, METODO,
+  elegibleMetodo, validaMetodo, verificaConReferencias, dispersionPrecios, clasificaSeries, METODO,
 } from './_lib/mercado-r0.js';
 import { CRITERIOS } from './_lib/mercado-fase0.js';
 import REFERENCIAS_CAP from './_lib/mercado-cap-referencia.json' with { type: 'json' };
@@ -494,6 +494,26 @@ async function jobUnidades({ ahora, manual }) {
     `select distinct on (emisora_serie) emisora, emisora_serie, fecha, cierre, importe
        from bmv_precios order by emisora_serie, fecha desc`).catch(() => []);
 
+  // ── VOLUMEN DE LA VENTANA, anclado a la TABLA y no al reloj ─────────
+  // Si se anclara en now() y la cosecha estuviera atrasada, todas las series
+  // darían volumen 0, la dispersión desaparecería y FEMSA/AMX/PINFRA se
+  // pondrían verdes solas. Anclado a `max(fecha)` se mide "los últimos N días
+  // de datos que tenemos", y el atraso se reporta aparte en vez de
+  // disfrazarse de series muertas.
+  const VENTANA_DIAS = 30;
+  const volumenes = await sql(
+    `with corte as (select max(fecha) hasta from bmv_precios)
+     select p.emisora_serie,
+            sum(coalesce(p.volumen, 0))::numeric  volumen_ventana,
+            count(*)::int                         filas_ventana
+       from bmv_precios p, corte c
+      where p.fecha > c.hasta - ($1::int * interval '1 day')
+      group by 1`, [VENTANA_DIAS]).catch(() => []);
+  const volPor = new Map(volumenes.map((v) => [v.emisora_serie, v]));
+  const [corte] = await sql('select max(fecha) hasta from bmv_precios').catch(() => [{}]);
+  const hastaFecha = corte && corte.hasta ? String(corte.hasta).slice(0, 10) : null;
+  const diasAtraso = hastaFecha ? Math.round((ahora - new Date(hastaFecha)) / 86400000) : null;
+
   const accPor = new Map(acciones.map((a) => [String(a.clave).toUpperCase(), a]));
   const preciosPor = new Map();
   for (const p of precios) {
@@ -518,8 +538,18 @@ async function jobUnidades({ ahora, manual }) {
     // ¿Las series de esta emisora cotizan a precios COMPARABLES y distintos?
     // Si sí, el cálculo le aplica el precio de una a todas las acciones y la
     // cap sale mal aunque el divisor esté bien (el caso FEMSA).
+    const conVol = series.map((x) => ({
+      ...x,
+      volumen_ventana: volPor.has(x.emisora_serie) ? volPor.get(x.emisora_serie).volumen_ventana : null,
+      filas_ventana: volPor.has(x.emisora_serie) ? volPor.get(x.emisora_serie).filas_ventana : 0,
+    }));
+    const clases = clasificaSeries({ series: conVol, serie_liquida: em.serie_liquida });
+
+    // La dispersión se mide SOLO entre series que operan. Una serie muerta no
+    // es un precio en desacuerdo: es el último número que quedó pegado.
     const disp = dispersionPrecios({
-      series, serie_liquida: em.serie_liquida, tolerancia_pct: CRITERIOS.g2_max_error_pct,
+      series: clases.con_mercado.map((x) => ({ emisora_serie: x.serie, cierre: x.precio })),
+      serie_liquida: em.serie_liquida, tolerancia_pct: CRITERIOS.g2_max_error_pct,
     });
 
     const calc = capConUnidades({
@@ -538,7 +568,11 @@ async function jobUnidades({ ahora, manual }) {
 
     return {
       clave, nombre: em.nombre, sector: em.sector,
-      serie_liquida: em.serie_liquida, n_series: series.length,
+      serie_liquida: em.serie_liquida,
+      n_series: series.length,
+      n_series_con_mercado: clases.con_mercado.length,
+      series_sin_mercado: clases.sin_mercado,
+      datos_rancios: clases.datos_rancios,
       acciones_por_unidad: em.acciones_por_unidad,
       unidad_fuente: em.unidad_fuente,
       periodo_xbrl: a ? `${a.anio}T${a.trimestre}` : null,
@@ -560,7 +594,12 @@ async function jobUnidades({ ahora, manual }) {
         : null,
       // Elegible para heredar el método: una serie, divisor 1. Se calcula con
       // las series REALES de bmv_precios, no con lo que declare el registro.
-      elegible_metodo: elegibleMetodo({ n_series: series.length, acciones_por_unidad: em.acciones_por_unidad }),
+      // Cuenta las series CON MERCADO, no las del catálogo: si solo una
+      // opera, no hay serie que elegir y la fórmula deja de tener parámetros
+      // libres. Es lo que vuelve resoluble a PINFRA sin referencia propia.
+      elegible_metodo: elegibleMetodo({
+        n_series: clases.con_mercado.length, acciones_por_unidad: em.acciones_por_unidad,
+      }),
     };
   });
 
@@ -579,6 +618,11 @@ async function jobUnidades({ ahora, manual }) {
 
     if (b.cap_calculada == null) {
       estado = 'gris_punteado'; motivo = b.motivo_calculo;
+    } else if (b.datos_rancios) {
+      // Ni siquiera la serie líquida operó: el problema son los datos, y un
+      // verde sacado de una tabla atrasada es peor que un gris.
+      estado = 'gris_punteado'; via = 'datos_rancios';
+      motivo = `la serie líquida no registra volumen en los últimos ${VENTANA_DIAS} días de datos: cosecha de precios atrasada`;
     } else if (b.dispersion.requiere_desglose) {
       // Manda sobre la verificación individual A PROPÓSITO: si las series
       // cotizan distinto, el número está estructuralmente mal aunque una
@@ -658,6 +702,19 @@ async function jobUnidades({ ahora, manual }) {
     // LA PRUEBA DE FEMSA, aplicada a las nueve.
     requieren_desglose: requierenDesglose,
     faltan_referencia_individual: faltanReferencia,
+    // El estado de la COSECHA de precios, una vez y global. Si esto está
+    // atrasado, medio reporte no vale y conviene verlo arriba.
+    datos_precio: {
+      ultima_fecha: hastaFecha,
+      dias_atraso: diasAtraso,
+      ventana_dias: VENTANA_DIAS,
+      emisoras_con_datos_rancios: salida.filter((s2) => s2.datos_rancios).map((s2) => s2.clave),
+      lectura: diasAtraso != null && diasAtraso > VENTANA_DIAS
+        ? `la cosecha de precios tiene ${diasAtraso} días de atraso, más que la ventana de ${VENTANA_DIAS}: la prueba de "serie sin mercado" no es confiable en esta corrida`
+        : null,
+    },
+    series_sin_mercado: salida.filter((s2) => s2.series_sin_mercado.length)
+      .map((s2) => ({ clave: s2.clave, excluidas: s2.series_sin_mercado })),
     // Precios viejos: lo que hace falta para saber si un error es del método
     // o de una cotización rancia (la duda de TLEVISA).
     precios_mas_viejos: salida.filter((s2) => s2.dias_precio != null)
