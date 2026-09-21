@@ -153,7 +153,7 @@ const D = (lang = 'es') => ({
   narracion: {
     estado: 'ok', hash: 'abc123', modelo: 'claude-opus-5', prompt_version: 1, creado_en: '2026-09-20T10:00:00Z',
     secciones: [
-      { id: 'direccion', texto: 'El 2026-02-20 la empresa reportó un cambio de directivos junto con sus resultados [0001-26-1].' },
+      { id: 'direccion', texto: 'El 2026-02-20 la empresa reportó un cambio de directivos junto con sus resultados [0001-26-1]. La misma presentación trae tres temas [0001-26-1] y se suma a los documentos de solicitación [0001-26-3] [0001-26-5] del mismo periodo, más la divulgación de noviembre [0001-25-7] y el reporte de enero [0001-26-2].' },
       { id: 'donde_se_rompe', texto: 'El 2026-03-01 avisó que no se puede confiar en estados financieros ya publicados [0001-26-9].' },
     ],
     declaraciones: [],
@@ -476,11 +476,33 @@ async function abrir(respuesta, ruta = '/historia.html?ticker=MELI') {
   report('…sin errores de JS', errores.length === 0, errores.join(' · '));
   report('…con sus secciones', (await page.locator('.lectura .parte').count()) === 2);
 
-  // LA CITA ES EL PRODUCTO: adentro de la prosa, visible y abrible.
-  const cita = page.locator('.lectura a.c').first();
-  report('las citas de la prosa son enlaces', (await page.locator('.lectura a.c').count()) === 2);
-  report('…que abren el documento', /sec\.gov/.test(await cita.getAttribute('href') || ''));
-  report('…y se ven como cita, con corchetes', /^\[0001-26-1\]$/.test((await cita.innerText()).trim()));
+  // LA CITA SALE DE LA FRASE, PERO NO DEJA DE ESTAR.
+  // Nueve accessions dentro de una oración la vuelven ilegible; era la razón
+  // número uno de que no se leyera como historia.
+  const marcas = page.locator('.lectura sup.c a');
+  report('las citas son marcas numeradas, no cadenas en la frase', (await marcas.count()) === 7);
+  report('…que abren el documento', /sec\.gov/.test(await marcas.first().getAttribute('href') || ''));
+  report('…y el hover dice qué papel es', /8-K/.test(await marcas.first().getAttribute('title') || ''));
+
+  const prosa = await page.locator('.lectura .parte p').first().innerText();
+  report('el párrafo ya NO lleva accessions adentro', !/\[\d{4}-\d{2}-\d\]/.test(prosa), prosa.slice(0, 100));
+  report('…y se lee como una oración', /reportó un cambio de directivos/.test(prosa));
+
+  // El mismo documento citado dos veces lleva el MISMO número: dos números
+  // harían parecer que son dos papeles.
+  const nums = await marcas.allInnerTexts();
+  report('el mismo documento repetido lleva el mismo número', nums[0] === nums[1], nums.join(','));
+  report('…y documentos distintos, números distintos', new Set(nums).size === 6, nums.join(','));
+
+  // El accession completo no desaparece: baja a la línea de fuentes.
+  const fuentes = await page.locator('.lectura .fuentes').first().innerText();
+  report('el accession completo vive en la línea de fuentes', /\[0001-26-1\]/.test(fuentes), fuentes.slice(0, 90));
+  report('…numerado igual que la marca del texto', new RegExp('\\b' + nums[0] + '\\s*\\[0001-26-1\\]').test(fuentes.replace(/\s+/g, ' ')));
+  report('…y enlazado', (await page.locator('.lectura .fuentes a').first().getAttribute('href') || '').includes('sec.gov'));
+  // Los números son inline: `.parte b` es block (es el título de la sección)
+  // y sin un display explícito cada fuente se iba a su propia línea.
+  report('…y la lista de fuentes es UNA línea que fluye, no una por renglón',
+    await page.evaluate(() => getComputedStyle(document.querySelector('.lectura .fuentes b')).display === 'inline'));
 
   // La procedencia. Una narración sin procedencia es una opinión anónima.
   const proc = await page.locator('.lectura .proc').innerText();
@@ -510,7 +532,7 @@ async function abrir(respuesta, ruta = '/historia.html?ticker=MELI') {
   report('el pie ya no dice "sin IA": la página ahora narra', !/sin IA/i.test(pie), pie.replace(/\n/g, ' '));
   report('…y sí dice lo que sigue siendo cierto', /sin predicciones de precio/i.test(pie) && /sin recomendaciones/i.test(pie));
 
-  await page.screenshot({ path: '/tmp/claude-0/-home-user-quantdesk2/c183cedc-10de-5593-8388-72ecf3a8e2f4/scratchpad/historia-lectura.png', fullPage: true });
+  await page.locator('.lectura').screenshot({ path: '/tmp/claude-0/-home-user-quantdesk2/c183cedc-10de-5593-8388-72ecf3a8e2f4/scratchpad/historia-lectura.png' });
   await page.close();
 }
 {

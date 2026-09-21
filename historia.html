@@ -111,11 +111,25 @@ input.tick:focus{border-color:var(--purple);}
 .lectura .parte p{font-size:13.5px;line-height:1.62;color:var(--text);}
 .lectura .parte.rompe-parte{border-top:1px solid var(--border);padding-top:11px;margin-top:14px;}
 .lectura .parte.rompe-parte b{color:#ffb0b0;}
-/* La cita dentro de la prosa: se ve y se abre. Es la diferencia entre esto
-   y un resumen bonito. */
-.lectura a.c{font-family:var(--mono);font-size:10.5px;color:var(--text3);text-decoration:none;
-  border-bottom:1px dotted var(--text3);white-space:nowrap;}
-.lectura a.c:hover{color:var(--green);border-bottom-color:var(--green);}
+/* LA CITA SALE DE LA FRASE, PERO NO DEJA DE ESTAR.
+   Nueve accessions dentro de una oración la vuelven ilegible — era la razón
+   número uno de que no se leyera como historia. Queda una marca al margen
+   del texto, numerada, que enlaza al documento y lo nombra en el hover; el
+   accession completo vive en la línea de fuentes de la sección, debajo.
+   Sigue siendo verificable a un clic, que es lo que no se negocia. */
+.lectura sup.c{font-size:9px;line-height:0;margin-left:1px;}
+.lectura sup.c a{font-family:var(--mono);color:var(--purple);text-decoration:none;padding:0 1px;}
+.lectura sup.c a:hover{color:var(--green);}
+.lectura sup.c + sup.c{margin-left:0;}
+.lectura .fuentes{font-family:var(--mono);font-size:10px;color:var(--text3);line-height:1.8;
+  margin-top:5px;letter-spacing:.02em;}
+.lectura .fuentes a{color:var(--text3);text-decoration:none;border-bottom:1px dotted var(--text3);}
+.lectura .fuentes a:hover{color:var(--green);border-bottom-color:var(--green);}
+.lectura .fuentes b{color:var(--purple);font-weight:400;
+  /* display:inline explícito: `.parte b` es block —es el título de la
+     sección— y las fuentes viven adentro de `.parte`, así que sin esto cada
+     número se iba a su propia línea. */
+  display:inline;}
 .lectura .proc{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.04em;
   border-top:1px solid var(--border);padding-top:9px;margin-top:12px;line-height:1.6;}
 .lectura.falta{border-left-color:var(--text3);}
@@ -331,6 +345,7 @@ const T = {
     intentos: (n) => `${n} intento(s) pagado(s)`,
     proc: (m, v, f) => `Escrita por ${m} · prompt v${v}${f ? ' · ' + f : ''}. Cada afirmación enlaza al documento del que sale. Sin predicciones, sin calificaciones, sin recomendaciones.`,
     citas_malas: 'Citas que no resuelven:',
+    fuentes: 'Fuentes:',
     vacio_filtro: 'Ningún documento de este emisor contesta esta pregunta.',
     vacio_nocubre: 'Esta pregunta no se contesta con documentos de EDGAR, así que la línea no tiene nada que mostrar. El motivo está arriba — y no es que hayamos buscado y no hubiera.',
     contesta_q: (n) => `Pregunta ${n}`,
@@ -391,6 +406,7 @@ const T = {
     intentos: (n) => `${n} paid attempt(s)`,
     proc: (m, v, f) => `Written by ${m} · prompt v${v}${f ? ' · ' + f : ''}. Every claim links to the document it comes from. No predictions, no ratings, no recommendations.`,
     citas_malas: 'Citations that do not resolve:',
+    fuentes: 'Sources:',
     vacio_filtro: 'No document from this issuer answers this question.',
     vacio_nocubre: 'This question is not answered with EDGAR documents, so the timeline has nothing to show. The reason is above — and it is not that we looked and found nothing.',
     contesta_q: (n) => `Question ${n}`,
@@ -669,29 +685,65 @@ function lecturaHTML(d) {
   // El índice de lo citable sale de lo que ESTA página ya tiene. Una cita que
   // no está acá no se enlaza — y el servidor ya retuvo la narración entera en
   // ese caso, así que llegar acá con una desconocida no debería pasar.
-  const url = new Map();
-  for (const e of ((d.linea_de_tiempo || {}).eventos || [])) url.set(e.accession, e.url);
+  const meta = new Map();
+  for (const e of ((d.linea_de_tiempo || {}).eventos || [])) {
+    meta.set(e.accession, { url: e.url, form: e.form, fecha: e.filed });
+  }
   for (const s of (d.secciones || [])) {
     for (const p of (s.serie || [])) {
-      if (p.accession) url.set(p.accession, p.url);
-      if (p.accession_aux) url.set(p.accession_aux, p.url_aux);
+      if (p.accession && !meta.has(p.accession)) meta.set(p.accession, { url: p.url, form: p.form, fecha: p.filed });
+      if (p.accession_aux && !meta.has(p.accession_aux)) meta.set(p.accession_aux, { url: p.url_aux, form: null, fecha: null });
     }
   }
 
-  // Se escapa PRIMERO y se enlaza después, sobre el texto ya escapado: al
-  // revés, el href entraría al escape y la cita quedaría rota.
-  const conCitas = (texto) => esc(texto).replace(/\[([A-Za-z0-9][A-Za-z0-9.\-]{2,})\]/g, (m, a) => (url.has(a)
-    ? `<a class="c" href="${esc(url.get(a))}" target="_blank" rel="noopener">[${esc(a)}]</a>`
-    : m));
+  // La numeración es de la lectura ENTERA, no por sección: el mismo documento
+  // lleva el mismo número aunque lo citen dos secciones distintas. Verlo
+  // repetido con dos números haría parecer que son dos papeles.
+  const numero = new Map();
+  const asignar = (a) => {
+    if (!numero.has(a)) numero.set(a, numero.size + 1);
+    return numero.get(a);
+  };
+
+  // Se escapa PRIMERO y se marca después, sobre el texto ya escapado: al
+  // revés, el href entraría al escape y el enlace quedaría roto.
+  const conCitas = (texto) => {
+    const usadas = [];
+    const html = esc(texto).replace(/\[([A-Za-z0-9][A-Za-z0-9.\-]{2,})\]/g, (m, a) => {
+      const info = meta.get(a);
+      if (!info) return m;                       // desconocida: se deja cruda
+      const num = asignar(a);
+      if (!usadas.includes(a)) usadas.push(a);
+      const rotulo = [info.form, info.fecha, `[${a}]`].filter(Boolean).join(' · ');
+      return `<sup class="c"><a href="${esc(info.url)}" target="_blank" rel="noopener" title="${esc(rotulo)}">${num}</a></sup>`;
+    });
+    return { html, usadas };
+  };
 
   const titulo = (id) => (id === 'donde_se_rompe' ? t.rompe : (TITULOS[LANG][id] || id));
 
+  // El accession completo no desaparece: baja a la línea de fuentes de su
+  // sección. La marca dice DÓNDE aplica; la línea dice QUÉ es.
+  const fuentesHTML = (usadas) => (usadas.length
+    ? `<div class="fuentes">${esc(t.fuentes)} ${usadas.map((a) => {
+      const info = meta.get(a);
+      const rotulo = [info.form, info.fecha].filter(Boolean).join(' ');
+      return `<b>${numero.get(a)}</b> <a href="${esc(info.url)}" target="_blank" rel="noopener">[${esc(a)}]</a>${rotulo ? ' ' + esc(rotulo) : ''}`;
+    }).join(' · ')}</div>`
+    : '');
+
+  const partes = (n.secciones || []).map((s) => {
+    const { html, usadas } = conCitas(s.texto);
+    return `<div class="parte${s.id === 'donde_se_rompe' ? ' rompe-parte' : ''}">
+      <b>${esc(titulo(s.id))}</b>
+      <p>${html}</p>
+      ${fuentesHTML(usadas)}
+    </div>`;
+  }).join('');
+
   return `<div class="lectura">
     <h3>${esc(t.lectura)}</h3>
-    ${(n.secciones || []).map((s) => `<div class="parte${s.id === 'donde_se_rompe' ? ' rompe-parte' : ''}">
-      <b>${esc(titulo(s.id))}</b>
-      <p>${conCitas(s.texto)}</p>
-    </div>`).join('')}
+    ${partes}
     <div class="proc">${esc(t.proc(n.modelo || '', n.prompt_version || '', String(n.creado_en || '').slice(0, 10)))}</div>
   </div>`;
 }

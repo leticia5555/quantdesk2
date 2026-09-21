@@ -56,16 +56,47 @@ export async function correrNarracion(ticker, {
 } = {}) {
   const { cuerpo } = await armarHistoria(lectura, ticker, { lang });
   if (cuerpo.estado !== 'ok') {
-    return { status: 409, cuerpo: { ticker, estado: cuerpo.estado, detalle: cuerpo.detalle, narrada: false } };
+    return { status: 409, cuerpo: { ticker, estado: cuerpo.estado, detalle: cuerpo.detalle, narrada: false, intentos: 0 } };
   }
 
   const paq = respuestaEvidencia(cuerpo, { ticker });
   if (!paq.narrable) {
-    return { status: 409, cuerpo: { ticker, estado: 'no_narrable', narrada: false } };
+    return { status: 409, cuerpo: { ticker, estado: 'no_narrable', narrada: false, intentos: 0 } };
   }
 
   const hash = hashNarracion(paq.evidencia);
   const cik = cuerpo.emisor.cik;
+
+  // ── NO SE LLAMA A LO QUE NO SE VA A PODER GUARDAR ───────────────────
+  //
+  // Esto existe por un gasto perdido real (§11.7). Antes, el orden efectivo
+  // con `forzar=1` era: armar evidencia → llamar a Opus → guardar → truena,
+  // porque la lectura previa de company_narracion se saltea con forzar. Se
+  // pagó la llamada y se perdió la respuesta — y lo peor: la respuesta cruda
+  // se guarda en esa fila, así que el resguardo vivía en la misma tabla que
+  // falló.
+  //
+  // Que el orden quedara bien sin forzar era un accidente: una lectura que
+  // pasaba a estar primero, no una garantía. Ahora es explícito y va antes de
+  // TODOS los caminos que gastan.
+  if (almacen.esquemaListo) {
+    let listo = await almacen.esquemaListo();
+    // Un intento de arreglarlo solo. `asegurarEsquema` es idempotente y es lo
+    // mismo que corre el goteo al sembrar.
+    if (!listo && almacen.asegurarEsquema) {
+      await almacen.asegurarEsquema();
+      listo = await almacen.esquemaListo();
+    }
+    if (!listo) {
+      return {
+        status: 503,
+        cuerpo: {
+          ticker, cik, hash, estado: 'sin_esquema', narrada: false, intentos: 0, costo: null,
+          detalle: 'Falta la tabla company_narracion y no se pudo crear. NO se llamó al modelo: una llamada que no se va a poder guardar no se hace. Aplicá docs/sql/historia.sql o corré /api/historia-harvest?job=sembrar, que asegura el esquema.',
+        },
+      };
+    }
+  }
 
   // Lo que hubo antes en este hash, sirva o no: hace falta para las dos
   // decisiones de abajo (no re-narrar lo que ya está, y no reintentar para
@@ -80,6 +111,9 @@ export async function correrNarracion(ticker, {
         status: 200,
         cuerpo: {
           ticker, cik, hash, estado: 'ok', narrada: false, cacheada: true,
+          // Cero llamadas en ESTA corrida. Que el campo esté siempre evita
+          // tener que deducir de su ausencia si hubo llamada o no.
+          intentos: 0,
           creado_en: guardada.creado_en, costo: null,
           secciones: guardada.secciones,
         },
@@ -94,6 +128,7 @@ export async function correrNarracion(ticker, {
       status: 200,
       cuerpo: {
         ticker, cik, hash, estado: 'simulado', narrada: false,
+        intentos: 0,
         evidencia_bytes: paq.bytes,
         inventario: paq.inventario.length,
         huerfanos: paq.huerfanos,
@@ -119,6 +154,7 @@ export async function correrNarracion(ticker, {
       status: 409,
       cuerpo: {
         ticker, cik, hash, estado: 'cortada_definitiva', narrada: false, costo: null,
+        intentos: 0,
         intentos_gastados: gastados,
         detalle: `Se cortó ${gastados} veces, la segunda con el techo en ${MAX_TOKENS_REINTENTO}. No se reintenta: con la misma evidencia el resultado no cambia. Usá forzar=1 si querés pagarlo igual.`,
       },
@@ -140,21 +176,46 @@ export async function correrNarracion(ticker, {
   const costo = sumarCostos(intentos.map((i) => i.costo));
 
   // SE GUARDA SIEMPRE, cualquiera sea el estado.
-  await almacen.guardarNarracion({
-    cik,
-    hash: r.hash,
-    estado: r.estado,
-    prompt_version: r.prompt_version,
-    modelo: r.modelo_servido || r.modelo,
-    huella_prompt: r.huella_prompt,
-    secciones: r.estado === 'ok' ? r.secciones : null,
-    // La cruda del ÚLTIMO intento, que es el que decidió el estado.
-    crudo: r.crudo,
-    costo,
-    detalle: r.detalle || r.categoria || null,
-    evidencia_bytes: paq.bytes,
-    intentos: intentos.length,
-  });
+  //
+  // Y si el guardado falla, la respuesta se lleva TODO lo que se pagó. No es
+  // paranoia: el resguardo de la cruda es esta misma fila, así que cuando la
+  // escritura falla el único lugar que queda para lo que costó plata es la
+  // respuesta HTTP. Un fallo que costó plata tiene que decir cuánto costó —
+  // y entregar lo que se compró.
+  try {
+    await almacen.guardarNarracion({
+      cik,
+      hash: r.hash,
+      estado: r.estado,
+      prompt_version: r.prompt_version,
+      modelo: r.modelo_servido || r.modelo,
+      huella_prompt: r.huella_prompt,
+      secciones: r.estado === 'ok' ? r.secciones : null,
+      // La cruda del ÚLTIMO intento, que es el que decidió el estado.
+      crudo: r.crudo,
+      costo,
+      detalle: r.detalle || r.categoria || null,
+      evidencia_bytes: paq.bytes,
+      intentos: intentos.length,
+    });
+  } catch (e) {
+    return {
+      status: 502,
+      cuerpo: {
+        ticker, cik, hash,
+        estado: 'guardado_fallido',
+        narrada: false,
+        intentos: intentos.length,
+        detalle: `La llamada se hizo y se pagó, pero no se pudo guardar: ${(e && e.message) || e}. Lo que sigue es lo único que queda de esta corrida.`,
+        costo,
+        // En qué había terminado el modelo, que si no se pierde con la fila.
+        estado_modelo: r.estado,
+        // Lo que se compró va ACÁ, porque en la tabla no entró.
+        secciones: r.estado === 'ok' ? r.secciones : null,
+        crudo_no_guardado: r.crudo,
+      },
+    };
+  }
 
   return {
     status: r.estado === 'ok' ? 200 : 502,

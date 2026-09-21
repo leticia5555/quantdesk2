@@ -475,9 +475,21 @@ export const hashEvidencia = (paquete) => hashDe(paquete);
 // de podar, ningún accession que el paquete nombre como cita puede quedar sin
 // resolver en el inventario.** Vale para los eventos, los vecinos, las anclas
 // de los episodios, las citas de la serie y las de la contraevidencia.
+// Lo que se excluyó, SIEMPRE con la misma forma. En este módulo un `null` no
+// puede querer decir dos cosas: "no se excluyó nada" y "no se calculó" llevan
+// a acciones opuestas, y la única manera de distinguirlos desde afuera sería
+// adivinar. Cuando no se excluyó nada, los contadores van en cero.
+export const NADA_EXCLUIDO = {
+  eventos: 0, episodios: 0, serie: 0, razones: 0, periodos_reexpresados: 0,
+  vecinos: 0, accessions_excluidos: [],
+};
+
 export function podarSinCita(paquete, huerfanos = []) {
   const malo = new Set(huerfanos);
-  if (!malo.size || !paquete || !paquete.narrable) return { paquete, excluidos: null };
+  // Un paquete no narrable no se poda Y no se puede afirmar nada sobre lo
+  // excluido: ahí sí va `null`, y es el único caso.
+  if (!paquete || !paquete.narrable) return { paquete, excluidos: null };
+  if (!malo.size) return { paquete, excluidos: { ...NADA_EXCLUIDO } };
 
   const limpio = (x) => !(x.citas || []).some((c) => malo.has(c));
   const linea = paquete.linea || {};
@@ -545,8 +557,10 @@ export function respuestaEvidencia(cuerpo, { ticker = null, limite = LIMITE_EVEN
   return {
     ticker: ticker || (cuerpo && cuerpo.ticker) || null,
     narrable: evidencia.narrable,
-    // Lo que se sacó por no tener contra qué verificarse. `null` cuando no se
-    // sacó nada, que es lo normal: un huérfano es un defecto del armado.
+    // Lo que se sacó por no tener contra qué verificarse. Siempre con la
+    // misma forma: ceros cuando no se sacó nada —que es lo normal, porque un
+    // huérfano es un defecto del armado— y `null` SOLO cuando el paquete no
+    // es narrable y por lo tanto no hay nada que afirmar.
     excluidos_sin_cita: excluidos,
     // El hash con el que se guarda la narración: la historia cambia cuando
     // cambia un filing, no cuando alguien abre la página.

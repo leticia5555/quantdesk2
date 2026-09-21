@@ -526,12 +526,13 @@ vez de tres. Es un descuento directo en el contexto que se paga por corrida.
 | Rebanada H: prompt congelado + versión en el hash + la llamada + persistencia + puerta autenticada (§11.4) | 9–13 |
 | Correcciones sobre la H: invariante de citas colgadas, tope del reintento, tres estados en pantalla (§11.5) | 3–4 |
 | Arreglo del diagnóstico + errores JSON en /api/ + pruebas de handler (§11.6) | 1–2 |
+| Gasto perdido: esquema verificado antes de gastar + costo en los fallos + citas fuera de la frase (§11.7) | 2–3 |
 | **Guard de citas**: toda `[accession]` de la salida tiene que existir en el contexto que se mandó; si no, se corta | 5–7 |
 | **Guard anti-opinión**: prohibido precio, calificación y recomendación, con tests que lo intenten | 5–7 |
 | Retiro del AI verdict de SMART $ + i18n + tests (§9) | 3–5 |
-| **Subtotal Fase B** | **31–45** |
+| **Subtotal Fase B** | **33–48** |
 
-**Total: 76–110 horas.** Más, si G5 empuja a extraer guía de prosa: **+10–16**
+**Total: 78–113 horas.** Más, si G5 empuja a extraer guía de prosa: **+10–16**
 por la salida 2 de §3 (y por eso la recomendación es la salida 1).
 
 Las dos líneas que más pueden moverse y hay que vigilar:
@@ -1637,6 +1638,234 @@ Quien llega ahí está preguntando *"¿mi llave está entrando?"*. Ahora lo dice
 por qué puerta llegó, de cuántos caracteres, y si sirve — un booleano. Nunca
 el valor. Es la misma información que el 401 ya daba, así que no expone nada
 nuevo, y ahorra el viaje de probar contra un job de verdad.
+
+---
+
+## 11.7. La primera corrida real, y lo que costó
+
+*2026-09-21. MELI narrado desde la máquina del operador.*
+
+| | |
+|---|---|
+| costo por historia | **$0,1719** |
+| entrada | 14.344 tokens · $0,0717 (42%) |
+| salida | 3.957 tokens · $0,0989 (**58%**) |
+| caché leído | 2.487 tokens · $0,0012 (1%) |
+
+**El costo lo manda la salida, no el paquete.** La evidencia entera —12.000
+tokens de línea de tiempo, serie y razones— cuesta menos que las cinco
+secciones que el modelo escribe. Es el dato que reordena todo lo que sigue:
+apretar el paquete no mueve la aguja; lo que la mueve es cuánto se escribe.
+
+**El caché queda cerrado como tema.** El prefijo pegó al 100%, pero fueron
+2.487 tokens de 16.831 — **15% de la entrada, un centavo**. El techo es chico
+por construcción: ~1.400 tokens de prompt congelado contra ~12.000 de
+evidencia que no se comparte entre emisores. No hay nada que exprimir.
+
+De paso, `costoDe` reportaba solo `cache_pego_pct` (lectura sobre cacheable),
+que dio 100% y **se lee como si el caché hiciera todo el trabajo**. Ahora
+reporta también `cache_del_total_pct` —cuánto de la entrada vino del caché,
+14,8%—, que es el número que el operador calculó a mano justamente porque el
+otro no lo decía.
+
+### El gasto perdido, y por qué el resguardo no resguardaba
+
+Dos llamadas anteriores murieron con `relation company_narracion does not
+exist`. El orden efectivo era: armar evidencia → llamar a Opus → guardar →
+tronar.
+
+Sin `forzar=1` la lectura previa de la tabla iba primero y fallaba **gratis**.
+Con `forzar=1` esa lectura se saltea, así que el primer contacto con la tabla
+era el GUARDADO: la llamada se pagó y la respuesta se perdió. Y que el orden
+quedara bien sin forzar era un accidente —una lectura que casualmente estaba
+antes—, no una garantía.
+
+Peor, y es el punto que importa: **la respuesta cruda se guarda en esa fila, o
+sea que el resguardo vivía en la misma tabla que falló.**
+
+Dos arreglos:
+
+1. **Se verifica el esquema antes de cualquier camino que gaste.** Si falta,
+   se intenta crear una vez (`asegurarEsquema` es idempotente); si sigue
+   faltando, **503 sin llamar**. Una llamada que no se va a poder guardar no
+   se hace.
+2. **Un fallo posterior a la llamada reporta el costo ya incurrido** y
+   devuelve lo que se compró —las secciones y la cruda— en la respuesta HTTP,
+   porque cuando la escritura falla ése es el único lugar que queda.
+
+Y dos cosas que el operador pidió y no estaban: `intentos` viaja en **toda**
+respuesta (0 cuando no hubo llamada), y `excluidos_sin_cita` ya no es `null`
+cuando no se excluyó nada — van los contadores en cero. En este módulo un
+`null` no puede querer decir dos cosas.
+
+### Las citas salieron de la frase
+
+Nueve accessions dentro de una oración la vuelven ilegible, y era la razón
+número uno de que no se leyera como historia. Ahora la cita es una **marca
+numerada al margen del texto** que enlaza al documento y lo nombra en el
+hover; el accession completo baja a la línea de fuentes de la sección. La
+numeración es de la lectura entera, así que el mismo papel citado dos veces
+lleva el mismo número — dos números harían parecer que son dos papeles.
+
+Sigue siendo verificable a un clic, que es lo que no se negocia.
+
+---
+
+## 11.8. La decisión grande: leer el cuerpo de los 8-K
+
+*Memo pedido el 2026-09-21. **No se implementa nada acá.** Es la decisión más
+grande que le queda al módulo y va escrita antes de empezar.*
+
+### El diagnóstico, que la propia narración dio
+
+La sección `direccion` de MELI lo dijo sola:
+
+> *"la evidencia cuenta documentos y fechas, no describe qué cargo cambió en
+> cada caso"*
+
+Nueve 8-K con item 5.02 y no se puede decir quién entró ni quién salió. Las
+dos secciones que funcionan son las que se apoyan en XBRL, **donde sí hay
+contenido**.
+
+Esto no es un defecto del prompt ni del modelo: es estructural. Hoy el módulo
+lee el **índice** de EDGAR —qué documento existe, de qué formulario, con qué
+items, en qué fecha— y los **hechos XBRL**. El cuerpo del documento no se baja.
+El índice dice que hubo un cambio de directivos; el cuerpo dice cuál.
+
+### Qué se podría extraer, y qué no
+
+| item | qué hay en el cuerpo | ¿lo tenemos hoy? |
+|---|---|---|
+| 5.02 | nombre, cargo, si fue salida o nombramiento, fecha efectiva, arreglo de compensación | **no** |
+| 1.01 / 2.01 | contraparte, tipo de acuerdo, monto cuando se divulga | **no** |
+| 4.02 | qué periodos no son confiables y por qué | **no** (solo que existe) |
+| 5.07 | el recuento de votos, propuesta por propuesta | **no** (solo que hubo votación) |
+| 2.02 | los números del trimestre, en el EX-99.1 | **ya los tenemos, y mejor**: XBRL etiquetado |
+
+La fila del 2.02 importa: para lo que ya está en XBRL, el cuerpo es **peor
+fuente**, no mejor. Leerlo ahí sería cambiar un número etiquetado por uno
+parafraseado.
+
+### El problema de la cita, que es el problema del módulo
+
+Hoy una afirmación cita un accession y el lector abre **un** documento y
+cuenta. Si la afirmación sale de la página 3 de un exhibit de 40 páginas, el
+accession sigue siendo correcto pero la promesa se degrada: de *"abrí esto y
+contá"* a *"abrí esto y buscá"*.
+
+La unidad de cita que sobrevive a leer cuerpos es **la cita textual**: un
+fragmento literal del documento, que el lector confirma con un Ctrl-F y que
+una máquina puede verificar contra el cuerpo guardado. Una paráfrasis no es
+verificable; una cita textual aparece o no aparece.
+
+**Recomendación: nada que salga de un cuerpo entra sin su fragmento literal.**
+
+### El costo: qué está medido y qué no
+
+**Medido:**
+
+- Paquete actual: 41,4 KB / ~12.000 tokens en un emisor duro (§11.3).
+- Corrida real: 14.344 tokens de entrada, $0,1719 por historia, **la salida es
+  el 58%** (§11.7).
+
+**NO medido, y no se puede medir desde el contenedor de la Fase A** — no
+alcanza `sec.gov` (§0):
+
+- Cuánto pesa el **documento primario** de un 8-K.
+- Cuánto pesa el **item relevante** aislado del resto.
+
+`company_filings.size_bytes` existe, pero **mide la submission completa**
+—todos los documentos, exhibits y el XBRL—, así que sirve como **cota
+superior**, no como el peso del cuerpo. Con eso ya se puede sacar el primer
+número sin bajar nada:
+
+```sql
+-- Cota superior del peso de un 8-K, por emisor. Es la submission ENTERA:
+-- el documento primario es una fracción de esto.
+select e.ticker,
+       count(*)                                        as ochokas,
+       round(avg(f.size_bytes) / 1024.0)               as kb_prom,
+       round(percentile_cont(0.5) within group (order by f.size_bytes) / 1024.0) as kb_mediana,
+       round(percentile_cont(0.9) within group (order by f.size_bytes) / 1024.0) as kb_p90
+  from company_filings f
+  join company_emisor e on e.cik = f.cik
+ where f.form = '8-K'
+ group by e.ticker
+ order by kb_p90 desc;
+```
+
+### La aritmética, parametrizada porque el insumo no está medido
+
+Entrada a $5/MTok. Hoy la entrada son 14.344 tokens ($0,072 de $0,172).
+
+| tokens útiles por 8-K | 20 filings | entrada extra | costo por historia |
+|---|---|---|---|
+| 500 (solo el párrafo del item) | 10.000 | $0,050 | ~$0,22 (+28%) |
+| 2.000 (el item con su contexto) | 40.000 | $0,200 | ~$0,37 (**+116%**) |
+| 8.000 (documento primario entero) | 160.000 | $0,800 | ~$0,97 (**+465%**) |
+
+**Toda la sensibilidad está en una cifra que no está medida.** Por eso el
+primer paso no es escribir código: es medir cuánto pesa el pedazo útil.
+
+### Tres arquitecturas
+
+**(a) Cuerpos completos al prompt de narración.** Lo más simple de escribir y
+lo peor en las tres dimensiones: el más caro (fila de abajo de la tabla), la
+peor cita (la afirmación apunta a 40 páginas) y la mayor superficie de
+invención, porque el modelo resume prosa libre.
+
+**(b) Extracción por filing, en una pasada aparte, barata, con cita textual
+obligatoria.** Un modelo chico (Haiku) lee UN documento y devuelve hechos
+estructurados —nombre, cargo, entró/salió, fecha— cada uno con su fragmento
+literal. Se guarda por accession. La narración consume **esos hechos**, no el
+cuerpo.
+
+- El paquete crece poco: un 5.02 son cuatro campos, no 8.000 tokens.
+- Se paga **una vez por documento**, no una vez por historia: un filing no
+  cambia nunca.
+- La cita textual se puede **verificar mecánicamente** contra el cuerpo
+  guardado — es la extensión natural del guardia de citas de la rebanada I.
+- Riesgo: la extracción puede errar. Pero un error con fragmento literal es
+  falsable; una paráfrasis, no.
+
+**(c) Recortar el item del HTML y mandarlo.** Barato, pero el HTML de EDGAR es
+notoriamente irregular y un recorte que falla en silencio manda el párrafo
+equivocado con la cita correcta, que es el peor resultado posible.
+
+**Recomendación: (b).**
+
+### El riesgo que no es de costo
+
+Hoy el modelo **no puede inventar el nombre de un CFO porque no tiene ningún
+nombre**. Los nombres, los cargos y los montos son exactamente donde un
+resumidor deriva, y el diferenciador entero del módulo es "cero números
+inventados".
+
+Darle cuerpos cambia esa propiedad de raíz. La cita textual obligatoria es lo
+que la reemplaza: un fragmento aparece en el documento o no aparece, y eso es
+mecánicamente comprobable.
+
+### Lo que habría que medir antes de escribir una línea
+
+Con criterio fijado ANTES, como las compuertas de §4:
+
+| | qué mide | criterio |
+|---|---|---|
+| **H1** | peso real del documento primario de un 8-K (mediana y p90), en los cuatro emisores | si la mediana pasa de ~6.000 tokens, (a) queda descartada sin discusión |
+| **H2** | ¿se puede aislar el item 5.02 del HTML? | < 90% de documentos donde el encabezado se encuentra → (c) descartada |
+| **H3** | ¿la extracción con cita textual verifica? Fragmentos que aparecen **literal** en el cuerpo | **< 95% → no se hace.** Es la compuerta que manda |
+| **H4** | costo por filing de la extracción y cuántos filings por emisor | define si (b) es viable a 4.000 emisores |
+
+**H3 es la que decide.** Si los fragmentos no verifican, leer cuerpos convierte
+a HISTORIA en un resumidor con citas — que es peor que un resumidor sin citas,
+porque parece riguroso.
+
+### Lo que no cambia en ningún escenario
+
+Las reglas de §8 y la prohibición de predecir precio, calificar o recomendar.
+Y la contraevidencia obligatoria: si se leen cuerpos, "dónde se rompe la
+historia" gana una fuente nueva —lo que el documento dice y contradice lo que
+contamos— no pierde ninguna.
 
 ---
 

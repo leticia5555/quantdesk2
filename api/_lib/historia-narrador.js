@@ -158,7 +158,7 @@ export function costoDe(usage = {}, modelo = MODELO) {
   // La doctrina de la tabla: un modelo ausente devuelve costo null, jamás un
   // precio supuesto. Un número inventado en una factura es peor que no tener
   // número, porque nadie lo revisa.
-  if (!p) return { modelo, tokens, usd: null, usd_total: null, cache_pego_pct: null, sin_precio: true };
+  if (!p) return { modelo, tokens, usd: null, usd_total: null, cache_pego_pct: null, cache_del_total_pct: null, sin_precio: true };
   const tok = tokens;
   const usd = (t, precio) => (Number.isFinite(precio) ? (t / 1e6) * precio : 0);
   const partes = {
@@ -168,9 +168,20 @@ export function costoDe(usage = {}, modelo = MODELO) {
     cache_lectura: usd(tok.cache_lectura, p.cache_read),
   };
   const total = partes.entrada + partes.salida + partes.cache_escritura + partes.cache_lectura;
-  // Cuánto del prefijo pegó. Con el prompt congelado de ~1.400 tokens, la
-  // segunda corrida en adelante debería leer caché en vez de entrada fresca.
+  // DOS medidas de caché, porque una sola se lee mal.
+  //
+  // `cache_pego_pct` es lectura sobre cacheable: dice si el prefijo se
+  // reusó. En la corrida real de MELI dio 100% — y leído solo, eso sugiere
+  // que el caché está haciendo todo el trabajo.
+  //
+  // No lo está. `cache_del_total_pct` es lo que de verdad importa: qué
+  // fracción de la entrada vino del caché. En esa misma corrida fueron 2.487
+  // de 16.831 tokens — 15%, un centavo. El prefijo congelado son ~1.400
+  // tokens contra ~12.000 de evidencia que no se comparte entre emisores, así
+  // que el techo del ahorro es chico por construcción y no hay nada que
+  // exprimir ahí. Las dos van juntas para que la primera no se lea sola.
   const cacheables = tok.cache_lectura + tok.cache_escritura;
+  const entradaTotal = tok.entrada + tok.cache_lectura;
   return {
     modelo,
     tokens: tok,
@@ -179,6 +190,7 @@ export function costoDe(usage = {}, modelo = MODELO) {
     // por corrida es una cifra real cuando se multiplica por cuatro mil.
     usd_total: Math.round(total * 1e6) / 1e6,
     cache_pego_pct: cacheables ? Math.round((tok.cache_lectura / cacheables) * 1000) / 10 : 0,
+    cache_del_total_pct: entradaTotal ? Math.round((tok.cache_lectura / entradaTotal) * 1000) / 10 : 0,
   };
 }
 
@@ -214,7 +226,7 @@ export function sumarCostos(costos = []) {
         cache_escritura: a.cache_escritura + c.tokens.cache_escritura,
         cache_lectura: a.cache_lectura + c.tokens.cache_lectura,
       }), { entrada: 0, salida: 0, cache_escritura: 0, cache_lectura: 0 }),
-      usd: null, usd_total: null, cache_pego_pct: null, sin_precio: true,
+      usd: null, usd_total: null, cache_pego_pct: null, cache_del_total_pct: null, sin_precio: true,
       intentos: reales.length,
     };
   }
@@ -238,6 +250,8 @@ export function sumarCostos(costos = []) {
     usd,
     usd_total: Math.round(sum((c) => c.usd_total) * 1e6) / 1e6,
     cache_pego_pct: cacheables ? Math.round((tokens.cache_lectura / cacheables) * 1000) / 10 : 0,
+    cache_del_total_pct: (tokens.entrada + tokens.cache_lectura)
+      ? Math.round((tokens.cache_lectura / (tokens.entrada + tokens.cache_lectura)) * 1000) / 10 : 0,
     intentos: reales.length,
   };
 }

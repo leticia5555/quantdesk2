@@ -59,6 +59,8 @@ const almacenFalso = () => {
     async intentoPrevio(cik, hash) {
       return filas.find((f) => f.cik === cik && f.hash === hash) || null;
     },
+    async esquemaListo() { return true; },
+    async asegurarEsquema() { return true; },
     async narracionPorHash(cik, hash) {
       return filas.find((f) => f.cik === cik && f.hash === hash && f.estado === 'ok') || null;
     },
@@ -275,6 +277,82 @@ console.log('\n── El reintento de una narración cortada tiene tope');
     eq(sinPrecio.tokens.entrada, 12010, 'pero los tokens sí: eso se sabe');
     eq(sinPrecio.sin_precio, true, 'y se dice por qué');
   }
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+console.log('\n── Nunca se llama a lo que no se va a poder guardar');
+//
+// Gasto perdido real (§11.7): con `forzar=1` la lectura previa de
+// company_narracion se saltea, así que el primer contacto con la tabla era el
+// GUARDADO — después de la llamada. La tabla no estaba, la llamada se pagó, y
+// la respuesta se perdió. Y lo peor: la cruda se guarda en esa misma fila, o
+// sea que el resguardo vivía en la tabla que falló.
+{
+  const sinEsquema = () => ({
+    ...almacenFalso(),
+    async esquemaListo() { return false; },
+    async asegurarEsquema() { return true; },   // "corre" pero no arregla nada
+  });
+
+  for (const forzar of [false, true]) {
+    const almacen = sinEsquema();
+    let llamadas = 0;
+    const r = await correrNarracion('MELI', {
+      lectura: lectura(), almacen, apiKey: 'k', forzar,
+      llamar: async () => { llamadas++; return llamarOk()({}); },
+    });
+    eq(llamadas, 0, `sin la tabla NO se llama al modelo (forzar=${forzar})`);
+    eq(r.status, 503, '…y contesta 503');
+    eq(r.cuerpo.estado, 'sin_esquema', '…con su propio estado');
+    eq(r.cuerpo.intentos, 0, '…diciendo que no hubo llamadas');
+    ok(/no se llamó al modelo/i.test(r.cuerpo.detalle), '…y que por eso no se gastó');
+    ok(/historia\.sql|job=sembrar/.test(r.cuerpo.detalle), '…más cómo arreglarlo');
+  }
+
+  // Si el esquema se puede crear solo, se crea y se sigue: la falta de tabla
+  // no tiene por qué ser una parada manual.
+  {
+    let creado = false;
+    const almacen = {
+      ...almacenFalso(),
+      async esquemaListo() { return creado; },
+      async asegurarEsquema() { creado = true; return true; },
+    };
+    let llamadas = 0;
+    const r = await correrNarracion('MELI', {
+      lectura: lectura(), almacen, apiKey: 'k',
+      llamar: async (ev) => { llamadas++; return llamarOk()(ev); },
+    });
+    eq(creado, true, 'se intenta crear el esquema una vez');
+    eq(llamadas, 1, 'y ahí sí se llama');
+    eq(r.cuerpo.estado, 'ok', 'con resultado normal');
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+console.log('\n── Un fallo que costó plata dice cuánto costó');
+{
+  // El guardado revienta DESPUÉS de la llamada. La plata ya se gastó, y el
+  // resguardo de la cruda era justamente la fila que no se pudo escribir: lo
+  // único que queda es la respuesta HTTP.
+  const almacen = {
+    ...almacenFalso(),
+    async esquemaListo() { return true; },
+    async guardarNarracion() { throw new Error('relation company_narracion does not exist'); },
+  };
+  const r = await correrNarracion('MELI', { lectura: lectura(), almacen, llamar: llamarOk(), apiKey: 'k' });
+
+  eq(r.status, 502, 'un guardado fallido no es un 200');
+  eq(r.cuerpo.estado, 'guardado_fallido', 'con su propio estado, distinto del del modelo');
+  eq(r.cuerpo.estado_modelo, 'ok', 'y el del modelo también, que si no se pierde con la fila');
+  ok(r.cuerpo.costo && r.cuerpo.costo.usd_total > 0, 'EL COSTO VA EN LA RESPUESTA: se pagó igual');
+  eq(r.cuerpo.intentos, 1, 'y cuántas llamadas se hicieron');
+  ok(/se pagó/.test(r.cuerpo.detalle), 'el detalle dice que se pagó');
+  ok(/relation company_narracion/.test(r.cuerpo.detalle), 'y por qué no se pudo guardar');
+
+  // Lo que se compró viaja en la respuesta, porque en la tabla no entró.
+  hondo(r.cuerpo.secciones, SECCIONES, 'la narración comprada se devuelve');
+  ok(r.cuerpo.crudo_no_guardado, 'y la cruda también: es lo único que queda de esta corrida');
 }
 
 // ═════════════════════════════════════════════════════════════════════════

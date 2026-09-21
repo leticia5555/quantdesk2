@@ -180,6 +180,19 @@ console.log('\n── El costo, desglosado');
   eq(tibia.cache_pego_pct, 100, 'la segunda lee el prefijo entero');
   ok(tibia.usd_total < fria.usd_total, 'y sale más barata');
 
+  // DOS medidas, porque una sola se lee mal. "100% del caché pegó" suena a
+  // que el caché hace todo el trabajo; lo que importa es qué fracción de la
+  // ENTRADA vino de ahí, y son cosas muy distintas.
+  eq(tibia.cache_del_total_pct, 11.5, 'pero solo el 11,5% de la entrada vino del caché');
+  ok(tibia.cache_pego_pct > tibia.cache_del_total_pct * 5,
+    'las dos medidas difieren mucho: por eso van juntas y no sola la primera');
+
+  // Los números REALES de la corrida de MELI (2026-09-21, §11.7).
+  const meli = costoDe({ input_tokens: 14344, output_tokens: 3957, cache_creation_input_tokens: 0, cache_read_input_tokens: 2487 });
+  eq(meli.usd_total, 0.171889, 'el costo de la corrida real de MELI');
+  eq(meli.cache_del_total_pct, 14.8, 'con el caché aportando el 14,8% de la entrada');
+  ok(meli.usd.salida > meli.usd.entrada, 'y la SALIDA pesando más que la entrada: ahí está el costo');
+
   eq(costoDe({}).usd_total, 0, 'un usage vacío no inventa un costo');
   ok(ANTHROPIC_PRICES[MODELO], 'hay precio para el modelo configurado, en la tabla única del repo');
 

@@ -634,6 +634,21 @@ export function crearRepo({ sql = sqlReal, sqlBatch = sqlBatchReal } = {}) {
       return 1;
     },
 
+    // ¿Existe la tabla donde se guarda lo que se va a pagar?
+    //
+    // Existe por un gasto perdido real (§11.7): con `forzar=1` la primera
+    // lectura de company_narracion se saltea, así que el primer contacto con
+    // la tabla era el GUARDADO — después de la llamada. La tabla no estaba,
+    // la llamada se pagó, y la respuesta del modelo se perdió: el resguardo
+    // vivía en la misma tabla que falló.
+    //
+    // `to_regclass` devuelve null en vez de tirar, que es lo que hace falta
+    // para poder preguntar sin romper.
+    async esquemaListo() {
+      const filas = await sql("select to_regclass('company_narracion') is not null as listo");
+      return !!(filas[0] && filas[0].listo);
+    },
+
     // Lo que hubo en este hash, sirva o no. Es lo que deja (a) no reintentar
     // para siempre una narración que ya se pagó dos veces, y (b) decirle a la
     // página que la lectura FALLÓ, que no es lo mismo que que no exista.

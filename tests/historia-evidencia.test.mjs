@@ -30,7 +30,7 @@ import {
   VERSION_EVIDENCIA, LIMITE_EVENTOS, MIN_EPISODIO_COLAPSA, RAZONES, MOTIVO_SIN_YOY, TECHO_BYTES,
   diasEntre, razonesDe, serieParaPrompt, eventosParaPrompt,
   armarEvidencia, accessionsDe, inventarioDe, canonico, hashDe, hashEvidencia, respuestaEvidencia,
-  podarSinCita,
+  podarSinCita, NADA_EXCLUIDO,
 } from '../api/_lib/historia-evidencia.js';
 import { armarHistoria, armarEvento } from '../api/_lib/historia-lectura.js';
 
@@ -401,15 +401,23 @@ console.log('\n── Lo que no se puede citar, NO entra (se decide antes de la 
   ok(!('anterior' in sobrevive), 'lo que se cae es la referencia al vecino, no el papel');
   eq(excluidos.vecinos, 1, 'y eso también se cuenta');
 
-  // Sin huérfanos no se toca nada, y no se inventa un campo de exclusiones.
+  // Sin huérfanos no se toca nada — pero el campo NO se vuelve null. En este
+  // módulo un null no puede querer decir dos cosas: "no se excluyó nada" y
+  // "no se calculó" llevan a acciones opuestas.
   const { paquete: igual, excluidos: nada } = podarSinCita(P, []);
-  eq(nada, null, 'sin huérfanos no hay nada que declarar');
+  hondo(nada, NADA_EXCLUIDO, 'sin huérfanos los contadores van en CERO, no en null');
+  eq(nada.eventos, 0, 'cero excluidos es un cero, no una ausencia');
+  hondo(nada.accessions_excluidos, [], 'y la lista va vacía, no ausente');
   eq(hashEvidencia(igual), hashEvidencia(P), 'y el paquete queda idéntico: el hash no se mueve');
+
+  // El ÚNICO caso donde null es correcto: no hay paquete del que afirmar nada.
+  eq(podarSinCita({ narrable: false }, ['x']).excluidos, null,
+    'un paquete no narrable sí devuelve null: no hay nada que afirmar');
 
   // La puerta de inspección poda ANTES de hashear: lo que no se puede citar
   // no entra al paquete, así que tampoco entra al hash ni al prompt.
   const r = respuestaEvidencia(cuerpo, { ticker: 'MELI' });
-  eq(r.excluidos_sin_cita, null, 'con datos sanos no se excluye nada');
+  hondo(r.excluidos_sin_cita, NADA_EXCLUIDO, 'con datos sanos, los contadores van en cero');
   hondo(r.huerfanos, [], 'y no hay huérfanos que podar');
 }
 
