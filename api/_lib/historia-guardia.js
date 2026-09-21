@@ -185,7 +185,30 @@ export const tieneOpinion = (texto) => RE_OPINION.test(String(texto || ''));
 // lava la voz del narrador como si fuera la de la empresa, que es peor que
 // decir la misma opinión de frente.
 //
-// Hoy no hay cuerpos guardados, así que ninguna cita textual verifica y
+// ── CONTRA QUÉ SE VERIFICA: FRAGMENTOS, NO CUERPOS ──────────────────
+//
+// La primera versión verificaba contra el CUERPO del documento, y eso chocaba
+// de frente con el plan de extracción: no se guardan cuerpos — ése es el
+// argumento de amortización entero (§11.8). Al narrar no habría contra qué
+// comparar.
+//
+// Lo que se verifica es contra los **fragmentos que la extracción ya
+// verificó**. El universo de comillas posibles es ese conjunto, no el
+// documento. Así cada comilla en pantalla queda verificada dos veces: una al
+// extraer, contra el cuerpo real; otra al narrar, contra el fragmento
+// guardado. Y es transitivo — si la comilla está dentro de un fragmento y el
+// fragmento estuvo en el cuerpo, la comilla estuvo en el cuerpo. El cuerpo se
+// puede tirar.
+//
+// La segunda verificación no es redundante: sin ella el narrador podría
+// escribir una comilla que nunca salió de ningún fragmento, y la primera no
+// se enteraría porque ya pasó.
+//
+// El mapa acepta una cadena o un arreglo de cadenas por accession, así que
+// sirve igual con un cuerpo entero (para probar) que con la lista de
+// fragmentos (en producción). Lo que NO hace es concatenarlos — ver abajo.
+//
+// Hoy no hay fragmentos guardados, así que ninguna cita textual verifica y
 // ninguna pasa. Es el estado correcto: la exención existe y está cerrada
 // hasta que la extracción la abra.
 export const COMILLAS_RE = /«([^»]*)»/g;
@@ -193,16 +216,28 @@ export const COMILLAS_RE = /«([^»]*)»/g;
 export const entrecomillados = (texto) => [...String(texto || '').matchAll(COMILLAS_RE)].map((m) => m[1]);
 
 // Devuelve las citas textuales de una afirmación, cada una con si verificó
-// contra alguno de los cuerpos de los documentos que la afirmación cita.
-export function verificarEntrecomillados(afirmacion, cuerpos) {
-  const mapa = cuerpos instanceof Map ? cuerpos : new Map(Object.entries(cuerpos || {}));
+// contra algún fragmento de los documentos que la afirmación cita.
+export function verificarEntrecomillados(afirmacion, verificado) {
+  const mapa = verificado instanceof Map ? verificado : new Map(Object.entries(verificado || {}));
   const accs = citasDe(afirmacion);
   return entrecomillados(afirmacion).map((frase) => ({
     frase,
-    // Tiene que aparecer literal en el cuerpo de ALGUNO de los documentos que
-    // la propia afirmación cita. Verificar contra cualquier cuerpo dejaría
-    // atribuir a un papel lo que dijo otro.
-    verificada: accs.some((a) => mapa.has(a) && apareceLiteral(frase, mapa.get(a))),
+    // Tres condiciones, y ninguna es cosmética:
+    //
+    //  · contra los fragmentos de ALGUNO de los documentos que la propia
+    //    afirmación cita — verificar contra cualquiera dejaría atribuirle a
+    //    un papel lo que dijo otro;
+    //  · dentro de UN fragmento, nunca repartida entre dos. Si se
+    //    concatenaran antes de comparar, el narrador podría coser una frase
+    //    que nunca existió contigua en el documento: dos pedazos verdaderos
+    //    pegados forman una cita falsa;
+    //  · literal, con el mismo verificador de siempre.
+    verificada: accs.some((a) => {
+      if (!mapa.has(a)) return false;
+      const v = mapa.get(a);
+      const trozos = Array.isArray(v) ? v : [v];
+      return trozos.some((t) => apareceLiteral(frase, t));
+    }),
   }));
 }
 
@@ -239,7 +274,7 @@ export const tieneRelativoAHoy = (texto) => RE_RELATIVA.test(String(texto || '')
 // El texto cortado viaja en el registro. La tentación es no guardarlo —"es
 // texto malo"— pero sin él no se puede ver qué dijo el modelo, que es
 // exactamente la queja que originó "la cruda se guarda siempre" (§11.4).
-export function guardar(secciones = [], citables = new Set(), { cuerpos = new Map() } = {}) {
+export function guardar(secciones = [], citables = new Set(), { verificado = new Map() } = {}) {
   const validas = citables instanceof Set ? citables : new Set(citables || []);
   const cortes = [];
   const salida = [];
@@ -257,7 +292,7 @@ export function guardar(secciones = [], citables = new Set(), { cuerpos = new Ma
 
       // Una cita textual sin respaldo se corta ANTES que nada más: lava la
       // voz del narrador como si fuera la de la empresa.
-      const comillas = verificarEntrecomillados(a, cuerpos);
+      const comillas = verificarEntrecomillados(a, verificado);
       const sinRespaldo = comillas.filter((c) => !c.verificada);
       if (sinRespaldo.length) {
         cortes.push({

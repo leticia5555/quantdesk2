@@ -226,8 +226,17 @@ console.log('\n── La cita textual verificada se exime; la no verificada se c
   // de los documentos, y una carta de un activista dice "la acción está
   // infravalorada" con todas las letras. Sin exención, el guardia cortaría
   // una cita literal verificada — lo más verificable que el módulo tiene.
-  const CUERPO = new Map([['acc-1', 'El consejo cree que la acción está infravalorada y que el mercado no lo ve.']]);
-  const conCuerpo = (texto) => guardar([{ id: 'x', texto }], CITABLES, { cuerpos: CUERPO });
+  // Se verifica contra los FRAGMENTOS que la extracción ya verificó, no
+  // contra el cuerpo: el plan es no guardar cuerpos (§11.8), así que al
+  // narrar no habría contra qué comparar. Cada comilla queda verificada dos
+  // veces — una al extraer contra el cuerpo, otra al narrar contra el
+  // fragmento— y eso es transitivo: si la comilla está dentro del fragmento
+  // y el fragmento estuvo en el cuerpo, la comilla estuvo en el cuerpo.
+  const FRAGMENTOS = new Map([['acc-1', [
+    'la acción está infravalorada',
+    'el consejo no comparte esa lectura',
+  ]]]);
+  const conCuerpo = (texto) => guardar([{ id: 'x', texto }], CITABLES, { verificado: FRAGMENTOS });
 
   {
     const r = conCuerpo('La carta del disidente dice «la acción está infravalorada» [acc-1].');
@@ -256,8 +265,28 @@ console.log('\n── La cita textual verificada se exime; la no verificada se c
   // Se verifica contra el cuerpo del documento QUE LA AFIRMACIÓN CITA, no
   // contra cualquiera: si no, se le atribuiría a un papel lo que dijo otro.
   eq(guardar([{ id: 'x', texto: 'El 8-K dice «la acción está infravalorada» [acc-2].' }],
-    CITABLES, { cuerpos: CUERPO }).estado, 'rechazada',
-  'la frase tiene que estar en el cuerpo del documento citado, no en otro');
+    CITABLES, { verificado: FRAGMENTOS }).estado, 'rechazada',
+  'la frase tiene que estar en un fragmento del documento CITADO, no de otro');
+
+  // EL CASO QUE DECIDE EL ESQUEMA: una comilla no puede repartirse entre dos
+  // fragmentos. Si se concatenaran antes de comparar, el narrador podría
+  // coser una frase que nunca existió contigua en el documento — dos pedazos
+  // verdaderos pegados forman una cita falsa.
+  eq(conCuerpo('La carta dice «infravalorada el consejo no comparte» [acc-1].').estado, 'rechazada',
+    'una comilla cosida entre dos fragmentos NO verifica');
+  eq(conCuerpo('La carta dice «acción está infravalorada» [acc-1].').estado, 'ok',
+    'pero una subcadena DENTRO de un fragmento sí: sigue siendo literal');
+
+  // Sin fragmentos guardados —el estado de hoy— ninguna comilla pasa.
+  eq(guardar([{ id: 'x', texto: 'Dice «cualquier cosa» [acc-1].' }], CITABLES).estado, 'rechazada',
+    'sin fragmentos, ninguna cita textual verifica: la exención está cerrada');
+
+  // Una cadena suelta funciona igual que un arreglo: el mismo verificador
+  // sirve para probar contra un cuerpo entero y para producción con
+  // fragmentos.
+  eq(guardar([{ id: 'x', texto: 'Dice «algo puntual» [acc-1].' }], CITABLES,
+    { verificado: { 'acc-1': 'texto con algo puntual adentro' } }).estado, 'ok',
+  'acepta una cadena suelta además de un arreglo');
 
   // La exención cubre lo entrecomillado y NADA MÁS: la opinión propia
   // pegada al lado de una cita válida sigue cayendo.
@@ -269,6 +298,8 @@ console.log('\n── La cita textual verificada se exime; la no verificada se c
   hondo(entrecomillados('sin comillas'), [], 'y ninguna cuando no hay');
   hondo(verificarEntrecomillados('«x» [acc-1]', { 'acc-1': 'algo con x adentro' }).map((c) => c.verificada),
     [true], 'acepta un objeto además de un Map');
+  hondo(verificarEntrecomillados('«x» [acc-1]', new Map([['acc-1', []]])).map((c) => c.verificada),
+    [false], 'un documento con cero fragmentos no verifica nada');
 }
 
 // ═════════════════════════════════════════════════════════════════════════

@@ -1772,6 +1772,78 @@ verificable; una cita textual aparece o no aparece.
 
 **Recomendación: nada que salga de un cuerpo entra sin su fragmento literal.**
 
+### La doble verificación, y qué obliga a guardar
+
+*Decidido el 2026-09-21, antes de escribir una línea de la extracción. El
+operador encontró el hueco: **la exención de cita textual de la rebanada I
+verifica contra el cuerpo del documento, y el plan de extracción es
+precisamente NO guardar cuerpos** — ése es el argumento de amortización
+entero. Al narrar no habría cuerpo contra el cual verificar.*
+
+**La salida: el narrador solo puede citar textualmente fragmentos que la
+extracción ya verificó.** El universo de comillas posibles es el conjunto de
+fragmentos extraídos, no el documento.
+
+Cada comilla que llega a pantalla queda verificada **dos veces**:
+
+| | cuándo | contra qué | qué garantiza |
+|---|---|---|---|
+| **1** | al extraer, una vez en la vida del filing | el cuerpo real, recién bajado | que el fragmento existe en el documento |
+| **2** | al narrar, cada vez | el fragmento guardado | que el narrador no inventó ni deformó la frase |
+
+La segunda no es redundante: sin ella, el narrador podría escribir una comilla
+que nunca salió de ningún fragmento, y la primera verificación no lo sabría
+porque ya pasó. Con las dos, una comilla en pantalla es un fragmento que
+estuvo en el documento **y** que nadie tocó en el camino.
+
+Y es transitiva, que es lo que la hace válida: si la comilla aparece literal
+dentro de un fragmento, y el fragmento apareció literal dentro del cuerpo,
+entonces la comilla apareció literal en el cuerpo. El cuerpo se puede tirar.
+
+**Un detalle que no es detalle:** la comilla tiene que estar dentro de **UN**
+fragmento, no repartida entre dos. Si los fragmentos se concatenaran antes de
+comparar, el narrador podría coser una frase que nunca existió contigua en el
+documento — dos pedazos verdaderos pegados forman una cita falsa. Se compara
+contra cada fragmento por separado.
+
+### Qué guarda la tabla, entonces
+
+No alcanza con el campo estructurado. Si se guarda *"cargo: Chief Financial
+Officer"* y se tira la frase, la promesa de la cita textual muere ahí.
+
+```
+company_hecho_extraido
+  cik, accession            -- de qué documento
+  item                      -- de qué item del 8-K salió
+  campo, valor              -- el dato estructurado (nombre, cargo, fecha…)
+
+  fragmento                 -- LA FRASE TEXTUAL COMPLETA, verbatim
+  offset                    -- dónde empieza, en el texto sin marcado
+  huella_cuerpo             -- sha del texto sin marcado del que salió
+
+  modelo, prompt_version    -- con qué se extrajo
+  verificado                -- si el fragmento apareció literal en el cuerpo
+  descartado_motivo         -- y si no, por qué (H3 cuenta los descartes)
+  extraido_en
+```
+
+Tres decisiones adentro:
+
+- **`fragmento` es la frase completa**, no un recorte al campo. El narrador
+  puede querer citar ocho de sus quince palabras, y una subcadena de un
+  fragmento verificado sigue siendo verificada. Al revés no funciona.
+- **`offset` es un localizador, y `huella_cuerpo` es lo que lo hace
+  auditable.** El offset es un índice sobre el texto sin marcado, así que solo
+  significa algo junto con el mismo procedimiento de des-etiquetado. Si el
+  des-etiquetador cambia, la huella no coincide y los offsets quedan marcados
+  como viejos — que es mucho mejor que quedar silenciosamente corridos.
+- **`verificado` y `descartado_motivo` se guardan aunque el fragmento se
+  descarte.** H3 se mide contando descartes: sin la fila, no hay denominador.
+
+Con el cuerpo se puede hacer lo que se quiera —tirarlo, cachearlo un rato,
+volver a bajarlo si hace falta reauditar—, porque lo que sostiene la cita es
+el fragmento guardado, no el documento.
+
 ### El costo: qué está medido y qué no
 
 **Medido:**
@@ -2080,20 +2152,29 @@ cortaba según el tiempo verbal.
 
 **2. La exención de la cita textual, fail-closed.** Lo entrecomillado con
 `«…»` se exime de los guardias de opinión y de fecha **solo si aparece
-literal en el cuerpo de alguno de los documentos que la propia afirmación
-cita**. Si no verifica, se corta con el motivo `cita_textual_no_verificada`.
+literal en un fragmento ya verificado** de alguno de los documentos que la
+propia afirmación cita. Si no verifica, se corta con el motivo
+`cita_textual_no_verificada`.
 
-Tres decisiones adentro:
+Cuatro decisiones adentro:
 
 - **`«…»` y no comillas rectas.** El delimitador decide qué se exime de un
   guardia, así que es load-bearing; las comillas rectas aparecen solas en
   prosa y un delimitador inequívoco vale más que uno natural.
-- **Contra el cuerpo del documento CITADO**, no contra cualquiera: si no, se
-  le atribuiría a un papel lo que dijo otro.
+- **Contra FRAGMENTOS, no contra cuerpos.** La primera versión verificaba
+  contra el cuerpo del documento, y eso chocaba de frente con el plan de
+  extracción: no se guardan cuerpos. La doble verificación de §11.8 es lo que
+  lo resuelve, y es transitiva.
+- **Dentro de UN fragmento, nunca repartida entre dos.** Dos pedazos
+  verdaderos pegados forman una cita falsa. Hay prueba, y la mutación que
+  concatena los fragmentos antes de comparar la rompe.
+- **Del documento CITADO**, no de cualquiera: si no, se le atribuiría a un
+  papel lo que dijo otro. Misma historia — la mutación que verifica contra
+  todos rompe la prueba.
 - **La exención cubre lo entrecomillado y nada más.** La opinión propia
   pegada al lado de una cita válida sigue cayendo.
 
-Hoy no hay cuerpos guardados, así que **ninguna cita textual verifica y
+Hoy no hay fragmentos guardados, así que **ninguna cita textual verifica y
 ninguna pasa**. Es el estado correcto: la exención existe, está probada y está
 cerrada hasta que la extracción la abra. Por eso tampoco se tocó el prompt: una
 instrucción de "podés citar textual" sin cuerpos de dónde citar es una
