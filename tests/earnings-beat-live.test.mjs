@@ -28,28 +28,64 @@ const base = estadisticasHistoricas([
   q('2026-06-25', 1.20, 1.10, 9.1), q('2026-03-25', 1.05, 1.00, 5.0),
   q('2025-12-20', 0.80, 0.90, -11.1), q('2025-09-20', 1.00, 0.95, 5.3),
 ]);
-ok(base.total === 4 && base.beats === 3 && base.pct === 75, 'cuenta beats sobre trimestres comparables', `${base.beats}/${base.total}=${base.pct}%`);
-ok(base.racha.tipo === 'beats' && base.racha.largo === 2, 'racha actual: tipo Y largo (un "2" solo no dice nada)', JSON.stringify(base.racha));
-ok(base.sorpresa_promedio_pct === 2.08, 'sorpresa promedio %', base.sorpresa_promedio_pct);
+ok(base.ventana.total === 4 && base.ventana.beats === 3 && base.ventana.pct === 75,
+  'cuenta beats sobre trimestres comparables', `${base.ventana.beats}/${base.ventana.total}=${base.ventana.pct}%`);
+ok(base.racha.tipo === 'beats' && base.racha.largo === 2, 'racha actual: tipo Y largo', JSON.stringify(base.racha));
 ok(base.ultimos.length === 4 && base.ultimos[0].fecha === '2026-06-25', 'últimos trimestres, más reciente primero');
 ok(base.ultimos[0].beat === true && base.ultimos[2].beat === false, 'cada trimestre marcado ✓/✗');
 
 const empate = estadisticasHistoricas([q('2026-06-25', 1.00, 1.00, 0)]);
-ok(empate.beats === 0, 'un empate NO es un beat (reportado > estimado, estricto)', empate.beats);
+ok(empate.ventana.beats === 0, 'un empate NO es un beat (reportado > estimado, estricto)', empate.ventana.beats);
 const frontera = estadisticasHistoricas([q('2026-06-25', 1.005, 1.00, 0.5)]);
-ok(frontera.beats === 1 && frontera.frontera === 1,
-  'un beat de menos de un centavo cuenta pero se marca frontera (ahí la definición depende del consenso)', frontera.frontera);
+ok(frontera.ventana.beats === 1 && frontera.frontera === 1,
+  'un beat de menos de un centavo cuenta pero se marca frontera', frontera.frontera);
 ok(CRITERIOS.frontera_eps === 0.01, 'y la frontera es la misma constante congelada del scope');
 
-const incompletos = estadisticasHistoricas([
-  q('2026-06-25', 1.2, null, null), q('2026-03-25', 1.1, 1.0, 10),
-]);
-ok(incompletos.total === 1, 'un trimestre sin estimado no puede decir si superó: no se cuenta', incompletos.total);
+const incompletos = estadisticasHistoricas([q('2026-06-25', 1.2, null, null), q('2026-03-25', 1.1, 1.0, 10)]);
+ok(incompletos.ventana.total === 1, 'un trimestre sin estimado no puede decir si superó: no se cuenta', incompletos.ventana.total);
 const vacio = estadisticasHistoricas([]);
-ok(vacio.sin_datos === true && vacio.pct === null && typeof vacio.motivo === 'string',
+ok(vacio.sin_datos === true && vacio.ventana === null && typeof vacio.motivo === 'string',
   'sin datos → lo dice con motivo, no inventa un 0%');
-ok(estadisticasHistoricas(null).total === 0, 'null → no crashea');
-ok(estadisticasHistoricas([q('2026-06-25', 1.2, 1.1, 9)], { ultimos: 1 }).ultimos.length === 1, 'respeta el tope de trimestres');
+ok(estadisticasHistoricas(null).sin_datos === true, 'null → no crashea');
+
+console.log('CICATRIZ MU: el promedio mentía y la mediana no');
+
+// Caso real reportado: 13 beats al hilo, últimos 8 trimestres positivos, y el
+// promedio decía −26.06%. La causa: UN trimestre con estimado ≈ $0.01.
+const mu = [];
+for (let i = 0; i < 16; i++) mu.push(q(`2026-${String(12 - (i % 12)).padStart(2, '0')}-15`.replace('2026', String(2026 - Math.floor(i / 4))), 1.2, 1.1, 9.1));
+mu.push(q('2021-03-15', -0.29, 0.01, -3000));            // el que arrastra el promedio
+for (let i = 0; i < 8; i++) mu.push(q(`20${10 + i}-06-15`, 1.0, 0.95, 5.3));
+const rMu = estadisticasHistoricas(mu);
+
+ok(rMu.sorpresa.mediana_pct === 9.1, 'la MEDIANA sobrevive al outlier', rMu.sorpresa.mediana_pct);
+ok(rMu.sorpresa.promedio_pct < -50, 'el promedio efectivamente se va al pozo (por eso no es el titular)', rMu.sorpresa.promedio_pct);
+ok(rMu.sorpresa.distorsionado === true, 'y la divergencia se DECLARA en vez de esconderse');
+ok(rMu.sorpresa.denominador_chico === 1, 'cuenta los trimestres con estimado cerca de cero', rMu.sorpresa.denominador_chico);
+ok(rMu.sorpresa.extremos.length === 3 && rMu.sorpresa.extremos[0].sorpresa_pct === -3000,
+  'publica los 3 trimestres más extremos, con el peor primero (es el diagnóstico)');
+ok(rMu.sorpresa.extremos[0].denominador_chico === true && rMu.sorpresa.extremos[0].estimado === 0.01,
+  'y muestra las cifras crudas que explican el disparate', JSON.stringify(rMu.sorpresa.extremos[0]));
+ok(typeof rMu.sorpresa.nota === 'string' && /MEDIANA/.test(rMu.sorpresa.nota), 'con una nota que dice cuál número manda');
+
+console.log('VENTANA: 5 años manda, el historial completo acompaña');
+
+const largo = [];
+for (let i = 0; i < 121; i++) largo.push(q(`${2026 - Math.floor(i / 4)}-${String((i % 4) * 3 + 1).padStart(2, '0')}-15`, i < 20 ? 1.2 : 0.9, 1.0, i < 20 ? 20 : -10));
+const rL = estadisticasHistoricas(largo);
+ok(rL.ventana.total === 20 && rL.ventana.trimestres === 20, 'el titular mira 20 trimestres, no 121', rL.ventana.total);
+ok(rL.ventana.anios === 5, 'y lo dice en años para que se lea', rL.ventana.anios);
+ok(rL.completo.total === 121, 'el historial completo sigue disponible como secundario', rL.completo.total);
+ok(rL.ventana.pct === 100 && rL.completo.pct < 30, 'los dos números pueden diferir mucho — por eso se muestran los dos');
+ok(rL.ultimos.length === 8, 'la lista visible sigue siendo de 8 trimestres');
+
+// Punto 3 del reporte: la racha tiene que salir de los MISMOS datos del titular.
+ok(rL.racha.sobre === 'ventana', 'la racha se calcula sobre la ventana del titular, no sobre 30 años');
+ok(rL.racha.largo === 20 && rL.racha.tope === true,
+  'si toda la ventana es del mismo signo, se marca `tope`: la racha puede ser más larga, pero afirmarlo sería inventar el trimestre 21',
+  `${rL.racha.largo}/${rL.racha.tope}`);
+const medianos = estadisticasHistoricas(largo).sorpresa.mediana_pct;
+ok(medianos === 20, 'la sorpresa también sale de la ventana (si no, la tarjeta se contradice)', medianos);
 
 console.log('LINT de honestidad sobre el código real');
 
@@ -77,9 +113,9 @@ ok(lineasAviso.length > 0, 'la tarjeta lleva su propia nota "no es predicción" 
 const cardSinAvisos = card.split('\n').filter((l) => !/no es predicci|not a forecast/i.test(l)).join('\n');
 
 const PROHIBIDO = [
-  { nombre: 'probabilidad del histórico', re: /probabilidad[^']{0,20}'\s*\+\s*h\./i },
-  { nombre: 'probability del histórico', re: /probability[^']{0,20}'\s*\+\s*h\./i },
-  { nombre: 'chance/odds del histórico', re: /(chance|odds)[^']{0,20}'\s*\+\s*h\./i },
+  { nombre: 'probabilidad del histórico', re: /probabilidad[^']{0,20}'\s*\+\s*(h|v|comp|sp)\./i },
+  { nombre: 'probability del histórico', re: /probability[^']{0,20}'\s*\+\s*(h|v|comp|sp)\./i },
+  { nombre: 'chance/odds del histórico', re: /(chance|odds)[^']{0,20}'\s*\+\s*(h|v|comp|sp)\./i },
   { nombre: 'el número presentado como pronóstico', re: /(predice|pronóstico|forecast|expected probability|probabilidad de que)/i },
 ];
 for (const p of PROHIBIDO) {
@@ -87,6 +123,17 @@ for (const p of PROHIBIDO) {
 }
 ok(!/probabilidad_quantdesk\s*\|\||probabilidad_quantdesk\s*\?/.test(card),
   'la tarjeta no intenta pintar una probabilidad de QuantDesk (todavía no existe)');
+
+// CICATRIZ MU, pineada: el titular de sorpresa NO puede volver a ser el promedio.
+ok(/Sorpresa mediana: /.test(card) && /Median surprise: /.test(card),
+  'la sorpresa se titula como MEDIANA en las dos lenguas');
+ok(!/'Sorpresa promedio: '|'Average surprise: '/.test(card),
+  'y NADIE volvió a poner el promedio de titular (fue el "-26.06%" de MU)');
+ok(/sp\.distorsionado/.test(card), 'cuando promedio y mediana divergen, la tarjeta lo dice');
+ok(/v\.beats\+' de '\+v\.total|v\.beats\+' of '\+v\.total/.test(card),
+  'el titular sale de la VENTANA (v), no del historial completo');
+ok(/completo/.test(card) && /full history/.test(card),
+  'y el historial completo aparece como secundario, en las dos lenguas');
 
 // El disclaimer bilingüe, obligatorio y con las dos lenguas.
 const iDisc = app.indexOf('function ebLiveDisclaimer(');

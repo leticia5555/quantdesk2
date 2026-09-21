@@ -2537,23 +2537,44 @@ function ebLiveCard(e){
   const m=(e.mercados&&e.mercados[0])||{};
   const dias=ebDiasHasta(e.fecha_resolucion);
 
-  // "Histórico: superó 26 de 32 (81%)" — conteo, nunca probabilidad.
-  const historicoTxt = (h.sin_datos||!h.total)
+  // "Histórico: superó 15 de 20 (75%) · completo: 77 de 121" — conteo, nunca
+  // probabilidad. El número PRINCIPAL es la ventana de 5 años: Micron en 1998
+  // no informa sobre Micron hoy. El historial completo va al lado, secundario,
+  // para no perder la profundidad.
+  const v=h.ventana, comp=h.completo;
+  const historicoTxt = (h.sin_datos||!v||!v.total)
     ? smL('Histórico: sin trimestres comparables en nuestra base','Track record: no comparable quarters in our data')
-    : smL('Histórico: superó '+h.beats+' de '+h.total+' ('+h.pct+'%)',
-          'Track record: beat '+h.beats+' of '+h.total+' ('+h.pct+'%)');
+    : smL('Histórico: superó '+v.beats+' de '+v.total+' ('+v.pct+'%)',
+          'Track record: beat '+v.beats+' of '+v.total+' ('+v.pct+'%)');
+  const completoTxt = (!comp||!v||comp.total<=v.total) ? ''
+    : smL('histórico completo: '+comp.beats+' de '+comp.total+' ('+comp.pct+'%)',
+          'full history: '+comp.beats+' of '+comp.total+' ('+comp.pct+'%)');
 
   // "Polymarket hoy: 68%" — con la fuente citada.
   const pmTxt = (m.polymarket_yes_pct===null||m.polymarket_yes_pct===undefined)
     ? smL('Polymarket hoy: sin precio','Polymarket today: no price')
     : smL('Polymarket hoy: '+m.polymarket_yes_pct+'%','Polymarket today: '+m.polymarket_yes_pct+'%');
 
+  // La racha se cuenta sobre LA MISMA ventana del titular. Si el titular mira
+  // 20 trimestres y la racha mira 121, la tarjeta se contradice sola. `tope`
+  // marca cuando toda la ventana es del mismo signo: la racha puede ser más
+  // larga, pero afirmarlo sería inventar el trimestre 21.
+  const mas=(h.racha&&h.racha.tope)?'+':'';
   const racha = h.racha&&h.racha.largo
-    ? smL('Racha: '+h.racha.largo+' '+(h.racha.tipo==='beats'?'trimestre(s) superando':'trimestre(s) fallando')+' al hilo',
-          'Streak: '+h.racha.largo+' quarter(s) '+(h.racha.tipo==='beats'?'beating':'missing')+' in a row')
+    ? smL('Racha: '+h.racha.largo+mas+' '+(h.racha.tipo==='beats'?'trimestre(s) superando':'trimestre(s) fallando')+' al hilo',
+          'Streak: '+h.racha.largo+mas+' quarter(s) '+(h.racha.tipo==='beats'?'beating':'missing')+' in a row')
     : '';
-  const sorpresa = (h.sorpresa_promedio_pct===null||h.sorpresa_promedio_pct===undefined)
-    ? '' : smL('Sorpresa promedio: ','Average surprise: ')+(h.sorpresa_promedio_pct>0?'+':'')+h.sorpresa_promedio_pct+'%';
+
+  // MEDIANA, no promedio. Un trimestre con estimado ≈ $0.01 mete un −3000%
+  // que arrastra el promedio de toda la serie: eso fue el "-26.06%" de MU con
+  // 13 beats al hilo. Cuando los dos se separan, se dice.
+  const sp=h.sorpresa||{};
+  const sorpresa = (sp.mediana_pct===null||sp.mediana_pct===undefined) ? ''
+    : smL('Sorpresa mediana: ','Median surprise: ')+(sp.mediana_pct>0?'+':'')+sp.mediana_pct+'%';
+  const sorpresaNota = sp.distorsionado
+    ? smL('promedio '+(sp.promedio_pct>0?'+':'')+sp.promedio_pct+'% — distorsionado por '+sp.denominador_chico+' trimestre(s) con estimado cerca de cero',
+          'mean '+(sp.promedio_pct>0?'+':'')+sp.promedio_pct+'% — distorted by '+sp.denominador_chico+' quarter(s) with a near-zero estimate')
+    : '';
 
   const quarters=(h.ultimos||[]).map(q=>{
     const marca=q.beat?'<span style="color:#00c97d;">✓</span>':'<span style="color:#ff4444;">✗</span>';
@@ -2581,11 +2602,14 @@ function ebLiveCard(e){
     +'<div style="font-family:var(--mono);font-size:11px;color:#ff6600;">'+pmTxt+'</div>'
     +'<div style="font-size:8px;color:#444;margin-bottom:8px;">'+smL('fuente: ','source: ')+(m.fuente_precio||'Polymarket')+'</div>'
     +'<div style="font-family:var(--mono);font-size:11px;color:#ccc;">'+historicoTxt+'</div>'
+    +(completoTxt?'<div style="font-size:9px;color:#666;">'+completoTxt+'</div>':'')
     +(racha?'<div style="font-size:9px;color:#888;margin-top:2px;">'+racha+'</div>':'')
     +(sorpresa?'<div style="font-size:9px;color:#888;">'+sorpresa+'</div>':'')
+    +(sorpresaNota?'<div style="font-size:8px;color:#7a6a45;line-height:1.3;">'+sorpresaNota+'</div>':'')
     +'<div style="font-size:8px;color:#444;margin-bottom:6px;">'+smL('fuente: historial de EPS (Alpha Vantage)','source: EPS history (Alpha Vantage)')+'</div>'
     +(quarters?'<div style="border-top:1px solid #161616;padding-top:6px;margin-bottom:6px;">'
-      +'<div style="font-size:8px;color:#555;letter-spacing:.08em;margin-bottom:3px;">'+smL('ÚLTIMOS TRIMESTRES','LAST QUARTERS')+'</div>'+quarters+'</div>':'')
+      +'<div style="font-size:8px;color:#555;letter-spacing:.08em;margin-bottom:3px;">'+smL('ÚLTIMOS TRIMESTRES','LAST QUARTERS')
+      +(v&&v.anios?'<span style="color:#444;"> · '+smL('titular sobre '+v.total+' trimestres ('+v.anios+' años)','headline over '+v.total+' quarters ('+v.anios+'y)')+'</span>':'')+'</div>'+quarters+'</div>':'')
     +'<div style="border-top:1px solid #161616;padding-top:6px;font-size:9px;color:#777;line-height:1.4;">'+link+consenso+otros+'</div>'
     +'<div style="margin-top:6px;font-size:8px;color:#5a4f38;line-height:1.4;">'
       +smL('El histórico no es predicción · Track record is not a forecast',
