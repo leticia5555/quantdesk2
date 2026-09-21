@@ -219,3 +219,55 @@ create table if not exists company_narracion (
 
 create index if not exists company_narracion_servible
      on company_narracion (cik, creado_en desc) where estado = 'ok';
+
+-- ═════════════════════════════════════════════════════════════════════════
+-- Los hechos extraídos del cuerpo de un filing (§11.8)
+--
+-- El plan de extracción NO guarda cuerpos: ése es el argumento de
+-- amortización entero. Lo que se guarda es el FRAGMENTO textual, y eso
+-- permite la doble verificación — una al extraer contra el cuerpo real, y
+-- otra al narrar contra el fragmento. Es transitiva: si la comilla está en el
+-- fragmento y el fragmento estuvo en el cuerpo, la comilla estuvo en el
+-- cuerpo.
+--
+-- `fragmento` es la frase COMPLETA, no un recorte al campo: el narrador puede
+-- citar ocho de sus quince palabras, y una subcadena de un fragmento
+-- verificado sigue verificada. Al revés no funciona.
+--
+-- `offset_texto` es un índice sobre el texto SIN MARCADO y CON LOS ESPACIOS
+-- NORMALIZADOS, y `huella_cuerpo` es el sha de ese mismo texto. El par es lo
+-- que hace auditable al offset: si el des-etiquetador cambia, la huella deja
+-- de coincidir y los offsets quedan marcados como viejos en vez de
+-- silenciosamente corridos.
+--
+-- `verificado` y `descartado_motivo` se guardan aunque el fragmento se
+-- descarte: la compuerta H3 se mide contando descartes, y sin la fila no hay
+-- denominador.
+-- ═════════════════════════════════════════════════════════════════════════
+create table if not exists company_hecho_extraido (
+     id             bigserial primary key,
+     cik            text not null,
+     accession      text not null,
+     item           text,
+     campo          text not null,
+     valor          text,
+     fragmento      text not null,
+     offset_texto   int,
+     huella_cuerpo  text not null,
+     modelo         text not null,
+     prompt_version int not null,
+     verificado     boolean not null,
+     descartado_motivo text,
+     extraido_en    timestamptz not null default now(),
+     foreign key (cik, accession) references company_filings (cik, accession) on delete cascade
+   );
+
+-- La lectura del narrador: los fragmentos VERIFICADOS de un documento. Es la
+-- única consulta que corre por historia, así que tiene su índice.
+create index if not exists company_hecho_verificado
+     on company_hecho_extraido (cik, accession) where verificado;
+
+-- Dos versiones de modelo o de prompt conviven a propósito: comparar una
+-- contra otra es como se mide H3 y H4.
+create index if not exists company_hecho_corrida
+     on company_hecho_extraido (cik, accession, modelo, prompt_version);

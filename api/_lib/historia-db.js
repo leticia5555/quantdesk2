@@ -62,7 +62,12 @@
 // quién la conecte al PM es otra decisión y otro PR.
 // ═══════════════════════════════════════════════════════════════
 
+import { createHash } from 'node:crypto';
 import { sql as sqlReal, sqlBatch as sqlBatchReal } from './db.js';
+// El MISMO verificador literal que usa el guardia de la salida. Que sea el
+// mismo no es ahorro: es la única forma de que "verificado al extraer" y
+// "verificado al narrar" signifiquen exactamente lo mismo.
+import { apareceLiteral, normalizarEspacios } from './historia-guardia.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // El catálogo de familias. El ORDEN de `tags` es el rango: el primero gana
@@ -378,6 +383,54 @@ export const HISTORIA_SCHEMA = [
   // Para "dame la última narración servible de este emisor" sin escanear.
   `create index if not exists company_narracion_servible
      on company_narracion (cik, creado_en desc) where estado = 'ok'`,
+
+  // ── Los hechos extraídos del cuerpo de un filing (§11.8) ─────────────
+  //
+  // El plan de extracción NO guarda cuerpos: ése es el argumento de
+  // amortización entero. Lo que se guarda es el FRAGMENTO textual, y eso
+  // permite la doble verificación — una al extraer contra el cuerpo real, y
+  // otra al narrar contra el fragmento. Es transitiva: si la comilla está en
+  // el fragmento y el fragmento estuvo en el cuerpo, la comilla estuvo en el
+  // cuerpo.
+  //
+  // `fragmento` es la frase COMPLETA, no un recorte al campo: el narrador
+  // puede citar ocho de sus quince palabras, y una subcadena de un fragmento
+  // verificado sigue verificada. Al revés no funciona.
+  //
+  // `offset` es un índice sobre el texto SIN MARCADO y CON LOS ESPACIOS
+  // NORMALIZADOS, y `huella_cuerpo` es el sha de ese mismo texto. El par es
+  // lo que hace auditable al offset: si el des-etiquetador cambia, la huella
+  // deja de coincidir y los offsets quedan marcados como viejos en vez de
+  // silenciosamente corridos.
+  //
+  // `verificado` y `descartado_motivo` se guardan aunque el fragmento se
+  // descarte: la compuerta H3 se mide contando descartes, y sin la fila no
+  // hay denominador.
+  `create table if not exists company_hecho_extraido (
+     id             bigserial primary key,
+     cik            text not null,
+     accession      text not null,
+     item           text,
+     campo          text not null,
+     valor          text,
+     fragmento      text not null,
+     offset_texto   int,
+     huella_cuerpo  text not null,
+     modelo         text not null,
+     prompt_version int not null,
+     verificado     boolean not null,
+     descartado_motivo text,
+     extraido_en    timestamptz not null default now(),
+     foreign key (cik, accession) references company_filings (cik, accession) on delete cascade
+   )`,
+  // La lectura del narrador: los fragmentos VERIFICADOS de un documento. Es
+  // la única consulta que corre por historia, así que tiene su índice.
+  `create index if not exists company_hecho_verificado
+     on company_hecho_extraido (cik, accession) where verificado`,
+  // Dos versiones de modelo o de prompt conviven a propósito: comparar una
+  // contra otra es como se mide H3 y H4.
+  `create index if not exists company_hecho_corrida
+     on company_hecho_extraido (cik, accession, modelo, prompt_version)`,
 ];
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -638,6 +691,104 @@ export function crearRepo({ sql = sqlReal, sqlBatch = sqlBatchReal } = {}) {
         ],
       );
       return 1;
+    },
+
+    // ── Los hechos extraídos ──────────────────────────────────────────
+    //
+    // **La verificación vive ACÁ, no en el que llama.** Podría recibir un
+    // `verificado: true` y creerle, pero entonces la garantía dependería de
+    // que cada llamador se acuerde — y una garantía que depende de que
+    // alguien se acuerde no es una garantía. Recibe el CUERPO y comprueba.
+    //
+    // El `offset` tampoco se acepta de afuera: lo calcula ella. Un modelo que
+    // devuelve un índice está adivinando, y un índice equivocado apunta a
+    // otra parte del documento con toda la apariencia de ser correcto.
+    //
+    // Se reemplaza en bloque por (documento, modelo, versión de prompt),
+    // igual que los items de un filing. Dos corridas con modelos distintos
+    // conviven: compararlas es como se mide H3.
+    async guardarHechos(cik, accession, { modelo, promptVersion, cuerpo, hechos = [] }) {
+      const texto = normalizarEspacios(cuerpo);
+      const huella = createHash('sha256').update(texto).digest('hex').slice(0, 32);
+
+      const filas = hechos
+        .filter((h) => h && h.fragmento)
+        .map((h) => {
+          const frag = normalizarEspacios(h.fragmento);
+          const verificado = apareceLiteral(frag, texto);
+          const i = verificado ? texto.indexOf(frag) : -1;
+          return {
+            item: h.item ?? null,
+            campo: String(h.campo || '').trim(),
+            valor: h.valor == null ? null : String(h.valor),
+            // Se guarda el fragmento NORMALIZADO, que es contra el que se
+            // verificó. Guardar el crudo dejaría el offset apuntando a otra
+            // cadena que la que está en la columna de al lado.
+            fragmento: frag,
+            offset_texto: i >= 0 ? i : null,
+            verificado,
+            // El motivo del descarte es parte del dato: H3 se mide contando.
+            descartado_motivo: verificado ? null : 'no_aparece_literal',
+          };
+        })
+        .filter((f) => f.campo);
+
+      const sentencias = [[
+        `delete from company_hecho_extraido
+          where cik = $1 and accession = $2 and modelo = $3 and prompt_version = $4`,
+        [cik, accession, modelo, promptVersion],
+      ]];
+
+      if (filas.length) {
+        const params = [];
+        const tuplas = filas.map((f) => {
+          params.push(cik, accession, f.item, f.campo, f.valor, f.fragmento,
+            f.offset_texto, huella, modelo, promptVersion, f.verificado, f.descartado_motivo);
+          const n = params.length;
+          return `($${n - 11}, $${n - 10}, $${n - 9}, $${n - 8}, $${n - 7}, $${n - 6}, `
+            + `$${n - 5}, $${n - 4}, $${n - 3}, $${n - 2}, $${n - 1}, $${n})`;
+        }).join(', ');
+        sentencias.push([
+          `insert into company_hecho_extraido
+             (cik, accession, item, campo, valor, fragmento,
+              offset_texto, huella_cuerpo, modelo, prompt_version, verificado, descartado_motivo)
+           values ${tuplas}`,
+          params,
+        ]);
+      }
+
+      await sqlBatch(sentencias);
+      return {
+        guardados: filas.length,
+        verificados: filas.filter((f) => f.verificado).length,
+        descartados: filas.filter((f) => !f.verificado).length,
+        huella_cuerpo: huella,
+      };
+    },
+
+    // Lo que el guardia de la salida necesita: por accession, los fragmentos
+    // VERIFICADOS. Los descartados no salen — un fragmento que no verificó no
+    // es material citable, y devolverlo para que el llamador filtre es
+    // ofrecerle la oportunidad de no filtrar.
+    async fragmentosVerificados(cik, accessions = []) {
+      if (!accessions.length) return new Map();
+      const marcas = accessions.map((_, i) => `$${i + 2}`).join(', ');
+      const filas = await sql(
+        `select accession, fragmento
+           from company_hecho_extraido
+          where cik = $1 and accession in (${marcas}) and verificado
+          order by accession, offset_texto nulls last`,
+        [cik, ...accessions],
+      );
+      const mapa = new Map();
+      for (const f of filas) {
+        if (!mapa.has(f.accession)) mapa.set(f.accession, []);
+        // Sin repetir: el mismo fragmento puede sostener dos campos (el
+        // nombre y el cargo salen de la misma frase).
+        const lista = mapa.get(f.accession);
+        if (!lista.includes(f.fragmento)) lista.push(f.fragmento);
+      }
+      return mapa;
     },
 
     // ¿Existe la tabla donde se guarda lo que se va a pagar?

@@ -1811,6 +1811,10 @@ contra cada fragmento por separado.
 No alcanza con el campo estructurado. Si se guarda *"cargo: Chief Financial
 Officer"* y se tira la frase, la promesa de la cita textual muere ahí.
 
+**Escrita el 2026-09-21** (`company_hecho_extraido` en `historia-db.js` y en
+`docs/sql/historia.sql`). H1 no la bloqueaba: la mediana del 8-K decide el
+lote del extractor y la estimación de costo, no la forma de la tabla.
+
 ```
 company_hecho_extraido
   cik, accession            -- de qué documento
@@ -1818,7 +1822,7 @@ company_hecho_extraido
   campo, valor              -- el dato estructurado (nombre, cargo, fecha…)
 
   fragmento                 -- LA FRASE TEXTUAL COMPLETA, verbatim
-  offset                    -- dónde empieza, en el texto sin marcado
+  offset_texto              -- dónde empieza, en el texto sin marcado
   huella_cuerpo             -- sha del texto sin marcado del que salió
 
   modelo, prompt_version    -- con qué se extrajo
@@ -1843,6 +1847,35 @@ Tres decisiones adentro:
 Con el cuerpo se puede hacer lo que se quiera —tirarlo, cachearlo un rato,
 volver a bajarlo si hace falta reauditar—, porque lo que sostiene la cita es
 el fragmento guardado, no el documento.
+
+### Dónde vive la verificación, y por qué no en el que llama
+
+`repo.guardarHechos()` **recibe el cuerpo y comprueba**. Podría recibir un
+`verificado: true` del extractor y creerle, pero entonces la garantía
+dependería de que cada llamador se acuerde — y una garantía que depende de que
+alguien se acuerde no es una garantía. Es la misma decisión que el inventario
+de citas de la rebanada G: se construye recorriendo, no en paralelo.
+
+Tres cosas que salen de eso:
+
+- **El `offset` tampoco se acepta de afuera.** Un modelo que devuelve un
+  índice está adivinando, y un índice equivocado apunta a otra parte del
+  documento con toda la apariencia de ser correcto. Lo calcula el almacén.
+- **Se guarda el fragmento normalizado**, que es contra el que se verificó.
+  Guardar el crudo dejaría el `offset` apuntando a otra cadena que la que está
+  en la columna de al lado.
+- **`fragmentosVerificados()` devuelve solo los verificados.** Devolver los
+  descartados para que el llamador filtre es ofrecerle la oportunidad de no
+  filtrar.
+
+Y las dos puntas usan **el mismo verificador literal**: el de
+`historia-guardia.js`. Que sea el mismo no es ahorro de código — es la única
+forma de que *"verificado al extraer"* y *"verificado al narrar"* signifiquen
+exactamente lo mismo.
+
+Seis mutaciones deliberadas sobre el almacén —creerle al llamador, aceptar su
+offset, no registrar el motivo del descarte, no guardar los descartados, no
+filtrar por verificado, no deduplicar— rompen pruebas.
 
 ### El costo: qué está medido y qué no
 
@@ -2005,6 +2038,9 @@ Con criterio fijado ANTES, como las compuertas de §4:
 | **H2** | ¿se puede aislar el item 5.02 del HTML? | < 90% de documentos donde el encabezado se encuentra → (c) descartada |
 | **H3** | ¿la extracción con cita textual verifica? Ver la definición de abajo | **< 95% → no se hace.** Es la compuerta que manda |
 | **H4** | costo por filing de la extracción y cuántos filings por emisor | define si (b) es viable a 4.000 emisores |
+
+*La tabla ya está escrita y no espera a H1: lo único que depende de la mediana
+es el lote del extractor y la estimación de costo.*
 
 **H3 es la que decide.** Si los fragmentos no verifican, leer cuerpos convierte
 a HISTORIA en un resumidor con citas — que es peor que un resumidor sin citas,
