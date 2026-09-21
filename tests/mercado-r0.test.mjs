@@ -15,9 +15,12 @@ import {
   buscarPistas, PISTAS_ACCIONES,
   filaUniversoUs, recorteMapa,
   parseFechaFeed, diagnosticoFechas, ZONAS_EXTRA,
-  referenciaManual, parseManualParam,
+  referenciaManual, referenciasManuales, parseManualParam,
   proximaRanura, intervaloDe, penalizarPor429, planCorrida,
+  elegibleMetodo, validaMetodo, verificaConReferencias, conteoImplicito, dispersionPrecios,
+  METODO, MAX_DESVIO_ENTERO_PCT,
 } from '../api/_lib/mercado-r0.js';
+import { CRITERIOS } from '../api/_lib/mercado-fase0.js';
 import { contarItemsFeed } from '../api/_lib/mercado-fase0.js';
 import REFERENCIAS from '../api/_lib/mercado-cap-referencia.json' with { type: 'json' };
 import { congelar, resumen } from '../scripts/mercado-congelar-fuentes.mjs';
@@ -590,4 +593,333 @@ test('R0a: el presupuesto de la corrida queda por debajo del maxDuration', () =>
   const p = planCorrida({ pendientes: 10000, presupuesto_ms: 250000, por_minuto: 55 });
   assert.ok(p.caben_por_corrida * p.intervalo_ms <= 250000);
   assert.ok(250000 < 300000);
+});
+
+// ───── R0(b ter) · verificar el MÉTODO, no cada emisora ─────
+
+// Los números reales de la corrida del 2026-09-21.
+const MUESTRAS_REALES = [
+  { clave: 'WALMEX', error_pct: 1.7, n_series: 1, acciones_por_unidad: 1 },
+  { clave: 'AMX', error_pct: 1.0, n_series: 3, acciones_por_unidad: 1 },
+  { clave: 'GMEXICO', error_pct: 0.3, n_series: 1, acciones_por_unidad: 1 },
+];
+
+test('R0b-ter: 3 muestras a ≤2% validan el instrumento (el caso real: 3/3)', () => {
+  const m = validaMetodo(MUESTRAS_REALES);
+  assert.equal(m.cuadran, 3);
+  assert.equal(m.no_cuadran, 0);
+  assert.ok(m.valido, m.razones.join(' · '));
+  assert.ok(Math.abs(m.peor_error_pct - 1.7) < 1e-9);
+  // Y reporta cuántas de las que cuadran son del MISMO tipo al que se
+  // extrapola: WALMEX y GMEXICO son limpias, AMX tiene 3 series.
+  assert.equal(m.limpias_entre_las_que_cuadran, 2);
+});
+
+test('R0b-ter: una muestra LIMPIA que falla tumba el método', () => {
+  // Si el instrumento falla en una emisora sin parámetros libres que SÍ tiene
+  // referencia, extrapolarlo a veinte que no la tienen es elegir los datos
+  // que convienen. (Una falla CON parámetros libres es otra cosa: ver el test
+  // "una falla con PARÁMETROS LIBRES no tumba el método".)
+  const m = validaMetodo([...MUESTRAS_REALES,
+    { clave: 'OTRA', error_pct: 8, n_series: 1, acciones_por_unidad: 1 }]);
+  assert.equal(m.cuadran, 3);
+  assert.equal(m.no_cuadran, 1);
+  assert.equal(m.valido, false);
+  assert.match(m.razones.join(' '), /la aritmética falla, no los parámetros/);
+  assert.deepEqual(m.claves_que_no, ['OTRA']);
+  assert.deepEqual(m.fallan_limpias, ['OTRA']);
+});
+
+test('R0b-ter: FEMSA NO cuenta como muestra que falla — no tiene error medible si no hay ref', () => {
+  // `validaMetodo` solo mira muestras CON error. Una emisora sin referencia
+  // no es evidencia ni a favor ni en contra.
+  const m = validaMetodo([...MUESTRAS_REALES, { clave: 'SINREF', error_pct: null }]);
+  assert.equal(m.muestras_con_referencia, 3);
+  assert.ok(m.valido);
+});
+
+test('R0b-ter: 2 muestras no alcanzan — el piso es 3', () => {
+  const m = validaMetodo(MUESTRAS_REALES.slice(0, 2));
+  assert.equal(m.valido, false);
+  assert.match(m.razones[0], /2 muestras cuadran/);
+});
+
+test('R0b-ter: el umbral del método es MÁS estricto que el individual', () => {
+  // Lo que se extrapola tiene que medirse mejor que lo que se mide una vez.
+  assert.ok(METODO.max_error_pct < CRITERIOS.g2_max_error_pct);
+  assert.equal(CRITERIOS.g2_metodo_max_error_pct, 2);
+  assert.equal(CRITERIOS.g2_max_error_pct, 5, 'el 5% del encargo NO se movió');
+  // Un 3% pasa el individual y NO el método, a propósito.
+  const m = validaMetodo([
+    { clave: 'A', error_pct: 3, n_series: 1, acciones_por_unidad: 1 },
+    { clave: 'B', error_pct: 1, n_series: 1, acciones_por_unidad: 1 },
+    { clave: 'C', error_pct: 1, n_series: 1, acciones_por_unidad: 1 },
+  ]);
+  assert.equal(m.valido, false);
+});
+
+test('R0b-ter: solo hereda el método quien no tiene NADA que elegir', () => {
+  assert.equal(elegibleMetodo({ n_series: 1, acciones_por_unidad: 1 }), true);
+  // Varias series: hay que acertar cuál, y el método no la valida.
+  assert.equal(elegibleMetodo({ n_series: 3, acciones_por_unidad: 1 }), false);
+  // Divisor: hay que acertar cuánto.
+  assert.equal(elegibleMetodo({ n_series: 1, acciones_por_unidad: 5 }), false);
+  assert.equal(elegibleMetodo({ n_series: 0, acciones_por_unidad: 1 }), false);
+});
+
+test('R0b-ter: las 9 con series/unidades NO son elegibles — ni una', () => {
+  // La lista real, con las series que devolvió el censo.
+  const nueve = {
+    AMX: 3, FEMSA: 2, CEMEX: 3, TLEVISA: 5, KOF: 3,
+    LIVEPOL: 2, KIMBER: 2, PINFRA: 2, LASITE: 3,
+  };
+  const por = Object.fromEntries(EMISORAS.emisoras.map((e) => [e.clave, e]));
+  for (const [clave, nSeries] of Object.entries(nueve)) {
+    assert.equal(
+      elegibleMetodo({ n_series: nSeries, acciones_por_unidad: por[clave].acciones_por_unidad }),
+      false, `${clave} no debería poder heredar el método`);
+  }
+});
+
+// ───── el divisor NO se redondea, y el conteo implícito explica FEMSA ─────
+
+test('R0b-ter: 4.2 NO se redondea a 4 — y antes se salvaba por un ULP', () => {
+  // |4.2−4|/4 = 0.050000000000000044 contra una tolerancia de 0.05: pasaba
+  // por coma flotante, no por diseño. Con 1% no hay suerte que valga.
+  const v = verificaDivisor({ capCalculada: 100 * 4.2, capReferencia: 100, acciones_por_unidad: 1 });
+  assert.equal(v.estado, 'no_es_de_unidad');
+  assert.equal(v.divisor_implicito, null);
+  assert.ok(Math.abs(v.exacto - 4.2) < 1e-9);
+  assert.equal(MAX_DESVIO_ENTERO_PCT, 1);
+});
+
+test('R0b-ter: el corte del entero limpio está en 1% — 4.02 sí, 4.05 no', () => {
+  assert.equal(verificaDivisor({ capCalculada: 402, capReferencia: 100, acciones_por_unidad: 1 }).divisor_implicito, 4);
+  assert.equal(verificaDivisor({ capCalculada: 405, capReferencia: 100, acciones_por_unidad: 1 }).divisor_implicito, null);
+});
+
+test('R0b-ter: el conteo implícito da el número que explica FEMSA (+19%)', () => {
+  // La pregunta buena no es "¿cuál es el divisor?" sino "¿cuántas acciones
+  // cree la referencia que hay?".
+  const acc = 16_935_974_370, precio = 207.66, apu = 5;
+  const capCalc = (acc * precio) / apu;
+  const capRef = (capCalc * apu) / 4.2;          // la referencia que dio implícito 4.2
+  const c = conteoImplicito({ capReferencia: capRef, precio, acciones_por_unidad: apu, acciones_circulacion: acc });
+  assert.ok(Math.abs(c.acciones_implicitas - 20_161_874_250) < 1000);
+  assert.equal(c.acciones_xbrl, acc);
+  assert.ok(Math.abs(c.delta_pct - 19.0) < 0.1, `delta ${c.delta_pct}`);
+});
+
+test('R0b-ter: sin precio, el conteo implícito es null en vez de un número raro', () => {
+  assert.equal(conteoImplicito({ capReferencia: 1e9, precio: null }), null);
+  assert.equal(conteoImplicito({ capReferencia: 1e9, precio: 0 }), null);
+});
+
+// ───── varias referencias por emisora ─────
+
+const REG_MULTI = {
+  vigencia_dias: 14,
+  referencias: [
+    { clave: 'FEMSA', market_cap: 700e9, fuente: 'Yahoo Finance (web)', capturada_en: '2026-09-20' },
+    { clave: 'FEMSA', market_cap: 703e9, fuente: 'Investing.com', capturada_en: '2026-09-20' },
+    { clave: 'WALMEX', market_cap: 784e9, fuente: 'Yahoo Finance (web)', capturada_en: '2026-09-20' },
+    { clave: 'VIEJA', market_cap: 1e9, fuente: 'Yahoo Finance (web)', capturada_en: '2026-01-01' },
+  ],
+};
+const HOY_MULTI = new Date('2026-09-25T00:00:00Z');
+
+test('R0b-ter: referenciasManuales devuelve TODAS, y separa las descartadas', () => {
+  const f = referenciasManuales(REG_MULTI, 'FEMSA', HOY_MULTI);
+  assert.equal(f.total, 2);
+  assert.equal(f.vigentes.length, 2);
+  assert.deepEqual(f.vigentes.map((r) => r.fuente).sort(), ['Investing.com', 'Yahoo Finance (web)']);
+
+  const v = referenciasManuales(REG_MULTI, 'VIEJA', HOY_MULTI);
+  assert.equal(v.vigentes.length, 0);
+  assert.equal(v.descartadas.length, 1);
+  assert.match(v.descartadas[0].motivo, /vencida/);
+});
+
+test('R0b-ter: dos fuentes que cuadran → verificada, y se reportan las dos', () => {
+  const r = verificaConReferencias({
+    capCalculada: 701e9, acciones_por_unidad: 1, precio: 100, acciones_circulacion: 7.01e9,
+    referencias: [
+      { cap: 700e9, fuente: 'Yahoo', capturada_en: '2026-09-20' },
+      { cap: 703e9, fuente: 'Investing', capturada_en: '2026-09-20' },
+    ],
+  });
+  assert.equal(r.estado, 'verificada');
+  assert.equal(r.por_referencia.length, 2);
+  assert.ok(r.por_referencia.every((x) => x.conteo));
+});
+
+test('R0b-ter: una cuadra y otra no → DISCREPANCIA, que no es "verificada"', () => {
+  // Dos fuentes públicas que no coinciden entre sí. Quedarse con la que
+  // conviene sería elegir el dato que da el resultado buscado.
+  const r = verificaConReferencias({
+    capCalculada: 700e9, acciones_por_unidad: 1, precio: 100, acciones_circulacion: 7e9,
+    referencias: [
+      { cap: 700e9, fuente: 'Yahoo', capturada_en: '2026-09-20' },
+      { cap: 500e9, fuente: 'Investing', capturada_en: '2026-09-20' },
+    ],
+  });
+  assert.equal(r.estado, 'discrepancia_entre_fuentes');
+  assert.match(r.motivo, /1 de 2 referencias cuadran/);
+  assert.match(r.motivo, /el problema puede no ser nuestro/);
+});
+
+test('R0b-ter: ninguna cuadra → el problema es nuestro, y se dice', () => {
+  const r = verificaConReferencias({
+    capCalculada: 700e9, acciones_por_unidad: 1, precio: 100, acciones_circulacion: 7e9,
+    referencias: [
+      { cap: 400e9, fuente: 'Yahoo', capturada_en: '2026-09-20' },
+      { cap: 410e9, fuente: 'Investing', capturada_en: '2026-09-20' },
+    ],
+  });
+  assert.equal(r.estado, 'no_cuadra');
+  assert.match(r.motivo, /ninguna de las 2 referencias cuadra/);
+});
+
+test('R0b-ter: sin referencias, el estado es sin_referencia — no "no cuadra"', () => {
+  const r = verificaConReferencias({ capCalculada: 1e9, referencias: [] });
+  assert.equal(r.estado, 'sin_referencia');
+  assert.deepEqual(r.por_referencia, []);
+});
+
+test('criterios: G2 sube a v2, cuenta dos vías, y el 5% del encargo NO se movió', () => {
+  // El cambio de regla queda versionado a propósito: el punto de congelar los
+  // criterios era que moverlos se viera en el diff.
+  assert.equal(CRITERIOS.version, 2);
+  assert.equal(CRITERIOS.g2_max_error_pct, 5);
+  assert.equal(CRITERIOS.g2_min_emisoras_verificadas, 15);
+  assert.equal(CRITERIOS.g2_metodo_min_muestras, 3);
+  assert.equal(CRITERIOS.g2_metodo_max_error_pct, 2);
+});
+
+// ───── LA PRUEBA DE FEMSA: series con precio distinto ─────
+
+const ser = (pares) => pares.map(([s2, c]) => ({ emisora_serie: s2, cierre: c }));
+
+test('FEMSA: dos unidades comparables a precios distintos → requiere desglose', () => {
+  // UB 165 y UBD 207.66 son las dos unidades de 5 acciones: comparables, y
+  // 26% distintas. `acciones_TOTALES × precio_de_UBD / 5` le aplica el precio
+  // de una a todo el capital, y el XBRL no desglosa por serie.
+  const d = dispersionPrecios({
+    series: ser([['FEMSAUB', 165], ['FEMSAUBD', 207.66]]), serie_liquida: 'FEMSAUBD',
+  });
+  assert.equal(d.requiere_desglose, true);
+  assert.equal(d.comparables, 2);
+  assert.ok(Math.abs(d.spread_pct - 25.85) < 0.1);
+  assert.match(d.motivo, /series con precio distinto, sin desglose/);
+  assert.match(d.motivo, /no desglosa|no un desglose|un total de acciones/);
+});
+
+test('CEMEX: unidad contra acción suelta NO es un desacuerdo de precio', () => {
+  // CPO 17.56 es un paquete de 3; A y B a 3.8 son acciones. No están en
+  // desacuerdo: son instrumentos distintos. Marcarlas habría mandado a gris a
+  // TODAS las emisoras con CPO.
+  const d = dispersionPrecios({
+    series: ser([['CEMEXA', 3.8], ['CEMEXB', 3.8], ['CEMEXCPO', 17.56]]), serie_liquida: 'CEMEXCPO',
+  });
+  assert.equal(d.requiere_desglose, false);
+  assert.equal(d.comparables, 1);
+  assert.match(d.nota, /no son comparables/);
+});
+
+test('las cotizaciones IDÉNTICAS cuentan como un solo precio', () => {
+  // KOFA = KOFD = 16.270452 a seis decimales no es un mercado: es un valor
+  // puesto a mano. Contarlas como dos precios distintos sería contar ruido.
+  const d = dispersionPrecios({
+    series: ser([['KOFA', 16.270452], ['KOFD', 16.270452], ['KOFUBL', 191.23]]), serie_liquida: 'KOFUBL',
+  });
+  assert.equal(d.requiere_desglose, false);
+  assert.equal(d.grupos_identicos.length, 1);
+  assert.deepEqual(d.grupos_identicos[0].series, ['KOFA', 'KOFD']);
+});
+
+test('LIVEPOL y KIMBER: comparables pero casi iguales → NO requieren desglose', () => {
+  // Dos series que se mueven juntas no rompen el cálculo: el error que
+  // introducen cabe dentro de la tolerancia.
+  for (const [liq, pares, tope] of [
+    ['LIVEPOLC-1', [['LIVEPOL1', 102.25], ['LIVEPOLC-1', 100.72]], 2],
+    ['KIMBERA', [['KIMBERA', 38.5], ['KIMBERB', 38.83]], 1],
+  ]) {
+    const d = dispersionPrecios({ series: ser(pares), serie_liquida: liq });
+    assert.equal(d.requiere_desglose, false, `${liq} no debería requerir desglose`);
+    assert.ok(d.spread_pct < tope);
+  }
+});
+
+test('la prueba sobre las 9 reales señala exactamente AMX, FEMSA y PINFRA', () => {
+  const reales = {
+    AMX: ['AMXB', [['AMXA', 19.5], ['AMXB', 19.91], ['AMXL', 16.1]]],
+    FEMSA: ['FEMSAUBD', [['FEMSAUB', 165], ['FEMSAUBD', 207.66]]],
+    CEMEX: ['CEMEXCPO', [['CEMEXA', 3.8], ['CEMEXB', 3.8], ['CEMEXCPO', 17.56]]],
+    TLEVISA: ['TLEVISACPO', [['TLEVISAA', 0.18], ['TLEVISAB', 0.205], ['TLEVISACPO', 7.63], ['TLEVISAD', 0.205], ['TLEVISAL', 0.205]]],
+    KOF: ['KOFUBL', [['KOFA', 16.270452], ['KOFD', 16.270452], ['KOFUBL', 191.23]]],
+    LIVEPOL: ['LIVEPOLC-1', [['LIVEPOL1', 102.25], ['LIVEPOLC-1', 100.72]]],
+    KIMBER: ['KIMBERA', [['KIMBERA', 38.5], ['KIMBERB', 38.83]]],
+    PINFRA: ['PINFRA*', [['PINFRA*', 258.14], ['PINFRAL', 195.99]]],
+    LASITE: ['LASITE*', [['LASITE*', 7.06], ['LASITEB-1', 3.12], ['LASITEB-2', 3.15]]],
+  };
+  const marcadas = Object.entries(reales)
+    .filter(([, [liq, pares]]) => dispersionPrecios({ series: ser(pares), serie_liquida: liq }).requiere_desglose)
+    .map(([k]) => k).sort();
+  assert.deepEqual(marcadas, ['AMX', 'FEMSA', 'PINFRA']);
+});
+
+test('una emisora de UNA serie nunca requiere desglose', () => {
+  assert.equal(dispersionPrecios({ series: ser([['WALMEX*', 45.54]]), serie_liquida: 'WALMEX*' }).requiere_desglose, false);
+  assert.equal(dispersionPrecios({ series: [], serie_liquida: null }).requiere_desglose, false);
+});
+
+// ───── qué tumba el método y qué no ─────
+
+test('una falla con PARÁMETROS LIBRES no tumba el método; una LIMPIA sí', () => {
+  // Sin esta distinción, TLEVISA (5.6%, divisor 117) y FEMSA habrían tumbado
+  // el método para las 20 emisoras de una sola serie, que no tienen nada que
+  // ver con el problema de esas dos.
+  const base = [
+    { clave: 'WALMEX', error_pct: 1.7, n_series: 1, acciones_por_unidad: 1 },
+    { clave: 'GMEXICO', error_pct: 0.3, n_series: 1, acciones_por_unidad: 1 },
+    { clave: 'AMX', error_pct: 1.0, n_series: 3, acciones_por_unidad: 1 },
+  ];
+  const conTlevisa = validaMetodo([...base,
+    { clave: 'TLEVISA', error_pct: 5.6, n_series: 5, acciones_por_unidad: 117 }]);
+  assert.ok(conTlevisa.valido, conTlevisa.razones.join(' · '));
+  assert.deepEqual(conTlevisa.fallan_limpias, []);
+  assert.equal(conTlevisa.fallan_con_parametros_libres[0].clave, 'TLEVISA');
+
+  // Pero una emisora LIMPIA que falla sí es evidencia contra la aritmética.
+  const conLimpiaRota = validaMetodo([...base,
+    { clave: 'OTRA', error_pct: 9, n_series: 1, acciones_por_unidad: 1 }]);
+  assert.equal(conLimpiaRota.valido, false);
+  assert.match(conLimpiaRota.razones.join(' '), /la aritmética falla, no los parámetros/);
+});
+
+test('hacen falta ≥2 muestras LIMPIAS: no se extrapola desde casos distintos', () => {
+  // Tres muestras que cuadran, pero ninguna limpia: el método se aplicaría a
+  // emisoras de una serie apoyándose solo en multi-serie.
+  const m = validaMetodo([
+    { clave: 'A', error_pct: 1, n_series: 3, acciones_por_unidad: 1 },
+    { clave: 'B', error_pct: 1, n_series: 2, acciones_por_unidad: 1 },
+    { clave: 'C', error_pct: 1, n_series: 1, acciones_por_unidad: 5 },
+  ]);
+  assert.equal(m.cuadran, 3);
+  assert.equal(m.limpias_entre_las_que_cuadran, 0);
+  assert.equal(m.valido, false);
+  assert.match(m.razones.join(' '), /extrapolar desde casos que no se parecen/);
+  assert.equal(METODO.min_muestras_limpias, 2);
+});
+
+test('el caso REAL de la corrida valida el método: 3 cuadran, 2 limpias', () => {
+  const m = validaMetodo([
+    { clave: 'WALMEX', error_pct: 1.7, n_series: 1, acciones_por_unidad: 1 },
+    { clave: 'GMEXICO', error_pct: 0.3, n_series: 1, acciones_por_unidad: 1 },
+    { clave: 'AMX', error_pct: 1.0, n_series: 3, acciones_por_unidad: 1 },
+    { clave: 'TLEVISA', error_pct: 5.6, n_series: 5, acciones_por_unidad: 117 },
+  ]);
+  assert.ok(m.valido);
+  assert.equal(m.cuadran, 3);
+  assert.equal(m.limpias_entre_las_que_cuadran, 2);
 });

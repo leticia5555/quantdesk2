@@ -837,8 +837,12 @@ test('tablero: todas verdes → GO; una roja → NO-GO con su razón', () => {
 test('los criterios están congelados y versionados', () => {
   // Si alguien mueve una portería, este test no lo impide — pero el diff de
   // estas líneas lo deja a la vista en la revisión, que es el punto.
-  assert.equal(CRITERIOS.version, 1);
+  //
+  // v2 (2026-09-21): cambió CÓMO se cuenta G2 (dos vías hacia "verificada"),
+  // NO sus umbrales. El 5% por emisora sigue donde estaba, y este test lo
+  // fija para que moverlo requiera tocar esta línea a propósito.
+  assert.equal(CRITERIOS.version, 2);
   assert.equal(CRITERIOS.g2_max_error_pct, 5);
   assert.equal(CRITERIOS.g6_min_trimestres_upa, 4);
-  assert.equal(tablero({}).criterios_version, 1);
+  assert.equal(tablero({}).criterios_version, 2);
 });
