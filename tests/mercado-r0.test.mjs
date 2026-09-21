@@ -927,8 +927,15 @@ test('el caso REAL de la corrida valida el método: 3 cuadran, 2 limpias', () =>
 
 // ───── serie sin mercado: una serie que no opera no es un precio ─────
 
+// OJO con este helper: durante una rebanada entera pasó `volumen_ventana`
+// con números y las pruebas quedaron verdes… contra una columna que la
+// cosecha NUNCA llena (`/v2/historicos` da [cierre, importe]). Por eso ahora
+// el activo se puede declarar por volumen O por importe, y hay casos con
+// `null` en los dos, que es lo que la tabla real entrega.
 const SV = (serie, precio, volumen_ventana, filas_ventana = 20) =>
-  ({ emisora_serie: serie, cierre: precio, volumen_ventana, filas_ventana });
+  ({ emisora_serie: serie, cierre: precio, volumen_ventana, importe_ventana: null, filas_ventana });
+const SI = (serie, precio, importe_ventana, filas_ventana = 20) =>
+  ({ emisora_serie: serie, cierre: precio, volumen_ventana: null, importe_ventana, filas_ventana });
 
 test('AMX: con A y L sin volumen, la dispersión cae a una sola serie', () => {
   // Es el caso que pediste: A y L no operan, así que el capital cotiza
@@ -974,19 +981,24 @@ test('FEMSA sigue gris: UB y UBD operan LAS DOS', () => {
   assert.ok(d.spread_pct > 25);
 });
 
-test('COSECHA RANCIA: si la líquida tampoco opera, NO se excluye nada', () => {
+test('COSECHA RANCIA: con la cosecha atrasada NO se excluye nada', () => {
   // El modo de falla que esta regla podía abrir: con la cosecha atrasada,
-  // todas las series dan volumen 0, la dispersión desaparece y FEMSA, AMX y
+  // todas las series dan actividad 0, la dispersión desaparece y FEMSA, AMX y
   // PINFRA se ponen verdes SOLAS. Un verde por falta de datos es peor que un
   // gris: el gris se ve.
+  //
+  // El atraso entra como VEREDICTO EN SESIONES, calculado afuera: esta
+  // función ya no lo adivina a partir de ceros.
   const c = clasificaSeries({
-    series: [SV('FEMSAUB', 165, 0, 0), SV('FEMSAUBD', 207.66, 0, 0)],
+    series: [SI('FEMSAUB', 165, 3.4e6), SI('FEMSAUBD', 207.66, 9.8e7)],
     serie_liquida: 'FEMSAUBD',
+    cosecha_atrasada: true, sesiones_atraso: 4,
   });
   assert.equal(c.datos_rancios, true);
+  assert.equal(c.causa_rancio, 'cosecha_atrasada');
   assert.equal(c.sin_mercado.length, 0, 'con datos rancios no se excluye ninguna serie');
   assert.equal(c.con_mercado.length, 2);
-  assert.match(c.motivo_rancio, /atraso de la cosecha/);
+  assert.match(c.motivo_rancio, /4 sesiones/);
 
   // Y la dispersión sigue viéndose, o sea que FEMSA sigue gris.
   const d = dispersionPrecios({
@@ -1002,10 +1014,14 @@ test('la serie LÍQUIDA nunca se declara sin mercado', () => {
     series: [SV('XB', 10, 0), SV('XA', 9, 5e6)], serie_liquida: 'XB',
   });
   assert.equal(c.datos_rancios, true);
+  assert.equal(c.causa_rancio, 'serie_liquida_sin_actividad');
   assert.ok(c.con_mercado.some((x) => x.serie === 'XB'));
+  // Y con la cosecha al día el motivo NO dice "atraso": dice que la serie
+  // del registro está mal o la emisora dejó de cotizar, que es otra cosa.
+  assert.doesNotMatch(c.motivo_rancio, /atraso/);
 });
 
-test('volumen NULL cuenta como CON mercado — no saber no es saber que no', () => {
+test('actividad NULL cuenta como CON mercado — no saber no es saber que no', () => {
   // Mantener la serie en la dispersión empuja hacia el gris, que es el lado
   // seguro cuando falta el dato.
   const c = clasificaSeries({
@@ -1013,6 +1029,64 @@ test('volumen NULL cuenta como CON mercado — no saber no es saber que no', () 
   });
   assert.equal(c.sin_mercado.length, 0);
   assert.equal(c.con_mercado.length, 2);
+});
+
+// ── EL BUG DE LA CORRIDA DEL 2026-09-21 ─────────────────────────────
+// `bmv_precios.volumen` está VACÍA en las ~570,000 filas: la cosecha de
+// /v2/historicos devuelve [cierre, importe] y nada más. La consulta hacía
+// `sum(coalesce(volumen, 0))`, así que "no medido" llegaba como CERO y la
+// serie líquida de las 27 emisoras salía sin mercado. G2: 2 de 15, con la
+// cosecha al día y cero sesiones de atraso.
+
+test('sin volumen y sin importe: NO medible, y no se excluye a nadie', () => {
+  const c = clasificaSeries({
+    series: [
+      { emisora_serie: 'AA', cierre: 10, volumen_ventana: null, importe_ventana: null, filas_ventana: 21 },
+      { emisora_serie: 'AB', cierre: 11, volumen_ventana: null, importe_ventana: null, filas_ventana: 21 },
+    ],
+    serie_liquida: 'AB',
+  });
+  assert.equal(c.actividad_no_medible, true);
+  assert.equal(c.actividad_medida, null);
+  // Y sobre todo: NO es rancio. La tabla puede estar perfectamente al día;
+  // lo que falta es la columna.
+  assert.equal(c.datos_rancios, false);
+  assert.equal(c.sin_mercado.length, 0);
+  assert.equal(c.con_mercado.length, 2);
+});
+
+test('con volumen vacío, el importe decide — y lo declara', () => {
+  const c = clasificaSeries({
+    series: [SI('BA', 19.5, 0, 12), SI('BB', 19.91, 4.2e9), SI('BL', 16.1, 0, 0)],
+    serie_liquida: 'BB',
+  });
+  assert.equal(c.actividad_medida, 'importe');
+  assert.deepEqual(c.con_mercado.map((x) => x.serie), ['BB']);
+  assert.deepEqual(c.sin_mercado.map((x) => x.serie).sort(), ['BA', 'BL']);
+  assert.match(c.sin_mercado.find((x) => x.serie === 'BA').motivo, /importe 0/);
+});
+
+test('el volumen manda cuando existe; el importe es el suplente', () => {
+  const c = clasificaSeries({
+    series: [
+      { emisora_serie: 'CA', cierre: 10, volumen_ventana: 0, importe_ventana: 9e9, filas_ventana: 20 },
+      { emisora_serie: 'CB', cierre: 11, volumen_ventana: 5e6, importe_ventana: 1e9, filas_ventana: 20 },
+    ],
+    serie_liquida: 'CB',
+  });
+  assert.equal(c.actividad_medida, 'volumen');
+  assert.deepEqual(c.sin_mercado.map((x) => x.serie), ['CA']);
+});
+
+test('un cero de actividad NO alcanza para declarar rancia la cosecha', () => {
+  // La inversa del bug: antes, ceros en todas las series se leían como
+  // "cosecha atrasada". El atraso lo dice el calendario, no los ceros.
+  const c = clasificaSeries({
+    series: [SI('DA', 10, 0, 20), SI('DB', 11, 0, 20)],
+    serie_liquida: 'DB', cosecha_atrasada: false,
+  });
+  assert.equal(c.causa_rancio, 'serie_liquida_sin_actividad');
+  assert.doesNotMatch(c.motivo_rancio, /atraso/);
 });
 
 test('se distingue "cotiza sin volumen" de "sin operaciones"', () => {
@@ -1026,4 +1100,54 @@ test('se distingue "cotiza sin volumen" de "sin operaciones"', () => {
   const por = Object.fromEntries(c.sin_mercado.map((x) => [x.serie, x.motivo]));
   assert.match(por.ZA, /cotiza pero con volumen 0/);
   assert.match(por.ZC, /sin operaciones/);
+});
+
+// ── La bandera de rancio, en SESIONES: findes y feriados ─────────────
+// Lo que pasó en prod: `datos_precio` traía `dias_atraso: 3` y
+// `sesiones_de_atraso: 0` —la cosecha estaba AL DÍA, el 21 era lunes— y aun
+// así las 27 emisoras salieron rancias. Estas pruebas componen las dos
+// piezas puras exactamente como lo hace `?job=unidades`.
+
+import { frescuraPrecios } from '../api/_lib/bmv-frescura.js';
+
+const banderaDe = (ultima, ahora) => {
+  const f = frescuraPrecios({ ultima_fecha: ultima, ahora: new Date(ahora) });
+  const c = clasificaSeries({
+    series: [SI('EA', 19.5, 3.4e6), SI('EB', 19.91, 4.2e9)],
+    serie_liquida: 'EB',
+    cosecha_atrasada: f.alerta, sesiones_atraso: f.dias_habiles_atraso,
+  });
+  return { dias_calendario: f.dias_habiles_atraso, frescura: f, clases: c };
+};
+
+test('FIN DE SEMANA: datos del viernes, consultados el domingo → NO rancio', () => {
+  // En calendario son 2 días; en sesiones, cero. La bandera vieja se prendía
+  // TODOS los domingos.
+  const { frescura, clases } = banderaDe('2026-09-18', '2026-09-20T18:00:00Z');
+  assert.equal(frescura.dias_habiles_atraso, 0);
+  assert.equal(clases.datos_rancios, false);
+});
+
+test('EL CASO DE PROD: viernes 18 guardado, lunes 21 por la mañana → NO rancio', () => {
+  // 3 días de calendario, 0 sesiones: el cierre del lunes todavía no existe.
+  const { frescura, clases } = banderaDe('2026-09-18', '2026-09-21T15:00:00Z');
+  assert.equal(frescura.dias_habiles_atraso, 0);
+  assert.equal(clases.datos_rancios, false);
+  assert.equal(clases.actividad_medida, 'importe');
+});
+
+test('FERIADO: datos del martes 15, consultados el jueves 17 → 1 sesión, NO rancio', () => {
+  // El 16 es Independencia: entre el 15 y el 17 hay UNA sesión, no dos.
+  const { frescura, clases } = banderaDe('2026-09-15', '2026-09-17T23:00:00Z');
+  assert.equal(frescura.dias_habiles_atraso, 1);
+  assert.deepEqual(frescura.asuetos_aplicados, { '2026-09-16': 'Independencia' });
+  assert.equal(clases.datos_rancios, false);
+});
+
+test('ATRASO DE VERDAD: martes 15 guardado, lunes 21 → 2 sesiones, SÍ rancio', () => {
+  const { frescura, clases } = banderaDe('2026-09-15', '2026-09-21T20:00:00Z');
+  assert.equal(frescura.dias_habiles_atraso, 2);
+  assert.equal(clases.datos_rancios, true);
+  assert.equal(clases.causa_rancio, 'cosecha_atrasada');
+  assert.equal(clases.sin_mercado.length, 0, 'con cosecha atrasada no se excluye ninguna serie');
 });

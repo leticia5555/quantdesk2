@@ -514,11 +514,20 @@ async function jobUnidades({ ahora, manual }) {
   // de datos que tenemos", y el atraso se reporta aparte en vez de
   // disfrazarse de series muertas.
   const VENTANA_DIAS = 30;
+  // SIN `coalesce`: `sum()` de una columna toda nula devuelve NULL, que es
+  // "no medido", y ese es justo el dato que importa. Con el `coalesce(…, 0)`
+  // que estaba acá, "no medido" se volvía "cero" y la regla de serie sin
+  // mercado declaraba muertas a las 27 emisoras —su serie líquida incluida—
+  // porque `bmv_precios.volumen` está VACÍA en toda la tabla: la cosecha de
+  // /v2/historicos trae [cierre, importe] y nada más.
   const volumenes = await sql(
     `with corte as (select max(fecha) hasta from bmv_precios)
      select p.emisora_serie,
-            sum(coalesce(p.volumen, 0))::numeric  volumen_ventana,
-            count(*)::int                         filas_ventana
+            sum(p.volumen)::numeric   volumen_ventana,
+            sum(p.importe)::numeric   importe_ventana,
+            count(p.volumen)::int     filas_con_volumen,
+            count(p.importe)::int     filas_con_importe,
+            count(*)::int             filas_ventana
        from bmv_precios p, corte c
       where p.fecha > c.hasta - ($1::int * interval '1 day')
       group by 1`, [VENTANA_DIAS]).catch(() => []);
@@ -555,12 +564,22 @@ async function jobUnidades({ ahora, manual }) {
     // ¿Las series de esta emisora cotizan a precios COMPARABLES y distintos?
     // Si sí, el cálculo le aplica el precio de una a todas las acciones y la
     // cap sale mal aunque el divisor esté bien (el caso FEMSA).
-    const conVol = series.map((x) => ({
-      ...x,
-      volumen_ventana: volPor.has(x.emisora_serie) ? volPor.get(x.emisora_serie).volumen_ventana : null,
-      filas_ventana: volPor.has(x.emisora_serie) ? volPor.get(x.emisora_serie).filas_ventana : 0,
-    }));
-    const clases = clasificaSeries({ series: conVol, serie_liquida: em.serie_liquida });
+    const conVol = series.map((x) => {
+      const v = volPor.get(x.emisora_serie) || null;
+      return {
+        ...x,
+        volumen_ventana: v ? v.volumen_ventana : null,
+        importe_ventana: v ? v.importe_ventana : null,
+        filas_ventana: v ? v.filas_ventana : 0,
+      };
+    });
+    // El atraso entra como VEREDICTO EN SESIONES, no como días de calendario:
+    // un lunes son dos o tres días y cero sesiones, y la bandera se prendía
+    // sola cada fin de semana.
+    const clases = clasificaSeries({
+      series: conVol, serie_liquida: em.serie_liquida,
+      cosecha_atrasada: frescura.alerta, sesiones_atraso: frescura.dias_habiles_atraso,
+    });
 
     // La dispersión se mide SOLO entre series que operan. Una serie muerta no
     // es un precio en desacuerdo: es el último número que quedó pegado.
@@ -590,6 +609,10 @@ async function jobUnidades({ ahora, manual }) {
       n_series_con_mercado: clases.con_mercado.length,
       series_sin_mercado: clases.sin_mercado,
       datos_rancios: clases.datos_rancios,
+      causa_rancio: clases.causa_rancio,
+      motivo_rancio: clases.motivo_rancio,
+      actividad_medida: clases.actividad_medida,
+      actividad_no_medible: !!clases.actividad_no_medible,
       acciones_por_unidad: em.acciones_por_unidad,
       unidad_fuente: em.unidad_fuente,
       periodo_xbrl: a ? `${a.anio}T${a.trimestre}` : null,
@@ -636,10 +659,11 @@ async function jobUnidades({ ahora, manual }) {
     if (b.cap_calculada == null) {
       estado = 'gris_punteado'; motivo = b.motivo_calculo;
     } else if (b.datos_rancios) {
-      // Ni siquiera la serie líquida operó: el problema son los datos, y un
-      // verde sacado de una tabla atrasada es peor que un gris.
-      estado = 'gris_punteado'; via = 'datos_rancios';
-      motivo = `la serie líquida no registra volumen en los últimos ${VENTANA_DIAS} días de datos: cosecha de precios atrasada`;
+      // Dos causas distintas y el motivo las distingue: la cosecha viene
+      // atrasada (en SESIONES), o la serie líquida no operó con la tabla al
+      // día. En las dos, un verde sacado de ahí es peor que un gris.
+      estado = 'gris_punteado'; via = b.causa_rancio || 'datos_rancios';
+      motivo = b.motivo_rancio;
     } else if (b.dispersion.requiere_desglose) {
       // Manda sobre la verificación individual A PROPÓSITO: si las series
       // cotizan distinto, el número está estructuralmente mal aunque una
@@ -728,6 +752,16 @@ async function jobUnidades({ ahora, manual }) {
       emisoras_con_datos_rancios: salida.filter((s2) => s2.datos_rancios).map((s2) => s2.clave),
       sesiones_de_atraso: frescura.dias_habiles_atraso,
       sesiones_faltantes: frescura.sesiones_faltantes,
+      // La bandera de rancio la decide `sesiones_de_atraso`, NUNCA
+      // `dias_atraso`: en calendario, cualquier lunes da 2 o 3.
+      bandera_rancio_usa: `sesiones (> ${frescura.max_dias_habiles} = rancio), no días de calendario`,
+      // Con qué se midió que una serie opera. `volumen` está VACÍA en toda
+      // la tabla (la cosecha trae [cierre, importe]), así que en la práctica
+      // manda `importe`. Si sale null para alguna emisora, esa no se pudo
+      // medir y NO se le excluyó ninguna serie.
+      actividad_medida_por_emisora: Object.fromEntries(
+        salida.map((s2) => [s2.clave, s2.actividad_medida || (s2.actividad_no_medible ? 'no medible' : null)])),
+      emisoras_sin_actividad_medible: salida.filter((s2) => s2.actividad_no_medible).map((s2) => s2.clave),
       // AVISO A TIEMPO. Este umbral estaba en `> VENTANA_DIAS` (30 días), así
       // que la corrida del 2026-09-21 —27 de 27 emisoras en `datos_rancios`,
       // G2 en 2/15— reportó `lectura: null`. El aviso llegaba justo cuando ya

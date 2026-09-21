@@ -394,40 +394,99 @@ export function parseManualParam(raw, { fuente, capturada_en } = {}) {
  *
  * Dos anclas lo impiden:
  *
- *   1. La ventana se ancla en `max(fecha)` DE LA TABLA, no en el reloj. Así
- *      se mide "los últimos 30 días de datos que tenemos", y el atraso de la
- *      cosecha se reporta aparte en vez de disfrazarse de series muertas.
+ *   1. La ventana se ancla en `max(fecha)` DE LA TABLA, no en el reloj, y el
+ *      atraso de la cosecha lo decide el llamador EN SESIONES (`bmv-frescura`)
+ *      y lo pasa en `cosecha_atrasada`. En días de calendario, un lunes
+ *      siempre da dos o tres y la bandera se prendía sola.
  *   2. **La serie líquida nunca se puede declarar sin mercado.** Si ELLA no
  *      operó en la ventana, el problema son los datos, no la serie: se
  *      devuelve `datos_rancios` y NO se excluye nada. Fail closed.
  *
- * Y el volumen `null` (columna vacía) cuenta como CON mercado: no saber no
- * es saber que no. Mantener la serie en la dispersión empuja hacia el gris,
- * que es el lado seguro.
+ * Y "no medido" cuenta como CON mercado: no saber no es saber que no.
+ * Mantener la serie en la dispersión empuja hacia el gris, que es el lado
+ * seguro.
+ *
+ * ── LO QUE LA CORRIDA DEL 2026-09-21 ENSEÑÓ ──────────────────────────
+ * Estas pruebas pasaban con fixtures que traían `volumen_ventana` con
+ * números. La tabla real NO: `/v2/historicos` devuelve [cierre, importe] y
+ * `bmv_precios.volumen` está vacía para las ~570,000 filas. Un instrumento
+ * probado contra una columna que la cosecha nunca llena mide otra cosa.
+ * Por eso la actividad se mide con `volumen` O con `importe`, y "no medido"
+ * no se convierte en cero en ninguna parte del camino.
  */
-export function clasificaSeries({ series = [], serie_liquida } = {}) {
+export function clasificaSeries({
+  series = [], serie_liquida, cosecha_atrasada = false, sesiones_atraso = null,
+} = {}) {
   const vivas = series
     .map((x) => ({
       serie: String((x && x.emisora_serie) || ''),
       precio: num(x && x.cierre),
-      // null ≠ 0: sin dato de volumen la serie se conserva (fail closed).
+      // `undefined` (la consulta no lo trajo) y `null` (la columna está
+      // vacía) son lo mismo acá: NO MEDIDO.
       volumen_ventana: x && x.volumen_ventana === undefined ? null : num(x.volumen_ventana),
+      importe_ventana: x && x.importe_ventana === undefined ? null : num(x.importe_ventana),
       filas_ventana: num(x && x.filas_ventana),
     }))
     .filter((x) => x.serie && x.precio != null && x.precio > 0);
 
+  // ── Ancla 1 (ahora explícita): la cosecha atrasada se decide FUERA ───
+  // El llamador pasa el veredicto en SESIONES (bmv-frescura), no en días de
+  // calendario. Un domingo son dos o tres días y cero sesiones.
+  if (cosecha_atrasada) {
+    return {
+      con_mercado: vivas,
+      sin_mercado: [],
+      datos_rancios: true,
+      causa_rancio: 'cosecha_atrasada',
+      actividad_medida: null,
+      motivo_rancio: `la cosecha de precios lleva ${sesiones_atraso ?? '?'} sesiones de atraso: con la tabla vieja no se puede concluir que una serie no opera`,
+    };
+  }
+
+  // ── Con qué se mide que una serie opera ─────────────────────────────
+  // `volumen` PRIMERO, `importe` si no hay volumen. No es un adorno: la
+  // cosecha de /v2/historicos devuelve [cierre, importe] y NADA más, así que
+  // `bmv_precios.volumen` está vacía para toda la tabla. Medir con ella —y
+  // peor, con un `coalesce(volumen, 0)` que convierte "no medido" en "cero"—
+  // declaraba sin mercado a las 27 emisoras, incluida su serie líquida, y
+  // mandaba G2 a 2 de 15 con la cosecha AL DÍA.
+  const actividadDe = (x) => (
+    x.volumen_ventana != null ? { valor: x.volumen_ventana, medida: 'volumen' }
+      : x.importe_ventana != null ? { valor: x.importe_ventana, medida: 'importe' }
+        : { valor: null, medida: null });
+
   const esLiquida = (x) => x.serie === serie_liquida;
-  const sinMercado = (x) => x.volumen_ventana != null && x.volumen_ventana <= 0;
+  const sinMercado = (x) => { const a = actividadDe(x); return a.valor != null && a.valor <= 0; };
+  const medidas = [...new Set(vivas.map((x) => actividadDe(x).medida).filter(Boolean))];
+
+  // Ninguna serie se pudo medir: no hay con qué excluir a nadie. NO es
+  // "rancio" —la tabla puede estar al día— es que la columna no existe. Se
+  // reporta y todas siguen contando, que es el lado seguro: la dispersión
+  // empuja hacia el gris.
+  if (!medidas.length) {
+    return {
+      con_mercado: vivas,
+      sin_mercado: [],
+      datos_rancios: false,
+      causa_rancio: null,
+      actividad_medida: null,
+      actividad_no_medible: true,
+      motivo_rancio: null,
+    };
+  }
 
   const liquida = vivas.find(esLiquida) || null;
-  // Ancla 2: si la líquida no operó, esto es atraso de cosecha, no una serie
-  // muerta. No se excluye NADA.
+  // Ancla 2: si la líquida no operó CON LA COSECHA AL DÍA, o la serie del
+  // registro está mal o la emisora dejó de cotizar. En cualquier caso no se
+  // excluye NADA: el cálculo usa justo ese precio.
   if (liquida && sinMercado(liquida)) {
     return {
       con_mercado: vivas,
       sin_mercado: [],
       datos_rancios: true,
-      motivo_rancio: `la serie líquida (${serie_liquida}) no registra volumen en la ventana: eso es atraso de la cosecha de precios, no una serie sin mercado — no se excluye ninguna`,
+      causa_rancio: 'serie_liquida_sin_actividad',
+      actividad_medida: actividadDe(liquida).medida,
+      motivo_rancio: `la serie líquida (${serie_liquida}) no registra actividad en la ventana y la cosecha está al día: o la serie del registro está mal, o la emisora dejó de cotizar — no se excluye ninguna`,
     };
   }
 
@@ -438,9 +497,12 @@ export function clasificaSeries({ series = [], serie_liquida } = {}) {
     con_mercado: conMercado,
     sin_mercado: muertas.map((x) => ({
       serie: x.serie, precio: x.precio, filas_ventana: x.filas_ventana,
-      motivo: x.filas_ventana ? 'cotiza pero con volumen 0 en la ventana' : 'sin operaciones en la ventana',
+      medida: actividadDe(x).medida,
+      motivo: x.filas_ventana ? `cotiza pero con ${actividadDe(x).medida} 0 en la ventana` : 'sin operaciones en la ventana',
     })),
     datos_rancios: false,
+    causa_rancio: null,
+    actividad_medida: medidas.length === 1 ? medidas[0] : medidas.join('+'),
     motivo_rancio: null,
   };
 }
