@@ -774,3 +774,64 @@ cotización rancia y no hay nada que arreglar en la fórmula.
 emisora**: si una cuadra y otra no, el estado **no** es "verificada" — es
 `discrepancia_entre_fuentes`, porque dos fuentes públicas que no coinciden es
 información, no un problema a esconder quedándose con la cómoda.
+
+
+---
+
+## 16. Serie sin mercado — y el verde falso que casi abre
+
+Pediste que una serie con volumen 0 en los últimos 30 días no cuente, ni para
+la dispersión ni para el cálculo. Implementado, con una salvedad que vale más
+que la regla.
+
+### 16.1 · Por qué la regla es correcta y no un atajo
+
+Una cotización sin volumen no es la opinión del mercado sobre esa serie: es el
+último número que quedó pegado. Si AMX A y L no operan, el capital de AMX
+cotiza **entero** como B, y aplicarle el precio de B a todas las acciones deja
+de ser una aproximación — es lo que pasa. La regla no relaja nada: describe
+mejor.
+
+Y tiene una consecuencia que resuelve a PINFRA sin referencia: con **una sola
+serie viva**, la fórmula deja de tener parámetros libres, así que la emisora
+pasa a ser elegible para la validación por método. `elegibleMetodo` cuenta
+ahora **series con mercado**, no series del catálogo.
+
+### 16.2 · El modo de falla que la regla podía abrir
+
+Si la ventana de 30 días se ancla en el reloj y la cosecha de precios está
+atrasada, **todas** las series dan volumen 0. Toda la dispersión desaparece, y
+FEMSA, AMX y PINFRA se ponen **verdes solas**.
+
+Un verde por falta de datos es peor que un gris: el gris se ve.
+
+Dos anclas lo cierran:
+
+1. **La ventana se ancla en `max(fecha)` de la tabla, no en `now()`.** Así se
+   mide "los últimos 30 días de datos que tenemos", y el atraso de la cosecha
+   se reporta aparte (`datos_precio.dias_atraso`) en vez de disfrazarse de
+   series muertas.
+2. **La serie líquida nunca se puede declarar sin mercado.** Si *ella* no
+   operó, el problema son los datos: se devuelve `datos_rancios`, **no se
+   excluye ninguna serie**, y la emisora va a gris con ese motivo. Fail
+   closed.
+
+Y el volumen `null` cuenta como **con** mercado: no saber no es saber que no.
+Mantener la serie en la dispersión empuja hacia el gris, que es el lado
+seguro. Hay un test para cada una de las tres.
+
+### 16.3 · Qué esperar de la corrida
+
+| emisora | qué decide |
+|---|---|
+| **AMX** | si A y L tienen volumen 0 → una serie viva → **verificada** (ya tiene referencia a 1.0%) |
+| **PINFRA** | si L tiene volumen 0 → una serie viva → **verificada por método**, sin necesitar referencia |
+| **FEMSA** | **sigue gris**: UB y UBD operan las dos, y la dispersión de 26% no se va |
+
+No puedo anticipar los volúmenes —no llego a `bmv_precios`— así que lo
+resuelve la corrida. Si AMX y PINFRA pasan, el conteo va a **27 verificadas y
+3 grises** (FEMSA, TLEVISA, PE&OLES).
+
+Y si `datos_precio.lectura` viene con texto, esta prueba no es confiable en
+esa corrida y hay que releer el resto con desconfianza — está puesto arriba
+del reporte justamente para eso.
