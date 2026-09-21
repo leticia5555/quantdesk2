@@ -835,3 +835,73 @@ resuelve la corrida. Si AMX y PINFRA pasan, el conteo va a **27 verificadas y
 Y si `datos_precio.lectura` viene con texto, esta prueba no es confiable en
 esa corrida y hay que releer el resto con desconfianza — está puesto arriba
 del reporte justamente para eso.
+
+---
+
+## 17. Las dos regresiones del 2026-09-21, y por qué eran dos cosas distintas
+
+La corrida de cierre de R0 destapó dos rojos que parecían el mismo problema
+—"los datos no llegan"— y no lo eran. Uno era una **cosecha que nunca se
+agendó**; el otro, **dos instrumentos leyendo tablas distintas**.
+
+### 17.1 · `job=unidades`: 27 de 27 en `datos_rancios`
+
+`datos_precio.ultima_fecha = 2026-09-15`, seis días de atraso, las 27 emisoras
+rancias, G2 en 2 verificadas de 15.
+
+**La regla hizo lo correcto.** Con precios del martes no se calcula una
+capitalización de hoy: eso es la regla 2 del encargo ejerciéndose, y el
+resultado —un rojo— es el resultado bueno. El problema estaba antes.
+
+**La causa, medida y no supuesta:** `vercel.json` no tenía ningún cron para
+`/api/bmv-harvest`. Aparecía sólo bajo `functions` (`maxDuration: 300`), que
+declara cuánto puede durar, no cuándo corre. La cosecha de Fase 1b fue manual.
+No murió un cron: nunca lo hubo.
+
+Y agendar `?job=historicos` no habría alcanzado: su rango termina en
+`hist_hasta`, la fecha del censo `?job=emisoras`. Alcanzado el censo, cada
+emisora cae en `d >= h` y se salta; el cron habría contestado 200 y "nada
+pendiente" todos los días. Un job de relleno histórico no es un job diario, por
+mucho que se le ponga un horario.
+
+**Lo que entra:** `?job=precios` (la cola diaria, contra la última sesión
+esperada del calendario y no contra el censo), agendado `10 22 * * 1-5` —una
+hora después del cierre de la BMV—, idempotente sin ledger, que salta las
+suspendidas y las que no tienen ni una fila. El hueco del 16 al 18 de
+septiembre se rellena con `?job=precios&desde=2026-09-16&hasta=2026-09-18`;
+son **dos** sesiones y no tres, porque el 16 es Independencia.
+
+**Y el aviso, que es lo que faltaba de verdad:** `/api/cron-status` gana
+`datos[]`, que mide `max(fecha)` de `bmv_precios` contra el calendario de la
+BMV y pone `ok: false` con más de una sesión de atraso. Vigilar el latido no
+bastaba por partida doble: no había cron que latiera, y un cron que corre,
+contesta 200 y no escribe nada deja el latido verde.
+
+El mismo medidor entra en `?job=unidades`. El aviso de esa corrida estaba en
+`dias_atraso > 30` —la ventana de volumen—, así que con seis días de atraso
+salió `lectura: null`: el reporte se calló justo cuando las 27 emisoras se
+caían. Ahora suena con la primera sesión perdida, que es cuando todavía se
+arregla con una cosecha.
+
+### 17.2 · El censo daba G1 rojo con la tabla llena
+
+`?job=universo` reportaba 538 de 553 filas completas y `g1_proyectado.verde`,
+y el censo del mismo día contestaba `{"candidatos":579,"con_cap":45,
+"con_sector":0,"con_cap_y_sector":0,"verde":false}`.
+
+No era un desacuerdo sobre los datos. `censoQ1` se escribió **antes** de que
+existiera `mercado_universo_us` y seguía leyendo `arena_market_cap` más el
+canal `assets:sector` del buffet —de ahí `con_sector: 0`, la caché del día
+estaba vacía—. Dos instrumentos midiendo cosas distintas con el mismo nombre.
+
+**Lo que entra:** una sola consulta (`SQL_UNIVERSO_US`) y una sola función
+(`censoUniversoUsDesdeTabla`), importadas por los dos endpoints. El medidor
+—`censoUniversoUs`, con los umbrales congelados de `CRITERIOS`— no cambió:
+cambió de dónde saca las filas. De paso, `g1_proyectado` dejó de contar a mano
+con 120 y 9 escritos al vuelo y sin mirar la frescura de la cap: ahora es el
+mismo veredicto, con las mismas razones, que va a dar el censo.
+
+Las tablas viejas siguen contándose, pero **aparte y etiquetadas**
+(`legado_no_es_la_medicion`): sirven para explicar una divergencia como esta,
+no para producir un número. Y una tabla vacía no se disimula cayendo al
+legado: se dice, con el comando que la llena.

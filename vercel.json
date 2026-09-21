@@ -166,6 +166,10 @@
     {
       "path": "/api/mercado-r0?job=universo",
       "schedule": "30,45 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/bmv-harvest?job=precios",
+      "schedule": "10 22 * * 1-5"
     }
   ]
 }

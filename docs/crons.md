@@ -30,6 +30,53 @@ al final.
 | `arena:universe`   | `/api/arena-universe`                 | `0 13 * * 1-5`         | **vercel.json** |
 | `arena:watch`      | `/api/arena-watch`                    | `*/5 13-21 * * 1-5`    | **vercel.json** |
 | `screener:refresh` | `/api/arena-screener?job=refresh`     | `0 */4 * * *` (cada 4h) | **GitHub Actions** → `.github/workflows/external-crons.yml` |
+| `mercado:universo` | `/api/mercado-r0?job=universo`        | `30,45 13-21 * * 1-5`  | **vercel.json** |
+| `bmv:precios`      | `/api/bmv-harvest?job=precios`        | `10 22 * * 1-5`        | **vercel.json** |
+| *(sin latido)*     | `/api/xbrl-capture?run=1`             | `0 13 * * 1`           | **vercel.json** — exento con motivo en `SIN_VIGILANCIA` |
+
+`tests/crons-declarados.test.mjs` exige que cada cron de `vercel.json` esté en
+`EXPECTED` de `api/cron-status.js` con el mismo schedule, o en `SIN_VIGILANCIA`
+con su porqué escrito. Un cron que nadie vigila es un cron que se puede morir
+en silencio; uno que nadie agenda ni siquiera llega a morirse.
+
+## `bmv:precios` — la cosecha que NUNCA se agendó (desde 2026-09-21)
+
+`10 22 * * 1-5` = **16:10 CDMX**, una hora después del cierre de la BMV.
+
+**Lo que pasó.** El 2026-09-21 `/api/mercado-r0?job=unidades` reportó las 27
+emisoras MX en `datos_rancios` y G2 se cayó a 2 verificadas de 15. La regla de
+fail-closed hizo exactamente lo suyo —no inventó una capitalización con precios
+del martes 15—, pero el atraso llevaba seis días y nadie se había enterado.
+
+**La causa no fue un cron que murió: no había cron.** La cosecha de precios de
+la Fase 1b se corrió a mano con `?job=historicos`, y `?job=historicos` no sirve
+como cron diario aunque se agende: cierra su rango en `hist_hasta`, que es la
+fecha del **censo** (`?job=emisoras`, point-in-time). En cuanto la cosecha
+alcanza al censo, toda emisora cae en `d >= h` y se salta — el job contestaría
+200, "0 pendientes", todos los días, para siempre.
+
+Por eso `?job=precios` es un job aparte: pide contra la última **sesión
+esperada** del calendario, que sí se mueve cada día. Es idempotente sin ledger
+(la cota de abajo es `max(fecha)` real de cada serie), salta las suspendidas
+—76 de las 185 ICS— y las que no tienen ni una fila (esas son siembra de
+`?job=historicos`).
+
+Para rellenar un hueco a mano:
+`?job=precios&desde=2026-09-16&hasta=2026-09-18`.
+
+## Vigilar el DATO, no sólo el latido
+
+`/api/cron-status` ganó un bloque `datos[]`. Un latido contesta *"¿corrió el
+cron?"*; la pregunta que costó seis días fue otra: *"¿está al día la tabla?"*.
+Son distintas en los dos sentidos —no había cron que latiera, y un cron que
+corre, contesta 200 y no escribe nada deja el latido igual de verde—, así que
+`datos[]` mide `max(fecha)` de `bmv_precios` contra el calendario de la BMV y
+pone `ok: false` con más de **1 sesión** de atraso.
+
+El calendario (`api/_lib/bmv-frescura.js`) cuenta **sesiones**, no días: entre
+el martes 15 y el viernes 18 hay dos, porque el 16 es Independencia. El
+veredicto reporta los asuetos que aplicó, para que un calendario equivocado se
+vea en la salida en vez de corregir la cuenta en silencio.
 
 El endpoint **`/api/liga/eventos`** (crónica de la liga) NO es un cron: es
 solo-lectura, público y cacheado en el edge, como `/api/leaderboard`.

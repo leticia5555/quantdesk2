@@ -35,12 +35,13 @@ import { sql } from './_lib/db.js';
 import { readDayCache } from './_lib/arena-buffet-cache.js';
 // El canal se importa de su dueño en vez de repetir la cadena: si el Arena le
 // cambia el nombre, este censo se entera por el import y no por un hueco.
-import { SECTOR_CHANNEL, sectorFromIndustry } from './_lib/arena-meta.js';
+import { SECTOR_CHANNEL } from './_lib/arena-meta.js';
 import { checkAdminAuth } from './_lib/arena-admin.js';
 import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
 import {
   CRITERIOS, CAMPOS_METRIC,
-  censoUniversoUs, capMxCandidatas, veredictoCapMx,
+  censoUniversoUsDesdeTabla, SQL_UNIVERSO_US,
+  capMxCandidatas, veredictoCapMx,
   presupuestoPrecios, censoRetornoTotal, anclaYtd,
   coberturaMetric, ventanaUpa, proximoReporte,
   coberturaCompanyFacts, censoForm4, veredictoFuente, tablaFuentes, tablero,
@@ -158,62 +159,59 @@ async function censoQ1(ahora) {
     try { return await sql(q, params); } catch (e) { errores[nombre] = String((e && e.message) || e); return []; }
   };
 
-  const [screener, caps, universoRows] = await Promise.all([
-    leer('arena_screener', 'select symbol, refreshed_at from arena_screener'),
-    leer('arena_market_cap', 'select symbol, market_cap, fetched_at from arena_market_cap'),
-    leer('arena_universe', 'select key, payload, source, built_at from arena_universe'),
-  ]);
+  // ── LA MISMA TABLA QUE ESCRIBE R0, Y LA MISMA CONSULTA ──────────────
+  // Esto leía `arena_market_cap` + el canal `assets:sector` del buffet, que
+  // es lo que había ANTES de que R0 construyera `mercado_universo_us`. El
+  // resultado fue dos instrumentos midiendo cosas distintas con el mismo
+  // nombre: `?job=universo` reportaba 538/553 completas y G1 proyectado en
+  // verde, y el censo del mismo día contestaba `con_sector: 0` y G1 en rojo.
+  // El medidor (`censoUniversoUs`) no cambió: cambió de dónde saca las filas.
+  const filas = await leer('mercado_universo_us', SQL_UNIVERSO_US);
+  const r = censoUniversoUsDesdeTabla(filas, { ahora });
 
-  // El universo del Arena guarda su payload como jsonb; los símbolos pueden
-  // venir en `symbols` o dentro de `admitidos`. Se aceptan las dos formas y se
-  // reporta de cuál salió — adivinar la forma es cómo se pierde una corrida.
-  const universo = [];
-  const formas = {};
-  for (const row of universoRows) {
-    const p = row && row.payload;
-    if (!p) continue;
-    const arr = Array.isArray(p.symbols) ? p.symbols
-      : Array.isArray(p.admitidos) ? p.admitidos
-        : Array.isArray(p) ? p : null;
-    if (!arr) { formas[row.key] = 'forma no reconocida'; continue; }
-    formas[row.key] = `${arr.length} símbolos`;
-    for (const s of arr) universo.push(typeof s === 'string' ? s : (s && s.symbol));
+  // Una tabla vacía NO se disimula cayendo a las tablas viejas: se dice, con
+  // el comando que la llena. Un G1 rojo por tabla vacía y uno por cobertura
+  // insuficiente se arreglan distinto.
+  if (!filas.length) {
+    r.verde = false;
+    r.razones = [errores.mercado_universo_us
+      ? `mercado_universo_us no se pudo leer: ${errores.mercado_universo_us}`
+      : 'mercado_universo_us está vacía: corré /api/mercado-r0?job=universo hasta que `avance.completo` sea true',
+      ...(r.razones || [])];
   }
 
-  // El sector NO vive en una columna: vive en la caché por día del buffet
-  // (canal assets:sector), como { SYMBOL: 'industria de Finnhub' }, y se mapea
-  // a ETF en tiempo de corrida. Ese es justo el hallazgo de Q1.
-  //
-  // Y NO guarda el sector: guarda la INDUSTRIA cruda de Finnhub, que se mapea
-  // a uno de los 11 ETFs con reglas por palabra clave (arena-meta). Se usa la
-  // misma función que el Arena —no una copia— y se cuenta lo que NINGUNA regla
-  // toca: una falla de cobertura tiene que verse como falla de cobertura.
-  let sectores = {};
-  let industrias = {};
-  let sinMapear = [];
-  let sectorFuente = 'arena_buffet_cache (canal assets:sector, día de hoy)';
+  // ── El legado, como CONTEXTO y no como medición ─────────────────────
+  // Se sigue contando lo que hay en las tablas del Arena para poder explicar
+  // una divergencia como la del 2026-09-21, pero ninguno de estos números
+  // entra en el veredicto. Van aparte y etiquetados.
+  const [caps, universoRows] = await Promise.all([
+    leer('arena_market_cap', 'select count(*)::int n from arena_market_cap'),
+    leer('arena_universe', 'select count(*)::int n from arena_universe'),
+  ]);
+  let industriasEnCache = 0;
+  let sectorCacheHoy = false;
   try {
     const cache = await readDayCache(SECTOR_CHANNEL, ahora);
-    industrias = (cache && cache.payload) || {};
-    if (!cache) sectorFuente += ' — VACÍA hoy';
-    for (const [sym, ind] of Object.entries(industrias)) {
-      const { etf } = sectorFromIndustry(ind);
-      if (etf) sectores[sym] = etf;
-      else sinMapear.push({ symbol: sym, industria: ind });
-    }
+    sectorCacheHoy = !!cache;
+    industriasEnCache = Object.keys((cache && cache.payload) || {}).length;
   } catch (e) { errores.sector_cache = String((e && e.message) || e); }
 
-  const r = censoUniversoUs({ screener, caps, sectores, universo: universo.filter(Boolean), ahora });
   return {
     ...r,
     fuentes: {
-      arena_screener: `${screener.length} filas (sin columna de cap ni de sector)`,
-      arena_market_cap: `${caps.length} filas`,
-      arena_universe: formas,
-      sector: sectorFuente,
-      sector_industrias_en_cache: Object.keys(industrias).length,
-      sector_sin_mapear: sinMapear.length,
-      sector_sin_mapear_ejemplos: sinMapear.slice(0, 10),
+      tabla: 'mercado_universo_us (la que escribe /api/mercado-r0?job=universo)',
+      filas: filas.length,
+      con_sector_etf: filas.filter((f) => f && f.sector_etf).length,
+      con_market_cap: filas.filter((f) => f && f.market_cap != null).length,
+      cap_por_fuente: r.cap_por_fuente,
+      frescura_se_mide_con: 'cap_actualizado (cuándo se MIDIÓ la cap), no `actualizado`',
+    },
+    legado_no_es_la_medicion: {
+      nota: 'de dónde leía este censo antes de R0. No entra en G1; está para explicar divergencias.',
+      arena_market_cap_filas: (caps[0] && caps[0].n) ?? null,
+      arena_universe_filas: (universoRows[0] && universoRows[0].n) ?? null,
+      sector_cache_hoy: sectorCacheHoy,
+      sector_industrias_en_cache: industriasEnCache,
     },
     errores: Object.keys(errores).length ? errores : undefined,
   };
