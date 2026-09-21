@@ -38,7 +38,7 @@ import { readDayCache } from './_lib/arena-buffet-cache.js';
 import { SECTOR_CHANNEL } from './_lib/arena-meta.js';
 import { checkAdminAuth } from './_lib/arena-admin.js';
 import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
-import { evaluaG2, SQL_G2, VENTANA_DIAS_G2 } from './_lib/mercado-r0.js';
+import { evaluaG2, SQL_G2, VENTANA_DIAS_G2, rangoDeCapturas } from './_lib/mercado-r0.js';
 import REFERENCIAS_CAP from './_lib/mercado-cap-referencia.json' with { type: 'json' };
 import { frescuraPrecios } from './_lib/bmv-frescura.js';
 import {
@@ -243,11 +243,14 @@ async function censoQ2(ahora) {
   // La referencia de verdad vive en `_lib/mercado-cap-referencia.json` desde
   // R0c. El censo ya no la va a buscar a ningún lado: usa la misma que el
   // constructor.
-  const [acciones, precios, volumenes, corteFilas] = await Promise.all([
+  const rango = rangoDeCapturas(REFERENCIAS_CAP);
+  const [acciones, precios, volumenes, corteFilas, periodos, cierresCaptura] = await Promise.all([
     leer('xbrl_reports', SQL_G2.acciones),
     leer('bmv_precios', SQL_G2.precios),
     leer('bmv_precios_ventana', SQL_G2.ventana, [VENTANA_DIAS_G2]),
     leer('bmv_precios_corte', SQL_G2.corte),
+    leer('xbrl_periodos', SQL_G2.periodos),
+    rango ? leer('bmv_precios_captura', SQL_G2.cierres_captura, [rango.desde, rango.hasta]) : Promise.resolve([]),
   ]);
   const corte = corteFilas[0] || {};
   const hastaFecha = corte && corte.hasta ? String(corte.hasta).slice(0, 10) : null;
@@ -255,7 +258,7 @@ async function censoQ2(ahora) {
 
   const g2 = evaluaG2({
     emisoras: EMISORAS.emisoras,
-    acciones, precios, volumenes,
+    acciones, precios, volumenes, periodos, cierres_captura: cierresCaptura,
     referencias: REFERENCIAS_CAP,
     frescura, ahora, criterios: CRITERIOS, ventana_dias: VENTANA_DIAS_G2,
   });
@@ -300,7 +303,7 @@ async function censoQ2(ahora) {
     verde: g2.verde,
     razones: g2.razones,
     medido_con: 'evaluaG2(SQL_G2) — el mismo que /api/mercado-r0?job=unidades',
-    fuente_referencia: `_lib/mercado-cap-referencia.json (${REFERENCIAS_CAP.referencias.length} referencias, vigencia ${REFERENCIAS_CAP.vigencia_dias} días)`,
+    fuente_referencia: `_lib/mercado-cap-referencia.json (${REFERENCIAS_CAP.referencias.length} referencias; caducan por trimestre XBRL, no por calendario)`,
     // El censo NO acepta `?manual=`: mide lo que hay guardado, a propósito.
     // Si un número solo existe en una URL, no existe para la compuerta.
     vigencia_referencias: g2.vigencia_referencias,

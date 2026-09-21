@@ -4,7 +4,7 @@
   "_reglas": {
     "procedencia": "Cada fila dice QUIEN la capturo, DE DONDE y CUANDO. Una cap sin las tres cosas no entra: es lo que separa una referencia de un numero suelto.",
     "no_se_pinta": "Estas cifras NUNCA se muestran en el mapa ni en la hoja. Son el patron de verificacion del §3.2 de la Fase 0: se comparan contra `calc` y lo unico que viaja al render es el veredicto (verificada | gris_punteado) y el error %.",
-    "caducidad": "Una cap de referencia envejece con el precio. `vigencia_dias` acota cuanto vale: pasado eso, la verificacion se marca `referencia_vencida` y la emisora vuelve a gris punteado en vez de arrastrar un verde viejo.",
+    "caducidad": "La referencia NO caduca por calendario. Caduca cuando entra un TRIMESTRE NUEVO de acciones en circulacion para esa emisora, que es lo unico que la invalida: una cap de referencia valida el DIVISOR y el CONTEO de acciones, no el precio de hoy. Por eso la comparacion se hace en la fecha de captura — acciones del trimestre vigente entonces x cierre de ese dia / apu, contra la cap capturada ese dia — y los dos lados quedan fechados igual. `gracia_dias` (3) es lo que se espera despues de un trimestre nuevo antes de mandar la emisora a gris: el divisor sigue validado, el conteo nuevo no, y se dice. `tope_dias` (120) es el freno de mano para una emisora que deja de reportar y cuyo trimestre nunca cambia; no es el instrumento. ANTES eran 14 dias contra el reloj, y eso convertia la captura manual en tarea quincenal: el 2026-10-04 vencian las 11 juntas y G2 pasaba de 26 a 0 sin que nadie tocara nada. La captura manual es TRIMESTRAL y avisada.",
     "manual_no_es_peor": "Una referencia capturada a mano y fechada es MAS auditable que una de una API que devuelve 401: se sabe quien la vio y cuando. Lo que no puede pasar es que se use sin decir que es manual.",
     "varias_por_emisora": "Una emisora puede tener VARIAS filas, de fuentes distintas. Se verifican TODAS y se reportan todas. Si una cuadra y otra no, el estado NO es 'verificada': es 'discrepancia_entre_fuentes', y significa que dos fuentes publicas no coinciden entre si — el problema puede no ser nuestro. Quedarse con la que conviene seria elegir el dato que da el resultado buscado.",
     "dos_vias": "Hay dos caminos a 'verificada' y no son intercambiables. INDIVIDUAL: la emisora tiene su propia referencia y cuadra a <=5%; es OBLIGATORIO donde la formula tiene parametros libres (varias series, o divisor > 1) — son 9 emisoras. POR METODO: la formula no tiene nada que elegir (una serie, divisor 1) y el instrumento quedo validado con >=3 muestras independientes a <=2%. Ver api/_lib/mercado-r0.js → 'R0(b ter)'.",
@@ -13,7 +13,8 @@
     "manual_es_override": "El parametro ?manual=CLAVE:CAP de /api/mercado-r0 REEMPLAZA las filas de este archivo para las claves que nombra, no se suma a ellas. Es un banco de pruebas: sirve para probar una correccion en produccion antes de persistirla aca. Si se sumara, una emisora ya verificada pasaria a discrepancia_entre_fuentes por la regla varias_por_emisora y el ensayo cambiaria el veredicto en vez de medirlo. Lo desplazado se REPORTA en la salida.",
     "de_donde_salieron": "Las 11 filas de abajo las capturo Lety a mano el 2026-09-20 y se corrieron primero por ?manual= (26 verificadas en ?job=unidades). Estan aca porque el censo lee ESTE archivo: mientras vivieron solo en la URL, /api/mercado-censo daba 0 verificadas el mismo dia que /api/mercado-r0 daba 26."
   },
-  "vigencia_dias": 14,
+  "gracia_dias": 3,
+  "tope_dias": 120,
   "referencias": [
     {
       "clave": "WALMEX",

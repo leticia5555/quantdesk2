@@ -72,3 +72,27 @@ test('la cosecha diaria de precios BMV está agendada, que es de lo que se trata
   const e = EXPECTED.find((x) => x.job === 'bmv:precios');
   assert.ok(e, 'agendado pero sin vigilancia: el modo de falla de xbrl-capture');
 });
+
+// ── La vigilancia de una TAREA HUMANA ────────────────────────────────
+// Las capitalizaciones de referencia MX las captura una persona a mano y
+// caducan cuando la emisora publica un trimestre nuevo de acciones. No son
+// un cron, pero se descuidan igual: cuando una caduca, su emisora se va a
+// gris en el mapa. El 2026-10-04 iban a caducar las 11 juntas.
+
+import { vigenciaDelRegistro } from '../api/_lib/mercado-r0.js';
+import REFERENCIAS_CAP from '../api/_lib/mercado-cap-referencia.json' with { type: 'json' };
+
+test('cron-status vigila las referencias de cap, no sólo crons y tablas', () => {
+  const src = readFileSync(new URL('../api/cron-status.js', import.meta.url), 'utf8');
+  assert.match(src, /vigenciaDelRegistro/, 'cron-status no mide la vigencia de las referencias');
+  assert.match(src, /referencias_a_recapturar/, 'no publica qué hay que re-capturar');
+  // Y entra en el `ok`: un aviso que no baja el semáforo no es un aviso.
+  assert.match(src, /referencias && referencias\.alerta/);
+});
+
+test('el registro real se puede medir sin explotar, aunque no haya trimestres', () => {
+  const v = vigenciaDelRegistro(REFERENCIAS_CAP, new Date('2026-09-21T20:00:00Z'), { periodos: [] });
+  assert.equal(v.filas, REFERENCIAS_CAP.referencias.length);
+  assert.equal(typeof v.alerta, 'boolean');
+  assert.ok(Array.isArray(v.a_recapturar));
+});
