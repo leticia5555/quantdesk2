@@ -6,6 +6,9 @@
 //
 //   GET /api/earnings-beat?smoke=1            → censo completo (JSON)
 //   GET /api/earnings-beat?smoke=1&format=md  → el mismo censo, en español
+//   GET /api/earnings-beat?vista=live         → vista EN VIVO (pública, para
+//                                               la tab EARNINGS): mercados
+//                                               abiertos + base histórica
 //   GET /api/earnings-beat                    → qué es esto + en qué fase va
 //
 // Parámetros del censo (todos opcionales):
@@ -58,6 +61,7 @@ import {
   extraeConsensoEps, outcomeResuelto, tokenYes, precioEnT24h, cruzaConPead, evaluaFuentePIT,
   isoDia, ts, resumenMarkdown, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
   analizaDesfases, clasificaT24h, clasificaParaV1, comparaEmparejamiento,
+  estadisticasHistoricas, indiceYes, num,
 } from './_lib/earnings-beat.js';
 import { V0_UNIVERSE } from './_lib/pead-universe.js';
 import { getSymbolMap } from './earnings.js';
@@ -111,6 +115,186 @@ const ESTRATEGIAS = [
 //      DENTRO del filtro (ahí el offset sí alcanza);
 //   C. el racimo (evento/serie) al que pertenece un mercado de earnings.
 // El barrido queda como control opcional (&barrido=1), nunca como el método.
+
+// ═══════════════════════════════════════════════════════════════════
+// VISTA EN VIVO (?vista=live) — lo que ve la tab EARNINGS.
+//
+// Mercados ABIERTOS de Polymarket + la base histórica de beats de
+// pead_earnings, por empresa. Mismo descubrimiento que el censo
+// (_lib/earnings-beat-descubrir.js) y MISMO filtro v1: si la vista usara otro
+// criterio que la cosecha, la pantalla y la tabla contarían cosas distintas.
+//
+// ── LO QUE ESTA VISTA NO HACE, Y NO VA A HACER HASTA LA FASE 2 ─────
+// NO emite una probabilidad de QuantDesk. El histórico es un CONTEO —
+// "superó 26 de 32" — y presentarlo como "81% de probabilidad" sería inventar
+// un pronóstico que nada validó todavía. El campo `probabilidad_quantdesk`
+// existe en la respuesta y vale `null` a propósito: así la ausencia es una
+// decisión visible y no un olvido que alguien "complete" más adelante.
+//
+// PRESUPUESTO: la vista se sirve cacheada, pero la primera petición la paga
+// un usuario. Por eso el camino de frases (rápido, ~8 requests) corre entero
+// y el de símbolos corre mientras quede presupuesto, declarando cuántos
+// alcanzó a probar. Mejor una vista parcial que dice que es parcial, que una
+// vista completa que llega tarde.
+const PRESUPUESTO_LIVE_MS = 90000;
+
+async function vistaLive(ctx) {
+  const t0 = Date.now();
+  const restante = () => PRESUPUESTO_LIVE_MS - (Date.now() - t0);
+  const gamma1 = (path, params, opts) => gamma(path, params, opts);
+  const universo = new Set(V0_UNIVERSE);
+
+  const crudos = new Map();
+  const suma = (camino, filas) => {
+    for (const raw of filas || []) {
+      const id = raw && raw.id !== undefined && raw.id !== null ? String(raw.id)
+        : raw && raw.slug ? 'slug:' + raw.slug : null;
+      if (!id || crudos.has(id)) continue;
+      crudos.set(id, { ...raw, _via: camino, _etiqueta: raw._etiqueta || null });
+    }
+  };
+
+  const ctxDesc = { simbolos: 99, limite: 100 };
+  const busqueda = await descubrePorBusqueda(ctxDesc, gamma1, restante);
+  suma('busqueda', busqueda.filas);
+  let simbolosProbados = 0;
+  if (restante() > 25000) {
+    const porSimbolo = await descubrePorSimbolo(ctxDesc, gamma1, restante, universo);
+    suma('simbolo', porSimbolo.filas);
+    simbolosProbados = porSimbolo.probados;
+  }
+
+  // ── Filtro v1 + solo ABIERTOS del universo ──
+  const indice = construyeIndiceNombres({ nombres: null, universo });
+  const abiertos = [];
+  const descartes = { no_abierto: 0, fuera_del_universo: 0, filtro_v1: 0 };
+  for (const raw of crudos.values()) {
+    const m = normalizaMercado(raw);
+    if (!m) continue;
+    const simbolo = resuelveSimbolo(m, indice, universo);
+    const v1 = clasificaParaV1({ ...m, symbol: simbolo.symbol }, { etiqueta: raw._etiqueta || null, universo });
+    if (!v1.acepta) { descartes.filtro_v1++; continue; }
+    if (!simbolo.symbol || !universo.has(simbolo.symbol)) { descartes.fuera_del_universo++; continue; }
+    // ABIERTO = todavía sin outcome resuelto. Un mercado ya resuelto no tiene
+    // nada que aportar a una vista "en vivo".
+    if (outcomeResuelto(m)) { descartes.no_abierto++; continue; }
+
+    const consenso = extraeConsensoEps(m.descripcion || '') || extraeConsensoEps(m.pregunta || '');
+    const iYes = indiceYes(m.outcomes);
+    const precioYes = iYes !== null ? num(m.precios_outcome[iYes]) : null;
+    abiertos.push({
+      market_id: m.id,
+      slug: m.slug,
+      titulo: m.pregunta,
+      url: m.slug ? `https://polymarket.com/market/${m.slug}` : null,
+      symbol: simbolo.symbol,
+      fecha_resolucion: isoDia(m.fin),
+      consenso_eps: consenso ? consenso.valor : null,
+      // Precio ACTUAL del Yes, tal como lo publica Gamma en `outcomePrices`.
+      // La fuente se cita en la respuesta y en la tarjeta: es el precio de
+      // Polymarket, no una opinión nuestra.
+      polymarket_yes: precioYes,
+      polymarket_yes_pct: precioYes === null ? null : Math.round(precioYes * 100),
+      fuente_precio: 'Polymarket · Gamma outcomePrices',
+      volumen: m.volumen,
+    });
+  }
+
+  // Más próximo a reportar primero: es el orden en que la información caduca.
+  abiertos.sort((a, b) => String(a.fecha_resolucion || '9999').localeCompare(String(b.fecha_resolucion || '9999')));
+
+  // ── Base histórica desde pead_earnings (SELECT, nada más) ──
+  const simbolos = [...new Set(abiertos.map((m) => m.symbol))];
+  const historico = {};
+  let errorHistorico = null;
+  if (simbolos.length) {
+    try {
+      const ph = simbolos.map((_, i) => `$${i + 1}`).join(', ');
+      const filas = await sql(
+        `select symbol, to_char(reported_date, 'YYYY-MM-DD') as reported_date,
+                reported_eps, estimated_eps, surprise_pct
+           from pead_earnings
+          where symbol in (${ph})
+          order by reported_date desc`,
+        simbolos
+      );
+      const porSimbolo = new Map();
+      for (const f of filas) {
+        if (!porSimbolo.has(f.symbol)) porSimbolo.set(f.symbol, []);
+        porSimbolo.get(f.symbol).push(f);
+      }
+      for (const s of simbolos) historico[s] = estadisticasHistoricas(porSimbolo.get(s) || []);
+    } catch (e) {
+      errorHistorico = String((e && e.message) || e).slice(0, 200);
+    }
+  }
+
+  // ── Una tarjeta por EMPRESA, no por mercado ──
+  // Una misma empresa puede tener varios mercados abiertos a la vez (distintos
+  // umbrales de EPS sobre el mismo reporte). Como la tarjeta es por empresa y
+  // el histórico también, agrupar acá evita que la pantalla repita cuatro veces
+  // el mismo "superó 26 de 32" con precios distintos al lado.
+  const porEmpresa = new Map();
+  for (const m of abiertos) {
+    if (!porEmpresa.has(m.symbol)) porEmpresa.set(m.symbol, []);
+    porEmpresa.get(m.symbol).push(m);
+  }
+  const empresas = [...porEmpresa.entries()].map(([symbol, lista]) => ({
+    symbol,
+    // La fecha que manda es la del mercado que resuelve primero.
+    fecha_resolucion: lista[0].fecha_resolucion,
+    mercados: lista,
+    historico: historico[symbol] || null,
+    // EXPLÍCITO Y NULO. Ver el comentario de arriba: la ausencia es la
+    // decisión, no un campo que falta.
+    probabilidad_quantdesk: null,
+    probabilidad_quantdesk_estado: 'en validación (Fase 2) — QuantDesk todavía no emite probabilidad propia',
+  })).sort((a, b) => String(a.fecha_resolucion || '9999').localeCompare(String(b.fecha_resolucion || '9999')));
+
+  // Estado vacío HONESTO: por qué no hay nada, no un error genérico.
+  let vacio = null;
+  if (!empresas.length) {
+    vacio = {
+      motivo: crudos.size === 0
+        ? 'Polymarket no devolvió mercados en esta consulta'
+        : descartes.no_abierto > 0
+          ? 'hay mercados de earnings, pero todos ya resolvieron: no hay ninguno abierto ahora mismo'
+          : descartes.fuera_del_universo > 0
+            ? 'hay mercados de earnings abiertos, pero ninguno de las 99 empresas que seguimos'
+            : 'ningún mercado pasó el filtro de beat/miss de EPS',
+      revisados: crudos.size,
+      descartes,
+    };
+  }
+
+  return {
+    vista: 'live',
+    generado_en: new Date().toISOString(),
+    empresas,
+    mercados_abiertos: abiertos.length,
+    vacio,
+    cobertura: {
+      mercados_revisados: crudos.size,
+      simbolos_probados: simbolosProbados,
+      de: universo.size,
+      parcial: simbolosProbados < universo.size,
+      nota: simbolosProbados < universo.size
+        ? 'búsqueda por símbolo incompleta por presupuesto de tiempo: puede faltar algún mercado abierto'
+        : null,
+      descartes,
+    },
+    historico_error: errorHistorico,
+    fuentes: {
+      mercados_y_precio: 'Polymarket (Gamma API, pública)',
+      historico_eps: 'Alpha Vantage EARNINGS vía pead_earnings',
+    },
+    aviso: {
+      es: 'El histórico es un conteo de trimestres pasados, NO una predicción. QuantDesk todavía no emite probabilidad propia: está en validación.',
+      en: 'The track record counts past quarters — it is NOT a forecast. QuantDesk does not publish its own probability yet: it is still being validated.',
+    },
+    ms: Date.now() - t0,
+  };
+}
 
 // ─────────────────── el censo ───────────────────
 
@@ -558,6 +742,26 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Método no soportado.' });
 
   const q = req.query || {};
+
+  // ── VISTA EN VIVO: pública, ANTES del gate ────────────────────────
+  // La consume la tab EARNINGS desde el navegador, así que no puede pedir
+  // CRON_SECRET. Es SOLO LECTURA (un SELECT a pead_earnings) y no expone nada
+  // que la app no muestre ya: precios públicos de Polymarket e historial de
+  // EPS. El censo (?smoke=1) sigue detrás del gate.
+  if (String(q.vista || '').toLowerCase() === 'live') {
+    try {
+      const out = await vistaLive({});
+      // El precio se mueve, pero no cada segundo: 5 min de CDN con revalidación
+      // en segundo plano. Sin esto, cada visita pagaría ~100 requests a Gamma.
+      res.setHeader('Cache-Control', 'public, s-maxage=300, stale-while-revalidate=900');
+      return res.status(200).json(out);
+    } catch (err) {
+      // Un fallo acá NO es un estado vacío: se dice que falló y por qué.
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(502).json({ vista: 'live', error: 'earnings-beat live: ' + ((err && err.message) || 'unknown'), empresas: [] });
+    }
+  }
+
   const secret = process.env.CRON_SECRET;
   if (secret) {
     const porHeader = (req.headers && req.headers.authorization) === `Bearer ${secret}`;

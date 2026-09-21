@@ -683,6 +683,59 @@ curl -H "Authorization: Bearer $CRON_SECRET" ".../api/earnings-beat-harvest?job=
 
 ---
 
+## VISTA EN VIVO — la tab EARNINGS (en paralelo a la cosecha)
+
+`/api/earnings-beat?vista=live`, **pública y cacheada**
+(`s-maxage=300, stale-while-revalidate=900`), consumida por la tab EARNINGS de
+`app.html`. Mismo descubrimiento (`_lib/earnings-beat-descubrir.js`) y **mismo
+filtro v1** que la cosecha: si la pantalla usara otro criterio que la tabla,
+las dos contarían cosas distintas y nadie lo notaría hasta que los números no
+cuadraran.
+
+**Qué muestra, por EMPRESA** (no por mercado: una empresa puede tener varios
+mercados abiertos sobre el mismo reporte, y repetir su histórico cuatro veces
+con precios distintos al lado sería ruido):
+
+| De Polymarket | De `pead_earnings` |
+|---|---|
+| título, fecha de resolución, consenso EPS | superó N de M y su % |
+| precio actual del Yes (`outcomePrices`) | racha actual (beats o misses al hilo) |
+| enlace al mercado | sorpresa promedio % · últimos 8 trimestres con ✓/✗ |
+
+Ordenado por **fecha de reporte más próxima**: es el orden en que la
+información caduca.
+
+### La regla que esta pantalla existe para no romper
+
+> El histórico se pinta como **CONTEO** — `Histórico: superó 26 de 32 (81%)` —
+> y **NUNCA** como `probabilidad 81%`.
+
+No es una preferencia de redacción. Es el mismo número diciendo dos cosas
+distintas: uno es un hecho sobre el pasado, el otro es un pronóstico que
+**nadie validó todavía**. **QuantDesk no emite probabilidad propia hasta que la
+Fase 2 la valide**, y el endpoint devuelve `probabilidad_quantdesk: null` con
+su estado al lado — la ausencia es una decisión visible, no un campo que
+alguien "complete" más adelante por parecer incompleto.
+
+Está **pineado por lint** (`tests/earnings-beat-live.test.mjs`): el test recorta
+la tarjeta del `app.html` real y falla si aparece lenguaje de pronóstico, si el
+disclaimer bilingüe desaparece, o si alguien le asigna un número a
+`probabilidad_quantdesk`. Un comentario pidiendo que no se haga se ignora; un
+test que falla, no.
+
+### Estados que no se confunden entre sí
+
+- **Vacío** → el motivo que dio el endpoint (*"hay mercados de earnings, pero
+  todos ya resolvieron"*, *"ninguno de las 99 empresas que seguimos"*…), no un
+  error genérico.
+- **Error** → se dice que falló y por qué. Un fallo de red **no** se pinta como
+  "no hay mercados abiertos": son cosas distintas.
+- **Cobertura parcial** → si la búsqueda por símbolo no alcanzó a probar los 99
+  por presupuesto de tiempo, la cabecera lo declara. Mejor una vista parcial
+  que dice que es parcial.
+
+---
+
 ## FASE 2 — Análisis (criterios congelados ANTES de ver los datos)
 
 Endpoint `/api/earnings-beat-analyze?format=md&secret=…`, **SELECT-only**,
