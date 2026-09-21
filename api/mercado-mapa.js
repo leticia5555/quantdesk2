@@ -28,10 +28,9 @@ export const maxDuration = 60;
 
 // Cuántos cuadros pinta el treemap. El resto viaja como "+N más = X%".
 const TOP_MAPA = 300;
-// Cuánta historia hace falta: el ancla YTD es el último cierre del año
-// pasado, así que la ventana arranca en el 1-dic anterior con margen.
-function desdeParaYtd(ahora) {
-  return `${ahora.getUTCFullYear() - 1}-12-01`;
+/** El 1 de enero del año en curso: todo lo anterior es "año pasado". */
+function inicioDeAnio(ahora) {
+  return `${ahora.getUTCFullYear()}-01-01`;
 }
 
 // El edge sirve la misma foto mientras el cron no haya dejado una nueva. Los
@@ -40,35 +39,76 @@ function desdeParaYtd(ahora) {
 const CACHE = 'public, s-maxage=600, stale-while-revalidate=3600';
 
 async function mapaUs(ahora) {
-  const desde = desdeParaYtd(ahora);
+  const anio = inicioDeAnio(ahora);
+  const errores = {};
+  // NO se traga el error. Un `catch(() => [])` acá convertía una consulta que
+  // falló en "300 cuadros sin serie": el mapa culpaba a los datos de un
+  // problema de lectura, y el pie lo reportaba como si faltara la cosecha.
+  const leer = async (nombre, q, params = []) => {
+    try { return await sql(q, params); } catch (e) { errores[nombre] = String((e && e.message) || e); return []; }
+  };
+
   const [universo, precios] = await Promise.all([
-    sql(`select symbol, nombre, sector_etf, market_cap, cap_fuente, cap_actualizado
-           from mercado_universo_us
-          where sector_etf is not null and market_cap is not null`).catch(() => []),
-    // UNA consulta para todas las series, acotada a los nombres que se van a
-    // pintar y a la ventana que YTD necesita.
-    sql(`select p.symbol, p.fecha::text as fecha, p.cierre, p.cierre_ajustado
-           from mercado_precios_us p
-           join (select symbol from mercado_universo_us
-                  where sector_etf is not null and market_cap is not null
-                  order by market_cap desc limit $1) top using (symbol)
-          where p.fecha >= $2::date
-          order by p.symbol, p.fecha`, [TOP_MAPA, desde]).catch(() => []),
+    leer('mercado_universo_us',
+      `select symbol, nombre, sector_etf, market_cap, cap_fuente, cap_actualizado
+         from mercado_universo_us
+        where sector_etf is not null and market_cap is not null`),
+    // UNA consulta, y acotada a lo que el navegador necesita: los últimos N
+    // cierres de cada símbolo más su ancla YTD. Traer la ventana entera desde
+    // diciembre eran ~60,000 filas por petición — el orden de magnitud en el
+    // que una lectura deja de ser barata y empieza a fallar.
+    leer('mercado_precios_us',
+      `with top as (
+         select symbol from mercado_universo_us
+          where sector_etf is not null and market_cap is not null
+          order by market_cap desc limit $1
+       ), r as (
+         select p.symbol, p.fecha, p.cierre, p.cierre_ajustado,
+                row_number() over (partition by p.symbol order by p.fecha desc) recientes,
+                row_number() over (partition by p.symbol order by p.fecha desc)
+                  filter (where p.fecha < $2::date) ancla
+           from mercado_precios_us p join top using (symbol)
+       )
+       select symbol, fecha::text as fecha, cierre, cierre_ajustado
+         from r
+        where recientes <= $3 or ancla = 1
+        order by symbol, fecha`,
+      [TOP_MAPA, anio, CIERRES_RECIENTES + 1]),
   ]);
 
+  // Fail closed y EN VOZ ALTA: un mapa que no pudo leer sus datos no es un
+  // mapa vacío, es un mapa roto, y decir lo primero manda a buscar el
+  // problema al lugar equivocado.
+  if (Object.keys(errores).length) {
+    return { mapa: 'us', cuadros: [], mas: null, error: 'no se pudieron leer los datos del mapa', detalle: errores };
+  }
   if (!universo.length) {
     return {
       mapa: 'us', cuadros: [], mas: null,
       error: 'mercado_universo_us está vacía: corré /api/mercado-r0?job=universo',
     };
   }
+  if (!precios.length) {
+    return {
+      mapa: 'us', cuadros: [], mas: null,
+      error: 'mercado_precios_us no tiene series para los nombres del mapa: corré /api/mercado-precios?job=us hasta que `completo` sea true',
+    };
+  }
 
   const recorte = recorteMapa(universo, TOP_MAPA);
   const { cuadros, faltantes } = armaMapaUs({ universo, precios, recorte, ahora });
 
+  // EL ÚLTIMO CIERRE QUE HAY, que no es el que el calendario dice que
+  // debería haber. El chip y el pie se rotulan con ESTE: un lunes a las
+  // 17:00, con la cosecha del día aún sin correr, lo que se está mirando es
+  // el cierre del viernes y hay que decirlo así.
+  let ultimoCierre = null;
+  for (const c of cuadros) if (c.fecha_precio && (!ultimoCierre || c.fecha_precio > ultimoCierre)) ultimoCierre = c.fecha_precio;
+
   return {
     mapa: 'us',
     bolsa: 'us',
+    ultimo_cierre: ultimoCierre,
     cuadros,
     // El "+N más = X%" NO es decoración: sin él, un mapa de 300 se lee como
     // si fuera el mercado entero. El % se mide sobre los que quedaron fuera.
@@ -83,7 +123,7 @@ async function mapaUs(ahora) {
 }
 
 async function mapaMx(ahora) {
-  const desde = desdeParaYtd(ahora);
+  const desde = `${ahora.getUTCFullYear() - 1}-12-01`;
   const rango = rangoDeCapturas(REFERENCIAS_CAP);
   const [acciones, ultimos, volumenes, corteFilas, periodos, cierresCaptura, series] = await Promise.all([
     sql(SQL_G2.acciones).catch(() => []),
@@ -117,10 +157,13 @@ async function mapaMx(ahora) {
   });
 
   const { cuadros, faltantes } = armaMapaMx({ detalleG2: g2.detalle, precios: series, ahora });
+  let ultimoCierre = null;
+  for (const c of cuadros) if (c.fecha_precio && (!ultimoCierre || c.fecha_precio > ultimoCierre)) ultimoCierre = c.fecha_precio;
 
   return {
     mapa: 'mx',
     bolsa: 'mx',
+    ultimo_cierre: ultimoCierre,
     cuadros,
     mas: null,   // México son 30 emisoras: se pintan todas, no hay recorte.
     fuente: {

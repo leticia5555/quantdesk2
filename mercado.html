@@ -21,14 +21,17 @@
      vuelve a pedir nada: los cuatro periodos se calculan sobre lo que ya
      viajó.
 
-  POR QUÉ EL NIVEL SUPERIOR ES POR SECTOR, Y NO 300 CUADROS.
-  En 390 px de ancho, 300 cuadros dan ~10 px por lado. El encargo pide tap
-  ≥44 px, y las dos cosas no caben juntas: un mapa de 300 nombres en un
-  teléfono es una textura, no una interfaz. Así que el primer nivel son los
-  11 sectores —cada uno holgadamente tocable— y al tocar uno se entra a sus
-  nombres. En escritorio (pointer:fine) el sector se puede recorrer con
-  hover sin entrar. El recorte del mapa NO cambia con el dispositivo: los
-  300 son los mismos, y el "+N más = X%" también.
+  QUÉ SE VE AL ABRIR, Y POR QUÉ NO SON 300 CUADROS NI 11 SECTORES.
+  En 390 px, 300 cuadros dan ~10 px de lado y el encargo pide tap ≥44 px:
+  no caben juntas. La primera versión resolvió abriendo en los 11 sectores,
+  y probada en el teléfono la conclusión fue otra: un mapa de mercado que
+  abre sin una sola empresa no es un mapa de mercado.
+  Ahora el primer nivel son los ~30 nombres más grandes bajo la cabecera de
+  su sector, y cada sector cierra con un cuadro "+N más = X%" que lo abre
+  completo. La cabecera también abre el sector. El área de cada sector es su
+  capitalización TOTAL, así que el cuadro del resto ocupa exactamente el
+  peso que representa. El recorte NO cambia con el dispositivo: los 300 son
+  los mismos y el "+N más" global también.
   ═══════════════════════════════════════════════════════════════════
 -->
 <style>
@@ -66,6 +69,13 @@
     color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6)}
   .cuadro .val{font-family:var(--mono);line-height:1.05;color:rgba(255,255,255,.92)}
   .cuadro.punteado{border:1px dashed #555}
+  /* La cabecera de sector del artboard 1: 14 px, tocable, y abre el sector. */
+  .cabecera{position:absolute;display:flex;align-items:center;padding:0 6px;
+    background:#141414;border:1px solid #0a0a0a;color:#cfcfcf;
+    font-family:var(--mono);font-size:11px;letter-spacing:.3px;
+    cursor:pointer;overflow:hidden;white-space:nowrap;-webkit-tap-highlight-color:transparent}
+  .cuadro.resto{background:#1b1b1b;border:1px dashed #3a3a3a;color:#bbb}
+  .cuadro.resto .sym{color:#ddd}
   /* La ruta vive en su propia franja. Flotando sobre el lienzo tapaba el
      cuadro de arriba a la izquierda, que además es el más grande del sector. */
   #ruta{display:none;padding:0 16px 8px}
@@ -214,17 +224,37 @@
     }).join('');
   }
 
+  var DIAS = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+
+  // EL CHIP LO MANDA EL DATO, NO EL CALENDARIO.
+  // Decía "cierre del lunes" porque el lunes ya había cerrado, mientras la
+  // tabla terminaba el viernes: rotulaba lo que DEBERÍA haber en vez de lo
+  // que hay. Ahora, si el mercado está cerrado, el texto sale de la fecha
+  // del último cierre que viajó.
   function pintarChip(d){
     var e = qdEstadoMercado(d.bolsa || estado.mapa);
     var el = document.getElementById('chip');
+    var txt;
+    if(e.abierto){ txt = 'abierto'; }
+    else if(d.ultimo_cierre){
+      var dia = DIAS[new Date(d.ultimo_cierre+'T12:00:00Z').getUTCDay()];
+      txt = 'cerrado · cierre del ' + dia;
+    } else { txt = e.texto; }
     el.className = 'chip' + (e.abierto ? ' abierto' : '');
-    el.textContent = (e.abierto?'● ':'○ ') + e.etiqueta + ': ' + e.texto;
+    el.textContent = (e.abierto?'● ':'○ ') + e.etiqueta + ': ' + txt;
+    el.title = d.ultimo_cierre ? ('último cierre en la tabla: ' + d.ultimo_cierre) : '';
   }
 
   function cuadrosVisibles(d){
     var cs = (d.cuadros||[]).filter(function(c){ return Number.isFinite(c.cap) && c.cap>0; });
     if(estado.sector) return cs.filter(function(c){ return (c.sector||'—')===estado.sector; });
     return cs;
+  }
+
+  // Cuántas empresas se ven al abrir. En 390 px, ~30 dejan cuadros tocables;
+  // en escritorio hay sitio para más.
+  function cuantasVisibles(){
+    return (window.innerWidth >= 900) ? 60 : 30;
   }
 
   function pintarMapa(d){
@@ -236,67 +266,14 @@
     if(!w || !h){ requestAnimationFrame(function(){ pintarMapa(d); }); return; }
     var cs = cuadrosVisibles(d);
     if(!cs.length){
-      l.innerHTML = '<div style="padding:24px;color:#888;font:12px var(--mono)">'
+      l.innerHTML = '<div style="padding:24px;color:#888;font:12px var(--mono);line-height:1.5">'
         + (d.error ? esc(d.error) : 'no hay cuadros con capitalización medida para pintar')
+        + (d.detalle ? '<br><br>' + esc(JSON.stringify(d.detalle)) : '')
         + '</div>';
       return;
     }
-
-    var items, nivelSector = !estado.sector;
-    if(nivelSector){
-      var porSector = {};
-      cs.forEach(function(c){ var k=c.sector||'—'; (porSector[k]=porSector[k]||[]).push(c); });
-      items = Object.keys(porSector).map(function(k){
-        var g = porSector[k];
-        var cap = g.reduce(function(a,c){ return a+c.cap; },0);
-        // El % del sector se pondera por capitalización: un sector no sube
-        // lo que sube el promedio de sus nombres, sube lo que sube su peso.
-        var num=0, den=0, sinDato=0;
-        g.forEach(function(c){ var p=cambio(c).pct; if(Number.isFinite(p)){ num+=p*c.cap; den+=c.cap; } else sinDato++; });
-        return { key:k, value:cap, sector:k, n:g.length, sinDato:sinDato,
-                 pct: den>0 ? num/den : null,
-                 motivo: den>0 ? null : 'ninguno de los '+g.length+' nombres tiene serie para este periodo' };
-      });
-    } else {
-      items = cs.map(function(c){ var r=cambio(c);
-        return { key:c.symbol, value:c.cap, cuadro:c, pct:r.pct, motivo:r.motivo }; });
-    }
-
-    var rects = squarify(items, { x:0, y:0, w:w, h:h });
-    var frag = document.createDocumentFragment();
-    rects.forEach(function(r){
-      var it = r.item;
-      var div = document.createElement('div');
-      div.className = 'cuadro' + (!Number.isFinite(it.pct) ? ' punteado' : '');
-      div.style.cssText = 'left:'+r.x+'px;top:'+r.y+'px;width:'+r.w+'px;height:'+r.h+'px;background:'+colorDe(it.pct);
-      var titulo = nivelSector ? (SECTORES[it.sector]||it.sector) : it.key;
-      div.setAttribute('aria-label', titulo);
-      // La etiqueta sólo entra si CABE. Un texto recortado a la mitad dice
-      // otra cosa que el nombre real.
-      if(r.w>=46 && r.h>=30){
-        var fs = Math.max(9, Math.min(15, Math.round(Math.min(r.w/5.2, r.h/2.6))));
-        // Un −0.04% redondeado a un decimal es "−0.0%", que es un signo
-        // inventado: si redondea a cero, se pinta cero y sin signo.
-        var txt = '—';
-        if(Number.isFinite(it.pct)){
-          var r1 = Math.round(it.pct*10)/10;
-          txt = r1===0 ? '0.0%' : ((r1>0?'+':'')+r1.toFixed(1)+'%');
-        }
-        div.innerHTML = '<div class="sym" style="font-size:'+fs+'px">'+esc(nivelSector?(SECTORES[it.sector]||it.sector):it.key)+'</div>'
-          + '<div class="val" style="font-size:'+Math.max(8,fs-3)+'px">'+txt+'</div>';
-      }
-      div.addEventListener('click', function(){
-        if(nivelSector){ estado.sector = it.sector; escribirUrl(true); render(); }
-        else { estado.symbol = it.key; escribirUrl(true); abrirHoja(cache[estado.mapa], it.key); }
-      });
-      if(window.matchMedia && window.matchMedia('(pointer:fine)').matches){
-        div.addEventListener('mousemove', function(ev){ mostrarTip(ev, it, nivelSector); });
-        div.addEventListener('mouseleave', ocultarTip);
-      }
-      frag.appendChild(div);
-    });
-    l.appendChild(frag);
-
+    if(estado.sector) pintarSector(l, cs, w, h);
+    else pintarPrimerNivel(l, cs, w, h);
   }
 
   function pintarRuta(){
@@ -311,9 +288,110 @@
     r.appendChild(b);
   }
 
-  function mostrarTip(ev, it, nivelSector){
+  // ── PRIMER NIVEL: empresas, agrupadas bajo su sector ──────────────
+  function pintarPrimerNivel(l, cs, w, h){
+    var ALTO_CABECERA = 14;
+    var grupos = agrupaPrimerNivel(cs, { n: cuantasVisibles() }).grupos;
+    var rects = squarify(grupos.map(function(g){ return { key:g.sector, value:g.cap_total, grupo:g }; }), { x:0, y:0, w:w, h:h });
+    var frag = document.createDocumentFragment();
+
+    rects.forEach(function(r){
+      var g = r.item.grupo;
+      // Sin sitio para la cabecera, el sector se dibuja sin ella: media
+      // cabecera recortada no dice el nombre del sector, lo insinúa.
+      var conCabecera = r.h >= ALTO_CABECERA + 26;
+      if(conCabecera){
+        var cab = document.createElement('div');
+        cab.className = 'cabecera';
+        cab.style.cssText = 'left:'+r.x+'px;top:'+r.y+'px;width:'+r.w+'px;height:'+ALTO_CABECERA+'px';
+        var nom = SECTORES[g.sector] || g.sector;
+        // Regla 3: si no cabe entero, abreviatura; nunca cortado a la mitad.
+        var etq = etiquetaQueCabe(candidatosSector(nom), r.w, 11);
+        cab.textContent = etq || '';
+        cab.title = nom;
+        cab.setAttribute('aria-label', nom);
+        cab.addEventListener('click', function(){ entrarASector(g.sector); });
+        frag.appendChild(cab);
+      }
+      var y0 = r.y + (conCabecera ? ALTO_CABECERA : 0);
+      var h0 = r.h - (conCabecera ? ALTO_CABECERA : 0);
+
+      var items = g.visibles.map(function(c){ var x=cambio(c);
+        return { key:c.symbol, value:c.cap, cuadro:c, pct:x.pct, motivo:x.motivo }; });
+      if(g.resto) items.push({ key:'+'+g.resto.n, value:g.resto.cap, resto:g.resto, sector:g.sector, pct:null });
+
+      squarify(items, { x:r.x, y:y0, w:r.w, h:h0 }).forEach(function(q){
+        frag.appendChild(q.item.resto ? cuadroResto(q) : cuadroEmpresa(q, false));
+      });
+    });
+    l.appendChild(frag);
+  }
+
+  // ── SEGUNDO NIVEL: un sector completo ─────────────────────────────
+  function pintarSector(l, cs, w, h){
+    var items = cs.map(function(c){ var x=cambio(c);
+      return { key:c.symbol, value:c.cap, cuadro:c, pct:x.pct, motivo:x.motivo }; });
+    var frag = document.createDocumentFragment();
+    squarify(items, { x:0, y:0, w:w, h:h }).forEach(function(q){ frag.appendChild(cuadroEmpresa(q, false)); });
+    l.appendChild(frag);
+  }
+
+  function entrarASector(sector){
+    estado.sector = sector; estado.symbol = null; escribirUrl(true); render();
+  }
+
+  function cuadroEmpresa(r, esSector){
+    var it = r.item;
+    var div = document.createElement('div');
+    div.className = 'cuadro' + (!Number.isFinite(it.pct) ? ' punteado' : '');
+    div.style.cssText = 'left:'+r.x+'px;top:'+r.y+'px;width:'+r.w+'px;height:'+r.h+'px;background:'+colorDe(it.pct);
+    div.setAttribute('aria-label', it.key);
+    if(r.w>=34 && r.h>=26){
+      var fs = Math.max(9, Math.min(15, Math.round(Math.min(r.w/4.6, r.h/2.6))));
+      // El ticker es corto por naturaleza, pero si ni él cabe se deja el
+      // cuadro sin texto: el color y el tamaño siguen diciendo algo.
+      var etq = etiquetaQueCabe([it.key], r.w, fs, { margen: 4 });
+      var txt = '—';
+      if(Number.isFinite(it.pct)){
+        var r1 = Math.round(it.pct*10)/10;
+        txt = r1===0 ? '0.0%' : ((r1>0?'+':'')+r1.toFixed(1)+'%');
+      }
+      if(etq) div.innerHTML = '<div class="sym" style="font-size:'+fs+'px">'+esc(etq)+'</div>'
+        + '<div class="val" style="font-size:'+Math.max(8,fs-3)+'px">'+txt+'</div>';
+    }
+    div.addEventListener('click', function(){
+      estado.symbol = it.key; escribirUrl(true); abrirHoja(cache[estado.mapa], it.key);
+    });
+    if(window.matchMedia && window.matchMedia('(pointer:fine)').matches){
+      div.addEventListener('mousemove', function(ev){ mostrarTip(ev, it, false); });
+      div.addEventListener('mouseleave', ocultarTip);
+    }
+    return div;
+  }
+
+  // El cuadro del resto del sector: su área ES la capitalización que
+  // representa, así que "+N más = X%" no es una nota al pie sino el tamaño
+  // del hueco que se está dejando de ver.
+  function cuadroResto(r){
+    var it = r.item;
+    var div = document.createElement('div');
+    div.className = 'cuadro resto';
+    div.style.cssText = 'left:'+r.x+'px;top:'+r.y+'px;width:'+r.w+'px;height:'+r.h+'px';
+    var pct = Number.isFinite(it.resto.pct) ? it.resto.pct.toFixed(0)+'%' : '—';
+    div.setAttribute('aria-label', '+'+it.resto.n+' más del sector, '+pct+' de su capitalización');
+    if(r.w>=34 && r.h>=26){
+      var fs = Math.max(9, Math.min(13, Math.round(Math.min(r.w/4.6, r.h/2.6))));
+      var etq = etiquetaQueCabe(['+'+it.resto.n+' más', '+'+it.resto.n], r.w, fs, { margen: 4 });
+      if(etq) div.innerHTML = '<div class="sym" style="font-size:'+fs+'px">'+esc(etq)+'</div>'
+        + '<div class="val" style="font-size:'+Math.max(8,fs-3)+'px">'+pct+'</div>';
+    }
+    div.addEventListener('click', function(){ entrarASector(it.sector); });
+    return div;
+  }
+
+  function mostrarTip(ev, it){
     var t = document.getElementById('tip');
-    var etq = nivelSector ? (SECTORES[it.sector]||it.sector)+' · '+it.n+' nombres' : it.key;
+    var etq = it.key;
     t.innerHTML = '<div>'+esc(etq)+'</div>'
       + '<div>'+qdPctTag(it.pct, estado.periodo, { motivo: it.motivo })+'</div>';
     t.style.display='block';

@@ -138,15 +138,37 @@ test('las constantes dicen lo que el mapa necesita', () => {
 
 // ───── la barra del día en curso no es un cierre ─────
 
-import { esCierreDefinitivo, soloCierresDefinitivos, CIERRE_US_UTC_H } from '../api/_lib/mercado-precios.js';
+import { esCierreDefinitivo, soloCierresDefinitivos, horaEnZona, CIERRE_ET_H } from '../api/_lib/mercado-precios.js';
 
 test('la barra de HOY antes del cierre no se guarda: es el precio vivo', () => {
   const medioDia = new Date('2026-09-21T15:00:00Z');   // 11:00 ET, mercado abierto
   assert.equal(esCierreDefinitivo('2026-09-21', medioDia), false);
   assert.equal(esCierreDefinitivo('2026-09-18', medioDia), true);
-  // Después del cierre sí.
   assert.equal(esCierreDefinitivo('2026-09-21', new Date('2026-09-21T21:30:00Z')), true);
-  assert.equal(CIERRE_US_UTC_H, 21);
+  assert.equal(CIERRE_ET_H, 16);
+});
+
+test('el cierre se mide en la hora DEL ESTE, no en un UTC fijo', () => {
+  // EL BUG: con el tope fijo en 21 UTC, en septiembre (EDT) el mercado cerraba
+  // a las 20:00 UTC y la barra seguía marcada como provisional una hora más.
+  const sept = new Date('2026-09-21T20:30:00Z');       // 16:30 ET — cerrado
+  assert.equal(horaEnZona(sept).hora, 16.5);
+  assert.equal(esCierreDefinitivo('2026-09-21', sept), true, 'a las 16:30 del Este la barra ya es un cierre');
+
+  // Y en enero (EST) las 20:30 UTC son las 15:30 ET: todavía abierto.
+  const enero = new Date('2027-01-19T20:30:00Z');
+  assert.equal(horaEnZona(enero).hora, 15.5);
+  assert.equal(esCierreDefinitivo('2027-01-19', enero), false, 'a las 15:30 del Este todavía es precio vivo');
+  assert.equal(esCierreDefinitivo('2027-01-19', new Date('2027-01-19T21:15:00Z')), true);
+});
+
+test('el día se toma del calendario del MERCADO, no del UTC', () => {
+  // 00:30 UTC del martes son las 20:30 del lunes en Nueva York: la barra del
+  // lunes ya cerró, y la del martes todavía no existe.
+  const t = new Date('2026-09-22T00:30:00Z');
+  assert.equal(horaEnZona(t).fecha, '2026-09-21');
+  assert.equal(esCierreDefinitivo('2026-09-21', t), true);
+  assert.equal(esCierreDefinitivo('2026-09-22', t), false);
 });
 
 test('una barra con fecha futura no se guarda nunca', () => {

@@ -214,3 +214,91 @@ test('con las entradas completas, mapa y censo dan el MISMO veredicto', () => {
   assert.equal(sinEllas.detalle[0].estado, 'gris_punteado');
   assert.equal(sinEllas.detalle[0].verificacion.por_referencia[0].error_pct, 8);
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// LO QUE EL TELÉFONO CORRIGIÓ
+//
+// Tres cosas que sólo se vieron con el mapa en la mano:
+//   1. Con la tabla al viernes y el cron sin correr, el mapa salía vacío.
+//   2. Abrir en sectores: un mapa de mercado sin una sola empresa no es un
+//      mapa de mercado.
+//   3. "omunicacione" — etiquetas cortadas a mitad de palabra.
+// ═══════════════════════════════════════════════════════════════════
+
+test('1D se calcula sobre lo que HAY: viernes contra jueves, sin exigir hoy', () => {
+  // Tabla que termina el viernes 18; se consulta el lunes 21 por la tarde.
+  const filas = serieLarga();
+  const p = empaquetaSerie(filas, { ahora: new Date('2026-09-21T23:00:00Z') });
+  const r = QD.qdPeriodChange(p.serie, '1D');
+  assert.ok(Number.isFinite(r.pct), 'el 1D tiene que salir aunque falte el cierre del lunes');
+  assert.equal(r.motivo, null);
+  // Y el ancla es el penúltimo cierre GUARDADO, no "ayer" del calendario.
+  assert.equal(r.refValue, p.serie[p.serie.length - 2].c);
+});
+
+test('el primer nivel son EMPRESAS agrupadas por sector, no sectores', () => {
+  const cuadros = [];
+  for (let i = 0; i < 40; i++) {
+    cuadros.push({ symbol: 'S' + i, sector: ['XLK', 'XLF', 'XLV'][i % 3], cap: (40 - i) * 1e9 });
+  }
+  const { grupos, visibles } = TM.agrupaPrimerNivel(cuadros, { n: 30 });
+  assert.equal(visibles, 30);
+  assert.equal(grupos.length, 3);
+  // Cada grupo trae sus empresas visibles y su resto.
+  for (const g of grupos) {
+    assert.ok(g.visibles.length > 0);
+    assert.ok(g.resto && g.resto.n > 0, `${g.sector} debería tener resto`);
+    assert.ok(g.visibles[0].cap >= g.visibles[g.visibles.length - 1].cap, 'ordenadas por cap');
+  }
+  assert.equal(grupos.reduce((a, g) => a + g.visibles.length, 0), 30);
+});
+
+test('el área del sector es su capitalización TOTAL, resto incluido', () => {
+  const cuadros = [
+    { symbol: 'A', sector: 'XLK', cap: 100 },
+    { symbol: 'B', sector: 'XLK', cap: 50 },
+    { symbol: 'C', sector: 'XLF', cap: 10 },
+  ];
+  const { grupos } = TM.agrupaPrimerNivel(cuadros, { n: 2 });   // sólo A y B visibles
+  const tec = grupos.find((g) => g.sector === 'XLK');
+  const fin = grupos.find((g) => g.sector === 'XLF');
+  assert.equal(tec.cap_total, 150);
+  assert.equal(tec.resto, null, 'sin ocultos no hay cuadro de resto');
+  // XLF no tiene ningún nombre entre los 2 más grandes, pero SIGUE apareciendo:
+  // si no, sus empresas serían inalcanzables desde el primer nivel.
+  assert.equal(fin.visibles.length, 0);
+  assert.equal(fin.resto.n, 1);
+  assert.equal(fin.resto.pct, 100);
+});
+
+test('el % del resto se mide sobre el SECTOR, que es la pregunta que dispara', () => {
+  const cuadros = [
+    { symbol: 'A', sector: 'XLK', cap: 60 },
+    { symbol: 'B', sector: 'XLK', cap: 40 },
+    { symbol: 'C', sector: 'XLF', cap: 1000 },
+  ];
+  const { grupos } = TM.agrupaPrimerNivel(cuadros, { n: 2 });   // C y A
+  const tec = grupos.find((g) => g.sector === 'XLK');
+  assert.equal(tec.resto.n, 1);
+  assert.equal(tec.resto.pct, 40, '40 de 100 del sector, no de los 1100 del mapa');
+});
+
+test('ETIQUETAS: si no cabe entera, abreviatura; nunca cortada a la mitad', () => {
+  const cand = TM.candidatosSector('Comunicaciones');
+  assert.equal(TM.etiquetaQueCabe(cand, 200, 13), 'Comunicaciones');
+  assert.equal(TM.etiquetaQueCabe(cand, 90, 13), 'Com.');
+  // Y si ni la abreviatura cabe, NADA — mejor un cuadro sin texto que
+  // "omunicacione", que es lo que el teléfono mostraba.
+  assert.equal(TM.etiquetaQueCabe(cand, 20, 13), null);
+  for (const n of ['Industriales', 'Materiales', 'Consumo discrecional']) {
+    const e = TM.etiquetaQueCabe(TM.candidatosSector(n), 80, 13);
+    assert.ok(e === null || n.startsWith(e) || /\.$/.test(e), `"${e}" no es ni el nombre ni una abreviatura de "${n}"`);
+  }
+});
+
+test('ETIQUETAS: toda abreviatura de sector es más corta que su nombre', () => {
+  for (const [nombre, abrev] of Object.entries(TM.ABREV_SECTOR)) {
+    assert.ok(abrev.length <= nombre.length, `${nombre} → ${abrev}`);
+    assert.ok(abrev.length <= 12, `${abrev} sigue siendo largo para un cuadro`);
+  }
+});

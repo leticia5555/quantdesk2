@@ -32,6 +32,8 @@ const { chromium } = require(PW);
 // Incluye a propósito un cuadro SIN serie y uno SIN ancla YTD: si el "—" con
 // su causa se rompe, esta corrida lo tiene que ver.
 const DIA = 86400;
+// La tabla termina el VIERNES 18 a propósito: es el caso que rompió en el
+// teléfono — lunes por la tarde, cosecha del día aún sin correr.
 const HOY = Math.floor(Date.parse('2026-09-18T00:00:00Z') / 1000);
 // La serie se arma con un movimiento POR DÍA, no con una deriva repartida:
 // con la deriva, el cambio de 1D salía ~0.05% y los 300 cuadros aparecían
@@ -80,6 +82,7 @@ const FIXTURES = {
     fuente: { cuadros: 'neon:mercado_universo_us (sector y cap)', series: 'neon:mercado_precios_us (cierre y cierre ajustado, cosecha diaria)' },
     faltantes: { total: 2, por_motivo: { no_hay_serie: 1, sin_ancla_ytd: 1 }, ejemplos: [] },
     periodos: ['1D', '1S', '1M', 'YTD'], generado_en: '2026-09-21T22:00:00.000Z',
+    ultimo_cierre: '2026-09-18',
   },
   mx: {
     mapa: 'mx', bolsa: 'mx',
@@ -104,6 +107,7 @@ const FIXTURES = {
     cosecha: { ultima_fecha: '2026-09-18', sesiones_de_atraso: 0, alerta: false, lectura: null },
     faltantes: { total: 1, por_motivo: { requiere_desglose: 1 }, ejemplos: [] },
     periodos: ['1D', '1S', '1M', 'YTD'], generado_en: '2026-09-21T22:00:00.000Z',
+    ultimo_cierre: '2026-09-18',
   },
 };
 
@@ -124,6 +128,22 @@ const server = createServer(async (req, res) => {
     res.end(buf);
   } catch { res.writeHead(404); res.end('no'); }
 });
+
+// ── EL RELOJ, FIJO ───────────────────────────────────────────────────
+// El caso que rompió en el teléfono: **lunes 17:00 CT con la tabla al
+// viernes**. Sin fijar el reloj, el chip diría "abierto" o "cerrado" según
+// la hora a la que alguien corra el script, y la comprobación del chip
+// pasaría o fallaría por motivos que no son el código.
+const MOMENTO = Date.parse('2026-09-21T23:00:00Z');   // lunes 17:00 CT / 19:00 ET
+const RELOJ_FIJO = `(() => {
+  const fijo = ${MOMENTO};
+  const Real = Date;
+  class Falso extends Real {
+    constructor(...a) { if (a.length === 0) super(fijo); else super(...a); }
+    static now() { return fijo; }
+  }
+  window.Date = Falso;
+})()`;
 
 const fallos = [];
 const ok = [];
@@ -159,6 +179,7 @@ try {
     isMobile: true, hasTouch: true,
     userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
   });
+  await movil.addInitScript(RELOJ_FIJO);
   const p = await movil.newPage();
   const errores = [];
   p.on('pageerror', (e) => errores.push(String(e)));
@@ -188,17 +209,44 @@ try {
   chequeo('todo control interactivo mide ≥44 px', taps.length === 0, taps.join(', '));
 
   const nSectores = await p.locator('.cuadro').count();
-  chequeo('el primer nivel son sectores, no 300 cuadros', nSectores <= 12, `${nSectores} cuadros`);
+  chequeo('al abrir se ven EMPRESAS, no sólo sectores', nSectores >= 20, `${nSectores} cuadros`);
+  chequeo('hay cabeceras de sector', (await p.locator('.cabecera').count()) >= 3);
+  chequeo('cada sector cierra con su cuadro "+N más"', (await p.locator('.cuadro.resto').count()) >= 1);
 
-  const sectoresTocables = await p.evaluate(() => [...document.querySelectorAll('.cuadro')]
-    .filter((e) => { const r = e.getBoundingClientRect(); return r.width < 44 || r.height < 44; }).length);
-  chequeo('cada sector es tocable (≥44 px)', sectoresTocables === 0, `${sectoresTocables} chicos`);
+  // NINGUNA etiqueta cortada a mitad de palabra.
+  const cortadas = await p.evaluate(() => {
+    const malas = [];
+    for (const el of document.querySelectorAll('.cabecera')) {
+      const t = el.textContent.trim();
+      if (!t) continue;
+      if (el.scrollWidth > el.clientWidth + 1) malas.push(t + ' (se desborda)');
+      const full = el.getAttribute('title') || '';
+      if (t && full && !full.startsWith(t) && !/\.$/.test(t)) malas.push(t + ' ≠ ' + full);
+    }
+    return malas;
+  });
+  chequeo('ninguna cabecera queda cortada a mitad de palabra', cortadas.length === 0, cortadas.join(' | '));
 
-  // TAP REAL en un sector → entra
+  // El chip tiene que hablar del DATO: la tabla termina el viernes.
+  const chipUs = await p.locator('#chip').innerText();
+  chequeo('el chip dice el cierre que se está viendo, no el que el calendario espera',
+    /cierre del viernes/.test(chipUs), chipUs);
+
+  // Y el mapa NO está vacío aunque falte el cierre de hoy: 1D se calcula
+  // sobre lo que HAY —viernes contra jueves—, no sobre lo que el calendario
+  // dice que debería haber.
+  const pintados = await p.evaluate(() => {
+    const vals = [...document.querySelectorAll('.cuadro:not(.resto) .val')].map((e) => e.textContent.trim());
+    return { total: vals.length, conPct: vals.filter((v) => /%$/.test(v)).length, sinDato: vals.filter((v) => v === '—').length };
+  });
+  chequeo('con la tabla al viernes, 1D se pinta igual (último cierre vs el anterior)',
+    pintados.conPct >= 15 && pintados.sinDato === 0, JSON.stringify(pintados));
+
+  // TAP REAL en la cabecera → abre el sector
   const pedidosAntes = pedidosApi;
-  await p.locator('.cuadro').first().tap();
+  await p.locator('.cabecera').first().tap();
   await p.waitForSelector('.volver');
-  chequeo('un tap en un sector entra a sus nombres', (await p.locator('.volver').count()) === 1);
+  chequeo('un tap en la cabecera de sector abre ese sector', (await p.locator('.volver').count()) === 1);
   chequeo('entrar a un sector es estado en la URL', p.url().includes('sector='));
 
   // TAP REAL en un nombre → hoja
@@ -212,7 +260,7 @@ try {
 
   await p.locator('#cerrar').tap();
   await p.locator('.volver').tap();
-  await p.waitForSelector('.cuadro');
+  await p.waitForSelector('.cabecera');
 
   // El toggle cambia el periodo SIN pedir nada
   const antesToggle = pedidosApi;
@@ -257,6 +305,7 @@ try {
   // ══════════ ESCRITORIO 1440 px, con HOVER ══════════
   console.log('\n── 1440 × 900, puntero fino ──');
   const esc = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await esc.addInitScript(RELOJ_FIJO);
   const d = await esc.newPage();
   await d.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
   await d.waitForSelector('.cuadro');
@@ -271,8 +320,8 @@ try {
   const tipTxt = await d.locator('#tip').innerText();
   chequeo('el tooltip también lleva la etiqueta de periodo', (await d.locator('#tip .qd-pct-per').count()) > 0, tipTxt.replace(/\n/g, ' '));
 
-  await d.locator('.cuadro').first().click();
-  await d.waitForSelector('.volver');
+  // En escritorio el primer nivel también son empresas: un clic en un cuadro
+  // abre su hoja directamente; el sector se abre desde la cabecera.
   await d.locator('.cuadro').first().click();
   await d.waitForSelector('.hoja[data-abierta="1"]');
   // La hoja entra con una transición de 180 ms: medirla antes de que termine

@@ -88,6 +88,102 @@ function colorDe(pct) {
   return ESCALA_COLOR[ESCALA_COLOR.length - 1].color;
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   EL PRIMER NIVEL: EMPRESAS, NO SECTORES
+
+   La primera versión abría en los 11 sectores porque 300 cuadros a 390 px
+   dan ~10 px de lado y el encargo pide tap ≥44 px. Probado en el teléfono,
+   la conclusión fue otra: un mapa de mercado que abre sin una sola empresa
+   no es un mapa de mercado.
+
+   Así que el primer nivel son los ~30 nombres MÁS GRANDES, agrupados bajo la
+   cabecera de su sector, y cada sector cierra con un cuadro "+N más = X%"
+   que lo abre completo. El área de cada sector es su capitalización TOTAL —
+   la de los nombres visibles más la del resto—, así que el cuadro del resto
+   ocupa exactamente el peso que representa. Ningún cuadro miente de tamaño.
+   ═══════════════════════════════════════════════════════════════════ */
+
+const ABREV_SECTOR = {
+  'Tecnología': 'Tec.', 'Finanzas': 'Fin.', 'Salud': 'Salud',
+  'Consumo discrecional': 'Cons. disc.', 'Consumo básico': 'Cons. bás.',
+  'Energía': 'Energía', 'Industriales': 'Ind.', 'Materiales': 'Mat.',
+  'Servicios públicos': 'Serv. púb.', 'Inmobiliario': 'Inmob.',
+  'Comunicaciones': 'Com.',
+};
+
+/**
+ * La etiqueta MÁS LARGA QUE CABE, de una lista de candidatos ordenada de más
+ * completa a más corta. Si no cabe ninguna, null — mejor un cuadro sin texto
+ * que uno con "omunicacione".
+ *
+ * El ancho se estima: en monoespaciada un carácter mide ~0.6 em, y se deja
+ * un margen. Estimar de menos corta palabras; estimar de más sólo abrevia
+ * antes de tiempo, que es el lado barato del error.
+ */
+function etiquetaQueCabe(candidatos, anchoPx, fontPx, opts) {
+  const o = opts || {};
+  const factor = o.factor || 0.62;
+  const margen = o.margen == null ? 8 : o.margen;
+  const util = anchoPx - margen;
+  for (const c of candidatos) {
+    if (!c) continue;
+    if (String(c).length * fontPx * factor <= util) return String(c);
+  }
+  return null;
+}
+
+/** Los candidatos de una cabecera de sector, de más completo a más corto. */
+function candidatosSector(nombre, abrev) {
+  return [nombre, abrev || ABREV_SECTOR[nombre], String(nombre || '').slice(0, 3) + '.'];
+}
+
+/**
+ * Agrupa para el primer nivel. `cuadros` = los del mapa (ya recortados al
+ * top 300 por el servidor); `n` = cuántas empresas se ven de entrada.
+ *
+ * Devuelve un grupo por sector con `visibles`, `resto` y el `cap_total` que
+ * define su área. Un sector sin ningún nombre entre los `n` más grandes
+ * igual aparece, con su cuadro de resto: si no, sus empresas quedarían
+ * inalcanzables desde el primer nivel.
+ */
+function agrupaPrimerNivel(cuadros, opts) {
+  const o = opts || {};
+  const n = o.n || 30;
+  const conCap = (cuadros || []).filter((c) => Number.isFinite(c.cap) && c.cap > 0);
+  const top = conCap.slice().sort((a, b) => b.cap - a.cap).slice(0, n);
+  const visiblePor = new Set(top.map((c) => c.symbol));
+
+  const porSector = new Map();
+  for (const c of conCap) {
+    const k = c.sector || '—';
+    if (!porSector.has(k)) porSector.set(k, { sector: k, cap_total: 0, visibles: [], ocultos: [] });
+    const g = porSector.get(k);
+    g.cap_total += c.cap;
+    (visiblePor.has(c.symbol) ? g.visibles : g.ocultos).push(c);
+  }
+
+  const grupos = [...porSector.values()].map((g) => {
+    const capOculta = g.ocultos.reduce((a, c) => a + c.cap, 0);
+    g.visibles.sort((a, b) => b.cap - a.cap);
+    return {
+      sector: g.sector,
+      cap_total: g.cap_total,
+      visibles: g.visibles,
+      // El % del resto se mide sobre la capitalización del SECTOR, no sobre
+      // la del mapa: es lo que contesta "¿cuánto de este sector no estoy
+      // viendo?", que es la pregunta que el cuadro dispara.
+      resto: g.ocultos.length
+        ? { n: g.ocultos.length, cap: capOculta, pct: g.cap_total > 0 ? (capOculta / g.cap_total) * 100 : null }
+        : null,
+    };
+  });
+  grupos.sort((a, b) => b.cap_total - a.cap_total);
+  return { grupos, visibles: top.length };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { squarify, colorDe, ESCALA_COLOR, COLOR_SIN_DATO };
+  module.exports = {
+    squarify, colorDe, ESCALA_COLOR, COLOR_SIN_DATO,
+    etiquetaQueCabe, candidatosSector, agrupaPrimerNivel, ABREV_SECTOR,
+  };
 }
