@@ -276,15 +276,56 @@ export function resumenPorDia(libros) {
       if (w && Object.keys(w).length) pesos[id] = w;
     }
     const n = Object.keys(pesos).length;
+
+    // ── QUIÉN ENTRÓ Y QUIÉN QUEDÓ FUERA ──────────────────────────────
+    // La coincidencia se calcula sobre los que TERMINARON con un libro. El
+    // número no está mal; estaba mal ROTULADO: "entre 4 libros" se lee como un
+    // hecho del día cuando es un hecho de un subconjunto que cambia solo — el
+    // día que tres agentes abortan, el denominador se mueve sin que nada lo
+    // diga y la serie deja de ser comparable consigo misma.
+    //
+    // Así que viaja con el censo del día: cuántos agentes corrieron, cuántos
+    // dejaron libro, y quién quedó afuera CON SU MOTIVO. Un aborto es un
+    // resultado del experimento, no una fila que falta.
+    const fuera = [];
+    for (const [id, l] of g.ultimos) {
+      if (pesos[id]) continue;
+      const estado = String(l.estado || '');
+      fuera.push({
+        agente: id,
+        nombre: (l.agente && l.agente.nombre) || id,
+        estado: estado || null,
+        // `aborted_*` es un aborto de la corrida; cualquier otro estado sin
+        // pesos es un libro vacío o una corrida del contrato viejo, y NO es lo
+        // mismo. Se distinguen porque llevan a arreglar cosas distintas.
+        aborto: estado.startsWith('aborted'),
+        motivo: l.error || null,
+      });
+    }
+    const censo = {
+      agentes_en_la_corrida: g.ultimos.size,
+      con_libro: n,
+      fuera: fuera.length,
+      abortados: fuera.filter((f) => f.aborto).length,
+      detalle_fuera: fuera,
+      // La frase, armada una sola vez acá: la página y la auditoría dicen lo
+      // mismo o un día difieren.
+      etiqueta: fuera.length
+        ? `entre ${n} de ${g.ultimos.size} libros · ${fuera.length} fuera (${fuera.map((f) => `${f.agente}: ${f.estado || 'sin libro'}`).join(', ')})`
+        : `entre los ${n} libros de la corrida (ningún agente quedó fuera)`,
+    };
+
     const coincidencia = n >= 2
       ? {
         ...pairwiseOverlap(pesos),
         nombre_mas_compartido: sharedTopTicker(pesos),
         libros: n,
+        ...censo,
         lectura: null,
         caveat: CAVEAT_ENFOQUE,
       }
       : { pairs: [], mean: null, max: null, libros: n,
+        ...censo,
         note: 'Hacen falta al menos DOS libros con pesos para que la coincidencia signifique algo.' };
     if (coincidencia.mean != null) coincidencia.lectura = lecturaDeCoincidencia(coincidencia.mean);
 
@@ -306,6 +347,17 @@ export function resumenPorDia(libros) {
       dia: g.dia, fuente: g.fuente,
       agentes: [...g.ultimos.keys()],
       corridas: g.ultimos.size,
+      // El censo también a nivel del día: quién entró, quién quedó fuera y por
+      // qué. Duplica lo que va dentro de `coincidencia` a propósito — un
+      // consumidor que solo mira el resumen del día no debería tener que
+      // entrar al bloque de la métrica para saber cuántos agentes hubo.
+      censo: {
+        agentes_en_la_corrida: coincidencia.agentes_en_la_corrida,
+        con_libro: coincidencia.con_libro,
+        fuera: coincidencia.fuera,
+        abortados: coincidencia.abortados,
+        detalle_fuera: coincidencia.detalle_fuera,
+      },
       enfoques: Object.fromEntries([...g.ultimos].map(([id, l]) => [id, l.enfoque || null])),
       coincidencia,
       piso_de_ruido: piso,

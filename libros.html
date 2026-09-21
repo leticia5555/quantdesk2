@@ -309,7 +309,18 @@ function cardHtml(l,i){
   const a=l.agente;
   const rotos = l.rieles&&l.rieles.ok===false || String(l.estado||'').startsWith('aborted');
   const npos = l.portafolio&&l.portafolio.pesos ? Object.keys(l.portafolio.pesos).length : null;
-  const railTag = l.rieles&&l.rieles.ok===false ? '<span class="tag rails">rieles ✕</span>' : '';
+  // ── "RIELES ✕" TIENE QUE DECIR CUÁL ────────────────────────────────
+  // El detalle (riel, ticker, motivo) ya viajaba, pero vivía detrás de "ver la
+  // investigación": para saber qué riel frenó una corrida había que abrir la
+  // tarjeta y bajar cuatro bloques. "Rechazado" sin el riel es la mitad de un
+  // diagnóstico — la diferencia entre "el agente falló" y "pidió 60% en un
+  // sector con tope de 50%".
+  const rieles = (l.rieles&&l.rieles.ok===false&&Array.isArray(l.rieles.violaciones))
+    ? [...new Set(l.rieles.violaciones.map(v=>v.riel).filter(Boolean))] : [];
+  const railTag = l.rieles&&l.rieles.ok===false
+    ? '<span class="tag rails" title="'+esc((l.rieles.violaciones||[]).map(v=>v.riel+(v.ticker?' '+v.ticker:'')+' — '+(v.detalle||'')).join(' · '))+'">'+
+      'rieles ✕'+(rieles.length?' '+esc(rieles.join(' ')):'')+'</span>'
+    : '';
   const enfoqueTag = l.enfoque ? '<span class="tag enfoque">'+esc(l.enfoque)+'</span>' : '';
   const inv=l.investigacion;
   const invResumen = inv&&inv.usó_herramientas
@@ -365,15 +376,29 @@ function clase(n,umbrales){ // [alto, medio] → clase de color
 function dayboxHtml(d){
   const s=d.coincidencia||{};
   const p=d.piso_de_ruido||{};
+  // ── LA COINCIDENCIA SE CALCULA SOBRE LOS QUE TERMINARON ────────────
+  // "entre 4 libros" se lee como un hecho del día y es un hecho de un
+  // SUBCONJUNTO que cambia solo: el día que tres agentes abortan, el
+  // denominador se mueve sin que nada lo diga. Así que la etiqueta lleva
+  // siempre cuántos agentes ENTRARON, y debajo va quién quedó fuera y por qué.
+  // Un aborto es un resultado del experimento, no una fila que falta.
+  const entraron = s.agentes_en_la_corrida!=null ? s.agentes_en_la_corrida : (s.libros||0);
+  const etiqueta = 'entre '+(s.libros||0)+' de '+entraron+' libros';
+  const fueraHtml = (s.detalle_fuera&&s.detalle_fuera.length)
+    ? '<div class="read warn" style="margin-top:-6px">Quedaron fuera <b>'+s.detalle_fuera.length+' de '+entraron+'</b>: '+
+      s.detalle_fuera.map(f=>'<b>'+esc(f.nombre||f.agente)+'</b> ('+esc(f.estado||'sin libro')+')').join(', ')+
+      '. La coincidencia de arriba NO los incluye — se calcula sobre los que terminaron con un libro.</div>'
+    : '';
   const sol = s.mean!=null
     ? '<div class="metric"><span class="k">Coincidencia</span><span class="v '+clase(s.mean,[0.8,0.5])+'">'+s.mean+'</span>'+
-      '<span class="k" style="min-width:0">entre '+(s.libros||0)+' libros</span></div>'+
+      '<span class="k" style="min-width:0">'+etiqueta+'</span></div>'+
       '<div class="read">'+esc(s.lectura||'')+'</div>'+
+      fueraHtml+
       (s.nombre_mas_compartido&&s.nombre_mas_compartido.ticker
         ? '<div class="read" style="margin-top:-6px">Nombre más compartido: <b>'+esc(s.nombre_mas_compartido.ticker)+'</b> — en '+
           s.nombre_mas_compartido.books+' de '+(s.libros||0)+' libros ('+s.nombre_mas_compartido.pct+'%).</div>'
         : '')
-    : '<div class="metric"><span class="k">Coincidencia</span><span class="v na">'+esc(s.note||'sin datos')+'</span></div>';
+    : '<div class="metric"><span class="k">Coincidencia</span><span class="v na">'+esc(s.note||'sin datos')+'</span></div>'+fueraHtml;
 
   // El piso solo se publica como piso si es comparable. Si no, se dice QUÉ
   // mide ese número en vez de mostrarlo con la etiqueta equivocada.
@@ -409,7 +434,10 @@ function dayboxHtml(d){
       '<div class="read warn">'+esc(p.motivo||'')+
       (p.cosine_observado!=null?' <b>(el coseno entre libros es '+p.cosine_observado+', y NO es el piso)</b>':'')+'</div>';
 
-  return '<div class="daybox"><h3>'+esc(d.dia)+' · corrida '+esc(d.fuente)+' · '+d.corridas+' agente(s)</h3>'+
+  const censo = d.censo||{};
+  const cabeza = esc(d.dia)+' · corrida '+esc(d.fuente)+' · '+d.corridas+' agente(s)'+
+    (censo.abortados ? ' · '+censo.abortados+' abortaron' : '');
+  return '<div class="daybox"><h3>'+cabeza+'</h3>'+
     sol+piso+
     '<div class="caveat">'+esc(s.caveat||'')+'</div></div>';
 }

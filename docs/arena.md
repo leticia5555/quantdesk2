@@ -746,6 +746,168 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B33 · EL MARGEN DE ERROR DE LA TABLA, DECLARADO ARRIBA DEL RANKING (2026-09-21)
+
+El ranking del 2026-09-21, leído como lo publicaba `/liga`:
+
+| puesto | agente | retorno |
+|---|---|---:|
+| 1 | Grok | **+1.42%** |
+| 2 | **Control · Haiku-B** | +1.06% |
+| … | … | … |
+| 6 | **Claude** | +0.07% |
+| 7 | Qwen | −0.29% |
+
+`claude` y `control` son el **mismo modelo**, el **mismo prompt** byte a byte, la
+**misma temperatura** y el **mismo tablero**. Terminaron a **0.99 puntos** uno
+del otro, y del 2º al 7º hay **1.35 puntos**: el **73%** del spread entre modelos
+es el sistema difiriendo consigo mismo. Ninguna brecha entre puestos consecutivos
+alcanza el piso — solo Grok se despega, y apenas.
+
+### Por qué el piso que ya existía no servía para esto
+
+Había DOS pisos de ruido y los dos en **coseno** (`_lib/arena-herding.js`): entre
+LIBROS y entre DELTAS. Los dos contestan *"¿deciden parecido dos corridas
+idénticas?"*. **Ninguno contesta la pregunta que hace cualquiera que abre
+`/liga`:** el 2º, ¿le ganó de verdad al 6º? Esa se mide en **puntos de retorno**,
+y un coseno **no se convierte** a puntos porcentuales — `_lib/arena-benchmark.js`
+ya lo decía con todas las letras y por eso publicaba el coseno *al lado* del
+exceso sin mezclarlos.
+
+Lo que faltaba no era una conversión. Era el piso **medido en la unidad del
+ranking**, y estaba a una resta de distancia porque los dos números ya estaban en
+la misma respuesta:
+
+```
+piso = | retorno(claude) − retorno(control) |
+```
+
+Cuesta **cero consultas y cero red**, así que va en el camino por defecto de
+`/api/leaderboard` (`margen_de_la_tabla`) y **no** detrás de `?postmortem=1`,
+donde vive el bloque en coseno que sí paga una consulta al journal de la sombra.
+
+### Lo que la pantalla dice ahora, arriba y antes del ranking
+
+- El **piso** (0.99 pp), el **spread** (1.71 pp completo · 1.35 pp sin el líder) y
+  qué **fracción** del segundo es el primero.
+- **Qué puestos no significan nada.** Una brecha menor que el piso es un empate
+  técnico, y se marca **en la fila**, al lado del número — no en la letra chica
+  del pie.
+- **Cuántos pierden contra el índice**, contado: *6 de 7*. Se decía en el pie que
+  el SPY estaba "para contestar si los siete le ganan al índice" y después no se
+  contestaba: el lector tenía que restar fila por fila.
+
+**Un ranking que no declara su propio margen de error es una tabla de posiciones
+inventada.** Ese es el motivo entero de este bloque.
+
+### Las tres cosas que este número NO es
+
+1. **No es un coseno y no se compara con los otros dos pisos.** Puntos de retorno
+   acumulado contra parecido entre vectores de peso: unidades distintas, escalas
+   distintas. Por eso viaja con `metodo: 'retorno'` y su unidad pegada, igual que
+   los otros dos viajan con el suyo.
+2. **No es una desviación estándar.** Es **una** observación de **un** par: dice a
+   qué distancia terminaron dos corridas idénticas, no qué tan seguido terminan
+   así. Con siete agentes y una sola réplica no hay con qué estimar lo segundo, y
+   fingir que sí lo hay sería el invento que esto existe para impedir.
+3. **No es un número del día.** `return_pct` se mide desde el baseline del reset,
+   así que el piso es **acumulado**. El spread sale de exactamente los mismos
+   retornos, así que el cociente entre los dos es legítimo: mismo origen, misma
+   unidad, misma ventana.
+
+### Un `null` que se leía como un 0.00%
+
+Encontrado por el test, no por lectura: `Number(null)` es `0` y `0` es finito, así
+que un agente **sin** retorno (cuenta caída, baseline ilegible) entraba a la tabla
+como un `0.00%` perfectamente creíble, y el piso, el spread y el conteo contra el
+índice se calculaban sobre un número que nadie midió. Es la misma trampa que el
+RVOL con `dayVolume == null` y la que `filaBenchmark` evita con `abierto`.
+
+### La coincidencia se calcula sobre los que TERMINARON
+
+`/liga/libros` decía *"entre 4 libros"* el día que Grok, DeepSeek y Qwen abortaron
+su última corrida. El número no estaba mal: estaba mal **rotulado**. Se lee como
+un hecho del día y es el de un **subconjunto que cambia solo** — el denominador se
+mueve sin que nada lo diga y la serie deja de ser comparable consigo misma.
+
+Ahora la etiqueta dice **"entre 4 de 7 libros"** y debajo va quién quedó fuera con
+su estado. **Un rechazo por rieles cuenta como FUERA pero no como ABORTO**: llevan
+a arreglar cosas distintas y sumarlos mandaría a buscar el problema al proveedor
+cuando está en el libro que pidió el modelo.
+
+### El `/8` de la pantalla era un tope que no existe
+
+`/liga` mostraba `13/8 posiciones`, `12/8`, `11/8`, `10/8`. **No eran cuatro
+violaciones: era un denominador muerto.** El 8 es del **contrato de ACCIONES**
+(el guard viejo), que el contrato de portafolio objetivo sustituyó el 2026-09-17
+— ya estaba dicho en la sección *Reglas del PM*, y la pantalla no se enteró.
+
+Los rieles vigentes (R1-R12) acotan **PESOS**, no cantidad. El propio prompt del
+contrato lo dice: *"There is NO cap on the NUMBER of positions"*, y el comentario
+de R1 deja escrita la reserva de que no lo haya. El único techo es indirecto y es
+**R8** (mínimo 2% por posición → a lo sumo 50 nombres), que no es 8.
+
+Un denominador que el motor no aplica convierte *"13 posiciones"* en *"13 de 8"* y
+manda a buscar un bug al lugar equivocado — el mismo error que el rechazo con el
+motivo equivocado de `_lib/arena-instrumento.js`.
+
+### Y "RIELES ✕" ahora dice CUÁL
+
+El detalle (riel, ticker, motivo) ya viajaba en `/api/liga/libros`, pero en la
+página vivía detrás de *"ver la investigación"*: para saber qué riel frenó una
+corrida había que abrir la tarjeta y bajar cuatro bloques. **"Rechazado" sin el
+riel es la mitad de un diagnóstico** — la diferencia entre *"el agente falló"* y
+*"pidió 60% en un sector con tope de 50%"*. El badge de la cabecera lo nombra.
+
+```bash
+# el riel de una corrida puntual, sin abrir la página
+curl -sS "$BASE/api/liga/libros?dias=1&agente=claude" \
+  | jq '.libros[] | {fecha, estado, rieles}'
+```
+
+---
+
+## B32 · CERRADO: la liga no operaba el viernes (el veredicto de feed era global)
+
+**Cerrado el 2026-09-21 con fills reales** (PGR, ADBE, MPC). La corrida en vivo
+mandó órdenes y llenaron: es la confirmación que faltaba, porque el arreglo se
+había verificado contra el código y con un escenario reproducido, no contra una
+sesión de mercado.
+
+**La causa, que fue un error de diseño nuestro.** El Arena usa OCHO cuentas de
+Alpaca: la maestra (`ALPACA_PAPER_*`, que arma el tablero y el universo) y una
+por agente. **La suscripción a SIP es por cuenta**: la maestra la tiene, las de
+los agentes no necesariamente. El veredicto de feed vivía en UNA variable de
+módulo compartida por las ocho, y encima **restringía** los intentos en vez de
+**ordenarlos**: `[feedResuelto]` era la lista completa, sin IEX detrás.
+
+1. El tablero corre con la maestra → SIP contesta → se recuerda `'sip'`.
+2. Cada agente pide precios con SU cuenta → **403**.
+3. Sin IEX detrás, el 403 no tiene a dónde caer y la llamada **lanza**.
+4. `arena-meta.js` traga el error y devuelve `{}` → el objetivo llega a la
+   ejecución **sin un solo precio de referencia**.
+5. Cada pata se descarta con *"sin precio de referencia para X"* → **cero
+   órdenes**, siete agentes, todo el viernes. *"Pasa los rieles"* era verdad; lo
+   que fallaba estaba después.
+
+**Los dos arreglos, porque uno solo deja el filo puesto** (`_lib/alpaca.js`,
+`feedPorCuenta`): la clave es la **cuenta** (el id de la key, nunca el secreto), y
+un veredicto guardado **ordena** los intentos sin quitar la alternativa. Aunque la
+clave fuera perfecta, una suscripción que caduque volvería a dejar una cuenta sin
+salida. **Un caché que quita la alternativa no es un caché: es un candado.**
+
+**Lo que entró junto y NO es lo mismo:** el tope diario del vigilante estaba
+muerto de antes. Contaba las corridas del día con
+`context->'event'->>'type' in ('watch_trigger','watch_floor')` y el contrato
+objetivo **nunca escribía `context.event`**, así que `runsToday` era `{}` para
+todos los agentes todos los días y el tope de 12 corridas/agente/día no frenaba
+nada (claude corrió ~20). El evento ahora se journalea y **sigue sin usarse para
+decidir**: el objetivo es el libro entero venga de donde venga. Lo que cambia es
+que el registro dice qué despertó la corrida, que es lo que el tope necesita para
+contar.
+
+---
+
 ## B31 · LA CORRIDA SECA TIENE QUE PODER REVISARSE
 
 ```bash

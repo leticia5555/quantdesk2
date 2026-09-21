@@ -38,6 +38,16 @@
 // habilidad. Va detrás de una bandera porque exige leer el journal de la
 // sombra, y esta ruta es pública y cacheada.
 //
+// ── `margen_de_la_tabla`: EL MARGEN DE ERROR, SIN BANDERA ─────────────
+// El piso de ruido en COSENO contesta si dos corridas idénticas deciden
+// parecido. No contesta la pregunta que hace cualquiera que abre /liga: el 2º,
+// ¿le ganó de verdad al 6º? Esa se mide en PUNTOS DE RETORNO, y el par
+// claude↔control ya los tiene en esta misma respuesta: la distancia entre ellos
+// ES el margen de error de la tabla. Cuesta una resta —cero consultas, cero
+// red— así que va en el camino por defecto y se lee ANTES del ranking. Incluye
+// también cuántos agentes pierden contra el índice, contado y no dejado para
+// que el lector reste fila por fila. Ver `_lib/arena-piso-retorno.js`.
+//
 // ENV VARS: ARENA_ENABLED · ALPACA_<ALPACA>_KEY/SECRET por agente ·
 //           DATABASE_URL · ARENA_BASELINE_EQUITY (opc, default 100000).
 // ═══════════════════════════════════════════════════════════════
@@ -49,6 +59,7 @@ import {
   BENCHMARK, leerBenchmark, precioBenchmark, benchmarkReturnPct, filaBenchmark, excesoVsBenchmark,
 } from './_lib/arena-benchmark.js';
 import { readBaselines, baselineDe, returnPct, indexarEquity, BASE_INDEX_USD } from './_lib/arena-baseline.js';
+import { margenDeLaTabla } from './_lib/arena-piso-retorno.js';
 
 const BASELINE = (() => {
   const n = Number(process.env.ARENA_BASELINE_EQUITY);
@@ -240,6 +251,22 @@ export default async function handler(req, res) {
     return ((A && A.orden) || 0) - ((B && B.orden) || 0);
   });
 
+  // ── EL MARGEN DE ERROR DE LA TABLA, EN LAS UNIDADES DE LA TABLA ─────
+  // Va en el camino POR DEFECTO y no detrás de `?postmortem=1`, a diferencia
+  // del bloque en coseno: cuesta una resta sobre filas que ya están calculadas
+  // (cero consultas, cero red) y es lo primero que hay que leer antes del
+  // ranking. Un ranking que no declara su propio margen de error es una tabla
+  // de posiciones inventada — y el piso en coseno, que sí cuesta una consulta
+  // al journal de la sombra, nunca pudo ocupar ese lugar porque mide otra cosa
+  // en otra unidad (ver `_lib/arena-piso-retorno.js`).
+  const margen = margenDeLaTabla({ agentes: rows, benchmarkReturn: benchReturn });
+  // El empate técnico viaja también EN LA FILA: la pantalla lo tiene que poder
+  // decir al lado del puesto, no solo en el bloque de arriba.
+  for (const r of rows) {
+    const e = margen.empates.por_agente ? margen.empates.por_agente[r.id] : null;
+    r.margen = e || null;
+  }
+
   // ¿Los siete arrancaron del mismo capital? Si no, un único "baseline: $100,000"
   // en la cabecera es falso, y la página tiene que decir otra cosa.
   const bases = [...new Set(rows.map((r) => r.baseline_equity))];
@@ -254,6 +281,10 @@ export default async function handler(req, res) {
     // (`agents.length`) seguirían contando siete, no ocho. El benchmark no es
     // un modelo y la forma de la respuesta no debería sugerir que lo es.
     benchmark: bench,
+    // El piso de ruido EN PUNTOS DE RETORNO, el spread entre modelos, qué
+    // puestos no se distinguen del ruido, y cuántos pierden contra el índice.
+    // Se lee ANTES del ranking, no después.
+    margen_de_la_tabla: margen,
     // El orden VISUAL, liviano: id + puesto + equity. La página arma la tabla
     // con esto y busca la fila completa por id, así el orden se decide UNA vez
     // acá y no se re-deriva en el navegador.

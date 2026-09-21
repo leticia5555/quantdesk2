@@ -257,6 +257,69 @@ console.log('\n── la coincidencia y el piso son hechos de UN día y de UNA f
     'una corrida viva y una de sombra del mismo día no son el mismo experimento: no entran al mismo coseno');
 }
 
+// ── LA COINCIDENCIA SE CALCULA SOBRE LOS QUE TERMINARON ──────────────
+// El número no estaba mal: estaba mal ROTULADO. "Entre 4 libros" se lee como un
+// hecho del día y es un hecho de un SUBCONJUNTO que cambia solo — el día que
+// tres agentes abortan, el denominador se mueve sin que nada lo diga y la serie
+// deja de ser comparable consigo misma.
+console.log('\n── quién entró, quién quedó fuera y por qué ──');
+{
+  const conLibro = (agente, pesos) => libroDeFila({
+    created_at: '2026-09-21T20:00:00Z', agent_id: agente, status: 'ok_target', plan: 'x',
+    target: { weights: pesos, cash: 0.1, theses: {} },
+    context: { lens: 'momentum', posiciones_iniciales: [] },
+  }, 'en_vivo');
+  const abortado = (agente, status, error) => libroDeFila({
+    created_at: '2026-09-21T20:00:00Z', agent_id: agente, status, plan: null, error,
+    target: null, context: { lens: 'momentum', posiciones_iniciales: [] },
+  }, 'en_vivo');
+
+  // Siete agentes entraron; tres abortaron su última corrida. El coseno de hoy
+  // sale de CUATRO libros, y eso es lo que la etiqueta tiene que decir.
+  const d = resumenPorDia([
+    conLibro('claude', { NVDA: 0.2, MSFT: 0.1 }),
+    conLibro('control', { NVDA: 0.2, MSFT: 0.1 }),
+    conLibro('openai', { AAPL: 0.15 }),
+    conLibro('gemini', { NVDA: 0.25 }),
+    abortado('grok', 'aborted_cuerpo_vacio', 'cuerpo_vacio: el proveedor cerró el stream'),
+    abortado('deepseek', 'aborted_llm_error', 'HTTP 502'),
+    abortado('qwen', 'aborted_malformed_target', 'pesos ausente'),
+  ])[0];
+
+  ok(d.coincidencia.libros === 4, 'el coseno se calcula sobre los CUATRO que terminaron', String(d.coincidencia.libros));
+  ok(d.coincidencia.agentes_en_la_corrida === 7,
+    'pero la etiqueta dice que entraron SIETE: sin el denominador, "entre 4 libros" parece del día y es de un subconjunto',
+    String(d.coincidencia.agentes_en_la_corrida));
+  ok(d.coincidencia.fuera === 3 && d.coincidencia.abortados === 3,
+    'tres quedaron fuera, los tres por aborto', JSON.stringify({ f: d.coincidencia.fuera, a: d.coincidencia.abortados }));
+  ok(/entre 4 de 7 libros/.test(d.coincidencia.etiqueta),
+    'la frase se arma UNA vez en el servidor, para que la página y la auditoría no digan cosas distintas', d.coincidencia.etiqueta);
+  ok(d.coincidencia.detalle_fuera.every((f) => f.agente && f.estado),
+    'y cada ausente viaja con su motivo: un aborto es un resultado del experimento, no una fila que falta',
+    JSON.stringify(d.coincidencia.detalle_fuera));
+  ok(d.censo.agentes_en_la_corrida === 7 && d.censo.con_libro === 4,
+    'el censo también cuelga del día: un consumidor del resumen no debería entrar a la métrica para saber cuántos hubo');
+
+  // Un rechazo por rieles NO es un aborto, y contarlos juntos mandaría a buscar
+  // el problema al proveedor cuando está en el libro que pidió el modelo.
+  const conRiel = resumenPorDia([
+    conLibro('claude', { NVDA: 0.2 }),
+    conLibro('control', { NVDA: 0.2 }),
+    abortado('grok', 'rejected_rails', 'R6 sector 61%'),
+  ])[0];
+  ok(conRiel.censo.fuera === 1 && conRiel.censo.abortados === 0,
+    'un rechazo por rieles cuenta como FUERA pero no como ABORTO: llevan a arreglar cosas distintas',
+    JSON.stringify({ f: conRiel.censo.fuera, a: conRiel.censo.abortados }));
+
+  // Con todos adentro, la etiqueta lo dice en vez de callarse.
+  const completo = resumenPorDia([
+    conLibro('claude', { NVDA: 0.2 }),
+    conLibro('control', { MSFT: 0.2 }),
+  ])[0];
+  ok(completo.censo.fuera === 0 && /ningún agente quedó fuera/.test(completo.coincidencia.etiqueta),
+    'y cuando no falta nadie, se dice — el silencio se leería igual que el dato ausente', completo.coincidencia.etiqueta);
+}
+
 // ── EL PISO SE CALCULA, NO SE ARCHIVA ────────────────────────────────
 console.log('\n── una sola implementación del piso, y acá no se archiva ──');
 {

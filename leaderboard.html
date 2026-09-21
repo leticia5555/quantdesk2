@@ -48,6 +48,31 @@ header{padding:22px 0 14px;display:flex;align-items:baseline;justify-content:spa
   background:var(--bg1);border:1px solid var(--border);border-radius:20px;padding:6px 12px;}
 .chip b{color:var(--text);}
 
+/* ── EL MARGEN DE LA TABLA ────────────────────────────────────────
+   Va ARRIBA del ranking y con peso visual propio: es lo que decide si el
+   ranking de abajo se puede leer. Un ranking que no declara su margen de
+   error es una tabla de posiciones inventada. */
+.margen{border:1px solid var(--border2);border-left:3px solid var(--amber);
+  background:var(--bg1);border-radius:8px;padding:13px 14px;margin:18px 0 4px;}
+.margen h3{font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--amber);margin-bottom:9px;}
+.margen .nums{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;margin-bottom:9px;}
+.margen .n{display:flex;flex-direction:column;gap:2px;}
+.margen .n b{font-family:var(--mono);font-size:19px;font-weight:700;line-height:1;}
+.margen .n span{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.05em;text-transform:uppercase;}
+.margen .n.piso b{color:var(--amber);}
+.margen .n.spread b{color:var(--text);}
+.margen .n.ratio b{color:var(--red);}
+.margen p{font-size:12px;color:var(--text2);line-height:1.55;}
+.margen p+p{margin-top:7px;}
+.margen p b{color:var(--text);}
+.margen .spy{margin-top:9px;padding-top:9px;border-top:1px solid var(--border);
+  font-size:12px;color:var(--text2);line-height:1.55;}
+.margen .spy b{color:var(--red);}
+.margen .fine{margin-top:9px;font-size:10px;color:var(--text3);line-height:1.5;}
+.tag.empate{color:var(--amber);border:1px solid rgba(255,179,71,.35);background:rgba(255,179,71,.06);}
+.tag.separado{color:var(--green);border:1px solid rgba(var(--green-rgb),.3);background:rgba(var(--green-rgb),.06);}
+
 /* RANK LIST */
 section{padding:20px 0 4px;}
 .sec-head{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
@@ -127,6 +152,11 @@ footer{margin-top:36px;padding-top:20px;border-top:1px solid var(--border);}
     <div class="summary" id="summary"></div>
   </div>
 
+  <!-- El margen de error de la tabla, ANTES del ranking. Se llena con
+       `margen_de_la_tabla` de /api/leaderboard; si el dato no viene, el bloque
+       no se pinta (y el ranking no finge tener un margen que nadie calculó). -->
+  <div id="margen"></div>
+
   <section>
     <div class="sec-head"><span class="bar"></span><h2>Ranking</h2><span class="sub" id="rankSub">por retorno</span></div>
     <div id="board"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>
@@ -187,6 +217,49 @@ function houseTag(a){
   if(a.house==='us') return '<span class="tag us">🇺🇸 usa</span>';
   return '';
 }
+// ── EL MARGEN DE LA TABLA ───────────────────────────────────────────
+// Tres números que SOLO significan algo juntos: cuánto separa a dos corridas
+// idénticas (el piso), cuánto separa a los modelos entre sí (el spread), y qué
+// fracción del segundo es el primero. Más la línea del índice, contada acá y no
+// dejada para que el lector reste fila por fila.
+//
+// El piso está en PUNTOS DE RETORNO y NO es el piso en coseno de /liga/libros:
+// unidades distintas, escalas distintas, no se comparan. El caveat viaja desde
+// el servidor para que esa frase exista en UN solo lugar.
+function margenHtml(m){
+  if(!m) return '';
+  const piso = m.piso&&m.piso.disponible ? m.piso : null;
+  const sp = m.spread&&m.spread.disponible ? m.spread : null;
+  const nums = piso
+    ? '<div class="nums">'+
+      '<div class="n piso"><b>'+piso.piso_pp+' pp</b><span>piso de ruido</span></div>'+
+      (sp?'<div class="n spread"><b>'+sp.spread_pp+' pp</b><span>spread · '+sp.modelos+' modelos</span></div>':'')+
+      (m.piso_sobre_spread_pct!=null?'<div class="n ratio"><b>'+m.piso_sobre_spread_pct+'%</b><span>del spread es ruido</span></div>':'')+
+      '</div>'
+    : '';
+  const par = piso
+    ? '<p><b>'+esc(piso.par.insignia.name)+'</b> '+pctStr(piso.par.insignia.return_pct)+
+      ' contra <b>'+esc(piso.par.testigo.name)+'</b> '+pctStr(piso.par.testigo.return_pct)+
+      ' — mismo modelo, mismo prompt, misma temperatura, distinta cuenta. Esa distancia es el margen de error de la tabla.</p>'
+    : '';
+  const sinLider = (m.piso_sobre_spread_sin_lider_pct!=null&&sp&&sp.spread_sin_lider_pp!=null)
+    ? '<p>Sin el líder, los otros '+(sp.modelos-1)+' caben en <b>'+sp.spread_sin_lider_pp+' pp</b>: ahí el piso es el <b>'+
+      m.piso_sobre_spread_sin_lider_pct+'%</b>.</p>' : '';
+  const sep = m.detalle_separados?'<p>'+esc(m.detalle_separados)+'</p>':'';
+  // La línea del índice se arma de los CAMPOS, no recortando la prosa del
+  // servidor: un `replace` sobre un texto que alguien reescriba deja la frase
+  // rota sin que nada falle.
+  const i = m.indice||{};
+  const idx = i.disponible
+    ? '<div class="spy"><b>'+i.pierden+' de '+i.total+'</b> pierden contra el S&amp;P ('+
+      pctStr(i.benchmark_return_pct)+')'+(i.ganan?' · le ganan '+i.ganan:'')+
+      (i.empatan?' · empatan '+i.empatan:'')+'.</div>'
+    : (i.motivo?'<div class="spy">'+esc(i.motivo)+'</div>':'');
+  return '<div class="margen"><h3>Antes del ranking: cuánto vale su margen de error</h3>'+
+    nums+'<p>'+esc(m.lectura)+'</p>'+par+sinLider+sep+idx+
+    (m.caveat?'<div class="fine">'+esc(m.caveat)+'</div>':'')+'</div>';
+}
+
 function tradesHtml(a){
   const j=a.journal; if(!j||!Array.isArray(j.actions)) return '';
   // Muestra las que TOCARON el mercado (aprobadas/enviadas), no las descartadas.
@@ -229,6 +302,15 @@ function rowHtml(a){
   const acct=a.account;
   const rankCls = a.rank>=1&&a.rank<=3 ? (' r'+a.rank) : '';
   const halt = a.halt&&a.halt.halted ? '<span class="tag halt">⛔ detenido</span>' : '';
+  // ── EL PUESTO, ¿SIGNIFICA ALGO? ────────────────────────────────────
+  // Si la brecha con el vecino más cercano es menor que el piso de ruido, el
+  // puesto está dentro del margen de error y la fila lo dice ahí mismo. No es
+  // letra chica del pie: es la diferencia entre "va 2º" y "va 2º y eso no se
+  // distingue del azar".
+  const mg = a.margen||null;
+  const empate = mg&&mg.empate_tecnico
+    ? '<span class="tag empate" title="la brecha con su vecino más cercano ('+mg.brecha_min_pp+' pp) es menor que el piso de ruido">≈ empate técnico</span>'
+    : (mg&&mg.separado ? '<span class="tag separado" title="su brecha con el vecino más cercano ('+mg.brecha_min_pp+' pp) supera el piso de ruido">fuera del ruido</span>' : '');
   if(!acct){
     // Aún no opera (sin keys / Alpaca caída): honesto, no roto.
     return '<div class="row"><div class="rtop"><div class="rank">—</div><div class="rid">'+
@@ -262,13 +344,21 @@ function rowHtml(a){
   return '<div class="row'+rankCls+'">'+
     '<div class="rtop">'+
       '<div class="rank">'+(a.rank||'—')+'</div>'+
-      '<div class="rid"><div class="rname">'+esc(a.name)+' '+houseTag(a)+' '+halt+'</div>'+
+      '<div class="rid"><div class="rname">'+esc(a.name)+' '+houseTag(a)+' '+halt+' '+empate+'</div>'+
         '<div class="rmodel">'+esc(a.model_label||a.model||'')+'</div></div>'+
       '<div class="req"><div class="eq">'+money(a.equity_indexado!=null?a.equity_indexado:acct.equity)+'</div>'+retHtml+dayHtml+'</div>'+
     '</div>'+
     plan+tradesHtml(a)+
     '<div class="rfoot"><span>'+esc((a.journal&&a.journal.run_date)||'—')+'</span>'+
-      '<span>'+npos+'/8 posiciones · cash '+money(acct.cash)+
+    // ── NO HAY TOPE DE POSICIONES, Y EL "/8" DECÍA QUE SÍ ─────────────
+    // El 8 era del CONTRATO DE ACCIONES (el guard viejo), que el contrato de
+    // portafolio objetivo sustituyó el 2026-09-17. Los rieles vigentes (R1-R12)
+    // acotan PESOS, no cantidad: el propio prompt dice "There is NO cap on the
+    // NUMBER of positions". Un denominador que el motor no aplica convierte
+    // "13 posiciones" en "13 de 8" —una violación que no existe— y manda a
+    // buscar un bug al lugar equivocado. El único techo real es indirecto y es
+    // R8 (mínimo 2% por posición → a lo sumo 50 nombres), así que no es un 8.
+      '<span>'+npos+(npos===1?' posición':' posiciones')+' · cash '+money(acct.cash)+
         // Indexado: todas parten de $100,000 en pantalla. El equity REAL va al
         // lado, porque la cuenta de Alpaca dice ese número y no éste.
         (a.equity_indexado!=null?' · desde $100,000 · real '+money(acct.equity):(a.baseline_equity!=null?' · desde '+money(a.baseline_equity):''))+'</span></div>'+
@@ -303,6 +393,7 @@ async function load(){
   const porId={}; data.agents.forEach(a=>{porId[a.id]=a;});
   const orden = Array.isArray(data.ranking)&&data.ranking.length
     ? data.ranking : data.agents.map(a=>({id:a.id,kind:'MODELO'}));
+  $('margen').innerHTML = margenHtml(data.margen_de_la_tabla);
   el.innerHTML=orden.map(r=>{
     if(r.kind==='BENCHMARK') return benchHtml(bench);
     const a=porId[r.id]; return a?rowHtml(a):'';

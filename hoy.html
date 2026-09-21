@@ -219,7 +219,11 @@ function arenaCard(a){
     : (a.control ? `<span class="badge exp" style="color:var(--text2);border-color:var(--border2);background:var(--bg2);">control</span>` : `<span class="badge exp">Paper</span>`);
   const ret = (a.return_pct!=null)
     ? `<div class="mc-stat"><div class="l">Return</div><div class="v ${a.return_pct>=0?'pos':'neg'}">${pctStr(a.return_pct)}</div></div>`
-    : `<div class="mc-stat"><div class="l">Pos.</div><div class="v">${positions}/8</div></div>`;
+    // Sin "/8": ese tope era del contrato de acciones que se retiró el
+    // 2026-09-17. Los rieles vigentes acotan PESOS, no cantidad de posiciones
+    // (ver leaderboard.html), y un denominador que el motor no aplica se lee
+    // como una violación que no existe.
+    : `<div class="mc-stat"><div class="l">Pos.</div><div class="v">${positions}</div></div>`;
   const stats = `
     <div class="mc-stats">
       <div class="mc-stat"><div class="l">Equity</div><div class="v">${money(acct.equity)}</div></div>
