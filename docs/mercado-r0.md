@@ -953,3 +953,59 @@ nunca los tuvo. *Un instrumento validado contra una columna que la cosecha no
 llena mide otra cosa* — y lo hace en silencio, porque el fixture y el código
 están de acuerdo entre ellos. Por eso las pruebas de esta rebanada incluyen el
 caso que la producción sí entrega: `volumen` y `importe` los dos en `null`.
+
+---
+
+## 19. G2 medido dos veces, y con dos reglas distintas
+
+El mismo día, con los mismos datos:
+
+```
+?job=unidades → g2_proyectado {verificadas: 26, verde: true}
+?job=todo     → q2 {sin_referencia: 30}, rojos [g2, g9]
+```
+
+Es el mismo problema que G1 tuvo hasta #241, y con la misma forma: **el censo
+medía por su cuenta.** `censoQ2` usaba `capMxCandidatas` + `veredictoCapMx`
+contra la cap pública de Yahoo — y Yahoo `quoteSummary` devuelve **401 Invalid
+Crumb** desde Vercel para todos los símbolos, así que las 30 emisoras salían
+`sin_referencia` y G2 no podía ponerse verde aunque estuviera bien. Mientras
+tanto `?job=unidades` leía `_lib/mercado-cap-referencia.json`, aplicaba el
+divisor del registro y la regla de series, y contaba 26.
+
+**Una sola función.** `evaluaG2` vive en `_lib/mercado-r0.js` con los tres
+pasos completos (calcular → validar el método → decidir el estado), y
+`SQL_G2` tiene las cuatro consultas que la alimentan. Los dos endpoints corren
+esas consultas y llaman a esa función; el que construye y el que mide ya no
+pueden discrepar. Los umbrales entran por parámetro en vez de importarse —así
+no se cierra un ciclo con `mercado-fase0.js`— y la salida **declara con qué
+umbrales midió**.
+
+Yahoo se sigue pidiendo, pero como **medición y no como veredicto**: un 401
+medido es un dato, y el día que vuelva a contestar queremos enterarnos. Va
+bajo `yahoo_quotesummary` con esa etiqueta encima.
+
+### 19.1 · La cláusula que había que retirar, y por qué no es aflojar
+
+`censoQ2` exigía además que **las cinco emisoras nombradas** —WALMEX, FEMSA,
+AMX, GMEXICO, GFNORTE— salieran verificadas. R0 demostró que dos de ellas no
+pueden:
+
+- **FEMSA** cotiza en UB (165) y UBD (207.66), dos unidades de 5 acciones que
+  difieren 26%, y el XBRL da un **total** sin desglose por serie. La cap
+  calculada está estructuralmente mal aunque el divisor esté bien. Va gris
+  punteada con motivo "series con precio distinto, sin desglose" — decisión
+  tomada el 2026-09-20, con tres referencias públicas que tampoco coinciden
+  entre sí (Yahoo 837B, Google 628B, cálculo 703B).
+- **GFNORTE** no tiene acciones en el XBRL ni cap pública que pedir. Opción B,
+  gris punteado, confirmado dos veces.
+
+Las dos son **grises por diseño, con su motivo en la hoja**. Exigirles verde
+era pedirle a la compuerta que contradijera una decisión ya tomada: G2 no
+podía cerrarse nunca, dijera lo que dijera el resto de las 30.
+
+La cláusula se retira en **`CRITERIOS` v3**, con esas dos razones escritas en
+el propio objeto. **Ningún umbral se movió:** el 5% por emisora sigue en 5, y
+el piso de verificadas sigue en 15. Queda versionado para que el cambio se lea
+en el diff en vez de aparecer sin firma — que es exactamente para lo que se
+congelaron los criterios.

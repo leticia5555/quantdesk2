@@ -23,12 +23,12 @@ import { sectorFromIndustry } from './_lib/arena-meta.js';
 import { beat } from './_lib/heartbeat.js';
 import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
 import {
-  capConUnidades, verificaDivisor, estadoEmisora,
   buscarPistas, PISTAS_ACCIONES, PISTAS_CAP,
-  filaUniversoUs,
-  referenciaManual, referenciasManuales, parseManualParam,
+  filaUniversoUs, parseManualParam,
   proximaRanura, intervaloDe, penalizarPor429, planCorrida,
-  elegibleMetodo, validaMetodo, verificaConReferencias, dispersionPrecios, clasificaSeries, METODO,
+  // El veredicto de G2 entero: los tres pasos viven en la librería desde que
+  // el censo tuvo que dar el MISMO número, no uno parecido.
+  evaluaG2, SQL_G2, VENTANA_DIAS_G2,
 } from './_lib/mercado-r0.js';
 import { CRITERIOS, censoUniversoUsDesdeTabla, SQL_UNIVERSO_US } from './_lib/mercado-fase0.js';
 import { frescuraPrecios } from './_lib/bmv-frescura.js';
@@ -500,39 +500,15 @@ async function jobRefcap({ limite = 40 }) {
 // ═══════════════════════════════════════════════════════════════════
 
 async function jobUnidades({ ahora, manual }) {
-  const acciones = await sql(
-    `select distinct on (clave) clave, anio, trimestre, acciones_circulacion
-       from xbrl_reports order by clave, anio desc, trimestre desc`).catch(() => []);
-  const precios = await sql(
-    `select distinct on (emisora_serie) emisora, emisora_serie, fecha, cierre, importe
-       from bmv_precios order by emisora_serie, fecha desc`).catch(() => []);
-
-  // ── VOLUMEN DE LA VENTANA, anclado a la TABLA y no al reloj ─────────
-  // Si se anclara en now() y la cosecha estuviera atrasada, todas las series
-  // darían volumen 0, la dispersión desaparecería y FEMSA/AMX/PINFRA se
-  // pondrían verdes solas. Anclado a `max(fecha)` se mide "los últimos N días
-  // de datos que tenemos", y el atraso se reporta aparte en vez de
-  // disfrazarse de series muertas.
-  const VENTANA_DIAS = 30;
-  // SIN `coalesce`: `sum()` de una columna toda nula devuelve NULL, que es
-  // "no medido", y ese es justo el dato que importa. Con el `coalesce(…, 0)`
-  // que estaba acá, "no medido" se volvía "cero" y la regla de serie sin
-  // mercado declaraba muertas a las 27 emisoras —su serie líquida incluida—
-  // porque `bmv_precios.volumen` está VACÍA en toda la tabla: la cosecha de
-  // /v2/historicos trae [cierre, importe] y nada más.
-  const volumenes = await sql(
-    `with corte as (select max(fecha) hasta from bmv_precios)
-     select p.emisora_serie,
-            sum(p.volumen)::numeric   volumen_ventana,
-            sum(p.importe)::numeric   importe_ventana,
-            count(p.volumen)::int     filas_con_volumen,
-            count(p.importe)::int     filas_con_importe,
-            count(*)::int             filas_ventana
-       from bmv_precios p, corte c
-      where p.fecha > c.hasta - ($1::int * interval '1 day')
-      group by 1`, [VENTANA_DIAS]).catch(() => []);
-  const volPor = new Map(volumenes.map((v) => [v.emisora_serie, v]));
-  const [corte] = await sql('select max(fecha) hasta from bmv_precios').catch(() => [{}]);
+  // Las CUATRO consultas de `SQL_G2`, las mismas que corre /api/mercado-censo.
+  const VENTANA_DIAS = VENTANA_DIAS_G2;
+  const [acciones, precios, volumenes, corteFilas] = await Promise.all([
+    sql(SQL_G2.acciones).catch(() => []),
+    sql(SQL_G2.precios).catch(() => []),
+    sql(SQL_G2.ventana, [VENTANA_DIAS]).catch(() => []),
+    sql(SQL_G2.corte).catch(() => [{}]),
+  ]);
+  const corte = corteFilas[0] || {};
   const hastaFecha = corte && corte.hasta ? String(corte.hasta).slice(0, 10) : null;
   const diasAtraso = hastaFecha ? Math.round((ahora - new Date(hastaFecha)) / 86400000) : null;
   // El atraso en SESIONES, que es el que importa: 6 días de calendario sobre
@@ -540,209 +516,32 @@ async function jobUnidades({ ahora, manual }) {
   // sesión que reclamar. Mismo medidor que /api/cron-status.
   const frescura = frescuraPrecios({ ultima_fecha: hastaFecha, ahora });
 
-  const accPor = new Map(acciones.map((a) => [String(a.clave).toUpperCase(), a]));
-  const preciosPor = new Map();
-  for (const p of precios) {
-    const k = String(p.emisora || '').toUpperCase();
-    if (!preciosPor.has(k)) preciosPor.set(k, []);
-    preciosPor.get(k).push(p);
-  }
-
   const ref = await jobRefcap({ limite: 20 });
   const registroManual = manual && manual.referencias && manual.referencias.length
     ? { vigencia_dias: REFERENCIAS_CAP.vigencia_dias, referencias: [...REFERENCIAS_CAP.referencias, ...manual.referencias] }
     : REFERENCIAS_CAP;
 
-  // ── PASO 1: calcular, y verificar SOLO las que tienen referencia ─────
-  const base = EMISORAS.emisoras.map((em) => {
-    const clave = String(em.clave).toUpperCase();
-    const a = accPor.get(clave);
-    const series = preciosPor.get(clave) || [];
-    const elegida = series.find((x) => x.emisora_serie === em.serie_liquida) || null;
-    const masOperada = series.slice().sort((x, y) => (num(y.importe) || 0) - (num(x.importe) || 0))[0] || null;
-
-    // ¿Las series de esta emisora cotizan a precios COMPARABLES y distintos?
-    // Si sí, el cálculo le aplica el precio de una a todas las acciones y la
-    // cap sale mal aunque el divisor esté bien (el caso FEMSA).
-    const conVol = series.map((x) => {
-      const v = volPor.get(x.emisora_serie) || null;
-      return {
-        ...x,
-        volumen_ventana: v ? v.volumen_ventana : null,
-        importe_ventana: v ? v.importe_ventana : null,
-        filas_ventana: v ? v.filas_ventana : 0,
-      };
-    });
-    // El atraso entra como VEREDICTO EN SESIONES, no como días de calendario:
-    // un lunes son dos o tres días y cero sesiones, y la bandera se prendía
-    // sola cada fin de semana.
-    const clases = clasificaSeries({
-      series: conVol, serie_liquida: em.serie_liquida,
-      cosecha_atrasada: frescura.alerta, sesiones_atraso: frescura.dias_habiles_atraso,
-    });
-
-    // La dispersión se mide SOLO entre series que operan. Una serie muerta no
-    // es un precio en desacuerdo: es el último número que quedó pegado.
-    const disp = dispersionPrecios({
-      series: clases.con_mercado.map((x) => ({ emisora_serie: x.serie, cierre: x.precio })),
-      serie_liquida: em.serie_liquida, tolerancia_pct: CRITERIOS.g2_max_error_pct,
-    });
-
-    const calc = capConUnidades({
-      clave, acciones_circulacion: a ? a.acciones_circulacion : null,
-      precio: elegida ? elegida.cierre : null,
-      serie_liquida: em.serie_liquida, acciones_por_unidad: em.acciones_por_unidad,
-    });
-    const refs = referenciasManuales(registroManual, clave, ahora);
-    const verif = verificaConReferencias({
-      capCalculada: calc.cap, referencias: refs.vigentes,
-      acciones_por_unidad: em.acciones_por_unidad,
-      precio: elegida ? elegida.cierre : null,
-      acciones_circulacion: a ? a.acciones_circulacion : null,
-      tolerancia_pct: CRITERIOS.g2_max_error_pct,
-    });
-
-    return {
-      clave, nombre: em.nombre, sector: em.sector,
-      serie_liquida: em.serie_liquida,
-      n_series: series.length,
-      n_series_con_mercado: clases.con_mercado.length,
-      series_sin_mercado: clases.sin_mercado,
-      datos_rancios: clases.datos_rancios,
-      causa_rancio: clases.causa_rancio,
-      motivo_rancio: clases.motivo_rancio,
-      actividad_medida: clases.actividad_medida,
-      actividad_no_medible: !!clases.actividad_no_medible,
-      acciones_por_unidad: em.acciones_por_unidad,
-      unidad_fuente: em.unidad_fuente,
-      periodo_xbrl: a ? `${a.anio}T${a.trimestre}` : null,
-      // La FECHA del precio usado. Sin ella, un 5.6% de error no se distingue
-      // de un precio rancio — que es justo la duda que dejó TLEVISA.
-      fecha_precio: elegida ? String(elegida.fecha).slice(0, 10) : null,
-      dias_precio: elegida && elegida.fecha
-        ? Math.round((ahora - new Date(elegida.fecha)) / 86400000) : null,
-      cap_calculada: calc.cap, motivo_calculo: calc.motivo,
-      dispersion: disp,
-      serie_mas_operada: masOperada ? masOperada.emisora_serie : null,
-      serie_discrepa: !!(masOperada && em.serie_liquida && masOperada.emisora_serie !== em.serie_liquida),
-      referencias: { vigentes: refs.vigentes.length, descartadas: refs.descartadas },
-      verificacion: verif,
-      // El error de la MEJOR referencia: es lo que alimenta la validación del
-      // método, y solo existe si hubo contra qué comparar.
-      error_pct: verif.por_referencia.length
-        ? verif.por_referencia.reduce((mejor, r) => (mejor == null || Math.abs(num(r.error_pct) ?? Infinity) < Math.abs(mejor) ? (num(r.error_pct) ?? mejor) : mejor), null)
-        : null,
-      // Elegible para heredar el método: una serie, divisor 1. Se calcula con
-      // las series REALES de bmv_precios, no con lo que declare el registro.
-      // Cuenta las series CON MERCADO, no las del catálogo: si solo una
-      // opera, no hay serie que elegir y la fórmula deja de tener parámetros
-      // libres. Es lo que vuelve resoluble a PINFRA sin referencia propia.
-      elegible_metodo: elegibleMetodo({
-        n_series: clases.con_mercado.length, acciones_por_unidad: em.acciones_por_unidad,
-      }),
-    };
+  // ── EL VEREDICTO, con el evaluador compartido ───────────────────────
+  // Los tres pasos (calcular, validar el método, decidir el estado) viven en
+  // `_lib/mercado-r0.js` desde que el censo tuvo que dar el MISMO número.
+  const g2 = evaluaG2({
+    emisoras: EMISORAS.emisoras,
+    acciones, precios, volumenes,
+    referencias: registroManual,
+    frescura, ahora, criterios: CRITERIOS, ventana_dias: VENTANA_DIAS,
   });
-
-  // ── PASO 2: ¿el INSTRUMENTO quedó validado? ──────────────────────────
-  const metodo = validaMetodo(
-    base.filter((b) => b.error_pct != null).map((b) => ({
-      clave: b.clave, error_pct: b.error_pct,
-      n_series: b.n_series, acciones_por_unidad: b.acciones_por_unidad,
-    })),
-    { min: CRITERIOS.g2_metodo_min_muestras, maxPct: CRITERIOS.g2_metodo_max_error_pct },
-  );
-
-  // ── PASO 3: el estado final de cada emisora ──────────────────────────
-  const salida = base.map((b) => {
-    let estado, etiqueta = null, motivo = null, via = null;
-
-    if (b.cap_calculada == null) {
-      estado = 'gris_punteado'; motivo = b.motivo_calculo;
-    } else if (b.datos_rancios) {
-      // Dos causas distintas y el motivo las distingue: la cosecha viene
-      // atrasada (en SESIONES), o la serie líquida no operó con la tabla al
-      // día. En las dos, un verde sacado de ahí es peor que un gris.
-      estado = 'gris_punteado'; via = b.causa_rancio || 'datos_rancios';
-      motivo = b.motivo_rancio;
-    } else if (b.dispersion.requiere_desglose) {
-      // Manda sobre la verificación individual A PROPÓSITO: si las series
-      // cotizan distinto, el número está estructuralmente mal aunque una
-      // referencia coincida — y una referencia que coincide con un cálculo
-      // mal hecho puede estar haciendo el mismo cálculo mal.
-      estado = 'gris_punteado'; via = 'requiere_desglose'; motivo = b.dispersion.motivo;
-    } else if (b.verificacion.estado === 'verificada') {
-      estado = 'verificada'; via = 'individual';
-      etiqueta = `cap: calc · verificada vs ${b.verificacion.por_referencia.map((r) => r.fuente).join(' + ')}`;
-    } else if (b.verificacion.estado === 'discrepancia_entre_fuentes') {
-      // NO es verificada: dos fuentes públicas no coinciden entre sí.
-      estado = 'gris_punteado'; via = 'discrepancia'; motivo = b.verificacion.motivo;
-    } else if (b.verificacion.estado === 'no_cuadra') {
-      estado = 'gris_punteado'; via = 'individual'; motivo = b.verificacion.motivo;
-    } else if (b.elegible_metodo && metodo.valido) {
-      // La fórmula no tiene nada que elegir acá, y el instrumento está
-      // validado. La etiqueta DICE que no hay control propio.
-      estado = 'verificada_por_metodo'; via = 'metodo';
-      etiqueta = `cap: calc · método validado (${metodo.cuadran} muestras ≤${metodo.umbral_pct}%)`;
-    } else if (b.elegible_metodo) {
-      estado = 'gris_punteado'; via = 'metodo';
-      motivo = `el método no está validado: ${metodo.razones.join(' · ')}`;
-    } else {
-      // Las 9: parámetros libres, así que referencia individual o nada.
-      estado = 'gris_punteado'; via = 'individual_obligatoria';
-      motivo = b.n_series > 1
-        ? `${b.n_series} series: la serie líquida es una elección, y el método no la valida — hace falta referencia individual`
-        : `divisor ${b.acciones_por_unidad}: el empaquetado es una elección, y el método no lo valida — hace falta referencia individual`;
-    }
-    return { ...b, estado, etiqueta, motivo_estado: motivo, via };
-  });
-
-  const porEstado = (x) => salida.filter((s2) => s2.estado === x);
-  const individuales = porEstado('verificada');
-  const porMetodo = porEstado('verificada_por_metodo');
-  const verificadasTotal = individuales.length + porMetodo.length;
-
-  // Las 9 que exigen referencia individual y todavía no la tienen: es la
-  // lista de lo que falta, nombre por nombre.
-  const requierenDesglose = salida.filter((s2) => s2.dispersion.requiere_desglose)
-    .map((s2) => ({
-      clave: s2.clave,
-      series: s2.dispersion.series_comparables,
-      spread_pct: +s2.dispersion.spread_pct.toFixed(1),
-      verificaba_igual: s2.verificacion.estado === 'verificada',
-    }));
-
-  const faltanReferencia = salida
-    .filter((s2) => !s2.elegible_metodo && s2.estado === 'gris_punteado' && s2.referencias.vigentes === 0)
-    .map((s2) => ({ clave: s2.clave, n_series: s2.n_series, apu: s2.acciones_por_unidad, motivo: s2.motivo_estado }));
+  const salida = g2.detalle;
 
   return {
     job: 'unidades', generado_en: ahora.toISOString(),
     criterios_version: CRITERIOS.version,
     emisoras: salida.length,
 
-    metodo: {
-      ...metodo,
-      lectura: metodo.valido
-        ? `instrumento validado con ${metodo.cuadran} muestras (peor ${metodo.peor_error_pct?.toFixed(1)}%); ${porMetodo.length} emisoras lo heredan`
-        : `instrumento NO validado — ninguna emisora hereda: ${metodo.razones.join(' · ')}`,
-      // El riesgo, a la vista y no en un comentario: cuántas heredan sin
-      // control propio, y desde cuántas muestras del mismo tipo.
-      heredan_sin_control_propio: porMetodo.map((s2) => s2.clave),
-    },
-
-    resumen: {
-      verificadas_individual: individuales.length,
-      verificadas_por_metodo: porMetodo.length,
-      verificadas_total: verificadasTotal,
-      gris_punteado: porEstado('gris_punteado').length,
-      con_cap_calculada: salida.filter((s2) => s2.cap_calculada != null).length,
-      con_referencia_vigente: salida.filter((s2) => s2.referencias.vigentes > 0).length,
-      discrepancias_entre_fuentes: salida.filter((s2) => s2.via === 'discrepancia').map((s2) => s2.clave),
-      requieren_desglose: requierenDesglose.length,
-    },
+    metodo: g2.metodo,
+    resumen: g2.resumen,
     // LA PRUEBA DE FEMSA, aplicada a las nueve.
-    requieren_desglose: requierenDesglose,
-    faltan_referencia_individual: faltanReferencia,
+    requieren_desglose: g2.requieren_desglose,
+    faltan_referencia_individual: g2.faltan_referencia_individual,
     // El estado de la COSECHA de precios, una vez y global. Si esto está
     // atrasado, medio reporte no vale y conviene verlo arriba.
     datos_precio: {
@@ -786,12 +585,15 @@ async function jobUnidades({ ahora, manual }) {
     refcap: { veredicto: ref.veredicto },
     detalle: salida,
 
+    // El MISMO veredicto que va a dar `/api/mercado-censo?job=censo`.
     g2_proyectado: {
-      verificadas: verificadasTotal,
-      piso: CRITERIOS.g2_min_emisoras_verificadas,
-      verde: verificadasTotal >= CRITERIOS.g2_min_emisoras_verificadas,
-      falta: verificadasTotal >= CRITERIOS.g2_min_emisoras_verificadas ? null
-        : `faltan ${CRITERIOS.g2_min_emisoras_verificadas - verificadasTotal} — ${faltanReferencia.length} esperan referencia individual`,
+      verificadas: g2.verificadas,
+      piso: g2.piso,
+      verde: g2.verde,
+      razones: g2.razones,
+      medido_con: 'evaluaG2(SQL_G2) — el mismo que el censo',
+      falta: g2.verde ? null
+        : `faltan ${g2.piso - g2.verificadas} — ${g2.faltan_referencia_individual.length} esperan referencia individual`,
     },
   };
 }

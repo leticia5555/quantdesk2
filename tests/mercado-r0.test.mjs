@@ -787,10 +787,14 @@ test('R0b-ter: sin referencias, el estado es sin_referencia — no "no cuadra"',
   assert.deepEqual(r.por_referencia, []);
 });
 
-test('criterios: G2 sube a v2, cuenta dos vías, y el 5% del encargo NO se movió', () => {
+test('criterios: G2 va en v3, cuenta dos vías, y el 5% del encargo NO se movió', () => {
   // El cambio de regla queda versionado a propósito: el punto de congelar los
   // criterios era que moverlos se viera en el diff.
-  assert.equal(CRITERIOS.version, 2);
+  //   v2 — dos vías hacia "verificada".
+  //   v3 — se retira "las 5 nombradas tienen que verificar": FEMSA y GFNORTE
+  //        son grises por decisión, así que esa cláusula no se podía cumplir.
+  // Ningún UMBRAL se movió en ninguna de las dos.
+  assert.equal(CRITERIOS.version, 3);
   assert.equal(CRITERIOS.g2_max_error_pct, 5);
   assert.equal(CRITERIOS.g2_min_emisoras_verificadas, 15);
   assert.equal(CRITERIOS.g2_metodo_min_muestras, 3);
@@ -1150,4 +1154,133 @@ test('ATRASO DE VERDAD: martes 15 guardado, lunes 21 → 2 sesiones, SÍ rancio'
   assert.equal(clases.datos_rancios, true);
   assert.equal(clases.causa_rancio, 'cosecha_atrasada');
   assert.equal(clases.sin_mercado.length, 0, 'con cosecha atrasada no se excluye ninguna serie');
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// G2 con UN SOLO evaluador — el mismo problema que G1 tuvo hasta #241
+//
+// El 2026-09-21, el mismo día y con los mismos datos:
+//   ?job=unidades → {verificadas: 26, verde: true}
+//   ?job=todo     → q2 {sin_referencia: 30}, rojos [g2, g9]
+// No discrepaban sobre los datos: el censo medía contra Yahoo (401 desde
+// Vercel) y `unidades` contra el registro de referencias + la regla de
+// series. Dos instrumentos con el mismo nombre.
+// ═══════════════════════════════════════════════════════════════════
+
+import { evaluaG2, SQL_G2, VENTANA_DIAS_G2 } from '../api/_lib/mercado-r0.js';
+import { readFileSync } from 'node:fs';
+
+const AHORA_G2 = new Date('2026-09-21T20:00:00Z');
+const FRESCA = { alerta: false, dias_habiles_atraso: 0 };
+
+// Una emisora de serie única y divisor 1: la fórmula no tiene parámetros
+// libres, o sea candidata a "verificada por método".
+const emisoraSimple = (clave) => ({ clave, nombre: clave, sector: 'X', serie_liquida: `${clave}*`, acciones_por_unidad: 1 });
+const accionesDe = (clave, n) => ({ clave, anio: 2026, trimestre: 2, acciones_circulacion: n });
+const precioDe = (clave, cierre) => ({ emisora: clave, emisora_serie: `${clave}*`, fecha: '2026-09-18', cierre, importe: 5e8 });
+const actividadDe = (clave) => ({ emisora_serie: `${clave}*`, volumen_ventana: null, importe_ventana: 9e9, filas_ventana: 20 });
+const refDe = (clave, cap) => ({ clave, market_cap: cap, fuente: 'Yahoo Finance (web)', capturada_en: '2026-09-20' });
+
+function universoG2(n, { desvio = 0 } = {}) {
+  const emisoras = [], acciones = [], precios = [], volumenes = [], refs = [];
+  for (let i = 0; i < n; i++) {
+    const clave = `E${i}`;
+    emisoras.push(emisoraSimple(clave));
+    acciones.push(accionesDe(clave, 1e9));
+    precios.push(precioDe(clave, 20));
+    volumenes.push(actividadDe(clave));
+    // cap calculada = 1e9 × 20 = 20e9. La referencia se desvía lo que se pida.
+    refs.push(refDe(clave, 20e9 * (1 + desvio)));
+  }
+  return { emisoras, acciones, precios, volumenes, referencias: { vigencia_dias: 14, referencias: refs } };
+}
+
+test('G2: las consultas compartidas apuntan a las tablas correctas', () => {
+  assert.match(SQL_G2.acciones, /from xbrl_reports/);
+  assert.match(SQL_G2.precios, /from bmv_precios/);
+  assert.match(SQL_G2.ventana, /sum\(p\.importe\)/);
+  // El bug de #243 no puede volver por la puerta de atrás.
+  assert.doesNotMatch(SQL_G2.ventana, /coalesce\(p\.volumen/);
+  assert.equal(VENTANA_DIAS_G2, 30);
+});
+
+test('G2: 20 emisoras que cuadran → verde, y por las DOS vías', () => {
+  const u = universoG2(20);
+  const g2 = evaluaG2({ ...u, frescura: FRESCA, ahora: AHORA_G2, criterios: CRITERIOS });
+  assert.equal(g2.verificadas, 20);
+  assert.ok(g2.verde, g2.razones.join(' · '));
+  assert.equal(g2.piso, CRITERIOS.g2_min_emisoras_verificadas);
+  // Con referencia propia que cuadra, la vía es individual — no "por método".
+  assert.equal(g2.resumen.verificadas_individual, 20);
+  assert.equal(g2.resumen.verificadas_por_metodo, 0);
+});
+
+test('G2: sin referencias, la vía por método sostiene a las de serie única', () => {
+  // Tres con referencia que cuadra validan el INSTRUMENTO; las demás lo
+  // heredan porque su fórmula no tiene nada que elegir.
+  const u = universoG2(18);
+  u.referencias.referencias = u.referencias.referencias.slice(0, 3);
+  const g2 = evaluaG2({ ...u, frescura: FRESCA, ahora: AHORA_G2, criterios: CRITERIOS });
+  assert.equal(g2.resumen.verificadas_individual, 3);
+  assert.equal(g2.resumen.verificadas_por_metodo, 15);
+  assert.ok(g2.metodo.valido);
+  assert.ok(g2.verde);
+  // Y la etiqueta DICE que no hay control propio.
+  const heredada = g2.detalle.find((d) => d.estado === 'verificada_por_metodo');
+  assert.match(heredada.etiqueta, /método validado/);
+});
+
+test('G2: con la cosecha atrasada no hay verde, y la razón lo dice', () => {
+  const u = universoG2(20);
+  const g2 = evaluaG2({
+    ...u, frescura: { alerta: true, dias_habiles_atraso: 4 }, ahora: AHORA_G2, criterios: CRITERIOS,
+  });
+  assert.equal(g2.verificadas, 0);
+  assert.equal(g2.verde, false);
+  assert.match(g2.razones.join(' · '), /4 sesiones de atraso/);
+  // Y ninguna serie se excluyó: fail closed.
+  assert.ok(g2.detalle.every((d) => d.series_sin_mercado.length === 0));
+});
+
+test('G2: FEMSA sigue gris aunque una referencia cuadre — la dispersión manda', () => {
+  const g2 = evaluaG2({
+    emisoras: [{ clave: 'FEMSA', nombre: 'FEMSA', sector: 'X', serie_liquida: 'FEMSAUBD', acciones_por_unidad: 5 }],
+    acciones: [accionesDe('FEMSA', 17e9)],
+    precios: [
+      { emisora: 'FEMSA', emisora_serie: 'FEMSAUBD', fecha: '2026-09-18', cierre: 207.66, importe: 9.8e7 },
+      { emisora: 'FEMSA', emisora_serie: 'FEMSAUB', fecha: '2026-09-18', cierre: 165, importe: 3.4e6 },
+    ],
+    volumenes: [
+      { emisora_serie: 'FEMSAUBD', volumen_ventana: null, importe_ventana: 9.8e9, filas_ventana: 20 },
+      { emisora_serie: 'FEMSAUB', volumen_ventana: null, importe_ventana: 3.4e8, filas_ventana: 20 },
+    ],
+    // Una referencia que cuadra con el cálculo: 17e9 × 207.66 / 5 ≈ 706e9.
+    referencias: { vigencia_dias: 14, referencias: [refDe('FEMSA', 706e9)] },
+    frescura: FRESCA, ahora: AHORA_G2, criterios: CRITERIOS,
+  });
+  const femsa = g2.detalle[0];
+  assert.equal(femsa.estado, 'gris_punteado');
+  assert.equal(femsa.via, 'requiere_desglose');
+  // Y se reporta que HABRÍA verificado: esconderlo sería esconder el conflicto.
+  assert.equal(g2.requieren_desglose[0].verificaba_igual, true);
+});
+
+test('G2: el evaluador DECLARA los umbrales con los que midió', () => {
+  const g2 = evaluaG2({ ...universoG2(1), frescura: FRESCA, ahora: AHORA_G2, criterios: CRITERIOS });
+  assert.equal(g2.criterios.max_error_pct, CRITERIOS.g2_max_error_pct);
+  assert.equal(g2.criterios.min_emisoras_verificadas, CRITERIOS.g2_min_emisoras_verificadas);
+});
+
+test('los DOS endpoints importan el mismo evaluador de G2', () => {
+  // La unificación no se puede deshacer sin que este test lo diga. Es el
+  // mismo candado que `SQL_UNIVERSO_US` para G1.
+  const r0 = readFileSync(new URL('../api/mercado-r0.js', import.meta.url), 'utf8');
+  const censo = readFileSync(new URL('../api/mercado-censo.js', import.meta.url), 'utf8');
+  for (const [nombre, src] of [['mercado-r0', r0], ['mercado-censo', censo]]) {
+    assert.match(src, /evaluaG2\(/, `${nombre} no llama a evaluaG2`);
+    assert.match(src, /SQL_G2/, `${nombre} no corre las consultas compartidas`);
+  }
+  // Y el censo ya no tiene su propio veredicto contra Yahoo.
+  assert.doesNotMatch(censo.replace(/\/\/[^\n]*/g, ''), /veredictoCapMx\(/,
+    'el censo volvió a evaluar G2 por su cuenta');
 });

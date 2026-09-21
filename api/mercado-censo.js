@@ -38,10 +38,12 @@ import { readDayCache } from './_lib/arena-buffet-cache.js';
 import { SECTOR_CHANNEL } from './_lib/arena-meta.js';
 import { checkAdminAuth } from './_lib/arena-admin.js';
 import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
+import { evaluaG2, SQL_G2, VENTANA_DIAS_G2 } from './_lib/mercado-r0.js';
+import REFERENCIAS_CAP from './_lib/mercado-cap-referencia.json' with { type: 'json' };
+import { frescuraPrecios } from './_lib/bmv-frescura.js';
 import {
   CRITERIOS, CAMPOS_METRIC,
   censoUniversoUsDesdeTabla, SQL_UNIVERSO_US,
-  capMxCandidatas, veredictoCapMx,
   presupuestoPrecios, censoRetornoTotal, anclaYtd,
   coberturaMetric, ventanaUpa, proximoReporte,
   coberturaCompanyFacts, censoForm4, veredictoFuente, tablaFuentes, tablero,
@@ -226,59 +228,55 @@ async function censoQ1(ahora) {
 // mismo que un error de 0%.
 async function censoQ2(ahora) {
   const errores = {};
-  const salida = { emisoras: [], resumen: {} };
+  const leer = async (nombre, q, params = []) => {
+    try { return await sql(q, params); } catch (e) { errores[nombre] = String((e && e.message) || e); return []; }
+  };
 
-  // Último reporte XBRL por emisora: las acciones en circulación.
-  let acciones = [];
-  try {
-    acciones = await sql(
-      `select distinct on (clave) clave, anio, trimestre, acciones_circulacion,
-              acciones_circulacion_tag, acciones_circulacion_motivo, fecha_publicacion
-         from xbrl_reports
-        order by clave, anio desc, trimestre desc`);
-  } catch (e) { errores.xbrl_reports = String((e && e.message) || e); }
+  // ── EL MISMO EVALUADOR QUE `?job=unidades`, Y LAS MISMAS CONSULTAS ──
+  // Esto medía por su cuenta: `capMxCandidatas` + `veredictoCapMx` contra la
+  // cap pública de Yahoo. Yahoo `quoteSummary` devuelve **401 Invalid Crumb**
+  // desde Vercel para TODOS los símbolos, así que las 30 emisoras salían
+  // `sin_referencia` y G2 no podía ponerse verde ni estando bien. El mismo
+  // día, `?job=unidades` —que lee el registro de referencias manuales y
+  // aplica la regla de series— reportaba 26 verificadas y verde.
+  //
+  // La referencia de verdad vive en `_lib/mercado-cap-referencia.json` desde
+  // R0c. El censo ya no la va a buscar a ningún lado: usa la misma que el
+  // constructor.
+  const [acciones, precios, volumenes, corteFilas] = await Promise.all([
+    leer('xbrl_reports', SQL_G2.acciones),
+    leer('bmv_precios', SQL_G2.precios),
+    leer('bmv_precios_ventana', SQL_G2.ventana, [VENTANA_DIAS_G2]),
+    leer('bmv_precios_corte', SQL_G2.corte),
+  ]);
+  const corte = corteFilas[0] || {};
+  const hastaFecha = corte && corte.hasta ? String(corte.hasta).slice(0, 10) : null;
+  const frescura = frescuraPrecios({ ultima_fecha: hastaFecha, ahora });
 
-  // Último cierre por SERIE. La llave de bmv_precios es (emisora_serie, fecha)
-  // justamente porque una emisora puede tener varias series — ese diseño ya
-  // está, y es lo que hace posible medir esta pregunta en vez de adivinarla.
-  let precios = [];
-  try {
-    precios = await sql(
-      `select distinct on (emisora_serie) emisora, emisora_serie, fecha, cierre
-         from bmv_precios
-        order by emisora_serie, fecha desc`);
-  } catch (e) { errores.bmv_precios = String((e && e.message) || e); }
+  const g2 = evaluaG2({
+    emisoras: EMISORAS.emisoras,
+    acciones, precios, volumenes,
+    referencias: REFERENCIAS_CAP,
+    frescura, ahora, criterios: CRITERIOS, ventana_dias: VENTANA_DIAS_G2,
+  });
 
+  // ── Yahoo, como MEDICIÓN y no como veredicto ────────────────────────
+  // Se sigue pidiendo porque un 401 medido es un dato —y porque el día que
+  // Yahoo vuelva a contestar queremos enterarnos—, pero NO decide nada. El
+  // símbolo sale de `serie_liquida` del registro: con `series[0]` salía
+  // `AMXA.MX`, la serie alfabéticamente primera y no la que opera.
+  const serieLiquidaDe = new Map(EMISORAS.emisoras.map((e) => [String(e.clave).toUpperCase(), e.serie_liquida]));
   const preciosPorEmisora = new Map();
   for (const p of precios) {
     const k = String(p.emisora || '').toUpperCase();
     if (!preciosPorEmisora.has(k)) preciosPorEmisora.set(k, []);
     preciosPorEmisora.get(k).push(p);
   }
-  const accionesPor = new Map(acciones.map((a) => [String(a.clave || '').toUpperCase(), a]));
-
-  // La referencia pública, solo para las 5 que el encargo nombra. Cortesía de
-  // 1 req/s: cinco requests, cinco segundos.
-  //
-  // DOS COSAS QUE LA CORRIDA DEL 2026-09-20 DEJÓ CLARAS Y QUE ESTE BLOQUE
-  // ARRASTRABA MAL:
-  //
-  // 1. El símbolo se armaba con `series[0]`, que es la serie ALFABÉTICAMENTE
-  //    primera, no la líquida. Salió `AMXA.MX` (serie A) en vez de la que
-  //    opera, y `FEMSAB.MX` — una serie que ni siquiera aparece entre las
-  //    candidatas con precio. Ahora sale de `serie_liquida` del registro.
-  // 2. Da igual, porque **Yahoo quoteSummary devuelve 401 Invalid Crumb**
-  //    desde Vercel: las cinco emisoras fallaron, y el precio objetivo de
-  //    AAPL también. No es el símbolo `.MX`, es el endpoint entero. Se deja
-  //    la llamada porque un 401 medido es un dato, pero la referencia de
-  //    verdad vive ahora en _lib/mercado-cap-referencia.json (R0c).
-  const serieLiquidaDe = new Map(EMISORAS.emisoras.map((e) => [String(e.clave).toUpperCase(), e.serie_liquida]));
-  const referencias = {};
+  const yahoo = {};
   for (const clave of MX_VERIFICAR) {
     const series = preciosPorEmisora.get(clave) || [];
     const liquida = serieLiquidaDe.get(clave);
     const serie = series.find((x) => x.emisora_serie === liquida) || series[0];
-    // El símbolo Yahoo de una emisora BMV es emisora+serie+'.MX'.
     const symYahoo = serie ? `${serie.emisora_serie}.MX` : `${clave}.MX`;
     const r = await medir(
       `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symYahoo)}?modules=price,summaryDetail`,
@@ -286,7 +284,7 @@ async function censoQ2(ahora) {
     const res = r.json && r.json.quoteSummary && r.json.quoteSummary.result && r.json.quoteSummary.result[0];
     const cap = res && res.price && res.price.marketCap
       && (res.price.marketCap.raw != null ? num(res.price.marketCap.raw) : num(res.price.marketCap));
-    referencias[clave] = {
+    yahoo[clave] = {
       symbol_yahoo: symYahoo, status: r.status, ms: r.ms,
       market_cap: cap ?? null,
       divisa: (res && res.price && res.price.currency) || null,
@@ -295,59 +293,37 @@ async function censoQ2(ahora) {
     await dormir(1000);
   }
 
-  let verificadas = 0, punteadas = 0;
-  for (const em of EMISORAS.emisoras) {
-    const clave = String(em.clave).toUpperCase();
-    const a = accionesPor.get(clave);
-    const cand = capMxCandidatas({
-      clave,
-      acciones_circulacion: a ? a.acciones_circulacion : null,
-      precios: preciosPorEmisora.get(clave) || [],
-    });
-    const ref = referencias[clave] ? referencias[clave].market_cap : null;
-    const v = veredictoCapMx(cand, ref);
-    // Sin referencia no se afirma nada: ni verificada ni descartada por error.
-    const estado = ref == null ? 'sin_referencia' : v.estado;
-    if (estado === 'verificada') verificadas++;
-    if (estado === 'gris_punteado') punteadas++;
-    salida.emisoras.push({
-      clave, sector: em.sector, nombre: em.nombre,
-      acciones_circulacion: cand.acciones,
-      tag_acciones: a ? a.acciones_circulacion_tag : null,
-      motivo_acciones: a ? a.acciones_circulacion_motivo : null,
-      periodo: a ? `${a.anio}T${a.trimestre}` : null,
-      series: cand.n_series,
-      candidatas: cand.candidatas,
-      referencia_publica: ref,
-      estado,
-      error_pct: v.error_pct == null ? null : +v.error_pct.toFixed(2),
-      multiplo_vs_referencia: v.multiplo_vs_referencia == null ? null : +v.multiplo_vs_referencia.toFixed(3),
-      motivo: estado === 'sin_referencia' ? 'no se pidió/no llegó capitalización pública de esta emisora' : v.motivo,
-    });
-  }
-
-  salida.resumen = {
-    emisoras: salida.emisoras.length,
-    con_acciones: salida.emisoras.filter((e) => e.acciones_circulacion != null).length,
-    con_precio: salida.emisoras.filter((e) => e.series > 0).length,
-    con_varias_series: salida.emisoras.filter((e) => e.series > 1).length,
-    verificadas, gris_punteado: punteadas,
-    sin_referencia: salida.emisoras.length - verificadas - punteadas,
+  return {
+    ...g2.resumen,
+    verificadas: g2.verificadas,
+    piso: g2.piso,
+    verde: g2.verde,
+    razones: g2.razones,
+    medido_con: 'evaluaG2(SQL_G2) — el mismo que /api/mercado-r0?job=unidades',
+    fuente_referencia: `_lib/mercado-cap-referencia.json (${REFERENCIAS_CAP.referencias.length} referencias, vigencia ${REFERENCIAS_CAP.vigencia_dias} días)`,
+    metodo: { valido: g2.metodo.valido, lectura: g2.metodo.lectura },
+    requieren_desglose: g2.requieren_desglose,
+    faltan_referencia_individual: g2.faltan_referencia_individual,
+    datos_precio: {
+      ultima_fecha: hastaFecha,
+      sesiones_de_atraso: frescura.dias_habiles_atraso,
+      alerta: frescura.alerta,
+      ventana_dias: VENTANA_DIAS_G2,
+    },
+    // Compacto a propósito: el detalle emisora por emisora vive en
+    // `?job=unidades`, que es el endpoint que las construye.
+    emisoras: g2.detalle.map((d) => ({
+      clave: d.clave, sector: d.sector, estado: d.estado, via: d.via,
+      cap_calculada: d.cap_calculada,
+      error_pct: d.error_pct == null ? null : +d.error_pct.toFixed(2),
+      etiqueta: d.etiqueta, motivo: d.motivo_estado,
+    })),
+    yahoo_quotesummary: {
+      nota: 'MEDICIÓN, no veredicto: 401 Invalid Crumb desde Vercel para todos los símbolos. No entra en G2.',
+      resultados: yahoo,
+    },
+    errores: Object.keys(errores).length ? errores : undefined,
   };
-  salida.referencias = referencias;
-  salida.errores = Object.keys(errores).length ? errores : undefined;
-  // G2 mide sobre las que SÍ se pudieron comparar: declarar verde un mapa
-  // porque nadie lo contradijo sería el error que esta fase existe para evitar.
-  salida.verde = verificadas >= Math.min(CRITERIOS.g2_min_emisoras_verificadas, MX_VERIFICAR.length)
-    && MX_VERIFICAR.every((c) => {
-      const e = salida.emisoras.find((x) => x.clave === c);
-      return e && e.estado === 'verificada';
-    });
-  salida.razones = MX_VERIFICAR
-    .map((c) => salida.emisoras.find((x) => x.clave === c))
-    .filter((e) => !e || e.estado !== 'verificada')
-    .map((e) => (e ? `${e.clave}: ${e.motivo || e.estado}` : 'emisora ausente de emisoras.json'));
-  return salida;
 }
 
 // ═══════════════════════════════════════════════════════════════════
