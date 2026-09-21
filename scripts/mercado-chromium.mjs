@@ -113,12 +113,31 @@ const FIXTURES = {
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css' };
 let pedidosApi = 0;
+let roto = false;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  // EL INTERRUPTOR VIVE EN EL SERVIDOR DE PRUEBA, NO EN LA PÁGINA. Se probó
+  // primero con `?mapa=roto` en la URL y no servía: la página normaliza el
+  // mapa a us|mx, así que el fixture roto nunca se pedía. Meter un gancho en
+  // mercado.html para que lo aceptara habría sido poner código de prueba en
+  // producción — el interruptor se queda de este lado.
+  if (url.pathname === '/__romper') {
+    roto = url.searchParams.get('v') === '1';
+    res.writeHead(200); return res.end('ok');
+  }
   if (url.pathname === '/api/mercado-mapa') {
     pedidosApi++;
-    const m = url.searchParams.get('map') === 'mx' ? 'mx' : 'us';
     res.writeHead(200, { 'content-type': 'application/json' });
+    // La respuesta que da el endpoint de verdad cuando una lectura falla:
+    // así llegó a producción, con un `filter` sobre `row_number()`.
+    if (roto) {
+      return res.end(JSON.stringify({
+        mapa: 'us', cuadros: [], mas: null,
+        error: 'no se pudieron leer los datos del mapa',
+        detalle: { mercado_precios_us: 'Neon: syntax error at or near "filter"' },
+      }));
+    }
+    const m = url.searchParams.get('map') === 'mx' ? 'mx' : 'us';
     return res.end(JSON.stringify(FIXTURES[m]));
   }
   const p = url.pathname === '/mercado' ? '/mercado.html' : url.pathname;
@@ -287,6 +306,28 @@ try {
   const femsa = await p.locator('#hojaCuerpo').innerText();
   chequeo('FEMSA sale gris CON su motivo, no gris a secas', /sin desglose/.test(femsa));
 
+  // ── EL MAPA ROTO: QUE SE VEA ROTO, Y QUE EL CHIP SE CALLE ──────────
+  // Con la consulta reventada el mapa salió gris en el teléfono y el chip
+  // SIGUIÓ diciendo "cierre del lunes": un día que el calendario suponía y
+  // que ningún dato respaldaba. Caer al texto del reloj era el mismo pecado
+  // por la puerta de atrás.
+  await fetch(`${BASE}/__romper?v=1`);
+  await p.goto(`${BASE}/mercado?mapa=us&periodo=1D`, { waitUntil: 'networkidle' });
+  await p.waitForTimeout(150);
+  const roto = await p.evaluate(() => ({
+    error: (document.querySelector('.aviso[data-error="1"]') || {}).textContent || '',
+    chip: (document.getElementById('chip') || {}).textContent || '',
+    titulo: (document.getElementById('chip') || {}).title || '',
+  }));
+  chequeo('una lectura que falla se reporta como ROTA, no como "sin datos"',
+    /no se pudieron leer/.test(roto.error), roto.error.trim().slice(0, 60));
+  chequeo('y el mensaje nombra la tabla y el error de Postgres',
+    /mercado_precios_us/.test(roto.error) && /filter/.test(roto.error));
+  chequeo('sin dato, el chip NO nombra un día que nada respalda',
+    !/cierre del/.test(roto.chip), roto.chip.trim());
+  chequeo('y el chip dice por qué no lo nombra', /no viajó/.test(roto.titulo), roto.titulo);
+
+  await fetch(`${BASE}/__romper?v=0`);
   await p.goto(`${BASE}/mercado?mapa=us&periodo=1D`, { waitUntil: 'networkidle' });
   await p.waitForSelector('.cuadro');
   await p.screenshot({ path: join(OUT, 'mercado-390.png') });

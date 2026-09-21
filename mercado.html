@@ -231,18 +231,31 @@
   // tabla terminaba el viernes: rotulaba lo que DEBERÍA haber en vez de lo
   // que hay. Ahora, si el mercado está cerrado, el texto sale de la fecha
   // del último cierre que viajó.
+  //
+  // Y SI NO VIAJÓ NINGUNA, EL CHIP NO NOMBRA UN DÍA. Caer al texto del
+  // calendario era el mismo pecado por la puerta de atrás: con el mapa roto
+  // por un error de lectura, el chip seguía afirmando "cierre del lunes" —
+  // un día que nada respaldaba. Sin dato se dice "cerrado" a secas y el
+  // motivo va en el title, porque un hueco visible es mejor que un rótulo
+  // seguro de sí mismo.
   function pintarChip(d){
     var e = qdEstadoMercado(d.bolsa || estado.mapa);
     var el = document.getElementById('chip');
-    var txt;
+    var txt, motivo = '';
     if(e.abierto){ txt = 'abierto'; }
     else if(d.ultimo_cierre){
       var dia = DIAS[new Date(d.ultimo_cierre+'T12:00:00Z').getUTCDay()];
       txt = 'cerrado · cierre del ' + dia;
-    } else { txt = e.texto; }
+      motivo = 'último cierre en la tabla: ' + d.ultimo_cierre;
+    } else if(e.abierto === null){
+      txt = e.texto; motivo = e.motivo || '';
+    } else {
+      txt = 'cerrado';
+      motivo = 'no se sabe de qué día es el último cierre: no viajó con los datos';
+    }
     el.className = 'chip' + (e.abierto ? ' abierto' : '');
     el.textContent = (e.abierto?'● ':'○ ') + e.etiqueta + ': ' + txt;
-    el.title = d.ultimo_cierre ? ('último cierre en la tabla: ' + d.ultimo_cierre) : '';
+    el.title = motivo;
   }
 
   function cuadrosVisibles(d){
@@ -266,7 +279,11 @@
     if(!w || !h){ requestAnimationFrame(function(){ pintarMapa(d); }); return; }
     var cs = cuadrosVisibles(d);
     if(!cs.length){
-      l.innerHTML = '<div style="padding:24px;color:#888;font:12px var(--mono);line-height:1.5">'
+      // ROTO Y VACÍO NO SON LO MISMO, y el marcador lo dice: confundirlos fue
+      // el bug. "No hay cuadros" manda a revisar la cosecha; un error de
+      // lectura manda a revisar la consulta, y son dos búsquedas distintas.
+      l.innerHTML = '<div class="aviso"' + (d.error ? ' data-error="1"' : '')
+        + ' style="padding:24px;color:#888;font:12px var(--mono);line-height:1.5">'
         + (d.error ? esc(d.error) : 'no hay cuadros con capitalización medida para pintar')
         + (d.detalle ? '<br><br>' + esc(JSON.stringify(d.detalle)) : '')
         + '</div>';

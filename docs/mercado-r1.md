@@ -119,8 +119,9 @@ del color de "no se movió" es afirmar algo que no se midió.
 ## 5. Cómo se probó
 
 `node scripts/mercado-chromium.mjs` levanta la página con la API servida desde
-un fixture y maneja un Chromium real. **26 comprobaciones en verde** (22 en R1,
-cuatro más en R1b), entre ellas:
+un fixture y maneja un Chromium real. **30 comprobaciones en verde** (22 en R1,
+cuatro por los arreglos de R1b y cuatro más por lo que destapó el preview),
+entre ellas:
 
 - 390 × 844 táctil: sin scroll horizontal **ni vertical**, todo control ≥44 px,
   cada sector tocable.
@@ -258,3 +259,81 @@ es cierre; 15:30 ET en enero no lo es) y el día de mercado contra el día UTC
 `tests/mercado-mapa.test.mjs` fija el 1D sobre una tabla que termina el
 viernes, el agrupado por sector con área de cap completa, el % del resto
 medido sobre el sector, y el ajuste de etiquetas.
+
+### 7.5 Lo que destapó el preview: el SQL que nadie probaba
+
+El deploy de R1b salió a un preview y el teléfono lo tumbó de inmediato:
+
+```
+no se pudieron leer los datos del mapa
+{"mercado_precios_us":"Neon: syntax error at or near \"filter\""}
+```
+
+**La consulta nueva del §7.1 no compilaba.** El ancla YTD se sacaba con
+`row_number() over (...) filter (where fecha < $2)`, y `FILTER` **sólo existe
+en agregados**: sobre una función de ventana Postgres ni siquiera llega a
+planear — truena en el parser. Un error de sintaxis, el más barato de atrapar,
+y se llevó el mapa entero.
+
+**Lo bueno, y no es consuelo:** el arreglo del `.catch(() => [])` hizo
+exactamente su trabajo. En vez de 300 cuadros grises culpando a la cosecha, la
+pantalla nombró la tabla y el error de Postgres. El diagnóstico tomó un minuto
+en vez de una tarde. Un error que se ve es un error que se arregla.
+
+**El arreglo.** El ancla se consigue ordenando, no filtrando: las filas
+previas al año primero y, dentro de ésas, la más reciente.
+
+```sql
+row_number() over (partition by p.symbol
+                   order by (p.fecha < $2::date) desc, p.fecha desc) ancla
+...
+where recientes <= $3 or (ancla = 1 and previa)
+```
+
+El `and previa` no es adorno: sin él, un símbolo que salió a bolsa en agosto
+recibiría como "ancla YTD" un cierre de **este** año, y el YTD saldría corto
+con etiqueta larga — el bug del % de periodo, por tercera vez.
+
+**Por qué se coló, que es la pregunta que importa.** Ninguna prueba tocaba el
+SQL. Las demás mockean `sql()` y verifican el armado, que es lo correcto para
+la lógica y **completamente ciego para la consulta**. El único que parseaba era
+Postgres en producción.
+
+`tests/mercado-sql.test.mjs` cierra ese hueco, y no con una expresión regular
+que buscara `filter` —eso atraparía este bug y ninguno más—: **levanta un
+Postgres de verdad, crea el esquema con la DDL real del repo y hace `PREPARE`
+de cada consulta.** `PREPARE` parsea *y* resuelve nombres, así que también
+falla si una columna no existe o si la DDL y la consulta se desincronizan.
+Después corre la consulta contra datos sembrados y comprueba las tres cosas
+que el mapa necesita: la serie con la tabla terminando el viernes, el ancla
+YTD donde la hay, y **ninguna ancla inventada** donde no.
+
+Se verificó que la prueba sirve **devolviéndole el bug**: con el `filter` de
+vuelta, los cuatro sub-tests se ponen rojos con el mismo mensaje que dio
+producción, palabra por palabra.
+
+Y si no hay Postgres en la máquina, **el archivo falla en voz alta en vez de
+saltarse solo**: una prueba que se auto-desactiva deja la suite en verde
+afirmando algo que no midió, que es la misma falta que este PR vino a
+corregir. Para saltarla hay que decirlo: `SIN_POSTGRES=1`.
+
+### 7.6 Y el chip, otra vez: sin dato no se nombra un día
+
+En esa misma pantalla rota el chip seguía diciendo **"cerrado · cierre del
+lunes"**. Con `ultimo_cierre` ausente, `pintarChip` caía al texto de
+`qdEstadoMercado`, que lo deriva del reloj: el mismo pecado del §7.1 entrando
+por la puerta de atrás.
+
+Ahora, sin fecha que respalde el rótulo, el chip dice **"cerrado"** a secas y
+el motivo va en el `title`. Y el aviso del lienzo distingue **roto** de
+**vacío** con `data-error`, porque mandan a buscar a lugares distintos: "no hay
+cuadros" manda a revisar la cosecha; un error de lectura manda a revisar la
+consulta.
+
+Las cuatro comprobaciones nuevas del Chromium cubren las dos cosas, con el
+interruptor del fallo **en el servidor de prueba, no en la página**: el primer
+intento fue pedir `?mapa=roto` en la URL y no servía —`mercado.html` normaliza
+el mapa a `us|mx`—, y hacer que lo aceptara habría sido meter código de prueba
+en producción.
+
+**30 comprobaciones en verde, 0 en rojo. Suite: 118/120.**

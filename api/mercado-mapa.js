@@ -38,6 +38,48 @@ function inicioDeAnio(ahora) {
 // caché no envejecen nada y sacan al origen de la ruta del teléfono.
 const CACHE = 'public, s-maxage=600, stale-while-revalidate=3600';
 
+// LAS CONSULTAS SALEN A UNA CONSTANTE EXPORTADA a propósito: mientras
+// vivieron incrustadas acá, NINGÚN test las tocaba —los tests mockean `sql()`—
+// y el único que las parseaba era Postgres en producción. Así se coló un
+// `filter` sobre `row_number()`, que ni siquiera es un error de lógica: es un
+// error de sintaxis, el más barato de atrapar y el que más caro salió.
+// `tests/mercado-sql.test.mjs` las prepara contra un Postgres de verdad.
+export const SQL_MAPA_US = {
+  universo:
+      `select symbol, nombre, sector_etf, market_cap, cap_fuente, cap_actualizado
+         from mercado_universo_us
+        where sector_etf is not null and market_cap is not null`,
+  // UNA consulta, y acotada a lo que el navegador necesita: los últimos N
+  // cierres de cada símbolo más su ancla YTD. Traer la ventana entera desde
+  // diciembre eran ~60,000 filas por petición — el orden de magnitud en el
+  // que una lectura deja de ser barata y empieza a fallar.
+  precios:
+      `with top as (
+         select symbol from mercado_universo_us
+          where sector_etf is not null and market_cap is not null
+          order by market_cap desc limit $1
+       ), r as (
+         select p.symbol, p.fecha, p.cierre, p.cierre_ajustado,
+                p.fecha < $2::date as previa,
+                row_number() over (partition by p.symbol order by p.fecha desc) recientes,
+                -- El ancla YTD NO se saca con \`filter\`: \`FILTER\` sólo existe en
+                -- agregados, y sobre \`row_number()\` Postgres ni siquiera llega a
+                -- planear — truena en el parser ("syntax error at or near filter").
+                -- Se consigue ordenando: las filas previas al año primero, y dentro
+                -- de ésas la más reciente. El \`and previa\` de abajo es el que evita
+                -- inventar un ancla para un símbolo que no tiene historia del año
+                -- pasado: sin él, la fila 1 sería un cierre de ESTE año disfrazado
+                -- de ancla, y el YTD saldría corto con etiqueta larga.
+                row_number() over (partition by p.symbol
+                                   order by (p.fecha < $2::date) desc, p.fecha desc) ancla
+           from mercado_precios_us p join top using (symbol)
+       )
+       select symbol, fecha::text as fecha, cierre, cierre_ajustado
+         from r
+        where recientes <= $3 or (ancla = 1 and previa)
+        order by symbol, fecha`,
+};
+
 async function mapaUs(ahora) {
   const anio = inicioDeAnio(ahora);
   const errores = {};
@@ -49,30 +91,8 @@ async function mapaUs(ahora) {
   };
 
   const [universo, precios] = await Promise.all([
-    leer('mercado_universo_us',
-      `select symbol, nombre, sector_etf, market_cap, cap_fuente, cap_actualizado
-         from mercado_universo_us
-        where sector_etf is not null and market_cap is not null`),
-    // UNA consulta, y acotada a lo que el navegador necesita: los últimos N
-    // cierres de cada símbolo más su ancla YTD. Traer la ventana entera desde
-    // diciembre eran ~60,000 filas por petición — el orden de magnitud en el
-    // que una lectura deja de ser barata y empieza a fallar.
-    leer('mercado_precios_us',
-      `with top as (
-         select symbol from mercado_universo_us
-          where sector_etf is not null and market_cap is not null
-          order by market_cap desc limit $1
-       ), r as (
-         select p.symbol, p.fecha, p.cierre, p.cierre_ajustado,
-                row_number() over (partition by p.symbol order by p.fecha desc) recientes,
-                row_number() over (partition by p.symbol order by p.fecha desc)
-                  filter (where p.fecha < $2::date) ancla
-           from mercado_precios_us p join top using (symbol)
-       )
-       select symbol, fecha::text as fecha, cierre, cierre_ajustado
-         from r
-        where recientes <= $3 or ancla = 1
-        order by symbol, fecha`,
+    leer('mercado_universo_us', SQL_MAPA_US.universo),
+    leer('mercado_precios_us', SQL_MAPA_US.precios,
       [TOP_MAPA, anio, CIERRES_RECIENTES + 1]),
   ]);
 

@@ -62,7 +62,7 @@ const PRESUPUESTO_MS = (() => {
 const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 
-const SCHEMA = [
+export const SCHEMA_UNIVERSO_US = [
   `create table if not exists mercado_universo_us (
      symbol        text primary key,
      nombre        text,
@@ -92,7 +92,7 @@ const SCHEMA = [
 let schemaListo = false;
 async function ensureSchema() {
   if (schemaListo) return;
-  await sqlBatch(SCHEMA.map((q) => [q, []]));
+  await sqlBatch(SCHEMA_UNIVERSO_US.map((q) => [q, []]));
   schemaListo = true;
 }
 
