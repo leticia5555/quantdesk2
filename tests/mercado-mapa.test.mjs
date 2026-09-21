@@ -172,3 +172,45 @@ test('la escala de color: 7 pasos, gris dentro de ±0.5%, y sin dato NO es verde
   assert.notEqual(TM.COLOR_SIN_DATO, TM.ESCALA_COLOR[3].color);
   assert.equal(TM.ESCALA_COLOR.length, 7);
 });
+
+// ───── el mapa no puede discrepar del censo ─────
+// Cuando /api/mercado-mapa se escribió, `periodos` y `cierres_captura` no
+// existían todavía y el llamado a evaluaG2 se quedó sin ellos. En cuanto
+// entraron, el mapa empezó a comparar la referencia contra el cálculo de HOY
+// mientras el censo la comparaba contra la de su fecha de captura. Medido con
+// el precio movido 8%: unidades decía `verificada` (0%) y el mapa
+// `gris_punteado` (8%). Este test es el candado.
+
+import { evaluaG2 } from '../api/_lib/mercado-r0.js';
+import { readFileSync } from 'node:fs';
+
+test('el mapa MX le pasa a evaluaG2 las MISMAS entradas que el censo', () => {
+  const src = readFileSync(join(ROOT, 'api/mercado-mapa.js'), 'utf8');
+  for (const arg of ['periodos', 'cierres_captura', 'SQL_G2.periodos', 'SQL_G2.cierres_captura', 'rangoDeCapturas']) {
+    assert.ok(src.includes(arg), `/api/mercado-mapa dejó de usar ${arg}: va a discrepar del censo`);
+  }
+});
+
+test('con las entradas completas, mapa y censo dan el MISMO veredicto', () => {
+  const base = {
+    emisoras: [{ clave: 'W', nombre: 'W', sector: 'X', serie_liquida: 'W*', acciones_por_unidad: 1 }],
+    acciones: [{ clave: 'W', anio: 2026, trimestre: 2, acciones_circulacion: 1e9 }],
+    // El precio se movió 8% desde que se capturó la referencia.
+    precios: [{ emisora: 'W', emisora_serie: 'W*', fecha: '2026-09-18', cierre: 21.6, importe: 5e8 }],
+    volumenes: [{ emisora_serie: 'W*', volumen_ventana: null, importe_ventana: 9e9, filas_ventana: 20 }],
+    periodos: [{ clave: 'W', anio: 2026, trimestre: 2, acciones_circulacion: 1e9, fecha_publicacion: '2026-07-22T00:00:00Z' }],
+    cierres_captura: [{ emisora: 'W', emisora_serie: 'W*', fecha: '2026-09-18', cierre: 20 }],
+    referencias: { gracia_dias: 3, tope_dias: 120, referencias: [{ clave: 'W', market_cap: 20e9, fuente: 'Yahoo', capturada_en: '2026-09-20' }] },
+    frescura: { alerta: false, dias_habiles_atraso: 0 },
+    ahora: AHORA, criterios: { g2_max_error_pct: 5, g2_min_emisoras_verificadas: 15, g2_metodo_min_muestras: 3, g2_metodo_max_error_pct: 2 },
+  };
+  const completo = evaluaG2(base);
+  assert.equal(completo.detalle[0].estado, 'verificada');
+  assert.equal(completo.detalle[0].verificacion.por_referencia[0].error_pct, 0);
+
+  // Y la prueba de que la omisión NO era inocua: sin esas dos entradas, la
+  // misma emisora con los mismos datos sale gris.
+  const sinEllas = evaluaG2({ ...base, periodos: [], cierres_captura: [] });
+  assert.equal(sinEllas.detalle[0].estado, 'gris_punteado');
+  assert.equal(sinEllas.detalle[0].verificacion.por_referencia[0].error_pct, 8);
+});

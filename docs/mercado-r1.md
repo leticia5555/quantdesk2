@@ -146,10 +146,16 @@ que el "+N más" y el pie ocuparan su alto), y un −0.04% se pintaba como
    salida a internet: `/api/mercado-precios?job=us` hay que correrlo allá,
    varias veces hasta que `completo` sea `true`. Mientras tanto el mapa US
    pinta los cuadros que tengan serie y **lista los que no, con su motivo**.
-2. **El mapa MX y el PR #248.** Cuando entre la vigencia por trimestre, el
-   llamado a `evaluaG2` de `/api/mercado-mapa` gana `periodos` y
-   `cierres_captura` como los otros dos consumidores. Los dos parámetros son
-   opcionales, así que nada se rompe mientras tanto; está marcado en el código.
+2. ~~El mapa MX y el PR #248.~~ **Cerrado, y no era inocuo.** El llamado a
+   `evaluaG2` del mapa se escribió cuando `periodos` y `cierres_captura` no
+   existían. En cuanto #248 entró a `main`, la omisión dejó de ser teórica:
+   el mapa comparaba la referencia contra el cálculo de HOY y el censo contra
+   el de su fecha de captura. Medido con el precio movido 8% desde la
+   captura, `?job=unidades` decía `verificada` con 0% de error y el mapa
+   `gris_punteado` con 8% — la misma emisora, los mismos datos, dos
+   veredictos. Los dos parámetros son opcionales en la firma pero no en la
+   práctica, y ahora hay un test que lo fija en los dos sentidos: que el mapa
+   los pasa, y que omitirlos cambia el resultado.
 3. **El `pct-lint` todavía sólo recorre `app.html`.** Para `/mercado` el
    candado es otro —el test de gemelas y que `qdPctTag` lanza sin etiqueta—,
    pero extender el lint a los archivos nuevos es trabajo pendiente.

@@ -18,7 +18,7 @@ import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
 import REFERENCIAS_CAP from './_lib/mercado-cap-referencia.json' with { type: 'json' };
 import { CRITERIOS } from './_lib/mercado-fase0.js';
 import {
-  evaluaG2, SQL_G2, VENTANA_DIAS_G2, recorteMapa,
+  evaluaG2, SQL_G2, VENTANA_DIAS_G2, rangoDeCapturas, recorteMapa,
 } from './_lib/mercado-r0.js';
 import { frescuraPrecios } from './_lib/bmv-frescura.js';
 import { armaMapaUs, armaMapaMx, resumenFaltantes, CIERRES_RECIENTES } from './_lib/mercado-mapa.js';
@@ -84,11 +84,14 @@ async function mapaUs(ahora) {
 
 async function mapaMx(ahora) {
   const desde = desdeParaYtd(ahora);
-  const [acciones, ultimos, volumenes, corteFilas, series] = await Promise.all([
+  const rango = rangoDeCapturas(REFERENCIAS_CAP);
+  const [acciones, ultimos, volumenes, corteFilas, periodos, cierresCaptura, series] = await Promise.all([
     sql(SQL_G2.acciones).catch(() => []),
     sql(SQL_G2.precios).catch(() => []),
     sql(SQL_G2.ventana, [VENTANA_DIAS_G2]).catch(() => []),
     sql(SQL_G2.corte).catch(() => [{}]),
+    sql(SQL_G2.periodos).catch(() => []),
+    rango ? sql(SQL_G2.cierres_captura, [rango.desde, rango.hasta]).catch(() => []) : Promise.resolve([]),
     sql(`select emisora_serie, fecha::text as fecha, cierre
            from bmv_precios where fecha >= $1::date
           order by emisora_serie, fecha`, [desde]).catch(() => []),
@@ -100,14 +103,15 @@ async function mapaMx(ahora) {
 
   // EL MISMO evaluador que `?job=unidades` y que el censo. El mapa no puede
   // tener su propia opinión sobre qué está verificado.
-  // PENDIENTE (#248): cuando entre la vigencia por trimestre, este llamado
-  // gana `periodos` y `cierres_captura` como los otros dos consumidores. Los
-  // dos parámetros son opcionales, así que el mapa no se rompe mientras
-  // tanto — pero hasta entonces verifica contra el cálculo de hoy, igual que
-  // `?job=unidades` en `main`.
+  // EL MISMO evaluador CON LAS MISMAS ENTRADAS. `periodos` y
+  // `cierres_captura` no son opcionales en la práctica aunque lo sean en la
+  // firma: sin ellos la referencia se compara contra el cálculo de HOY y no
+  // contra el de su fecha de captura, y el mapa empieza a discrepar del
+  // censo. Medido con el precio movido 8% desde la captura: `?job=unidades`
+  // decía `verificada` con 0% de error y el mapa `gris_punteado` con 8%.
   const g2 = evaluaG2({
     emisoras: EMISORAS.emisoras,
-    acciones, precios: ultimos, volumenes,
+    acciones, precios: ultimos, volumenes, periodos, cierres_captura: cierresCaptura,
     referencias: REFERENCIAS_CAP, frescura, ahora,
     criterios: CRITERIOS, ventana_dias: VENTANA_DIAS_G2,
   });
@@ -123,7 +127,7 @@ async function mapaMx(ahora) {
       cuadros: 'emisoras.json + xbrl_reports (acciones) + bmv_precios (precio)',
       series: 'neon:bmv_precios (cierre diario por serie)',
       verificacion: 'evaluaG2 — el mismo que /api/mercado-r0?job=unidades y el censo',
-      referencias: `${REFERENCIAS_CAP.referencias.length} manuales`,
+      referencias: `${REFERENCIAS_CAP.referencias.length} manuales, caducan por trimestre XBRL`,
     },
     cosecha: {
       ultima_fecha: hasta,
@@ -135,7 +139,12 @@ async function mapaMx(ahora) {
       verificadas: g2.verificadas,
       piso: g2.piso,
       verde: g2.verde,
-      vigencia_referencias: g2.vigencia_referencias || null,
+      vigencia_referencias: g2.vigencia_referencias ? {
+        vigentes: g2.vigencia_referencias.vigentes,
+        en_gracia: g2.vigencia_referencias.en_gracia,
+        vencidas: g2.vigencia_referencias.vencidas,
+        a_recapturar: g2.vigencia_referencias.a_recapturar,
+      } : null,
     },
     faltantes: resumenFaltantes(faltantes),
   };
