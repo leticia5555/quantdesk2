@@ -120,6 +120,11 @@ function normalizaMercado(raw) {
   // real cuando existe. Se guardan las dos y el censo dice cuál usó.
   const finDeclarado = raw.endDate || raw.end_date_iso || raw.endDateIso || null;
   const finReal = raw.closedTime || raw.closed_time || null;
+  // CUÁNDO NACIÓ EL MERCADO. Es lo que decide CONTRA QUÉ REPORTE apunta: un
+  // mercado creado en septiembre no puede estar preguntando por el reporte de
+  // junio, que ya ocurrió. Sin este campo el emparejamiento se va al trimestre
+  // anterior y produce desfases de +90 días que parecen ruido y no lo son.
+  const creado = raw.createdAt || raw.created_at || raw.startDate || raw.startDateIso || raw.start_date_iso || null;
   return {
     id: raw.id !== undefined && raw.id !== null ? String(raw.id) : null,
     slug: raw.slug || null,
@@ -131,6 +136,7 @@ function normalizaMercado(raw) {
     fin_declarado: finDeclarado ? String(finDeclarado) : null,
     fin_real: finReal ? String(finReal) : null,
     fin: finReal ? String(finReal) : finDeclarado ? String(finDeclarado) : null,
+    creado: creado ? String(creado) : null,
     cerrado: raw.closed === true || raw.closed === 'true',
     activo: raw.active === true || raw.active === 'true',
     uma: raw.umaResolutionStatus || raw.uma_resolution_status || null,
@@ -192,6 +198,66 @@ function pareceEarnings(m) {
   if (!texto) return { si: false, senales: [] };
   const senales = SENALES_EARNINGS.filter((s) => s.re.test(texto)).map((s) => s.nombre);
   return { si: senales.length > 0, senales };
+}
+
+// ── FILTRO v1: SOLO beat/miss de EPS ──────────────────────────────────────
+// La corrida con GO destapó tres poblaciones que pasaban el filtro de
+// "parece earnings" sin ser lo que el experimento mide:
+//
+//   1. MERCADOS DE MENCIÓN — «Will X say "Y" during the earnings call?».
+//      Ocurren EN un earnings call, pero no predicen beat/miss de nada. Peor:
+//      26 de los 36 aceptados de símbolos ruidosos eran de esta forma (GEV
+//      apareciendo al buscar GE, LYFT al buscar NOW), así que también eran la
+//      vía por la que se colaba el símbolo equivocado.
+//   2. OTRAS MÉTRICAS DE EARNINGS — los de MO son de Altria y son de earnings
+//      de verdad, pero preguntan por volumen de cigarros, no por EPS. Fuera de
+//      v1, documentado: v1 mide beat/miss de EPS y nada más.
+//   3. SÍMBOLO DISTINTO AL BUSCADO — la búsqueda es por subcadena; si el
+//      mercado resolvió a otro símbolo, se descarta salvo que el título nombre
+//      al resuelto explícitamente ($SYM o (SYM)).
+//
+// Se excluye POR LA FORMA DEL TÍTULO, no por símbolo: prohibir "GEV" taparía
+// el síntoma y dejaría la puerta abierta para el siguiente ticker ruidoso.
+const FORMAS_EXCLUIDAS = [
+  // «Will X say "tariffs" during the Q3 earnings call?» — el verbo + la frase
+  // entre comillas es la firma; el "during ... call" la confirma.
+  { nombre: 'mencion_con_frase', re: /\b(say|says|mention|mentions|utter|utters|use|uses)\b[^?]{0,80}["'\u201c\u201d\u2018\u2019][^"'\u201c\u201d\u2018\u2019]+["'\u201c\u201d\u2018\u2019]/i },
+  { nombre: 'mencion_en_la_llamada', re: /\bduring\b[^?]{0,40}\b(earnings|conference)\s+call\b/i },
+  { nombre: 'mencion_cuantas_veces', re: /\bhow many times\b/i },
+];
+
+// Para contar como v1 el mercado tiene que ser de BEAT/MISS DE EPS.
+const SENALES_EPS = [
+  { nombre: 'eps_explicito', re: /\b(eps|earnings per share)\b/i },
+  { nombre: 'beat_earnings', re: /\bbeat\b[^.?]{0,40}\b(earnings|estimates?|expectations?|consensus|street)\b/i },
+];
+
+// Clasifica un mercado para v1. Devuelve SIEMPRE el motivo: un descarte sin
+// motivo no se puede auditar, y este filtro se escribió precisamente porque
+// el anterior descartaba y aceptaba sin decir por qué.
+//   m        — mercado normalizado
+//   etiqueta — el símbolo que se BUSCÓ (camino D); null si vino de una frase
+function clasificaParaV1(m, { etiqueta = null, universo = null } = {}) {
+  const texto = [m && m.pregunta, m && m.slug, m && m.descripcion].filter(Boolean).join(' • ');
+  const esEarnings = pareceEarnings(m);
+  if (!esEarnings.si) return { acepta: false, motivo: 'no_parece_earnings', senales: [] };
+
+  const forma = FORMAS_EXCLUIDAS.find((f) => f.re.test(texto));
+  if (forma) return { acepta: false, motivo: 'mercado_de_menciones', forma: forma.nombre, senales: esEarnings.senales };
+
+  const eps = SENALES_EPS.filter((x) => x.re.test(texto)).map((x) => x.nombre);
+  if (!eps.length) {
+    return { acepta: false, motivo: 'no_es_beat_miss_de_eps', senales: esEarnings.senales };
+  }
+
+  // Regla dura del símbolo. Solo aplica cuando SABEMOS qué se buscó.
+  if (etiqueta && m && m.symbol && m.symbol !== etiqueta) {
+    const explicito = tickerExplicito(texto, universo) === m.symbol;
+    if (!explicito) {
+      return { acepta: false, motivo: 'simbolo_distinto_al_buscado', buscado: etiqueta, resuelto: m.symbol, senales: esEarnings.senales };
+    }
+  }
+  return { acepta: true, motivo: 'ok', senales: esEarnings.senales, senales_eps: eps };
 }
 
 // ─────────────────── símbolo ───────────────────
@@ -373,7 +439,23 @@ function precioEnT24h(history, finMs, { horas = CRITERIOS.horas_antes_precio, to
 // Casa por símbolo y fecha ±tolerancia; con varios candidatos gana el más
 // cercano. La fecha de resolución NO es la de reporte (el mercado puede
 // resolver un día después), por eso hay tolerancia y por eso se guarda `dias`.
-function cruzaConPead(mercados, filas, { tolerancia = CRITERIOS.tolerancia_dias_cruce } = {}) {
+// ── EL EMPAREJAMIENTO, corregido ──────────────────────────────────────────
+// Cicatriz: el histograma de 69 "fuera de tolerancia" NO era ruido, era señal.
+// El grueso caía a +90/+119 días porque se emparejaba contra el reporte
+// ANTERIOR: MU resolvió el 30 de septiembre y se casaba con el reporte de
+// junio. Un mercado creado en septiembre no puede estar preguntando por un
+// reporte que ya ocurrió cuando el mercado nació.
+//
+// La regla correcta: **el reporte tiene que ser POSTERIOR a la creación del
+// mercado.** Eso no relaja nada — la tolerancia sigue en 1 día. Al contrario,
+// vuelve honesto el conteo: un mercado cuyo reporte aún no está cosechado
+// deja de parecer "desfase raro" y pasa a ser lo que es,
+// `sin_reporte_posterior_a_la_creacion`, que es un problema de NUESTRA
+// cosecha y se arregla cosechando, no moviendo umbrales.
+function cruzaConPead(mercados, filas, {
+  tolerancia = CRITERIOS.tolerancia_dias_cruce,
+  exigirPosteriorACreacion = true,
+} = {}) {
   const porSimbolo = new Map();
   for (const f of filas || []) {
     const s = String(f.symbol || '').toUpperCase();
@@ -388,28 +470,85 @@ function cruzaConPead(mercados, filas, { tolerancia = CRITERIOS.tolerancia_dias_
     const s = m && m.symbol ? String(m.symbol).toUpperCase() : null;
     const fecha = m && isoDia(m.fecha_resolucion);
     if (!s || !fecha) { salida.push({ ...m, cruce: null, motivo_sin_cruce: 'sin_simbolo_o_fecha' }); continue; }
+
     const candidatos = porSimbolo.get(s) || [];
+    const creado = m ? isoDia(m.creado) : null;
+    // Solo los reportes que todavía NO habían ocurrido cuando nació el mercado.
+    const elegibles = exigirPosteriorACreacion && creado
+      ? candidatos.filter((d) => d >= creado)
+      : candidatos;
+
     let mejor = null;
-    // El más cercano SIN importar la tolerancia. Sirve para dos cosas: elegir
-    // el match cuando entra, y —cuando NO entra— medir POR CUÁNTO no entró.
-    // Sin esto, "31 fuera de tolerancia" es un número sin diagnóstico: no se
-    // puede distinguir un desfase sistemático de ruido.
-    let cercano = null;
-    for (const d of candidatos) {
+    let cercano = null;   // el más cercano SIN tolerancia: mide POR CUÁNTO no entró
+    for (const d of elegibles) {
       const dias = diasEntre(fecha, d);
       if (dias === null) continue;
       if (!cercano || Math.abs(dias) < Math.abs(cercano.dias)) cercano = { reported_date: d, dias };
       if (Math.abs(dias) > tolerancia) continue;
       if (!mejor || Math.abs(dias) < Math.abs(mejor.dias)) mejor = { reported_date: d, dias };
     }
+
+    const motivo = mejor ? null
+      : !candidatos.length ? 'simbolo_no_esta_en_pead_earnings'
+      : !elegibles.length ? 'sin_reporte_posterior_a_la_creacion'
+      : 'fecha_fuera_de_tolerancia';
+
     salida.push({
       ...m,
       cruce: mejor,
       cercano_fuera_de_tolerancia: mejor ? null : cercano,
-      motivo_sin_cruce: mejor ? null : candidatos.length ? 'fecha_fuera_de_tolerancia' : 'simbolo_no_esta_en_pead_earnings',
+      reportes_anteriores_descartados: candidatos.length - elegibles.length,
+      motivo_sin_cruce: motivo,
     });
   }
   return salida;
+}
+
+// Compara el emparejamiento VIEJO (contra cualquier reporte) con el NUEVO
+// (solo reportes posteriores a la creación) y dice qué pasó con cada caso que
+// antes caía en "fecha fuera de tolerancia": cuántos se recuperan, cuántos
+// esperan cosecha, y cuántos son ruido de verdad.
+function comparaEmparejamiento(mercados, filas, opciones = {}) {
+  const antes = cruzaConPead(mercados, filas, { ...opciones, exigirPosteriorACreacion: false });
+  const ahora = cruzaConPead(mercados, filas, { ...opciones, exigirPosteriorACreacion: true });
+  const porId = new Map(ahora.map((m, i) => [m.id || 'i' + i, m]));
+
+  const fueraAntes = antes.filter((m) => !m.cruce && m.motivo_sin_cruce === 'fecha_fuera_de_tolerancia');
+  const destino = { recuperados: 0, sin_reporte_posterior: 0, sigue_fuera_de_tolerancia: 0, otro: 0 };
+  for (let i = 0; i < antes.length; i++) {
+    const m = antes[i];
+    if (m.cruce || m.motivo_sin_cruce !== 'fecha_fuera_de_tolerancia') continue;
+    const nuevo = porId.get(m.id || 'i' + i);
+    if (!nuevo) { destino.otro++; continue; }
+    if (nuevo.cruce) destino.recuperados++;
+    else if (nuevo.motivo_sin_cruce === 'sin_reporte_posterior_a_la_creacion') destino.sin_reporte_posterior++;
+    else if (nuevo.motivo_sin_cruce === 'fecha_fuera_de_tolerancia') destino.sigue_fuera_de_tolerancia++;
+    else destino.otro++;
+  }
+  // Los que antes casaban y ahora no. Lo normal es que sean FALSOS
+  // emparejamientos contra el trimestre anterior —o sea, una corrección—,
+  // pero si el número es grande hay que sospechar de `creado`.
+  let dejaronDeCasar = 0;
+  for (let i = 0; i < antes.length; i++) {
+    const nuevo = porId.get(antes[i].id || 'i' + i);
+    if (antes[i].cruce && nuevo && !nuevo.cruce) dejaronDeCasar++;
+  }
+  // EL MODO DE FALLA SILENCIOSO: si Gamma no expone fecha de creación, la
+  // regla no se aplica y todo queda igual sin que nada falle. Se cuenta.
+  const sinCreacion = (mercados || []).filter((m) => !isoDia(m && m.creado)).length;
+  return {
+    cruzados_antes: antes.filter((m) => m.cruce).length,
+    cruzados_ahora: ahora.filter((m) => m.cruce).length,
+    fuera_de_tolerancia_antes: fueraAntes.length,
+    destino_de_esos_casos: destino,
+    dejaron_de_casar_con_la_regla_nueva: dejaronDeCasar,
+    sin_fecha_de_creacion: sinCreacion,
+    total: (mercados || []).length,
+    nota_sin_creacion: sinCreacion
+      ? `${sinCreacion} mercados NO traen fecha de creación: en ésos la regla no se aplica y el emparejamiento queda como antes. Si son la mayoría, el arreglo no está actuando.`
+      : null,
+    ahora,
+  };
 }
 
 // ── ¿El desfase es SISTEMÁTICO o es ruido? ────────────────────────────────
@@ -823,6 +962,28 @@ function resumenMarkdown(c) {
   }
   L.push('');
 
+  const f = c.filtro_v1;
+  if (f) {
+    L.push('## 2b. Filtro v1 — solo beat/miss de EPS');
+    L.push('');
+    L.push(f.regla);
+    L.push('');
+    L.push('| Motivo | Mercados |');
+    L.push('|---|---|');
+    for (const [k, v] of Object.entries(f.motivos || {}).sort((a, b) => b[1] - a[1])) {
+      L.push(`| ${k === 'ok' ? '**ACEPTADOS**' : k} | ${v} |`);
+    }
+    L.push('');
+    for (const [motivo, muestra] of Object.entries(f.muestras || {})) {
+      if (!muestra.length) continue;
+      L.push(`**Descartados por \`${motivo}\`:**`);
+      for (const m of muestra) {
+        L.push(`- ${m.texto}${m.buscado ? ` _(buscado ${m.buscado}${m.resuelto && m.resuelto !== m.buscado ? ` → resolvió ${m.resuelto}` : ''})_` : ''}`);
+      }
+      L.push('');
+    }
+  }
+
   const n = c.conteos || {};
   L.push('## 3. ¿Hay mercados de earnings, con símbolo, consenso y outcome?');
   L.push('');
@@ -909,6 +1070,32 @@ function resumenMarkdown(c) {
   }
   L.push('');
 
+  const emp = (c.cruce || {}).emparejamiento;
+  if (emp) {
+    L.push('### Emparejamiento corregido: el reporte tiene que ser POSTERIOR a la creación del mercado');
+    L.push('');
+    L.push(emp.regla);
+    L.push('');
+    L.push(`Cruzados con la regla vieja: **${emp.cruzados_con_regla_vieja}** → con la nueva: **${emp.cruzados_ahora}**.`);
+    L.push('');
+    const d = emp.destino_de_esos_casos || {};
+    L.push(`De los **${emp.casos_que_antes_caian_fuera_de_tolerancia}** que antes caían en "fecha fuera de tolerancia":`);
+    L.push('');
+    L.push('| Destino | Casos | Qué significa |');
+    L.push('|---|---|---|');
+    L.push(`| **recuperados** (ahora cruzan) | ${d.recuperados ?? 0} | el reporte correcto sí estaba cosechado |`);
+    L.push(`| esperan cosecha | ${d.sin_reporte_posterior ?? 0} | el reporte del trimestre que el mercado pregunta **todavía no está en \`pead_earnings\`** — se arregla cosechando, no moviendo umbrales |`);
+    L.push(`| **ruido de verdad** | ${d.sigue_fuera_de_tolerancia ?? 0} | cruzan de símbolo, hay reporte posterior, y aun así no cuadran |`);
+    L.push(`| otro | ${d.otro ?? 0} | — |`);
+    L.push('');
+    L.push(`Dejaron de casar con la regla nueva: **${emp.dejaron_de_casar_con_la_regla_nueva}** — normalmente son **falsos emparejamientos contra el trimestre anterior**, o sea una corrección, no una pérdida.`);
+    if (emp.nota_sin_creacion) {
+      L.push('');
+      L.push(`> ⚠ ${emp.nota_sin_creacion}`);
+    }
+    L.push('');
+  }
+
   const des = (c.cruce || {}).desfases;
   if (des && des.casos) {
     L.push('### Los que cruzan de símbolo pero no de fecha');
@@ -986,11 +1173,12 @@ function resumenMarkdown(c) {
 }
 
 export {
-  CRITERIOS, ALIAS_EMPRESAS, SENALES_EARNINGS, PATRONES_CONSENSO,
+  CRITERIOS, ALIAS_EMPRESAS, SENALES_EARNINGS, PATRONES_CONSENSO, FORMAS_EXCLUIDAS, SENALES_EPS,
+  clasificaParaV1,
   num, jsonArray, isoDia, ts, diasEntre, normalizaTexto,
   normalizaMercado, indiceYes, tokenYes, outcomeResuelto, pareceEarnings,
   construyeIndiceNombres, tickerExplicito, resuelveSimbolo,
   extraeConsensoEps, precioEnT24h, cruzaConPead, evaluaFuentePIT, resumenMarkdown,
   esFecha, recortaFila, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
-  analizaDesfases, clasificaT24h, MAX_TOLERANCIA_PROPONIBLE,
+  analizaDesfases, clasificaT24h, MAX_TOLERANCIA_PROPONIBLE, comparaEmparejamiento,
 };

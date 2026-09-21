@@ -14,7 +14,9 @@
 //                  la fecha en el código — lint tests/no-hardcoded-dates)
 //   ?desde=...     fecha exacta de corte, gana sobre ?meses
 //   ?ejemplos=3    cuántos mercados traen precio del Yes a T-24h
-//   ?max_precios=250  tope de mercados a los que se les pide el precio T-24h
+//   ?indice=0      arranca en el N-ésimo cruzado: para partir en dos corridas
+//                  y sumar (el censo publica índice inicial, final y restantes)
+//   ?max_precios=400  tope de mercados a los que se les pide el precio T-24h
 //                  (el conteo del candado). Si no entran, trunca y lo declara
 //   ?detalle=1     incluye el detalle mercado por mercado del T-24h
 //   ?simbolos=99   cuántos símbolos del universo v0 se buscan uno por uno
@@ -50,7 +52,7 @@ import {
   CRITERIOS, normalizaMercado, pareceEarnings, resuelveSimbolo, construyeIndiceNombres,
   extraeConsensoEps, outcomeResuelto, tokenYes, precioEnT24h, cruzaConPead, evaluaFuentePIT,
   isoDia, ts, resumenMarkdown, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
-  analizaDesfases, clasificaT24h,
+  analizaDesfases, clasificaT24h, clasificaParaV1, comparaEmparejamiento,
 } from './_lib/earnings-beat.js';
 import { V0_UNIVERSE } from './_lib/pead-universe.js';
 import { getSymbolMap } from './earnings.js';
@@ -506,25 +508,44 @@ async function corre(ctx) {
   const claves = new Map();
   const mercados = [];
   const descartados = [];
+  // Cada descarte con su motivo Y su muestra: un filtro que no se puede
+  // auditar es el que dejó pasar 26 mercados del símbolo equivocado.
+  const motivos_filtro = {};
+  const muestras_filtro = {};
   for (const raw of crudosPorId.values()) {
     for (const k of Object.keys(raw || {})) claves.set(k, (claves.get(k) || 0) + 1);
     const m = normalizaMercado(raw);
     if (!m) continue;
     const fecha = isoDia(m.fin);
-    const esEarnings = pareceEarnings(m);
-    if (!esEarnings.si) {
+    const simbolo = resuelveSimbolo(m, indice, universo);
+    // El filtro v1 necesita el símbolo YA resuelto para poder aplicar la regla
+    // dura de "resuelto != buscado".
+    const v1 = clasificaParaV1({ ...m, symbol: simbolo.symbol }, { etiqueta: raw._etiqueta || null, universo });
+    motivos_filtro[v1.motivo] = (motivos_filtro[v1.motivo] || 0) + 1;
+    if (!v1.acepta) {
+      const muestra = (muestras_filtro[v1.motivo] = muestras_filtro[v1.motivo] || []);
+      if (muestra.length < 4 && (m.pregunta || m.slug)) {
+        muestra.push({
+          texto: String(m.pregunta || m.slug).slice(0, 100),
+          buscado: raw._etiqueta || null, resuelto: simbolo.symbol || null,
+        });
+      }
       if (descartados.length < 8 && m.pregunta) descartados.push(m.pregunta.slice(0, 110));
       continue;
     }
     if (fecha && fecha < ctx.desde) continue;   // fuera de ventana: no se cuenta
-    const simbolo = resuelveSimbolo(m, indice, universo);
+    const esEarnings = { senales: v1.senales };
     const consenso = extraeConsensoEps(m.descripcion || '') || extraeConsensoEps(m.pregunta || '');
     const outcome = outcomeResuelto(m);
     mercados.push({
       id: m.id, slug: m.slug, pregunta: m.pregunta, via: raw._via || null, etiqueta: raw._etiqueta || null,
       fecha_resolucion: fecha, fin_declarado: m.fin_declarado, fin_real: m.fin_real,
+      // La fecha de creación viaja hasta el cruce: es la que decide CONTRA QUÉ
+      // REPORTE apunta el mercado. Sin ella la regla nueva no actúa (y el
+      // censo lo grita en `sin_fecha_de_creacion`).
+      creado: m.creado,
       cerrado: m.cerrado, uma: m.uma, volumen: m.volumen,
-      senales: esEarnings.senales,
+      senales: esEarnings.senales, senales_eps: v1.senales_eps || [],
       symbol: simbolo.symbol, symbol_via: simbolo.via, symbol_ambiguo: !!simbolo.ambiguo,
       en_universo_v0: simbolo.symbol ? universo.has(simbolo.symbol) : false,
       consenso_pm: consenso ? consenso.valor : null,
@@ -595,7 +616,21 @@ async function corre(ctx) {
     );
     cruce.consultado = true;
     cruce.filas_pead = filas.length;
-    const todos = cruzaConPead(mercados, filas);
+    // Emparejamiento corregido (solo reportes POSTERIORES a la creación del
+    // mercado) + la comparación contra el viejo, para poder decir qué pasó con
+    // los casos que antes caían en "fecha fuera de tolerancia".
+    const comparacion = comparaEmparejamiento(mercados, filas);
+    const todos = comparacion.ahora;
+    cruce.emparejamiento = {
+      regla: 'el reporte tiene que ser POSTERIOR a la creación del mercado; tolerancia sigue en ±' + CRITERIOS.tolerancia_dias_cruce + ' día',
+      cruzados_con_regla_vieja: comparacion.cruzados_antes,
+      cruzados_ahora: comparacion.cruzados_ahora,
+      casos_que_antes_caian_fuera_de_tolerancia: comparacion.fuera_de_tolerancia_antes,
+      destino_de_esos_casos: comparacion.destino_de_esos_casos,
+      dejaron_de_casar_con_la_regla_nueva: comparacion.dejaron_de_casar_con_la_regla_nueva,
+      sin_fecha_de_creacion: comparacion.sin_fecha_de_creacion,
+      nota_sin_creacion: comparacion.nota_sin_creacion,
+    };
     cruzados = todos.filter((m) => m.cruce);
     cruce.cruzados = cruzados.length;
     cruce.en_universo_v0 = cruzados.filter((m) => m.en_universo_v0).length;
@@ -616,12 +651,19 @@ async function corre(ctx) {
   // en lotes con concurrencia, y si el presupuesto se acaba se declara
   // truncado con cuántos alcanzó a ver — un conteo parcial que se sabe parcial
   // sigue siendo útil; uno parcial que se cree total, no.
-  const objetivo = cruzados.length ? cruzados
-    : mercados.filter((m) => m.token_yes && m.fecha_resolucion).slice(0, ctx.max_precios);
+  // `&indice=N` arranca en el N-ésimo cruzado: si los 312 no entran en una
+  // corrida, se parte en dos y se suman — con los índices publicados para que
+  // la suma no sea a ojo.
+  const universoPrecios = cruzados.length ? cruzados
+    : mercados.filter((m) => m.token_yes && m.fecha_resolucion);
+  const objetivo = universoPrecios.slice(ctx.indice, ctx.indice + ctx.max_precios);
   const sobre = cruzados.length ? 'mercados_cruzados' : 'mercados_de_earnings (sin cruce disponible)';
 
   const t24 = {
-    sobre, total: objetivo.length, procesados: 0, truncado: false, motivo_corte: null,
+    sobre, universo: universoPrecios.length,
+    indice_inicial: ctx.indice, indice_final: ctx.indice + objetivo.length - 1,
+    restantes_despues_de_esta_corrida: Math.max(0, universoPrecios.length - (ctx.indice + objetivo.length)),
+    total: objetivo.length, procesados: 0, truncado: false, motivo_corte: null,
     conteo: { valido: 0, rancio: 0, sin_ticks: 0, sin_ticks_antes: 0, sin_precio: 0, error: 0, sin_token: 0 },
     formas: {}, detalle: [],
   };
@@ -637,6 +679,7 @@ async function corre(ctx) {
       t24.motivo_corte = `tope &max_precios=${ctx.max_precios}`;
       break;
     }
+    if (t24.procesados >= objetivo.length) break;
     const lote = objetivo.slice(i, i + CONCURRENCIA_CLOB);
     const resultados = await Promise.all(lote.map((m) => precioDeUnMercado(m, clob1)));
     for (const r of resultados) {
@@ -708,6 +751,11 @@ async function corre(ctx) {
     esquema_observado: {
       claves_mas_frecuentes: [...claves.entries()].sort((a, b) => b[1] - a[1]).slice(0, 30).map(([k, n]) => `${k} (${n})`),
       mercados_crudos: crudosPorId.size,
+    },
+    filtro_v1: {
+      regla: 'v1 = SOLO beat/miss de EPS. Fuera: mercados de mención ("Will X say Y during the call"), otras métricas de earnings (volumen, guidance), y cualquiera cuyo símbolo resuelto no sea el buscado salvo que el título lo nombre explícitamente.',
+      motivos: motivos_filtro,
+      muestras: muestras_filtro,
     },
     conteos: {
       mercados_de_earnings_en_ventana: mercados.length,
@@ -808,7 +856,9 @@ export default async function handler(req, res) {
     // Default: todos. &simbolos=0 lo apaga.
     simbolos: q.simbolos === undefined ? 99 : Math.max(0, Math.min(200, Number(q.simbolos) || 0)),
     // Tope de mercados a los que se les pide precio (el conteo del candado).
-    max_precios: Math.max(1, Math.min(500, Number(q.max_precios) || 250)),
+    max_precios: Math.max(1, Math.min(500, Number(q.max_precios) || 400)),
+    // Índice de arranque dentro de los cruzados (segunda pasada sumable).
+    indice: Math.max(0, Number(q.indice) || 0),
     detalle_precios: String(q.detalle || '') === '1',
     paginas: Math.max(1, Math.min(60, Number(q.paginas) || 20)),
     limite: Math.max(1, Math.min(500, Number(q.limite) || 500)),

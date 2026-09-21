@@ -1,19 +1,57 @@
 # SCOPE — Experimento "earnings-beat": ¿QuantDesk le gana a Polymarket?
 
-> **Estado: FASE 0, cuarta vuelta.** La primera corrida desde Vercel dio
-> **INCONCLUSO por descubrimiento, no por fuente** (§1.0): el barrido por
-> paginación se quedó ciego y su "0 mercados de earnings" no era un hallazgo.
-> Esta versión cambia el descubrimiento por **búsqueda dirigida** y corrige un
-> **falso positivo** de la sonda de revisiones (§1.4). Entregado: este documento
-> y `/api/earnings-beat?smoke=1`. **Cero código de modelo** — no hay una línea de
-> regresión en el repo y no la va a haber hasta que la Fase 0 pase. Los
-> criterios de la Fase 2 ya están **congelados en código**
-> (`CRITERIOS` en `api/_lib/earnings-beat.js`, fijados sin haber visto un solo
-> dato) y **pineados por test** (`tests/earnings-beat.test.mjs`): mover una
-> portería después rompe un test y se ve en el diff.
+> **Estado: FASE 0 → GO.** El censo (`/api/earnings-beat?smoke=1`) contestó las
+> cuatro preguntas y el candado se cumple con margen. Veredicto y números en
+> §0.0. Las revisiones PIT quedaron **CERRADAS: fuera de v1** (§1.4). Lo que
+> sigue es la **Fase 1 (cosecha, `pm_earnings_markets`)**, en su propia rama.
 >
-> Mismo patrón que el PEAD (`docs/pead-backtest-scope.md`): validación primero,
-> agente después. Si no hay ventaja, se descarta y no se escribe el agente.
+> Los `CRITERIOS` de la Fase 2 siguen **congelados** en
+> `api/_lib/earnings-beat.js` y **pineados por test**, sin haberse movido en
+> ninguna de las cinco vueltas — incluida la tolerancia de ±1 día, que el censo
+> propuso subir y **no se subió** (§1.3).
+
+## 0.0 VEREDICTO DE LA FASE 0 — **GO**
+
+**Se puede construir el dataset del experimento con la API pública de
+Polymarket.** Los cuatro puntos del encargo, contestados:
+
+| Pregunta | Respuesta |
+|---|---|
+| ¿Mercados de earnings resueltos, con símbolo, consenso y outcome? | **Sí.** 230 mercados en ventana, **96% resueltos**, con símbolo, consenso declarado en la descripción y token del Yes |
+| ¿Historial de precios del token Yes? | **Sí.** CLOB con ~72 puntos por mercado y T-24h real |
+| ¿Cruce con `pead_earnings`? | **Sí.** 312 cruzados por símbolo + fecha |
+| ¿Fuente PIT de revisiones gratis? | **No.** CERRADA, fuera de v1 (§1.4) |
+
+### El candado, con sus números
+
+| Medida | Valor | Umbral | ¿Cumple? |
+|---|---|---|---|
+| Mercados cruzados con precio **válido** a T-24h | **251** | ≥ 100 | **SÍ, con 2.5× de margen** |
+| …sobre procesados | 251 / 252 (99.6%) | — | — |
+| Cobertura de la corrida | 250 de 312 cruzados | — | **truncada: 251 es un PISO** |
+
+### Lo que estos números todavía NO incluyen, dicho de frente
+
+La corrida que produjo el GO es **anterior** a tres correcciones que están en
+este documento y en el código, y **dos de ellas bajan el total**:
+
+1. **Filtro v1** (§1.2d): salen los mercados de mención, las métricas de
+   earnings que no son EPS, y los de símbolo ajeno. De 36 aceptados de símbolos
+   ruidosos, **26 resolvieron a otro símbolo**. El conteo de aceptados **va a
+   bajar, y está bien**: lo que baja es basura que no debía estar.
+2. **Emparejamiento por fecha de creación** (§1.3): reclasifica los 69 casos
+   "fuera de tolerancia" — algunos cruzan, la mayoría resulta que **espera
+   cosecha nuestra**.
+3. **Corrida completa** de los 312 (§1.2b): el 251 deja de ser un piso.
+
+**Por qué el GO se sostiene igual.** El margen es de 2.5× sobre el umbral, y el
+filtro toca una fracción chica del total (36 mercados de símbolos ruidosos
+sobre ~452 aceptados). Para tumbar el candado habría que perder **más del 60%**
+de la muestra, que es un orden de magnitud más de lo que el filtro puede
+quitar. **El número final sale de la próxima corrida**; el GO no depende de él,
+y si la próxima corrida lo desmintiera, esto se revierte y se dice.
+
+---
 
 ## Hipótesis
 
@@ -253,6 +291,11 @@ precio válido a T-24h**, así que hay que pedirle el precio **a cada uno**.
 - Si el presupuesto se acaba, **se declara truncado con cuántos alcanzó a
   ver**. Un conteo parcial que se sabe parcial sirve; uno parcial que se cree
   total, no.
+- **Dos corridas sumables.** `&indice=N` arranca en el N-ésimo cruzado, y el
+  censo publica `indice_inicial`, `indice_final` y
+  `restantes_despues_de_esta_corrida`. Si los 312 no entran en 240s, se parte
+  en dos y **se suman los válidos sin ambigüedad** — los índices están
+  publicados justamente para que la suma no sea a ojo.
 - Los "ejemplos" salen **del mismo lote**: cero requests extra.
 
 Y el resultado se parte en las categorías que deciden, porque no todas cuentan:
@@ -286,6 +329,36 @@ Además, la búsqueda por símbolo pagina **máximo 3 páginas** (las frases,
 12): son 99 búsquedas, y el presupuesto vale más que la página 4 de
 *"Now You See Me"*.
 
+### 1.2d Filtro v1 — solo beat/miss de EPS
+
+La corrida con GO destapó tres poblaciones que pasaban el filtro de "parece
+earnings" **sin ser lo que el experimento mide**:
+
+| Población | Ejemplo | Qué se hace |
+|---|---|---|
+| **Mercados de mención** | `Will X say "tariffs" during the earnings call?` | **FUERA.** Ocurren *en* un earnings call, pero no predicen beat/miss de nada |
+| **Otras métricas de earnings** | los de `MO`: volumen de cigarros de Altria | **FUERA de v1**, documentado. Son earnings de verdad, pero no EPS. **v1 = solo beat/miss de EPS** |
+| **Símbolo ajeno** | `GEV` apareciendo al buscar `GE`, `LYFT` al buscar `NOW` | **FUERA**, salvo que el título nombre explícitamente al símbolo resuelto |
+
+**Se excluye por la FORMA del título, no por símbolo.** Prohibir `GEV` taparía
+el síntoma y dejaría la puerta abierta para el siguiente ticker ruidoso; la
+firma real es el verbo (`say`/`mention`) con una frase entre comillas, o el
+`during … earnings call`.
+
+**Y la regla dura, tal como se pidió:** si el símbolo resuelto ≠ el símbolo
+buscado, el mercado **se descarta**, salvo que el título lo nombre explícitamente
+(`$SYM` o `(SYM)`). Los dos hallazgos que la motivaron —26 de 36 aceptados de
+símbolos ruidosos resolvían a otro símbolo— eran casi todos mercados de mención,
+así que las dos reglas se refuerzan.
+
+Para que el filtro sea **auditable** (el anterior aceptaba y descartaba sin decir
+por qué), el censo publica **el conteo por motivo** y **una muestra de lo
+descartado en cada uno**:
+
+```
+ok · mercado_de_menciones · no_es_beat_miss_de_eps · simbolo_distinto_al_buscado · no_parece_earnings
+```
+
 ### 1.3 Cruce con la cosecha del PEAD
 
 **Corrección de nomenclatura:** el encargo dice `pead_events`; esa tabla no
@@ -308,6 +381,33 @@ qué se arregla después:
 
 El markdown del censo dice cuál de los dos manda, en letras, para que la
 decisión no dependa de leer bien una tabla de conteos.
+
+#### El histograma de 69 no era ruido: era el trimestre siguiente
+
+El grueso de los "fuera de tolerancia" caía a **+90/+119 días** porque se
+emparejaba contra el reporte **anterior**: MU resolvió el 30 de septiembre y se
+casaba con el reporte de junio. Un mercado creado en septiembre **no puede estar
+preguntando por un reporte que ya había ocurrido cuando el mercado nació**.
+
+> **Regla corregida: el reporte tiene que ser POSTERIOR a la creación del
+> mercado.** La tolerancia **sigue en ±1 día** — esto no relaja nada, al
+> contrario: elimina emparejamientos falsos contra el trimestre anterior.
+
+Y vuelve honesto el diagnóstico, porque parte los casos en tres destinos que
+antes se veían igual:
+
+| Destino | Qué significa | Qué se hace |
+|---|---|---|
+| **recuperados** | el reporte correcto sí estaba cosechado | cruzan, y suman al candado |
+| **esperan cosecha** | el reporte del trimestre que el mercado pregunta **todavía no está en `pead_earnings`** | se arregla **cosechando**, no moviendo umbrales |
+| **ruido de verdad** | hay reporte posterior y aun así no cuadra | se quedan afuera |
+
+El censo publica los tres números, más `dejaron_de_casar_con_la_regla_nueva`
+(normalmente falsos emparejamientos eliminados, o sea una corrección) y
+—clave— **`sin_fecha_de_creacion`**: si Gamma no expone `createdAt`, la regla
+**no actúa y nada falla**, que es el modo de falla silencioso que este contador
+existe para hacer visible. En el ensayo local, ese contador fue el que detectó
+que la fecha de creación no estaba llegando al cruce.
 
 **Y el segundo motivo se diagnostica, no solo se cuenta.** "31 fuera de
 tolerancia" es un número sin diagnóstico: no distingue un desfase de calendario
@@ -451,6 +551,9 @@ cubre "desde septiembre del año pasado" sin tatuar la fecha en el código (lint
 ### 1.6 Compuerta de la Fase 0 (GO / NO-GO / INCONCLUSO)
 
 Se lee el censo contra esto. **El censo reporta; no se auto-aprueba.**
+
+> **Resuelto: GO** (§0.0). Esta tabla queda como el registro de con qué regla se
+> decidió, no como una compuerta pendiente.
 
 | Resultado | Condición |
 |---|---|
