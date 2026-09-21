@@ -507,6 +507,287 @@ export function clasificaSeries({
   };
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// G2 — UN SOLO EVALUADOR, para el que construye y para el que mide
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * La ventana de actividad. 30 días de DATOS (anclados a `max(fecha)` de la
+ * tabla, no al reloj).
+ */
+export const VENTANA_DIAS_G2 = 30;
+
+/**
+ * LAS CUATRO CONSULTAS, exportadas para que no haya dos versiones.
+ *
+ * Mismo problema que G1 tuvo hasta #241: `/api/mercado-r0?job=unidades`
+ * evaluaba con el registro de referencias y la regla de series, y
+ * `/api/mercado-censo?job=censo` lo hacía por su cuenta contra Yahoo —que
+ * devuelve 401 desde Vercel—, así que el mismo día daba `verificadas: 26,
+ * verde: true` en un endpoint y `sin_referencia: 30` en el otro.
+ */
+export const SQL_G2 = {
+  acciones: `select distinct on (clave) clave, anio, trimestre, acciones_circulacion,
+                    acciones_circulacion_tag, acciones_circulacion_motivo
+               from xbrl_reports order by clave, anio desc, trimestre desc`,
+  precios: `select distinct on (emisora_serie) emisora, emisora_serie, fecha, cierre, importe
+              from bmv_precios order by emisora_serie, fecha desc`,
+  corte: 'select max(fecha) hasta from bmv_precios',
+  // $1 = días de ventana. SIN `coalesce`: la suma de una columna toda nula
+  // es NULL, que es "no medido", y ese es justo el dato que importa.
+  ventana: `with corte as (select max(fecha) hasta from bmv_precios)
+            select p.emisora_serie,
+                   sum(p.volumen)::numeric   volumen_ventana,
+                   sum(p.importe)::numeric   importe_ventana,
+                   count(p.volumen)::int     filas_con_volumen,
+                   count(p.importe)::int     filas_con_importe,
+                   count(*)::int             filas_ventana
+              from bmv_precios p, corte c
+             where p.fecha > c.hasta - ($1::int * interval '1 day')
+             group by 1`,
+};
+
+/**
+ * EL VEREDICTO DE G2, entero y puro.
+ *
+ * Recibe filas y devuelve estados. No abre Neon ni pide red: los dos
+ * endpoints corren `SQL_G2`, le pasan lo que salió, y obtienen el MISMO
+ * resultado. Los umbrales entran por parámetro (`criterios`) en vez de
+ * importarse, para no cerrar un ciclo con `mercado-fase0.js`; los dos
+ * llamadores pasan el mismo objeto congelado y la salida lo declara.
+ *
+ * Dos caminos a verificada, que NO se colapsan en uno:
+ *   · `verificada`            — referencia pública individual que cuadra.
+ *   · `verificada_por_metodo` — serie única y divisor 1: la fórmula no tiene
+ *                               nada que elegir, y el instrumento está
+ *                               validado con ≥N muestras limpias. La etiqueta
+ *                               dice que no hay control propio.
+ */
+export function evaluaG2({
+  emisoras = [], acciones = [], precios = [], volumenes = [],
+  referencias = { referencias: [] }, frescura = null, ahora = new Date(),
+  criterios = {}, ventana_dias = VENTANA_DIAS_G2,
+} = {}) {
+  const C = {
+    g2_max_error_pct: 5,
+    g2_min_emisoras_verificadas: 15,
+    g2_metodo_min_muestras: METODO.min_muestras,
+    g2_metodo_max_error_pct: METODO.max_error_pct,
+    ...criterios,
+  };
+  const reloj = ahora instanceof Date ? ahora : new Date(ahora);
+
+  const accPor = new Map(acciones.map((a) => [up(a.clave), a]));
+  const volPor = new Map(volumenes.map((v) => [v.emisora_serie, v]));
+  const preciosPor = new Map();
+  for (const p of precios) {
+    const k = up(p.emisora);
+    if (!preciosPor.has(k)) preciosPor.set(k, []);
+    preciosPor.get(k).push(p);
+  }
+
+  // ── PASO 1: calcular, y verificar SOLO las que tienen referencia ─────
+  const base = emisoras.map((em) => {
+    const clave = up(em.clave);
+    const a = accPor.get(clave);
+    const series = preciosPor.get(clave) || [];
+    const elegida = series.find((x) => x.emisora_serie === em.serie_liquida) || null;
+    const masOperada = series.slice().sort((x, y) => (num(y.importe) || 0) - (num(x.importe) || 0))[0] || null;
+
+    const conVol = series.map((x) => {
+      const v = volPor.get(x.emisora_serie) || null;
+      return {
+        ...x,
+        volumen_ventana: v ? v.volumen_ventana : null,
+        importe_ventana: v ? v.importe_ventana : null,
+        filas_ventana: v ? v.filas_ventana : 0,
+      };
+    });
+    // El atraso entra como VEREDICTO EN SESIONES, no como días de calendario:
+    // un lunes son dos o tres días y cero sesiones, y la bandera se prendía
+    // sola cada fin de semana.
+    const clases = clasificaSeries({
+      series: conVol, serie_liquida: em.serie_liquida,
+      cosecha_atrasada: !!(frescura && frescura.alerta),
+      sesiones_atraso: frescura ? frescura.dias_habiles_atraso : null,
+    });
+
+    // La dispersión se mide SOLO entre series que operan. Una serie muerta no
+    // es un precio en desacuerdo: es el último número que quedó pegado.
+    const disp = dispersionPrecios({
+      series: clases.con_mercado.map((x) => ({ emisora_serie: x.serie, cierre: x.precio })),
+      serie_liquida: em.serie_liquida, tolerancia_pct: C.g2_max_error_pct,
+    });
+
+    const calc = capConUnidades({
+      clave, acciones_circulacion: a ? a.acciones_circulacion : null,
+      precio: elegida ? elegida.cierre : null,
+      serie_liquida: em.serie_liquida, acciones_por_unidad: em.acciones_por_unidad,
+    });
+    const refs = referenciasManuales(referencias, clave, reloj);
+    const verif = verificaConReferencias({
+      capCalculada: calc.cap, referencias: refs.vigentes,
+      acciones_por_unidad: em.acciones_por_unidad,
+      precio: elegida ? elegida.cierre : null,
+      acciones_circulacion: a ? a.acciones_circulacion : null,
+      tolerancia_pct: C.g2_max_error_pct,
+    });
+
+    return {
+      clave, nombre: em.nombre, sector: em.sector,
+      serie_liquida: em.serie_liquida,
+      n_series: series.length,
+      n_series_con_mercado: clases.con_mercado.length,
+      series_sin_mercado: clases.sin_mercado,
+      datos_rancios: clases.datos_rancios,
+      causa_rancio: clases.causa_rancio,
+      motivo_rancio: clases.motivo_rancio,
+      actividad_medida: clases.actividad_medida,
+      actividad_no_medible: !!clases.actividad_no_medible,
+      acciones_circulacion: a ? num(a.acciones_circulacion) : null,
+      acciones_por_unidad: em.acciones_por_unidad,
+      unidad_fuente: em.unidad_fuente,
+      periodo_xbrl: a ? `${a.anio}T${a.trimestre}` : null,
+      tag_acciones: a ? (a.acciones_circulacion_tag || null) : null,
+      // La FECHA del precio usado. Sin ella, un 5.6% de error no se distingue
+      // de un precio rancio — que es justo la duda que dejó TLEVISA.
+      fecha_precio: elegida ? String(elegida.fecha).slice(0, 10) : null,
+      dias_precio: elegida && elegida.fecha
+        ? Math.round((reloj - new Date(elegida.fecha)) / 86400000) : null,
+      cap_calculada: calc.cap, motivo_calculo: calc.motivo,
+      dispersion: disp,
+      serie_mas_operada: masOperada ? masOperada.emisora_serie : null,
+      serie_discrepa: !!(masOperada && em.serie_liquida && masOperada.emisora_serie !== em.serie_liquida),
+      referencias: { vigentes: refs.vigentes.length, descartadas: refs.descartadas },
+      verificacion: verif,
+      error_pct: verif.por_referencia.length
+        ? verif.por_referencia.reduce((mejor, r) => (mejor == null || Math.abs(num(r.error_pct) ?? Infinity) < Math.abs(mejor) ? (num(r.error_pct) ?? mejor) : mejor), null)
+        : null,
+      // Elegible para heredar el método: una serie CON MERCADO, divisor 1.
+      elegible_metodo: elegibleMetodo({
+        n_series: clases.con_mercado.length, acciones_por_unidad: em.acciones_por_unidad,
+      }),
+    };
+  });
+
+  // ── PASO 2: ¿el INSTRUMENTO quedó validado? ──────────────────────────
+  const metodo = validaMetodo(
+    base.filter((b) => b.error_pct != null).map((b) => ({
+      clave: b.clave, error_pct: b.error_pct,
+      n_series: b.n_series, acciones_por_unidad: b.acciones_por_unidad,
+    })),
+    { min: C.g2_metodo_min_muestras, maxPct: C.g2_metodo_max_error_pct },
+  );
+
+  // ── PASO 3: el estado final de cada emisora ──────────────────────────
+  const detalle = base.map((b) => {
+    let estado, etiqueta = null, motivo = null, via = null;
+
+    if (b.cap_calculada == null) {
+      estado = 'gris_punteado'; motivo = b.motivo_calculo;
+    } else if (b.datos_rancios) {
+      // Dos causas distintas y el motivo las distingue: la cosecha viene
+      // atrasada (en SESIONES), o la serie líquida no operó con la tabla al
+      // día. En las dos, un verde sacado de ahí es peor que un gris.
+      estado = 'gris_punteado'; via = b.causa_rancio || 'datos_rancios';
+      motivo = b.motivo_rancio;
+    } else if (b.dispersion.requiere_desglose) {
+      // Manda sobre la verificación individual A PROPÓSITO: si las series
+      // cotizan distinto, el número está estructuralmente mal aunque una
+      // referencia coincida — y una referencia que coincide con un cálculo
+      // mal hecho puede estar haciendo el mismo cálculo mal.
+      estado = 'gris_punteado'; via = 'requiere_desglose'; motivo = b.dispersion.motivo;
+    } else if (b.verificacion.estado === 'verificada') {
+      estado = 'verificada'; via = 'individual';
+      etiqueta = `cap: calc · verificada vs ${b.verificacion.por_referencia.map((r) => r.fuente).join(' + ')}`;
+    } else if (b.verificacion.estado === 'discrepancia_entre_fuentes') {
+      // NO es verificada: dos fuentes públicas no coinciden entre sí.
+      estado = 'gris_punteado'; via = 'discrepancia'; motivo = b.verificacion.motivo;
+    } else if (b.verificacion.estado === 'no_cuadra') {
+      estado = 'gris_punteado'; via = 'individual'; motivo = b.verificacion.motivo;
+    } else if (b.elegible_metodo && metodo.valido) {
+      estado = 'verificada_por_metodo'; via = 'metodo';
+      etiqueta = `cap: calc · método validado (${metodo.cuadran} muestras ≤${metodo.umbral_pct}%)`;
+    } else if (b.elegible_metodo) {
+      estado = 'gris_punteado'; via = 'metodo';
+      motivo = `el método no está validado: ${metodo.razones.join(' · ')}`;
+    } else {
+      estado = 'gris_punteado'; via = 'individual_obligatoria';
+      motivo = b.n_series > 1
+        ? `${b.n_series} series: la serie líquida es una elección, y el método no la valida — hace falta referencia individual`
+        : `divisor ${b.acciones_por_unidad}: el empaquetado es una elección, y el método no lo valida — hace falta referencia individual`;
+    }
+    return { ...b, estado, etiqueta, motivo_estado: motivo, via };
+  });
+
+  const porEstado = (x) => detalle.filter((d) => d.estado === x);
+  const individuales = porEstado('verificada');
+  const porMetodo = porEstado('verificada_por_metodo');
+  const verificadas = individuales.length + porMetodo.length;
+
+  // Las que exigen referencia individual y todavía no la tienen: es la lista
+  // de lo que falta, nombre por nombre.
+  const requierenDesglose = detalle.filter((d) => d.dispersion.requiere_desglose)
+    .map((d) => ({
+      clave: d.clave,
+      series: d.dispersion.series_comparables,
+      spread_pct: +d.dispersion.spread_pct.toFixed(1),
+      verificaba_igual: d.verificacion.estado === 'verificada',
+    }));
+  const faltanReferencia = detalle
+    .filter((d) => !d.elegible_metodo && d.estado === 'gris_punteado' && d.referencias.vigentes === 0)
+    .map((d) => ({ clave: d.clave, n_series: d.n_series, apu: d.acciones_por_unidad, motivo: d.motivo_estado }));
+
+  const razones = [];
+  if (verificadas < C.g2_min_emisoras_verificadas) {
+    razones.push(`solo ${verificadas} emisoras verificadas (piso ${C.g2_min_emisoras_verificadas}): ${individuales.length} con referencia individual + ${porMetodo.length} por método`);
+  }
+  // El atraso no es una compuerta aparte —ya se manifiesta en el conteo,
+  // porque deja a todas en gris— pero decir POR QUÉ cayó el conteo evita
+  // que alguien busque el problema en las referencias.
+  if (frescura && frescura.alerta) {
+    razones.push(`la cosecha de precios lleva ${frescura.dias_habiles_atraso} sesiones de atraso: ninguna emisora puede verificarse con la tabla vieja`);
+  }
+  if (!metodo.valido && porMetodo.length === 0) {
+    razones.push(`el método no está validado: ${metodo.razones.join(' · ')}`);
+  }
+
+  return {
+    detalle,
+    metodo: {
+      ...metodo,
+      heredan_sin_control_propio: porMetodo.map((d) => d.clave),
+      lectura: metodo.valido
+        ? `instrumento validado con ${metodo.cuadran} muestras (peor ${metodo.peor_error_pct?.toFixed(1)}%); ${porMetodo.length} emisoras lo heredan`
+        : `instrumento NO validado — ninguna emisora hereda: ${metodo.razones.join(' · ')}`,
+    },
+    resumen: {
+      emisoras: detalle.length,
+      verificadas_individual: individuales.length,
+      verificadas_por_metodo: porMetodo.length,
+      verificadas_total: verificadas,
+      gris_punteado: porEstado('gris_punteado').length,
+      con_cap_calculada: detalle.filter((d) => d.cap_calculada != null).length,
+      con_referencia_vigente: detalle.filter((d) => d.referencias.vigentes > 0).length,
+      discrepancias_entre_fuentes: detalle.filter((d) => d.via === 'discrepancia').map((d) => d.clave),
+      requieren_desglose: requierenDesglose.length,
+    },
+    requieren_desglose: requierenDesglose,
+    faltan_referencia_individual: faltanReferencia,
+    verificadas,
+    piso: C.g2_min_emisoras_verificadas,
+    verde: verificadas >= C.g2_min_emisoras_verificadas,
+    razones,
+    ventana_dias,
+    criterios: {
+      max_error_pct: C.g2_max_error_pct,
+      min_emisoras_verificadas: C.g2_min_emisoras_verificadas,
+      metodo_min_muestras: C.g2_metodo_min_muestras,
+      metodo_max_error_pct: C.g2_metodo_max_error_pct,
+    },
+  };
+}
+
 /**
  * LA PRUEBA DE FEMSA — y por qué el cálculo de una emisora multi-serie puede
  * estar mal aunque el divisor sea correcto.

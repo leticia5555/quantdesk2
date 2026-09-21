@@ -692,7 +692,7 @@ auto-contenido.
 | Gate | Pregunta | Verde si | Si sale rojo |
 |---|---|---|---|
 | **G1** | universo US | ≥120 nombres con cap **y** sector · ≥9 sectores con ≥5 nombres · cap más vieja ≤192 h | R1 empieza por llenar `mercado_universo_us`; el mapa US se pospone dentro de R1, no se cancela |
-| **G2** | capitalización MX | las 5 emisoras nombradas cuadran a ≤5% | las que no cuadren salen **gris punteadas**. El mapa MX sale igual — con menos cuadros y sin mentir |
+| **G2** | capitalización MX | ~~las 5 emisoras nombradas cuadran a ≤5%~~ → **≥15 emisoras verificadas** a ≤5%, por referencia individual o por método validado (`CRITERIOS` v2 y v3) | las que no cuadren salen **gris punteadas**. El mapa MX sale igual — con menos cuadros y sin mentir |
 | **G3** | precios batch | los 9 símbolos con serie; el presupuesto extrapolado cabe en 800 ms de servidor | cron → Neon (que ya es la recomendación) |
 | **G4** | retorno total | `adjclose` presente y factor derivable en los 9, **y** la serie cubre YTD | sin `adjclose` en `.MX`: la ficha MX dice "rendimiento de precio", no "total". Sin cobertura YTD: se alarga el `range` |
 | **G5** | `metric` | ≥8 de 12 campos | los que falten van "—" con su motivo; si son muchos, el bloque Valuación se recorta |

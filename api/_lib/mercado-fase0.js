@@ -28,13 +28,31 @@
 // Un umbral escrito después de ver el número no es un umbral, es una
 // racionalización — y si alguien mueve una portería, el diff lo delata.
 export const CRITERIOS = {
+  // v3 (2026-09-21): se RETIRA la cláusula "las 5 nombradas tienen que
+  // verificar" de G2. No es un umbral que se afloja: es una condición que R0
+  // demostró IMPOSIBLE de cumplir, y dejarla puesta hacía que G2 no pudiera
+  // ponerse verde nunca, dijera lo que dijera el resto.
+  //
+  //   · FEMSA — cotiza en UB (165) y UBD (207.66), dos series de 5 acciones
+  //     con 26% de diferencia, y el XBRL da un TOTAL sin desglose por serie.
+  //     Sin el desglose, la cap calculada está estructuralmente mal aunque
+  //     el divisor esté bien. Decisión de Lety (2026-09-20): gris punteado
+  //     con motivo "series con precio distinto, sin desglose".
+  //   · GFNORTE — no tiene ni acciones en el XBRL ni cap pública que pedir
+  //     (Yahoo quoteSummary devuelve 401 desde Vercel). Decisión de Lety,
+  //     confirmada dos veces: opción B, gris punteado.
+  //
+  // Las dos son GRISES POR DISEÑO, con su motivo en la hoja. Exigirles verde
+  // era pedirle a la compuerta que contradijera una decisión ya tomada.
+  // El piso de 15 NO se movió, y el 5% tampoco.
+  //
   // v2 (2026-09-21): cambia CÓMO se cuenta G2, no su umbral. Ver
   // `g2_min_emisoras_verificadas` abajo. El 5% de error por emisora NO se
   // movió — mover ESE número después de ver los resultados sí habría sido
   // racionalizar. Lo que cambió es qué cuenta como verificada, y queda
   // versionado justamente para que el cambio se vea en el diff en vez de
   // aparecer sin firma.
-  version: 2,
+  version: 3,
 
   // G1 — universo US. Un mapa por sector necesita que CADA sector tenga con
   // qué llenarse. Con 3 nombres en Utilities el cuadro no es un sector, es
@@ -299,6 +317,14 @@ export function censoUniversoUs({ screener = [], caps = [], sectores = {}, unive
  * antemano la estructura de capital de cada emisora.
  *
  * `precios` = [{ emisora_serie, cierre }] — las series vivas de bmv_precios.
+ *
+ * ── SUPERADA POR R0, y se queda como registro ────────────────────────
+ * Esta función mide la pregunta de la Fase 0 —"¿se puede calcular la cap MX
+ * sin conocer la estructura de capital?"— y su respuesta (no, hacen falta las
+ * unidades) es lo que abrió R0. El veredicto de G2 hoy lo da `evaluaG2` en
+ * `_lib/mercado-r0.js`, con el divisor del registro, la regla de series y las
+ * referencias manuales. NO la vuelvas a cablear a una compuerta: mide la
+ * ignorancia de antes, no el instrumento de ahora.
  */
 export function capMxCandidatas({ clave, acciones_circulacion, precios = [] }) {
   const acciones = num(acciones_circulacion);

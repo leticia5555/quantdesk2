@@ -911,12 +911,17 @@ test('los criterios están congelados y versionados', () => {
   // estas líneas lo deja a la vista en la revisión, que es el punto.
   //
   // v2 (2026-09-21): cambió CÓMO se cuenta G2 (dos vías hacia "verificada"),
-  // NO sus umbrales. El 5% por emisora sigue donde estaba, y este test lo
-  // fija para que moverlo requiera tocar esta línea a propósito.
-  assert.equal(CRITERIOS.version, 2);
+  // NO sus umbrales.
+  // v3 (2026-09-21): se retiró la cláusula "las 5 nombradas tienen que
+  // verificar". FEMSA y GFNORTE son grises POR DECISIÓN —sin desglose por
+  // serie la una, sin cap pública la otra—, así que esa cláusula volvía a G2
+  // imposible de cerrar. Los umbrales siguen donde estaban, y este test los
+  // fija para que moverlos requiera tocar estas líneas a propósito.
+  assert.equal(CRITERIOS.version, 3);
   assert.equal(CRITERIOS.g2_max_error_pct, 5);
+  assert.equal(CRITERIOS.g2_min_emisoras_verificadas, 15);
   assert.equal(CRITERIOS.g6_min_trimestres_upa, 4);
-  assert.equal(tablero({}).criterios_version, 2);
+  assert.equal(tablero({}).criterios_version, 3);
 });
 
 test('Q1 tabla: una cap sin fecha de medición se cuenta, no se promedia', () => {
