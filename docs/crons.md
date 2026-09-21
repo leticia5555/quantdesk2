@@ -27,6 +27,8 @@ al final.
 | `arena:reconcile`  | `/api/arena-run?phase=reconcile`      | `40 14 * * 1-5`        | **vercel.json** |
 | `arena:morning`    | `/api/arena-run?phase=morning`        | `50 14 * * 1-5`        | **vercel.json** |
 | `pead:hour`        | `/api/pead-harvest?job=hour`          | `30 21 * * *`          | **vercel.json** |
+| `earnings-beat:mercados` | `/api/earnings-beat-harvest?job=mercados` | `0 23 * * *`   | **vercel.json** |
+| `earnings-beat:precios`  | `/api/earnings-beat-harvest?job=precios`  | `40 23 * * *`  | **vercel.json** |
 | `arena:universe`   | `/api/arena-universe`                 | `0 13 * * 1-5`         | **vercel.json** |
 | `arena:watch`      | `/api/arena-watch`                    | `*/5 13-21 * * 1-5`    | **vercel.json** |
 | `screener:refresh` | `/api/arena-screener?job=refresh`     | `0 */4 * * *` (cada 4h) | **GitHub Actions** → `.github/workflows/external-crons.yml` |

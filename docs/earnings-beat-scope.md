@@ -10,46 +10,83 @@
 > ninguna de las cinco vueltas — incluida la tolerancia de ±1 día, que el censo
 > propuso subir y **no se subió** (§1.3).
 
-## 0.0 VEREDICTO DE LA FASE 0 — **GO**
+## 0.0 VEREDICTO DE LA FASE 0 — **GO** (cerrado, números finales)
 
 **Se puede construir el dataset del experimento con la API pública de
-Polymarket.** Los cuatro puntos del encargo, contestados:
-
-| Pregunta | Respuesta |
-|---|---|
-| ¿Mercados de earnings resueltos, con símbolo, consenso y outcome? | **Sí.** 230 mercados en ventana, **96% resueltos**, con símbolo, consenso declarado en la descripción y token del Yes |
-| ¿Historial de precios del token Yes? | **Sí.** CLOB con ~72 puntos por mercado y T-24h real |
-| ¿Cruce con `pead_earnings`? | **Sí.** 312 cruzados por símbolo + fecha |
-| ¿Fuente PIT de revisiones gratis? | **No.** CERRADA, fuera de v1 (§1.4) |
-
-### El candado, con sus números
+Polymarket.** Corrida final, ya con el filtro v1 y el emparejamiento corregido:
 
 | Medida | Valor | Umbral | ¿Cumple? |
 |---|---|---|---|
-| Mercados cruzados con precio **válido** a T-24h | **251** | ≥ 100 | **SÍ, con 2.5× de margen** |
-| …sobre procesados | 251 / 252 (99.6%) | — | — |
-| Cobertura de la corrida | 250 de 312 cruzados | — | **truncada: 251 es un PISO** |
+| **Mercados cruzados con precio válido a T-24h** | **239** | ≥ 100 | **SÍ — 2.4×** |
+| Cobertura | **sin truncar** (los 312 cruzados, completos) | — | el 239 es final, no un piso |
+| Filtro v1 | **0 ruido de subcadena · 0 símbolo distinto** | — | limpio |
+| Consenso declarado por Polymarket | **100%** de los mercados | — | el consenso propio está disponible siempre |
+| Emparejamiento corregido | **sin pérdidas** | — | ningún mercado que cruzaba dejó de cruzar |
 
-### Lo que estos números todavía NO incluyen, dicho de frente
+Las cuatro preguntas del encargo, contestadas:
 
-La corrida que produjo el GO es **anterior** a tres correcciones que están en
-este documento y en el código, y **dos de ellas bajan el total**:
+| Pregunta | Respuesta |
+|---|---|
+| ¿Mercados de earnings resueltos, con símbolo, consenso y outcome? | **Sí** |
+| ¿Historial de precios del token Yes? | **Sí**, con T-24h real |
+| ¿Cruce con `pead_earnings`? | **Sí**, 312 cruzados |
+| ¿Fuente PIT de revisiones gratis? | **No.** CERRADA, fuera de v1 (§1.4) |
 
-1. **Filtro v1** (§1.2d): salen los mercados de mención, las métricas de
-   earnings que no son EPS, y los de símbolo ajeno. De 36 aceptados de símbolos
-   ruidosos, **26 resolvieron a otro símbolo**. El conteo de aceptados **va a
-   bajar, y está bien**: lo que baja es basura que no debía estar.
-2. **Emparejamiento por fecha de creación** (§1.3): reclasifica los 69 casos
-   "fuera de tolerancia" — algunos cruzan, la mayoría resulta que **espera
-   cosecha nuestra**.
-3. **Corrida completa** de los 312 (§1.2b): el 251 deja de ser un piso.
+**Lo que costó llegar acá, porque es la parte reutilizable:** cuatro de las
+cinco vueltas no midieron Polymarket, midieron el instrumento. Un tope de
+offset leído como "no hay mercados", un `limit=5` disfrazado de catálogo, tres
+ejemplos haciéndose pasar por el conteo del candado, y un histograma de
+desfases que era el trimestre siguiente. **Ningún `CRITERIO` se movió en
+ninguna de las cinco** — incluida la tolerancia de ±1 día que el propio censo
+propuso subir y no se subió.
 
-**Por qué el GO se sostiene igual.** El margen es de 2.5× sobre el umbral, y el
-filtro toca una fracción chica del total (36 mercados de símbolos ruidosos
-sobre ~452 aceptados). Para tumbar el candado habría que perder **más del 60%**
-de la muestra, que es un orden de magnitud más de lo que el filtro puede
-quitar. **El número final sale de la próxima corrida**; el GO no depende de él,
-y si la próxima corrida lo desmintiera, esto se revierte y se dice.
+## 0.1 Universo de v1: los 99, y no se amplía
+
+**v1 se queda con los 99 símbolos del universo del PEAD.** No se amplía, y el
+motivo es de método, no de pereza: **239 es 2.4× el candado**, y ampliar el
+universo antes de saber si el modelo sirve es trabajo sin respuesta. Si la
+Fase 2 sale **INCONCLUSO por muestra**, ahí se amplía **con razón** — sabiendo
+qué pregunta responde la ampliación.
+
+Congelado en `SIMBOLOS_V1` (`api/earnings-beat-harvest.js`) y con test.
+
+## 0.2 La deuda que sí bloquea: el historial del PEAD
+
+De los mercados que no cruzan, los que dicen `sin_reporte_posterior_a_la_creacion`
+son mercados cuyo trimestre **todavía no está en `pead_earnings`**. Sin eso, los
+mercados de **este** trimestre no tienen con qué emparejarse, y el problema
+crece solo con cada trimestre que pasa.
+
+**Pero el goteo del PEAD está apagado a propósito, y su cupo ya tiene dueño.**
+El backtest PEAD cerró con NO-GO, su ledger quedó 99/99, y los **25
+requests/día de Alpha Vantage se reasignaron al wheel**
+(`docs/wheel-fase0.md` §4.3). Re-encenderlo **no es gratis**: es quitarle el
+cupo a otro proyecto durante los días que dure la puesta al día.
+
+Por eso lo que se entrega es **la decisión informada, no la decisión tomada**:
+
+```bash
+# CERO llamadas a AV: solo dice cuántos símbolos quedaron viejos y qué costaría
+curl ".../api/pead-harvest?job=refresh&dry=1&secret=$CRON_SECRET"
+#   → simbolos_viejos · costo_en_llamadas_av · dias_de_goteo_a_25_por_dia
+```
+
+`job=refresh` corre **antes** del gate de `PEAD_HARVEST_ENABLED` justamente
+porque su razón de ser es *decidir si vale la pena prender el goteo*: detrás
+del gate sería inalcanzable en el único momento en que hace falta. Sin `?dry=1`
+devuelve esos símbolos a `pending`; el gasto real **no ocurre** hasta que
+alguien prenda `PEAD_HARVEST_ENABLED=1` y le ponga un schedule.
+
+**Las opciones, con su costo:**
+
+| Opción | Costo | Cuándo conviene |
+|---|---|---|
+| Prender el goteo unos días | el wheel se queda sin cupo de AV ese tiempo | si el `dry-run` dice que son pocos símbolos |
+| Partir el cupo (menos símbolos/día) | más lento para los dos | si los dos proyectos corren en paralelo |
+| No hacer nada por ahora | los mercados del trimestre actual no cruzan | si la Fase 2 va a correr sobre trimestres ya cosechados |
+
+La tercera es viable para arrancar: **la Fase 2 mide trimestres pasados**, que
+ya están en la tabla. La deuda muerde cuando el experimento pase a tiempo real.
 
 ---
 
@@ -572,43 +609,77 @@ feature entra a v1 o queda fuera documentado.
 
 ---
 
-## FASE 1 — Cosecha (solo tras GO de Fase 0)
+## FASE 1 — Cosecha ✅ IMPLEMENTADA
 
-Cron diario, gate `CRON_SECRET` + `EARNINGS_BEAT_ENABLED=1`, heartbeat
-`beat('earnings-beat:harvest')` — igual que `pead-harvest`, para que
-`/api/cron-status` marque en rojo un cron muerto.
+`/api/earnings-beat-harvest`, **dos crons diarios** con gate `CRON_SECRET` +
+`EARNINGS_BEAT_HARVEST_ENABLED=1` y heartbeat, para que `/api/cron-status`
+marque en rojo un cron muerto.
 
-```sql
--- Un renglón por mercado de earnings resuelto. La PK hace el upsert idempotente.
-create table if not exists pm_earnings_markets (
-  market_id      text primary key,       -- id de Gamma
-  slug           text,
-  symbol         text,                   -- resuelto en la cosecha, con su vía
-  symbol_via     text,                   -- 'ticker' | 'alias' | 'symbol_map'
-  report_date    date,                   -- reported_date de pead_earnings al cruzar
-  resolved_date  date,                   -- fecha de resolución del mercado
-  consensus_pm   numeric,                -- el consenso que Polymarket DECLARA
-  outcome        text,                   -- 'yes' | 'no'
-  yes_price_t24h numeric,                -- último tick ≤ resolución − 24h
-  yes_price_ts   timestamptz,            -- CUÁNDO fue ese tick (rancio auditable)
-  volume         numeric,
-  question       text,
-  raw            jsonb,                  -- el mercado crudo: el esquema cambia
-  ingested_at    timestamptz not null default now()
-);
+| Job | Cadencia (UTC) | Qué hace |
+|---|---|---|
+| `?job=mercados` | `0 23 * * *` | descubre (Gamma), filtra v1, cruza, pide precios, upsert |
+| `?job=precios` | `40 23 * * *` | completa el T-24h pendiente y **re-mira los abiertos** (CLOB) |
+| `?job=status` | — | stats, sin escribir |
+
+**Están partidos a propósito:** un CLOB lento no puede comerse el presupuesto
+del descubrimiento, y cada uno late por su cuenta — si el que se muere es
+`precios`, la tabla sigue creciendo y eso se ve en `cron-status`.
+
+### La tabla
+
+`pm_earnings_markets` (`api/_lib/earnings-beat-db.js`), PK `market_id`. Sobre
+el diseño anterior cambian tres cosas, y las tres son decisiones:
+
+1. **Los mercados ABIERTOS también se guardan** (`abierto = true`). Antes el
+   plan decía "solo resueltos"; eso **nace con sesgo de supervivencia** y
+   además obliga a re-descubrir lo ya visto. Resuelven después y `job=precios`
+   los completa.
+2. **`filtro_motivo`** se guarda: lo que entra ya pasó el filtro v1, y queda
+   dicho en la fila para poder auditarlo sin re-cosechar.
+3. **`camino`**: por cuál de los dos caminos entró el mercado.
+
+### Las dos reglas que hacen que "idempotente" signifique algo
+
+Correr el cron dos veces no puede **degradar** la tabla. Están en SQL (dentro
+del `ON CONFLICT`) y en JS (`debeReemplazarPrecio` / `mejorOutcome`, puras y
+testeadas), y la escala de calidad del SQL **se genera desde el mismo objeto**
+que usa el JS para que no puedan divergir:
+
+- **Un precio válido no lo pisa un `sin_ticks`** de un reintento con el CLOB
+  caído. El reemplazo es solo *hacia arriba* en calidad
+  (`valido > rancio > sin_ticks_antes > sin_ticks > error`).
+- **Un mercado resuelto no vuelve a abierto** porque una corrida lo haya visto
+  abierto en cache. La resolución es un hecho.
+
+### El filtro v1 corre en la COSECHA, no en el análisis
+
+Lo que entra a la tabla ya está filtrado. Si filtrara el consumidor, cada
+consumidor futuro tendría que acordarse de filtrar igual — y el día que uno se
+olvide, los mercados de mención vuelven a contar como beat/miss. Además se
+descartan acá los que caen fuera del universo v1 (§0.1): un mercado de una
+empresa que no cosechamos no tiene historial con qué modelarse.
+
+### Los dos caminos, los dos corriendo
+
+El censo midió **`simbolo` 252 vs `busqueda` 67**, así que símbolo es el
+ganador — pero **se corren los dos igual**: 67 mercados que el ganador no ve
+siguen siendo 67, y el día que Polymarket cambie sus plantillas el que
+sobreviva va a ser el otro. El aporte de cada camino se journalea por corrida.
+
+El descubrimiento vive en `api/_lib/earnings-beat-descubrir.js`, **una sola
+implementación** compartida con el censo: dos copias se desincronizan, y acá la
+que se desincronizara decidiría **qué entra a la tabla**.
+
+### Encendido
+
+```bash
+# 1. Env var en Vercel
+EARNINGS_BEAT_HARVEST_ENABLED=1
+# 2. Primera corrida a mano (crea el esquema y siembra)
+curl -H "Authorization: Bearer $CRON_SECRET" ".../api/earnings-beat-harvest?job=mercados"
+# 3. Verificar
+curl -H "Authorization: Bearer $CRON_SECRET" ".../api/earnings-beat-harvest?job=status"
 ```
-
-Reglas de la cosecha:
-
-- **Idempotente**: upsert por `market_id`; re-correr no duplica ni pisa un
-  precio ya capturado con uno peor.
-- **Solo mercados resueltos**: un mercado vivo no tiene outcome y no entra.
-- **`yes_price_t24h` se guarda con su timestamp**: sin el `ts`, "precio a 24h"
-  no es auditable y no hay forma de detectar el rancio después.
-- **`raw` completo**: el esquema de Gamma puede cambiar; guardar el crudo evita
-  re-cosechar cuando aparezca un campo que hoy no miramos.
-- **Cadencia**: conservadora y medida con 429s, según lo que reporte `rate_limit`
-  en el censo.
 
 ---
 
