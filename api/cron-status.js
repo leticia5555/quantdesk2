@@ -17,12 +17,21 @@
 // habría dejado el latido igual de verde. Por eso `datos[]` mide la tabla,
 // que es lo que el consumidor realmente necesita.
 //
+// ── Y LAS TAREAS HUMANAS CON VENCIMIENTO ───────────────────────────
+// `referencias_cap` vigila las capitalizaciones de referencia MX, que las
+// captura una persona a mano y caducan cuando la emisora publica un trimestre
+// nuevo de acciones. No es un cron, pero se descuida igual — y cuando caduca
+// una, su emisora se va a gris en el mapa. Acá se ve venir con días de
+// gracia, en vez de descubrirse cuando G2 ya está rojo.
+//
 // Metadata operativa (nombres de job + timestamps), sin secretos → sin gate.
 // ═══════════════════════════════════════════════════════════════════
 
 import { readHeartbeats } from './_lib/heartbeat.js';
 import { sql } from './_lib/db.js';
 import { frescuraPrecios } from './_lib/bmv-frescura.js';
+import { vigenciaDelRegistro, SQL_G2 } from './_lib/mercado-r0.js';
+import REFERENCIAS_CAP from './_lib/mercado-cap-referencia.json' with { type: 'json' };
 
 // Cadencia esperada por job, alineada con vercel.json. `stale_after_h` es el
 // umbral de "algo anda mal": > 2× el intervalo, y para los crons de 1-5
@@ -174,15 +183,35 @@ export default async function handler(req, res) {
       }
     }
 
+    // ── Las referencias de capitalización MX ────────────────────────
+    // No es un cron ni una tabla: es una TAREA HUMANA con vencimiento. Cada
+    // referencia caduca cuando la emisora publica un trimestre nuevo de
+    // acciones, y cuando caduca su emisora se va a gris. Acá se ve venir,
+    // con días de gracia, en vez de descubrirlo cuando G2 se pone rojo.
+    let referencias = null;
+    try {
+      const periodos = await sql(SQL_G2.periodos);
+      referencias = vigenciaDelRegistro(REFERENCIAS_CAP, new Date(now), { periodos });
+    } catch (e) {
+      referencias = {
+        filas: (REFERENCIAS_CAP.referencias || []).length,
+        alerta: true,
+        lectura: `no se pudo medir la vigencia de las referencias: ${String((e && e.message) || e)}`,
+      };
+    }
+
     const staleJobs = jobs.filter((j) => j.stale).map((j) => j.job);
     const datosEnAlerta = datos.filter((d) => d.alerta).map((d) => d.tabla);
     return res.status(200).json({
-      ok: staleJobs.length === 0 && datosEnAlerta.length === 0,
+      ok: staleJobs.length === 0 && datosEnAlerta.length === 0 && !(referencias && referencias.alerta),
       checked_at: new Date(now).toISOString(),
       stale: staleJobs,
       datos_en_alerta: datosEnAlerta,
+      // Lo que hay que re-capturar a mano, si hay algo. Vacío = nada que hacer.
+      referencias_a_recapturar: (referencias && referencias.a_recapturar) || [],
       jobs,
       datos,
+      referencias_cap: referencias,
       untracked: extra,
     });
   } catch (err) {
