@@ -63,6 +63,12 @@
     "api/mercado-r0.js": {
       "maxDuration": 300
     },
+    "api/mercado-precios.js": {
+      "maxDuration": 300
+    },
+    "api/mercado-mapa.js": {
+      "maxDuration": 60
+    },
     "api/*.js": {
       "maxDuration": 60
     }
@@ -77,6 +83,9 @@
       "destination": "/app.html"
     },
     {
+      "source": "/mercado",
+      "destination": "/mercado.html"
+    },    {
       "source": "/hoy",
       "destination": "/hoy.html"
     },
@@ -181,6 +190,10 @@
     {
       "path": "/api/bmv-harvest?job=precios",
       "schedule": "10 22 * * 1-5"
+    },
+    {
+      "path": "/api/mercado-precios?job=us",
+      "schedule": "20,35,50 21 * * 1-5"
     }
   ]
 }
