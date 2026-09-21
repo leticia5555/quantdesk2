@@ -174,6 +174,18 @@ const VACIO = () => {
   return d;
 };
 
+// El guardia cortó algo: se muestra lo que quedó Y se declara el hueco.
+const CON_CORTES = () => {
+  const d = D();
+  d.narracion = {
+    ...d.narracion,
+    cortes: { afirmaciones_cortadas: 2, secciones_cortadas: 1,
+      por_motivo: { cita_desconocida: 1, opinion: 1, seccion_vacia: 1 } },
+    declaraciones: [{ codigo: 'narracion_cortada', texto: 'El guardia de citas cortó parte de esta lectura antes de guardarla. Lo que se muestra es lo que sobrevivió; lo cortado se cuenta abajo. Un hueco declarado es un dato, uno silencioso es un bug.' }],
+  };
+  return d;
+};
+
 // Sin lectura escrita: se declara, no se esconde.
 const SIN_LECTURA = () => {
   const d = D();
@@ -533,6 +545,22 @@ async function abrir(respuesta, ruta = '/historia.html?ticker=MELI') {
   report('…y sí dice lo que sigue siendo cierto', /sin predicciones de precio/i.test(pie) && /sin recomendaciones/i.test(pie));
 
   await page.locator('.lectura').screenshot({ path: '/tmp/claude-0/-home-user-quantdesk2/c183cedc-10de-5593-8388-72ecf3a8e2f4/scratchpad/historia-lectura.png' });
+  await page.close();
+}
+{
+  const { page } = await abrir(CON_CORTES);
+  report('con cortes, la lectura se muestra igual', (await page.locator('.lectura .parte').count()) === 2);
+  report('…y el hueco se DECLARA, no se esconde', (await page.locator('.lectura .cortado').count()) === 1);
+  const c = await page.locator('.lectura .cortado').innerText();
+  report('…diciendo cuántas afirmaciones se cortaron', /2 afirmaciones cortadas/.test(c), c.replace(/\n/g, ' '));
+  report('…y por qué motivo cada una', /citas que no existen/.test(c) && /opinión/.test(c), c.replace(/\n/g, ' '));
+  report('…incluida la sección que quedó sin nada', /1 secciones que quedaron sin nada/.test(c));
+  report('…con la explicación de la regla', /un hueco declarado es un dato/i.test(c));
+  await page.close();
+}
+{
+  const { page } = await abrir(D);
+  report('sin cortes NO se pinta el bloque de cortado', (await page.locator('.lectura .cortado').count()) === 0);
   await page.close();
 }
 {

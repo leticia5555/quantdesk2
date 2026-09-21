@@ -62,7 +62,9 @@ const almacenFalso = () => {
     async esquemaListo() { return true; },
     async asegurarEsquema() { return true; },
     async narracionPorHash(cik, hash) {
-      return filas.find((f) => f.cik === cik && f.hash === hash && f.estado === 'ok') || null;
+      // Como el repo real: `ok_con_cortes` también sirve; `rechazada` no.
+      return filas.find((f) => f.cik === cik && f.hash === hash
+        && (f.estado === 'ok' || f.estado === 'ok_con_cortes')) || null;
     },
   };
 };
@@ -353,6 +355,77 @@ console.log('\n── Un fallo que costó plata dice cuánto costó');
   // Lo que se compró viaja en la respuesta, porque en la tabla no entró.
   hondo(r.cuerpo.secciones, SECCIONES, 'la narración comprada se devuelve');
   ok(r.cuerpo.crudo_no_guardado, 'y la cruda también: es lo único que queda de esta corrida');
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+console.log('\n── El guardia corre ANTES de guardar, no al leer');
+{
+  // Una narración con una cita inventada no debe llegar a EXISTIR como
+  // servible. Lo que se guarda es el texto ya cortado; la cruda queda intacta
+  // para poder ver qué dijo el modelo antes del corte.
+  const conInventada = async (ev) => ({
+    estado: 'ok', hash: hashNarracion(ev), prompt_version: 1, modelo: 'claude-opus-5', huella_prompt: 'h',
+    secciones: [
+      { id: 'direccion', texto: 'Nombró un director financiero [acc-502]. Compró una empresa [acc-inventado].' },
+      { id: 'catalizador', texto: 'Todo inventado [otro-inventado].' },
+    ],
+    crudo: { id: 'msg_1' }, costo: COSTO(0.09),
+  });
+
+  const almacen = almacenFalso();
+  const r = await correrNarracion('MELI', { lectura: lectura(), almacen, llamar: conInventada, apiKey: 'k' });
+
+  eq(r.cuerpo.estado, 'ok_con_cortes', 'el estado dice que se cortó algo');
+  eq(r.status, 200, 'y sirve igual: sobrevivió una sección');
+  eq(r.cuerpo.secciones.length, 1, 'la sección sin nada que sostener desaparece');
+  eq(r.cuerpo.secciones[0].texto, 'Nombró un director financiero [acc-502].',
+    'y de la que queda, solo la afirmación citable');
+  ok(!JSON.stringify(r.cuerpo.secciones).includes('inventado'),
+    'ninguna cita inventada sobrevive al guardado');
+
+  // Lo que se cortó se cuenta y viaja.
+  eq(r.cuerpo.cortes.afirmaciones_cortadas, 2, 'dos afirmaciones cortadas');
+  eq(r.cuerpo.cortes.secciones_cortadas, 1, 'y una sección entera');
+
+  // EN LA FILA: el texto guardado es el cortado, la cruda es la original.
+  const fila = almacen.filas[0];
+  eq(fila.estado, 'ok_con_cortes', 'la fila guarda el estado del guardia');
+  eq(fila.secciones.length, 1, 'con el texto ya cortado');
+  ok(fila.cortes && fila.cortes.lista.length === 3, 'y la lista completa de cortes');
+  ok(/Compró una empresa/.test(JSON.stringify(fila.cortes)),
+    'con el texto cortado adentro: sin eso no se puede ver qué dijo el modelo');
+  ok(fila.crudo, 'la cruda queda intacta, sin cortar');
+
+  // Si NADA sobrevive, no se sirve: la página se cae a la Fase A.
+  {
+    const todoMalo = async (ev) => ({
+      estado: 'ok', hash: hashNarracion(ev), prompt_version: 1, modelo: 'claude-opus-5', huella_prompt: 'h',
+      secciones: [{ id: 'direccion', texto: 'Inventado [no-existe].' }],
+      crudo: {}, costo: COSTO(0.09),
+    });
+    const a2 = almacenFalso();
+    const r2 = await correrNarracion('MELI', { lectura: lectura(), almacen: a2, llamar: todoMalo, apiKey: 'k' });
+    eq(r2.cuerpo.estado, 'rechazada', 'sin ninguna sección viva, la narración se rechaza');
+    eq(r2.status, 502, 'y no se contesta 200');
+    eq(r2.cuerpo.secciones, null, 'sin texto servible');
+    ok(r2.cuerpo.costo.usd_total > 0, 'pero el costo se reporta: se pagó igual');
+    // Y NO queda cacheada como buena: la próxima lectura no la sirve.
+    eq(await a2.narracionPorHash('0001099590', r2.cuerpo.hash), null,
+      'una narración rechazada no se sirve después como si estuviera buena');
+  }
+
+  // Una opinión que se cuela tampoco sobrevive al guardado.
+  {
+    const conOpinion = async (ev) => ({
+      estado: 'ok', hash: hashNarracion(ev), prompt_version: 1, modelo: 'claude-opus-5', huella_prompt: 'h',
+      secciones: [{ id: 'direccion', texto: 'Nombró un CFO [acc-502]. La acción está barata [acc-502].' }],
+      crudo: {}, costo: COSTO(0.09),
+    });
+    const a3 = almacenFalso();
+    const r3 = await correrNarracion('MELI', { lectura: lectura(), almacen: a3, llamar: conOpinion, apiKey: 'k' });
+    eq(r3.cuerpo.secciones[0].texto, 'Nombró un CFO [acc-502].', 'la opinión se corta aunque tenga cita válida');
+    eq(r3.cuerpo.cortes.por_motivo.opinion, 1, 'y se cuenta como opinión');
+  }
 }
 
 // ═════════════════════════════════════════════════════════════════════════

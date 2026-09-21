@@ -360,6 +360,10 @@ export const HISTORIA_SCHEMA = [
      modelo         text not null,
      huella_prompt  text not null,
      secciones      jsonb,
+     -- Lo que el guardia de la rebanada I cortó, con su motivo y el texto.
+     -- No es opcional: es lo que la página muestra para que el hueco quede
+     -- declarado. Un hueco declarado es un dato; uno silencioso es un bug.
+     cortes         jsonb,
      crudo          jsonb,
      costo          jsonb,
      detalle        text,
@@ -612,6 +616,7 @@ export function crearRepo({ sql = sqlReal, sqlBatch = sqlBatchReal } = {}) {
          on conflict (cik, hash) do update set
            estado = excluded.estado,
            secciones = excluded.secciones,
+           cortes = excluded.cortes,
            crudo = excluded.crudo,
            costo = excluded.costo,
            detalle = excluded.detalle,
@@ -624,6 +629,7 @@ export function crearRepo({ sql = sqlReal, sqlBatch = sqlBatchReal } = {}) {
         [
           n.cik, n.hash, n.estado, n.prompt_version, n.modelo, n.huella_prompt,
           n.secciones ? JSON.stringify(n.secciones) : null,
+          n.cortes ? JSON.stringify(n.cortes) : null,
           n.crudo ? JSON.stringify(n.crudo) : null,
           n.costo ? JSON.stringify(n.costo) : null,
           n.detalle ?? null,
@@ -666,10 +672,13 @@ export function crearRepo({ sql = sqlReal, sqlBatch = sqlBatchReal } = {}) {
     // un filing que ya cambió — un dato viejo con citas correctas, que es
     // indistinguible de uno bueno.
     async narracionPorHash(cik, hash) {
+      // `ok_con_cortes` también sirve: el guardia cortó algo y lo que quedó
+      // se muestra con el hueco declarado. Solo `rechazada` —no sobrevivió
+      // ninguna sección— y los fallos de llamada quedan afuera.
       const filas = await sql(
-        `select estado, prompt_version, modelo, secciones, costo, creado_en
+        `select estado, prompt_version, modelo, secciones, cortes, costo, creado_en
            from company_narracion
-          where cik = $1 and hash = $2 and estado = 'ok'
+          where cik = $1 and hash = $2 and estado in ('ok', 'ok_con_cortes')
           limit 1`,
         [cik, hash],
       );

@@ -201,6 +201,10 @@ create table if not exists company_narracion (
      modelo         text not null,
      huella_prompt  text not null,
      secciones      jsonb,
+     -- Lo que el guardia de la rebanada I cortó, con su motivo y el texto.
+     -- No es opcional: es lo que la página muestra para que el hueco quede
+     -- declarado. Un hueco declarado es un dato; uno silencioso es un bug.
+     cortes         jsonb,
      crudo          jsonb,
      costo          jsonb,
      detalle        text,

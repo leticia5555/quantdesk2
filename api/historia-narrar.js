@@ -39,6 +39,7 @@ import {
   narrar, hashNarracion, sumarCostos, MAX_TOKENS, MAX_TOKENS_REINTENTO, MAX_INTENTOS,
 } from './_lib/historia-narrador.js';
 import { repo } from './_lib/historia-db.js';
+import { guardar as guardarSalida } from './_lib/historia-guardia.js';
 
 export const config = { maxDuration: 300 };
 
@@ -175,6 +176,28 @@ export async function correrNarracion(ticker, {
   // de no mirar— desaparece de la cuenta justamente porque falló.
   const costo = sumarCostos(intentos.map((i) => i.costo));
 
+  // ── EL GUARDIA, ANTES DE GUARDAR ────────────────────────────────────
+  //
+  // Acá y no en la lectura: una narración con una cita inventada no debe
+  // llegar a existir como servible. Lo que se guarda en `secciones` es el
+  // texto YA cortado, y lo que se cortó viaja en `cortes` para que la página
+  // lo declare. La respuesta cruda del modelo queda intacta en `crudo`, así
+  // que siempre se puede ver qué dijo antes del corte.
+  //
+  // Los accessions válidos salen del inventario del MISMO paquete que se le
+  // mandó: la lista es cerrada por construcción, no una segunda lista que se
+  // pueda separar.
+  let cortes = null;
+  let estadoFinal = r.estado;
+  let seccionesFinales = r.estado === 'ok' ? r.secciones : null;
+  if (r.estado === 'ok') {
+    const citables = new Set(paq.inventario.map((x) => x.accession));
+    const g = guardarSalida(r.secciones, citables);
+    cortes = g.cortes.length ? { lista: g.cortes, resumen: g.resumen } : null;
+    estadoFinal = g.estado;
+    seccionesFinales = g.secciones.length ? g.secciones : null;
+  }
+
   // SE GUARDA SIEMPRE, cualquiera sea el estado.
   //
   // Y si el guardado falla, la respuesta se lleva TODO lo que se pagó. No es
@@ -186,12 +209,14 @@ export async function correrNarracion(ticker, {
     await almacen.guardarNarracion({
       cik,
       hash: r.hash,
-      estado: r.estado,
+      estado: estadoFinal,
       prompt_version: r.prompt_version,
       modelo: r.modelo_servido || r.modelo,
       huella_prompt: r.huella_prompt,
-      secciones: r.estado === 'ok' ? r.secciones : null,
-      // La cruda del ÚLTIMO intento, que es el que decidió el estado.
+      secciones: seccionesFinales,
+      cortes,
+      // La cruda del ÚLTIMO intento, SIN cortar: es la única manera de ver
+      // qué dijo el modelo antes de que el guardia lo tocara.
       crudo: r.crudo,
       costo,
       detalle: r.detalle || r.categoria || null,
@@ -211,19 +236,23 @@ export async function correrNarracion(ticker, {
         // En qué había terminado el modelo, que si no se pierde con la fila.
         estado_modelo: r.estado,
         // Lo que se compró va ACÁ, porque en la tabla no entró.
-        secciones: r.estado === 'ok' ? r.secciones : null,
+        secciones: seccionesFinales,
+        cortes,
         crudo_no_guardado: r.crudo,
       },
     };
   }
 
+  const sirve = estadoFinal === 'ok' || estadoFinal === 'ok_con_cortes';
   return {
-    status: r.estado === 'ok' ? 200 : 502,
+    status: sirve ? 200 : 502,
     cuerpo: {
       ticker, cik, hash: r.hash,
-      estado: r.estado,
-      narrada: r.estado === 'ok',
+      estado: estadoFinal,
+      narrada: sirve,
       cacheada: false,
+      // Qué cortó el guardia, en el resumen. La lista entera queda en la fila.
+      cortes: cortes ? cortes.resumen : null,
       detalle: r.detalle || null,
       evidencia_bytes: paq.bytes,
       // Cuántas llamadas se pagaron en ESTA corrida, a la vista.
@@ -231,7 +260,7 @@ export async function correrNarracion(ticker, {
       // El costo se devuelve SIEMPRE que haya habido llamada, incluso cuando
       // falló: se pagó igual, y no verlo es cómo una factura sorprende.
       costo,
-      secciones: r.estado === 'ok' ? r.secciones : null,
+      secciones: seccionesFinales,
     },
   };
 }

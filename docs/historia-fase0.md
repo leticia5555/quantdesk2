@@ -527,8 +527,7 @@ vez de tres. Es un descuento directo en el contexto que se paga por corrida.
 | Correcciones sobre la H: invariante de citas colgadas, tope del reintento, tres estados en pantalla (§11.5) | 3–4 |
 | Arreglo del diagnóstico + errores JSON en /api/ + pruebas de handler (§11.6) | 1–2 |
 | Gasto perdido: esquema verificado antes de gastar + costo en los fallos + citas fuera de la frase (§11.7) | 2–3 |
-| **Guard de citas**: toda `[accession]` de la salida tiene que existir en el contexto que se mandó; si no, se corta | 5–7 |
-| **Guard anti-opinión**: prohibido precio, calificación y recomendación, con tests que lo intenten | 5–7 |
+| **Guard de citas** + **anti-opinión** + relativo-a-hoy, con el verificador literal que H3 reusa (§11.9) — *hecho* | 5–7 |
 | Retiro del AI verdict de SMART $ + i18n + tests (§9) | 3–5 |
 | **Subtotal Fase B** | **33–48** |
 
@@ -1774,29 +1773,39 @@ alcanza `sec.gov` (§0):
 - Cuánto pesa el **documento primario** de un 8-K.
 - Cuánto pesa el **item relevante** aislado del resto.
 
-`company_filings.size_bytes` existe, pero **mide la submission completa**
-—todos los documentos, exhibits y el XBRL—, así que sirve como **cota
-superior**, no como el peso del cuerpo. Con eso ya se puede sacar el primer
-número sin bajar nada:
+`company_filings.size_bytes` existe pero **mide la submission completa**
+—todos los documentos, los exhibits y el XBRL—, y con eso adentro la cota
+superior queda tan alta que **no informa nada**: un 8-K de dos párrafos con un
+XBRL de 300 KB pesa lo mismo que uno de cuarenta páginas.
 
-```sql
--- Cota superior del peso de un 8-K, por emisor. Es la submission ENTERA:
--- el documento primario es una fracción de esto.
-select e.ticker,
-       count(*)                                        as ochokas,
-       round(avg(f.size_bytes) / 1024.0)               as kb_prom,
-       round(percentile_cont(0.5) within group (order by f.size_bytes) / 1024.0) as kb_mediana,
-       round(percentile_cont(0.9) within group (order by f.size_bytes) / 1024.0) as kb_p90
-  from company_filings f
-  join company_emisor e on e.cik = f.cik
- where f.form = '8-K'
- group by e.ticker
- order by kb_p90 desc;
+*Enmienda del 2026-09-21: el memo original proponía esa consulta como primer
+número. No sirve. Lo que hay que medir es el **documento principal**, y eso no
+está en la base.*
+
+Sí está la URL del documento principal (`company_filings.url`, que la ingesta
+guarda), así que **H1 es una sonda, no una consulta**: un `HEAD` por filing y
+leer el `Content-Length`. No se baja el cuerpo, es una request por documento y
+entra holgada en el techo de 10 req/s (§4, G4).
+
+```
+para cada 8-K de los cuatro emisores:
+    HEAD company_filings.url   →  Content-Length
+reportar: mediana y p90 en bytes y en tokens (≈ bytes/4 para HTML en inglés),
+          por emisor y en total
 ```
 
-### La aritmética, parametrizada porque el insumo no está medido
+Eso da el peso del documento primario **sin exhibits**, que es la cifra de la
+que cuelga toda la aritmética de arriba.
 
-Entrada a $5/MTok. Hoy la entrada son 14.344 tokens ($0,072 de $0,172).
+### La aritmética de la opción (a) — CUERPOS AL PROMPT, que es la descartada
+
+> ⚠️ **Esta tabla es de la opción (a) y de ninguna otra.** Se deja porque es
+> la que explica por qué (a) se descarta, no porque mida la ruta elegida.
+> Enmienda del 2026-09-21: sin esta etiqueta, dentro de un mes alguien mata
+> la idea buena con el número de la mala.
+
+Entrada a $5/MTok (Opus 5). Hoy la entrada son 14.344 tokens ($0,072 de
+$0,172).
 
 | tokens útiles por 8-K | 20 filings | entrada extra | costo por historia |
 |---|---|---|---|
@@ -1804,8 +1813,40 @@ Entrada a $5/MTok. Hoy la entrada son 14.344 tokens ($0,072 de $0,172).
 | 2.000 (el item con su contexto) | 40.000 | $0,200 | ~$0,37 (**+116%**) |
 | 8.000 (documento primario entero) | 160.000 | $0,800 | ~$0,97 (**+465%**) |
 
-**Toda la sensibilidad está en una cifra que no está medida.** Por eso el
-primer paso no es escribir código: es medir cuánto pesa el pedazo útil.
+Y lo peor de (a) no es la tabla: **se paga cada vez**. Cada historia, cada
+re-narración por un filing nuevo, cada subida de versión del prompt.
+
+### La aritmética de la opción (b) — LA ELEGIDA: la extracción es un ACTIVO
+
+*Enmienda del 2026-09-21. El memo original comparaba extracción contra
+cuerpos-al-prompt **en una sola historia**, y así la extracción parece un
+gasto más. La comparación real es amortizada, y cambia la conclusión de "caro"
+a "se paga solo".*
+
+Un 8-K **se extrae una vez en la vida**. El filing no cambia nunca: una vez
+que están el nombre, el cargo, la fecha y la frase textual, los lee esa
+historia, las que vengan después, todas las re-narraciones y todo lo que se
+construya encima. La narración, en cambio, **se repaga por historia y por
+versión del prompt**.
+
+Y la extracción no necesita Opus. *"Quién salió, de qué cargo, con qué fecha,
+con la frase textual"* es tarea chica y mecánica; asumir Opus infla el costo
+varias veces. Con Haiku 4.5 ($1 / $5 por MTok) y ~3.000 tokens de entrada más
+~300 de salida por filing:
+
+| | qué se paga | cuándo | 20 filings |
+|---|---|---|---|
+| **(b) extracción** | $0,0045 por filing | **una vez en la vida del filing** | **$0,09, para siempre** |
+| (b) hechos en el prompt | ~120 tokens por filing | por historia | $0,012 (**+7%** sobre $0,1719) |
+| (a) cuerpos en el prompt | 2.000 tokens por filing | **por historia y por versión de prompt** | $0,20 cada vez |
+
+**La extracción se repaga en media historia.** Después de eso, todo lo demás
+es ganancia, y el paquete de narración crece un 7% en vez de un 116%.
+
+El modelo de extracción es una **perilla aparte** de la de narración
+(`HISTORIA_EXTRACCION_MODEL` en `_lib/model.js`, junto a las de la app, el
+Arena e HISTORIA). Se mide con el más barato que pase H3 y se sube solo si no
+pasa — no al revés.
 
 ### Tres arquitecturas
 
@@ -1815,14 +1856,16 @@ peor cita (la afirmación apunta a 40 páginas) y la mayor superficie de
 invención, porque el modelo resume prosa libre.
 
 **(b) Extracción por filing, en una pasada aparte, barata, con cita textual
-obligatoria.** Un modelo chico (Haiku) lee UN documento y devuelve hechos
+obligatoria.** Un modelo chico —Haiku 4.5, o el más barato que pase H3— lee UN
+documento y devuelve hechos
 estructurados —nombre, cargo, entró/salió, fecha— cada uno con su fragmento
 literal. Se guarda por accession. La narración consume **esos hechos**, no el
 cuerpo.
 
 - El paquete crece poco: un 5.02 son cuatro campos, no 8.000 tokens.
 - Se paga **una vez por documento**, no una vez por historia: un filing no
-  cambia nunca.
+  cambia nunca. Es un **activo**, no un gasto por historia — la aritmética
+  amortizada está arriba.
 - La cita textual se puede **verificar mecánicamente** contra el cuerpo
   guardado — es la extensión natural del guardia de citas de la rebanada I.
 - Riesgo: la extracción puede errar. Pero un error con fragmento literal es
@@ -1851,14 +1894,36 @@ Con criterio fijado ANTES, como las compuertas de §4:
 
 | | qué mide | criterio |
 |---|---|---|
-| **H1** | peso real del documento primario de un 8-K (mediana y p90), en los cuatro emisores | si la mediana pasa de ~6.000 tokens, (a) queda descartada sin discusión |
+| **H1** | peso real del **documento primario** de un 8-K (mediana y p90), por `HEAD` sobre su URL — no `size_bytes`, que es la submission entera | si la mediana pasa de ~6.000 tokens, (a) queda descartada sin discusión |
 | **H2** | ¿se puede aislar el item 5.02 del HTML? | < 90% de documentos donde el encabezado se encuentra → (c) descartada |
-| **H3** | ¿la extracción con cita textual verifica? Fragmentos que aparecen **literal** en el cuerpo | **< 95% → no se hace.** Es la compuerta que manda |
+| **H3** | ¿la extracción con cita textual verifica? Ver la definición de abajo | **< 95% → no se hace.** Es la compuerta que manda |
 | **H4** | costo por filing de la extracción y cuántos filings por emisor | define si (b) es viable a 4.000 emisores |
 
 **H3 es la que decide.** Si los fragmentos no verifican, leer cuerpos convierte
 a HISTORIA en un resumidor con citas — que es peor que un resumidor sin citas,
 porque parece riguroso.
+
+#### Qué quiere decir "verifica", exactamente
+
+*Fijado el 2026-09-21, antes de medir.*
+
+**Subcadena exacta del cuerpo, normalizando SOLO espacios en blanco.**
+
+- Se colapsa cualquier corrida de espacios, tabulaciones y saltos de línea a
+  un espacio, en el fragmento y en el cuerpo. Nada más.
+- No se normalizan mayúsculas, ni acentos, ni comillas tipográficas, ni
+  guiones, ni puntuación.
+- **Nada difuso.** Ni distancia de edición, ni "equivalente en significado",
+  ni n-gramas, ni umbral de parecido.
+- Si la frase no aparece **tal cual**, la extracción **se descarta y se
+  cuenta**. No se corrige, no se aproxima, no se acepta "casi".
+
+Ésa es la diferencia entre una cita y una afirmación. Un umbral de parecido
+convierte la cita en una afirmación con buena presentación, y ahí se pierde
+todo lo que el módulo tiene para ofrecer.
+
+El verificador no es de esta rebanada: **es el mismo que la rebanada I usa
+para las citas de la narración**, y por eso la I va primero.
 
 ### Lo que no cambia en ningún escenario
 
@@ -1866,6 +1931,101 @@ Las reglas de §8 y la prohibición de predecir precio, calificar o recomendar.
 Y la contraevidencia obligatoria: si se leen cuerpos, "dónde se rompe la
 historia" gana una fuente nueva —lo que el documento dice y contradice lo que
 contamos— no pierde ninguna.
+
+---
+
+## 11.9. Los guardias de la salida (rebanada I)
+
+*2026-09-21. Van antes de la extracción, por pedido del operador y con razón:
+la extracción de cuerpos es exactamente por donde entraría una cita inventada.
+Hoy el modelo no puede alucinar el nombre de un CFO porque no tiene ninguno;
+el guardia tiene que estar antes de que eso cambie.*
+
+`api/_lib/historia-guardia.js`. El módulo descansa en dos promesas —*toda
+afirmación lleva su cita* y *nada de predecir precio, calificar ni
+recomendar*— y un prompt que las pide es una intención. Esto es lo que las
+vuelve propiedades.
+
+### El verificador literal, que es el mismo que va a usar H3
+
+**Subcadena exacta, normalizando SOLO espacios en blanco.** Se colapsa
+cualquier corrida de espacios, tabulaciones y saltos de línea; nada más. Un
+acento, una mayúscula, una comilla tipográfica o un guión distinto **cuentan
+como diferencia** y descartan el fragmento.
+
+Nada difuso: ni distancia de edición, ni "equivalente en significado", ni
+umbral de parecido. Un umbral convierte la cita en una afirmación con buena
+presentación, y ahí se pierde todo lo que el módulo tiene para ofrecer.
+
+Se normalizan los espacios y nada más porque el HTML de EDGAR parte las frases
+con saltos de línea en lugares arbitrarios: una corrida de espacios no es una
+diferencia de contenido. Lo demás sí lo es.
+
+### Qué se corta, y con qué granularidad
+
+La unidad es la **oración**, no el párrafo: una cita inventada en la tercera
+afirmación no tiene por qué llevarse las dos buenas. Si después de cortar no
+queda ninguna, **cae la sección entera** — mostrarla vacía o con un resto
+inerte miente por omisión.
+
+| guardia | qué corta | por qué |
+|---|---|---|
+| **citas** | una `[accession]` que no está en el inventario del paquete que se le mandó | es el diferenciador del producto |
+| **opinión** | precio objetivo, calificación, recomendación, veredicto de inversión | §8 y el encargo |
+| **relativo a hoy** | "recientemente", "actualmente", "este año" | la narración se guarda con el hash de su evidencia y se sirve durante meses: "hace poco" envejece mintiendo, con la cita correcta al lado |
+
+El guardia corre **antes de guardar**, no al leer: una narración con una cita
+inventada no debe llegar a existir como servible. Lo que se guarda en
+`secciones` es el texto ya cortado; `cortes` lleva el registro con el texto
+cortado adentro, y `crudo` queda intacto — sin eso no se puede ver qué dijo el
+modelo antes del corte, que es la misma razón por la que la cruda se guarda
+siempre (§11.4).
+
+Estados: `ok` (no se tocó nada) · `ok_con_cortes` (sobrevivió algo, el hueco
+se declara en pantalla) · `rechazada` (no quedó ninguna sección; la página se
+cae a los documentos de la Fase A).
+
+### Dónde está el límite de la lista de opinión
+
+Es la parte fácil de arruinar en la dirección contraria. **Describir lo que un
+documento dice no es calificar**: *"avisó que no se puede confiar en sus
+estados financieros [acc]"* es un hecho; *"tiene problemas contables serios"*
+es una conclusión nuestra.
+
+Por eso la lista tiene verbos de consejo y adjetivos de valuación, y **no**
+tiene palabras como "riesgo" o "problema", que aparecen legítimamente al
+describir lo que un 8-K dice de sí mismo. Hay siete frases permitidas en las
+pruebas que fallarían con una lista más ancha.
+
+Mismo cuidado en el guardia de fechas: `reciente` **no** entra como raíz
+suelta, porque *"el filing más reciente"* es una comparación entre documentos
+y es correcta.
+
+### Dos cosas que las pruebas adversarias encontraron
+
+Las pruebas están escritas para **intentar pasar** el guardia, no para
+confirmar que anda. Dos resultados:
+
+1. **Un bug real.** El estado se calculaba mirando primero si hubo cortes:
+   un modelo que devolviera secciones de texto vacío —cero afirmaciones, cero
+   cortes— quedaba en `ok` con nada adentro, y la página habría pintado un
+   bloque en blanco como si fuera una lectura. Ahora lo primero que se mira es
+   si sobrevivió algo.
+
+2. **Código muerto que parecía defensa.** Había un caso especial para no
+   partir en los decimales (`12.3%`). Al mutarlo no rompía ninguna prueba: la
+   regla de *"el punto tiene que ir seguido de un espacio"* ya lo cubre. Se
+   sacó. Código que parece cargar peso y no lo carga es peor que no tenerlo,
+   porque el próximo que lo lea va a creer que ahí está la defensa. La lista
+   de abreviaturas, en cambio, sí hace falta: al mutarla, `EE.UU.` se parte al
+   medio.
+
+### Lo que este guardia NO hace
+
+No verifica que una afirmación **diga** lo que el documento dice: verifica que
+el documento **exista** en la evidencia. La verificación de contenido es la
+cita textual, y es la que entra con la extracción (§11.8, H3) — usando este
+mismo verificador literal.
 
 ---
 

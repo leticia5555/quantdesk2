@@ -107,6 +107,10 @@ export const DECLARACIONES = {
     es: 'Todavía no hay una lectura escrita de esta empresa. Los documentos de abajo sí están: la narración se genera aparte y se guarda, no se escribe cada vez que alguien abre la página.',
     en: 'There is no written reading of this company yet. The documents below are here: the narration is generated separately and stored, not written every time someone opens the page.',
   },
+  narracion_cortada: {
+    es: 'El guardia de citas cortó parte de esta lectura antes de guardarla. Lo que se muestra es lo que sobrevivió; lo cortado se cuenta abajo. Se corta la afirmación si se puede aislar y la sección si no — un hueco declarado es un dato, uno silencioso es un bug.',
+    en: 'The citation guard cut part of this reading before storing it. What is shown is what survived; what was cut is counted below. A claim is cut when it can be isolated and the whole section when it cannot — a declared gap is data, a silent one is a bug.',
+  },
   narracion_fallida: {
     es: 'Se intentó escribir la lectura y falló. No se muestra nada a medias: una narración cortada o rechazada, con las citas correctas hasta donde llegó, se lee como completa. Los documentos de abajo no dependen de eso.',
     en: 'A reading was attempted and failed. Nothing partial is shown: a truncated or refused narration, with correct citations as far as it got, reads as complete. The documents below do not depend on it.',
@@ -562,6 +566,9 @@ export async function armarNarracion(cuerpo, { buscar, intento, lang = 'es' } = 
     };
   }
 
+  // El guardia ya cortó al guardar (rebanada I): lo que llega acá es el texto
+  // sobreviviente. Lo cortado viaja para declararlo en pantalla.
+  const cortes = guardada.cortes || null;
   return {
     estado: 'ok',
     hash,
@@ -569,7 +576,8 @@ export async function armarNarracion(cuerpo, { buscar, intento, lang = 'es' } = 
     prompt_version: guardada.prompt_version,
     creado_en: guardada.creado_en,
     secciones: guardada.secciones,
-    declaraciones: [],
+    cortes: cortes ? cortes.resumen : null,
+    declaraciones: cortes ? [declarar('narracion_cortada', lang)] : [],
   };
 }
 

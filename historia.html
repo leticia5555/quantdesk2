@@ -130,6 +130,12 @@ input.tick:focus{border-color:var(--purple);}
      sección— y las fuentes viven adentro de `.parte`, así que sin esto cada
      número se iba a su propia línea. */
   display:inline;}
+.lectura .cortado{background:rgba(255,179,71,.06);border:1px solid rgba(255,179,71,.26);
+  border-radius:8px;padding:10px 12px;margin-top:12px;}
+.lectura .cortado b{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--amber);display:block;margin-bottom:5px;}
+.lectura .cortado p{font-size:12px;color:var(--text2);line-height:1.55;}
+.lectura .cortado .cuenta{font-family:var(--mono);font-size:10.5px;color:var(--text3);margin-top:6px;}
 .lectura .proc{font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.04em;
   border-top:1px solid var(--border);padding-top:9px;margin-top:12px;line-height:1.6;}
 .lectura.falta{border-left-color:var(--text3);}
@@ -346,6 +352,14 @@ const T = {
     proc: (m, v, f) => `Escrita por ${m} · prompt v${v}${f ? ' · ' + f : ''}. Cada afirmación enlaza al documento del que sale. Sin predicciones, sin calificaciones, sin recomendaciones.`,
     citas_malas: 'Citas que no resuelven:',
     fuentes: 'Fuentes:',
+    cortado: 'El guardia cortó parte de esta lectura',
+    motivo_corte: {
+      cita_desconocida: 'citas que no existen en la evidencia',
+      opinion: 'opinión, calificación o recomendación',
+      relativo_a_hoy: 'lenguaje relativo a hoy',
+      seccion_vacia: 'secciones que quedaron sin nada',
+    },
+    afirmaciones: (n) => (n === 1 ? '1 afirmación cortada' : `${n} afirmaciones cortadas`),
     vacio_filtro: 'Ningún documento de este emisor contesta esta pregunta.',
     vacio_nocubre: 'Esta pregunta no se contesta con documentos de EDGAR, así que la línea no tiene nada que mostrar. El motivo está arriba — y no es que hayamos buscado y no hubiera.',
     contesta_q: (n) => `Pregunta ${n}`,
@@ -407,6 +421,14 @@ const T = {
     proc: (m, v, f) => `Written by ${m} · prompt v${v}${f ? ' · ' + f : ''}. Every claim links to the document it comes from. No predictions, no ratings, no recommendations.`,
     citas_malas: 'Citations that do not resolve:',
     fuentes: 'Sources:',
+    cortado: 'The guard cut part of this reading',
+    motivo_corte: {
+      cita_desconocida: 'citations not present in the evidence',
+      opinion: 'opinion, rating or recommendation',
+      relativo_a_hoy: 'language relative to today',
+      seccion_vacia: 'sections left with nothing',
+    },
+    afirmaciones: (n) => (n === 1 ? '1 claim cut' : `${n} claims cut`),
     vacio_filtro: 'No document from this issuer answers this question.',
     vacio_nocubre: 'This question is not answered with EDGAR documents, so the timeline has nothing to show. The reason is above — and it is not that we looked and found nothing.',
     contesta_q: (n) => `Question ${n}`,
@@ -741,9 +763,24 @@ function lecturaHTML(d) {
     </div>`;
   }).join('');
 
+  // LO QUE SE CORTÓ SE DECLARA. Mostrar el texto sobreviviente sin decir que
+  // falta algo sería exactamente el hueco silencioso que el módulo no hace.
+  const c = n.cortes;
+  const cortado = c ? `<div class="cortado">
+    <b>${esc(t.cortado)}</b>
+    ${(n.declaraciones || []).map((x) => `<p>${esc(x.texto)}</p>`).join('')}
+    <div class="cuenta">${esc(t.afirmaciones(c.afirmaciones_cortadas || 0))}${
+  Object.keys(c.por_motivo || {}).length
+    ? ' · ' + esc(Object.entries(c.por_motivo)
+      .filter(([k]) => k !== 'seccion_vacia')
+      .map(([k, v]) => `${v} ${t.motivo_corte[k] || k}`).join(' · ')) : ''}${
+  c.secciones_cortadas ? ' · ' + esc(`${c.secciones_cortadas} ${t.motivo_corte.seccion_vacia}`) : ''}</div>
+  </div>` : '';
+
   return `<div class="lectura">
     <h3>${esc(t.lectura)}</h3>
     ${partes}
+    ${cortado}
     <div class="proc">${esc(t.proc(n.modelo || '', n.prompt_version || '', String(n.creado_en || '').slice(0, 10)))}</div>
   </div>`;
 }
