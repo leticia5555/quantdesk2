@@ -138,8 +138,14 @@ console.log('\n── una EJECUCIÓN PARCIAL también alimenta la memoria ──
   ok(/XENE/.test(b), 'un nombre descartado en una ejecución parcial entra a la memoria igual');
   ok(!/rejected ENTIRELY/.test(b),
     'pero NO se le dice que el libro quedó congelado: sí se ejecutó, y decirle la consecuencia equivocada le haría dejar de creerle al aviso');
-  ok(/WAS executed/.test(b) && /you do not hold/.test(b),
-    'se le dice lo que de verdad pasó: el resto se ejecutó y esa posición no la tiene', b.split('\n').slice(-2)[0]);
+  // La frase decía "you never will while the name stays out of the universe",
+  // que enseñaba la misma regla falsa que el prompt: el universo NO decide lo
+  // que se puede tener. Se cambió el 2026-09-22 por el hecho, que es el mismo
+  // y no arrastra la regla: la pata se descartó y su peso quedó en cash.
+  ok(/WAS executed/.test(b) && /stayed in cash/.test(b),
+    'se le dice lo que de verdad pasó: el resto se ejecutó y ese peso quedó en cash', b.split('\n').slice(-2)[0]);
+  ok(!/you never will while the name stays out of the universe/.test(b),
+    'y ya no se le enseña que el universo expira posiciones — era la regla que hacía liquidar un nombre bueno');
 
   // Mezcla: una rechazada entera y una parcial. Son consecuencias distintas y
   // las dos tienen que aparecer.

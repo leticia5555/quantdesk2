@@ -60,6 +60,7 @@ import {
 } from './_lib/arena-benchmark.js';
 import { readBaselines, baselineDe, returnPct, indexarEquity, BASE_INDEX_USD } from './_lib/arena-baseline.js';
 import { margenDeLaTabla } from './_lib/arena-piso-retorno.js';
+import { ordenesDeActions, resumenDeOrdenes } from './_lib/arena-fills.js';
 
 const BASELINE = (() => {
   const n = Number(process.env.ARENA_BASELINE_EQUITY);
@@ -170,7 +171,15 @@ export default async function handler(req, res) {
         out.journal = {
           run_date: jr[0].run_date, status: jr[0].status, plan: jr[0].plan,
           actions: jr[0].actions || [], created_at: jr[0].created_at,
+          // ── LAS ÓRDENES CON SU PRECIO ────────────────────────────
+          // "PGR buy · filled" dice que pasó algo, no qué. El precio de
+          // ejecución, la cantidad, el monto y la hora los escribe el
+          // reconcile sobre `actions`; el costo de la posición ANTES de
+          // operar está en `account`. Juntarlos es lo que convierte un
+          // estado en un hecho auditable. Ver `_lib/arena-fills.js`.
+          ordenes: ordenesDeActions(jr[0].actions || [], jr[0].account || null),
         };
+        out.journal.resumen_ordenes = resumenDeOrdenes(out.journal.ordenes);
         const conPlan = jr.find((r) => r && typeof r.plan === 'string' && r.plan.trim());
         // Sólo viaja cuando es OTRA corrida: si la última ya trae plan, un
         // duplicado sólo invita a que la página muestre dos veces lo mismo.

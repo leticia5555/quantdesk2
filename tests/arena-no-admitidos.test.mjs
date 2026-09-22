@@ -8,7 +8,19 @@ console.log('\n── el caso XENE ──');
   const movers = { gainers: [{ symbol: 'NVDA' }], losers: [{ symbol: 'XENE', change_pct: -30 }], actives: [] };
   const r = marcarNoAdmitidos({ movers, screener: null, notable_insider_buys: [] }, ['NVDA', 'AMD']);
   ok(movers.losers[0].no_admitido === true, 'XENE queda marcado en SU PROPIA FILA, no en una lista aparte que habría que cruzar');
-  ok(/CANNOT hold/.test(movers.losers[0].nota_admision), 'y la nota dice la consecuencia, no solo el hecho');
+  // ── LA ASERCIÓN CAMBIÓ EL 2026-09-22, CON SU MOTIVO ──────────────
+  // Decía `/CANNOT hold/`, y ese texto era la instrucción que producía la
+  // liquidación forzada: deepseek compró NKE al 25% por la mañana y lo
+  // vendió por la tarde "porque el universo admisible de hoy fuerza la
+  // salida". El universo del día decide lo que se puede ABRIR o AGRANDAR,
+  // no lo que se puede TENER. La consecuencia se sigue diciendo —el punto
+  // original de la aserción— pero la correcta.
+  ok(/cannot OPEN or ADD/.test(movers.losers[0].nota_admision),
+    'y la nota dice la consecuencia: no se puede ABRIR ni AGRANDAR', movers.losers[0].nota_admision);
+  ok(!/CANNOT hold/i.test(movers.losers[0].nota_admision),
+    'y NO dice que no se pueda tener: una posición abierta no la cierra la rotación de una lista');
+  ok(/holding or reducing it is fine/.test(movers.losers[0].nota_admision),
+    'lo dice explícito, porque el silencio se leyó como prohibición');
   ok(movers.gainers[0].no_admitido === undefined, 'un nombre admitido NO se marca: una marca en todos no marca nada');
   ok(r.total === 1 && r.simbolos[0].symbol === 'XENE', 'el resumen para el journal trae el conteo y el nombre', JSON.stringify(r.simbolos));
   ok(r.simbolos[0].canales.includes('movers:losers'), 'con el canal por el que entró, que es donde hay que mirar');

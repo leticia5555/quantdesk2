@@ -746,6 +746,146 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B35 · LO QUE PUEDE VER NO ES LO QUE PUEDE TENER (2026-09-22)
+
+DeepSeek compró NKE al **25%** por la mañana y lo liquidó por la tarde. El
+motivo que escribió: *"el universo admisible de hoy fuerza la salida"*.
+
+**No estaba alucinando. Estaba leyendo bien el sistema.** El universo del día
+era a la vez lo que el agente podía MIRAR y lo que podía TENER, y el prompt se
+lo decía con todas las letras.
+
+### El texto que lo causaba
+
+Tres lugares enseñaban la misma regla falsa, y los tres salieron hoy:
+
+| dónde | decía |
+|---|---|
+| `buildTargetSystemPrompt` | *"You CANNOT hold them today"* |
+| `marcarNoAdmitidos`, en la fila de cada nombre | *"you CANNOT hold this name today"* |
+| `bloqueDeRechazos`, la memoria de rechazos | *"you never will while the name stays out of the universe"* |
+
+La respuesta a *"¿se lo decimos o lo infiere?"* es **se lo decíamos**, en
+imperativo, en el prefijo cacheado que los siete leen en cada corrida.
+
+### Y el cableado hacía lo mismo
+
+No era solo el texto. `normalizarTickersObjetivo` validaba el objetivo contra
+`universe_raw.symbols` y **nada más**, así que un nombre en el libro cuyo ticker
+no estuviera en la lista de hoy era, para el validador, un ticker inventado. De
+ahí salían **dos finales, los dos malos**, y por eso el bug no se veía como un
+bug: había un camino "sano" para cada caso.
+
+- **Si lo descartado cabía bajo el tope del rescate** (⅓ del bruto): se
+  ejecutaba el resto del libro **sin** ese nombre. Y en el contrato objetivo,
+  "sin ese nombre" **es venderlo**. Liquidación que nadie decidió.
+- **Si pesaba más que el tope**: el objetivo se rechazaba entero y el libro
+  quedaba **congelado** en el de ayer, con las posiciones que el PM acababa de
+  decidir cerrar.
+
+### La regla, ahora en dos
+
+- **Lo que puede ABRIR o AGRANDAR** → el universo del día. Ahí viven las reglas
+  de admisión (liquidez, tipo de instrumento, precio mínimo), y existen para no
+  abrir una posición de la que después no se pueda salir.
+- **Lo que puede TENER** → todo lo que YA TIENE, más el universo. Una posición
+  abierta sale por un **RIEL**, por un **STOP**, o porque el **agente decide**
+  venderla. Nunca por rotación de una lista.
+
+La rotación es constante **por construcción**: el universo se arma antes de la
+apertura, capa los movers del día a los 50 de mayor volumen y ajusta el piso de
+liquidez al feed que contestó. Un nombre entra y sale de esa lista por razones
+que no tienen nada que ver con la tesis del PM.
+
+### El único límite que queda: no se puede AGRANDAR
+
+Si tener bastara para comprar, una acción heredada sería la llave para meter el
+30% del libro en un nombre que el universo rechazó por liquidez. Así que un
+nombre que se tiene y no está en el universo se puede **mantener o reducir**, no
+aumentar.
+
+**Y el corte no es un epsilon: es `no_trade_band` (2pp).** Por debajo de la
+banda el motor no manda una orden, así que "aumentar" menos que la banda no es
+aumentar nada — y descartar esa pata por 0.3pp de drift mandaría la posición
+ENTERA a cash, que es la liquidación forzada volviendo por la puerta de atrás.
+
+`admitidos_por_tenencia` journalea qué nombres vivieron SOLO por estar en el
+libro. Sin ese campo el arreglo sería invisible, y es el que contesta cuántas
+salidas estaba forzando la rotación.
+
+### Lo que NO se tocó, y es la otra mitad del encargo
+
+Que el agente VEA todo el universo en el tablero es un cambio distinto y cuesta
+tokens. La medición está abajo (B34). Éste no cuesta ninguno.
+
+---
+
+## B34 · A CUÁNTO SE COMPRÓ Y A CUÁNTO SE VENDIÓ (2026-09-22)
+
+La pantalla decía **"PGR buy · filled"** y nada más. Eso dice que pasó algo, no
+QUÉ pasó: ni a qué precio, ni cuántas acciones, ni a qué hora, ni si la venta
+ganó o perdió. **Es el punto ciego del viernes en otra forma** — un estado que
+se lee como si fuera una explicación.
+
+### El dato estaba, en dos mitades que nadie juntaba
+
+| qué | dónde | quién lo escribe |
+|---|---|---|
+| lo que se PIDIÓ (cantidad, límite, intención, delta de peso) | `context.ejecucion.ordenes_calculadas` | la corrida, una vez |
+| lo que PASÓ (precio de ejecución, cantidad llenada, hora) | la columna **`actions`** | `runArenaReconcile`, después |
+| el costo de la posición ANTES de operar | la columna **`account`** | la corrida |
+
+`context.ejecucion.enviadas` se escribe cuando la orden SALE: ahí el estado es
+`accepted` y todavía no hay precio. La única estructura que se **re-escribe**
+es `actions`, y la proyección de `/api/liga/libros` no la miraba. El precio
+estaba en el journal y no llegaba a la pantalla.
+
+`_lib/arena-fills.js` las junta, en UN lugar: dos implementaciones del mismo
+cálculo terminan difiriendo, y ésta produce un número de dinero.
+
+### Las cinco situaciones se nombran distinto
+
+`llena` · `parcial` · `sin_llenar` (terminal y no llenó) · `pendiente` (viva, o
+el reconcile no pasó) · `no_enviada` / `sin_enviar`. Llevan a mirar cosas
+distintas, y una parcial que solo muestra lo llenado **se lee como una orden
+completa más chica**. Ahora dice cuánto se llenó *y* cuánto no.
+
+### El resultado de una salida, con una sola fórmula
+
+```
+P&L = (salida − entrada) × cantidad      para un largo
+P&L = (entrada − salida) × cantidad      para un corto
+%   = P&L / (entrada × cantidad)         para los dos
+```
+
+Escribirlo así evita la trampa clásica de invertir el cociente para el corto y
+publicar un porcentaje que no corresponde al dinero de al lado. Un `cover` es
+`side: 'buy'` para Alpaca, así que **`intencion` ahora viaja en `actions`**: sin
+ella, una venta de cierre y la apertura de un corto son indistinguibles.
+
+**Lo que este número NO es**, dicho en la pantalla y no en la letra chica:
+`avg_entry_price` es un **promedio** (una posición armada en tres compras no
+tiene "el" precio de entrada); es **bruto**, sin comisiones y **sin dividendos**;
+y **solo las salidas realizan** — una compra devuelve `null`, no cero.
+
+**Y un ausente no es un cero.** Una venta cuya entrada no se pudo leer NO entra
+al realizado como 0: se cuenta aparte (`salidas_sin_base`) y el resumen dice
+cuántas quedaron fuera del total.
+
+### El deslizamiento, gratis
+
+La referencia que aprobó el riel ya viajaba. Al lado del precio real de
+ejecución dice si el límite marketable está haciendo su trabajo — es el único
+número que lo contesta, y costaba una resta.
+
+### La hora es de MERCADO
+
+`15:58 ET`, no la del teléfono de quien mira. Un fill cerca del cierre dice
+algo; el mismo fill en hora local de Madrid se lee como si el mercado operara de
+noche.
+
+---
+
 ## B33 · EL MARGEN DE ERROR DE LA TABLA, DECLARADO ARRIBA DEL RANKING (2026-09-21)
 
 El ranking del 2026-09-21, leído como lo publicaba `/liga`:

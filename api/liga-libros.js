@@ -50,6 +50,7 @@
 import { sql } from './_lib/db.js';
 import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay } from './_lib/arena-registry.js';
 import { pairwiseOverlap, sharedTopTicker, pisoDeRuido, deltaDePesos, lecturaDeCoincidencia, CAVEAT_ENFOQUE } from './_lib/arena-herding.js';
+import { claveDeOrden, detalleDeOrden, fillsDeActions, entradasDeCuenta, resumenDeOrdenes } from './_lib/arena-fills.js';
 
 const int = (v, def, min, max) => {
   const n = parseInt(v, 10);
@@ -133,6 +134,14 @@ export const FUENTE_PRUEBA = 'prueba';
 // Una fila del journal (en vivo o de prueba) → el libro publicable.
 export function libroDeFila(row, fuente) {
   const ctx = row.context || {};
+  // ── LOS FILLS Y EL LIBRO DE ANTES ─────────────────────────────────
+  // `actions` es la única estructura que el reconcile RE-ESCRIBE después de la
+  // corrida: ahí viven el precio de ejecución, la cantidad llenada y la hora.
+  // `account` es la foto del libro ANTES de operar, que es contra lo que se
+  // mide el resultado de una venta. Las corridas de PRUEBA no tienen ninguno
+  // de los dos —no mandan órdenes—, y ahí el fill sale null, que es correcto.
+  const fills = fillsDeActions(row.actions || []);
+  const entradas = entradasDeCuenta(row.account || null);
   const target = row.target || null;
   const reb = row.rebalance || null;
   return {
@@ -187,7 +196,7 @@ export function libroDeFila(row, fuente) {
     // no se mandó ninguna. Una corrida SIN ENVIAR y una que movió dinero se
     // journalean en la misma tabla, y confundirlas sería el mismo error que
     // las tablas separadas existen para impedir del lado de la sombra.
-    ordenes: ejecucionPublicable(ctx.ejecucion),
+    ordenes: ejecucionPublicable(ctx.ejecucion, { fills, entradas }),
     // Qué contrato corrió esa vuelta, tal como se journaleó. NO se infiere del
     // contenido: una fila vieja sin el campo sale null, y null es un dato.
     contrato: ctx.contrato || null,
@@ -198,30 +207,52 @@ export function libroDeFila(row, fuente) {
 
 // La ejecución, publicable. Las órdenes CALCULADAS son la lista (existen en
 // sin enviar y en vivo); el resultado de cada una se pega encima cuando se mandó.
-export function ejecucionPublicable(e) {
+//
+// ── EL FILL VIVE EN OTRA ESTRUCTURA, Y POR ESO FALTABA EL PRECIO ─────
+// `context.ejecucion.enviadas` se escribe UNA vez, cuando la orden se manda:
+// ahí el estado es `accepted` y todavía no hay precio de ejecución. Quien
+// escribe el precio, la cantidad llenada y la hora es `runArenaReconcile`, y lo
+// hace sobre la columna `actions` — otra estructura, que esta proyección no
+// miraba. El dato estaba en el journal y no llegaba a la pantalla.
+//
+// `fills` son esas filas de `actions` y `entradas` es el libro de ANTES de la
+// corrida (`account.holdings`), que es contra lo que se mide una venta. Sin
+// ellos la función degrada a lo de antes en vez de romperse: las órdenes salen
+// con su cantidad y su límite y el fill sale en null, que es lo que significa.
+export function ejecucionPublicable(e, { fills = null, entradas = null } = {}) {
   if (!e) return null;
   const enviadas = new Map();
   for (const o of e.enviadas || []) {
     const k = String(o.client_order_id || o.symbol || '');
     if (k) enviadas.set(k, o);
   }
+  const porFill = fills || new Map();
   const ordenes = (e.ordenes_calculadas || []).map((o) => {
+    const clave = claveDeOrden(o);
     const r = enviadas.get(String(o.client_order_id || o.symbol || '')) || null;
+    // El fill reconciliado gana sobre el eco del envío: el segundo dice
+    // `accepted` para siempre, el primero dice a cuánto llenó.
+    const fill = porFill.get(clave)
+      || (o.symbol ? porFill.get(`${String(o.symbol).toUpperCase()}|${String(o.side || '').toLowerCase()}`) : null)
+      // Sin fila conciliada se usa el eco del envío, que al menos trae
+      // `result` y el estado inicial. `enviadas` vacío (modo seco) → null, y
+      // `detalleDeOrden` lo publica como `sin_enviar`.
+      || (r ? { symbol: String(o.symbol || '').toUpperCase(), side: o.side, qty: o.qty,
+        filled_qty: null, filled_avg_price: null, filled_at: null,
+        order_status: r.order_status || null, result: r.result || null, error: r.error || null,
+        intencion: o.intencion || null, client_order_id: r.client_order_id || null,
+        alpaca_order_id: r.alpaca_order_id || null } : null);
+    const d = detalleDeOrden({
+      orden: o, fill,
+      entrada: entradas ? entradas[String(o.symbol || '').toUpperCase()] || null : null,
+    });
     return {
-      ticker: o.symbol,
-      lado: o.side,
-      // `sell` y `short` son ambos `sell` para Alpaca y significan cosas
-      // opuestas: la intención original viaja al lado.
-      intencion: o.intencion || null,
-      cantidad: o.qty,
-      limite: o.limit_price,
-      referencia: o.referencia ?? null,
-      monto: o.notional_real ?? null,
-      delta_pp: Number.isFinite(o.delta_weight) ? +(o.delta_weight * 100).toFixed(2) : null,
-      cierra_posicion: !!o.closes_position,
-      resultado: r ? (r.result || null) : null,
-      estado_alpaca: r ? (r.order_status || null) : null,
-      ...(r && r.error ? { error: r.error } : {}),
+      ...d,
+      // Nombres que la página ya usaba. Se conservan para no romper un
+      // consumidor viejo por un renombre: `monto` es lo que se PIDIÓ al
+      // límite; `monto_usd` es lo que de verdad se movió.
+      cantidad: d.cantidad_pedida,
+      monto: o.notional_real ?? d.monto_pedido_usd,
     };
   });
   return {
@@ -235,6 +266,9 @@ export function ejecucionPublicable(e) {
     freno: e.freno || null,
     nota: e.nota || null,
     ordenes,
+    // Cuánto se compró, cuánto se vendió, cuánto se realizó y cuántas no
+    // llenaron. Se calcula acá y no en la página: es dinero.
+    resumen: resumenDeOrdenes(ordenes),
     descartadas: (e.descartadas || []).map((d) => ({
       ticker: d.symbol || null, lado: d.side || null, motivo: d.motivo || null,
     })),
@@ -395,6 +429,12 @@ export default async function handler(req, res) {
       // bien porque allá sí son columnas.
       const rows = await sql(
         `select run_date, created_at, agent_id, status, plan, error,
+                -- actions es la UNICA columna que el reconcile re-escribe:
+                -- sin ella no hay precio de ejecucion ni hora. account es el
+                -- libro de ANTES de operar, que es contra lo que se mide una
+                -- venta. Las dos faltaban, y por eso la pantalla solo decia
+                -- que la orden estaba llena y no a cuanto.
+                actions, account,
                 context->'target' as target,
                 context->'rebalance' as rebalance,
                 jsonb_build_object(

@@ -112,12 +112,31 @@ section{padding:20px 0 4px;}
   display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;}
 .rplan.open{-webkit-line-clamp:unset;}
 .rmore{font-family:var(--mono);font-size:9px;color:var(--purple);letter-spacing:.06em;margin-top:6px;cursor:pointer;display:inline-block;}
-.rtrades{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;}
-.trade{font-family:var(--mono);font-size:9px;letter-spacing:.03em;padding:3px 7px;border-radius:3px;border:1px solid var(--border2);color:var(--text2);}
-.trade b{color:var(--text);}
-.trade.buy{border-color:rgba(var(--green-rgb),.3);}
-.trade.sell{border-color:rgba(var(--red-rgb),.3);}
-.trade.filled{background:rgba(var(--green-rgb),.07);}
+/* ── LAS ÓRDENES DEL DÍA ──────────────────────────────────────────
+   Una fila por orden: ticker, lado, cantidad, precio de ejecución, monto y
+   hora; y debajo, si es una salida, el resultado contra la entrada. Una
+   orden que solo dice "filled" es un estado, no un hecho. */
+.ordenes{margin-top:10px;display:flex;flex-direction:column;gap:5px;}
+.orden{border:1px solid var(--border);border-left:2px solid var(--border2);border-radius:4px;padding:6px 8px;background:var(--bg);}
+.orden.buy{border-left-color:rgba(var(--green-rgb),.5);}
+.orden.sell{border-left-color:rgba(var(--red-rgb),.5);}
+.orden.filled{background:rgba(var(--green-rgb),.04);}
+.orden.parcial{border-left-color:var(--amber);}
+.orden.vacia{opacity:.7;border-left-color:var(--text3);}
+.otop{font-family:var(--mono);font-size:10px;letter-spacing:.02em;color:var(--text2);
+  display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;}
+.otop b{color:var(--text);font-size:11px;}
+.olado{text-transform:uppercase;font-size:8px;letter-spacing:.09em;color:var(--text3);}
+.oest{font-size:8px;letter-spacing:.09em;text-transform:uppercase;color:var(--amber);
+  border:1px solid rgba(255,179,71,.3);border-radius:3px;padding:1px 5px;}
+.odet{margin-left:auto;color:var(--text);font-size:10px;}
+.obot{margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;}
+.opnl{font-family:var(--mono);font-size:9px;letter-spacing:.02em;}
+.opnl b{font-weight:700;}
+.ofalta{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.02em;line-height:1.45;}
+.ores{font-family:var(--mono);font-size:9px;color:var(--text2);letter-spacing:.03em;
+  margin-top:3px;padding-top:6px;border-top:1px solid var(--border);}
+.ores b{font-weight:700;}
 .rfoot{display:flex;justify-content:space-between;gap:8px;margin-top:9px;font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.05em;}
 .badge-soon{font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.1em;padding:3px 7px;border-radius:3px;text-transform:uppercase;
   color:var(--amber);border:1px solid rgba(255,179,71,.35);background:rgba(255,179,71,.06);}
@@ -260,17 +279,79 @@ function margenHtml(m){
     (m.caveat?'<div class="fine">'+esc(m.caveat)+'</div>':'')+'</div>';
 }
 
+// ── LAS ÓRDENES DEL DÍA, CON SU PRECIO ──────────────────────────────
+// Antes: "PGR buy · filled". Eso dice que pasó algo, no QUÉ pasó — el mismo
+// punto ciego del viernes en otra forma. Ahora cada orden trae ticker, lado,
+// cantidad, precio de ejecución, monto y hora; las ventas traen además el
+// resultado contra la entrada; las parciales dicen cuánto quedó sin llenar; y
+// las que NO llenaron aparecen igual, con su estado y su motivo.
+//
+// Nada de esto se calcula acá: viene armado de `_lib/arena-fills.js`. Es
+// dinero, y dos lugares calculando dinero es la forma de que un día difieran.
+const ET = ts => {
+  const d = new Date(ts);
+  if(!isFinite(d)) return '';
+  // HORA DE MERCADO, no la del teléfono de quien mira. Un fill a las "15:58"
+  // dice algo (cerca del cierre); el mismo fill en la hora local de alguien en
+  // Madrid no dice nada, y peor: se lee como si el mercado operara de noche.
+  return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'America/New_York'})+' ET';
+};
+const px = n => { n=Number(n); return isFinite(n) ? '$'+n.toFixed(2) : '—'; };
+const ESTADO_ORDEN = {
+  llena:'', parcial:'parcial', sin_llenar:'no llenó', pendiente:'pendiente',
+  no_enviada:'no salió', sin_enviar:'sin enviar',
+};
+function ordenHtml(o){
+  const lado = o.intencion || o.lado || '';
+  const cls = (o.lado==='buy'?'buy':'sell')+(o.estado==='llena'?' filled':'')+
+    (o.estado==='parcial'?' parcial':'')+(o.estado==='sin_llenar'||o.estado==='no_enviada'?' vacia':'');
+  // La línea de dinero. Cuando no llenó no se inventa un precio: se dice el
+  // estado y el motivo, que es el dato que hay.
+  const linea = o.cantidad_llena!=null
+    ? esc(String(o.cantidad_llena))+' @ '+px(o.precio_ejecucion)+
+      (o.monto_usd!=null?' · '+money(o.monto_usd):'')+
+      (o.hora?' · '+ET(o.hora):'')
+    : (o.cantidad_pedida!=null?esc(String(o.cantidad_pedida))+' pedidas @ lím '+px(o.limite):'');
+  const etiqueta = ESTADO_ORDEN[o.estado];
+  const falta = o.estado==='parcial'&&o.cantidad_sin_llenar!=null
+    ? '<span class="ofalta">quedaron '+esc(String(o.cantidad_sin_llenar))+' sin llenar</span>' : '';
+  const r = o.resultado_contra_entrada;
+  const pnl = r&&r.calculable
+    ? '<span class="opnl '+pctClass(r.pnl_usd)+'">entrada '+px(r.entrada)+' → salida '+px(r.salida)+
+      ' · '+(r.pnl_usd>=0?'+':'−')+money(Math.abs(r.pnl_usd))+' ('+pctStr(r.pnl_pct)+')</span>'
+    : (r ? '<span class="ofalta">'+esc(r.motivo)+'</span>' : '');
+  const motivo = o.motivo&&o.estado!=='llena'&&o.estado!=='parcial'
+    ? '<span class="ofalta">'+esc(o.motivo)+'</span>' : '';
+  return '<div class="orden '+cls+'">'+
+    '<div class="otop"><b>'+esc(o.ticker||'?')+'</b> <span class="olado">'+esc(lado)+'</span>'+
+      (etiqueta?' <span class="oest">'+esc(etiqueta)+'</span>':'')+
+      '<span class="odet">'+linea+'</span></div>'+
+    (pnl||falta||motivo?'<div class="obot">'+pnl+falta+motivo+'</div>':'')+
+  '</div>';
+}
 function tradesHtml(a){
-  const j=a.journal; if(!j||!Array.isArray(j.actions)) return '';
-  // Muestra las que TOCARON el mercado (aprobadas/enviadas), no las descartadas.
-  const acts=j.actions.filter(x=>x && (x.result==='approved'||x.order_status)).slice(0,6);
-  if(!acts.length) return '';
-  return '<div class="rtrades">'+acts.map(x=>{
-    const side=(x.side||'').toLowerCase();
-    const filled=x.order_status==='filled'?' filled':'';
-    const st=x.order_status?(' · '+esc(x.order_status)):'';
-    return '<span class="trade '+side+filled+'"><b>'+esc(x.symbol||'?')+'</b> '+esc(side)+st+'</span>';
-  }).join('')+'</div>';
+  const j=a.journal; if(!j||!Array.isArray(j.ordenes)||!j.ordenes.length) return '';
+  const res=j.resumen_ordenes||null;
+  // Las que TOCARON el mercado primero; las que no llenaron van después pero
+  // van: una orden que no se llenó es información, no ruido que se esconde.
+  const orden={llena:0,parcial:1,pendiente:2,sin_llenar:3,no_enviada:4,sin_enviar:5};
+  const lista=[...j.ordenes].sort((x,y)=>(orden[x.estado]??9)-(orden[y.estado]??9)).slice(0,10);
+  const resumen = res
+    ? '<div class="ores">'+
+      (res.comprado_usd?'compró '+money(res.comprado_usd):'')+
+      (res.comprado_usd&&res.vendido_usd?' · ':'')+
+      (res.vendido_usd?'vendió '+money(res.vendido_usd):'')+
+      (res.salidas_calculadas?' · realizado <b class="'+pctClass(res.realizado_usd)+'">'+
+        (res.realizado_usd>=0?'+':'−')+money(Math.abs(res.realizado_usd))+'</b>':'')+
+      (res.parciales?' · '+res.parciales+' parcial'+(res.parciales===1?'':'es'):'')+
+      (res.sin_llenar?' · '+res.sin_llenar+' sin llenar':'')+
+      (res.pendientes?' · '+res.pendientes+' pendiente'+(res.pendientes===1?'':'s'):'')+
+      (res.nota?'<br/><span class="ofalta">'+esc(res.nota)+'</span>':'')+
+      '</div>'
+    : '';
+  return '<div class="ordenes">'+lista.map(ordenHtml).join('')+
+    (j.ordenes.length>lista.length?'<div class="ofalta">y '+(j.ordenes.length-lista.length)+' más — el detalle completo en <a href="/liga/libros">/liga/libros</a>.</div>':'')+
+    resumen+'</div>';
 }
 // La fila del índice. NO lleva número: el orden por retorno la pone donde le
 // toca, pero un puesto la volvería competidora — y no decidió nada.

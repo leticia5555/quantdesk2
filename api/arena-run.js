@@ -382,7 +382,9 @@ YOUR MANDATE: maximize the equity of this book over FOUR WEEKS. Not today, not t
 
 WHAT YOU RETURN IS A BOOK, NOT ORDERS. You do not place trades. You state the portfolio you want to hold, as weights, and a deterministic engine works out the difference against what you actually hold and executes it.
 
-⚠️ SOME NAMES IN YOUR MARKET CONTEXT ARE MARKED \`no_admitido: true\`. Those are shown for CONTEXT ONLY — a stock down 30% tells you something about its sector even when you cannot own it. You CANNOT hold them today: naming one in your \`pesos\` gets that leg discarded, and if several are bad the whole book is rejected. They appear because the day's channels are live while the tradable universe is fixed before the open, so a mid-session collapse shows up in one and not the other. Read the flag before you write a thesis about the name.
+⚠️ SOME NAMES IN YOUR MARKET CONTEXT ARE MARKED \`no_admitido: true\`. Those are shown for CONTEXT ONLY — a stock down 30% tells you something about its sector even when you cannot buy it. You CANNOT OPEN a position in them today, and you cannot ADD to one: naming one at a weight above what you already hold gets that leg discarded. They appear because the day's channels are live while the tradable universe is fixed before the open, so a mid-session collapse shows up in one and not the other. Read the flag before you write a thesis about the name.
+
+⚠️ WHAT YOU CAN HOLD IS NOT WHAT YOU CAN SEE. Today's board and today's universe are the names you can OPEN or ADD TO. They are not a list of what you are allowed to own. **A position already in your book stays legal whether or not its ticker appears on today's list**, and you must keep restating it at its weight to keep it. A holding leaves your book in exactly three ways: a rail rejects it, a deterministic stop fires, or YOU decide to sell it. Never because the list rotated — that list is rebuilt before every open, caps the day's movers, and adjusts its liquidity floor to whichever data feed answered, so names enter and leave it for reasons that have nothing to do with your thesis. "It is no longer in today's universe" is NOT a reason to exit, and a plan that gives that as its reason is describing a mistake. If you want out of a name, say why the NAME changed.
 
 ⚠️ WHAT YOU DO NOT MENTION, YOU SELL. A ticker absent from your \`pesos\` is a ticker you are closing. There is no "leave it as it is" — every position you want to keep must be restated, every run, with its weight. This is the single most important rule of the format: read it twice.
 
@@ -584,8 +586,15 @@ export function marcarNoAdmitidos({ movers, screener, notable_insider_buys }, un
     // La bandera va EN LA FILA que el modelo lee, no en una lista aparte que
     // tendría que cruzar a mano. Y el texto explica la consecuencia: sin ella,
     // "no_admitido: true" es un campo que se puede leer como un detalle.
+    // ── EL TEXTO DECÍA "NO PODÉS TENERLO" Y ESO ERA FALSO ────────────
+    // Y peor que falso: era la instrucción que producía la liquidación
+    // forzada. Un nombre fuera del universo de hoy no se puede ABRIR ni
+    // AGRANDAR; si ya está en el libro, se puede mantener o reducir. El
+    // bloque es COMPARTIDO por los siete (va en el prefijo cacheado), así que
+    // no puede hablar del libro de ninguno en particular — por eso la frase
+    // es sobre la acción (abrir/agrandar) y no sobre el agente.
     fila.no_admitido = true;
-    fila.nota_admision = 'NOT in today\'s universe — you CANNOT hold this name today. Naming it in your book gets that leg discarded.';
+    fila.nota_admision = 'NOT in today\'s universe — you cannot OPEN or ADD to this name today. If you already hold it, holding or reducing it is fine; asking for more than you hold gets that leg discarded.';
     const prev = fuera.get(s) || { symbol: s, canales: [] };
     if (!prev.canales.includes(canal)) prev.canales.push(canal);
     fuera.set(s, prev);
@@ -604,7 +613,7 @@ export function marcarNoAdmitidos({ movers, screener, notable_insider_buys }, un
     total: lista.length,
     simbolos: lista.slice(0, 40),
     nota: lista.length
-      ? 'Estos nombres se MUESTRAN por contexto de mercado y están marcados `no_admitido` en su fila: el PM no puede tenerlos hoy. Aparecen porque los canales del día y el universo usan admisiones distintas — el universo ajusta el piso al feed, capa los movers del día y se construye ANTES de la apertura, así que un desplome de media sesión entra en los canales y no en el universo.'
+      ? 'Estos nombres se MUESTRAN por contexto de mercado y están marcados `no_admitido` en su fila: el PM no puede ABRIR ni AGRANDAR una posición en ellos hoy. Si ya los tiene, mantenerlos o reducirlos es legal — el universo del día no expira posiciones abiertas. Aparecen porque los canales del día y el universo usan admisiones distintas: el universo ajusta el piso al feed, capa los movers del día y se construye ANTES de la apertura, así que un desplome de media sesión entra en los canales y no en el universo.'
       : 'Todos los nombres de los canales están en el universo del día.',
   };
 }
@@ -1476,6 +1485,17 @@ async function journalObjetivoVivo(row) {
          symbol: o.symbol, side: o.side, qty: o.qty, limit_price: o.limit_price,
          result: o.result, order_status: o.order_status || null,
          alpaca_order_id: o.alpaca_order_id || null, client_order_id: o.client_order_id || null,
+         // ── LA INTENCIÓN Y LA REFERENCIA, EN LA FILA QUE EL RECONCILE TOCA ──
+         // `sell` y `short` son ambos `sell` para Alpaca. Sin `intencion`, una
+         // venta que CIERRA un largo y la apertura de un corto se ven idénticas
+         // en `actions`, y el resultado contra la entrada se calcularía con el
+         // signo al revés. `referencia` es el precio que aprobó el riel: al
+         // lado del fill es la única forma de leer el deslizamiento.
+         // Las filas viejas salen con null, y null es un dato.
+         intencion: o.intencion || null,
+         closes_position: !!o.closes_position,
+         referencia: o.referencia ?? null,
+         delta_weight: o.delta_weight ?? null,
          origin: 'objetivo',
          reasoning: o.intencion ? `rebalanceo hacia el objetivo (${o.intencion}, ${((o.delta_weight || 0) * 100).toFixed(2)}pp)` : null,
          ...(o.error ? { error: o.error } : {}),

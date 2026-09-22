@@ -60,8 +60,8 @@ function consecuencia(corridas, parciales) {
   }
   if (parciales > 0) {
     partes.push(parciales > 1
-      ? `In ${parciales} other runs the rest of your book WAS executed, but those positions were dropped — you do not hold them, and you never will while the name stays out of the universe.`
-      : 'In another run the rest of your book WAS executed, but that position was dropped — you do not hold it, and you never will while the name stays out of the universe.');
+      ? `In ${parciales} other runs the rest of your book WAS executed, but those positions were dropped and their weight stayed in cash — you never opened them.`
+      : 'In another run the rest of your book WAS executed, but that position was dropped and its weight stayed in cash — you never opened it.');
   }
   return partes.join(' ');
 }
@@ -136,7 +136,13 @@ export function bloqueDeRechazos(filas = [], { universo = null } = {}) {
     // no decir nada: a un agente cuyo libro SÍ se ejecutó no se le puede decir
     // que quedó congelado — dejaría de creerle al aviso.
     consecuencia(corridas, parciales),
-    'A name that is not in the universe cannot be held today, no matter how good the thesis is. Use the screener to find a name that IS in it, or state your book without that position. Do not ask for it again.',
+    // ── ESTA LÍNEA DECÍA "cannot be held" Y ERA FALSA ──────────────
+    // El universo decide lo que se puede ABRIR, no lo que se puede tener.
+    // Los nombres de arriba son justamente los que el agente NO tiene —
+    // por eso se los rechazaron— así que la frase correcta es sobre abrir.
+    // Dicho como estaba, le enseñaba al PM la regla que hace liquidar una
+    // posición buena el día que su ticker sale de la lista.
+    'A name that is not in today\'s universe cannot be OPENED today, no matter how good the thesis is. Use the screener to find a name that IS in it, or state your book without that position. Do not ask for it again. This says nothing about the positions you already hold: those stay legal and you keep restating them.',
   ].join('\n');
 }
 

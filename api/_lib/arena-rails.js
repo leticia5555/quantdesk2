@@ -163,15 +163,59 @@ export function parsePortfolioResponse(raw) {
 // Toda reparación se REPORTA. Si un modelo empieza a corromper tickers de forma
 // sistemática, esconderlo detrás de un arreglo silencioso es cómo se deja de
 // notar.
-export function normalizarTickersObjetivo(weights, { universo = null } = {}) {
+// ── LO QUE PUEDE VER ≠ LO QUE PUEDE TENER (2026-09-22) ───────────────
+// EL CASO: deepseek compró NKE al 25% por la mañana y lo vendió por la tarde
+// porque "el universo admisible de hoy fuerza la salida". No fue una decisión
+// de cartera: fue el agente leyendo la lista del día como si expirara sus
+// posiciones. Y tenía razón en leerlo así, porque ASÍ ESTABA CABLEADO — el
+// universo del día era a la vez lo que podía mirar y lo que podía tener.
+//
+// Son dos preguntas distintas:
+//
+//   · LO QUE PUEDE ABRIR o AGRANDAR → el universo del día. Ahí viven las
+//     reglas de admisión (liquidez, tipo de instrumento, precio mínimo), y
+//     esas reglas existen para no abrir una posición en algo que no se puede
+//     salir después.
+//   · LO QUE PUEDE TENER → todo lo que YA TIENE, más el universo. Una posición
+//     abierta no deja de existir porque el universo se reconstruya sin ella al
+//     día siguiente. Sale por un RIEL, por un STOP, o porque el agente decide
+//     venderla. Nunca por rotación de una lista.
+//
+// La rotación del universo es CONSTANTE por construcción: el universo se arma
+// antes de la apertura, capa los movers del día a los 50 de mayor volumen, y
+// ajusta el piso de liquidez al feed que contestó. Un nombre entra y sale de
+// esa lista por razones que no tienen nada que ver con la tesis del PM.
+//
+// ── EL ÚNICO LÍMITE QUE QUEDA: NO SE PUEDE AGRANDAR ──────────────────
+// Si tener bastara para poder comprar, una acción heredada sería la llave para
+// meter el 30% del libro en un nombre que el universo rechazó por liquidez.
+// Así que un nombre que se TIENE y NO está en el universo se puede MANTENER o
+// REDUCIR, no AUMENTAR — y el corte no es un epsilon: es la banda de
+// no-negociación (`no_trade_band`). Por debajo de ella el motor no manda una
+// orden, así que "aumentar" menos que la banda no es aumentar nada, y
+// descartar esa pata por 0.3pp sería mandar la posición ENTERA a cash, que es
+// justo la liquidación forzada que esto viene a cerrar.
+export function normalizarTickersObjetivo(weights, { universo = null, tenencias = null, banda = RAILS.no_trade_band } = {}) {
   const conocidos = universo && universo.length
     ? new Set(universo.map((x) => String(x || '').trim().toUpperCase()).filter(Boolean))
     : null;
+  // { SÍMBOLO: peso actual ABSOLUTO }. Sin tenencias el comportamiento es el de
+  // antes: se degrada, no se rompe.
+  const enLibro = new Map();
+  for (const [k, v] of Object.entries(tenencias || {})) {
+    const s = String(k || '').trim().toUpperCase();
+    const n = Number(v);
+    if (s) enLibro.set(s, Number.isFinite(n) ? Math.abs(n) : 0);
+  }
 
   const salida = {};
   const reparados = [];
   const desconocidos = [];
   const colisiones = [];
+  // Los que pasaron SOLO porque ya se tenían. Es el número que dice cuánto del
+  // libro vive fuera del universo del día — y sin él, el arreglo sería
+  // invisible en el journal.
+  const admitidosPorTenencia = [];
 
   for (const [k, v] of Object.entries(weights || {})) {
     const crudo = String(k || '').trim().toUpperCase();
@@ -186,11 +230,31 @@ export function normalizarTickersObjetivo(weights, { universo = null } = {}) {
     if (limpio !== crudo) reparados.push({ pedido: crudo, normalizado: limpio });
 
     if (conocidos && !conocidos.has(limpio)) {
+      // ¿Lo TIENE? Entonces el nombre existe: lo confirmó el broker el día que
+      // llenó la orden. Que hoy no esté en la lista no lo vuelve inventado.
+      const actual = enLibro.get(limpio);
+      if (actual !== undefined) {
+        const pedido = Math.abs(Number(v) || 0);
+        if (pedido <= actual + banda + 1e-9) {
+          admitidosPorTenencia.push({
+            simbolo: limpio, peso_pedido: Number(v) || 0, peso_actual: actual,
+            nota: 'no está en el universo de HOY, pero ya está en el libro: mantenerlo o reducirlo es legal. Una posición abierta no la cierra la rotación de una lista.',
+          });
+          salida[limpio] = v;
+          continue;
+        }
+        desconocidos.push({
+          pedido: crudo, normalizado: limpio, peso: v, peso_actual: actual,
+          fuera_del_universo_pero_en_libro: true,
+          motivo: `lo tenés al ${(actual * 100).toFixed(1)}% y pedís ${(pedido * 100).toFixed(1)}%, pero ${limpio} NO está en el universo de hoy: se puede MANTENER o REDUCIR, no aumentar. Aumentar es abrir, y abrir necesita el universo.`,
+        });
+        continue;
+      }
       desconocidos.push({
         pedido: crudo, normalizado: limpio, peso: v,
         motivo: limpio !== crudo
           ? `"${crudo}" se normalizó a "${limpio}" y ESE tampoco está en el universo de hoy`
-          : 'no está en el universo de hoy',
+          : 'no está en el universo de hoy, y no lo tenés en el libro',
       });
       continue;
     }
@@ -207,6 +271,11 @@ export function normalizarTickersObjetivo(weights, { universo = null } = {}) {
   return {
     ok, weights: salida, reparados, desconocidos, colisiones,
     validado_contra_universo: !!conocidos,
+    // Cuánto del libro vive fuera del universo de hoy. Es el número que dice si
+    // la rotación de la lista estaba forzando salidas — y el que contesta
+    // "cuántas ventas de hoy fueron por rotación y no por decisión".
+    admitidos_por_tenencia: admitidosPorTenencia,
+    validado_contra_tenencias: enLibro.size > 0,
     ...(ok ? {} : {
       error: desconocidos.length
         ? `El objetivo nombra ${desconocidos.length} símbolo(s) que NO existen en el universo de hoy: ${desconocidos.map((d) => `"${d.pedido}"${d.normalizado && d.normalizado !== d.pedido ? ` → "${d.normalizado}"` : ''} (${d.motivo})`).join('; ')}. Se rechaza el objetivo ENTERO: una cartera a la que se le saca una pata ya no es la que el PM decidió.`
