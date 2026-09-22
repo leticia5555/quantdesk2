@@ -126,8 +126,27 @@ async function mapaUs(ahora) {
   // rótulo mientras los otros 299 calculan su 1D contra el lunes.
   const cierre = cierreQueSePinta(cuadros);
 
+  // UN MAPA GRIS PORQUE FALTA UNA CORRIDA NO ES UN MAPA ROTO, y tiene que
+  // poder decirlo. `cap_moneda` y `acciones_millones` son columnas nuevas: el
+  // día que esto se despliega están vacías para todos, así que TODOS los
+  // cuadros salen grises con razón. Sin este aviso, la pantalla diría "553
+  // cuadros sin dato completo" y mandaría a buscar 553 bugs donde lo que
+  // falta es correr ?job=universo. Es el mismo pecado del `catch(() => [])`:
+  // un estado del sistema disfrazado de dato que falta.
+  const sinAuditar = cuadros.filter((c) => c.estado === 'gris_punteado' && !c.cap_auditable).length;
+  const auditoria = {
+    total: cuadros.length,
+    verificadas: cuadros.filter((c) => c.estado === 'verificada').length,
+    sin_auditar: sinAuditar,
+    hallazgos: cuadros.filter((c) => c.estado === 'gris_punteado' && c.cap_auditable).length,
+    aviso: sinAuditar > cuadros.length * 0.5
+      ? `la capitalización no está auditada todavía en ${sinAuditar} de ${cuadros.length} emisoras: corré /api/mercado-r0?job=universo hasta que ?job=auditoria-cap reporte sin_moneda 0`
+      : null,
+  };
+
   return {
     mapa: 'us',
+    auditoria,
     bolsa: 'us',
     ultimo_cierre: cierre.fecha,
     cierre_detalle: cierre,

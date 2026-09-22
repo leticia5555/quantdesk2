@@ -73,6 +73,9 @@
   .iniciales{flex:0 0 auto;width:44px;height:44px;border-radius:6px;background:#1f1f1f;border:1px solid #333;
     display:flex;align-items:center;justify-content:center;font:600 13px var(--mono);color:#ddd;letter-spacing:.02em}
   .ficha h2{margin:0}
+  /* Aviso de sistema: ámbar, porque no es un error rojo ni un dato gris. */
+  #aviso{display:none;margin:6px 10px 0;padding:8px 10px;border-radius:6px;
+    background:#241f00;border:1px solid #5a4a00;color:#e8d48a;font:12px var(--mono);line-height:1.5}
   .cuadro.punteado{border:1px dashed #555}
   /* La cabecera de sector del artboard 1: 14 px, tocable, y abre el sector. */
   .cabecera{position:absolute;display:flex;align-items:center;padding:0 6px;
@@ -136,6 +139,7 @@
 
 <div id="ruta"></div>
 <main><div id="lienzo"></div></main>
+<div id="aviso"></div>
 <div id="mas"></div>
 <footer id="pie">cargando…</footer>
 
@@ -213,6 +217,7 @@
     // al llenarse, y el treemap se dibuja con píxeles medidos. Al revés, el
     // mapa se calculaba contra una altura que después se encogía y los
     // cuadros de abajo terminaban encima del pie.
+    pintarAviso(d);
     pintarPie(d);
     pintarRuta();
     pintarMapa(d);
@@ -403,6 +408,18 @@
     t.style.left = x+'px'; t.style.top = Math.max(8, ev.clientY-40)+'px';
   }
   function ocultarTip(){ document.getElementById('tip').style.display='none'; }
+
+  // EL AVISO DE SISTEMA, que no es lo mismo que un dato que falta. Un mapa
+  // gris porque la cap no se auditó todavía manda a correr un job; uno gris
+  // porque la cosecha está atrasada manda a otro lado. Decir sólo "N cuadros
+  // sin dato completo" los confunde y hace buscar el bug donde no está.
+  function pintarAviso(d){
+    var el = document.getElementById('aviso');
+    if(!el) return;
+    var a = d.auditoria && d.auditoria.aviso;
+    el.textContent = a || '';
+    el.style.display = a ? 'block' : 'none';
+  }
 
   function pintarPie(d){
     var f = d.fuente || {};

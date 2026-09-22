@@ -134,6 +134,7 @@ export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new D
       cap_medida_en: u.cap_actualizado ? String(u.cap_actualizado).slice(0, 10) : null,
       estado: cap.estado,
       motivo: cap.motivo,
+      cap_auditable: cap.auditable === true,
       cap_moneda: cap.moneda,
       cap_error_pct: cap.error_pct,
       cap_multiplo: cap.multiplo,

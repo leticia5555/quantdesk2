@@ -80,13 +80,20 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   const cand = candidatasCapUs(entrada || {});
   const decl = cand.find((c) => c.serie === 'finnhub:metric');
   const recon = cand.find((c) => c.serie === 'acciones×precio');
+  // `auditable` separa DOS grises que se ven igual y se arreglan distinto:
+  //   false → faltan insumos (la cosecha no repobló moneda/acciones todavía).
+  //           Se arregla corriendo ?job=universo.
+  //   true  → hubo con qué comparar y NO cuadró. Es un hallazgo de verdad.
+  // Sin esta distinción, el día que se despliegue esto el mapa sale entero
+  // gris y la pantalla dice "553 sin capitalización verificada", que manda a
+  // buscar 553 bugs donde lo que falta es una corrida.
   const base = { symbol, moneda: moneda ? String(moneda).toUpperCase() : null };
 
   // Sin reconstrucción no hay con qué contrastar. Una sola fuente no se
   // "verifica" a sí misma; a lo sumo se le cree, y creerle es lo que falló.
   if (!recon) {
     return {
-      ...base, estado: 'gris_punteado', cap_usd: null, error_pct: null, multiplo: null,
+      ...base, estado: 'gris_punteado', auditable: false, cap_usd: null, error_pct: null, multiplo: null,
       motivo: !decl ? 'sin capitalización de ninguna fuente'
         : 'no se puede reconstruir la cap (faltan acciones en circulación o precio en USD)',
     };
@@ -95,7 +102,7 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   // Sin declarada, la reconstruida queda sola: mismo argumento.
   if (!decl) {
     return {
-      ...base, estado: 'gris_punteado', cap_usd: null, error_pct: null, multiplo: null,
+      ...base, estado: 'gris_punteado', auditable: false, cap_usd: null, error_pct: null, multiplo: null,
       motivo: 'sólo hay acciones×precio, sin una segunda fuente que la confirme',
     };
   }
@@ -108,7 +115,11 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   // es el número, es no saber en qué unidad está.
   if (!decl.usd) {
     return {
-      ...base, estado: 'gris_punteado', cap_usd: null, error_pct: e, multiplo,
+      ...base, estado: 'gris_punteado',
+      // Saber que viene en TWD es un HALLAZGO; no saber en qué moneda viene
+      // es un insumo que falta. No son el mismo gris.
+      auditable: !!decl.moneda,
+      cap_usd: null, error_pct: e, multiplo,
       motivo: decl.moneda
         ? `la cap declarada viene en ${decl.moneda}, no en USD`
         : 'no se sabe en qué moneda viene la cap declarada',
@@ -116,13 +127,14 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   }
 
   if (e == null) {
-    return { ...base, estado: 'gris_punteado', cap_usd: null, error_pct: null, multiplo, motivo: 'las dos fuentes no son comparables' };
+    return { ...base, estado: 'gris_punteado', auditable: false, cap_usd: null, error_pct: null, multiplo, motivo: 'las dos fuentes no son comparables' };
   }
 
   const ok = Math.abs(e) <= umbral;
   return {
     ...base,
     estado: ok ? 'verificada' : 'gris_punteado',
+    auditable: true,
     // La cap que viaja es la DECLARADA, no un promedio: promediar dos fuentes
     // que discrepan fabrica un número que ninguna midió.
     cap_usd: ok ? decl.cap : null,
@@ -140,6 +152,8 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
 export function auditaCapUs(filas = [], umbral = CRITERIOS.g2_max_error_pct) {
   const veredictos = filas.map((f) => veredictoCapUs(f, umbral));
   const grises = veredictos.filter((v) => v.estado === 'gris_punteado');
+  const pendientes = grises.filter((v) => !v.auditable);
+  const hallazgos = grises.filter((v) => v.auditable);
   const porMoneda = {};
   for (const v of veredictos) {
     const k = v.moneda || 'desconocida';
@@ -149,11 +163,15 @@ export function auditaCapUs(filas = [], umbral = CRITERIOS.g2_max_error_pct) {
     total: veredictos.length,
     verificadas: veredictos.length - grises.length,
     gris_punteado: grises.length,
+    // Los dos números que NO hay que sumar: uno manda a correr la cosecha,
+    // el otro manda a mirar emisoras.
+    sin_auditar: pendientes.length,
+    hallazgos: hallazgos.length,
     no_usd: veredictos.filter((v) => v.moneda && v.moneda !== 'USD').length,
     por_moneda: porMoneda,
     umbral_pct: umbral,
     // Los peores primero: el que más miente de tamaño es el que más se ve.
-    peores: grises
+    peores: hallazgos
       .slice()
       .sort((a, b) => Math.abs(b.error_pct ?? 0) - Math.abs(a.error_pct ?? 0))
       .slice(0, 50),

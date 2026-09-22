@@ -114,6 +114,7 @@ const FIXTURES = {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css' };
 let pedidosApi = 0;
 let roto = false;
+let sinAuditar = false;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   // EL INTERRUPTOR VIVE EN EL SERVIDOR DE PRUEBA, NO EN LA PÁGINA. Se probó
@@ -125,11 +126,25 @@ const server = createServer(async (req, res) => {
     roto = url.searchParams.get('v') === '1';
     res.writeHead(200); return res.end('ok');
   }
+  if (url.pathname === '/__sin-auditar') {
+    sinAuditar = url.searchParams.get('v') === '1';
+    res.writeHead(200); return res.end('ok');
+  }
   if (url.pathname === '/api/mercado-mapa') {
     pedidosApi++;
     res.writeHead(200, { 'content-type': 'application/json' });
     // La respuesta que da el endpoint de verdad cuando una lectura falla:
     // así llegó a producción, con un `filter` sobre `row_number()`.
+    if (sinAuditar) {
+      // Como quedará prod el día del despliegue: columnas nuevas vacías, así
+      // que todos los cuadros grises CON RAZÓN y ningún hallazgo.
+      const f = JSON.parse(JSON.stringify(FIXTURES.us));
+      f.auditoria = {
+        total: f.cuadros.length, verificadas: 0, sin_auditar: f.cuadros.length, hallazgos: 0,
+        aviso: `la capitalización no está auditada todavía en ${f.cuadros.length} de ${f.cuadros.length} emisoras: corré /api/mercado-r0?job=universo hasta que ?job=auditoria-cap reporte sin_moneda 0`,
+      };
+      return res.end(JSON.stringify(f));
+    }
     if (roto) {
       return res.end(JSON.stringify({
         mapa: 'us', cuadros: [], mas: null,
@@ -374,6 +389,19 @@ try {
   chequeo('sin dato, el chip NO nombra un día que nada respalda',
     !/cierre del/.test(roto.chip), roto.chip.trim());
   chequeo('y el chip dice por qué no lo nombra', /no viajó/.test(roto.titulo), roto.titulo);
+
+  // ── UN MAPA GRIS POR FALTA DE CORRIDA SE EXPLICA SOLO ─────────────
+  await fetch(`${BASE}/__sin-auditar?v=1`);
+  await p.goto(`${BASE}/mercado?mapa=us&periodo=1D`, { waitUntil: 'networkidle' });
+  await p.waitForTimeout(150);
+  const aviso = await p.evaluate(() => {
+    const e = document.getElementById('aviso');
+    return { visible: !!e && getComputedStyle(e).display !== 'none', txt: e ? e.textContent : '' };
+  });
+  chequeo('un mapa sin auditar lo DICE, no se hace el gris misterioso',
+    aviso.visible && /no está auditada todavía/.test(aviso.txt), aviso.txt.slice(0, 70));
+  chequeo('y el aviso dice exactamente qué correr', /job=universo/.test(aviso.txt));
+  await fetch(`${BASE}/__sin-auditar?v=0`);
 
   await fetch(`${BASE}/__romper?v=0`);
   await p.goto(`${BASE}/mercado?mapa=us&periodo=1D`, { waitUntil: 'networkidle' });
