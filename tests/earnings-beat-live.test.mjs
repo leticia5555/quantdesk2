@@ -13,7 +13,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { readFileSync } from 'node:fs';
-import { estadisticasHistoricas, CRITERIOS } from '../api/_lib/earnings-beat.js';
+import { estadisticasHistoricas, sorpresaPct, escalaDelEstimado, PISO_ESCALA, CRITERIOS } from '../api/_lib/earnings-beat.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -48,25 +48,132 @@ ok(vacio.sin_datos === true && vacio.ventana === null && typeof vacio.motivo ===
   'sin datos → lo dice con motivo, no inventa un 0%');
 ok(estadisticasHistoricas(null).sin_datos === true, 'null → no crashea');
 
-console.log('CICATRIZ MU: el promedio mentía y la mediana no');
+console.log('SIGNO con estimados NEGATIVOS (los dos casos reales de MU)');
 
-// Caso real reportado: 13 beats al hilo, últimos 8 trimestres positivos, y el
-// promedio decía −26.06%. La causa: UN trimestre con estimado ≈ $0.01.
-const mu = [];
-for (let i = 0; i < 16; i++) mu.push(q(`2026-${String(12 - (i % 12)).padStart(2, '0')}-15`.replace('2026', String(2026 - Math.floor(i / 4))), 1.2, 1.1, 9.1));
-mu.push(q('2021-03-15', -0.29, 0.01, -3000));            // el que arrastra el promedio
-for (let i = 0; i < 8; i++) mu.push(q(`20${10 + i}-06-15`, 1.0, 0.95, 5.3));
-const rMu = estadisticasHistoricas(mu);
+// pead_earnings hereda el % de Alpha Vantage cuando AV lo trae, y solo lo
+// recalcula con |estimado| cuando AV lo deja nulo. O sea: la convención de
+// signo de AV nunca se verificó. Por eso el número que se MUESTRA se calcula
+// acá — y acá se testea, con los dos trimestres reales que aparecieron en el
+// diag de MU. Si el denominador dejara de estar en valor absoluto, un miss
+// contra una pérdida esperada se vería como beat.
+ok(sorpresaPct(-1.91, -0.88) < 0,
+  'est −0.88 → −1.91 da NEGATIVO (reportó peor que la pérdida esperada)', sorpresaPct(-1.91, -0.88).toFixed(2));
+ok(sorpresaPct(0.42, -0.25) > 0,
+  'est −0.25 → 0.42 da POSITIVO (esperaban pérdida y ganó)', sorpresaPct(0.42, -0.25).toFixed(2));
+ok(Math.abs(sorpresaPct(-1.91, -0.88) + 117.05) < 0.01, 'y la magnitud es (rep−est)/|est|', sorpresaPct(-1.91, -0.88));
+ok(sorpresaPct(0.80, 1.00) < 0 && sorpresaPct(1.20, 1.00) > 0, 'con estimados positivos, los signos de siempre');
+ok(sorpresaPct(0.10, 0) === null, 'estimado cero → null, no Infinity');
+ok(sorpresaPct(null, 1) === null && sorpresaPct(1, null) === null, 'cifras faltantes → null');
 
-ok(rMu.sorpresa.mediana_pct === 9.1, 'la MEDIANA sobrevive al outlier', rMu.sorpresa.mediana_pct);
-ok(rMu.sorpresa.promedio_pct < -50, 'el promedio efectivamente se va al pozo (por eso no es el titular)', rMu.sorpresa.promedio_pct);
-ok(rMu.sorpresa.distorsionado === true, 'y la divergencia se DECLARA en vez de esconderse');
-ok(rMu.sorpresa.denominador_chico === 1, 'cuenta los trimestres con estimado cerca de cero', rMu.sorpresa.denominador_chico);
-ok(rMu.sorpresa.extremos.length === 3 && rMu.sorpresa.extremos[0].sorpresa_pct === -3000,
-  'publica los 3 trimestres más extremos, con el peor primero (es el diagnóstico)');
-ok(rMu.sorpresa.extremos[0].denominador_chico === true && rMu.sorpresa.extremos[0].estimado === 0.01,
-  'y muestra las cifras crudas que explican el disparate', JSON.stringify(rMu.sorpresa.extremos[0]));
-ok(typeof rMu.sorpresa.nota === 'string' && /MEDIANA/.test(rMu.sorpresa.nota), 'con una nota que dice cuál número manda');
+// El conteo de beats NO usa el porcentaje: sale de comparar las dos cifras.
+// Por eso un lío de signos en la fuente no puede contaminar el titular.
+const negs = estadisticasHistoricas([
+  { reported_date: '2026-06-25', reported_eps: -1.91, estimated_eps: -0.88, surprise_pct: -117 },
+  { reported_date: '2026-03-25', reported_eps: 0.42, estimated_eps: -0.25, surprise_pct: 268 },
+]);
+ok(negs.ventana.beats === 1, 'reportar −1.91 contra −0.88 NO es un beat; 0.42 contra −0.25 SÍ', negs.ventana.beats);
+ok(negs.sorpresa.estimado_no_positivo === 2, 'cuenta los trimestres con estimado cero o negativo', negs.sorpresa.estimado_no_positivo);
+
+// Si AV mandara el signo al revés, se detecta en vez de heredarse en silencio.
+const discrepa = estadisticasHistoricas([
+  { reported_date: '2026-06-25', reported_eps: -1.91, estimated_eps: -0.88, surprise_pct: +117 },
+]);
+ok(discrepa.sorpresa.signo_discrepante === 1,
+  'un signo al revés en la tabla se CUENTA (no se hereda callado)', discrepa.sorpresa.signo_discrepante);
+ok(discrepa.sorpresa.mediana_pct < 0, 'y lo que se muestra es el nuestro, no el de la tabla', discrepa.sorpresa.mediana_pct);
+
+console.log('CICATRIZ MU: lo que arregló el número fue la VENTANA, no la mediana');
+
+// El diag en producción desmintió el primer diagnóstico: MU dio
+// distorsionado:false y UN solo denominador chico. Sus extremos son
+// trimestres de PÉRDIDA reales — es cíclica. Este test fija esa distinción:
+// colas reales y artefacto de denominador se reportan DISTINTO.
+const ciclica = [];
+for (let i = 0; i < 20; i++) ciclica.push({ reported_date: `2026-${String(12 - (i % 12)).padStart(2, '0')}-15`.replace('2026', String(2026 - Math.floor(i / 4))), reported_eps: 1.2, estimated_eps: 1.1, surprise_pct: 9.1 });
+// …y la bajada del ciclo, fuera de la ventana de 5 años:
+for (let i = 0; i < 12; i++) ciclica.push({ reported_date: `20${18 + Math.floor(i / 4)}-0${(i % 4) * 2 + 1}-15`, reported_eps: -1.91, estimated_eps: -0.88, surprise_pct: -117 });
+const rc = estadisticasHistoricas(ciclica);
+ok(rc.ventana.pct === 100 && rc.completo.pct < 70,
+  'la ventana de 5 años y el historial completo difieren DE VERDAD en una cíclica', `${rc.ventana.pct}% vs ${rc.completo.pct}%`);
+ok(rc.sorpresa.denominador_chico === 0, 'y sin un solo denominador chico: las colas son reales', rc.sorpresa.denominador_chico);
+
+// Cuando la distorsión SÍ viene de denominadores, se dice que viene de ahí.
+const artefacto = estadisticasHistoricas([
+  ...Array.from({ length: 10 }, (_, i) => ({ reported_date: `2026-0${(i % 9) + 1}-15`, reported_eps: 1.2, estimated_eps: 1.1, surprise_pct: 9.1 })),
+  { reported_date: '2021-03-15', reported_eps: -0.29, estimated_eps: 0.01, surprise_pct: -3000 },
+]);
+ok(artefacto.sorpresa.distorsionado === true && artefacto.sorpresa.causa === 'artefacto_denominador',
+  'distorsión por denominador chico → se nombra como artefacto', artefacto.sorpresa.causa);
+const colas = estadisticasHistoricas([
+  ...Array.from({ length: 10 }, (_, i) => ({ reported_date: `2026-0${(i % 9) + 1}-15`, reported_eps: 1.2, estimated_eps: 1.1, surprise_pct: 9.1 })),
+  { reported_date: '2021-03-15', reported_eps: -1.91, estimated_eps: -0.88, surprise_pct: -117 },
+]);
+ok(colas.sorpresa.distorsionado === true && colas.sorpresa.causa === 'colas_reales',
+  'distorsión por colas reales → se nombra como tal, no como dato sucio', colas.sorpresa.causa);
+ok(colas.sorpresa.extremos[0].estimado_no_positivo === true,
+  'y el extremo muestra que el estimado era negativo, para poder leerlo bien');
+
+console.log('CICATRIZ BA: la tarjeta NO puede afirmar una causa que el dato no dice');
+
+// BA salió con distorsionado:true y denominador_chico:0, y la tarjeta imprimía
+// "distorsionado por 0 trimestre(s) con estimado cerca de cero". Falso: su
+// extremo es est 0.09 → −6.18 (737 MAX), un trimestre REAL. El mismo error que
+// ya habíamos corregido en el endpoint, repetido por el texto de la UI.
+const ba = estadisticasHistoricas([
+  { reported_date: '2026-06-25', reported_eps: -6.18, estimated_eps: 0.09, surprise_pct: -6966 },
+  ...Array.from({ length: 9 }, (_, i) => ({ reported_date: `2025-0${(i % 9) + 1}-15`, reported_eps: 1.2, estimated_eps: 1.1, surprise_pct: 9 })),
+]);
+ok(ba.sorpresa.distorsionado === true && ba.sorpresa.denominador_chico === 0,
+  'BA: distorsionado SIN denominadores chicos', `${ba.sorpresa.distorsionado}/${ba.sorpresa.denominador_chico}`);
+ok(ba.sorpresa.causa === 'colas_reales', 'la causa es COLAS REALES, no artefacto', ba.sorpresa.causa);
+ok(!/cerca de cero/.test(ba.sorpresa.causa_probable) && /REALES/.test(ba.sorpresa.causa_probable),
+  'y la prosa no menciona estimados cerca de cero cuando no los hay', ba.sorpresa.causa_probable);
+
+const conChicos = estadisticasHistoricas([
+  { reported_date: '2026-06-25', reported_eps: -0.29, estimated_eps: 0.01, surprise_pct: -3000 },
+  ...Array.from({ length: 9 }, (_, i) => ({ reported_date: `2025-0${(i % 9) + 1}-15`, reported_eps: 1.2, estimated_eps: 1.1, surprise_pct: 9 })),
+]);
+ok(conChicos.sorpresa.causa === 'artefacto_denominador', 'y cuando SÍ hay denominador de centavos, la causa cambia', conChicos.sorpresa.causa);
+ok(/centavos/.test(conChicos.sorpresa.causa_probable), 'con su prosa propia');
+ok(ba.sorpresa.causa !== conChicos.sorpresa.causa,
+  'LAS DOS CAUSAS NO COMPARTEN TEXTO — mismo texto para las dos es lo que nos tuvo equivocados dos vueltas');
+
+console.log('ESCALA del estimado: la fragilidad que `frontera` no ve');
+
+// INTC: estimados de un centavo. Un beat de $0.28 es +2800% y NO es "frontera"
+// (que mide ≤$0.01 en dólares absolutos), pero esa racha es frágil igual.
+const intc = escalaDelEstimado([
+  { reported_date: '2026-06-25', estimated_eps: 0.01 }, { reported_date: '2026-03-25', estimated_eps: 0.02 },
+  { reported_date: '2025-12-20', estimated_eps: 0.01 }, { reported_date: '2025-09-20', estimated_eps: 0.05 },
+]);
+ok(intc.escala_chica === true && intc.estimado_mediano === 0.015, 'INTC queda marcado por escala', intc.estimado_mediano);
+const aapl = escalaDelEstimado([
+  { reported_date: '2026-06-25', estimated_eps: 1.42 }, { reported_date: '2026-03-25', estimated_eps: 1.51 },
+]);
+ok(aapl.escala_chica === false, 'AAPL no', aapl.estimado_mediano);
+ok(escalaDelEstimado([{ reported_date: '2026-06-25', estimated_eps: -0.30 }]).escala_chica === false,
+  'usa el VALOR ABSOLUTO: un estimado de −$0.30 no es de escala chica');
+ok(escalaDelEstimado([]).estimado_mediano === null && escalaDelEstimado(null).escala_chica === false,
+  'sin datos → null, no crashea');
+ok(escalaDelEstimado([
+  { reported_date: '2026-06-25', estimated_eps: 0.01 }, { reported_date: '2020-06-25', estimated_eps: 5.00 },
+  { reported_date: '2019-06-25', estimated_eps: 5.00 }, { reported_date: '2018-06-25', estimated_eps: 5.00 },
+  { reported_date: '2017-06-25', estimated_eps: 5.00 },
+], { n: 1 }).escala_chica === true, 'mira los ÚLTIMOS trimestres, no la historia entera');
+ok(PISO_ESCALA === 0.20, 'el piso propuesto es $0.20 y está en una constante, no suelto en el código');
+
+console.log('CONTEOS: por qué filas_en_tabla y completo.total no cuadran');
+
+const conHuecos = estadisticasHistoricas([
+  { reported_date: '2026-06-25', reported_eps: 1.2, estimated_eps: 1.1, surprise_pct: 9 },
+  { reported_date: '2026-03-25', reported_eps: 1.1, estimated_eps: null, surprise_pct: null },
+  { reported_date: '2025-12-20', reported_eps: null, estimated_eps: 1.0, surprise_pct: null },
+]);
+ok(conHuecos.filas_en_tabla === 3 && conHuecos.completo.total === 1,
+  'filas en tabla ≠ trimestres comparables', `${conHuecos.filas_en_tabla} vs ${conHuecos.completo.total}`);
+ok(conHuecos.descartados_sin_cifras === 2,
+  'la diferencia se publica: son los trimestres sin estimado o sin reportado (AV no siempre los da)',
+  conHuecos.descartados_sin_cifras);
 
 console.log('VENTANA: 5 años manda, el historial completo acompaña');
 
@@ -130,6 +237,16 @@ ok(/Sorpresa mediana: /.test(card) && /Median surprise: /.test(card),
 ok(!/'Sorpresa promedio: '|'Average surprise: '/.test(card),
   'y NADIE volvió a poner el promedio de titular (fue el "-26.06%" de MU)');
 ok(/sp\.distorsionado/.test(card), 'cuando promedio y mediana divergen, la tarjeta lo dice');
+// CICATRIZ BA pineada: la tarjeta elige el texto por `causa`, no lo afirma.
+ok(/sp\.causa\s*===\s*'artefacto_denominador'/.test(card),
+  'la tarjeta elige el texto de la causa por CÓDIGO (sp.causa), no lo arma sola');
+ok(!/distorsionado por '\+sp\.denominador_chico\+' trimestre\(s\) con estimado cerca de cero/.test(card),
+  'y NADIE volvió a hardcodear "estimado cerca de cero" (el bug de BA)');
+const lineasCausa = card.split('\n')
+  .filter((l) => !/^\s*\/\//.test(l))   // los comentarios explican el bug: no son texto de pantalla
+  .filter((l) => /cerca de cero|near-zero|pennies-sized|de centavos/i.test(l));
+ok(lineasCausa.every((l) => /artefacto_denominador|denominador_chico/.test(l)),
+  'toda mención a estimados de centavos vive dentro de la rama del artefacto', lineasCausa.length);
 ok(/v\.beats\+' de '\+v\.total|v\.beats\+' of '\+v\.total/.test(card),
   'el titular sale de la VENTANA (v), no del historial completo');
 ok(/completo/.test(card) && /full history/.test(card),

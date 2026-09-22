@@ -13,6 +13,10 @@
 //                                             → base histórica de esos
 //                                               símbolos (solo DB), con los
 //                                               3 trimestres más extremos
+//   GET /api/earnings-beat?vista=live&diag=escala
+//                                             → cuántos de los 99 tienen
+//                                               estimados de escala chica
+//                                               (medición, no cambia la UI)
 //   GET /api/earnings-beat                    → qué es esto + en qué fase va
 //
 // Parámetros del censo (todos opcionales):
@@ -65,7 +69,7 @@ import {
   extraeConsensoEps, outcomeResuelto, tokenYes, precioEnT24h, cruzaConPead, evaluaFuentePIT,
   isoDia, ts, resumenMarkdown, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
   analizaDesfases, clasificaT24h, clasificaParaV1, comparaEmparejamiento,
-  estadisticasHistoricas, indiceYes, num,
+  estadisticasHistoricas, indiceYes, num, escalaDelEstimado, PISO_ESCALA,
 } from './_lib/earnings-beat.js';
 import { V0_UNIVERSE } from './_lib/pead-universe.js';
 import { getSymbolMap } from './earnings.js';
@@ -120,6 +124,50 @@ const ESTRATEGIAS = [
 //   C. el racimo (evento/serie) al que pertenece un mercado de earnings.
 // El barrido queda como control opcional (&barrido=1), nunca como el método.
 
+// ── Censo de ESCALA del universo (?vista=live&diag=escala) ────────────────
+// Antes de decidir si la fragilidad por escala se MUESTRA, hay que saber a
+// cuántos de los 99 les aplica: si son tres, es una nota al pie; si son
+// treinta, es una columna. `frontera` (beats ≤ $0.01 en dólares absolutos) se
+// le escapa a INTC, cuyos estimados rondan el centavo: un beat de $0.28 es
+// +2800% y no cae en "frontera", pero esa racha es frágil de otra manera.
+// Esto MIDE. No cambia la tarjeta.
+async function censoDeEscala() {
+  const universo = [...new Set(V0_UNIVERSE)];
+  const ph = universo.map((_, i) => `$${i + 1}`).join(', ');
+  const filas = await sql(
+    `select symbol, to_char(reported_date, 'YYYY-MM-DD') as reported_date, estimated_eps
+       from pead_earnings
+      where symbol in (${ph}) and estimated_eps is not null
+      order by reported_date desc`,
+    universo
+  );
+  const porSimbolo = new Map();
+  for (const f of filas) {
+    if (!porSimbolo.has(f.symbol)) porSimbolo.set(f.symbol, []);
+    porSimbolo.get(f.symbol).push(f);
+  }
+  const medidos = universo.map((s) => ({ symbol: s, ...escalaDelEstimado(porSimbolo.get(s) || []) }));
+  const conDatos = medidos.filter((m) => m.estimado_mediano !== null);
+  const chicos = conDatos.filter((m) => m.escala_chica).sort((a, b) => a.estimado_mediano - b.estimado_mediano);
+  return {
+    diag: 'escala',
+    pregunta: '¿A cuántos de los 99 símbolos les aplicaría una señal de fragilidad por escala del estimado?',
+    piso: PISO_ESCALA,
+    universo: universo.length,
+    con_datos: conDatos.length,
+    sin_datos: universo.length - conDatos.length,
+    escala_chica: chicos.length,
+    simbolos: chicos.map((m) => ({ symbol: m.symbol, estimado_mediano: m.estimado_mediano, trimestres: m.trimestres_usados })),
+    // Para calibrar el piso con datos en vez de con una corazonada.
+    percentiles: (() => {
+      const v = conDatos.map((m) => m.estimado_mediano).sort((a, b) => a - b);
+      const p = (q) => (v.length ? v[Math.min(v.length - 1, Math.floor(q * v.length))] : null);
+      return { p10: p(0.10), p25: p(0.25), mediana: p(0.50), p75: p(0.75) };
+    })(),
+    nota: 'MEDICIÓN, no decisión: la señal NO se muestra en la tarjeta. Con este conteo se decide si vale una nota al pie, una columna, o nada.',
+  };
+}
+
 // ── Diagnóstico por símbolo (?vista=live&diag=MU,COST) ────────────────────
 // Solo DB, sin tocar Gamma: sirve para mirar la base histórica de una empresa
 // AUNQUE no tenga mercados abiertos. Nació de un número que se veía imposible
@@ -146,9 +194,17 @@ async function diagnosticoSimbolos(simbolos) {
     diag: limpios.map((s) => ({
       symbol: s,
       trimestres_en_tabla: (porSimbolo.get(s) || []).length,
+      // `trimestres_en_tabla` cuenta filas; `completo.total` cuenta las que
+      // tienen reportado Y estimado. La diferencia está en
+      // `historico.descartados_sin_cifras` y NO es un error de conteo.
       historico: estadisticasHistoricas(porSimbolo.get(s) || []),
     })),
-    como_leerlo: 'Mirá historico.sorpresa: si `distorsionado` es true, el promedio está arrastrado por los trimestres de `extremos` con `denominador_chico` (estimado cerca de cero). El número que se muestra en la tarjeta es la MEDIANA.',
+    como_leerlo: [
+      'historico.sorpresa.distorsionado = el promedio y la mediana cuentan historias distintas. `causa_probable` dice cuál de las dos: artefacto de denominador (estimado cero/negativo/de centavos) o COLAS REALES (una cíclica con trimestres de pérdida de verdad).',
+      'historico.sorpresa.signo_discrepante = filas donde el % de Alpha Vantage y el nuestro no coinciden en el SIGNO. Lo que se muestra es siempre el nuestro, calculado con |estimado|. Si este contador deja de ser cero, hay algo que mirar en la fuente.',
+      'filas_en_tabla vs completo.total: la diferencia son los trimestres a los que AV no les dio estimado (o reportado). Sin las dos cifras no se puede decir si superó, así que no se cuentan — `descartados_sin_cifras` los cuenta.',
+      'ventana vs completo: el titular mira 5 años. En una empresa CÍCLICA los dos números difieren de verdad, y esa diferencia es información, no un error.',
+    ],
   };
 }
 
@@ -788,7 +844,9 @@ export default async function handler(req, res) {
     try {
       // ?diag=MU,COST → base histórica de esos símbolos, sin pasar por Gamma.
       if (q.diag) {
-        const out = await diagnosticoSimbolos(String(q.diag).split(','));
+        const out = String(q.diag).toLowerCase() === 'escala'
+          ? await censoDeEscala()
+          : await diagnosticoSimbolos(String(q.diag).split(','));
         res.setHeader('Cache-Control', 'public, s-maxage=60');
         return res.status(200).json(out);
       }

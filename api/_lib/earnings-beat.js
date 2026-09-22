@@ -830,36 +830,39 @@ function extraeCluster(raw) {
 // ─────────────────── base histórica de beats (vista EN VIVO) ─────────────
 //
 // Lo que esto ES: el conteo de cuántas veces una empresa superó el estimado,
-// leído de pead_earnings. Lo que esto NO ES: una probabilidad. La diferencia
-// no es cosmética — es la razón por la que la tarjeta dice "superó 15 de 20"
-// y NUNCA "probabilidad 75%". QuantDesk no emite probabilidad propia hasta
-// que la Fase 2 la valide.
+// leído de pead_earnings. Lo que esto NO ES: una probabilidad.
 //
-// ── CICATRIZ: el promedio de sorpresa mentía ───────────────────────────────
-// MU salió con "Average surprise: -26.06%" teniendo 13 beats al hilo y los
-// últimos 8 trimestres todos positivos. No era un bug de render: era el
-// PROMEDIO. `surprise_pct` es (reportado − estimado) / |estimado|, así que un
-// solo trimestre con estimado ≈ $0.01 mete un −3000% que arrastra ciento y
-// pico de trimestres. El mismo modo de falla ya estaba documentado en el PEAD
-// (api/pead-analyze.js, corte EXPLORATORIO "surprise_pct explota cuando
-// estimated_eps ≈ 0"); lo que faltó fue aplicarlo acá.
+// ── CICATRIZ, corregida con datos reales ───────────────────────────────────
+// MU salió con "Average surprise: −26.06%" teniendo 13 beats al hilo. El
+// primer diagnóstico fue "denominador cerca de cero", por analogía con el
+// corte EXPLORATORIO del PEAD. **Era falso**, y lo desmintió la corrida del
+// `diag` en producción: MU dio `distorsionado: false` y UN solo trimestre con
+// denominador chico. Sus extremos son trimestres de PÉRDIDA REALES
+// (est −0.88 → −1.91; est −0.25 → 0.42): Micron es cíclica y pierde dinero en
+// las bajadas del ciclo de memoria.
 //
-// Tres cambios, y ninguno es "quitar los feos":
-//   1. El número principal es la MEDIANA, que no la mueve un outlier. El
-//      promedio se sigue publicando al lado, porque cuando los dos se separan
-//      mucho eso ES el hallazgo, no algo que esconder (`distorsionado`).
-//   2. Se cuentan aparte los trimestres con |estimado| < PISO_ESTIMADO: ahí el
-//      porcentaje no es "grande", es que el denominador no significa nada.
-//   3. Se publican SIEMPRE los 3 trimestres de |sorpresa| más extrema, con sus
-//      cifras crudas. Es el diagnóstico permanente: la próxima vez que un
-//      número se vea raro, la evidencia ya está en la respuesta.
+// **Lo que arregló el número fue la VENTANA, no la mediana.** Mirar 20
+// trimestres en vez de 121 sacó del cálculo las pérdidas de ciclos viejos. La
+// mediana no está tapando un artefacto: está reportando otra cosa — la
+// tendencia central en vez del promedio, que en una serie con colas gordas
+// REALES es lo que uno quiere leer, pero no es un arreglo de un dato sucio.
+// Las dos siguen publicadas; ninguna de las dos miente.
 //
-// ── Y la ventana ───────────────────────────────────────────────────────────
-// El track record usaba TODO el historial: 121 trimestres de MU son ~30 años.
-// Micron en 1998 no informa sobre Micron hoy. El número principal pasa a los
-// últimos VENTANA_TRIMESTRES (5 años) y el total queda como secundario. La
-// racha y la sorpresa se calculan sobre ESA MISMA ventana — si el titular
-// mira 20 trimestres y la racha mira 121, la tarjeta se contradice sola.
+// Lo que sí es un problema de medición, y por eso se cuenta aparte: cuando el
+// estimado es CERO, NEGATIVO o de centavos, el porcentaje de sorpresa deja de
+// ser comparable entre trimestres — un −117% contra un estimado de −$0.88 no
+// significa lo mismo que un −117% contra $2.00.
+//
+// ── EL PORCENTAJE SE RECALCULA ACÁ, A PROPÓSITO ───────────────────────────
+// `pead_earnings.surprise_pct` viene de Alpha Vantage cuando AV lo trae
+// (api/_lib/av-earnings.js:51) y solo se recalcula con |estimado| cuando AV lo
+// deja nulo. O sea: **para la mayoría de las filas heredamos la convención de
+// signo de AV sin haberla verificado**. Con estimados negativos eso importa:
+// si el denominador no está en valor absoluto, el signo se voltea y un miss se
+// ve como beat. Así que el número que se MUESTRA se calcula acá, con |est|, y
+// el de la tabla se usa solo para comparar: `signo_discrepante` cuenta las
+// filas donde AV y nosotros no coincidimos en el signo. Si ese contador deja
+// de ser cero, hay algo que mirar en la fuente.
 const VENTANA_TRIMESTRES = 20;   // 5 años
 const PISO_ESTIMADO = 0.05;      // por debajo de esto el % de sorpresa no significa nada
 
@@ -868,6 +871,14 @@ function mediana(valores) {
   if (!v.length) return null;
   const m = Math.floor(v.length / 2);
   return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+
+// (reportado − estimado) / |estimado|. El valor absoluto en el denominador es
+// lo único que mantiene el signo con estimados negativos: reportar peor que un
+// estimado de pérdida TIENE que dar negativo.
+function sorpresaPct(reportado, estimado) {
+  if (!Number.isFinite(reportado) || !Number.isFinite(estimado) || estimado === 0) return null;
+  return ((reportado - estimado) / Math.abs(estimado)) * 100;
 }
 
 function estadisticasHistoricas(filas, {
@@ -882,24 +893,37 @@ function estadisticasHistoricas(filas, {
       fecha: isoDia(f.reported_date),
       reportado: num(f.reported_eps),
       estimado: num(f.estimated_eps),
-      sorpresa_pct: num(f.surprise_pct),
+      sorpresa_guardada: num(f.surprise_pct),   // la de la tabla (AV), solo para comparar
     }))
     .filter((f) => f.fecha)
     .sort((a, b) => b.fecha.localeCompare(a.fecha));   // más reciente primero
 
   // Solo los trimestres con las DOS cifras pueden decir si superó o no.
   const comparables = ordenadas.filter((f) => f.reportado !== null && f.estimado !== null);
+  const descartados = ordenadas.length - comparables.length;
   if (!comparables.length) {
     return { sin_datos: true, motivo: 'sin trimestres comparables en pead_earnings',
+      filas_en_tabla: ordenadas.length, descartados_sin_cifras: descartados,
       ventana: null, completo: null, racha: null, sorpresa: null, ultimos: [] };
   }
 
-  const marcar = (f) => ({
-    ...f,
-    beat: f.reportado > f.estimado,
-    frontera: Math.abs(f.reportado - f.estimado) <= frontera,
-    denominador_chico: Math.abs(f.estimado) < pisoEstimado,
-  });
+  const marcar = (f) => {
+    const pct = sorpresaPct(f.reportado, f.estimado);
+    return {
+      ...f,
+      // `beat` NO depende del porcentaje: sale de comparar las dos cifras. Por
+      // eso el conteo y la racha son inmunes a cualquier lío de signos.
+      beat: f.reportado > f.estimado,
+      frontera: Math.abs(f.reportado - f.estimado) <= frontera,
+      sorpresa_pct: pct,
+      denominador_chico: Math.abs(f.estimado) < pisoEstimado,
+      estimado_no_positivo: f.estimado <= 0,
+      // ¿AV y nosotros coincidimos en el SIGNO? Si no, el % de la tabla no es
+      // confiable para esa fila — y lo que se muestra es el nuestro.
+      signo_discrepante: pct !== null && f.sorpresa_guardada !== null
+        && Math.sign(pct) !== Math.sign(f.sorpresa_guardada),
+    };
+  };
   const todos = comparables.map(marcar);
   const enVentana = todos.slice(0, ventana);
 
@@ -909,10 +933,7 @@ function estadisticasHistoricas(filas, {
     pct: lista.length ? Math.round((lista.filter((f) => f.beat).length / lista.length) * 100) : null,
   });
 
-  // Racha sobre la MISMA ventana que el titular. Si toda la ventana es del
-  // mismo signo, `tope` avisa que la racha puede ser más larga de lo que se
-  // puede afirmar con estos datos — decir "20" cuando el dato se acaba en 20
-  // sería inventar el 21.
+  // Racha sobre la MISMA ventana que el titular.
   let racha = 0;
   for (const f of enVentana) {
     if (f.beat !== enVentana[0].beat) break;
@@ -922,8 +943,9 @@ function estadisticasHistoricas(filas, {
   const pcts = enVentana.map((f) => f.sorpresa_pct).filter((x) => Number.isFinite(x));
   const med = mediana(pcts);
   const prom = pcts.length ? pcts.reduce((a, b) => a + b, 0) / pcts.length : null;
-  // "Distorsionado" = el promedio y la mediana cuentan historias distintas.
-  // No se esconde el promedio: se marca, que es lo que habría delatado a MU.
+  // "Distorsionado" = promedio y mediana cuentan historias distintas. Puede ser
+  // por denominadores chicos (artefacto) o por colas REALES (una cíclica con
+  // trimestres de pérdida). El contador de al lado dice cuál de las dos.
   const distorsionado = med !== null && prom !== null
     && (Math.abs(prom - med) > 15 || (med > 0 && prom < 0) || (med < 0 && prom > 0));
 
@@ -934,14 +956,24 @@ function estadisticasHistoricas(filas, {
     .map((f) => ({
       fecha: f.fecha, estimado: f.estimado, reportado: f.reportado,
       sorpresa_pct: Number(f.sorpresa_pct.toFixed(2)),
+      sorpresa_en_tabla: f.sorpresa_guardada === null ? null : Number(f.sorpresa_guardada.toFixed(2)),
       denominador_chico: f.denominador_chico,
+      estimado_no_positivo: f.estimado_no_positivo,
+      signo_discrepante: f.signo_discrepante,
     }));
+
+  const noPositivos = enVentana.filter((f) => f.estimado_no_positivo).length;
+  const chicos = enVentana.filter((f) => f.denominador_chico).length;
 
   return {
     sin_datos: false,
-    // EL NÚMERO PRINCIPAL: los últimos `ventana` trimestres.
+    // Por qué `filas_en_tabla` y `completo.total` no cuadran: los trimestres a
+    // los que AV no les dio estimado (o reportado) no pueden decir si la
+    // empresa superó, así que no se cuentan. Se publica la diferencia en vez
+    // de dejar dos números que no cierran.
+    filas_en_tabla: ordenadas.length,
+    descartados_sin_cifras: descartados,
     ventana: { trimestres: ventana, ...cuenta(enVentana), anios: Math.round(ventana / 4) },
-    // Secundario, para que no se pierda la profundidad del historial.
     completo: cuenta(todos),
     racha: {
       tipo: enVentana[0].beat ? 'beats' : 'misses',
@@ -950,14 +982,43 @@ function estadisticasHistoricas(filas, {
       tope: racha === enVentana.length && todos.length > enVentana.length,
     },
     sorpresa: {
+      // Calculada acá con |estimado|, no heredada de AV. Ver el comentario de
+      // arriba: con estimados negativos la convención de signo importa.
       mediana_pct: med === null ? null : Number(med.toFixed(2)),
       promedio_pct: prom === null ? null : Number(prom.toFixed(2)),
       distorsionado,
-      denominador_chico: enVentana.filter((f) => f.denominador_chico).length,
+      denominador_chico: chicos,
+      estimado_no_positivo: noPositivos,
+      signo_discrepante: enVentana.filter((f) => f.signo_discrepante).length,
       piso_estimado: pisoEstimado,
       extremos,
+      // El motivo de la distorsión, dicho: artefacto de denominador, o colas
+      // reales de una empresa que de verdad tuvo trimestres extremos.
+      // OJO con la distinción, que es la que se entendió mal DOS VECES:
+      //   · denominador de CENTAVOS  → el % es un artefacto (dividir por ~0);
+      //   · estimado NEGATIVO o cola grande → el trimestre es REAL (una pérdida
+      //     de verdad), solo que su % es menos comparable contra otros.
+      // Meter los dos en la misma bolsa fue el diagnóstico falso de MU, y
+      // después el texto de la tarjeta lo repitió con BA: `distorsionado:true`
+      // con `denominador_chico:0` y aun así imprimía "estimado cerca de cero",
+      // cuando el extremo de BA es est 0.09 → −6.18, el 737 MAX. Real.
+      //
+      // `causa` es el CÓDIGO (lo que consume la UI para elegir su texto en el
+      // idioma que toque); `causa_probable` es la explicación en prosa para
+      // quien lee el JSON. Un solo lugar decide cuál de las dos es: si la UI
+      // arma su propia frase, vuelve a pasar lo de BA.
+      causa: !distorsionado ? null : chicos > 0 ? 'artefacto_denominador' : 'colas_reales',
+      causa_probable: !distorsionado ? null
+        : chicos > 0
+          ? 'artefacto de denominador: ' + chicos + ' trimestre(s) con estimado de centavos, donde el % no significa nada'
+          // Describe lo que ES. La versión anterior terminaba con "no hay
+          // ningún estimado cerca de cero acá" y volvía a meter la frase de la
+          // otra causa en esta rama — que es justo la mezcla que nos tuvo
+          // equivocados dos vueltas.
+          : 'trimestres de pérdida o sorpresas muy grandes REALES'
+            + (noPositivos ? ' (' + noPositivos + ' con estimado negativo, donde el % es menos comparable aunque el trimestre sea real)' : ''),
       nota: distorsionado
-        ? 'El promedio y la mediana no coinciden: hay trimestres con estimado cerca de cero que inflan el porcentaje. El número que se muestra es la MEDIANA.'
+        ? 'Promedio y mediana no coinciden. Se muestra la MEDIANA; el promedio queda al lado para que la divergencia se vea. La CAUSA está en `causa`/`causa_probable` — no se asume.'
         : null,
     },
     frontera: enVentana.filter((f) => f.frontera).length,
@@ -965,6 +1026,36 @@ function estadisticasHistoricas(filas, {
       fecha: f.fecha, estimado: f.estimado, reportado: f.reportado,
       beat: f.beat, frontera: f.frontera, sorpresa_pct: f.sorpresa_pct,
     })),
+  };
+}
+
+// ── Escala del estimado: qué tan frágil es una racha ──────────────────────
+//
+// `frontera` mide beats de ≤ $0.01 en dólares ABSOLUTOS, y por eso se le
+// escapa INTC: sus últimos estimados son de $0.01, así que un beat de $0.28 es
+// +2800% y NO cae en "frontera" — pero la racha de una empresa cuyo estimado
+// ronda el centavo es frágil de otra manera: cualquier ruido de redondeo la da
+// vuelta. Para apostar beat/miss, la ESCALA del estimado es lo que dice qué
+// tan sólida es la racha.
+//
+// Esto NO se muestra todavía. Primero hay que saber a cuántos de los 99
+// símbolos les aplica: si son tres, es una nota al pie; si son treinta, es una
+// columna. La medición va primero, la decisión de pantalla después.
+const PISO_ESCALA = 0.20;   // estimado mediano de los últimos 4 trimestres
+
+// Mediana del |estimado| de los últimos `n` trimestres con cifra.
+function escalaDelEstimado(filas, { n = 4 } = {}) {
+  const vals = (filas || [])
+    .filter((f) => f && f.reported_date && num(f.estimated_eps) !== null)
+    .sort((a, b) => String(isoDia(b.reported_date)).localeCompare(String(isoDia(a.reported_date))))
+    .slice(0, n)
+    .map((f) => Math.abs(num(f.estimated_eps)));
+  const med = mediana(vals);
+  return {
+    trimestres_usados: vals.length,
+    estimado_mediano: med === null ? null : Number(med.toFixed(4)),
+    escala_chica: med !== null && med < PISO_ESCALA,
+    piso: PISO_ESCALA,
   };
 }
 
@@ -1322,5 +1413,6 @@ export {
   extraeConsensoEps, precioEnT24h, cruzaConPead, evaluaFuentePIT, resumenMarkdown,
   esFecha, recortaFila, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
   analizaDesfases, clasificaT24h, MAX_TOLERANCIA_PROPONIBLE, comparaEmparejamiento,
-  estadisticasHistoricas, mediana, VENTANA_TRIMESTRES, PISO_ESTIMADO,
+  estadisticasHistoricas, mediana, sorpresaPct, VENTANA_TRIMESTRES, PISO_ESTIMADO,
+  escalaDelEstimado, PISO_ESCALA,
 };

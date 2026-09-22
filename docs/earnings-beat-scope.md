@@ -705,37 +705,88 @@ con precios distintos al lado sería ruido):
 Ordenado por **fecha de reporte más próxima**: es el orden en que la
 información caduca.
 
-### Cicatriz: el promedio de sorpresa mentía
+### Cicatriz: el promedio mentía, pero no por lo que creí
 
 MU salió en la tarjeta con **"Average surprise: −26.06%"** teniendo **13 beats
-al hilo** y los últimos 8 trimestres todos positivos. No era un bug de render:
-era el **promedio**. `surprise_pct` es (reportado − estimado) / |estimado|, así
-que **un solo trimestre con estimado ≈ $0.01 mete un −3000%** que arrastra
-ciento y pico de trimestres. COST igual: +0.44% con beats visibles de ~+9%.
+al hilo**. El primer diagnóstico fue *"denominador cerca de cero"*, por
+analogía con el corte EXPLORATORIO del PEAD.
 
-El modo de falla ya estaba documentado en el PEAD (`api/pead-analyze.js`, corte
-EXPLORATORIO *"surprise_pct explota cuando estimated_eps ≈ 0"*). **Lo que faltó
-fue aplicarlo acá** — la lección estaba escrita y la pantalla nueva la repitió.
+**Era falso, y lo desmintió el `diag` corrido en producción.** MU dio
+`distorsionado: false` y **un solo** trimestre con denominador chico. Sus
+extremos son **trimestres de pérdida reales** — est −0.88 → −1.91, est −0.25 →
+0.42: Micron es cíclica y pierde dinero en las bajadas del ciclo de memoria.
 
-Tres cambios, y ninguno es "quitar los feos":
+> **Lo que arregló el número fue la VENTANA, no la mediana.** Mirar 20
+> trimestres en vez de 121 sacó del cálculo las pérdidas de ciclos viejos.
 
-1. **El número principal es la MEDIANA.** No la mueve un outlier. El promedio
-   se sigue publicando al lado, porque cuando los dos se separan **eso ES el
-   hallazgo** (`distorsionado: true`), no algo que esconder.
-2. **Se cuentan aparte los trimestres con |estimado| < $0.05**
-   (`denominador_chico`): ahí el porcentaje no es "grande", es que el
-   denominador no significa nada.
-3. **Se publican siempre los 3 trimestres de |sorpresa| más extrema**, con sus
-   cifras crudas. Es el diagnóstico permanente: la próxima vez que un número se
-   vea raro, la evidencia ya está en la respuesta.
+La mediana **no está tapando un artefacto**: está reportando otra cosa — la
+tendencia central en vez del promedio, que en una serie con colas gordas
+**reales** es lo que uno quiere leer, pero no es el arreglo de un dato sucio.
+Las dos siguen publicadas, y ninguna de las dos miente.
 
-Para mirarlo sin esperar a que la empresa tenga mercado abierto:
+La distinción quedó en el código, porque confundirlas fue el error:
 
-```bash
-/api/earnings-beat?vista=live&diag=MU,COST
-# → trimestres_en_tabla · sorpresa.mediana_pct vs promedio_pct · distorsionado
-#   · denominador_chico · extremos[] con estimado/reportado crudos
-```
+| Señal | Qué significa | Cómo se reporta |
+|---|---|---|
+| `denominador_chico` (\|est\| < $0.05) | el % **es un artefacto**: dividir por ~0 | `causa_probable: artefacto de denominador` |
+| `estimado_no_positivo` (est ≤ 0) | el trimestre es **real**; su % es menos comparable | `causa_probable: colas reales … ojo: N con estimado negativo` |
+
+### Cicatriz bis: el mismo error, impreso en la tarjeta
+
+Corregido el endpoint, **la tarjeta siguió afirmando la causa por su cuenta**.
+BA salió con `distorsionado: true` y `denominador_chico: 0`, y la pantalla
+imprimía *"distorsionado por **0** trimestre(s) con estimado cerca de cero"*.
+Falso: el extremo de BA es **est 0.09 → −6.18** — el 737 MAX, un trimestre
+real.
+
+> **Mismo texto para las dos causas es lo que nos tuvo equivocados dos
+> vueltas.** Ahora la causa la decide **un solo lugar** (el endpoint) y viaja
+> como **código**, no como prosa: `causa: 'artefacto_denominador' |
+> 'colas_reales'`. La UI elige su frase —en el idioma que toque— a partir de
+> ese código, y **cada causa tiene palabras propias**:
+
+| `causa` | Qué dice la tarjeta |
+|---|---|
+| `artefacto_denominador` | *N trimestre(s) con estimado de centavos: ahí el % no significa nada* |
+| `colas_reales` | *trimestres de pérdida o sorpresas muy grandes REALES (N con estimado negativo)* |
+
+Pineado por lint: la tarjeta **debe** ramificar por `sp.causa`, y toda mención
+a "estimados de centavos" tiene que vivir **dentro** de la rama del artefacto.
+El lint ignora los comentarios — ahí el bug se explica a propósito.
+
+### El porcentaje se recalcula, y el signo se verifica
+
+`pead_earnings.surprise_pct` viene de **Alpha Vantage** cuando AV lo trae
+(`api/_lib/av-earnings.js:51`) y solo se recalcula con `|estimado|` cuando AV
+lo deja nulo. O sea: **para la mayoría de las filas heredábamos la convención
+de signo de AV sin haberla verificado nunca.** Con estimados negativos eso
+importa — si el denominador no está en valor absoluto, **el signo se voltea y
+un miss se ve como beat**.
+
+Dos defensas, las dos con test:
+
+1. El número que se **muestra** se calcula acá (`sorpresaPct`, con `|est|`), no
+   se hereda. Testeado con los dos trimestres reales de MU: est −0.88 → −1.91
+   **negativo**, est −0.25 → 0.42 **positivo**.
+2. `signo_discrepante` cuenta las filas donde AV y nosotros **no coincidimos en
+   el signo**. Si ese contador deja de ser cero, hay algo que mirar en la
+   fuente — en vez de heredarlo callado.
+
+**Confirmado en producción** (diag sobre 5 símbolos): BA est −0.67 → −0.20 da
+**+70%** con `beat: true`, y est −2.38 → −7.47 da **−214%** con `beat: false`.
+El signo es correcto en los dos sentidos. **Cerrado.**
+
+Y lo que de verdad protege el titular: **`beat` no usa el porcentaje.** Sale de
+comparar reportado contra estimado, así que el conteo y la racha son inmunes a
+cualquier lío de signos aguas arriba.
+
+### Por qué `filas_en_tabla` y `completo.total` no cuadran
+
+MU: 122 filas vs 121 comparables. COST: 101 vs 88. **No es un error de
+conteo:** son los trimestres a los que AV no les dio estimado (o reportado).
+Sin las dos cifras no se puede decir si la empresa superó, así que no entran al
+conteo. La diferencia se publica en `descartados_sin_cifras` en vez de dejar
+dos números que no cierran.
 
 ### Ventana: 5 años manda, 30 años acompañan
 
@@ -749,6 +800,28 @@ El track record usaba **todo** el historial — 121 trimestres de MU son ~30 añ
 mira 20 trimestres y la racha mira 121, la tarjeta se contradice sola. Cuando
 toda la ventana es del mismo signo, la racha se marca con `+` (`tope: true`):
 puede ser más larga, pero afirmarlo sería inventar el trimestre 21.
+
+### Propuesta abierta: fragilidad por ESCALA del estimado
+
+`frontera` mide beats de ≤ $0.01 **en dólares absolutos**, y por eso **se le
+escapa INTC**: sus últimos estimados rondan el centavo, así que un beat de
+$0.28 es **+2800%** y no cae en "frontera" — pero una racha construida sobre
+estimados de un centavo es frágil de otra manera: cualquier ruido de redondeo
+la da vuelta. Para apostar beat/miss, **la escala del estimado dice qué tan
+sólida es la racha**.
+
+**La señal NO se muestra.** Primero la medición, después la decisión de
+pantalla:
+
+```bash
+/api/earnings-beat?vista=live&diag=escala
+# → escala_chica: cuántos de los 99 tienen estimado mediano (últimos 4T) < $0.20
+#   percentiles: p10/p25/mediana/p75, para calibrar el piso con datos
+```
+
+Si son tres símbolos, es una nota al pie. Si son treinta, es una columna. Si el
+p25 del universo ya está debajo de $0.20, el piso propuesto está mal elegido y
+hay que moverlo antes de mostrar nada.
 
 ### La regla que esta pantalla existe para no romper
 
@@ -798,6 +871,72 @@ Logística simple. **Solo features calculables con datos anteriores a
 | Sorpresa % promedio | `pead_earnings` | idem |
 | Pares: % de beats de empresas del **mismo sector Finnhub** que ya reportaron antes en la misma temporada (mismo mes calendario) | `pead_earnings` + sector de Finnhub | solo empresas con `reported_date < report_date` |
 | ~~Revisiones de estimados~~ | — | **FUERA de v1** (§1.4, cerrado): no hay fuente PIT gratis. No se sustituye por un proxy |
+
+### Riesgo conocido: la tasa de 5 años en empresas CÍCLICAS
+
+Escrito **antes** de entrenar nada, porque salió de un dato real y es el tipo de
+cosa que después se racionaliza:
+
+> **MU superó el 90% en 5 años y el 64% en 121 trimestres. La diferencia es
+> real.** La ventana de 5 años de una cíclica captura **el ciclo**, no la
+> empresa.
+
+Consecuencia directa para el modelo v1: **usar la tasa de beats de 5 años como
+feature en una cíclica es un falso positivo esperable cuando el ciclo voltea.**
+Micron lleva años de subida del ciclo de memoria; la misma feature que hoy dice
+"90%" va a seguir diciéndolo el trimestre en que la demanda se dé vuelta, y ahí
+el modelo va a estar seguro y equivocado al mismo tiempo — que es la peor
+combinación.
+
+No se "arregla" moviendo la ventana: 20 trimestres es la ventana correcta para
+**leer** una empresa, y 121 mezcla otra empresa. Lo que corresponde es tenerlo
+medido:
+
+- reportar el desempeño del modelo **partido por sector**, no solo agregado —
+  si el edge vive entero en semiconductores durante una subida de ciclo, eso
+  es un hallazgo sobre el ciclo, no sobre el modelo;
+- tratar la **|brecha| entre la tasa de 5 años y la del historial completo**
+  como señal de ciclicidad medible — en valor absoluto, porque se invierte
+  según la fase (MU +26, BA −24; una empresa estable ronda cero) — y mirarla al
+  interpretar cualquier GO;
+- y recordar que el candado de ≥100 mercados **no protege de esto**: una
+  muestra grande concentrada en una fase del ciclo sigue siendo una fase del
+  ciclo.
+
+### Riesgo conocido: la tasa histórica SATURA
+
+**PFE salió 20/20 con la racha en tope.** Una tasa de **100% no es habilidad**:
+es **guía conservadora sistemática** — la empresa orienta el estimado por
+debajo de lo que espera entregar, trimestre tras trimestre, y lo supera
+siempre.
+
+Consecuencia para el feature: **arriba de cierto punto la tasa histórica deja
+de discriminar.** Entre una empresa de 100% y otra de 95% no hay diferencia de
+información útil, y el modelo va a tratarlas como el extremo de una escala que
+ahí ya no mide nada. Peor: el mercado también lo sabe, así que es justo donde
+menos probable es que quede edge — el precio de Polymarket ya va a estar
+pegado a 1.
+
+Qué hacer con eso en la Fase 2: **mirar la calibración por tramo**, no solo el
+Brier agregado. Si el modelo acierta todo en el tramo 90-100% y nada en el
+tramo 50-70%, el Brier total puede verse bien y la apuesta —que vive en el
+desacuerdo con el mercado— no existir.
+
+### La brecha de ciclicidad va en los DOS sentidos
+
+MU: **90% en ventana vs 64% completo** (+26). **BA: 40% vs 64% (−24).** La
+brecha se invierte según dónde esté la empresa en su ciclo, así que como medida
+de ciclicidad lo que sirve es el **valor absoluto de la diferencia**, no la
+diferencia con signo.
+
+- **|brecha| grande** → la ventana de 5 años está capturando una fase del
+  ciclo, para arriba (MU) o para abajo (BA). La tasa de 5 años es frágil en las
+  dos direcciones.
+- **|brecha| ≈ 0** → empresa estable; la tasa de 5 años y la de 30 años dicen
+  lo mismo, y el feature es más confiable.
+
+El signo por separado sigue siendo informativo (dice **en qué fase** está), pero
+la magnitud es la que mide **cuánto desconfiar del feature**.
 
 ### Partición temporal
 
