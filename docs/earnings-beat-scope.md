@@ -801,29 +801,32 @@ mira 20 trimestres y la racha mira 121, la tarjeta se contradice sola. Cuando
 toda la ventana es del mismo signo, la racha se marca con `+` (`tope: true`):
 puede ser más larga, pero afirmarlo sería inventar el trimestre 21.
 
-### Propuesta abierta: fragilidad por ESCALA del estimado
+### Fragilidad por escala: MEDIDA y DESCARTADA para la UI
 
-`frontera` mide beats de ≤ $0.01 **en dólares absolutos**, y por eso **se le
-escapa INTC**: sus últimos estimados rondan el centavo, así que un beat de
-$0.28 es **+2800%** y no cae en "frontera" — pero una racha construida sobre
-estimados de un centavo es frágil de otra manera: cualquier ruido de redondeo
-la da vuelta. Para apostar beat/miss, **la escala del estimado dice qué tan
-sólida es la racha**.
+`frontera` mide beats de ≤ $0.01 **en dólares absolutos**, y por eso se le
+escapa **INTC**: sus estimados rondan el centavo, así que un beat de $0.28 es
+**+2800%** y no cae en "frontera".
 
-**La señal NO se muestra.** Primero la medición, después la decisión de
-pantalla:
+Se midió antes de decidir (`?vista=live&diag=escala`):
 
-```bash
-/api/earnings-beat?vista=live&diag=escala
-# → escala_chica: cuántos de los 99 tienen estimado mediano (últimos 4T) < $0.20
-#   percentiles: p10/p25/mediana/p75, para calibrar el piso con datos
-```
+| Medida | Resultado |
+|---|---|
+| p25 del universo | **$1.20** → el piso de $0.20 está bien elegido, no se mueve |
+| Símbolos por debajo del piso | **1 de 98** — INTC, estimado mediano **$0.045** |
 
-Si son tres símbolos, es una nota al pie. Si son treinta, es una columna. Si el
-p25 del universo ya está debajo de $0.20, el piso propuesto está mal elegido y
-hay que moverlo antes de mostrar nada.
+> **Decisión: NO se muestra en la tarjeta.** Un caso entre 98 no justifica una
+> columna ni una nota al pie. El `diag` **se queda** — sirve para volver a
+> medir cuando cambie el universo.
 
-### La regla que esta pantalla existe para no romper
+**Y el `98` de `99` también es un dato:** un símbolo del universo no tiene ni un
+`estimated_eps` cosechado en `pead_earnings`. No afecta esta decisión, pero es
+otro síntoma de la deuda de §0.2 (el historial del PEAD sin poner al día).
+
+**Volver a correr `diag=escala` si se amplía el universo.** Los 99 de v1 son los
+más líquidos; con nombres menos líquidos el conteo puede cambiar, y ahí la
+decisión se revisa con datos nuevos en vez de heredarse.
+
+### La regla que esta pantalla existe para no romper### La regla que esta pantalla existe para no romper
 
 > El histórico se pinta como **CONTEO** — `Histórico: superó 26 de 32 (81%)` —
 > y **NUNCA** como `probabilidad 81%`.
@@ -902,6 +905,33 @@ medido:
 - y recordar que el candado de ≥100 mercados **no protege de esto**: una
   muestra grande concentrada en una fase del ciclo sigue siendo una fase del
   ciclo.
+
+### Riesgo conocido: INTC y la escala del estimado
+
+**INTC es el único símbolo del universo v1 donde `surprise_pct` explota por
+escala**: con estimados de ~$0.01, un beat de $0.28 se convierte en **+2800%**.
+No es un dato sucio — el trimestre es real; es que **el porcentaje deja de ser
+comparable** contra una empresa cuyo estimado es $1.50.
+
+> **Esto se decide al ENTRENAR, no en la UI.** La pantalla ya tomó su decisión
+> (no mostrarlo, §"Fragilidad por escala"). El modelo tiene que tomar la suya.
+
+Tres caminos, con lo que cuesta cada uno:
+
+| Opción | Qué hace | Qué se pierde |
+|---|---|---|
+| **Winsorizar** | recorta la sorpresa a un percentil (p. ej. 1/99) | trata un valor real como si fuera extremo; el corte es arbitrario y hay que congelarlo |
+| **Escalar por precio** | `surprise / close_previo` en vez de `/ |estimado|` | ya existe en el PEAD (`surprise_sobre_precio`, corte EXPLORATORIO), pero exige precios: más dependencias en el pipeline de features |
+| **Excluir** | INTC fuera del dataset | es 1 de 99, pero excluir por "molesta" es cómo se cocinan los resultados |
+
+**Regla de la casa que aplica acá:** cualquiera de las tres **se elige y se
+congela ANTES de entrenar**, igual que los `CRITERIOS`. Elegir después de ver
+cuál da mejor Brier es mover una portería, y el diff lo delataría.
+
+Mi recomendación, para que quede escrita y se pueda discutir en frío:
+**escalar por precio**, porque es la única que no inventa un corte ni descarta
+un dato — y porque el PEAD ya tiene la primitiva. Pero es una recomendación, no
+la decisión.
 
 ### Riesgo conocido: la tasa histórica SATURA
 
