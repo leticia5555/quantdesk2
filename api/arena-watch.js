@@ -498,8 +498,21 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
   // (6) RECONCILE oportuno: con órdenes que llenan en minutos, el `previous`
   // que se le reinyecta al PM se queda viejo dentro del mismo día. Se true-ea
   // antes de despertar a nadie, y no más de una vez cada 30 minutos.
+  //
+  // ── YA NO DEPENDE DE QUE SE DESPIERTE A ALGUIEN (2026-09-22) ────────
+  // Estaba condicionado a `runs.length || floorAgents.length`, o sea: solo se
+  // true-eaban los fills cuando además había a quién despertar. En un día en
+  // que la última ronda fija opera y después nadie se despierta —lo normal—,
+  // los fills de la tarde se quedaban SIN precio hasta el reconcile de las
+  // 14:40 del día siguiente. El precio existía en Alpaca y la pantalla decía
+  // "filled" a secas durante toda la tarde y la noche.
+  //
+  // El costo de soltar la condición es acotado por construcción: el propio
+  // `runArenaReconcile` solo TRAE filas con una orden no terminal (el `exists`
+  // de su consulta), así que una sesión sin órdenes vivas cuesta una consulta
+  // a Neon y cero llamadas a Alpaca. Y el freno de 30 minutos no se toca.
   let reconcile = null;
-  if (!dry && (runs.length || floorAgents.length)) {
+  if (!dry) {
     const key = 'reconcile:' + today;
     let dueAt = 0;
     try {

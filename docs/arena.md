@@ -884,6 +884,27 @@ número que lo contesta, y costaba una resta.
 algo; el mismo fill en hora local de Madrid se lee como si el mercado operara de
 noche.
 
+### El precio no aparecía el mismo día, y eso era la mitad del encargo
+
+Publicar el precio no sirve si llega mañana. El reconcile del vigilante estaba
+condicionado a **que además hubiera a quién despertar**:
+
+```js
+if (!dry && (runs.length || floorAgents.length)) {   // ← la condición
+```
+
+O sea: en un día en que la última ronda fija opera y después nadie se despierta
+—lo normal—, los fills de la tarde se quedaban sin precio hasta el cron de las
+**14:40 del día siguiente**. El precio existía en Alpaca y la pantalla decía
+"filled" a secas toda la tarde y toda la noche.
+
+Soltar la condición cuesta poco **por construcción**: `runArenaReconcile` solo
+TRAE filas con alguna orden no terminal (el `exists` de su consulta), así que
+una sesión sin órdenes vivas es una consulta a Neon y **cero** llamadas a
+Alpaca. El freno de 30 minutos no se toca. El vigilante corre hasta las 21:55
+UTC, después del cierre en los dos husos, así que los fills del cierre se
+true-ean el mismo día.
+
 ---
 
 ## B33 · EL MARGEN DE ERROR DE LA TABLA, DECLARADO ARRIBA DEL RANKING (2026-09-21)
