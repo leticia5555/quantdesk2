@@ -13,6 +13,7 @@ import {
   empaquetaSerie, armaMapaUs, armaMapaMx, resumenFaltantes, CIERRES_RECIENTES, MOTIVOS,
 } from '../api/_lib/mercado-mapa.js';
 import { recorteMapa } from '../api/_lib/mercado-r0.js';
+import { cierreQueSePinta } from '../api/_lib/mercado-precios.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const req = createRequire(import.meta.url);
@@ -301,4 +302,36 @@ test('ETIQUETAS: toda abreviatura de sector es más corta que su nombre', () => 
     assert.ok(abrev.length <= nombre.length, `${nombre} → ${abrev}`);
     assert.ok(abrev.length <= 12, `${abrev} sigue siendo largo para un cuadro`);
   }
+});
+
+// ── EL CIERRE QUE SE PINTA, no el máximo ────────────────────────────────
+// El chip dijo "cierre del martes" un martes a las 15:54 con la cosecha sin
+// correr. La causa no era el texto: era que `ultimo_cierre` se sacaba con un
+// max() sobre los 300 cuadros.
+test('el rótulo del cierre es el que usa la mayoría, no el más nuevo', () => {
+  // 299 al lunes, 1 al martes: lo que se está viendo es el lunes.
+  const cuadros = Array.from({ length: 300 }, (_, i) => ({ fecha_precio: i === 0 ? '2026-09-22' : '2026-09-21' }));
+  const c = cierreQueSePinta(cuadros);
+  assert.equal(c.fecha, '2026-09-21', 'un disidente no arrastra el rótulo');
+  assert.equal(c.cuadros, 299);
+  assert.ok(c.concuerdan);
+});
+
+test('si el mapa mezcla dos cierres de verdad, NO rotula ninguno y dice por qué', () => {
+  const cuadros = [
+    ...Array.from({ length: 5 }, () => ({ fecha_precio: '2026-09-22' })),
+    ...Array.from({ length: 5 }, () => ({ fecha_precio: '2026-09-21' })),
+  ];
+  const c = cierreQueSePinta(cuadros);
+  assert.equal(c.fecha, null, 'sin mayoría abrumadora no se inventa un rótulo');
+  assert.equal(c.concuerdan, false);
+  assert.match(c.motivo, /mezcla 2 cierres/);
+  // Y el reparto viaja, para que la pantalla lo pueda mostrar en vez de callarse.
+  assert.deepEqual(c.reparto, { '2026-09-22': 5, '2026-09-21': 5 });
+});
+
+test('sin ninguna fecha, el cierre se declara ausente con su motivo', () => {
+  const c = cierreQueSePinta([{ symbol: 'X' }, {}]);
+  assert.equal(c.fecha, null);
+  assert.match(c.motivo, /ningún cuadro/);
 });

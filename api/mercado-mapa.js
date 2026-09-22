@@ -22,7 +22,7 @@ import {
 } from './_lib/mercado-r0.js';
 import { frescuraPrecios } from './_lib/bmv-frescura.js';
 import { armaMapaUs, armaMapaMx, resumenFaltantes, CIERRES_RECIENTES } from './_lib/mercado-mapa.js';
-import { MIN_PUNTOS_SERIE } from './_lib/mercado-precios.js';
+import { MIN_PUNTOS_SERIE, cierreQueSePinta } from './_lib/mercado-precios.js';
 
 export const maxDuration = 60;
 
@@ -118,17 +118,20 @@ async function mapaUs(ahora) {
   const recorte = recorteMapa(universo, TOP_MAPA);
   const { cuadros, faltantes } = armaMapaUs({ universo, precios, recorte, ahora });
 
-  // EL ÚLTIMO CIERRE QUE HAY, que no es el que el calendario dice que
-  // debería haber. El chip y el pie se rotulan con ESTE: un lunes a las
-  // 17:00, con la cosecha del día aún sin correr, lo que se está mirando es
-  // el cierre del viernes y hay que decirlo así.
-  let ultimoCierre = null;
-  for (const c of cuadros) if (c.fecha_precio && (!ultimoCierre || c.fecha_precio > ultimoCierre)) ultimoCierre = c.fecha_precio;
+  // EL CIERRE QUE SE ESTÁ PINTANDO, que no es el que el calendario dice que
+  // debería haber NI el más nuevo que aparezca. Un lunes a las 17:00, con la
+  // cosecha del día aún sin correr, lo que se mira es el cierre del viernes.
+  //
+  // Era un `max()` y por eso el chip llegó a decir "cierre del martes" un
+  // martes a las 15:54: basta UN símbolo con la vela de hoy para arrastrar el
+  // rótulo mientras los otros 299 calculan su 1D contra el lunes.
+  const cierre = cierreQueSePinta(cuadros);
 
   return {
     mapa: 'us',
     bolsa: 'us',
-    ultimo_cierre: ultimoCierre,
+    ultimo_cierre: cierre.fecha,
+    cierre_detalle: cierre,
     cuadros,
     // El "+N más = X%" NO es decoración: sin él, un mapa de 300 se lee como
     // si fuera el mercado entero. El % se mide sobre los que quedaron fuera.
@@ -177,13 +180,13 @@ async function mapaMx(ahora) {
   });
 
   const { cuadros, faltantes } = armaMapaMx({ detalleG2: g2.detalle, precios: series, ahora });
-  let ultimoCierre = null;
-  for (const c of cuadros) if (c.fecha_precio && (!ultimoCierre || c.fecha_precio > ultimoCierre)) ultimoCierre = c.fecha_precio;
+  const cierre = cierreQueSePinta(cuadros);
 
   return {
     mapa: 'mx',
     bolsa: 'mx',
-    ultimo_cierre: ultimoCierre,
+    ultimo_cierre: cierre.fecha,
+    cierre_detalle: cierre,
     cuadros,
     mas: null,   // México son 30 emisoras: se pintan todas, no hay recorte.
     fuente: {

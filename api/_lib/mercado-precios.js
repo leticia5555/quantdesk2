@@ -222,3 +222,45 @@ export function cubreYtd(serie = [], ahora = new Date()) {
     motivo: `la serie empieza en ${primera} y no llega al año anterior: no hay cierre de fin de año contra el cual anclar`,
   };
 }
+
+/**
+ * EL CIERRE QUE EL MAPA ESTÁ PINTANDO, y no el más nuevo que aparezca.
+ *
+ * Antes esto era un `max()` sobre los cuadros, y era un rótulo mentiroso por
+ * construcción: basta UN símbolo con la vela de hoy —una corrida manual, una
+ * emisora con otro huso— para que el chip diga "cierre del martes" mientras
+ * 299 cuadros calculan su 1D contra el lunes. El chip describía un cuadro, no
+ * el mapa.
+ *
+ * La fecha que se rotula es la MODA: la que usa la mayoría de los cuadros. Y
+ * si la mayoría no es abrumadora, no se rotula ninguna — `concuerdan` viaja
+ * para que la página pueda decir "el mapa mezcla dos cierres" en vez de
+ * elegir uno y callarse. Un rótulo que no describe lo que se ve es peor que
+ * no tener rótulo, porque el que lo lee no tiene cómo enterarse.
+ */
+export function cierreQueSePinta(cuadros = [], { minAcuerdo = 0.9 } = {}) {
+  const cuenta = new Map();
+  let conFecha = 0;
+  for (const c of cuadros) {
+    const f = c && c.fecha_precio;
+    if (!f) continue;
+    conFecha++;
+    cuenta.set(f, (cuenta.get(f) || 0) + 1);
+  }
+  if (!conFecha) return { fecha: null, cuadros: 0, de: 0, concuerdan: false, reparto: {}, motivo: 'ningún cuadro trae fecha de precio' };
+
+  let moda = null, nModa = 0;
+  for (const [f, n] of cuenta) if (n > nModa || (n === nModa && f > moda)) { moda = f; nModa = n; }
+
+  const acuerdo = nModa / conFecha;
+  const reparto = Object.fromEntries([...cuenta.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1)));
+  return {
+    fecha: acuerdo >= minAcuerdo ? moda : null,
+    cuadros: nModa,
+    de: conFecha,
+    concuerdan: acuerdo >= minAcuerdo,
+    reparto,
+    motivo: acuerdo >= minAcuerdo ? null
+      : `el mapa mezcla ${cuenta.size} cierres distintos; el más común (${moda}) cubre ${nModa} de ${conFecha}`,
+  };
+}
