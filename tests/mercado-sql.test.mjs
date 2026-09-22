@@ -57,7 +57,7 @@ function binDePostgres() {
  * Lo que se prueba acá es la FORMA de la consulta; que los parámetros liguen
  * lo verifica el PREPARE de arriba, que sí los declara con su tipo.
  */
-const conLiterales = (q) => q.replace(/\$1/g, '300').replace(/\$2/g, "'2026-01-01'").replace(/\$3/g, '23');
+const conLiterales = (q) => q.replace(/\$1/g, "'2026-01-01'").replace(/\$2/g, '23');
 
 const SIN_POSTGRES = process.env.SIN_POSTGRES === '1';
 const BIN = SIN_POSTGRES ? null : binDePostgres();
@@ -120,7 +120,7 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
     // PREPARE es la prueba entera: parsea el texto Y liga cada columna contra
     // el esquema. El `filter` sobre row_number() moría acá, en el parser.
     psql(`prepare universo as ${SQL_MAPA_US.universo};`);
-    psql(`prepare precios(int, date, int) as ${SQL_MAPA_US.precios};`);
+    psql(`prepare precios(date, int) as ${SQL_MAPA_US.precios};`);
   });
 
   await t.test('con la tabla terminando el VIERNES, la consulta devuelve la serie y el ancla YTD', () => {

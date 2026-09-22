@@ -230,7 +230,50 @@ try {
   const nSectores = await p.locator('.cuadro').count();
   chequeo('al abrir se ven EMPRESAS, no sólo sectores', nSectores >= 20, `${nSectores} cuadros`);
   chequeo('hay cabeceras de sector', (await p.locator('.cabecera').count()) >= 3);
-  chequeo('cada sector cierra con su cuadro "+N más"', (await p.locator('.cuadro.resto').count()) >= 1);
+  chequeo('NO existe el cuadro "+N más": se pintan todas', (await p.locator('.cuadro.resto').count()) === 0);
+
+  // TODO SECTOR CON EMPRESAS MUESTRA AL MENOS SU MAYOR CON NOMBRE. El mapa
+  // llegó a enseñar "Industrial: +55 más · 100%" — un sector entero sin una
+  // sola empresa. Si hay 55, la mayor tiene que aparecer con su ticker.
+  const sectores = await p.evaluate(() => {
+    const cabs = [...document.querySelectorAll('.cabecera')];
+    const cuadros = [...document.querySelectorAll('.cuadro')].map((e) => ({
+      x: e.offsetLeft, y: e.offsetTop, w: e.offsetWidth, h: e.offsetHeight,
+      txt: (e.querySelector('.sym') || {}).textContent || '',
+    }));
+    return cabs.map((c) => {
+      // Los cuadros que caen bajo esta cabecera, por geometría.
+      const x0 = c.offsetLeft, x1 = x0 + c.offsetWidth, y0 = c.offsetTop;
+      const mios = cuadros.filter((q) => q.x >= x0 - 1 && q.x < x1 && q.y >= y0);
+      return { sector: c.textContent, n: mios.length, conNombre: mios.filter((q) => q.txt).length };
+    });
+  });
+  chequeo('todo sector dibujado tiene al menos una empresa con nombre',
+    sectores.length > 0 && sectores.every((s) => s.n === 0 || s.conNombre >= 1),
+    JSON.stringify(sectores.filter((s) => s.n > 0 && s.conNombre === 0)));
+
+  // Los cuadros chicos EXISTEN y se tocan; simplemente no llevan letra.
+  const chicos = await p.evaluate(() => {
+    const cs = [...document.querySelectorAll('.cuadro')];
+    const sinTexto = cs.filter((e) => !(e.querySelector('.sym') || {}).textContent);
+    return { total: cs.length, sinTexto: sinTexto.length, todosTocables: sinTexto.every((e) => e.onclick !== undefined) };
+  });
+  // LA REGLA ES "TODAS", no "muchas": se comparan los cuadros dibujados
+  // contra los que el fixture trae con capitalización. Un umbral redondo
+  // (">= 60") habría pasado con 60 de 300.
+  const conCap = FIXTURES.us.cuadros.filter((c) => Number.isFinite(c.cap) && c.cap > 0).length;
+  chequeo('se dibujan TODAS las empresas con capitalización, no un recorte',
+    chicos.total === conCap, `${chicos.total} dibujados de ${conCap} con cap`);
+  chequeo('los cuadros sin letra siguen siendo tocables', chicos.todosTocables, JSON.stringify(chicos));
+
+  // REGLA 5: cero logos en el mapa. Ni <img>, ni background-image.
+  const imgs = await p.evaluate(() => {
+    const cont = document.getElementById('lienzo') || document.body;
+    const conFondo = [...cont.querySelectorAll('*')].filter((e) => /url\(/.test(getComputedStyle(e).backgroundImage || ''));
+    return { imgs: cont.querySelectorAll('img').length, conFondo: conFondo.length };
+  });
+  chequeo('cero logos en el mapa: ni <img> ni background-image',
+    imgs.imgs === 0 && imgs.conFondo === 0, JSON.stringify(imgs));
 
   // NINGUNA etiqueta cortada a mitad de palabra.
   const cortadas = await p.evaluate(() => {
@@ -274,6 +317,11 @@ try {
   const hoja = await p.locator('#hojaCuerpo').innerText();
   chequeo('un tap en un nombre abre la hoja', hoja.length > 20);
   chequeo('la hoja declara la fuente de la capitalización', /fuente de la cap/i.test(hoja));
+  // Regla 5: en la hoja, iniciales en mono — nunca un hueco ni un ícono roto.
+  chequeo('la hoja lleva las iniciales del ticker, no un logo',
+    (await p.locator('.hoja .iniciales').count()) === 1
+    && (await p.locator('.hoja img').count()) === 0,
+    (await p.locator('.hoja .iniciales').first().textContent().catch(() => '')));
   chequeo('la hoja lleva el % con su etiqueta de periodo', (await p.locator('.hoja .qd-pct-per').count()) > 0);
   chequeo('el toggle no volvió a pedir el mapa', pedidosApi === pedidosAntes, `${pedidosApi - pedidosAntes} peticiones nuevas`);
 

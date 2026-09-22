@@ -18,7 +18,7 @@ import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
 import REFERENCIAS_CAP from './_lib/mercado-cap-referencia.json' with { type: 'json' };
 import { CRITERIOS } from './_lib/mercado-fase0.js';
 import {
-  evaluaG2, SQL_G2, VENTANA_DIAS_G2, rangoDeCapturas, recorteMapa,
+  evaluaG2, SQL_G2, VENTANA_DIAS_G2, rangoDeCapturas,
 } from './_lib/mercado-r0.js';
 import { frescuraPrecios } from './_lib/bmv-frescura.js';
 import { armaMapaUs, armaMapaMx, resumenFaltantes, CIERRES_RECIENTES } from './_lib/mercado-mapa.js';
@@ -26,8 +26,9 @@ import { MIN_PUNTOS_SERIE, cierreQueSePinta } from './_lib/mercado-precios.js';
 
 export const maxDuration = 60;
 
-// Cuántos cuadros pinta el treemap. El resto viaja como "+N más = X%".
-const TOP_MAPA = 300;
+// EL MAPA PINTA TODAS. No hay recorte ni "+N más": un sector cuyas empresas
+// no entraban al top salía como "+55 más · 100%" —un sector entero sin una
+// sola empresa— y el agregado había dejado de resumir para tapar.
 /** El 1 de enero del año en curso: todo lo anterior es "año pasado". */
 function inicioDeAnio(ahora) {
   return `${ahora.getUTCFullYear()}-01-01`;
@@ -46,7 +47,7 @@ const CACHE = 'public, s-maxage=600, stale-while-revalidate=3600';
 // `tests/mercado-sql.test.mjs` las prepara contra un Postgres de verdad.
 export const SQL_MAPA_US = {
   universo:
-      `select symbol, nombre, sector_etf, market_cap, cap_fuente, cap_actualizado
+      `select symbol, nombre, sector_etf, market_cap, cap_fuente, cap_actualizado, cap_moneda, acciones_millones
          from mercado_universo_us
         where sector_etf is not null and market_cap is not null`,
   // UNA consulta, y acotada a lo que el navegador necesita: los últimos N
@@ -57,10 +58,9 @@ export const SQL_MAPA_US = {
       `with top as (
          select symbol from mercado_universo_us
           where sector_etf is not null and market_cap is not null
-          order by market_cap desc limit $1
        ), r as (
          select p.symbol, p.fecha, p.cierre, p.cierre_ajustado,
-                p.fecha < $2::date as previa,
+                p.fecha < $1::date as previa,
                 row_number() over (partition by p.symbol order by p.fecha desc) recientes,
                 -- El ancla YTD NO se saca con \`filter\`: \`FILTER\` sólo existe en
                 -- agregados, y sobre \`row_number()\` Postgres ni siquiera llega a
@@ -71,12 +71,12 @@ export const SQL_MAPA_US = {
                 -- pasado: sin él, la fila 1 sería un cierre de ESTE año disfrazado
                 -- de ancla, y el YTD saldría corto con etiqueta larga.
                 row_number() over (partition by p.symbol
-                                   order by (p.fecha < $2::date) desc, p.fecha desc) ancla
+                                   order by (p.fecha < $1::date) desc, p.fecha desc) ancla
            from mercado_precios_us p join top using (symbol)
        )
        select symbol, fecha::text as fecha, cierre, cierre_ajustado
          from r
-        where recientes <= $3 or (ancla = 1 and previa)
+        where recientes <= $2 or (ancla = 1 and previa)
         order by symbol, fecha`,
 };
 
@@ -93,7 +93,7 @@ async function mapaUs(ahora) {
   const [universo, precios] = await Promise.all([
     leer('mercado_universo_us', SQL_MAPA_US.universo),
     leer('mercado_precios_us', SQL_MAPA_US.precios,
-      [TOP_MAPA, anio, CIERRES_RECIENTES + 1]),
+      [anio, CIERRES_RECIENTES + 1]),
   ]);
 
   // Fail closed y EN VOZ ALTA: un mapa que no pudo leer sus datos no es un
@@ -115,8 +115,7 @@ async function mapaUs(ahora) {
     };
   }
 
-  const recorte = recorteMapa(universo, TOP_MAPA);
-  const { cuadros, faltantes } = armaMapaUs({ universo, precios, recorte, ahora });
+  const { cuadros, faltantes } = armaMapaUs({ universo, precios, ahora });
 
   // EL CIERRE QUE SE ESTÁ PINTANDO, que no es el que el calendario dice que
   // debería haber NI el más nuevo que aparezca. Un lunes a las 17:00, con la
@@ -133,9 +132,7 @@ async function mapaUs(ahora) {
     ultimo_cierre: cierre.fecha,
     cierre_detalle: cierre,
     cuadros,
-    // El "+N más = X%" NO es decoración: sin él, un mapa de 300 se lee como
-    // si fuera el mercado entero. El % se mide sobre los que quedaron fuera.
-    mas: recorte.resto,
+    mas: null,   // se pintan todas: no hay resto que resumir.
     fuente: {
       cuadros: 'neon:mercado_universo_us (sector y cap)',
       series: 'neon:mercado_precios_us (cierre y cierre ajustado, cosecha diaria)',

@@ -68,14 +68,17 @@
   .cuadro .sym{font-family:var(--mono);font-weight:600;line-height:1.05;
     color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6)}
   .cuadro .val{font-family:var(--mono);line-height:1.05;color:rgba(255,255,255,.92)}
+  /* La "ficha" de la hoja: iniciales en mono en vez de logo. Ver abrirHoja. */
+  .ficha{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .iniciales{flex:0 0 auto;width:44px;height:44px;border-radius:6px;background:#1f1f1f;border:1px solid #333;
+    display:flex;align-items:center;justify-content:center;font:600 13px var(--mono);color:#ddd;letter-spacing:.02em}
+  .ficha h2{margin:0}
   .cuadro.punteado{border:1px dashed #555}
   /* La cabecera de sector del artboard 1: 14 px, tocable, y abre el sector. */
   .cabecera{position:absolute;display:flex;align-items:center;padding:0 6px;
     background:#141414;border:1px solid #0a0a0a;color:#cfcfcf;
     font-family:var(--mono);font-size:11px;letter-spacing:.3px;
     cursor:pointer;overflow:hidden;white-space:nowrap;-webkit-tap-highlight-color:transparent}
-  .cuadro.resto{background:#1b1b1b;border:1px dashed #3a3a3a;color:#bbb}
-  .cuadro.resto .sym{color:#ddd}
   /* La ruta vive en su propia franja. Flotando sobre el lienzo tapaba el
      cuadro de arriba a la izquierda, que además es el más grande del sector. */
   #ruta{display:none;padding:0 16px 8px}
@@ -210,7 +213,6 @@
     // al llenarse, y el treemap se dibuja con píxeles medidos. Al revés, el
     // mapa se calculaba contra una altura que después se encogía y los
     // cuadros de abajo terminaban encima del pie.
-    pintarMas(d);
     pintarPie(d);
     pintarRuta();
     pintarMapa(d);
@@ -305,10 +307,14 @@
     r.appendChild(b);
   }
 
-  // ── PRIMER NIVEL: empresas, agrupadas bajo su sector ──────────────
+  // ── PRIMER NIVEL: TODAS las empresas, agrupadas bajo su sector ────
+  // No hay "+N más". Un sector cuyas empresas no entraban al top salía como
+  // "+55 más · 100%": un sector entero sin una sola empresa, y un cuadro de
+  // resto que era el 100% de lo que decía resumir. El agregado había dejado
+  // de resumir para tapar.
   function pintarPrimerNivel(l, cs, w, h){
     var ALTO_CABECERA = 14;
-    var grupos = agrupaPrimerNivel(cs, { n: cuantasVisibles() }).grupos;
+    var grupos = agrupaPorSector(cs).grupos;
     var rects = squarify(grupos.map(function(g){ return { key:g.sector, value:g.cap_total, grupo:g }; }), { x:0, y:0, w:w, h:h });
     var frag = document.createDocumentFragment();
 
@@ -316,7 +322,7 @@
       var g = r.item.grupo;
       // Sin sitio para la cabecera, el sector se dibuja sin ella: media
       // cabecera recortada no dice el nombre del sector, lo insinúa.
-      var conCabecera = r.h >= ALTO_CABECERA + 26;
+      var conCabecera = r.h >= ALTO_CABECERA + 12;
       if(conCabecera){
         var cab = document.createElement('div');
         cab.className = 'cabecera';
@@ -333,12 +339,10 @@
       var y0 = r.y + (conCabecera ? ALTO_CABECERA : 0);
       var h0 = r.h - (conCabecera ? ALTO_CABECERA : 0);
 
-      var items = g.visibles.map(function(c){ var x=cambio(c);
+      var items = g.items.map(function(c){ var x=cambio(c);
         return { key:c.symbol, value:c.cap, cuadro:c, pct:x.pct, motivo:x.motivo }; });
-      if(g.resto) items.push({ key:'+'+g.resto.n, value:g.resto.cap, resto:g.resto, sector:g.sector, pct:null });
-
       squarify(items, { x:r.x, y:y0, w:r.w, h:h0 }).forEach(function(q){
-        frag.appendChild(q.item.resto ? cuadroResto(q) : cuadroEmpresa(q, false));
+        frag.appendChild(cuadroEmpresa(q, false));
       });
     });
     l.appendChild(frag);
@@ -363,19 +367,22 @@
     div.className = 'cuadro' + (!Number.isFinite(it.pct) ? ' punteado' : '');
     div.style.cssText = 'left:'+r.x+'px;top:'+r.y+'px;width:'+r.w+'px;height:'+r.h+'px;background:'+colorDe(it.pct);
     div.setAttribute('aria-label', it.key);
-    if(r.w>=34 && r.h>=26){
-      var fs = Math.max(9, Math.min(15, Math.round(Math.min(r.w/4.6, r.h/2.6))));
-      // El ticker es corto por naturaleza, pero si ni él cabe se deja el
-      // cuadro sin texto: el color y el tamaño siguen diciendo algo.
-      var etq = etiquetaQueCabe([it.key], r.w, fs, { margen: 4 });
-      var txt = '—';
-      if(Number.isFinite(it.pct)){
-        var r1 = Math.round(it.pct*10)/10;
-        txt = r1===0 ? '0.0%' : ((r1>0?'+':'')+r1.toFixed(1)+'%');
-      }
-      if(etq) div.innerHTML = '<div class="sym" style="font-size:'+fs+'px">'+esc(etq)+'</div>'
-        + '<div class="val" style="font-size:'+Math.max(8,fs-3)+'px">'+txt+'</div>';
+
+    var txt = '—';
+    if(Number.isFinite(it.pct)){
+      var r1 = Math.round(it.pct*10)/10;
+      txt = r1===0 ? '0.0%' : ((r1>0?'+':'')+r1.toFixed(1)+'%');
     }
+    // EL TEXTO SÓLO SI CABE. Un cuadro de 3px existe, se toca y va sin letra
+    // — como en Finviz. Nunca se recorta a mitad de palabra: media palabra no
+    // es información, es ruido con forma de información.
+    var e = etiquetaCuadro(r.w, r.h, { ticker: it.key, pct: txt, fontPx: 13, fontMin: 8 });
+    if(e.ticker){
+      var html = '<div class="sym" style="font-size:'+e.font+'px">'+esc(e.ticker)+'</div>';
+      if(e.pct) html += '<div class="val" style="font-size:'+e.font_pct+'px">'+esc(e.pct)+'</div>';
+      div.innerHTML = html;
+    }
+
     div.addEventListener('click', function(){
       estado.symbol = it.key; escribirUrl(true); abrirHoja(cache[estado.mapa], it.key);
     });
@@ -383,26 +390,6 @@
       div.addEventListener('mousemove', function(ev){ mostrarTip(ev, it, false); });
       div.addEventListener('mouseleave', ocultarTip);
     }
-    return div;
-  }
-
-  // El cuadro del resto del sector: su área ES la capitalización que
-  // representa, así que "+N más = X%" no es una nota al pie sino el tamaño
-  // del hueco que se está dejando de ver.
-  function cuadroResto(r){
-    var it = r.item;
-    var div = document.createElement('div');
-    div.className = 'cuadro resto';
-    div.style.cssText = 'left:'+r.x+'px;top:'+r.y+'px;width:'+r.w+'px;height:'+r.h+'px';
-    var pct = Number.isFinite(it.resto.pct) ? it.resto.pct.toFixed(0)+'%' : '—';
-    div.setAttribute('aria-label', '+'+it.resto.n+' más del sector, '+pct+' de su capitalización');
-    if(r.w>=34 && r.h>=26){
-      var fs = Math.max(9, Math.min(13, Math.round(Math.min(r.w/4.6, r.h/2.6))));
-      var etq = etiquetaQueCabe(['+'+it.resto.n+' más', '+'+it.resto.n], r.w, fs, { margen: 4 });
-      if(etq) div.innerHTML = '<div class="sym" style="font-size:'+fs+'px">'+esc(etq)+'</div>'
-        + '<div class="val" style="font-size:'+Math.max(8,fs-3)+'px">'+pct+'</div>';
-    }
-    div.addEventListener('click', function(){ entrarASector(it.sector); });
     return div;
   }
 
@@ -416,15 +403,6 @@
     t.style.left = x+'px'; t.style.top = Math.max(8, ev.clientY-40)+'px';
   }
   function ocultarTip(){ document.getElementById('tip').style.display='none'; }
-
-  function pintarMas(d){
-    var el = document.getElementById('mas');
-    if(!d.mas || !d.mas.n){ el.textContent=''; return; }
-    var pct = Number.isFinite(d.mas.pct) ? d.mas.pct.toFixed(1)+'%' : '—';
-    // Sin esta línea, un mapa de 300 se lee como si fuera el mercado entero.
-    el.textContent = '+' + d.mas.n + ' más = ' + pct + ' de la capitalización'
-      + (d.mas.sin_cap_excluidos ? ' · ' + d.mas.sin_cap_excluidos + ' sin capitalización medida, fuera del porcentaje' : '');
-  }
 
   function pintarPie(d){
     var f = d.fuente || {};
@@ -458,7 +436,12 @@
 
     var motivo = c.motivo || r.motivo || c.ytd_motivo;
     document.getElementById('hojaCuerpo').innerHTML =
-      '<h2>'+esc(c.symbol)+'</h2><div class="sub">'+esc(c.nombre||'')+'</div>'
+      // LAS INICIALES, NO UN LOGO. No tenemos fuente de logos, y una que
+      // dependa de terceros siempre va a tener huecos: un ícono roto dice
+      // "esto está mal hecho" sobre una empresa que no tiene nada de malo.
+      // Un cuadro con el ticker en mono nunca falta y nunca miente.
+      '<div class="ficha"><div class="iniciales">'+esc(String(c.symbol||'').slice(0,4))+'</div>'
+      + '<div><h2>'+esc(c.symbol)+'</h2><div class="sub">'+esc(c.nombre||'')+'</div></div></div>'
       + '<dl>' + filas.map(function(f){ return '<dt>'+f[0]+'</dt><dd>'+f[1]+'</dd>'; }).join('') + '</dl>'
       // Regla 2: el dato que falta dice POR QUÉ falta.
       + (motivo ? '<div class="motivo">'+esc(motivo)+'</div>' : '');
