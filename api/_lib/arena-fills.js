@@ -295,6 +295,93 @@ export function resumenDeOrdenes(ordenes = []) {
   return r;
 }
 
+// ── EL DESLIZAMIENTO, AGREGADO ───────────────────────────────────────
+// La pregunta que contesta: ¿algún agente paga sistemáticamente más que los
+// otros por el mismo mecanismo? Si sí, **eso no es el modelo** — es el límite
+// marketable trabajando mal para él, y se arregla en el motor, no en el prompt.
+//
+// ── LO QUE MIDE, Y LO QUE NO ─────────────────────────────────────────
+// Es `precio_ejecución` contra la `referencia` que aprobó el riel, con el signo
+// puesto para que POSITIVO SIEMPRE SEA PEOR (pagar de más comprando, cobrar de
+// menos vendiendo). Entre esa referencia y el fill pasa tiempo, así que el
+// número mezcla DOS cosas: la calidad de la ejecución y la deriva del precio
+// mientras la orden viajaba. No se pueden separar con lo que hay, y por eso el
+// número sirve para COMPARAR AGENTES —que corren el mismo mecanismo el mismo
+// día— y no como medida absoluta de slippage.
+//
+// ── POR QUÉ LA PONDERADA VA AL LADO DE LA MEDIA ──────────────────────
+// Un agente que desliza 0.4pp en una orden de $200 y 0.02pp en una de $20,000
+// tiene una media horrible y un costo real ínfimo. La media dice cómo ejecuta;
+// la ponderada por monto dice cuánto le costó. Las dos, o ninguna.
+//
+// ── Y EL TOPE, QUE ES LO QUE DE VERDAD DELATA ────────────────────────
+// El límite marketable es un TECHO: un fill no puede pasarlo. Un agente cuyos
+// fills se pegan al límite no está "deslizando más", está tocando el tope todas
+// las veces — que es la firma de una banda demasiado angosta o demasiado ancha
+// para su libro. Se cuenta sin conocer la banda: se compara el precio de
+// ejecución con el límite de ESA orden, que ya viaja en la fila.
+const CENTAVO = 0.005;   // medio centavo: el tick de Alpaca es $0.01
+
+const mediana = (xs) => {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return +(s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2).toFixed(3);
+};
+
+export function resumenDeslizamiento(ordenes = []) {
+  const medibles = (Array.isArray(ordenes) ? ordenes : [])
+    .filter((o) => o && Number.isFinite(o.deslizamiento_pp) && o.cantidad_llena != null);
+  if (!medibles.length) {
+    return {
+      fills: 0, media_pp: null, mediana_pp: null, ponderada_pp: null,
+      // Un cero acá se leería como "ejecuta perfecto". Es "no hay con qué".
+      nota: 'Ninguna orden con precio de ejecución Y referencia del riel en esta ventana: sin las dos no hay deslizamiento que medir.',
+    };
+  }
+
+  const pps = medibles.map((o) => o.deslizamiento_pp);
+  const suma = pps.reduce((a, b) => a + b, 0);
+  let pesoTotal = 0, pondSuma = 0;
+  for (const o of medibles) {
+    const w = Number(o.monto_usd);
+    if (Number.isFinite(w) && w > 0) { pesoTotal += w; pondSuma += o.deslizamiento_pp * w; }
+  }
+  const porLado = {};
+  for (const o of medibles) {
+    const k = o.lado === 'buy' ? 'compras' : 'ventas';
+    (porLado[k] = porLado[k] || { fills: 0, suma: 0 }).fills++;
+    porLado[k].suma += o.deslizamiento_pp;
+  }
+  for (const k of Object.keys(porLado)) {
+    porLado[k] = { fills: porLado[k].fills, media_pp: +(porLado[k].suma / porLado[k].fills).toFixed(3) };
+  }
+  const enElTope = medibles.filter((o) => Number.isFinite(o.limite) && Number.isFinite(o.precio_ejecucion)
+    && (o.lado === 'buy'
+      ? o.precio_ejecucion >= o.limite - CENTAVO
+      : o.precio_ejecucion <= o.limite + CENTAVO)).length;
+  const ordenado = [...medibles].sort((a, b) => b.deslizamiento_pp - a.deslizamiento_pp);
+  const cara = (o) => ({ ticker: o.ticker, lado: o.lado, pp: o.deslizamiento_pp, monto_usd: o.monto_usd, hora: o.hora });
+
+  return {
+    fills: medibles.length,
+    media_pp: +(suma / medibles.length).toFixed(3),
+    mediana_pp: mediana(pps),
+    // null, no 0: sin montos legibles la ponderada no existe.
+    ponderada_pp: pesoTotal > 0 ? +(pondSuma / pesoTotal).toFixed(3) : null,
+    monto_total_usd: pesoTotal > 0 ? +pesoTotal.toFixed(2) : null,
+    // El costo en DÓLARES de deslizar: pp sobre el notional movido. Es el
+    // número que vuelve accionable al porcentaje.
+    costo_estimado_usd: pesoTotal > 0 ? +((pondSuma / 100)).toFixed(2) : null,
+    por_lado: porLado,
+    en_el_tope: enElTope,
+    en_el_tope_pct: +((enElTope / medibles.length) * 100).toFixed(1),
+    peor: cara(ordenado[0]),
+    mejor: cara(ordenado[ordenado.length - 1]),
+    nota: 'POSITIVO = peor (se pagó de más comprando o se cobró de menos vendiendo). Mide el fill contra la referencia que aprobó el riel, así que mezcla ejecución con la deriva del precio mientras la orden viajaba: sirve para COMPARAR AGENTES del mismo día, no como slippage absoluto.',
+  };
+}
+
 // ── EL CAMINO CORTO: de `actions` a órdenes publicables ──────────────
 // Para /liga, que no lee `context.ejecucion`: la propia fila de `actions` es la
 // orden Y el fill. Sirve igual para el contrato VIEJO, cuyas filas nunca

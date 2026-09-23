@@ -21,7 +21,7 @@
 import { readFileSync } from 'node:fs';
 import {
   claveDeOrden, fillsDeActions, entradasDeCuenta, resultadoContraEntrada,
-  detalleDeOrden, resumenDeOrdenes, ordenesDeActions,
+  detalleDeOrden, resumenDeOrdenes, ordenesDeActions, resumenDeslizamiento,
 } from '../api/_lib/arena-fills.js';
 import { ejecucionPublicable } from '../api/liga-libros.js';
 
@@ -265,6 +265,57 @@ console.log('\n── las dos pantallas leen lo que el servidor publica ──')
   ok(!/\bfilled<\/span>|order_status\?\(' · '/.test(liga), 'y /liga ya no publica el `filled` pelado que lo originó');
   ok(/intencion: o\.intencion \|\| null/.test(run),
     '`actions` journalea la INTENCIÓN: sin ella, una venta de cierre y la apertura de un corto se ven iguales');
+}
+
+// ── 11) EL DESLIZAMIENTO, AGREGADO ───────────────────────────────────
+// La pregunta: ¿alguno paga sistemáticamente más que los otros por el MISMO
+// mecanismo? Si sí, no es el modelo — es el límite marketable trabajando mal
+// para él.
+console.log('\n── el deslizamiento por agente ──');
+{
+  const o = (ticker, lado, ref, ejec, qty, limite) => detalleDeOrden({
+    orden: { symbol: ticker, side: lado, qty, limit_price: limite, referencia: ref },
+    fill: { symbol: ticker, side: lado, qty, filled_qty: qty, filled_avg_price: ejec,
+      filled_at: '2026-09-23T15:00:00Z', order_status: 'filled', result: 'approved' },
+  });
+
+  // Compra a 100 que llena a 100.20 → +0.2pp (peor). Venta a 100 que llena a
+  // 99.80 → +0.2pp TAMBIÉN: el signo se normaliza para que positivo sea peor
+  // de los dos lados. Sin eso, promediar compras y ventas las cancelaría.
+  const compra = o('AAA', 'buy', 100, 100.2, 10, 100.5);
+  const venta = o('BBB', 'sell', 100, 99.8, 10, 99.5);
+  ok(compra.deslizamiento_pp === 0.2 && venta.deslizamiento_pp === 0.2,
+    'positivo es PEOR de los dos lados: comprar caro y vender barato dan el mismo signo',
+    JSON.stringify([compra.deslizamiento_pp, venta.deslizamiento_pp]));
+
+  const r = resumenDeslizamiento([compra, venta, o('CCC', 'buy', 100, 99.9, 10, 100.5)]);
+  ok(r.fills === 3, 'cuenta los fills medibles');
+  ok(r.media_pp === 0.1, 'la media incluye el que ejecutó MEJOR que la referencia, con su signo negativo: (0.2 + 0.2 − 0.1) / 3', String(r.media_pp));
+  ok(r.por_lado.compras.fills === 2 && r.por_lado.ventas.fills === 1, 'y se abre por lado');
+  ok(r.mejor.ticker === 'CCC' && r.mejor.pp === -0.1, 'nombra el mejor y el peor: un promedio sin extremos no se puede auditar');
+
+  // LA PONDERADA: un agente que desliza feo en una orden chica y bien en una
+  // grande tiene una media horrible y un costo real ínfimo. Las dos, o ninguna.
+  const chicaFea = o('DDD', 'buy', 100, 100.4, 2, 100.5);      // 0.4pp sobre $200
+  const grandeBuena = o('EEE', 'buy', 100, 100.01, 200, 100.5); // 0.01pp sobre $20k
+  const p = resumenDeslizamiento([chicaFea, grandeBuena]);
+  ok(p.media_pp === 0.205, 'la media dice cómo ejecuta', String(p.media_pp));
+  ok(p.ponderada_pp === 0.014, 'y la ponderada por monto dice cuánto le costó — son números distintos a propósito', String(p.ponderada_pp));
+  ok(p.costo_estimado_usd === 2.8, 'con el costo en dólares al lado, que es lo que vuelve accionable al porcentaje', String(p.costo_estimado_usd));
+
+  // EL TOPE: un fill no puede pasar su límite. Pegarse al límite todas las
+  // veces no es "deslizar más": es la firma de una banda mal calibrada.
+  const t = resumenDeslizamiento([o('FFF', 'buy', 100, 100.5, 10, 100.5), compra]);
+  ok(t.en_el_tope === 1 && t.en_el_tope_pct === 50,
+    'se cuenta cuántos llenaron PEGADOS al límite, sin necesitar saber la banda', JSON.stringify([t.en_el_tope, t.en_el_tope_pct]));
+
+  // Sin referencia no hay deslizamiento, y eso NO es un cero.
+  const vacio = resumenDeslizamiento([detalleDeOrden({
+    orden: { symbol: 'GGG', side: 'buy', qty: 10, limit_price: 100 },
+    fill: { symbol: 'GGG', side: 'buy', qty: 10, filled_qty: 10, filled_avg_price: 99, order_status: 'filled', result: 'approved' },
+  })]);
+  ok(vacio.fills === 0 && vacio.media_pp === null && /no hay con qué|sin las dos/.test(vacio.nota),
+    'sin referencia del riel no se publica un 0 que se leería como "ejecuta perfecto"', vacio.nota);
 }
 
 console.log(failures ? `\n${failures} fallo(s)` : '\nTodo en verde');

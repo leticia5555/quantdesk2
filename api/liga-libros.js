@@ -50,7 +50,7 @@
 import { sql } from './_lib/db.js';
 import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay } from './_lib/arena-registry.js';
 import { pairwiseOverlap, sharedTopTicker, pisoDeRuido, deltaDePesos, lecturaDeCoincidencia, CAVEAT_ENFOQUE } from './_lib/arena-herding.js';
-import { claveDeOrden, detalleDeOrden, fillsDeActions, entradasDeCuenta, resumenDeOrdenes } from './_lib/arena-fills.js';
+import { claveDeOrden, detalleDeOrden, fillsDeActions, entradasDeCuenta, resumenDeOrdenes, resumenDeslizamiento } from './_lib/arena-fills.js';
 
 const int = (v, def, min, max) => {
   const n = parseInt(v, 10);
@@ -272,6 +272,140 @@ export function ejecucionPublicable(e, { fills = null, entradas = null } = {}) {
     descartadas: (e.descartadas || []).map((d) => ({
       ticker: d.symbol || null, lado: d.side || null, motivo: d.motivo || null,
     })),
+  };
+}
+
+// ── QUIÉN USA QUÉ HERRAMIENTA, Y CUÁNTAS VECES ───────────────────────
+// LA PREGUNTA QUE CONTESTA (2026-09-23): el tablero es una MUESTRA del universo
+// —los top-30 por cambio, los top-20 por RVOL, los extremos de 52 semanas— y el
+// universo completo (~600 nombres) está a una llamada de `screener`. Meter esa
+// lista entera en el tablero cuesta ~4,000 tokens por corrida y por agente.
+//
+// Antes de pagarlos hay que saber si el acceso es el problema. Si los agentes
+// casi no llaman al screener, **no les falta acceso: no saben que lo tienen**, y
+// eso se arregla con una línea de veinte tokens en vez de cuatro mil.
+//
+// Tres números distintos, porque contestan cosas distintas:
+//   · `llamadas` — cuántas veces la llamó en total. Un agente que la llama seis
+//     veces en una corrida y ninguna en las otras cinco no "la usa".
+//   · `corridas_con_uso` — en cuántas corridas la tocó AL MENOS una vez. Éste es
+//     el que dice si la herramienta está en su repertorio.
+//   · `abortadas` — una corrida que murió antes de investigar no cuenta como
+//     "decidió no usarla". Mezclarlas haría parecer desuso lo que es una falla
+//     del proveedor.
+export const HERRAMIENTAS = ['screener', 'noticias', 'ficha', 'sector'];
+
+export function resumenDeHerramientas(libros = []) {
+  const porAgente = new Map();
+  const vacio = () => ({
+    corridas: 0, abortadas: 0, con_investigacion: 0, sin_uso: 0,
+    llamadas: 0, por_herramienta: {}, corridas_con_uso: {},
+  });
+
+  for (const l of (Array.isArray(libros) ? libros : [])) {
+    const id = (l.agente && l.agente.id) || 'desconocido';
+    if (!porAgente.has(id)) porAgente.set(id, { agente: id, nombre: (l.agente && l.agente.nombre) || id, ...vacio() });
+    const a = porAgente.get(id);
+    a.corridas++;
+    if (String(l.estado || '').startsWith('aborted')) { a.abortadas++; continue; }
+    const pasos = (l.investigacion && l.investigacion.pasos) || [];
+    if (!pasos.length) { a.sin_uso++; continue; }
+    a.con_investigacion++;
+    const enEstaCorrida = new Set();
+    for (const p of pasos) {
+      const t = String((p && p.herramienta) || '').trim().toLowerCase();
+      if (!t) continue;
+      a.llamadas++;
+      a.por_herramienta[t] = (a.por_herramienta[t] || 0) + 1;
+      enEstaCorrida.add(t);
+    }
+    for (const t of enEstaCorrida) a.corridas_con_uso[t] = (a.corridas_con_uso[t] || 0) + 1;
+  }
+
+  const filas = [...porAgente.values()].map((a) => {
+    // El denominador son las corridas que PUDIERON investigar: una abortada no
+    // decidió no usar el screener, se murió antes.
+    const vivas = a.corridas - a.abortadas;
+    const screener = a.por_herramienta.screener || 0;
+    const conScreener = a.corridas_con_uso.screener || 0;
+    return {
+      ...a,
+      corridas_vivas: vivas,
+      screener_llamadas: screener,
+      screener_corridas: conScreener,
+      screener_pct_corridas: vivas > 0 ? +((conScreener / vivas) * 100).toFixed(1) : null,
+      screener_por_corrida: vivas > 0 ? +(screener / vivas).toFixed(2) : null,
+    };
+  }).sort((x, y) => (y.screener_pct_corridas ?? -1) - (x.screener_pct_corridas ?? -1));
+
+  const vivasTotal = filas.reduce((s, f) => s + f.corridas_vivas, 0);
+  const conScreenerTotal = filas.reduce((s, f) => s + f.screener_corridas, 0);
+  const porHerramienta = {};
+  for (const f of filas) {
+    for (const [t, n] of Object.entries(f.por_herramienta)) porHerramienta[t] = (porHerramienta[t] || 0) + n;
+  }
+  const pct = vivasTotal > 0 ? +((conScreenerTotal / vivasTotal) * 100).toFixed(1) : null;
+
+  return {
+    por_agente: filas,
+    liga: {
+      corridas_vivas: vivasTotal,
+      abortadas: filas.reduce((s, f) => s + f.abortadas, 0),
+      llamadas: filas.reduce((s, f) => s + f.llamadas, 0),
+      por_herramienta: porHerramienta,
+      screener_pct_corridas: pct,
+      // La lectura, para que el número no haya que interpretarlo dos veces.
+      lectura: pct == null
+        ? 'Sin corridas vivas en la ventana: no hay uso que contar.'
+        : pct >= 70
+          ? `El screener se usa en el ${pct}% de las corridas: el acceso al universo NO es el cuello de botella. Si igual se quiere el universo en el tablero, que sea por otra razón.`
+          : pct >= 30
+            ? `El screener se usa en el ${pct}% de las corridas: lo conocen y no siempre lo usan. Antes de pagar el tablero completo, conviene ver QUÉ filtran cuando lo llaman.`
+            : `El screener se usa en el ${pct}% de las corridas. No les falta ACCESO al universo: les falta saber que lo tienen. Una línea en el prompt cuesta ~20 tokens; meter el universo en el tablero cuesta ~4,000 por agente y por corrida.`,
+    },
+    nota: 'Cuenta los pasos journaleados en `context.tools.summary`. Una corrida ABORTADA no cuenta como "decidió no investigar": no llegó. Por eso el denominador son las corridas vivas.',
+  };
+}
+
+// Deslizamiento por agente sobre la ventana. Reusa `resumenDeslizamiento` —el
+// cálculo vive en `_lib/arena-fills.js` con el resto del dinero— y acá solo se
+// agrupa. Las corridas de PRUEBA quedan fuera: no mandan órdenes, así que no
+// tienen fills y meterlas solo diluiría el denominador.
+export function deslizamientoPorAgente(libros = []) {
+  const porAgente = new Map();
+  for (const l of (Array.isArray(libros) ? libros : [])) {
+    if (l.fuente === FUENTE_PRUEBA) continue;
+    const ordenes = (l.ordenes && l.ordenes.ordenes) || [];
+    if (!ordenes.length) continue;
+    const id = (l.agente && l.agente.id) || 'desconocido';
+    if (!porAgente.has(id)) porAgente.set(id, { agente: id, nombre: (l.agente && l.agente.nombre) || id, ordenes: [] });
+    porAgente.get(id).ordenes.push(...ordenes);
+  }
+  const filas = [...porAgente.values()]
+    .map((a) => ({ agente: a.agente, nombre: a.nombre, ...resumenDeslizamiento(a.ordenes) }))
+    .filter((a) => a.fills > 0)
+    .sort((x, y) => y.media_pp - x.media_pp);
+
+  // El par claude↔control es el que hace legible la tabla: los dos corren el
+  // MISMO modelo con el mismo prompt, así que lo que los separa acá es el
+  // mecanismo, no el modelo. Un agente que desliza más que ESA distancia es el
+  // candidato real a "el límite marketable le trabaja mal".
+  const de = (id) => filas.find((f) => f.agente === id) || null;
+  const a = de('claude'), b = de('control');
+  const piso = (a && b && a.media_pp != null && b.media_pp != null)
+    ? +Math.abs(a.media_pp - b.media_pp).toFixed(3) : null;
+
+  return {
+    por_agente: filas,
+    // Mismo criterio que el piso de ruido del ranking: un delta entre agentes
+    // que no supera lo que separa a dos corridas idénticas no significa nada.
+    piso_claude_control_pp: piso,
+    lectura: !filas.length
+      ? 'Todavía no hay fills con referencia del riel en esta ventana.'
+      : piso == null
+        ? `${filas.length} agente(s) con fills. Sin el par claude↔control completo no hay piso contra el cual leer las diferencias: una brecha chica entre dos modelos puede ser el mecanismo y no el modelo.`
+        : `El par claude↔control —mismo modelo, mismo prompt— se separa ${piso} pp. Una diferencia de deslizamiento menor que eso entre dos agentes distintos no es atribuible a nadie.`,
+    nota: 'Solo corridas EN VIVO: las de prueba no mandan órdenes. Una semana de sesiones es el mínimo para que la media por agente signifique algo — con dos o tres fills, un nombre ilíquido mueve el promedio entero.',
   };
 }
 
@@ -507,6 +641,17 @@ export default async function handler(req, res) {
     // archivar escribe, y este endpoint no escribe. El archivo histórico vive
     // en /api/leaderboard?postmortem=1, que lo lee de `arena_noise_floor`.
     por_dia: resumenPorDia(libros),
+    // ── EL USO DE HERRAMIENTAS EN LA VENTANA ─────────────────────────
+    // Cuántas veces llamó cada agente a cada herramienta, y en cuántas
+    // corridas. Contesta si el universo completo hace falta en el tablero o si
+    // el screener ya está ahí y nadie lo llama. `?dias=7` da la semana.
+    herramientas: resumenDeHerramientas(libros),
+    // ── EL DESLIZAMIENTO POR AGENTE ──────────────────────────────────
+    // Si uno paga sistemáticamente más que los otros por el MISMO mecanismo,
+    // eso no es el modelo: es el límite marketable trabajando mal para él.
+    // Sale de las mismas órdenes que ya se publican, así que no cuesta una
+    // consulta más.
+    deslizamiento: deslizamientoPorAgente(libros),
     avisos: avisos.length ? avisos : null,
     libros,
   });

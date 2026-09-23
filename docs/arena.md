@@ -746,7 +746,78 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
-## B35 · LO QUE PUEDE VER NO ES LO QUE PUEDE TENER (2026-09-22)
+## B36 · DOS CONTEOS QUE DECIDEN, EN LA MISMA RESPUESTA (2026-09-23)
+
+Dos preguntas abiertas, las dos contestables con datos que YA se journalean.
+Ninguna necesitaba una tabla nueva ni una consulta más: salen de las mismas
+filas que `/api/liga/libros` ya carga.
+
+```bash
+curl -sS "$BASE/api/liga/libros?dias=7&fuente=viva" | jq '{herramientas, deslizamiento}'
+```
+
+### 1. ¿Hace falta el universo completo en el tablero?
+
+**Decisión: NO, por ahora** (Lety, 2026-09-23). El tablero es una MUESTRA del
+universo —top-30 por cambio, top-20 por RVOL, extremos de 52 semanas— y el
+universo entero está **a una llamada de `screener`**. Meterlo en el tablero
+cuesta **+3,200–4,300 tokens** por agente y por corrida, y con el tope actual
+(`ARENA_BOARD_TOKENS`, 5,000) el recorte por la cola se llevaría titulares,
+earnings y los extremos de 52 semanas — que son justo los campos que aparecen
+citados en los razonamientos. **No se cambian tres secciones que el PM cita por
+una lista de nombres que puede pedir.**
+
+Lo que queda por medir antes de tocar el prompt: **si casi no llaman al
+screener, no les falta acceso — les falta saber que lo tienen**, y eso se
+arregla con una línea de ~20 tokens en vez de 4,000.
+
+`herramientas` cuenta tres cosas distintas a propósito:
+
+| campo | contesta |
+|---|---|
+| `screener_llamadas` | cuántas veces la llamó en total |
+| `screener_corridas` | en cuántas corridas la tocó **al menos una vez** |
+| `screener_pct_corridas` | el decisivo: si está o no en su repertorio |
+
+Un agente que la llama seis veces en una corrida y ninguna en las otras cinco
+**no la usa**, y un conteo de llamadas sola diría que sí. Y una corrida
+**abortada no entra al denominador**: no decidió no investigar, no llegó.
+
+### 2. ¿Alguno paga más que los otros por el mismo mecanismo?
+
+`deslizamiento` agrega el `deslizamiento_pp` que ya viaja por orden. Si un
+agente desliza sistemáticamente más, **eso no es el modelo: es el límite
+marketable trabajando mal para él**, y se arregla en el motor.
+
+Tres decisiones que hacen legible el número:
+
+- **Positivo siempre es peor**, de los dos lados (pagar de más comprando,
+  cobrar de menos vendiendo). Sin normalizar el signo, promediar compras y
+  ventas las cancela.
+- **La media y la ponderada por monto, juntas.** Un agente que desliza 0.4pp en
+  una orden de $200 y 0.01pp en una de $20,000 tiene una media horrible y un
+  costo real ínfimo: la media dice cómo ejecuta, la ponderada cuánto costó.
+- **El piso claude↔control**, igual que en el ranking. Los dos corren el mismo
+  modelo con el mismo prompt, así que lo que los separa ACÁ es el mecanismo.
+  Una diferencia menor que ese piso no se le puede cobrar a ningún modelo.
+
+Y `en_el_tope`: un fill no puede pasar su límite, así que un agente cuyos fills
+se pegan al límite **no está deslizando más — está tocando el techo todas las
+veces**, que es la firma de una banda mal calibrada y no de mala ejecución. Se
+cuenta comparando el precio de ejecución con el límite de esa orden, sin
+necesitar conocer la banda.
+
+**El mínimo honesto es una semana de sesiones.** Con dos o tres fills un nombre
+ilíquido mueve el promedio entero, y la nota del bloque lo dice.
+
+---
+
+## B35 · EL AGENTE NO ESTABA FALLANDO, ESTABA OBEDECIENDO (2026-09-22)
+
+> **El agente no estaba fallando, estaba obedeciendo.**
+>
+> Tres textos en imperativo le decían que no podía tener lo que tenía, y un
+> validador leía un nombre de su propio libro como un ticker inventado.
 
 DeepSeek compró NKE al **25%** por la mañana y lo liquidó por la tarde. El
 motivo que escribió: *"el universo admisible de hoy fuerza la salida"*.
@@ -754,6 +825,35 @@ motivo que escribió: *"el universo admisible de hoy fuerza la salida"*.
 **No estaba alucinando. Estaba leyendo bien el sistema.** El universo del día
 era a la vez lo que el agente podía MIRAR y lo que podía TENER, y el prompt se
 lo decía con todas las letras.
+
+### Por qué esto es más grande que un caso
+
+Es el error más caro que se puede cometer contra un experimento de comparación
+de modelos, y no por el dinero: **un sistema que le ordena a un agente hacer
+algo, y después publica ese algo como la decisión del agente, no está midiendo
+al modelo.** Está midiendo su propia instrucción, con siete etiquetas distintas
+encima.
+
+El churn de DeepSeek —comprar al 25% y salir el mismo día— es el caso que se
+vio. Lo que hay que asumir es que **no fue el único**: cualquier venta cuyo
+nombre hubiera salido del universo ese día tiene esta explicación disponible
+antes que cualquier tesis. Y una cartera que rota por una lista que se
+reconstruye todas las mañanas **se ve exactamente igual que una cartera
+aleatoria**, que es como se venían viendo los libros.
+
+No se puede cuantificar hacia atrás con lo que hay: la mitad de los casos no
+dejó rastro estructurado (el agente que obedeció y OMITIÓ el nombre no genera
+una fila de rechazo, genera una venta que parece decidida). Queda dicho como
+límite, no estimado a ojo — y desde el 2026-09-22 `admitidos_por_tenencia`
+cuenta el caso directamente, así que hacia adelante sí es medible.
+
+### La lección, para el próximo
+
+Los tres textos eran **correctos sobre el universo** y **falsos sobre el libro**,
+y la diferencia entre esas dos cosas no existía en el código: había UN conjunto
+donde hacían falta dos. Cuando un prompt y un validador dicen lo mismo, no se
+confirman entre sí — comparten la misma suposición, y una suposición repetida
+en dos lugares se lee como una verificación.
 
 ### El texto que lo causaba
 

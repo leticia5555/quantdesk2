@@ -21,7 +21,8 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { readFileSync } from 'node:fs';
-import { identidad, secuenciaPublicable, libroDeFila, ejecucionPublicable, resumenPorDia, selloDe, SELLOS } from '../api/liga-libros.js';
+import { identidad, secuenciaPublicable, libroDeFila, ejecucionPublicable, resumenPorDia, selloDe, SELLOS,
+  resumenDeHerramientas, deslizamientoPorAgente } from '../api/liga-libros.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -318,6 +319,97 @@ console.log('\n── quién entró, quién quedó fuera y por qué ──');
   ])[0];
   ok(completo.censo.fuera === 0 && /ningún agente quedó fuera/.test(completo.coincidencia.etiqueta),
     'y cuando no falta nadie, se dice — el silencio se leería igual que el dato ausente', completo.coincidencia.etiqueta);
+}
+
+// ── EL CONTEO DE HERRAMIENTAS, QUE ES UNA DECISIÓN DE PRODUCTO ───────
+// El tablero es una MUESTRA del universo; el universo completo está a una
+// llamada de `screener`. Meterlo entero en el tablero cuesta ~4,000 tokens por
+// agente y por corrida. Antes de pagarlos hay que saber si el acceso es el
+// problema: si casi no llaman al screener, no les falta acceso — les falta
+// saber que lo tienen, y eso cuesta una línea de prompt.
+console.log('\n── cuántas veces llamó cada agente a cada herramienta ──');
+{
+  const conPasos = (agente, estado, herramientas) => ({
+    fuente: 'en_vivo', fecha: '2026-09-23T20:00:00Z',
+    agente: { id: agente, nombre: agente }, estado,
+    investigacion: herramientas ? { usó_herramientas: herramientas.length > 0, pasos: herramientas.map((h, i) => ({ n: i + 1, herramienta: h })) } : null,
+  });
+
+  const r = resumenDeHerramientas([
+    // claude investiga: screener dos veces en una corrida, y en otra ninguna.
+    conPasos('claude', 'ok_target', ['screener', 'screener', 'ficha']),
+    conPasos('claude', 'ok_target', ['noticias']),
+    // deepseek nunca la llama.
+    conPasos('deepseek', 'ok_target', ['ficha', 'noticias']),
+    conPasos('deepseek', 'ok_target', []),
+    // y una corrida suya que abortó: NO cuenta como "decidió no investigar".
+    conPasos('deepseek', 'aborted_cuerpo_vacio', null),
+  ]);
+
+  const claude = r.por_agente.find((a) => a.agente === 'claude');
+  const deepseek = r.por_agente.find((a) => a.agente === 'deepseek');
+
+  ok(claude.screener_llamadas === 2, 'cuenta las LLAMADAS: claude la usó dos veces', String(claude.screener_llamadas));
+  ok(claude.screener_corridas === 1, 'y las CORRIDAS en que la tocó: dos llamadas en una sola corrida no son dos corridas',
+    String(claude.screener_corridas));
+  ok(claude.screener_pct_corridas === 50, 'el porcentaje es sobre corridas, no sobre llamadas', String(claude.screener_pct_corridas));
+
+  ok(deepseek.screener_llamadas === 0 && deepseek.screener_pct_corridas === 0,
+    'deepseek no la llama nunca, y eso sale como 0% y no como un hueco');
+  ok(deepseek.abortadas === 1 && deepseek.corridas_vivas === 2,
+    'su corrida abortada NO entra al denominador: no llegó a investigar, no decidió no hacerlo',
+    JSON.stringify({ abortadas: deepseek.abortadas, vivas: deepseek.corridas_vivas }));
+  ok(deepseek.sin_uso === 1, 'y la corrida en que investigó CERO sí se cuenta aparte: ésa sí es una decisión');
+
+  ok(r.liga.screener_pct_corridas === 25, 'la liga entera: 1 de 4 corridas vivas tocó el screener', String(r.liga.screener_pct_corridas));
+  ok(/les falta saber que lo tienen/.test(r.liga.lectura),
+    'y con uso bajo la lectura dice la conclusión: el problema no es el acceso', r.liga.lectura);
+  ok(r.liga.por_herramienta.ficha === 2 && r.liga.por_herramienta.noticias === 2,
+    'las otras tres herramientas también se cuentan: sin ellas no se sabe si investigan poco o investigan otra cosa',
+    JSON.stringify(r.liga.por_herramienta));
+
+  // Con uso alto, la lectura cambia de conclusión — no es un texto fijo.
+  const alto = resumenDeHerramientas([
+    conPasos('claude', 'ok_target', ['screener']),
+    conPasos('control', 'ok_target', ['screener', 'ficha']),
+  ]);
+  ok(alto.liga.screener_pct_corridas === 100 && /NO es el cuello de botella/.test(alto.liga.lectura),
+    'con uso alto dice lo contrario: el acceso no es lo que falta', alto.liga.lectura);
+
+  ok(resumenDeHerramientas([]).liga.screener_pct_corridas === null,
+    'sin corridas no se publica un 0% que se leería como "no la usan"');
+}
+
+// ── EL DESLIZAMIENTO POR AGENTE, CON SU PISO ─────────────────────────
+console.log('\n── el deslizamiento se lee contra el par idéntico ──');
+{
+  const libro = (agente, fuente, ordenes) => ({
+    fuente, fecha: '2026-09-23T20:00:00Z', agente: { id: agente, nombre: agente },
+    estado: 'ok_target', ordenes: { ordenes },
+  });
+  const ord = (pp, monto) => ({ ticker: 'X', lado: 'buy', deslizamiento_pp: pp, cantidad_llena: 10,
+    monto_usd: monto, precio_ejecucion: 100, limite: 101 });
+
+  const d = deslizamientoPorAgente([
+    libro('claude', 'en_vivo', [ord(0.10, 1000)]),
+    libro('control', 'en_vivo', [ord(0.14, 1000)]),
+    libro('qwen', 'en_vivo', [ord(0.40, 1000)]),
+    // Una corrida de PRUEBA no manda órdenes: si entrara, diluiría el denominador.
+    libro('qwen', 'prueba', [ord(9.99, 1000)]),
+  ]);
+  ok(d.por_agente.length === 3, 'las corridas de prueba no entran: no mandan órdenes', String(d.por_agente.length));
+  ok(d.por_agente[0].agente === 'qwen', 'se ordena por el que más desliza, que es a quien hay que mirar');
+  ok(d.piso_claude_control_pp === 0.04,
+    'y trae el piso del par idéntico: claude↔control corren el MISMO modelo, así que lo que los separa acá es el mecanismo',
+    String(d.piso_claude_control_pp));
+  ok(/0.04 pp/.test(d.lectura) && /no es atribuible a nadie/.test(d.lectura),
+    'la lectura dice que una diferencia menor que ese piso no se le puede cobrar a ningún modelo', d.lectura);
+  ok(/Una semana de sesiones es el mínimo/.test(d.nota),
+    'y avisa que con dos o tres fills la media no significa nada');
+
+  const sinPar = deslizamientoPorAgente([libro('qwen', 'en_vivo', [ord(0.4, 1000)])]);
+  ok(sinPar.piso_claude_control_pp === null && /Sin el par claude↔control/.test(sinPar.lectura),
+    'sin el par completo no se inventa un piso, y se dice que sin él las brechas no se leen');
 }
 
 // ── EL PISO SE CALCULA, NO SE ARCHIVA ────────────────────────────────
