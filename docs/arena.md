@@ -764,10 +764,18 @@ enviadas.get(String(o.client_order_id || o.symbol || ''))   // → 'PGR', y el m
                                                             //   'arena-claude-f-…'
 ```
 
-**Fallaba en TODA corrida viva**, y de la peor forma: sin excepción y sin hueco
-visible. `resultado` y `estado_alpaca` salían `null`, y la página escribía
-"calculada" sobre órdenes que sí se habían mandado. El mapa ahora se indexa por
-las dos claves, igual que `fillsDeActions`.
+**Falló en TODA corrida viva hasta B34**, y de la peor forma: sin excepción y
+sin hueco visible. `resultado` y `estado_alpaca` salían `null`, y la página
+escribía "calculada" sobre órdenes que sí se habían mandado — ésa es la
+explicación de por qué la columna de resultado nunca decía nada útil.
+
+**Ojo con el alcance, para no anotar más de lo que se arregló:** B34 ya lo había
+tapado sin querer. `journalObjetivoVivo` escribe `actions` en el mismo insert, y
+el nuevo pareo por fill busca en `actions` por `SÍMBOLO|lado`, así que desde
+ayer el estado y el precio ya salían bien por ese camino. Lo que se arregla acá
+es el **respaldo**: el eco del envío, que es lo único que queda cuando `actions`
+falta o llega incompleto. Sigue valiendo la pena —un respaldo que nunca acierta
+no es un respaldo— pero no es lo que habría roto la pantalla mañana.
 
 ### 2. Las salidas de riesgo escriben `reference`, no `referencia`
 
