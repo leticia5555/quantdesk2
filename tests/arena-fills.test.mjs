@@ -267,6 +267,69 @@ console.log('\n── las dos pantallas leen lo que el servidor publica ──')
     '`actions` journalea la INTENCIÓN: sin ella, una venta de cierre y la apertura de un corto se ven iguales');
 }
 
+// ── 10b) LA FORMA REAL DE PROD, QUE LA SINTÉTICA NO TENÍA ────────────
+// `ordenes_calculadas` NO lleva `client_order_id`: se lo pone `enviarOrdenes`
+// DESPUÉS, al mandar. Un test que se lo inventa prueba un caso que no existe.
+// Éste usa la forma exacta que journalea `legsAOrdenes`.
+console.log('\n── la forma que de verdad tiene una corrida viva ──');
+{
+  const CID = 'arena-claude-f-2026-09-23-PGR-sell';
+  const e = {
+    modo: 'enviado', candado: { ok: true },
+    // TAL CUAL sale de `legsAOrdenes`: sin client_order_id, sin alpaca_order_id.
+    ordenes_calculadas: [{
+      symbol: 'PGR', side: 'sell', qty: 40, limit_price: 263, intencion: 'sell',
+      referencia: 264.3, notional_objetivo: 10572, notional_real: 10520,
+      weight_from: 0.10, weight_to: 0, delta_weight: -0.1, closes_position: true,
+    }],
+    // Y `enviadas` SÍ lo lleva: es lo que rompía el pareo.
+    enviadas: [{ symbol: 'PGR', side: 'sell', qty: 40, limit_price: 263, result: 'approved',
+      order_status: 'accepted', client_order_id: CID, alpaca_order_id: 'a1' }],
+    descartadas: [],
+  };
+  const fills = fillsDeActions([{
+    symbol: 'PGR', side: 'sell', qty: 40, limit_price: 263, result: 'approved', order_status: 'filled',
+    filled_qty: 40, filled_avg_price: 265.1, filled_at: '2026-09-23T19:58:02Z',
+    client_order_id: CID, alpaca_order_id: 'a1', intencion: 'sell',
+  }]);
+  const pub = ejecucionPublicable(e, { fills, entradas: entradasDeCuenta(CUENTA) });
+  const o = pub.ordenes[0];
+  ok(o.precio_ejecucion === 265.1,
+    'la orden calculada encuentra su fill por SÍMBOLO|lado, que es la única clave que comparten', String(o.precio_ejecucion));
+  ok(o.resultado === 'approved' && o.estado_alpaca === 'filled',
+    'y el resultado del envío también se pega: buscarlo solo por client_order_id devolvía null en TODA corrida viva',
+    JSON.stringify([o.resultado, o.estado_alpaca]));
+  ok(o.deslizamiento_pp === -0.303, 'el deslizamiento sale de la referencia journaleada por el motor', String(o.deslizamiento_pp));
+
+  // Sin fill conciliado todavía, el eco del envío igual tiene que llegar.
+  const sinFill = ejecucionPublicable(e, { fills: new Map(), entradas: {} });
+  ok(sinFill.ordenes[0].estado === 'pendiente' && sinFill.ordenes[0].resultado === 'approved',
+    'antes del reconcile la orden sale `pendiente` y NO `sin_enviar`: se mandó, solo que no sabemos a cuánto llenó',
+    JSON.stringify([sinFill.ordenes[0].estado, sinFill.ordenes[0].resultado]));
+}
+
+// ── 10c) LAS SALIDAS DE RIESGO ───────────────────────────────────────
+// Una fila `risk_exit` no tiene `context.ejecucion` —la escribió la red
+// determinista, no el contrato objetivo— pero sí tiene `actions` con su fill.
+// Eran las únicas ventas que seguían sin decir a cuánto se vendieron, y son
+// justo las que más importan: las que disparó un stop.
+console.log('\n── las ventas que disparó un stop ──');
+{
+  const o = ordenesDeActions([{
+    symbol: 'PGR', side: 'sell', qty: 40, limit_price: 250,
+    // OJO: la red determinista escribe `reference`, en inglés. Leer solo
+    // `referencia` dejaba estas órdenes sin deslizamiento.
+    reference: 252, channels: ['risk_exit'], origin: 'catastrophic_stop',
+    result: 'approved', order_status: 'filled',
+    filled_qty: 40, filled_avg_price: 251.4, filled_at: '2026-09-23T13:35:00Z',
+    alpaca_order_id: 'x1', client_order_id: 'arena-claude-2026-09-23-PGR:exit',
+  }], CUENTA)[0];
+  ok(o.precio_ejecucion === 251.4 && o.monto_usd === 10056, 'el stop dice a cuánto vendió');
+  ok(o.resultado_contra_entrada.pnl_usd === -280,
+    'y su resultado contra la entrada: un stop que cortó una pérdida la muestra', String(o.resultado_contra_entrada.pnl_usd));
+  ok(o.deslizamiento_pp === 0.238, '`reference` se lee igual que `referencia`: es el mismo dato con dos nombres', String(o.deslizamiento_pp));
+}
+
 // ── 11) EL DESLIZAMIENTO, AGREGADO ───────────────────────────────────
 // La pregunta: ¿alguno paga sistemáticamente más que los otros por el MISMO
 // mecanismo? Si sí, no es el modelo — es el límite marketable trabajando mal

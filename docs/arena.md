@@ -746,6 +746,56 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B37 · TRES COSAS QUE LA PRUEBA SINTÉTICA NO PODÍA VER (2026-09-23)
+
+Los precios se verificaron contra payloads armados a mano. Releyendo el camino
+real contra la forma que de verdad journalea el motor aparecieron tres huecos
+que un fixture inventado no toca, porque el fixture se escribe con la forma que
+uno CREE que tiene el dato.
+
+### 1. `ordenes_calculadas` no lleva `client_order_id`
+
+Lo pone `enviarOrdenes` **después**, al mandar. Así que el pareo entre la orden
+calculada y su resultado de envío se hacía con una clave que un lado no tiene:
+
+```js
+enviadas.get(String(o.client_order_id || o.symbol || ''))   // → 'PGR', y el mapa
+                                                            //   está llaveado por
+                                                            //   'arena-claude-f-…'
+```
+
+**Fallaba en TODA corrida viva**, y de la peor forma: sin excepción y sin hueco
+visible. `resultado` y `estado_alpaca` salían `null`, y la página escribía
+"calculada" sobre órdenes que sí se habían mandado. El mapa ahora se indexa por
+las dos claves, igual que `fillsDeActions`.
+
+### 2. Las salidas de riesgo escriben `reference`, no `referencia`
+
+`attributeRiskExit` es más vieja que el contrato objetivo y usa el nombre en
+inglés. Son el mismo dato; leer solo uno dejaba sin deslizamiento justo a las
+órdenes de los stops.
+
+### 3. Una fila `risk_exit` no tiene `context.ejecucion`
+
+La escribe la red determinista, no el contrato objetivo — pero **sí tiene
+`actions`**, y el reconcile les pone su precio como a cualquier otra. Sin un
+respaldo, las ventas que dispara un stop eran las únicas que seguían sin decir a
+cuánto se vendieron, **y son las que más importan**: una venta que el PM decidió
+tiene una tesis al lado; una que disparó un stop solo tiene su precio.
+
+`ordenesSueltas` arma la misma forma desde `actions` sola, y la nota dice de
+dónde salió: *"RED DETERMINISTA: estas ventas las disparó un stop, no el PM"*.
+Vale igual para las filas del contrato viejo.
+
+### La lección
+
+Las tres son la misma: **un fixture se escribe con la forma que uno cree que
+tiene el dato, así que confirma la creencia en vez de comprobarla.** El test que
+las encontró no fue más ingenioso — fue el que copió la forma del `push` de
+`legsAOrdenes` en vez de inventarla.
+
+---
+
 ## B36 · DOS CONTEOS QUE DECIDEN, EN LA MISMA RESPUESTA (2026-09-23)
 
 Dos preguntas abiertas, las dos contestables con datos que YA se journalean.

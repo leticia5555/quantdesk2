@@ -176,7 +176,11 @@ export function detalleDeOrden({ orden = {}, fill = null, entrada = null } = {})
   const intencion = orden.intencion || (fill && fill.intencion) || null;
   const pedida = num(orden.qty) ?? (fill ? fill.qty : null);
   const limite = num(orden.limit_price);
-  const referencia = num(orden.referencia);
+  // `referencia` la escribe el contrato objetivo; `reference`, las salidas de
+  // riesgo (`attributeRiskExit`). Son el mismo dato con dos nombres porque se
+  // escribieron en momentos distintos, y leer solo uno dejaba la mitad de las
+  // órdenes sin deslizamiento — justo las de los stops, que es donde importa.
+  const referencia = num(orden.referencia ?? orden.reference);
 
   const llena = fill ? fill.filled_qty : null;
   const precio = fill ? fill.filled_avg_price : null;
@@ -409,7 +413,7 @@ export function ordenesDeActions(actions = [], account = null) {
         orden: {
           symbol: a.symbol, side: a.side, qty: a.qty, limit_price: a.limit_price,
           intencion: a.intencion || null, closes_position: !!a.closes_position,
-          referencia: a.referencia ?? null, delta_weight: a.delta_weight,
+          referencia: a.referencia ?? a.reference ?? null, delta_weight: a.delta_weight,
           alpaca_order_id: a.alpaca_order_id || null, client_order_id: a.client_order_id || null,
         },
         fill: nuncaSalio

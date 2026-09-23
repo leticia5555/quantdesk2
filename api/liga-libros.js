@@ -50,7 +50,7 @@
 import { sql } from './_lib/db.js';
 import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay } from './_lib/arena-registry.js';
 import { pairwiseOverlap, sharedTopTicker, pisoDeRuido, deltaDePesos, lecturaDeCoincidencia, CAVEAT_ENFOQUE } from './_lib/arena-herding.js';
-import { claveDeOrden, detalleDeOrden, fillsDeActions, entradasDeCuenta, resumenDeOrdenes, resumenDeslizamiento } from './_lib/arena-fills.js';
+import { claveDeOrden, detalleDeOrden, fillsDeActions, entradasDeCuenta, resumenDeOrdenes, resumenDeslizamiento, ordenesDeActions } from './_lib/arena-fills.js';
 
 const int = (v, def, min, max) => {
   const n = parseInt(v, 10);
@@ -196,7 +196,17 @@ export function libroDeFila(row, fuente) {
     // no se mandó ninguna. Una corrida SIN ENVIAR y una que movió dinero se
     // journalean en la misma tabla, y confundirlas sería el mismo error que
     // las tablas separadas existen para impedir del lado de la sombra.
-    ordenes: ejecucionPublicable(ctx.ejecucion, { fills, entradas }),
+    // ── SIN `ejecucion` PERO CON ÓRDENES: LAS SALIDAS DE RIESGO ──────
+    // Una fila `risk_exit` (stop catastrófico, trailing, breaker) NO tiene
+    // `context.ejecucion` — no la escribió el contrato objetivo, la escribió la
+    // red determinista— pero SÍ tiene `actions`, y el reconcile les pone su
+    // precio de ejecución como a cualquier otra. Sin este respaldo, las ventas
+    // que más importan —las que disparó un stop— eran las únicas que seguían
+    // sin decir a cuánto se vendieron. Vale igual para las filas del contrato
+    // VIEJO, que nunca tuvieron `ordenes_calculadas`.
+    ordenes: ctx.ejecucion
+      ? ejecucionPublicable(ctx.ejecucion, { fills, entradas })
+      : ordenesSueltas(row.actions || [], row.account || null, row.status),
     // Qué contrato corrió esa vuelta, tal como se journaleó. NO se infiere del
     // contenido: una fila vieja sin el campo sale null, y null es un dato.
     contrato: ctx.contrato || null,
@@ -221,15 +231,23 @@ export function libroDeFila(row, fuente) {
 // con su cantidad y su límite y el fill sale en null, que es lo que significa.
 export function ejecucionPublicable(e, { fills = null, entradas = null } = {}) {
   if (!e) return null;
+  // ── EL MAPA DE `enviadas` NECESITA LAS DOS CLAVES ─────────────────
+  // Las filas de `enviadas` SÍ llevan `client_order_id` (lo pone `enviarOrdenes`);
+  // las de `ordenes_calculadas` NO (lo pone el envío, después). Así que buscar
+  // por `client_order_id || symbol` desde el lado calculado nunca acertaba: el
+  // resultado del envío salía null en TODA corrida viva, y la página mostraba
+  // "calculada" para órdenes que sí se habían mandado. Se indexa por las dos.
   const enviadas = new Map();
   for (const o of e.enviadas || []) {
-    const k = String(o.client_order_id || o.symbol || '');
-    if (k) enviadas.set(k, o);
+    const cid = o.client_order_id ? String(o.client_order_id) : null;
+    if (cid) enviadas.set(cid, o);
+    const alt = o.symbol ? `${String(o.symbol).toUpperCase()}|${String(o.side || '').toLowerCase()}` : '';
+    if (alt && !enviadas.has(alt)) enviadas.set(alt, o);
   }
   const porFill = fills || new Map();
   const ordenes = (e.ordenes_calculadas || []).map((o) => {
     const clave = claveDeOrden(o);
-    const r = enviadas.get(String(o.client_order_id || o.symbol || '')) || null;
+    const r = enviadas.get(clave) || enviadas.get(String(o.client_order_id || '')) || null;
     // El fill reconciliado gana sobre el eco del envío: el segundo dice
     // `accepted` para siempre, el primero dice a cuánto llenó.
     const fill = porFill.get(clave)
@@ -272,6 +290,24 @@ export function ejecucionPublicable(e, { fills = null, entradas = null } = {}) {
     descartadas: (e.descartadas || []).map((d) => ({
       ticker: d.symbol || null, lado: d.side || null, motivo: d.motivo || null,
     })),
+  };
+}
+
+// Órdenes de una fila que no pasó por el contrato objetivo: se arman de
+// `actions` sola. Devuelve la MISMA forma que `ejecucionPublicable` para que la
+// página no tenga que distinguir de dónde salieron — lo que sí cambia es la
+// nota, porque el origen es un hecho y no un detalle.
+export function ordenesSueltas(actions = [], account = null, estado = null) {
+  const ordenes = ordenesDeActions(actions, account);
+  if (!ordenes.length) return null;
+  const esRiesgo = String(estado || '') === 'risk_exit';
+  return {
+    modo: 'enviado',
+    modo_nota: esRiesgo
+      ? 'RED DETERMINISTA: estas ventas las disparó un stop, no el PM. Corren sin LLM y no se pueden apagar.'
+      : 'Órdenes journaleadas sin el detalle del contrato objetivo (fila del contrato viejo): sale lo que hay.',
+    candado_ok: null, freno: null, nota: null,
+    ordenes, resumen: resumenDeOrdenes(ordenes), descartadas: [],
   };
 }
 
