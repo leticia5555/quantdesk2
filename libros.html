@@ -134,7 +134,14 @@ section{padding:18px 0 4px;}
 .ord .sym{font-weight:700;min-width:46px;}
 .ord .det{color:var(--text2);}
 .ord .res{margin-left:auto;font-size:9px;letter-spacing:.05em;color:var(--text3);}
-.ord .res.ok{color:var(--green);}.ord .res.bad{color:var(--red);}
+.ord .res.ok{color:var(--green);}.ord .res.bad{color:var(--red);}.ord .res.warn{color:var(--amber);}
+/* Lo que se PIDIÓ va debajo de lo que se EJECUTÓ y más apagado: al revés,
+   el precio límite se lee como el precio pagado. */
+.ord .ped{display:block;color:var(--text3);font-size:9px;margin-top:2px;}
+.ord .pnl{flex-basis:100%;font-size:10px;margin-top:4px;color:var(--text2);}
+.ord .pnl.up b{color:var(--green);}.ord .pnl.down b{color:var(--red);}
+.ord .pnl-nota{display:block;color:var(--text3);font-size:9px;margin-top:2px;line-height:1.45;}
+.kv b.up{color:var(--green);}.kv b.down{color:var(--red);}
 .nota{font-size:11px;color:var(--text3);line-height:1.5;margin-top:8px;}
 .nota.warn{color:var(--amber);}
 .nota.bad{color:#fca5a5;}
@@ -274,19 +281,67 @@ function pesosHtml(p){
     (p.cash!=null?'<span class="peso">cash '+pp(p.cash)+'</span>':'')+'</div>';
 }
 
+// ── EL PRECIO DE EJECUCIÓN, QUE ES LO QUE FALTABA ───────────────────
+// La orden decía cuánto se PIDIÓ (cantidad y límite) y nunca a cuánto LLENÓ.
+// El precio de ejecución, la cantidad llenada y la hora los escribe el
+// reconcile sobre `actions`; el endpoint ahora los pega encima de la orden
+// calculada (`_lib/arena-fills.js`). Acá solo se pintan.
+const ET = ts => {
+  const d=new Date(ts);
+  if(!isFinite(d)) return '';
+  // Hora de MERCADO. La del navegador haría que un fill del cierre se leyera
+  // como una operación de madrugada para quien mira desde Europa.
+  return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'America/New_York'})+' ET';
+};
+const px = n => { n=Number(n); return isFinite(n)?'$'+n.toFixed(2):'—'; };
+const sgn = n => (n>=0?'+':'−')+money(Math.abs(n));
+const ESTADO_ORDEN = {
+  llena:['ok','llena'], parcial:['warn','PARCIAL'], sin_llenar:['bad','NO LLENÓ'],
+  pendiente:['','pendiente'], no_enviada:['bad','NO SALIÓ'], sin_enviar:['','sin enviar'],
+};
 function ordenesHtml(o){
   if(!o) return '';
   const lista=(o.ordenes||[]).map(x=>{
-    const res=x.resultado==='approved'?'<span class="res ok">enviada'+(x.estado_alpaca?' · '+esc(x.estado_alpaca):'')+'</span>'
-      :x.resultado?'<span class="res bad">'+esc(x.resultado)+'</span>'
-      :'<span class="res">calculada</span>';
-    return '<div class="ord"><span class="side '+esc(x.lado)+'">'+esc(x.lado)+'</span>'+
+    const [cls,txt]=ESTADO_ORDEN[x.estado]||['','—'];
+    const res='<span class="res '+cls+'">'+esc(txt)+(x.estado_alpaca&&x.estado!=='llena'?' · '+esc(x.estado_alpaca):'')+'</span>';
+    // Lo que de verdad se movió va PRIMERO; lo que se pidió queda al lado.
+    // Al revés, el límite se lee como el precio pagado.
+    const ejec = x.cantidad_llena!=null
+      ? '<b>'+esc(String(x.cantidad_llena))+' @ '+px(x.precio_ejecucion)+'</b>'+
+        (x.monto_usd!=null?' · '+money(x.monto_usd):'')+
+        (x.hora?' · '+ET(x.hora):'')+
+        (x.deslizamiento_pp!=null?' · desliz '+(x.deslizamiento_pp>0?'+':'')+x.deslizamiento_pp+'pp':'')
+      : '<span style="color:var(--text3)">sin fill</span>';
+    const pedido = (x.cantidad_pedida!=null?'pidió '+esc(String(x.cantidad_pedida))+' @ lím '+px(x.limite):'')+
+      (x.delta_pp!=null?' · '+(x.delta_pp>0?'+':'')+x.delta_pp+'pp':'');
+    const r=x.resultado_contra_entrada;
+    const pnl=r&&r.calculable
+      ? '<div class="pnl '+(r.pnl_usd>=0?'up':'down')+'">cierra '+esc(r.cierra)+
+        ' · entrada '+px(r.entrada)+' → salida '+px(r.salida)+
+        ' · <b>'+sgn(r.pnl_usd)+'</b> ('+(r.pnl_pct>=0?'+':'')+r.pnl_pct+'%)'+
+        '<span class="pnl-nota">'+esc(r.nota)+'</span></div>'
+      : (r?'<div class="nota warn">'+esc(r.motivo)+'</div>':'');
+    const falta = x.estado==='parcial'&&x.cantidad_sin_llenar!=null
+      ? '<div class="nota warn">'+esc(String(x.cantidad_sin_llenar))+' sin llenar'+(x.motivo?' — '+esc(x.motivo):'')+'</div>'
+      : (x.motivo&&x.estado!=='llena'?'<div class="nota warn">'+esc(x.motivo)+'</div>':'');
+    return '<div class="ord"><span class="side '+esc(x.lado)+'">'+esc(x.intencion||x.lado)+'</span>'+
       '<span class="sym">'+esc(x.ticker)+'</span>'+
-      '<span class="det">'+esc(x.cantidad)+' @ lím '+esc(x.limite)+
-      (x.monto!=null?' · '+money(x.monto):'')+
-      (x.delta_pp!=null?' · '+(x.delta_pp>0?'+':'')+x.delta_pp+'pp':'')+'</span>'+res+
+      '<span class="det">'+ejec+(pedido?'<span class="ped">'+pedido+'</span>':'')+'</span>'+res+
+      pnl+falta+
       (x.error?'<div class="nota bad">'+esc(x.error)+'</div>':'')+'</div>';
   }).join('');
+  const r=o.resumen;
+  const resumen=r&&r.ordenes
+    ? '<div class="kv" style="margin-top:8px">'+
+      (r.comprado_usd?'compró <b>'+money(r.comprado_usd)+'</b>':'')+
+      (r.comprado_usd&&r.vendido_usd?' · ':'')+
+      (r.vendido_usd?'vendió <b>'+money(r.vendido_usd)+'</b>':'')+
+      (r.salidas_calculadas?' · realizado <b class="'+(r.realizado_usd>=0?'up':'down')+'">'+sgn(r.realizado_usd)+'</b> en '+r.salidas_calculadas+' salida(s)':'')+
+      ' · '+r.llenas+' llena(s)'+(r.parciales?', '+r.parciales+' parcial(es)':'')+
+      (r.sin_llenar?', '+r.sin_llenar+' sin llenar':'')+(r.pendientes?', '+r.pendientes+' pendiente(s)':'')+
+      (r.nota?'<div class="nota warn">'+esc(r.nota)+'</div>':'')+
+      '</div>'
+    : '';
   const desc=(o.descartadas||[]).map(d=>
     '<div class="nota warn">descartada '+esc(d.ticker||'')+': '+esc(d.motivo||'')+'</div>').join('');
   const cab = o.modo_nota?'<div class="nota'+(o.modo==='dry'?' warn':'')+'">'+esc(o.modo_nota)+'</div>':'';
@@ -294,7 +349,7 @@ function ordenesHtml(o){
     ? '<div class="nota bad">CANDADO: '+esc(o.freno||'alguna orden no correspondía a ningún peso, así que no se mandó NINGUNA de esta corrida.')+'</div>'
     : '';
   if(!lista&&!desc) return cab+freno+'<div class="empty">Ninguna orden: el objetivo ya estaba puesto.</div>';
-  return cab+freno+lista+desc;
+  return cab+freno+lista+desc+resumen;
 }
 
 function railsHtml(r){
@@ -309,7 +364,18 @@ function cardHtml(l,i){
   const a=l.agente;
   const rotos = l.rieles&&l.rieles.ok===false || String(l.estado||'').startsWith('aborted');
   const npos = l.portafolio&&l.portafolio.pesos ? Object.keys(l.portafolio.pesos).length : null;
-  const railTag = l.rieles&&l.rieles.ok===false ? '<span class="tag rails">rieles ✕</span>' : '';
+  // ── "RIELES ✕" TIENE QUE DECIR CUÁL ────────────────────────────────
+  // El detalle (riel, ticker, motivo) ya viajaba, pero vivía detrás de "ver la
+  // investigación": para saber qué riel frenó una corrida había que abrir la
+  // tarjeta y bajar cuatro bloques. "Rechazado" sin el riel es la mitad de un
+  // diagnóstico — la diferencia entre "el agente falló" y "pidió 60% en un
+  // sector con tope de 50%".
+  const rieles = (l.rieles&&l.rieles.ok===false&&Array.isArray(l.rieles.violaciones))
+    ? [...new Set(l.rieles.violaciones.map(v=>v.riel).filter(Boolean))] : [];
+  const railTag = l.rieles&&l.rieles.ok===false
+    ? '<span class="tag rails" title="'+esc((l.rieles.violaciones||[]).map(v=>v.riel+(v.ticker?' '+v.ticker:'')+' — '+(v.detalle||'')).join(' · '))+'">'+
+      'rieles ✕'+(rieles.length?' '+esc(rieles.join(' ')):'')+'</span>'
+    : '';
   const enfoqueTag = l.enfoque ? '<span class="tag enfoque">'+esc(l.enfoque)+'</span>' : '';
   const inv=l.investigacion;
   const invResumen = inv&&inv.usó_herramientas
@@ -365,15 +431,29 @@ function clase(n,umbrales){ // [alto, medio] → clase de color
 function dayboxHtml(d){
   const s=d.coincidencia||{};
   const p=d.piso_de_ruido||{};
+  // ── LA COINCIDENCIA SE CALCULA SOBRE LOS QUE TERMINARON ────────────
+  // "entre 4 libros" se lee como un hecho del día y es un hecho de un
+  // SUBCONJUNTO que cambia solo: el día que tres agentes abortan, el
+  // denominador se mueve sin que nada lo diga. Así que la etiqueta lleva
+  // siempre cuántos agentes ENTRARON, y debajo va quién quedó fuera y por qué.
+  // Un aborto es un resultado del experimento, no una fila que falta.
+  const entraron = s.agentes_en_la_corrida!=null ? s.agentes_en_la_corrida : (s.libros||0);
+  const etiqueta = 'entre '+(s.libros||0)+' de '+entraron+' libros';
+  const fueraHtml = (s.detalle_fuera&&s.detalle_fuera.length)
+    ? '<div class="read warn" style="margin-top:-6px">Quedaron fuera <b>'+s.detalle_fuera.length+' de '+entraron+'</b>: '+
+      s.detalle_fuera.map(f=>'<b>'+esc(f.nombre||f.agente)+'</b> ('+esc(f.estado||'sin libro')+')').join(', ')+
+      '. La coincidencia de arriba NO los incluye — se calcula sobre los que terminaron con un libro.</div>'
+    : '';
   const sol = s.mean!=null
     ? '<div class="metric"><span class="k">Coincidencia</span><span class="v '+clase(s.mean,[0.8,0.5])+'">'+s.mean+'</span>'+
-      '<span class="k" style="min-width:0">entre '+(s.libros||0)+' libros</span></div>'+
+      '<span class="k" style="min-width:0">'+etiqueta+'</span></div>'+
       '<div class="read">'+esc(s.lectura||'')+'</div>'+
+      fueraHtml+
       (s.nombre_mas_compartido&&s.nombre_mas_compartido.ticker
         ? '<div class="read" style="margin-top:-6px">Nombre más compartido: <b>'+esc(s.nombre_mas_compartido.ticker)+'</b> — en '+
           s.nombre_mas_compartido.books+' de '+(s.libros||0)+' libros ('+s.nombre_mas_compartido.pct+'%).</div>'
         : '')
-    : '<div class="metric"><span class="k">Coincidencia</span><span class="v na">'+esc(s.note||'sin datos')+'</span></div>';
+    : '<div class="metric"><span class="k">Coincidencia</span><span class="v na">'+esc(s.note||'sin datos')+'</span></div>'+fueraHtml;
 
   // El piso solo se publica como piso si es comparable. Si no, se dice QUÉ
   // mide ese número en vez de mostrarlo con la etiqueta equivocada.
@@ -409,7 +489,10 @@ function dayboxHtml(d){
       '<div class="read warn">'+esc(p.motivo||'')+
       (p.cosine_observado!=null?' <b>(el coseno entre libros es '+p.cosine_observado+', y NO es el piso)</b>':'')+'</div>';
 
-  return '<div class="daybox"><h3>'+esc(d.dia)+' · corrida '+esc(d.fuente)+' · '+d.corridas+' agente(s)</h3>'+
+  const censo = d.censo||{};
+  const cabeza = esc(d.dia)+' · corrida '+esc(d.fuente)+' · '+d.corridas+' agente(s)'+
+    (censo.abortados ? ' · '+censo.abortados+' abortaron' : '');
+  return '<div class="daybox"><h3>'+cabeza+'</h3>'+
     sol+piso+
     '<div class="caveat">'+esc(s.caveat||'')+'</div></div>';
 }

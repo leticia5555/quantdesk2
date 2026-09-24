@@ -32,6 +32,10 @@ Measured twice on 2026-09-16, the cosine similarity between those two books came
 
 Those two were measured book-to-book, which only works while both accounts start the day holding the same thing. Once they diverge, the same comparison measures inheritance instead of noise, so the floor is now computed between *deltas* — what each account decided to change. That number lives on a different scale (it can go negative, since selling is a negative weight) and the pages label which method produced it. Both are archived for every day, so the two can be compared later.
 
+Both of those are cosine similarities — they answer "do two identical runs *decide* alike?". They do not answer the question anyone actually asks of a leaderboard: did 2nd place really beat 6th? That one is measured in points of return, and a cosine does not convert into percentage points. So the ranking declares a third number, in its own units: **the gap between the two identical accounts' returns**. On 2026-09-21 that was **0.99 points**, against a **1.35-point** spread from 2nd place to 7th — 73% of the visible spread between models is one configuration disagreeing with itself, and no two consecutive places were separated by more than the floor.
+
+That number sits above the table, not under it, and any place whose gap to its neighbour is smaller than the floor is labelled a technical tie on its own row. The count of models losing to the index is stated there too, rather than left for the reader to work out row by row.
+
 No other public LLM trading arena publishes this number. Without it, "model X beat model Y" is a coin flip with a leaderboard on top.
 
 ### An index that doesn't think

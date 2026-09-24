@@ -348,7 +348,24 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   // NOMBRES existen. Un objetivo con un símbolo inventado no tiene una
   // violación de riel — no tiene sentido siquiera evaluarlo.
   const universoSimbolos = (buffet && buffet.universe_raw && buffet.universe_raw.symbols) || null;
-  const tick = normalizarTickersObjetivo(parsed.weights, { universo: universoSimbolos });
+  // ── LO QUE PUEDE TENER NO ES LO QUE PUEDE VER (2026-09-22) ─────────
+  // El universo del día decide qué se puede ABRIR. Lo que YA se tiene sigue
+  // siendo legal aunque su ticker no esté hoy en la lista: una posición sale
+  // por un riel, por un stop o porque el agente la vende — nunca porque la
+  // lista rotó. Sin esto, deepseek compró NKE al 25% por la mañana y lo
+  // liquidó por la tarde "porque el universo admisible de hoy fuerza la
+  // salida", y tenía razón: así estaba cableado.
+  //
+  // El peso ACTUAL viaja porque el permiso no es ilimitado: un nombre que se
+  // tiene y no está en el universo se puede mantener o reducir, no aumentar
+  // (ver `normalizarTickersObjetivo`).
+  const tenencias = {};
+  for (const p of (libro.positions || [])) {
+    const sym = String((p && p.symbol) || '').trim().toUpperCase();
+    const mv = Math.abs(Number(p && p.market_value));
+    if (sym && Number.isFinite(mv) && Number.isFinite(equity) && equity > 0) tenencias[sym] = mv / equity;
+  }
+  const tick = normalizarTickersObjetivo(parsed.weights, { universo: universoSimbolos, tenencias });
   // ── QUÉ DESPERTÓ ESTA CORRIDA (2026-09-19) ──────────────────────────
   // ESTO FALTABA Y DEJÓ MUERTO EL TOPE DIARIO. El vigilante cuenta las
   // corridas del día con:
@@ -368,6 +385,10 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   ctx.tickers = {
     reparados: tick.reparados, desconocidos: tick.desconocidos, colisiones: tick.colisiones,
     validado_contra_universo: tick.validado_contra_universo,
+    // Los nombres que siguieron vivos SOLO porque ya estaban en el libro. Es
+    // la medida directa de cuántas salidas habría forzado la rotación del
+    // universo si esto no estuviera — y es lo que hace auditable el conteo.
+    admitidos_por_tenencia: tick.admitidos_por_tenencia,
     // Si el aviso viajó Y el modelo volvió a pedir el mismo nombre, eso ya no
     // es falta de información: es el modelo ignorando un hecho que tenía
     // enfrente, y el post-mortem tiene que poder distinguir las dos cosas.

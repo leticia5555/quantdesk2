@@ -746,6 +746,504 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B37 · TRES COSAS QUE LA PRUEBA SINTÉTICA NO PODÍA VER (2026-09-23)
+
+Los precios se verificaron contra payloads armados a mano. Releyendo el camino
+real contra la forma que de verdad journalea el motor aparecieron tres huecos
+que un fixture inventado no toca, porque el fixture se escribe con la forma que
+uno CREE que tiene el dato.
+
+### 1. `ordenes_calculadas` no lleva `client_order_id`
+
+Lo pone `enviarOrdenes` **después**, al mandar. Así que el pareo entre la orden
+calculada y su resultado de envío se hacía con una clave que un lado no tiene:
+
+```js
+enviadas.get(String(o.client_order_id || o.symbol || ''))   // → 'PGR', y el mapa
+                                                            //   está llaveado por
+                                                            //   'arena-claude-f-…'
+```
+
+**Falla en TODA corrida viva**, y de la peor forma: sin excepción y sin hueco
+visible. `resultado` y `estado_alpaca` salen `null`, y la página escribe
+"calculada" sobre órdenes que sí se mandaron y sí llenaron.
+
+**Medido en producción el 2026-09-24: 462 órdenes del 21 al 24, las 462 con
+`resultado: null` y `estado_alpaca: null`.** Cero excepciones.
+
+> ### CORRECCIÓN DE UNA CORRECCIÓN (2026-09-24)
+>
+> El 23 anoté acá que "B34 ya lo había tapado sin querer" y que esto arreglaba
+> un **respaldo** y no el camino principal. **Estaba mal, y el error de método
+> importa más que el error:** razoné sobre el estado de la RAMA y lo escribí
+> como si fuera el estado de PRODUCCIÓN. La rama no está mergeada. Producción
+> corre `main`, `main` no tiene el pareo por fill de B34, y por lo tanto esta
+> expresión **es** el camino principal allá — es la causa única de que las 462
+> órdenes no tengan precio.
+>
+> La regla que sale de esto: **una afirmación sobre el comportamiento
+> observable dice contra qué árbol se verificó, o no se escribe.** "Ya estaba
+> tapado" sin decir *dónde* convirtió un bug de producción en una nota al pie.
+
+### 2. Las salidas de riesgo escriben `reference`, no `referencia`
+
+`attributeRiskExit` es más vieja que el contrato objetivo y usa el nombre en
+inglés. Son el mismo dato; leer solo uno dejaba sin deslizamiento justo a las
+órdenes de los stops.
+
+### 3. Una fila `risk_exit` no tiene `context.ejecucion`
+
+La escribe la red determinista, no el contrato objetivo — pero **sí tiene
+`actions`**, y el reconcile les pone su precio como a cualquier otra. Sin un
+respaldo, las ventas que dispara un stop eran las únicas que seguían sin decir a
+cuánto se vendieron, **y son las que más importan**: una venta que el PM decidió
+tiene una tesis al lado; una que disparó un stop solo tiene su precio.
+
+`ordenesSueltas` arma la misma forma desde `actions` sola, y la nota dice de
+dónde salió: *"RED DETERMINISTA: estas ventas las disparó un stop, no el PM"*.
+Vale igual para las filas del contrato viejo.
+
+### La lección
+
+Las tres son la misma: **un fixture se escribe con la forma que uno cree que
+tiene el dato, así que confirma la creencia en vez de comprobarla.**
+
+Y el caso 1 lo demuestra dos veces. El fixture de `tests/arena-fills.test.mjs`
+le ponía `client_order_id` a la orden calculada — un campo que la función que
+las produce NUNCA escribe. El test pasaba en verde **sobre el caso que no
+existe**, mientras producción fallaba en el 100% de las filas.
+
+`tests/arena-pareo-ordenes.test.mjs` cierra ese hueco de otra forma: **no
+escribe las formas, llama a las funciones que las producen.** `legsAOrdenes`
+genera la orden, se le pega encima lo que le pega `enviarOrdenes`, se proyecta a
+`actions` como lo hace `journalObjetivoVivo`, y recién ahí se parea. Un test que
+afirma sobre un dato que él mismo inventó no prueba nada sobre el dato real.
+
+---
+
+## B36 · DOS CONTEOS QUE DECIDEN, EN LA MISMA RESPUESTA (2026-09-23)
+
+Dos preguntas abiertas, las dos contestables con datos que YA se journalean.
+Ninguna necesitaba una tabla nueva ni una consulta más: salen de las mismas
+filas que `/api/liga/libros` ya carga.
+
+```bash
+curl -sS "$BASE/api/liga/libros?dias=7&fuente=viva" | jq '{herramientas, deslizamiento}'
+```
+
+### 1. ¿Hace falta el universo completo en el tablero?
+
+**Decisión: NO, por ahora** (Lety, 2026-09-23). El tablero es una MUESTRA del
+universo —top-30 por cambio, top-20 por RVOL, extremos de 52 semanas— y el
+universo entero está **a una llamada de `screener`**. Meterlo en el tablero
+cuesta **+3,200–4,300 tokens** por agente y por corrida, y con el tope actual
+(`ARENA_BOARD_TOKENS`, 5,000) el recorte por la cola se llevaría titulares,
+earnings y los extremos de 52 semanas — que son justo los campos que aparecen
+citados en los razonamientos. **No se cambian tres secciones que el PM cita por
+una lista de nombres que puede pedir.**
+
+Lo que queda por medir antes de tocar el prompt: **si casi no llaman al
+screener, no les falta acceso — les falta saber que lo tienen**, y eso se
+arregla con una línea de ~20 tokens en vez de 4,000.
+
+`herramientas` cuenta tres cosas distintas a propósito:
+
+| campo | contesta |
+|---|---|
+| `screener_llamadas` | cuántas veces la llamó en total |
+| `screener_corridas` | en cuántas corridas la tocó **al menos una vez** |
+| `screener_pct_corridas` | el decisivo: si está o no en su repertorio |
+
+Un agente que la llama seis veces en una corrida y ninguna en las otras cinco
+**no la usa**, y un conteo de llamadas sola diría que sí. Y una corrida
+**abortada no entra al denominador**: no decidió no investigar, no llegó.
+
+### 2. ¿Alguno paga más que los otros por el mismo mecanismo?
+
+`deslizamiento` agrega el `deslizamiento_pp` que ya viaja por orden. Si un
+agente desliza sistemáticamente más, **eso no es el modelo: es el límite
+marketable trabajando mal para él**, y se arregla en el motor.
+
+Tres decisiones que hacen legible el número:
+
+- **Positivo siempre es peor**, de los dos lados (pagar de más comprando,
+  cobrar de menos vendiendo). Sin normalizar el signo, promediar compras y
+  ventas las cancela.
+- **La media y la ponderada por monto, juntas.** Un agente que desliza 0.4pp en
+  una orden de $200 y 0.01pp en una de $20,000 tiene una media horrible y un
+  costo real ínfimo: la media dice cómo ejecuta, la ponderada cuánto costó.
+- **El piso claude↔control**, igual que en el ranking. Los dos corren el mismo
+  modelo con el mismo prompt, así que lo que los separa ACÁ es el mecanismo.
+  Una diferencia menor que ese piso no se le puede cobrar a ningún modelo.
+
+Y `en_el_tope`: un fill no puede pasar su límite, así que un agente cuyos fills
+se pegan al límite **no está deslizando más — está tocando el techo todas las
+veces**, que es la firma de una banda mal calibrada y no de mala ejecución. Se
+cuenta comparando el precio de ejecución con el límite de esa orden, sin
+necesitar conocer la banda.
+
+**El mínimo honesto es una semana de sesiones.** Con dos o tres fills un nombre
+ilíquido mueve el promedio entero, y la nota del bloque lo dice.
+
+---
+
+## B35 · EL AGENTE NO ESTABA FALLANDO, ESTABA OBEDECIENDO (2026-09-22)
+
+> **El agente no estaba fallando, estaba obedeciendo.**
+>
+> Tres textos en imperativo le decían que no podía tener lo que tenía, y un
+> validador leía un nombre de su propio libro como un ticker inventado.
+
+DeepSeek compró NKE al **25%** por la mañana y lo liquidó por la tarde. El
+motivo que escribió: *"el universo admisible de hoy fuerza la salida"*.
+
+**No estaba alucinando. Estaba leyendo bien el sistema.** El universo del día
+era a la vez lo que el agente podía MIRAR y lo que podía TENER, y el prompt se
+lo decía con todas las letras.
+
+### Por qué esto es más grande que un caso
+
+Es el error más caro que se puede cometer contra un experimento de comparación
+de modelos, y no por el dinero: **un sistema que le ordena a un agente hacer
+algo, y después publica ese algo como la decisión del agente, no está midiendo
+al modelo.** Está midiendo su propia instrucción, con siete etiquetas distintas
+encima.
+
+El churn de DeepSeek —comprar al 25% y salir el mismo día— es el caso que se
+vio. Lo que hay que asumir es que **no fue el único**: cualquier venta cuyo
+nombre hubiera salido del universo ese día tiene esta explicación disponible
+antes que cualquier tesis. Y una cartera que rota por una lista que se
+reconstruye todas las mañanas **se ve exactamente igual que una cartera
+aleatoria**, que es como se venían viendo los libros.
+
+No se puede cuantificar hacia atrás con lo que hay: la mitad de los casos no
+dejó rastro estructurado (el agente que obedeció y OMITIÓ el nombre no genera
+una fila de rechazo, genera una venta que parece decidida). Queda dicho como
+límite, no estimado a ojo — y desde el 2026-09-22 `admitidos_por_tenencia`
+cuenta el caso directamente, así que hacia adelante sí es medible.
+
+### La lección, para el próximo
+
+Los tres textos eran **correctos sobre el universo** y **falsos sobre el libro**,
+y la diferencia entre esas dos cosas no existía en el código: había UN conjunto
+donde hacían falta dos. Cuando un prompt y un validador dicen lo mismo, no se
+confirman entre sí — comparten la misma suposición, y una suposición repetida
+en dos lugares se lee como una verificación.
+
+### El texto que lo causaba
+
+Tres lugares enseñaban la misma regla falsa, y los tres salieron hoy:
+
+| dónde | decía |
+|---|---|
+| `buildTargetSystemPrompt` | *"You CANNOT hold them today"* |
+| `marcarNoAdmitidos`, en la fila de cada nombre | *"you CANNOT hold this name today"* |
+| `bloqueDeRechazos`, la memoria de rechazos | *"you never will while the name stays out of the universe"* |
+
+La respuesta a *"¿se lo decimos o lo infiere?"* es **se lo decíamos**, en
+imperativo, en el prefijo cacheado que los siete leen en cada corrida.
+
+### Y el cableado hacía lo mismo
+
+No era solo el texto. `normalizarTickersObjetivo` validaba el objetivo contra
+`universe_raw.symbols` y **nada más**, así que un nombre en el libro cuyo ticker
+no estuviera en la lista de hoy era, para el validador, un ticker inventado. De
+ahí salían **dos finales, los dos malos**, y por eso el bug no se veía como un
+bug: había un camino "sano" para cada caso.
+
+- **Si lo descartado cabía bajo el tope del rescate** (⅓ del bruto): se
+  ejecutaba el resto del libro **sin** ese nombre. Y en el contrato objetivo,
+  "sin ese nombre" **es venderlo**. Liquidación que nadie decidió.
+- **Si pesaba más que el tope**: el objetivo se rechazaba entero y el libro
+  quedaba **congelado** en el de ayer, con las posiciones que el PM acababa de
+  decidir cerrar.
+
+### La regla, ahora en dos
+
+- **Lo que puede ABRIR o AGRANDAR** → el universo del día. Ahí viven las reglas
+  de admisión (liquidez, tipo de instrumento, precio mínimo), y existen para no
+  abrir una posición de la que después no se pueda salir.
+- **Lo que puede TENER** → todo lo que YA TIENE, más el universo. Una posición
+  abierta sale por un **RIEL**, por un **STOP**, o porque el **agente decide**
+  venderla. Nunca por rotación de una lista.
+
+La rotación es constante **por construcción**: el universo se arma antes de la
+apertura, capa los movers del día a los 50 de mayor volumen y ajusta el piso de
+liquidez al feed que contestó. Un nombre entra y sale de esa lista por razones
+que no tienen nada que ver con la tesis del PM.
+
+### El único límite que queda: no se puede AGRANDAR
+
+Si tener bastara para comprar, una acción heredada sería la llave para meter el
+30% del libro en un nombre que el universo rechazó por liquidez. Así que un
+nombre que se tiene y no está en el universo se puede **mantener o reducir**, no
+aumentar.
+
+**Y el corte no es un epsilon: es `no_trade_band` (2pp).** Por debajo de la
+banda el motor no manda una orden, así que "aumentar" menos que la banda no es
+aumentar nada — y descartar esa pata por 0.3pp de drift mandaría la posición
+ENTERA a cash, que es la liquidación forzada volviendo por la puerta de atrás.
+
+`admitidos_por_tenencia` journalea qué nombres vivieron SOLO por estar en el
+libro. Sin ese campo el arreglo sería invisible, y es el que contesta cuántas
+salidas estaba forzando la rotación.
+
+### Lo que NO se tocó, y es la otra mitad del encargo
+
+Que el agente VEA todo el universo en el tablero es un cambio distinto y cuesta
+tokens. La medición está abajo (B34). Éste no cuesta ninguno.
+
+---
+
+## B34 · A CUÁNTO SE COMPRÓ Y A CUÁNTO SE VENDIÓ (2026-09-22)
+
+La pantalla decía **"PGR buy · filled"** y nada más. Eso dice que pasó algo, no
+QUÉ pasó: ni a qué precio, ni cuántas acciones, ni a qué hora, ni si la venta
+ganó o perdió. **Es el punto ciego del viernes en otra forma** — un estado que
+se lee como si fuera una explicación.
+
+### El dato estaba, en dos mitades que nadie juntaba
+
+| qué | dónde | quién lo escribe |
+|---|---|---|
+| lo que se PIDIÓ (cantidad, límite, intención, delta de peso) | `context.ejecucion.ordenes_calculadas` | la corrida, una vez |
+| lo que PASÓ (precio de ejecución, cantidad llenada, hora) | la columna **`actions`** | `runArenaReconcile`, después |
+| el costo de la posición ANTES de operar | la columna **`account`** | la corrida |
+
+`context.ejecucion.enviadas` se escribe cuando la orden SALE: ahí el estado es
+`accepted` y todavía no hay precio. La única estructura que se **re-escribe**
+es `actions`, y la proyección de `/api/liga/libros` no la miraba. El precio
+estaba en el journal y no llegaba a la pantalla.
+
+`_lib/arena-fills.js` las junta, en UN lugar: dos implementaciones del mismo
+cálculo terminan difiriendo, y ésta produce un número de dinero.
+
+### Las cinco situaciones se nombran distinto
+
+`llena` · `parcial` · `sin_llenar` (terminal y no llenó) · `pendiente` (viva, o
+el reconcile no pasó) · `no_enviada` / `sin_enviar`. Llevan a mirar cosas
+distintas, y una parcial que solo muestra lo llenado **se lee como una orden
+completa más chica**. Ahora dice cuánto se llenó *y* cuánto no.
+
+### El resultado de una salida, con una sola fórmula
+
+```
+P&L = (salida − entrada) × cantidad      para un largo
+P&L = (entrada − salida) × cantidad      para un corto
+%   = P&L / (entrada × cantidad)         para los dos
+```
+
+Escribirlo así evita la trampa clásica de invertir el cociente para el corto y
+publicar un porcentaje que no corresponde al dinero de al lado. Un `cover` es
+`side: 'buy'` para Alpaca, así que **`intencion` ahora viaja en `actions`**: sin
+ella, una venta de cierre y la apertura de un corto son indistinguibles.
+
+**Lo que este número NO es**, dicho en la pantalla y no en la letra chica:
+`avg_entry_price` es un **promedio** (una posición armada en tres compras no
+tiene "el" precio de entrada); es **bruto**, sin comisiones y **sin dividendos**;
+y **solo las salidas realizan** — una compra devuelve `null`, no cero.
+
+**Y un ausente no es un cero.** Una venta cuya entrada no se pudo leer NO entra
+al realizado como 0: se cuenta aparte (`salidas_sin_base`) y el resumen dice
+cuántas quedaron fuera del total.
+
+### El deslizamiento, gratis
+
+La referencia que aprobó el riel ya viajaba. Al lado del precio real de
+ejecución dice si el límite marketable está haciendo su trabajo — es el único
+número que lo contesta, y costaba una resta.
+
+### La hora es de MERCADO
+
+`15:58 ET`, no la del teléfono de quien mira. Un fill cerca del cierre dice
+algo; el mismo fill en hora local de Madrid se lee como si el mercado operara de
+noche.
+
+### El precio no aparecía el mismo día, y eso era la mitad del encargo
+
+Publicar el precio no sirve si llega mañana. El reconcile del vigilante estaba
+condicionado a **que además hubiera a quién despertar**:
+
+```js
+if (!dry && (runs.length || floorAgents.length)) {   // ← la condición
+```
+
+O sea: en un día en que la última ronda fija opera y después nadie se despierta
+—lo normal—, los fills de la tarde se quedaban sin precio hasta el cron de las
+**14:40 del día siguiente**. El precio existía en Alpaca y la pantalla decía
+"filled" a secas toda la tarde y toda la noche.
+
+Soltar la condición cuesta poco **por construcción**: `runArenaReconcile` solo
+TRAE filas con alguna orden no terminal (el `exists` de su consulta), así que
+una sesión sin órdenes vivas es una consulta a Neon y **cero** llamadas a
+Alpaca. El freno de 30 minutos no se toca. El vigilante corre hasta las 21:55
+UTC, después del cierre en los dos husos, así que los fills del cierre se
+true-ean el mismo día.
+
+---
+
+## B33 · EL MARGEN DE ERROR DE LA TABLA, DECLARADO ARRIBA DEL RANKING (2026-09-21)
+
+El ranking del 2026-09-21, leído como lo publicaba `/liga`:
+
+| puesto | agente | retorno |
+|---|---|---:|
+| 1 | Grok | **+1.42%** |
+| 2 | **Control · Haiku-B** | +1.06% |
+| … | … | … |
+| 6 | **Claude** | +0.07% |
+| 7 | Qwen | −0.29% |
+
+`claude` y `control` son el **mismo modelo**, el **mismo prompt** byte a byte, la
+**misma temperatura** y el **mismo tablero**. Terminaron a **0.99 puntos** uno
+del otro, y del 2º al 7º hay **1.35 puntos**: el **73%** del spread entre modelos
+es el sistema difiriendo consigo mismo. Ninguna brecha entre puestos consecutivos
+alcanza el piso — solo Grok se despega, y apenas.
+
+### Por qué el piso que ya existía no servía para esto
+
+Había DOS pisos de ruido y los dos en **coseno** (`_lib/arena-herding.js`): entre
+LIBROS y entre DELTAS. Los dos contestan *"¿deciden parecido dos corridas
+idénticas?"*. **Ninguno contesta la pregunta que hace cualquiera que abre
+`/liga`:** el 2º, ¿le ganó de verdad al 6º? Esa se mide en **puntos de retorno**,
+y un coseno **no se convierte** a puntos porcentuales — `_lib/arena-benchmark.js`
+ya lo decía con todas las letras y por eso publicaba el coseno *al lado* del
+exceso sin mezclarlos.
+
+Lo que faltaba no era una conversión. Era el piso **medido en la unidad del
+ranking**, y estaba a una resta de distancia porque los dos números ya estaban en
+la misma respuesta:
+
+```
+piso = | retorno(claude) − retorno(control) |
+```
+
+Cuesta **cero consultas y cero red**, así que va en el camino por defecto de
+`/api/leaderboard` (`margen_de_la_tabla`) y **no** detrás de `?postmortem=1`,
+donde vive el bloque en coseno que sí paga una consulta al journal de la sombra.
+
+### Lo que la pantalla dice ahora, arriba y antes del ranking
+
+- El **piso** (0.99 pp), el **spread** (1.71 pp completo · 1.35 pp sin el líder) y
+  qué **fracción** del segundo es el primero.
+- **Qué puestos no significan nada.** Una brecha menor que el piso es un empate
+  técnico, y se marca **en la fila**, al lado del número — no en la letra chica
+  del pie.
+- **Cuántos pierden contra el índice**, contado: *6 de 7*. Se decía en el pie que
+  el SPY estaba "para contestar si los siete le ganan al índice" y después no se
+  contestaba: el lector tenía que restar fila por fila.
+
+**Un ranking que no declara su propio margen de error es una tabla de posiciones
+inventada.** Ese es el motivo entero de este bloque.
+
+### Las tres cosas que este número NO es
+
+1. **No es un coseno y no se compara con los otros dos pisos.** Puntos de retorno
+   acumulado contra parecido entre vectores de peso: unidades distintas, escalas
+   distintas. Por eso viaja con `metodo: 'retorno'` y su unidad pegada, igual que
+   los otros dos viajan con el suyo.
+2. **No es una desviación estándar.** Es **una** observación de **un** par: dice a
+   qué distancia terminaron dos corridas idénticas, no qué tan seguido terminan
+   así. Con siete agentes y una sola réplica no hay con qué estimar lo segundo, y
+   fingir que sí lo hay sería el invento que esto existe para impedir.
+3. **No es un número del día.** `return_pct` se mide desde el baseline del reset,
+   así que el piso es **acumulado**. El spread sale de exactamente los mismos
+   retornos, así que el cociente entre los dos es legítimo: mismo origen, misma
+   unidad, misma ventana.
+
+### Un `null` que se leía como un 0.00%
+
+Encontrado por el test, no por lectura: `Number(null)` es `0` y `0` es finito, así
+que un agente **sin** retorno (cuenta caída, baseline ilegible) entraba a la tabla
+como un `0.00%` perfectamente creíble, y el piso, el spread y el conteo contra el
+índice se calculaban sobre un número que nadie midió. Es la misma trampa que el
+RVOL con `dayVolume == null` y la que `filaBenchmark` evita con `abierto`.
+
+### La coincidencia se calcula sobre los que TERMINARON
+
+`/liga/libros` decía *"entre 4 libros"* el día que Grok, DeepSeek y Qwen abortaron
+su última corrida. El número no estaba mal: estaba mal **rotulado**. Se lee como
+un hecho del día y es el de un **subconjunto que cambia solo** — el denominador se
+mueve sin que nada lo diga y la serie deja de ser comparable consigo misma.
+
+Ahora la etiqueta dice **"entre 4 de 7 libros"** y debajo va quién quedó fuera con
+su estado. **Un rechazo por rieles cuenta como FUERA pero no como ABORTO**: llevan
+a arreglar cosas distintas y sumarlos mandaría a buscar el problema al proveedor
+cuando está en el libro que pidió el modelo.
+
+### El `/8` de la pantalla era un tope que no existe
+
+`/liga` mostraba `13/8 posiciones`, `12/8`, `11/8`, `10/8`. **No eran cuatro
+violaciones: era un denominador muerto.** El 8 es del **contrato de ACCIONES**
+(el guard viejo), que el contrato de portafolio objetivo sustituyó el 2026-09-17
+— ya estaba dicho en la sección *Reglas del PM*, y la pantalla no se enteró.
+
+Los rieles vigentes (R1-R12) acotan **PESOS**, no cantidad. El propio prompt del
+contrato lo dice: *"There is NO cap on the NUMBER of positions"*, y el comentario
+de R1 deja escrita la reserva de que no lo haya. El único techo es indirecto y es
+**R8** (mínimo 2% por posición → a lo sumo 50 nombres), que no es 8.
+
+Un denominador que el motor no aplica convierte *"13 posiciones"* en *"13 de 8"* y
+manda a buscar un bug al lugar equivocado — el mismo error que el rechazo con el
+motivo equivocado de `_lib/arena-instrumento.js`.
+
+### Y "RIELES ✕" ahora dice CUÁL
+
+El detalle (riel, ticker, motivo) ya viajaba en `/api/liga/libros`, pero en la
+página vivía detrás de *"ver la investigación"*: para saber qué riel frenó una
+corrida había que abrir la tarjeta y bajar cuatro bloques. **"Rechazado" sin el
+riel es la mitad de un diagnóstico** — la diferencia entre *"el agente falló"* y
+*"pidió 60% en un sector con tope de 50%"*. El badge de la cabecera lo nombra.
+
+```bash
+# el riel de una corrida puntual, sin abrir la página
+curl -sS "$BASE/api/liga/libros?dias=1&agente=claude" \
+  | jq '.libros[] | {fecha, estado, rieles}'
+```
+
+---
+
+## B32 · CERRADO: la liga no operaba el viernes (el veredicto de feed era global)
+
+**Cerrado el 2026-09-21 con fills reales** (PGR, ADBE, MPC). La corrida en vivo
+mandó órdenes y llenaron: es la confirmación que faltaba, porque el arreglo se
+había verificado contra el código y con un escenario reproducido, no contra una
+sesión de mercado.
+
+**La causa, que fue un error de diseño nuestro.** El Arena usa OCHO cuentas de
+Alpaca: la maestra (`ALPACA_PAPER_*`, que arma el tablero y el universo) y una
+por agente. **La suscripción a SIP es por cuenta**: la maestra la tiene, las de
+los agentes no necesariamente. El veredicto de feed vivía en UNA variable de
+módulo compartida por las ocho, y encima **restringía** los intentos en vez de
+**ordenarlos**: `[feedResuelto]` era la lista completa, sin IEX detrás.
+
+1. El tablero corre con la maestra → SIP contesta → se recuerda `'sip'`.
+2. Cada agente pide precios con SU cuenta → **403**.
+3. Sin IEX detrás, el 403 no tiene a dónde caer y la llamada **lanza**.
+4. `arena-meta.js` traga el error y devuelve `{}` → el objetivo llega a la
+   ejecución **sin un solo precio de referencia**.
+5. Cada pata se descarta con *"sin precio de referencia para X"* → **cero
+   órdenes**, siete agentes, todo el viernes. *"Pasa los rieles"* era verdad; lo
+   que fallaba estaba después.
+
+**Los dos arreglos, porque uno solo deja el filo puesto** (`_lib/alpaca.js`,
+`feedPorCuenta`): la clave es la **cuenta** (el id de la key, nunca el secreto), y
+un veredicto guardado **ordena** los intentos sin quitar la alternativa. Aunque la
+clave fuera perfecta, una suscripción que caduque volvería a dejar una cuenta sin
+salida. **Un caché que quita la alternativa no es un caché: es un candado.**
+
+**Lo que entró junto y NO es lo mismo:** el tope diario del vigilante estaba
+muerto de antes. Contaba las corridas del día con
+`context->'event'->>'type' in ('watch_trigger','watch_floor')` y el contrato
+objetivo **nunca escribía `context.event`**, así que `runsToday` era `{}` para
+todos los agentes todos los días y el tope de 12 corridas/agente/día no frenaba
+nada (claude corrió ~20). El evento ahora se journalea y **sigue sin usarse para
+decidir**: el objetivo es el libro entero venga de donde venga. Lo que cambia es
+que el registro dice qué despertó la corrida, que es lo que el tope necesita para
+contar.
+
+---
+
 ## B31 · LA CORRIDA SECA TIENE QUE PODER REVISARSE
 
 ```bash

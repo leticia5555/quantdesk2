@@ -48,6 +48,31 @@ header{padding:22px 0 14px;display:flex;align-items:baseline;justify-content:spa
   background:var(--bg1);border:1px solid var(--border);border-radius:20px;padding:6px 12px;}
 .chip b{color:var(--text);}
 
+/* ── EL MARGEN DE LA TABLA ────────────────────────────────────────
+   Va ARRIBA del ranking y con peso visual propio: es lo que decide si el
+   ranking de abajo se puede leer. Un ranking que no declara su margen de
+   error es una tabla de posiciones inventada. */
+.margen{border:1px solid var(--border2);border-left:3px solid var(--amber);
+  background:var(--bg1);border-radius:8px;padding:13px 14px;margin:18px 0 4px;}
+.margen h3{font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--amber);margin-bottom:9px;}
+.margen .nums{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;margin-bottom:9px;}
+.margen .n{display:flex;flex-direction:column;gap:2px;}
+.margen .n b{font-family:var(--mono);font-size:19px;font-weight:700;line-height:1;}
+.margen .n span{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.05em;text-transform:uppercase;}
+.margen .n.piso b{color:var(--amber);}
+.margen .n.spread b{color:var(--text);}
+.margen .n.ratio b{color:var(--red);}
+.margen p{font-size:12px;color:var(--text2);line-height:1.55;}
+.margen p+p{margin-top:7px;}
+.margen p b{color:var(--text);}
+.margen .spy{margin-top:9px;padding-top:9px;border-top:1px solid var(--border);
+  font-size:12px;color:var(--text2);line-height:1.55;}
+.margen .spy b{color:var(--red);}
+.margen .fine{margin-top:9px;font-size:10px;color:var(--text3);line-height:1.5;}
+.tag.empate{color:var(--amber);border:1px solid rgba(255,179,71,.35);background:rgba(255,179,71,.06);}
+.tag.separado{color:var(--green);border:1px solid rgba(var(--green-rgb),.3);background:rgba(var(--green-rgb),.06);}
+
 /* RANK LIST */
 section{padding:20px 0 4px;}
 .sec-head{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
@@ -87,12 +112,31 @@ section{padding:20px 0 4px;}
   display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;}
 .rplan.open{-webkit-line-clamp:unset;}
 .rmore{font-family:var(--mono);font-size:9px;color:var(--purple);letter-spacing:.06em;margin-top:6px;cursor:pointer;display:inline-block;}
-.rtrades{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;}
-.trade{font-family:var(--mono);font-size:9px;letter-spacing:.03em;padding:3px 7px;border-radius:3px;border:1px solid var(--border2);color:var(--text2);}
-.trade b{color:var(--text);}
-.trade.buy{border-color:rgba(var(--green-rgb),.3);}
-.trade.sell{border-color:rgba(var(--red-rgb),.3);}
-.trade.filled{background:rgba(var(--green-rgb),.07);}
+/* ── LAS ÓRDENES DEL DÍA ──────────────────────────────────────────
+   Una fila por orden: ticker, lado, cantidad, precio de ejecución, monto y
+   hora; y debajo, si es una salida, el resultado contra la entrada. Una
+   orden que solo dice "filled" es un estado, no un hecho. */
+.ordenes{margin-top:10px;display:flex;flex-direction:column;gap:5px;}
+.orden{border:1px solid var(--border);border-left:2px solid var(--border2);border-radius:4px;padding:6px 8px;background:var(--bg);}
+.orden.buy{border-left-color:rgba(var(--green-rgb),.5);}
+.orden.sell{border-left-color:rgba(var(--red-rgb),.5);}
+.orden.filled{background:rgba(var(--green-rgb),.04);}
+.orden.parcial{border-left-color:var(--amber);}
+.orden.vacia{opacity:.7;border-left-color:var(--text3);}
+.otop{font-family:var(--mono);font-size:10px;letter-spacing:.02em;color:var(--text2);
+  display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;}
+.otop b{color:var(--text);font-size:11px;}
+.olado{text-transform:uppercase;font-size:8px;letter-spacing:.09em;color:var(--text3);}
+.oest{font-size:8px;letter-spacing:.09em;text-transform:uppercase;color:var(--amber);
+  border:1px solid rgba(255,179,71,.3);border-radius:3px;padding:1px 5px;}
+.odet{margin-left:auto;color:var(--text);font-size:10px;}
+.obot{margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;}
+.opnl{font-family:var(--mono);font-size:9px;letter-spacing:.02em;}
+.opnl b{font-weight:700;}
+.ofalta{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.02em;line-height:1.45;}
+.ores{font-family:var(--mono);font-size:9px;color:var(--text2);letter-spacing:.03em;
+  margin-top:3px;padding-top:6px;border-top:1px solid var(--border);}
+.ores b{font-weight:700;}
 .rfoot{display:flex;justify-content:space-between;gap:8px;margin-top:9px;font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.05em;}
 .badge-soon{font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.1em;padding:3px 7px;border-radius:3px;text-transform:uppercase;
   color:var(--amber);border:1px solid rgba(255,179,71,.35);background:rgba(255,179,71,.06);}
@@ -126,6 +170,11 @@ footer{margin-top:36px;padding-top:20px;border-top:1px solid var(--border);}
     <p>Siete IAs manejan cada una su propio libro con dinero paper y las <b>mismas reglas</b>. Mismo mercado, misma temperatura, mismo prompt — lo único distinto es el modelo. Ranking por <b>retorno</b> desde el equity con el que arrancó cada cuenta.</p>
     <div class="summary" id="summary"></div>
   </div>
+
+  <!-- El margen de error de la tabla, ANTES del ranking. Se llena con
+       `margen_de_la_tabla` de /api/leaderboard; si el dato no viene, el bloque
+       no se pinta (y el ranking no finge tener un margen que nadie calculó). -->
+  <div id="margen"></div>
 
   <section>
     <div class="sec-head"><span class="bar"></span><h2>Ranking</h2><span class="sub" id="rankSub">por retorno</span></div>
@@ -187,17 +236,122 @@ function houseTag(a){
   if(a.house==='us') return '<span class="tag us">🇺🇸 usa</span>';
   return '';
 }
+// ── EL MARGEN DE LA TABLA ───────────────────────────────────────────
+// Tres números que SOLO significan algo juntos: cuánto separa a dos corridas
+// idénticas (el piso), cuánto separa a los modelos entre sí (el spread), y qué
+// fracción del segundo es el primero. Más la línea del índice, contada acá y no
+// dejada para que el lector reste fila por fila.
+//
+// El piso está en PUNTOS DE RETORNO y NO es el piso en coseno de /liga/libros:
+// unidades distintas, escalas distintas, no se comparan. El caveat viaja desde
+// el servidor para que esa frase exista en UN solo lugar.
+function margenHtml(m){
+  if(!m) return '';
+  const piso = m.piso&&m.piso.disponible ? m.piso : null;
+  const sp = m.spread&&m.spread.disponible ? m.spread : null;
+  const nums = piso
+    ? '<div class="nums">'+
+      '<div class="n piso"><b>'+piso.piso_pp+' pp</b><span>piso de ruido</span></div>'+
+      (sp?'<div class="n spread"><b>'+sp.spread_pp+' pp</b><span>spread · '+sp.modelos+' modelos</span></div>':'')+
+      (m.piso_sobre_spread_pct!=null?'<div class="n ratio"><b>'+m.piso_sobre_spread_pct+'%</b><span>del spread es ruido</span></div>':'')+
+      '</div>'
+    : '';
+  const par = piso
+    ? '<p><b>'+esc(piso.par.insignia.name)+'</b> '+pctStr(piso.par.insignia.return_pct)+
+      ' contra <b>'+esc(piso.par.testigo.name)+'</b> '+pctStr(piso.par.testigo.return_pct)+
+      ' — mismo modelo, mismo prompt, misma temperatura, distinta cuenta. Esa distancia es el margen de error de la tabla.</p>'
+    : '';
+  const sinLider = (m.piso_sobre_spread_sin_lider_pct!=null&&sp&&sp.spread_sin_lider_pp!=null)
+    ? '<p>Sin el líder, los otros '+(sp.modelos-1)+' caben en <b>'+sp.spread_sin_lider_pp+' pp</b>: ahí el piso es el <b>'+
+      m.piso_sobre_spread_sin_lider_pct+'%</b>.</p>' : '';
+  const sep = m.detalle_separados?'<p>'+esc(m.detalle_separados)+'</p>':'';
+  // La línea del índice se arma de los CAMPOS, no recortando la prosa del
+  // servidor: un `replace` sobre un texto que alguien reescriba deja la frase
+  // rota sin que nada falle.
+  const i = m.indice||{};
+  const idx = i.disponible
+    ? '<div class="spy"><b>'+i.pierden+' de '+i.total+'</b> pierden contra el S&amp;P ('+
+      pctStr(i.benchmark_return_pct)+')'+(i.ganan?' · le ganan '+i.ganan:'')+
+      (i.empatan?' · empatan '+i.empatan:'')+'.</div>'
+    : (i.motivo?'<div class="spy">'+esc(i.motivo)+'</div>':'');
+  return '<div class="margen"><h3>Antes del ranking: cuánto vale su margen de error</h3>'+
+    nums+'<p>'+esc(m.lectura)+'</p>'+par+sinLider+sep+idx+
+    (m.caveat?'<div class="fine">'+esc(m.caveat)+'</div>':'')+'</div>';
+}
+
+// ── LAS ÓRDENES DEL DÍA, CON SU PRECIO ──────────────────────────────
+// Antes: "PGR buy · filled". Eso dice que pasó algo, no QUÉ pasó — el mismo
+// punto ciego del viernes en otra forma. Ahora cada orden trae ticker, lado,
+// cantidad, precio de ejecución, monto y hora; las ventas traen además el
+// resultado contra la entrada; las parciales dicen cuánto quedó sin llenar; y
+// las que NO llenaron aparecen igual, con su estado y su motivo.
+//
+// Nada de esto se calcula acá: viene armado de `_lib/arena-fills.js`. Es
+// dinero, y dos lugares calculando dinero es la forma de que un día difieran.
+const ET = ts => {
+  const d = new Date(ts);
+  if(!isFinite(d)) return '';
+  // HORA DE MERCADO, no la del teléfono de quien mira. Un fill a las "15:58"
+  // dice algo (cerca del cierre); el mismo fill en la hora local de alguien en
+  // Madrid no dice nada, y peor: se lee como si el mercado operara de noche.
+  return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'America/New_York'})+' ET';
+};
+const px = n => { n=Number(n); return isFinite(n) ? '$'+n.toFixed(2) : '—'; };
+const ESTADO_ORDEN = {
+  llena:'', parcial:'parcial', sin_llenar:'no llenó', pendiente:'pendiente',
+  no_enviada:'no salió', sin_enviar:'sin enviar',
+};
+function ordenHtml(o){
+  const lado = o.intencion || o.lado || '';
+  const cls = (o.lado==='buy'?'buy':'sell')+(o.estado==='llena'?' filled':'')+
+    (o.estado==='parcial'?' parcial':'')+(o.estado==='sin_llenar'||o.estado==='no_enviada'?' vacia':'');
+  // La línea de dinero. Cuando no llenó no se inventa un precio: se dice el
+  // estado y el motivo, que es el dato que hay.
+  const linea = o.cantidad_llena!=null
+    ? esc(String(o.cantidad_llena))+' @ '+px(o.precio_ejecucion)+
+      (o.monto_usd!=null?' · '+money(o.monto_usd):'')+
+      (o.hora?' · '+ET(o.hora):'')
+    : (o.cantidad_pedida!=null?esc(String(o.cantidad_pedida))+' pedidas @ lím '+px(o.limite):'');
+  const etiqueta = ESTADO_ORDEN[o.estado];
+  const falta = o.estado==='parcial'&&o.cantidad_sin_llenar!=null
+    ? '<span class="ofalta">quedaron '+esc(String(o.cantidad_sin_llenar))+' sin llenar</span>' : '';
+  const r = o.resultado_contra_entrada;
+  const pnl = r&&r.calculable
+    ? '<span class="opnl '+pctClass(r.pnl_usd)+'">entrada '+px(r.entrada)+' → salida '+px(r.salida)+
+      ' · '+(r.pnl_usd>=0?'+':'−')+money(Math.abs(r.pnl_usd))+' ('+pctStr(r.pnl_pct)+')</span>'
+    : (r ? '<span class="ofalta">'+esc(r.motivo)+'</span>' : '');
+  const motivo = o.motivo&&o.estado!=='llena'&&o.estado!=='parcial'
+    ? '<span class="ofalta">'+esc(o.motivo)+'</span>' : '';
+  return '<div class="orden '+cls+'">'+
+    '<div class="otop"><b>'+esc(o.ticker||'?')+'</b> <span class="olado">'+esc(lado)+'</span>'+
+      (etiqueta?' <span class="oest">'+esc(etiqueta)+'</span>':'')+
+      '<span class="odet">'+linea+'</span></div>'+
+    (pnl||falta||motivo?'<div class="obot">'+pnl+falta+motivo+'</div>':'')+
+  '</div>';
+}
 function tradesHtml(a){
-  const j=a.journal; if(!j||!Array.isArray(j.actions)) return '';
-  // Muestra las que TOCARON el mercado (aprobadas/enviadas), no las descartadas.
-  const acts=j.actions.filter(x=>x && (x.result==='approved'||x.order_status)).slice(0,6);
-  if(!acts.length) return '';
-  return '<div class="rtrades">'+acts.map(x=>{
-    const side=(x.side||'').toLowerCase();
-    const filled=x.order_status==='filled'?' filled':'';
-    const st=x.order_status?(' · '+esc(x.order_status)):'';
-    return '<span class="trade '+side+filled+'"><b>'+esc(x.symbol||'?')+'</b> '+esc(side)+st+'</span>';
-  }).join('')+'</div>';
+  const j=a.journal; if(!j||!Array.isArray(j.ordenes)||!j.ordenes.length) return '';
+  const res=j.resumen_ordenes||null;
+  // Las que TOCARON el mercado primero; las que no llenaron van después pero
+  // van: una orden que no se llenó es información, no ruido que se esconde.
+  const orden={llena:0,parcial:1,pendiente:2,sin_llenar:3,no_enviada:4,sin_enviar:5};
+  const lista=[...j.ordenes].sort((x,y)=>(orden[x.estado]??9)-(orden[y.estado]??9)).slice(0,10);
+  const resumen = res
+    ? '<div class="ores">'+
+      (res.comprado_usd?'compró '+money(res.comprado_usd):'')+
+      (res.comprado_usd&&res.vendido_usd?' · ':'')+
+      (res.vendido_usd?'vendió '+money(res.vendido_usd):'')+
+      (res.salidas_calculadas?' · realizado <b class="'+pctClass(res.realizado_usd)+'">'+
+        (res.realizado_usd>=0?'+':'−')+money(Math.abs(res.realizado_usd))+'</b>':'')+
+      (res.parciales?' · '+res.parciales+' parcial'+(res.parciales===1?'':'es'):'')+
+      (res.sin_llenar?' · '+res.sin_llenar+' sin llenar':'')+
+      (res.pendientes?' · '+res.pendientes+' pendiente'+(res.pendientes===1?'':'s'):'')+
+      (res.nota?'<br/><span class="ofalta">'+esc(res.nota)+'</span>':'')+
+      '</div>'
+    : '';
+  return '<div class="ordenes">'+lista.map(ordenHtml).join('')+
+    (j.ordenes.length>lista.length?'<div class="ofalta">y '+(j.ordenes.length-lista.length)+' más — el detalle completo en <a href="/liga/libros">/liga/libros</a>.</div>':'')+
+    resumen+'</div>';
 }
 // La fila del índice. NO lleva número: el orden por retorno la pone donde le
 // toca, pero un puesto la volvería competidora — y no decidió nada.
@@ -229,6 +383,15 @@ function rowHtml(a){
   const acct=a.account;
   const rankCls = a.rank>=1&&a.rank<=3 ? (' r'+a.rank) : '';
   const halt = a.halt&&a.halt.halted ? '<span class="tag halt">⛔ detenido</span>' : '';
+  // ── EL PUESTO, ¿SIGNIFICA ALGO? ────────────────────────────────────
+  // Si la brecha con el vecino más cercano es menor que el piso de ruido, el
+  // puesto está dentro del margen de error y la fila lo dice ahí mismo. No es
+  // letra chica del pie: es la diferencia entre "va 2º" y "va 2º y eso no se
+  // distingue del azar".
+  const mg = a.margen||null;
+  const empate = mg&&mg.empate_tecnico
+    ? '<span class="tag empate" title="la brecha con su vecino más cercano ('+mg.brecha_min_pp+' pp) es menor que el piso de ruido">≈ empate técnico</span>'
+    : (mg&&mg.separado ? '<span class="tag separado" title="su brecha con el vecino más cercano ('+mg.brecha_min_pp+' pp) supera el piso de ruido">fuera del ruido</span>' : '');
   if(!acct){
     // Aún no opera (sin keys / Alpaca caída): honesto, no roto.
     return '<div class="row"><div class="rtop"><div class="rank">—</div><div class="rid">'+
@@ -262,13 +425,21 @@ function rowHtml(a){
   return '<div class="row'+rankCls+'">'+
     '<div class="rtop">'+
       '<div class="rank">'+(a.rank||'—')+'</div>'+
-      '<div class="rid"><div class="rname">'+esc(a.name)+' '+houseTag(a)+' '+halt+'</div>'+
+      '<div class="rid"><div class="rname">'+esc(a.name)+' '+houseTag(a)+' '+halt+' '+empate+'</div>'+
         '<div class="rmodel">'+esc(a.model_label||a.model||'')+'</div></div>'+
       '<div class="req"><div class="eq">'+money(a.equity_indexado!=null?a.equity_indexado:acct.equity)+'</div>'+retHtml+dayHtml+'</div>'+
     '</div>'+
     plan+tradesHtml(a)+
     '<div class="rfoot"><span>'+esc((a.journal&&a.journal.run_date)||'—')+'</span>'+
-      '<span>'+npos+'/8 posiciones · cash '+money(acct.cash)+
+    // ── NO HAY TOPE DE POSICIONES, Y EL "/8" DECÍA QUE SÍ ─────────────
+    // El 8 era del CONTRATO DE ACCIONES (el guard viejo), que el contrato de
+    // portafolio objetivo sustituyó el 2026-09-17. Los rieles vigentes (R1-R12)
+    // acotan PESOS, no cantidad: el propio prompt dice "There is NO cap on the
+    // NUMBER of positions". Un denominador que el motor no aplica convierte
+    // "13 posiciones" en "13 de 8" —una violación que no existe— y manda a
+    // buscar un bug al lugar equivocado. El único techo real es indirecto y es
+    // R8 (mínimo 2% por posición → a lo sumo 50 nombres), así que no es un 8.
+      '<span>'+npos+(npos===1?' posición':' posiciones')+' · cash '+money(acct.cash)+
         // Indexado: todas parten de $100,000 en pantalla. El equity REAL va al
         // lado, porque la cuenta de Alpaca dice ese número y no éste.
         (a.equity_indexado!=null?' · desde $100,000 · real '+money(acct.equity):(a.baseline_equity!=null?' · desde '+money(a.baseline_equity):''))+'</span></div>'+
@@ -303,6 +474,7 @@ async function load(){
   const porId={}; data.agents.forEach(a=>{porId[a.id]=a;});
   const orden = Array.isArray(data.ranking)&&data.ranking.length
     ? data.ranking : data.agents.map(a=>({id:a.id,kind:'MODELO'}));
+  $('margen').innerHTML = margenHtml(data.margen_de_la_tabla);
   el.innerHTML=orden.map(r=>{
     if(r.kind==='BENCHMARK') return benchHtml(bench);
     const a=porId[r.id]; return a?rowHtml(a):'';
