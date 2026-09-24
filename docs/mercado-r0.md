@@ -1119,3 +1119,75 @@ se ve venir con días de gracia en vez de descubrirse cuando G2 ya está rojo.
 
 **La captura manual pasa a ser trimestral y avisada**, no quincenal y por
 sorpresa.
+
+---
+
+## 8. R0(g) — la cap de EE.UU.: tres fuentes y dos techos distintos
+
+Añadido el 2026-09-24, después de que la auditoría contra prod (569 emisoras,
+`main` en `d6eab7b`) devolviera **279 verificadas, 25 hallazgos y 265 sin
+precio**. Los 25 hallazgos no eran un solo problema:
+
+| grupo | cuántos | qué estaba mal | quién lo resuelve |
+|---|---|---|---|
+| no-USD con precio | 4 (TSM, NVO, VALE, ASML) | la cap viene en la moneda de reporte **y** `shareOutstanding` cuenta ordinarias, no ADR | referencia manual de Yahoo → razón del ADR |
+| USD con desajuste | 21 | el conteo de acciones está viejo (VMRK 2.1765, MNST 2.0782, APH 1.9847 ≈ split 2:1) | EDGAR, `dei:EntityCommonStockSharesOutstanding` |
+
+### 8.1 Dos techos, declarados aparte
+
+`CRITERIOS.g2_max_error_pct = 5` compara **dos medidas del mismo instante**.
+El contraste con EDGAR no es eso: las acciones son las de la portada del
+trimestre y el precio es el cierre de hoy, así que entre las dos fechas hay
+recompras, emisiones y RSUs que vestean. La diferencia esperada no es cero.
+
+Por eso `UMBRAL_EDGAR_PCT = 10` vive en `api/_lib/mercado-edgar.js`, **separado
+del 5% de G2**, y hay una prueba (`tests/mercado-edgar.test.mjs`) que se pone
+roja si alguien los unifica. Con el 5%, la banda de 5–7% de la auditoría —ORCL
+10.69, BX 6.06, APO 5.55, PAYX 6.89, CDNS −5.92, SHOP −5.79, MRNA −5.72, RKT
+5.45, BE 5.29— quedaba gris por un desajuste que no es error de nadie. Lo que
+el 10% **no** tapa: un split 2:1 son ~100 puntos de error y sigue saliendo
+gris si EDGAR no lo confirma.
+
+Cuando cuadra, **el número que se pinta es el nuestro**: `acciones de EDGAR ×
+último cierre de Neon`, con fuente `calc: edgar×neon`. La cap de Finnhub queda
+de **cruce**, no de valor. Y la fecha de portada se guarda pegada al conteo
+(`acciones_edgar_portada`), porque un conteo de acciones sin su fecha no se
+puede volver a juzgar.
+
+### 8.2 La referencia manual de los ADR no se pinta
+
+Igual que México: `api/_lib/mercado-cap-us-referencia.json` guarda la cap de
+Yahoo con quién, de dónde y cuándo, vigencia al trimestre — y **nunca viaja al
+render**. Sirve una sola vez, para despejar la razón del ADR:
+
+```
+razón_cruda = (acciones × precio) ÷ cap_referencia
+```
+
+y se acepta sólo si cae a ≤2% de una proporción plausible (entero 1..20, o
+1/n). Lo que se dibuja es `acciones ÷ razón_redondeada × nuestro cierre`. Dos
+razones para redondear: con el factor crudo el resultado sería idéntico a la
+cap de Yahoo —pintar la referencia con otro nombre, clavada en la fecha de
+captura— y si el crudo no se parece a ninguna razón de ADR, lo que está mal es
+otra cosa y la emisora se queda **gris** en vez de recibir un tamaño inventado.
+
+### 8.3 Orden de precedencia, y por qué EDGAR entra último
+
+1. **referencia manual** vigente con razón limpia → `calc: acciones÷N:1×neon`
+2. **par de Finnhub** dentro del 5% → verificada, cap declarada (las 279 de la
+   auditoría no se mueven: nadie reportó que estuvieran rotas)
+3. **EDGAR** dentro del 10%, sólo si (2) falló → `calc: edgar×neon`
+4. si no → **gris con las dos causas**, y el múltiplo dice de qué tipo fue
+
+### 8.4 Jobs nuevos
+
+| job | qué hace | red |
+|---|---|---|
+| `?job=acciones-edgar` | pide EDGAR **sólo** para los hallazgos en USD; reanudable, 5 req/s, escribe acciones + portada + form + CIK | sí |
+| `?job=razon-adr` | despeja la razón de cada referencia contra prod; acepta `?manual=TSM:2316e9&fuente=...&capturada_en=...` para probar una captura antes de escribirla | no |
+| `?job=auditoria-cap` | ahora devuelve `sin_moneda_symbols` con los nombres: un conteo sin el símbolo obliga a abrir psql | no |
+
+`SEC_USER_AGENT` es **obligatoria** para `?job=acciones-edgar`: la SEC pide un
+agente con contacto real y bloquea sin él. Si falta, el job no manda nada y lo
+dice — inventar un agente es pedirle a otro que confíe en un dato que nosotros
+mismos falsificamos, y encima se bloquea la IP para todos.

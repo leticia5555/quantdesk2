@@ -404,3 +404,98 @@ test('un símbolo sin serie NO se reporta dos veces por la misma causa', () => {
   });
   assert.deepEqual(resumenFaltantes(faltantes).por_motivo, { no_hay_serie: 1 });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// LOS DOS BUGS QUE ENCONTRÓ CHROME EL 2026-09-24
+// ═══════════════════════════════════════════════════════════════════════
+
+test('un error de lectura NO es cacheable, aunque el status sea 200', async () => {
+  // El bug: la primera carga sirvió "column cap_moneda does not exist" con
+  // hora de generación de antes de la migración. El error de lectura viaja
+  // DENTRO del cuerpo (eso está bien), pero el handler miraba sólo el status
+  // para decidir el Cache-Control y Vercel cacheó diez minutos de un error ya
+  // arreglado. La decisión ahora es del cuerpo.
+  const { cacheDeRespuesta } = await import('../api/mercado-mapa.js');
+
+  const roto = cacheDeRespuesta({ mapa: 'us', cuadros: [], error: 'no se pudieron leer los datos del mapa' });
+  assert.equal(roto.cache, 'no-store');
+  assert.equal(roto.completa, false);
+
+  const vacio = cacheDeRespuesta({ mapa: 'us', cuadros: [] });
+  assert.equal(vacio.cache, 'no-store', 'cero cuadros tampoco se cachea: no hay nada que servir dos veces');
+
+  const bueno = cacheDeRespuesta({ mapa: 'us', cuadros: [{ symbol: 'NVDA' }] });
+  assert.match(bueno.cache, /^public, s-maxage=/);
+  assert.equal(bueno.completa, true);
+
+  assert.equal(cacheDeRespuesta({ cuadros: [{ symbol: 'X' }] }, 500).cache, 'no-store');
+});
+
+test('el pie cuenta CUADROS: los símbolos sin precio no son cuadros todavía', () => {
+  // El bug: decía "277 cuadros sin dato completo" sumando 250 sin serie a 25
+  // caps sin verificar, y mandaba a buscar 277 problemas donde había 25.
+  const faltantes = [
+    ...Array.from({ length: 250 }, (_, i) => ({ symbol: `S${i}`, motivo: MOTIVOS.SIN_SERIE })),
+    ...Array.from({ length: 25 }, (_, i) => ({ symbol: `H${i}`, motivo: MOTIVOS.CAP_SIN_VERIFICAR })),
+    { symbol: 'CORTA', motivo: MOTIVOS.SERIE_CORTA },
+    { symbol: 'NUEVA', motivo: MOTIVOS.SIN_ANCLA_YTD },
+  ];
+  const r = resumenFaltantes(faltantes);
+  assert.equal(r.sin_cap_verificada, 25, 'esto es lo que el pie muestra');
+  assert.equal(r.sin_precio, 250, 'esto existe para diagnóstico, no para el pie');
+  assert.equal(r.sin_periodo, 1);
+  assert.equal(r.sin_ancla_ytd, 1);
+  assert.equal(r.total, 277, 'el total sigue estando para quien lo necesite');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// UN CUADRO GRIS TIENE QUE VERSE
+//
+// Antes se filtraba por `cap > 0` y una emisora sin cap verificada no salía
+// gris punteada: salía AUSENTE. Un cuadro que no está no tiene dónde decir su
+// causa, que es lo que pide la regla 2 del encargo.
+// ═══════════════════════════════════════════════════════════════════════
+test('las grises se dibujan, con el tamaño del cuadro verificado más chico de su sector', () => {
+  const { grupos, empresas, verificadas, grises } = TM.agrupaPorSector([
+    { symbol: 'NVDA', sector: 'XLK', cap: 4_000e9, precio: 163 },
+    { symbol: 'MSFT', sector: 'XLK', cap: 3_700e9, precio: 498 },
+    { symbol: 'SNDK', sector: 'XLK', cap: 40e9, precio: 90 },
+    { symbol: 'TSM', sector: 'XLK', cap: null, precio: 200 },     // gris, con precio
+    { symbol: 'NOPRICE', sector: 'XLK', cap: null, precio: null }, // no es cuadro todavía
+  ]);
+  assert.equal(empresas, 4, 'las cuatro con precio o con cap');
+  assert.equal(verificadas, 3);
+  assert.equal(grises, 1);
+
+  const xlk = grupos.find((g) => g.sector === 'XLK');
+  const tsm = xlk.items.find((i) => i.symbol === 'TSM');
+  assert.ok(tsm, 'TSM se dibuja: antes desaparecía del mapa');
+  assert.equal(tsm.cap_verificada, false);
+  assert.equal(tsm.area, 40e9, 'mide lo mismo que la verificada más chica, no más');
+  assert.equal(xlk.items.find((i) => i.symbol === 'NOPRICE'), undefined);
+
+  // Y no le gana en tamaño a ninguna verificada.
+  const maxVerificada = Math.max(...xlk.items.filter((i) => i.cap_verificada).map((i) => i.area));
+  assert.ok(tsm.area <= maxVerificada);
+});
+
+test('un sector entero sin verificadas cae al mínimo global, y todo gris es una rejilla que lo dice', () => {
+  const { grupos } = TM.agrupaPorSector([
+    { symbol: 'NVDA', sector: 'XLK', cap: 4_000e9, precio: 163 },
+    { symbol: 'SNDK', sector: 'XLK', cap: 40e9, precio: 90 },
+    { symbol: 'VALE', sector: 'XLB', cap: null, precio: 11 },
+    { symbol: 'FCX', sector: 'XLB', cap: null, precio: 40 },
+  ]);
+  const xlb = grupos.find((g) => g.sector === 'XLB');
+  assert.equal(xlb.grises, 2);
+  assert.deepEqual(xlb.items.map((i) => i.area), [40e9, 40e9], 'ambas al mínimo global');
+
+  // El día del despliegue, con las columnas nuevas vacías: ninguna verificada
+  // en todo el mapa. Todas miden igual en vez de romperse.
+  const solas = TM.agrupaPorSector([
+    { symbol: 'A', sector: 'XLK', cap: null, precio: 10 },
+    { symbol: 'B', sector: 'XLK', cap: null, precio: 20 },
+  ]);
+  assert.equal(solas.verificadas, 0);
+  assert.deepEqual(solas.grupos[0].items.map((i) => i.area), [1, 1]);
+});
