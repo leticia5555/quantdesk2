@@ -857,7 +857,151 @@ test que falla, no.
 
 ---
 
-## FASE 2 — Análisis (criterios congelados ANTES de ver los datos)
+## FASE 2 — Análisis ✅ IMPLEMENTADA (`/api/earnings-beat-analyze`)
+
+> **Los criterios se fijaron ANTES de correr nada** y viven en código como
+> `CRITERIOS_F2` (`api/_lib/earnings-beat-analyze.js`), exportados en el JSON de
+> cada corrida y **pineados por test**. Incluye las **dos decisiones que el
+> encargo pidió congelar antes de entrenar** — el umbral de liquidez y el
+> tratamiento de la sorpresa que explota por escala.
+
+**Pregunta única:** ¿el modelo de QuantDesk predice beat/miss mejor que el
+precio de Polymarket a T-24h?
+
+### Las dos decisiones congeladas, con su porqué
+
+**1. Liquidez: $500.** El memo declara **$200** como piso de ruido. El umbral se
+pone en **$500** —2.5× ese piso— y **no más arriba**: cada dólar de exigencia
+extra recorta muestra, y la muestra es lo que separa un número de un
+INCONCLUSO. Si con $500 quedan menos de 100 mercados, el veredicto es
+**INCONCLUSO** — *no se baja el umbral para alcanzar el candado*.
+
+**2. La sorpresa de escala (INTC): winsorizar a ±100%.** El scope traía mi
+recomendación de **escalar por precio**; la cambié, y el motivo es de
+dependencias, no de resultado: escalar exige el cierre previo de **cada**
+trimestre, o sea meter una fuente de precios dentro de un endpoint que es
+`SELECT`-only. Winsorizar **no descarta ningún mercado ni inventa un dato**:
+acota un feature cuya *escala* no es comparable entre empresas (+2800% de INTC
+contra +9% de COST). Escalar por precio queda anotado para v2, con su propia
+congelación antes de entrenar.
+
+### Modelo v1 — lo más tonto que funcione
+
+Regresión logística, **4 features + intercepto**, descenso de gradiente con
+tasa y pasos **fijos**. Sin ensembles, sin tuning, sin búsqueda de
+hiperparámetros: cada grado de libertad es una oportunidad de jardín de
+pruebas, y con ~240 filas el jardín se llena rápido. **Determinista**: los
+mismos datos dan el mismo modelo.
+
+| Feature | Definición | Cuidado |
+|---|---|---|
+| `tasa` | beats en los últimos 20 trimestres (5 años) | — |
+| `racha` | racha actual **con signo** (+3 beats / −3 misses) | un "3" sin signo no distingue una cosa de la otra |
+| `sorpresa_mediana` | mediana de la sorpresa %, **winsorizada ±100%** | mediana, **no** promedio — ver §"Cicatriz" |
+| `pares` | % de beats del mismo sector Finnhub que reportaron **antes** en la **misma temporada** (mismo mes) | excluye a la propia empresa |
+
+**La regla que hace válido todo lo demás:** cada feature se calcula con
+trimestres cuyo `reported_date` es **estrictamente anterior** al `report_date`
+del evento. Un `<=` metería el resultado a predecir dentro de la entrada. Hay
+test que lo fija, y otro que verifica que un trimestre **posterior** tampoco
+entra.
+
+**Revisiones PIT: FUERA** (§1.4, cerrado).
+
+### Predicción fuera de muestra
+
+El número que decide es el **Brier de la predicción fuera de muestra** por
+**k-fold (k=5, fold = índice % 5, determinista)**. El Brier **en muestra** se
+publica al lado etiquetado **EXPLORATORIO**: sirve para ver la brecha, no para
+el veredicto. Un test exige que el de CV **no sea mejor** que el de muestra —
+si lo fuera, algo está mal armado.
+
+Esto **no** sustituye grabar hacia adelante. Lo dice la advertencia de abajo.
+
+### Baselines obligatorios
+
+| # | Baseline | Para qué |
+|---|---|---|
+| 1 | "siempre sí" (tasa base de la muestra) | el piso |
+| 2 | **tasa histórica por empresa, sin modelo** | el que hay que batir para tener **lectura** |
+| 3 | **precio de Polymarket a T-24h** | el que hay que batir para tener **edge** |
+
+El baseline 2 es un bar real, no un trámite: en el ensayo sintético **le ganó al
+modelo** y el veredicto salió NO-GO por eso.
+
+### Criterios de éxito (congelados)
+
+1. **Muestra** ≥ **100** mercados con precio válido a T-24h *después* del filtro
+   de liquidez. Por debajo → **INCONCLUSO**.
+2. **Apuestas** ≥ **30** en la simulación. Por debajo → **INCONCLUSO**: con
+   menos, el neto es ruido con forma de resultado.
+3. **Lectura**: Brier del modelo (CV) **<** Brier de la tasa por empresa.
+4. **Edge**: Brier del modelo **<** Brier de Polymarket **Y** la simulación
+   —apostando solo cuando `|modelo − mercado| ≥ 15 pts`, costo **3%** por
+   apuesta— da **neto > 0**.
+5. **Veredicto**: **GO / NO-GO / INCONCLUSO**, con **una sola** especificación
+   principal. Todo lo demás va etiquetado **EXPLORATORIO** y no cuenta.
+
+**Mecánica de la apuesta, congelada:** 1 unidad de stake; comprar a precio `p`
+da `1/p` acciones que pagan $1 si acierta → ganancia `1/p − 1`, pérdida `−1`. El
+costo del 3% **se cobra siempre**, gane o pierda.
+
+### Calibración por tramo, no solo Brier agregado
+
+Se reporta acierto **por decil** de probabilidad, del modelo y del mercado. Un
+Brier agregado bueno puede venir entero del tramo donde el mercado ya está
+pegado a 1 — ahí no hay apuesta. El umbral de 15 puntos ya lo bloquea en la
+práctica (si el mercado está en 0.97 y el modelo coincide, no hay apuesta), y
+además se publica **cuántas apuestas caen en el tramo ≥ 0.90**: si son más de la
+mitad, sale un aviso. **No cambia el veredicto** — una sola especificación
+principal — pero queda escrito.
+
+### Un feature siempre nulo se denuncia
+
+Si `pares` sale `null` en todos los eventos, **el modelo corre de hecho con 3
+features** y hay que decirlo, no dejar que lo reciba como "la media" en
+silencio. Causa típica: el historial de los pares de la misma temporada **no
+está en `pead_earnings`** — la deuda de §0.2. El análisis publica
+`muestra.aviso_pares` y el markdown lo imprime.
+
+> **Esto es lo primero que hay que mirar en la corrida real.** En el ensayo
+> local `pares` salió null en los 210 eventos por esa misma causa, y es probable
+> que en producción pase lo mismo mientras la cosecha del PEAD siga atrasada.
+
+### ADVERTENCIA, en el veredicto y en toda corrida
+
+> **El modelo se construyó VIENDO cómo salieron estos mercados.** Un GO acá es
+> **SEÑAL, no prueba**: incluso con predicción fuera de muestra por k-fold, la
+> elección de features y de ventana se hizo mirando este mismo período. **La
+> prueba es grabar hacia adelante con el modelo CONGELADO** y leer después. Eso
+> es el lote siguiente.
+
+Va en GO, en NO-GO y en INCONCLUSO — no depende del resultado. Hay test.
+
+### Uso
+
+```bash
+curl -s -H "Authorization: Bearer $CRON_SECRET" \
+  "https://quantdesk2.vercel.app/api/earnings-beat-analyze" | jq
+# resumen en español, se abre en el navegador:
+#   /api/earnings-beat-analyze?format=md&secret=<CRON_SECRET>
+# opcional: &apuestas=1 (detalle apuesta por apuesta)
+```
+
+**Garantías:** cero writes a Neon (tres `SELECT`: `pm_earnings_markets`,
+`pead_earnings`, `mercado_universo_us`), sin `ensureSchema()` ni `beat()`, gate
+`CRON_SECRET`, `maxDuration = 300`, y el lib de análisis es **puro** — sin
+`fetch`, sin DB, testeado con fixtures.
+
+| Archivo | Qué |
+|---|---|
+| `api/_lib/earnings-beat-analyze.js` | `CRITERIOS_F2`, features, logística, Brier, calibración, simulación, veredicto, resumen |
+| `api/earnings-beat-analyze.js` | Endpoint: gate, los tres SELECT, filtro de liquidez, ensamblado |
+| `tests/earnings-beat-analyze.test.mjs` | Fixtures. Criterios pineados, cero look-ahead, GO/NO-GO/INCONCLUSO |
+
+---
+
+## FASE 2 — apuntes previos (se conservan: acá están los riesgos conocidos)
 
 Endpoint `/api/earnings-beat-analyze?format=md&secret=…`, **SELECT-only**,
 `maxDuration = 300`. Mismo contrato que `/api/pead-analyze`.

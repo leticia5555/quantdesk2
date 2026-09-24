@@ -54,6 +54,9 @@
     "api/earnings-beat-harvest.js": {
       "maxDuration": 300
     },
+    "api/earnings-beat-analyze.js": {
+      "maxDuration": 300
+    },
     "api/historia-harvest.js": {
       "maxDuration": 300
     },
