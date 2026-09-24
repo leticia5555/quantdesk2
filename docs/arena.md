@@ -764,18 +764,26 @@ enviadas.get(String(o.client_order_id || o.symbol || ''))   // → 'PGR', y el m
                                                             //   'arena-claude-f-…'
 ```
 
-**Falló en TODA corrida viva hasta B34**, y de la peor forma: sin excepción y
-sin hueco visible. `resultado` y `estado_alpaca` salían `null`, y la página
-escribía "calculada" sobre órdenes que sí se habían mandado — ésa es la
-explicación de por qué la columna de resultado nunca decía nada útil.
+**Falla en TODA corrida viva**, y de la peor forma: sin excepción y sin hueco
+visible. `resultado` y `estado_alpaca` salen `null`, y la página escribe
+"calculada" sobre órdenes que sí se mandaron y sí llenaron.
 
-**Ojo con el alcance, para no anotar más de lo que se arregló:** B34 ya lo había
-tapado sin querer. `journalObjetivoVivo` escribe `actions` en el mismo insert, y
-el nuevo pareo por fill busca en `actions` por `SÍMBOLO|lado`, así que desde
-ayer el estado y el precio ya salían bien por ese camino. Lo que se arregla acá
-es el **respaldo**: el eco del envío, que es lo único que queda cuando `actions`
-falta o llega incompleto. Sigue valiendo la pena —un respaldo que nunca acierta
-no es un respaldo— pero no es lo que habría roto la pantalla mañana.
+**Medido en producción el 2026-09-24: 462 órdenes del 21 al 24, las 462 con
+`resultado: null` y `estado_alpaca: null`.** Cero excepciones.
+
+> ### CORRECCIÓN DE UNA CORRECCIÓN (2026-09-24)
+>
+> El 23 anoté acá que "B34 ya lo había tapado sin querer" y que esto arreglaba
+> un **respaldo** y no el camino principal. **Estaba mal, y el error de método
+> importa más que el error:** razoné sobre el estado de la RAMA y lo escribí
+> como si fuera el estado de PRODUCCIÓN. La rama no está mergeada. Producción
+> corre `main`, `main` no tiene el pareo por fill de B34, y por lo tanto esta
+> expresión **es** el camino principal allá — es la causa única de que las 462
+> órdenes no tengan precio.
+>
+> La regla que sale de esto: **una afirmación sobre el comportamiento
+> observable dice contra qué árbol se verificó, o no se escribe.** "Ya estaba
+> tapado" sin decir *dónde* convirtió un bug de producción en una nota al pie.
 
 ### 2. Las salidas de riesgo escriben `reference`, no `referencia`
 
@@ -798,9 +806,18 @@ Vale igual para las filas del contrato viejo.
 ### La lección
 
 Las tres son la misma: **un fixture se escribe con la forma que uno cree que
-tiene el dato, así que confirma la creencia en vez de comprobarla.** El test que
-las encontró no fue más ingenioso — fue el que copió la forma del `push` de
-`legsAOrdenes` en vez de inventarla.
+tiene el dato, así que confirma la creencia en vez de comprobarla.**
+
+Y el caso 1 lo demuestra dos veces. El fixture de `tests/arena-fills.test.mjs`
+le ponía `client_order_id` a la orden calculada — un campo que la función que
+las produce NUNCA escribe. El test pasaba en verde **sobre el caso que no
+existe**, mientras producción fallaba en el 100% de las filas.
+
+`tests/arena-pareo-ordenes.test.mjs` cierra ese hueco de otra forma: **no
+escribe las formas, llama a las funciones que las producen.** `legsAOrdenes`
+genera la orden, se le pega encima lo que le pega `enviarOrdenes`, se proyecta a
+`actions` como lo hace `journalObjetivoVivo`, y recién ahí se parea. Un test que
+afirma sobre un dato que él mismo inventó no prueba nada sobre el dato real.
 
 ---
 
