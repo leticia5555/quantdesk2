@@ -348,6 +348,11 @@ function analiza(eventos, { criterios = CRITERIOS_F2 } = {}) {
 
   return {
     criterios,
+    // Las predicciones de ESTA corrida, alineadas con `eventos`. La vista de
+    // comparación las consume tal cual: si recalculara el modelo por su
+    // cuenta, la tabla y el veredicto podrían mostrar números distintos del
+    // mismo evento, y nadie sabría cuál creer.
+    predicciones: predCV,
     muestra: {
       mercados: eventos.length,
       beats: ys.filter((y) => y === 1).length,
@@ -393,6 +398,222 @@ function analiza(eventos, { criterios = CRITERIOS_F2 } = {}) {
         : null,
     },
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// VISTA DE COMPARACIÓN — dónde coinciden y dónde no
+//
+// NO es una señal de apuesta y NO calcula retornos. La pregunta que contesta
+// es otra: ¿en qué mercados QuantDesk y Polymarket dicen lo mismo, y en cuáles
+// no, sobre todo en la zona de duda donde ninguno de los dos está seguro?
+//
+// Usa las MISMAS predicciones fuera de muestra que el veredicto (las que
+// `analiza()` devuelve en `predicciones`). No re-entrena nada: un segundo
+// ajuste daría números parecidos pero distintos, y entonces habría dos
+// QuantDesk y ninguna forma de saber cuál es el que dictaminó NO-GO.
+// ═══════════════════════════════════════════════════════════════════
+
+// Un pronóstico probabilístico "acierta" cuando su LADO fue el correcto. La
+// definición está acá, congelada, porque "acierto" en un número entre 0 y 1 no
+// es obvio: p ≥ 0.5 apostaría a beat, p < 0.5 a miss.
+const acierta = (p, beat) => (Number.isFinite(p) ? (p >= 0.5 ? beat : !beat) : null);
+
+const TRAMOS = [
+  [0.00, 0.25], [0.25, 0.40], [0.40, 0.55],
+  // La zona de DUDA, partida fina: es la que la pregunta persigue.
+  [0.55, 0.65], [0.65, 0.75],
+  [0.75, 0.85], [0.85, 0.95], [0.95, 1.001],
+];
+const MIN_N_TRAMO = 20;   // por debajo de esto no se concluye nada
+
+function comparacion(eventos, predicciones, {
+  zonaDesde = null, zonaHasta = null, orden = 'desacuerdo', descendente = true,
+} = {}) {
+  const filas = [];
+  const descartadas = [];
+  for (let i = 0; i < eventos.length; i++) {
+    const e = eventos[i];
+    const qd = predicciones[i];
+    const pm = e.mercado;
+    if (!Number.isFinite(qd) || !Number.isFinite(pm)) {
+      // Una fila que no se puede comparar NO desaparece en silencio: la tabla
+      // se encogería un mercado y nadie se enteraría.
+      descartadas.push({ symbol: e.symbol, report_date: e.report_date,
+        motivo: !Number.isFinite(qd) ? 'sin_prediccion' : 'sin_precio_de_mercado' });
+      continue;
+    }
+    const y = e.beat ? 1 : 0;
+    const errQd = Math.abs(qd - y);
+    const errPm = Math.abs(pm - y);
+    filas.push({
+      symbol: e.symbol, report_date: e.report_date,
+      prob_quantdesk: +qd.toFixed(3),
+      prob_polymarket: +pm.toFixed(3),
+      // CON SIGNO: + significa que QuantDesk es MÁS optimista que el mercado.
+      desacuerdo: +(qd - pm).toFixed(3),
+      desacuerdo_abs: +Math.abs(qd - pm).toFixed(3),
+      resultado: e.beat ? 'beat' : 'miss',
+      acierta_quantdesk: acierta(qd, e.beat),
+      acierta_polymarket: acierta(pm, e.beat),
+      // "Más cerca" es distancia al resultado (0 o 1), no quién acertó el lado:
+      // los dos pueden acertar el lado y uno estar mucho más cerca.
+      mas_cerca: Math.abs(errQd - errPm) < 1e-9 ? 'empate' : (errQd < errPm ? 'quantdesk' : 'polymarket'),
+      error_quantdesk: +errQd.toFixed(3),
+      error_polymarket: +errPm.toFixed(3),
+    });
+  }
+
+  // El filtro es por la probabilidad del MERCADO: la zona de duda se define
+  // por dónde duda el mercado, que es el referente.
+  const enZona = filas.filter((f) =>
+    (zonaDesde === null || f.prob_polymarket >= zonaDesde)
+    && (zonaHasta === null || f.prob_polymarket < zonaHasta));
+
+  const cmp = {
+    desacuerdo: (a, b) => a.desacuerdo_abs - b.desacuerdo_abs,
+    desacuerdo_con_signo: (a, b) => a.desacuerdo - b.desacuerdo,
+    fecha: (a, b) => String(a.report_date).localeCompare(String(b.report_date)),
+    simbolo: (a, b) => String(a.symbol).localeCompare(String(b.symbol)),
+    mercado: (a, b) => a.prob_polymarket - b.prob_polymarket,
+  }[orden] || ((a, b) => a.desacuerdo_abs - b.desacuerdo_abs);
+  const ordenadas = enZona.slice().sort((a, b) => (descendente ? -cmp(a, b) : cmp(a, b)));
+
+  return {
+    es_vista_de_comparacion: true,
+    no_es_senal: 'Esta vista NO es una señal de apuesta y NO calcula retornos. Compara dos pronósticos contra lo que pasó; no recomienda nada.',
+    filtro: { zona_mercado_desde: zonaDesde, zona_mercado_hasta: zonaHasta, orden, descendente,
+      filas_en_zona: enZona.length, filas_totales: filas.length,
+      eventos_recibidos: eventos.length, descartadas: descartadas.length,
+      aviso_descartadas: descartadas.length
+        ? `${descartadas.length} de ${eventos.length} mercados quedaron fuera de la tabla por no tener los dos números que hacen falta para compararlos.`
+        : null,
+      detalle_descartadas: descartadas },
+    filas: ordenadas,
+    por_tramo: resumenPorTramo(filas),
+    distribucion: distribucionComparada(filas),
+    ...titularDeDuda(filas),
+  };
+}
+
+// Resumen por tramo del MERCADO. Es el que contesta la pregunta: en la zona de
+// duda, ¿se parecen o no, y quién queda más cerca?
+function resumenPorTramo(filas) {
+  return TRAMOS.map(([desde, hasta]) => {
+    const enT = filas.filter((f) => f.prob_polymarket >= desde && f.prob_polymarket < hasta);
+    const n = enT.length;
+    const medDes = mediana(enT.map((f) => f.desacuerdo));
+    const aciertoQd = n ? enT.filter((f) => f.acierta_quantdesk).length / n : null;
+    const aciertoPm = n ? enT.filter((f) => f.acierta_polymarket).length / n : null;
+    return {
+      tramo: `${desde.toFixed(2)}–${Math.min(1, hasta).toFixed(2)}`,
+      n,
+      // La zona de duda tiene pocos casos por definición: es donde el mercado
+      // se moja menos. Marcarlo evita leer una diferencia de 3 casos como un
+      // hallazgo, que es el error más fácil de cometer con esta tabla.
+      muestra_insuficiente: n < MIN_N_TRAMO,
+      desacuerdo_mediano: medDes === null ? null : +medDes.toFixed(3),
+      acierto_quantdesk: aciertoQd === null ? null : +aciertoQd.toFixed(3),
+      acierto_polymarket: aciertoPm === null ? null : +aciertoPm.toFixed(3),
+      quantdesk_mas_cerca: enT.filter((f) => f.mas_cerca === 'quantdesk').length,
+      polymarket_mas_cerca: enT.filter((f) => f.mas_cerca === 'polymarket').length,
+      empates: enT.filter((f) => f.mas_cerca === 'empate').length,
+      beats_reales: n ? +(enT.filter((f) => f.resultado === 'beat').length / n).toFixed(3) : null,
+    };
+  });
+}
+
+// Dónde pone su masa cada uno. De acá sale el titular, calculado y no escrito
+// a mano: si mañana el modelo cambia, la frase cambia con él.
+function distribucionComparada(filas, deciles = 10) {
+  const cubos = Array.from({ length: deciles }, (_, i) => ({
+    desde: +(i / deciles).toFixed(2), hasta: +((i + 1) / deciles).toFixed(2), quantdesk: 0, polymarket: 0,
+  }));
+  for (const f of filas) {
+    cubos[Math.min(deciles - 1, Math.floor(f.prob_quantdesk * deciles))].quantdesk++;
+    cubos[Math.min(deciles - 1, Math.floor(f.prob_polymarket * deciles))].polymarket++;
+  }
+  return cubos;
+}
+
+// EL TITULAR, en letras y calculado. La pregunta "¿quién duda más?" se contesta
+// con cuánta masa pone cada uno en los extremos (≥0.9 y ≤0.1): el que pone
+// menos es el que duda más. Se dice, no se deja deducir de una tabla.
+function titularDeDuda(filas) {
+  const n = filas.length;
+  const extremo = (k) => filas.filter((f) => f[k] >= 0.9 || f[k] <= 0.1).length;
+  const alto = (k, d, h) => filas.filter((f) => f[k] >= d && f[k] < h).length;
+  const exQd = extremo('prob_quantdesk');
+  const exPm = extremo('prob_polymarket');
+  const quienDudaMas = exQd === exPm ? null : (exQd < exPm ? 'quantdesk' : 'polymarket');
+
+  const detalle = [
+    `mercado en 0.9–1: ${alto('prob_polymarket', 0.9, 1.001)} · QuantDesk en 0.9–1: ${alto('prob_quantdesk', 0.9, 1.001)}`,
+    `mercado en 0.8–0.9: ${alto('prob_polymarket', 0.8, 0.9)} · QuantDesk en 0.8–0.9: ${alto('prob_quantdesk', 0.8, 0.9)}`,
+  ];
+
+  return {
+    titular: quienDudaMas === null
+      ? `Los dos se mojan parecido: ${exQd} de ${n} pronósticos en los extremos (≥0.9 o ≤0.1) cada uno.`
+      : quienDudaMas === 'quantdesk'
+        ? `**QuantDesk duda más que el mercado.** Pone ${exQd} de ${n} pronósticos en los extremos (≥0.9 o ≤0.1); el mercado pone ${exPm}. O sea que el modelo se moja menos, y por eso su probabilidad casi nunca llega donde llega el precio.`
+        : `**El mercado duda más que QuantDesk.** Pone ${exPm} de ${n} pronósticos en los extremos (≥0.9 o ≤0.1); el modelo pone ${exQd}.`,
+    titular_detalle: detalle,
+    extremos: { quantdesk: exQd, polymarket: exPm, de: n },
+  };
+}
+
+function renderComparacionMd(c, { veredicto = null } = {}) {
+  const L = [];
+  L.push('# QuantDesk vs Polymarket — dónde coinciden y dónde no');
+  L.push('');
+  L.push(`Generado: ${c.generado_en || '—'} · ${c.filtro.filas_totales} mercados`);
+  L.push('');
+  if (veredicto) {
+    L.push(`> **El veredicto de la Fase 2 sigue siendo ${veredicto}.** La columna de QuantDesk es la salida de un modelo que **no** pasó sus criterios; está acá para comparar, no porque esté validada.`);
+    L.push('');
+  }
+  L.push(`> ${c.no_es_senal}`);
+  L.push('');
+  L.push('## ' + String(c.titular).replace(/\*\*/g, ''));
+  L.push('');
+  for (const d of c.titular_detalle || []) L.push(`- ${d}`);
+  L.push('');
+
+  L.push('## Por tramo del MERCADO (la zona de duda es 0.55–0.75)');
+  L.push('');
+  L.push('| Tramo | n | Desacuerdo mediano | Acierto QD | Acierto mercado | QD más cerca | Mercado más cerca | Beats reales |');
+  L.push('|---|---|---|---|---|---|---|---|');
+  for (const t of c.por_tramo || []) {
+    if (!t.n) continue;
+    const marca = t.muestra_insuficiente ? ' ⚠' : '';
+    L.push(`| ${t.tramo}${marca} | ${t.n} | ${t.desacuerdo_mediano ?? '—'} | ${t.acierto_quantdesk ?? '—'} | ${t.acierto_polymarket ?? '—'} | ${t.quantdesk_mas_cerca} | ${t.polymarket_mas_cerca} | ${t.beats_reales ?? '—'} |`);
+  }
+  L.push('');
+  L.push(`⚠ = menos de ${MIN_N_TRAMO} casos: **muestra insuficiente para concluir**. La zona de duda tiene pocos casos por definición — es donde el mercado se moja menos — así que es justo donde más fácil es confundir tres casos con un hallazgo.`);
+  L.push('');
+
+  L.push('## Dónde pone su masa cada uno');
+  L.push('');
+  L.push('| Tramo | QuantDesk | Polymarket |');
+  L.push('|---|---|---|');
+  for (const d of c.distribucion || []) {
+    if (!d.quantdesk && !d.polymarket) continue;
+    L.push(`| ${d.desde}–${d.hasta} | ${d.quantdesk} | ${d.polymarket} |`);
+  }
+  L.push('');
+
+  const f = c.filas || [];
+  L.push(`## Mayor desacuerdo${c.filtro.zona_mercado_desde !== null ? ` (mercado ${c.filtro.zona_mercado_desde}–${c.filtro.zona_mercado_hasta ?? 1})` : ''}`);
+  L.push('');
+  L.push('| Símbolo | Fecha | QD | Mercado | Desacuerdo | Resultado | Más cerca |');
+  L.push('|---|---|---|---|---|---|---|');
+  for (const x of f.slice(0, 25)) {
+    L.push(`| ${x.symbol} | ${x.report_date} | ${x.prob_quantdesk} | ${x.prob_polymarket} | ${x.desacuerdo > 0 ? '+' : ''}${x.desacuerdo} | ${x.resultado} | ${x.mas_cerca} |`);
+  }
+  if (f.length > 25) { L.push(''); L.push(`_(${f.length} filas en total; se muestran 25. El JSON las trae todas.)_`); }
+  L.push('');
+  L.push('Desacuerdo **con signo**: positivo = QuantDesk más optimista que el mercado.');
+  return L.join('\n');
 }
 
 // ─────────────────── resumen en español ───────────────────
@@ -477,4 +698,6 @@ export {
   CRITERIOS_F2, ORDEN_FEATURES, featuresDeEvento, winsoriza, mediana, media,
   entrena, predice, prediceCV, brier, calibracionPorDecil, simula, sigmoide,
   analiza, renderResumenF2,
+  comparacion, renderComparacionMd, resumenPorTramo, distribucionComparada,
+  titularDeDuda, acierta, TRAMOS, MIN_N_TRAMO,
 };
