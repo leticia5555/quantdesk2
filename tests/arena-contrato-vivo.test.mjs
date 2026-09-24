@@ -245,9 +245,23 @@ console.log('\n── el envío: secuencial, idempotente, y una falla no tumba e
     ok(/insufficient buying power/.test(enviadas[1].error || ''), 'con el error del broker, no un "falló" mudo');
     ok(llamadas.every((c) => c.type === 'limit' || c.limit_price != null),
       'todas con límite', JSON.stringify(llamadas[0]));
-    ok(enviadas[0].client_order_id === enviadas[0].client_order_id && /arena-claude-f-2026-09-18-AAA-sell/.test(enviadas[0].client_order_id),
-      'client_order_id determinista: el mismo símbolo en la misma corrida no puede mandarse dos veces',
+    // ── LA ASERCIÓN CAMBIÓ EL 2026-09-24, CON SU MOTIVO ──────────────
+    // Pedía `arena-claude-f-2026-09-18-AAA-sell`: agente, fecha, ticker, lado y
+    // NADA de la corrida. Ese id era el bug — dos rondas del mismo día sobre el
+    // mismo nombre producían el MISMO id, Alpaca rechazaba el repetido con un
+    // 422, y ~216 de 525 órdenes murieron así en cuatro días (las ventas mucho
+    // más que las compras, porque una venta se re-pide y una compra no).
+    //
+    // Lo que la aserción protegía SIGUE protegido, y se verifica abajo: dos
+    // llamadas de la MISMA corrida dan el mismo id. Lo que se agrega es que dos
+    // corridas distintas NO lo compartan. El caso completo, con las dos filas
+    // reales que lo destaparon, vive en `tests/arena-client-order-id.test.mjs`.
+    ok(/^arena-claude-f\d{4}-2026-09-18-AAA-sell$/.test(enviadas[0].client_order_id),
+      'client_order_id con el MINUTO de la corrida: sin él, dos rondas del mismo día colisionan y la segunda muere con un 422',
       enviadas[0].client_order_id);
+    ok(enviadas[0].client_order_id !== enviadas[2].client_order_id,
+      'y dos símbolos de la misma corrida siguen sin pisarse',
+      JSON.stringify([enviadas[0].client_order_id, enviadas[2].client_order_id]));
   } finally { globalThis.fetch = fetchReal; }
 }
 

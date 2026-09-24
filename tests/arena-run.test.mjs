@@ -785,8 +785,12 @@ ok(journalInserts.length - insertsBeforeBC === 1, 'broadcut: una sola fila de jo
 const bcPosts = alpacaOrderPosts.slice(postsBeforeBC);
 ok(bcPosts.length === 2 && bcPosts.every((o) => o.side === 'sell' && o.type === 'limit' && o.time_in_force === 'day'),
   'broadcut: dos órdenes SELL límite+day (regla de la casa: sigue siendo limit)', JSON.stringify(bcPosts.map((o) => ({ s: o.symbol, side: o.side }))));
-ok(bcPosts.every((o) => o.client_order_id === `arena:${today}:${o.symbol}:exit`),
-  'broadcut: client_order_id con segmento :exit (no colisiona con :buy/:sell)', JSON.stringify(bcPosts.map((o) => o.client_order_id)));
+// El `:exit` sigue siendo lo que separa un stop de una venta del PM. Lo que se
+// le agregó el 2026-09-24 es el MINUTO: sin él un stop sobre el mismo nombre
+// solo podía salir una vez por día, y el reintento con la banda ensanchada
+// —que es como funciona `escalationFromRiskRows`— se lo comía un 422.
+ok(bcPosts.every((o) => new RegExp(`^arena:${today}:${o.symbol}:exit:\\d{4}$`).test(o.client_order_id)),
+  'broadcut: client_order_id con segmento :exit Y el minuto de la corrida', JSON.stringify(bcPosts.map((o) => o.client_order_id)));
 const bcAapl = bcPosts.find((o) => o.symbol === 'AAPL');
 ok(bcAapl && Number(bcAapl.limit_price) === Math.round(200 * 0.88 * 100) / 100 && bcAapl.qty === '49',
   'broadcut: AAPL marketable limit ancho 176 (200×0.88), posición ENTERA 49', JSON.stringify(bcAapl && { l: bcAapl.limit_price, q: bcAapl.qty }));
@@ -821,8 +825,10 @@ ok(rCS.risk_exits === 1 && rCS.breaker_stage === 'none',
 const csPosts = alpacaOrderPosts.slice(postsBeforeCS);
 ok(csPosts.length === 1 && csPosts[0].symbol === 'MSFT' && csPosts[0].side === 'sell' && csPosts[0].qty === '20',
   'stop: vende MSFT ENTERO (20) con SELL límite', JSON.stringify(csPosts[0] && { s: csPosts[0].symbol, side: csPosts[0].side, q: csPosts[0].qty }));
-ok(csPosts[0] && Number(csPosts[0].limit_price) === Math.round(200 * 0.68 * 100) / 100 && csPosts[0].client_order_id === `arena:${today}:MSFT:exit`,
-  'stop: marketable limit 136 (banda catastrófica 32%) sobre el cierre fresco 200, client_order_id :exit', JSON.stringify(csPosts[0] && csPosts[0].limit_price));
+ok(csPosts[0] && Number(csPosts[0].limit_price) === Math.round(200 * 0.68 * 100) / 100
+  && new RegExp(`^arena:${today}:MSFT:exit:\\d{4}$`).test(csPosts[0].client_order_id),
+  'stop: marketable limit 136 (banda catastrófica 32%) sobre el cierre fresco 200, client_order_id :exit con minuto',
+  JSON.stringify(csPosts[0] && { l: csPosts[0].limit_price, cid: csPosts[0].client_order_id }));
 // DOS filas: la de riesgo (status risk_exit) + la del PM (ok_no_actions, holdeó).
 const csRows = journalInserts.slice(insertsBeforeCS).map((j) => j.params);
 const csRisk = csRows.find((r) => r[COL.status] === 'risk_exit');

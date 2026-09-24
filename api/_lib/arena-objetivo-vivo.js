@@ -262,12 +262,70 @@ export function verificarOrdenesContraPesos({ ordenes = [], target = {}, current
 // Una orden que falla NO aborta las siguientes: se anota y se sigue. Media
 // cartera puesta es un estado real que el próximo rebalanceo corrige; abortar a
 // la mitad deja el mismo estado pero sin registro de qué faltó.
+// ── EL MINUTO DE LA CORRIDA ──────────────────────────────────────────
+// `HHMM` en UTC. Es el mismo trozo que ya usa el contrato de ACCIONES
+// (`runArenaDecide`), y se exporta para que los dos caminos no puedan divergir:
+// el bug de abajo nació justo de que un camino tuviera el arreglo y el otro no.
+export const minutoDeCorrida = (now = new Date()) => String(now.toISOString().slice(11, 16)).replace(':', '');
+
+// ── EL ID QUE COLISIONABA CONSIGO MISMO (2026-09-24) ─────────────────
+// EL BUG, medido en producción: 525 órdenes calculadas del 21 al 24 y ~216 que
+// nunca llegaron a Alpaca, con las VENTAS fallando muchísimo más que las
+// compras. Dos filas reales del mismo agente, el mismo día, el mismo ticker y
+// el mismo lado, con cinco minutos de diferencia: la primera `approved`, la
+// segunda `submit_failed`.
+//
+//     arena-control-f-2026-09-24-GDDY-buy      ← 19:31
+//     arena-control-f-2026-09-24-GDDY-buy      ← 19:36, byte a byte el mismo
+//
+// El id llevaba agente, fecha, ticker y lado, y NO llevaba la corrida. Alpaca
+// rechaza un `client_order_id` repetido, así que cada agente podía tocar cada
+// nombre UNA vez por día por lado y todo lo demás moría con un 422.
+//
+// ── Y EL ARREGLO YA EXISTÍA, EN EL CAMINO QUE SE RETIRÓ ──────────────
+// `runArenaDecide` —el contrato de ACCIONES— chocó con esto cuando entró la
+// cadencia por evento, y lo resolvió agregando el tag de corrida y el minuto.
+// Su comentario lo dice con todas las letras: *"Alpaca rechaza el id repetido
+// — la segunda orden, la que el disparador produjo, moriría con un 422"*. El
+// contrato OBJETIVO se escribió después y no se llevó el arreglo: peor, dejó
+// `runTag: 'f'` escrito a mano en el llamador, así que todas las corridas se
+// estampan con el tag de la revisión de piso.
+//
+// Es el patrón de la casa otra vez: una regla que entra por un camino y no por
+// el otro.
+//
+// ── POR QUÉ LAS VENTAS FALLABAN MÁS ──────────────────────────────────
+// Una compra se pide una vez y llena. Una venta se repite: se trimea, no llena,
+// y la ronda siguiente vuelve a pedir el mismo trim del mismo nombre. La
+// segunda petición es la que se cae — y el libro, que sí podía comprar y no
+// podía deshacerse de nada, crece.
+//
+// ── QUÉ IDEMPOTENCIA SE CONSERVA Y CUÁL NO ───────────────────────────
+// Se conserva la que importa: dos invocaciones de la MISMA corrida (un cron que
+// se repite, un reintento de la lambda) caen en el mismo minuto y producen el
+// mismo id, así que no se duplica la orden. Lo que deja de estar bloqueado es
+// lo que nunca tuvo que estarlo: una ronda POSTERIOR pidiendo el mismo nombre.
+// Que dos rondas distintas no se pisen lo garantiza el vigilante con sus
+// marcadores de "ya se hizo hoy", que es la capa donde vive esa decisión.
+//
+// ── SIN RECORTE CIEGO ────────────────────────────────────────────────
+// Antes terminaba en `.slice(0, 48)`. Un recorte por la cola se come primero el
+// LADO: `…-GDDY-buy` y `…-GDDY-sell` truncados al mismo largo serían el mismo
+// id, y una compra cancelaría una venta. Ahora el largo está acotado por
+// construcción (el agente se capa a 10 caracteres, que es lo único de largo
+// variable) y hay un test que lo verifica contra el registry entero — si entra
+// un agente con un id largo, falla el test en vez de colisionar en vivo.
+export const AGENTE_EN_ID = 10;
+
+export function clientOrderIdObjetivo({ agentId, runTag = 'f', runDate, symbol, side, now = new Date() } = {}) {
+  return `arena-${String(agentId || '').slice(0, AGENTE_EN_ID)}-${runTag}${minutoDeCorrida(now)}-${runDate}-${symbol}-${side}`;
+}
+
 export async function enviarOrdenes({ ordenes = [], creds, runDate, agentId, runTag = 'f', now = new Date() } = {}) {
   const enviadas = [];
   for (const o of ordenes) {
-    // Idempotencia del broker: el mismo símbolo, la misma corrida y el mismo
-    // agente no pueden mandar dos órdenes aunque el cron se repita.
-    const clientOrderId = `arena-${agentId}-${runTag}-${runDate}-${o.symbol}-${o.side}`.slice(0, 48);
+    // Idempotencia del broker ACOTADA A LA CORRIDA, no al día: ver arriba.
+    const clientOrderId = clientOrderIdObjetivo({ agentId, runTag, runDate, symbol: o.symbol, side: o.side, now });
     try {
       const orden = await createLimitOrder({
         symbol: o.symbol, qty: o.qty, side: o.side,
