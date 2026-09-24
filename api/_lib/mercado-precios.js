@@ -93,10 +93,34 @@ export function aplanarChartYahoo(json) {
   };
 }
 
-// El mercado de EE.UU. cierra 16:00 ET = 20:00 UTC en EDT y 21:00 en EST. Se
-// toma el más tardío con margen: antes de eso, la última barra que manda
-// Yahoo es el precio VIVO del día, no un cierre.
-export const CIERRE_US_UTC_H = 21;
+// El mercado de EE.UU. cierra a las 16:00 DEL ESTE. En UTC eso son las 20:00
+// media parte del año (EDT) y las 21:00 la otra (EST), así que un número fijo
+// se equivoca seis meses al año.
+//
+// La versión anterior usaba 21 UTC —el valor de invierno, elegido como el
+// "más tardío con margen"— y en septiembre eso deja la barra del día marcada
+// como provisional entre las 20:00 y las 21:00 UTC, con el mercado ya
+// cerrado hace una hora. Ahora se pregunta la hora local con `Intl`, que es
+// quien sabe de cambios de horario.
+export const CIERRE_ET_H = 16;
+export const MARGEN_CIERRE_MIN = 10;
+const TZ_US = 'America/New_York';
+
+/** La hora local de una zona y el día que es allá. Sin tablas de offsets. */
+export function horaEnZona(ahora, tz = TZ_US) {
+  const d = ahora instanceof Date ? ahora : new Date(ahora);
+  try {
+    const p = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(d);
+    const g = (t) => (p.find((x) => x.type === t) || {}).value;
+    const h = Number(g('hour')) % 24, m = Number(g('minute'));
+    return { fecha: `${g('year')}-${g('month')}-${g('day')}`, hora: h + m / 60, ok: Number.isFinite(h) };
+  } catch (e) {
+    return { fecha: null, hora: null, ok: false };
+  }
+}
 
 /**
  * ¿La barra de esta fecha ya es un CIERRE, o todavía es el precio vivo?
@@ -106,13 +130,15 @@ export const CIERRE_US_UTC_H = 21;
  * siguiente se calcularía contra un precio de media sesión.
  */
 export function esCierreDefinitivo(fechaIso, ahora = new Date()) {
-  const now = ahora instanceof Date ? ahora : new Date(ahora);
-  const hoy = now.toISOString().slice(0, 10);
   const f = String(fechaIso || '').slice(0, 10);
   if (!f) return false;
-  if (f < hoy) return true;
-  if (f > hoy) return false;                       // barra futura: no existe
-  return now.getUTCHours() >= CIERRE_US_UTC_H;
+  const t = horaEnZona(ahora, TZ_US);
+  // Sin zona resuelta se falla CERRADO: no se guarda una barra que no se
+  // pudo fechar contra el cierre de su propio mercado.
+  if (!t.ok) return false;
+  if (f < t.fecha) return true;
+  if (f > t.fecha) return false;                   // barra futura: no existe
+  return t.hora >= CIERRE_ET_H + MARGEN_CIERRE_MIN / 60;
 }
 
 /** Filtra las barras que todavía no son cierre, y dice cuántas quitó. */
@@ -194,5 +220,47 @@ export function cubreYtd(serie = [], ahora = new Date()) {
   return {
     cubre: false, puntos: pts.length,
     motivo: `la serie empieza en ${primera} y no llega al año anterior: no hay cierre de fin de año contra el cual anclar`,
+  };
+}
+
+/**
+ * EL CIERRE QUE EL MAPA ESTÁ PINTANDO, y no el más nuevo que aparezca.
+ *
+ * Antes esto era un `max()` sobre los cuadros, y era un rótulo mentiroso por
+ * construcción: basta UN símbolo con la vela de hoy —una corrida manual, una
+ * emisora con otro huso— para que el chip diga "cierre del martes" mientras
+ * 299 cuadros calculan su 1D contra el lunes. El chip describía un cuadro, no
+ * el mapa.
+ *
+ * La fecha que se rotula es la MODA: la que usa la mayoría de los cuadros. Y
+ * si la mayoría no es abrumadora, no se rotula ninguna — `concuerdan` viaja
+ * para que la página pueda decir "el mapa mezcla dos cierres" en vez de
+ * elegir uno y callarse. Un rótulo que no describe lo que se ve es peor que
+ * no tener rótulo, porque el que lo lee no tiene cómo enterarse.
+ */
+export function cierreQueSePinta(cuadros = [], { minAcuerdo = 0.9 } = {}) {
+  const cuenta = new Map();
+  let conFecha = 0;
+  for (const c of cuadros) {
+    const f = c && c.fecha_precio;
+    if (!f) continue;
+    conFecha++;
+    cuenta.set(f, (cuenta.get(f) || 0) + 1);
+  }
+  if (!conFecha) return { fecha: null, cuadros: 0, de: 0, concuerdan: false, reparto: {}, motivo: 'ningún cuadro trae fecha de precio' };
+
+  let moda = null, nModa = 0;
+  for (const [f, n] of cuenta) if (n > nModa || (n === nModa && f > moda)) { moda = f; nModa = n; }
+
+  const acuerdo = nModa / conFecha;
+  const reparto = Object.fromEntries([...cuenta.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1)));
+  return {
+    fecha: acuerdo >= minAcuerdo ? moda : null,
+    cuadros: nModa,
+    de: conFecha,
+    concuerdan: acuerdo >= minAcuerdo,
+    reparto,
+    motivo: acuerdo >= minAcuerdo ? null
+      : `el mapa mezcla ${cuenta.size} cierres distintos; el más común (${moda}) cubre ${nModa} de ${conFecha}`,
   };
 }

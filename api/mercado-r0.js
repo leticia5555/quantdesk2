@@ -62,7 +62,9 @@ const PRESUPUESTO_MS = (() => {
 const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 
-const SCHEMA = [
+import { auditaCapUs } from './_lib/mercado-cap-us.js';
+
+export const SCHEMA_UNIVERSO_US = [
   `create table if not exists mercado_universo_us (
      symbol        text primary key,
      nombre        text,
@@ -84,6 +86,12 @@ const SCHEMA = [
   //
   // Antes no se notaba porque, con los 429, ninguna cap llegaba a escribirse.
   `alter table mercado_universo_us add column if not exists cap_actualizado timestamptz`,
+  // LA MONEDA DE LA CAP Y LAS ACCIONES: los dos datos que `profile2` ya
+  // traía y que la cosecha tiraba. Sin la moneda, la cap de un ADR se guarda
+  // como si fueran dólares y el cuadro miente de tamaño (TSM salía más grande
+  // que NVDA). Sin las acciones, no hay con qué contrastarla.
+  `alter table mercado_universo_us add column if not exists cap_moneda text`,
+  `alter table mercado_universo_us add column if not exists acciones_millones numeric`,
   `create index if not exists mercado_universo_us_cap_idx
      on mercado_universo_us (market_cap desc nulls last)`,
   `create index if not exists mercado_universo_us_sector_idx
@@ -92,7 +100,7 @@ const SCHEMA = [
 let schemaListo = false;
 async function ensureSchema() {
   if (schemaListo) return;
-  await sqlBatch(SCHEMA.map((q) => [q, []]));
+  await sqlBatch(SCHEMA_UNIVERSO_US.map((q) => [q, []]));
   schemaListo = true;
 }
 
@@ -153,7 +161,7 @@ async function simbolosDelUniverso() {
 async function refrescarSimbolos(simbolos, { finnhubKey, ahora, deadline }) {
   await ensureSchema();
   const previas = new Map(
-    (await sql('select symbol, nombre, industria, sector_etf, market_cap, cap_fuente, actualizado, cap_actualizado from mercado_universo_us'))
+    (await sql('select symbol, nombre, industria, sector_etf, market_cap, cap_fuente, actualizado, cap_actualizado, cap_moneda, acciones_millones from mercado_universo_us'))
       .map((r) => [r.symbol, r]));
 
   // Caps ya medidas por el Arena: gratis, y con su propia política de TTL
@@ -171,7 +179,11 @@ async function refrescarSimbolos(simbolos, { finnhubKey, ahora, deadline }) {
   const necesitaCap = [];
   for (const sym of simbolos) {
     const p = previas.get(sym);
-    if (!p || !p.industria) necesitaPerfil.push(sym);
+    // Se vuelve a pedir `profile2` no sólo cuando falta la industria, sino
+    // también cuando faltan la moneda o las acciones. Sin esto, los símbolos
+    // que ya tenían industria no conseguirían nunca los campos nuevos y el
+    // arreglo de la cap no llegaría jamás a las filas viejas.
+    if (!p || !p.industria || !p.cap_moneda || num(p.acciones_millones) == null) necesitaPerfil.push(sym);
     const capArena = capsArena.get(sym);
     const medida = p && p.cap_actualizado ? new Date(p.cap_actualizado) : null;
     const capFresca = p && num(p.market_cap) != null && medida
@@ -221,7 +233,15 @@ async function refrescarSimbolos(simbolos, { finnhubKey, ahora, deadline }) {
     if (r.red) { contadores.profile2.red++; continue; }
     if (!r.ok || !r.json) { contadores.profile2.sin_datos++; continue; }
     contadores.profile2.ok++;
-    perfiles.set(sym, { nombre: r.json.name || null, industria: r.json.finnhubIndustry || null });
+    perfiles.set(sym, {
+      nombre: r.json.name || null,
+      industria: r.json.finnhubIndustry || null,
+      // `currency` es la moneda de REPORTE de la empresa, no la del ticker.
+      // Es el campo que distingue una cap en USD de una en TWD, y el que
+      // faltaba para poder dudar de la cap declarada.
+      moneda: r.json.currency ? String(r.json.currency).toUpperCase() : null,
+      acciones_millones: num(r.json.shareOutstanding),
+    });
   }
 
   // ── metric ──────────────────────────────────────────────────────────
@@ -272,6 +292,9 @@ async function refrescarSimbolos(simbolos, { finnhubKey, ahora, deadline }) {
     const fila = filaUniversoUs({
       symbol: sym, nombre, industria, sector_etf: etf,
       market_cap: cap, cap_fuente: fuente, ahora,
+      cap_moneda: (perfil && perfil.moneda) || prev.cap_moneda || null,
+      acciones_millones: (perfil && num(perfil.acciones_millones) != null)
+        ? num(perfil.acciones_millones) : num(prev.acciones_millones),
     });
     // Solo se sella la medición cuando la cap se midió DE VERDAD en esta
     // corrida; si vino del Arena, se hereda su fecha; si no, se conserva la
@@ -300,8 +323,8 @@ async function guardarUniverso(filas) {
   for (let i = 0; i < filas.length; i += lote) {
     const trozo = filas.slice(i, i + lote);
     await sql(
-      `insert into mercado_universo_us (symbol, nombre, industria, sector_etf, market_cap, cap_fuente, actualizado, cap_actualizado)
-       select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::numeric[], $6::text[], $7::timestamptz[], $8::timestamptz[])
+      `insert into mercado_universo_us (symbol, nombre, industria, sector_etf, market_cap, cap_fuente, actualizado, cap_actualizado, cap_moneda, acciones_millones)
+       select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::numeric[], $6::text[], $7::timestamptz[], $8::timestamptz[], $9::text[], $10::numeric[])
        on conflict (symbol) do update set
          nombre = coalesce(excluded.nombre, mercado_universo_us.nombre),
          industria = coalesce(excluded.industria, mercado_universo_us.industria),
@@ -313,10 +336,13 @@ async function guardarUniverso(filas) {
          -- la cap, la de antes sigue siendo la buena.
          cap_actualizado = greatest(
            coalesce(excluded.cap_actualizado, mercado_universo_us.cap_actualizado),
-           coalesce(mercado_universo_us.cap_actualizado, excluded.cap_actualizado))`,
+           coalesce(mercado_universo_us.cap_actualizado, excluded.cap_actualizado)),
+         cap_moneda = coalesce(excluded.cap_moneda, mercado_universo_us.cap_moneda),
+         acciones_millones = coalesce(excluded.acciones_millones, mercado_universo_us.acciones_millones)`,
       [trozo.map((f) => f.symbol), trozo.map((f) => f.nombre), trozo.map((f) => f.industria),
        trozo.map((f) => f.sector_etf), trozo.map((f) => f.market_cap), trozo.map((f) => f.cap_fuente),
-       trozo.map((f) => f.actualizado), trozo.map((f) => f.cap_actualizado ?? null)]);
+       trozo.map((f) => f.actualizado), trozo.map((f) => f.cap_actualizado ?? null),
+       trozo.map((f) => f.cap_moneda ?? null), trozo.map((f) => f.acciones_millones ?? null)]);
     escritas += trozo.length;
   }
   return escritas;
@@ -667,6 +693,57 @@ async function jobGfnorte() {
 
 // ═══════════════════════════════════════════════════════════════════
 
+/**
+ * LA AUDITORÍA DE LA CAP EN USD. Contesta la pregunta que el teléfono hizo:
+ * ¿cuántos símbolos tienen una capitalización en la que no se puede confiar,
+ * y por qué?
+ *
+ * Es SÓLO LECTURA. No corrige nada: el veredicto lo aplica el mapa en cada
+ * petición, así que no hay un estado que arreglar acá. Este job existe para
+ * poder mirar el bosque —cuántos, de qué moneda, cuáles mienten más— en vez
+ * de descubrirlos de a uno en la pantalla del teléfono.
+ */
+async function jobAuditoriaCap() {
+  await ensureSchema();
+  const filas = await sql(
+    `with ultimo as (
+       select distinct on (symbol) symbol, cierre
+         from mercado_precios_us
+        order by symbol, fecha desc
+     )
+     select u.symbol, u.nombre, u.sector_etf, u.market_cap, u.cap_moneda,
+            u.acciones_millones, p.cierre as precio_usd
+       from mercado_universo_us u
+       left join ultimo p using (symbol)
+      where u.market_cap is not null`);
+
+  const a = auditaCapUs(filas.map((f) => ({
+    symbol: f.symbol,
+    declarada: num(f.market_cap) != null ? num(f.market_cap) / 1e6 : null,
+    moneda: f.cap_moneda,
+    acciones: num(f.acciones_millones),
+    precio_usd: num(f.precio_usd),
+  })));
+
+  // Cuántos NO se pueden ni auditar todavía, que es distinto de cuántos
+  // fallan: si la cosecha aún no repobló `cap_moneda`, el número grande de
+  // grises dice "falta correr ?job=universo", no "hay 300 ADRs rotos".
+  const sinMoneda = filas.filter((f) => !f.cap_moneda).length;
+  const sinAcciones = filas.filter((f) => num(f.acciones_millones) == null).length;
+
+  return {
+    job: 'auditoria-cap',
+    ...a,
+    veredictos: undefined,          // el detalle completo no cabe ni hace falta
+    sin_moneda: sinMoneda,
+    sin_acciones: sinAcciones,
+    listo_para_auditar: sinMoneda === 0 && sinAcciones === 0,
+    nota: sinMoneda || sinAcciones
+      ? `faltan campos de profile2 en ${Math.max(sinMoneda, sinAcciones)} símbolos: corré ?job=universo hasta que bajen a 0 antes de leer el conteo de grises`
+      : null,
+  };
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -696,7 +773,8 @@ export default async function handler(req, res) {
 
   try {
     let out;
-    if (job === 'universo') out = await jobUniverso({ ahora, dry, finnhubKey: process.env.FINNHUB_API_KEY, t0 });
+    if (job === 'auditoria-cap') out = await jobAuditoriaCap();
+    else if (job === 'universo') out = await jobUniverso({ ahora, dry, finnhubKey: process.env.FINNHUB_API_KEY, t0 });
     else if (job === 'unidades') out = await jobUnidades({ ahora, manual });
     else if (job === 'refcap') out = await jobRefcap({ limite: Number(q.limite) || 40 });
     else if (job === 'gfnorte') out = await jobGfnorte();

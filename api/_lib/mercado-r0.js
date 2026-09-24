@@ -1446,7 +1446,7 @@ export function planCorrida({ pendientes, presupuesto_ms = 270000, por_minuto = 
  * NO se hace es dejarlo fuera en silencio — un símbolo ausente y uno sin cap
  * se ven igual en un `select count(*)` y son problemas distintos.
  */
-export function filaUniversoUs({ symbol, nombre, industria, sector_etf, market_cap, cap_fuente, ahora }) {
+export function filaUniversoUs({ symbol, nombre, industria, sector_etf, market_cap, cap_fuente, ahora, cap_moneda, acciones_millones }) {
   const sym = up(symbol);
   const cap = num(market_cap);
   const faltan = [];
@@ -1460,6 +1460,10 @@ export function filaUniversoUs({ symbol, nombre, industria, sector_etf, market_c
     sector_etf: sector_etf || null,
     market_cap: cap != null && cap > 0 ? cap : null,
     cap_fuente: cap != null && cap > 0 ? (cap_fuente || null) : null,
+    // La moneda y las acciones viajan SIEMPRE, tenga cap o no: son lo que
+    // permite dudar de la cap, así que no pueden depender de que la cap esté.
+    cap_moneda: cap_moneda ? String(cap_moneda).toUpperCase() : null,
+    acciones_millones: num(acciones_millones) != null && num(acciones_millones) > 0 ? num(acciones_millones) : null,
     actualizado: (ahora instanceof Date ? ahora : new Date(ahora)).toISOString(),
     completa: faltan.length === 0,
     faltan,

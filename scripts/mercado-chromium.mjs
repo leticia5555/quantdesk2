@@ -32,6 +32,8 @@ const { chromium } = require(PW);
 // Incluye a propósito un cuadro SIN serie y uno SIN ancla YTD: si el "—" con
 // su causa se rompe, esta corrida lo tiene que ver.
 const DIA = 86400;
+// La tabla termina el VIERNES 18 a propósito: es el caso que rompió en el
+// teléfono — lunes por la tarde, cosecha del día aún sin correr.
 const HOY = Math.floor(Date.parse('2026-09-18T00:00:00Z') / 1000);
 // La serie se arma con un movimiento POR DÍA, no con una deriva repartida:
 // con la deriva, el cambio de 1D salía ~0.05% y los 300 cuadros aparecían
@@ -80,6 +82,7 @@ const FIXTURES = {
     fuente: { cuadros: 'neon:mercado_universo_us (sector y cap)', series: 'neon:mercado_precios_us (cierre y cierre ajustado, cosecha diaria)' },
     faltantes: { total: 2, por_motivo: { no_hay_serie: 1, sin_ancla_ytd: 1 }, ejemplos: [] },
     periodos: ['1D', '1S', '1M', 'YTD'], generado_en: '2026-09-21T22:00:00.000Z',
+    ultimo_cierre: '2026-09-18',
   },
   mx: {
     mapa: 'mx', bolsa: 'mx',
@@ -104,17 +107,52 @@ const FIXTURES = {
     cosecha: { ultima_fecha: '2026-09-18', sesiones_de_atraso: 0, alerta: false, lectura: null },
     faltantes: { total: 1, por_motivo: { requiere_desglose: 1 }, ejemplos: [] },
     periodos: ['1D', '1S', '1M', 'YTD'], generado_en: '2026-09-21T22:00:00.000Z',
+    ultimo_cierre: '2026-09-18',
   },
 };
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css' };
 let pedidosApi = 0;
+let roto = false;
+let sinAuditar = false;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  // EL INTERRUPTOR VIVE EN EL SERVIDOR DE PRUEBA, NO EN LA PÁGINA. Se probó
+  // primero con `?mapa=roto` en la URL y no servía: la página normaliza el
+  // mapa a us|mx, así que el fixture roto nunca se pedía. Meter un gancho en
+  // mercado.html para que lo aceptara habría sido poner código de prueba en
+  // producción — el interruptor se queda de este lado.
+  if (url.pathname === '/__romper') {
+    roto = url.searchParams.get('v') === '1';
+    res.writeHead(200); return res.end('ok');
+  }
+  if (url.pathname === '/__sin-auditar') {
+    sinAuditar = url.searchParams.get('v') === '1';
+    res.writeHead(200); return res.end('ok');
+  }
   if (url.pathname === '/api/mercado-mapa') {
     pedidosApi++;
-    const m = url.searchParams.get('map') === 'mx' ? 'mx' : 'us';
     res.writeHead(200, { 'content-type': 'application/json' });
+    // La respuesta que da el endpoint de verdad cuando una lectura falla:
+    // así llegó a producción, con un `filter` sobre `row_number()`.
+    if (sinAuditar) {
+      // Como quedará prod el día del despliegue: columnas nuevas vacías, así
+      // que todos los cuadros grises CON RAZÓN y ningún hallazgo.
+      const f = JSON.parse(JSON.stringify(FIXTURES.us));
+      f.auditoria = {
+        total: f.cuadros.length, verificadas: 0, sin_auditar: f.cuadros.length, hallazgos: 0,
+        aviso: `la capitalización no está auditada todavía en ${f.cuadros.length} de ${f.cuadros.length} emisoras: corré /api/mercado-r0?job=universo hasta que ?job=auditoria-cap reporte sin_moneda 0`,
+      };
+      return res.end(JSON.stringify(f));
+    }
+    if (roto) {
+      return res.end(JSON.stringify({
+        mapa: 'us', cuadros: [], mas: null,
+        error: 'no se pudieron leer los datos del mapa',
+        detalle: { mercado_precios_us: 'Neon: syntax error at or near "filter"' },
+      }));
+    }
+    const m = url.searchParams.get('map') === 'mx' ? 'mx' : 'us';
     return res.end(JSON.stringify(FIXTURES[m]));
   }
   const p = url.pathname === '/mercado' ? '/mercado.html' : url.pathname;
@@ -124,6 +162,22 @@ const server = createServer(async (req, res) => {
     res.end(buf);
   } catch { res.writeHead(404); res.end('no'); }
 });
+
+// ── EL RELOJ, FIJO ───────────────────────────────────────────────────
+// El caso que rompió en el teléfono: **lunes 17:00 CT con la tabla al
+// viernes**. Sin fijar el reloj, el chip diría "abierto" o "cerrado" según
+// la hora a la que alguien corra el script, y la comprobación del chip
+// pasaría o fallaría por motivos que no son el código.
+const MOMENTO = Date.parse('2026-09-21T23:00:00Z');   // lunes 17:00 CT / 19:00 ET
+const RELOJ_FIJO = `(() => {
+  const fijo = ${MOMENTO};
+  const Real = Date;
+  class Falso extends Real {
+    constructor(...a) { if (a.length === 0) super(fijo); else super(...a); }
+    static now() { return fijo; }
+  }
+  window.Date = Falso;
+})()`;
 
 const fallos = [];
 const ok = [];
@@ -159,6 +213,7 @@ try {
     isMobile: true, hasTouch: true,
     userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
   });
+  await movil.addInitScript(RELOJ_FIJO);
   const p = await movil.newPage();
   const errores = [];
   p.on('pageerror', (e) => errores.push(String(e)));
@@ -188,17 +243,87 @@ try {
   chequeo('todo control interactivo mide ≥44 px', taps.length === 0, taps.join(', '));
 
   const nSectores = await p.locator('.cuadro').count();
-  chequeo('el primer nivel son sectores, no 300 cuadros', nSectores <= 12, `${nSectores} cuadros`);
+  chequeo('al abrir se ven EMPRESAS, no sólo sectores', nSectores >= 20, `${nSectores} cuadros`);
+  chequeo('hay cabeceras de sector', (await p.locator('.cabecera').count()) >= 3);
+  chequeo('NO existe el cuadro "+N más": se pintan todas', (await p.locator('.cuadro.resto').count()) === 0);
 
-  const sectoresTocables = await p.evaluate(() => [...document.querySelectorAll('.cuadro')]
-    .filter((e) => { const r = e.getBoundingClientRect(); return r.width < 44 || r.height < 44; }).length);
-  chequeo('cada sector es tocable (≥44 px)', sectoresTocables === 0, `${sectoresTocables} chicos`);
+  // TODO SECTOR CON EMPRESAS MUESTRA AL MENOS SU MAYOR CON NOMBRE. El mapa
+  // llegó a enseñar "Industrial: +55 más · 100%" — un sector entero sin una
+  // sola empresa. Si hay 55, la mayor tiene que aparecer con su ticker.
+  const sectores = await p.evaluate(() => {
+    const cabs = [...document.querySelectorAll('.cabecera')];
+    const cuadros = [...document.querySelectorAll('.cuadro')].map((e) => ({
+      x: e.offsetLeft, y: e.offsetTop, w: e.offsetWidth, h: e.offsetHeight,
+      txt: (e.querySelector('.sym') || {}).textContent || '',
+    }));
+    return cabs.map((c) => {
+      // Los cuadros que caen bajo esta cabecera, por geometría.
+      const x0 = c.offsetLeft, x1 = x0 + c.offsetWidth, y0 = c.offsetTop;
+      const mios = cuadros.filter((q) => q.x >= x0 - 1 && q.x < x1 && q.y >= y0);
+      return { sector: c.textContent, n: mios.length, conNombre: mios.filter((q) => q.txt).length };
+    });
+  });
+  chequeo('todo sector dibujado tiene al menos una empresa con nombre',
+    sectores.length > 0 && sectores.every((s) => s.n === 0 || s.conNombre >= 1),
+    JSON.stringify(sectores.filter((s) => s.n > 0 && s.conNombre === 0)));
 
-  // TAP REAL en un sector → entra
+  // Los cuadros chicos EXISTEN y se tocan; simplemente no llevan letra.
+  const chicos = await p.evaluate(() => {
+    const cs = [...document.querySelectorAll('.cuadro')];
+    const sinTexto = cs.filter((e) => !(e.querySelector('.sym') || {}).textContent);
+    return { total: cs.length, sinTexto: sinTexto.length, todosTocables: sinTexto.every((e) => e.onclick !== undefined) };
+  });
+  // LA REGLA ES "TODAS", no "muchas": se comparan los cuadros dibujados
+  // contra los que el fixture trae con capitalización. Un umbral redondo
+  // (">= 60") habría pasado con 60 de 300.
+  const conCap = FIXTURES.us.cuadros.filter((c) => Number.isFinite(c.cap) && c.cap > 0).length;
+  chequeo('se dibujan TODAS las empresas con capitalización, no un recorte',
+    chicos.total === conCap, `${chicos.total} dibujados de ${conCap} con cap`);
+  chequeo('los cuadros sin letra siguen siendo tocables', chicos.todosTocables, JSON.stringify(chicos));
+
+  // REGLA 5: cero logos en el mapa. Ni <img>, ni background-image.
+  const imgs = await p.evaluate(() => {
+    const cont = document.getElementById('lienzo') || document.body;
+    const conFondo = [...cont.querySelectorAll('*')].filter((e) => /url\(/.test(getComputedStyle(e).backgroundImage || ''));
+    return { imgs: cont.querySelectorAll('img').length, conFondo: conFondo.length };
+  });
+  chequeo('cero logos en el mapa: ni <img> ni background-image',
+    imgs.imgs === 0 && imgs.conFondo === 0, JSON.stringify(imgs));
+
+  // NINGUNA etiqueta cortada a mitad de palabra.
+  const cortadas = await p.evaluate(() => {
+    const malas = [];
+    for (const el of document.querySelectorAll('.cabecera')) {
+      const t = el.textContent.trim();
+      if (!t) continue;
+      if (el.scrollWidth > el.clientWidth + 1) malas.push(t + ' (se desborda)');
+      const full = el.getAttribute('title') || '';
+      if (t && full && !full.startsWith(t) && !/\.$/.test(t)) malas.push(t + ' ≠ ' + full);
+    }
+    return malas;
+  });
+  chequeo('ninguna cabecera queda cortada a mitad de palabra', cortadas.length === 0, cortadas.join(' | '));
+
+  // El chip tiene que hablar del DATO: la tabla termina el viernes.
+  const chipUs = await p.locator('#chip').innerText();
+  chequeo('el chip dice el cierre que se está viendo, no el que el calendario espera',
+    /cierre del viernes/.test(chipUs), chipUs);
+
+  // Y el mapa NO está vacío aunque falte el cierre de hoy: 1D se calcula
+  // sobre lo que HAY —viernes contra jueves—, no sobre lo que el calendario
+  // dice que debería haber.
+  const pintados = await p.evaluate(() => {
+    const vals = [...document.querySelectorAll('.cuadro:not(.resto) .val')].map((e) => e.textContent.trim());
+    return { total: vals.length, conPct: vals.filter((v) => /%$/.test(v)).length, sinDato: vals.filter((v) => v === '—').length };
+  });
+  chequeo('con la tabla al viernes, 1D se pinta igual (último cierre vs el anterior)',
+    pintados.conPct >= 15 && pintados.sinDato === 0, JSON.stringify(pintados));
+
+  // TAP REAL en la cabecera → abre el sector
   const pedidosAntes = pedidosApi;
-  await p.locator('.cuadro').first().tap();
+  await p.locator('.cabecera').first().tap();
   await p.waitForSelector('.volver');
-  chequeo('un tap en un sector entra a sus nombres', (await p.locator('.volver').count()) === 1);
+  chequeo('un tap en la cabecera de sector abre ese sector', (await p.locator('.volver').count()) === 1);
   chequeo('entrar a un sector es estado en la URL', p.url().includes('sector='));
 
   // TAP REAL en un nombre → hoja
@@ -207,12 +332,17 @@ try {
   const hoja = await p.locator('#hojaCuerpo').innerText();
   chequeo('un tap en un nombre abre la hoja', hoja.length > 20);
   chequeo('la hoja declara la fuente de la capitalización', /fuente de la cap/i.test(hoja));
+  // Regla 5: en la hoja, iniciales en mono — nunca un hueco ni un ícono roto.
+  chequeo('la hoja lleva las iniciales del ticker, no un logo',
+    (await p.locator('.hoja .iniciales').count()) === 1
+    && (await p.locator('.hoja img').count()) === 0,
+    (await p.locator('.hoja .iniciales').first().textContent().catch(() => '')));
   chequeo('la hoja lleva el % con su etiqueta de periodo', (await p.locator('.hoja .qd-pct-per').count()) > 0);
   chequeo('el toggle no volvió a pedir el mapa', pedidosApi === pedidosAntes, `${pedidosApi - pedidosAntes} peticiones nuevas`);
 
   await p.locator('#cerrar').tap();
   await p.locator('.volver').tap();
-  await p.waitForSelector('.cuadro');
+  await p.waitForSelector('.cabecera');
 
   // El toggle cambia el periodo SIN pedir nada
   const antesToggle = pedidosApi;
@@ -239,6 +369,41 @@ try {
   const femsa = await p.locator('#hojaCuerpo').innerText();
   chequeo('FEMSA sale gris CON su motivo, no gris a secas', /sin desglose/.test(femsa));
 
+  // ── EL MAPA ROTO: QUE SE VEA ROTO, Y QUE EL CHIP SE CALLE ──────────
+  // Con la consulta reventada el mapa salió gris en el teléfono y el chip
+  // SIGUIÓ diciendo "cierre del lunes": un día que el calendario suponía y
+  // que ningún dato respaldaba. Caer al texto del reloj era el mismo pecado
+  // por la puerta de atrás.
+  await fetch(`${BASE}/__romper?v=1`);
+  await p.goto(`${BASE}/mercado?mapa=us&periodo=1D`, { waitUntil: 'networkidle' });
+  await p.waitForTimeout(150);
+  const roto = await p.evaluate(() => ({
+    error: (document.querySelector('.aviso[data-error="1"]') || {}).textContent || '',
+    chip: (document.getElementById('chip') || {}).textContent || '',
+    titulo: (document.getElementById('chip') || {}).title || '',
+  }));
+  chequeo('una lectura que falla se reporta como ROTA, no como "sin datos"',
+    /no se pudieron leer/.test(roto.error), roto.error.trim().slice(0, 60));
+  chequeo('y el mensaje nombra la tabla y el error de Postgres',
+    /mercado_precios_us/.test(roto.error) && /filter/.test(roto.error));
+  chequeo('sin dato, el chip NO nombra un día que nada respalda',
+    !/cierre del/.test(roto.chip), roto.chip.trim());
+  chequeo('y el chip dice por qué no lo nombra', /no viajó/.test(roto.titulo), roto.titulo);
+
+  // ── UN MAPA GRIS POR FALTA DE CORRIDA SE EXPLICA SOLO ─────────────
+  await fetch(`${BASE}/__sin-auditar?v=1`);
+  await p.goto(`${BASE}/mercado?mapa=us&periodo=1D`, { waitUntil: 'networkidle' });
+  await p.waitForTimeout(150);
+  const aviso = await p.evaluate(() => {
+    const e = document.getElementById('aviso');
+    return { visible: !!e && getComputedStyle(e).display !== 'none', txt: e ? e.textContent : '' };
+  });
+  chequeo('un mapa sin auditar lo DICE, no se hace el gris misterioso',
+    aviso.visible && /no está auditada todavía/.test(aviso.txt), aviso.txt.slice(0, 70));
+  chequeo('y el aviso dice exactamente qué correr', /job=universo/.test(aviso.txt));
+  await fetch(`${BASE}/__sin-auditar?v=0`);
+
+  await fetch(`${BASE}/__romper?v=0`);
   await p.goto(`${BASE}/mercado?mapa=us&periodo=1D`, { waitUntil: 'networkidle' });
   await p.waitForSelector('.cuadro');
   await p.screenshot({ path: join(OUT, 'mercado-390.png') });
@@ -257,6 +422,7 @@ try {
   // ══════════ ESCRITORIO 1440 px, con HOVER ══════════
   console.log('\n── 1440 × 900, puntero fino ──');
   const esc = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await esc.addInitScript(RELOJ_FIJO);
   const d = await esc.newPage();
   await d.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
   await d.waitForSelector('.cuadro');
@@ -271,8 +437,8 @@ try {
   const tipTxt = await d.locator('#tip').innerText();
   chequeo('el tooltip también lleva la etiqueta de periodo', (await d.locator('#tip .qd-pct-per').count()) > 0, tipTxt.replace(/\n/g, ' '));
 
-  await d.locator('.cuadro').first().click();
-  await d.waitForSelector('.volver');
+  // En escritorio el primer nivel también son empresas: un clic en un cuadro
+  // abre su hoja directamente; el sector se abre desde la cabecera.
   await d.locator('.cuadro').first().click();
   await d.waitForSelector('.hoja[data-abierta="1"]');
   // La hoja entra con una transición de 180 ms: medirla antes de que termine

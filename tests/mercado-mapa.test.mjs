@@ -13,6 +13,7 @@ import {
   empaquetaSerie, armaMapaUs, armaMapaMx, resumenFaltantes, CIERRES_RECIENTES, MOTIVOS,
 } from '../api/_lib/mercado-mapa.js';
 import { recorteMapa } from '../api/_lib/mercado-r0.js';
+import { cierreQueSePinta } from '../api/_lib/mercado-precios.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const req = createRequire(import.meta.url);
@@ -213,4 +214,193 @@ test('con las entradas completas, mapa y censo dan el MISMO veredicto', () => {
   const sinEllas = evaluaG2({ ...base, periodos: [], cierres_captura: [] });
   assert.equal(sinEllas.detalle[0].estado, 'gris_punteado');
   assert.equal(sinEllas.detalle[0].verificacion.por_referencia[0].error_pct, 8);
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// LO QUE EL TELÉFONO CORRIGIÓ
+//
+// Tres cosas que sólo se vieron con el mapa en la mano:
+//   1. Con la tabla al viernes y el cron sin correr, el mapa salía vacío.
+//   2. Abrir en sectores: un mapa de mercado sin una sola empresa no es un
+//      mapa de mercado.
+//   3. "omunicacione" — etiquetas cortadas a mitad de palabra.
+// ═══════════════════════════════════════════════════════════════════
+
+test('1D se calcula sobre lo que HAY: viernes contra jueves, sin exigir hoy', () => {
+  // Tabla que termina el viernes 18; se consulta el lunes 21 por la tarde.
+  const filas = serieLarga();
+  const p = empaquetaSerie(filas, { ahora: new Date('2026-09-21T23:00:00Z') });
+  const r = QD.qdPeriodChange(p.serie, '1D');
+  assert.ok(Number.isFinite(r.pct), 'el 1D tiene que salir aunque falte el cierre del lunes');
+  assert.equal(r.motivo, null);
+  // Y el ancla es el penúltimo cierre GUARDADO, no "ayer" del calendario.
+  assert.equal(r.refValue, p.serie[p.serie.length - 2].c);
+});
+
+// ── EL MAPA DIBUJA TODAS. Sin "+N más" ─────────────────────────────────
+//
+// Las tres pruebas que había acá fijaban el agregado, y una de ellas fijaba
+// como CORRECTO justo lo que el teléfono encontró mal: un sector con
+// `visibles.length === 0` y `resto.pct === 100`. Una prueba puede consagrar
+// un bug igual de bien que prevenirlo; ésta lo consagró durante un día.
+test('agrupaPorSector devuelve TODAS las empresas, no un recorte', () => {
+  const cuadros = [];
+  for (let i = 0; i < 40; i++) {
+    cuadros.push({ symbol: 'S' + i, sector: ['XLK', 'XLF', 'XLV'][i % 3], cap: (40 - i) * 1e9 });
+  }
+  const { grupos, empresas } = TM.agrupaPorSector(cuadros);
+  assert.equal(empresas, 40, 'las 40, no las 30 más grandes');
+  assert.equal(grupos.reduce((a, g) => a + g.items.length, 0), 40);
+  for (const g of grupos) {
+    assert.ok(g.items.length > 0, `${g.sector} sin una sola empresa`);
+    assert.ok(g.items[0].cap >= g.items[g.items.length - 1].cap, 'ordenadas por cap');
+    // El área del sector sigue siendo la suma de sus empresas.
+    assert.equal(g.cap_total, g.items.reduce((a, c) => a + c.cap, 0));
+  }
+});
+
+test('NINGÚN sector puede quedar sin empresas: era el "+55 más · 100%"', () => {
+  const cuadros = [
+    { symbol: 'A', sector: 'XLK', cap: 1000 },
+    { symbol: 'B', sector: 'XLF', cap: 1 },   // diminuta, antes caía en el resto
+  ];
+  const { grupos } = TM.agrupaPorSector(cuadros);
+  const fin = grupos.find((g) => g.sector === 'XLF');
+  assert.equal(fin.items.length, 1, 'la más chica del mapa igual es un cuadro');
+  assert.equal(fin.items[0].symbol, 'B');
+});
+
+test('una cap no verificada no entra al mapa: no se le puede dar tamaño', () => {
+  const { grupos, empresas } = TM.agrupaPorSector([
+    { symbol: 'A', sector: 'XLK', cap: 100 },
+    { symbol: 'TSM', sector: 'XLK', cap: null },   // gris punteado
+  ]);
+  assert.equal(empresas, 1);
+  assert.equal(grupos[0].items.length, 1);
+});
+
+// ── EL TEXTO, SÓLO SI CABE ─────────────────────────────────────────────
+test('un cuadro de 3px va sin letra, no con media palabra', () => {
+  const e = TM.etiquetaCuadro(3, 3, { ticker: 'NVDA', pct: '+1.2%' });
+  assert.equal(e.ticker, null);
+  assert.equal(e.pct, null);
+});
+
+test('el ticker entra a ~28px con la letra más chica de la escalera', () => {
+  // La escalera es lo que hace que la mayor de un sector apretado igual
+  // aparezca con nombre: con un solo tamaño se iba sin letra por 2px.
+  const e = TM.etiquetaCuadro(28, 11, { ticker: 'NVDA', pct: '+1.2%', fontPx: 13, fontMin: 8 });
+  assert.equal(e.ticker, 'NVDA');
+  assert.equal(e.pct, null, 'no hay alto para la segunda línea');
+  assert.ok(e.font <= 13 && e.font >= 8);
+});
+
+test('el % sólo aparece cuando cabe la segunda línea', () => {
+  const chico = TM.etiquetaCuadro(60, 14, { ticker: 'NVDA', pct: '+1.2%', fontPx: 13 });
+  assert.equal(chico.ticker, 'NVDA');
+  assert.equal(chico.pct, null);
+  const grande = TM.etiquetaCuadro(60, 40, { ticker: 'NVDA', pct: '+1.2%', fontPx: 13 });
+  assert.equal(grande.pct, '+1.2%');
+});
+
+test('el texto NUNCA se recorta: o entra entero o no va', () => {
+  // Un ticker largo en un cuadro angosto se va sin letra; jamás "GOOG…".
+  for (const w of [10, 16, 22, 28, 34, 50, 80]) {
+    const e = TM.etiquetaCuadro(w, 30, { ticker: 'GOOGL', pct: '+1.0%', fontPx: 13, fontMin: 8 });
+    assert.ok(e.ticker === null || e.ticker === 'GOOGL', `"${e.ticker}" a ${w}px`);
+  }
+});
+
+test('ETIQUETAS: si no cabe entera, abreviatura; nunca cortada a la mitad', () => {
+  const cand = TM.candidatosSector('Comunicaciones');
+  assert.equal(TM.etiquetaQueCabe(cand, 200, 13), 'Comunicaciones');
+  assert.equal(TM.etiquetaQueCabe(cand, 90, 13), 'Com.');
+  // Y si ni la abreviatura cabe, NADA — mejor un cuadro sin texto que
+  // "omunicacione", que es lo que el teléfono mostraba.
+  assert.equal(TM.etiquetaQueCabe(cand, 20, 13), null);
+  for (const n of ['Industriales', 'Materiales', 'Consumo discrecional']) {
+    const e = TM.etiquetaQueCabe(TM.candidatosSector(n), 80, 13);
+    assert.ok(e === null || n.startsWith(e) || /\.$/.test(e), `"${e}" no es ni el nombre ni una abreviatura de "${n}"`);
+  }
+});
+
+test('ETIQUETAS: toda abreviatura de sector es más corta que su nombre', () => {
+  for (const [nombre, abrev] of Object.entries(TM.ABREV_SECTOR)) {
+    assert.ok(abrev.length <= nombre.length, `${nombre} → ${abrev}`);
+    assert.ok(abrev.length <= 12, `${abrev} sigue siendo largo para un cuadro`);
+  }
+});
+
+// ── EL CIERRE QUE SE PINTA, no el máximo ────────────────────────────────
+// El chip dijo "cierre del martes" un martes a las 15:54 con la cosecha sin
+// correr. La causa no era el texto: era que `ultimo_cierre` se sacaba con un
+// max() sobre los 300 cuadros.
+test('el rótulo del cierre es el que usa la mayoría, no el más nuevo', () => {
+  // 299 al lunes, 1 al martes: lo que se está viendo es el lunes.
+  const cuadros = Array.from({ length: 300 }, (_, i) => ({ fecha_precio: i === 0 ? '2026-09-22' : '2026-09-21' }));
+  const c = cierreQueSePinta(cuadros);
+  assert.equal(c.fecha, '2026-09-21', 'un disidente no arrastra el rótulo');
+  assert.equal(c.cuadros, 299);
+  assert.ok(c.concuerdan);
+});
+
+test('si el mapa mezcla dos cierres de verdad, NO rotula ninguno y dice por qué', () => {
+  const cuadros = [
+    ...Array.from({ length: 5 }, () => ({ fecha_precio: '2026-09-22' })),
+    ...Array.from({ length: 5 }, () => ({ fecha_precio: '2026-09-21' })),
+  ];
+  const c = cierreQueSePinta(cuadros);
+  assert.equal(c.fecha, null, 'sin mayoría abrumadora no se inventa un rótulo');
+  assert.equal(c.concuerdan, false);
+  assert.match(c.motivo, /mezcla 2 cierres/);
+  // Y el reparto viaja, para que la pantalla lo pueda mostrar en vez de callarse.
+  assert.deepEqual(c.reparto, { '2026-09-22': 5, '2026-09-21': 5 });
+});
+
+test('sin ninguna fecha, el cierre se declara ausente con su motivo', () => {
+  const c = cierreQueSePinta([{ symbol: 'X' }, {}]);
+  assert.equal(c.fecha, null);
+  assert.match(c.motivo, /ningún cuadro/);
+});
+
+// ── LA CAP DE LOS ADR, en el mapa ──────────────────────────────────────
+test('mapa US: una cap que no se pudo confirmar NO dimensiona el cuadro', () => {
+  // TSM con la cap en su moneda de reporte: hay número, y se decide no creerle.
+  const { cuadros } = armaMapaUs({
+    universo: [{ symbol: 'TSM', nombre: 'TSMC', sector_etf: 'XLK', market_cap: 32e12, cap_moneda: 'TWD', acciones_millones: 5190 }],
+    precios: [
+      { symbol: 'TSM', fecha: '2026-09-18', cierre: 200, cierre_ajustado: 200 },
+      { symbol: 'TSM', fecha: '2026-09-21', cierre: 200, cierre_ajustado: 200 },
+    ],
+    ahora: new Date('2026-09-22T20:00:00Z'),
+  });
+  const tsm = cuadros[0];
+  assert.equal(tsm.cap, null, 'sin tamaño antes que con un tamaño que miente');
+  assert.equal(tsm.estado, 'gris_punteado');
+  assert.match(tsm.motivo, /TWD/);
+});
+
+test('mapa US: una cap que sí concuerda dimensiona normalmente', () => {
+  const { cuadros } = armaMapaUs({
+    universo: [{ symbol: 'NVDA', nombre: 'NVIDIA', sector_etf: 'XLK', market_cap: 4.0e12, cap_moneda: 'USD', acciones_millones: 24400 }],
+    precios: [
+      { symbol: 'NVDA', fecha: '2026-09-18', cierre: 163.93, cierre_ajustado: 163.93 },
+      { symbol: 'NVDA', fecha: '2026-09-21', cierre: 163.93, cierre_ajustado: 163.93 },
+    ],
+    ahora: new Date('2026-09-22T20:00:00Z'),
+  });
+  assert.equal(cuadros[0].estado, 'verificada');
+  assert.ok(cuadros[0].cap > 0);
+});
+
+test('un símbolo sin serie NO se reporta dos veces por la misma causa', () => {
+  // Sin precio no hay con qué contrastar la cap, pero eso ya lo dice
+  // `no_hay_serie`. Dos motivos para una causa manda a arreglar lo que no
+  // está roto.
+  const { faltantes } = armaMapaUs({
+    universo: [{ symbol: 'X', nombre: 'X', sector_etf: 'XLK', market_cap: 1e9, cap_moneda: 'USD', acciones_millones: 10 }],
+    precios: [],
+    ahora: new Date('2026-09-22T20:00:00Z'),
+  });
+  assert.deepEqual(resumenFaltantes(faltantes).por_motivo, { no_hay_serie: 1 });
 });

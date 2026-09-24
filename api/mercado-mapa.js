@@ -18,20 +18,20 @@ import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
 import REFERENCIAS_CAP from './_lib/mercado-cap-referencia.json' with { type: 'json' };
 import { CRITERIOS } from './_lib/mercado-fase0.js';
 import {
-  evaluaG2, SQL_G2, VENTANA_DIAS_G2, rangoDeCapturas, recorteMapa,
+  evaluaG2, SQL_G2, VENTANA_DIAS_G2, rangoDeCapturas,
 } from './_lib/mercado-r0.js';
 import { frescuraPrecios } from './_lib/bmv-frescura.js';
 import { armaMapaUs, armaMapaMx, resumenFaltantes, CIERRES_RECIENTES } from './_lib/mercado-mapa.js';
-import { MIN_PUNTOS_SERIE } from './_lib/mercado-precios.js';
+import { MIN_PUNTOS_SERIE, cierreQueSePinta } from './_lib/mercado-precios.js';
 
 export const maxDuration = 60;
 
-// Cuántos cuadros pinta el treemap. El resto viaja como "+N más = X%".
-const TOP_MAPA = 300;
-// Cuánta historia hace falta: el ancla YTD es el último cierre del año
-// pasado, así que la ventana arranca en el 1-dic anterior con margen.
-function desdeParaYtd(ahora) {
-  return `${ahora.getUTCFullYear() - 1}-12-01`;
+// EL MAPA PINTA TODAS. No hay recorte ni "+N más": un sector cuyas empresas
+// no entraban al top salía como "+55 más · 100%" —un sector entero sin una
+// sola empresa— y el agregado había dejado de resumir para tapar.
+/** El 1 de enero del año en curso: todo lo anterior es "año pasado". */
+function inicioDeAnio(ahora) {
+  return `${ahora.getUTCFullYear()}-01-01`;
 }
 
 // El edge sirve la misma foto mientras el cron no haya dejado una nueva. Los
@@ -39,40 +39,119 @@ function desdeParaYtd(ahora) {
 // caché no envejecen nada y sacan al origen de la ruta del teléfono.
 const CACHE = 'public, s-maxage=600, stale-while-revalidate=3600';
 
+// LAS CONSULTAS SALEN A UNA CONSTANTE EXPORTADA a propósito: mientras
+// vivieron incrustadas acá, NINGÚN test las tocaba —los tests mockean `sql()`—
+// y el único que las parseaba era Postgres en producción. Así se coló un
+// `filter` sobre `row_number()`, que ni siquiera es un error de lógica: es un
+// error de sintaxis, el más barato de atrapar y el que más caro salió.
+// `tests/mercado-sql.test.mjs` las prepara contra un Postgres de verdad.
+export const SQL_MAPA_US = {
+  universo:
+      `select symbol, nombre, sector_etf, market_cap, cap_fuente, cap_actualizado, cap_moneda, acciones_millones
+         from mercado_universo_us
+        where sector_etf is not null and market_cap is not null`,
+  // UNA consulta, y acotada a lo que el navegador necesita: los últimos N
+  // cierres de cada símbolo más su ancla YTD. Traer la ventana entera desde
+  // diciembre eran ~60,000 filas por petición — el orden de magnitud en el
+  // que una lectura deja de ser barata y empieza a fallar.
+  precios:
+      `with top as (
+         select symbol from mercado_universo_us
+          where sector_etf is not null and market_cap is not null
+       ), r as (
+         select p.symbol, p.fecha, p.cierre, p.cierre_ajustado,
+                p.fecha < $1::date as previa,
+                row_number() over (partition by p.symbol order by p.fecha desc) recientes,
+                -- El ancla YTD NO se saca con \`filter\`: \`FILTER\` sólo existe en
+                -- agregados, y sobre \`row_number()\` Postgres ni siquiera llega a
+                -- planear — truena en el parser ("syntax error at or near filter").
+                -- Se consigue ordenando: las filas previas al año primero, y dentro
+                -- de ésas la más reciente. El \`and previa\` de abajo es el que evita
+                -- inventar un ancla para un símbolo que no tiene historia del año
+                -- pasado: sin él, la fila 1 sería un cierre de ESTE año disfrazado
+                -- de ancla, y el YTD saldría corto con etiqueta larga.
+                row_number() over (partition by p.symbol
+                                   order by (p.fecha < $1::date) desc, p.fecha desc) ancla
+           from mercado_precios_us p join top using (symbol)
+       )
+       select symbol, fecha::text as fecha, cierre, cierre_ajustado
+         from r
+        where recientes <= $2 or (ancla = 1 and previa)
+        order by symbol, fecha`,
+};
+
 async function mapaUs(ahora) {
-  const desde = desdeParaYtd(ahora);
+  const anio = inicioDeAnio(ahora);
+  const errores = {};
+  // NO se traga el error. Un `catch(() => [])` acá convertía una consulta que
+  // falló en "300 cuadros sin serie": el mapa culpaba a los datos de un
+  // problema de lectura, y el pie lo reportaba como si faltara la cosecha.
+  const leer = async (nombre, q, params = []) => {
+    try { return await sql(q, params); } catch (e) { errores[nombre] = String((e && e.message) || e); return []; }
+  };
+
   const [universo, precios] = await Promise.all([
-    sql(`select symbol, nombre, sector_etf, market_cap, cap_fuente, cap_actualizado
-           from mercado_universo_us
-          where sector_etf is not null and market_cap is not null`).catch(() => []),
-    // UNA consulta para todas las series, acotada a los nombres que se van a
-    // pintar y a la ventana que YTD necesita.
-    sql(`select p.symbol, p.fecha::text as fecha, p.cierre, p.cierre_ajustado
-           from mercado_precios_us p
-           join (select symbol from mercado_universo_us
-                  where sector_etf is not null and market_cap is not null
-                  order by market_cap desc limit $1) top using (symbol)
-          where p.fecha >= $2::date
-          order by p.symbol, p.fecha`, [TOP_MAPA, desde]).catch(() => []),
+    leer('mercado_universo_us', SQL_MAPA_US.universo),
+    leer('mercado_precios_us', SQL_MAPA_US.precios,
+      [anio, CIERRES_RECIENTES + 1]),
   ]);
 
+  // Fail closed y EN VOZ ALTA: un mapa que no pudo leer sus datos no es un
+  // mapa vacío, es un mapa roto, y decir lo primero manda a buscar el
+  // problema al lugar equivocado.
+  if (Object.keys(errores).length) {
+    return { mapa: 'us', cuadros: [], mas: null, error: 'no se pudieron leer los datos del mapa', detalle: errores };
+  }
   if (!universo.length) {
     return {
       mapa: 'us', cuadros: [], mas: null,
       error: 'mercado_universo_us está vacía: corré /api/mercado-r0?job=universo',
     };
   }
+  if (!precios.length) {
+    return {
+      mapa: 'us', cuadros: [], mas: null,
+      error: 'mercado_precios_us no tiene series para los nombres del mapa: corré /api/mercado-precios?job=us hasta que `completo` sea true',
+    };
+  }
 
-  const recorte = recorteMapa(universo, TOP_MAPA);
-  const { cuadros, faltantes } = armaMapaUs({ universo, precios, recorte, ahora });
+  const { cuadros, faltantes } = armaMapaUs({ universo, precios, ahora });
+
+  // EL CIERRE QUE SE ESTÁ PINTANDO, que no es el que el calendario dice que
+  // debería haber NI el más nuevo que aparezca. Un lunes a las 17:00, con la
+  // cosecha del día aún sin correr, lo que se mira es el cierre del viernes.
+  //
+  // Era un `max()` y por eso el chip llegó a decir "cierre del martes" un
+  // martes a las 15:54: basta UN símbolo con la vela de hoy para arrastrar el
+  // rótulo mientras los otros 299 calculan su 1D contra el lunes.
+  const cierre = cierreQueSePinta(cuadros);
+
+  // UN MAPA GRIS PORQUE FALTA UNA CORRIDA NO ES UN MAPA ROTO, y tiene que
+  // poder decirlo. `cap_moneda` y `acciones_millones` son columnas nuevas: el
+  // día que esto se despliega están vacías para todos, así que TODOS los
+  // cuadros salen grises con razón. Sin este aviso, la pantalla diría "553
+  // cuadros sin dato completo" y mandaría a buscar 553 bugs donde lo que
+  // falta es correr ?job=universo. Es el mismo pecado del `catch(() => [])`:
+  // un estado del sistema disfrazado de dato que falta.
+  const sinAuditar = cuadros.filter((c) => c.estado === 'gris_punteado' && !c.cap_auditable).length;
+  const auditoria = {
+    total: cuadros.length,
+    verificadas: cuadros.filter((c) => c.estado === 'verificada').length,
+    sin_auditar: sinAuditar,
+    hallazgos: cuadros.filter((c) => c.estado === 'gris_punteado' && c.cap_auditable).length,
+    aviso: sinAuditar > cuadros.length * 0.5
+      ? `la capitalización no está auditada todavía en ${sinAuditar} de ${cuadros.length} emisoras: corré /api/mercado-r0?job=universo hasta que ?job=auditoria-cap reporte sin_moneda 0`
+      : null,
+  };
 
   return {
     mapa: 'us',
+    auditoria,
     bolsa: 'us',
+    ultimo_cierre: cierre.fecha,
+    cierre_detalle: cierre,
     cuadros,
-    // El "+N más = X%" NO es decoración: sin él, un mapa de 300 se lee como
-    // si fuera el mercado entero. El % se mide sobre los que quedaron fuera.
-    mas: recorte.resto,
+    mas: null,   // se pintan todas: no hay resto que resumir.
     fuente: {
       cuadros: 'neon:mercado_universo_us (sector y cap)',
       series: 'neon:mercado_precios_us (cierre y cierre ajustado, cosecha diaria)',
@@ -83,7 +162,7 @@ async function mapaUs(ahora) {
 }
 
 async function mapaMx(ahora) {
-  const desde = desdeParaYtd(ahora);
+  const desde = `${ahora.getUTCFullYear() - 1}-12-01`;
   const rango = rangoDeCapturas(REFERENCIAS_CAP);
   const [acciones, ultimos, volumenes, corteFilas, periodos, cierresCaptura, series] = await Promise.all([
     sql(SQL_G2.acciones).catch(() => []),
@@ -117,10 +196,13 @@ async function mapaMx(ahora) {
   });
 
   const { cuadros, faltantes } = armaMapaMx({ detalleG2: g2.detalle, precios: series, ahora });
+  const cierre = cierreQueSePinta(cuadros);
 
   return {
     mapa: 'mx',
     bolsa: 'mx',
+    ultimo_cierre: cierre.fecha,
+    cierre_detalle: cierre,
     cuadros,
     mas: null,   // México son 30 emisoras: se pintan todas, no hay recorte.
     fuente: {

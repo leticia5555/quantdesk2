@@ -24,6 +24,7 @@
 
 import { anclaYtd } from './mercado-fase0.js';
 import { serieDesdeFilas, cubreYtd } from './mercado-precios.js';
+import { veredictoCapUs } from './mercado-cap-us.js';
 
 const num = (v) => {
   if (v === null || v === undefined || v === '') return null;
@@ -40,6 +41,9 @@ export const MOTIVOS = {
   SERIE_CORTA: 'serie_corta',
   SIN_ANCLA_YTD: 'sin_ancla_ytd',
   SIN_CAP: 'sin_capitalizacion',
+  // La cap existe pero no se pudo confirmar contra una segunda fuente. NO es
+  // lo mismo que SIN_CAP: acá hay número y se decidió no creerle.
+  CAP_SIN_VERIFICAR: 'cap_sin_verificar',
 };
 
 /**
@@ -100,13 +104,40 @@ export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new D
     else if (paq.serie.length < 2) faltantes.push({ symbol: sym, motivo: MOTIVOS.SERIE_CORTA });
     else if (!paq.ytd) faltantes.push({ symbol: sym, motivo: MOTIVOS.SIN_ANCLA_YTD, detalle: paq.ytd_motivo });
 
+    // LA CAP SÓLO SE PINTA SI ESTÁ VERIFICADA, igual que en México. Un ADR
+    // con la cap en su moneda de reporte se guardó como si fueran dólares y
+    // salía como el cuadro más grande de la pantalla: mentía de tamaño, que
+    // es la mentira que más se nota y la que nadie puede corregir a ojo.
+    //
+    // El contraste es contra `acciones × precio` con el cierre que ya
+    // tenemos. Si no concuerdan dentro del 5%, gris punteado con su motivo.
+    const cap = veredictoCapUs({
+      symbol: sym,
+      declarada: num(u.market_cap) != null ? num(u.market_cap) / 1e6 : null,
+      moneda: u.cap_moneda || null,
+      acciones: num(u.acciones_millones),
+      precio_usd: paq.precio,
+    });
+    // Sólo se reporta como problema DE CAP cuando hay precio: sin serie no
+    // hay con qué contrastar, y eso ya está dicho arriba. Dos motivos para
+    // una sola causa infla el conteo y manda a arreglar lo que no está roto.
+    if (cap.estado !== 'verificada' && paq.precio != null) {
+      faltantes.push({ symbol: sym, motivo: MOTIVOS.CAP_SIN_VERIFICAR, detalle: cap.motivo });
+    }
+
     cuadros.push({
       symbol: sym,
       nombre: u.nombre || sym,
       sector: u.sector_etf || null,
-      cap: num(u.market_cap),
-      cap_fuente: u.cap_fuente || null,
+      cap: cap.estado === 'verificada' ? cap.cap_usd : null,
+      cap_fuente: cap.estado === 'verificada' ? (u.cap_fuente || null) : null,
       cap_medida_en: u.cap_actualizado ? String(u.cap_actualizado).slice(0, 10) : null,
+      estado: cap.estado,
+      motivo: cap.motivo,
+      cap_auditable: cap.auditable === true,
+      cap_moneda: cap.moneda,
+      cap_error_pct: cap.error_pct,
+      cap_multiplo: cap.multiplo,
       ...paq,
     });
   }
