@@ -493,7 +493,17 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
       ejecucion.freno = candado.error;
     } else if (mandaOrdenes()) {
       ejecucion.enviadas = await enviarOrdenes({
-        ordenes, creds, runDate: base.run_date, agentId: agent.id, runTag: 'f', now,
+        ordenes, creds, runDate: base.run_date, agentId: agent.id, now,
+        // ── EL TAG DECÍA SIEMPRE 'f' ─────────────────────────────────
+        // 'f' es "revisión de piso" en el vocabulario del contrato viejo, y acá
+        // estaba escrito a mano: TODAS las órdenes del contrato objetivo salían
+        // estampadas como revisión de piso, vinieran de una ronda fija, de la
+        // matutina o de un disparador. Con el minuto adentro el tag ya no
+        // decide la unicidad del id — pero sí es lo que uno lee para saber qué
+        // despertó una orden, y decir siempre lo mismo es no decir nada.
+        runTag: evento
+          ? (evento.type === 'post_earnings_morning' ? 'm' : 'w')
+          : 'd',
       });
     } else {
       // `objetivo_dry`: se calculó todo y NO se mandó nada. Es el escalón que

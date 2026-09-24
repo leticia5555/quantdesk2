@@ -96,7 +96,7 @@ import { loadUniverse } from './_lib/arena-universe.js';
 // que el validador hace cumplir. Dos fuentes para el mismo tope es cómo el
 // prompt termina prometiendo algo que el harness rechaza.
 import { RAILS, RESCATE } from './_lib/arena-rails.js';
-import { usaObjetivo, contratoActivo, permiteCortos } from './_lib/arena-objetivo-vivo.js';
+import { usaObjetivo, contratoActivo, permiteCortos, minutoDeCorrida } from './_lib/arena-objetivo-vivo.js';
 import { runAgenteObjetivo } from './arena-shadow.js';
 // B2: EL TABLERO — lo que los siete miran, idéntico, en el prefijo cacheado.
 import { buildBoard, renderBoard, BOARD_TOKEN_HARD_CAP, SECTOR_ETFS } from './_lib/arena-board.js';
@@ -1536,11 +1536,24 @@ function pisosDesdeAperturas(positions, seriesBySymbol, opens) {
 // ella no hay forma de probar DE PUNTA A PUNTA que un stop de corto llega al
 // broker como `buy` — y ése es justo el paso donde un literal 'sell' duplicaba
 // el riesgo en vez de cerrarlo.
-export async function submitRiskExits(approved, runDate, creds, enviar = createLimitOrder) {
+// ── EL MISMO ID COLISIONADO, Y ACÁ CUESTA MÁS (2026-09-24) ───────────
+// `arena:<fecha>:<símbolo>:exit` no lleva la corrida, así que un stop sobre el
+// mismo nombre solo puede salir UNA vez por día. Y eso no es un inconveniente:
+// **desarma la escalera de escalamiento.** `escalationFromRiskRows` cuenta los
+// stops catastróficos que NO llenaron para ensanchar la banda en el intento
+// siguiente — y ese intento siguiente reusaba el id, se lo rechazaba Alpaca con
+// un 422, y la banda ensanchada nunca llegaba al broker. Un stop que no llena a
+// la primera no tenía segunda.
+//
+// Mismo arreglo que el camino del objetivo, con el mismo helper para que no
+// vuelvan a divergir. `:exit` se conserva: es lo que impide que un stop
+// determinista y una venta del PM sobre el mismo nombre compartan id.
+export async function submitRiskExits(approved, runDate, creds, enviar = createLimitOrder, now = new Date()) {
   const actions = [];
   let submitted = 0;
+  const minuto = minutoDeCorrida(now);
   for (const a of approved) {
-    const clientOrderId = `arena:${runDate}:${a.symbol}:exit`;
+    const clientOrderId = `arena:${runDate}:${a.symbol}:exit:${minuto}`;
     try {
       // EL LADO SALE DEL PLAN, no de un literal. Estaba escrito 'sell' a mano:
       // con cortos cableados eso mandaba una VENTA para cerrar una posición ya
@@ -1930,7 +1943,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // Análogo del DEATH -20% de la flota validada. No se abre riesgo nuevo en un
   // −20%, así que ni se pega al buffet ni se gasta Anthropic.
   if (risk.stage === 'broadcut') {
-    const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate, creds);
+    const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate, creds, createLimitOrder, now);
     const plan = `CIRCUIT BREAKER — corte amplio. Drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)}); se liquidan ${risk.approved.length} posiciones con marketable limit y se salta el LLM (no se abre riesgo nuevo en un −20%).`;
     await journalInsert({ ...base, account: accountSnapshot, status: 'risk_broad_cut', plan, actions: [...riskActions, ...riskDiscardActions(risk.discarded)], context: { risk: riskContext } });
     // DETIENE al agente (persistente): esta es la ÚNICA fila de la muerte. Las
@@ -1947,7 +1960,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
   // normales que NO deben frenar la red). stage 'none' → no-op (0 exits). ──
   let riskSubmitted = 0;
   if (risk.approved.length || risk.discarded.length) {
-    const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate, creds);
+    const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate, creds, createLimitOrder, now);
     riskSubmitted = submitted;
     // El plan sintético nombra la regla que REALMENTE disparó (un nombre puede
     // caer en más de una; se reporta la más severa que haya en el lote).
@@ -2624,7 +2637,7 @@ export async function runArenaRiskNet({ agent, now = new Date(), caches } = {}) 
     return { status: 'ok_no_exits', agent: agentId, orders: 0, breaker_stage: risk.stage, drawdown: +risk.drawdown.toFixed(4), equity };
   }
 
-  const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate, creds);
+  const { actions: riskActions, submitted } = await submitRiskExits(risk.approved, runDate, creds, createLimitOrder, now);
   const codes = new Set(risk.approved.flatMap((a) => a.reason_codes || []));
   const plan = risk.stage === 'broadcut'
     ? `CIRCUIT BREAKER — corte amplio. Drawdown ${(risk.drawdown * 100).toFixed(1)}% desde el pico de equity (${peak.toFixed(0)}); se liquidan ${risk.approved.length} posiciones con marketable limit.`
