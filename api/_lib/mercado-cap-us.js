@@ -97,15 +97,62 @@ export function razonAdr({ cap_referencia_usd, acciones_millones, precio_usd, to
   };
 }
 
-/** Una referencia manual sirve hasta el fin de su trimestre, como en México. */
+// ── LA VIGENCIA NO APAGA NADA ──────────────────────────────────────────
+// Primera versión de esto: al vencer la referencia, el cuadro se iba a gris. Es
+// la misma trampa que los 14 días de #248 — un reloj que apaga datos buenos
+// solo. Y acá es peor, porque LA RAZÓN DEL ADR ES ESTRUCTURAL: que 1 ADR de TSM
+// equivalga a N ordinarias no cambia porque pase un trimestre. Lo que envejece
+// es la CAP de Yahoo, y la cap de Yahoo no se pinta.
+//
+// Así que vencer significa una sola cosa: hay que recapturar para volver a
+// CONFIRMAR la razón. El mapa sigue dibujando con la razón vigente y la tarea
+// aparece en `referencias_a_recapturar` de /api/cron-status, donde se ve venir.
+//
+// Lo único que SÍ pone gris el cuadro es que la razón cruda deje de parecerse a
+// una proporción plausible: ahí cambió algo de verdad —un split del ADR, un
+// cambio de ratio, una captura mal leída— y el tamaño deja de estar sostenido.
 export function referenciaVigente(ref, hoy = new Date()) {
   if (!ref) return { hay: false };
   const hasta = ref.vigente_hasta ? String(ref.vigente_hasta) : null;
   const dia = hoy instanceof Date ? hoy.toISOString().slice(0, 10) : String(hoy).slice(0, 10);
-  if (!hasta) return { hay: true, vigente: false, motivo: 'la referencia manual no declara hasta cuándo vale' };
+  if (!hasta) {
+    return { hay: true, vigente: false, sin_fecha: true, a_recapturar: true, vigente_hasta: null,
+      motivo: 'la referencia manual no declara hasta cuándo vale: recapturala para ponerle fecha' };
+  }
+  const vigente = dia <= hasta;
   return {
-    hay: true, vigente: dia <= hasta, vigente_hasta: hasta,
-    motivo: dia <= hasta ? null : `la referencia manual venció el ${hasta}: recapturá la cap en Yahoo`,
+    hay: true, vigente, a_recapturar: !vigente, vigente_hasta: hasta,
+    motivo: vigente ? null
+      : `la referencia venció el ${hasta}: recapturá la cap en Yahoo para reconfirmar la razón (el cuadro sigue dibujándose con ella)`,
+  };
+}
+
+/**
+ * Qué hay que recapturar, para /api/cron-status.
+ *
+ * NO lleva `alerta`: una referencia vencida ya no rompe nada, así que no puede
+ * poner en rojo el tablero. Es una tarea pendiente, y confundir una tarea con
+ * una falla es cómo se aprende a ignorar el rojo.
+ */
+export function vigenciaReferenciasUs(registro, hoy = new Date()) {
+  const filas = (registro && registro.referencias) || [];
+  const estado = filas.map((r) => {
+    const v = referenciaVigente(r, hoy);
+    return {
+      clave: String(r.clave || '').toUpperCase(),
+      vigente_hasta: v.vigente_hasta,
+      vigente: v.vigente === true,
+      fuente: r.fuente || null,
+      capturada_en: r.capturada_en || null,
+    };
+  });
+  return {
+    filas: filas.length,
+    vigentes: estado.filter((e) => e.vigente).length,
+    a_recapturar: estado.filter((e) => !e.vigente).map((e) => ({ ...e, mapa: 'us', motivo: 'reconfirmar la razón del ADR' })),
+    detalle: estado,
+    alerta: false,
+    lectura: 'vencer no apaga el cuadro: la razón del ADR es estructural y se sigue usando. Recapturar sólo la reconfirma.',
   };
 }
 
@@ -171,12 +218,6 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
       acciones_millones: entrada.acciones,
       precio_usd: entrada.precio_usd,
     });
-    if (!vig.vigente) {
-      return {
-        ...base, estado: 'gris_punteado', auditable: true, cap_usd: null, error_pct: null, multiplo: null,
-        via: 'referencia_manual', motivo: vig.motivo,
-      };
-    }
     if (r.ok) {
       return {
         ...base, estado: 'verificada', auditable: true,
@@ -186,6 +227,10 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
         fuente: `calc: acciones÷${r.etiqueta}×neon`,
         referencia_fuente: referencia.fuente || null,
         referencia_capturada_en: referencia.capturada_en || null,
+        // Vencida NO es gris: es una tarea. El cuadro se sigue dibujando con la
+        // razón y esto es lo que la hace aparecer en cron-status.
+        referencia_a_recapturar: vig.a_recapturar === true,
+        referencia_vigente_hasta: vig.vigente_hasta,
         motivo: null,
       };
     }

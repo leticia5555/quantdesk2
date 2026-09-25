@@ -145,6 +145,8 @@ export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new D
       cap_fuente: cap.estado === 'verificada' ? (cap.fuente || u.cap_fuente || null) : null,
       cap_via: cap.via || null,
       cap_razon_adr: cap.razon_etiqueta || null,
+      cap_referencia_a_recapturar: cap.referencia_a_recapturar === true,
+      cap_referencia_vigente_hasta: cap.referencia_vigente_hasta || null,
       cap_portada_edgar: cap.fecha_portada || null,
       cap_medida_en: u.cap_actualizado ? String(u.cap_actualizado).slice(0, 10) : null,
       estado: cap.estado,

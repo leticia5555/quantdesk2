@@ -32,6 +32,8 @@ import { sql } from './_lib/db.js';
 import { frescuraPrecios } from './_lib/bmv-frescura.js';
 import { vigenciaDelRegistro, SQL_G2 } from './_lib/mercado-r0.js';
 import REFERENCIAS_CAP from './_lib/mercado-cap-referencia.json' with { type: 'json' };
+import REFERENCIAS_CAP_US from './_lib/mercado-cap-us-referencia.json' with { type: 'json' };
+import { vigenciaReferenciasUs } from './_lib/mercado-cap-us.js';
 
 // Cadencia esperada por job, alineada con vercel.json. `stale_after_h` es el
 // umbral de "algo anda mal": > 2× el intervalo, y para los crons de 1-5
@@ -200,6 +202,14 @@ export default async function handler(req, res) {
       };
     }
 
+    // ── Las referencias de ADR de EE.UU. ────────────────────────────
+    // Distinto de México a propósito: acá vencer NO apaga el cuadro. La razón
+    // del ADR es estructural, así que la referencia vencida sigue sirviendo y
+    // lo único que hace falta es reconfirmarla. Por eso NO entra en `ok`: es
+    // una tarea con fecha, no una falla, y meter tareas en el rojo es cómo se
+    // aprende a ignorar el rojo.
+    const referenciasUs = vigenciaReferenciasUs(REFERENCIAS_CAP_US, new Date(now));
+
     const staleJobs = jobs.filter((j) => j.stale).map((j) => j.job);
     const datosEnAlerta = datos.filter((d) => d.alerta).map((d) => d.tabla);
     return res.status(200).json({
@@ -208,10 +218,14 @@ export default async function handler(req, res) {
       stale: staleJobs,
       datos_en_alerta: datosEnAlerta,
       // Lo que hay que re-capturar a mano, si hay algo. Vacío = nada que hacer.
-      referencias_a_recapturar: (referencias && referencias.a_recapturar) || [],
+      referencias_a_recapturar: [
+        ...((referencias && referencias.a_recapturar) || []),
+        ...referenciasUs.a_recapturar,
+      ],
       jobs,
       datos,
       referencias_cap: referencias,
+      referencias_cap_us: referenciasUs,
       untracked: extra,
     });
   } catch (err) {

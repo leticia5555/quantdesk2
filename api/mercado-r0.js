@@ -968,9 +968,12 @@ async function jobRazonAdr({ ahora, manual }) {
       razon: r.razon ?? null,
       razon_etiqueta: r.etiqueta,
       error_pct: r.error_pct != null ? Number(r.error_pct.toFixed(2)) : null,
-      resuelve: r.ok === true && vig.vigente === true,
+      // Resuelve = la razón sale limpia. Vencida no lo impide: la razón del ADR
+      // es estructural y recapturar sólo la reconfirma.
+      resuelve: r.ok === true,
+      a_recapturar: vig.a_recapturar === true,
       // La cap de referencia NO viaja: sólo el veredicto, como en México.
-      motivo: vig.vigente === false ? vig.motivo : r.motivo,
+      motivo: r.motivo || (vig.a_recapturar ? vig.motivo : null),
       fuente_referencia: ref.fuente || null,
       capturada_en: ref.capturada_en || null,
     };
@@ -983,6 +986,7 @@ async function jobRazonAdr({ ahora, manual }) {
     referencias: refs.size,
     resuelven: detalle.filter((d) => d.resuelve).length,
     no_resuelven: detalle.filter((d) => !d.resuelve).length,
+    a_recapturar: detalle.filter((d) => d.a_recapturar).map((d) => d.symbol),
     sin_fila_en_universo: faltan,
     override_manual: ovr.claves,
     detalle: detalle.sort((a, b) => (a.symbol < b.symbol ? -1 : 1)),

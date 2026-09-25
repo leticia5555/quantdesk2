@@ -1156,9 +1156,9 @@ puede volver a juzgar.
 
 ### 8.2 La referencia manual de los ADR no se pinta
 
-Igual que México: `api/_lib/mercado-cap-us-referencia.json` guarda la cap de
-Yahoo con quién, de dónde y cuándo, vigencia al trimestre — y **nunca viaja al
-render**. Sirve una sola vez, para despejar la razón del ADR:
+`api/_lib/mercado-cap-us-referencia.json` guarda la cap de Yahoo con quién, de
+dónde y cuándo — y **nunca viaja al render**. Sirve una sola vez, para despejar
+la razón del ADR:
 
 ```
 razón_cruda = (acciones × precio) ÷ cap_referencia
@@ -1170,6 +1170,20 @@ razones para redondear: con el factor crudo el resultado sería idéntico a la
 cap de Yahoo —pintar la referencia con otro nombre, clavada en la fecha de
 captura— y si el crudo no se parece a ninguna razón de ADR, lo que está mal es
 otra cosa y la emisora se queda **gris** en vez de recibir un tamaño inventado.
+
+**Vencer no apaga el cuadro.** A diferencia de México, acá la vigencia no es una
+compuerta: la razón del ADR es **estructural** —que 1 ADR equivalga a N
+ordinarias no cambia porque pase un trimestre— y la única cifra que envejece es
+la cap de Yahoo, que no se pinta. Al pasar `vigente_hasta`, la emisora sigue
+dibujándose con su razón y la tarea aparece en `referencias_a_recapturar` de
+`/api/cron-status`, **sin** poner el tablero en rojo: es una tarea con fecha, no
+una falla, y meter tareas en el rojo es cómo se aprende a ignorar el rojo. Un
+reloj que apaga datos buenos solo fue la trampa de los 14 días de #248 y no se
+repite.
+
+Lo único que pone gris el cuadro es que la **razón cruda deje de parecerse** a
+una proporción plausible: ahí cambió algo de verdad —un split del ADR, un cambio
+de ratio, una captura mal leída— y el tamaño deja de estar sostenido.
 
 ### 8.3 Orden de precedencia, y por qué EDGAR entra último
 
