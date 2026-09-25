@@ -1001,6 +1001,124 @@ curl -s -H "Authorization: Bearer $CRON_SECRET" \
 
 ---
 
+## VISTA DE COMPARACIÓN ✅ IMPLEMENTADA (`?vista=comparacion`)
+
+**El veredicto NO-GO de la Fase 2 queda EN PIE. Esto no lo revisa.** No es un
+segundo intento de ganarle al mercado con otra tabla: es otra pregunta.
+
+> ¿Dónde coinciden QuantDesk y Polymarket, y dónde no — sobre todo en la zona
+> de duda (mercado 0.55–0.75), donde ninguno de los dos está seguro?
+
+Y hay algo que NO es, dicho antes de los detalles porque es lo único que puede
+volverla dañina: **no es una señal de apuesta y no calcula retornos.** Ni un
+campo de apuesta, costo, neto o unidades en la respuesta — hay un test que
+recorre todas las claves del JSON y falla si aparece alguno. El disclaimer de
+"no es predicción" se queda.
+
+### Mismo dataset, MISMA predicción, cero re-entrenamiento
+
+La vista corre sobre los mismos mercados que el veredicto (el mismo filtro de
+liquidez congelado, `min_volumen_usd = 500`) y usa **las mismas predicciones
+fuera de muestra por k-fold**: `analiza()` las devuelve en `predicciones` y
+`comparacion()` las consume tal cual.
+
+El porqué no es estético. Un segundo ajuste sobre los mismos datos daría
+números *parecidos pero distintos*, y entonces habría **dos QuantDesk y ninguna
+forma de saber cuál es el que dictaminó NO-GO**. La columna de la tabla tiene
+que ser, número por número, la que produjo el veredicto.
+
+Hay tres tests que lo cuidan:
+
+- `analiza()` devuelve una predicción por evento, y la tabla de la comparación
+  coincide con esa lista número por número.
+- Si a `comparacion()` se le pasan predicciones ajenas (0.999 en todas), muestra
+  0.999: consume el argumento, no vuelve a ajustar por su cuenta.
+- Un lint sobre el fuente del endpoint: `analiza(` se llama **una sola vez**, y
+  la comparación recibe `resultado.predicciones`.
+
+### Definiciones congeladas (porque ninguna es obvia)
+
+| Concepto | Definición | Por qué así |
+|---|---|---|
+| **acierto** de una probabilidad | `p ≥ 0.5` apuesta a beat; `p < 0.5` a miss | "Acertar" con un número entre 0 y 1 no significa nada hasta que se fija el corte. Queda en código, no en la cabeza de quien lee. |
+| **desacuerdo** | `prob_quantdesk − prob_polymarket`, **con signo** | Positivo = QuantDesk **más optimista** que el mercado. Sin signo se pierde la mitad de la información; `desacuerdo_abs` va aparte, para ordenar. |
+| **más cerca** | menor `\|p − resultado\|` | **No** es "quién acertó el lado". Los dos pueden acertar el lado y uno estar mucho más cerca (QD 0.55 y mercado 0.95 en un beat: los dos aciertan, el mercado está a 0.05). |
+| **zona de duda** | mercado en `0.55–0.75`, partida en `0.55–0.65` y `0.65–0.75` | Es la zona que la pregunta persigue; en un solo bloque se promedian dos cosas distintas. |
+| **muestra insuficiente** | `n < 20` en el tramo | La zona de duda tiene pocos casos **por definición** — es donde el mercado se moja menos — así que es justo donde más fácil es leer tres casos como un hallazgo. |
+
+### El filtro es por la probabilidad del MERCADO
+
+`?zona=0.55-0.75` filtra por `prob_polymarket`, no por la del modelo. El
+mercado es el referente: "la zona de duda" es donde duda **él**. Un mercado con
+QD dentro del rango y precio afuera **no** entra — hay test, porque es
+exactamente la confusión fácil.
+
+Lo que el filtro **no** mueve: el titular, los tramos y la distribución se
+calculan sobre el universo completo. Un titular que cambia según el filtro que
+alguien dejó puesto no es un titular, es un artefacto.
+
+### El titular se CALCULA, no se escribe a mano
+
+La frase de arriba ("**QuantDesk duda más que el mercado**") sale de contar
+cuántos pronósticos pone cada uno en los extremos (≥ 0.9 o ≤ 0.1): el que pone
+menos es el que duda más. Si mañana el modelo se moja más, la frase se da
+vuelta sola — hay test en los dos sentidos, y un tercero para el empate.
+
+Los números que ella leyó en la corrida y que motivaron el encargo —
+**el mercado puso 81 mercados en 0.9–1 y QuantDesk solo 9; QuantDesk puso 162
+en 0.8–0.9 y el mercado 75** — son la salida del cálculo, **no** están escritos
+en el código. Quedan acá como registro de lo que se vio, no como constante.
+
+Y se dice en letras. Dejar que se deduzca de una tabla de diez filas es dejar
+que no se lea.
+
+### Lo que devuelve
+
+Una fila por mercado: símbolo, fecha, `prob_quantdesk`, `prob_polymarket`,
+`desacuerdo` (con signo), `resultado` real, quién acertó cada uno, quién quedó
+**más cerca**, y el error de cada lado. Ordenable por `desacuerdo`,
+`desacuerdo_con_signo`, `fecha`, `simbolo` o `mercado`.
+
+Más el resumen por tramo del mercado: `n`, desacuerdo mediano, acierto de QD vs
+acierto del mercado, cuántas veces cada uno quedó más cerca, los beats reales
+del tramo, y la marca de muestra insuficiente.
+
+El `veredicto_fase2` viaja **con** la vista: la columna de QuantDesk no se lee
+nunca como validada, porque es la salida de un modelo que no pasó sus
+criterios. En el markdown va arriba, antes de la primera tabla.
+
+### Uso
+
+```bash
+curl -s -H "Authorization: Bearer $CRON_SECRET" \
+  "https://quantdesk2.vercel.app/api/earnings-beat-analyze?vista=comparacion" | jq
+# en el navegador:
+#   /api/earnings-beat-analyze?vista=comparacion&format=md&secret=<CRON_SECRET>
+# solo la zona de duda:            &zona=0.55-0.75   (o &zona=duda)
+# otro orden:                      &orden=fecha&asc=1
+```
+
+Una zona ilegible (`&zona=ahí nomás`) **no** se corrige a la de duda: se ignora
+y se muestra todo. Un filtro fantasma es peor que ningún filtro. Y `&zona=0.9-1`
+estira el tope apenas, porque el precio 1.00 existe y es justo la población de
+la que habla el titular.
+
+Si a un mercado le falta uno de los dos números, la fila no entra — y el
+`filtro` dice **cuántos recibió, cuántos descartó y por qué motivo cada uno**.
+Una tabla que se encoge en silencio es la forma más fácil de que falte un
+mercado y nadie se entere.
+
+Mismas garantías que el veredicto: `SELECT`-only, sin `ensureSchema()` ni
+`beat()`, gate `CRON_SECRET`, `maxDuration = 300`, lib puro.
+
+| Archivo | Qué |
+|---|---|
+| `api/_lib/earnings-beat-analyze.js` | `comparacion`, `resumenPorTramo`, `distribucionComparada`, `titularDeDuda`, `acierta`, `TRAMOS`, `MIN_N_TRAMO`, `renderComparacionMd` |
+| `api/earnings-beat-analyze.js` | `cargaEventos()` compartido por las dos vistas, `parseZona()`, la rama `?vista=comparacion` |
+| `tests/earnings-beat-analyze-e2e.test.mjs` | El endpoint de punta a punta con Neon simulado: SELECT-only, las dos vistas sobre el mismo dataset, cero campos de apuesta, los parámetros |
+
+---
+
 ## FASE 2 — apuntes previos (se conservan: acá están los riesgos conocidos)
 
 Endpoint `/api/earnings-beat-analyze?format=md&secret=…`, **SELECT-only**,
@@ -1200,7 +1318,7 @@ en vez de celebrarse.
 - lectura pura del censo — `api/_lib/earnings-beat.js`
 - censo/smoke — `api/earnings-beat.js`
 - tabla `pm_earnings_markets` + su cron (Fase 1)
-- `/api/earnings-beat-analyze` (Fase 2)
+- `/api/earnings-beat-analyze` (Fase 2, y `?vista=comparacion`)
 
 ## Fuera de v1 / backlog
 
@@ -1223,3 +1341,7 @@ en vez de celebrarse.
 | `api/_lib/earnings-beat.js` | Lógica pura: `CRITERIOS` congelados, normalización, símbolo, consenso, T-24h, cruce, regla PIT, resumen en español. |
 | `api/earnings-beat.js` | Endpoint del censo (`?smoke=1`): sondas, barrido, ejemplos, cruce, sondas de revisiones. |
 | `tests/earnings-beat.test.mjs` | Fixtures, **sin red**. Incluye el pineo de los `CRITERIOS`. |
+| `api/_lib/earnings-beat-analyze.js` | Fase 2 y vista de comparación: `CRITERIOS_F2`, features, logística, Brier, calibración, simulación, veredicto, y la comparación QD vs mercado. |
+| `api/earnings-beat-analyze.js` | Endpoint SELECT-only de las dos vistas: veredicto (default) y `?vista=comparacion`. |
+| `tests/earnings-beat-analyze.test.mjs` | El lib de la Fase 2 y de la comparación, con fixtures. |
+| `tests/earnings-beat-analyze-e2e.test.mjs` | El endpoint con Neon simulado: SELECT-only, gate, parámetros, cero campos de apuesta. |

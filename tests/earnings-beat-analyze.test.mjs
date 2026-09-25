@@ -6,12 +6,14 @@
 //   - Brier, calibración por decil, simulación
 //   - veredicto GO / NO-GO / INCONCLUSO contra datasets sintéticos
 //   - la advertencia de "señal, no prueba" va SIEMPRE
+//   - la vista de comparación: mismas predicciones, cero apuestas, cero retornos
 // Correr con `node tests/earnings-beat-analyze.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
 import {
   CRITERIOS_F2, featuresDeEvento, winsoriza, brier, calibracionPorDecil,
   simula, analiza, renderResumenF2, prediceCV, entrena, predice, ORDEN_FEATURES,
+  comparacion, renderComparacionMd, acierta, TRAMOS, MIN_N_TRAMO,
 } from '../api/_lib/earnings-beat-analyze.js';
 
 let failures = 0;
@@ -200,6 +202,191 @@ ok(/\$500/.test(md) && /240/.test(md), 'el umbral de liquidez y cuántos sobrevi
 ok(/EXPLORATORIO/.test(md), 'lo exploratorio va marcado');
 ok(typeof renderResumenF2({ veredicto: 'INCONCLUSO', porque: [], muestra: {}, briers: {}, calibracion: {}, modelo: {}, advertencia: 'x' }) === 'string',
   'un análisis a medias no rompe el render');
+
+// ═══════════════════════════════════════════════════════════════
+// VISTA DE COMPARACIÓN
+// Lo que estos tests defienden: que no re-entrene, que el filtro sea por la
+// probabilidad del MERCADO, que "más cerca" sea distancia y no lado, que los
+// tramos flacos salgan marcados, que el titular se calcule, y que en ninguna
+// parte aparezca una apuesta o un retorno.
+// ═══════════════════════════════════════════════════════════════
+
+console.log('comparación: el acierto de una probabilidad, congelado');
+
+ok(acierta(0.5, true) === true, 'p = 0.5 apuesta a beat (el corte está en ≥ 0.5, no en >)');
+ok(acierta(0.49, false) === true, 'p < 0.5 acierta cuando fue miss');
+ok(acierta(0.8, false) === false, 'y falla cuando fue beat');
+ok(acierta(null, true) === null, 'sin probabilidad no hay acierto: null, no false');
+ok(MIN_N_TRAMO === 20, 'el mínimo para concluir por tramo = 20', MIN_N_TRAMO);
+ok(TRAMOS.some(([a, b]) => a === 0.55 && b === 0.65) && TRAMOS.some(([a, b]) => a === 0.65 && b === 0.75),
+  'la zona de duda 0.55–0.75 va partida en dos, no en un solo bloque');
+
+console.log('comparación: NO re-entrena, consume las predicciones que le pasan');
+
+ok(Array.isArray(analiza(senal).predicciones) && analiza(senal).predicciones.length === senal.length,
+  'analiza() devuelve una predicción por evento — la única fuente de la columna QD');
+const predAjenas = senal.map(() => 0.999);
+const cAjenas = comparacion(senal, predAjenas);
+ok(cAjenas.filas.every((f) => f.prob_quantdesk === 0.999),
+  'si le pasan 0.999 muestra 0.999: no vuelve a ajustar el modelo por su cuenta');
+// Y con las de verdad: las filas son EXACTAMENTE las que dictaron el veredicto.
+const cReal = comparacion(senal, rs.predicciones);
+const dichas = cReal.filas.map((f) => f.prob_quantdesk).sort((a, b) => a - b).join(',');
+const delVeredicto = rs.predicciones.map((p) => +p.toFixed(3)).sort((a, b) => a - b).join(',');
+ok(dichas === delVeredicto, 'la tabla y el veredicto salen del mismo ajuste, número por número');
+ok(cReal.filtro.filas_totales === senal.length, 'y no se pierde ningún mercado en el camino', cReal.filtro.filas_totales);
+
+console.log('comparación: una fila que no se puede comparar se DENUNCIA');
+
+const EVF = [
+  { symbol: 'OK', report_date: '2026-06-01', beat: true, mercado: 0.60 },
+  { symbol: 'SIN_PM', report_date: '2026-06-02', beat: true, mercado: NaN },
+  { symbol: 'SIN_QD', report_date: '2026-06-03', beat: false, mercado: 0.40 },
+];
+const cf = comparacion(EVF, [0.7, 0.7, null]);
+ok(cf.filas.length === 1 && cf.filtro.filas_totales === 1, 'solo la fila comparable entra a la tabla', cf.filas.length);
+ok(cf.filtro.eventos_recibidos === 3 && cf.filtro.descartadas === 2,
+  'pero dice de cuántos partió y cuántos descartó: la tabla no se encoge en silencio',
+  `${cf.filtro.eventos_recibidos} → ${cf.filtro.descartadas}`);
+ok(/2 de 3 mercados quedaron fuera/.test(cf.filtro.aviso_descartadas || ''), 'con aviso en letras', cf.filtro.aviso_descartadas);
+ok(cf.filtro.detalle_descartadas.find((d) => d.symbol === 'SIN_QD').motivo === 'sin_prediccion'
+  && cf.filtro.detalle_descartadas.find((d) => d.symbol === 'SIN_PM').motivo === 'sin_precio_de_mercado',
+  'y nombrando cuál de los dos números faltaba', JSON.stringify(cf.filtro.detalle_descartadas));
+ok(comparacion([EVF[0]], [0.7]).filtro.aviso_descartadas === null,
+  'sin descartes, sin aviso: no se avisa de nada');
+
+console.log('comparación: el desacuerdo lleva signo y "más cerca" es distancia');
+
+const EVC = [
+  { symbol: 'OPT', report_date: '2026-02-01', beat: true, mercado: 0.40 },  // QD más optimista
+  { symbol: 'PES', report_date: '2026-02-02', beat: false, mercado: 0.80 }, // QD más pesimista
+  { symbol: 'IGU', report_date: '2026-02-03', beat: true, mercado: 0.70 },  // idénticos
+  { symbol: 'AMB', report_date: '2026-02-04', beat: true, mercado: 0.95 },  // los dos aciertan el lado
+];
+const cc = comparacion(EVC, [0.75, 0.20, 0.70, 0.55], { orden: 'fecha', descendente: false });
+const [fOpt, fPes, fIgu, fAmb] = cc.filas;
+ok(fOpt.desacuerdo === 0.35, '+0.35: QuantDesk más optimista que el mercado', fOpt.desacuerdo);
+ok(fPes.desacuerdo === -0.6, '−0.60: QuantDesk más pesimista', fPes.desacuerdo);
+ok(fOpt.desacuerdo_abs === 0.35 && fPes.desacuerdo_abs === 0.6, 'y el abs va aparte, para ordenar');
+ok(fIgu.mas_cerca === 'empate' && fIgu.desacuerdo === 0, 'iguales → empate, no un ganador inventado');
+ok(fAmb.acierta_quantdesk === true && fAmb.acierta_polymarket === true && fAmb.mas_cerca === 'polymarket',
+  'los dos aciertan el LADO y el mercado igual queda más cerca: "más cerca" no es "acertó"');
+ok(fPes.acierta_quantdesk === true && fPes.acierta_polymarket === false,
+  'y cuando el lado difiere, el acierto también');
+
+console.log('comparación: el filtro de zona es por el precio del MERCADO');
+
+const EVZ = [
+  { symbol: 'DENTRO', report_date: '2026-03-01', beat: true, mercado: 0.60 },
+  { symbol: 'BORDE_BAJO', report_date: '2026-03-02', beat: true, mercado: 0.55 },
+  { symbol: 'BORDE_ALTO', report_date: '2026-03-03', beat: true, mercado: 0.75 },
+  { symbol: 'FUERA', report_date: '2026-03-04', beat: true, mercado: 0.95 },
+];
+// La cuarta fila tiene un QD DENTRO de la zona y un mercado fuera: si el filtro
+// mirara al modelo, entraría. Es la confusión que este test cierra.
+const cz = comparacion(EVZ, [0.10, 0.10, 0.10, 0.60], { zonaDesde: 0.55, zonaHasta: 0.75 });
+ok(cz.filas.length === 2, 'la zona 0.55–0.75 deja 2 de 4: desde inclusivo, hasta exclusivo', cz.filas.length);
+ok(cz.filas.every((f) => f.symbol !== 'FUERA'), 'un QD dentro de la zona NO mete a su mercado en la zona');
+ok(cz.filas.some((f) => f.symbol === 'BORDE_BAJO') && !cz.filas.some((f) => f.symbol === 'BORDE_ALTO'),
+  'el borde de abajo entra y el de arriba no (así no se cuenta dos veces entre tramos)');
+ok(cz.filtro.filas_totales === 4 && cz.filtro.filas_en_zona === 2,
+  'y el filtro dice de cuántas partió, no solo cuántas quedaron');
+// Los tramos y la distribución se calculan sobre TODO, no sobre lo filtrado: un
+// titular que cambia con el filtro no es un titular, es un artefacto.
+ok(cz.extremos.de === 4, 'el titular se calcula sobre el total, no sobre la zona filtrada', cz.extremos.de);
+
+console.log('comparación: los órdenes');
+
+const ordenados = (o, asc) => comparacion(EVC, [0.75, 0.20, 0.70, 0.55], { orden: o, descendente: !asc })
+  .filas.map((f) => f.symbol).join(',');
+ok(ordenados('desacuerdo') === 'PES,AMB,OPT,IGU', 'por defecto: el desacuerdo más grande arriba', ordenados('desacuerdo'));
+ok(ordenados('desacuerdo', true) === 'IGU,OPT,AMB,PES', 'y al revés con asc', ordenados('desacuerdo', true));
+ok(ordenados('desacuerdo_con_signo') === 'OPT,IGU,AMB,PES', 'con signo: el más optimista arriba', ordenados('desacuerdo_con_signo'));
+ok(ordenados('fecha', true) === 'OPT,PES,IGU,AMB', 'por fecha ascendente');
+ok(ordenados('simbolo', true) === 'AMB,IGU,OPT,PES', 'por símbolo');
+ok(ordenados('mercado', true) === 'OPT,IGU,PES,AMB', 'por precio del mercado');
+ok(ordenados('inventado') === ordenados('desacuerdo'), 'un orden que no existe cae al default, no rompe');
+
+console.log('comparación: los tramos flacos salen MARCADOS');
+
+// 25 mercados en 0.65–0.75 (alcanza para concluir) y 5 en 0.55–0.65 (no).
+const EVT = [
+  // 5 de los 25 son miss (i = 0, 5, 10, 15, 20) → 20 beats = 0.80.
+  ...Array.from({ length: 25 }, (_, i) => ({ symbol: 'G' + i, report_date: '2026-04-01', beat: i % 5 !== 0, mercado: 0.70 })),
+  ...Array.from({ length: 5 }, (_, i) => ({ symbol: 'P' + i, report_date: '2026-04-02', beat: true, mercado: 0.60 })),
+];
+// QD dice 0.30 en todos → apuesta a "miss" siempre, y acierta solo los 5 misses.
+const ct = comparacion(EVT, EVT.map(() => 0.30));
+const t65 = ct.por_tramo.find((t) => t.tramo === '0.65–0.75');
+const t55 = ct.por_tramo.find((t) => t.tramo === '0.55–0.65');
+ok(t65.n === 25 && t65.muestra_insuficiente === false, '25 casos: alcanza para concluir', `${t65.n}`);
+ok(t55.n === 5 && t55.muestra_insuficiente === true, '5 casos: MUESTRA INSUFICIENTE, marcado', `${t55.n}`);
+ok(Math.abs(t65.acierto_polymarket - 0.80) < 1e-9, 'el acierto del mercado por tramo sale de los resultados reales', t65.acierto_polymarket);
+ok(Math.abs(t65.beats_reales - 0.80) < 1e-9, 'y los beats reales del tramo se publican al lado', t65.beats_reales);
+ok(Math.abs(t65.acierto_quantdesk - 0.20) < 1e-9,
+  'y el del modelo al lado, medido igual: QD dijo 0.30 → "miss" en los 25, acertó los 5', t65.acierto_quantdesk);
+ok(t65.desacuerdo_mediano === -0.4, 'el desacuerdo mediano del tramo conserva el signo', t65.desacuerdo_mediano);
+ok(t65.quantdesk_mas_cerca + t65.polymarket_mas_cerca + t65.empates === t65.n,
+  'cada mercado del tramo cae en exactamente una de las tres columnas');
+ok(ct.por_tramo.every((t) => typeof t.muestra_insuficiente === 'boolean'),
+  'ningún tramo se publica sin decir si alcanza o no');
+
+console.log('comparación: el titular se CALCULA, no se escribe a mano');
+
+// El mercado se moja (0.95) y el modelo no (0.70): QuantDesk duda más.
+const EVD = Array.from({ length: 30 }, (_, i) => ({ symbol: 'D' + i, report_date: '2026-05-01', beat: true, mercado: 0.95 }));
+const cd = comparacion(EVD, EVD.map(() => 0.70));
+ok(/QuantDesk duda más que el mercado/.test(cd.titular), 'lo dice en letras, no lo deja deducir de la tabla', cd.titular);
+ok(cd.extremos.quantdesk === 0 && cd.extremos.polymarket === 30, 'con los números que lo sostienen');
+ok(/0\.9–1/.test((cd.titular_detalle || []).join(' ')), 'y el detalle nombra el tramo 0.9–1 del encargo');
+// Dado vuelta, la frase se da vuelta: si mañana el modelo se moja más, el
+// titular cambia con él. Eso es lo que significa "calculado".
+const cinv = comparacion(EVD.map((e) => ({ ...e, mercado: 0.70 })), EVD.map(() => 0.95));
+ok(/El mercado duda más que QuantDesk/.test(cinv.titular), 'al revés, la frase se da vuelta', cinv.titular);
+const cemp = comparacion(EVD, EVD.map(() => 0.95));
+ok(/se mojan parecido/.test(cemp.titular), 'y empatados no se inventa un ganador', cemp.titular);
+
+console.log('comparación: NI UNA apuesta, NI UN retorno');
+
+// Se revisan los CAMPOS, no el texto: el disclaimer nombra "señal de apuesta" y
+// "no calcula retornos" a propósito, y buscar la palabra suelta lo marcaría a él.
+function todasLasClaves(o, acc = new Set()) {
+  if (Array.isArray(o)) { for (const x of o) todasLasClaves(x, acc); return acc; }
+  if (o && typeof o === 'object') {
+    for (const [k, v] of Object.entries(o)) { acc.add(k); todasLasClaves(v, acc); }
+  }
+  return acc;
+}
+const claves = [...todasLasClaves(comparacion(senal, rs.predicciones))];
+const PROHIBIDAS = /apuesta|neto|retorno|unidad|costo|simulacion|ganancia|edge|kelly|stake/i;
+const delatoras = claves.filter((k) => PROHIBIDAS.test(k));
+ok(delatoras.length === 0, 'ni un campo de apuesta, costo o retorno en toda la vista', delatoras.join(','));
+ok(claves.includes('prob_quantdesk') && claves.includes('prob_polymarket') && claves.includes('desacuerdo'),
+  'lo que sí trae: las dos probabilidades y el desacuerdo', claves.length + ' campos');
+ok(/NO es una señal de apuesta y NO calcula retornos/.test(cReal.no_es_senal),
+  'y lo dice de frente, en el propio JSON');
+ok(cReal.es_vista_de_comparacion === true, 'la vista se identifica como lo que es');
+
+console.log('comparación: markdown');
+
+const mdC = renderComparacionMd({ ...cReal, generado_en: '2026-09-24T00:00:00Z' }, { veredicto: 'NO-GO' });
+ok(/veredicto de la Fase 2 sigue siendo NO-GO/.test(mdC),
+  'el veredicto que sigue en pie va ARRIBA: la columna QD no está validada');
+ok(/no.{0,3} pasó sus criterios/.test(mdC), 'dicho sin eufemismo');
+ok(/NO es una señal de apuesta y NO calcula retornos/.test(mdC), 'el disclaimer se queda');
+ok(/muestra insuficiente para concluir/.test(mdC), 'la leyenda del ⚠ está, no solo el símbolo');
+ok(/zona de duda es 0\.55–0\.75/.test(mdC), 'y la tabla por tramo nombra la zona que se persigue');
+ok(/positivo = QuantDesk más optimista/.test(mdC), 'el signo del desacuerdo se explica');
+ok(!/neto|apuesta[s]? :|unidades/.test(mdC.replace('señal de apuesta', '')), 'sin netos ni apuestas en el texto');
+ok(/Dónde pone su masa cada uno/.test(mdC), 'la distribución comparada está en el resumen');
+ok(typeof renderComparacionMd({ filtro: { filas_totales: 0, zona_mercado_desde: null }, titular: 'x', no_es_senal: 'y' }) === 'string',
+  'una vista vacía no rompe el render');
+
+console.log('comparación: determinismo');
+
+const j1 = JSON.stringify(comparacion(senal, rs.predicciones));
+const j2 = JSON.stringify(comparacion(senal, rs.predicciones));
+ok(j1 === j2, 'dos corridas, la misma tabla');
 
 console.log(failures ? `\n${failures} FALLAS` : '\nTodo en verde');
 process.exit(failures ? 1 : 0);
