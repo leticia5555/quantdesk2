@@ -1,0 +1,46 @@
+{
+  "_doc": "Capitalizaciones de REFERENCIA en USD para los ADR del mapa de EE.UU. NO SE PINTAN NUNCA. Lo único que hacen es elegir la razón del ADR; el número que el mapa muestra sale de `acciones ÷ razón × último cierre nuestro`, medido por nosotros.",
+  "_por_que_existe": "Finnhub reporta `marketCapitalization` en la moneda de reporte de la empresa (`profile2.currency`) y `shareOutstanding` en ACCIONES ORDINARIAS, mientras el precio que cosechamos es por ADR. Las dos cosas juntas rompen `acciones × precio` de dos maneras a la vez, y el múltiplo observado no se descompone con el tipo de cambio solo: TSM 5.2754 (TWD), NVO 9.5326 (DKK), VALE 4.8334 (BRL), ASML 0.8612 (EUR). Convertir con un FX congelado en este archivo sería un número que se podre solo y que nadie volvería a mirar.",
+  "_reglas": {
+    "no_se_pinta": "Estas cifras NUNCA viajan al render. Se usan una sola vez, para despejar la razón del ADR: razón = (acciones × precio) ÷ cap_referencia. Lo que se dibuja es `acciones ÷ razón_redondeada × precio`, con NUESTRO cierre, así que el cuadro sigue al mercado todos los días en vez de quedarse clavado en la captura.",
+    "por_que_redondeada": "La razón se redondea a la proporción plausible más cercana (entero 1..20, o 1/n) y sólo se acepta si el crudo cae a ≤2% de ella. Usar el factor crudo devolvería exactamente la cap de Yahoo: sería pintar la referencia con otro nombre. Y si el crudo no se parece a ninguna razón de ADR, algo más está mal —captura vieja, acciones de otra clase— y la emisora se queda GRIS en lugar de recibir un tamaño inventado.",
+    "procedencia": "Cada fila dice QUIÉN la capturó, DE DÓNDE y CUÁNDO. Una cap sin las tres cosas no entra: es lo que separa una referencia de un número suelto.",
+    "caducidad": "Vencer NO apaga el cuadro. La razon del ADR es ESTRUCTURAL —que 1 ADR equivalga a N ordinarias no cambia porque pase un trimestre—, y la unica cifra que envejece es la cap de Yahoo, que no se pinta. Al pasar `vigente_hasta` la emisora sigue dibujandose con su razon y la tarea aparece en `referencias_a_recapturar` de /api/cron-status para reconfirmarla. Un reloj que apaga datos buenos solo es la trampa de los 14 dias de #248, y no se repite.",
+    "cuando_si_se_pone_gris": "Cuando la razon cruda deja de parecerse a una proporcion plausible (>2% de la mas cercana). Ahi cambio algo de verdad: un split del ADR, un cambio de ratio, o una captura mal leida. El tamano deja de estar sostenido y el cuadro va gris con su causa."
+  },
+  "capturado_por": "Lety, en Chrome, leyendo Market Cap (intraday) en Yahoo Finance",
+  "referencias": [
+    {
+      "clave": "TSM",
+      "market_cap_usd": 2316000000000,
+      "fuente": "yahoo-finance-market-cap-intraday",
+      "capturada_en": "2026-09-23",
+      "vigente_hasta": "2026-09-30",
+      "nota": "múltiplo observado 5.2754 con cap declarada en TWD"
+    },
+    {
+      "clave": "NVO",
+      "market_cap_usd": 175831000000,
+      "fuente": "yahoo-finance-market-cap-intraday",
+      "capturada_en": "2026-09-23",
+      "vigente_hasta": "2026-09-30",
+      "nota": "múltiplo observado 9.5326 con cap declarada en DKK"
+    },
+    {
+      "clave": "VALE",
+      "market_cap_usd": 60474000000,
+      "fuente": "yahoo-finance-market-cap-intraday",
+      "capturada_en": "2026-09-18",
+      "vigente_hasta": "2026-09-30",
+      "nota": "múltiplo observado 4.8334 con cap declarada en BRL; Yahoo marcaba 2026-09-18 al capturar"
+    },
+    {
+      "clave": "ASML",
+      "market_cap_usd": 661612000000,
+      "fuente": "yahoo-finance-market-cap-intraday",
+      "capturada_en": "2026-09-23",
+      "vigente_hasta": "2026-09-30",
+      "nota": "múltiplo observado 0.8612 con cap declarada en EUR: éste sí se explica casi entero por el tipo de cambio, y aun así no se convierte"
+    }
+  ]
+}

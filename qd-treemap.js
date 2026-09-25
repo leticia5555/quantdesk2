@@ -157,22 +157,60 @@ function candidatosSector(nombre, abrev) {
  * sector, que son la navegación de verdad. Los cuadros se tocan a cualquier
  * tamaño.
  */
+// UN CUADRO GRIS TIENE QUE VERSE. Antes se filtraba por `cap > 0` y una
+// emisora sin cap verificada desaparecía del mapa: TSM no salía gris punteada,
+// salía ausente, y lo único que quedaba era un número en el pie. Eso viola la
+// regla 2 del encargo —dato que falta es "—" en gris CON SU CAUSA— porque un
+// cuadro que no está no tiene dónde decir su causa.
+//
+// Ahora se dibuja con TAMAÑO FIJO: el del cuadro verificado más chico de su
+// sector. Se elige el más chico a propósito, y no un promedio ni un mínimo
+// visible: el tamaño es lo único que el mapa no puede afirmar de esa emisora,
+// así que ocupa lo menos que se puede ocupar sin desaparecer. Nunca hereda un
+// área proporcional a una cap en la que no creemos.
+//
+// Sólo entran las que YA son cuadros: si no hay precio no hay serie, no hay %
+// y no hay nada que mostrar — ésas no son cuadros todavía y no se cuentan
+// como tales en el pie.
+function esDibujable(c) {
+  return (Number.isFinite(c.cap) && c.cap > 0) || Number.isFinite(c.precio);
+}
+function esVerificada(c) {
+  return Number.isFinite(c.cap) && c.cap > 0;
+}
+
 function agrupaPorSector(cuadros) {
-  const conCap = (cuadros || []).filter((c) => Number.isFinite(c.cap) && c.cap > 0);
+  const dibujables = (cuadros || []).filter(esDibujable);
   const porSector = new Map();
-  for (const c of conCap) {
+  for (const c of dibujables) {
     const k = c.sector || '—';
-    if (!porSector.has(k)) porSector.set(k, { sector: k, cap_total: 0, items: [] });
-    const g = porSector.get(k);
-    g.cap_total += c.cap;
-    g.items.push(c);
+    if (!porSector.has(k)) porSector.set(k, { sector: k, cap_total: 0, items: [], grises: 0 });
+    porSector.get(k).items.push(c);
   }
+
+  const capsVerificadas = dibujables.filter(esVerificada).map((c) => c.cap);
+  const minGlobal = capsVerificadas.length ? Math.min(...capsVerificadas) : 1;
+
   const grupos = [...porSector.values()].map((g) => {
-    g.items.sort((a, b) => b.cap - a.cap);
+    const verificadas = g.items.filter(esVerificada).map((c) => c.cap);
+    // Un sector entero sin una sola verificada cae al mínimo global; si no hay
+    // ninguna en todo el mapa (el día del despliegue, con las columnas nuevas
+    // vacías), todas miden lo mismo y el mapa es una rejilla gris que lo dice.
+    const fijo = verificadas.length ? Math.min(...verificadas) : minGlobal;
+    g.items = g.items.map((c) => ({ ...c, area: esVerificada(c) ? c.cap : fijo, cap_verificada: esVerificada(c) }));
+    g.grises = g.items.filter((it) => !it.cap_verificada).length;
+    g.area_fija = fijo;
+    g.cap_total = g.items.reduce((s, it) => s + it.area, 0);
+    g.items.sort((a, b) => b.area - a.area);
     return g;
   });
   grupos.sort((a, b) => b.cap_total - a.cap_total);
-  return { grupos, empresas: conCap.length };
+  return {
+    grupos,
+    empresas: dibujables.length,
+    verificadas: capsVerificadas.length,
+    grises: dibujables.length - capsVerificadas.length,
+  };
 }
 
 /** Cuánto mide un texto en monoespaciada, en px. Un sitio, una vez. */

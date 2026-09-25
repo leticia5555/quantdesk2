@@ -62,7 +62,11 @@ const PRESUPUESTO_MS = (() => {
 const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 
-import { auditaCapUs } from './_lib/mercado-cap-us.js';
+import { auditaCapUs, razonAdr, referenciaVigente, TOLERANCIA_RAZON_PCT } from './_lib/mercado-cap-us.js';
+import REFERENCIAS_CAP_US from './_lib/mercado-cap-us-referencia.json' with { type: 'json' };
+import {
+  accionesDeCompanyConcept, mapaCik, rutaCompanyConcept, UMBRAL_EDGAR_PCT,
+} from './_lib/mercado-edgar.js';
 
 export const SCHEMA_UNIVERSO_US = [
   `create table if not exists mercado_universo_us (
@@ -92,6 +96,16 @@ export const SCHEMA_UNIVERSO_US = [
   // que NVDA). Sin las acciones, no hay con qué contrastarla.
   `alter table mercado_universo_us add column if not exists cap_moneda text`,
   `alter table mercado_universo_us add column if not exists acciones_millones numeric`,
+  // LAS ACCIONES DE EDGAR VAN CON SU FECHA PEGADA. Un conteo de acciones sin
+  // la fecha de la portada de la que salió no se puede volver a juzgar: no se
+  // sabe si envejeció ni contra qué precio vale. Guardar las dos fechas
+  // —portada y presentación— contesta dos preguntas distintas: a qué fecha
+  // vale el número, y cuándo nos enteramos.
+  `alter table mercado_universo_us add column if not exists acciones_edgar_millones numeric`,
+  `alter table mercado_universo_us add column if not exists acciones_edgar_portada date`,
+  `alter table mercado_universo_us add column if not exists acciones_edgar_presentada date`,
+  `alter table mercado_universo_us add column if not exists acciones_edgar_form text`,
+  `alter table mercado_universo_us add column if not exists edgar_cik text`,
   `create index if not exists mercado_universo_us_cap_idx
      on mercado_universo_us (market_cap desc nulls last)`,
   `create index if not exists mercado_universo_us_sector_idx
@@ -104,9 +118,9 @@ async function ensureSchema() {
   schemaListo = true;
 }
 
-async function json(url, timeoutMs = 12000) {
+async function json(url, timeoutMs = 12000, headers = undefined) {
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers });
     // El 429 se distingue del resto A PROPÓSITO: "429" y "no hay datos" son
     // problemas opuestos y el reporte anterior los sumaba en un solo
     // `errores_fuente`, que fue justo lo que hizo falta desambiguar a mano.
@@ -728,7 +742,8 @@ async function jobAuditoriaCap() {
   // Cuántos NO se pueden ni auditar todavía, que es distinto de cuántos
   // fallan: si la cosecha aún no repobló `cap_moneda`, el número grande de
   // grises dice "falta correr ?job=universo", no "hay 300 ADRs rotos".
-  const sinMoneda = filas.filter((f) => !f.cap_moneda).length;
+  const sinMonedaFilas = filas.filter((f) => !f.cap_moneda);
+  const sinMoneda = sinMonedaFilas.length;
   const sinAcciones = filas.filter((f) => num(f.acciones_millones) == null).length;
 
   return {
@@ -736,11 +751,246 @@ async function jobAuditoriaCap() {
     ...a,
     veredictos: undefined,          // el detalle completo no cabe ni hace falta
     sin_moneda: sinMoneda,
+    // EL CONTEO SIN EL NOMBRE NO SE PUEDE ACCIONAR. "desconocida: 1" obliga a
+    // abrir psql para saber de quién se está hablando; el símbolo dice si es
+    // un ETF que no tiene `currency`, un ADR con perfil incompleto o una fila
+    // que quedó a medias. Van todos, no una muestra: si son muchos, el número
+    // de al lado ya lo dice.
+    sin_moneda_symbols: sinMonedaFilas.map((f) => f.symbol).sort(),
     sin_acciones: sinAcciones,
     listo_para_auditar: sinMoneda === 0 && sinAcciones === 0,
     nota: sinMoneda || sinAcciones
       ? `faltan campos de profile2 en ${Math.max(sinMoneda, sinAcciones)} símbolos: corré ?job=universo hasta que bajen a 0 antes de leer el conteo de grises`
       : null,
+  };
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+// ?job=acciones-edgar — el árbitro de las 21 que no cuadran
+//
+// Sólo se le pregunta a EDGAR por las emisoras cuyo par de Finnhub NO
+// concuerda. Las 279 que ya cuadran no se tocan: pedir 561 CIK para confirmar
+// lo que ya está verificado es gastar la paciencia de la SEC en nada, y mover
+// la fuente de 279 cuadros que nadie reportó como rotos.
+//
+// EL USER-AGENT NO SE INVENTA. La SEC exige uno con contacto real y bloquea
+// sin él. Si `SEC_USER_AGENT` no está en el entorno, el job NO corre y lo
+// dice: mandar un agente falso es pedirle a otro que confíe en un dato que
+// nosotros mismos falsificamos, y además se bloquea la IP para todos.
+// ═══════════════════════════════════════════════════════════════════
+const EDGAR_POR_MINUTO = 300;        // 5/s, la mitad del techo que publica la SEC.
+let CIKS = null;                     // el mapa ticker→CIK, una vez por proceso.
+
+async function jobAccionesEdgar({ ahora, t0, limite }) {
+  await ensureSchema();
+  const ua = process.env.SEC_USER_AGENT;
+  if (!ua) {
+    return {
+      job: 'acciones-edgar',
+      error: 'falta SEC_USER_AGENT',
+      como_se_arregla: 'la SEC pide un User-Agent con contacto real (ej. "QuantDesk research contacto@dominio"). Ponelo en las variables del entorno de Vercel; sin él no se manda nada.',
+    };
+  }
+  const headers = { 'User-Agent': ua, 'Accept-Encoding': 'gzip, deflate' };
+
+  // A quién le falta: los hallazgos en USD, que son los que un conteo de
+  // acciones nuevo puede rescatar. El veredicto se calcula con el MISMO
+  // `auditaCapUs` del job de auditoría para que las dos vistas no puedan
+  // discrepar.
+  const filas = await sql(
+    `with ultimo as (
+       select distinct on (symbol) symbol, cierre
+         from mercado_precios_us
+        order by symbol, fecha desc
+     )
+     select u.symbol, u.market_cap, u.cap_moneda, u.acciones_millones,
+            u.acciones_edgar_millones, p.cierre as precio_usd
+       from mercado_universo_us u
+       left join ultimo p using (symbol)
+      where u.market_cap is not null and u.sector_etf is not null`);
+
+  const a = auditaCapUs(filas.map((f) => ({
+    symbol: f.symbol,
+    declarada: num(f.market_cap) != null ? num(f.market_cap) / 1e6 : null,
+    moneda: f.cap_moneda,
+    acciones: num(f.acciones_millones),
+    precio_usd: num(f.precio_usd),
+  })));
+  const porSymbol = new Map(filas.map((f) => [f.symbol, f]));
+  const candidatos = a.veredictos
+    .filter((v) => v.estado === 'gris_punteado' && v.auditable && v.moneda === 'USD')
+    .map((v) => v.symbol)
+    .filter((sym) => num((porSymbol.get(sym) || {}).acciones_edgar_millones) == null);
+
+  const tope = Number.isFinite(limite) && limite > 0 ? limite : candidatos.length;
+  const pendientes = candidatos.slice(0, tope);
+
+  // El mapa ticker→CIK: un archivo, una vez.
+  const cuenta = { ok: 0, sin_cik: 0, sin_dato: 0, red: 0, rate_429: 0 };
+  const sinCik = [], resultados = [];
+  if (!CIKS) {
+    const r = await json('https://www.sec.gov/files/company_tickers.json', 20000, headers);
+    if (!r.ok) {
+      return {
+        job: 'acciones-edgar', error: 'no se pudo leer el índice de CIK de la SEC',
+        status: r.status, detalle: r.error || null, candidatos: candidatos.length,
+      };
+    }
+    CIKS = mapaCik(r.json);
+  }
+
+  const deadline = t0 + PRESUPUESTO_MS;
+  const intervalo = intervaloDe(EDGAR_POR_MINUTO);
+  let ritmo = { proxima: 0 };
+  let sinPresupuesto = false;
+  async function ranura() {
+    const r = proximaRanura(ritmo, Date.now(), intervalo);
+    ritmo = r.estado;
+    if (Date.now() + r.espera > deadline) { sinPresupuesto = true; return false; }
+    if (r.espera > 0) await dormir(r.espera);
+    return true;
+  }
+
+  const escrituras = [];
+  for (const sym of pendientes) {
+    const cik = CIKS.get(sym);
+    if (!cik) { cuenta.sin_cik++; sinCik.push(sym); continue; }
+    if (!(await ranura())) break;
+    const r = await json(rutaCompanyConcept(cik), 15000, headers);
+    if (r.status === 429) { cuenta.rate_429++; continue; }
+    if (!r.ok) { if (r.red) cuenta.red++; else cuenta.sin_dato++; continue; }
+    const acc = accionesDeCompanyConcept(r.json);
+    if (acc.acciones == null) { cuenta.sin_dato++; resultados.push({ symbol: sym, motivo: acc.motivo }); continue; }
+    cuenta.ok++;
+    resultados.push({
+      symbol: sym, acciones: acc.acciones, portada: acc.fecha_portada,
+      presentada: acc.presentado_en, form: acc.form,
+    });
+    escrituras.push([
+      `update mercado_universo_us
+          set acciones_edgar_millones = $2, acciones_edgar_portada = $3::date,
+              acciones_edgar_presentada = $4::date, acciones_edgar_form = $5, edgar_cik = $6
+        where symbol = $1`,
+      [sym, acc.acciones / 1e6, acc.fecha_portada, acc.presentado_en, acc.form, cik],
+    ]);
+  }
+  if (escrituras.length) await sqlBatch(escrituras);
+
+  return {
+    job: 'acciones-edgar',
+    umbral_pct: UMBRAL_EDGAR_PCT,
+    nota: `el contraste con EDGAR usa su propio techo de ${UMBRAL_EDGAR_PCT}%, separado del ${CRITERIOS.g2_max_error_pct}% de G2: las acciones son de la portada del trimestre y el precio es el de hoy, así que algo de deriva es lo esperado y no un error de nadie`,
+    candidatos: candidatos.length,
+    intentados: pendientes.length,
+    escritos: escrituras.length,
+    cuenta,
+    sin_cik: sinCik,
+    ejemplos: resultados.slice(0, 25),
+    avance: {
+      completo: !sinPresupuesto && pendientes.length === candidatos.length,
+      pendientes_al_terminar: Math.max(0, candidatos.length - escrituras.length - sinCik.length),
+    },
+    presupuesto_agotado: sinPresupuesto,
+    ms: Date.now() - t0,
+  };
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+// ?job=razon-adr — el equivalente US de ?job=unidades
+//
+// Las referencias manuales de Yahoo NO se pintan; despejan la razón del ADR.
+// Este job es el que dice si esa razón sale limpia, con los datos de prod:
+//
+//     razón = (acciones × precio) ÷ cap_referencia
+//
+// y se exige que caiga a ≤2% de una proporción plausible. Es de SOLO LECTURA:
+// no corrige nada, porque el veredicto lo aplica el mapa en cada petición.
+//
+// `?manual=TSM:2316e9,...&fuente=...&capturada_en=...` REEMPLAZA las filas del
+// archivo para las claves que nombra, igual que en México: así se prueba una
+// captura nueva antes de escribirla en el JSON, y queda dicho en la respuesta
+// que el número no salió del archivo.
+// ═══════════════════════════════════════════════════════════════════
+/** El fin del trimestre calendario de una fecha, que es hasta cuándo vale una captura. */
+function finDeTrimestre(iso) {
+  const d = iso ? new Date(`${String(iso).slice(0, 10)}T00:00:00Z`) : new Date();
+  if (Number.isNaN(d.getTime())) return null;
+  const finMes = [2, 5, 8, 11][Math.floor(d.getUTCMonth() / 3)];
+  const fin = new Date(Date.UTC(d.getUTCFullYear(), finMes + 1, 0));
+  return fin.toISOString().slice(0, 10);
+}
+
+async function jobRazonAdr({ ahora, manual }) {
+  await ensureSchema();
+  const ovr = registroConOverride(REFERENCIAS_CAP_US, (manual && manual.referencias) || []);
+  // `parseManualParam` devuelve `market_cap` (el nombre de México) y sin
+  // vigencia. Se normaliza acá: una captura de prueba vale hasta el fin de SU
+  // trimestre, igual que una del archivo. Sin esto, un `?manual=` siempre
+  // saldría "no declara hasta cuándo vale" y no serviría para probar nada.
+  const refs = new Map((ovr.registro.referencias || []).map((r) => {
+    const clave = String(r.clave).toUpperCase();
+    return [clave, {
+      ...r, clave,
+      market_cap_usd: num(r.market_cap_usd) ?? num(r.market_cap),
+      vigente_hasta: r.vigente_hasta || finDeTrimestre(r.capturada_en),
+    }];
+  }));
+
+  const filas = await sql(
+    `with ultimo as (
+       select distinct on (symbol) symbol, fecha, cierre
+         from mercado_precios_us
+        order by symbol, fecha desc
+     )
+     select u.symbol, u.cap_moneda, u.acciones_millones, p.cierre as precio_usd, p.fecha::text as fecha_precio
+       from mercado_universo_us u
+       left join ultimo p using (symbol)
+      where u.symbol = any($1::text[])`,
+    [[...refs.keys()]]);
+
+  const detalle = filas.map((f) => {
+    const ref = refs.get(f.symbol);
+    const vig = referenciaVigente(ref, ahora);
+    const r = razonAdr({
+      cap_referencia_usd: ref.market_cap_usd,
+      acciones_millones: num(f.acciones_millones),
+      precio_usd: num(f.precio_usd),
+    });
+    return {
+      symbol: f.symbol,
+      moneda_declarada: f.cap_moneda || null,
+      fecha_precio: f.fecha_precio || null,
+      vigente: vig.vigente === true,
+      vigente_hasta: ref.vigente_hasta || null,
+      razon_cruda: r.crudo != null ? Number(r.crudo.toFixed(4)) : null,
+      razon: r.razon ?? null,
+      razon_etiqueta: r.etiqueta,
+      error_pct: r.error_pct != null ? Number(r.error_pct.toFixed(2)) : null,
+      // Resuelve = la razón sale limpia. Vencida no lo impide: la razón del ADR
+      // es estructural y recapturar sólo la reconfirma.
+      resuelve: r.ok === true,
+      a_recapturar: vig.a_recapturar === true,
+      // La cap de referencia NO viaja: sólo el veredicto, como en México.
+      motivo: r.motivo || (vig.a_recapturar ? vig.motivo : null),
+      fuente_referencia: ref.fuente || null,
+      capturada_en: ref.capturada_en || null,
+    };
+  });
+
+  const faltan = [...refs.keys()].filter((k) => !filas.some((f) => f.symbol === k));
+  return {
+    job: 'razon-adr',
+    tolerancia_pct: TOLERANCIA_RAZON_PCT,
+    referencias: refs.size,
+    resuelven: detalle.filter((d) => d.resuelve).length,
+    no_resuelven: detalle.filter((d) => !d.resuelve).length,
+    a_recapturar: detalle.filter((d) => d.a_recapturar).map((d) => d.symbol),
+    sin_fila_en_universo: faltan,
+    override_manual: ovr.claves,
+    detalle: detalle.sort((a, b) => (a.symbol < b.symbol ? -1 : 1)),
+    nota: 'la cap de referencia no se pinta nunca: lo que el mapa dibuja es acciones ÷ razón × nuestro cierre',
   };
 }
 
@@ -774,11 +1024,13 @@ export default async function handler(req, res) {
   try {
     let out;
     if (job === 'auditoria-cap') out = await jobAuditoriaCap();
+    else if (job === 'acciones-edgar') out = await jobAccionesEdgar({ ahora, t0, limite: Number(q.limite) || null });
+    else if (job === 'razon-adr') out = await jobRazonAdr({ ahora, manual });
     else if (job === 'universo') out = await jobUniverso({ ahora, dry, finnhubKey: process.env.FINNHUB_API_KEY, t0 });
     else if (job === 'unidades') out = await jobUnidades({ ahora, manual });
     else if (job === 'refcap') out = await jobRefcap({ limite: Number(q.limite) || 40 });
     else if (job === 'gfnorte') out = await jobGfnorte();
-    else return res.status(400).json({ error: 'job debe ser universo | unidades | refcap | gfnorte' });
+    else return res.status(400).json({ error: 'job debe ser universo | unidades | refcap | gfnorte | auditoria-cap | acciones-edgar | razon-adr' });
 
     // Solo el job que construye late: los de diagnóstico no son un cron y
     // marcarlos vivos haría que /api/cron-status mintiera.

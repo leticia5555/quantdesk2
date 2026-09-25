@@ -33,11 +33,128 @@
 // cuál fue: ~32× huele a tipo de cambio, ~5× a ratio de ADR, ~1e6 a unidades.
 // ═══════════════════════════════════════════════════════════════════════
 import { CRITERIOS, errorPct } from './mercado-fase0.js';
+import { veredictoCapEdgar } from './mercado-edgar.js';
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 
 /** Finnhub da cap y acciones en MILLONES. Un sitio, una vez. */
 export const MILLON = 1e6;
+
+// ── LA RAZÓN DEL ADR ───────────────────────────────────────────────────
+// Un ADR de TSM no es una acción de TSM: son varias. Finnhub cuenta ORDINARIAS
+// y nosotros cosechamos el precio del ADR, así que `acciones × precio` sale
+// multiplicado por la razón — encima de estar la cap en otra moneda.
+//
+// La referencia manual de Yahoo NO se pinta (regla del archivo de referencias,
+// la misma de México). Sirve para despejar la razón UNA vez:
+//
+//     razón_cruda = (acciones × precio) ÷ cap_referencia
+//
+// y lo que se dibuja es `acciones ÷ razón_redondeada × precio`, con nuestro
+// cierre de cada día. Si se usara la razón cruda, el resultado sería idéntico
+// a la cap de Yahoo: pintar la referencia con otro nombre, y clavada en la
+// fecha de captura para siempre.
+export const TOLERANCIA_RAZON_PCT = 2;
+
+/** Las proporciones que un ADR puede tener de verdad: N ordinarias por ADR, o 1/N. */
+export function razonesPlausibles(max = 20) {
+  const out = [];
+  for (let n = 1; n <= max; n++) out.push(n);
+  for (let n = 2; n <= max; n++) out.push(1 / n);
+  return out;
+}
+
+/**
+ * La razón que explica el desajuste, o nada.
+ *
+ * Fallar cerrado es el punto: si la razón cruda no se parece a ninguna
+ * proporción plausible, NO se fuerza la más cercana. Que no se parezca
+ * significa que lo que está mal es otra cosa —la captura quedó vieja, las
+ * acciones son de otra clase— y darle un tamaño igual sería exactamente el
+ * bug que esto vino a cerrar.
+ */
+export function razonAdr({ cap_referencia_usd, acciones_millones, precio_usd, tolerancia = TOLERANCIA_RAZON_PCT }) {
+  const ref = num(cap_referencia_usd);
+  const acc = num(acciones_millones);
+  const px = num(precio_usd);
+  if (ref == null || ref <= 0) return { ok: false, motivo: 'la referencia manual no trae una cap en USD utilizable' };
+  if (acc == null || acc <= 0 || px == null || px <= 0) {
+    return { ok: false, motivo: 'faltan acciones en circulación o cierre para despejar la razón del ADR' };
+  }
+
+  const crudo = (acc * MILLON * px) / ref;
+  let razon = null, mejor = Infinity;
+  for (const cand of razonesPlausibles()) {
+    const err = Math.abs(errorPct(crudo, cand) ?? Infinity);
+    if (err < mejor) { mejor = err; razon = cand; }
+  }
+  const ok = mejor <= tolerancia;
+  return {
+    ok, crudo, razon: ok ? razon : null, razon_cercana: razon, error_pct: mejor,
+    etiqueta: ok ? (razon >= 1 ? `${razon}:1` : `1:${Math.round(1 / razon)}`) : null,
+    motivo: ok ? null
+      : `la razón cruda ${crudo.toFixed(3)} no se parece a ninguna proporción de ADR (la más cercana, ${razon}, queda a ${mejor.toFixed(1)}%, techo ${tolerancia}%)`,
+  };
+}
+
+// ── LA VIGENCIA NO APAGA NADA ──────────────────────────────────────────
+// Primera versión de esto: al vencer la referencia, el cuadro se iba a gris. Es
+// la misma trampa que los 14 días de #248 — un reloj que apaga datos buenos
+// solo. Y acá es peor, porque LA RAZÓN DEL ADR ES ESTRUCTURAL: que 1 ADR de TSM
+// equivalga a N ordinarias no cambia porque pase un trimestre. Lo que envejece
+// es la CAP de Yahoo, y la cap de Yahoo no se pinta.
+//
+// Así que vencer significa una sola cosa: hay que recapturar para volver a
+// CONFIRMAR la razón. El mapa sigue dibujando con la razón vigente y la tarea
+// aparece en `referencias_a_recapturar` de /api/cron-status, donde se ve venir.
+//
+// Lo único que SÍ pone gris el cuadro es que la razón cruda deje de parecerse a
+// una proporción plausible: ahí cambió algo de verdad —un split del ADR, un
+// cambio de ratio, una captura mal leída— y el tamaño deja de estar sostenido.
+export function referenciaVigente(ref, hoy = new Date()) {
+  if (!ref) return { hay: false };
+  const hasta = ref.vigente_hasta ? String(ref.vigente_hasta) : null;
+  const dia = hoy instanceof Date ? hoy.toISOString().slice(0, 10) : String(hoy).slice(0, 10);
+  if (!hasta) {
+    return { hay: true, vigente: false, sin_fecha: true, a_recapturar: true, vigente_hasta: null,
+      motivo: 'la referencia manual no declara hasta cuándo vale: recapturala para ponerle fecha' };
+  }
+  const vigente = dia <= hasta;
+  return {
+    hay: true, vigente, a_recapturar: !vigente, vigente_hasta: hasta,
+    motivo: vigente ? null
+      : `la referencia venció el ${hasta}: recapturá la cap en Yahoo para reconfirmar la razón (el cuadro sigue dibujándose con ella)`,
+  };
+}
+
+/**
+ * Qué hay que recapturar, para /api/cron-status.
+ *
+ * NO lleva `alerta`: una referencia vencida ya no rompe nada, así que no puede
+ * poner en rojo el tablero. Es una tarea pendiente, y confundir una tarea con
+ * una falla es cómo se aprende a ignorar el rojo.
+ */
+export function vigenciaReferenciasUs(registro, hoy = new Date()) {
+  const filas = (registro && registro.referencias) || [];
+  const estado = filas.map((r) => {
+    const v = referenciaVigente(r, hoy);
+    return {
+      clave: String(r.clave || '').toUpperCase(),
+      vigente_hasta: v.vigente_hasta,
+      vigente: v.vigente === true,
+      fuente: r.fuente || null,
+      capturada_en: r.capturada_en || null,
+    };
+  });
+  return {
+    filas: filas.length,
+    vigentes: estado.filter((e) => e.vigente).length,
+    a_recapturar: estado.filter((e) => !e.vigente).map((e) => ({ ...e, mapa: 'us', motivo: 'reconfirmar la razón del ADR' })),
+    detalle: estado,
+    alerta: false,
+    lectura: 'vencer no apaga el cuadro: la razón del ADR es estructural y se sigue usando. Recapturar sólo la reconfirma.',
+  };
+}
 
 /**
  * Las dos estimaciones de cap en USD para un símbolo.
@@ -76,7 +193,7 @@ export function candidatasCapUs({ declarada, moneda, acciones, precio_usd }) {
  * verificado — el bug que #241 y #245 ya costaron.
  */
 export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
-  const { symbol, moneda } = entrada || {};
+  const { symbol, moneda, referencia, edgar, hoy } = entrada || {};
   const cand = candidatasCapUs(entrada || {});
   const decl = cand.find((c) => c.serie === 'finnhub:metric');
   const recon = cand.find((c) => c.serie === 'acciones×precio');
@@ -88,6 +205,41 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   // gris y la pantalla dice "553 sin capitalización verificada", que manda a
   // buscar 553 bugs donde lo que falta es una corrida.
   const base = { symbol, moneda: moneda ? String(moneda).toUpperCase() : null };
+
+  // ── PRIMERO, LA REFERENCIA MANUAL ────────────────────────────────────
+  // Para los cuatro ADR de la auditoría (TSM, NVO, VALE, ASML) ni la moneda
+  // ni las unidades de `shareOutstanding` sirven, así que el contraste normal
+  // no puede decir nada útil. La referencia de Yahoo despeja la razón y el
+  // tamaño vuelve a ser NUESTRO cálculo con NUESTRO cierre.
+  if (referencia) {
+    const vig = referenciaVigente(referencia, hoy || new Date());
+    const r = razonAdr({
+      cap_referencia_usd: referencia.market_cap_usd,
+      acciones_millones: entrada.acciones,
+      precio_usd: entrada.precio_usd,
+    });
+    if (r.ok) {
+      return {
+        ...base, estado: 'verificada', auditable: true,
+        cap_usd: (num(entrada.acciones) * MILLON * num(entrada.precio_usd)) / r.razon,
+        error_pct: r.error_pct, multiplo: null,
+        via: 'referencia_manual', razon_adr: r.razon, razon_etiqueta: r.etiqueta,
+        fuente: `calc: acciones÷${r.etiqueta}×neon`,
+        referencia_fuente: referencia.fuente || null,
+        referencia_capturada_en: referencia.capturada_en || null,
+        // Vencida NO es gris: es una tarea. El cuadro se sigue dibujando con la
+        // razón y esto es lo que la hace aparecer en cron-status.
+        referencia_a_recapturar: vig.a_recapturar === true,
+        referencia_vigente_hasta: vig.vigente_hasta,
+        motivo: null,
+      };
+    }
+    return {
+      ...base, estado: 'gris_punteado', auditable: true, cap_usd: null,
+      error_pct: r.error_pct ?? null, multiplo: r.crudo ?? null,
+      via: 'referencia_manual', motivo: r.motivo,
+    };
+  }
 
   // Sin reconstrucción no hay con qué contrastar. Una sola fuente no se
   // "verifica" a sí misma; a lo sumo se le cree, y creerle es lo que falló.
@@ -131,17 +283,46 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   }
 
   const ok = Math.abs(e) <= umbral;
+  if (ok) {
+    return {
+      ...base, estado: 'verificada', auditable: true,
+      // La cap que viaja es la DECLARADA, no un promedio: promediar dos fuentes
+      // que discrepan fabrica un número que ninguna midió.
+      cap_usd: decl.cap, error_pct: e, multiplo, via: 'finnhub', motivo: null,
+    };
+  }
+
+  // ── SEGUNDA OPORTUNIDAD: EDGAR ───────────────────────────────────────
+  // Que las dos de Finnhub no cuadren NO dice cuál está mal. En las 21 de la
+  // auditoría el patrón apunta al conteo de acciones (tres pegadas a 2× =
+  // split no reflejado), así que se le pregunta a quien firma la portada. Sólo
+  // acá: si el par de Finnhub ya concordaba, no se toca nada — las 279
+  // verificadas siguen verificadas por donde venían.
+  if (edgar && num(edgar.acciones) != null) {
+    const ve = veredictoCapEdgar({
+      symbol, declarada_usd: decl.cap, acciones_edgar: edgar.acciones,
+      precio_usd: entrada.precio_usd, fecha_portada: edgar.fecha_portada,
+    });
+    if (ve.estado === 'verificada') {
+      return {
+        ...base, ...ve,
+        // El desajuste con Finnhub no se borra por haberlo resuelto: queda
+        // dicho, porque es lo que explica por qué la fuente dice `edgar`.
+        finnhub_error_pct: e, finnhub_multiplo: multiplo,
+      };
+    }
+    return {
+      ...base, ...ve,
+      finnhub_error_pct: e, finnhub_multiplo: multiplo,
+      motivo: `${ve.motivo}; contra Finnhub el desajuste era ${e.toFixed(1)}% (${multiplo.toFixed(2)}×)`,
+    };
+  }
+
   return {
-    ...base,
-    estado: ok ? 'verificada' : 'gris_punteado',
-    auditable: true,
-    // La cap que viaja es la DECLARADA, no un promedio: promediar dos fuentes
-    // que discrepan fabrica un número que ninguna midió.
-    cap_usd: ok ? decl.cap : null,
-    error_pct: e,
-    multiplo,
-    motivo: ok ? null
-      : `la cap declarada difiere ${e.toFixed(1)}% de acciones×precio (${multiplo.toFixed(2)}×), techo ${umbral}%`,
+    ...base, estado: 'gris_punteado', auditable: true, cap_usd: null,
+    error_pct: e, multiplo, via: 'finnhub',
+    motivo: `la cap declarada difiere ${e.toFixed(1)}% de acciones×precio (${multiplo.toFixed(2)}×), techo ${umbral}%`
+      + (edgar ? '; EDGAR no dio acciones para cruzarlo' : ''),
   };
 }
 

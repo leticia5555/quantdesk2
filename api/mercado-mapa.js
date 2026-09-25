@@ -16,6 +16,7 @@
 import { sql } from './_lib/db.js';
 import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
 import REFERENCIAS_CAP from './_lib/mercado-cap-referencia.json' with { type: 'json' };
+import REFERENCIAS_CAP_US from './_lib/mercado-cap-us-referencia.json' with { type: 'json' };
 import { CRITERIOS } from './_lib/mercado-fase0.js';
 import {
   evaluaG2, SQL_G2, VENTANA_DIAS_G2, rangoDeCapturas,
@@ -39,6 +40,37 @@ function inicioDeAnio(ahora) {
 // caché no envejecen nada y sacan al origen de la ruta del teléfono.
 const CACHE = 'public, s-maxage=600, stale-while-revalidate=3600';
 
+// Las referencias manuales de los ADR, indexadas una vez por proceso. NO se
+// pintan: sólo despejan la razón del ADR (ver el _doc del JSON).
+const REFS_US = new Map(
+  (REFERENCIAS_CAP_US.referencias || []).map((r) => [String(r.clave).toUpperCase(), r]),
+);
+
+/**
+ * QUÉ SE PUEDE CACHEAR.
+ *
+ * El 2026-09-24 la primera carga en Chrome sirvió un error de HACE HORAS:
+ * "column cap_moneda does not exist", generado 5:06 pm, de antes de la
+ * migración. El endpoint respondía 200 —porque el error de lectura viaja
+ * DENTRO del cuerpo, que es lo correcto— y el handler miraba sólo el status
+ * para decidir el `Cache-Control`. Vercel cacheó diez minutos de un error ya
+ * arreglado, y ningún reintento del teléfono lo iba a limpiar.
+ *
+ * La regla ahora es del CUERPO, no del status: se cachea únicamente una
+ * respuesta completa. Cualquier otra cosa —error de lectura, tabla vacía, cero
+ * cuadros— va `no-store`, porque una respuesta que describe un problema
+ * transitorio no debe sobrevivir al arreglo del problema.
+ */
+export function cacheDeRespuesta(out, status = 200) {
+  if (status !== 200) return { cache: 'no-store', completa: false, motivo: `status ${status}` };
+  if (!out || typeof out !== 'object') return { cache: 'no-store', completa: false, motivo: 'respuesta vacía' };
+  if (out.error) return { cache: 'no-store', completa: false, motivo: 'la respuesta trae un error' };
+  if (!Array.isArray(out.cuadros) || out.cuadros.length === 0) {
+    return { cache: 'no-store', completa: false, motivo: 'no hay cuadros que mostrar' };
+  }
+  return { cache: CACHE, completa: true, motivo: null };
+}
+
 // LAS CONSULTAS SALEN A UNA CONSTANTE EXPORTADA a propósito: mientras
 // vivieron incrustadas acá, NINGÚN test las tocaba —los tests mockean `sql()`—
 // y el único que las parseaba era Postgres en producción. Así se coló un
@@ -47,7 +79,8 @@ const CACHE = 'public, s-maxage=600, stale-while-revalidate=3600';
 // `tests/mercado-sql.test.mjs` las prepara contra un Postgres de verdad.
 export const SQL_MAPA_US = {
   universo:
-      `select symbol, nombre, sector_etf, market_cap, cap_fuente, cap_actualizado, cap_moneda, acciones_millones
+      `select symbol, nombre, sector_etf, market_cap, cap_fuente, cap_actualizado, cap_moneda, acciones_millones,
+              acciones_edgar_millones, acciones_edgar_portada
          from mercado_universo_us
         where sector_etf is not null and market_cap is not null`,
   // UNA consulta, y acotada a lo que el navegador necesita: los últimos N
@@ -115,7 +148,7 @@ async function mapaUs(ahora) {
     };
   }
 
-  const { cuadros, faltantes } = armaMapaUs({ universo, precios, ahora });
+  const { cuadros, faltantes } = armaMapaUs({ universo, precios, ahora, referencias: REFS_US });
 
   // EL CIERRE QUE SE ESTÁ PINTANDO, que no es el que el calendario dice que
   // debería haber NI el más nuevo que aparezca. Un lunes a las 17:00, con la
@@ -252,7 +285,12 @@ export default async function handler(req, res) {
     out.cierres_por_cuadro = CIERRES_RECIENTES;
     out.min_puntos_serie = MIN_PUNTOS_SERIE;
     out.ms = Date.now() - t0;
-    res.setHeader('Cache-Control', CACHE);
+    const c = cacheDeRespuesta(out, 200);
+    res.setHeader('Cache-Control', c.cache);
+    // Que se diga en la respuesta: si alguna vez vuelve a aparecer un cuerpo
+    // viejo, el propio JSON dice si ese cuerpo era cacheable o no.
+    out.cacheable = c.completa;
+    if (!c.completa) out.no_cacheado_porque = c.motivo;
     return res.status(200).json(out);
   } catch (e) {
     // Un error no se cachea: el próximo pedido tiene que volver a intentar.

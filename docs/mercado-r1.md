@@ -337,3 +337,66 @@ el mapa a `us|mx`—, y hacer que lo aceptara habría sido meter código de prue
 en producción.
 
 **30 comprobaciones en verde, 0 en rojo. Suite: 118/120.**
+
+---
+
+## §8 — Ronda 3: lo que encontró Chrome, y el gris que no se veía
+
+Prod en Chrome, `main` en `d6eab7b`. Los puntos 3–5 del encargo (fecha del
+chip, fuera el "+N más", cero logos) quedaron confirmados en pantalla. Dos
+bugs nuevos, los dos de los que el mapa **dice** de sí mismo:
+
+### 8.1 Un error cacheado diez minutos después de estar arreglado
+
+La primera carga sirvió `column cap_moneda does not exist`, generado a las
+5:06 pm — de **antes** de la migración. El error de lectura viaja dentro del
+cuerpo (eso es correcto: es lo que #251 vino a arreglar), pero el handler
+decidía el `Cache-Control` mirando **sólo el status**, y un 200 con un error
+adentro se cacheaba igual que un mapa sano. Ningún reintento del teléfono lo
+iba a limpiar.
+
+La regla ahora es del **cuerpo**, en `cacheDeRespuesta()`: se cachea
+únicamente una respuesta completa —sin `error` y con al menos un cuadro—. Todo
+lo demás va `no-store`, porque una respuesta que describe un problema
+transitorio no debe sobrevivir al arreglo del problema. La respuesta además
+lleva `cacheable` y, si no lo es, `no_cacheado_porque`: si alguna vez vuelve a
+aparecer un cuerpo viejo, el propio JSON dice si ese cuerpo era cacheable.
+
+### 8.2 "277 cuadros sin dato completo" eran 25
+
+El pie sumaba 250 símbolos **sin precio** a 25 caps sin verificar y lo
+reportaba como un solo problema, que manda a buscar 277 bugs donde hay 25. Un
+símbolo sin serie **no es un cuadro todavía**: no se dibuja, no tiene % y no
+hay nada que mirar. `resumenFaltantes` ahora desglosa `sin_cap_verificada`,
+`sin_precio`, `sin_periodo` y `sin_ancla_ytd`; el pie muestra el primero y dice
+**"25 sin capitalización verificada"**. `total` sigue estando para quien lo
+necesite.
+
+### 8.3 Un cuadro gris tiene que verse
+
+Éste no lo reportó nadie: salió de leer el código al confirmar el punto 4.
+`agrupaPorSector` y `cuadrosVisibles` filtraban por `cap > 0`, así que una
+emisora sin cap verificada **no salía gris punteada: salía ausente**. El único
+rastro era un número en el pie, y un cuadro que no está no tiene dónde decir su
+causa — que es justo lo que pide la regla 2 del encargo.
+
+Ahora se dibuja con **tamaño fijo: el del cuadro verificado más chico de su
+sector**, punteado, con ticker y `—`, y el motivo al tocarlo. El más chico a
+propósito: el tamaño es lo único que el mapa no puede afirmar de esa emisora,
+así que ocupa lo menos posible sin desaparecer, y nunca hereda un área
+proporcional a una cap en la que no creemos. Un sector entero sin verificadas
+cae al mínimo global; si no hay ninguna en todo el mapa —el día del despliegue,
+con las columnas nuevas vacías— todas miden igual y el mapa es una rejilla gris
+que lo dice, en vez de una pantalla en blanco.
+
+El % **se calla** en esas: pintarlo sobre un cuadro cuyo tamaño no afirmamos lo
+haría pasar por un cuadro entero.
+
+### 8.4 Cómo se puso a prueba
+
+`node scripts/mercado-chromium.mjs` → **42 comprobaciones en verde, 0 en rojo**,
+incluidas las cuatro nuevas: la gris se dibuja punteada, lleva ticker y `—`, su
+hoja dice la causa, y el pie no suma los sin precio.
+
+`node --test tests/` → **122 de 123 suites en verde**. La única roja es la
+heredada `agents-persistence`, que no se tocó.

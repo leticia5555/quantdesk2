@@ -266,7 +266,14 @@
   }
 
   function cuadrosVisibles(d){
-    var cs = (d.cuadros||[]).filter(function(c){ return Number.isFinite(c.cap) && c.cap>0; });
+    // YA ES UN CUADRO el que tiene cap verificada o el que tiene precio: el
+    // segundo se dibuja gris punteado con tamaño prestado y dice su causa al
+    // tocarlo. Este filtro pedía `cap > 0` y por eso una emisora sin cap
+    // verificada no salía gris: salía ausente, y su motivo no tenía dónde
+    // aparecer. El que no tiene precio no es un cuadro todavía.
+    var cs = (d.cuadros||[]).filter(function(c){
+      return (Number.isFinite(c.cap) && c.cap>0) || Number.isFinite(c.precio);
+    });
     if(estado.sector) return cs.filter(function(c){ return (c.sector||'—')===estado.sector; });
     return cs;
   }
@@ -345,7 +352,8 @@
       var h0 = r.h - (conCabecera ? ALTO_CABECERA : 0);
 
       var items = g.items.map(function(c){ var x=cambio(c);
-        return { key:c.symbol, value:c.cap, cuadro:c, pct:x.pct, motivo:x.motivo }; });
+        return { key:c.symbol, value:c.area, cuadro:c, pct:x.pct, motivo:x.motivo,
+                 cap_verificada:c.cap_verificada }; });
       squarify(items, { x:r.x, y:y0, w:r.w, h:h0 }).forEach(function(q){
         frag.appendChild(cuadroEmpresa(q, false));
       });
@@ -355,8 +363,12 @@
 
   // ── SEGUNDO NIVEL: un sector completo ─────────────────────────────
   function pintarSector(l, cs, w, h){
-    var items = cs.map(function(c){ var x=cambio(c);
-      return { key:c.symbol, value:c.cap, cuadro:c, pct:x.pct, motivo:x.motivo }; });
+    // Mismo criterio de área que el primer nivel —incluido el tamaño fijo de
+    // las grises— para que un cuadro no cambie de sentido al entrar al sector.
+    var g = agrupaPorSector(cs).grupos[0];
+    var items = (g ? g.items : []).map(function(c){ var x=cambio(c);
+      return { key:c.symbol, value:c.area, cuadro:c, pct:x.pct, motivo:x.motivo,
+               cap_verificada:c.cap_verificada }; });
     var frag = document.createDocumentFragment();
     squarify(items, { x:0, y:0, w:w, h:h }).forEach(function(q){ frag.appendChild(cuadroEmpresa(q, false)); });
     l.appendChild(frag);
@@ -369,12 +381,19 @@
   function cuadroEmpresa(r, esSector){
     var it = r.item;
     var div = document.createElement('div');
-    div.className = 'cuadro' + (!Number.isFinite(it.pct) ? ' punteado' : '');
-    div.style.cssText = 'left:'+r.x+'px;top:'+r.y+'px;width:'+r.w+'px;height:'+r.h+'px;background:'+colorDe(it.pct);
+    // Dos motivos distintos para el mismo punteado, y los dos son "falta un
+    // dato": sin % no se puede colorear, y sin cap verificada el TAMAÑO es
+    // prestado. En el segundo caso el % se calla a propósito: pintarlo sobre
+    // un cuadro cuyo tamaño no afirmamos lo haría pasar por un cuadro entero.
+    var capGris = it.cap_verificada === false;
+    var incompleto = capGris || !Number.isFinite(it.pct);
+    div.className = 'cuadro' + (incompleto ? ' punteado' : '');
+    div.style.cssText = 'left:'+r.x+'px;top:'+r.y+'px;width:'+r.w+'px;height:'+r.h+'px;background:'
+      + (capGris ? COLOR_SIN_DATO : colorDe(it.pct));
     div.setAttribute('aria-label', it.key);
 
     var txt = '—';
-    if(Number.isFinite(it.pct)){
+    if(!capGris && Number.isFinite(it.pct)){
       var r1 = Math.round(it.pct*10)/10;
       txt = r1===0 ? '0.0%' : ((r1>0?'+':'')+r1.toFixed(1)+'%');
     }
@@ -427,7 +446,13 @@
     partes.push('fuente: ' + (f.series || '—'));
     if(d.cosecha && d.cosecha.ultima_fecha) partes.push('último cierre: ' + d.cosecha.ultima_fecha);
     if(d.cosecha && d.cosecha.alerta) partes.push('⚠ cosecha atrasada ' + d.cosecha.sesiones_de_atraso + ' sesiones');
-    if(d.faltantes && d.faltantes.total) partes.push(d.faltantes.total + ' cuadros sin dato completo');
+    // LO QUE SE CUENTA ACÁ SON CUADROS, y un símbolo sin precio no es un
+    // cuadro todavía: no se dibuja, no tiene %, no hay nada que mirar. El
+    // conteo decía "277 cuadros sin dato completo" sumándole los 250 sin
+    // serie, y mandaba a buscar 277 problemas donde había 25.
+    var f2 = d.faltantes || {};
+    if(f2.sin_cap_verificada) partes.push(f2.sin_cap_verificada + ' sin capitalización verificada');
+    if(f2.sin_periodo) partes.push(f2.sin_periodo + ' sin periodo');
     partes.push('generado ' + new Date(d.generado_en).toLocaleString('es-MX'));
     document.getElementById('pie').textContent = partes.join(' · ');
   }

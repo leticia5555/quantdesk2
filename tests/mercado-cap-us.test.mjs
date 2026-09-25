@@ -102,3 +102,139 @@ test('la auditoría cuenta, agrupa por moneda y ordena por el que más miente', 
   assert.equal(a.umbral_pct, 5, 'el umbral es el congelado de G2, no uno nuevo');
   assert.equal(a.peores[0].symbol, 'TSM', 'el que más miente de tamaño va primero');
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA RAZÓN DEL ADR, Y EL ORDEN DE PRECEDENCIA
+//
+// La referencia manual de Yahoo NO SE PINTA: despeja la razón y nada más. Lo
+// que el mapa dibuja es `acciones ÷ razón × nuestro cierre`, así que el cuadro
+// sigue al mercado en vez de quedarse clavado en la fecha de captura.
+// ═══════════════════════════════════════════════════════════════════════
+import { razonAdr, referenciaVigente, vigenciaReferenciasUs, MILLON } from '../api/_lib/mercado-cap-us.js';
+
+// Un ADR de 5 ordinarias por ADR: 5,190M ordinarias, ADR a 200 USD, y una
+// referencia que dice que la empresa vale 5,190M/5 × 200.
+const TSM = { acciones: 5_190, precio_usd: 200 };
+const REF_TSM = {
+  // 1% arriba de la razón exacta, como una captura de verdad: la razón sigue
+  // resolviendo a 5:1 y la cap pintada NO coincide con la referencia.
+  clave: 'TSM', market_cap_usd: ((TSM.acciones * MILLON * TSM.precio_usd) / 5) * 1.01,
+  fuente: 'yahoo-finance-market-cap-intraday', capturada_en: '2026-09-23', vigente_hasta: '2026-09-30',
+};
+const HOY = new Date('2026-09-24T12:00:00Z');
+
+test('la razón se despeja y sale una proporción de ADR, no un decimal suelto', () => {
+  const r = razonAdr({ cap_referencia_usd: REF_TSM.market_cap_usd, acciones_millones: TSM.acciones, precio_usd: TSM.precio_usd });
+  assert.equal(r.ok, true);
+  assert.equal(r.razon, 5);
+  assert.equal(r.etiqueta, '5:1');
+});
+
+test('una razón que no se parece a ninguna proporción NO se fuerza a la más cercana', () => {
+  // Captura vieja, o acciones de otra clase: el desajuste no es una razón de
+  // ADR y darle un tamaño igual sería el bug que esto vino a cerrar.
+  const r = razonAdr({ cap_referencia_usd: REF_TSM.market_cap_usd / 1.13, acciones_millones: TSM.acciones, precio_usd: TSM.precio_usd });
+  assert.equal(r.ok, false);
+  assert.equal(r.razon, null);
+  assert.match(r.motivo, /no se parece a ninguna proporción/);
+});
+
+test('con referencia vigente la cap pintada es NUESTRO cálculo, no la referencia', () => {
+  const v = veredictoCapUs({
+    symbol: 'TSM', moneda: 'TWD', declarada: 32_000_000, ...TSM,
+    referencia: REF_TSM, hoy: HOY,
+  });
+  assert.equal(v.estado, 'verificada');
+  assert.equal(v.cap_usd, (TSM.acciones * MILLON * TSM.precio_usd) / 5);
+  assert.equal(v.fuente, 'calc: acciones÷5:1×neon');
+  assert.equal(v.via, 'referencia_manual');
+  // Y la cap de referencia no viaja al render en ningún campo.
+  assert.equal(JSON.stringify(v).includes(String(REF_TSM.market_cap_usd)), false,
+    'la referencia manual nunca se pinta: sólo el veredicto');
+});
+
+// ── VENCER NO APAGA EL CUADRO ──────────────────────────────────────────
+// La primera versión ponía gris al vencer la referencia, que es la trampa de
+// los 14 días de #248 con otro disfraz: un reloj que apaga datos buenos solo.
+// La razón del ADR es ESTRUCTURAL; lo que envejece es la cap de Yahoo, y la cap
+// de Yahoo no se pinta.
+test('una referencia vencida SIGUE dibujando el cuadro, y se anota para recapturar', () => {
+  const v = veredictoCapUs({
+    symbol: 'TSM', moneda: 'TWD', declarada: 32_000_000, ...TSM,
+    referencia: { ...REF_TSM, vigente_hasta: '2026-06-30' }, hoy: HOY,
+  });
+  assert.equal(v.estado, 'verificada', 'el cuadro no se apaga por el calendario');
+  assert.equal(v.cap_usd, (TSM.acciones * MILLON * TSM.precio_usd) / 5);
+  assert.equal(v.referencia_a_recapturar, true, 'pero la tarea queda dicha');
+  assert.equal(v.referencia_vigente_hasta, '2026-06-30');
+  assert.equal(v.motivo, null, 'una tarea pendiente no es un motivo de gris');
+});
+
+test('lo único que pone gris es que la razón deje de parecerse a una proporción', () => {
+  // Un split del ADR, un cambio de ratio, una captura mal leída: ahí sí cambió
+  // algo de verdad y el tamaño deja de estar sostenido.
+  const v = veredictoCapUs({
+    symbol: 'TSM', moneda: 'TWD', declarada: 32_000_000, ...TSM,
+    referencia: { ...REF_TSM, market_cap_usd: REF_TSM.market_cap_usd / 1.13 }, hoy: HOY,
+  });
+  assert.equal(v.estado, 'gris_punteado');
+  assert.equal(v.cap_usd, null);
+  assert.match(v.motivo, /no se parece a ninguna proporción/);
+});
+
+test('referenciaVigente marca la tarea, no una falla', () => {
+  const sinFecha = referenciaVigente({ clave: 'X', market_cap_usd: 1 }, HOY);
+  assert.equal(sinFecha.a_recapturar, true);
+  assert.match(sinFecha.motivo, /no declara hasta cuándo/);
+
+  const vencida = referenciaVigente({ clave: 'X', market_cap_usd: 1, vigente_hasta: '2026-06-30' }, HOY);
+  assert.equal(vencida.a_recapturar, true);
+  assert.match(vencida.motivo, /sigue dibujándose/);
+});
+
+test('la lista para cron-status no lleva alerta: una tarea con fecha no es un rojo', () => {
+  const v = vigenciaReferenciasUs({
+    referencias: [
+      { clave: 'TSM', vigente_hasta: '2026-12-31', fuente: 'yahoo', capturada_en: '2026-09-23' },
+      { clave: 'VALE', vigente_hasta: '2026-06-30', fuente: 'yahoo', capturada_en: '2026-06-01' },
+    ],
+  }, HOY);
+  assert.equal(v.filas, 2);
+  assert.equal(v.vigentes, 1);
+  assert.deepEqual(v.a_recapturar.map((r) => r.clave), ['VALE']);
+  assert.equal(v.a_recapturar[0].mapa, 'us');
+  assert.equal(v.alerta, false, 'no puede poner en rojo el tablero: no rompe nada');
+});
+
+// ── EDGAR entra SÓLO como segunda oportunidad ──────────────────────────
+test('si el par de Finnhub ya concuerda, EDGAR no cambia nada', () => {
+  // Las 279 verificadas de la auditoría no se mueven de fuente por haber
+  // agregado un árbitro: nadie reportó que estuvieran rotas.
+  const v = veredictoCapUs({ ...NVDA, edgar: { acciones: 1, fecha_portada: '2025-08-01' } });
+  assert.equal(v.estado, 'verificada');
+  assert.equal(v.via, 'finnhub');
+  assert.equal(v.cap_usd, NVDA.declarada * 1e6);
+});
+
+test('cuando Finnhub no concuerda, EDGAR decide y la fuente lo dice', () => {
+  const v = veredictoCapUs({
+    symbol: 'MNST', moneda: 'USD', declarada: 60_000, acciones: 500, precio_usd: 57.7,
+    edgar: { acciones: 1_040_000_000, fecha_portada: '2025-07-31' },
+  });
+  assert.equal(v.estado, 'verificada');
+  assert.equal(v.via, 'edgar');
+  assert.equal(v.fuente, 'calc: edgar×neon');
+  assert.equal(v.cap_usd, 1_040_000_000 * 57.7);
+  assert.ok(Math.abs(v.finnhub_error_pct) > 5, 'el desajuste con Finnhub queda dicho, no se borra');
+});
+
+test('si EDGAR tampoco cuadra, gris con las DOS causas', () => {
+  const v = veredictoCapUs({
+    symbol: 'VMRK', moneda: 'USD', declarada: 10_000, acciones: 100, precio_usd: 46,
+    edgar: { acciones: 100_000_000, fecha_portada: '2025-07-31' },
+  });
+  assert.equal(v.estado, 'gris_punteado');
+  assert.equal(v.cap_usd, null);
+  assert.match(v.motivo, /techo propio 10%/);
+  assert.match(v.motivo, /contra Finnhub/);
+});

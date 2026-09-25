@@ -87,7 +87,7 @@ export function empaquetaSerie(filas = [], { ahora = new Date(), recientes = CIE
  * sin-cap contados aparte. Se respeta tal cual: afirmar un porcentaje que no
  * se midió es el mismo error que el mapa evita en todo lo demás.
  */
-export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new Date() }) {
+export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new Date(), referencias = new Map() }) {
   const porSymbol = new Map();
   for (const p of precios) {
     const s = String(p.symbol || '').toUpperCase();
@@ -117,6 +117,14 @@ export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new D
       moneda: u.cap_moneda || null,
       acciones: num(u.acciones_millones),
       precio_usd: paq.precio,
+      // La referencia manual de Yahoo para los ADR: no se pinta, sólo despeja
+      // la razón. Y las acciones de EDGAR, que entran de árbitro cuando el par
+      // de Finnhub no concuerda.
+      referencia: referencias.get(sym) || null,
+      edgar: num(u.acciones_edgar_millones) != null
+        ? { acciones: num(u.acciones_edgar_millones) * 1e6, fecha_portada: u.acciones_edgar_portada || null }
+        : null,
+      hoy: ahora,
     });
     // Sólo se reporta como problema DE CAP cuando hay precio: sin serie no
     // hay con qué contrastar, y eso ya está dicho arriba. Dos motivos para
@@ -130,7 +138,16 @@ export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new D
       nombre: u.nombre || sym,
       sector: u.sector_etf || null,
       cap: cap.estado === 'verificada' ? cap.cap_usd : null,
-      cap_fuente: cap.estado === 'verificada' ? (u.cap_fuente || null) : null,
+      // La fuente la declara el VEREDICTO cuando la cap no salió de Finnhub:
+      // `calc: edgar×neon` o `calc: acciones÷5:1×neon` dicen de dónde viene el
+      // número que se está pintando. Decir "finnhub" en esos casos sería
+      // atribuirle un número que Finnhub no dio.
+      cap_fuente: cap.estado === 'verificada' ? (cap.fuente || u.cap_fuente || null) : null,
+      cap_via: cap.via || null,
+      cap_razon_adr: cap.razon_etiqueta || null,
+      cap_referencia_a_recapturar: cap.referencia_a_recapturar === true,
+      cap_referencia_vigente_hasta: cap.referencia_vigente_hasta || null,
+      cap_portada_edgar: cap.fecha_portada || null,
       cap_medida_en: u.cap_actualizado ? String(u.cap_actualizado).slice(0, 10) : null,
       estado: cap.estado,
       motivo: cap.motivo,
@@ -192,5 +209,20 @@ export function armaMapaMx({ detalleG2 = [], precios = [], ahora = new Date() })
 export function resumenFaltantes(faltantes = []) {
   const por = {};
   for (const f of faltantes) por[f.motivo] = (por[f.motivo] || 0) + 1;
-  return { total: faltantes.length, por_motivo: por, ejemplos: faltantes.slice(0, 10) };
+  const n = (k) => por[k] || 0;
+  // `total` sumaba cosas que se arreglan en lugares distintos y se leía como
+  // un solo problema: "277 cuadros sin dato completo" eran 25 caps sin
+  // verificar más 250 símbolos que ni siquiera tienen serie. Los segundos NO
+  // SON CUADROS todavía; contarlos como tales manda a buscar 250 bugs que no
+  // existen. Sigue estando `total` para quien lo necesite, pero el pie usa el
+  // desglose.
+  return {
+    total: faltantes.length,
+    por_motivo: por,
+    sin_precio: n(MOTIVOS.SIN_SERIE),
+    sin_periodo: n(MOTIVOS.SERIE_CORTA),
+    sin_ancla_ytd: n(MOTIVOS.SIN_ANCLA_YTD),
+    sin_cap_verificada: n(MOTIVOS.CAP_SIN_VERIFICAR),
+    ejemplos: faltantes.slice(0, 10),
+  };
 }

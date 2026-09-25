@@ -69,6 +69,14 @@ function cuadrosUs() {
   // saber decir en voz alta.
   cs.push({ symbol: 'SINSERIE', nombre: 'Sin serie', sector: 'XLK', cap: 5e9,
     cap_fuente: 'neon:arena_market_cap', serie: [], ytd: null, ytd_motivo: 'no_hay_serie', puntos: 0, precio: null, fecha_precio: null });
+  // El caso TSM: cap SIN verificar pero con precio. Antes desaparecía del
+  // mapa; ahora tiene que salir gris punteado, con ticker y "—", y su causa
+  // al tocarlo.
+  cs.push({ symbol: 'TSMG', nombre: 'ADR sin cap verificada', sector: 'XLK', cap: null,
+    cap_fuente: null, estado: 'gris_punteado', cap_auditable: true, cap_moneda: 'TWD',
+    motivo: 'la cap declarada viene en TWD, no en USD',
+    serie: serie(200, 21, 0.01), ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: 180 },
+    ytd_motivo: null, puntos: 180, precio: 202, fecha_precio: '2026-09-18' });
   cs.push({ symbol: 'SINYTD', nombre: 'Sin ancla', sector: 'XLF', cap: 4e9,
     cap_fuente: 'finnhub:metric', serie: serie(30, 21, 0.02), ytd: null,
     ytd_motivo: 'la serie empieza en 2026-07-01 y no llega al año anterior: no hay cierre de fin de año contra el cual anclar',
@@ -80,7 +88,8 @@ const FIXTURES = {
     mapa: 'us', bolsa: 'us', cuadros: cuadrosUs(),
     mas: { n: 253, cap: 4.2e12, pct: 18.7, sin_cap_excluidos: 12, nota: '12 nombres quedan fuera del porcentaje porque no tienen capitalización medida' },
     fuente: { cuadros: 'neon:mercado_universo_us (sector y cap)', series: 'neon:mercado_precios_us (cierre y cierre ajustado, cosecha diaria)' },
-    faltantes: { total: 2, por_motivo: { no_hay_serie: 1, sin_ancla_ytd: 1 }, ejemplos: [] },
+    faltantes: { total: 3, por_motivo: { no_hay_serie: 1, sin_ancla_ytd: 1, cap_sin_verificar: 1 },
+      sin_precio: 1, sin_periodo: 0, sin_ancla_ytd: 1, sin_cap_verificada: 1, ejemplos: [] },
     periodos: ['1D', '1S', '1M', 'YTD'], generado_en: '2026-09-21T22:00:00.000Z',
     ultimo_cierre: '2026-09-18',
   },
@@ -276,9 +285,12 @@ try {
   // LA REGLA ES "TODAS", no "muchas": se comparan los cuadros dibujados
   // contra los que el fixture trae con capitalización. Un umbral redondo
   // (">= 60") habría pasado con 60 de 300.
-  const conCap = FIXTURES.us.cuadros.filter((c) => Number.isFinite(c.cap) && c.cap > 0).length;
-  chequeo('se dibujan TODAS las empresas con capitalización, no un recorte',
-    chicos.total === conCap, `${chicos.total} dibujados de ${conCap} con cap`);
+  // "TODAS" son las que YA son cuadros: con cap verificada, o con precio y la
+  // cap gris. Las que no tienen precio no son cuadros todavía.
+  const dibujables = FIXTURES.us.cuadros.filter(
+    (c) => (Number.isFinite(c.cap) && c.cap > 0) || Number.isFinite(c.precio)).length;
+  chequeo('se dibujan TODAS las que ya son cuadros, no un recorte',
+    chicos.total === dibujables, `${chicos.total} dibujados de ${dibujables} dibujables`);
   chequeo('los cuadros sin letra siguen siendo tocables', chicos.todosTocables, JSON.stringify(chicos));
 
   // REGLA 5: cero logos en el mapa. Ni <img>, ni background-image.
@@ -357,6 +369,41 @@ try {
   const hojaHueco = await p.locator('#hojaCuerpo').innerText();
   chequeo('un cuadro sin dato dice "—"', /—/.test(hojaHueco));
   chequeo('y dice POR QUÉ no hay dato', (await p.locator('.hoja .motivo').count()) === 1, hojaHueco.slice(0, 60).replace(/\n/g, ' '));
+
+  // ── UNA CAP SIN VERIFICAR SE VE, CON SU CAUSA ──────────────────────
+  // Antes se filtraba por `cap > 0` y la emisora salía AUSENTE del mapa: el
+  // único rastro era un número en el pie. Un cuadro que no está no tiene
+  // dónde decir por qué le falta el dato.
+  await p.goto(`${BASE}/mercado?mapa=us&sector=XLK&symbol=TSMG`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('.hoja[data-abierta="1"]');
+  const hojaGris = await p.locator('#hojaCuerpo').innerText();
+  chequeo('la hoja de una cap sin verificar dice su causa', /TWD/.test(hojaGris), hojaGris.slice(0, 80).replace(/\n/g, ' '));
+  await p.locator('#cerrar').tap();
+
+  const gris = await p.evaluate(() => {
+    const e = [...document.querySelectorAll('.cuadro')].find((x) => x.getAttribute('aria-label') === 'TSMG');
+    if (!e) return { existe: false };
+    return {
+      existe: true,
+      punteado: e.classList.contains('punteado'),
+      ticker: ((e.querySelector('.sym') || {}).textContent || ''),
+      valor: ((e.querySelector('.val') || {}).textContent || ''),
+      ancho: Math.round(e.getBoundingClientRect().width),
+    };
+  });
+  chequeo('una cap sin verificar se DIBUJA gris punteada, no desaparece',
+    gris.existe === true && gris.punteado === true, JSON.stringify(gris));
+  chequeo('la gris lleva su ticker y "—", nunca un % sobre un tamaño prestado',
+    gris.ticker === 'TSMG' && gris.valor === '—', JSON.stringify(gris));
+
+  // ── EL PIE CUENTA CUADROS ──────────────────────────────────────────
+  await p.goto(`${BASE}/mercado?mapa=us`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('.cabecera');
+  const pie = await p.locator('#pie').innerText();
+  chequeo('el pie dice "sin capitalización verificada", no "cuadros sin dato completo"',
+    /sin capitalización verificada/.test(pie) && !/cuadros sin dato completo/.test(pie), pie);
+  chequeo('y no le suma los símbolos sin precio, que no son cuadros todavía',
+    /1 sin capitalización verificada/.test(pie), pie);
 
   // México: el chip cambia de bolsa y el gris lleva su motivo
   await p.goto(`${BASE}/mercado?mapa=mx&periodo=1M`, { waitUntil: 'networkidle' });
