@@ -14,6 +14,8 @@
 //                                               símbolos (solo DB), con los
 //                                               3 trimestres más extremos
 //   GET /api/earnings-beat?vista=live&diag=escala
+//   GET /api/earnings-beat?vista=live&diag=desacuerdos   → la fila en la mano:
+//       pregunta literal del mercado, umbral declarado, nivel de EPS y dictamen
 //                                             → cuántos de los 99 tienen
 //                                               estimados de escala chica
 //                                               (medición, no cambia la UI)
@@ -69,7 +71,7 @@ import {
   extraeConsensoEps, outcomeResuelto, tokenYes, precioEnT24h, cruzaConPead, evaluaFuentePIT,
   isoDia, ts, resumenMarkdown, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
   analizaDesfases, clasificaT24h, clasificaParaV1, comparaEmparejamiento,
-  estadisticasHistoricas, indiceYes, num, escalaDelEstimado, PISO_ESCALA,
+  estadisticasHistoricas, evaluaDesacuerdo, CRITERIOS_DESACUERDO, indiceYes, num, escalaDelEstimado, PISO_ESCALA,
 } from './_lib/earnings-beat.js';
 import { V0_UNIVERSE } from './_lib/pead-universe.js';
 import { getSymbolMap } from './earnings.js';
@@ -165,6 +167,71 @@ async function censoDeEscala() {
       return { p10: p(0.10), p25: p(0.25), mediana: p(0.50), p75: p(0.75) };
     })(),
     nota: 'MEDICIÓN, no decisión: la señal NO se muestra en la tarjeta. Con este conteo se decide si vale una nota al pie, una columna, o nada.',
+  };
+}
+
+// ── Diag de DESACUERDOS (?vista=live&diag=desacuerdos) ────────────────────
+// "Quiero el diagnóstico con la fila en la mano, no con el código."
+//
+// Un hueco de 70 puntos entre el precio y la tasa histórica tiene dos causas
+// posibles, y desde la tarjeta no se distinguen. Este diag imprime, por cada
+// mercado abierto, LA PREGUNTA LITERAL del mercado, el umbral que declara, el
+// nivel reciente de EPS y el dictamen — que es lo único con lo que se puede
+// decidir si el hueco es información o es que el mercado pregunta otra cosa.
+//
+// Corre la vista completa y la aplana: mismo descubrimiento, mismos números
+// que la pantalla. Si dijera otra cosa que la tarjeta, no serviría de nada.
+async function diagDesacuerdos() {
+  const live = await vistaLive({});
+  const filas = [];
+  for (const e of live.empresas || []) {
+    for (const m of e.mercados || []) {
+      const d = m.desacuerdo || {};
+      filas.push({
+        symbol: e.symbol,
+        // La pregunta LITERAL, sin recortar a 90 como en la tarjeta: acá es la
+        // evidencia, y recortada no se puede leer si pide un umbral distinto.
+        pregunta: m.titulo,
+        slug: m.slug,
+        url: m.url,
+        fecha_resolucion: m.fecha_resolucion,
+        precio_yes_pct: m.polymarket_yes_pct,
+        umbral_declarado: m.consenso_eps,
+        nivel_eps_reciente: d.instrumento ? d.instrumento.nivel_eps_reciente : null,
+        desvio_umbral_pct: d.instrumento ? d.instrumento.desvio_umbral_pct : null,
+        umbral_lejos_del_nivel: d.instrumento ? d.instrumento.umbral_lejos_del_nivel : null,
+        tasa_historica_pct: d.tasa_historica_pct,
+        trimestres: d.trimestres ?? null,
+        gap_puntos: d.gap_puntos,
+        clasificacion: d.clasificacion,
+        motivo: d.motivo,
+        instrumento_primero: d.instrumento_primero ?? null,
+        mercados_de_la_empresa: (e.desacuerdos || {}).cuantos_mercados ?? null,
+        varios_umbrales: (e.desacuerdos || {}).varios_umbrales ?? null,
+      });
+    }
+  }
+  // Mayor hueco arriba: es lo que se viene a mirar. Los no comparables al final.
+  filas.sort((a, b) => Math.abs(b.gap_puntos || 0) - Math.abs(a.gap_puntos || 0));
+  const porMotivo = {};
+  for (const f of filas) {
+    const k = f.clasificacion === 'desacuerdo' || f.clasificacion === 'coincide' ? f.clasificacion : (f.motivo || 'no_comparable');
+    porMotivo[k] = (porMotivo[k] || 0) + 1;
+  }
+  return {
+    diag: 'desacuerdos',
+    pregunta: '¿Qué mercados abiertos están lejos de la tasa histórica, y el hueco es información o es que el mercado pregunta otra cosa?',
+    generado_en: live.generado_en,
+    mercados: filas.length,
+    por_clasificacion: porMotivo,
+    criterios: CRITERIOS_DESACUERDO,
+    filas,
+    como_leerlo: [
+      'Un `umbral_declarado` lejos de `nivel_eps_reciente` (mirá `desvio_umbral_pct`) quiere decir que el mercado NO pregunta "¿superó el consenso?" — ahí el hueco no significa nada.',
+      '`varios_umbrales: true` quiere decir que la empresa tiene varios mercados abiertos sobre el mismo reporte: solo uno es comparable con la tasa histórica.',
+      'La tasa histórica es un CONTEO de trimestres pasados. No es predicción, y la Fase 2 dio NO-GO: QuantDesk todavía no emite probabilidad propia.',
+      'Nada de esto es señal de compra ni de venta. Es dónde mirar.',
+    ],
   };
 }
 
@@ -331,17 +398,59 @@ async function vistaLive(ctx) {
     if (!porEmpresa.has(m.symbol)) porEmpresa.set(m.symbol, []);
     porEmpresa.get(m.symbol).push(m);
   }
-  const empresas = [...porEmpresa.entries()].map(([symbol, lista]) => ({
-    symbol,
-    // La fecha que manda es la del mercado que resuelve primero.
-    fecha_resolucion: lista[0].fecha_resolucion,
-    mercados: lista,
-    historico: historico[symbol] || null,
-    // EXPLÍCITO Y NULO. Ver el comentario de arriba: la ausencia es la
-    // decisión, no un campo que falta.
-    probabilidad_quantdesk: null,
-    probabilidad_quantdesk_estado: 'en validación (Fase 2) — QuantDesk todavía no emite probabilidad propia',
-  })).sort((a, b) => String(a.fecha_resolucion || '9999').localeCompare(String(b.fecha_resolucion || '9999')));
+  // El día de hoy se calcula UNA vez y viaja por parámetro: `evaluaDesacuerdo`
+  // no lee el reloj, así el test puede fijar el día.
+  const hoy = new Date().toISOString().slice(0, 10);
+
+  const empresas = [...porEmpresa.entries()].map(([symbol, lista]) => {
+    const hist = historico[symbol] || null;
+    // El desacuerdo se mide POR MERCADO, no por empresa: cada mercado tiene su
+    // propio umbral de EPS, y la tasa de beats solo es comparable con el que
+    // pregunta por el consenso. Restarle la tasa al precio del mercado
+    // equivocado es el error que esta estructura hace imposible.
+    const mercados = lista.map((m) => ({
+      ...m,
+      desacuerdo: evaluaDesacuerdo({
+        historico: hist,
+        precio_mercado: m.polymarket_yes,
+        consenso_declarado: m.consenso_eps,
+        fecha_reporte: m.fecha_resolucion,
+        hoy,
+      }),
+    }));
+    // Varios mercados abiertos de la misma empresa = varios umbrales sobre el
+    // mismo reporte. Ahí el instrumento NO es opcional: antes de leer un hueco
+    // hay que saber cuál de los umbrales se está mirando.
+    const variosUmbrales = mercados.length > 1;
+    const comparables = mercados.filter((m) => m.desacuerdo && m.desacuerdo.clasificacion === 'desacuerdo');
+    const destacado = comparables.length
+      ? comparables.slice().sort((a, b) => Math.abs(b.desacuerdo.gap_puntos) - Math.abs(a.desacuerdo.gap_puntos))[0]
+      : null;
+    return {
+      symbol,
+      // La fecha que manda es la del mercado que resuelve primero.
+      fecha_resolucion: lista[0].fecha_resolucion,
+      mercados,
+      historico: hist,
+      desacuerdos: {
+        cuantos_mercados: mercados.length,
+        varios_umbrales: variosUmbrales,
+        instrumento_obligatorio: variosUmbrales,
+        aviso_varios_umbrales: variosUmbrales
+          ? `${mercados.length} mercados abiertos de ${symbol} sobre el mismo reporte, con umbrales distintos. La tasa histórica solo es comparable con el que pregunta por el consenso — el hueco de los otros no significa nada.`
+          : null,
+        destacado: destacado
+          ? { market_id: destacado.market_id, titulo: destacado.titulo, url: destacado.url,
+              gap_puntos: destacado.desacuerdo.gap_puntos,
+              instrumento_primero: destacado.desacuerdo.instrumento_primero || variosUmbrales }
+          : null,
+      },
+      // EXPLÍCITO Y NULO. Ver el comentario de arriba: la ausencia es la
+      // decisión, no un campo que falta.
+      probabilidad_quantdesk: null,
+      probabilidad_quantdesk_estado: 'en validación (Fase 2) — QuantDesk todavía no emite probabilidad propia',
+    };
+  }).sort((a, b) => String(a.fecha_resolucion || '9999').localeCompare(String(b.fecha_resolucion || '9999')));
 
   // Estado vacío HONESTO: por qué no hay nada, no un error genérico.
   let vacio = null;
@@ -844,8 +953,9 @@ export default async function handler(req, res) {
     try {
       // ?diag=MU,COST → base histórica de esos símbolos, sin pasar por Gamma.
       if (q.diag) {
-        const out = String(q.diag).toLowerCase() === 'escala'
-          ? await censoDeEscala()
+        const cual = String(q.diag).toLowerCase();
+        const out = cual === 'escala' ? await censoDeEscala()
+          : cual === 'desacuerdos' ? await diagDesacuerdos()
           : await diagnosticoSimbolos(String(q.diag).split(','));
         res.setHeader('Cache-Control', 'public, s-maxage=60');
         return res.status(200).json(out);
