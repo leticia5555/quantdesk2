@@ -746,6 +746,224 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B40 · ESTAMOS RANKEANDO 37 MANOS CONTRA 3 (2026-09-25)
+
+Contado sobre siete días:
+
+| agente | vivas | abortadas | | agente | vivas | abortadas |
+|---|---:|---:|---|---|---:|---:|
+| control | **37** | 0 | | gemini | 13 | 10 |
+| claude | 30 | 0 | | deepseek | 9 | **25** |
+| grok | 18 | 7 | | **qwen** | **3** | **22** |
+| ChatGPT | 13 | 13 | | **liga** | **123** | **77** |
+
+**Qwen decidió tres veces en la semana. Control decidió 37.** Y el ranking los
+ponía en la misma tabla, publicando la diferencia como si midiera al modelo.
+
+### Por qué esto es peor que el piso de ruido
+
+No es la misma objeción. **El piso dice cuánta de la distancia entre dos puestos
+es azar. Esto dice que dos agentes no jugaron el mismo juego.**
+
+Un modelo que decide tres veces en cinco sesiones tiene una cartera que es sobre
+todo **deriva de precio**: sus posiciones las eligió otro día y el mercado hizo
+el resto. Su retorno mide al mercado con su cartera vieja encima — no mide al
+modelo. Ponerlo en una tabla ordenada al lado de uno que decidió 37 veces no es
+un caveat: es comparar dos experimentos distintos.
+
+### Lo que NO se afirma
+
+**La dirección del sesgo no se insinúa, porque no se sabe.** Abortar puede
+ahorrarle a un agente una decisión mala tanto como impedirle una buena. Lo único
+afirmable es que **no midieron lo mismo**, y eso es exactamente lo que dice la
+pantalla — ni "a qwen lo perjudicaron los abortos" ni lo contrario.
+
+### Una abortada no es una decisión de no operar
+
+`ok_no_actions` (miró y decidió quedarse quieto) y `aborted_cuerpo_vacio` (el
+proveedor no contestó) son opuestos: el primero es el modelo actuando, el
+segundo es el modelo ausente. Contarlos juntos **haría parecer prudente lo que
+es una falla de infraestructura**. Por eso `vivas` incluye `ok_no_actions`,
+`rejected_rails` y `ejecutado_parcial` —en las tres el modelo llegó y decidió— y
+solo `aborted_*` cuenta como ausencia.
+
+### El criterio es el cociente, no la diferencia
+
+37 contra 3 y 370 contra 30 son el mismo problema; 40 contra 37 no lo es aunque
+la diferencia sea parecida. El corte está en **2×** (`RATIO_INCOMPARABLE`) y se
+declara como lo que es: **elegido, no derivado**. A partir de ahí uno tuvo el
+doble de oportunidades de corregir que el otro.
+
+Y **cero corridas vivas es el caso más grave, no un hueco**: un cociente con
+denominador cero no existe, y si saliera como `null` que la pantalla ignora, el
+agente más roto sería el único sin advertencia.
+
+---
+
+## B39 · LA RED DE SEGURIDAD ESTUVO APAGADA DIEZ DÍAS (2026-09-25)
+
+Salió como nota al pie del `client_order_id` y **no es una nota al pie**. El
+resto de ese incidente son órdenes que no salieron; esto es **una red de
+seguridad que no podía reintentar**.
+
+### El mecanismo
+
+`submitRiskExits` usaba `arena:<fecha>:<símbolo>:exit`. Sin la corrida adentro,
+un stop sobre el mismo nombre solo podía salir **una vez por día**.
+
+Y eso no es un inconveniente: **desarma la escalera de escalamiento.**
+`escalationFromRiskRows` cuenta los stops catastróficos que NO llenaron para
+ensanchar la banda en el intento siguiente. Ese intento reusaba el id, Alpaca lo
+rechazaba con un 422, y **la banda ensanchada nunca llegaba al broker**. Un stop
+que no llenaba a la primera no tenía segunda.
+
+### Desde cuándo — y la fecha no es la que parece
+
+El literal nació el **2026-07-30** (`86bcba4`, el commit que introdujo la regla
+de salida determinista). **Y ahí era correcto**: con UNA corrida por día, la
+fecha hacía el id único por construcción, y un reintento al día siguiente usaba
+otra fecha. La escalera funcionaba, a un escalón por día.
+
+Se rompió el **2026-09-14**, con `6b96b66` — *"cadencia POR EVENTO: vigilante
+sin LLM, disparadores y topes"*. Ese commit introdujo `runArenaRiskNet`, que
+hace correr la red **varias veces dentro del mismo día**, y ahí el id empezó a
+chocar consigo mismo.
+
+**El mismo commit contiene el arreglo, aplicado al otro camino.** `6b96b66`
+agregó `const orderTag` al camino del PM con este comentario:
+
+> Con la cadencia por evento un agente puede pronunciarse dos veces sobre el
+> mismo nombre el mismo día, y **Alpaca rechaza el id repetido** […] El tag de
+> corrida + el minuto ET la desambiguan.
+
+Tocó `exit` nueve veces en el diff y **no le llevó el arreglo**. Diez días, del
+14 al 24 de septiembre: la T2 entera en su cadencia vigente.
+
+### La lección, que ya es un patrón con nombre
+
+Es la cuarta vez esta temporada que **una regla entra por un camino y no por el
+otro**: el corte por temporada (en `decide` y no en la red determinista), el
+halt (después de la bandera y no antes), el pareo del P0, y ahora el id. En los
+cuatro casos el autor del arreglo **estaba mirando el camino correcto** — y el
+otro camino existía, hacía lo mismo, y quedó atrás.
+
+Por eso el arreglo de hoy no duplica la lógica: los dos caminos llaman al
+**mismo** `minutoDeCorrida`. Un helper compartido no garantiza que alguien se
+acuerde del segundo camino, pero sí garantiza que cuando se acuerde no tenga que
+volver a decidir el formato.
+
+### Lo que no se puede saber
+
+**Cuántos stops se quedaron sin segundo intento en esos diez días no se puede
+reconstruir del journal con certeza.** Un stop cuyo reintento murió por 422 dejó
+una fila `submit_failed` con su motivo, y ésas sí se cuentan. Pero un stop que
+no llenó y del que la red **nunca volvió a intentar nada** —porque el objetivo
+del PM ya había cerrado la posición por otro lado, o porque el precio se
+recuperó— no dejó rastro de un intento que no ocurrió. Se cuenta el piso, no el
+total, y se dice cuál de los dos es.
+
+---
+
+## B38 · EL ID QUE COLISIONABA CONSIGO MISMO (2026-09-24)
+
+Destapado por la consulta que confirmaba el P0. **525 órdenes calculadas del 21
+al 24; ~216 nunca llegaron a Alpaca.** Y no fallan parejo — en la muestra que
+Lety contó a mano:
+
+| lado | intentos | fallaron | |
+|---|---:|---:|---:|
+| compras | 8 | 2 | 25% |
+| **ventas** | 6 | **5** | **83%** |
+
+Dos filas reales, mismo agente, mismo día, mismo ticker, mismo lado:
+
+```
+control 19:31 GDDY buy → approved, filled 29 @ 101.81
+control 19:36 GDDY buy → submit_failed
+```
+
+```js
+`arena-${agentId}-${runTag}-${runDate}-${o.symbol}-${o.side}`.slice(0, 48)
+//  arena-control-f-2026-09-24-GDDY-buy   ← las 19:31
+//  arena-control-f-2026-09-24-GDDY-buy   ← las 19:36, byte a byte el mismo
+```
+
+Agente, fecha, ticker y lado. **La corrida no está.** Alpaca rechaza un
+`client_order_id` repetido, así que cada agente podía tocar cada nombre **una
+vez por día por lado** y todo lo demás moría con un 422.
+
+### Por qué las ventas y no las compras
+
+Una compra se pide una vez y llena. **Una venta se repite**: se trimea, no
+llena, y la ronda siguiente vuelve a pedir el mismo trim del mismo nombre — o
+el PM baja el peso otra vez. La segunda petición es la que se cae.
+
+Y eso cierra el hueco que quedaba abierto en el inflado de los libros: **los
+agentes sí vendían; sus ventas se caían antes de salir.** Compran, no pueden
+deshacerse de nada, y el libro crece. De 68 posiciones el lunes a 95 el jueves,
+con Control y Claude en 22.
+
+### El arreglo ya existía, en el camino que se retiró
+
+`runArenaDecide` —el contrato de ACCIONES— chocó con esto cuando entró la
+cadencia por evento, y lo resolvió. Su propio comentario:
+
+> El `client_order_id` nació con la cadencia de UNA corrida por día […] Con la
+> cadencia por evento un agente puede pronunciarse dos veces sobre el mismo
+> nombre el mismo día, y **Alpaca rechaza el id repetido** — la segunda orden,
+> la que el disparador produjo, **moriría con un 422**. El tag de corrida + el
+> minuto ET la desambiguan.
+
+El contrato OBJETIVO se escribió después y **no se llevó el arreglo**. Peor:
+dejó `runTag: 'f'` escrito a mano en el llamador, así que todas sus órdenes
+salían estampadas como "revisión de piso" vinieran de donde vinieran.
+
+**Es el patrón de la casa, por enésima vez: una regla entra por un camino y no
+por el otro.** Ya pasó con el corte por temporada (en `decide` y no en la red),
+con el halt (después de la bandera y no antes), y con el pareo del P0.
+
+### Y en los stops cuesta más
+
+`submitRiskExits` usaba `arena:<fecha>:<símbolo>:exit`, sin corrida. Mismo
+choque, con una consecuencia peor: **desarma la escalera de escalamiento.**
+`escalationFromRiskRows` cuenta los stops catastróficos que NO llenaron para
+ensanchar la banda en el intento siguiente — y ese intento reusaba el id, se lo
+rechazaba Alpaca, y la banda ensanchada nunca llegaba al broker. **Un stop que
+no llenaba a la primera no tenía segunda.**
+
+### Qué idempotencia se conserva y cuál no
+
+Se conserva la que importa: dos invocaciones de la MISMA corrida (un cron que se
+repite, un reintento de la lambda) caen en el mismo minuto y producen el mismo
+id. Lo que deja de estar bloqueado es lo que nunca tuvo que estarlo: **una ronda
+posterior pidiendo el mismo nombre.** Que dos rondas distintas no se pisen lo
+garantiza el vigilante con sus marcadores de "ya se hizo hoy", que es la capa
+donde vive esa decisión.
+
+### Sin recorte ciego
+
+El `.slice(0, 48)` recortaba **por la cola, y la cola es el lado**: dos ids
+truncados al mismo largo serían el mismo, y una compra cancelaría una venta.
+Ahora el largo está acotado por construcción —lo único de largo variable es el
+agente, capado a 10— y un test lo verifica **contra el registry entero**, con
+todos los símbolos y los dos lados. Si entra un octavo agente con un id largo,
+falla el test en vez de colisionar en vivo.
+
+### El motivo SIEMPRE estuvo guardado
+
+`enviarOrdenes` journalea `error: String(e.message)`, y `alpacaFetch` compone el
+mensaje con el cuerpo de la respuesta (`Alpaca 422: client_order_id must be
+unique`). O sea: **el motivo está en la base desde el lunes, dos veces** — en
+`context.ejecucion.enviadas[].error` y en `actions[].error`.
+
+Lo que fallaba era mostrarlo: `ejecucionPublicable` lo copiaba con
+`...(r && r.error ? { error: r.error } : {})`, y `r` era siempre `null` **por el
+mismo pareo roto del P0**. Un bug tapando la evidencia de otro. Con el P0
+mergeado, una orden que no salió aparece como `no_enviada` con el texto de
+Alpaca al lado.
+
+---
+
 ## B37 · TRES COSAS QUE LA PRUEBA SINTÉTICA NO PODÍA VER (2026-09-23)
 
 Los precios se verificaron contra payloads armados a mano. Releyendo el camino

@@ -71,6 +71,14 @@ header{padding:22px 0 14px;display:flex;align-items:baseline;justify-content:spa
 .margen .spy b{color:var(--red);}
 .margen .fine{margin-top:9px;font-size:10px;color:var(--text3);line-height:1.5;}
 .tag.empate{color:var(--amber);border:1px solid rgba(255,179,71,.35);background:rgba(255,179,71,.06);}
+/* Las MANOS: cuántas veces decidió cada uno. Un puesto no se lee sin esto. */
+.tag.manos{color:var(--text2);border:1px solid var(--border2);background:var(--bg2);}
+.tag.manos.pocas{color:var(--red);border-color:rgba(var(--red-rgb),.4);background:rgba(var(--red-rgb),.07);}
+.margen .manos-bloque{margin-top:9px;padding-top:9px;border-top:1px solid var(--border);
+  font-size:12px;color:var(--text2);line-height:1.55;}
+.margen .manos-bloque b{color:var(--text);}
+.margen .manos-bloque .lista{font-family:var(--mono);font-size:10px;color:var(--text3);
+  letter-spacing:.03em;margin-top:6px;line-height:1.7;}
 .tag.separado{color:var(--green);border:1px solid rgba(var(--green-rgb),.3);background:rgba(var(--green-rgb),.06);}
 
 /* RANK LIST */
@@ -208,6 +216,9 @@ footer{margin-top:36px;padding-top:20px;border-top:1px solid var(--border);}
 
 <script>
 const $=id=>document.getElementById(id);
+// Las manos viajan aparte del margen: son dos objeciones distintas a la misma
+// tabla, y la fila de cada agente también las necesita.
+let MANOS=null;
 async function getJSON(url){
   try{
     const c=new AbortController();const t=setTimeout(()=>c.abort(),9000);
@@ -275,8 +286,26 @@ function margenHtml(m){
       (i.empatan?' · empatan '+i.empatan:'')+'.</div>'
     : (i.motivo?'<div class="spy">'+esc(i.motivo)+'</div>':'');
   return '<div class="margen"><h3>Antes del ranking: cuánto vale su margen de error</h3>'+
-    nums+'<p>'+esc(m.lectura)+'</p>'+par+sinLider+sep+idx+
+    nums+'<p>'+esc(m.lectura)+'</p>'+par+sinLider+sep+idx+manosHtml(MANOS)+
     (m.caveat?'<div class="fine">'+esc(m.caveat)+'</div>':'')+'</div>';
+}
+
+// ── CUÁNTAS MANOS JUGÓ CADA UNO ─────────────────────────────────────
+// La segunda objeción a la tabla, y es distinta del piso: el piso dice cuánta
+// de la distancia entre dos puestos es azar; esto dice que dos agentes NO
+// jugaron el mismo juego. Qwen decidió 3 veces en la semana y Control 37.
+function manosHtml(mn){
+  if(!mn||!mn.resumen||!mn.resumen.disponible) return '';
+  const r=mn.resumen;
+  const filas=Object.values(mn.por_agente||{}).sort((a,b)=>b.vivas-a.vivas)
+    .map(a=>esc(a.agente)+' <b>'+a.vivas+'</b>'+(a.abortadas?' <span style="color:var(--red)">('+a.abortadas+' abortos)</span>':''))
+    .join(' · ');
+  return '<div class="manos-bloque">'+
+    '<b>'+r.vivas_totales+' corridas vivas y '+r.abortadas_totales+' abortadas</b> en la temporada'+
+    (r.pct_abortos_liga!=null?' ('+r.pct_abortos_liga+'% de abortos)':'')+'. '+
+    esc(r.lectura)+
+    '<div class="lista">'+filas+'</div>'+
+    '</div>';
 }
 
 // ── LAS ÓRDENES DEL DÍA, CON SU PRECIO ──────────────────────────────
@@ -388,6 +417,17 @@ function rowHtml(a){
   // puesto está dentro del margen de error y la fila lo dice ahí mismo. No es
   // letra chica del pie: es la diferencia entre "va 2º" y "va 2º y eso no se
   // distingue del azar".
+  // ── LAS MANOS, EN LA FILA ────────────────────────────────────────
+  // Un puesto no se puede leer sin saber cuántas veces jugó el que lo tiene.
+  // Rojo cuando decidió menos de la mitad que el que más decidió: ahí su
+  // retorno es sobre todo deriva de precio sobre una cartera de otro día.
+  const mn = a.manos||null;
+  const tope = MANOS&&MANOS.resumen&&MANOS.resumen.mas ? MANOS.resumen.mas.vivas : null;
+  const pocas = !!(mn&&tope&&(mn.vivas===0 || tope/Math.max(mn.vivas,1) >= 2));
+  const manosTag = mn
+    ? '<span class="tag manos'+(pocas?' pocas':'')+'" title="'+esc(mn.vivas+' corridas vivas y '+mn.abortadas+' abortadas en la temporada')+'">'+
+      mn.vivas+' manos'+(mn.abortadas?' · '+mn.abortadas+' abortos':'')+'</span>'
+    : '';
   const mg = a.margen||null;
   const empate = mg&&mg.empate_tecnico
     ? '<span class="tag empate" title="la brecha con su vecino más cercano ('+mg.brecha_min_pp+' pp) es menor que el piso de ruido">≈ empate técnico</span>'
@@ -425,7 +465,7 @@ function rowHtml(a){
   return '<div class="row'+rankCls+'">'+
     '<div class="rtop">'+
       '<div class="rank">'+(a.rank||'—')+'</div>'+
-      '<div class="rid"><div class="rname">'+esc(a.name)+' '+houseTag(a)+' '+halt+' '+empate+'</div>'+
+      '<div class="rid"><div class="rname">'+esc(a.name)+' '+houseTag(a)+' '+halt+' '+empate+' '+manosTag+'</div>'+
         '<div class="rmodel">'+esc(a.model_label||a.model||'')+'</div></div>'+
       '<div class="req"><div class="eq">'+money(a.equity_indexado!=null?a.equity_indexado:acct.equity)+'</div>'+retHtml+dayHtml+'</div>'+
     '</div>'+
@@ -474,6 +514,7 @@ async function load(){
   const porId={}; data.agents.forEach(a=>{porId[a.id]=a;});
   const orden = Array.isArray(data.ranking)&&data.ranking.length
     ? data.ranking : data.agents.map(a=>({id:a.id,kind:'MODELO'}));
+  MANOS = data.manos || null;
   $('margen').innerHTML = margenHtml(data.margen_de_la_tabla);
   el.innerHTML=orden.map(r=>{
     if(r.kind==='BENCHMARK') return benchHtml(bench);
