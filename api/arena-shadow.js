@@ -58,6 +58,7 @@ function sectorEtfDe(buffet, sym) {
 }
 import { shadowBroker, shadowJournalInsert as shadowJournalInsertReal, shadowRunId, shadowReport, ensureShadowSchema } from './_lib/arena-shadow.js';
 import { rechazosPrevios, bloqueDeRechazos } from './_lib/arena-rechazos.js';
+import { marcarDesagote, rechazosDeEnvio } from './_lib/arena-desagote.js';
 import { currentTier, recordRunSpend, callCost } from './_lib/arena-budget.js';
 import { marketDay } from './_lib/arena-buffet-cache.js';
 import { createTrace } from './_lib/arena-trace.js';
@@ -511,6 +512,26 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
       ejecucion.enviadas = [];
       ejecucion.nota = 'ARENA_CONTRATO=objetivo_dry: las órdenes se calcularon y se journalearon COMPLETAS, y no se mandó ninguna. Poné `objetivo` para que se manden.';
     }
+  }
+
+  // ── ¿ESTA CORRIDA ESTÁ DESAGOTANDO UN ATRASO? ───────────────────────
+  // Del 21 al 24 de septiembre el `client_order_id` no llevaba la corrida y 180
+  // órdenes murieron con `Alpaca 422: client_order_id must be unique`, sobre
+  // todo VENTAS. La primera corrida con el id arreglado las suelta de golpe y
+  // parece un evento de mercado. No lo es, y la fila tiene que decirlo.
+  //
+  // Se MIDE contra el journal en vez de escribir la fecha del deploy a mano:
+  // así se apaga sola cuando el atraso se termina, y marca a cada agente por lo
+  // suyo (uno que aborta veinte veces lo arrastra más días que uno que corre
+  // tres veces al día). Nunca tumba la corrida: es una etiqueta de post-mortem.
+  if (vivo && ejecucion && (ejecucion.enviadas || []).length) {
+    try {
+      const desagote = marcarDesagote({
+        ordenes: (ejecucion.enviadas || []).filter((o) => o.result === 'approved'),
+        rechazadasAntes: await rechazosDeEnvio(agent.id),
+      });
+      if (desagote) ctx.desagote = desagote;
+    } catch (e) { /* una marca perdida es una fila de estudio menos, no una corrida menos */ }
   }
 
   // ── EL CONTEXTO DE CADA APERTURA ────────────────────────────────────

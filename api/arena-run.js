@@ -2903,6 +2903,64 @@ export async function announceEjecucionParcial(now = new Date(), env = process.e
   } catch (e) { return false; }
 }
 
+// ── EL DÍA DEL DESAGÜE — un día que NO se puede promediar ────────────
+// MISMO mecanismo que los otros anuncios: una fila `rules_changed` de liga,
+// idempotente por id, con la fecha adentro.
+//
+// POR QUÉ HACE FALTA. Del 2026-09-21 al 24, el `client_order_id` no llevaba la
+// corrida, así que cada agente podía tocar cada nombre UNA vez por día por lado
+// y el resto moría con `Alpaca 422: client_order_id must be unique`. **180
+// órdenes**, el 39% de la semana, y sobre todo VENTAS — una venta se re-pide y
+// una compra no. Los agentes vendían y sus ventas no salían.
+//
+// La primera corrida con el id arreglado ejecuta esas ventas acumuladas de
+// golpe. **Va a parecer un evento de mercado y no lo es: es el sistema
+// desagotando.** Sin esta fila, dentro de dos semanas alguien lee "el jueves
+// todos vendieron a la vez" y construye una tesis sobre un bug.
+//
+// Un hueco declarado es un dato; uno silencioso es un bug esperando.
+export const DESAGOTE_ANNOUNCEMENT_ID = 'arena-desagote-cid-2026-09-25';
+export const DESAGOTE_RULES_VERSION = 'v4.3';
+
+export const DESAGOTE_RULES_TEXT = [
+  'REGLAMENTO v4.3 — EL client_order_id LLEVA LA CORRIDA. Hasta hoy el id de la orden era `arena-<agente>-<tag>-<fecha>-<ticker>-<lado>`: no llevaba QUÉ corrida la había pedido. Dos rondas del mismo día sobre el mismo nombre producían el MISMO id, y Alpaca rechaza el repetido.',
+  'LO QUE COSTÓ, medido: 525 órdenes calculadas del 21 al 24 de septiembre y ~216 que nunca llegaron al broker. De los 204 fallos con motivo visible, 180 son `Alpaca 422: client_order_id must be unique` — el 39% de TODAS las órdenes de la semana.',
+  'NO FALLABA PAREJO, Y ESO ES LO QUE DEFORMÓ LOS LIBROS. Una compra se pide una vez y llena; una VENTA se repite —se trimea, no llena, la ronda siguiente vuelve a pedir el mismo trim— y la segunda petición es la que se caía. Los agentes sí vendían: sus ventas morían antes de salir. Los libros pasaron de 68 posiciones el lunes a 95 el jueves porque compraban y no podían deshacerse de nada.',
+  'ESTE DÍA NO SE PROMEDIA CON LOS OTROS. La primera corrida con el id arreglado ejecuta de golpe las ventas que cuatro días de 422 dejaron pendientes. El volumen, el turnover y el número de órdenes de hoy son un DESAGÜE, no una decisión: leerlos como actividad del modelo sería construir una tesis sobre un bug. El return sí sigue siendo comparable — el baseline no se movió.',
+  'CADA CORRIDA AFECTADA SE MARCA SOLA. `context.desagote` lleva cuántas de sus órdenes corresponden a un (ticker, lado) que venía siendo rechazado con un 422, con los nombres. No es una fecha escrita a mano: se mide contra el journal y deja de marcar cuando el atraso se termina.',
+  'Y LA RED DE SEGURIDAD ESTUVO APAGADA DIEZ DÍAS. El id de las salidas de riesgo (`arena:<fecha>:<símbolo>:exit`) tampoco llevaba la corrida. Con la cadencia por evento (2026-09-14) eso desarmó la escalera de escalamiento: un stop catastrófico que no llenaba a la primera reintentaba con la banda ensanchada, el reintento reusaba el id, y se lo comía un 422. Un stop que no llenaba a la primera NO TENÍA SEGUNDA. Ver el incidente aparte.',
+  'Experimento sin validación estadística, paper trading, no es asesoría.',
+].join('\n');
+
+export async function announceDesagote(now = new Date(), env = process.env) {
+  if (!usaObjetivo(env)) return false;
+  try {
+    await sql(
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
+       values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
+      [DESAGOTE_ANNOUNCEMENT_ID, now.toISOString().slice(0, 10), PROMPT_VERSION, DESAGOTE_RULES_TEXT,
+       JSON.stringify({
+         rules_version: DESAGOTE_RULES_VERSION,
+         reemplaza_a: PARCIAL_RULES_VERSION,
+         motivo: 'el client_order_id no llevaba la corrida: 180 órdenes muertas con 422 en cuatro días',
+         medido: {
+           ordenes_calculadas: 525, sin_llegar_al_broker: 216,
+           fallos_con_motivo: 204, cid_duplicado: 180,
+           pct_de_la_semana: 39,
+           // El corte por lado es lo que explica el inflado de los libros.
+           muestra_por_lado: { compras: { intentos: 8, fallaron: 2 }, ventas: { intentos: 6, fallaron: 5 } },
+           posiciones_liga: { lunes: 68, jueves: 95 },
+         },
+         ventana: { desde: /* date-lint-ok: borde del régimen del id colisionado, ancla del post-mortem */ '2026-09-21', hasta: /* date-lint-ok: idem */ '2026-09-24' },
+         no_promediar: 'el turnover, el número de órdenes y el volumen del primer día con el arreglo',
+         sigue_comparable: 'el return: el baseline no se movió',
+         applies_to: activeAgents().map((a) => a.id),
+       })],
+    );
+    return true;
+  } catch (e) { return false; }
+}
+
 // ── ESCALÓN DEL PRESUPUESTO (B9) — anuncio con fecha ─────────────────
 // MISMO mecanismo que los otros anuncios: una fila de liga, idempotente por id.
 // Acá la idempotencia es por (día, escalón) y no por temporada: el breaker puede
@@ -3251,6 +3309,7 @@ export async function runArenaMorning({ baseUrl, now = new Date() } = {}) {
   await announceContratoObjetivo(now);
   await announceCortos(now);
   await announceEjecucionParcial(now);
+  await announceDesagote(now);
   await announceSeasonOpen(now);
   // Corte del post-mortem por CAMBIO DE MODELOS (idempotente por id).
   await announceModelChange(now);
@@ -3381,6 +3440,7 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
   await announceContratoObjetivo(now);
   await announceCortos(now);
   await announceEjecucionParcial(now);
+  await announceDesagote(now);
   await announceSeasonOpen(now);
   // Corte del post-mortem por CAMBIO DE MODELOS (idempotente por id).
   await announceModelChange(now);

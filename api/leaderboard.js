@@ -54,13 +54,14 @@
 
 import { sql, ensureSchema } from './_lib/db.js';
 import { getAccount, getPositions } from './_lib/alpaca.js';
-import { activeAgents, agentAlpacaCreds } from './_lib/arena-registry.js';
+import { activeAgents, agentAlpacaCreds, ARENA_SEASON } from './_lib/arena-registry.js';
 import {
   BENCHMARK, leerBenchmark, precioBenchmark, benchmarkReturnPct, filaBenchmark, excesoVsBenchmark,
 } from './_lib/arena-benchmark.js';
 import { readBaselines, baselineDe, returnPct, indexarEquity, BASE_INDEX_USD } from './_lib/arena-baseline.js';
 import { margenDeLaTabla } from './_lib/arena-piso-retorno.js';
 import { ordenesDeActions, resumenDeOrdenes } from './_lib/arena-fills.js';
+import { manosDeLaLiga } from './_lib/arena-manos.js';
 
 const BASELINE = (() => {
   const n = Number(process.env.ARENA_BASELINE_EQUITY);
@@ -136,6 +137,20 @@ export default async function handler(req, res) {
     for (const r of stateRows) haltByAgent[r.agent_id] = r;
   } catch (err) { journalErr = String((err && err.message) || err); }
 
+  // ── CUÁNTAS MANOS JUGÓ CADA UNO ──────────────────────────────────────
+  // Qwen decidió 3 veces en la semana y Control 37. El ranking los ponía en la
+  // misma tabla y publicaba la diferencia como si midiera al modelo. UNA
+  // consulta agregada para los siete — el conteo entero cabe en una fila por
+  // agente, así que no hay motivo para que esto cueste más que eso.
+  let manos = null;
+  try {
+    const filas = await sql(
+      `select agent_id, status from arena_journal
+        where phase = 'decide' and agent_id <> 'league' and run_date >= $1::date`,
+      [ARENA_SEASON.start]);
+    manos = manosDeLaLiga(filas);
+  } catch (err) { manos = null; }
+
   // ── EL DENOMINADOR ES EL BASELINE PROPIO DE CADA AGENTE ──────────────
   // No un $100k global. El reset re-basa cada cuenta a SU equity real después
   // de aplanar (arena-reset paso 6), y ese mismo número tiene que ser el
@@ -191,6 +206,10 @@ export default async function handler(req, res) {
         }
       }
     } catch (err) { out.journal_error = String((err && err.message) || err); }
+
+    // Las manos de ESTE agente, en su fila: un puesto no se puede leer sin
+    // saber cuántas veces jugó el que lo tiene.
+    out.manos = (manos && manos.por_agente[agent.id]) || null;
 
     const h = haltByAgent[agent.id];
     if (h) out.halt = { halted: !!h.halted, halted_at: h.halted_at || null, reason: h.halted_reason || null, resumed_at: h.resumed_at || null };
@@ -294,6 +313,11 @@ export default async function handler(req, res) {
     // puestos no se distinguen del ruido, y cuántos pierden contra el índice.
     // Se lee ANTES del ranking, no después.
     margen_de_la_tabla: margen,
+    // Corridas vivas y abortadas por agente, desde la apertura de la temporada.
+    // Va al lado del margen y no dentro: son dos objeciones distintas a la
+    // misma tabla. El piso dice cuánta de la distancia entre dos puestos es
+    // azar; esto dice que dos agentes no jugaron el mismo juego.
+    manos: manos,
     // El orden VISUAL, liviano: id + puesto + equity. La página arma la tabla
     // con esto y busca la fila completa por id, así el orden se decide UNA vez
     // acá y no se re-deriva en el navegador.

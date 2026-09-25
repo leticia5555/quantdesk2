@@ -746,78 +746,121 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
-## B37 · TRES COSAS QUE LA PRUEBA SINTÉTICA NO PODÍA VER (2026-09-23)
+## B40 · ESTAMOS RANKEANDO 37 MANOS CONTRA 3 (2026-09-25)
 
-Los precios se verificaron contra payloads armados a mano. Releyendo el camino
-real contra la forma que de verdad journalea el motor aparecieron tres huecos
-que un fixture inventado no toca, porque el fixture se escribe con la forma que
-uno CREE que tiene el dato.
+Contado sobre siete días:
 
-### 1. `ordenes_calculadas` no lleva `client_order_id`
+| agente | vivas | abortadas | | agente | vivas | abortadas |
+|---|---:|---:|---|---|---:|---:|
+| control | **37** | 0 | | gemini | 13 | 10 |
+| claude | 30 | 0 | | deepseek | 9 | **25** |
+| grok | 18 | 7 | | **qwen** | **3** | **22** |
+| ChatGPT | 13 | 13 | | **liga** | **123** | **77** |
 
-Lo pone `enviarOrdenes` **después**, al mandar. Así que el pareo entre la orden
-calculada y su resultado de envío se hacía con una clave que un lado no tiene:
+**Qwen decidió tres veces en la semana. Control decidió 37.** Y el ranking los
+ponía en la misma tabla, publicando la diferencia como si midiera al modelo.
 
-```js
-enviadas.get(String(o.client_order_id || o.symbol || ''))   // → 'PGR', y el mapa
-                                                            //   está llaveado por
-                                                            //   'arena-claude-f-…'
-```
+### Por qué esto es peor que el piso de ruido
 
-**Falla en TODA corrida viva**, y de la peor forma: sin excepción y sin hueco
-visible. `resultado` y `estado_alpaca` salen `null`, y la página escribe
-"calculada" sobre órdenes que sí se mandaron y sí llenaron.
+No es la misma objeción. **El piso dice cuánta de la distancia entre dos puestos
+es azar. Esto dice que dos agentes no jugaron el mismo juego.**
 
-**Medido en producción el 2026-09-24: 462 órdenes del 21 al 24, las 462 con
-`resultado: null` y `estado_alpaca: null`.** Cero excepciones.
+Un modelo que decide tres veces en cinco sesiones tiene una cartera que es sobre
+todo **deriva de precio**: sus posiciones las eligió otro día y el mercado hizo
+el resto. Su retorno mide al mercado con su cartera vieja encima — no mide al
+modelo. Ponerlo en una tabla ordenada al lado de uno que decidió 37 veces no es
+un caveat: es comparar dos experimentos distintos.
 
-> ### CORRECCIÓN DE UNA CORRECCIÓN (2026-09-24)
->
-> El 23 anoté acá que "B34 ya lo había tapado sin querer" y que esto arreglaba
-> un **respaldo** y no el camino principal. **Estaba mal, y el error de método
-> importa más que el error:** razoné sobre el estado de la RAMA y lo escribí
-> como si fuera el estado de PRODUCCIÓN. La rama no está mergeada. Producción
-> corre `main`, `main` no tiene el pareo por fill de B34, y por lo tanto esta
-> expresión **es** el camino principal allá — es la causa única de que las 462
-> órdenes no tengan precio.
->
-> La regla que sale de esto: **una afirmación sobre el comportamiento
-> observable dice contra qué árbol se verificó, o no se escribe.** "Ya estaba
-> tapado" sin decir *dónde* convirtió un bug de producción en una nota al pie.
+### Lo que NO se afirma
 
-### 2. Las salidas de riesgo escriben `reference`, no `referencia`
+**La dirección del sesgo no se insinúa, porque no se sabe.** Abortar puede
+ahorrarle a un agente una decisión mala tanto como impedirle una buena. Lo único
+afirmable es que **no midieron lo mismo**, y eso es exactamente lo que dice la
+pantalla — ni "a qwen lo perjudicaron los abortos" ni lo contrario.
 
-`attributeRiskExit` es más vieja que el contrato objetivo y usa el nombre en
-inglés. Son el mismo dato; leer solo uno dejaba sin deslizamiento justo a las
-órdenes de los stops.
+### Una abortada no es una decisión de no operar
 
-### 3. Una fila `risk_exit` no tiene `context.ejecucion`
+`ok_no_actions` (miró y decidió quedarse quieto) y `aborted_cuerpo_vacio` (el
+proveedor no contestó) son opuestos: el primero es el modelo actuando, el
+segundo es el modelo ausente. Contarlos juntos **haría parecer prudente lo que
+es una falla de infraestructura**. Por eso `vivas` incluye `ok_no_actions`,
+`rejected_rails` y `ejecutado_parcial` —en las tres el modelo llegó y decidió— y
+solo `aborted_*` cuenta como ausencia.
 
-La escribe la red determinista, no el contrato objetivo — pero **sí tiene
-`actions`**, y el reconcile les pone su precio como a cualquier otra. Sin un
-respaldo, las ventas que dispara un stop eran las únicas que seguían sin decir a
-cuánto se vendieron, **y son las que más importan**: una venta que el PM decidió
-tiene una tesis al lado; una que disparó un stop solo tiene su precio.
+### El criterio es el cociente, no la diferencia
 
-`ordenesSueltas` arma la misma forma desde `actions` sola, y la nota dice de
-dónde salió: *"RED DETERMINISTA: estas ventas las disparó un stop, no el PM"*.
-Vale igual para las filas del contrato viejo.
+37 contra 3 y 370 contra 30 son el mismo problema; 40 contra 37 no lo es aunque
+la diferencia sea parecida. El corte está en **2×** (`RATIO_INCOMPARABLE`) y se
+declara como lo que es: **elegido, no derivado**. A partir de ahí uno tuvo el
+doble de oportunidades de corregir que el otro.
 
-### La lección
+Y **cero corridas vivas es el caso más grave, no un hueco**: un cociente con
+denominador cero no existe, y si saliera como `null` que la pantalla ignora, el
+agente más roto sería el único sin advertencia.
 
-Las tres son la misma: **un fixture se escribe con la forma que uno cree que
-tiene el dato, así que confirma la creencia en vez de comprobarla.**
+---
 
-Y el caso 1 lo demuestra dos veces. El fixture de `tests/arena-fills.test.mjs`
-le ponía `client_order_id` a la orden calculada — un campo que la función que
-las produce NUNCA escribe. El test pasaba en verde **sobre el caso que no
-existe**, mientras producción fallaba en el 100% de las filas.
+## B39 · LA RED DE SEGURIDAD ESTUVO APAGADA DIEZ DÍAS (2026-09-25)
 
-`tests/arena-pareo-ordenes.test.mjs` cierra ese hueco de otra forma: **no
-escribe las formas, llama a las funciones que las producen.** `legsAOrdenes`
-genera la orden, se le pega encima lo que le pega `enviarOrdenes`, se proyecta a
-`actions` como lo hace `journalObjetivoVivo`, y recién ahí se parea. Un test que
-afirma sobre un dato que él mismo inventó no prueba nada sobre el dato real.
+Salió como nota al pie del `client_order_id` y **no es una nota al pie**. El
+resto de ese incidente son órdenes que no salieron; esto es **una red de
+seguridad que no podía reintentar**.
+
+### El mecanismo
+
+`submitRiskExits` usaba `arena:<fecha>:<símbolo>:exit`. Sin la corrida adentro,
+un stop sobre el mismo nombre solo podía salir **una vez por día**.
+
+Y eso no es un inconveniente: **desarma la escalera de escalamiento.**
+`escalationFromRiskRows` cuenta los stops catastróficos que NO llenaron para
+ensanchar la banda en el intento siguiente. Ese intento reusaba el id, Alpaca lo
+rechazaba con un 422, y **la banda ensanchada nunca llegaba al broker**. Un stop
+que no llenaba a la primera no tenía segunda.
+
+### Desde cuándo — y la fecha no es la que parece
+
+El literal nació el **2026-07-30** (`86bcba4`, el commit que introdujo la regla
+de salida determinista). **Y ahí era correcto**: con UNA corrida por día, la
+fecha hacía el id único por construcción, y un reintento al día siguiente usaba
+otra fecha. La escalera funcionaba, a un escalón por día.
+
+Se rompió el **2026-09-14**, con `6b96b66` — *"cadencia POR EVENTO: vigilante
+sin LLM, disparadores y topes"*. Ese commit introdujo `runArenaRiskNet`, que
+hace correr la red **varias veces dentro del mismo día**, y ahí el id empezó a
+chocar consigo mismo.
+
+**El mismo commit contiene el arreglo, aplicado al otro camino.** `6b96b66`
+agregó `const orderTag` al camino del PM con este comentario:
+
+> Con la cadencia por evento un agente puede pronunciarse dos veces sobre el
+> mismo nombre el mismo día, y **Alpaca rechaza el id repetido** […] El tag de
+> corrida + el minuto ET la desambiguan.
+
+Tocó `exit` nueve veces en el diff y **no le llevó el arreglo**. Diez días, del
+14 al 24 de septiembre: la T2 entera en su cadencia vigente.
+
+### La lección, que ya es un patrón con nombre
+
+Es la cuarta vez esta temporada que **una regla entra por un camino y no por el
+otro**: el corte por temporada (en `decide` y no en la red determinista), el
+halt (después de la bandera y no antes), el pareo del P0, y ahora el id. En los
+cuatro casos el autor del arreglo **estaba mirando el camino correcto** — y el
+otro camino existía, hacía lo mismo, y quedó atrás.
+
+Por eso el arreglo de hoy no duplica la lógica: los dos caminos llaman al
+**mismo** `minutoDeCorrida`. Un helper compartido no garantiza que alguien se
+acuerde del segundo camino, pero sí garantiza que cuando se acuerde no tenga que
+volver a decidir el formato.
+
+### Lo que no se puede saber
+
+**Cuántos stops se quedaron sin segundo intento en esos diez días no se puede
+reconstruir del journal con certeza.** Un stop cuyo reintento murió por 422 dejó
+una fila `submit_failed` con su motivo, y ésas sí se cuentan. Pero un stop que
+no llenó y del que la red **nunca volvió a intentar nada** —porque el objetivo
+del PM ya había cerrado la posición por otro lado, o porque el precio se
+recuperó— no dejó rastro de un intento que no ocurrió. Se cuenta el piso, no el
+total, y se dice cuál de los dos es.
 
 ---
 
@@ -918,6 +961,81 @@ Lo que fallaba era mostrarlo: `ejecucionPublicable` lo copiaba con
 mismo pareo roto del P0**. Un bug tapando la evidencia de otro. Con el P0
 mergeado, una orden que no salió aparece como `no_enviada` con el texto de
 Alpaca al lado.
+
+---
+
+## B37 · TRES COSAS QUE LA PRUEBA SINTÉTICA NO PODÍA VER (2026-09-23)
+
+Los precios se verificaron contra payloads armados a mano. Releyendo el camino
+real contra la forma que de verdad journalea el motor aparecieron tres huecos
+que un fixture inventado no toca, porque el fixture se escribe con la forma que
+uno CREE que tiene el dato.
+
+### 1. `ordenes_calculadas` no lleva `client_order_id`
+
+Lo pone `enviarOrdenes` **después**, al mandar. Así que el pareo entre la orden
+calculada y su resultado de envío se hacía con una clave que un lado no tiene:
+
+```js
+enviadas.get(String(o.client_order_id || o.symbol || ''))   // → 'PGR', y el mapa
+                                                            //   está llaveado por
+                                                            //   'arena-claude-f-…'
+```
+
+**Falla en TODA corrida viva**, y de la peor forma: sin excepción y sin hueco
+visible. `resultado` y `estado_alpaca` salen `null`, y la página escribe
+"calculada" sobre órdenes que sí se mandaron y sí llenaron.
+
+**Medido en producción el 2026-09-24: 462 órdenes del 21 al 24, las 462 con
+`resultado: null` y `estado_alpaca: null`.** Cero excepciones.
+
+> ### CORRECCIÓN DE UNA CORRECCIÓN (2026-09-24)
+>
+> El 23 anoté acá que "B34 ya lo había tapado sin querer" y que esto arreglaba
+> un **respaldo** y no el camino principal. **Estaba mal, y el error de método
+> importa más que el error:** razoné sobre el estado de la RAMA y lo escribí
+> como si fuera el estado de PRODUCCIÓN. La rama no está mergeada. Producción
+> corre `main`, `main` no tiene el pareo por fill de B34, y por lo tanto esta
+> expresión **es** el camino principal allá — es la causa única de que las 462
+> órdenes no tengan precio.
+>
+> La regla que sale de esto: **una afirmación sobre el comportamiento
+> observable dice contra qué árbol se verificó, o no se escribe.** "Ya estaba
+> tapado" sin decir *dónde* convirtió un bug de producción en una nota al pie.
+
+### 2. Las salidas de riesgo escriben `reference`, no `referencia`
+
+`attributeRiskExit` es más vieja que el contrato objetivo y usa el nombre en
+inglés. Son el mismo dato; leer solo uno dejaba sin deslizamiento justo a las
+órdenes de los stops.
+
+### 3. Una fila `risk_exit` no tiene `context.ejecucion`
+
+La escribe la red determinista, no el contrato objetivo — pero **sí tiene
+`actions`**, y el reconcile les pone su precio como a cualquier otra. Sin un
+respaldo, las ventas que dispara un stop eran las únicas que seguían sin decir a
+cuánto se vendieron, **y son las que más importan**: una venta que el PM decidió
+tiene una tesis al lado; una que disparó un stop solo tiene su precio.
+
+`ordenesSueltas` arma la misma forma desde `actions` sola, y la nota dice de
+dónde salió: *"RED DETERMINISTA: estas ventas las disparó un stop, no el PM"*.
+Vale igual para las filas del contrato viejo.
+
+### La lección
+
+Las tres son la misma: **un fixture se escribe con la forma que uno cree que
+tiene el dato, así que confirma la creencia en vez de comprobarla.**
+
+Y el caso 1 lo demuestra dos veces. El fixture de `tests/arena-fills.test.mjs`
+le ponía `client_order_id` a la orden calculada — un campo que la función que
+las produce NUNCA escribe. El test pasaba en verde **sobre el caso que no
+existe**, mientras producción fallaba en el 100% de las filas.
+
+`tests/arena-pareo-ordenes.test.mjs` cierra ese hueco de otra forma: **no
+escribe las formas, llama a las funciones que las producen.** `legsAOrdenes`
+genera la orden, se le pega encima lo que le pega `enviarOrdenes`, se proyecta a
+`actions` como lo hace `journalObjetivoVivo`, y recién ahí se parea. Un test que
+afirma sobre un dato que él mismo inventó no prueba nada sobre el dato real.
 
 ---
 
