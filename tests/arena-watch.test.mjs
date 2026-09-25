@@ -40,7 +40,11 @@ import {
   diaTokens, faseTokens,
   buildTriggerHeadline,
 } from '../api/_lib/arena-watch.js';
-import { ARENA_AGENTS } from '../api/_lib/arena-registry.js';
+import { competidores } from '../api/_lib/arena-registry.js';
+
+// El presupuesto diario es el de los que CORREN la liga. Una sonda apagada no
+// gasta un peso, y contarla inflaba el peor caso hasta romper el tope.
+const ARENA_AGENTS = competidores();
 import { runArenaWatch } from '../api/arena-watch.js';
 
 // Los slugs de OpenRouter de la temporada nueva no están verificados contra el

@@ -27,6 +27,22 @@ const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5';
 // siquiera "solo esta vez".
 const ARENA_ANTHROPIC_MODEL = process.env.ARENA_CLAUDE_MODEL || 'claude-fable-5-1';
 
+// El MISMO modelo por la otra ruta. La sonda de transporte (2026-09-25) corre
+// Fable por OpenRouter para separar "es el modelo" de "es la ruta", y eso pide
+// el slug de OpenRouter, que no es el de Anthropic.
+//
+// Está acá y no en _lib/arena-registry.js porque el lint de
+// tests/claude-model.test.mjs lo cazó ahí, y tenía razón: un ID de modelo
+// nuevo no se escribe fuera de este archivo, ni siquiera para una sonda que
+// arranca apagada. Es exactamente la frase de arriba, puesta a prueba.
+//
+// El default NO está verificado contra el catálogo: es la forma que OpenRouter
+// usa, no un slug confirmado. Por eso el brazo lleva `slug_verified: false` y
+// no corre hasta que `ARENA_MODEL_RUTA_OR` traiga el real, que lo resuelve
+// `/api/arena-smoke?catalog=1`. Un slug adivinado produciría un aborto NUESTRO
+// que la sonda reportaría como si fuera de la ruta.
+const ARENA_OPENROUTER_CLAUDE_MODEL = process.env.ARENA_MODEL_RUTA_OR || 'anthropic/claude-fable-5.1';
+
 // Precio por MILLÓN de tokens del catálogo de Anthropic. Solo se usa para
 // REPORTAR el costo del Arena (el smoke y el journal); ninguna decisión depende
 // de esta tabla. Un modelo ausente devuelve costo null — jamás un precio
@@ -58,4 +74,4 @@ const ANTHROPIC_PRICES = {
   'claude-haiku-4-5': { in: 1, out: 5 },
 };
 
-export { ANTHROPIC_MODEL, ARENA_ANTHROPIC_MODEL, HISTORIA_ANTHROPIC_MODEL, ANTHROPIC_PRICES };
+export { ANTHROPIC_MODEL, ARENA_ANTHROPIC_MODEL, ARENA_OPENROUTER_CLAUDE_MODEL, HISTORIA_ANTHROPIC_MODEL, ANTHROPIC_PRICES };

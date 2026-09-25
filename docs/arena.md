@@ -746,6 +746,83 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B41 · UNA REGLA EN DOS CAMINOS NO ES UNA REGLA (2026-09-25)
+
+**LA NORMA, primero, porque lo demás es la evidencia:**
+
+> Cuando una regla tiene que valer en dos caminos, se vuelve **UNA función
+> compartida**, y existe una prueba que **falla si divergen**. No es ahorro de
+> código: es la única forma de que los dos signifiquen lo mismo.
+
+La segunda mitad es la que hace trabajo. Una función compartida sin prueba se
+vuelve a bifurcar el día que alguien necesita "una variante chiquita" y copia.
+La prueba es lo que convierte la norma en algo que se rompe ruidosamente.
+
+**Y la norma se aplica hacia adelante, no de golpe hacia atrás.** Inventariar
+no es refactorizar. Lo que ya está duplicado se anota con su costo y se arregla
+cuando se lo toca; lo que se escribe de hoy en adelante nace compartido.
+
+### Por qué es norma y no reacción
+
+Cinco bugs en una semana, uno por día, con la misma forma:
+
+| | qué pasó | factura |
+|---|---|---|
+| 1 | el `client_order_id` sin corrida: arreglado en el contrato de acciones, no en el del objetivo | 180 de 204 órdenes rechazadas — **39% de la semana** |
+| 2 | el ladder de escalamiento del stop: correcto el 30-jul, roto el 14-sep en un solo camino | la red de seguridad apagada **diez días** |
+| 3 | el pareo de fills: mapa por id, consulta por símbolo | 462 órdenes **sin precio** en pantalla |
+| 4 | los cortos en las salidas (`arena-exits-short.js`) | cerrado: hoy lo importan los dos |
+| 5 | `ARENA_AGENTS` como sinónimo de "la liga" | cinco pruebas rotas y la apertura de la T3 **nunca anunciada** |
+
+Cinco veces la misma causa deja de ser mala suerte. El patrón ES el hallazgo:
+dos motores que hacen el mismo trabajo —el camino del **contrato objetivo** y
+el de la **red determinista de riesgo**— comparten la mitad de sus reglas por
+copia en vez de por referencia. Un arreglo entra por un camino y el otro sigue
+con la versión vieja hasta que produce una factura.
+
+El quinto lo produjo el barrido mismo, el mismo día que se escribió la norma.
+Eso no debilita la norma: es la prueba de que el patrón sigue vivo cuando uno
+ya lo está buscando.
+
+### El modelo a copiar
+
+`minutoDeCorrida` (`_lib/arena-objetivo-vivo.js`). Cuando se arregló el id
+colisionante, el minuto NO se calculó dos veces: el camino del PM y el de los
+stops importan la misma función, y `tests/arena-client-order-id.test.mjs`
+verifica que `arena-run.js` la importe en vez de tener la suya. Si mañana
+alguien escribe un `slice(11,16)` a mano, la prueba lo dice.
+
+El otro precedente es el verificador literal de HISTORIA, y el argumento ahí
+fue el mismo: no es ahorro de código, es que las dos citas signifiquen lo
+mismo.
+
+Aplicado hoy en el quinto caso: `competidores()` en `_lib/arena-registry.js`,
+y **no** se reusó `activeAgents()` para eso. Son dos preguntas distintas —
+"quién está inscrito" y "quién corre hoy"— y una función que contesta dos
+preguntas es la misma bifurcación con otra ropa. Compartir la regla no es
+fusionar conceptos.
+
+### Lo que la norma NO dice
+
+No dice que dos cosas parecidas tengan que unificarse. La red determinista
+precia con el último cierre completo y el objetivo con el snapshot vivo; un
+stop preciado con el tick de ahora se dispararía con ruido intradía. Esa
+diferencia es una decisión, no una divergencia, y el inventario la lista
+aparte para que nadie la "arregle".
+
+El criterio: si las dos versiones tuvieran que cambiar juntas ante el mismo
+hecho del mundo, es UNA regla. Si pueden cambiar por separado y seguir siendo
+correctas, son dos.
+
+### El inventario
+
+Qué vive hoy en dos caminos, con archivo y línea, qué cuesta arreglar cada
+cosa y qué rompe si se deja: **`docs/arena-dos-caminos.md`**. Verificado
+leyendo el árbol el 2026-09-25, no de memoria — incluyendo una afirmación que
+tuve que corregir después de correrla.
+
+---
+
 ## B40 · ESTAMOS RANKEANDO 37 MANOS CONTRA 3 (2026-09-25)
 
 Contado sobre siete días:

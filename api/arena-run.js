@@ -117,7 +117,7 @@ import { callArenaLLM, providerKey, effectiveParams, sameParams, withDeadline, c
 // arquetipo NUNCA entra al prompt que decide — ver el candado del control en el
 // encabezado de _lib/arena-voice.js.
 import { generateHeadline } from './_lib/arena-voice.js';
-import { ARENA_AGENTS, ARENA_SEASON, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, ARENA_AGENT_DEADLINE_MS, ANTHROPIC_CACHE_MIN_TOKENS, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, modelSlugResolved, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
+import { ARENA_AGENTS, competidores, ARENA_SEASON, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, ARENA_AGENT_DEADLINE_MS, ANTHROPIC_CACHE_MIN_TOKENS, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, modelSlugResolved, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
 // CADENCIA POR EVENTO: el corte de fecha y las constantes del vigilante.
 // El runner solo necesita saber CUÁNDO deja de correr el cron nocturno y qué
 // dice el reglamento nuevo; la lógica de disparadores vive en su módulo.
@@ -3110,8 +3110,14 @@ export const SEASON_OPEN_ID = 'arena-temporada-' + ARENA_SEASON.id + '-apertura'
 
 export async function announceSeasonOpen(now = new Date()) {
   const agents = activeAgents();
-  if (agents.length < ARENA_AGENTS.length) {
-    return { announced: false, reason: 'liga incompleta', active: agents.length, total: ARENA_AGENTS.length };
+  // El padrón es `competidores()`, no `ARENA_AGENTS`. El 2026-09-25 entraron al
+  // array tres SONDAS de infraestructura que nunca compitieron: contra el array
+  // crudo esta guarda daba 7 < 10 y la apertura no se anunciaba nunca más. El
+  // id es idempotente y la T2 ya está sellada, así que el daño habría aparecido
+  // recién en la T3 — un anuncio que no sale no rompe nada hasta que importa.
+  const padron = competidores();
+  if (agents.length < padron.length) {
+    return { announced: false, reason: 'liga incompleta', active: agents.length, total: padron.length };
   }
   const casa = { us: '🇺🇸', china: '🇨🇳', control: 'control' };
   const roster = agents.map((a) => `${a.name} (${a.model_label}, ${casa[a.house] || a.house})`).join(' · ');

@@ -195,8 +195,14 @@ console.log('\n── el control hereda el enfoque de claude, todos los días �
 
   ok(comparteEnfoqueCon('control') === 'claude' && comparteEnfoqueCon('grok') === null,
     'y se puede preguntar QUIÉN hereda de quién — el reporte lo usa para saber si el par mide ruido');
-  ok(Object.keys(ENFOQUE_HEREDADO).length === 1,
-    'la herencia está declarada en un solo lugar, no repartida por el código');
+  // Antes esto pedía UNA sola entrada, cuando el control era el único que
+  // heredaba. Lo que protege no es el número de herederos —el 2026-09-25 se
+  // sumaron las tres sondas de ruta, que por diseño miran lo mismo que claude—
+  // sino que la herencia viva en UN mapa y no repartida en ifs por el código.
+  ok(Object.keys(ENFOQUE_HEREDADO).length >= 1
+    && Object.values(ENFOQUE_HEREDADO).every((v) => typeof v === 'string'),
+    'la herencia está declarada en un solo lugar, no repartida por el código',
+    JSON.stringify(ENFOQUE_HEREDADO));
 }
 
 console.log('\n── el determinismo no se rompió ──');

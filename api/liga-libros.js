@@ -48,7 +48,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql } from './_lib/db.js';
-import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay } from './_lib/arena-registry.js';
+import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay, PROBE_IDS } from './_lib/arena-registry.js';
 import { pairwiseOverlap, sharedTopTicker, pisoDeRuido, deltaDePesos, lecturaDeCoincidencia, CAVEAT_ENFOQUE } from './_lib/arena-herding.js';
 import { claveDeOrden, detalleDeOrden, fillsDeActions, entradasDeCuenta, resumenDeOrdenes, resumenDeslizamiento, ordenesDeActions } from './_lib/arena-fills.js';
 
@@ -616,10 +616,15 @@ export default async function handler(req, res) {
                   'posiciones_iniciales', context->'posiciones_iniciales'
                 ) as context
          from arena_journal
-         where phase = 'decide' and agent_id <> 'league' and run_date >= $1::date
-           ${agente ? 'and agent_id = $2' : ''}
+         where phase = 'decide' and agent_id <> 'league'
+           -- Las SONDAS DE RUTA corren el mismo harness para medir la
+           -- infraestructura, no para competir: una tarjeta suya acá sería un
+           -- agente que nadie inscribió.
+           and agent_id <> all($2::text[])
+           and run_date >= $1::date
+           ${agente ? 'and agent_id = $3' : ''}
          order by created_at desc limit 200`,
-        agente ? [desde, agente] : [desde],
+        agente ? [desde, PROBE_IDS, agente] : [desde, PROBE_IDS],
       );
       for (const r of rows || []) libros.push(libroDeFila(r, FUENTE_VIVA));
     } catch (e) {
@@ -639,9 +644,10 @@ export default async function handler(req, res) {
                   'posiciones_iniciales', context->'posiciones_iniciales'
                 ) as context
          from arena_shadow_journal
-         where run_date >= $1::date ${agente ? 'and agent_id = $2' : ''}
+         where run_date >= $1::date and agent_id <> all($2::text[])
+           ${agente ? 'and agent_id = $3' : ''}
          order by created_at desc limit 200`,
-        agente ? [desde, agente] : [desde],
+        agente ? [desde, PROBE_IDS, agente] : [desde, PROBE_IDS],
       );
       for (const r of rows || []) libros.push(libroDeFila(r, FUENTE_PRUEBA));
     } catch (e) {

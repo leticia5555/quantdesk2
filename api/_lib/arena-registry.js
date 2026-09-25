@@ -64,7 +64,7 @@
 //           override de slug) · ARENA_LEAGUE (opc, lista de ids a correr).
 // ═══════════════════════════════════════════════════════════════
 
-import { ARENA_ANTHROPIC_MODEL, ANTHROPIC_PRICES } from './model.js';
+import { ARENA_ANTHROPIC_MODEL, ARENA_OPENROUTER_CLAUDE_MODEL, ANTHROPIC_PRICES } from './model.js';
 
 export { ANTHROPIC_PRICES };
 
@@ -335,6 +335,83 @@ export const ARENA_AGENTS = [
     archetype: { name: 'el paciente', voice: 'Juegas el largo plazo. El ruido de hoy te interesa poco; hablas en trimestres.' },
     alpaca: 'QWEN', house: 'china', control: false, phase: 'B', enabled: true,
   },
+
+  // ── SONDA DE RUTA: ¿ES EL MODELO O ES EL TRANSPORTE? ─────────────────
+  // EL DATO (2026-09-25, siete días): los dos agentes de Anthropic DIRECTO
+  // llevan 0 abortos en 67 corridas; los cinco de OpenRouter concentran los 77.
+  // Eso NO concluye: esos cinco también son modelos distintos, y además
+  // comparten el reparto de reloj de esa ruta y la ausencia de caché de prompt.
+  // Tres cosas cambiadas a la vez.
+  //
+  // Es la lógica de la cuenta de control aplicada al TRANSPORTE: se fija el
+  // modelo y se mueve solo la ruta. Tres brazos, porque con dos el resultado
+  // sería ambiguo:
+  //
+  //   A · ruta_directo      Fable por Anthropic, CON caché  → el `claude` de la liga
+  //   B · ruta_directo_nc   Fable por Anthropic, SIN caché  → aísla la caché
+  //   C · ruta_or           Fable por OpenRouter            → aísla la ruta
+  //
+  // Si B aborta como C, el culpable es la caché/latencia y no la ruta. Si B
+  // sale limpio y C aborta, la ruta es el problema. Sin B, "abortó por
+  // OpenRouter" y "abortó por correr sin caché" se ven idénticos.
+  //
+  // ── FUERA DE LA LIGA, Y SIN TOCAR NINGUNA CUENTA ─────────────────────
+  // `enabled: false` los deja fuera de `activeAgents()`, así que ninguna
+  // corrida de la liga los incluye. Se corren a mano por `?agent=<id>` contra
+  // `/api/arena-shadow`, que usa `shadowBroker`: toda ESCRITURA lanza. Leen el
+  // libro de la cuenta `PAPER` para armar el prompt —una lectura no toca nada—
+  // y no pueden mandar una orden ni por accidente.
+  //
+  // `probe: true` los saca además de las pantallas públicas: no son
+  // competidores y una tarjeta suya en /liga/libros sería una fila que nadie
+  // pidió.
+  //
+  // ── LO QUE SE IGUALA, Y LO QUE NO SE PUEDE ───────────────────────────
+  // Igual: el modelo, la persona (byte a byte la de `claude`), el enfoque del
+  // día (vía ENFOQUE_HEREDADO), el system, el contexto compartido, el
+  // presupuesto de herramientas y el reparto de reloj.
+  // NO igualable, y se declara: el ORDEN de la lista de nombres del día cambia
+  // por agente a propósito (anti-herding) — cambia el orden, no el tamaño, así
+  // que no mueve un timeout. Y el canal del `effort` es distinto por ruta
+  // (`output_config` contra `reasoning`), que es justamente parte de lo que
+  // significa "los mismos parámetros por otra ruta".
+  {
+    id: 'ruta_directo', name: 'Sonda · directo', model_label: 'Claude Fable 5.1',
+    provider: 'anthropic', model: slug('RUTA_DIRECTO', ARENA_ANTHROPIC_MODEL), persona: 'Claude PM',
+    slug_verified: true, caps: CAPS_FABLE,
+    archetype: { name: 'sonda', voice: 'No publica: es una sonda de infraestructura.' },
+    alpaca: 'PAPER', house: 'sonda', control: false, probe: true, phase: 'sonda', enabled: false,
+  },
+  {
+    id: 'ruta_directo_nc', name: 'Sonda · directo sin caché', model_label: 'Claude Fable 5.1',
+    provider: 'anthropic', model: slug('RUTA_DIRECTO_NC', ARENA_ANTHROPIC_MODEL), persona: 'Claude PM',
+    slug_verified: true,
+    // El ÚNICO cambio contra el brazo A: sin caché de prompt. Si el prefijo no
+    // se cachea, cada vuelta re-procesa ~5K tokens y tarda más — y tardar más
+    // es exactamente lo que dispara nuestro corte de reloj.
+    caps: { ...CAPS_FABLE, cache: null },
+    archetype: { name: 'sonda', voice: 'No publica: es una sonda de infraestructura.' },
+    alpaca: 'PAPER', house: 'sonda', control: false, probe: true, phase: 'sonda', enabled: false,
+  },
+  {
+    id: 'ruta_or', name: 'Sonda · OpenRouter', model_label: 'Claude Fable 5.1',
+    provider: 'openrouter',
+    // EL SLUG NO SE ADIVINA. `slug_verified: false` + el candado significa que
+    // este brazo NO corre hasta que `ARENA_MODEL_RUTA_OR` tenga el slug real de
+    // OpenRouter para Fable 5.1 — lo resuelve `/api/arena-smoke?catalog=1`.
+    // Preferimos una sonda que no arranca a una que le pega a un slug
+    // inventado y reporta un aborto que es nuestro.
+    model: slug('RUTA_OR', ARENA_OPENROUTER_CLAUDE_MODEL),
+    persona: 'Claude PM',
+    slug_verified: false,
+    // `sampling: false` IGUAL que el brazo directo: Fable rechaza `temperature`
+    // con 400, y mandarla solo por este brazo haría que los dos difirieran en
+    // algo más que la ruta — y encima produciría un aborto que sería nuestro.
+    caps: { sampling: false, effort: 'openrouter', cache: null },
+    archetype: { name: 'sonda', voice: 'No publica: es una sonda de infraestructura.' },
+    alpaca: 'PAPER', house: 'sonda', control: false, probe: true, phase: 'sonda', enabled: false,
+  },
+
   // ── PENDIENTE T3 · EL OCTAVO AGENTE, EUROPEO ─────────────────────────
   // Mistral, `house: 'eu'`. Decidido el 2026-09-17 que entra en la T3 y NO en
   // la T2, y la razón no es técnica: un agente que arranca a mitad de temporada
@@ -434,6 +511,28 @@ export function seasonDay(now = new Date(), season = ARENA_SEASON) {
 
 export function agentById(id) {
   return ARENA_AGENTS.find((a) => a.id === id) || null;
+}
+
+// ── LAS SONDAS NO SON COMPETIDORES ───────────────────────────────────
+// Corren el mismo harness para medir la INFRAESTRUCTURA, no para competir. Ya
+// quedan fuera de la liga por `enabled: false`; esto las saca además de las
+// pantallas y de los agregados públicos, donde una fila suya sería un agente
+// que nadie inscribió.
+export const PROBE_IDS = ARENA_AGENTS.filter((a) => a.probe).map((a) => a.id);
+export const esProbe = (id) => PROBE_IDS.includes(String(id || '').toLowerCase());
+
+// LOS QUE COMPITEN. Hasta el 2026-09-25 `ARENA_AGENTS` y "la liga" eran lo
+// mismo, así que medio repo usaba el array crudo para decir "los siete": el
+// lint de voces, el peor caso de costo de arena-watch, el conteo del anuncio de
+// apertura. La primera entrada que NO era un competidor —las sondas de ruta—
+// rompió cinco pruebas a la vez, todas por la misma causa.
+//
+// `activeAgents()` NO sirve para esto: contesta "quién corre HOY" y la respuesta
+// cambia con `ARENA_LEAGUE` y con las banderas `enabled`. Un agente sacado de la
+// parrilla por un día sigue siendo un competidor, y una sonda apagada nunca lo
+// fue. Son dos preguntas distintas y ahora tienen dos funciones distintas.
+export function competidores() {
+  return ARENA_AGENTS.filter((a) => !a.probe);
 }
 
 // Creds Alpaca del agente: ALPACA_<ALPACA>_KEY / ALPACA_<ALPACA>_SECRET.

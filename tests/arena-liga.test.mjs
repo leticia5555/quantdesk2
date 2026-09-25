@@ -41,7 +41,7 @@ delete process.env.ARENA_TEMPERATURE;
 
 import { readFileSync } from 'node:fs';
 import { runArenaLeague, announceSeasonOpen, SEASON_OPEN_ID } from '../api/arena-run.js';
-import { activeAgents, agentById, agentAlpacaCreds, ARENA_TEMPERATURE, ARENA_AGENTS, ARENA_SEASON } from '../api/_lib/arena-registry.js';
+import { activeAgents, agentById, agentAlpacaCreds, ARENA_TEMPERATURE, ARENA_AGENTS, competidores, ARENA_SEASON } from '../api/_lib/arena-registry.js';
 import { ANTHROPIC_MODEL, ARENA_ANTHROPIC_MODEL } from '../api/_lib/model.js';
 import { callArenaLLM, providerKey, effectiveParams, sameParams } from '../api/_lib/arena-model.js';
 import { buildDiveSystemPrompt } from '../api/arena-run.js';
@@ -185,8 +185,14 @@ console.log('liga: registry (Temporada 2: los 7 activos, slugs, temperatura, cre
   const SIETE = ['claude', 'openai', 'control', 'grok', 'gemini', 'deepseek', 'qwen'];
   ok(ids.length === 7 && SIETE.every((x) => ids.includes(x)),
     'Temporada 2: la liga COMPLETA activa (los 7)', JSON.stringify(ids));
-  const off = ARENA_AGENTS.filter((a) => !a.enabled).map((a) => a.id);
-  ok(off.length === 0, 'ya no queda ningún agente apagado en el registry', JSON.stringify(off));
+  // Se pregunta por los COMPETIDORES, no por el array crudo. El 2026-09-25
+  // entraron al registry tres sondas de infraestructura con `enabled: false` a
+  // propósito: contra `ARENA_AGENTS` esta línea las leía como "cuatro agentes
+  // apagados" y fallaba por lo que es justamente el diseño.
+  const off = competidores().filter((a) => !a.enabled).map((a) => a.id);
+  ok(off.length === 0, 'ya no queda ningún COMPETIDOR apagado en el registry', JSON.stringify(off));
+  ok(ARENA_AGENTS.filter((a) => a.probe).every((a) => a.enabled === false),
+    'y las sondas, al revés: ninguna encendida — no compiten aunque vivan en el mismo array');
   ok(['grok', 'gemini', 'deepseek', 'qwen'].every((x) => agentById(x).enabled === true),
     'Grok/Gemini/DeepSeek/Qwen encendidos (el flip de la Temporada 2)');
   ok(ARENA_TEMPERATURE === 0.7, 'temperatura fija 0.7 por default', String(ARENA_TEMPERATURE));
@@ -260,7 +266,7 @@ const res = await runArenaLeague({ baseUrl: BASE_URL });
   // próximo cambio de modelos. Lo que el test protege es el invariante —
   // un adapter, cinco slugs DISTINTOS, uno por agente.
   const slugsVistos = [...new Set(openrouterCalls.map((c) => c.model))].sort();
-  const slugsEsperados = ARENA_AGENTS.filter((a) => a.provider === 'openrouter').map((a) => a.model).sort();
+  const slugsEsperados = competidores().filter((a) => a.provider === 'openrouter').map((a) => a.model).sort();
   ok(slugsVistos.join(',') === slugsEsperados.join(',') && slugsVistos.length === 5,
     'OpenRouter recibió los 5 slugs distintos del registry (uno por agente)', JSON.stringify(slugsVistos));
 
@@ -295,7 +301,9 @@ const res = await runArenaLeague({ baseUrl: BASE_URL });
     'la familia de OpenRouter sí reporta su temperatura efectiva');
   // Dentro de cada familia, parámetros idénticos (la regla nueva).
   const porFamilia = {};
-  for (const a of ARENA_AGENTS) {
+  // Entre COMPETIDORES. Las sondas de ruta difieren a propósito (una corre sin
+  // caché) — ése es el experimento, no una violación de la regla.
+  for (const a of competidores()) {
     const p = effectiveParams(a);
     (porFamilia[a.provider] = porFamilia[a.provider] || []).push(
       JSON.stringify({ t: p.temperature, e: p.effort, mt: p.max_tokens, ec: p.effort_channel }));

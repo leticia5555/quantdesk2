@@ -17,7 +17,12 @@ import {
   HEADLINE_MAX, headlinesEnabled, normalizeHeadline,
   buildHeadlineSystemPrompt, buildHeadlineUserPrompt, generateHeadline,
 } from '../api/_lib/arena-voice.js';
-import { ARENA_AGENTS, agentById } from '../api/_lib/arena-registry.js';
+import { ARENA_AGENTS, competidores, agentById } from '../api/_lib/arena-registry.js';
+
+// Las VOCES son de los que publican. Las sondas de ruta (2026-09-25) comparten
+// un arquetipo llamado `sonda` porque no publican nada: tres arquetipos
+// idénticos ahí no son tres voces indistinguibles, son cero voces.
+const VOCES = competidores();
 import { buildDiveSystemPrompt, buildScanSystemPrompt, buildDiveUserPrompt } from '../api/arena-run.js';
 
 let failures = 0;
@@ -29,8 +34,8 @@ function ok(cond, name, detail) {
 // ═══ arquetipos en el registry ═════════════════════════════════════
 console.log('voz: arquetipo fijo por modelo, en el registry');
 ok(ARENA_AGENTS.every((a) => a.archetype && a.archetype.name && a.archetype.voice),
-  'los siete tienen arquetipo con nombre y voz', JSON.stringify(ARENA_AGENTS.filter((a) => !a.archetype).map((a) => a.id)));
-const nombres = ARENA_AGENTS.map((a) => a.archetype.name);
+  'TODA entrada del registry tiene arquetipo con nombre y voz, sondas incluidas', JSON.stringify(ARENA_AGENTS.filter((a) => !a.archetype).map((a) => a.id)));
+const nombres = VOCES.map((a) => a.archetype.name);
 ok(new Set(nombres).size === nombres.length, 'ningún arquetipo se repite: siete voces distinguibles', JSON.stringify(nombres));
 ok(/escéptico/i.test(agentById('control').archetype.name) && /no cree en nadie/i.test(agentById('control').archetype.name),
   'el control es "el escéptico que no cree en nadie"', agentById('control').archetype.name);
@@ -44,7 +49,7 @@ const diveClaude = buildDiveSystemPrompt(agentById('claude').persona);
 const diveControl = buildDiveSystemPrompt(agentById('control').persona);
 ok(diveClaude === diveControl,
   'el DIVE de claude y el del control siguen siendo BYTE-IDÉNTICOS (el control sigue siendo piso de ruido)');
-for (const a of ARENA_AGENTS) {
+for (const a of VOCES) {
   const marcas = [a.archetype.name, a.archetype.voice.slice(0, 30)];
   const sucio = marcas.some((m) => scanSys.includes(m) || diveClaude.includes(m) || buildDiveSystemPrompt(a.persona).includes(m));
   ok(!sucio, `${a.id}: su arquetipo NO aparece en el prompt del SCAN ni del DIVE`, a.archetype.name);

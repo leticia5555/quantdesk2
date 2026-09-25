@@ -71,7 +71,13 @@ export function dayIndex(now = new Date()) {
 // La rotación hashea el id del agente, así que `claude` y `control` caían en
 // enfoques distintos casi siempre. Acá se fija: el control toma el enfoque de su
 // insignia, no la suya.
-export const ENFOQUE_HEREDADO = { control: 'claude' };
+// Las SONDAS DE RUTA también heredan el de `claude`: el brazo A, el B y el C
+// tienen que mirar lo mismo, o la comparación mide el enfoque y no la ruta.
+// Es el mismo motivo por el que `control` lo hereda.
+export const ENFOQUE_HEREDADO = {
+  control: 'claude',
+  ruta_directo: 'claude', ruta_directo_nc: 'claude', ruta_or: 'claude',
+};
 
 export function enfoqueDelDia(agentId, now = new Date()) {
   const fuente = ENFOQUE_HEREDADO[String(agentId || '').toLowerCase()] || agentId;
