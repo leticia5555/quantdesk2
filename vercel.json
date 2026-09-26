@@ -57,6 +57,9 @@
     "api/earnings-beat-analyze.js": {
       "maxDuration": 300
     },
+    "api/grades-backtest.js": {
+      "maxDuration": 300
+    },
     "api/historia-harvest.js": {
       "maxDuration": 300
     },
