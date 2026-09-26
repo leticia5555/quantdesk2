@@ -6,6 +6,9 @@
 //   GET /api/grades-backtest                   → el backtest (Fase 1)
 //   GET /api/grades-backtest?format=md         → resumen en español
 //   GET /api/grades-backtest?simbolos=20       → recorta el censo (ahorra cuota)
+//   GET /api/grades-backtest?smoke=NKE         → DIAGNÓSTICO de la frontera:
+//       tres variantes de URL (con limit alto, con limit chico y sin limit),
+//       cada una con su status, content-type y los primeros 500 bytes.
 //
 // ── EL ORDEN NO SE SALTEA ──────────────────────────────────────────
 // La Fase 0 mide si hay con qué. Si la muestra real queda bajo
@@ -28,20 +31,93 @@
 
 import { sql } from './_lib/db.js';
 import { V0_UNIVERSE } from './_lib/pead-universe.js';
-import { gradesHistorical } from './_lib/fmp-grades.js';
+import { createHash } from 'node:crypto';
+import { gradesHistorical, interpretaSmoke, LIMIT_ALTO } from './_lib/fmp-grades.js';
 import {
   CRITERIOS_GRADES, seleccionaVentana, analizaGrades, renderGradesMd, ADVERTENCIA,
 } from './_lib/grades-backtest.js';
 
 export const maxDuration = 300;
 
-// Requests a FMP en paralelo. BAJO a propósito: el objetivo de la Fase 0 es
-// MEDIR el rate limit, y pegarle con 20 hilos mide el rate limit de otra cosa.
-const CONCURRENCIA = 4;
+// Requests a FMP en paralelo. BAJÓ DE 4 A 2: la primera corrida midió 56.98
+// req/s, que para un plan gratis es mucho aunque no haya salido ningún 429 —
+// y si el 429 llega recién a mitad del censo, la mitad del universo queda
+// marcada como "sin datos" por una cuota y no por la fuente.
+const CONCURRENCIA = 2;
 // Si llegan tantos 429 seguidos, se corta y se DECLARA. Seguir pegándole
 // gastaría cuota para aprender lo mismo dos veces.
 const MAX_429 = 5;
 const PRESUPUESTO_MS = 240000;
+
+// ── DIAGNÓSTICO DE LA FRONTERA (?smoke=NKE) ───────────────────────────────
+// "Quiero el diagnóstico con la fila en la mano, no con el código."
+//
+// Nació de una corrida donde 20 de 20 símbolos dieron `http_error` con mensaje
+// VACÍO: la Fase 0 llevaba solo `motivo` y `fmp_message` a la vista, y como
+// `fmp_message` únicamente se llena en el caso del 200-con-error, un error HTTP
+// salía mudo. Un error que no dice por qué es el mismo problema que el "exit
+// code 22" que tapó un 500 con la causa en el cuerpo.
+//
+// Tres requests, y contestan las tres preguntas a la vez:
+//   · ¿la URL que arma el código es la que funciona a mano?  → `url_sin_key`
+//   · ¿es la key o es el endpoint?                           → status + cuerpo
+//   · ¿es el `limit`?                                        → con y sin él
+const VARIANTES_SMOKE = [
+  { id: 'limit_alto', limit: LIMIT_ALTO, nota: 'lo que hace el censo hoy' },
+  { id: 'limit_chico', limit: 10, nota: 'un limit que cualquier plan acepta' },
+  { id: 'sin_limit', limit: null, nota: 'la URL sin el parámetro' },
+];
+
+// La key NUNCA se imprime. Se publica su HUELLA: con eso se compara contra la
+// que se tiene a mano sin exponer el valor.
+//   echo -n "$FMP_API_KEY" | shasum -a 256 | cut -c1-10
+function diagnosticoDeKey() {
+  const k = process.env.FMP_API_KEY || '';
+  return {
+    presente: !!k,
+    longitud: k.length || 0,
+    huella_sha256_10: k ? createHash('sha256').update(k).digest('hex').slice(0, 10) : null,
+    como_comparar: 'echo -n "$FMP_API_KEY" | shasum -a 256 | cut -c1-10  → tiene que dar la misma huella',
+    entorno_vercel: process.env.VERCEL_ENV || null,
+    nota_entorno: 'En Vercel una env var vive por ENTORNO: que esté en Production no la pone en Preview ni en Development.',
+    // Se dice explícitamente que no se muestra el valor, para que nadie lo
+    // agregue "para depurar mejor".
+    valor: 'NO se publica, a propósito. La huella alcanza para saber si es la misma key.',
+  };
+}
+
+async function smokeDeFrontera(symbol) {
+  const sym = String(symbol || 'NKE').trim().toUpperCase();
+  const key = diagnosticoDeKey();
+  const variantes = [];
+  for (const v of VARIANTES_SMOKE) {
+    const r = await gradesHistorical(sym, { limit: v.limit });
+    variantes.push({
+      id: v.id, nota: v.nota, limit: v.limit,
+      url_sin_key: r.url_sin_key || null,
+      ok: !!r.ok, status: r.status ?? null, motivo: r.motivo || null, ms: r.ms ?? null,
+      content_type: r.content_type ?? null,
+      longitud_cuerpo: r.longitud_cuerpo ?? null,
+      // EL CUERPO, SIEMPRE — salga bien o mal. Es lo único que explica un 400.
+      body_sample: r.body_sample ?? null,
+      fmp_message: r.fmp_message || null,
+      detalle: r.detalle || null,
+      filas: r.ok ? r.filas.length : null,
+      meses: r.meses ?? null, desde: r.desde ?? null, hasta: r.hasta ?? null,
+      posible_tope: r.posible_tope ?? null,
+    });
+  }
+  const lectura = interpretaSmoke(variantes, { key });
+  return {
+    smoke: sym,
+    pregunta: '¿Por qué la frontera con FMP no trae filas? (URL, key, status y cuerpo de cada variante)',
+    generado_en: new Date().toISOString(),
+    key, variantes, ...lectura,
+    // La URL que funciona a mano, para comparar letra por letra con `url_sin_key`.
+    url_de_referencia: `https://financialmodelingprep.com/stable/grades-historical?symbol=${sym}&limit=N&apikey=...`,
+    cuota_gastada_requests: variantes.length,
+  };
+}
 
 // ── Los grades de varios símbolos, midiendo el camino ──
 async function traeGrades(simbolos, { limite = null, fetchImpl = fetch } = {}) {
@@ -65,6 +141,8 @@ async function traeGrades(simbolos, { limite = null, fetchImpl = fetch } = {}) {
         meses: r.meses ?? null, desde: r.desde ?? null, hasta: r.hasta ?? null,
         posible_tope: r.posible_tope ?? null, fmp_message: r.fmp_message || null,
         detalle: r.detalle || null, body_sample: r.ok ? null : (r.body_sample || null),
+        longitud_cuerpo: r.longitud_cuerpo ?? null, content_type: r.content_type ?? null,
+        url_sin_key: r.url_sin_key || null,
       });
     }
   };
@@ -148,6 +226,17 @@ export default async function handler(req, res) {
   })();
 
   try {
+    // El smoke va PRIMERO y no toca Neon: son 3 requests y contesta si tiene
+    // sentido gastar el censo entero.
+    if (q.smoke) {
+      const out = await smokeDeFrontera(q.smoke === '1' ? 'NKE' : q.smoke);
+      if (esMd) {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        return res.status(200).send(renderSmokeMd(out));
+      }
+      return res.status(200).json(out);
+    }
+
     const { eventos, conteos } = await cargaEventos();
     const universo = [...new Set(V0_UNIVERSE)];
     // Solo los símbolos que hacen falta: los del universo que además tienen
@@ -172,6 +261,25 @@ export default async function handler(req, res) {
       const meses = conDatos.map((t) => t.meses).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
       const alcanza = validos.length >= CRITERIOS_GRADES.min_eventos;
 
+      // ── LA FRONTERA SE JUZGA ANTES QUE LA MUESTRA ──────────────────
+      //
+      // Si FMP no entregó filas, los descartes por "menos_de_3_meses" son
+      // CONSECUENCIA de eso y no dicen nada sobre el tamaño de muestra. La
+      // primera versión de este censo igual anunciaba "INCONCLUSO POR MUESTRA",
+      // que es atribuirle a los datos una falla del instrumento — el mismo error
+      // que los "0 mercados de earnings" de la Fase 0 del earnings-beat, que
+      // eran ceguera del método y no un hallazgo.
+      //
+      // Ahora: mientras la frontera esté fallando, el censo NO se pronuncia
+      // sobre la muestra.
+      const fallados = telemetria.filter((t) => !t.ok);
+      const fronteraRota = telemetria.length > 0 && conDatos.length === 0;
+      const fronteraParcial = !fronteraRota && fallados.length > 0
+        && fallados.length >= telemetria.length / 2;
+      const motivoDominante = Object.entries(
+        fallados.reduce((a, t) => { a[t.motivo] = (a[t.motivo] || 0) + 1; return a; }, {})
+      ).sort((a, b) => b[1] - a[1])[0] || null;
+
       const salida = {
         fase: 0,
         pregunta: '¿Hay con qué correr el backtest? (historia de grades, cobertura del universo, rate limits y tamaño de muestra REAL)',
@@ -194,7 +302,21 @@ export default async function handler(req, res) {
           con_grades: conDatos.length,
           sin_grades: limites.pedidos - conDatos.length,
           recortado_a: limite,
-          simbolos_sin_grades: telemetria.filter((t) => !t.ok).map((t) => ({ symbol: t.symbol, motivo: t.motivo, fmp_message: t.fmp_message })),
+          // EL STATUS Y EL CUERPO VAN ACÁ, en la lista que se lee.
+          //
+          // La primera versión llevaba solo `motivo` y `fmp_message`, y como
+          // `fmp_message` únicamente se llena en el caso del 200-con-error, un
+          // `http_error` salía MUDO: 20 de 20 símbolos fallando y ni un código
+          // ni un byte de explicación. El dato estaba en
+          // `telemetria_por_simbolo`; lo que faltaba era ponerlo donde se mira.
+          // Es el mismo problema que el "exit code 22" tapando un 500 que traía
+          // la causa en el cuerpo.
+          simbolos_sin_grades: telemetria.filter((t) => !t.ok).map((t) => ({
+            symbol: t.symbol, motivo: t.motivo, status: t.status,
+            fmp_message: t.fmp_message, detalle: t.detalle,
+            body_sample: t.body_sample, longitud_cuerpo: t.longitud_cuerpo,
+            content_type: t.content_type, url_sin_key: t.url_sin_key,
+          })),
         },
         // 3. Rate limits, MEDIDOS.
         limites,
@@ -207,9 +329,33 @@ export default async function handler(req, res) {
           min_eventos: CRITERIOS_GRADES.min_eventos,
           alcanza,
           descartes,
+          // Sin esto, un lector honesto leería "menos_de_3_meses: 240" como un
+          // dato sobre la historia de FMP.
+          descartes_son_consecuencia_de_la_frontera: fronteraRota || fronteraParcial
+            ? 'Estos descartes NO dicen nada sobre el tamaño de muestra: la frontera no entregó filas, así que todos los eventos caen en "menos_de_3_meses" por falta de datos, no por falta de historia.'
+            : null,
         },
-        veredicto_fase_0: alcanza ? 'HAY CON QUÉ — se puede correr la Fase 1'
-          : `INCONCLUSO POR MUESTRA — ${validos.length} eventos con ventana válida, el candado son ${CRITERIOS_GRADES.min_eventos}. Se para acá.`,
+        // El diagnóstico de la FRONTERA, antes que cualquier lectura de muestra.
+        frontera: {
+          pedidos: telemetria.length,
+          con_datos: conDatos.length,
+          fallados: fallados.length,
+          rota: fronteraRota,
+          degradada: fronteraParcial,
+          motivo_dominante: motivoDominante ? { motivo: motivoDominante[0], simbolos: motivoDominante[1] } : null,
+          // El primer fallo COMPLETO, con status, cuerpo y URL: la fila en la mano.
+          primer_fallo: fallados.length ? fallados[0] : null,
+          key: diagnosticoDeKey(),
+          que_hacer: fronteraRota || fronteraParcial
+            ? 'Correr ?smoke=NKE: prueba la URL con y sin `limit` y devuelve status, content-type y los primeros 500 bytes de cada variante. Un 401/403 se reporta como auth_error (se arregla en las env vars); un 400 con `limit` pero 200 sin él es el parámetro, no la key.'
+            : null,
+        },
+        veredicto_fase_0: fronteraRota
+          ? `FALLA DE FRONTERA — ${telemetria.length} de ${telemetria.length} símbolos sin datos (${motivoDominante ? motivoDominante[0] : 'sin motivo'}). NO se lee la muestra: los descartes de abajo son CONSECUENCIA de no haber traído ni una fila, no un hallazgo sobre el tamaño de muestra. Diagnosticar con ?smoke=NKE.`
+          : fronteraParcial
+            ? `FRONTERA DEGRADADA — ${fallados.length} de ${telemetria.length} símbolos sin datos (${motivoDominante ? motivoDominante[0] : 'sin motivo'}). Cualquier lectura de muestra sale sesgada por los símbolos que faltan. Diagnosticar con ?smoke=NKE antes de concluir.`
+            : alcanza ? 'HAY CON QUÉ — se puede correr la Fase 1'
+              : `INCONCLUSO POR MUESTRA — ${validos.length} eventos con ventana válida, el candado son ${CRITERIOS_GRADES.min_eventos}. La frontera respondió bien, así que esto SÍ es un dato sobre la muestra. Se para acá.`,
         criterios: CRITERIOS_GRADES,
         advertencia: ADVERTENCIA,
         telemetria_por_simbolo: telemetria,
@@ -247,6 +393,51 @@ export default async function handler(req, res) {
   }
 }
 
+function renderSmokeMd(s) {
+  const L = [];
+  L.push(`# Smoke de la frontera FMP — ${s.smoke}`);
+  L.push('');
+  L.push(`Generado: ${s.generado_en} · ${s.cuota_gastada_requests} requests gastados`);
+  L.push('');
+  L.push(`## LECTURA: ${s.causa}`);
+  L.push('');
+  L.push(s.lectura);
+  L.push('');
+  L.push('## La key');
+  L.push('');
+  L.push(`Presente: **${s.key.presente}** · longitud: ${s.key.longitud} · huella sha256: \`${s.key.huella_sha256_10 || '—'}\` · entorno: ${s.key.entorno_vercel || '—'}`);
+  L.push('');
+  L.push(`Para comparar sin exponerla: \`${s.key.como_comparar}\``);
+  L.push('');
+  L.push(`> ${s.key.nota_entorno}`);
+  L.push('');
+  L.push('## Las variantes');
+  L.push('');
+  L.push('| Variante | limit | HTTP | motivo | filas | ms |');
+  L.push('|---|---|---|---|---|---|');
+  for (const v of s.variantes) {
+    L.push(`| ${v.id} (${v.nota}) | ${v.limit === null ? '—' : v.limit} | ${v.status ?? '—'} | ${v.ok ? 'ok' : (v.motivo || '—')} | ${v.filas ?? '—'} | ${v.ms ?? '—'} |`);
+  }
+  L.push('');
+  for (const v of s.variantes) {
+    L.push(`### ${v.id}`);
+    L.push('');
+    L.push(`URL (sin key): \`${v.url_sin_key || '—'}\``);
+    L.push(`Content-Type: ${v.content_type || '—'} · cuerpo: ${v.longitud_cuerpo ?? '—'} bytes`);
+    if (v.meses) L.push(`Historia: ${v.meses} meses · ${v.desde} → ${v.hasta}${v.posible_tope ? ' · **tocó el límite**' : ''}`);
+    if (v.detalle) L.push(`Detalle: ${v.detalle}`);
+    L.push('');
+    L.push('```');
+    L.push(v.body_sample === null ? '(sin cuerpo)' : (v.body_sample || '(cuerpo VACÍO — 0 bytes)'));
+    L.push('```');
+    L.push('');
+  }
+  L.push('---');
+  L.push('');
+  L.push(`La URL que funciona a mano, para comparar letra por letra: \`${s.url_de_referencia}\``);
+  return L.join('\n');
+}
+
 function renderCensoMd(c) {
   const L = [];
   L.push('# FASE 0 — ¿hay con qué correr el backtest de enfriamiento?');
@@ -256,6 +447,20 @@ function renderCensoMd(c) {
   L.push(`## ${c.veredicto_fase_0}`);
   L.push('');
   const h = c.historia, m = c.muestra, lim = c.limites, cob = c.cobertura;
+  const fr = c.frontera || {};
+  if (fr.rota || fr.degradada) {
+    L.push(`> ⚠ **La frontera ${fr.rota ? 'NO respondió' : 'respondió a medias'}**: ${fr.con_datos} de ${fr.pedidos} símbolos con datos`
+      + (fr.motivo_dominante ? ` · motivo dominante: **${fr.motivo_dominante.motivo}** (${fr.motivo_dominante.simbolos} símbolos)` : '') + '.');
+    L.push('>');
+    L.push(`> ${fr.que_hacer}`);
+    if (fr.primer_fallo) {
+      L.push('>');
+      L.push(`> Primer fallo: **${fr.primer_fallo.symbol}** · HTTP ${fr.primer_fallo.status ?? '—'} · ${fr.primer_fallo.longitud_cuerpo === 0 ? 'cuerpo VACÍO' : `cuerpo: ${String(fr.primer_fallo.body_sample || '').replace(/\n/g, ' ').slice(0, 200)}`}`);
+      L.push(`> URL (sin key): \`${fr.primer_fallo.url_sin_key || '—'}\``);
+    }
+    L.push(`> Key: presente **${(fr.key || {}).presente}** · longitud ${(fr.key || {}).longitud} · huella \`${(fr.key || {}).huella_sha256_10 || '—'}\` · entorno ${(fr.key || {}).entorno_vercel || '—'}`);
+    L.push('');
+  }
   L.push('## 1. Historia de `grades-historical`');
   L.push('');
   L.push(`Símbolos con datos: **${h.simbolos_con_datos}** · meses por símbolo: ${h.meses_por_simbolo ? `min ${h.meses_por_simbolo.min} · mediana ${h.meses_por_simbolo.mediana} · max ${h.meses_por_simbolo.max}` : '—'}`);
@@ -268,9 +473,17 @@ function renderCensoMd(c) {
   if (cob.recortado_a) L.push(`(recortado a ${cob.recortado_a} símbolos con \`?simbolos=\`)`);
   if ((cob.simbolos_sin_grades || []).length) {
     L.push('');
-    L.push('| Símbolo | Motivo | Mensaje de FMP |');
-    L.push('|---|---|---|');
-    for (const s of cob.simbolos_sin_grades.slice(0, 30)) L.push(`| ${s.symbol} | ${s.motivo} | ${s.fmp_message || '—'} |`);
+    // El STATUS y el CUERPO en la tabla. Sin ellos, "http_error" en 20 filas no
+    // dice nada y manda a buscar donde no está.
+    L.push('| Símbolo | Motivo | HTTP | Mensaje / cuerpo |');
+    L.push('|---|---|---|---|');
+    for (const s of cob.simbolos_sin_grades.slice(0, 30)) {
+      const cuerpo = s.fmp_message || s.detalle
+        || (s.longitud_cuerpo === 0 ? '(cuerpo VACÍO — 0 bytes)' : (s.body_sample || '—'));
+      L.push(`| ${s.symbol} | ${s.motivo} | ${s.status ?? '—'} | ${String(cuerpo).replace(/\n/g, ' ').replace(/\|/g, '\\|').slice(0, 160)} |`);
+    }
+    L.push('');
+    L.push(`URL que armó el código (sin key): \`${(cob.simbolos_sin_grades[0] || {}).url_sin_key || '—'}\``);
   }
   L.push('');
   L.push('## 3. Rate limits (MEDIDOS en esta corrida)');
@@ -287,6 +500,10 @@ function renderCensoMd(c) {
   L.push(`> ${m.nota_muestra}`);
   L.push('');
   L.push(`Con ventana válida (≥ ${c.criterios.min_meses_grades} meses previos, T-1 fresco, ventana en rango): **${m.con_ventana_valida}** · candado: ${m.min_eventos} → ${m.alcanza ? '**alcanza**' : '**NO alcanza**'}`);
+  if (m.descartes_son_consecuencia_de_la_frontera) {
+    L.push('');
+    L.push(`> ⚠ ${m.descartes_son_consecuencia_de_la_frontera}`);
+  }
   if (Object.keys(m.descartes || {}).length) {
     L.push('');
     L.push('| Motivo de descarte | Eventos |');

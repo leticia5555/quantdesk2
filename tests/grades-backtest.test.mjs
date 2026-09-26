@@ -23,7 +23,7 @@ import {
   CRITERIOS_GRADES, scoreSentimiento, seleccionaVentana, terciles, tercilDe,
   NOMBRE_TERCIL, testProporciones, erf, normalCDF, analizaGrades, renderGradesMd, ADVERTENCIA,
 } from '../api/_lib/grades-backtest.js';
-import { normalizaGrades } from '../api/_lib/fmp-grades.js';
+import { normalizaGrades, interpretaSmoke } from '../api/_lib/fmp-grades.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -204,6 +204,70 @@ const nke = seleccionaVentana([
   { date: '2026-06-30', strongBuy: 1, buy: 10, hold: 12, sell: 3, strongSell: 1 },
 ], '2026-07-10');
 ok(nke.ok && nke.delta < 0, 'el patrón de NKE (6+20 → 1+10) se lee como enfriamiento', nke.delta.toFixed(3));
+
+console.log('interpretaSmoke: nombra la causa, y cuando no la sabe lo dice');
+
+const V = (id, limit, extra) => ({ id, limit, ok: false, status: 400, motivo: 'http_error', ...extra });
+
+ok(interpretaSmoke([], {}).causa === 'sin_variantes', 'sin variantes no se inventa una causa');
+ok(interpretaSmoke([V('a', 1000)], { key: { presente: false } }).causa === 'sin_key',
+  'si no hay key, eso manda sobre cualquier status');
+ok(interpretaSmoke([
+  V('a', 1000, { status: 401, motivo: 'auth_error' }),
+  V('b', 10, { status: 401, motivo: 'auth_error' }),
+]).causa === 'auth_error', 'todas con 401 → auth_error');
+ok(/env vars de Vercel, no en el código/.test(interpretaSmoke([
+  V('a', 1000, { status: 403, motivo: 'auth_error' })]).lectura),
+  'y la lectura dice dónde se arregla');
+ok(interpretaSmoke([
+  { id: 'a', limit: 1000, ok: true, status: 200, meses: 10 },
+  { id: 'b', limit: null, ok: true, status: 200, meses: 10 },
+]).causa === 'frontera_ok', 'todas ok → frontera_ok');
+
+// EL CASO QUE MOTIVÓ EL SMOKE: falla con limit, anda sin él.
+const limitR = interpretaSmoke([
+  V('limit_alto', 1000, { status: 400 }),
+  { id: 'sin_limit', limit: null, ok: true, status: 200, meses: 10 },
+]);
+ok(limitR.causa === 'limit_rechazado', 'falla con limit y anda sin él → el PARÁMETRO', limitR.causa);
+ok(/PARÁMETRO, no la key/.test(limitR.lectura), 'y se dice que no es la key', limitR.lectura);
+ok(/limit=1000/.test(limitR.lectura) && /HTTP 400/.test(limitR.lectura),
+  'citando el valor y el status, no en abstracto');
+
+// Variante: un limit chico anda y el alto no → hay techo.
+const techo = interpretaSmoke([
+  V('limit_alto', 1000, { status: 400 }),
+  { id: 'limit_chico', limit: 10, ok: true, status: 200, meses: 10 },
+]);
+ok(techo.causa === 'limit_fuera_de_rango', 'limit chico ok y alto no → techo', techo.causa);
+ok(/DECLARAR que la historia puede estar cortada/.test(techo.lectura),
+  'y avisa que bajar el limit obliga a declarar el corte — la cicatriz del limit=5');
+
+// 200 con Error Message en todas: se cita el mensaje, no se disfraza de http_error.
+const msg = interpretaSmoke([
+  V('a', 1000, { status: 200, motivo: 'fmp_error_message', fmp_message: 'Symbol not found' }),
+  V('b', null, { status: 200, motivo: 'fmp_error_message', fmp_message: 'Symbol not found' }),
+]);
+ok(msg.causa === 'fmp_error_message', 'un 200 con mensaje se nombra como tal', msg.causa);
+ok(/Symbol not found/.test(msg.lectura), 'y el mensaje se CITA', msg.lectura);
+
+// Mismo status en todas, sin mensaje: se reporta y NO se adivina.
+const uniforme = interpretaSmoke([V('a', 1000, { status: 500 }), V('b', 10, { status: 500 }), V('c', null, { status: 500 })]);
+ok(uniforme.causa === 'http_error_uniforme', 'mismo status en todas → uniforme', uniforme.causa);
+ok(/no se adivina desde acá/.test(uniforme.lectura),
+  'y se dice que la causa la lee una persona, en vez de inventarla', uniforme.lectura);
+
+// Patrón que no encaja: se admite.
+const raro = interpretaSmoke([V('a', 1000, { status: 500 }), V('b', 10, { status: 404 })]);
+ok(raro.causa === 'no_concluyente', 'un patrón desconocido NO se fuerza a una causa', raro.causa);
+ok(/sin interpretar/.test(raro.lectura), 'y se entrega crudo');
+ok(interpretaSmoke([V('a', 1000, { status: 429, motivo: 'rate_limit' }), V('b', 10, { status: 429, motivo: 'rate_limit' })]).causa === 'rate_limit',
+  'un 429 se nombra como cuota agotada');
+
+console.log('gradesHistorical: el limit es OPCIONAL y la URL se publica sin key');
+
+// La URL y el limit se prueban de punta a punta en tests/grades-backtest-e2e.test.mjs,
+// donde hay un fetch simulado; acá alcanza con la interpretación, que es pura.
 
 console.log('el veredicto: los candados van ANTES de los números');
 
