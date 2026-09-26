@@ -77,6 +77,8 @@ header{padding:22px 0 14px;display:flex;align-items:baseline;justify-content:spa
 .margen .manos-bloque{margin-top:9px;padding-top:9px;border-top:1px solid var(--border);
   font-size:12px;color:var(--text2);line-height:1.55;}
 .margen .manos-bloque b{color:var(--text);}
+.margen .manos-bloque .culpa-saldo{margin-top:6px;padding:6px 8px;border-left:2px solid var(--amber);
+  background:rgba(245,158,11,.07);color:var(--text2);font-size:11px;line-height:1.5;}
 .margen .manos-bloque .lista{font-family:var(--mono);font-size:10px;color:var(--text3);
   letter-spacing:.03em;margin-top:6px;line-height:1.7;}
 .tag.separado{color:var(--green);border:1px solid rgba(var(--green-rgb),.3);background:rgba(var(--green-rgb),.06);}
@@ -294,16 +296,30 @@ function margenHtml(m){
 // La segunda objeción a la tabla, y es distinta del piso: el piso dice cuánta
 // de la distancia entre dos puestos es azar; esto dice que dos agentes NO
 // jugaron el mismo juego. Qwen decidió 3 veces en la semana y Control 37.
+//
+// ── Y LOS ABORTOS SE PARTEN EN DOS (2026-09-26) ─────────────────────
+// 48 de los 84 abortos de la temporada fueron LAS CUENTAS SIN SALDO, no los
+// modelos. Publicarlos juntos le carga al modelo una falla de la cuenta: si
+// Qwen tiene 31 abortos y la mitad son saldo, sus manos no son culpa suya.
+// Son dos columnas y se pintan distinto — el rojo es del modelo, el ámbar es
+// de la cuenta — porque solo una de las dos dice algo sobre el agente.
 function manosHtml(mn){
   if(!mn||!mn.resumen||!mn.resumen.disponible) return '';
   const r=mn.resumen;
   const filas=Object.values(mn.por_agente||{}).sort((a,b)=>b.vivas-a.vivas)
-    .map(a=>esc(a.agente)+' <b>'+a.vivas+'</b>'+(a.abortadas?' <span style="color:var(--red)">('+a.abortadas+' abortos)</span>':''))
+    .map(a=>{
+      const modelo=a.abortadas_modelo!=null?a.abortadas_modelo:a.abortadas;
+      const saldo=a.abortadas_saldo||0;
+      return esc(a.agente)+' <b>'+a.vivas+'</b>'+
+        (modelo?' <span style="color:var(--red)" title="El modelo o su proveedor no contestaron. Esto SÍ dice algo del agente.">('+modelo+' del modelo)</span>':'')+
+        (saldo?' <span style="color:var(--amber)" title="La cuenta se quedó sin crédito. No dice nada del modelo: el agente no jugó menos manos por ser peor.">('+saldo+' sin saldo)</span>':'');
+    })
     .join(' · ');
   return '<div class="manos-bloque">'+
     '<b>'+r.vivas_totales+' corridas vivas y '+r.abortadas_totales+' abortadas</b> en la temporada'+
     (r.pct_abortos_liga!=null?' ('+r.pct_abortos_liga+'% de abortos)':'')+'. '+
     esc(r.lectura)+
+    (r.culpa?'<div class="culpa-saldo">'+esc(r.culpa)+'</div>':'')+
     '<div class="lista">'+filas+'</div>'+
     '</div>';
 }
@@ -424,9 +440,17 @@ function rowHtml(a){
   const mn = a.manos||null;
   const tope = MANOS&&MANOS.resumen&&MANOS.resumen.mas ? MANOS.resumen.mas.vivas : null;
   const pocas = !!(mn&&tope&&(mn.vivas===0 || tope/Math.max(mn.vivas,1) >= 2));
+  // En la fila solo va el aborto DEL MODELO: es el único que dice algo del
+  // agente cuyo puesto se está leyendo. Los de saldo van en el title, porque
+  // explican la diferencia de manos sin ser culpa suya.
+  const abModelo = mn ? (mn.abortadas_modelo!=null?mn.abortadas_modelo:mn.abortadas) : 0;
+  const abSaldo = mn ? (mn.abortadas_saldo||0) : 0;
   const manosTag = mn
-    ? '<span class="tag manos'+(pocas?' pocas':'')+'" title="'+esc(mn.vivas+' corridas vivas y '+mn.abortadas+' abortadas en la temporada')+'">'+
-      mn.vivas+' manos'+(mn.abortadas?' · '+mn.abortadas+' abortos':'')+'</span>'
+    ? '<span class="tag manos'+(pocas?' pocas':'')+'" title="'+esc(
+        mn.vivas+' corridas vivas y '+mn.abortadas+' abortadas en la temporada'+
+        (abSaldo?' — de las cuales '+abSaldo+' fueron la CUENTA SIN SALDO, no el modelo. Ésas no dicen nada sobre el agente: no jugó menos manos por ser peor.':''))+'">'+
+      mn.vivas+' manos'+(abModelo?' · '+abModelo+' abortos':'')+
+      (abSaldo?' · <span style="color:var(--amber)">'+abSaldo+' sin saldo</span>':'')+'</span>'
     : '';
   const mg = a.margen||null;
   const empate = mg&&mg.empate_tecnico

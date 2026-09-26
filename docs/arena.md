@@ -746,6 +746,132 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B45 · EL LOOP EMPEZABA VUELTAS QUE NO PODÍA PAGAR (2026-09-26)
+
+### Primero, la corrección de mi apuesta
+
+Predije que los `cuerpo_vacio` por reloj nuestro traerían **70.002 ms**
+—`RESERVA_CIERRE_MS`— razonando desde B23, donde el número fue 45.002 y era
+esa misma constante en su valor de entonces.
+
+Salió **10.002**. De los 23 `cuerpo_vacio`, 17 traen datos: **13 con
+`timeout_nuestro: true`, 4 con `false`.**
+
+> **El mecanismo acertó, la constante no.** Era un techo NUESTRO cortando la
+> lectura del cuerpo —eso sí— pero el PISO de la vuelta, no la reserva de
+> cierre. Se anota así en el registro, y de acá sale la regla de cómo anotar:
+>
+> **Cuando un diagnóstico apunta a una constante, se escribe el MECANISMO y se
+> deriva el número. El número ya se movió una vez** (la reserva fue 45s antes
+> de ser 70s), y un registro que guarda el número guarda la parte que caduca.
+
+Y los 4 con `false` son una minoría REAL del proveedor. No se tapan al arreglar
+la nuestra: son dos causas, y la que arreglamos es la grande, no la única.
+
+### La aritmética
+
+Dos reglas sobre el mismo presupuesto, escritas por separado:
+
+```
+guarda:  cortar si  restante < RESERVA        (70s)
+techo:   max(PISO, restante − RESERVA)        (PISO = 10s)
+```
+
+Se contradicen en una banda de exactamente el ancho del piso:
+
+| restante | ¿arranca? | techo | reserva que le queda al cierre |
+|---:|---|---:|---|
+| 85s | sí | 15s | 70s ✓ |
+| 80s | sí | 10s | 70s ✓ (el borde) |
+| **79s** | **sí** | **10s** | **69s** ← el piso levanta un techo de 9s |
+| **71s** | **sí** | **10s** | **61s** ← …y de 1s |
+| 69s | no | — | intacta |
+
+Ahí adentro el loop arrancaba una vuelta **con diez segundos** —por debajo de
+cualquier vuelta exitosa observada, que en B23 fueron 13s, 23s y 32s— y se los
+sacaba a la reserva del cierre. La vuelta se moría leyendo el cuerpo:
+`cuerpo_vacio`, `timeout_nuestro: true`, `ms ≈ 10002`.
+
+**Un agente que entra a su última vuelta con diez segundos ya perdió antes, en
+el reparto.** Es aritmética nuestra, y se resuelve antes del prompt.
+
+### El arreglo, y el que NO se hizo
+
+Las dos reglas salen ahora del mismo número: la guarda es
+`minimoParaOtraVuelta() = RESERVA + PISO`. Si no queda para una vuelta pagable
+**más** la reserva entera, se va al cierre con la reserva **intacta** — que es
+lo que la reserva existe para garantizar. La banda se cierra por construcción:
+el `max` del piso ya no puede morder, y se queda solo como red para un
+`timeoutMs` chico por env var. Si vuelve a activarse, `origenTecho` lo dice.
+
+Lo que **no** se hizo: subir la reserva. Habría cerrado la banda comiendo
+investigación. Esto solo saca las vueltas que no se podían pagar — una de 15s
+sigue entrando, y el presupuesto total del loop no se movió.
+
+### Y el piso estaba escrito CUATRO veces
+
+Lo encontró la prueba del arreglo, no una revisión: el `10000` estaba a mano en
+la vuelta normal, el reintento del cuerpo vacío, el reintento transitorio y el
+turno de cierre. **B41 dentro de un solo archivo** — no hacen falta dos caminos
+para que una regla se bifurque, alcanza con cuatro sitios y un número redondo.
+Los cuatro salen ahora de `PISO_VUELTA_MS`.
+
+La prueba (`tests/arena-reparto-reloj.test.mjs`) **barre la frontera
+milisegundo a milisegundo** en vez de probar tres casos elegidos: una banda de
+ancho 1 sobreviviría a tres muestras. Y verifica la derivación con otros
+valores, no solo con los de hoy — dos constantes que hoy coinciden pasarían una
+prueba que solo mire los números actuales.
+
+---
+
+## B44 · SE HABÍA ACABADO EL DINERO (2026-09-26, verificado en producción)
+
+Con la ficha arreglada (B42), los 52 abortos con `terminó_por: error` leídos
+por mensaje literal del proveedor:
+
+| mensaje | casos | cuenta |
+|---|---:|---|
+| `This request requires more credits…` | **33** | OpenRouter |
+| `Your credit balance is too low…` | **13** | Anthropic |
+| `This request would exceed your available…` | 2 | OpenRouter |
+| `This request's maximum cost exceeds…` | 1 | |
+| `OpenRouter could not verify avail…` | 1 | |
+| `The operation was aborted` | 1 | |
+| `se pasó de 10s (abortado a los 10002ms)` | 1 | |
+
+**48 de 52 son falta de saldo. Sobre los 84 abortos de la temporada, el 57%
+son las dos cuentas sin crédito**, en días distintos.
+
+Los racimos de B43 no eran "el proveedor falló": **era que se acabó el
+dinero.** Eso es lo que explica por qué se partían exactamente por proveedor y
+nunca se mezclaban — un saldo es por cuenta.
+
+### UN ABORTO POR FALTA DE SALDO NO ES UN ABORTO DEL MODELO
+
+Y hasta hoy `/liga` los contaba juntos. **Es el mismo error de categoría que
+contar `ok_no_actions` como aborto, en la dirección opuesta: le carga al modelo
+una falla de la cuenta.** Si Qwen tiene 31 abortos y la mitad son saldo, sus
+manos jugadas no son culpa suya, y la tabla que las publica al lado del retorno
+está atribuyendo mal — encima de las dos objeciones que ya tenía (el piso de
+ruido y las manos desparejas).
+
+Separados en `_lib/arena-manos.js`: `abortadas_saldo` y `abortadas_modelo`
+suman `abortadas`, que se conserva. En la fila de cada agente va **solo el del
+modelo**, que es el único que habla de él; el de saldo va en ámbar y explicado.
+
+Y una cota nueva, `techo_de_manos` = vivas + abortos de saldo. **Se llama
+techo y no "manos reales" a propósito:** un modelo puede abortar por su cuenta
+en una corrida que el saldo le impidió intentar. Es una cota superior, no una
+estimación, y el nombre tiene que decirlo o alguien la va a reportar como las
+manos que le faltaron.
+
+Las firmas son literales de producción, cada una con su origen y su conteo, y
+**no se generalizó a `/credit/i`**: un falso positivo acá borra un fallo real
+del modelo de la columna que existe para mostrarlo. Es el error más caro de
+los dos.
+
+---
+
 ## B43 · BRAZOS SIMULTÁNEOS NO SEPARAN LA CAUSA DEL MOMENTO (2026-09-26)
 
 **LA NORMA, primero:**
@@ -848,6 +974,10 @@ multi-agente**:
 **Los racimos se parten exactamente por proveedor y nunca se mezclan.** Cinco
 modelos de cinco empresas distintas no fallan solos en el mismo minuto: falla
 la CUENTA. OpenRouter el 23-24, Anthropic el 25.
+
+> **Qué era exactamente esa falla de cuenta: B44.** Con la ficha arreglada, el
+> texto literal del proveedor lo dijo — se había acabado el saldo. Un saldo es
+> por cuenta, que es justo por qué los racimos se partían así.
 
 ### Por qué esto cancela la sonda de ruta
 

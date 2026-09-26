@@ -134,6 +134,53 @@ export const RESERVA_CIERRE_MS = Number(process.env.ARENA_CIERRE_MS) || 70000;
 // `ARENA_TOOL_LOOP_MS` fuerza otro valor sin deploy si se quiere medir.
 export const MARGEN_MS = 15000;
 
+// ── EL PISO DE UNA VUELTA, Y LA GUARDA QUE SE DERIVA DE ÉL ───────────
+// Medido el 2026-09-26: de los 23 abortos por `cuerpo_vacio` de la temporada,
+// 17 traían datos y **13 eran NUESTRO reloj** (`timeout_nuestro: true`). El
+// número que aparecía no era la reserva de cierre: era **10.002 ms**, o sea
+// este piso más el viaje.
+//
+// EL MECANISMO (y se anota el mecanismo, no el número, porque el número ya se
+// movió una vez — la reserva fue 45s antes de ser 70s):
+//
+// El techo de cada vuelta era `max(PISO, restante − RESERVA)` y la guarda de
+// arriba cortaba con `restante < RESERVA`. Las dos reglas hablan del mismo
+// presupuesto y estaban escritas por separado, así que se CONTRADECÍAN en una
+// banda de exactamente el ancho del piso:
+//
+//     restante 85s → techo 15s   ok
+//     restante 80s → techo 10s   ok, justo en el borde
+//     restante 79s → techo 10s   ← el piso levanta un techo de 9s…
+//     restante 71s → techo 10s   ← …y de 1s, comiéndose la reserva
+//     restante 69s → corta       la guarda por fin actúa
+//
+// En esa banda el loop arrancaba una vuelta que **no podía pagar**: le daba
+// diez segundos —por debajo de CUALQUIER vuelta exitosa observada, que en B23
+// fueron 13s, 23s y 32s— y encima se los sacaba a la reserva del cierre. La
+// vuelta se moría leyendo el cuerpo, se journaleaba `cuerpo_vacio`, y el
+// cierre arrancaba con menos reloj del que tenía reservado.
+//
+// EL ARREGLO es que las dos reglas salgan del MISMO número. La guarda ya no
+// pregunta "¿queda la reserva?" sino "¿queda la reserva MÁS una vuelta
+// pagable?". Si no, se va al cierre con la reserva INTACTA, que es lo que la
+// reserva existe para garantizar. La banda se cierra por construcción: con la
+// guarda derivada, `restante − RESERVA` nunca es menor que el piso cuando se
+// llega a calcular el techo, así que el `max` deja de tener efecto.
+//
+// EL PISO VIVE EN CUATRO SITIOS y ahora sale de acá en los cuatro: la vuelta
+// normal, el reintento del cuerpo vacío, el reintento transitorio y el turno de
+// cierre. Los cuatro tenían el 10000 escrito a mano; lo encontró la prueba de
+// este arreglo, no una revisión. Es B41 en un solo archivo.
+//
+// OJO: bajar `ARENA_VUELTA_PISO_MS` NO hace que entren más vueltas útiles,
+// hace que entren más vueltas condenadas. El valor tiene que ser el mínimo en
+// que una vuelta tiene ALGUNA chance, no el mínimo que deja pasar el if.
+export const PISO_VUELTA_MS = Number(process.env.ARENA_VUELTA_PISO_MS) || 10000;
+
+// Lo que tiene que quedar para que valga la pena empezar OTRA vuelta. Se
+// exporta para que la prueba verifique la derivación y no un número copiado.
+export const minimoParaOtraVuelta = (reservaMs = RESERVA_CIERRE_MS, pisoMs = PISO_VUELTA_MS) => reservaMs + pisoMs;
+
 export function relojDisponible({ deadlineMs = ARENA_AGENT_DEADLINE_MS, scanMs = 0, reservaMs = RESERVA_CIERRE_MS, margenMs = MARGEN_MS } = {}) {
   return Math.max(30000, deadlineMs - scanMs - reservaMs - margenMs);
 }
@@ -411,7 +458,10 @@ export async function runToolLoop({
     // EL RELOJ, ANTES de empezar la vuelta. Empezarla y que la mate el deadline
     // del agente a mitad de camino pierde todo lo investigado y journalea un
     // "timeout" sin decir en qué vuelta se quedó.
-    if (turns > 0 && restante() < RESERVA_CIERRE_MS) { sinTiempo = true; break; }
+    // La guarda sale de `minimoParaOtraVuelta`, no de la reserva sola: una
+    // vuelta que no puede pagar su propio piso se la sacaría al cierre. Ver la
+    // banda de contradicción documentada arriba, en PISO_VUELTA_MS.
+    if (turns > 0 && restante() < minimoParaOtraVuelta()) { sinTiempo = true; break; }
 
     // ── EL TECHO DE CONTEXTO, también ANTES de la vuelta ──────────────
     // Se mide lo que SE VA A MANDAR, no lo que se mandó: pasarse y enterarse
@@ -443,11 +493,22 @@ export async function runToolLoop({
     // llamada, así que una lectura de más cambia POR CUÁL LÍMITE corta el loop.
     // Lo detectó el test del reparto al ponerse rojo.
     const restanteAqui = restante();
-    const techo = Math.max(10000, Math.min(timeoutMs || Infinity, restanteAqui - RESERVA_CIERRE_MS));
+    // El `max` con el piso se conserva como RED, no como política: con la
+    // guarda derivada ya no debería activarse nunca (si el loop llegó acá,
+    // `restanteAqui - RESERVA_CIERRE_MS >= PISO_VUELTA_MS`). Se deja porque
+    // `timeoutMs` puede venir de una env var y una env var pequeña no tiene
+    // por qué producir una vuelta de cero. Que no se active es justamente lo
+    // que verifica la prueba del reparto.
+    const techo = Math.max(PISO_VUELTA_MS, Math.min(timeoutMs || Infinity, restanteAqui - RESERVA_CIERRE_MS));
     // DE DÓNDE SALIÓ ESE TECHO. Un aborto que solo dice "se pasó de 15s" no
     // distingue una env var mal puesta de un loop que llegó sin reloj, y se
     // arreglan en lugares opuestos. Acá se sabe, así que se dice.
-    const origenTecho = `reloj del loop, vuelta ${turns}: quedaban ${Math.round(restanteAqui / 1000)}s del presupuesto y ${Math.round(RESERVA_CIERRE_MS / 1000)}s están reservados para el cierre`;
+    const origenTecho = `reloj del loop, vuelta ${turns}: quedaban ${Math.round(restanteAqui / 1000)}s del presupuesto y ${Math.round(RESERVA_CIERRE_MS / 1000)}s están reservados para el cierre`
+      + (techo <= PISO_VUELTA_MS
+        // Si esto aparece, la guarda derivada NO alcanzó y hay que mirar
+        // `timeoutMs`: es la única forma de llegar al piso desde el 2026-09-26.
+        ? ` — TECHO EN EL PISO (${Math.round(PISO_VUELTA_MS / 1000)}s): con la guarda derivada esto solo puede venir de un timeoutMs chico, no del reparto`
+        : '');
     const argsVuelta = { agent, system, messages: convo, maxTokens, now, timeoutMs: techo, origenTecho, tools, ...(effort ? { effort } : {}) };
     llm = await call({
       ...argsVuelta,
@@ -479,7 +540,10 @@ export async function runToolLoop({
       const alcanzaElReloj = restante() > pisoReserva + REINTENTO_VACIO_MS + 10000;
       if (alcanzaElReloj) {
         await dormir(REINTENTO_VACIO_MS);
-        const techo2 = Math.max(10000, Math.min(timeoutMs || Infinity, restante() - pisoReserva));
+        // El MISMO piso que la vuelta normal. Estaba escrito a mano acá, en
+        // el reintento transitorio y en el cierre: cuatro copias del número que
+        // producía los 10.002 ms. Ver PISO_VUELTA_MS.
+        const techo2 = Math.max(PISO_VUELTA_MS, Math.min(timeoutMs || Infinity, restante() - pisoReserva));
         // Y NO se repite igual: se excluye al proveedor que nos colgó. Repetir
         // la misma llamada al mismo proveedor lento es pagar el reloj dos veces
         // por la misma respuesta.
@@ -508,7 +572,7 @@ export async function runToolLoop({
       transitorios.push({ vuelta: turns, detalle: llm.error_detail || null, proveedor: llm.proveedor || null });
       if (restante() > RESERVA_CIERRE_MS + REINTENTO_TRANSITORIO_MS) {
         await dormir(REINTENTO_TRANSITORIO_MS);
-        const techoT = Math.max(10000, Math.min(timeoutMs || Infinity, restante() - RESERVA_CIERRE_MS));
+        const techoT = Math.max(PISO_VUELTA_MS, Math.min(timeoutMs || Infinity, restante() - RESERVA_CIERRE_MS));
         llm = await call({
           ...argsVuelta, timeoutMs: techoT,
           ...(trace ? { trace, fase: `loop:vuelta_${turns}:reintento_transitorio` } : {}),
@@ -647,7 +711,7 @@ export async function runToolLoop({
     // le daría un techo que ya no existe — así es como el total se pasaba del
     // deadline sin que la cuenta lo delatara.
     const disponible = Math.max(0, (budgetMs + RESERVA_CIERRE_MS) - usado);
-    return Math.max(10000, timeoutMs ? Math.min(timeoutMs, disponible) : disponible);
+    return Math.max(PISO_VUELTA_MS, timeoutMs ? Math.min(timeoutMs, disponible) : disponible);
   };
   const llamarCierre = (msgs, extra = {}) => call({
     agent, system, messages: msgs, maxTokens, now,

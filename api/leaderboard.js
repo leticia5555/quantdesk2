@@ -145,7 +145,20 @@ export default async function handler(req, res) {
   let manos = null;
   try {
     const filas = await sql(
-      `select agent_id, status from arena_journal
+      // `error` y el detalle del proveedor vienen porque un aborto POR FALTA DE
+      // SALDO no es un aborto del modelo, y hasta el 2026-09-26 se contaban
+      // juntos: 48 de los 84 abortos de la temporada eran las cuentas sin
+      // crédito. El texto se acota acá — para clasificar alcanza el principio
+      // del mensaje, y esto son cientos de filas.
+      `select agent_id, status,
+              left(error, 300) as error,
+              jsonb_build_object(
+                'llm_error', jsonb_build_object(
+                  'detail',         left(context->'llm_error'->>'detail', 300),
+                  'provider_error', left(context->'llm_error'->>'provider_error', 300)
+                )
+              ) as context
+         from arena_journal
         where phase = 'decide' and agent_id <> 'league' and run_date >= $1::date`,
       [ARENA_SEASON.start]);
     manos = manosDeLaLiga(filas);
