@@ -199,7 +199,12 @@ pueden quedar desparejos, y por eso se publica el **n real** de cada uno.
 ## Uso
 
 ```bash
-# FASE 0 primero, siempre:
+# EL SMOKE PRIMERO: 3 requests, no toca Neon, y dice si vale gastar el censo.
+curl -s -H "Authorization: Bearer $CRON_SECRET" \
+  "https://quantdesk2.vercel.app/api/grades-backtest?smoke=NKE" | jq
+#   /api/grades-backtest?smoke=NKE&format=md&secret=<CRON_SECRET>
+
+# FASE 0 después:
 curl -s -H "Authorization: Bearer $CRON_SECRET" \
   "https://quantdesk2.vercel.app/api/grades-backtest?fase=0" | jq
 # en el navegador:
@@ -221,6 +226,114 @@ el archivo pide 300 y el glob concede 60: lo atrapó el lint
 `tests/arena-timeouts.test.mjs`, no yo). **Esta tanda no crea tabla**: los grades se
 leen en vivo y no se guardan. El lib de análisis es **puro**: sin `fetch`, sin
 DB, testeado con fixtures.
+
+---
+
+## CICATRIZ: la Fase 0 culpó a la muestra de una falla del instrumento
+
+Primera corrida real: **20 de 20 símbolos con `http_error`, mensaje de FMP
+vacío, cero 429, latencias de 12–292 ms.** Y el censo anunció
+**"INCONCLUSO POR MUESTRA"** con `menos_de_3_meses: 240`.
+
+Las dos cosas estaban mal, y la segunda es la grave.
+
+### 1. El error salía MUDO, y el dato existía
+
+`gradesHistorical` devolvía `status` y `body_sample` — eso estaba bien. La vista
+del censo (`cobertura.simbolos_sin_grades` y la tabla del markdown) llevaba
+**solo `motivo` y `fmp_message`**, y `fmp_message` únicamente se llena en el caso
+del 200-con-error. Así que un error HTTP salía sin código y sin un byte de
+explicación.
+
+O sea: escribí *"los primeros bytes SIEMPRE"* en la cabecera del lib, lo
+implementé ahí, **y lo tiré en la vista**. El mismo problema que el `exit code 22`
+que tapó un 500 con la causa en el cuerpo.
+
+Ahora, en la lista que se lee y en el markdown: `status`, `body_sample`,
+`longitud_cuerpo` (un cuerpo **vacío** es en sí mismo un dato), `content_type` y
+`url_sin_key`. Y la muestra del cuerpo subió de 200 a **500 bytes**: con 200 un
+mensaje de FMP envuelto en JSON se corta antes de la parte que explica.
+
+### 2. El censo se pronunció sobre la muestra con el instrumento roto
+
+`menos_de_3_meses: 240` **no era un hallazgo**: era la consecuencia de no haber
+traído ni una fila. Decir "INCONCLUSO POR MUESTRA" ahí es atribuirle a los datos
+una falla del instrumento — **el mismo error que los "0 mercados de earnings" de
+la Fase 0 del earnings-beat**, que no eran un hallazgo sino ceguera del método.
+
+Es la tercera vez que aparece esta forma de error en el proyecto, así que ahora
+es estructural, no una nota: **mientras la frontera esté fallando, el censo no se
+pronuncia sobre la muestra.**
+
+| Situación | Veredicto |
+|---|---|
+| 0 símbolos con datos | **FALLA DE FRONTERA** — y nombra el motivo dominante |
+| ≥ la mitad sin datos | **FRONTERA DEGRADADA** — cualquier lectura de muestra sale sesgada |
+| la frontera respondió | `HAY CON QUÉ` / `INCONCLUSO POR MUESTRA`, y **ahí sí** es un dato sobre la muestra |
+
+Los descartes se siguen publicando, pero marcados:
+`descartes_son_consecuencia_de_la_frontera`. Hay test.
+
+### 3. Un 401/403 no puede salir como `http_error` mudo
+
+Una key ausente, vencida o de un plan que no cubre el endpoint son **tres cosas
+que se arreglan en las env vars, no en el código**. Ahora 401/403 → `auth_error`
+y 402 → `auth_error` con "el plan no cubre este endpoint", cada uno con su status,
+su cuerpo y un `detalle` que dice dónde se arregla.
+
+### 4. La concurrencia bajó de 4 a 2
+
+La corrida midió **56.98 req/s**. Aunque no salió ningún 429, para un plan gratis
+es mucho — y si el 429 llega recién a mitad del censo, media docena de símbolos
+queda marcada como "sin datos" por una cuota y no por la fuente.
+
+---
+
+## EL SMOKE DE FRONTERA (`?smoke=NKE`)
+
+Tres requests, sin tocar Neon, y contesta las tres preguntas juntas:
+
+| Variante | URL | Para qué |
+|---|---|---|
+| `limit_alto` | `&limit=1000` | lo que hace el censo hoy |
+| `limit_chico` | `&limit=10` | un limit que cualquier plan acepta |
+| `sin_limit` | sin el parámetro | descarta al parámetro como causa |
+
+De cada una: `url_sin_key`, status, `content_type`, `longitud_cuerpo` y **los
+primeros 500 bytes del cuerpo, salga bien o mal**. Más la `url_de_referencia`
+para comparar letra por letra con la que funciona a mano.
+
+La `lectura` la calcula `interpretaSmoke`, que es **pura y testeada**:
+
+| Patrón | Causa | Qué significa |
+|---|---|---|
+| sin key en el entorno | `sin_key` | se arregla en Vercel, y la env var vive **por entorno** |
+| todas 401/403/402 | `auth_error` | la key fue rechazada: vencida, revocada o sin plan |
+| alguna 429 | `rate_limit` | cuota agotada, ni código ni key |
+| falla con `limit`, anda sin él | `limit_rechazado` | **es el parámetro** |
+| anda con `limit` chico, falla con el alto | `limit_fuera_de_rango` | hay techo, y bajarlo obliga a declarar que la historia puede estar cortada |
+| 200 con `Error Message` en todas | `fmp_error_message` | FMP contestó y dijo por qué; el mensaje se **cita** |
+| mismo status en todas, sin mensaje | `http_error_uniforme` | no es el limit ni el símbolo; el cuerpo va completo |
+| todas ok | `frontera_ok` | el problema está entre el censo y esta llamada |
+| cualquier otro | `no_concluyente` | **se admite**: los cuerpos van crudos y lo lee una persona |
+
+Un orden que hubo que arreglar: tres 429 tienen el mismo status, así que sin
+poner la rama del 429 **antes** de la de "mismo status en todas", la causa
+conocida se perdía dentro de la desconocida. Hay test.
+
+### La key nunca se imprime
+
+Se publica su **huella** `sha256` de 10 hex, su longitud y el
+`VERCEL_ENV`. Con eso se compara contra la que se tiene a mano sin exponer el
+valor:
+
+```bash
+echo -n "$FMP_API_KEY" | shasum -a 256 | cut -c1-10   # tiene que dar la misma huella
+```
+
+Hay test de que el valor de la key no aparece en la respuesta ni en el markdown.
+
+**El candado de 100 no se tocó.**
 
 ---
 
