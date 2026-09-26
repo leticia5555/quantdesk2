@@ -293,6 +293,38 @@ try {
     chicos.total === dibujables, `${chicos.total} dibujados de ${dibujables} dibujables`);
   chequeo('los cuadros sin letra siguen siendo tocables', chicos.todosTocables, JSON.stringify(chicos));
 
+  // ── NINGÚN CUADRO CON SITIO SE QUEDA SIN TEXTO ─────────────────────
+  // La talla fija de 13px dejaba sin % a V, MA, JNJ, ABBV, BAC, GS y GOOGL
+  // teniendo espacio de sobra, y a los medianos sin nada. El umbral de 900px²
+  // (30×30) es el tamaño a partir del cual entra un ticker de 4 letras a 8px
+  // con sus márgenes: por debajo de ahí, ir sin letra es correcto.
+  const mudos = await p.evaluate(() => {
+    const out = { total: 0, mudos: [], conDos: 0, tallas: {} };
+    for (const e of document.querySelectorAll('.cuadro')) {
+      const r = e.getBoundingClientRect();
+      const area = r.width * r.height;
+      const sym = (e.querySelector('.sym') || {}).textContent || '';
+      const val = (e.querySelector('.val') || {}).textContent || '';
+      if (sym) {
+        const f = Math.round(parseFloat(getComputedStyle(e.querySelector('.sym')).fontSize));
+        out.tallas[f] = (out.tallas[f] || 0) + 1;
+      }
+      if (val) out.conDos++;
+      if (area >= 900) {
+        out.total++;
+        if (!sym) out.mudos.push({ w: Math.round(r.width), h: Math.round(r.height), aria: e.getAttribute('aria-label') });
+      }
+    }
+    return out;
+  });
+  chequeo('ningún cuadro de ≥900px² se queda sin texto',
+    mudos.mudos.length === 0, `${mudos.mudos.length} de ${mudos.total}: ${JSON.stringify(mudos.mudos.slice(0, 5))}`);
+  // Y la fuente escala de verdad: si todas las tallas fueran iguales, seguiría
+  // siendo el tamaño fijo con otro número.
+  chequeo('la fuente escala con el cuadro, no es una talla fija',
+    Object.keys(mudos.tallas).length >= 3, JSON.stringify(mudos.tallas));
+  chequeo('los cuadros grandes llevan también el %', mudos.conDos > 0, `${mudos.conDos} con dos líneas`);
+
   // REGLA 5: cero logos en el mapa. Ni <img>, ni background-image.
   const imgs = await p.evaluate(() => {
     const cont = document.getElementById('lienzo') || document.body;
@@ -336,6 +368,11 @@ try {
   await p.locator('.cabecera').first().tap();
   await p.waitForSelector('.volver');
   chequeo('un tap en la cabecera de sector abre ese sector', (await p.locator('.volver').count()) === 1);
+  // Las abreviaturas ("Con.", "Ser.", "Inm.", "Mat.") son para la cabecera
+  // apretada del primer nivel. Al entrar hay sitio: el nombre va completo.
+  const volver = await p.locator('.volver').first().innerText();
+  chequeo('al entrar al sector, el nombre va COMPLETO, sin abreviatura',
+    !/\.\s*$/.test(volver.trim()) && volver.trim().length > 4, volver);
   chequeo('entrar a un sector es estado en la URL', p.url().includes('sector='));
 
   // TAP REAL en un nombre → hoja

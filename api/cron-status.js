@@ -87,7 +87,14 @@ export const EXPECTED = [
   // cosecha de Fase 1b fue a mano y nunca se agendó, así que la tabla se
   // quedó en el 15-sep sin que nada lo dijera. El latido vigila que el cron
   // corra; `datos[]` vigila que además traiga algo.
-  { job: 'bmv:precios',     path: '/api/bmv-harvest?job=precios',    schedule: '10 22 * * 1-5',         cadence: 'días hábiles ~22:10', stale_after_h: 80 },
+  // DOS CORRIDAS, no una. El sábado 2026-09-26 la tabla terminaba el jueves
+  // habiendo cerrado el viernes: con una sola pasada a las 22:10 UTC (16:10 en
+  // Ciudad de México, 1h10 después del cierre), si el proveedor todavía no
+  // publicó el día, no hay segunda oportunidad hasta el lunes. El mapa de EE.UU.
+  // corre tres veces por esta misma razón. Acá se agrega UNA sola —no dos— para
+  // no triplicar el consumo de DataBursatil, cuyo presupuesto de requests ya
+  // dio problemas de medición.
+  { job: 'bmv:precios',     path: '/api/bmv-harvest?job=precios',    schedule: '10,40 22 * * 1-5',      cadence: 'días hábiles 22:10 y 22:40', stale_after_h: 80 },
   // R1(a): la serie diaria fechada de EE.UU., que es lo que YTD necesita.
   // Tres veces por hora después del cierre (21:00 UTC) porque la SIEMBRA de
   // 300 nombres a 100/min no cabe en una corrida; una vez sembrada, la cola

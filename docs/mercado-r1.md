@@ -400,3 +400,92 @@ hoja dice la causa, y el pie no suma los sin precio.
 
 `node --test tests/` → **122 de 123 suites en verde**. La única roja es la
 heredada `agents-persistence`, que no se tocó.
+
+---
+
+## §9 — Ronda 4: las letras, la unidad, y dos preguntas contestadas
+
+### 9.1 La fuente escala con el cuadro
+
+Había una talla fija de 13px con una escalera que sólo bajaba. Resultado: V, MA,
+JNJ, ABBV, BAC, GS y GOOGL salían **sin el %** teniendo espacio de sobra, y los
+medianos sin nada. Tener sitio y no usarlo es tan malo como no tenerlo — el
+cuadro más grande de la pantalla es el que más puede decir.
+
+`etiquetaCuadro` ahora prueba de **18px a 8px** y busca, en este orden:
+
+1. la talla más grande donde caben **ticker + %** (dos líneas),
+2. si en ninguna caben las dos, la más grande donde cabe el ticker,
+3. si tampoco a 8px, el cuadro va de color y sin texto.
+
+Se prefieren las dos líneas antes que una letra más grande: el % es la mitad de
+lo que el cuadro tiene que decir. El % va una talla menor que el ticker.
+
+Candado en Chromium a 390px: **cero cuadros de ≥900px² sin texto** (900px² = 30×30,
+que es donde entra un ticker de 4 letras a 8px con sus márgenes), más una
+comprobación de que las tallas usadas son varias — si todas fueran iguales,
+seguiría siendo el tamaño fijo con otro número. La corrida da
+`{"10":5,"11":2,"12":8,"14":1,"15":4,"16":4,"17":4,"18":27}`.
+
+Y al entrar a un sector el nombre va **completo**: las abreviaturas (`Con.`,
+`Ser.`, `Inm.`, `Mat.`) son sólo para la cabecera apretada del primer nivel.
+
+### 9.2 `qdCap`: la unidad se lee, no se descifra
+
+La hoja decía **"5.51 B"** para NVDA. En español un billón es 10¹²; en inglés
+*billion* es mil millones. Mil veces de diferencia en el número más grande de la
+pantalla y sin forma de saber cuál era. Y **"790.8 mm"** era una abreviatura que
+no existe fuera de esa pantalla.
+
+Una sola función, `qdCap(valor, moneda)` en `qd-periods.js`, con escala larga y
+la moneda al lado —60 mil millones de pesos y 60 mil millones de dólares no son
+la misma empresa—:
+
+| entrada | sale |
+|---|---|
+| `5.51e12, USD` | `5.51 billones USD` |
+| `790.8e9, MXN` | `790.8 mil millones MXN` |
+| `60.5e9, USD` | `60.5 mil millones USD` |
+| `1e12, USD` | `1.00 billón USD` |
+| `null` / `0` | `—` |
+
+Ese último caso era un bug esperando: `Number(null)` es `0` y
+`Number.isFinite(0)` es `true`, así que una cap que nadie midió se habría
+escrito **"0 USD"**. Es el tercer sitio donde el mismo tropiezo aparece en dos
+días (el filtro de EDGAR, el guardia del cierre de captura, y esto).
+
+### 9.3 "puntos de serie: 24" con YTD — el número estaba bien, la etiqueta no
+
+`puntos` es `serie.length` **de lo que la consulta trajo**, y la consulta del mapa
+trae a propósito *23 cierres recientes + 1 ancla de fin de año* (`SQL_MAPA_US.precios`).
+O sea: 24 filas, y el YTD sale del ancla que viene **entre** esas 24 — no de 24
+días de historia. El largo real de la serie nunca viaja al navegador porque nadie
+lo pide.
+
+No había nada que arreglar en el dato. La etiqueta pasa a decir **"cierres
+traídos: 24 (incluye el ancla de fin de año)"**, que es lo que el número es.
+
+### 9.4 México con el cierre del jueves un sábado
+
+El cron estaba bien declarado y no hay bug de huso: `10 22 * * 1-5` es 22:10 UTC
+= 16:10 en Ciudad de México, 1h10 después del cierre de las 15:00, y el viernes
+entra en `1-5`. `bmv-harvest.js` calcula `hoy` en UTC y a las 22:10 UTC del
+viernes la fecha UTC **sigue siendo viernes**, así que pidió el viernes. Tampoco
+existe del lado de México el guardia de "barra provisional" que causó el bug de
+EDT/EST en EE.UU.
+
+Quedan dos causas posibles, y `/api/cron-status` las distingue:
+
+| si pasó esto | se ve así |
+|---|---|
+| el cron no corrió | `jobs[]` → `bmv:precios` con `stale: true` y su último latido del jueves |
+| corrió y el proveedor no tenía el viernes | latido fresco del viernes, y `datos[]` → `bmv_precios` con `ultima_fecha` del jueves, `sesiones_faltantes` con el viernes y `alerta: true` |
+
+La segunda es la apuesta, y hay una asimetría que la respalda: **EE.UU. cosecha
+tres veces (21:20/21:35/21:50) y México una sola.** Si a las 16:10 locales el
+proveedor todavía no publicó, no hay segunda oportunidad hasta el lunes. Se
+agrega **una** corrida más (`10,40 22 * * 1-5`), no dos, para no triplicar el
+consumo de DataBursatil — cuyo presupuesto de requests ya dio problemas de
+medición (§4.4 de `docs/bmv-rotation.md`). El vigilante de `cron-status` se
+actualizó con el mismo schedule, que es lo que `tests/crons-declarados.test.mjs`
+exige.
