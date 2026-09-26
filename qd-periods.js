@@ -122,6 +122,54 @@ function fmtPrice(v) {
   return n.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
 
+
+/* ═══════════════════════════════════════════════════════════════════
+   LA CAPITALIZACIÓN, EN ESPAÑOL Y SIN AMBIGÜEDAD
+
+   La hoja decía "5.51 B" para NVDA. En español "B" se lee como billón, pero
+   quien viene de leer mercados en inglés lo lee como *billion* = mil millones:
+   un factor de mil de diferencia en el número más grande de la pantalla, y sin
+   forma de saber cuál de los dos significa. "790.8 mm" era peor: esa
+   abreviatura no existe fuera de esta pantalla.
+
+   Acá no se abrevia. Se escribe la escala con palabras —millones, mil
+   millones, billones— y la moneda al lado, porque 60 mil millones de pesos y
+   60 mil millones de dólares no son la misma empresa.
+
+   Un solo sitio: si mañana hay que tocar la escala, se toca acá.
+   ═══════════════════════════════════════════════════════════════════ */
+function qdCap(valor, moneda) {
+  const v = Number(valor);
+  const mon = moneda ? String(moneda).toUpperCase() : '';
+  const cola = mon ? ' ' + mon : '';
+  // `Number(null)` es 0 y `Number.isFinite(0)` es true, así que preguntar sólo
+  // por finitud devolvía "0 USD" para una cap que no existe. Una cap sin dato es
+  // "—", con su causa al lado en la hoja; un cero es un número que nadie midió.
+  // (Es el mismo tropiezo que dejó `candidatos: 0` en el job de EDGAR.)
+  const a = Math.abs(v);
+  if (!Number.isFinite(v) || !(a > 0)) return '—';
+
+  const signo = v < 0 ? '-' : '';
+  // Escala LARGA, la del español: un billón son 10¹², no 10⁹.
+  const escalas = [
+    { corte: 1e12, div: 1e12, palabra: 'billones', dec: 2 },
+    { corte: 1e9, div: 1e9, palabra: 'mil millones', dec: 1 },
+    { corte: 1e6, div: 1e6, palabra: 'millones', dec: 1 },
+  ];
+  for (const e of escalas) {
+    if (a >= e.corte) {
+      const n = (a / e.div).toFixed(e.dec);
+      // "1.00 billones" chirría; en singular la palabra cambia.
+      const palabra = Number(n) === 1
+        ? (e.palabra === 'billones' ? 'billón' : (e.palabra === 'millones' ? 'millón' : 'mil millones'))
+        : e.palabra;
+      return `${signo}${n} ${palabra}${cola}`;
+    }
+  }
+  // Por debajo del millón no hay escala que ayude: el número entero se lee solo.
+  return `${signo}${Math.round(a).toLocaleString('es-MX')}${cola}`;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { QD_PERIODS, qdPeriodChange, qdPctTag, qdAnclaYtd, fmtPrice, qdEscHTML };
 }
@@ -189,4 +237,5 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports.QD_BOLSAS = QD_BOLSAS;
   module.exports.qdEstadoMercado = qdEstadoMercado;
   module.exports.qdHoraEn = qdHoraEn;
+  module.exports.qdCap = qdCap;
 }

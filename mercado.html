@@ -197,13 +197,11 @@
     return r;
   }
 
-  function fmtCap(v){
-    if(!Number.isFinite(v)) return '—';
-    if(v>=1e12) return (v/1e12).toFixed(2)+' B';   // billones (10^12)
-    if(v>=1e9)  return (v/1e9).toFixed(1)+' mm';   // miles de millones
-    if(v>=1e6)  return (v/1e6).toFixed(0)+' m';
-    return String(Math.round(v));
-  }
+  // La capitalización la formatea `qdCap` (qd-periods.js), en español y con la
+  // moneda al lado. Acá había un `fmtCap` que decía "5.51 B" para 5.51
+  // billones: "B" se lee como billion —mil millones— y eran mil veces más.
+  // Y "790.8 mm" era una abreviatura que no existe fuera de esta pantalla.
+
 
   // ── Render ────────────────────────────────────────────────────────
   function render(){
@@ -400,7 +398,9 @@
     // EL TEXTO SÓLO SI CABE. Un cuadro de 3px existe, se toca y va sin letra
     // — como en Finviz. Nunca se recorta a mitad de palabra: media palabra no
     // es información, es ruido con forma de información.
-    var e = etiquetaCuadro(r.w, r.h, { ticker: it.key, pct: txt, fontPx: 13, fontMin: 8 });
+    // 18 → 8: la fuente escala con el cuadro. Con la talla fija de 13 los
+    // cuadros grandes desperdiciaban sitio y se iban sin %.
+    var e = etiquetaCuadro(r.w, r.h, { ticker: it.key, pct: txt, fontPx: 18, fontMin: 8 });
     if(e.ticker){
       var html = '<div class="sym" style="font-size:'+e.font+'px">'+esc(e.ticker)+'</div>';
       if(e.pct) html += '<div class="val" style="font-size:'+e.font_pct+'px">'+esc(e.pct)+'</div>';
@@ -466,7 +466,7 @@
       ['cambio', qdPctTag(r.pct, estado.periodo, { motivo: r.motivo })],
       ['precio', c.precio!=null ? fmtPrice(c.precio) : '—'],
       ['al cierre de', c.fecha_precio || '—'],
-      ['capitalización', fmtCap(c.cap)],
+      ['capitalización', esc(qdCap(c.cap, d.bolsa === 'mx' ? 'MXN' : 'USD'))],
       ['fuente de la cap', esc(c.cap_fuente || '—')],
       ['sector', esc(SECTORES[c.sector]||c.sector||'—')]
     ];
@@ -474,7 +474,11 @@
     if(c.serie_liquida) filas.push(['serie', esc(c.serie_liquida)]);
     if(c.acciones_por_unidad && c.acciones_por_unidad!==1) filas.push(['acciones por unidad', String(c.acciones_por_unidad)]);
     if(c.etiqueta) filas.push(['verificación', esc(c.etiqueta)]);
-    filas.push(['puntos de serie', String(c.puntos||0)]);
+    // NO es el largo de la historia: es lo que la consulta del mapa trajo
+    // (los cierres recientes más el ancla de fin de año). Decir "puntos de
+    // serie: 24" hacía parecer que el YTD salía de 24 días, cuando sale del
+    // ancla que viene EN esos 24.
+    filas.push(['cierres traídos', String(c.puntos||0) + (c.ytd ? ' (incluye el ancla de fin de año)' : '')]);
 
     var motivo = c.motivo || r.motivo || c.ytd_motivo;
     document.getElementById('hojaCuerpo').innerHTML =
