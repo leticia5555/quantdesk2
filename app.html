@@ -2600,6 +2600,16 @@ function ebLiveCard(e){
   const consenso=(m.consenso_eps===null||m.consenso_eps===undefined)?'' :
     '<div style="font-size:9px;color:#666;margin-top:2px;">'+smL('Consenso del mercado: ','Market consensus: ')+Number(m.consenso_eps).toFixed(2)+'</div>';
 
+  // ── BLOQUE DE DESACUERDO ────────────────────────────────────────
+  // LA CAUSA LA DECIDE EL ENDPOINT. Acá solo se TRADUCE por código: la nota de
+  // sorpresa de BA ya afirmó una causa falsa por armarse el texto en el front,
+  // y no se repite. Si un código no se reconoce, no se escribe nada.
+  //
+  // Y la brecha NUNCA se presenta como "QuantDesk dice 75%": es la distancia
+  // entre un precio y un CONTEO de trimestres pasados. Las dos cosas nombradas
+  // por lo que son, en la misma frase.
+  const desacuerdoTxt = ebDesacuerdoBloque(e, m);
+
   const titulo=m.titulo?String(m.titulo).slice(0,90):(m.slug||'');
   const link=m.url?'<a href="'+m.url+'" target="_blank" rel="noopener noreferrer" style="color:#ff6600;text-decoration:none;">'+titulo+' ↗</a>':titulo;
   const otros=(e.mercados&&e.mercados.length>1)
@@ -2618,6 +2628,7 @@ function ebLiveCard(e){
     +(sorpresa?'<div style="font-size:9px;color:#888;">'+sorpresa+'</div>':'')
     +(sorpresaNota?'<div style="font-size:8px;color:#7a6a45;line-height:1.3;">'+sorpresaNota+'</div>':'')
     +'<div style="font-size:8px;color:#444;margin-bottom:6px;">'+smL('fuente: historial de EPS (Alpha Vantage)','source: EPS history (Alpha Vantage)')+'</div>'
+    +desacuerdoTxt
     +(quarters?'<div style="border-top:1px solid #161616;padding-top:6px;margin-bottom:6px;">'
       +'<div style="font-size:8px;color:#555;letter-spacing:.08em;margin-bottom:3px;">'+smL('ÚLTIMOS TRIMESTRES','LAST QUARTERS')
       +(v&&v.anios?'<span style="color:#444;"> · '+smL('titular sobre '+v.total+' trimestres ('+v.anios+' años)','headline over '+v.total+' quarters ('+v.anios+'y)')+'</span>':'')+'</div>'+quarters+'</div>':'')
@@ -2626,6 +2637,76 @@ function ebLiveCard(e){
       +smL('El histórico no es predicción · Track record is not a forecast',
            'Track record is not a forecast · El histórico no es predicción')+'</div>'
   +'</div>';
+}
+
+// ─── BLOQUE DE DESACUERDO ────────────────────────────────────────────
+// Se dibuja SOLO cuando el endpoint dictaminó `clasificacion === 'desacuerdo'`.
+// Los motivos de "no comparable" (muestra corta, fecha pasada, sin consenso)
+// no pintan tarjeta: una advertencia que no se puede sostener es peor que el
+// silencio. El único que sí se dice es el de varios umbrales, porque ahí la
+// tarjeta muestra un precio que podría no ser el comparable.
+//
+// LO QUE ESTE BLOQUE NO PUEDE DECIR, y hay test que lo vigila: que el mercado
+// sepa algo. Un hueco grande tiene dos causas y la más probable, según las
+// cuatro correcciones de la Fase 0, es que los dos números sean sobre
+// preguntas distintas. Por eso el orden de "dónde mirar" lo manda el endpoint.
+const EB_DONDE_MIRAR_EN = {
+  instrumento: 'FIRST: is the market asking the same question? Compare its threshold and quarter against consensus — a threshold above consensus trades low for good reason.',
+  instrumento_sin_consenso: 'FIRST: the market declares no consensus, so what it resolves against is unknown. Open the market on Polymarket and read the question.',
+  revisiones: 'estimate revisions, last 30 days',
+  ocho_k: "the company's latest 8-Ks (EDGAR)",
+  pares: 'what its sector peers reported this quarter',
+};
+const EB_LECTURA_EN = {
+  instrumento_primero: 'A gap this size is produced more easily by a market asking something ELSE than by new information: check the instrument before the news.',
+  ambas_causas: 'It could be information the track record does not contain, or the two figures not measuring the same thing. There is no telling which without opening the market.',
+};
+
+function ebDesacuerdoBloque(e, m){
+  const ds=(e&&e.desacuerdos)||{};
+  const d=(m&&m.desacuerdo)||null;
+  const partes=[];
+
+  // Varios umbrales sobre el mismo reporte: el precio de arriba puede no ser el
+  // que se puede comparar con la tasa histórica. Se dice ANTES del hueco.
+  if(ds.varios_umbrales){
+    partes.push('<div style="font-size:9px;color:#7a6a45;line-height:1.35;">'
+      +smL(ds.cuantos_mercados+' mercados abiertos de esta empresa, con umbrales distintos sobre el mismo reporte. La tasa histórica solo es comparable con el que pregunta por el consenso.',
+           ds.cuantos_mercados+' open markets for this company, with different thresholds on the same report. The track record is only comparable with the one asking about consensus.')
+      +'</div>');
+  }
+
+  if(d&&d.clasificacion==='desacuerdo'&&d.gap_puntos!==null){
+    const abs=Math.abs(d.gap_puntos);
+    const debajo=d.gap_puntos<0;
+    const pistas=(d.donde_mirar||[]).map(function(x){
+      const en=EB_DONDE_MIRAR_EN[x.codigo];
+      // Código que esta pantalla no conoce: NO se escribe. Mejor una pista
+      // menos que una frase inventada.
+      if(!en) return '';
+      return '<div style="padding-left:8px;color:#888;">→ '+smL(x.texto,en)+'</div>';
+    }).filter(Boolean).join('');
+    const lecturaEn=EB_LECTURA_EN[d.lectura_codigo]||'';
+    partes.push('<div style="border-top:1px solid #2a2118;margin-top:6px;padding-top:6px;">'
+      +'<div style="font-family:var(--mono);font-size:10px;color:#e8a33d;letter-spacing:.06em;">'
+        +smL('⚠ DESACUERDO · brecha de '+abs+' puntos','⚠ DISAGREEMENT · '+abs+'-point gap')+'</div>'
+      // Los dos números nombrados por lo que son: un PRECIO y un CONTEO.
+      +'<div style="font-size:9px;color:#aaa;line-height:1.35;margin-top:3px;">'
+        +smL('El precio del mercado ('+d.precio_pct+'%) está '+(debajo?'muy por debajo':'muy por encima')+' de la tasa histórica ('+d.tasa_historica_pct+'%, '+d.beats+' de '+d.trimestres+' trimestres).',
+             'The market price ('+d.precio_pct+'%) is far '+(debajo?'below':'above')+' the historical rate ('+d.tasa_historica_pct+'%, '+d.beats+' of '+d.trimestres+' quarters).')
+        +'</div>'
+      +(lecturaEn?'<div style="font-size:9px;color:#888;line-height:1.35;margin-top:3px;">'+smL(d.lectura,'A '+abs+'-point gap. '+lecturaEn)+'</div>':'')
+      +'<div style="font-size:9px;color:#666;margin-top:4px;">'+smL('Dónde mirar:','Where to look:')+'</div>'
+      +pistas
+      +'<div style="font-size:8px;color:#7a6a45;line-height:1.35;margin-top:4px;">'
+        +smL('La tasa histórica es un CONTEO de trimestres pasados: no es predicción de este trimestre.',
+             'The historical rate is a COUNT of past quarters: it is not a forecast for this quarter.')+'</div>'
+      +'<div style="font-size:8px;color:#666;margin-top:2px;">'
+        +smL('No es señal de compra ni de venta. Es dónde mirar.','Not a buy or sell signal. It is where to look.')+'</div>'
+    +'</div>');
+  }
+
+  return partes.join('');
 }
 
 // Días hasta la fecha, calculados en runtime (nunca una fecha tatuada).

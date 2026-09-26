@@ -1001,6 +1001,105 @@ curl -s -H "Authorization: Bearer $CRON_SECRET" \
 
 ---
 
+## TARJETA DE DESACUERDO ✅ IMPLEMENTADA (`?vista=live` + `?diag=desacuerdos`)
+
+Cuando el precio de un mercado abierto está lejos de la tasa histórica de la
+empresa, la tarjeta lo dice y manda a mirar. **No es señal de compra ni de
+venta. Es dónde mirar.**
+
+### Cicatriz: el borrador decía lo que no se sabe
+
+El borrador de la tarjeta traía esta frase:
+
+> *"Algo que el historial no contiene está moviendo el precio."*
+
+Esa frase **afirma que el mercado está informado**, y es justo lo que no se
+sabe. Un hueco grande tiene dos causas:
+
+1. el mercado sabe algo que el historial no contiene;
+2. **los dos números no son sobre la misma pregunta.**
+
+Y la segunda es la más probable, no por escepticismo sino por historia: **la
+Fase 0 de este experimento se corrigió cuatro veces por (2)** — mercados de
+menciones, emparejamiento con el trimestre siguiente, ruido por substring, tope
+de offset. Además la vista en vivo ya sabe que *"una misma empresa puede tener
+varios mercados abiertos a la vez (distintos umbrales de EPS sobre el mismo
+reporte)"*: un mercado que pregunta "¿EPS por encima de $3.20?" cotiza 8% con
+toda la razón si el consenso es $2.75, y restarle la tasa de beats a ese 8% no
+significa nada.
+
+Por eso la regla que quedó en código: **cuanto MÁS grande el hueco, MÁS arriba
+va la revisión del instrumento** en "dónde mirar". A partir de
+`gap_instrumento_primero_puntos` (50) el instrumento es el primer renglón, y la
+lectura dice que un hueco así *se produce más fácil con un mercado que pregunta
+otra cosa que con información nueva*. Hay test de que la frase del borrador no
+puede aparecer.
+
+Otras tres cosas del borrador que no pasaron:
+
+| Traía | Problema | Quedó |
+|---|---|---|
+| `Histórico: 78% (21 de 27)` | 27 no es ninguna ventana del proyecto. El titular está congelado en **20 trimestres** (la cicatriz de MU: *"lo que arregló el número fue la VENTANA"*). Un conteo de 27 al lado de una brecha hace que la brecha sea de otra cosa que lo que se muestra. | La brecha se calcula sobre la **misma ventana de 20** que el titular. Hay test con 27 trimestres que verifica que sale 20. |
+| `reporta 22-jul` | Una fecha ya pasada. Eso no es una advertencia, es una fila rancia. | `motivo: 'fecha_pasada'` cierra el dictamen y **no se pinta tarjeta**. El día entra por parámetro (la función es pura; el endpoint lo calcula una vez). |
+| `Brecha: −70 puntos`, a secas | Restar un precio a una tasa histórica es legítimo, pero **solo si cada número se nombra por lo que es**. Un "78%" suelto al lado de un "8%" se lee como dos probabilidades, y ahí la tasa histórica se volvió el pronóstico de QuantDesk por la puerta de atrás — que es la regla que la tarjeta en vivo existe para no romper. | La brecha va siempre con las dos cosas nombradas: *"El precio del mercado (8%) está muy por debajo de la tasa histórica (75%, 15 de 20 trimestres)"*, y debajo: *"La tasa histórica es un CONTEO de trimestres pasados: no es predicción de este trimestre."* |
+
+### Los umbrales (congelados, `CRITERIOS_DESACUERDO`)
+
+| Umbral | Valor | Por qué |
+|---|---|---|
+| `ventana_trimestres` | 20 | La misma del titular. Si fuera otra, la brecha no sería la de lo que se muestra. |
+| `min_trimestres` | 12 | Una tasa de 6 trimestres se mueve 17 puntos con un solo trimestre. |
+| `gap_min_puntos` | 25 | Por debajo: **coincide**, y no se manda a mirar nada. |
+| `gap_instrumento_primero_puntos` | 50 | Por encima: el instrumento va primero. |
+| `tolerancia_umbral_pct` | 20 | El umbral declarado contra el nivel reciente de EPS. Más lejos que esto y la pregunta puede no ser "beat vs consenso". |
+
+### Lo que cierra el dictamen ANTES de restar
+
+`sin_precio` · `sin_historial` · `muestra_corta` · `fecha_pasada` ·
+`sin_consenso_declarado`. Ninguno pinta tarjeta: una advertencia que no se
+puede sostener es peor que el silencio.
+
+Un bug que salió de estos tests: `Number(null)` es **0**, no `NaN`, así que un
+mercado que no declaraba consenso pasaba como si declarara **$0.00** y el camino
+de "no se sabe contra qué resuelve" no se disparaba nunca.
+
+### Por MERCADO, no por empresa
+
+El desacuerdo se calcula por mercado, con **el umbral de ese mercado**. Cuando
+una empresa tiene varios mercados abiertos, la tarjeta lo avisa antes del hueco:
+solo el que pregunta por el consenso es comparable con la tasa histórica.
+
+### La causa viaja como CÓDIGO
+
+`donde_mirar` son `{codigo, texto}` y la lectura lleva `lectura_codigo`. La
+pantalla **traduce** por código; no re-decide. Es la lección de la nota de
+sorpresa de BA, que afirmó "estimado cerca de cero" con
+`denominador_chico: 0` porque el texto se armaba en el front. Un código que la
+pantalla no reconoce **no se escribe**: mejor una pista menos que una frase
+inventada.
+
+### El diag: la fila en la mano
+
+```bash
+curl -s "https://quantdesk2.vercel.app/api/earnings-beat?vista=live&diag=desacuerdos" | jq
+```
+
+Por cada mercado abierto: **la pregunta literal** (sin recortar), el umbral
+declarado, el nivel reciente de EPS, el desvío entre los dos, la tasa histórica,
+el hueco y el dictamen. Es lo único con lo que se puede decidir si un −70 es
+información o es que el mercado pregunta otra cosa. Corre la **misma**
+`vistaLive()` que la pantalla: si dijera otros números no serviría de evidencia.
+
+| Archivo | Qué |
+|---|---|
+| `api/_lib/earnings-beat.js` | `evaluaDesacuerdo` + `CRITERIOS_DESACUERDO`. Función PURA: `hoy` entra por parámetro. |
+| `api/earnings-beat.js` | El desacuerdo por mercado en `vistaLive()` y el `?diag=desacuerdos`. |
+| `app.html` | `ebDesacuerdoBloque()` — bilingüe, traduce por código, nunca decide la causa. |
+| `tests/earnings-beat-desacuerdo.test.mjs` | Umbrales pineados, los cierres previos, la ventana de 20, y que la lectura NO afirme que el mercado sabe algo. |
+| `tests/earnings-beat-live.test.mjs` | El lint de honestidad, ampliado al bloque nuevo y al diag. |
+
+---
+
 ## VISTA DE COMPARACIÓN ✅ IMPLEMENTADA (`?vista=comparacion`)
 
 **El veredicto NO-GO de la Fase 2 queda EN PIE. Esto no lo revisa.** No es un
