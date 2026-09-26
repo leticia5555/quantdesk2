@@ -195,15 +195,25 @@ El 8 está escrito a mano y no lee `TOOL_BUDGET`. Consecuencia: si alguien sube
 `ARENA_TOOLS_MAX` en Vercel, el motor gasta más y el "peor caso" publicado no
 se mueve un centavo. Y el breaker de B9 se compara contra ese número.
 
-**Mitigante real, y hay que decirlo antes que la queja:** el reloj del loop son
-185s (`relojDisponible({scanMs: 0})`), y a ~20s por vuelta no entran 20
-herramientas — entran 8 o 9. O sea que el 8 hoy da un número *empíricamente*
-razonable. Pero lo da por casualidad: nadie derivó el 8 del reloj, y el día que
-el reloj o el precio se muevan, el estimador seguirá diciendo 8.
+**Por qué no es cosmético: el breaker de B9 se compara contra este número.**
+Ahí está la gravedad, y no en la duplicación. Un breaker mide el gasto contra
+un techo; si el techo está clavado en un supuesto que no sigue al motor,
+entonces subir `ARENA_TOOLS_MAX` sube el gasto real y **no mueve el umbral que
+tendría que frenarlo**. Un breaker que mide contra un techo que no se mueve es
+un breaker que no frena — y no falla ruidosamente: sigue reportando verde
+mientras la factura sube. Es la peor clase de bug de los que hay en esta lista,
+aunque sea el más barato de arreglar.
 
-> **Costo:** bajo. O el estimador lee `TOOL_BUDGET`, o el 8 se deriva del reloj
-> con el comentario que lo explique. Lo que no puede quedar es un 8 sin
-> procedencia.
+**Mitigante, y hay que decirlo antes que la queja:** el reloj del loop son 185s
+(`relojDisponible({scanMs: 0})`), y a ~20s por vuelta no entran 20 herramientas
+— entran 8 o 9. O sea que el 8 hoy da un número *empíricamente* razonable. Pero
+lo da por casualidad: nadie derivó el 8 del reloj. El día que el reloj suba, o
+que las vueltas se abaraten, el estimador seguirá diciendo 8.
+
+> **Costo:** bajo, y **prioridad alta pese al costo**, que es una combinación
+> rara y por eso conviene decirla. O el estimador lee `TOOL_BUDGET`, o el 8 se
+> deriva del reloj con el comentario que lo explique. Lo que no puede quedar es
+> un 8 sin procedencia debajo de un breaker.
 
 ## 9. Lo que está en dos lugares A PROPÓSITO
 
@@ -237,7 +247,7 @@ Del más barato al más caro, y del más silencioso al más ruidoso:
 | 5 | `side: 'sell'` a mano | **una línea** | una cobertura de la red sin P&L en pantalla |
 | 4 | `referencia`/`reference` | medio | el lector ya paga con un `??`; el próximo campo nuevo repite el patrón |
 | 6 | `buildPositionMeta` ausente | medio | el camino vivo decide sin edad de posición ni trailing |
-| 8 | el estimador asume 8 herramientas, el motor permite 20 | bajo | el peor caso publicado no se mueve si sube `ARENA_TOOLS_MAX`; el breaker se compara contra él |
+| 8 | el estimador asume 8 herramientas, el motor permite 20 | bajo, **prioridad alta** | **el breaker de B9 mide contra ese techo: si no se mueve, el breaker no frena, y no falla ruidosamente** |
 | 7 | `ARENA_AGENTS` = la liga | hecho | — |
 
 Lo que NO está en esta tabla porque ya se arregló esta semana: el

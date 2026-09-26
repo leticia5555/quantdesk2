@@ -856,6 +856,33 @@ Y vale al revés también: el barrido salió bien porque se hizo el día que se
 agregó algo, no el día que algo se rompió. **Un cambio que ensancha una
 categoría es una oportunidad de auditoría, no solo un diff.**
 
+### EL ARGUMENTO PARA VOLVER A BARRER: TRES, NO UNA
+
+El barrido lleva **tres hallazgos encontrados buscando otra cosa**. Ésa es la
+cuenta que justifica repetirlo, no la severidad de ninguno por separado:
+
+1. **La T3 que no se anunciaba.** Buscando duplicación entre los dos caminos.
+   Nada estaba roto; lo destapó agregar algo que no competía.
+2. **El breaker que no frenaría.** Buscando el costo de la sonda de ruta.
+   `estimateWorstCaseCost` asume 8 herramientas escritas a mano mientras el
+   motor permite 20, y el breaker de B9 se compara contra ese techo. Un techo
+   que no sigue al motor es un breaker que no frena, y no falla ruidosamente.
+3. **Las firmas cruzadas, corregidas por medición.** Iba escrito en el
+   inventario que el cruce de parámetros producía un precio plausible al lado
+   equivocado. Se corrió antes de publicarlo y las dos funciones fallan
+   CERRADAS: la guarda de la banda atrapa el string. El hallazgo real terminó
+   siendo más chico y de otra naturaleza —un motivo de descarte que apunta al
+   lado equivocado— y se escribió así.
+
+Los tres salieron de mirar el código con una pregunta distinta en la mano. El
+tercero no es un hallazgo del código sino del método, y cuenta igual: una
+afirmación sobre comportamiento observable se corre antes de publicarse, o no
+se publica (ver B37).
+
+**Tres de tres en un solo barrido es la tasa que justifica el siguiente.** No
+"el código está mal": el código está bien mirado desde adentro, y mal mirado
+desde una pregunta que nadie le había hecho.
+
 ### El modelo a copiar
 
 `minutoDeCorrida` (`_lib/arena-objetivo-vivo.js`). Cuando se arregló el id
