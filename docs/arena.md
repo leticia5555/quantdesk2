@@ -746,6 +746,77 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B43 · BRAZOS SIMULTÁNEOS NO SEPARAN LA CAUSA DEL MOMENTO (2026-09-26)
+
+**LA NORMA, primero:**
+
+> Un experimento cuyos brazos corren al mismo tiempo **no puede distinguir una
+> causa del brazo de una causa del momento**. Si el mundo tiene minutos malos,
+> todos los brazos los comparten.
+>
+> **Toda sonda comparativa futura escalona sus brazos en el tiempo, o lleva un
+> control que corra en el mismo minuto que cada uno.**
+
+Las dos salidas resuelven lo mismo por caminos opuestos: escalonar hace que un
+minuto malo golpee a un solo brazo (y se note como brazo); un control
+simultáneo hace que el minuto malo golpee a los dos (y se note como minuto).
+Cualquiera de las dos sirve. Ninguna es opcional.
+
+### De dónde salió
+
+La sonda de ruta (B42) tenía tres brazos y una hipótesis: si el brazo de
+OpenRouter aborta y los de Anthropic no, la ruta causa abortos.
+
+Los racimos la cancelaron por innecesaria —la respuesta ya estaba en los
+datos— pero eso no es lo importante. **Lo importante es que si la hubiéramos
+corrido, habría mentido.** Los tres brazos iban a correr juntos, por
+definición de experimento controlado. Y los datos muestran siete ventanas de
+minutos en las que TODOS los agentes de una cuenta fallan a la vez.
+
+Las dos formas en que la sonda se rompía:
+
+| lo que pasaba en ese minuto | lo que la sonda habría concluido |
+|---|---|
+| racimo de OpenRouter: C aborta, A y B no | **"la ruta causa abortos"** — falso, era la cuenta ese día |
+| racimo de Anthropic: A y B abortan, C no | **"la ruta directa es peor"** — exactamente al revés |
+
+Los dos son la conclusión falsa que la sonda existía para evitar. Un
+experimento que puede producir la respuesta equivocada con la misma facilidad
+que la correcta no es un experimento caro: es uno inválido, y el precio era lo
+de menos.
+
+### Lo que esto NO dice
+
+No dice que los experimentos simultáneos estén mal. **La cuenta de control de
+la liga corre simultánea a propósito, y está bien**: es justamente el segundo
+caso de la norma —un control que corre en el mismo minuto que el brazo—. Por
+eso funciona. Claude y Control comparten modelo, prompt y minuto, así que
+cualquier diferencia entre ellos NO puede ser del momento.
+
+La sonda de ruta no tenía eso: sus tres brazos eran tres tratamientos, no dos
+tratamientos y un control. Tres cosas comparadas entre sí, todas expuestas al
+mismo minuto, sin nada que midiera el minuto.
+
+### Y sobre el criterio, que nos incluye a los dos
+
+El criterio de decisión que habíamos escrito partía el mundo en **"reloj o
+ruta"**. La respuesta era **la cuenta**, y no estaba en la lista de ninguno de
+los dos.
+
+> **Escribir qué resultado te desmentiría no alcanza si las alternativas que
+> enumerás no son exhaustivas.** Una lista de hipótesis es también una
+> afirmación —"no hay otras"— y esa afirmación se verifica peor que las que
+> están en la lista, porque nada la contradice explícitamente: el dato que no
+> encaja en ninguna se lee como ruido de la que más se le parece.
+
+Corolario práctico, del caso: los 52 `error` con **cero pasos** y **mediana de
+1 vuelta** no encajaban en "reloj" ni en "ruta". Morir antes de la primera
+herramienta no es agotarse ni es un problema de transporte del contenido. El
+dato que no entra en ninguna casilla es la señal de que falta una casilla, no
+de que el dato esté sucio.
+
+---
+
 ## B42 · NO ERA EL MODELO NI LA RUTA: ERA LA CUENTA (2026-09-26)
 
 Diez días, **84 corridas abortadas**. Desglosadas por `terminó_por`:
@@ -791,7 +862,8 @@ de esa ruta**, que es exactamente la conclusión falsa que la sonda existía par
 evitar.
 
 Se retiró sin correr. La lápida, con lo que sobrevive del trabajo, está en
-`_lib/arena-registry.js`.
+`_lib/arena-registry.js`. **La regla general que sale de esto —y que vale para
+toda sonda futura, no solo para ésta— está en B43.**
 
 > **Y la regla de decisión que yo había escrito estaba mal en las dos mitades.**
 > Decía: *"si cortan por `time_budget` es reloj y la sonda no hace falta"* —o
@@ -984,6 +1056,49 @@ se publica (ver B37).
 **Tres de tres en un solo barrido es la tasa que justifica el siguiente.** No
 "el código está mal": el código está bien mirado desde adentro, y mal mirado
 desde una pregunta que nadie le había hecho.
+
+### EL CASO REINCIDENTE: LA LISTA DE COLUMNAS DEL JOURNAL
+
+`arena_journal` tenía DOS escritores de corridas completas, cada uno con su
+lista de columnas escrita a mano. La del contrato objetivo se quedó atrás
+**tres veces**, una columna por vez, y cada hueco se descubrió por un síntoma
+distinto meses después:
+
+| columna | cómo se descubrió |
+|---|---|
+| `account` | el equity y las posiciones de una ronda viva quedaban solo dentro del texto del prompt |
+| `error` | 84 corridas abortadas con la ficha diciendo `error: null`; los racimos de B42 salieron de la base a mano |
+| `prompt_hash` | encontrado el 2026-09-26 **al hacer la constante compartida**. Nadie lo había extrañado — que es peor, no mejor: sin él el post-mortem no puede agrupar por versión exacta del prompt |
+
+Tres veces el mismo hueco en el mismo lugar. **Acordarse falló dos veces; no
+iba a funcionar la tercera.** Ese lugar no es un descuido, es un sitio conocido
+de divergencia, y un sitio conocido de divergencia se cierra con una prueba,
+no con cuidado.
+
+Cerrado como manda la norma, con las dos mitades:
+
+- **La función compartida:** `COLUMNAS_CORRIDA` y `escribirCorrida` en
+  `_lib/arena-journal.js`. Los placeholders y el orden de los valores se
+  DERIVAN de la constante, así que una columna nueva no puede quedar sin su
+  `$N` ni desalinear al resto.
+- **La prueba que falla al divergir:** `tests/arena-journal-columnas.test.mjs`
+  escanea todo `insert into arena_journal` de `api/`, y **nombra la columna que
+  falta** en vez de decir "difieren". Verificada con dos mutaciones: sacar
+  `error` de la constante da cuatro fallos, y reponer un escritor con lista
+  propia da dos.
+
+Lo que NO se hizo, y es la otra mitad de B41: **no se fusionaron los dos
+escritores.** Difieren en cosas reales —uno arma `actions` desde las órdenes
+del PM y el otro desde `ejecucion.enviadas`, uno es idempotente por id y el
+otro no—. Se comparte la REGLA (qué columnas lleva una corrida), no el
+concepto.
+
+Y las diferencias legítimas contra `arena_shadow_journal` (`target`,
+`rebalance`, `actions`) están **declaradas en la prueba con su motivo**: una
+cuarta que aparezca sin declarar rompe. Sin eso, "difieren a propósito" se
+vuelve la excusa que tapa el próximo hueco. La prueba también falla si una
+diferencia declarada deja de existir: un comentario que miente es peor que
+ninguno.
 
 ### El modelo a copiar
 

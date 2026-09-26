@@ -33,6 +33,7 @@
 
 import { readFileSync } from 'node:fs';
 import { falloPublicable } from '../api/liga-libros.js';
+import { COLUMNAS_CORRIDA } from '../api/_lib/arena-journal.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -43,22 +44,26 @@ function ok(cond, name, detail) {
 // ── 1) LA COLUMNA QUE NO SE ESCRIBÍA ─────────────────────────────────
 console.log('\n── el camino vivo journalea el motivo ──');
 {
-  const run = readFileSync(new URL('../api/arena-run.js', import.meta.url), 'utf8');
-  const fn = run.slice(run.indexOf('async function journalObjetivoVivo'));
-  // La función es larga (el mapeo de `actions` se come la mitad): el corte va
-  // hasta su cierre real, no a un número redondo que deje el parámetro afuera.
-  const cuerpo = fn.slice(0, fn.indexOf("\n}") + 2);
-  ok(/insert into arena_journal \([^)]*\berror\b[^)]*\)/.test(cuerpo),
-    'el INSERT del contrato objetivo incluye la columna `error`');
-  ok(/row\.error \|\| null/.test(cuerpo),
+  // ── ACTUALIZADA EL MISMO DÍA QUE SE ESCRIBIÓ, CON EL MOTIVO ──────
+  // Nació mirando el INSERT dentro de `journalObjetivoVivo`. Horas después
+  // ese INSERT desapareció de ahí: `error` era la TERCERA columna que se
+  // perdía en esa lista (después de `account` y antes de descubrir
+  // `prompt_hash`), así que la lista pasó a ser UNA constante compartida.
+  //
+  // Arreglar el bug de fondo rompió la prueba del síntoma, que es lo que tiene
+  // que pasar. Ahora pregunta por la propiedad donde vive.
+  ok(COLUMNAS_CORRIDA.includes('error'),
+    'la columna `error` está en la lista que usan los DOS escritores', COLUMNAS_CORRIDA.join(', '));
+  const jrn = readFileSync(new URL('../api/_lib/arena-journal.js', import.meta.url), 'utf8');
+  ok(/error: row\.error \?\? null/.test(jrn),
     'y le pasa el valor: una columna en la lista sin su parámetro es el mismo bug con otra cara');
 
-  // El número de columnas y el de placeholders tienen que coincidir, o el
-  // insert revienta en producción y no acá.
-  const cols = (cuerpo.match(/insert into arena_journal \(([^)]*)\)/) || [])[1] || '';
-  const vals = (cuerpo.match(/values \(([^)]*)\)/) || [])[1] || '';
-  ok(cols.split(',').length === vals.split(',').length,
-    'columnas y placeholders cuadran', `${cols.split(',').length} vs ${vals.split(',').length}`);
+  // Y el camino del objetivo pasa por ahí en vez de tener su propio insert:
+  // es la bifurcación que costó tres columnas.
+  const run = readFileSync(new URL('../api/arena-run.js', import.meta.url), 'utf8');
+  const fn = run.slice(run.indexOf('async function journalObjetivoVivo'));
+  ok(/await escribirCorrida\(/.test(fn.slice(0, 2500)),
+    'el camino del objetivo escribe por el escritor compartido');
 }
 
 // ── 2) LAS DOS CONSULTAS, NO UNA ─────────────────────────────────────

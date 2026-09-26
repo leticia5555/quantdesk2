@@ -24,6 +24,7 @@ import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serieDe, minutoDe, MUESTREO_MS, snapshotCuenta } from '../api/_lib/arena-equity.js';
+import { COLUMNAS_CORRIDA } from '../api/_lib/arena-journal.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -223,20 +224,27 @@ console.log('\n── el snapshot del libro ──');
 console.log('\n── y se escribe en los DOS caminos ──');
 {
   const run = readFileSync(new URL('../api/arena-run.js', import.meta.url), 'utf8');
-  // ── ACTUALIZADA EL 2026-09-26, CON EL MOTIVO ─────────────────────
-  // Antes clavaba la lista de columnas COMPLETA y en orden. Se rompió al
-  // agregar `error` (13ª columna), que era el mismo bug que `account`: el
-  // journal de sombra la escribía y el vivo no, así que 84 corridas abortadas
-  // salían sin motivo. Una aserción que se rompe cuando se ARREGLA el bug
-  // hermano está midiendo la forma del INSERT, no la propiedad.
+  // ── ACTUALIZADA DOS VECES EL 2026-09-26, CON EL MOTIVO ───────────
+  // (1) Clavaba la lista de columnas COMPLETA y en orden, y se rompió al
+  //     agregar `error` — o sea, al ARREGLAR el bug hermano. Estaba midiendo
+  //     la forma del INSERT, no la propiedad.
+  // (2) Después el INSERT se fue de arena-run.js entero: `account`, `error` y
+  //     `prompt_hash` se habían perdido las tres por tener la lista escrita a
+  //     mano dos veces, así que ahora hay UNA constante compartida
+  //     (`COLUMNAS_CORRIDA`) y los dos escritores la importan. Ver B41.
   //
-  // Ahora pide lo que de verdad importa —que la columna esté, y con su
-  // parámetro— sin clavar el orden ni el resto de la lista.
-  const insert = (run.match(/insert into arena_journal \(([^)]*)\)/) || [])[1] || '';
-  ok(/\baccount\b/.test(insert),
-    'el camino VIVO del contrato objetivo escribe `account` — antes tenía 11 columnas y ésta no era una de ellas', insert);
-  ok(/row\.account \? JSON\.stringify\(row\.account\) : null/.test(run),
+  // La propiedad que este archivo cuida sigue siendo la misma —que el camino
+  // vivo guarde el libro— y ahora se verifica donde vive: en la constante y en
+  // el escritor compartido. La divergencia entre listas la cubre
+  // tests/arena-journal-columnas.test.mjs, que nombra la columna que falta.
+  ok(COLUMNAS_CORRIDA.includes('account'),
+    'el camino VIVO del contrato objetivo escribe `account` — antes tenía 11 columnas y ésta no era una de ellas',
+    COLUMNAS_CORRIDA.join(', '));
+  const jrn = readFileSync(new URL('../api/_lib/arena-journal.js', import.meta.url), 'utf8');
+  ok(/account: json\(row\.account\)/.test(jrn),
     'y le pasa el valor: la columna en la lista sin su parámetro sería el mismo hueco');
+  ok(/await escribirCorrida\(/.test(run),
+    'y el camino vivo pasa por el escritor compartido, no por un insert propio');
   const shadowLib = readFileSync(new URL('../api/_lib/arena-shadow.js', import.meta.url), 'utf8');
   ok(/alter table arena_shadow_journal add column if not exists account jsonb/.test(shadowLib),
     'y la tabla de PRUEBA gana la columna con una migración idempotente');

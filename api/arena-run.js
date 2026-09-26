@@ -97,6 +97,10 @@ import { loadUniverse } from './_lib/arena-universe.js';
 // prompt termina prometiendo algo que el harness rechaza.
 import { RAILS, RESCATE } from './_lib/arena-rails.js';
 import { usaObjetivo, contratoActivo, permiteCortos, minutoDeCorrida } from './_lib/arena-objetivo-vivo.js';
+// La lista de columnas de una corrida, compartida por los DOS escritores de
+// arena_journal. Ver el encabezado de ese archivo: tres columnas se perdieron
+// por tenerla escrita a mano dos veces.
+import { escribirCorrida } from './_lib/arena-journal.js';
 import { runAgenteObjetivo } from './arena-shadow.js';
 // B2: EL TABLERO — lo que los siete miran, idéntico, en el prefijo cacheado.
 import { buildBoard, renderBoard, BOARD_TOKEN_HARD_CAP, SECTOR_ETFS } from './_lib/arena-board.js';
@@ -1427,18 +1431,13 @@ async function registrarGasto({ agent, runId, phase, llm, now, toolCalls = 0, lo
   } catch (e) { return null; }   // el contador JAMÁS frena una corrida
 }
 
+// La lista de columnas ya NO vive acá: la trae `COLUMNAS_CORRIDA` de
+// _lib/arena-journal.js, que es la misma que usa el camino del objetivo. Tres
+// columnas se perdieron por tener dos listas escritas a mano (`account`,
+// `error`, `prompt_hash`) y cada una se descubrió meses después por un
+// síntoma distinto. El orden histórico se conserva ahí, con su motivo.
 async function journalInsert(row) {
-  // agent_id va AL FINAL ($14): mantiene el orden histórico de columnas
-  // (id…context) para no romper lectores por posición. null → 'claude' (insignia).
-  await sql(
-    `insert into arena_journal (id, run_date, phase, status, prompt_version, prompt_hash, model, plan, llm_response, actions, account, error, context, agent_id)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-    [row.id, row.run_date, row.phase, row.status, row.prompt_version ?? null, row.prompt_hash ?? null,
-     row.model ?? null, row.plan ?? null, row.llm_response ?? null,
-     row.actions ? JSON.stringify(row.actions) : null,
-     row.account ? JSON.stringify(row.account) : null, row.error ?? null,
-     row.context ? JSON.stringify(row.context) : null,
-     row.agent_id ?? FLAGSHIP_AGENT_ID]);
+  await escribirCorrida(row, { agentePorDefecto: FLAGSHIP_AGENT_ID });
 }
 
 // ── SALIDAS DE RIESGO (deterministas, no del LLM) ────────────────────
@@ -1467,54 +1466,33 @@ function attributeRiskExit(a, extra) {
 // del contrato nuevo no aparecería en ningún tablero.
 async function journalObjetivoVivo(row) {
   try {
-    await sql(
-      // ── `account` NO ESTABA, Y SE PERDÍA CADA RONDA ─────────────────
-      // `arena_journal` tiene la columna desde siempre y el contrato viejo la
-      // escribía; el objetivo no. Resultado: el equity, el cash y las
-      // posiciones de una ronda VIVA quedaban sólo dentro del texto del
-      // prompt. Es el estado de ese día: si no se guarda cuando pasa, mañana
-      // no existe.
-      // ── `error` TAMPOCO ESTABA, Y ERA EL MOTIVO DEL ABORTO ──────────
-      // Encontrado el 2026-09-26 con 84 corridas abortadas en diez días: en
-      // `/liga/libros` el motivo salía `null` para TODAS. No era la pantalla
-      // —la página ya pinta `l.error`— ni el journal de sombra, que sí escribe
-      // la columna. Era esta lista de columnas: `arena_shadow_journal` recibe
-      // `error` y acá se caía al piso, así que una corrida viva que abortó
-      // decía que había abortado y no por qué.
-      //
-      // Mismo patrón que `account` (arriba) y que los cinco de B41: DOS
-      // escritores del mismo journal, uno con la columna y el otro sin ella.
-      `insert into arena_journal (id, run_date, phase, status, prompt_version, model, plan, llm_response, actions, context, agent_id, account, error)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) on conflict (id) do nothing`,
-      [row.id, row.run_date, row.phase || 'decide', row.status, row.prompt_version, row.model,
-       row.plan || null, row.llm_response || null,
-       // Las ÓRDENES como `actions`, que es lo que /liga ya sabe renderizar. El
-       // portafolio objetivo y el rebalanceo van en `context`: son del contrato
-       // nuevo y ninguna vista vieja los espera.
-       JSON.stringify(((row.context && row.context.ejecucion && row.context.ejecucion.enviadas) || []).map((o) => ({
-         symbol: o.symbol, side: o.side, qty: o.qty, limit_price: o.limit_price,
-         result: o.result, order_status: o.order_status || null,
-         alpaca_order_id: o.alpaca_order_id || null, client_order_id: o.client_order_id || null,
-         // ── LA INTENCIÓN Y LA REFERENCIA, EN LA FILA QUE EL RECONCILE TOCA ──
-         // `sell` y `short` son ambos `sell` para Alpaca. Sin `intencion`, una
-         // venta que CIERRA un largo y la apertura de un corto se ven idénticas
-         // en `actions`, y el resultado contra la entrada se calcularía con el
-         // signo al revés. `referencia` es el precio que aprobó el riel: al
-         // lado del fill es la única forma de leer el deslizamiento.
-         // Las filas viejas salen con null, y null es un dato.
-         intencion: o.intencion || null,
-         closes_position: !!o.closes_position,
-         referencia: o.referencia ?? null,
-         delta_weight: o.delta_weight ?? null,
-         origin: 'objetivo',
-         reasoning: o.intencion ? `rebalanceo hacia el objetivo (${o.intencion}, ${((o.delta_weight || 0) * 100).toFixed(2)}pp)` : null,
-         ...(o.error ? { error: o.error } : {}),
-       }))),
-       JSON.stringify({ ...(row.context || {}), target: row.target || null, rebalance: row.rebalance || null, contrato: contratoActivo() }),
-       row.agent_id,
-       row.account ? JSON.stringify(row.account) : null,
-       row.error || null],
-    );
+    await escribirCorrida({
+      ...row,
+      phase: row.phase || 'decide',
+      // Las ÓRDENES como `actions`, que es lo que /liga ya sabe renderizar. El
+      // portafolio objetivo y el rebalanceo van en `context`: son del contrato
+      // nuevo y ninguna vista vieja los espera.
+      actions: ((row.context && row.context.ejecucion && row.context.ejecucion.enviadas) || []).map((o) => ({
+        symbol: o.symbol, side: o.side, qty: o.qty, limit_price: o.limit_price,
+        result: o.result, order_status: o.order_status || null,
+        alpaca_order_id: o.alpaca_order_id || null, client_order_id: o.client_order_id || null,
+        // ── LA INTENCIÓN Y LA REFERENCIA, EN LA FILA QUE EL RECONCILE TOCA ──
+        // `sell` y `short` son ambos `sell` para Alpaca. Sin `intencion`, una
+        // venta que CIERRA un largo y la apertura de un corto se ven idénticas
+        // en `actions`, y el resultado contra la entrada se calcularía con el
+        // signo al revés. `referencia` es el precio que aprobó el riel: al
+        // lado del fill es la única forma de leer el deslizamiento.
+        // Las filas viejas salen con null, y null es un dato.
+        intencion: o.intencion || null,
+        closes_position: !!o.closes_position,
+        referencia: o.referencia ?? null,
+        delta_weight: o.delta_weight ?? null,
+        origin: 'objetivo',
+        reasoning: o.intencion ? `rebalanceo hacia el objetivo (${o.intencion}, ${((o.delta_weight || 0) * 100).toFixed(2)}pp)` : null,
+        ...(o.error ? { error: o.error } : {}),
+      })),
+      context: { ...(row.context || {}), target: row.target || null, rebalance: row.rebalance || null, contrato: contratoActivo() },
+    }, { idempotente: true });
   } catch (e) {
     // NO se traga: una corrida que operó y no se journaleó es peor que una que
     // no operó — las órdenes existen en Alpaca y no hay fila que las explique.
