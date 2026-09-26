@@ -165,3 +165,36 @@ export function veredictoCapEdgar({ symbol, declarada_usd, acciones_edgar, preci
       : `acciones de EDGAR (${fecha_portada || 'portada sin fecha'}) × cierre difieren ${e.toFixed(1)}% de la cap declarada (${multiplo.toFixed(2)}×), techo propio ${umbral}%`,
   };
 }
+
+/**
+ * A QUIÉN LE FALTA PREGUNTARLE A EDGAR — y por qué a los demás no.
+ *
+ * Extraído del job para poder probarlo, porque el 2026-09-25 devolvió
+ * `candidatos: 0` con 21 hallazgos en el universo y la causa fue un descarte
+ * silencioso: el filtro preguntaba `num(acciones_edgar_millones) == null`, y
+ * `num(null)` devuelve **0**, no null —`Number(null)` es 0—, así que las 21
+ * filas con la columna vacía se descartaban como si ya tuvieran acciones de
+ * EDGAR. Un cero sin desglose no se puede depurar: ahora cada descarte se
+ * cuenta y la pregunta correcta es "¿tiene un conteo POSITIVO?".
+ */
+export function candidatosParaEdgar({ entradas = [], veredictos = [], universoPorSymbol = new Map() } = {}) {
+  const porSymbol = new Map(entradas.map((e) => [e.symbol, e]));
+  const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
+  const diagnostico = {
+    filas: veredictos.length, sin_precio: 0, sin_acciones: 0,
+    verificadas: 0, no_usd: 0, ya_con_edgar: 0, candidatos: 0,
+  };
+  const candidatos = [];
+  for (const v of veredictos) {
+    const e = porSymbol.get(v.symbol) || {};
+    const u = universoPorSymbol.get(v.symbol) || {};
+    if (!(n(e.precio_usd) > 0)) { diagnostico.sin_precio++; continue; }
+    if (!(n(e.acciones) > 0)) { diagnostico.sin_acciones++; continue; }
+    if (v.estado === 'verificada') { diagnostico.verificadas++; continue; }
+    if (v.moneda !== 'USD') { diagnostico.no_usd++; continue; }
+    if (n(u.acciones_edgar_millones) > 0) { diagnostico.ya_con_edgar++; continue; }
+    diagnostico.candidatos++;
+    candidatos.push(v.symbol);
+  }
+  return { candidatos, diagnostico };
+}

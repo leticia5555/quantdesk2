@@ -113,3 +113,66 @@ test('una sola fuente no se verifica a sí misma, tampoco EDGAR', () => {
   assert.equal(v.cap_usd, null);
   assert.match(v.motivo, /ninguna cap declarada/);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL CERO QUE NO SE PUDO DEPURAR
+//
+// Corrida del 2026-09-25: `candidatos: 0` con 21 hallazgos en USD en el
+// universo. La causa fue un descarte silencioso —`num(null)` devuelve 0, no
+// null, porque `Number(null)` es 0—, así que el filtro
+// `num(acciones_edgar_millones) == null` daba false para las 21 filas con la
+// columna vacía y las tiraba como si ya tuvieran su conteo de EDGAR.
+// ═══════════════════════════════════════════════════════════════════════
+import { candidatosParaEdgar } from '../api/_lib/mercado-edgar.js';
+
+const gris = (symbol, moneda = 'USD') => ({ symbol, moneda, estado: 'gris_punteado', auditable: true });
+const entrada = (symbol, extra = {}) => ({ symbol, precio_usd: 100, acciones: 500, ...extra });
+
+test('una columna acciones_edgar_millones NULL no descarta al candidato', () => {
+  // Es lo que Postgres devuelve para la columna vacía: null, no undefined.
+  const r = candidatosParaEdgar({
+    entradas: [entrada('MNST'), entrada('APH'), entrada('ORCL')],
+    veredictos: [gris('MNST'), gris('APH'), gris('ORCL')],
+    universoPorSymbol: new Map([
+      ['MNST', { acciones_edgar_millones: null }],
+      ['APH', { acciones_edgar_millones: null }],
+      ['ORCL', {}],
+    ]),
+  });
+  assert.deepEqual(r.candidatos, ['MNST', 'APH', 'ORCL']);
+  assert.equal(r.diagnostico.candidatos, 3);
+  assert.equal(r.diagnostico.ya_con_edgar, 0);
+});
+
+test('el que YA tiene conteo de EDGAR sí se descarta, y se dice', () => {
+  const r = candidatosParaEdgar({
+    entradas: [entrada('MNST')],
+    veredictos: [gris('MNST')],
+    universoPorSymbol: new Map([['MNST', { acciones_edgar_millones: 1040 }]]),
+  });
+  assert.deepEqual(r.candidatos, []);
+  assert.equal(r.diagnostico.ya_con_edgar, 1);
+});
+
+test('cada descarte se cuenta por su causa: un cero tiene que poder depurarse', () => {
+  const r = candidatosParaEdgar({
+    entradas: [
+      entrada('SINPX', { precio_usd: null }),
+      entrada('SINACC', { acciones: null }),
+      entrada('NVDA'),
+      entrada('TSM'),
+      entrada('MNST'),
+    ],
+    veredictos: [
+      gris('SINPX'), gris('SINACC'),
+      { symbol: 'NVDA', moneda: 'USD', estado: 'verificada', auditable: true },
+      gris('TSM', 'TWD'),
+      gris('MNST'),
+    ],
+    universoPorSymbol: new Map(),
+  });
+  assert.deepEqual(r.candidatos, ['MNST']);
+  assert.deepEqual(r.diagnostico, {
+    filas: 5, sin_precio: 1, sin_acciones: 1, verificadas: 1, no_usd: 1, ya_con_edgar: 0, candidatos: 1,
+  });
+});

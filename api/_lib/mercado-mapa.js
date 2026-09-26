@@ -24,7 +24,7 @@
 
 import { anclaYtd } from './mercado-fase0.js';
 import { serieDesdeFilas, cubreYtd } from './mercado-precios.js';
-import { veredictoCapUs } from './mercado-cap-us.js';
+import { veredictoCapUs, filaVeredictoCapUs, cierreHasta } from './mercado-cap-us.js';
 
 const num = (v) => {
   if (v === null || v === undefined || v === '') return null;
@@ -111,21 +111,20 @@ export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new D
     //
     // El contraste es contra `acciones × precio` con el cierre que ya
     // tenemos. Si no concuerdan dentro del 5%, gris punteado con su motivo.
-    const cap = veredictoCapUs({
-      symbol: sym,
-      declarada: num(u.market_cap) != null ? num(u.market_cap) / 1e6 : null,
-      moneda: u.cap_moneda || null,
-      acciones: num(u.acciones_millones),
+    // La fila del veredicto la arma `filaVeredictoCapUs`, UN solo sitio para los
+    // tres llamadores (este mapa y los dos jobs). Armarla a mano en cada lado
+    // fue lo que hizo que el job dijera 279/26 y el mapa 281/24 sobre la misma
+    // base: al job le faltaban las referencias de ADR.
+    const ref = referencias.get(sym) || null;
+    const enCaptura = ref ? cierreHasta(porSymbol.get(sym) || [], ref.capturada_en) : null;
+    const cap = veredictoCapUs(filaVeredictoCapUs(u, {
       precio_usd: paq.precio,
-      // La referencia manual de Yahoo para los ADR: no se pinta, sólo despeja
-      // la razón. Y las acciones de EDGAR, que entran de árbitro cuando el par
-      // de Finnhub no concuerda.
-      referencia: referencias.get(sym) || null,
-      edgar: num(u.acciones_edgar_millones) != null
-        ? { acciones: num(u.acciones_edgar_millones) * 1e6, fecha_portada: u.acciones_edgar_portada || null }
-        : null,
+      // El cierre del día en que se leyó la cap de Yahoo, sin ajustar: la razón
+      // del ADR se despeja contra el dato de SU fecha, no contra el de hoy.
+      precio_captura: enCaptura ? enCaptura.cierre : null,
+      referencias,
       hoy: ahora,
-    });
+    }));
     // Sólo se reporta como problema DE CAP cuando hay precio: sin serie no
     // hay con qué contrastar, y eso ya está dicho arriba. Dos motivos para
     // una sola causa infla el conteo y manda a arreglar lo que no está roto.

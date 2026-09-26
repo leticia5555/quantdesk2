@@ -213,11 +213,33 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   // tamaño vuelve a ser NUESTRO cálculo con NUESTRO cierre.
   if (referencia) {
     const vig = referenciaVigente(referencia, hoy || new Date());
+    // EL CIERRE DEL DÍA DE LA CAPTURA, no el de hoy. La cap de Yahoo se leyó un
+    // día concreto; despejar la razón contra el precio de hoy mete el
+    // movimiento del mercado entre las dos fechas dentro de un número que
+    // debería ser estructural. Eso hizo fallar a ASML por 2.3%: razón cruda
+    // 1.023 con el cierre del 25 contra una cap del 23. Es la misma regla de
+    // #248: una referencia se contrasta contra el dato de SU fecha.
+    //
+    // Y es el cierre SIN AJUSTAR, porque es el que Yahoo usó para su cap. El
+    // ajustado se reescribe hacia atrás con cada split y haría que la razón
+    // cambiara sola meses después.
     const r = razonAdr({
       cap_referencia_usd: referencia.market_cap_usd,
       acciones_millones: entrada.acciones,
-      precio_usd: entrada.precio_usd,
+      precio_usd: entrada.precio_captura,
     });
+    // Sin ese cierre no se despeja nada: gris con la causa, nunca con el precio
+    // de hoy como sustituto silencioso.
+    // `num(null)` da 0, no null —Number(null) es 0—, así que preguntar por
+    // `== null` dejaba pasar el caso. Lo que de verdad hace falta es un cierre
+    // POSITIVO.
+    if (!(num(entrada.precio_captura) > 0)) {
+      return {
+        ...base, estado: 'gris_punteado', auditable: false, cap_usd: null, error_pct: null, multiplo: null,
+        via: 'referencia_manual',
+        motivo: `no tengo el cierre del ${referencia.capturada_en || 'día de la captura'} para despejar la razón del ADR`,
+      };
+    }
     if (r.ok) {
       return {
         ...base, estado: 'verificada', auditable: true,
@@ -324,6 +346,52 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
     motivo: `la cap declarada difiere ${e.toFixed(1)}% de acciones×precio (${multiplo.toFixed(2)}×), techo ${umbral}%`
       + (edgar ? '; EDGAR no dio acciones para cruzarlo' : ''),
   };
+}
+
+
+/**
+ * LA FILA DEL VEREDICTO, ARMADA EN UN SOLO SITIO.
+ *
+ * El 2026-09-25 el job de auditoría dijo 279/26 y el mapa 281/24 sobre la misma
+ * base: el mapa le pasaba las referencias de ADR a `veredictoCapUs` y el job no,
+ * así que TSM y VALE salían grises "viene en TWD/BRL" de un lado y verificadas
+ * del otro. Dos opiniones sobre qué está verificado es exactamente el bug que
+ * #241 y #245 ya costaron.
+ *
+ * El arreglo no es acordarse de pasar los dos argumentos en los tres sitios: es
+ * que haya UN sitio que arma la fila. Si mañana entra una cuarta fuente, entra
+ * acá y la ven todos.
+ */
+export function filaVeredictoCapUs(u, { precio_usd, precio_captura, referencias, hoy } = {}) {
+  const sym = String((u && u.symbol) || '').toUpperCase();
+  const refs = referencias instanceof Map ? referencias : new Map();
+  return {
+    symbol: sym,
+    declarada: num(u && u.market_cap) != null ? num(u.market_cap) / MILLON : null,
+    moneda: (u && u.cap_moneda) || null,
+    acciones: num(u && u.acciones_millones),
+    precio_usd: num(precio_usd),
+    precio_captura: num(precio_captura),
+    referencia: refs.get(sym) || null,
+    edgar: num(u && u.acciones_edgar_millones) != null
+      ? { acciones: num(u.acciones_edgar_millones) * MILLON, fecha_portada: (u && u.acciones_edgar_portada) || null }
+      : null,
+    hoy: hoy || new Date(),
+  };
+}
+
+/** El último cierre SIN AJUSTAR con fecha ≤ la pedida. Para la fecha de captura. */
+export function cierreHasta(filas = [], fecha) {
+  if (!fecha) return null;
+  const tope = String(fecha).slice(0, 10);
+  let mejor = null;
+  for (const f of filas) {
+    const d = f && f.fecha ? String(f.fecha).slice(0, 10) : null;
+    if (!d || d > tope) continue;
+    if (num(f.cierre) == null) continue;
+    if (!mejor || d > mejor.fecha) mejor = { fecha: d, cierre: num(f.cierre) };
+  }
+  return mejor;
 }
 
 /**
