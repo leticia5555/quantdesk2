@@ -102,6 +102,61 @@ export function secuenciaPublicable(ctx) {
   };
 }
 
+// ── POR QUÉ SE CAYÓ, EN LA FICHA Y NO EN EL JOURNAL ──────────────────
+// 84 corridas abortadas en diez días y la ficha decía `error: null` en todas.
+// El texto estaba escrito —`context.llm_error` lo tiene entero desde B23— y
+// esta proyección no lo pedía: la lista blanca del `jsonb_build_object` de
+// abajo no lo incluía. Tercera vez en la semana que el dato existía y la
+// pantalla no lo mostraba.
+//
+// Lo que se publica está elegido para que NO haya que hacer arqueología:
+//
+//   · `http` + `respuesta` — qué contestó el proveedor, literal. Un "HTTP 200"
+//     a secas no distingue un 200 con `{"error":…}` adentro de un 200 vacío.
+//   · `proveedor` — en OpenRouter un mismo slug lo sirven varias empresas y no
+//     rinden igual. "qwen se cuelga" y "Alibaba se cuelga" se arreglan al revés.
+//   · `reloj_nuestro` — LA PREGUNTA DE B23. `true` significa que el cuerpo no
+//     llegó porque NUESTRO AbortSignal cortó la lectura mientras el proveedor
+//     seguía pensando; `false`, que el proveedor cerró el stream de verdad. Un
+//     timeout tragado se ve idéntico a una falla del otro lado y lleva a
+//     arreglar lo que no está roto.
+//   · `cortes` — todas las vueltas que se cayeron, no solo la última. Una es
+//     mala suerte; cuatro en la misma corrida es el proveedor.
+//   · `murio_en` — si está poblado, el turno de cierre NUNCA ocurrió, y el
+//     `cierre: null` de al lado no significa "el cierre salió bien".
+//
+// Devuelve null cuando la corrida no falló: un bloque vacío en cada ficha sana
+// sería ruido.
+export function falloPublicable(ctx, error) {
+  const e = ctx && ctx.llm_error;
+  if (!e && !error) return null;
+  if (!e) return { motivo: error, http: null, respuesta: null, proveedor: null, reloj_nuestro: null, cortes: [], murio_en: null };
+  const cortes = Array.isArray(e.cuerpos_vacios) ? e.cuerpos_vacios.map((c) => ({
+    vuelta: c.vuelta ?? null, intento: c.intento ?? null, bytes: c.bytes ?? null,
+    proveedor: c.proveedor || null, ms: c.ms ?? null,
+    // El discriminante, por vuelta: dos cortes de la misma corrida pueden ser
+    // uno nuestro y uno suyo, y promediarlos borraría justo eso.
+    reloj_nuestro: !!c.timeout_nuestro,
+  })) : [];
+  return {
+    motivo: error || e.motivo || null,
+    http: e.status ?? null,
+    // El texto del proveedor, en orden de especificidad. `raw_body` es el
+    // último recurso y ya viene acotado por la consulta.
+    respuesta: e.provider_error || e.detail || e.raw_body || null,
+    proveedor: e.proveedor || null,
+    reloj_nuestro: e.timeout_nuestro == null ? null : !!e.timeout_nuestro,
+    // Cuál reloj, y de dónde salió ese número: "se pasó de 15s" no dice si el
+    // 15 lo puso una env var o el reparto del loop, y se arreglan en lugares
+    // opuestos.
+    techo_ms: e.techo_ms ?? null,
+    techo_origen: e.techo_origen || null,
+    cortes,
+    murio_en: e.murio_en || null,
+    colgados: Array.isArray(e.proveedores_colgados) && e.proveedores_colgados.length ? e.proveedores_colgados : null,
+  };
+}
+
 // ── EL SELLO: DOS COSAS DISTINTAS EN UNA ETIQUETA ────────────────────
 // Un libro tiene que decir DOS cosas que no son la misma:
 //
@@ -212,6 +267,8 @@ export function libroDeFila(row, fuente) {
     contrato: ctx.contrato || null,
     posiciones_iniciales: Array.isArray(ctx.posiciones_iniciales) ? ctx.posiciones_iniciales : null,
     error: row.error || null,
+    // POR QUÉ se cayó, no solo QUE se cayó.
+    fallo: falloPublicable(ctx, row.error || null),
   };
 }
 
@@ -613,7 +670,28 @@ export default async function handler(req, res) {
                   'rails', context->'rails',
                   'ejecucion', context->'ejecucion',
                   'contrato', context->>'contrato',
-                  'posiciones_iniciales', context->'posiciones_iniciales'
+                  'posiciones_iniciales', context->'posiciones_iniciales',
+                  -- POR QUE SE CAYO. Se arma campo por campo y NO se manda
+                  -- llm_error entero: trae raw_body y el turno de cierre
+                  -- completo, que en 200 filas es una respuesta que no baja.
+                  -- raw_body va acotado ACA, en la consulta, para que el
+                  -- recorte no dependa de que el cliente se acuerde.
+                  -- (Sin comillas invertidas: esto vive en un template
+                  -- literal de JS y una sola cierra el string.)
+                  'llm_error', jsonb_build_object(
+                    'status',         context->'llm_error'->'status',
+                    'detail',         left(context->'llm_error'->>'detail', 800),
+                    'provider_error', left(context->'llm_error'->>'provider_error', 800),
+                    'raw_body',       left(context->'llm_error'->>'raw_body', 800),
+                    'proveedor',      context->'llm_error'->>'proveedor',
+                    'timeout_nuestro',context->'llm_error'->'timeout_nuestro',
+                    'techo_ms',       context->'llm_error'->'techo_ms',
+                    'techo_origen',   context->'llm_error'->>'techo_origen',
+                    'motivo',         context->'llm_error'->>'motivo',
+                    'murio_en',       context->'llm_error'->'murio_en',
+                    'cuerpos_vacios', context->'llm_error'->'cuerpos_vacios',
+                    'proveedores_colgados', context->'llm_error'->'proveedores_colgados'
+                  )
                 ) as context
          from arena_journal
          where phase = 'decide' and agent_id <> 'league'
@@ -641,7 +719,24 @@ export default async function handler(req, res) {
                   'tools', context->'tools',
                   'rails', context->'rails',
                   'ejecucion', context->'ejecucion',
-                  'posiciones_iniciales', context->'posiciones_iniciales'
+                  'posiciones_iniciales', context->'posiciones_iniciales',
+                  -- Igual que la consulta VIVA. Las dos o ninguna: la mitad de
+                  -- las fichas con el motivo a la vista es peor que ninguna,
+                  -- porque la ausencia se lee como "no falló".
+                  'llm_error', jsonb_build_object(
+                    'status',         context->'llm_error'->'status',
+                    'detail',         left(context->'llm_error'->>'detail', 800),
+                    'provider_error', left(context->'llm_error'->>'provider_error', 800),
+                    'raw_body',       left(context->'llm_error'->>'raw_body', 800),
+                    'proveedor',      context->'llm_error'->>'proveedor',
+                    'timeout_nuestro',context->'llm_error'->'timeout_nuestro',
+                    'techo_ms',       context->'llm_error'->'techo_ms',
+                    'techo_origen',   context->'llm_error'->>'techo_origen',
+                    'motivo',         context->'llm_error'->>'motivo',
+                    'murio_en',       context->'llm_error'->'murio_en',
+                    'cuerpos_vacios', context->'llm_error'->'cuerpos_vacios',
+                    'proveedores_colgados', context->'llm_error'->'proveedores_colgados'
+                  )
                 ) as context
          from arena_shadow_journal
          where run_date >= $1::date and agent_id <> all($2::text[])

@@ -1474,8 +1474,18 @@ async function journalObjetivoVivo(row) {
       // posiciones de una ronda VIVA quedaban sólo dentro del texto del
       // prompt. Es el estado de ese día: si no se guarda cuando pasa, mañana
       // no existe.
-      `insert into arena_journal (id, run_date, phase, status, prompt_version, model, plan, llm_response, actions, context, agent_id, account)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) on conflict (id) do nothing`,
+      // ── `error` TAMPOCO ESTABA, Y ERA EL MOTIVO DEL ABORTO ──────────
+      // Encontrado el 2026-09-26 con 84 corridas abortadas en diez días: en
+      // `/liga/libros` el motivo salía `null` para TODAS. No era la pantalla
+      // —la página ya pinta `l.error`— ni el journal de sombra, que sí escribe
+      // la columna. Era esta lista de columnas: `arena_shadow_journal` recibe
+      // `error` y acá se caía al piso, así que una corrida viva que abortó
+      // decía que había abortado y no por qué.
+      //
+      // Mismo patrón que `account` (arriba) y que los cinco de B41: DOS
+      // escritores del mismo journal, uno con la columna y el otro sin ella.
+      `insert into arena_journal (id, run_date, phase, status, prompt_version, model, plan, llm_response, actions, context, agent_id, account, error)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) on conflict (id) do nothing`,
       [row.id, row.run_date, row.phase || 'decide', row.status, row.prompt_version, row.model,
        row.plan || null, row.llm_response || null,
        // Las ÓRDENES como `actions`, que es lo que /liga ya sabe renderizar. El
@@ -1502,7 +1512,8 @@ async function journalObjetivoVivo(row) {
        }))),
        JSON.stringify({ ...(row.context || {}), target: row.target || null, rebalance: row.rebalance || null, contrato: contratoActivo() }),
        row.agent_id,
-       row.account ? JSON.stringify(row.account) : null],
+       row.account ? JSON.stringify(row.account) : null,
+       row.error || null],
     );
   } catch (e) {
     // NO se traga: una corrida que operó y no se journaleó es peor que una que

@@ -145,6 +145,15 @@ section{padding:18px 0 4px;}
 .nota{font-size:11px;color:var(--text3);line-height:1.5;margin-top:8px;}
 .nota.warn{color:var(--amber);}
 .nota.bad{color:#fca5a5;}
+.fallo{border:1px solid #7f1d1d;background:#1a0f0f;border-radius:6px;padding:10px 12px;margin:8px 0;}
+.fallo h5{margin:0 0 6px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#fca5a5;}
+.fallo .resp{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:pre-wrap;word-break:break-word;color:#e5e7eb;background:#0b0b0b;border-radius:4px;padding:8px;margin:6px 0;}
+.fallo .kv{font-size:12px;color:#cbd5e1;line-height:1.7;}
+.fallo .culpa{display:inline-block;font-size:11px;font-weight:700;padding:2px 7px;border-radius:999px;}
+.fallo .culpa.nuestra{background:#78350f;color:#fde68a;}
+.fallo .culpa.suya{background:#7f1d1d;color:#fecaca;}
+.fallo .cortes{font-size:11.5px;color:#94a3b8;margin-top:6px;}
+.fallo .cortes b{color:#e5e7eb;}
 .kv{font-family:var(--mono);font-size:10px;color:var(--text2);letter-spacing:.04em;line-height:1.7;}
 .kv b{color:var(--text);}
 .empty{font-size:12px;color:var(--text3);line-height:1.5;}
@@ -352,6 +361,46 @@ function ordenesHtml(o){
   return cab+freno+lista+desc+resumen;
 }
 
+// ── POR QUÉ SE CAYÓ ──────────────────────────────────────────────────
+// 84 corridas abortadas en diez días y la ficha decía "Sin plan publicado."
+// El texto del proveedor estaba en el journal desde B23 y no llegaba hasta acá.
+//
+// Lo que este bloque contesta sin que nadie abra la base:
+//   · qué contestó el proveedor, literal, con su status HTTP
+//   · QUIÉN atendió (en OpenRouter un slug lo sirven varias empresas)
+//   · y la pregunta de B23: ¿cortó NUESTRO reloj o cerró el proveedor?
+//     Un timeout tragado se ve idéntico a una falla del otro lado y lleva a
+//     arreglar lo que no está roto. Por eso es una etiqueta y no una nota.
+function falloHtml(f){
+  if(!f) return '';
+  const culpa = f.reloj_nuestro===true
+    ? '<span class="culpa nuestra" title="Nuestro AbortSignal cortó la LECTURA del cuerpo mientras el proveedor seguía pensando (B23). Se arregla con más reloj o con otro proveedor.">cortó NUESTRO reloj</span>'
+    : f.reloj_nuestro===false
+      ? '<span class="culpa suya" title="El proveedor cerró el stream por su cuenta. Se reintenta igual.">cortó el PROVEEDOR</span>'
+      : '';
+  const cortes = (f.cortes||[]).length
+    ? '<div class="cortes">Se cayó '+f.cortes.length+' vez/veces en esta corrida: '+
+      f.cortes.map(c=>'<b>vuelta '+esc(String(c.vuelta))+'</b>'+(c.intento?' (intento '+c.intento+')':'')+
+        ' — '+(c.bytes!=null?c.bytes+' bytes':'sin bytes')+
+        (c.ms!=null?' a los '+Math.round(c.ms/1000)+'s':'')+
+        (c.proveedor?' · '+esc(c.proveedor):'')+
+        ' · '+(c.reloj_nuestro?'reloj nuestro':'cortó el proveedor')).join(' · ')+
+      '. Una es mala suerte; varias en la misma corrida es el proveedor.</div>'
+    : '';
+  return '<div class="fallo"><h5>Por qué se cayó</h5>'+
+    (f.motivo?'<div class="kv">'+esc(f.motivo)+'</div>':'')+
+    (f.respuesta?'<div class="resp">'+esc(f.respuesta)+'</div>'
+      :'<div class="resp">El proveedor no devolvió cuerpo: no hay texto que mostrar. Eso ES el síntoma, no un hueco de la pantalla.</div>')+
+    '<div class="kv">'+
+      (f.http!=null?'HTTP <b>'+esc(String(f.http))+'</b>':'sin status HTTP')+
+      (f.proveedor?' · atendió <b>'+esc(f.proveedor)+'</b>':' · proveedor <b>no declarado</b> (OpenRouter lo manda dentro del cuerpo, y el cuerpo no llegó)')+
+      (f.techo_ms!=null?' · techo <b>'+Math.round(f.techo_ms/1000)+'s</b>'+(f.techo_origen?' ('+esc(f.techo_origen)+')':''):'')+
+      (culpa?'<br/>'+culpa:'')+
+      (f.murio_en?'<br/>El turno de cierre <b>nunca ocurrió</b>: murió en '+esc(typeof f.murio_en==='string'?f.murio_en:JSON.stringify(f.murio_en)):'')+
+      (f.colgados?'<br/>Proveedores colgados: <b>'+esc(f.colgados.join(', '))+'</b>':'')+
+    '</div>'+cortes+'</div>';
+}
+
 function railsHtml(r){
   if(!r) return '';
   if(r.ok) return '<div class="kv">Pasó los rieles.</div>';
@@ -399,7 +448,9 @@ function cardHtml(l,i){
     '</div>'+
     '<div class="cbody">'+
       (a.control?'<div class="nota">'+esc(a.control_nota)+'</div>':'')+
-      (l.plan?'<div class="plan">'+esc(l.plan)+'</div>':'<div class="plan">'+esc(l.error||'Sin plan publicado.')+'</div>')+
+      falloHtml(l.fallo)+
+      (l.plan?'<div class="plan">'+esc(l.plan)+'</div>'
+        :(l.fallo?'':'<div class="plan">'+esc(l.error||'Sin plan publicado.')+'</div>'))+
       pesosHtml(l.portafolio)+
       '<span class="toggle" data-card="'+i+'" data-resumen="'+esc(invResumen)+'">ver la investigación ('+esc(invResumen)+') ↓</span>'+
       '<div class="detalle">'+
@@ -417,7 +468,7 @@ function cardHtml(l,i){
           (inv&&inv.presupuesto!=null?'<br/>herramientas <b>'+esc(inv.usadas)+'/'+esc(inv.presupuesto)+'</b> en <b>'+esc(inv.vueltas)+'</b> vuelta(s)':'')+
         '</div>'+
         (l.enfoque_nota?'<div class="nota">'+esc(l.enfoque_nota)+'</div>':'')+
-        (l.error?'<div class="nota bad">'+esc(l.error)+'</div>':'')+
+        (l.error&&!l.fallo?'<div class="nota bad">'+esc(l.error)+'</div>':'')+
         '</div>'+
       '</div>'+
     '</div>'+

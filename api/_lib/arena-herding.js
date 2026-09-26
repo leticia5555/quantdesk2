@@ -74,9 +74,12 @@ export function dayIndex(now = new Date()) {
 // Las SONDAS DE RUTA también heredan el de `claude`: el brazo A, el B y el C
 // tienen que mirar lo mismo, o la comparación mide el enfoque y no la ruta.
 // Es el mismo motivo por el que `control` lo hereda.
+// Las sondas de ruta también heredaban de `claude`; se retiraron el 2026-09-26
+// (ver la lápida en arena-registry.js). El mapa se queda como MAPA, con una
+// sola entrada, y no vuelve a ser un `if (id === 'control')`: la herencia
+// declarada en un lugar es lo que verifica tests/arena-antiherding.
 export const ENFOQUE_HEREDADO = {
   control: 'claude',
-  ruta_directo: 'claude', ruta_directo_nc: 'claude', ruta_or: 'claude',
 };
 
 export function enfoqueDelDia(agentId, now = new Date()) {

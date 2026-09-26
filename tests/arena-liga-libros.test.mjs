@@ -144,7 +144,16 @@ console.log('\n── la tabla de sombra puede no existir todavía ──');
 console.log('\n── la liga VIVA guarda el objetivo dentro de context ──');
 {
   const src = readFileSync(new URL('../api/liga-libros.js', import.meta.url), 'utf8');
-  const viva = src.slice(src.indexOf('from arena_journal') - 1400, src.indexOf('from arena_journal'));
+  // ── LA VENTANA, ACTUALIZADA EL 2026-09-26 ────────────────────────
+  // Eran 1400 caracteres hacia atrás desde `from arena_journal`. Se rompió al
+  // sumar la proyección de `llm_error` (el motivo de los abortos, que no
+  // llegaba a la ficha): la consulta creció y el `select` quedó afuera de la
+  // ventana, así que las cuatro aserciones fallaban aunque todo estuviera.
+  //
+  // Un número de caracteres no es un límite: es una apuesta a que la consulta
+  // no crezca. Ahora la ventana va desde el `select` REAL hasta su `from`.
+  const finViva = src.indexOf('from arena_journal');
+  const viva = src.slice(src.lastIndexOf('`select', finViva), finViva);
   ok(/context->'target' as target/.test(viva),
     'la consulta de la liga viva proyecta el objetivo desde context: sin esto, toda corrida viva sale con portafolio null');
   ok(/context->'rebalance' as rebalance/.test(viva), 'y el rebalanceo');

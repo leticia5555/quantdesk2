@@ -223,8 +223,20 @@ console.log('\n── el snapshot del libro ──');
 console.log('\n── y se escribe en los DOS caminos ──');
 {
   const run = readFileSync(new URL('../api/arena-run.js', import.meta.url), 'utf8');
-  ok(/insert into arena_journal \(id, run_date, phase, status, prompt_version, model, plan, llm_response, actions, context, agent_id, account\)/.test(run),
-    'el camino VIVO del contrato objetivo escribe `account` — antes tenía 11 columnas y ésta no era una de ellas');
+  // ── ACTUALIZADA EL 2026-09-26, CON EL MOTIVO ─────────────────────
+  // Antes clavaba la lista de columnas COMPLETA y en orden. Se rompió al
+  // agregar `error` (13ª columna), que era el mismo bug que `account`: el
+  // journal de sombra la escribía y el vivo no, así que 84 corridas abortadas
+  // salían sin motivo. Una aserción que se rompe cuando se ARREGLA el bug
+  // hermano está midiendo la forma del INSERT, no la propiedad.
+  //
+  // Ahora pide lo que de verdad importa —que la columna esté, y con su
+  // parámetro— sin clavar el orden ni el resto de la lista.
+  const insert = (run.match(/insert into arena_journal \(([^)]*)\)/) || [])[1] || '';
+  ok(/\baccount\b/.test(insert),
+    'el camino VIVO del contrato objetivo escribe `account` — antes tenía 11 columnas y ésta no era una de ellas', insert);
+  ok(/row\.account \? JSON\.stringify\(row\.account\) : null/.test(run),
+    'y le pasa el valor: la columna en la lista sin su parámetro sería el mismo hueco');
   const shadowLib = readFileSync(new URL('../api/_lib/arena-shadow.js', import.meta.url), 'utf8');
   ok(/alter table arena_shadow_journal add column if not exists account jsonb/.test(shadowLib),
     'y la tabla de PRUEBA gana la columna con una migración idempotente');

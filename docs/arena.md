@@ -746,6 +746,108 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B42 · NO ERA EL MODELO NI LA RUTA: ERA LA CUENTA (2026-09-26)
+
+Diez días, **84 corridas abortadas**. Desglosadas por `terminó_por`:
+
+| motivo | casos | |
+|---|---:|---|
+| `error` | **52** | 62% |
+| `cuerpo_vacio` | 23 | 27% |
+| `time_budget` | 3 | 3.6% |
+| `call_budget` | 3 | |
+| `end_turn` | 2 | |
+| `no_tools` | 1 | |
+
+**El reloj son 3 de 84.** Y la mediana de vueltas en las abortadas es **1**:
+las de `error` traen **cero pasos**. No se agotan investigando — mueren antes
+de la primera herramienta.
+
+### Los racimos
+
+Ordenando los 52 `error` por minuto, **28 caen en siete racimos
+multi-agente**:
+
+| cuándo | quiénes |
+|---|---|
+| 23 sep 19:30 | grok, qwen, gemini, openai |
+| 24 sep 14:00 · 16:00 · 19:30 · 19:45 | **los CINCO de OpenRouter**, cuatro veces |
+| 25 sep 16:00 · 19:30 | **claude y control** (los dos de Anthropic) |
+
+**Los racimos se parten exactamente por proveedor y nunca se mezclan.** Cinco
+modelos de cinco empresas distintas no fallan solos en el mismo minuto: falla
+la CUENTA. OpenRouter el 23-24, Anthropic el 25.
+
+### Por qué esto cancela la sonda de ruta
+
+La sonda existía para separar "es el modelo" de "es la ruta", con tres brazos
+y ~$6 de saldo. La pregunta era: **¿la ruta causa abortos?**
+
+La respuesta es **sí, y en las DOS rutas, en días distintos, a nivel cuenta.**
+Siete racimos lo muestran con datos que ya estaban escritos. La sonda habría
+medido con cinco corridas por brazo algo que no necesitaba medirse — y peor:
+**un brazo que hubiera caído dentro de un racimo se habría leído como un fallo
+de esa ruta**, que es exactamente la conclusión falsa que la sonda existía para
+evitar.
+
+Se retiró sin correr. La lápida, con lo que sobrevive del trabajo, está en
+`_lib/arena-registry.js`.
+
+> **Y la regla de decisión que yo había escrito estaba mal en las dos mitades.**
+> Decía: *"si cortan por `time_budget` es reloj y la sonda no hace falta"* —o
+> sea que su negación (no cortan por reloj) implicaba que la sonda SÍ hacía
+> falta. El dato dio lo contrario: no cortan por reloj **y** la sonda tampoco
+> hace falta, por una razón que mi criterio no contemplaba. Escribir qué
+> resultado te desmentiría no alcanza si las alternativas que enumerás no son
+> exhaustivas.
+
+### LA TERCERA VEZ EN UNA SEMANA: EL DATO ESTABA, LA PANTALLA NO LO MOSTRABA
+
+Para llegar a los racimos hubo que hacer arqueología en la base, porque en
+`/liga/libros` **las 84 fichas decían `error: null`**. El texto del proveedor
+está journaleado entero desde B23.
+
+Es el mismo patrón que los fills sin precio y que las órdenes sin motivo. Tres
+veces en una semana:
+
+| | el dato estaba en | la pantalla mostraba |
+|---|---|---|
+| fills | `actions`, tras el reconcile | "llena", sin precio |
+| órdenes no enviadas | el 422 de Alpaca | nada |
+| **abortos** | `context.llm_error` | `error: null` |
+
+**Dos causas, y las dos hacían falta:**
+
+1. **`journalObjetivoVivo` no escribía la columna `error`.** El journal de
+   SOMBRA sí. Dos escritores del mismo journal, uno con la columna y el otro
+   sin ella — **B41, octava instancia**, y la segunda vez en esa misma lista
+   de columnas (ya había pasado con `account`).
+2. **La lista blanca de `/liga/libros` no pedía `context.llm_error`.** El
+   `jsonb_build_object` de la proyección enumera qué se publica, y lo que no
+   está en la lista no existe para la pantalla.
+
+Arreglado: la ficha de una corrida caída ahora dice qué contestó el proveedor
+con su status HTTP, **quién** atendió, y —la pregunta de B23— **si cortó
+nuestro reloj o el proveedor**, que se arreglan al revés. Cada corte conserva
+su culpa por separado: dos cortes de la misma corrida pueden ser uno de cada
+lado, y promediarlos borraría justo eso.
+
+> **NORMA: un `null` en la pantalla tiene que distinguir "no pasó" de "no se
+> preguntó".** Una lista blanca de proyección es una decisión de qué se puede
+> diagnosticar sin abrir la base — y se revisa cuando se agrega un campo de
+> diagnóstico, no cuando alguien lo extraña tres incidentes después.
+
+### Lo que queda abierto
+
+**`cuerpo_vacio`: 23 casos, 15 de Qwen y 8 de DeepSeek, nadie más.** Ése sí es
+de esos dos, y el diagnóstico ya es decidible sin correr nada: `timeout_nuestro`
+separa las dos hipótesis de B23 y ahora se ve en la ficha. Detalle en
+`docs/arena-dos-caminos.md` → apéndice.
+
+**`time_budget`: 3 casos, los tres de DeepSeek.** Anotado, sin tocar.
+
+---
+
 ## B41 · UNA REGLA EN DOS CAMINOS NO ES UNA REGLA (2026-09-25)
 
 **LA NORMA, primero, porque lo demás es la evidencia:**

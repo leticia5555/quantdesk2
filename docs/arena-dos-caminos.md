@@ -258,3 +258,101 @@ cortos de salida.
 La norma que sale de todo esto está en `docs/arena.md` → **B41**, con la
 prueba que decide si estás mirando una regla o dos, y la regla de operación:
 cuando entre al registry el próximo agente que no compita, se vuelve a barrer.
+
+
+---
+
+# APÉNDICE · `cuerpo_vacio`: 23 CASOS, DOS HIPÓTESIS, UN CAMPO QUE LAS SEPARA
+
+Escrito el 2026-09-26, cuando los racimos cancelaron la sonda de ruta y dejaron
+esto como el único problema de abortos que sigue siendo de agentes concretos.
+
+## El dato
+
+23 de las 84 abortadas cortaron por `cuerpo_vacio`: **15 de Qwen, 8 de
+DeepSeek, nadie más.** No aparecen en racimos multi-agente — a diferencia de
+los 52 `error`, esto no es la cuenta.
+
+## Las dos hipótesis, y por qué se ven idénticas
+
+Un `cuerpo_vacio` es un HTTP 200 sin cuerpo. Puede ser:
+
+**A · El proveedor cerró el stream.** Contestó los headers y murió antes de
+mandar el cuerpo. Se arregla reintentando, o sacándolo del routing.
+
+**B · Nuestro `AbortSignal` mató la lectura** (el caso de B23). `fetch` resuelve
+en cuanto llegan los HEADERS; OpenRouter manda el 200 al instante y después
+keepalives mientras el proveedor de abajo piensa. El cuerpo se lee en
+`r.text()`, y el `AbortSignal` cubre **también** esa lectura:
+
+```js
+const r = await fetch(url, { signal: AbortSignal.timeout(300) });
+// resuelve con 200 a los 31 ms — los HEADERS ya llegaron
+const texto = await r.text().catch(() => '');
+// r.text() LANZA a los 304 ms; el .catch lo convierte en ''
+// → se reporta "HTTP 200 con el cuerpo vacío"
+```
+
+Se arregla al revés que A: más reloj, u otro proveedor. **Y un timeout tragado
+se ve idéntico a una falla del otro lado, y lleva a arreglar lo que no está
+roto** — es literalmente lo que pasó en B19, que B23 tuvo que corregir.
+
+## No hace falta correr nada: el campo ya existe
+
+B23 no solo diagnosticó, **instrumentó**. `arena-model.js:414`:
+
+```js
+const nuestroReloj = !!first.abortadoLeyendo;
+return { status: first.status, data: null, emptyBody: true, timedOutLeyendo: nuestroReloj, … };
+```
+
+Y el loop lo guarda **por vuelta**, no por corrida (`arena-tool-loop.js:467`,
+492, 697, 724):
+
+```js
+vacios.push({ vuelta, intento, bytes, proveedor, timeout_nuestro: !!llm.timedOutLeyendo, ms });
+```
+
+que termina en `context.llm_error.cuerpos_vacios[]`. **La respuesta a la
+pregunta está escrita en cada una de las 23 filas desde que ocurrieron.** Lo
+que faltaba era mirarla, y hasta hoy no se podía sin abrir la base — ver B42.
+
+## Cómo se lee, ahora que la ficha lo muestra
+
+En la ficha de cada corrida abortada, el bloque **POR QUÉ SE CAYÓ**:
+
+| lo que dice | qué significa | qué se hace |
+|---|---|---|
+| `cortó NUESTRO reloj` | hipótesis B. El proveedor seguía pensando | subir el techo, o sacar a ese proveedor del routing |
+| `cortó el PROVEEDOR` | hipótesis A | reintentar; si se repite, `ARENA_PROVIDER_IGNORE_<AGENTE>` |
+| sin etiqueta | el campo no viajó (fila vieja) | **no se adivina**: `null` es "no sabemos", no "fue el proveedor" |
+
+Y al lado, el `techo_ms` con su `techo_origen`: *"se pasó de 70s"* no dice si
+ese 70 lo puso una env var o el reparto del loop, y **se arreglan en lugares
+opuestos**. En B23 el número que cerró el caso fue justamente ése: 45.002 ms
+era `RESERVA_CIERRE_MS`, un techo nuestro. Hoy esa constante vale **70.000**,
+así que el número a buscar en estas 23 es otro — y si aparece 70.002, es B otra
+vez.
+
+## Mi lectura, declarada como lectura y no como hallazgo
+
+**Apuesto a B, y puedo estar equivocado.** Tres razones, ninguna concluyente:
+
+1. Qwen y DeepSeek son los dos modelos chinos, y en OpenRouter los sirven
+   proveedores que se solapan. B23 documentó a `Alibaba` colgándose tres veces
+   seguidas hasta nuestro techo, con Qwen.
+2. Son los dos agentes con **menos manos jugadas** (3 y 9 vivas). Un modelo que
+   tarda más pega contra nuestros techos más seguido, sin que el proveedor haga
+   nada mal.
+3. **OpenRouter no hace fallback por lentitud, solo por error.** Un proveedor
+   que tarda 200s y uno que devuelve 500 se ven distinto desde su lado e
+   idéntico desde el nuestro.
+
+**Lo que me desmentiría:** que los 23 traigan `timeout_nuestro: false`, o que
+los `ms` no se parezcan a ninguno de nuestros techos (70.000 de
+`RESERVA_CIERRE_MS`, o el piso de 10.000 cuando ya casi no queda presupuesto).
+Ahí sería A, y el arreglo es routing, no reloj.
+
+**La consulta 4** (`docs/sql/arena-abortos-2026-09-26.sql`) desagrega por
+proveedor y es la que lo cierra. Con la ficha arreglada, también se lee de a
+una sin tocar SQL.

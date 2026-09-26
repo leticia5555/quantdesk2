@@ -336,81 +336,32 @@ export const ARENA_AGENTS = [
     alpaca: 'QWEN', house: 'china', control: false, phase: 'B', enabled: true,
   },
 
-  // ── SONDA DE RUTA: ¿ES EL MODELO O ES EL TRANSPORTE? ─────────────────
-  // EL DATO (2026-09-25, siete días): los dos agentes de Anthropic DIRECTO
-  // llevan 0 abortos en 67 corridas; los cinco de OpenRouter concentran los 77.
-  // Eso NO concluye: esos cinco también son modelos distintos, y además
-  // comparten el reparto de reloj de esa ruta y la ausencia de caché de prompt.
-  // Tres cosas cambiadas a la vez.
+  // ── SONDA DE RUTA: PREGUNTA CONTESTADA, SONDA RETIRADA (2026-09-26) ──
+  // Acá vivieron tres brazos (Fable por Anthropic con caché, sin caché, y por
+  // OpenRouter) para separar "es el modelo" de "es la ruta". Nunca corrieron:
+  // los datos contestaron la pregunta antes, y por ~$6 de diferencia.
   //
-  // Es la lógica de la cuenta de control aplicada al TRANSPORTE: se fija el
-  // modelo y se mueve solo la ruta. Tres brazos, porque con dos el resultado
-  // sería ambiguo:
+  // 84 abortos en diez días, repartidos así: `error` 52, `cuerpo_vacio` 23,
+  // `time_budget` 3. **El reloj eran 3 de 84**, y la mediana de vueltas en las
+  // abortadas era 1 — morían ANTES de la primera herramienta, no agotadas.
+  // Y 28 de los 52 caían en siete racimos multi-agente que se parten
+  // exactamente por proveedor y nunca se mezclan: el 24-sep los CINCO de
+  // OpenRouter a la misma hora, el 25-sep claude y control (los dos de
+  // Anthropic) a la misma hora. Cinco modelos de cinco empresas no fallan
+  // solos en el mismo minuto: falla la cuenta.
   //
-  //   A · ruta_directo      Fable por Anthropic, CON caché  → el `claude` de la liga
-  //   B · ruta_directo_nc   Fable por Anthropic, SIN caché  → aísla la caché
-  //   C · ruta_or           Fable por OpenRouter            → aísla la ruta
+  // O sea: la ruta SÍ causa abortos, en las DOS rutas, en días distintos y a
+  // nivel CUENTA. La sonda habría medido con cinco corridas por brazo algo que
+  // siete racimos ya mostraban — y peor, un brazo que cayera en un racimo
+  // habría parecido un fallo de esa ruta.
   //
-  // Si B aborta como C, el culpable es la caché/latencia y no la ruta. Si B
-  // sale limpio y C aborta, la ruta es el problema. Sin B, "abortó por
-  // OpenRouter" y "abortó por correr sin caché" se ven idénticos.
-  //
-  // ── FUERA DE LA LIGA, Y SIN TOCAR NINGUNA CUENTA ─────────────────────
-  // `enabled: false` los deja fuera de `activeAgents()`, así que ninguna
-  // corrida de la liga los incluye. Se corren a mano por `?agent=<id>` contra
-  // `/api/arena-shadow`, que usa `shadowBroker`: toda ESCRITURA lanza. Leen el
-  // libro de la cuenta `PAPER` para armar el prompt —una lectura no toca nada—
-  // y no pueden mandar una orden ni por accidente.
-  //
-  // `probe: true` los saca además de las pantallas públicas: no son
-  // competidores y una tarjeta suya en /liga/libros sería una fila que nadie
-  // pidió.
-  //
-  // ── LO QUE SE IGUALA, Y LO QUE NO SE PUEDE ───────────────────────────
-  // Igual: el modelo, la persona (byte a byte la de `claude`), el enfoque del
-  // día (vía ENFOQUE_HEREDADO), el system, el contexto compartido, el
-  // presupuesto de herramientas y el reparto de reloj.
-  // NO igualable, y se declara: el ORDEN de la lista de nombres del día cambia
-  // por agente a propósito (anti-herding) — cambia el orden, no el tamaño, así
-  // que no mueve un timeout. Y el canal del `effort` es distinto por ruta
-  // (`output_config` contra `reasoning`), que es justamente parte de lo que
-  // significa "los mismos parámetros por otra ruta".
-  {
-    id: 'ruta_directo', name: 'Sonda · directo', model_label: 'Claude Fable 5.1',
-    provider: 'anthropic', model: slug('RUTA_DIRECTO', ARENA_ANTHROPIC_MODEL), persona: 'Claude PM',
-    slug_verified: true, caps: CAPS_FABLE,
-    archetype: { name: 'sonda', voice: 'No publica: es una sonda de infraestructura.' },
-    alpaca: 'PAPER', house: 'sonda', control: false, probe: true, phase: 'sonda', enabled: false,
-  },
-  {
-    id: 'ruta_directo_nc', name: 'Sonda · directo sin caché', model_label: 'Claude Fable 5.1',
-    provider: 'anthropic', model: slug('RUTA_DIRECTO_NC', ARENA_ANTHROPIC_MODEL), persona: 'Claude PM',
-    slug_verified: true,
-    // El ÚNICO cambio contra el brazo A: sin caché de prompt. Si el prefijo no
-    // se cachea, cada vuelta re-procesa ~5K tokens y tarda más — y tardar más
-    // es exactamente lo que dispara nuestro corte de reloj.
-    caps: { ...CAPS_FABLE, cache: null },
-    archetype: { name: 'sonda', voice: 'No publica: es una sonda de infraestructura.' },
-    alpaca: 'PAPER', house: 'sonda', control: false, probe: true, phase: 'sonda', enabled: false,
-  },
-  {
-    id: 'ruta_or', name: 'Sonda · OpenRouter', model_label: 'Claude Fable 5.1',
-    provider: 'openrouter',
-    // EL SLUG NO SE ADIVINA. `slug_verified: false` + el candado significa que
-    // este brazo NO corre hasta que `ARENA_MODEL_RUTA_OR` tenga el slug real de
-    // OpenRouter para Fable 5.1 — lo resuelve `/api/arena-smoke?catalog=1`.
-    // Preferimos una sonda que no arranca a una que le pega a un slug
-    // inventado y reporta un aborto que es nuestro.
-    model: slug('RUTA_OR', ARENA_OPENROUTER_CLAUDE_MODEL),
-    persona: 'Claude PM',
-    slug_verified: false,
-    // `sampling: false` IGUAL que el brazo directo: Fable rechaza `temperature`
-    // con 400, y mandarla solo por este brazo haría que los dos difirieran en
-    // algo más que la ruta — y encima produciría un aborto que sería nuestro.
-    caps: { sampling: false, effort: 'openrouter', cache: null },
-    archetype: { name: 'sonda', voice: 'No publica: es una sonda de infraestructura.' },
-    alpaca: 'PAPER', house: 'sonda', control: false, probe: true, phase: 'sonda', enabled: false,
-  },
+  // Lo que SE QUEDA de este trabajo, porque no dependía de la sonda:
+  //   · `competidores()` (abajo) y el `probe: true` que lo motivó. Destapó que
+  //     `announceSeasonOpen` comparaba contra `ARENA_AGENTS` y la apertura de
+  //     la T3 no se habría anunciado nunca. Ver B41.
+  //   · `ARENA_OPENROUTER_CLAUDE_MODEL` en `_lib/model.js`, que el lint cazó
+  //     acá y tenía razón.
+  // Si algún día hace falta reponerlos: git log de este archivo, 2026-09-25.
 
   // ── PENDIENTE T3 · EL OCTAVO AGENTE, EUROPEO ─────────────────────────
   // Mistral, `house: 'eu'`. Decidido el 2026-09-17 que entra en la T3 y NO en
