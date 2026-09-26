@@ -1,7 +1,7 @@
 # ARENA — LO QUE VIVE EN DOS CAMINOS
 
-Fecha del barrido: **2026-09-25**. Verificado LEYENDO los archivos en `main` a
-esa fecha, no de memoria. Cada fila trae archivo y línea para que el próximo
+Fecha del barrido: **2026-09-25**, ampliado el **2026-09-26** (fila 8).
+Verificado LEYENDO los archivos en `main` a esas fechas, no de memoria. Cada fila trae archivo y línea para que el próximo
 que lo lea pueda desmentirme en treinta segundos.
 
 ## Por qué existe este doc
@@ -181,7 +181,31 @@ apuntan ahí. **No** se reusó `activeAgents()`: contesta otra pregunta —"qui�
 corre hoy", que cambia con `ARENA_LEAGUE` y con `enabled`. Un agente sacado un
 día sigue siendo competidor; una sonda apagada nunca lo fue.
 
-## 8. Lo que está en dos lugares A PROPÓSITO
+## 8. El presupuesto de herramientas — EL ESTIMADOR NO LEE EL MOTOR
+
+Encontrado el 2026-09-26 costeando la sonda de ruta, o sea: buscando otra cosa.
+
+| | valor | dónde |
+|---|---:|---|
+| lo que el motor permite | **20** | `TOOL_BUDGET.fixed_round`, `_lib/arena-tools.js:67` |
+| lo que el estimador asume | **8** | `roundTools = 8`, `_lib/arena-watch.js:691` |
+| lo que se publica como supuesto | **8** | `tools_per_fixed_round: 8`, `_lib/arena-watch.js:755` |
+
+El 8 está escrito a mano y no lee `TOOL_BUDGET`. Consecuencia: si alguien sube
+`ARENA_TOOLS_MAX` en Vercel, el motor gasta más y el "peor caso" publicado no
+se mueve un centavo. Y el breaker de B9 se compara contra ese número.
+
+**Mitigante real, y hay que decirlo antes que la queja:** el reloj del loop son
+185s (`relojDisponible({scanMs: 0})`), y a ~20s por vuelta no entran 20
+herramientas — entran 8 o 9. O sea que el 8 hoy da un número *empíricamente*
+razonable. Pero lo da por casualidad: nadie derivó el 8 del reloj, y el día que
+el reloj o el precio se muevan, el estimador seguirá diciendo 8.
+
+> **Costo:** bajo. O el estimador lee `TOOL_BUDGET`, o el 8 se deriva del reloj
+> con el comentario que lo explique. Lo que no puede quedar es un 8 sin
+> procedencia.
+
+## 9. Lo que está en dos lugares A PROPÓSITO
 
 Un inventario que no dice esto invita a "unificar" algo que se separó por una
 razón.
@@ -213,6 +237,7 @@ Del más barato al más caro, y del más silencioso al más ruidoso:
 | 5 | `side: 'sell'` a mano | **una línea** | una cobertura de la red sin P&L en pantalla |
 | 4 | `referencia`/`reference` | medio | el lector ya paga con un `??`; el próximo campo nuevo repite el patrón |
 | 6 | `buildPositionMeta` ausente | medio | el camino vivo decide sin edad de posición ni trailing |
+| 8 | el estimador asume 8 herramientas, el motor permite 20 | bajo | el peor caso publicado no se mueve si sube `ARENA_TOOLS_MAX`; el breaker se compara contra él |
 | 7 | `ARENA_AGENTS` = la liga | hecho | — |
 
 Lo que NO está en esta tabla porque ya se arregló esta semana: el
@@ -220,4 +245,6 @@ Lo que NO está en esta tabla porque ya se arregló esta semana: el
 compartidos por los dos caminos), el ladder del stop, el pareo de fills y los
 cortos de salida.
 
-La norma que sale de todo esto está en `docs/arena.md` → **B41**.
+La norma que sale de todo esto está en `docs/arena.md` → **B41**, con la
+prueba que decide si estás mirando una regla o dos, y la regla de operación:
+cuando entre al registry el próximo agente que no compita, se vuelve a barrer.

@@ -762,6 +762,52 @@ La prueba es lo que convierte la norma en algo que se rompe ruidosamente.
 no es refactorizar. Lo que ya está duplicado se anota con su costo y se arregla
 cuando se lo toca; lo que se escribe de hoy en adelante nace compartido.
 
+### LA PRUEBA QUE DECIDE
+
+Antes de aplicar la norma hay que contestar si estás mirando UNA regla o DOS.
+Ésta es la pregunta, y no hay otra:
+
+> **Si las dos versiones tuvieran que cambiar juntas ante el mismo hecho del
+> mundo, es UNA regla. Si pueden cambiar por separado y seguir siendo
+> correctas, son DOS.**
+
+El hecho del mundo es el árbitro, no el parecido del código. Dos funciones
+pueden tener el cuerpo idéntico y ser dos reglas; dos funciones que no se
+parecen en nada pueden ser una.
+
+**Una regla, aunque el código difiera.** La aritmética del límite marketable
+(`limiteMarketable` / `riskExitLimit`). Si Alpaca cambiara cómo redondea los
+centavos, las dos tendrían que cambiar el mismo día o una quedaría mal. Es una.
+Que una use banda 0.5% y la otra 12% no las separa: el número es un argumento,
+la regla es la fórmula.
+
+**Dos reglas, aunque el código se parezca.** La referencia de precio. La red
+determinista usa el último cierre COMPLETO; el objetivo usa el snapshot vivo.
+Si mañana decidiéramos que el rebalanceo se precie con otra cosa, el stop NO
+tendría que cambiar — y seguiría siendo correcto. Son dos, y unificarlas
+rompería un stop que hoy no se dispara con el ruido intradía.
+
+### COMPARTIR LA REGLA NO ES FUSIONAR CONCEPTOS
+
+El error simétrico, y el más fácil de cometer justo después de leer la norma:
+ver dos funciones que dan casi el mismo resultado y hacer una sola.
+
+El ejemplo es de hoy. Al arreglar el sexto caso había dos candidatas obvias
+para ser "la lista de agentes":
+
+| | contesta | cambia con |
+|---|---|---|
+| `competidores()` | quién está INSCRIPTO en la temporada | quién se anota — un hecho de la liga |
+| `activeAgents()` | quién CORRE hoy | `ARENA_LEAGUE`, las banderas `enabled` — un hecho de la operación |
+
+Pasan la prueba como DOS: un agente recortado por `ARENA_LEAGUE` un martes
+sigue inscripto, y las dos respuestas siguen siendo correctas. Una sonda
+apagada nunca estuvo inscripta. Fusionarlas habría dado la misma bifurcación
+con otra ropa — y habría vuelto a romper la apertura de temporada, esta vez
+con una función compartida encima para que pareciera resuelto.
+
+Una función que contesta dos preguntas no es reuso. Es un bug con buena prensa.
+
 ### Por qué es norma y no reacción
 
 Cinco bugs en una semana, uno por día, con la misma forma:
@@ -780,9 +826,35 @@ el de la **red determinista de riesgo**— comparten la mitad de sus reglas por
 copia en vez de por referencia. Un arreglo entra por un camino y el otro sigue
 con la versión vieja hasta que produce una factura.
 
-El quinto lo produjo el barrido mismo, el mismo día que se escribió la norma.
-Eso no debilita la norma: es la prueba de que el patrón sigue vivo cuando uno
-ya lo está buscando.
+### LO DESTAPÓ AGREGAR, NO FALLAR
+
+El quinto caso pagó el barrido entero, y hay que decir CÓMO apareció, porque de
+ahí sale una regla de operación.
+
+No lo destapó una falla. Lo destapó **meter al registry algo que no competía**.
+Nada estaba roto el 24 de septiembre: los siete corrían, las pruebas estaban en
+verde y `announceSeasonOpen` funcionaba. Bastó agregar tres sondas para que
+`activeAgents().length < ARENA_AGENTS.length` pasara a ser 7 < 10 y la apertura
+de la T3 dejara de anunciarse. Como el id es idempotente y la T2 ya está
+sellada, **no lo habríamos visto hasta noviembre**, el día que la temporada
+arrancara en silencio.
+
+Lo que estaba mal no era el código: era una equivalencia tácita —"toda entrada
+del registry es un competidor"— que ningún archivo declaraba y de la que
+dependían cinco pruebas y una guarda de producción. Una suposición así no falla
+mientras nadie la contradiga. Es invisible por construcción.
+
+> **REGLA DE OPERACIÓN: cuando entre al registry el próximo agente que NO
+> compita** —otra sonda, un observador, un benchmark— **se vuelve a barrer
+> `ARENA_AGENTS` antes de darlo por hecho.** No porque el código esté sospechado,
+> sino porque agregar la primera excepción a una categoría es el único momento
+> en que las suposiciones tácitas sobre esa categoría se vuelven visibles. Cinco
+> pruebas rotas de un saque es barato; una temporada que arranca sin anunciarse
+> no.
+
+Y vale al revés también: el barrido salió bien porque se hizo el día que se
+agregó algo, no el día que algo se rompió. **Un cambio que ensancha una
+categoría es una oportunidad de auditoría, no solo un diff.**
 
 ### El modelo a copiar
 
@@ -804,15 +876,11 @@ fusionar conceptos.
 
 ### Lo que la norma NO dice
 
-No dice que dos cosas parecidas tengan que unificarse. La red determinista
-precia con el último cierre completo y el objetivo con el snapshot vivo; un
-stop preciado con el tick de ahora se dispararía con ruido intradía. Esa
-diferencia es una decisión, no una divergencia, y el inventario la lista
-aparte para que nadie la "arregle".
-
-El criterio: si las dos versiones tuvieran que cambiar juntas ante el mismo
-hecho del mundo, es UNA regla. Si pueden cambiar por separado y seguir siendo
-correctas, son dos.
+No dice que dos cosas parecidas tengan que unificarse. Para eso está la prueba
+de arriba, y el inventario lista aparte lo que está duplicado A PROPÓSITO —la
+referencia de precio del stop contra la del rebalanceo, las bandas, el orden
+anti-herding— justamente para que nadie lo "arregle" leyendo esta entrada a
+medias.
 
 ### El inventario
 
