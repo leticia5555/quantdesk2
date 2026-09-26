@@ -62,10 +62,13 @@ const PRESUPUESTO_MS = (() => {
 const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 
-import { auditaCapUs, razonAdr, referenciaVigente, TOLERANCIA_RAZON_PCT } from './_lib/mercado-cap-us.js';
+import {
+  auditaCapUs, razonAdr, referenciaVigente, TOLERANCIA_RAZON_PCT,
+  filaVeredictoCapUs, cierreHasta, veredictoCapUs,
+} from './_lib/mercado-cap-us.js';
 import REFERENCIAS_CAP_US from './_lib/mercado-cap-us-referencia.json' with { type: 'json' };
 import {
-  accionesDeCompanyConcept, mapaCik, rutaCompanyConcept, UMBRAL_EDGAR_PCT,
+  accionesDeCompanyConcept, mapaCik, rutaCompanyConcept, UMBRAL_EDGAR_PCT, candidatosParaEdgar,
 } from './_lib/mercado-edgar.js';
 
 export const SCHEMA_UNIVERSO_US = [
@@ -717,31 +720,88 @@ async function jobGfnorte() {
  * poder mirar el bosque —cuántos, de qué moneda, cuáles mienten más— en vez
  * de descubrirlos de a uno en la pantalla del teléfono.
  */
-async function jobAuditoriaCap() {
-  await ensureSchema();
+
+// ═══════════════════════════════════════════════════════════════════
+// LOS INSUMOS DEL VEREDICTO, LEÍDOS UNA VEZ
+//
+// El 2026-09-25 la auditoría dijo 279/26 y el mapa 281/24 sobre la misma base.
+// La causa no fue el veredicto —es el mismo `veredictoCapUs` en los tres
+// lados— sino la FILA que se le pasa: el mapa le daba las referencias de ADR y
+// los jobs no, así que TSM y VALE salían grises "viene en TWD/BRL" de un lado y
+// verificadas del otro.
+//
+// Acá se leen los insumos y se arman las filas con el MISMO adaptador que usa el
+// mapa. Si mañana entra una cuarta fuente, entra en el adaptador y la ven los
+// tres.
+// ═══════════════════════════════════════════════════════════════════
+async function insumosCapUs({ ahora, soloConSector = false }) {
+  const refs = new Map(
+    (REFERENCIAS_CAP_US.referencias || []).map((r) => [String(r.clave).toUpperCase(), r]),
+  );
+
   const filas = await sql(
     `with ultimo as (
-       select distinct on (symbol) symbol, cierre
+       select distinct on (symbol) symbol, cierre, fecha
          from mercado_precios_us
         order by symbol, fecha desc
      )
-     select u.symbol, u.nombre, u.sector_etf, u.market_cap, u.cap_moneda,
-            u.acciones_millones, p.cierre as precio_usd
+     select u.symbol, u.nombre, u.industria, u.sector_etf, u.market_cap, u.cap_fuente, u.cap_moneda,
+            u.acciones_millones, u.acciones_edgar_millones, u.acciones_edgar_portada::text as acciones_edgar_portada,
+            p.cierre as precio_usd, p.fecha::text as fecha_precio
        from mercado_universo_us u
        left join ultimo p using (symbol)
-      where u.market_cap is not null`);
+      where u.market_cap is not null
+        ${soloConSector ? 'and u.sector_etf is not null' : ''}`);
 
-  const a = auditaCapUs(filas.map((f) => ({
-    symbol: f.symbol,
-    declarada: num(f.market_cap) != null ? num(f.market_cap) / 1e6 : null,
-    moneda: f.cap_moneda,
-    acciones: num(f.acciones_millones),
-    precio_usd: num(f.precio_usd),
-  })));
+  // Los cierres del día de cada captura, para despejar la razón del ADR contra
+  // el dato de SU fecha (la regla de #248). Acotado a los símbolos con
+  // referencia y a una ventana corta antes de la captura más nueva.
+  const claves = [...refs.keys()];
+  const capturas = claves.map((k) => String((refs.get(k) || {}).capturada_en || '')).filter(Boolean).sort();
+  const preciosRef = new Map();
+  if (claves.length && capturas.length) {
+    const hasta = capturas[capturas.length - 1];
+    const rows = await sql(
+      `select symbol, fecha::text as fecha, cierre
+         from mercado_precios_us
+        where symbol = any($1::text[])
+          and fecha <= $2::date and fecha >= ($2::date - interval '45 days')`,
+      [claves, hasta]);
+    for (const r of rows) {
+      if (!preciosRef.has(r.symbol)) preciosRef.set(r.symbol, []);
+      preciosRef.get(r.symbol).push(r);
+    }
+  }
 
-  // Cuántos NO se pueden ni auditar todavía, que es distinto de cuántos
-  // fallan: si la cosecha aún no repobló `cap_moneda`, el número grande de
-  // grises dice "falta correr ?job=universo", no "hay 300 ADRs rotos".
+  const entradas = filas.map((f) => {
+    const ref = refs.get(f.symbol) || null;
+    const enCaptura = ref ? cierreHasta(preciosRef.get(f.symbol) || [], ref.capturada_en) : null;
+    return filaVeredictoCapUs(f, {
+      precio_usd: num(f.precio_usd),
+      precio_captura: enCaptura ? enCaptura.cierre : null,
+      referencias: refs,
+      hoy: ahora,
+    });
+  });
+
+  return { filas, entradas, refs, preciosRef, porSymbol: new Map(filas.map((f) => [f.symbol, f])) };
+}
+
+async function jobAuditoriaCap({ ahora } = {}) {
+  await ensureSchema();
+  // MISMA POBLACIÓN QUE EL MAPA para los conteos de cabecera: el mapa sólo
+  // dibuja lo que tiene sector, así que contar acá las filas sin sector hacía
+  // que los dos totales no pudieran coincidir ni con el veredicto unificado.
+  // Las de afuera se reportan aparte, que es donde se ven las que no deberían
+  // estar en el universo.
+  const { filas, entradas } = await insumosCapUs({ ahora: ahora || new Date(), soloConSector: true });
+  const a = auditaCapUs(entradas);
+  const fuera = await sql(
+    `select symbol, nombre, industria, cap_fuente, cap_moneda
+       from mercado_universo_us
+      where market_cap is not null and sector_etf is null
+      order by symbol`);
+
   const sinMonedaFilas = filas.filter((f) => !f.cap_moneda);
   const sinMoneda = sinMonedaFilas.length;
   const sinAcciones = filas.filter((f) => num(f.acciones_millones) == null).length;
@@ -756,8 +816,23 @@ async function jobAuditoriaCap() {
     // un ETF que no tiene `currency`, un ADR con perfil incompleto o una fila
     // que quedó a medias. Van todos, no una muestra: si son muchos, el número
     // de al lado ya lo dice.
-    sin_moneda_symbols: sinMonedaFilas.map((f) => f.symbol).sort(),
+    // Con nombre e industria: el símbolo solo dice a quién mirar, pero no si es
+    // una empresa con el perfil a medias o algo que no debería estar en el
+    // universo. `industria: null` + `cap_fuente` cuentan esa historia.
+    sin_moneda_symbols: sinMonedaFilas
+      .map((f) => ({ symbol: f.symbol, nombre: f.nombre || null, industria: f.industria || null,
+                     sector_etf: f.sector_etf || null, cap_fuente: f.cap_fuente || null }))
+      .sort((x, y) => (x.symbol < y.symbol ? -1 : 1)),
     sin_acciones: sinAcciones,
+    // Con cap pero SIN sector: no son cuadros del mapa y por eso no entran en
+    // los conteos de arriba. Acá es donde aparece lo que quizá no debería estar
+    // en el universo (un índice, un ETF, un ticker dado de baja).
+    fuera_del_mapa: {
+      total: fuera.length,
+      simbolos: fuera.map((f) => ({ symbol: f.symbol, nombre: f.nombre || null, industria: f.industria || null,
+                                    cap_fuente: f.cap_fuente || null, cap_moneda: f.cap_moneda || null })),
+      nota: 'sin `industria` no hay `sector_etf`, y sin sector el mapa no los dibuja: revisá si corresponde sacarlos del universo',
+    },
     listo_para_auditar: sinMoneda === 0 && sinAcciones === 0,
     nota: sinMoneda || sinAcciones
       ? `faltan campos de profile2 en ${Math.max(sinMoneda, sinAcciones)} símbolos: corré ?job=universo hasta que bajen a 0 antes de leer el conteo de grises`
@@ -795,33 +870,18 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
   const headers = { 'User-Agent': ua, 'Accept-Encoding': 'gzip, deflate' };
 
   // A quién le falta: los hallazgos en USD, que son los que un conteo de
-  // acciones nuevo puede rescatar. El veredicto se calcula con el MISMO
-  // `auditaCapUs` del job de auditoría para que las dos vistas no puedan
-  // discrepar.
-  const filas = await sql(
-    `with ultimo as (
-       select distinct on (symbol) symbol, cierre
-         from mercado_precios_us
-        order by symbol, fecha desc
-     )
-     select u.symbol, u.market_cap, u.cap_moneda, u.acciones_millones,
-            u.acciones_edgar_millones, p.cierre as precio_usd
-       from mercado_universo_us u
-       left join ultimo p using (symbol)
-      where u.market_cap is not null and u.sector_etf is not null`);
+  // acciones nuevo puede rescatar. Las filas salen del MISMO adaptador que usa
+  // el mapa, así que el job ya no puede tener otra opinión sobre qué está
+  // verificado.
+  const { entradas, porSymbol } = await insumosCapUs({ ahora, soloConSector: true });
+  const veredictos = entradas.map((e) => veredictoCapUs(e));
 
-  const a = auditaCapUs(filas.map((f) => ({
-    symbol: f.symbol,
-    declarada: num(f.market_cap) != null ? num(f.market_cap) / 1e6 : null,
-    moneda: f.cap_moneda,
-    acciones: num(f.acciones_millones),
-    precio_usd: num(f.precio_usd),
-  })));
-  const porSymbol = new Map(filas.map((f) => [f.symbol, f]));
-  const candidatos = a.veredictos
-    .filter((v) => v.estado === 'gris_punteado' && v.auditable && v.moneda === 'USD')
-    .map((v) => v.symbol)
-    .filter((sym) => num((porSymbol.get(sym) || {}).acciones_edgar_millones) == null);
+  // POR QUÉ NO HAY CANDIDATOS, cuando no hay. El filtro vive en la librería para
+  // poder probarlo: acá fue donde `num(null) === 0` descartó a los 21 en
+  // silencio.
+  const { candidatos, diagnostico: diag } = candidatosParaEdgar({
+    entradas, veredictos, universoPorSymbol: porSymbol,
+  });
 
   const tope = Number.isFinite(limite) && limite > 0 ? limite : candidatos.length;
   const pendientes = candidatos.slice(0, tope);
@@ -882,6 +942,10 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
     umbral_pct: UMBRAL_EDGAR_PCT,
     nota: `el contraste con EDGAR usa su propio techo de ${UMBRAL_EDGAR_PCT}%, separado del ${CRITERIOS.g2_max_error_pct}% de G2: las acciones son de la portada del trimestre y el precio es el de hoy, así que algo de deriva es lo esperado y no un error de nadie`,
     candidatos: candidatos.length,
+    // El desglose viaja SIEMPRE, no sólo cuando el conteo es cero: un 21 que
+    // debería ser 25 también hay que poder explicarlo.
+    diagnostico: diag,
+    simbolos_candidatos: candidatos.slice(0, 30),
     intentados: pendientes.length,
     escritos: escrituras.length,
     cuenta,
@@ -950,18 +1014,41 @@ async function jobRazonAdr({ ahora, manual }) {
       where u.symbol = any($1::text[])`,
     [[...refs.keys()]]);
 
+  // Los cierres alrededor de cada captura, para despejar la razón con el dato de
+  // SU fecha.
+  const capturas = [...refs.values()].map((r) => String(r.capturada_en || '')).filter(Boolean).sort();
+  const preciosRef = new Map();
+  if (capturas.length) {
+    const rows = await sql(
+      `select symbol, fecha::text as fecha, cierre
+         from mercado_precios_us
+        where symbol = any($1::text[])
+          and fecha <= $2::date and fecha >= ($2::date - interval '45 days')`,
+      [[...refs.keys()], capturas[capturas.length - 1]]);
+    for (const r of rows) {
+      if (!preciosRef.has(r.symbol)) preciosRef.set(r.symbol, []);
+      preciosRef.get(r.symbol).push(r);
+    }
+  }
+
   const detalle = filas.map((f) => {
     const ref = refs.get(f.symbol);
     const vig = referenciaVigente(ref, ahora);
+    // CONTRA EL CIERRE DE LA FECHA DE CAPTURA, no el de hoy. Con el de hoy, ASML
+    // daba razón cruda 1.023 (el mercado se movió 2.3% entre el 23 y el 25) y
+    // una emisora sana se iba a gris por el techo del 2%.
+    const enCaptura = cierreHasta(preciosRef.get(f.symbol) || [], ref.capturada_en);
     const r = razonAdr({
       cap_referencia_usd: ref.market_cap_usd,
       acciones_millones: num(f.acciones_millones),
-      precio_usd: num(f.precio_usd),
+      precio_usd: enCaptura ? enCaptura.cierre : null,
     });
     return {
       symbol: f.symbol,
       moneda_declarada: f.cap_moneda || null,
       fecha_precio: f.fecha_precio || null,
+      fecha_cierre_usado: enCaptura ? enCaptura.fecha : null,
+      cierre_usado: enCaptura ? enCaptura.cierre : null,
       vigente: vig.vigente === true,
       vigente_hasta: ref.vigente_hasta || null,
       razon_cruda: r.crudo != null ? Number(r.crudo.toFixed(4)) : null,
@@ -1023,7 +1110,7 @@ export default async function handler(req, res) {
 
   try {
     let out;
-    if (job === 'auditoria-cap') out = await jobAuditoriaCap();
+    if (job === 'auditoria-cap') out = await jobAuditoriaCap({ ahora });
     else if (job === 'acciones-edgar') out = await jobAccionesEdgar({ ahora, t0, limite: Number(q.limite) || null });
     else if (job === 'razon-adr') out = await jobRazonAdr({ ahora, manual });
     else if (job === 'universo') out = await jobUniverso({ ahora, dry, finnhubKey: process.env.FINNHUB_API_KEY, t0 });

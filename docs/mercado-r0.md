@@ -1205,3 +1205,65 @@ de ratio, una captura mal leída— y el tamaño deja de estar sostenido.
 agente con contacto real y bloquea sin él. Si falta, el job no manda nada y lo
 dice — inventar un agente es pedirle a otro que confíe en un dato que nosotros
 mismos falsificamos, y encima se bloquea la IP para todos.
+
+---
+
+## 9. R0(h) — tres fallas de la corrida del 2026-09-25
+
+### 9.1 La razón del ADR se despejaba contra el precio de hoy
+
+ASML: razón cruda **1.023** usando el cierre del 25 contra una cap de Yahoo
+capturada el **23**. El 2.3% que el mercado se movió entre las dos fechas entraba
+dentro de un número que debería ser estructural, y el techo del 2% mandaba a
+gris una emisora sana.
+
+Es la regla de #248: **una referencia se contrasta con el dato de SU fecha.**
+Ahora la razón se despeja con el último cierre **≤ `capturada_en`**
+(`cierreHasta`), y es el cierre **sin ajustar** —el que Yahoo usó— porque el
+ajustado se reescribe hacia atrás con cada split y haría que la razón cambiara
+sola meses después. Si ese cierre no está, **gris con la causa**: nunca el precio
+de hoy como sustituto silencioso.
+
+El tamaño que se pinta sigue usando el cierre de **hoy**. Son dos preguntas
+distintas: la razón es estructural, el tamaño sigue al mercado.
+
+### 9.2 `candidatos: 0` con 21 hallazgos — `num(null)` es `0`
+
+El filtro de candidatos preguntaba:
+
+```js
+num(fila.acciones_edgar_millones) == null     // ← nunca es true
+```
+
+y `num(null)` devuelve **`0`**, no `null`, porque `Number(null) === 0`. Las 21
+filas con la columna vacía se descartaban **como si ya tuvieran** su conteo de
+EDGAR. La pregunta correcta es si hay un conteo **positivo**: `> 0`.
+
+El mismo tropiezo estaba en el guardia del cierre de captura, y por eso ahora
+`candidatosParaEdgar` vive en la librería con pruebas, y **cada descarte se
+cuenta por su causa** (`diagnostico: { sin_precio, sin_acciones, verificadas,
+no_usd, ya_con_edgar, candidatos }`). Un cero sin desglose no se puede depurar
+sin volver a correrlo a ciegas.
+
+### 9.3 El job y el mapa contaban distinto — 279/26 vs 281/24
+
+El veredicto era el mismo `veredictoCapUs` en los dos lados. Lo que difería era
+**la fila** que cada uno le armaba a mano: el mapa le pasaba las referencias de
+ADR y los jobs no, así que TSM y VALE salían grises "la cap viene en TWD/BRL" en
+el job y verificadas en el mapa. Tercera vez que dos vistas opinan distinto sobre
+qué está verificado (#241, #245).
+
+Dos arreglos estructurales, no dos recordatorios:
+
+1. **`filaVeredictoCapUs`** — un solo sitio arma la fila (declarada, moneda,
+   acciones, precio, precio de captura, referencia, EDGAR). Los tres llamadores
+   la usan. Si entra una cuarta fuente, entra ahí y la ven todos.
+2. **Misma población.** La auditoría contaba filas con cap pero **sin sector**,
+   que el mapa nunca dibuja: con eso los totales no podían coincidir ni con el
+   veredicto unificado. Ahora los conteos de cabecera usan el mismo filtro que el
+   mapa y las de afuera van en `fuera_del_mapa`, que es donde se ve lo que quizá
+   no debería estar en el universo.
+
+`tests/mercado-cap-coherencia.test.mjs` es el candado: compara los conteos y el
+veredicto símbolo por símbolo de los dos caminos. Verificado devolviéndole el bug
+al mapa —quitarle las referencias— y las tres sub-pruebas se ponen rojas.

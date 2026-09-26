@@ -110,7 +110,7 @@ test('la auditoría cuenta, agrupa por moneda y ordena por el que más miente', 
 // que el mapa dibuja es `acciones ÷ razón × nuestro cierre`, así que el cuadro
 // sigue al mercado en vez de quedarse clavado en la fecha de captura.
 // ═══════════════════════════════════════════════════════════════════════
-import { razonAdr, referenciaVigente, vigenciaReferenciasUs, MILLON } from '../api/_lib/mercado-cap-us.js';
+import { razonAdr, referenciaVigente, vigenciaReferenciasUs, cierreHasta, filaVeredictoCapUs, MILLON } from '../api/_lib/mercado-cap-us.js';
 
 // Un ADR de 5 ordinarias por ADR: 5,190M ordinarias, ADR a 200 USD, y una
 // referencia que dice que la empresa vale 5,190M/5 × 200.
@@ -142,7 +142,7 @@ test('una razón que no se parece a ninguna proporción NO se fuerza a la más c
 test('con referencia vigente la cap pintada es NUESTRO cálculo, no la referencia', () => {
   const v = veredictoCapUs({
     symbol: 'TSM', moneda: 'TWD', declarada: 32_000_000, ...TSM,
-    referencia: REF_TSM, hoy: HOY,
+    precio_captura: TSM.precio_usd, referencia: REF_TSM, hoy: HOY,
   });
   assert.equal(v.estado, 'verificada');
   assert.equal(v.cap_usd, (TSM.acciones * MILLON * TSM.precio_usd) / 5);
@@ -161,6 +161,7 @@ test('con referencia vigente la cap pintada es NUESTRO cálculo, no la referenci
 test('una referencia vencida SIGUE dibujando el cuadro, y se anota para recapturar', () => {
   const v = veredictoCapUs({
     symbol: 'TSM', moneda: 'TWD', declarada: 32_000_000, ...TSM,
+    precio_captura: TSM.precio_usd,
     referencia: { ...REF_TSM, vigente_hasta: '2026-06-30' }, hoy: HOY,
   });
   assert.equal(v.estado, 'verificada', 'el cuadro no se apaga por el calendario');
@@ -175,6 +176,7 @@ test('lo único que pone gris es que la razón deje de parecerse a una proporci�
   // algo de verdad y el tamaño deja de estar sostenido.
   const v = veredictoCapUs({
     symbol: 'TSM', moneda: 'TWD', declarada: 32_000_000, ...TSM,
+    precio_captura: TSM.precio_usd,
     referencia: { ...REF_TSM, market_cap_usd: REF_TSM.market_cap_usd / 1.13 }, hoy: HOY,
   });
   assert.equal(v.estado, 'gris_punteado');
@@ -237,4 +239,56 @@ test('si EDGAR tampoco cuadra, gris con las DOS causas', () => {
   assert.equal(v.cap_usd, null);
   assert.match(v.motivo, /techo propio 10%/);
   assert.match(v.motivo, /contra Finnhub/);
+});
+
+// ── LA RAZÓN SE DESPEJA CON EL CIERRE DE SU FECHA ──────────────────────
+// El caso ASML del 2026-09-25: la cap de Yahoo es del 23 y el job la contrastó
+// con el cierre del 25. Razón cruda 1.023 → falla el techo del 2% y una emisora
+// sana se va a gris. Misma regla de #248: la referencia se contrasta con el dato
+// de SU fecha.
+test('la razón usa el cierre del día de la captura, no el de hoy', () => {
+  const acciones = 400;              // millones
+  const pxCaptura = 1000;            // cierre del 2026-09-23
+  const pxHoy = 1023;                // +2.3% al 2026-09-25
+  const ref = {
+    clave: 'ASML', market_cap_usd: acciones * MILLON * pxCaptura, // razón exacta 1:1
+    fuente: 'yahoo-finance-market-cap-intraday', capturada_en: '2026-09-23', vigente_hasta: '2026-09-30',
+  };
+
+  const bien = veredictoCapUs({
+    symbol: 'ASML', moneda: 'EUR', declarada: 500_000, acciones,
+    precio_usd: pxHoy, precio_captura: pxCaptura, referencia: ref, hoy: HOY,
+  });
+  assert.equal(bien.estado, 'verificada');
+  assert.equal(bien.razon_adr, 1, 'resuelve 1:1');
+  // Y el tamaño que se pinta sigue el mercado: usa el cierre de HOY.
+  assert.equal(bien.cap_usd, acciones * MILLON * pxHoy);
+
+  // Con el precio de hoy como si fuera el de la captura, la razón cruda se va a
+  // 1.023 y la emisora cae a gris: el bug que esto arregla.
+  const mal = razonAdr({ cap_referencia_usd: ref.market_cap_usd, acciones_millones: acciones, precio_usd: pxHoy });
+  assert.equal(mal.ok, false);
+  assert.ok(Math.abs(mal.error_pct - 2.3) < 0.1, `error ${mal.error_pct}`);
+});
+
+test('sin el cierre de la fecha de captura NO se sustituye por el de hoy: gris con causa', () => {
+  const v = veredictoCapUs({
+    symbol: 'TSM', moneda: 'TWD', declarada: 32_000_000, ...TSM,
+    precio_captura: null, referencia: REF_TSM, hoy: HOY,
+  });
+  assert.equal(v.estado, 'gris_punteado');
+  assert.equal(v.cap_usd, null);
+  assert.match(v.motivo, /cierre del 2026-09-23/);
+});
+
+test('cierreHasta toma el último cierre en o antes de la fecha, nunca uno posterior', () => {
+  const filas = [
+    { fecha: '2026-09-21', cierre: 10 },
+    { fecha: '2026-09-23', cierre: 12 },
+    { fecha: '2026-09-25', cierre: 99 },
+  ];
+  assert.deepEqual(cierreHasta(filas, '2026-09-23'), { fecha: '2026-09-23', cierre: 12 });
+  // Sábado: cae al viernes, no al lunes siguiente.
+  assert.deepEqual(cierreHasta(filas, '2026-09-24'), { fecha: '2026-09-23', cierre: 12 });
+  assert.equal(cierreHasta(filas, '2026-09-20'), null);
 });
