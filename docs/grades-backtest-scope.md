@@ -56,11 +56,30 @@ que esté en Production no la pone en Preview. Sin key, la respuesta dice
    contestó y dijo por qué". Hay test.
 2. **Los primeros bytes SIEMPRE**, salga bien o mal: es donde FMP explica.
 
-Y una propia: el `limit` va **alto a propósito** (1000). La Fase 0 tiene que
-MEDIR hasta dónde llega la historia, y un límite bajo contestaría la pregunta
-con el límite — es la cicatriz del `limit=5` del censo de Polymarket, que
-disfrazó un tope propio de un hallazgo sobre la fuente. Si alguna serie toca el
-límite, se avisa (`alguno_en_el_tope_del_limit`) en vez de concluir.
+### EL HALLAZGO CONTRAINTUITIVO: no se manda `limit`
+
+**Medido, no supuesto:**
+
+| Llamada | Resultado |
+|---|---|
+| `&limit=1000` | **HTTP 402** — el plan acepta `limit` solo entre **0 y 10** |
+| `&limit=10` | **10 meses** |
+| **sin `limit`** | **88 meses** (2019-01 → 2026-09) |
+
+El parámetro que existe para "traer más" es el que **RECORTA**: pedir sin él da
+**8.8× más historia** que pedir el máximo que el plan acepta.
+
+Esto se olvida fácil y se "arregla" fácil en la dirección equivocada — alguien ve
+poca historia y **sube** el `limit`, que es exactamente lo que provoca el 402. Por
+eso: `LIMIT_POR_DEFECTO = null`, el censo **declara** en su respuesta que no envió
+límite (`limite_enviado: null` + `nota_limite`), y hay test de que **ninguna URL
+del censo lleva `limit`**.
+
+La versión anterior de este documento decía que el `limit` iba "alto a propósito
+para medir la historia". Era al revés: cualquier `limit` la recorta, y uno alto
+hace que FMP rechace la llamada. La cicatriz del `limit=5` de Polymarket sigue
+valiendo — no dejar que un parámetro propio conteste la pregunta — pero acá la
+forma de cumplirla es **no mandar el parámetro**, no subirlo.
 
 ---
 
@@ -215,7 +234,8 @@ curl -s -H "Authorization: Bearer $CRON_SECRET" \
 #   &eventos=1     detalle evento por evento
 ```
 
-**CUOTA:** una corrida completa son ~1 request a FMP **por símbolo con eventos**.
+**CUOTA:** una corrida completa son ~1 request a FMP **por símbolo con eventos**
+(sin `limit`, un request trae los ~88 meses; no hay que paginar).
 El plan gratis de FMP suele cortar por DÍA, así que conviene empezar con
 `?simbolos=20` y leer `cuota_gastada_requests` antes de correr el censo entero.
 
@@ -289,15 +309,66 @@ queda marcada como "sin datos" por una cuota y no por la fuente.
 
 ---
 
+## CICATRIZ: escribí un diagnóstico falso con forma de certeza
+
+El smoke funcionó y dijo `limit_rechazado`. Pero la clasificación del 402 estaba
+mal, y el texto que imprimía era **falso**:
+
+> `HTTP 402: el plan de la key no cubre este endpoint.`
+
+El 402 venía de `limit=1000`, y el cuerpo de FMP lo decía con todas las letras
+(*"Limit must be between 0 and 10"*). Mi frase habría mandado a **rotar la
+llave** — a arreglar algo que no estaba roto, en el único lugar donde un error
+cuesta caro. La key estaba bien: presente, 32 chars, production.
+
+El error de fondo no fue clasificar mal un status: fue **escribir una causa
+concreta que el dato no sostenía**. Un `http_error` mudo te deja sin información;
+una causa inventada te da información falsa, y eso es peor.
+
+Cómo queda:
+
+| Status | Motivo | Quién decide |
+|---|---|---|
+| 401 · 403 | `auth_error` | el status. Se arregla en las env vars, no en el código. |
+| 402 **y el cuerpo nombra un parámetro** | `parametro_fuera_de_rango` | **el cuerpo**. Publica el parámetro y el rango extraídos del mensaje, y el detalle dice *"NO es un problema de plan. No se toca la key."* |
+| 402 **y el cuerpo no nombra ninguno** | `pago_requerido` | nadie: el detalle dice *"Puede ser el plan, pero NO se afirma"*, y el cuerpo va completo. |
+
+`mencionaParametro` es pura y testeada: exige el **nombre** de un parámetro
+conocido (`limit`, `symbol`, `from`, `to`, `page`, `period`, `datatype`), excluye
+cualquier mención a la api key para no confundir un rechazo de credencial, y
+extrae el rango cuando el mensaje lo trae (`between 0 and 10`, `Max is 10`).
+
+### Y un aviso fantasma en la misma corrida
+
+El smoke marcó *"sin_limit … tocó el límite"*. No tocó nada: son los 88 meses que
+hay. El bug era una coerción:
+
+```js
+posible_tope: j.length >= limit    // con limit = null → 88 >= 0 → true
+```
+
+`null` se vuelve `0`, así que **toda** respuesta sin límite salía marcada como
+truncada — y el aviso contradecía al dato que estaba al lado. Ahora
+`posible_tope` solo puede ser `true` si **se envió** un límite y la respuesta lo
+alcanzó, y `limite_enviado` va publicado para que el aviso sea auditable. La
+variante con `limit=10` que devuelve 10 filas **sí** lo tocó: ahí el aviso es
+correcto, y hay test de las dos mitades.
+
+---
+
 ## EL SMOKE DE FRONTERA (`?smoke=NKE`)
 
 Tres requests, sin tocar Neon, y contesta las tres preguntas juntas:
 
 | Variante | URL | Para qué |
 |---|---|---|
-| `limit_alto` | `&limit=1000` | lo que hace el censo hoy |
-| `limit_chico` | `&limit=10` | un limit que cualquier plan acepta |
-| `sin_limit` | sin el parámetro | descarta al parámetro como causa |
+| `sin_limit` | sin el parámetro | **el defecto del censo** — la que trae toda la historia |
+| `limit_chico` | `&limit=10` | el máximo que el plan acepta: **recorta** |
+| `limit_alto` | `&limit=1000` | provoca el 402 a propósito, para que el cuerpo diga el rango |
+
+La `lectura` publica el **contraste de meses medido** (88 contra 10 = 8.8×) en vez
+de que haya que deducirlo de la tabla, y cuando no hay dos variantes comparables
+**no inventa el múltiplo**.
 
 De cada una: `url_sin_key`, status, `content_type`, `longitud_cuerpo` y **los
 primeros 500 bytes del cuerpo, salga bien o mal**. Más la `url_de_referencia`

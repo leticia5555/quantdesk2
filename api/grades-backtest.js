@@ -32,7 +32,9 @@
 import { sql } from './_lib/db.js';
 import { V0_UNIVERSE } from './_lib/pead-universe.js';
 import { createHash } from 'node:crypto';
-import { gradesHistorical, interpretaSmoke, LIMIT_ALTO } from './_lib/fmp-grades.js';
+import {
+  gradesHistorical, interpretaSmoke, LIMIT_SMOKE_ALTO, LIMIT_MAXIMO_DEL_PLAN, LIMIT_POR_DEFECTO,
+} from './_lib/fmp-grades.js';
 import {
   CRITERIOS_GRADES, seleccionaVentana, analizaGrades, renderGradesMd, ADVERTENCIA,
 } from './_lib/grades-backtest.js';
@@ -63,9 +65,9 @@ const PRESUPUESTO_MS = 240000;
 //   · ¿es la key o es el endpoint?                           → status + cuerpo
 //   · ¿es el `limit`?                                        → con y sin él
 const VARIANTES_SMOKE = [
-  { id: 'limit_alto', limit: LIMIT_ALTO, nota: 'lo que hace el censo hoy' },
-  { id: 'limit_chico', limit: 10, nota: 'un limit que cualquier plan acepta' },
-  { id: 'sin_limit', limit: null, nota: 'la URL sin el parámetro' },
+  { id: 'sin_limit', limit: null, nota: 'EL DEFECTO del censo: la URL sin el parámetro — la que trae toda la historia' },
+  { id: 'limit_chico', limit: LIMIT_MAXIMO_DEL_PLAN, nota: `el máximo que el plan acepta (${LIMIT_MAXIMO_DEL_PLAN}) — RECORTA la historia` },
+  { id: 'limit_alto', limit: LIMIT_SMOKE_ALTO, nota: 'provoca el 402 a propósito, para que el cuerpo diga el rango' },
 ];
 
 // La key NUNCA se imprime. Se publica su HUELLA: con eso se compara contra la
@@ -287,12 +289,23 @@ export default async function handler(req, res) {
         solo_lectura_en_neon: true,
         // 1. ¿Cuántos meses de historia devuelve grades-historical?
         historia: {
+          // SE DECLARA que el censo no manda `limit`. Es el hallazgo que más
+          // fácil se revierte por accidente: el parámetro que parece traer más
+          // es el que recorta.
+          limite_enviado: LIMIT_POR_DEFECTO,
+          nota_limite: LIMIT_POR_DEFECTO === null
+            ? `Sin \`limit\` a propósito: medido, sin el parámetro FMP devuelve ~88 meses y con \`limit=${LIMIT_MAXIMO_DEL_PLAN}\` (el máximo que el plan acepta) devuelve ${LIMIT_MAXIMO_DEL_PLAN}. Un \`limit\` alto no trae más: FMP contesta 402.`
+            : `⚠ El censo está mandando limit=${LIMIT_POR_DEFECTO}, y eso RECORTA la historia. Sin el parámetro son ~88 meses.`,
           simbolos_con_datos: conDatos.length,
           meses_por_simbolo: meses.length ? { min: meses[0], mediana: meses[Math.floor(meses.length / 2)], max: meses[meses.length - 1] } : null,
           mas_antiguo: conDatos.map((t) => t.desde).filter(Boolean).sort()[0] || null,
           mas_reciente: conDatos.map((t) => t.hasta).filter(Boolean).sort().pop() || null,
+          // Con `limit` nulo esto es false por construcción: sin límite no hay
+          // límite que tocar. La versión anterior calculaba `filas >= limit` con
+          // limit null, o sea `88 >= 0`, y marcaba TODA respuesta como "tocó el
+          // límite" — un aviso fantasma que además contradecía al dato.
           alguno_en_el_tope_del_limit: conDatos.some((t) => t.posible_tope),
-          nota_tope: 'Si alguno toca el `limit`, la historia puede estar cortada por el límite y no por la fuente. Es la cicatriz del `limit=5` del censo de Polymarket.',
+          nota_tope: 'Solo puede ser true si se envió un `limit` Y la respuesta lo alcanzó. Es la cicatriz del `limit=5` del censo de Polymarket, pero sin el falso positivo de antes.',
         },
         // 2. ¿Cubre los 99 símbolos del universo v0?
         cobertura: {
