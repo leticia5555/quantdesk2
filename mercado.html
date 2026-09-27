@@ -474,6 +474,15 @@
     if(c.serie_liquida) filas.push(['serie', esc(c.serie_liquida)]);
     if(c.acciones_por_unidad && c.acciones_por_unidad!==1) filas.push(['acciones por unidad', String(c.acciones_por_unidad)]);
     if(c.etiqueta) filas.push(['verificación', esc(c.etiqueta)]);
+    // EN QUÉ ESTADO ESTÁ LA CONSULTA A EDGAR. Sólo se muestra cuando no trajo
+    // conteo, que es cuando importa: el 2026-09-26 la hoja decía "EDGAR no dio
+    // acciones" de ORCL sin que EDGAR hubiera sido consultado, y eso manda a
+    // revisar la fuente en lugar del job que murió antes de preguntarle.
+    if(c.cap_edgar_estado && c.cap_edgar_estado!=='consultado_con_dato'){
+      filas.push(['consulta a EDGAR', c.cap_edgar_estado==='no_consultado'
+        ? 'pendiente' : 'hecha, y no trajo acciones']);
+    }
+    if(c.cap_portada_edgar) filas.push(['portada del 10-Q', esc(c.cap_portada_edgar)]);
     // NO es el largo de la historia: es lo que la consulta del mapa trajo
     // (los cierres recientes más el ancla de fin de año). Decir "puntos de
     // serie: 24" hacía parecer que el YTD salía de 24 días, cuando sale del

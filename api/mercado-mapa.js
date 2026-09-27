@@ -80,7 +80,8 @@ export function cacheDeRespuesta(out, status = 200) {
 export const SQL_MAPA_US = {
   universo:
       `select symbol, nombre, sector_etf, market_cap, cap_fuente, cap_actualizado, cap_moneda, acciones_millones,
-              acciones_edgar_millones, acciones_edgar_portada
+              acciones_edgar_millones, acciones_edgar_portada,
+              edgar_consultada_en, edgar_consulta_motivo
          from mercado_universo_us
         where sector_etf is not null and market_cap is not null`,
   // UNA consulta, y acotada a lo que el navegador necesita: los últimos N

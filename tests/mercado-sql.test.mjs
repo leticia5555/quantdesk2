@@ -32,7 +32,7 @@ import { join } from 'node:path';
 
 import { SQL_MAPA_US } from '../api/mercado-mapa.js';
 import { SCHEMA_PRECIOS_US } from '../api/_lib/mercado-precios.js';
-import { SCHEMA_UNIVERSO_US } from '../api/mercado-r0.js';
+import { SCHEMA_UNIVERSO_US, SQL_CAP_US } from '../api/mercado-r0.js';
 
 const PUERTO = 55433;
 
@@ -123,6 +123,16 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
     psql(`prepare precios(date, int) as ${SQL_MAPA_US.precios};`);
   });
 
+  await t.test('cada consulta de los jobs de cap PREPARA también', () => {
+    // Los jobs que Lety corre a mano no estaban cubiertos, y son los que más
+    // cambian: `?job=razon-adr` estrenó una ventana con TRES parámetros y un
+    // `$3` sin ligar sólo se habría visto como un 500 en el navegador.
+    psql(`prepare insumos_todos as ${SQL_CAP_US.insumos(false)};`);
+    psql(`prepare insumos_con_sector as ${SQL_CAP_US.insumos(true)};`);
+    psql(`prepare ventana(text[], date, date) as ${SQL_CAP_US.ventana_referencias};`);
+    psql(`prepare razon(text[]) as ${SQL_CAP_US.razon_universo};`);
+  });
+
   await t.test('con la tabla terminando el VIERNES, la consulta devuelve la serie y el ancla YTD', () => {
     // El caso del reporte: es lunes, la cosecha no guardó la barra de hoy, la
     // tabla termina el viernes. La consulta tiene que traer datos igual.
@@ -181,4 +191,26 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
     assert.ok(Number(total) <= 6 * 24, `${total} filas para 6 símbolos`);
     assert.ok(Number(total) < Number(enTabla) / 3, `${total} de ${enTabla}: la consulta acota de verdad`);
   });
+
+  await t.test('la ventana de referencias abre a los DOS lados de la captura', () => {
+    // Que PREPARE pase no alcanza: la ventana de #259 sólo miraba hacia atrás, y
+    // la pregunta "¿hay un cierre vecino que reconcilie?" necesita los dos
+    // lados. Acá se mide con filas de verdad, no leyendo el texto de la
+    // consulta. (Cada llamada a psql es una sesión nueva, así que la consulta va
+    // con literales en vez de un EXECUTE: el PREPARE de arriba ya ligó los tipos.)
+    const conFecha = (q, dia) => q
+      .replace(/\$1/g, "'{S1}'").replace(/\$2/g, `'${dia}'`).replace(/\$3/g, `'${dia}'`);
+    const fechasDe = (dia) => psql(`${conFecha(SQL_CAP_US.ventana_referencias, dia)};`)
+      .trim().split('\n').map((l) => l.split('|')[1]).filter(Boolean).sort();
+
+    // La tabla de esta prueba va del 2025-11-03 al 2026-09-18 en días hábiles.
+    const alrededorDel10 = fechasDe('2026-09-10');
+    assert.ok(alrededorDel10.length > 0, 'la ventana trajo filas');
+    assert.ok(alrededorDel10[0] < '2026-09-10', `hacia atrás: ${alrededorDel10[0]}`);
+    assert.ok(
+      alrededorDel10[alrededorDel10.length - 1] > '2026-09-10',
+      `hacia adelante: ${alrededorDel10[alrededorDel10.length - 1]}`,
+    );
+  });
+
 });

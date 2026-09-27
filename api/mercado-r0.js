@@ -64,11 +64,12 @@ const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; 
 
 import {
   auditaCapUs, razonAdr, referenciaVigente, TOLERANCIA_RAZON_PCT,
-  filaVeredictoCapUs, cierreHasta, veredictoCapUs,
+  filaVeredictoCapUs, cierreHasta, veredictoCapUs, ventanaDeCierres, razonesPorCierre,
 } from './_lib/mercado-cap-us.js';
 import REFERENCIAS_CAP_US from './_lib/mercado-cap-us-referencia.json' with { type: 'json' };
 import {
   accionesDeCompanyConcept, mapaCik, rutaCompanyConcept, UMBRAL_EDGAR_PCT, candidatosParaEdgar,
+  formaDeUnits,
 } from './_lib/mercado-edgar.js';
 
 export const SCHEMA_UNIVERSO_US = [
@@ -109,6 +110,11 @@ export const SCHEMA_UNIVERSO_US = [
   `alter table mercado_universo_us add column if not exists acciones_edgar_presentada date`,
   `alter table mercado_universo_us add column if not exists acciones_edgar_form text`,
   `alter table mercado_universo_us add column if not exists edgar_cik text`,
+  // CUÁNDO se le preguntó a EDGAR y QUÉ contestó. Sin estas dos columnas, una
+  // `acciones_edgar_millones` vacía no distingue "no se preguntó" de "se
+  // preguntó y no había", y el mapa acaba inventando la causa (#260).
+  `alter table mercado_universo_us add column if not exists edgar_consultada_en timestamptz`,
+  `alter table mercado_universo_us add column if not exists edgar_consulta_motivo text`,
   `create index if not exists mercado_universo_us_cap_idx
      on mercado_universo_us (market_cap desc nulls last)`,
   `create index if not exists mercado_universo_us_sector_idx
@@ -734,24 +740,66 @@ async function jobGfnorte() {
 // mapa. Si mañana entra una cuarta fuente, entra en el adaptador y la ven los
 // tres.
 // ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// EL SQL DE LOS JOBS DE CAP, EXPORTADO PARA QUE POSTGRES LO PARSEE EN CI
+//
+// El SQL del mapa ya se prepara contra un Postgres de verdad
+// (`tests/mercado-sql.test.mjs`) desde que un `filter` sobre `row_number()`
+// tiró el mapa en producción. El de estos jobs no estaba cubierto, y son los
+// que Lety corre a mano: un nombre de columna mal o un `$3` que nadie liga se
+// descubría con el job devolviendo 500. Exportadas, el mismo PREPARE las mide.
+// ═══════════════════════════════════════════════════════════════════════
+export const SQL_CAP_US = {
+  // El universo con su último cierre. Sin parámetros: el filtro por sector se
+  // agrega según el llamador (los conteos de cabecera usan la MISMA población
+  // que el mapa; la auditoría completa, todas).
+  insumos: (soloConSector = false) =>
+      `with ultimo as (
+         select distinct on (symbol) symbol, cierre, fecha
+           from mercado_precios_us
+          order by symbol, fecha desc
+       )
+       select u.symbol, u.nombre, u.industria, u.sector_etf, u.market_cap, u.cap_fuente, u.cap_moneda,
+              u.acciones_millones, u.acciones_edgar_millones, u.acciones_edgar_portada::text as acciones_edgar_portada,
+              u.edgar_consultada_en::text as edgar_consultada_en, u.edgar_consulta_motivo,
+              p.cierre as precio_usd, p.fecha::text as fecha_precio
+         from mercado_universo_us u
+         left join ultimo p using (symbol)
+        where u.market_cap is not null
+          ${soloConSector ? 'and u.sector_etf is not null' : ''}`,
+
+  // Los cierres alrededor de las capturas. $1 = símbolos, $2 = captura más
+  // vieja, $3 = la más nueva. La ventana se abre a los DOS lados: hacia atrás
+  // para despejar la razón contra el cierre de `capturada_en` (la regla de
+  // #248) y hacia adelante para poder CONTESTAR si el desajuste vino de haber
+  // elegido mal el día — el sello de cotización de Yahoo puede venir atrasado,
+  // como el de VALE.
+  ventana_referencias:
+      `select symbol, fecha::text as fecha, cierre
+         from mercado_precios_us
+        where symbol = any($1::text[])
+          and fecha >= ($2::date - interval '45 days')
+          and fecha <= ($3::date + interval '15 days')`,
+
+  // La fila mínima para la razón del ADR: moneda, acciones y último cierre.
+  razon_universo:
+      `with ultimo as (
+         select distinct on (symbol) symbol, fecha, cierre
+           from mercado_precios_us
+          order by symbol, fecha desc
+       )
+       select u.symbol, u.cap_moneda, u.acciones_millones, p.cierre as precio_usd, p.fecha::text as fecha_precio
+         from mercado_universo_us u
+         left join ultimo p using (symbol)
+        where u.symbol = any($1::text[])`,
+};
+
 async function insumosCapUs({ ahora, soloConSector = false }) {
   const refs = new Map(
     (REFERENCIAS_CAP_US.referencias || []).map((r) => [String(r.clave).toUpperCase(), r]),
   );
 
-  const filas = await sql(
-    `with ultimo as (
-       select distinct on (symbol) symbol, cierre, fecha
-         from mercado_precios_us
-        order by symbol, fecha desc
-     )
-     select u.symbol, u.nombre, u.industria, u.sector_etf, u.market_cap, u.cap_fuente, u.cap_moneda,
-            u.acciones_millones, u.acciones_edgar_millones, u.acciones_edgar_portada::text as acciones_edgar_portada,
-            p.cierre as precio_usd, p.fecha::text as fecha_precio
-       from mercado_universo_us u
-       left join ultimo p using (symbol)
-      where u.market_cap is not null
-        ${soloConSector ? 'and u.sector_etf is not null' : ''}`);
+  const filas = await sql(SQL_CAP_US.insumos(soloConSector));
 
   // Los cierres del día de cada captura, para despejar la razón del ADR contra
   // el dato de SU fecha (la regla de #248). Acotado a los símbolos con
@@ -760,13 +808,8 @@ async function insumosCapUs({ ahora, soloConSector = false }) {
   const capturas = claves.map((k) => String((refs.get(k) || {}).capturada_en || '')).filter(Boolean).sort();
   const preciosRef = new Map();
   if (claves.length && capturas.length) {
-    const hasta = capturas[capturas.length - 1];
-    const rows = await sql(
-      `select symbol, fecha::text as fecha, cierre
-         from mercado_precios_us
-        where symbol = any($1::text[])
-          and fecha <= $2::date and fecha >= ($2::date - interval '45 days')`,
-      [claves, hasta]);
+    const rows = await sql(SQL_CAP_US.ventana_referencias,
+      [claves, capturas[0], capturas[capturas.length - 1]]);
     for (const r of rows) {
       if (!preciosRef.has(r.symbol)) preciosRef.set(r.symbol, []);
       preciosRef.get(r.symbol).push(r);
@@ -887,7 +930,7 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
   const pendientes = candidatos.slice(0, tope);
 
   // El mapa ticker→CIK: un archivo, una vez.
-  const cuenta = { ok: 0, sin_cik: 0, sin_dato: 0, red: 0, rate_429: 0 };
+  const cuenta = { ok: 0, sin_cik: 0, sin_dato: 0, red: 0, rate_429: 0, excepcion: 0 };
   const sinCik = [], resultados = [];
   if (!CIKS) {
     const r = await json('https://www.sec.gov/files/company_tickers.json', 20000, headers);
@@ -913,27 +956,80 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
   }
 
   const escrituras = [];
+  const fallas = [];
+
+  // LA CONSULTA SE REGISTRA AUNQUE NO TRAIGA NÚMERO. Es la única manera de que
+  // el mapa pueda decir "EDGAR consultado el X y no dio acciones" en vez de
+  // "EDGAR no dio acciones" —que es lo que decía de ORCL, MNST y APH sin que
+  // nadie le hubiera preguntado nada (#260)—, o "pendiente de consulta"
+  // mientras de verdad esté pendiente.
+  const registroConsulta = (sym, motivo, cik = null) => [
+    `update mercado_universo_us
+        set edgar_consultada_en = now(), edgar_consulta_motivo = $2,
+            edgar_cik = coalesce($3, edgar_cik)
+      where symbol = $1`,
+    [sym, motivo, cik],
+  ];
+
   for (const sym of pendientes) {
     const cik = CIKS.get(sym);
-    if (!cik) { cuenta.sin_cik++; sinCik.push(sym); continue; }
+    if (!cik) {
+      cuenta.sin_cik++; sinCik.push(sym);
+      // No tener CIK ES una respuesta: se buscó en el índice de la SEC y no
+      // está. Queda registrada, o el cuadro dice "pendiente" para siempre.
+      escrituras.push(registroConsulta(sym, 'sin CIK en el índice de la SEC (suele ser un ADR que presenta 20-F, o un instrumento que no presenta)'));
+      continue;
+    }
     if (!(await ranura())) break;
-    const r = await json(rutaCompanyConcept(cik), 15000, headers);
-    if (r.status === 429) { cuenta.rate_429++; continue; }
-    if (!r.ok) { if (r.red) cuenta.red++; else cuenta.sin_dato++; continue; }
-    const acc = accionesDeCompanyConcept(r.json);
-    if (acc.acciones == null) { cuenta.sin_dato++; resultados.push({ symbol: sym, motivo: acc.motivo }); continue; }
-    cuenta.ok++;
-    resultados.push({
-      symbol: sym, acciones: acc.acciones, portada: acc.fecha_portada,
-      presentada: acc.presentado_en, form: acc.form,
-    });
-    escrituras.push([
-      `update mercado_universo_us
-          set acciones_edgar_millones = $2, acciones_edgar_portada = $3::date,
-              acciones_edgar_presentada = $4::date, acciones_edgar_form = $5, edgar_cik = $6
-        where symbol = $1`,
-      [sym, acc.acciones / 1e6, acc.fecha_portada, acc.presentado_en, acc.form, cik],
-    ]);
+    let r = null;
+    try {
+      r = await json(rutaCompanyConcept(cik), 15000, headers);
+      if (r.status === 429) { cuenta.rate_429++; continue; }
+      if (!r.ok) {
+        if (r.red) { cuenta.red++; continue; }
+        cuenta.sin_dato++;
+        const motivo = r.status === 404
+          ? 'EDGAR no reporta dei:EntityCommonStockSharesOutstanding para este CIK (404)'
+          : `EDGAR contestó HTTP ${r.status}${r.noJson ? ' y el cuerpo no era JSON' : ''}`;
+        resultados.push({ symbol: sym, motivo });
+        // Un 404 es una respuesta —EDGAR no tiene el concepto— y se registra.
+        // Un 5xx o un cuerpo raro NO lo es: se vuelve a intentar la próxima.
+        if (r.status === 404) escrituras.push(registroConsulta(sym, motivo, cik));
+        continue;
+      }
+      const acc = accionesDeCompanyConcept(r.json);
+      if (acc.acciones == null) {
+        cuenta.sin_dato++;
+        resultados.push({ symbol: sym, motivo: acc.motivo, unidad: acc.unidad || null });
+        escrituras.push(registroConsulta(sym, acc.motivo, cik));
+        continue;
+      }
+      cuenta.ok++;
+      resultados.push({
+        symbol: sym, acciones: acc.acciones, portada: acc.fecha_portada,
+        presentada: acc.presentado_en, form: acc.form, unidad: acc.unidad || null,
+      });
+      escrituras.push([
+        `update mercado_universo_us
+            set acciones_edgar_millones = $2, acciones_edgar_portada = $3::date,
+                acciones_edgar_presentada = $4::date, acciones_edgar_form = $5, edgar_cik = $6,
+                edgar_consultada_en = now(), edgar_consulta_motivo = null
+          where symbol = $1`,
+        [sym, acc.acciones / 1e6, acc.fecha_portada, acc.presentado_en, acc.form, cik],
+      ]);
+    } catch (e) {
+      // UN SÍMBOLO NO SE LLEVA EL JOB. El 2026-09-26 el primero de los 21 tiró
+      // `TypeError: unidades.filter is not a function` y los otros 20 nunca se
+      // intentaron: 21 cuadros se quedaron sin segunda opinión por una
+      // excepción en uno. La forma de la respuesta viaja en el reporte, porque
+      // un TypeError dice que algo no era un arreglo y no QUÉ era.
+      cuenta.excepcion++;
+      fallas.push({
+        symbol: sym, cik,
+        error: String((e && e.message) || e),
+        forma_respuesta: formaDeUnits(r && r.json),
+      });
+    }
   }
   if (escrituras.length) await sqlBatch(escrituras);
 
@@ -950,6 +1046,9 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
     escritos: escrituras.length,
     cuenta,
     sin_cik: sinCik,
+    // Las excepciones se REPORTAN, con la forma de lo que llegó. Un job que
+    // muere con un 500 en el log no se puede depurar desde el navegador.
+    fallas: fallas.slice(0, 25),
     ejemplos: resultados.slice(0, 25),
     avance: {
       completo: !sinPresupuesto && pendientes.length === candidatos.length,
@@ -1002,29 +1101,20 @@ async function jobRazonAdr({ ahora, manual }) {
     }];
   }));
 
-  const filas = await sql(
-    `with ultimo as (
-       select distinct on (symbol) symbol, fecha, cierre
-         from mercado_precios_us
-        order by symbol, fecha desc
-     )
-     select u.symbol, u.cap_moneda, u.acciones_millones, p.cierre as precio_usd, p.fecha::text as fecha_precio
-       from mercado_universo_us u
-       left join ultimo p using (symbol)
-      where u.symbol = any($1::text[])`,
-    [[...refs.keys()]]);
+  const filas = await sql(SQL_CAP_US.razon_universo, [[...refs.keys()]]);
 
   // Los cierres alrededor de cada captura, para despejar la razón con el dato de
   // SU fecha.
   const capturas = [...refs.values()].map((r) => String(r.capturada_en || '')).filter(Boolean).sort();
   const preciosRef = new Map();
   if (capturas.length) {
-    const rows = await sql(
-      `select symbol, fecha::text as fecha, cierre
-         from mercado_precios_us
-        where symbol = any($1::text[])
-          and fecha <= $2::date and fecha >= ($2::date - interval '45 days')`,
-      [[...refs.keys()], capturas[capturas.length - 1]]);
+    // La ventana se abre a los dos lados de la captura. No es para elegir el
+    // día que mejor queda —el veredicto sigue usando el cierre ≤ `capturada_en`—
+    // sino para poder CONTESTAR si el desajuste es del día elegido o de la
+    // referencia. VALE es el caso: su sello de cotización decía 09-18 y su cap
+    // reconcilia con un precio de la semana del 23.
+    const rows = await sql(SQL_CAP_US.ventana_referencias,
+      [[...refs.keys()], capturas[0], capturas[capturas.length - 1]]);
     for (const r of rows) {
       if (!preciosRef.has(r.symbol)) preciosRef.set(r.symbol, []);
       preciosRef.get(r.symbol).push(r);
@@ -1043,10 +1133,20 @@ async function jobRazonAdr({ ahora, manual }) {
       acciones_millones: num(f.acciones_millones),
       precio_usd: enCaptura ? enCaptura.cierre : null,
     });
+    // La ventana alrededor de la captura: la misma cuenta contra cada cierre
+    // vecino, para ver si hay un día que reconcilie.
+    const ventana = razonesPorCierre(
+      ventanaDeCierres(preciosRef.get(f.symbol) || [], ref.capturada_en, 5),
+      { cap_referencia_usd: ref.market_cap_usd, acciones_millones: num(f.acciones_millones) });
     return {
       symbol: f.symbol,
       moneda_declarada: f.cap_moneda || null,
-      fecha_precio: f.fecha_precio || null,
+      // `fecha_precio` se leía como "el precio que usó la razón" y NO lo es:
+      // es el último cierre que tenemos, informativo. El nombre confundió a
+      // Lety el 2026-09-26 —razonable— así que ahora dice lo que es, y el que
+      // de verdad se usó viene al lado con su etiqueta.
+      fecha_ultimo_cierre: f.fecha_precio || null,
+      precio_usado_de: 'último cierre con fecha ≤ capturada_en',
       fecha_cierre_usado: enCaptura ? enCaptura.fecha : null,
       cierre_usado: enCaptura ? enCaptura.cierre : null,
       vigente: vig.vigente === true,
@@ -1063,6 +1163,16 @@ async function jobRazonAdr({ ahora, manual }) {
       motivo: r.motivo || (vig.a_recapturar ? vig.motivo : null),
       fuente_referencia: ref.fuente || null,
       capturada_en: ref.capturada_en || null,
+      cotizacion_marcada_en: ref.cotizacion_marcada_en || null,
+      // El instrumento, no la conclusión: si `alguno_dentro` es true el
+      // problema fue el día elegido; si es false, el desajuste está en la
+      // referencia y aflojar el techo sólo lo taparía.
+      ventana: {
+        sesiones: ventana.filas.length,
+        alguno_dentro: ventana.alguno_dentro,
+        mejor: ventana.mejor,
+        filas: ventana.filas,
+      },
     };
   });
 
@@ -1071,6 +1181,11 @@ async function jobRazonAdr({ ahora, manual }) {
     job: 'razon-adr',
     tolerancia_pct: TOLERANCIA_RAZON_PCT,
     referencias: refs.size,
+    // Cuáles reconciliarían con OTRO cierre de su ventana. Es la lista que
+    // decide si lo que hay que revisar es la fecha de captura o la referencia.
+    reconcilian_en_otro_dia: detalle
+      .filter((d) => !d.resuelve && d.ventana && d.ventana.alguno_dentro)
+      .map((d) => `${d.symbol} (mejor: ${d.ventana.mejor ? `${d.ventana.mejor.fecha} a ${d.ventana.mejor.error_pct}%` : 's/d'})`),
     resuelven: detalle.filter((d) => d.resuelve).length,
     no_resuelven: detalle.filter((d) => !d.resuelve).length,
     a_recapturar: detalle.filter((d) => d.a_recapturar).map((d) => d.symbol),
