@@ -213,53 +213,96 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   // tamaño vuelve a ser NUESTRO cálculo con NUESTRO cierre.
   if (referencia) {
     const vig = referenciaVigente(referencia, hoy || new Date());
-    // EL CIERRE DEL DÍA DE LA CAPTURA, no el de hoy. La cap de Yahoo se leyó un
-    // día concreto; despejar la razón contra el precio de hoy mete el
-    // movimiento del mercado entre las dos fechas dentro de un número que
-    // debería ser estructural. Eso hizo fallar a ASML por 2.3%: razón cruda
-    // 1.023 con el cierre del 25 contra una cap del 23. Es la misma regla de
-    // #248: una referencia se contrasta contra el dato de SU fecha.
+    // ── EL PRECIO VIAJA CON LA CAP, Y ASÍ LA RAZÓN NO DEPENDE DE NINGÚN CIERRE ──
     //
-    // Y es el cierre SIN AJUSTAR, porque es el que Yahoo usó para su cap. El
-    // ajustado se reescribe hacia atrás con cada split y haría que la razón
-    // cambiara sola meses después.
+    // Yahoo muestra "Market Cap (intraday)" y "price" en la misma pantalla, al
+    // mismo instante. Si se guardan los DOS, la razón del ADR sale de una sola
+    // fuente coherente consigo misma:
+    //
+    //     ordinarias por ADR = (acciones × precio_referencia) ÷ cap_referencia
+    //
+    // y no hay ninguna fecha que elegir. Las dos versiones anteriores dependían
+    // de un cierre nuestro y las dos fallaron por la misma razón: con el cierre
+    // de hoy, ASML daba 1.023 porque el mercado se movió entre el 23 y el 25;
+    // con el cierre de `capturada_en`, VALE daba 1.043 porque el sello de la
+    // cotización de Yahoo venía atrasado. Ninguna de las dos era un problema de
+    // la emisora: eran dos maneras de adivinar con qué precio calculó Yahoo.
+    // Con `precio_referencia` no se adivina.
+    //
+    // OJO CON LA DIRECCIÓN, que se puede invertir sin que nada se queje: esta
+    // razón cuenta ORDINARIAS POR ADR (TSM da 5, no 1/5), y es la que el tamaño
+    // pintado DIVIDE. Invertirla dejaría a TSM cinco veces más grande de lo que
+    // es, que es exactamente el bug que la referencia existe para cerrar. El
+    // caso 1:1 no distingue las dos direcciones, así que hay una prueba con TSM.
+    //
+    // El cierre de `capturada_en` queda como CRUCE INFORMATIVO: dice cuánto se
+    // movió el precio entre la captura y nuestro cierre de ese día, y nunca
+    // decide nada.
+    const pxRef = num(referencia.precio_referencia);
+    const conPrecioRef = pxRef != null && pxRef > 0;
     const r = razonAdr({
       cap_referencia_usd: referencia.market_cap_usd,
       acciones_millones: entrada.acciones,
-      precio_usd: entrada.precio_captura,
+      precio_usd: conPrecioRef ? pxRef : entrada.precio_captura,
     });
-    // Sin ese cierre no se despeja nada: gris con la causa, nunca con el precio
-    // de hoy como sustituto silencioso.
-    // `num(null)` da 0, no null —Number(null) es 0—, así que preguntar por
-    // `== null` dejaba pasar el caso. Lo que de verdad hace falta es un cierre
-    // POSITIVO.
-    if (!(num(entrada.precio_captura) > 0)) {
+
+    // Sin precio de referencia se cae al cierre de la captura, y ahí sí hace
+    // falta tenerlo: gris con la causa, nunca el precio de hoy como sustituto
+    // silencioso. (`num(null)` da 0 —`Number(null)` es 0—, así que el guardia
+    // pregunta por un número POSITIVO.)
+    if (!conPrecioRef && !(num(entrada.precio_captura) > 0)) {
       return {
         ...base, estado: 'gris_punteado', auditable: false, cap_usd: null, error_pct: null, multiplo: null,
         via: 'referencia_manual',
-        motivo: `no tengo el cierre del ${referencia.capturada_en || 'día de la captura'} para despejar la razón del ADR`,
+        motivo: `la referencia no trae el precio con el que se leyó la cap y tampoco tengo el cierre del ${referencia.capturada_en || 'día de la captura'} para despejar la razón del ADR`,
       };
     }
+
+    // CUÁNTAS ACCIONES IMPLICA LA CAP DE YAHOO. Si la razón no sale limpia con
+    // el precio de referencia, la fecha ya no puede ser la culpable: lo que
+    // queda es el conteo de acciones, y este par de números lo dice sin
+    // interpretación. Se reporta SIEMPRE, no sólo cuando falla.
+    const implicitas = conPrecioRef ? num(referencia.market_cap_usd) / pxRef / MILLON : null;
+    const desajusteAcciones = implicitas != null && num(entrada.acciones) > 0
+      ? ((num(entrada.acciones) / (implicitas * (r.razon_cercana || 1))) - 1) * 100
+      : null;
+    const procedencia = {
+      via: 'referencia_manual',
+      razon_de: conPrecioRef ? 'precio_referencia' : 'cierre_de_captura',
+      precio_referencia: conPrecioRef ? pxRef : null,
+      // El cruce: nuestro cierre del día de la captura contra el precio que
+      // Yahoo mostraba. Informativo, y por eso viaja aparte del veredicto.
+      cruce_cierre_captura: num(entrada.precio_captura) > 0 ? num(entrada.precio_captura) : null,
+      cruce_desvio_pct: conPrecioRef && num(entrada.precio_captura) > 0
+        ? ((num(entrada.precio_captura) / pxRef) - 1) * 100 : null,
+      acciones_implicitas_millones: implicitas,
+      acciones_desajuste_pct: desajusteAcciones,
+      referencia_fuente: referencia.fuente || null,
+      referencia_capturada_en: referencia.capturada_en || null,
+      // Vencida NO es gris: es una tarea. El cuadro se sigue dibujando con la
+      // razón y esto es lo que la hace aparecer en cron-status.
+      referencia_a_recapturar: vig.a_recapturar === true,
+      referencia_vigente_hasta: vig.vigente_hasta,
+    };
+
     if (r.ok) {
       return {
-        ...base, estado: 'verificada', auditable: true,
+        ...base, ...procedencia, estado: 'verificada', auditable: true,
         cap_usd: (num(entrada.acciones) * MILLON * num(entrada.precio_usd)) / r.razon,
         error_pct: r.error_pct, multiplo: null,
-        via: 'referencia_manual', razon_adr: r.razon, razon_etiqueta: r.etiqueta,
+        razon_adr: r.razon, razon_etiqueta: r.etiqueta,
         fuente: `calc: acciones÷${r.etiqueta}×neon`,
-        referencia_fuente: referencia.fuente || null,
-        referencia_capturada_en: referencia.capturada_en || null,
-        // Vencida NO es gris: es una tarea. El cuadro se sigue dibujando con la
-        // razón y esto es lo que la hace aparecer en cron-status.
-        referencia_a_recapturar: vig.a_recapturar === true,
-        referencia_vigente_hasta: vig.vigente_hasta,
         motivo: null,
       };
     }
     return {
-      ...base, estado: 'gris_punteado', auditable: true, cap_usd: null,
+      ...base, ...procedencia, estado: 'gris_punteado', auditable: true, cap_usd: null,
       error_pct: r.error_pct ?? null, multiplo: r.crudo ?? null,
-      via: 'referencia_manual', motivo: r.motivo,
+      // Con el precio de referencia la fecha queda descartada como causa, así
+      // que el motivo apunta a donde de verdad quedó la duda: el conteo.
+      motivo: conPrecioRef
+        ? `${r.motivo}; con el precio de la captura (${pxRef}) la fecha no es la causa: la cap de referencia implica ${implicitas != null ? implicitas.toFixed(1) : '?'}M acciones por ADR y nosotros tenemos ${num(entrada.acciones)}M ordinarias`
+        : r.motivo,
     };
   }
 
