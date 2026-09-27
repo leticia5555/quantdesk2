@@ -768,6 +768,11 @@ Salió **10.002**. De los 23 `cuerpo_vacio`, 17 traen datos: **13 con
 Y los 4 con `false` son una minoría REAL del proveedor. No se tapan al arreglar
 la nuestra: son dos causas, y la que arreglamos es la grande, no la única.
 
+> **Y estos 13 no eran solo un bug: eran un bug MAL ATRIBUIDO.** Hasta el
+> 2026-09-27 `/liga` los contaba como abortos del modelo, concentrados en Qwen
+> y DeepSeek — los dos que peor se ven en la tabla. La tercera columna que los
+> saca de ahí está en B44.
+
 ### La aritmética
 
 Dos reglas sobre el mismo presupuesto, escritas por separado:
@@ -824,7 +829,7 @@ prueba que solo mire los números actuales.
 
 ---
 
-## B44 · SE HABÍA ACABADO EL DINERO (2026-09-26, verificado en producción)
+## B44 · SE HABÍA ACABADO EL DINERO, Y EL RESTO NOS LO ROBAMOS NOSOTROS (2026-09-26/27, verificado en producción)
 
 Con la ficha arreglada (B42), los 52 abortos con `terminó_por: error` leídos
 por mensaje literal del proveedor:
@@ -855,20 +860,90 @@ manos jugadas no son culpa suya, y la tabla que las publica al lado del retorno
 está atribuyendo mal — encima de las dos objeciones que ya tenía (el piso de
 ruido y las manos desparejas).
 
-Separados en `_lib/arena-manos.js`: `abortadas_saldo` y `abortadas_modelo`
-suman `abortadas`, que se conserva. En la fila de cada agente va **solo el del
-modelo**, que es el único que habla de él; el de saldo va en ámbar y explicado.
+### SON TRES CULPAS, NO DOS
 
-Y una cota nueva, `techo_de_manos` = vivas + abortos de saldo. **Se llama
-techo y no "manos reales" a propósito:** un modelo puede abortar por su cuenta
-en una corrida que el saldo le impidió intentar. Es una cota superior, no una
-estimación, y el nombre tiene que decirlo o alguien la va a reportar como las
-manos que le faltaron.
+Con dos columnas —modelo y cuenta— **nuestro propio bug caía en la del
+modelo.** B45: el loop arrancaba vueltas con diez segundos y se morían leyendo
+el cuerpo. De los 23 `cuerpo_vacio` de la temporada, **13 eran nuestro
+reloj**, y estaban concentrados en Qwen y DeepSeek: los dos que peor se ven en
+la tabla.
 
-Las firmas son literales de producción, cada una con su origen y su conteo, y
-**no se generalizó a `/credit/i`**: un falso positivo acá borra un fallo real
-del modelo de la columna que existe para mostrarlo. Es el error más caro de
-los dos.
+**Nuestro error de aritmética estaba anotado en el expediente de los dos
+agentes a los que más perjudicaba.** Un aborto mal atribuido no es neutral:
+empeora justo a quien ya empeoró.
+
+La firma de esa tercera culpa **no es un mensaje, es un campo**:
+`timeout_nuestro`, que B23 instrumentó para exactamente esta distinción. No
+hace falta lista de literales, y una lista sería peor — el mensaje cambia con
+el proveedor y el campo no. Se mira en los dos lugares donde vive: el resumen
+de la corrida y cada vuelta en `cuerpos_vacios[]`. **Si UNO de los cortes fue
+nuestro, la corrida no se le carga al modelo:** la duda se resuelve a favor del
+que no puede defenderse en el journal.
+
+Y al revés, sin el campo NO se reclama la culpa: un aborto sin instrumentar
+cuenta como del modelo. La regla conservadora apunta contra nosotros, no a
+nuestro favor.
+
+### LA CUENTA DE LA T2
+
+| culpa | abortos |
+|---|---:|
+| la cuenta sin saldo | **48** |
+| nuestro reparto del reloj | **~13** |
+| el proveedor cortó el stream | 4 |
+| `time_budget` | 3 |
+| otros | ~6 |
+| **de los modelos** | **como mucho 10** |
+
+**De 84 abortos, como mucho DIEZ son de los modelos.**
+
+Eso borra la lectura de que "Qwen y DeepSeek son inestables". Puede que nada
+más fueran **los que más sufrieron nuestro bug** — y no hay forma de
+distinguir una cosa de la otra con estos datos, que es justamente el punto.
+
+### `abortadas_modelo` ES UN RESIDUAL, Y SE PUBLICA COMO COTA
+
+Es "lo que quedó después de sacar lo que sabemos que no es del modelo".
+Adentro puede seguir habiendo causas nuestras que todavía no sabemos
+reconocer: el corte por `time_budget`, por ejemplo, es el presupuesto
+funcionando, no el modelo fallando.
+
+Por eso la pantalla lo pinta con `≤`. **Un residual leído como medición
+convierte "no pudimos atribuirlo" en "fue el modelo"** — y ése es exactamente
+el error que esta entrada existe para cerrar, en su forma más sutil.
+
+Lo mismo vale para `techo_de_manos` = vivas + las que le sacamos nosotros
+(saldo y reloj). **Se llama techo y no "manos reales" a propósito:** un modelo
+puede abortar por su cuenta en una corrida que otra cosa le impidió intentar.
+Es cota superior, no estimación, y el nombre tiene que decirlo o alguien la va
+a reportar como las manos que le faltaron.
+
+Las firmas del saldo son literales de producción, cada una con su origen y su
+conteo, y **no se generalizó a `/credit/i`**: un falso positivo acá borra un
+fallo real del modelo de la columna que existe para mostrarlo. Es el error más
+caro de los dos.
+
+La precedencia está **declarada** (saldo → nuestra → modelo) con su razón: sin
+dinero la llamada no podía ocurrir, así que cualquier otra cosa observable es
+consecuencia. No se solapan en la práctica, pero si algún día se solapan la
+clasificación tiene que ser la misma todos los días y no depender de cómo
+quedó escrito el `if`.
+
+### Y ESTO CIERRA EL CASO DE LA T2
+
+> **La T2 midió un sistema sin dinero que además se robaba el tiempo a sí
+> mismo.** Esos números no son de los modelos.
+
+No es una objeción más al lado del piso de ruido y de las manos desparejas: es
+de otra clase. El piso dice cuánta distancia entre dos puestos es azar; las
+manos dicen que no jugaron el mismo juego; **esto dice que la mayor parte de
+lo que separaba a los últimos de los primeros lo pusimos nosotros.**
+
+Con los saldos recargados y B45 desplegado, se resetea y se arranca limpio.
+Lo que la T2 sí deja: cinco instrumentos que no existían el 20 de septiembre
+—el piso en puntos de retorno, las manos jugadas, los precios de ejecución, la
+ficha del fallo, y las tres culpas— y sin ellos esta conclusión no se podía
+ni formular.
 
 ---
 

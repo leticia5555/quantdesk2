@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
-// tests/arena-abortos-saldo.test.mjs — UN ABORTO POR FALTA DE SALDO NO
-// ES UN ABORTO DEL MODELO.
+// tests/arena-abortos-saldo.test.mjs — TRES CULPAS: DEL MODELO, DE LA
+// CUENTA, Y NUESTRA.
 //
 // EL DATO (producción, 2026-09-26). Los 52 abortos con `terminó_por: error`,
 // por mensaje literal del proveedor:
@@ -23,20 +23,40 @@
 // tiene 31 abortos y la mitad son saldo, sus manos jugadas no son culpa suya,
 // y la tabla que las publica al lado del retorno atribuye mal.
 //
+// ── Y FALTABA UNA TERCERA COLUMNA (2026-09-27) ───────────────────────
+// Con DOS columnas, **nuestro propio bug caía en la del modelo**. B45: el loop
+// arrancaba vueltas con diez segundos y se morían leyendo el cuerpo. De los 23
+// `cuerpo_vacio`, 13 eran nuestro reloj — y estaban concentrados en Qwen y
+// DeepSeek, los dos que peor se ven en la tabla. Nuestro error de aritmética
+// anotado en el expediente de los dos agentes a los que más perjudicaba.
+//
+// La firma de esa tercera culpa NO es un mensaje: es `timeout_nuestro`, que
+// B23 instrumentó para exactamente esto. Un campo no cambia con el proveedor.
+//
+// LA CUENTA DE LA T2, con las tres columnas:
+//     48  saldo · ~13 nuestro reparto · 4 el proveedor cortó · 3 time_budget
+//     ~6  otros  →  de 84 abortos, COMO MUCHO DIEZ son de los modelos
+//
+// Eso borra la lectura de que "Qwen y DeepSeek son inestables": puede que nada
+// más fueran los que más sufrieron nuestro bug.
+//
 // Lo que este archivo fija:
 //   1. LAS FIRMAS REALES SE RECONOCEN, con el texto literal de producción.
 //   2. NO SE CLASIFICA DE MÁS. Un falso positivo BORRA un fallo real del
 //      modelo de la columna que lo tiene que mostrar — es peor que no separar.
-//   3. LAS DOS COLUMNAS SUMAN EL TOTAL. El total sigue siendo el total.
-//   4. EL TECHO DE MANOS ES UNA COTA, NO UNA ESTIMACIÓN, y se llama así.
-//   5. LA PANTALLA LAS PINTA DISTINTO, y la fila del agente solo muestra la
+//   3. LAS TRES COLUMNAS SUMAN EL TOTAL. El total sigue siendo el total.
+//   4. LA PRECEDENCIA ESTÁ DECLARADA, no depende de cómo quedó escrito el if.
+//   5. `abortadas_modelo` ES UN RESIDUAL Y SE PUBLICA COMO COTA (`≤`). Un
+//      residual leído como medición convierte "no supimos de quién fue" en
+//      "fue el modelo".
+//   6. LA PANTALLA LAS PINTA DISTINTO, y la fila del agente solo muestra la
 //      que habla de él.
 //
 // Correr con `node tests/arena-abortos-saldo.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
 import { readFileSync } from 'node:fs';
-import { esAbortoDeSaldo, manosPorAgente, manosDeLaLiga, comparabilidad } from '../api/_lib/arena-manos.js';
+import { esAbortoDeSaldo, esAbortoNuestro, culpaDelAborto, manosPorAgente, comparabilidad } from '../api/_lib/arena-manos.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -91,21 +111,77 @@ console.log('\n── lo que NO se cuenta como saldo ──');
     'se mira también dentro de context.llm_error: las filas viejas no tienen la columna');
 }
 
-// ── 3) LAS DOS COLUMNAS SUMAN EL TOTAL ───────────────────────────────
+// ── 2b) LA TERCERA CULPA: NUESTRA ────────────────────────────────────
+console.log('\n── el bug del reparto de reloj es nuestro, no del modelo ──');
+{
+  // El caso de producción: `cuerpo_vacio` con nuestro reloj cortando la lectura.
+  const nuestro = { agent_id: 'x', status: 'aborted_cuerpo_vacio',
+    context: { llm_error: { timeout_nuestro: true, techo_ms: 10000 } } };
+  ok(esAbortoNuestro(nuestro), 'un corte con `timeout_nuestro: true` es NUESTRO');
+  ok(culpaDelAborto(nuestro) === 'nuestra', 'y se clasifica como tal, no como del modelo');
+
+  const suyo = { agent_id: 'x', status: 'aborted_cuerpo_vacio',
+    context: { llm_error: { timeout_nuestro: false } } };
+  ok(culpaDelAborto(suyo) === 'modelo', 'y con `false`, el proveedor cortó de verdad: queda del lado del modelo');
+
+  // Sin el campo NO se adivina. Un aborto sin instrumentar cuenta como del
+  // modelo: es la lectura conservadora contra nosotros mismos, no a favor.
+  ok(culpaDelAborto({ agent_id: 'x', status: 'aborted_llm_error', error: 'HTTP 500' }) === 'modelo',
+    'sin el campo no se reclama la culpa: no se usa para limpiarnos el expediente');
+
+  // POR VUELTA, no solo por corrida: una corrida puede tener un corte suyo en
+  // la vuelta 3 y uno nuestro en el cierre. Si UNO fue nuestro, no se le carga
+  // al modelo — la duda se resuelve a favor del que no puede defenderse.
+  const mixto = { agent_id: 'x', status: 'aborted_cuerpo_vacio', context: { llm_error: {
+    cuerpos_vacios: [{ vuelta: 3, timeout_nuestro: false }, { vuelta: 'cierre', timeout_nuestro: true }],
+  } } };
+  ok(culpaDelAborto(mixto) === 'nuestra',
+    'con un corte suyo y uno nuestro en la misma corrida, no se le carga al modelo');
+
+  // Y la firma es el CAMPO, no un literal: si mañana el proveedor cambia el
+  // texto del error, esto sigue funcionando.
+  const src = readFileSync(new URL('../api/_lib/arena-manos.js', import.meta.url), 'utf8');
+  ok(/LA FIRMA NO ES UN MENSAJE, ES UN CAMPO/.test(src),
+    'el código dice por qué no hay lista de literales para esta culpa');
+}
+
+// ── 2c) LA PRECEDENCIA, DECLARADA ────────────────────────────────────
+// No se solapan en la práctica, pero el orden se declara igual: si algún día
+// se solapan, la clasificación tiene que ser la misma todos los días y no
+// depender de cómo quedó escrito el if.
+console.log('\n── si dos firmas coinciden, gana la declarada ──');
+{
+  const ambas = { agent_id: 'x', status: 'aborted_llm_error',
+    error: 'This request requires more credits',
+    context: { llm_error: { timeout_nuestro: true } } };
+  ok(culpaDelAborto(ambas) === 'saldo',
+    'saldo gana: sin dinero la llamada no podía ocurrir, y el resto es consecuencia');
+  const src = readFileSync(new URL('../api/_lib/arena-manos.js', import.meta.url), 'utf8');
+  ok(/EL ORDEN DE PRECEDENCIA, DECLARADO/.test(src) && /SALDO primero/.test(src),
+    'y el orden está escrito con su razón, no implícito en el if');
+}
+
+// ── 3) LAS TRES COLUMNAS SUMAN EL TOTAL ──────────────────────────────
 console.log('\n── el corte no cambia el total ──');
 {
+  const nuestro = () => ({ agent_id: 'qwen', status: 'aborted_cuerpo_vacio',
+    context: { llm_error: { timeout_nuestro: true } } });
   const m = manosPorAgente([
     { agent_id: 'qwen', status: 'ok_target' },
-    ...Array(15).fill(ab('This request requires more credits')).map((f) => ({ ...f, agent_id: 'qwen' })),
-    ...Array(8).fill(ab('cuerpo_vacio: el proveedor cerró el stream')).map((f) => ({ ...f, agent_id: 'qwen' })),
+    ...Array(15).fill(0).map(() => ({ ...ab('This request requires more credits'), agent_id: 'qwen' })),
+    ...Array(5).fill(0).map(nuestro),
+    ...Array(3).fill(0).map(() => ({ agent_id: 'qwen', status: 'aborted_cuerpo_vacio',
+      context: { llm_error: { timeout_nuestro: false } } })),
   ]);
   const q = m.get('qwen');
-  ok(q.abortadas === 23 && q.abortadas_saldo === 15 && q.abortadas_modelo === 8,
-    'saldo + modelo = abortadas', JSON.stringify([q.abortadas_saldo, q.abortadas_modelo, q.abortadas]));
+  ok(q.abortadas === 23 && q.abortadas_saldo === 15 && q.abortadas_nuestras === 5 && q.abortadas_modelo === 3,
+    'saldo + nuestras + modelo = abortadas',
+    JSON.stringify([q.abortadas_saldo, q.abortadas_nuestras, q.abortadas_modelo, q.abortadas]));
   ok(q.corridas === 24 && q.pct_abortos === 95.8,
     'el total y su porcentaje no se movieron: sigue habiendo 23 abortos', String(q.pct_abortos));
-  ok(q.pct_abortos_modelo === 33.3,
-    'y aparece el porcentaje ATRIBUIBLE, que es el que va al lado del retorno', String(q.pct_abortos_modelo));
+  ok(q.pct_abortos_modelo === 12.5,
+    'y el porcentaje atribuible bajó de 95.8 a 12.5: es la diferencia entre acusar y medir', String(q.pct_abortos_modelo));
+  ok(q.abortadas_no_suyas === 20, 'y se publica cuántos NO son suyos, de un saque', String(q.abortadas_no_suyas));
 }
 
 // ── 4) EL TECHO ES UNA COTA ──────────────────────────────────────────
@@ -117,14 +193,19 @@ console.log('\n── una cota, y se llama cota ──');
   const m = manosPorAgente([
     { agent_id: 'a', status: 'ok_target' }, { agent_id: 'a', status: 'ok_no_actions' },
     ab('Your credit balance is too low'), ab('HTTP 500'),
+    { agent_id: 'a', status: 'aborted_cuerpo_vacio', context: { llm_error: { timeout_nuestro: true } } },
   ].map((f) => ({ ...f, agent_id: 'a' })));
   const a = m.get('a');
-  ok(a.techo_de_manos === 3, 'techo = vivas + saldo, no vivas + todos los abortos', String(a.techo_de_manos));
+  ok(a.techo_de_manos === 4,
+    'techo = vivas + las que le sacamos nosotros (saldo Y reloj), no vivas + todos los abortos',
+    String(a.techo_de_manos));
   ok(a.techo_de_manos >= a.vivas, 'y nunca es menor que las manos reales');
 
   const src = readFileSync(new URL('../api/_lib/arena-manos.js', import.meta.url), 'utf8');
   ok(/es una COTA, no una estimación/.test(src),
     'el código dice que es una cota, para que nadie la reporte como "las manos que le faltaron"');
+  ok(/ES UN RESIDUAL, NO UNA MEDICIÓN/.test(src),
+    'y que `abortadas_modelo` también es una cota, por arriba: es lo que no se pudo atribuir');
 }
 
 // ── 5) EL RESUMEN DE LIGA DICE DE QUIÉN ES LA FALLA ──────────────────
@@ -139,11 +220,14 @@ console.log('\n── la liga, con la culpa separada ──');
   meter('control', 37, 0, 0); meter('qwen', 3, 16, 6);
   const r = comparabilidad(manosPorAgente(filas));
 
-  ok(r.abortadas_saldo === 16 && r.abortadas_modelo === 6, 'el resumen trae las dos', JSON.stringify([r.abortadas_saldo, r.abortadas_modelo]));
-  ok(/LA CUENTA SIN SALDO, no el modelo/.test(r.culpa || ''),
+  ok(r.abortadas_saldo === 16 && r.abortadas_nuestras === 0 && r.abortadas_modelo === 6,
+    'el resumen trae las tres', JSON.stringify([r.abortadas_saldo, r.abortadas_nuestras, r.abortadas_modelo]));
+  ok(/LA CUENTA SIN SALDO/.test(r.culpa || ''),
     'y lo dice con todas las letras', r.culpa);
   ok(/no jugó menos manos por ser peor/.test(r.culpa || ''),
     'incluyendo por qué eso cambia la lectura de la tabla');
+  ok(/Como mucho 6 son de los modelos/.test(r.culpa || '') && /residual/.test(r.culpa || ''),
+    'y da el número de los modelos con la palabra que lo vuelve honesto: COMO MUCHO');
 
   // `culpa` es un campo APARTE de `lectura`: son dos objeciones distintas y
   // juntarlas en un párrafo hace que se lea una sola.
@@ -167,19 +251,31 @@ console.log('\n── /liga las pinta distinto ──');
   ok(/'provider_error', left\(context->'llm_error'->>'provider_error', 300\)/.test(api),
     'y el detalle del proveedor, para las filas viejas sin la columna');
 
-  ok(/abortadas_saldo/.test(page) && /abortadas_modelo/.test(page), 'la página lee las dos');
-  ok(/sin saldo/.test(page) && /del modelo/.test(page), 'y las nombra distinto');
-  ok(/var\(--amber\)/.test(page.slice(page.indexOf('function manosHtml'), page.indexOf('function manosHtml') + 1600)),
-    'con color distinto: solo una de las dos habla del agente');
+  ok(/'timeout_nuestro', context->'llm_error'->'timeout_nuestro'/.test(api),
+    'y el campo de B23, que es la firma de la tercera culpa');
+  ok(/'cuerpos_vacios',  context->'llm_error'->'cuerpos_vacios'/.test(api),
+    'con los cortes por vuelta: uno nuestro en el cierre ya alcanza');
+
+  ok(/abortadas_saldo/.test(page) && /abortadas_nuestras/.test(page) && /abortadas_modelo/.test(page),
+    'la página lee las TRES');
+  const bloque = page.slice(page.indexOf('function manosHtml'), page.indexOf('function manosHtml') + 2200);
+  ok(/sin saldo/.test(bloque) && /nuestras/.test(bloque) && /del modelo/.test(bloque),
+    'y las nombra distinto');
+  ok(/var\(--amber\)/.test(bloque) && /var\(--nuestra\)/.test(bloque) && /var\(--red\)/.test(bloque),
+    'tres colores: solo una de las tres habla del agente');
+  ok(/--nuestra:/.test(page) && !/var\(--blue,/.test(page),
+    'y el color de la culpa nuestra es propio, no --blue: ése ya es el de la etiqueta de casa, pegada en la misma fila');
   ok(/culpa-saldo/.test(page), 'y el bloque de la liga tiene su lugar propio');
 
   // En la FILA del agente solo va el aborto del modelo: es el único que dice
-  // algo del puesto que se está leyendo.
-  const fila = page.slice(page.indexOf('const manosTag'), page.indexOf('const manosTag') + 900);
-  ok(/abModelo\?' · '\+abModelo\+' abortos'/.test(fila),
-    'la fila cuenta solo los abortos del modelo en el conteo principal');
-  ok(/no jugó menos manos por ser peor/.test(fila),
-    'y los de saldo se explican en el title, sin cargárselos al agente');
+  // algo del puesto que se está leyendo. Y con `≤`, porque es un residual.
+  const fila = page.slice(page.indexOf('const abModelo'), page.indexOf('const abModelo') + 1600);
+  ok(/abModelo\?' · ≤'\+abModelo\+' abortos'/.test(fila),
+    'la fila cuenta solo los abortos del modelo, y con ≤ porque es una cota');
+  ok(/[Nn]o jugó menos manos por ser peor/.test(fila),
+    'las otras dos se explican en el title, sin cargárselas al agente');
+  ok(/cota superior de su culpa, no una medición/.test(fila),
+    'y el title dice que el número del modelo es una cota, no una medición');
 }
 
 console.log(failures ? `\n${failures} fallo(s)` : '\nTodo en verde');

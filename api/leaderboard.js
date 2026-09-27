@@ -155,7 +155,16 @@ export default async function handler(req, res) {
               jsonb_build_object(
                 'llm_error', jsonb_build_object(
                   'detail',         left(context->'llm_error'->>'detail', 300),
-                  'provider_error', left(context->'llm_error'->>'provider_error', 300)
+                  'provider_error', left(context->'llm_error'->>'provider_error', 300),
+                  -- La TERCERA culpa. Con dos columnas, NUESTRO bug del reparto
+                  -- de reloj (B45) caia en la del modelo, y estaba concentrado
+                  -- en los dos agentes que peor se ven en la tabla. La firma es
+                  -- este campo, instrumentado por B23, no un mensaje: el
+                  -- mensaje cambia con el proveedor y el campo no.
+                  'timeout_nuestro', context->'llm_error'->'timeout_nuestro',
+                  -- Y por vuelta: una corrida puede tener un corte suyo y uno
+                  -- nuestro. Si UNO fue nuestro, no se le carga al modelo.
+                  'cuerpos_vacios',  context->'llm_error'->'cuerpos_vacios'
                 )
               ) as context
          from arena_journal

@@ -67,9 +67,12 @@ export const FIRMAS_SIN_SALDO = [
 // El texto puede llegar en `error` (la columna) o dentro de `context.llm_error`
 // (el detalle del proveedor). Se miran los dos: la columna se perdía hasta el
 // 2026-09-26 y las filas viejas de la temporada la tienen en null.
+export const errorDeFila = (fila) =>
+  (fila && (fila.llm_error || (fila.context && fila.context.llm_error))) || {};
+
 export function esAbortoDeSaldo(fila) {
   if (!fila || !CORRIDA_ABORTADA(fila.status)) return false;
-  const e = fila.llm_error || (fila.context && fila.context.llm_error) || {};
+  const e = errorDeFila(fila);
   const texto = [fila.error, e.detail, e.provider_error, e.raw_body]
     .filter((x) => typeof x === 'string').join(' \n ');
   if (!texto) return false;
@@ -83,28 +86,91 @@ export function manosPorAgente(filas = []) {
   for (const f of (Array.isArray(filas) ? filas : [])) {
     const id = f && f.agent_id;
     if (!id || id === 'league') continue;
-    if (!m.has(id)) m.set(id, { agente: id, vivas: 0, abortadas: 0, abortadas_modelo: 0, abortadas_saldo: 0 });
+    if (!m.has(id)) {
+      m.set(id, {
+        agente: id, vivas: 0, abortadas: 0,
+        // TRES culpas, no dos. Las tres suman `abortadas`, que se conserva: el
+        // total sigue siendo el total. Lo que cambia es que se puede decir de
+        // quién es cada uno — y DOS de las tres no dicen nada del modelo.
+        abortadas_saldo: 0, abortadas_nuestras: 0, abortadas_modelo: 0,
+      });
+    }
     const a = m.get(id);
     if (!CORRIDA_ABORTADA(f.status)) { a.vivas++; continue; }
     a.abortadas++;
-    // Las dos columnas suman `abortadas`, que se conserva: el total sigue
-    // siendo el total. Lo que cambia es que ahora se puede decir CUÁL de los
-    // dos, y solo una de las dos dice algo del modelo.
-    if (esAbortoDeSaldo(f)) a.abortadas_saldo++; else a.abortadas_modelo++;
+    const culpa = culpaDelAborto(f);
+    if (culpa === 'saldo') a.abortadas_saldo++;
+    else if (culpa === 'nuestra') a.abortadas_nuestras++;
+    else a.abortadas_modelo++;
   }
   for (const a of m.values()) {
     a.corridas = a.vivas + a.abortadas;
     a.pct_abortos = a.corridas ? pct1((a.abortadas / a.corridas) * 100) : null;
-    // El porcentaje que SÍ es atribuible al modelo. Es el número que debería
-    // leerse al lado del retorno; `pct_abortos` incluye la falla de la cuenta.
+    // ── `abortadas_modelo` ES UN RESIDUAL, NO UNA MEDICIÓN ───────────
+    // Es "lo que quedó después de sacar lo que sabemos que no es del modelo".
+    // Adentro puede seguir habiendo causas nuestras que todavía no sabemos
+    // reconocer —el corte por `time_budget`, por ejemplo, es el presupuesto
+    // funcionando, no el modelo fallando— así que este número es una COTA
+    // SUPERIOR de la culpa del modelo, y la pantalla lo dice como cota.
+    //
+    // La distinción importa: un residual que se lee como medición convierte
+    // "no pudimos atribuirlo" en "fue el modelo".
     a.pct_abortos_modelo = a.corridas ? pct1((a.abortadas_modelo / a.corridas) * 100) : null;
-    // Las manos que el agente HABRÍA jugado si la cuenta hubiera tenido saldo.
+    a.abortadas_no_suyas = a.abortadas_saldo + a.abortadas_nuestras;
+    // Las manos que el agente HABRÍA jugado si no le hubiéramos sacado
+    // corridas nosotros —sin saldo, o con una vuelta que no podía pagar—.
     // No es un contrafáctico fuerte —un modelo puede abortar por su cuenta en
-    // una corrida que el saldo le impidió intentar— y por eso se llama `techo`
+    // una corrida que otra cosa le impidió intentar— y por eso se llama `techo`
     // y no `vivas_reales`: es una COTA, no una estimación.
-    a.techo_de_manos = a.vivas + a.abortadas_saldo;
+    a.techo_de_manos = a.vivas + a.abortadas_no_suyas;
   }
   return m;
+}
+
+// ── Y LA TERCERA CULPA: NUESTRA ─────────────────────────────────────
+// Encontrada el 2026-09-27, al separar el saldo: **con dos columnas, nuestro
+// propio bug caía en la del modelo.**
+//
+// B45: el loop arrancaba vueltas con diez segundos —una banda de exactamente
+// el ancho del piso, entre la guarda y el techo— y esas vueltas se morían
+// leyendo el cuerpo. De los 23 `cuerpo_vacio` de la temporada, **13 eran
+// nuestro reloj**, y estaban concentrados en Qwen y DeepSeek: los dos que peor
+// se ven en la tabla. O sea que nuestro error de aritmética estaba anotado en
+// el expediente de los dos agentes a los que más perjudicaba.
+//
+// LA FIRMA NO ES UN MENSAJE, ES UN CAMPO. `timeout_nuestro` lo instrumentó B23
+// justamente para distinguir nuestro corte del suyo, así que acá no hace falta
+// ninguna lista de literales — y una lista sería peor: el mensaje cambia con el
+// proveedor, el campo no.
+//
+// Se miran los DOS lugares donde vive: el resumen de la corrida, y cada vuelta
+// por separado en `cuerpos_vacios[]`. Una corrida puede tener un corte suyo en
+// la vuelta 3 y uno nuestro en el cierre; si UNO fue nuestro, la corrida no se
+// le carga al modelo. La duda se resuelve a favor del modelo a propósito: es
+// el que no puede defenderse en el journal.
+export function esAbortoNuestro(fila) {
+  if (!fila || !CORRIDA_ABORTADA(fila.status)) return false;
+  const e = errorDeFila(fila);
+  if (e.timeout_nuestro === true) return true;
+  const cortes = Array.isArray(e.cuerpos_vacios) ? e.cuerpos_vacios : [];
+  return cortes.some((c) => c && c.timeout_nuestro === true);
+}
+
+// ── EL ORDEN DE PRECEDENCIA, DECLARADO ───────────────────────────────
+// No se solapan en la práctica —una cuenta sin saldo devuelve un cuerpo de
+// error rápido, no un stream que se corta— pero el orden se declara igual: si
+// algún día se solapan, que la clasificación sea la misma todos los días y no
+// dependa de cómo quedó escrito el if.
+//
+// SALDO primero: si no había dinero, la llamada no podía ocurrir, y cualquier
+// otra cosa que se observe es consecuencia de eso.
+export const CULPAS = ['saldo', 'nuestra', 'modelo'];
+export function culpaDelAborto(fila) {
+  if (!CORRIDA_ABORTADA(fila && fila.status)) return null;
+  if (esAbortoDeSaldo(fila)) return 'saldo';
+  if (esAbortoNuestro(fila)) return 'nuestra';
+  // RESIDUAL, no medición. Ver el comentario de `abortadas_modelo`.
+  return 'modelo';
 }
 
 // ── ¿SE PUEDEN COMPARAR ESTOS DOS? ───────────────────────────────────
@@ -130,7 +196,8 @@ export function comparabilidad(mapa) {
   const totalVivas = filas.reduce((s, a) => s + a.vivas, 0);
   const totalAbortos = filas.reduce((s, a) => s + a.abortadas, 0);
   const totalSaldo = filas.reduce((s, a) => s + (a.abortadas_saldo || 0), 0);
-  const totalModelo = totalAbortos - totalSaldo;
+  const totalNuestras = filas.reduce((s, a) => s + (a.abortadas_nuestras || 0), 0);
+  const totalModelo = totalAbortos - totalSaldo - totalNuestras;
   const incomparable = ratio == null || ratio >= RATIO_INCOMPARABLE;
 
   return {
@@ -138,8 +205,10 @@ export function comparabilidad(mapa) {
     agentes: filas.length,
     vivas_totales: totalVivas,
     abortadas_totales: totalAbortos,
-    // El corte que cambia a quién se le carga la falla.
+    // El corte que cambia a quién se le carga la falla. TRES, no dos.
     abortadas_saldo: totalSaldo,
+    abortadas_nuestras: totalNuestras,
+    // Residual: cota SUPERIOR de la culpa del modelo, no una medición.
     abortadas_modelo: totalModelo,
     pct_abortos_liga: (totalVivas + totalAbortos) ? pct1((totalAbortos / (totalVivas + totalAbortos)) * 100) : null,
     mas: { agente: max.agente, vivas: max.vivas },
@@ -156,8 +225,17 @@ export function comparabilidad(mapa) {
     // distintas a la tabla y juntarlas en un párrafo hace que se lea una sola.
     // `lectura` dice que no jugaron el mismo juego; esto dice que una parte de
     // la diferencia no es del modelo.
-    culpa: totalSaldo > 0
-      ? `${totalSaldo} de los ${totalAbortos} abortos fueron LA CUENTA SIN SALDO, no el modelo (${pct1((totalSaldo / totalAbortos) * 100)}%). Esos no dicen nada sobre el modelo: un agente cuya cuenta se quedó sin crédito no jugó menos manos por ser peor. Los ${totalModelo} restantes sí son del modelo o de su proveedor.`
+    culpa: (totalSaldo + totalNuestras) > 0
+      ? `De los ${totalAbortos} abortos, ${totalSaldo + totalNuestras} NO son de los modelos: `
+        + [
+          totalSaldo ? `${totalSaldo} fueron LA CUENTA SIN SALDO` : null,
+          totalNuestras ? `${totalNuestras} fueron NUESTRO reparto de reloj (el loop arrancaba vueltas que no podía pagar)` : null,
+        ].filter(Boolean).join(' y ')
+        + '. Un agente no jugó menos manos por ser peor'
+        // El número que Lety quiere poder leer de un saque, y con la palabra
+        // que lo vuelve honesto: COMO MUCHO. `abortadas_modelo` es lo que
+        // quedó sin atribuir, no lo que se midió del modelo.
+        + `. Como mucho ${totalModelo} son de los modelos, y ése es un residual —lo que no pudimos atribuir— no una medición: adentro puede seguir habiendo causas nuestras que todavía no sabemos reconocer.`
       : null,
     // La dirección del sesgo NO se insinúa: abortar puede salvar a un agente de
     // una decisión mala tanto como impedirle una buena.

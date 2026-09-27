@@ -20,6 +20,10 @@
   --green:#00c97d; --green-rgb:0,201,125;
   --red:#ff4545; --red-rgb:255,69,69;
   --blue:#4a9eff; --amber:#ffb347; --purple:#a78bfa; --gold:#ffd35a;
+  /* Para la culpa NUESTRA en el bloque de manos. Color propio y no --blue:
+     ese ya es el de la etiqueta de casa `us`, que va pegada en la misma fila,
+     y dos azules juntos se leen como la misma categoría. */
+  --nuestra:#5eead4;
   --mono:'Space Mono',monospace; --sans:'DM Sans',sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
@@ -297,21 +301,25 @@ function margenHtml(m){
 // de la distancia entre dos puestos es azar; esto dice que dos agentes NO
 // jugaron el mismo juego. Qwen decidió 3 veces en la semana y Control 37.
 //
-// ── Y LOS ABORTOS SE PARTEN EN DOS (2026-09-26) ─────────────────────
-// 48 de los 84 abortos de la temporada fueron LAS CUENTAS SIN SALDO, no los
-// modelos. Publicarlos juntos le carga al modelo una falla de la cuenta: si
-// Qwen tiene 31 abortos y la mitad son saldo, sus manos no son culpa suya.
-// Son dos columnas y se pintan distinto — el rojo es del modelo, el ámbar es
-// de la cuenta — porque solo una de las dos dice algo sobre el agente.
+// ── Y LOS ABORTOS SE PARTEN EN TRES (2026-09-26 / 27) ───────────────
+// Primero salió el saldo: 48 de los 84 abortos eran LAS CUENTAS SIN CRÉDITO.
+// Después faltaba una columna — con dos, NUESTRO bug del reparto de reloj
+// (B45) caía en la del modelo, y estaba concentrado justo en Qwen y DeepSeek,
+// los dos que peor se ven en la tabla.
+//
+// Tres culpas, tres colores, y el orden NO es arbitrario: el rojo (del modelo)
+// va primero porque es el único que habla del agente cuyo puesto se lee. Las
+// otras dos van después, con su motivo en el title.
 function manosHtml(mn){
   if(!mn||!mn.resumen||!mn.resumen.disponible) return '';
   const r=mn.resumen;
   const filas=Object.values(mn.por_agente||{}).sort((a,b)=>b.vivas-a.vivas)
     .map(a=>{
       const modelo=a.abortadas_modelo!=null?a.abortadas_modelo:a.abortadas;
-      const saldo=a.abortadas_saldo||0;
+      const saldo=a.abortadas_saldo||0, nuestras=a.abortadas_nuestras||0;
       return esc(a.agente)+' <b>'+a.vivas+'</b>'+
-        (modelo?' <span style="color:var(--red)" title="El modelo o su proveedor no contestaron. Esto SÍ dice algo del agente.">('+modelo+' del modelo)</span>':'')+
+        (modelo?' <span style="color:var(--red)" title="Lo que quedó sin atribuir. Es una COTA SUPERIOR de la culpa del modelo, no una medición: adentro puede seguir habiendo causas nuestras que todavía no sabemos reconocer.">(≤'+modelo+' del modelo)</span>':'')+
+        (nuestras?' <span style="color:var(--nuestra)" title="NUESTRO bug: el loop arrancaba vueltas con diez segundos y se morían leyendo el cuerpo (B45). Esto no dice nada del modelo — es aritmética nuestra.">('+nuestras+' nuestras)</span>':'')+
         (saldo?' <span style="color:var(--amber)" title="La cuenta se quedó sin crédito. No dice nada del modelo: el agente no jugó menos manos por ser peor.">('+saldo+' sin saldo)</span>':'');
     })
     .join(' · ');
@@ -441,15 +449,26 @@ function rowHtml(a){
   const tope = MANOS&&MANOS.resumen&&MANOS.resumen.mas ? MANOS.resumen.mas.vivas : null;
   const pocas = !!(mn&&tope&&(mn.vivas===0 || tope/Math.max(mn.vivas,1) >= 2));
   // En la fila solo va el aborto DEL MODELO: es el único que dice algo del
-  // agente cuyo puesto se está leyendo. Los de saldo van en el title, porque
-  // explican la diferencia de manos sin ser culpa suya.
+  // agente cuyo puesto se está leyendo. Las otras dos culpas van en el title,
+  // porque explican la diferencia de manos sin ser culpa suya.
+  //
+  // El `≤` no es decoración: `abortadas_modelo` es el RESIDUAL —lo que no se
+  // pudo atribuir— y leerlo como medición convierte "no supimos de quién fue"
+  // en "fue el modelo".
   const abModelo = mn ? (mn.abortadas_modelo!=null?mn.abortadas_modelo:mn.abortadas) : 0;
   const abSaldo = mn ? (mn.abortadas_saldo||0) : 0;
+  const abNuestras = mn ? (mn.abortadas_nuestras||0) : 0;
+  const noSuyas = abSaldo + abNuestras;
   const manosTag = mn
     ? '<span class="tag manos'+(pocas?' pocas':'')+'" title="'+esc(
         mn.vivas+' corridas vivas y '+mn.abortadas+' abortadas en la temporada'+
-        (abSaldo?' — de las cuales '+abSaldo+' fueron la CUENTA SIN SALDO, no el modelo. Ésas no dicen nada sobre el agente: no jugó menos manos por ser peor.':''))+'">'+
-      mn.vivas+' manos'+(abModelo?' · '+abModelo+' abortos':'')+
+        (noSuyas?' — de las cuales '+noSuyas+' NO son suyas: '+
+          [abSaldo?abSaldo+' por la CUENTA SIN SALDO':null,
+           abNuestras?abNuestras+' por NUESTRO reparto de reloj':null].filter(Boolean).join(' y ')+
+          '. No jugó menos manos por ser peor.':'')+
+        (abModelo?' Los '+abModelo+' restantes son un residual: cota superior de su culpa, no una medición.':''))+'">'+
+      mn.vivas+' manos'+(abModelo?' · ≤'+abModelo+' abortos':'')+
+      (abNuestras?' · <span style="color:var(--nuestra)">'+abNuestras+' nuestras</span>':'')+
       (abSaldo?' · <span style="color:var(--amber)">'+abSaldo+' sin saldo</span>':'')+'</span>'
     : '';
   const mg = a.margen||null;
