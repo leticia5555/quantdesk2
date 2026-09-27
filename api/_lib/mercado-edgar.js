@@ -66,6 +66,57 @@ export const rutaCompanyConcept = (cik) =>
   `https://data.sec.gov/api/xbrl/companyconcept/CIK${cik}/dei/EntityCommonStockSharesOutstanding.json`;
 
 /**
+ * LA FORMA DE `units`, PARA PODER DEPURARLA.
+ *
+ * La corrida del 2026-09-26 murió con `TypeError: unidades.filter is not a
+ * function`: el lector hacía `json.units.shares.filter(...)` dando por hecho
+ * que la clave se llama `shares` y que su valor es un arreglo. La respuesta
+ * real no tiene por qué cumplir ninguna de las dos cosas, y el resto del
+ * código de esta casa nunca lo dio por hecho — `mercado-fase0.js:622` y
+ * `historia-ingesta.js:183` recorren `Object.entries(units)` justamente
+ * porque la clave de unidad es un dato de la respuesta, no una constante.
+ *
+ * Esta huella viaja en el motivo cuando no se encuentran filas: un
+ * `TypeError` en el log dice que algo no era un arreglo, pero no QUÉ era, y
+ * sin eso la siguiente corrida se depura a ciegas otra vez.
+ */
+export function formaDeUnits(json) {
+  if (!json || typeof json !== 'object') return `respuesta: ${json === null ? 'null' : typeof json}`;
+  const u = json.units;
+  if (u === undefined) return 'sin campo units';
+  if (u === null) return 'units: null';
+  if (Array.isArray(u)) return `units: arreglo de ${u.length}`;
+  if (typeof u !== 'object') return `units: ${typeof u}`;
+  const partes = Object.keys(u).slice(0, 6).map((k) => {
+    const v = u[k];
+    if (Array.isArray(v)) return `${k}: arreglo de ${v.length}`;
+    return `${k}: ${v === null ? 'null' : typeof v}`;
+  });
+  return `units: objeto con {${partes.join(', ')}}`;
+}
+
+/**
+ * Las filas de hechos de una respuesta `companyconcept`, venga como venga.
+ *
+ * `units` es un objeto cuyas CLAVES son nombres de unidad XBRL (`shares`,
+ * `USD`, `USD/shares`…) y cuyos valores son los arreglos de hechos. Para
+ * `dei:EntityCommonStockSharesOutstanding` la clave esperada es `shares`, y se
+ * prefiere; pero si no está o no es un arreglo, se toma la primera clave que
+ * SÍ traiga un arreglo, y se dice cuál se usó. Lo que no se hace nunca más es
+ * llamar `.filter` sobre algo que no se verificó que sea un arreglo.
+ */
+export function filasDeUnits(json, { preferida = 'shares' } = {}) {
+  const u = json && typeof json === 'object' ? json.units : null;
+  if (Array.isArray(u)) return { filas: u, unidad: null };
+  if (!u || typeof u !== 'object') return { filas: [], unidad: null };
+  if (Array.isArray(u[preferida])) return { filas: u[preferida], unidad: preferida };
+  for (const [k, v] of Object.entries(u)) {
+    if (Array.isArray(v)) return { filas: v, unidad: k };
+  }
+  return { filas: [], unidad: null };
+}
+
+/**
  * El conteo de acciones más reciente de una respuesta `companyconcept`.
  *
  * Se elige por `filed` (cuándo se presentó), no por `end`: dos trimestres
@@ -76,17 +127,19 @@ export const rutaCompanyConcept = (cik) =>
  * nos enteramos.
  */
 export function accionesDeCompanyConcept(json, { formas = FORMAS_CON_PORTADA } = {}) {
-  const unidades = (json && json.units && json.units.shares) || [];
+  const { filas: unidades, unidad } = filasDeUnits(json);
   const validas = unidades.filter((u) => {
     const v = num(u && u.val);
     return v != null && v > 0 && u.end && formas.includes(String(u.form || ''));
   });
   if (!validas.length) {
     return {
-      acciones: null, fecha_portada: null, presentado_en: null, form: null,
+      acciones: null, fecha_portada: null, presentado_en: null, form: null, unidad,
       motivo: unidades.length
-        ? `EDGAR no trae ${formas.join('/')} con conteo de acciones utilizable`
-        : 'EDGAR no reporta dei:EntityCommonStockSharesOutstanding para este CIK',
+        ? `EDGAR no trae ${formas.join('/')} con conteo de acciones utilizable (${unidades.length} hechos en "${unidad}")`
+        // La huella va PEGADA al motivo: es la diferencia entre "EDGAR no tiene
+        // el concepto" y "la respuesta vino con otra forma y no la supimos leer".
+        : `EDGAR no reporta dei:EntityCommonStockSharesOutstanding para este CIK (${formaDeUnits(json)})`,
     };
   }
   const orden = validas.slice().sort((a, b) => {
@@ -100,6 +153,7 @@ export function accionesDeCompanyConcept(json, { formas = FORMAS_CON_PORTADA } =
     fecha_portada: String(u.end),
     presentado_en: u.filed ? String(u.filed) : null,
     form: String(u.form),
+    unidad,
     fy: u.fy != null ? Number(u.fy) : null,
     fp: u.fp ? String(u.fp) : null,
     accn: u.accn ? String(u.accn) : null,
@@ -163,6 +217,58 @@ export function veredictoCapEdgar({ symbol, declarada_usd, acciones_edgar, preci
     multiplo,
     motivo: ok ? null
       : `acciones de EDGAR (${fecha_portada || 'portada sin fecha'}) × cierre difieren ${e.toFixed(1)}% de la cap declarada (${multiplo.toFixed(2)}×), techo propio ${umbral}%`,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// TRES ESTADOS, NO DOS — Y UNA CAUSA QUE NO SE INVENTA
+//
+// El 2026-09-26 el mapa decía de ORCL, MNST y APH "EDGAR no dio acciones en
+// circulación". EDGAR nunca fue consultado: el job había muerto en la primera
+// respuesta. La causa en pantalla era FALSA, y de las peores: acusa a la
+// fuente de no tener un dato que nadie le pidió, así que manda a revisar
+// EDGAR en lugar de revisar el job.
+//
+// La raíz eran dos cosas a la vez. Una, `filaVeredictoCapUs` fabricaba una
+// fila de EDGAR para TODAS las emisoras, porque preguntaba
+// `num(acciones_edgar_millones) != null` y `num(null)` devuelve **0** —
+// `Number(null)` es 0—, así que la columna vacía entraba como "EDGAR dio 0
+// acciones". Dos: aunque el guardia estuviera bien, "la columna está vacía" no
+// distingue "todavía no se preguntó" de "se preguntó y no había".
+//
+// Así que los estados son tres y cada uno se arregla distinto:
+//
+//   no_consultado         → correr ?job=acciones-edgar. NO es un hallazgo.
+//   consultado_sin_dato   → EDGAR contestó y no tiene el concepto (típico de
+//                           un ADR que presenta 20-F, o de un CIK ausente).
+//                           Se guarda CUÁNDO se preguntó y QUÉ contestó.
+//   consultado_con_dato   → hay conteo de portada: recién acá hay veredicto.
+// ═══════════════════════════════════════════════════════════════════════
+
+/** Los tres estados, nombrados. Un cuarto tendría que aparecer acá primero. */
+export const ESTADOS_EDGAR = ['no_consultado', 'consultado_sin_dato', 'consultado_con_dato'];
+
+/**
+ * En qué estado está la consulta a EDGAR de un símbolo, y cómo se dice.
+ *
+ * `acciones` es el conteo ya en acciones (no en millones). El guardia es
+ * `> 0` y no `!= null` a propósito: es el mismo `Number(null) === 0` que ya
+ * costó cuatro bugs en este archivo y en `mercado-mapa.js`.
+ */
+export function estadoEdgar({ acciones = null, consultada_en = null, motivo = null } = {}) {
+  const acc = num(acciones);
+  if (acc != null && acc > 0) return { estado: 'consultado_con_dato', consultada_en, frase: null };
+  if (consultada_en) {
+    const dia = String(consultada_en).slice(0, 10);
+    return {
+      estado: 'consultado_sin_dato', consultada_en: dia,
+      frase: `EDGAR consultado el ${dia} y no dio acciones en circulación${motivo ? `: ${motivo}` : ''}`,
+    };
+  }
+  return {
+    estado: 'no_consultado', consultada_en: null,
+    // La frase dice lo que HAY QUE HACER, no lo que la fuente no hizo.
+    frase: 'pendiente de consulta a EDGAR (falta correr ?job=acciones-edgar)',
   };
 }
 

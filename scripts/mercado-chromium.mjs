@@ -77,6 +77,20 @@ function cuadrosUs() {
     motivo: 'la cap declarada viene en TWD, no en USD',
     serie: serie(200, 21, 0.01), ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: 180 },
     ytd_motivo: null, puntos: 180, precio: 202, fecha_precio: '2026-09-18' });
+  // Los otros dos grises que NO son el de TSM, y que el 2026-09-26 mentían en la
+  // hoja: ORCL decía "EDGAR no dio acciones en circulación" sin que EDGAR
+  // hubiera sido consultado, y XNDU no tenía causa que nombrara su fuente.
+  cs.push({ symbol: 'ORCL', nombre: 'Oracle (EDGAR pendiente)', sector: 'XLK', cap: null,
+    cap_fuente: null, estado: 'gris_punteado', cap_auditable: true, cap_moneda: 'USD',
+    cap_edgar_estado: 'no_consultado',
+    motivo: 'la cap declarada difiere -10.7% de acciones×precio (0.89×), techo 5%; pendiente de consulta a EDGAR (falta correr ?job=acciones-edgar)',
+    serie: serie(360, 21, 0.006), ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: 300 },
+    ytd_motivo: null, puntos: 180, precio: 362, fecha_precio: '2026-09-18' });
+  cs.push({ symbol: 'XNDU', nombre: 'Xanadu Quantum (sin moneda)', sector: 'XLK', cap: null,
+    cap_fuente: null, estado: 'gris_punteado', cap_auditable: false, cap_moneda: null,
+    motivo: 'sin moneda declarada por Finnhub (la cap viene de neon:arena_market_cap)',
+    serie: serie(11, 21, 0.03), ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: 9 },
+    ytd_motivo: null, puntos: 180, precio: 11.4, fecha_precio: '2026-09-18' });
   cs.push({ symbol: 'SINYTD', nombre: 'Sin ancla', sector: 'XLF', cap: 4e9,
     cap_fuente: 'finnhub:metric', serie: serie(30, 21, 0.02), ytd: null,
     ytd_motivo: 'la serie empieza en 2026-07-01 y no llega al año anterior: no hay cierre de fin de año contra el cual anclar',
@@ -88,8 +102,8 @@ const FIXTURES = {
     mapa: 'us', bolsa: 'us', cuadros: cuadrosUs(),
     mas: { n: 253, cap: 4.2e12, pct: 18.7, sin_cap_excluidos: 12, nota: '12 nombres quedan fuera del porcentaje porque no tienen capitalización medida' },
     fuente: { cuadros: 'neon:mercado_universo_us (sector y cap)', series: 'neon:mercado_precios_us (cierre y cierre ajustado, cosecha diaria)' },
-    faltantes: { total: 3, por_motivo: { no_hay_serie: 1, sin_ancla_ytd: 1, cap_sin_verificar: 1 },
-      sin_precio: 1, sin_periodo: 0, sin_ancla_ytd: 1, sin_cap_verificada: 1, ejemplos: [] },
+    faltantes: { total: 5, por_motivo: { no_hay_serie: 1, sin_ancla_ytd: 1, cap_sin_verificar: 3 },
+      sin_precio: 1, sin_periodo: 0, sin_ancla_ytd: 1, sin_cap_verificada: 3, ejemplos: [] },
     periodos: ['1D', '1S', '1M', 'YTD'], generado_en: '2026-09-21T22:00:00.000Z',
     ultimo_cierre: '2026-09-18',
   },
@@ -293,6 +307,38 @@ try {
     chicos.total === dibujables, `${chicos.total} dibujados de ${dibujables} dibujables`);
   chequeo('los cuadros sin letra siguen siendo tocables', chicos.todosTocables, JSON.stringify(chicos));
 
+  // ── NINGÚN CUADRO CON SITIO SE QUEDA SIN TEXTO ─────────────────────
+  // La talla fija de 13px dejaba sin % a V, MA, JNJ, ABBV, BAC, GS y GOOGL
+  // teniendo espacio de sobra, y a los medianos sin nada. El umbral de 900px²
+  // (30×30) es el tamaño a partir del cual entra un ticker de 4 letras a 8px
+  // con sus márgenes: por debajo de ahí, ir sin letra es correcto.
+  const mudos = await p.evaluate(() => {
+    const out = { total: 0, mudos: [], conDos: 0, tallas: {} };
+    for (const e of document.querySelectorAll('.cuadro')) {
+      const r = e.getBoundingClientRect();
+      const area = r.width * r.height;
+      const sym = (e.querySelector('.sym') || {}).textContent || '';
+      const val = (e.querySelector('.val') || {}).textContent || '';
+      if (sym) {
+        const f = Math.round(parseFloat(getComputedStyle(e.querySelector('.sym')).fontSize));
+        out.tallas[f] = (out.tallas[f] || 0) + 1;
+      }
+      if (val) out.conDos++;
+      if (area >= 900) {
+        out.total++;
+        if (!sym) out.mudos.push({ w: Math.round(r.width), h: Math.round(r.height), aria: e.getAttribute('aria-label') });
+      }
+    }
+    return out;
+  });
+  chequeo('ningún cuadro de ≥900px² se queda sin texto',
+    mudos.mudos.length === 0, `${mudos.mudos.length} de ${mudos.total}: ${JSON.stringify(mudos.mudos.slice(0, 5))}`);
+  // Y la fuente escala de verdad: si todas las tallas fueran iguales, seguiría
+  // siendo el tamaño fijo con otro número.
+  chequeo('la fuente escala con el cuadro, no es una talla fija',
+    Object.keys(mudos.tallas).length >= 3, JSON.stringify(mudos.tallas));
+  chequeo('los cuadros grandes llevan también el %', mudos.conDos > 0, `${mudos.conDos} con dos líneas`);
+
   // REGLA 5: cero logos en el mapa. Ni <img>, ni background-image.
   const imgs = await p.evaluate(() => {
     const cont = document.getElementById('lienzo') || document.body;
@@ -336,6 +382,11 @@ try {
   await p.locator('.cabecera').first().tap();
   await p.waitForSelector('.volver');
   chequeo('un tap en la cabecera de sector abre ese sector', (await p.locator('.volver').count()) === 1);
+  // Las abreviaturas ("Con.", "Ser.", "Inm.", "Mat.") son para la cabecera
+  // apretada del primer nivel. Al entrar hay sitio: el nombre va completo.
+  const volver = await p.locator('.volver').first().innerText();
+  chequeo('al entrar al sector, el nombre va COMPLETO, sin abreviatura',
+    !/\.\s*$/.test(volver.trim()) && volver.trim().length > 4, volver);
   chequeo('entrar a un sector es estado en la URL', p.url().includes('sector='));
 
   // TAP REAL en un nombre → hoja
@@ -403,7 +454,31 @@ try {
   chequeo('el pie dice "sin capitalización verificada", no "cuadros sin dato completo"',
     /sin capitalización verificada/.test(pie) && !/cuadros sin dato completo/.test(pie), pie);
   chequeo('y no le suma los símbolos sin precio, que no son cuadros todavía',
-    /1 sin capitalización verificada/.test(pie), pie);
+    /3 sin capitalización verificada/.test(pie), pie);
+
+  // ── LA CAUSA DE UN GRIS NO SE INVENTA ──────────────────────────────
+  // El 2026-09-26, en el iPhone: ORCL, MNST y APH decían "EDGAR no dio acciones
+  // en circulación" y EDGAR nunca había sido consultado —el job había muerto en
+  // la primera respuesta—. Una causa falsa manda a revisar la fuente en lugar
+  // del job, y es el peor gris: el que parece resuelto.
+  for (const [sym, espera, prohibido] of [
+    ['ORCL', /pendiente de consulta a EDGAR/, /EDGAR no dio/],
+    ['XNDU', /sin moneda declarada por Finnhub/, /USD/],
+  ]) {
+    await p.goto(`${BASE}/mercado?mapa=us&sector=XLK&symbol=${sym}`, { waitUntil: 'networkidle' });
+    await p.waitForSelector('.hoja[data-abierta="1"]');
+    const hoja = await p.locator('#hojaCuerpo').innerText();
+    chequeo(`${sym}: la hoja dice la causa REAL`, espera.test(hoja), hoja.slice(0, 140).replace(/\n/g, ' '));
+    chequeo(`${sym}: y no la falsa`, !prohibido.test(hoja), hoja.slice(0, 140).replace(/\n/g, ' '));
+    await p.locator('#cerrar').tap();
+  }
+  // Y el estado de la consulta se puede leer sin interpretar prosa.
+  await p.goto(`${BASE}/mercado?mapa=us&sector=XLK&symbol=ORCL`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('.hoja[data-abierta="1"]');
+  const hojaOrcl = await p.locator('#hojaCuerpo').innerText();
+  chequeo('la hoja trae el renglón "consulta a EDGAR: pendiente"',
+    /consulta a EDGAR/.test(hojaOrcl) && /pendiente/.test(hojaOrcl), hojaOrcl.slice(0, 200).replace(/\n/g, ' '));
+  await p.locator('#cerrar').tap();
 
   // México: el chip cambia de bolsa y el gris lleva su motivo
   await p.goto(`${BASE}/mercado?mapa=mx&periodo=1M`, { waitUntil: 'networkidle' });

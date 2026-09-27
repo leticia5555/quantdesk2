@@ -30,9 +30,10 @@
       "clave": "VALE",
       "market_cap_usd": 60474000000,
       "fuente": "yahoo-finance-market-cap-intraday",
-      "capturada_en": "2026-09-18",
+      "capturada_en": "2026-09-23",
+      "cotizacion_marcada_en": "2026-09-18",
       "vigente_hasta": "2026-09-30",
-      "nota": "múltiplo observado 4.8334 con cap declarada en BRL; Yahoo marcaba 2026-09-18 al capturar"
+      "nota": "múltiplo observado 4.8334 con cap declarada en BRL. `capturada_en` es el 23, el día en que Lety la leyó: las cuatro se capturaron el 2026-09-23 al cierre. El 2026-09-18 es lo que Yahoo ESTAMPABA en la cotización, y estaba guardado por error como fecha de captura. La medición lo confirma: con el cierre del 18 la razón cruda da 1.043 y con uno de la semana del 23 da ~1.00, o sea que la cap intradía de Yahoo se calculó con un precio fresco aunque el sello de la cotización viniera atrasado."
     },
     {
       "clave": "ASML",

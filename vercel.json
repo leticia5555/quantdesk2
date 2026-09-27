@@ -195,7 +195,7 @@
     },
     {
       "path": "/api/bmv-harvest?job=precios",
-      "schedule": "10 22 * * 1-5"
+      "schedule": "10,40 22 * * 1-5"
     },
     {
       "path": "/api/mercado-precios?job=us",

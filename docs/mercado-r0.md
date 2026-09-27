@@ -1267,3 +1267,115 @@ Dos arreglos estructurales, no dos recordatorios:
 `tests/mercado-cap-coherencia.test.mjs` es el candado: compara los conteos y el
 veredicto símbolo por símbolo de los dos caminos. Verificado devolviéndole el bug
 al mapa —quitarle las referencias— y las tres sub-pruebas se ponen rojas.
+
+## 10. R0(i) — la corrida del 2026-09-26, y el gris que mentía
+
+Tres fallas, y la tercera es la peor de las que este mapa ha tenido: una causa
+FALSA en pantalla.
+
+### 10.1 `TypeError: unidades.filter is not a function` — y 21 símbolos con él
+
+`accionesDeCompanyConcept` hacía `json.units.shares.filter(...)`, dando por
+hecho dos cosas de la respuesta de `companyconcept`: que la clave de unidad se
+llama `shares` y que su valor es un arreglo. Ninguna de las dos es un
+invariante de la fuente, y el resto de este repo nunca las dio por hechas —
+`mercado-fase0.js:622` y `historia-ingesta.js:183` recorren
+`Object.entries(units)` precisamente porque la clave de unidad es un dato de la
+respuesta, no una constante.
+
+Dos arreglos, y el segundo importa más que el primero:
+
+1. **El lector no asume forma.** `filasDeUnits` prefiere `shares`, y si no está
+   o no es un arreglo toma la primera clave que sí traiga uno, diciendo cuál usó
+   (`unidad` viaja en el resultado). Nunca más se llama `.filter` sobre algo sin
+   verificar. Si no hay filas, el motivo arrastra la **huella** de lo que llegó
+   (`formaDeUnits`: `units: objeto con {shares: number}`), porque un `TypeError`
+   en el log dice que algo no era un arreglo y no QUÉ era.
+2. **Un símbolo no se lleva el job.** El `for` de `?job=acciones-edgar` envuelve
+   cada símbolo en `try/catch`; la excepción se cuenta en `cuenta.excepcion` y se
+   reporta en `fallas[]` con la huella. La corrida del 26 perdió los 21
+   candidatos por una excepción en el primero.
+
+**Sobre el fixture de `tests/mercado-edgar.test.mjs`:** NO está grabado de una
+llamada real. El contenedor donde se construye esto no tiene egress a sec.gov —
+el proxy deniega el CONNECT a `data.sec.gov:443` por política, igual que
+documenta `docs/historia-fase0.md` §0 — así que está reconstruido del esquema
+que publica la SEC y del que ya consume el código probado del repo. Por eso el
+motivo arrastra la huella: la primera corrida en prod con `fallas` en la salida
+dice la forma REAL si todavía no coincide.
+
+### 10.2 Tres estados de EDGAR, no dos
+
+En el iPhone, ORCL, MNST y APH decían **"EDGAR no dio acciones en
+circulación"**. EDGAR nunca fue consultado: el job había muerto. Una causa falsa
+manda a revisar la fuente en lugar del job, y es el peor gris — el que parece
+resuelto.
+
+La raíz eran dos cosas a la vez:
+
+- **`num(null) === 0`, cuarta vez.** `filaVeredictoCapUs` preguntaba
+  `num(acciones_edgar_millones) != null`, y `Number(null)` es `0`, así que la
+  columna vacía entraba como "EDGAR dio 0 acciones" para las 569 emisoras. Peor
+  que la causa falsa: `veredictoCapEdgar` devuelve `auditable: false` sin
+  acciones, así que los 21 hallazgos en USD pasaron a contarse como "insumos que
+  faltan" y la auditoría reportó **3 hallazgos donde había 21**. El guardia
+  correcto es `> 0`.
+- **La columna vacía no distingue dos preguntas.** "No se preguntó" y "se
+  preguntó y no había" se arreglan distinto. Ahora `mercado_universo_us` guarda
+  `edgar_consultada_en` y `edgar_consulta_motivo`, el job los escribe para TODO
+  símbolo intentado (incluidos `sin CIK` y `404`, que son respuestas) y
+  `estadoEdgar` devuelve uno de tres: `no_consultado` → "pendiente de consulta a
+  EDGAR (falta correr ?job=acciones-edgar)"; `consultado_sin_dato` → "EDGAR
+  consultado el AAAA-MM-DD y no dio acciones en circulación: …";
+  `consultado_con_dato` → hay veredicto. Un 5xx o un cuerpo no-JSON **no** se
+  registra como consulta: se vuelve a intentar.
+
+`tests/mercado-cap-coherencia.test.mjs` fija que el job y el mapa coincidan
+también en cuál de los tres estados es, y que ninguna causa diga "EDGAR no dio".
+
+### 10.3 Contra qué día se despeja la razón del ADR
+
+`?job=razon-adr` **sí** estaba usando el cierre de `capturada_en`: lo prueba el
+propio síntoma. VALE daba 0.999 con el cierre del 25 y pasó a 1.043 sin que ese
+último cierre cambiara — sólo el ancla puede mover ese número. `fecha_precio` en
+la salida era el último cierre (informativo) y se leía como "el precio que usó
+la razón"; ahora se llama `fecha_ultimo_cierre` y al lado va
+`precio_usado_de: 'último cierre con fecha ≤ capturada_en'` con
+`fecha_cierre_usado`/`cierre_usado`.
+
+Lo que quedó al descubierto es otra cosa: **no sabemos con qué precio calculó
+Yahoo su "Market Cap (intraday)"**. De VALE sabemos dos fechas distintas — el
+2026-09-23, cuando Lety la leyó, y el 2026-09-18, que era lo que Yahoo estampaba
+en la cotización — y con un techo de 2% elegir mal por un par de sesiones alcanza
+para mandar a gris una emisora cuya razón es obviamente 1:1.
+
+Dos cosas, y ninguna afloja el techo:
+
+1. **`capturada_en` de VALE es el 2026-09-23**, el día en que se leyó, como las
+   otras tres. El 18 queda declarado aparte en `cotizacion_marcada_en`. La
+   medición lo respalda: la cap reconcilia contra un precio de la semana del 23,
+   o sea que Yahoo usó un precio fresco aunque el sello viniera atrasado.
+2. **La ventana**, que es un instrumento y no una conclusión: `ventanaDeCierres`
+   + `razonesPorCierre` calculan la razón contra cada cierre de ±5 sesiones
+   alrededor de la captura y la salida del job trae `ventana.alguno_dentro`,
+   `ventana.mejor` y `reconcilian_en_otro_dia`. Una corrida contesta si el
+   desajuste es del día elegido o de la referencia. **El veredicto sigue usando
+   un solo cierre**, el de `capturada_en`: elegir "el día que mejor queda" o
+   subir el 2% sería mover el arco, que es exactamente lo que el 5% de G2 y el
+   10% de EDGAR están separados para evitar.
+
+### 10.4 XNDU
+
+`XNDU` es **Xanadu Quantum Technologies** (sector XLK). Su cap entró por
+`neon:arena_market_cap`, un camino que nunca guardó `profile2.currency`, así que
+no declara moneda. **No sale del universo** (decisión de Lety, 2026-09-26): se
+dibuja gris punteado con causa `sin moneda declarada por Finnhub (la cap viene de
+neon:arena_market_cap)`. La causa nombra la fuente a propósito, para no
+atribuirle a Finnhub un dato que quizá no dio él.
+
+### 10.5 El SQL de los jobs también se prepara
+
+`SQL_CAP_US` exporta las consultas de `insumosCapUs` y `?job=razon-adr`, y
+`tests/mercado-sql.test.mjs` les hace `PREPARE` contra un Postgres real junto a
+las del mapa. La ventana nueva tiene tres parámetros: un `$3` sin ligar sólo se
+habría visto como un 500 en el navegador.

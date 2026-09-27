@@ -499,3 +499,74 @@ test('un sector entero sin verificadas cae al mínimo global, y todo gris es una
   assert.equal(solas.verificadas, 0);
   assert.deepEqual(solas.grupos[0].items.map((i) => i.area), [1, 1]);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// LAS LETRAS ESCALAN CON EL CUADRO
+//
+// Con la talla fija de 13px, V, MA, JNJ, ABBV, BAC, GS y GOOGL salían SIN el %
+// teniendo espacio de sobra, y los medianos sin nada. Tener sitio y no usarlo es
+// tan malo como no tenerlo: el cuadro más grande de la pantalla es el que más
+// puede decir.
+// ═══════════════════════════════════════════════════════════════════════
+test('un cuadro grande usa letra grande y lleva las dos líneas', () => {
+  const e = TM.etiquetaCuadro(120, 80, { ticker: 'GOOGL', pct: '+20.9%' });
+  assert.equal(e.font, 18, 'el techo es 18px');
+  assert.equal(e.ticker, 'GOOGL');
+  assert.equal(e.pct, '+20.9%');
+  assert.ok(e.font_pct < e.font, 'el % va una talla menor');
+});
+
+test('la talla BAJA para que entren las dos líneas, en vez de quedarse sin %', () => {
+  // 30×30: a 18px no caben dos líneas, pero a 9px sí. Antes esto salía con
+  // ticker de 13 y sin %.
+  const e = TM.etiquetaCuadro(30, 30, { ticker: 'GS', pct: '+2.0%' });
+  assert.ok(e.pct, 'lleva el %');
+  assert.ok(e.font < 18 && e.font >= 8, `font ${e.font}`);
+});
+
+test('si no caben dos líneas a ninguna talla, va el ticker con la más grande que entre', () => {
+  // Ancho de sobra, alto para una sola línea.
+  const e = TM.etiquetaCuadro(60, 15, { ticker: 'V', pct: '+1.1%' });
+  assert.equal(e.ticker, 'V');
+  assert.equal(e.pct, null);
+  assert.equal(e.font, 15, 'la más grande que cabe en 15px de alto');
+});
+
+test('si no cabe ni a 8px, el cuadro va de color y sin texto', () => {
+  assert.equal(TM.etiquetaCuadro(14, 8, { ticker: 'BE', pct: '0.0%' }).ticker, null);
+  assert.equal(TM.etiquetaCuadro(3, 3, { ticker: 'XX', pct: '0.0%' }).ticker, null);
+});
+
+test('la escala es monótona: un cuadro más grande nunca lleva letra más chica', () => {
+  let anterior = 0;
+  for (const w of [30, 40, 60, 90, 140, 200]) {
+    const e = TM.etiquetaCuadro(w, w, { ticker: 'AAPL', pct: '+1.0%' });
+    assert.ok(e.font >= anterior, `${w}px bajó de ${anterior} a ${e.font}`);
+    anterior = e.font;
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA CAPITALIZACIÓN SE LEE, NO SE DESCIFRA
+//
+// La hoja decía "5.51 B" para NVDA: en inglés "B" es billion —mil millones—, y
+// en español billón es 10¹². Mil veces de diferencia en el número más grande de
+// la pantalla, sin forma de saber cuál era. Y "790.8 mm" no existe fuera de esa
+// pantalla.
+// ═══════════════════════════════════════════════════════════════════════
+test('qdCap escribe la escala en español y con la moneda', () => {
+  assert.equal(QD.qdCap(5.51e12, 'USD'), '5.51 billones USD');
+  assert.equal(QD.qdCap(790.8e9, 'MXN'), '790.8 mil millones MXN');
+  assert.equal(QD.qdCap(60.5e9, 'USD'), '60.5 mil millones USD');
+});
+
+test('qdCap no dice "0" cuando no hay dato: dice "—"', () => {
+  // `Number(null)` es 0 y `Number.isFinite(0)` es true: preguntar sólo por
+  // finitud devolvía "0 USD" para una cap que nadie midió.
+  for (const v of [null, undefined, 0, NaN, '']) assert.equal(QD.qdCap(v, 'USD'), '—', `valor ${String(v)}`);
+});
+
+test('qdCap usa el singular cuando toca', () => {
+  assert.equal(QD.qdCap(1e12, 'USD'), '1.00 billón USD');
+  assert.equal(QD.qdCap(1e6, 'MXN'), '1.0 millón MXN');
+});

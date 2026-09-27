@@ -231,7 +231,8 @@ function anchoTexto(txt, fontPx, factor) {
  */
 function etiquetaCuadro(w, h, opts) {
   const o = opts || {};
-  const font = o.fontPx || 11;
+  const max = o.fontPx || 18;
+  const min = o.fontMin || 8;
   const factor = o.factor || 0.62;
   const margen = o.margen == null ? 4 : o.margen;
   const ticker = o.ticker ? String(o.ticker) : '';
@@ -240,29 +241,40 @@ function etiquetaCuadro(w, h, opts) {
   const utilW = w - margen * 2;
   if (!ticker || utilW <= 0 || h <= 0) return { ticker: null, pct: null, font: null };
 
-  // ESCALERA DE TAMAÑOS, como Finviz. Con un solo tamaño, un cuadro que le
-  // queda 2px corto se va sin letra aunque haya sitio de sobra para una letra
-  // un punto más chica. Se prueba de mayor a menor y se usa la primera que
-  // entra — nunca se recorta el texto para que quepa.
+  // LA FUENTE ESCALA CON EL CUADRO, como Finviz.
+  //
+  // Antes había una talla fija (13px) y una escalera que sólo bajaba: un cuadro
+  // grande usaba la misma letra que uno mediano y le sobraba sitio, así que V,
+  // MA, JNJ, ABBV, BAC, GS y GOOGL salían SIN el % teniendo espacio de más.
+  // Tener sitio y no usarlo es tan malo como no tenerlo: el cuadro más grande
+  // de la pantalla es el que más puede decir.
+  //
+  // Ahora se prueba de 18px hacia abajo hasta 8px, buscando en este orden:
+  //
+  //   1. la talla más grande en la que caben TICKER + % (dos líneas),
+  //   2. si en ninguna caben las dos, la más grande en la que cabe el ticker,
+  //   3. si tampoco a 8px, el cuadro va de color y sin texto.
+  //
+  // Se prefieren las dos líneas antes que una letra más grande: el % es la
+  // mitad de lo que el cuadro tiene que decir, y un ticker enorme sin su número
+  // es un cuadro que ocupa mucho y dice poco.
   //
   // El ANCHO lleva margen —el texto no puede tocar el borde— pero el ALTO no:
   // un cuadro de 12px con letra de 11 sí lleva su ticker, apretado y legible.
-  const min = o.fontMin || 8;
-  // La escalera baja HASTA `fontMin`, no tres puntos y para. Con base 13 se
-  // cortaba en 10 y los cuadros de ~28px se iban sin letra teniendo sitio
-  // para una de 8 — justo los que la regla quiere rescatar.
-  const escalera = o.escalera || Array.from({ length: Math.max(0, font - min + 1) }, (_, i) => font - i);
-  let elegida = null;
-  for (const f of escalera) {
-    if (h >= f && anchoTexto(ticker, f, factor) <= utilW) { elegida = f; break; }
-  }
-  if (elegida == null) return { ticker: null, pct: null, font: null };
+  const tallaPct = (f) => Math.max(min - 1, f - 2);   // el % va una talla menor
+  const cabeTicker = (f) => h >= f && anchoTexto(ticker, f, factor) <= utilW;
+  const cabenDos = (f) => pct != null
+    && h >= f + tallaPct(f) + 2
+    && anchoTexto(ticker, f, factor) <= utilW
+    && anchoTexto(pct, tallaPct(f), factor) <= utilW;
 
-  const fontPct = Math.max(min - 1, elegida - 2);
-  const cabePct = pct != null
-    && h >= elegida + fontPct + 2
-    && anchoTexto(pct, fontPct, factor) <= utilW;
-  return { ticker, pct: cabePct ? pct : null, font: elegida, font_pct: cabePct ? fontPct : null };
+  for (let f = max; f >= min; f--) {
+    if (cabenDos(f)) return { ticker, pct, font: f, font_pct: tallaPct(f) };
+  }
+  for (let f = max; f >= min; f--) {
+    if (cabeTicker(f)) return { ticker, pct: null, font: f, font_pct: null };
+  }
+  return { ticker: null, pct: null, font: null };
 }
 
 if (typeof module !== 'undefined' && module.exports) {

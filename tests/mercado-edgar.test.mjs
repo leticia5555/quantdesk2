@@ -176,3 +176,117 @@ test('cada descarte se cuenta por su causa: un cero tiene que poder depurarse', 
     filas: 5, sin_precio: 1, sin_acciones: 1, verificadas: 1, no_usd: 1, ya_con_edgar: 0, candidatos: 1,
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA FORMA DE LA RESPUESTA — EL TypeError QUE SE LLEVÓ 21 SÍMBOLOS
+//
+// Corrida del 2026-09-26 en prod: `TypeError: unidades.filter is not a
+// function` en la primera respuesta, y con ella los 21 candidatos. El lector
+// daba por hecho dos cosas de `units`: que la clave se llama `shares` y que su
+// valor es un arreglo. Ninguna de las dos es un invariante de la fuente — el
+// resto de esta casa nunca lo dio por hecho (`mercado-fase0.js:622` y
+// `historia-ingesta.js:183` recorren `Object.entries(units)`).
+//
+// ADVERTENCIA SOBRE ESTE FIXTURE, que hay que leer antes de creerle: este
+// contenedor NO tiene salida a sec.gov —el proxy deniega el CONNECT a
+// data.sec.gov:443 por política, igual que documenta docs/historia-fase0.md
+// §0— así que NO está grabado de una llamada real. Está reconstruido del
+// esquema que publica la SEC para `companyconcept` y del que ya consume el
+// código probado de este repo, recortado a tres hechos. La primera corrida en
+// prod con `fallas` en la salida dirá la forma REAL si todavía no coincide:
+// para eso el motivo ahora arrastra la huella de `units`.
+// ═══════════════════════════════════════════════════════════════════════
+import { filasDeUnits, formaDeUnits, estadoEdgar, ESTADOS_EDGAR } from '../api/_lib/mercado-edgar.js';
+
+const COMPANYCONCEPT_ORCL = {
+  cik: 1341439,
+  taxonomy: 'dei',
+  tag: 'EntityCommonStockSharesOutstanding',
+  label: 'Entity Common Stock, Shares Outstanding',
+  description: 'Indicate number of shares or other units outstanding of each of registrant\'s classes of capital or common stock...',
+  entityName: 'Oracle Corporation',
+  units: {
+    shares: [
+      { end: '2025-03-07', val: 2_802_000_000, accn: '0000950170-25-034563', fy: 2025, fp: 'Q3', form: '10-Q', filed: '2025-03-11', frame: 'CY2025Q1I' },
+      { end: '2025-06-13', val: 2_811_000_000, accn: '0000950170-25-085487', fy: 2025, fp: 'FY', form: '10-K', filed: '2025-06-20' },
+      { end: '2025-09-05', val: 2_818_000_000, accn: '0000950170-25-121463', fy: 2026, fp: 'Q1', form: '10-Q', filed: '2025-09-09' },
+    ],
+  },
+};
+
+test('la forma real de companyconcept se lee, y gana el filing más nuevo', () => {
+  const a = accionesDeCompanyConcept(COMPANYCONCEPT_ORCL);
+  assert.equal(a.acciones, 2_818_000_000);
+  assert.equal(a.form, '10-Q');
+  assert.equal(a.fecha_portada, '2025-09-05');
+  assert.equal(a.presentado_en, '2025-09-09');
+  assert.equal(a.unidad, 'shares', 'se dice de qué clave de unidad salió');
+});
+
+test('`units` con un valor que NO es arreglo ya no tira TypeError', () => {
+  // Es el caso exacto que mató la corrida. Lo que tiene que pasar es un motivo
+  // con la huella de la forma, no una excepción.
+  for (const units of [{ shares: null }, { shares: 42 }, { shares: { 0: {} } }, {}, null, [], 'shares']) {
+    const a = accionesDeCompanyConcept({ units });
+    assert.equal(a.acciones, null, `units=${JSON.stringify(units)}`);
+    assert.equal(typeof a.motivo, 'string');
+  }
+  // Y la huella dice QUÉ llegó: un TypeError en el log sólo dice que algo no
+  // era un arreglo.
+  const a = accionesDeCompanyConcept({ units: { shares: 42 } });
+  assert.match(a.motivo, /units: objeto con \{shares: number\}/);
+});
+
+test('si la clave de unidad no es "shares", se usa la que traiga el arreglo y se dice cuál', () => {
+  const a = accionesDeCompanyConcept({
+    units: { 'shares/item': [{ end: '2025-09-05', val: 10, form: '10-Q', filed: '2025-09-09' }] },
+  });
+  assert.equal(a.acciones, 10);
+  assert.equal(a.unidad, 'shares/item');
+});
+
+test('se prefiere `shares` cuando hay varias unidades', () => {
+  const { filas, unidad } = filasDeUnits({ units: { USD: [{ val: 1 }, { val: 2 }], shares: [{ val: 9 }] } });
+  assert.equal(unidad, 'shares');
+  assert.equal(filas.length, 1);
+});
+
+test('la huella de units nombra cada caso sin volcar la respuesta entera', () => {
+  assert.equal(formaDeUnits(undefined), 'respuesta: undefined');
+  assert.equal(formaDeUnits(null), 'respuesta: null');
+  assert.equal(formaDeUnits({}), 'sin campo units');
+  assert.equal(formaDeUnits({ units: null }), 'units: null');
+  assert.equal(formaDeUnits({ units: [1, 2, 3] }), 'units: arreglo de 3');
+  assert.equal(formaDeUnits({ units: 'x' }), 'units: string');
+  assert.equal(formaDeUnits(COMPANYCONCEPT_ORCL), 'units: objeto con {shares: arreglo de 3}');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// TRES ESTADOS: NO CONSULTADO ≠ CONSULTADO SIN DATO
+//
+// El mapa decía de ORCL, MNST y APH "EDGAR no dio acciones en circulación"
+// cuando EDGAR nunca fue consultado —el job había muerto—. Una causa falsa
+// manda a revisar la fuente en lugar del job, y es la peor clase de gris: el
+// que parece resuelto.
+// ═══════════════════════════════════════════════════════════════════════
+test('sin consulta la causa es una TAREA, no una acusación a EDGAR', () => {
+  const e = estadoEdgar({});
+  assert.equal(e.estado, 'no_consultado');
+  assert.match(e.frase, /pendiente de consulta a EDGAR/);
+  assert.doesNotMatch(e.frase, /no dio/, 'no se le puede achacar nada a quien no se le preguntó');
+});
+
+test('consultado sin dato dice CUÁNDO se preguntó y QUÉ contestó', () => {
+  const e = estadoEdgar({ consultada_en: '2026-09-27T14:03:00.000Z', motivo: 'sin CIK en el índice de la SEC' });
+  assert.equal(e.estado, 'consultado_sin_dato');
+  assert.equal(e.consultada_en, '2026-09-27');
+  assert.match(e.frase, /consultado el 2026-09-27/);
+  assert.match(e.frase, /sin CIK en el índice de la SEC/);
+});
+
+test('un conteo de 0 no es un conteo: `num(null)` da 0 y ésa ya costó cuatro bugs', () => {
+  assert.equal(estadoEdgar({ acciones: 0, consultada_en: '2026-09-27' }).estado, 'consultado_sin_dato');
+  assert.equal(estadoEdgar({ acciones: 0 }).estado, 'no_consultado');
+  assert.equal(estadoEdgar({ acciones: 2_818_000_000 }).estado, 'consultado_con_dato');
+  assert.deepEqual(ESTADOS_EDGAR, ['no_consultado', 'consultado_sin_dato', 'consultado_con_dato']);
+});
