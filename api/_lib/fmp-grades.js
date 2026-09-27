@@ -30,19 +30,52 @@
 
 const BASE = 'https://financialmodelingprep.com/stable';
 
-// Tope de filas por símbolo. La serie es mensual, así que 1000 son ~83 años:
-// alto a propósito, porque la Fase 0 tiene que MEDIR hasta dónde llega la
-// historia y un límite bajo contestaría la pregunta con el límite. Es la
-// cicatriz del `limit=5` del censo de Polymarket, que disfrazó un tope propio
-// de un hallazgo sobre la fuente.
+// ═══════════════════════════════════════════════════════════════════
+// EL HALLAZGO CONTRAINTUITIVO: **NO SE MANDA `limit`.**
 //
-// PERO un `limit` fuera del rango que acepta el plan es una de las formas en que
-// FMP contesta 400, así que `gradesHistorical` acepta `limit: null` (URL sin el
-// parámetro) y el smoke prueba las variantes. "Alto a propósito" no sirve si el
-// servidor rechaza el número.
-const LIMIT_ALTO = 1000;
+// Medido, no supuesto:
+//   · `limit=1000`  → HTTP 402, el plan acepta `limit` solo entre 0 y 10.
+//   · `limit=10`    → 10 meses.
+//   · SIN `limit`   → **88 meses** (2019-01 → 2026-09).
+//
+// O sea que el parámetro que existe para "traer más" es el que RECORTA: pedir
+// sin él da 8.8× más historia que pedir el máximo que el plan acepta. Se olvida
+// fácil y se "arregla" fácil en la dirección equivocada (subir el limit), así que
+// queda escrito acá y en docs/grades-backtest-scope.md.
+//
+// La versión anterior de este comentario decía que el limit iba "alto a
+// propósito" para medir la historia. Era exactamente al revés: cualquier limit
+// la recorta o hace que FMP rechace la llamada.
+//
+// `limit` sigue siendo un parámetro de `gradesHistorical` porque el smoke tiene
+// que poder probar las variantes; el DEFECTO es null.
+// ═══════════════════════════════════════════════════════════════════
+const LIMIT_POR_DEFECTO = null;          // sin el parámetro: la historia completa
+const LIMIT_MAXIMO_DEL_PLAN = 10;        // medido: el plan acepta 0..10
+const LIMIT_SMOKE_ALTO = 1000;           // el valor que el smoke usa para provocar el 402
 
 const VALID_TICKER = /^[A-Z][A-Z.\-]{0,9}$/;
+
+// ¿El cuerpo de un 402 habla de un PARÁMETRO o de un plan? Lo decide el texto,
+// no una corazonada. Se exige el NOMBRE de un parámetro conocido, y se excluye
+// cualquier mención a la key para no confundir un rechazo de credencial.
+const PARAMETROS_CONOCIDOS = ['limit', 'symbol', 'from', 'to', 'page', 'period', 'datatype'];
+
+function mencionaParametro(texto) {
+  const t = String(texto || '');
+  if (!t) return { menciona: false, parametro: null, rango: null };
+  // "Invalid API key" nombra una credencial, no un parámetro de consulta.
+  if (/\bapi\s*-?\s?keys?\b/i.test(t)) return { menciona: false, parametro: null, rango: null };
+  const encontrado = PARAMETROS_CONOCIDOS.find((k) => new RegExp('\\b' + k + '\\b', 'i').test(t));
+  if (!encontrado) return { menciona: false, parametro: null, rango: null };
+  // El rango, si el mensaje lo trae ("between 0 and 10", "0 to 10", "max 10").
+  let rango = null;
+  const entre = t.match(/between\s+(-?\d+)\s+and\s+(-?\d+)/i) || t.match(/\b(-?\d+)\s*(?:to|-|–)\s*(-?\d+)\b/);
+  const maximo = t.match(/\bmax(?:imum)?(?:\s+is)?\s*[:=]?\s*(-?\d+)/i);
+  if (entre) rango = { min: Number(entre[1]), max: Number(entre[2]) };
+  else if (maximo) rango = { min: null, max: Number(maximo[1]) };
+  return { menciona: true, parametro: encontrado, rango };
+}
 
 // Una sola forma de fila, con los cinco conteos numéricos y la fecha en ISO.
 // Lo que no se puede leer se descarta CONTADO, no en silencio.
@@ -71,7 +104,7 @@ function normalizaGrades(crudo) {
 // Devuelve SIEMPRE un objeto con `ok` y, si falló, el motivo y la muestra del
 // cuerpo. Nunca lanza.
 async function gradesHistorical(symbol, {
-  apiKey = process.env.FMP_API_KEY, limit = LIMIT_ALTO, timeoutMs = 15000, fetchImpl = fetch,
+  apiKey = process.env.FMP_API_KEY, limit = LIMIT_POR_DEFECTO, timeoutMs = 15000, fetchImpl = fetch,
 } = {}) {
   const sym = String(symbol || '').trim().toUpperCase();
   if (!VALID_TICKER.test(sym)) return { ok: false, symbol: sym, motivo: 'ticker_invalido' };
@@ -101,16 +134,32 @@ async function gradesHistorical(symbol, {
       return { ok: false, symbol: sym, url_sin_key: url, motivo: 'rate_limit', status: 429, ms, ...cuerpo,
         retry_after: (r.headers && r.headers.get && r.headers.get('retry-after')) || null };
     }
-    // AUTH APARTE. Una key ausente, muerta, o de un plan que no cubre el
-    // endpoint NO puede salir como un `http_error` mudo: son las tres cosas que
-    // se arreglan en otro lado (en Vercel, no en el código), y confundirlas con
-    // "la fuente falló" manda a buscar donde no está.
-    if (r.status === 401 || r.status === 403 || r.status === 402) {
+    // ── AUTH: 401 y 403, y NADA MÁS ────────────────────────────────
+    // Una key ausente, vencida o sin permiso se arregla en las env vars, no en
+    // el código, y por eso no puede salir como un `http_error` mudo.
+    if (r.status === 401 || r.status === 403) {
       return { ok: false, symbol: sym, url_sin_key: url, status: r.status, ms, ...cuerpo,
         motivo: 'auth_error',
-        detalle: r.status === 402
-          ? 'HTTP 402: el plan de la key no cubre este endpoint.'
-          : 'HTTP ' + r.status + ': la key fue RECHAZADA (ausente para FMP, vencida, o sin permiso para este endpoint). Se arregla en las env vars, no en el código.' };
+        detalle: 'HTTP ' + r.status + ': la key fue RECHAZADA (ausente para FMP, vencida, o sin permiso para este endpoint). Se arregla en las env vars, no en el código.' };
+    }
+
+    // ── EL 402 NO ES AUTH ──────────────────────────────────────────
+    //
+    // Esta rama existe por un diagnóstico FALSO que escribí antes: el 402 se
+    // clasificaba como `auth_error` con el texto "el plan de la key no cubre
+    // este endpoint". El 402 real venía por `limit=1000`, y el cuerpo de FMP lo
+    // decía con todas las letras — pero mi texto mandaba a rotar la llave.
+    //
+    // Ahora el CUERPO decide, y cuando el cuerpo no alcanza para decidir, se
+    // dice que no alcanza en vez de elegir una de las dos.
+    if (r.status === 402) {
+      const p = mencionaParametro(muestra);
+      return { ok: false, symbol: sym, url_sin_key: url, status: 402, ms, ...cuerpo,
+        motivo: p.menciona ? 'parametro_fuera_de_rango' : 'pago_requerido',
+        parametro: p.parametro, rango: p.rango,
+        detalle: p.menciona
+          ? `HTTP 402, pero el cuerpo nombra el parámetro \`${p.parametro}\`${p.rango ? ` y su rango aceptado (${p.rango.min}..${p.rango.max})` : ''}: es un VALOR fuera de rango, NO un problema de plan. No se toca la key.`
+          : 'HTTP 402 y el cuerpo no nombra ningún parámetro. Puede ser el plan, pero NO se afirma: el cuerpo va completo arriba y lo lee una persona.' };
     }
     if (!r.ok) {
       return { ok: false, symbol: sym, url_sin_key: url, motivo: 'http_error', status: r.status, ms, ...cuerpo };
@@ -134,10 +183,14 @@ async function gradesHistorical(symbol, {
       desde: filas.length ? filas[0].date : null,
       hasta: filas.length ? filas[filas.length - 1].date : null,
       meses: filas.length,
-      // Si `recibidas` toca el límite, la historia puede estar CORTADA por el
-      // límite y no por la fuente. Se avisa en vez de concluir.
-      posible_tope: j.length >= limit,
-      limit,
+      // ── LA HEURÍSTICA DEL TOPE, ARREGLADA ──
+      // Antes era `j.length >= limit`, y con `limit: null` eso se vuelve
+      // `88 >= 0` → TRUE: toda respuesta sin límite salía marcada como "tocó el
+      // límite". Sin límite NO HAY límite que tocar, así que es false, y el
+      // límite enviado se publica al lado para que el aviso sea auditable.
+      posible_tope: limit === null || limit === undefined ? false : j.length >= limit,
+      limite_enviado: limit ?? null,
+      limit: limit ?? null,
     };
   } catch (e) {
     const m = String((e && e.message) || e);
@@ -189,8 +242,19 @@ function interpretaSmoke(variantes, { key = null } = {}) {
   const fallanConLimit = conLimit.filter((x) => !x.ok);
   const andanSinLimit = sinLimit.filter((x) => x.ok);
   if (fallanConLimit.length && andanSinLimit.length) {
+    const rangos = fallanConLimit.map((x) => x.rango).filter(Boolean);
+    const rango = rangos.length ? `${rangos[0].min ?? 0}..${rangos[0].max}` : null;
+    // El CONTRASTE DE MESES, que es el hallazgo de verdad: la variante sin
+    // parámetro puede traer muchísimo más que la que lleva el máximo aceptado.
+    const sinL = andanSinLimit[0];
+    const conL = conLimit.filter((x) => x.ok).sort((a, b) => (b.meses || 0) - (a.meses || 0))[0] || null;
+    const contraste = (sinL && sinL.meses && conL && conL.meses)
+      ? ` Y el hallazgo que importa: sin \`limit\` son ${sinL.meses} meses contra ${conL.meses} con \`limit=${conL.limit}\` — o sea ${(sinL.meses / conL.meses).toFixed(1)}× más historia. El parámetro que parece traer más es el que RECORTA.`
+      : (sinL && sinL.meses ? ` Sin \`limit\` son ${sinL.meses} meses.` : '');
     return { causa: 'limit_rechazado',
-      lectura: `La URL SIN \`limit\` trae filas y la que lleva \`limit=${fallanConLimit.map((x) => x.limit).join('/')}\` falla con HTTP ${[...new Set(fallanConLimit.map((x) => x.status))].join('/')}. Es el PARÁMETRO, no la key: el plan no acepta ese valor de limit. Arreglo: pedir sin limit, o con el valor más alto que sí acepte.` };
+      lectura: `La URL SIN \`limit\` trae filas y la que lleva \`limit=${fallanConLimit.map((x) => x.limit).join('/')}\` falla con HTTP ${[...new Set(fallanConLimit.map((x) => x.status))].join('/')}`
+        + (rango ? `, y el cuerpo dice que el rango aceptado es ${rango}` : '')
+        + `. Es el PARÁMETRO, no la key.${contraste} Arreglo: pedir SIN limit.` };
   }
   const limitChicoAnda = conLimit.filter((x) => x.ok).sort((a, b) => a.limit - b.limit);
   if (fallanConLimit.length && limitChicoAnda.length) {
@@ -212,4 +276,7 @@ function interpretaSmoke(variantes, { key = null } = {}) {
     lectura: 'El patrón no encaja en ningún caso conocido. Los status y los cuerpos de cada variante van abajo sin interpretar: eso lo lee una persona.' };
 }
 
-export { gradesHistorical, normalizaGrades, interpretaSmoke, BASE, LIMIT_ALTO, VALID_TICKER };
+export {
+  gradesHistorical, normalizaGrades, interpretaSmoke, mencionaParametro,
+  BASE, LIMIT_POR_DEFECTO, LIMIT_MAXIMO_DEL_PLAN, LIMIT_SMOKE_ALTO, VALID_TICKER,
+};

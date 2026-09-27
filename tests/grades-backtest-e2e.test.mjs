@@ -119,9 +119,15 @@ function mockFetch(fx, { forzar429Desde = null, httpError = null, todos = null }
       // poder rechazar una y aceptar otra.
       const lim = (u.match(/[?&]limit=(\d+)/) || [])[1];
       if (todosLimitTope !== null && lim !== undefined && Number(lim) > todosLimitTope) {
-        return { ok: false, status: 400,
-          text: async () => JSON.stringify({ 'Error Message': 'Invalid limit. Max is ' + todosLimitTope }),
+        // 402 con el rango en el cuerpo: es lo que FMP contestó de verdad.
+        return { ok: false, status: 402,
+          text: async () => JSON.stringify({ 'Error Message': 'Limit must be between 0 and ' + todosLimitTope }),
           headers: { get: () => 'application/json' } };
+      }
+      // Con `limit` la serie se RECORTA, como en FMP. Sin él, entera.
+      if (lim !== undefined && fx.grades[sym]) {
+        return { ok: true, status: 200, headers: { get: () => 'application/json' },
+          text: async () => JSON.stringify(fx.grades[sym].slice(-Number(lim))) };
       }
       if (forzar429Desde !== null && fmpPedidos.length > forzar429Desde) {
         return { ok: false, status: 429, text: async () => 'Limit Reach', headers: { get: () => '60' } };
@@ -369,16 +375,24 @@ console.log('la frontera: el status y el cuerpo SIEMPRE llegan a la vista');
 
 console.log('la frontera: un 401/403 es auth_error, nunca http_error mudo');
 {
-  for (const st of [401, 403, 402]) {
+  // OJO: el 402 NO va en esta bolsa. Estaba acá, y ESE era el bug — un 402 por
+  // `limit` fuera de rango salía como auth_error con un texto que mandaba a
+  // rotar la llave. El 402 tiene su propio bloque más abajo.
+  for (const st of [401, 403]) {
     global.fetch = mockFetch(FX, { todos: { status: st, body: 'Invalid API KEY' } });
     const r = mockRes();
     await handler(GET({ secret: SECRET, fase: '0' }), r);
     const fallo = r.body.cobertura.simbolos_sin_grades[0];
     ok(fallo.motivo === 'auth_error', `HTTP ${st} → auth_error, no http_error`, fallo.motivo);
     ok(fallo.status === st && /Invalid API KEY/.test(fallo.body_sample || ''), `con el status ${st} y el cuerpo`);
-    ok(/env vars|plan de la key/.test(fallo.detalle || ''),
+    ok(/env vars/.test(fallo.detalle || ''),
       'y el detalle dice que se arregla en las env vars, no en el código', fallo.detalle);
   }
+  global.fetch = mockFetch(FX, { todos: { status: 402, body: 'Limit must be between 0 and 10' } });
+  const noAuth = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0' }), noAuth);
+  ok(noAuth.body.cobertura.simbolos_sin_grades[0].motivo !== 'auth_error',
+    'y un 402 por limit NO entra en auth_error', noAuth.body.cobertura.simbolos_sin_grades[0].motivo);
 }
 
 console.log('el smoke: tres variantes, con URL, status y cuerpo de cada una');
@@ -396,8 +410,9 @@ console.log('el smoke: tres variantes, con URL, status y cuerpo de cada una');
   const alto = s.variantes.find((v) => v.id === 'limit_alto');
   const chico = s.variantes.find((v) => v.id === 'limit_chico');
   const sin = s.variantes.find((v) => v.id === 'sin_limit');
-  ok(alto.ok === false && alto.status === 400, 'la variante con limit alto falla 400', `${alto.status}`);
-  ok(/Max is 100/.test(alto.body_sample || ''), 'con el cuerpo que lo explica', alto.body_sample);
+  ok(alto.ok === false && alto.status === 402, 'la variante con limit alto falla 402', `${alto.status}`);
+  ok(/between 0 and 100/.test(alto.body_sample || ''), 'con el cuerpo que trae el rango', alto.body_sample);
+  ok(alto.motivo === 'parametro_fuera_de_rango', 'y se clasifica como parámetro, no como auth', alto.motivo);
   ok(chico.ok === true && sin.ok === true, 'las de limit chico y sin limit traen filas');
   ok(sin.url_sin_key === `https://financialmodelingprep.com/stable/grades-historical?symbol=${SIMS[0]}`,
     'la variante sin limit arma la URL sin el parámetro', sin.url_sin_key);
@@ -417,7 +432,7 @@ console.log('el smoke: tres variantes, con URL, status y cuerpo de cada una');
 
   const md = mockRes();
   await handler(GET({ secret: SECRET, smoke: SIMS[0], format: 'md' }), md);
-  ok(/LECTURA:/.test(md.text) && /Max is 100/.test(md.text), 'el md del smoke trae la lectura y los cuerpos');
+  ok(/LECTURA:/.test(md.text) && /between 0 and 100/.test(md.text), 'el md del smoke trae la lectura y los cuerpos');
   ok(!md.text.includes(process.env.FMP_API_KEY), 'y tampoco filtra la key');
   todosLimitTope = null;
 }
@@ -457,6 +472,87 @@ console.log('concurrencia: bajó a 2 para el censo real');
   const fuente = readFileSync(new URL('../api/grades-backtest.js', import.meta.url), 'utf8');
   ok(/const CONCURRENCIA = 2;/.test(fuente), 'la concurrencia es 2, no 4');
   ok(/BAJÓ DE 4 A 2/.test(fuente), 'con el porqué escrito al lado');
+}
+
+
+// ═══════════════════ 9. SIN LIMIT, Y EL 402 QUE NO ES AUTH ═══════════════════
+console.log('el censo NO manda limit: es el parámetro que RECORTA');
+{
+  todosLimitTope = null;
+  global.fetch = mockFetch(FX);
+  const r = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0' }), r);
+  ok(fmpPedidos.length > 0, 'el censo pidió grades', fmpPedidos.length);
+  ok(fmpPedidos.every((p) => !/[?&]limit=/.test(p.url)),
+    'NINGUNA URL del censo lleva `limit`: sin el parámetro son ~88 meses, con el máximo del plan son 10',
+    fmpPedidos[0].url.replace(/apikey=[^&]*/, 'apikey=***'));
+  ok(r.body.historia.limite_enviado === null, 'y se DECLARA que no se envió límite', r.body.historia.limite_enviado);
+  ok(/el parámetro/.test(r.body.historia.nota_limite) || /Sin `limit` a propósito/.test(r.body.historia.nota_limite),
+    'con el porqué escrito al lado, porque se revierte fácil en la dirección equivocada', r.body.historia.nota_limite);
+
+  // EL AVISO FANTASMA: antes `88 >= null` daba true y TODA respuesta salía
+  // marcada como "tocó el límite".
+  ok(r.body.historia.alguno_en_el_tope_del_limit === false,
+    'sin límite enviado, nada "tocó el límite": no hay límite que tocar',
+    r.body.historia.alguno_en_el_tope_del_limit);
+  const md = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0', format: 'md' }), md);
+  ok(!/tocó el límite/.test(md.text) && !/⚠ Si alguno toca/.test(md.text),
+    'y el markdown no imprime el aviso fantasma');
+}
+
+console.log('un 402 por limit NO se clasifica como auth_error');
+{
+  global.fetch = mockFetch(FX, { todos: { status: 402, body: '{"Error Message":"Limit must be between 0 and 10"}' } });
+  const r = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0' }), r);
+  const f = r.body.cobertura.simbolos_sin_grades[0];
+  ok(f.motivo === 'parametro_fuera_de_rango', 'el motivo es el parámetro, no auth', f.motivo);
+  ok(f.status === 402 && /between 0 and 10/.test(f.body_sample || ''), 'con el status y el cuerpo que lo dicen');
+  ok(/NO un problema de plan/.test(f.detalle || '') && /No se toca la key/.test(f.detalle || ''),
+    'y el detalle dice explícitamente que NO se toca la key — el texto anterior mandaba a rotarla', f.detalle);
+  ok(!/auth/.test(f.motivo), 'en ninguna forma dice auth');
+
+  // Un 402 cuyo cuerpo NO nombra un parámetro: se admite que no se sabe.
+  global.fetch = mockFetch(FX, { todos: { status: 402, body: 'This endpoint is not available under your current subscription' } });
+  const plan = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0' }), plan);
+  const fp = plan.body.cobertura.simbolos_sin_grades[0];
+  ok(fp.motivo === 'pago_requerido', 'sin parámetro nombrado, el motivo es pago_requerido', fp.motivo);
+  ok(/NO se afirma/.test(fp.detalle || ''),
+    'y NO se afirma que sea el plan: el cuerpo va completo y lo lee una persona', fp.detalle);
+
+  // 401 y 403 siguen siendo auth.
+  for (const st of [401, 403]) {
+    global.fetch = mockFetch(FX, { todos: { status: st, body: 'Invalid API KEY' } });
+    const a = mockRes();
+    await handler(GET({ secret: SECRET, fase: '0' }), a);
+    ok(a.body.cobertura.simbolos_sin_grades[0].motivo === 'auth_error', `HTTP ${st} sigue siendo auth_error`);
+  }
+}
+
+console.log('el smoke: las tres variantes con el contraste de meses');
+{
+  todosLimitTope = 10;
+  global.fetch = mockFetch(FX);
+  const r = mockRes();
+  await handler(GET({ secret: SECRET, smoke: SIMS[0] }), r);
+  const s = r.body;
+  const sin = s.variantes.find((v) => v.id === 'sin_limit');
+  const chico = s.variantes.find((v) => v.id === 'limit_chico');
+  const alto = s.variantes.find((v) => v.id === 'limit_alto');
+  ok(sin.ok && sin.meses === 24, 'sin limit trae la serie entera del fixture', sin.meses);
+  ok(chico.ok && chico.meses === 10, 'con el máximo del plan, RECORTA a 10', chico.meses);
+  ok(sin.meses > chico.meses, 'o sea: sin el parámetro hay MÁS historia que con él', `${sin.meses} vs ${chico.meses}`);
+  ok(alto.status === 402 && alto.motivo === 'parametro_fuera_de_rango', 'el limit alto provoca el 402', alto.motivo);
+  ok(s.causa === 'limit_rechazado', 'la lectura culpa al parámetro', s.causa);
+  ok(/24 meses contra 10/.test(s.lectura) && /2\.4× más historia/.test(s.lectura),
+    'y cita el contraste medido, no el que yo suponga', s.lectura);
+  ok(sin.posible_tope === false, 'la variante sin límite NO se marca como "tocó el límite"');
+  ok(chico.posible_tope === true, 'la de limit=10 que devuelve 10 filas SÍ lo tocó — ahí el aviso es correcto');
+  ok(s.variantes[0].id === 'sin_limit' && /EL DEFECTO/.test(s.variantes[0].nota),
+    'y la variante del defecto va primero, marcada como tal', s.variantes[0].nota);
+  todosLimitTope = null;
 }
 
 console.log(failures ? `\n${failures} FALLAS` : '\nTodo en verde');

@@ -23,7 +23,10 @@ import {
   CRITERIOS_GRADES, scoreSentimiento, seleccionaVentana, terciles, tercilDe,
   NOMBRE_TERCIL, testProporciones, erf, normalCDF, analizaGrades, renderGradesMd, ADVERTENCIA,
 } from '../api/_lib/grades-backtest.js';
-import { normalizaGrades, interpretaSmoke } from '../api/_lib/fmp-grades.js';
+import {
+  normalizaGrades, interpretaSmoke, mencionaParametro,
+  LIMIT_POR_DEFECTO, LIMIT_MAXIMO_DEL_PLAN,
+} from '../api/_lib/fmp-grades.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -204,6 +207,61 @@ const nke = seleccionaVentana([
   { date: '2026-06-30', strongBuy: 1, buy: 10, hold: 12, sell: 3, strongSell: 1 },
 ], '2026-07-10');
 ok(nke.ok && nke.delta < 0, 'el patrón de NKE (6+20 → 1+10) se lee como enfriamiento', nke.delta.toFixed(3));
+
+console.log('el limit: SIN parámetro por defecto (el hallazgo contraintuitivo)');
+
+ok(LIMIT_POR_DEFECTO === null,
+  'el defecto de la frontera es NO mandar limit: sin el parámetro son ~88 meses, con el máximo del plan son 10',
+  String(LIMIT_POR_DEFECTO));
+ok(LIMIT_MAXIMO_DEL_PLAN === 10, 'y queda anotado que el plan acepta 0..10', LIMIT_MAXIMO_DEL_PLAN);
+
+console.log('el 402 NO es auth: lo decide el CUERPO');
+
+// Esta rama existe por un diagnóstico FALSO: el 402 salía como auth_error con el
+// texto "el plan de la key no cubre este endpoint", cuando el 402 venía de
+// limit=1000 y el cuerpo lo decía. Ese texto mandaba a rotar la llave.
+const conLimit = mencionaParametro('Limit must be between 0 and 10');
+ok(conLimit.menciona === true && conLimit.parametro === 'limit',
+  'un cuerpo que nombra `limit` es un parámetro fuera de rango', JSON.stringify(conLimit));
+ok(conLimit.rango.min === 0 && conLimit.rango.max === 10,
+  'y el RANGO se extrae del mensaje, no se supone', JSON.stringify(conLimit.rango));
+ok(mencionaParametro('Invalid limit. Max is 10').rango.max === 10, 'también con la forma "Max is 10"');
+const plan = mencionaParametro('This endpoint is not available under your current subscription');
+ok(plan.menciona === false, 'un cuerpo que habla de la suscripción NO nombra un parámetro', JSON.stringify(plan));
+// "Invalid API KEY" nombra una CREDENCIAL, no un parámetro de consulta.
+ok(mencionaParametro('Invalid API KEY').menciona === false,
+  'y una mención a la api key no se confunde con un parámetro');
+ok(mencionaParametro('').menciona === false && mencionaParametro(null).menciona === false,
+  'un cuerpo vacío no nombra nada');
+ok(mencionaParametro('symbol is required').parametro === 'symbol', 'otros parámetros también se reconocen');
+
+console.log('interpretaSmoke: el contraste de meses es EL hallazgo');
+
+const conContraste = interpretaSmoke([
+  { id: 'sin_limit', limit: null, ok: true, status: 200, meses: 88 },
+  { id: 'limit_chico', limit: 10, ok: true, status: 200, meses: 10 },
+  { id: 'limit_alto', limit: 1000, ok: false, status: 402, motivo: 'parametro_fuera_de_rango',
+    parametro: 'limit', rango: { min: 0, max: 10 } },
+]);
+ok(conContraste.causa === 'limit_rechazado', 'falla con limit alto y anda sin él → el parámetro', conContraste.causa);
+ok(/rango aceptado es 0\.\.10/.test(conContraste.lectura), 'la lectura CITA el rango que dijo el cuerpo', conContraste.lectura);
+ok(/88 meses contra 10/.test(conContraste.lectura) && /8\.8× más historia/.test(conContraste.lectura),
+  'y el contraste de meses, que es el hallazgo de verdad', conContraste.lectura);
+ok(/el que RECORTA/.test(conContraste.lectura),
+  'diciendo en letras que el parámetro que parece traer más es el que recorta');
+ok(/Es el PARÁMETRO, no la key/.test(conContraste.lectura), 'y que no es la key');
+// Un 402 sin contraste medible no inventa el múltiplo.
+const sinContraste = interpretaSmoke([
+  { id: 'sin_limit', limit: null, ok: true, status: 200, meses: 88 },
+  { id: 'limit_alto', limit: 1000, ok: false, status: 402, motivo: 'parametro_fuera_de_rango', parametro: 'limit', rango: null },
+]);
+ok(!/×/.test(sinContraste.lectura) && /88 meses/.test(sinContraste.lectura),
+  'sin una variante con limit que ande, no se inventa el múltiplo', sinContraste.lectura);
+// Y un 402 NO cae en la rama de auth.
+ok(interpretaSmoke([
+  { id: 'a', limit: 1000, ok: false, status: 402, motivo: 'parametro_fuera_de_rango' },
+  { id: 'b', limit: 10, ok: false, status: 402, motivo: 'parametro_fuera_de_rango' },
+]).causa !== 'auth_error', 'un 402 nunca se lee como auth_error');
 
 console.log('interpretaSmoke: nombra la causa, y cuando no la sabe lo dice');
 
