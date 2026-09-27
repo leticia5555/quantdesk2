@@ -215,6 +215,81 @@ pueden quedar desparejos, y por eso se publica el **n real** de cada uno.
 
 ---
 
+## SESGO DE SELECCIÓN — escrito ANTES de correr la Fase 1
+
+La Fase 0 pasó el candado: **117 eventos con ventana válida** contra el mínimo de
+100, con datos reales por primera vez. Pero **la muestra no la elegimos
+nosotros.**
+
+El plan gratis de FMP cubre solo un subconjunto de empresas: **35 de 75** con
+acceso. El 402 de esa corrida es DISTINTO al del `limit`: el cuerpo nombra
+`symbol`, no `limit`. **No hay arreglo de código posible** — no es un bug, es lo
+que el plan cubre.
+
+Entonces:
+
+> Los **117 eventos** vienen de **35 empresas que no elegimos nosotros**: son las
+> que el plan de FMP cubre. Un GO acá vale para **esas 35**, no para el universo
+> de 99. La muestra se eligió sola, y **por dónde se eligió puede correlacionar
+> con lo que se mide** (tamaño, cobertura de analistas, sector). Para extenderlo
+> al universo hace falta un plan que cubra a todas, y volver a correr.
+
+**Esto NO es razón para no correr la Fase 1.** Es razón para que el veredicto lo
+diga en letras. Así que la advertencia:
+
+- se calcula con los números de **cada corrida** (`advertenciaDeSeleccion`), no es
+  una plantilla;
+- viaja en `advertencia_seleccion`, **separada** de la advertencia de información
+  pública, porque son dos límites distintos;
+- va en **GO, en NO-GO y en INCONCLUSO** — hay test de los tres;
+- sale en el markdown **arriba**, junto al veredicto, no en un pie de página;
+- y ya se declara **desde la Fase 0**, para que llegue escrita y no como sorpresa.
+
+### La lista, cruda
+
+`?fase=0` publica `perfil_de_simbolos`: los dos grupos (con y sin acceso) con su
+**sector** y su **capitalización** (de `mercado_universo_us`), el conteo por sector
+de cada grupo, y min/mediana/max de la cap.
+
+Va **sin conclusión sobre el patrón**. Si hay uno — de tamaño, de sector — se ve
+en la tabla; y si no se ve, nadie lo inventa. Un símbolo que no está en nuestra
+tabla se marca (`en_mercado_universo_us: false`) con el sector en `null` en vez de
+rellenarlo.
+
+---
+
+## CICATRIZ: el aviso de los descartes afirmaba algo falso
+
+Decía:
+
+> *"la frontera no entregó filas, así que todos los eventos caen en
+> `menos_de_3_meses` por falta de datos"*
+
+**Falso.** La frontera entregó 35 símbolos con **82–93 meses cada uno**. El error
+de fondo: los 123 descartes iban todos a la misma cubeta, y de esa mezcla salía
+una frase que no era cierta.
+
+Son dos cosas distintas y ahora se cuentan aparte:
+
+| Motivo | Naturaleza | Qué significa |
+|---|---|---|
+| `sin_acceso_al_simbolo` | **artefacto del plan** | La empresa tiene historia; la cuenta no la cubre. **No dice nada sobre los datos.** |
+| `historia_insuficiente` y los demás | **dato** | La serie llegó y no alcanzó. Eso sí es información. |
+
+Reglas que quedaron en código, con test:
+
+- **El acceso se juzga PRIMERO.** Un símbolo que no llegó no puede tener
+  "historia insuficiente", porque no tiene historia que medir.
+- `menos_de_3_meses` **se renombró** a `historia_insuficiente`, y solo se usa
+  donde ya se sabe que el símbolo sí llegó. El nombre viejo ya no existe.
+- `descartes_por_naturaleza` publica los dos totales, y el `porque` los explica
+  **separados** en vez de sumarlos.
+- El aviso se arma con los **dos conteos** y solo afirma lo que los conteos dicen.
+  Hay test de que ya **no** puede decir "la frontera no entregó filas" cuando
+  entregó la mitad.
+
+---
+
 ## Uso
 
 ```bash
