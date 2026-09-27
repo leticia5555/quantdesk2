@@ -445,3 +445,126 @@ test('capturada_en es el día en que se LEYÓ la cap, y el sello de Yahoo va apa
     assert.equal(r.capturada_en, '2026-09-23', `${r.clave}: todas se leyeron el mismo día`);
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL PRECIO VIAJA CON LA CAP — Y ASÍ NO HAY FECHA QUE ELEGIR
+//
+// Dos intentos, dos fallas, la MISMA causa: la razón del ADR se despejaba
+// contra un cierre NUESTRO y había que adivinar cuál. Con el cierre de hoy,
+// ASML daba 1.023 porque el mercado se movió entre el 23 y el 25. Con el cierre
+// de `capturada_en`, VALE daba 1.043 porque el sello de la cotización de Yahoo
+// venía atrasado. Ninguna de las dos era un problema de la emisora.
+//
+// Yahoo muestra "Market Cap (intraday)" y "price" en la misma pantalla y al
+// mismo instante. Guardando los DOS, la razón sale de una fuente coherente
+// consigo misma y no depende de ningún cierre. Decisión de Lety, 2026-09-27.
+// ═══════════════════════════════════════════════════════════════════════
+
+// Las cuatro referencias reales, con el precio que Lety leyó junto a la cap.
+const REF = (clave) => {
+  const r = REFERENCIAS.referencias.find((x) => x.clave === clave);
+  return { ...r, vigente_hasta: '2026-12-31' };
+};
+
+test('las cuatro referencias traen el precio con el que se leyó la cap', () => {
+  const esperado = { TSM: 446.57, NVO: 39.80, VALE: 14.21, ASML: 1722.50 };
+  for (const [clave, px] of Object.entries(esperado)) {
+    assert.equal(REF(clave).precio_referencia, px, clave);
+    assert.equal(REF(clave).capturada_en, '2026-09-23', `${clave}: se leyeron las cuatro el mismo día`);
+  }
+});
+
+test('LA DIRECCIÓN: la razón cuenta ORDINARIAS POR ADR, no lo contrario', () => {
+  // TSM es el único de los cuatro que la distingue: 1 ADR = 5 ordinarias.
+  // La cap de Yahoo (2.316e12) con su precio (446.57) implica 5,186.1M unidades
+  // de ADR; TSMC tiene 25,930M ordinarias. 25930 / 5186.1 = 5.
+  //
+  // Si alguien invierte la cuenta, la razón sale 1/5, `razonesPlausibles` la
+  // acepta igual porque 1/5 también es una proporción de ADR plausible, y el
+  // tamaño pintado —que DIVIDE por la razón— deja a TSM CINCO VECES más grande
+  // de lo que es. Que es exactamente el bug que la referencia existe para
+  // cerrar. Por eso esta prueba.
+  const v = veredictoCapUs({
+    symbol: 'TSM', moneda: 'TWD', declarada: 32_000_000, acciones: 25_930,
+    precio_usd: 451, precio_captura: 449.10, referencia: REF('TSM'), hoy: new Date('2026-09-27'),
+  });
+  assert.equal(v.estado, 'verificada');
+  assert.equal(v.razon_adr, 5, 'cinco ordinarias por ADR');
+  assert.equal(v.razon_etiqueta, '5:1');
+  assert.equal(v.cap_usd, (25_930 * MILLON * 451) / 5, 'el tamaño DIVIDE por la razón');
+  // Y el tamaño tiene que quedar en el orden de la cap de Yahoo, no 5× arriba.
+  assert.ok(v.cap_usd > 2.2e12 && v.cap_usd < 2.5e12, `${v.cap_usd}`);
+  assert.equal(v.razon_de, 'precio_referencia');
+  assert.equal(v.precio_referencia, 446.57);
+});
+
+test('VALE resuelve 1:1 sin que ningún cierre participe', () => {
+  // El caso que el sello atrasado de Yahoo rompía: acá el cierre de la captura
+  // ni se pasa, y la razón sale igual.
+  const acciones = 60_474_000_000 / 14.21 / MILLON;   // las que la cap implica
+  const v = veredictoCapUs({
+    symbol: 'VALE', moneda: 'BRL', declarada: 300_000, acciones: Math.round(acciones),
+    precio_usd: 13.55, precio_captura: null, referencia: REF('VALE'), hoy: new Date('2026-09-27'),
+  });
+  assert.equal(v.estado, 'verificada', v.motivo);
+  assert.equal(v.razon_etiqueta, '1:1');
+  assert.equal(v.razon_de, 'precio_referencia');
+  // El tamaño sigue siendo NUESTRO cierre de hoy, no el de la referencia.
+  assert.equal(v.cap_usd, Math.round(acciones) * MILLON * 13.55);
+});
+
+test('sin el cierre de la captura ya NO se pone gris: el precio de la referencia alcanza', () => {
+  // Antes, `precio_captura: null` era gris con "no tengo el cierre del …". Con
+  // `precio_referencia` ese gris desaparece, porque la razón no lo necesita.
+  const acciones = Math.round(661_612_000_000 / 1722.50 / MILLON);
+  const conPrecio = veredictoCapUs({
+    symbol: 'ASML', moneda: 'EUR', declarada: 560_000, acciones,
+    precio_usd: 1700, precio_captura: null, referencia: REF('ASML'), hoy: new Date('2026-09-27'),
+  });
+  assert.equal(conPrecio.estado, 'verificada', conPrecio.motivo);
+
+  // Y si la referencia NO trajera precio, el gris vuelve — con su causa, que
+  // ahora nombra las dos cosas que faltan.
+  const sinPrecio = veredictoCapUs({
+    symbol: 'ASML', moneda: 'EUR', declarada: 560_000, acciones,
+    precio_usd: 1700, precio_captura: null,
+    referencia: { ...REF('ASML'), precio_referencia: undefined }, hoy: new Date('2026-09-27'),
+  });
+  assert.equal(sinPrecio.estado, 'gris_punteado');
+  assert.match(sinPrecio.motivo, /no trae el precio con el que se leyó la cap/);
+});
+
+test('el cierre de la captura queda de CRUCE, y nunca decide', () => {
+  const acciones = Math.round(60_474_000_000 / 14.21 / MILLON);
+  const base = {
+    symbol: 'VALE', moneda: 'BRL', declarada: 300_000, acciones,
+    precio_usd: 13.55, referencia: REF('VALE'), hoy: new Date('2026-09-27'),
+  };
+  // Un cierre 9% abajo del precio de Yahoo —el caso del sello atrasado— NO
+  // cambia el veredicto. Sólo se reporta cuánto se separó.
+  const v = veredictoCapUs({ ...base, precio_captura: 12.93 });
+  assert.equal(v.estado, 'verificada');
+  assert.equal(v.cruce_cierre_captura, 12.93);
+  assert.ok(v.cruce_desvio_pct < -8 && v.cruce_desvio_pct > -10, `${v.cruce_desvio_pct}`);
+  // Con o sin cruce, el mismo tamaño y la misma razón.
+  assert.equal(v.cap_usd, veredictoCapUs({ ...base, precio_captura: null }).cap_usd);
+});
+
+test('si la razón no sale limpia, la causa apunta al CONTEO y da los dos números', () => {
+  // Lo que Lety dijo: "o el problema es de acciones, no de fecha". Con 392M
+  // ordinarias contra las 384.1M que implica la cap, el crudo da 1.0205 y el
+  // techo de 2% lo rechaza — y el motivo tiene que decir dónde mirar, no
+  // repetir que no se parece a una proporción.
+  const v = veredictoCapUs({
+    symbol: 'ASML', moneda: 'EUR', declarada: 560_000, acciones: 392,
+    precio_usd: 1700, precio_captura: 1715, referencia: REF('ASML'), hoy: new Date('2026-09-27'),
+  });
+  assert.equal(v.estado, 'gris_punteado');
+  assert.equal(v.cap_usd, null, 'sin tamaño antes que con uno inventado');
+  assert.match(v.motivo, /la fecha no es la causa/);
+  assert.match(v.motivo, /384\.1M acciones por ADR/);
+  assert.match(v.motivo, /392M ordinarias/);
+  assert.ok(Math.abs(v.acciones_implicitas_millones - 384.1) < 0.1, `${v.acciones_implicitas_millones}`);
+  // El techo NO se movió.
+  assert.equal(TOLERANCIA_RAZON_PCT, 2);
+});

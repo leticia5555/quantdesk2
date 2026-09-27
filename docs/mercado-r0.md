@@ -1379,3 +1379,75 @@ atribuirle a Finnhub un dato que quizá no dio él.
 `tests/mercado-sql.test.mjs` les hace `PREPARE` contra un Postgres real junto a
 las del mapa. La ventana nueva tiene tres parámetros: un `$3` sin ligar sólo se
 habría visto como un 500 en el navegador.
+
+## 11. R0(j) — el precio viaja con la cap, y la razón deja de tener fecha
+
+Dos intentos de despejar la razón del ADR, dos fallas, **la misma causa**: la
+razón se despejaba contra un cierre NUESTRO y había que adivinar cuál.
+
+| intento | ancla | qué falló |
+| :--- | :--- | :--- |
+| #254 | el cierre de hoy | ASML 1.023: el mercado se movió 2.3% entre el 23 y el 25 |
+| #259 | el cierre de `capturada_en` | VALE 1.043: el sello de la cotización de Yahoo venía atrasado |
+
+Ninguna de las dos era un problema de la emisora. Las dos eran maneras de
+adivinar con qué precio calculó Yahoo su "Market Cap (intraday)".
+
+**El arreglo lo cierra desde otro lado:** Yahoo muestra la cap y el **precio** en
+la misma pantalla, al mismo instante. Guardando los dos, la razón sale de una
+fuente coherente consigo misma:
+
+```
+ordinarias por ADR = (acciones × precio_referencia) ÷ cap_referencia
+```
+
+y **no hay ninguna fecha que elegir**. `mercado-cap-us-referencia.json` guarda
+`precio_referencia` junto a `market_cap_usd` en las cuatro (TSM 446.57, NVO
+39.80, VALE 14.21, ASML 1722.50; las cuatro leídas el 2026-09-23). El cierre de
+`capturada_en` queda como **cruce informativo** — `cruce_cierre_captura`,
+`cruce_desvio_pct` —, que dice cuánto se movió el precio entre lo que Yahoo
+mostraba y nuestro cierre de ese día, y no decide nada. El tamaño que se pinta
+sigue siendo `acciones ÷ razón × nuestro último cierre`, así que el cuadro sigue
+al mercado todos los días.
+
+**El techo de 2% no se movió** (decisión de Lety, 2026-09-27: "no aflojes el
+techo"). Lo que cambió es el insumo, no el criterio.
+
+### 11.1 La dirección de la razón, que se puede invertir sin que nada se queje
+
+La razón cuenta **ordinarias por ADR**: TSM da **5**, no 1/5. Es la que el
+tamaño pintado **divide**. Si alguien invierte la cuenta, `razonesPlausibles`
+acepta 1/5 igual —también es una proporción de ADR plausible— y TSM queda
+**cinco veces más grande** de lo que es, que es exactamente el bug que la
+referencia existe para cerrar. Los otros tres casos son 1:1 y no distinguen las
+dos direcciones, así que hay una prueba con TSM que sí:
+`tests/mercado-cap-us.test.mjs` → "LA DIRECCIÓN: la razón cuenta ORDINARIAS POR
+ADR, no lo contrario".
+
+### 11.2 Si con el precio de la captura tampoco sale limpia
+
+Entonces la fecha queda descartada y lo único sospechoso es el **conteo de
+acciones**. El veredicto lo dice con números en vez de con una corazonada:
+
+- `acciones_implicitas_millones` = `cap_referencia ÷ precio_referencia`, o sea
+  cuántas unidades implica la cap de Yahoo;
+- contra nuestras `acciones_millones` de Finnhub;
+- y el motivo del gris nombra las dos: *"con el precio de la captura la fecha no
+  es la causa: la cap de referencia implica 384.1M acciones por ADR y nosotros
+  tenemos 392M ordinarias"*.
+
+Lo que cada referencia implica, para tenerlo a mano:
+
+| clave | cap USD | precio | acciones que implica |
+| :--- | ---: | ---: | ---: |
+| TSM | 2,316,000M | 446.57 | 5,186.2M (× 5 = 25,931M ordinarias) |
+| NVO | 175,831M | 39.80 | 4,417.9M |
+| VALE | 60,474M | 14.21 | 4,255.7M |
+| ASML | 661,612M | 1722.50 | 384.1M |
+
+### 11.3 `?manual=` acepta el precio
+
+`?job=razon-adr&manual=CLAVE:CAP:PRECIO` — el tercer campo es el precio con el
+que se leyó la cap, para probar una referencia sin redeploy. Sigue siendo
+opcional por compatibilidad con México, donde la cap no es de un ADR, pero para
+un ADR conviene siempre por lo de arriba.

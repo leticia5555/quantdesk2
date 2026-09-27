@@ -6,13 +6,18 @@
     "por_que_redondeada": "La razón se redondea a la proporción plausible más cercana (entero 1..20, o 1/n) y sólo se acepta si el crudo cae a ≤2% de ella. Usar el factor crudo devolvería exactamente la cap de Yahoo: sería pintar la referencia con otro nombre. Y si el crudo no se parece a ninguna razón de ADR, algo más está mal —captura vieja, acciones de otra clase— y la emisora se queda GRIS en lugar de recibir un tamaño inventado.",
     "procedencia": "Cada fila dice QUIÉN la capturó, DE DÓNDE y CUÁNDO. Una cap sin las tres cosas no entra: es lo que separa una referencia de un número suelto.",
     "caducidad": "Vencer NO apaga el cuadro. La razon del ADR es ESTRUCTURAL —que 1 ADR equivalga a N ordinarias no cambia porque pase un trimestre—, y la unica cifra que envejece es la cap de Yahoo, que no se pinta. Al pasar `vigente_hasta` la emisora sigue dibujandose con su razon y la tarea aparece en `referencias_a_recapturar` de /api/cron-status para reconfirmarla. Un reloj que apaga datos buenos solo es la trampa de los 14 dias de #248, y no se repite.",
-    "cuando_si_se_pone_gris": "Cuando la razon cruda deja de parecerse a una proporcion plausible (>2% de la mas cercana). Ahi cambio algo de verdad: un split del ADR, un cambio de ratio, o una captura mal leida. El tamano deja de estar sostenido y el cuadro va gris con su causa."
+    "cuando_si_se_pone_gris": "Cuando la razon cruda deja de parecerse a una proporcion plausible (>2% de la mas cercana). Ahi cambio algo de verdad: un split del ADR, un cambio de ratio, o una captura mal leida. El tamano deja de estar sostenido y el cuadro va gris con su causa.",
+    "por_que_viaja_el_precio": "La cap y el PRECIO se leyeron juntos, en la misma pantalla de Yahoo y al mismo instante, así que la razón del ADR sale de una sola fuente coherente consigo misma: ordinarias por ADR = (acciones × precio_referencia) ÷ cap_referencia. Sin fechas que elegir. Las dos versiones anteriores despejaban la razón contra un cierre NUESTRO y las dos fallaron por lo mismo: con el cierre de hoy ASML daba 1.023 (el mercado se movió entre el 23 y el 25) y con el cierre de `capturada_en` VALE daba 1.043 (el sello de la cotización de Yahoo venía atrasado). Ninguna era un problema de la emisora: eran dos maneras de adivinar con qué precio calculó Yahoo. Decisión de Lety del 2026-09-27.",
+    "la_direccion_de_la_razon": "La razón cuenta ORDINARIAS POR ADR —TSM da 5, no 1/5— y es la que el tamaño pintado DIVIDE: `acciones ÷ razón × nuestro cierre`. Invertirla dejaría a TSM cinco veces más grande de lo que es. El caso 1:1 no distingue las dos direcciones, así que hay una prueba con TSM que sí.",
+    "el_cierre_queda_de_cruce": "El cierre de `capturada_en` ya no despeja nada: queda como cruce informativo (`cruce_desvio_pct`), que dice cuánto se movió el precio entre lo que Yahoo mostraba y nuestro cierre de ese día. No decide.",
+    "si_falla_con_precio_referencia": "Con el precio de la captura la FECHA queda descartada como causa. Si la razón sigue sin salir limpia, lo que queda es el conteo de acciones, y el veredicto lo dice con números: `acciones_implicitas_millones` (las que la cap de Yahoo implica, cap_ref ÷ precio_ref) contra nuestras `acciones_millones`."
   },
   "capturado_por": "Lety, en Chrome, leyendo Market Cap (intraday) en Yahoo Finance",
   "referencias": [
     {
       "clave": "TSM",
       "market_cap_usd": 2316000000000,
+      "precio_referencia": 446.57,
       "fuente": "yahoo-finance-market-cap-intraday",
       "capturada_en": "2026-09-23",
       "vigente_hasta": "2026-09-30",
@@ -21,6 +26,7 @@
     {
       "clave": "NVO",
       "market_cap_usd": 175831000000,
+      "precio_referencia": 39.8,
       "fuente": "yahoo-finance-market-cap-intraday",
       "capturada_en": "2026-09-23",
       "vigente_hasta": "2026-09-30",
@@ -29,6 +35,7 @@
     {
       "clave": "VALE",
       "market_cap_usd": 60474000000,
+      "precio_referencia": 14.21,
       "fuente": "yahoo-finance-market-cap-intraday",
       "capturada_en": "2026-09-23",
       "cotizacion_marcada_en": "2026-09-18",
@@ -38,6 +45,7 @@
     {
       "clave": "ASML",
       "market_cap_usd": 661612000000,
+      "precio_referencia": 1722.5,
       "fuente": "yahoo-finance-market-cap-intraday",
       "capturada_en": "2026-09-23",
       "vigente_hasta": "2026-09-30",

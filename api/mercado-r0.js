@@ -64,7 +64,7 @@ const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; 
 
 import {
   auditaCapUs, razonAdr, referenciaVigente, TOLERANCIA_RAZON_PCT,
-  filaVeredictoCapUs, cierreHasta, veredictoCapUs, ventanaDeCierres, razonesPorCierre,
+  filaVeredictoCapUs, cierreHasta, veredictoCapUs, ventanaDeCierres, razonesPorCierre, MILLON,
 } from './_lib/mercado-cap-us.js';
 import REFERENCIAS_CAP_US from './_lib/mercado-cap-us-referencia.json' with { type: 'json' };
 import {
@@ -1124,31 +1124,45 @@ async function jobRazonAdr({ ahora, manual }) {
   const detalle = filas.map((f) => {
     const ref = refs.get(f.symbol);
     const vig = referenciaVigente(ref, ahora);
-    // CONTRA EL CIERRE DE LA FECHA DE CAPTURA, no el de hoy. Con el de hoy, ASML
-    // daba razón cruda 1.023 (el mercado se movió 2.3% entre el 23 y el 25) y
-    // una emisora sana se iba a gris por el techo del 2%.
+    // CON EL PRECIO QUE VIAJA EN LA REFERENCIA. La cap y el precio se leyeron
+    // juntos en Yahoo, así que la razón sale de una fuente coherente consigo
+    // misma y NO hay fecha que elegir. Los dos intentos anteriores dependían de
+    // un cierre nuestro y los dos fallaron por lo mismo: ASML 1.023 con el
+    // cierre de hoy, VALE 1.043 con el de `capturada_en`.
     const enCaptura = cierreHasta(preciosRef.get(f.symbol) || [], ref.capturada_en);
+    const pxRef = num(ref.precio_referencia);
+    const conPrecioRef = pxRef != null && pxRef > 0;
     const r = razonAdr({
       cap_referencia_usd: ref.market_cap_usd,
       acciones_millones: num(f.acciones_millones),
-      precio_usd: enCaptura ? enCaptura.cierre : null,
+      precio_usd: conPrecioRef ? pxRef : (enCaptura ? enCaptura.cierre : null),
     });
-    // La ventana alrededor de la captura: la misma cuenta contra cada cierre
-    // vecino, para ver si hay un día que reconcilie.
+    // CUÁNTAS ACCIONES IMPLICA LA CAP DE YAHOO, y cuánto se separan de las
+    // nuestras. Con el precio de la captura la fecha ya no puede ser la causa,
+    // así que si la razón no sale limpia esto es lo que queda por mirar.
+    const implicitas = conPrecioRef ? num(ref.market_cap_usd) / pxRef / MILLON : null;
+    // La ventana de cierres queda de CRUCE: ya no despeja la razón, sólo dice
+    // cuánto se movió el precio alrededor de la captura.
     const ventana = razonesPorCierre(
       ventanaDeCierres(preciosRef.get(f.symbol) || [], ref.capturada_en, 5),
       { cap_referencia_usd: ref.market_cap_usd, acciones_millones: num(f.acciones_millones) });
     return {
       symbol: f.symbol,
       moneda_declarada: f.cap_moneda || null,
-      // `fecha_precio` se leía como "el precio que usó la razón" y NO lo es:
-      // es el último cierre que tenemos, informativo. El nombre confundió a
-      // Lety el 2026-09-26 —razonable— así que ahora dice lo que es, y el que
-      // de verdad se usó viene al lado con su etiqueta.
+      // De dónde salió el precio con el que se despejó la razón. Explícito
+      // porque `fecha_precio` —el último cierre, informativo— se leía como si
+      // fuera el precio usado, y era razonable leerlo así.
+      razon_de: conPrecioRef ? 'precio_referencia' : 'cierre_de_captura',
+      precio_referencia: conPrecioRef ? pxRef : null,
+      acciones_millones: num(f.acciones_millones),
+      acciones_implicitas_millones: implicitas != null ? Number(implicitas.toFixed(1)) : null,
       fecha_ultimo_cierre: f.fecha_precio || null,
-      precio_usado_de: 'último cierre con fecha ≤ capturada_en',
-      fecha_cierre_usado: enCaptura ? enCaptura.fecha : null,
-      cierre_usado: enCaptura ? enCaptura.cierre : null,
+      // Cruce informativo: nuestro cierre del día de la captura contra el precio
+      // que Yahoo mostraba. No decide nada.
+      cruce_cierre_captura: enCaptura ? enCaptura.cierre : null,
+      cruce_fecha: enCaptura ? enCaptura.fecha : null,
+      cruce_desvio_pct: conPrecioRef && enCaptura
+        ? Number((((enCaptura.cierre / pxRef) - 1) * 100).toFixed(2)) : null,
       vigente: vig.vigente === true,
       vigente_hasta: ref.vigente_hasta || null,
       razon_cruda: r.crudo != null ? Number(r.crudo.toFixed(4)) : null,
@@ -1164,10 +1178,10 @@ async function jobRazonAdr({ ahora, manual }) {
       fuente_referencia: ref.fuente || null,
       capturada_en: ref.capturada_en || null,
       cotizacion_marcada_en: ref.cotizacion_marcada_en || null,
-      // El instrumento, no la conclusión: si `alguno_dentro` es true el
-      // problema fue el día elegido; si es false, el desajuste está en la
-      // referencia y aflojar el techo sólo lo taparía.
-      ventana: {
+      // Cruce, no criterio: desde que la razón sale del precio de la
+      // referencia, esto sólo sirve para ver cuánto se movió el precio
+      // alrededor de la captura.
+      cruce_ventana: {
         sesiones: ventana.filas.length,
         alguno_dentro: ventana.alguno_dentro,
         mejor: ventana.mejor,
@@ -1181,11 +1195,12 @@ async function jobRazonAdr({ ahora, manual }) {
     job: 'razon-adr',
     tolerancia_pct: TOLERANCIA_RAZON_PCT,
     referencias: refs.size,
-    // Cuáles reconciliarían con OTRO cierre de su ventana. Es la lista que
-    // decide si lo que hay que revisar es la fecha de captura o la referencia.
-    reconcilian_en_otro_dia: detalle
-      .filter((d) => !d.resuelve && d.ventana && d.ventana.alguno_dentro)
-      .map((d) => `${d.symbol} (mejor: ${d.ventana.mejor ? `${d.ventana.mejor.fecha} a ${d.ventana.mejor.error_pct}%` : 's/d'})`),
+    // LA PREGUNTA QUE QUEDA CUANDO FALLA. Con el precio de la captura la fecha
+    // está descartada, así que de una razón que no sale limpia lo único
+    // sospechoso es el conteo de acciones: acá va el número, no una corazonada.
+    revisar_acciones: detalle
+      .filter((d) => !d.resuelve && d.razon_de === 'precio_referencia' && d.acciones_implicitas_millones)
+      .map((d) => `${d.symbol}: la cap de referencia implica ${d.acciones_implicitas_millones}M por ADR y tenemos ${d.acciones_millones}M ordinarias (razón cruda ${d.razon_cruda})`),
     resuelven: detalle.filter((d) => d.resuelve).length,
     no_resuelven: detalle.filter((d) => !d.resuelve).length,
     a_recapturar: detalle.filter((d) => d.a_recapturar).map((d) => d.symbol),

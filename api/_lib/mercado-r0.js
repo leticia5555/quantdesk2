@@ -469,10 +469,16 @@ export function referenciaManual(registro, clave, ahora, ctx = {}) {
 }
 
 /**
- * Parsea `?job=...&manual=CLAVE:CAP,CLAVE:CAP` para una verificación puntual
- * sin redeploy. `fuente` y `capturada_en` se pasan aparte y valen para todas
- * las de esa corrida — porque si vinieron en la misma sesión, vinieron del
- * mismo lado y el mismo día.
+ * Parsea `?job=...&manual=CLAVE:CAP[:PRECIO],CLAVE:CAP[:PRECIO]` para una
+ * verificación puntual sin redeploy. `fuente` y `capturada_en` se pasan aparte
+ * y valen para todas las de esa corrida — porque si vinieron en la misma
+ * sesión, vinieron del mismo lado y el mismo día.
+ *
+ * El TERCER campo es el precio con el que se leyó la cap, y es opcional sólo
+ * por compatibilidad con México, donde la cap no es de un ADR. Para un ADR
+ * conviene siempre: con el precio de la misma pantalla la razón sale de una
+ * fuente coherente consigo misma y no depende de ningún cierre nuestro
+ * (`docs/mercado-r0.md` §11).
  */
 export function parseManualParam(raw, { fuente, capturada_en } = {}) {
   const txt = String(raw || '').trim();
@@ -481,13 +487,20 @@ export function parseManualParam(raw, { fuente, capturada_en } = {}) {
   for (const parte of txt.split(',')) {
     const t = parte.trim();
     if (!t) continue;
-    const i = t.lastIndexOf(':');
-    if (i <= 0) { invalidas.push({ entrada: t, motivo: 'falta el ":" entre clave y capitalización' }); continue; }
-    const clave = up(t.slice(0, i));
-    const cap = num(t.slice(i + 1).replace(/[\s,_]/g, ''));
+    const campos = t.split(':').map((x) => x.trim());
+    if (campos.length < 2 || !campos[0]) { invalidas.push({ entrada: t, motivo: 'falta el ":" entre clave y capitalización' }); continue; }
+    if (campos.length > 3) { invalidas.push({ entrada: t, motivo: 'sobran campos: la forma es CLAVE:CAP o CLAVE:CAP:PRECIO' }); continue; }
+    const clave = up(campos[0]);
+    const cap = num(campos[1].replace(/[\s,_]/g, ''));
     if (cap == null || cap <= 0) { invalidas.push({ entrada: t, motivo: 'la capitalización no es un número positivo' }); continue; }
+    let precio = null;
+    if (campos.length === 3) {
+      precio = num(campos[2].replace(/[\s,_]/g, ''));
+      if (precio == null || precio <= 0) { invalidas.push({ entrada: t, motivo: 'el precio de referencia no es un número positivo' }); continue; }
+    }
     referencias.push({
       clave, market_cap: cap,
+      ...(precio != null ? { precio_referencia: precio } : {}),
       fuente: fuente || 'manual (sin fuente declarada)',
       capturada_en: capturada_en || null,
     });
