@@ -28,6 +28,79 @@ const SEC_UA = 'QuantDesk research@quantdesk.app';
 
 // Compra "destacada": open-market (P), officer/director, valor mínimo.
 const NOTABLE_MIN_USD = 100000;
+
+// ── Moneda del precio (footnotes del Form 4) ────────────────────────
+// El precio de la Tabla I NO siempre es USD: emisores extranjeros con
+// listado dual (CEMEX CPO, etc.) reportan el precio de la bolsa local y
+// lo aclaran en un footnote ("Price in Mexican Pesos (MXN)"). Sin leerlo,
+// 400,800 CPO × MX$17.28 se pintaba como US$6.9M (≈18× el valor real).
+// Regla: la moneda se toma SOLO de los footnotes referenciados por el
+// precio (o, si no hay, por la transacción); sin mención explícita → USD.
+const CURRENCY_PATTERNS = [
+  ['MXN', /\bMXN\b|mexican\s+pesos?|pesos?\s+mexicanos?/i],
+  ['EUR', /\bEUR\b|\beuros?\b/i],
+  ['GBP', /\bGBP\b|pounds?\s+sterling|british\s+pounds?|\bpence\b/i],
+  ['CAD', /\bCAD\b|canadian\s+dollars?/i],
+  ['BRL', /\bBRL\b|\breais\b|brazilian\s+reals?/i],
+  ['JPY', /\bJPY\b|japanese\s+yen|\byen\b/i],
+  ['CHF', /\bCHF\b|swiss\s+francs?/i],
+  ['ILS', /\bILS\b|\bNIS\b|israeli\s+shekels?|new\s+shekels?/i],
+  ['HKD', /\bHKD\b|hong\s+kong\s+dollars?/i],
+  ['AUD', /\bAUD\b|australian\s+dollars?/i],
+  ['INR', /\bINR\b|indian\s+rupees?/i],
+  ['SEK', /\bSEK\b|swedish\s+kron(?:a|or)/i],
+  ['NOK', /\bNOK\b|norwegian\s+kron(?:e|er)/i],
+  ['DKK', /\bDKK\b|danish\s+kron(?:e|er)/i],
+  ['ZAR', /\bZAR\b|south\s+african\s+rand/i],
+  ['CLP', /\bCLP\b|chilean\s+pesos?/i],
+  ['COP', /\bCOP\b|colombian\s+pesos?/i],
+  ['PEN', /\bPEN\b|peruvian\s+sol(?:es)?|nuevos?\s+sol(?:es)?/i],
+  ['ARS', /\bARS\b|argentine\s+pesos?/i],
+  ['KRW', /\bKRW\b|korean\s+won/i],
+  ['TWD', /\bTWD\b|taiwan\s+dollars?/i],
+];
+// Tipo de cambio APROXIMADO (unidades por USD) — se usa SOLO para aplicar
+// el umbral de $100k y para la etiqueta "≈ US$" de referencia. El monto
+// principal de la card se muestra en la moneda del filing, que es el dato
+// real. Revisar de vez en cuando; un desvío de ±20% no cambia qué pasa el
+// umbral. Moneda no listada → el item se excluye y se cuenta en scan.
+const FX_TO_USD_APPROX = {
+  MXN: 18.5, EUR: 0.92, GBP: 0.78, CAD: 1.37, BRL: 5.5, JPY: 150, CHF: 0.88,
+  ILS: 3.7, HKD: 7.8, AUD: 1.5, INR: 84, SEK: 10.5, NOK: 10.7, DKK: 6.9,
+  ZAR: 18, CLP: 950, COP: 4100, PEN: 3.75, ARS: 1300, KRW: 1380, TWD: 32,
+};
+
+// Texto de footnotes → código de moneda, o null si no se menciona ninguna.
+export function detectCurrency(text) {
+  const s = String(text || '');
+  if (!s) return null;
+  for (const [code, re] of CURRENCY_PATTERNS) if (re.test(s)) return code;
+  return null;
+}
+
+// <footnotes><footnote id="F2">…</footnote></footnotes> → Map id→texto.
+export function parseFootnotes(xml) {
+  const out = new Map();
+  const re = /<(?:\w+:)?footnote\s+id="([^"]+)"[^>]*>([\s\S]*?)<\/(?:\w+:)?footnote>/gi;
+  let m;
+  while ((m = re.exec(String(xml || '')))) {
+    out.set(m[1], m[2].replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim());
+  }
+  return out;
+}
+
+function footnoteIds(block) {
+  return [...String(block || '').matchAll(/<(?:\w+:)?footnoteId\s+id="([^"]+)"/gi)].map((m) => m[1]);
+}
+
+// Unidad del instrumento según securityTitle (para la card: "CPO" en vez
+// de "sh" cuando el filing lo dice; ADS/ADR idem).
+export function securityUnit(title) {
+  const s = String(title || '');
+  if (/\bCPOs?\b|participation certificates?/i.test(s)) return 'CPO';
+  if (/\bADSs?\b|\bADRs?\b|depositary/i.test(s)) return 'ADS';
+  return 'sh';
+}
 // Filings únicos a inspeccionar por build (2 páginas de atom ≈ 100-200
 // entries → ~60-100 únicos). Cap para caber holgados en maxDuration=60s
 // a ≤8 req/s: cada filing cuesta 2 requests (index.json + XML).
@@ -182,28 +255,62 @@ export function parseForm4Xml(xml) {
     };
   });
   const planned10b5 = /^(1|true)$/i.test(xval(s, 'aff10b5One'));
+  const footnotes = parseFootnotes(s);
+  const noteText = (ids) => ids.map((id) => footnotes.get(id) || '').join(' ');
   const buys = (s.match(/<(?:\w+:)?nonDerivativeTransaction>[\s\S]*?<\/(?:\w+:)?nonDerivativeTransaction>/gi) || [])
-    .map((b) => ({
-      code: xval(b, 'transactionCode'),
-      ad: xval(b, 'transactionAcquiredDisposedCode'),
-      date: xval(b, 'transactionDate') || null,
-      shares: parseFloat(xval(b, 'transactionShares')) || 0,
-      price: parseFloat(xval(b, 'transactionPricePerShare')) || 0,
-    }))
+    .map((b) => {
+      // Moneda: primero los footnotes colgados del precio; si el precio no
+      // trae ninguno, los de toda la transacción. Nada → USD (null).
+      const priceBlock = xtag(b, 'transactionPricePerShare');
+      const priceIds = footnoteIds(priceBlock);
+      const currency = detectCurrency(noteText(priceIds.length ? priceIds : footnoteIds(b)));
+      const securityTitle = xval(b, 'securityTitle') || null;
+      const ownBlock = xtag(b, 'ownershipNature');
+      const dio = xval(ownBlock, 'directOrIndirectOwnership').toUpperCase();
+      return {
+        code: xval(b, 'transactionCode'),
+        ad: xval(b, 'transactionAcquiredDisposedCode'),
+        date: xval(b, 'transactionDate') || null,
+        shares: parseFloat(xval(b, 'transactionShares')) || 0,
+        price: parseFloat(xval(b, 'transactionPricePerShare')) || 0,
+        currency,
+        securityTitle,
+        indirect: dio === 'I',
+        ownershipNature: dio === 'I' ? (xval(ownBlock, 'natureOfOwnership') || null) : null,
+      };
+    })
     .filter((tx) => tx.code === 'P' && tx.ad === 'A' && tx.shares > 0 && tx.price > 0);
   return { issuer, owners, planned10b5, buys };
 }
 
 // Filing parseado → item destacado, o null si no pasa el filtro.
-export function extractNotableBuy(doc, meta, minUsd = NOTABLE_MIN_USD) {
+// `stats` (opcional) acumula descartes no-obvios (moneda sin tipo de
+// cambio) para que scan.* los exponga y la cobertura sea auditable.
+export function extractNotableBuy(doc, meta, minUsd = NOTABLE_MIN_USD, stats = null) {
   if (!doc || !doc.buys.length) return null;
   const lead = doc.owners.find((o) => o.isOfficer || o.isDirector);
   if (!lead) return null;
-  const value = doc.buys.reduce((s, tx) => s + tx.shares * tx.price, 0);
-  if (value < minUsd) return null;
-  const shares = doc.buys.reduce((s, tx) => s + tx.shares, 0);
-  const tradeDate = doc.buys.map((tx) => tx.date).filter(Boolean).sort()[0] || null;
+  // Un filing con compras en dos monedas distintas no se suma: se toma la
+  // moneda de la primera compra y se ignoran las demás (caso rarísimo).
+  const currency = doc.buys[0].currency || null;
+  const buys = doc.buys.filter((tx) => (tx.currency || null) === currency);
+  const value = buys.reduce((s, tx) => s + tx.shares * tx.price, 0);
+  // Umbral en USD: moneda local → conversión aproximada solo para el
+  // umbral; moneda desconocida → fuera (no se puede comparar honestamente).
+  let valueUsdApprox = null;
+  if (currency) {
+    const fx = FX_TO_USD_APPROX[currency];
+    if (!fx) {
+      if (stats) stats.fx_unknown = (stats.fx_unknown || 0) + 1;
+      return null;
+    }
+    valueUsdApprox = Math.round(value / fx);
+  }
+  if ((currency ? valueUsdApprox : value) < minUsd) return null;
+  const shares = buys.reduce((s, tx) => s + tx.shares, 0);
+  const tradeDate = buys.map((tx) => tx.date).filter(Boolean).sort()[0] || null;
   const filedDate = meta.updated ? meta.updated.slice(0, 10) : null;
+  const indirect = buys.some((tx) => tx.indirect);
   return {
     accession: meta.accession,
     insider: lead.name,
@@ -213,8 +320,16 @@ export function extractNotableBuy(doc, meta, minUsd = NOTABLE_MIN_USD) {
     ticker: doc.issuer.ticker,
     issuerCik: doc.issuer.cik,
     shares: Math.round(shares),
+    unit: securityUnit(buys[0].securityTitle),
     avgPrice: shares > 0 ? +(value / shares).toFixed(2) : null,
+    // `value` está en `currency` (null = USD). Si hay moneda local, el
+    // dato real es value+currency; valueUsdApprox es solo referencia.
     value: Math.round(value),
+    currency,
+    valueUsdApprox,
+    // Tenencia indirecta (cónyuge, trust, holding) — el filing lo declara.
+    indirect,
+    ownershipNature: indirect ? (buys.find((tx) => tx.indirect).ownershipNature || null) : null,
     tradeDate,
     filedDate,
     // Honestidad de lag: días entre el trade y el filing (máx legal: 2 hábiles).
@@ -258,6 +373,7 @@ async function buildInsider() {
 
   const toScan = entries.filter((e) => !insiderAccum.has(e.accession)).slice(0, SCAN_CAP);
   let fetched = 0;
+  const skipStats = {};
   // Por filing: index.json del accession (el nombre del XML varía) → XML.
   const found = await batchedMap(toScan, async (e) => {
     const dir = `https://www.sec.gov/Archives/edgar/data/${e.cik}/${e.accession.replace(/-/g, '')}`;
@@ -271,7 +387,7 @@ async function buildInsider() {
     const xml = await fetchRaw(dir + '/' + xmlFile.name);
     fetched++;
     if (!xml.ok) return null;
-    return extractNotableBuy(parseForm4Xml(xml.text), e);
+    return extractNotableBuy(parseForm4Xml(xml.text), e, NOTABLE_MIN_USD, skipStats);
   });
 
   // Merge al acumulador de instancia + poda por edad.
@@ -281,8 +397,11 @@ async function buildInsider() {
     if ((it.filedDate || '') < cutoff) insiderAccum.delete(acc);
   }
 
+  // Orden por tamaño comparable: USD real o la aproximación (nunca el
+  // monto nominal en moneda local, que mezclaría pesos con dólares).
+  const usd = (it) => (it.currency ? it.valueUsdApprox : it.value) || 0;
   const items = markClusters([...insiderAccum.values()])
-    .sort((a, b) => (b.filedDate || '').localeCompare(a.filedDate || '') || b.value - a.value)
+    .sort((a, b) => (b.filedDate || '').localeCompare(a.filedDate || '') || usd(b) - usd(a))
     .slice(0, 60);
 
   return {
@@ -290,7 +409,8 @@ async function buildInsider() {
     items,
     // Cobertura honesta: qué se escaneó este build y cuánto acumula la
     // instancia — un cold start solo ve la ventana del atom.
-    scan: { atom_entries: entries.length, inspected: toScan.length, xml_fetched: fetched, accumulated: insiderAccum.size },
+    scan: { atom_entries: entries.length, inspected: toScan.length, xml_fetched: fetched, accumulated: insiderAccum.size, ...skipStats },
+    fx_note: 'Precios en moneda local (footnote del Form 4) se muestran en esa moneda; "≈ US$" usa un tipo de cambio fijo aproximado, solo referencia',
     lag_note: 'SEC Form 4: reportado máx. 2 días hábiles después del trade',
     sources,
     stale: false,

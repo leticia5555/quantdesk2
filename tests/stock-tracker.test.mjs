@@ -7,6 +7,7 @@
 
 import handler, {
   parseForm4Atom, parseForm4Xml, extractNotableBuy, markClusters,
+  detectCurrency, parseFootnotes, securityUnit,
   parse13FInfotable, diff13F, pickInfotableFile,
   _resetTrackerCache, _expireTrackerCache,
 } from '../api/stock-tracker.js';
@@ -101,6 +102,88 @@ console.log('extractNotableBuy: umbral, officer/director, lag');
   ok(extractNotableBuy(parseForm4Xml(form4Xml({ shares: 100 })), meta) === null, '100 × $25 = $2.5k → null (bajo umbral)');
   ok(extractNotableBuy(parseForm4Xml(form4Xml({ officer: false })), meta) === null, '10%-owner sin cargo → null');
   ok(extractNotableBuy(parseForm4Xml(form4Xml({ code: 'A' })), meta) === null, 'award (A) → null: solo open-market');
+  ok(notable.currency === null && notable.valueUsdApprox === null && notable.unit === 'sh' && notable.indirect === false,
+    'filing USD normal: currency null, sin ≈US$, unidad sh, directo', JSON.stringify([notable.currency, notable.valueUsdApprox, notable.unit, notable.indirect]));
+}
+
+// ─────────── moneda local en footnote (caso real: CEMEX CPO, 2026-09-25) ───────────
+// Estructura calcada del Form 4 real de Rogelio Zambrano Lozano (CIK
+// 2035244, accession 0002035244-26-000009): precio 17.2812 con footnotes
+// F1/F2/F3, F2 = "Price in Mexican Pesos (MXN)", tenencia indirecta Spouse.
+// Sin leer el footnote, 400,800 × 17.28 se pintaba como US$6.9M.
+function form4XmlCemex({ shares = 400800, price = 17.2812, noteCurrency = 'Price in Mexican Pesos (MXN).', direct = false } = {}) {
+  // F3 real menciona "MXN" en el rango de precios; si el test cambia F2, el rango va sin moneda.
+  const rangeCcy = /MXN/.test(noteCurrency) ? ' MXN' : '';
+  return '<?xml version="1.0"?><ownershipDocument><aff10b5One>0</aff10b5One>' +
+    '<issuer><issuerCik>0001076378</issuerCik><issuerName>CEMEX SAB DE CV</issuerName>' +
+    '<issuerTradingSymbol>CX</issuerTradingSymbol></issuer>' +
+    '<reportingOwner><reportingOwnerId><rptOwnerCik>0002035244</rptOwnerCik>' +
+    '<rptOwnerName>Zambrano Lozano Rogelio</rptOwnerName></reportingOwnerId>' +
+    '<reportingOwnerRelationship><isDirector>1</isDirector><isOfficer>0</isOfficer></reportingOwnerRelationship></reportingOwner>' +
+    '<nonDerivativeTable><nonDerivativeTransaction>' +
+    '<securityTitle><value>Ordinary Participation Certificates (CEMEX.CPO)</value></securityTitle>' +
+    `<transactionDate><value>${iso(2)}</value></transactionDate>` +
+    '<transactionCoding><transactionFormType>4</transactionFormType><transactionCode>P</transactionCode><equitySwapInvolved>0</equitySwapInvolved></transactionCoding>' +
+    `<transactionAmounts><transactionShares><value>${shares}</value></transactionShares>` +
+    `<transactionPricePerShare><value>${price}</value><footnoteId id="F1"/><footnoteId id="F2"/><footnoteId id="F3"/></transactionPricePerShare>` +
+    '<transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode></transactionAmounts>' +
+    '<postTransactionAmounts><sharesOwnedFollowingTransaction><value>10000000</value></sharesOwnedFollowingTransaction></postTransactionAmounts>' +
+    '<ownershipNature><directOrIndirectOwnership><value>' + (direct ? 'D' : 'I') + '</value></directOrIndirectOwnership>' +
+    (direct ? '' : '<natureOfOwnership><value>Spouse</value></natureOfOwnership>') + '</ownershipNature>' +
+    '</nonDerivativeTransaction></nonDerivativeTable>' +
+    '<footnotes><footnote id="F1">Price per Ordinary Participation Certificate.</footnote>' +
+    `<footnote id="F2">${noteCurrency}</footnote>` +
+    `<footnote id="F3">The reported price in Column 4 is a weighted average price. These Ordinary Participation Certificates were purchased in multiple transactions at prices ranging from $17.20${rangeCcy} to $17.34${rangeCcy} per Ordinary Participation Certificate.</footnote></footnotes>` +
+    '</ownershipDocument>';
+}
+
+console.log('detectCurrency / parseFootnotes: moneda declarada en footnotes');
+{
+  ok(detectCurrency('Price in Mexican Pesos (MXN).') === 'MXN', 'MXN explícito');
+  ok(detectCurrency('Precio en pesos mexicanos') === 'MXN', 'pesos mexicanos en español');
+  ok(detectCurrency('Price in Canadian dollars') === 'CAD', 'CAD por nombre');
+  ok(detectCurrency('Shares purchased in euros on Euronext') === 'EUR', 'EUR por nombre');
+  ok(detectCurrency('Weighted average price; prices ranged from $10.00 to $10.20.') === null, 'footnote sin moneda → null (USD)');
+  ok(detectCurrency('') === null && detectCurrency(null) === null, 'vacío → null');
+  const fn = parseFootnotes('<footnotes><footnote id="F1">uno</footnote><footnote id="F2">Price in <b>MXN</b>\n  pesos</footnote></footnotes>');
+  ok(fn.size === 2 && fn.get('F2') === 'Price in MXN pesos', 'parseFootnotes: id→texto limpio', JSON.stringify([...fn]));
+  ok(securityUnit('Ordinary Participation Certificates (CEMEX.CPO)') === 'CPO', 'unidad CPO');
+  ok(securityUnit('American Depositary Shares') === 'ADS', 'unidad ADS');
+  ok(securityUnit('Common Stock') === 'sh' && securityUnit(null) === 'sh', 'unidad sh por defecto');
+}
+
+console.log('parseForm4Xml: moneda, unidad y tenencia indirecta por transacción');
+{
+  const doc = parseForm4Xml(form4XmlCemex());
+  ok(doc.buys.length === 1, '1 compra P', doc.buys.length);
+  ok(doc.buys[0].currency === 'MXN', 'currency MXN desde el footnote F2 colgado del precio', doc.buys[0].currency);
+  ok(doc.buys[0].indirect === true && doc.buys[0].ownershipNature === 'Spouse', 'indirecta · Spouse', JSON.stringify([doc.buys[0].indirect, doc.buys[0].ownershipNature]));
+  ok(/CPO/.test(doc.buys[0].securityTitle), 'securityTitle capturado', doc.buys[0].securityTitle);
+  const usd = parseForm4Xml(form4XmlCemex({ noteCurrency: 'Price is a weighted average.' }));
+  ok(usd.buys[0].currency === null, 'footnotes sin moneda → null (USD)', usd.buys[0].currency);
+  const d2 = parseForm4Xml(form4XmlCemex({ direct: true }));
+  ok(d2.buys[0].indirect === false && d2.buys[0].ownershipNature === null, 'directa → indirect false, nature null');
+}
+
+console.log('extractNotableBuy: umbral en USD aproximado, monto en moneda local (bug CEMEX $6.9M)');
+{
+  const meta = { accession: '0002035244-26-000009', link: ATOM_LINK, updated: iso(1) + 'T18:47:00-04:00' };
+  const it = extractNotableBuy(parseForm4Xml(form4XmlCemex()), meta);
+  ok(!!it, 'CEMEX pasa el umbral (≈US$375k)');
+  ok(it.currency === 'MXN', 'currency MXN en el item', it.currency);
+  ok(it.value === 6926305, 'value = 400,800 × 17.2812 = MX$6,926,305 (moneda del filing, NO USD)', it.value);
+  ok(it.valueUsdApprox > 300000 && it.valueUsdApprox < 450000, '≈US$ en rango 300k–450k con FX aproximado', it.valueUsdApprox);
+  ok(it.unit === 'CPO' && it.avgPrice === 17.28, 'unidad CPO y precio promedio 17.28', JSON.stringify([it.unit, it.avgPrice]));
+  ok(it.indirect === true && it.ownershipNature === 'Spouse', 'INDIRECTA · Spouse en el item', JSON.stringify([it.indirect, it.ownershipNature]));
+  ok(it.role === 'Director', 'director sin officerTitle → Director', it.role);
+  // 100,000 × MX$17.28 = MX$1.7M pasaría el umbral si se leyera como USD;
+  // en USD aproximado son ~US$93k → fuera. Este es el bug original al revés.
+  ok(extractNotableBuy(parseForm4Xml(form4XmlCemex({ shares: 100000 })), meta) === null, 'MX$1.7M (~US$93k) → null: el umbral se aplica en USD');
+  // Moneda que ningún patrón reconoce → se trata como USD (comportamiento
+  // anterior), sin descarte: el riesgo queda acotado a monedas no listadas.
+  const stats = {};
+  const egp = extractNotableBuy(parseForm4Xml(form4XmlCemex({ noteCurrency: 'Price in Egyptian pounds (EGP).' })), meta, undefined, stats);
+  ok(egp && egp.currency === null && stats.fx_unknown === undefined, 'moneda no reconocida → currency null, sin skip', JSON.stringify([egp && egp.currency, stats]));
 }
 
 console.log('markClusters: ≥2 insiders mismo issuer');
