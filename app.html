@@ -6914,13 +6914,17 @@ async function loadTracker(cat,force){
   renderTracker(d);
 }
 
-function stFmtUsd(v){
+// Prefijo de moneda para montos que NO son USD (el Form 4 lo declara en
+// footnote: CEMEX CPO en MXN, etc.). Sin moneda → '$' como siempre.
+const ST_CCY_PREFIX={MXN:'MX$',EUR:'€',GBP:'£',CAD:'C$',BRL:'R$',JPY:'¥',CHF:'CHF ',ILS:'₪',HKD:'HK$',AUD:'A$',INR:'₹',ZAR:'R',CLP:'CLP ',COP:'COP ',PEN:'S/',ARS:'AR$',KRW:'₩',TWD:'NT$',SEK:'SEK ',NOK:'NOK ',DKK:'DKK '};
+function stFmtUsd(v,ccy){
   if(v==null||isNaN(v))return'';
+  const p=ccy?(ST_CCY_PREFIX[ccy]||ccy+' '):'$';
   const a=Math.abs(v);
-  if(a>=1e9)return'$'+(v/1e9).toFixed(1)+'B';
-  if(a>=1e6)return'$'+(v/1e6).toFixed(1)+'M';
-  if(a>=1e3)return'$'+Math.round(v/1e3)+'k';
-  return'$'+Math.round(v);
+  if(a>=1e9)return p+(v/1e9).toFixed(1)+'B';
+  if(a>=1e6)return p+(v/1e6).toFixed(1)+'M';
+  if(a>=1e3)return p+Math.round(v/1e3)+'k';
+  return p+Math.round(v);
 }
 
 // Lag honesto por card: "trade 2026-07-01 · filed +2d".
@@ -6936,20 +6940,28 @@ function stInsiderCard(it){
   const tags=[];
   if(it.cluster)tags.push('<span class="vcf-tag" title="'+t('stClusterTip')+'">'+t('stCluster')+'</span>');
   if(it.planned10b5)tags.push('<span class="vcf-tag" title="'+t('stPlannedTip')+'">10b5-1</span>');
+  // Moneda local declarada en el footnote del filing: etiqueta + monto en
+  // esa moneda (el dato real) y "≈ US$" de referencia con FX aproximado.
+  if(it.currency)tags.push('<span class="vcf-tag" title="'+qdEscHTML(t('stCcyTip'))+'">'+qdEscHTML(it.currency)+'</span>');
+  // Tenencia indirecta (cónyuge, trust, holding) según el propio Form 4.
+  if(it.indirect)tags.push('<span class="vcf-tag" title="'+qdEscHTML(t('stIndirectTip')+(it.ownershipNature?' · '+it.ownershipNature:''))+'">'+t('stIndirect')+(it.ownershipNature?' · '+qdEscHTML(it.ownershipNature):'')+'</span>');
   const co=qdEscHTML(it.issuer||'—')+(it.ticker?' <span style="color:var(--text3);">('+qdEscHTML(it.ticker)+')</span>':'');
+  const pfx=it.currency?(ST_CCY_PREFIX[it.currency]||it.currency+' '):'$';
+  const unit=it.unit||'sh';
   return '<div class="deal-card">'+
     '<div class="deal-top">'+
       '<div style="min-width:0;">'+
         '<div class="deal-name">'+qdEscHTML(it.insider||'—')+'</div>'+
         '<div class="deal-sector" style="margin-top:4px;line-height:1.5;">'+qdEscHTML(it.role||'')+' · '+co+'</div>'+
       '</div>'+
-      '<div style="flex-shrink:0;margin-left:12px;">'+
-        '<div class="deal-amt">'+stFmtUsd(it.value)+'</div>'+
-        (tags.length?'<div style="display:flex;gap:4px;justify-content:flex-end;margin-top:4px;">'+tags.join('')+'</div>':'')+
+      '<div style="flex-shrink:0;margin-left:12px;text-align:right;">'+
+        '<div class="deal-amt">'+stFmtUsd(it.value,it.currency)+'</div>'+
+        (it.currency&&it.valueUsdApprox!=null?'<div class="vcf-src" title="'+qdEscHTML(t('stCcyTip'))+'">≈ US'+stFmtUsd(it.valueUsdApprox)+'</div>':'')+
+        (tags.length?'<div style="display:flex;gap:4px;justify-content:flex-end;margin-top:4px;flex-wrap:wrap;">'+tags.join('')+'</div>':'')+
       '</div>'+
     '</div>'+
     '<div class="deal-foot">'+
-      '<div class="backers">'+(it.shares?Number(it.shares).toLocaleString()+' sh @ $'+qdEscHTML(String(it.avgPrice==null?'—':it.avgPrice)):'')+'</div>'+
+      '<div class="backers">'+(it.shares?Number(it.shares).toLocaleString()+' '+qdEscHTML(unit)+' @ '+qdEscHTML(pfx)+qdEscHTML(String(it.avgPrice==null?'—':it.avgPrice)):'')+'</div>'+
       '<div class="vcf-src">'+stLagBadge(it)+
         (it.link?' · <a href="'+qdEscHTML(it.link)+'" target="_blank" rel="noopener noreferrer">EDGAR ↗</a>':'')+'</div>'+
     '</div>'+
@@ -10151,6 +10163,8 @@ const i18n = {
     stNew:'NEW POSITIONS', stClosed:'CLOSED', stIncreased:'ADDED TO', stReduced:'TRIMMED',
     stCluster:'CLUSTER', stClusterTip:'2+ insiders bought this company within the window',
     stPlannedTip:'Pre-scheduled trade under a Rule 10b5-1 plan (not discretionary)',
+    stCcyTip:'Price reported in local currency per the filing\'s footnote (e.g. Mexican CPOs in MXN). Amount shown in that currency; "≈ US$" uses a fixed approximate FX rate, reference only',
+    stIndirect:'INDIRECT', stIndirectTip:'Held indirectly per the filing (spouse, trust, holding company)',
     stEmptyTitle:'No notable buys in the scanned window (yet)',
     stEmptyBody:'Sources are up — the recent Form 4 window just has no open-market buys by officers/directors ≥ $100k. Most filings are awards, option exercises and sales; notable buys are rare by design.',
     stEmptyInFeed:'in feed', stEmptyInspected:'inspected', stEmptyAccum:'accumulated',
@@ -10384,6 +10398,8 @@ const i18n = {
     stNew:'POSICIONES NUEVAS', stClosed:'CERRADAS', stIncreased:'AUMENTÓ', stReduced:'RECORTÓ',
     stCluster:'CLUSTER', stClusterTip:'2+ insiders compraron esta empresa en la ventana',
     stPlannedTip:'Trade pre-programado bajo un plan Rule 10b5-1 (no discrecional)',
+    stCcyTip:'Precio reportado en moneda local según el footnote del filing (p. ej. CPOs mexicanos en MXN). El monto se muestra en esa moneda; "≈ US$" usa un tipo de cambio fijo aproximado, solo referencia',
+    stIndirect:'INDIRECTA', stIndirectTip:'Tenencia indirecta según el filing (cónyuge, trust, holding)',
     stEmptyTitle:'0 compras destacadas en la ventana escaneada (por ahora)',
     stEmptyBody:'Las fuentes están arriba — la ventana reciente de Form 4 simplemente no trae compras open-market de officers/directors ≥ $100k. La mayoría de filings son awards, ejercicios de opciones y ventas; las compras destacadas son raras por diseño.',
     stEmptyInFeed:'en el feed', stEmptyInspected:'inspeccionados', stEmptyAccum:'acumulados',
