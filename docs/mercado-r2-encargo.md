@@ -418,3 +418,44 @@ el ticker, por Yahoo o por la caché, porque el endpoint **omitía en silencio**
 el cuadro gris la repite: *"Yahoo respondió HTTP 404"* se arregla cambiando el
 ticker y *"no se pudo consultar"* no. Sin razón declarada, el cuadro dice que no
 la hay en vez de afirmar una.
+
+### El texto invisible, y lo que la medición dijo de la escala
+
+`qdPctTag` pinta el número de verde o rojo con un `style` en línea — correcto
+sobre fondo oscuro, como en la tira de arriba y en la hoja. Pero en Mundo el
+**fondo ya es verde o rojo**, así que el número salía del mismo color que su
+cuadro. Medido:
+
+| texto | sobre | contraste |
+| :--- | :--- | ---: |
+| rojo `#E24B4A` | rojo claro `#D2635C` | **1.06** |
+| verde `#00c97d` | verde claro `#4CAF7D` | **1.25** |
+
+1.06 es invisible. El arreglo es blanco, como en el mapa de EE.UU., forzado con
+`!important` porque hay que ganarle a un `style` en línea sin tocar el
+calculador compartido que usa toda la app.
+
+**Y la medición dejó un dato que es decisión de diseño, no de código:** con la
+escala del mockup, el blanco **no llega a WCAG AA (4.5)** en tres de los siete
+pasos —`#4CAF7D` da 2.71, `#1E9E5F` 3.44, `#D2635C` 3.70—, y en la corrida con
+el fixture repartido por toda la escala quedan **24 de 51** textos bajo 4.5. Se
+gana legibilidad real con el `text-shadow` que el mapa ya usa, pero un ratio no
+lo ve.
+
+Las dos maneras de llegar a AA, si se quiere:
+
+1. **oscurecer esos tres pasos** de la escala (toca el mapa de EE.UU. también,
+   porque es la misma escala), o
+2. **elegir el color del texto según el fondo** — blanco en los oscuros, casi
+   negro en los claros.
+
+El piso de la prueba quedó en **2.5**: atrapa el bug de verdad (mismo color que
+el fondo da ~1.0) y no convierte una decisión de la escala en un rojo de CI. Y
+`tests/mercado-mapa.test.mjs` fija el otro lado: si alguien aclara un paso de la
+escala, el contraste cae y se pone rojo antes de que se vea en un teléfono.
+
+**Una nota sobre el fixture:** la prueba de contraste pasó la primera vez sin
+haber mirado un solo cuadro de color — la rampa suave dejaba todos los 1D en
+±0.03% y por lo tanto todos los cuadros en el gris de ±0.5%. Una prueba que
+pasa sin tocar el caso que mide es decorativa, así que el fixture ahora reparte
+saltos del último día entre −3.8% y +3.6% y cubre los siete pasos.

@@ -123,7 +123,12 @@ function cuadrosUs() {
 // cruce contra el peso. `^FTSE` llega con UN punto a propósito: sin dos
 // cierres no hay periodo que calcular, y eso tiene que salir como "sin dato
 // con causa" y no como un cuadro de color.
-function serieAnual(base, drift) {
+// `salto` es el movimiento del ÚLTIMO día, en por ciento. Sin él, la rampa
+// suave dejaba todos los 1D en ±0.03% y por lo tanto todos los cuadros en el
+// gris de ±0.5%: la prueba de contraste pasaba sin haber mirado un solo cuadro
+// de color, que es una prueba decorativa. Con el salto, los cuadros cubren los
+// siete pasos de la escala y el contraste se mide donde importa.
+function serieAnual(base, drift, salto) {
   // 365 días, no 260: con 260 la serie arranca en enero y NO alcanza a tocar un
   // cierre del año anterior, así que YTD sale "—" con causa — correcto, pero
   // entonces la prueba no mediría que YTD FUNCIONA, sólo que falla bien. El
@@ -133,37 +138,41 @@ function serieAnual(base, drift) {
   for (let i = 365; i >= 0; i--) {
     pts.push({ t: hoy - i * 86400, c: +(base * (1 + drift * (365 - i) / 365)).toFixed(4) });
   }
+  if (Number.isFinite(salto)) {
+    const prev = pts[pts.length - 2].c;
+    pts[pts.length - 1] = { t: pts[pts.length - 1].t, c: +(prev * (1 + salto / 100)).toFixed(4) };
+  }
   return pts;
 }
 const MACRO = {
   data: {
-    '^GSPC': { price: 6810, currency: 'USD', series: serieAnual(6100, 0.115) },
-    '^NDX': { price: 25100, currency: 'USD', series: serieAnual(22000, 0.14) },
-    '^GSPTSE': { price: 29400, currency: 'CAD', series: serieAnual(28000, 0.05) },
-    '^FCHI': { price: 8100, currency: 'EUR', series: serieAnual(7900, 0.025) },
-    '000001.SS': { price: 3820, currency: 'CNY', series: serieAnual(3500, 0.09) },
-    '^NSEI': { price: 26800, currency: 'INR', series: serieAnual(25200, 0.063) },
+    '^GSPC': { price: 6810, currency: 'USD', series: serieAnual(6100, 0.115, 0.8) },
+    '^NDX': { price: 25100, currency: 'USD', series: serieAnual(22000, 0.14, 2.4) },
+    '^GSPTSE': { price: 29400, currency: 'CAD', series: serieAnual(28000, 0.05, 3.6) },
+    '^FCHI': { price: 8100, currency: 'EUR', series: serieAnual(7900, 0.025, -1.2) },
+    '000001.SS': { price: 3820, currency: 'CNY', series: serieAnual(3500, 0.09, -2.6) },
+    '^NSEI': { price: 26800, currency: 'INR', series: serieAnual(25200, 0.063, -3.8) },
     // `^AXJO` a propósito AUSENTE: lo que tiene que pasar es que el cuadro
     // diga por qué no está, en vez de desaparecer de la rejilla.
     // Un símbolo AUSENTE a propósito: lo que tiene que pasar es que el cuadro
     // diga por qué no está, en vez de desaparecer.
-    'BTC-USD': { price: 114240, currency: 'USD', series: serieAnual(98000, 0.165) },
+    'BTC-USD': { price: 114240, currency: 'USD', series: serieAnual(98000, 0.165, 1.9) },
     // A propósito DISTINTO del FIX: si el cuadro tomara esto, se vería.
     'MXN=X': { price: 99.99, currency: 'MXN', series: serieAnual(99, 0.5) },
-    'GC=F': { price: 3684, currency: 'USD', series: serieAnual(3100, 0.188) },
+    'GC=F': { price: 3684, currency: 'USD', series: serieAnual(3100, 0.188, -1.7) },
     'CAD=X': { price: 1.38, currency: 'CAD', series: serieAnual(1.42, -0.028) },
     'CLP=X': { price: 965, currency: 'CLP', series: serieAnual(990, -0.025) },
-    '^IPSA': { price: 8720, currency: 'CLP', series: serieAnual(7900, 0.104) },
+    '^IPSA': { price: 8720, currency: 'CLP', series: serieAnual(7900, 0.104, 1.6) },
     'CNY=X': { price: 7.06, currency: 'CNY', series: serieAnual(7.2, -0.019) },
     'INR=X': { price: 88.4, currency: 'INR', series: serieAnual(86, 0.028) },
     'AUD=X': { price: 1.49, currency: 'AUD', series: serieAnual(1.53, -0.026) },
     '^MXX': { price: 56200, currency: 'MXN', series: serieAnual(52000, 0.08) },
-    '^BVSP': { price: 139000, currency: 'BRL', series: serieAnual(132000, 0.05) },
+    '^BVSP': { price: 139000, currency: 'BRL', series: serieAnual(132000, 0.05, -2.1) },
     'ES=F': { price: 6120, currency: 'USD', series: serieAnual(5800, 0.055) },
     'NQ=F': { price: 22400, currency: 'USD', series: serieAnual(20500, 0.09) },
     'YM=F': { price: 45200, currency: 'USD', series: serieAnual(44000, 0.027) },
-    '^GDAXI': { price: 24100, currency: 'EUR', series: serieAnual(22000, 0.095) },
-    '^FTSE': { price: 9450, currency: 'GBP', series: serieAnual(9100, 0.038) },
+    '^GDAXI': { price: 24100, currency: 'EUR', series: serieAnual(22000, 0.095, -0.9) },
+    '^FTSE': { price: 9450, currency: 'GBP', series: serieAnual(9100, 0.038, 0.2) },
     // Nikkei con el precio de HOY (martes) sobre una serie que termina el
     // lunes: es el caso que hacía que el encabezado de Asia dijera "cierre del
     // lunes" mientras los cuadros mostraban martes.
@@ -182,7 +191,7 @@ const MACRO = {
         { t: Date.parse('2026-09-21T20:00:00Z') / 1000, c: 6889.74 },
       ]),
     },
-    '^HSI': { price: 26100, currency: 'HKD', series: serieAnual(25000, 0.044) },
+    '^HSI': { price: 26100, currency: 'HKD', series: serieAnual(25000, 0.044, 2.9) },
     'DX-Y.NYB': { price: 97.4, currency: 'USD', series: serieAnual(99, -0.016) },
     'EURUSD=X': { price: 1.182, currency: 'USD', series: serieAnual(1.16, 0.019) },
     'JPY=X': { price: 148.2, currency: 'JPY', series: serieAnual(150, -0.012) },
@@ -783,6 +792,52 @@ try {
   const nikkei = mundo.cajas.find((c) => c.sym === '^N225');
   chequeo('el encabezado de Asia NO dice "cierre del lunes" con los cuadros en martes',
     !/cierre del lunes/.test(asia.estado), `${asia.estado} · Nikkei ${nikkei.chico}`);
+  // ── EL TEXTO SE TIENE QUE LEER SOBRE SU PROPIO CUADRO ──────────────
+  // `qdPctTag` pinta el número de verde o rojo con un `style` en línea, que es
+  // lo correcto sobre fondo oscuro. Pero en Mundo el FONDO ya es verde o rojo,
+  // así que el número salía del mismo color que su cuadro: el CAC 40 en rojo
+  // sobre rojo daba **1.06 de contraste** —invisible— y el Nasdaq verde sobre
+  // verde, 1.25. El signo ya lo dice el fondo; el texto sólo tiene que leerse.
+  const contraste = await p.evaluate(() => {
+    const lin = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    const rgb = (s) => (s.match(/\d+(\.\d+)?/g) || []).slice(0, 3).map(Number);
+    const L = ([r, g, b]) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    const ratio = (a, b) => {
+      const la = L(a), lb = L(b);
+      const [hi, lo] = la > lb ? [la, lb] : [lb, la];
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    const filas = [];
+    for (const c of document.querySelectorAll('#mundo .c')) {
+      const fondo = rgb(getComputedStyle(c).backgroundColor);
+      for (const sel of ['.v .qd-pct', '.n', '.l']) {
+        const el = c.querySelector(sel);
+        if (!el || !el.textContent.trim()) continue;
+        filas.push({
+          sym: c.dataset.sym, parte: sel,
+          color: getComputedStyle(el).color,
+          r: Math.round(ratio(rgb(getComputedStyle(el).color), fondo) * 100) / 100,
+        });
+      }
+    }
+    return filas;
+  });
+  const peor = contraste.reduce((a, b) => (b.r < a.r ? b : a));
+  const pctBlancos = contraste.filter((f) => f.parte === '.v .qd-pct');
+  chequeo('el % NO se pinta del color de su propio cuadro: va en blanco',
+    pctBlancos.length > 0 && pctBlancos.every((f) => /rgb\(255, 255, 255\)/.test(f.color)),
+    JSON.stringify(pctBlancos.slice(0, 3)));
+  // El piso es 2.5 y no 4.5 a propósito, y el número de abajo dice por qué: con
+  // la escala del mockup, BLANCO sobre el verde claro (#4CAF7D) da 2.71 y sobre
+  // el rojo claro (#D2635C) da 3.70. Llegar a AA (4.5) pide oscurecer esos tres
+  // pasos o elegir texto oscuro en los claros, y la escala es la del mockup:
+  // es decisión de Lety, no un efecto secundario de esta prueba. Lo que este
+  // piso SÍ atrapa es el bug de verdad — mismo color que el fondo da ~1.0.
+  chequeo('ningún texto queda por debajo de 2.5 de contraste sobre su cuadro',
+    peor.r >= 2.5, `el peor: ${peor.sym} ${peor.parte} ${peor.r} (${peor.color})`);
+  console.log(`     ↳ contraste mínimo ${peor.r} en ${peor.sym} ${peor.parte}`
+    + ` · bajo AA (4.5): ${contraste.filter((f) => f.r < 4.5).length} de ${contraste.length}`);
+
   chequeo('todos los niveles llevan su fecha, también los de Asia',
     mundo.cajas.every((c) => / · \d{2}-\d{2}$/.test(c.chico)),
     JSON.stringify(mundo.cajas.slice(0, 3).map((c) => c.chico)));

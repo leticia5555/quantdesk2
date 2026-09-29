@@ -98,6 +98,17 @@
   .c .n{font-size:12px;font-weight:600;line-height:1.1}
   .c .r{font-size:10px;opacity:.85}
   .c .v{font-family:var(--mono);font-size:16px;font-weight:600;line-height:1}
+  /* EL % EN BLANCO SOBRE UN CUADRO DE COLOR.
+     `qdPctTag` pinta el número de verde o rojo con un `style` en línea — que
+     es lo correcto sobre fondo oscuro, como en la tira de arriba— pero acá el
+     FONDO ya es verde o rojo, así que el número quedaba del mismo color que su
+     cuadro y no se leía: el CAC 40, el Nasdaq, el IPC y el DAX en MXN salían en
+     blanco… de invisible. El signo ya lo dice el fondo; el texto sólo tiene que
+     ser legible, como en el mapa de EE.UU.
+     El `!important` es contra un `style` en línea, que es la única manera de
+     ganarle sin tocar el calculador compartido que usa toda la app. */
+  .c .v .qd-pct, .c .v .qd-pct-per, .c .v .qd-pct *{color:#fff !important}
+  .c .v .qd-pct{text-shadow:0 1px 2px rgba(0,0,0,.6)}
   .c .l{font-family:var(--mono);font-size:10px;opacity:.85}
   .c.punteado{border-style:dashed;border-color:#555}
   @media (pointer:fine){ .c:hover{outline:1px solid rgba(255,255,255,.55);outline-offset:-1px} }

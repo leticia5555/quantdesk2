@@ -646,3 +646,52 @@ test('el factor de ancho es el MEDIDO con la fuente real, no un número a ojo', 
   // puede bajar del real.
   assert.ok(TM.anchoTexto('AAPL', 6) >= 14.45);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA ESCALA DE COLOR TIENE QUE AGUANTAR TEXTO BLANCO
+//
+// El bug: en Mundo el % salía del color que `qdPctTag` le pone —verde o rojo—
+// sobre un cuadro que YA era verde o rojo. Rojo sobre `#D2635C` da **1.06** de
+// contraste y verde sobre `#4CAF7D` da **1.25**: invisible. El arreglo es texto
+// blanco, como en el mapa de EE.UU.
+//
+// Esta prueba fija el otro lado: que la ESCALA aguante blanco. Si alguien
+// aclara un paso, el contraste cae y esto se pone rojo antes de que se vea en
+// un teléfono. El piso es 2.5 y no el 4.5 de WCAG AA a propósito — con la
+// escala del mockup, blanco sobre el verde claro da 2.71 y sobre el rojo claro
+// 3.70, así que llegar a AA pide cambiar la escala, y la escala es una decisión
+// de diseño de Lety, no un efecto secundario de una prueba.
+// ═══════════════════════════════════════════════════════════════════════
+const PISO_CONTRASTE = 2.5;
+
+function contraste(hexA, hexB) {
+  const lin = (c) => { const x = c / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; };
+  const lum = (hex) => {
+    const n = parseInt(hex.slice(1), 16);
+    return 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+  };
+  const a = lum(hexA), b = lum(hexB);
+  const [hi, lo] = a > b ? [a, b] : [b, a];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+test('el blanco se lee sobre los siete pasos de la escala, y sobre el sin-dato', () => {
+  const pasos = TM.ESCALA_COLOR.map((p) => p.color).concat([TM.COLOR_SIN_DATO]);
+  const malos = pasos
+    .map((c) => ({ color: c, r: Math.round(contraste('#ffffff', c) * 100) / 100 }))
+    .filter((x) => x.r < PISO_CONTRASTE);
+  assert.deepEqual(malos, [], `pasos donde el blanco no se lee: ${JSON.stringify(malos)}`);
+});
+
+test('y el verde/rojo de qdPctTag NO se lee sobre los pasos de su propio signo', () => {
+  // Esto documenta el bug en vez de sólo arreglarlo: si algún día alguien
+  // quisiera volver a usar el color del texto sobre el cuadro de color, acá
+  // están los números que dicen por qué no.
+  const verde = '#00c97d', rojo = '#E24B4A';
+  assert.ok(contraste(verde, '#4CAF7D') < 1.5, 'verde sobre verde claro: invisible');
+  assert.ok(contraste(rojo, '#D2635C') < 1.5, 'rojo sobre rojo claro: invisible');
+  // Sobre el fondo oscuro de la página sí se leen, que es donde se usan (la
+  // tira de arriba y la hoja).
+  assert.ok(contraste(verde, '#0a0a0a') > 4.5);
+  assert.ok(contraste(rojo, '#0a0a0a') > 4.5);
+});
