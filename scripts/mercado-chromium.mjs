@@ -48,17 +48,29 @@ function serie(base, pasos, porDia) {
   return out;
 }
 const SECTORES = ['XLK', 'XLF', 'XLV', 'XLY', 'XLE', 'XLI'];
+// ── A ESCALA DE PRODUCCIÓN ────────────────────────────────────────────
+// Con 54 cuadros de prueba, "ningún cuadro se queda sin ticker" no medía nada:
+// en prod son ~550 y el más chico queda en pocos píxeles. Las capitalizaciones
+// siguen una ley de potencias como la bolsa de verdad —2.5 billones el primero,
+// un par de miles de millones el último— porque es la distribución la que hace
+// los cuadros minúsculos, no la cantidad.
+const POR_SECTOR = 91;
+
 function cuadrosUs() {
   const cs = [];
   for (let s = 0; s < SECTORES.length; s++) {
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < POR_SECTOR; i++) {
       // −3.5% a +3.5% por día: cubre los siete pasos de la escala, incluido
       // el gris de ±0.5%, para que la captura se pueda revisar de verdad.
       const drift = (((s * 3 + i * 5) % 15) - 7) / 200;
-      const base = 40 + i * 7;
+      const base = 40 + (i % 9) * 7;
+      // El rango entrelaza sectores para que cada uno tenga grandes y chicos,
+      // como en el mapa de verdad.
+      const rango = i * SECTORES.length + s;
       cs.push({
-        symbol: `S${s}${i}`, nombre: `Empresa ${s}-${i}`, sector: SECTORES[s],
-        cap: (60 - s * 8 - i) * 1e9, cap_fuente: 'finnhub:metric', cap_medida_en: '2026-09-21',
+        symbol: `S${rango}`, nombre: `Empresa ${s}-${i}`, sector: SECTORES[s],
+        cap: Math.round(2.5e12 / Math.pow(rango + 1, 1.15)),
+        cap_fuente: 'finnhub:metric', cap_medida_en: '2026-09-21',
         serie: serie(base, 21, drift),
         ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: base * 0.9 },
         ytd_motivo: null, puntos: 180, precio: base * (1 + drift), fecha_precio: '2026-09-18',
@@ -77,6 +89,28 @@ function cuadrosUs() {
     motivo: 'la cap declarada viene en TWD, no en USD',
     serie: serie(200, 21, 0.01), ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: 180 },
     ytd_motivo: null, puntos: 180, precio: 202, fecha_precio: '2026-09-18' });
+  // Los otros dos grises que NO son el de TSM, y que el 2026-09-26 mentían en la
+  // hoja: ORCL decía "EDGAR no dio acciones en circulación" sin que EDGAR
+  // hubiera sido consultado, y XNDU no tenía causa que nombrara su fuente.
+  cs.push({ symbol: 'ORCL', nombre: 'Oracle (EDGAR pendiente)', sector: 'XLK', cap: null,
+    cap_fuente: null, estado: 'gris_punteado', cap_auditable: true, cap_moneda: 'USD',
+    cap_edgar_estado: 'no_consultado',
+    motivo: 'la cap declarada difiere -10.7% de acciones×precio (0.89×), techo 5%; pendiente de consulta a EDGAR (falta correr ?job=acciones-edgar)',
+    serie: serie(360, 21, 0.006), ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: 300 },
+    ytd_motivo: null, puntos: 180, precio: 362, fecha_precio: '2026-09-18' });
+  // Verificada por acuerdo de conteos: la cap declarada se descartó y la hoja
+  // tiene que decirlo, aunque el cuadro esté verde y `motivo` sea null.
+  cs.push({ symbol: 'MNST', nombre: 'Monster (cap declarada descartada)', sector: 'XLP', cap: 120e9,
+    cap_fuente: 'calc: edgar×neon', estado: 'verificada', cap_auditable: true, cap_moneda: 'USD',
+    cap_via: 'edgar_acuerdo_acciones', cap_portada_edgar: '2026-07-31',
+    cap_nota: 'cap declarada de Finnhub descartada: dos conteos de acciones coinciden (EDGAR 2080.0M y Finnhub 2075.0M, 0.2% de diferencia, techo 5%)',
+    serie: serie(57.7, 21, 0.005), ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: 50 },
+    ytd_motivo: null, puntos: 180, precio: 57.7, fecha_precio: '2026-09-18' });
+  cs.push({ symbol: 'XNDU', nombre: 'Xanadu Quantum (sin moneda)', sector: 'XLK', cap: null,
+    cap_fuente: null, estado: 'gris_punteado', cap_auditable: false, cap_moneda: null,
+    motivo: 'sin moneda declarada por Finnhub (la cap viene de neon:arena_market_cap)',
+    serie: serie(11, 21, 0.03), ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: 9 },
+    ytd_motivo: null, puntos: 180, precio: 11.4, fecha_precio: '2026-09-18' });
   cs.push({ symbol: 'SINYTD', nombre: 'Sin ancla', sector: 'XLF', cap: 4e9,
     cap_fuente: 'finnhub:metric', serie: serie(30, 21, 0.02), ytd: null,
     ytd_motivo: 'la serie empieza en 2026-07-01 y no llega al año anterior: no hay cierre de fin de año contra el cual anclar',
@@ -88,8 +122,8 @@ const FIXTURES = {
     mapa: 'us', bolsa: 'us', cuadros: cuadrosUs(),
     mas: { n: 253, cap: 4.2e12, pct: 18.7, sin_cap_excluidos: 12, nota: '12 nombres quedan fuera del porcentaje porque no tienen capitalización medida' },
     fuente: { cuadros: 'neon:mercado_universo_us (sector y cap)', series: 'neon:mercado_precios_us (cierre y cierre ajustado, cosecha diaria)' },
-    faltantes: { total: 3, por_motivo: { no_hay_serie: 1, sin_ancla_ytd: 1, cap_sin_verificar: 1 },
-      sin_precio: 1, sin_periodo: 0, sin_ancla_ytd: 1, sin_cap_verificada: 1, ejemplos: [] },
+    faltantes: { total: 5, por_motivo: { no_hay_serie: 1, sin_ancla_ytd: 1, cap_sin_verificar: 3 },
+      sin_precio: 1, sin_periodo: 0, sin_ancla_ytd: 1, sin_cap_verificada: 3, ejemplos: [] },
     periodos: ['1D', '1S', '1M', 'YTD'], generado_en: '2026-09-21T22:00:00.000Z',
     ultimo_cierre: '2026-09-18',
   },
@@ -238,7 +272,29 @@ try {
     v: document.documentElement.scrollHeight > document.documentElement.clientHeight + 1,
   }));
   chequeo('sin scroll horizontal a 390 px', !scroll.h);
-  chequeo('sin scroll vertical: el mapa cabe en la pantalla', !scroll.v);
+  // ── EN CELULAR EL MAPA ES LARGO, A PROPÓSITO ───────────────────────
+  // Hasta el 2026-09-29 esto exigía que el mapa cupiera en una pantalla de
+  // 390px. Con ~550 cuadros, caber significa que el más chico queda en 3px: se
+  // ve, se toca, y no se puede saber de quién es. Decisión de Lety: en celular
+  // el alto es max(2000, ancho × 5) y se recorre. El no-scroll sigue siendo la
+  // regla en escritorio, y se comprueba abajo a 1440×900.
+  const alto = await p.evaluate(() => {
+    const l = document.getElementById('lienzo');
+    return {
+      lienzo: Math.round(l.getBoundingClientRect().height),
+      ancho: Math.round(l.getBoundingClientRect().width),
+      scrollBody: document.documentElement.scrollHeight,
+      marcado: document.body.getAttribute('data-scroll'),
+      // Las constantes salen de la página, no se repiten acá: un número
+      // copiado en dos lados se desincroniza y la prueba mide lo de ayer.
+      k: window.QD_MAPA,
+    };
+  });
+  chequeo(`en celular el mapa es LARGO: max(${alto.k.ALTO_MIN_MOVIL}, ancho × ${alto.k.FACTOR_ALTO_MOVIL})`,
+    alto.marcado === '1'
+      && alto.lienzo === Math.max(alto.k.ALTO_MIN_MOVIL, Math.round(alto.ancho * alto.k.FACTOR_ALTO_MOVIL)),
+    JSON.stringify(alto));
+  chequeo('y la página se recorre en vertical', scroll.v, JSON.stringify(alto));
 
   const taps = await p.evaluate(() => {
     const sel = ['nav button', '.toggle button', '#cerrar'];
@@ -293,6 +349,108 @@ try {
     chicos.total === dibujables, `${chicos.total} dibujados de ${dibujables} dibujables`);
   chequeo('los cuadros sin letra siguen siendo tocables', chicos.todosTocables, JSON.stringify(chicos));
 
+  // ── NINGÚN CUADRO CON SITIO SE QUEDA SIN TEXTO ─────────────────────
+  // La talla fija de 13px dejaba sin % a V, MA, JNJ, ABBV, BAC, GS y GOOGL
+  // teniendo espacio de sobra, y a los medianos sin nada. El umbral de 900px²
+  // (30×30) es el tamaño a partir del cual entra un ticker de 4 letras a 8px
+  // con sus márgenes: por debajo de ahí, ir sin letra es correcto.
+  const mudos = await p.evaluate(() => {
+    const out = { total: 0, mudos: [], conDos: 0, tallas: {} };
+    for (const e of document.querySelectorAll('.cuadro')) {
+      const r = e.getBoundingClientRect();
+      const area = r.width * r.height;
+      const sym = (e.querySelector('.sym') || {}).textContent || '';
+      const val = (e.querySelector('.val') || {}).textContent || '';
+      if (sym) {
+        const f = Math.round(parseFloat(getComputedStyle(e.querySelector('.sym')).fontSize));
+        out.tallas[f] = (out.tallas[f] || 0) + 1;
+      }
+      if (val) out.conDos++;
+      if (area >= 900) {
+        out.total++;
+        if (!sym) out.mudos.push({ w: Math.round(r.width), h: Math.round(r.height), aria: e.getAttribute('aria-label') });
+      }
+    }
+    return out;
+  });
+  chequeo('ningún cuadro de ≥900px² se queda sin texto',
+    mudos.mudos.length === 0, `${mudos.mudos.length} de ${mudos.total}: ${JSON.stringify(mudos.mudos.slice(0, 5))}`);
+  // Y la fuente escala de verdad: si todas las tallas fueran iguales, seguiría
+  // siendo el tamaño fijo con otro número.
+  chequeo('la fuente escala con el cuadro, no es una talla fija',
+    Object.keys(mudos.tallas).length >= 3, JSON.stringify(mudos.tallas));
+  chequeo('los cuadros grandes llevan también el %', mudos.conDos > 0, `${mudos.conDos} con dos líneas`);
+
+  // ── Y NINGUNA SE DESBORDA ──────────────────────────────────────────
+  // `anchoTexto` ESTIMA el ancho (0.62 × talla × caracteres). El margen
+  // proporcional le quita holgura a esa estimación, así que acá se mide con la
+  // fuente REAL: si una etiqueta se sale de su cuadro, el navegador la recorta
+  // y media palabra no es información, es ruido con forma de información.
+  const desbordadas = await p.evaluate(() => {
+    const malas = [];
+    for (const e of document.querySelectorAll('.cuadro')) {
+      const caja = e.getBoundingClientRect();
+      for (const t of e.querySelectorAll('.sym, .val')) {
+        const r = t.getBoundingClientRect();
+        // 0.5px de tolerancia: el redondeo subpíxel del navegador no es un
+        // desborde.
+        if (r.width > caja.width + 0.5 || t.scrollWidth > t.clientWidth + 1) {
+          malas.push({ aria: e.getAttribute('aria-label'), txt: t.textContent, w: Math.round(r.width), caja: Math.round(caja.width) });
+        }
+      }
+    }
+    return malas;
+  });
+  chequeo('ninguna etiqueta se desborda de su cuadro con la fuente real',
+    desbordadas.length === 0, `${desbordadas.length}: ${JSON.stringify(desbordadas.slice(0, 5))}`);
+
+  // ── TODOS LOS CUADROS LLEVAN SU TICKER ─────────────────────────────
+  // "Quiero que TODOS los cuadros lleven su ticker" (Lety, 2026-09-29). Un
+  // cuadro sin letra es un color que no se puede nombrar. La excepción que ella
+  // fijó: los que midan menos de 14px de ancho o de alto — ahí ni un ticker de
+  // 2 letras a 6px entra sin tocar el borde, y recortar a mitad de palabra está
+  // prohibido porque media palabra no es información.
+  //
+  // El conteo de la excepción se REPORTA, no se esconde: es el número que dice
+  // si el mapa largo está funcionando o si hay que estirarlo más.
+  const tickers = await p.evaluate(() => {
+    const out = { total: 0, sin: 0, excepcion: 0, bajo14: 0, deben: [], anchoMin: null };
+    for (const e of document.querySelectorAll('.cuadro')) {
+      const r = e.getBoundingClientRect();
+      out.total++;
+      out.anchoMin = out.anchoMin == null ? r.width : Math.min(out.anchoMin, r.width);
+      if (((e.querySelector('.sym') || {}).textContent || '')) continue;
+      out.sin++;
+      // LA EXCEPCIÓN ES LA GEOMETRÍA DEL PROPIO TICKER, no un número redondo.
+      // Lety la fijó en "menos de 14px de lado", y medido no alcanza: un ticker
+      // de 4 letras a 6px mide 14.45px con la fuente real, así que necesita
+      // 16.45px de cuadro con su margen de 1px. Un cuadro de 15px que "debería"
+      // llevar TSMG no puede: recortar a mitad de palabra está prohibido.
+      // Así que la excepción se calcula por cuadro —¿cabe SU ticker a 6px?— y
+      // el conteo con la regla plana de 14px también se reporta, que es el que
+      // ella pidió comparar.
+      const t = e.getAttribute('aria-label') || '';
+      const necesita = t.length * 6 * 0.6022 + 2;
+      if (r.width < 14 || r.height < 14) out.bajo14++;
+      if (r.width < necesita || r.height < 6) { out.excepcion++; continue; }
+      out.deben.push({
+        aria: e.getAttribute('aria-label'),
+        w: Math.round(r.width * 10) / 10, h: Math.round(r.height * 10) / 10,
+      });
+    }
+    out.anchoMin = Math.round(out.anchoMin * 10) / 10;
+    return out;
+  });
+  chequeo('ningún cuadro con sitio para su ticker se queda sin él',
+    tickers.deben.length === 0,
+    `${tickers.deben.length} tienen sitio y están mudos: ${JSON.stringify(tickers.deben.slice(0, 6))}`);
+  // El número que Lety pidió reportar, con SU regla plana de 14px.
+  chequeo('menos de 20 cuadros caen bajo los 14px de lado',
+    tickers.bajo14 < 20, `${tickers.bajo14} de ${tickers.total}`);
+  console.log(`     ↳ sin ticker: ${tickers.sin} de ${tickers.total} cuadros · `
+    + `${tickers.bajo14} bajo 14px de lado · ${tickers.excepcion} no les cabe su propio ticker a 6px `
+    + `· el más angosto mide ${tickers.anchoMin}px`);
+
   // REGLA 5: cero logos en el mapa. Ni <img>, ni background-image.
   const imgs = await p.evaluate(() => {
     const cont = document.getElementById('lienzo') || document.body;
@@ -336,6 +494,11 @@ try {
   await p.locator('.cabecera').first().tap();
   await p.waitForSelector('.volver');
   chequeo('un tap en la cabecera de sector abre ese sector', (await p.locator('.volver').count()) === 1);
+  // Las abreviaturas ("Con.", "Ser.", "Inm.", "Mat.") son para la cabecera
+  // apretada del primer nivel. Al entrar hay sitio: el nombre va completo.
+  const volver = await p.locator('.volver').first().innerText();
+  chequeo('al entrar al sector, el nombre va COMPLETO, sin abreviatura',
+    !/\.\s*$/.test(volver.trim()) && volver.trim().length > 4, volver);
   chequeo('entrar a un sector es estado en la URL', p.url().includes('sector='));
 
   // TAP REAL en un nombre → hoja
@@ -393,8 +556,14 @@ try {
   });
   chequeo('una cap sin verificar se DIBUJA gris punteada, no desaparece',
     gris.existe === true && gris.punteado === true, JSON.stringify(gris));
-  chequeo('la gris lleva su ticker y "—", nunca un % sobre un tamaño prestado',
-    gris.ticker === 'TSMG' && gris.valor === '—', JSON.stringify(gris));
+  // El tamaño de una gris es PRESTADO: el del cuadro verificado más chico de su
+  // sector. Con el universo a escala real ese cuadro mide ~15px a 390px, así
+  // que la gris es de las más chicas del mapa y su ticker de 4 letras no entra
+  // ni a 6px. Lo que NO puede pasar es que lleve un % —un número sobre un
+  // tamaño prestado sería afirmar algo que no se midió—, y eso se comprueba
+  // acá; que lleve su ticker se comprueba en escritorio, donde tiene sitio.
+  chequeo('la gris nunca lleva un % sobre un tamaño prestado',
+    gris.valor === '' || gris.valor === '—', JSON.stringify(gris));
 
   // ── EL PIE CUENTA CUADROS ──────────────────────────────────────────
   await p.goto(`${BASE}/mercado?mapa=us`, { waitUntil: 'networkidle' });
@@ -403,7 +572,43 @@ try {
   chequeo('el pie dice "sin capitalización verificada", no "cuadros sin dato completo"',
     /sin capitalización verificada/.test(pie) && !/cuadros sin dato completo/.test(pie), pie);
   chequeo('y no le suma los símbolos sin precio, que no son cuadros todavía',
-    /1 sin capitalización verificada/.test(pie), pie);
+    /3 sin capitalización verificada/.test(pie), pie);
+
+  // ── LA CAUSA DE UN GRIS NO SE INVENTA ──────────────────────────────
+  // El 2026-09-26, en el iPhone: ORCL, MNST y APH decían "EDGAR no dio acciones
+  // en circulación" y EDGAR nunca había sido consultado —el job había muerto en
+  // la primera respuesta—. Una causa falsa manda a revisar la fuente en lugar
+  // del job, y es el peor gris: el que parece resuelto.
+  for (const [sym, espera, prohibido] of [
+    ['ORCL', /pendiente de consulta a EDGAR/, /EDGAR no dio/],
+    ['XNDU', /sin moneda declarada por Finnhub/, /USD/],
+  ]) {
+    await p.goto(`${BASE}/mercado?mapa=us&sector=XLK&symbol=${sym}`, { waitUntil: 'networkidle' });
+    await p.waitForSelector('.hoja[data-abierta="1"]');
+    const hoja = await p.locator('#hojaCuerpo').innerText();
+    chequeo(`${sym}: la hoja dice la causa REAL`, espera.test(hoja), hoja.slice(0, 140).replace(/\n/g, ' '));
+    chequeo(`${sym}: y no la falsa`, !prohibido.test(hoja), hoja.slice(0, 140).replace(/\n/g, ' '));
+    await p.locator('#cerrar').tap();
+  }
+  // Un cuadro VERIFICADO que descartó un dato de la fuente lo declara: si no,
+  // la pantalla muestra un tamaño sin decir de dónde salió la decisión.
+  await p.goto(`${BASE}/mercado?mapa=us&sector=XLP&symbol=MNST`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('.hoja[data-abierta="1"]');
+  const hojaMnst = await p.locator('#hojaCuerpo').innerText();
+  chequeo('una verificada que descartó la cap declarada lo DICE en la hoja',
+    /cap declarada de Finnhub descartada/.test(hojaMnst) && /dos conteos de acciones coinciden/.test(hojaMnst),
+    hojaMnst.slice(0, 160).replace(/\n/g, ' '));
+  chequeo('y la fuente que se muestra es la del cálculo nuestro, no finnhub',
+    /calc: edgar×neon/.test(hojaMnst), hojaMnst.slice(0, 200).replace(/\n/g, ' '));
+  await p.locator('#cerrar').tap();
+
+  // Y el estado de la consulta se puede leer sin interpretar prosa.
+  await p.goto(`${BASE}/mercado?mapa=us&sector=XLK&symbol=ORCL`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('.hoja[data-abierta="1"]');
+  const hojaOrcl = await p.locator('#hojaCuerpo').innerText();
+  chequeo('la hoja trae el renglón "consulta a EDGAR: pendiente"',
+    /consulta a EDGAR/.test(hojaOrcl) && /pendiente/.test(hojaOrcl), hojaOrcl.slice(0, 200).replace(/\n/g, ' '));
+  await p.locator('#cerrar').tap();
 
   // México: el chip cambia de bolsa y el gris lleva su motivo
   await p.goto(`${BASE}/mercado?mapa=mx&periodo=1M`, { waitUntil: 'networkidle' });

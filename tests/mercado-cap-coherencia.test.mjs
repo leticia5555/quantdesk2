@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 
 import { armaMapaUs } from '../api/_lib/mercado-mapa.js';
 import {
-  auditaCapUs, filaVeredictoCapUs, cierreHasta, MILLON,
+  auditaCapUs, veredictoCapUs, filaVeredictoCapUs, cierreHasta, MILLON,
 } from '../api/_lib/mercado-cap-us.js';
 
 const AHORA = new Date('2026-09-25T22:00:00Z');
@@ -53,6 +53,15 @@ const UNIVERSO = [
   { symbol: 'ORCL', nombre: 'Oracle', sector_etf: 'XLK', market_cap: 1_008_000e6,
     cap_moneda: 'USD', acciones_millones: 2_000, cap_fuente: 'finnhub:metric',
     acciones_edgar_millones: 2_800, acciones_edgar_portada: '2025-08-31' },
+  // Desajuste en USD, EDGAR YA CONSULTADO y sin dato → gris, pero con otra
+  // causa que MNST: a MNST todavía no se le preguntó. Los dos grises se ven
+  // iguales en pantalla y se arreglan distinto, así que el mapa y el job tienen
+  // que coincidir también en CUÁL de los dos es.
+  { symbol: 'SPCX', nombre: 'SpaceCo', sector_etf: 'XLI', market_cap: 30_000e6,
+    cap_moneda: 'USD', acciones_millones: 200, cap_fuente: 'finnhub:metric',
+    acciones_edgar_millones: null, acciones_edgar_portada: null,
+    edgar_consultada_en: '2026-09-27T14:03:00.000Z',
+    edgar_consulta_motivo: 'sin CIK en el índice de la SEC (suele ser un ADR que presenta 20-F, o un instrumento que no presenta)' },
 ];
 
 const PRECIOS = [
@@ -62,6 +71,7 @@ const PRECIOS = [
   ...precios('TSM', { ...plano(200), '2026-09-24': 205, '2026-09-25': 210 }),
   ...precios('MNST', plano(57.7)),
   ...precios('ORCL', plano(360)),
+  ...precios('SPCX', plano(100)),
 ];
 
 const REFS = new Map([
@@ -104,7 +114,7 @@ test('el job y el mapa dan el MISMO conteo de verificadas y grises', () => {
 
   assert.deepEqual(job, mapa, `job ${JSON.stringify(job)} vs mapa ${JSON.stringify(mapa)}`);
   assert.equal(mapa.verificadas, 3, 'NVDA por finnhub, TSM por referencia, ORCL por edgar');
-  assert.equal(mapa.grises, 1, 'MNST, que no tiene EDGAR todavía');
+  assert.equal(mapa.grises, 2, 'MNST (a EDGAR no se le preguntó) y SPCX (se le preguntó y no había)');
 });
 
 test('y el MISMO veredicto símbolo por símbolo, con la misma fuente', () => {
@@ -154,5 +164,56 @@ test('sin la referencia, TSM se va a gris en los DOS lados — nunca en uno solo
     .filter((v) => v.estado === 'gris_punteado').map((v) => v.symbol).sort();
 
   assert.deepEqual(jobGris, mapaGris);
-  assert.deepEqual(mapaGris, ['MNST', 'TSM']);
+  assert.deepEqual(mapaGris, ['MNST', 'SPCX', 'TSM']);
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// LOS TRES ESTADOS DE EDGAR TAMBIÉN TIENEN QUE COINCIDIR
+//
+// El 2026-09-26 el mapa decía de ORCL, MNST y APH "EDGAR no dio acciones en
+// circulación" sin que EDGAR hubiera sido consultado. Si el job y el mapa
+// pudieran opinar distinto sobre en qué estado está la consulta, la causa en
+// pantalla y la causa del reporte volverían a divergir — que es el bug de #245
+// con otro traje.
+// ═══════════════════════════════════════════════════════════════════════
+test('el job y el mapa dicen el MISMO estado de consulta a EDGAR', () => {
+  const delJob = new Map(entradasComoElJob().map((e) => {
+    const v = veredictoCapUs(e);
+    return [v.symbol, { estado: v.estado, edgar: v.edgar_estado || null, motivo: v.motivo }];
+  }));
+  const { cuadros } = armaMapaUs({ universo: UNIVERSO, precios: PRECIOS, ahora: AHORA, referencias: REFS });
+
+  for (const c of cuadros) {
+    const j = delJob.get(c.symbol);
+    assert.equal(c.estado, j.estado, `${c.symbol}: estado`);
+    assert.equal(c.cap_edgar_estado, j.edgar, `${c.symbol}: estado de la consulta a EDGAR`);
+    assert.equal(c.motivo, j.motivo, `${c.symbol}: la causa en pantalla es la del reporte`);
+  }
+
+  // Y los tres estados están representados, cada uno con su causa.
+  const por = new Map(cuadros.map((c) => [c.symbol, c]));
+  assert.equal(por.get('MNST').cap_edgar_estado, 'no_consultado');
+  assert.match(por.get('MNST').motivo, /pendiente de consulta a EDGAR/);
+  assert.equal(por.get('SPCX').cap_edgar_estado, 'consultado_sin_dato');
+  assert.match(por.get('SPCX').motivo, /EDGAR consultado el 2026-09-27/);
+  assert.match(por.get('SPCX').motivo, /sin CIK/);
+  assert.equal(por.get('ORCL').estado, 'verificada');
+  assert.equal(por.get('ORCL').cap_fuente, 'calc: edgar×neon');
+
+  // NINGUNO dice la causa falsa.
+  for (const c of cuadros) {
+    if (c.motivo) assert.doesNotMatch(c.motivo, /EDGAR no dio acciones/, `${c.symbol}`);
+  }
+});
+
+test('un desajuste medido es un hallazgo aunque la consulta a EDGAR esté pendiente', () => {
+  // Con la fila de EDGAR fabricada (`num(null) === 0`), MNST salía
+  // `auditable: false` y la auditoría reportaba 3 hallazgos donde había 21.
+  const v = entradasComoElJob().map((e) => veredictoCapUs(e));
+  const mnst = v.find((x) => x.symbol === 'MNST');
+  assert.equal(mnst.estado, 'gris_punteado');
+  assert.equal(mnst.auditable, true, 'el desajuste está medido: es hallazgo, no insumo que falta');
+  const spcx = v.find((x) => x.symbol === 'SPCX');
+  assert.equal(spcx.auditable, true);
 });

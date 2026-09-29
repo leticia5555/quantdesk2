@@ -93,7 +93,7 @@ const respuesta = (filas) => ({
   rows: filas.map((f) => CAMPOS.map(([name]) => (f[name] === undefined ? null : f[name]))),
 });
 
-let queries = [], fmpPedidos = [], todosLimitTope = null;
+let queries = [], fmpPedidos = [], todosLimitTope = null, sinTablaDeUniverso = false;
 function mockFetch(fx, { forzar429Desde = null, httpError = null, todos = null } = {}) {
   queries = []; fmpPedidos = [];
   return async (url, opts) => {
@@ -102,6 +102,18 @@ function mockFetch(fx, { forzar429Desde = null, httpError = null, todos = null }
       const body = JSON.parse(opts.body);
       const lista = body.queries || [body];
       for (const q of lista) queries.push(q.query);
+      // El perfil de símbolos lee sector y cap: otra tabla, otra forma de fila.
+      if (/mercado_universo_us/.test(lista[0].query)) {
+        if (sinTablaDeUniverso) throw new Error('relation "mercado_universo_us" does not exist');
+        return { ok: true, status: 200, json: async () => ({
+          fields: [['symbol', TXT], ['sector_etf', TXT], ['industria', TXT], ['market_cap', NUM]]
+            .map(([name, dataTypeID]) => ({ name, dataTypeID })),
+          // La mitad de los símbolos del fixture tiene sector y cap; la otra no
+          // está en la tabla, que es lo que pasa en producción.
+          rows: SIMS.filter((_, i) => i % 2 === 0)
+            .map((s, i) => [s, i % 2 ? 'Technology' : 'Health Care', 'Industria ' + i, String((i + 1) * 1e11)]),
+        }) };
+      }
       return { ok: true, status: 200, json: async () => respuesta(fx.mercados) };
     }
     if (u.includes('grades-historical')) {
@@ -119,9 +131,15 @@ function mockFetch(fx, { forzar429Desde = null, httpError = null, todos = null }
       // poder rechazar una y aceptar otra.
       const lim = (u.match(/[?&]limit=(\d+)/) || [])[1];
       if (todosLimitTope !== null && lim !== undefined && Number(lim) > todosLimitTope) {
-        return { ok: false, status: 400,
-          text: async () => JSON.stringify({ 'Error Message': 'Invalid limit. Max is ' + todosLimitTope }),
+        // 402 con el rango en el cuerpo: es lo que FMP contestó de verdad.
+        return { ok: false, status: 402,
+          text: async () => JSON.stringify({ 'Error Message': 'Limit must be between 0 and ' + todosLimitTope }),
           headers: { get: () => 'application/json' } };
+      }
+      // Con `limit` la serie se RECORTA, como en FMP. Sin él, entera.
+      if (lim !== undefined && fx.grades[sym]) {
+        return { ok: true, status: 200, headers: { get: () => 'application/json' },
+          text: async () => JSON.stringify(fx.grades[sym].slice(-Number(lim))) };
       }
       if (forzar429Desde !== null && fmpPedidos.length > forzar429Desde) {
         return { ok: false, status: 429, text: async () => 'Limit Reach', headers: { get: () => '60' } };
@@ -355,10 +373,20 @@ console.log('la frontera: el status y el cuerpo SIEMPRE llegan a la vista');
   ok(b.frontera.primer_fallo && b.frontera.primer_fallo.status === 400,
     'y el primer fallo COMPLETO, con la fila en la mano');
   ok(/smoke=NKE/.test(b.frontera.que_hacer || ''), 'diciendo qué correr para diagnosticarlo');
-  ok(/NO dicen nada sobre el tamaño de muestra/.test(b.muestra.descartes_son_consecuencia_de_la_frontera || ''),
-    'y los descartes quedan marcados como CONSECUENCIA, no como hallazgo',
+  // El aviso ya no afirma "la frontera no entregó filas": se arma con los DOS
+  // conteos y solo dice lo que los conteos dicen. Con la frontera caída del todo,
+  // los 144 descartes son artefacto y cero son dato.
+  ok(/ARTEFACTO del plan de FMP/.test(b.muestra.descartes_son_consecuencia_de_la_frontera || ''),
+    'los descartes quedan marcados por NATURALEZA, no como un hallazgo sobre la muestra',
     b.muestra.descartes_son_consecuencia_de_la_frontera);
-  ok(b.muestra.descartes.menos_de_3_meses > 0, 'los descartes siguen publicándose, pero explicados');
+  ok(/No se pueden leer juntos/.test(b.muestra.descartes_son_consecuencia_de_la_frontera || ''),
+    'diciendo que las dos clases no se leen juntas');
+  ok(b.muestra.descartes.sin_acceso_al_simbolo === 144 && !b.muestra.descartes.historia_insuficiente,
+    'con la frontera caída, TODO descarte es sin_acceso_al_simbolo y ninguno es historia_insuficiente',
+    JSON.stringify(b.muestra.descartes));
+  ok(b.muestra.descartes_por_naturaleza.artefacto_del_plan === 144
+    && b.muestra.descartes_por_naturaleza.dato_real === 0,
+    'y los dos conteos por naturaleza van publicados', JSON.stringify(b.muestra.descartes_por_naturaleza));
 
   const md = mockRes();
   await handler(GET({ secret: SECRET, fase: '0', format: 'md' }), md);
@@ -369,16 +397,24 @@ console.log('la frontera: el status y el cuerpo SIEMPRE llegan a la vista');
 
 console.log('la frontera: un 401/403 es auth_error, nunca http_error mudo');
 {
-  for (const st of [401, 403, 402]) {
+  // OJO: el 402 NO va en esta bolsa. Estaba acá, y ESE era el bug — un 402 por
+  // `limit` fuera de rango salía como auth_error con un texto que mandaba a
+  // rotar la llave. El 402 tiene su propio bloque más abajo.
+  for (const st of [401, 403]) {
     global.fetch = mockFetch(FX, { todos: { status: st, body: 'Invalid API KEY' } });
     const r = mockRes();
     await handler(GET({ secret: SECRET, fase: '0' }), r);
     const fallo = r.body.cobertura.simbolos_sin_grades[0];
     ok(fallo.motivo === 'auth_error', `HTTP ${st} → auth_error, no http_error`, fallo.motivo);
     ok(fallo.status === st && /Invalid API KEY/.test(fallo.body_sample || ''), `con el status ${st} y el cuerpo`);
-    ok(/env vars|plan de la key/.test(fallo.detalle || ''),
+    ok(/env vars/.test(fallo.detalle || ''),
       'y el detalle dice que se arregla en las env vars, no en el código', fallo.detalle);
   }
+  global.fetch = mockFetch(FX, { todos: { status: 402, body: 'Limit must be between 0 and 10' } });
+  const noAuth = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0' }), noAuth);
+  ok(noAuth.body.cobertura.simbolos_sin_grades[0].motivo !== 'auth_error',
+    'y un 402 por limit NO entra en auth_error', noAuth.body.cobertura.simbolos_sin_grades[0].motivo);
 }
 
 console.log('el smoke: tres variantes, con URL, status y cuerpo de cada una');
@@ -396,8 +432,9 @@ console.log('el smoke: tres variantes, con URL, status y cuerpo de cada una');
   const alto = s.variantes.find((v) => v.id === 'limit_alto');
   const chico = s.variantes.find((v) => v.id === 'limit_chico');
   const sin = s.variantes.find((v) => v.id === 'sin_limit');
-  ok(alto.ok === false && alto.status === 400, 'la variante con limit alto falla 400', `${alto.status}`);
-  ok(/Max is 100/.test(alto.body_sample || ''), 'con el cuerpo que lo explica', alto.body_sample);
+  ok(alto.ok === false && alto.status === 402, 'la variante con limit alto falla 402', `${alto.status}`);
+  ok(/between 0 and 100/.test(alto.body_sample || ''), 'con el cuerpo que trae el rango', alto.body_sample);
+  ok(alto.motivo === 'parametro_fuera_de_rango', 'y se clasifica como parámetro, no como auth', alto.motivo);
   ok(chico.ok === true && sin.ok === true, 'las de limit chico y sin limit traen filas');
   ok(sin.url_sin_key === `https://financialmodelingprep.com/stable/grades-historical?symbol=${SIMS[0]}`,
     'la variante sin limit arma la URL sin el parámetro', sin.url_sin_key);
@@ -417,7 +454,7 @@ console.log('el smoke: tres variantes, con URL, status y cuerpo de cada una');
 
   const md = mockRes();
   await handler(GET({ secret: SECRET, smoke: SIMS[0], format: 'md' }), md);
-  ok(/LECTURA:/.test(md.text) && /Max is 100/.test(md.text), 'el md del smoke trae la lectura y los cuerpos');
+  ok(/LECTURA:/.test(md.text) && /between 0 and 100/.test(md.text), 'el md del smoke trae la lectura y los cuerpos');
   ok(!md.text.includes(process.env.FMP_API_KEY), 'y tampoco filtra la key');
   todosLimitTope = null;
 }
@@ -457,6 +494,171 @@ console.log('concurrencia: bajó a 2 para el censo real');
   const fuente = readFileSync(new URL('../api/grades-backtest.js', import.meta.url), 'utf8');
   ok(/const CONCURRENCIA = 2;/.test(fuente), 'la concurrencia es 2, no 4');
   ok(/BAJÓ DE 4 A 2/.test(fuente), 'con el porqué escrito al lado');
+}
+
+
+// ═══════════════════ 9. SIN LIMIT, Y EL 402 QUE NO ES AUTH ═══════════════════
+console.log('el censo NO manda limit: es el parámetro que RECORTA');
+{
+  todosLimitTope = null;
+  global.fetch = mockFetch(FX);
+  const r = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0' }), r);
+  ok(fmpPedidos.length > 0, 'el censo pidió grades', fmpPedidos.length);
+  ok(fmpPedidos.every((p) => !/[?&]limit=/.test(p.url)),
+    'NINGUNA URL del censo lleva `limit`: sin el parámetro son ~88 meses, con el máximo del plan son 10',
+    fmpPedidos[0].url.replace(/apikey=[^&]*/, 'apikey=***'));
+  ok(r.body.historia.limite_enviado === null, 'y se DECLARA que no se envió límite', r.body.historia.limite_enviado);
+  ok(/el parámetro/.test(r.body.historia.nota_limite) || /Sin `limit` a propósito/.test(r.body.historia.nota_limite),
+    'con el porqué escrito al lado, porque se revierte fácil en la dirección equivocada', r.body.historia.nota_limite);
+
+  // EL AVISO FANTASMA: antes `88 >= null` daba true y TODA respuesta salía
+  // marcada como "tocó el límite".
+  ok(r.body.historia.alguno_en_el_tope_del_limit === false,
+    'sin límite enviado, nada "tocó el límite": no hay límite que tocar',
+    r.body.historia.alguno_en_el_tope_del_limit);
+  const md = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0', format: 'md' }), md);
+  ok(!/tocó el límite/.test(md.text) && !/⚠ Si alguno toca/.test(md.text),
+    'y el markdown no imprime el aviso fantasma');
+}
+
+console.log('un 402 por limit NO se clasifica como auth_error');
+{
+  global.fetch = mockFetch(FX, { todos: { status: 402, body: '{"Error Message":"Limit must be between 0 and 10"}' } });
+  const r = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0' }), r);
+  const f = r.body.cobertura.simbolos_sin_grades[0];
+  ok(f.motivo === 'parametro_fuera_de_rango', 'el motivo es el parámetro, no auth', f.motivo);
+  ok(f.status === 402 && /between 0 and 10/.test(f.body_sample || ''), 'con el status y el cuerpo que lo dicen');
+  ok(/NO un problema de plan/.test(f.detalle || '') && /No se toca la key/.test(f.detalle || ''),
+    'y el detalle dice explícitamente que NO se toca la key — el texto anterior mandaba a rotarla', f.detalle);
+  ok(!/auth/.test(f.motivo), 'en ninguna forma dice auth');
+
+  // Un 402 cuyo cuerpo NO nombra un parámetro: se admite que no se sabe.
+  global.fetch = mockFetch(FX, { todos: { status: 402, body: 'This endpoint is not available under your current subscription' } });
+  const plan = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0' }), plan);
+  const fp = plan.body.cobertura.simbolos_sin_grades[0];
+  ok(fp.motivo === 'pago_requerido', 'sin parámetro nombrado, el motivo es pago_requerido', fp.motivo);
+  ok(/NO se afirma/.test(fp.detalle || ''),
+    'y NO se afirma que sea el plan: el cuerpo va completo y lo lee una persona', fp.detalle);
+
+  // 401 y 403 siguen siendo auth.
+  for (const st of [401, 403]) {
+    global.fetch = mockFetch(FX, { todos: { status: st, body: 'Invalid API KEY' } });
+    const a = mockRes();
+    await handler(GET({ secret: SECRET, fase: '0' }), a);
+    ok(a.body.cobertura.simbolos_sin_grades[0].motivo === 'auth_error', `HTTP ${st} sigue siendo auth_error`);
+  }
+}
+
+console.log('el smoke: las tres variantes con el contraste de meses');
+{
+  todosLimitTope = 10;
+  global.fetch = mockFetch(FX);
+  const r = mockRes();
+  await handler(GET({ secret: SECRET, smoke: SIMS[0] }), r);
+  const s = r.body;
+  const sin = s.variantes.find((v) => v.id === 'sin_limit');
+  const chico = s.variantes.find((v) => v.id === 'limit_chico');
+  const alto = s.variantes.find((v) => v.id === 'limit_alto');
+  ok(sin.ok && sin.meses === 24, 'sin limit trae la serie entera del fixture', sin.meses);
+  ok(chico.ok && chico.meses === 10, 'con el máximo del plan, RECORTA a 10', chico.meses);
+  ok(sin.meses > chico.meses, 'o sea: sin el parámetro hay MÁS historia que con él', `${sin.meses} vs ${chico.meses}`);
+  ok(alto.status === 402 && alto.motivo === 'parametro_fuera_de_rango', 'el limit alto provoca el 402', alto.motivo);
+  ok(s.causa === 'limit_rechazado', 'la lectura culpa al parámetro', s.causa);
+  ok(/24 meses contra 10/.test(s.lectura) && /2\.4× más historia/.test(s.lectura),
+    'y cita el contraste medido, no el que yo suponga', s.lectura);
+  ok(sin.posible_tope === false, 'la variante sin límite NO se marca como "tocó el límite"');
+  ok(chico.posible_tope === true, 'la de limit=10 que devuelve 10 filas SÍ lo tocó — ahí el aviso es correcto');
+  ok(s.variantes[0].id === 'sin_limit' && /EL DEFECTO/.test(s.variantes[0].nota),
+    'y la variante del defecto va primero, marcada como tal', s.variantes[0].nota);
+  todosLimitTope = null;
+}
+
+
+// ═══════════════════ 10. LA LISTA Y EL SESGO ═══════════════════
+console.log('la lista de quién cubre el plan, cruda y sin conclusión');
+{
+  todosLimitTope = null; sinTablaDeUniverso = false;
+  // La mitad de los símbolos sin acceso: es el caso real (35 de 75).
+  const mitad = SIMS.filter((_, i) => i % 2 === 1);
+  const fx = fabrica({ simbolosSinGrades: mitad });
+  global.fetch = mockFetch(fx);
+  const r = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0' }), r);
+  const b = r.body;
+  const pf = b.perfil_de_simbolos;
+  ok(pf.con_acceso.length + pf.sin_acceso.length === SIMS.length,
+    'la lista cubre a todos los pedidos', `${pf.con_acceso.length}+${pf.sin_acceso.length}`);
+  ok(pf.sin_acceso.length === mitad.length, 'y los sin acceso son los que la frontera no trajo', pf.sin_acceso.length);
+  ok(pf.con_acceso.every((x) => 'sector' in x && 'market_cap_musd' in x),
+    'cada símbolo lleva sector y capitalización — los dos ejes donde podría haber patrón');
+  ok(pf.por_sector && pf.por_sector.con_acceso && pf.por_sector.sin_acceso,
+    'y el conteo por sector va para los DOS grupos, para poder comparar');
+  ok(pf.market_cap_musd.con_acceso === null || typeof pf.market_cap_musd.con_acceso.mediana === 'number',
+    'con min/mediana/max de la cap cuando hay datos');
+  ok(/sin conclusión sobre el patrón/.test(pf.nota) && /no se inventa/.test(pf.nota),
+    'y se dice explícitamente que acá NO hay una conclusión', pf.nota);
+  ok(pf.con_acceso.some((x) => x.en_mercado_universo_us === false)
+    || pf.con_acceso.every((x) => 'en_mercado_universo_us' in x),
+    'un símbolo que no está en nuestra tabla se marca, no se inventa su sector');
+
+  // Las dos naturalezas de descarte, con acceso PARCIAL — el caso donde el aviso
+  // viejo mentía.
+  ok(b.muestra.descartes.sin_acceso_al_simbolo > 0 && b.muestra.descartes_por_naturaleza.dato_real >= 0,
+    'con acceso parcial los descartes se parten en dos cubetas', JSON.stringify(b.muestra.descartes));
+  ok(!('menos_de_3_meses' in b.muestra.descartes), 'el motivo que las mezclaba ya no existe');
+  ok(!/la frontera no entregó filas/.test(b.muestra.descartes_son_consecuencia_de_la_frontera || ''),
+    'y el aviso ya NO afirma que la frontera no entregó filas — entregó la mitad',
+    b.muestra.descartes_son_consecuencia_de_la_frontera);
+
+  // El sesgo de selección, ya desde la Fase 0.
+  ok(/SESGO DE SELECCIÓN/.test(b.advertencia_seleccion || ''),
+    'la Fase 0 ya declara el sesgo de selección, para que llegue escrito a la Fase 1');
+  ok(/NO para el universo de 99/.test(b.advertencia_seleccion), 'y que un GO no se extiende al universo');
+
+  const md = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0', format: 'md' }), md);
+  ok(/A quién cubre el plan/.test(md.text), 'el markdown trae la sección de la lista');
+  ok(/\*\*Con acceso:\*\*/.test(md.text) && /\*\*Sin acceso:\*\*/.test(md.text), 'con las dos listas');
+  ok(/\| Sector \| Con acceso \| Sin acceso \|/.test(md.text), 'y el conteo por sector comparado');
+  ok(/SESGO DE SELECCIÓN/.test(md.text), 'y la advertencia de sesgo');
+  ok(/artefacto del plan/.test(md.text), 'la tabla de descartes dice la naturaleza de cada motivo');
+}
+
+console.log('si la tabla de sectores no existe, se declara y no se cae');
+{
+  sinTablaDeUniverso = true;
+  global.fetch = mockFetch(fabrica({ simbolosSinGrades: [SIMS[1]] }));
+  const r = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0' }), r);
+  sinTablaDeUniverso = false;
+  ok(r.code === 200, 'la Fase 0 igual responde', r.code);
+  ok(typeof r.body.perfil_de_simbolos.error === 'string',
+    'y el error de la tabla de sectores queda DECLARADO', r.body.perfil_de_simbolos.error);
+  ok(r.body.perfil_de_simbolos.con_acceso.length > 0,
+    'la lista de símbolos sigue estando: el sector es un extra, no el dato');
+  ok(r.body.perfil_de_simbolos.con_acceso.every((x) => x.sector === null),
+    'con el sector en null, no inventado');
+}
+
+console.log('la Fase 1 recibe los símbolos sin acceso');
+{
+  const fuente = readFileSync(new URL('../api/grades-backtest.js', import.meta.url), 'utf8');
+  ok(/analizaGrades\(conGrades, \{ sinAcceso \}\)/.test(fuente),
+    'el endpoint le pasa sinAcceso a analizaGrades: si no, la Fase 1 contaría un artefacto del plan como historia insuficiente');
+
+  global.fetch = mockFetch(fabrica({ simbolosSinGrades: SIMS.filter((_, i) => i % 2 === 1) }));
+  const r = mockRes();
+  await handler(GET({ secret: SECRET }), r);
+  ok(/SESGO DE SELECCIÓN/.test(r.body.advertencia_seleccion || ''),
+    'y el veredicto de la Fase 1 lleva la advertencia de sesgo');
+  ok(r.body.muestra.descartes.sin_acceso_al_simbolo > 0,
+    'con los descartes por plan separados', JSON.stringify(r.body.muestra.descartes));
+  ok(typeof r.body.muestra.empresas_distintas === 'number',
+    'y cuántas empresas distintas quedaron en la muestra', r.body.muestra.empresas_distintas);
 }
 
 console.log(failures ? `\n${failures} FALLAS` : '\nTodo en verde');

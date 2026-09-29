@@ -122,7 +122,7 @@ const ABREV_SECTOR = {
  */
 function etiquetaQueCabe(candidatos, anchoPx, fontPx, opts) {
   const o = opts || {};
-  const factor = o.factor || 0.62;
+  const factor = o.factor || FACTOR_ANCHO;
   const margen = o.margen == null ? 8 : o.margen;
   const util = anchoPx - margen;
   for (const c of candidatos) {
@@ -213,9 +213,23 @@ function agrupaPorSector(cuadros) {
   };
 }
 
+// ── EL ANCHO DE UN CARACTER, MEDIDO ─────────────────────────────────────
+// Era 0.62, un número a ojo. Medido en el Chromium del repo con la fuente real
+// (`ui-monospace` a 6, 7, 8, 10, 13 y 18px, con V, WMT, AAPL y S258) el ancho
+// por caracter es **0.6022** de la talla, estable en todas: 'AAPL' a 6px mide
+// 14.45px, no 14.88.
+//
+// El 3% de más no era gratis: reservaba ancho que no hacía falta y dejaba
+// cuadros mudos que sí tenían sitio. Sobreestimar es más seguro que
+// subestimar —recortar a mitad de palabra está prohibido— así que el número
+// sigue siendo una ESTIMACIÓN y el Chromium comprueba con la fuente real que
+// ninguna etiqueta se desborde. Si algún día cambia la fuente, esa
+// comprobación se pone roja y este número se vuelve a medir.
+const FACTOR_ANCHO = 0.6022;
+
 /** Cuánto mide un texto en monoespaciada, en px. Un sitio, una vez. */
 function anchoTexto(txt, fontPx, factor) {
-  return String(txt || '').length * fontPx * (factor || 0.62);
+  return String(txt || '').length * fontPx * (factor || FACTOR_ANCHO);
 }
 
 /**
@@ -231,38 +245,77 @@ function anchoTexto(txt, fontPx, factor) {
  */
 function etiquetaCuadro(w, h, opts) {
   const o = opts || {};
-  const font = o.fontPx || 11;
-  const factor = o.factor || 0.62;
-  const margen = o.margen == null ? 4 : o.margen;
+  const max = o.fontPx || 18;
+  const min = o.fontMin || 8;
+  const factor = o.factor || FACTOR_ANCHO;
+  // EL MARGEN ES PROPORCIONAL, NO FIJO. Con 4px por lado, un cuadro de 23px de
+  // ancho gastaba 35% de su ancho en aire y se quedaba mudo teniendo sitio para
+  // su ticker a 8px (S58 mide 14.9px y le quedaban 14.6). Cuatro píxeles son
+  // aire en un cuadro de 200 y son un tercio del cuadro en uno de 23.
+  // El tope sigue siendo 4 y el piso 1: el texto no toca el borde nunca.
+  // Que el texto quepa DE VERDAD con la fuente real —no con la estimación de
+  // `anchoTexto`— lo mide el Chromium: "ninguna etiqueta se desborda".
+  const margen = o.margen == null ? Math.max(1, Math.min(4, Math.round(w * 0.09))) : o.margen;
   const ticker = o.ticker ? String(o.ticker) : '';
   const pct = o.pct == null ? null : String(o.pct);
 
   const utilW = w - margen * 2;
   if (!ticker || utilW <= 0 || h <= 0) return { ticker: null, pct: null, font: null };
 
-  // ESCALERA DE TAMAÑOS, como Finviz. Con un solo tamaño, un cuadro que le
-  // queda 2px corto se va sin letra aunque haya sitio de sobra para una letra
-  // un punto más chica. Se prueba de mayor a menor y se usa la primera que
-  // entra — nunca se recorta el texto para que quepa.
+  // LA FUENTE ESCALA CON EL CUADRO, como Finviz.
+  //
+  // Antes había una talla fija (13px) y una escalera que sólo bajaba: un cuadro
+  // grande usaba la misma letra que uno mediano y le sobraba sitio, así que V,
+  // MA, JNJ, ABBV, BAC, GS y GOOGL salían SIN el % teniendo espacio de más.
+  // Tener sitio y no usarlo es tan malo como no tenerlo: el cuadro más grande
+  // de la pantalla es el que más puede decir.
+  //
+  // Ahora se prueba de 18px hacia abajo hasta 8px, buscando en este orden:
+  //
+  //   1. la talla más grande en la que caben TICKER + % (dos líneas),
+  //   2. si en ninguna caben las dos, la más grande en la que cabe el ticker,
+  //   3. si tampoco a 8px, el cuadro va de color y sin texto.
+  //
+  // Se prefieren las dos líneas antes que una letra más grande: el % es la
+  // mitad de lo que el cuadro tiene que decir, y un ticker enorme sin su número
+  // es un cuadro que ocupa mucho y dice poco.
   //
   // El ANCHO lleva margen —el texto no puede tocar el borde— pero el ALTO no:
   // un cuadro de 12px con letra de 11 sí lleva su ticker, apretado y legible.
-  const min = o.fontMin || 8;
-  // La escalera baja HASTA `fontMin`, no tres puntos y para. Con base 13 se
-  // cortaba en 10 y los cuadros de ~28px se iban sin letra teniendo sitio
-  // para una de 8 — justo los que la regla quiere rescatar.
-  const escalera = o.escalera || Array.from({ length: Math.max(0, font - min + 1) }, (_, i) => font - i);
-  let elegida = null;
-  for (const f of escalera) {
-    if (h >= f && anchoTexto(ticker, f, factor) <= utilW) { elegida = f; break; }
-  }
-  if (elegida == null) return { ticker: null, pct: null, font: null };
+  // ── EL TICKER BAJA MÁS QUE EL % ──────────────────────────────────────
+  // "Quiero que TODOS los cuadros lleven su ticker" (Lety, 2026-09-29). Un
+  // cuadro sin letra es un color que no se puede nombrar: se ve, se toca, y no
+  // se sabe de quién es. El % es otra cosa — es un número que se lee, y un
+  // número de 6px no se lee: se adivina.
+  //
+  // Así que las dos líneas tienen su propio piso (`fontMinDos`, 8px, con el %
+  // una talla menor como siempre) y el ticker solo puede seguir bajando hasta
+  // `fontMin` (6px en celular). Y para el TICKER el margen lateral baja a 1px:
+  // el ticker es la identidad del cuadro y 1px alcanza para no tocar el borde;
+  // el %, que se lee, conserva su aire.
+  //
+  // Esta rama sólo AGREGA texto: se llega a ella cuando ya no cupo nada de lo
+  // de arriba, así que no puede quitarle letra a ningún cuadro que hoy la
+  // tenga. Que el texto quepa DE VERDAD con la fuente real —y no con la
+  // estimación de `anchoTexto`— lo mide el Chromium: "ninguna etiqueta se
+  // desborda".
+  const minDos = o.fontMinDos == null ? 8 : o.fontMinDos;
+  const margenTicker = o.margenTicker == null ? 1 : o.margenTicker;
+  const utilWTicker = w - margenTicker * 2;
+  const tallaPct = (f) => Math.max(minDos - 1, f - 2);   // el % va una talla menor
+  const cabeTicker = (f) => h >= f && anchoTexto(ticker, f, factor) <= utilWTicker;
+  const cabenDos = (f) => pct != null
+    && h >= f + tallaPct(f) + 2
+    && anchoTexto(ticker, f, factor) <= utilW
+    && anchoTexto(pct, tallaPct(f), factor) <= utilW;
 
-  const fontPct = Math.max(min - 1, elegida - 2);
-  const cabePct = pct != null
-    && h >= elegida + fontPct + 2
-    && anchoTexto(pct, fontPct, factor) <= utilW;
-  return { ticker, pct: cabePct ? pct : null, font: elegida, font_pct: cabePct ? fontPct : null };
+  for (let f = max; f >= minDos; f--) {
+    if (cabenDos(f)) return { ticker, pct, font: f, font_pct: tallaPct(f) };
+  }
+  for (let f = max; f >= min; f--) {
+    if (cabeTicker(f)) return { ticker, pct: null, font: f, font_pct: null };
+  }
+  return { ticker: null, pct: null, font: null };
 }
 
 if (typeof module !== 'undefined' && module.exports) {

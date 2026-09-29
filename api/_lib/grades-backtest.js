@@ -229,14 +229,37 @@ function testProporciones(exitos1, n1, exitos2, n2) {
 // chico se convierte en un hallazgo.
 // ═══════════════════════════════════════════════════════════════════
 
+// ── DOS NATURALEZAS DE DESCARTE, QUE NO SE PUEDEN MEZCLAR ──────────
+//
+// `sin_acceso_al_simbolo` es un ARTEFACTO del plan de FMP: la empresa existe y
+// tiene historia, pero la cuenta no la cubre. `historia_insuficiente` y los
+// demás son DATOS: la serie está y no alcanza.
+//
+// Mezclarlos hacía que el censo dijera "todos los eventos caen en
+// menos_de_3_meses por falta de datos" cuando la frontera había entregado 35
+// símbolos con 82–93 meses cada uno. La frase era falsa, y la falsedad venía de
+// meter dos cosas distintas en la misma cubeta.
+const ARTEFACTOS_DEL_PLAN = new Set(['sin_acceso_al_simbolo']);
+
 // eventos: [{ symbol, report_date, beat, grades: [{date, strongBuy, ...}] }]
-function analizaGrades(eventos, { criterios = CRITERIOS_GRADES } = {}) {
+// sinAcceso: Set de símbolos que la frontera NO pudo traer (artefacto, no dato).
+function analizaGrades(eventos, { criterios = CRITERIOS_GRADES, sinAcceso = null } = {}) {
+  const bloqueados = sinAcceso instanceof Set ? sinAcceso : new Set(sinAcceso || []);
   const evaluados = [];
   const descartes = {};
   for (const e of Array.isArray(eventos) ? eventos : []) {
+    // El acceso se juzga PRIMERO: un símbolo que no vino no puede tener
+    // "historia insuficiente", porque no tiene historia que medir.
+    if (bloqueados.has(e.symbol)) {
+      descartes.sin_acceso_al_simbolo = (descartes.sin_acceso_al_simbolo || 0) + 1;
+      continue;
+    }
     const v = seleccionaVentana(e.grades, e.report_date, { criterios });
     if (!v.ok) {
-      descartes[v.motivo] = (descartes[v.motivo] || 0) + 1;
+      // `menos_de_3_meses` se renombra a `historia_insuficiente` SOLO acá, donde
+      // ya se sabe que el símbolo sí llegó: es un dato sobre la serie.
+      const motivo = v.motivo === 'menos_de_3_meses' ? 'historia_insuficiente' : v.motivo;
+      descartes[motivo] = (descartes[motivo] || 0) + 1;
       continue;
     }
     evaluados.push({
@@ -247,10 +270,23 @@ function analizaGrades(eventos, { criterios = CRITERIOS_GRADES } = {}) {
     });
   }
 
+  const empresas = [...new Set(evaluados.map((x) => x.symbol))];
+  const porNaturaleza = { artefacto_del_plan: 0, dato_real: 0 };
+  for (const [k, n] of Object.entries(descartes)) {
+    if (ARTEFACTOS_DEL_PLAN.has(k)) porNaturaleza.artefacto_del_plan += n;
+    else porNaturaleza.dato_real += n;
+  }
+
   const muestra = {
     eventos_de_entrada: (eventos || []).length,
     con_ventana_valida: evaluados.length,
+    empresas_distintas: empresas.length,
+    empresas: empresas.sort(),
     descartes,
+    // Los descartes, separados por NATURALEZA. Sin esto, un artefacto del plan y
+    // un dato sobre la serie se leen como lo mismo.
+    descartes_por_naturaleza: porNaturaleza,
+    nota_naturaleza: 'sin_acceso_al_simbolo es un ARTEFACTO del plan de FMP (la empresa tiene historia; la cuenta no la cubre). Los demás motivos son DATOS sobre la serie que sí llegó.',
     min_eventos: criterios.min_eventos,
     // El baseline obligatorio, al lado de la tasa observada en la muestra: si la
     // muestra ya no se parece al universo, la comparación con el baseline no
@@ -271,6 +307,7 @@ function analizaGrades(eventos, { criterios = CRITERIOS_GRADES } = {}) {
         ...motivosDeDescarte(descartes),
       ],
       advertencia: ADVERTENCIA,
+      advertencia_seleccion: advertenciaDeSeleccion(evaluados.length, empresas.length, porNaturaleza.artefacto_del_plan),
     };
   }
 
@@ -361,19 +398,48 @@ function analizaGrades(eventos, { criterios = CRITERIOS_GRADES } = {}) {
 
   return { criterios, muestra, cortes_terciles: cortes.map((c) => +c.toFixed(4)),
     terciles: grupos, comparacion, veredicto, porque, advertencia: ADVERTENCIA,
+    // LA SEGUNDA ADVERTENCIA, con los números de ESTA corrida. No depende del
+    // resultado: va en GO, en NO-GO y en INCONCLUSO.
+    advertencia_seleccion: advertenciaDeSeleccion(evaluados.length, empresas.length, porNaturaleza.artefacto_del_plan),
     eventos: evaluados };
 }
 
 function motivosDeDescarte(descartes) {
-  const total = Object.values(descartes || {}).reduce((a, b) => a + b, 0);
+  const entradas = Object.entries(descartes || {});
+  const total = entradas.reduce((a, [, n]) => a + n, 0);
   if (!total) return [];
-  const partes = Object.entries(descartes).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}: ${v}`);
-  return [`Se descartaron ${total} eventos por no tener ventana válida — ${partes.join(' · ')}.`];
+  const artefacto = entradas.filter(([k]) => ARTEFACTOS_DEL_PLAN.has(k));
+  const dato = entradas.filter(([k]) => !ARTEFACTOS_DEL_PLAN.has(k));
+  const fmt = (xs) => xs.sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}: ${v}`).join(' · ');
+  const L = [`Se descartaron ${total} eventos.`];
+  if (artefacto.length) {
+    L.push(`De esos, ${artefacto.reduce((a, [, n]) => a + n, 0)} por ARTEFACTO del plan de FMP (${fmt(artefacto)}): la empresa tiene historia, la cuenta no la cubre. No dice nada sobre los datos.`);
+  }
+  if (dato.length) {
+    L.push(`Y ${dato.reduce((a, [, n]) => a + n, 0)} por el DATO mismo (${fmt(dato)}): la serie llegó y no alcanzó.`);
+  }
+  return L;
 }
 
 // La advertencia que el encargo pidió dejar escrita. No depende del resultado:
 // va en GO, en NO-GO y en INCONCLUSO.
 const ADVERTENCIA = 'Aunque salga GO, esto es INFORMACIÓN PÚBLICA que el mercado ya ve: las notas de los analistas se publican. No implica ventaja contra Polymarket — esa pregunta ya se corrió y salió NO-GO (Fase 2 del earnings-beat). Sería un feature descriptivo, no una señal de apuesta.';
+
+// ── SESGO DE SELECCIÓN ─────────────────────────────────────────────
+// Escrita en el pre-registro ANTES de correr la Fase 1.
+//
+// Las empresas de la muestra NO las elegimos nosotros: son las que el plan de
+// FMP cubre. Eso no es razón para no correr el backtest — es razón para que el
+// veredicto lo diga EN LETRAS, con los números de la corrida. Un GO vale para
+// esas empresas, no para el universo.
+function advertenciaDeSeleccion(eventos, empresas, bloqueadosPorElPlan) {
+  const cobertura = bloqueadosPorElPlan > 0
+    ? ` ${bloqueadosPorElPlan} eventos quedaron fuera porque su empresa no está cubierta por el plan.`
+    : '';
+  return `SESGO DE SELECCIÓN: los ${eventos} eventos vienen de ${empresas} empresas que NO elegimos nosotros — son las que el plan de FMP cubre.${cobertura} `
+    + `Un GO acá vale para esas ${empresas} empresas, NO para el universo de 99. La muestra se eligió sola, y por dónde se eligió puede correlacionar con lo que se mide (tamaño, cobertura de analistas, sector). `
+    + 'Para extenderlo al universo hace falta un plan que cubra a todas, y volver a correr.';
+}
 
 // ─────────────────── resumen en español ───────────────────
 
@@ -390,17 +456,34 @@ function renderGradesMd(a) {
   L.push('');
   L.push(`> ⚠ ${a.advertencia}`);
   L.push('');
+  if (a.advertencia_seleccion) {
+    L.push(`> ⚠ ${a.advertencia_seleccion}`);
+    L.push('');
+  }
 
   const m = a.muestra || {};
   L.push('## Muestra');
   L.push('');
   L.push(`Eventos de entrada: **${m.eventos_de_entrada}** · con ventana válida: **${m.con_ventana_valida}** (candado ${c.min_eventos})`);
+  if (m.empresas_distintas) L.push(`Empresas distintas: **${m.empresas_distintas}** — las que el plan de FMP cubre, no las que elegimos.`);
   L.push(`Tasa de beats en la muestra: **${m.tasa_beats_en_muestra ?? '—'}** · tasa base del universo: ${c.tasa_base_universo}`);
+  if (m.descartes_por_naturaleza) {
+    L.push('');
+    L.push(`Descartes por **naturaleza**: artefacto del plan **${m.descartes_por_naturaleza.artefacto_del_plan}** · dato real **${m.descartes_por_naturaleza.dato_real}**`);
+    L.push('');
+    L.push(`> ${m.nota_naturaleza}`);
+  }
   if (m.descartes && Object.keys(m.descartes).length) {
     L.push('');
-    L.push('| Motivo de descarte | Eventos |');
-    L.push('|---|---|');
-    for (const [k, v] of Object.entries(m.descartes).sort((x, y) => y[1] - x[1])) L.push(`| ${k} | ${v} |`);
+    L.push('| Motivo de descarte | Eventos | Naturaleza |');
+    L.push('|---|---|---|');
+    for (const [k, v] of Object.entries(m.descartes).sort((x, y) => y[1] - x[1])) {
+      L.push(`| ${k} | ${v} | ${ARTEFACTOS_DEL_PLAN.has(k) ? 'artefacto del plan' : 'dato' } |`);
+    }
+  }
+  if ((m.empresas || []).length) {
+    L.push('');
+    L.push(`Las ${m.empresas.length} empresas de la muestra: \`${m.empresas.join(' ')}\``);
   }
   L.push('');
 
@@ -454,4 +537,5 @@ export {
   CRITERIOS_GRADES, scoreSentimiento, seleccionaVentana, terciles, tercilDe,
   NOMBRE_TERCIL, testProporciones, erf, normalCDF, diasEntre, dia,
   analizaGrades, ADVERTENCIA, renderGradesMd,
+  advertenciaDeSeleccion, ARTEFACTOS_DEL_PLAN,
 };

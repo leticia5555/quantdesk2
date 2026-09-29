@@ -22,8 +22,12 @@
 import {
   CRITERIOS_GRADES, scoreSentimiento, seleccionaVentana, terciles, tercilDe,
   NOMBRE_TERCIL, testProporciones, erf, normalCDF, analizaGrades, renderGradesMd, ADVERTENCIA,
+  advertenciaDeSeleccion, ARTEFACTOS_DEL_PLAN,
 } from '../api/_lib/grades-backtest.js';
-import { normalizaGrades, interpretaSmoke } from '../api/_lib/fmp-grades.js';
+import {
+  normalizaGrades, interpretaSmoke, mencionaParametro,
+  LIMIT_POR_DEFECTO, LIMIT_MAXIMO_DEL_PLAN,
+} from '../api/_lib/fmp-grades.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -205,6 +209,61 @@ const nke = seleccionaVentana([
 ], '2026-07-10');
 ok(nke.ok && nke.delta < 0, 'el patrón de NKE (6+20 → 1+10) se lee como enfriamiento', nke.delta.toFixed(3));
 
+console.log('el limit: SIN parámetro por defecto (el hallazgo contraintuitivo)');
+
+ok(LIMIT_POR_DEFECTO === null,
+  'el defecto de la frontera es NO mandar limit: sin el parámetro son ~88 meses, con el máximo del plan son 10',
+  String(LIMIT_POR_DEFECTO));
+ok(LIMIT_MAXIMO_DEL_PLAN === 10, 'y queda anotado que el plan acepta 0..10', LIMIT_MAXIMO_DEL_PLAN);
+
+console.log('el 402 NO es auth: lo decide el CUERPO');
+
+// Esta rama existe por un diagnóstico FALSO: el 402 salía como auth_error con el
+// texto "el plan de la key no cubre este endpoint", cuando el 402 venía de
+// limit=1000 y el cuerpo lo decía. Ese texto mandaba a rotar la llave.
+const conLimit = mencionaParametro('Limit must be between 0 and 10');
+ok(conLimit.menciona === true && conLimit.parametro === 'limit',
+  'un cuerpo que nombra `limit` es un parámetro fuera de rango', JSON.stringify(conLimit));
+ok(conLimit.rango.min === 0 && conLimit.rango.max === 10,
+  'y el RANGO se extrae del mensaje, no se supone', JSON.stringify(conLimit.rango));
+ok(mencionaParametro('Invalid limit. Max is 10').rango.max === 10, 'también con la forma "Max is 10"');
+const plan = mencionaParametro('This endpoint is not available under your current subscription');
+ok(plan.menciona === false, 'un cuerpo que habla de la suscripción NO nombra un parámetro', JSON.stringify(plan));
+// "Invalid API KEY" nombra una CREDENCIAL, no un parámetro de consulta.
+ok(mencionaParametro('Invalid API KEY').menciona === false,
+  'y una mención a la api key no se confunde con un parámetro');
+ok(mencionaParametro('').menciona === false && mencionaParametro(null).menciona === false,
+  'un cuerpo vacío no nombra nada');
+ok(mencionaParametro('symbol is required').parametro === 'symbol', 'otros parámetros también se reconocen');
+
+console.log('interpretaSmoke: el contraste de meses es EL hallazgo');
+
+const conContraste = interpretaSmoke([
+  { id: 'sin_limit', limit: null, ok: true, status: 200, meses: 88 },
+  { id: 'limit_chico', limit: 10, ok: true, status: 200, meses: 10 },
+  { id: 'limit_alto', limit: 1000, ok: false, status: 402, motivo: 'parametro_fuera_de_rango',
+    parametro: 'limit', rango: { min: 0, max: 10 } },
+]);
+ok(conContraste.causa === 'limit_rechazado', 'falla con limit alto y anda sin él → el parámetro', conContraste.causa);
+ok(/rango aceptado es 0\.\.10/.test(conContraste.lectura), 'la lectura CITA el rango que dijo el cuerpo', conContraste.lectura);
+ok(/88 meses contra 10/.test(conContraste.lectura) && /8\.8× más historia/.test(conContraste.lectura),
+  'y el contraste de meses, que es el hallazgo de verdad', conContraste.lectura);
+ok(/el que RECORTA/.test(conContraste.lectura),
+  'diciendo en letras que el parámetro que parece traer más es el que recorta');
+ok(/Es el PARÁMETRO, no la key/.test(conContraste.lectura), 'y que no es la key');
+// Un 402 sin contraste medible no inventa el múltiplo.
+const sinContraste = interpretaSmoke([
+  { id: 'sin_limit', limit: null, ok: true, status: 200, meses: 88 },
+  { id: 'limit_alto', limit: 1000, ok: false, status: 402, motivo: 'parametro_fuera_de_rango', parametro: 'limit', rango: null },
+]);
+ok(!/×/.test(sinContraste.lectura) && /88 meses/.test(sinContraste.lectura),
+  'sin una variante con limit que ande, no se inventa el múltiplo', sinContraste.lectura);
+// Y un 402 NO cae en la rama de auth.
+ok(interpretaSmoke([
+  { id: 'a', limit: 1000, ok: false, status: 402, motivo: 'parametro_fuera_de_rango' },
+  { id: 'b', limit: 10, ok: false, status: 402, motivo: 'parametro_fuera_de_rango' },
+]).causa !== 'auth_error', 'un 402 nunca se lee como auth_error');
+
 console.log('interpretaSmoke: nombra la causa, y cuando no la sabe lo dice');
 
 const V = (id, limit, extra) => ({ id, limit, ok: false, status: 400, motivo: 'http_error', ...extra });
@@ -338,7 +397,9 @@ ok(rg.porque.some((p) => /tasa base del universo es 0\.8182/.test(p)),
 // Eventos que no se pueden usar: se cuentan por motivo.
 const conBasura = [...conSenal, { symbol: 'X', report_date: '2026-07-01', beat: true, grades: [] }];
 const rb = analizaGrades(conBasura);
-ok(rb.muestra.descartes.menos_de_3_meses === 1, 'un evento sin grades se descarta CONTADO', JSON.stringify(rb.muestra.descartes));
+ok(rb.muestra.descartes.historia_insuficiente === 1,
+  'un evento cuyo símbolo SÍ llegó pero sin historia: historia_insuficiente, que es un DATO',
+  JSON.stringify(rb.muestra.descartes));
 ok(rb.muestra.eventos_de_entrada === 181 && rb.muestra.con_ventana_valida === 180,
   'y los dos conteos van: cuántos entraron y cuántos sobrevivieron');
 
@@ -417,6 +478,73 @@ const todosIguales = Array.from({ length: 120 }, (_, i) => eventoPlano(i, true, 
 const ri = analizaGrades(todosIguales);
 ok(ri.veredicto === 'INCONCLUSO' && /1 valor\(es\) distinto/.test(ri.porque[0]),
   'todos los deltas iguales: INCONCLUSO por la forma de la distribución', ri.porque[0]);
+
+console.log('los descartes: ARTEFACTO del plan vs DATO sobre la serie');
+
+// El aviso viejo decía "la frontera no entregó filas, así que todos los eventos
+// caen en menos_de_3_meses por falta de datos". Era FALSO con acceso parcial: la
+// frontera entregó 35 símbolos con 82–93 meses. Las dos clases iban en la misma
+// cubeta y el texto afirmaba algo que no era.
+const mezcla = [
+  // BLOQ: el plan no cubre la empresa. Artefacto.
+  ...Array.from({ length: 40 }, (_, i) => ({ symbol: 'BLOQ', report_date: '2026-07-15', beat: true, grades: [] })),
+  // CORTA: el símbolo llegó, pero con 2 meses nada más. Dato.
+  ...Array.from({ length: 25 }, (_, i) => ({ symbol: 'CORTA', report_date: '2026-07-15', beat: true, grades: [
+    { date: '2026-05-10', strongBuy: 5, buy: 10, hold: 1, sell: 0, strongSell: 0 },
+    { date: '2026-06-10', strongBuy: 4, buy: 11, hold: 1, sell: 0, strongSell: 0 },
+  ] })),
+  ...conSenal,
+];
+const rm = analizaGrades(mezcla, { sinAcceso: new Set(['BLOQ']) });
+ok(rm.muestra.descartes.sin_acceso_al_simbolo === 40,
+  'los 40 de la empresa que el plan no cubre: sin_acceso_al_simbolo', JSON.stringify(rm.muestra.descartes));
+ok(rm.muestra.descartes.historia_insuficiente === 25,
+  'y los 25 con serie corta: historia_insuficiente — NO la misma cubeta', JSON.stringify(rm.muestra.descartes));
+ok(!('menos_de_3_meses' in rm.muestra.descartes),
+  'el nombre viejo, que mezclaba las dos, ya no aparece');
+ok(rm.muestra.descartes_por_naturaleza.artefacto_del_plan === 40
+  && rm.muestra.descartes_por_naturaleza.dato_real === 25,
+  'y los dos conteos por naturaleza van publicados', JSON.stringify(rm.muestra.descartes_por_naturaleza));
+ok(ARTEFACTOS_DEL_PLAN.has('sin_acceso_al_simbolo') && !ARTEFACTOS_DEL_PLAN.has('historia_insuficiente'),
+  'la clasificación de qué es artefacto está en un solo lugar');
+// EL ACCESO SE JUZGA PRIMERO: un símbolo bloqueado no puede tener "historia
+// insuficiente", porque no tiene historia que medir.
+const bloqueadoConGrades = analizaGrades(
+  [{ symbol: 'X', report_date: '2026-07-15', beat: true, grades: [{ date: '2026-04-10', strongBuy: 1, buy: 1, hold: 0, sell: 0, strongSell: 0 }] }],
+  { sinAcceso: new Set(['X']) });
+ok(bloqueadoConGrades.muestra.descartes.sin_acceso_al_simbolo === 1,
+  'el acceso se juzga ANTES que la ventana', JSON.stringify(bloqueadoConGrades.muestra.descartes));
+// Y el texto del porqué separa las dos, en vez de sumarlas.
+const chicoMezclado = analizaGrades(mezcla.slice(0, 65), { sinAcceso: new Set(['BLOQ']) });
+ok(chicoMezclado.porque.some((p) => /ARTEFACTO del plan/.test(p)), 'el porqué nombra el artefacto');
+ok(chicoMezclado.porque.some((p) => /por el DATO mismo/.test(p)), 'y el dato, aparte');
+ok(chicoMezclado.porque.some((p) => /No dice nada sobre los datos/.test(p)),
+  'diciendo que el artefacto no dice nada sobre los datos');
+
+console.log('SESGO DE SELECCIÓN: en letras, con los números de la corrida');
+
+ok(rm.muestra.empresas_distintas === new Set(conSenal.map((e) => e.symbol)).size,
+  'se cuentan las empresas distintas que quedaron', rm.muestra.empresas_distintas);
+ok(Array.isArray(rm.muestra.empresas) && rm.muestra.empresas.length === rm.muestra.empresas_distintas,
+  'y se publica la LISTA, no solo el conteo');
+for (const [nombre, r] of Object.entries({ INCONCLUSO: rc, 'NO-GO': rn, GO: rg, mezcla: rm })) {
+  ok(/SESGO DE SELECCIÓN/.test(r.advertencia_seleccion || ''),
+    `"${nombre}": la advertencia de sesgo va SIEMPRE, no solo cuando conviene`);
+  ok(/NO para el universo de 99/.test(r.advertencia_seleccion || ''),
+    `"${nombre}": y dice que un GO no se extiende al universo`);
+}
+ok(/NO elegimos nosotros/.test(rm.advertencia_seleccion), 'nombra que la muestra se eligió sola');
+ok(/puede correlacionar con lo que se mide/.test(rm.advertencia_seleccion),
+  'y por qué eso importa: el criterio de selección puede correlacionar con la señal');
+const conBloqueo = advertenciaDeSeleccion(117, 35, 123);
+ok(/117 eventos/.test(conBloqueo) && /35 empresas/.test(conBloqueo) && /123 eventos quedaron fuera/.test(conBloqueo),
+  'los números son los de la corrida, no una plantilla', conBloqueo);
+ok(!/123 eventos quedaron fuera/.test(advertenciaDeSeleccion(117, 35, 0)),
+  'y sin eventos bloqueados no se inventa esa frase');
+ok(/SESGO DE SELECCIÓN/.test(renderGradesMd({ ...rg, generado_en: 'x' })),
+  'la advertencia de sesgo sale en el markdown, arriba');
+ok(/las que el plan de FMP cubre, no las que elegimos/.test(renderGradesMd({ ...rg, generado_en: 'x' })),
+  'y la muestra dice de dónde salieron las empresas');
 
 console.log('la advertencia va SIEMPRE');
 

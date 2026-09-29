@@ -400,3 +400,186 @@ hoja dice la causa, y el pie no suma los sin precio.
 
 `node --test tests/` → **122 de 123 suites en verde**. La única roja es la
 heredada `agents-persistence`, que no se tocó.
+
+---
+
+## §9 — Ronda 4: las letras, la unidad, y dos preguntas contestadas
+
+### 9.1 La fuente escala con el cuadro
+
+Había una talla fija de 13px con una escalera que sólo bajaba. Resultado: V, MA,
+JNJ, ABBV, BAC, GS y GOOGL salían **sin el %** teniendo espacio de sobra, y los
+medianos sin nada. Tener sitio y no usarlo es tan malo como no tenerlo — el
+cuadro más grande de la pantalla es el que más puede decir.
+
+`etiquetaCuadro` ahora prueba de **18px a 8px** y busca, en este orden:
+
+1. la talla más grande donde caben **ticker + %** (dos líneas),
+2. si en ninguna caben las dos, la más grande donde cabe el ticker,
+3. si tampoco a 8px, el cuadro va de color y sin texto.
+
+Se prefieren las dos líneas antes que una letra más grande: el % es la mitad de
+lo que el cuadro tiene que decir. El % va una talla menor que el ticker.
+
+Candado en Chromium a 390px: **cero cuadros de ≥900px² sin texto** (900px² = 30×30,
+que es donde entra un ticker de 4 letras a 8px con sus márgenes), más una
+comprobación de que las tallas usadas son varias — si todas fueran iguales,
+seguiría siendo el tamaño fijo con otro número. La corrida da
+`{"10":5,"11":2,"12":8,"14":1,"15":4,"16":4,"17":4,"18":27}`.
+
+Y al entrar a un sector el nombre va **completo**: las abreviaturas (`Con.`,
+`Ser.`, `Inm.`, `Mat.`) son sólo para la cabecera apretada del primer nivel.
+
+### 9.2 `qdCap`: la unidad se lee, no se descifra
+
+La hoja decía **"5.51 B"** para NVDA. En español un billón es 10¹²; en inglés
+*billion* es mil millones. Mil veces de diferencia en el número más grande de la
+pantalla y sin forma de saber cuál era. Y **"790.8 mm"** era una abreviatura que
+no existe fuera de esa pantalla.
+
+Una sola función, `qdCap(valor, moneda)` en `qd-periods.js`, con escala larga y
+la moneda al lado —60 mil millones de pesos y 60 mil millones de dólares no son
+la misma empresa—:
+
+| entrada | sale |
+|---|---|
+| `5.51e12, USD` | `5.51 billones USD` |
+| `790.8e9, MXN` | `790.8 mil millones MXN` |
+| `60.5e9, USD` | `60.5 mil millones USD` |
+| `1e12, USD` | `1.00 billón USD` |
+| `null` / `0` | `—` |
+
+Ese último caso era un bug esperando: `Number(null)` es `0` y
+`Number.isFinite(0)` es `true`, así que una cap que nadie midió se habría
+escrito **"0 USD"**. Es el tercer sitio donde el mismo tropiezo aparece en dos
+días (el filtro de EDGAR, el guardia del cierre de captura, y esto).
+
+### 9.3 "puntos de serie: 24" con YTD — el número estaba bien, la etiqueta no
+
+`puntos` es `serie.length` **de lo que la consulta trajo**, y la consulta del mapa
+trae a propósito *23 cierres recientes + 1 ancla de fin de año* (`SQL_MAPA_US.precios`).
+O sea: 24 filas, y el YTD sale del ancla que viene **entre** esas 24 — no de 24
+días de historia. El largo real de la serie nunca viaja al navegador porque nadie
+lo pide.
+
+No había nada que arreglar en el dato. La etiqueta pasa a decir **"cierres
+traídos: 24 (incluye el ancla de fin de año)"**, que es lo que el número es.
+
+### 9.4 México con el cierre del jueves un sábado
+
+El cron estaba bien declarado y no hay bug de huso: `10 22 * * 1-5` es 22:10 UTC
+= 16:10 en Ciudad de México, 1h10 después del cierre de las 15:00, y el viernes
+entra en `1-5`. `bmv-harvest.js` calcula `hoy` en UTC y a las 22:10 UTC del
+viernes la fecha UTC **sigue siendo viernes**, así que pidió el viernes. Tampoco
+existe del lado de México el guardia de "barra provisional" que causó el bug de
+EDT/EST en EE.UU.
+
+Quedan dos causas posibles, y `/api/cron-status` las distingue:
+
+| si pasó esto | se ve así |
+|---|---|
+| el cron no corrió | `jobs[]` → `bmv:precios` con `stale: true` y su último latido del jueves |
+| corrió y el proveedor no tenía el viernes | latido fresco del viernes, y `datos[]` → `bmv_precios` con `ultima_fecha` del jueves, `sesiones_faltantes` con el viernes y `alerta: true` |
+
+La segunda es la apuesta, y hay una asimetría que la respalda: **EE.UU. cosecha
+tres veces (21:20/21:35/21:50) y México una sola.** Si a las 16:10 locales el
+proveedor todavía no publicó, no hay segunda oportunidad hasta el lunes. Se
+agrega **una** corrida más (`10,40 22 * * 1-5`), no dos, para no triplicar el
+consumo de DataBursatil — cuyo presupuesto de requests ya dio problemas de
+medición (§4.4 de `docs/bmv-rotation.md`). El vigilante de `cron-status` se
+actualizó con el mismo schedule, que es lo que `tests/crons-declarados.test.mjs`
+exige.
+
+## 10. Ronda 5 — el mapa largo del celular, y el ticker en todos los cuadros
+
+"Quiero que **todos** los cuadros lleven su ticker" (Lety, 2026-09-29). Un cuadro
+sin letra es un color que no se puede nombrar: se ve, se toca, y no se sabe de
+quién es.
+
+### 10.1 En celular el mapa deja de caber, a propósito
+
+Debajo de **600px** de ancho, el alto del treemap pasa a
+`max(2000px, ancho × FACTOR)` y la página se recorre en vertical. En escritorio
+**no cambia nada**: el no-scroll sigue siendo la regla y se comprueba a
+1440×900.
+
+Mecánica: `body[data-scroll="1"]` cambia `overflow-y` a `auto`, saca a `main`
+del `flex:1` y pone `#lienzo` en `position:relative`. Lo último no es
+cosmético: con `inset:0` el alto queda sobre-restringido y el navegador ignora
+el `height` que pone el JS.
+
+### 10.2 El factor es 12 y no 5, y eso no es lo que ella pidió
+
+El pedido traía el número (`ancho × 5`) **y** el resultado esperado (menos de 20
+cuadros sin ticker de ~550). Con el universo a escala real en el Chromium, los
+dos no coinciden:
+
+| factor | sin ticker | bajo 14px de lado | ≥14px y mudos |
+| ---: | ---: | ---: | ---: |
+| × 5 | 309 / 552 | 256 | 53 |
+| × 8 | 216 / 552 | 153 | 63 |
+| × 10 | 143 / 552 | 57 | 86 |
+| **× 12** | **75 / 552** | **9** | **0** |
+
+El ×5 venía del mockup, que tenía ~40 cuadros, y no escala a 550. Se eligió el
+**resultado** que ella pidió por encima del número que propuso, queda declarado
+en `mercado.html` con esta tabla y volverlo a 5 es una línea. A 390px son
+4,680px de mapa: se recorre, que es justo lo que el modo largo vino a permitir.
+
+Para que el número no se desincronice, la página expone `window.QD_MAPA` y el
+Chromium calcula el alto esperado con **las mismas constantes**. Lo que queda
+pinchado en la prueba no es el factor —ése puede moverse— sino el resultado:
+*"menos de 20 cuadros caen bajo los 14px de lado"*.
+
+### 10.3 El ticker baja a 6px; el % se queda en 8
+
+- `fontMin` (piso del ticker) = **6** en celular, 8 en escritorio.
+- `fontMinDos` (piso de las dos líneas) = **8** siempre, con el % una talla
+  menor como siempre. Un % de 4px no se lee: se adivina.
+- El margen lateral del **ticker** baja a **1px**. El ticker es la identidad del
+  cuadro y 1px alcanza para no tocar el borde; el %, que se lee, conserva su
+  aire y el margen proporcional.
+
+Esta rama sólo **agrega** texto: se llega a ella cuando ya no cupo nada de lo de
+arriba, así que no puede quitarle letra a ningún cuadro que hoy la tenga.
+
+### 10.4 El factor de ancho era un número a ojo
+
+`anchoTexto` estimaba 0.62 de la talla por caracter. Medido en el Chromium del
+repo con la fuente real (`ui-monospace` a 6, 7, 8, 10, 13 y 18px, con V, WMT,
+AAPL y S258) es **0.6022**, estable en todas las tallas: `AAPL` a 6px mide
+14.45px, no 14.88.
+
+El 3% de más no era gratis — reservaba ancho que no hacía falta y dejaba mudos
+cuadros que sí tenían sitio. Sigue siendo una **estimación**, y sobreestimar es
+más seguro que subestimar porque recortar a mitad de palabra está prohibido, así
+que el Chromium comprueba con la fuente real que ninguna etiqueta se desborde:
+si algún día cambia la fuente, esa comprobación se pone roja y el número se
+vuelve a medir.
+
+### 10.5 La excepción de la prueba es la geometría del ticker, no un número redondo
+
+Lety la fijó en "menos de 14px de ancho o de alto". Medido no alcanza: un ticker
+de 4 letras a 6px mide 14.45px, así que necesita **16.45px** de cuadro con su
+margen de 1px. Un cuadro de 15px que "debería" llevar `TSMG` no puede, y
+recortar está prohibido.
+
+Así que la comprobación tiene dos números y reporta los dos:
+
+- **la que falla si se rompe**: ningún cuadro con sitio para *su* ticker se
+  queda sin él → 0;
+- **la que ella pidió comparar**: cuántos caen bajo los 14px de lado → 9 de 552.
+
+Y el desglose sale impreso en cada corrida: *"sin ticker: 75 de 552 cuadros · 9
+bajo 14px de lado · 75 no les cabe su propio ticker a 6px · el más angosto mide
+13px"*.
+
+### 10.6 El fixture del Chromium, a escala de producción
+
+Con 54 cuadros de prueba, "ningún cuadro se queda sin ticker" no medía nada. El
+fixture ahora tiene **552** con capitalizaciones en ley de potencias —2.5
+billones el primero, un par de miles de millones el último—, porque es la
+distribución la que hace los cuadros minúsculos, no la cantidad. Un efecto
+secundario que vale anotar: el tamaño de un cuadro gris es **prestado** (el del
+verificado más chico de su sector), así que a escala real los grises son de los
+cuadros más chicos del mapa.

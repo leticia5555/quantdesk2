@@ -1267,3 +1267,303 @@ Dos arreglos estructurales, no dos recordatorios:
 `tests/mercado-cap-coherencia.test.mjs` es el candado: compara los conteos y el
 veredicto símbolo por símbolo de los dos caminos. Verificado devolviéndole el bug
 al mapa —quitarle las referencias— y las tres sub-pruebas se ponen rojas.
+
+## 10. R0(i) — la corrida del 2026-09-26, y el gris que mentía
+
+Tres fallas, y la tercera es la peor de las que este mapa ha tenido: una causa
+FALSA en pantalla.
+
+### 10.1 `TypeError: unidades.filter is not a function` — y 21 símbolos con él
+
+`accionesDeCompanyConcept` hacía `json.units.shares.filter(...)`, dando por
+hecho dos cosas de la respuesta de `companyconcept`: que la clave de unidad se
+llama `shares` y que su valor es un arreglo. Ninguna de las dos es un
+invariante de la fuente, y el resto de este repo nunca las dio por hechas —
+`mercado-fase0.js:622` y `historia-ingesta.js:183` recorren
+`Object.entries(units)` precisamente porque la clave de unidad es un dato de la
+respuesta, no una constante.
+
+Dos arreglos, y el segundo importa más que el primero:
+
+1. **El lector no asume forma.** `filasDeUnits` prefiere `shares`, y si no está
+   o no es un arreglo toma la primera clave que sí traiga uno, diciendo cuál usó
+   (`unidad` viaja en el resultado). Nunca más se llama `.filter` sobre algo sin
+   verificar. Si no hay filas, el motivo arrastra la **huella** de lo que llegó
+   (`formaDeUnits`: `units: objeto con {shares: number}`), porque un `TypeError`
+   en el log dice que algo no era un arreglo y no QUÉ era.
+2. **Un símbolo no se lleva el job.** El `for` de `?job=acciones-edgar` envuelve
+   cada símbolo en `try/catch`; la excepción se cuenta en `cuenta.excepcion` y se
+   reporta en `fallas[]` con la huella. La corrida del 26 perdió los 21
+   candidatos por una excepción en el primero.
+
+**Sobre el fixture de `tests/mercado-edgar.test.mjs`:** NO está grabado de una
+llamada real. El contenedor donde se construye esto no tiene egress a sec.gov —
+el proxy deniega el CONNECT a `data.sec.gov:443` por política, igual que
+documenta `docs/historia-fase0.md` §0 — así que está reconstruido del esquema
+que publica la SEC y del que ya consume el código probado del repo. Por eso el
+motivo arrastra la huella: la primera corrida en prod con `fallas` en la salida
+dice la forma REAL si todavía no coincide.
+
+### 10.2 Tres estados de EDGAR, no dos
+
+En el iPhone, ORCL, MNST y APH decían **"EDGAR no dio acciones en
+circulación"**. EDGAR nunca fue consultado: el job había muerto. Una causa falsa
+manda a revisar la fuente en lugar del job, y es el peor gris — el que parece
+resuelto.
+
+La raíz eran dos cosas a la vez:
+
+- **`num(null) === 0`, cuarta vez.** `filaVeredictoCapUs` preguntaba
+  `num(acciones_edgar_millones) != null`, y `Number(null)` es `0`, así que la
+  columna vacía entraba como "EDGAR dio 0 acciones" para las 569 emisoras. Peor
+  que la causa falsa: `veredictoCapEdgar` devuelve `auditable: false` sin
+  acciones, así que los 21 hallazgos en USD pasaron a contarse como "insumos que
+  faltan" y la auditoría reportó **3 hallazgos donde había 21**. El guardia
+  correcto es `> 0`.
+- **La columna vacía no distingue dos preguntas.** "No se preguntó" y "se
+  preguntó y no había" se arreglan distinto. Ahora `mercado_universo_us` guarda
+  `edgar_consultada_en` y `edgar_consulta_motivo`, el job los escribe para TODO
+  símbolo intentado (incluidos `sin CIK` y `404`, que son respuestas) y
+  `estadoEdgar` devuelve uno de tres: `no_consultado` → "pendiente de consulta a
+  EDGAR (falta correr ?job=acciones-edgar)"; `consultado_sin_dato` → "EDGAR
+  consultado el AAAA-MM-DD y no dio acciones en circulación: …";
+  `consultado_con_dato` → hay veredicto. Un 5xx o un cuerpo no-JSON **no** se
+  registra como consulta: se vuelve a intentar.
+
+`tests/mercado-cap-coherencia.test.mjs` fija que el job y el mapa coincidan
+también en cuál de los tres estados es, y que ninguna causa diga "EDGAR no dio".
+
+### 10.3 Contra qué día se despeja la razón del ADR
+
+`?job=razon-adr` **sí** estaba usando el cierre de `capturada_en`: lo prueba el
+propio síntoma. VALE daba 0.999 con el cierre del 25 y pasó a 1.043 sin que ese
+último cierre cambiara — sólo el ancla puede mover ese número. `fecha_precio` en
+la salida era el último cierre (informativo) y se leía como "el precio que usó
+la razón"; ahora se llama `fecha_ultimo_cierre` y al lado va
+`precio_usado_de: 'último cierre con fecha ≤ capturada_en'` con
+`fecha_cierre_usado`/`cierre_usado`.
+
+Lo que quedó al descubierto es otra cosa: **no sabemos con qué precio calculó
+Yahoo su "Market Cap (intraday)"**. De VALE sabemos dos fechas distintas — el
+2026-09-23, cuando Lety la leyó, y el 2026-09-18, que era lo que Yahoo estampaba
+en la cotización — y con un techo de 2% elegir mal por un par de sesiones alcanza
+para mandar a gris una emisora cuya razón es obviamente 1:1.
+
+Dos cosas, y ninguna afloja el techo:
+
+1. **`capturada_en` de VALE es el 2026-09-23**, el día en que se leyó, como las
+   otras tres. El 18 queda declarado aparte en `cotizacion_marcada_en`. La
+   medición lo respalda: la cap reconcilia contra un precio de la semana del 23,
+   o sea que Yahoo usó un precio fresco aunque el sello viniera atrasado.
+2. **La ventana**, que es un instrumento y no una conclusión: `ventanaDeCierres`
+   + `razonesPorCierre` calculan la razón contra cada cierre de ±5 sesiones
+   alrededor de la captura y la salida del job trae `ventana.alguno_dentro`,
+   `ventana.mejor` y `reconcilian_en_otro_dia`. Una corrida contesta si el
+   desajuste es del día elegido o de la referencia. **El veredicto sigue usando
+   un solo cierre**, el de `capturada_en`: elegir "el día que mejor queda" o
+   subir el 2% sería mover el arco, que es exactamente lo que el 5% de G2 y el
+   10% de EDGAR están separados para evitar.
+
+### 10.4 XNDU
+
+`XNDU` es **Xanadu Quantum Technologies** (sector XLK). Su cap entró por
+`neon:arena_market_cap`, un camino que nunca guardó `profile2.currency`, así que
+no declara moneda. **No sale del universo** (decisión de Lety, 2026-09-26): se
+dibuja gris punteado con causa `sin moneda declarada por Finnhub (la cap viene de
+neon:arena_market_cap)`. La causa nombra la fuente a propósito, para no
+atribuirle a Finnhub un dato que quizá no dio él.
+
+### 10.5 El SQL de los jobs también se prepara
+
+`SQL_CAP_US` exporta las consultas de `insumosCapUs` y `?job=razon-adr`, y
+`tests/mercado-sql.test.mjs` les hace `PREPARE` contra un Postgres real junto a
+las del mapa. La ventana nueva tiene tres parámetros: un `$3` sin ligar sólo se
+habría visto como un 500 en el navegador.
+
+## 11. R0(j) — el precio viaja con la cap, y la razón deja de tener fecha
+
+Dos intentos de despejar la razón del ADR, dos fallas, **la misma causa**: la
+razón se despejaba contra un cierre NUESTRO y había que adivinar cuál.
+
+| intento | ancla | qué falló |
+| :--- | :--- | :--- |
+| #254 | el cierre de hoy | ASML 1.023: el mercado se movió 2.3% entre el 23 y el 25 |
+| #259 | el cierre de `capturada_en` | VALE 1.043: el sello de la cotización de Yahoo venía atrasado |
+
+Ninguna de las dos era un problema de la emisora. Las dos eran maneras de
+adivinar con qué precio calculó Yahoo su "Market Cap (intraday)".
+
+**El arreglo lo cierra desde otro lado:** Yahoo muestra la cap y el **precio** en
+la misma pantalla, al mismo instante. Guardando los dos, la razón sale de una
+fuente coherente consigo misma:
+
+```
+ordinarias por ADR = (acciones × precio_referencia) ÷ cap_referencia
+```
+
+y **no hay ninguna fecha que elegir**. `mercado-cap-us-referencia.json` guarda
+`precio_referencia` junto a `market_cap_usd` en las cuatro (TSM 446.57, NVO
+39.80, VALE 14.21, ASML 1722.50; las cuatro leídas el 2026-09-23). El cierre de
+`capturada_en` queda como **cruce informativo** — `cruce_cierre_captura`,
+`cruce_desvio_pct` —, que dice cuánto se movió el precio entre lo que Yahoo
+mostraba y nuestro cierre de ese día, y no decide nada. El tamaño que se pinta
+sigue siendo `acciones ÷ razón × nuestro último cierre`, así que el cuadro sigue
+al mercado todos los días.
+
+**El techo de 2% no se movió** (decisión de Lety, 2026-09-27: "no aflojes el
+techo"). Lo que cambió es el insumo, no el criterio.
+
+### 11.1 La dirección de la razón, que se puede invertir sin que nada se queje
+
+La razón cuenta **ordinarias por ADR**: TSM da **5**, no 1/5. Es la que el
+tamaño pintado **divide**. Si alguien invierte la cuenta, `razonesPlausibles`
+acepta 1/5 igual —también es una proporción de ADR plausible— y TSM queda
+**cinco veces más grande** de lo que es, que es exactamente el bug que la
+referencia existe para cerrar. Los otros tres casos son 1:1 y no distinguen las
+dos direcciones, así que hay una prueba con TSM que sí:
+`tests/mercado-cap-us.test.mjs` → "LA DIRECCIÓN: la razón cuenta ORDINARIAS POR
+ADR, no lo contrario".
+
+### 11.2 Si con el precio de la captura tampoco sale limpia
+
+Entonces la fecha queda descartada y lo único sospechoso es el **conteo de
+acciones**. El veredicto lo dice con números en vez de con una corazonada:
+
+- `acciones_implicitas_millones` = `cap_referencia ÷ precio_referencia`, o sea
+  cuántas unidades implica la cap de Yahoo;
+- contra nuestras `acciones_millones` de Finnhub;
+- y el motivo del gris nombra las dos: *"con el precio de la captura la fecha no
+  es la causa: la cap de referencia implica 384.1M acciones por ADR y nosotros
+  tenemos 392M ordinarias"*.
+
+Lo que cada referencia implica, para tenerlo a mano:
+
+| clave | cap USD | precio | acciones que implica |
+| :--- | ---: | ---: | ---: |
+| TSM | 2,316,000M | 446.57 | 5,186.2M (× 5 = 25,931M ordinarias) |
+| NVO | 175,831M | 39.80 | 4,417.9M |
+| VALE | 60,474M | 14.21 | 4,255.7M |
+| ASML | 661,612M | 1722.50 | 384.1M |
+
+### 11.3 `?manual=` acepta el precio
+
+`?job=razon-adr&manual=CLAVE:CAP:PRECIO` — el tercer campo es el precio con el
+que se leyó la cap, para probar una referencia sin redeploy. Sigue siendo
+opcional por compatibilidad con México, donde la cap no es de un ADR, pero para
+un ADR conviene siempre por lo de arriba.
+
+## 12. R0(k) — la corrida del 2026-09-28: cinco casos de la realidad
+
+286 verificadas, job = mapa, EDGAR con 27 consultas / 15 con conteo / 12 sin /
+**0 excepciones**. ORCL verificada vía EDGAR y ASML 1:1. De lo que quedó
+salieron cinco cosas.
+
+### 12.1 Dos conteos que coinciden le ganan a la cap declarada
+
+MNST, APH y VMRK: acciones de EDGAR × nuestro cierre da **2×** la cap declarada
+por Finnhub, y acciones de Finnhub × nuestro cierre da **también 2×**. Los dos
+conteos concuerdan entre sí; la que se sale es la cap declarada — el patrón de un
+split que la cap no reflejó.
+
+Regla (Lety, 2026-09-29): si los dos conteos coinciden dentro de
+`UMBRAL_ACUERDO_ACCIONES_PCT = 5`, se verifica con `calc: edgar×neon` y la cap
+declarada se **descarta**, diciéndolo: *"cap declarada de Finnhub descartada: dos
+conteos de acciones coinciden (EDGAR 2080.0M y Finnhub 2075.0M, 0.2% de
+diferencia, techo 5%)"*. Esto va **antes** del contraste contra la declarada,
+porque cuando los conteos concuerdan la declarada ya no es el árbitro: es el
+sospechoso. El desajuste con ella queda reportado igual — es lo que explica por
+qué la fuente dice `edgar`.
+
+**Tres techos, tres constantes, y el número repetido no los unifica:** G2 = 5%
+(cap declarada contra cap reconstruida), EDGAR = 10% (portada del trimestre
+contra cierre de hoy), acuerdo de conteos = 5% (dos conteos de acciones).
+`UMBRAL_ACUERDO_ACCIONES_PCT` coincide en número con el de G2 y sigue siendo su
+propia constante: unificarlas es cómo se pierde de vista cuál se está aflojando.
+Hay una prueba que se pone roja si alguien las junta.
+
+Una honestidad sobre "independientes": no sabemos de dónde saca Finnhub su
+`shareOutstanding`, y bien puede venir de los mismos filings. Lo que hace segura
+la regla no es la independencia de las fuentes — es que el número que se **pinta**
+sigue siendo el nuestro, `acciones × nuestro cierre`, y nunca la cap declarada.
+
+### 12.2 Una portada no puede ser de otra época
+
+CMCSA resolvió con una portada del **2009-12-31**: era lo más nuevo que su
+concepto traía, y el lector tomó lo más reciente sin preguntarse si eso era
+reciente. Un conteo de hace 17 años por el cierre de hoy es un número inventado
+con dos datos reales.
+
+`MAX_MESES_PORTADA = 15` (un año fiscal más el trimestre de gracia para
+presentarlo). Pasado eso, gris con la causa diciendo **de qué año** es lo único
+que EDGAR tiene: *"EDGAR sólo tiene portada de 2009 (2009-12-31, 201 meses)"*. La
+fecha viaja igual en el resultado, porque es el dato accionable. El borde (15
+meses justos pasan, 16 no) está probado, para que mover el número sea una
+decisión y no un efecto secundario.
+
+### 12.3 BE: `units: {shares: object}`
+
+La huella decía `units: objeto con {shares: object}`. Después de #260 el lector ya
+no reventaba, pero tampoco entendía la forma: devolvía cero filas porque sólo
+sabía leer arreglos. Un **objeto** de hechos también es una colección de hechos,
+así que `filasDeUnits` ahora lo acepta vía `Object.values`, validando que lo de
+dentro tenga pinta de hecho (`val` con `end` o `form`) antes de tratarlo como
+tal — un diccionario cualquiera no se convierte en hechos por tener valores.
+
+Y dos cosas para no volver a adivinar la forma:
+
+- la huella dice también **las claves** del objeto (`objeto con claves
+  {label|description}`), porque `shares: object` no alcanzó para entender qué
+  llegó;
+- el job trae `muestra_cruda`: la respuesta **recortada a 600 caracteres**, sólo
+  para los símbolos que fallan. Es lo único que contesta "¿qué llegó?" cuando la
+  forma no se entiende, y desde el contenedor donde se construye esto no hay
+  salida a sec.gov para mirarla de otro modo.
+
+### 12.4 BX: varias clases de acciones
+
+BX presenta una línea de portada por clase, y `companyconcept` no dice de qué
+clase es cada hecho — la clase vive en el contexto XBRL, que por esa API no
+viaja. Varios conteos **distintos** para la **misma** portada (mismo `end` y
+mismo `filed`) significan que tomar el primero cuenta de menos y sumarlos es
+adivinar que están todos y sin repetir. Ninguna de las dos: gris con la causa y
+los conteos que EDGAR dio. El mismo conteo repetido en varios filings **no** es
+varias clases, y confundirlos mandaría a gris a media bolsa.
+
+### 12.5 VALE: descartar no es borrar
+
+La captura de Yahoo resultó vieja (fechada 2026-09-18, con la cap que no
+corresponde al precio con el que se leyó). La fila **no se borra**: qué se
+capturó, cuándo y por qué se descartó es parte de la procedencia. Lleva
+`descartada: { en, porque }`, el cuadro va gris con esa causa —*"la referencia
+manual se descartó el 2026-09-29: … Esperando recaptura"*— y **no** cuenta como
+hallazgo: es un insumo que hay que volver a capturar.
+
+Vencer (`vigente_hasta`) y descartar son cosas distintas: vencer es una tarea y
+no apaga el cuadro, porque la razón del ADR es estructural; descartar dice que el
+dato quedó mal, y con un dato mal no se pinta.
+
+### 12.6 De paso: el margen de las letras es proporcional
+
+El Chromium encontró un cuadro de 22.6 × 46 —1,044px², sobre el umbral de 900—
+mudo: con 4px de margen por lado se le iba un tercio del ancho en aire y su
+ticker (14.9px a 8px) no entraba en los 14.6px que le quedaban. Cuatro píxeles
+son aire en un cuadro de 200 y un tercio del cuadro en uno de 23, así que el
+margen ahora es `max(1, min(4, 9% del ancho))`. Ese cuadro pasó de mudo a llevar
+su ticker a 10px.
+
+`anchoTexto` **estima** el ancho, y el margen proporcional le quita holgura a la
+estimación, así que hay una comprobación nueva que mide con la **fuente real**:
+"ninguna etiqueta se desborda de su cuadro". Si una se saliera, el navegador la
+recortaría, y media palabra no es información: es ruido con forma de información.
+
+## 13. Backlog de R1 — lo que quedó anotado y sin hacer
+
+Cosas decididas, no urgentes, y que sin estar escritas se pierden. (La primera
+la fijó Lety el 2026-09-25 y hasta hoy no estaba en ningún archivo, que es
+exactamente el problema que esta sección resuelve.)
+
+| # | qué | por qué está pendiente |
+| :-- | :--- | :--- |
+| 1 | **Acciones de NVO desde el 20-F** | NVO tiene dos clases (A y B) y la razón cruda daba 0.748. Queda gris con causa hasta que el conteo salga del 20-F, que sí las separa. |
+| 2 | **Acciones de BX por clase** | Igual que arriba pero desde el 10-Q: `companyconcept` no dice de qué clase es cada hecho de portada. Hay que leer la portada del filing, no la API de conceptos. |
+| 3 | **Recaptura de VALE** | La captura del 2026-09-23 quedó descartada (§12.5). Gris hasta que llegue la nueva. |

@@ -499,3 +499,150 @@ test('un sector entero sin verificadas cae al mínimo global, y todo gris es una
   assert.equal(solas.verificadas, 0);
   assert.deepEqual(solas.grupos[0].items.map((i) => i.area), [1, 1]);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// LAS LETRAS ESCALAN CON EL CUADRO
+//
+// Con la talla fija de 13px, V, MA, JNJ, ABBV, BAC, GS y GOOGL salían SIN el %
+// teniendo espacio de sobra, y los medianos sin nada. Tener sitio y no usarlo es
+// tan malo como no tenerlo: el cuadro más grande de la pantalla es el que más
+// puede decir.
+// ═══════════════════════════════════════════════════════════════════════
+test('un cuadro grande usa letra grande y lleva las dos líneas', () => {
+  const e = TM.etiquetaCuadro(120, 80, { ticker: 'GOOGL', pct: '+20.9%' });
+  assert.equal(e.font, 18, 'el techo es 18px');
+  assert.equal(e.ticker, 'GOOGL');
+  assert.equal(e.pct, '+20.9%');
+  assert.ok(e.font_pct < e.font, 'el % va una talla menor');
+});
+
+test('la talla BAJA para que entren las dos líneas, en vez de quedarse sin %', () => {
+  // 30×30: a 18px no caben dos líneas, pero a 9px sí. Antes esto salía con
+  // ticker de 13 y sin %.
+  const e = TM.etiquetaCuadro(30, 30, { ticker: 'GS', pct: '+2.0%' });
+  assert.ok(e.pct, 'lleva el %');
+  assert.ok(e.font < 18 && e.font >= 8, `font ${e.font}`);
+});
+
+test('si no caben dos líneas a ninguna talla, va el ticker con la más grande que entre', () => {
+  // Ancho de sobra, alto para una sola línea.
+  const e = TM.etiquetaCuadro(60, 15, { ticker: 'V', pct: '+1.1%' });
+  assert.equal(e.ticker, 'V');
+  assert.equal(e.pct, null);
+  assert.equal(e.font, 15, 'la más grande que cabe en 15px de alto');
+});
+
+test('si no cabe ni a 8px, el cuadro va de color y sin texto', () => {
+  // Con el margen proporcional hace falta un cuadro más chico que antes para
+  // quedarse mudo, y eso es el arreglo funcionando: un ticker de 3 letras mide
+  // 14.9px a 8px, así que en 10px de ancho no entra ni con 1px de margen.
+  assert.equal(TM.etiquetaCuadro(10, 8, { ticker: 'BEE', pct: '0.0%' }).ticker, null);
+  assert.equal(TM.etiquetaCuadro(3, 3, { ticker: 'XX', pct: '0.0%' }).ticker, null);
+  // Alto insuficiente también manda al color solo, aunque el ancho dé.
+  assert.equal(TM.etiquetaCuadro(200, 6, { ticker: 'AAPL', pct: '0.0%' }).ticker, null);
+});
+
+test('un cuadro angosto CON sitio lleva su ticker: el margen es proporcional', () => {
+  // El caso que el Chromium encontró el 2026-09-29: un cuadro de 22.6 × 46
+  // (1,044px², sobre el umbral de 900) se quedaba mudo porque 4px de margen por
+  // lado le comían un tercio del ancho. `S58` mide 14.9px a 8px y le quedaban
+  // 14.6. Cuatro píxeles son aire en un cuadro de 200 y un tercio del cuadro en
+  // uno de 23.
+  const e = TM.etiquetaCuadro(22.6, 46, { ticker: 'S58', pct: '-1.2%' });
+  assert.equal(e.ticker, 'S58');
+  // Y no apenas a 8px: con el margen chico del ticker le alcanza para 11, que
+  // es la escalera aprovechando el sitio que el margen fijo desperdiciaba.
+  assert.ok(e.font >= 8, `${e.font}`);
+  assert.equal(e.font, 11);
+  // Y sigue habiendo margen: el texto no toca el borde.
+  assert.ok(TM.anchoTexto('S58', e.font) < 22.6 - 2, 'queda aire a los dos lados');
+  // En un cuadro ancho el margen sigue siendo 4: lo proporcional tiene tope.
+  assert.equal(TM.etiquetaCuadro(200, 60, { ticker: 'AAPL', pct: '+1.0%' }).font, 18);
+});
+
+test('la escala es monótona: un cuadro más grande nunca lleva letra más chica', () => {
+  let anterior = 0;
+  for (const w of [30, 40, 60, 90, 140, 200]) {
+    const e = TM.etiquetaCuadro(w, w, { ticker: 'AAPL', pct: '+1.0%' });
+    assert.ok(e.font >= anterior, `${w}px bajó de ${anterior} a ${e.font}`);
+    anterior = e.font;
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA CAPITALIZACIÓN SE LEE, NO SE DESCIFRA
+//
+// La hoja decía "5.51 B" para NVDA: en inglés "B" es billion —mil millones—, y
+// en español billón es 10¹². Mil veces de diferencia en el número más grande de
+// la pantalla, sin forma de saber cuál era. Y "790.8 mm" no existe fuera de esa
+// pantalla.
+// ═══════════════════════════════════════════════════════════════════════
+test('qdCap escribe la escala en español y con la moneda', () => {
+  assert.equal(QD.qdCap(5.51e12, 'USD'), '5.51 billones USD');
+  assert.equal(QD.qdCap(790.8e9, 'MXN'), '790.8 mil millones MXN');
+  assert.equal(QD.qdCap(60.5e9, 'USD'), '60.5 mil millones USD');
+});
+
+test('qdCap no dice "0" cuando no hay dato: dice "—"', () => {
+  // `Number(null)` es 0 y `Number.isFinite(0)` es true: preguntar sólo por
+  // finitud devolvía "0 USD" para una cap que nadie midió.
+  for (const v of [null, undefined, 0, NaN, '']) assert.equal(QD.qdCap(v, 'USD'), '—', `valor ${String(v)}`);
+});
+
+test('qdCap usa el singular cuando toca', () => {
+  assert.equal(QD.qdCap(1e12, 'USD'), '1.00 billón USD');
+  assert.equal(QD.qdCap(1e6, 'MXN'), '1.0 millón MXN');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL TICKER BAJA MÁS QUE EL %
+//
+// "Quiero que TODOS los cuadros lleven su ticker" (Lety, 2026-09-29). Un cuadro
+// sin letra es un color que no se puede nombrar: se ve, se toca, y no se sabe de
+// quién es. El % es otra cosa — es un número que se lee, y uno de 6px no se lee:
+// se adivina. Así que el piso del ticker baja a 6 y el de las dos líneas se
+// queda en 8.
+// ═══════════════════════════════════════════════════════════════════════
+test('el ticker llega a 6px donde las dos líneas ya no caben', () => {
+  const chico = { ticker: 'S58', pct: '-1.2%', fontMin: 6 };
+  const e = TM.etiquetaCuadro(14, 14, chico);
+  assert.equal(e.ticker, 'S58');
+  assert.equal(e.font, 6);
+  assert.equal(e.pct, null, 'un % de 4px no se lee: se adivina');
+  // Con el piso viejo (8) ese mismo cuadro salía mudo.
+  assert.equal(TM.etiquetaCuadro(14, 14, { ticker: 'S58', pct: '-1.2%' }).ticker, null);
+});
+
+test('el % nunca baja del piso de las dos líneas, aunque el ticker sí', () => {
+  // `fontMinDos` es 8 por defecto: las dos líneas no se intentan por debajo de
+  // ahí, así que el % nunca sale a menos de 7px (una talla menor que 8).
+  for (let w = 10; w <= 400; w += 3) {
+    for (let h = 6; h <= 120; h += 3) {
+      const e = TM.etiquetaCuadro(w, h, { ticker: 'AAPL', pct: '+12.3%', fontMin: 6 });
+      if (e.pct != null) {
+        assert.ok(e.font >= 8, `${w}×${h}: ticker de ${e.font}px con %`);
+        assert.ok(e.font_pct >= 7, `${w}×${h}: % de ${e.font_pct}px`);
+      }
+      if (e.ticker != null) assert.ok(e.font >= 6, `${w}×${h}: ticker de ${e.font}px`);
+    }
+  }
+});
+
+test('el margen del ticker es 1px, y el de las dos líneas sigue siendo el proporcional', () => {
+  // 'S58' a 6px mide 10.84px con el factor medido. Con 1px por lado entra en
+  // 12.84; con el margen proporcional de un cuadro de 13px (1px) también.
+  assert.equal(TM.etiquetaCuadro(13, 10, { ticker: 'S58', fontMin: 6 }).ticker, 'S58');
+  // Y por debajo de lo que mide su propio ticker, no se dibuja: recortar a
+  // mitad de palabra está prohibido.
+  assert.equal(TM.etiquetaCuadro(12, 10, { ticker: 'S58', fontMin: 6 }).ticker, null);
+});
+
+test('el factor de ancho es el MEDIDO con la fuente real, no un número a ojo', () => {
+  // Medido en el Chromium del repo: 0.6022 de la talla por caracter, estable de
+  // 6px a 18px. 'AAPL' a 6px mide 14.45px, no 14.88.
+  assert.ok(Math.abs(TM.anchoTexto('AAPL', 6) - 14.45) < 0.02, `${TM.anchoTexto('AAPL', 6)}`);
+  assert.ok(Math.abs(TM.anchoTexto('V', 18) - 10.84) < 0.02, `${TM.anchoTexto('V', 18)}`);
+  // Sobreestimar sigue siendo más seguro que subestimar, así que el factor no
+  // puede bajar del real.
+  assert.ok(TM.anchoTexto('AAPL', 6) >= 14.45);
+});

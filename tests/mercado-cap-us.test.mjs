@@ -58,11 +58,25 @@ test('aunque la moneda sea USD, un desajuste >5% sale gris', () => {
 });
 
 // ── FALLAR CERRADO ─────────────────────────────────────────────────────
-test('moneda desconocida NO se asume USD', () => {
+test('moneda desconocida NO se asume USD, y la causa nombra la fuente', () => {
   // Suponer USD es exactamente la suposición que rompió el mapa.
-  const v = veredictoCapUs({ symbol: 'X', declarada: 1_000, acciones: 10, precio_usd: 100 });
+  // XNDU (Xanadu Quantum Technologies, XLK) es el caso real: su cap entró por
+  // `neon:arena_market_cap`, un camino que nunca guardó `profile2.currency`.
+  // Decisión de Lety del 2026-09-26: NO sale del universo, se dibuja gris con
+  // la causa dicha. Y la causa nombra de dónde vino la cap, para no acusar a
+  // Finnhub de un dato que no dio él.
+  const v = veredictoCapUs({
+    symbol: 'XNDU', declarada: 3_200, acciones: 290, precio_usd: 11,
+    fuente_declarada: 'neon:arena_market_cap',
+  });
   assert.equal(v.estado, 'gris_punteado');
-  assert.match(v.motivo, /no se sabe en qué moneda/);
+  assert.equal(v.cap_usd, null);
+  assert.match(v.motivo, /sin moneda declarada por Finnhub/);
+  assert.match(v.motivo, /neon:arena_market_cap/);
+
+  // Sin fuente declarada no se inventa un paréntesis vacío.
+  const sinFuente = veredictoCapUs({ symbol: 'X', declarada: 1_000, acciones: 10, precio_usd: 100 });
+  assert.equal(sinFuente.motivo, 'sin moneda declarada por Finnhub');
 });
 
 test('una sola fuente nunca se verifica a sí misma', () => {
@@ -231,8 +245,11 @@ test('cuando Finnhub no concuerda, EDGAR decide y la fuente lo dice', () => {
 });
 
 test('si EDGAR tampoco cuadra, gris con las DOS causas', () => {
+  // Los dos conteos de acciones DISCREPAN acá (80M contra 100M, 25%): si
+  // coincidieran, la regla del 2026-09-29 descartaría la cap declarada y esto
+  // se verificaría, que es lo que prueba el bloque de MNST/APH/VMRK más abajo.
   const v = veredictoCapUs({
-    symbol: 'VMRK', moneda: 'USD', declarada: 10_000, acciones: 100, precio_usd: 46,
+    symbol: 'VMRK', moneda: 'USD', declarada: 10_000, acciones: 80, precio_usd: 46,
     edgar: { acciones: 100_000_000, fecha_portada: '2025-07-31' },
   });
   assert.equal(v.estado, 'gris_punteado');
@@ -291,4 +308,309 @@ test('cierreHasta toma el último cierre en o antes de la fecha, nunca uno poste
   // Sábado: cae al viernes, no al lunes siguiente.
   assert.deepEqual(cierreHasta(filas, '2026-09-24'), { fecha: '2026-09-23', cierre: 12 });
   assert.equal(cierreHasta(filas, '2026-09-20'), null);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA FILA DE EDGAR QUE NO EXISTÍA — `num(null) === 0`, CUARTA VEZ
+//
+// El mapa decía de ORCL, MNST y APH "EDGAR no dio acciones en circulación" sin
+// que EDGAR hubiera sido consultado nunca: el job había muerto antes. La causa
+// era doble y las dos mitades se prueban acá.
+//
+// Mitad 1: `filaVeredictoCapUs` preguntaba `num(acciones_edgar_millones) != null`
+// y `num(null)` devuelve **0** —`Number(null)` es 0—, así que la columna vacía
+// entraba como "EDGAR dio 0 acciones" para las 569 emisoras. Peor que la causa
+// falsa: `veredictoCapEdgar` devuelve `auditable: false` sin acciones, así que
+// los 21 hallazgos en USD se contaron como "insumos que faltan" y la auditoría
+// reportó 3 donde había 21.
+//
+// Mitad 2: aunque el guardia estuviera bien, la columna vacía no distingue
+// "todavía no se preguntó" de "se preguntó y no había".
+// ═══════════════════════════════════════════════════════════════════════
+import { ventanaDeCierres, razonesPorCierre, TOLERANCIA_RAZON_PCT } from '../api/_lib/mercado-cap-us.js';
+import REFERENCIAS from '../api/_lib/mercado-cap-us-referencia.json' with { type: 'json' };
+
+// ORCL tal como sale de la tabla el día que el job de EDGAR no corrió.
+const ORCL = {
+  symbol: 'ORCL', market_cap: 1.05e12, cap_moneda: 'USD', cap_fuente: 'finnhub:metric',
+  acciones_millones: 2_800, acciones_edgar_millones: null, acciones_edgar_portada: null,
+  edgar_consultada_en: null, edgar_consulta_motivo: null,
+};
+
+test('una columna de EDGAR vacía NO fabrica una fila de EDGAR con 0 acciones', () => {
+  const fila = filaVeredictoCapUs(ORCL, { precio_usd: 420, referencias: new Map() });
+  assert.equal(fila.edgar, null, 'null, no {acciones: 0}');
+  // Y el 0 explícito tampoco: un conteo de cero acciones no es un conteo.
+  assert.equal(filaVeredictoCapUs({ ...ORCL, acciones_edgar_millones: 0 }, { precio_usd: 420 }).edgar, null);
+  // Un conteo de verdad sí pasa, en acciones y no en millones.
+  const conDato = filaVeredictoCapUs({ ...ORCL, acciones_edgar_millones: 2_818 }, { precio_usd: 420 });
+  assert.equal(conDato.edgar.acciones, 2_818_000_000);
+});
+
+test('sin consulta a EDGAR la causa es la TAREA, y el hallazgo sigue contando como hallazgo', () => {
+  const v = veredictoCapUs(filaVeredictoCapUs(ORCL, { precio_usd: 420, referencias: new Map() }));
+  assert.equal(v.estado, 'gris_punteado');
+  assert.equal(v.edgar_estado, 'no_consultado');
+  assert.match(v.motivo, /difiere -10\.7% de acciones×precio/);
+  assert.match(v.motivo, /pendiente de consulta a EDGAR/);
+  assert.doesNotMatch(v.motivo, /EDGAR no dio/, 'no se acusa a quien no se le preguntó');
+  // ÉSTE es el que hizo que la auditoría dijera 3 donde había 21: un desajuste
+  // medido es un hallazgo, esté pendiente o no la segunda opinión.
+  assert.equal(v.auditable, true);
+});
+
+test('consultado y sin dato dice cuándo se preguntó, y no se confunde con lo anterior', () => {
+  const v = veredictoCapUs(filaVeredictoCapUs({
+    ...ORCL,
+    edgar_consultada_en: '2026-09-27T14:03:00.000Z',
+    edgar_consulta_motivo: 'EDGAR no reporta dei:EntityCommonStockSharesOutstanding para este CIK (404)',
+  }, { precio_usd: 420, referencias: new Map() }));
+  assert.equal(v.edgar_estado, 'consultado_sin_dato');
+  assert.equal(v.edgar_consultada_en, '2026-09-27');
+  assert.match(v.motivo, /EDGAR consultado el 2026-09-27 y no dio acciones/);
+  assert.match(v.motivo, /404/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// CONTRA QUÉ DÍA — EL INSTRUMENTO
+//
+// #259 puso el contraste contra el cierre de `capturada_en`, y funcionó: VALE
+// pasó de 0.999 (cierre del 25) a 1.043 (cierre del 18), que es exactamente lo
+// que significa cambiar de ancla. Lo que quedó al descubierto es que no sabemos
+// con qué precio calculó Yahoo su cap intradía. La ventana lo contesta con
+// datos en vez de con una corazonada, y NO afloja el techo.
+// ═══════════════════════════════════════════════════════════════════════
+const SERIE = [
+  { fecha: '2026-09-15', cierre: 9.2 }, { fecha: '2026-09-16', cierre: 9.4 },
+  { fecha: '2026-09-17', cierre: 9.6 }, { fecha: '2026-09-18', cierre: 9.8 },
+  { fecha: '2026-09-21', cierre: 10.0 }, { fecha: '2026-09-22', cierre: 10.1 },
+  { fecha: '2026-09-23', cierre: 10.2 }, { fecha: '2026-09-25', cierre: 10.23 },
+];
+
+test('la ventana toma sesiones a los DOS lados de la captura', () => {
+  const v = ventanaDeCierres(SERIE, '2026-09-18', 2);
+  assert.deepEqual(v.map((f) => f.fecha), ['2026-09-17', '2026-09-18', '2026-09-21', '2026-09-22']);
+  // Una fecha que no existe en la serie no rompe nada: se ubica entre las que sí.
+  assert.deepEqual(ventanaDeCierres(SERIE, '2026-09-19', 1).map((f) => f.fecha), ['2026-09-18', '2026-09-21']);
+  assert.deepEqual(ventanaDeCierres(SERIE, null, 2), []);
+});
+
+test('la ventana dice si hay un día que reconcilia, y cuál', () => {
+  // Una referencia que cuadra 1:1 contra el cierre del 22 y contra ninguno de
+  // los de la semana anterior.
+  const r = razonesPorCierre(ventanaDeCierres(SERIE, '2026-09-18', 5), {
+    cap_referencia_usd: 10.1 * 6_000 * 1e6, acciones_millones: 6_000,
+  });
+  assert.equal(r.alguno_dentro, true);
+  assert.equal(r.mejor.fecha, '2026-09-22');
+  assert.ok(r.mejor.error_pct < 0.01);
+  const dentro = r.filas.filter((f) => f.dentro).map((f) => f.fecha);
+  assert.deepEqual(dentro, ['2026-09-21', '2026-09-22', '2026-09-23', '2026-09-25']);
+  // Y el del 18 queda fuera con su número, que es el dato que hacía falta.
+  const d18 = r.filas.find((f) => f.fecha === '2026-09-18');
+  assert.ok(d18.error_pct > TOLERANCIA_RAZON_PCT, `${d18.error_pct}`);
+});
+
+test('si NINGÚN día reconcilia, la ventana lo dice: el problema es la referencia', () => {
+  const r = razonesPorCierre(ventanaDeCierres(SERIE, '2026-09-18', 5), {
+    // Una cap 40% arriba de cualquier acciones×precio de la ventana: no hay
+    // proporción de ADR que la explique ningún día.
+    cap_referencia_usd: 10.1 * 6_000 * 1e6 * 1.4, acciones_millones: 6_000,
+  });
+  assert.equal(r.alguno_dentro, false);
+  assert.ok(r.mejor.error_pct > TOLERANCIA_RAZON_PCT);
+});
+
+test('el veredicto sigue usando UN cierre: el de capturada_en, no el que mejor queda', () => {
+  // La ventana informa; no elige. Si el elegido no cuadra, gris con su causa.
+  const usado = cierreHasta(SERIE, '2026-09-18');
+  assert.equal(usado.fecha, '2026-09-18');
+  const v = veredictoCapUs({
+    symbol: 'VALE', moneda: 'BRL', declarada: 300_000, acciones: 6_000,
+    precio_usd: 10.23, precio_captura: usado.cierre,
+    referencia: { market_cap_usd: 10.1 * 6_000 * 1e6, capturada_en: '2026-09-18', vigente_hasta: '2026-12-31' },
+    hoy: new Date('2026-09-27'),
+  });
+  assert.equal(v.estado, 'gris_punteado');
+  assert.match(v.motivo, /no se parece a ninguna proporción/);
+});
+
+// ── LA FECHA DE CAPTURA DE VALE ────────────────────────────────────────
+test('capturada_en es el día en que se LEYÓ la cap, y el sello de Yahoo va aparte', () => {
+  // Las cuatro se capturaron el 2026-09-23 al cierre (mensaje de Lety del
+  // 2026-09-24). El 2026-09-18 era lo que Yahoo ESTAMPABA en la cotización de
+  // VALE y estaba guardado por error como fecha de captura, lo que mandaba la
+  // razón a despejarse contra un cierre 4.3% más bajo.
+  const vale = REFERENCIAS.referencias.find((r) => r.clave === 'VALE');
+  assert.equal(vale.capturada_en, '2026-09-23');
+  assert.equal(vale.cotizacion_marcada_en, '2026-09-18');
+  for (const r of REFERENCIAS.referencias) {
+    assert.equal(r.capturada_en, '2026-09-23', `${r.clave}: todas se leyeron el mismo día`);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL PRECIO VIAJA CON LA CAP — Y ASÍ NO HAY FECHA QUE ELEGIR
+//
+// Dos intentos, dos fallas, la MISMA causa: la razón del ADR se despejaba
+// contra un cierre NUESTRO y había que adivinar cuál. Con el cierre de hoy,
+// ASML daba 1.023 porque el mercado se movió entre el 23 y el 25. Con el cierre
+// de `capturada_en`, VALE daba 1.043 porque el sello de la cotización de Yahoo
+// venía atrasado. Ninguna de las dos era un problema de la emisora.
+//
+// Yahoo muestra "Market Cap (intraday)" y "price" en la misma pantalla y al
+// mismo instante. Guardando los DOS, la razón sale de una fuente coherente
+// consigo misma y no depende de ningún cierre. Decisión de Lety, 2026-09-27.
+// ═══════════════════════════════════════════════════════════════════════
+
+// Las cuatro referencias reales, con el precio que Lety leyó junto a la cap.
+// Por defecto SIN el descarte: estas pruebas miden la aritmética de la razón.
+// Que VALE esté descartada hoy se prueba aparte, contra la fila de verdad.
+const REF = (clave) => {
+  const r = REFERENCIAS.referencias.find((x) => x.clave === clave);
+  const { descartada, ...resto } = r;
+  return { ...resto, vigente_hasta: '2026-12-31' };
+};
+
+test('las cuatro referencias traen el precio con el que se leyó la cap', () => {
+  const esperado = { TSM: 446.57, NVO: 39.80, VALE: 14.21, ASML: 1722.50 };
+  for (const [clave, px] of Object.entries(esperado)) {
+    assert.equal(REF(clave).precio_referencia, px, clave);
+    assert.equal(REF(clave).capturada_en, '2026-09-23', `${clave}: se leyeron las cuatro el mismo día`);
+  }
+});
+
+test('LA DIRECCIÓN: la razón cuenta ORDINARIAS POR ADR, no lo contrario', () => {
+  // TSM es el único de los cuatro que la distingue: 1 ADR = 5 ordinarias.
+  // La cap de Yahoo (2.316e12) con su precio (446.57) implica 5,186.1M unidades
+  // de ADR; TSMC tiene 25,930M ordinarias. 25930 / 5186.1 = 5.
+  //
+  // Si alguien invierte la cuenta, la razón sale 1/5, `razonesPlausibles` la
+  // acepta igual porque 1/5 también es una proporción de ADR plausible, y el
+  // tamaño pintado —que DIVIDE por la razón— deja a TSM CINCO VECES más grande
+  // de lo que es. Que es exactamente el bug que la referencia existe para
+  // cerrar. Por eso esta prueba.
+  const v = veredictoCapUs({
+    symbol: 'TSM', moneda: 'TWD', declarada: 32_000_000, acciones: 25_930,
+    precio_usd: 451, precio_captura: 449.10, referencia: REF('TSM'), hoy: new Date('2026-09-27'),
+  });
+  assert.equal(v.estado, 'verificada');
+  assert.equal(v.razon_adr, 5, 'cinco ordinarias por ADR');
+  assert.equal(v.razon_etiqueta, '5:1');
+  assert.equal(v.cap_usd, (25_930 * MILLON * 451) / 5, 'el tamaño DIVIDE por la razón');
+  // Y el tamaño tiene que quedar en el orden de la cap de Yahoo, no 5× arriba.
+  assert.ok(v.cap_usd > 2.2e12 && v.cap_usd < 2.5e12, `${v.cap_usd}`);
+  assert.equal(v.razon_de, 'precio_referencia');
+  assert.equal(v.precio_referencia, 446.57);
+});
+
+test('VALE resuelve 1:1 sin que ningún cierre participe', () => {
+  // El caso que el sello atrasado de Yahoo rompía: acá el cierre de la captura
+  // ni se pasa, y la razón sale igual.
+  const acciones = 60_474_000_000 / 14.21 / MILLON;   // las que la cap implica
+  const v = veredictoCapUs({
+    symbol: 'VALE', moneda: 'BRL', declarada: 300_000, acciones: Math.round(acciones),
+    precio_usd: 13.55, precio_captura: null, referencia: REF('VALE'), hoy: new Date('2026-09-27'),
+  });
+  assert.equal(v.estado, 'verificada', v.motivo);
+  assert.equal(v.razon_etiqueta, '1:1');
+  assert.equal(v.razon_de, 'precio_referencia');
+  // El tamaño sigue siendo NUESTRO cierre de hoy, no el de la referencia.
+  assert.equal(v.cap_usd, Math.round(acciones) * MILLON * 13.55);
+});
+
+test('sin el cierre de la captura ya NO se pone gris: el precio de la referencia alcanza', () => {
+  // Antes, `precio_captura: null` era gris con "no tengo el cierre del …". Con
+  // `precio_referencia` ese gris desaparece, porque la razón no lo necesita.
+  const acciones = Math.round(661_612_000_000 / 1722.50 / MILLON);
+  const conPrecio = veredictoCapUs({
+    symbol: 'ASML', moneda: 'EUR', declarada: 560_000, acciones,
+    precio_usd: 1700, precio_captura: null, referencia: REF('ASML'), hoy: new Date('2026-09-27'),
+  });
+  assert.equal(conPrecio.estado, 'verificada', conPrecio.motivo);
+
+  // Y si la referencia NO trajera precio, el gris vuelve — con su causa, que
+  // ahora nombra las dos cosas que faltan.
+  const sinPrecio = veredictoCapUs({
+    symbol: 'ASML', moneda: 'EUR', declarada: 560_000, acciones,
+    precio_usd: 1700, precio_captura: null,
+    referencia: { ...REF('ASML'), precio_referencia: undefined }, hoy: new Date('2026-09-27'),
+  });
+  assert.equal(sinPrecio.estado, 'gris_punteado');
+  assert.match(sinPrecio.motivo, /no trae el precio con el que se leyó la cap/);
+});
+
+test('el cierre de la captura queda de CRUCE, y nunca decide', () => {
+  const acciones = Math.round(60_474_000_000 / 14.21 / MILLON);
+  const base = {
+    symbol: 'VALE', moneda: 'BRL', declarada: 300_000, acciones,
+    precio_usd: 13.55, referencia: REF('VALE'), hoy: new Date('2026-09-27'),
+  };
+  // Un cierre 9% abajo del precio de Yahoo —el caso del sello atrasado— NO
+  // cambia el veredicto. Sólo se reporta cuánto se separó.
+  const v = veredictoCapUs({ ...base, precio_captura: 12.93 });
+  assert.equal(v.estado, 'verificada');
+  assert.equal(v.cruce_cierre_captura, 12.93);
+  assert.ok(v.cruce_desvio_pct < -8 && v.cruce_desvio_pct > -10, `${v.cruce_desvio_pct}`);
+  // Con o sin cruce, el mismo tamaño y la misma razón.
+  assert.equal(v.cap_usd, veredictoCapUs({ ...base, precio_captura: null }).cap_usd);
+});
+
+test('si la razón no sale limpia, la causa apunta al CONTEO y da los dos números', () => {
+  // Lo que Lety dijo: "o el problema es de acciones, no de fecha". Con 392M
+  // ordinarias contra las 384.1M que implica la cap, el crudo da 1.0205 y el
+  // techo de 2% lo rechaza — y el motivo tiene que decir dónde mirar, no
+  // repetir que no se parece a una proporción.
+  const v = veredictoCapUs({
+    symbol: 'ASML', moneda: 'EUR', declarada: 560_000, acciones: 392,
+    precio_usd: 1700, precio_captura: 1715, referencia: REF('ASML'), hoy: new Date('2026-09-27'),
+  });
+  assert.equal(v.estado, 'gris_punteado');
+  assert.equal(v.cap_usd, null, 'sin tamaño antes que con uno inventado');
+  assert.match(v.motivo, /la fecha no es la causa/);
+  assert.match(v.motivo, /384\.1M acciones por ADR/);
+  assert.match(v.motivo, /392M ordinarias/);
+  assert.ok(Math.abs(v.acciones_implicitas_millones - 384.1) < 0.1, `${v.acciones_implicitas_millones}`);
+  // El techo NO se movió.
+  assert.equal(TOLERANCIA_RAZON_PCT, 2);
+});
+
+// ── VALE: LA CAPTURA QUE RESULTÓ VIEJA ─────────────────────────────────
+// Vencer es una TAREA y no apaga el cuadro (la razón del ADR es estructural).
+// Descartar es otra cosa: el dato quedó mal, y con un dato mal no se pinta.
+test('una referencia descartada no sostiene tamaño, y la fila no se borra', () => {
+  const vale = REFERENCIAS.referencias.find((r) => r.clave === 'VALE');
+  assert.ok(vale.descartada, 'la fila sigue ahí, con el descarte declarado');
+  assert.equal(vale.descartada.en, '2026-09-29');
+  assert.match(vale.descartada.porque, /2026-09-18/);
+  // Y los números capturados siguen guardados: son la procedencia de lo que se
+  // descartó, no basura a limpiar.
+  assert.equal(vale.market_cap_usd, 60_474_000_000);
+  assert.equal(vale.precio_referencia, 14.21);
+
+  const v = veredictoCapUs({
+    symbol: 'VALE', moneda: 'BRL', declarada: 300_000, acciones: 4_256,
+    precio_usd: 13.55, precio_captura: 14.05, referencia: vale, hoy: new Date('2026-09-29'),
+  });
+  assert.equal(v.estado, 'gris_punteado');
+  assert.equal(v.cap_usd, null);
+  // NO es un hallazgo: es un insumo que hay que volver a capturar.
+  assert.equal(v.auditable, false);
+  assert.match(v.motivo, /se descartó el 2026-09-29/);
+  assert.match(v.motivo, /Esperando recaptura/);
+  // Y no se cuela por el camino de la razón: ni siquiera se intenta.
+  assert.equal(v.razon_adr, undefined);
+});
+
+test('el acuerdo entre conteos llega al veredicto con las unidades correctas', () => {
+  // `acciones` viene en MILLONES de la tabla y el árbitro compara en ACCIONES.
+  // Si el adaptador no convierte, 2080 contra 2.08e9 no coinciden nunca.
+  const v = veredictoCapUs({
+    symbol: 'MNST', moneda: 'USD', declarada: 60_000, acciones: 2_075,
+    precio_usd: 57.7, edgar: { acciones: 2_080_000_000, fecha_portada: '2026-07-31' },
+  });
+  assert.equal(v.estado, 'verificada', v.motivo);
+  assert.equal(v.via, 'edgar_acuerdo_acciones');
+  assert.equal(v.cap_usd, 2_080_000_000 * 57.7);
+  assert.match(v.nota, /dos conteos de acciones coinciden/);
 });

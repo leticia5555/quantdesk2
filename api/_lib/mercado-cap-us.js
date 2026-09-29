@@ -33,7 +33,7 @@
 // cuál fue: ~32× huele a tipo de cambio, ~5× a ratio de ADR, ~1e6 a unidades.
 // ═══════════════════════════════════════════════════════════════════════
 import { CRITERIOS, errorPct } from './mercado-fase0.js';
-import { veredictoCapEdgar } from './mercado-edgar.js';
+import { veredictoCapEdgar, estadoEdgar } from './mercado-edgar.js';
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 
@@ -212,54 +212,116 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   // no puede decir nada útil. La referencia de Yahoo despeja la razón y el
   // tamaño vuelve a ser NUESTRO cálculo con NUESTRO cierre.
   if (referencia) {
+    // ── UNA REFERENCIA DESCARTADA NO SE USA, Y NO SE BORRA ───────────────
+    // La captura de VALE resultó vieja: Yahoo la mostraba fechada el 18-sep y
+    // el número no corresponde al precio con el que se leyó. Descartarla NO es
+    // borrar la fila —el registro de qué se capturó y por qué se descartó es
+    // parte de la procedencia—: es dejar de sostener un tamaño con ella y
+    // decirlo, hasta que llegue la recaptura. Vencer es una tarea (no apaga el
+    // cuadro); descartar es otra cosa: el dato quedó mal, y con un dato mal no
+    // se pinta.
+    if (referencia.descartada) {
+      const d = referencia.descartada;
+      return {
+        ...base, estado: 'gris_punteado',
+        // No es un hallazgo: es un insumo que hay que volver a capturar.
+        auditable: false, cap_usd: null, error_pct: null, multiplo: null,
+        via: 'referencia_manual',
+        referencia_descartada_en: d.en || null,
+        motivo: `la referencia manual se descartó${d.en ? ` el ${d.en}` : ''}: ${d.porque || 'sin motivo declarado'}. Esperando recaptura`,
+      };
+    }
     const vig = referenciaVigente(referencia, hoy || new Date());
-    // EL CIERRE DEL DÍA DE LA CAPTURA, no el de hoy. La cap de Yahoo se leyó un
-    // día concreto; despejar la razón contra el precio de hoy mete el
-    // movimiento del mercado entre las dos fechas dentro de un número que
-    // debería ser estructural. Eso hizo fallar a ASML por 2.3%: razón cruda
-    // 1.023 con el cierre del 25 contra una cap del 23. Es la misma regla de
-    // #248: una referencia se contrasta contra el dato de SU fecha.
+    // ── EL PRECIO VIAJA CON LA CAP, Y ASÍ LA RAZÓN NO DEPENDE DE NINGÚN CIERRE ──
     //
-    // Y es el cierre SIN AJUSTAR, porque es el que Yahoo usó para su cap. El
-    // ajustado se reescribe hacia atrás con cada split y haría que la razón
-    // cambiara sola meses después.
+    // Yahoo muestra "Market Cap (intraday)" y "price" en la misma pantalla, al
+    // mismo instante. Si se guardan los DOS, la razón del ADR sale de una sola
+    // fuente coherente consigo misma:
+    //
+    //     ordinarias por ADR = (acciones × precio_referencia) ÷ cap_referencia
+    //
+    // y no hay ninguna fecha que elegir. Las dos versiones anteriores dependían
+    // de un cierre nuestro y las dos fallaron por la misma razón: con el cierre
+    // de hoy, ASML daba 1.023 porque el mercado se movió entre el 23 y el 25;
+    // con el cierre de `capturada_en`, VALE daba 1.043 porque el sello de la
+    // cotización de Yahoo venía atrasado. Ninguna de las dos era un problema de
+    // la emisora: eran dos maneras de adivinar con qué precio calculó Yahoo.
+    // Con `precio_referencia` no se adivina.
+    //
+    // OJO CON LA DIRECCIÓN, que se puede invertir sin que nada se queje: esta
+    // razón cuenta ORDINARIAS POR ADR (TSM da 5, no 1/5), y es la que el tamaño
+    // pintado DIVIDE. Invertirla dejaría a TSM cinco veces más grande de lo que
+    // es, que es exactamente el bug que la referencia existe para cerrar. El
+    // caso 1:1 no distingue las dos direcciones, así que hay una prueba con TSM.
+    //
+    // El cierre de `capturada_en` queda como CRUCE INFORMATIVO: dice cuánto se
+    // movió el precio entre la captura y nuestro cierre de ese día, y nunca
+    // decide nada.
+    const pxRef = num(referencia.precio_referencia);
+    const conPrecioRef = pxRef != null && pxRef > 0;
     const r = razonAdr({
       cap_referencia_usd: referencia.market_cap_usd,
       acciones_millones: entrada.acciones,
-      precio_usd: entrada.precio_captura,
+      precio_usd: conPrecioRef ? pxRef : entrada.precio_captura,
     });
-    // Sin ese cierre no se despeja nada: gris con la causa, nunca con el precio
-    // de hoy como sustituto silencioso.
-    // `num(null)` da 0, no null —Number(null) es 0—, así que preguntar por
-    // `== null` dejaba pasar el caso. Lo que de verdad hace falta es un cierre
-    // POSITIVO.
-    if (!(num(entrada.precio_captura) > 0)) {
+
+    // Sin precio de referencia se cae al cierre de la captura, y ahí sí hace
+    // falta tenerlo: gris con la causa, nunca el precio de hoy como sustituto
+    // silencioso. (`num(null)` da 0 —`Number(null)` es 0—, así que el guardia
+    // pregunta por un número POSITIVO.)
+    if (!conPrecioRef && !(num(entrada.precio_captura) > 0)) {
       return {
         ...base, estado: 'gris_punteado', auditable: false, cap_usd: null, error_pct: null, multiplo: null,
         via: 'referencia_manual',
-        motivo: `no tengo el cierre del ${referencia.capturada_en || 'día de la captura'} para despejar la razón del ADR`,
+        motivo: `la referencia no trae el precio con el que se leyó la cap y tampoco tengo el cierre del ${referencia.capturada_en || 'día de la captura'} para despejar la razón del ADR`,
       };
     }
+
+    // CUÁNTAS ACCIONES IMPLICA LA CAP DE YAHOO. Si la razón no sale limpia con
+    // el precio de referencia, la fecha ya no puede ser la culpable: lo que
+    // queda es el conteo de acciones, y este par de números lo dice sin
+    // interpretación. Se reporta SIEMPRE, no sólo cuando falla.
+    const implicitas = conPrecioRef ? num(referencia.market_cap_usd) / pxRef / MILLON : null;
+    const desajusteAcciones = implicitas != null && num(entrada.acciones) > 0
+      ? ((num(entrada.acciones) / (implicitas * (r.razon_cercana || 1))) - 1) * 100
+      : null;
+    const procedencia = {
+      via: 'referencia_manual',
+      razon_de: conPrecioRef ? 'precio_referencia' : 'cierre_de_captura',
+      precio_referencia: conPrecioRef ? pxRef : null,
+      // El cruce: nuestro cierre del día de la captura contra el precio que
+      // Yahoo mostraba. Informativo, y por eso viaja aparte del veredicto.
+      cruce_cierre_captura: num(entrada.precio_captura) > 0 ? num(entrada.precio_captura) : null,
+      cruce_desvio_pct: conPrecioRef && num(entrada.precio_captura) > 0
+        ? ((num(entrada.precio_captura) / pxRef) - 1) * 100 : null,
+      acciones_implicitas_millones: implicitas,
+      acciones_desajuste_pct: desajusteAcciones,
+      referencia_fuente: referencia.fuente || null,
+      referencia_capturada_en: referencia.capturada_en || null,
+      // Vencida NO es gris: es una tarea. El cuadro se sigue dibujando con la
+      // razón y esto es lo que la hace aparecer en cron-status.
+      referencia_a_recapturar: vig.a_recapturar === true,
+      referencia_vigente_hasta: vig.vigente_hasta,
+    };
+
     if (r.ok) {
       return {
-        ...base, estado: 'verificada', auditable: true,
+        ...base, ...procedencia, estado: 'verificada', auditable: true,
         cap_usd: (num(entrada.acciones) * MILLON * num(entrada.precio_usd)) / r.razon,
         error_pct: r.error_pct, multiplo: null,
-        via: 'referencia_manual', razon_adr: r.razon, razon_etiqueta: r.etiqueta,
+        razon_adr: r.razon, razon_etiqueta: r.etiqueta,
         fuente: `calc: acciones÷${r.etiqueta}×neon`,
-        referencia_fuente: referencia.fuente || null,
-        referencia_capturada_en: referencia.capturada_en || null,
-        // Vencida NO es gris: es una tarea. El cuadro se sigue dibujando con la
-        // razón y esto es lo que la hace aparecer en cron-status.
-        referencia_a_recapturar: vig.a_recapturar === true,
-        referencia_vigente_hasta: vig.vigente_hasta,
         motivo: null,
       };
     }
     return {
-      ...base, estado: 'gris_punteado', auditable: true, cap_usd: null,
+      ...base, ...procedencia, estado: 'gris_punteado', auditable: true, cap_usd: null,
       error_pct: r.error_pct ?? null, multiplo: r.crudo ?? null,
-      via: 'referencia_manual', motivo: r.motivo,
+      // Con el precio de referencia la fecha queda descartada como causa, así
+      // que el motivo apunta a donde de verdad quedó la duda: el conteo.
+      motivo: conPrecioRef
+        ? `${r.motivo}; con el precio de la captura (${pxRef}) la fecha no es la causa: la cap de referencia implica ${implicitas != null ? implicitas.toFixed(1) : '?'}M acciones por ADR y nosotros tenemos ${num(entrada.acciones)}M ordinarias`
+        : r.motivo,
     };
   }
 
@@ -294,9 +356,15 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
       // es un insumo que falta. No son el mismo gris.
       auditable: !!decl.moneda,
       cap_usd: null, error_pct: e, multiplo,
+      // XNDU (Xanadu Quantum Technologies, XLK) es el caso de esta rama sin
+      // moneda: su cap entró por `neon:arena_market_cap` y ese camino nunca
+      // guardó `profile2.currency`. NO se saca del universo —decisión de Lety
+      // del 2026-09-26— y no se asume USD: se dibuja gris con la causa dicha,
+      // que además nombra de dónde salió la cap para que no se le atribuya a
+      // quien no la dio.
       motivo: decl.moneda
         ? `la cap declarada viene en ${decl.moneda}, no en USD`
-        : 'no se sabe en qué moneda viene la cap declarada',
+        : `sin moneda declarada por Finnhub${entrada.fuente_declarada ? ` (la cap viene de ${entrada.fuente_declarada})` : ''}`,
     };
   }
 
@@ -320,9 +388,13 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   // split no reflejado), así que se le pregunta a quien firma la portada. Sólo
   // acá: si el par de Finnhub ya concordaba, no se toca nada — las 279
   // verificadas siguen verificadas por donde venían.
-  if (edgar && num(edgar.acciones) != null) {
+  if (edgar && num(edgar.acciones) > 0) {
     const ve = veredictoCapEdgar({
       symbol, declarada_usd: decl.cap, acciones_edgar: edgar.acciones,
+      // EN ACCIONES, no en millones, que es como viene de la tabla: el árbitro
+      // compara los dos conteos entre sí y una unidad distinta en cada lado
+      // haría que "coinciden dentro del 5%" no signifique nada.
+      acciones_finnhub: num(entrada.acciones) > 0 ? num(entrada.acciones) * MILLON : null,
       precio_usd: entrada.precio_usd, fecha_portada: edgar.fecha_portada,
     });
     if (ve.estado === 'verificada') {
@@ -340,11 +412,27 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
     };
   }
 
+  // ── SIN CONTEO DE EDGAR: LA CAUSA DICE EN QUÉ ESTADO ESTÁ LA CONSULTA ──
+  // "EDGAR no dio acciones" cuando EDGAR nunca fue consultado es una causa
+  // falsa, y de las peores: manda a revisar la fuente en vez del job que murió
+  // antes de preguntarle. Los tres estados viven en `estadoEdgar`.
+  const ce = estadoEdgar({
+    acciones: edgar && edgar.acciones,
+    consultada_en: (entrada.edgar_consulta || {}).consultada_en,
+    motivo: (entrada.edgar_consulta || {}).motivo,
+  });
   return {
-    ...base, estado: 'gris_punteado', auditable: true, cap_usd: null,
+    ...base, estado: 'gris_punteado',
+    // Un hallazgo es un desajuste que YA tuvo con qué cruzarse. Mientras la
+    // consulta a EDGAR esté pendiente, el desajuste está medido pero la
+    // segunda opinión no llegó: es una tarea, no un hallazgo, y contarlo como
+    // hallazgo fue lo que hizo que la auditoría reportara 3 donde había 21.
+    auditable: true,
+    cap_usd: null,
     error_pct: e, multiplo, via: 'finnhub',
-    motivo: `la cap declarada difiere ${e.toFixed(1)}% de acciones×precio (${multiplo.toFixed(2)}×), techo ${umbral}%`
-      + (edgar ? '; EDGAR no dio acciones para cruzarlo' : ''),
+    edgar_estado: ce.estado,
+    edgar_consultada_en: ce.consultada_en,
+    motivo: `la cap declarada difiere ${e.toFixed(1)}% de acciones×precio (${multiplo.toFixed(2)}×), techo ${umbral}%; ${ce.frase}`,
   };
 }
 
@@ -369,13 +457,29 @@ export function filaVeredictoCapUs(u, { precio_usd, precio_captura, referencias,
     symbol: sym,
     declarada: num(u && u.market_cap) != null ? num(u.market_cap) / MILLON : null,
     moneda: (u && u.cap_moneda) || null,
+    // De dónde salió la cap declarada. Viaja para que la causa de un gris sin
+    // moneda pueda nombrar la fuente en vez de culpar a Finnhub de un dato que
+    // quizá no dio él (XNDU viene de `neon:arena_market_cap`).
+    fuente_declarada: (u && u.cap_fuente) || null,
     acciones: num(u && u.acciones_millones),
     precio_usd: num(precio_usd),
     precio_captura: num(precio_captura),
     referencia: refs.get(sym) || null,
-    edgar: num(u && u.acciones_edgar_millones) != null
+    // `> 0`, NO `!= null`: `num(null)` devuelve 0 porque `Number(null)` es 0, así
+    // que el guardia viejo fabricaba una fila de EDGAR con 0 acciones para las
+    // 569 emisoras. El veredicto la tomaba por buena y el mapa acusaba a EDGAR
+    // de no haber dado un dato que nadie le había pedido (#260). Cuarta vez que
+    // esta coerción cuesta un bug; el patrón correcto es preguntar por un
+    // número POSITIVO.
+    edgar: num(u && u.acciones_edgar_millones) > 0
       ? { acciones: num(u.acciones_edgar_millones) * MILLON, fecha_portada: (u && u.acciones_edgar_portada) || null }
       : null,
+    // Y el estado de la consulta viaja SIEMPRE, con o sin conteo: es lo que
+    // separa "todavía no se preguntó" de "se preguntó y no había".
+    edgar_consulta: {
+      consultada_en: (u && u.edgar_consultada_en) || null,
+      motivo: (u && u.edgar_consulta_motivo) || null,
+    },
     hoy: hoy || new Date(),
   };
 }
@@ -392,6 +496,70 @@ export function cierreHasta(filas = [], fecha) {
     if (!mejor || d > mejor.fecha) mejor = { fecha: d, cierre: num(f.cierre) };
   }
   return mejor;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// CONTRA QUÉ DÍA SE DESPEJA LA RAZÓN — EL INSTRUMENTO, NO LA CONCLUSIÓN
+//
+// #259 hizo lo que había que hacer: la razón se despeja contra el cierre de
+// `capturada_en` y no contra el de hoy. Y funcionó — VALE, que con el cierre
+// del 25 daba 0.999, pasó a 1.043 con el del 18, que es exactamente lo que
+// significa cambiar de ancla.
+//
+// Lo que quedó al descubierto es otra cosa: NO SABEMOS con qué precio calculó
+// Yahoo su "Market Cap (intraday)". Sabemos el día en que Lety lo leyó y el
+// día que Yahoo estampaba en la cotización, y para VALE esos dos no coinciden.
+// Con un techo de 2%, elegir mal el día por un par de sesiones alcanza para
+// mandar a gris una emisora cuya razón es obviamente 1:1.
+//
+// Esto NO decide nada: reporta. Para cada emisora con referencia se calcula la
+// razón cruda contra CADA cierre de una ventana alrededor de la captura, con
+// su error contra la proporción más cercana. Una corrida contesta si el
+// problema es qué día elegimos —hay un cierre que reconcilia— o si es la
+// referencia misma —ninguno lo hace—. El veredicto sigue usando un solo
+// cierre, el de `capturada_en`: aflojar el techo o elegir "el día que mejor
+// queda" sería mover el arco para que la pelota entre, que es justo lo que el
+// 5% de G2 y el 10% de EDGAR están separados para evitar.
+// ═══════════════════════════════════════════════════════════════════════
+
+/** Los cierres alrededor de una fecha: `sesiones` a cada lado, en orden. */
+export function ventanaDeCierres(filas = [], fecha, sesiones = 5) {
+  if (!fecha) return [];
+  const tope = String(fecha).slice(0, 10);
+  const orden = [];
+  const vistas = new Set();
+  for (const f of filas) {
+    const d = f && f.fecha ? String(f.fecha).slice(0, 10) : null;
+    const c = num(f && f.cierre);
+    if (!d || c == null || vistas.has(d)) continue;
+    vistas.add(d);
+    orden.push({ fecha: d, cierre: c });
+  }
+  orden.sort((a, b) => (a.fecha < b.fecha ? -1 : 1));
+  // `corte` = cuántos cierres hay con fecha ≤ la pedida. La ventana toma
+  // `sesiones` de ese lado y `sesiones` del otro.
+  let corte = orden.length;
+  for (let i = 0; i < orden.length; i++) if (orden[i].fecha > tope) { corte = i; break; }
+  return orden.slice(Math.max(0, corte - sesiones), Math.min(orden.length, corte + sesiones));
+}
+
+/** La razón cruda contra cada cierre de la ventana, y cuál queda más cerca. */
+export function razonesPorCierre(cierres = [], { cap_referencia_usd, acciones_millones, tolerancia = TOLERANCIA_RAZON_PCT } = {}) {
+  const filas = cierres.map((c) => {
+    const r = razonAdr({ cap_referencia_usd, acciones_millones, precio_usd: c.cierre, tolerancia });
+    return {
+      fecha: c.fecha, cierre: c.cierre,
+      crudo: r.crudo != null ? Number(r.crudo.toFixed(4)) : null,
+      razon_cercana: r.razon_cercana ?? null,
+      error_pct: r.error_pct != null ? Number(r.error_pct.toFixed(2)) : null,
+      dentro: r.ok === true,
+    };
+  });
+  const medibles = filas.filter((f) => f.error_pct != null);
+  const mejor = medibles.length
+    ? medibles.reduce((a, b) => (b.error_pct < a.error_pct ? b : a))
+    : null;
+  return { filas, mejor, alguno_dentro: filas.some((f) => f.dentro) };
 }
 
 /**
