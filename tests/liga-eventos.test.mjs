@@ -25,18 +25,55 @@ function ok(cond, name, detail) {
 }
 
 // ═══ TEMPORADA ═════════════════════════════════════════════════════
-console.log('temporada: ventana de 4 semanas de mercado, cierre en viernes');
+// ── ACTUALIZADAS EL 2026-09-29, AL ABRIR LA T3 ─────────────────────
+// Clavaban los valores de la T2 (`id === 'T2'`, `weeks === 4`, apertura en
+// LUNES) y se rompieron al cambiar de temporada. Lo que este bloque protege
+// no es qué temporada corre hoy —eso cambia por diseño— sino las
+// PROPIEDADES que una temporada tiene que cumplir, sea cual sea.
+//
+// La que se cayó como invariante: "apertura en lunes". Nunca lo fue. La T3
+// abre MARTES a propósito, el mismo día del reset: esperar al lunes costaba
+// dos sesiones y no compraba nada. El cierre en viernes SÍ es invariante, y
+// por un motivo mecánico — ver abajo.
+console.log('temporada: ventana declarada, cierre en viernes');
 const et = (d) => new Date(d + 'T22:40:00Z'); // la hora del cron de decide
-ok(ARENA_SEASON.id === 'T2' && ARENA_SEASON.weeks === 4, 'T2, cuatro semanas', JSON.stringify({ id: ARENA_SEASON.id, w: ARENA_SEASON.weeks }));
+const dias = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
+
+ok(/^T\d+$/.test(ARENA_SEASON.id) && ARENA_SEASON.weeks > 0,
+  'la temporada se identifica y declara su largo', JSON.stringify({ id: ARENA_SEASON.id, w: ARENA_SEASON.weeks }));
+
+// `weeks` sale publicado en el anuncio de apertura. Si no coincide con la
+// ventana real, la primera línea que alguien lee de la temporada miente.
+const sesiones = (() => {
+  let n = 0;
+  for (let t = Date.parse(ARENA_SEASON.start); t <= Date.parse(ARENA_SEASON.end); t += 86400000) {
+    const d = new Date(t).getUTCDay();
+    if (d >= 1 && d <= 5) n++;
+  }
+  return n;
+})();
+ok(Math.abs(ARENA_SEASON.weeks - sesiones / 5) < 0.15,
+  `\`weeks\` coincide con las ${sesiones} sesiones L-V de la ventana: un número redondo que no cuadra es una mentira publicada`,
+  JSON.stringify({ declarado: ARENA_SEASON.weeks, real: +(sesiones / 5).toFixed(1), sesiones }));
+
 ok(new Date(ARENA_SEASON.end + 'T12:00:00Z').getUTCDay() === 5,
   'el cierre cae en VIERNES: un fin de semana no tendría corrida y el ganador no se declararía nunca', ARENA_SEASON.end);
-ok(new Date(ARENA_SEASON.start + 'T12:00:00Z').getUTCDay() === 1, 'y la apertura en lunes', ARENA_SEASON.start);
-ok(seasonStatus(et('2026-09-13')) === 'pending', 'antes del arranque → pending');
+// Y la apertura, en día HÁBIL — no en lunes. Un arranque en sábado no tendría
+// corrida y el día 1 de la temporada no existiría.
+const diaApertura = new Date(ARENA_SEASON.start + 'T12:00:00Z').getUTCDay();
+ok(diaApertura >= 1 && diaApertura <= 5,
+  'y la apertura en día hábil (NO necesariamente lunes: la T3 abre martes, el mismo día del reset)', ARENA_SEASON.start);
+ok(dias(ARENA_SEASON.start, ARENA_SEASON.end) > 0, 'la ventana va hacia adelante');
+
+const antes = new Date(Date.parse(ARENA_SEASON.start) - 86400000).toISOString().slice(0, 10);
+const despues = new Date(Date.parse(ARENA_SEASON.end) + 3 * 86400000).toISOString().slice(0, 10);
+ok(seasonStatus(et(antes)) === 'pending', 'antes del arranque → pending', antes);
 ok(seasonStatus(et(ARENA_SEASON.start)) === 'running' && seasonDay(et(ARENA_SEASON.start)) === 1, 'el día de apertura es el día 1');
 ok(seasonStatus(et(ARENA_SEASON.end)) === 'running', 'el último día la temporada SIGUE corriendo (hay que operar y declarar)');
-ok(seasonStatus(et('2026-10-12')) === 'ended' && seasonDay(et('2026-10-12')) === null,
-  'pasado el cierre → ended, y el día de temporada es null (no un número que siga creciendo)');
-ok(isSeasonFinalDay(et(ARENA_SEASON.end)) === true && isSeasonFinalDay(et('2026-10-08')) === false,
+ok(seasonStatus(et(despues)) === 'ended' && seasonDay(et(despues)) === null,
+  'pasado el cierre → ended, y el día de temporada es null (no un número que siga creciendo)', despues);
+const penultimo = new Date(Date.parse(ARENA_SEASON.end) - 86400000).toISOString().slice(0, 10);
+ok(isSeasonFinalDay(et(ARENA_SEASON.end)) === true && isSeasonFinalDay(et(penultimo)) === false,
   'isSeasonFinalDay solo es cierto el último día', ARENA_SEASON.end);
 
 console.log('temporada: ranking del cierre');
@@ -55,8 +92,15 @@ ok(r.standings[0].return_pct === 10.5 && r.standings[2].return_pct === -2,
 ok(r.sin_equity.length === 2 && r.sin_equity.map((x) => x.id).sort().join(',') === 'deepseek,gemini',
   'un agente sin equity NO se rankea ni se le inventa un cero: sale aparte, nombrado', JSON.stringify(r.sin_equity));
 ok(rankSeasonStandings([]).winner === null, 'sin nadie con equity no hay ganador (no se declara uno inventado)');
-ok(SEASON_WINNER_ID === 'arena-temporada-T2-ganador' && BASELINE_EQUITY === 100000,
-  'id idempotente del cierre + baseline por default', SEASON_WINNER_ID);
+// El id se DERIVA de la temporada (era `'arena-temporada-T2-ganador'` clavado,
+// y con la T3 pasó a T3 solo, que es el comportamiento correcto). Lo que
+// importa es que lleve la temporada adentro: un id fijo entre temporadas
+// haría que el cierre de la T3 chocara con el de la T2 y no se declarara
+// ganador nunca — la fila es idempotente por id.
+ok(SEASON_WINNER_ID === `arena-temporada-${ARENA_SEASON.id}-ganador` && BASELINE_EQUITY === 100000,
+  'id idempotente del cierre, derivado de la temporada + baseline por default', SEASON_WINNER_ID);
+ok(SEASON_WINNER_ID.includes(ARENA_SEASON.id),
+  'y la temporada va EN el id: sin eso, el cierre de una temporada nueva chocaría con el de la anterior');
 
 // ═══ clasificación de rechazos ═════════════════════════════════════
 console.log('eventos: por qué NO se ejecutó una acción');
@@ -204,8 +248,8 @@ ok(frenado && /cooldown/.test(frenado.razon) && frenado.puntos_al_nivel === 1.5,
   'y el que un tope frenó lleva la razón, no desaparece del relato', JSON.stringify(frenado));
 ok(disparos.every((d) => d.titular === undefined),
   'un disparador NO lleva titular: es anterior a la decisión, y a esa altura todavía no hay voz que narre nada');
-ok(res.body.temporada.id === 'T2' && res.body.temporada.start === ARENA_SEASON.start,
-  'el feed viene con la temporada en curso', JSON.stringify(res.body.temporada));
+ok(res.body.temporada.id === ARENA_SEASON.id && res.body.temporada.start === ARENA_SEASON.start,
+  'el feed viene con la temporada EN CURSO, sea cual sea (era T2 clavado)', JSON.stringify(res.body.temporada));
 ok(res.body.conteos && TIPOS.every((t) => t in res.body.conteos), 'con conteos por tipo', JSON.stringify(res.body.conteos));
 ok(/s-maxage/.test(res.headers['Cache-Control'] || ''), 'cacheado en el edge como el leaderboard', res.headers['Cache-Control']);
 

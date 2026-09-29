@@ -416,12 +416,29 @@ export function activeAgents() {
 //
 // Las fechas se comparan en horario del ESTE (el del mercado), no en UTC: la
 // corrida de decide es 22:40 UTC, que en ET sigue siendo el mismo día hábil.
+// ── T3 (2026-09-29). POR QUÉ SE TIRÓ EL MARCADOR DE LA T2 ────────────
+// De 84 abortos de la T2, ~48 fueron las cuentas sin saldo, ~13 nuestro bug
+// del reparto de reloj (B45), 4 cortes de proveedor y 3 `time_budget`. **Como
+// mucho 10 eran de los modelos.** La T2 no midió modelos: midió un sistema sin
+// dinero que además se robaba el tiempo a sí mismo. El detalle está en B44.
+//
+// La T2 NO se borra. Queda entera en `arena_journal`, en
+// `arena_shadow_journal`, en `arena_equity_intraday` y en
+// `arena_benchmark` (con `season = 'T2'`, su SPY del 16-sep a $759.42
+// intacto). Sale de la ventana del leaderboard por FECHA, que es lo que la
+// sella: `start` es el corte de todas las consultas de /liga.
 export const ARENA_SEASON = {
-  id: 'T2',
-  name: 'Temporada 2',
-  start: /* date-lint-ok: fecha declarada de apertura de la temporada, un hecho fijo, no una referencia a "hoy" */ '2026-09-14',
-  end: /* date-lint-ok: cierre declarado de la temporada (viernes, 4 semanas de mercado) */ '2026-10-09',
-  weeks: 4,
+  id: 'T3',
+  name: 'Temporada 3',
+  // Arranca el MISMO día que el reset, no un lunes redondo. La fecha bonita de
+  // octubre costaba dos días de temporada parada y no compraba nada.
+  start: /* date-lint-ok: fecha declarada de apertura de la temporada, un hecho fijo, no una referencia a "hoy" */ '2026-09-29',
+  end: /* date-lint-ok: cierre declarado de la temporada (VIERNES: un cierre en fin de semana no tendría corrida y el ganador no se declararía nunca) */ '2026-10-30',
+  // 24 sesiones L-V, contadas: 4.8 semanas, no 4. Se escribe el número real y
+  // no el redondo — este campo sale publicado en el anuncio de apertura, y una
+  // temporada que dice "4 semanas" y corre 24 sesiones miente en la primera
+  // línea que alguien lee.
+  weeks: 4.8,
   // Qué se mide para declarar al ganador. Equity, igual que el leaderboard:
   // `claude` arrastra días de ventaja de la T1, así que el return vs. baseline
   // viaja al lado — el caveat de ranking del scope sigue vigente y se publica.

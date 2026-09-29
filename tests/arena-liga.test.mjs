@@ -366,7 +366,10 @@ console.log('liga: apertura de temporada — una fila de LIGA, automática e ide
 {
   journalInserts.length = 0;
   const ordersBefore = orderPosts.length;
-  const hoy = new Date('2026-09-14T22:40:00Z');
+  // El día de apertura sale de la temporada VIGENTE, no clavado: este bloque
+  // verifica que el anuncio use la fecha en que corre, así que fijarla a mano
+  // probaba la fecha de la T2 contra el código de la T3.
+  const hoy = new Date(ARENA_SEASON.start + 'T22:40:00Z');
   const res = await announceSeasonOpen(hoy);
 
   ok(res.announced === true && res.agents === 7, 'anuncia con los siete en pista', JSON.stringify(res));
@@ -374,15 +377,19 @@ console.log('liga: apertura de temporada — una fila de LIGA, automática e ide
   ok(journalInserts.length === 1, 'UNA sola fila, no una por agente', String(journalInserts.length));
 
   const fila = journalInserts[0];
-  ok(fila[0] === SEASON_OPEN_ID && fila[1] === '2026-09-14',
-    'id fijo (idempotente) y run_date = el día en que corre, no una fecha hardcodeada', JSON.stringify([fila[0], fila[1]]));
-  ok(/TEMPORADA 2 — ARRANCA LA LIGA COMPLETA/.test(fila[3]) && /Grok/.test(fila[3]) && /Qwen/.test(fila[3]),
-    'el plan anuncia la temporada y nombra a los siete', fila[3].slice(0, 90));
+  ok(fila[0] === SEASON_OPEN_ID && fila[1] === ARENA_SEASON.start,
+    'id idempotente y run_date = el día en que corre, no una fecha hardcodeada', JSON.stringify([fila[0], fila[1]]));
+  // El nombre sale de ARENA_SEASON, no clavado: al abrir la T3 esto decía
+  // "TEMPORADA 2" en el test y "TEMPORADA 3" en el anuncio, y lo que hay que
+  // proteger es que el anuncio nombre SU temporada y a los siete.
+  ok(new RegExp(ARENA_SEASON.name.toUpperCase() + ' — ARRANCA LA LIGA COMPLETA').test(fila[3])
+    && /Grok/.test(fila[3]) && /Qwen/.test(fila[3]),
+    'el plan anuncia la temporada en curso y nombra a los siete', fila[3].slice(0, 90));
   ok(new RegExp(ARENA_SEASON.start + ' → ' + ARENA_SEASON.end).test(fila[3]),
     'y publica la ventana de la temporada', ARENA_SEASON.start + ' → ' + ARENA_SEASON.end);
   ok(/piso de ruido/.test(fila[3]), 'explica qué es el control (sin eso, ningún delta entre modelos significa nada)');
   const ctx = JSON.parse(fila[4]);
-  ok(ctx.season.id === 'T2' && ctx.agents.length === 7 && ctx.opened_on === '2026-09-14',
+  ok(ctx.season.id === ARENA_SEASON.id && ctx.agents.length === 7 && ctx.opened_on === ARENA_SEASON.start,
     'el context lleva temporada, los siete agentes y la fecha de apertura', JSON.stringify({ s: ctx.season.id, n: ctx.agents.length, d: ctx.opened_on }));
 
   // GUARDA: con la liga recortada NO se anuncia (el id es idempotente; anunciar

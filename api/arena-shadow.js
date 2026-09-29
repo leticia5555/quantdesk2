@@ -280,7 +280,21 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
       : (llm.data && Number.isFinite(llm.data.cost_usd) ? llm.data.cost_usd : null),
   });
   await recordRunSpend({
-    agentId: agent.id, runId, phase: 'shadow', usd: costo.usd, usdSource: costo.source,
+    // ── LA FASE, NO 'shadow' A MANO (2026-09-29) ─────────────────────
+    // Esta función corre los DOS caminos: la sombra y la liga VIVA (`vivo:
+    // true`, desde `runArenaDecide`). El literal estampaba `'shadow'` en las
+    // dos, así que el gasto de una ronda viva se registraba como si fuera de
+    // sombra.
+    //
+    // NO rompía el breaker: la consulta del gasto del día
+    // (`arena-budget.js`) agrupa por `agent_id` y no filtra por `phase`, así
+    // que el total siempre fue correcto. Lo que no se podía contestar era
+    // "cuánto costó la liga viva contra cuánto costó la sombra" — y con la T3
+    // arrancando, eso habría sido un mes entero de datos mezclados.
+    //
+    // `'decide'` es la misma fase que el journal ya usa para una corrida viva
+    // (`base.phase`), así que las dos tablas hablan el mismo idioma.
+    agentId: agent.id, runId, phase: vivo ? 'decide' : 'shadow', usd: costo.usd, usdSource: costo.source,
     tokens: { input: usage.input_tokens, output: usage.output_tokens, cache_read: usage.cache_read_input_tokens, cache_write: usage.cache_creation_input_tokens },
     llmCalls: (loop.usage_total && loop.usage_total.calls) || loop.turns || 1, toolCalls: executor.used, now,
   });

@@ -96,8 +96,20 @@ console.log('\n── el ENDPOINT de sombra no puede escribir a Alpaca ──');
   ok(/arena_shadow_journal|shadowJournalInsert/.test(codigo), 'y journalea por el camino de sombra');
   ok(!/journalInsert\(/.test(codigo.replace(/shadowJournalInsert\(/g, '')),
     'CANDADO: no usa el journalInsert de la tabla real');
-  ok(/phase: 'shadow'/.test(codigo),
-    'el gasto se registra como `shadow`: son llamadas reales a siete proveedores y van contra el mismo presupuesto');
+  // ── ACTUALIZADA EL 2026-09-29, CON EL MOTIVO ─────────────────────
+  // Pedía el literal `phase: 'shadow'`, y ese literal era el bug: esta misma
+  // función corre la liga VIVA (`vivo: true`), así que el gasto de una ronda
+  // viva se registraba como si fuera de sombra. No rompía el breaker —la
+  // consulta del gasto no filtra por fase— pero hacía imposible separar el
+  // costo de la liga del de la sombra, y la T3 habría nacido con un mes de
+  // datos mezclados.
+  //
+  // Lo que este archivo cuida sigue siendo lo mismo: que una corrida de
+  // SOMBRA se registre como sombra y vaya contra el mismo presupuesto.
+  ok(/phase: vivo \? 'decide' : 'shadow'/.test(codigo),
+    'el gasto de una corrida de sombra se registra como `shadow`: son llamadas reales a siete proveedores y van contra el mismo presupuesto');
+  ok(/phase: vivo \?/.test(codigo),
+    'y el de una corrida VIVA como `decide`: el literal fijo mezclaba las dos');
   ok(/orders_placed: 0/.test(codigo), 'y el reporte afirma explícitamente cero órdenes');
 }
 

@@ -7,24 +7,86 @@ para Lety.
 **El reset NO se aprieta hasta que los seis puntos estén en verde, y se
 aprieta el MISMO día de la recarga.**
 
+> ## LA PUERTA DEL HUMO, POR ESCRITO Y ANTES
+>
+> **Si UNO de los siete aborta, la temporada NO abre.** Se arregla y se vuelve
+> a correr, aunque la apertura se empuje al miércoles.
+>
+> «Ese ya casi pasaba» es literalmente lo que hicimos con la T2, y costó nueve
+> días y una temporada entera. Un agente con `reloj_pct ≥ 90` **no pasó**:
+> llegó justo, y va a abortar el primer día malo.
+>
+> Empujar la apertura un día cuesta una sesión de 24. Abrir con un agente roto
+> costó 24 de 24.
+
+---
+
+## 0 · LA PAUSA: `ARENA_ENABLED=0`, Y POR QUÉ NO ALCANZA `pauseWatch`
+
+**Sí, el scheduler puede disparar en la ventana entre deploy y reset.** Los
+crons del arena, en UTC:
+
+| cron | UTC | ET | qué hace |
+|---|---|---|---|
+| `/api/arena-watch` | `*/5 13-21 * * 1-5` | **cada 5 min, 09:00–17:00** | despierta agentes por disparador |
+| `/api/arena-run?phase=reconcile` | `40 14` | 10:40 | concilia fills |
+| `/api/arena-run?phase=morning` | `50 14` | 10:50 | ronda matutina por evento |
+| `/api/arena-run` | `40 22` | 18:40 | la ronda de decide |
+| `/api/arena-universe` | `0 13` | 09:00 | refresca el universo |
+
+El de las **:05 es el peligroso**: dispara 96 veces al día. Cualquier paso que
+se pase de las 09:00 ET cae adentro.
+
+**`pauseWatch` NO sirve para esto**, y conviene saber por qué antes de
+confiarle la noche:
+
+- solo frena `/api/arena-watch`. **`/api/arena-run` no la consulta** — el
+  decide de las 18:40 y la matutina de las 10:50 corren igual;
+- tiene un **tope duro de 120 minutos** (`Math.min(120, …)`), así que no cubre
+  un plan que puede dormirse y seguir en la mañana;
+- vence sola, que es una virtud durante un aplanado de diez minutos y un
+  defecto para una pausa de doce horas.
+
+**`ARENA_ENABLED=0` sí.** Verificado leyendo los gates de cada endpoint:
+
+| endpoint | ¿lo frena `ARENA_ENABLED=0`? | |
+|---|---|---|
+| `/api/arena-run` | **sí** (`arena-run.js:3601`) | la liga no decide |
+| `/api/arena-watch` | **sí** | el vigilante no despierta a nadie |
+| `/api/arena-reset` | **no**, a propósito | *"el reset es justamente lo que se corre con el Arena apagado"* |
+| `/api/arena-shadow` | **no**, a propósito | *"la sombra es lo que se corre ANTES de encender nada"* |
+| `/api/arena-smoke` | **no**, a propósito | el smoke es la compuerta |
+
+O sea: la pausa frena exactamente lo que hay que frenar y deja pasar
+exactamente los tres endpoints del plan. No hace falta nada más.
+
+**Ojo con una cosa:** `ARENA_ENABLED` es una env var de Vercel, y una env var
+nueva **no la ven las funciones ya desplegadas** — hace falta un redeploy para
+que tome efecto. Por eso (a) y (b) son el mismo deploy.
+
 ---
 
 ## 0 · EL ORDEN, QUE ES LA PARTE QUE MÁS FÁCIL SE ROMPE
 
 ```
-1. ARENA_SEASON.id → 'T3' en _lib/arena-registry.js    ← CÓDIGO, necesita deploy
-2. deploy
-3. Lety recarga las dos cuentas (Anthropic + OpenRouter)
-4. CATÁLOGO (gratis)          /api/arena-smoke?catalog=1
-5. HUMO por agente (cuesta)   /api/arena-shadow?agent=<id>   × 7
-6. Si los siete verdes →      /api/arena-reset?confirm=1
-7. Verificar la salida del reset (§1.4) antes de dejar correr el cron
+a. ARENA_ENABLED=0 en Vercel   ← LA PAUSA. Mata arena-run Y arena-watch
+b. deploy (lleva la pausa + ARENA_SEASON=T3 + el fix del phase)
+c. §1.3 · verificar los baselines de la T2 en Neon        ← Lety
+d. /api/arena-reset?confirm=1        solo si (c) salió limpio
+e. /api/arena-smoke?catalog=1        siete `exact`
+f. /api/arena-shadow?agent=<id> × 7  secuencial, sin abortar, reloj_pct < 90
+g. lectura de cache_read por agente  (la medición de caché ES el humo)
+h. ARENA_ENABLED=1 + deploy          ← la despausa, y la apertura
 ```
 
-**El paso 1 va primero y es el que se olvida.** Si se resetea con
-`ARENA_SEASON.id` todavía en `'T2'`, las siete cuentas se re-basan hoy y el
-benchmark **no se re-abre** — queda anclado al 16 de septiembre. Eso estaba
-silencioso hasta hoy; ahora sale en `warnings` (§2).
+**LA PAUSA ES `ARENA_ENABLED=0`, NO `pauseWatch`.** Ver §0: la pausa que
+escribe el reset en Neon solo frena al vigilante y tiene un tope de 120
+minutos.
+
+**La pausa y el deploy de la T3 van JUNTOS, en el mismo deploy.** No es
+apuro: es que así los dos cambios entran atómicamente. Si el deploy falla,
+todo sigue como está (T2, encendido) y no queda un estado intermedio donde la
+temporada dice T3 y la liga corre.
 
 ---
 
@@ -300,8 +362,10 @@ contraproducente en al menos uno.
 
 ## LO QUE FALTA ANTES DE APRETAR
 
-- [ ] `ARENA_SEASON` → T3 (`id`, `name`, `start`, `end`) y deploy
-- [ ] Lety recarga las dos cuentas
+- [x] `ARENA_SEASON` → T3 · `2026-09-29` → `2026-10-30` · 24 sesiones · **hecho**
+- [x] el `phase` hardcodeado de `recordRunSpend` · **hecho**
+- [x] Lety recargó las dos cuentas
+- [ ] `ARENA_ENABLED=0` + deploy (§0)
 - [ ] §1.3 · la fila del reset de la T2 trae los siete baselines
 - [ ] §3.1 · catálogo: siete `exact`
 - [ ] §3.2 · humo: siete sin abortar
