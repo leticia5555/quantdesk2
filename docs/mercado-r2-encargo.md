@@ -258,3 +258,92 @@ El toggle **USD | MXN** y la línea "en pesos" de la hoja son R2(c): la
 aritmética y su procedencia ya están hechas y probadas en `qd-pesos.js`, y lo
 que falta es traer la serie del FIX de Banxico al payload y pintar los dos
 números (grande en pesos, chico local) con la etiqueta.
+
+---
+
+## R2(b) ajustado al artboard 4, y R2(c)
+
+El mockup está en el repo como `docs/mockup/Mundo.dc.html`. Lo que cambió
+respecto de la primera versión de R2(b):
+
+| del artboard | cómo quedó |
+| :--- | :--- |
+| 3 columnas, 78px de alto, 2px de gap | igual, con comprobación de las tres medidas |
+| nombre + **país** + % grande + "local +X%" chico | igual. En moneda local la línea chica lleva el **nivel**, no el país: el país ya está arriba |
+| encabezado por región con su estado | `estadoDeRegion`, y las horas **en hora de México** |
+| tira arriba con SPX, IPC, NIKKEI, KOSPI, DAX | igual |
+| "El mundo, ahora · [día] · [estado]" | igual, con el día en CT |
+| 14 índices + Bitcoin, USD/MXN y Oro con su precio | 18 cuadros |
+| toggle **Local \| MXN** | R2(c), con el FIX |
+
+### El día es de allá y la hora es de acá
+
+"Asia · abre lun 18:00 CT" en un domingo tiene trampa: el **día** es el de
+Tokio —allá ya es lunes— y la **hora** es la de México, donde todavía es domingo
+por la noche. Mezclarlas al revés es cómo se dice "abre el lunes" de algo que
+abre esta noche. `proximaApertura` avanza de 15 en 15 minutos preguntándole a la
+zona de la bolsa, así que los cambios de horario de cualquiera de los dos lados
+salen bien sin tabla de fechas — hay prueba de que la apertura de Nueva York
+vista desde la CDMX se mueve de 07:30 a 08:30 CT entre octubre y diciembre,
+porque EE.UU. cambia de horario y México no.
+
+### Los símbolos, y el que no pude verificar
+
+Los 17 que Yahoo tiene con ticker conocido entraron: `^GSPC`, `^NDX`, `^MXX`,
+`^BVSP`, `^GSPTSE`, `^GDAXI`, `^FTSE`, `^FCHI`, `^N225`, `^KS11`, `^HSI`,
+`000001.SS`, `^NSEI`, `^AXJO`, `BTC-USD`, `MXN=X`, `GC=F`.
+
+**`^COLCAP` no lo pude verificar**: este contenedor no tiene salida a Yahoo. Va
+en el catálogo marcado `sin_verificar`, y si el ticker no existe el cuadro sale
+**"sin dato" con su causa** en vez de desaparecer o inventar un número. Una
+corrida en prod lo dice en una línea.
+
+Y para que el rendimiento en pesos valga para los índices nuevos hubo que
+agregar cinco cruces más de moneda: `CAD=X`, `COP=X`, `CNY=X`, `INR=X`, `AUD=X`.
+Sin ellos, el S&P/TSX, el COLCAP, Shanghái, el Nifty y el ASX dirían "—" con
+causa al pasar a pesos.
+
+### R2(c): el toggle Local | MXN
+
+El número grande es el rendimiento en pesos y el chico el local, con la nota
+del mockup —*"Rendimiento en pesos: índice local convertido con su tipo de
+cambio del periodo"*— más **la fecha del FIX**. La hoja estrena la línea
+`rendimiento en pesos` y la fila `fuente del peso`, que dice
+`calc: banxico:SF43718 (FIX del AAAA-MM-DD)`.
+
+Dos batches por mapa, no uno por cuadro: los índices y el FIX. El FIX se pide
+aparte porque **es otra fuente** — Yahoo da el dólar de mercado (`MXN=X`, que es
+el cuadro) y Banxico da el FIX, que es con lo que se convierte. Mezclarlos sería
+pintar una conversión y atribuírsela a la fuente equivocada. El toggle no vuelve
+a pedir nada.
+
+Dos comprobaciones que valen más que las otras: **el IPC en pesos no cambia**
+(ya está en pesos, su cruce es 0 por definición) y **el S&P sí cambia**. Si
+alguna de las dos se rompe, la conversión está mal de raíz.
+
+### Dos trampas de los `<script>` clásicos, las dos encontradas midiendo
+
+1. **`export` no carga.** Ya documentado arriba: Node lo acepta, el navegador
+   no. Los tres archivos usan el patrón doble y hay prueba.
+2. **Dos scripts no pueden declarar el mismo nombre.** `qd-pesos.js` y
+   `qd-mundo.js` tenían los dos un `const num` privado. En módulos ESM cada uno
+   tiene su ámbito; como scripts clásicos **comparten el global**, y dos `const`
+   iguales son un `SyntaxError` que tumba el segundo archivo entero. La página
+   cargó con `enPesos` inexistente y el toggle MXN murió en silencio: el render
+   lanzaba, la pantalla se quedaba con el contenido anterior y el botón parecía
+   sordo. Se renombraron a `numPesos` y `numMundo`, y
+   `tests/mercado-scripts.test.mjs` lo prohíbe.
+
+Y lo que dejó al descubierto: la comprobación de consola sólo miraba **al
+cargar**. Un error que aparece al TOCAR algo necesita mirarse después de tocar
+todo, así que ahora el Chromium exige cero errores de consola **al final** del
+recorrido, con todos los taps hechos. Ése es el que habría cazado el toggle
+muerto sin que yo lo buscara.
+
+### Lo que NO cambié, y es una decisión
+
+El artboard usa la paleta del encargo §4 (`#0b0f14`, IBM Plex) y `/mercado` hoy
+usa `#0a0a0a` y la mono del sistema — una divergencia que viene de R1. Copié la
+**estructura** del artboard y dejé la paleta de la página: si Mundo estrenara
+otra, se vería como otra app al lado de EE.UU. y México. Migrar la paleta toca
+las tres pestañas y merece su propia rebanada.

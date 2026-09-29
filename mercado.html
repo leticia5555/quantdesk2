@@ -70,30 +70,38 @@
      cabe entero y el no-scroll sigue siendo la regla.
      `position:relative` es necesario, no cosmético: con `inset:0` el alto
      queda sobre-restringido y el navegador ignora el `height` que pone el JS. */
-  /* ── MUNDO: REJILLA, NO TREEMAP ───────────────────────────────────────
+  /* ── MUNDO: REJILLA, NO TREEMAP (artboard 4) ─────────────────────────
      Encargo §3/R2: "un cuadro por índice, TAMAÑO FIJO (los índices no tienen
      cap; no fingir)". El tamaño fijo es la regla 2 aplicada al tamaño: en el
      mapa de acciones el área ES un dato y un cuadro grande afirma algo; un
      índice no tiene con qué dimensionarse, así que todos miden igual y lo
-     único que el cuadro afirma es su color. */
+     único que el cuadro afirma es su color.
+     Las medidas son las del mockup: 3 columnas, 78px de alto, 2px de gap. */
   #mundo{position:absolute;inset:0;overflow:auto;-webkit-overflow-scrolling:touch}
-  #mundo .region{margin:0 0 14px}
-  #mundo .region > h2{margin:0 0 6px;font:600 11px var(--mono);color:var(--tenue);
-    letter-spacing:.06em;text-transform:uppercase}
-  #mundo .region > .aviso-region{margin:0 0 6px;font:10px var(--mono);color:#777}
-  #mundo .rejilla{display:grid;gap:6px;grid-template-columns:repeat(auto-fill,minmax(106px,1fr))}
-  .idx{position:relative;min-height:74px;border:1px solid #0a0a0a;border-radius:3px;padding:6px 7px;
-    display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;
-    -webkit-tap-highlight-color:transparent;overflow:hidden}
-  .idx .nom{font:600 11px var(--mono);color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6);
-    white-space:nowrap;overflow:hidden;text-overflow:clip}
-  .idx .pc{font:700 15px var(--mono);color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6)}
-  .idx .px{font:10px var(--mono);color:rgba(255,255,255,.85)}
-  .idx .bol{font:9px var(--mono);color:rgba(255,255,255,.72);white-space:nowrap;
-    overflow:hidden;text-overflow:clip}
-  .idx .bol b{font-weight:600;color:rgba(255,255,255,.92)}
-  .idx.punteado{border-style:dashed;border-color:#555}
-  @media (pointer:fine){ .idx:hover{outline:1px solid rgba(255,255,255,.55);outline-offset:-1px} }
+  #mundo .tira{display:flex;gap:14px;align-items:center;height:30px;padding:0 2px;
+    border-bottom:1px solid var(--linea);overflow-x:auto;white-space:nowrap;
+    font-family:var(--mono);font-size:11px;scrollbar-width:none}
+  #mundo .tira::-webkit-scrollbar{display:none}
+  #mundo .tira b{color:var(--tenue);font-weight:500}
+  #mundo .titular{padding:10px 2px 6px}
+  #mundo .titular h1{margin:0;font-size:20px;font-weight:700;letter-spacing:-.01em}
+  #mundo .titular .sub{margin-top:2px;font-size:11px;color:var(--tenue)}
+  #mundo .reg{display:flex;align-items:baseline;justify-content:space-between;gap:8px;
+    padding:12px 0 6px;font-size:12px;letter-spacing:.1em;text-transform:uppercase;
+    color:#9aa5b1;font-weight:600}
+  #mundo .reg span{font-size:10px;letter-spacing:.04em;text-transform:none;
+    color:#6b7785;font-weight:400;text-align:right}
+  #mundo .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px}
+  .c{box-sizing:border-box;height:78px;display:flex;flex-direction:column;
+    justify-content:space-between;padding:8px 10px;color:#fff;border:1px solid #0a0a0a;
+    position:relative;overflow:hidden;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .c .n{font-size:12px;font-weight:600;line-height:1.1}
+  .c .r{font-size:10px;opacity:.85}
+  .c .v{font-family:var(--mono);font-size:16px;font-weight:600;line-height:1}
+  .c .l{font-family:var(--mono);font-size:10px;opacity:.85}
+  .c.punteado{border-style:dashed;border-color:#555}
+  @media (pointer:fine){ .c:hover{outline:1px solid rgba(255,255,255,.55);outline-offset:-1px} }
+  #mundo .nota{padding:2px 0 4px;font-size:10px;color:#f59e0b}
   body[data-scroll="1"]{overflow-y:auto;overflow-x:hidden}
   body[data-scroll="1"] main{flex:0 0 auto}
   body[data-scroll="1"] #lienzo{position:relative;inset:auto;width:100%}
@@ -172,6 +180,7 @@
 </nav>
 
 <div class="toggle" id="toggle" role="group" aria-label="Periodo"></div>
+<div class="toggle" id="moneda" role="group" aria-label="Moneda" hidden></div>
 
 <div id="ruta"></div>
 <main><div id="lienzo"></div><div id="mundo" hidden></div></main>
@@ -188,6 +197,7 @@
 <script src="/qd-periods.js"></script>
 <script src="/qd-treemap.js"></script>
 <script src="/qd-mercados.js"></script>
+<script src="/qd-pesos.js"></script>
 <script src="/qd-mundo.js"></script>
 <script>
 (function(){
@@ -210,11 +220,17 @@
     var pm = p.get('mapa');
     var mapa = (pm==='mx' || pm==='mundo') ? pm : 'us';
     var per  = PERIODOS.indexOf(p.get('periodo'))>=0 ? p.get('periodo') : '1D';
-    return { mapa:mapa, periodo:per, sector:p.get('sector')||null, symbol:p.get('symbol')||null };
+    return { mapa:mapa, periodo:per, sector:p.get('sector')||null, symbol:p.get('symbol')||null,
+             // Regla 9: `&moneda=usd|mxn`. En la URL se llama "usd" porque así
+             // lo fijó el encargo; el botón dice "Local", porque un índice en
+             // yenes no está en dólares — lo que el botón promete es "en su
+             // moneda", y el otro es "en pesos".
+             moneda: p.get('moneda')==='mxn' ? 'mxn' : 'usd' };
   }
   function escribirUrl(push){
     var p = new URLSearchParams();
     p.set('mapa', estado.mapa); p.set('periodo', estado.periodo);
+    if(estado.mapa==='mundo') p.set('moneda', estado.moneda);
     if(estado.sector) p.set('sector', estado.sector);
     if(estado.symbol) p.set('symbol', estado.symbol);
     var url = location.pathname + '?' + p.toString();
@@ -248,6 +264,7 @@
       document.getElementById('tab-'+k).setAttribute('aria-selected', estado.mapa===k);
     });
     pintarToggle();
+    pintarMonedaToggle();
     var d = cache[estado.mapa];
     if(!d){ cargar(estado.mapa); return; }
     // Mundo es una rejilla, no un treemap: los índices no tienen con qué
@@ -624,21 +641,66 @@
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
 
   // ═══════════════════════════════════════════════════════════════════
-  // MUNDO — rejilla por región, tamaño fijo, color por %
+  // MUNDO (artboard 4) — rejilla por región, tamaño fijo, color por %
   //
   // El % de cada cuadro sale de `qdPeriodChange` sobre la serie que manda el
-  // endpoint (regla 1), incluido YTD: la serie es de un año desde R2(a), así
-  // que el ancla de fin de año la encuentra el mismo calculador y no hace
-  // falta que el servidor la elija, como sí hace falta en el mapa de acciones
-  // —donde sólo viajan 22 cierres para no mandar 75,000 puntos a un teléfono—.
+  // endpoint (regla 1), incluido YTD: la serie es de un año, así que el ancla
+  // de fin de año la encuentra el mismo calculador y no hace falta que el
+  // servidor la elija —como sí hace falta en el mapa de acciones, donde sólo
+  // viajan 22 cierres para no mandar 75,000 puntos a un teléfono—.
   //
-  // El chip es POR BOLSA, no global: el Nikkei cerrado y el Bovespa abierto
-  // caben en la misma pantalla, y un solo chip mentiría en uno de los dos.
+  // El estado es POR BOLSA, no global: el Nikkei cerrado y el Bovespa abierto
+  // caben en la misma pantalla. Y las horas de los encabezados van en hora de
+  // MÉXICO, que es la decisión del mockup: "Asia · abre lun 18:00 CT".
   // ═══════════════════════════════════════════════════════════════════
-  function cambioMundo(c){
+  var BOLSAS_POR_REGION = { america:[], europa:[], asia:[], otros:[] };
+
+  function cambioLocal(c){
     var r = qdPeriodChange(c.serie || [], estado.periodo);
     if(r.pct==null && !r.motivo) r.motivo = 'la serie no alcanza para este periodo';
     return r;
+  }
+
+  // ── R2(c): EL RENDIMIENTO EN PESOS ─────────────────────────────────
+  // La aritmética vive en `qd-pesos.js` y recibe DOS rendimientos ya
+  // calculados con `qdPeriodChange` —el del activo y el de su moneda contra el
+  // peso—, nunca precios: calcularlo desde precios haría dos implementaciones
+  // del ancla del periodo, que es el bug que la regla 1 previene.
+  function rendimientoDeSerie(sym, d){
+    var s = d && d.data && d.data[sym] && d.data[sym].series;
+    if(!s || s.length < 2) return null;
+    var r = qdPeriodChange(s, estado.periodo);
+    return Number.isFinite(r.pct) ? r.pct : null;
+  }
+
+  function pctDelFix(d){
+    // El FIX de Banxico, en el MISMO periodo. Serie diaria: `qdPeriodChange`
+    // la ancla por fecha igual que cualquier otra.
+    var f = d && d.fix && Array.isArray(d.fix.serie) ? d.fix.serie : null;
+    if(!f || f.length < 2) return null;
+    var r = qdPeriodChange(f, estado.periodo);
+    return Number.isFinite(r.pct) ? r.pct : null;
+  }
+
+  function enPesosDe(c, d){
+    var moneda = c.moneda || c.moneda_esperada;
+    var cruce = MONEDAS[moneda];
+    var usdPorUnidad = null;
+    if(cruce){
+      var p = rendimientoDeSerie(cruce.symbol, d);
+      if(p != null){
+        // `EURUSD=X` son DÓLARES POR EURO: para el cruce hace falta la forma
+        // inversa, euros por dólar. Confundirlas invierte el signo.
+        usdPorUnidad = cruce.invertir ? ((1 / (1 + p/100)) - 1) * 100 : p;
+      }
+    }
+    return enPesos({
+      pctLocal: cambioLocal(c).pct,
+      moneda: moneda,
+      usdMxnPct: pctDelFix(d),
+      usdPorUnidadPct: usdPorUnidad,
+      fix: d && d.fix ? { serie:'SF43718', fecha:d.fix.fecha, valor:d.fix.valor } : null,
+    });
   }
 
   function estadoDeCuadro(c){
@@ -647,43 +709,112 @@
     catch(e){ return { etiqueta: 'sin horario declarado', abierta: false, estado: 'desconocida' }; }
   }
 
+  /** Lo que se pinta grande y lo que se pinta chico, según moneda y tipo. */
+  function lineasDeCuadro(c, d){
+    var local = cambioLocal(c);
+    if(estado.moneda === 'mxn'){
+      var mx = enPesosDe(c, d);
+      return {
+        pct: mx.pct,
+        grande: qdPctTag(mx.pct, estado.periodo, { motivo: mx.motivo }),
+        // El local queda chico, como en el mockup: el número grande es el que
+        // el toggle promete y el chico es de dónde salió.
+        chico: 'local ' + (Number.isFinite(local.pct) ? (local.pct>=0?'+':'') + local.pct.toFixed(1) + '%' : '—'),
+        motivo: mx.motivo || local.motivo || null,
+        fuente: mx.fuente || null,
+      };
+    }
+    return {
+      pct: local.pct,
+      grande: qdPctTag(local.pct, estado.periodo, { motivo: local.motivo }),
+      // En moneda local la línea chica lleva el NIVEL, no el país: el país ya
+      // está arriba y repetirlo desperdicia el único renglón que queda. Para
+      // Bitcoin y el oro va con "$" porque son dólares; para un índice va sin
+      // símbolo, porque 45,800 puntos del Nikkei no son pesos ni dólares.
+      chico: (c.prefijo || '') + fmtPrice(c.precio),
+      motivo: local.motivo || null,
+      fuente: 'yahoo:v8/chart',
+    };
+  }
+
   function pintarMundo(d){
     var m = armaMundo({ data: (d && d.data) || {} });
     var cont = document.getElementById('mundo');
     var html = '';
+
+    // ── La tira de arriba: cinco índices corriendo ────────────────────
+    html += '<div class="tira">' + TIRA.map(function(sym){
+      var c = null;
+      m.regiones.forEach(function(r){ r.cuadros.forEach(function(x){ if(x.symbol===sym) c = x; }); });
+      if(!c) return '';
+      var l = lineasDeCuadro(c, d);
+      var corto = { '^GSPC':'SPX', '^MXX':'IPC', '^N225':'NIKKEI', '^KS11':'KOSPI', '^GDAXI':'DAX' }[sym] || sym;
+      return '<span><b>' + esc(corto) + '</b> ' + l.grande + '</span>';
+    }).join('') + '</div>';
+
+    // ── El titular, con el día y el estado en hora de México ──────────
+    var hoy = new Date();
+    var diaTxt = hoy.toLocaleDateString('es-MX', { weekday:'short', day:'numeric', month:'short', timeZone:'America/Mexico_City' });
+    var reg = {};
+    ['america','europa','asia'].forEach(function(k){
+      var cierres = {};
+      var claves = [];
+      m.regiones.forEach(function(r){ if(r.clave!==k) return; r.cuadros.forEach(function(c){
+        if(c.es24h) return;
+        claves.push(c.bolsa); cierres[c.bolsa] = c.ultimo_cierre;
+      }); });
+      BOLSAS_POR_REGION[k] = claves;
+      reg[k] = estadoDeRegion(claves, hoy, { cierres: cierres });
+    });
+    reg.otros = { etiqueta: '24/7 · abierto' };
+    var sub = diaTxt + (reg.america && reg.america.etiqueta ? ' · ' + reg.america.etiqueta : '')
+      + (reg.asia && reg.asia.proxima ? ' · Asia ' + reg.asia.proxima.etiqueta : '');
+    html += '<div class="titular"><h1>El mundo, ahora</h1><div class="sub">' + esc(sub) + '</div></div>';
+
+    if(estado.moneda === 'mxn'){
+      var fx = d && d.fix;
+      html += '<div class="nota">' + (fx && fx.fecha
+        ? 'Rendimiento en pesos: índice local convertido con su tipo de cambio del periodo · FIX del ' + esc(fx.fecha)
+        : 'Rendimiento en pesos: NO disponible — ' + esc((fx && fx.motivo) || 'no llegó el FIX de Banxico')) + '</div>';
+    }
+
+    // ── Las cuatro regiones ───────────────────────────────────────────
     m.regiones.forEach(function(r){
       if(!r.cuadros.length && !r.aviso) return;
-      html += '<section class="region"><h2>' + esc(r.nombre) + '</h2>';
-      if(r.aviso) html += '<div class="aviso-region">' + esc(r.aviso) + '</div>';
-      html += '<div class="rejilla">';
+      var e = reg[r.clave] || {};
+      html += '<div class="reg">' + esc(r.nombre) + '<span>'
+        + esc(r.clave==='america' ? (e.etiqueta||'') : (e.etiqueta||''))
+        + (r.aviso ? ' · ' + esc(r.aviso) : '') + '</span></div>';
+      html += '<div class="grid">';
       r.cuadros.forEach(function(c){
-        var x = cambioMundo(c);
-        var e = estadoDeCuadro(c);
-        // Sin % no hay color que afirmar: gris punteado, como en el mapa.
-        var sinPct = !Number.isFinite(x.pct);
-        html += '<div class="idx' + (sinPct ? ' punteado' : '') + '"'
-          + ' style="background:' + (sinPct ? COLOR_SIN_DATO : colorDe(x.pct)) + '"'
+        var l = lineasDeCuadro(c, d);
+        var sinPct = !Number.isFinite(l.pct);
+        html += '<div class="c' + (sinPct ? ' punteado' : '') + '"'
+          + ' style="background:' + (sinPct ? COLOR_SIN_DATO : colorDe(l.pct)) + '"'
           + ' data-sym="' + esc(c.symbol) + '" role="button" tabindex="0"'
           + ' aria-label="' + esc(c.nombre) + '">'
-          + '<div class="nom">' + esc(c.nombre) + '</div>'
-          + '<div><div class="pc">' + qdPctTag(x.pct, estado.periodo, { motivo: x.motivo }) + '</div>'
-          + '<div class="px">' + esc(fmtPrice(c.precio)) + (c.moneda ? ' ' + esc(c.moneda) : '') + '</div></div>'
-          + '<div class="bol">' + (e.abierta ? '● ' : '○ ') + esc(e.etiqueta) + '</div>'
+          + '<div><div class="n">' + esc(c.nombre) + '</div>'
+          + '<div class="r">' + esc(c.pais || '') + '</div></div>'
+          + '<div><div class="v">' + l.grande + '</div>'
+          + '<div class="l">' + esc(l.chico) + '</div></div>'
           + '</div>';
       });
-      html += '</div></section>';
+      html += '</div>';
     });
+
     // Lo que no se pudo pintar se DICE, con su causa (regla 2).
     if(m.faltantes.length){
-      html += '<section class="region"><h2>sin dato</h2><div class="aviso-region">'
+      html += '<div class="reg">sin dato<span>' + m.faltantes.length + ' de '
+        + (m.faltantes.length + m.regiones.reduce(function(a,r){ return a + r.cuadros.length; },0)) + '</span></div>'
+        + '<div class="nota">'
         + m.faltantes.map(function(f){ return esc(f.nombre + ' (' + f.symbol + '): ' + f.motivo); }).join('<br>')
-        + '</div></section>';
+        + '</div>';
     }
     cont.innerHTML = html;
   }
 
-  // El chip de arriba en Mundo no puede ser de una bolsa: hay ocho en pantalla.
-  // Dice cuántas están abiertas, y el detalle vive en cada cuadro.
+  // El chip de arriba en Mundo no puede ser de una bolsa: hay trece en
+  // pantalla. Dice cuántas están abiertas, y el detalle vive en cada región.
   function pintarChipMundo(d){
     var m = armaMundo({ data: (d && d.data) || {} });
     var abiertas = 0, total = 0;
@@ -696,13 +827,23 @@
     el.className = 'chip' + (abiertas > 0 ? ' abierto' : '');
     el.textContent = (abiertas > 0 ? '● ' : '○ ')
       + (total ? abiertas + ' de ' + total + ' bolsas abiertas' : 'sin bolsas con dato');
-    el.title = 'el estado de cada bolsa va en su propio cuadro: con ocho husos, un solo chip mentiría en alguno';
+    el.title = 'el estado de cada bolsa va en el encabezado de su región: con trece husos, un solo chip mentiría en alguno';
+  }
+
+  function pintarMonedaToggle(){
+    var t = document.getElementById('moneda');
+    t.hidden = (estado.mapa !== 'mundo');
+    if(t.hidden) return;
+    t.innerHTML = [['usd','Local'],['mxn','MXN']].map(function(x){
+      return '<button type="button" data-mon="'+x[0]+'" aria-pressed="'+(x[0]===estado.moneda)+'">'+x[1]+'</button>';
+    }).join('');
   }
 
   function pintarPieMundo(d){
     var gen = d && d.generated_at ? new Date(d.generated_at) : null;
     document.getElementById('pie').textContent =
-      'fuente: yahoo v8/chart vía /api/macro-markets (precio y serie; los % los calcula esta pantalla)'
+      'fuente: yahoo v8/chart vía /api/macro-markets · índices con retraso · el estado (abierto/cerrado) es por bolsa, no global'
+      + (estado.moneda==='mxn' && d && d.fix && d.fix.fecha ? ' · pesos con el FIX de Banxico del ' + d.fix.fecha : '')
       + (gen && Number.isFinite(gen.getTime()) ? ' · generado ' + gen.toLocaleString('es-MX') : '')
       + ' · Información, no asesoría';
   }
@@ -712,19 +853,23 @@
     var c = null;
     m.regiones.forEach(function(r){ r.cuadros.forEach(function(x){ if(x.symbol===symbol) c = x; }); });
     if(!c) return;
-    var x = cambioMundo(c);
+    var local = cambioLocal(c);
+    var mx = enPesosDe(c, d);
     var e = estadoDeCuadro(c);
     var filas = [
-      ['cambio', qdPctTag(x.pct, estado.periodo, { motivo: x.motivo })],
-      ['nivel', esc(fmtPrice(c.precio)) + (c.moneda ? ' ' + esc(c.moneda) : '')],
+      ['cambio local', qdPctTag(local.pct, estado.periodo, { motivo: local.motivo })],
+      // La línea que el encargo pide que se active en la hoja.
+      [ETIQUETA_PESOS, qdPctTag(mx.pct, estado.periodo, { motivo: mx.motivo })],
+      ['nivel', esc((c.prefijo||'') + fmtPrice(c.precio)) + (c.moneda ? ' ' + esc(c.moneda) : '')],
+      ['país', esc(c.pais || '—')],
       ['bolsa', esc(c.es24h ? 'cotiza 24h' : (e.nombre || c.bolsa))],
       ['estado', esc(e.etiqueta) + (e.hora_local ? ' · ' + esc(e.hora_local) + ' local' : '')],
       ['último cierre', esc(c.ultimo_cierre || '—')],
       ['fuente', esc(c.fuente)],
       ['cierres traídos', String(c.puntos || 0)]
     ];
-    // La moneda que manda es la que declaró la fuente. Si no es la esperada, se
-    // dice: convertir con la suposición es lo que puso a TSM del tamaño de NVDA.
+    // Cada número en pesos dice qué FIX usó y de qué fecha (regla 3).
+    if(mx.fuente) filas.push(['fuente del peso', esc(mx.fuente)]);
     if(c.moneda_discrepa){
       filas.push(['moneda', esc(c.moneda) + ' (se esperaba ' + esc(c.moneda_esperada) + ')']);
     }
@@ -732,15 +877,19 @@
       '<div class="ficha"><div class="iniciales">' + esc(String(c.symbol).replace(/[^A-Za-z0-9]/g,'').slice(0,4)) + '</div>'
       + '<div><h2>' + esc(c.nombre) + '</h2><div class="sub">' + esc(c.symbol) + '</div></div></div>'
       + '<dl>' + filas.map(function(f){ return '<dt>'+f[0]+'</dt><dd>'+f[1]+'</dd>'; }).join('') + '</dl>'
-      + (x.motivo ? '<div class="motivo">' + esc(x.motivo) + '</div>' : '');
+      + (mx.motivo ? '<div class="motivo">' + esc(mx.motivo) + '</div>' : '');
     var h = document.getElementById('hoja');
     h.setAttribute('data-abierta','1'); h.setAttribute('aria-hidden','false');
   }
 
   // Tap en un cuadro de Mundo → la hoja, igual que en el mapa.
   document.getElementById('mundo').addEventListener('click', function(ev){
-    var t = ev.target.closest('.idx'); if(!t) return;
+    var t = ev.target.closest('.c'); if(!t) return;
     estado.symbol = t.dataset.sym; escribirUrl(true); abrirHojaMundo(cache.mundo, estado.symbol);
+  });
+  document.getElementById('moneda').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-mon]'); if(!b) return;
+    estado.moneda = b.dataset.mon; escribirUrl(true); render();
   });
 
   // ── Carga: UNA petición por mapa, y el toggle no vuelve a pedir ───
@@ -752,12 +901,40 @@
     // existe y ya está cacheado para toda la base de usuarios, que además no
     // devuelve ningún porcentaje pre-cocinado (regla 1).
     if(mapa==='mundo'){
-      fetch('/api/macro-markets')
-        .then(function(r){ return r.json(); })
-        .then(function(d){ cache.mundo = d; render(); })
-        .catch(function(e){
-          document.getElementById('pie').textContent = 'no se pudo cargar Mundo: ' + e.message;
-        });
+      // DOS batches, no uno por cuadro: los índices y el FIX. La regla 7
+      // prohíbe un fetch por cuadro, y el toggle de moneda NO vuelve a pedir
+      // nada — el FIX viaja desde la primera carga, con su fecha.
+      //
+      // El FIX se pide aparte porque es otra fuente: Yahoo da el dólar de
+      // mercado (`MXN=X`, que es el CUADRO) y Banxico da el FIX, que es el
+      // número oficial con el que se convierte. Mezclarlos sería pintar una
+      // conversión y atribuírsela a la otra fuente.
+      Promise.all([
+        fetch('/api/macro-markets').then(function(r){ return r.json(); }),
+        fetch('/api/banxico?series=USDMXN&days=420')
+          .then(function(r){ return r.json(); })
+          .catch(function(e){ return { error: e.message }; })
+      ]).then(function(rs){
+        var d = rs[0] || {};
+        var b = rs[1] || {};
+        var pts = (b && Array.isArray(b.points)) ? b.points : null;
+        if(pts && pts.length >= 2){
+          d.fix = {
+            fecha: b.latest ? b.latest.date : pts[pts.length-1].date,
+            valor: b.latest ? b.latest.value : pts[pts.length-1].value,
+            // A la forma que `qdPeriodChange` entiende. Un solo calculador,
+            // también para el tipo de cambio.
+            serie: pts.map(function(x){ return { t: Date.parse(x.date + 'T12:00:00Z')/1000, c: x.value }; })
+          };
+        } else {
+          // Sin FIX no hay rendimiento en pesos, y se dice: nunca se convierte
+          // con el dólar de mercado como sustituto silencioso.
+          d.fix = { motivo: 'no llegó el FIX de Banxico' + (b && b.error ? ' (' + b.error + ')' : '') };
+        }
+        cache.mundo = d; render();
+      }).catch(function(e){
+        document.getElementById('pie').textContent = 'no se pudo cargar Mundo: ' + e.message;
+      });
       return;
     }
     fetch('/api/mercado-mapa?map='+encodeURIComponent(mapa))

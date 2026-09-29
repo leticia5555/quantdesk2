@@ -25,11 +25,14 @@ const conTodo = () => {
 
 test('las cuatro regiones del encargo, en orden y con su nombre', () => {
   assert.deepEqual(REGIONES.map((r) => r.nombre),
-    ['América', 'Europa', 'Asia', 'Cripto · FX · materias primas']);
+    ['América', 'Europa', 'Asia', 'Cripto · FX · Materias primas']);
 });
 
 test('los cruces de moneda son INSUMO y no ocupan cuadro', () => {
-  assert.deepEqual(SOLO_INSUMO.sort(), ['BRL=X', 'GBPUSD=X', 'HKD=X', 'KRW=X']);
+  // Once monedas con cruce declarado: las cuatro de R2(a) más las cinco que
+  // trajo el artboard 4 (CAD, COP, CNY, INR, AUD) y el euro.
+  assert.deepEqual(SOLO_INSUMO.sort(),
+    ['AUD=X', 'BRL=X', 'CAD=X', 'CNY=X', 'COP=X', 'EURUSD=X', 'GBPUSD=X', 'HKD=X', 'INR=X', 'JPY=X', 'KRW=X']);
   const m = armaMundo({ data: conTodo() });
   const pintados = m.regiones.flatMap((r) => r.cuadros.map((c) => c.symbol));
   for (const s of SOLO_INSUMO) assert.ok(!pintados.includes(s), `${s} no debería tener cuadro`);

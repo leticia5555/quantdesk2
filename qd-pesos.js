@@ -39,7 +39,7 @@
 // hay es una ausencia: `rendimientoEnPesos(null, 10)` devolvía +10% como si el
 // activo hubiera estado plano. Quinta vez que esta coerción cuesta un bug en
 // este proyecto, y la primera que una prueba la caza antes de subirla.
-const num = (v) => {
+const numPesos = (v) => {
   if (v === null || v === undefined || v === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
@@ -57,8 +57,8 @@ const ETIQUETA_PESOS = 'rendimiento en pesos';
  * su motivo, porque un rendimiento a medias no es un rendimiento.
  */
 function rendimientoEnPesos(pctLocal, pctMonedaMxn) {
-  const rl = num(pctLocal);
-  const rm = num(pctMonedaMxn);
+  const rl = numPesos(pctLocal);
+  const rm = numPesos(pctMonedaMxn);
   if (rl == null) return { pct: null, motivo: 'falta el rendimiento local del activo' };
   if (rm == null) return { pct: null, motivo: 'falta el rendimiento de la moneda contra el peso' };
   const pct = ((1 + rl / 100) * (1 + rm / 100) - 1) * 100;
@@ -90,11 +90,11 @@ function cruceContraPeso(moneda, { usdMxnPct, usdPorUnidadPct } = {}) {
   if (!m) return { pct: null, motivo: 'el activo no declara en qué moneda cotiza' };
   if (m === 'MXN') return { pct: 0, via: 'mxn_es_el_peso', motivo: null };
 
-  const fix = num(usdMxnPct);
+  const fix = numPesos(usdMxnPct);
   if (fix == null) return { pct: null, via: null, motivo: 'no hay rendimiento del FIX USD/MXN para este periodo' };
   if (m === 'USD') return { pct: fix, via: 'fix', motivo: null };
 
-  const u = num(usdPorUnidadPct);
+  const u = numPesos(usdPorUnidadPct);
   if (u == null) {
     return {
       pct: null, via: null,
@@ -118,7 +118,7 @@ function enPesos({ pctLocal, moneda, usdMxnPct, usdPorUnidadPct, fix = null } = 
   const cruce = cruceContraPeso(moneda, { usdMxnPct, usdPorUnidadPct });
   if (cruce.pct == null) {
     return {
-      pct: null, local_pct: num(pctLocal), moneda: String(moneda || '').toUpperCase() || null,
+      pct: null, local_pct: numPesos(pctLocal), moneda: String(moneda || '').toUpperCase() || null,
       etiqueta: ETIQUETA_PESOS, fuente: null, motivo: cruce.motivo,
     };
   }
@@ -132,7 +132,7 @@ function enPesos({ pctLocal, moneda, usdMxnPct, usdPorUnidadPct, fix = null } = 
     fuente: r.pct == null ? null
       : (fix && fix.fecha ? `calc: banxico:${fix.serie || 'SF43718'} (FIX del ${fix.fecha})` : 'calc: banxico:SF43718 (FIX sin fecha declarada)'),
     fix_fecha: fix && fix.fecha ? fix.fecha : null,
-    fix_valor: fix && num(fix.valor) != null ? num(fix.valor) : null,
+    fix_valor: fix && numPesos(fix.valor) != null ? numPesos(fix.valor) : null,
   };
 }
 

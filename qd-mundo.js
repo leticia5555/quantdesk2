@@ -13,7 +13,7 @@
 // color.
 //
 // ── QUÉ NO ESTÁ EN MUNDO, Y POR QUÉ ───────────────────────────────────
-// `/api/macro-markets` trae 23 símbolos y acá se pintan 15. Los otros ocho no
+// `/api/macro-markets` trae 39 símbolos y acá se pintan 18. Los demás no
 // se esconden: se declaran.
 //
 //   · `^VIX`, `^TNX`, `2YY=F`, `^TYX` — la volatilidad y las tasas del Tesoro
@@ -34,54 +34,100 @@
 // 'pronto', no fingir".
 // ═══════════════════════════════════════════════════════════════════════
 
-/** Las cuatro regiones, en el orden en que se pintan. */
+/** Las cuatro regiones, en el orden en que se pintan (artboard 4). */
 const REGIONES = [
   { clave: 'america', nombre: 'América' },
   { clave: 'europa', nombre: 'Europa' },
   { clave: 'asia', nombre: 'Asia' },
-  { clave: 'otros', nombre: 'Cripto · FX · materias primas' },
+  { clave: 'otros', nombre: 'Cripto · FX · Materias primas' },
 ];
 
 /**
- * Un renglón por símbolo: cómo se llama en español, en qué región va, y en qué
- * bolsa cotiza —o `24h` si no abre ni cierra, que es la etiqueta que Lety pidió
- * para futuros, divisas y cripto.
+ * CÓMO SE LLEGA DE CADA MONEDA AL PESO.
  *
- * `moneda` es la que se ESPERA; la que manda es la que el endpoint devuelve en
- * `currency`. Si no coinciden, el cuadro lo dice en vez de convertir con la
- * suposición: es la misma lección del ADR que salía del tamaño de NVDA.
+ * `qd-pesos.js` necesita el rendimiento de "unidades de la moneda por dólar"
+ * para armar el cruce. Yahoo publica las divisas de dos formas y confundirlas
+ * invierte el signo del cruce:
+ *
+ *   · `JPY=X`, `KRW=X`, `CAD=X`… → YENES POR DÓLAR. Se usa tal cual.
+ *   · `EURUSD=X`, `GBPUSD=X`     → DÓLARES POR EURO. Hay que invertir.
+ *
+ * Así que la forma va declarada por moneda y no se adivina del nombre del
+ * símbolo. `MXN` no tiene entrada porque el cruce del peso contra el peso es 0,
+ * y `USD` tampoco porque ahí el cruce ES el FIX.
+ */
+const MONEDAS = {
+  JPY: { symbol: 'JPY=X', invertir: false },
+  KRW: { symbol: 'KRW=X', invertir: false },
+  HKD: { symbol: 'HKD=X', invertir: false },
+  BRL: { symbol: 'BRL=X', invertir: false },
+  CAD: { symbol: 'CAD=X', invertir: false },
+  COP: { symbol: 'COP=X', invertir: false },
+  CNY: { symbol: 'CNY=X', invertir: false },
+  INR: { symbol: 'INR=X', invertir: false },
+  AUD: { symbol: 'AUD=X', invertir: false },
+  EUR: { symbol: 'EURUSD=X', invertir: true },
+  GBP: { symbol: 'GBPUSD=X', invertir: true },
+};
+
+/**
+ * Los 18 cuadros del artboard 4: nombre, PAÍS, región, bolsa y moneda.
+ *
+ * `tipo` decide qué va en la línea chica: en un índice va el rendimiento local
+ * —"local +0.7%"— y en Bitcoin, el dólar y el oro va el PRECIO, como en el
+ * mockup ("$114,240", "18.21", "$3,684"). Un índice no tiene precio que
+ * mostrar: 45,800 puntos del Nikkei no son pesos ni dólares.
+ *
+ * `moneda` es la que se ESPERA; manda la que el endpoint declara en `currency`.
+ * Si no coinciden, el cuadro lo dice en vez de convertir con la suposición.
  */
 const CATALOGO = [
   // ── América ─────────────────────────────────────────────────────────
-  { symbol: '^MXX', nombre: 'IPC', region: 'america', bolsa: 'bmv', moneda: 'MXN' },
-  { symbol: '^BVSP', nombre: 'Bovespa', region: 'america', bolsa: 'saopaulo', moneda: 'BRL' },
-  { symbol: 'ES=F', nombre: 'S&P 500 fut.', region: 'america', bolsa: '24h', moneda: 'USD' },
-  { symbol: 'NQ=F', nombre: 'Nasdaq 100 fut.', region: 'america', bolsa: '24h', moneda: 'USD' },
-  { symbol: 'YM=F', nombre: 'Dow fut.', region: 'america', bolsa: '24h', moneda: 'USD' },
+  { symbol: '^GSPC', nombre: 'S&P 500', pais: 'EE.UU.', region: 'america', bolsa: 'nyse', moneda: 'USD' },
+  { symbol: '^NDX', nombre: 'Nasdaq 100', pais: 'EE.UU.', region: 'america', bolsa: 'nyse', moneda: 'USD' },
+  { symbol: '^MXX', nombre: 'IPC', pais: 'México', region: 'america', bolsa: 'bmv', moneda: 'MXN' },
+  { symbol: '^BVSP', nombre: 'Bovespa', pais: 'Brasil', region: 'america', bolsa: 'saopaulo', moneda: 'BRL' },
+  { symbol: '^GSPTSE', nombre: 'S&P/TSX', pais: 'Canadá', region: 'america', bolsa: 'toronto', moneda: 'CAD' },
+  // COLCAP: no pude verificar el ticker desde acá (sin salida a Yahoo). Si
+  // `^COLCAP` no existe, el cuadro sale "sin dato" con su causa y se arregla
+  // con un renglón — no se inventa un número ni se esconde el hueco.
+  { symbol: '^COLCAP', nombre: 'COLCAP', pais: 'Colombia', region: 'america', bolsa: 'bogota', moneda: 'COP', sin_verificar: true },
   // ── Europa ──────────────────────────────────────────────────────────
-  { symbol: '^GDAXI', nombre: 'DAX', region: 'europa', bolsa: 'francfort', moneda: 'EUR' },
-  { symbol: '^FTSE', nombre: 'FTSE 100', region: 'europa', bolsa: 'londres', moneda: 'GBP' },
+  { symbol: '^GDAXI', nombre: 'DAX', pais: 'Alemania', region: 'europa', bolsa: 'francfort', moneda: 'EUR' },
+  { symbol: '^FTSE', nombre: 'FTSE 100', pais: 'Reino Unido', region: 'europa', bolsa: 'londres', moneda: 'GBP' },
+  { symbol: '^FCHI', nombre: 'CAC 40', pais: 'Francia', region: 'europa', bolsa: 'paris', moneda: 'EUR' },
   // ── Asia ────────────────────────────────────────────────────────────
-  { symbol: '^N225', nombre: 'Nikkei 225', region: 'asia', bolsa: 'tokio', moneda: 'JPY' },
-  { symbol: '^KS11', nombre: 'KOSPI', region: 'asia', bolsa: 'seul', moneda: 'KRW' },
-  { symbol: '^HSI', nombre: 'Hang Seng', region: 'asia', bolsa: 'hongkong', moneda: 'HKD' },
-  // ── Cripto · FX · materias primas ───────────────────────────────────
-  { symbol: 'DX-Y.NYB', nombre: 'Índice dólar', region: 'otros', bolsa: '24h', moneda: 'USD' },
-  { symbol: 'EURUSD=X', nombre: 'EUR/USD', region: 'otros', bolsa: '24h', moneda: 'USD' },
-  { symbol: 'JPY=X', nombre: 'USD/JPY', region: 'otros', bolsa: '24h', moneda: 'JPY' },
-  { symbol: 'CL=F', nombre: 'Petróleo WTI', region: 'otros', bolsa: '24h', moneda: 'USD' },
-  { symbol: 'BZ=F', nombre: 'Petróleo Brent', region: 'otros', bolsa: '24h', moneda: 'USD' },
+  { symbol: '^N225', nombre: 'Nikkei 225', pais: 'Japón', region: 'asia', bolsa: 'tokio', moneda: 'JPY' },
+  { symbol: '^KS11', nombre: 'KOSPI', pais: 'Corea', region: 'asia', bolsa: 'seul', moneda: 'KRW' },
+  { symbol: '^HSI', nombre: 'Hang Seng', pais: 'Hong Kong', region: 'asia', bolsa: 'hongkong', moneda: 'HKD' },
+  { symbol: '000001.SS', nombre: 'Shanghai', pais: 'China', region: 'asia', bolsa: 'shanghai', moneda: 'CNY' },
+  { symbol: '^NSEI', nombre: 'Nifty 50', pais: 'India', region: 'asia', bolsa: 'mumbai', moneda: 'INR' },
+  { symbol: '^AXJO', nombre: 'ASX 200', pais: 'Australia', region: 'asia', bolsa: 'sidney', moneda: 'AUD' },
+  // ── Cripto · FX · Materias primas ───────────────────────────────────
+  { symbol: 'BTC-USD', nombre: 'Bitcoin', pais: 'BTC/USD', region: 'otros', bolsa: '24h', moneda: 'USD', tipo: 'precio', prefijo: '$' },
+  { symbol: 'MXN=X', nombre: 'USD/MXN', pais: 'peso', region: 'otros', bolsa: '24h', moneda: 'MXN', tipo: 'precio' },
+  { symbol: 'GC=F', nombre: 'Oro', pais: 'USD/oz', region: 'otros', bolsa: '24h', moneda: 'USD', tipo: 'precio', prefijo: '$' },
   // ── Insumos del rendimiento en pesos: NO ocupan cuadro ──────────────
   { symbol: 'GBPUSD=X', nombre: 'GBP/USD', region: null, bolsa: '24h', moneda: 'USD', solo_insumo: true },
+  { symbol: 'EURUSD=X', nombre: 'EUR/USD', region: null, bolsa: '24h', moneda: 'USD', solo_insumo: true },
+  { symbol: 'JPY=X', nombre: 'USD/JPY', region: null, bolsa: '24h', moneda: 'JPY', solo_insumo: true },
   { symbol: 'KRW=X', nombre: 'USD/KRW', region: null, bolsa: '24h', moneda: 'KRW', solo_insumo: true },
   { symbol: 'HKD=X', nombre: 'USD/HKD', region: null, bolsa: '24h', moneda: 'HKD', solo_insumo: true },
   { symbol: 'BRL=X', nombre: 'USD/BRL', region: null, bolsa: '24h', moneda: 'BRL', solo_insumo: true },
+  { symbol: 'CAD=X', nombre: 'USD/CAD', region: null, bolsa: '24h', moneda: 'CAD', solo_insumo: true },
+  { symbol: 'COP=X', nombre: 'USD/COP', region: null, bolsa: '24h', moneda: 'COP', solo_insumo: true },
+  { symbol: 'CNY=X', nombre: 'USD/CNY', region: null, bolsa: '24h', moneda: 'CNY', solo_insumo: true },
+  { symbol: 'INR=X', nombre: 'USD/INR', region: null, bolsa: '24h', moneda: 'INR', solo_insumo: true },
+  { symbol: 'AUD=X', nombre: 'USD/AUD', region: null, bolsa: '24h', moneda: 'AUD', solo_insumo: true },
 ];
+
+/** Los cinco de la tira de arriba (artboard 4), en su orden. */
+const TIRA = ['^GSPC', '^MXX', '^N225', '^KS11', '^GDAXI'];
 
 /** Los símbolos que sólo sirven para el cruce contra el peso. */
 const SOLO_INSUMO = CATALOGO.filter((c) => c.solo_insumo).map((c) => c.symbol);
 
-const num = (v) => {
+const numMundo = (v) => {
   if (v === null || v === undefined || v === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
@@ -91,7 +137,7 @@ const num = (v) => {
 function ultimoDiaDeSerie(serie = []) {
   let mejor = null;
   for (const p of serie) {
-    const t = num(p && p.t);
+    const t = numMundo(p && p.t);
     if (t == null) continue;
     if (mejor == null || t > mejor) mejor = t;
   }
@@ -116,7 +162,7 @@ function armaMundo({ data = {}, catalogo = CATALOGO, regiones = REGIONES } = {})
     if (c.solo_insumo || !c.region) continue;
     const d = data[c.symbol];
     const serie = (d && Array.isArray(d.series)) ? d.series : [];
-    const precio = num(d && d.price);
+    const precio = numMundo(d && d.price);
 
     if (!d) {
       faltantes.push({ symbol: c.symbol, nombre: c.nombre, motivo: 'el endpoint no devolvió este símbolo' });
@@ -138,6 +184,11 @@ function armaMundo({ data = {}, catalogo = CATALOGO, regiones = REGIONES } = {})
     porRegion.get(c.region).push({
       symbol: c.symbol,
       nombre: c.nombre,
+      pais: c.pais || null,
+      // 'indice' → la línea chica lleva el rendimiento local; 'precio' → el
+      // precio, como en el mockup. Un índice no tiene precio que mostrar.
+      tipo: c.tipo || 'indice',
+      prefijo: c.prefijo || '',
       bolsa: c.bolsa,
       es24h: c.bolsa === '24h',
       precio,
@@ -168,5 +219,5 @@ function armaMundo({ data = {}, catalogo = CATALOGO, regiones = REGIONES } = {})
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { REGIONES, CATALOGO, SOLO_INSUMO, ultimoDiaDeSerie, armaMundo };
+  module.exports = { REGIONES, CATALOGO, MONEDAS, TIRA, SOLO_INSUMO, ultimoDiaDeSerie, armaMundo };
 }

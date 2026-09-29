@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Mercado — mundo por región</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0b0f14;font-family:"IBM Plex Sans Condensed",system-ui,sans-serif;color:#e6ebf0}
+a{color:#7cc4ff}a:hover{color:#a9d8ff}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+.c{box-sizing:border-box;height:78px;display:flex;flex-direction:column;justify-content:space-between;padding:8px 10px;color:#fff;text-decoration:none;border:1px solid #0b0f14;position:relative;overflow:hidden}
+.c .n{font-size:12px;font-weight:600;line-height:1.1}
+.c .r{font-size:10px;opacity:.85}
+.c .v{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:16px;font-weight:600;line-height:1}
+.c .l{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10px;opacity:.85}
+.reg{display:flex;align-items:baseline;justify-content:space-between;padding:12px 16px 6px;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:#9aa5b1;font-weight:600}
+.reg span{font-size:10px;letter-spacing:.04em;text-transform:none;color:#6b7785;font-weight:400}
+.grid{display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:2px;padding:0 16px}
+.up{color:#4ade80}.dn{color:#f87171}
+</style>
+</helmet>
+<div style="width: 390px; height: 900px; box-sizing: border-box; display: flex; flex-direction: column; background: #0b0f14; position: relative;">
+
+  <div style="display: flex; height: 30px; align-items: center; border-bottom: 1px solid #161c24; overflow: hidden; padding: 0 8px; font-size: 11px; white-space: nowrap;">
+    <div class="mono" style="display: flex; gap: 14px; align-items: center;">
+      <span><b style="color:#9aa5b1;font-weight:500">SPX</b> <span class="up">+0.72%</span></span>
+      <span><b style="color:#9aa5b1;font-weight:500">IPC</b> <span class="dn">-0.31%</span></span>
+      <span><b style="color:#9aa5b1;font-weight:500">NIKKEI</b> <span class="up">+0.4%</span></span>
+      <span><b style="color:#9aa5b1;font-weight:500">KOSPI</b> <span class="up">+1.1%</span></span>
+      <span><b style="color:#9aa5b1;font-weight:500">DAX</b> <span class="dn">-0.2%</span></span>
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px 6px;">
+    <div style="display: flex; flex-direction: column; gap: 2px;">
+      <div style="font-size: 20px; font-weight: 700; letter-spacing: -0.01em;">El mundo, ahora</div>
+      <div style="font-size: 11px; color: #9aa5b1;">dom 20 sep · <span style="color:#f59e0b">cierre del viernes</span> · Asia abre lun 18:00 CT</div>
+    </div>
+    <span style="font-size: 9px; letter-spacing: .08em; padding: 3px 6px; border: 1px solid #f59e0b; color: #f59e0b; border-radius: 3px; text-transform: uppercase;">Datos de ejemplo</span>
+  </div>
+
+  <div style="display: flex; padding: 0 12px; gap: 6px; height: 36px; align-items: center;">
+    <button style="height: 30px; padding: 0 14px; border-radius: 15px; border: 1px solid #222a35; background: transparent; color: #c9d1d9; font: 600 13px 'IBM Plex Sans Condensed', sans-serif;">EE.UU.</button>
+    <button style="height: 30px; padding: 0 14px; border-radius: 15px; border: 1px solid #222a35; background: transparent; color: #c9d1d9; font: 600 13px 'IBM Plex Sans Condensed', sans-serif;">México</button>
+    <button style="height: 30px; padding: 0 14px; border-radius: 15px; border: 1px solid #2b8a3e; background: #14351f; color: #86efac; font: 600 13px 'IBM Plex Sans Condensed', sans-serif;">Mundo</button>
+    <div style="flex: 1;"></div>
+    <button aria-label="Compartir imagen" style="width: 30px; height: 30px; border-radius: 15px; border: 1px solid #222a35; background: transparent; color: #c9d1d9; display: flex; align-items: center; justify-content: center;">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v13"/></svg>
+    </button>
+  </div>
+
+  <div style="display: flex; padding: 4px 12px 4px; align-items: center; justify-content: space-between;">
+    <div class="mono" style="display: flex; border: 1px solid #222a35; border-radius: 4px; overflow: hidden; font-size: 11px;">
+      <span style="padding: 4px 10px; background: #1c2531; color: #fff;">1D</span>
+      <span style="padding: 4px 10px; color: #9aa5b1;">1S</span>
+      <span style="padding: 4px 10px; color: #9aa5b1;">1M</span>
+      <span style="padding: 4px 10px; color: #9aa5b1;">YTD</span>
+    </div>
+    <div class="mono" style="display: flex; border: 1px solid #222a35; border-radius: 4px; overflow: hidden; font-size: 11px;">
+      <span style="padding: 4px 10px; color: #9aa5b1;">Local</span>
+      <span style="padding: 4px 10px; background: #1c2531; color: #fff;">MXN</span>
+    </div>
+  </div>
+  <div style="padding: 0 16px 4px; font-size: 10px; color: #f59e0b;">Rendimiento en pesos: índice local convertido con su tipo de cambio del periodo</div>
+
+  <div class="reg">América <span>tamaño fijo · color = 1D</span></div>
+  <div class="grid">
+    <a class="c" href="Sheet.dc.html" style="background:#166534"><div><div class="n">S&amp;P 500</div><div class="r">EE.UU.</div></div><div><div class="v">+0.3%</div><div class="l">local +0.7%</div></div></a>
+    <a class="c" href="Sheet.dc.html" style="background:#166534"><div><div class="n">Nasdaq 100</div><div class="r">EE.UU.</div></div><div><div class="v">+0.3%</div><div class="l">local +0.7%</div></div></a>
+    <a class="c" href="Sheet.dc.html" style="background:#374151"><div><div class="n">IPC</div><div class="r">México</div></div><div><div class="v">-0.3%</div><div class="l">local -0.3%</div></div></a>
+    <a class="c" href="Sheet.dc.html" style="background:#166534"><div><div class="n">Bovespa</div><div class="r">Brasil</div></div><div><div class="v">+0.6%</div><div class="l">local +0.9%</div></div></a>
+    <a class="c" href="Sheet.dc.html" style="background:#374151"><div><div class="n">S&amp;P/TSX</div><div class="r">Canadá</div></div><div><div class="v">+0.1%</div><div class="l">local +0.4%</div></div></a>
+    <a class="c" href="Sheet.dc.html" style="background:#991b1b"><div><div class="n">COLCAP</div><div class="r">Colombia</div></div><div><div class="v">-0.8%</div><div class="l">local -0.5%</div></div></a>
+  </div>
+
+  <div class="reg">Europa <span>cerrado · cierre vie</span></div>
+  <div class="grid">
+    <a class="c" href="Sheet.dc.html" style="background:#374151"><div><div class="n">DAX</div><div class="r">Alemania</div></div><div><div class="v">-0.4%</div><div class="l">local -0.2%</div></div></a>
+    <a class="c" href="Sheet.dc.html" style="background:#374151"><div><div class="n">FTSE 100</div><div class="r">Reino Unido</div></div><div><div class="v">+0.0%</div><div class="l">local +0.2%</div></div></a>
+    <a class="c" href="Sheet.dc.html" style="background:#991b1b"><div><div class="n">CAC 40</div><div class="r">Francia</div></div><div><div class="v">-0.9%</div><div class="l">local -0.7%</div></div></a>
+  </div>
+
+  <div class="reg">Asia <span>abre lun 18:00 CT</span></div>
+  <div class="grid">
+    <a class="c" href="Sheet.dc.html" style="background:#166534"><div><div class="n">Nikkei 225</div><div class="r">Japón</div></div><div><div class="v">+0.8%</div><div class="l">local +0.4%</div></div></a>
+    <a class="c" href="Sheet.dc.html" style="background:#15803d"><div><div class="n">KOSPI</div><div class="r">Corea</div></div><div><div class="v">+1.5%</div><div class="l">local +1.1%</div></div></a>
+    <a class="c" href="Sheet.dc.html" style="background:#991b1b"><div><div class="n">Hang Seng</div><div class="r">Hong Kong</div></div><div><div class="v">-1.1%</div><div class="l">local -0.9%</div></div></a>
+    <a class="c" href="Sheet.dc.html" style="background:#374151"><div><div class="n">Shanghai</div><div class="r">China</div></div><div><div class="v">+0.2%</div><div class="l">local +0.3%</div></div></a>
+    <a class="c" href="Sheet.dc.html" style="background:#166534"><div><div class="n">Nifty 50</div><div class="r">India</div></div><div><div class="v">+0.5%</div><div class="l">local +0.6%</div></div></a>
+    <a class="c" href="Sheet.dc.html" style="background:#374151"><div><div class="n">ASX 200</div><div class="r">Australia</div></div><div><div class="v">-0.2%</div><div class="l">local +0.1%</div></div></a>
+  </div>
+
+  <div class="reg">Cripto · FX · Materias primas <span>24/7 · abierto</span></div>
+  <div class="grid">
+    <a class="c" href="Sheet.dc.html" style="background:#166534"><div><div class="n">Bitcoin</div><div class="r">BTC/USD</div></div><div><div class="v">+1.8%</div><div class="l">$114,240</div></div></a>
+    <a class="c" href="Sheet.dc.html" style="background:#991b1b"><div><div class="n">USD/MXN</div><div class="r">peso</div></div><div><div class="v">-0.4%</div><div class="l">18.21</div></div></a>
+    <a class="c" href="Sheet.dc.html" style="background:#15803d"><div><div class="n">Oro</div><div class="r">USD/oz</div></div><div><div class="v">+2.1%</div><div class="l">$3,684</div></div></a>
+  </div>
+
+  <div style="flex: 1;"></div>
+  <div style="padding: 10px 16px 14px; font-size: 10px; color: #6b7785; border-top: 1px solid #161c24; line-height: 1.5;">Yahoo Finance · índices con retraso · el estado (abierto/cerrado) es por bolsa, no global.<br><span class="mono">quantdesk · /mercado?mapa=mundo&amp;periodo=1d&amp;moneda=mxn</span></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -75,3 +75,24 @@ test('lo que la página USA de cada script está exportado', () => {
     }
   }
 });
+
+test('dos scripts clásicos no pueden declarar el MISMO nombre a nivel superior', () => {
+  // Esto tumbó Mundo una vez: `qd-pesos.js` y `qd-mundo.js` tenían los dos un
+  // `const num` de ayudante privado. En módulos ESM no pasa nada —cada uno
+  // tiene su ámbito— pero como <script> clásicos comparten el ámbito global, y
+  // dos `const` con el mismo nombre son un **SyntaxError** que tumba el
+  // SEGUNDO archivo completo. La página cargó con `enPesos` inexistente y el
+  // toggle MXN murió en silencio.
+  const vistos = new Map();
+  for (const f of scriptsDe('mercado.html')) {
+    const src = readFileSync(join(ROOT, f), 'utf8');
+    // Sólo declaraciones a nivel superior: las que empiezan en columna 0.
+    for (const m of src.matchAll(/^(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/gm)) {
+      if (!vistos.has(m[1])) vistos.set(m[1], []);
+      vistos.get(m[1]).push(f);
+    }
+  }
+  const choques = [...vistos.entries()].filter(([, fs]) => fs.length > 1);
+  assert.deepEqual(choques, [],
+    'nombres declarados dos veces: ' + choques.map(([n, fs]) => `${n} (${fs.join(', ')})`).join(' · '));
+});

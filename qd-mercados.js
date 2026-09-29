@@ -51,6 +51,13 @@ const BOLSAS = {
   francfort: { nombre: 'Fráncfort',   zona: 'Europe/Berlin',      abre: '09:00', cierra: '17:30', dias: [1, 2, 3, 4, 5] },
   londres:   { nombre: 'Londres',     zona: 'Europe/London',      abre: '08:00', cierra: '16:30', dias: [1, 2, 3, 4, 5] },
   saopaulo:  { nombre: 'São Paulo',   zona: 'America/Sao_Paulo',  abre: '10:00', cierra: '17:00', dias: [1, 2, 3, 4, 5] },
+  // ── LAS QUE EL ARTBOARD 4 AGREGÓ ─────────────────────────────────────
+  toronto:   { nombre: 'Toronto',     zona: 'America/Toronto',    abre: '09:30', cierra: '16:00', dias: [1, 2, 3, 4, 5] },
+  bogota:    { nombre: 'Bogotá',      zona: 'America/Bogota',     abre: '09:30', cierra: '15:55', dias: [1, 2, 3, 4, 5] },
+  paris:     { nombre: 'París',       zona: 'Europe/Paris',       abre: '09:00', cierra: '17:30', dias: [1, 2, 3, 4, 5] },
+  shanghai:  { nombre: 'Shanghái',    zona: 'Asia/Shanghai',      abre: '09:30', cierra: '15:00', dias: [1, 2, 3, 4, 5], almuerzo: ['11:30', '13:00'] },
+  mumbai:    { nombre: 'Bombay',      zona: 'Asia/Kolkata',       abre: '09:15', cierra: '15:30', dias: [1, 2, 3, 4, 5] },
+  sidney:    { nombre: 'Sídney',      zona: 'Australia/Sydney',   abre: '10:00', cierra: '16:00', dias: [1, 2, 3, 4, 5] },
 };
 
 /**
@@ -162,6 +169,109 @@ function estadoDeBolsa(clave, ahora = new Date(), { ultimoCierre = null, bolsas 
   };
 }
 
+/**
+ * LA PRÓXIMA APERTURA, EN HORA DE MÉXICO.
+ *
+ * El artboard 4 pide encabezados como *"Asia · abre lun 18:00 CT"*. Las dos
+ * mitades tienen trampa:
+ *
+ *   · "lun 18:00 CT" es la apertura de Tokio del lunes vista desde la Ciudad de
+ *     México, o sea **el domingo por la noche de acá**. El día que se nombra es
+ *     el de ALLÁ y la hora la de ACÁ, y mezclarlos al revés es cómo se dice
+ *     "abre el lunes" de algo que abre esta noche.
+ *   · no se busca "el próximo día hábil" con aritmética de calendario: se
+ *     avanza hora por hora preguntándole a la zona de la bolsa, así el cambio
+ *     de horario de cualquiera de los dos lados sale bien sin tabla de fechas.
+ *
+ * Devuelve `{ dia, hhmm, etiqueta }` con el día abreviado en español y la hora
+ * ya convertida a CT, o `null` si en dos semanas no hay apertura (no debería
+ * pasar; si pasa, el llamador dice "sin horario" en vez de inventar una).
+ */
+const DIAS_CORTO = ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'];
+const ZONA_CT = 'America/Mexico_City';
+
+function proximaApertura(clave, ahora = new Date(), { bolsas = BOLSAS, zonaLocal = ZONA_CT } = {}) {
+  const k = bolsas[clave] ? clave : (ALIAS_BOLSA[clave] || clave);
+  const b = bolsas[k];
+  if (!b) return null;
+  const abre = minutos(b.abre);
+  // Paso de 15 minutos: los horarios de apertura del mundo caen en :00, :15 y
+  // :30 (Bombay abre 09:15), así que 15 es el paso que no se los salta.
+  const PASO = 15 * 60 * 1000;
+  let t = ahora instanceof Date ? ahora.getTime() : new Date(ahora).getTime();
+  for (let i = 0; i < 14 * 24 * 4; i++) {
+    t += PASO;
+    const loc = horaEnZona(b.zona, new Date(t));
+    if (!b.dias.includes(loc.diaIso)) continue;
+    // El primer paso que cae justo en la apertura de un día que opera.
+    if (loc.minutos === abre) {
+      const aca = horaEnZona(zonaLocal, new Date(t));
+      return {
+        // El día es el de la bolsa; la hora, la de acá. Es lo que el mockup
+        // muestra y es lo que una persona en México necesita para poner una
+        // alarma.
+        dia: DIAS_CORTO[(loc.diaIso || 1) - 1],
+        hhmm: aca.hhmm,
+        cuando: new Date(t).toISOString(),
+        etiqueta: `abre ${DIAS_CORTO[(loc.diaIso || 1) - 1]} ${aca.hhmm} CT`,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * EL ENCABEZADO DE UNA REGIÓN: el estado de varias bolsas en una línea.
+ *
+ * El artboard pide "Europa · cerrado · cierre vie" y "Asia · abre lun 18:00
+ * CT". No es el estado de una bolsa: es el de un grupo, y el grupo no tiene
+ * horario propio. Las reglas, en orden:
+ *
+ *   · si alguna está abierta → "abierto" (y cuántas, si no son todas)
+ *   · si todas cerradas y hay próxima apertura → "abre <día> <hora> CT"
+ *   · si alguna está en horario pero sin cierre nuevo → se dice, porque es la
+ *     diferencia entre un feriado y una cosecha que no llegó
+ *
+ * Nunca se afirma "abierto" por el horario solo: cada bolsa ya trae su propio
+ * contraste contra el último cierre.
+ */
+function estadoDeRegion(claves = [], ahora = new Date(), { cierres = {}, bolsas = BOLSAS } = {}) {
+  const estados = claves
+    .filter((k) => k && k !== '24h')
+    .map((k) => estadoDeBolsa(k, ahora, { ultimoCierre: cierres[k] || null, bolsas }));
+  if (!estados.length) return { etiqueta: '24/7 · abierto', abiertas: 0, total: 0, continuo: true };
+
+  const abiertas = estados.filter((e) => e.abierta);
+  const sinCierre = estados.filter((e) => e.estado === 'sin_cierre_nuevo');
+  if (abiertas.length) {
+    return {
+      etiqueta: abiertas.length === estados.length
+        ? 'abierto'
+        : `abierto · ${abiertas.length} de ${estados.length}`,
+      abiertas: abiertas.length, total: estados.length,
+    };
+  }
+  if (sinCierre.length) {
+    return {
+      etiqueta: `en horario, sin cierre nuevo (${sinCierre.length} de ${estados.length})`,
+      abiertas: 0, total: estados.length,
+    };
+  }
+  // Todas cerradas: la próxima que abra manda el encabezado, y el día del
+  // último cierre lo acompaña porque es el dato que se está viendo.
+  let prox = null;
+  for (const e of estados) {
+    const p = proximaApertura(e.clave, ahora, { bolsas });
+    if (p && (!prox || p.cuando < prox.cuando)) prox = p;
+  }
+  const conCierre = estados.find((e) => e.ultimo_cierre);
+  const cierre = conCierre ? String(conCierre.etiqueta).replace(/^cerrado · /, '') : null;
+  return {
+    etiqueta: prox ? `cerrado · ${prox.etiqueta}` : (cierre ? `cerrado · ${cierre}` : 'cerrado'),
+    cierre, proxima: prox, abiertas: 0, total: estados.length,
+  };
+}
+
 /** Los que no abren ni cierran. La regla 4 los llama aparte a propósito. */
 function estado24h(clave = '24h') {
   return {
@@ -202,5 +312,6 @@ function qdEstadoMercado(bolsa, ahora, { ultimoCierre = null } = {}) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { BOLSAS, ALIAS_BOLSA, ETIQUETA_24H, horaEnZona, estadoDeBolsa, estado24h, qdEstadoMercado };
+  module.exports = { BOLSAS, ALIAS_BOLSA, ETIQUETA_24H, ZONA_CT, DIAS_CORTO,
+    horaEnZona, estadoDeBolsa, estado24h, qdEstadoMercado, proximaApertura, estadoDeRegion };
 }

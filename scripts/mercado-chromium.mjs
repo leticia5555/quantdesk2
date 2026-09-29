@@ -137,13 +137,30 @@ function serieAnual(base, drift) {
 }
 const MACRO = {
   data: {
+    '^GSPC': { price: 6810, currency: 'USD', series: serieAnual(6100, 0.115) },
+    '^NDX': { price: 25100, currency: 'USD', series: serieAnual(22000, 0.14) },
+    '^GSPTSE': { price: 29400, currency: 'CAD', series: serieAnual(28000, 0.05) },
+    '^FCHI': { price: 8100, currency: 'EUR', series: serieAnual(7900, 0.025) },
+    '000001.SS': { price: 3820, currency: 'CNY', series: serieAnual(3500, 0.09) },
+    '^NSEI': { price: 26800, currency: 'INR', series: serieAnual(25200, 0.063) },
+    '^AXJO': { price: 8950, currency: 'AUD', series: serieAnual(8600, 0.04) },
+    // COLCAP a propósito AUSENTE: no pude verificar su ticker, y lo que tiene
+    // que pasar entonces es que el cuadro diga por qué no está.
+    'BTC-USD': { price: 114240, currency: 'USD', series: serieAnual(98000, 0.165) },
+    'MXN=X': { price: 18.21, currency: 'MXN', series: serieAnual(19.4, -0.061) },
+    'GC=F': { price: 3684, currency: 'USD', series: serieAnual(3100, 0.188) },
+    'CAD=X': { price: 1.38, currency: 'CAD', series: serieAnual(1.42, -0.028) },
+    'COP=X': { price: 3980, currency: 'COP', series: serieAnual(4200, -0.052) },
+    'CNY=X': { price: 7.06, currency: 'CNY', series: serieAnual(7.2, -0.019) },
+    'INR=X': { price: 88.4, currency: 'INR', series: serieAnual(86, 0.028) },
+    'AUD=X': { price: 1.49, currency: 'AUD', series: serieAnual(1.53, -0.026) },
     '^MXX': { price: 56200, currency: 'MXN', series: serieAnual(52000, 0.08) },
     '^BVSP': { price: 139000, currency: 'BRL', series: serieAnual(132000, 0.05) },
     'ES=F': { price: 6120, currency: 'USD', series: serieAnual(5800, 0.055) },
     'NQ=F': { price: 22400, currency: 'USD', series: serieAnual(20500, 0.09) },
     'YM=F': { price: 45200, currency: 'USD', series: serieAnual(44000, 0.027) },
     '^GDAXI': { price: 24100, currency: 'EUR', series: serieAnual(22000, 0.095) },
-    '^FTSE': { price: 9450, currency: 'GBP', series: [{ t: Date.parse('2026-09-21T20:00:00Z') / 1000, c: 9450 }] },
+    '^FTSE': { price: 9450, currency: 'GBP', series: serieAnual(9100, 0.038) },
     '^N225': { price: 45800, currency: 'JPY', series: serieAnual(42000, 0.09) },
     '^KS11': { price: 3480, currency: 'KRW', series: serieAnual(3600, -0.033) },
     '^HSI': { price: 26100, currency: 'HKD', series: serieAnual(25000, 0.044) },
@@ -216,6 +233,24 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/__sin-auditar') {
     sinAuditar = url.searchParams.get('v') === '1';
     res.writeHead(200); return res.end('ok');
+  }
+  if (url.pathname === '/api/banxico') {
+    pedidosApi++;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    // El FIX es DIARIO y sólo de días hábiles. 300 puntos de ~420 días
+    // naturales es lo que Banxico devuelve de verdad, y con eso YTD alcanza.
+    const pts = [];
+    const fin = Date.parse('2026-09-21T12:00:00Z');
+    for (let i = 420; i >= 0; i--) {
+      const d = new Date(fin - i * 86400000);
+      const dow = d.getUTCDay();
+      if (dow === 0 || dow === 6) continue;
+      pts.push({ date: d.toISOString().slice(0, 10), value: +(19.4 * (1 - 0.061 * (420 - i) / 420)).toFixed(4) });
+    }
+    return res.end(JSON.stringify({
+      series: 'USDMXN', code: 'SF43718', title: 'Tipo de cambio FIX',
+      points: pts, latest: pts[pts.length - 1], fetched_at: '2026-09-21T20:00:00.000Z',
+    }));
   }
   if (url.pathname === '/api/macro-markets') {
     pedidosApi++;
@@ -624,91 +659,160 @@ try {
     /3 sin capitalización verificada/.test(pie), pie);
 
   // ═══════════════════════════════════════════════════════════════════
-  // MUNDO (R2b) — rejilla por región, tamaño fijo, chip POR BOLSA
+  // MUNDO (artboard 4) — 3 columnas, 78px, 2px de gap
   // ═══════════════════════════════════════════════════════════════════
   await p.goto(`${BASE}/mercado?mapa=mundo`, { waitUntil: 'networkidle' });
-  await p.waitForSelector('#mundo .idx');
+  await p.waitForSelector('#mundo .c');
   const mundo = await p.evaluate(() => {
-    const regiones = [...document.querySelectorAll('#mundo .region')].map((r) => ({
-      titulo: (r.querySelector('h2') || {}).textContent || '',
-      cuadros: r.querySelectorAll('.idx').length,
-      aviso: (r.querySelector('.aviso-region') || {}).textContent || '',
+    const regiones = [...document.querySelectorAll('#mundo .reg')].map((r) => ({
+      titulo: (r.childNodes[0] || {}).textContent || '',
+      estado: (r.querySelector('span') || {}).textContent || '',
     }));
-    const cajas = [...document.querySelectorAll('#mundo .idx')].map((e) => {
+    const cajas = [...document.querySelectorAll('#mundo .c')].map((e) => {
       const b = e.getBoundingClientRect();
       return {
         sym: e.dataset.sym,
         w: Math.round(b.width), h: Math.round(b.height),
-        nom: (e.querySelector('.nom') || {}).textContent || '',
-        pct: (e.querySelector('.pc') || {}).textContent || '',
-        bol: (e.querySelector('.bol') || {}).textContent || '',
-        punteado: e.classList.contains('punteado'),
+        x: Math.round(b.x),
+        nom: (e.querySelector('.n') || {}).textContent || '',
+        pais: (e.querySelector('.r') || {}).textContent || '',
+        grande: (e.querySelector('.v') || {}).textContent || '',
+        chico: (e.querySelector('.l') || {}).textContent || '',
       };
     });
     return {
       regiones, cajas,
       lienzoOculto: document.getElementById('lienzo').hidden,
+      tira: [...document.querySelectorAll('#mundo .tira > span')].map((e) => e.textContent.trim()),
+      titular: (document.querySelector('#mundo .titular h1') || {}).textContent || '',
+      sub: (document.querySelector('#mundo .titular .sub') || {}).textContent || '',
+      notas: [...document.querySelectorAll('#mundo .nota')].map((e) => e.textContent),
       chip: (document.getElementById('chip') || {}).textContent || '',
       pie: (document.getElementById('pie') || {}).textContent || '',
       tab: document.getElementById('tab-mundo').getAttribute('aria-selected'),
+      monedaBotones: [...document.querySelectorAll('#moneda button')].map((b) => b.textContent),
     };
   });
 
   chequeo('la pestaña Mundo se selecciona y el treemap se apaga',
     mundo.tab === 'true' && mundo.lienzoOculto === true, JSON.stringify({ tab: mundo.tab, lienzo: mundo.lienzoOculto }));
-  chequeo('las cuatro regiones del encargo, en orden',
-    mundo.regiones.slice(0, 4).map((r) => r.titulo).join(' | ')
-      === 'América | Europa | Asia | Cripto · FX · materias primas',
-    mundo.regiones.map((r) => `${r.titulo}(${r.cuadros})`).join(' · '));
-  chequeo('un cuadro por índice, y los insumos del cruce NO ocupan cuadro',
-    mundo.cajas.length === 14
-      && !mundo.cajas.some((c) => ['GBPUSD=X', 'KRW=X', 'HKD=X', 'BRL=X'].includes(c.sym)),
-    `${mundo.cajas.length} cuadros: ${mundo.cajas.map((c) => c.sym).join(',')}`);
 
-  // TAMAÑO FIJO: es la regla 2 aplicada al tamaño. Si un cuadro fuera más
-  // grande que otro estaría afirmando algo que ningún dato sostiene.
-  const anchos = [...new Set(mundo.cajas.map((c) => c.w))];
+  // ── LAS MEDIDAS DEL ARTBOARD ───────────────────────────────────────
   const altos = [...new Set(mundo.cajas.map((c) => c.h))];
+  const columnas = [...new Set(mundo.cajas.map((c) => c.x))].length;
+  chequeo('cuadros de 78px de alto, como el mockup', altos.length === 1 && altos[0] === 78, JSON.stringify(altos));
+  chequeo('rejilla de 3 columnas', columnas === 3, `${columnas} posiciones de x distintas`);
+  const anchos = [...new Set(mundo.cajas.map((c) => c.w))];
   chequeo('TAMAÑO FIJO: todos los cuadros miden igual (los índices no tienen cap)',
-    anchos.length <= 2 && altos.length === 1, `anchos ${JSON.stringify(anchos)} altos ${JSON.stringify(altos)}`);
+    anchos.length <= 2, `anchos ${JSON.stringify(anchos)}`);
 
-  chequeo('cada cuadro lleva su nombre en español y su % con etiqueta de periodo',
-    mundo.cajas.every((c) => c.nom.length > 0) && mundo.cajas.some((c) => /1D/.test(c.pct)),
+  // ── LOS 18 ÍNDICES DEL MOCKUP ──────────────────────────────────────
+  chequeo('las cuatro regiones del encargo, en orden',
+    mundo.regiones.slice(0, 4).map((r) => r.titulo.trim()).join(' | ')
+      === 'América | Europa | Asia | Cripto · FX · Materias primas',
+    mundo.regiones.map((r) => r.titulo.trim()).join(' · '));
+  const esperados = ['^GSPC', '^NDX', '^MXX', '^BVSP', '^GSPTSE', '^GDAXI', '^FTSE', '^FCHI',
+    '^N225', '^KS11', '^HSI', '000001.SS', '^NSEI', '^AXJO', 'BTC-USD', 'MXN=X', 'GC=F'];
+  const symsMundo = mundo.cajas.map((c) => c.sym);
+  chequeo('los índices del mockup están, y los cruces de moneda NO ocupan cuadro',
+    esperados.every((e) => symsMundo.includes(e))
+      && !symsMundo.some((x) => /=X$/.test(x) && x !== 'MXN=X'),
+    `${symsMundo.length}: ${symsMundo.join(',')}`);
+  chequeo('cada cuadro lleva nombre Y país, como el mockup',
+    mundo.cajas.every((c) => c.nom.length > 0 && c.pais.length > 0),
     JSON.stringify(mundo.cajas.slice(0, 3)));
+  chequeo('el número grande es el % con su etiqueta de periodo',
+    mundo.cajas.filter((c) => /1D/.test(c.grande)).length >= 15,
+    JSON.stringify(mundo.cajas.slice(0, 2).map((c) => c.grande)));
+  chequeo('Bitcoin, el dólar y el oro llevan PRECIO abajo, no "local"',
+    ['BTC-USD', 'MXN=X', 'GC=F'].every((sym) => {
+      const c = mundo.cajas.find((x) => x.sym === sym);
+      return c && /[0-9]/.test(c.chico) && !/local/.test(c.chico);
+    }),
+    JSON.stringify(mundo.cajas.filter((c) => ['BTC-USD', 'MXN=X', 'GC=F'].includes(c.sym)).map((c) => `${c.sym}:${c.chico}`)));
 
-  // EL CHIP ES POR BOLSA. Con ocho husos en pantalla, uno global mentiría.
-  const conBolsa = mundo.cajas.filter((c) => !/24h/.test(c.bol));
-  chequeo('el chip es POR BOLSA: cada cuadro dice el estado de la suya',
-    conBolsa.length >= 5 && conBolsa.every((c) => c.bol.length > 2),
-    JSON.stringify(conBolsa.map((c) => `${c.sym}:${c.bol}`).slice(0, 5)));
-  chequeo('futuros, FX y materias primas llevan "24h", no abierto/cerrado',
-    mundo.cajas.filter((c) => /24h/.test(c.bol)).length === 8,
-    JSON.stringify(mundo.cajas.filter((c) => /24h/.test(c.bol)).map((c) => c.sym)));
-  chequeo('el chip de arriba no finge una sola bolsa: cuenta cuántas están abiertas',
-    /bolsas/.test(mundo.chip), mundo.chip);
+  // ── EL ESTADO VA EN EL ENCABEZADO DE REGIÓN, EN HORA DE MÉXICO ─────
+  chequeo('cada región dice su estado en el encabezado',
+    mundo.regiones.slice(0, 3).every((r) => r.estado.length > 3),
+    JSON.stringify(mundo.regiones.map((r) => `${r.titulo.trim()}: ${r.estado}`)));
+  chequeo('y las horas van en hora de México (CT), como pide el mockup',
+    mundo.regiones.some((r) => /CT/.test(r.estado)) || mundo.regiones.some((r) => /abierto|cierre/.test(r.estado)),
+    JSON.stringify(mundo.regiones.map((r) => r.estado)));
+  chequeo('la última región dice 24/7', /24\/7/.test(mundo.regiones[3].estado), mundo.regiones[3].estado);
 
-  // REGLA 2: lo que no se pudo pintar dice por qué.
-  chequeo('el FTSE, que llegó con un punto, sale como "sin dato" CON causa',
-    /FTSE/.test(mundo.regiones.map((r) => r.aviso).join(' '))
-      && /sin dos cierres no hay periodo/.test(mundo.regiones.map((r) => r.aviso).join(' ')),
-    mundo.regiones.map((r) => r.aviso).filter(Boolean).join(' | ').slice(0, 160));
-  chequeo('cripto no se finge: la región lo dice',
-    /cripto todavía no/.test(mundo.regiones.map((r) => r.aviso).join(' ')),
-    mundo.regiones.map((r) => r.aviso).filter(Boolean).join(' | ').slice(0, 120));
-  chequeo('el pie de Mundo declara la fuente y que los % los calcula la pantalla',
-    /macro-markets/.test(mundo.pie) && /los % los calcula/.test(mundo.pie) && /Información, no asesoría/.test(mundo.pie),
-    mundo.pie);
+  // ── LA TIRA Y EL TITULAR ───────────────────────────────────────────
+  chequeo('la tira de arriba lleva los cinco del mockup',
+    mundo.tira.length === 5 && /SPX/.test(mundo.tira[0]) && /DAX/.test(mundo.tira[4]),
+    JSON.stringify(mundo.tira));
+  chequeo('el titular dice "El mundo, ahora" con el día y el estado',
+    mundo.titular === 'El mundo, ahora' && mundo.sub.length > 8, `${mundo.titular} · ${mundo.sub}`);
 
-  // TAP REAL → la hoja, con la línea de la bolsa y su hora local.
-  await p.locator('#mundo .idx[data-sym="\\^N225"]').tap();
+  // ── REGLA 2 ────────────────────────────────────────────────────────
+  chequeo('COLCAP, que no llegó, sale con su causa en vez de desaparecer',
+    mundo.notas.join(' ').includes('COLCAP') && /no devolvió este símbolo/.test(mundo.notas.join(' ')),
+    mundo.notas.join(' | ').slice(0, 160));
+  chequeo('el pie declara la fuente y que el estado es por bolsa',
+    /macro-markets/.test(mundo.pie) && /por bolsa, no global/.test(mundo.pie)
+      && /Información, no asesoría/.test(mundo.pie), mundo.pie);
+
+  // ── R2(c): EL TOGGLE Local | MXN ───────────────────────────────────
+  chequeo('el toggle de moneda dice Local | MXN, como el mockup',
+    mundo.monedaBotones.join('|') === 'Local|MXN', JSON.stringify(mundo.monedaBotones));
+  const antesMon = pedidosApi;
+  await p.locator('#moneda button[data-mon="mxn"]').tap();
+  await p.waitForTimeout(200);
+  const mxn = await p.evaluate(() => ({
+    cajas: [...document.querySelectorAll('#mundo .c')].map((e) => ({
+      sym: e.dataset.sym,
+      grande: (e.querySelector('.v') || {}).textContent || '',
+      chico: (e.querySelector('.l') || {}).textContent || '',
+    })),
+    nota: [...document.querySelectorAll('#mundo .nota')].map((e) => e.textContent).join(' | '),
+    pie: (document.getElementById('pie') || {}).textContent || '',
+  }));
+  chequeo('en MXN el número grande cambia y el chico dice "local"',
+    mxn.cajas.filter((c) => /^local /.test(c.chico)).length >= 14,
+    JSON.stringify(mxn.cajas.slice(0, 3)));
+  chequeo('el IPC en pesos NO cambia: ya está en pesos',
+    (() => {
+      const a = mundo.cajas.find((c) => c.sym === '^MXX').grande;
+      const b = mxn.cajas.find((c) => c.sym === '^MXX').grande;
+      return a === b;
+    })(), `local ${mundo.cajas.find((c) => c.sym === '^MXX').grande} vs mxn ${mxn.cajas.find((c) => c.sym === '^MXX').grande}`);
+  chequeo('el S&P en pesos SÍ cambia: el dólar se movió contra el peso',
+    mundo.cajas.find((c) => c.sym === '^GSPC').grande !== mxn.cajas.find((c) => c.sym === '^GSPC').grande,
+    `local ${mundo.cajas.find((c) => c.sym === '^GSPC').grande} vs mxn ${mxn.cajas.find((c) => c.sym === '^GSPC').grande}`);
+  chequeo('la nota dice con qué FIX y de qué fecha se convirtió',
+    /FIX del \d{4}-\d{2}-\d{2}/.test(mxn.nota), mxn.nota.slice(0, 140));
+  chequeo('el pie también declara el FIX cuando se está en pesos',
+    /FIX de Banxico del/.test(mxn.pie), mxn.pie);
+  chequeo('el toggle de moneda no vuelve a pedir datos',
+    pedidosApi === antesMon, `${pedidosApi - antesMon} peticiones nuevas`);
+
+  // TAP REAL → la hoja, con la línea "rendimiento en pesos".
+  await p.locator('#mundo .c[data-sym="\\^N225"]').tap();
   await p.waitForSelector('.hoja[data-abierta="1"]');
   const hojaN = await p.locator('#hojaCuerpo').innerText();
-  chequeo('tap en un índice abre la hoja con su bolsa, su hora local y su fuente',
-    /Nikkei 225/.test(hojaN) && /Tokio/.test(hojaN) && /local/.test(hojaN) && /yahoo/.test(hojaN),
-    hojaN.slice(0, 180).replace(/\n/g, ' '));
-  chequeo('y la URL queda con el estado, como pide la regla 9',
-    /mapa=mundo/.test(p.url()) && /symbol=%5EN225|symbol=\^N225/.test(p.url()), p.url());
+  chequeo('la hoja de un índice trae la línea "rendimiento en pesos" y su FIX',
+    /Nikkei 225/.test(hojaN) && /rendimiento en pesos/.test(hojaN) && /banxico:SF43718/.test(hojaN),
+    hojaN.slice(0, 220).replace(/\n/g, ' '));
+  chequeo('y la bolsa con su hora local', /Tokio/.test(hojaN) && /local/.test(hojaN),
+    hojaN.slice(0, 200).replace(/\n/g, ' '));
+  chequeo('la URL lleva mapa, periodo, moneda y símbolo (regla 9)',
+    /mapa=mundo/.test(p.url()) && /moneda=mxn/.test(p.url()) && /symbol=/.test(p.url()), p.url());
   await p.locator('#cerrar').tap();
+  await p.locator('#moneda button[data-mon="usd"]').tap();
+  await p.waitForTimeout(120);
+
+  // ── NINGUNA INTERACCIÓN LANZÓ UN ERROR ─────────────────────────────
+  // La comprobación de arriba mira la consola SÓLO al cargar, y así se pasó
+  // esto: `mercado.html` no cargaba `qd-pesos.js`, así que `enPesos` no
+  // existía y el toggle MXN tiraba un ReferenceError. El render moría a
+  // mitad, la pantalla se quedaba con el contenido anterior y la página
+  // "funcionaba" — con el botón muerto. Un error que sólo aparece al TOCAR
+  // algo necesita una comprobación después de tocar todo.
+  chequeo('ninguna interacción lanzó un error de consola',
+    errores.length === 0, errores.slice(0, 3).join(' | '));
 
   await p.screenshot({ path: join(OUT, 'mercado-390-mundo.png') });
   console.log(`     → ${join(OUT, 'mercado-390-mundo.png')}`);
@@ -717,7 +821,7 @@ try {
   const antes = pedidosApi;
   await p.locator('.toggle button[data-per="YTD"]').tap();
   await p.waitForTimeout(150);
-  const ytd = await p.evaluate(() => [...document.querySelectorAll('#mundo .idx .pc')].map((e) => e.textContent));
+  const ytd = await p.evaluate(() => [...document.querySelectorAll('#mundo .c .v')].map((e) => e.textContent));
   chequeo('YTD se calcula en la pantalla, sin volver a pedir nada',
     pedidosApi === antes && ytd.some((t) => /YTD/.test(t)),
     `${pedidosApi - antes} peticiones nuevas · ${ytd.slice(0, 3).join(' ')}`);
