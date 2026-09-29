@@ -188,6 +188,28 @@ export async function readBaseline(agentId) {
   };
 }
 
+// ── EL ESTADO DEL AGENTE: halt + baseline, UNA sola lectura ─────────
+// Vivía en `api/arena-run.js`. Se movió acá el 2026-09-29 porque el camino del
+// contrato objetivo (`arena-shadow.js`) también necesita el halt, y
+// `arena-run` ya importa de `arena-shadow`: importarlo al revés sería
+// circular. El módulo compartido es el lugar donde ninguno de los dos manda.
+//
+// FAIL-SAFE DECLARADO: si la lectura falla, NO se asume detenido. Congelar un
+// agente por un hipo de Neon es peor que dejarlo correr una ronda — el breaker
+// se re-evalúa en la siguiente igual. La dirección de la falla es una decisión
+// y por eso está escrita.
+export async function leerEstadoAgente(agentId) {
+  const VACIO = { halted: false, halted_at: null, halted_reason: null, resumed_at: null, baseline_at: null, baseline_equity: null, baseline_id: null };
+  try {
+    const rows = await sql(`select halted, halted_at, halted_reason, resumed_at,
+                                   baseline_at, baseline_equity, baseline_id
+                            from arena_state where agent_id = $1`, [agentId]);
+    return rows[0] || VACIO;
+  } catch {
+    return VACIO;
+  }
+}
+
 export async function setBaseline(agentId, { at, equity, id }) {
   await sql(
     `insert into arena_state (agent_id, halted, baseline_at, baseline_equity, baseline_id)

@@ -9,7 +9,14 @@ aprieta el MISMO día de la recarga.**
 
 > ## LA PUERTA DEL HUMO, POR ESCRITO Y ANTES
 >
-> **Si UNO de los siete aborta, la temporada NO abre.** Se arregla y se vuelve
+> **El humo NO necesita que se levante el halt.** Verificado en el código y
+fijado en `tests/arena-halt-sombra.test.mjs`: el chequeo vive dentro de
+`runAgenteObjetivo` pero **atado a `vivo`**, y `/api/arena-shadow` fuerza
+`vivo: false` de forma literal. Un freno que existe para que no salgan órdenes
+no le aplica a un camino cuyo broker lanza en toda escritura — si le aplicara,
+verificar el sistema exigiría desprotegerlo.
+
+**Si UNO de los siete aborta, la temporada NO abre.** Se arregla y se vuelve
 > a correr, aunque la apertura se empuje al miércoles.
 >
 > «Ese ya casi pasaba» es literalmente lo que hicimos con la T2, y costó nueve
@@ -18,6 +25,103 @@ aprieta el MISMO día de la recarga.**
 >
 > Empujar la apertura un día cuesta una sesión de 24. Abrir con un agente roto
 > costó 24 de 24.
+
+---
+
+## 0-bis · CUANDO `ARENA_ENABLED` NO LLEGA: DIAGNÓSTICO PASO A PASO
+
+Escrito el 2026-09-29, después de que la variable no llegara y la liga corriera
+un día entero contra los libros de la T2.
+
+### Lo primero: el juez es el runtime, no el panel
+
+El panel de *Settings* de Vercel dice **qué se guardó**, no **qué ve el código
+que está atendiendo**. Son dos cosas distintas y la segunda es la que importa.
+Vercel no muestra los valores resueltos de un deployment (por diseño: son
+secretos), así que el único testigo confiable es un endpoint.
+
+```bash
+curl -s "https://quantdesk2.vercel.app/api/arena-audit?compuertas=1&key=$ARENA_ADMIN_KEY" | jq
+```
+
+```jsonc
+{
+  "build": { "sha": "…" },              // ← ¿es el commit que subiste?
+  "compuertas": {
+    "liga_habilitada": false,           // ← lo que decide
+    "ARENA_ENABLED": "0",               // ← el valor CRUDO
+    "lectura": "LA LIGA ESTÁ APAGADA…"
+  }
+}
+```
+
+**`ARENA_ENABLED` crudo distingue las dos fallas**, y por eso se publica el
+string y no solo el booleano:
+
+| lo que ves | qué significa | qué hacer |
+|---|---|---|
+| `"0"` | llegó. Está apagada | nada, seguí |
+| `null` | **la variable NO EXISTE en este deployment** | el scope, paso 1 |
+| `"1"` | existe con el valor viejo | el deployment, paso 2 |
+
+Sin `?compuertas=1` desplegado todavía, `curl -s .../api/arena` da `enabled`
+(el booleano) y alcanza para saber si está frenada, pero no distingue `null`
+de `"1"`.
+
+### Paso 1 · El SCOPE de la variable (la causa más probable)
+
+En Vercel una variable existe **por entorno**: Production, Preview,
+Development. Se marcan con casillas al crearla, y es fácil guardar una en
+Preview creyendo que es global.
+
+1. **Project → Settings → Environment Variables**
+2. buscá `ARENA_ENABLED`
+3. mirá la columna **Environments** de esa fila
+
+**Tiene que decir `Production`.** Si dice solo `Preview` o `Development`, ésa
+es la causa: la producción nunca la tuvo. Se edita la fila, se marca
+Production, se guarda — **y hace falta redesplegar**, porque el valor se
+resuelve cuando el deployment se construye.
+
+### Paso 2 · El DEPLOYMENT que atiende producción
+
+Si el scope está bien, la pregunta es si el deployment que responde es
+posterior al guardado de la variable.
+
+1. **Project → Deployments**
+2. el que tiene la etiqueta **Current** / **Production** es el que contesta
+3. mirá su **hora** y comparala con la hora en que guardaste la variable
+
+**Si el deployment es ANTERIOR al guardado, ésa es la causa.** Un valor
+guardado después de que el build arrancó no entra en ese build. El arreglo es
+**Redeploy** — y con la casilla *"Use existing Build Cache"* **desmarcada**, o
+el build puede reusar artefactos con el valor viejo.
+
+### Paso 3 · ¿Es el proyecto que creés?
+
+Poco frecuente pero pasa, y es el que más tiempo cuesta:
+
+- el dominio `quantdesk2.vercel.app` puede estar apuntando a otro proyecto o a
+  otro deployment promovido a mano;
+- **Project → Settings → Domains** dice a qué apunta;
+- el `build.sha` de la respuesta del curl contra el SHA de `main` lo confirma
+  de un lado y del otro. Si el SHA no es el que subiste, estás mirando otro
+  deployment y todo lo demás es ruido.
+
+### Y el orden, una vez arreglada
+
+```
+guardar la variable (con Production marcado)
+  → Redeploy SIN cache
+  → curl ?compuertas=1
+  → ARENA_ENABLED: "0" y liga_habilitada: false
+  → recién ahí, quitar el halt
+```
+
+> **Nunca al revés.** El halt de la base es hoy el único freno que funcionó, y
+> es el único que no depende de que un deploy llegue: vive en Neon y lo lee la
+> función que decide. Quitarlo antes de que la compuerta de arriba conteste
+> `false` es quedarse sin ningún freno verificado.
 
 ---
 

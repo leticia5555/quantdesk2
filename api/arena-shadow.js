@@ -39,6 +39,9 @@ import { gatherContext, buildSharedContext, buildTargetSystemPrompt, resolveBase
 import { parsePortfolioResponse, validateTarget, railTrims, normalizarTickersObjetivo, rescatarObjetivo, RAILS } from './_lib/arena-rails.js';
 import { orderLegs } from './_lib/arena-rebalance.js';
 import { legsAOrdenes, verificarOrdenesContraPesos, enviarOrdenes, mandaOrdenes, frenoPorTurnoverMinimo, contratoActivo, permiteCortos } from './_lib/arena-objetivo-vivo.js';
+// El estado del agente (halt + baseline). Se lee ACÁ y no solo en el llamador:
+// ver el bloque del halt en `runAgenteObjetivo`.
+import { leerEstadoAgente as getArenaState } from './_lib/arena-baseline.js';
 import { snapshotCuenta } from './_lib/arena-equity.js';
 import { registrarAperturas } from './_lib/arena-apertura.js';
 import { fetchOptionChain } from './options.js';
@@ -116,6 +119,43 @@ export function runShadowAgent(args) {
 export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier = null, deps = {}, trace = null, vivo = false, journalInsert = null, runId: runIdDado = null, esDisparador = false, evento = null }) {
   const runId = runIdDado || shadowRunId(agent.id, now);
   const base = { id: runId, run_date: marketDay(now), agent_id: agent.id, phase: 'decide', prompt_version: PROMPT_VERSION, model: agent.model };
+
+  // ── EL HALT, ADENTRO DE LA FUNCIÓN QUE DECIDE (2026-09-29) ─────────
+  // Hasta hoy el chequeo vivía SOLO en `runArenaDecide`, o sea en un LLAMADOR.
+  // Con el contrato de acciones eso estaba bien porque ahí decidía el llamador;
+  // con el contrato objetivo la función que decide es ÉSTA, y el comentario de
+  // `runArenaDecide` dice textualmente por qué eso importa: *"la guarda va en
+  // la función que DECIDE, no sólo en un llamador: un segundo llamador que se
+  // olvide de filtrar no puede volver a abrir el agujero"*.
+  //
+  // Hoy hay dos llamadores y los dos son seguros —`runArenaDecide` chequea
+  // antes, y `runShadowAgent` fuerza `vivo: false`— así que no había agujero.
+  // Pero era cierto POR ACCIDENTE: un tercer llamador con `vivo: true` lo
+  // reabría, que es exactamente el escenario del que hablaba ese comentario.
+  //
+  // ── Y POR QUÉ EL BYPASS ES `vivo` Y NO UN PARÁMETRO ───────────────
+  // El halt existe para que NO SALGAN ÓRDENES. La sombra no puede mandar una:
+  // su broker LANZA en toda escritura (ver `const broker` abajo). Un freno que
+  // existe para detener órdenes no tiene por qué aplicarle a un camino que
+  // estructuralmente no puede emitirlas — si le aplicara, verificar el sistema
+  // exigiría levantar el freno, que es lo contrario de lo que un freno es.
+  //
+  // El bypass se ata a `vivo`, que `runShadowAgent` fija en `false` de manera
+  // literal. NO es una bandera que un llamador pueda pasar para saltarse el
+  // halt en vivo: para eludirlo habría que pedir `vivo: false`, y entonces el
+  // broker que lanza viene en el mismo paquete. La excepción y la garantía son
+  // el MISMO valor.
+  if (vivo) {
+    const estadoHalt = await getArenaState(agent.id);
+    if (estadoHalt && estadoHalt.halted) {
+      return {
+        agent: agent.id, status: 'halted',
+        halted_since: estadoHalt.halted_at || null,
+        reason: estadoHalt.halted_reason || null,
+        nota: 'La corrida VIVA está detenida por el halt. La corrida de SOMBRA (`/api/arena-shadow`) sigue disponible: no puede mandar órdenes, así que el freno no le aplica.',
+      };
+    }
+  }
   // EN VIVO EL BROKER ES EL DE VERDAD. En sombra es el que LANZA en cualquier
   // escritura — ese candado es lo que hace que una sombra no pueda operar ni
   // por accidente, y por eso no se toca: se elige uno u otro acá y en ningún

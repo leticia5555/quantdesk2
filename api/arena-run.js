@@ -129,7 +129,7 @@ import { WATCH_RULES, watchCadenceActive, watchStartDate } from './_lib/arena-wa
 // EL CORTE: baseline por agente (reset) + el piso del pico del breaker.
 // Ver _lib/arena-baseline.js — SEASON_CUTOFF sigue siendo el suelo, el baseline
 // solo lo puede mover hacia ADELANTE.
-import { effectiveCutoff, breakerPeak, RESET_BASELINE_USD, readBaselines } from './_lib/arena-baseline.js';
+import { effectiveCutoff, breakerPeak, RESET_BASELINE_USD, readBaselines, leerEstadoAgente } from './_lib/arena-baseline.js';
 
 // Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
 // reglas de universo); el buffet (trimMovers) la reusa y los tests de
@@ -1570,17 +1570,12 @@ function riskDiscardActions(discarded) {
 // ── estado del agente: HALT del breaker −20% (persistente) ───────────
 // El broadcut DETIENE al agente (análogo del DEATH -20% de la flota: mata, no
 // vacía y ya). Reactivación MANUAL (runArenaResume) — nunca automática.
+// El cuerpo se movió a `_lib/arena-baseline.js` el 2026-09-29: el camino del
+// contrato objetivo también necesita el halt y no podía importarlo de acá sin
+// un ciclo. Esta firma se conserva —con su default al insignia— porque la usan
+// veinte sitios y los tests la piden por este nombre.
 export async function getArenaState(agentId = FLAGSHIP_AGENT_ID) {
-  try {
-    const rows = await sql(`select halted, halted_at, halted_reason, resumed_at,
-                                   baseline_at, baseline_equity, baseline_id
-                            from arena_state where agent_id = $1`, [agentId]);
-    return rows[0] || { halted: false, halted_at: null, halted_reason: null, resumed_at: null, baseline_at: null, baseline_equity: null, baseline_id: null };
-  } catch (e) {
-    // Fail-safe: si el estado no se puede leer, NO se asume detenido (no se
-    // congela el agente por un hipo de DB) — el breaker se re-evaluará igual.
-    return { halted: false, halted_at: null, halted_reason: null, resumed_at: null };
-  }
+  return leerEstadoAgente(agentId);
 }
 
 // ── EL CORTE EFECTIVO de un agente ───────────────────────────────────
