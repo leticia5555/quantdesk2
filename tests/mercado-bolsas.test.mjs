@@ -12,12 +12,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { BOLSAS, ETIQUETA_24H, horaEnZona, estadoDeBolsa, estado24h } from '../qd-mercados.js';
+import { createRequire } from 'node:module';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-test('las 8 bolsas de la decisión están, con zona IANA y horario', () => {
+// `qd-mercados.js` lo carga el navegador con un <script src> clásico, así que
+// NO puede tener `export`: sería un SyntaxError y el archivo entero no
+// cargaría. Se lee con `createRequire`, igual que `tests/qd-periods.test.mjs`
+// hace con `qd-periods.js`. Hay una prueba que fija esto en
+// `tests/mercado-scripts.test.mjs`.
+const require = createRequire(import.meta.url);
+const M = require(join(dirname(fileURLToPath(import.meta.url)), '..', 'qd-mercados.js'));
+const { BOLSAS, ETIQUETA_24H, horaEnZona, estadoDeBolsa, estado24h, qdEstadoMercado, ALIAS_BOLSA } = M;
+
+test('las bolsas del mapa están, con zona IANA y horario', () => {
+  // Eran las 8 de la decisión del 2026-09-29; el artboard 4 agregó seis
+  // índices más y con ellos sus bolsas. La lista se fija acá para que agregar
+  // una sea una decisión y no un efecto secundario.
   assert.deepEqual(
     Object.keys(BOLSAS).sort(),
-    ['bmv', 'francfort', 'hongkong', 'londres', 'nyse', 'saopaulo', 'seul', 'tokio'],
+    ['bmv', 'bogota', 'francfort', 'hongkong', 'londres', 'mumbai', 'nyse',
+      'paris', 'saopaulo', 'seul', 'shanghai', 'sidney', 'tokio', 'toronto'],
   );
   for (const [k, b] of Object.entries(BOLSAS)) {
     assert.match(b.zona, /^[A-Za-z]+\/[A-Za-z_]+$/, `${k}: zona IANA`);
@@ -126,8 +141,146 @@ test('los que cotizan casi sin parar llevan otra etiqueta, no abierto/cerrado', 
 });
 
 test('una bolsa sin horario declarado lo dice en vez de suponer uno', () => {
-  const e = estadoDeBolsa('shanghai', new Date('2026-09-28T02:00:00Z'), { ultimoCierre: '2026-09-28' });
+  // Shanghái ya tiene horario desde el artboard 4, así que el caso se prueba
+  // con una que de verdad no está declarada.
+  const e = estadoDeBolsa('estambul', new Date('2026-09-28T02:00:00Z'), { ultimoCierre: '2026-09-28' });
   assert.equal(e.estado, 'desconocida');
   assert.equal(e.abierta, false);
   assert.match(e.etiqueta, /sin horario declarado/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// UNA SOLA TABLA — las pruebas que vivían en `tests/qd-periods.test.mjs`
+//
+// `qd-periods.js` tenía su propio `QD_BOLSAS` con us/mx y su propio `Intl`, o
+// sea DOS tablas decidiendo si un mercado está abierto. Estas pruebas se
+// mudaron acá tal cual —mismos instantes, mismas expectativas— para que la
+// unificación se demuestre en vez de afirmarse: si el adaptador cambiara el
+// comportamiento que `/mercado` ya tenía, se ponen rojas.
+// ═══════════════════════════════════════════════════════════════════════
+
+
+test('los alias us/mx apuntan a la tabla única, no a una copia', () => {
+  assert.deepEqual(ALIAS_BOLSA, { us: 'nyse', mx: 'bmv' });
+  assert.equal(qdEstadoMercado('us', new Date('2026-09-21T17:00:00Z'), { ultimoCierre: '2026-09-21' }).bolsa, 'nyse');
+  assert.equal(qdEstadoMercado('mx', new Date('2026-09-21T17:00:00Z'), { ultimoCierre: '2026-09-21' }).bolsa, 'bmv');
+});
+
+test('las dos bolsas NO abren ni cierran a la misma hora', () => {
+  // 20:30 UTC = 16:30 en Nueva York (cerrado) y 14:30 en la CDMX (abierto).
+  const t = new Date('2026-09-21T20:30:00Z');   // lunes
+  const us = qdEstadoMercado('us', t, { ultimoCierre: '2026-09-21' });
+  const mx = qdEstadoMercado('mx', t, { ultimoCierre: '2026-09-21' });
+  assert.equal(us.abierto, false, 'NY ya cerró a las 16:30 locales');
+  assert.equal(mx.abierto, true, 'la BMV sigue abierta a las 14:30 locales');
+  assert.equal(us.etiqueta, 'NYSE/Nasdaq');
+  assert.equal(mx.etiqueta, 'BMV');
+});
+
+test('en sesión, las dos abiertas', () => {
+  const t = new Date('2026-09-21T17:00:00Z');   // 13:00 NY, 11:00 CDMX
+  assert.equal(qdEstadoMercado('us', t, { ultimoCierre: '2026-09-21' }).abierto, true);
+  assert.equal(qdEstadoMercado('mx', t, { ultimoCierre: '2026-09-21' }).abierto, true);
+});
+
+test('el fin de semana dice de qué día es el cierre que se está viendo', () => {
+  const dom = new Date('2026-09-20T17:00:00Z');   // domingo
+  for (const b of ['us', 'mx']) {
+    const e = qdEstadoMercado(b, dom, { ultimoCierre: '2026-09-18' });
+    assert.equal(e.abierto, false);
+    assert.match(e.texto, /cierre del viernes/);
+  }
+});
+
+test('antes de abrir, el cierre que se ve es el del día hábil anterior', () => {
+  const lunesTemprano = new Date('2026-09-21T12:00:00Z');   // 8:00 NY, 6:00 CDMX
+  for (const b of ['us', 'mx']) {
+    const e = qdEstadoMercado(b, lunesTemprano, { ultimoCierre: '2026-09-18' });
+    assert.equal(e.abierto, false);
+    assert.match(e.texto, /cierre del viernes/);
+  }
+});
+
+test('una bolsa que no existe LANZA en vez de inventar un horario', () => {
+  assert.throws(() => qdEstadoMercado('xx', new Date()), /bolsa desconocida/);
+});
+
+test('lo ÚNICO que cambió del chip viejo: ya no afirma abierto con el horario solo', () => {
+  // El comentario que estaba en `qd-periods.js` lo admitía: "los feriados NO se
+  // modelan… un día de asueto sale como abierto sin operaciones". Con el último
+  // cierre en la mano, deja de pasar.
+  const t = new Date('2026-09-21T17:00:00Z');   // lunes, en sesión
+  assert.equal(qdEstadoMercado('us', t, { ultimoCierre: '2026-09-21' }).abierto, true);
+  const feriado = qdEstadoMercado('us', t, { ultimoCierre: '2026-09-18' });
+  assert.equal(feriado.abierto, false, 'en sesión pero sin cierre nuevo: no se afirma');
+  assert.match(feriado.texto, /sin cierre nuevo hoy/);
+  assert.match(feriado.motivo, /sin cierre nuevo hoy/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA PRÓXIMA APERTURA Y EL ENCABEZADO DE REGIÓN (artboard 4)
+//
+// El mockup pide "Asia · abre lun 18:00 CT" en un domingo. Las dos mitades
+// tienen trampa: el DÍA es el de la bolsa —en Tokio ya es lunes— y la HORA es
+// la de México, donde todavía es domingo por la noche. Mezclarlas al revés es
+// cómo se dice "abre el lunes" de algo que abre esta noche.
+// ═══════════════════════════════════════════════════════════════════════
+const { proximaApertura, estadoDeRegion } = M;
+
+test('la próxima apertura nombra el día de ALLÁ con la hora de ACÁ', () => {
+  // Domingo 2026-09-20, 12:00 en la CDMX.
+  const dom = new Date('2026-09-20T17:00:00Z');
+  const tk = proximaApertura('tokio', dom);
+  assert.equal(tk.etiqueta, 'abre lun 18:00 CT', 'la línea exacta del mockup');
+  assert.equal(tk.dia, 'lun', 'lunes es el día en Tokio');
+  assert.equal(tk.hhmm, '18:00', 'y 18:00 es la hora en México, donde es domingo');
+});
+
+test('la apertura sale bien a los dos lados de un cambio de horario', () => {
+  // EE.UU. cambia de horario el primer domingo de noviembre; México no cambia
+  // desde 2022. Así que la apertura de Nueva York vista desde la CDMX se MUEVE
+  // una hora, y con un offset a mano se erraría medio año.
+  const octubre = proximaApertura('nyse', new Date('2026-10-20T04:00:00Z'));
+  const diciembre = proximaApertura('nyse', new Date('2026-12-15T04:00:00Z'));
+  assert.equal(octubre.hhmm, '07:30', 'en octubre NY abre 07:30 CT');
+  assert.equal(diciembre.hhmm, '08:30', 'en diciembre, 08:30 CT: una hora más tarde');
+});
+
+test('el encabezado de una región resume varias bolsas sin afirmar de más', () => {
+  const dom = new Date('2026-09-20T17:00:00Z');   // domingo
+  const asia = estadoDeRegion(['tokio', 'seul', 'hongkong', 'shanghai', 'mumbai', 'sidney'], dom,
+    { cierres: { tokio: '2026-09-18' } });
+  assert.match(asia.etiqueta, /^cerrado · abre /);
+  assert.match(asia.etiqueta, / CT$/, 'la hora va en CT');
+  assert.equal(asia.abiertas, 0);
+
+  // En sesión, con el cierre de hoy: abierto.
+  const lunes = new Date('2026-09-21T14:30:00Z');   // 09:30 en NY
+  const america = estadoDeRegion(['nyse', 'toronto'], lunes,
+    { cierres: { nyse: '2026-09-21', toronto: '2026-09-21' } });
+  assert.equal(america.etiqueta, 'abierto');
+  assert.equal(america.abiertas, 2);
+});
+
+test('si sólo algunas están abiertas, se dice cuántas — no "abierto" a secas', () => {
+  // 09:30 en NY son 15:30 en Fráncfort (abierta) y 14:30 en Londres (abierta),
+  // pero Tokio ya cerró. Un "abierto" pelado taparía eso.
+  const t = new Date('2026-09-21T14:30:00Z');
+  const r = estadoDeRegion(['nyse', 'tokio'], t, { cierres: { nyse: '2026-09-21', tokio: '2026-09-21' } });
+  assert.match(r.etiqueta, /abierto · 1 de 2/);
+});
+
+test('una región en horario pero sin cierre nuevo NO dice abierto', () => {
+  // El feriado que no está en ningún calendario del repo, a nivel región.
+  const t = new Date('2026-09-21T14:30:00Z');
+  const r = estadoDeRegion(['nyse', 'toronto'], t,
+    { cierres: { nyse: '2026-09-18', toronto: '2026-09-18' } });
+  assert.match(r.etiqueta, /sin cierre nuevo \(2 de 2\)/);
+  assert.equal(r.abiertas, 0);
+});
+
+test('una región de puros 24h no se pregunta por horarios', () => {
+  const r = estadoDeRegion(['24h', '24h'], new Date('2026-09-20T17:00:00Z'));
+  assert.equal(r.continuo, true);
+  assert.match(r.etiqueta, /24\/7/);
 });

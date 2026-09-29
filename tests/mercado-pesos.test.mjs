@@ -10,7 +10,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { rendimientoEnPesos, cruceContraPeso, enPesos, ETIQUETA_PESOS } from '../qd-pesos.js';
+import { createRequire } from 'node:module';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Mismo motivo que en `mercado-bolsas`: este archivo lo va a cargar el
+// navegador con un <script> clásico, así que no lleva `export`.
+const require = createRequire(import.meta.url);
+const { rendimientoEnPesos, cruceContraPeso, enPesos, ETIQUETA_PESOS } =
+  require(join(dirname(fileURLToPath(import.meta.url)), '..', 'qd-pesos.js'));
 
 // El % que devolvería `qdPeriodChange`: de un valor a otro, en por ciento.
 const pct = (de, a) => ((a / de) - 1) * 100;
