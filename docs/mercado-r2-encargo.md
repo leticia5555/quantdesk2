@@ -396,3 +396,25 @@ dice por qué no está.
   cifra — así no depende de cuántos índices tenga el catálogo.
 - **`^COLCAP` no existe en Yahoo** (comprobado por Lety contra prod). Colombia
   sale, entra **Chile (`^IPSA`)** con la Bolsa de Santiago y su cruce `CLP=X`.
+
+### Dos detalles de la segunda revisión (2026-09-29)
+
+**El estado de la región salía de otra fecha que el número.** El encabezado de
+Asia decía *"cierre del lunes"* mientras los cuadros mostraban el martes: el
+encabezado miraba `ultimo_cierre` —la última fecha de la **serie**— y los
+cuadros miraban el precio, que desde el arreglo del KOSPI puede ser más nuevo.
+Ahora el cuadro lleva `fecha_dato` —la del número que se está viendo— y de ahí
+salen tanto el chip como el encabezado. `ultimo_cierre` sigue existiendo y sigue
+siendo el último **cierre**: son dos cosas distintas y las dos hacen falta.
+
+**La fecha va SIEMPRE junto al nivel.** Estaba sólo cuando el dato era viejo, o
+sea que quedaban sin fecha justo los más frescos —los de Asia, que ya traían el
+precio de hoy— y había que saber la regla para leer la pantalla.
+
+**Y `^IPSA` costó una ronda que no debió costar.** El símbolo **sí** estaba en
+`MACRO_SYMBOLS`; lo que no se podía decidir desde el cliente era si faltaba por
+el ticker, por Yahoo o por la caché, porque el endpoint **omitía en silencio**
+(`if (!r.ok) return;`). Ahora cada omisión viaja con su razón en `omitidos`, y
+el cuadro gris la repite: *"Yahoo respondió HTTP 404"* se arregla cambiando el
+ticker y *"no se pudo consultar"* no. Sin razón declarada, el cuadro dice que no
+la hay en vez de afirmar una.

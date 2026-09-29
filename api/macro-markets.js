@@ -144,19 +144,33 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const data = {};
+  // POR QUÉ FALTA UN SÍMBOLO. Antes se omitía en silencio, y desde el cliente
+  // "no llegó" tenía tres causas indistinguibles: el ticker no existe, Yahoo
+  // falló, o la respuesta vino sin serie utilizable. Con `^IPSA` costó una
+  // ronda entera no poder decidir entre "ticker malo" y "caché vieja". Ahora
+  // cada omisión viaja con su razón, y el cuadro gris puede decirla.
+  const omitidos = {};
   await Promise.all(MACRO_SYMBOLS.map(async (sym) => {
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=${RANGO}&interval=1d`;
       const r = await fetch(url, { headers: UA });
-      if (!r.ok) return;
+      if (!r.ok) {
+        // 404 = el ticker no existe en Yahoo. 429 = nos frenaron. Son cosas
+        // distintas y se arreglan distinto.
+        omitidos[sym] = `Yahoo respondió HTTP ${r.status}`;
+        return;
+      }
       const m = extractMacro(await r.json());
       if (m) data[sym] = m;
-    } catch (e) { /* símbolo omitido → el cliente conserva/omite la tarjeta */ }
+      else omitidos[sym] = 'Yahoo contestó 200 pero sin precio o con menos de 2 cierres';
+    } catch (e) {
+      omitidos[sym] = `no se pudo consultar: ${String((e && e.message) || e)}`;
+    }
   }));
 
   // Caché CDN compartida: 1 request por ventana para toda la base de
   // usuarios. TTL corto — es un dashboard, no un motor de fills.
   res.setHeader('Cache-Control', 'public, s-maxage=120, stale-while-revalidate=300');
   // Siempre 200: un símbolo ausente es "sin dato", no un error global.
-  return res.status(200).json({ data, generated_at: new Date().toISOString() });
+  return res.status(200).json({ data, omitidos, generated_at: new Date().toISOString() });
 }

@@ -205,7 +205,7 @@ function serieConPrecio(serie = [], precio, precioT) {
  * que es la regla 2: un símbolo que el endpoint no devolvió no es un cuadro
  * ausente, es un cuadro que dice por qué no está.
  */
-function armaMundo({ data = {}, catalogo = CATALOGO, regiones = REGIONES, fix = null } = {}) {
+function armaMundo({ data = {}, catalogo = CATALOGO, regiones = REGIONES, fix = null, omitidos = {} } = {}) {
   const faltantes = [];
   const porRegion = new Map(regiones.map((r) => [r.clave, []]));
 
@@ -226,7 +226,13 @@ function armaMundo({ data = {}, catalogo = CATALOGO, regiones = REGIONES, fix = 
         faltantes.push({ symbol: c.symbol, nombre: c.nombre, motivo: (fix && fix.motivo) || 'no llegó el FIX de Banxico' });
         continue;
       }
-      faltantes.push({ symbol: c.symbol, nombre: c.nombre, motivo: 'el endpoint no devolvió este símbolo' });
+      // La razón la da el endpoint cuando la tiene: "Yahoo respondió HTTP 404"
+      // se arregla cambiando el ticker, y "no se pudo consultar" no. Sin razón
+      // declarada, se dice eso y no una inventada.
+      faltantes.push({
+        symbol: c.symbol, nombre: c.nombre,
+        motivo: omitidos[c.symbol] || 'el endpoint no devolvió este símbolo ni dijo por qué',
+      });
       continue;
     }
     if (precio == null) {
@@ -256,6 +262,13 @@ function armaMundo({ data = {}, catalogo = CATALOGO, regiones = REGIONES, fix = 
       precio: px.precio,
       precio_fecha: px.precio_fecha,
       precio_es_de_hoy: px.precio_es_de_hoy,
+      // LA FECHA DEL DATO QUE SE ESTÁ MOSTRANDO, que no siempre es la del
+      // último cierre: cuando el precio de hoy entró a la serie, el número que
+      // se ve es de hoy. El encabezado de la región decía "cierre del lunes"
+      // mientras los cuadros mostraban martes, porque miraba `ultimo_cierre` y
+      // los cuadros miraban el precio. El estado sale de la MISMA fecha que el
+      // número.
+      fecha_dato: px.precio_fecha || ultimoDiaDeSerie(serie),
       // La moneda que manda es la que declaró la fuente. La esperada viaja al
       // lado para poder decirlo cuando no coinciden, en vez de elegir una.
       moneda: monedaReal,

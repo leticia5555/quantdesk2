@@ -164,7 +164,13 @@ const MACRO = {
     'YM=F': { price: 45200, currency: 'USD', series: serieAnual(44000, 0.027) },
     '^GDAXI': { price: 24100, currency: 'EUR', series: serieAnual(22000, 0.095) },
     '^FTSE': { price: 9450, currency: 'GBP', series: serieAnual(9100, 0.038) },
-    '^N225': { price: 45800, currency: 'JPY', series: serieAnual(42000, 0.09) },
+    // Nikkei con el precio de HOY (martes) sobre una serie que termina el
+    // lunes: es el caso que hacía que el encabezado de Asia dijera "cierre del
+    // lunes" mientras los cuadros mostraban martes.
+    '^N225': {
+      price: 45800, precio_t: Date.parse('2026-09-22T06:00:00Z') / 1000, currency: 'JPY',
+      series: serieAnual(42000, 0.09),
+    },
     // EL CASO DEL KOSPI, con los números que Lety vio en prod el 2026-09-29:
     // la serie termina el lunes 28 en 6,889.74 (viniendo de 7,080.92 el
     // viernes) y `price` es 6,870.81, de HOY. El 1D correcto es −0.27%; el que
@@ -188,6 +194,10 @@ const MACRO = {
     'HKD=X': { price: 7.78, currency: 'HKD', series: serieAnual(7.8, -0.003) },
     'BRL=X': { price: 5.32, currency: 'BRL', series: serieAnual(5.5, -0.033) },
   },
+  // El endpoint dice POR QUÉ falta cada uno: "no llegó" tenía tres causas
+  // indistinguibles desde el cliente (ticker malo, Yahoo caído, respuesta sin
+  // serie) y con `^IPSA` costó una ronda no poder elegir entre ellas.
+  omitidos: { '^AXJO': 'Yahoo respondió HTTP 404' },
   generated_at: '2026-09-21T20:05:00.000Z',
 };
 
@@ -763,9 +773,19 @@ try {
     mundo.titular === 'El mundo, ahora' && mundo.sub.length > 8, `${mundo.titular} · ${mundo.sub}`);
 
   // ── REGLA 2 ────────────────────────────────────────────────────────
-  chequeo('un símbolo que no llegó sale con su causa en vez de desaparecer',
-    /no devolvió este símbolo/.test(mundo.notas.join(' ')),
+  chequeo('un símbolo que no llegó sale con la causa QUE DIO EL ENDPOINT',
+    /Yahoo respondió HTTP 404/.test(mundo.notas.join(' '))
+      && !/ni dijo por qué/.test(mundo.notas.join(' ')),
     mundo.notas.join(' | ').slice(0, 160));
+
+  // ── EL ESTADO Y EL NÚMERO, DE LA MISMA FECHA ───────────────────────
+  const asia = mundo.regiones.find((r) => /Asia/.test(r.titulo));
+  const nikkei = mundo.cajas.find((c) => c.sym === '^N225');
+  chequeo('el encabezado de Asia NO dice "cierre del lunes" con los cuadros en martes',
+    !/cierre del lunes/.test(asia.estado), `${asia.estado} · Nikkei ${nikkei.chico}`);
+  chequeo('todos los niveles llevan su fecha, también los de Asia',
+    mundo.cajas.every((c) => / · \d{2}-\d{2}$/.test(c.chico)),
+    JSON.stringify(mundo.cajas.slice(0, 3).map((c) => c.chico)));
   chequeo('ya no dice "cripto todavía no": Bitcoin está en la rejilla',
     !/cripto todavía no/.test(mundo.regiones.map((r) => r.estado).join(' '))
       && symsMundo.includes('BTC-USD'),

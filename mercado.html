@@ -705,7 +705,10 @@
 
   function estadoDeCuadro(c){
     if(c.es24h) return estado24h();
-    try { return estadoDeBolsa(c.bolsa, new Date(), { ultimoCierre: c.ultimo_cierre }); }
+    // `fecha_dato`, no `ultimo_cierre`: cuando el precio de hoy ya entró a la
+    // serie, el número que se ve es de hoy y el estado tiene que salir de la
+    // MISMA fecha. Asia decía "cierre del lunes" con los cuadros en martes.
+    try { return estadoDeBolsa(c.bolsa, new Date(), { ultimoCierre: c.fecha_dato || c.ultimo_cierre }); }
     catch(e){ return { etiqueta: 'sin horario declarado', abierta: false, estado: 'desconocida' }; }
   }
 
@@ -731,17 +734,19 @@
       // está arriba y repetirlo desperdicia el único renglón que queda. Para
       // Bitcoin y el oro va con "$" porque son dólares; para un índice va sin
       // símbolo, porque 45,800 puntos del Nikkei no son pesos ni dólares.
-      // Si el precio no es el de hoy, la etiqueta lo dice: mostrar un nivel sin
-      // su fecha junto a un % que sí es de hoy fue el bug del KOSPI.
+      // LA FECHA VA SIEMPRE, no sólo cuando el dato es viejo. Ponerla sólo a
+      // los atrasados dejaba sin fecha justo a los más frescos —los de Asia,
+      // que ya traían el precio de hoy— y obligaba a saber la regla para leer
+      // la pantalla. Cada número dice de cuándo es.
       chico: (c.prefijo || '') + fmtPrice(c.precio)
-        + (c.precio_es_de_hoy === false && c.precio_fecha ? ' · ' + c.precio_fecha.slice(5) : ''),
+        + (c.precio_fecha ? ' · ' + c.precio_fecha.slice(5) : ''),
       motivo: local.motivo || null,
       fuente: 'yahoo:v8/chart',
     };
   }
 
   function pintarMundo(d){
-    var m = armaMundo({ data: (d && d.data) || {}, fix: (d && d.fix) || null });
+    var m = armaMundo({ data: (d && d.data) || {}, fix: (d && d.fix) || null, omitidos: (d && d.omitidos) || {} });
     var cont = document.getElementById('mundo');
     var html = '';
 
@@ -764,7 +769,7 @@
       var claves = [];
       m.regiones.forEach(function(r){ if(r.clave!==k) return; r.cuadros.forEach(function(c){
         if(c.es24h) return;
-        claves.push(c.bolsa); cierres[c.bolsa] = c.ultimo_cierre;
+        claves.push(c.bolsa); cierres[c.bolsa] = c.fecha_dato || c.ultimo_cierre;
       }); });
       BOLSAS_POR_REGION[k] = claves;
       reg[k] = estadoDeRegion(claves, hoy, { cierres: cierres });
@@ -819,7 +824,7 @@
   // El chip de arriba en Mundo no puede ser de una bolsa: hay trece en
   // pantalla. Dice cuántas están abiertas, y el detalle vive en cada región.
   function pintarChipMundo(d){
-    var m = armaMundo({ data: (d && d.data) || {}, fix: (d && d.fix) || null });
+    var m = armaMundo({ data: (d && d.data) || {}, fix: (d && d.fix) || null, omitidos: (d && d.omitidos) || {} });
     // CUENTA BOLSAS, NO CUADROS. Decía "5 de 14 bolsas abiertas" contando
     // índices: el S&P 500 y el Nasdaq 100 son DOS cuadros y UNA bolsa, y Nueva
     // York no abre dos veces. Se cuenta por clave de bolsa, sin repetir.
@@ -857,7 +862,7 @@
   }
 
   function abrirHojaMundo(d, symbol){
-    var m = armaMundo({ data: (d && d.data) || {}, fix: (d && d.fix) || null });
+    var m = armaMundo({ data: (d && d.data) || {}, fix: (d && d.fix) || null, omitidos: (d && d.omitidos) || {} });
     var c = null;
     m.regiones.forEach(function(r){ r.cuadros.forEach(function(x){ if(x.symbol===symbol) c = x; }); });
     if(!c) return;

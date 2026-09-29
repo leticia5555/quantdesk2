@@ -209,3 +209,43 @@ test('Chile entra, Colombia sale, y el aviso de cripto se fue con Bitcoin', () =
   const m = armaMundo({ data });
   for (const r of m.regiones) assert.equal(r.aviso, null, `${r.clave}: Bitcoin ya está, el aviso sería falso`);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL ESTADO SALE DE LA MISMA FECHA QUE EL NÚMERO
+//
+// El encabezado de Asia decía "cierre del lunes" mientras los cuadros
+// mostraban el martes: miraba `ultimo_cierre` —la última fecha de la SERIE—
+// y los cuadros miraban el precio, que desde el arreglo del KOSPI puede ser
+// más nuevo. Dos fechas para el mismo cuadro es media pantalla mintiendo.
+// ═══════════════════════════════════════════════════════════════════════
+test('cuando el precio de hoy entró a la serie, la fecha del dato es la de hoy', () => {
+  const data = {};
+  for (const c of CATALOGO) data[c.symbol] = { price: 100, currency: c.moneda, series: [{ t: dia('2026-09-25'), c: 90 }, { t: dia('2026-09-28'), c: 95 }] };
+  data['^N225'] = {
+    price: 45800, precio_t: dia('2026-09-29'), currency: 'JPY',
+    series: [{ t: dia('2026-09-25'), c: 44000 }, { t: dia('2026-09-28'), c: 45000 }],
+  };
+  const m = armaMundo({ data, fix: FIX });
+  const n = m.regiones.flatMap((r) => r.cuadros).find((c) => c.symbol === '^N225');
+  assert.equal(n.fecha_dato, '2026-09-29', 'la del número que se ve');
+  assert.equal(n.ultimo_cierre, '2026-09-28', 'y el último CIERRE sigue siendo el suyo');
+
+  // El que no tiene precio nuevo: las dos fechas coinciden.
+  const otro = m.regiones.flatMap((r) => r.cuadros).find((c) => c.symbol === '^GSPC');
+  assert.equal(otro.fecha_dato, '2026-09-28');
+  assert.equal(otro.fecha_dato, otro.ultimo_cierre);
+});
+
+test('la causa de un símbolo ausente la da el ENDPOINT, no se inventa', () => {
+  const data = {};
+  for (const c of CATALOGO) data[c.symbol] = { price: 100, currency: c.moneda, series: serie() };
+  delete data['^IPSA'];
+  delete data['^AXJO'];
+  const m = armaMundo({ data, fix: FIX, omitidos: { '^IPSA': 'Yahoo respondió HTTP 404' } });
+  const por = new Map(m.faltantes.map((f) => [f.symbol, f.motivo]));
+  // Con razón declarada: se usa tal cual, porque un 404 se arregla cambiando
+  // el ticker y un timeout no.
+  assert.equal(por.get('^IPSA'), 'Yahoo respondió HTTP 404');
+  // Sin razón declarada: se dice que no la hay, en vez de afirmar una.
+  assert.match(por.get('^AXJO'), /ni dijo por qué/);
+});
