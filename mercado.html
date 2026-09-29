@@ -62,6 +62,17 @@
   /* overflow:hidden NO es cosmético: sin él, un cuadro calculado con una
      altura vieja se dibuja encima del pie y tapa la fuente del dato. */
   #lienzo{position:absolute;inset:0;overflow:hidden}
+  /* ── EL MAPA LARGO DEL CELULAR ────────────────────────────────────────
+     En 390px de ancho, obligar al mapa a caber en una pantalla deja cuadros
+     de 3px: se ven, se tocan, y no se puede saber de quién son. En celular el
+     treemap crece a max(2000px, ancho × 5) y la página se recorre, como el
+     mockup (Main medía 1,640px). En escritorio no cambia nada: ahí el mapa
+     cabe entero y el no-scroll sigue siendo la regla.
+     `position:relative` es necesario, no cosmético: con `inset:0` el alto
+     queda sobre-restringido y el navegador ignora el `height` que pone el JS. */
+  body[data-scroll="1"]{overflow-y:auto;overflow-x:hidden}
+  body[data-scroll="1"] main{flex:0 0 auto}
+  body[data-scroll="1"] #lienzo{position:relative;inset:auto;width:100%}
   .cuadro{position:absolute;overflow:hidden;border:1px solid #0a0a0a;border-radius:2px;
     display:flex;flex-direction:column;justify-content:center;align-items:center;
     cursor:pointer;-webkit-tap-highlight-color:transparent;padding:2px}
@@ -282,10 +293,49 @@
     return (window.innerWidth >= 900) ? 60 : 30;
   }
 
+  // ── CUÁNDO EL MAPA SE VUELVE LARGO ──────────────────────────────────
+  // Debajo de 600px de ancho no hay manera de que ~550 cuadros quepan en una
+  // pantalla con letra legible: el más chico queda en 3px. Así que el alto pasa
+  // a ser max(2000, ancho × FACTOR) y la página se recorre. El piso de 2000 y
+  // la forma de la cuenta son de Lety (2026-09-29, del mockup, donde Main
+  // medía 1,640px).
+  //
+  // EL FACTOR ES 12 Y NO 5, Y ESO NO ES LO QUE ELLA DIJO. Su pedido traía las
+  // dos cosas: el número (×5) y el resultado esperado (menos de 20 cuadros sin
+  // ticker de ~550). Medido en el Chromium con el universo a escala real:
+  //
+  //     factor   sin ticker   <14px de lado   ≥14px y mudos
+  //        × 5      309/552            256              53
+  //        × 8      216/552            153              63
+  //       × 10      143/552             57              86
+  //       × 12       75/552              9               0
+  //
+  // Con ×5 quedan 256 cuadros sin ticker, no menos de 20: el ×5 venía de un
+  // mockup de ~40 cuadros y no escala a 550. Se eligió el resultado que ella
+  // pidió por encima del número que propuso, y queda dicho acá y en el PR para
+  // que volverlo a 5 sea una línea. 390px × 12 = 4,680px de mapa: se recorre,
+  // que es justo lo que el modo largo vino a permitir.
+  var ANCHO_MOVIL = 600, ALTO_MIN_MOVIL = 2000, FACTOR_ALTO_MOVIL = 12;
+  function esMovil(){ return window.innerWidth < ANCHO_MOVIL; }
+  // Expuestas para que la comprobación del Chromium calcule el alto esperado
+  // con LAS MISMAS constantes en vez de repetirlas: un número copiado en dos
+  // lados se desincroniza, y entonces la prueba mide lo que decía ayer. Lo que
+  // queda pinchado allá no es el factor —ése puede moverse— sino el RESULTADO:
+  // menos de 20 cuadros bajo los 14px de lado.
+  window.QD_MAPA = { ANCHO_MOVIL: ANCHO_MOVIL, ALTO_MIN_MOVIL: ALTO_MIN_MOVIL, FACTOR_ALTO_MOVIL: FACTOR_ALTO_MOVIL };
+
   function pintarMapa(d){
     var l = document.getElementById('lienzo');
     l.innerHTML = '';
+    // El modo largo se decide ANTES de medir: cambia de dónde sale el alto.
+    var movil = esMovil();
+    if(movil) document.body.setAttribute('data-scroll','1');
+    else { document.body.removeAttribute('data-scroll'); l.style.height = ''; }
     var w = l.clientWidth, h = l.clientHeight;
+    if(movil && w){
+      h = Math.max(ALTO_MIN_MOVIL, Math.round(w * FACTOR_ALTO_MOVIL));
+      l.style.height = h + 'px';
+    }
     // Si el layout todavía no se aplicó (primer pintado), se reintenta en el
     // siguiente cuadro en vez de dibujar contra un cero.
     if(!w || !h){ requestAnimationFrame(function(){ pintarMapa(d); }); return; }
@@ -400,7 +450,14 @@
     // es información, es ruido con forma de información.
     // 18 → 8: la fuente escala con el cuadro. Con la talla fija de 13 los
     // cuadros grandes desperdiciaban sitio y se iban sin %.
-    var e = etiquetaCuadro(r.w, r.h, { ticker: it.key, pct: txt, fontPx: 18, fontMin: 8 });
+    // En celular el ticker puede bajar a 6px: con el mapa largo hay cuadros que
+    // sólo caben así, y un cuadro sin ticker es un color que no se puede
+    // nombrar. El % conserva su piso (`fontMinDos`), porque un número de 6px no
+    // se lee: se adivina.
+    var e = etiquetaCuadro(r.w, r.h, {
+      ticker: it.key, pct: txt, fontPx: 18,
+      fontMin: esMovil() ? 6 : 8, fontMinDos: 8,
+    });
     if(e.ticker){
       var html = '<div class="sym" style="font-size:'+e.font+'px">'+esc(e.ticker)+'</div>';
       if(e.pct) html += '<div class="val" style="font-size:'+e.font_pct+'px">'+esc(e.pct)+'</div>';
@@ -489,7 +546,12 @@
     // ancla que viene EN esos 24.
     filas.push(['cierres traídos', String(c.puntos||0) + (c.ytd ? ' (incluye el ancla de fin de año)' : '')]);
 
+    // La nota va junto al motivo: un cuadro VERIFICADO puede tener algo que
+    // declarar —"la cap declarada se descartó porque dos conteos de acciones
+    // coinciden"— y eso es procedencia, no un error. Sin esto, la pantalla
+    // mostraría el tamaño sin decir que se descartó un dato de la fuente.
     var motivo = c.motivo || r.motivo || c.ytd_motivo;
+    if(c.cap_nota) motivo = motivo ? (c.cap_nota + ' · ' + motivo) : c.cap_nota;
     document.getElementById('hojaCuerpo').innerHTML =
       // LAS INICIALES, NO UN LOGO. No tenemos fuente de logos, y una que
       // dependa de terceros siempre va a tener huecos: un ícono roto dice

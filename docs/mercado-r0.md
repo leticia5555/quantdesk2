@@ -1451,3 +1451,119 @@ Lo que cada referencia implica, para tenerlo a mano:
 que se leyó la cap, para probar una referencia sin redeploy. Sigue siendo
 opcional por compatibilidad con México, donde la cap no es de un ADR, pero para
 un ADR conviene siempre por lo de arriba.
+
+## 12. R0(k) — la corrida del 2026-09-28: cinco casos de la realidad
+
+286 verificadas, job = mapa, EDGAR con 27 consultas / 15 con conteo / 12 sin /
+**0 excepciones**. ORCL verificada vía EDGAR y ASML 1:1. De lo que quedó
+salieron cinco cosas.
+
+### 12.1 Dos conteos que coinciden le ganan a la cap declarada
+
+MNST, APH y VMRK: acciones de EDGAR × nuestro cierre da **2×** la cap declarada
+por Finnhub, y acciones de Finnhub × nuestro cierre da **también 2×**. Los dos
+conteos concuerdan entre sí; la que se sale es la cap declarada — el patrón de un
+split que la cap no reflejó.
+
+Regla (Lety, 2026-09-29): si los dos conteos coinciden dentro de
+`UMBRAL_ACUERDO_ACCIONES_PCT = 5`, se verifica con `calc: edgar×neon` y la cap
+declarada se **descarta**, diciéndolo: *"cap declarada de Finnhub descartada: dos
+conteos de acciones coinciden (EDGAR 2080.0M y Finnhub 2075.0M, 0.2% de
+diferencia, techo 5%)"*. Esto va **antes** del contraste contra la declarada,
+porque cuando los conteos concuerdan la declarada ya no es el árbitro: es el
+sospechoso. El desajuste con ella queda reportado igual — es lo que explica por
+qué la fuente dice `edgar`.
+
+**Tres techos, tres constantes, y el número repetido no los unifica:** G2 = 5%
+(cap declarada contra cap reconstruida), EDGAR = 10% (portada del trimestre
+contra cierre de hoy), acuerdo de conteos = 5% (dos conteos de acciones).
+`UMBRAL_ACUERDO_ACCIONES_PCT` coincide en número con el de G2 y sigue siendo su
+propia constante: unificarlas es cómo se pierde de vista cuál se está aflojando.
+Hay una prueba que se pone roja si alguien las junta.
+
+Una honestidad sobre "independientes": no sabemos de dónde saca Finnhub su
+`shareOutstanding`, y bien puede venir de los mismos filings. Lo que hace segura
+la regla no es la independencia de las fuentes — es que el número que se **pinta**
+sigue siendo el nuestro, `acciones × nuestro cierre`, y nunca la cap declarada.
+
+### 12.2 Una portada no puede ser de otra época
+
+CMCSA resolvió con una portada del **2009-12-31**: era lo más nuevo que su
+concepto traía, y el lector tomó lo más reciente sin preguntarse si eso era
+reciente. Un conteo de hace 17 años por el cierre de hoy es un número inventado
+con dos datos reales.
+
+`MAX_MESES_PORTADA = 15` (un año fiscal más el trimestre de gracia para
+presentarlo). Pasado eso, gris con la causa diciendo **de qué año** es lo único
+que EDGAR tiene: *"EDGAR sólo tiene portada de 2009 (2009-12-31, 201 meses)"*. La
+fecha viaja igual en el resultado, porque es el dato accionable. El borde (15
+meses justos pasan, 16 no) está probado, para que mover el número sea una
+decisión y no un efecto secundario.
+
+### 12.3 BE: `units: {shares: object}`
+
+La huella decía `units: objeto con {shares: object}`. Después de #260 el lector ya
+no reventaba, pero tampoco entendía la forma: devolvía cero filas porque sólo
+sabía leer arreglos. Un **objeto** de hechos también es una colección de hechos,
+así que `filasDeUnits` ahora lo acepta vía `Object.values`, validando que lo de
+dentro tenga pinta de hecho (`val` con `end` o `form`) antes de tratarlo como
+tal — un diccionario cualquiera no se convierte en hechos por tener valores.
+
+Y dos cosas para no volver a adivinar la forma:
+
+- la huella dice también **las claves** del objeto (`objeto con claves
+  {label|description}`), porque `shares: object` no alcanzó para entender qué
+  llegó;
+- el job trae `muestra_cruda`: la respuesta **recortada a 600 caracteres**, sólo
+  para los símbolos que fallan. Es lo único que contesta "¿qué llegó?" cuando la
+  forma no se entiende, y desde el contenedor donde se construye esto no hay
+  salida a sec.gov para mirarla de otro modo.
+
+### 12.4 BX: varias clases de acciones
+
+BX presenta una línea de portada por clase, y `companyconcept` no dice de qué
+clase es cada hecho — la clase vive en el contexto XBRL, que por esa API no
+viaja. Varios conteos **distintos** para la **misma** portada (mismo `end` y
+mismo `filed`) significan que tomar el primero cuenta de menos y sumarlos es
+adivinar que están todos y sin repetir. Ninguna de las dos: gris con la causa y
+los conteos que EDGAR dio. El mismo conteo repetido en varios filings **no** es
+varias clases, y confundirlos mandaría a gris a media bolsa.
+
+### 12.5 VALE: descartar no es borrar
+
+La captura de Yahoo resultó vieja (fechada 2026-09-18, con la cap que no
+corresponde al precio con el que se leyó). La fila **no se borra**: qué se
+capturó, cuándo y por qué se descartó es parte de la procedencia. Lleva
+`descartada: { en, porque }`, el cuadro va gris con esa causa —*"la referencia
+manual se descartó el 2026-09-29: … Esperando recaptura"*— y **no** cuenta como
+hallazgo: es un insumo que hay que volver a capturar.
+
+Vencer (`vigente_hasta`) y descartar son cosas distintas: vencer es una tarea y
+no apaga el cuadro, porque la razón del ADR es estructural; descartar dice que el
+dato quedó mal, y con un dato mal no se pinta.
+
+### 12.6 De paso: el margen de las letras es proporcional
+
+El Chromium encontró un cuadro de 22.6 × 46 —1,044px², sobre el umbral de 900—
+mudo: con 4px de margen por lado se le iba un tercio del ancho en aire y su
+ticker (14.9px a 8px) no entraba en los 14.6px que le quedaban. Cuatro píxeles
+son aire en un cuadro de 200 y un tercio del cuadro en uno de 23, así que el
+margen ahora es `max(1, min(4, 9% del ancho))`. Ese cuadro pasó de mudo a llevar
+su ticker a 10px.
+
+`anchoTexto` **estima** el ancho, y el margen proporcional le quita holgura a la
+estimación, así que hay una comprobación nueva que mide con la **fuente real**:
+"ninguna etiqueta se desborda de su cuadro". Si una se saliera, el navegador la
+recortaría, y media palabra no es información: es ruido con forma de información.
+
+## 13. Backlog de R1 — lo que quedó anotado y sin hacer
+
+Cosas decididas, no urgentes, y que sin estar escritas se pierden. (La primera
+la fijó Lety el 2026-09-25 y hasta hoy no estaba en ningún archivo, que es
+exactamente el problema que esta sección resuelve.)
+
+| # | qué | por qué está pendiente |
+| :-- | :--- | :--- |
+| 1 | **Acciones de NVO desde el 20-F** | NVO tiene dos clases (A y B) y la razón cruda daba 0.748. Queda gris con causa hasta que el conteo salga del 20-F, que sí las separa. |
+| 2 | **Acciones de BX por clase** | Igual que arriba pero desde el 10-Q: `companyconcept` no dice de qué clase es cada hecho de portada. Hay que leer la portada del filing, no la API de conceptos. |
+| 3 | **Recaptura de VALE** | La captura del 2026-09-23 quedó descartada (§12.5). Gris hasta que llegue la nueva. |

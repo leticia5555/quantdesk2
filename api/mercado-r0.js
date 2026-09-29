@@ -69,7 +69,7 @@ import {
 import REFERENCIAS_CAP_US from './_lib/mercado-cap-us-referencia.json' with { type: 'json' };
 import {
   accionesDeCompanyConcept, mapaCik, rutaCompanyConcept, UMBRAL_EDGAR_PCT, candidatosParaEdgar,
-  formaDeUnits,
+  formaDeUnits, muestraCruda, UMBRAL_ACUERDO_ACCIONES_PCT, MAX_MESES_PORTADA,
 } from './_lib/mercado-edgar.js';
 
 export const SCHEMA_UNIVERSO_US = [
@@ -997,10 +997,22 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
         if (r.status === 404) escrituras.push(registroConsulta(sym, motivo, cik));
         continue;
       }
-      const acc = accionesDeCompanyConcept(r.json);
+      const acc = accionesDeCompanyConcept(r.json, { hoy: ahora });
       if (acc.acciones == null) {
         cuenta.sin_dato++;
-        resultados.push({ symbol: sym, motivo: acc.motivo, unidad: acc.unidad || null });
+        resultados.push({
+          symbol: sym, motivo: acc.motivo, unidad: acc.unidad || null, forma: acc.forma || null,
+          // Lo que EDGAR sí trajo, cuando trajo algo: sirve para decidir a dónde
+          // ir por el conteo (una portada vieja se busca en otra parte; varias
+          // clases se resuelven leyendo el 10-Q).
+          portada: acc.fecha_portada || null,
+          meses_de_antiguedad: acc.meses_de_antiguedad ?? null,
+          clases: acc.clases ?? null, conteos: acc.conteos ?? null,
+          // Y LA RESPUESTA CRUDA, recortada. Es lo único que contesta "¿qué
+          // llegó?" cuando la forma no se entiende, y desde el contenedor donde
+          // se construye esto no hay salida a sec.gov para mirarla de otro modo.
+          muestra_cruda: muestraCruda(r.json),
+        });
         escrituras.push(registroConsulta(sym, acc.motivo, cik));
         continue;
       }
@@ -1037,6 +1049,10 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
     job: 'acciones-edgar',
     umbral_pct: UMBRAL_EDGAR_PCT,
     nota: `el contraste con EDGAR usa su propio techo de ${UMBRAL_EDGAR_PCT}%, separado del ${CRITERIOS.g2_max_error_pct}% de G2: las acciones son de la portada del trimestre y el precio es el de hoy, así que algo de deriva es lo esperado y no un error de nadie`,
+    umbral_acuerdo_acciones_pct: UMBRAL_ACUERDO_ACCIONES_PCT,
+    max_meses_portada: MAX_MESES_PORTADA,
+    nota_acuerdo: `si el conteo de EDGAR y el de Finnhub coinciden dentro de ${UMBRAL_ACUERDO_ACCIONES_PCT}%, se verifica con calc: edgar×neon y la cap declarada se descarta: dos conteos que concuerdan dejan a la cap como el dato que se sale (MNST, APH, VMRK)`,
+    nota_portada: `una portada de más de ${MAX_MESES_PORTADA} meses no sostiene un tamaño: gris con el año que EDGAR tiene (CMCSA traía 2009)`,
     candidatos: candidatos.length,
     // El desglose viaja SIEMPRE, no sólo cuando el conteo es cero: un 21 que
     // debería ser 25 también hay que poder explicarlo.
