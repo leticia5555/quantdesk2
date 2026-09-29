@@ -291,12 +291,24 @@ export async function abrirBenchmarkDelReset({ dry, now, creds = null }) {
   }
   return {
     abierto: true, ya_estaba: !!r.ya_estaba,
+    // LA TEMPORADA, en el resultado. El benchmark es por temporada desde el
+    // 2026-09-29; sin este campo no hay forma de ver, leyendo la salida, si se
+    // abrió el de la temporada que uno cree.
+    temporada: r.season || ARENA_SEASON.id,
     symbol: r.symbol, entry: r.entry, shares: r.shares, capital: r.capital,
     opened_at: r.opened_at || now.toISOString(),
     precio_fuente: precio.fuente,
     note: r.ya_estaba
-      ? `Ya estaba abierto a $${r.entry}: NO se re-abrió. Un benchmark que se re-abre deja de medir la temporada y pasa a medir desde el último reset.`
+      ? `Ya estaba abierto a $${r.entry} desde ${r.opened_at} para la temporada ${r.season || ARENA_SEASON.id}: NO se re-abrió. Un benchmark que se re-abre deja de medir la temporada y pasa a medir desde el último reset.`
       : `$${Number(r.capital).toLocaleString('en-US')} en ${r.symbol} a $${r.entry} (${precio.fuente}) = ${r.shares} acciones. No se toca hasta el final de la temporada.`,
+    // ── LA ADVERTENCIA QUE FALTABA ───────────────────────────────────
+    // `ya_estaba: true` es un camino de ÉXITO y salía en silencio. Si alguien
+    // resetea las siete cuentas sin haber movido `ARENA_SEASON.id`, las cuentas
+    // arrancan hoy y la referencia sigue anclada al día que se abrió esa
+    // temporada — la comparación queda rota desde el primer minuto, y nada en
+    // la salida lo dice. Ahora sube a `warnings`, que es donde se mira.
+    ...(r.ya_estaba ? { warning:
+      `BENCHMARK: ya existía uno para la temporada ${r.season || ARENA_SEASON.id}, abierto el ${r.opened_at} a $${r.entry}. NO se re-abrió, así que las siete cuentas arrancan HOY contra una referencia de ESE día. Si esto es una temporada NUEVA, pará: hay que mover ARENA_SEASON.id en _lib/arena-registry.js y desplegar ANTES del reset. Si es un re-intento de la misma temporada, está bien y no hace falta hacer nada.` } : {}),
   };
 }
 

@@ -149,14 +149,52 @@ console.log('\n── el exceso vs. SPY y el piso de ruido ──');
 }
 
 // ── 5) EL RESET: una sola apertura, en el mismo corte ────────────────
+// ── LA IDEMPOTENCIA ES POR TEMPORADA, NO PARA SIEMPRE (2026-09-29) ───
+// EL CASO: la clave era `benchmark:spy`, una sola fila. Con la idempotencia
+// de abajo —correcta y conservada— el reset de una temporada NUEVA no
+// re-abría el benchmark: la T3 habría arrancado midiendo contra un SPY
+// comprado el 16 de septiembre a $759.42, el día que abrió la T2. Agentes
+// desde un día, referencia desde otro. Y en silencio, porque `ya_estaba: true`
+// es un camino de éxito.
+console.log('\n── la clave lleva la temporada ──');
+{
+  const src = readFileSync('api/_lib/arena-benchmark.js', 'utf8');
+  ok(/export const claveBenchmark = \(season = ARENA_SEASON\.id\)/.test(src),
+    'la clave se deriva de la temporada, con la actual por default');
+  ok(/`benchmark:spy:\$\{season\}`/.test(src),
+    'y la temporada va EN la clave: dos temporadas no pueden compartir fila');
+
+  // La fila de la T2 no se borra ni se pisa: se reetiqueta. Es la evidencia de
+  // contra qué corrió la T2, y Lety pidió que la temporada se selle, no que se
+  // borre.
+  ok(/update arena_benchmark set key = \$1, season = \$2/.test(src) && /not exists/.test(src),
+    'la fila vieja MIGRA a su temporada, idempotentemente: no se recalcula, se mueve');
+  ok(/TEMPORADA_LEGADA = 'T2'/.test(src),
+    'y se sabe a qué temporada pertenecía la fila sin etiqueta');
+
+  // El reset tiene que DECIR cuál abrió, y avisar cuando no abrió ninguno.
+  const reset = readFileSync('api/arena-reset.js', 'utf8');
+  ok(/temporada: r\.season \|\| ARENA_SEASON\.id/.test(reset),
+    'el resultado del reset dice PARA QUÉ TEMPORADA se abrió');
+  ok(/hay que mover ARENA_SEASON\.id/.test(reset),
+    'y si ya existía, el warning dice exactamente qué revisar antes de seguir');
+  ok(/\.\.\.\(r\.ya_estaba \? \{ warning:/.test(reset),
+    'ese aviso sube a `warnings`, no se queda en una nota: `ya_estaba` es un camino de ÉXITO y salía mudo');
+}
+
 console.log('\n── el reset abre el benchmark UNA vez ──');
 {
   const src = readFileSync('api/_lib/arena-benchmark.js', 'utf8');
-  ok(/const ya = await leerBenchmark\(\);\s*\n\s*if \(ya\) return/.test(src),
+  // ── ACTUALIZADAS EL 2026-09-29, CON EL MOTIVO ────────────────────
+  // Clavaban la llamada sin argumentos (`leerBenchmark()`), y se rompieron al
+  // hacer el benchmark POR TEMPORADA. La idempotencia que protegen no cambió
+  // —sigue siendo "leé antes de insertar, releé después"— lo que cambió es su
+  // alcance: era para siempre y ahora es dentro de una temporada. Ver abajo.
+  ok(/const ya = await leerBenchmark\(\{ season \}\);\s*\n\s*if \(ya\) return/.test(src),
     'abrirBenchmark lee ANTES de insertar: si ya estaba, no se pisa el precio de entrada');
   ok(/on conflict \(key\) do nothing/.test(src),
     'y el insert es idempotente en la DB, no solo en el chequeo previo');
-  ok(/const guardado = await leerBenchmark\(\)/.test(src),
+  ok(/const guardado = await leerBenchmark\(\{ season \}\)/.test(src),
     'RELEE después de insertar: dos resets en paralelo reportan la MISMA entrada, no dos precios');
 
   const reset = readFileSync('api/arena-reset.js', 'utf8');
