@@ -117,6 +117,50 @@ function cuadrosUs() {
     puntos: 55, precio: 30.6, fecha_precio: '2026-09-18' });
   return cs;
 }
+// ── MUNDO: la respuesta de `/api/macro-markets` ───────────────────────
+// Un año de cierres diarios (que es lo que el endpoint pide desde R2(a),
+// para que YTD alcance) y la moneda de cada símbolo, que es lo que decide el
+// cruce contra el peso. `^FTSE` llega con UN punto a propósito: sin dos
+// cierres no hay periodo que calcular, y eso tiene que salir como "sin dato
+// con causa" y no como un cuadro de color.
+function serieAnual(base, drift) {
+  // 365 días, no 260: con 260 la serie arranca en enero y NO alcanza a tocar un
+  // cierre del año anterior, así que YTD sale "—" con causa — correcto, pero
+  // entonces la prueba no mediría que YTD FUNCIONA, sólo que falla bien. El
+  // endpoint pide `range=1y` justamente para que el ancla de fin de año exista.
+  const pts = [];
+  const hoy = Date.parse('2026-09-21T20:00:00Z') / 1000;
+  for (let i = 365; i >= 0; i--) {
+    pts.push({ t: hoy - i * 86400, c: +(base * (1 + drift * (365 - i) / 365)).toFixed(4) });
+  }
+  return pts;
+}
+const MACRO = {
+  data: {
+    '^MXX': { price: 56200, currency: 'MXN', series: serieAnual(52000, 0.08) },
+    '^BVSP': { price: 139000, currency: 'BRL', series: serieAnual(132000, 0.05) },
+    'ES=F': { price: 6120, currency: 'USD', series: serieAnual(5800, 0.055) },
+    'NQ=F': { price: 22400, currency: 'USD', series: serieAnual(20500, 0.09) },
+    'YM=F': { price: 45200, currency: 'USD', series: serieAnual(44000, 0.027) },
+    '^GDAXI': { price: 24100, currency: 'EUR', series: serieAnual(22000, 0.095) },
+    '^FTSE': { price: 9450, currency: 'GBP', series: [{ t: Date.parse('2026-09-21T20:00:00Z') / 1000, c: 9450 }] },
+    '^N225': { price: 45800, currency: 'JPY', series: serieAnual(42000, 0.09) },
+    '^KS11': { price: 3480, currency: 'KRW', series: serieAnual(3600, -0.033) },
+    '^HSI': { price: 26100, currency: 'HKD', series: serieAnual(25000, 0.044) },
+    'DX-Y.NYB': { price: 97.4, currency: 'USD', series: serieAnual(99, -0.016) },
+    'EURUSD=X': { price: 1.182, currency: 'USD', series: serieAnual(1.16, 0.019) },
+    'JPY=X': { price: 148.2, currency: 'JPY', series: serieAnual(150, -0.012) },
+    'CL=F': { price: 63.4, currency: 'USD', series: serieAnual(70, -0.094) },
+    'BZ=F': { price: 67.1, currency: 'USD', series: serieAnual(74, -0.093) },
+    // Insumos del rendimiento en pesos: llegan y NO ocupan cuadro.
+    'GBPUSD=X': { price: 1.36, currency: 'USD', series: serieAnual(1.33, 0.022) },
+    'KRW=X': { price: 1385, currency: 'KRW', series: serieAnual(1400, -0.011) },
+    'HKD=X': { price: 7.78, currency: 'HKD', series: serieAnual(7.8, -0.003) },
+    'BRL=X': { price: 5.32, currency: 'BRL', series: serieAnual(5.5, -0.033) },
+  },
+  generated_at: '2026-09-21T20:05:00.000Z',
+};
+
 const FIXTURES = {
   us: {
     mapa: 'us', bolsa: 'us', cuadros: cuadrosUs(),
@@ -172,6 +216,11 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/__sin-auditar') {
     sinAuditar = url.searchParams.get('v') === '1';
     res.writeHead(200); return res.end('ok');
+  }
+  if (url.pathname === '/api/macro-markets') {
+    pedidosApi++;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(MACRO));
   }
   if (url.pathname === '/api/mercado-mapa') {
     pedidosApi++;
@@ -573,6 +622,110 @@ try {
     /sin capitalización verificada/.test(pie) && !/cuadros sin dato completo/.test(pie), pie);
   chequeo('y no le suma los símbolos sin precio, que no son cuadros todavía',
     /3 sin capitalización verificada/.test(pie), pie);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // MUNDO (R2b) — rejilla por región, tamaño fijo, chip POR BOLSA
+  // ═══════════════════════════════════════════════════════════════════
+  await p.goto(`${BASE}/mercado?mapa=mundo`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('#mundo .idx');
+  const mundo = await p.evaluate(() => {
+    const regiones = [...document.querySelectorAll('#mundo .region')].map((r) => ({
+      titulo: (r.querySelector('h2') || {}).textContent || '',
+      cuadros: r.querySelectorAll('.idx').length,
+      aviso: (r.querySelector('.aviso-region') || {}).textContent || '',
+    }));
+    const cajas = [...document.querySelectorAll('#mundo .idx')].map((e) => {
+      const b = e.getBoundingClientRect();
+      return {
+        sym: e.dataset.sym,
+        w: Math.round(b.width), h: Math.round(b.height),
+        nom: (e.querySelector('.nom') || {}).textContent || '',
+        pct: (e.querySelector('.pc') || {}).textContent || '',
+        bol: (e.querySelector('.bol') || {}).textContent || '',
+        punteado: e.classList.contains('punteado'),
+      };
+    });
+    return {
+      regiones, cajas,
+      lienzoOculto: document.getElementById('lienzo').hidden,
+      chip: (document.getElementById('chip') || {}).textContent || '',
+      pie: (document.getElementById('pie') || {}).textContent || '',
+      tab: document.getElementById('tab-mundo').getAttribute('aria-selected'),
+    };
+  });
+
+  chequeo('la pestaña Mundo se selecciona y el treemap se apaga',
+    mundo.tab === 'true' && mundo.lienzoOculto === true, JSON.stringify({ tab: mundo.tab, lienzo: mundo.lienzoOculto }));
+  chequeo('las cuatro regiones del encargo, en orden',
+    mundo.regiones.slice(0, 4).map((r) => r.titulo).join(' | ')
+      === 'América | Europa | Asia | Cripto · FX · materias primas',
+    mundo.regiones.map((r) => `${r.titulo}(${r.cuadros})`).join(' · '));
+  chequeo('un cuadro por índice, y los insumos del cruce NO ocupan cuadro',
+    mundo.cajas.length === 14
+      && !mundo.cajas.some((c) => ['GBPUSD=X', 'KRW=X', 'HKD=X', 'BRL=X'].includes(c.sym)),
+    `${mundo.cajas.length} cuadros: ${mundo.cajas.map((c) => c.sym).join(',')}`);
+
+  // TAMAÑO FIJO: es la regla 2 aplicada al tamaño. Si un cuadro fuera más
+  // grande que otro estaría afirmando algo que ningún dato sostiene.
+  const anchos = [...new Set(mundo.cajas.map((c) => c.w))];
+  const altos = [...new Set(mundo.cajas.map((c) => c.h))];
+  chequeo('TAMAÑO FIJO: todos los cuadros miden igual (los índices no tienen cap)',
+    anchos.length <= 2 && altos.length === 1, `anchos ${JSON.stringify(anchos)} altos ${JSON.stringify(altos)}`);
+
+  chequeo('cada cuadro lleva su nombre en español y su % con etiqueta de periodo',
+    mundo.cajas.every((c) => c.nom.length > 0) && mundo.cajas.some((c) => /1D/.test(c.pct)),
+    JSON.stringify(mundo.cajas.slice(0, 3)));
+
+  // EL CHIP ES POR BOLSA. Con ocho husos en pantalla, uno global mentiría.
+  const conBolsa = mundo.cajas.filter((c) => !/24h/.test(c.bol));
+  chequeo('el chip es POR BOLSA: cada cuadro dice el estado de la suya',
+    conBolsa.length >= 5 && conBolsa.every((c) => c.bol.length > 2),
+    JSON.stringify(conBolsa.map((c) => `${c.sym}:${c.bol}`).slice(0, 5)));
+  chequeo('futuros, FX y materias primas llevan "24h", no abierto/cerrado',
+    mundo.cajas.filter((c) => /24h/.test(c.bol)).length === 8,
+    JSON.stringify(mundo.cajas.filter((c) => /24h/.test(c.bol)).map((c) => c.sym)));
+  chequeo('el chip de arriba no finge una sola bolsa: cuenta cuántas están abiertas',
+    /bolsas/.test(mundo.chip), mundo.chip);
+
+  // REGLA 2: lo que no se pudo pintar dice por qué.
+  chequeo('el FTSE, que llegó con un punto, sale como "sin dato" CON causa',
+    /FTSE/.test(mundo.regiones.map((r) => r.aviso).join(' '))
+      && /sin dos cierres no hay periodo/.test(mundo.regiones.map((r) => r.aviso).join(' ')),
+    mundo.regiones.map((r) => r.aviso).filter(Boolean).join(' | ').slice(0, 160));
+  chequeo('cripto no se finge: la región lo dice',
+    /cripto todavía no/.test(mundo.regiones.map((r) => r.aviso).join(' ')),
+    mundo.regiones.map((r) => r.aviso).filter(Boolean).join(' | ').slice(0, 120));
+  chequeo('el pie de Mundo declara la fuente y que los % los calcula la pantalla',
+    /macro-markets/.test(mundo.pie) && /los % los calcula/.test(mundo.pie) && /Información, no asesoría/.test(mundo.pie),
+    mundo.pie);
+
+  // TAP REAL → la hoja, con la línea de la bolsa y su hora local.
+  await p.locator('#mundo .idx[data-sym="\\^N225"]').tap();
+  await p.waitForSelector('.hoja[data-abierta="1"]');
+  const hojaN = await p.locator('#hojaCuerpo').innerText();
+  chequeo('tap en un índice abre la hoja con su bolsa, su hora local y su fuente',
+    /Nikkei 225/.test(hojaN) && /Tokio/.test(hojaN) && /local/.test(hojaN) && /yahoo/.test(hojaN),
+    hojaN.slice(0, 180).replace(/\n/g, ' '));
+  chequeo('y la URL queda con el estado, como pide la regla 9',
+    /mapa=mundo/.test(p.url()) && /symbol=%5EN225|symbol=\^N225/.test(p.url()), p.url());
+  await p.locator('#cerrar').tap();
+
+  await p.screenshot({ path: join(OUT, 'mercado-390-mundo.png') });
+  console.log(`     → ${join(OUT, 'mercado-390-mundo.png')}`);
+
+  // El toggle de periodo no vuelve a pedir datos (regla 7).
+  const antes = pedidosApi;
+  await p.locator('.toggle button[data-per="YTD"]').tap();
+  await p.waitForTimeout(150);
+  const ytd = await p.evaluate(() => [...document.querySelectorAll('#mundo .idx .pc')].map((e) => e.textContent));
+  chequeo('YTD se calcula en la pantalla, sin volver a pedir nada',
+    pedidosApi === antes && ytd.some((t) => /YTD/.test(t)),
+    `${pedidosApi - antes} peticiones nuevas · ${ytd.slice(0, 3).join(' ')}`);
+  // Y que YTD dé un NÚMERO, no un "—": con `range=3mo` la serie no llegaba al
+  // año anterior y el ancla no existía. Ésa fue la razón de subirlo a 1y.
+  chequeo('y YTD da un número de verdad, que es para lo que se subió a range=1y',
+    ytd.filter((t) => /YTD/.test(t) && /%/.test(t)).length >= 10,
+    `${ytd.filter((t) => /%/.test(t)).length} con número de ${ytd.length}: ${ytd.slice(0, 3).join(' ')}`);
 
   // ── LA CAUSA DE UN GRIS NO SE INVENTA ──────────────────────────────
   // El 2026-09-26, en el iPhone: ORCL, MNST y APH decían "EDGAR no dio acciones

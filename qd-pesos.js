@@ -46,7 +46,7 @@ const num = (v) => {
 };
 
 /** La etiqueta que el encargo pide que se vea. No se abrevia. */
-export const ETIQUETA_PESOS = 'rendimiento en pesos';
+const ETIQUETA_PESOS = 'rendimiento en pesos';
 
 /**
  * Compone el rendimiento en pesos a partir de dos rendimientos en POR CIENTO.
@@ -56,7 +56,7 @@ export const ETIQUETA_PESOS = 'rendimiento en pesos';
  * cero) es válido y da −100%; cualquiera de los dos ausente devuelve null con
  * su motivo, porque un rendimiento a medias no es un rendimiento.
  */
-export function rendimientoEnPesos(pctLocal, pctMonedaMxn) {
+function rendimientoEnPesos(pctLocal, pctMonedaMxn) {
   const rl = num(pctLocal);
   const rm = num(pctMonedaMxn);
   if (rl == null) return { pct: null, motivo: 'falta el rendimiento local del activo' };
@@ -85,7 +85,7 @@ export function rendimientoEnPesos(pctLocal, pctMonedaMxn) {
  *   - USD  → el rendimiento del FIX, tal cual.
  *   - otra → se arma con el FIX y la serie de esa moneda contra el dólar.
  */
-export function cruceContraPeso(moneda, { usdMxnPct, usdPorUnidadPct } = {}) {
+function cruceContraPeso(moneda, { usdMxnPct, usdPorUnidadPct } = {}) {
   const m = String(moneda || '').toUpperCase();
   if (!m) return { pct: null, motivo: 'el activo no declara en qué moneda cotiza' };
   if (m === 'MXN') return { pct: 0, via: 'mxn_es_el_peso', motivo: null };
@@ -114,7 +114,7 @@ export function cruceContraPeso(moneda, { usdMxnPct, usdPorUnidadPct } = {}) {
  * mitad. `fix` describe el dato de Banxico que se usó, y viaja SIEMPRE para
  * que cada número en pesos pueda decir qué FIX usó y de qué fecha (regla 3).
  */
-export function enPesos({ pctLocal, moneda, usdMxnPct, usdPorUnidadPct, fix = null } = {}) {
+function enPesos({ pctLocal, moneda, usdMxnPct, usdPorUnidadPct, fix = null } = {}) {
   const cruce = cruceContraPeso(moneda, { usdMxnPct, usdPorUnidadPct });
   if (cruce.pct == null) {
     return {

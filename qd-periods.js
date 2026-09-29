@@ -175,67 +175,25 @@ if (typeof module !== 'undefined' && module.exports) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   EL CHIP DE ESTADO, UNO POR BOLSA
+   EL CHIP DE ESTADO SE FUE A `qd-mercados.js`
 
-   Un precio congelado en fin de semana es CORRECTO —es el cierre del
-   viernes— pero sin decirlo parece roto. Y con dos mercados en la misma
-   página, un solo chip mentiría en uno de los dos: la BMV cierra a las 15:00
-   de la CDMX y Nueva York a las 16:00 del Este, que no son la misma hora ni
-   con el mismo cambio de horario. México no cambia de horario desde 2022;
-   EE.UU. sí, y por eso su offset se toma del reloj del propio navegador en
-   vez de fijarse a −4.
+   Acá vivían `QD_BOLSAS`, `qdHoraEn` y `qdEstadoMercado`, con su propia tabla
+   de dos bolsas (us, mx) y su propio `Intl`. R2 pide un chip por bolsa para
+   ocho, y tener DOS tablas decidiendo si un mercado está abierto es el bug que
+   #241 y #245 ya costaron con las capitalizaciones: el job decía una cosa y el
+   mapa otra sobre el mismo hecho.
+
+   Así que la tabla es una sola y vive en `qd-mercados.js`, junto con el arreglo
+   del hueco que el comentario de acá admitía —"los feriados NO se modelan… un
+   día de asueto sale como abierto sin operaciones"—: ahora el horario se
+   contrasta con el último cierre y un feriado sale "sin cierre nuevo hoy".
+
+   `qdEstadoMercado` sigue existiendo con el mismo nombre y el mismo shape,
+   exportada desde ahí, así que quien la llamaba no cambia. Lo único que cambió
+   es que recibe `{ ultimoCierre }` y con eso deja de afirmar "abierto" con el
+   horario solo.
    ═══════════════════════════════════════════════════════════════════ */
 
-const QD_BOLSAS = {
-  us: { nombre: 'EE.UU.', tz: 'America/New_York', abre: 9.5, cierra: 16, etiqueta: 'NYSE/Nasdaq' },
-  mx: { nombre: 'México', tz: 'America/Mexico_City', abre: 8.5, cierra: 15, etiqueta: 'BMV' },
-};
-
-// La hora local de una zona, sin librerías: Intl ya sabe los cambios de
-// horario, así que preguntarle es más honesto que una tabla de offsets.
-function qdHoraEn(tz, ahora) {
-  const d = ahora instanceof Date ? ahora : new Date(ahora || Date.now());
-  try {
-    const p = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz, hour: '2-digit', minute: '2-digit', weekday: 'short', hour12: false,
-    }).formatToParts(d);
-    const g = (t) => (p.find((x) => x.type === t) || {}).value;
-    const dias = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-    const h = Number(g('hour')), m = Number(g('minute'));
-    return { hora: (h % 24) + m / 60, dow: dias[g('weekday')], ok: Number.isFinite(h) };
-  } catch (e) {
-    return { hora: null, dow: null, ok: false };
-  }
-}
-
-function qdEstadoMercado(bolsa, ahora) {
-  const b = QD_BOLSAS[bolsa];
-  if (!b) throw new Error('qdEstadoMercado: bolsa desconocida ' + bolsa);
-  const t = qdHoraEn(b.tz, ahora);
-  if (!t.ok) {
-    return { bolsa, nombre: b.nombre, etiqueta: b.etiqueta, abierto: null, texto: 'horario no disponible', motivo: 'el navegador no resolvió la zona horaria' };
-  }
-  const finde = t.dow === 0 || t.dow === 6;
-  const abierto = !finde && t.hora >= b.abre && t.hora < b.cierra;
-  const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
-  let d = t.dow;
-  if (finde || t.hora < b.abre) { do { d = (d + 6) % 7; } while (d === 0 || d === 6); }
-  return {
-    bolsa, nombre: b.nombre, etiqueta: b.etiqueta,
-    abierto,
-    // Los feriados NO se modelan: la BMV y NYSE tienen calendarios distintos y
-    // una tabla desactualizada mentiría con más confianza que este texto.
-    // Un día de asueto sale como "abierto" sin operaciones, y el pie del mapa
-    // dice la fecha del último cierre, que es el dato que desambigua.
-    texto: abierto ? 'abierto' : ('cerrado · cierre del ' + DIAS[d]),
-    ultimo_dia: DIAS[d],
-    motivo: null,
-  };
-}
-
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports.QD_BOLSAS = QD_BOLSAS;
-  module.exports.qdEstadoMercado = qdEstadoMercado;
-  module.exports.qdHoraEn = qdHoraEn;
   module.exports.qdCap = qdCap;
 }

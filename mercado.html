@@ -70,6 +70,30 @@
      cabe entero y el no-scroll sigue siendo la regla.
      `position:relative` es necesario, no cosmético: con `inset:0` el alto
      queda sobre-restringido y el navegador ignora el `height` que pone el JS. */
+  /* ── MUNDO: REJILLA, NO TREEMAP ───────────────────────────────────────
+     Encargo §3/R2: "un cuadro por índice, TAMAÑO FIJO (los índices no tienen
+     cap; no fingir)". El tamaño fijo es la regla 2 aplicada al tamaño: en el
+     mapa de acciones el área ES un dato y un cuadro grande afirma algo; un
+     índice no tiene con qué dimensionarse, así que todos miden igual y lo
+     único que el cuadro afirma es su color. */
+  #mundo{position:absolute;inset:0;overflow:auto;-webkit-overflow-scrolling:touch}
+  #mundo .region{margin:0 0 14px}
+  #mundo .region > h2{margin:0 0 6px;font:600 11px var(--mono);color:var(--tenue);
+    letter-spacing:.06em;text-transform:uppercase}
+  #mundo .region > .aviso-region{margin:0 0 6px;font:10px var(--mono);color:#777}
+  #mundo .rejilla{display:grid;gap:6px;grid-template-columns:repeat(auto-fill,minmax(106px,1fr))}
+  .idx{position:relative;min-height:74px;border:1px solid #0a0a0a;border-radius:3px;padding:6px 7px;
+    display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;
+    -webkit-tap-highlight-color:transparent;overflow:hidden}
+  .idx .nom{font:600 11px var(--mono);color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6);
+    white-space:nowrap;overflow:hidden;text-overflow:clip}
+  .idx .pc{font:700 15px var(--mono);color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+  .idx .px{font:10px var(--mono);color:rgba(255,255,255,.85)}
+  .idx .bol{font:9px var(--mono);color:rgba(255,255,255,.72);white-space:nowrap;
+    overflow:hidden;text-overflow:clip}
+  .idx .bol b{font-weight:600;color:rgba(255,255,255,.92)}
+  .idx.punteado{border-style:dashed;border-color:#555}
+  @media (pointer:fine){ .idx:hover{outline:1px solid rgba(255,255,255,.55);outline-offset:-1px} }
   body[data-scroll="1"]{overflow-y:auto;overflow-x:hidden}
   body[data-scroll="1"] main{flex:0 0 auto}
   body[data-scroll="1"] #lienzo{position:relative;inset:auto;width:100%}
@@ -144,12 +168,13 @@
 <nav role="tablist" aria-label="Mercado">
   <button role="tab" id="tab-us" data-mapa="us" aria-selected="true">EE.UU.</button>
   <button role="tab" id="tab-mx" data-mapa="mx" aria-selected="false">México</button>
+  <button role="tab" id="tab-mundo" data-mapa="mundo" aria-selected="false">Mundo</button>
 </nav>
 
 <div class="toggle" id="toggle" role="group" aria-label="Periodo"></div>
 
 <div id="ruta"></div>
-<main><div id="lienzo"></div></main>
+<main><div id="lienzo"></div><div id="mundo" hidden></div></main>
 <div id="aviso"></div>
 <div id="mas"></div>
 <footer id="pie">cargando…</footer>
@@ -162,6 +187,8 @@
 
 <script src="/qd-periods.js"></script>
 <script src="/qd-treemap.js"></script>
+<script src="/qd-mercados.js"></script>
+<script src="/qd-mundo.js"></script>
 <script>
 (function(){
   'use strict';
@@ -180,7 +207,8 @@
   // atrás del teléfono tiene que salir del sector, no de la página.
   function leerUrl(){
     var p = new URLSearchParams(location.search);
-    var mapa = p.get('mapa')==='mx' ? 'mx' : 'us';
+    var pm = p.get('mapa');
+    var mapa = (pm==='mx' || pm==='mundo') ? pm : 'us';
     var per  = PERIODOS.indexOf(p.get('periodo'))>=0 ? p.get('periodo') : '1D';
     return { mapa:mapa, periodo:per, sector:p.get('sector')||null, symbol:p.get('symbol')||null };
   }
@@ -216,11 +244,28 @@
 
   // ── Render ────────────────────────────────────────────────────────
   function render(){
-    document.getElementById('tab-us').setAttribute('aria-selected', estado.mapa==='us');
-    document.getElementById('tab-mx').setAttribute('aria-selected', estado.mapa==='mx');
+    ['us','mx','mundo'].forEach(function(k){
+      document.getElementById('tab-'+k).setAttribute('aria-selected', estado.mapa===k);
+    });
     pintarToggle();
     var d = cache[estado.mapa];
     if(!d){ cargar(estado.mapa); return; }
+    // Mundo es una rejilla, no un treemap: los índices no tienen con qué
+    // dimensionarse. Se reparte acá arriba para no meterle un `if` al
+    // repartidor del mapa, que ya tiene bastante.
+    document.getElementById('lienzo').hidden = (estado.mapa==='mundo');
+    document.getElementById('mundo').hidden = (estado.mapa!=='mundo');
+    if(estado.mapa==='mundo'){
+      document.body.removeAttribute('data-scroll');
+      pintarChipMundo(d);
+      pintarAviso({});
+      pintarPieMundo(d);
+      document.getElementById('ruta').innerHTML = '';
+      document.getElementById('mas').innerHTML = '';
+      pintarMundo(d);
+      if(estado.symbol) abrirHojaMundo(d, estado.symbol); else cerrarHoja(true);
+      return;
+    }
     pintarChip(d);
     // El "+N más" y el pie se pintan ANTES del mapa: los dos cambian de alto
     // al llenarse, y el treemap se dibuja con píxeles medidos. Al revés, el
@@ -255,7 +300,11 @@
   // motivo va en el title, porque un hueco visible es mejor que un rótulo
   // seguro de sí mismo.
   function pintarChip(d){
-    var e = qdEstadoMercado(d.bolsa || estado.mapa);
+    // `ultimoCierre` va al cálculo, no se re-deriva acá: el estado del mercado
+    // lo decide `qd-mercados.js` y nadie más. Antes esta función volvía a armar
+    // el texto "cierre del <día>" por su cuenta, o sea que había tres lugares
+    // opinando —la tabla de `qd-periods`, ésta, y el chip nuevo—.
+    var e = qdEstadoMercado(d.bolsa || estado.mapa, new Date(), { ultimoCierre: d.ultimo_cierre || null });
     var el = document.getElementById('chip');
     var txt, motivo = '';
     if(e.abierto){ txt = 'abierto'; }
@@ -574,9 +623,143 @@
   function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // MUNDO — rejilla por región, tamaño fijo, color por %
+  //
+  // El % de cada cuadro sale de `qdPeriodChange` sobre la serie que manda el
+  // endpoint (regla 1), incluido YTD: la serie es de un año desde R2(a), así
+  // que el ancla de fin de año la encuentra el mismo calculador y no hace
+  // falta que el servidor la elija, como sí hace falta en el mapa de acciones
+  // —donde sólo viajan 22 cierres para no mandar 75,000 puntos a un teléfono—.
+  //
+  // El chip es POR BOLSA, no global: el Nikkei cerrado y el Bovespa abierto
+  // caben en la misma pantalla, y un solo chip mentiría en uno de los dos.
+  // ═══════════════════════════════════════════════════════════════════
+  function cambioMundo(c){
+    var r = qdPeriodChange(c.serie || [], estado.periodo);
+    if(r.pct==null && !r.motivo) r.motivo = 'la serie no alcanza para este periodo';
+    return r;
+  }
+
+  function estadoDeCuadro(c){
+    if(c.es24h) return estado24h();
+    try { return estadoDeBolsa(c.bolsa, new Date(), { ultimoCierre: c.ultimo_cierre }); }
+    catch(e){ return { etiqueta: 'sin horario declarado', abierta: false, estado: 'desconocida' }; }
+  }
+
+  function pintarMundo(d){
+    var m = armaMundo({ data: (d && d.data) || {} });
+    var cont = document.getElementById('mundo');
+    var html = '';
+    m.regiones.forEach(function(r){
+      if(!r.cuadros.length && !r.aviso) return;
+      html += '<section class="region"><h2>' + esc(r.nombre) + '</h2>';
+      if(r.aviso) html += '<div class="aviso-region">' + esc(r.aviso) + '</div>';
+      html += '<div class="rejilla">';
+      r.cuadros.forEach(function(c){
+        var x = cambioMundo(c);
+        var e = estadoDeCuadro(c);
+        // Sin % no hay color que afirmar: gris punteado, como en el mapa.
+        var sinPct = !Number.isFinite(x.pct);
+        html += '<div class="idx' + (sinPct ? ' punteado' : '') + '"'
+          + ' style="background:' + (sinPct ? COLOR_SIN_DATO : colorDe(x.pct)) + '"'
+          + ' data-sym="' + esc(c.symbol) + '" role="button" tabindex="0"'
+          + ' aria-label="' + esc(c.nombre) + '">'
+          + '<div class="nom">' + esc(c.nombre) + '</div>'
+          + '<div><div class="pc">' + qdPctTag(x.pct, estado.periodo, { motivo: x.motivo }) + '</div>'
+          + '<div class="px">' + esc(fmtPrice(c.precio)) + (c.moneda ? ' ' + esc(c.moneda) : '') + '</div></div>'
+          + '<div class="bol">' + (e.abierta ? '● ' : '○ ') + esc(e.etiqueta) + '</div>'
+          + '</div>';
+      });
+      html += '</div></section>';
+    });
+    // Lo que no se pudo pintar se DICE, con su causa (regla 2).
+    if(m.faltantes.length){
+      html += '<section class="region"><h2>sin dato</h2><div class="aviso-region">'
+        + m.faltantes.map(function(f){ return esc(f.nombre + ' (' + f.symbol + '): ' + f.motivo); }).join('<br>')
+        + '</div></section>';
+    }
+    cont.innerHTML = html;
+  }
+
+  // El chip de arriba en Mundo no puede ser de una bolsa: hay ocho en pantalla.
+  // Dice cuántas están abiertas, y el detalle vive en cada cuadro.
+  function pintarChipMundo(d){
+    var m = armaMundo({ data: (d && d.data) || {} });
+    var abiertas = 0, total = 0;
+    m.regiones.forEach(function(r){ r.cuadros.forEach(function(c){
+      if(c.es24h) return;
+      total++;
+      if(estadoDeCuadro(c).abierta) abiertas++;
+    }); });
+    var el = document.getElementById('chip');
+    el.className = 'chip' + (abiertas > 0 ? ' abierto' : '');
+    el.textContent = (abiertas > 0 ? '● ' : '○ ')
+      + (total ? abiertas + ' de ' + total + ' bolsas abiertas' : 'sin bolsas con dato');
+    el.title = 'el estado de cada bolsa va en su propio cuadro: con ocho husos, un solo chip mentiría en alguno';
+  }
+
+  function pintarPieMundo(d){
+    var gen = d && d.generated_at ? new Date(d.generated_at) : null;
+    document.getElementById('pie').textContent =
+      'fuente: yahoo v8/chart vía /api/macro-markets (precio y serie; los % los calcula esta pantalla)'
+      + (gen && Number.isFinite(gen.getTime()) ? ' · generado ' + gen.toLocaleString('es-MX') : '')
+      + ' · Información, no asesoría';
+  }
+
+  function abrirHojaMundo(d, symbol){
+    var m = armaMundo({ data: (d && d.data) || {} });
+    var c = null;
+    m.regiones.forEach(function(r){ r.cuadros.forEach(function(x){ if(x.symbol===symbol) c = x; }); });
+    if(!c) return;
+    var x = cambioMundo(c);
+    var e = estadoDeCuadro(c);
+    var filas = [
+      ['cambio', qdPctTag(x.pct, estado.periodo, { motivo: x.motivo })],
+      ['nivel', esc(fmtPrice(c.precio)) + (c.moneda ? ' ' + esc(c.moneda) : '')],
+      ['bolsa', esc(c.es24h ? 'cotiza 24h' : (e.nombre || c.bolsa))],
+      ['estado', esc(e.etiqueta) + (e.hora_local ? ' · ' + esc(e.hora_local) + ' local' : '')],
+      ['último cierre', esc(c.ultimo_cierre || '—')],
+      ['fuente', esc(c.fuente)],
+      ['cierres traídos', String(c.puntos || 0)]
+    ];
+    // La moneda que manda es la que declaró la fuente. Si no es la esperada, se
+    // dice: convertir con la suposición es lo que puso a TSM del tamaño de NVDA.
+    if(c.moneda_discrepa){
+      filas.push(['moneda', esc(c.moneda) + ' (se esperaba ' + esc(c.moneda_esperada) + ')']);
+    }
+    document.getElementById('hojaCuerpo').innerHTML =
+      '<div class="ficha"><div class="iniciales">' + esc(String(c.symbol).replace(/[^A-Za-z0-9]/g,'').slice(0,4)) + '</div>'
+      + '<div><h2>' + esc(c.nombre) + '</h2><div class="sub">' + esc(c.symbol) + '</div></div></div>'
+      + '<dl>' + filas.map(function(f){ return '<dt>'+f[0]+'</dt><dd>'+f[1]+'</dd>'; }).join('') + '</dl>'
+      + (x.motivo ? '<div class="motivo">' + esc(x.motivo) + '</div>' : '');
+    var h = document.getElementById('hoja');
+    h.setAttribute('data-abierta','1'); h.setAttribute('aria-hidden','false');
+  }
+
+  // Tap en un cuadro de Mundo → la hoja, igual que en el mapa.
+  document.getElementById('mundo').addEventListener('click', function(ev){
+    var t = ev.target.closest('.idx'); if(!t) return;
+    estado.symbol = t.dataset.sym; escribirUrl(true); abrirHojaMundo(cache.mundo, estado.symbol);
+  });
+
   // ── Carga: UNA petición por mapa, y el toggle no vuelve a pedir ───
+  var NOMBRE_MAPA = { us:'EE.UU.', mx:'México', mundo:'Mundo' };
+
   function cargar(mapa){
-    document.getElementById('pie').textContent = 'cargando ' + (mapa==='us'?'EE.UU.':'México') + '…';
+    document.getElementById('pie').textContent = 'cargando ' + (NOMBRE_MAPA[mapa]||mapa) + '…';
+    // Regla 7: un endpoint batch por mapa. Mundo no estrena uno — usa el que ya
+    // existe y ya está cacheado para toda la base de usuarios, que además no
+    // devuelve ningún porcentaje pre-cocinado (regla 1).
+    if(mapa==='mundo'){
+      fetch('/api/macro-markets')
+        .then(function(r){ return r.json(); })
+        .then(function(d){ cache.mundo = d; render(); })
+        .catch(function(e){
+          document.getElementById('pie').textContent = 'no se pudo cargar Mundo: ' + e.message;
+        });
+      return;
+    }
     fetch('/api/mercado-mapa?map='+encodeURIComponent(mapa))
       .then(function(r){ return r.json(); })
       .then(function(d){ cache[mapa]=d; render(); })

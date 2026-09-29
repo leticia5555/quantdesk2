@@ -189,3 +189,72 @@ un rendimiento ausente entraba como "no se movió", que es una **afirmación**
 donde lo que hay es una ausencia. Es la quinta vez que esta coerción cuesta un
 bug en este proyecto y la primera que una prueba lo caza **antes** de subirlo —
 la que dice "un rendimiento ausente no vale cero".
+
+---
+
+## R2(b) — Mundo en pantalla
+
+Pestaña **Mundo** en `/mercado?mapa=mundo`, rejilla por región, tamaño fijo,
+color por %, chip por bolsa. Sin endpoint nuevo: lee `/api/macro-markets`, que
+ya batchea y ya está cacheado para toda la base de usuarios (regla 7) y que no
+devuelve ningún porcentaje pre-cocinado (regla 1).
+
+### Tamaño fijo es la regla 2 aplicada al tamaño
+
+En el mapa de acciones el área **es** un dato —la capitalización— y un cuadro
+grande afirma algo. Un índice no tiene con qué dimensionarse: el Nikkei son 225
+empresas japonesas y el DAX 40 alemanas, y no hay número que los haga
+comparables de tamaño. Así que todos miden igual y lo único que el cuadro
+afirma es su color. Hay comprobación en Chromium de que los 14 cuadros miden lo
+mismo: si alguien los dimensionara por algo, se pone roja.
+
+### Qué NO está en Mundo, y por qué
+
+De los 23 símbolos del endpoint se pintan 14. Los otros nueve no se esconden:
+
+| fuera | por qué |
+| :--- | :--- |
+| `^VIX`, `^TNX`, `2YY=F`, `^TYX` | la volatilidad y las tasas del Tesoro no son índices de ninguna región, y las cuatro que Lety fijó no tienen cajón para ellas. Meterlas en "Cripto · FX · materias primas" sería acomodar el dato al mueble. Siguen en el tab MACRO de `app.html`. |
+| `GBPUSD=X`, `KRW=X`, `HKD=X`, `BRL=X` | entraron en R2(a) como **insumo** del rendimiento en pesos (sin ellos el FTSE, el KOSPI, el Hang Seng y el Bovespa no se pueden convertir). Son el cruce de una moneda, no un activo que alguien quiera mirar: van marcados `solo_insumo`. |
+| cripto | **no hay ni un símbolo de cripto en la fuente.** La región lo dice con su aviso, como los tabs Cripto/ETFs del encargo van "vacíos con 'pronto', no fingir". |
+
+### Una sola tabla de bolsas
+
+`qd-periods.js` tenía **su propio** `QD_BOLSAS` con us/mx y su propio `Intl`, o
+sea dos tablas decidiendo si un mercado está abierto — el bug de #241/#245 con
+otro traje. La tabla quedó una sola, en `qd-mercados.js`; `qdEstadoMercado`
+conserva nombre y shape como adaptador, y las pruebas del chip viejo se
+**mudaron tal cual** a `tests/mercado-bolsas.test.mjs` para que la unificación
+se demuestre en vez de afirmarse.
+
+Lo único que cambió a propósito: `abierto` ya no se afirma con el horario solo.
+`/mercado` pasa `ultimoCierre`, que siempre tiene, y con eso el hueco que el
+comentario viejo admitía —*"un día de asueto sale como abierto sin
+operaciones"*— deja de pasar. Y `pintarChip` dejó de re-derivar el texto
+"cierre del <día>" por su cuenta: eran **tres** lugares opinando.
+
+### `export` en un `<script>` clásico: verde en la suite, blanco en el teléfono
+
+`qd-mercados.js` y `qd-mundo.js` se escribieron con `export const` / `export
+function`, que es lo natural acá porque todo lo demás es ESM y **Node los
+acepta** (sin `package.json`, detecta la sintaxis y los carga como módulo). Las
+pruebas pasaban.
+
+Pero `mercado.html` los carga con `<script src>`, un script **clásico**, y ahí
+`export` es un `SyntaxError`: el archivo entero no se ejecuta, `armaMundo` queda
+`undefined` y la pestaña sale **en blanco**. Verde en la suite y roto en el
+teléfono, que es el peor par que hay.
+
+Por eso `qd-periods.js` y `qd-treemap.js` usan el patrón doble —sólo
+declaraciones y un `module.exports` protegido con `typeof`—. Los tres archivos
+nuevos se convirtieron, y `tests/mercado-scripts.test.mjs` lo vuelve
+obligatorio: lee los `<script src>` **del propio HTML**, compila cada archivo
+con `new Function` (que es modo script, igual que el navegador) y exige el
+guardia. Se pone roja antes de que llegue a un teléfono.
+
+### Lo que falta para cerrar R2
+
+El toggle **USD | MXN** y la línea "en pesos" de la hoja son R2(c): la
+aritmética y su procedencia ya están hechas y probadas en `qd-pesos.js`, y lo
+que falta es traer la serie del FIX de Banxico al payload y pintar los dos
+números (grande en pesos, chico local) con la etiqueta.

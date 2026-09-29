@@ -149,42 +149,17 @@ test('fmtPrice: dos decimales, cuatro abajo de un dólar, "—" si no hay', () =
   assert.equal(MERCADO.fmtPrice('x'), '—');
 });
 
-// ───── el chip de estado, uno por bolsa ─────
-
-test('las dos bolsas NO abren ni cierran a la misma hora', () => {
-  // 20:30 UTC = 16:30 en Nueva York (cerrado) y 14:30 en la CDMX (abierto).
-  const t = new Date('2026-09-21T20:30:00Z');   // lunes
-  const us = MERCADO.qdEstadoMercado('us', t);
-  const mx = MERCADO.qdEstadoMercado('mx', t);
-  assert.equal(us.abierto, false, 'NY ya cerró a las 16:30 locales');
-  assert.equal(mx.abierto, true, 'la BMV sigue abierta a las 14:30 locales');
-  assert.equal(us.etiqueta, 'NYSE/Nasdaq');
-  assert.equal(mx.etiqueta, 'BMV');
+// ───── el chip de estado se fue a `qd-mercados.js` ─────
+//
+// Vivía acá con su propia tabla de dos bolsas. R2 pide ocho, y dos tablas
+// decidiendo si un mercado está abierto es el bug de #241/#245 con otro traje.
+// La tabla es una sola y las pruebas del chip viven con ella, en
+// `tests/mercado-bolsas.test.mjs`. Lo que se prueba ACÁ es que no quedó una
+// segunda copia: si alguien vuelve a definir `QD_BOLSAS` o `qdEstadoMercado`
+// en este archivo, esto se pone rojo.
+test('el chip NO se define dos veces: qd-periods ya no lo exporta', () => {
+  assert.equal(MERCADO.QD_BOLSAS, undefined, 'la tabla de bolsas vive en qd-mercados.js');
+  assert.equal(MERCADO.qdEstadoMercado, undefined, 'y el cálculo también');
+  assert.equal(MERCADO.qdHoraEn, undefined);
 });
 
-test('en sesión, las dos abiertas', () => {
-  const t = new Date('2026-09-21T17:00:00Z');   // 13:00 NY, 11:00 CDMX
-  assert.equal(MERCADO.qdEstadoMercado('us', t).abierto, true);
-  assert.equal(MERCADO.qdEstadoMercado('mx', t).abierto, true);
-});
-
-test('el fin de semana dice de qué día es el cierre que se está viendo', () => {
-  const dom = new Date('2026-09-20T17:00:00Z');   // domingo
-  for (const b of ['us', 'mx']) {
-    const e = MERCADO.qdEstadoMercado(b, dom);
-    assert.equal(e.abierto, false);
-    assert.match(e.texto, /cierre del viernes/);
-  }
-});
-
-test('antes de abrir, el cierre que se ve es el del día hábil anterior', () => {
-  const lunesTemprano = new Date('2026-09-21T12:00:00Z');   // 8:00 NY, 6:00 CDMX
-  for (const b of ['us', 'mx']) {
-    assert.equal(MERCADO.qdEstadoMercado(b, lunesTemprano).abierto, false);
-    assert.match(MERCADO.qdEstadoMercado(b, lunesTemprano).texto, /cierre del viernes/);
-  }
-});
-
-test('una bolsa que no existe LANZA en vez de inventar un horario', () => {
-  assert.throws(() => MERCADO.qdEstadoMercado('xx', new Date()), /bolsa desconocida/);
-});
