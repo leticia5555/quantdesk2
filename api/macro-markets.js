@@ -43,7 +43,7 @@ export const MACRO_SYMBOLS = [
   // moneda, el S&P/TSX, el COLCAP, Shanghái, el Nifty y el ASX no pueden
   // convertirse a pesos y su cuadro diría "—" con causa. Todos en la forma
   // "unidades por dólar", igual que JPY=X.
-  'CAD=X', 'COP=X', 'CNY=X', 'INR=X', 'AUD=X',
+  'CAD=X', 'CLP=X', 'CNY=X', 'INR=X', 'AUD=X',
   'CL=F', 'BZ=F',               // commodities: WTI, Brent
   '^N225', '^KS11', '^HSI',     // Asia
   '^GDAXI', '^FTSE',            // Europa
@@ -58,10 +58,9 @@ export const MACRO_SYMBOLS = [
   '000001.SS',                  // China — Shanghai Composite
   '^NSEI',                      // India — Nifty 50
   '^AXJO',                      // Australia — ASX 200
-  // COLCAP va aparte: no pude verificar su ticker desde este contenedor (sin
-  // salida a Yahoo). Si `^COLCAP` no existe, el cuadro sale "sin dato" con su
-  // causa en vez de desaparecer, y se corrige con un renglón.
-  '^COLCAP',
+  // `^COLCAP` no existe en Yahoo —comprobado por Lety contra prod— así que
+  // Colombia sale y entra Chile, que sí tiene ticker.
+  '^IPSA',
   // Cripto, FX y materias primas de la última región del mockup.
   'BTC-USD',                    // Bitcoin — Lety confirmó que Yahoo lo tiene
   'MXN=X',                      // USD/MXN de mercado, para el CUADRO. La
@@ -122,9 +121,19 @@ export function extractMacro(chartJson) {
 
   return {
     price: sig6(price),
+    // ── LA FECHA DEL PRECIO, QUE FALTABA ────────────────────────────────
+    // `price` es el último precio de mercado y la serie diaria termina en el
+    // último CIERRE: cuando la sesión de hoy ya corrió pero el cierre todavía
+    // no entró a la serie, son de días distintos. Sin este timestamp no hay
+    // manera de saberlo, y el cliente terminaba mostrando el precio de hoy con
+    // el % de ayer — el KOSPI en 6,870.81 con el −2.70% del lunes.
+    precio_t: Number.isFinite(meta.regularMarketTime) ? meta.regularMarketTime : null,
     currency: meta.currency || null,
-    // ~3 meses de diario (~66 sesiones) alcanza para 1S/1M/3M holgado.
-    series: series.slice(-70),
+    // Un AÑO de diario, no ~3 meses. Esto estaba en `slice(-70)` y dejaba sin
+    // efecto el `range=1y`: el fetch pedía un año y el recorte devolvía 70
+    // puntos, con los que el ancla de fin de año no existe y YTD sale "—".
+    // 280 = las ~252 sesiones de un año más margen.
+    series: series.slice(-280),
   };
 }
 

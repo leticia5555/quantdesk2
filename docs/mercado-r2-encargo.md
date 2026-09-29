@@ -347,3 +347,52 @@ usa `#0a0a0a` y la mono del sistema — una divergencia que viene de R1. Copié 
 **estructura** del artboard y dejé la paleta de la página: si Mundo estrenara
 otra, se vería como otra app al lado de EE.UU. y México. Migrar la paleta toca
 las tres pestañas y merece su propia rebanada.
+
+---
+
+## R2(b/c) — los cinco de la revisión contra prod (2026-09-29)
+
+### 1. El precio y el % eran de días distintos
+
+`price` es el último precio de mercado y la serie diaria termina en el último
+**cierre**. Cuando la sesión de hoy ya corrió pero su cierre no entró a la
+serie, son de días distintos — y el cuadro mostraba el precio de hoy con el % de
+ayer. El KOSPI: **6,870.81 con −2.70%**, que era el 1D del lunes (6,889.74
+contra 7,080.92). El de hoy era **−0.27%**.
+
+Dos cosas faltaban, y la primera no se podía arreglar sin la segunda:
+
+- **El endpoint no mandaba la fecha del precio.** Ahora `extractMacro` devuelve
+  `precio_t` desde `meta.regularMarketTime`, o `null` si Yahoo no lo manda. Sin
+  ese dato, "¿es más nuevo?" no se puede contestar y no se adivina.
+- **La regla**, en `serieConPrecio`: si `price` es más nuevo que el último
+  punto, entra como el punto de hoy **antes** de calcular; si no, el precio que
+  se muestra es el del último punto y la etiqueta dice su fecha (`6,889.74 ·
+  09-28`).
+
+Y apareció otra: `extractMacro` tenía `series.slice(-70)`, que **dejaba sin
+efecto el `range=1y`** de R2(a) — el fetch pedía un año y el recorte devolvía 70
+puntos, con los que el ancla de fin de año no existe y YTD sale "—". El tope
+ahora es 280 (~252 sesiones más margen).
+
+### 2. El peso tenía dos fuentes en la misma pantalla
+
+El cuadro USD/MXN salía de `MXN=X` de Yahoo y daba **+2.19%** 1D —a esa serie le
+faltaba el 28-sep, así que comparaba 18.1376 contra 17.7487 del 27— mientras la
+conversión a pesos, que usa el FIX, daba **+0.74%**. Dos números del mismo peso,
+uno al lado del otro.
+
+El cuadro pasa a salir del **mismo FIX** que convierte, con su fecha y con
+`fuente: banxico:SF43718`. Si el FIX no llega, el cuadro **no cae a Yahoo**:
+dice por qué no está.
+
+### 3, 4 y 5
+
+- El aviso *"cripto todavía no"* se fue: con Bitcoin en la rejilla era falso, y
+  un aviso falso es peor que ninguno.
+- El chip contaba **cuadros**, no bolsas: el S&P 500 y el Nasdaq 100 son dos
+  cuadros y **una** bolsa, y Nueva York no abre dos veces. Ahora cuenta claves
+  de bolsa sin repetir, y la prueba compara los dos números en vez de fijar una
+  cifra — así no depende de cuántos índices tenga el catálogo.
+- **`^COLCAP` no existe en Yahoo** (comprobado por Lety contra prod). Colombia
+  sale, entra **Chile (`^IPSA`)** con la Bolsa de Santiago y su cruce `CLP=X`.

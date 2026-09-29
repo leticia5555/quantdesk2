@@ -143,14 +143,17 @@ const MACRO = {
     '^FCHI': { price: 8100, currency: 'EUR', series: serieAnual(7900, 0.025) },
     '000001.SS': { price: 3820, currency: 'CNY', series: serieAnual(3500, 0.09) },
     '^NSEI': { price: 26800, currency: 'INR', series: serieAnual(25200, 0.063) },
-    '^AXJO': { price: 8950, currency: 'AUD', series: serieAnual(8600, 0.04) },
-    // COLCAP a propósito AUSENTE: no pude verificar su ticker, y lo que tiene
-    // que pasar entonces es que el cuadro diga por qué no está.
+    // `^AXJO` a propósito AUSENTE: lo que tiene que pasar es que el cuadro
+    // diga por qué no está, en vez de desaparecer de la rejilla.
+    // Un símbolo AUSENTE a propósito: lo que tiene que pasar es que el cuadro
+    // diga por qué no está, en vez de desaparecer.
     'BTC-USD': { price: 114240, currency: 'USD', series: serieAnual(98000, 0.165) },
-    'MXN=X': { price: 18.21, currency: 'MXN', series: serieAnual(19.4, -0.061) },
+    // A propósito DISTINTO del FIX: si el cuadro tomara esto, se vería.
+    'MXN=X': { price: 99.99, currency: 'MXN', series: serieAnual(99, 0.5) },
     'GC=F': { price: 3684, currency: 'USD', series: serieAnual(3100, 0.188) },
     'CAD=X': { price: 1.38, currency: 'CAD', series: serieAnual(1.42, -0.028) },
-    'COP=X': { price: 3980, currency: 'COP', series: serieAnual(4200, -0.052) },
+    'CLP=X': { price: 965, currency: 'CLP', series: serieAnual(990, -0.025) },
+    '^IPSA': { price: 8720, currency: 'CLP', series: serieAnual(7900, 0.104) },
     'CNY=X': { price: 7.06, currency: 'CNY', series: serieAnual(7.2, -0.019) },
     'INR=X': { price: 88.4, currency: 'INR', series: serieAnual(86, 0.028) },
     'AUD=X': { price: 1.49, currency: 'AUD', series: serieAnual(1.53, -0.026) },
@@ -162,7 +165,17 @@ const MACRO = {
     '^GDAXI': { price: 24100, currency: 'EUR', series: serieAnual(22000, 0.095) },
     '^FTSE': { price: 9450, currency: 'GBP', series: serieAnual(9100, 0.038) },
     '^N225': { price: 45800, currency: 'JPY', series: serieAnual(42000, 0.09) },
-    '^KS11': { price: 3480, currency: 'KRW', series: serieAnual(3600, -0.033) },
+    // EL CASO DEL KOSPI, con los números que Lety vio en prod el 2026-09-29:
+    // la serie termina el lunes 28 en 6,889.74 (viniendo de 7,080.92 el
+    // viernes) y `price` es 6,870.81, de HOY. El 1D correcto es −0.27%; el que
+    // se mostraba, −2.70%, era el del lunes.
+    '^KS11': {
+      price: 6870.81, precio_t: Date.parse('2026-09-22T06:00:00Z') / 1000, currency: 'KRW',
+      series: serieAnual(6500, 0.06).slice(0, -1).concat([
+        { t: Date.parse('2026-09-18T20:00:00Z') / 1000, c: 7080.92 },
+        { t: Date.parse('2026-09-21T20:00:00Z') / 1000, c: 6889.74 },
+      ]),
+    },
     '^HSI': { price: 26100, currency: 'HKD', series: serieAnual(25000, 0.044) },
     'DX-Y.NYB': { price: 97.4, currency: 'USD', series: serieAnual(99, -0.016) },
     'EURUSD=X': { price: 1.182, currency: 'USD', series: serieAnual(1.16, 0.019) },
@@ -711,8 +724,10 @@ try {
     mundo.regiones.slice(0, 4).map((r) => r.titulo.trim()).join(' | ')
       === 'América | Europa | Asia | Cripto · FX · Materias primas',
     mundo.regiones.map((r) => r.titulo.trim()).join(' · '));
-  const esperados = ['^GSPC', '^NDX', '^MXX', '^BVSP', '^GSPTSE', '^GDAXI', '^FTSE', '^FCHI',
-    '^N225', '^KS11', '^HSI', '000001.SS', '^NSEI', '^AXJO', 'BTC-USD', 'MXN=X', 'GC=F'];
+  // `^AXJO` no está en la lista porque el fixture lo omite A PROPÓSITO: es el
+  // caso de "no llegó → se dice con su causa", que se comprueba más abajo.
+  const esperados = ['^GSPC', '^NDX', '^MXX', '^BVSP', '^GSPTSE', '^IPSA', '^GDAXI', '^FTSE', '^FCHI',
+    '^N225', '^KS11', '^HSI', '000001.SS', '^NSEI', 'BTC-USD', 'MXN=X', 'GC=F'];
   const symsMundo = mundo.cajas.map((c) => c.sym);
   chequeo('los índices del mockup están, y los cruces de moneda NO ocupan cuadro',
     esperados.every((e) => symsMundo.includes(e))
@@ -748,9 +763,39 @@ try {
     mundo.titular === 'El mundo, ahora' && mundo.sub.length > 8, `${mundo.titular} · ${mundo.sub}`);
 
   // ── REGLA 2 ────────────────────────────────────────────────────────
-  chequeo('COLCAP, que no llegó, sale con su causa en vez de desaparecer',
-    mundo.notas.join(' ').includes('COLCAP') && /no devolvió este símbolo/.test(mundo.notas.join(' ')),
+  chequeo('un símbolo que no llegó sale con su causa en vez de desaparecer',
+    /no devolvió este símbolo/.test(mundo.notas.join(' ')),
     mundo.notas.join(' | ').slice(0, 160));
+  chequeo('ya no dice "cripto todavía no": Bitcoin está en la rejilla',
+    !/cripto todavía no/.test(mundo.regiones.map((r) => r.estado).join(' '))
+      && symsMundo.includes('BTC-USD'),
+    mundo.regiones.map((r) => r.estado).join(' | ').slice(0, 120));
+
+  // ── EL PRECIO Y EL % SON DEL MISMO DÍA (el caso del KOSPI) ─────────
+  const kospi = mundo.cajas.find((c) => c.sym === '^KS11');
+  chequeo('el KOSPI muestra el % de HOY (−0.27%), no el del lunes (−2.70%)',
+    /-0\.3%|-0\.27%/.test(kospi.grande) && !/-2\.7/.test(kospi.grande),
+    `grande ${kospi.grande} · chico ${kospi.chico}`);
+  chequeo('y su nivel es el precio de hoy, sin fecha vieja pegada',
+    /6,870/.test(kospi.chico), kospi.chico);
+
+  // ── UNA SOLA FUENTE DE VERDAD PARA EL PESO ─────────────────────────
+  const peso = mundo.cajas.find((c) => c.sym === 'MXN=X');
+  chequeo('el cuadro USD/MXN sale del FIX, no de Yahoo',
+    /18\./.test(peso.chico) && !/99/.test(peso.chico) && /FIX/.test(peso.pais),
+    `${peso.pais} · ${peso.chico} · ${peso.grande}`);
+
+  // ── EL CHIP CUENTA BOLSAS, NO ÍNDICES ──────────────────────────────
+  // El S&P 500 y el Nasdaq 100 son dos cuadros y UNA bolsa: Nueva York no abre
+  // dos veces. Con 17 cuadros hay 11 bolsas distintas más los 24h.
+  // El S&P 500 y el Nasdaq 100 son dos cuadros y UNA bolsa: Nueva York no abre
+  // dos veces. Así que las bolsas tienen que ser MENOS que los cuadros que no
+  // son 24h — comparar los dos números es lo que distingue "cuenta bolsas" de
+  // "cuenta cuadros", y no depende de cuántos índices tenga el catálogo.
+  const no24h = mundo.cajas.filter((c) => !['BTC-USD', 'MXN=X', 'GC=F'].includes(c.sym)).length;
+  const enChip = Number((mundo.chip.match(/de (\d+) bolsas/) || [])[1]);
+  chequeo('el chip cuenta BOLSAS, no cuadros (NY tiene dos índices y una bolsa)',
+    Number.isFinite(enChip) && enChip < no24h, `${mundo.chip} · cuadros no-24h: ${no24h}`);
   chequeo('el pie declara la fuente y que el estado es por bolsa',
     /macro-markets/.test(mundo.pie) && /por bolsa, no global/.test(mundo.pie)
       && /Información, no asesoría/.test(mundo.pie), mundo.pie);
