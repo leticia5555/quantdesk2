@@ -104,7 +104,11 @@ console.log('handler: batch feliz sobre el universo fijo');
   global.fetch = async (url) => {
     calls++;
     const u = String(url);
-    ok(u.includes('range=3mo') && u.includes('interval=1d'), 'pide range=3mo&interval=1d (serie 3m en 1 fetch)');
+    // Era `range=3mo`: ~70 puntos, con los que YTD no se puede calcular. R2 lo
+    // subió a 1y (decisión de Lety, 2026-09-29) porque `qdPeriodChange` ancla
+    // por FECHA, así que una serie más larga no cambia ningún número de los
+    // periodos que ya funcionaban — sólo habilita el que no alcanzaba.
+    ok(u.includes('range=1y') && u.includes('interval=1d'), 'pide range=1y&interval=1d (un año en 1 fetch, para que YTD alcance)');
     if (u.includes('%5EVIX')) return chartResponse({ regularMarketPrice: 20 }, [1, 2, 3], [18, 19, 20]);
     return chartResponse({ regularMarketPrice: 100 }, [1, 2, 3], [98, 99, 100]);
   };
