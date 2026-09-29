@@ -39,6 +39,49 @@ const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; 
 /** El techo de ESTE contraste. Declarado, versionado, y no es el de G2. */
 export const UMBRAL_EDGAR_PCT = 10;
 
+/**
+ * CUÁNDO DOS CONTEOS DE ACCIONES LE GANAN A LA CAP DECLARADA.
+ *
+ * MNST, APH y VMRK (corrida del 2026-09-28): las acciones de la portada de
+ * EDGAR × nuestro cierre dan 2× la cap que declara Finnhub, y las acciones que
+ * declara Finnhub × nuestro cierre dan TAMBIÉN 2×. O sea que los dos conteos de
+ * acciones concuerdan entre sí y la que se sale es la cap declarada — el patrón
+ * de un split 2:1 que la cap de Finnhub no reflejó.
+ *
+ * Regla de Lety del 2026-09-29: cuando los dos conteos coinciden dentro de este
+ * umbral, se verifica con `calc: edgar×neon` y la cap declarada se DESCARTA,
+ * diciéndolo.
+ *
+ * ESTE 5% NO ES EL DE G2 aunque coincida el número, y por eso es su propia
+ * constante: G2 compara una cap declarada contra una reconstruida; acá se
+ * comparan dos CONTEOS DE ACCIONES, que es una pregunta distinta y con otra
+ * deriva esperada (recompras y emisiones entre la portada y hoy).
+ *
+ * Y una honestidad sobre la palabra "independientes": no sabemos de dónde saca
+ * Finnhub su `shareOutstanding`, y bien puede venir de los mismos filings. Lo
+ * que hace segura la regla no es la independencia de las fuentes: es que el
+ * número que se PINTA sigue siendo el nuestro —acciones × nuestro cierre— y
+ * nunca la cap declarada. Si los dos conteos estuvieran mal por la misma razón,
+ * el tamaño estaría mal; pero entonces también lo estaría el de las 286 que ya
+ * se verifican por este camino.
+ */
+export const UMBRAL_ACUERDO_ACCIONES_PCT = 5;
+
+/**
+ * CUÁNTO PUEDE ENVEJECER UNA PORTADA.
+ *
+ * CMCSA (misma corrida) resolvió con una portada del **2009-12-31**: el
+ * concepto de ese CIK no traía nada más nuevo con forma de 10-Q/10-K, y el
+ * lector tomó lo más reciente que había sin preguntarse si eso era reciente.
+ * Un conteo de acciones de hace 17 años multiplicado por el cierre de hoy es un
+ * número inventado con dos datos reales.
+ *
+ * 15 meses = un año fiscal más el trimestre de gracia para presentarlo. Pasado
+ * eso, gris con la causa diciendo DE QUÉ AÑO es lo único que EDGAR tiene, que
+ * es lo que permite decidir si hay que buscar el conteo en otra parte.
+ */
+export const MAX_MESES_PORTADA = 15;
+
 /** Las formas que traen portada con conteo de acciones. Un 8-K no sirve. */
 export const FORMAS_CON_PORTADA = ['10-Q', '10-K', '10-K/A', '10-Q/A', '20-F', '40-F'];
 
@@ -90,6 +133,13 @@ export function formaDeUnits(json) {
   const partes = Object.keys(u).slice(0, 6).map((k) => {
     const v = u[k];
     if (Array.isArray(v)) return `${k}: arreglo de ${v.length}`;
+    // `shares: object` no alcanzó para entender qué llegó en BE: un objeto
+    // puede ser un hecho suelto o un diccionario de hechos, y se arreglan
+    // distinto. Así que la huella también dice SUS claves.
+    if (v && typeof v === 'object') {
+      const dentro = Object.keys(v).slice(0, 6).join('|');
+      return `${k}: objeto con claves {${dentro}${Object.keys(v).length > 6 ? '…' : ''}}`;
+    }
     return `${k}: ${v === null ? 'null' : typeof v}`;
   });
   return `units: objeto con {${partes.join(', ')}}`;
@@ -107,13 +157,48 @@ export function formaDeUnits(json) {
  */
 export function filasDeUnits(json, { preferida = 'shares' } = {}) {
   const u = json && typeof json === 'object' ? json.units : null;
-  if (Array.isArray(u)) return { filas: u, unidad: null };
-  if (!u || typeof u !== 'object') return { filas: [], unidad: null };
-  if (Array.isArray(u[preferida])) return { filas: u[preferida], unidad: preferida };
+  if (Array.isArray(u)) return { filas: u, unidad: null, forma: 'units es el arreglo' };
+  if (!u || typeof u !== 'object') return { filas: [], unidad: null, forma: null };
+
+  // Un OBJETO de hechos también es una colección de hechos. BE llegó así en la
+  // corrida del 2026-09-28 —la huella dijo `units: objeto con {shares: object}`—
+  // y el lector, que ya no reventaba, tampoco entendía la forma: devolvía cero
+  // filas. `Object.values` la entiende, y se valida que lo de dentro tenga
+  // pinta de hecho (`val` con `end` o `form`) antes de tratarlo como tal: un
+  // objeto cualquiera no se convierte en hechos por tener valores.
+  const comoFilas = (v) => {
+    if (Array.isArray(v)) return { filas: v, forma: 'arreglo' };
+    if (!v || typeof v !== 'object') return null;
+    const vals = Object.values(v);
+    const hechos = vals.filter((x) => x && typeof x === 'object' && !Array.isArray(x)
+      && num(x.val) != null && (x.end || x.form));
+    if (!hechos.length) return null;
+    return { filas: hechos, forma: `objeto con ${hechos.length} de ${vals.length} valores con pinta de hecho` };
+  };
+
+  const pref = comoFilas(u[preferida]);
+  if (pref) return { filas: pref.filas, unidad: preferida, forma: pref.forma };
   for (const [k, v] of Object.entries(u)) {
-    if (Array.isArray(v)) return { filas: v, unidad: k };
+    const r = comoFilas(v);
+    if (r) return { filas: r.filas, unidad: k, forma: r.forma };
   }
-  return { filas: [], unidad: null };
+  return { filas: [], unidad: null, forma: null };
+}
+
+/**
+ * UN PEDAZO DE LA RESPUESTA CRUDA, PARA PODER MIRARLA.
+ *
+ * La huella dice la forma; esto dice el CONTENIDO. Cuando una respuesta no se
+ * entiende, lo que hace falta es verla — y desde el contenedor donde se
+ * construye esto no hay salida a sec.gov, así que la única manera de que
+ * aparezca en pantalla es que el job la traiga recortada. Va sólo para los que
+ * fallan: la respuesta completa de un CIK son cientos de KB.
+ */
+export function muestraCruda(json, max = 600) {
+  let txt;
+  try { txt = JSON.stringify(json); } catch { return '(no serializable)'; }
+  if (txt == null) return String(json);
+  return txt.length > max ? `${txt.slice(0, max)}… (${txt.length} caracteres en total)` : txt;
 }
 
 /**
@@ -126,15 +211,18 @@ export function filasDeUnits(json, { preferida = 'shares' } = {}) {
  * preguntas distintas: una dice a qué fecha vale el número, la otra cuándo
  * nos enteramos.
  */
-export function accionesDeCompanyConcept(json, { formas = FORMAS_CON_PORTADA } = {}) {
-  const { filas: unidades, unidad } = filasDeUnits(json);
+export function accionesDeCompanyConcept(json, {
+  formas = FORMAS_CON_PORTADA, hoy = new Date(), maxMeses = MAX_MESES_PORTADA,
+} = {}) {
+  const { filas: unidades, unidad, forma } = filasDeUnits(json);
   const validas = unidades.filter((u) => {
     const v = num(u && u.val);
     return v != null && v > 0 && u.end && formas.includes(String(u.form || ''));
   });
+  const base = { acciones: null, fecha_portada: null, presentado_en: null, form: null, unidad, forma };
   if (!validas.length) {
     return {
-      acciones: null, fecha_portada: null, presentado_en: null, form: null, unidad,
+      ...base,
       motivo: unidades.length
         ? `EDGAR no trae ${formas.join('/')} con conteo de acciones utilizable (${unidades.length} hechos en "${unidad}")`
         // La huella va PEGADA al motivo: es la diferencia entre "EDGAR no tiene
@@ -148,17 +236,58 @@ export function accionesDeCompanyConcept(json, { formas = FORMAS_CON_PORTADA } =
     return String(a.end) < String(b.end) ? 1 : -1;
   });
   const u = orden[0];
+  const portada = String(u.end);
+
+  // ── VARIAS CLASES DE ACCIONES: NO SE ELIGE UNA ───────────────────────
+  // BX presenta una línea de portada por clase, y la API de companyconcept no
+  // dice de qué clase es cada hecho —la clase vive en el contexto XBRL, que acá
+  // no viaja—. Así que varios conteos DISTINTOS para la MISMA portada significa
+  // que tomar el primero cuenta de menos, y sumarlos es adivinar que están
+  // todos y sin repetir. Ninguna de las dos: gris con la causa.
+  const mismaPortada = orden.filter((x) => String(x.end) === portada && String(x.filed || '') === String(u.filed || ''));
+  const valores = [...new Set(mismaPortada.map((x) => num(x.val)))];
+  if (valores.length > 1) {
+    return {
+      ...base, fecha_portada: portada, presentado_en: u.filed ? String(u.filed) : null, form: String(u.form),
+      clases: valores.length, conteos: valores.sort((a, b) => b - a),
+      motivo: `EDGAR reporta ${valores.length} conteos distintos para la portada del ${portada} (${valores.join(' / ')}): son varias clases de acciones y la API no dice cuál es cuál, así que tomar uno contaría de menos y sumarlos sería adivinar`,
+    };
+  }
+
+  // ── LA PORTADA NO PUEDE SER DE OTRA ÉPOCA ────────────────────────────
+  // CMCSA resolvió con una portada del 2009-12-31 porque era lo más nuevo que
+  // el concepto traía. Un conteo de hace 17 años por el cierre de hoy es un
+  // número inventado con dos datos reales.
+  const meses = mesesEntre(portada, hoy);
+  if (meses != null && meses > maxMeses) {
+    return {
+      ...base, fecha_portada: portada, presentado_en: u.filed ? String(u.filed) : null, form: String(u.form),
+      meses_de_antiguedad: Math.round(meses),
+      motivo: `EDGAR sólo tiene portada de ${portada.slice(0, 4)} (${portada}, ${Math.round(meses)} meses): un conteo de acciones de esa fecha por el cierre de hoy no sostiene un tamaño`,
+    };
+  }
+
   return {
     acciones: num(u.val),
-    fecha_portada: String(u.end),
+    fecha_portada: portada,
     presentado_en: u.filed ? String(u.filed) : null,
     form: String(u.form),
     unidad,
+    forma,
+    meses_de_antiguedad: meses != null ? Math.round(meses) : null,
     fy: u.fy != null ? Number(u.fy) : null,
     fp: u.fp ? String(u.fp) : null,
     accn: u.accn ? String(u.accn) : null,
     motivo: null,
   };
+}
+
+/** Meses entre una fecha ISO y el reloj que se le pase. Null si no se puede. */
+export function mesesEntre(fechaIso, hoy = new Date()) {
+  const t = Date.parse(String(fechaIso));
+  const n = hoy instanceof Date ? hoy.getTime() : Date.parse(String(hoy));
+  if (!Number.isFinite(t) || !Number.isFinite(n)) return null;
+  return (n - t) / (1000 * 60 * 60 * 24 * 30.4375);
 }
 
 /**
@@ -169,9 +298,15 @@ export function accionesDeCompanyConcept(json, { formas = FORMAS_CON_PORTADA } =
  * las dos concuerdan dentro del 10% le creemos al conjunto, y si no, gris con
  * la causa y el múltiplo, que es el que dice si fue un split (≈2×) o deriva.
  */
-export function veredictoCapEdgar({ symbol, declarada_usd, acciones_edgar, precio_usd, fecha_portada }, umbral = UMBRAL_EDGAR_PCT) {
+export function veredictoCapEdgar({
+  symbol, declarada_usd, acciones_edgar, acciones_finnhub, precio_usd, fecha_portada,
+}, umbral = UMBRAL_EDGAR_PCT) {
   const dec = num(declarada_usd);
   const acc = num(acciones_edgar);
+  // En ACCIONES, no en millones: el llamador convierte. Mezclar las dos
+  // unidades en esta función es cómo se compara 2,800 con 2,800,000,000 y sale
+  // "coinciden dentro del 5%" jamás, o peor, siempre.
+  const accF = num(acciones_finnhub);
   const px = num(precio_usd);
   const base = { symbol, via: 'edgar', fecha_portada: fecha_portada || null, umbral_pct: umbral };
 
@@ -186,6 +321,33 @@ export function veredictoCapEdgar({ symbol, declarada_usd, acciones_edgar, preci
   }
 
   const reconstruida = acc * px;
+
+  // ── DOS CONTEOS DE ACCIONES QUE COINCIDEN LE GANAN A LA CAP DECLARADA ──
+  // MNST, APH y VMRK: EDGAR × cierre da 2× la cap declarada, y Finnhub ×
+  // cierre da TAMBIÉN 2×. Los dos conteos concuerdan entre sí; la que se sale
+  // es la cap declarada, que es justo el patrón de un split que la cap no
+  // reflejó. Esto va ANTES del contraste contra la declarada, porque cuando los
+  // conteos concuerdan la declarada ya no es el árbitro: es el sospechoso.
+  const acuerdo = accF != null && accF > 0 ? errorPct(accF, acc) : null;
+  if (acuerdo != null && Math.abs(acuerdo) <= UMBRAL_ACUERDO_ACCIONES_PCT) {
+    return {
+      ...base, estado: 'verificada', auditable: true,
+      cap_usd: reconstruida,
+      fuente: 'calc: edgar×neon',
+      via: 'edgar_acuerdo_acciones',
+      acciones_acuerdo_pct: acuerdo,
+      umbral_acuerdo_pct: UMBRAL_ACUERDO_ACCIONES_PCT,
+      // El desajuste con la declarada NO se borra por haberla descartado: queda
+      // dicho, porque es lo que explica por qué la fuente dice `edgar`.
+      error_pct: dec != null && dec > 0 ? errorPct(dec, reconstruida) : null,
+      multiplo: dec != null && dec > 0 ? dec / reconstruida : null,
+      // El motivo viaja aunque esté verificada: acá el motivo no es una queja,
+      // es la procedencia de una decisión que descartó un dato de la fuente.
+      motivo: null,
+      nota: `cap declarada de Finnhub descartada: dos conteos de acciones coinciden (EDGAR ${(acc / 1e6).toFixed(1)}M y Finnhub ${(accF / 1e6).toFixed(1)}M, ${Math.abs(acuerdo).toFixed(1)}% de diferencia, techo ${UMBRAL_ACUERDO_ACCIONES_PCT}%)`,
+    };
+  }
+
   // Sin declarada no hay cruce. Una sola fuente no se verifica a sí misma:
   // ése fue el error que puso a TSM del tamaño de NVDA.
   if (dec == null || dec <= 0) {

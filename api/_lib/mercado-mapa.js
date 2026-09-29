@@ -151,6 +151,11 @@ export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new D
       // / consultado_con_dato. Viaja para que la hoja pueda decir la verdad en
       // lugar de acusar a EDGAR de no haber contestado algo que no se le preguntó.
       cap_edgar_estado: cap.edgar_estado || null,
+      // La PROCEDENCIA de una decisión, no una queja: cuando dos conteos de
+      // acciones coinciden y por eso se descartó la cap declarada, el cuadro
+      // queda verificado y `motivo` es null — así que sin esto la pantalla no
+      // diría que se descartó un dato de la fuente.
+      cap_nota: cap.nota || null,
       cap_medida_en: u.cap_actualizado ? String(u.cap_actualizado).slice(0, 10) : null,
       estado: cap.estado,
       motivo: cap.motivo,

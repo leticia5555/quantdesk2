@@ -212,6 +212,25 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   // no puede decir nada útil. La referencia de Yahoo despeja la razón y el
   // tamaño vuelve a ser NUESTRO cálculo con NUESTRO cierre.
   if (referencia) {
+    // ── UNA REFERENCIA DESCARTADA NO SE USA, Y NO SE BORRA ───────────────
+    // La captura de VALE resultó vieja: Yahoo la mostraba fechada el 18-sep y
+    // el número no corresponde al precio con el que se leyó. Descartarla NO es
+    // borrar la fila —el registro de qué se capturó y por qué se descartó es
+    // parte de la procedencia—: es dejar de sostener un tamaño con ella y
+    // decirlo, hasta que llegue la recaptura. Vencer es una tarea (no apaga el
+    // cuadro); descartar es otra cosa: el dato quedó mal, y con un dato mal no
+    // se pinta.
+    if (referencia.descartada) {
+      const d = referencia.descartada;
+      return {
+        ...base, estado: 'gris_punteado',
+        // No es un hallazgo: es un insumo que hay que volver a capturar.
+        auditable: false, cap_usd: null, error_pct: null, multiplo: null,
+        via: 'referencia_manual',
+        referencia_descartada_en: d.en || null,
+        motivo: `la referencia manual se descartó${d.en ? ` el ${d.en}` : ''}: ${d.porque || 'sin motivo declarado'}. Esperando recaptura`,
+      };
+    }
     const vig = referenciaVigente(referencia, hoy || new Date());
     // ── EL PRECIO VIAJA CON LA CAP, Y ASÍ LA RAZÓN NO DEPENDE DE NINGÚN CIERRE ──
     //
@@ -372,6 +391,10 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   if (edgar && num(edgar.acciones) > 0) {
     const ve = veredictoCapEdgar({
       symbol, declarada_usd: decl.cap, acciones_edgar: edgar.acciones,
+      // EN ACCIONES, no en millones, que es como viene de la tabla: el árbitro
+      // compara los dos conteos entre sí y una unidad distinta en cada lado
+      // haría que "coinciden dentro del 5%" no signifique nada.
+      acciones_finnhub: num(entrada.acciones) > 0 ? num(entrada.acciones) * MILLON : null,
       precio_usd: entrada.precio_usd, fecha_portada: edgar.fecha_portada,
     });
     if (ve.estado === 'verificada') {

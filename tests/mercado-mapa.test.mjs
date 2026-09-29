@@ -533,8 +533,31 @@ test('si no caben dos líneas a ninguna talla, va el ticker con la más grande q
 });
 
 test('si no cabe ni a 8px, el cuadro va de color y sin texto', () => {
-  assert.equal(TM.etiquetaCuadro(14, 8, { ticker: 'BE', pct: '0.0%' }).ticker, null);
+  // Con el margen proporcional hace falta un cuadro más chico que antes para
+  // quedarse mudo, y eso es el arreglo funcionando: un ticker de 3 letras mide
+  // 14.9px a 8px, así que en 10px de ancho no entra ni con 1px de margen.
+  assert.equal(TM.etiquetaCuadro(10, 8, { ticker: 'BEE', pct: '0.0%' }).ticker, null);
   assert.equal(TM.etiquetaCuadro(3, 3, { ticker: 'XX', pct: '0.0%' }).ticker, null);
+  // Alto insuficiente también manda al color solo, aunque el ancho dé.
+  assert.equal(TM.etiquetaCuadro(200, 6, { ticker: 'AAPL', pct: '0.0%' }).ticker, null);
+});
+
+test('un cuadro angosto CON sitio lleva su ticker: el margen es proporcional', () => {
+  // El caso que el Chromium encontró el 2026-09-29: un cuadro de 22.6 × 46
+  // (1,044px², sobre el umbral de 900) se quedaba mudo porque 4px de margen por
+  // lado le comían un tercio del ancho. `S58` mide 14.9px a 8px y le quedaban
+  // 14.6. Cuatro píxeles son aire en un cuadro de 200 y un tercio del cuadro en
+  // uno de 23.
+  const e = TM.etiquetaCuadro(22.6, 46, { ticker: 'S58', pct: '-1.2%' });
+  assert.equal(e.ticker, 'S58');
+  // Y no apenas a 8px: con 2px de margen le alcanza para 10, que es la escalera
+  // aprovechando el sitio que el margen fijo desperdiciaba.
+  assert.ok(e.font >= 8, `${e.font}`);
+  assert.equal(e.font, 10);
+  // Y sigue habiendo margen: el texto no toca el borde.
+  assert.ok(TM.anchoTexto('S58', e.font) < 22.6 - 2, 'queda aire a los dos lados');
+  // En un cuadro ancho el margen sigue siendo 4: lo proporcional tiene tope.
+  assert.equal(TM.etiquetaCuadro(200, 60, { ticker: 'AAPL', pct: '+1.0%' }).font, 18);
 });
 
 test('la escala es monótona: un cuadro más grande nunca lleva letra más chica', () => {

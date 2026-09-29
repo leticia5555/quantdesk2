@@ -489,7 +489,12 @@
     // ancla que viene EN esos 24.
     filas.push(['cierres traídos', String(c.puntos||0) + (c.ytd ? ' (incluye el ancla de fin de año)' : '')]);
 
+    // La nota va junto al motivo: un cuadro VERIFICADO puede tener algo que
+    // declarar —"la cap declarada se descartó porque dos conteos de acciones
+    // coinciden"— y eso es procedencia, no un error. Sin esto, la pantalla
+    // mostraría el tamaño sin decir que se descartó un dato de la fuente.
     var motivo = c.motivo || r.motivo || c.ytd_motivo;
+    if(c.cap_nota) motivo = motivo ? (c.cap_nota + ' · ' + motivo) : c.cap_nota;
     document.getElementById('hojaCuerpo').innerHTML =
       // LAS INICIALES, NO UN LOGO. No tenemos fuente de logos, y una que
       // dependa de terceros siempre va a tener huecos: un ícono roto dice

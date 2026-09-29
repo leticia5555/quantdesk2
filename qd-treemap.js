@@ -234,7 +234,14 @@ function etiquetaCuadro(w, h, opts) {
   const max = o.fontPx || 18;
   const min = o.fontMin || 8;
   const factor = o.factor || 0.62;
-  const margen = o.margen == null ? 4 : o.margen;
+  // EL MARGEN ES PROPORCIONAL, NO FIJO. Con 4px por lado, un cuadro de 23px de
+  // ancho gastaba 35% de su ancho en aire y se quedaba mudo teniendo sitio para
+  // su ticker a 8px (S58 mide 14.9px y le quedaban 14.6). Cuatro píxeles son
+  // aire en un cuadro de 200 y son un tercio del cuadro en uno de 23.
+  // El tope sigue siendo 4 y el piso 1: el texto no toca el borde nunca.
+  // Que el texto quepa DE VERDAD con la fuente real —no con la estimación de
+  // `anchoTexto`— lo mide el Chromium: "ninguna etiqueta se desborda".
+  const margen = o.margen == null ? Math.max(1, Math.min(4, Math.round(w * 0.09))) : o.margen;
   const ticker = o.ticker ? String(o.ticker) : '';
   const pct = o.pct == null ? null : String(o.pct);
 

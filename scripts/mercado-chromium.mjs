@@ -86,6 +86,14 @@ function cuadrosUs() {
     motivo: 'la cap declarada difiere -10.7% de acciones×precio (0.89×), techo 5%; pendiente de consulta a EDGAR (falta correr ?job=acciones-edgar)',
     serie: serie(360, 21, 0.006), ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: 300 },
     ytd_motivo: null, puntos: 180, precio: 362, fecha_precio: '2026-09-18' });
+  // Verificada por acuerdo de conteos: la cap declarada se descartó y la hoja
+  // tiene que decirlo, aunque el cuadro esté verde y `motivo` sea null.
+  cs.push({ symbol: 'MNST', nombre: 'Monster (cap declarada descartada)', sector: 'XLP', cap: 120e9,
+    cap_fuente: 'calc: edgar×neon', estado: 'verificada', cap_auditable: true, cap_moneda: 'USD',
+    cap_via: 'edgar_acuerdo_acciones', cap_portada_edgar: '2026-07-31',
+    cap_nota: 'cap declarada de Finnhub descartada: dos conteos de acciones coinciden (EDGAR 2080.0M y Finnhub 2075.0M, 0.2% de diferencia, techo 5%)',
+    serie: serie(57.7, 21, 0.005), ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: 50 },
+    ytd_motivo: null, puntos: 180, precio: 57.7, fecha_precio: '2026-09-18' });
   cs.push({ symbol: 'XNDU', nombre: 'Xanadu Quantum (sin moneda)', sector: 'XLK', cap: null,
     cap_fuente: null, estado: 'gris_punteado', cap_auditable: false, cap_moneda: null,
     motivo: 'sin moneda declarada por Finnhub (la cap viene de neon:arena_market_cap)',
@@ -339,6 +347,29 @@ try {
     Object.keys(mudos.tallas).length >= 3, JSON.stringify(mudos.tallas));
   chequeo('los cuadros grandes llevan también el %', mudos.conDos > 0, `${mudos.conDos} con dos líneas`);
 
+  // ── Y NINGUNA SE DESBORDA ──────────────────────────────────────────
+  // `anchoTexto` ESTIMA el ancho (0.62 × talla × caracteres). El margen
+  // proporcional le quita holgura a esa estimación, así que acá se mide con la
+  // fuente REAL: si una etiqueta se sale de su cuadro, el navegador la recorta
+  // y media palabra no es información, es ruido con forma de información.
+  const desbordadas = await p.evaluate(() => {
+    const malas = [];
+    for (const e of document.querySelectorAll('.cuadro')) {
+      const caja = e.getBoundingClientRect();
+      for (const t of e.querySelectorAll('.sym, .val')) {
+        const r = t.getBoundingClientRect();
+        // 0.5px de tolerancia: el redondeo subpíxel del navegador no es un
+        // desborde.
+        if (r.width > caja.width + 0.5 || t.scrollWidth > t.clientWidth + 1) {
+          malas.push({ aria: e.getAttribute('aria-label'), txt: t.textContent, w: Math.round(r.width), caja: Math.round(caja.width) });
+        }
+      }
+    }
+    return malas;
+  });
+  chequeo('ninguna etiqueta se desborda de su cuadro con la fuente real',
+    desbordadas.length === 0, `${desbordadas.length}: ${JSON.stringify(desbordadas.slice(0, 5))}`);
+
   // REGLA 5: cero logos en el mapa. Ni <img>, ni background-image.
   const imgs = await p.evaluate(() => {
     const cont = document.getElementById('lienzo') || document.body;
@@ -472,6 +503,18 @@ try {
     chequeo(`${sym}: y no la falsa`, !prohibido.test(hoja), hoja.slice(0, 140).replace(/\n/g, ' '));
     await p.locator('#cerrar').tap();
   }
+  // Un cuadro VERIFICADO que descartó un dato de la fuente lo declara: si no,
+  // la pantalla muestra un tamaño sin decir de dónde salió la decisión.
+  await p.goto(`${BASE}/mercado?mapa=us&sector=XLP&symbol=MNST`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('.hoja[data-abierta="1"]');
+  const hojaMnst = await p.locator('#hojaCuerpo').innerText();
+  chequeo('una verificada que descartó la cap declarada lo DICE en la hoja',
+    /cap declarada de Finnhub descartada/.test(hojaMnst) && /dos conteos de acciones coinciden/.test(hojaMnst),
+    hojaMnst.slice(0, 160).replace(/\n/g, ' '));
+  chequeo('y la fuente que se muestra es la del cálculo nuestro, no finnhub',
+    /calc: edgar×neon/.test(hojaMnst), hojaMnst.slice(0, 200).replace(/\n/g, ' '));
+  await p.locator('#cerrar').tap();
+
   // Y el estado de la consulta se puede leer sin interpretar prosa.
   await p.goto(`${BASE}/mercado?mapa=us&sector=XLK&symbol=ORCL`, { waitUntil: 'networkidle' });
   await p.waitForSelector('.hoja[data-abierta="1"]');
