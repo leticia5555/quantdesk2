@@ -142,26 +142,61 @@ O sea: los baselines de la T2 viven en la fila del reset del **2026-09-16**, y
 los de la T3 van a vivir en la del reset nuevo.
 
 > **COMPROBACIÓN PREVIA, gratis y obligatoria.** Antes de apretar nada, hay que
-> confirmar que esa fila existe y trae los baselines. Si no existe, el reset de
-> la T3 borra los baselines de la T2 sin copia:
->
-> ```sql
-> select id, run_date,
->        context->>'season'      as temporada,
->        context->>'baseline_at' as baseline_at,
->        jsonb_array_length(context->'accounts') as cuentas,
->        (select jsonb_agg(jsonb_build_object(
->                  'agente', a->>'agent', 'baseline', a->>'baseline_equity'))
->           from jsonb_array_elements(context->'accounts') a) as baselines
->   from arena_journal
->  where agent_id = 'league' and status = 'rules_changed'
->    and id like 'arena-t2-%'
->  order by created_at;
-> ```
->
-> **Verde = siete cuentas con su `baseline_equity`.** Si sale vacío o con
-> `baselines: null`, **no se aprieta el reset**: primero hay que volcar
-> `arena_state` a una fila de respaldo.
+> confirmar que esa fila existe y trae los baselines. **Son DOS consultas, y
+> el orden importa.**
+
+### PRIMERO: ¿qué filas hay? (sin filtro de id)
+
+La versión anterior filtraba con `id like 'arena-t2-%'`. Si ése no es el
+prefijo real, sale vacío — y **vacío ahí son tres cosas distintas que llevan a
+acciones opuestas**: no hay fila / hay fila sin baselines / el filtro está mal.
+Un `like` que yo escribí de memoria no puede ser lo que decide si hay respaldo.
+
+```sql
+-- DESCUBRIMIENTO. Sin filtro de id: mostrá lo que REALMENTE hay.
+select id,
+       run_date,
+       created_at,
+       context->>'season'       as temporada,
+       context->>'reset_id'     as reset_id,
+       context->>'baseline_at'  as baseline_at,
+       -- coalesce: si `accounts` no existe, `jsonb_array_length` TRUENA, y
+       -- eso es exactamente la falla que esta consulta busca detectar. Una
+       -- consulta que revienta ante el caso que investiga no sirve.
+       jsonb_array_length(coalesce(context->'accounts', '[]'::jsonb)) as cuentas,
+       left(coalesce(plan, ''), 80)                                   as plan
+  from arena_journal
+ where agent_id = 'league' and status = 'rules_changed'
+ order by created_at;
+```
+
+**Qué mirar:** la fila del reset del 16-sep, con `cuentas = 7`. Ahí se lee el
+`id` REAL, que es lo que se pega en la segunda consulta.
+
+### DESPUÉS: los baselines de esa fila
+
+```sql
+-- Reemplazá <ID> por el id que devolvió la consulta de arriba.
+select a->>'agent'                      as agente,
+       (a->>'baseline_equity')::numeric as baseline,
+       (a->>'equity_before')::numeric   as equity_antes,
+       (a->>'equity_after')::numeric    as equity_despues,
+       a->>'flat'                       as quedo_plana
+  from arena_journal j,
+       jsonb_array_elements(coalesce(j.context->'accounts', '[]'::jsonb)) a
+ where j.id = '<ID>'
+ order by 1;
+```
+
+**Verde = siete filas, todas con `baseline` no nulo.**
+
+**Rojo —cualquiera de los tres casos— no se aprieta el reset.** El respaldo es
+una línea y tarda un segundo:
+
+```sql
+create table if not exists arena_state_t2 as select * from arena_state;
+select count(*) as filas, count(baseline_equity) as con_baseline from arena_state_t2;
+```
 
 ### 1.4 · CÓMO SE SELLA LA T2
 

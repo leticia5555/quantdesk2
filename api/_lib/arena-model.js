@@ -301,6 +301,36 @@ async function openRouterFetch({ apiKey, agent, model, system, messages, maxToke
     || r.headers.get('x-openrouter-provider')
     || null;
 
+  // ── LAS CABECERAS, QUE SÍ LLEGAN CUANDO EL CUERPO NO (2026-09-29) ──
+  // Éste es el punto que hacía la pregunta incontestable. Un `cuerpo_vacio`
+  // ocurre porque `fetch` RESUELVE con las cabeceras y el cuerpo se corta
+  // después — o sea que en el caso exacto que queremos diagnosticar, **las
+  // cabeceras existen y el cuerpo no**. Y hasta hoy no guardábamos ninguna.
+  //
+  // Sin esto, "¿qué proveedor sirvió las 23 corridas que se cayeron?" no se
+  // puede contestar con lo que hay: el proveedor viaja en el cuerpo. Con el id
+  // de la generación, en cambio, OpenRouter conserva el registro de su lado y
+  // el proveedor se recupera DESPUÉS (`GET /api/v1/generation?id=`).
+  //
+  // No se adivina UN nombre de cabecera —adivinar el nombre es exactamente lo
+  // que nos dejó sin dato— se capturan TODAS las que puedan servir de
+  // identificador, acotadas en cantidad y largo para que esto no se convierta
+  // en un volcado en cada fila del journal.
+  const cabeceras = (() => {
+    const out = {};
+    let n = 0;
+    try {
+      for (const [k, v] of r.headers.entries()) {
+        if (n >= 12) break;
+        const nombre = String(k).toLowerCase();
+        if (!/^(x-(or|openrouter|request|ratelimit)[-a-z]*|cf-ray|openai-[a-z-]*id)$/.test(nombre)) continue;
+        out[nombre] = String(v).slice(0, 200);
+        n++;
+      }
+    } catch { /* algunos runtimes no iteran headers: un hueco declarado, no un throw */ }
+    return n ? out : null;
+  })();
+
   if (trace) {
     trace.push({
       fase, provider: proveedor ? `openrouter:${proveedor}` : 'openrouter', model,
@@ -310,6 +340,12 @@ async function openRouterFetch({ apiKey, agent, model, system, messages, maxToke
   }
   return {
     status: r.status, raw, ms, proveedor,
+    // El id de la generación. Del cuerpo cuando llegó; de las cabeceras cuando
+    // no — que es el caso que importa.
+    generationId: (raw && raw.id)
+      || (cabeceras && (cabeceras['x-openrouter-id'] || cabeceras['x-request-id'] || cabeceras['x-or-id']))
+      || null,
+    cabeceras,
     // La política que se MANDÓ. Cuando el proveedor no se puede leer, esto es
     // lo único que queda para saber si el routing estaba configurado o no.
     politicaPedida: body.provider || null,
@@ -414,10 +450,19 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
       timedOutLeyendo: nuestroReloj,
       proveedor: first.proveedor || null,
       politica_pedida: first.politicaPedida || null,
+      // EL RESCATE DEL DIAGNÓSTICO. El cuerpo no llegó, pero las CABECERAS sí
+      // —por eso `fetch` resolvió— y ahí puede venir el id de la generación.
+      // Con ese id, OpenRouter todavía sabe de su lado quién la sirvió
+      // (`GET /api/v1/generation?id=`), así que la pregunta "¿qué proveedor
+      // colgó?" deja de ser incontestable.
+      generation_id: first.generationId || null,
+      cabeceras: first.cabeceras || null,
       // Lo dice en el mensaje, no solo en un campo: quien lee el journal en una
       // terminal tiene que ver la salida sin ir a buscarla.
       hint: first.proveedor ? null
-        : 'No se pudo saber QUÉ proveedor atendió: OpenRouter lo manda dentro del cuerpo, y el cuerpo no llegó. La exclusión automática no puede dispararse sin ese nombre. Si este agente se cuelga seguido, poné el proveedor sospechoso en ARENA_PROVIDER_IGNORE_<AGENTE> (se toma sin deploy) — el trace de una corrida que SÍ contestó lo dice.',
+        : (first.generationId
+          ? `No se pudo saber QUÉ proveedor atendió: OpenRouter lo manda dentro del cuerpo, y el cuerpo no llegó. PERO quedó el id de la generación (${first.generationId}): OpenRouter conserva el registro de su lado — \`GET /api/v1/generation?id=${first.generationId}\` devuelve el proveedor. Con eso se decide si va a ARENA_PROVIDER_IGNORE_<AGENTE>.`
+          : 'No se pudo saber QUÉ proveedor atendió: OpenRouter lo manda dentro del cuerpo, y el cuerpo no llegó. Tampoco vino un id de generación en las cabeceras, así que ESTA corrida no se puede atribuir ni después. Si este agente se cuelga seguido, poné el proveedor sospechoso en ARENA_PROVIDER_IGNORE_<AGENTE> (se toma sin deploy) — el trace de una corrida que SÍ contestó lo dice.'),
       ms: first.ms ?? null,
       error_detail: nuestroReloj
         ? `TIMEOUT NUESTRO leyendo el cuerpo: el proveedor${first.proveedor ? ' (' + first.proveedor + ')' : ''} mandó HTTP ${first.status} y keepalives, y nuestro reloj de ${Math.round((first.ms || 0) / 1000)}s venció antes de que llegara el cuerpo. NO es el proveedor cerrando el stream: somos nosotros cortando.`

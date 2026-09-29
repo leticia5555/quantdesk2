@@ -78,6 +78,29 @@ console.log('schema: 100% CREATE TABLE IF NOT EXISTS, cero DROP/TRUNCATE en api/
     // /api/arena-reset mientras aplana las cuentas). Borra UNA fila por clave y
     // no guarda datos de usuario: el "dato" que vive ahí es un vencimiento.
     'api/_lib/arena-baseline.js': /delete from arena_flags where key = \$1/i,
+    // ── REVISADO EL 2026-09-29, y por qué pasa ───────────────────────
+    // `historia-db.guardarItems(cik, accession, items)` reemplaza EN BLOQUE
+    // los items de UN filing: si EDGAR corrigió la lista, dejar los viejos
+    // conviviendo con los nuevos inventaría items que el filing ya no declara.
+    //
+    // Estuvo rojo varios días porque revisarlo era afirmar que lo revisé, y no
+    // lo había hecho. Los cuatro puntos, ahora que sí:
+    //
+    //   1. ALCANCE. `cik + accession` es la clave compuesta de UN filing. No
+    //      puede barrer una tabla, ni una empresa, ni un año.
+    //   2. ATOMICIDAD. El delete y el insert de los items nuevos viajan en el
+    //      MISMO `sqlBatch`, o sea un solo request con `queries[]` al endpoint
+    //      de Neon, que lo corre como una transacción.
+    //   3. Y SI NO LO FUERA: el peor caso es un filing con cero items. Es dato
+    //      DERIVADO de EDGAR, público y re-ingestable — se arregla volviendo a
+    //      correr la ingesta. Es la diferencia con el DELETE de `agents.js`,
+    //      que borra algo que el usuario escribió y no se puede reconstruir.
+    //   4. SUPERFICIE. Vive en el camino de ingesta de HISTORIA, no en un
+    //      endpoint de usuario.
+    //
+    // El regex exige las DOS columnas del scope: un `delete from
+    // company_filing_items` sin ellas —o con una sola— no pasa esta lista.
+    'api/_lib/historia-db.js': /delete from company_filing_items where cik = \$1 and accession = \$2/i,
   };
   let deletes = [];
   for (const p of files) {
@@ -87,6 +110,14 @@ console.log('schema: 100% CREATE TABLE IF NOT EXISTS, cero DROP/TRUNCATE en api/
   }
   const unexpected = deletes.filter((d) => !ALLOWED_DELETES[d.file] || !ALLOWED_DELETES[d.file].test(d.stmt));
   ok(unexpected.length === 0, 'todo DELETE de api/ está en la allowlist revisada', JSON.stringify(unexpected));
+  // Que un DELETE allowlisted no se AFLOJE después. Agregar la entrada es la
+  // parte fácil; lo que cuesta caro es que mañana alguien le saque una columna
+  // al `where` y el regex siga pasando porque era laxo. Los tres exigen su
+  // scope completo.
+  const itemsDel = deletes.find((d) => d.file === 'api/_lib/historia-db.js');
+  ok(itemsDel && /cik = \$1 and accession = \$2/.test(itemsDel.stmt),
+    'el DELETE de items de filing sigue scoped por cik + accession (las DOS)', itemsDel && itemsDel.stmt);
+
   const agentDel = deletes.find((d) => d.file === 'api/agents.js');
   ok(agentDel && /id = \$1 and user_id = \$2/.test(agentDel.stmt),
     'el DELETE de agentes está doble-scoped por id + user_id', agentDel && agentDel.stmt);

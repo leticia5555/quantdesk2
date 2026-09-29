@@ -525,7 +525,7 @@ export async function runToolLoop({
     if (llm && llm.emptyBody) {
       const colgado = llm.proveedor || null;
       if (colgado && !proveedoresColgados.includes(colgado)) proveedoresColgados.push(colgado);
-      vacios.push({ vuelta: turns, intento: 1, bytes: llm.bytes ?? 0, proveedor: colgado, timeout_nuestro: !!llm.timedOutLeyendo, ms: llm.ms ?? null });
+      vacios.push({ vuelta: turns, intento: 1, bytes: llm.bytes ?? 0, proveedor: colgado, timeout_nuestro: !!llm.timedOutLeyendo, ms: llm.ms ?? null, generation_id: llm.generation_id || null });
 
       // ── EL REINTENTO DE UNA VUELTA ÚTIL VALE MÁS QUE UN SEGUNDO CIERRE ─
       // Antes el reintento se saltaba con "sin reloj" apenas el presupuesto
@@ -553,7 +553,7 @@ export async function runToolLoop({
           ...(trace ? { trace, fase: `loop:vuelta_${turns}:reintento_otro_proveedor` } : {}),
         });
         sumar(llm);
-        if (llm && llm.emptyBody) vacios.push({ vuelta: turns, intento: 2, bytes: llm.bytes ?? 0, proveedor: llm.proveedor || null, timeout_nuestro: !!llm.timedOutLeyendo, ms: llm.ms ?? null });
+        if (llm && llm.emptyBody) vacios.push({ vuelta: turns, intento: 2, bytes: llm.bytes ?? 0, proveedor: llm.proveedor || null, timeout_nuestro: !!llm.timedOutLeyendo, ms: llm.ms ?? null, generation_id: llm.generation_id || null });
       } else {
         vacios.push({ vuelta: turns, intento: 2, omitido: 'sin reloj ni para el cierre: se va directo a cerrar' });
       }
@@ -758,7 +758,7 @@ export async function runToolLoop({
     if (llm && llm.emptyBody) {
       const colgado = llm.proveedor || null;
       if (colgado && !proveedoresColgados.includes(colgado)) proveedoresColgados.push(colgado);
-      vacios.push({ vuelta: 'cierre', intento: 1, bytes: llm.bytes ?? 0, proveedor: colgado, timeout_nuestro: !!llm.timedOutLeyendo, ms: llm.ms ?? null });
+      vacios.push({ vuelta: 'cierre', intento: 1, bytes: llm.bytes ?? 0, proveedor: colgado, timeout_nuestro: !!llm.timedOutLeyendo, ms: llm.ms ?? null, generation_id: llm.generation_id || null });
 
       // ── EL SEGUNDO CIERRE VA A OTRO PROVEEDOR, O NO VA ─────────────
       // El trace de qwen mostró dos cierres de 45.002 ms EXACTOS al mismo
@@ -785,7 +785,7 @@ export async function runToolLoop({
         const reintento = await llamarCierre(convo, trace ? { fase: 'cierre:otro_proveedor' } : {});
         anotarCierre('cierre_otro_proveedor', reintento, null);
         if (reintento && !reintento.emptyBody) { llm = reintento; }
-        else { vacios.push({ vuelta: 'cierre', intento: 2, bytes: (reintento && reintento.bytes) ?? 0, proveedor: (reintento && reintento.proveedor) || null, timeout_nuestro: !!(reintento && reintento.timedOutLeyendo), ms: (reintento && reintento.ms) ?? null }); }
+        else { vacios.push({ vuelta: 'cierre', intento: 2, bytes: (reintento && reintento.bytes) ?? 0, proveedor: (reintento && reintento.proveedor) || null, timeout_nuestro: !!(reintento && reintento.timedOutLeyendo), ms: (reintento && reintento.ms) ?? null, generation_id: (reintento && reintento.generation_id) || null }); }
       } else {
         // Las DOS condiciones, no la primera que falle: el reporte del
         // 2026-09-17 decía "no se sabe qué proveedor atendió" cuando además el

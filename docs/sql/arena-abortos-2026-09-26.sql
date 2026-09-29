@@ -156,38 +156,96 @@ group by 1, 2
 order by pct_abortos desc nulls last;
 
 
--- ── 4 · QUIÉN ATENDIÓ, Y QUÉ COSTARON LOS ABORTOS ────────────────────
--- Dos cosas en una porque salen de la misma fila.
+-- ── 4 · QUÉ COSTARON LOS ABORTOS, Y POR QUÉ NO DICE QUIÉN LOS SIRVIÓ ──
 --
--- QUIÉN ATENDIÓ: en OpenRouter un mismo slug lo sirven varios proveedores y no
--- rinden igual. Sin esto, "qwen se cuelga" y "el proveedor que sirvió a qwen
--- se cuelga" se journalean idéntico, y son diagnósticos opuestos: el segundo
--- se arregla con routing.
+-- ═══ LEER ESTO ANTES DE CORRERLA (corregido el 2026-09-29) ═══════════
 --
--- QUÉ COSTARON: una corrida abortada igual gastó. Si los 77 abortos costaron
--- lo mismo que las 123 vivas, el problema no es solo la tabla — es la factura.
+-- La versión anterior de esta consulta tenía DOS defectos, y el segundo la
+-- invalidaba:
+--
+--   1. NO FILTRABA POR `cuerpo_vacio`. Su único filtro de aborto era
+--      `status like 'aborted%'`, o sea TODOS: los 48 de saldo, los 13
+--      nuestros y los 23 de cuerpo vacío, sumados. Se llamaba una cosa y
+--      medía otra.
+--
+--   2. NO PODÍA CONTESTAR SU PROPIA PREGUNTA. OpenRouter manda el nombre del
+--      proveedor DENTRO DEL CUERPO. `cuerpo_vacio` significa, literalmente,
+--      que el cuerpo no llegó. Para las 23 corridas que queremos investigar,
+--      **el proveedor viene vacío POR CONSTRUCCIÓN**.
+--
+-- Eso último estaba anotado como "lo que me desmentiría". No era un
+-- desmentido: era el resultado GARANTIZADO. Corrida tal cual, iba a devolver
+-- `(no declarado)` en las 23, y la lectura natural —"no se concentran en
+-- ningún proveedor, no vale la pena fijar routing"— sería una conclusión
+-- sacada de un dato que la consulta nunca pudo ver. El mismo
+-- null-leído-como-medición que ya nos mordió en la consulta de caché.
+--
+-- ═══ ENTONCES, ¿SE PUEDE CONTESTAR? ══════════════════════════════════
+--
+-- **Para las 23 de la T2: NO.** No guardábamos el id de la generación (el
+-- único con el que OpenRouter podría decirnos después quién la sirvió), así
+-- que esas corridas son inatribuibles para siempre. Se dice derecho y no se
+-- rellena con una inferencia.
+--
+-- **Desde la T3: SÍ.** Se instrumentó el 2026-09-29. Las CABECERAS de la
+-- respuesta SÍ llegan cuando el cuerpo no —por eso `fetch` resuelve— y ahora
+-- se capturan: `context.llm_error.generation_id` y `.cabeceras`. Con ese id,
+-- `GET /api/v1/generation?id=<id>` devuelve el proveedor del lado de
+-- OpenRouter aunque a nosotros no nos haya llegado nada.
+--
+-- ═══ QUÉ SÍ CONTESTA ESTA CONSULTA ═══════════════════════════════════
+--
+-- Lo que se puede saber de los `cuerpo_vacio` con lo que hay:
+--   · cuántos son, por agente
+--   · cuántos fueron NUESTRO reloj y cuántos del proveedor (B23 instrumentó
+--     `timeout_nuestro`, y ése SÍ existe en las 23)
+--   · cuánto costaron
+--   · y en cuántos tenemos un id para recuperar el proveedor (0 en la T2,
+--     por eso la columna: para ver el número subir en la T3)
+--
+-- La columna `proveedor` se deja A PROPÓSITO, con su etiqueta: verla en
+-- `(no llegó el cuerpo)` es el recordatorio de que el hueco es estructural y
+-- no un problema de la consulta.
+
+select
+  j.agent_id,
+  count(*)                                                                as cuerpos_vacios,
+  count(*) filter (where (v->>'timeout_nuestro')::boolean)                as reloj_nuestro,
+  count(*) filter (where not coalesce((v->>'timeout_nuestro')::boolean, false)) as corto_el_proveedor,
+  -- El proveedor, cuando existe. En la T2 esto es 0 por construcción.
+  count(*) filter (where coalesce(v->>'proveedor', '') <> '')             as con_proveedor,
+  coalesce(
+    nullif(string_agg(distinct v->>'proveedor', ', ')
+           filter (where coalesce(v->>'proveedor', '') <> ''), ''),
+    '(no llegó el cuerpo — OpenRouter manda el proveedor adentro)')       as proveedores,
+  -- LA COLUMNA QUE IMPORTA MIRAR EN LA T3: cuántos se pueden recuperar.
+  count(*) filter (where coalesce(v->>'generation_id', '') <> '')         as con_generation_id,
+  round(sum(distinct coalesce((j.context->'cost'->>'usd')::numeric, 0))::numeric, 2) as usd_tirado
+from arena_journal j
+left join lateral jsonb_array_elements(
+  coalesce(j.context->'llm_error'->'cuerpos_vacios', '[]'::jsonb)) as v on true
+where j.run_date >= '2026-09-14'
+  and j.agent_id <> 'league'
+  and j.phase = 'decide'
+  -- EL FILTRO QUE FALTABA: solo los cuerpos vacíos, no los 84 abortos.
+  and j.status = 'aborted_cuerpo_vacio'
+group by 1
+order by cuerpos_vacios desc;
+
+
+-- ── 4b · Y EL COSTO DE TODOS LOS ABORTOS, QUE ES OTRA PREGUNTA ────────
+-- La 4 vieja mezclaba las dos. Ésta es la que sí quiere TODOS los abortos:
+-- cuánto se tiró, por agente y por culpa. No pretende decir quién los sirvió.
 select
   agent_id,
-  proveedor,
-  count(*)                                       as vueltas,
-  count(*) filter (where abortada)               as en_corridas_abortadas,
-  round(sum(costo) filter (where abortada)::numeric, 2)       as usd_tirado,
-  round(sum(costo)::numeric, 2)                               as usd_total
-from (
-  select
-    j.agent_id,
-    coalesce(p.value #>> '{}', '(no declarado)')              as proveedor,
-    j.status like 'aborted%'                                  as abortada,
-    -- El costo es de la CORRIDA, no de la vuelta: se divide entre las vueltas
-    -- para no multiplicarlo al desagregar por proveedor.
-    coalesce((j.context->'cost'->>'usd')::numeric, 0)
-      / greatest(jsonb_array_length(coalesce(j.context->'tools'->'proveedores', '[]'::jsonb)), 1) as costo
-  from arena_journal j
-  left join lateral jsonb_array_elements(
-    coalesce(j.context->'tools'->'proveedores', '[]'::jsonb)) as p(value) on true
-  where j.run_date >= '2026-09-14'
-    and j.agent_id <> 'league'
-    and j.phase = 'decide'
-) t
-group by 1, 2
-order by usd_tirado desc nulls last, agent_id;
+  count(*)                                                            as abortos,
+  count(*) filter (where error ~* 'credits|credit balance|available|maximum cost|verify.{0,20}avail') as saldo,
+  count(*) filter (where (context->'llm_error'->>'timeout_nuestro')::boolean) as reloj_nuestro,
+  round(sum(coalesce((context->'cost'->>'usd')::numeric, 0))::numeric, 2)     as usd_tirado
+from arena_journal
+where run_date >= '2026-09-14'
+  and agent_id <> 'league'
+  and phase = 'decide'
+  and status like 'aborted%'
+group by 1
+order by usd_tirado desc nulls last;

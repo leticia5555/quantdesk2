@@ -317,6 +317,13 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
       status: llm.status, detail: llm.error_detail || null,
       provider_error: llm.provider_error || null,
       raw_body: llm.raw_body || null,
+      // EL ID DE LA GENERACIÓN. Cuando el cuerpo no llegó, es lo ÚNICO con lo
+      // que se puede recuperar después quién sirvió la llamada: OpenRouter
+      // guarda el registro de su lado. Sin esto, un `cuerpo_vacio` es
+      // inatribuible para siempre — y eso fue exactamente lo que pasó con los
+      // 23 de la T2.
+      generation_id: llm.generation_id || null,
+      cabeceras: llm.cabeceras || null,
       // EL TURNO DE CIERRE ENTERO. Los abortos llegaron con status 200 y todo
       // lo de arriba en null: el fetch iba bien y la falla estaba al LEER la
       // respuesta. Esto es lo que faltaba.

@@ -746,6 +746,97 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B46 · UNA CONSULTA QUE NO PUEDE VER SU PROPIA RESPUESTA (2026-09-29)
+
+Escribí la consulta 4 para contestar *"¿qué proveedor sirvió los 23
+`cuerpo_vacio`?"*, y le puse al lado:
+
+> *Lo que me desmentiría: que el proveedor venga `null` en la mayoría —
+> OpenRouter lo manda dentro del cuerpo, y el cuerpo es justo lo que no llegó.*
+
+**Eso no era un desmentido. Era el resultado garantizado**, y yo mismo había
+escrito el mecanismo tres líneas antes. Un `cuerpo_vacio` es, por definición,
+la corrida en la que el cuerpo no llegó; el proveedor viaja en el cuerpo; por
+lo tanto para esas 23 corridas —y solo para ésas, que son justo las que
+interesan— el dato **no puede existir**.
+
+Corrida tal cual, la consulta devolvía `(no declarado)` en las 23, y la
+lectura natural habría sido *"no se concentran en ningún proveedor, no vale
+fijar routing"*. Una conclusión sacada de un campo que la consulta nunca pudo
+ver.
+
+> **LA NORMA: una hipótesis nula no es lo mismo que un hueco estructural.**
+>
+> Antes de escribir "esto me desmentiría", hay que preguntarse si ese
+> resultado es **posible de otra manera**. Si el diseño de la medición
+> garantiza ese valor, no es evidencia en contra de nada: es la medición
+> diciendo que no midió.
+>
+> Se reconoce con una pregunta: **¿bajo qué circunstancia este campo vendría
+> poblado?** Si la respuesta es "ninguna, dado el caso que estoy filtrando",
+> la consulta está mal planteada, no el mundo.
+
+Es la misma familia que el `null` de B42 —"no pasó" contra "no se preguntó"—
+un escalón más arriba: ahí el dato existía y la pantalla no lo pedía; acá la
+consulta lo pide y el dato no puede existir. **Las dos se leen igual desde
+afuera: un campo vacío.**
+
+### Y el segundo defecto, más chico y más tonto
+
+La misma consulta filtraba con `status like 'aborted%'`, o sea **todos** los
+abortos: los 48 de saldo, los 13 nuestros y los 23 de cuerpo vacío, sumados.
+Se llamaba «cuerpo_vacio por proveedor» y medía otra cosa. Corregido con
+`status = 'aborted_cuerpo_vacio'`, y el costo de todos los abortos se separó
+en una consulta 4b, que es la pregunta distinta que estaba escondida adentro.
+
+### LO QUE SÍ SE PUDO HACER: que la pregunta viva en la T3
+
+Antes de rendirme había que revisar una cosa: **¿guardamos el id de la
+generación?** OpenRouter conserva el registro de su lado con el proveedor que
+la sirvió, aunque a nosotros no nos haya llegado el cuerpo.
+
+**No lo guardábamos.** Así que para las 23 de la T2 la respuesta es *"esto no
+se puede contestar con lo que hay"*, y se dice derecho.
+
+Pero el motivo por el que se puede arreglar estaba escondido en el propio
+mecanismo del bug: **un `cuerpo_vacio` ocurre porque `fetch` RESUELVE con las
+cabeceras y el cuerpo se corta después.** O sea que en el caso exacto que
+queremos diagnosticar, **las cabeceras existen.** Y no guardábamos ninguna.
+
+Instrumentado hoy, antes de que la T3 corra su primera vuelta:
+
+- `_lib/arena-model.js` captura las cabeceras que puedan servir de
+  identificador (`x-or-*`, `x-openrouter-*`, `x-request-id`, `cf-ray`…),
+  acotadas en cantidad y largo. **No se adivina UN nombre** — adivinar el
+  nombre es exactamente lo que nos dejó sin dato.
+- `generation_id` sale del cuerpo cuando llegó, y de las cabeceras cuando no.
+- Viaja por vuelta en `cuerpos_vacios[]` y al journal en
+  `context.llm_error.generation_id`.
+- El `hint` del aborto cambia según el caso: con id, trae el
+  `GET /api/v1/generation?id=…` listo; sin id, dice que esa corrida **no se
+  puede atribuir ni después**, en vez de sugerir un camino que no existe.
+
+La consulta 4 ahora tiene una columna `con_generation_id` que en la T2 va a
+dar **0 en todas las filas**. Está puesta a propósito: es el número que
+tiene que subir en la T3, y verlo en cero es el recordatorio de que el hueco
+era estructural y no un problema de la consulta.
+
+### Y la de los baselines tenía el mismo vicio, más chico
+
+Filtraba con `id like 'arena-t2-%'`, un prefijo que escribí de memoria. Si no
+era el real, salía vacío — y **vacío ahí son tres cosas con acciones
+opuestas**: no hay fila, hay fila sin baselines, o el filtro está mal. Un
+`like` inventado no puede ser lo que decide si existe el respaldo de la única
+copia de los baselines de la T2.
+
+Partida en dos: una de DESCUBRIMIENTO sin filtro de id, que lista lo que
+realmente hay, y una de detalle contra el id que devuelve la primera. Y con
+`coalesce(context->'accounts', '[]'::jsonb)`, porque `jsonb_array_length` de
+un campo ausente **truena** — o sea que la consulta reventaba justo ante la
+falla que existía para detectar.
+
+---
+
 ## B45 · EL LOOP EMPEZABA VUELTAS QUE NO PODÍA PAGAR (2026-09-26)
 
 ### Primero, la corrección de mi apuesta
