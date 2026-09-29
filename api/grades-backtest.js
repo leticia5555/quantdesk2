@@ -37,6 +37,7 @@ import {
 } from './_lib/fmp-grades.js';
 import {
   CRITERIOS_GRADES, seleccionaVentana, analizaGrades, renderGradesMd, ADVERTENCIA,
+  advertenciaDeSeleccion,
 } from './_lib/grades-backtest.js';
 
 export const maxDuration = 300;
@@ -50,6 +51,59 @@ const CONCURRENCIA = 2;
 // gastaría cuota para aprender lo mismo dos veces.
 const MAX_429 = 5;
 const PRESUPUESTO_MS = 240000;
+
+// ── PERFIL DE LOS SÍMBOLOS CON Y SIN ACCESO ───────────────────────────────
+// El plan de FMP cubre solo un subconjunto de empresas. No hay arreglo de código
+// para eso, así que lo único útil es ENSEÑAR LA LISTA: si hay patrón, se ve; y si
+// no se ve, nadie inventa uno. Se publican los dos grupos con su sector y su
+// capitalización, y NO se emite ninguna conclusión sobre el patrón — el conteo
+// por sector va crudo.
+async function perfilDeSimbolos(conAcceso, sinAcceso) {
+  const todos = [...new Set([...conAcceso, ...sinAcceso])];
+  if (!todos.length) return { error: null, con_acceso: [], sin_acceso: [] };
+  let filas = [], error = null;
+  try {
+    filas = await sql(
+      `select symbol, sector_etf, industria, market_cap
+         from mercado_universo_us
+        where symbol in (${todos.map((_, i) => `$${i + 1}`).join(', ')})`,
+      todos
+    );
+  } catch (e) {
+    error = String((e && e.message) || e).slice(0, 200);
+  }
+  const porSimbolo = new Map((filas || []).map((f) => [f.symbol, f]));
+  const arma = (lista) => lista.slice().sort().map((sym) => {
+    const f = porSimbolo.get(sym) || null;
+    return {
+      symbol: sym,
+      sector: f ? (f.sector_etf || null) : null,
+      industria: f ? (f.industria || null) : null,
+      // En miles de millones y redondeada: alcanza para ver si hay patrón de
+      // tamaño y no finge una precisión que la fuente no tiene.
+      market_cap_musd: f && f.market_cap != null ? Math.round(Number(f.market_cap) / 1e9) : null,
+      en_mercado_universo_us: !!f,
+    };
+  });
+  const tally = (lista) => {
+    const out = {};
+    for (const x of lista) { const k = x.sector || '(sin sector en nuestra tabla)'; out[k] = (out[k] || 0) + 1; }
+    return Object.fromEntries(Object.entries(out).sort((a, b) => b[1] - a[1]));
+  };
+  const caps = (lista) => {
+    const v = lista.map((x) => x.market_cap_musd).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+    return v.length ? { n: v.length, min: v[0], mediana: v[Math.floor(v.length / 2)], max: v[v.length - 1] } : null;
+  };
+  const ca = arma(conAcceso), sa = arma(sinAcceso);
+  return {
+    error,
+    fuente: 'mercado_universo_us (sector_etf, industria, market_cap)',
+    con_acceso: ca, sin_acceso: sa,
+    por_sector: { con_acceso: tally(ca), sin_acceso: tally(sa) },
+    market_cap_musd: { con_acceso: caps(ca), sin_acceso: caps(sa) },
+    nota: 'Las dos listas y los dos conteos van CRUDOS, sin conclusión sobre el patrón. Si hay uno (sector, tamaño), se ve en la tabla; si no se ve, no se inventa. El plan de FMP no se arregla desde el código.',
+  };
+}
 
 // ── DIAGNÓSTICO DE LA FRONTERA (?smoke=NKE) ───────────────────────────────
 // "Quiero el diagnóstico con la fila en la mano, no con el código."
@@ -252,12 +306,32 @@ export default async function handler(req, res) {
     // (corte ESTRICTO en report_date) — acá no se filtra nada a ojo.
     const conGrades = eventos.map((e) => ({ ...e, grades: porSimbolo.get(e.symbol) || [] }));
 
+    // Los símbolos que la frontera NO pudo traer. Es un ARTEFACTO del plan, no un
+    // dato sobre la serie, y de acá en adelante viaja separado.
+    const sinAcceso = new Set(telemetria.filter((t) => !t.ok).map((t) => t.symbol));
+    const conAcceso = telemetria.filter((t) => t.ok).map((t) => t.symbol);
+
     if (esCenso) {
       // ── FASE 0: el CENSO. Mide si hay con qué, y no dictamina la señal. ──
-      const ventanas = conGrades.map((e) => ({ e, v: seleccionaVentana(e.grades, e.report_date) }));
+      const ventanas = conGrades.map((e) => ({
+        e,
+        // El acceso se juzga PRIMERO: un símbolo que no llegó no puede tener
+        // "historia insuficiente", porque no tiene historia que medir.
+        v: sinAcceso.has(e.symbol)
+          ? { ok: false, motivo: 'sin_acceso_al_simbolo' }
+          : seleccionaVentana(e.grades, e.report_date),
+      }));
       const validos = ventanas.filter((x) => x.v.ok);
       const descartes = {};
-      for (const x of ventanas) if (!x.v.ok) descartes[x.v.motivo] = (descartes[x.v.motivo] || 0) + 1;
+      for (const x of ventanas) {
+        if (x.v.ok) continue;
+        const motivo = x.v.motivo === 'menos_de_3_meses' ? 'historia_insuficiente' : x.v.motivo;
+        descartes[motivo] = (descartes[motivo] || 0) + 1;
+      }
+      const artefactoDelPlan = descartes.sin_acceso_al_simbolo || 0;
+      const datoReal = Object.entries(descartes)
+        .filter(([k]) => k !== 'sin_acceso_al_simbolo').reduce((a, [, n]) => a + n, 0);
+      const perfil = await perfilDeSimbolos(conAcceso, [...sinAcceso]);
 
       const conDatos = telemetria.filter((t) => t.ok);
       const meses = conDatos.map((t) => t.meses).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
@@ -342,10 +416,16 @@ export default async function handler(req, res) {
           min_eventos: CRITERIOS_GRADES.min_eventos,
           alcanza,
           descartes,
-          // Sin esto, un lector honesto leería "menos_de_3_meses: 240" como un
-          // dato sobre la historia de FMP.
-          descartes_son_consecuencia_de_la_frontera: fronteraRota || fronteraParcial
-            ? 'Estos descartes NO dicen nada sobre el tamaño de muestra: la frontera no entregó filas, así que todos los eventos caen en "menos_de_3_meses" por falta de datos, no por falta de historia.'
+          // ── EL AVISO QUE ERA FALSO ──────────────────────────────────
+          // Decía "la frontera no entregó filas, así que TODOS los eventos caen
+          // en menos_de_3_meses por falta de datos". Con acceso PARCIAL eso es
+          // falso: la frontera entregó 35 símbolos con 82–93 meses cada uno, y
+          // los descartes eran de dos clases distintas metidas en la misma
+          // cubeta. Ahora el texto se arma con los DOS conteos y solo afirma lo
+          // que los conteos dicen.
+          descartes_por_naturaleza: { artefacto_del_plan: artefactoDelPlan, dato_real: datoReal },
+          descartes_son_consecuencia_de_la_frontera: artefactoDelPlan > 0
+            ? `${artefactoDelPlan} de los ${artefactoDelPlan + datoReal} descartes son ARTEFACTO del plan de FMP (\`sin_acceso_al_simbolo\`): esas empresas tienen historia, la cuenta no las cubre. Los otros ${datoReal} son DATOS sobre series que sí llegaron. No se pueden leer juntos.`
             : null,
         },
         // El diagnóstico de la FRONTERA, antes que cualquier lectura de muestra.
@@ -369,8 +449,19 @@ export default async function handler(req, res) {
             ? `FRONTERA DEGRADADA — ${fallados.length} de ${telemetria.length} símbolos sin datos (${motivoDominante ? motivoDominante[0] : 'sin motivo'}). Cualquier lectura de muestra sale sesgada por los símbolos que faltan. Diagnosticar con ?smoke=NKE antes de concluir.`
             : alcanza ? 'HAY CON QUÉ — se puede correr la Fase 1'
               : `INCONCLUSO POR MUESTRA — ${validos.length} eventos con ventana válida, el candado son ${CRITERIOS_GRADES.min_eventos}. La frontera respondió bien, así que esto SÍ es un dato sobre la muestra. Se para acá.`,
+        // 5. LA LISTA. El plan de FMP no se arregla desde el código, así que lo
+        // único útil es enseñar a quién cubre y a quién no, con su sector y su
+        // capitalización, sin concluir nada sobre el patrón.
+        perfil_de_simbolos: perfil,
         criterios: CRITERIOS_GRADES,
         advertencia: ADVERTENCIA,
+        // El sesgo de selección se declara YA en la Fase 0, con los números de
+        // esta corrida, para que llegue a la Fase 1 escrito y no como sorpresa.
+        advertencia_seleccion: advertenciaDeSeleccion(
+          validos.length,
+          new Set(validos.map((x) => x.e.symbol)).size,
+          artefactoDelPlan
+        ),
         telemetria_por_simbolo: telemetria,
       };
       if (esMd) {
@@ -381,7 +472,9 @@ export default async function handler(req, res) {
     }
 
     // ── FASE 1: el backtest. El candado de muestra vive en analizaGrades. ──
-    const a = analizaGrades(conGrades);
+    // `sinAcceso` viaja para que los descartes por PLAN no se confundan con
+    // descartes por HISTORIA: son dos cosas y el veredicto las separa.
+    const a = analizaGrades(conGrades, { sinAcceso });
     const salida = {
       fase: 1,
       pregunta: '¿El enfriamiento de los analistas entre T-3 y T-1 meses predice beat/miss?',
@@ -517,14 +610,58 @@ function renderCensoMd(c) {
     L.push('');
     L.push(`> ⚠ ${m.descartes_son_consecuencia_de_la_frontera}`);
   }
+  if (m.descartes_por_naturaleza) {
+    L.push('');
+    L.push(`Descartes por **naturaleza**: artefacto del plan **${m.descartes_por_naturaleza.artefacto_del_plan}** · dato real **${m.descartes_por_naturaleza.dato_real}**`);
+  }
   if (Object.keys(m.descartes || {}).length) {
     L.push('');
-    L.push('| Motivo de descarte | Eventos |');
-    L.push('|---|---|');
-    for (const [k, v] of Object.entries(m.descartes).sort((a, b) => b[1] - a[1])) L.push(`| ${k} | ${v} |`);
+    L.push('| Motivo de descarte | Eventos | Naturaleza |');
+    L.push('|---|---|---|');
+    for (const [k, v] of Object.entries(m.descartes).sort((a, b) => b[1] - a[1])) {
+      L.push(`| ${k} | ${v} | ${k === 'sin_acceso_al_simbolo' ? 'artefacto del plan' : 'dato'} |`);
+    }
+  }
+
+  // ── La lista, cruda ──
+  const pf = c.perfil_de_simbolos;
+  if (pf && (pf.con_acceso || []).length) {
+    L.push('');
+    L.push(`## 5. A quién cubre el plan (${pf.con_acceso.length} con acceso · ${pf.sin_acceso.length} sin acceso)`);
+    L.push('');
+    L.push(`> ${pf.nota}`);
+    if (pf.error) { L.push(''); L.push(`> ⚠ Sector y cap no se pudieron leer: ${pf.error}`); }
+    L.push('');
+    L.push(`**Con acceso:** \`${pf.con_acceso.map((x) => x.symbol).join(' ')}\``);
+    L.push('');
+    L.push(`**Sin acceso:** \`${pf.sin_acceso.map((x) => x.symbol).join(' ') || '—'}\``);
+    L.push('');
+    L.push('| Sector | Con acceso | Sin acceso |');
+    L.push('|---|---|---|');
+    const sectores = [...new Set([...Object.keys(pf.por_sector.con_acceso), ...Object.keys(pf.por_sector.sin_acceso)])];
+    for (const sec of sectores) {
+      L.push(`| ${sec} | ${pf.por_sector.con_acceso[sec] || 0} | ${pf.por_sector.sin_acceso[sec] || 0} |`);
+    }
+    const cap = pf.market_cap_musd || {};
+    if (cap.con_acceso || cap.sin_acceso) {
+      L.push('');
+      L.push('| Capitalización (miles de millones USD) | n | min | mediana | max |');
+      L.push('|---|---|---|---|---|');
+      for (const [k, v] of Object.entries(cap)) {
+        if (!v) continue;
+        L.push(`| ${k.replace('_', ' ')} | ${v.n} | ${v.min} | ${v.mediana} | ${v.max} |`);
+      }
+    }
+    L.push('');
+    L.push('| Símbolo | Acceso | Sector | Cap (mM USD) |');
+    L.push('|---|---|---|---|');
+    for (const x of [...pf.con_acceso.map((x) => ({ ...x, a: 'sí' })), ...pf.sin_acceso.map((x) => ({ ...x, a: 'NO' }))]) {
+      L.push(`| ${x.symbol} | ${x.a} | ${x.sector || '—'} | ${x.market_cap_musd ?? '—'} |`);
+    }
   }
   L.push('');
   L.push(`> ⚠ ${c.advertencia}`);
+  if (c.advertencia_seleccion) { L.push(''); L.push(`> ⚠ ${c.advertencia_seleccion}`); }
   L.push('');
   L.push('---');
   L.push('');

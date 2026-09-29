@@ -93,7 +93,7 @@ const respuesta = (filas) => ({
   rows: filas.map((f) => CAMPOS.map(([name]) => (f[name] === undefined ? null : f[name]))),
 });
 
-let queries = [], fmpPedidos = [], todosLimitTope = null;
+let queries = [], fmpPedidos = [], todosLimitTope = null, sinTablaDeUniverso = false;
 function mockFetch(fx, { forzar429Desde = null, httpError = null, todos = null } = {}) {
   queries = []; fmpPedidos = [];
   return async (url, opts) => {
@@ -102,6 +102,18 @@ function mockFetch(fx, { forzar429Desde = null, httpError = null, todos = null }
       const body = JSON.parse(opts.body);
       const lista = body.queries || [body];
       for (const q of lista) queries.push(q.query);
+      // El perfil de símbolos lee sector y cap: otra tabla, otra forma de fila.
+      if (/mercado_universo_us/.test(lista[0].query)) {
+        if (sinTablaDeUniverso) throw new Error('relation "mercado_universo_us" does not exist');
+        return { ok: true, status: 200, json: async () => ({
+          fields: [['symbol', TXT], ['sector_etf', TXT], ['industria', TXT], ['market_cap', NUM]]
+            .map(([name, dataTypeID]) => ({ name, dataTypeID })),
+          // La mitad de los símbolos del fixture tiene sector y cap; la otra no
+          // está en la tabla, que es lo que pasa en producción.
+          rows: SIMS.filter((_, i) => i % 2 === 0)
+            .map((s, i) => [s, i % 2 ? 'Technology' : 'Health Care', 'Industria ' + i, String((i + 1) * 1e11)]),
+        }) };
+      }
       return { ok: true, status: 200, json: async () => respuesta(fx.mercados) };
     }
     if (u.includes('grades-historical')) {
@@ -361,10 +373,20 @@ console.log('la frontera: el status y el cuerpo SIEMPRE llegan a la vista');
   ok(b.frontera.primer_fallo && b.frontera.primer_fallo.status === 400,
     'y el primer fallo COMPLETO, con la fila en la mano');
   ok(/smoke=NKE/.test(b.frontera.que_hacer || ''), 'diciendo qué correr para diagnosticarlo');
-  ok(/NO dicen nada sobre el tamaño de muestra/.test(b.muestra.descartes_son_consecuencia_de_la_frontera || ''),
-    'y los descartes quedan marcados como CONSECUENCIA, no como hallazgo',
+  // El aviso ya no afirma "la frontera no entregó filas": se arma con los DOS
+  // conteos y solo dice lo que los conteos dicen. Con la frontera caída del todo,
+  // los 144 descartes son artefacto y cero son dato.
+  ok(/ARTEFACTO del plan de FMP/.test(b.muestra.descartes_son_consecuencia_de_la_frontera || ''),
+    'los descartes quedan marcados por NATURALEZA, no como un hallazgo sobre la muestra',
     b.muestra.descartes_son_consecuencia_de_la_frontera);
-  ok(b.muestra.descartes.menos_de_3_meses > 0, 'los descartes siguen publicándose, pero explicados');
+  ok(/No se pueden leer juntos/.test(b.muestra.descartes_son_consecuencia_de_la_frontera || ''),
+    'diciendo que las dos clases no se leen juntas');
+  ok(b.muestra.descartes.sin_acceso_al_simbolo === 144 && !b.muestra.descartes.historia_insuficiente,
+    'con la frontera caída, TODO descarte es sin_acceso_al_simbolo y ninguno es historia_insuficiente',
+    JSON.stringify(b.muestra.descartes));
+  ok(b.muestra.descartes_por_naturaleza.artefacto_del_plan === 144
+    && b.muestra.descartes_por_naturaleza.dato_real === 0,
+    'y los dos conteos por naturaleza van publicados', JSON.stringify(b.muestra.descartes_por_naturaleza));
 
   const md = mockRes();
   await handler(GET({ secret: SECRET, fase: '0', format: 'md' }), md);
@@ -553,6 +575,90 @@ console.log('el smoke: las tres variantes con el contraste de meses');
   ok(s.variantes[0].id === 'sin_limit' && /EL DEFECTO/.test(s.variantes[0].nota),
     'y la variante del defecto va primero, marcada como tal', s.variantes[0].nota);
   todosLimitTope = null;
+}
+
+
+// ═══════════════════ 10. LA LISTA Y EL SESGO ═══════════════════
+console.log('la lista de quién cubre el plan, cruda y sin conclusión');
+{
+  todosLimitTope = null; sinTablaDeUniverso = false;
+  // La mitad de los símbolos sin acceso: es el caso real (35 de 75).
+  const mitad = SIMS.filter((_, i) => i % 2 === 1);
+  const fx = fabrica({ simbolosSinGrades: mitad });
+  global.fetch = mockFetch(fx);
+  const r = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0' }), r);
+  const b = r.body;
+  const pf = b.perfil_de_simbolos;
+  ok(pf.con_acceso.length + pf.sin_acceso.length === SIMS.length,
+    'la lista cubre a todos los pedidos', `${pf.con_acceso.length}+${pf.sin_acceso.length}`);
+  ok(pf.sin_acceso.length === mitad.length, 'y los sin acceso son los que la frontera no trajo', pf.sin_acceso.length);
+  ok(pf.con_acceso.every((x) => 'sector' in x && 'market_cap_musd' in x),
+    'cada símbolo lleva sector y capitalización — los dos ejes donde podría haber patrón');
+  ok(pf.por_sector && pf.por_sector.con_acceso && pf.por_sector.sin_acceso,
+    'y el conteo por sector va para los DOS grupos, para poder comparar');
+  ok(pf.market_cap_musd.con_acceso === null || typeof pf.market_cap_musd.con_acceso.mediana === 'number',
+    'con min/mediana/max de la cap cuando hay datos');
+  ok(/sin conclusión sobre el patrón/.test(pf.nota) && /no se inventa/.test(pf.nota),
+    'y se dice explícitamente que acá NO hay una conclusión', pf.nota);
+  ok(pf.con_acceso.some((x) => x.en_mercado_universo_us === false)
+    || pf.con_acceso.every((x) => 'en_mercado_universo_us' in x),
+    'un símbolo que no está en nuestra tabla se marca, no se inventa su sector');
+
+  // Las dos naturalezas de descarte, con acceso PARCIAL — el caso donde el aviso
+  // viejo mentía.
+  ok(b.muestra.descartes.sin_acceso_al_simbolo > 0 && b.muestra.descartes_por_naturaleza.dato_real >= 0,
+    'con acceso parcial los descartes se parten en dos cubetas', JSON.stringify(b.muestra.descartes));
+  ok(!('menos_de_3_meses' in b.muestra.descartes), 'el motivo que las mezclaba ya no existe');
+  ok(!/la frontera no entregó filas/.test(b.muestra.descartes_son_consecuencia_de_la_frontera || ''),
+    'y el aviso ya NO afirma que la frontera no entregó filas — entregó la mitad',
+    b.muestra.descartes_son_consecuencia_de_la_frontera);
+
+  // El sesgo de selección, ya desde la Fase 0.
+  ok(/SESGO DE SELECCIÓN/.test(b.advertencia_seleccion || ''),
+    'la Fase 0 ya declara el sesgo de selección, para que llegue escrito a la Fase 1');
+  ok(/NO para el universo de 99/.test(b.advertencia_seleccion), 'y que un GO no se extiende al universo');
+
+  const md = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0', format: 'md' }), md);
+  ok(/A quién cubre el plan/.test(md.text), 'el markdown trae la sección de la lista');
+  ok(/\*\*Con acceso:\*\*/.test(md.text) && /\*\*Sin acceso:\*\*/.test(md.text), 'con las dos listas');
+  ok(/\| Sector \| Con acceso \| Sin acceso \|/.test(md.text), 'y el conteo por sector comparado');
+  ok(/SESGO DE SELECCIÓN/.test(md.text), 'y la advertencia de sesgo');
+  ok(/artefacto del plan/.test(md.text), 'la tabla de descartes dice la naturaleza de cada motivo');
+}
+
+console.log('si la tabla de sectores no existe, se declara y no se cae');
+{
+  sinTablaDeUniverso = true;
+  global.fetch = mockFetch(fabrica({ simbolosSinGrades: [SIMS[1]] }));
+  const r = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0' }), r);
+  sinTablaDeUniverso = false;
+  ok(r.code === 200, 'la Fase 0 igual responde', r.code);
+  ok(typeof r.body.perfil_de_simbolos.error === 'string',
+    'y el error de la tabla de sectores queda DECLARADO', r.body.perfil_de_simbolos.error);
+  ok(r.body.perfil_de_simbolos.con_acceso.length > 0,
+    'la lista de símbolos sigue estando: el sector es un extra, no el dato');
+  ok(r.body.perfil_de_simbolos.con_acceso.every((x) => x.sector === null),
+    'con el sector en null, no inventado');
+}
+
+console.log('la Fase 1 recibe los símbolos sin acceso');
+{
+  const fuente = readFileSync(new URL('../api/grades-backtest.js', import.meta.url), 'utf8');
+  ok(/analizaGrades\(conGrades, \{ sinAcceso \}\)/.test(fuente),
+    'el endpoint le pasa sinAcceso a analizaGrades: si no, la Fase 1 contaría un artefacto del plan como historia insuficiente');
+
+  global.fetch = mockFetch(fabrica({ simbolosSinGrades: SIMS.filter((_, i) => i % 2 === 1) }));
+  const r = mockRes();
+  await handler(GET({ secret: SECRET }), r);
+  ok(/SESGO DE SELECCIÓN/.test(r.body.advertencia_seleccion || ''),
+    'y el veredicto de la Fase 1 lleva la advertencia de sesgo');
+  ok(r.body.muestra.descartes.sin_acceso_al_simbolo > 0,
+    'con los descartes por plan separados', JSON.stringify(r.body.muestra.descartes));
+  ok(typeof r.body.muestra.empresas_distintas === 'number',
+    'y cuántas empresas distintas quedaron en la muestra', r.body.muestra.empresas_distintas);
 }
 
 console.log(failures ? `\n${failures} FALLAS` : '\nTodo en verde');
