@@ -731,14 +731,17 @@
       // está arriba y repetirlo desperdicia el único renglón que queda. Para
       // Bitcoin y el oro va con "$" porque son dólares; para un índice va sin
       // símbolo, porque 45,800 puntos del Nikkei no son pesos ni dólares.
-      chico: (c.prefijo || '') + fmtPrice(c.precio),
+      // Si el precio no es el de hoy, la etiqueta lo dice: mostrar un nivel sin
+      // su fecha junto a un % que sí es de hoy fue el bug del KOSPI.
+      chico: (c.prefijo || '') + fmtPrice(c.precio)
+        + (c.precio_es_de_hoy === false && c.precio_fecha ? ' · ' + c.precio_fecha.slice(5) : ''),
       motivo: local.motivo || null,
       fuente: 'yahoo:v8/chart',
     };
   }
 
   function pintarMundo(d){
-    var m = armaMundo({ data: (d && d.data) || {} });
+    var m = armaMundo({ data: (d && d.data) || {}, fix: (d && d.fix) || null });
     var cont = document.getElementById('mundo');
     var html = '';
 
@@ -816,13 +819,18 @@
   // El chip de arriba en Mundo no puede ser de una bolsa: hay trece en
   // pantalla. Dice cuántas están abiertas, y el detalle vive en cada región.
   function pintarChipMundo(d){
-    var m = armaMundo({ data: (d && d.data) || {} });
-    var abiertas = 0, total = 0;
+    var m = armaMundo({ data: (d && d.data) || {}, fix: (d && d.fix) || null });
+    // CUENTA BOLSAS, NO CUADROS. Decía "5 de 14 bolsas abiertas" contando
+    // índices: el S&P 500 y el Nasdaq 100 son DOS cuadros y UNA bolsa, y Nueva
+    // York no abre dos veces. Se cuenta por clave de bolsa, sin repetir.
+    var bolsas = {};
     m.regiones.forEach(function(r){ r.cuadros.forEach(function(c){
-      if(c.es24h) return;
-      total++;
-      if(estadoDeCuadro(c).abierta) abiertas++;
+      if(c.es24h || !c.bolsa) return;
+      if(bolsas[c.bolsa] === undefined) bolsas[c.bolsa] = estadoDeCuadro(c).abierta === true;
     }); });
+    var claves = Object.keys(bolsas);
+    var total = claves.length;
+    var abiertas = claves.filter(function(k){ return bolsas[k]; }).length;
     var el = document.getElementById('chip');
     el.className = 'chip' + (abiertas > 0 ? ' abierto' : '');
     el.textContent = (abiertas > 0 ? '● ' : '○ ')
@@ -849,7 +857,7 @@
   }
 
   function abrirHojaMundo(d, symbol){
-    var m = armaMundo({ data: (d && d.data) || {} });
+    var m = armaMundo({ data: (d && d.data) || {}, fix: (d && d.fix) || null });
     var c = null;
     m.regiones.forEach(function(r){ r.cuadros.forEach(function(x){ if(x.symbol===symbol) c = x; }); });
     if(!c) return;
@@ -861,6 +869,7 @@
       // La línea que el encargo pide que se active en la hoja.
       [ETIQUETA_PESOS, qdPctTag(mx.pct, estado.periodo, { motivo: mx.motivo })],
       ['nivel', esc((c.prefijo||'') + fmtPrice(c.precio)) + (c.moneda ? ' ' + esc(c.moneda) : '')],
+      ['nivel de', esc(c.precio_fecha || '—') + (c.precio_es_de_hoy ? ' (precio de mercado)' : ' (último cierre)')],
       ['país', esc(c.pais || '—')],
       ['bolsa', esc(c.es24h ? 'cotiza 24h' : (e.nombre || c.bolsa))],
       ['estado', esc(e.etiqueta) + (e.hora_local ? ' · ' + esc(e.hora_local) + ' local' : '')],

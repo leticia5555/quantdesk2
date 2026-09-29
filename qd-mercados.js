@@ -53,7 +53,7 @@ const BOLSAS = {
   saopaulo:  { nombre: 'São Paulo',   zona: 'America/Sao_Paulo',  abre: '10:00', cierra: '17:00', dias: [1, 2, 3, 4, 5] },
   // ── LAS QUE EL ARTBOARD 4 AGREGÓ ─────────────────────────────────────
   toronto:   { nombre: 'Toronto',     zona: 'America/Toronto',    abre: '09:30', cierra: '16:00', dias: [1, 2, 3, 4, 5] },
-  bogota:    { nombre: 'Bogotá',      zona: 'America/Bogota',     abre: '09:30', cierra: '15:55', dias: [1, 2, 3, 4, 5] },
+  santiago:  { nombre: 'Santiago',    zona: 'America/Santiago',   abre: '09:30', cierra: '16:00', dias: [1, 2, 3, 4, 5] },
   paris:     { nombre: 'París',       zona: 'Europe/Paris',       abre: '09:00', cierra: '17:30', dias: [1, 2, 3, 4, 5] },
   shanghai:  { nombre: 'Shanghái',    zona: 'Asia/Shanghai',      abre: '09:30', cierra: '15:00', dias: [1, 2, 3, 4, 5], almuerzo: ['11:30', '13:00'] },
   mumbai:    { nombre: 'Bombay',      zona: 'Asia/Kolkata',       abre: '09:15', cierra: '15:30', dias: [1, 2, 3, 4, 5] },
