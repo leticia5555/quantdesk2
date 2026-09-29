@@ -267,6 +267,11 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   const llm = loop.llm;
   ctx.tools = {
     budget: toolsMax, used: executor.used, intentos: executor.intentos,
+    // ── CUÁNTO TARDÓ CADA VUELTA ─────────────────────────────────────
+    // La corrida de humo tiene que MEDIR, no solo pasar o fallar: elegir el
+    // techo por llamada depende de cuánto tarda de verdad cada agente en
+    // devolver un cuerpo, y ese número no existía en ningún lado.
+    vueltas_medidas: loop.vueltas_medidas || null,
     turns: loop.turns, stopped_by: loop.stopped_by,
     // CUÁL DE LOS TRES TECHOS CORTÓ, con los tres al lado. `stopped_by` dice
     // cuál ganó; `limites` dice si ganó por poco o por lejos — y eso es lo que

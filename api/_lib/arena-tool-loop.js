@@ -453,6 +453,10 @@ export async function runToolLoop({
   let cierreEnMs = null;
   let compactados = 0;
   let picoTokens = 0;
+  // El registro de TODAS las vueltas, con su tiempo. Ver el comentario de
+  // `vueltasMedidas.push` más abajo: antes esto dependía de que el proveedor
+  // viniera con nombre.
+  const vueltasMedidas = [];
 
   while (turns < maxTurns) {
     // EL RELOJ, ANTES de empezar la vuelta. Empezarla y que la mate el deadline
@@ -516,6 +520,31 @@ export async function runToolLoop({
       ...(trace ? { trace, fase: `loop:vuelta_${turns}` } : {}),
     });
     sumar(llm);
+    // ── EL TIEMPO DE CADA VUELTA, SIEMPRE (2026-09-29) ───────────────
+    // Esto se guardaba SOLO `if (llm.proveedor)`, o sea únicamente cuando
+    // OpenRouter había devuelto un nombre — que es exactamente lo que NO pasa
+    // en un cuerpo vacío, y tampoco pasa nunca en Anthropic, que no manda
+    // proveedor. Resultado: el tiempo de lectura no quedaba registrado justo
+    // en las corridas que hay que medir.
+    //
+    // Es la misma forma que las cabeceras: el dato existía en la variable y el
+    // `if` lo tiraba. Ahora la vuelta SIEMPRE deja su registro; el proveedor
+    // es una columna más, que puede venir null.
+    //
+    // Sin esto, la corrida de humo solo puede decir pasó/falló. Con esto dice
+    // CUÁNTO TARDÓ CADA AGENTE EN DEVOLVER UN CUERPO, que es el número del que
+    // depende elegir el techo por llamada.
+    vueltasMedidas.push({
+      vuelta: turns,
+      ms: llm && llm.ms != null ? llm.ms : null,
+      status: llm ? llm.status : null,
+      bytes: llm && llm.bytes != null ? llm.bytes : null,
+      ok: !!(llm && llm.status === 200 && llm.data),
+      vacio: !!(llm && llm.emptyBody),
+      reloj_nuestro: !!(llm && llm.timedOutLeyendo),
+      techo_ms: llm && llm.techo_ms != null ? llm.techo_ms : techo,
+      proveedor: (llm && llm.proveedor) || null,
+    });
     if (llm && llm.proveedor) proveedoresPorVuelta.push({ vuelta: turns, proveedor: llm.proveedor, ms: llm.ms ?? null, ok: llm.status === 200 && !!llm.data });
 
     // ── CUERPO VACÍO: se reintenta la MISMA vuelta, una vez ────────────
@@ -615,7 +644,7 @@ export async function runToolLoop({
         threw_stack: llm.threw_stack || null,
         nota: 'El loop murió DENTRO de una vuelta de herramientas: el turno de cierre nunca llegó a ejecutarse. Un `cierre: null` en el journal significa esto, no que el cierre haya salido bien.',
       };
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', murio_en: dondeMurio, ...(transitorios.length ? { errores_transitorios: transitorios } : {}), elapsed_ms: clock() - t0, budget_ms: budgetMs, limites: limites(), usage_total: acumulado, cost_usd_total: costoAcumulado, ...(proveedoresPorVuelta.length ? { proveedores: proveedoresPorVuelta } : {}), ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: 'error', murio_en: dondeMurio, ...(transitorios.length ? { errores_transitorios: transitorios } : {}), elapsed_ms: clock() - t0, budget_ms: budgetMs, limites: limites(), usage_total: acumulado, cost_usd_total: costoAcumulado, vueltas_medidas: vueltasMedidas, ...(proveedoresPorVuelta.length ? { proveedores: proveedoresPorVuelta } : {}), ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
     }
 
     const pedidos = toolUseBlocks(llm.data);
@@ -624,7 +653,7 @@ export async function runToolLoop({
       // que el reintento recuperó sigue siendo un corte, y si se pierde acá, la
       // única evidencia de que el proveedor está inestable son las corridas que
       // además fracasaron — o sea, la mitad del cuadro.
-      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: turns === 1 ? 'no_tools' : 'end_turn', elapsed_ms: clock() - t0, budget_ms: budgetMs, limites: limites(), usage_total: acumulado, cost_usd_total: costoAcumulado, ...(proveedoresPorVuelta.length ? { proveedores: proveedoresPorVuelta } : {}), ...(transitorios.length ? { errores_transitorios: transitorios } : {}), ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
+      return { llm, messages: convo, turns, sequence: executor.sequence, stopped_by: turns === 1 ? 'no_tools' : 'end_turn', elapsed_ms: clock() - t0, budget_ms: budgetMs, limites: limites(), usage_total: acumulado, cost_usd_total: costoAcumulado, vueltas_medidas: vueltasMedidas, ...(proveedoresPorVuelta.length ? { proveedores: proveedoresPorVuelta } : {}), ...(transitorios.length ? { errores_transitorios: transitorios } : {}), ...(vacios.length ? { cuerpos_vacios: vacios } : {}) };
     }
 
     // Las herramientas de UNA vuelta corren EN PARALELO: son lecturas
@@ -807,7 +836,7 @@ export async function runToolLoop({
     return {
       llm: { status: 0, data: null, error_detail: `el turno de cierre LANZÓ: ${String((e && e.message) || e)}`, cierre_diagnostico: diagCierre },
       messages: convo, turns, sequence: executor.sequence, stopped_by: 'error_cierre',
-      elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado,
+      elapsed_ms: clock() - t0, budget_ms: budgetMs, usage_total: acumulado, cost_usd_total: costoAcumulado, vueltas_medidas: vueltasMedidas,
       cierre_diagnostico: diagCierre, limites: limites(),
       ...(vacios.length ? { cuerpos_vacios: vacios } : {}),
     };
@@ -849,7 +878,7 @@ export async function runToolLoop({
         : sinContexto ? 'context_budget'
           : sinTiempo ? 'time_budget'
             : 'max_turns',
-    elapsed_ms: clock() - t0, budget_ms: budgetMs,
+    elapsed_ms: clock() - t0, budget_ms: budgetMs, vueltas_medidas: vueltasMedidas,
     limites: limites(),
     usage_total: acumulado, cost_usd_total: costoAcumulado,
     cierre_diagnostico: diagCierre,

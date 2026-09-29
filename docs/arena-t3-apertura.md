@@ -300,9 +300,25 @@ for a in claude control openai grok gemini deepseek qwen; do
          corto_por: .context.tools.stopped_by,
          reloj_pct: .context.tools.limites.reloj_ms.pct,
          ordenes: (.context.ejecucion.ordenes_calculadas | length),
-         costo: .cost_usd, error: .error}'
+         costo: .cost_usd, error: .error,
+
+         # ── LA MEDICIÓN, que es la mitad del humo ──────────────────
+         # Cuánto tardó CADA vuelta en devolver un cuerpo. Es el número del
+         # que depende elegir el techo por llamada, y hasta el 2026-09-29 no
+         # se guardaba salvo que el proveedor viniera con nombre — o sea
+         # nunca en Anthropic y nunca en un cuerpo vacío.
+         lecturas_ms: [.context.tools.vueltas_medidas[]?.ms],
+         lectura_max_ms: ([.context.tools.vueltas_medidas[]?.ms] | max),
+         techo_ms: ([.context.tools.vueltas_medidas[]?.techo_ms] | max),
+         vueltas_vacias: ([.context.tools.vueltas_medidas[]? | select(.vacio)] | length),
+         cortes_nuestros: ([.context.tools.vueltas_medidas[]? | select(.reloj_nuestro)] | length)}'
 done
 ```
+
+**La tabla que sale de ahí es la que decide el techo.** No es información de
+color: si `lectura_max_ms` de un agente roza el `techo_ms` en una corrida
+limpia, ese agente va a morir el primer día lento. Y si lo roza por debajo con
+holgura, el techo se puede apretar.
 
 **Criterio de apertura, los siete a la vez:**
 
@@ -313,6 +329,8 @@ done
 | `corto_por` | `end_turn` · `no_tools` · `call_budget` | `cuerpo_vacio` · `error` · `time_budget` |
 | `reloj_pct` | < 90 | ≥ 90 (llegó justo, va a abortar un día malo) |
 | `costo` | un número | `null` (no sabemos qué gastó) |
+| `lectura_max_ms` | **< 60.000** | ≥ 70.000 (a un pelo del techo de 90s) |
+| `cortes_nuestros` | 0 | ≥ 1 (nuestro reloj lo cortó aun en una corrida limpia) |
 
 **Si UNO aborta, la temporada no abre.** Se arregla y se vuelve a correr ese
 agente. Esto es exactamente lo que no hicimos con la T2 y costó nueve días.

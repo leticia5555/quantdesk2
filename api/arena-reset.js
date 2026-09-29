@@ -323,6 +323,31 @@ export function resetAnnouncement({ resetId, baselineUsd, baselineModo = 'real',
   // comparable (o no) su retorno con el de los demás, así que tiene que quedar
   // escrito en el corte, no reconstruible después.
   const conBase = rows.filter((r) => r && r.baseline_equity != null);
+  // ── LA ASIMETRÍA DE CAPITAL, DECLARADA (2026-09-29) ─────────────────
+  // Con baseline `real` los siete arrancan en 0.00% — pero con DINERO
+  // DISTINTO, que es herencia de la temporada anterior escondida en otra
+  // variable. Y no es cosmético: el riel R8 pide un mínimo de 2% por posición,
+  // y las órdenes son en acciones ENTERAS. Con menos capital, el mínimo
+  // expresable en un nombre caro se redondea con un error enorme en relativo,
+  // y los movimientos chicos se descartan por no alcanzar una acción.
+  //
+  // Caso real del 2026-09-29: una venta de ORCL se descartó porque "el
+  // movimiento son $139.38 y una acción cuesta $139.44".
+  //
+  // No se puede arreglar desde acá (igualar el saldo exige recrear las cuentas
+  // paper en Alpaca, que regenera las API keys). Así que se DECLARA: el
+  // capital de arranque de cada agente sale publicado en el anuncio, con el
+  // tamaño de su posición mínima al lado. Una asimetría declarada es dato; una
+  // callada es el sesgo que alguien descubre en noviembre.
+  const R8_MIN = 0.02;
+  const lineaCapital = conBase.length
+    ? 'CAPITAL DE ARRANQUE, que NO es igual entre los siete: '
+      + conBase.map((r) => {
+        const eq = Number(r.baseline_equity);
+        return `${r.agent} $${eq.toFixed(0)} (posición mínima $${(eq * R8_MIN).toFixed(0)})`;
+      }).join(' · ')
+      + `. Es herencia de la temporada anterior: cada cuenta quedó donde la dejó su propio aplanado. Importa porque el mínimo de ${(R8_MIN * 100).toFixed(0)}% por posición se expresa en acciones ENTERAS: en un nombre de $1.000 la acción, una cuenta chica no puede comprar 1,6 acciones y redondea con un error grande en relativo. El que salió peor de la temporada anterior arranca ésta con menos resolución, no solo con menos dinero.`
+    : null;
   const lineaBaseline = baselineModo === 'real'
     ? `BASELINE de la temporada: el EQUITY REAL de cada cuenta después de aplanar. Los ${rows.length} arrancan en 0.00%. ` +
       (conBase.length ? conBase.map((r) => `${r.agent} $${Number(r.baseline_equity).toFixed(2)}`).join(' · ') + '. ' : '') +
@@ -338,11 +363,12 @@ export function resetAnnouncement({ resetId, baselineUsd, baselineModo = 'real',
   return [
     `RESET DE LIBROS — ${resetId}. Las ${rows.length} cuentas de la liga se aplanaron: ${canceladas} órdenes abiertas canceladas y ${vendidas} posiciones vendidas a mercado. ${planas} de ${rows.length} quedaron confirmadas en cero.`,
     lineaBaseline,
+    lineaCapital,
     'CORTE DE MEMORIA: el plan anterior, los fills, los compromisos abiertos y el pico de equity se cortan en este instante. Nada de antes del reset se le reinyecta al PM: un libro que ya no existe no puede ser recordado como propio.',
     lineaBench,
     'Las métricas de ANTES y DESPUÉS de este corte NO son comparables. El post-mortem tiene que partir acá.',
     'Experimento sin validación estadística, paper trading, no es asesoría.',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 export default async function handler(req, res) {

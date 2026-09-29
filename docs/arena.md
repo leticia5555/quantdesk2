@@ -746,6 +746,74 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B48 · LOS SIETE ARRANCAN EN 0.00% CON DINERO DISTINTO (2026-09-29)
+
+El reset re-basa cada cuenta a **su equity real después de aplanar**, así que
+los siete arrancan en 0,00%. Es lo correcto: un $100.000 declarado le cobraría
+a cada agente el residuo de su propio aplanado como si fuera pérdida del día 1,
+y para `claude` y `control` —que existen para medirse entre sí— ese sesgo es
+más grande que el piso de ruido que miden.
+
+**Pero eso deja una tercera cosa que ninguno de los dos había puesto sobre la
+mesa: arrancan con DINERO DISTINTO.** `claude` en $97.224, los otros en otro
+lado. Es herencia de la temporada anterior, escondida en otra variable — el
+retorno queda limpio y el capital no.
+
+### Y no es cosmético: cambia lo que el agente PUEDE hacer
+
+Dos mecanismos, los dos medidos el mismo día:
+
+**1 · El mínimo de R8 se expresa en acciones enteras.** El riel pide 2% por
+posición. A $97.000 eso son $1.940; con una acción de $1.180, son **1,6
+acciones**, que se redondean a 1 o a 2 — un error enorme en relativo sobre una
+posición que el riel creía del 2%.
+
+**2 · Los movimientos chicos no alcanzan una acción.** El 29 de septiembre una
+venta de ORCL se descartó con el motivo literal: *"el movimiento son $139,38 y
+una acción cuesta $139,44"*. Con menos capital eso pasa más seguido.
+
+> **El que salió peor de la temporada anterior arranca la siguiente con menos
+> resolución, no solo con menos dinero.** Y el ranking lo lee como si fuera
+> decisión del modelo.
+
+### ¿Se pueden igualar? Sí, y no conviene hacerlo hoy
+
+Las cuentas paper de Alpaca **sí** admiten un saldo inicial arbitrario. Pero el
+camino tiene una trampa:
+
+- el dashboard hoy **crea y borra** cuentas en vez de resetearlas;
+- **regenera las API keys**: las viejas dejan de servir. Siete cuentas = catorce
+  variables nuevas en Vercel;
+- y la parte peligrosa: *"cuando apretás reset en la interfaz, las órdenes y
+  posiciones se resetean en la vista, pero por API no se resetea nada y siguen
+  devolviéndose hasta que generás keys nuevas"*. **La UI y la API divergen en
+  silencio** hasta que la rotación de keys se completa.
+
+> **Decisión: NO se iguala hoy.** Meter un cambio de catorce env vars con un
+> modo de divergencia silenciosa conocido, **la mañana siguiente a un incidente
+> causado por una env var que no llegó**, es repetir la clase de riesgo que
+> acaba de costar una temporada. Se hace en frío, entre temporadas, con su
+> propia verificación.
+
+### Entonces se declara, y con el número que importa
+
+El anuncio de apertura publica el capital de arranque de cada agente **con el
+tamaño de su posición mínima al lado**:
+
+```
+CAPITAL DE ARRANQUE, que NO es igual entre los siete:
+  claude $97224 (posición mínima $1944) · control $101877 (posición mínima $2038) · …
+```
+
+La posición mínima es el número accionable — es contra lo que se compara el
+precio de una acción para saber si un nombre caro es siquiera expresable en esa
+cuenta. Publicar solo el equity dejaría el lector haciendo la multiplicación.
+
+**Una asimetría declarada es dato; una callada es el sesgo que alguien
+descubre en noviembre.**
+
+---
+
 ## B47 · LA T3 ARRANCÓ SOLA, CONTRA LOS LIBROS DE LA T2 (2026-09-29)
 
 El 29 de septiembre la liga corrió **en vivo, etiquetada T3, contra las
