@@ -39,10 +39,35 @@ export const MACRO_SYMBOLS = [
   // (KOSPI), el dólar de Hong Kong (HSI) y el real (BOVESPA). El peso NO va
   // acá: viene del FIX de Banxico, que es la fuente oficial y trae su fecha.
   'GBPUSD=X', 'KRW=X', 'HKD=X', 'BRL=X',
+  // Y los de los índices que entraron con el artboard 4: sin el cruce de su
+  // moneda, el S&P/TSX, el COLCAP, Shanghái, el Nifty y el ASX no pueden
+  // convertirse a pesos y su cuadro diría "—" con causa. Todos en la forma
+  // "unidades por dólar", igual que JPY=X.
+  'CAD=X', 'COP=X', 'CNY=X', 'INR=X', 'AUD=X',
   'CL=F', 'BZ=F',               // commodities: WTI, Brent
   '^N225', '^KS11', '^HSI',     // Asia
   '^GDAXI', '^FTSE',            // Europa
   '^MXX', '^BVSP',              // LATAM
+  // ── LOS ÍNDICES DEL ARTBOARD 4 (Mundo) ──────────────────────────────
+  // El mockup pide 14 índices por región y el endpoint traía 7. Los que
+  // faltaban, con el ticker que Yahoo usa para cada uno:
+  '^GSPC', '^NDX',              // EE.UU. — el ÍNDICE, no el futuro (ES=F/NQ=F
+                                //   siguen arriba porque el tab MACRO los usa)
+  '^GSPTSE',                    // Canadá — S&P/TSX
+  '^FCHI',                      // Francia — CAC 40
+  '000001.SS',                  // China — Shanghai Composite
+  '^NSEI',                      // India — Nifty 50
+  '^AXJO',                      // Australia — ASX 200
+  // COLCAP va aparte: no pude verificar su ticker desde este contenedor (sin
+  // salida a Yahoo). Si `^COLCAP` no existe, el cuadro sale "sin dato" con su
+  // causa en vez de desaparecer, y se corrige con un renglón.
+  '^COLCAP',
+  // Cripto, FX y materias primas de la última región del mockup.
+  'BTC-USD',                    // Bitcoin — Lety confirmó que Yahoo lo tiene
+  'MXN=X',                      // USD/MXN de mercado, para el CUADRO. La
+                                //   conversión a pesos usa el FIX de Banxico,
+                                //   que es otra cosa y trae su fecha.
+  'GC=F',                       // Oro — futuro COMEX, USD/oz
   'ES=F', 'NQ=F', 'YM=F',       // futuros EE.UU.
 ];
 
