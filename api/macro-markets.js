@@ -30,12 +30,34 @@ export const MACRO_SYMBOLS = [
   '^VIX',                       // volatilidad
   '^TNX', '2YY=F', '^TYX',      // rendimientos: 10Y, 2Y (futuro CBOT, % directo), 30Y
   'DX-Y.NYB', 'JPY=X', 'EURUSD=X', // FX global: DXY, USD/JPY, EUR/USD
+  // ── LOS CRUCES QUE R2 NECESITA PARA EL RENDIMIENTO EN PESOS ──────────
+  // El encargo pide que el toggle MXN recalcule el rendimiento de TODO activo,
+  // "también el Nikkei, el DAX, etc.". Para eso hace falta el cruce de su
+  // moneda contra el peso, y sin la serie de esa moneda contra el dólar el
+  // rendimiento en pesos sale "—" con causa (regla 2) en lugar de salir.
+  // El yen y el euro ya estaban arriba; faltaban la libra (FTSE), el won
+  // (KOSPI), el dólar de Hong Kong (HSI) y el real (BOVESPA). El peso NO va
+  // acá: viene del FIX de Banxico, que es la fuente oficial y trae su fecha.
+  'GBPUSD=X', 'KRW=X', 'HKD=X', 'BRL=X',
   'CL=F', 'BZ=F',               // commodities: WTI, Brent
   '^N225', '^KS11', '^HSI',     // Asia
   '^GDAXI', '^FTSE',            // Europa
   '^MXX', '^BVSP',              // LATAM
   'ES=F', 'NQ=F', 'YM=F',       // futuros EE.UU.
 ];
+
+// ── POR QUÉ 1 AÑO Y NO 3 MESES ────────────────────────────────────────
+// Eran `range=3mo`: ~70 puntos, con los que 1D/1S/1M/3M se pueden calcular y
+// **YTD no**. Es el mismo problema que el mapa de R1 tuvo y resolvió pidiendo
+// un año. Decisión de Lety (2026-09-29): subir a 1y, que es aditivo — el tab
+// MACRO de `app.html` calcula sus periodos desde la serie con `qdPeriodChange`,
+// que ancla por FECHA, así que una serie más larga no le cambia ningún número;
+// sólo habilita los que antes no alcanzaban.
+//
+// El costo: ~250 puntos × 23 símbolos en una respuesta que ya estaba cacheada
+// para toda la base de usuarios. Sigue siendo UN request por ventana de 2
+// minutos, que es lo que la regla 7 pide.
+const RANGO = '1y';
 
 const UA = { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' };
 
@@ -90,7 +112,7 @@ export default async function handler(req, res) {
   const data = {};
   await Promise.all(MACRO_SYMBOLS.map(async (sym) => {
     try {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=3mo&interval=1d`;
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=${RANGO}&interval=1d`;
       const r = await fetch(url, { headers: UA });
       if (!r.ok) return;
       const m = extractMacro(await r.json());
