@@ -574,6 +574,26 @@ try {
   chequeo('y no le suma los símbolos sin precio, que no son cuadros todavía',
     /3 sin capitalización verificada/.test(pie), pie);
 
+  // ── EL CALIBRADOR NO TOCA EL MAPA ──────────────────────────────────
+  // `?calibrar=1` responde "¿qué tan largo tiene que ser?" con los datos que
+  // se están viendo, en vez de con un fixture inventado. Es un instrumento: si
+  // cambiara el mapa dejaría de medirlo.
+  await p.goto(`${BASE}/mercado?mapa=us`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('.cuadro');
+  const sinCal = await p.evaluate(() => document.querySelectorAll('.cuadro').length);
+  await p.goto(`${BASE}/mercado?mapa=us&calibrar=1`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('#calibracion');
+  const cal = await p.evaluate(() => ({
+    cuadros: document.querySelectorAll('.cuadro').length,
+    txt: document.getElementById('calibracion').textContent,
+  }));
+  chequeo('?calibrar=1 no cambia el mapa: sólo agrega la tabla',
+    cal.cuadros === sinCal, `${cal.cuadros} vs ${sinCal}`);
+  chequeo('la tabla de calibración trae el barrido y su conclusión',
+    /factor\s+alto/.test(cal.txt) && /(FACTOR MÁS CHICO CON 0 MUDOS SOSTENIDO|NINGÚN factor)/.test(cal.txt),
+    cal.txt.split('\n').slice(0, 3).join(' | '));
+  console.log(`     ↳ ${cal.txt.trim().split('\n').slice(-4).join(' · ')}`);
+
   // ── LA CAUSA DE UN GRIS NO SE INVENTA ──────────────────────────────
   // El 2026-09-26, en el iPhone: ORCL, MNST y APH decían "EDGAR no dio acciones
   // en circulación" y EDGAR nunca había sido consultado —el job había muerto en

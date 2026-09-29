@@ -583,3 +583,56 @@ distribución la que hace los cuadros minúsculos, no la cantidad. Un efecto
 secundario que vale anotar: el tamaño de un cuadro gris es **prestado** (el del
 verificado más chico de su sector), así que a escala real los grises son de los
 cuadros más chicos del mapa.
+
+## 11. Ronda 6 — calibrar el alto con los datos de verdad
+
+El ×12 salió de un fixture de **552** cuadros con capitalizaciones inventadas.
+Producción tiene **307** y otra distribución, así que ese número está calibrado
+contra algo que no existe — el error que este mapa evita en todo lo demás.
+
+### 11.1 El instrumento: `?calibrar=1`
+
+`/mercado?mapa=us&calibrar=1` corre el **mismo reparto** del primer nivel
+(`agrupaPorSector` + `squarify` + la cabecera de sector) a factores de ×4 a ×20
+sobre **los datos que se están viendo**, y muestra debajo del mapa cuántos
+cuadros se quedan sin ticker en cada uno. No toca el mapa: hay una comprobación
+en Chromium de que el número de cuadros es idéntico con y sin el parámetro.
+
+Para calibrar sin navegador, `scripts/mercado-alto.mjs` hace lo mismo sobre una
+respuesta guardada de `/api/mercado-mapa`, con `--ancho`, `--umbral` y `--font`.
+
+### 11.2 El cero se elige SOSTENIDO, no el primero que aparece
+
+El conteo **no baja siempre** al subir el factor: `squarify` reacomoda las filas
+al cambiar la proporción, así que un cuadro puede salir más angosto en un mapa
+más alto. En el barrido de prueba, ×9 daba 0 mudos y ×10 daba 1. Así que se
+elige el primer factor **a partir del cual el cero se sostiene** hasta ×20. Un
+cero que el siguiente medio punto rompe no es una calibración: es una
+coincidencia.
+
+### 11.3 Lo que fuerza el largo no es la cantidad de cuadros
+
+Con 307 cuadros el criterio "0 mudos entre los de ≥16px" **no acorta el mapa**.
+La razón es geométrica: a 6px, con 1px de margen, un ticker necesita
+
+| letras | ancho mínimo de cuadro |
+| ---: | ---: |
+| 3 | 12.84px |
+| 4 | **16.45px** |
+| 5 | 20.07px |
+
+o sea que un cuadro de 16.0px **no puede** llevar un ticker de 4 letras: el
+umbral de 16 queda 0.45px corto. Exigir cero mudos a partir de 16px obliga a que
+el cuadro más chico llegue a ~16.5px, y eso es lo que estira el mapa — no los
+307 cuadros.
+
+El piso de la fuente es la palanca de verdad:
+
+| piso del ticker | factor sostenido | alto | sin ticker |
+| ---: | ---: | ---: | ---: |
+| 6px | × 12.5 | 4,475px | 0 |
+| **5px** | **× 2 (el piso)** | **2,000px** | 15, todos bajo 16px |
+
+Bajar el ticker de 6px a 5px devuelve el mapa a su piso de 2,000px cumpliendo el
+mismo criterio: cero mudos entre los de ≥16px. (Números de un 307 sintético,
+para ver el orden de magnitud; los de verdad salen de `?calibrar=1` sobre prod.)

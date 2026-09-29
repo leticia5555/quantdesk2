@@ -182,7 +182,14 @@
     var p = new URLSearchParams(location.search);
     var mapa = p.get('mapa')==='mx' ? 'mx' : 'us';
     var per  = PERIODOS.indexOf(p.get('periodo'))>=0 ? p.get('periodo') : '1D';
-    return { mapa:mapa, periodo:per, sector:p.get('sector')||null, symbol:p.get('symbol')||null };
+    return { mapa:mapa, periodo:per, sector:p.get('sector')||null, symbol:p.get('symbol')||null,
+             // `?calibrar=1` no cambia el mapa: agrega debajo la tabla de qué
+             // tan largo tendría que ser para que ningún cuadro con sitio se
+             // quede sin ticker, calculada con LOS DATOS QUE ESTÁ VIENDO. El
+             // alto salió calibrado contra un fixture inventado de 552 cuadros
+             // y producción tiene 307: calibrar contra datos inventados es el
+             // error que este mapa evita en todo lo demás.
+             calibrar: p.get('calibrar')==='1' };
   }
   function escribirUrl(push){
     var p = new URLSearchParams();
@@ -353,6 +360,20 @@
     }
     if(estado.sector) pintarSector(l, cs, w, h);
     else pintarPrimerNivel(l, cs, w, h);
+    if(estado.calibrar && !estado.sector){
+      // LOS DOS PISOS, porque la pregunta no es sólo "qué factor": con el
+      // ticker desde 6px el criterio empuja el mapa a lo largo, y bajarlo a
+      // 5px lo devuelve al piso de 2000. Cuál de los dos vale es una decisión
+      // sobre legibilidad, y se toma mirando los dos números juntos.
+      var a = calibrarAlto(cs, w, 6), b = calibrarAlto(cs, w, 5);
+      var txt = pintarCalibracion(a);
+      var pre = document.getElementById('calibracion');
+      pre.textContent = txt + '\n\n── con el ticker desde 5px ──\n'
+        + (b.estable
+          ? '  factor × ' + b.estable.f + ' · alto ' + b.estable.h + 'px · '
+            + b.estable.sin + ' sin ticker (todos bajo ' + b.umbral + 'px)'
+          : '  ningún factor hasta ×20 deja 0 mudos');
+    }
   }
 
   function pintarRuta(){
@@ -424,6 +445,79 @@
 
   function entrarASector(sector){
     estado.sector = sector; estado.symbol = null; escribirUrl(true); render();
+  }
+
+  // ── ¿QUÉ TAN LARGO TIENE QUE SER EL MAPA? ───────────────────────────
+  // Corre el MISMO reparto del primer nivel a varios factores y cuenta los
+  // cuadros que se quedan sin ticker. Nada de esto toca el mapa que se ve: es
+  // un instrumento, y sólo aparece con `?calibrar=1`.
+  //
+  // OJO CON LA NO-MONOTONÍA: el conteo NO baja siempre al subir el factor.
+  // `squarify` reacomoda las filas al cambiar la proporción, así que un cuadro
+  // puede salir más angosto en un mapa más alto. Por eso la tabla muestra el
+  // barrido entero y se elige el primer factor a partir del cual el cero SE
+  // SOSTIENE, no el primero que da cero.
+  function calibrarAlto(cs, w, FONT_MIN){
+    var ALTO_CABECERA = 14, UMBRAL = 16;
+    function reparte(h){
+      var g = agrupaPorSector(cs), out = [];
+      squarify(g.grupos.map(function(x){ return { key:x.sector, value:x.cap_total, grupo:x }; }),
+        { x:0, y:0, w:w, h:h }).forEach(function(r){
+        var conCab = r.h >= ALTO_CABECERA + 12;
+        var items = r.item.grupo.items.map(function(c){ return { key:c.symbol, value:c.area }; });
+        squarify(items, { x:r.x, y:r.y + (conCab?ALTO_CABECERA:0), w:r.w,
+                          h:r.h - (conCab?ALTO_CABECERA:0) }).forEach(function(q){ out.push(q); });
+      });
+      return out;
+    }
+    var filas = [], estable = null;
+    for(var f = 4; f <= 20; f += 0.5){
+      var h = Math.max(ALTO_MIN_MOVIL, Math.round(w * f));
+      var sin = 0, mudos = 0, minLado = Infinity;
+      reparte(h).forEach(function(r){
+        minLado = Math.min(minLado, r.w, r.h);
+        var e = etiquetaCuadro(r.w, r.h, { ticker:r.item.key, pct:null, fontMin:FONT_MIN, fontMinDos:8 });
+        if(e.ticker) return;
+        sin++;
+        if(r.w >= UMBRAL && r.h >= UMBRAL) mudos++;
+      });
+      filas.push({ f:f, h:h, sin:sin, mudos:mudos, min:Math.round(minLado*10)/10 });
+    }
+    // El primero a partir del cual TODOS los siguientes dan cero.
+    for(var i = 0; i < filas.length; i++){
+      var todos = true;
+      for(var j = i; j < filas.length; j++) if(filas[j].mudos !== 0){ todos = false; break; }
+      if(todos){ estable = filas[i]; break; }
+    }
+    return { filas:filas, estable:estable, cuadros:cs.length, ancho:w, umbral:UMBRAL, font:FONT_MIN };
+  }
+
+  function pintarCalibracion(cal){
+    var d = document.createElement('pre');
+    d.id = 'calibracion';
+    d.style.cssText = 'margin:8px 16px;padding:10px;background:#111;border:1px solid var(--linea);'
+      + 'border-radius:6px;font:11px var(--mono);color:#ccc;overflow:auto;white-space:pre';
+    var t = cal.cuadros + ' cuadros · ancho ' + cal.ancho + 'px · ticker desde ' + cal.font + 'px'
+      + ' · deben llevarlo los de \u2265' + cal.umbral + 'px\n\n'
+      + 'factor   alto   sin ticker   \u2265' + cal.umbral + 'px y mudos   lado mín\n';
+    cal.filas.forEach(function(r){
+      if(r.f % 1 !== 0 && !(cal.estable && r.f === cal.estable.f)) return;
+      t += ('× ' + r.f).padStart(6) + String(r.h).padStart(7) + String(r.sin).padStart(13)
+        + String(r.mudos).padStart(16) + String(r.min).padStart(11) + '\n';
+    });
+    t += '\n' + (cal.estable
+      ? 'FACTOR MÁS CHICO CON 0 MUDOS SOSTENIDO: × ' + cal.estable.f
+        + '\n  alto del mapa: ' + cal.estable.h + 'px'
+        + '\n  quedan ' + cal.estable.sin + ' sin ticker, todos bajo ' + cal.umbral + 'px de lado'
+        + '\n  el cuadro más chico mide ' + cal.estable.min + 'px de lado'
+      : 'NINGÚN factor hasta ×20 deja 0 mudos: un ticker de 4 letras a 6px necesita '
+        + (anchoTexto('AAAA', 6) + 2).toFixed(1) + 'px de cuadro y uno de 5, '
+        + (anchoTexto('AAAAA', 6) + 2).toFixed(1) + 'px.');
+    d.textContent = t;
+    var viejo = document.getElementById('calibracion');
+    if(viejo) viejo.remove();
+    document.getElementById('pie').parentNode.insertBefore(d, document.getElementById('pie'));
+    return t;
   }
 
   function cuadroEmpresa(r, esSector){
