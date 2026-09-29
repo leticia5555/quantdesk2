@@ -48,17 +48,29 @@ function serie(base, pasos, porDia) {
   return out;
 }
 const SECTORES = ['XLK', 'XLF', 'XLV', 'XLY', 'XLE', 'XLI'];
+// ── A ESCALA DE PRODUCCIÓN ────────────────────────────────────────────
+// Con 54 cuadros de prueba, "ningún cuadro se queda sin ticker" no medía nada:
+// en prod son ~550 y el más chico queda en pocos píxeles. Las capitalizaciones
+// siguen una ley de potencias como la bolsa de verdad —2.5 billones el primero,
+// un par de miles de millones el último— porque es la distribución la que hace
+// los cuadros minúsculos, no la cantidad.
+const POR_SECTOR = 91;
+
 function cuadrosUs() {
   const cs = [];
   for (let s = 0; s < SECTORES.length; s++) {
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < POR_SECTOR; i++) {
       // −3.5% a +3.5% por día: cubre los siete pasos de la escala, incluido
       // el gris de ±0.5%, para que la captura se pueda revisar de verdad.
       const drift = (((s * 3 + i * 5) % 15) - 7) / 200;
-      const base = 40 + i * 7;
+      const base = 40 + (i % 9) * 7;
+      // El rango entrelaza sectores para que cada uno tenga grandes y chicos,
+      // como en el mapa de verdad.
+      const rango = i * SECTORES.length + s;
       cs.push({
-        symbol: `S${s}${i}`, nombre: `Empresa ${s}-${i}`, sector: SECTORES[s],
-        cap: (60 - s * 8 - i) * 1e9, cap_fuente: 'finnhub:metric', cap_medida_en: '2026-09-21',
+        symbol: `S${rango}`, nombre: `Empresa ${s}-${i}`, sector: SECTORES[s],
+        cap: Math.round(2.5e12 / Math.pow(rango + 1, 1.15)),
+        cap_fuente: 'finnhub:metric', cap_medida_en: '2026-09-21',
         serie: serie(base, 21, drift),
         ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: base * 0.9 },
         ytd_motivo: null, puntos: 180, precio: base * (1 + drift), fecha_precio: '2026-09-18',
@@ -260,7 +272,29 @@ try {
     v: document.documentElement.scrollHeight > document.documentElement.clientHeight + 1,
   }));
   chequeo('sin scroll horizontal a 390 px', !scroll.h);
-  chequeo('sin scroll vertical: el mapa cabe en la pantalla', !scroll.v);
+  // ── EN CELULAR EL MAPA ES LARGO, A PROPÓSITO ───────────────────────
+  // Hasta el 2026-09-29 esto exigía que el mapa cupiera en una pantalla de
+  // 390px. Con ~550 cuadros, caber significa que el más chico queda en 3px: se
+  // ve, se toca, y no se puede saber de quién es. Decisión de Lety: en celular
+  // el alto es max(2000, ancho × 5) y se recorre. El no-scroll sigue siendo la
+  // regla en escritorio, y se comprueba abajo a 1440×900.
+  const alto = await p.evaluate(() => {
+    const l = document.getElementById('lienzo');
+    return {
+      lienzo: Math.round(l.getBoundingClientRect().height),
+      ancho: Math.round(l.getBoundingClientRect().width),
+      scrollBody: document.documentElement.scrollHeight,
+      marcado: document.body.getAttribute('data-scroll'),
+      // Las constantes salen de la página, no se repiten acá: un número
+      // copiado en dos lados se desincroniza y la prueba mide lo de ayer.
+      k: window.QD_MAPA,
+    };
+  });
+  chequeo(`en celular el mapa es LARGO: max(${alto.k.ALTO_MIN_MOVIL}, ancho × ${alto.k.FACTOR_ALTO_MOVIL})`,
+    alto.marcado === '1'
+      && alto.lienzo === Math.max(alto.k.ALTO_MIN_MOVIL, Math.round(alto.ancho * alto.k.FACTOR_ALTO_MOVIL)),
+    JSON.stringify(alto));
+  chequeo('y la página se recorre en vertical', scroll.v, JSON.stringify(alto));
 
   const taps = await p.evaluate(() => {
     const sel = ['nav button', '.toggle button', '#cerrar'];
@@ -370,6 +404,53 @@ try {
   chequeo('ninguna etiqueta se desborda de su cuadro con la fuente real',
     desbordadas.length === 0, `${desbordadas.length}: ${JSON.stringify(desbordadas.slice(0, 5))}`);
 
+  // ── TODOS LOS CUADROS LLEVAN SU TICKER ─────────────────────────────
+  // "Quiero que TODOS los cuadros lleven su ticker" (Lety, 2026-09-29). Un
+  // cuadro sin letra es un color que no se puede nombrar. La excepción que ella
+  // fijó: los que midan menos de 14px de ancho o de alto — ahí ni un ticker de
+  // 2 letras a 6px entra sin tocar el borde, y recortar a mitad de palabra está
+  // prohibido porque media palabra no es información.
+  //
+  // El conteo de la excepción se REPORTA, no se esconde: es el número que dice
+  // si el mapa largo está funcionando o si hay que estirarlo más.
+  const tickers = await p.evaluate(() => {
+    const out = { total: 0, sin: 0, excepcion: 0, bajo14: 0, deben: [], anchoMin: null };
+    for (const e of document.querySelectorAll('.cuadro')) {
+      const r = e.getBoundingClientRect();
+      out.total++;
+      out.anchoMin = out.anchoMin == null ? r.width : Math.min(out.anchoMin, r.width);
+      if (((e.querySelector('.sym') || {}).textContent || '')) continue;
+      out.sin++;
+      // LA EXCEPCIÓN ES LA GEOMETRÍA DEL PROPIO TICKER, no un número redondo.
+      // Lety la fijó en "menos de 14px de lado", y medido no alcanza: un ticker
+      // de 4 letras a 6px mide 14.45px con la fuente real, así que necesita
+      // 16.45px de cuadro con su margen de 1px. Un cuadro de 15px que "debería"
+      // llevar TSMG no puede: recortar a mitad de palabra está prohibido.
+      // Así que la excepción se calcula por cuadro —¿cabe SU ticker a 6px?— y
+      // el conteo con la regla plana de 14px también se reporta, que es el que
+      // ella pidió comparar.
+      const t = e.getAttribute('aria-label') || '';
+      const necesita = t.length * 6 * 0.6022 + 2;
+      if (r.width < 14 || r.height < 14) out.bajo14++;
+      if (r.width < necesita || r.height < 6) { out.excepcion++; continue; }
+      out.deben.push({
+        aria: e.getAttribute('aria-label'),
+        w: Math.round(r.width * 10) / 10, h: Math.round(r.height * 10) / 10,
+      });
+    }
+    out.anchoMin = Math.round(out.anchoMin * 10) / 10;
+    return out;
+  });
+  chequeo('ningún cuadro con sitio para su ticker se queda sin él',
+    tickers.deben.length === 0,
+    `${tickers.deben.length} tienen sitio y están mudos: ${JSON.stringify(tickers.deben.slice(0, 6))}`);
+  // El número que Lety pidió reportar, con SU regla plana de 14px.
+  chequeo('menos de 20 cuadros caen bajo los 14px de lado',
+    tickers.bajo14 < 20, `${tickers.bajo14} de ${tickers.total}`);
+  console.log(`     ↳ sin ticker: ${tickers.sin} de ${tickers.total} cuadros · `
+    + `${tickers.bajo14} bajo 14px de lado · ${tickers.excepcion} no les cabe su propio ticker a 6px `
+    + `· el más angosto mide ${tickers.anchoMin}px`);
+
   // REGLA 5: cero logos en el mapa. Ni <img>, ni background-image.
   const imgs = await p.evaluate(() => {
     const cont = document.getElementById('lienzo') || document.body;
@@ -475,8 +556,14 @@ try {
   });
   chequeo('una cap sin verificar se DIBUJA gris punteada, no desaparece',
     gris.existe === true && gris.punteado === true, JSON.stringify(gris));
-  chequeo('la gris lleva su ticker y "—", nunca un % sobre un tamaño prestado',
-    gris.ticker === 'TSMG' && gris.valor === '—', JSON.stringify(gris));
+  // El tamaño de una gris es PRESTADO: el del cuadro verificado más chico de su
+  // sector. Con el universo a escala real ese cuadro mide ~15px a 390px, así
+  // que la gris es de las más chicas del mapa y su ticker de 4 letras no entra
+  // ni a 6px. Lo que NO puede pasar es que lleve un % —un número sobre un
+  // tamaño prestado sería afirmar algo que no se midió—, y eso se comprueba
+  // acá; que lleve su ticker se comprueba en escritorio, donde tiene sitio.
+  chequeo('la gris nunca lleva un % sobre un tamaño prestado',
+    gris.valor === '' || gris.valor === '—', JSON.stringify(gris));
 
   // ── EL PIE CUENTA CUADROS ──────────────────────────────────────────
   await p.goto(`${BASE}/mercado?mapa=us`, { waitUntil: 'networkidle' });

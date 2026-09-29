@@ -489,3 +489,97 @@ consumo de DataBursatil — cuyo presupuesto de requests ya dio problemas de
 medición (§4.4 de `docs/bmv-rotation.md`). El vigilante de `cron-status` se
 actualizó con el mismo schedule, que es lo que `tests/crons-declarados.test.mjs`
 exige.
+
+## 10. Ronda 5 — el mapa largo del celular, y el ticker en todos los cuadros
+
+"Quiero que **todos** los cuadros lleven su ticker" (Lety, 2026-09-29). Un cuadro
+sin letra es un color que no se puede nombrar: se ve, se toca, y no se sabe de
+quién es.
+
+### 10.1 En celular el mapa deja de caber, a propósito
+
+Debajo de **600px** de ancho, el alto del treemap pasa a
+`max(2000px, ancho × FACTOR)` y la página se recorre en vertical. En escritorio
+**no cambia nada**: el no-scroll sigue siendo la regla y se comprueba a
+1440×900.
+
+Mecánica: `body[data-scroll="1"]` cambia `overflow-y` a `auto`, saca a `main`
+del `flex:1` y pone `#lienzo` en `position:relative`. Lo último no es
+cosmético: con `inset:0` el alto queda sobre-restringido y el navegador ignora
+el `height` que pone el JS.
+
+### 10.2 El factor es 12 y no 5, y eso no es lo que ella pidió
+
+El pedido traía el número (`ancho × 5`) **y** el resultado esperado (menos de 20
+cuadros sin ticker de ~550). Con el universo a escala real en el Chromium, los
+dos no coinciden:
+
+| factor | sin ticker | bajo 14px de lado | ≥14px y mudos |
+| ---: | ---: | ---: | ---: |
+| × 5 | 309 / 552 | 256 | 53 |
+| × 8 | 216 / 552 | 153 | 63 |
+| × 10 | 143 / 552 | 57 | 86 |
+| **× 12** | **75 / 552** | **9** | **0** |
+
+El ×5 venía del mockup, que tenía ~40 cuadros, y no escala a 550. Se eligió el
+**resultado** que ella pidió por encima del número que propuso, queda declarado
+en `mercado.html` con esta tabla y volverlo a 5 es una línea. A 390px son
+4,680px de mapa: se recorre, que es justo lo que el modo largo vino a permitir.
+
+Para que el número no se desincronice, la página expone `window.QD_MAPA` y el
+Chromium calcula el alto esperado con **las mismas constantes**. Lo que queda
+pinchado en la prueba no es el factor —ése puede moverse— sino el resultado:
+*"menos de 20 cuadros caen bajo los 14px de lado"*.
+
+### 10.3 El ticker baja a 6px; el % se queda en 8
+
+- `fontMin` (piso del ticker) = **6** en celular, 8 en escritorio.
+- `fontMinDos` (piso de las dos líneas) = **8** siempre, con el % una talla
+  menor como siempre. Un % de 4px no se lee: se adivina.
+- El margen lateral del **ticker** baja a **1px**. El ticker es la identidad del
+  cuadro y 1px alcanza para no tocar el borde; el %, que se lee, conserva su
+  aire y el margen proporcional.
+
+Esta rama sólo **agrega** texto: se llega a ella cuando ya no cupo nada de lo de
+arriba, así que no puede quitarle letra a ningún cuadro que hoy la tenga.
+
+### 10.4 El factor de ancho era un número a ojo
+
+`anchoTexto` estimaba 0.62 de la talla por caracter. Medido en el Chromium del
+repo con la fuente real (`ui-monospace` a 6, 7, 8, 10, 13 y 18px, con V, WMT,
+AAPL y S258) es **0.6022**, estable en todas las tallas: `AAPL` a 6px mide
+14.45px, no 14.88.
+
+El 3% de más no era gratis — reservaba ancho que no hacía falta y dejaba mudos
+cuadros que sí tenían sitio. Sigue siendo una **estimación**, y sobreestimar es
+más seguro que subestimar porque recortar a mitad de palabra está prohibido, así
+que el Chromium comprueba con la fuente real que ninguna etiqueta se desborde:
+si algún día cambia la fuente, esa comprobación se pone roja y el número se
+vuelve a medir.
+
+### 10.5 La excepción de la prueba es la geometría del ticker, no un número redondo
+
+Lety la fijó en "menos de 14px de ancho o de alto". Medido no alcanza: un ticker
+de 4 letras a 6px mide 14.45px, así que necesita **16.45px** de cuadro con su
+margen de 1px. Un cuadro de 15px que "debería" llevar `TSMG` no puede, y
+recortar está prohibido.
+
+Así que la comprobación tiene dos números y reporta los dos:
+
+- **la que falla si se rompe**: ningún cuadro con sitio para *su* ticker se
+  queda sin él → 0;
+- **la que ella pidió comparar**: cuántos caen bajo los 14px de lado → 9 de 552.
+
+Y el desglose sale impreso en cada corrida: *"sin ticker: 75 de 552 cuadros · 9
+bajo 14px de lado · 75 no les cabe su propio ticker a 6px · el más angosto mide
+13px"*.
+
+### 10.6 El fixture del Chromium, a escala de producción
+
+Con 54 cuadros de prueba, "ningún cuadro se queda sin ticker" no medía nada. El
+fixture ahora tiene **552** con capitalizaciones en ley de potencias —2.5
+billones el primero, un par de miles de millones el último—, porque es la
+distribución la que hace los cuadros minúsculos, no la cantidad. Un efecto
+secundario que vale anotar: el tamaño de un cuadro gris es **prestado** (el del
+verificado más chico de su sector), así que a escala real los grises son de los
+cuadros más chicos del mapa.

@@ -122,7 +122,7 @@ const ABREV_SECTOR = {
  */
 function etiquetaQueCabe(candidatos, anchoPx, fontPx, opts) {
   const o = opts || {};
-  const factor = o.factor || 0.62;
+  const factor = o.factor || FACTOR_ANCHO;
   const margen = o.margen == null ? 8 : o.margen;
   const util = anchoPx - margen;
   for (const c of candidatos) {
@@ -213,9 +213,23 @@ function agrupaPorSector(cuadros) {
   };
 }
 
+// ── EL ANCHO DE UN CARACTER, MEDIDO ─────────────────────────────────────
+// Era 0.62, un número a ojo. Medido en el Chromium del repo con la fuente real
+// (`ui-monospace` a 6, 7, 8, 10, 13 y 18px, con V, WMT, AAPL y S258) el ancho
+// por caracter es **0.6022** de la talla, estable en todas: 'AAPL' a 6px mide
+// 14.45px, no 14.88.
+//
+// El 3% de más no era gratis: reservaba ancho que no hacía falta y dejaba
+// cuadros mudos que sí tenían sitio. Sobreestimar es más seguro que
+// subestimar —recortar a mitad de palabra está prohibido— así que el número
+// sigue siendo una ESTIMACIÓN y el Chromium comprueba con la fuente real que
+// ninguna etiqueta se desborde. Si algún día cambia la fuente, esa
+// comprobación se pone roja y este número se vuelve a medir.
+const FACTOR_ANCHO = 0.6022;
+
 /** Cuánto mide un texto en monoespaciada, en px. Un sitio, una vez. */
 function anchoTexto(txt, fontPx, factor) {
-  return String(txt || '').length * fontPx * (factor || 0.62);
+  return String(txt || '').length * fontPx * (factor || FACTOR_ANCHO);
 }
 
 /**
@@ -233,7 +247,7 @@ function etiquetaCuadro(w, h, opts) {
   const o = opts || {};
   const max = o.fontPx || 18;
   const min = o.fontMin || 8;
-  const factor = o.factor || 0.62;
+  const factor = o.factor || FACTOR_ANCHO;
   // EL MARGEN ES PROPORCIONAL, NO FIJO. Con 4px por lado, un cuadro de 23px de
   // ancho gastaba 35% de su ancho en aire y se quedaba mudo teniendo sitio para
   // su ticker a 8px (S58 mide 14.9px y le quedaban 14.6). Cuatro píxeles son
@@ -268,14 +282,34 @@ function etiquetaCuadro(w, h, opts) {
   //
   // El ANCHO lleva margen —el texto no puede tocar el borde— pero el ALTO no:
   // un cuadro de 12px con letra de 11 sí lleva su ticker, apretado y legible.
-  const tallaPct = (f) => Math.max(min - 1, f - 2);   // el % va una talla menor
-  const cabeTicker = (f) => h >= f && anchoTexto(ticker, f, factor) <= utilW;
+  // ── EL TICKER BAJA MÁS QUE EL % ──────────────────────────────────────
+  // "Quiero que TODOS los cuadros lleven su ticker" (Lety, 2026-09-29). Un
+  // cuadro sin letra es un color que no se puede nombrar: se ve, se toca, y no
+  // se sabe de quién es. El % es otra cosa — es un número que se lee, y un
+  // número de 6px no se lee: se adivina.
+  //
+  // Así que las dos líneas tienen su propio piso (`fontMinDos`, 8px, con el %
+  // una talla menor como siempre) y el ticker solo puede seguir bajando hasta
+  // `fontMin` (6px en celular). Y para el TICKER el margen lateral baja a 1px:
+  // el ticker es la identidad del cuadro y 1px alcanza para no tocar el borde;
+  // el %, que se lee, conserva su aire.
+  //
+  // Esta rama sólo AGREGA texto: se llega a ella cuando ya no cupo nada de lo
+  // de arriba, así que no puede quitarle letra a ningún cuadro que hoy la
+  // tenga. Que el texto quepa DE VERDAD con la fuente real —y no con la
+  // estimación de `anchoTexto`— lo mide el Chromium: "ninguna etiqueta se
+  // desborda".
+  const minDos = o.fontMinDos == null ? 8 : o.fontMinDos;
+  const margenTicker = o.margenTicker == null ? 1 : o.margenTicker;
+  const utilWTicker = w - margenTicker * 2;
+  const tallaPct = (f) => Math.max(minDos - 1, f - 2);   // el % va una talla menor
+  const cabeTicker = (f) => h >= f && anchoTexto(ticker, f, factor) <= utilWTicker;
   const cabenDos = (f) => pct != null
     && h >= f + tallaPct(f) + 2
     && anchoTexto(ticker, f, factor) <= utilW
     && anchoTexto(pct, tallaPct(f), factor) <= utilW;
 
-  for (let f = max; f >= min; f--) {
+  for (let f = max; f >= minDos; f--) {
     if (cabenDos(f)) return { ticker, pct, font: f, font_pct: tallaPct(f) };
   }
   for (let f = max; f >= min; f--) {
