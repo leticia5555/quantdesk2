@@ -71,14 +71,41 @@ function squarify(items = [], { x = 0, y = 0, w = 1, h = 1 } = {}) {
 }
 
 /** El color del cuadro: 7 pasos de −3% a +3%, gris dentro de ±0.5%. */
+// ── LA ESCALA AGUANTA TEXTO BLANCO EN LOS SIETE PASOS ─────────────────
+// Los tonos claros del mockup no llegaban a WCAG AA con texto blanco: el verde
+// claro daba **2.71** de contraste, el verde medio 3.44 y el rojo claro 3.70.
+// Y peor: en Mundo el % se pintaba del color de su propio signo, así que rojo
+// sobre el rojo claro daba **1.06** — invisible.
+//
+// Decisión de Lety (2026-09-29): oscurecer esos tonos hasta que el blanco dé
+// ≥4.5 en los siete pasos, en las tres pestañas. Lo que se ajustó y a cuánto
+// quedó:
+//
+//     −3 y peor   #8B1A1A   9.29   (sin cambio)
+//     −2          #B4332B   6.09   (sin cambio)
+//     −0.5        #D2635C → #B95751   3.70 → 4.62
+//     ±0.5 gris   #3C3C3C  11.03   (sin cambio)
+//     +2          #4CAF7D → #39825D   2.71 → 4.62
+//     +3          #1E9E5F → #167345   3.44 → 5.85
+//     >+3         #0B7A42 → #096235   5.42 → 7.51
+//
+// EL >+3 SE OSCURECIÓ AUNQUE YA PASABA, y no es de más: si los tres verdes se
+// llevan al mismo 4.6, dos pasos quedan con la MISMA luminancia y el degradado
+// se aplana — el mapa deja de distinguir "+1%" de "+2.5%", que es para lo que
+// existe. El ramp de los verdes ahora imita el de los rojos, que ya venía
+// escalonado: 4.6 · 5.9 · 7.5 contra 4.6 · 6.1 · 9.3.
+//
+// `tests/mercado-mapa.test.mjs` fija el piso en 4.5 para los siete pasos y para
+// el gris de sin-dato: aclarar un tono se pone rojo antes de llegar a un
+// teléfono.
 const ESCALA_COLOR = [
   { max: -3, color: '#8B1A1A' },
   { max: -2, color: '#B4332B' },
-  { max: -0.5, color: '#D2635C' },
+  { max: -0.5, color: '#B95751' },
   { max: 0.5, color: '#3C3C3C' },
-  { max: 2, color: '#4CAF7D' },
-  { max: 3, color: '#1E9E5F' },
-  { max: Infinity, color: '#0B7A42' },
+  { max: 2, color: '#39825D' },
+  { max: 3, color: '#167345' },
+  { max: Infinity, color: '#096235' },
 ];
 const COLOR_SIN_DATO = '#242424';
 

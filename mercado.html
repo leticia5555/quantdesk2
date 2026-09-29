@@ -252,7 +252,7 @@
   // ── El % de un cuadro. ÚNICA vía: qdPeriodChange. ────────────────
   // YTD se arma con [ancla, último] porque el ancla es una FECHA y viaja
   // como punto; los demás periodos usan la ventana de cierres recientes.
-  function cambio(c){
+  function cambioLocalDeCuadro(c){
     if(estado.periodo==='YTD'){
       if(!c.ytd || !c.serie || !c.serie.length)
         return { pct:null, periodLabel:'YTD', motivo: c.ytd_motivo || 'no hay serie para este instrumento' };
@@ -263,6 +263,37 @@
     return r;
   }
 
+  // EL TOGGLE MXN TAMBIÉN EN EL MAPA DE EE.UU.
+  //
+  // No hacía nada: NVDA decía +1.7% en Local y +1.7% en MXN. Una acción de
+  // Nueva York cotiza en dólares, así que para un mexicano su rendimiento es lo
+  // que subió la acción MÁS lo que subió el dólar contra su peso — y eso se
+  // multiplica, no se suma. La cuenta es la MISMA de Mundo (`qd-pesos.js`) con
+  // el MISMO FIX de Banxico: una sola calculadora y una sola fuente del peso.
+  //
+  // El color sale de este número, no del local: si el cuadro se pinta por el %
+  // en dólares mientras el número dice pesos, el color miente.
+  //
+  // En México no se ofrece: esas acciones ya están en pesos.
+  function cambio(c){
+    var local = cambioLocalDeCuadro(c);
+    if(estado.mapa !== 'us' || estado.moneda !== 'mxn') return local;
+    var mx = enPesos({
+      pctLocal: local.pct,
+      // El mapa de EE.UU. es todo en dólares; el veredicto de la cap ya
+      // descarta lo que no lo sea.
+      moneda: 'USD',
+      usdMxnPct: pctDelFix(dActual),
+      fix: dActual && dActual.fix ? { serie:'SF43718', fecha:dActual.fix.fecha, valor:dActual.fix.valor } : null,
+    });
+    return {
+      pct: mx.pct, periodLabel: estado.periodo,
+      motivo: mx.motivo || local.motivo || null,
+      local_pct: local.pct, local_motivo: local.motivo || null,
+      fuente_peso: mx.fuente || null,
+    };
+  }
+
   // La capitalización la formatea `qdCap` (qd-periods.js), en español y con la
   // moneda al lado. Acá había un `fmtCap` que decía "5.51 B" para 5.51
   // billones: "B" se lee como billion —mil millones— y eran mil veces más.
@@ -270,6 +301,10 @@
 
 
   // ── Render ────────────────────────────────────────────────────────
+  // El payload que se está pintando. `cambio()` lo necesita para el FIX y ya
+  // lee `estado.periodo` del mismo ámbito, así que es el mismo patrón.
+  var dActual = null;
+
   function render(){
     ['us','mx','mundo'].forEach(function(k){
       document.getElementById('tab-'+k).setAttribute('aria-selected', estado.mapa===k);
@@ -278,6 +313,7 @@
     pintarMonedaToggle();
     var d = cache[estado.mapa];
     if(!d){ cargar(estado.mapa); return; }
+    dActual = d;
     // Mundo es una rejilla, no un treemap: los índices no tienen con qué
     // dimensionarse. Se reparte acá arriba para no meterle un `if` al
     // repartidor del mapa, que ya tiene bastante.
@@ -370,35 +406,50 @@
     return (window.innerWidth >= 900) ? 60 : 30;
   }
 
-  // ── CUÁNDO EL MAPA SE VUELVE LARGO ──────────────────────────────────
-  // Debajo de 600px de ancho no hay manera de que ~550 cuadros quepan en una
+  // ── CUÁNDO EL MAPA SE VUELVE LARGO, Y CUÁNTO ───────────────────────
+  // Debajo de 600px de ancho no hay manera de que ~300 cuadros quepan en una
   // pantalla con letra legible: el más chico queda en 3px. Así que el alto pasa
   // a ser max(2000, ancho × FACTOR) y la página se recorre. El piso de 2000 y
   // la forma de la cuenta son de Lety (2026-09-29, del mockup, donde Main
-  // medía 1,640px).
+  // medía 1,640px). En escritorio no cambia nada.
   //
-  // EL FACTOR ES 12 Y NO 5, Y ESO NO ES LO QUE ELLA DIJO. Su pedido traía las
-  // dos cosas: el número (×5) y el resultado esperado (menos de 20 cuadros sin
-  // ticker de ~550). Medido en el Chromium con el universo a escala real:
+  // ┌ LA LEY DEL ALTO DE UN CUADRO ───────────────────────────────────┐
+  // │   alto = (cap / cap_total) × columnas × alto_total              │
+  // └─────────────────────────────────────────────────────────────────┘
+  // El ÁREA es la capitalización y eso no se negocia, así que el alto de un
+  // cuadro que ocupa el ancho de su columna sólo depende de `columnas ×
+  // alto_total`. De ahí salen las dos consecuencias que decidieron este número:
   //
-  //     factor   sin ticker   <14px de lado   ≥14px y mudos
-  //        × 5      309/552            256              53
-  //        × 8      216/552            153              63
-  //       × 10      143/552             57              86
-  //       × 12       75/552              9               0
+  // 1. LAS COLUMNAS VAN AL REVÉS. Lety pidió (2026-09-29) "los sectores en 2
+  //    columnas para que ningún cuadro pase de media pantalla". Partir el ancho
+  //    a la mitad DUPLICA el alto del mayor: medido en el Chromium a 390px con
+  //    el universo a escala, NVDA/S0 pasa de 901px a 1,811px. Se probaron las
+  //    cuatro combinaciones y ninguna de dos columnas baja del alto que ya
+  //    había, así que el mapa se queda en UNA columna.
   //
-  // Con ×5 quedan 256 cuadros sin ticker, no menos de 20: el ×5 venía de un
-  // mockup de ~40 cuadros y no escala a 550. Se eligió el resultado que ella
-  // pidió por encima del número que propuso, y queda dicho acá y en el PR para
-  // que volverlo a 5 sea una línea. 390px × 12 = 4,680px de mapa: se recorre,
-  // que es justo lo que el modo largo vino a permitir.
-  var ANCHO_MOVIL = 600, ALTO_MIN_MOVIL = 2000, FACTOR_ALTO_MOVIL = 12;
+  // 2. EL FACTOR BAJA DE 12 A 6. Es la única palanca que acorta al mayor.
+  //    NVDA medía ~800px en su iPhone con ×12 (toda la pantalla); con ×6 mide
+  //    ~400px, que es la media pantalla que pidió, y el mapa se recorre la
+  //    mitad: 2,148px en vez de 4,296px.
+  //
+  // LO QUE SE PAGA ES ÁREA, Y POR LO TANTO TICKERS. Cada cuadro tiene la mitad
+  // de área. Medido a 390px:
+  //
+  //             ancho  factor   largo   el mayor   sin ticker (552)   (307 de prod)
+  //     1 col     358     ×12   4,296      901px           75/552           4/307
+  //     1 col     358      ×6   2,148      446px          300/552          25/307
+  //     2 col     179     ×12   4,650    1,811px           48/552           0/307
+  //     2 col     179      ×6   2,325      901px          297/552          20/307
+  //
+  // Esto REVIERTE en parte la decisión de R1 ("me quedo con ×12, todos con
+  // ticker"): en producción 25 de 307 cuadros pierden su ticker, 11 de ellos
+  // por debajo de los 14px de lado que ella misma aceptó como excepción.
+  // Volverlo a ×12 es cambiar este número y nada más.
+  var ANCHO_MOVIL = 600, ALTO_MIN_MOVIL = 2000, FACTOR_ALTO_MOVIL = 6;
   function esMovil(){ return window.innerWidth < ANCHO_MOVIL; }
   // Expuestas para que la comprobación del Chromium calcule el alto esperado
   // con LAS MISMAS constantes en vez de repetirlas: un número copiado en dos
-  // lados se desincroniza, y entonces la prueba mide lo que decía ayer. Lo que
-  // queda pinchado allá no es el factor —ése puede moverse— sino el RESULTADO:
-  // menos de 20 cuadros bajo los 14px de lado.
+  // lados se desincroniza, y entonces la prueba mide lo que decía ayer.
   window.QD_MAPA = { ANCHO_MOVIL: ANCHO_MOVIL, ALTO_MIN_MOVIL: ALTO_MIN_MOVIL, FACTOR_ALTO_MOVIL: FACTOR_ALTO_MOVIL };
 
   function pintarMapa(d){
@@ -587,6 +638,14 @@
     var f2 = d.faltantes || {};
     if(f2.sin_cap_verificada) partes.push(f2.sin_cap_verificada + ' sin capitalización verificada');
     if(f2.sin_periodo) partes.push(f2.sin_periodo + ' sin periodo');
+    // Regla 5 + regla 3: si la pantalla está en pesos, el pie declara con qué
+    // se convirtió. El FIX es diario, así que la fecha es parte del dato: "el
+    // FIX de Banxico" sin fecha no dice qué número se usó.
+    if(estado.mapa === 'us' && estado.moneda === 'mxn'){
+      partes.push(d.fix && d.fix.fecha
+        ? 'en pesos con el FIX de Banxico (SF43718) del ' + d.fix.fecha
+        : 'sin FIX: ' + ((d.fix && d.fix.motivo) || 'no llegó el FIX de Banxico'));
+    }
     partes.push('generado ' + new Date(d.generado_en).toLocaleString('es-MX'));
     document.getElementById('pie').textContent = partes.join(' · ');
   }
@@ -596,14 +655,25 @@
     var c = (d.cuadros||[]).find(function(x){ return x.symbol===symbol; });
     if(!c) return;
     var r = cambio(c);
-    var filas = [
+    // En pesos la hoja muestra LAS DOS y con su etiqueta: el número grande del
+    // cuadro es el de pesos, y el local queda debajo para que se vea de dónde
+    // salió. En dólares no hay segunda línea que mostrar.
+    var enPeso = (estado.mapa === 'us' && estado.moneda === 'mxn');
+    var filas = enPeso ? [
+      [ETIQUETA_PESOS, qdPctTag(r.pct, estado.periodo, { motivo: r.motivo })],
+      ['cambio local', qdPctTag(r.local_pct, estado.periodo, { motivo: r.local_motivo })],
+    ] : [
       ['cambio', qdPctTag(r.pct, estado.periodo, { motivo: r.motivo })],
-      ['precio', c.precio!=null ? fmtPrice(c.precio) : '—'],
+    ];
+    filas = filas.concat([
+      ['precio', (c.precio!=null ? fmtPrice(c.precio) : '—') + (enPeso ? ' USD' : '')],
       ['al cierre de', c.fecha_precio || '—'],
       ['capitalización', esc(qdCap(c.cap, d.bolsa === 'mx' ? 'MXN' : 'USD'))],
       ['fuente de la cap', esc(c.cap_fuente || '—')],
       ['sector', esc(SECTORES[c.sector]||c.sector||'—')]
-    ];
+    ]);
+    // Cada número en pesos dice qué FIX usó y de qué fecha (regla 3).
+    if(enPeso && r.fuente_peso) filas.push(['fuente del peso', esc(r.fuente_peso)]);
     if(c.cap_medida_en) filas.push(['cap medida el', esc(c.cap_medida_en)]);
     if(c.serie_liquida) filas.push(['serie', esc(c.serie_liquida)]);
     if(c.acciones_por_unidad && c.acciones_por_unidad!==1) filas.push(['acciones por unidad', String(c.acciones_por_unidad)]);
@@ -856,7 +926,9 @@
 
   function pintarMonedaToggle(){
     var t = document.getElementById('moneda');
-    t.hidden = (estado.mapa !== 'mundo');
+    // EE.UU. y Mundo sí; MÉXICO NO: esas acciones ya cotizan en pesos y un
+    // toggle que no puede hacer nada es un botón que miente.
+    t.hidden = (estado.mapa !== 'mundo' && estado.mapa !== 'us');
     if(t.hidden) return;
     t.innerHTML = [['usd','Local'],['mxn','MXN']].map(function(x){
       return '<button type="button" data-mon="'+x[0]+'" aria-pressed="'+(x[0]===estado.moneda)+'">'+x[1]+'</button>';
@@ -917,6 +989,41 @@
     estado.moneda = b.dataset.mon; escribirUrl(true); render();
   });
 
+  // EL FIX DE BANXICO, PARA CUALQUIER MAPA QUE CONVIERTA A PESOS.
+  //
+  // Vivía dentro de la rama de Mundo, y por eso el toggle MXN no hacía nada en
+  // EE.UU.: sin FIX no hay con qué convertir, así que `cambio()` devolvía el
+  // número local sin más. Ahora es una función y la usan los dos mapas: UNA
+  // sola fuente del peso para toda la pantalla.
+  //
+  // Se pide aparte de los precios porque es OTRA fuente: Yahoo da el dólar de
+  // mercado (`MXN=X`, que en Mundo es el cuadro) y Banxico da el FIX, que es el
+  // número oficial con el que se convierte. Mezclarlos sería pintar una
+  // conversión y atribuírsela a la otra fuente.
+  //
+  // Nunca rechaza: sin FIX se resuelve con `motivo`, y ese motivo termina
+  // impreso en el cuadro. Convertir con el dólar de mercado como sustituto
+  // silencioso queda prohibido.
+  function traerFix(){
+    return fetch('/api/banxico?series=USDMXN&days=420')
+      .then(function(r){ return r.json(); })
+      .catch(function(e){ return { error: e.message }; })
+      .then(function(b){
+        b = b || {};
+        var pts = Array.isArray(b.points) ? b.points : null;
+        if(pts && pts.length >= 2){
+          return {
+            fecha: b.latest ? b.latest.date : pts[pts.length-1].date,
+            valor: b.latest ? b.latest.value : pts[pts.length-1].value,
+            // A la forma que `qdPeriodChange` entiende. Un solo calculador,
+            // también para el tipo de cambio.
+            serie: pts.map(function(x){ return { t: Date.parse(x.date + 'T12:00:00Z')/1000, c: x.value }; })
+          };
+        }
+        return { motivo: 'no llegó el FIX de Banxico' + (b.error ? ' (' + b.error + ')' : '') };
+      });
+  }
+
   // ── Carga: UNA petición por mapa, y el toggle no vuelve a pedir ───
   var NOMBRE_MAPA = { us:'EE.UU.', mx:'México', mundo:'Mundo' };
 
@@ -925,49 +1032,23 @@
     // Regla 7: un endpoint batch por mapa. Mundo no estrena uno — usa el que ya
     // existe y ya está cacheado para toda la base de usuarios, que además no
     // devuelve ningún porcentaje pre-cocinado (regla 1).
-    if(mapa==='mundo'){
-      // DOS batches, no uno por cuadro: los índices y el FIX. La regla 7
-      // prohíbe un fetch por cuadro, y el toggle de moneda NO vuelve a pedir
-      // nada — el FIX viaja desde la primera carga, con su fecha.
-      //
-      // El FIX se pide aparte porque es otra fuente: Yahoo da el dólar de
-      // mercado (`MXN=X`, que es el CUADRO) y Banxico da el FIX, que es el
-      // número oficial con el que se convierte. Mezclarlos sería pintar una
-      // conversión y atribuírsela a la otra fuente.
-      Promise.all([
-        fetch('/api/macro-markets').then(function(r){ return r.json(); }),
-        fetch('/api/banxico?series=USDMXN&days=420')
-          .then(function(r){ return r.json(); })
-          .catch(function(e){ return { error: e.message }; })
-      ]).then(function(rs){
-        var d = rs[0] || {};
-        var b = rs[1] || {};
-        var pts = (b && Array.isArray(b.points)) ? b.points : null;
-        if(pts && pts.length >= 2){
-          d.fix = {
-            fecha: b.latest ? b.latest.date : pts[pts.length-1].date,
-            valor: b.latest ? b.latest.value : pts[pts.length-1].value,
-            // A la forma que `qdPeriodChange` entiende. Un solo calculador,
-            // también para el tipo de cambio.
-            serie: pts.map(function(x){ return { t: Date.parse(x.date + 'T12:00:00Z')/1000, c: x.value }; })
-          };
-        } else {
-          // Sin FIX no hay rendimiento en pesos, y se dice: nunca se convierte
-          // con el dólar de mercado como sustituto silencioso.
-          d.fix = { motivo: 'no llegó el FIX de Banxico' + (b && b.error ? ' (' + b.error + ')' : '') };
-        }
-        cache.mundo = d; render();
-      }).catch(function(e){
-        document.getElementById('pie').textContent = 'no se pudo cargar Mundo: ' + e.message;
-      });
-      return;
-    }
-    fetch('/api/mercado-mapa?map='+encodeURIComponent(mapa))
-      .then(function(r){ return r.json(); })
-      .then(function(d){ cache[mapa]=d; render(); })
-      .catch(function(e){
-        document.getElementById('pie').textContent = 'no se pudo cargar el mapa: ' + e.message;
-      });
+    //
+    // El FIX viaja en la MISMA carga, en paralelo, para los dos mapas que
+    // convierten a pesos: el toggle de moneda no vuelve a pedir nada.
+    var peticiones = (mapa === 'mundo')
+      ? [ fetch('/api/macro-markets').then(function(r){ return r.json(); }), traerFix() ]
+      : (mapa === 'us')
+        ? [ fetch('/api/mercado-mapa?map=us').then(function(r){ return r.json(); }), traerFix() ]
+        // México ya está en pesos: no se ofrece el toggle y no se pide el FIX.
+        : [ fetch('/api/mercado-mapa?map='+encodeURIComponent(mapa)).then(function(r){ return r.json(); }) ];
+
+    Promise.all(peticiones).then(function(rs){
+      var d = rs[0] || {};
+      if(rs.length > 1) d.fix = rs[1];
+      cache[mapa] = d; render();
+    }).catch(function(e){
+      document.getElementById('pie').textContent = 'no se pudo cargar ' + (NOMBRE_MAPA[mapa]||mapa) + ': ' + e.message;
+    });
   }
 
   // ── Eventos ───────────────────────────────────────────────────────

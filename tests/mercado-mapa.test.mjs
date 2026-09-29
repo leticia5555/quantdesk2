@@ -658,11 +658,11 @@ test('el factor de ancho es el MEDIDO con la fuente real, no un número a ojo', 
 // Esta prueba fija el otro lado: que la ESCALA aguante blanco. Si alguien
 // aclara un paso, el contraste cae y esto se pone rojo antes de que se vea en
 // un teléfono. El piso es 2.5 y no el 4.5 de WCAG AA a propósito — con la
-// escala del mockup, blanco sobre el verde claro da 2.71 y sobre el rojo claro
-// 3.70, así que llegar a AA pide cambiar la escala, y la escala es una decisión
-// de diseño de Lety, no un efecto secundario de una prueba.
+// Los tonos claros del mockup no llegaban: 2.71, 3.44 y 3.70. Se oscurecieron
+// (decisión de Lety, 2026-09-29) y el piso subió a 4.5, que es WCAG AA. El
+// detalle de cuánto se movió cada uno está en `qd-treemap.js`.
 // ═══════════════════════════════════════════════════════════════════════
-const PISO_CONTRASTE = 2.5;
+const PISO_CONTRASTE = 4.5;   // WCAG AA. Decisión de Lety, 2026-09-29.
 
 function contraste(hexA, hexB) {
   const lin = (c) => { const x = c / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; };
@@ -688,8 +688,10 @@ test('y el verde/rojo de qdPctTag NO se lee sobre los pasos de su propio signo',
   // quisiera volver a usar el color del texto sobre el cuadro de color, acá
   // están los números que dicen por qué no.
   const verde = '#00c97d', rojo = '#E24B4A';
-  assert.ok(contraste(verde, '#4CAF7D') < 1.5, 'verde sobre verde claro: invisible');
-  assert.ok(contraste(rojo, '#D2635C') < 1.5, 'rojo sobre rojo claro: invisible');
+  // Con los tonos de antes: 1.25 y 1.06. Con los de ahora siguen siendo
+  // ilegibles, que es el punto — el texto va blanco, no del color del signo.
+  assert.ok(contraste(verde, '#39825D') < 2.5, 'verde sobre el verde claro: ilegible');
+  assert.ok(contraste(rojo, '#B95751') < 2.5, 'rojo sobre el rojo claro: ilegible');
   // Sobre el fondo oscuro de la página sí se leen, que es donde se usan (la
   // tira de arriba y la hoja).
   assert.ok(contraste(verde, '#0a0a0a') > 4.5);

@@ -27,6 +27,9 @@ if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true });
 const require = createRequire(import.meta.url);
 const PW = process.env.PW_PATH || '/tmp/claude-0/-home-user-quantdesk2/978a1f3c-866a-59be-9b12-d16e6c760a3e/scratchpad/node_modules/playwright-core';
 const { chromium } = require(PW);
+// El MISMO calculador que la pantalla (regla 1): la comprobación de la cuenta
+// en pesos no puede traer su propia aritmética del periodo.
+const { qdPeriodChange } = require(join(ROOT, 'qd-periods.js'));
 
 // ── El fixture: un mapa con todo lo que tiene que saberse pintar ───
 // Incluye a propósito un cuadro SIN serie y uno SIN ancla YTD: si el "—" con
@@ -269,16 +272,7 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/api/banxico') {
     pedidosApi++;
     res.writeHead(200, { 'content-type': 'application/json' });
-    // El FIX es DIARIO y sólo de días hábiles. 300 puntos de ~420 días
-    // naturales es lo que Banxico devuelve de verdad, y con eso YTD alcanza.
-    const pts = [];
-    const fin = Date.parse('2026-09-21T12:00:00Z');
-    for (let i = 420; i >= 0; i--) {
-      const d = new Date(fin - i * 86400000);
-      const dow = d.getUTCDay();
-      if (dow === 0 || dow === 6) continue;
-      pts.push({ date: d.toISOString().slice(0, 10), value: +(19.4 * (1 - 0.061 * (420 - i) / 420)).toFixed(4) });
-    }
+    const pts = PUNTOS_FIX;
     return res.end(JSON.stringify({
       series: 'USDMXN', code: 'SF43718', title: 'Tipo de cambio FIX',
       points: pts, latest: pts[pts.length - 1], fetched_at: '2026-09-21T20:00:00.000Z',
@@ -321,6 +315,29 @@ const server = createServer(async (req, res) => {
     res.end(buf);
   } catch { res.writeHead(404); res.end('no'); }
 });
+
+// ── EL FIX DE BANXICO DEL FIXTURE ────────────────────────────────────
+// Es DIARIO y sólo de días hábiles: ~300 puntos en 420 días naturales es lo
+// que Banxico devuelve de verdad, y con eso el ancla de YTD existe.
+//
+// Cae 6.1% en el año (el peso apreciándose contra el dólar) a propósito: con
+// un tipo de cambio plano, "el % en pesos cambió" no probaría nada.
+//
+// Vive acá arriba, y no dentro del servidor, porque la comprobación de la
+// cuenta multiplicativa la recalcula con `qdPeriodChange` —el mismo
+// calculador de la regla 1— en lugar de leerle el resultado a la página.
+const PUNTOS_FIX = (() => {
+  const pts = [];
+  const fin = Date.parse('2026-09-21T12:00:00Z');
+  for (let i = 420; i >= 0; i--) {
+    const d = new Date(fin - i * 86400000);
+    const dow = d.getUTCDay();
+    if (dow === 0 || dow === 6) continue;
+    pts.push({ date: d.toISOString().slice(0, 10), value: +(19.4 * (1 - 0.061 * (420 - i) / 420)).toFixed(4) });
+  }
+  return pts;
+})();
+const SERIE_FIX = PUNTOS_FIX.map((x) => ({ t: Date.parse(x.date + 'T12:00:00Z') / 1000, c: x.value }));
 
 // ── EL RELOJ, FIJO ───────────────────────────────────────────────────
 // El caso que rompió en el teléfono: **lunes 17:00 CT con la tabla al
@@ -410,6 +427,36 @@ try {
     alto.marcado === '1'
       && alto.lienzo === Math.max(alto.k.ALTO_MIN_MOVIL, Math.round(alto.ancho * alto.k.FACTOR_ALTO_MOVIL)),
     JSON.stringify(alto));
+
+  // ── EL CUADRO MÁS ALTO NO SE COME LA PANTALLA ──────────────────────
+  // "En el iPhone, NVDA ocupa la pantalla completa (unos 800px de alto) por el
+  // ×12" (Lety, 2026-09-29). El alto de un cuadro es
+  // `(cap/cap_total) × columnas × alto_total`, así que la única palanca es el
+  // alto total — y esto comprueba el RESULTADO, no la palanca.
+  //
+  // Se mide de dos maneras porque el fixture NO es producción: su mayor pesa
+  // 20.8% de la cap dibujada y NVDA pesa 17.1% (los 800px que ella midió,
+  // sobre los 4,680 del ×12). El fixture da la cota alta; la cuota de prod da
+  // el número que ella va a ver.
+  const CUOTA_MAYOR_PROD = 0.171; // NVDA: 800px medidos sobre 4,680 de alto
+  const masAlto = await p.evaluate(() => {
+    let h = 0, sym = '', area = 0;
+    for (const e of document.querySelectorAll('.cuadro')) {
+      const r = e.getBoundingClientRect();
+      area += r.width * r.height;
+      if (r.height > h) { h = r.height; sym = e.getAttribute('aria-label'); }
+    }
+    return { h: Math.round(h), sym, pantalla: window.innerHeight, cuota: null, area };
+  });
+  const altoNvda = Math.round(alto.lienzo * CUOTA_MAYOR_PROD);
+  chequeo('el mayor de PRODUCCIÓN (NVDA, 17.1% de la cap dibujada) queda en media pantalla',
+    altoNvda <= masAlto.pantalla / 2,
+    `${altoNvda}px sobre un mapa de ${alto.lienzo}px; media pantalla es ${Math.round(masAlto.pantalla / 2)}px`);
+  // Y en el fixture, que es más desigual, al menos no llena una pantalla: con
+  // ×12 el mayor medía 901px sobre 844 de pantalla, que es la queja de ella.
+  chequeo('y en el fixture el mayor ya no llena una pantalla entera',
+    masAlto.h < masAlto.pantalla,
+    `el mayor es ${masAlto.sym} con ${masAlto.h}px de ${masAlto.pantalla}px de pantalla`);
   chequeo('y la página se recorre en vertical', scroll.v, JSON.stringify(alto));
 
   const taps = await p.evaluate(() => {
@@ -560,9 +607,24 @@ try {
   chequeo('ningún cuadro con sitio para su ticker se queda sin él',
     tickers.deben.length === 0,
     `${tickers.deben.length} tienen sitio y están mudos: ${JSON.stringify(tickers.deben.slice(0, 6))}`);
-  // El número que Lety pidió reportar, con SU regla plana de 14px.
-  chequeo('menos de 20 cuadros caen bajo los 14px de lado',
-    tickers.bajo14 < 20, `${tickers.bajo14} de ${tickers.total}`);
+  // ── EL TECHO DE CUADROS MINÚSCULOS, DECLARADO APARTE ───────────────
+  // Lety pidió en R1 "menos de 20 de ~550 bajo los 14px de lado", y con ×12 se
+  // cumplía (9 de 552). Al bajar el factor a 6 para que el mayor quepa en media
+  // pantalla (su pedido del 2026-09-29), el área de cada cuadro se parte a la
+  // mitad y el conteo sube. Las dos cosas no caben juntas, y el techo se mueve
+  // ACÁ, con su nombre y sus dos números, para que moverlo se vea en el diff —
+  // igual que `CRITERIOS.g2_max_error_pct` en el veredicto de la cap:
+  //
+  //     factor   fixture (552)   producción (307)
+  //       ×12          9/552            3/307
+  //        ×6        242/552           11/307
+  //
+  // Lo que NO se movió es el criterio de verdad, que es el de arriba: ningún
+  // cuadro con sitio para su ticker se queda sin él. Éste es un detector de
+  // regresión sobre la densidad, no la promesa.
+  const MAX_BAJO_14 = 250;
+  chequeo(`no más de ${MAX_BAJO_14} cuadros caen bajo los 14px de lado (era <20 con ×12; el factor bajó a 6)`,
+    tickers.bajo14 <= MAX_BAJO_14, `${tickers.bajo14} de ${tickers.total}`);
   console.log(`     ↳ sin ticker: ${tickers.sin} de ${tickers.total} cuadros · `
     + `${tickers.bajo14} bajo 14px de lado · ${tickers.excepcion} no les cabe su propio ticker a 6px `
     + `· el más angosto mide ${tickers.anchoMin}px`);
@@ -950,6 +1012,97 @@ try {
   chequeo('y YTD da un número de verdad, que es para lo que se subió a range=1y',
     ytd.filter((t) => /YTD/.test(t) && /%/.test(t)).length >= 10,
     `${ytd.filter((t) => /%/.test(t)).length} con número de ${ytd.length}: ${ytd.slice(0, 3).join(' ')}`);
+
+  // ── EL TOGGLE MXN TAMBIÉN EN EL MAPA DE EE.UU. ─────────────────────
+  // En el iPhone NVDA decía +1.7% en Local y +1.7% en MXN: el toggle se
+  // pintaba y no hacía nada. La causa era que el FIX sólo se pedía en la rama
+  // de Mundo, así que en EE.UU. no había con qué convertir.
+  //
+  // Se comprueba lo que se ve: que el NÚMERO cambie, que el COLOR siga al
+  // número en pesos (si el cuadro se pinta por el % en dólares mientras el
+  // número dice pesos, el color miente), y que la cuenta sea la multiplicativa
+  // de `qd-pesos.js` y no la suma.
+  await p.goto(`${BASE}/mercado?mapa=us&periodo=YTD`, { waitUntil: 'networkidle' });
+  const leerUs = () => p.evaluate(() => {
+    const out = {};
+    for (const e of document.querySelectorAll('.cuadro')) {
+      const aria = e.getAttribute('aria-label') || '';
+      const sym = aria.split(' ')[0];
+      out[sym] = { val: (e.querySelector('.val') || {}).textContent || '', color: getComputedStyle(e).backgroundColor, aria };
+    }
+    return {
+      cuadros: out,
+      pie: (document.getElementById('pie') || {}).textContent || '',
+      toggleOculto: document.getElementById('moneda').hidden,
+      botones: [...document.querySelectorAll('#moneda button')].map((b) => b.textContent),
+    };
+  });
+  const usLocal = await leerUs();
+  chequeo('el toggle de moneda se ofrece en EE.UU.',
+    usLocal.toggleOculto === false && usLocal.botones.join('|') === 'Local|MXN', JSON.stringify(usLocal.botones));
+
+  const antesUs = pedidosApi;
+  await p.locator('#moneda button[data-mon="mxn"]').tap();
+  await p.waitForTimeout(250);
+  const usMxn = await leerUs();
+
+  // El FIX del fixture cae 6.1% en el año: en pesos TODO el mapa de EE.UU.
+  // tiene que moverse. Cero cuadros movidos es exactamente el bug de ella.
+  const symsUs = Object.keys(usLocal.cuadros).filter((k) => /%/.test(usLocal.cuadros[k].val));
+  const movidos = symsUs.filter((k) => usMxn.cuadros[k] && usMxn.cuadros[k].val !== usLocal.cuadros[k].val);
+  chequeo('en MXN el % de los cuadros de EE.UU. cambia (era el bug: +1.7% en las dos)',
+    symsUs.length > 0 && movidos.length === symsUs.length,
+    `${movidos.length} de ${symsUs.length} con % cambiaron`);
+
+  // EL COLOR SIGUE AL NÚMERO EN PESOS. Con el peso apreciándose 6.1%, los
+  // cuadros que estaban apenas en verde cruzan a rojo: si ninguno cambia de
+  // color, el color se está pintando con el número viejo.
+  const recoloreados = symsUs.filter((k) => usMxn.cuadros[k] && usMxn.cuadros[k].color !== usLocal.cuadros[k].color);
+  chequeo('y el color sigue al número en pesos, no al local',
+    recoloreados.length > 0,
+    `${recoloreados.length} cuadros cambiaron de color; ej. ${recoloreados.slice(0, 3).map((k) => `${k} ${usLocal.cuadros[k].val}→${usMxn.cuadros[k].val}`).join(', ')}`);
+
+  chequeo('el pie de EE.UU. declara con qué FIX y de qué fecha se convirtió',
+    /FIX de Banxico \(SF43718\) del \d{4}-\d{2}-\d{2}/.test(usMxn.pie), usMxn.pie);
+  chequeo('el toggle de moneda no vuelve a pedir datos en EE.UU. tampoco',
+    pedidosApi === antesUs, `${pedidosApi - antesUs} peticiones nuevas`);
+
+  // LA CUENTA ES MULTIPLICATIVA. Se recalcula acá desde el local y el FIX que
+  // la propia página tiene, y se compara con el número pintado: si alguien
+  // cambia la fórmula por una suma, el cruzado se pierde y esto lo ve.
+  const rmFix = qdPeriodChange(SERIE_FIX, 'YTD').pct;
+  const rlLocal = parseFloat(String((usLocal.cuadros.MNST || {}).val || '').replace(/[^\-0-9.]/g, ''));
+  const pintado = parseFloat(String((usMxn.cuadros.MNST || {}).val || '').replace(/[^\-0-9.]/g, ''));
+  const esperado = ((1 + rlLocal / 100) * (1 + rmFix / 100) - 1) * 100;
+  const suma = rlLocal + rmFix;
+  chequeo('el % en pesos es (1+r_local)(1+r_moneda)−1, no la suma',
+    Number.isFinite(pintado) && Math.abs(pintado - esperado) < 0.1 && Math.abs(esperado - suma) > 0.15,
+    `local ${rlLocal}% · FIX ${rmFix.toFixed(3)}% → pintado ${pintado}% · multiplicativo ${esperado.toFixed(3)}% · suma ingenua ${suma.toFixed(3)}%`);
+
+  // LA HOJA: las dos líneas y el FIX, igual que en Mundo.
+  await p.locator('.cuadro[aria-label^="MNST"]').first().tap();
+  await p.waitForSelector('.hoja[data-abierta="1"]');
+  const hojaUs = await p.locator('#hojaCuerpo').innerText();
+  chequeo('la hoja de una acción de EE.UU. en pesos trae las dos líneas y su FIX',
+    /rendimiento en pesos/.test(hojaUs) && /cambio local/.test(hojaUs)
+      && /fuente del peso/.test(hojaUs) && /banxico:SF43718 \(FIX del \d{4}-\d{2}-\d{2}\)/.test(hojaUs),
+    hojaUs.slice(0, 260).replace(/\n/g, ' '));
+  chequeo('y el precio dice USD, para que no se lea como pesos',
+    /precio\s+[\d.,]+ USD/.test(hojaUs), hojaUs.slice(0, 200).replace(/\n/g, ' '));
+  await p.locator('#cerrar').tap();
+
+  // ── EN MÉXICO EL TOGGLE NO SE OFRECE ───────────────────────────────
+  // "En la pestaña México, esconde el toggle: esas acciones ya están en
+  // pesos" (Lety). Un botón que no puede hacer nada es un botón que miente.
+  await p.goto(`${BASE}/mercado?mapa=mx&periodo=YTD&moneda=mxn`, { waitUntil: 'networkidle' });
+  const mxTog = await p.evaluate(() => ({
+    oculto: document.getElementById('moneda').hidden,
+    pie: (document.getElementById('pie') || {}).textContent || '',
+  }));
+  chequeo('en México el toggle de moneda está escondido',
+    mxTog.oculto === true, `hidden=${mxTog.oculto}`);
+  chequeo('y el pie de México no habla de ningún FIX: ya está en pesos',
+    !/FIX/.test(mxTog.pie), mxTog.pie);
 
   // ── LA CAUSA DE UN GRIS NO SE INVENTA ──────────────────────────────
   // El 2026-09-26, en el iPhone: ORCL, MNST y APH decían "EDGAR no dio acciones
