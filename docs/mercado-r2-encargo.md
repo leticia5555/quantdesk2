@@ -128,3 +128,64 @@ apretar el toggle.
 5. **Feriados fuera de EE.UU.** ¿Alcanza la propuesta de §1.4 —el chip nunca
    afirma "abierto" contra el horario solo, sino contra el último cierre que
    tenemos— o hay que conseguir calendarios por bolsa?
+
+---
+
+# ADENDA — el encargo llegó, y las cinco decisiones (2026-09-29)
+
+El contrato ya está en el repo como **`docs/mercado-encargo.md`** y es la fuente
+de verdad. Su §3/R2 confirma lo que este plan había reconstruido y agrega el
+detalle que faltaba. Las respuestas de Lety, anotadas acá porque una decisión
+que se queda en el chat se pierde (como las acciones de NVO desde el 20-F, que
+tardaron cuatro días en llegar a un archivo):
+
+1. **Mundo: tarjetas por región, tamaño fijo, color por %.** El encargo lo dice
+   así: *"los índices no tienen cap; no fingir"*. Regiones: **América / Europa /
+   Asia / Cripto-FX-materias primas**.
+2. **"En pesos" convierte el RENDIMIENTO, no los precios.** Toggle global
+   USD | MXN. El % de cada activo se recalcula con el cruce de **su** moneda
+   contra el peso en el mismo periodo:
+   `r_pesos = (1 + r_local) × (1 + r_moneda/MXN) − 1`. Número grande = en pesos,
+   chico = local, con la etiqueta visible **"rendimiento en pesos"**. Aplica
+   también al Nikkei y al DAX. La hoja muestra la línea "en pesos".
+3. **`/api/macro-markets` sube a `range=1y`**, para que haya YTD.
+4. **Las 8 bolsas sí.** Futuros, FX y cripto llevan **"24h"** en lugar de
+   abierto/cerrado.
+5. **Feriados: la propuesta de §1.4 alcanza.** El chip no dice "abierto" sólo
+   por el horario; si la sesión debería estar corriendo y el último cierre es de
+   ayer, dice *"sin cierre nuevo hoy"*. No hay que conseguir calendarios.
+
+## R2(a) — entregado
+
+`qd-mercados.js` y `qd-pesos.js`, puros y probados, sin UI y sin tocar
+`/mercado`.
+
+### Lo que hubo que agregar al endpoint
+
+Para que el punto 2 funcione **también** para el FTSE, el KOSPI, el Hang Seng y
+el Bovespa hacían falta los cruces de sus monedas, que no estaban:
+`GBPUSD=X`, `KRW=X`, `HKD=X`, `BRL=X`. El yen y el euro ya estaban. El peso
+**no** se agrega ahí: viene del FIX de Banxico, que es la fuente oficial y trae
+su fecha.
+
+### La aritmética, y por qué la prueba va al revés
+
+La composición es multiplicativa y el término cruzado no es redondeo: el S&P
++20% con el dólar +10% da **+32%**, no +30% — dos puntos enteros de
+rendimiento real. Sumar los dos porcentajes es el error clásico.
+
+El encargo pide "test unitario del cálculo con un caso conocido". Una prueba que
+verifique `(1+a)(1+b)−1` contra `(1+a)(1+b)−1` no prueba nada: repite la
+fórmula. Así que el caso conocido se arma **al revés** — se construyen los
+precios en pesos (índice × FIX), se calcula el rendimiento directo, y se exige
+que la composición dé lo mismo. Igual para el Nikkei, donde el peso se llega
+pasando por el yen: `yenes ÷ (yenes por dólar) × (pesos por dólar)`. Si la
+fórmula estuviera mal, esas pruebas se ponen rojas.
+
+### `num(null)` es 0, y `num('')` también — quinta vez
+
+El guardia ingenuo hacía que `rendimientoEnPesos(null, 10)` devolviera **+10%**:
+un rendimiento ausente entraba como "no se movió", que es una **afirmación**
+donde lo que hay es una ausencia. Es la quinta vez que esta coerción cuesta un
+bug en este proyecto y la primera que una prueba lo caza **antes** de subirlo —
+la que dice "un rendimiento ausente no vale cero".
