@@ -53,7 +53,7 @@ import { sql, ensureSchema } from './_lib/db.js';
 import { getCalendar, getAccount, getPositions, getSnapshots, getAvgDailyVolume } from './_lib/alpaca.js';
 import { registrarEquity } from './_lib/arena-equity.js';
 import { usaObjetivo } from './_lib/arena-objetivo-vivo.js';
-import { activeAgents, agentById, agentAlpacaCreds, ARENA_AGENT_DEADLINE_MS } from './_lib/arena-registry.js';
+import { activeAgents, agentById, agentAlpacaCreds, vigilanteApagado, ARENA_AGENT_DEADLINE_MS } from './_lib/arena-registry.js';
 import { withDeadline } from './_lib/arena-model.js';
 import {
   WATCH_RULES, watchCadenceActive, watchStartDate, easternDate, sessionPhase, easternMinutes,
@@ -666,7 +666,9 @@ export default async function handler(req, res) {
   // el vigilante NO debe requerir apagar el Arena — si el modelo por evento sale
   // mal, se vuelve al cron nocturno moviendo ARENA_WATCH_START hacia adelante y
   // ARENA_WATCH_ENABLED a 0, sin un deploy.
-  if (process.env.ARENA_ENABLED !== '1' || process.env.ARENA_WATCH_ENABLED === '0') {
+  // Mismo predicado que arena-run, importado y no copiado. Ver el comentario
+  // de `ligaApagada` en _lib/arena-registry.js.
+  if (vigilanteApagado()) {
     await beat('arena:watch', 'disabled');
     return res.status(200).json({ disabled: true, hint: 'ARENA_ENABLED != 1 o ARENA_WATCH_ENABLED = 0.' });
   }

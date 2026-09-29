@@ -47,6 +47,7 @@ import { readFileSync } from 'node:fs';
 import {
   RESERVA_CIERRE_MS, PISO_VUELTA_MS, MARGEN_MS, minimoParaOtraVuelta, relojDisponible,
 } from '../api/_lib/arena-tool-loop.js';
+import { ARENA_LLM_TIMEOUT_MS, ARENA_AGENT_DEADLINE_MS } from '../api/_lib/arena-registry.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -155,6 +156,82 @@ console.log('\n── y si el piso vuelve a actuar, se sabe por qué ──');
     'el `origenTecho` marca cuando el techo quedó en el piso');
   ok(/solo puede venir de un timeoutMs chico, no del reparto/.test(src),
     'y dice dónde mirar: con la guarda derivada el reparto ya no puede producirlo');
+}
+
+// ── 6) EL TERCER RELOJ: EL TECHO POR LLAMADA LLEGA AL LOOP ───────────
+// EL CASO (2026-09-29): arreglamos la banda de 70-80s y abajo había OTRO
+// reloj. Los cortes de ese día: 57.163ms, 32.992ms y un cierre con
+// **104.984ms** de techo, los tres con `reloj_nuestro: true`.
+//
+// 104.984 no es una constante que alguien escribió: es `(185s + 70s) − 150s`
+// de lo ya usado. `ARENA_LLM_TIMEOUT_MS` (90s) existe, está documentado y
+// tiene hasta un campo `origen` para diagnosticarlo — y NO se le pasaba al
+// loop. Adentro las dos aritméticas lo tratan como opcional
+// (`|| Infinity`, `: disponible`), así que sin él el techo queda SIN TAPA.
+//
+// Es la misma forma que la banda: no un número mal elegido, sino un límite
+// real que no alcanza al camino que corre.
+console.log('\n── el techo por llamada, que no llegaba ──');
+{
+  const shadow = readFileSync(new URL('../api/arena-shadow.js', import.meta.url), 'utf8');
+  ok(/timeoutMs: ARENA_LLM_TIMEOUT_MS/.test(shadow),
+    'el camino del objetivo le pasa el techo por llamada al loop');
+  ok(/ARENA_LLM_TIMEOUT_MS \}? from '\.\/_lib\/arena-registry\.js'|ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS/.test(shadow),
+    'y lo importa del registry, no lo copia');
+
+  // La aritmética del cierre, reproducida con el caso real.
+  const B = relojDisponible({ scanMs: 0 });
+  const cierre = (usado, tm) => {
+    const d = Math.max(0, (B + RESERVA_CIERRE_MS) - usado);
+    return Math.max(PISO_VUELTA_MS, tm ? Math.min(tm, d) : d);
+  };
+  ok(cierre(150016, undefined) === 104984,
+    'el caso real reproduce: sin techo, el cierre recibía 104.984ms', String(cierre(150016, undefined)));
+  ok(cierre(150016, ARENA_LLM_TIMEOUT_MS) === ARENA_LLM_TIMEOUT_MS,
+    'con el techo, queda en 90s', String(cierre(150016, ARENA_LLM_TIMEOUT_MS)));
+
+  // Y NINGÚN reparto puede superar el techo, barrido de punta a punta.
+  const excedidos = [];
+  for (let u = 0; u <= B + RESERVA_CIERRE_MS; u += 971) {
+    if (cierre(u, ARENA_LLM_TIMEOUT_MS) > ARENA_LLM_TIMEOUT_MS) excedidos.push(u);
+  }
+  ok(excedidos.length === 0, 'y ningún reparto del cierre supera el techo', excedidos.slice(0, 3).join(', '));
+
+  // La vuelta normal, lo mismo.
+  const vuelta = (rest, tm) => Math.max(PISO_VUELTA_MS, Math.min(tm || Infinity, rest - RESERVA_CIERRE_MS));
+  ok(vuelta(B, undefined) === B - RESERVA_CIERRE_MS && vuelta(B, ARENA_LLM_TIMEOUT_MS) === ARENA_LLM_TIMEOUT_MS,
+    'la primera vuelta pasaba de 115s y ahora queda en 90s',
+    `${vuelta(B, undefined)} → ${vuelta(B, ARENA_LLM_TIMEOUT_MS)}`);
+}
+
+// ── 7) EL INVENTARIO DE RELOJES, COMPLETO ────────────────────────────
+// Lety: "ya nos pasó que el piso estaba escrito cuatro veces en un archivo, no
+// quiero arreglar el tercero la semana que viene". Esto fija la lista: si
+// aparece un reloj nuevo que no está acá, alguien lo agrega A ESTA LISTA o
+// esta prueba no lo cubre — y el que no está en la lista es el próximo.
+console.log('\n── todos los relojes de una corrida, enumerados ──');
+{
+  const RELOJES = {
+    ARENA_AGENT_DEADLINE_MS: ARENA_AGENT_DEADLINE_MS,   // la corrida entera
+    RESERVA_CIERRE_MS,                                   // el turno de cierre
+    MARGEN_MS,                                           // Alpaca + journal
+    PISO_VUELTA_MS,                                      // mínimo por vuelta
+    ARENA_LLM_TIMEOUT_MS,                                // UNA llamada al LLM
+  };
+  for (const [n, v] of Object.entries(RELOJES)) {
+    ok(Number.isFinite(v) && v > 0, `${n} está declarado y es un número`, String(v));
+  }
+
+  // LA DESIGUALDAD QUE TIENE QUE VALER: el techo de una llamada no puede
+  // superar lo que el loop tiene para gastar, o el techo no acota nada.
+  ok(ARENA_LLM_TIMEOUT_MS <= relojDisponible({ scanMs: 0 }),
+    'el techo por llamada cabe dentro del presupuesto del loop',
+    `${ARENA_LLM_TIMEOUT_MS} <= ${relojDisponible({ scanMs: 0 })}`);
+  // Y la suma no puede pasarse del deadline del agente, o el `withDeadline`
+  // mata la corrida antes de que el cierre alcance a escribir.
+  ok(relojDisponible({ scanMs: 0 }) + RESERVA_CIERRE_MS + MARGEN_MS <= ARENA_AGENT_DEADLINE_MS,
+    'presupuesto + reserva + margen cabe en el deadline del agente',
+    `${relojDisponible({ scanMs: 0 }) + RESERVA_CIERRE_MS + MARGEN_MS} <= ${ARENA_AGENT_DEADLINE_MS}`);
 }
 
 console.log(failures ? `\n${failures} fallo(s)` : '\nTodo en verde');

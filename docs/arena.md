@@ -746,6 +746,107 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B47 · LA T3 ARRANCÓ SOLA, CONTRA LOS LIBROS DE LA T2 (2026-09-29)
+
+El 29 de septiembre la liga corrió **en vivo, etiquetada T3, contra las
+carteras heredadas de la T2**. Órdenes reales a Alpaca desde las 13:33 UTC —
+tres minutos después de la apertura. `control` vendió EFX y HPE y compró MDT;
+`openai` compró CCL y AMAT; grok y gemini también llenaron.
+
+`posiciones_iniciales` de control: las 28 de la T2. El reset nunca se ejecutó,
+no hubo verificación de baselines, no hubo humo, y el SPY siguió anclado al 16
+de septiembre. **El propio piso de ruido lo dijo solo:** *"el coseno entre
+libros mide HERENCIA"*.
+
+El deploy de código sí entró —la temporada decía T3— y `ARENA_ENABLED=0` no.
+
+### POR QUÉ NO HAY UN TERCER ESTADO
+
+La compuerta es `process.env.ARENA_ENABLED !== '1'`, leída **en runtime**,
+dentro del handler, en cada request. No hay build-time, no hay caché, no hay
+default en el código: `grep` sobre `api/` no encuentra una sola asignación a
+esa variable.
+
+Y por la forma del predicado, **el único valor que deja correr la liga es
+exactamente `'1'`**. Vacío, ausente, `'0'`, `' 1'` con espacio, `'true'`: todos
+apagan. O sea que la pregunta *"¿puede estar puesta y no verla?"* tiene una
+respuesta cerrada:
+
+> **No.** Si la liga corrió, el proceso que la atendió leyó exactamente `'1'`.
+> No es que no viera la variable nueva: vio la vieja. El cambio no llegó a ese
+> deployment.
+
+Las causas posibles son de despliegue, no de código: la variable guardada en
+otro *Environment* (Preview en vez de Production), guardada después de que el
+build arrancó, o un deployment distinto sirviendo el tráfico.
+
+### LO QUE FALTABA ERA PODER PREGUNTAR
+
+Y acá está el hallazgo que importa más que la causa: **no había forma de
+verificar la pausa sin arriesgarse a disparar una corrida.** El único modo de
+preguntar era pegarle a `/api/arena-run` o `/api/arena-watch` — que si la
+compuerta funcionaba contestaban `disabled`, y si NO funcionaba **corrían una
+ronda**. El chequeo costaba exactamente el accidente que quería descartar.
+
+> **NORMA: un interruptor que no se puede verificar sin accionarlo no es un
+> interruptor, es una esperanza.** Todo freno tiene que tener un endpoint
+> SOLO-LECTURA que responda su estado, y ese endpoint tiene que reportar el
+> MISMO predicado que el freno usa — no una copia que describa lo que el freno
+> "debería" hacer.
+
+Cerrado: `ligaApagada()` / `vigilanteApagado()` viven en
+`_lib/arena-registry.js`, los importan `arena-run` y `arena-watch` (eran dos
+copias del literal), y `/api/arena-audit?compuertas=1` los reporta sin tocar
+la base ni el camino de decisión. Mientras tanto `/api/arena` —que ya existía
+y es solo-lectura— publica `enabled` con la misma expresión negada, y sirve
+para verificar sin desplegar nada.
+
+### EL DÍA 29 QUEDA DECLARADO, NO BORRADO
+
+`start` se movió al **2026-09-30** (23 sesiones, `weeks: 4.6`). El 29 entra en
+`TEMPORADA_DIAS_CONTAMINADOS` con su motivo al lado de la fecha, en el código
+y no en un doc aparte: quien vea el hueco en `/liga` tiene que poder saber por
+qué sin ir a buscar.
+
+Sus filas NO se borran —son la evidencia— pero no entran en el ranking ni en
+el piso de ruido. Un hueco declarado es dato; uno callado es el bug de la
+próxima semana.
+
+### Y TRES COSAS MÁS QUE SALIERON DEL MISMO DÍA
+
+**1 · La ficha se contradecía a sí misma.** El aborto de deepseek mostraba en
+`censo.detalle_fuera.motivo` *"el proveedor devolvió HTTP 200 y cerró el
+stream"*, mientras `fallo.respuesta` decía *"TIMEOUT NUESTRO… somos nosotros
+cortando"*, con `reloj_nuestro: true`. **Dos textos para el mismo hecho**, y el
+que la pantalla muestra era el falso. Con 24 días por delante eso archiva
+nuestro bug como fallas de DeepSeek — **la tercera culpa de B44 otra vez, un
+escalón más abajo: ya no en el conteo, sino en la prosa.** El texto ahora se
+DERIVA del mismo booleano que el otro, así que no se pueden contradecir.
+
+**2 · Había un TERCER reloj.** Arreglamos la banda de 70–80s (B45) y abajo
+estaba `ARENA_LLM_TIMEOUT_MS = 90s`: existe, está documentado, tiene un campo
+`origen` para diagnosticarlo — y **no se le pasaba al loop**. Adentro las dos
+aritméticas lo tratan como opcional (`|| Infinity`, `: disponible`), así que
+sin él el techo queda sin tapa. Los cortes del 29: 57.163ms, 32.992ms y un
+cierre con **104.984ms**, que no es una constante sino `(185s + 70s) − 150s de
+lo ya usado`. Es la misma forma que B45: **no un número mal elegido, sino un
+límite real que no alcanza al camino que corre.**
+
+El inventario completo de relojes quedó fijado en
+`tests/arena-reparto-reloj.test.mjs`, con las dos desigualdades que tienen que
+valer: el techo por llamada cabe en el presupuesto del loop, y presupuesto +
+reserva + margen cabe en el deadline del agente.
+
+**3 · El baseline nunca fue $100.000, y debí corregirlo antes.** Durante una
+semana el plan habló de *"re-basar las siete cuentas a $100.000"* y no lo
+corregí. El reset **liquida a mercado** (`DELETE /v2/positions`) y re-basa cada
+cuenta a **su equity real después de aplanar** (`baselineModo: 'real'` por
+default; `?baseline=<n>` fuerza el número declarado). Las dos mitades
+importaban y ninguna estaba dicha: que sí liquida, y que el número no es
+$100.000.
+
+---
+
 ## B46 · UNA CONSULTA QUE NO PUEDE VER SU PROPIA RESPUESTA (2026-09-29)
 
 Escribí la consulta 4 para contestar *"¿qué proveedor sirvió los 23

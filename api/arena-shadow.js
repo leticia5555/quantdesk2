@@ -33,7 +33,7 @@
 import { ensureSchema } from './_lib/db.js';
 import { checkAdminAuth } from './_lib/arena-admin.js';
 import * as alpaca from './_lib/alpaca.js';
-import { activeAgents, agentById, agentAlpacaCreds, ARENA_MAX_TOKENS } from './_lib/arena-registry.js';
+import { activeAgents, agentById, agentAlpacaCreds, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS } from './_lib/arena-registry.js';
 import { callArenaLLM, withDeadline, cachePrefixReport, anthropicCostUsd } from './_lib/arena-model.js';
 import { gatherContext, buildSharedContext, buildTargetSystemPrompt, resolveBaseUrl, PROMPT_VERSION } from './arena-run.js';
 import { parsePortfolioResponse, validateTarget, railTrims, normalizarTickersObjetivo, rescatarObjetivo, RAILS } from './_lib/arena-rails.js';
@@ -233,6 +233,24 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
         agent, system: [system, shared], messages: [{ role: 'user', content: user }],
         executor, maxTokens: ARENA_MAX_TOKENS, now, trace,
         budgetMs: relojDisponible({ scanMs: 0 }),
+        // ── EL TECHO POR LLAMADA, QUE NUNCA LLEGABA (2026-09-29) ────
+        // `ARENA_LLM_TIMEOUT_MS` (90s) existe, está documentado y tiene hasta
+        // un campo `origen` para diagnosticarlo. Y NO se le pasaba al loop.
+        //
+        // Adentro, las dos aritméticas lo tratan como opcional:
+        //   vuelta:  Math.min(timeoutMs || Infinity, restante - RESERVA)
+        //   cierre:  timeoutMs ? Math.min(timeoutMs, disponible) : disponible
+        // Sin él, `|| Infinity` y el `: disponible` dejan el techo SIN TAPA.
+        //
+        // Medido el 2026-09-29: un cierre corrió con **104.984 ms** de techo.
+        // No es una constante que alguien escribió — es `(185s + 70s) − 150s`
+        // de lo ya usado. El tope de 90s existía y no aplicaba.
+        //
+        // Es la misma forma que B45: no un número mal elegido, sino un límite
+        // real que no alcanza al camino que corre. Y es el TERCER reloj de la
+        // misma corrida, que es exactamente lo que Lety pidió no volver a
+        // descubrir la semana que viene.
+        timeoutMs: ARENA_LLM_TIMEOUT_MS,
       })
       : { llm: await callArenaLLM({ agent, system: [system, shared], messages: [{ role: 'user', content: user }], maxTokens: ARENA_MAX_TOKENS, now, trace, fase: 'sin_herramientas' }), turns: 1, stopped_by: 'tools_disabled' };
   } catch (e) {
@@ -307,8 +325,26 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     // el stream sin mandar nada. Un motivo que se confunde con otro es un
     // diagnóstico que no existe.
     const vacio = !!llm.emptyBody;
+    // ── EL MOTIVO SE DERIVA, NO SE ESCRIBE APARTE (2026-09-29) ────────
+    // Este texto decía SIEMPRE "el proveedor cerró el stream", sin mirar
+    // `timedOutLeyendo`. Mientras tanto `llm.error_detail` —tres archivos más
+    // allá— sí se ramificaba y decía "TIMEOUT NUESTRO". Dos textos para el
+    // MISMO hecho, y el que la pantalla muestra en
+    // `censo.detalle_fuera.motivo` era el equivocado.
+    //
+    // Consecuencia medida el 2026-09-29: el aborto de deepseek salía en la
+    // ficha culpando al proveedor de un corte que fue NUESTRO
+    // (`reloj_nuestro: true`). Con 24 días por delante, eso archiva nuestro
+    // bug como fallas de DeepSeek — la tercera culpa de B44 otra vez, un
+    // escalón más abajo: no ya en el conteo, sino en la prosa.
+    //
+    // Ahora sale del MISMO booleano que `error_detail`, así que no se pueden
+    // contradecir. Si hace falta cambiar el texto, se cambia una vez.
+    const nuestroReloj = !!llm.timedOutLeyendo;
     const error = vacio
-      ? `cuerpo_vacio: el proveedor devolvió HTTP ${llm.status} y cerró el stream sin cuerpo, dos veces (con reintento). NO es un error de formato del payload.`
+      ? (nuestroReloj
+        ? `cuerpo_vacio por NUESTRO reloj: el proveedor devolvió HTTP ${llm.status} y seguía mandando keepalives cuando nuestro techo de lectura venció${llm.ms ? ` (${Math.round(llm.ms / 1000)}s)` : ''}. NO es el proveedor cerrando el stream: somos nosotros cortando.`
+        : `cuerpo_vacio: el proveedor devolvió HTTP ${llm.status} y cerró el stream sin cuerpo, dos veces (con reintento). NO es un error de formato del payload.`)
       : llm.stale ? 'fechas rotas tras retry' : `HTTP ${llm.status}${llm.error_detail ? ': ' + llm.error_detail : ''}`;
     // EL CUERPO CRUDO AL JOURNAL. Tres agentes abortaron con "HTTP 200" y no
     // había forma de saber qué había contestado el proveedor: el error decía el
@@ -332,7 +368,9 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
       // salió bien: es un cierre que nunca se ejecutó.
       murio_en: (loop && loop.murio_en) || null,
       threw_stack: llm.threw_stack || null,
-      motivo: vacio ? 'cuerpo_vacio' : null,
+      // El motivo CORTO, también derivado: el largo y el corto no pueden
+      // discrepar, que es el bug que esto cierra.
+      motivo: vacio ? (nuestroReloj ? 'cuerpo_vacio_reloj_nuestro' : 'cuerpo_vacio_proveedor') : null,
       // Todos los cortes de la corrida, con su vuelta y su intento. Si un agente
       // acumula varios, el problema es del proveedor y no de una vuelta suelta.
       cuerpos_vacios: (loop && loop.cuerpos_vacios) || null,

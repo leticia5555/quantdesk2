@@ -220,6 +220,49 @@ const slug = (id, fallback) => process.env['ARENA_MODEL_' + id] || fallback;
 // single-agent (app.html · /api/arena) lo muestran a él.
 export const FLAGSHIP_AGENT_ID = 'claude';
 
+// ── LAS COMPUERTAS, EN UN SOLO LUGAR (2026-09-29) ────────────────────
+// `ARENA_ENABLED !== '1'` estaba escrito a mano en `arena-run` y en
+// `arena-watch`. Dos copias del mismo predicado, que es B41 otra vez — pero lo
+// que lo hizo urgente fue otra cosa: **no había forma de PREGUNTAR si la liga
+// estaba apagada sin arriesgarse a prenderla.**
+//
+// El único modo de comprobar la pausa era pegarle a `/api/arena-run` o a
+// `/api/arena-watch`: si la compuerta funcionaba contestaban `disabled`, y si
+// NO funcionaba corrían una ronda. O sea que el chequeo costaba exactamente el
+// accidente que estaba tratando de descartar. Para una pausa que se aprieta de
+// noche y se verifica antes de dormir, eso no sirve.
+//
+// Ahora el predicado vive acá, los dos lo importan, y `/api/arena-audit`
+// —que es SOLO LECTURA— lo reporta. La respuesta no puede divergir de la
+// compuerta porque es la misma función, no una copia que describe lo que la
+// compuerta "debería" hacer.
+export function ligaApagada(env = process.env) {
+  return env.ARENA_ENABLED !== '1';
+}
+export function vigilanteApagado(env = process.env) {
+  return ligaApagada(env) || env.ARENA_WATCH_ENABLED === '0';
+}
+
+// El estado completo, para reportarlo. Devuelve las razones ya redactadas: un
+// `false` sin motivo obliga a ir a leer el código para saber qué mover.
+export function estadoDeCompuertas(env = process.env) {
+  const liga = !ligaApagada(env);
+  const vig = !vigilanteApagado(env);
+  return {
+    liga_habilitada: liga,
+    vigilante_habilitado: vig,
+    // El valor CRUDO de la env var, no solo el booleano: la diferencia entre
+    // "está en 0" y "no existe" importa cuando uno acaba de desplegar y quiere
+    // saber si la variable llegó.
+    ARENA_ENABLED: env.ARENA_ENABLED === undefined ? null : String(env.ARENA_ENABLED),
+    ARENA_WATCH_ENABLED: env.ARENA_WATCH_ENABLED === undefined ? null : String(env.ARENA_WATCH_ENABLED),
+    ARENA_LEAGUE: env.ARENA_LEAGUE ? String(env.ARENA_LEAGUE) : null,
+    lectura: liga
+      ? 'LA LIGA CORRE: arena-run decide y arena-watch dispara.'
+      : 'LA LIGA ESTÁ APAGADA: ni arena-run ni arena-watch hacen nada. arena-reset, arena-shadow y arena-smoke SÍ funcionan — no consultan esta compuerta, a propósito.',
+  };
+}
+
 // ── LA LIGA ───────────────────────────────────────────────────────────
 // `enabled` = la parrilla de la TEMPORADA 2: los SIETE.
 //
@@ -430,15 +473,22 @@ export function activeAgents() {
 export const ARENA_SEASON = {
   id: 'T3',
   name: 'Temporada 3',
-  // Arranca el MISMO día que el reset, no un lunes redondo. La fecha bonita de
-  // octubre costaba dos días de temporada parada y no compraba nada.
-  start: /* date-lint-ok: fecha declarada de apertura de la temporada, un hecho fijo, no una referencia a "hoy" */ '2026-09-29',
+  // ── EL 29 NO CUENTA, Y SE DICE POR QUÉ ────────────────────────────
+  // El start era 2026-09-29. Ese día la liga CORRIÓ EN VIVO etiquetada T3
+  // contra los libros heredados de la T2: `ARENA_ENABLED=0` no llegó al
+  // deployment, el reset nunca se apretó, no hubo humo, y el SPY siguió
+  // anclado al 16 de septiembre. Hubo órdenes reales desde las 13:33 UTC.
+  //
+  // Correr el start al 30 no tapa nada: el 29 queda registrado como día
+  // contaminado, con su motivo, en `TEMPORADA_DIAS_CONTAMINADOS` y en B47. Un
+  // hueco declarado es dato; uno callado es el bug de la próxima semana.
+  start: /* date-lint-ok: fecha declarada de apertura de la temporada, un hecho fijo, no una referencia a "hoy" */ '2026-09-30',
   end: /* date-lint-ok: cierre declarado de la temporada (VIERNES: un cierre en fin de semana no tendría corrida y el ganador no se declararía nunca) */ '2026-10-30',
-  // 24 sesiones L-V, contadas: 4.8 semanas, no 4. Se escribe el número real y
-  // no el redondo — este campo sale publicado en el anuncio de apertura, y una
-  // temporada que dice "4 semanas" y corre 24 sesiones miente en la primera
+  // 23 sesiones L-V, contadas: 4.6 semanas. Se escribe el número real y no el
+  // redondo — este campo sale publicado en el anuncio de apertura, y una
+  // temporada que dice "4 semanas" y corre 23 sesiones miente en la primera
   // línea que alguien lee.
-  weeks: 4.8,
+  weeks: 4.6,
   // Qué se mide para declarar al ganador. Equity, igual que el leaderboard:
   // `claude` arrastra días de ventaja de la T1, así que el return vs. baseline
   // viaja al lado — el caveat de ranking del scope sigue vigente y se publica.
@@ -453,6 +503,24 @@ function easternToday(now) {
 }
 
 // 'pending' (aún no arranca) · 'running' · 'ended' (ya pasó el cierre).
+// ── DÍAS CONTAMINADOS: FUERA DE LA SERIE, DENTRO DEL REGISTRO ───────
+// Un día en que la liga corrió pero sus datos NO miden lo que la temporada
+// dice medir. No se borra la fila —es la evidencia— pero no entra en el
+// ranking ni en el piso de ruido.
+//
+// El motivo va acá, al lado de la fecha, y no en un doc aparte: quien lea
+// `/liga` y vea un hueco tiene que poder saber por qué sin buscar.
+export const TEMPORADA_DIAS_CONTAMINADOS = [
+  {
+    fecha: /* date-lint-ok: día contaminado, un hecho fijo */ '2026-09-29',
+    temporada: 'T3',
+    motivo: 'La liga corrió EN VIVO etiquetada T3 contra los libros heredados de la T2. `ARENA_ENABLED=0` no llegó al deployment, el reset nunca se ejecutó, no hubo corrida de humo y el benchmark siguió anclado al 16-sep. Hubo órdenes reales a Alpaca desde las 13:33 UTC. Los retornos de ese día miden HERENCIA de la T2, no decisiones de la T3.',
+  },
+];
+
+export const esDiaContaminado = (fecha, season = ARENA_SEASON.id) =>
+  TEMPORADA_DIAS_CONTAMINADOS.some((d) => d.fecha === String(fecha).slice(0, 10) && d.temporada === season);
+
 export function seasonStatus(now = new Date(), season = ARENA_SEASON) {
   const today = easternToday(now);
   if (today < season.start) return 'pending';

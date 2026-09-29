@@ -38,7 +38,8 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql } from './_lib/db.js';
-import { FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
+import { FLAGSHIP_AGENT_ID, estadoDeCompuertas, ARENA_SEASON } from './_lib/arena-registry.js';
+import { buildInfo } from './_lib/build-info.js';
 import { checkLecturaAuth } from './_lib/arena-admin.js';
 import {
   auditaFila, agrupaCorridas, construyeResumen,
@@ -75,6 +76,35 @@ export default async function handler(req, res) {
   // en un archivo para no perderla.
   const auth = checkLecturaAuth(req);
   if (!auth.ok) return res.status(auth.status).json(auth.body);
+
+  // ── ?compuertas=1 — ¿ESTÁ APAGADA LA LIGA? SIN EFECTO ──────────────
+  // Va PRIMERO, antes de tocar la base: la pregunta "¿agarró la pausa?" tiene
+  // que poder contestarse aunque Neon esté caído, y sin leer una sola fila.
+  //
+  // POR QUÉ ACÁ Y NO EN arena-run. Preguntarle a arena-run si está apagado
+  // costaba una ronda entera si la compuerta estaba rota — el chequeo pagaba
+  // exactamente el accidente que quería descartar. Este endpoint es
+  // SOLO-LECTURA (cero `insert`, cero `update`, cero `delete`) y no importa
+  // nada del camino de decisión.
+  //
+  // Y lo que contesta NO es una copia del predicado: es `estadoDeCompuertas`,
+  // que usa la MISMA función que las dos compuertas. Una respuesta que
+  // describe lo que la compuerta "debería" hacer no sirve para verificar un
+  // deploy.
+  //
+  // Lee `process.env` del proceso que atiende ESTE request, en el MISMO
+  // deployment que atiende a arena-run y arena-watch. Eso es justo lo que uno
+  // quiere saber después de tocar una env var en Vercel: no si el panel dice
+  // que se guardó, sino si el código desplegado la está viendo.
+  if (String(q.compuertas || q.gates || '') === '1') {
+    return res.status(200).json({
+      // El SHA, para confirmar que el deploy que contesta es el que se subió.
+      build: buildInfo(),
+      ahora: new Date().toISOString(),
+      compuertas: estadoDeCompuertas(),
+      temporada: { id: ARENA_SEASON.id, start: ARENA_SEASON.start, end: ARENA_SEASON.end },
+    });
+  }
 
   // ── LOS NOMBRES QUE LA GENTE ESCRIBE, NO SOLO LOS CANÓNICOS ────────
   // Un parámetro mal escrito se IGNORABA EN SILENCIO y el endpoint devolvía

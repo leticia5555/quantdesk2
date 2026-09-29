@@ -121,7 +121,7 @@ import { callArenaLLM, providerKey, effectiveParams, sameParams, withDeadline, c
 // arquetipo NUNCA entra al prompt que decide — ver el candado del control en el
 // encabezado de _lib/arena-voice.js.
 import { generateHeadline } from './_lib/arena-voice.js';
-import { ARENA_AGENTS, competidores, ARENA_SEASON, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, ARENA_AGENT_DEADLINE_MS, ANTHROPIC_CACHE_MIN_TOKENS, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, modelSlugResolved, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
+import { ARENA_AGENTS, competidores, ligaApagada, ARENA_SEASON, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, ARENA_AGENT_DEADLINE_MS, ANTHROPIC_CACHE_MIN_TOKENS, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, modelSlugResolved, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
 // CADENCIA POR EVENTO: el corte de fecha y las constantes del vigilante.
 // El runner solo necesita saber CUÁNDO deja de correr el cron nocturno y qué
 // dice el reglamento nuevo; la lógica de disparadores vive en su módulo.
@@ -3598,7 +3598,10 @@ export default async function handler(req, res) {
 
   // El switch de Lety: los crons de vercel.json disparan desde el deploy,
   // pero el Arena no opera hasta ARENA_ENABLED=1 (post smoke verde).
-  if (process.env.ARENA_ENABLED !== '1') {
+  // El predicado sale de `_lib/arena-registry.js`: lo comparte con arena-watch
+  // y lo REPORTA arena-audit, que es solo-lectura. Preguntarle a este endpoint
+  // si está apagado costaba una ronda entera si la compuerta estaba rota.
+  if (ligaApagada()) {
     const phase = String((req.query && req.query.phase) || 'decide').toLowerCase();
     if (phase === 'reconcile' || phase === 'decide' || phase === 'morning') await beat('arena:' + phase, 'disabled');
     return res.status(200).json({ disabled: true, hint: 'ARENA_ENABLED != 1 — smoke de /api/alpaca?smoke=1 primero.' });

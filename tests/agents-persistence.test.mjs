@@ -71,13 +71,32 @@ console.log('schema: 100% CREATE TABLE IF NOT EXISTS, cero DROP/TRUNCATE en api/
   // curado (gated por ADMIN_SECRET, no toca datos de usuario). Un DELETE nuevo
   // fuera de la lista tumba este test a propósito — para que nadie meta un
   // borrado destructivo sin revisión.
+  // ── LOS REGEX VAN ANCLADOS, Y ÉSA ES LA MITAD QUE PROTEGE ───────
+  // Hasta el 2026-09-29 los cuatro estaban SIN anclar, así que pedían que los
+  // nombres aparecieran y nada más. Los cuatro dejaban pasar esto:
+  //
+  //     delete from agents where id = $1 and user_id = $2 or 1=1
+  //
+  // Contiene las dos columnas del scope, pasa el regex, y borra la tabla
+  // entera. Es la forma clásica en que un delete acotado deja de serlo sin
+  // perder los nombres que la guarda busca — y una allowlist que no la caza
+  // es una allowlist decorativa.
+  //
+  // Con `^...$` el statement tiene que ser EXACTAMENTE el aprobado. Un `or`,
+  // un `where` extra, un cambio de columna: cualquier cosa distinta cae fuera
+  // y hay que revisarla a mano, que es el punto de la lista.
+  //
+  // El costo es que un cambio inocuo (reordenar el where, agregar un
+  // `returning`) también la rompe. Es el costo correcto: se paga una vez por
+  // cambio, y lo que compra es que nadie amplíe un DELETE sin que alguien lo
+  // lea.
   const ALLOWED_DELETES = {
-    'api/agents.js': /id = \$1 and user_id = \$2/,          // doble-scoped por dueño
-    'api/macro-events.js': /delete from macro_events where id = \$1/i, // admin curado, gated
+    'api/agents.js': /^delete from agents where id = \$1 and user_id = \$2$/i,          // doble-scoped por dueño
+    'api/macro-events.js': /^delete from macro_events where id = \$1 returning id$/i, // admin curado, gated
     // El kv de flags dinámicos del Arena (hoy: la pausa del vigilante que pone
     // /api/arena-reset mientras aplana las cuentas). Borra UNA fila por clave y
     // no guarda datos de usuario: el "dato" que vive ahí es un vencimiento.
-    'api/_lib/arena-baseline.js': /delete from arena_flags where key = \$1/i,
+    'api/_lib/arena-baseline.js': /^delete from arena_flags where key = \$1$/i,
     // ── REVISADO EL 2026-09-29, y por qué pasa ───────────────────────
     // `historia-db.guardarItems(cik, accession, items)` reemplaza EN BLOQUE
     // los items de UN filing: si EDGAR corrigió la lista, dejar los viejos
@@ -100,7 +119,7 @@ console.log('schema: 100% CREATE TABLE IF NOT EXISTS, cero DROP/TRUNCATE en api/
     //
     // El regex exige las DOS columnas del scope: un `delete from
     // company_filing_items` sin ellas —o con una sola— no pasa esta lista.
-    'api/_lib/historia-db.js': /delete from company_filing_items where cik = \$1 and accession = \$2/i,
+    'api/_lib/historia-db.js': /^delete from company_filing_items where cik = \$1 and accession = \$2$/i,
   };
   let deletes = [];
   for (const p of files) {
@@ -110,13 +129,31 @@ console.log('schema: 100% CREATE TABLE IF NOT EXISTS, cero DROP/TRUNCATE en api/
   }
   const unexpected = deletes.filter((d) => !ALLOWED_DELETES[d.file] || !ALLOWED_DELETES[d.file].test(d.stmt));
   ok(unexpected.length === 0, 'todo DELETE de api/ está en la allowlist revisada', JSON.stringify(unexpected));
-  // Que un DELETE allowlisted no se AFLOJE después. Agregar la entrada es la
-  // parte fácil; lo que cuesta caro es que mañana alguien le saque una columna
-  // al `where` y el regex siga pasando porque era laxo. Los tres exigen su
-  // scope completo.
-  const itemsDel = deletes.find((d) => d.file === 'api/_lib/historia-db.js');
-  ok(itemsDel && /cik = \$1 and accession = \$2/.test(itemsDel.stmt),
-    'el DELETE de items de filing sigue scoped por cik + accession (las DOS)', itemsDel && itemsDel.stmt);
+  // ── LA GUARDA, VERIFICADA ROMPIÉNDOLA ───────────────────────────
+  // Una guarda que no se probó rompiendo algo es una guarda que suponemos.
+  // Contra CADA entrada de la lista se corre el statement real con un `or`
+  // pegado: si alguno pasa, el regex de ése está sin anclar y la allowlist
+  // no protege lo que dice proteger.
+  const SUFIJOS_DE_ATAQUE = [' or 1=1', ' or true', ' or id is not null'];
+  const permisivos = [];
+  for (const [archivo, re] of Object.entries(ALLOWED_DELETES)) {
+    const real = deletes.find((d) => d.file === archivo);
+    if (!real) continue;
+    for (const suf of SUFIJOS_DE_ATAQUE) {
+      if (re.test(real.stmt + suf)) permisivos.push(`${archivo} acepta "${real.stmt}${suf}"`);
+    }
+    // Y el control positivo: el statement REAL tiene que seguir pasando. Sin
+    // esto, un regex que no acepta nada también daría verde acá.
+    ok(re.test(real.stmt), `${archivo}: el DELETE real sigue aprobado`, real.stmt);
+  }
+  ok(permisivos.length === 0,
+    'NINGÚN regex de la allowlist acepta el mismo DELETE con un `or` pegado (que borraría la tabla entera)',
+    permisivos.join(' · '));
+
+  // Y que la lista no tenga entradas muertas: un regex para un archivo que ya
+  // no tiene DELETE es una aprobación colgada que alguien va a reusar.
+  const huerfanas = Object.keys(ALLOWED_DELETES).filter((f) => !deletes.some((d) => d.file === f));
+  ok(huerfanas.length === 0, 'ninguna entrada de la allowlist quedó sin su DELETE', huerfanas.join(', '));
 
   const agentDel = deletes.find((d) => d.file === 'api/agents.js');
   ok(agentDel && /id = \$1 and user_id = \$2/.test(agentDel.stmt),
