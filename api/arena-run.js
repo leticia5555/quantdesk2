@@ -121,7 +121,7 @@ import { callArenaLLM, providerKey, effectiveParams, sameParams, withDeadline, c
 // arquetipo NUNCA entra al prompt que decide — ver el candado del control en el
 // encabezado de _lib/arena-voice.js.
 import { generateHeadline } from './_lib/arena-voice.js';
-import { ARENA_AGENTS, competidores, ligaApagada, ARENA_SEASON, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, ARENA_AGENT_DEADLINE_MS, ANTHROPIC_CACHE_MIN_TOKENS, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, modelSlugResolved, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
+import { ARENA_AGENTS, competidores, ligaApagada, PROMPT_VERSION, ARENA_SEASON, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, ARENA_AGENT_DEADLINE_MS, ANTHROPIC_CACHE_MIN_TOKENS, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, modelSlugResolved, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
 // CADENCIA POR EVENTO: el corte de fecha y las constantes del vigilante.
 // El runner solo necesita saber CUÁNDO deja de correr el cron nocturno y qué
 // dice el reglamento nuevo; la lógica de disparadores vive en su módulo.
@@ -150,7 +150,12 @@ export const maxDuration = 300;
 // matutina por evento. v2 era el flujo de DOS fases (SCAN → DEEP DIVE); v1, un
 // solo LLM call sobre el buffet. El bump permite cortar el post-mortem por
 // temporada: las métricas de T1 y T2 NO son comparables (cambió el reglamento).
-export const PROMPT_VERSION = 'arena-pm-v3-t2';
+// El valor se movió a `_lib/arena-registry.js` el 2026-09-30: era la única
+// arista NO hoisteada del ciclo arena-run ↔ arena-shadow (un `export const` en
+// un ciclo puede leerse como `undefined` bajo transpilado a CJS, y esto va al
+// journal del camino que decide). Se reexporta porque `arena-reset.js` y los
+// tests lo piden desde acá.
+export { PROMPT_VERSION };
 
 // ── REGLAMENTO DE LA TEMPORADA 2 ─────────────────────────────────────
 // El cambio de reglas se ANUNCIA en el journal con fecha, una sola vez (fila

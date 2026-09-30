@@ -33,6 +33,24 @@ verificar el sistema exigiría desprotegerlo.
 Escrito el 2026-09-29, después de que la variable no llegara y la liga corriera
 un día entero contra los libros de la T2.
 
+### EL ORDEN: CAPTURAR LA EVIDENCIA ANTES DE ARREGLAR
+
+La primera versión de este plan decía *arreglar → redeploy → curl → ver "0"*.
+**Estaba mal, y por mi propia norma (B47).** Si la causa era el scope, al
+arreglarla el audit dice `"0"` y **ya nunca se sabe cuál de las tres era**:
+el testigo se destruye en el mismo acto que lo corrige. La próxima vez que
+pase estamos igual de ciegos.
+
+```
+1. deploy del código como está          ← trae ?compuertas=1
+2. curl ?compuertas=1  →  ANOTAR el valor crudo, tal como venga
+3. recién ahí arreglar lo que ese valor señale
+4. redeploy sin cache → curl otra vez → "0" y liga_habilitada: false
+```
+
+**El paso 2 es el único momento en que existe la evidencia.** Anotarlo no es
+burocracia: es la diferencia entre "se arregló" y "sabemos qué falló".
+
 ### Lo primero: el juez es el runtime, no el panel
 
 El panel de *Settings* de Vercel dice **qué se guardó**, no **qué ve el código
@@ -68,7 +86,12 @@ Sin `?compuertas=1` desplegado todavía, `curl -s .../api/arena` da `enabled`
 (el booleano) y alcanza para saber si está frenada, pero no distingue `null`
 de `"1"`.
 
-### Paso 1 · El SCOPE de la variable (la causa más probable)
+### Paso 1 · El valor crudo YA te dijo cuál es — ahora se arregla
+
+Con el valor del paso 2 anotado, cada rama tiene UNA causa y UN arreglo. No
+hace falta recorrer los tres pasos: se va directo al que el valor señala.
+
+#### Si dio `null` → el SCOPE (la causa más probable)
 
 En Vercel una variable existe **por entorno**: Production, Preview,
 Development. Se marcan con casillas al crearla, y es fácil guardar una en
@@ -83,10 +106,10 @@ es la causa: la producción nunca la tuvo. Se edita la fila, se marca
 Production, se guarda — **y hace falta redesplegar**, porque el valor se
 resuelve cuando el deployment se construye.
 
-### Paso 2 · El DEPLOYMENT que atiende producción
+#### Si dio `"1"` → el DEPLOYMENT o el build cache
 
-Si el scope está bien, la pregunta es si el deployment que responde es
-posterior al guardado de la variable.
+La variable existe con el valor viejo, así que el scope está bien y la
+pregunta es si el deployment que responde es posterior al guardado.
 
 1. **Project → Deployments**
 2. el que tiene la etiqueta **Current** / **Production** es el que contesta
@@ -97,7 +120,7 @@ guardado después de que el build arrancó no entra en ese build. El arreglo es
 **Redeploy** — y con la casilla *"Use existing Build Cache"* **desmarcada**, o
 el build puede reusar artefactos con el valor viejo.
 
-### Paso 3 · ¿Es el proyecto que creés?
+#### Si el `build.sha` no es el tuyo → es otro deployment
 
 Poco frecuente pero pasa, y es el que más tiempo cuesta:
 
@@ -172,16 +195,31 @@ que tome efecto. Por eso (a) y (b) son el mismo deploy.
 
 ## 0 · EL ORDEN, QUE ES LA PARTE QUE MÁS FÁCIL SE ROMPE
 
+### HOY MIÉRCOLES 30, DESPUÉS DEL CIERRE (16:00 ET / 14:00 MTY)
+
+**El halt se queda puesto TODO el tiempo.** El humo no lo necesita levantado
+(§3).
+
 ```
-a. ARENA_ENABLED=0 en Vercel   ← LA PAUSA. Mata arena-run Y arena-watch
-b. deploy (lleva la pausa + ARENA_SEASON=T3 + el fix del phase)
-c. §1.3 · verificar los baselines de la T2 en Neon        ← Lety
-d. /api/arena-reset?confirm=1        solo si (c) salió limpio
+a. deploy del código como está       ← trae ?compuertas=1 y la key rotada
+b. curl ?compuertas=1 → ANOTAR el valor crudo    ← la evidencia, §0-bis
+c. arreglar lo que ese valor señale → redeploy sin cache → curl → "0"
+d. §1.3 · los baselines de la T2 en Neon
 e. /api/arena-smoke?catalog=1        siete `exact`
-f. /api/arena-shadow?agent=<id> × 7  secuencial, sin abortar, reloj_pct < 90
-g. lectura de cache_read por agente  (la medición de caché ES el humo)
-h. ARENA_ENABLED=1 + deploy          ← la despausa, y la apertura
+f. /api/arena-shadow?agent=<id> × 7  secuencial, CON la tabla de lecturas
+g. lectura de cache_read por agente
 ```
+
+### MAÑANA JUEVES 1-OCT, EN LA APERTURA
+
+```
+h. /api/arena-reset?confirm=1        aplana, re-basa y compra el SPY
+i. quitar el halt                    update arena_state set halted = false
+j. abre
+```
+
+El reset y el SPY van juntos por construcción, y los dos en el mismo instante
+que se levanta el halt: es lo único del plan que no se puede partir.
 
 **LA PAUSA ES `ARENA_ENABLED=0`, NO `pauseWatch`.** Ver §0: la pausa que
 escribe el reset en Neon solo frena al vigilante y tiene un tope de 120
@@ -433,8 +471,30 @@ holgura, el techo se puede apretar.
 | `corto_por` | `end_turn` · `no_tools` · `call_budget` | `cuerpo_vacio` · `error` · `time_budget` |
 | `reloj_pct` | < 90 | ≥ 90 (llegó justo, va a abortar un día malo) |
 | `costo` | un número | `null` (no sabemos qué gastó) |
-| `lectura_max_ms` | **< 60.000** | ≥ 70.000 (a un pelo del techo de 90s) |
+| `lectura_max_ms` | **< 90.000 en TODAS las vueltas** | ≥ 90.000 en cualquiera |
 | `cortes_nuestros` | 0 | ≥ 1 (nuestro reloj lo cortó aun en una corrida limpia) |
+
+> ### EL TERCER CRITERIO, Y QUÉ SE HACE SI FALLA
+>
+> **Ningún agente con una lectura de cuerpo arriba de 90s en ninguna de sus
+> vueltas.** No es el promedio ni la mediana: **el máximo**, porque una sola
+> vuelta que se pasa mata la corrida entera.
+>
+> Con el techo ahora aplicado en 90s, un agente que tarda más **muere
+> sistemáticamente** — bien etiquetado como corte nuestro, pero muerto. Y eso
+> no se descubre en el humo si el humo solo dice pasó/falló.
+>
+> **Si DeepSeek falla este criterio, la decisión NO es "abrimos igual".** Es
+> una de estas dos, y las dos se declaran:
+>
+> | opción | cómo | costo |
+> |---|---|---|
+> | **subirle el techo a él** | `ARENA_LLM_TIMEOUT_MS` más alto — **sin deploy** (acepta 5s–280s) | deja de ser el mismo parámetro para los siete: es un confound y va al anuncio |
+> | **abrir con seis** | sacarlo de `activeAgents()` | la liga no es de siete y el tablero lo dice desde el día 1 |
+>
+> Un techo distinto por agente **no es trampa si está declarado** — es lo mismo
+> que ya hacemos con `caps.cache` y con `sampling`, que difieren por familia y
+> salen publicados. Lo que no se puede es que difiera y no se diga.
 
 **Si UNO aborta, la temporada no abre.** Se arregla y se vuelve a correr ese
 agente. Esto es exactamente lo que no hicimos con la T2 y costó nueve días.
@@ -514,6 +574,41 @@ compra nada y no hay que tocarlo.
 Ver `docs/arena-cache-openrouter.md`. Resumen: **no es una sola palanca, son
 tres mecanismos distintos**, y aplicar el de Anthropic a los cinco sería
 contraproducente en al menos uno.
+
+---
+
+## ROTAR `ARENA_ADMIN_KEY` — y por qué no me la pasás
+
+La key vieja está pegada en el chat varias veces. Vamos a dejar endpoints de
+administración vivos un mes, así que se rota en el deploy de hoy.
+
+**Nadie la escribe en ningún lado, y yo no la necesito.** Los comandos de este
+runbook usan `$ARENA_ADMIN_KEY`, nunca el valor.
+
+```bash
+# 1 · generala en TU terminal (el espacio inicial la deja fuera del historial
+#     en bash/zsh con HIST_IGNORE_SPACE; si no, borrá la línea después)
+ openssl rand -hex 32
+
+# 2 · Vercel → Settings → Environment Variables → ARENA_ADMIN_KEY
+#     pegar · marcar Production · Save
+# 3 · Redeploy (sin build cache)
+
+# 4 · bajarla a tu máquina sin volver a escribirla
+vercel env pull .env.local       # queda ignorada por git (se agregó hoy)
+set -a && . ./.env.local && set +a
+curl -s "$BASE/api/arena-audit?compuertas=1" -H "x-admin-key: $ARENA_ADMIN_KEY" | jq
+```
+
+**Usá el header `x-admin-key`, no `?key=`.** Los tres métodos son
+equivalentes para el endpoint, pero un query param queda en los access logs de
+Vercel, en el historial del shell y en el Referer si el link se comparte. El
+header no. (El endpoint nunca imprime la key: el 401 dice qué llegó y por
+dónde, nunca el valor — verificado en `_lib/arena-admin.js`.)
+
+**`.gitignore` ya cubre `.env*`** — se agregó hoy, antes de la rotación, porque
+`vercel env pull` escribe ahí y un secreto commiteado no se borra con un
+`git rm`.
 
 ---
 

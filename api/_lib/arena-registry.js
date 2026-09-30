@@ -218,6 +218,35 @@ const slug = (id, fallback) => process.env['ARENA_MODEL_' + id] || fallback;
 
 // El agente insignia: su historial (Agente #6) se preserva y las vistas
 // single-agent (app.html · /api/arena) lo muestran a él.
+// ── LA VERSIÓN DEL PROMPT, FUERA DEL CICLO (2026-09-30) ─────────────
+// Vivía en `api/arena-run.js`, que está en un ciclo de imports con
+// `api/arena-shadow.js`: arena-shadow importa `gatherContext`,
+// `buildSharedContext`, `buildTargetSystemPrompt`, `resolveBaseUrl` y esto;
+// arena-run importa `runAgenteObjetivo` de vuelta.
+//
+// Los otros cuatro son `function` declarations: hoistean, y en un ciclo eso es
+// benigno — el binding existe antes de que se evalúe el cuerpo del módulo.
+// **Esto era `export const`, que NO hoistea**, y era la única arista del ciclo
+// con riesgo real.
+//
+// Hoy no tronaba porque se lee DENTRO de `runAgenteObjetivo`, y cuando esa
+// función corre los dos módulos ya terminaron de evaluarse. O sea: seguro por
+// USO, no por estructura. Y el modo de falla no es un crash: bajo un
+// transpilado a CJS, un `const` leído en un ciclo antes de su inicialización
+// da `undefined` en vez de lanzar. Eso habría escrito
+// `prompt_version: undefined` en el journal del camino que DECIDE — un hueco
+// de datos silencioso, en la tabla del post-mortem.
+//
+// Es una constante de texto: no tiene por qué vivir en un archivo de 3.600
+// líneas que está en un ciclo. Acá es hoja (este módulo no importa ninguno de
+// los dos) y el ciclo queda con puras declarations.
+//
+// v3 = las tres rondas fijas + la matutina por evento. v2 era el flujo de DOS
+// fases (SCAN → DEEP DIVE); v1, un solo LLM call sobre el buffet. El bump
+// permite cortar el post-mortem por temporada: las métricas de T1, T2 y T3 NO
+// son comparables porque cambió el reglamento.
+export const PROMPT_VERSION = 'arena-pm-v3-t2';
+
 export const FLAGSHIP_AGENT_ID = 'claude';
 
 // ── LAS COMPUERTAS, EN UN SOLO LUGAR (2026-09-29) ────────────────────
@@ -482,13 +511,13 @@ export const ARENA_SEASON = {
   // Correr el start al 30 no tapa nada: el 29 queda registrado como día
   // contaminado, con su motivo, en `TEMPORADA_DIAS_CONTAMINADOS` y en B47. Un
   // hueco declarado es dato; uno callado es el bug de la próxima semana.
-  start: /* date-lint-ok: fecha declarada de apertura de la temporada, un hecho fijo, no una referencia a "hoy" */ '2026-09-30',
+  start: /* date-lint-ok: fecha declarada de apertura de la temporada, un hecho fijo, no una referencia a "hoy" */ '2026-10-01',
   end: /* date-lint-ok: cierre declarado de la temporada (VIERNES: un cierre en fin de semana no tendría corrida y el ganador no se declararía nunca) */ '2026-10-30',
-  // 23 sesiones L-V, contadas: 4.6 semanas. Se escribe el número real y no el
+  // 22 sesiones L-V, contadas: 4.4 semanas. Se escribe el número real y no el
   // redondo — este campo sale publicado en el anuncio de apertura, y una
-  // temporada que dice "4 semanas" y corre 23 sesiones miente en la primera
+  // temporada que dice "4 semanas" y corre 22 sesiones miente en la primera
   // línea que alguien lee.
-  weeks: 4.6,
+  weeks: 4.4,
   // Qué se mide para declarar al ganador. Equity, igual que el leaderboard:
   // `claude` arrastra días de ventaja de la T1, así que el return vs. baseline
   // viaja al lado — el caveat de ranking del scope sigue vigente y se publica.
@@ -514,7 +543,19 @@ export const TEMPORADA_DIAS_CONTAMINADOS = [
   {
     fecha: /* date-lint-ok: día contaminado, un hecho fijo */ '2026-09-29',
     temporada: 'T3',
+    clase: 'corrio_contaminado',
     motivo: 'La liga corrió EN VIVO etiquetada T3 contra los libros heredados de la T2. `ARENA_ENABLED=0` no llegó al deployment, el reset nunca se ejecutó, no hubo corrida de humo y el benchmark siguió anclado al 16-sep. Hubo órdenes reales a Alpaca desde las 13:33 UTC. Los retornos de ese día miden HERENCIA de la T2, no decisiones de la T3.',
+  },
+  {
+    fecha: /* date-lint-ok: día sin corrida, un hecho fijo */ '2026-09-30',
+    temporada: 'T3',
+    // ── DOS HUECOS, DOS MOTIVOS ─────────────────────────────────────
+    // Éste NO es el mismo caso que el 29 y por eso lleva `clase` propia. El 29
+    // corrió y sus datos mienten; el 30 no corrió. Un post-mortem que los
+    // mezcle va a buscar en el 30 unas órdenes que nunca existieron, o va a
+    // leer el hueco del 30 como una falla del sistema.
+    clase: 'detenida_a_proposito',
+    motivo: 'La liga estuvo DETENIDA por el halt manual (los siete en `halted = true` desde las 17:12 UTC del 29) mientras se diagnosticaba por qué `ARENA_ENABLED=0` no llegaba al deployment. No corrió: no hay decisiones, no hay órdenes y no hay abortos. El hueco es deliberado, no una falla.',
   },
 ];
 

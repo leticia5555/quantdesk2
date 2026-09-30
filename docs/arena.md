@@ -746,6 +746,65 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B49 · UN CICLO DE IMPORTS SE JUZGA POR LA FORMA DE SUS ARISTAS (2026-09-30)
+
+`api/arena-shadow.js` importa cinco cosas de `api/arena-run.js`, y
+`api/arena-run.js` importa `runAgenteObjetivo` de vuelta. Un ciclo entre el
+archivo del camino VIVO y el del camino de VERIFICACIÓN.
+
+Lo había anotado como "deuda, no se toca hoy". **Eso era pereza disfrazada de
+prudencia**, porque un ciclo no es una cosa: es benigno o es una bomba según
+la forma de cada arista, y eso se contesta con un `grep`.
+
+| arista | forma | ¿hoistea? |
+|---|---|---|
+| `gatherContext` | `export async function` | sí |
+| `buildSharedContext` | `export function` | sí |
+| `buildTargetSystemPrompt` | `export function` | sí |
+| `resolveBaseUrl` | `export function` | sí |
+| **`PROMPT_VERSION`** | **`export const`** | **NO** |
+| `runAgenteObjetivo` (la vuelta) | `export async function` | sí |
+
+Una `function` declaration se hoistea: el binding existe antes de que el
+cuerpo del módulo se evalúe, así que en un ciclo da igual quién cargue
+primero. Un `const` **no**: en ESM da TDZ, y bajo un transpilado a CJS da
+**`undefined` en silencio**, que es peor.
+
+### Por qué no tronaba, y por qué eso no alcanzaba
+
+`PROMPT_VERSION` se lee dentro de `runAgenteObjetivo` (línea 121), no en el
+cuerpo del módulo. Cuando esa función corre, los dos módulos ya terminaron de
+evaluarse. **Seguro por USO, no por estructura** — y la distinción importa
+porque nadie lo eligió: es una coincidencia del sitio donde quedó la lectura.
+
+Y el modo de falla no habría sido un crash. Habría sido
+`prompt_version: undefined` en el journal del camino que DECIDE: un campo
+vacío en la tabla del post-mortem, descubierto meses después, sin nada que
+apunte al ciclo.
+
+> **NORMA: un ciclo de imports se declara por la forma de sus aristas, no por
+> su existencia.** Si todas hoistean, se anota y se sigue. Si alguna no, es un
+> bug latente y se saca del ciclo — no se abre un ticket.
+
+Sacado: `PROMPT_VERSION` vive en `_lib/arena-registry.js`, que es hoja (no
+importa a ninguno de los dos). `arena-run` lo reexporta porque `arena-reset` y
+los tests lo piden desde ahí. El ciclo queda con puras declarations.
+
+Y `tests/arena-halt-sombra.test.mjs` exige que **toda** arista hoistee:
+extrae los nombres del `import` real y verifica cada uno contra su definición.
+Verificado con mutación — meter un `export const` nuevo al ciclo lo pone rojo
+nombrando el símbolo.
+
+### La misma cuenta, sobre el resto del archivo
+
+`getArenaState` también se movió a `_lib/arena-baseline.js`, y ahí **di un
+motivo falso**: escribí que evitaba un ciclo. El ciclo ya existía. El
+movimiento sigue siendo correcto por B41 —lo usan los dos caminos, así que
+vive donde ninguno manda— pero la razón que puse no era la razón. Lo cazó mi
+propia prueba, y queda escrito en ella.
+
+---
+
 ## B48 · LOS SIETE ARRANCAN EN 0.00% CON DINERO DISTINTO (2026-09-29)
 
 El reset re-basa cada cuenta a **su equity real después de aplanar**, así que

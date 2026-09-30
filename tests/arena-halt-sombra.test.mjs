@@ -138,6 +138,54 @@ console.log('\n── el estado sale del módulo compartido ──');
   const cicloVuelta = /from '\.\/arena-run\.js'/.test(shadow);
   ok(cicloIda && cicloVuelta,
     'el ciclo arena-run ↔ arena-shadow existe desde antes y está declarado acá: si algún día se rompe, esta línea avisa que se puede simplificar');
+}
+
+// ── 6) EL CICLO SOLO PUEDE LLEVAR COSAS QUE HOISTEAN ─────────────────
+// Un ciclo de imports no es deuda neutra, y la diferencia es la FORMA del
+// export:
+//
+//   · `function` declaration → hoistea. El binding existe antes de que se
+//     evalúe el cuerpo del módulo, así que en un ciclo es benigno.
+//   · `const` / `let` / arrow → NO hoistea. En ESM da TDZ; bajo un transpilado
+//     a CJS da **`undefined` en silencio**, que es peor.
+//
+// El 2026-09-30 el ciclo llevaba cuatro declarations y UN `export const`:
+// `PROMPT_VERSION`. No tronaba porque se lee dentro de `runAgenteObjetivo`, o
+// sea cuando los dos módulos ya terminaron de evaluarse — seguro por USO, no
+// por estructura. Y su modo de falla habría sido `prompt_version: undefined`
+// en el journal del camino que DECIDE: un hueco de datos, no un crash.
+//
+// Se movió a `_lib/arena-registry.js`, que es hoja. Esta prueba exige que
+// **toda** arista del ciclo hoistee, así que la próxima que no lo haga se pone
+// roja acá en vez de aparecer como un campo vacío en noviembre.
+console.log('\n── toda arista del ciclo hoistea ──');
+{
+  const registry = leer('api/_lib/arena-registry.js');
+
+  // Lo que arena-shadow importa DE arena-run: cada nombre tiene que estar
+  // definido allá como `function`.
+  const linea = (shadow.match(/import \{([^}]*)\} from '\.\/arena-run\.js'/) || [])[1] || '';
+  const importados = linea.split(',').map((x) => x.trim()).filter(Boolean);
+  ok(importados.length > 0, 'el ciclo existe y se puede inspeccionar', importados.join(', '));
+
+  const noHoistean = importados.filter((n) => !new RegExp(`^export (async )?function ${n}\\b`, 'm').test(run));
+  ok(noHoistean.length === 0,
+    'TODO lo que arena-shadow importa de arena-run es `function` declaration (hoistea)',
+    noHoistean.length ? 'NO hoistea: ' + noHoistean.join(', ') + ' — en un ciclo puede leerse undefined bajo CJS' : undefined);
+
+  // Y la vuelta.
+  ok(/^export async function runAgenteObjetivo\b/m.test(shadow),
+    'y lo que arena-run importa de arena-shadow también');
+
+  // `PROMPT_VERSION` fuera del ciclo, en el módulo hoja.
+  ok(/^export const PROMPT_VERSION/m.test(registry),
+    'PROMPT_VERSION vive en el módulo hoja');
+  ok(!/^export const PROMPT_VERSION/m.test(run),
+    'y ya NO se define en arena-run: era la única arista del ciclo que no hoisteaba');
+  ok(!importados.includes('PROMPT_VERSION'),
+    'ni se importa por la arista del ciclo');
+  ok(!/from '\.\/arena-run\.js'|from '\.\/arena-shadow\.js'/.test(registry),
+    'y el módulo hoja no importa a ninguno de los dos: si lo hiciera, dejaría de ser hoja');
 
   // Y la definición NO quedó duplicada: se movió, no se copió.
   const baseline = leer('api/_lib/arena-baseline.js');

@@ -33,9 +33,12 @@
 import { ensureSchema } from './_lib/db.js';
 import { checkAdminAuth } from './_lib/arena-admin.js';
 import * as alpaca from './_lib/alpaca.js';
-import { activeAgents, agentById, agentAlpacaCreds, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS } from './_lib/arena-registry.js';
+import { activeAgents, agentById, agentAlpacaCreds, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS, PROMPT_VERSION } from './_lib/arena-registry.js';
 import { callArenaLLM, withDeadline, cachePrefixReport, anthropicCostUsd } from './_lib/arena-model.js';
-import { gatherContext, buildSharedContext, buildTargetSystemPrompt, resolveBaseUrl, PROMPT_VERSION } from './arena-run.js';
+// `PROMPT_VERSION` ya NO viene de acá: era la única arista del ciclo que no
+// hoisteaba. Sale de _lib/arena-registry.js, que es hoja. Los cuatro que
+// quedan son `function` declarations y en un ciclo son benignos.
+import { gatherContext, buildSharedContext, buildTargetSystemPrompt, resolveBaseUrl } from './arena-run.js';
 import { parsePortfolioResponse, validateTarget, railTrims, normalizarTickersObjetivo, rescatarObjetivo, RAILS } from './_lib/arena-rails.js';
 import { orderLegs } from './_lib/arena-rebalance.js';
 import { legsAOrdenes, verificarOrdenesContraPesos, enviarOrdenes, mandaOrdenes, frenoPorTurnoverMinimo, contratoActivo, permiteCortos } from './_lib/arena-objetivo-vivo.js';
