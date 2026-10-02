@@ -66,7 +66,23 @@ function mencionaParametro(texto) {
   if (!t) return { menciona: false, parametro: null, rango: null };
   // "Invalid API key" nombra una credencial, no un parámetro de consulta.
   if (/\bapi\s*-?\s?keys?\b/i.test(t)) return { menciona: false, parametro: null, rango: null };
-  const encontrado = PARAMETROS_CONOCIDOS.find((k) => new RegExp('\\b' + k + '\\b', 'i').test(t));
+  // EL NOMBRE SOLO NO ALCANZA. `to`, `from`, `page` y `period` son palabras
+  // comunes del inglés, y el mensaje real de plan de FMP termina en "…please
+  // visit our subscription PAGE TO upgrade your plan". La primera versión de
+  // esta función buscaba la palabra suelta y clasificaba ESE mensaje como
+  // "parámetro `to` fuera de rango, NO es un problema de plan" — el espejo del
+  // diagnóstico falso que esta misma función vino a corregir.
+  //
+  // Ahora el nombre tiene que aparecer EN CONTEXTO DE PARÁMETRO: entre
+  // comillas ('period'), con `=`, o pegado a una frase que solo se usa para
+  // parámetros. Gana el que aparece entre comillas, que es como FMP los nombra.
+  const alt = PARAMETROS_CONOCIDOS.join('|');
+  const entreComillas = t.match(new RegExp(`['"\`](${alt})['"\`]`, 'i'));
+  const enContexto = entreComillas
+    || t.match(new RegExp(`\\b(${alt})\\s*=`, 'i'))
+    || t.match(new RegExp(`\\b(?:invalid|parameter|param)\\s+(${alt})\\b`, 'i'))
+    || t.match(new RegExp(`\\b(${alt})\\s+(?:must|is required|is invalid|parameter|out of range|should)\\b`, 'i'));
+  const encontrado = enContexto ? enContexto[1].toLowerCase() : null;
   if (!encontrado) return { menciona: false, parametro: null, rango: null };
   // El rango, si el mensaje lo trae ("between 0 and 10", "0 to 10", "max 10").
   let rango = null;

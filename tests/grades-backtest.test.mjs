@@ -236,6 +236,20 @@ ok(mencionaParametro('').menciona === false && mencionaParametro(null).menciona 
   'un cuerpo vacío no nombra nada');
 ok(mencionaParametro('symbol is required').parametro === 'symbol', 'otros parámetros también se reconocen');
 
+// LA REGRESIÓN que encontró el experimento "reaccion": `to`, `from` y `page`
+// son palabras comunes del inglés, y el mensaje REAL de plan de FMP termina en
+// "subscription PAGE TO upgrade your plan". Con la palabra suelta, ese mensaje
+// salía como "parámetro `to` fuera de rango, NO es un problema de plan".
+const planReal = mencionaParametro('Special Endpoint : This endpoint is not available under your current subscription please visit our subscription page to upgrade your plan');
+ok(planReal.menciona === false,
+  'el mensaje real de PLAN de FMP no se confunde con un parámetro por contener "page" y "to"', JSON.stringify(planReal));
+ok(mencionaParametro('Data from 2019 to 2026 is available on premium plans').menciona === false,
+  '"from 2019 to 2026" son palabras, no parámetros');
+ok(mencionaParametro("Premium Query Parameter: This value set for 'period' is not available").parametro === 'period',
+  'un parámetro ENTRE COMILLAS se reconoce — es como FMP los nombra');
+ok(mencionaParametro("Premium Query Parameter: This value set for 'symbol' is not available").parametro === 'symbol',
+  'y el 402 de símbolo fuera del plan sale como `symbol`');
+
 console.log('interpretaSmoke: el contraste de meses es EL hallazgo');
 
 const conContraste = interpretaSmoke([
