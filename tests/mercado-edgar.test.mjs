@@ -454,6 +454,80 @@ test('varias clases en la misma portada: NO se elige una ni se suman', () => {
   assert.deepEqual(a.conteos, [720_000_000, 490_000_000]);
   assert.match(a.motivo, /2 conteos distintos para la portada del 2026-07-31/);
   assert.match(a.motivo, /varias clases/);
+  // La SUMA viaja como candidata, no como conteo: `acciones` sigue en null.
+  assert.equal(a.suma_clases, 1_210_000_000);
+  assert.match(a.motivo, /la suma \(1210000000\) sólo vale si otro conteo la confirma/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA SUMA DE CLASES SE ACEPTA SÓLO SI OTRO CONTEO LA CONFIRMA
+//
+// Sumar es adivinar que están todas las clases y sin repetir. Lo que convierte
+// la suma en un dato es el acuerdo con un conteo independiente, bajo el mismo
+// techo del 5% que Lety fijó para MNST/APH/VMRK. Sin ese acuerdo, gris.
+//
+// NO SE PUDO COMPROBAR CONTRA EDGAR DE VERDAD: el contenedor no tiene salida a
+// sec.gov. Lo que protege al mapa no es haber visto el JSON de BX, es el
+// acuerdo: una suma incompleta no concuerda y no se pinta.
+// ═══════════════════════════════════════════════════════════════════════
+test('BX: la suma de las clases se verifica cuando Finnhub la confirma', () => {
+  const v = veredictoCapEdgar({
+    symbol: 'BX', declarada_usd: 170e9,
+    acciones_edgar: null,                 // ningún conteo suelto vale
+    suma_clases_edgar: 1_210_000_000, clases_edgar: 2,
+    acciones_finnhub: 1_225_000_000,      // 1.2% de diferencia
+    precio_usd: 140,
+  });
+  assert.equal(v.estado, 'verificada');
+  assert.equal(v.via, 'edgar_suma_clases');
+  assert.equal(v.cap_usd, 1_210_000_000 * 140);
+  assert.equal(v.fuente, 'calc: edgar×neon');
+  assert.equal(v.clases, 2);
+  assert.match(v.nota, /acciones sumadas de las 2 clases/);
+  assert.match(v.nota, /Finnhub cuenta 1225\.0M/);
+  assert.equal(v.motivo, null);
+});
+
+test('BX: si la suma no concuerda con Finnhub, gris con la causa — no se pinta', () => {
+  // Una clase que no viajó: la suma queda corta y el desacuerdo lo delata.
+  const v = veredictoCapEdgar({
+    symbol: 'BX', declarada_usd: 170e9,
+    acciones_edgar: null,
+    suma_clases_edgar: 720_000_000, clases_edgar: 2,
+    acciones_finnhub: 1_225_000_000,
+    precio_usd: 140,
+  });
+  assert.equal(v.estado, 'gris_punteado');
+  assert.equal(v.cap_usd, null);
+  assert.match(v.motivo, /no concuerda con el conteo de Finnhub/);
+  assert.match(v.motivo, /falta una clase o sobra/);
+});
+
+test('BX: sin segundo conteo, la suma no se acepta a secas', () => {
+  const v = veredictoCapEdgar({
+    symbol: 'BX', declarada_usd: 170e9,
+    acciones_edgar: null,
+    suma_clases_edgar: 1_210_000_000, clases_edgar: 2,
+    acciones_finnhub: null,
+    precio_usd: 140,
+  });
+  assert.equal(v.estado, 'gris_punteado');
+  assert.match(v.motivo, /no hay un segundo conteo con el que confirmar la suma/);
+});
+
+test('la suma NUNCA se arbitra contra la cap declarada', () => {
+  // En una emisora de varias clases la declarada es justo el número del que se
+  // sospecha —cuenta una clase—, así que usarla de árbitro sería preguntarle al
+  // sospechoso. Con la declarada clavada en la suma×precio y SIN conteo de
+  // Finnhub, el resultado tiene que seguir siendo gris.
+  const v = veredictoCapEdgar({
+    symbol: 'BX', declarada_usd: 1_210_000_000 * 140,
+    acciones_edgar: null,
+    suma_clases_edgar: 1_210_000_000, clases_edgar: 2,
+    acciones_finnhub: null,
+    precio_usd: 140,
+  });
+  assert.equal(v.estado, 'gris_punteado');
 });
 
 test('el MISMO conteo repetido no es varias clases', () => {

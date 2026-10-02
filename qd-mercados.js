@@ -20,17 +20,39 @@
 // japonés es un verde producido por un dato que falta, y eso es peor que un
 // gris: el gris se ve.
 //
-// Así que el horario NUNCA afirma "abierta" solo. Se contrasta con el último
-// cierre que tenemos:
+// Así que el horario no afirma "abierta" solo CUANDO HAY CON QUÉ CONTRASTARLO.
+// Y ahí estuvo el error, que costó un chip mintiendo en pantalla tres días:
 //
-//   - el horario dice que la sesión corre Y el último cierre es de hoy → ABIERTA
-//   - el horario dice que corre PERO el último cierre es de ayer o antes
-//     → SIN CIERRE NUEVO (feriado, media sesión, o la cosecha no llegó)
-//   - el horario dice que no corre → CERRADA, y la etiqueta nombra el día
-//     del último cierre, como el chip de EE.UU. que ya existía
+//   UN CIERRE DIARIO NO PUEDE CONFIRMAR UNA SESIÓN EN CURSO.
 //
-// Sin `ultimoCierre` no se inventa nada: el estado sale `horario_solo` y la
-// etiqueta lo dice, que es un gris honesto y no un verde inventado.
+// La regla era "corre el horario Y el último cierre es de HOY → abierta". Pero
+// mientras la sesión corre, el cierre de hoy TODAVÍA NO EXISTE: por definición
+// se publica cuando la sesión termina. O sea que la condición sólo se podía
+// cumplir fuera del horario, que es justo cuando no aplica. El mapa de EE.UU.
+// decía "cerrado · cierre del jueves" el viernes a las 11:16 CT con la NYSE
+// operando (Lety, 2026-10-02), y lo decía TODOS los días hábiles en horario.
+//
+// Mundo no mentía por casualidad: sus cuadros traen `precio_t`, una marca de
+// tiempo INTRADÍA, y un precio de hoy sí confirma que se está operando.
+//
+// Así que el contraste depende de QUÉ CLASE DE DATO se tiene:
+//
+//   - `datoIntradia: true` (Mundo) → el dato de hoy confirma la sesión, y un
+//     dato viejo con el horario corriendo es señal real: feriado, media sesión
+//     o la cosecha no llegó. Eso sigue sin ser "abierto".
+//   - sin esa marca (el mapa, que viaja con cierres diarios) → el estado sale
+//     del HORARIO, porque es la única evidencia que existe durante la sesión.
+//     La fecha del dato no desaparece: viaja aparte, y el chip la dice
+//     —"abierto · mapa con cierre del jueves"— en vez de disfrazarla de estado.
+//   - el horario dice que no corre → CERRADA, y la etiqueta nombra el día del
+//     último cierre, como el chip de EE.UU. que ya existía.
+//
+// Lo que se pierde al soltar el contraste en el mapa es el feriado que ningún
+// calendario del repo modela. Se pierde porque NO SE PODÍA DETECTAR ASÍ: un
+// cierre viejo durante la sesión es el estado normal de un mapa de cierres, no
+// un indicio de feriado. Decir "cerrado" por eso no era prudencia, era un dato
+// inventado con cara de prudencia — y de los peores, porque el usuario lo
+// podía desmentir mirando por la ventana.
 // ═══════════════════════════════════════════════════════════════════════
 
 // Las 8 bolsas con símbolo en `/api/macro-markets` (decisión de Lety,
@@ -113,7 +135,7 @@ function horaEnZona(zona, ahora = new Date()) {
  * serie de esa bolsa. Es lo que convierte un horario en una afirmación: sin
  * él, esto no dice "abierta".
  */
-function estadoDeBolsa(clave, ahora = new Date(), { ultimoCierre = null, bolsas = BOLSAS } = {}) {
+function estadoDeBolsa(clave, ahora = new Date(), { ultimoCierre = null, datoIntradia = false, bolsas = BOLSAS } = {}) {
   const k = bolsas[clave] ? clave : (ALIAS_BOLSA[clave] || clave);
   const b = bolsas[k];
   if (!b) return { estado: 'desconocida', etiqueta: 'bolsa sin horario declarado', abierta: false };
@@ -151,22 +173,44 @@ function estadoDeBolsa(clave, ahora = new Date(), { ultimoCierre = null, bolsas 
     };
   }
 
-  // EL HORARIO DICE QUE CORRE. Recién acá hace falta el dato para afirmarlo.
-  if (!ultimoCierre) {
+  // EL HORARIO DICE QUE CORRE.
+  const datoDeHoy = !!ultimoCierre && ultimoCierre >= loc.fecha;
+  // Sólo un dato INTRADÍA puede desmentir al horario: un cierre diario viejo
+  // durante la sesión es lo normal, no un indicio de nada.
+  if (datoIntradia && ultimoCierre && !datoDeHoy) {
+    // Feriado, media sesión, o la cosecha no llegó. Las tres se arreglan
+    // distinto, y ninguna es "abierto".
     return {
-      ...base, estado: 'horario_solo', abierta: false,
-      etiqueta: 'en horario, sin cierre con el que confirmarlo',
+      ...base, estado: 'sin_cierre_nuevo', abierta: false, dato_de_hoy: false,
+      etiqueta: `sin cierre nuevo hoy · último del ${ultimoCierre}`,
     };
   }
-  if (ultimoCierre >= loc.fecha) {
-    return { ...base, estado: 'abierta', abierta: true, etiqueta: 'abierto' };
+  if (datoIntradia && !ultimoCierre) {
+    return {
+      ...base, estado: 'horario_solo', abierta: false, dato_de_hoy: null,
+      etiqueta: 'en horario, sin dato con el que confirmarlo',
+    };
   }
-  // Feriado, media sesión, o la cosecha no llegó. Las tres se arreglan
-  // distinto, y ninguna es "abierto".
+  // `dato_de_hoy` viaja para que el llamador pueda decir de cuándo es lo que
+  // está mostrando. El estado NO lo dice: son dos hechos distintos y meterlos
+  // en la misma palabra fue el bug.
   return {
-    ...base, estado: 'sin_cierre_nuevo', abierta: false,
-    etiqueta: `sin cierre nuevo hoy · último del ${ultimoCierre}`,
+    ...base, estado: 'abierta', abierta: true,
+    dato_de_hoy: ultimoCierre ? datoDeHoy : null,
+    etiqueta: 'abierto',
   };
+}
+
+/**
+ * El día de la semana de una fecha ISO, en español. Vive acá porque el chip y
+ * la etiqueta de cerrado lo necesitan igual, y tenerlo dos veces es cómo se
+ * termina con dos listas de días que se desincronizan.
+ */
+function nombreDeDia(fecha) {
+  if (!fecha) return null;
+  const d = new Date(`${fecha}T12:00:00Z`);
+  if (!Number.isFinite(d.getTime())) return null;
+  return DIAS_ES[(d.getUTCDay() + 6) % 7];
 }
 
 /**
@@ -232,13 +276,13 @@ function proximaApertura(clave, ahora = new Date(), { bolsas = BOLSAS, zonaLocal
  *   · si alguna está en horario pero sin cierre nuevo → se dice, porque es la
  *     diferencia entre un feriado y una cosecha que no llegó
  *
- * Nunca se afirma "abierto" por el horario solo: cada bolsa ya trae su propio
- * contraste contra el último cierre.
+ * `datoIntradia` viaja a cada bolsa: en Mundo, donde los cuadros traen
+ * `precio_t`, un dato viejo con el horario corriendo sí desmiente la sesión.
  */
-function estadoDeRegion(claves = [], ahora = new Date(), { cierres = {}, bolsas = BOLSAS } = {}) {
+function estadoDeRegion(claves = [], ahora = new Date(), { cierres = {}, datoIntradia = false, bolsas = BOLSAS } = {}) {
   const estados = claves
     .filter((k) => k && k !== '24h')
-    .map((k) => estadoDeBolsa(k, ahora, { ultimoCierre: cierres[k] || null, bolsas }));
+    .map((k) => estadoDeBolsa(k, ahora, { ultimoCierre: cierres[k] || null, datoIntradia, bolsas }));
   if (!estados.length) return { etiqueta: '24/7 · abierto', abiertas: 0, total: 0, continuo: true };
 
   const abiertas = estados.filter((e) => e.abierta);
@@ -313,5 +357,6 @@ function qdEstadoMercado(bolsa, ahora, { ultimoCierre = null } = {}) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { BOLSAS, ALIAS_BOLSA, ETIQUETA_24H, ZONA_CT, DIAS_CORTO,
-    horaEnZona, estadoDeBolsa, estado24h, qdEstadoMercado, proximaApertura, estadoDeRegion };
+    horaEnZona, estadoDeBolsa, estado24h, qdEstadoMercado, proximaApertura, estadoDeRegion,
+    nombreDeDia };
 }
