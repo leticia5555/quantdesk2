@@ -53,6 +53,13 @@
     border:1px solid var(--linea);border-radius:3px;padding:3px 7px;white-space:nowrap}
   .chip.abierto{color:#00c97d}
   nav,.toggle{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid var(--linea)}
+  /* EL `hidden` TIENE QUE GANAR. `.toggle{display:flex}` es una regla de autor
+     y le gana al `[hidden]{display:none}` del navegador, así que el toggle de
+     moneda se seguía viendo en México —con los botones de la pestaña anterior
+     pegados, porque `pintarMonedaToggle` sale antes de rellenarlos—. La
+     propiedad `.hidden` decía `true` y la pantalla decía otra cosa; por eso la
+     comprobación que miraba la propiedad lo daba por bueno. */
+  nav[hidden],.toggle[hidden]{display:none}
   nav button,.toggle button{flex:1;min-height:var(--tap);min-width:var(--tap);
     background:transparent;border:1px solid var(--linea);border-radius:6px;color:var(--tenue);
     font-family:var(--mono);font-size:13px;cursor:pointer;-webkit-tap-highlight-color:transparent}
@@ -357,7 +364,9 @@
     }).join('');
   }
 
-  var DIAS = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+  // Los nombres de los días los da `qd-mercados.js` (`nombreDeDia`): había una
+  // lista acá y otra allá, y dos listas de días es cómo terminan diciendo
+  // cosas distintas de la misma fecha.
 
   // EL CHIP LO MANDA EL DATO, NO EL CALENDARIO.
   // Decía "cierre del lunes" porque el lunes ya había cerrado, mientras la
@@ -371,17 +380,30 @@
   // un día que nada respaldaba. Sin dato se dice "cerrado" a secas y el
   // motivo va en el title, porque un hueco visible es mejor que un rótulo
   // seguro de sí mismo.
+  // EL ESTADO DEL MERCADO Y LA FECHA DEL DATO SON DOS HECHOS DISTINTOS.
+  //
+  // El chip decía "cerrado · cierre del jueves" el viernes a las 11:16 CT con
+  // la NYSE y la BMV operando (Lety, 2026-10-02). La causa está explicada en
+  // `qd-mercados.js`: el estado se contrastaba contra el último CIERRE, y
+  // mientras la sesión corre el cierre de hoy no existe todavía, así que la
+  // bolsa salía cerrada todos los días hábiles en horario.
+  //
+  // Ahora el estado lo decide el horario (`qd-mercados.js`, un solo lugar) y la
+  // fecha del dato se dice APARTE, que es lo que pidió: el mapa muestra
+  // cierres, y durante la sesión el último que hay es el de ayer. Decirlo no es
+  // una disculpa, es la procedencia del número que se está viendo.
   function pintarChip(d){
-    // `ultimoCierre` va al cálculo, no se re-deriva acá: el estado del mercado
-    // lo decide `qd-mercados.js` y nadie más. Antes esta función volvía a armar
-    // el texto "cierre del <día>" por su cuenta, o sea que había tres lugares
-    // opinando —la tabla de `qd-periods`, ésta, y el chip nuevo—.
     var e = qdEstadoMercado(d.bolsa || estado.mapa, new Date(), { ultimoCierre: d.ultimo_cierre || null });
     var el = document.getElementById('chip');
+    var dia = nombreDeDia(d.ultimo_cierre);
     var txt, motivo = '';
-    if(e.abierto){ txt = 'abierto'; }
-    else if(d.ultimo_cierre){
-      var dia = DIAS[new Date(d.ultimo_cierre+'T12:00:00Z').getUTCDay()];
+    if(e.abierto){
+      txt = dia ? 'abierto · mapa con cierre del ' + dia : 'abierto';
+      motivo = dia
+        ? 'la bolsa opera ahora; el mapa muestra el cierre del ' + d.ultimo_cierre
+          + ' porque el de hoy no existe hasta que cierre'
+        : 'la bolsa opera ahora; no se sabe de qué día es el cierre del mapa';
+    } else if(d.ultimo_cierre){
       txt = 'cerrado · cierre del ' + dia;
       motivo = 'último cierre en la tabla: ' + d.ultimo_cierre;
     } else if(e.abierto === null){
@@ -1013,7 +1035,11 @@
     // `fecha_dato`, no `ultimo_cierre`: cuando el precio de hoy ya entró a la
     // serie, el número que se ve es de hoy y el estado tiene que salir de la
     // MISMA fecha. Asia decía "cierre del lunes" con los cuadros en martes.
-    try { return estadoDeBolsa(c.bolsa, new Date(), { ultimoCierre: c.fecha_dato || c.ultimo_cierre }); }
+    // `datoIntradia: true`: los cuadros de Mundo traen `precio_t`, una marca de
+    // tiempo de HOY cuando se está operando. Ahí sí un dato viejo con el
+    // horario corriendo desmiente la sesión. El mapa de EE.UU. y el de México
+    // viajan con cierres diarios y no pueden hacer ese contraste.
+    try { return estadoDeBolsa(c.bolsa, new Date(), { ultimoCierre: c.fecha_dato || c.ultimo_cierre, datoIntradia: true }); }
     catch(e){ return { etiqueta: 'sin horario declarado', abierta: false, estado: 'desconocida' }; }
   }
 
@@ -1077,7 +1103,7 @@
         claves.push(c.bolsa); cierres[c.bolsa] = c.fecha_dato || c.ultimo_cierre;
       }); });
       BOLSAS_POR_REGION[k] = claves;
-      reg[k] = estadoDeRegion(claves, hoy, { cierres: cierres });
+      reg[k] = estadoDeRegion(claves, hoy, { cierres: cierres, datoIntradia: true });
     });
     reg.otros = { etiqueta: '24/7 · abierto' };
     var sub = diaTxt + (reg.america && reg.america.etiqueta ? ' · ' + reg.america.etiqueta : '')

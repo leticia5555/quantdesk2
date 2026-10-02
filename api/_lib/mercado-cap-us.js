@@ -388,14 +388,20 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   // split no reflejado), así que se le pregunta a quien firma la portada. Sólo
   // acá: si el par de Finnhub ya concordaba, no se toca nada — las 279
   // verificadas siguen verificadas por donde venían.
-  if (edgar && num(edgar.acciones) > 0) {
+  const clasesEdgar = entrada.edgar_clases || null;
+  if ((edgar && num(edgar.acciones) > 0) || clasesEdgar) {
     const ve = veredictoCapEdgar({
-      symbol, declarada_usd: decl.cap, acciones_edgar: edgar.acciones,
+      symbol, declarada_usd: decl.cap, acciones_edgar: edgar ? edgar.acciones : null,
       // EN ACCIONES, no en millones, que es como viene de la tabla: el árbitro
       // compara los dos conteos entre sí y una unidad distinta en cada lado
       // haría que "coinciden dentro del 5%" no signifique nada.
       acciones_finnhub: num(entrada.acciones) > 0 ? num(entrada.acciones) * MILLON : null,
-      precio_usd: entrada.precio_usd, fecha_portada: edgar.fecha_portada,
+      precio_usd: entrada.precio_usd,
+      fecha_portada: (edgar && edgar.fecha_portada) || (clasesEdgar && clasesEdgar.fecha_portada) || null,
+      // BX: cuando EDGAR reporta una portada por clase, `acciones` queda vacía
+      // a propósito y la suma entra por su propia puerta, con su propio techo.
+      suma_clases_edgar: clasesEdgar ? clasesEdgar.suma : null,
+      clases_edgar: clasesEdgar ? clasesEdgar.clases : null,
     });
     if (ve.estado === 'verificada') {
       return {
@@ -473,6 +479,15 @@ export function filaVeredictoCapUs(u, { precio_usd, precio_captura, referencias,
     // número POSITIVO.
     edgar: num(u && u.acciones_edgar_millones) > 0
       ? { acciones: num(u.acciones_edgar_millones) * MILLON, fecha_portada: (u && u.acciones_edgar_portada) || null }
+      : null,
+    // VARIAS CLASES (BX): la suma viaja aparte y el veredicto la acepta sólo si
+    // Finnhub la confirma. Mismo guardia `> 0` por el mismo motivo de siempre.
+    edgar_clases: num(u && u.acciones_edgar_clases) > 1 && num(u && u.acciones_edgar_suma_millones) > 0
+      ? {
+        clases: num(u.acciones_edgar_clases),
+        suma: num(u.acciones_edgar_suma_millones) * MILLON,
+        fecha_portada: (u && u.acciones_edgar_portada) || null,
+      }
       : null,
     // Y el estado de la consulta viaja SIEMPRE, con o sin conteo: es lo que
     // separa "todavía no se preguntó" de "se preguntó y no había".

@@ -133,6 +133,15 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
     psql(`prepare razon(text[]) as ${SQL_CAP_US.razon_universo};`);
   });
 
+  await t.test('las escrituras del job de EDGAR también PREPARAN', () => {
+    // El job escribía con SQL en línea, así que una columna mal escrita no la
+    // veía nadie hasta que Lety corriera el job contra producción y recibiera
+    // un 500. Ahora las dos sentencias viven en `SQL_CAP_US` y se preparan
+    // DESDE AHÍ: copiarlas acá habría dejado que las dos copias se separaran.
+    psql(`prepare edgar_conteo(text, numeric, date, date, text, text) as ${SQL_CAP_US.edgar_conteo};`);
+    psql(`prepare edgar_clases(text, int, numeric, date) as ${SQL_CAP_US.edgar_clases};`);
+  });
+
   await t.test('con la tabla terminando el VIERNES, la consulta devuelve la serie y el ancla YTD', () => {
     // El caso del reporte: es lunes, la cosecha no guardó la barra de hoy, la
     // tabla termina el viernes. La consulta tiene que traer datos igual.

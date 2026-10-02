@@ -748,6 +748,45 @@ try {
   chequeo('el chip dice el cierre que se está viendo, no el que el calendario espera',
     /cierre del viernes/.test(chipUs), chipUs);
 
+  // ═══════════════════════════════════════════════════════════════════
+  // EL CHIP CON LA BOLSA ABIERTA — 11:00 CT de un día hábil
+  //
+  // "Viernes 11:16 CT, EE.UU. y México dicen 'cerrado · cierre del jueves' con
+  // NYSE y BMV abiertas" (Lety, 2026-10-02). El resto de la corrida usa un
+  // reloj de lunes 17:00 CT —con todo cerrado, que es el caso que rompió en su
+  // momento—, así que esto estrena su propio contexto con el reloj dentro de
+  // la sesión. Es el único modo de probarlo: el estado depende de la hora.
+  // ═══════════════════════════════════════════════════════════════════
+  const EN_SESION = Date.parse('2026-09-22T16:00:00Z');   // martes 11:00 CT / 12:00 ET
+  const ctxAbierto = await browser.newContext({
+    viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true,
+  });
+  await ctxAbierto.addInitScript(`(() => {
+    const fijo = ${EN_SESION};
+    const Real = Date;
+    class Falso extends Real {
+      constructor(...a) { if (a.length === 0) super(fijo); else super(...a); }
+      static now() { return fijo; }
+    }
+    window.Date = Falso;
+  })()`);
+  const pa = await ctxAbierto.newPage();
+  for (const [mapa, bolsa] of [['us', 'NYSE/Nasdaq'], ['mx', 'BMV']]) {
+    await pa.goto(`${BASE}/mercado?mapa=${mapa}`, { waitUntil: 'networkidle' });
+    await pa.waitForSelector('.cuadro');
+    const txt = (await pa.locator('#chip').innerText()).trim();
+    const tit = await pa.locator('#chip').getAttribute('title');
+    const verde = await pa.evaluate(() => document.getElementById('chip').classList.contains('abierto'));
+    chequeo(`a las 11:00 CT de un día hábil, ${bolsa} sale ABIERTA y no "cerrado"`,
+      txt.startsWith('●') && new RegExp(`${bolsa.replace('/', '\\/')}: abierto`).test(txt)
+        && !/cerrado/.test(txt) && verde, txt);
+    // Y la fecha del dato no desaparece: va aparte, con su causa en el title.
+    chequeo(`y ${bolsa} dice de cuándo es el mapa, aparte del estado`,
+      /mapa con cierre del viernes/.test(txt) && /no existe hasta que cierre/.test(tit || ''),
+      `${txt} · title: ${tit}`);
+  }
+  await ctxAbierto.close();
+
   // Y el mapa NO está vacío aunque falte el cierre de hoy: 1D se calcula
   // sobre lo que HAY —viernes contra jueves—, no sobre lo que el calendario
   // dice que debería haber.
@@ -1193,14 +1232,41 @@ try {
   // "En la pestaña México, esconde el toggle: esas acciones ya están en
   // pesos" (Lety). Un botón que no puede hacer nada es un botón que miente.
   await p.goto(`${BASE}/mercado?mapa=mx&periodo=YTD&moneda=mxn`, { waitUntil: 'networkidle' });
-  const mxTog = await p.evaluate(() => ({
-    oculto: document.getElementById('moneda').hidden,
-    pie: (document.getElementById('pie') || {}).textContent || '',
-  }));
-  chequeo('en México el toggle de moneda está escondido',
-    mxTog.oculto === true, `hidden=${mxTog.oculto}`);
+  // SE MIDE LO QUE SE VE, NO LA PROPIEDAD. Esta comprobación miraba
+  // `.hidden` y lo daba por bueno mientras el toggle seguía en pantalla en el
+  // iPhone: `.toggle{display:flex}` es una regla de autor y le gana al
+  // `[hidden]{display:none}` del navegador. La propiedad decía una cosa y la
+  // pantalla otra, y la prueba creyó a la propiedad.
+  const mxTog = await p.evaluate(() => {
+    const t = document.getElementById('moneda');
+    const r = t.getBoundingClientRect();
+    return {
+      prop: t.hidden, display: getComputedStyle(t).display,
+      alto: Math.round(r.height), botones: t.querySelectorAll('button').length,
+      pie: (document.getElementById('pie') || {}).textContent || '',
+    };
+  });
+  chequeo('en México el toggle de moneda NO se ve (ni ocupa sitio)',
+    mxTog.prop === true && mxTog.display === 'none' && mxTog.alto === 0,
+    JSON.stringify(mxTog));
   chequeo('y el pie de México no habla de ningún FIX: ya está en pesos',
     !/FIX/.test(mxTog.pie), mxTog.pie);
+
+  // EL CASO REAL: venir de EE.UU., donde el toggle YA está pintado. Entrando
+  // directo por la URL nunca se habían dibujado los botones, así que un
+  // toggle que no se esconde se veía vacío y pasaba desapercibido; llegando
+  // desde EE.UU. se quedaban los botones de la pestaña anterior, que es como
+  // ella lo vio.
+  await p.goto(`${BASE}/mercado?mapa=us&periodo=YTD`, { waitUntil: 'networkidle' });
+  await p.locator('nav button[data-mapa="mx"]').tap();
+  await p.waitForTimeout(250);
+  const mxDesdeUs = await p.evaluate(() => {
+    const t = document.getElementById('moneda');
+    return { display: getComputedStyle(t).display, alto: Math.round(t.getBoundingClientRect().height),
+             texto: t.textContent.trim() };
+  });
+  chequeo('y llegando desde EE.UU. tampoco: no se quedan los botones de la otra pestaña',
+    mxDesdeUs.display === 'none' && mxDesdeUs.alto === 0, JSON.stringify(mxDesdeUs));
 
   // ── LA CAUSA DE UN GRIS NO SE INVENTA ──────────────────────────────
   // El 2026-09-26, en el iPhone: ORCL, MNST y APH decían "EDGAR no dio acciones

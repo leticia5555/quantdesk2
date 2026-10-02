@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 // `tests/mercado-scripts.test.mjs`.
 const require = createRequire(import.meta.url);
 const M = require(join(dirname(fileURLToPath(import.meta.url)), '..', 'qd-mercados.js'));
-const { BOLSAS, ETIQUETA_24H, horaEnZona, estadoDeBolsa, estado24h, qdEstadoMercado, ALIAS_BOLSA } = M;
+const { BOLSAS, ETIQUETA_24H, horaEnZona, estadoDeBolsa, estado24h, qdEstadoMercado, ALIAS_BOLSA, nombreDeDia } = M;
 
 test('las bolsas del mapa están, con zona IANA y horario', () => {
   // Eran las 8 de la decisión del 2026-09-29; el artboard 4 agregó seis
@@ -95,31 +95,89 @@ test('el receso de mediodía no es "abierto": Tokio y Hong Kong paran', () => {
   assert.ok(BOLSAS.hongkong.almuerzo, 'Hong Kong también para a mediodía');
 });
 
-// ── LO QUE NO SE AFIRMA CON EL HORARIO SOLO ───────────────────────────
-test('en horario pero con el último cierre de ayer: "sin cierre nuevo hoy", no "abierto"', () => {
-  // Es el caso del feriado que no está en ningún calendario del repo. También
-  // cubre "la cosecha no llegó": las dos se arreglan distinto y ninguna es
-  // "abierto".
+// ═══════════════════════════════════════════════════════════════════════
+// UN CIERRE DIARIO NO PUEDE CONFIRMAR UNA SESIÓN EN CURSO
+//
+// El viernes a las 11:16 CT, con la NYSE y la BMV operando, el chip decía
+// "cerrado · cierre del jueves" (Lety, 2026-10-02). La regla vieja era
+// "corre el horario Y el último cierre es de HOY → abierta", y el cierre de
+// hoy no existe hasta que la sesión termina: la condición sólo se podía
+// cumplir fuera del horario. Mentía todos los días hábiles.
+// ═══════════════════════════════════════════════════════════════════════
+test('a las 11:00 CT de un día hábil la NYSE está ABIERTA, con el cierre de ayer', () => {
+  // Viernes 2 de octubre, 11:00 en Ciudad de México = 12:00 en Nueva York.
+  const t = new Date('2026-10-02T17:00:00Z');
+  const e = estadoDeBolsa('nyse', t, { ultimoCierre: '2026-10-01' });
+  assert.equal(e.sesion_corriendo, true);
+  assert.equal(e.abierta, true, 'la bolsa opera: eso lo dice el horario');
+  assert.equal(e.estado, 'abierta');
+  assert.equal(e.etiqueta, 'abierto');
+  // La fecha del dato no se pierde: viaja aparte para que el chip la diga.
+  assert.equal(e.dato_de_hoy, false);
+  assert.equal(e.ultimo_cierre, '2026-10-01');
+});
+
+test('y la BMV igual: 11:00 CT es su propio horario', () => {
+  const t = new Date('2026-10-02T17:00:00Z');
+  const e = estadoDeBolsa('bmv', t, { ultimoCierre: '2026-10-01' });
+  assert.equal(e.abierta, true);
+  assert.equal(e.etiqueta, 'abierto');
+});
+
+test('fuera de horario sigue cerrada, y la etiqueta nombra el día del cierre', () => {
+  const e = estadoDeBolsa('nyse', new Date('2026-10-02T23:00:00Z'), { ultimoCierre: '2026-10-01' });
+  assert.equal(e.abierta, false);
+  assert.equal(e.estado, 'cerrada');
+  assert.match(e.etiqueta, /cerrado · cierre del jueves/);
+});
+
+// ── DONDE EL DATO SÍ PUEDE DESMENTIR AL HORARIO ───────────────────────
+// Mundo trae `precio_t`, una marca intradía: ahí un dato viejo con la sesión
+// corriendo es señal real —feriado, media sesión, o la cosecha no llegó— y
+// ninguna de las tres es "abierto". El mapa viaja con cierres diarios y no
+// puede hacer ese contraste, que es exactamente de lo que se enteró el chip.
+test('con dato INTRADÍA viejo y el horario corriendo: "sin cierre nuevo", no "abierto"', () => {
   const t = new Date('2026-09-28T14:00:00Z');   // lunes 10:00 en NY
-  const e = estadoDeBolsa('nyse', t, { ultimoCierre: '2026-09-25' });
+  const e = estadoDeBolsa('nyse', t, { ultimoCierre: '2026-09-25', datoIntradia: true });
   assert.equal(e.sesion_corriendo, true, 'el horario sí dice que corre');
-  assert.equal(e.abierta, false, 'pero no se afirma sin el dato');
+  assert.equal(e.abierta, false, 'pero el intradía de hoy no llegó');
   assert.equal(e.estado, 'sin_cierre_nuevo');
   assert.match(e.etiqueta, /sin cierre nuevo hoy · último del 2026-09-25/);
 });
 
-test('sin último cierre no se dice ni abierto ni cerrado a secas: se dice que falta', () => {
+test('con dato INTRADÍA de hoy: abierta', () => {
   const t = new Date('2026-09-28T14:00:00Z');
-  const enHorario = estadoDeBolsa('nyse', t, {});
-  assert.equal(enHorario.estado, 'horario_solo');
-  assert.equal(enHorario.abierta, false);
-  assert.match(enHorario.etiqueta, /en horario, sin cierre con el que confirmarlo/);
+  const e = estadoDeBolsa('nyse', t, { ultimoCierre: '2026-09-28', datoIntradia: true });
+  assert.equal(e.abierta, true);
+  assert.equal(e.dato_de_hoy, true);
+});
+
+test('sin ningún dato: el mapa confía en el horario, Mundo dice que le falta', () => {
+  const t = new Date('2026-09-28T14:00:00Z');
+  // El mapa: el horario es la única evidencia que hay durante la sesión.
+  const mapa = estadoDeBolsa('nyse', t, {});
+  assert.equal(mapa.abierta, true);
+  assert.equal(mapa.dato_de_hoy, null, 'y se dice que no se sabe de cuándo es');
+
+  // Mundo, que sí espera un intradía: si no llegó, no lo afirma.
+  const mundo = estadoDeBolsa('nyse', t, { datoIntradia: true });
+  assert.equal(mundo.estado, 'horario_solo');
+  assert.equal(mundo.abierta, false);
+  assert.match(mundo.etiqueta, /en horario, sin dato con el que confirmarlo/);
 
   // Fuera de horario, cerrado es cerrado — pero la etiqueta dice que no sabe
   // de qué día es el último cierre, en vez de nombrar un día inventado.
   const fuera = estadoDeBolsa('nyse', new Date('2026-09-28T23:00:00Z'), {});
   assert.equal(fuera.estado, 'cerrada');
   assert.match(fuera.etiqueta, /no se sabe de qué día es el último cierre/);
+});
+
+test('nombreDeDia es la ÚNICA lista de días: el chip y la etiqueta la comparten', () => {
+  assert.equal(nombreDeDia('2026-10-01'), 'jueves');
+  assert.equal(nombreDeDia('2026-10-02'), 'viernes');
+  assert.equal(nombreDeDia('2026-10-04'), 'domingo');
+  assert.equal(nombreDeDia(null), null);
+  assert.equal(nombreDeDia('no-es-fecha'), null);
 });
 
 test('la etiqueta de cerrado nombra el día, y dice "de hoy" cuando es de hoy', () => {
@@ -205,16 +263,19 @@ test('una bolsa que no existe LANZA en vez de inventar un horario', () => {
   assert.throws(() => qdEstadoMercado('xx', new Date()), /bolsa desconocida/);
 });
 
-test('lo ÚNICO que cambió del chip viejo: ya no afirma abierto con el horario solo', () => {
-  // El comentario que estaba en `qd-periods.js` lo admitía: "los feriados NO se
-  // modelan… un día de asueto sale como abierto sin operaciones". Con el último
-  // cierre en la mano, deja de pasar.
+test('el adaptador del mapa dice ABIERTO en sesión, con el cierre que sea', () => {
+  // `qdEstadoMercado` es lo que llama el chip del mapa, y el mapa viaja con
+  // CIERRES DIARIOS: durante la sesión el último siempre es de un día anterior.
+  // Esto llegó a devolver `abierto: false` con la bolsa operando.
   const t = new Date('2026-09-21T17:00:00Z');   // lunes, en sesión
   assert.equal(qdEstadoMercado('us', t, { ultimoCierre: '2026-09-21' }).abierto, true);
-  const feriado = qdEstadoMercado('us', t, { ultimoCierre: '2026-09-18' });
-  assert.equal(feriado.abierto, false, 'en sesión pero sin cierre nuevo: no se afirma');
-  assert.match(feriado.texto, /sin cierre nuevo hoy/);
-  assert.match(feriado.motivo, /sin cierre nuevo hoy/);
+  const conCierreDeAyer = qdEstadoMercado('us', t, { ultimoCierre: '2026-09-18' });
+  assert.equal(conCierreDeAyer.abierto, true, 'la bolsa opera; el cierre de hoy no existe aún');
+  assert.equal(conCierreDeAyer.texto, 'abierto');
+  // El feriado que ningún calendario del repo modela se pierde acá, y se
+  // pierde porque no se podía detectar así: un cierre viejo durante la sesión
+  // es el estado NORMAL de un mapa de cierres, no un indicio de feriado.
+  // Donde sí hay con qué contrastar —Mundo, con `precio_t`— el contraste sigue.
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -270,13 +331,21 @@ test('si sólo algunas están abiertas, se dice cuántas — no "abierto" a seca
   assert.match(r.etiqueta, /abierto · 1 de 2/);
 });
 
-test('una región en horario pero sin cierre nuevo NO dice abierto', () => {
-  // El feriado que no está en ningún calendario del repo, a nivel región.
+test('una región en horario pero sin dato intradía nuevo NO dice abierto', () => {
+  // El feriado que no está en ningún calendario del repo, a nivel región. Vale
+  // en Mundo, que es quien pasa `datoIntradia`: ahí la fecha del cuadro sale de
+  // `precio_t` y un dato viejo con la sesión corriendo sí dice algo.
   const t = new Date('2026-09-21T14:30:00Z');
   const r = estadoDeRegion(['nyse', 'toronto'], t,
-    { cierres: { nyse: '2026-09-18', toronto: '2026-09-18' } });
+    { cierres: { nyse: '2026-09-18', toronto: '2026-09-18' }, datoIntradia: true });
   assert.match(r.etiqueta, /sin cierre nuevo \(2 de 2\)/);
   assert.equal(r.abiertas, 0);
+
+  // Sin esa marca —el mapa, con cierres diarios— la misma entrada es ABIERTO.
+  const mapa = estadoDeRegion(['nyse', 'toronto'], t,
+    { cierres: { nyse: '2026-09-18', toronto: '2026-09-18' } });
+  assert.equal(mapa.abiertas, 2);
+  assert.equal(mapa.etiqueta, 'abierto');
 });
 
 test('una región de puros 24h no se pregunta por horarios', () => {
