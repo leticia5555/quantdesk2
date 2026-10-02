@@ -54,7 +54,8 @@
 
 import { sql, ensureSchema } from './_lib/db.js';
 import { getAccount, getPositions } from './_lib/alpaca.js';
-import { activeAgents, agentAlpacaCreds, ARENA_SEASON } from './_lib/arena-registry.js';
+import { activeAgents, agentAlpacaCreds, ARENA_SEASON, temporadaEfectiva } from './_lib/arena-registry.js';
+import { leerInicioTemporada } from './_lib/arena-baseline.js';
 import {
   BENCHMARK, leerBenchmark, precioBenchmark, benchmarkReturnPct, filaBenchmark, excesoVsBenchmark,
 } from './_lib/arena-benchmark.js';
@@ -142,6 +143,19 @@ export default async function handler(req, res) {
   // misma tabla y publicaba la diferencia como si midiera al modelo. UNA
   // consulta agregada para los siete — el conteo entero cabe en una fila por
   // agente, así que no hay motivo para que esto cueste más que eso.
+  // ── LA VENTANA ARRANCA CUANDO EL RESET CORRIÓ ────────────────────────
+  // No cuando la constante dice. El 2026-10-02 `ARENA_SEASON.start` decía
+  // `2026-10-01` y /liga habría contado como "temporada T3, día 1" un día en
+  // que el reset no había corrido y los libros eran los de la T2. La fecha
+  // planeada se vuelve falsa sola con solo que pase el tiempo; la que escribe
+  // el reset no.
+  //
+  // Si el reset no corrió, `abierta: false` y la ventana cae a la fecha
+  // planeada — con la bandera al lado para que la pantalla pueda decir
+  // "declarada, no abierta" en vez de inventar un día 1.
+  let temporada = temporadaEfectiva(null);
+  try { temporada = temporadaEfectiva(await leerInicioTemporada(ARENA_SEASON.id)); } catch { /* cae a la planeada */ }
+
   let manos = null;
   try {
     const filas = await sql(
@@ -169,7 +183,7 @@ export default async function handler(req, res) {
               ) as context
          from arena_journal
         where phase = 'decide' and agent_id <> 'league' and run_date >= $1::date`,
-      [ARENA_SEASON.start]);
+      [temporada.start]);
     manos = manosDeLaLiga(filas);
   } catch (err) { manos = null; }
 
@@ -340,6 +354,9 @@ export default async function handler(req, res) {
     // misma tabla. El piso dice cuánta de la distancia entre dos puestos es
     // azar; esto dice que dos agentes no jugaron el mismo juego.
     manos: manos,
+    // La temporada EFECTIVA: con `abierta` y, si el reset corrió tarde, cuántos
+    // días se corrió la ventana contra lo planeado.
+    temporada,
     // El orden VISUAL, liviano: id + puesto + equity. La página arma la tabla
     // con esto y busca la fila completa por id, así el orden se decide UNA vez
     // acá y no se re-deriva en el navegador.

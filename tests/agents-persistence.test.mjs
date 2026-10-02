@@ -120,6 +120,25 @@ console.log('schema: 100% CREATE TABLE IF NOT EXISTS, cero DROP/TRUNCATE en api/
     // El regex exige las DOS columnas del scope: un `delete from
     // company_filing_items` sin ellas —o con una sola— no pasa esta lista.
     'api/_lib/historia-db.js': /^delete from company_filing_items where cik = \$1 and accession = \$2$/i,
+    // ── REVISADO EL 2026-10-02 ───────────────────────────────────────
+    // El reset borra las anclas de precio del vigilante
+    // (`arena_watch_mark`), que es la única tabla con estado por
+    // agente+símbolo SIN columna de fecha: no caduca sola y el reset la
+    // dejaba viva, así que el día 1 de una temporada nueva el vigilante medía
+    // el ±3% contra precios de la anterior.
+    //
+    // Es un DELETE SIN WHERE, que es justo lo que esta lista existe para
+    // frenar. Pasa por cuatro razones:
+    //   1. La tabla es CACHÉ, no registro: `markPrice` trata la ausencia de
+    //      fila como "el ancla es el cierre anterior", que es el
+    //      comportamiento correcto para una cartera recién nacida.
+    //   2. El rastro narrativo NO vive acá — vive en `arena_journal`, que el
+    //      reset no toca.
+    //   3. Un `where` por agente sería PEOR: dejaría anclas de agentes que
+    //      salieron de la liga, que es el mismo bug con menos filas.
+    //   4. Solo lo corre `/api/arena-reset?confirm=1`, que es manual, nunca
+    //      un cron y nunca un LLM.
+    'api/arena-reset.js': /^delete from arena_watch_mark returning agent_id$/i,
   };
   let deletes = [];
   for (const p of files) {

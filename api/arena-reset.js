@@ -90,7 +90,7 @@ import {
 } from './_lib/alpaca.js';
 import { activeAgents, agentById, agentAlpacaCreds, ARENA_SEASON } from './_lib/arena-registry.js';
 import {
-  RESET_BASELINE_USD, setBaseline, pauseWatch, resumeWatch, startingDrawdown,
+  RESET_BASELINE_USD, setBaseline, pauseWatch, resumeWatch, startingDrawdown, marcarInicioTemporada,
 } from './_lib/arena-baseline.js';
 import {
   BENCHMARK, abrirBenchmark, precioBenchmark, leerBenchmark,
@@ -519,6 +519,51 @@ export default async function handler(req, res) {
          })],
       );
       out.journaled = true;
+      // ── EL ANCLA DEL VIGILANTE, QUE NO CADUCA SOLA ───────────────
+      // `arena_watch_mark` es la ÚNICA tabla con estado por agente+símbolo sin
+      // columna de fecha. Guarda el precio contra el que el vigilante mide el
+      // ±3% "desde el último pronunciamiento del agente". El reset aplana
+      // Alpaca y re-basa los baselines, pero esta tabla sobrevivía: el día 1
+      // de la temporada nueva el vigilante habría medido contra precios de la
+      // anterior, para nombres que ya nadie tiene.
+      //
+      // Es el caso exacto de los dos caminos: Alpaca plano y nuestras tablas
+      // con memoria.
+      //
+      // Borrarla es SEGURO y además correcto: `markPrice` ya trata la ausencia
+      // de fila como "el ancla es el cierre anterior", que es justo lo que
+      // corresponde para una cartera que acaba de nacer.
+      //
+      // Las otras tres tablas del vigilante llevan fecha y caducan solas
+      // (`arena_watch` por `run_date`, `arena_watch_meta` por la clave
+      // `levels:<día>:<agente>`). La memoria del journal —trailing, escalera
+      // de stops, plan previo, compromisos— ya la corta `agentCutoff` con el
+      // `baseline_at` que este mismo reset acaba de escribir.
+      try {
+        const borradas = await sql(`delete from arena_watch_mark returning agent_id`);
+        out.anclas_borradas = Array.isArray(borradas) ? borradas.length : 0;
+      } catch (e) {
+        out.anclas_borradas = null;
+        // El remedio se describe, no se pega listo para copiar: el lint de
+        // `tests/agents-persistence.test.mjs` escanea TODO el archivo buscando
+        // sentencias destructivas, y un DELETE dentro de un string de usuario
+        // es indistinguible de uno real para ese escaneo. Tiene razón en no
+        // distinguirlos — y además un borrado sin `where` copiable desde un
+        // mensaje de error es mala idea por su cuenta.
+        out.warnings.push(`No se pudieron borrar las anclas del vigilante (tabla arena_watch_mark): ${String((e && e.message) || e)}. El vigilante va a medir el ±3% contra precios de la temporada ANTERIOR hasta que esa tabla quede vacía. Vaciala a mano (la tabla entera, sin filtro: es caché, no registro) y volvé a correr esta verificación.`);
+      }
+      // ── EL INICIO DE LA TEMPORADA, ESCRITO POR EL RESET ──────────
+      // Acá y no en una constante: la temporada empieza el día que pasa la
+      // puerta, no el día que alguien escribió en el código. Idempotente — si
+      // el reset se repite dentro de la misma temporada, el inicio NO se
+      // mueve. Va DESPUÉS del anuncio a propósito: si el journal falló, la
+      // temporada no se marca como abierta.
+      try {
+        out.inicio_temporada = await marcarInicioTemporada(ARENA_SEASON.id, now);
+      } catch (e) {
+        out.inicio_temporada = { error: String((e && e.message) || e) };
+        out.warnings.push(`No se pudo marcar el inicio de la temporada (${String((e && e.message) || e)}). Las cuentas SÍ se re-basaron; /liga va a usar la fecha planeada (${ARENA_SEASON.start}) hasta que esto se escriba.`);
+      }
     } catch (e) {
       out.journaled = false;
       out.warnings.push('No se pudo journalear el anuncio del reset: ' + String((e && e.message) || e) + '. El corte existe en arena_state pero no hay fila que lo cuente en /liga.');

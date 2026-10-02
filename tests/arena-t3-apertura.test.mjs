@@ -38,21 +38,50 @@ console.log('\n── la T2 se sella, no se borra ──');
   // Sin comentarios: un `-- delete` en una nota no es una escritura, pero un
   // DELETE de verdad sí, y hay que distinguirlos para que la prueba no mienta
   // en ninguna de las dos direcciones.
+  // ── ACTUALIZADA EL 2026-10-02, Y LA ASERCIÓN ANTERIOR ERA EL BUG ──
+  // Esto exigía CERO delete y que `arena_watch_mark` ni se nombrara. Las dos
+  // cosas se cumplían, y las dos eran el problema: `arena_watch_mark` es la
+  // única tabla con estado por agente+símbolo SIN columna de fecha, así que
+  // sobrevivía al reset y el día 1 de la temporada nueva el vigilante medía
+  // el ±3% contra precios de la anterior, para nombres que ya nadie tiene.
+  //
+  // "Cero DELETE" era una propiedad fácil de verificar, no la correcta. La
+  // correcta es: **exactamente los deletes enumerados, y ninguno más.**
   const codigo = reset.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
-  const destructivos = (codigo.match(/\b(delete\s+from|truncate)\b/gi) || []);
-  ok(destructivos.length === 0,
-    'cero DELETE y cero TRUNCATE en todo el endpoint', destructivos.join(', '));
+  const DELETES_APROBADOS = [
+    // Caché de anclas del vigilante. Sin fila, `markPrice` usa el cierre
+    // anterior — que es el comportamiento correcto para una cartera recién
+    // nacida. El rastro narrativo vive en `arena_journal`, intacto.
+    /^delete from arena_watch_mark returning agent_id$/i,
+  ];
+  const destructivos = (codigo.match(/\b(delete\s+from|truncate)[^'"`;]*/gi) || []).map((x) => x.trim());
+  ok(!/\btruncate\b/i.test(codigo), 'cero TRUNCATE: nada se vacía a ciegas');
+  const sinAprobar = destructivos.filter((d) => !DELETES_APROBADOS.some((re) => re.test(d)));
+  ok(sinAprobar.length === 0,
+    `los DELETE del reset son exactamente los ${DELETES_APROBADOS.length} enumerados`,
+    sinAprobar.join(' · '));
+  ok(destructivos.length === DELETES_APROBADOS.length,
+    'y están TODOS: una entrada aprobada sin su delete es una aprobación colgada',
+    `${destructivos.length} en el código vs ${DELETES_APROBADOS.length} aprobados`);
 
   // Las tablas que el plan promete intactas. Que no aparezcan NOMBRADAS en el
   // endpoint es la forma más fuerte de la promesa: no se las puede tocar sin
-  // mencionarlas.
+  // mencionarlas. `arena_watch_mark` YA NO está en esta lista — se borra a
+  // propósito, y por qué está en el comentario del reset y en la línea 5 de
+  // `docs/sql/arena-t3-arranque-limpio.sql`.
   const INTACTAS = ['arena_shadow_journal', 'arena_equity_intraday', 'arena_aperturas',
-    'arena_noise_floor', 'arena_spend', 'arena_watch_events', 'arena_watch_mark',
+    'arena_noise_floor', 'arena_spend', 'arena_watch_events',
     'arena_universe', 'arena_screener', 'arena_market_cap', 'arena_buffet_cache'];
   const mencionadas = INTACTAS.filter((t) => new RegExp('\\b' + t + '\\b').test(codigo));
   ok(mencionadas.length === 0,
     `las ${INTACTAS.length} tablas que el plan promete intactas no se nombran siquiera`,
     mencionadas.join(', '));
+
+  // Y la que SÍ se borra, con su verificación propia.
+  ok(/delete from arena_watch_mark/i.test(codigo),
+    'el reset vacía las anclas del vigilante: es la única tabla por agente+símbolo que no caduca sola');
+  ok(/out\.anclas_borradas/.test(reset),
+    'y reporta cuántas borró, para que la verificación de arranque pueda leerlo');
 }
 
 // ── 2) LOS CUATRO SITIOS QUE SÍ TOCA ─────────────────────────────────

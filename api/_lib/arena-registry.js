@@ -562,6 +562,35 @@ export const TEMPORADA_DIAS_CONTAMINADOS = [
 export const esDiaContaminado = (fecha, season = ARENA_SEASON.id) =>
   TEMPORADA_DIAS_CONTAMINADOS.some((d) => d.fecha === String(fecha).slice(0, 10) && d.temporada === season);
 
+// ── LA TEMPORADA, CON EL INICIO QUE EL RESET ESCRIBIÓ ───────────────
+// `ARENA_SEASON.start` es el inicio PLANEADO. El real lo escribe el reset
+// (ver `marcarInicioTemporada` en _lib/arena-baseline.js), porque una fecha
+// en una constante se vuelve falsa sola: el 2-oct la constante decía
+// `2026-10-01` y la temporada reportaba "día 1" sin que el reset hubiera
+// corrido nunca.
+//
+// Esta función es PURA: recibe el inicio leído y devuelve la temporada
+// efectiva. Quien lee la DB es el llamador. Así `seasonStatus` y `seasonDay`
+// siguen siendo puras y testeables sin red.
+//
+// `abierta: false` cuando el reset no corrió: la temporada está DECLARADA y
+// no ABIERTA, que son cosas distintas y hasta hoy se veían iguales.
+export function temporadaEfectiva(inicioReal = null, season = ARENA_SEASON) {
+  const start = inicioReal && inicioReal.start ? String(inicioReal.start) : null;
+  return {
+    ...season,
+    start: start || season.start,
+    start_planeado: season.start,
+    abierta: !!start,
+    // Si el reset corrió DESPUÉS de la fecha planeada, la ventana se corrió y
+    // la temporada tiene menos sesiones de las que `weeks` declara. Se dice,
+    // no se recalcula en silencio.
+    corrida_dias: start && start > season.start
+      ? Math.round((Date.parse(start) - Date.parse(season.start)) / 86400000)
+      : 0,
+  };
+}
+
 export function seasonStatus(now = new Date(), season = ARENA_SEASON) {
   const today = easternToday(now);
   if (today < season.start) return 'pending';

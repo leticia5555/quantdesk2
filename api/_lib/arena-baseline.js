@@ -50,6 +50,46 @@ export const RESET_BASELINE_USD = (() => {
 
 export const WATCH_PAUSE_FLAG = 'watch_paused_until';
 
+// ── LA TEMPORADA EMPIEZA EL DÍA QUE PASA LA PUERTA ──────────────────
+// `ARENA_SEASON.start` es una constante en el código, así que cada vez que la
+// apertura se corre hay que editarla y DESPLEGAR. En una semana la T3 tuvo
+// CINCO fechas —29-sep, 30-sep, 1-oct…— y cada cambio pidió un deploy, que es
+// exactamente el paso que falló el 29 y dejó correr la liga un día entero
+// contra los libros de la T2.
+//
+// Peor: el 2-oct la constante decía `2026-10-01` y la temporada reportaba
+// "running, día 1" sin que el reset hubiera corrido nunca. Una fecha escrita
+// a mano se vuelve falsa sola, con solo que pase el tiempo.
+//
+// El reset es el único momento en que la temporada EMPIEZA de verdad: aplana,
+// re-basa y compra el benchmark. Así que la fecha la escribe él.
+//
+// IDEMPOTENTE, por el mismo motivo que el benchmark: si el reset se vuelve a
+// correr dentro de la misma temporada, el inicio NO se mueve. Una temporada
+// cuyo día 1 se recalcula en cada reset mide desde el último reset, que es el
+// error que hace inútil la comparación.
+export const claveInicioTemporada = (seasonId) => `season_start:${seasonId}`;
+
+export async function marcarInicioTemporada(seasonId, now = new Date()) {
+  const clave = claveInicioTemporada(seasonId);
+  const ya = await readFlag(clave);
+  if (ya && ya.value && ya.value.start) return { start: ya.value.start, ya_estaba: true, at: ya.value.at || null };
+  const start = now.toISOString().slice(0, 10);
+  await setFlag(clave, { start, at: now.toISOString() }, `inicio real de la temporada ${seasonId}: el día en que corrió el reset`);
+  return { start, ya_estaba: false, at: now.toISOString() };
+}
+
+// El inicio EFECTIVO. Devuelve `null` si el reset no corrió todavía — y ese
+// null es un dato, no un hueco: significa que la temporada está DECLARADA
+// pero no ABIERTA. Quien lo lea decide qué hacer; lo que no puede pasar es
+// que una fecha del calendario haga parecer abierta una temporada que nadie
+// abrió.
+export async function leerInicioTemporada(seasonId) {
+  const row = await readFlag(claveInicioTemporada(seasonId));
+  const v = row && row.value;
+  return v && v.start ? { start: String(v.start), at: v.at || null } : null;
+}
+
 // ── PURO (testeable sin DB) ──────────────────────────────────────────
 
 // Número REAL o null. `Number(null)`, `Number('')` y `Number([])` son todos 0 —
